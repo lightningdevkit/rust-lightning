@@ -1007,11 +1007,25 @@ const BASE_AMOUNT_PENALTY_DIVISOR: u64 = 1 << 30;
 /// (recently) seen an HTLC successfully complete over this channel.
 #[inline(always)]
 fn success_probability(
-	amount_msat: u64, min_liquidity_msat: u64, max_liquidity_msat: u64, _capacity_msat: u64,
-	_params: &ProbabilisticScoringFeeParameters, _min_zero_implies_no_successes: bool,
+	amount_msat: u64, min_liquidity_msat: u64, max_liquidity_msat: u64, capacity_msat: u64,
+	_params: &ProbabilisticScoringFeeParameters, min_zero_implies_no_successes: bool,
 ) -> (u64, u64) {
+	debug_assert!(min_liquidity_msat <= amount_msat);
+	debug_assert!(amount_msat < max_liquidity_msat);
+	debug_assert!(max_liquidity_msat <= capacity_msat);
+
 	let numerator = max_liquidity_msat - amount_msat;
-	let denominator = (max_liquidity_msat - min_liquidity_msat).saturating_add(1);
+	let mut denominator = (max_liquidity_msat - min_liquidity_msat).saturating_add(1);
+	if min_zero_implies_no_successes && min_liquidity_msat == 0 &&
+		denominator < u64::max_value() / 21
+	{
+		// If we have no knowledge of the channel, scale probability down by ~75%
+		// Note that we prefer to increase the denominator rather than decrease the numerator as
+		// the denominator is more likely to be larger and thus provide greater precision. This is
+		// mostly an overoptimization but makes a large difference in tests.
+		denominator = denominator * 21 / 16
+	}
+
 	(numerator, denominator)
 }
 
@@ -2956,47 +2970,47 @@ mod tests {
 			inflight_htlc_msat: 0,
 			effective_capacity: EffectiveCapacity::Total { capacity_msat: 950_000_000, htlc_maximum_msat: 1_000 },
 		};
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 4375);
+		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 6262);
 		let usage = ChannelUsage {
 			effective_capacity: EffectiveCapacity::Total { capacity_msat: 1_950_000_000, htlc_maximum_msat: 1_000 }, ..usage
 		};
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 2739);
+		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 4634);
 		let usage = ChannelUsage {
 			effective_capacity: EffectiveCapacity::Total { capacity_msat: 2_950_000_000, htlc_maximum_msat: 1_000 }, ..usage
 		};
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 2236);
+		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 4186);
 		let usage = ChannelUsage {
 			effective_capacity: EffectiveCapacity::Total { capacity_msat: 3_950_000_000, htlc_maximum_msat: 1_000 }, ..usage
 		};
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 1983);
+		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 3909);
 		let usage = ChannelUsage {
 			effective_capacity: EffectiveCapacity::Total { capacity_msat: 4_950_000_000, htlc_maximum_msat: 1_000 }, ..usage
 		};
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 1637);
+		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 3556);
 		let usage = ChannelUsage {
 			effective_capacity: EffectiveCapacity::Total { capacity_msat: 5_950_000_000, htlc_maximum_msat: 1_000 }, ..usage
 		};
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 1606);
+		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 3533);
 		let usage = ChannelUsage {
 			effective_capacity: EffectiveCapacity::Total { capacity_msat: 6_950_000_000, htlc_maximum_msat: 1_000 }, ..usage
 		};
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 1331);
+		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 3172);
 		let usage = ChannelUsage {
 			effective_capacity: EffectiveCapacity::Total { capacity_msat: 7_450_000_000, htlc_maximum_msat: 1_000 }, ..usage
 		};
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 1387);
+		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 3211);
 		let usage = ChannelUsage {
 			effective_capacity: EffectiveCapacity::Total { capacity_msat: 7_950_000_000, htlc_maximum_msat: 1_000 }, ..usage
 		};
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 1379);
+		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 3243);
 		let usage = ChannelUsage {
 			effective_capacity: EffectiveCapacity::Total { capacity_msat: 8_950_000_000, htlc_maximum_msat: 1_000 }, ..usage
 		};
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 1363);
+		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 3297);
 		let usage = ChannelUsage {
 			effective_capacity: EffectiveCapacity::Total { capacity_msat: 9_950_000_000, htlc_maximum_msat: 1_000 }, ..usage
 		};
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 1355);
+		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 3250);
 	}
 
 	#[test]
@@ -3161,7 +3175,7 @@ mod tests {
 		};
 
 		// With no historical data the normal liquidity penalty calculation is used.
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 47);
+		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 168);
 		assert_eq!(scorer.historical_estimated_channel_liquidity_probabilities(42, &target),
 			None);
 		assert_eq!(scorer.historical_estimated_payment_success_probability(42, &target, 42, &params),
@@ -3169,7 +3183,7 @@ mod tests {
 
 		scorer.payment_path_failed(&payment_path_for_amount(1), 42);
 		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 2048);
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage_1, &params), 128);
+		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage_1, &params), 249);
 		// The "it failed" increment is 32, where the probability should lie several buckets into
 		// the first octile.
 		assert_eq!(scorer.historical_estimated_channel_liquidity_probabilities(42, &target),
@@ -3183,7 +3197,7 @@ mod tests {
 		// Even after we tell the scorer we definitely have enough available liquidity, it will
 		// still remember that there was some failure in the past, and assign a non-0 penalty.
 		scorer.payment_path_failed(&payment_path_for_amount(1000), 43);
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 32);
+		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 105);
 		// The first points should be decayed just slightly and the last bucket has a new point.
 		assert_eq!(scorer.historical_estimated_channel_liquidity_probabilities(42, &target),
 			Some(([31, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 32, 0, 0, 0, 0, 0],
@@ -3193,17 +3207,17 @@ mod tests {
 		// simply check bounds here.
 		let five_hundred_prob =
 			scorer.historical_estimated_payment_success_probability(42, &target, 500, &params).unwrap();
-		assert!(five_hundred_prob > 0.66);
-		assert!(five_hundred_prob < 0.68);
+		assert!(five_hundred_prob > 0.59);
+		assert!(five_hundred_prob < 0.60);
 		let one_prob =
 			scorer.historical_estimated_payment_success_probability(42, &target, 1, &params).unwrap();
-		assert!(one_prob < 1.0);
-		assert!(one_prob > 0.95);
+		assert!(one_prob < 0.85);
+		assert!(one_prob > 0.84);
 
 		// Advance the time forward 16 half-lives (which the docs claim will ensure all data is
 		// gone), and check that we're back to where we started.
 		SinceEpoch::advance(Duration::from_secs(10 * 16));
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 47);
+		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 168);
 		// Once fully decayed we still have data, but its all-0s. In the future we may remove the
 		// data entirely instead.
 		assert_eq!(scorer.historical_estimated_channel_liquidity_probabilities(42, &target),
@@ -3367,9 +3381,9 @@ mod tests {
 			inflight_htlc_msat: 0,
 			effective_capacity: EffectiveCapacity::Total { capacity_msat, htlc_maximum_msat: capacity_msat },
 		};
-		// With no historical data the normal liquidity penalty calculation is used, which in this
-		// case is diminuitively low.
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 0);
+		// With no historical data the normal liquidity penalty calculation is used, which results
+		// in a success probability of ~75%.
+		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 1269);
 		assert_eq!(scorer.historical_estimated_channel_liquidity_probabilities(42, &target),
 			None);
 		assert_eq!(scorer.historical_estimated_payment_success_probability(42, &target, 42, &params),
