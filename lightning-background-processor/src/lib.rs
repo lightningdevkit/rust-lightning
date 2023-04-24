@@ -302,6 +302,12 @@ macro_rules! define_run_body {
 			// persistence.
 			$peer_manager.process_events();
 
+			// Exit the loop if the background processor was requested to stop.
+			if $loop_exit_check {
+				log_trace!($logger, "Terminating background processor.");
+				break;
+			}
+
 			// We wait up to 100ms, but track how long it takes to detect being put to sleep,
 			// see `await_start`'s use below.
 			let mut await_start = None;
@@ -309,15 +315,16 @@ macro_rules! define_run_body {
 			let updates_available = $await;
 			let await_slow = if $check_slow_await { $timer_elapsed(&mut await_start.unwrap(), 1) } else { false };
 
-			if updates_available {
-				log_trace!($logger, "Persisting ChannelManager...");
-				$persister.persist_manager(&*$channel_manager)?;
-				log_trace!($logger, "Done persisting ChannelManager.");
-			}
 			// Exit the loop if the background processor was requested to stop.
 			if $loop_exit_check {
 				log_trace!($logger, "Terminating background processor.");
 				break;
+			}
+
+			if updates_available {
+				log_trace!($logger, "Persisting ChannelManager...");
+				$persister.persist_manager(&*$channel_manager)?;
+				log_trace!($logger, "Done persisting ChannelManager.");
 			}
 			if $timer_elapsed(&mut last_freshness_call, FRESHNESS_TIMER) {
 				log_trace!($logger, "Calling ChannelManager's timer_tick_occurred");
