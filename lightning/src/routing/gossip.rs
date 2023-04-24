@@ -28,7 +28,7 @@ use crate::ln::msgs::{DecodeError, ErrorAction, Init, LightningError, RoutingMes
 use crate::ln::msgs::{ChannelAnnouncement, ChannelUpdate, NodeAnnouncement, GossipTimestampFilter};
 use crate::ln::msgs::{QueryChannelRange, ReplyChannelRange, QueryShortChannelIds, ReplyShortChannelIdsEnd};
 use crate::ln::msgs;
-use crate::routing::utxo::{self, UtxoLookup};
+use crate::routing::utxo::{self, UtxoLookup, UtxoResolver};
 use crate::util::ser::{Readable, ReadableArgs, Writeable, Writer, MaybeReadable};
 use crate::util::logger::{Logger, Level};
 use crate::util::scid_utils::{block_from_scid, scid_from_parts, MAX_SCID_BLOCK};
@@ -1438,8 +1438,8 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 
 	/// Store or update channel info from a channel announcement.
 	///
-	/// You probably don't want to call this directly, instead relying on a P2PGossipSync's
-	/// RoutingMessageHandler implementation to call it indirectly. This may be useful to accept
+	/// You probably don't want to call this directly, instead relying on a [`P2PGossipSync`]'s
+	/// [`RoutingMessageHandler`] implementation to call it indirectly. This may be useful to accept
 	/// routing messages from a source using a protocol other than the lightning P2P protocol.
 	///
 	/// If a [`UtxoLookup`] object is provided via `utxo_lookup`, it will be called to verify
@@ -1456,6 +1456,19 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 		secp_verify_sig!(self.secp_ctx, &msg_hash, &msg.bitcoin_signature_1, &get_pubkey_from_node_id!(msg.contents.bitcoin_key_1, "channel_announcement"), "channel_announcement");
 		secp_verify_sig!(self.secp_ctx, &msg_hash, &msg.bitcoin_signature_2, &get_pubkey_from_node_id!(msg.contents.bitcoin_key_2, "channel_announcement"), "channel_announcement");
 		self.update_channel_from_unsigned_announcement_intern(&msg.contents, Some(msg), utxo_lookup)
+	}
+
+	/// Store or update channel info from a channel announcement.
+	///
+	/// You probably don't want to call this directly, instead relying on a [`P2PGossipSync`]'s
+	/// [`RoutingMessageHandler`] implementation to call it indirectly. This may be useful to accept
+	/// routing messages from a source using a protocol other than the lightning P2P protocol.
+	///
+	/// This will skip verification of if the channel is actually on-chain.
+	pub fn update_channel_from_announcement_no_lookup(
+		&self, msg: &ChannelAnnouncement
+	) -> Result<(), LightningError> {
+		self.update_channel_from_announcement::<&UtxoResolver>(msg, &None)
 	}
 
 	/// Store or update channel info from a channel announcement without verifying the associated

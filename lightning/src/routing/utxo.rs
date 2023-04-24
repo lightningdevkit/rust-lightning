@@ -125,7 +125,7 @@ pub struct UtxoFuture {
 
 /// A trivial implementation of [`UtxoLookup`] which is used to call back into the network graph
 /// once we have a concrete resolution of a request.
-struct UtxoResolver(Result<TxOut, UtxoLookupError>);
+pub(crate) struct UtxoResolver(Result<TxOut, UtxoLookupError>);
 impl UtxoLookup for UtxoResolver {
 	fn get_utxo(&self, _genesis_hash: &BlockHash, _short_channel_id: u64) -> UtxoResult {
 		UtxoResult::Sync(self.0.clone())
