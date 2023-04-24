@@ -32,7 +32,7 @@
 //! use lightning::offers::refund::{Refund, RefundBuilder};
 //! use lightning::util::ser::{Readable, Writeable};
 //!
-//! # use lightning::onion_message::BlindedPath;
+//! # use lightning::blinded_path::BlindedPath;
 //! # #[cfg(feature = "std")]
 //! # use std::time::SystemTime;
 //! #
@@ -80,6 +80,7 @@ use core::str::FromStr;
 use core::time::Duration;
 use crate::chain::keysinterface::EntropySource;
 use crate::io;
+use crate::blinded_path::BlindedPath;
 use crate::ln::PaymentHash;
 use crate::ln::features::InvoiceRequestFeatures;
 use crate::ln::inbound_payment::{ExpandedKey, IV_LEN, Nonce};
@@ -90,7 +91,6 @@ use crate::offers::offer::{OfferTlvStream, OfferTlvStreamRef};
 use crate::offers::parse::{Bech32Encode, ParseError, ParsedMessage, SemanticError};
 use crate::offers::payer::{PayerContents, PayerTlvStream, PayerTlvStreamRef};
 use crate::offers::signer::{Metadata, MetadataMaterial, self};
-use crate::onion_message::BlindedPath;
 use crate::util::ser::{SeekReadable, WithoutLength, Writeable, Writer};
 use crate::util::string::PrintableString;
 
@@ -701,6 +701,7 @@ mod tests {
 	use bitcoin::secp256k1::{KeyPair, Secp256k1, SecretKey};
 	use core::convert::TryFrom;
 	use core::time::Duration;
+	use crate::blinded_path::{BlindedHop, BlindedPath};
 	use crate::chain::keysinterface::KeyMaterial;
 	use crate::ln::features::{InvoiceRequestFeatures, OfferFeatures};
 	use crate::ln::inbound_payment::ExpandedKey;
@@ -710,7 +711,6 @@ mod tests {
 	use crate::offers::parse::{ParseError, SemanticError};
 	use crate::offers::payer::PayerTlvStreamRef;
 	use crate::offers::test_utils::*;
-	use crate::onion_message::{BlindedHop, BlindedPath};
 	use crate::util::ser::{BigSize, Writeable};
 	use crate::util::string::PrintableString;
 

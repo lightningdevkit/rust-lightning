@@ -50,7 +50,7 @@ use lightning::util::errors::APIError;
 use lightning::util::logger::Logger;
 use lightning::util::config::UserConfig;
 use lightning::util::ser::{Readable, ReadableArgs, Writeable, Writer};
-use lightning::routing::router::{InFlightHtlcs, Route, RouteHop, RouteParameters, Router};
+use lightning::routing::router::{InFlightHtlcs, Path, Route, RouteHop, RouteParameters, Router};
 
 use crate::utils::test_logger::{self, Output};
 use crate::utils::test_persister::TestPersister;
@@ -353,14 +353,14 @@ fn send_payment(source: &ChanMan, dest: &ChanMan, dest_chan_id: u64, amt: u64, p
 	payment_id[0..8].copy_from_slice(&payment_idx.to_ne_bytes());
 	*payment_idx += 1;
 	if let Err(err) = source.send_payment_with_route(&Route {
-		paths: vec![vec![RouteHop {
+		paths: vec![Path { hops: vec![RouteHop {
 			pubkey: dest.get_our_node_id(),
 			node_features: dest.node_features(),
 			short_channel_id: dest_chan_id,
 			channel_features: dest.channel_features(),
 			fee_msat: amt,
 			cltv_expiry_delta: 200,
-		}]],
+		}], blinded_tail: None }],
 		payment_params: None,
 	}, payment_hash, RecipientOnionFields::secret_only(payment_secret), PaymentId(payment_id)) {
 		check_payment_err(err);
@@ -375,7 +375,7 @@ fn send_hop_payment(source: &ChanMan, middle: &ChanMan, middle_chan_id: u64, des
 	payment_id[0..8].copy_from_slice(&payment_idx.to_ne_bytes());
 	*payment_idx += 1;
 	if let Err(err) = source.send_payment_with_route(&Route {
-		paths: vec![vec![RouteHop {
+		paths: vec![Path { hops: vec![RouteHop {
 			pubkey: middle.get_our_node_id(),
 			node_features: middle.node_features(),
 			short_channel_id: middle_chan_id,
@@ -389,7 +389,7 @@ fn send_hop_payment(source: &ChanMan, middle: &ChanMan, middle_chan_id: u64, des
 			channel_features: dest.channel_features(),
 			fee_msat: amt,
 			cltv_expiry_delta: 200,
-		}]],
+		}], blinded_tail: None }],
 		payment_params: None,
 	}, payment_hash, RecipientOnionFields::secret_only(payment_secret), PaymentId(payment_id)) {
 		check_payment_err(err);

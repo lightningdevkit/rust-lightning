@@ -23,7 +23,7 @@ use crate::ln::msgs;
 use crate::ln::msgs::ChannelMessageHandler;
 use crate::ln::outbound_payment::Retry;
 use crate::routing::gossip::{EffectiveCapacity, RoutingFees};
-use crate::routing::router::{get_route, PaymentParameters, Route, Router, RouteHint, RouteHintHop, RouteHop, RouteParameters};
+use crate::routing::router::{get_route, Path, PaymentParameters, Route, Router, RouteHint, RouteHintHop, RouteHop, RouteParameters};
 use crate::routing::scoring::ChannelUsage;
 use crate::util::test_utils;
 use crate::util::errors::APIError;
@@ -59,12 +59,12 @@ fn mpp_failure() {
 	let (mut route, payment_hash, _, payment_secret) = get_route_and_payment_hash!(&nodes[0], nodes[3], 100000);
 	let path = route.paths[0].clone();
 	route.paths.push(path);
-	route.paths[0][0].pubkey = nodes[1].node.get_our_node_id();
-	route.paths[0][0].short_channel_id = chan_1_id;
-	route.paths[0][1].short_channel_id = chan_3_id;
-	route.paths[1][0].pubkey = nodes[2].node.get_our_node_id();
-	route.paths[1][0].short_channel_id = chan_2_id;
-	route.paths[1][1].short_channel_id = chan_4_id;
+	route.paths[0].hops[0].pubkey = nodes[1].node.get_our_node_id();
+	route.paths[0].hops[0].short_channel_id = chan_1_id;
+	route.paths[0].hops[1].short_channel_id = chan_3_id;
+	route.paths[1].hops[0].pubkey = nodes[2].node.get_our_node_id();
+	route.paths[1].hops[0].short_channel_id = chan_2_id;
+	route.paths[1].hops[1].short_channel_id = chan_4_id;
 	send_along_route_with_secret(&nodes[0], route, &[&[&nodes[1], &nodes[3]], &[&nodes[2], &nodes[3]]], 200_000, payment_hash, payment_secret);
 	fail_payment_along_route(&nodes[0], &[&[&nodes[1], &nodes[3]], &[&nodes[2], &nodes[3]]], false, payment_hash);
 }
@@ -87,12 +87,12 @@ fn mpp_retry() {
 	let (mut route, payment_hash, payment_preimage, payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[3], amt_msat);
 	let path = route.paths[0].clone();
 	route.paths.push(path);
-	route.paths[0][0].pubkey = nodes[1].node.get_our_node_id();
-	route.paths[0][0].short_channel_id = chan_1_update.contents.short_channel_id;
-	route.paths[0][1].short_channel_id = chan_3_update.contents.short_channel_id;
-	route.paths[1][0].pubkey = nodes[2].node.get_our_node_id();
-	route.paths[1][0].short_channel_id = chan_2_update.contents.short_channel_id;
-	route.paths[1][1].short_channel_id = chan_4_update.contents.short_channel_id;
+	route.paths[0].hops[0].pubkey = nodes[1].node.get_our_node_id();
+	route.paths[0].hops[0].short_channel_id = chan_1_update.contents.short_channel_id;
+	route.paths[0].hops[1].short_channel_id = chan_3_update.contents.short_channel_id;
+	route.paths[1].hops[0].pubkey = nodes[2].node.get_our_node_id();
+	route.paths[1].hops[0].short_channel_id = chan_2_update.contents.short_channel_id;
+	route.paths[1].hops[1].short_channel_id = chan_4_update.contents.short_channel_id;
 
 	// Initiate the MPP payment.
 	let payment_id = PaymentId(payment_hash.0);
@@ -177,12 +177,12 @@ fn do_mpp_receive_timeout(send_partial_mpp: bool) {
 	let (mut route, payment_hash, payment_preimage, payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[3], 100_000);
 	let path = route.paths[0].clone();
 	route.paths.push(path);
-	route.paths[0][0].pubkey = nodes[1].node.get_our_node_id();
-	route.paths[0][0].short_channel_id = chan_1_update.contents.short_channel_id;
-	route.paths[0][1].short_channel_id = chan_3_update.contents.short_channel_id;
-	route.paths[1][0].pubkey = nodes[2].node.get_our_node_id();
-	route.paths[1][0].short_channel_id = chan_2_update.contents.short_channel_id;
-	route.paths[1][1].short_channel_id = chan_4_update.contents.short_channel_id;
+	route.paths[0].hops[0].pubkey = nodes[1].node.get_our_node_id();
+	route.paths[0].hops[0].short_channel_id = chan_1_update.contents.short_channel_id;
+	route.paths[0].hops[1].short_channel_id = chan_3_update.contents.short_channel_id;
+	route.paths[1].hops[0].pubkey = nodes[2].node.get_our_node_id();
+	route.paths[1].hops[0].short_channel_id = chan_2_update.contents.short_channel_id;
+	route.paths[1].hops[1].short_channel_id = chan_4_update.contents.short_channel_id;
 
 	// Initiate the MPP payment.
 	nodes[0].node.send_payment_with_route(&route, payment_hash,
@@ -437,7 +437,7 @@ fn do_retry_with_no_persist(confirm_before_reload: bool) {
 		let mut new_config = channel.config();
 		new_config.forwarding_fee_base_msat += 100_000;
 		channel.update_config(&new_config);
-		new_route.paths[0][0].fee_msat += 100_000;
+		new_route.paths[0].hops[0].fee_msat += 100_000;
 	}
 
 	// Force expiration of the channel's previous config.
@@ -454,7 +454,7 @@ fn do_retry_with_no_persist(confirm_before_reload: bool) {
 	assert_eq!(events.len(), 1);
 	pass_along_path(&nodes[0], &[&nodes[1], &nodes[2]], 1_000_000, payment_hash, Some(payment_secret), events.pop().unwrap(), true, None);
 	do_claim_payment_along_route(&nodes[0], &[&[&nodes[1], &nodes[2]]], false, payment_preimage);
-	expect_payment_sent!(nodes[0], payment_preimage, Some(new_route.paths[0][0].fee_msat));
+	expect_payment_sent!(nodes[0], payment_preimage, Some(new_route.paths[0].hops[0].fee_msat));
 }
 
 #[test]
@@ -1839,56 +1839,56 @@ fn auto_retry_partial_failure() {
 	// Configure the initial send, retry1 and retry2's paths.
 	let send_route = Route {
 		paths: vec![
-			vec![RouteHop {
+			Path { hops: vec![RouteHop {
 				pubkey: nodes[1].node.get_our_node_id(),
 				node_features: nodes[1].node.node_features(),
 				short_channel_id: chan_1_id,
 				channel_features: nodes[1].node.channel_features(),
 				fee_msat: amt_msat / 2,
 				cltv_expiry_delta: 100,
-			}],
-			vec![RouteHop {
+			}], blinded_tail: None },
+			Path { hops: vec![RouteHop {
 				pubkey: nodes[1].node.get_our_node_id(),
 				node_features: nodes[1].node.node_features(),
 				short_channel_id: chan_2_id,
 				channel_features: nodes[1].node.channel_features(),
 				fee_msat: amt_msat / 2,
 				cltv_expiry_delta: 100,
-			}],
+			}], blinded_tail: None },
 		],
 		payment_params: Some(route_params.payment_params.clone()),
 	};
 	let retry_1_route = Route {
 		paths: vec![
-			vec![RouteHop {
+			Path { hops: vec![RouteHop {
 				pubkey: nodes[1].node.get_our_node_id(),
 				node_features: nodes[1].node.node_features(),
 				short_channel_id: chan_1_id,
 				channel_features: nodes[1].node.channel_features(),
 				fee_msat: amt_msat / 4,
 				cltv_expiry_delta: 100,
-			}],
-			vec![RouteHop {
+			}], blinded_tail: None },
+			Path { hops: vec![RouteHop {
 				pubkey: nodes[1].node.get_our_node_id(),
 				node_features: nodes[1].node.node_features(),
 				short_channel_id: chan_3_id,
 				channel_features: nodes[1].node.channel_features(),
 				fee_msat: amt_msat / 4,
 				cltv_expiry_delta: 100,
-			}],
+			}], blinded_tail: None },
 		],
 		payment_params: Some(route_params.payment_params.clone()),
 	};
 	let retry_2_route = Route {
 		paths: vec![
-			vec![RouteHop {
+			Path { hops: vec![RouteHop {
 				pubkey: nodes[1].node.get_our_node_id(),
 				node_features: nodes[1].node.node_features(),
 				short_channel_id: chan_1_id,
 				channel_features: nodes[1].node.channel_features(),
 				fee_msat: amt_msat / 4,
 				cltv_expiry_delta: 100,
-			}],
+			}], blinded_tail: None },
 		],
 		payment_params: Some(route_params.payment_params.clone()),
 	};
@@ -2128,29 +2128,29 @@ fn retry_multi_path_single_failed_payment() {
 	let chans = nodes[0].node.list_usable_channels();
 	let mut route = Route {
 		paths: vec![
-			vec![RouteHop {
+			Path { hops: vec![RouteHop {
 				pubkey: nodes[1].node.get_our_node_id(),
 				node_features: nodes[1].node.node_features(),
 				short_channel_id: chans[0].short_channel_id.unwrap(),
 				channel_features: nodes[1].node.channel_features(),
 				fee_msat: 10_000,
 				cltv_expiry_delta: 100,
-			}],
-			vec![RouteHop {
+			}], blinded_tail: None },
+			Path { hops: vec![RouteHop {
 				pubkey: nodes[1].node.get_our_node_id(),
 				node_features: nodes[1].node.node_features(),
 				short_channel_id: chans[1].short_channel_id.unwrap(),
 				channel_features: nodes[1].node.channel_features(),
 				fee_msat: 100_000_001, // Our default max-HTLC-value is 10% of the channel value, which this is one more than
 				cltv_expiry_delta: 100,
-			}],
+			}], blinded_tail: None },
 		],
 		payment_params: Some(payment_params),
 	};
 	nodes[0].router.expect_find_route(route_params.clone(), Ok(route.clone()));
 	// On retry, split the payment across both channels.
-	route.paths[0][0].fee_msat = 50_000_001;
-	route.paths[1][0].fee_msat = 50_000_000;
+	route.paths[0].hops[0].fee_msat = 50_000_001;
+	route.paths[1].hops[0].fee_msat = 50_000_000;
 	let mut pay_params = route.payment_params.clone().unwrap();
 	pay_params.previously_failed_channels.push(chans[1].short_channel_id.unwrap());
 	nodes[0].router.expect_find_route(RouteParameters {
@@ -2180,7 +2180,7 @@ fn retry_multi_path_single_failed_payment() {
 			short_channel_id: Some(expected_scid), .. } =>
 		{
 			assert_eq!(payment_hash, ev_payment_hash);
-			assert_eq!(expected_scid, route.paths[1][0].short_channel_id);
+			assert_eq!(expected_scid, route.paths[1].hops[0].short_channel_id);
 			assert!(err_msg.contains("max HTLC"));
 		},
 		_ => panic!("Unexpected event"),
@@ -2222,23 +2222,23 @@ fn immediate_retry_on_failure() {
 	let chans = nodes[0].node.list_usable_channels();
 	let mut route = Route {
 		paths: vec![
-			vec![RouteHop {
+			Path { hops: vec![RouteHop {
 				pubkey: nodes[1].node.get_our_node_id(),
 				node_features: nodes[1].node.node_features(),
 				short_channel_id: chans[0].short_channel_id.unwrap(),
 				channel_features: nodes[1].node.channel_features(),
 				fee_msat: 100_000_001, // Our default max-HTLC-value is 10% of the channel value, which this is one more than
 				cltv_expiry_delta: 100,
-			}],
+			}], blinded_tail: None },
 		],
 		payment_params: Some(PaymentParameters::from_node_id(nodes[1].node.get_our_node_id(), TEST_FINAL_CLTV)),
 	};
 	nodes[0].router.expect_find_route(route_params.clone(), Ok(route.clone()));
 	// On retry, split the payment across both channels.
 	route.paths.push(route.paths[0].clone());
-	route.paths[0][0].short_channel_id = chans[1].short_channel_id.unwrap();
-	route.paths[0][0].fee_msat = 50_000_000;
-	route.paths[1][0].fee_msat = 50_000_001;
+	route.paths[0].hops[0].short_channel_id = chans[1].short_channel_id.unwrap();
+	route.paths[0].hops[0].fee_msat = 50_000_000;
+	route.paths[1].hops[0].fee_msat = 50_000_001;
 	let mut pay_params = route_params.payment_params.clone();
 	pay_params.previously_failed_channels.push(chans[0].short_channel_id.unwrap());
 	nodes[0].router.expect_find_route(RouteParameters {
@@ -2255,7 +2255,7 @@ fn immediate_retry_on_failure() {
 			short_channel_id: Some(expected_scid), .. } =>
 		{
 			assert_eq!(payment_hash, ev_payment_hash);
-			assert_eq!(expected_scid, route.paths[1][0].short_channel_id);
+			assert_eq!(expected_scid, route.paths[1].hops[0].short_channel_id);
 			assert!(err_msg.contains("max HTLC"));
 		},
 		_ => panic!("Unexpected event"),
@@ -2310,7 +2310,7 @@ fn no_extra_retries_on_back_to_back_fail() {
 
 	let mut route = Route {
 		paths: vec![
-			vec![RouteHop {
+			Path { hops: vec![RouteHop {
 				pubkey: nodes[1].node.get_our_node_id(),
 				node_features: nodes[1].node.node_features(),
 				short_channel_id: chan_1_scid,
@@ -2324,8 +2324,8 @@ fn no_extra_retries_on_back_to_back_fail() {
 				channel_features: nodes[2].node.channel_features(),
 				fee_msat: 100_000_000,
 				cltv_expiry_delta: 100,
-			}],
-			vec![RouteHop {
+			}], blinded_tail: None },
+			Path { hops: vec![RouteHop {
 				pubkey: nodes[1].node.get_our_node_id(),
 				node_features: nodes[1].node.node_features(),
 				short_channel_id: chan_1_scid,
@@ -2339,7 +2339,7 @@ fn no_extra_retries_on_back_to_back_fail() {
 				channel_features: nodes[2].node.channel_features(),
 				fee_msat: 100_000_000,
 				cltv_expiry_delta: 100,
-			}]
+			}], blinded_tail: None }
 		],
 		payment_params: Some(PaymentParameters::from_node_id(nodes[2].node.get_our_node_id(), TEST_FINAL_CLTV)),
 	};
@@ -2348,7 +2348,7 @@ fn no_extra_retries_on_back_to_back_fail() {
 	second_payment_params.previously_failed_channels = vec![chan_2_scid, chan_2_scid];
 	// On retry, we'll only return one path
 	route.paths.remove(1);
-	route.paths[0][1].fee_msat = amt_msat;
+	route.paths[0].hops[1].fee_msat = amt_msat;
 	nodes[0].router.expect_find_route(RouteParameters {
 			payment_params: second_payment_params,
 			final_value_msat: amt_msat,
@@ -2512,7 +2512,7 @@ fn test_simple_partial_retry() {
 
 	let mut route = Route {
 		paths: vec![
-			vec![RouteHop {
+			Path { hops: vec![RouteHop {
 				pubkey: nodes[1].node.get_our_node_id(),
 				node_features: nodes[1].node.node_features(),
 				short_channel_id: chan_1_scid,
@@ -2526,8 +2526,8 @@ fn test_simple_partial_retry() {
 				channel_features: nodes[2].node.channel_features(),
 				fee_msat: 100_000_000,
 				cltv_expiry_delta: 100,
-			}],
-			vec![RouteHop {
+			}], blinded_tail: None },
+			Path { hops: vec![RouteHop {
 				pubkey: nodes[1].node.get_our_node_id(),
 				node_features: nodes[1].node.node_features(),
 				short_channel_id: chan_1_scid,
@@ -2541,7 +2541,7 @@ fn test_simple_partial_retry() {
 				channel_features: nodes[2].node.channel_features(),
 				fee_msat: 100_000_000,
 				cltv_expiry_delta: 100,
-			}]
+			}], blinded_tail: None }
 		],
 		payment_params: Some(PaymentParameters::from_node_id(nodes[2].node.get_our_node_id(), TEST_FINAL_CLTV)),
 	};
@@ -2678,7 +2678,7 @@ fn test_threaded_payment_retries() {
 
 	let mut route = Route {
 		paths: vec![
-			vec![RouteHop {
+			Path { hops: vec![RouteHop {
 				pubkey: nodes[1].node.get_our_node_id(),
 				node_features: nodes[1].node.node_features(),
 				short_channel_id: chan_1_scid,
@@ -2692,8 +2692,8 @@ fn test_threaded_payment_retries() {
 				channel_features: nodes[2].node.channel_features(),
 				fee_msat: amt_msat / 1000,
 				cltv_expiry_delta: 100,
-			}],
-			vec![RouteHop {
+			}], blinded_tail: None },
+			Path { hops: vec![RouteHop {
 				pubkey: nodes[2].node.get_our_node_id(),
 				node_features: nodes[2].node.node_features(),
 				short_channel_id: chan_3_scid,
@@ -2707,7 +2707,7 @@ fn test_threaded_payment_retries() {
 				channel_features: nodes[3].node.channel_features(),
 				fee_msat: amt_msat - amt_msat / 1000,
 				cltv_expiry_delta: 100,
-			}]
+			}], blinded_tail: None }
 		],
 		payment_params: Some(PaymentParameters::from_node_id(nodes[2].node.get_our_node_id(), TEST_FINAL_CLTV)),
 	};
@@ -2765,9 +2765,9 @@ fn test_threaded_payment_retries() {
 		// we should still ultimately fail for the same reason - because we're trying to send too
 		// many HTLCs at once.
 		let mut new_route_params = route_params.clone();
-		previously_failed_channels.push(route.paths[0][1].short_channel_id);
+		previously_failed_channels.push(route.paths[0].hops[1].short_channel_id);
 		new_route_params.payment_params.previously_failed_channels = previously_failed_channels.clone();
-		route.paths[0][1].short_channel_id += 1;
+		route.paths[0].hops[1].short_channel_id += 1;
 		nodes[0].router.expect_find_route(new_route_params, Ok(route.clone()));
 
 		let bs_fail_updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
@@ -2913,13 +2913,13 @@ fn do_claim_from_closed_chan(fail_payment: bool) {
 	let mut route = nodes[0].router.find_route(&nodes[0].node.get_our_node_id(), &route_params,
 		None, &nodes[0].node.compute_inflight_htlcs()).unwrap();
 	// Make sure the route is ordered as the B->D path before C->D
-	route.paths.sort_by(|a, _| if a[0].pubkey == nodes[1].node.get_our_node_id() {
+	route.paths.sort_by(|a, _| if a.hops[0].pubkey == nodes[1].node.get_our_node_id() {
 		std::cmp::Ordering::Less } else { std::cmp::Ordering::Greater });
 
 	// Note that we add an extra 1 in the send pipeline to compensate for any blocks found while
 	// the HTLC is being relayed.
-	route.paths[0][1].cltv_expiry_delta = TEST_FINAL_CLTV + 8;
-	route.paths[1][1].cltv_expiry_delta = TEST_FINAL_CLTV + 12;
+	route.paths[0].hops[1].cltv_expiry_delta = TEST_FINAL_CLTV + 8;
+	route.paths[1].hops[1].cltv_expiry_delta = TEST_FINAL_CLTV + 12;
 	let final_cltv = nodes[0].best_block_info().1 + TEST_FINAL_CLTV + 8 + 1;
 
 	nodes[0].router.expect_find_route(route_params.clone(), Ok(route.clone()));

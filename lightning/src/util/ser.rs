@@ -749,7 +749,7 @@ where T: Readable + Eq + Hash
 }
 
 // Vectors
-macro_rules! impl_for_vec {
+macro_rules! impl_writeable_for_vec {
 	($ty: ty $(, $name: ident)*) => {
 		impl<$($name : Writeable),*> Writeable for Vec<$ty> {
 			#[inline]
@@ -761,7 +761,10 @@ macro_rules! impl_for_vec {
 				Ok(())
 			}
 		}
-
+	}
+}
+macro_rules! impl_readable_for_vec {
+	($ty: ty $(, $name: ident)*) => {
 		impl<$($name : Readable),*> Readable for Vec<$ty> {
 			#[inline]
 			fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
@@ -775,6 +778,12 @@ macro_rules! impl_for_vec {
 				Ok(ret)
 			}
 		}
+	}
+}
+macro_rules! impl_for_vec {
+	($ty: ty $(, $name: ident)*) => {
+		impl_writeable_for_vec!($ty $(, $name)*);
+		impl_readable_for_vec!($ty $(, $name)*);
 	}
 }
 
@@ -805,6 +814,8 @@ impl Readable for Vec<u8> {
 impl_for_vec!(ecdsa::Signature);
 impl_for_vec!(crate::ln::channelmanager::MonitorUpdateCompletionAction);
 impl_for_vec!((A, B), A, B);
+impl_writeable_for_vec!(&crate::routing::router::BlindedTail);
+impl_readable_for_vec!(crate::routing::router::BlindedTail);
 
 impl Writeable for Script {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {

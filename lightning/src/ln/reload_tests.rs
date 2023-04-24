@@ -699,7 +699,7 @@ fn do_test_partial_claim_before_restart(persist_both_monitors: bool) {
 	assert_eq!(route.paths.len(), 2);
 	route.paths.sort_by(|path_a, _| {
 		// Sort the path so that the path through nodes[1] comes first
-		if path_a[0].pubkey == nodes[1].node.get_our_node_id() {
+		if path_a.hops[0].pubkey == nodes[1].node.get_our_node_id() {
 			core::cmp::Ordering::Less } else { core::cmp::Ordering::Greater }
 	});
 
@@ -856,7 +856,7 @@ fn do_forwarded_payment_no_manager_persistence(use_cs_commitment: bool, claim_ht
 	let (mut route, payment_hash, payment_preimage, payment_secret) =
 		get_route_and_payment_hash!(nodes[0], nodes[2], 1_000_000);
 	if use_intercept {
-		route.paths[0][1].short_channel_id = intercept_scid;
+		route.paths[0].hops[1].short_channel_id = intercept_scid;
 	}
 	let payment_id = PaymentId(nodes[0].keys_manager.backing.get_secure_random_bytes());
 	let htlc_expiry = nodes[0].best_block_info().1 + TEST_FINAL_CLTV;

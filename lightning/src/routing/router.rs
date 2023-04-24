@@ -13,10 +13,12 @@ use bitcoin::secp256k1::PublicKey;
 use bitcoin::hashes::Hash;
 use bitcoin::hashes::sha256::Hash as Sha256;
 
+use crate::blinded_path::{BlindedHop, BlindedPath};
 use crate::ln::PaymentHash;
 use crate::ln::channelmanager::{ChannelDetails, PaymentId};
 use crate::ln::features::{ChannelFeatures, InvoiceFeatures, NodeFeatures};
 use crate::ln::msgs::{DecodeError, ErrorAction, LightningError, MAX_VALUE_MSAT};
+use crate::offers::invoice::BlindedPayInfo;
 use crate::routing::gossip::{DirectedChannelInfo, EffectiveCapacity, ReadOnlyNetworkGraph, NetworkGraph, NodeId, RoutingFees};
 use crate::routing::scoring::{ChannelUsage, LockableScore, Score};
 use crate::util::ser::{Writeable, Readable, ReadableArgs, Writer};
@@ -135,19 +137,19 @@ impl<'a, S: Score> Score for ScorerAccountingForInFlightHtlcs<'a, S> {
 		}
 	}
 
-	fn payment_path_failed(&mut self, path: &[&RouteHop], short_channel_id: u64) {
+	fn payment_path_failed(&mut self, path: &Path, short_channel_id: u64) {
 		self.scorer.payment_path_failed(path, short_channel_id)
 	}
 
-	fn payment_path_successful(&mut self, path: &[&RouteHop]) {
+	fn payment_path_successful(&mut self, path: &Path) {
 		self.scorer.payment_path_successful(path)
 	}
 
-	fn probe_failed(&mut self, path: &[&RouteHop], short_channel_id: u64) {
+	fn probe_failed(&mut self, path: &Path, short_channel_id: u64) {
 		self.scorer.probe_failed(path, short_channel_id)
 	}
 
-	fn probe_successful(&mut self, path: &[&RouteHop]) {
+	fn probe_successful(&mut self, path: &Path) {
 		self.scorer.probe_successful(path)
 	}
 }
@@ -168,22 +170,27 @@ impl InFlightHtlcs {
 	pub fn new() -> Self { InFlightHtlcs(HashMap::new()) }
 
 	/// Takes in a path with payer's node id and adds the path's details to `InFlightHtlcs`.
-	pub fn process_path(&mut self, path: &[RouteHop], payer_node_id: PublicKey) {
-		if path.is_empty() { return };
+	pub fn process_path(&mut self, path: &Path, payer_node_id: PublicKey) {
+		if path.hops.is_empty() { return };
+
+		let mut cumulative_msat = 0;
+		if let Some(tail) = &path.blinded_tail {
+			cumulative_msat += tail.final_value_msat;
+		}
+
 		// total_inflight_map needs to be direction-sensitive when keeping track of the HTLC value
 		// that is held up. However, the `hops` array, which is a path returned by `find_route` in
 		// the router excludes the payer node. In the following lines, the payer's information is
 		// hardcoded with an inflight value of 0 so that we can correctly represent the first hop
 		// in our sliding window of two.
-		let reversed_hops_with_payer = path.iter().rev().skip(1)
+		let reversed_hops_with_payer = path.hops.iter().rev().skip(1)
 			.map(|hop| hop.pubkey)
 			.chain(core::iter::once(payer_node_id));
-		let mut cumulative_msat = 0;
 
 		// Taking the reversed vector from above, we zip it with just the reversed hops list to
 		// work "backwards" of the given path, since the last hop's `fee_msat` actually represents
 		// the total amount sent.
-		for (next_hop, prev_hop) in path.iter().rev().zip(reversed_hops_with_payer) {
+		for (next_hop, prev_hop) in path.hops.iter().rev().zip(reversed_hops_with_payer) {
 			cumulative_msat += next_hop.fee_msat;
 			self.0
 				.entry((next_hop.short_channel_id, NodeId::from_pubkey(&prev_hop) < NodeId::from_pubkey(&next_hop.pubkey)))
@@ -210,7 +217,8 @@ impl Readable for InFlightHtlcs {
 	}
 }
 
-/// A hop in a route
+/// A hop in a route, and additional metadata about it. "Hop" is defined as a node and the channel
+/// that leads to it.
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct RouteHop {
 	/// The node_id of the node at this hop.
@@ -224,11 +232,18 @@ pub struct RouteHop {
 	/// to reach this node.
 	pub channel_features: ChannelFeatures,
 	/// The fee taken on this hop (for paying for the use of the *next* channel in the path).
-	/// For the last hop, this should be the full value of the payment (might be more than
-	/// requested if we had to match htlc_minimum_msat).
+	/// If this is the last hop in [`Path::hops`]:
+	/// * if we're sending to a [`BlindedPath`], this is the fee paid for use of the entire blinded path
+	/// * otherwise, this is the full value of this [`Path`]'s part of the payment
+	///
+	/// [`BlindedPath`]: crate::blinded_path::BlindedPath
 	pub fee_msat: u64,
-	/// The CLTV delta added for this hop. For the last hop, this should be the full CLTV value
-	/// expected at the destination, in excess of the current block height.
+	/// The CLTV delta added for this hop.
+	/// If this is the last hop in [`Path::hops`]:
+	/// * if we're sending to a [`BlindedPath`], this is the CLTV delta for the entire blinded path
+	/// * otherwise, this is the CLTV delta expected at the destination
+	///
+	/// [`BlindedPath`]: crate::blinded_path::BlindedPath
 	pub cltv_expiry_delta: u32,
 }
 
@@ -241,16 +256,82 @@ impl_writeable_tlv_based!(RouteHop, {
 	(10, cltv_expiry_delta, required),
 });
 
+/// The blinded portion of a [`Path`], if we're routing to a recipient who provided blinded paths in
+/// their BOLT12 [`Invoice`].
+///
+/// [`Invoice`]: crate::offers::invoice::Invoice
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+pub struct BlindedTail {
+	/// The hops of the [`BlindedPath`] provided by the recipient.
+	///
+	/// [`BlindedPath`]: crate::blinded_path::BlindedPath
+	pub hops: Vec<BlindedHop>,
+	/// The blinding point of the [`BlindedPath`] provided by the recipient.
+	///
+	/// [`BlindedPath`]: crate::blinded_path::BlindedPath
+	pub blinding_point: PublicKey,
+	/// Excess CLTV delta added to the recipient's CLTV expiry to deter intermediate nodes from
+	/// inferring the destination. May be 0.
+	pub excess_final_cltv_expiry_delta: u32,
+	/// The total amount paid on this [`Path`], excluding the fees.
+	pub final_value_msat: u64,
+}
+
+impl_writeable_tlv_based!(BlindedTail, {
+	(0, hops, vec_type),
+	(2, blinding_point, required),
+	(4, excess_final_cltv_expiry_delta, required),
+	(6, final_value_msat, required),
+});
+
+/// A path in a [`Route`] to the payment recipient. Must always be at least length one.
+/// If no [`Path::blinded_tail`] is present, then [`Path::hops`] length may be up to 19.
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+pub struct Path {
+	/// The list of unblinded hops in this [`Path`]. Must be at least length one.
+	pub hops: Vec<RouteHop>,
+	/// The blinded path at which this path terminates, if we're sending to one, and its metadata.
+	pub blinded_tail: Option<BlindedTail>,
+}
+
+impl Path {
+	/// Gets the fees for a given path, excluding any excess paid to the recipient.
+	pub fn fee_msat(&self) -> u64 {
+		match &self.blinded_tail {
+			Some(_) => self.hops.iter().map(|hop| hop.fee_msat).sum::<u64>(),
+			None => {
+				// Do not count last hop of each path since that's the full value of the payment
+				self.hops.split_last().map_or(0,
+					|(_, path_prefix)| path_prefix.iter().map(|hop| hop.fee_msat).sum())
+			}
+		}
+	}
+
+	/// Gets the total amount paid on this [`Path`], excluding the fees.
+	pub fn final_value_msat(&self) -> u64 {
+		match &self.blinded_tail {
+			Some(blinded_tail) => blinded_tail.final_value_msat,
+			None => self.hops.last().map_or(0, |hop| hop.fee_msat)
+		}
+	}
+
+	/// Gets the final hop's CLTV expiry delta.
+	pub fn final_cltv_expiry_delta(&self) -> Option<u32> {
+		match &self.blinded_tail {
+			Some(_) => None,
+			None => self.hops.last().map(|hop| hop.cltv_expiry_delta)
+		}
+	}
+}
+
 /// A route directs a payment from the sender (us) to the recipient. If the recipient supports MPP,
 /// it can take multiple paths. Each path is composed of one or more hops through the network.
 #[derive(Clone, Hash, PartialEq, Eq)]
 pub struct Route {
-	/// The list of routes taken for a single (potentially-)multi-part payment. The pubkey of the
-	/// last RouteHop in each path must be the same. Each entry represents a list of hops, NOT
-	/// INCLUDING our own, where the last hop is the destination. Thus, this must always be at
-	/// least length one. While the maximum length of any given path is variable, keeping the length
-	/// of any path less or equal to 19 should currently ensure it is viable.
-	pub paths: Vec<Vec<RouteHop>>,
+	/// The list of [`Path`]s taken for a single (potentially-)multi-part payment. If no
+	/// [`BlindedTail`]s are present, then the pubkey of the last [`RouteHop`] in each path must be
+	/// the same.
+	pub paths: Vec<Path>,
 	/// The `payment_params` parameter passed to [`find_route`].
 	/// This is used by `ChannelManager` to track information which may be required for retries,
 	/// provided back to you via [`Event::PaymentPathFailed`].
@@ -259,33 +340,19 @@ pub struct Route {
 	pub payment_params: Option<PaymentParameters>,
 }
 
-pub(crate) trait RoutePath {
-	/// Gets the fees for a given path, excluding any excess paid to the recipient.
-	fn get_path_fees(&self) -> u64;
-}
-impl RoutePath for Vec<RouteHop> {
-	fn get_path_fees(&self) -> u64 {
-		// Do not count last hop of each path since that's the full value of the payment
-		self.split_last().map(|(_, path_prefix)| path_prefix).unwrap_or(&[])
-			.iter().map(|hop| &hop.fee_msat)
-			.sum()
-	}
-}
-
 impl Route {
 	/// Returns the total amount of fees paid on this [`Route`].
 	///
 	/// This doesn't include any extra payment made to the recipient, which can happen in excess of
 	/// the amount passed to [`find_route`]'s `params.final_value_msat`.
 	pub fn get_total_fees(&self) -> u64 {
-		self.paths.iter().map(|path| path.get_path_fees()).sum()
+		self.paths.iter().map(|path| path.fee_msat()).sum()
 	}
 
-	/// Returns the total amount paid on this [`Route`], excluding the fees.
+	/// Returns the total amount paid on this [`Route`], excluding the fees. Might be more than
+	/// requested if we had to reach htlc_minimum_msat.
 	pub fn get_total_amount(&self) -> u64 {
-		return self.paths.iter()
-			.map(|path| path.split_last().map(|(hop, _)| hop.fee_msat).unwrap_or(0))
-			.sum();
+		self.paths.iter().map(|path| path.final_value_msat()).sum()
 	}
 }
 
@@ -296,14 +363,25 @@ impl Writeable for Route {
 	fn write<W: crate::util::ser::Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		write_ver_prefix!(writer, SERIALIZATION_VERSION, MIN_SERIALIZATION_VERSION);
 		(self.paths.len() as u64).write(writer)?;
-		for hops in self.paths.iter() {
-			(hops.len() as u8).write(writer)?;
-			for hop in hops.iter() {
+		let mut blinded_tails = Vec::new();
+		for path in self.paths.iter() {
+			(path.hops.len() as u8).write(writer)?;
+			for (idx, hop) in path.hops.iter().enumerate() {
 				hop.write(writer)?;
+				if let Some(blinded_tail) = &path.blinded_tail {
+					if blinded_tails.is_empty() {
+						blinded_tails = Vec::with_capacity(path.hops.len());
+						for _ in 0..idx {
+							blinded_tails.push(None);
+						}
+					}
+					blinded_tails.push(Some(blinded_tail));
+				} else if !blinded_tails.is_empty() { blinded_tails.push(None); }
 			}
 		}
 		write_tlv_fields!(writer, {
 			(1, self.payment_params, option),
+			(2, blinded_tails, optional_vec),
 		});
 		Ok(())
 	}
@@ -325,12 +403,19 @@ impl Readable for Route {
 			if hops.is_empty() { return Err(DecodeError::InvalidValue); }
 			min_final_cltv_expiry_delta =
 				cmp::min(min_final_cltv_expiry_delta, hops.last().unwrap().cltv_expiry_delta);
-			paths.push(hops);
+			paths.push(Path { hops, blinded_tail: None });
 		}
-		let mut payment_params = None;
-		read_tlv_fields!(reader, {
+		_init_and_read_tlv_fields!(reader, {
 			(1, payment_params, (option: ReadableArgs, min_final_cltv_expiry_delta)),
+			(2, blinded_tails, optional_vec),
 		});
+		let blinded_tails = blinded_tails.unwrap_or(Vec::new());
+		if blinded_tails.len() != 0 {
+			if blinded_tails.len() != paths.len() { return Err(DecodeError::InvalidValue) }
+			for (mut path, blinded_tail_opt) in paths.iter_mut().zip(blinded_tails.into_iter()) {
+				path.blinded_tail = blinded_tail_opt;
+			}
+		}
 		Ok(Route { paths, payment_params })
 	}
 }
@@ -420,7 +505,7 @@ pub struct PaymentParameters {
 	pub features: Option<InvoiceFeatures>,
 
 	/// Hints for routing to the payee, containing channels connecting the payee to public nodes.
-	pub route_hints: Vec<RouteHint>,
+	pub route_hints: Hints,
 
 	/// Expiration of a payment to the payee, in seconds relative to the UNIX epoch.
 	pub expiry_time: Option<u64>,
@@ -459,15 +544,22 @@ pub struct PaymentParameters {
 
 impl Writeable for PaymentParameters {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+		let mut clear_hints = &vec![];
+		let mut blinded_hints = &vec![];
+		match &self.route_hints {
+			Hints::Clear(hints) => clear_hints = hints,
+			Hints::Blinded(hints) => blinded_hints = hints,
+		}
 		write_tlv_fields!(writer, {
 			(0, self.payee_pubkey, required),
 			(1, self.max_total_cltv_expiry_delta, required),
 			(2, self.features, option),
 			(3, self.max_path_count, required),
-			(4, self.route_hints, vec_type),
+			(4, *clear_hints, vec_type),
 			(5, self.max_channel_saturation_power_of_half, required),
 			(6, self.expiry_time, option),
 			(7, self.previously_failed_channels, vec_type),
+			(8, *blinded_hints, optional_vec),
 			(9, self.final_cltv_expiry_delta, required),
 		});
 		Ok(())
@@ -485,14 +577,23 @@ impl ReadableArgs<u32> for PaymentParameters {
 			(5, max_channel_saturation_power_of_half, (default_value, 2)),
 			(6, expiry_time, option),
 			(7, previously_failed_channels, vec_type),
+			(8, blinded_route_hints, optional_vec),
 			(9, final_cltv_expiry_delta, (default_value, default_final_cltv_expiry_delta)),
 		});
+		let clear_route_hints = route_hints.unwrap_or(vec![]);
+		let blinded_route_hints = blinded_route_hints.unwrap_or(vec![]);
+		let route_hints = if blinded_route_hints.len() != 0 {
+			if clear_route_hints.len() != 0 { return Err(DecodeError::InvalidValue) }
+			Hints::Blinded(blinded_route_hints)
+		} else {
+			Hints::Clear(clear_route_hints)
+		};
 		Ok(Self {
 			payee_pubkey: _init_tlv_based_struct_field!(payee_pubkey, required),
 			max_total_cltv_expiry_delta: _init_tlv_based_struct_field!(max_total_cltv_expiry_delta, (default_value, unused)),
 			features,
 			max_path_count: _init_tlv_based_struct_field!(max_path_count, (default_value, unused)),
-			route_hints: route_hints.unwrap_or(Vec::new()),
+			route_hints,
 			max_channel_saturation_power_of_half: _init_tlv_based_struct_field!(max_channel_saturation_power_of_half, (default_value, unused)),
 			expiry_time,
 			previously_failed_channels: previously_failed_channels.unwrap_or(Vec::new()),
@@ -511,7 +612,7 @@ impl PaymentParameters {
 		Self {
 			payee_pubkey,
 			features: None,
-			route_hints: vec![],
+			route_hints: Hints::Clear(vec![]),
 			expiry_time: None,
 			max_total_cltv_expiry_delta: DEFAULT_MAX_TOTAL_CLTV_EXPIRY_DELTA,
 			max_path_count: DEFAULT_MAX_PATH_COUNT,
@@ -540,7 +641,7 @@ impl PaymentParameters {
 	///
 	/// This is not exported to bindings users since bindings don't support move semantics
 	pub fn with_route_hints(self, route_hints: Vec<RouteHint>) -> Self {
-		Self { route_hints, ..self }
+		Self { route_hints: Hints::Clear(route_hints), ..self }
 	}
 
 	/// Includes a payment expiration in seconds relative to the UNIX epoch.
@@ -570,6 +671,16 @@ impl PaymentParameters {
 	pub fn with_max_channel_saturation_power_of_half(self, max_channel_saturation_power_of_half: u8) -> Self {
 		Self { max_channel_saturation_power_of_half, ..self }
 	}
+}
+
+/// Routing hints for the tail of the route.
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+pub enum Hints {
+	/// The recipient provided blinded paths and payinfo to reach them. The blinded paths themselves
+	/// will be included in the final [`Route`].
+	Blinded(Vec<(BlindedPayInfo, BlindedPath)>),
+	/// The recipient included these route hints in their BOLT11 invoice.
+	Clear(Vec<RouteHint>),
 }
 
 /// A list of hops along a payment path terminating with a channel to the recipient.
@@ -1021,12 +1132,18 @@ where L::Target: Logger {
 		return Err(LightningError{err: "Cannot send a payment of 0 msat".to_owned(), action: ErrorAction::IgnoreError});
 	}
 
-	for route in payment_params.route_hints.iter() {
-		for hop in &route.0 {
-			if hop.src_node_id == payment_params.payee_pubkey {
-				return Err(LightningError{err: "Route hint cannot have the payee as the source.".to_owned(), action: ErrorAction::IgnoreError});
+	match &payment_params.route_hints {
+		Hints::Clear(hints) => {
+			for route in hints.iter() {
+				for hop in &route.0 {
+					if hop.src_node_id == payment_params.payee_pubkey {
+						return Err(LightningError{err: "Route hint cannot have the payee as the source.".to_owned(), action: ErrorAction::IgnoreError});
+					}
+				}
 			}
-		}
+		},
+		_ => return Err(LightningError{err: "Routing to blinded paths isn't supported yet".to_owned(), action: ErrorAction::IgnoreError}),
+
 	}
 	if payment_params.max_total_cltv_expiry_delta <= final_cltv_expiry_delta {
 		return Err(LightningError{err: "Can't find a route where the maximum total CLTV expiry delta is below the final CLTV expiry.".to_owned(), action: ErrorAction::IgnoreError});
@@ -1551,7 +1668,11 @@ where L::Target: Logger {
 		// If a caller provided us with last hops, add them to routing targets. Since this happens
 		// earlier than general path finding, they will be somewhat prioritized, although currently
 		// it matters only if the fees are exactly the same.
-		for route in payment_params.route_hints.iter().filter(|route| !route.0.is_empty()) {
+		let route_hints = match &payment_params.route_hints {
+			Hints::Clear(hints) => hints,
+			_ => return Err(LightningError{err: "Routing to blinded paths isn't supported yet".to_owned(), action: ErrorAction::IgnoreError}),
+		};
+		for route in route_hints.iter().filter(|route| !route.0.is_empty()) {
 			let first_hop_in_route = &(route.0)[0];
 			let have_hop_src_in_graph =
 				// Only add the hops in this route to our candidate set if either
@@ -1966,8 +2087,14 @@ where L::Target: Logger {
 		}
 	}
 
+	let mut paths: Vec<Path> = Vec::new();
+	for results_vec in selected_paths {
+		let mut hops = Vec::with_capacity(results_vec.len());
+		for res in results_vec { hops.push(res?); }
+		paths.push(Path { hops, blinded_tail: None });
+	}
 	let route = Route {
-		paths: selected_paths.into_iter().map(|path| path.into_iter().collect()).collect::<Result<Vec<_>, _>>()?,
+		paths,
 		payment_params: Some(payment_params.clone()),
 	};
 	log_info!(logger, "Got route to {}: {}", payment_params.payee_pubkey, log_route!(route));
@@ -1989,14 +2116,14 @@ fn add_random_cltv_offset(route: &mut Route, payment_params: &PaymentParameters,
 
 		// Remember the last three nodes of the random walk and avoid looping back on them.
 		// Init with the last three nodes from the actual path, if possible.
-		let mut nodes_to_avoid: [NodeId; 3] = [NodeId::from_pubkey(&path.last().unwrap().pubkey),
-			NodeId::from_pubkey(&path.get(path.len().saturating_sub(2)).unwrap().pubkey),
-			NodeId::from_pubkey(&path.get(path.len().saturating_sub(3)).unwrap().pubkey)];
+		let mut nodes_to_avoid: [NodeId; 3] = [NodeId::from_pubkey(&path.hops.last().unwrap().pubkey),
+			NodeId::from_pubkey(&path.hops.get(path.hops.len().saturating_sub(2)).unwrap().pubkey),
+			NodeId::from_pubkey(&path.hops.get(path.hops.len().saturating_sub(3)).unwrap().pubkey)];
 
 		// Choose the last publicly known node as the starting point for the random walk.
 		let mut cur_hop: Option<NodeId> = None;
 		let mut path_nonce = [0u8; 12];
-		if let Some(starting_hop) = path.iter().rev()
+		if let Some(starting_hop) = path.hops.iter().rev()
 			.find(|h| network_nodes.contains_key(&NodeId::from_pubkey(&h.pubkey))) {
 				cur_hop = Some(NodeId::from_pubkey(&starting_hop.pubkey));
 				path_nonce.copy_from_slice(&cur_hop.unwrap().as_slice()[..12]);
@@ -2045,7 +2172,7 @@ fn add_random_cltv_offset(route: &mut Route, payment_params: &PaymentParameters,
 
 		// Limit the offset so we never exceed the max_total_cltv_expiry_delta. To improve plausibility,
 		// we choose the limit to be the largest possible multiple of MEDIAN_HOP_CLTV_EXPIRY_DELTA.
-		let path_total_cltv_expiry_delta: u32 = path.iter().map(|h| h.cltv_expiry_delta).sum();
+		let path_total_cltv_expiry_delta: u32 = path.hops.iter().map(|h| h.cltv_expiry_delta).sum();
 		let mut max_path_offset = payment_params.max_total_cltv_expiry_delta - path_total_cltv_expiry_delta;
 		max_path_offset = cmp::max(
 			max_path_offset - (max_path_offset % MEDIAN_HOP_CLTV_EXPIRY_DELTA),
@@ -2053,7 +2180,11 @@ fn add_random_cltv_offset(route: &mut Route, payment_params: &PaymentParameters,
 		shadow_ctlv_expiry_delta_offset = cmp::min(shadow_ctlv_expiry_delta_offset, max_path_offset);
 
 		// Add 'shadow' CLTV offset to the final hop
-		if let Some(last_hop) = path.last_mut() {
+		if let Some(tail) = path.blinded_tail.as_mut() {
+			tail.excess_final_cltv_expiry_delta = tail.excess_final_cltv_expiry_delta
+				.checked_add(shadow_ctlv_expiry_delta_offset).unwrap_or(tail.excess_final_cltv_expiry_delta);
+		}
+		if let Some(last_hop) = path.hops.last_mut() {
 			last_hop.cltv_expiry_delta = last_hop.cltv_expiry_delta
 				.checked_add(shadow_ctlv_expiry_delta_offset).unwrap_or(last_hop.cltv_expiry_delta);
 		}
@@ -2107,13 +2238,13 @@ fn build_route_from_hops_internal<L: Deref>(
 			u64::max_value()
 		}
 
-		fn payment_path_failed(&mut self, _path: &[&RouteHop], _short_channel_id: u64) {}
+		fn payment_path_failed(&mut self, _path: &Path, _short_channel_id: u64) {}
 
-		fn payment_path_successful(&mut self, _path: &[&RouteHop]) {}
+		fn payment_path_successful(&mut self, _path: &Path) {}
 
-		fn probe_failed(&mut self, _path: &[&RouteHop], _short_channel_id: u64) {}
+		fn probe_failed(&mut self, _path: &Path, _short_channel_id: u64) {}
 
-		fn probe_successful(&mut self, _path: &[&RouteHop]) {}
+		fn probe_successful(&mut self, _path: &Path) {}
 	}
 
 	impl<'a> Writeable for HopScorer {
@@ -2141,10 +2272,11 @@ fn build_route_from_hops_internal<L: Deref>(
 
 #[cfg(test)]
 mod tests {
+	use crate::blinded_path::{BlindedHop, BlindedPath};
 	use crate::routing::gossip::{NetworkGraph, P2PGossipSync, NodeId, EffectiveCapacity};
 	use crate::routing::utxo::UtxoResult;
 	use crate::routing::router::{get_route, build_route_from_hops_internal, add_random_cltv_offset, default_node_features,
-		PaymentParameters, Route, RouteHint, RouteHintHop, RouteHop, RoutingFees,
+		BlindedTail, InFlightHtlcs, Path, PaymentParameters, Route, RouteHint, RouteHintHop, RouteHop, RoutingFees,
 		DEFAULT_MAX_TOTAL_CLTV_EXPIRY_DELTA, MAX_PATH_LENGTH_ESTIMATE};
 	use crate::routing::scoring::{ChannelUsage, FixedPenaltyScorer, Score, ProbabilisticScorer, ProbabilisticScoringParameters};
 	use crate::routing::test_utils::{add_channel, add_or_update_node, build_graph, build_line_graph, id_to_feature_flags, get_nodes, update_channel};
@@ -2156,8 +2288,9 @@ mod tests {
 	use crate::util::config::UserConfig;
 	use crate::util::test_utils as ln_test_utils;
 	use crate::util::chacha20::ChaCha20;
+	use crate::util::ser::{Readable, Writeable};
 	#[cfg(c_bindings)]
-	use crate::util::ser::{Writeable, Writer};
+	use crate::util::ser::Writer;
 
 	use bitcoin::hashes::Hash;
 	use bitcoin::network::constants::Network;
@@ -2171,6 +2304,7 @@ mod tests {
 	use bitcoin::secp256k1::{PublicKey,SecretKey};
 	use bitcoin::secp256k1::Secp256k1;
 
+	use crate::io::Cursor;
 	use crate::prelude::*;
 	use crate::sync::Arc;
 
@@ -2228,21 +2362,21 @@ mod tests {
 		} else { panic!(); }
 
 		let route = get_route(&our_id, &payment_params, &network_graph.read_only(), None, 100, 42, Arc::clone(&logger), &scorer, &random_seed_bytes).unwrap();
-		assert_eq!(route.paths[0].len(), 2);
+		assert_eq!(route.paths[0].hops.len(), 2);
 
-		assert_eq!(route.paths[0][0].pubkey, nodes[1]);
-		assert_eq!(route.paths[0][0].short_channel_id, 2);
-		assert_eq!(route.paths[0][0].fee_msat, 100);
-		assert_eq!(route.paths[0][0].cltv_expiry_delta, (4 << 4) | 1);
-		assert_eq!(route.paths[0][0].node_features.le_flags(), &id_to_feature_flags(2));
-		assert_eq!(route.paths[0][0].channel_features.le_flags(), &id_to_feature_flags(2));
+		assert_eq!(route.paths[0].hops[0].pubkey, nodes[1]);
+		assert_eq!(route.paths[0].hops[0].short_channel_id, 2);
+		assert_eq!(route.paths[0].hops[0].fee_msat, 100);
+		assert_eq!(route.paths[0].hops[0].cltv_expiry_delta, (4 << 4) | 1);
+		assert_eq!(route.paths[0].hops[0].node_features.le_flags(), &id_to_feature_flags(2));
+		assert_eq!(route.paths[0].hops[0].channel_features.le_flags(), &id_to_feature_flags(2));
 
-		assert_eq!(route.paths[0][1].pubkey, nodes[2]);
-		assert_eq!(route.paths[0][1].short_channel_id, 4);
-		assert_eq!(route.paths[0][1].fee_msat, 100);
-		assert_eq!(route.paths[0][1].cltv_expiry_delta, 42);
-		assert_eq!(route.paths[0][1].node_features.le_flags(), &id_to_feature_flags(3));
-		assert_eq!(route.paths[0][1].channel_features.le_flags(), &id_to_feature_flags(4));
+		assert_eq!(route.paths[0].hops[1].pubkey, nodes[2]);
+		assert_eq!(route.paths[0].hops[1].short_channel_id, 4);
+		assert_eq!(route.paths[0].hops[1].fee_msat, 100);
+		assert_eq!(route.paths[0].hops[1].cltv_expiry_delta, 42);
+		assert_eq!(route.paths[0].hops[1].node_features.le_flags(), &id_to_feature_flags(3));
+		assert_eq!(route.paths[0].hops[1].channel_features.le_flags(), &id_to_feature_flags(4));
 	}
 
 	#[test]
@@ -2264,7 +2398,7 @@ mod tests {
 		} else { panic!(); }
 
 		let route = get_route(&our_id, &payment_params, &network_graph.read_only(), None, 100, 42, Arc::clone(&logger), &scorer, &random_seed_bytes).unwrap();
-		assert_eq!(route.paths[0].len(), 2);
+		assert_eq!(route.paths[0].hops.len(), 2);
 	}
 
 	#[test]
@@ -2391,7 +2525,7 @@ mod tests {
 
 		// A payment above the minimum should pass
 		let route = get_route(&our_id, &payment_params, &network_graph.read_only(), None, 199_999_999, 42, Arc::clone(&logger), &scorer, &random_seed_bytes).unwrap();
-		assert_eq!(route.paths[0].len(), 2);
+		assert_eq!(route.paths[0].hops.len(), 2);
 	}
 
 	#[test]
@@ -2474,7 +2608,7 @@ mod tests {
 
 		let route = get_route(&our_id, &payment_params, &network_graph.read_only(), None, 60_000, 42, Arc::clone(&logger), &scorer, &random_seed_bytes).unwrap();
 		// Overpay fees to hit htlc_minimum_msat.
-		let overpaid_fees = route.paths[0][0].fee_msat + route.paths[1][0].fee_msat;
+		let overpaid_fees = route.paths[0].hops[0].fee_msat + route.paths[1].hops[0].fee_msat;
 		// TODO: this could be better balanced to overpay 10k and not 15k.
 		assert_eq!(overpaid_fees, 15_000);
 
@@ -2520,16 +2654,16 @@ mod tests {
 		let route = get_route(&our_id, &payment_params, &network_graph.read_only(), None, 60_000, 42, Arc::clone(&logger), &scorer, &random_seed_bytes).unwrap();
 		// Fine to overpay for htlc_minimum_msat if it allows us to save fee.
 		assert_eq!(route.paths.len(), 1);
-		assert_eq!(route.paths[0][0].short_channel_id, 12);
-		let fees = route.paths[0][0].fee_msat;
+		assert_eq!(route.paths[0].hops[0].short_channel_id, 12);
+		let fees = route.paths[0].hops[0].fee_msat;
 		assert_eq!(fees, 5_000);
 
 		let route = get_route(&our_id, &payment_params, &network_graph.read_only(), None, 50_000, 42, Arc::clone(&logger), &scorer, &random_seed_bytes).unwrap();
 		// Not fine to overpay for htlc_minimum_msat if it requires paying more than fee on
 		// the other channel.
 		assert_eq!(route.paths.len(), 1);
-		assert_eq!(route.paths[0][0].short_channel_id, 2);
-		let fees = route.paths[0][0].fee_msat;
+		assert_eq!(route.paths[0].hops[0].short_channel_id, 2);
+		let fees = route.paths[0].hops[0].fee_msat;
 		assert_eq!(fees, 5_000);
 	}
 
@@ -2576,21 +2710,21 @@ mod tests {
 		// If we specify a channel to node7, that overrides our local channel view and that gets used
 		let our_chans = vec![get_channel_details(Some(42), nodes[7].clone(), InitFeatures::from_le_bytes(vec![0b11]), 250_000_000)];
 		let route = get_route(&our_id, &payment_params, &network_graph.read_only(), Some(&our_chans.iter().collect::<Vec<_>>()), 100, 42, Arc::clone(&logger), &scorer, &random_seed_bytes).unwrap();
-		assert_eq!(route.paths[0].len(), 2);
+		assert_eq!(route.paths[0].hops.len(), 2);
 
-		assert_eq!(route.paths[0][0].pubkey, nodes[7]);
-		assert_eq!(route.paths[0][0].short_channel_id, 42);
-		assert_eq!(route.paths[0][0].fee_msat, 200);
-		assert_eq!(route.paths[0][0].cltv_expiry_delta, (13 << 4) | 1);
-		assert_eq!(route.paths[0][0].node_features.le_flags(), &vec![0b11]); // it should also override our view of their features
-		assert_eq!(route.paths[0][0].channel_features.le_flags(), &Vec::<u8>::new()); // No feature flags will meet the relevant-to-channel conversion
+		assert_eq!(route.paths[0].hops[0].pubkey, nodes[7]);
+		assert_eq!(route.paths[0].hops[0].short_channel_id, 42);
+		assert_eq!(route.paths[0].hops[0].fee_msat, 200);
+		assert_eq!(route.paths[0].hops[0].cltv_expiry_delta, (13 << 4) | 1);
+		assert_eq!(route.paths[0].hops[0].node_features.le_flags(), &vec![0b11]); // it should also override our view of their features
+		assert_eq!(route.paths[0].hops[0].channel_features.le_flags(), &Vec::<u8>::new()); // No feature flags will meet the relevant-to-channel conversion
 
-		assert_eq!(route.paths[0][1].pubkey, nodes[2]);
-		assert_eq!(route.paths[0][1].short_channel_id, 13);
-		assert_eq!(route.paths[0][1].fee_msat, 100);
-		assert_eq!(route.paths[0][1].cltv_expiry_delta, 42);
-		assert_eq!(route.paths[0][1].node_features.le_flags(), &id_to_feature_flags(3));
-		assert_eq!(route.paths[0][1].channel_features.le_flags(), &id_to_feature_flags(13));
+		assert_eq!(route.paths[0].hops[1].pubkey, nodes[2]);
+		assert_eq!(route.paths[0].hops[1].short_channel_id, 13);
+		assert_eq!(route.paths[0].hops[1].fee_msat, 100);
+		assert_eq!(route.paths[0].hops[1].cltv_expiry_delta, 42);
+		assert_eq!(route.paths[0].hops[1].node_features.le_flags(), &id_to_feature_flags(3));
+		assert_eq!(route.paths[0].hops[1].channel_features.le_flags(), &id_to_feature_flags(13));
 	}
 
 	#[test]
@@ -2617,21 +2751,21 @@ mod tests {
 		// If we specify a channel to node7, that overrides our local channel view and that gets used
 		let our_chans = vec![get_channel_details(Some(42), nodes[7].clone(), InitFeatures::from_le_bytes(vec![0b11]), 250_000_000)];
 		let route = get_route(&our_id, &payment_params, &network_graph.read_only(), Some(&our_chans.iter().collect::<Vec<_>>()), 100, 42, Arc::clone(&logger), &scorer, &random_seed_bytes).unwrap();
-		assert_eq!(route.paths[0].len(), 2);
+		assert_eq!(route.paths[0].hops.len(), 2);
 
-		assert_eq!(route.paths[0][0].pubkey, nodes[7]);
-		assert_eq!(route.paths[0][0].short_channel_id, 42);
-		assert_eq!(route.paths[0][0].fee_msat, 200);
-		assert_eq!(route.paths[0][0].cltv_expiry_delta, (13 << 4) | 1);
-		assert_eq!(route.paths[0][0].node_features.le_flags(), &vec![0b11]); // it should also override our view of their features
-		assert_eq!(route.paths[0][0].channel_features.le_flags(), &Vec::<u8>::new()); // No feature flags will meet the relevant-to-channel conversion
+		assert_eq!(route.paths[0].hops[0].pubkey, nodes[7]);
+		assert_eq!(route.paths[0].hops[0].short_channel_id, 42);
+		assert_eq!(route.paths[0].hops[0].fee_msat, 200);
+		assert_eq!(route.paths[0].hops[0].cltv_expiry_delta, (13 << 4) | 1);
+		assert_eq!(route.paths[0].hops[0].node_features.le_flags(), &vec![0b11]); // it should also override our view of their features
+		assert_eq!(route.paths[0].hops[0].channel_features.le_flags(), &Vec::<u8>::new()); // No feature flags will meet the relevant-to-channel conversion
 
-		assert_eq!(route.paths[0][1].pubkey, nodes[2]);
-		assert_eq!(route.paths[0][1].short_channel_id, 13);
-		assert_eq!(route.paths[0][1].fee_msat, 100);
-		assert_eq!(route.paths[0][1].cltv_expiry_delta, 42);
-		assert_eq!(route.paths[0][1].node_features.le_flags(), &id_to_feature_flags(3));
-		assert_eq!(route.paths[0][1].channel_features.le_flags(), &id_to_feature_flags(13));
+		assert_eq!(route.paths[0].hops[1].pubkey, nodes[2]);
+		assert_eq!(route.paths[0].hops[1].short_channel_id, 13);
+		assert_eq!(route.paths[0].hops[1].fee_msat, 100);
+		assert_eq!(route.paths[0].hops[1].cltv_expiry_delta, 42);
+		assert_eq!(route.paths[0].hops[1].node_features.le_flags(), &id_to_feature_flags(3));
+		assert_eq!(route.paths[0].hops[1].channel_features.le_flags(), &id_to_feature_flags(13));
 
 		// Note that we don't test disabling node 3 and failing to route to it, as we (somewhat
 		// naively) assume that the user checked the feature bits on the invoice, which override
@@ -2649,48 +2783,48 @@ mod tests {
 		// Route to 1 via 2 and 3 because our channel to 1 is disabled
 		let payment_params = PaymentParameters::from_node_id(nodes[0], 42);
 		let route = get_route(&our_id, &payment_params, &network_graph.read_only(), None, 100, 42, Arc::clone(&logger), &scorer, &random_seed_bytes).unwrap();
-		assert_eq!(route.paths[0].len(), 3);
+		assert_eq!(route.paths[0].hops.len(), 3);
 
-		assert_eq!(route.paths[0][0].pubkey, nodes[1]);
-		assert_eq!(route.paths[0][0].short_channel_id, 2);
-		assert_eq!(route.paths[0][0].fee_msat, 200);
-		assert_eq!(route.paths[0][0].cltv_expiry_delta, (4 << 4) | 1);
-		assert_eq!(route.paths[0][0].node_features.le_flags(), &id_to_feature_flags(2));
-		assert_eq!(route.paths[0][0].channel_features.le_flags(), &id_to_feature_flags(2));
+		assert_eq!(route.paths[0].hops[0].pubkey, nodes[1]);
+		assert_eq!(route.paths[0].hops[0].short_channel_id, 2);
+		assert_eq!(route.paths[0].hops[0].fee_msat, 200);
+		assert_eq!(route.paths[0].hops[0].cltv_expiry_delta, (4 << 4) | 1);
+		assert_eq!(route.paths[0].hops[0].node_features.le_flags(), &id_to_feature_flags(2));
+		assert_eq!(route.paths[0].hops[0].channel_features.le_flags(), &id_to_feature_flags(2));
 
-		assert_eq!(route.paths[0][1].pubkey, nodes[2]);
-		assert_eq!(route.paths[0][1].short_channel_id, 4);
-		assert_eq!(route.paths[0][1].fee_msat, 100);
-		assert_eq!(route.paths[0][1].cltv_expiry_delta, (3 << 4) | 2);
-		assert_eq!(route.paths[0][1].node_features.le_flags(), &id_to_feature_flags(3));
-		assert_eq!(route.paths[0][1].channel_features.le_flags(), &id_to_feature_flags(4));
+		assert_eq!(route.paths[0].hops[1].pubkey, nodes[2]);
+		assert_eq!(route.paths[0].hops[1].short_channel_id, 4);
+		assert_eq!(route.paths[0].hops[1].fee_msat, 100);
+		assert_eq!(route.paths[0].hops[1].cltv_expiry_delta, (3 << 4) | 2);
+		assert_eq!(route.paths[0].hops[1].node_features.le_flags(), &id_to_feature_flags(3));
+		assert_eq!(route.paths[0].hops[1].channel_features.le_flags(), &id_to_feature_flags(4));
 
-		assert_eq!(route.paths[0][2].pubkey, nodes[0]);
-		assert_eq!(route.paths[0][2].short_channel_id, 3);
-		assert_eq!(route.paths[0][2].fee_msat, 100);
-		assert_eq!(route.paths[0][2].cltv_expiry_delta, 42);
-		assert_eq!(route.paths[0][2].node_features.le_flags(), &id_to_feature_flags(1));
-		assert_eq!(route.paths[0][2].channel_features.le_flags(), &id_to_feature_flags(3));
+		assert_eq!(route.paths[0].hops[2].pubkey, nodes[0]);
+		assert_eq!(route.paths[0].hops[2].short_channel_id, 3);
+		assert_eq!(route.paths[0].hops[2].fee_msat, 100);
+		assert_eq!(route.paths[0].hops[2].cltv_expiry_delta, 42);
+		assert_eq!(route.paths[0].hops[2].node_features.le_flags(), &id_to_feature_flags(1));
+		assert_eq!(route.paths[0].hops[2].channel_features.le_flags(), &id_to_feature_flags(3));
 
 		// If we specify a channel to node7, that overrides our local channel view and that gets used
 		let payment_params = PaymentParameters::from_node_id(nodes[2], 42);
 		let our_chans = vec![get_channel_details(Some(42), nodes[7].clone(), InitFeatures::from_le_bytes(vec![0b11]), 250_000_000)];
 		let route = get_route(&our_id, &payment_params, &network_graph.read_only(), Some(&our_chans.iter().collect::<Vec<_>>()), 100, 42, Arc::clone(&logger), &scorer, &random_seed_bytes).unwrap();
-		assert_eq!(route.paths[0].len(), 2);
+		assert_eq!(route.paths[0].hops.len(), 2);
 
-		assert_eq!(route.paths[0][0].pubkey, nodes[7]);
-		assert_eq!(route.paths[0][0].short_channel_id, 42);
-		assert_eq!(route.paths[0][0].fee_msat, 200);
-		assert_eq!(route.paths[0][0].cltv_expiry_delta, (13 << 4) | 1);
-		assert_eq!(route.paths[0][0].node_features.le_flags(), &vec![0b11]);
-		assert_eq!(route.paths[0][0].channel_features.le_flags(), &Vec::<u8>::new()); // No feature flags will meet the relevant-to-channel conversion
+		assert_eq!(route.paths[0].hops[0].pubkey, nodes[7]);
+		assert_eq!(route.paths[0].hops[0].short_channel_id, 42);
+		assert_eq!(route.paths[0].hops[0].fee_msat, 200);
+		assert_eq!(route.paths[0].hops[0].cltv_expiry_delta, (13 << 4) | 1);
+		assert_eq!(route.paths[0].hops[0].node_features.le_flags(), &vec![0b11]);
+		assert_eq!(route.paths[0].hops[0].channel_features.le_flags(), &Vec::<u8>::new()); // No feature flags will meet the relevant-to-channel conversion
 
-		assert_eq!(route.paths[0][1].pubkey, nodes[2]);
-		assert_eq!(route.paths[0][1].short_channel_id, 13);
-		assert_eq!(route.paths[0][1].fee_msat, 100);
-		assert_eq!(route.paths[0][1].cltv_expiry_delta, 42);
-		assert_eq!(route.paths[0][1].node_features.le_flags(), &id_to_feature_flags(3));
-		assert_eq!(route.paths[0][1].channel_features.le_flags(), &id_to_feature_flags(13));
+		assert_eq!(route.paths[0].hops[1].pubkey, nodes[2]);
+		assert_eq!(route.paths[0].hops[1].short_channel_id, 13);
+		assert_eq!(route.paths[0].hops[1].fee_msat, 100);
+		assert_eq!(route.paths[0].hops[1].cltv_expiry_delta, 42);
+		assert_eq!(route.paths[0].hops[1].node_features.le_flags(), &id_to_feature_flags(3));
+		assert_eq!(route.paths[0].hops[1].channel_features.le_flags(), &id_to_feature_flags(13));
 	}
 
 	fn last_hops(nodes: &Vec<PublicKey>) -> Vec<RouteHint> {
@@ -2805,44 +2939,44 @@ mod tests {
 
 		let payment_params = PaymentParameters::from_node_id(nodes[6], 42).with_route_hints(last_hops_multi_private_channels(&nodes));
 		let route = get_route(&our_id, &payment_params, &network_graph.read_only(), None, 100, 42, Arc::clone(&logger), &scorer, &random_seed_bytes).unwrap();
-		assert_eq!(route.paths[0].len(), 5);
+		assert_eq!(route.paths[0].hops.len(), 5);
 
-		assert_eq!(route.paths[0][0].pubkey, nodes[1]);
-		assert_eq!(route.paths[0][0].short_channel_id, 2);
-		assert_eq!(route.paths[0][0].fee_msat, 100);
-		assert_eq!(route.paths[0][0].cltv_expiry_delta, (4 << 4) | 1);
-		assert_eq!(route.paths[0][0].node_features.le_flags(), &id_to_feature_flags(2));
-		assert_eq!(route.paths[0][0].channel_features.le_flags(), &id_to_feature_flags(2));
+		assert_eq!(route.paths[0].hops[0].pubkey, nodes[1]);
+		assert_eq!(route.paths[0].hops[0].short_channel_id, 2);
+		assert_eq!(route.paths[0].hops[0].fee_msat, 100);
+		assert_eq!(route.paths[0].hops[0].cltv_expiry_delta, (4 << 4) | 1);
+		assert_eq!(route.paths[0].hops[0].node_features.le_flags(), &id_to_feature_flags(2));
+		assert_eq!(route.paths[0].hops[0].channel_features.le_flags(), &id_to_feature_flags(2));
 
-		assert_eq!(route.paths[0][1].pubkey, nodes[2]);
-		assert_eq!(route.paths[0][1].short_channel_id, 4);
-		assert_eq!(route.paths[0][1].fee_msat, 0);
-		assert_eq!(route.paths[0][1].cltv_expiry_delta, (6 << 4) | 1);
-		assert_eq!(route.paths[0][1].node_features.le_flags(), &id_to_feature_flags(3));
-		assert_eq!(route.paths[0][1].channel_features.le_flags(), &id_to_feature_flags(4));
+		assert_eq!(route.paths[0].hops[1].pubkey, nodes[2]);
+		assert_eq!(route.paths[0].hops[1].short_channel_id, 4);
+		assert_eq!(route.paths[0].hops[1].fee_msat, 0);
+		assert_eq!(route.paths[0].hops[1].cltv_expiry_delta, (6 << 4) | 1);
+		assert_eq!(route.paths[0].hops[1].node_features.le_flags(), &id_to_feature_flags(3));
+		assert_eq!(route.paths[0].hops[1].channel_features.le_flags(), &id_to_feature_flags(4));
 
-		assert_eq!(route.paths[0][2].pubkey, nodes[4]);
-		assert_eq!(route.paths[0][2].short_channel_id, 6);
-		assert_eq!(route.paths[0][2].fee_msat, 0);
-		assert_eq!(route.paths[0][2].cltv_expiry_delta, (11 << 4) | 1);
-		assert_eq!(route.paths[0][2].node_features.le_flags(), &id_to_feature_flags(5));
-		assert_eq!(route.paths[0][2].channel_features.le_flags(), &id_to_feature_flags(6));
+		assert_eq!(route.paths[0].hops[2].pubkey, nodes[4]);
+		assert_eq!(route.paths[0].hops[2].short_channel_id, 6);
+		assert_eq!(route.paths[0].hops[2].fee_msat, 0);
+		assert_eq!(route.paths[0].hops[2].cltv_expiry_delta, (11 << 4) | 1);
+		assert_eq!(route.paths[0].hops[2].node_features.le_flags(), &id_to_feature_flags(5));
+		assert_eq!(route.paths[0].hops[2].channel_features.le_flags(), &id_to_feature_flags(6));
 
-		assert_eq!(route.paths[0][3].pubkey, nodes[3]);
-		assert_eq!(route.paths[0][3].short_channel_id, 11);
-		assert_eq!(route.paths[0][3].fee_msat, 0);
-		assert_eq!(route.paths[0][3].cltv_expiry_delta, (8 << 4) | 1);
+		assert_eq!(route.paths[0].hops[3].pubkey, nodes[3]);
+		assert_eq!(route.paths[0].hops[3].short_channel_id, 11);
+		assert_eq!(route.paths[0].hops[3].fee_msat, 0);
+		assert_eq!(route.paths[0].hops[3].cltv_expiry_delta, (8 << 4) | 1);
 		// If we have a peer in the node map, we'll use their features here since we don't have
 		// a way of figuring out their features from the invoice:
-		assert_eq!(route.paths[0][3].node_features.le_flags(), &id_to_feature_flags(4));
-		assert_eq!(route.paths[0][3].channel_features.le_flags(), &id_to_feature_flags(11));
+		assert_eq!(route.paths[0].hops[3].node_features.le_flags(), &id_to_feature_flags(4));
+		assert_eq!(route.paths[0].hops[3].channel_features.le_flags(), &id_to_feature_flags(11));
 
-		assert_eq!(route.paths[0][4].pubkey, nodes[6]);
-		assert_eq!(route.paths[0][4].short_channel_id, 8);
-		assert_eq!(route.paths[0][4].fee_msat, 100);
-		assert_eq!(route.paths[0][4].cltv_expiry_delta, 42);
-		assert_eq!(route.paths[0][4].node_features.le_flags(), default_node_features().le_flags()); // We dont pass flags in from invoices yet
-		assert_eq!(route.paths[0][4].channel_features.le_flags(), &Vec::<u8>::new()); // We can't learn any flags from invoices, sadly
+		assert_eq!(route.paths[0].hops[4].pubkey, nodes[6]);
+		assert_eq!(route.paths[0].hops[4].short_channel_id, 8);
+		assert_eq!(route.paths[0].hops[4].fee_msat, 100);
+		assert_eq!(route.paths[0].hops[4].cltv_expiry_delta, 42);
+		assert_eq!(route.paths[0].hops[4].node_features.le_flags(), default_node_features().le_flags()); // We dont pass flags in from invoices yet
+		assert_eq!(route.paths[0].hops[4].channel_features.le_flags(), &Vec::<u8>::new()); // We can't learn any flags from invoices, sadly
 	}
 
 	fn empty_last_hop(nodes: &Vec<PublicKey>) -> Vec<RouteHint> {
@@ -2881,44 +3015,44 @@ mod tests {
 		// Test handling of an empty RouteHint passed in Invoice.
 
 		let route = get_route(&our_id, &payment_params, &network_graph.read_only(), None, 100, 42, Arc::clone(&logger), &scorer, &random_seed_bytes).unwrap();
-		assert_eq!(route.paths[0].len(), 5);
+		assert_eq!(route.paths[0].hops.len(), 5);
 
-		assert_eq!(route.paths[0][0].pubkey, nodes[1]);
-		assert_eq!(route.paths[0][0].short_channel_id, 2);
-		assert_eq!(route.paths[0][0].fee_msat, 100);
-		assert_eq!(route.paths[0][0].cltv_expiry_delta, (4 << 4) | 1);
-		assert_eq!(route.paths[0][0].node_features.le_flags(), &id_to_feature_flags(2));
-		assert_eq!(route.paths[0][0].channel_features.le_flags(), &id_to_feature_flags(2));
+		assert_eq!(route.paths[0].hops[0].pubkey, nodes[1]);
+		assert_eq!(route.paths[0].hops[0].short_channel_id, 2);
+		assert_eq!(route.paths[0].hops[0].fee_msat, 100);
+		assert_eq!(route.paths[0].hops[0].cltv_expiry_delta, (4 << 4) | 1);
+		assert_eq!(route.paths[0].hops[0].node_features.le_flags(), &id_to_feature_flags(2));
+		assert_eq!(route.paths[0].hops[0].channel_features.le_flags(), &id_to_feature_flags(2));
 
-		assert_eq!(route.paths[0][1].pubkey, nodes[2]);
-		assert_eq!(route.paths[0][1].short_channel_id, 4);
-		assert_eq!(route.paths[0][1].fee_msat, 0);
-		assert_eq!(route.paths[0][1].cltv_expiry_delta, (6 << 4) | 1);
-		assert_eq!(route.paths[0][1].node_features.le_flags(), &id_to_feature_flags(3));
-		assert_eq!(route.paths[0][1].channel_features.le_flags(), &id_to_feature_flags(4));
+		assert_eq!(route.paths[0].hops[1].pubkey, nodes[2]);
+		assert_eq!(route.paths[0].hops[1].short_channel_id, 4);
+		assert_eq!(route.paths[0].hops[1].fee_msat, 0);
+		assert_eq!(route.paths[0].hops[1].cltv_expiry_delta, (6 << 4) | 1);
+		assert_eq!(route.paths[0].hops[1].node_features.le_flags(), &id_to_feature_flags(3));
+		assert_eq!(route.paths[0].hops[1].channel_features.le_flags(), &id_to_feature_flags(4));
 
-		assert_eq!(route.paths[0][2].pubkey, nodes[4]);
-		assert_eq!(route.paths[0][2].short_channel_id, 6);
-		assert_eq!(route.paths[0][2].fee_msat, 0);
-		assert_eq!(route.paths[0][2].cltv_expiry_delta, (11 << 4) | 1);
-		assert_eq!(route.paths[0][2].node_features.le_flags(), &id_to_feature_flags(5));
-		assert_eq!(route.paths[0][2].channel_features.le_flags(), &id_to_feature_flags(6));
+		assert_eq!(route.paths[0].hops[2].pubkey, nodes[4]);
+		assert_eq!(route.paths[0].hops[2].short_channel_id, 6);
+		assert_eq!(route.paths[0].hops[2].fee_msat, 0);
+		assert_eq!(route.paths[0].hops[2].cltv_expiry_delta, (11 << 4) | 1);
+		assert_eq!(route.paths[0].hops[2].node_features.le_flags(), &id_to_feature_flags(5));
+		assert_eq!(route.paths[0].hops[2].channel_features.le_flags(), &id_to_feature_flags(6));
 
-		assert_eq!(route.paths[0][3].pubkey, nodes[3]);
-		assert_eq!(route.paths[0][3].short_channel_id, 11);
-		assert_eq!(route.paths[0][3].fee_msat, 0);
-		assert_eq!(route.paths[0][3].cltv_expiry_delta, (8 << 4) | 1);
+		assert_eq!(route.paths[0].hops[3].pubkey, nodes[3]);
+		assert_eq!(route.paths[0].hops[3].short_channel_id, 11);
+		assert_eq!(route.paths[0].hops[3].fee_msat, 0);
+		assert_eq!(route.paths[0].hops[3].cltv_expiry_delta, (8 << 4) | 1);
 		// If we have a peer in the node map, we'll use their features here since we don't have
 		// a way of figuring out their features from the invoice:
-		assert_eq!(route.paths[0][3].node_features.le_flags(), &id_to_feature_flags(4));
-		assert_eq!(route.paths[0][3].channel_features.le_flags(), &id_to_feature_flags(11));
+		assert_eq!(route.paths[0].hops[3].node_features.le_flags(), &id_to_feature_flags(4));
+		assert_eq!(route.paths[0].hops[3].channel_features.le_flags(), &id_to_feature_flags(11));
 
-		assert_eq!(route.paths[0][4].pubkey, nodes[6]);
-		assert_eq!(route.paths[0][4].short_channel_id, 8);
-		assert_eq!(route.paths[0][4].fee_msat, 100);
-		assert_eq!(route.paths[0][4].cltv_expiry_delta, 42);
-		assert_eq!(route.paths[0][4].node_features.le_flags(), default_node_features().le_flags()); // We dont pass flags in from invoices yet
-		assert_eq!(route.paths[0][4].channel_features.le_flags(), &Vec::<u8>::new()); // We can't learn any flags from invoices, sadly
+		assert_eq!(route.paths[0].hops[4].pubkey, nodes[6]);
+		assert_eq!(route.paths[0].hops[4].short_channel_id, 8);
+		assert_eq!(route.paths[0].hops[4].fee_msat, 100);
+		assert_eq!(route.paths[0].hops[4].cltv_expiry_delta, 42);
+		assert_eq!(route.paths[0].hops[4].node_features.le_flags(), default_node_features().le_flags()); // We dont pass flags in from invoices yet
+		assert_eq!(route.paths[0].hops[4].channel_features.le_flags(), &Vec::<u8>::new()); // We can't learn any flags from invoices, sadly
 	}
 
 	/// Builds a trivial last-hop hint that passes through the two nodes given, with channel 0xff00
@@ -2987,35 +3121,35 @@ mod tests {
 		});
 
 		let route = get_route(&our_id, &payment_params, &network_graph.read_only(), None, 100, 42, Arc::clone(&logger), &scorer, &random_seed_bytes).unwrap();
-		assert_eq!(route.paths[0].len(), 4);
+		assert_eq!(route.paths[0].hops.len(), 4);
 
-		assert_eq!(route.paths[0][0].pubkey, nodes[1]);
-		assert_eq!(route.paths[0][0].short_channel_id, 2);
-		assert_eq!(route.paths[0][0].fee_msat, 200);
-		assert_eq!(route.paths[0][0].cltv_expiry_delta, 65);
-		assert_eq!(route.paths[0][0].node_features.le_flags(), &id_to_feature_flags(2));
-		assert_eq!(route.paths[0][0].channel_features.le_flags(), &id_to_feature_flags(2));
+		assert_eq!(route.paths[0].hops[0].pubkey, nodes[1]);
+		assert_eq!(route.paths[0].hops[0].short_channel_id, 2);
+		assert_eq!(route.paths[0].hops[0].fee_msat, 200);
+		assert_eq!(route.paths[0].hops[0].cltv_expiry_delta, 65);
+		assert_eq!(route.paths[0].hops[0].node_features.le_flags(), &id_to_feature_flags(2));
+		assert_eq!(route.paths[0].hops[0].channel_features.le_flags(), &id_to_feature_flags(2));
 
-		assert_eq!(route.paths[0][1].pubkey, nodes[2]);
-		assert_eq!(route.paths[0][1].short_channel_id, 4);
-		assert_eq!(route.paths[0][1].fee_msat, 100);
-		assert_eq!(route.paths[0][1].cltv_expiry_delta, 81);
-		assert_eq!(route.paths[0][1].node_features.le_flags(), &id_to_feature_flags(3));
-		assert_eq!(route.paths[0][1].channel_features.le_flags(), &id_to_feature_flags(4));
+		assert_eq!(route.paths[0].hops[1].pubkey, nodes[2]);
+		assert_eq!(route.paths[0].hops[1].short_channel_id, 4);
+		assert_eq!(route.paths[0].hops[1].fee_msat, 100);
+		assert_eq!(route.paths[0].hops[1].cltv_expiry_delta, 81);
+		assert_eq!(route.paths[0].hops[1].node_features.le_flags(), &id_to_feature_flags(3));
+		assert_eq!(route.paths[0].hops[1].channel_features.le_flags(), &id_to_feature_flags(4));
 
-		assert_eq!(route.paths[0][2].pubkey, nodes[3]);
-		assert_eq!(route.paths[0][2].short_channel_id, last_hops[0].0[0].short_channel_id);
-		assert_eq!(route.paths[0][2].fee_msat, 0);
-		assert_eq!(route.paths[0][2].cltv_expiry_delta, 129);
-		assert_eq!(route.paths[0][2].node_features.le_flags(), &id_to_feature_flags(4));
-		assert_eq!(route.paths[0][2].channel_features.le_flags(), &Vec::<u8>::new()); // We can't learn any flags from invoices, sadly
+		assert_eq!(route.paths[0].hops[2].pubkey, nodes[3]);
+		assert_eq!(route.paths[0].hops[2].short_channel_id, last_hops[0].0[0].short_channel_id);
+		assert_eq!(route.paths[0].hops[2].fee_msat, 0);
+		assert_eq!(route.paths[0].hops[2].cltv_expiry_delta, 129);
+		assert_eq!(route.paths[0].hops[2].node_features.le_flags(), &id_to_feature_flags(4));
+		assert_eq!(route.paths[0].hops[2].channel_features.le_flags(), &Vec::<u8>::new()); // We can't learn any flags from invoices, sadly
 
-		assert_eq!(route.paths[0][3].pubkey, nodes[6]);
-		assert_eq!(route.paths[0][3].short_channel_id, last_hops[0].0[1].short_channel_id);
-		assert_eq!(route.paths[0][3].fee_msat, 100);
-		assert_eq!(route.paths[0][3].cltv_expiry_delta, 42);
-		assert_eq!(route.paths[0][3].node_features.le_flags(), default_node_features().le_flags()); // We dont pass flags in from invoices yet
-		assert_eq!(route.paths[0][3].channel_features.le_flags(), &Vec::<u8>::new()); // We can't learn any flags from invoices, sadly
+		assert_eq!(route.paths[0].hops[3].pubkey, nodes[6]);
+		assert_eq!(route.paths[0].hops[3].short_channel_id, last_hops[0].0[1].short_channel_id);
+		assert_eq!(route.paths[0].hops[3].fee_msat, 100);
+		assert_eq!(route.paths[0].hops[3].cltv_expiry_delta, 42);
+		assert_eq!(route.paths[0].hops[3].node_features.le_flags(), default_node_features().le_flags()); // We dont pass flags in from invoices yet
+		assert_eq!(route.paths[0].hops[3].channel_features.le_flags(), &Vec::<u8>::new()); // We can't learn any flags from invoices, sadly
 	}
 
 	#[test]
@@ -3059,35 +3193,35 @@ mod tests {
 		});
 
 		let route = get_route(&our_id, &payment_params, &network_graph.read_only(), None, 100, 42, Arc::clone(&logger), &scorer, &[42u8; 32]).unwrap();
-		assert_eq!(route.paths[0].len(), 4);
+		assert_eq!(route.paths[0].hops.len(), 4);
 
-		assert_eq!(route.paths[0][0].pubkey, nodes[1]);
-		assert_eq!(route.paths[0][0].short_channel_id, 2);
-		assert_eq!(route.paths[0][0].fee_msat, 200);
-		assert_eq!(route.paths[0][0].cltv_expiry_delta, 65);
-		assert_eq!(route.paths[0][0].node_features.le_flags(), &id_to_feature_flags(2));
-		assert_eq!(route.paths[0][0].channel_features.le_flags(), &id_to_feature_flags(2));
+		assert_eq!(route.paths[0].hops[0].pubkey, nodes[1]);
+		assert_eq!(route.paths[0].hops[0].short_channel_id, 2);
+		assert_eq!(route.paths[0].hops[0].fee_msat, 200);
+		assert_eq!(route.paths[0].hops[0].cltv_expiry_delta, 65);
+		assert_eq!(route.paths[0].hops[0].node_features.le_flags(), &id_to_feature_flags(2));
+		assert_eq!(route.paths[0].hops[0].channel_features.le_flags(), &id_to_feature_flags(2));
 
-		assert_eq!(route.paths[0][1].pubkey, nodes[2]);
-		assert_eq!(route.paths[0][1].short_channel_id, 4);
-		assert_eq!(route.paths[0][1].fee_msat, 100);
-		assert_eq!(route.paths[0][1].cltv_expiry_delta, 81);
-		assert_eq!(route.paths[0][1].node_features.le_flags(), &id_to_feature_flags(3));
-		assert_eq!(route.paths[0][1].channel_features.le_flags(), &id_to_feature_flags(4));
+		assert_eq!(route.paths[0].hops[1].pubkey, nodes[2]);
+		assert_eq!(route.paths[0].hops[1].short_channel_id, 4);
+		assert_eq!(route.paths[0].hops[1].fee_msat, 100);
+		assert_eq!(route.paths[0].hops[1].cltv_expiry_delta, 81);
+		assert_eq!(route.paths[0].hops[1].node_features.le_flags(), &id_to_feature_flags(3));
+		assert_eq!(route.paths[0].hops[1].channel_features.le_flags(), &id_to_feature_flags(4));
 
-		assert_eq!(route.paths[0][2].pubkey, non_announced_pubkey);
-		assert_eq!(route.paths[0][2].short_channel_id, last_hops[0].0[0].short_channel_id);
-		assert_eq!(route.paths[0][2].fee_msat, 0);
-		assert_eq!(route.paths[0][2].cltv_expiry_delta, 129);
-		assert_eq!(route.paths[0][2].node_features.le_flags(), default_node_features().le_flags()); // We dont pass flags in from invoices yet
-		assert_eq!(route.paths[0][2].channel_features.le_flags(), &Vec::<u8>::new()); // We can't learn any flags from invoices, sadly
+		assert_eq!(route.paths[0].hops[2].pubkey, non_announced_pubkey);
+		assert_eq!(route.paths[0].hops[2].short_channel_id, last_hops[0].0[0].short_channel_id);
+		assert_eq!(route.paths[0].hops[2].fee_msat, 0);
+		assert_eq!(route.paths[0].hops[2].cltv_expiry_delta, 129);
+		assert_eq!(route.paths[0].hops[2].node_features.le_flags(), default_node_features().le_flags()); // We dont pass flags in from invoices yet
+		assert_eq!(route.paths[0].hops[2].channel_features.le_flags(), &Vec::<u8>::new()); // We can't learn any flags from invoices, sadly
 
-		assert_eq!(route.paths[0][3].pubkey, nodes[6]);
-		assert_eq!(route.paths[0][3].short_channel_id, last_hops[0].0[1].short_channel_id);
-		assert_eq!(route.paths[0][3].fee_msat, 100);
-		assert_eq!(route.paths[0][3].cltv_expiry_delta, 42);
-		assert_eq!(route.paths[0][3].node_features.le_flags(), default_node_features().le_flags()); // We dont pass flags in from invoices yet
-		assert_eq!(route.paths[0][3].channel_features.le_flags(), &Vec::<u8>::new()); // We can't learn any flags from invoices, sadly
+		assert_eq!(route.paths[0].hops[3].pubkey, nodes[6]);
+		assert_eq!(route.paths[0].hops[3].short_channel_id, last_hops[0].0[1].short_channel_id);
+		assert_eq!(route.paths[0].hops[3].fee_msat, 100);
+		assert_eq!(route.paths[0].hops[3].cltv_expiry_delta, 42);
+		assert_eq!(route.paths[0].hops[3].node_features.le_flags(), default_node_features().le_flags()); // We dont pass flags in from invoices yet
+		assert_eq!(route.paths[0].hops[3].channel_features.le_flags(), &Vec::<u8>::new()); // We can't learn any flags from invoices, sadly
 	}
 
 	fn last_hops_with_public_channel(nodes: &Vec<PublicKey>) -> Vec<RouteHint> {
@@ -3141,44 +3275,44 @@ mod tests {
 		// which would be handled in the same manner.
 
 		let route = get_route(&our_id, &payment_params, &network_graph.read_only(), None, 100, 42, Arc::clone(&logger), &scorer, &random_seed_bytes).unwrap();
-		assert_eq!(route.paths[0].len(), 5);
+		assert_eq!(route.paths[0].hops.len(), 5);
 
-		assert_eq!(route.paths[0][0].pubkey, nodes[1]);
-		assert_eq!(route.paths[0][0].short_channel_id, 2);
-		assert_eq!(route.paths[0][0].fee_msat, 100);
-		assert_eq!(route.paths[0][0].cltv_expiry_delta, (4 << 4) | 1);
-		assert_eq!(route.paths[0][0].node_features.le_flags(), &id_to_feature_flags(2));
-		assert_eq!(route.paths[0][0].channel_features.le_flags(), &id_to_feature_flags(2));
+		assert_eq!(route.paths[0].hops[0].pubkey, nodes[1]);
+		assert_eq!(route.paths[0].hops[0].short_channel_id, 2);
+		assert_eq!(route.paths[0].hops[0].fee_msat, 100);
+		assert_eq!(route.paths[0].hops[0].cltv_expiry_delta, (4 << 4) | 1);
+		assert_eq!(route.paths[0].hops[0].node_features.le_flags(), &id_to_feature_flags(2));
+		assert_eq!(route.paths[0].hops[0].channel_features.le_flags(), &id_to_feature_flags(2));
 
-		assert_eq!(route.paths[0][1].pubkey, nodes[2]);
-		assert_eq!(route.paths[0][1].short_channel_id, 4);
-		assert_eq!(route.paths[0][1].fee_msat, 0);
-		assert_eq!(route.paths[0][1].cltv_expiry_delta, (6 << 4) | 1);
-		assert_eq!(route.paths[0][1].node_features.le_flags(), &id_to_feature_flags(3));
-		assert_eq!(route.paths[0][1].channel_features.le_flags(), &id_to_feature_flags(4));
+		assert_eq!(route.paths[0].hops[1].pubkey, nodes[2]);
+		assert_eq!(route.paths[0].hops[1].short_channel_id, 4);
+		assert_eq!(route.paths[0].hops[1].fee_msat, 0);
+		assert_eq!(route.paths[0].hops[1].cltv_expiry_delta, (6 << 4) | 1);
+		assert_eq!(route.paths[0].hops[1].node_features.le_flags(), &id_to_feature_flags(3));
+		assert_eq!(route.paths[0].hops[1].channel_features.le_flags(), &id_to_feature_flags(4));
 
-		assert_eq!(route.paths[0][2].pubkey, nodes[4]);
-		assert_eq!(route.paths[0][2].short_channel_id, 6);
-		assert_eq!(route.paths[0][2].fee_msat, 0);
-		assert_eq!(route.paths[0][2].cltv_expiry_delta, (11 << 4) | 1);
-		assert_eq!(route.paths[0][2].node_features.le_flags(), &id_to_feature_flags(5));
-		assert_eq!(route.paths[0][2].channel_features.le_flags(), &id_to_feature_flags(6));
+		assert_eq!(route.paths[0].hops[2].pubkey, nodes[4]);
+		assert_eq!(route.paths[0].hops[2].short_channel_id, 6);
+		assert_eq!(route.paths[0].hops[2].fee_msat, 0);
+		assert_eq!(route.paths[0].hops[2].cltv_expiry_delta, (11 << 4) | 1);
+		assert_eq!(route.paths[0].hops[2].node_features.le_flags(), &id_to_feature_flags(5));
+		assert_eq!(route.paths[0].hops[2].channel_features.le_flags(), &id_to_feature_flags(6));
 
-		assert_eq!(route.paths[0][3].pubkey, nodes[3]);
-		assert_eq!(route.paths[0][3].short_channel_id, 11);
-		assert_eq!(route.paths[0][3].fee_msat, 0);
-		assert_eq!(route.paths[0][3].cltv_expiry_delta, (8 << 4) | 1);
+		assert_eq!(route.paths[0].hops[3].pubkey, nodes[3]);
+		assert_eq!(route.paths[0].hops[3].short_channel_id, 11);
+		assert_eq!(route.paths[0].hops[3].fee_msat, 0);
+		assert_eq!(route.paths[0].hops[3].cltv_expiry_delta, (8 << 4) | 1);
 		// If we have a peer in the node map, we'll use their features here since we don't have
 		// a way of figuring out their features from the invoice:
-		assert_eq!(route.paths[0][3].node_features.le_flags(), &id_to_feature_flags(4));
-		assert_eq!(route.paths[0][3].channel_features.le_flags(), &id_to_feature_flags(11));
+		assert_eq!(route.paths[0].hops[3].node_features.le_flags(), &id_to_feature_flags(4));
+		assert_eq!(route.paths[0].hops[3].channel_features.le_flags(), &id_to_feature_flags(11));
 
-		assert_eq!(route.paths[0][4].pubkey, nodes[6]);
-		assert_eq!(route.paths[0][4].short_channel_id, 8);
-		assert_eq!(route.paths[0][4].fee_msat, 100);
-		assert_eq!(route.paths[0][4].cltv_expiry_delta, 42);
-		assert_eq!(route.paths[0][4].node_features.le_flags(), default_node_features().le_flags()); // We dont pass flags in from invoices yet
-		assert_eq!(route.paths[0][4].channel_features.le_flags(), &Vec::<u8>::new()); // We can't learn any flags from invoices, sadly
+		assert_eq!(route.paths[0].hops[4].pubkey, nodes[6]);
+		assert_eq!(route.paths[0].hops[4].short_channel_id, 8);
+		assert_eq!(route.paths[0].hops[4].fee_msat, 100);
+		assert_eq!(route.paths[0].hops[4].cltv_expiry_delta, 42);
+		assert_eq!(route.paths[0].hops[4].node_features.le_flags(), default_node_features().le_flags()); // We dont pass flags in from invoices yet
+		assert_eq!(route.paths[0].hops[4].channel_features.le_flags(), &Vec::<u8>::new()); // We can't learn any flags from invoices, sadly
 	}
 
 	#[test]
@@ -3194,99 +3328,99 @@ mod tests {
 		let mut last_hops = last_hops(&nodes);
 		let payment_params = PaymentParameters::from_node_id(nodes[6], 42).with_route_hints(last_hops.clone());
 		let route = get_route(&our_id, &payment_params, &network_graph.read_only(), Some(&our_chans.iter().collect::<Vec<_>>()), 100, 42, Arc::clone(&logger), &scorer, &random_seed_bytes).unwrap();
-		assert_eq!(route.paths[0].len(), 2);
+		assert_eq!(route.paths[0].hops.len(), 2);
 
-		assert_eq!(route.paths[0][0].pubkey, nodes[3]);
-		assert_eq!(route.paths[0][0].short_channel_id, 42);
-		assert_eq!(route.paths[0][0].fee_msat, 0);
-		assert_eq!(route.paths[0][0].cltv_expiry_delta, (8 << 4) | 1);
-		assert_eq!(route.paths[0][0].node_features.le_flags(), &vec![0b11]);
-		assert_eq!(route.paths[0][0].channel_features.le_flags(), &Vec::<u8>::new()); // No feature flags will meet the relevant-to-channel conversion
+		assert_eq!(route.paths[0].hops[0].pubkey, nodes[3]);
+		assert_eq!(route.paths[0].hops[0].short_channel_id, 42);
+		assert_eq!(route.paths[0].hops[0].fee_msat, 0);
+		assert_eq!(route.paths[0].hops[0].cltv_expiry_delta, (8 << 4) | 1);
+		assert_eq!(route.paths[0].hops[0].node_features.le_flags(), &vec![0b11]);
+		assert_eq!(route.paths[0].hops[0].channel_features.le_flags(), &Vec::<u8>::new()); // No feature flags will meet the relevant-to-channel conversion
 
-		assert_eq!(route.paths[0][1].pubkey, nodes[6]);
-		assert_eq!(route.paths[0][1].short_channel_id, 8);
-		assert_eq!(route.paths[0][1].fee_msat, 100);
-		assert_eq!(route.paths[0][1].cltv_expiry_delta, 42);
-		assert_eq!(route.paths[0][1].node_features.le_flags(), default_node_features().le_flags()); // We dont pass flags in from invoices yet
-		assert_eq!(route.paths[0][1].channel_features.le_flags(), &Vec::<u8>::new()); // We can't learn any flags from invoices, sadly
+		assert_eq!(route.paths[0].hops[1].pubkey, nodes[6]);
+		assert_eq!(route.paths[0].hops[1].short_channel_id, 8);
+		assert_eq!(route.paths[0].hops[1].fee_msat, 100);
+		assert_eq!(route.paths[0].hops[1].cltv_expiry_delta, 42);
+		assert_eq!(route.paths[0].hops[1].node_features.le_flags(), default_node_features().le_flags()); // We dont pass flags in from invoices yet
+		assert_eq!(route.paths[0].hops[1].channel_features.le_flags(), &Vec::<u8>::new()); // We can't learn any flags from invoices, sadly
 
 		last_hops[0].0[0].fees.base_msat = 1000;
 
 		// Revert to via 6 as the fee on 8 goes up
 		let payment_params = PaymentParameters::from_node_id(nodes[6], 42).with_route_hints(last_hops);
 		let route = get_route(&our_id, &payment_params, &network_graph.read_only(), None, 100, 42, Arc::clone(&logger), &scorer, &random_seed_bytes).unwrap();
-		assert_eq!(route.paths[0].len(), 4);
+		assert_eq!(route.paths[0].hops.len(), 4);
 
-		assert_eq!(route.paths[0][0].pubkey, nodes[1]);
-		assert_eq!(route.paths[0][0].short_channel_id, 2);
-		assert_eq!(route.paths[0][0].fee_msat, 200); // fee increased as its % of value transferred across node
-		assert_eq!(route.paths[0][0].cltv_expiry_delta, (4 << 4) | 1);
-		assert_eq!(route.paths[0][0].node_features.le_flags(), &id_to_feature_flags(2));
-		assert_eq!(route.paths[0][0].channel_features.le_flags(), &id_to_feature_flags(2));
+		assert_eq!(route.paths[0].hops[0].pubkey, nodes[1]);
+		assert_eq!(route.paths[0].hops[0].short_channel_id, 2);
+		assert_eq!(route.paths[0].hops[0].fee_msat, 200); // fee increased as its % of value transferred across node
+		assert_eq!(route.paths[0].hops[0].cltv_expiry_delta, (4 << 4) | 1);
+		assert_eq!(route.paths[0].hops[0].node_features.le_flags(), &id_to_feature_flags(2));
+		assert_eq!(route.paths[0].hops[0].channel_features.le_flags(), &id_to_feature_flags(2));
 
-		assert_eq!(route.paths[0][1].pubkey, nodes[2]);
-		assert_eq!(route.paths[0][1].short_channel_id, 4);
-		assert_eq!(route.paths[0][1].fee_msat, 100);
-		assert_eq!(route.paths[0][1].cltv_expiry_delta, (7 << 4) | 1);
-		assert_eq!(route.paths[0][1].node_features.le_flags(), &id_to_feature_flags(3));
-		assert_eq!(route.paths[0][1].channel_features.le_flags(), &id_to_feature_flags(4));
+		assert_eq!(route.paths[0].hops[1].pubkey, nodes[2]);
+		assert_eq!(route.paths[0].hops[1].short_channel_id, 4);
+		assert_eq!(route.paths[0].hops[1].fee_msat, 100);
+		assert_eq!(route.paths[0].hops[1].cltv_expiry_delta, (7 << 4) | 1);
+		assert_eq!(route.paths[0].hops[1].node_features.le_flags(), &id_to_feature_flags(3));
+		assert_eq!(route.paths[0].hops[1].channel_features.le_flags(), &id_to_feature_flags(4));
 
-		assert_eq!(route.paths[0][2].pubkey, nodes[5]);
-		assert_eq!(route.paths[0][2].short_channel_id, 7);
-		assert_eq!(route.paths[0][2].fee_msat, 0);
-		assert_eq!(route.paths[0][2].cltv_expiry_delta, (10 << 4) | 1);
+		assert_eq!(route.paths[0].hops[2].pubkey, nodes[5]);
+		assert_eq!(route.paths[0].hops[2].short_channel_id, 7);
+		assert_eq!(route.paths[0].hops[2].fee_msat, 0);
+		assert_eq!(route.paths[0].hops[2].cltv_expiry_delta, (10 << 4) | 1);
 		// If we have a peer in the node map, we'll use their features here since we don't have
 		// a way of figuring out their features from the invoice:
-		assert_eq!(route.paths[0][2].node_features.le_flags(), &id_to_feature_flags(6));
-		assert_eq!(route.paths[0][2].channel_features.le_flags(), &id_to_feature_flags(7));
+		assert_eq!(route.paths[0].hops[2].node_features.le_flags(), &id_to_feature_flags(6));
+		assert_eq!(route.paths[0].hops[2].channel_features.le_flags(), &id_to_feature_flags(7));
 
-		assert_eq!(route.paths[0][3].pubkey, nodes[6]);
-		assert_eq!(route.paths[0][3].short_channel_id, 10);
-		assert_eq!(route.paths[0][3].fee_msat, 100);
-		assert_eq!(route.paths[0][3].cltv_expiry_delta, 42);
-		assert_eq!(route.paths[0][3].node_features.le_flags(), default_node_features().le_flags()); // We dont pass flags in from invoices yet
-		assert_eq!(route.paths[0][3].channel_features.le_flags(), &Vec::<u8>::new()); // We can't learn any flags from invoices, sadly
+		assert_eq!(route.paths[0].hops[3].pubkey, nodes[6]);
+		assert_eq!(route.paths[0].hops[3].short_channel_id, 10);
+		assert_eq!(route.paths[0].hops[3].fee_msat, 100);
+		assert_eq!(route.paths[0].hops[3].cltv_expiry_delta, 42);
+		assert_eq!(route.paths[0].hops[3].node_features.le_flags(), default_node_features().le_flags()); // We dont pass flags in from invoices yet
+		assert_eq!(route.paths[0].hops[3].channel_features.le_flags(), &Vec::<u8>::new()); // We can't learn any flags from invoices, sadly
 
 		// ...but still use 8 for larger payments as 6 has a variable feerate
 		let route = get_route(&our_id, &payment_params, &network_graph.read_only(), None, 2000, 42, Arc::clone(&logger), &scorer, &random_seed_bytes).unwrap();
-		assert_eq!(route.paths[0].len(), 5);
+		assert_eq!(route.paths[0].hops.len(), 5);
 
-		assert_eq!(route.paths[0][0].pubkey, nodes[1]);
-		assert_eq!(route.paths[0][0].short_channel_id, 2);
-		assert_eq!(route.paths[0][0].fee_msat, 3000);
-		assert_eq!(route.paths[0][0].cltv_expiry_delta, (4 << 4) | 1);
-		assert_eq!(route.paths[0][0].node_features.le_flags(), &id_to_feature_flags(2));
-		assert_eq!(route.paths[0][0].channel_features.le_flags(), &id_to_feature_flags(2));
+		assert_eq!(route.paths[0].hops[0].pubkey, nodes[1]);
+		assert_eq!(route.paths[0].hops[0].short_channel_id, 2);
+		assert_eq!(route.paths[0].hops[0].fee_msat, 3000);
+		assert_eq!(route.paths[0].hops[0].cltv_expiry_delta, (4 << 4) | 1);
+		assert_eq!(route.paths[0].hops[0].node_features.le_flags(), &id_to_feature_flags(2));
+		assert_eq!(route.paths[0].hops[0].channel_features.le_flags(), &id_to_feature_flags(2));
 
-		assert_eq!(route.paths[0][1].pubkey, nodes[2]);
-		assert_eq!(route.paths[0][1].short_channel_id, 4);
-		assert_eq!(route.paths[0][1].fee_msat, 0);
-		assert_eq!(route.paths[0][1].cltv_expiry_delta, (6 << 4) | 1);
-		assert_eq!(route.paths[0][1].node_features.le_flags(), &id_to_feature_flags(3));
-		assert_eq!(route.paths[0][1].channel_features.le_flags(), &id_to_feature_flags(4));
+		assert_eq!(route.paths[0].hops[1].pubkey, nodes[2]);
+		assert_eq!(route.paths[0].hops[1].short_channel_id, 4);
+		assert_eq!(route.paths[0].hops[1].fee_msat, 0);
+		assert_eq!(route.paths[0].hops[1].cltv_expiry_delta, (6 << 4) | 1);
+		assert_eq!(route.paths[0].hops[1].node_features.le_flags(), &id_to_feature_flags(3));
+		assert_eq!(route.paths[0].hops[1].channel_features.le_flags(), &id_to_feature_flags(4));
 
-		assert_eq!(route.paths[0][2].pubkey, nodes[4]);
-		assert_eq!(route.paths[0][2].short_channel_id, 6);
-		assert_eq!(route.paths[0][2].fee_msat, 0);
-		assert_eq!(route.paths[0][2].cltv_expiry_delta, (11 << 4) | 1);
-		assert_eq!(route.paths[0][2].node_features.le_flags(), &id_to_feature_flags(5));
-		assert_eq!(route.paths[0][2].channel_features.le_flags(), &id_to_feature_flags(6));
+		assert_eq!(route.paths[0].hops[2].pubkey, nodes[4]);
+		assert_eq!(route.paths[0].hops[2].short_channel_id, 6);
+		assert_eq!(route.paths[0].hops[2].fee_msat, 0);
+		assert_eq!(route.paths[0].hops[2].cltv_expiry_delta, (11 << 4) | 1);
+		assert_eq!(route.paths[0].hops[2].node_features.le_flags(), &id_to_feature_flags(5));
+		assert_eq!(route.paths[0].hops[2].channel_features.le_flags(), &id_to_feature_flags(6));
 
-		assert_eq!(route.paths[0][3].pubkey, nodes[3]);
-		assert_eq!(route.paths[0][3].short_channel_id, 11);
-		assert_eq!(route.paths[0][3].fee_msat, 1000);
-		assert_eq!(route.paths[0][3].cltv_expiry_delta, (8 << 4) | 1);
+		assert_eq!(route.paths[0].hops[3].pubkey, nodes[3]);
+		assert_eq!(route.paths[0].hops[3].short_channel_id, 11);
+		assert_eq!(route.paths[0].hops[3].fee_msat, 1000);
+		assert_eq!(route.paths[0].hops[3].cltv_expiry_delta, (8 << 4) | 1);
 		// If we have a peer in the node map, we'll use their features here since we don't have
 		// a way of figuring out their features from the invoice:
-		assert_eq!(route.paths[0][3].node_features.le_flags(), &id_to_feature_flags(4));
-		assert_eq!(route.paths[0][3].channel_features.le_flags(), &id_to_feature_flags(11));
+		assert_eq!(route.paths[0].hops[3].node_features.le_flags(), &id_to_feature_flags(4));
+		assert_eq!(route.paths[0].hops[3].channel_features.le_flags(), &id_to_feature_flags(11));
 
-		assert_eq!(route.paths[0][4].pubkey, nodes[6]);
-		assert_eq!(route.paths[0][4].short_channel_id, 8);
-		assert_eq!(route.paths[0][4].fee_msat, 2000);
-		assert_eq!(route.paths[0][4].cltv_expiry_delta, 42);
-		assert_eq!(route.paths[0][4].node_features.le_flags(), default_node_features().le_flags()); // We dont pass flags in from invoices yet
-		assert_eq!(route.paths[0][4].channel_features.le_flags(), &Vec::<u8>::new()); // We can't learn any flags from invoices, sadly
+		assert_eq!(route.paths[0].hops[4].pubkey, nodes[6]);
+		assert_eq!(route.paths[0].hops[4].short_channel_id, 8);
+		assert_eq!(route.paths[0].hops[4].fee_msat, 2000);
+		assert_eq!(route.paths[0].hops[4].cltv_expiry_delta, 42);
+		assert_eq!(route.paths[0].hops[4].node_features.le_flags(), default_node_features().le_flags()); // We dont pass flags in from invoices yet
+		assert_eq!(route.paths[0].hops[4].channel_features.le_flags(), &Vec::<u8>::new()); // We can't learn any flags from invoices, sadly
 	}
 
 	fn do_unannounced_path_test(last_hop_htlc_max: Option<u64>, last_hop_fee_prop: u32, outbound_capacity_msat: u64, route_val: u64) -> Result<Route, LightningError> {
@@ -3327,21 +3461,21 @@ mod tests {
 
 		let middle_node_id = PublicKey::from_secret_key(&Secp256k1::new(), &SecretKey::from_slice(&hex::decode(format!("{:02}", 42).repeat(32)).unwrap()[..]).unwrap());
 		let target_node_id = PublicKey::from_secret_key(&Secp256k1::new(), &SecretKey::from_slice(&hex::decode(format!("{:02}", 43).repeat(32)).unwrap()[..]).unwrap());
-		assert_eq!(route.paths[0].len(), 2);
+		assert_eq!(route.paths[0].hops.len(), 2);
 
-		assert_eq!(route.paths[0][0].pubkey, middle_node_id);
-		assert_eq!(route.paths[0][0].short_channel_id, 42);
-		assert_eq!(route.paths[0][0].fee_msat, 1001);
-		assert_eq!(route.paths[0][0].cltv_expiry_delta, (8 << 4) | 1);
-		assert_eq!(route.paths[0][0].node_features.le_flags(), &[0b11]);
-		assert_eq!(route.paths[0][0].channel_features.le_flags(), &[0; 0]); // We can't learn any flags from invoices, sadly
+		assert_eq!(route.paths[0].hops[0].pubkey, middle_node_id);
+		assert_eq!(route.paths[0].hops[0].short_channel_id, 42);
+		assert_eq!(route.paths[0].hops[0].fee_msat, 1001);
+		assert_eq!(route.paths[0].hops[0].cltv_expiry_delta, (8 << 4) | 1);
+		assert_eq!(route.paths[0].hops[0].node_features.le_flags(), &[0b11]);
+		assert_eq!(route.paths[0].hops[0].channel_features.le_flags(), &[0; 0]); // We can't learn any flags from invoices, sadly
 
-		assert_eq!(route.paths[0][1].pubkey, target_node_id);
-		assert_eq!(route.paths[0][1].short_channel_id, 8);
-		assert_eq!(route.paths[0][1].fee_msat, 1000000);
-		assert_eq!(route.paths[0][1].cltv_expiry_delta, 42);
-		assert_eq!(route.paths[0][1].node_features.le_flags(), default_node_features().le_flags()); // We dont pass flags in from invoices yet
-		assert_eq!(route.paths[0][1].channel_features.le_flags(), &[0; 0]); // We can't learn any flags from invoices, sadly
+		assert_eq!(route.paths[0].hops[1].pubkey, target_node_id);
+		assert_eq!(route.paths[0].hops[1].short_channel_id, 8);
+		assert_eq!(route.paths[0].hops[1].fee_msat, 1000000);
+		assert_eq!(route.paths[0].hops[1].cltv_expiry_delta, 42);
+		assert_eq!(route.paths[0].hops[1].node_features.le_flags(), default_node_features().le_flags()); // We dont pass flags in from invoices yet
+		assert_eq!(route.paths[0].hops[1].channel_features.le_flags(), &[0; 0]); // We can't learn any flags from invoices, sadly
 	}
 
 	#[test]
@@ -3446,9 +3580,9 @@ mod tests {
 			let route = get_route(&our_id, &payment_params, &network_graph.read_only(), None, 250_000_000, 42, Arc::clone(&logger), &scorer, &random_seed_bytes).unwrap();
 			assert_eq!(route.paths.len(), 1);
 			let path = route.paths.last().unwrap();
-			assert_eq!(path.len(), 2);
-			assert_eq!(path.last().unwrap().pubkey, nodes[2]);
-			assert_eq!(path.last().unwrap().fee_msat, 250_000_000);
+			assert_eq!(path.hops.len(), 2);
+			assert_eq!(path.hops.last().unwrap().pubkey, nodes[2]);
+			assert_eq!(path.final_value_msat(), 250_000_000);
 		}
 
 		// Check that setting next_outbound_htlc_limit_msat in first_hops limits the channels.
@@ -3482,9 +3616,9 @@ mod tests {
 			let route = get_route(&our_id, &payment_params, &network_graph.read_only(), Some(&our_chans.iter().collect::<Vec<_>>()), 200_000_000, 42, Arc::clone(&logger), &scorer, &random_seed_bytes).unwrap();
 			assert_eq!(route.paths.len(), 1);
 			let path = route.paths.last().unwrap();
-			assert_eq!(path.len(), 2);
-			assert_eq!(path.last().unwrap().pubkey, nodes[2]);
-			assert_eq!(path.last().unwrap().fee_msat, 200_000_000);
+			assert_eq!(path.hops.len(), 2);
+			assert_eq!(path.hops.last().unwrap().pubkey, nodes[2]);
+			assert_eq!(path.final_value_msat(), 200_000_000);
 		}
 
 		// Enable channel #1 back.
@@ -3529,9 +3663,9 @@ mod tests {
 			let route = get_route(&our_id, &payment_params, &network_graph.read_only(), None, 15_000, 42, Arc::clone(&logger), &scorer, &random_seed_bytes).unwrap();
 			assert_eq!(route.paths.len(), 1);
 			let path = route.paths.last().unwrap();
-			assert_eq!(path.len(), 2);
-			assert_eq!(path.last().unwrap().pubkey, nodes[2]);
-			assert_eq!(path.last().unwrap().fee_msat, 15_000);
+			assert_eq!(path.hops.len(), 2);
+			assert_eq!(path.hops.last().unwrap().pubkey, nodes[2]);
+			assert_eq!(path.final_value_msat(), 15_000);
 		}
 
 		// Now let's see if routing works if we know only capacity from the UTXO.
@@ -3600,9 +3734,9 @@ mod tests {
 			let route = get_route(&our_id, &payment_params, &network_graph.read_only(), None, 15_000, 42, Arc::clone(&logger), &scorer, &random_seed_bytes).unwrap();
 			assert_eq!(route.paths.len(), 1);
 			let path = route.paths.last().unwrap();
-			assert_eq!(path.len(), 2);
-			assert_eq!(path.last().unwrap().pubkey, nodes[2]);
-			assert_eq!(path.last().unwrap().fee_msat, 15_000);
+			assert_eq!(path.hops.len(), 2);
+			assert_eq!(path.hops.last().unwrap().pubkey, nodes[2]);
+			assert_eq!(path.final_value_msat(), 15_000);
 		}
 
 		// Now let's see if routing chooses htlc_maximum_msat over UTXO capacity.
@@ -3632,9 +3766,9 @@ mod tests {
 			let route = get_route(&our_id, &payment_params, &network_graph.read_only(), None, 10_000, 42, Arc::clone(&logger), &scorer, &random_seed_bytes).unwrap();
 			assert_eq!(route.paths.len(), 1);
 			let path = route.paths.last().unwrap();
-			assert_eq!(path.len(), 2);
-			assert_eq!(path.last().unwrap().pubkey, nodes[2]);
-			assert_eq!(path.last().unwrap().fee_msat, 10_000);
+			assert_eq!(path.hops.len(), 2);
+			assert_eq!(path.hops.last().unwrap().pubkey, nodes[2]);
+			assert_eq!(path.final_value_msat(), 10_000);
 		}
 	}
 
@@ -3745,9 +3879,9 @@ mod tests {
 			assert_eq!(route.paths.len(), 1);
 			let mut total_amount_paid_msat = 0;
 			for path in &route.paths {
-				assert_eq!(path.len(), 4);
-				assert_eq!(path.last().unwrap().pubkey, nodes[3]);
-				total_amount_paid_msat += path.last().unwrap().fee_msat;
+				assert_eq!(path.hops.len(), 4);
+				assert_eq!(path.hops.last().unwrap().pubkey, nodes[3]);
+				total_amount_paid_msat += path.final_value_msat();
 			}
 			assert_eq!(total_amount_paid_msat, 49_000);
 		}
@@ -3758,9 +3892,9 @@ mod tests {
 			assert_eq!(route.paths.len(), 1);
 			let mut total_amount_paid_msat = 0;
 			for path in &route.paths {
-				assert_eq!(path.len(), 4);
-				assert_eq!(path.last().unwrap().pubkey, nodes[3]);
-				total_amount_paid_msat += path.last().unwrap().fee_msat;
+				assert_eq!(path.hops.len(), 4);
+				assert_eq!(path.hops.last().unwrap().pubkey, nodes[3]);
+				total_amount_paid_msat += path.final_value_msat();
 			}
 			assert_eq!(total_amount_paid_msat, 50_000);
 		}
@@ -3806,9 +3940,9 @@ mod tests {
 			assert_eq!(route.paths.len(), 1);
 			let mut total_amount_paid_msat = 0;
 			for path in &route.paths {
-				assert_eq!(path.len(), 2);
-				assert_eq!(path.last().unwrap().pubkey, nodes[2]);
-				total_amount_paid_msat += path.last().unwrap().fee_msat;
+				assert_eq!(path.hops.len(), 2);
+				assert_eq!(path.hops.last().unwrap().pubkey, nodes[2]);
+				total_amount_paid_msat += path.final_value_msat();
 			}
 			assert_eq!(total_amount_paid_msat, 50_000);
 		}
@@ -3952,9 +4086,9 @@ mod tests {
 			assert_eq!(route.paths.len(), 3);
 			let mut total_amount_paid_msat = 0;
 			for path in &route.paths {
-				assert_eq!(path.len(), 2);
-				assert_eq!(path.last().unwrap().pubkey, nodes[2]);
-				total_amount_paid_msat += path.last().unwrap().fee_msat;
+				assert_eq!(path.hops.len(), 2);
+				assert_eq!(path.hops.last().unwrap().pubkey, nodes[2]);
+				total_amount_paid_msat += path.final_value_msat();
 			}
 			assert_eq!(total_amount_paid_msat, 250_000);
 		}
@@ -3966,9 +4100,9 @@ mod tests {
 			assert_eq!(route.paths.len(), 3);
 			let mut total_amount_paid_msat = 0;
 			for path in &route.paths {
-				assert_eq!(path.len(), 2);
-				assert_eq!(path.last().unwrap().pubkey, nodes[2]);
-				total_amount_paid_msat += path.last().unwrap().fee_msat;
+				assert_eq!(path.hops.len(), 2);
+				assert_eq!(path.hops.last().unwrap().pubkey, nodes[2]);
+				total_amount_paid_msat += path.final_value_msat();
 			}
 			assert_eq!(total_amount_paid_msat, 290_000);
 		}
@@ -4131,8 +4265,8 @@ mod tests {
 
 			let mut total_amount_paid_msat = 0;
 			for path in &route.paths {
-				assert_eq!(path.last().unwrap().pubkey, nodes[3]);
-				total_amount_paid_msat += path.last().unwrap().fee_msat;
+				assert_eq!(path.hops.last().unwrap().pubkey, nodes[3]);
+				total_amount_paid_msat += path.final_value_msat();
 			}
 			assert_eq!(total_amount_paid_msat, 300_000);
 		}
@@ -4293,9 +4427,9 @@ mod tests {
 			let mut total_value_transferred_msat = 0;
 			let mut total_paid_msat = 0;
 			for path in &route.paths {
-				assert_eq!(path.last().unwrap().pubkey, nodes[3]);
-				total_value_transferred_msat += path.last().unwrap().fee_msat;
-				for hop in path {
+				assert_eq!(path.hops.last().unwrap().pubkey, nodes[3]);
+				total_value_transferred_msat += path.final_value_msat();
+				for hop in &path.hops {
 					total_paid_msat += hop.fee_msat;
 				}
 			}
@@ -4470,8 +4604,8 @@ mod tests {
 
 			let mut total_amount_paid_msat = 0;
 			for path in &route.paths {
-				assert_eq!(path.last().unwrap().pubkey, nodes[3]);
-				total_amount_paid_msat += path.last().unwrap().fee_msat;
+				assert_eq!(path.hops.last().unwrap().pubkey, nodes[3]);
+				total_amount_paid_msat += path.final_value_msat();
 			}
 			assert_eq!(total_amount_paid_msat, 200_000);
 			assert_eq!(route.get_total_fees(), 150_000);
@@ -4567,16 +4701,16 @@ mod tests {
 		// overpay at all.
 		let mut route = get_route(&our_id, &payment_params, &network_graph.read_only(), None, 100_000, 42, Arc::clone(&logger), &scorer, &random_seed_bytes).unwrap();
 		assert_eq!(route.paths.len(), 2);
-		route.paths.sort_by_key(|path| path[0].short_channel_id);
+		route.paths.sort_by_key(|path| path.hops[0].short_channel_id);
 		// Paths are manually ordered ordered by SCID, so:
 		// * the first is channel 1 (0 fee, but 99 sat maximum) -> channel 3 -> channel 42
 		// * the second is channel 2 (1 msat fee) -> channel 4 -> channel 42
-		assert_eq!(route.paths[0][0].short_channel_id, 1);
-		assert_eq!(route.paths[0][0].fee_msat, 0);
-		assert_eq!(route.paths[0][2].fee_msat, 99_000);
-		assert_eq!(route.paths[1][0].short_channel_id, 2);
-		assert_eq!(route.paths[1][0].fee_msat, 1);
-		assert_eq!(route.paths[1][2].fee_msat, 1_000);
+		assert_eq!(route.paths[0].hops[0].short_channel_id, 1);
+		assert_eq!(route.paths[0].hops[0].fee_msat, 0);
+		assert_eq!(route.paths[0].hops[2].fee_msat, 99_000);
+		assert_eq!(route.paths[1].hops[0].short_channel_id, 2);
+		assert_eq!(route.paths[1].hops[0].fee_msat, 1);
+		assert_eq!(route.paths[1].hops[2].fee_msat, 1_000);
 		assert_eq!(route.get_total_fees(), 1);
 		assert_eq!(route.get_total_amount(), 100_000);
 	}
@@ -4696,9 +4830,9 @@ mod tests {
 			assert_eq!(route.paths.len(), 3);
 			let mut total_amount_paid_msat = 0;
 			for path in &route.paths {
-				assert_eq!(path.len(), 2);
-				assert_eq!(path.last().unwrap().pubkey, nodes[2]);
-				total_amount_paid_msat += path.last().unwrap().fee_msat;
+				assert_eq!(path.hops.len(), 2);
+				assert_eq!(path.hops.last().unwrap().pubkey, nodes[2]);
+				total_amount_paid_msat += path.final_value_msat();
 			}
 			assert_eq!(total_amount_paid_msat, 125_000);
 		}
@@ -4709,9 +4843,9 @@ mod tests {
 			assert_eq!(route.paths.len(), 2);
 			let mut total_amount_paid_msat = 0;
 			for path in &route.paths {
-				assert_eq!(path.len(), 2);
-				assert_eq!(path.last().unwrap().pubkey, nodes[2]);
-				total_amount_paid_msat += path.last().unwrap().fee_msat;
+				assert_eq!(path.hops.len(), 2);
+				assert_eq!(path.hops.last().unwrap().pubkey, nodes[2]);
+				total_amount_paid_msat += path.final_value_msat();
 			}
 			assert_eq!(total_amount_paid_msat, 90_000);
 		}
@@ -4846,28 +4980,28 @@ mod tests {
 			// Now ensure the route flows simply over nodes 1 and 4 to 6.
 			let route = get_route(&our_id, &payment_params, &network.read_only(), None, 10_000, 42, Arc::clone(&logger), &scorer, &random_seed_bytes).unwrap();
 			assert_eq!(route.paths.len(), 1);
-			assert_eq!(route.paths[0].len(), 3);
+			assert_eq!(route.paths[0].hops.len(), 3);
 
-			assert_eq!(route.paths[0][0].pubkey, nodes[1]);
-			assert_eq!(route.paths[0][0].short_channel_id, 6);
-			assert_eq!(route.paths[0][0].fee_msat, 100);
-			assert_eq!(route.paths[0][0].cltv_expiry_delta, (5 << 4) | 0);
-			assert_eq!(route.paths[0][0].node_features.le_flags(), &id_to_feature_flags(1));
-			assert_eq!(route.paths[0][0].channel_features.le_flags(), &id_to_feature_flags(6));
+			assert_eq!(route.paths[0].hops[0].pubkey, nodes[1]);
+			assert_eq!(route.paths[0].hops[0].short_channel_id, 6);
+			assert_eq!(route.paths[0].hops[0].fee_msat, 100);
+			assert_eq!(route.paths[0].hops[0].cltv_expiry_delta, (5 << 4) | 0);
+			assert_eq!(route.paths[0].hops[0].node_features.le_flags(), &id_to_feature_flags(1));
+			assert_eq!(route.paths[0].hops[0].channel_features.le_flags(), &id_to_feature_flags(6));
 
-			assert_eq!(route.paths[0][1].pubkey, nodes[4]);
-			assert_eq!(route.paths[0][1].short_channel_id, 5);
-			assert_eq!(route.paths[0][1].fee_msat, 0);
-			assert_eq!(route.paths[0][1].cltv_expiry_delta, (1 << 4) | 0);
-			assert_eq!(route.paths[0][1].node_features.le_flags(), &id_to_feature_flags(4));
-			assert_eq!(route.paths[0][1].channel_features.le_flags(), &id_to_feature_flags(5));
+			assert_eq!(route.paths[0].hops[1].pubkey, nodes[4]);
+			assert_eq!(route.paths[0].hops[1].short_channel_id, 5);
+			assert_eq!(route.paths[0].hops[1].fee_msat, 0);
+			assert_eq!(route.paths[0].hops[1].cltv_expiry_delta, (1 << 4) | 0);
+			assert_eq!(route.paths[0].hops[1].node_features.le_flags(), &id_to_feature_flags(4));
+			assert_eq!(route.paths[0].hops[1].channel_features.le_flags(), &id_to_feature_flags(5));
 
-			assert_eq!(route.paths[0][2].pubkey, nodes[6]);
-			assert_eq!(route.paths[0][2].short_channel_id, 1);
-			assert_eq!(route.paths[0][2].fee_msat, 10_000);
-			assert_eq!(route.paths[0][2].cltv_expiry_delta, 42);
-			assert_eq!(route.paths[0][2].node_features.le_flags(), &id_to_feature_flags(6));
-			assert_eq!(route.paths[0][2].channel_features.le_flags(), &id_to_feature_flags(1));
+			assert_eq!(route.paths[0].hops[2].pubkey, nodes[6]);
+			assert_eq!(route.paths[0].hops[2].short_channel_id, 1);
+			assert_eq!(route.paths[0].hops[2].fee_msat, 10_000);
+			assert_eq!(route.paths[0].hops[2].cltv_expiry_delta, 42);
+			assert_eq!(route.paths[0].hops[2].node_features.le_flags(), &id_to_feature_flags(6));
+			assert_eq!(route.paths[0].hops[2].channel_features.le_flags(), &id_to_feature_flags(1));
 		}
 	}
 
@@ -4917,21 +5051,21 @@ mod tests {
 			// 200% fee charged channel 13 in the 1-to-2 direction.
 			let route = get_route(&our_id, &payment_params, &network_graph.read_only(), None, 90_000, 42, Arc::clone(&logger), &scorer, &random_seed_bytes).unwrap();
 			assert_eq!(route.paths.len(), 1);
-			assert_eq!(route.paths[0].len(), 2);
+			assert_eq!(route.paths[0].hops.len(), 2);
 
-			assert_eq!(route.paths[0][0].pubkey, nodes[7]);
-			assert_eq!(route.paths[0][0].short_channel_id, 12);
-			assert_eq!(route.paths[0][0].fee_msat, 90_000*2);
-			assert_eq!(route.paths[0][0].cltv_expiry_delta, (13 << 4) | 1);
-			assert_eq!(route.paths[0][0].node_features.le_flags(), &id_to_feature_flags(8));
-			assert_eq!(route.paths[0][0].channel_features.le_flags(), &id_to_feature_flags(12));
+			assert_eq!(route.paths[0].hops[0].pubkey, nodes[7]);
+			assert_eq!(route.paths[0].hops[0].short_channel_id, 12);
+			assert_eq!(route.paths[0].hops[0].fee_msat, 90_000*2);
+			assert_eq!(route.paths[0].hops[0].cltv_expiry_delta, (13 << 4) | 1);
+			assert_eq!(route.paths[0].hops[0].node_features.le_flags(), &id_to_feature_flags(8));
+			assert_eq!(route.paths[0].hops[0].channel_features.le_flags(), &id_to_feature_flags(12));
 
-			assert_eq!(route.paths[0][1].pubkey, nodes[2]);
-			assert_eq!(route.paths[0][1].short_channel_id, 13);
-			assert_eq!(route.paths[0][1].fee_msat, 90_000);
-			assert_eq!(route.paths[0][1].cltv_expiry_delta, 42);
-			assert_eq!(route.paths[0][1].node_features.le_flags(), &id_to_feature_flags(3));
-			assert_eq!(route.paths[0][1].channel_features.le_flags(), &id_to_feature_flags(13));
+			assert_eq!(route.paths[0].hops[1].pubkey, nodes[2]);
+			assert_eq!(route.paths[0].hops[1].short_channel_id, 13);
+			assert_eq!(route.paths[0].hops[1].fee_msat, 90_000);
+			assert_eq!(route.paths[0].hops[1].cltv_expiry_delta, 42);
+			assert_eq!(route.paths[0].hops[1].node_features.le_flags(), &id_to_feature_flags(3));
+			assert_eq!(route.paths[0].hops[1].channel_features.le_flags(), &id_to_feature_flags(13));
 		}
 	}
 
@@ -4983,21 +5117,21 @@ mod tests {
 			// expensive) channels 12-13 path.
 			let route = get_route(&our_id, &payment_params, &network_graph.read_only(), None, 90_000, 42, Arc::clone(&logger), &scorer, &random_seed_bytes).unwrap();
 			assert_eq!(route.paths.len(), 1);
-			assert_eq!(route.paths[0].len(), 2);
+			assert_eq!(route.paths[0].hops.len(), 2);
 
-			assert_eq!(route.paths[0][0].pubkey, nodes[7]);
-			assert_eq!(route.paths[0][0].short_channel_id, 12);
-			assert_eq!(route.paths[0][0].fee_msat, 90_000*2);
-			assert_eq!(route.paths[0][0].cltv_expiry_delta, (13 << 4) | 1);
-			assert_eq!(route.paths[0][0].node_features.le_flags(), &id_to_feature_flags(8));
-			assert_eq!(route.paths[0][0].channel_features.le_flags(), &id_to_feature_flags(12));
+			assert_eq!(route.paths[0].hops[0].pubkey, nodes[7]);
+			assert_eq!(route.paths[0].hops[0].short_channel_id, 12);
+			assert_eq!(route.paths[0].hops[0].fee_msat, 90_000*2);
+			assert_eq!(route.paths[0].hops[0].cltv_expiry_delta, (13 << 4) | 1);
+			assert_eq!(route.paths[0].hops[0].node_features.le_flags(), &id_to_feature_flags(8));
+			assert_eq!(route.paths[0].hops[0].channel_features.le_flags(), &id_to_feature_flags(12));
 
-			assert_eq!(route.paths[0][1].pubkey, nodes[2]);
-			assert_eq!(route.paths[0][1].short_channel_id, 13);
-			assert_eq!(route.paths[0][1].fee_msat, 90_000);
-			assert_eq!(route.paths[0][1].cltv_expiry_delta, 42);
-			assert_eq!(route.paths[0][1].node_features.le_flags(), channelmanager::provided_invoice_features(&config).le_flags());
-			assert_eq!(route.paths[0][1].channel_features.le_flags(), &id_to_feature_flags(13));
+			assert_eq!(route.paths[0].hops[1].pubkey, nodes[2]);
+			assert_eq!(route.paths[0].hops[1].short_channel_id, 13);
+			assert_eq!(route.paths[0].hops[1].fee_msat, 90_000);
+			assert_eq!(route.paths[0].hops[1].cltv_expiry_delta, 42);
+			assert_eq!(route.paths[0].hops[1].node_features.le_flags(), channelmanager::provided_invoice_features(&config).le_flags());
+			assert_eq!(route.paths[0].hops[1].channel_features.le_flags(), &id_to_feature_flags(13));
 		}
 	}
 
@@ -5025,11 +5159,11 @@ mod tests {
 				&get_channel_details(Some(2), nodes[0], channelmanager::provided_init_features(&config), 10_000),
 			]), 100_000, 42, Arc::clone(&logger), &scorer, &random_seed_bytes).unwrap();
 			assert_eq!(route.paths.len(), 1);
-			assert_eq!(route.paths[0].len(), 1);
+			assert_eq!(route.paths[0].hops.len(), 1);
 
-			assert_eq!(route.paths[0][0].pubkey, nodes[0]);
-			assert_eq!(route.paths[0][0].short_channel_id, 3);
-			assert_eq!(route.paths[0][0].fee_msat, 100_000);
+			assert_eq!(route.paths[0].hops[0].pubkey, nodes[0]);
+			assert_eq!(route.paths[0].hops[0].short_channel_id, 3);
+			assert_eq!(route.paths[0].hops[0].fee_msat, 100_000);
 		}
 		{
 			let route = get_route(&our_id, &payment_params, &network_graph.read_only(), Some(&[
@@ -5037,17 +5171,17 @@ mod tests {
 				&get_channel_details(Some(2), nodes[0], channelmanager::provided_init_features(&config), 50_000),
 			]), 100_000, 42, Arc::clone(&logger), &scorer, &random_seed_bytes).unwrap();
 			assert_eq!(route.paths.len(), 2);
-			assert_eq!(route.paths[0].len(), 1);
-			assert_eq!(route.paths[1].len(), 1);
+			assert_eq!(route.paths[0].hops.len(), 1);
+			assert_eq!(route.paths[1].hops.len(), 1);
 
-			assert!((route.paths[0][0].short_channel_id == 3 && route.paths[1][0].short_channel_id == 2) ||
-				(route.paths[0][0].short_channel_id == 2 && route.paths[1][0].short_channel_id == 3));
+			assert!((route.paths[0].hops[0].short_channel_id == 3 && route.paths[1].hops[0].short_channel_id == 2) ||
+				(route.paths[0].hops[0].short_channel_id == 2 && route.paths[1].hops[0].short_channel_id == 3));
 
-			assert_eq!(route.paths[0][0].pubkey, nodes[0]);
-			assert_eq!(route.paths[0][0].fee_msat, 50_000);
+			assert_eq!(route.paths[0].hops[0].pubkey, nodes[0]);
+			assert_eq!(route.paths[0].hops[0].fee_msat, 50_000);
 
-			assert_eq!(route.paths[1][0].pubkey, nodes[0]);
-			assert_eq!(route.paths[1][0].fee_msat, 50_000);
+			assert_eq!(route.paths[1].hops[0].pubkey, nodes[0]);
+			assert_eq!(route.paths[1].hops[0].fee_msat, 50_000);
 		}
 
 		{
@@ -5069,11 +5203,11 @@ mod tests {
 				&get_channel_details(Some(4), nodes[0], channelmanager::provided_init_features(&config), 1_000_000),
 			]), 100_000, 42, Arc::clone(&logger), &scorer, &random_seed_bytes).unwrap();
 			assert_eq!(route.paths.len(), 1);
-			assert_eq!(route.paths[0].len(), 1);
+			assert_eq!(route.paths[0].hops.len(), 1);
 
-			assert_eq!(route.paths[0][0].pubkey, nodes[0]);
-			assert_eq!(route.paths[0][0].short_channel_id, 6);
-			assert_eq!(route.paths[0][0].fee_msat, 100_000);
+			assert_eq!(route.paths[0].hops[0].pubkey, nodes[0]);
+			assert_eq!(route.paths[0].hops[0].short_channel_id, 6);
+			assert_eq!(route.paths[0].hops[0].fee_msat, 100_000);
 		}
 	}
 
@@ -5091,7 +5225,7 @@ mod tests {
 			&our_id, &payment_params, &network_graph.read_only(), None, 100, 42,
 			Arc::clone(&logger), &scorer, &random_seed_bytes
 		).unwrap();
-		let path = route.paths[0].iter().map(|hop| hop.short_channel_id).collect::<Vec<_>>();
+		let path = route.paths[0].hops.iter().map(|hop| hop.short_channel_id).collect::<Vec<_>>();
 
 		assert_eq!(route.get_total_fees(), 100);
 		assert_eq!(route.get_total_amount(), 100);
@@ -5104,7 +5238,7 @@ mod tests {
 			&our_id, &payment_params, &network_graph.read_only(), None, 100, 42,
 			Arc::clone(&logger), &scorer, &random_seed_bytes
 		).unwrap();
-		let path = route.paths[0].iter().map(|hop| hop.short_channel_id).collect::<Vec<_>>();
+		let path = route.paths[0].hops.iter().map(|hop| hop.short_channel_id).collect::<Vec<_>>();
 
 		assert_eq!(route.get_total_fees(), 300);
 		assert_eq!(route.get_total_amount(), 100);
@@ -5124,10 +5258,10 @@ mod tests {
 			if short_channel_id == self.short_channel_id { u64::max_value() } else { 0 }
 		}
 
-		fn payment_path_failed(&mut self, _path: &[&RouteHop], _short_channel_id: u64) {}
-		fn payment_path_successful(&mut self, _path: &[&RouteHop]) {}
-		fn probe_failed(&mut self, _path: &[&RouteHop], _short_channel_id: u64) {}
-		fn probe_successful(&mut self, _path: &[&RouteHop]) {}
+		fn payment_path_failed(&mut self, _path: &Path, _short_channel_id: u64) {}
+		fn payment_path_successful(&mut self, _path: &Path) {}
+		fn probe_failed(&mut self, _path: &Path, _short_channel_id: u64) {}
+		fn probe_successful(&mut self, _path: &Path) {}
 	}
 
 	struct BadNodeScorer {
@@ -5144,10 +5278,10 @@ mod tests {
 			if *target == self.node_id { u64::max_value() } else { 0 }
 		}
 
-		fn payment_path_failed(&mut self, _path: &[&RouteHop], _short_channel_id: u64) {}
-		fn payment_path_successful(&mut self, _path: &[&RouteHop]) {}
-		fn probe_failed(&mut self, _path: &[&RouteHop], _short_channel_id: u64) {}
-		fn probe_successful(&mut self, _path: &[&RouteHop]) {}
+		fn payment_path_failed(&mut self, _path: &Path, _short_channel_id: u64) {}
+		fn payment_path_successful(&mut self, _path: &Path) {}
+		fn probe_failed(&mut self, _path: &Path, _short_channel_id: u64) {}
+		fn probe_successful(&mut self, _path: &Path) {}
 	}
 
 	#[test]
@@ -5165,7 +5299,7 @@ mod tests {
 			&our_id, &payment_params, &network_graph, None, 100, 42,
 			Arc::clone(&logger), &scorer, &random_seed_bytes
 		).unwrap();
-		let path = route.paths[0].iter().map(|hop| hop.short_channel_id).collect::<Vec<_>>();
+		let path = route.paths[0].hops.iter().map(|hop| hop.short_channel_id).collect::<Vec<_>>();
 
 		assert_eq!(route.get_total_fees(), 100);
 		assert_eq!(route.get_total_amount(), 100);
@@ -5177,7 +5311,7 @@ mod tests {
 			&our_id, &payment_params, &network_graph, None, 100, 42,
 			Arc::clone(&logger), &scorer, &random_seed_bytes
 		).unwrap();
-		let path = route.paths[0].iter().map(|hop| hop.short_channel_id).collect::<Vec<_>>();
+		let path = route.paths[0].hops.iter().map(|hop| hop.short_channel_id).collect::<Vec<_>>();
 
 		assert_eq!(route.get_total_fees(), 300);
 		assert_eq!(route.get_total_amount(), 100);
@@ -5199,7 +5333,7 @@ mod tests {
 	#[test]
 	fn total_fees_single_path() {
 		let route = Route {
-			paths: vec![vec![
+			paths: vec![Path { hops: vec![
 				RouteHop {
 					pubkey: PublicKey::from_slice(&hex::decode("02eec7245d6b7d2ccb30380bfbe2a3648cd7a942653f5aa340edcea1f283686619").unwrap()[..]).unwrap(),
 					channel_features: ChannelFeatures::empty(), node_features: NodeFeatures::empty(),
@@ -5215,7 +5349,7 @@ mod tests {
 					channel_features: ChannelFeatures::empty(), node_features: NodeFeatures::empty(),
 					short_channel_id: 0, fee_msat: 225, cltv_expiry_delta: 0
 				},
-			]],
+			], blinded_tail: None }],
 			payment_params: None,
 		};
 
@@ -5226,7 +5360,7 @@ mod tests {
 	#[test]
 	fn total_fees_multi_path() {
 		let route = Route {
-			paths: vec![vec![
+			paths: vec![Path { hops: vec![
 				RouteHop {
 					pubkey: PublicKey::from_slice(&hex::decode("02eec7245d6b7d2ccb30380bfbe2a3648cd7a942653f5aa340edcea1f283686619").unwrap()[..]).unwrap(),
 					channel_features: ChannelFeatures::empty(), node_features: NodeFeatures::empty(),
@@ -5237,7 +5371,7 @@ mod tests {
 					channel_features: ChannelFeatures::empty(), node_features: NodeFeatures::empty(),
 					short_channel_id: 0, fee_msat: 150, cltv_expiry_delta: 0
 				},
-			],vec![
+			], blinded_tail: None }, Path { hops: vec![
 				RouteHop {
 					pubkey: PublicKey::from_slice(&hex::decode("02eec7245d6b7d2ccb30380bfbe2a3648cd7a942653f5aa340edcea1f283686619").unwrap()[..]).unwrap(),
 					channel_features: ChannelFeatures::empty(), node_features: NodeFeatures::empty(),
@@ -5248,7 +5382,7 @@ mod tests {
 					channel_features: ChannelFeatures::empty(), node_features: NodeFeatures::empty(),
 					short_channel_id: 0, fee_msat: 150, cltv_expiry_delta: 0
 				},
-			]],
+			], blinded_tail: None }],
 			payment_params: None,
 		};
 
@@ -5282,7 +5416,7 @@ mod tests {
 		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
 		let random_seed_bytes = keys_manager.get_secure_random_bytes();
 		let route = get_route(&our_id, &feasible_payment_params, &network_graph, None, 100, 0, Arc::clone(&logger), &scorer, &random_seed_bytes).unwrap();
-		let path = route.paths[0].iter().map(|hop| hop.short_channel_id).collect::<Vec<_>>();
+		let path = route.paths[0].hops.iter().map(|hop| hop.short_channel_id).collect::<Vec<_>>();
 		assert_ne!(path.len(), 0);
 
 		// But not if we exclude all paths on the basis of their accumulated CLTV delta
@@ -5317,12 +5451,12 @@ mod tests {
 		assert!(get_route(&our_id, &payment_params, &network_graph, None, 100, 0, Arc::clone(&logger), &scorer, &random_seed_bytes).is_ok());
 		loop {
 			if let Ok(route) = get_route(&our_id, &payment_params, &network_graph, None, 100, 0, Arc::clone(&logger), &scorer, &random_seed_bytes) {
-				for chan in route.paths[0].iter() {
+				for chan in route.paths[0].hops.iter() {
 					assert!(!payment_params.previously_failed_channels.contains(&chan.short_channel_id));
 				}
 				let victim = (u64::from_ne_bytes(random_seed_bytes[0..8].try_into().unwrap()) as usize)
-					% route.paths[0].len();
-				payment_params.previously_failed_channels.push(route.paths[0][victim].short_channel_id);
+					% route.paths[0].hops.len();
+				payment_params.previously_failed_channels.push(route.paths[0].hops[victim].short_channel_id);
 			} else { break; }
 		}
 	}
@@ -5341,7 +5475,7 @@ mod tests {
 		let feasible_payment_params = PaymentParameters::from_node_id(nodes[18], 0);
 		let route = get_route(&our_id, &feasible_payment_params, &network_graph, None, 100, 0,
 			Arc::clone(&logger), &scorer, &random_seed_bytes).unwrap();
-		let path = route.paths[0].iter().map(|hop| hop.short_channel_id).collect::<Vec<_>>();
+		let path = route.paths[0].hops.iter().map(|hop| hop.short_channel_id).collect::<Vec<_>>();
 		assert!(path.len() == MAX_PATH_LENGTH_ESTIMATE.into());
 
 		// But we can't create a path surpassing the MAX_PATH_LENGTH_ESTIMATE limit.
@@ -5369,12 +5503,12 @@ mod tests {
 		let route = get_route(&our_id, &payment_params, &network_graph.read_only(), None, 100, 42, Arc::clone(&logger), &scorer, &random_seed_bytes).unwrap();
 		assert_eq!(route.paths.len(), 1);
 
-		let cltv_expiry_deltas_before = route.paths[0].iter().map(|h| h.cltv_expiry_delta).collect::<Vec<u32>>();
+		let cltv_expiry_deltas_before = route.paths[0].hops.iter().map(|h| h.cltv_expiry_delta).collect::<Vec<u32>>();
 
 		// Check whether the offset added to the last hop by default is in [1 .. DEFAULT_MAX_TOTAL_CLTV_EXPIRY_DELTA]
 		let mut route_default = route.clone();
 		add_random_cltv_offset(&mut route_default, &payment_params, &network_graph.read_only(), &random_seed_bytes);
-		let cltv_expiry_deltas_default = route_default.paths[0].iter().map(|h| h.cltv_expiry_delta).collect::<Vec<u32>>();
+		let cltv_expiry_deltas_default = route_default.paths[0].hops.iter().map(|h| h.cltv_expiry_delta).collect::<Vec<u32>>();
 		assert_eq!(cltv_expiry_deltas_before.split_last().unwrap().1, cltv_expiry_deltas_default.split_last().unwrap().1);
 		assert!(cltv_expiry_deltas_default.last() > cltv_expiry_deltas_before.last());
 		assert!(cltv_expiry_deltas_default.last().unwrap() <= &DEFAULT_MAX_TOTAL_CLTV_EXPIRY_DELTA);
@@ -5384,7 +5518,7 @@ mod tests {
 		let limited_max_total_cltv_expiry_delta = cltv_expiry_deltas_before.iter().sum();
 		let limited_payment_params = payment_params.with_max_total_cltv_expiry_delta(limited_max_total_cltv_expiry_delta);
 		add_random_cltv_offset(&mut route_limited, &limited_payment_params, &network_graph.read_only(), &random_seed_bytes);
-		let cltv_expiry_deltas_limited = route_limited.paths[0].iter().map(|h| h.cltv_expiry_delta).collect::<Vec<u32>>();
+		let cltv_expiry_deltas_limited = route_limited.paths[0].hops.iter().map(|h| h.cltv_expiry_delta).collect::<Vec<u32>>();
 		assert_eq!(cltv_expiry_deltas_before, cltv_expiry_deltas_limited);
 	}
 
@@ -5412,11 +5546,11 @@ mod tests {
 			let mut random_bytes = [0u8; ::core::mem::size_of::<usize>()];
 
 			prng.process_in_place(&mut random_bytes);
-			let random_path_index = usize::from_be_bytes(random_bytes).wrapping_rem(p.len());
-			let observation_point = NodeId::from_pubkey(&p.get(random_path_index).unwrap().pubkey);
+			let random_path_index = usize::from_be_bytes(random_bytes).wrapping_rem(p.hops.len());
+			let observation_point = NodeId::from_pubkey(&p.hops.get(random_path_index).unwrap().pubkey);
 
 			// 2. Calculate what CLTV expiry delta we would observe there
-			let observed_cltv_expiry_delta: u32 = p[random_path_index..].iter().map(|h| h.cltv_expiry_delta).sum();
+			let observed_cltv_expiry_delta: u32 = p.hops[random_path_index..].iter().map(|h| h.cltv_expiry_delta).sum();
 
 			// 3. Starting from the observation point, find candidate paths
 			let mut candidates: VecDeque<(NodeId, Vec<u32>)> = VecDeque::new();
@@ -5467,8 +5601,8 @@ mod tests {
 		let hops = [nodes[1], nodes[2], nodes[4], nodes[3]];
 		let route = build_route_from_hops_internal(&our_id, &hops, &payment_params,
 			 &network_graph, 100, 0, Arc::clone(&logger), &random_seed_bytes).unwrap();
-		let route_hop_pubkeys = route.paths[0].iter().map(|hop| hop.pubkey).collect::<Vec<_>>();
-		assert_eq!(hops.len(), route.paths[0].len());
+		let route_hop_pubkeys = route.paths[0].hops.iter().map(|hop| hop.pubkey).collect::<Vec<_>>();
+		assert_eq!(hops.len(), route.paths[0].hops.len());
 		for (idx, hop_pubkey) in hops.iter().enumerate() {
 			assert!(*hop_pubkey == route_hop_pubkeys[idx]);
 		}
@@ -5515,8 +5649,8 @@ mod tests {
 		// 100,000 sats is less than the available liquidity on each channel, set above.
 		let route = get_route(&our_id, &payment_params, &network_graph.read_only(), None, 100_000_000, 42, Arc::clone(&logger), &scorer, &random_seed_bytes).unwrap();
 		assert_eq!(route.paths.len(), 2);
-		assert!((route.paths[0][1].short_channel_id == 4 && route.paths[1][1].short_channel_id == 13) ||
-			(route.paths[1][1].short_channel_id == 4 && route.paths[0][1].short_channel_id == 13));
+		assert!((route.paths[0].hops[1].short_channel_id == 4 && route.paths[1].hops[1].short_channel_id == 13) ||
+			(route.paths[1].hops[1].short_channel_id == 4 && route.paths[0].hops[1].short_channel_id == 13));
 	}
 
 	#[cfg(not(feature = "no-std"))]
@@ -5640,6 +5774,151 @@ mod tests {
 		scorer.remove_banned(&NodeId::from_pubkey(&nodes[3]));
 		let route = get_route(&our_id, &payment_params, &network_graph.read_only(), None, 100, 42, Arc::clone(&logger), &scorer, &random_seed_bytes);
 		assert!(route.is_ok());
+	}
+
+	#[test]
+	fn blinded_route_ser() {
+		let blinded_path_1 = BlindedPath {
+			introduction_node_id: ln_test_utils::pubkey(42),
+			blinding_point: ln_test_utils::pubkey(43),
+			blinded_hops: vec![
+				BlindedHop { blinded_node_id: ln_test_utils::pubkey(44), encrypted_payload: Vec::new() },
+				BlindedHop { blinded_node_id: ln_test_utils::pubkey(45), encrypted_payload: Vec::new() }
+			],
+		};
+		let blinded_path_2 = BlindedPath {
+			introduction_node_id: ln_test_utils::pubkey(46),
+			blinding_point: ln_test_utils::pubkey(47),
+			blinded_hops: vec![
+				BlindedHop { blinded_node_id: ln_test_utils::pubkey(48), encrypted_payload: Vec::new() },
+				BlindedHop { blinded_node_id: ln_test_utils::pubkey(49), encrypted_payload: Vec::new() }
+			],
+		};
+		// (De)serialize a Route with 1 blinded path out of two total paths.
+		let mut route = Route { paths: vec![Path {
+			hops: vec![RouteHop {
+				pubkey: ln_test_utils::pubkey(50),
+				node_features: NodeFeatures::empty(),
+				short_channel_id: 42,
+				channel_features: ChannelFeatures::empty(),
+				fee_msat: 100,
+				cltv_expiry_delta: 0,
+			}],
+			blinded_tail: Some(BlindedTail {
+				hops: blinded_path_1.blinded_hops,
+				blinding_point: blinded_path_1.blinding_point,
+				excess_final_cltv_expiry_delta: 40,
+				final_value_msat: 100,
+			})}, Path {
+			hops: vec![RouteHop {
+				pubkey: ln_test_utils::pubkey(51),
+				node_features: NodeFeatures::empty(),
+				short_channel_id: 43,
+				channel_features: ChannelFeatures::empty(),
+				fee_msat: 100,
+				cltv_expiry_delta: 0,
+			}], blinded_tail: None }],
+			payment_params: None,
+		};
+		let encoded_route = route.encode();
+		let decoded_route: Route = Readable::read(&mut Cursor::new(&encoded_route[..])).unwrap();
+		assert_eq!(decoded_route.paths[0].blinded_tail, route.paths[0].blinded_tail);
+		assert_eq!(decoded_route.paths[1].blinded_tail, route.paths[1].blinded_tail);
+
+		// (De)serialize a Route with two paths, each containing a blinded tail.
+		route.paths[1].blinded_tail = Some(BlindedTail {
+			hops: blinded_path_2.blinded_hops,
+			blinding_point: blinded_path_2.blinding_point,
+			excess_final_cltv_expiry_delta: 41,
+			final_value_msat: 101,
+		});
+		let encoded_route = route.encode();
+		let decoded_route: Route = Readable::read(&mut Cursor::new(&encoded_route[..])).unwrap();
+		assert_eq!(decoded_route.paths[0].blinded_tail, route.paths[0].blinded_tail);
+		assert_eq!(decoded_route.paths[1].blinded_tail, route.paths[1].blinded_tail);
+	}
+
+	#[test]
+	fn blinded_path_inflight_processing() {
+		// Ensure we'll score the channel that's inbound to a blinded path's introduction node, and
+		// account for the blinded tail's final amount_msat.
+		let mut inflight_htlcs = InFlightHtlcs::new();
+		let blinded_path = BlindedPath {
+			introduction_node_id: ln_test_utils::pubkey(43),
+			blinding_point: ln_test_utils::pubkey(48),
+			blinded_hops: vec![BlindedHop { blinded_node_id: ln_test_utils::pubkey(49), encrypted_payload: Vec::new() }],
+		};
+		let path = Path {
+			hops: vec![RouteHop {
+				pubkey: ln_test_utils::pubkey(42),
+				node_features: NodeFeatures::empty(),
+				short_channel_id: 42,
+				channel_features: ChannelFeatures::empty(),
+				fee_msat: 100,
+				cltv_expiry_delta: 0,
+			},
+			RouteHop {
+				pubkey: blinded_path.introduction_node_id,
+				node_features: NodeFeatures::empty(),
+				short_channel_id: 43,
+				channel_features: ChannelFeatures::empty(),
+				fee_msat: 1,
+				cltv_expiry_delta: 0,
+			}],
+			blinded_tail: Some(BlindedTail {
+				hops: blinded_path.blinded_hops,
+				blinding_point: blinded_path.blinding_point,
+				excess_final_cltv_expiry_delta: 0,
+				final_value_msat: 200,
+			}),
+		};
+		inflight_htlcs.process_path(&path, ln_test_utils::pubkey(44));
+		assert_eq!(*inflight_htlcs.0.get(&(42, true)).unwrap(), 301);
+		assert_eq!(*inflight_htlcs.0.get(&(43, false)).unwrap(), 201);
+	}
+
+	#[test]
+	fn blinded_path_cltv_shadow_offset() {
+		// Make sure we add a shadow offset when sending to blinded paths.
+		let blinded_path = BlindedPath {
+			introduction_node_id: ln_test_utils::pubkey(43),
+			blinding_point: ln_test_utils::pubkey(44),
+			blinded_hops: vec![
+				BlindedHop { blinded_node_id: ln_test_utils::pubkey(45), encrypted_payload: Vec::new() },
+				BlindedHop { blinded_node_id: ln_test_utils::pubkey(46), encrypted_payload: Vec::new() }
+			],
+		};
+		let mut route = Route { paths: vec![Path {
+			hops: vec![RouteHop {
+				pubkey: ln_test_utils::pubkey(42),
+				node_features: NodeFeatures::empty(),
+				short_channel_id: 42,
+				channel_features: ChannelFeatures::empty(),
+				fee_msat: 100,
+				cltv_expiry_delta: 0,
+			},
+			RouteHop {
+				pubkey: blinded_path.introduction_node_id,
+				node_features: NodeFeatures::empty(),
+				short_channel_id: 43,
+				channel_features: ChannelFeatures::empty(),
+				fee_msat: 1,
+				cltv_expiry_delta: 0,
+			}
+			],
+			blinded_tail: Some(BlindedTail {
+				hops: blinded_path.blinded_hops,
+				blinding_point: blinded_path.blinding_point,
+				excess_final_cltv_expiry_delta: 0,
+				final_value_msat: 200,
+			}),
+		}], payment_params: None};
+
+		let payment_params = PaymentParameters::from_node_id(ln_test_utils::pubkey(47), 18);
+		let (_, network_graph, _, _, _) = build_line_graph();
+		add_random_cltv_offset(&mut route, &payment_params, &network_graph.read_only(), &[0; 32]);
+		assert_eq!(route.paths[0].blinded_tail.as_ref().unwrap().excess_final_cltv_expiry_delta, 40);
+		assert_eq!(route.paths[0].hops.last().unwrap().cltv_expiry_delta, 40);
 	}
 }
 
@@ -5811,12 +6090,12 @@ mod benches {
 			let amount = route.get_total_amount();
 			if amount < 250_000 {
 				for path in route.paths {
-					scorer.payment_path_successful(&path.iter().collect::<Vec<_>>());
+					scorer.payment_path_successful(&path);
 				}
 			} else if amount > 750_000 {
 				for path in route.paths {
-					let short_channel_id = path[path.len() / 2].short_channel_id;
-					scorer.payment_path_failed(&path.iter().collect::<Vec<_>>(), short_channel_id);
+					let short_channel_id = path.hops[path.hops.len() / 2].short_channel_id;
+					scorer.payment_path_failed(&path, short_channel_id);
 				}
 			}
 		}

@@ -7024,6 +7024,7 @@ mod tests {
 	use crate::chain::chaininterface::{FeeEstimator, LowerBoundedFeeEstimator, ConfirmationTarget};
 	use crate::chain::keysinterface::{ChannelSigner, InMemorySigner, EntropySource, SignerProvider};
 	use crate::chain::transaction::OutPoint;
+	use crate::routing::router::Path;
 	use crate::util::config::UserConfig;
 	use crate::util::enforcing_trait_impls::EnforcingSigner;
 	use crate::util::errors::APIError;
@@ -7201,7 +7202,7 @@ mod tests {
 			cltv_expiry: 200000000,
 			state: OutboundHTLCState::Committed,
 			source: HTLCSource::OutboundRoute {
-				path: Vec::new(),
+				path: Path { hops: Vec::new(), blinded_tail: None },
 				session_priv: SecretKey::from_slice(&hex::decode("0fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff").unwrap()[..]).unwrap(),
 				first_hop_htlc_msat: 548,
 				payment_id: PaymentId([42; 32]),

@@ -2000,12 +2000,12 @@ fn test_path_paused_mpp() {
 	// Set us up to take multiple routes, one 0 -> 1 -> 3 and one 0 -> 2 -> 3:
 	let path = route.paths[0].clone();
 	route.paths.push(path);
-	route.paths[0][0].pubkey = nodes[1].node.get_our_node_id();
-	route.paths[0][0].short_channel_id = chan_1_id;
-	route.paths[0][1].short_channel_id = chan_3_id;
-	route.paths[1][0].pubkey = nodes[2].node.get_our_node_id();
-	route.paths[1][0].short_channel_id = chan_2_ann.contents.short_channel_id;
-	route.paths[1][1].short_channel_id = chan_4_id;
+	route.paths[0].hops[0].pubkey = nodes[1].node.get_our_node_id();
+	route.paths[0].hops[0].short_channel_id = chan_1_id;
+	route.paths[0].hops[1].short_channel_id = chan_3_id;
+	route.paths[1].hops[0].pubkey = nodes[2].node.get_our_node_id();
+	route.paths[1].hops[0].short_channel_id = chan_2_ann.contents.short_channel_id;
+	route.paths[1].hops[1].short_channel_id = chan_4_id;
 
 	// Set it so that the first monitor update (for the path 0 -> 1 -> 3) succeeds, but the second
 	// (for the path 0 -> 2 -> 3) fails.

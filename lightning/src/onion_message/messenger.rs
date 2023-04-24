@@ -15,16 +15,15 @@ use bitcoin::hashes::hmac::{Hmac, HmacEngine};
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::secp256k1::{self, PublicKey, Scalar, Secp256k1, SecretKey};
 
+use crate::blinded_path::{BlindedPath, ForwardTlvs, ReceiveTlvs, utils};
 use crate::chain::keysinterface::{EntropySource, KeysManager, NodeSigner, Recipient};
 use crate::events::OnionMessageProvider;
 use crate::ln::features::{InitFeatures, NodeFeatures};
 use crate::ln::msgs::{self, OnionMessageHandler};
 use crate::ln::onion_utils;
 use crate::ln::peer_handler::IgnoringMessageHandler;
-use super::blinded_path::{BlindedPath, ForwardTlvs, ReceiveTlvs};
 pub use super::packet::{CustomOnionMessageContents, OnionMessageContents};
 use super::packet::{BIG_PACKET_HOP_DATA_LEN, ForwardControlTlvs, Packet, Payload, ReceiveControlTlvs, SMALL_PACKET_HOP_DATA_LEN};
-use super::utils;
 use crate::util::logger::Logger;
 use crate::util::ser::Writeable;
 
@@ -43,9 +42,10 @@ use crate::prelude::*;
 /// # extern crate bitcoin;
 /// # use bitcoin::hashes::_export::_core::time::Duration;
 /// # use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
+/// # use lightning::blinded_path::BlindedPath;
 /// # use lightning::chain::keysinterface::KeysManager;
 /// # use lightning::ln::peer_handler::IgnoringMessageHandler;
-/// # use lightning::onion_message::{BlindedPath, CustomOnionMessageContents, Destination, OnionMessageContents, OnionMessenger};
+/// # use lightning::onion_message::{CustomOnionMessageContents, Destination, OnionMessageContents, OnionMessenger};
 /// # use lightning::util::logger::{Logger, Record};
 /// # use lightning::util::ser::{Writeable, Writer};
 /// # use lightning::io;
@@ -91,7 +91,7 @@ use crate::prelude::*;
 /// // Create a blinded path to yourself, for someone to send an onion message to.
 /// # let your_node_id = hop_node_id1;
 /// let hops = [hop_node_id3, hop_node_id4, your_node_id];
-/// let blinded_path = BlindedPath::new(&hops, &keys_manager, &secp_ctx).unwrap();
+/// let blinded_path = BlindedPath::new_for_message(&hops, &keys_manager, &secp_ctx).unwrap();
 ///
 /// // Send a custom onion message to a blinded path.
 /// # let intermediate_hops = [hop_node_id1, hop_node_id2];
@@ -226,7 +226,7 @@ impl<ES: Deref, NS: Deref, L: Deref, CMH: Deref> OnionMessenger<ES, NS, L, CMH>
 				let our_node_id = self.node_signer.get_node_id(Recipient::Node)
 					.map_err(|()| SendError::GetNodeIdFailed)?;
 				if blinded_path.introduction_node_id == our_node_id {
-					blinded_path.advance_by_one(&self.node_signer, &self.secp_ctx)
+					blinded_path.advance_message_path_by_one(&self.node_signer, &self.secp_ctx)
 						.map_err(|()| SendError::BlindedPathAdvanceFailed)?;
 				}
 			}

@@ -10,13 +10,13 @@
 use bitcoin::secp256k1::{KeyPair, Parity, PublicKey, Secp256k1, SecretKey, self};
 use crate::utils::test_logger;
 use core::convert::{Infallible, TryFrom};
+use lightning::blinded_path::BlindedPath;
 use lightning::chain::keysinterface::EntropySource;
 use lightning::ln::PaymentHash;
 use lightning::ln::features::BlindedHopFeatures;
 use lightning::offers::invoice::{BlindedPayInfo, UnsignedInvoice};
 use lightning::offers::invoice_request::InvoiceRequest;
 use lightning::offers::parse::SemanticError;
-use lightning::onion_message::BlindedPath;
 use lightning::util::ser::Writeable;
 
 #[inline]
@@ -74,8 +74,8 @@ fn build_response<'a, T: secp256k1::Signing + secp256k1::Verification>(
 ) -> Result<UnsignedInvoice<'a>, SemanticError> {
 	let entropy_source = Randomness {};
 	let paths = vec![
-		BlindedPath::new(&[pubkey(43), pubkey(44), pubkey(42)], &entropy_source, secp_ctx).unwrap(),
-		BlindedPath::new(&[pubkey(45), pubkey(46), pubkey(42)], &entropy_source, secp_ctx).unwrap(),
+		BlindedPath::new_for_message(&[pubkey(43), pubkey(44), pubkey(42)], &entropy_source, secp_ctx).unwrap(),
+		BlindedPath::new_for_message(&[pubkey(45), pubkey(46), pubkey(42)], &entropy_source, secp_ctx).unwrap(),
 	];
 
 	let payinfo = vec![

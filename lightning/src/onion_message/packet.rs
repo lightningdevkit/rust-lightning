@@ -12,9 +12,9 @@
 use bitcoin::secp256k1::PublicKey;
 use bitcoin::secp256k1::ecdh::SharedSecret;
 
+use crate::blinded_path::{BlindedPath, ForwardTlvs, ReceiveTlvs};
 use crate::ln::msgs::DecodeError;
 use crate::ln::onion_utils;
-use super::blinded_path::{BlindedPath, ForwardTlvs, ReceiveTlvs};
 use super::messenger::CustomOnionMessageHandler;
 use crate::util::chacha20poly1305rfc::{ChaChaPolyReadAdapter, ChaChaPolyWriteAdapter};
 use crate::util::ser::{BigSize, FixedLengthReader, LengthRead, LengthReadable, LengthReadableArgs, Readable, ReadableArgs, Writeable, Writer};
@@ -149,7 +149,7 @@ pub(super) enum ForwardControlTlvs {
 	Blinded(Vec<u8>),
 	/// If we're constructing an onion message hop through an intermediate unblinded node, we'll need
 	/// to construct the intermediate hop's control TLVs in their unblinded state to avoid encoding
-	/// them into an intermediate Vec. See [`super::blinded_path::ForwardTlvs`] for more info.
+	/// them into an intermediate Vec. See [`crate::blinded_path::ForwardTlvs`] for more info.
 	Unblinded(ForwardTlvs),
 }
 
@@ -157,7 +157,7 @@ pub(super) enum ForwardControlTlvs {
 pub(super) enum ReceiveControlTlvs {
 	/// See [`ForwardControlTlvs::Blinded`].
 	Blinded(Vec<u8>),
-	/// See [`ForwardControlTlvs::Unblinded`] and [`super::blinded_path::ReceiveTlvs`].
+	/// See [`ForwardControlTlvs::Unblinded`] and [`crate::blinded_path::ReceiveTlvs`].
 	Unblinded(ReceiveTlvs),
 }
 
@@ -255,7 +255,7 @@ impl<H: CustomOnionMessageHandler> ReadableArgs<(SharedSecret, &H)> for Payload<
 /// When reading a packet off the wire, we don't know a priori whether the packet is to be forwarded
 /// or received. Thus we read a ControlTlvs rather than reading a ForwardControlTlvs or
 /// ReceiveControlTlvs directly.
-pub(super) enum ControlTlvs {
+pub(crate) enum ControlTlvs {
 	/// This onion message is intended to be forwarded.
 	Forward(ForwardTlvs),
 	/// This onion message is intended to be received.

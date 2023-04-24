@@ -18,7 +18,7 @@ use crate::events::{self, PaymentFailureReason};
 use crate::ln::{PaymentHash, PaymentPreimage, PaymentSecret};
 use crate::ln::channelmanager::{ChannelDetails, HTLCSource, IDEMPOTENCY_TIMEOUT_TICKS, PaymentId};
 use crate::ln::onion_utils::HTLCFailReason;
-use crate::routing::router::{InFlightHtlcs, PaymentParameters, Route, RouteHop, RouteParameters, RoutePath, Router};
+use crate::routing::router::{InFlightHtlcs, Path, PaymentParameters, Route, RouteParameters, Router};
 use crate::util::errors::APIError;
 use crate::util::logger::Logger;
 use crate::util::time::Time;
@@ -26,7 +26,6 @@ use crate::util::time::Time;
 use crate::util::time::tests::SinceEpoch;
 use crate::util::ser::ReadableArgs;
 
-use core::cmp;
 use core::fmt::{self, Display, Formatter};
 use core::ops::Deref;
 
@@ -161,7 +160,7 @@ impl PendingOutboundPayment {
 	}
 
 	/// panics if path is None and !self.is_fulfilled
-	fn remove(&mut self, session_priv: &[u8; 32], path: Option<&Vec<RouteHop>>) -> bool {
+	fn remove(&mut self, session_priv: &[u8; 32], path: Option<&Path>) -> bool {
 		let remove_res = match self {
 			PendingOutboundPayment::Legacy { session_privs } |
 				PendingOutboundPayment::Retryable { session_privs, .. } |
@@ -173,17 +172,16 @@ impl PendingOutboundPayment {
 		if remove_res {
 			if let PendingOutboundPayment::Retryable { ref mut pending_amt_msat, ref mut pending_fee_msat, .. } = self {
 				let path = path.expect("Fulfilling a payment should always come with a path");
-				let path_last_hop = path.last().expect("Outbound payments must have had a valid path");
-				*pending_amt_msat -= path_last_hop.fee_msat;
+				*pending_amt_msat -= path.final_value_msat();
 				if let Some(fee_msat) = pending_fee_msat.as_mut() {
-					*fee_msat -= path.get_path_fees();
+					*fee_msat -= path.fee_msat();
 				}
 			}
 		}
 		remove_res
 	}
 
-	pub(super) fn insert(&mut self, session_priv: [u8; 32], path: &Vec<RouteHop>) -> bool {
+	pub(super) fn insert(&mut self, session_priv: [u8; 32], path: &Path) -> bool {
 		let insert_res = match self {
 			PendingOutboundPayment::Legacy { session_privs } |
 				PendingOutboundPayment::Retryable { session_privs, .. } => {
@@ -194,10 +192,9 @@ impl PendingOutboundPayment {
 		};
 		if insert_res {
 			if let PendingOutboundPayment::Retryable { ref mut pending_amt_msat, ref mut pending_fee_msat, .. } = self {
-				let path_last_hop = path.last().expect("Outbound payments must have had a valid path");
-				*pending_amt_msat += path_last_hop.fee_msat;
+				*pending_amt_msat += path.final_value_msat();
 				if let Some(fee_msat) = pending_fee_msat.as_mut() {
-					*fee_msat += path.get_path_fees();
+					*fee_msat += path.fee_msat();
 				}
 			}
 		}
@@ -498,7 +495,7 @@ impl OutboundPayments {
 		NS::Target: NodeSigner,
 		L::Target: Logger,
 		IH: Fn() -> InFlightHtlcs,
-		SP: Fn(&Vec<RouteHop>, &PaymentHash, RecipientOnionFields, u64, u32, PaymentId,
+		SP: Fn(&Path, &PaymentHash, RecipientOnionFields, u64, u32, PaymentId,
 			&Option<PaymentPreimage>, [u8; 32]) -> Result<(), APIError>,
 	{
 		self.send_payment_internal(payment_id, payment_hash, recipient_onion, None, retry_strategy,
@@ -514,7 +511,7 @@ impl OutboundPayments {
 	where
 		ES::Target: EntropySource,
 		NS::Target: NodeSigner,
-		F: Fn(&Vec<RouteHop>, &PaymentHash, RecipientOnionFields, u64, u32, PaymentId,
+		F: Fn(&Path, &PaymentHash, RecipientOnionFields, u64, u32, PaymentId,
 			&Option<PaymentPreimage>, [u8; 32]) -> Result<(), APIError>
 	{
 		let onion_session_privs = self.add_new_pending_payment(payment_hash, recipient_onion.clone(), payment_id, None, route, None, None, entropy_source, best_block_height)?;
@@ -536,7 +533,7 @@ impl OutboundPayments {
 		NS::Target: NodeSigner,
 		L::Target: Logger,
 		IH: Fn() -> InFlightHtlcs,
-		SP: Fn(&Vec<RouteHop>, &PaymentHash, RecipientOnionFields, u64, u32, PaymentId,
+		SP: Fn(&Path, &PaymentHash, RecipientOnionFields, u64, u32, PaymentId,
 			&Option<PaymentPreimage>, [u8; 32]) -> Result<(), APIError>,
 	{
 		let preimage = payment_preimage
@@ -556,7 +553,7 @@ impl OutboundPayments {
 	where
 		ES::Target: EntropySource,
 		NS::Target: NodeSigner,
-		F: Fn(&Vec<RouteHop>, &PaymentHash, RecipientOnionFields, u64, u32, PaymentId,
+		F: Fn(&Path, &PaymentHash, RecipientOnionFields, u64, u32, PaymentId,
 			&Option<PaymentPreimage>, [u8; 32]) -> Result<(), APIError>
 	{
 		let preimage = payment_preimage
@@ -585,7 +582,7 @@ impl OutboundPayments {
 		R::Target: Router,
 		ES::Target: EntropySource,
 		NS::Target: NodeSigner,
-		SP: Fn(&Vec<RouteHop>, &PaymentHash, RecipientOnionFields, u64, u32, PaymentId,
+		SP: Fn(&Path, &PaymentHash, RecipientOnionFields, u64, u32, PaymentId,
 			&Option<PaymentPreimage>, [u8; 32]) -> Result<(), APIError>,
 		IH: Fn() -> InFlightHtlcs,
 		FH: Fn() -> Vec<ChannelDetails>,
@@ -656,7 +653,7 @@ impl OutboundPayments {
 		NS::Target: NodeSigner,
 		L::Target: Logger,
 		IH: Fn() -> InFlightHtlcs,
-		SP: Fn(&Vec<RouteHop>, &PaymentHash, RecipientOnionFields, u64, u32, PaymentId,
+		SP: Fn(&Path, &PaymentHash, RecipientOnionFields, u64, u32, PaymentId,
 			&Option<PaymentPreimage>, [u8; 32]) -> Result<(), APIError>
 	{
 		#[cfg(feature = "std")] {
@@ -697,7 +694,7 @@ impl OutboundPayments {
 		NS::Target: NodeSigner,
 		L::Target: Logger,
 		IH: Fn() -> InFlightHtlcs,
-		SP: Fn(&Vec<RouteHop>, &PaymentHash, RecipientOnionFields, u64, u32, PaymentId,
+		SP: Fn(&Path, &PaymentHash, RecipientOnionFields, u64, u32, PaymentId,
 			&Option<PaymentPreimage>, [u8; 32]) -> Result<(), APIError>
 	{
 		#[cfg(feature = "std")] {
@@ -721,8 +718,8 @@ impl OutboundPayments {
 			}
 		};
 		for path in route.paths.iter() {
-			if path.len() == 0 {
-				log_error!(logger, "length-0 path in route");
+			if path.hops.len() == 0 {
+				log_error!(logger, "Unusable path in route (path.hops.len() must be at least 1");
 				self.abandon_payment(payment_id, PaymentFailureReason::UnexpectedError, pending_events);
 				return
 			}
@@ -757,7 +754,7 @@ impl OutboundPayments {
 						PendingOutboundPayment::Retryable {
 							total_msat, keysend_preimage, payment_secret, payment_metadata, pending_amt_msat, ..
 						} => {
-							let retry_amt_msat: u64 = route.paths.iter().map(|path| path.last().unwrap().fee_msat).sum();
+							let retry_amt_msat = route.get_total_amount();
 							if retry_amt_msat + *pending_amt_msat > *total_msat * (100 + RETRY_OVERFLOW_PERCENTAGE) / 100 {
 								log_error!(logger, "retry_amt_msat of {} will put pending_amt_msat (currently: {}) more than 10% over total_payment_amt_msat of {}", retry_amt_msat, pending_amt_msat, total_msat);
 								abandon_with_entry!(payment, PaymentFailureReason::UnexpectedError);
@@ -819,7 +816,7 @@ impl OutboundPayments {
 		NS::Target: NodeSigner,
 		L::Target: Logger,
 		IH: Fn() -> InFlightHtlcs,
-		SP: Fn(&Vec<RouteHop>, &PaymentHash, RecipientOnionFields, u64, u32, PaymentId,
+		SP: Fn(&Path, &PaymentHash, RecipientOnionFields, u64, u32, PaymentId,
 			&Option<PaymentPreimage>, [u8; 32]) -> Result<(), APIError>
 	{
 		match err {
@@ -854,7 +851,7 @@ impl OutboundPayments {
 
 	fn push_path_failed_evs_and_scids<I: ExactSizeIterator + Iterator<Item = Result<(), APIError>>, L: Deref>(
 		payment_id: PaymentId, payment_hash: PaymentHash, route_params: &mut RouteParameters,
-		paths: Vec<Vec<RouteHop>>, path_results: I, logger: &L, pending_events: &Mutex<Vec<events::Event>>
+		paths: Vec<Path>, path_results: I, logger: &L, pending_events: &Mutex<Vec<events::Event>>
 	) where L::Target: Logger {
 		let mut events = pending_events.lock().unwrap();
 		debug_assert_eq!(paths.len(), path_results.len());
@@ -864,7 +861,7 @@ impl OutboundPayments {
 				log_error!(logger, "Failed to send along path due to error: {:?}", e);
 				let mut failed_scid = None;
 				if let APIError::ChannelUnavailable { .. } = e {
-					let scid = path[0].short_channel_id;
+					let scid = path.hops[0].short_channel_id;
 					failed_scid = Some(scid);
 					route_params.payment_params.previously_failed_channels.push(scid);
 				}
@@ -885,26 +882,26 @@ impl OutboundPayments {
 	}
 
 	pub(super) fn send_probe<ES: Deref, NS: Deref, F>(
-		&self, hops: Vec<RouteHop>, probing_cookie_secret: [u8; 32], entropy_source: &ES,
-		node_signer: &NS, best_block_height: u32, send_payment_along_path: F
+		&self, path: Path, probing_cookie_secret: [u8; 32], entropy_source: &ES, node_signer: &NS,
+		best_block_height: u32, send_payment_along_path: F
 	) -> Result<(PaymentHash, PaymentId), PaymentSendFailure>
 	where
 		ES::Target: EntropySource,
 		NS::Target: NodeSigner,
-		F: Fn(&Vec<RouteHop>, &PaymentHash, RecipientOnionFields, u64, u32, PaymentId,
+		F: Fn(&Path, &PaymentHash, RecipientOnionFields, u64, u32, PaymentId,
 			&Option<PaymentPreimage>, [u8; 32]) -> Result<(), APIError>
 	{
 		let payment_id = PaymentId(entropy_source.get_secure_random_bytes());
 
 		let payment_hash = probing_cookie_from_id(&payment_id, probing_cookie_secret);
 
-		if hops.len() < 2 {
+		if path.hops.len() < 2 && path.blinded_tail.is_none() {
 			return Err(PaymentSendFailure::ParameterError(APIError::APIMisuseError {
 				err: "No need probing a path with less than two hops".to_string()
 			}))
 		}
 
-		let route = Route { paths: vec![hops], payment_params: None };
+		let route = Route { paths: vec![path], payment_params: None };
 		let onion_session_privs = self.add_new_pending_payment(payment_hash,
 			RecipientOnionFields::spontaneous_empty(), payment_id, None, &route, None, None,
 			entropy_source, best_block_height)?;
@@ -986,7 +983,7 @@ impl OutboundPayments {
 	) -> Result<(), PaymentSendFailure>
 	where
 		NS::Target: NodeSigner,
-		F: Fn(&Vec<RouteHop>, &PaymentHash, RecipientOnionFields, u64, u32, PaymentId,
+		F: Fn(&Path, &PaymentHash, RecipientOnionFields, u64, u32, PaymentId,
 			&Option<PaymentPreimage>, [u8; 32]) -> Result<(), APIError>
 	{
 		if route.paths.len() < 1 {
@@ -999,17 +996,23 @@ impl OutboundPayments {
 		let our_node_id = node_signer.get_node_id(Recipient::Node).unwrap(); // TODO no unwrap
 		let mut path_errs = Vec::with_capacity(route.paths.len());
 		'path_check: for path in route.paths.iter() {
-			if path.len() < 1 || path.len() > 20 {
+			if path.hops.len() < 1 || path.hops.len() > 20 {
 				path_errs.push(Err(APIError::InvalidRoute{err: "Path didn't go anywhere/had bogus size".to_owned()}));
 				continue 'path_check;
 			}
-			for (idx, hop) in path.iter().enumerate() {
-				if idx != path.len() - 1 && hop.pubkey == our_node_id {
+			if path.blinded_tail.is_some() {
+				path_errs.push(Err(APIError::InvalidRoute{err: "Sending to blinded paths isn't supported yet".to_owned()}));
+				continue 'path_check;
+			}
+			let dest_hop_idx = if path.blinded_tail.is_some() && path.blinded_tail.as_ref().unwrap().hops.len() > 1 {
+				usize::max_value() } else { path.hops.len() - 1 };
+			for (idx, hop) in path.hops.iter().enumerate() {
+				if idx != dest_hop_idx && hop.pubkey == our_node_id {
 					path_errs.push(Err(APIError::InvalidRoute{err: "Path went through us but wasn't a simple rebalance loop to us".to_owned()}));
 					continue 'path_check;
 				}
 			}
-			total_value += path.last().unwrap().fee_msat;
+			total_value += path.final_value_msat();
 			path_errs.push(Ok(()));
 		}
 		if path_errs.iter().any(|e| e.is_err()) {
@@ -1048,7 +1051,6 @@ impl OutboundPayments {
 		let mut has_ok = false;
 		let mut has_err = false;
 		let mut pending_amt_unsent = 0;
-		let mut max_unsent_cltv_delta = 0;
 		for (res, path) in results.iter().zip(route.paths.iter()) {
 			if res.is_ok() { has_ok = true; }
 			if res.is_err() { has_err = true; }
@@ -1058,8 +1060,7 @@ impl OutboundPayments {
 				has_err = true;
 				has_ok = true;
 			} else if res.is_err() {
-				pending_amt_unsent += path.last().unwrap().fee_msat;
-				max_unsent_cltv_delta = cmp::max(max_unsent_cltv_delta, path.last().unwrap().cltv_expiry_delta);
+				pending_amt_unsent += path.final_value_msat();
 			}
 		}
 		if has_err && has_ok {
@@ -1091,7 +1092,7 @@ impl OutboundPayments {
 	) -> Result<(), PaymentSendFailure>
 	where
 		NS::Target: NodeSigner,
-		F: Fn(&Vec<RouteHop>, &PaymentHash, RecipientOnionFields, u64, u32, PaymentId,
+		F: Fn(&Path, &PaymentHash, RecipientOnionFields, u64, u32, PaymentId,
 			&Option<PaymentPreimage>, [u8; 32]) -> Result<(), APIError>
 	{
 		self.pay_route_internal(route, payment_hash, recipient_onion, keysend_preimage, payment_id,
@@ -1111,7 +1112,7 @@ impl OutboundPayments {
 
 	pub(super) fn claim_htlc<L: Deref>(
 		&self, payment_id: PaymentId, payment_preimage: PaymentPreimage, session_priv: SecretKey,
-		path: Vec<RouteHop>, from_onchain: bool, pending_events: &Mutex<Vec<events::Event>>, logger: &L
+		path: Path, from_onchain: bool, pending_events: &Mutex<Vec<events::Event>>, logger: &L
 	) where L::Target: Logger {
 		let mut session_priv_bytes = [0; 32];
 		session_priv_bytes.copy_from_slice(&session_priv[..]);
@@ -1220,9 +1221,8 @@ impl OutboundPayments {
 	// Returns a bool indicating whether a PendingHTLCsForwardable event should be generated.
 	pub(super) fn fail_htlc<L: Deref>(
 		&self, source: &HTLCSource, payment_hash: &PaymentHash, onion_error: &HTLCFailReason,
-		path: &Vec<RouteHop>, session_priv: &SecretKey, payment_id: &PaymentId,
-		probing_cookie_secret: [u8; 32], secp_ctx: &Secp256k1<secp256k1::All>,
-		pending_events: &Mutex<Vec<events::Event>>, logger: &L
+		path: &Path, session_priv: &SecretKey, payment_id: &PaymentId, probing_cookie_secret: [u8; 32],
+		secp_ctx: &Secp256k1<secp256k1::All>, pending_events: &Mutex<Vec<events::Event>>, logger: &L
 	) -> bool where L::Target: Logger {
 		#[cfg(test)]
 		let (network_update, short_channel_id, payment_retryable, onion_error_code, onion_error_data) = onion_error.decode_onion_failure(secp_ctx, logger, &source);
@@ -1430,7 +1430,7 @@ mod tests {
 	use crate::ln::msgs::{ErrorAction, LightningError};
 	use crate::ln::outbound_payment::{OutboundPayments, Retry, RetryableSendFailure};
 	use crate::routing::gossip::NetworkGraph;
-	use crate::routing::router::{InFlightHtlcs, PaymentParameters, Route, RouteHop, RouteParameters};
+	use crate::routing::router::{InFlightHtlcs, Path, PaymentParameters, Route, RouteHop, RouteParameters};
 	use crate::sync::{Arc, Mutex};
 	use crate::util::errors::APIError;
 	use crate::util::test_utils;
@@ -1551,14 +1551,14 @@ mod tests {
 		};
 		let failed_scid = 42;
 		let route = Route {
-			paths: vec![vec![RouteHop {
+			paths: vec![Path { hops: vec![RouteHop {
 				pubkey: receiver_pk,
 				node_features: NodeFeatures::empty(),
 				short_channel_id: failed_scid,
 				channel_features: ChannelFeatures::empty(),
 				fee_msat: 0,
 				cltv_expiry_delta: 0,
-			}]],
+			}], blinded_tail: None }],
 			payment_params: Some(payment_params),
 		};
 		router.expect_find_route(route_params.clone(), Ok(route.clone()));

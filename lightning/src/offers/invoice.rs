@@ -29,7 +29,7 @@
 //!
 //! # use lightning::ln::PaymentHash;
 //! # use lightning::offers::invoice::BlindedPayInfo;
-//! # use lightning::onion_message::BlindedPath;
+//! # use lightning::blinded_path::BlindedPath;
 //! #
 //! # fn create_payment_paths() -> Vec<(BlindedPath, BlindedPayInfo)> { unimplemented!() }
 //! # fn create_payment_hash() -> PaymentHash { unimplemented!() }
@@ -104,6 +104,7 @@ use bitcoin::util::schnorr::TweakedPublicKey;
 use core::convert::{Infallible, TryFrom};
 use core::time::Duration;
 use crate::io;
+use crate::blinded_path::BlindedPath;
 use crate::ln::PaymentHash;
 use crate::ln::features::{BlindedHopFeatures, Bolt12InvoiceFeatures};
 use crate::ln::inbound_payment::ExpandedKey;
@@ -115,7 +116,6 @@ use crate::offers::parse::{ParseError, ParsedMessage, SemanticError};
 use crate::offers::payer::{PAYER_METADATA_TYPE, PayerTlvStream, PayerTlvStreamRef};
 use crate::offers::refund::{IV_BYTES as REFUND_IV_BYTES, Refund, RefundContents};
 use crate::offers::signer;
-use crate::onion_message::BlindedPath;
 use crate::util::ser::{HighZeroBytesDroppedBigSize, Iterable, SeekReadable, WithoutLength, Writeable, Writer};
 use crate::util::string::PrintableString;
 
@@ -748,7 +748,7 @@ type BlindedPayInfoIter<'a> = core::iter::Map<
 >;
 
 /// Information needed to route a payment across a [`BlindedPath`].
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Hash, Eq, PartialEq)]
 pub struct BlindedPayInfo {
 	/// Base fee charged (in millisatoshi) for the entire blinded path.
 	pub fee_base_msat: u32,
@@ -942,6 +942,7 @@ mod tests {
 	use bitcoin::util::schnorr::TweakedPublicKey;
 	use core::convert::TryFrom;
 	use core::time::Duration;
+	use crate::blinded_path::{BlindedHop, BlindedPath};
 	use crate::chain::keysinterface::KeyMaterial;
 	use crate::ln::features::Bolt12InvoiceFeatures;
 	use crate::ln::inbound_payment::ExpandedKey;
@@ -953,7 +954,6 @@ mod tests {
 	use crate::offers::payer::PayerTlvStreamRef;
 	use crate::offers::refund::RefundBuilder;
 	use crate::offers::test_utils::*;
-	use crate::onion_message::{BlindedHop, BlindedPath};
 	use crate::util::ser::{BigSize, Iterable, Writeable};
 	use crate::util::string::PrintableString;
 

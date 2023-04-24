@@ -60,6 +60,7 @@ use core::convert::{Infallible, TryFrom};
 use core::ops::Deref;
 use crate::chain::keysinterface::EntropySource;
 use crate::io;
+use crate::blinded_path::BlindedPath;
 use crate::ln::PaymentHash;
 use crate::ln::features::InvoiceRequestFeatures;
 use crate::ln::inbound_payment::{ExpandedKey, IV_LEN, Nonce};
@@ -70,7 +71,6 @@ use crate::offers::offer::{Offer, OfferContents, OfferTlvStream, OfferTlvStreamR
 use crate::offers::parse::{ParseError, ParsedMessage, SemanticError};
 use crate::offers::payer::{PayerContents, PayerTlvStream, PayerTlvStreamRef};
 use crate::offers::signer::{Metadata, MetadataMaterial};
-use crate::onion_message::BlindedPath;
 use crate::util::ser::{HighZeroBytesDroppedBigSize, SeekReadable, WithoutLength, Writeable, Writer};
 use crate::util::string::PrintableString;
 

@@ -1,0 +1,4 @@
+## Backwards Compatibility
+
+* Routes manually constructed with `Path::blinded_tail` present will not be readable by prior versions of LDK
+* `PaymentParameters` manually constructed with `Hints::Blinded` will not be readable by prior versions of LDK

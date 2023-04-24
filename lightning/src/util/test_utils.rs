@@ -25,7 +25,7 @@ use crate::ln::msgs::LightningError;
 use crate::ln::script::ShutdownScript;
 use crate::routing::gossip::{EffectiveCapacity, NetworkGraph, NodeId};
 use crate::routing::utxo::{UtxoLookup, UtxoLookupError, UtxoResult};
-use crate::routing::router::{find_route, InFlightHtlcs, Route, RouteHop, RouteParameters, Router, ScorerAccountingForInFlightHtlcs};
+use crate::routing::router::{find_route, InFlightHtlcs, Path, Route, RouteParameters, Router, ScorerAccountingForInFlightHtlcs};
 use crate::routing::scoring::{ChannelUsage, Score};
 use crate::util::config::UserConfig;
 use crate::util::enforcing_trait_impls::{EnforcingSigner, EnforcementState};
@@ -59,6 +59,15 @@ use crate::chain::keysinterface::{InMemorySigner, Recipient, EntropySource, Node
 #[cfg(feature = "std")]
 use std::time::{SystemTime, UNIX_EPOCH};
 use bitcoin::Sequence;
+
+pub fn pubkey(byte: u8) -> PublicKey {
+	let secp_ctx = Secp256k1::new();
+	PublicKey::from_secret_key(&secp_ctx, &privkey(byte))
+}
+
+pub fn privkey(byte: u8) -> SecretKey {
+	SecretKey::from_slice(&[byte; 32]).unwrap()
+}
 
 pub struct TestVecWriter(pub Vec<u8>);
 impl Writer for TestVecWriter {
@@ -106,7 +115,7 @@ impl<'a> Router for TestRouter<'a> {
 				let scorer = ScorerAccountingForInFlightHtlcs::new(locked_scorer, inflight_htlcs);
 				for path in &route.paths {
 					let mut aggregate_msat = 0u64;
-					for (idx, hop) in path.iter().rev().enumerate() {
+					for (idx, hop) in path.hops.iter().rev().enumerate() {
 						aggregate_msat += hop.fee_msat;
 						let usage = ChannelUsage {
 							amount_msat: aggregate_msat,
@@ -116,11 +125,11 @@ impl<'a> Router for TestRouter<'a> {
 
 						// Since the path is reversed, the last element in our iteration is the first
 						// hop.
-						if idx == path.len() - 1 {
+						if idx == path.hops.len() - 1 {
 							scorer.channel_penalty_msat(hop.short_channel_id, &NodeId::from_pubkey(payer), &NodeId::from_pubkey(&hop.pubkey), usage);
 						} else {
-							let curr_hop_path_idx = path.len() - 1 - idx;
-							scorer.channel_penalty_msat(hop.short_channel_id, &NodeId::from_pubkey(&path[curr_hop_path_idx - 1].pubkey), &NodeId::from_pubkey(&hop.pubkey), usage);
+							let curr_hop_path_idx = path.hops.len() - 1 - idx;
+							scorer.channel_penalty_msat(hop.short_channel_id, &NodeId::from_pubkey(&path.hops[curr_hop_path_idx - 1].pubkey), &NodeId::from_pubkey(&hop.pubkey), usage);
 						}
 					}
 				}
@@ -974,13 +983,13 @@ impl Score for TestScorer {
 		0
 	}
 
-	fn payment_path_failed(&mut self, _actual_path: &[&RouteHop], _actual_short_channel_id: u64) {}
+	fn payment_path_failed(&mut self, _actual_path: &Path, _actual_short_channel_id: u64) {}
 
-	fn payment_path_successful(&mut self, _actual_path: &[&RouteHop]) {}
+	fn payment_path_successful(&mut self, _actual_path: &Path) {}
 
-	fn probe_failed(&mut self, _actual_path: &[&RouteHop], _: u64) {}
+	fn probe_failed(&mut self, _actual_path: &Path, _: u64) {}
 
-	fn probe_successful(&mut self, _actual_path: &[&RouteHop]) {}
+	fn probe_successful(&mut self, _actual_path: &Path) {}
 }
 
 impl Drop for TestScorer {

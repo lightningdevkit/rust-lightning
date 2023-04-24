@@ -2276,8 +2276,8 @@ pub fn route_payment<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_route:
 		.with_features(expected_route.last().unwrap().node.invoice_features());
 	let route = get_route(origin_node, &payment_params, recv_value, TEST_FINAL_CLTV).unwrap();
 	assert_eq!(route.paths.len(), 1);
-	assert_eq!(route.paths[0].len(), expected_route.len());
-	for (node, hop) in expected_route.iter().zip(route.paths[0].iter()) {
+	assert_eq!(route.paths[0].hops.len(), expected_route.len());
+	for (node, hop) in expected_route.iter().zip(route.paths[0].hops.iter()) {
 		assert_eq!(hop.pubkey, node.node.get_our_node_id());
 	}
 
@@ -2297,8 +2297,8 @@ pub fn route_over_limit<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_rou
 		&origin_node.node.get_our_node_id(), &payment_params, &network_graph,
 		None, recv_value, TEST_FINAL_CLTV, origin_node.logger, &scorer, &random_seed_bytes).unwrap();
 	assert_eq!(route.paths.len(), 1);
-	assert_eq!(route.paths[0].len(), expected_route.len());
-	for (node, hop) in expected_route.iter().zip(route.paths[0].iter()) {
+	assert_eq!(route.paths[0].hops.len(), expected_route.len());
+	for (node, hop) in expected_route.iter().zip(route.paths[0].hops.iter()) {
 		assert_eq!(hop.pubkey, node.node.get_our_node_id());
 	}
 
@@ -2404,7 +2404,7 @@ pub fn pass_failed_payment_back<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expe
 					assert_eq!(payment_hash, our_payment_hash);
 					assert!(payment_failed_permanently);
 					for (idx, hop) in expected_route.iter().enumerate() {
-						assert_eq!(hop.node.get_our_node_id(), path[idx].pubkey);
+						assert_eq!(hop.node.get_our_node_id(), path.hops[idx].pubkey);
 					}
 					payment_id.unwrap()
 				},

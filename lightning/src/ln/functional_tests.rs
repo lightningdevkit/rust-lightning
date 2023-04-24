@@ -26,7 +26,7 @@ use crate::ln::channel::{Channel, ChannelError};
 use crate::ln::{chan_utils, onion_utils};
 use crate::ln::chan_utils::{OFFERED_HTLC_SCRIPT_WEIGHT, htlc_success_tx_weight, htlc_timeout_tx_weight, HTLCOutputInCommitment};
 use crate::routing::gossip::{NetworkGraph, NetworkUpdate};
-use crate::routing::router::{PaymentParameters, Route, RouteHop, RouteParameters, find_route, get_route};
+use crate::routing::router::{Path, PaymentParameters, Route, RouteHop, RouteParameters, find_route, get_route};
 use crate::ln::features::{ChannelFeatures, NodeFeatures};
 use crate::ln::msgs;
 use crate::ln::msgs::{ChannelMessageHandler, RoutingMessageHandler, ErrorAction};
@@ -1044,7 +1044,7 @@ fn fake_network_test() {
 	});
 	hops[1].fee_msat = chan_4.1.contents.fee_base_msat as u64 + chan_4.1.contents.fee_proportional_millionths as u64 * hops[2].fee_msat as u64 / 1000000;
 	hops[0].fee_msat = chan_3.0.contents.fee_base_msat as u64 + chan_3.0.contents.fee_proportional_millionths as u64 * hops[1].fee_msat as u64 / 1000000;
-	let payment_preimage_1 = send_along_route(&nodes[1], Route { paths: vec![hops], payment_params: None }, &vec!(&nodes[2], &nodes[3], &nodes[1])[..], 1000000).0;
+	let payment_preimage_1 = send_along_route(&nodes[1], Route { paths: vec![Path { hops, blinded_tail: None }], payment_params: None }, &vec!(&nodes[2], &nodes[3], &nodes[1])[..], 1000000).0;
 
 	let mut hops = Vec::with_capacity(3);
 	hops.push(RouteHop {
@@ -1073,7 +1073,7 @@ fn fake_network_test() {
 	});
 	hops[1].fee_msat = chan_2.1.contents.fee_base_msat as u64 + chan_2.1.contents.fee_proportional_millionths as u64 * hops[2].fee_msat as u64 / 1000000;
 	hops[0].fee_msat = chan_3.1.contents.fee_base_msat as u64 + chan_3.1.contents.fee_proportional_millionths as u64 * hops[1].fee_msat as u64 / 1000000;
-	let payment_hash_2 = send_along_route(&nodes[1], Route { paths: vec![hops], payment_params: None }, &vec!(&nodes[3], &nodes[2], &nodes[1])[..], 1000000).1;
+	let payment_hash_2 = send_along_route(&nodes[1], Route { paths: vec![Path { hops, blinded_tail: None }], payment_params: None }, &vec!(&nodes[3], &nodes[2], &nodes[1])[..], 1000000).1;
 
 	// Claim the rebalances...
 	fail_payment(&nodes[1], &vec!(&nodes[3], &nodes[2], &nodes[1])[..], payment_hash_2);
@@ -1831,8 +1831,8 @@ fn test_channel_reserve_holding_cell_htlcs() {
 		let payment_params = PaymentParameters::from_node_id(nodes[2].node.get_our_node_id(), TEST_FINAL_CLTV)
 			.with_features(nodes[2].node.invoice_features()).with_max_channel_saturation_power_of_half(0);
 		let (mut route, our_payment_hash, _, our_payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[2], payment_params, recv_value_0, TEST_FINAL_CLTV);
-		route.paths[0].last_mut().unwrap().fee_msat += 1;
-		assert!(route.paths[0].iter().rev().skip(1).all(|h| h.fee_msat == feemsat));
+		route.paths[0].hops.last_mut().unwrap().fee_msat += 1;
+		assert!(route.paths[0].hops.iter().rev().skip(1).all(|h| h.fee_msat == feemsat));
 
 		unwrap_send_err!(nodes[0].node.send_payment_with_route(&route, our_payment_hash,
 				RecipientOnionFields::secret_only(our_payment_secret), PaymentId(our_payment_hash.0)
@@ -5749,7 +5749,7 @@ fn test_fail_holding_cell_htlc_upon_free() {
 			assert_eq!(PaymentId(our_payment_hash.0), *payment_id.as_ref().unwrap());
 			assert_eq!(our_payment_hash.clone(), *payment_hash);
 			assert_eq!(*payment_failed_permanently, false);
-			assert_eq!(*short_channel_id, Some(route.paths[0][0].short_channel_id));
+			assert_eq!(*short_channel_id, Some(route.paths[0].hops[0].short_channel_id));
 		},
 		_ => panic!("Unexpected event"),
 	}
@@ -5840,7 +5840,7 @@ fn test_free_and_fail_holding_cell_htlcs() {
 			assert_eq!(payment_id_2, *payment_id.as_ref().unwrap());
 			assert_eq!(payment_hash_2.clone(), *payment_hash);
 			assert_eq!(*payment_failed_permanently, false);
-			assert_eq!(*short_channel_id, Some(route_2.paths[0][0].short_channel_id));
+			assert_eq!(*short_channel_id, Some(route_2.paths[0].hops[0].short_channel_id));
 		},
 		_ => panic!("Unexpected event"),
 	}
@@ -6037,7 +6037,7 @@ fn test_update_add_htlc_bolt2_sender_value_below_minimum_msat() {
 	let _chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 95000000);
 
 	let (mut route, our_payment_hash, _, our_payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[1], 100000);
-	route.paths[0][0].fee_msat = 100;
+	route.paths[0].hops[0].fee_msat = 100;
 
 	unwrap_send_err!(nodes[0].node.send_payment_with_route(&route, our_payment_hash,
 			RecipientOnionFields::secret_only(our_payment_secret), PaymentId(our_payment_hash.0)
@@ -6057,7 +6057,7 @@ fn test_update_add_htlc_bolt2_sender_zero_value_msat() {
 	let _chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 95000000);
 
 	let (mut route, our_payment_hash, _, our_payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[1], 100000);
-	route.paths[0][0].fee_msat = 0;
+	route.paths[0].hops[0].fee_msat = 0;
 	unwrap_send_err!(nodes[0].node.send_payment_with_route(&route, our_payment_hash,
 			RecipientOnionFields::secret_only(our_payment_secret), PaymentId(our_payment_hash.0)),
 		true, APIError::ChannelUnavailable { ref err },
@@ -6103,7 +6103,7 @@ fn test_update_add_htlc_bolt2_sender_cltv_expiry_too_high() {
 	let payment_params = PaymentParameters::from_node_id(nodes[1].node.get_our_node_id(), 0)
 		.with_features(nodes[1].node.invoice_features());
 	let (mut route, our_payment_hash, _, our_payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[1], payment_params, 100000000, 0);
-	route.paths[0].last_mut().unwrap().cltv_expiry_delta = 500000001;
+	route.paths[0].hops.last_mut().unwrap().cltv_expiry_delta = 500000001;
 	unwrap_send_err!(nodes[0].node.send_payment_with_route(&route, our_payment_hash,
 			RecipientOnionFields::secret_only(our_payment_secret), PaymentId(our_payment_hash.0)
 		), true, APIError::InvalidRoute { ref err },
@@ -6172,7 +6172,7 @@ fn test_update_add_htlc_bolt2_sender_exceed_max_htlc_value_in_flight() {
 	let (mut route, our_payment_hash, _, our_payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[1], max_in_flight);
 	// Manually create a route over our max in flight (which our router normally automatically
 	// limits us to.
-	route.paths[0][0].fee_msat =  max_in_flight + 1;
+	route.paths[0].hops[0].fee_msat =  max_in_flight + 1;
 	unwrap_send_err!(nodes[0].node.send_payment_with_route(&route, our_payment_hash,
 			RecipientOnionFields::secret_only(our_payment_secret), PaymentId(our_payment_hash.0)
 		), true, APIError::ChannelUnavailable { ref err },
@@ -7671,7 +7671,7 @@ fn test_pending_claimed_htlc_no_balance_underflow() {
 	// almost-claimed HTLC as available balance.
 	let (mut route, _, _, _) = get_route_and_payment_hash!(nodes[0], nodes[1], 10_000);
 	route.payment_params = None; // This is all wrong, but unnecessary
-	route.paths[0][0].pubkey = nodes[0].node.get_our_node_id();
+	route.paths[0].hops[0].pubkey = nodes[0].node.get_our_node_id();
 	let (_, payment_hash_2, payment_secret_2) = get_payment_preimage_hash!(nodes[0]);
 	nodes[1].node.send_payment_with_route(&route, payment_hash_2,
 		RecipientOnionFields::secret_only(payment_secret_2), PaymentId(payment_hash_2.0)).unwrap();
@@ -8043,19 +8043,19 @@ fn test_onion_value_mpp_set_calculation() {
 	let sample_path = route.paths.pop().unwrap();
 
 	let mut path_1 = sample_path.clone();
-	path_1[0].pubkey = nodes[1].node.get_our_node_id();
-	path_1[0].short_channel_id = chan_1_id;
-	path_1[1].pubkey = nodes[3].node.get_our_node_id();
-	path_1[1].short_channel_id = chan_3_id;
-	path_1[1].fee_msat = 100_000;
+	path_1.hops[0].pubkey = nodes[1].node.get_our_node_id();
+	path_1.hops[0].short_channel_id = chan_1_id;
+	path_1.hops[1].pubkey = nodes[3].node.get_our_node_id();
+	path_1.hops[1].short_channel_id = chan_3_id;
+	path_1.hops[1].fee_msat = 100_000;
 	route.paths.push(path_1);
 
 	let mut path_2 = sample_path.clone();
-	path_2[0].pubkey = nodes[2].node.get_our_node_id();
-	path_2[0].short_channel_id = chan_2_id;
-	path_2[1].pubkey = nodes[3].node.get_our_node_id();
-	path_2[1].short_channel_id = chan_4_id;
-	path_2[1].fee_msat = 1_000;
+	path_2.hops[0].pubkey = nodes[2].node.get_our_node_id();
+	path_2.hops[0].short_channel_id = chan_2_id;
+	path_2.hops[1].pubkey = nodes[3].node.get_our_node_id();
+	path_2.hops[1].short_channel_id = chan_4_id;
+	path_2.hops[1].fee_msat = 1_000;
 	route.paths.push(path_2);
 
 	// Send payment
@@ -8152,11 +8152,11 @@ fn do_test_overshoot_mpp(msat_amounts: &[u64], total_msat: u64) {
 	for i in 0..routing_node_count {
 		let routing_node = 2 + i;
 		let mut path = sample_path.clone();
-		path[0].pubkey = nodes[routing_node].node.get_our_node_id();
-		path[0].short_channel_id = src_chan_ids[i];
-		path[1].pubkey = nodes[dst_idx].node.get_our_node_id();
-		path[1].short_channel_id = dst_chan_ids[i];
-		path[1].fee_msat = msat_amounts[i];
+		path.hops[0].pubkey = nodes[routing_node].node.get_our_node_id();
+		path.hops[0].short_channel_id = src_chan_ids[i];
+		path.hops[1].pubkey = nodes[dst_idx].node.get_our_node_id();
+		path.hops[1].short_channel_id = dst_chan_ids[i];
+		path.hops[1].fee_msat = msat_amounts[i];
 		route.paths.push(path);
 	}
 
@@ -8205,12 +8205,12 @@ fn test_simple_mpp() {
 	let (mut route, payment_hash, payment_preimage, payment_secret) = get_route_and_payment_hash!(&nodes[0], nodes[3], 100000);
 	let path = route.paths[0].clone();
 	route.paths.push(path);
-	route.paths[0][0].pubkey = nodes[1].node.get_our_node_id();
-	route.paths[0][0].short_channel_id = chan_1_id;
-	route.paths[0][1].short_channel_id = chan_3_id;
-	route.paths[1][0].pubkey = nodes[2].node.get_our_node_id();
-	route.paths[1][0].short_channel_id = chan_2_id;
-	route.paths[1][1].short_channel_id = chan_4_id;
+	route.paths[0].hops[0].pubkey = nodes[1].node.get_our_node_id();
+	route.paths[0].hops[0].short_channel_id = chan_1_id;
+	route.paths[0].hops[1].short_channel_id = chan_3_id;
+	route.paths[1].hops[0].pubkey = nodes[2].node.get_our_node_id();
+	route.paths[1].hops[0].short_channel_id = chan_2_id;
+	route.paths[1].hops[1].short_channel_id = chan_4_id;
 	send_along_route_with_secret(&nodes[0], route, &[&[&nodes[1], &nodes[3]], &[&nodes[2], &nodes[3]]], 200_000, payment_hash, payment_secret);
 	claim_payment_along_route(&nodes[0], &[&[&nodes[1], &nodes[3]], &[&nodes[2], &nodes[3]]], false, payment_preimage);
 }
@@ -9414,7 +9414,7 @@ fn test_inconsistent_mpp_params() {
 	assert_eq!(route.paths.len(), 2);
 	route.paths.sort_by(|path_a, _| {
 		// Sort the path so that the path through nodes[1] comes first
-		if path_a[0].pubkey == nodes[1].node.get_our_node_id() {
+		if path_a.hops[0].pubkey == nodes[1].node.get_our_node_id() {
 			core::cmp::Ordering::Less } else { core::cmp::Ordering::Greater }
 	});
 
@@ -9590,7 +9590,7 @@ fn test_double_partial_claim() {
 	assert_eq!(route.paths.len(), 2);
 	route.paths.sort_by(|path_a, _| {
 		// Sort the path so that the path through nodes[1] comes first
-		if path_a[0].pubkey == nodes[1].node.get_our_node_id() {
+		if path_a.hops[0].pubkey == nodes[1].node.get_our_node_id() {
 			core::cmp::Ordering::Less } else { core::cmp::Ordering::Greater }
 	});
 

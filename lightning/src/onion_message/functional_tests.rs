@@ -9,10 +9,11 @@
 
 //! Onion message testing and test utilities live here.
 
+use crate::blinded_path::BlindedPath;
 use crate::chain::keysinterface::{NodeSigner, Recipient};
 use crate::ln::features::InitFeatures;
 use crate::ln::msgs::{self, DecodeError, OnionMessageHandler};
-use super::{BlindedPath, CustomOnionMessageContents, CustomOnionMessageHandler, Destination, OnionMessageContents, OnionMessenger, SendError};
+use super::{CustomOnionMessageContents, CustomOnionMessageHandler, Destination, OnionMessageContents, OnionMessenger, SendError};
 use crate::util::ser::{Writeable, Writer};
 use crate::util::test_utils;
 
@@ -135,7 +136,7 @@ fn two_unblinded_two_blinded() {
 	let test_msg = OnionMessageContents::Custom(TestCustomMessage {});
 
 	let secp_ctx = Secp256k1::new();
-	let blinded_path = BlindedPath::new(&[nodes[3].get_node_pk(), nodes[4].get_node_pk()], &*nodes[4].keys_manager, &secp_ctx).unwrap();
+	let blinded_path = BlindedPath::new_for_message(&[nodes[3].get_node_pk(), nodes[4].get_node_pk()], &*nodes[4].keys_manager, &secp_ctx).unwrap();
 
 	nodes[0].messenger.send_onion_message(&[nodes[1].get_node_pk(), nodes[2].get_node_pk()], Destination::BlindedPath(blinded_path), test_msg, None).unwrap();
 	pass_along_path(&nodes, None);
@@ -147,7 +148,7 @@ fn three_blinded_hops() {
 	let test_msg = OnionMessageContents::Custom(TestCustomMessage {});
 
 	let secp_ctx = Secp256k1::new();
-	let blinded_path = BlindedPath::new(&[nodes[1].get_node_pk(), nodes[2].get_node_pk(), nodes[3].get_node_pk()], &*nodes[3].keys_manager, &secp_ctx).unwrap();
+	let blinded_path = BlindedPath::new_for_message(&[nodes[1].get_node_pk(), nodes[2].get_node_pk(), nodes[3].get_node_pk()], &*nodes[3].keys_manager, &secp_ctx).unwrap();
 
 	nodes[0].messenger.send_onion_message(&[], Destination::BlindedPath(blinded_path), test_msg, None).unwrap();
 	pass_along_path(&nodes, None);
@@ -173,13 +174,13 @@ fn we_are_intro_node() {
 	let test_msg = TestCustomMessage {};
 
 	let secp_ctx = Secp256k1::new();
-	let blinded_path = BlindedPath::new(&[nodes[0].get_node_pk(), nodes[1].get_node_pk(), nodes[2].get_node_pk()], &*nodes[2].keys_manager, &secp_ctx).unwrap();
+	let blinded_path = BlindedPath::new_for_message(&[nodes[0].get_node_pk(), nodes[1].get_node_pk(), nodes[2].get_node_pk()], &*nodes[2].keys_manager, &secp_ctx).unwrap();
 
 	nodes[0].messenger.send_onion_message(&[], Destination::BlindedPath(blinded_path), OnionMessageContents::Custom(test_msg.clone()), None).unwrap();
 	pass_along_path(&nodes, None);
 
 	// Try with a two-hop blinded path where we are the introduction node.
-	let blinded_path = BlindedPath::new(&[nodes[0].get_node_pk(), nodes[1].get_node_pk()], &*nodes[1].keys_manager, &secp_ctx).unwrap();
+	let blinded_path = BlindedPath::new_for_message(&[nodes[0].get_node_pk(), nodes[1].get_node_pk()], &*nodes[1].keys_manager, &secp_ctx).unwrap();
 	nodes[0].messenger.send_onion_message(&[], Destination::BlindedPath(blinded_path), OnionMessageContents::Custom(test_msg), None).unwrap();
 	nodes.remove(2);
 	pass_along_path(&nodes, None);
@@ -193,13 +194,13 @@ fn invalid_blinded_path_error() {
 
 	// 0 hops
 	let secp_ctx = Secp256k1::new();
-	let mut blinded_path = BlindedPath::new(&[nodes[1].get_node_pk(), nodes[2].get_node_pk()], &*nodes[2].keys_manager, &secp_ctx).unwrap();
+	let mut blinded_path = BlindedPath::new_for_message(&[nodes[1].get_node_pk(), nodes[2].get_node_pk()], &*nodes[2].keys_manager, &secp_ctx).unwrap();
 	blinded_path.blinded_hops.clear();
 	let err = nodes[0].messenger.send_onion_message(&[], Destination::BlindedPath(blinded_path), OnionMessageContents::Custom(test_msg.clone()), None).unwrap_err();
 	assert_eq!(err, SendError::TooFewBlindedHops);
 
 	// 1 hop
-	let mut blinded_path = BlindedPath::new(&[nodes[1].get_node_pk(), nodes[2].get_node_pk()], &*nodes[2].keys_manager, &secp_ctx).unwrap();
+	let mut blinded_path = BlindedPath::new_for_message(&[nodes[1].get_node_pk(), nodes[2].get_node_pk()], &*nodes[2].keys_manager, &secp_ctx).unwrap();
 	blinded_path.blinded_hops.remove(0);
 	assert_eq!(blinded_path.blinded_hops.len(), 1);
 	let err = nodes[0].messenger.send_onion_message(&[], Destination::BlindedPath(blinded_path), OnionMessageContents::Custom(test_msg), None).unwrap_err();
@@ -213,7 +214,7 @@ fn reply_path() {
 	let secp_ctx = Secp256k1::new();
 
 	// Destination::Node
-	let reply_path = BlindedPath::new(&[nodes[2].get_node_pk(), nodes[1].get_node_pk(), nodes[0].get_node_pk()], &*nodes[0].keys_manager, &secp_ctx).unwrap();
+	let reply_path = BlindedPath::new_for_message(&[nodes[2].get_node_pk(), nodes[1].get_node_pk(), nodes[0].get_node_pk()], &*nodes[0].keys_manager, &secp_ctx).unwrap();
 	nodes[0].messenger.send_onion_message(&[nodes[1].get_node_pk(), nodes[2].get_node_pk()], Destination::Node(nodes[3].get_node_pk()), OnionMessageContents::Custom(test_msg.clone()), Some(reply_path)).unwrap();
 	pass_along_path(&nodes, None);
 	// Make sure the last node successfully decoded the reply path.
@@ -222,8 +223,8 @@ fn reply_path() {
 		&format!("Received an onion message with path_id None and a reply_path"), 1);
 
 	// Destination::BlindedPath
-	let blinded_path = BlindedPath::new(&[nodes[1].get_node_pk(), nodes[2].get_node_pk(), nodes[3].get_node_pk()], &*nodes[3].keys_manager, &secp_ctx).unwrap();
-	let reply_path = BlindedPath::new(&[nodes[2].get_node_pk(), nodes[1].get_node_pk(), nodes[0].get_node_pk()], &*nodes[0].keys_manager, &secp_ctx).unwrap();
+	let blinded_path = BlindedPath::new_for_message(&[nodes[1].get_node_pk(), nodes[2].get_node_pk(), nodes[3].get_node_pk()], &*nodes[3].keys_manager, &secp_ctx).unwrap();
+	let reply_path = BlindedPath::new_for_message(&[nodes[2].get_node_pk(), nodes[1].get_node_pk(), nodes[0].get_node_pk()], &*nodes[0].keys_manager, &secp_ctx).unwrap();
 
 	nodes[0].messenger.send_onion_message(&[], Destination::BlindedPath(blinded_path), OnionMessageContents::Custom(test_msg), Some(reply_path)).unwrap();
 	pass_along_path(&nodes, None);
