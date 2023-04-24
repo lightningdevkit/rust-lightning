@@ -7324,6 +7324,42 @@ pub mod benches {
 			"generate_large_mpp_routes_with_probabilistic_scorer");
 	}
 
+	pub fn generate_routes_with_nonlinear_probabilistic_scorer(bench: &mut Criterion) {
+		let logger = TestLogger::new();
+		let network_graph = bench_utils::read_network_graph(&logger).unwrap();
+		let mut params = ProbabilisticScoringFeeParameters::default();
+		params.linear_success_probability = false;
+		let scorer = ProbabilisticScorer::new(
+			ProbabilisticScoringDecayParameters::default(), &network_graph, &logger);
+		generate_routes(bench, &network_graph, scorer, &params,
+			channelmanager::provided_invoice_features(&UserConfig::default()), 0,
+			"generate_routes_with_nonlinear_probabilistic_scorer");
+	}
+
+	pub fn generate_mpp_routes_with_nonlinear_probabilistic_scorer(bench: &mut Criterion) {
+		let logger = TestLogger::new();
+		let network_graph = bench_utils::read_network_graph(&logger).unwrap();
+		let mut params = ProbabilisticScoringFeeParameters::default();
+		params.linear_success_probability = false;
+		let scorer = ProbabilisticScorer::new(
+			ProbabilisticScoringDecayParameters::default(), &network_graph, &logger);
+		generate_routes(bench, &network_graph, scorer, &params,
+			channelmanager::provided_invoice_features(&UserConfig::default()), 0,
+			"generate_mpp_routes_with_nonlinear_probabilistic_scorer");
+	}
+
+	pub fn generate_large_mpp_routes_with_nonlinear_probabilistic_scorer(bench: &mut Criterion) {
+		let logger = TestLogger::new();
+		let network_graph = bench_utils::read_network_graph(&logger).unwrap();
+		let mut params = ProbabilisticScoringFeeParameters::default();
+		params.linear_success_probability = false;
+		let scorer = ProbabilisticScorer::new(
+			ProbabilisticScoringDecayParameters::default(), &network_graph, &logger);
+		generate_routes(bench, &network_graph, scorer, &params,
+			channelmanager::provided_invoice_features(&UserConfig::default()), 100_000_000,
+			"generate_large_mpp_routes_with_nonlinear_probabilistic_scorer");
+	}
+
 	fn generate_routes<S: ScoreLookUp + ScoreUpdate>(
 		bench: &mut Criterion, graph: &NetworkGraph<&TestLogger>, mut scorer: S,
 		score_params: &S::ScoreParams, features: Bolt11InvoiceFeatures, starting_amount: u64,
