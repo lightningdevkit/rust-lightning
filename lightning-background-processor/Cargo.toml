@@ -1,6 +1,6 @@
 [package]
 name = "lightning-background-processor"
-version = "0.0.114"
+version = "0.0.115"
 authors = ["Valentine Wallace <vwallace@protonmail.com>"]
 license = "MIT OR Apache-2.0"
 repository = "http://github.com/lightningdevkit/rust-lightning"
@@ -21,11 +21,11 @@ default = ["std"]
 
 [dependencies]
 bitcoin = { version = "0.29.0", default-features = false }
-lightning = { version = "0.0.114", path = "../lightning", default-features = false }
-lightning-rapid-gossip-sync = { version = "0.0.114", path = "../lightning-rapid-gossip-sync", default-features = false }
+lightning = { version = "0.0.115", path = "../lightning", default-features = false }
+lightning-rapid-gossip-sync = { version = "0.0.115", path = "../lightning-rapid-gossip-sync", default-features = false }
 
 [dev-dependencies]
 tokio = { version = "1.14", features = [ "macros", "rt", "rt-multi-thread", "sync", "time" ] }
-lightning = { version = "0.0.114", path = "../lightning", features = ["_test_utils"] }
-lightning-invoice = { version = "0.22.0", path = "../lightning-invoice" }
-lightning-persister = { version = "0.0.114", path = "../lightning-persister" }
+lightning = { version = "0.0.115", path = "../lightning", features = ["_test_utils"] }
+lightning-invoice = { version = "0.23.0", path = "../lightning-invoice" }
+lightning-persister = { version = "0.0.115", path = "../lightning-persister" }

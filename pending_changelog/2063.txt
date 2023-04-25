@@ -1,4 +1,0 @@
-## API Updates
-
-- `Event::PaymentPathFailed::retry` will always be `None` if we initiate a payment on 0.0.115
-	then downgrade to an earlier version (#2063)
