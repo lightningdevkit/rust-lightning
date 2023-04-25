@@ -116,6 +116,8 @@ impl<T: SeekReadable> TryFrom<Vec<u8>> for ParsedMessage<T> {
 }
 
 /// Error when parsing a bech32 encoded message using [`str::parse`].
+///
+/// This is not exported to bindings users as its name conflicts with the BOLT 11 ParseError type.
 #[derive(Debug, PartialEq)]
 pub enum ParseError {
 	/// The bech32 encoding does not conform to the BOLT 12 requirements for continuing messages
@@ -135,6 +137,8 @@ pub enum ParseError {
 }
 
 /// Error when interpreting a TLV stream as a specific type.
+///
+/// This is not exported to bindings users as its name conflicts with the BOLT 11 SemanticError type.
 #[derive(Debug, PartialEq)]
 pub enum SemanticError {
 	/// The current [`std::time::SystemTime`] is past the offer or invoice's expiration.

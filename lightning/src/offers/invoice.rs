@@ -134,6 +134,8 @@ pub(super) const SIGNATURE_TAG: &'static str = concat!("lightning", "invoice", "
 ///
 /// See [module-level documentation] for usage.
 ///
+/// This is not exported to bindings users as builder patterns don't map outside of move semantics.
+///
 /// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
 /// [`Refund`]: crate::offers::refund::Refund
 /// [module-level documentation]: self
@@ -145,12 +147,18 @@ pub struct InvoiceBuilder<'a, S: SigningPubkeyStrategy> {
 }
 
 /// Indicates how [`Invoice::signing_pubkey`] was set.
+///
+/// This is not exported to bindings users as builder patterns don't map outside of move semantics.
 pub trait SigningPubkeyStrategy {}
 
 /// [`Invoice::signing_pubkey`] was explicitly set.
+///
+/// This is not exported to bindings users as builder patterns don't map outside of move semantics.
 pub struct ExplicitSigningPubkey {}
 
 /// [`Invoice::signing_pubkey`] was derived.
+///
+/// This is not exported to bindings users as builder patterns don't map outside of move semantics.
 pub struct DerivedSigningPubkey {}
 
 impl SigningPubkeyStrategy for ExplicitSigningPubkey {}
@@ -369,6 +377,8 @@ impl<'a> UnsignedInvoice<'a> {
 	}
 
 	/// Signs the invoice using the given function.
+	///
+	/// This is not exported to bindings users as functions aren't currently mapped.
 	pub fn sign<F, E>(self, sign: F) -> Result<Invoice, SignError<E>>
 	where
 		F: FnOnce(&Message) -> Result<Signature, E>
@@ -404,6 +414,8 @@ impl<'a> UnsignedInvoice<'a> {
 ///
 /// An invoice may be sent in response to an [`InvoiceRequest`] in the case of an offer or sent
 /// directly after scanning a refund. It includes all the information needed to pay a recipient.
+///
+/// This is not exported to bindings users as its name conflicts with the BOLT 11 Invoice type.
 ///
 /// [`Offer`]: crate::offers::offer::Offer
 /// [`Refund`]: crate::offers::refund::Refund

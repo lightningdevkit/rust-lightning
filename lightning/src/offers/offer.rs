@@ -98,6 +98,8 @@ pub(super) const IV_BYTES: &[u8; IV_LEN] = b"LDK Offer ~~~~~~";
 ///
 /// See [module-level documentation] for usage.
 ///
+/// This is not exported to bindings users as builder patterns don't map outside of move semantics.
+///
 /// [module-level documentation]: self
 pub struct OfferBuilder<'a, M: MetadataStrategy, T: secp256k1::Signing> {
 	offer: OfferContents,
@@ -106,12 +108,18 @@ pub struct OfferBuilder<'a, M: MetadataStrategy, T: secp256k1::Signing> {
 }
 
 /// Indicates how [`Offer::metadata`] may be set.
+///
+/// This is not exported to bindings users as builder patterns don't map outside of move semantics.
 pub trait MetadataStrategy {}
 
 /// [`Offer::metadata`] may be explicitly set or left empty.
+///
+/// This is not exported to bindings users as builder patterns don't map outside of move semantics.
 pub struct ExplicitMetadata {}
 
 /// [`Offer::metadata`] will be derived.
+///
+/// This is not exported to bindings users as builder patterns don't map outside of move semantics.
 pub struct DerivedMetadata {}
 
 impl MetadataStrategy for ExplicitMetadata {}
@@ -448,6 +456,8 @@ impl Offer {
 	///
 	/// Useful to protect the sender's privacy.
 	///
+	/// This is not exported to bindings users as builder patterns don't map outside of move semantics.
+	///
 	/// [`InvoiceRequest::payer_id`]: crate::offers::invoice_request::InvoiceRequest::payer_id
 	/// [`InvoiceRequest::metadata`]: crate::offers::invoice_request::InvoiceRequest::metadata
 	/// [`Invoice::verify`]: crate::offers::invoice::Invoice::verify
@@ -469,6 +479,8 @@ impl Offer {
 	/// [`InvoiceRequest::payer_id`] instead of deriving a different key for each request.
 	///
 	/// Useful for recurring payments using the same `payer_id` with different invoices.
+	///
+	/// This is not exported to bindings users as builder patterns don't map outside of move semantics.
 	///
 	/// [`InvoiceRequest::payer_id`]: crate::offers::invoice_request::InvoiceRequest::payer_id
 	pub fn request_invoice_deriving_metadata<ES: Deref>(
@@ -495,6 +507,8 @@ impl Offer {
 	/// Otherwise, payments may be correlated.
 	///
 	/// Errors if the offer contains unknown required features.
+	///
+	/// This is not exported to bindings users as builder patterns don't map outside of move semantics.
 	///
 	/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
 	pub fn request_invoice(
