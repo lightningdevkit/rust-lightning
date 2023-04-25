@@ -464,6 +464,8 @@ impl InvoiceRequest {
 
 	/// Signature of the invoice request using [`payer_id`].
 	///
+	/// This is not exported to bindings users as Signature is not yet mapped.
+	///
 	/// [`payer_id`]: Self::payer_id
 	pub fn signature(&self) -> Signature {
 		self.signature
@@ -571,6 +573,8 @@ impl InvoiceRequest {
 	/// Verifies that the request was for an offer created using the given key. Returns the derived
 	/// keys need to sign an [`Invoice`] for the request if they could be extracted from the
 	/// metadata.
+	///
+	/// This is not exported to bindings users as KeyPair is not yet mapped.
 	///
 	/// [`Invoice`]: crate::offers::invoice::Invoice
 	pub fn verify<T: secp256k1::Signing>(
