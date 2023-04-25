@@ -125,7 +125,8 @@ pub enum Bolt12ParseError {
 	/// being parsed.
 	InvalidBech32Hrp,
 	/// The string could not be bech32 decoded.
-	Bech32(bech32::Error),
+	Bech32(/// This is not exported to bindings users as the details don't matter much
+		bech32::Error),
 	/// The bech32 decoded string could not be decoded as the expected message type.
 	Decode(DecodeError),
 	/// The parsed message has invalid semantics.
