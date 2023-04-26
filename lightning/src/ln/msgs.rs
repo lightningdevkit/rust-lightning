@@ -545,6 +545,13 @@ pub enum NetAddress {
 		/// The port on which the node is listening.
 		port: u16,
 	},
+	/// A websocket address/port on which the peer is listening.
+	Websocket {
+		/// The hostname on which the node is listening.
+		hostname: Hostname,
+		/// The port on which the node is listening.
+		port: u16,
+	},
 }
 impl NetAddress {
 	/// Gets the ID of this address type. Addresses in [`NodeAnnouncement`] messages should be sorted
@@ -556,6 +563,7 @@ impl NetAddress {
 			&NetAddress::OnionV2(_) => { 3 },
 			&NetAddress::OnionV3 {..} => { 4 },
 			&NetAddress::Hostname {..} => { 5 },
+			&NetAddress::Websocket {..} => { 6 },
 		}
 	}
 
@@ -568,6 +576,8 @@ impl NetAddress {
 			&NetAddress::OnionV3 { .. } => { 37 },
 			// Consists of 1-byte hostname length, hostname bytes, and 2-byte port.
 			&NetAddress::Hostname { ref hostname, .. } => { u16::from(hostname.len()) + 3 },
+			// Consists of 1-byte hostname length, hostname bytes, and 2-byte port.
+			&NetAddress::Websocket { ref hostname, ..} => { u16::from(hostname.len()) + 3 },
 		}
 	}
 
@@ -606,6 +616,11 @@ impl Writeable for NetAddress {
 				hostname.write(writer)?;
 				port.write(writer)?;
 			},
+			&NetAddress::Websocket { ref hostname, ref port } => {
+				6u8.write(writer)?;
+				hostname.write(writer)?;
+				port.write(writer)?;
+			},
 		}
 		Ok(())
 	}
@@ -638,6 +653,12 @@ impl Readable for Result<NetAddress, u8> {
 			},
 			5 => {
 				Ok(Ok(NetAddress::Hostname {
+					hostname: Readable::read(reader)?,
+					port: Readable::read(reader)?,
+				}))
+			},
+			6 => {
+				Ok(Ok(NetAddress::Websocket {
 					hostname: Readable::read(reader)?,
 					port: Readable::read(reader)?,
 				}))
@@ -2288,7 +2309,7 @@ mod tests {
 		do_encoding_channel_announcement(true, true);
 	}
 
-	fn do_encoding_node_announcement(unknown_features_bits: bool, ipv4: bool, ipv6: bool, onionv2: bool, onionv3: bool, hostname: bool, excess_address_data: bool, excess_data: bool) {
+	fn do_encoding_node_announcement(unknown_features_bits: bool, ipv4: bool, ipv6: bool, onionv2: bool, onionv3: bool, hostname: bool, websocket: bool, excess_address_data: bool, excess_data: bool) {
 		let secp_ctx = Secp256k1::new();
 		let (privkey_1, pubkey_1) = get_keys_from!("0101010101010101010101010101010101010101010101010101010101010101", secp_ctx);
 		let sig_1 = get_sig_on!(privkey_1, secp_ctx, String::from("01010101010101010101010101010101"));
@@ -2328,6 +2349,12 @@ mod tests {
 			addresses.push(msgs::NetAddress::Hostname {
 				hostname: Hostname::try_from(String::from("host")).unwrap(),
 				port: 9735,
+			});
+		}
+		if websocket {
+			addresses.push(msgs::NetAddress::Websocket {
+				hostname: Hostname::try_from(String::from("host")).unwrap(),
+				port: 9736,
 			});
 		}
 		let mut addr_len = 0;
@@ -2373,6 +2400,9 @@ mod tests {
 		if hostname {
 			target_value.append(&mut hex::decode("0504686f73742607").unwrap());
 		}
+		if websocket {
+			target_value.append(&mut hex::decode("0604686f73742608").unwrap());
+		}
 		if excess_address_data {
 			target_value.append(&mut hex::decode("216c280b5395a2546e7e4b2663e04f811622f15a4f92e83aa2e92ba2a573c139142c54ae63072a1ec1ee7dc0c04bde5c847806172aa05c92c22ae8e308d1d269").unwrap());
 		}
@@ -2384,16 +2414,16 @@ mod tests {
 
 	#[test]
 	fn encoding_node_announcement() {
-		do_encoding_node_announcement(true, true, true, true, true, true, true, true);
-		do_encoding_node_announcement(false, false, false, false, false, false, false, false);
-		do_encoding_node_announcement(false, true, false, false, false, false, false, false);
-		do_encoding_node_announcement(false, false, true, false, false, false, false, false);
-		do_encoding_node_announcement(false, false, false, true, false, false, false, false);
-		do_encoding_node_announcement(false, false, false, false, true, false, false, false);
-		do_encoding_node_announcement(false, false, false, false, false, true, false, false);
-		do_encoding_node_announcement(false, false, false, false, false, false, true, false);
-		do_encoding_node_announcement(false, true, false, true, false, false, true, false);
-		do_encoding_node_announcement(false, false, true, false, true, false, false, false);
+		do_encoding_node_announcement(true, true, true, true, true, true, true, true, true);
+		do_encoding_node_announcement(false, false, false, false, false, false, false, false, false);
+		do_encoding_node_announcement(false, true, false, false, false, false, false, false, false);
+		do_encoding_node_announcement(false, false, true, false, false, false, false, false, false);
+		do_encoding_node_announcement(false, false, false, true, false, false, false, false, false);
+		do_encoding_node_announcement(false, false, false, false, true, false, false, false, false);
+		do_encoding_node_announcement(false, false, false, false, false, true, false, false, false);
+		do_encoding_node_announcement(false, false, false, false, false, false, false, true, false);
+		do_encoding_node_announcement(false, true, false, true, false, false, false, true, false);
+		do_encoding_node_announcement(false, false, true, false, true, false, false, false, false);
 	}
 
 	fn do_encoding_channel_update(direction: bool, disable: bool, excess_data: bool) {
