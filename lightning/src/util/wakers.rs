@@ -45,7 +45,7 @@ impl Notifier {
 	pub(crate) fn notify(&self) {
 		let mut lock = self.notify_pending.lock().unwrap();
 		if let Some(future_state) = &lock.1 {
-			if future_state.lock().unwrap().complete() {
+			if complete_future(future_state) {
 				lock.1 = None;
 				return;
 			}
@@ -116,15 +116,15 @@ pub(crate) struct FutureState {
 	callbacks_made: bool,
 }
 
-impl FutureState {
-	fn complete(&mut self) -> bool {
-		for (counts_as_call, callback) in self.callbacks.drain(..) {
-			callback.call();
-			self.callbacks_made |= counts_as_call;
-		}
-		self.complete = true;
-		self.callbacks_made
+fn complete_future(this: &Arc<Mutex<FutureState>>) -> bool {
+	let mut state_lock = this.lock().unwrap();
+	let state = &mut *state_lock;
+	for (counts_as_call, callback) in state.callbacks.drain(..) {
+		callback.call();
+		state.callbacks_made |= counts_as_call;
 	}
+	state.complete = true;
+	state.callbacks_made
 }
 
 /// A simple future which can complete once, and calls some callback(s) when it does so.
@@ -421,9 +421,9 @@ mod tests {
 		future.register_callback(Box::new(move || assert!(!callback_ref.fetch_or(true, Ordering::SeqCst))));
 
 		assert!(!callback.load(Ordering::SeqCst));
-		future.state.lock().unwrap().complete();
+		complete_future(&future.state);
 		assert!(callback.load(Ordering::SeqCst));
-		future.state.lock().unwrap().complete();
+		complete_future(&future.state);
 	}
 
 	#[test]
@@ -435,7 +435,7 @@ mod tests {
 				callbacks_made: false,
 			}))
 		};
-		future.state.lock().unwrap().complete();
+		complete_future(&future.state);
 
 		let callback = Arc::new(AtomicBool::new(false));
 		let callback_ref = Arc::clone(&callback);
@@ -483,7 +483,7 @@ mod tests {
 		assert_eq!(Pin::new(&mut second_future).poll(&mut Context::from_waker(&second_waker)), Poll::Pending);
 		assert!(!second_woken.load(Ordering::SeqCst));
 
-		future.state.lock().unwrap().complete();
+		complete_future(&future.state);
 		assert!(woken.load(Ordering::SeqCst));
 		assert!(second_woken.load(Ordering::SeqCst));
 		assert_eq!(Pin::new(&mut future).poll(&mut Context::from_waker(&waker)), Poll::Ready(()));
