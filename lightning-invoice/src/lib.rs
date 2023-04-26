@@ -455,6 +455,15 @@ pub enum TaggedField {
 pub struct Sha256(/// This is not exported to bindings users as the native hash types are not currently mapped
 	pub sha256::Hash);
 
+impl Sha256 {
+	/// Constructs a new [`Sha256`] from the given bytes, which are assumed to be the output of a
+	/// single sha256 hash.
+	#[cfg(c_bindings)]
+	pub fn from_bytes(bytes: &[u8; 32]) -> Self {
+		Self(sha256::Hash::from_slice(bytes).expect("from_slice only fails if len is not 32"))
+	}
+}
+
 /// Description string
 ///
 /// # Invariants

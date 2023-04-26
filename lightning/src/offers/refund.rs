@@ -105,6 +105,8 @@ pub(super) const IV_BYTES: &[u8; IV_LEN] = b"LDK Refund ~~~~~";
 ///
 /// See [module-level documentation] for usage.
 ///
+/// This is not exported to bindings users as builder patterns don't map outside of move semantics.
+///
 /// [module-level documentation]: self
 pub struct RefundBuilder<'a, T: secp256k1::Signing> {
 	refund: RefundContents,
@@ -387,6 +389,8 @@ impl Refund {
 	/// See [`Refund::respond_with_no_std`] for further details where the aforementioned creation
 	/// time is used for the `created_at` parameter.
 	///
+	/// This is not exported to bindings users as builder patterns don't map outside of move semantics.
+	///
 	/// [`Duration`]: core::time::Duration
 	#[cfg(feature = "std")]
 	pub fn respond_with(
@@ -419,6 +423,8 @@ impl Refund {
 	///
 	/// Errors if the request contains unknown required features.
 	///
+	/// This is not exported to bindings users as builder patterns don't map outside of move semantics.
+	///
 	/// [`Invoice::created_at`]: crate::offers::invoice::Invoice::created_at
 	pub fn respond_with_no_std(
 		&self, payment_paths: Vec<(BlindedPath, BlindedPayInfo)>, payment_hash: PaymentHash,
@@ -435,6 +441,8 @@ impl Refund {
 	/// derived signing keys to sign the [`Invoice`].
 	///
 	/// See [`Refund::respond_with`] for further details.
+	///
+	/// This is not exported to bindings users as builder patterns don't map outside of move semantics.
 	///
 	/// [`Invoice`]: crate::offers::invoice::Invoice
 	#[cfg(feature = "std")]
@@ -458,6 +466,8 @@ impl Refund {
 	/// derived signing keys to sign the [`Invoice`].
 	///
 	/// See [`Refund::respond_with_no_std`] for further details.
+	///
+	/// This is not exported to bindings users as builder patterns don't map outside of move semantics.
 	///
 	/// [`Invoice`]: crate::offers::invoice::Invoice
 	pub fn respond_using_derived_keys_no_std<ES: Deref>(
