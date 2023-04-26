@@ -490,7 +490,7 @@ const MEDIAN_HOP_CLTV_EXPIRY_DELTA: u32 = 40;
 // down from (1300-93) / 61 = 19.78... to arrive at a conservative estimate of 19.
 const MAX_PATH_LENGTH_ESTIMATE: u8 = 19;
 
-/// The recipient of a payment.
+/// Information used to route a payment.
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct PaymentParameters {
 	/// The node id of the payee.
@@ -504,8 +504,8 @@ pub struct PaymentParameters {
 	/// [`for_keysend`]: Self::for_keysend
 	pub features: Option<InvoiceFeatures>,
 
-	/// Hints for routing to the payee, containing channels connecting the payee to public nodes.
-	pub route_hints: Hints,
+	/// Information about the payee, such as their features and route hints for their channels.
+	pub payee: Payee,
 
 	/// Expiration of a payment to the payee, in seconds relative to the UNIX epoch.
 	pub expiry_time: Option<u64>,
@@ -546,9 +546,9 @@ impl Writeable for PaymentParameters {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		let mut clear_hints = &vec![];
 		let mut blinded_hints = &vec![];
-		match &self.route_hints {
-			Hints::Clear(hints) => clear_hints = hints,
-			Hints::Blinded(hints) => blinded_hints = hints,
+		match &self.payee {
+			Payee::Clear { route_hints, .. } => clear_hints = route_hints,
+			Payee::Blinded { route_hints } => blinded_hints = route_hints,
 		}
 		write_tlv_fields!(writer, {
 			(0, self.payee_pubkey, required),
@@ -582,18 +582,18 @@ impl ReadableArgs<u32> for PaymentParameters {
 		});
 		let clear_route_hints = route_hints.unwrap_or(vec![]);
 		let blinded_route_hints = blinded_route_hints.unwrap_or(vec![]);
-		let route_hints = if blinded_route_hints.len() != 0 {
+		let payee = if blinded_route_hints.len() != 0 {
 			if clear_route_hints.len() != 0 { return Err(DecodeError::InvalidValue) }
-			Hints::Blinded(blinded_route_hints)
+			Payee::Blinded { route_hints: blinded_route_hints }
 		} else {
-			Hints::Clear(clear_route_hints)
+			Payee::Clear { route_hints: clear_route_hints }
 		};
 		Ok(Self {
 			payee_pubkey: _init_tlv_based_struct_field!(payee_pubkey, required),
 			max_total_cltv_expiry_delta: _init_tlv_based_struct_field!(max_total_cltv_expiry_delta, (default_value, unused)),
 			features,
 			max_path_count: _init_tlv_based_struct_field!(max_path_count, (default_value, unused)),
-			route_hints,
+			payee,
 			max_channel_saturation_power_of_half: _init_tlv_based_struct_field!(max_channel_saturation_power_of_half, (default_value, unused)),
 			expiry_time,
 			previously_failed_channels: previously_failed_channels.unwrap_or(Vec::new()),
@@ -612,7 +612,7 @@ impl PaymentParameters {
 		Self {
 			payee_pubkey,
 			features: None,
-			route_hints: Hints::Clear(vec![]),
+			payee: Payee::Clear { route_hints: vec![] },
 			expiry_time: None,
 			max_total_cltv_expiry_delta: DEFAULT_MAX_TOTAL_CLTV_EXPIRY_DELTA,
 			max_path_count: DEFAULT_MAX_PATH_COUNT,
@@ -641,7 +641,7 @@ impl PaymentParameters {
 	///
 	/// This is not exported to bindings users since bindings don't support move semantics
 	pub fn with_route_hints(self, route_hints: Vec<RouteHint>) -> Self {
-		Self { route_hints: Hints::Clear(route_hints), ..self }
+		Self { payee: Payee::Clear { route_hints }, ..self }
 	}
 
 	/// Includes a payment expiration in seconds relative to the UNIX epoch.
@@ -673,14 +673,22 @@ impl PaymentParameters {
 	}
 }
 
-/// Routing hints for the tail of the route.
+/// The recipient of a payment, differing based on whether they've hidden their identity with route
+/// blinding.
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
-pub enum Hints {
+pub enum Payee {
 	/// The recipient provided blinded paths and payinfo to reach them. The blinded paths themselves
 	/// will be included in the final [`Route`].
-	Blinded(Vec<(BlindedPayInfo, BlindedPath)>),
+	Blinded {
+		/// Aggregated routing info and blinded paths, for routing to the payee without knowing their
+		/// node id.
+		route_hints: Vec<(BlindedPayInfo, BlindedPath)>,
+	},
 	/// The recipient included these route hints in their BOLT11 invoice.
-	Clear(Vec<RouteHint>),
+	Clear {
+		/// Hints for routing to the payee, containing channels connecting the payee to public nodes.
+		route_hints: Vec<RouteHint>,
+	},
 }
 
 /// A list of hops along a payment path terminating with a channel to the recipient.
@@ -1131,9 +1139,9 @@ where L::Target: Logger {
 		return Err(LightningError{err: "Cannot send a payment of 0 msat".to_owned(), action: ErrorAction::IgnoreError});
 	}
 
-	match &payment_params.route_hints {
-		Hints::Clear(hints) => {
-			for route in hints.iter() {
+	match &payment_params.payee {
+		Payee::Clear { route_hints } => {
+			for route in route_hints.iter() {
 				for hop in &route.0 {
 					if hop.src_node_id == payment_params.payee_pubkey {
 						return Err(LightningError{err: "Route hint cannot have the payee as the source.".to_owned(), action: ErrorAction::IgnoreError});
@@ -1664,8 +1672,8 @@ where L::Target: Logger {
 		// If a caller provided us with last hops, add them to routing targets. Since this happens
 		// earlier than general path finding, they will be somewhat prioritized, although currently
 		// it matters only if the fees are exactly the same.
-		let route_hints = match &payment_params.route_hints {
-			Hints::Clear(hints) => hints,
+		let route_hints = match &payment_params.payee {
+			Payee::Clear { route_hints } => route_hints,
 			_ => return Err(LightningError{err: "Routing to blinded paths isn't supported yet".to_owned(), action: ErrorAction::IgnoreError}),
 		};
 		for route in route_hints.iter().filter(|route| !route.0.is_empty()) {
