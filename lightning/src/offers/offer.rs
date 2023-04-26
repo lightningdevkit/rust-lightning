@@ -98,6 +98,8 @@ pub(super) const IV_BYTES: &[u8; IV_LEN] = b"LDK Offer ~~~~~~";
 ///
 /// See [module-level documentation] for usage.
 ///
+/// This is not exported to bindings users as builder patterns don't map outside of move semantics.
+///
 /// [module-level documentation]: self
 pub struct OfferBuilder<'a, M: MetadataStrategy, T: secp256k1::Signing> {
 	offer: OfferContents,
@@ -106,12 +108,18 @@ pub struct OfferBuilder<'a, M: MetadataStrategy, T: secp256k1::Signing> {
 }
 
 /// Indicates how [`Offer::metadata`] may be set.
+///
+/// This is not exported to bindings users as builder patterns don't map outside of move semantics.
 pub trait MetadataStrategy {}
 
 /// [`Offer::metadata`] may be explicitly set or left empty.
+///
+/// This is not exported to bindings users as builder patterns don't map outside of move semantics.
 pub struct ExplicitMetadata {}
 
 /// [`Offer::metadata`] will be derived.
+///
+/// This is not exported to bindings users as builder patterns don't map outside of move semantics.
 pub struct DerivedMetadata {}
 
 impl MetadataStrategy for ExplicitMetadata {}
@@ -448,6 +456,8 @@ impl Offer {
 	///
 	/// Useful to protect the sender's privacy.
 	///
+	/// This is not exported to bindings users as builder patterns don't map outside of move semantics.
+	///
 	/// [`InvoiceRequest::payer_id`]: crate::offers::invoice_request::InvoiceRequest::payer_id
 	/// [`InvoiceRequest::metadata`]: crate::offers::invoice_request::InvoiceRequest::metadata
 	/// [`Invoice::verify`]: crate::offers::invoice::Invoice::verify
@@ -469,6 +479,8 @@ impl Offer {
 	/// [`InvoiceRequest::payer_id`] instead of deriving a different key for each request.
 	///
 	/// Useful for recurring payments using the same `payer_id` with different invoices.
+	///
+	/// This is not exported to bindings users as builder patterns don't map outside of move semantics.
 	///
 	/// [`InvoiceRequest::payer_id`]: crate::offers::invoice_request::InvoiceRequest::payer_id
 	pub fn request_invoice_deriving_metadata<ES: Deref>(
@@ -495,6 +507,8 @@ impl Offer {
 	/// Otherwise, payments may be correlated.
 	///
 	/// Errors if the offer contains unknown required features.
+	///
+	/// This is not exported to bindings users as builder patterns don't map outside of move semantics.
 	///
 	/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
 	pub fn request_invoice(
@@ -691,6 +705,9 @@ pub enum Amount {
 	/// An amount of currency specified using ISO 4712.
 	Currency {
 		/// The currency that the amount is denominated in.
+		///
+		/// This is not exported to bindings users as bindings have troubles with type aliases to
+		/// byte arrays.
 		iso4217_code: CurrencyCode,
 		/// The amount in the currency unit adjusted by the ISO 4712 exponent (e.g., USD cents).
 		amount: u64,
@@ -698,7 +715,7 @@ pub enum Amount {
 }
 
 /// An ISO 4712 three-letter currency code (e.g., USD).
-pub type CurrencyCode = [u8; 3];
+pub(crate) type CurrencyCode = [u8; 3];
 
 /// Quantity of items supported by an [`Offer`].
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -708,7 +725,8 @@ pub enum Quantity {
 	///
 	/// May be used with `NonZeroU64::new(1)` but prefer to use [`Quantity::One`] if only one item
 	/// is supported.
-	Bounded(NonZeroU64),
+	Bounded(/// This is not exported to bindings users as builder patterns don't map outside of move semantics.
+		NonZeroU64),
 	/// One or more items. Use when more than one item can be requested without any limit.
 	Unbounded,
 	/// Only one item. Use when only a single item can be requested.

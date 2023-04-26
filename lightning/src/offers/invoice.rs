@@ -134,6 +134,8 @@ pub(super) const SIGNATURE_TAG: &'static str = concat!("lightning", "invoice", "
 ///
 /// See [module-level documentation] for usage.
 ///
+/// This is not exported to bindings users as builder patterns don't map outside of move semantics.
+///
 /// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
 /// [`Refund`]: crate::offers::refund::Refund
 /// [module-level documentation]: self
@@ -145,12 +147,18 @@ pub struct InvoiceBuilder<'a, S: SigningPubkeyStrategy> {
 }
 
 /// Indicates how [`Invoice::signing_pubkey`] was set.
+///
+/// This is not exported to bindings users as builder patterns don't map outside of move semantics.
 pub trait SigningPubkeyStrategy {}
 
 /// [`Invoice::signing_pubkey`] was explicitly set.
+///
+/// This is not exported to bindings users as builder patterns don't map outside of move semantics.
 pub struct ExplicitSigningPubkey {}
 
 /// [`Invoice::signing_pubkey`] was derived.
+///
+/// This is not exported to bindings users as builder patterns don't map outside of move semantics.
 pub struct DerivedSigningPubkey {}
 
 impl SigningPubkeyStrategy for ExplicitSigningPubkey {}
@@ -303,6 +311,8 @@ impl<'a, S: SigningPubkeyStrategy> InvoiceBuilder<'a, S> {
 	///
 	/// Successive calls to this method will add another address. Caller is responsible for not
 	/// adding duplicate addresses and only calling if capable of receiving to P2TR addresses.
+	///
+	/// This is not exported to bindings users as TweakedPublicKey isn't yet mapped.
 	pub fn fallback_v1_p2tr_tweaked(mut self, output_key: &TweakedPublicKey) -> Self {
 		let address = FallbackAddress {
 			version: WitnessVersion::V1.to_num(),
@@ -369,6 +379,8 @@ impl<'a> UnsignedInvoice<'a> {
 	}
 
 	/// Signs the invoice using the given function.
+	///
+	/// This is not exported to bindings users as functions aren't currently mapped.
 	pub fn sign<F, E>(self, sign: F) -> Result<Invoice, SignError<E>>
 	where
 		F: FnOnce(&Message) -> Result<Signature, E>
@@ -404,6 +416,8 @@ impl<'a> UnsignedInvoice<'a> {
 ///
 /// An invoice may be sent in response to an [`InvoiceRequest`] in the case of an offer or sent
 /// directly after scanning a refund. It includes all the information needed to pay a recipient.
+///
+/// This is not exported to bindings users as its name conflicts with the BOLT 11 Invoice type.
 ///
 /// [`Offer`]: crate::offers::offer::Offer
 /// [`Refund`]: crate::offers::refund::Refund
@@ -464,6 +478,8 @@ impl Invoice {
 	///
 	/// Blinded paths provide recipient privacy by obfuscating its node id. Note, however, that this
 	/// privacy is lost if a public node id is used for [`Invoice::signing_pubkey`].
+	///
+	/// This is not exported to bindings users as a slice of tuples isn't exportable.
 	pub fn payment_paths(&self) -> &[(BlindedPath, BlindedPayInfo)] {
 		&self.contents.fields().payment_paths[..]
 	}
@@ -504,6 +520,8 @@ impl Invoice {
 
 	/// Fallback addresses for paying the invoice on-chain, in order of most-preferred to
 	/// least-preferred.
+	///
+	/// This is not exported to bindings users as Address is not yet mapped
 	pub fn fallbacks(&self) -> Vec<Address> {
 		let network = match self.network() {
 			None => return Vec::new(),
@@ -568,6 +586,8 @@ impl Invoice {
 	}
 
 	/// Signature of the invoice verified using [`Invoice::signing_pubkey`].
+	///
+	/// This is not exported to bindings users as SIgnature is not yet mapped.
 	pub fn signature(&self) -> Signature {
 		self.signature
 	}

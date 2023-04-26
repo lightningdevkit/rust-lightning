@@ -84,6 +84,8 @@ pub(super) const IV_BYTES: &[u8; IV_LEN] = b"LDK Invreq ~~~~~";
 ///
 /// See [module-level documentation] for usage.
 ///
+/// This is not exported to bindings users as builder patterns don't map outside of move semantics.
+///
 /// [module-level documentation]: self
 pub struct InvoiceRequestBuilder<'a, 'b, P: PayerIdStrategy, T: secp256k1::Signing> {
 	offer: &'a Offer,
@@ -94,12 +96,18 @@ pub struct InvoiceRequestBuilder<'a, 'b, P: PayerIdStrategy, T: secp256k1::Signi
 }
 
 /// Indicates how [`InvoiceRequest::payer_id`] will be set.
+///
+/// This is not exported to bindings users as builder patterns don't map outside of move semantics.
 pub trait PayerIdStrategy {}
 
 /// [`InvoiceRequest::payer_id`] will be explicitly set.
+///
+/// This is not exported to bindings users as builder patterns don't map outside of move semantics.
 pub struct ExplicitPayerId {}
 
 /// [`InvoiceRequest::payer_id`] will be derived.
+///
+/// This is not exported to bindings users as builder patterns don't map outside of move semantics.
 pub struct DerivedPayerId {}
 
 impl PayerIdStrategy for ExplicitPayerId {}
@@ -340,6 +348,8 @@ pub struct UnsignedInvoiceRequest<'a> {
 
 impl<'a> UnsignedInvoiceRequest<'a> {
 	/// Signs the invoice request using the given function.
+	///
+	/// This is not exported to bindings users as functions are not yet mapped.
 	pub fn sign<F, E>(self, sign: F) -> Result<InvoiceRequest, SignError<E>>
 	where
 		F: FnOnce(&Message) -> Result<Signature, E>
@@ -454,6 +464,8 @@ impl InvoiceRequest {
 
 	/// Signature of the invoice request using [`payer_id`].
 	///
+	/// This is not exported to bindings users as Signature is not yet mapped.
+	///
 	/// [`payer_id`]: Self::payer_id
 	pub fn signature(&self) -> Signature {
 		self.signature
@@ -464,6 +476,8 @@ impl InvoiceRequest {
 	///
 	/// See [`InvoiceRequest::respond_with_no_std`] for further details where the aforementioned
 	/// creation time is used for the `created_at` parameter.
+	///
+	/// This is not exported to bindings users as builder patterns don't map outside of move semantics.
 	///
 	/// [`Duration`]: core::time::Duration
 	#[cfg(feature = "std")]
@@ -493,6 +507,8 @@ impl InvoiceRequest {
 	///
 	/// Errors if the request contains unknown required features.
 	///
+	/// This is not exported to bindings users as builder patterns don't map outside of move semantics.
+	///
 	/// [`Invoice::created_at`]: crate::offers::invoice::Invoice::created_at
 	pub fn respond_with_no_std(
 		&self, payment_paths: Vec<(BlindedPath, BlindedPayInfo)>, payment_hash: PaymentHash,
@@ -510,6 +526,8 @@ impl InvoiceRequest {
 	/// same [`ExpandedKey`] as the one used to create the offer.
 	///
 	/// See [`InvoiceRequest::respond_with`] for further details.
+	///
+	/// This is not exported to bindings users as builder patterns don't map outside of move semantics.
 	///
 	/// [`Invoice`]: crate::offers::invoice::Invoice
 	#[cfg(feature = "std")]
@@ -532,6 +550,8 @@ impl InvoiceRequest {
 	///
 	/// See [`InvoiceRequest::respond_with_no_std`] for further details.
 	///
+	/// This is not exported to bindings users as builder patterns don't map outside of move semantics.
+	///
 	/// [`Invoice`]: crate::offers::invoice::Invoice
 	pub fn verify_and_respond_using_derived_keys_no_std<T: secp256k1::Signing>(
 		&self, payment_paths: Vec<(BlindedPath, BlindedPayInfo)>, payment_hash: PaymentHash,
@@ -553,6 +573,8 @@ impl InvoiceRequest {
 	/// Verifies that the request was for an offer created using the given key. Returns the derived
 	/// keys need to sign an [`Invoice`] for the request if they could be extracted from the
 	/// metadata.
+	///
+	/// This is not exported to bindings users as KeyPair is not yet mapped.
 	///
 	/// [`Invoice`]: crate::offers::invoice::Invoice
 	pub fn verify<T: secp256k1::Signing>(

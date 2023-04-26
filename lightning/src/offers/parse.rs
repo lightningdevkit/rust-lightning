@@ -116,6 +116,8 @@ impl<T: SeekReadable> TryFrom<Vec<u8>> for ParsedMessage<T> {
 }
 
 /// Error when parsing a bech32 encoded message using [`str::parse`].
+///
+/// This is not exported to bindings users as its name conflicts with the BOLT 11 ParseError type.
 #[derive(Debug, PartialEq)]
 pub enum ParseError {
 	/// The bech32 encoding does not conform to the BOLT 12 requirements for continuing messages
@@ -125,7 +127,8 @@ pub enum ParseError {
 	/// being parsed.
 	InvalidBech32Hrp,
 	/// The string could not be bech32 decoded.
-	Bech32(bech32::Error),
+	Bech32(/// This is not exported to bindings users as the details don't matter much
+		bech32::Error),
 	/// The bech32 decoded string could not be decoded as the expected message type.
 	Decode(DecodeError),
 	/// The parsed message has invalid semantics.
@@ -135,6 +138,8 @@ pub enum ParseError {
 }
 
 /// Error when interpreting a TLV stream as a specific type.
+///
+/// This is not exported to bindings users as its name conflicts with the BOLT 11 SemanticError type.
 #[derive(Debug, PartialEq)]
 pub enum SemanticError {
 	/// The current [`std::time::SystemTime`] is past the offer or invoice's expiration.

@@ -27,7 +27,8 @@ use crate::util::ser::{VecWriter, Writeable, Writer};
 use crate::ln::peer_channel_encryptor::{PeerChannelEncryptor,NextNoiseStep};
 use crate::ln::wire;
 use crate::ln::wire::Encode;
-use crate::onion_message::{CustomOnionMessageContents, CustomOnionMessageHandler, SimpleArcOnionMessenger, SimpleRefOnionMessenger};
+use crate::onion_message::messenger::{CustomOnionMessageHandler, SimpleArcOnionMessenger, SimpleRefOnionMessenger};
+use crate::onion_message::packet::CustomOnionMessageContents;
 use crate::routing::gossip::{NetworkGraph, P2PGossipSync, NodeId, NodeAlias};
 use crate::util::atomic_counter::AtomicCounter;
 use crate::util::logger::Logger;
@@ -2160,7 +2161,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 			excess_data: Vec::new(),
 		};
 		let node_announce_sig = match self.node_signer.sign_gossip_message(
-			msgs::UnsignedGossipMessage::NodeAnnouncement(&announcement)
+			msgs::UnsignedGossipMessage::NodeAnnouncement(announcement.clone())
 		) {
 			Ok(sig) => sig,
 			Err(_) => {
