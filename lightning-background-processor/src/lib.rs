@@ -859,7 +859,7 @@ mod tests {
 	use lightning::util::persist::KVStorePersister;
 	use lightning_persister::FilesystemPersister;
 	use std::collections::VecDeque;
-	use std::fs;
+	use std::{fs, env};
 	use std::path::PathBuf;
 	use std::sync::{Arc, Mutex};
 	use std::sync::mpsc::SyncSender;
@@ -1116,7 +1116,9 @@ mod tests {
 		path.to_str().unwrap().to_string()
 	}
 
-	fn create_nodes(num_nodes: usize, persist_dir: String) -> Vec<Node> {
+	fn create_nodes(num_nodes: usize, persist_dir: &str) -> (String, Vec<Node>) {
+		let persist_temp_path = env::temp_dir().join(persist_dir);
+		let persist_dir = persist_temp_path.to_string_lossy().to_string();
 		let network = Network::Testnet;
 		let mut nodes = Vec::new();
 		for i in 0..num_nodes {
@@ -1129,7 +1131,7 @@ mod tests {
 			let seed = [i as u8; 32];
 			let router = Arc::new(DefaultRouter::new(network_graph.clone(), logger.clone(), seed, scorer.clone()));
 			let chain_source = Arc::new(test_utils::TestChainSource::new(Network::Testnet));
-			let persister = Arc::new(FilesystemPersister::new(format!("{}_persister_{}", persist_dir, i)));
+			let persister = Arc::new(FilesystemPersister::new(format!("{}_persister_{}", &persist_dir, i)));
 			let now = Duration::from_secs(genesis_block.header.time as u64);
 			let keys_manager = Arc::new(KeysManager::new(&seed, now.as_secs(), now.subsec_nanos()));
 			let chain_monitor = Arc::new(chainmonitor::ChainMonitor::new(Some(chain_source.clone()), tx_broadcaster.clone(), logger.clone(), fee_estimator.clone(), persister.clone()));
@@ -1151,7 +1153,7 @@ mod tests {
 			}
 		}
 
-		nodes
+		(persist_dir, nodes)
 	}
 
 	macro_rules! open_channel {
@@ -1223,7 +1225,7 @@ mod tests {
 		// Test that when a new channel is created, the ChannelManager needs to be re-persisted with
 		// updates. Also test that when new updates are available, the manager signals that it needs
 		// re-persistence and is successfully re-persisted.
-		let nodes = create_nodes(2, "test_background_processor".to_string());
+		let (persist_dir, nodes) = create_nodes(2, "test_background_processor");
 
 		// Go through the channel creation process so that each node has something to persist. Since
 		// open_channel consumes events, it must complete before starting BackgroundProcessor to
@@ -1261,7 +1263,7 @@ mod tests {
 		}
 
 		// Check that the initial channel manager data is persisted as expected.
-		let filepath = get_full_filepath("test_background_processor_persister_0".to_string(), "manager".to_string());
+		let filepath = get_full_filepath(format!("{}_persister_0", &persist_dir), "manager".to_string());
 		check_persisted_data!(nodes[0].node, filepath.clone());
 
 		loop {
@@ -1278,11 +1280,11 @@ mod tests {
 		}
 
 		// Check network graph is persisted
-		let filepath = get_full_filepath("test_background_processor_persister_0".to_string(), "network_graph".to_string());
+		let filepath = get_full_filepath(format!("{}_persister_0", &persist_dir), "network_graph".to_string());
 		check_persisted_data!(nodes[0].network_graph, filepath.clone());
 
 		// Check scorer is persisted
-		let filepath = get_full_filepath("test_background_processor_persister_0".to_string(), "scorer".to_string());
+		let filepath = get_full_filepath(format!("{}_persister_0", &persist_dir), "scorer".to_string());
 		check_persisted_data!(nodes[0].scorer, filepath.clone());
 
 		if !std::thread::panicking() {
@@ -1295,7 +1297,7 @@ mod tests {
 		// Test that `ChannelManager::timer_tick_occurred` is called every `FRESHNESS_TIMER`,
 		// `ChainMonitor::rebroadcast_pending_claims` is called every `REBROADCAST_TIMER`, and
 		// `PeerManager::timer_tick_occurred` every `PING_TIMER`.
-		let nodes = create_nodes(1, "test_timer_tick_called".to_string());
+		let (_, nodes) = create_nodes(1, "test_timer_tick_called");
 		let data_dir = nodes[0].persister.get_data_dir();
 		let persister = Arc::new(Persister::new(data_dir));
 		let event_handler = |_: _| {};
@@ -1320,7 +1322,7 @@ mod tests {
 	#[test]
 	fn test_channel_manager_persist_error() {
 		// Test that if we encounter an error during manager persistence, the thread panics.
-		let nodes = create_nodes(2, "test_persist_error".to_string());
+		let (_, nodes) = create_nodes(2, "test_persist_error");
 		open_channel!(nodes[0], nodes[1], 100000);
 
 		let data_dir = nodes[0].persister.get_data_dir();
@@ -1340,7 +1342,7 @@ mod tests {
 	#[cfg(feature = "futures")]
 	async fn test_channel_manager_persist_error_async() {
 		// Test that if we encounter an error during manager persistence, the thread panics.
-		let nodes = create_nodes(2, "test_persist_error_sync".to_string());
+		let (_, nodes) = create_nodes(2, "test_persist_error_sync");
 		open_channel!(nodes[0], nodes[1], 100000);
 
 		let data_dir = nodes[0].persister.get_data_dir();
@@ -1368,7 +1370,7 @@ mod tests {
 	#[test]
 	fn test_network_graph_persist_error() {
 		// Test that if we encounter an error during network graph persistence, an error gets returned.
-		let nodes = create_nodes(2, "test_persist_network_graph_error".to_string());
+		let (_, nodes) = create_nodes(2, "test_persist_network_graph_error");
 		let data_dir = nodes[0].persister.get_data_dir();
 		let persister = Arc::new(Persister::new(data_dir).with_graph_error(std::io::ErrorKind::Other, "test"));
 		let event_handler = |_: _| {};
@@ -1386,7 +1388,7 @@ mod tests {
 	#[test]
 	fn test_scorer_persist_error() {
 		// Test that if we encounter an error during scorer persistence, an error gets returned.
-		let nodes = create_nodes(2, "test_persist_scorer_error".to_string());
+		let (_, nodes) = create_nodes(2, "test_persist_scorer_error");
 		let data_dir = nodes[0].persister.get_data_dir();
 		let persister = Arc::new(Persister::new(data_dir).with_scorer_error(std::io::ErrorKind::Other, "test"));
 		let event_handler = |_: _| {};
@@ -1403,7 +1405,7 @@ mod tests {
 
 	#[test]
 	fn test_background_event_handling() {
-		let mut nodes = create_nodes(2, "test_background_event_handling".to_string());
+		let (_, mut nodes) = create_nodes(2, "test_background_event_handling");
 		let channel_value = 100000;
 		let data_dir = nodes[0].persister.get_data_dir();
 		let persister = Arc::new(Persister::new(data_dir.clone()));
@@ -1477,7 +1479,7 @@ mod tests {
 
 	#[test]
 	fn test_scorer_persistence() {
-		let nodes = create_nodes(2, "test_scorer_persistence".to_string());
+		let (_, nodes) = create_nodes(2, "test_scorer_persistence");
 		let data_dir = nodes[0].persister.get_data_dir();
 		let persister = Arc::new(Persister::new(data_dir));
 		let event_handler = |_: _| {};
@@ -1549,7 +1551,7 @@ mod tests {
 	fn test_not_pruning_network_graph_until_graph_sync_completion() {
 		let (sender, receiver) = std::sync::mpsc::sync_channel(1);
 
-		let nodes = create_nodes(2, "test_not_pruning_network_graph_until_graph_sync_completion".to_string());
+		let (_, nodes) = create_nodes(2, "test_not_pruning_network_graph_until_graph_sync_completion");
 		let data_dir = nodes[0].persister.get_data_dir();
 		let persister = Arc::new(Persister::new(data_dir).with_graph_persistence_notifier(sender));
 
@@ -1568,7 +1570,7 @@ mod tests {
 	async fn test_not_pruning_network_graph_until_graph_sync_completion_async() {
 		let (sender, receiver) = std::sync::mpsc::sync_channel(1);
 
-		let nodes = create_nodes(2, "test_not_pruning_network_graph_until_graph_sync_completion_async".to_string());
+		let (_, nodes) = create_nodes(2, "test_not_pruning_network_graph_until_graph_sync_completion_async");
 		let data_dir = nodes[0].persister.get_data_dir();
 		let persister = Arc::new(Persister::new(data_dir).with_graph_persistence_notifier(sender));
 
@@ -1708,7 +1710,7 @@ mod tests {
 			_ => panic!("Unexpected event: {:?}", event),
 		};
 
-		let nodes = create_nodes(1, "test_payment_path_scoring".to_string());
+		let (_, nodes) = create_nodes(1, "test_payment_path_scoring");
 		let data_dir = nodes[0].persister.get_data_dir();
 		let persister = Arc::new(Persister::new(data_dir));
 		let bg_processor = BackgroundProcessor::start(persister, event_handler, nodes[0].chain_monitor.clone(), nodes[0].node.clone(), nodes[0].no_gossip_sync(), nodes[0].peer_manager.clone(), nodes[0].logger.clone(), Some(nodes[0].scorer.clone()));
@@ -1737,7 +1739,7 @@ mod tests {
 			}
 		};
 
-		let nodes = create_nodes(1, "test_payment_path_scoring_async".to_string());
+		let (_, nodes) = create_nodes(1, "test_payment_path_scoring_async");
 		let data_dir = nodes[0].persister.get_data_dir();
 		let persister = Arc::new(Persister::new(data_dir));
 
