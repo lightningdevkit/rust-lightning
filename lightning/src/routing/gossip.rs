@@ -1573,6 +1573,13 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 			return Err(LightningError{err: "Channel announcement node had a channel with itself".to_owned(), action: ErrorAction::IgnoreError});
 		}
 
+		if msg.chain_hash != self.genesis_hash {
+			return Err(LightningError {
+				err: "Channel announcement chain hash does not match genesis hash".to_owned(), 
+				action: ErrorAction::IgnoreAndLog(Level::Debug),
+			});
+		}
+
 		{
 			let channels = self.channels.read().unwrap();
 
@@ -1818,6 +1825,13 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 
 	fn update_channel_intern(&self, msg: &msgs::UnsignedChannelUpdate, full_msg: Option<&msgs::ChannelUpdate>, sig: Option<&secp256k1::ecdsa::Signature>) -> Result<(), LightningError> {
 		let chan_enabled = msg.flags & (1 << 1) != (1 << 1);
+
+		if msg.chain_hash != self.genesis_hash {
+			return Err(LightningError {
+				err: "Channel update chain hash does not match genesis hash".to_owned(),
+				action: ErrorAction::IgnoreAndLog(Level::Debug),
+			});
+		}
 
 		#[cfg(all(feature = "std", not(test), not(feature = "_test_utils")))]
 		{
@@ -2311,6 +2325,16 @@ pub(crate) mod tests {
 			Ok(_) => panic!(),
 			Err(e) => assert_eq!(e.err, "Channel announcement node had a channel with itself")
 		};
+
+		// Test that channel announcements with the wrong chain hash are ignored (network graph is testnet,
+		// announcement is mainnet).
+		let incorrect_chain_announcement = get_signed_channel_announcement(|unsigned_announcement| {
+			unsigned_announcement.chain_hash = genesis_block(Network::Bitcoin).header.block_hash();
+		}, node_1_privkey, node_2_privkey, &secp_ctx);
+		match gossip_sync.handle_channel_announcement(&incorrect_chain_announcement) {
+			Ok(_) => panic!(),
+			Err(e) => assert_eq!(e.err, "Channel announcement chain hash does not match genesis hash")
+		};
 	}
 
 	#[test]
@@ -2414,6 +2438,17 @@ pub(crate) mod tests {
 		match gossip_sync.handle_channel_update(&invalid_sig_channel_update) {
 			Ok(_) => panic!(),
 			Err(e) => assert_eq!(e.err, "Invalid signature on channel_update message")
+		};
+
+		// Test that channel updates with the wrong chain hash are ignored (network graph is testnet, channel
+		// update is mainet).
+		let incorrect_chain_update = get_signed_channel_update(|unsigned_channel_update| {
+			unsigned_channel_update.chain_hash = genesis_block(Network::Bitcoin).header.block_hash();
+		}, node_1_privkey, &secp_ctx);
+
+		match gossip_sync.handle_channel_update(&incorrect_chain_update) {
+			Ok(_) => panic!(),
+			Err(e) => assert_eq!(e.err, "Channel update chain hash does not match genesis hash")
 		};
 	}
 
