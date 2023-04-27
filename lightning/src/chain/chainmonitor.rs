@@ -825,8 +825,6 @@ impl<ChannelSigner: WriteableEcdsaChannelSigner, C: Deref, T: Deref, F: Deref, L
 
 #[cfg(test)]
 mod tests {
-	use bitcoin::{BlockHeader, TxMerkleNode};
-	use bitcoin::hashes::Hash;
 	use crate::{check_added_monitors, check_closed_broadcast, check_closed_event};
 	use crate::{expect_payment_sent, expect_payment_claimed, expect_payment_sent_without_paths, expect_payment_path_successful, get_event_msg};
 	use crate::{get_htlc_update_msgs, get_local_commitment_txn, get_revoke_commit_msgs, get_route_and_payment_hash, unwrap_send_err};
@@ -972,10 +970,7 @@ mod tests {
 
 		// Connect B's commitment transaction, but only to the ChainMonitor/ChannelMonitor. The
 		// channel is now closed, but the ChannelManager doesn't know that yet.
-		let new_header = BlockHeader {
-			version: 2, time: 0, bits: 0, nonce: 0,
-			prev_blockhash: nodes[0].best_block_info().0,
-			merkle_root: TxMerkleNode::all_zeros() };
+		let new_header = create_dummy_header(nodes[0].best_block_info().0, 0);
 		nodes[0].chain_monitor.chain_monitor.transactions_confirmed(&new_header,
 			&[(0, &remote_txn[0]), (1, &remote_txn[1])], nodes[0].best_block_info().1 + 1);
 		assert!(nodes[0].chain_monitor.release_pending_monitor_events().is_empty());
@@ -999,10 +994,7 @@ mod tests {
 
 		if block_timeout {
 			// After three blocks, pending MontiorEvents should be released either way.
-			let latest_header = BlockHeader {
-				version: 2, time: 0, bits: 0, nonce: 0,
-				prev_blockhash: nodes[0].best_block_info().0,
-				merkle_root: TxMerkleNode::all_zeros() };
+			let latest_header = create_dummy_header(nodes[0].best_block_info().0, 0);
 			nodes[0].chain_monitor.chain_monitor.best_block_updated(&latest_header, nodes[0].best_block_info().1 + LATENCY_GRACE_PERIOD_BLOCKS);
 		} else {
 			let persistences = chanmon_cfgs[0].persister.chain_sync_monitor_persistences.lock().unwrap().clone();

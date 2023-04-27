@@ -12,7 +12,6 @@
 //! There are a bunch of these as their handling is relatively error-prone so they are split out
 //! here. See also the chanmon_fail_consistency fuzz test.
 
-use bitcoin::blockdata::block::{Block, BlockHeader};
 use bitcoin::blockdata::constants::genesis_block;
 use bitcoin::hash_types::BlockHash;
 use bitcoin::network::constants::Network;
@@ -35,7 +34,6 @@ use crate::util::test_utils;
 
 use crate::io;
 use bitcoin::hashes::Hash;
-use bitcoin::TxMerkleNode;
 use crate::prelude::*;
 use crate::sync::{Arc, Mutex};
 
@@ -121,15 +119,7 @@ fn test_monitor_and_persister_update_fail() {
 		assert_eq!(chain_mon.watch_channel(outpoint, new_monitor), ChannelMonitorUpdateStatus::Completed);
 		chain_mon
 	};
-	let header = BlockHeader {
-		version: 0x20000000,
-		prev_blockhash: BlockHash::all_zeros(),
-		merkle_root: TxMerkleNode::all_zeros(),
-		time: 42,
-		bits: 42,
-		nonce: 42
-	};
-	chain_mon.chain_monitor.block_connected(&Block { header, txdata: vec![] }, 200);
+	chain_mon.chain_monitor.block_connected(&create_dummy_block(BlockHash::all_zeros(), 42, Vec::new()), 200);
 
 	// Set the persister's return value to be a InProgress.
 	persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);

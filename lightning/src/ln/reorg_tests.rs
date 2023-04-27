@@ -19,14 +19,11 @@ use crate::util::test_utils;
 use crate::util::ser::Writeable;
 use crate::util::string::UntrustedString;
 
-use bitcoin::blockdata::block::{Block, BlockHeader};
 use bitcoin::blockdata::script::Builder;
 use bitcoin::blockdata::opcodes;
 use bitcoin::secp256k1::Secp256k1;
 
 use crate::prelude::*;
-use bitcoin::hashes::Hash;
-use bitcoin::TxMerkleNode;
 
 use crate::ln::functional_test_utils::*;
 
@@ -67,7 +64,6 @@ fn do_test_onchain_htlc_reorg(local_commitment: bool, claim: bool) {
 	check_added_monitors!(nodes[2], 1);
 	get_htlc_update_msgs!(nodes[2], nodes[1].node.get_our_node_id());
 
-	let mut header = BlockHeader { version: 0x2000_0000, prev_blockhash: nodes[2].best_block_hash(), merkle_root: TxMerkleNode::all_zeros(), time: 42, bits: 42, nonce: 42 };
 	let claim_txn = if local_commitment {
 		// Broadcast node 1 commitment txn to broadcast the HTLC-Timeout
 		let node_1_commitment_txn = get_local_commitment_txn!(nodes[1], chan_2.2);
@@ -77,7 +73,7 @@ fn do_test_onchain_htlc_reorg(local_commitment: bool, claim: bool) {
 		check_spends!(node_1_commitment_txn[1], node_1_commitment_txn[0]);
 
 		// Give node 2 node 1's transactions and get its response (claiming the HTLC instead).
-		connect_block(&nodes[2], &Block { header, txdata: node_1_commitment_txn.clone() });
+		connect_block(&nodes[2], &create_dummy_block(nodes[2].best_block_hash(), 42, node_1_commitment_txn.clone()));
 		check_added_monitors!(nodes[2], 1);
 		check_closed_broadcast!(nodes[2], true); // We should get a BroadcastChannelUpdate (and *only* a BroadcstChannelUpdate)
 		check_closed_event!(nodes[2], 1, ClosureReason::CommitmentTxConfirmed);
@@ -88,8 +84,7 @@ fn do_test_onchain_htlc_reorg(local_commitment: bool, claim: bool) {
 		// Make sure node 1's height is the same as the !local_commitment case
 		connect_blocks(&nodes[1], 1);
 		// Confirm node 1's commitment txn (and HTLC-Timeout) on node 1
-		header.prev_blockhash = nodes[1].best_block_hash();
-		connect_block(&nodes[1], &Block { header, txdata: node_1_commitment_txn.clone() });
+		connect_block(&nodes[1], &create_dummy_block(nodes[1].best_block_hash(), 42, node_1_commitment_txn.clone()));
 
 		// ...but return node 1's commitment tx in case claim is set and we're preparing to reorg
 		vec![node_1_commitment_txn[0].clone(), node_2_commitment_txn[0].clone()]
@@ -125,11 +120,7 @@ fn do_test_onchain_htlc_reorg(local_commitment: bool, claim: bool) {
 		// Disconnect Node 1's HTLC-Timeout which was connected above
 		disconnect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
 
-		let block = Block {
-			header: BlockHeader { version: 0x20000000, prev_blockhash: nodes[1].best_block_hash(), merkle_root: TxMerkleNode::all_zeros(), time: 42, bits: 42, nonce: 42 },
-			txdata: claim_txn,
-		};
-		connect_block(&nodes[1], &block);
+		connect_block(&nodes[1], &create_dummy_block(nodes[1].best_block_hash(), 42, claim_txn));
 
 		// ChannelManager only polls chain::Watch::release_pending_monitor_events when we
 		// probe it for events, so we probe non-message events here (which should just be the
@@ -137,11 +128,7 @@ fn do_test_onchain_htlc_reorg(local_commitment: bool, claim: bool) {
 		expect_payment_forwarded!(nodes[1], nodes[0], nodes[2], Some(1000), true, true);
 	} else {
 		// Confirm the timeout tx and check that we fail the HTLC backwards
-		let block = Block {
-			header: BlockHeader { version: 0x20000000, prev_blockhash: nodes[1].best_block_hash(), merkle_root: TxMerkleNode::all_zeros(), time: 42, bits: 42, nonce: 42 },
-			txdata: vec![],
-		};
-		connect_block(&nodes[1], &block);
+		connect_block(&nodes[1], &create_dummy_block(nodes[1].best_block_hash(), 42, Vec::new()));
 		expect_pending_htlcs_forwardable_and_htlc_handling_failed!(nodes[1], vec![HTLCDestination::NextHopChannel { node_id: Some(nodes[2].node.get_our_node_id()), channel_id: chan_2.2 }]);
 	}
 
