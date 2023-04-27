@@ -10,7 +10,7 @@ use core::str::FromStr;
 use bech32::{u5, FromBase32};
 
 use bitcoin::{PubkeyHash, ScriptHash};
-use bitcoin::util::address::WitnessVersion;
+use bitcoin::address::WitnessVersion;
 use bitcoin_hashes::Hash;
 use bitcoin_hashes::sha256;
 use crate::prelude::*;
@@ -726,8 +726,8 @@ mod test {
 	use crate::de::Bolt11ParseError;
 	use secp256k1::PublicKey;
 	use bech32::u5;
-	use bitcoin_hashes::hex::FromHex;
 	use bitcoin_hashes::sha256;
+	use std::str::FromStr;
 
 	const CHARSET_REV: [i8; 128] = [
 		-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
@@ -778,7 +778,7 @@ mod test {
 			"qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypq".as_bytes()
 		);
 
-		let hash = sha256::Hash::from_hex(
+		let hash = sha256::Hash::from_str(
 			"0001020304050607080900010203040506070809000102030405060708090102"
 		).unwrap();
 		let expected = Ok(Sha256(hash));
@@ -855,7 +855,7 @@ mod test {
 		use crate::Fallback;
 		use bech32::FromBase32;
 		use bitcoin::{PubkeyHash, ScriptHash};
-		use bitcoin::util::address::WitnessVersion;
+		use bitcoin::address::WitnessVersion;
 		use bitcoin_hashes::Hash;
 
 		let cases = vec![
@@ -988,7 +988,7 @@ mod test {
 						data: RawDataPart {
 							timestamp: PositiveTimestamp::from_unix_timestamp(1496314658).unwrap(),
 							tagged_fields: vec ! [
-								PaymentHash(Sha256(sha256::Hash::from_hex(
+								PaymentHash(Sha256(sha256::Hash::from_str(
 									"0001020304050607080900010203040506070809000102030405060708090102"
 								).unwrap())).into(),
 								Description(crate::Description::new("coffee beans".to_owned()).unwrap()).into(),
@@ -1035,7 +1035,7 @@ mod test {
 					data: RawDataPart {
 					timestamp: PositiveTimestamp::from_unix_timestamp(1496314658).unwrap(),
 					tagged_fields: vec ! [
-						PaymentHash(Sha256(sha256::Hash::from_hex(
+						PaymentHash(Sha256(sha256::Hash::from_str(
 							"0001020304050607080900010203040506070809000102030405060708090102"
 						).unwrap())).into(),
 						Description(

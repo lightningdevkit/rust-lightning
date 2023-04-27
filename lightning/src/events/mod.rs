@@ -30,8 +30,9 @@ use crate::util::ser::{BigSize, FixedLengthReader, Writeable, Writer, MaybeReada
 use crate::util::string::UntrustedString;
 use crate::routing::router::{BlindedTail, Path, RouteHop, RouteParameters};
 
-use bitcoin::{PackedLockTime, Transaction, OutPoint};
-use bitcoin::blockdata::script::Script;
+use bitcoin::{Transaction, OutPoint};
+use bitcoin::blockdata::locktime::absolute::LockTime;
+use bitcoin::blockdata::script::ScriptBuf;
 use bitcoin::hashes::Hash;
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::secp256k1::PublicKey;
@@ -384,7 +385,7 @@ pub enum Event {
 		/// The value, in satoshis, that the output should have.
 		channel_value_satoshis: u64,
 		/// The script which should be used in the transaction output.
-		output_script: Script,
+		output_script: ScriptBuf,
 		/// The `user_channel_id` value passed in to [`ChannelManager::create_channel`] for outbound
 		/// channels, or to [`ChannelManager::accept_inbound_channel`] for inbound channels if
 		/// [`UserConfig::manually_accept_inbound_channels`] config flag is set to true. Otherwise
@@ -1253,7 +1254,7 @@ impl MaybeReadable for Event {
 						(5, fee_paid_msat, option),
 					});
 					if payment_hash.is_none() {
-						payment_hash = Some(PaymentHash(Sha256::hash(&payment_preimage.0[..]).into_inner()));
+						payment_hash = Some(PaymentHash(Sha256::hash(&payment_preimage.0[..]).to_byte_array()));
 					}
 					Ok(Some(Event::PaymentSent {
 						payment_id,
@@ -1395,7 +1396,7 @@ impl MaybeReadable for Event {
 			11u8 => {
 				let f = || {
 					let mut channel_id = ChannelId::new_zero();
-					let mut transaction = Transaction{ version: 2, lock_time: PackedLockTime::ZERO, input: Vec::new(), output: Vec::new() };
+					let mut transaction = Transaction{ version: 2, lock_time: LockTime::ZERO, input: Vec::new(), output: Vec::new() };
 					read_tlv_fields!(reader, {
 						(0, channel_id, required),
 						(2, transaction, required),

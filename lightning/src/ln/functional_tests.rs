@@ -38,11 +38,12 @@ use crate::util::string::UntrustedString;
 use crate::util::config::{UserConfig, MaxDustHTLCExposure};
 
 use bitcoin::hash_types::BlockHash;
-use bitcoin::blockdata::script::{Builder, Script};
+use bitcoin::blockdata::locktime::absolute::LockTime;
+use bitcoin::blockdata::script::{Builder, ScriptBuf};
 use bitcoin::blockdata::opcodes;
 use bitcoin::blockdata::constants::ChainHash;
 use bitcoin::network::constants::Network;
-use bitcoin::{PackedLockTime, Sequence, Transaction, TxIn, TxOut, Witness};
+use bitcoin::{Sequence, Transaction, TxIn, TxOut, Witness};
 use bitcoin::OutPoint as BitcoinOutPoint;
 
 use bitcoin::secp256k1::Secp256k1;
@@ -2860,8 +2861,8 @@ fn test_htlc_on_chain_success() {
 	assert_eq!(node_txn[1].input[0].witness.clone().last().unwrap().len(), ACCEPTED_HTLC_SCRIPT_WEIGHT);
 	assert!(node_txn[0].output[0].script_pubkey.is_v0_p2wsh()); // revokeable output
 	assert!(node_txn[1].output[0].script_pubkey.is_v0_p2wsh()); // revokeable output
-	assert_eq!(node_txn[0].lock_time.0, 0);
-	assert_eq!(node_txn[1].lock_time.0, 0);
+	assert_eq!(node_txn[0].lock_time, LockTime::ZERO);
+	assert_eq!(node_txn[1].lock_time, LockTime::ZERO);
 
 	// Verify that B's ChannelManager is able to extract preimage from HTLC Success tx and pass it backward
 	connect_block(&nodes[1], &create_dummy_block(nodes[1].best_block_hash(), 42, vec![commitment_tx[0].clone(), node_txn[0].clone(), node_txn[1].clone()]));
@@ -2942,8 +2943,8 @@ fn test_htlc_on_chain_success() {
 			// Node[0]: 2 * HTLC-timeout tx
 			check_spends!(node_txn[0], $commitment_tx);
 			check_spends!(node_txn[1], $commitment_tx);
-			assert_ne!(node_txn[0].lock_time.0, 0);
-			assert_ne!(node_txn[1].lock_time.0, 0);
+			assert_ne!(node_txn[0].lock_time, LockTime::ZERO);
+			assert_ne!(node_txn[1].lock_time, LockTime::ZERO);
 			if $htlc_offered {
 				assert_eq!(node_txn[0].input[0].witness.last().unwrap().len(), OFFERED_HTLC_SCRIPT_WEIGHT);
 				assert_eq!(node_txn[1].input[0].witness.last().unwrap().len(), OFFERED_HTLC_SCRIPT_WEIGHT);
@@ -2994,7 +2995,7 @@ fn test_htlc_on_chain_success() {
 	assert_eq!(commitment_spend.input.len(), 2);
 	assert_eq!(commitment_spend.input[0].witness.last().unwrap().len(), OFFERED_HTLC_SCRIPT_WEIGHT);
 	assert_eq!(commitment_spend.input[1].witness.last().unwrap().len(), OFFERED_HTLC_SCRIPT_WEIGHT);
-	assert_eq!(commitment_spend.lock_time.0, nodes[1].best_block_info().1);
+	assert_eq!(commitment_spend.lock_time.to_consensus_u32(), nodes[1].best_block_info().1);
 	assert!(commitment_spend.output[0].script_pubkey.is_v0_p2wpkh()); // direct payment
 	// We don't bother to check that B can claim the HTLC output on its commitment tx here as
 	// we already checked the same situation with A.
@@ -3647,7 +3648,7 @@ fn test_force_close_fail_back() {
 	assert_eq!(node_txn.len(), 1);
 	assert_eq!(node_txn[0].input.len(), 1);
 	assert_eq!(node_txn[0].input[0].previous_output.txid, tx.txid());
-	assert_eq!(node_txn[0].lock_time.0, 0); // Must be an HTLC-Success
+	assert_eq!(node_txn[0].lock_time, LockTime::ZERO); // Must be an HTLC-Success
 	assert_eq!(node_txn[0].input[0].witness.len(), 5); // Must be an HTLC-Success
 
 	check_spends!(node_txn[0], tx);
@@ -4729,7 +4730,7 @@ fn test_static_spendable_outputs_justice_tx_revoked_htlc_timeout_tx() {
 	assert_eq!(revoked_htlc_txn[0].input.len(), 1);
 	assert_eq!(revoked_htlc_txn[0].input[0].witness.last().unwrap().len(), OFFERED_HTLC_SCRIPT_WEIGHT);
 	check_spends!(revoked_htlc_txn[0], revoked_local_txn[0]);
-	assert_ne!(revoked_htlc_txn[0].lock_time.0, 0); // HTLC-Timeout
+	assert_ne!(revoked_htlc_txn[0].lock_time, LockTime::ZERO); // HTLC-Timeout
 
 	// B will generate justice tx from A's revoked commitment/HTLC tx
 	connect_block(&nodes[1], &create_dummy_block(nodes[1].best_block_hash(), 42, vec![revoked_local_txn[0].clone(), revoked_htlc_txn[0].clone()]));
@@ -4892,7 +4893,7 @@ fn test_onchain_to_onchain_claim() {
 	check_spends!(c_txn[0], commitment_tx[0]);
 	assert_eq!(c_txn[0].input[0].witness.clone().last().unwrap().len(), ACCEPTED_HTLC_SCRIPT_WEIGHT);
 	assert!(c_txn[0].output[0].script_pubkey.is_v0_p2wsh()); // revokeable output
-	assert_eq!(c_txn[0].lock_time.0, 0); // Success tx
+	assert_eq!(c_txn[0].lock_time, LockTime::ZERO); // Success tx
 
 	// So we broadcast C's commitment tx and HTLC-Success on B's chain, we should successfully be able to extract preimage and update downstream monitor
 	connect_block(&nodes[1], &create_dummy_block(nodes[1].best_block_hash(), 42, vec![commitment_tx[0].clone(), c_txn[0].clone()]));
@@ -4951,7 +4952,7 @@ fn test_onchain_to_onchain_claim() {
 	check_spends!(b_txn[0], commitment_tx[0]);
 	assert_eq!(b_txn[0].input[0].witness.clone().last().unwrap().len(), OFFERED_HTLC_SCRIPT_WEIGHT);
 	assert!(b_txn[0].output[0].script_pubkey.is_v0_p2wpkh()); // direct payment
-	assert_eq!(b_txn[0].lock_time.0, nodes[1].best_block_info().1); // Success tx
+	assert_eq!(b_txn[0].lock_time.to_consensus_u32(), nodes[1].best_block_info().1); // Success tx
 
 	check_closed_broadcast!(nodes[1], true);
 	check_added_monitors!(nodes[1], 1);
@@ -7122,7 +7123,7 @@ fn do_test_sweep_outbound_htlc_failure_update(revoked: bool, local: bool) {
 		if !revoked {
 			assert_eq!(timeout_tx[0].input[0].witness.last().unwrap().len(), ACCEPTED_HTLC_SCRIPT_WEIGHT);
 		} else {
-			assert_eq!(timeout_tx[0].lock_time.0, 11);
+			assert_eq!(timeout_tx[0].lock_time.to_consensus_u32(), 11);
 		}
 		// We fail non-dust-HTLC 2 by broadcast of local timeout/revocation-claim tx
 		mine_transaction(&nodes[0], &timeout_tx[0]);
@@ -7416,7 +7417,7 @@ fn test_bump_penalty_txn_on_revoked_commitment() {
 		assert_eq!(node_txn[0].output.len(), 1);
 		check_spends!(node_txn[0], revoked_txn[0]);
 		let fee_1 = penalty_sum - node_txn[0].output[0].value;
-		feerate_1 = fee_1 * 1000 / node_txn[0].weight() as u64;
+		feerate_1 = fee_1 * 1000 / node_txn[0].weight().to_wu();
 		penalty_1 = node_txn[0].txid();
 		node_txn.clear();
 	};
@@ -7436,7 +7437,7 @@ fn test_bump_penalty_txn_on_revoked_commitment() {
 			// Verify new bumped tx is different from last claiming transaction, we don't want spurrious rebroadcast
 			assert_ne!(penalty_2, penalty_1);
 			let fee_2 = penalty_sum - node_txn[0].output[0].value;
-			feerate_2 = fee_2 * 1000 / node_txn[0].weight() as u64;
+			feerate_2 = fee_2 * 1000 / node_txn[0].weight().to_wu();
 			// Verify 25% bump heuristic
 			assert!(feerate_2 * 100 >= feerate_1 * 125);
 			node_txn.clear();
@@ -7459,7 +7460,7 @@ fn test_bump_penalty_txn_on_revoked_commitment() {
 			// Verify new bumped tx is different from last claiming transaction, we don't want spurrious rebroadcast
 			assert_ne!(penalty_3, penalty_2);
 			let fee_3 = penalty_sum - node_txn[0].output[0].value;
-			feerate_3 = fee_3 * 1000 / node_txn[0].weight() as u64;
+			feerate_3 = fee_3 * 1000 / node_txn[0].weight().to_wu();
 			// Verify 25% bump heuristic
 			assert!(feerate_3 * 100 >= feerate_2 * 125);
 			node_txn.clear();
@@ -7578,7 +7579,7 @@ fn test_bump_penalty_txn_on_revoked_htlcs() {
 		first = node_txn[3].txid();
 		// Store both feerates for later comparison
 		let fee_1 = revoked_htlc_txn[0].output[0].value + revoked_htlc_txn[1].output[0].value - node_txn[3].output[0].value;
-		feerate_1 = fee_1 * 1000 / node_txn[3].weight() as u64;
+		feerate_1 = fee_1 * 1000 / node_txn[3].weight().to_wu();
 		penalty_txn = vec![node_txn[2].clone()];
 		node_txn.clear();
 	}
@@ -7602,7 +7603,7 @@ fn test_bump_penalty_txn_on_revoked_htlcs() {
 		// Verify bumped tx is different and 25% bump heuristic
 		assert_ne!(first, node_txn[0].txid());
 		let fee_2 = revoked_htlc_txn[0].output[0].value + revoked_htlc_txn[1].output[0].value - node_txn[0].output[0].value;
-		let feerate_2 = fee_2 * 1000 / node_txn[0].weight() as u64;
+		let feerate_2 = fee_2 * 1000 / node_txn[0].weight().to_wu();
 		assert!(feerate_2 * 100 > feerate_1 * 125);
 		let txn = vec![node_txn[0].clone()];
 		node_txn.clear();
@@ -7678,7 +7679,7 @@ fn test_bump_penalty_txn_on_remote_commitment() {
 		preimage = node_txn[0].txid();
 		let index = node_txn[0].input[0].previous_output.vout;
 		let fee = remote_txn[0].output[index as usize].value - node_txn[0].output[0].value;
-		feerate_preimage = fee * 1000 / node_txn[0].weight() as u64;
+		feerate_preimage = fee * 1000 / node_txn[0].weight().to_wu();
 
 		let (preimage_bump_tx, timeout_tx) = if node_txn[2].input[0].previous_output == node_txn[0].input[0].previous_output {
 			(node_txn[2].clone(), node_txn[1].clone())
@@ -7693,7 +7694,7 @@ fn test_bump_penalty_txn_on_remote_commitment() {
 		timeout = timeout_tx.txid();
 		let index = timeout_tx.input[0].previous_output.vout;
 		let fee = remote_txn[0].output[index as usize].value - timeout_tx.output[0].value;
-		feerate_timeout = fee * 1000 / timeout_tx.weight() as u64;
+		feerate_timeout = fee * 1000 / timeout_tx.weight().to_wu();
 
 		node_txn.clear();
 	};
@@ -7712,13 +7713,13 @@ fn test_bump_penalty_txn_on_remote_commitment() {
 
 		let index = preimage_bump.input[0].previous_output.vout;
 		let fee = remote_txn[0].output[index as usize].value - preimage_bump.output[0].value;
-		let new_feerate = fee * 1000 / preimage_bump.weight() as u64;
+		let new_feerate = fee * 1000 / preimage_bump.weight().to_wu();
 		assert!(new_feerate * 100 > feerate_timeout * 125);
 		assert_ne!(timeout, preimage_bump.txid());
 
 		let index = node_txn[0].input[0].previous_output.vout;
 		let fee = remote_txn[0].output[index as usize].value - node_txn[0].output[0].value;
-		let new_feerate = fee * 1000 / node_txn[0].weight() as u64;
+		let new_feerate = fee * 1000 / node_txn[0].weight().to_wu();
 		assert!(new_feerate * 100 > feerate_preimage * 125);
 		assert_ne!(preimage, node_txn[0].txid());
 
@@ -9182,10 +9183,10 @@ fn test_invalid_funding_tx() {
 	// a panic as we'd try to extract a 32 byte preimage from a witness element without checking
 	// its length.
 	let mut wit_program: Vec<u8> = channelmonitor::deliberately_bogus_accepted_htlc_witness_program();
-	let wit_program_script: Script = wit_program.into();
+	let wit_program_script: ScriptBuf = wit_program.into();
 	for output in tx.output.iter_mut() {
 		// Make the confirmed funding transaction have a bogus script_pubkey
-		output.script_pubkey = Script::new_v0_p2wsh(&wit_program_script.wscript_hash());
+		output.script_pubkey = ScriptBuf::new_v0_p2wsh(&wit_program_script.wscript_hash());
 	}
 
 	nodes[0].node.funding_transaction_generated_unchecked(&temporary_channel_id, &nodes[1].node.get_our_node_id(), tx.clone(), 0).unwrap();
@@ -9223,19 +9224,19 @@ fn test_invalid_funding_tx() {
 	// long the ChannelMonitor will try to read 32 bytes from the second-to-last element, panicing
 	// as its not 32 bytes long.
 	let mut spend_tx = Transaction {
-		version: 2i32, lock_time: PackedLockTime::ZERO,
+		version: 2i32, lock_time: LockTime::ZERO,
 		input: tx.output.iter().enumerate().map(|(idx, _)| TxIn {
 			previous_output: BitcoinOutPoint {
 				txid: tx.txid(),
 				vout: idx as u32,
 			},
-			script_sig: Script::new(),
+			script_sig: ScriptBuf::new(),
 			sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
-			witness: Witness::from_vec(channelmonitor::deliberately_bogus_accepted_htlc_witness())
+			witness: Witness::from_slice(&channelmonitor::deliberately_bogus_accepted_htlc_witness())
 		}).collect(),
 		output: vec![TxOut {
 			value: 1000,
-			script_pubkey: Script::new(),
+			script_pubkey: ScriptBuf::new(),
 		}]
 	};
 	check_spends!(spend_tx, tx);
@@ -9883,12 +9884,12 @@ fn test_non_final_funding_tx() {
 
 	let chan_id = *nodes[0].network_chan_count.borrow();
 	let events = nodes[0].node.get_and_clear_pending_events();
-	let input = TxIn { previous_output: BitcoinOutPoint::null(), script_sig: bitcoin::Script::new(), sequence: Sequence(1), witness: Witness::from_vec(vec!(vec!(1))) };
+	let input = TxIn { previous_output: BitcoinOutPoint::null(), script_sig: bitcoin::ScriptBuf::new(), sequence: Sequence(1), witness: Witness::from_slice(&[&[1]]) };
 	assert_eq!(events.len(), 1);
 	let mut tx = match events[0] {
 		Event::FundingGenerationReady { ref channel_value_satoshis, ref output_script, .. } => {
 			// Timelock the transaction _beyond_ the best client height + 1.
-			Transaction { version: chan_id as i32, lock_time: PackedLockTime(best_height + 2), input: vec![input], output: vec![TxOut {
+			Transaction { version: chan_id as i32, lock_time: LockTime::from_height(best_height + 2).unwrap(), input: vec![input], output: vec![TxOut {
 				value: *channel_value_satoshis, script_pubkey: output_script.clone(),
 			}]}
 		},
@@ -9928,12 +9929,12 @@ fn test_non_final_funding_tx_within_headroom() {
 
 	let chan_id = *nodes[0].network_chan_count.borrow();
 	let events = nodes[0].node.get_and_clear_pending_events();
-	let input = TxIn { previous_output: BitcoinOutPoint::null(), script_sig: bitcoin::Script::new(), sequence: Sequence(1), witness: Witness::from_vec(vec!(vec!(1))) };
+	let input = TxIn { previous_output: BitcoinOutPoint::null(), script_sig: bitcoin::ScriptBuf::new(), sequence: Sequence(1), witness: Witness::from_slice(&[[1]]) };
 	assert_eq!(events.len(), 1);
 	let mut tx = match events[0] {
 		Event::FundingGenerationReady { ref channel_value_satoshis, ref output_script, .. } => {
 			// Timelock the transaction within a +1 headroom from the best block.
-			Transaction { version: chan_id as i32, lock_time: PackedLockTime(best_height + 1), input: vec![input], output: vec![TxOut {
+			Transaction { version: chan_id as i32, lock_time: LockTime::from_consensus(best_height + 1), input: vec![input], output: vec![TxOut {
 				value: *channel_value_satoshis, script_pubkey: output_script.clone(),
 			}]}
 		},

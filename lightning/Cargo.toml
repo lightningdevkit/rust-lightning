@@ -17,7 +17,7 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
 # Internal test utilities exposed to other repo crates
-_test_utils = ["hex", "regex", "bitcoin/bitcoinconsensus"]
+_test_utils = ["regex", "bitcoin/bitcoinconsensus"]
 # Unlog messages superior at targeted level.
 max_level_off = []
 max_level_error = []
@@ -40,21 +40,20 @@ grind_signatures = []
 default = ["std", "grind_signatures"]
 
 [dependencies]
-bitcoin = { version = "0.29.0", default-features = false, features = ["secp-recovery"] }
+bitcoin = { version = "0.30.2", default-features = false, features = ["secp-recovery"] }
 
 hashbrown = { version = "0.8", optional = true }
-hex = { version = "0.4", optional = true }
+hex = { package = "hex-conservative", version = "0.1.1", default-features = false }
 regex = { version = "1.5.6", optional = true }
 backtrace = { version = "0.3", optional = true }
 
 core2 = { version = "0.3.0", optional = true, default-features = false }
 
 [dev-dependencies]
-hex = "0.4"
 regex = "1.5.6"
 
 [dev-dependencies.bitcoin]
-version = "0.29.0"
+version = "0.30.2"
 default-features = false
 features = ["bitcoinconsensus", "secp-recovery"]
 
@@ -62,4 +61,4 @@ features = ["bitcoinconsensus", "secp-recovery"]
 criterion = { version = "0.4", optional = true, default-features = false }
 
 [target.'cfg(taproot)'.dependencies]
-musig2 = { git = "https://github.com/arik-so/rust-musig2", rev = "dc05904" }
+musig2 = { git = "https://github.com/arik-so/rust-musig2", rev = "cff11e3" }

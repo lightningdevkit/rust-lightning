@@ -40,16 +40,15 @@ use crate::util::logger::{Logger, Level, Record};
 use crate::util::ser::{Readable, ReadableArgs, Writer, Writeable};
 use crate::util::persist::KVStore;
 
-use bitcoin::EcdsaSighashType;
 use bitcoin::blockdata::constants::ChainHash;
 use bitcoin::blockdata::constants::genesis_block;
 use bitcoin::blockdata::transaction::{Transaction, TxOut};
-use bitcoin::blockdata::script::{Builder, Script};
+use bitcoin::blockdata::script::{Builder, Script, ScriptBuf};
 use bitcoin::blockdata::opcodes;
 use bitcoin::blockdata::block::Block;
 use bitcoin::network::constants::Network;
 use bitcoin::hash_types::{BlockHash, Txid};
-use bitcoin::util::sighash::SighashCache;
+use bitcoin::sighash::{SighashCache, EcdsaSighashType};
 
 use bitcoin::secp256k1::{PublicKey, Scalar, Secp256k1, SecretKey};
 use bitcoin::secp256k1::ecdh::SharedSecret;
@@ -193,7 +192,7 @@ impl SignerProvider for OnlyReadsKeysInterface {
 		))
 	}
 
-	fn get_destination_script(&self) -> Result<Script, ()> { Err(()) }
+	fn get_destination_script(&self) -> Result<ScriptBuf, ()> { Err(()) }
 	fn get_shutdown_scriptpubkey(&self) -> Result<ShutdownScript, ()> { Err(()) }
 }
 
@@ -302,12 +301,12 @@ pub(crate) struct WatchtowerPersister {
 	/// After receiving a revoke_and_ack for a commitment number, we'll form and store the justice
 	/// tx which would be used to provide a watchtower with the data it needs.
 	watchtower_state: Mutex<HashMap<OutPoint, HashMap<Txid, Transaction>>>,
-	destination_script: Script,
+	destination_script: ScriptBuf,
 }
 
 impl WatchtowerPersister {
 	#[cfg(test)]
-	pub(crate) fn new(destination_script: Script) -> Self {
+	pub(crate) fn new(destination_script: ScriptBuf) -> Self {
 		WatchtowerPersister {
 			persister: TestPersister::new(),
 			unsigned_justice_tx_data: Mutex::new(HashMap::new()),
@@ -561,9 +560,9 @@ impl TestBroadcaster {
 impl chaininterface::BroadcasterInterface for TestBroadcaster {
 	fn broadcast_transactions(&self, txs: &[&Transaction]) {
 		for tx in txs {
-			let lock_time = tx.lock_time.0;
+			let lock_time = tx.lock_time.to_consensus_u32();
 			assert!(lock_time < 1_500_000_000);
-			if bitcoin::LockTime::from(tx.lock_time).is_block_height() && lock_time > self.blocks.lock().unwrap().last().unwrap().1 {
+			if tx.lock_time.is_block_height() && lock_time > self.blocks.lock().unwrap().last().unwrap().1 {
 				for inp in tx.input.iter() {
 					if inp.sequence != Sequence::MAX {
 						panic!("We should never broadcast a transaction before its locktime ({})!", tx.lock_time);
@@ -1122,7 +1121,7 @@ impl SignerProvider for TestKeysInterface {
 		))
 	}
 
-	fn get_destination_script(&self) -> Result<Script, ()> { self.backing.get_destination_script() }
+	fn get_destination_script(&self) -> Result<ScriptBuf, ()> { self.backing.get_destination_script() }
 
 	fn get_shutdown_scriptpubkey(&self) -> Result<ShutdownScript, ()> {
 		match &mut *self.expectations.lock().unwrap() {
@@ -1212,8 +1211,8 @@ pub struct TestChainSource {
 	pub chain_hash: ChainHash,
 	pub utxo_ret: Mutex<UtxoResult>,
 	pub get_utxo_call_count: AtomicUsize,
-	pub watched_txn: Mutex<HashSet<(Txid, Script)>>,
-	pub watched_outputs: Mutex<HashSet<(OutPoint, Script)>>,
+	pub watched_txn: Mutex<HashSet<(Txid, ScriptBuf)>>,
+	pub watched_outputs: Mutex<HashSet<(OutPoint, ScriptBuf)>>,
 }
 
 impl TestChainSource {
@@ -1242,7 +1241,7 @@ impl UtxoLookup for TestChainSource {
 
 impl chain::Filter for TestChainSource {
 	fn register_tx(&self, txid: &Txid, script_pubkey: &Script) {
-		self.watched_txn.lock().unwrap().insert((*txid, script_pubkey.clone()));
+		self.watched_txn.lock().unwrap().insert((*txid, script_pubkey.into()));
 	}
 
 	fn register_output(&self, output: WatchedOutput) {
@@ -1362,9 +1361,9 @@ impl WalletSource for TestWalletSource {
 		Ok(self.utxos.borrow().clone())
 	}
 
-	fn get_change_script(&self) -> Result<Script, ()> {
+	fn get_change_script(&self) -> Result<ScriptBuf, ()> {
 		let public_key = bitcoin::PublicKey::new(self.secret_key.public_key(&self.secp));
-		Ok(Script::new_p2pkh(&public_key.pubkey_hash()))
+		Ok(ScriptBuf::new_p2pkh(&public_key.pubkey_hash()))
 	}
 
 	fn sign_tx(&self, mut tx: Transaction) -> Result<Transaction, ()> {
@@ -1374,10 +1373,10 @@ impl WalletSource for TestWalletSource {
 				let sighash = SighashCache::new(&tx)
 					.legacy_signature_hash(i, &utxo.output.script_pubkey, EcdsaSighashType::All as u32)
 					.map_err(|_| ())?;
-				let sig = self.secp.sign_ecdsa(&sighash.as_hash().into(), &self.secret_key);
-				let bitcoin_sig = bitcoin::EcdsaSig { sig, hash_ty: EcdsaSighashType::All }.to_vec();
+				let sig = self.secp.sign_ecdsa(&(*sighash.as_raw_hash()).into(), &self.secret_key);
+				let bitcoin_sig = bitcoin::ecdsa::Signature { sig, hash_ty: EcdsaSighashType::All };
 				tx.input[i].script_sig = Builder::new()
-					.push_slice(&bitcoin_sig)
+					.push_slice(&bitcoin_sig.serialize())
 					.push_slice(&self.secret_key.public_key(&self.secp).serialize())
 					.into_script();
 			}

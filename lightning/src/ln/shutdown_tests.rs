@@ -27,7 +27,7 @@ use crate::util::string::UntrustedString;
 use bitcoin::blockdata::script::Builder;
 use bitcoin::blockdata::opcodes;
 use bitcoin::network::constants::Network;
-use bitcoin::util::address::WitnessVersion;
+use bitcoin::address::{WitnessProgram, WitnessVersion};
 
 use regex;
 
@@ -781,7 +781,7 @@ fn test_unsupported_anysegwit_upfront_shutdown_script() {
 	match events[0] {
 		MessageSendEvent::HandleError { action: ErrorAction::SendErrorMessage { ref msg }, node_id } => {
 			assert_eq!(node_id, nodes[0].node.get_our_node_id());
-			assert_eq!(msg.data, "Peer is signaling upfront_shutdown but has provided an unacceptable scriptpubkey format: Script(OP_PUSHNUM_16 OP_PUSHBYTES_2 0028)");
+			assert_eq!(msg.data, "Peer is signaling upfront_shutdown but has provided an unacceptable scriptpubkey format: OP_PUSHNUM_16 OP_PUSHBYTES_2 0028");
 		},
 		_ => panic!("Unexpected event"),
 	}
@@ -806,11 +806,11 @@ fn test_unsupported_anysegwit_upfront_shutdown_script() {
 	match events[0] {
 		MessageSendEvent::HandleError { action: ErrorAction::SendErrorMessage { ref msg }, node_id } => {
 			assert_eq!(node_id, nodes[1].node.get_our_node_id());
-			assert_eq!(msg.data, "Peer is signaling upfront_shutdown but has provided an unacceptable scriptpubkey format: Script(OP_PUSHNUM_16 OP_PUSHBYTES_2 0028)");
+			assert_eq!(msg.data, "Peer is signaling upfront_shutdown but has provided an unacceptable scriptpubkey format: OP_PUSHNUM_16 OP_PUSHBYTES_2 0028");
 		},
 		_ => panic!("Unexpected event"),
 	}
-	check_closed_event!(nodes[0], 1, ClosureReason::ProcessingError { err: "Peer is signaling upfront_shutdown but has provided an unacceptable scriptpubkey format: Script(OP_PUSHNUM_16 OP_PUSHBYTES_2 0028)".to_string() }
+	check_closed_event!(nodes[0], 1, ClosureReason::ProcessingError { err: "Peer is signaling upfront_shutdown but has provided an unacceptable scriptpubkey format: OP_PUSHNUM_16 OP_PUSHBYTES_2 0028".to_string() }
 		, [nodes[1].node.get_our_node_id()], 100000);
 }
 
@@ -835,7 +835,7 @@ fn test_invalid_upfront_shutdown_script() {
 	match events[0] {
 		MessageSendEvent::HandleError { action: ErrorAction::SendErrorMessage { ref msg }, node_id } => {
 			assert_eq!(node_id, nodes[0].node.get_our_node_id());
-			assert_eq!(msg.data, "Peer is signaling upfront_shutdown but has provided an unacceptable scriptpubkey format: Script(OP_0 OP_PUSHBYTES_2 0000)");
+			assert_eq!(msg.data, "Peer is signaling upfront_shutdown but has provided an unacceptable scriptpubkey format: OP_0 OP_PUSHBYTES_2 0000");
 		},
 		_ => panic!("Unexpected event"),
 	}
@@ -927,8 +927,9 @@ fn test_unsupported_anysegwit_shutdown_script() {
 
 	// Check that using an unsupported shutdown script fails and a supported one succeeds.
 	let supported_shutdown_script = chanmon_cfgs[1].keys_manager.get_shutdown_scriptpubkey().unwrap();
+	let unsupported_witness_program = WitnessProgram::new(WitnessVersion::V16, &[0, 40]).unwrap();
 	let unsupported_shutdown_script =
-		ShutdownScript::new_witness_program(WitnessVersion::V16, &[0, 40]).unwrap();
+		ShutdownScript::new_witness_program(&unsupported_witness_program).unwrap();
 	chanmon_cfgs[1].keys_manager
 		.expect(OnGetShutdownScriptpubkey { returns: unsupported_shutdown_script.clone() })
 		.expect(OnGetShutdownScriptpubkey { returns: supported_shutdown_script });

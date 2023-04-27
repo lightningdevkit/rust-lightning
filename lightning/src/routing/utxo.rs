@@ -15,14 +15,14 @@
 
 use bitcoin::TxOut;
 use bitcoin::blockdata::constants::ChainHash;
-use bitcoin::hashes::hex::ToHex;
+
+use hex::DisplayHex;
 
 use crate::events::MessageSendEvent;
 use crate::ln::chan_utils::make_funding_redeemscript_from_slices;
 use crate::ln::msgs::{self, LightningError, ErrorAction};
 use crate::routing::gossip::{NetworkGraph, NodeId, P2PGossipSync};
 use crate::util::logger::{Level, Logger};
-use crate::util::ser::Writeable;
 
 use crate::prelude::*;
 
@@ -460,11 +460,11 @@ impl PendingChecks {
 			match res {
 				Ok(TxOut { value, script_pubkey }) => {
 					let expected_script =
-						make_funding_redeemscript_from_slices(msg.bitcoin_key_1.as_slice(), msg.bitcoin_key_2.as_slice()).to_v0_p2wsh();
+						make_funding_redeemscript_from_slices(msg.bitcoin_key_1.as_array(), msg.bitcoin_key_2.as_array()).to_v0_p2wsh();
 					if script_pubkey != expected_script {
 						return Err(LightningError{
 							err: format!("Channel announcement key ({}) didn't match on-chain script ({})",
-								expected_script.to_hex(), script_pubkey.to_hex()),
+								expected_script.to_hex_string(), script_pubkey.to_hex_string()),
 							action: ErrorAction::IgnoreError
 						});
 					}
@@ -473,7 +473,7 @@ impl PendingChecks {
 				Err(UtxoLookupError::UnknownChain) => {
 					Err(LightningError {
 						err: format!("Channel announced on an unknown chain ({})",
-							msg.chain_hash.encode().to_hex()),
+							msg.chain_hash.to_bytes().as_hex()),
 						action: ErrorAction::IgnoreError
 					})
 				},
@@ -578,7 +578,7 @@ mod tests {
 	}
 
 	fn get_test_objects() -> (msgs::ChannelAnnouncement, TestChainSource,
-		NetworkGraph<Box<TestLogger>>, bitcoin::Script, msgs::NodeAnnouncement,
+		NetworkGraph<Box<TestLogger>>, bitcoin::ScriptBuf, msgs::NodeAnnouncement,
 		msgs::NodeAnnouncement, msgs::ChannelUpdate, msgs::ChannelUpdate, msgs::ChannelUpdate)
 	{
 		let secp_ctx = Secp256k1::new();
@@ -661,7 +661,7 @@ mod tests {
 		assert!(network_graph.read_only().channels().get(&valid_announcement.contents.short_channel_id).is_none());
 
 		future.resolve_without_forwarding(&network_graph,
-			Ok(TxOut { value: 1_000_000, script_pubkey: bitcoin::Script::new() }));
+			Ok(TxOut { value: 1_000_000, script_pubkey: bitcoin::ScriptBuf::new() }));
 		assert!(network_graph.read_only().channels().get(&valid_announcement.contents.short_channel_id).is_none());
 	}
 

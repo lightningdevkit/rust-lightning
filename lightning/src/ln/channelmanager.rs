@@ -17,9 +17,10 @@
 //! on-chain transactions (it only monitors the chain to watch for any force-closes that might
 //! imply it needs to fail HTLCs/payments/channels it manages).
 
-use bitcoin::blockdata::block::BlockHeader;
+use bitcoin::blockdata::block::Header;
 use bitcoin::blockdata::transaction::Transaction;
 use bitcoin::blockdata::constants::ChainHash;
+use bitcoin::key::constants::SECRET_KEY_SIZE;
 use bitcoin::network::constants::Network;
 
 use bitcoin::hashes::Hash;
@@ -28,7 +29,7 @@ use bitcoin::hash_types::{BlockHash, Txid};
 
 use bitcoin::secp256k1::{SecretKey,PublicKey};
 use bitcoin::secp256k1::Secp256k1;
-use bitcoin::{LockTime, secp256k1, Sequence};
+use bitcoin::{secp256k1, Sequence};
 
 use crate::blinded_path::BlindedPath;
 use crate::blinded_path::payment::{PaymentConstraints, ReceiveTlvs};
@@ -313,7 +314,7 @@ impl Readable for InterceptId {
 /// Uniquely describes an HTLC by its source. Just the guaranteed-unique subset of [`HTLCSource`].
 pub(crate) enum SentHTLCId {
 	PreviousHopData { short_channel_id: u64, htlc_id: u64 },
-	OutboundRoute { session_priv: SecretKey },
+	OutboundRoute { session_priv: [u8; SECRET_KEY_SIZE] },
 }
 impl SentHTLCId {
 	pub(crate) fn from_source(source: &HTLCSource) -> Self {
@@ -323,7 +324,7 @@ impl SentHTLCId {
 				htlc_id: hop_data.htlc_id,
 			},
 			HTLCSource::OutboundRoute { session_priv, .. } =>
-				Self::OutboundRoute { session_priv: *session_priv },
+				Self::OutboundRoute { session_priv: session_priv.secret_bytes() },
 		}
 	}
 }
@@ -3751,7 +3752,10 @@ where
 			// lower than the next block height. However, the modules constituting our Lightning
 			// node might not have perfect sync about their blockchain views. Thus, if the wallet
 			// module is ahead of LDK, only allow one more block of headroom.
-			if !funding_transaction.input.iter().all(|input| input.sequence == Sequence::MAX) && LockTime::from(funding_transaction.lock_time).is_block_height() && funding_transaction.lock_time.0 > height + 1 {
+			if !funding_transaction.input.iter().all(|input| input.sequence == Sequence::MAX) &&
+				funding_transaction.lock_time.is_block_height() &&
+				funding_transaction.lock_time.to_consensus_u32() > height + 1
+			{
 				result = result.and(Err(APIError::APIMisuseError {
 					err: "Funding transaction absolute timelock is non-final".to_owned()
 				}));
@@ -4140,7 +4144,7 @@ where
 												) {
 													Ok(res) => res,
 													Err(onion_utils::OnionDecodeErr::Malformed { err_msg, err_code }) => {
-														let sha256_of_onion = Sha256::hash(&onion_packet.hop_data).into_inner();
+														let sha256_of_onion = Sha256::hash(&onion_packet.hop_data).to_byte_array();
 														// In this scenario, the phantom would have sent us an
 														// `update_fail_malformed_htlc`, meaning here we encrypt the error as
 														// if it came from us (the second-to-last hop) but contains the sha256
@@ -5163,7 +5167,7 @@ where
 	}
 
 	fn claim_payment_internal(&self, payment_preimage: PaymentPreimage, custom_tlvs_known: bool) {
-		let payment_hash = PaymentHash(Sha256::hash(&payment_preimage.0).into_inner());
+		let payment_hash = PaymentHash(Sha256::hash(&payment_preimage.0).to_byte_array());
 
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 
@@ -6556,7 +6560,7 @@ where
 							if !is_our_scid && forward_info.incoming_amt_msat.is_some() &&
 							   fake_scid::is_valid_intercept(&self.fake_scid_rand_bytes, scid, &self.chain_hash)
 							{
-								let intercept_id = InterceptId(Sha256::hash(&forward_info.incoming_shared_secret).into_inner());
+								let intercept_id = InterceptId(Sha256::hash(&forward_info.incoming_shared_secret).to_byte_array());
 								let mut pending_intercepts = self.pending_intercepted_htlcs.lock().unwrap();
 								match pending_intercepts.entry(intercept_id) {
 									hash_map::Entry::Vacant(entry) => {
@@ -7900,7 +7904,7 @@ fn create_recv_pending_htlc_info(
 		// could discover the final destination of X, by probing the adjacent nodes on the route
 		// with a keysend payment of identical payment hash to X and observing the processing
 		// time discrepancies due to a hash collision with X.
-		let hashed_preimage = PaymentHash(Sha256::hash(&payment_preimage.0).into_inner());
+		let hashed_preimage = PaymentHash(Sha256::hash(&payment_preimage.0).to_byte_array());
 		if hashed_preimage != payment_hash {
 			return Err(InboundOnionErr {
 				err_code: 0x4000|22,
@@ -8029,7 +8033,7 @@ where
 				return Err(HTLCFailureMsg::Malformed(msgs::UpdateFailMalformedHTLC {
 					channel_id: msg.channel_id,
 					htlc_id: msg.htlc_id,
-					sha256_of_onion: Sha256::hash(&msg.onion_routing_packet.hop_data).into_inner(),
+					sha256_of_onion: Sha256::hash(&msg.onion_routing_packet.hop_data).to_byte_array(),
 					failure_code: $err_code,
 				}));
 			}
@@ -8231,7 +8235,7 @@ where
 	R::Target: Router,
 	L::Target: Logger,
 {
-	fn filtered_block_connected(&self, header: &BlockHeader, txdata: &TransactionData, height: u32) {
+	fn filtered_block_connected(&self, header: &Header, txdata: &TransactionData, height: u32) {
 		{
 			let best_block = self.best_block.read().unwrap();
 			assert_eq!(best_block.block_hash(), header.prev_blockhash,
@@ -8244,7 +8248,7 @@ where
 		self.best_block_updated(header, height);
 	}
 
-	fn block_disconnected(&self, header: &BlockHeader, height: u32) {
+	fn block_disconnected(&self, header: &Header, height: u32) {
 		let _persistence_guard =
 			PersistenceNotifierGuard::optionally_notify_skipping_background_events(
 				self, || -> NotifyOption { NotifyOption::DoPersist });
@@ -8273,7 +8277,7 @@ where
 	R::Target: Router,
 	L::Target: Logger,
 {
-	fn transactions_confirmed(&self, header: &BlockHeader, txdata: &TransactionData, height: u32) {
+	fn transactions_confirmed(&self, header: &Header, txdata: &TransactionData, height: u32) {
 		// Note that we MUST NOT end up calling methods on self.chain_monitor here - we're called
 		// during initialization prior to the chain_monitor being fully configured in some cases.
 		// See the docs for `ChannelManagerReadArgs` for more.
@@ -8294,7 +8298,7 @@ where
 		}
 	}
 
-	fn best_block_updated(&self, header: &BlockHeader, height: u32) {
+	fn best_block_updated(&self, header: &Header, height: u32) {
 		// Note that we MUST NOT end up calling methods on self.chain_monitor here - we're called
 		// during initialization prior to the chain_monitor being fully configured in some cases.
 		// See the docs for `ChannelManagerReadArgs` for more.
@@ -11468,7 +11472,7 @@ mod tests {
 
 		let test_preimage = PaymentPreimage([42; 32]);
 		let test_secret = PaymentSecret([43; 32]);
-		let payment_hash = PaymentHash(Sha256::hash(&test_preimage.0).into_inner());
+		let payment_hash = PaymentHash(Sha256::hash(&test_preimage.0).to_byte_array());
 		let session_privs = nodes[0].node.test_add_new_pending_payment(payment_hash,
 			RecipientOnionFields::secret_only(test_secret), PaymentId(payment_hash.0), &route).unwrap();
 		nodes[0].node.test_send_payment_internal(&route, payment_hash,
@@ -11600,7 +11604,7 @@ mod tests {
 		nodes[0].node.handle_accept_channel(&nodes[1].node.get_our_node_id(), &accept_channel);
 
 		let (temporary_channel_id, tx, _funding_output) = create_funding_transaction(&nodes[0], &nodes[1].node.get_our_node_id(), 1_000_000, 42);
-		let channel_id = ChannelId::from_bytes(tx.txid().into_inner());
+		let channel_id = ChannelId::from_bytes(tx.txid().to_byte_array());
 		{
 			// Ensure that the `id_to_peer` map is empty until either party has received the
 			// funding transaction, and have the real `channel_id`.
@@ -12393,7 +12397,7 @@ mod tests {
 		let recipient_onion = RecipientOnionFields::secret_only(pay_secret);
 		let preimage_bytes = [43; 32];
 		let preimage = PaymentPreimage(preimage_bytes);
-		let rhash_bytes = Sha256::hash(&preimage_bytes).into_inner();
+		let rhash_bytes = Sha256::hash(&preimage_bytes).to_byte_array();
 		let payment_hash = PaymentHash(rhash_bytes);
 		let prng_seed = [44; 32];
 
@@ -12459,9 +12463,10 @@ pub mod bench {
 	use crate::util::test_utils;
 	use crate::util::config::{UserConfig, MaxDustHTLCExposure};
 
+	use bitcoin::blockdata::locktime::absolute::LockTime;
 	use bitcoin::hashes::Hash;
 	use bitcoin::hashes::sha256::Hash as Sha256;
-	use bitcoin::{Block, BlockHeader, PackedLockTime, Transaction, TxMerkleNode, TxOut};
+	use bitcoin::{Block, Transaction, TxOut};
 
 	use crate::sync::{Arc, Mutex, RwLock};
 
@@ -12538,7 +12543,7 @@ pub mod bench {
 
 		let tx;
 		if let Event::FundingGenerationReady { temporary_channel_id, output_script, .. } = get_event!(node_a_holder, Event::FundingGenerationReady) {
-			tx = Transaction { version: 2, lock_time: PackedLockTime::ZERO, input: Vec::new(), output: vec![TxOut {
+			tx = Transaction { version: 2, lock_time: LockTime::ZERO, input: Vec::new(), output: vec![TxOut {
 				value: 8_000_000, script_pubkey: output_script,
 			}]};
 			node_a.funding_transaction_generated(&temporary_channel_id, &node_b.get_our_node_id(), tx.clone()).unwrap();
@@ -12611,7 +12616,7 @@ pub mod bench {
 				let mut payment_preimage = PaymentPreimage([0; 32]);
 				payment_preimage.0[0..8].copy_from_slice(&payment_count.to_le_bytes());
 				payment_count += 1;
-				let payment_hash = PaymentHash(Sha256::hash(&payment_preimage.0[..]).into_inner());
+				let payment_hash = PaymentHash(Sha256::hash(&payment_preimage.0[..]).to_byte_array());
 				let payment_secret = $node_b.create_inbound_payment_for_hash(payment_hash, None, 7200, None).unwrap();
 
 				$node_a.send_payment(payment_hash, RecipientOnionFields::secret_only(payment_secret),

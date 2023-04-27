@@ -47,9 +47,9 @@ mod utils;
 
 use crate::poll::{ChainTip, Poll, ValidatedBlockHeader};
 
-use bitcoin::blockdata::block::{Block, BlockHeader};
+use bitcoin::blockdata::block::{Block, Header};
 use bitcoin::hash_types::BlockHash;
-use bitcoin::util::uint::Uint256;
+use bitcoin::pow::Work;
 
 use lightning::chain;
 use lightning::chain::Listen;
@@ -147,14 +147,13 @@ impl BlockSourceError {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BlockHeaderData {
 	/// The block header itself.
-	pub header: BlockHeader,
+	pub header: Header,
 
 	/// The block height where the genesis block has height 0.
 	pub height: u32,
 
-	/// The total chain work in expected number of double-SHA256 hashes required to build a chain
-	/// of equivalent weight.
-	pub chainwork: Uint256,
+	/// The total chain work required to build a chain of equivalent weight.
+	pub chainwork: Work,
 }
 
 /// A block including either all its transactions or only the block header.
@@ -166,7 +165,7 @@ pub enum BlockData {
 	/// A block containing all its transactions.
 	FullBlock(Block),
 	/// A block header for when the block does not contain any pertinent transactions.
-	HeaderOnly(BlockHeader),
+	HeaderOnly(Header),
 }
 
 /// A lightweight client for keeping a listener in sync with the chain, allowing for Simplified

@@ -13,10 +13,7 @@ use crate::ln::msgs::DecodeError;
 use crate::sign::EntropySource;
 use crate::util::ser::{Readable, Writeable, Writer};
 
-use bitcoin::hashes::hex::ToHex;
-
 use crate::io;
-use crate::prelude::*;
 use core::fmt;
 use core::ops::Deref;
 
@@ -79,12 +76,6 @@ impl Readable for ChannelId {
 	}
 }
 
-impl ToHex for ChannelId {
-	fn to_hex(&self) -> String {
-		self.0.to_hex()
-	}
-}
-
 impl fmt::Display for ChannelId {
 	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
 		crate::util::logger::DebugBytes(&self.0).fmt(f)
@@ -93,17 +84,18 @@ impl fmt::Display for ChannelId {
 
 #[cfg(test)]
 mod tests {
+	use hex::DisplayHex;
+
 	use crate::ln::ChannelId;
 	use crate::util::ser::{Readable, Writeable};
 	use crate::util::test_utils;
-	use bitcoin::hashes::hex::ToHex;
 	use crate::prelude::*;
 	use crate::io;
 
 	#[test]
 	fn test_channel_id_v1_from_funding_txid() {
 		let channel_id = ChannelId::v1_from_funding_txid(&[2; 32], 1);
-		assert_eq!(channel_id.to_hex(), "0202020202020202020202020202020202020202020202020202020202020203");
+		assert_eq!(channel_id.0.as_hex().to_string(), "0202020202020202020202020202020202020202020202020202020202020203");
 	}
 
 	#[test]

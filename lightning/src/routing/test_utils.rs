@@ -17,10 +17,8 @@ use crate::util::ser::Writeable;
 use bitcoin::blockdata::constants::ChainHash;
 use bitcoin::hashes::sha256d::Hash as Sha256dHash;
 use bitcoin::hashes::Hash;
+use bitcoin::hashes::hex::FromHex;
 use bitcoin::network::constants::Network;
-
-use hex;
-
 use bitcoin::secp256k1::{PublicKey,SecretKey};
 use bitcoin::secp256k1::{Secp256k1, All};
 
@@ -107,12 +105,12 @@ pub(super) fn update_channel(
 
 pub(super) fn get_nodes(secp_ctx: &Secp256k1<All>) -> (SecretKey, PublicKey, Vec<SecretKey>, Vec<PublicKey>) {
 	let privkeys: Vec<SecretKey> = (2..22).map(|i| {
-		SecretKey::from_slice(&hex::decode(format!("{:02x}", i).repeat(32)).unwrap()[..]).unwrap()
+		SecretKey::from_slice(&<Vec<u8>>::from_hex(&format!("{:02x}", i).repeat(32)).unwrap()[..]).unwrap()
 	}).collect();
 
 	let pubkeys = privkeys.iter().map(|secret| PublicKey::from_secret_key(&secp_ctx, secret)).collect();
 
-	let our_privkey = SecretKey::from_slice(&hex::decode("01".repeat(32)).unwrap()[..]).unwrap();
+	let our_privkey = SecretKey::from_slice(&<Vec<u8>>::from_hex(&"01".repeat(32)).unwrap()[..]).unwrap();
 	let our_id = PublicKey::from_secret_key(&secp_ctx, &our_privkey);
 
 	(our_privkey, our_id, privkeys, pubkeys)
