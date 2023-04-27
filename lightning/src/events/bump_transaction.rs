@@ -24,6 +24,7 @@ use crate::ln::chan_utils::{
 };
 use crate::events::Event;
 use crate::prelude::HashMap;
+use crate::sync::Mutex;
 use crate::util::logger::Logger;
 
 use bitcoin::{OutPoint, PackedLockTime, PubkeyHash, Sequence, Script, Transaction, Txid, TxIn, TxOut, Witness, WPubkeyHash};
@@ -368,7 +369,8 @@ pub struct CoinSelection {
 
 /// An abstraction over a bitcoin wallet that can perform coin selection over a set of UTXOs and can
 /// sign for them. The coin selection method aims to mimic Bitcoin Core's `fundrawtransaction` RPC,
-/// which most wallets should be able to satisfy.
+/// which most wallets should be able to satisfy. Otherwise, consider implementing [`WalletSource`],
+/// which can provide a default implementation of this trait when used with [`Wallet`].
 pub trait CoinSelectionSource {
 	/// Performs coin selection of a set of UTXOs, with at least 1 confirmation each, that are
 	/// available to spend. Implementations are free to pick their coin selection algorithm of
@@ -403,6 +405,148 @@ pub trait CoinSelectionSource {
 	/// Signs and provides the full witness for all inputs within the transaction known to the
 	/// trait (i.e., any provided via [`CoinSelectionSource::select_confirmed_utxos`]).
 	fn sign_tx(&self, tx: &mut Transaction) -> Result<(), ()>;
+}
+
+/// An alternative to [`CoinSelectionSource`] that can be implemented and used along [`Wallet`] to
+/// provide a default implementation to [`CoinSelectionSource`].
+pub trait WalletSource {
+	/// Returns all UTXOs, with at least 1 confirmation each, that are available to spend.
+	fn list_confirmed_utxos(&self) -> Result<Vec<Utxo>, ()>;
+	/// Returns a script to use for change above dust resulting from a successful coin selection
+	/// attempt.
+	fn get_change_script(&self) -> Result<Script, ()>;
+	/// Signs and provides the full [`TxIn::script_sig`] and [`TxIn::witness`] for all inputs within
+	/// the transaction known to the wallet (i.e., any provided via
+	/// [`WalletSource::list_confirmed_utxos`]).
+	fn sign_tx(&self, tx: &mut Transaction) -> Result<(), ()>;
+}
+
+/// A wrapper over [`WalletSource`] that implements [`CoinSelection`] by preferring UTXOs that would
+/// avoid conflicting double spends. If not enough UTXOs are available to do so, conflicting double
+/// spends may happen.
+pub struct Wallet<W: Deref> where W::Target: WalletSource {
+	source: W,
+	// TODO: Do we care about cleaning this up once the UTXOs have a confirmed spend? We can do so
+	// by checking whether any UTXOs that exist in the map are no longer returned in
+	// `list_confirmed_utxos`.
+	locked_utxos: Mutex<HashMap<OutPoint, ClaimId>>,
+}
+
+impl<W: Deref> Wallet<W> where W::Target: WalletSource {
+	/// Returns a new instance backed by the given [`WalletSource`] that serves as an implementation
+	/// of [`CoinSelectionSource`].
+	pub fn new(source: W) -> Self {
+		Self { source, locked_utxos: Mutex::new(HashMap::new()) }
+	}
+
+	/// Performs coin selection on the set of UTXOs obtained from
+	/// [`WalletSource::list_confirmed_utxos`]. Its algorithm can be described as "smallest
+	/// above-dust-after-spend first", with a slight twist: we may skip UTXOs that are above dust at
+	/// the target feerate after having spent them in a separate claim transaction if
+	/// `force_conflicting_utxo_spend` is unset to avoid producing conflicting transactions. If
+	/// `tolerate_high_network_feerates` is set, we'll attempt to spend UTXOs that contribute at
+	/// least 1 satoshi at the current feerate, otherwise, we'll only attempt to spend those which
+	/// contribute at least twice their fee.
+	fn select_confirmed_utxos_internal(
+		&self, utxos: &[Utxo], claim_id: ClaimId, force_conflicting_utxo_spend: bool,
+		tolerate_high_network_feerates: bool, target_feerate_sat_per_1000_weight: u32,
+		preexisting_tx_weight: u64, target_amount_sat: u64,
+	) -> Result<CoinSelection, ()> {
+		let mut locked_utxos = self.locked_utxos.lock().unwrap();
+		let mut eligible_utxos = utxos.iter().filter_map(|utxo| {
+			if let Some(utxo_claim_id) = locked_utxos.get(&utxo.outpoint) {
+				if *utxo_claim_id != claim_id && !force_conflicting_utxo_spend {
+					return None;
+				}
+			}
+			let fee_to_spend_utxo = fee_for_weight(
+				target_feerate_sat_per_1000_weight, BASE_INPUT_WEIGHT as u64 + utxo.satisfaction_weight,
+			);
+			let should_spend = if tolerate_high_network_feerates {
+				utxo.output.value > fee_to_spend_utxo
+			} else {
+				utxo.output.value >= fee_to_spend_utxo * 2
+			};
+			if should_spend {
+				Some((utxo, fee_to_spend_utxo))
+			} else {
+				None
+			}
+		}).collect::<Vec<_>>();
+		eligible_utxos.sort_unstable_by_key(|(utxo, _)| utxo.output.value);
+
+		let mut selected_amount = 0;
+		let mut total_fees = fee_for_weight(target_feerate_sat_per_1000_weight, preexisting_tx_weight);
+		let mut selected_utxos = Vec::new();
+		for (utxo, fee_to_spend_utxo) in eligible_utxos {
+			if selected_amount >= target_amount_sat + total_fees {
+				break;
+			}
+			selected_amount += utxo.output.value;
+			total_fees += fee_to_spend_utxo;
+			selected_utxos.push(utxo.clone());
+		}
+		if selected_amount < target_amount_sat + total_fees {
+			return Err(());
+		}
+		for utxo in &selected_utxos {
+			locked_utxos.insert(utxo.outpoint, claim_id);
+		}
+		core::mem::drop(locked_utxos);
+
+		let remaining_amount = selected_amount - target_amount_sat - total_fees;
+		let change_script = self.source.get_change_script()?;
+		let change_output_fee = fee_for_weight(
+			target_feerate_sat_per_1000_weight,
+			(8 /* value */ + change_script.consensus_encode(&mut sink()).unwrap() as u64) *
+				WITNESS_SCALE_FACTOR as u64,
+		);
+		let change_output_amount = remaining_amount.saturating_sub(change_output_fee);
+		let change_output = if change_output_amount < change_script.dust_value().to_sat() {
+			None
+		} else {
+			Some(TxOut { script_pubkey: change_script, value: change_output_amount })
+		};
+
+		Ok(CoinSelection {
+			confirmed_utxos: selected_utxos,
+			change_output,
+		})
+	}
+}
+
+impl<W: Deref> CoinSelectionSource for Wallet<W> where W::Target: WalletSource {
+	fn select_confirmed_utxos(
+		&self, claim_id: ClaimId, must_spend: &[Input], must_pay_to: &[TxOut],
+		target_feerate_sat_per_1000_weight: u32,
+	) -> Result<CoinSelection, ()> {
+		let utxos = self.source.list_confirmed_utxos()?;
+		// TODO: Use fee estimation utils when we upgrade to bitcoin v0.30.0.
+		const BASE_TX_SIZE: u64 = 4 /* version */ + 1 /* input count */ + 1 /* output count */ + 4 /* locktime */;
+		let total_output_size: u64 = must_pay_to.iter().map(|output|
+			8 /* value */ + 1 /* script len */ + output.script_pubkey.len() as u64
+		).sum();
+		let total_satisfaction_weight: u64 = must_spend.iter().map(|input| input.satisfaction_weight).sum();
+		let total_input_weight = (BASE_INPUT_WEIGHT * must_spend.len() as u64) + total_satisfaction_weight;
+
+		let preexisting_tx_weight = 2 /* segwit marker & flag */ + total_input_weight +
+			((BASE_TX_SIZE + total_output_size) * WITNESS_SCALE_FACTOR as u64);
+		let target_amount_sat = must_pay_to.iter().map(|output| output.value).sum();
+		let do_coin_selection = |force_conflicting_utxo_spend: bool, tolerate_high_network_feerates: bool| {
+			self.select_confirmed_utxos_internal(
+				&utxos, claim_id, force_conflicting_utxo_spend, tolerate_high_network_feerates,
+				target_feerate_sat_per_1000_weight, preexisting_tx_weight, target_amount_sat,
+			)
+		};
+		do_coin_selection(false, false)
+			.or_else(|_| do_coin_selection(false, true))
+			.or_else(|_| do_coin_selection(true, false))
+			.or_else(|_| do_coin_selection(true, true))
+	}
+
+	fn sign_tx(&self, tx: &mut Transaction) -> Result<(), ()> {
+		self.source.sign_tx(tx)
+	}
 }
 
 /// A handler for [`Event::BumpTransaction`] events that sources confirmed UTXOs from a
