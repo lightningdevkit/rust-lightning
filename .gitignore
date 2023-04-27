@@ -10,4 +10,5 @@ Cargo.lock
 lightning/target
 lightning/ldk-net_graph-*.bin
 lightning-custom-message/target
+lightning-transaction-sync/target
 no-std-check/target
