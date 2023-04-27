@@ -69,7 +69,7 @@ fn test_priv_forwarding_rejection() {
 	let payment_params = PaymentParameters::from_node_id(nodes[2].node.get_our_node_id(), TEST_FINAL_CLTV)
 		.with_features(nodes[2].node.invoice_features())
 		.with_route_hints(last_hops);
-	let (route, our_payment_hash, our_payment_preimage, our_payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[2], payment_params, 10_000, TEST_FINAL_CLTV);
+	let (route, our_payment_hash, our_payment_preimage, our_payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[2], payment_params, 10_000);
 
 	nodes[0].node.send_payment_with_route(&route, our_payment_hash,
 		RecipientOnionFields::secret_only(our_payment_secret), PaymentId(our_payment_hash.0)).unwrap();
@@ -238,7 +238,7 @@ fn test_routed_scid_alias() {
 	let payment_params = PaymentParameters::from_node_id(nodes[2].node.get_our_node_id(), 42)
 		.with_features(nodes[2].node.invoice_features())
 		.with_route_hints(hop_hints);
-	let (route, payment_hash, payment_preimage, payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[2], payment_params, 100_000, 42);
+	let (route, payment_hash, payment_preimage, payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[2], payment_params, 100_000);
 	assert_eq!(route.paths[0].hops[1].short_channel_id, last_hop[0].inbound_scid_alias.unwrap());
 	nodes[0].node.send_payment_with_route(&route, payment_hash,
 		RecipientOnionFields::secret_only(payment_secret), PaymentId(payment_hash.0)).unwrap();
@@ -404,7 +404,7 @@ fn test_inbound_scid_privacy() {
 	let payment_params = PaymentParameters::from_node_id(nodes[2].node.get_our_node_id(), 42)
 		.with_features(nodes[2].node.invoice_features())
 		.with_route_hints(hop_hints.clone());
-	let (route, payment_hash, payment_preimage, payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[2], payment_params, 100_000, 42);
+	let (route, payment_hash, payment_preimage, payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[2], payment_params, 100_000);
 	assert_eq!(route.paths[0].hops[1].short_channel_id, last_hop[0].inbound_scid_alias.unwrap());
 	nodes[0].node.send_payment_with_route(&route, payment_hash,
 		RecipientOnionFields::secret_only(payment_secret), PaymentId(payment_hash.0)).unwrap();
@@ -420,7 +420,7 @@ fn test_inbound_scid_privacy() {
 	let payment_params_2 = PaymentParameters::from_node_id(nodes[2].node.get_our_node_id(), 42)
 		.with_features(nodes[2].node.invoice_features())
 		.with_route_hints(hop_hints);
-	let (route_2, payment_hash_2, _, payment_secret_2) = get_route_and_payment_hash!(nodes[0], nodes[2], payment_params_2, 100_000, 42);
+	let (route_2, payment_hash_2, _, payment_secret_2) = get_route_and_payment_hash!(nodes[0], nodes[2], payment_params_2, 100_000);
 	assert_eq!(route_2.paths[0].hops[1].short_channel_id, last_hop[0].short_channel_id.unwrap());
 	nodes[0].node.send_payment_with_route(&route_2, payment_hash_2,
 		RecipientOnionFields::secret_only(payment_secret_2), PaymentId(payment_hash_2.0)).unwrap();
@@ -472,7 +472,7 @@ fn test_scid_alias_returned() {
 	let payment_params = PaymentParameters::from_node_id(nodes[2].node.get_our_node_id(), 42)
 		.with_features(nodes[2].node.invoice_features())
 		.with_route_hints(hop_hints);
-	let (mut route, payment_hash, _, payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[2], payment_params, 10_000, 42);
+	let (mut route, payment_hash, _, payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[2], payment_params, 10_000);
 	assert_eq!(route.paths[0].hops[1].short_channel_id, nodes[2].node.list_usable_channels()[0].inbound_scid_alias.unwrap());
 
 	route.paths[0].hops[1].fee_msat = 10_000_000; // Overshoot the last channel's value
