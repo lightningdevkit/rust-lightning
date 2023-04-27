@@ -86,9 +86,11 @@ where
 ///   participating node
 /// * It is fine to cache `phantom_route_hints` and reuse it across invoices, as long as the data is
 ///   updated when a channel becomes disabled or closes
-/// * Note that if too many channels are included in [`PhantomRouteHints::channels`], the invoice
-///   may be too long for QR code scanning. To fix this, `PhantomRouteHints::channels` may be pared
-///   down
+/// * Note that the route hints generated from `phantom_route_hints` will be limited to a maximum
+///   of 3 hints to ensure that the invoice can be scanned in a QR code. These hints are selected
+///   in the order that the nodes in `PhantomRouteHints` are specified, selecting one hint per node
+///   until the maximum is hit. Callers may provide as many `PhantomRouteHints::channels` as
+///   desired, but note that some nodes will be trimmed if more than 3 nodes are provided.
 ///
 /// `description_hash` is a SHA-256 hash of the description text
 ///
@@ -200,31 +202,8 @@ where
 		invoice = invoice.amount_milli_satoshis(amt);
 	}
 
-	for PhantomRouteHints { channels, phantom_scid, real_node_pubkey } in phantom_route_hints {
-		log_trace!(logger, "Generating phantom route hints for node {}",
-			log_pubkey!(real_node_pubkey));
-		let mut route_hints = filter_channels(channels, amt_msat, &logger);
-
-		// If we have any public channel, the route hints from `filter_channels` will be empty.
-		// In that case we create a RouteHint on which we will push a single hop with the phantom
-		// route into the invoice, and let the sender find the path to the `real_node_pubkey`
-		// node by looking at our public channels.
-		if route_hints.is_empty() {
-			route_hints.push(RouteHint(vec![]))
-		}
-		for mut route_hint in route_hints {
-			route_hint.0.push(RouteHintHop {
-				src_node_id: real_node_pubkey,
-				short_channel_id: phantom_scid,
-				fees: RoutingFees {
-					base_msat: 0,
-					proportional_millionths: 0,
-				},
-				cltv_expiry_delta: MIN_CLTV_EXPIRY_DELTA,
-				htlc_minimum_msat: None,
-				htlc_maximum_msat: None,});
-			invoice = invoice.private_route(route_hint.clone());
-		}
+	for route_hint in select_phantom_hints(amt_msat, phantom_route_hints, logger) {
+		invoice = invoice.private_route(route_hint);
 	}
 
 	let raw_invoice = match invoice.build_raw() {
@@ -238,6 +217,78 @@ where
 	match signed_raw_invoice {
 		Ok(inv) => Ok(Invoice::from_signed(inv).unwrap()),
 		Err(e) => Err(SignOrCreationError::SignError(e))
+	}
+}
+
+/// Utility to select route hints for phantom invoices.
+/// See [`PhantomKeysManager`] for more information on phantom node payments.
+///
+/// To ensure that the phantom invoice is still readable by QR code, we limit to 3 hints per invoice:
+/// * Select up to three channels per node.
+/// * Select one hint from each node, up to three hints or until we run out of hints.
+///
+/// [`PhantomKeysManager`]: lightning::chain::keysinterface::PhantomKeysManager
+fn select_phantom_hints<L: Deref>(amt_msat: Option<u64>, phantom_route_hints: Vec<PhantomRouteHints>,
+	logger: L) -> Vec<RouteHint>
+where
+	L::Target: Logger,
+{
+	let mut phantom_hints: Vec<Vec<RouteHint>> = Vec::new();
+
+	for PhantomRouteHints { channels, phantom_scid, real_node_pubkey } in phantom_route_hints {
+		log_trace!(logger, "Generating phantom route hints for node {}",
+			log_pubkey!(real_node_pubkey));
+		let mut route_hints = sort_and_filter_channels(channels, amt_msat, &logger);
+
+		// If we have any public channel, the route hints from `sort_and_filter_channels` will be
+		// empty. In that case we create a RouteHint on which we will push a single hop with the
+		// phantom route into the invoice, and let the sender find the path to the `real_node_pubkey`
+		// node by looking at our public channels.
+		if route_hints.is_empty() {
+			route_hints.push(RouteHint(vec![]))
+		}
+		for route_hint in &mut route_hints {
+			route_hint.0.push(RouteHintHop {
+				src_node_id: real_node_pubkey,
+				short_channel_id: phantom_scid,
+				fees: RoutingFees {
+					base_msat: 0,
+					proportional_millionths: 0,
+				},
+				cltv_expiry_delta: MIN_CLTV_EXPIRY_DELTA,
+				htlc_minimum_msat: None,
+				htlc_maximum_msat: None,});
+		}
+
+		phantom_hints.push(route_hints);
+	}
+
+	// We have one vector per real node involved in creating the phantom invoice. To distribute
+	// the hints across our real nodes we add one hint from each in turn until no node has any hints
+	// left (if one node has more hints than any other, these will accumulate at the end of the
+	// vector).
+	let mut invoice_hints: Vec<RouteHint> = Vec::new();
+	let mut hint_idx = 0;
+
+	loop {
+		let mut remaining_hints = false;
+
+		for hints in phantom_hints.iter() {
+			if invoice_hints.len() == 3 {
+				return invoice_hints
+			}
+
+			if hint_idx < hints.len() {
+				invoice_hints.push(hints[hint_idx].clone());
+				remaining_hints = true
+			}
+		}
+
+		if !remaining_hints {
+			return invoice_hints
+		}
+
+		hint_idx +=1;
 	}
 }
 
@@ -485,7 +536,7 @@ fn _create_invoice_from_channelmanager_and_duration_since_epoch_with_payment_has
 		invoice = invoice.amount_milli_satoshis(amt);
 	}
 
-	let route_hints = filter_channels(channels, amt_msat, &logger);
+	let route_hints = sort_and_filter_channels(channels, amt_msat, &logger);
 	for hint in route_hints {
 		invoice = invoice.private_route(hint);
 	}
@@ -504,19 +555,26 @@ fn _create_invoice_from_channelmanager_and_duration_since_epoch_with_payment_has
 	}
 }
 
-/// Filters the `channels` for an invoice, and returns the corresponding `RouteHint`s to include
+/// Sorts and filters the `channels` for an invoice, and returns the corresponding `RouteHint`s to include
 /// in the invoice.
 ///
 /// The filtering is based on the following criteria:
 /// * Only one channel per counterparty node
-/// * Always select the channel with the highest inbound capacity per counterparty node
+/// * If the counterparty has a channel that is above the `min_inbound_capacity_msat` + 10% scaling
+///   factor (to allow some margin for change in inbound), select the channel with the lowest
+///   inbound capacity that is above this threshold.
+/// * If no `min_inbound_capacity_msat` is specified, or the counterparty has no channels above the
+///   minimum + 10% scaling factor, select the channel with the highest inbound capacity per counterparty.
 /// * Prefer channels with capacity at least `min_inbound_capacity_msat` and where the channel
 ///   `is_usable` (i.e. the peer is connected).
 /// * If any public channel exists, only public [`RouteHint`]s will be returned.
 /// * If any public, announced, channel exists (i.e. a channel with 7+ confs, to ensure the
 ///   announcement has had a chance to propagate), no [`RouteHint`]s will be returned, as the
 ///   sender is expected to find the path by looking at the public channels instead.
-fn filter_channels<L: Deref>(
+/// * Limited to a total of 3 channels.
+/// * Sorted by lowest inbound capacity if an online channel with the minimum amount requested exists,
+///   otherwise sort by highest inbound capacity to give the payment the best chance of succeeding.
+fn sort_and_filter_channels<L: Deref>(
 	channels: Vec<ChannelDetails>, min_inbound_capacity_msat: Option<u64>, logger: &L
 ) -> Vec<RouteHint> where L::Target: Logger {
 	let mut filtered_channels: HashMap<PublicKey, ChannelDetails> = HashMap::new();
@@ -570,12 +628,16 @@ fn filter_channels<L: Deref>(
 				// If this channel is public and the previous channel is not, ensure we replace the
 				// previous channel to avoid announcing non-public channels.
 				let new_now_public = channel.is_public && !entry.get().is_public;
+				// Decide whether we prefer the currently selected channel with the node to the new one,
+				// based on their inbound capacity. 
+				let prefer_current = prefer_current_channel(min_inbound_capacity_msat, current_max_capacity,
+					channel.inbound_capacity_msat);
 				// If the public-ness of the channel has not changed (in which case simply defer to
-				// `new_now_public), and this channel has a greater capacity, prefer to announce
-				// this channel.
-				let new_higher_capacity = channel.is_public == entry.get().is_public &&
-					channel.inbound_capacity_msat > current_max_capacity;
-				if new_now_public || new_higher_capacity {
+				// `new_now_public), and this channel has more desirable inbound than the incumbent,
+				// prefer to include this channel.
+				let new_channel_preferable = channel.is_public == entry.get().is_public && !prefer_current;
+
+				if new_now_public || new_channel_preferable {
 					log_trace!(logger,
 						"Preferring counterparty {} channel {} (SCID {:?}, {} msats) over {} (SCID {:?}, {} msats) for invoice route hints",
 						log_pubkey!(channel.counterparty.node_id),
@@ -617,7 +679,7 @@ fn filter_channels<L: Deref>(
 	// the payment value and where we're currently connected to the channel counterparty.
 	// Even if we cannot satisfy both goals, always ensure we include *some* hints, preferring
 	// those which meet at least one criteria.
-	filtered_channels
+	let mut eligible_channels = filtered_channels
 		.into_iter()
 		.map(|(_, channel)| channel)
 		.filter(|channel| {
@@ -654,8 +716,50 @@ fn filter_channels<L: Deref>(
 
 			include_channel
 		})
-		.map(route_hint_from_channel)
-		.collect::<Vec<RouteHint>>()
+		.collect::<Vec<ChannelDetails>>();
+
+		eligible_channels.sort_unstable_by(|a, b| {
+			if online_min_capacity_channel_exists {
+				a.inbound_capacity_msat.cmp(&b.inbound_capacity_msat)
+			} else {
+				b.inbound_capacity_msat.cmp(&a.inbound_capacity_msat)
+			}});
+		eligible_channels.into_iter().take(3).map(route_hint_from_channel).collect::<Vec<RouteHint>>()
+}
+
+/// prefer_current_channel chooses a channel to use for route hints between a currently selected and candidate
+/// channel based on the inbound capacity of each channel and the minimum inbound capacity requested for the hints,
+/// returning true if the current channel should be preferred over the candidate channel.
+/// * If no minimum amount is requested, the channel with the most inbound is chosen to maximize the chances that a
+///   payment of any size will succeed.
+/// * If we have channels with inbound above our minimum requested inbound (plus a 10% scaling factor, expressed as a
+///   percentage) then we choose the lowest inbound channel with above this amount. If we have sufficient inbound
+///   channels, we don't want to deplete our larger channels with small payments (the off-chain version of "grinding
+///   our change").
+/// * If no channel above our minimum amount exists, then we just prefer the channel with the most inbound to give
+///   payments the best chance of succeeding in multiple parts.
+fn prefer_current_channel(min_inbound_capacity_msat: Option<u64>, current_channel: u64,
+	candidate_channel: u64) -> bool {
+
+	// If no min amount is given for the hints, err of the side of caution and choose the largest channel inbound to
+	// maximize chances of any payment succeeding.
+	if min_inbound_capacity_msat.is_none() {
+		return current_channel > candidate_channel
+	}
+
+	let scaled_min_inbound = min_inbound_capacity_msat.unwrap() * 110;
+	let current_sufficient = current_channel * 100 >= scaled_min_inbound;
+	let candidate_sufficient = candidate_channel * 100 >= scaled_min_inbound;
+
+	if current_sufficient && candidate_sufficient {
+		return current_channel < candidate_channel
+	} else if current_sufficient {
+		return true
+	} else if candidate_sufficient {
+		return false
+	}
+
+	current_channel > candidate_channel
 }
 
 #[cfg(test)]
@@ -675,6 +779,34 @@ mod test {
 	use lightning::util::config::UserConfig;
 	use crate::utils::create_invoice_from_channelmanager_and_duration_since_epoch;
 	use std::collections::HashSet;
+
+	#[test]
+	fn test_prefer_current_channel() {
+		// No minimum, prefer larger candidate channel.
+		assert_eq!(crate::utils::prefer_current_channel(None, 100, 200), false);
+
+		// No minimum, prefer larger current channel.
+		assert_eq!(crate::utils::prefer_current_channel(None, 200, 100), true);
+
+		// Minimum set, prefer current channel over minimum + buffer.
+		assert_eq!(crate::utils::prefer_current_channel(Some(100), 115, 100), true);
+
+		// Minimum set, prefer candidate channel over minimum + buffer.
+		assert_eq!(crate::utils::prefer_current_channel(Some(100), 105, 125), false);
+		
+		// Minimum set, both channels sufficient, prefer smaller current channel.
+		assert_eq!(crate::utils::prefer_current_channel(Some(100), 115, 125), true);
+		
+		// Minimum set, both channels sufficient, prefer smaller candidate channel.
+		assert_eq!(crate::utils::prefer_current_channel(Some(100), 200, 160), false);
+
+		// Minimum set, neither sufficient, prefer larger current channel.
+		assert_eq!(crate::utils::prefer_current_channel(Some(200), 100, 50), true);
+
+		// Minimum set, neither sufficient, prefer larger candidate channel.
+		assert_eq!(crate::utils::prefer_current_channel(Some(200), 100, 150), false);
+	}
+
 
 	#[test]
 	fn test_from_channelmanager() {
@@ -883,17 +1015,19 @@ mod test {
 	}
 
 	#[test]
-	fn test_hints_has_only_highest_inbound_capacity_channel() {
+	fn test_hints_has_only_lowest_inbound_capacity_channel_above_minimum() {
 		let chanmon_cfgs = create_chanmon_cfgs(2);
 		let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-		let _chan_1_0_low_inbound_capacity = create_unannounced_chan_between_nodes_with_value(&nodes, 1, 0, 100_000, 0);
-		let chan_1_0_high_inbound_capacity = create_unannounced_chan_between_nodes_with_value(&nodes, 1, 0, 10_000_000, 0);
-		let _chan_1_0_medium_inbound_capacity = create_unannounced_chan_between_nodes_with_value(&nodes, 1, 0, 1_000_000, 0);
+
+		let _chan_1_0_inbound_below_amt = create_unannounced_chan_between_nodes_with_value(&nodes, 1, 0, 10_000, 0);
+		let _chan_1_0_large_inbound_above_amt = create_unannounced_chan_between_nodes_with_value(&nodes, 1, 0, 500_000, 0);
+		let chan_1_0_low_inbound_above_amt = create_unannounced_chan_between_nodes_with_value(&nodes, 1, 0, 200_000, 0);
+
 		let mut scid_aliases = HashSet::new();
-		scid_aliases.insert(chan_1_0_high_inbound_capacity.0.short_channel_id_alias.unwrap());
-		match_invoice_routes(Some(5000), &nodes[0], scid_aliases);
+		scid_aliases.insert(chan_1_0_low_inbound_above_amt.0.short_channel_id_alias.unwrap());
+		match_invoice_routes(Some(100_000_000), &nodes[0], scid_aliases);
 	}
 
 	#[test]
@@ -923,6 +1057,48 @@ mod test {
 		scid_aliases.insert(chan_b.0.short_channel_id_alias.unwrap());
 		nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id());
 		match_invoice_routes(Some(1_000_000_000), &nodes[0], scid_aliases);
+	}
+
+	#[test]
+	fn test_insufficient_inbound_sort_by_highest_capacity() {
+		let chanmon_cfgs = create_chanmon_cfgs(5);
+		let node_cfgs = create_node_cfgs(5, &chanmon_cfgs);
+		let node_chanmgrs = create_node_chanmgrs(5, &node_cfgs, &[None, None, None, None, None]);
+		let nodes = create_network(5, &node_cfgs, &node_chanmgrs);
+		let _chan_1_0 = create_unannounced_chan_between_nodes_with_value(&nodes, 1, 0, 100_000, 0);
+		let chan_2_0 = create_unannounced_chan_between_nodes_with_value(&nodes, 2, 0, 200_000, 0);
+		let chan_3_0 = create_unannounced_chan_between_nodes_with_value(&nodes, 3, 0, 300_000, 0);
+		let chan_4_0 = create_unannounced_chan_between_nodes_with_value(&nodes, 4, 0, 400_000, 0);
+
+		// When no single channel has enough inbound capacity for the payment, we expect the three
+		// highest inbound channels to be chosen.
+		let mut scid_aliases = HashSet::new();
+		scid_aliases.insert(chan_2_0.0.short_channel_id_alias.unwrap());
+		scid_aliases.insert(chan_3_0.0.short_channel_id_alias.unwrap());
+		scid_aliases.insert(chan_4_0.0.short_channel_id_alias.unwrap());
+
+		match_invoice_routes(Some(1_000_000_000), &nodes[0], scid_aliases.clone());
+	}
+
+	#[test]
+	fn test_sufficient_inbound_sort_by_lowest_capacity() {
+		let chanmon_cfgs = create_chanmon_cfgs(5);
+		let node_cfgs = create_node_cfgs(5, &chanmon_cfgs);
+		let node_chanmgrs = create_node_chanmgrs(5, &node_cfgs, &[None, None, None, None, None]);
+		let nodes = create_network(5, &node_cfgs, &node_chanmgrs);
+		let chan_1_0 = create_unannounced_chan_between_nodes_with_value(&nodes, 1, 0, 100_000, 0);
+		let chan_2_0 = create_unannounced_chan_between_nodes_with_value(&nodes, 2, 0, 200_000, 0);
+		let chan_3_0 = create_unannounced_chan_between_nodes_with_value(&nodes, 3, 0, 300_000, 0);
+		let _chan_4_0 = create_unannounced_chan_between_nodes_with_value(&nodes, 4, 0, 400_000, 0);
+
+		// When we have channels that have sufficient inbound for the payment, test that we sort
+		// by lowest inbound capacity.
+		let mut scid_aliases = HashSet::new();
+		scid_aliases.insert(chan_1_0.0.short_channel_id_alias.unwrap());
+		scid_aliases.insert(chan_2_0.0.short_channel_id_alias.unwrap());
+		scid_aliases.insert(chan_3_0.0.short_channel_id_alias.unwrap());
+
+		match_invoice_routes(Some(50_000_000), &nodes[0], scid_aliases.clone());
 	}
 
 	#[test]
@@ -1459,7 +1635,7 @@ mod test {
 
 	#[test]
 	#[cfg(feature = "std")]
-	fn test_multi_node_hints_has_only_highest_inbound_capacity_channel() {
+	fn test_multi_node_hints_has_only_lowest_inbound_channel_above_minimum() {
 		let mut chanmon_cfgs = create_chanmon_cfgs(3);
 		let seed_1 = [42u8; 32];
 		let seed_2 = [43u8; 32];
@@ -1470,17 +1646,17 @@ mod test {
 		let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
 		let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 
-		let _chan_0_1_low_inbound_capacity = create_unannounced_chan_between_nodes_with_value(&nodes, 0, 1, 100_000, 0);
-		let chan_0_1_high_inbound_capacity = create_unannounced_chan_between_nodes_with_value(&nodes, 0, 1, 10_000_000, 0);
-		let _chan_0_1_medium_inbound_capacity = create_unannounced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0);
+		let _chan_0_1_below_amt = create_unannounced_chan_between_nodes_with_value(&nodes, 0, 1, 100_000, 0);
+		let _chan_0_1_above_amt_high_inbound = create_unannounced_chan_between_nodes_with_value(&nodes, 0, 1, 500_000, 0);
+		let chan_0_1_above_amt_low_inbound = create_unannounced_chan_between_nodes_with_value(&nodes, 0, 1, 180_000, 0);
 		let chan_0_2 = create_unannounced_chan_between_nodes_with_value(&nodes, 0, 2, 100000, 10001);
 
 		let mut scid_aliases = HashSet::new();
-		scid_aliases.insert(chan_0_1_high_inbound_capacity.0.short_channel_id_alias.unwrap());
+		scid_aliases.insert(chan_0_1_above_amt_low_inbound.0.short_channel_id_alias.unwrap());
 		scid_aliases.insert(chan_0_2.0.short_channel_id_alias.unwrap());
 
 		match_multi_node_invoice_routes(
-			Some(10_000),
+			Some(100_000_000),
 			&nodes[1],
 			vec![&nodes[1], &nodes[2],],
 			scid_aliases,
@@ -1562,7 +1738,98 @@ mod test {
 		);
 	}
 
-	#[cfg(feature = "std")]
+	#[test]
+	fn test_multi_node_hints_limited_to_3() {
+		let mut chanmon_cfgs = create_chanmon_cfgs(6);
+		let seed_1 = [42 as u8; 32];
+		let seed_2 = [43 as u8; 32];
+		let seed_3 = [44 as u8; 32];
+		let seed_4 = [45 as u8; 32];
+		let cross_node_seed = [44 as u8; 32];
+		chanmon_cfgs[2].keys_manager.backing = PhantomKeysManager::new(&seed_1, 43, 44, &cross_node_seed);
+		chanmon_cfgs[3].keys_manager.backing = PhantomKeysManager::new(&seed_2, 43, 44, &cross_node_seed);
+		chanmon_cfgs[4].keys_manager.backing = PhantomKeysManager::new(&seed_3, 43, 44, &cross_node_seed);
+		chanmon_cfgs[5].keys_manager.backing = PhantomKeysManager::new(&seed_4, 43, 44, &cross_node_seed);
+		let node_cfgs = create_node_cfgs(6, &chanmon_cfgs);
+		let node_chanmgrs = create_node_chanmgrs(6, &node_cfgs, &[None, None, None, None, None, None]);
+		let nodes = create_network(6, &node_cfgs, &node_chanmgrs);
+
+		// Setup each phantom node with two channels from distinct peers.
+		let chan_0_2 = create_unannounced_chan_between_nodes_with_value(&nodes, 0, 2, 10_000, 0);
+		let chan_1_2 = create_unannounced_chan_between_nodes_with_value(&nodes, 1, 2, 20_000, 0);
+		let chan_0_3 = create_unannounced_chan_between_nodes_with_value(&nodes, 0, 3, 20_000, 0);
+		let _chan_1_3 = create_unannounced_chan_between_nodes_with_value(&nodes, 1, 3, 10_000, 0);
+		let chan_0_4 = create_unannounced_chan_between_nodes_with_value(&nodes, 0, 4, 20_000, 0);
+		let _chan_1_4 = create_unannounced_chan_between_nodes_with_value(&nodes, 1, 4, 10_000, 0);
+		let _chan_0_5 = create_unannounced_chan_between_nodes_with_value(&nodes, 0, 5, 20_000, 0);
+		let _chan_1_5 = create_unannounced_chan_between_nodes_with_value(&nodes, 1, 5, 10_000, 0);
+
+		// Set invoice amount > all channels inbound so that every one is eligible for inclusion
+		// and hints will be sorted by largest inbound capacity.
+		let invoice_amt = Some(100_000_000);
+
+		// With 4 phantom nodes, assert that we include 1 hint per node, up to 3 nodes.
+		let mut scid_aliases = HashSet::new();
+		scid_aliases.insert(chan_1_2.0.short_channel_id_alias.unwrap());
+		scid_aliases.insert(chan_0_3.0.short_channel_id_alias.unwrap());
+		scid_aliases.insert(chan_0_4.0.short_channel_id_alias.unwrap());
+
+		match_multi_node_invoice_routes(
+			invoice_amt,
+			&nodes[3],
+			vec![&nodes[2], &nodes[3], &nodes[4], &nodes[5]],
+			scid_aliases,
+			false,
+		);
+
+		// With 2 phantom nodes, assert that we include no more than 3 hints.
+		let mut scid_aliases = HashSet::new();
+		scid_aliases.insert(chan_1_2.0.short_channel_id_alias.unwrap());
+		scid_aliases.insert(chan_0_3.0.short_channel_id_alias.unwrap());
+		scid_aliases.insert(chan_0_2.0.short_channel_id_alias.unwrap());
+
+		match_multi_node_invoice_routes(
+			invoice_amt,
+			&nodes[3],
+			vec![&nodes[2], &nodes[3]],
+			scid_aliases,
+			false,
+		);
+	}
+
+	#[test]
+	fn test_multi_node_hints_at_least_3() {
+		let mut chanmon_cfgs = create_chanmon_cfgs(5);
+		let seed_1 = [42 as u8; 32];
+		let seed_2 = [43 as u8; 32];
+		let cross_node_seed = [44 as u8; 32];
+		chanmon_cfgs[1].keys_manager.backing = PhantomKeysManager::new(&seed_1, 43, 44, &cross_node_seed);
+		chanmon_cfgs[2].keys_manager.backing = PhantomKeysManager::new(&seed_2, 43, 44, &cross_node_seed);
+		let node_cfgs = create_node_cfgs(5, &chanmon_cfgs);
+		let node_chanmgrs = create_node_chanmgrs(5, &node_cfgs, &[None, None, None, None, None]);
+		let nodes = create_network(5, &node_cfgs, &node_chanmgrs);
+
+		let _chan_0_3 = create_unannounced_chan_between_nodes_with_value(&nodes, 0, 3, 10_000, 0);
+		let chan_1_3 = create_unannounced_chan_between_nodes_with_value(&nodes, 1, 3, 20_000, 0);
+		let chan_2_3 = create_unannounced_chan_between_nodes_with_value(&nodes, 2, 3, 30_000, 0);
+		let chan_0_4 = create_unannounced_chan_between_nodes_with_value(&nodes, 0, 4, 10_000, 0);
+
+		// Since the invoice amount is above all channels inbound, all four are eligible. Test that
+		// we still include 3 hints from 2 distinct nodes sorted by inbound.
+		let mut scid_aliases = HashSet::new();
+		scid_aliases.insert(chan_1_3.0.short_channel_id_alias.unwrap());
+		scid_aliases.insert(chan_2_3.0.short_channel_id_alias.unwrap());
+		scid_aliases.insert(chan_0_4.0.short_channel_id_alias.unwrap());
+
+		match_multi_node_invoice_routes(
+			Some(100_000_000),
+			&nodes[3],
+			vec![&nodes[3], &nodes[4],],
+			scid_aliases,
+			false,
+		);
+	}
+
 	fn match_multi_node_invoice_routes<'a, 'b: 'a, 'c: 'b>(
 		invoice_amt: Option<u64>,
 		invoice_node: &Node<'a, 'b, 'c>,
