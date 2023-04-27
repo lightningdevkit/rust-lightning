@@ -442,7 +442,7 @@ impl Writeable for RouteParameters {
 			(2, self.final_value_msat, required),
 			// LDK versions prior to 0.0.114 had the `final_cltv_expiry_delta` parameter in
 			// `RouteParameters` directly. For compatibility, we write it here.
-			(4, self.payment_params.final_cltv_expiry_delta, required),
+			(4, self.payment_params.payee.final_cltv_expiry_delta(), option),
 		});
 		Ok(())
 	}
@@ -453,11 +453,13 @@ impl Readable for RouteParameters {
 		_init_and_read_tlv_fields!(reader, {
 			(0, payment_params, (required: ReadableArgs, 0)),
 			(2, final_value_msat, required),
-			(4, final_cltv_expiry_delta, required),
+			(4, final_cltv_delta, option),
 		});
 		let mut payment_params: PaymentParameters = payment_params.0.unwrap();
-		if payment_params.final_cltv_expiry_delta == 0 {
-			payment_params.final_cltv_expiry_delta = final_cltv_expiry_delta.0.unwrap();
+		if let Payee::Clear { ref mut final_cltv_expiry_delta, .. } = payment_params.payee {
+			if final_cltv_expiry_delta == &0 {
+				*final_cltv_expiry_delta = final_cltv_delta.ok_or(DecodeError::InvalidValue)?;
+			}
 		}
 		Ok(Self {
 			payment_params,
@@ -526,9 +528,6 @@ pub struct PaymentParameters {
 	/// payment to fail. Future attempts for the same payment shouldn't be relayed through any of
 	/// these SCIDs.
 	pub previously_failed_channels: Vec<u64>,
-
-	/// The minimum CLTV delta at the end of the route. This value must not be zero.
-	pub final_cltv_expiry_delta: u32,
 }
 
 impl Writeable for PaymentParameters {
@@ -549,7 +548,7 @@ impl Writeable for PaymentParameters {
 			(6, self.expiry_time, option),
 			(7, self.previously_failed_channels, vec_type),
 			(8, *blinded_hints, optional_vec),
-			(9, self.final_cltv_expiry_delta, required),
+			(9, self.payee.final_cltv_expiry_delta(), option),
 		});
 		Ok(())
 	}
@@ -582,6 +581,7 @@ impl ReadableArgs<u32> for PaymentParameters {
 				route_hints: clear_route_hints,
 				node_id: payee_pubkey.ok_or(DecodeError::InvalidValue)?,
 				features: features.and_then(|f| f.bolt11()),
+				final_cltv_expiry_delta: final_cltv_expiry_delta.0.unwrap(),
 			}
 		};
 		Ok(Self {
@@ -591,7 +591,6 @@ impl ReadableArgs<u32> for PaymentParameters {
 			max_channel_saturation_power_of_half: _init_tlv_based_struct_field!(max_channel_saturation_power_of_half, (default_value, unused)),
 			expiry_time,
 			previously_failed_channels: previously_failed_channels.unwrap_or(Vec::new()),
-			final_cltv_expiry_delta: _init_tlv_based_struct_field!(final_cltv_expiry_delta, (default_value, unused)),
 		})
 	}
 }
@@ -604,13 +603,12 @@ impl PaymentParameters {
 	/// provided.
 	pub fn from_node_id(payee_pubkey: PublicKey, final_cltv_expiry_delta: u32) -> Self {
 		Self {
-			payee: Payee::Clear { node_id: payee_pubkey, route_hints: vec![], features: None },
+			payee: Payee::Clear { node_id: payee_pubkey, route_hints: vec![], features: None, final_cltv_expiry_delta },
 			expiry_time: None,
 			max_total_cltv_expiry_delta: DEFAULT_MAX_TOTAL_CLTV_EXPIRY_DELTA,
 			max_path_count: DEFAULT_MAX_PATH_COUNT,
 			max_channel_saturation_power_of_half: 2,
 			previously_failed_channels: Vec::new(),
-			final_cltv_expiry_delta,
 		}
 	}
 
@@ -629,8 +627,12 @@ impl PaymentParameters {
 	pub fn with_bolt11_features(self, features: InvoiceFeatures) -> Result<Self, ()> {
 		match self.payee {
 			Payee::Blinded { .. } => Err(()),
-			Payee::Clear { route_hints, node_id, .. } =>
-				Ok(Self { payee: Payee::Clear { route_hints, node_id, features: Some(features) }, ..self })
+			Payee::Clear { route_hints, node_id, final_cltv_expiry_delta, .. } =>
+				Ok(Self {
+					payee: Payee::Clear {
+						route_hints, node_id, features: Some(features), final_cltv_expiry_delta
+					}, ..self
+				})
 		}
 	}
 
@@ -641,8 +643,12 @@ impl PaymentParameters {
 	pub fn with_route_hints(self, route_hints: Vec<RouteHint>) -> Result<Self, ()> {
 		match self.payee {
 			Payee::Blinded { .. } => Err(()),
-			Payee::Clear { node_id, features, .. } =>
-				Ok(Self { payee: Payee::Clear { route_hints, node_id, features }, ..self })
+			Payee::Clear { node_id, features, final_cltv_expiry_delta, .. } =>
+				Ok(Self {
+					payee: Payee::Clear {
+						route_hints, node_id, features, final_cltv_expiry_delta,
+					}, ..self
+				})
 		}
 	}
 
@@ -704,6 +710,8 @@ pub enum Payee {
 		///
 		/// [`for_keysend`]: PaymentParameters::for_keysend
 		features: Option<InvoiceFeatures>,
+		/// The minimum CLTV delta at the end of the route. This value must not be zero.
+		final_cltv_expiry_delta: u32,
 	},
 }
 
@@ -730,6 +738,12 @@ impl Payee {
 		match self {
 			Self::Clear { features, .. } => features.as_ref().map(|f| FeaturesRef::Bolt11(f)),
 			Self::Blinded { features, .. } => features.as_ref().map(|f| FeaturesRef::Bolt12(f)),
+		}
+	}
+	fn final_cltv_expiry_delta(&self) -> Option<u32> {
+		match self {
+			Self::Clear { final_cltv_expiry_delta, .. } => Some(*final_cltv_expiry_delta),
+			_ => None,
 		}
 	}
 }
@@ -1256,7 +1270,8 @@ where L::Target: Logger {
 		_ => return Err(LightningError{err: "Routing to blinded paths isn't supported yet".to_owned(), action: ErrorAction::IgnoreError}),
 
 	}
-	if payment_params.max_total_cltv_expiry_delta <= payment_params.final_cltv_expiry_delta {
+	let final_cltv_expiry_delta = payment_params.payee.final_cltv_expiry_delta().unwrap_or(0);
+	if payment_params.max_total_cltv_expiry_delta <= final_cltv_expiry_delta {
 		return Err(LightningError{err: "Can't find a route where the maximum total CLTV expiry delta is below the final CLTV expiry.".to_owned(), action: ErrorAction::IgnoreError});
 	}
 
@@ -1487,9 +1502,9 @@ where L::Target: Logger {
 					// In order to already account for some of the privacy enhancing random CLTV
 					// expiry delta offset we add on top later, we subtract a rough estimate
 					// (2*MEDIAN_HOP_CLTV_EXPIRY_DELTA) here.
-					let max_total_cltv_expiry_delta = (payment_params.max_total_cltv_expiry_delta - payment_params.final_cltv_expiry_delta)
+					let max_total_cltv_expiry_delta = (payment_params.max_total_cltv_expiry_delta - final_cltv_expiry_delta)
 						.checked_sub(2*MEDIAN_HOP_CLTV_EXPIRY_DELTA)
-						.unwrap_or(payment_params.max_total_cltv_expiry_delta - payment_params.final_cltv_expiry_delta);
+						.unwrap_or(payment_params.max_total_cltv_expiry_delta - final_cltv_expiry_delta);
 					let hop_total_cltv_delta = ($next_hops_cltv_delta as u32)
 						.saturating_add($candidate.cltv_expiry_delta());
 					let exceeds_cltv_delta_limit = hop_total_cltv_delta > max_total_cltv_expiry_delta;
@@ -2179,7 +2194,7 @@ where L::Target: Logger {
 		}).collect::<Vec<_>>();
 		// Propagate the cltv_expiry_delta one hop backwards since the delta from the current hop is
 		// applicable for the previous hop.
-		path.iter_mut().rev().fold(payment_params.final_cltv_expiry_delta, |prev_cltv_expiry_delta, hop| {
+		path.iter_mut().rev().fold(final_cltv_expiry_delta, |prev_cltv_expiry_delta, hop| {
 			core::mem::replace(&mut hop.as_mut().unwrap().cltv_expiry_delta, prev_cltv_expiry_delta)
 		});
 		selected_paths.push(path);
