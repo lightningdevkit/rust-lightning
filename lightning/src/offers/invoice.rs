@@ -955,7 +955,7 @@ mod tests {
 	use core::convert::TryFrom;
 	use core::time::Duration;
 	use crate::blinded_path::{BlindedHop, BlindedPath};
-	use crate::chain::keysinterface::KeyMaterial;
+	use crate::sign::KeyMaterial;
 	use crate::ln::features::Bolt12InvoiceFeatures;
 	use crate::ln::inbound_payment::ExpandedKey;
 	use crate::ln::msgs::DecodeError;

@@ -78,7 +78,7 @@ use core::convert::TryFrom;
 use core::ops::Deref;
 use core::str::FromStr;
 use core::time::Duration;
-use crate::chain::keysinterface::EntropySource;
+use crate::sign::EntropySource;
 use crate::io;
 use crate::blinded_path::BlindedPath;
 use crate::ln::PaymentHash;
@@ -712,7 +712,7 @@ mod tests {
 	use core::convert::TryFrom;
 	use core::time::Duration;
 	use crate::blinded_path::{BlindedHop, BlindedPath};
-	use crate::chain::keysinterface::KeyMaterial;
+	use crate::sign::KeyMaterial;
 	use crate::ln::features::{InvoiceRequestFeatures, OfferFeatures};
 	use crate::ln::inbound_payment::ExpandedKey;
 	use crate::ln::msgs::{DecodeError, MAX_VALUE_MSAT};

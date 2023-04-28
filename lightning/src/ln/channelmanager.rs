@@ -55,7 +55,7 @@ use crate::ln::msgs::{ChannelMessageHandler, DecodeError, LightningError, MAX_VA
 use crate::ln::outbound_payment;
 use crate::ln::outbound_payment::{OutboundPayments, PaymentAttempts, PendingOutboundPayment};
 use crate::ln::wire::Encode;
-use crate::chain::keysinterface::{EntropySource, KeysManager, NodeSigner, Recipient, SignerProvider, ChannelSigner, WriteableEcdsaChannelSigner};
+use crate::sign::{EntropySource, KeysManager, NodeSigner, Recipient, SignerProvider, ChannelSigner, WriteableEcdsaChannelSigner};
 use crate::util::config::{UserConfig, ChannelConfig};
 use crate::util::wakers::{Future, Notifier};
 use crate::util::scid_utils::fake_scid;
@@ -1414,7 +1414,7 @@ pub enum RecentPaymentDetails {
 
 /// Route hints used in constructing invoices for [phantom node payents].
 ///
-/// [phantom node payments]: crate::chain::keysinterface::PhantomKeysManager
+/// [phantom node payments]: crate::sign::PhantomKeysManager
 #[derive(Clone)]
 pub struct PhantomRouteHints {
 	/// The list of channels to be included in the invoice route hints.
@@ -5823,7 +5823,7 @@ where
 	/// Gets a fake short channel id for use in receiving [phantom node payments]. These fake scids
 	/// are used when constructing the phantom invoice's route hints.
 	///
-	/// [phantom node payments]: crate::chain::keysinterface::PhantomKeysManager
+	/// [phantom node payments]: crate::sign::PhantomKeysManager
 	pub fn get_phantom_scid(&self) -> u64 {
 		let best_block_height = self.best_block.read().unwrap().height();
 		let short_to_chan_info = self.short_to_chan_info.read().unwrap();
@@ -5839,7 +5839,7 @@ where
 
 	/// Gets route hints for use in receiving [phantom node payments].
 	///
-	/// [phantom node payments]: crate::chain::keysinterface::PhantomKeysManager
+	/// [phantom node payments]: crate::sign::PhantomKeysManager
 	pub fn get_phantom_route_hints(&self) -> PhantomRouteHints {
 		PhantomRouteHints {
 			channels: self.list_usable_channels(),
@@ -8107,7 +8107,7 @@ mod tests {
 	use crate::util::errors::APIError;
 	use crate::util::test_utils;
 	use crate::util::config::ChannelConfig;
-	use crate::chain::keysinterface::EntropySource;
+	use crate::sign::EntropySource;
 
 	#[test]
 	fn test_notify_limits() {
@@ -9023,7 +9023,7 @@ mod tests {
 pub mod bench {
 	use crate::chain::Listen;
 	use crate::chain::chainmonitor::{ChainMonitor, Persist};
-	use crate::chain::keysinterface::{KeysManager, InMemorySigner};
+	use crate::sign::{KeysManager, InMemorySigner};
 	use crate::events::{Event, MessageSendEvent, MessageSendEventsProvider};
 	use crate::ln::channelmanager::{BestBlock, ChainParameters, ChannelManager, PaymentHash, PaymentPreimage, PaymentId, RecipientOnionFields, Retry};
 	use crate::ln::functional_test_utils::*;

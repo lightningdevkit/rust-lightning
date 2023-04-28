@@ -37,7 +37,7 @@ use lightning::chain::{BestBlock, ChannelMonitorUpdateStatus, chainmonitor, chan
 use lightning::chain::channelmonitor::{ChannelMonitor, MonitorEvent};
 use lightning::chain::transaction::OutPoint;
 use lightning::chain::chaininterface::{BroadcasterInterface, ConfirmationTarget, FeeEstimator};
-use lightning::chain::keysinterface::{KeyMaterial, InMemorySigner, Recipient, EntropySource, NodeSigner, SignerProvider};
+use lightning::sign::{KeyMaterial, InMemorySigner, Recipient, EntropySource, NodeSigner, SignerProvider};
 use lightning::events;
 use lightning::events::MessageSendEventsProvider;
 use lightning::ln::{PaymentHash, PaymentPreimage, PaymentSecret};

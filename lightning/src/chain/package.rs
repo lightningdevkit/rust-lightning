@@ -25,7 +25,7 @@ use crate::ln::chan_utils::{TxCreationKeys, HTLCOutputInCommitment};
 use crate::ln::chan_utils;
 use crate::ln::msgs::DecodeError;
 use crate::chain::chaininterface::{FeeEstimator, ConfirmationTarget, MIN_RELAY_FEE_SAT_PER_1000_WEIGHT};
-use crate::chain::keysinterface::WriteableEcdsaChannelSigner;
+use crate::sign::WriteableEcdsaChannelSigner;
 #[cfg(anchors)]
 use crate::chain::onchaintx::ExternalHTLCClaim;
 use crate::chain::onchaintx::OnchainTxHandler;

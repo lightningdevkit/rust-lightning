@@ -1547,7 +1547,7 @@ mod benches {
 	use std::time::Duration;
 	use bitcoin::blockdata::constants::genesis_block;
 	use bitcoin::Network;
-	use crate::chain::keysinterface::{EntropySource, KeysManager};
+	use crate::sign::{EntropySource, KeysManager};
 
 	use test::Bencher;
 

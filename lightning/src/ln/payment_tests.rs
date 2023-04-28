@@ -13,7 +13,7 @@
 
 use crate::chain::{ChannelMonitorUpdateStatus, Confirm, Listen, Watch};
 use crate::chain::channelmonitor::{ANTI_REORG_DELAY, HTLC_FAIL_BACK_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS};
-use crate::chain::keysinterface::EntropySource;
+use crate::sign::EntropySource;
 use crate::chain::transaction::OutPoint;
 use crate::events::{ClosureReason, Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider, PathFailure, PaymentFailureReason};
 use crate::ln::channel::EXPIRE_PREV_CONFIG_TICKS;

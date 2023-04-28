@@ -12,7 +12,7 @@
 //! LSP).
 
 use crate::chain::ChannelMonitorUpdateStatus;
-use crate::chain::keysinterface::NodeSigner;
+use crate::sign::NodeSigner;
 use crate::events::{ClosureReason, Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider};
 use crate::ln::channelmanager::{ChannelManager, MIN_CLTV_EXPIRY_DELTA, PaymentId, RecipientOnionFields};
 use crate::routing::gossip::RoutingFees;

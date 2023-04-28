@@ -10,7 +10,7 @@
 //! Further functional tests which test blockchain reorganizations.
 
 #[cfg(anchors)]
-use crate::chain::keysinterface::{ChannelSigner, EcdsaChannelSigner};
+use crate::sign::{ChannelSigner, EcdsaChannelSigner};
 #[cfg(anchors)]
 use crate::chain::channelmonitor::LATENCY_GRACE_PERIOD_BLOCKS;
 use crate::chain::channelmonitor::{ANTI_REORG_DELAY, Balance};

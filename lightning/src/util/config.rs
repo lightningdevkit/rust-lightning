@@ -124,7 +124,7 @@ pub struct ChannelHandshakeConfig {
 	///
 	/// Default value: true.
 	///
-	/// [`SignerProvider::get_shutdown_scriptpubkey`]: crate::chain::keysinterface::SignerProvider::get_shutdown_scriptpubkey
+	/// [`SignerProvider::get_shutdown_scriptpubkey`]: crate::sign::SignerProvider::get_shutdown_scriptpubkey
 	pub commit_upfront_shutdown_pubkey: bool,
 	/// The Proportion of the channel value to configure as counterparty's channel reserve,
 	/// i.e., `their_channel_reserve_satoshis` for both outbound and inbound channels.

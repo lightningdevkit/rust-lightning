@@ -8,7 +8,7 @@
 // licenses.
 
 use crate::chain::transaction::OutPoint;
-use crate::chain::keysinterface::SpendableOutputDescriptor;
+use crate::sign::SpendableOutputDescriptor;
 
 use bitcoin::hash_types::Txid;
 use bitcoin::blockdata::transaction::Transaction;

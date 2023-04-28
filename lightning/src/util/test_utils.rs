@@ -16,7 +16,7 @@ use crate::chain::chainmonitor::MonitorUpdateId;
 use crate::chain::channelmonitor;
 use crate::chain::channelmonitor::MonitorEvent;
 use crate::chain::transaction::OutPoint;
-use crate::chain::keysinterface;
+use crate::sign;
 use crate::events;
 use crate::ln::channelmanager;
 use crate::ln::features::{ChannelFeatures, InitFeatures, NodeFeatures};
@@ -54,7 +54,7 @@ use crate::sync::{Mutex, Arc};
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use core::mem;
 use bitcoin::bech32::u5;
-use crate::chain::keysinterface::{InMemorySigner, Recipient, EntropySource, NodeSigner, SignerProvider};
+use crate::sign::{InMemorySigner, Recipient, EntropySource, NodeSigner, SignerProvider};
 
 #[cfg(feature = "std")]
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -289,7 +289,7 @@ impl TestPersister {
 		self.update_rets.lock().unwrap().push_back(next_ret);
 	}
 }
-impl<Signer: keysinterface::WriteableEcdsaChannelSigner> chainmonitor::Persist<Signer> for TestPersister {
+impl<Signer: sign::WriteableEcdsaChannelSigner> chainmonitor::Persist<Signer> for TestPersister {
 	fn persist_new_channel(&self, _funding_txo: OutPoint, _data: &channelmonitor::ChannelMonitor<Signer>, _id: MonitorUpdateId) -> chain::ChannelMonitorUpdateStatus {
 		if let Some(update_ret) = self.update_rets.lock().unwrap().pop_front() {
 			return update_ret
@@ -711,7 +711,7 @@ impl TestNodeSigner {
 }
 
 impl NodeSigner for TestNodeSigner {
-	fn get_inbound_payment_key_material(&self) -> crate::chain::keysinterface::KeyMaterial {
+	fn get_inbound_payment_key_material(&self) -> crate::sign::KeyMaterial {
 		unreachable!()
 	}
 
@@ -744,7 +744,7 @@ impl NodeSigner for TestNodeSigner {
 }
 
 pub struct TestKeysInterface {
-	pub backing: keysinterface::PhantomKeysManager,
+	pub backing: sign::PhantomKeysManager,
 	pub override_random_bytes: Mutex<Option<[u8; 32]>>,
 	pub disable_revocation_policy_check: bool,
 	enforcement_states: Mutex<HashMap<[u8;32], Arc<Mutex<EnforcementState>>>>,
@@ -770,7 +770,7 @@ impl NodeSigner for TestKeysInterface {
 		self.backing.ecdh(recipient, other_key, tweak)
 	}
 
-	fn get_inbound_payment_key_material(&self) -> keysinterface::KeyMaterial {
+	fn get_inbound_payment_key_material(&self) -> sign::KeyMaterial {
 		self.backing.get_inbound_payment_key_material()
 	}
 
@@ -826,7 +826,7 @@ impl TestKeysInterface {
 	pub fn new(seed: &[u8; 32], network: Network) -> Self {
 		let now = Duration::from_secs(genesis_block(network).header.time as u64);
 		Self {
-			backing: keysinterface::PhantomKeysManager::new(seed, now.as_secs(), now.subsec_nanos(), seed),
+			backing: sign::PhantomKeysManager::new(seed, now.as_secs(), now.subsec_nanos(), seed),
 			override_random_bytes: Mutex::new(None),
 			disable_revocation_policy_check: false,
 			enforcement_states: Mutex::new(HashMap::new()),
@@ -834,7 +834,7 @@ impl TestKeysInterface {
 		}
 	}
 
-	/// Sets an expectation that [`keysinterface::SignerProvider::get_shutdown_scriptpubkey`] is
+	/// Sets an expectation that [`sign::SignerProvider::get_shutdown_scriptpubkey`] is
 	/// called.
 	pub fn expect(&self, expectation: OnGetShutdownScriptpubkey) -> &Self {
 		self.expectations.lock().unwrap()
@@ -882,7 +882,7 @@ impl Drop for TestKeysInterface {
 	}
 }
 
-/// An expectation that [`keysinterface::SignerProvider::get_shutdown_scriptpubkey`] was called and
+/// An expectation that [`sign::SignerProvider::get_shutdown_scriptpubkey`] was called and
 /// returns a [`ShutdownScript`].
 pub struct OnGetShutdownScriptpubkey {
 	/// A shutdown script used to close a channel.

@@ -16,7 +16,7 @@ use crate::routing::scoring::WriteableScore;
 use crate::chain;
 use crate::chain::chaininterface::{BroadcasterInterface, FeeEstimator};
 use crate::chain::chainmonitor::{Persist, MonitorUpdateId};
-use crate::chain::keysinterface::{EntropySource, NodeSigner, WriteableEcdsaChannelSigner, SignerProvider};
+use crate::sign::{EntropySource, NodeSigner, WriteableEcdsaChannelSigner, SignerProvider};
 use crate::chain::transaction::OutPoint;
 use crate::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate};
 use crate::ln::channelmanager::ChannelManager;

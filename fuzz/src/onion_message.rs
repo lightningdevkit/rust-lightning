@@ -5,7 +5,7 @@ use bitcoin::secp256k1::{PublicKey, Scalar, Secp256k1, SecretKey};
 use bitcoin::secp256k1::ecdh::SharedSecret;
 use bitcoin::secp256k1::ecdsa::RecoverableSignature;
 
-use lightning::chain::keysinterface::{Recipient, KeyMaterial, EntropySource, NodeSigner, SignerProvider};
+use lightning::sign::{Recipient, KeyMaterial, EntropySource, NodeSigner, SignerProvider};
 use lightning::ln::msgs::{self, DecodeError, OnionMessageHandler};
 use lightning::ln::script::ShutdownScript;
 use lightning::util::enforcing_trait_impls::EnforcingSigner;

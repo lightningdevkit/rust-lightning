@@ -14,7 +14,7 @@ use bitcoin::hashes::{Hash, HashEngine};
 use bitcoin::hashes::cmp::fixed_time_eq;
 use bitcoin::hashes::hmac::{Hmac, HmacEngine};
 use bitcoin::hashes::sha256::Hash as Sha256;
-use crate::chain::keysinterface::{KeyMaterial, EntropySource};
+use crate::sign::{KeyMaterial, EntropySource};
 use crate::ln::{PaymentHash, PaymentPreimage, PaymentSecret};
 use crate::ln::msgs;
 use crate::ln::msgs::MAX_VALUE_MSAT;
@@ -37,7 +37,7 @@ const METHOD_TYPE_OFFSET: usize = 5;
 /// A set of keys that were HKDF-expanded from an initial call to
 /// [`NodeSigner::get_inbound_payment_key_material`].
 ///
-/// [`NodeSigner::get_inbound_payment_key_material`]: crate::chain::keysinterface::NodeSigner::get_inbound_payment_key_material
+/// [`NodeSigner::get_inbound_payment_key_material`]: crate::sign::NodeSigner::get_inbound_payment_key_material
 pub struct ExpandedKey {
 	/// The key used to encrypt the bytes containing the payment metadata (i.e. the amount and
 	/// expiry, included for payment verification on decryption).
@@ -166,8 +166,8 @@ fn min_final_cltv_expiry_delta_from_metadata(bytes: [u8; METADATA_LEN]) -> u16 {
 /// Note that if `min_final_cltv_expiry_delta` is set to some value, then the payment will not be receivable
 /// on versions of LDK prior to 0.0.114.
 ///
-/// [phantom node payments]: crate::chain::keysinterface::PhantomKeysManager
-/// [`NodeSigner::get_inbound_payment_key_material`]: crate::chain::keysinterface::NodeSigner::get_inbound_payment_key_material
+/// [phantom node payments]: crate::sign::PhantomKeysManager
+/// [`NodeSigner::get_inbound_payment_key_material`]: crate::sign::NodeSigner::get_inbound_payment_key_material
 pub fn create<ES: Deref>(keys: &ExpandedKey, min_value_msat: Option<u64>,
 	invoice_expiry_delta_secs: u32, entropy_source: &ES, current_time: u64,
 	min_final_cltv_expiry_delta: Option<u16>) -> Result<(PaymentHash, PaymentSecret), ()>
@@ -202,7 +202,7 @@ pub fn create<ES: Deref>(keys: &ExpandedKey, min_value_msat: Option<u64>,
 /// Note that if `min_final_cltv_expiry_delta` is set to some value, then the payment will not be receivable
 /// on versions of LDK prior to 0.0.114.
 ///
-/// [phantom node payments]: crate::chain::keysinterface::PhantomKeysManager
+/// [phantom node payments]: crate::sign::PhantomKeysManager
 pub fn create_from_hash(keys: &ExpandedKey, min_value_msat: Option<u64>, payment_hash: PaymentHash,
 	invoice_expiry_delta_secs: u32, current_time: u64, min_final_cltv_expiry_delta: Option<u16>) -> Result<PaymentSecret, ()> {
 	let metadata_bytes = construct_metadata_bytes(min_value_msat, if min_final_cltv_expiry_delta.is_some() {
@@ -311,7 +311,7 @@ fn construct_payment_secret(iv_bytes: &[u8; IV_LEN], metadata_bytes: &[u8; METAD
 ///
 /// See [`ExpandedKey`] docs for more info on the individual keys used.
 ///
-/// [`NodeSigner::get_inbound_payment_key_material`]: crate::chain::keysinterface::NodeSigner::get_inbound_payment_key_material
+/// [`NodeSigner::get_inbound_payment_key_material`]: crate::sign::NodeSigner::get_inbound_payment_key_material
 /// [`create_inbound_payment`]: crate::ln::channelmanager::ChannelManager::create_inbound_payment
 /// [`create_inbound_payment_for_hash`]: crate::ln::channelmanager::ChannelManager::create_inbound_payment_for_hash
 pub(super) fn verify<L: Deref>(payment_hash: PaymentHash, payment_data: &msgs::FinalOnionHopData,
