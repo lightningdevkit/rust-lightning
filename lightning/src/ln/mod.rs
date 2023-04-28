@@ -73,11 +73,13 @@ pub use self::peer_channel_encryptor::LN_MAX_MSG_LEN;
 ///
 /// This is not exported to bindings users as we just use [u8; 32] directly
 #[derive(Hash, Copy, Clone, PartialEq, Eq, Debug)]
+#[cfg_attr(test, derive(PartialOrd, Ord))]
 pub struct PaymentHash(pub [u8; 32]);
 /// payment_preimage type, use to route payment between hop
 ///
 /// This is not exported to bindings users as we just use [u8; 32] directly
 #[derive(Hash, Copy, Clone, PartialEq, Eq, Debug)]
+#[cfg_attr(test, derive(PartialOrd, Ord))]
 pub struct PaymentPreimage(pub [u8; 32]);
 /// payment_secret type, use to authenticate sender to the receiver and tie MPP HTLCs together
 ///
