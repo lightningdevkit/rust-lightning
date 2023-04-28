@@ -864,7 +864,7 @@ fn get_ldk_payment_preimage() {
 	let route = get_route(
 		&nodes[0].node.get_our_node_id(), &payment_params, &nodes[0].network_graph.read_only(),
 		Some(&nodes[0].node.list_usable_channels().iter().collect::<Vec<_>>()),
-		amt_msat, TEST_FINAL_CLTV, nodes[0].logger, &scorer, &random_seed_bytes).unwrap();
+		amt_msat, nodes[0].logger, &scorer, &random_seed_bytes).unwrap();
 	nodes[0].node.send_payment_with_route(&route, payment_hash,
 		RecipientOnionFields::secret_only(payment_secret), PaymentId(payment_hash.0)).unwrap();
 	check_added_monitors!(nodes[0], 1);
@@ -974,7 +974,7 @@ fn failed_probe_yields_event() {
 
 	let payment_params = PaymentParameters::from_node_id(nodes[2].node.get_our_node_id(), 42);
 
-	let (route, _, _, _) = get_route_and_payment_hash!(&nodes[0], nodes[2], &payment_params, 9_998_000, 42);
+	let (route, _, _, _) = get_route_and_payment_hash!(&nodes[0], nodes[2], &payment_params, 9_998_000);
 
 	let (payment_hash, payment_id) = nodes[0].node.send_probe(route.paths[0].clone()).unwrap();
 
@@ -1023,7 +1023,7 @@ fn onchain_failed_probe_yields_event() {
 	let payment_params = PaymentParameters::from_node_id(nodes[2].node.get_our_node_id(), 42);
 
 	// Send a dust HTLC, which will be treated as if it timed out once the channel hits the chain.
-	let (route, _, _, _) = get_route_and_payment_hash!(&nodes[0], nodes[2], &payment_params, 1_000, 42);
+	let (route, _, _, _) = get_route_and_payment_hash!(&nodes[0], nodes[2], &payment_params, 1_000);
 	let (payment_hash, payment_id) = nodes[0].node.send_probe(route.paths[0].clone()).unwrap();
 
 	// node[0] -- update_add_htlcs -> node[1]
@@ -1418,8 +1418,7 @@ fn do_test_intercepted_payment(test: InterceptTest) {
 	let route = get_route(
 		&nodes[0].node.get_our_node_id(), &route_params.payment_params,
 		&nodes[0].network_graph.read_only(), None, route_params.final_value_msat,
-		route_params.payment_params.final_cltv_expiry_delta, nodes[0].logger, &scorer,
-		&random_seed_bytes,
+		nodes[0].logger, &scorer, &random_seed_bytes,
 	).unwrap();
 
 	let (payment_hash, payment_secret) = nodes[2].node.create_inbound_payment(Some(amt_msat), 60 * 60, None).unwrap();

@@ -716,7 +716,7 @@ fn do_test_onion_failure_stale_channel_update(announced_channel: bool) {
 		let payment_params = PaymentParameters::from_node_id(*channel_to_update_counterparty, TEST_FINAL_CLTV)
 			.with_features(nodes[2].node.invoice_features())
 			.with_route_hints(hop_hints);
-		get_route_and_payment_hash!(nodes[0], nodes[2], payment_params, PAYMENT_AMT, TEST_FINAL_CLTV)
+		get_route_and_payment_hash!(nodes[0], nodes[2], payment_params, PAYMENT_AMT)
 	};
 	send_along_route_with_secret(&nodes[0], route.clone(), &[&[&nodes[1], &nodes[2]]], PAYMENT_AMT,
 		payment_hash, payment_secret);
@@ -862,7 +862,7 @@ fn test_always_create_tlv_format_onion_payloads() {
 
 	let payment_params = PaymentParameters::from_node_id(nodes[2].node.get_our_node_id(), TEST_FINAL_CLTV)
 		.with_features(InvoiceFeatures::empty());
-	let (route, _payment_hash, _payment_preimage, _payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[2], payment_params, 40000, TEST_FINAL_CLTV);
+	let (route, _payment_hash, _payment_preimage, _payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[2], payment_params, 40000);
 
 	let hops = &route.paths[0].hops;
 	// Asserts that the first hop to `node[1]` signals no support for variable length onions.
@@ -993,7 +993,7 @@ macro_rules! get_phantom_route {
 		(get_route(
 			&$nodes[0].node.get_our_node_id(), &payment_params, &network_graph,
 			Some(&$nodes[0].node.list_usable_channels().iter().collect::<Vec<_>>()),
-			$amt, TEST_FINAL_CLTV, $nodes[0].logger, &scorer, &[0u8; 32]
+			$amt, $nodes[0].logger, &scorer, &[0u8; 32]
 		).unwrap(), phantom_route_hint.phantom_scid)
 	}
 }}
