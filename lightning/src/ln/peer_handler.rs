@@ -416,7 +416,7 @@ struct Peer {
 	sync_status: InitSyncTracker,
 
 	msgs_sent_since_pong: usize,
-	awaiting_pong_timer_tick_intervals: i8,
+	awaiting_pong_timer_tick_intervals: i64,
 	received_message_since_timer_tick: bool,
 	sent_gossip_timestamp_filter: bool,
 
