@@ -3,9 +3,11 @@
 
 use crate::{BlockData, BlockHeaderData, BlockSource, AsyncBlockSourceResult};
 use crate::http::{HttpClient, HttpEndpoint, HttpError, JsonResponse};
+use crate::gossip::UtxoSource;
 
 use bitcoin::hash_types::BlockHash;
 use bitcoin::hashes::hex::ToHex;
+use bitcoin::OutPoint;
 
 use std::sync::Mutex;
 
@@ -138,10 +140,32 @@ impl BlockSource for RpcClient {
 	}
 }
 
+impl UtxoSource for RpcClient {
+	fn get_block_hash_by_height<'a>(&'a self, block_height: u32) -> AsyncBlockSourceResult<'a, BlockHash> {
+		Box::pin(async move {
+			let height_param = serde_json::json!(block_height);
+			Ok(self.call_method("getblockhash", &[height_param]).await?)
+		})
+	}
+
+	fn is_output_unspent<'a>(&'a self, outpoint: OutPoint) -> AsyncBlockSourceResult<'a, bool> {
+		Box::pin(async move {
+			let txid_param = serde_json::json!(outpoint.txid.to_hex());
+			let vout_param = serde_json::json!(outpoint.vout);
+			let include_mempool = serde_json::json!(false);
+			let utxo_opt: serde_json::Value = self.call_method(
+				"gettxout", &[txid_param, vout_param, include_mempool]).await?;
+			Ok(!utxo_opt.is_null())
+		})
+	}
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;
 	use crate::http::client_tests::{HttpServer, MessageBody};
+
+	use bitcoin::hashes::Hash;
 
 	/// Credentials encoded in base64.
 	const CREDENTIALS: &'static str = "dXNlcjpwYXNzd29yZA==";
@@ -244,5 +268,25 @@ mod tests {
 			Err(e) => panic!("Unexpected error: {:?}", e),
 			Ok(count) => assert_eq!(count, 654470),
 		}
+	}
+
+	#[tokio::test]
+	async fn fails_to_fetch_spent_utxo() {
+		let response = serde_json::json!({ "result": null });
+		let server = HttpServer::responding_with_ok(MessageBody::Content(response));
+		let client = RpcClient::new(CREDENTIALS, server.endpoint()).unwrap();
+		let outpoint = OutPoint::new(bitcoin::Txid::from_inner([0; 32]), 0);
+		let unspent_output = client.is_output_unspent(outpoint).await.unwrap();
+		assert_eq!(unspent_output, false);
+	}
+
+	#[tokio::test]
+	async fn fetches_utxo() {
+		let response = serde_json::json!({ "result": {"bestblock": 1, "confirmations": 42}});
+		let server = HttpServer::responding_with_ok(MessageBody::Content(response));
+		let client = RpcClient::new(CREDENTIALS, server.endpoint()).unwrap();
+		let outpoint = OutPoint::new(bitcoin::Txid::from_inner([0; 32]), 0);
+		let unspent_output = client.is_output_unspent(outpoint).await.unwrap();
+		assert_eq!(unspent_output, true);
 	}
 }

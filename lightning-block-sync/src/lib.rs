@@ -28,6 +28,8 @@ pub mod http;
 pub mod init;
 pub mod poll;
 
+pub mod gossip;
+
 #[cfg(feature = "rest-client")]
 pub mod rest;
 
