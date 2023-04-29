@@ -152,6 +152,10 @@ pub enum SpendableOutputDescriptor {
 		outpoint: OutPoint,
 		/// The output which is referenced by the given outpoint.
 		output: TxOut,
+		/// Arbitrary identification information returned by a call to
+		/// `Sign::channel_keys_id()`. This may be useful in re-deriving keys used in
+		/// the channel to spend the output.
+		channel_keys_id: Option<[u8; 32]>
 	},
 	/// An output to a P2WSH script which can be spent with a single signature after an `OP_CSV`
 	/// delay.
@@ -208,6 +212,7 @@ impl_writeable_tlv_based_enum!(SpendableOutputDescriptor,
 	(0, StaticOutput) => {
 		(0, outpoint, required),
 		(2, output, required),
+		(3, channel_keys_id, option),
 	},
 ;
 	(1, DelayedPaymentOutput),
@@ -545,7 +550,7 @@ pub trait SignerProvider {
 	///
 	/// This method should return a different value each time it is called, to avoid linking
 	/// on-chain funds across channels as controlled to the same user.
-	fn get_destination_script(&self) -> Script;
+	fn get_destination_script(&self, channel_keys_id: [u8; 32]) -> Script;
 
 	/// Get a script pubkey which we will send funds to when closing a channel.
 	///
@@ -711,7 +716,7 @@ impl InMemorySigner {
 		if spend_tx.input[input_idx].previous_output != descriptor.outpoint.into_bitcoin_outpoint() { return Err(()); }
 
 		let remotepubkey = self.pubkeys().payment_point;
-		let witness_script = bitcoin::Address::p2pkh(&::bitcoin::PublicKey{compressed: true, inner: remotepubkey}, Network::Testnet).script_pubkey();
+		let witness_script = bitcoin::Address::p2pkh(&bitcoin::PublicKey{compressed: true, inner: remotepubkey}, Network::Testnet).script_pubkey();
 		let sighash = hash_to_message!(&sighash::SighashCache::new(spend_tx).segwit_signature_hash(input_idx, &witness_script, descriptor.output.value, EcdsaSighashType::All).unwrap()[..]);
 		let remotesig = sign_with_aux_rand(secp_ctx, &sighash, &self.payment_key, &self);
 		let payment_script = bitcoin::Address::p2wpkh(&::bitcoin::PublicKey{compressed: true, inner: remotepubkey}, Network::Bitcoin).unwrap().script_pubkey();
@@ -1014,9 +1019,10 @@ pub struct KeysManager {
 	node_id: PublicKey,
 	inbound_payment_key: KeyMaterial,
 	destination_script: Script,
-	shutdown_pubkey: PublicKey,
+	shutdown_pubkey: ExtendedPubKey,
 	channel_master_key: ExtendedPrivKey,
 	channel_child_index: AtomicUsize,
+	disallow_downgrades: bool,
 
 	rand_bytes_unique_start: [u8; 32],
 	rand_bytes_index: AtomicCounter,
@@ -1061,7 +1067,7 @@ impl KeysManager {
 					Err(_) => panic!("Your RNG is busted"),
 				};
 				let shutdown_pubkey = match master_key.ckd_priv(&secp_ctx, ChildNumber::from_hardened_idx(2).unwrap()) {
-					Ok(shutdown_key) => ExtendedPubKey::from_priv(&secp_ctx, &shutdown_key).public_key,
+					Ok(shutdown_key) => ExtendedPubKey::from_priv(&secp_ctx, &shutdown_key),
 					Err(_) => panic!("Your RNG is busted"),
 				};
 				let channel_master_key = master_key.ckd_priv(&secp_ctx, ChildNumber::from_hardened_idx(3).unwrap()).expect("Your RNG is busted");
@@ -1087,6 +1093,7 @@ impl KeysManager {
 
 					channel_master_key,
 					channel_child_index: AtomicUsize::new(0),
+					disallow_downgrades: true,
 
 					rand_bytes_unique_start,
 					rand_bytes_index: AtomicCounter::new(),
@@ -1202,7 +1209,7 @@ impl KeysManager {
 					input_value += descriptor.output.value;
 					if !output_set.insert(descriptor.outpoint) { return Err(()); }
 				},
-				SpendableOutputDescriptor::StaticOutput { ref outpoint, ref output } => {
+				SpendableOutputDescriptor::StaticOutput { ref outpoint, ref output, .. } => {
 					input.push(TxIn {
 						previous_output: outpoint.into_bitcoin_outpoint(),
 						script_sig: Script::new(),
@@ -1245,17 +1252,22 @@ impl KeysManager {
 					}
 					spend_tx.input[input_idx].witness = Witness::from_vec(keys_cache.as_ref().unwrap().0.sign_dynamic_p2wsh_input(&spend_tx, input_idx, &descriptor, &secp_ctx)?);
 				},
-				SpendableOutputDescriptor::StaticOutput { ref output, .. } => {
+				SpendableOutputDescriptor::StaticOutput { ref output, channel_keys_id, .. } => {
+					let destination_script = channel_keys_id.map_or( None,|s| Some(self.get_destination_script(s)));
 					let derivation_idx = if output.script_pubkey == self.destination_script {
 						1
-					} else {
+					} else if Some(&output.script_pubkey) == destination_script.as_ref() {
+						u32::from_be_bytes(channel_keys_id.unwrap()[0..4].try_into().unwrap())
+					}
+					else {
 						2
 					};
-					let secret = {
+
+						let secret = {
 						// Note that when we aren't serializing the key, network doesn't matter
 						match ExtendedPrivKey::new_master(Network::Testnet, &self.seed) {
 							Ok(master_key) => {
-								match master_key.ckd_priv(&secp_ctx, ChildNumber::from_hardened_idx(derivation_idx).expect("key space exhausted")) {
+								match master_key.ckd_priv(&secp_ctx, ChildNumber::from_hardened_idx((derivation_idx) % (1 << 31)).expect("key space exhausted")) {
 									Ok(key) => key,
 									Err(_) => panic!("Your RNG is busted"),
 								}
@@ -1265,7 +1277,7 @@ impl KeysManager {
 					};
 					let pubkey = ExtendedPubKey::from_priv(&secp_ctx, &secret).to_pub();
 					if derivation_idx == 2 {
-						assert_eq!(pubkey.inner, self.shutdown_pubkey);
+						assert_eq!(pubkey.inner, self.shutdown_pubkey.public_key);
 					}
 					let witness_script = bitcoin::Address::p2pkh(&pubkey, Network::Testnet).script_pubkey();
 					let payment_script = bitcoin::Address::p2wpkh(&pubkey, Network::Testnet).expect("uncompressed key found").script_pubkey();
@@ -1302,6 +1314,10 @@ impl EntropySource for KeysManager {
 }
 
 impl NodeSigner for KeysManager {
+	fn get_inbound_payment_key_material(&self) -> KeyMaterial {
+		self.inbound_payment_key.clone()
+	}
+
 	fn get_node_id(&self, recipient: Recipient) -> Result<PublicKey, ()> {
 		match recipient {
 			Recipient::Node => Ok(self.node_id.clone()),
@@ -1318,10 +1334,6 @@ impl NodeSigner for KeysManager {
 			node_secret = node_secret.mul_tweak(tweak).map_err(|_| ())?;
 		}
 		Ok(SharedSecret::new(other_key, &node_secret))
-	}
-
-	fn get_inbound_payment_key_material(&self) -> KeyMaterial {
-		self.inbound_payment_key.clone()
 	}
 
 	fn sign_invoice(&self, hrp_bytes: &[u8], invoice_data: &[u5], recipient: Recipient) -> Result<RecoverableSignature, ()> {
@@ -1366,12 +1378,30 @@ impl SignerProvider for KeysManager {
 		InMemorySigner::read(&mut io::Cursor::new(reader), self)
 	}
 
-	fn get_destination_script(&self) -> Script {
-		self.destination_script.clone()
+	fn get_destination_script(&self, channel_keys_id: [u8; 32]) -> Script {
+		let derivation_idx = if self.disallow_downgrades {
+			u32::from_be_bytes(channel_keys_id[0..4].try_into().unwrap())
+		} else {
+			3
+		};
+		match ExtendedPrivKey::new_master(Network::Testnet, &self.seed) {
+			Ok(master_key) => {
+				match master_key.ckd_priv(&self.secp_ctx, ChildNumber::from_hardened_idx((derivation_idx) % (1 << 31)).expect("key space exhausted")) {
+					Ok(destination_key) => {
+						let wpubkey_hash = WPubkeyHash::hash(&ExtendedPubKey::from_priv(&self.secp_ctx, &destination_key).to_pub().to_bytes());
+						Builder::new().push_opcode(opcodes::all::OP_PUSHBYTES_0)
+							.push_slice(&wpubkey_hash.into_inner())
+							.into_script()
+					},
+					Err(_) => panic!("Your RNG is busted"),
+				}
+			}
+			Err(_) => panic!("Your RNG is busted")
+		}
 	}
 
 	fn get_shutdown_scriptpubkey(&self) -> ShutdownScript {
-		ShutdownScript::new_p2wpkh_from_pubkey(self.shutdown_pubkey.clone())
+		ShutdownScript::new_p2wpkh_from_pubkey(self.shutdown_pubkey.public_key.clone())
 	}
 }
 
@@ -1410,6 +1440,10 @@ impl EntropySource for PhantomKeysManager {
 }
 
 impl NodeSigner for PhantomKeysManager {
+	fn get_inbound_payment_key_material(&self) -> KeyMaterial {
+		self.inbound_payment_key.clone()
+	}
+
 	fn get_node_id(&self, recipient: Recipient) -> Result<PublicKey, ()> {
 		match recipient {
 			Recipient::Node => self.inner.get_node_id(Recipient::Node),
@@ -1426,10 +1460,6 @@ impl NodeSigner for PhantomKeysManager {
 			node_secret = node_secret.mul_tweak(tweak).map_err(|_| ())?;
 		}
 		Ok(SharedSecret::new(other_key, &node_secret))
-	}
-
-	fn get_inbound_payment_key_material(&self) -> KeyMaterial {
-		self.inbound_payment_key.clone()
 	}
 
 	fn sign_invoice(&self, hrp_bytes: &[u8], invoice_data: &[u5], recipient: Recipient) -> Result<RecoverableSignature, ()> {
@@ -1461,8 +1491,8 @@ impl SignerProvider for PhantomKeysManager {
 		self.inner.read_chan_signer(reader)
 	}
 
-	fn get_destination_script(&self) -> Script {
-		self.inner.get_destination_script()
+	fn get_destination_script(&self, channel_keys_id: [u8; 32]) -> Script {
+		self.inner.get_destination_script(channel_keys_id)
 	}
 
 	fn get_shutdown_scriptpubkey(&self) -> ShutdownScript {

@@ -3697,6 +3697,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				spendable_output =  Some(SpendableOutputDescriptor::StaticOutput {
 					outpoint: OutPoint { txid: tx.txid(), index: i as u16 },
 					output: outp.clone(),
+					channel_keys_id: Some(self.channel_keys_id),
 				});
 				break;
 			}
@@ -3727,6 +3728,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				spendable_output = Some(SpendableOutputDescriptor::StaticOutput {
 					outpoint: OutPoint { txid: tx.txid(), index: i as u16 },
 					output: outp.clone(),
+					channel_keys_id: Some(self.channel_keys_id),
 				});
 				break;
 			}

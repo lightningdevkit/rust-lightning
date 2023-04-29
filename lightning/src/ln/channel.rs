@@ -984,6 +984,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 
 		let mut secp_ctx = Secp256k1::new();
 		secp_ctx.seeded_randomize(&entropy_source.get_secure_random_bytes());
+		let channel_keys_id = holder_signer.channel_keys_id();
 
 		let shutdown_scriptpubkey = if config.channel_handshake_config.commit_upfront_shutdown_pubkey {
 			Some(signer_provider.get_shutdown_scriptpubkey())
@@ -1021,7 +1022,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 
 			holder_signer,
 			shutdown_scriptpubkey,
-			destination_script: signer_provider.get_destination_script(),
+			destination_script: signer_provider.get_destination_script(channel_keys_id),
 
 			cur_holder_commitment_transaction_number: INITIAL_COMMITMENT_NUMBER,
 			cur_counterparty_commitment_transaction_number: INITIAL_COMMITMENT_NUMBER,
@@ -1344,6 +1345,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 
 		let mut secp_ctx = Secp256k1::new();
 		secp_ctx.seeded_randomize(&entropy_source.get_secure_random_bytes());
+		let channel_keys_id = holder_signer.channel_keys_id();
 
 		let chan = Channel {
 			user_id,
@@ -1368,7 +1370,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 
 			holder_signer,
 			shutdown_scriptpubkey,
-			destination_script: signer_provider.get_destination_script(),
+			destination_script: signer_provider.get_destination_script(channel_keys_id),
 
 			cur_holder_commitment_transaction_number: INITIAL_COMMITMENT_NUMBER,
 			cur_counterparty_commitment_transaction_number: INITIAL_COMMITMENT_NUMBER,
@@ -7087,7 +7089,7 @@ mod tests {
 
 		fn read_chan_signer(&self, _data: &[u8]) -> Result<Self::Signer, DecodeError> { panic!(); }
 
-		fn get_destination_script(&self) -> Script {
+		fn get_destination_script(&self, _channel_keys_id: [u8; 32]) -> Script {
 			let secp_ctx = Secp256k1::signing_only();
 			let channel_monitor_claim_key = SecretKey::from_slice(&hex::decode("0fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff").unwrap()[..]).unwrap();
 			let channel_monitor_claim_key_hash = WPubkeyHash::hash(&PublicKey::from_secret_key(&secp_ctx, &channel_monitor_claim_key).serialize());
