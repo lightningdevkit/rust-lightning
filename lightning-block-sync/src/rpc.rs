@@ -105,12 +105,13 @@ impl RpcClient {
 			return Err(std::io::Error::new(std::io::ErrorKind::Other, rpc_error));
 		}
 
-		let result = &mut response["result"];
-		if result.is_null() {
-			return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "expected JSON result"));
-		}
+		let result = match response.get_mut("result") {
+			Some(result) => result.take(),
+			None =>
+				return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "expected JSON result")),
+		};
 
-		JsonResponse(result.take()).try_into()
+		JsonResponse(result).try_into()
 	}
 }
 
@@ -205,7 +206,7 @@ mod tests {
 
 	#[tokio::test]
 	async fn call_method_returning_missing_result() {
-		let response = serde_json::json!({ "result": null });
+		let response = serde_json::json!({  });
 		let server = HttpServer::responding_with_ok(MessageBody::Content(response));
 		let client = RpcClient::new(CREDENTIALS, server.endpoint()).unwrap();
 
