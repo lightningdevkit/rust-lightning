@@ -30,8 +30,7 @@ use lightning::events::{Event, PathFailure};
 #[cfg(feature = "std")]
 use lightning::events::{EventHandler, EventsProvider};
 use lightning::ln::channelmanager::ChannelManager;
-use lightning::ln::msgs::{ChannelMessageHandler, OnionMessageHandler, RoutingMessageHandler};
-use lightning::ln::peer_handler::{CustomMessageHandler, PeerManager, SocketDescriptor};
+use lightning::ln::peer_handler::APeerManager;
 use lightning::routing::gossip::{NetworkGraph, P2PGossipSync};
 use lightning::routing::utxo::UtxoLookup;
 use lightning::routing::router::Router;
@@ -81,6 +80,8 @@ use alloc::vec::Vec;
 ///
 /// [`ChannelMonitor`]: lightning::chain::channelmonitor::ChannelMonitor
 /// [`Event`]: lightning::events::Event
+/// [`PeerManager::timer_tick_occurred`]: lightning::ln::peer_handler::PeerManager::timer_tick_occurred
+/// [`PeerManager::process_events`]: lightning::ln::peer_handler::PeerManager::process_events
 #[cfg(feature = "std")]
 #[must_use = "BackgroundProcessor will immediately stop on drop. It should be stored until shutdown."]
 pub struct BackgroundProcessor {
@@ -295,7 +296,7 @@ macro_rules! define_run_body {
 			// ChannelManager, we want to minimize methods blocking on a ChannelManager
 			// generally, and as a fallback place such blocking only immediately before
 			// persistence.
-			$peer_manager.process_events();
+			$peer_manager.as_ref().process_events();
 
 			// Exit the loop if the background processor was requested to stop.
 			if $loop_exit_check {
@@ -340,11 +341,11 @@ macro_rules! define_run_body {
 				// more than a handful of seconds to complete, and shouldn't disconnect all our
 				// peers.
 				log_trace!($logger, "100ms sleep took more than a second, disconnecting peers.");
-				$peer_manager.disconnect_all_peers();
+				$peer_manager.as_ref().disconnect_all_peers();
 				last_ping_call = $get_timer(PING_TIMER);
 			} else if $timer_elapsed(&mut last_ping_call, PING_TIMER) {
 				log_trace!($logger, "Calling PeerManager's timer_tick_occurred");
-				$peer_manager.timer_tick_occurred();
+				$peer_manager.as_ref().timer_tick_occurred();
 				last_ping_call = $get_timer(PING_TIMER);
 			}
 
@@ -578,10 +579,6 @@ pub async fn process_events_async<
 	G: 'static + Deref<Target = NetworkGraph<L>> + Send + Sync,
 	L: 'static + Deref + Send + Sync,
 	P: 'static + Deref + Send + Sync,
-	Descriptor: 'static + SocketDescriptor + Send + Sync,
-	CMH: 'static + Deref + Send + Sync,
-	RMH: 'static + Deref + Send + Sync,
-	OMH: 'static + Deref + Send + Sync,
 	EventHandlerFuture: core::future::Future<Output = ()>,
 	EventHandler: Fn(Event) -> EventHandlerFuture,
 	PS: 'static + Deref + Send,
@@ -589,8 +586,8 @@ pub async fn process_events_async<
 	CM: 'static + Deref<Target = ChannelManager<CW, T, ES, NS, SP, F, R, L>> + Send + Sync,
 	PGS: 'static + Deref<Target = P2PGossipSync<G, UL, L>> + Send + Sync,
 	RGS: 'static + Deref<Target = RapidGossipSync<G, L>> + Send,
-	UMH: 'static + Deref + Send + Sync,
-	PM: 'static + Deref<Target = PeerManager<Descriptor, CMH, RMH, OMH, L, UMH, NS>> + Send + Sync,
+	APM: APeerManager + Send + Sync,
+	PM: 'static + Deref<Target = APM> + Send + Sync,
 	S: 'static + Deref<Target = SC> + Send + Sync,
 	SC: for<'b> WriteableScore<'b>,
 	SleepFuture: core::future::Future<Output = bool> + core::marker::Unpin,
@@ -612,10 +609,6 @@ where
 	R::Target: 'static + Router,
 	L::Target: 'static + Logger,
 	P::Target: 'static + Persist<<SP::Target as SignerProvider>::Signer>,
-	CMH::Target: 'static + ChannelMessageHandler,
-	OMH::Target: 'static + OnionMessageHandler,
-	RMH::Target: 'static + RoutingMessageHandler,
-	UMH::Target: 'static + CustomMessageHandler,
 	PS::Target: 'static + Persister<'a, CW, T, ES, NS, SP, F, R, L, SC>,
 {
 	let mut should_break = false;
@@ -721,18 +714,14 @@ impl BackgroundProcessor {
 		G: 'static + Deref<Target = NetworkGraph<L>> + Send + Sync,
 		L: 'static + Deref + Send + Sync,
 		P: 'static + Deref + Send + Sync,
-		Descriptor: 'static + SocketDescriptor + Send + Sync,
-		CMH: 'static + Deref + Send + Sync,
-		OMH: 'static + Deref + Send + Sync,
-		RMH: 'static + Deref + Send + Sync,
 		EH: 'static + EventHandler + Send,
 		PS: 'static + Deref + Send,
 		M: 'static + Deref<Target = ChainMonitor<<SP::Target as SignerProvider>::Signer, CF, T, F, L, P>> + Send + Sync,
 		CM: 'static + Deref<Target = ChannelManager<CW, T, ES, NS, SP, F, R, L>> + Send + Sync,
 		PGS: 'static + Deref<Target = P2PGossipSync<G, UL, L>> + Send + Sync,
 		RGS: 'static + Deref<Target = RapidGossipSync<G, L>> + Send,
-		UMH: 'static + Deref + Send + Sync,
-		PM: 'static + Deref<Target = PeerManager<Descriptor, CMH, RMH, OMH, L, UMH, NS>> + Send + Sync,
+		APM: APeerManager + Send + Sync,
+		PM: 'static + Deref<Target = APM> + Send + Sync,
 		S: 'static + Deref<Target = SC> + Send + Sync,
 		SC: for <'b> WriteableScore<'b>,
 	>(
@@ -751,10 +740,6 @@ impl BackgroundProcessor {
 		R::Target: 'static + Router,
 		L::Target: 'static + Logger,
 		P::Target: 'static + Persist<<SP::Target as SignerProvider>::Signer>,
-		CMH::Target: 'static + ChannelMessageHandler,
-		OMH::Target: 'static + OnionMessageHandler,
-		RMH::Target: 'static + RoutingMessageHandler,
-		UMH::Target: 'static + CustomMessageHandler,
 		PS::Target: 'static + Persister<'a, CW, T, ES, NS, SP, F, R, L, SC>,
 	{
 		let stop_thread = Arc::new(AtomicBool::new(false));

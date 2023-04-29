@@ -542,6 +542,54 @@ pub type SimpleArcPeerManager<SD, M, T, F, C, L> = PeerManager<SD, Arc<SimpleArc
 /// This is not exported to bindings users as general type aliases don't make sense in bindings.
 pub type SimpleRefPeerManager<'a, 'b, 'c, 'd, 'e, 'f, 'g, 'h, 'i, 'j, 'k, 'l, 'm, SD, M, T, F, C, L> = PeerManager<SD, SimpleRefChannelManager<'a, 'b, 'c, 'd, 'e, 'f, 'g, 'm, M, T, F, L>, &'f P2PGossipSync<&'g NetworkGraph<&'f L>, &'h C, &'f L>, &'i SimpleRefOnionMessenger<'j, 'k, L>, &'f L, IgnoringMessageHandler, &'c KeysManager>;
 
+
+/// A generic trait which is implemented for all [`PeerManager`]s. This makes bounding functions or
+/// structs on any [`PeerManager`] much simpler as only this trait is needed as a bound, rather
+/// than the full set of bounds on [`PeerManager`] itself.
+#[allow(missing_docs)]
+pub trait APeerManager {
+	type Descriptor: SocketDescriptor;
+	type CMT: ChannelMessageHandler + ?Sized;
+	type CM: Deref<Target=Self::CMT>;
+	type RMT: RoutingMessageHandler + ?Sized;
+	type RM: Deref<Target=Self::RMT>;
+	type OMT: OnionMessageHandler + ?Sized;
+	type OM: Deref<Target=Self::OMT>;
+	type LT: Logger + ?Sized;
+	type L: Deref<Target=Self::LT>;
+	type CMHT: CustomMessageHandler + ?Sized;
+	type CMH: Deref<Target=Self::CMHT>;
+	type NST: NodeSigner + ?Sized;
+	type NS: Deref<Target=Self::NST>;
+	/// Gets a reference to the underlying [`PeerManager`].
+	fn as_ref(&self) -> &PeerManager<Self::Descriptor, Self::CM, Self::RM, Self::OM, Self::L, Self::CMH, Self::NS>;
+}
+
+impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CMH: Deref, NS: Deref>
+APeerManager for PeerManager<Descriptor, CM, RM, OM, L, CMH, NS> where
+	CM::Target: ChannelMessageHandler,
+	RM::Target: RoutingMessageHandler,
+	OM::Target: OnionMessageHandler,
+	L::Target: Logger,
+	CMH::Target: CustomMessageHandler,
+	NS::Target: NodeSigner,
+{
+	type Descriptor = Descriptor;
+	type CMT = <CM as Deref>::Target;
+	type CM = CM;
+	type RMT = <RM as Deref>::Target;
+	type RM = RM;
+	type OMT = <OM as Deref>::Target;
+	type OM = OM;
+	type LT = <L as Deref>::Target;
+	type L = L;
+	type CMHT = <CMH as Deref>::Target;
+	type CMH = CMH;
+	type NST = <NS as Deref>::Target;
+	type NS = NS;
+	fn as_ref(&self) -> &PeerManager<Descriptor, CM, RM, OM, L, CMH, NS> { self }
+}
+
 /// A PeerManager manages a set of peers, described by their [`SocketDescriptor`] and marshalls
 /// socket events into messages which it passes on to its [`MessageHandler`].
 ///
