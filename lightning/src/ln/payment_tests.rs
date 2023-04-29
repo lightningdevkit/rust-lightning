@@ -1409,7 +1409,7 @@ fn do_test_intercepted_payment(test: InterceptTest) {
 				htlc_minimum_msat: None,
 				htlc_maximum_msat: None,
 			}])
-		])
+		]).unwrap()
 		.with_features(nodes[2].node.invoice_features());
 	let route_params = RouteParameters {
 		payment_params,

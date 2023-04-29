@@ -715,7 +715,7 @@ fn do_test_onion_failure_stale_channel_update(announced_channel: bool) {
 		}])];
 		let payment_params = PaymentParameters::from_node_id(*channel_to_update_counterparty, TEST_FINAL_CLTV)
 			.with_features(nodes[2].node.invoice_features())
-			.with_route_hints(hop_hints);
+			.with_route_hints(hop_hints).unwrap();
 		get_route_and_payment_hash!(nodes[0], nodes[2], payment_params, PAYMENT_AMT)
 	};
 	send_along_route_with_secret(&nodes[0], route.clone(), &[&[&nodes[1], &nodes[2]]], PAYMENT_AMT,
@@ -987,7 +987,7 @@ macro_rules! get_phantom_route {
 						htlc_minimum_msat: None,
 						htlc_maximum_msat: None,
 					}
-		])]);
+		])]).unwrap();
 		let scorer = test_utils::TestScorer::new();
 		let network_graph = $nodes[0].network_graph.read_only();
 		(get_route(
