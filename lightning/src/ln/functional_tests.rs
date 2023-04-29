@@ -1829,7 +1829,7 @@ fn test_channel_reserve_holding_cell_htlcs() {
 	// attempt to send amt_msat > their_max_htlc_value_in_flight_msat
 	{
 		let payment_params = PaymentParameters::from_node_id(nodes[2].node.get_our_node_id(), TEST_FINAL_CLTV)
-			.with_features(nodes[2].node.invoice_features()).with_max_channel_saturation_power_of_half(0);
+			.with_bolt11_features(nodes[2].node.invoice_features()).unwrap().with_max_channel_saturation_power_of_half(0);
 		let (mut route, our_payment_hash, _, our_payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[2], payment_params, recv_value_0);
 		route.paths[0].hops.last_mut().unwrap().fee_msat += 1;
 		assert!(route.paths[0].hops.iter().rev().skip(1).all(|h| h.fee_msat == feemsat));
@@ -1856,7 +1856,7 @@ fn test_channel_reserve_holding_cell_htlcs() {
 		}
 
 		let payment_params = PaymentParameters::from_node_id(nodes[2].node.get_our_node_id(), TEST_FINAL_CLTV)
-			.with_features(nodes[2].node.invoice_features()).with_max_channel_saturation_power_of_half(0);
+			.with_bolt11_features(nodes[2].node.invoice_features()).unwrap().with_max_channel_saturation_power_of_half(0);
 		let route = get_route!(nodes[0], payment_params, recv_value_0).unwrap();
 		let (payment_preimage, ..) = send_along_route(&nodes[0], route, &[&nodes[1], &nodes[2]], recv_value_0);
 		claim_payment(&nodes[0], &[&nodes[1], &nodes[2]], payment_preimage);
@@ -4795,7 +4795,7 @@ fn test_duplicate_payment_hash_one_failure_one_success() {
 	// script push size limit so that the below script length checks match
 	// ACCEPTED_HTLC_SCRIPT_WEIGHT.
 	let payment_params = PaymentParameters::from_node_id(nodes[3].node.get_our_node_id(), TEST_FINAL_CLTV - 40)
-		.with_features(nodes[3].node.invoice_features());
+		.with_bolt11_features(nodes[3].node.invoice_features()).unwrap();
 	let (route, _, _, _) = get_route_and_payment_hash!(nodes[0], nodes[3], payment_params, 800_000);
 	send_along_route_with_secret(&nodes[0], route, &[&[&nodes[1], &nodes[2], &nodes[3]]], 800_000, duplicate_payment_hash, payment_secret);
 
@@ -6101,7 +6101,7 @@ fn test_update_add_htlc_bolt2_sender_cltv_expiry_too_high() {
 	let _chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1000000, 0);
 
 	let payment_params = PaymentParameters::from_node_id(nodes[1].node.get_our_node_id(), 0)
-		.with_features(nodes[1].node.invoice_features());
+		.with_bolt11_features(nodes[1].node.invoice_features()).unwrap();
 	let (mut route, our_payment_hash, _, our_payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[1], payment_params, 100000000);
 	route.paths[0].hops.last_mut().unwrap().cltv_expiry_delta = 500000001;
 	unwrap_send_err!(nodes[0].node.send_payment_with_route(&route, our_payment_hash,
@@ -7043,7 +7043,7 @@ fn test_check_htlc_underpaying() {
 
 	let scorer = test_utils::TestScorer::new();
 	let random_seed_bytes = chanmon_cfgs[1].keys_manager.get_secure_random_bytes();
-	let payment_params = PaymentParameters::from_node_id(nodes[1].node.get_our_node_id(), TEST_FINAL_CLTV).with_features(nodes[1].node.invoice_features());
+	let payment_params = PaymentParameters::from_node_id(nodes[1].node.get_our_node_id(), TEST_FINAL_CLTV).with_bolt11_features(nodes[1].node.invoice_features()).unwrap();
 	let route = get_route(&nodes[0].node.get_our_node_id(), &payment_params, &nodes[0].network_graph.read_only(), None, 10_000, nodes[0].logger, &scorer, &random_seed_bytes).unwrap();
 	let (_, our_payment_hash, _) = get_payment_preimage_hash!(nodes[0]);
 	let our_payment_secret = nodes[1].node.create_inbound_payment_for_hash(our_payment_hash, Some(100_000), 7200, None).unwrap();
@@ -7189,7 +7189,7 @@ fn test_bump_penalty_txn_on_revoked_commitment() {
 
 	let payment_preimage = route_payment(&nodes[0], &vec!(&nodes[1])[..], 3000000).0;
 	let payment_params = PaymentParameters::from_node_id(nodes[0].node.get_our_node_id(), 30)
-		.with_features(nodes[0].node.invoice_features());
+		.with_bolt11_features(nodes[0].node.invoice_features()).unwrap();
 	let (route,_, _, _) = get_route_and_payment_hash!(nodes[1], nodes[0], payment_params, 3000000);
 	send_along_route(&nodes[1], route, &vec!(&nodes[0])[..], 3000000);
 
@@ -7294,13 +7294,13 @@ fn test_bump_penalty_txn_on_revoked_htlcs() {
 
 	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1000000, 59000000);
 	// Lock HTLC in both directions (using a slightly lower CLTV delay to provide timely RBF bumps)
-	let payment_params = PaymentParameters::from_node_id(nodes[1].node.get_our_node_id(), 50).with_features(nodes[1].node.invoice_features());
+	let payment_params = PaymentParameters::from_node_id(nodes[1].node.get_our_node_id(), 50).with_bolt11_features(nodes[1].node.invoice_features()).unwrap();
 	let scorer = test_utils::TestScorer::new();
 	let random_seed_bytes = chanmon_cfgs[1].keys_manager.get_secure_random_bytes();
 	let route = get_route(&nodes[0].node.get_our_node_id(), &payment_params, &nodes[0].network_graph.read_only(), None,
 		3_000_000, nodes[0].logger, &scorer, &random_seed_bytes).unwrap();
 	let payment_preimage = send_along_route(&nodes[0], route, &[&nodes[1]], 3_000_000).0;
-	let payment_params = PaymentParameters::from_node_id(nodes[0].node.get_our_node_id(), 50).with_features(nodes[0].node.invoice_features());
+	let payment_params = PaymentParameters::from_node_id(nodes[0].node.get_our_node_id(), 50).with_bolt11_features(nodes[0].node.invoice_features()).unwrap();
 	let route = get_route(&nodes[1].node.get_our_node_id(), &payment_params, &nodes[1].network_graph.read_only(), None,
 		3_000_000, nodes[0].logger, &scorer, &random_seed_bytes).unwrap();
 	send_along_route(&nodes[1], route, &[&nodes[0]], 3_000_000);
@@ -9300,7 +9300,7 @@ fn do_test_dup_htlc_second_rejected(test_for_second_fail_panic: bool) {
 	let _chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 10001);
 
 	let payment_params = PaymentParameters::from_node_id(nodes[1].node.get_our_node_id(), TEST_FINAL_CLTV)
-		.with_features(nodes[1].node.invoice_features());
+		.with_bolt11_features(nodes[1].node.invoice_features()).unwrap();
 	let route = get_route!(nodes[0], payment_params, 10_000).unwrap();
 
 	let (our_payment_preimage, our_payment_hash, our_payment_secret) = get_payment_preimage_hash!(&nodes[1]);
@@ -9409,7 +9409,7 @@ fn test_inconsistent_mpp_params() {
 	let chan_2_3 =create_announced_chan_between_nodes_with_value(&nodes, 2, 3, 100_000, 0);
 
 	let payment_params = PaymentParameters::from_node_id(nodes[3].node.get_our_node_id(), TEST_FINAL_CLTV)
-		.with_features(nodes[3].node.invoice_features());
+		.with_bolt11_features(nodes[3].node.invoice_features()).unwrap();
 	let mut route = get_route!(nodes[0], payment_params, 15_000_000).unwrap();
 	assert_eq!(route.paths.len(), 2);
 	route.paths.sort_by(|path_a, _| {

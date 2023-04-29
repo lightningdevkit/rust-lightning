@@ -838,7 +838,7 @@ mod test {
 
 		let payment_params = PaymentParameters::from_node_id(invoice.recover_payee_pub_key(),
 				invoice.min_final_cltv_expiry_delta() as u32)
-			.with_features(invoice.features().unwrap().clone())
+			.with_bolt11_features(invoice.features().unwrap().clone()).unwrap()
 			.with_route_hints(invoice.route_hints()).unwrap();
 		let route_params = RouteParameters {
 			payment_params,
@@ -1294,7 +1294,7 @@ mod test {
 
 		let payment_params = PaymentParameters::from_node_id(invoice.recover_payee_pub_key(),
 				invoice.min_final_cltv_expiry_delta() as u32)
-			.with_features(invoice.features().unwrap().clone())
+			.with_bolt11_features(invoice.features().unwrap().clone()).unwrap()
 			.with_route_hints(invoice.route_hints()).unwrap();
 		let params = RouteParameters {
 			payment_params,

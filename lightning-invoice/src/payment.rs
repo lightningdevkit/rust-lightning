@@ -154,7 +154,7 @@ fn pay_invoice_using_amount<P: Deref>(
 		.with_expiry_time(expiry_time_from_unix_epoch(invoice).as_secs())
 		.with_route_hints(invoice.route_hints()).unwrap();
 	if let Some(features) = invoice.features() {
-		payment_params = payment_params.with_features(features.clone());
+		payment_params = payment_params.with_bolt11_features(features.clone()).unwrap();
 	}
 	let route_params = RouteParameters {
 		payment_params,

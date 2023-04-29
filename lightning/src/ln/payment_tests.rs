@@ -857,7 +857,7 @@ fn get_ldk_payment_preimage() {
 	let (payment_hash, payment_secret) = nodes[1].node.create_inbound_payment(Some(amt_msat), expiry_secs, None).unwrap();
 
 	let payment_params = PaymentParameters::from_node_id(nodes[1].node.get_our_node_id(), TEST_FINAL_CLTV)
-		.with_features(nodes[1].node.invoice_features());
+		.with_bolt11_features(nodes[1].node.invoice_features()).unwrap();
 	let scorer = test_utils::TestScorer::new();
 	let keys_manager = test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
 	let random_seed_bytes = keys_manager.get_secure_random_bytes();
@@ -1410,7 +1410,7 @@ fn do_test_intercepted_payment(test: InterceptTest) {
 				htlc_maximum_msat: None,
 			}])
 		]).unwrap()
-		.with_features(nodes[2].node.invoice_features());
+		.with_bolt11_features(nodes[2].node.invoice_features()).unwrap();
 	let route_params = RouteParameters {
 		payment_params,
 		final_value_msat: amt_msat,
@@ -1600,7 +1600,7 @@ fn do_automatic_retries(test: AutoRetry) {
 	invoice_features.set_basic_mpp_optional();
 	let payment_params = PaymentParameters::from_node_id(nodes[2].node.get_our_node_id(), TEST_FINAL_CLTV)
 		.with_expiry_time(payment_expiry_secs as u64)
-		.with_features(invoice_features);
+		.with_bolt11_features(invoice_features).unwrap();
 	let route_params = RouteParameters {
 		payment_params,
 		final_value_msat: amt_msat,
@@ -1819,7 +1819,7 @@ fn auto_retry_partial_failure() {
 	invoice_features.set_basic_mpp_optional();
 	let payment_params = PaymentParameters::from_node_id(nodes[1].node.get_our_node_id(), TEST_FINAL_CLTV)
 		.with_expiry_time(payment_expiry_secs as u64)
-		.with_features(invoice_features);
+		.with_bolt11_features(invoice_features).unwrap();
 	let route_params = RouteParameters {
 		payment_params,
 		final_value_msat: amt_msat,
@@ -2031,7 +2031,7 @@ fn auto_retry_zero_attempts_send_error() {
 	invoice_features.set_basic_mpp_optional();
 	let payment_params = PaymentParameters::from_node_id(nodes[1].node.get_our_node_id(), TEST_FINAL_CLTV)
 		.with_expiry_time(payment_expiry_secs as u64)
-		.with_features(invoice_features);
+		.with_bolt11_features(invoice_features).unwrap();
 	let route_params = RouteParameters {
 		payment_params,
 		final_value_msat: amt_msat,
@@ -2071,7 +2071,7 @@ fn fails_paying_after_rejected_by_payee() {
 	invoice_features.set_basic_mpp_optional();
 	let payment_params = PaymentParameters::from_node_id(nodes[1].node.get_our_node_id(), TEST_FINAL_CLTV)
 		.with_expiry_time(payment_expiry_secs as u64)
-		.with_features(invoice_features);
+		.with_bolt11_features(invoice_features).unwrap();
 	let route_params = RouteParameters {
 		payment_params,
 		final_value_msat: amt_msat,
@@ -2118,7 +2118,7 @@ fn retry_multi_path_single_failed_payment() {
 	invoice_features.set_basic_mpp_optional();
 	let payment_params = PaymentParameters::from_node_id(nodes[1].node.get_our_node_id(), TEST_FINAL_CLTV)
 		.with_expiry_time(payment_expiry_secs as u64)
-		.with_features(invoice_features);
+		.with_bolt11_features(invoice_features).unwrap();
 	let route_params = RouteParameters {
 		payment_params: payment_params.clone(),
 		final_value_msat: amt_msat,
@@ -2212,7 +2212,7 @@ fn immediate_retry_on_failure() {
 	invoice_features.set_basic_mpp_optional();
 	let payment_params = PaymentParameters::from_node_id(nodes[1].node.get_our_node_id(), TEST_FINAL_CLTV)
 		.with_expiry_time(payment_expiry_secs as u64)
-		.with_features(invoice_features);
+		.with_bolt11_features(invoice_features).unwrap();
 	let route_params = RouteParameters {
 		payment_params,
 		final_value_msat: amt_msat,
@@ -2301,7 +2301,7 @@ fn no_extra_retries_on_back_to_back_fail() {
 	invoice_features.set_basic_mpp_optional();
 	let payment_params = PaymentParameters::from_node_id(nodes[1].node.get_our_node_id(), TEST_FINAL_CLTV)
 		.with_expiry_time(payment_expiry_secs as u64)
-		.with_features(invoice_features);
+		.with_bolt11_features(invoice_features).unwrap();
 	let route_params = RouteParameters {
 		payment_params,
 		final_value_msat: amt_msat,
@@ -2503,7 +2503,7 @@ fn test_simple_partial_retry() {
 	invoice_features.set_basic_mpp_optional();
 	let payment_params = PaymentParameters::from_node_id(nodes[1].node.get_our_node_id(), TEST_FINAL_CLTV)
 		.with_expiry_time(payment_expiry_secs as u64)
-		.with_features(invoice_features);
+		.with_bolt11_features(invoice_features).unwrap();
 	let route_params = RouteParameters {
 		payment_params,
 		final_value_msat: amt_msat,
@@ -2669,7 +2669,7 @@ fn test_threaded_payment_retries() {
 	invoice_features.set_basic_mpp_optional();
 	let payment_params = PaymentParameters::from_node_id(nodes[1].node.get_our_node_id(), TEST_FINAL_CLTV)
 		.with_expiry_time(payment_expiry_secs as u64)
-		.with_features(invoice_features);
+		.with_bolt11_features(invoice_features).unwrap();
 	let mut route_params = RouteParameters {
 		payment_params,
 		final_value_msat: amt_msat,
@@ -2906,7 +2906,7 @@ fn do_claim_from_closed_chan(fail_payment: bool) {
 	let (payment_preimage, payment_hash, payment_secret) = get_payment_preimage_hash!(nodes[3]);
 	let mut route_params = RouteParameters {
 		payment_params: PaymentParameters::from_node_id(nodes[3].node.get_our_node_id(), TEST_FINAL_CLTV)
-			.with_features(nodes[1].node.invoice_features()),
+			.with_bolt11_features(nodes[1].node.invoice_features()).unwrap(),
 		final_value_msat: 10_000_000,
 	};
 	let mut route = nodes[0].router.find_route(&nodes[0].node.get_our_node_id(), &route_params,
@@ -3050,7 +3050,7 @@ fn do_test_payment_metadata_consistency(do_reload: bool, do_modify: bool) {
 	let payment_metadata = vec![44, 49, 52, 142];
 
 	let payment_params = PaymentParameters::from_node_id(nodes[3].node.get_our_node_id(), TEST_FINAL_CLTV)
-		.with_features(nodes[1].node.invoice_features());
+		.with_bolt11_features(nodes[1].node.invoice_features()).unwrap();
 	let mut route_params = RouteParameters {
 		payment_params,
 		final_value_msat: amt_msat,
