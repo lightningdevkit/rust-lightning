@@ -29,7 +29,7 @@ use crate::io;
 use crate::prelude::*;
 use crate::sync::Mutex;
 use alloc::collections::BinaryHeap;
-use core::cmp;
+use core::{cmp, fmt};
 use core::ops::Deref;
 
 /// A [`Router`] implemented using [`find_route`].
@@ -493,9 +493,6 @@ const MAX_PATH_LENGTH_ESTIMATE: u8 = 19;
 /// Information used to route a payment.
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct PaymentParameters {
-	/// The node id of the payee.
-	pub payee_pubkey: PublicKey,
-
 	/// Features supported by the payee.
 	///
 	/// May be set from the payee's invoice or via [`for_keysend`]. May be `None` if the invoice
@@ -551,7 +548,7 @@ impl Writeable for PaymentParameters {
 			Payee::Blinded { route_hints } => blinded_hints = route_hints,
 		}
 		write_tlv_fields!(writer, {
-			(0, self.payee_pubkey, required),
+			(0, self.payee.node_id(), option),
 			(1, self.max_total_cltv_expiry_delta, required),
 			(2, self.features, option),
 			(3, self.max_path_count, required),
@@ -569,7 +566,7 @@ impl Writeable for PaymentParameters {
 impl ReadableArgs<u32> for PaymentParameters {
 	fn read<R: io::Read>(reader: &mut R, default_final_cltv_expiry_delta: u32) -> Result<Self, DecodeError> {
 		_init_and_read_tlv_fields!(reader, {
-			(0, payee_pubkey, required),
+			(0, payee_pubkey, option),
 			(1, max_total_cltv_expiry_delta, (default_value, DEFAULT_MAX_TOTAL_CLTV_EXPIRY_DELTA)),
 			(2, features, option),
 			(3, max_path_count, (default_value, DEFAULT_MAX_PATH_COUNT)),
@@ -583,13 +580,15 @@ impl ReadableArgs<u32> for PaymentParameters {
 		let clear_route_hints = route_hints.unwrap_or(vec![]);
 		let blinded_route_hints = blinded_route_hints.unwrap_or(vec![]);
 		let payee = if blinded_route_hints.len() != 0 {
-			if clear_route_hints.len() != 0 { return Err(DecodeError::InvalidValue) }
+			if clear_route_hints.len() != 0 || payee_pubkey.is_some() { return Err(DecodeError::InvalidValue) }
 			Payee::Blinded { route_hints: blinded_route_hints }
 		} else {
-			Payee::Clear { route_hints: clear_route_hints }
+			Payee::Clear {
+				route_hints: clear_route_hints,
+				node_id: payee_pubkey.ok_or(DecodeError::InvalidValue)?,
+			}
 		};
 		Ok(Self {
-			payee_pubkey: _init_tlv_based_struct_field!(payee_pubkey, required),
 			max_total_cltv_expiry_delta: _init_tlv_based_struct_field!(max_total_cltv_expiry_delta, (default_value, unused)),
 			features,
 			max_path_count: _init_tlv_based_struct_field!(max_path_count, (default_value, unused)),
@@ -610,9 +609,8 @@ impl PaymentParameters {
 	/// provided.
 	pub fn from_node_id(payee_pubkey: PublicKey, final_cltv_expiry_delta: u32) -> Self {
 		Self {
-			payee_pubkey,
 			features: None,
-			payee: Payee::Clear { route_hints: vec![] },
+			payee: Payee::Clear { node_id: payee_pubkey, route_hints: vec![] },
 			expiry_time: None,
 			max_total_cltv_expiry_delta: DEFAULT_MAX_TOTAL_CLTV_EXPIRY_DELTA,
 			max_path_count: DEFAULT_MAX_PATH_COUNT,
@@ -644,8 +642,8 @@ impl PaymentParameters {
 	pub fn with_route_hints(self, route_hints: Vec<RouteHint>) -> Result<Self, ()> {
 		match self.payee {
 			Payee::Blinded { .. } => Err(()),
-			Payee::Clear { .. } =>
-				Ok(Self { payee: Payee::Clear { route_hints }, ..self })
+			Payee::Clear { node_id, .. } =>
+				Ok(Self { payee: Payee::Clear { route_hints, node_id }, ..self })
 		}
 	}
 
@@ -691,9 +689,20 @@ pub enum Payee {
 	},
 	/// The recipient included these route hints in their BOLT11 invoice.
 	Clear {
+		/// The node id of the payee.
+		node_id: PublicKey,
 		/// Hints for routing to the payee, containing channels connecting the payee to public nodes.
 		route_hints: Vec<RouteHint>,
 	},
+}
+
+impl Payee {
+	fn node_id(&self) -> Option<PublicKey> {
+		match self {
+			Self::Clear { node_id, .. } => Some(*node_id),
+			_ => None,
+		}
+	}
 }
 
 /// A list of hops along a payment path terminating with a channel to the recipient.
@@ -1080,6 +1089,21 @@ fn default_node_features() -> NodeFeatures {
 	features
 }
 
+struct LoggedPayeePubkey(Option<PublicKey>);
+impl fmt::Display for LoggedPayeePubkey {
+	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+		match self.0 {
+			Some(pk) => {
+				"payee node id ".fmt(f)?;
+				pk.fmt(f)
+			},
+			None => {
+				"blinded payee".fmt(f)
+			},
+		}
+	}
+}
+
 /// Finds a route from us (payer) to the given target node (payee).
 ///
 /// If the payee provided features in their invoice, they should be provided via `params.payee`.
@@ -1129,10 +1153,16 @@ pub(crate) fn get_route<L: Deref, S: Score>(
 	_random_seed_bytes: &[u8; 32]
 ) -> Result<Route, LightningError>
 where L::Target: Logger {
-	let payee_node_id = NodeId::from_pubkey(&payment_params.payee_pubkey);
+	// If we're routing to a blinded recipient, we won't have their node id. Therefore, keep the
+	// unblinded payee id as an option. We also need a non-optional "payee id" for path construction,
+	// so use a dummy id for this in the blinded case.
+	let payee_node_id_opt = payment_params.payee.node_id().map(|pk| NodeId::from_pubkey(&pk));
+	const DUMMY_BLINDED_PAYEE_ID: [u8; 33] = [42u8; 33];
+	let maybe_dummy_payee_pk = payment_params.payee.node_id().unwrap_or_else(|| PublicKey::from_slice(&DUMMY_BLINDED_PAYEE_ID).unwrap());
+	let maybe_dummy_payee_node_id = NodeId::from_pubkey(&maybe_dummy_payee_pk);
 	let our_node_id = NodeId::from_pubkey(&our_node_pubkey);
 
-	if payee_node_id == our_node_id {
+	if payee_node_id_opt.map_or(false, |payee| payee == our_node_id) {
 		return Err(LightningError{err: "Cannot generate a route to ourselves".to_owned(), action: ErrorAction::IgnoreError});
 	}
 
@@ -1145,10 +1175,10 @@ where L::Target: Logger {
 	}
 
 	match &payment_params.payee {
-		Payee::Clear { route_hints } => {
+		Payee::Clear { route_hints, node_id } => {
 			for route in route_hints.iter() {
 				for hop in &route.0 {
-					if hop.src_node_id == payment_params.payee_pubkey {
+					if hop.src_node_id == *node_id {
 						return Err(LightningError{err: "Route hint cannot have the payee as the source.".to_owned(), action: ErrorAction::IgnoreError});
 					}
 				}
@@ -1231,14 +1261,13 @@ where L::Target: Logger {
 		false
 	} else if let Some(features) = &payment_params.features {
 		features.supports_basic_mpp()
-	} else if let Some(node) = network_nodes.get(&payee_node_id) {
-		if let Some(node_info) = node.announcement_info.as_ref() {
-			node_info.features.supports_basic_mpp()
-		} else { false }
+	} else if let Some(payee) = payee_node_id_opt {
+		network_nodes.get(&payee).map_or(false, |node| node.announcement_info.as_ref().map_or(false,
+			|info| info.features.supports_basic_mpp()))
 	} else { false };
 
-	log_trace!(logger, "Searching for a route from payer {} to payee {} {} MPP and {} first hops {}overriding the network graph", our_node_pubkey,
-		payment_params.payee_pubkey, if allow_mpp { "with" } else { "without" },
+	log_trace!(logger, "Searching for a route from payer {} to {} {} MPP and {} first hops {}overriding the network graph", our_node_pubkey,
+		LoggedPayeePubkey(payment_params.payee.node_id()), if allow_mpp { "with" } else { "without" },
 		first_hops.map(|hops| hops.len()).unwrap_or(0), if first_hops.is_some() { "" } else { "not " });
 
 	// Step (1).
@@ -1341,7 +1370,8 @@ where L::Target: Logger {
 		});
 	}
 
-	log_trace!(logger, "Building path from {} (payee) to {} (us/payer) for value {} msat.", payment_params.payee_pubkey, our_node_pubkey, final_value_msat);
+	log_trace!(logger, "Building path from {} to payer {} for value {} msat.",
+		LoggedPayeePubkey(payment_params.payee.node_id()), our_node_pubkey, final_value_msat);
 
 	macro_rules! add_entry {
 		// Adds entry which goes from $src_node_id to $dest_node_id over the $candidate hop.
@@ -1590,7 +1620,7 @@ where L::Target: Logger {
 				// Entries are added to dist in add_entry!() when there is a channel from a node.
 				// Because there are no channels from payee, it will not have a dist entry at this point.
 				// If we're processing any other node, it is always be the result of a channel from it.
-				assert_eq!($node_id, payee_node_id);
+				debug_assert_eq!($node_id, maybe_dummy_payee_node_id);
 				false
 			};
 
@@ -1650,35 +1680,35 @@ where L::Target: Logger {
 
 		// If first hop is a private channel and the only way to reach the payee, this is the only
 		// place where it could be added.
-		if let Some(first_channels) = first_hop_targets.get(&payee_node_id) {
+		payee_node_id_opt.map(|payee| first_hop_targets.get(&payee).map(|first_channels| {
 			for details in first_channels {
 				let candidate = CandidateRouteHop::FirstHop { details };
-				let added = add_entry!(candidate, our_node_id, payee_node_id, 0, path_value_msat,
+				let added = add_entry!(candidate, our_node_id, payee, 0, path_value_msat,
 									0, 0u64, 0, 0);
 				log_trace!(logger, "{} direct route to payee via SCID {}",
 						if added { "Added" } else { "Skipped" }, candidate.short_channel_id());
 			}
-		}
+		}));
 
 		// Add the payee as a target, so that the payee-to-payer
 		// search algorithm knows what to start with.
-		match network_nodes.get(&payee_node_id) {
+		payee_node_id_opt.map(|payee| match network_nodes.get(&payee) {
 			// The payee is not in our network graph, so nothing to add here.
 			// There is still a chance of reaching them via last_hops though,
 			// so don't yet fail the payment here.
 			// If not, targets.pop() will not even let us enter the loop in step 2.
 			None => {},
 			Some(node) => {
-				add_entries_to_cheapest_to_target_node!(node, payee_node_id, 0, path_value_msat, 0, 0u64, 0, 0);
+				add_entries_to_cheapest_to_target_node!(node, payee, 0, path_value_msat, 0, 0u64, 0, 0);
 			},
-		}
+		});
 
 		// Step (2).
 		// If a caller provided us with last hops, add them to routing targets. Since this happens
 		// earlier than general path finding, they will be somewhat prioritized, although currently
 		// it matters only if the fees are exactly the same.
 		let route_hints = match &payment_params.payee {
-			Payee::Clear { route_hints } => route_hints,
+			Payee::Clear { route_hints, .. } => route_hints,
 			_ => return Err(LightningError{err: "Routing to blinded paths isn't supported yet".to_owned(), action: ErrorAction::IgnoreError}),
 		};
 		for route in route_hints.iter().filter(|route| !route.0.is_empty()) {
@@ -1693,7 +1723,7 @@ where L::Target: Logger {
 				// We start building the path from reverse, i.e., from payee
 				// to the first RouteHintHop in the path.
 				let hop_iter = route.0.iter().rev();
-				let prev_hop_iter = core::iter::once(&payment_params.payee_pubkey).chain(
+				let prev_hop_iter = core::iter::once(&maybe_dummy_payee_pk).chain(
 					route.0.iter().skip(1).rev().map(|hop| &hop.src_node_id));
 				let mut hop_used = true;
 				let mut aggregate_next_hops_fee_msat: u64 = 0;
@@ -1853,7 +1883,7 @@ where L::Target: Logger {
 					// save this path for the payment route. Also, update the liquidity
 					// remaining on the used hops, so that we take them into account
 					// while looking for more paths.
-					if ordered_hops.last().unwrap().0.node_id == payee_node_id {
+					if ordered_hops.last().unwrap().0.node_id == maybe_dummy_payee_node_id {
 						break 'path_walk;
 					}
 
@@ -1936,7 +1966,7 @@ where L::Target: Logger {
 			// If we found a path back to the payee, we shouldn't try to process it again. This is
 			// the equivalent of the `elem.was_processed` check in
 			// add_entries_to_cheapest_to_target_node!() (see comment there for more info).
-			if node_id == payee_node_id { continue 'path_construction; }
+			if node_id == maybe_dummy_payee_node_id { continue 'path_construction; }
 
 			// Otherwise, since the current target node is not us,
 			// keep "unrolling" the payment graph from payee to payer by
@@ -2106,7 +2136,7 @@ where L::Target: Logger {
 		paths,
 		payment_params: Some(payment_params.clone()),
 	};
-	log_info!(logger, "Got route to {}: {}", payment_params.payee_pubkey, log_route!(route));
+	log_info!(logger, "Got route: {}", log_route!(route));
 	Ok(route)
 }
 
