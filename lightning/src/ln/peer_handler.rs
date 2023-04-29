@@ -259,10 +259,11 @@ impl Deref for ErroringMessageHandler {
 }
 
 /// Provides references to trait impls which handle different types of messages.
-pub struct MessageHandler<CM: Deref, RM: Deref, OM: Deref> where
-		CM::Target: ChannelMessageHandler,
-		RM::Target: RoutingMessageHandler,
-		OM::Target: OnionMessageHandler,
+pub struct MessageHandler<CM: Deref, RM: Deref, OM: Deref, CustomM: Deref> where
+	CM::Target: ChannelMessageHandler,
+	RM::Target: RoutingMessageHandler,
+	OM::Target: OnionMessageHandler,
+	CustomM::Target: CustomMessageHandler,
 {
 	/// A message handler which handles messages specific to channels. Usually this is just a
 	/// [`ChannelManager`] object or an [`ErroringMessageHandler`].
@@ -275,9 +276,15 @@ pub struct MessageHandler<CM: Deref, RM: Deref, OM: Deref> where
 	/// [`P2PGossipSync`]: crate::routing::gossip::P2PGossipSync
 	pub route_handler: RM,
 
-	/// A message handler which handles onion messages. For now, this can only be an
-	/// [`IgnoringMessageHandler`].
+	/// A message handler which handles onion messages. This should generally be an
+	/// [`OnionMessenger`], but can also be an [`IgnoringMessageHandler`].
+	///
+	/// [`OnionMessenger`]: crate::onion_message::OnionMessenger
 	pub onion_message_handler: OM,
+
+	/// A message handler which handles custom messages. The only LDK-provided implementation is
+	/// [`IgnoringMessageHandler`].
+	pub custom_message_handler: CustomM,
 }
 
 /// Provides an object which can be used to send data to and which uniquely identifies a connection
@@ -561,7 +568,7 @@ pub struct PeerManager<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: D
 		L::Target: Logger,
 		CMH::Target: CustomMessageHandler,
 		NS::Target: NodeSigner {
-	message_handler: MessageHandler<CM, RM, OM>,
+	message_handler: MessageHandler<CM, RM, OM, CMH>,
 	/// Connection state for each connected peer - we have an outer read-write lock which is taken
 	/// as read while we're doing processing for a peer and taken write when a peer is being added
 	/// or removed.
@@ -591,7 +598,6 @@ pub struct PeerManager<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: D
 	last_node_announcement_serial: AtomicU32,
 
 	ephemeral_key_midstate: Sha256Engine,
-	custom_message_handler: CMH,
 
 	peer_counter: AtomicCounter,
 
@@ -652,7 +658,8 @@ impl<Descriptor: SocketDescriptor, CM: Deref, OM: Deref, L: Deref, NS: Deref> Pe
 			chan_handler: channel_message_handler,
 			route_handler: IgnoringMessageHandler{},
 			onion_message_handler,
-		}, current_time, ephemeral_random_data, logger, IgnoringMessageHandler{}, node_signer)
+			custom_message_handler: IgnoringMessageHandler{},
+		}, current_time, ephemeral_random_data, logger, node_signer)
 	}
 }
 
@@ -679,7 +686,8 @@ impl<Descriptor: SocketDescriptor, RM: Deref, L: Deref, NS: Deref> PeerManager<D
 			chan_handler: ErroringMessageHandler::new(),
 			route_handler: routing_message_handler,
 			onion_message_handler: IgnoringMessageHandler{},
-		}, current_time, ephemeral_random_data, logger, IgnoringMessageHandler{}, node_signer)
+			custom_message_handler: IgnoringMessageHandler{},
+		}, current_time, ephemeral_random_data, logger, node_signer)
 	}
 }
 
@@ -741,7 +749,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 	/// incremented irregularly internally. In general it is best to simply use the current UNIX
 	/// timestamp, however if it is not available a persistent counter that increases once per
 	/// minute should suffice.
-	pub fn new(message_handler: MessageHandler<CM, RM, OM>, current_time: u32, ephemeral_random_data: &[u8; 32], logger: L, custom_message_handler: CMH, node_signer: NS) -> Self {
+	pub fn new(message_handler: MessageHandler<CM, RM, OM, CMH>, current_time: u32, ephemeral_random_data: &[u8; 32], logger: L, node_signer: NS) -> Self {
 		let mut ephemeral_key_midstate = Sha256::engine();
 		ephemeral_key_midstate.input(ephemeral_random_data);
 
@@ -761,7 +769,6 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 			gossip_processing_backlog_lifted: AtomicBool::new(false),
 			last_node_announcement_serial: AtomicU32::new(current_time),
 			logger,
-			custom_message_handler,
 			node_signer,
 			secp_ctx,
 		}
@@ -1232,7 +1239,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 									peer.pending_read_is_header = true;
 
 									let mut reader = io::Cursor::new(&msg_data[..]);
-									let message_result = wire::read(&mut reader, &*self.custom_message_handler);
+									let message_result = wire::read(&mut reader, &*self.message_handler.custom_message_handler);
 									let message = match message_result {
 										Ok(x) => x,
 										Err(e) => {
@@ -1543,7 +1550,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 				log_trace!(self.logger, "Received unknown odd message of type {}, ignoring", type_id);
 			},
 			wire::Message::Custom(custom) => {
-				self.custom_message_handler.handle_custom_message(custom, &their_node_id)?;
+				self.message_handler.custom_message_handler.handle_custom_message(custom, &their_node_id)?;
 			},
 		};
 		Ok(should_forward)
@@ -1896,7 +1903,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 				}
 			}
 
-			for (node_id, msg) in self.custom_message_handler.get_and_clear_pending_msg() {
+			for (node_id, msg) in self.message_handler.custom_message_handler.get_and_clear_pending_msg() {
 				if peers_to_disconnect.get(&node_id).is_some() { continue; }
 				self.enqueue_message(&mut *get_peer_for_forwarding!(&node_id), &msg);
 			}
@@ -2264,8 +2271,11 @@ mod tests {
 		let mut peers = Vec::new();
 		for i in 0..peer_count {
 			let ephemeral_bytes = [i as u8; 32];
-			let msg_handler = MessageHandler { chan_handler: &cfgs[i].chan_handler, route_handler: &cfgs[i].routing_handler, onion_message_handler: IgnoringMessageHandler {} };
-			let peer = PeerManager::new(msg_handler, 0, &ephemeral_bytes, &cfgs[i].logger, IgnoringMessageHandler {}, &cfgs[i].node_signer);
+			let msg_handler = MessageHandler {
+				chan_handler: &cfgs[i].chan_handler, route_handler: &cfgs[i].routing_handler,
+				onion_message_handler: IgnoringMessageHandler {}, custom_message_handler: IgnoringMessageHandler {}
+			};
+			let peer = PeerManager::new(msg_handler, 0, &ephemeral_bytes, &cfgs[i].logger, &cfgs[i].node_signer);
 			peers.push(peer);
 		}
 
