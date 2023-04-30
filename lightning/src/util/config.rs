@@ -346,7 +346,11 @@ pub struct ChannelConfig {
 	/// enough time to broadcast and confirm a transaction, possibly with time in between to RBF
 	/// the spending transaction).
 	///
-	/// Default value: 72 (12 hours at an average of 6 blocks/hour).
+	/// When setting this value, consider how long it may take to upgrade node(s) after a bug
+	/// was discovered and a patch released. While not all potential sources of error can be
+	/// recovered, some classes of bugs may allow this much time to react.
+	///
+	/// Default value: 576 (96 hours at an average of 6 blocks/hour).
 	/// Minimum value: [`MIN_CLTV_EXPIRY_DELTA`], any values less than this will be treated as
 	///                [`MIN_CLTV_EXPIRY_DELTA`] instead.
 	///
@@ -405,7 +409,7 @@ impl Default for ChannelConfig {
 		ChannelConfig {
 			forwarding_fee_proportional_millionths: 0,
 			forwarding_fee_base_msat: 1000,
-			cltv_expiry_delta: 6 * 12, // 6 blocks/hour * 12 hours
+			cltv_expiry_delta: 96 * 12, // 8 blocks/hour * 12 hours
 			max_dust_htlc_exposure_msat: 5_000_000,
 			force_close_avoidance_max_fee_satoshis: 1000,
 		}
