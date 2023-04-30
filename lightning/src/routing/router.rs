@@ -3897,7 +3897,7 @@ mod tests {
 	fn available_amount_while_routing_test() {
 		// Tests whether we choose the correct available channel amount while routing.
 
-		let (secp_ctx, network_graph, mut gossip_sync, chain_monitor, logger) = build_graph();
+		let (secp_ctx, network_graph, gossip_sync, chain_monitor, logger) = build_graph();
 		let (our_privkey, our_id, privkeys, nodes) = get_nodes(&secp_ctx);
 		let scorer = ln_test_utils::TestScorer::new();
 		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
