@@ -29,7 +29,7 @@ use bitcoin::secp256k1::constants::{PUBLIC_KEY_SIZE, SECRET_KEY_SIZE, COMPACT_SI
 use bitcoin::secp256k1::ecdsa;
 use bitcoin::secp256k1::schnorr;
 use bitcoin::blockdata::constants::ChainHash;
-use bitcoin::blockdata::script::Script;
+use bitcoin::blockdata::script::{self, Script};
 use bitcoin::blockdata::transaction::{OutPoint, Transaction, TxOut};
 use bitcoin::consensus;
 use bitcoin::consensus::Encodable;
@@ -655,6 +655,21 @@ impl<T: MaybeReadable> Readable for WithoutLength<Vec<T>> {
 }
 impl<'a, T> From<&'a Vec<T>> for WithoutLength<&'a Vec<T>> {
 	fn from(v: &'a Vec<T>) -> Self { Self(v) }
+}
+
+impl Writeable for WithoutLength<&Script> {
+	#[inline]
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+		writer.write_all(self.0.as_bytes())
+	}
+}
+
+impl Readable for WithoutLength<Script> {
+	#[inline]
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+		let v: WithoutLength<Vec<u8>> = Readable::read(r)?;
+		Ok(WithoutLength(script::Builder::from(v.0).into_script()))
+	}
 }
 
 #[derive(Debug)]

@@ -25,7 +25,7 @@ use bitcoin::secp256k1;
 use crate::ln::{PaymentPreimage, PaymentHash};
 use crate::ln::features::{ChannelTypeFeatures, InitFeatures};
 use crate::ln::msgs;
-use crate::ln::msgs::{DecodeError, OptionalField};
+use crate::ln::msgs::DecodeError;
 use crate::ln::script::{self, ShutdownScript};
 use crate::ln::channelmanager::{self, CounterpartyForwardingInfo, PendingHTLCStatus, HTLCSource, SentHTLCId, HTLCFailureMsg, PendingHTLCInfo, RAACommitmentOrder, BREAKDOWN_TIMEOUT, MIN_CLTV_EXPIRY_DELTA, MAX_LOCAL_BREAKDOWN_TIMEOUT};
 use crate::ln::chan_utils::{CounterpartyCommitmentSecrets, TxCreationKeys, HTLCOutputInCommitment, htlc_success_tx_weight, htlc_timeout_tx_weight, make_funding_redeemscript, ChannelPublicKeys, CommitmentTransaction, HolderCommitmentTransaction, ChannelTransactionParameters, CounterpartyChannelTransactionParameters, MAX_HTLCS, get_commitment_transaction_number_obscure_factor, ClosingTransaction};
@@ -1314,7 +1314,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 
 		let counterparty_shutdown_scriptpubkey = if their_features.supports_upfront_shutdown_script() {
 			match &msg.shutdown_scriptpubkey {
-				&OptionalField::Present(ref script) => {
+				&Some(ref script) => {
 					// Peer is signaling upfront_shutdown and has opt-out with a 0-length script. We don't enforce anything
 					if script.len() == 0 {
 						None
@@ -1326,7 +1326,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 					}
 				},
 				// Peer is signaling upfront shutdown but don't opt-out with correct mechanism (a.k.a 0-length script). Peer looks buggy, we fail the channel
-				&OptionalField::Absent => {
+				&None => {
 					return Err(ChannelError::Close("Peer is signaling upfront_shutdown but we don't get any script. Use 0-length script to opt-out".to_owned()));
 				}
 			}
@@ -2191,7 +2191,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 
 		let counterparty_shutdown_scriptpubkey = if their_features.supports_upfront_shutdown_script() {
 			match &msg.shutdown_scriptpubkey {
-				&OptionalField::Present(ref script) => {
+				&Some(ref script) => {
 					// Peer is signaling upfront_shutdown and has opt-out with a 0-length script. We don't enforce anything
 					if script.len() == 0 {
 						None
@@ -2203,7 +2203,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 					}
 				},
 				// Peer is signaling upfront shutdown but don't opt-out with correct mechanism (a.k.a 0-length script). Peer looks buggy, we fail the channel
-				&OptionalField::Absent => {
+				&None => {
 					return Err(ChannelError::Close("Peer is signaling upfront_shutdown but we don't get any script. Use 0-length script to opt-out".to_owned()));
 				}
 			}
@@ -5318,7 +5318,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			htlc_basepoint: keys.htlc_basepoint,
 			first_per_commitment_point,
 			channel_flags: if self.config.announced_channel {1} else {0},
-			shutdown_scriptpubkey: OptionalField::Present(match &self.shutdown_scriptpubkey {
+			shutdown_scriptpubkey: Some(match &self.shutdown_scriptpubkey {
 				Some(script) => script.clone().into_inner(),
 				None => Builder::new().into_script(),
 			}),
@@ -5384,7 +5384,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			delayed_payment_basepoint: keys.delayed_payment_basepoint,
 			htlc_basepoint: keys.htlc_basepoint,
 			first_per_commitment_point,
-			shutdown_scriptpubkey: OptionalField::Present(match &self.shutdown_scriptpubkey {
+			shutdown_scriptpubkey: Some(match &self.shutdown_scriptpubkey {
 				Some(script) => script.clone().into_inner(),
 				None => Builder::new().into_script(),
 			}),

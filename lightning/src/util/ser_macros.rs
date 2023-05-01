@@ -554,7 +554,7 @@ macro_rules! impl_writeable_msg {
 		impl $crate::util::ser::Writeable for $st {
 			fn write<W: $crate::util::ser::Writer>(&self, w: &mut W) -> Result<(), $crate::io::Error> {
 				$( self.$field.write(w)?; )*
-				$crate::encode_tlv_stream!(w, {$(($type, self.$tlvfield, $fieldty)),*});
+				$crate::encode_tlv_stream!(w, {$(($type, self.$tlvfield.as_ref(), $fieldty)),*});
 				Ok(())
 			}
 		}
@@ -725,6 +725,9 @@ macro_rules! _init_tlv_field_var {
 	};
 	($field: ident, optional_vec) => {
 		let mut $field = Some(Vec::new());
+	};
+	($field: ident, (option, encoding: ($fieldty: ty, $encoding: ident))) => {
+		$crate::_init_tlv_field_var!($field, option);
 	};
 	($field: ident, (option: $trait: ident $(, $read_arg: expr)?)) => {
 		$crate::_init_tlv_field_var!($field, option);

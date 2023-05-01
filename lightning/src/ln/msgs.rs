@@ -199,8 +199,8 @@ pub struct OpenChannel {
 	pub first_per_commitment_point: PublicKey,
 	/// The channel flags to be used
 	pub channel_flags: u8,
-	/// Optionally, a request to pre-set the to-sender output's `scriptPubkey` for when we collaboratively close
-	pub shutdown_scriptpubkey: OptionalField<Script>,
+	/// A request to pre-set the to-sender output's `scriptPubkey` for when we collaboratively close
+	pub shutdown_scriptpubkey: Option<Script>,
 	/// The channel type that this channel will represent
 	///
 	/// If this is `None`, we derive the channel type from the intersection of our
@@ -241,8 +241,8 @@ pub struct AcceptChannel {
 	pub htlc_basepoint: PublicKey,
 	/// The first to-be-broadcast-by-sender transaction's per commitment point
 	pub first_per_commitment_point: PublicKey,
-	/// Optionally, a request to pre-set the to-sender output's scriptPubkey for when we collaboratively close
-	pub shutdown_scriptpubkey: OptionalField<Script>,
+	/// A request to pre-set the to-sender output's scriptPubkey for when we collaboratively close
+	pub shutdown_scriptpubkey: Option<Script>,
 	/// The channel type that this channel will represent.
 	///
 	/// If this is `None`, we derive the channel type from the intersection of
@@ -946,20 +946,6 @@ pub struct CommitmentUpdate {
 	pub commitment_signed: CommitmentSigned,
 }
 
-/// Messages could have optional fields to use with extended features
-/// As we wish to serialize these differently from `Option<T>`s (`Options` get a tag byte, but
-/// [`OptionalField`] simply gets `Present` if there are enough bytes to read into it), we have a
-/// separate enum type for them.
-///
-/// This is not exported to bindings users due to a free generic in `T`
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum OptionalField<T> {
-	/// Optional field is included in message
-	Present(T),
-	/// Optional field is absent in message
-	Absent
-}
-
 /// A trait to describe an object which can receive channel messages.
 ///
 /// Messages MAY be called in parallel when they originate from different `their_node_ids`, however
@@ -1255,52 +1241,6 @@ impl From<io::Error> for DecodeError {
 	}
 }
 
-impl Writeable for OptionalField<Script> {
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
-		match *self {
-			OptionalField::Present(ref script) => {
-				// Note that Writeable for script includes the 16-bit length tag for us
-				script.write(w)?;
-			},
-			OptionalField::Absent => {}
-		}
-		Ok(())
-	}
-}
-
-impl Readable for OptionalField<Script> {
-	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
-		match <u16 as Readable>::read(r) {
-			Ok(len) => {
-				let mut buf = vec![0; len as usize];
-				r.read_exact(&mut buf)?;
-				Ok(OptionalField::Present(Script::from(buf)))
-			},
-			Err(DecodeError::ShortRead) => Ok(OptionalField::Absent),
-			Err(e) => Err(e)
-		}
-	}
-}
-
-impl Writeable for OptionalField<u64> {
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
-		match *self {
-			OptionalField::Present(ref value) => {
-				value.write(w)?;
-			},
-			OptionalField::Absent => {}
-		}
-		Ok(())
-	}
-}
-
-impl Readable for OptionalField<u64> {
-	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
-		let value: u64 = Readable::read(r)?;
-		Ok(OptionalField::Present(value))
-	}
-}
-
 #[cfg(not(taproot))]
 impl_writeable_msg!(AcceptChannel, {
 	temporary_channel_id,
@@ -1317,8 +1257,8 @@ impl_writeable_msg!(AcceptChannel, {
 	delayed_payment_basepoint,
 	htlc_basepoint,
 	first_per_commitment_point,
-	shutdown_scriptpubkey
 }, {
+	(0, shutdown_scriptpubkey, (option, encoding: (Script, WithoutLength))), // Don't encode length twice.
 	(1, channel_type, option),
 });
 
@@ -1338,8 +1278,8 @@ impl_writeable_msg!(AcceptChannel, {
 	delayed_payment_basepoint,
 	htlc_basepoint,
 	first_per_commitment_point,
-	shutdown_scriptpubkey
 }, {
+	(0, shutdown_scriptpubkey, (option, encoding: (Script, WithoutLength))), // Don't encode length twice.
 	(1, channel_type, option),
 	(4, next_local_nonce, option),
 });
@@ -1477,8 +1417,8 @@ impl_writeable_msg!(OpenChannel, {
 	htlc_basepoint,
 	first_per_commitment_point,
 	channel_flags,
-	shutdown_scriptpubkey
 }, {
+	(0, shutdown_scriptpubkey, (option, encoding: (Script, WithoutLength))), // Don't encode length twice.
 	(1, channel_type, option),
 });
 
@@ -2103,7 +2043,7 @@ mod tests {
 	use crate::ln::{PaymentPreimage, PaymentHash, PaymentSecret};
 	use crate::ln::features::{ChannelFeatures, ChannelTypeFeatures, InitFeatures, NodeFeatures};
 	use crate::ln::msgs;
-	use crate::ln::msgs::{FinalOnionHopData, OptionalField, OnionErrorPacket, OnionHopDataFormat};
+	use crate::ln::msgs::{FinalOnionHopData, OnionErrorPacket, OnionHopDataFormat};
 	use crate::routing::gossip::{NodeAlias, NodeId};
 	use crate::util::ser::{Writeable, Readable, Hostname};
 
@@ -2422,7 +2362,7 @@ mod tests {
 			htlc_basepoint: pubkey_5,
 			first_per_commitment_point: pubkey_6,
 			channel_flags: if random_bit { 1 << 5 } else { 0 },
-			shutdown_scriptpubkey: if shutdown { OptionalField::Present(Address::p2pkh(&::bitcoin::PublicKey{compressed: true, inner: pubkey_1}, Network::Testnet).script_pubkey()) } else { OptionalField::Absent },
+			shutdown_scriptpubkey: if shutdown { Some(Address::p2pkh(&::bitcoin::PublicKey{compressed: true, inner: pubkey_1}, Network::Testnet).script_pubkey()) } else { None },
 			channel_type: if incl_chan_type { Some(ChannelTypeFeatures::empty()) } else { None },
 		};
 		let encoded_value = open_channel.encode();
@@ -2478,7 +2418,7 @@ mod tests {
 			delayed_payment_basepoint: pubkey_4,
 			htlc_basepoint: pubkey_5,
 			first_per_commitment_point: pubkey_6,
-			shutdown_scriptpubkey: if shutdown { OptionalField::Present(Address::p2pkh(&::bitcoin::PublicKey{compressed: true, inner: pubkey_1}, Network::Testnet).script_pubkey()) } else { OptionalField::Absent },
+			shutdown_scriptpubkey: if shutdown { Some(Address::p2pkh(&::bitcoin::PublicKey{compressed: true, inner: pubkey_1}, Network::Testnet).script_pubkey()) } else { None },
 			channel_type: None,
 			#[cfg(taproot)]
 			next_local_nonce: None,
