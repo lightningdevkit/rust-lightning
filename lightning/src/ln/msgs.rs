@@ -199,8 +199,8 @@ pub struct OpenChannel {
 	pub first_per_commitment_point: PublicKey,
 	/// The channel flags to be used
 	pub channel_flags: u8,
-	/// Optionally, a request to pre-set the to-sender output's `scriptPubkey` for when we collaboratively close
-	pub shutdown_scriptpubkey: OptionalField<Script>,
+	/// A request to pre-set the to-sender output's `scriptPubkey` for when we collaboratively close
+	pub shutdown_scriptpubkey: Option<Script>,
 	/// The channel type that this channel will represent
 	///
 	/// If this is `None`, we derive the channel type from the intersection of our
@@ -241,8 +241,8 @@ pub struct AcceptChannel {
 	pub htlc_basepoint: PublicKey,
 	/// The first to-be-broadcast-by-sender transaction's per commitment point
 	pub first_per_commitment_point: PublicKey,
-	/// Optionally, a request to pre-set the to-sender output's scriptPubkey for when we collaboratively close
-	pub shutdown_scriptpubkey: OptionalField<Script>,
+	/// A request to pre-set the to-sender output's scriptPubkey for when we collaboratively close
+	pub shutdown_scriptpubkey: Option<Script>,
 	/// The channel type that this channel will represent.
 	///
 	/// If this is `None`, we derive the channel type from the intersection of
@@ -458,20 +458,6 @@ pub struct UpdateFee {
 	pub feerate_per_kw: u32,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-/// Proof that the sender knows the per-commitment secret of the previous commitment transaction.
-///
-/// This is used to convince the recipient that the channel is at a certain commitment
-/// number even if they lost that data due to a local failure. Of course, the peer may lie
-/// and even later commitments may have been revoked.
-pub struct DataLossProtect {
-	/// Proof that the sender knows the per-commitment secret of a specific commitment transaction
-	/// belonging to the recipient
-	pub your_last_per_commitment_secret: [u8; 32],
-	/// The sender's per-commitment point for their current commitment transaction
-	pub my_current_per_commitment_point: PublicKey,
-}
-
 /// A [`channel_reestablish`] message to be sent to or received from a peer.
 ///
 /// [`channel_reestablish`]: https://github.com/lightning/bolts/blob/master/02-peer-protocol.md#message-retransmission
@@ -483,8 +469,11 @@ pub struct ChannelReestablish {
 	pub next_local_commitment_number: u64,
 	/// The next commitment number for the recipient
 	pub next_remote_commitment_number: u64,
-	/// Optionally, a field proving that next_remote_commitment_number-1 has been revoked
-	pub data_loss_protect: OptionalField<DataLossProtect>,
+	/// Proof that the sender knows the per-commitment secret of a specific commitment transaction
+	/// belonging to the recipient
+	pub your_last_per_commitment_secret: [u8; 32],
+	/// The sender's per-commitment point for their current commitment transaction
+	pub my_current_per_commitment_point: PublicKey,
 }
 
 /// An [`announcement_signatures`] message to be sent to or received from a peer.
@@ -957,20 +946,6 @@ pub struct CommitmentUpdate {
 	pub commitment_signed: CommitmentSigned,
 }
 
-/// Messages could have optional fields to use with extended features
-/// As we wish to serialize these differently from `Option<T>`s (`Options` get a tag byte, but
-/// [`OptionalField`] simply gets `Present` if there are enough bytes to read into it), we have a
-/// separate enum type for them.
-///
-/// This is not exported to bindings users due to a free generic in `T`
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum OptionalField<T> {
-	/// Optional field is included in message
-	Present(T),
-	/// Optional field is absent in message
-	Absent
-}
-
 /// A trait to describe an object which can receive channel messages.
 ///
 /// Messages MAY be called in parallel when they originate from different `their_node_ids`, however
@@ -1266,52 +1241,6 @@ impl From<io::Error> for DecodeError {
 	}
 }
 
-impl Writeable for OptionalField<Script> {
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
-		match *self {
-			OptionalField::Present(ref script) => {
-				// Note that Writeable for script includes the 16-bit length tag for us
-				script.write(w)?;
-			},
-			OptionalField::Absent => {}
-		}
-		Ok(())
-	}
-}
-
-impl Readable for OptionalField<Script> {
-	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
-		match <u16 as Readable>::read(r) {
-			Ok(len) => {
-				let mut buf = vec![0; len as usize];
-				r.read_exact(&mut buf)?;
-				Ok(OptionalField::Present(Script::from(buf)))
-			},
-			Err(DecodeError::ShortRead) => Ok(OptionalField::Absent),
-			Err(e) => Err(e)
-		}
-	}
-}
-
-impl Writeable for OptionalField<u64> {
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
-		match *self {
-			OptionalField::Present(ref value) => {
-				value.write(w)?;
-			},
-			OptionalField::Absent => {}
-		}
-		Ok(())
-	}
-}
-
-impl Readable for OptionalField<u64> {
-	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
-		let value: u64 = Readable::read(r)?;
-		Ok(OptionalField::Present(value))
-	}
-}
-
 #[cfg(not(taproot))]
 impl_writeable_msg!(AcceptChannel, {
 	temporary_channel_id,
@@ -1328,8 +1257,8 @@ impl_writeable_msg!(AcceptChannel, {
 	delayed_payment_basepoint,
 	htlc_basepoint,
 	first_per_commitment_point,
-	shutdown_scriptpubkey
 }, {
+	(0, shutdown_scriptpubkey, (option, encoding: (Script, WithoutLength))), // Don't encode length twice.
 	(1, channel_type, option),
 });
 
@@ -1349,8 +1278,8 @@ impl_writeable_msg!(AcceptChannel, {
 	delayed_payment_basepoint,
 	htlc_basepoint,
 	first_per_commitment_point,
-	shutdown_scriptpubkey
 }, {
+	(0, shutdown_scriptpubkey, (option, encoding: (Script, WithoutLength))), // Don't encode length twice.
 	(1, channel_type, option),
 	(4, next_local_nonce, option),
 });
@@ -1362,42 +1291,13 @@ impl_writeable_msg!(AnnouncementSignatures, {
 	bitcoin_signature
 }, {});
 
-impl Writeable for ChannelReestablish {
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
-		self.channel_id.write(w)?;
-		self.next_local_commitment_number.write(w)?;
-		self.next_remote_commitment_number.write(w)?;
-		match self.data_loss_protect {
-			OptionalField::Present(ref data_loss_protect) => {
-				(*data_loss_protect).your_last_per_commitment_secret.write(w)?;
-				(*data_loss_protect).my_current_per_commitment_point.write(w)?;
-			},
-			OptionalField::Absent => {}
-		}
-		Ok(())
-	}
-}
-
-impl Readable for ChannelReestablish{
-	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
-		Ok(Self {
-			channel_id: Readable::read(r)?,
-			next_local_commitment_number: Readable::read(r)?,
-			next_remote_commitment_number: Readable::read(r)?,
-			data_loss_protect: {
-				match <[u8; 32] as Readable>::read(r) {
-					Ok(your_last_per_commitment_secret) =>
-						OptionalField::Present(DataLossProtect {
-							your_last_per_commitment_secret,
-							my_current_per_commitment_point: Readable::read(r)?,
-						}),
-					Err(DecodeError::ShortRead) => OptionalField::Absent,
-					Err(e) => return Err(e)
-				}
-			}
-		})
-	}
-}
+impl_writeable_msg!(ChannelReestablish, {
+	channel_id,
+	next_local_commitment_number,
+	next_remote_commitment_number,
+	your_last_per_commitment_secret,
+	my_current_per_commitment_point,
+}, {});
 
 impl_writeable_msg!(ClosingSigned,
 	{ channel_id, fee_satoshis, signature },
@@ -1517,8 +1417,8 @@ impl_writeable_msg!(OpenChannel, {
 	htlc_basepoint,
 	first_per_commitment_point,
 	channel_flags,
-	shutdown_scriptpubkey
 }, {
+	(0, shutdown_scriptpubkey, (option, encoding: (Script, WithoutLength))), // Don't encode length twice.
 	(1, channel_type, option),
 });
 
@@ -2143,7 +2043,7 @@ mod tests {
 	use crate::ln::{PaymentPreimage, PaymentHash, PaymentSecret};
 	use crate::ln::features::{ChannelFeatures, ChannelTypeFeatures, InitFeatures, NodeFeatures};
 	use crate::ln::msgs;
-	use crate::ln::msgs::{FinalOnionHopData, OptionalField, OnionErrorPacket, OnionHopDataFormat};
+	use crate::ln::msgs::{FinalOnionHopData, OnionErrorPacket, OnionHopDataFormat};
 	use crate::routing::gossip::{NodeAlias, NodeId};
 	use crate::util::ser::{Writeable, Readable, Hostname};
 
@@ -2162,23 +2062,7 @@ mod tests {
 	use core::convert::TryFrom;
 
 	#[test]
-	fn encoding_channel_reestablish_no_secret() {
-		let cr = msgs::ChannelReestablish {
-			channel_id: [4, 0, 0, 0, 0, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 0, 6, 0, 0, 0, 0, 0, 0, 0, 7, 0, 0, 0, 0, 0, 0, 0],
-			next_local_commitment_number: 3,
-			next_remote_commitment_number: 4,
-			data_loss_protect: OptionalField::Absent,
-		};
-
-		let encoded_value = cr.encode();
-		assert_eq!(
-			encoded_value,
-			vec![4, 0, 0, 0, 0, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 0, 6, 0, 0, 0, 0, 0, 0, 0, 7, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 4]
-		);
-	}
-
-	#[test]
-	fn encoding_channel_reestablish_with_secret() {
+	fn encoding_channel_reestablish() {
 		let public_key = {
 			let secp_ctx = Secp256k1::new();
 			PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&hex::decode("0101010101010101010101010101010101010101010101010101010101010101").unwrap()[..]).unwrap())
@@ -2188,7 +2072,8 @@ mod tests {
 			channel_id: [4, 0, 0, 0, 0, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 0, 6, 0, 0, 0, 0, 0, 0, 0, 7, 0, 0, 0, 0, 0, 0, 0],
 			next_local_commitment_number: 3,
 			next_remote_commitment_number: 4,
-			data_loss_protect: OptionalField::Present(msgs::DataLossProtect { your_last_per_commitment_secret: [9;32], my_current_per_commitment_point: public_key}),
+			your_last_per_commitment_secret: [9;32],
+			my_current_per_commitment_point: public_key,
 		};
 
 		let encoded_value = cr.encode();
@@ -2477,7 +2362,7 @@ mod tests {
 			htlc_basepoint: pubkey_5,
 			first_per_commitment_point: pubkey_6,
 			channel_flags: if random_bit { 1 << 5 } else { 0 },
-			shutdown_scriptpubkey: if shutdown { OptionalField::Present(Address::p2pkh(&::bitcoin::PublicKey{compressed: true, inner: pubkey_1}, Network::Testnet).script_pubkey()) } else { OptionalField::Absent },
+			shutdown_scriptpubkey: if shutdown { Some(Address::p2pkh(&::bitcoin::PublicKey{compressed: true, inner: pubkey_1}, Network::Testnet).script_pubkey()) } else { None },
 			channel_type: if incl_chan_type { Some(ChannelTypeFeatures::empty()) } else { None },
 		};
 		let encoded_value = open_channel.encode();
@@ -2533,7 +2418,7 @@ mod tests {
 			delayed_payment_basepoint: pubkey_4,
 			htlc_basepoint: pubkey_5,
 			first_per_commitment_point: pubkey_6,
-			shutdown_scriptpubkey: if shutdown { OptionalField::Present(Address::p2pkh(&::bitcoin::PublicKey{compressed: true, inner: pubkey_1}, Network::Testnet).script_pubkey()) } else { OptionalField::Absent },
+			shutdown_scriptpubkey: if shutdown { Some(Address::p2pkh(&::bitcoin::PublicKey{compressed: true, inner: pubkey_1}, Network::Testnet).script_pubkey()) } else { None },
 			channel_type: None,
 			#[cfg(taproot)]
 			next_local_nonce: None,

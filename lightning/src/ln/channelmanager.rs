@@ -6698,7 +6698,7 @@ pub fn provided_init_features(_config: &UserConfig) -> InitFeatures {
 	// should also add the corresponding (optional) bit to the [`ChannelMessageHandler`] impl for
 	// [`ErroringMessageHandler`].
 	let mut features = InitFeatures::empty();
-	features.set_data_loss_protect_optional();
+	features.set_data_loss_protect_required();
 	features.set_upfront_shutdown_script_optional();
 	features.set_variable_length_onion_required();
 	features.set_static_remote_key_required();

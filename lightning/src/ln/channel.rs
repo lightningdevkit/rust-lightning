@@ -25,7 +25,7 @@ use bitcoin::secp256k1;
 use crate::ln::{PaymentPreimage, PaymentHash};
 use crate::ln::features::{ChannelTypeFeatures, InitFeatures};
 use crate::ln::msgs;
-use crate::ln::msgs::{DecodeError, OptionalField, DataLossProtect};
+use crate::ln::msgs::DecodeError;
 use crate::ln::script::{self, ShutdownScript};
 use crate::ln::channelmanager::{self, CounterpartyForwardingInfo, PendingHTLCStatus, HTLCSource, SentHTLCId, HTLCFailureMsg, PendingHTLCInfo, RAACommitmentOrder, BREAKDOWN_TIMEOUT, MIN_CLTV_EXPIRY_DELTA, MAX_LOCAL_BREAKDOWN_TIMEOUT};
 use crate::ln::chan_utils::{CounterpartyCommitmentSecrets, TxCreationKeys, HTLCOutputInCommitment, htlc_success_tx_weight, htlc_timeout_tx_weight, make_funding_redeemscript, ChannelPublicKeys, CommitmentTransaction, HolderCommitmentTransaction, ChannelTransactionParameters, CounterpartyChannelTransactionParameters, MAX_HTLCS, get_commitment_transaction_number_obscure_factor, ClosingTransaction};
@@ -1322,7 +1322,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 
 		let counterparty_shutdown_scriptpubkey = if their_features.supports_upfront_shutdown_script() {
 			match &msg.shutdown_scriptpubkey {
-				&OptionalField::Present(ref script) => {
+				&Some(ref script) => {
 					// Peer is signaling upfront_shutdown and has opt-out with a 0-length script. We don't enforce anything
 					if script.len() == 0 {
 						None
@@ -1334,7 +1334,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 					}
 				},
 				// Peer is signaling upfront shutdown but don't opt-out with correct mechanism (a.k.a 0-length script). Peer looks buggy, we fail the channel
-				&OptionalField::Absent => {
+				&None => {
 					return Err(ChannelError::Close("Peer is signaling upfront_shutdown but we don't get any script. Use 0-length script to opt-out".to_owned()));
 				}
 			}
@@ -2207,7 +2207,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 
 		let counterparty_shutdown_scriptpubkey = if their_features.supports_upfront_shutdown_script() {
 			match &msg.shutdown_scriptpubkey {
-				&OptionalField::Present(ref script) => {
+				&Some(ref script) => {
 					// Peer is signaling upfront_shutdown and has opt-out with a 0-length script. We don't enforce anything
 					if script.len() == 0 {
 						None
@@ -2219,7 +2219,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 					}
 				},
 				// Peer is signaling upfront shutdown but don't opt-out with correct mechanism (a.k.a 0-length script). Peer looks buggy, we fail the channel
-				&OptionalField::Absent => {
+				&None => {
 					return Err(ChannelError::Close("Peer is signaling upfront_shutdown but we don't get any script. Use 0-length script to opt-out".to_owned()));
 				}
 			}
@@ -4059,32 +4059,27 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		}
 
 		if msg.next_remote_commitment_number > 0 {
-			match msg.data_loss_protect {
-				OptionalField::Present(ref data_loss) => {
-					let expected_point = self.holder_signer.get_per_commitment_point(INITIAL_COMMITMENT_NUMBER - msg.next_remote_commitment_number + 1, &self.secp_ctx);
-					let given_secret = SecretKey::from_slice(&data_loss.your_last_per_commitment_secret)
-						.map_err(|_| ChannelError::Close("Peer sent a garbage channel_reestablish with unparseable secret key".to_owned()))?;
-					if expected_point != PublicKey::from_secret_key(&self.secp_ctx, &given_secret) {
-						return Err(ChannelError::Close("Peer sent a garbage channel_reestablish with secret key not matching the commitment height provided".to_owned()));
+			let expected_point = self.holder_signer.get_per_commitment_point(INITIAL_COMMITMENT_NUMBER - msg.next_remote_commitment_number + 1, &self.secp_ctx);
+			let given_secret = SecretKey::from_slice(&msg.your_last_per_commitment_secret)
+				.map_err(|_| ChannelError::Close("Peer sent a garbage channel_reestablish with unparseable secret key".to_owned()))?;
+			if expected_point != PublicKey::from_secret_key(&self.secp_ctx, &given_secret) {
+				return Err(ChannelError::Close("Peer sent a garbage channel_reestablish with secret key not matching the commitment height provided".to_owned()));
+			}
+			if msg.next_remote_commitment_number > INITIAL_COMMITMENT_NUMBER - self.cur_holder_commitment_transaction_number {
+				macro_rules! log_and_panic {
+					($err_msg: expr) => {
+						log_error!(logger, $err_msg, log_bytes!(self.channel_id), log_pubkey!(self.counterparty_node_id));
+						panic!($err_msg, log_bytes!(self.channel_id), log_pubkey!(self.counterparty_node_id));
 					}
-					if msg.next_remote_commitment_number > INITIAL_COMMITMENT_NUMBER - self.cur_holder_commitment_transaction_number {
-						macro_rules! log_and_panic {
-							($err_msg: expr) => {
-								log_error!(logger, $err_msg, log_bytes!(self.channel_id), log_pubkey!(self.counterparty_node_id));
-								panic!($err_msg, log_bytes!(self.channel_id), log_pubkey!(self.counterparty_node_id));
-							}
-						}
-						log_and_panic!("We have fallen behind - we have received proof that if we broadcast our counterparty is going to claim all our funds.\n\
-							This implies you have restarted with lost ChannelMonitor and ChannelManager state, the first of which is a violation of the LDK chain::Watch requirements.\n\
-							More specifically, this means you have a bug in your implementation that can cause loss of funds, or you are running with an old backup, which is unsafe.\n\
-							If you have restored from an old backup and wish to force-close channels and return to operation, you should start up, call\n\
-							ChannelManager::force_close_without_broadcasting_txn on channel {} with counterparty {} or\n\
-							ChannelManager::force_close_all_channels_without_broadcasting_txn, then reconnect to peer(s).\n\
-							Note that due to a long-standing bug in lnd you may have to reach out to peers running lnd-based nodes to ask them to manually force-close channels\n\
-							See https://github.com/lightningdevkit/rust-lightning/issues/1565 for more info.");
-					}
-				},
-				OptionalField::Absent => {}
+				}
+				log_and_panic!("We have fallen behind - we have received proof that if we broadcast our counterparty is going to claim all our funds.\n\
+					This implies you have restarted with lost ChannelMonitor and ChannelManager state, the first of which is a violation of the LDK chain::Watch requirements.\n\
+					More specifically, this means you have a bug in your implementation that can cause loss of funds, or you are running with an old backup, which is unsafe.\n\
+					If you have restored from an old backup and wish to force-close channels and return to operation, you should start up, call\n\
+					ChannelManager::force_close_without_broadcasting_txn on channel {} with counterparty {} or\n\
+					ChannelManager::force_close_all_channels_without_broadcasting_txn, then reconnect to peer(s).\n\
+					Note that due to a long-standing bug in lnd you may have to reach out to peers running lnd-based nodes to ask them to manually force-close channels\n\
+					See https://github.com/lightningdevkit/rust-lightning/issues/1565 for more info.");
 			}
 		}
 
@@ -5342,7 +5337,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			htlc_basepoint: keys.htlc_basepoint,
 			first_per_commitment_point,
 			channel_flags: if self.config.announced_channel {1} else {0},
-			shutdown_scriptpubkey: OptionalField::Present(match &self.shutdown_scriptpubkey {
+			shutdown_scriptpubkey: Some(match &self.shutdown_scriptpubkey {
 				Some(script) => script.clone().into_inner(),
 				None => Builder::new().into_script(),
 			}),
@@ -5408,7 +5403,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			delayed_payment_basepoint: keys.delayed_payment_basepoint,
 			htlc_basepoint: keys.htlc_basepoint,
 			first_per_commitment_point,
-			shutdown_scriptpubkey: OptionalField::Present(match &self.shutdown_scriptpubkey {
+			shutdown_scriptpubkey: Some(match &self.shutdown_scriptpubkey {
 				Some(script) => script.clone().into_inner(),
 				None => Builder::new().into_script(),
 			}),
@@ -5670,19 +5665,13 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		// valid, and valid in fuzzing mode's arbitrary validity criteria:
 		let mut pk = [2; 33]; pk[1] = 0xff;
 		let dummy_pubkey = PublicKey::from_slice(&pk).unwrap();
-		let data_loss_protect = if self.cur_counterparty_commitment_transaction_number + 1 < INITIAL_COMMITMENT_NUMBER {
+		let remote_last_secret = if self.cur_counterparty_commitment_transaction_number + 1 < INITIAL_COMMITMENT_NUMBER {
 			let remote_last_secret = self.commitment_secrets.get_secret(self.cur_counterparty_commitment_transaction_number + 2).unwrap();
 			log_trace!(logger, "Enough info to generate a Data Loss Protect with per_commitment_secret {} for channel {}", log_bytes!(remote_last_secret), log_bytes!(self.channel_id()));
-			OptionalField::Present(DataLossProtect {
-				your_last_per_commitment_secret: remote_last_secret,
-				my_current_per_commitment_point: dummy_pubkey
-			})
+			remote_last_secret
 		} else {
 			log_info!(logger, "Sending a data_loss_protect with no previous remote per_commitment_secret for channel {}", log_bytes!(self.channel_id()));
-			OptionalField::Present(DataLossProtect {
-				your_last_per_commitment_secret: [0;32],
-				my_current_per_commitment_point: dummy_pubkey,
-			})
+			[0;32]
 		};
 		msgs::ChannelReestablish {
 			channel_id: self.channel_id(),
@@ -5704,7 +5693,8 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			// dropped this channel on disconnect as it hasn't yet reached FundingSent so we can't
 			// overflow here.
 			next_remote_commitment_number: INITIAL_COMMITMENT_NUMBER - self.cur_counterparty_commitment_transaction_number - 1,
-			data_loss_protect,
+			your_last_per_commitment_secret: remote_last_secret,
+			my_current_per_commitment_point: dummy_pubkey,
 		}
 	}
 
@@ -7038,7 +7028,7 @@ mod tests {
 	use crate::ln::channel::{Channel, InboundHTLCOutput, OutboundHTLCOutput, InboundHTLCState, OutboundHTLCState, HTLCCandidate, HTLCInitiator};
 	use crate::ln::channel::{MAX_FUNDING_SATOSHIS_NO_WUMBO, TOTAL_BITCOIN_SUPPLY_SATOSHIS, MIN_THEIR_CHAN_RESERVE_SATOSHIS};
 	use crate::ln::features::ChannelTypeFeatures;
-	use crate::ln::msgs::{ChannelUpdate, DataLossProtect, DecodeError, OptionalField, UnsignedChannelUpdate, MAX_VALUE_MSAT};
+	use crate::ln::msgs::{ChannelUpdate, DecodeError, UnsignedChannelUpdate, MAX_VALUE_MSAT};
 	use crate::ln::script::ShutdownScript;
 	use crate::ln::chan_utils;
 	use crate::ln::chan_utils::{htlc_success_tx_weight, htlc_timeout_tx_weight};
@@ -7339,12 +7329,7 @@ mod tests {
 		let msg = node_b_chan.get_channel_reestablish(&&logger);
 		assert_eq!(msg.next_local_commitment_number, 1); // now called next_commitment_number
 		assert_eq!(msg.next_remote_commitment_number, 0); // now called next_revocation_number
-		match msg.data_loss_protect {
-			OptionalField::Present(DataLossProtect { your_last_per_commitment_secret, .. }) => {
-				assert_eq!(your_last_per_commitment_secret, [0; 32]);
-			},
-			_ => panic!()
-		}
+		assert_eq!(msg.your_last_per_commitment_secret, [0; 32]);
 
 		// Check that the commitment point in Node A's channel_reestablish message
 		// is sane.
@@ -7352,12 +7337,7 @@ mod tests {
 		let msg = node_a_chan.get_channel_reestablish(&&logger);
 		assert_eq!(msg.next_local_commitment_number, 1); // now called next_commitment_number
 		assert_eq!(msg.next_remote_commitment_number, 0); // now called next_revocation_number
-		match msg.data_loss_protect {
-			OptionalField::Present(DataLossProtect { your_last_per_commitment_secret, .. }) => {
-				assert_eq!(your_last_per_commitment_secret, [0; 32]);
-			},
-			_ => panic!()
-		}
+		assert_eq!(msg.your_last_per_commitment_secret, [0; 32]);
 	}
 
 	#[test]
