@@ -856,7 +856,7 @@ mod tests {
 		// Set a bunch of features we use, plus initial_routing_sync_required (which shouldn't get
 		// converted as it's only relevant in an init context).
 		init_features.set_initial_routing_sync_required();
-		init_features.set_data_loss_protect_optional();
+		init_features.set_data_loss_protect_required();
 		init_features.set_variable_length_onion_required();
 		init_features.set_static_remote_key_required();
 		init_features.set_payment_secret_required();
@@ -876,7 +876,7 @@ mod tests {
 		let node_features: NodeFeatures = init_features.to_context();
 		{
 			// Check that the flags are as expected:
-			// - option_data_loss_protect
+			// - option_data_loss_protect (req)
 			// - var_onion_optin (req) | static_remote_key (req) | payment_secret(req)
 			// - basic_mpp | wumbo
 			// - opt_shutdown_anysegwit
@@ -884,7 +884,7 @@ mod tests {
 			// - option_channel_type | option_scid_alias
 			// - option_zeroconf
 			assert_eq!(node_features.flags.len(), 7);
-			assert_eq!(node_features.flags[0], 0b00000010);
+			assert_eq!(node_features.flags[0], 0b00000001);
 			assert_eq!(node_features.flags[1], 0b01010001);
 			assert_eq!(node_features.flags[2], 0b10001010);
 			assert_eq!(node_features.flags[3], 0b00001000);
