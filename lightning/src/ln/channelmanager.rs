@@ -112,6 +112,8 @@ pub(super) enum PendingHTLCRouting {
 		phantom_shared_secret: Option<[u8; 32]>,
 	},
 	ReceiveKeysend {
+		/// This was added in 0.0.116 and will break deserialization on downgrades.
+		payment_data: Option<msgs::FinalOnionHopData>,
 		payment_preimage: PaymentPreimage,
 		payment_metadata: Option<Vec<u8>>,
 		incoming_cltv_expiry: u32, // Used to track when we should expire pending HTLCs that go unclaimed
@@ -2342,20 +2344,7 @@ where
 				});
 			},
 			msgs::OnionHopDataFormat::FinalNode { payment_data, keysend_preimage, payment_metadata } => {
-				if payment_data.is_some() && keysend_preimage.is_some() {
-					return Err(ReceiveError {
-						err_code: 0x4000|22,
-						err_data: Vec::new(),
-						msg: "We don't support MPP keysend payments",
-					});
-				} else if let Some(data) = payment_data {
-					PendingHTLCRouting::Receive {
-						payment_data: data,
-						payment_metadata,
-						incoming_cltv_expiry: hop_data.outgoing_cltv_value,
-						phantom_shared_secret,
-					}
-				} else if let Some(payment_preimage) = keysend_preimage {
+				if let Some(payment_preimage) = keysend_preimage {
 					// We need to check that the sender knows the keysend preimage before processing this
 					// payment further. Otherwise, an intermediary routing hop forwarding non-keysend-HTLC X
 					// could discover the final destination of X, by probing the adjacent nodes on the route
@@ -2369,11 +2358,25 @@ where
 							msg: "Payment preimage didn't match payment hash",
 						});
 					}
-
+					if !self.default_configuration.accept_mpp_keysend && payment_data.is_some() {
+						return Err(ReceiveError {
+							err_code: 0x4000|22,
+							err_data: Vec::new(),
+							msg: "We don't support MPP keysend payments",
+						});
+					}
 					PendingHTLCRouting::ReceiveKeysend {
+						payment_data,
 						payment_preimage,
 						payment_metadata,
 						incoming_cltv_expiry: hop_data.outgoing_cltv_value,
+					}
+				} else if let Some(data) = payment_data {
+					PendingHTLCRouting::Receive {
+						payment_data: data,
+						payment_metadata,
+						incoming_cltv_expiry: hop_data.outgoing_cltv_value,
+						phantom_shared_secret,
 					}
 				} else {
 					return Err(ReceiveError {
@@ -3490,10 +3493,13 @@ where
 										(incoming_cltv_expiry, OnionPayload::Invoice { _legacy_hop_data },
 											Some(payment_data), phantom_shared_secret, onion_fields)
 									},
-									PendingHTLCRouting::ReceiveKeysend { payment_preimage, payment_metadata, incoming_cltv_expiry } => {
-										let onion_fields = RecipientOnionFields { payment_secret: None, payment_metadata };
+									PendingHTLCRouting::ReceiveKeysend { payment_data, payment_preimage, payment_metadata, incoming_cltv_expiry } => {
+										let onion_fields = RecipientOnionFields {
+											payment_secret: payment_data.as_ref().map(|data| data.payment_secret),
+											payment_metadata
+										};
 										(incoming_cltv_expiry, OnionPayload::Spontaneous(payment_preimage),
-											None, None, onion_fields)
+											payment_data, None, onion_fields)
 									},
 									_ => {
 										panic!("short_channel_id == 0 should imply any pending_forward entries are of type Receive");
@@ -7058,6 +7064,7 @@ impl_writeable_tlv_based_enum!(PendingHTLCRouting,
 		(0, payment_preimage, required),
 		(2, incoming_cltv_expiry, required),
 		(3, payment_metadata, option),
+		(4, payment_data, option), // Added in 0.0.116
 	},
 ;);
 
@@ -8704,10 +8711,13 @@ mod tests {
 
 	#[test]
 	fn test_keysend_msg_with_secret_err() {
-		// Test that we error as expected if we receive a keysend payment that includes a payment secret.
+		// Test that we error as expected if we receive a keysend payment that includes a payment
+		// secret when we don't support MPP keysend.
+		let mut reject_mpp_keysend_cfg = test_default_channel_config();
+		reject_mpp_keysend_cfg.accept_mpp_keysend = false;
 		let chanmon_cfgs = create_chanmon_cfgs(2);
 		let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, Some(reject_mpp_keysend_cfg)]);
 		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 		let payer_pubkey = nodes[0].node.get_our_node_id();
