@@ -85,6 +85,8 @@ pub struct DelayedPaymentOutputDescriptor {
 }
 impl DelayedPaymentOutputDescriptor {
 	/// The maximum length a well-formed witness spending one of these should have.
+	/// Note: If you have the grind_signatures feature enabled, this will be at least 1 byte
+	/// shorter.
 	// Calculated as 1 byte length + 73 byte signature, 1 byte empty vec push, 1 byte length plus
 	// redeemscript push length.
 	pub const MAX_WITNESS_LENGTH: usize = 1 + 73 + 1 + chan_utils::REVOKEABLE_REDEEMSCRIPT_MAX_LENGTH + 1;
@@ -117,6 +119,8 @@ pub struct StaticPaymentOutputDescriptor {
 }
 impl StaticPaymentOutputDescriptor {
 	/// The maximum length a well-formed witness spending one of these should have.
+	/// Note: If you have the grind_signatures feature enabled, this will be at least 1 byte
+	/// shorter.
 	// Calculated as 1 byte legnth + 73 byte signature, 1 byte empty vec push, 1 byte length plus
 	// redeemscript push length.
 	pub const MAX_WITNESS_LENGTH: usize = 1 + 73 + 34;
@@ -1194,6 +1198,8 @@ impl KeysManager {
 						witness: Witness::new(),
 					});
 					witness_weight += StaticPaymentOutputDescriptor::MAX_WITNESS_LENGTH;
+					#[cfg(feature = "grind_signatures")]
+					{ witness_weight -= 1; } // Guarantees a low R signature
 					input_value += descriptor.output.value;
 					if !output_set.insert(descriptor.outpoint) { return Err(()); }
 				},
@@ -1205,6 +1211,8 @@ impl KeysManager {
 						witness: Witness::new(),
 					});
 					witness_weight += DelayedPaymentOutputDescriptor::MAX_WITNESS_LENGTH;
+					#[cfg(feature = "grind_signatures")]
+					{ witness_weight -= 1; } // Guarantees a low R signature
 					input_value += descriptor.output.value;
 					if !output_set.insert(descriptor.outpoint) { return Err(()); }
 				},
@@ -1216,6 +1224,8 @@ impl KeysManager {
 						witness: Witness::new(),
 					});
 					witness_weight += 1 + 73 + 34;
+					#[cfg(feature = "grind_signatures")]
+					{ witness_weight -= 1; } // Guarantees a low R signature
 					input_value += output.value;
 					if !output_set.insert(*outpoint) { return Err(()); }
 				}
