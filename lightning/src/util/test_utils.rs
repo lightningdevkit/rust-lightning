@@ -180,8 +180,8 @@ impl SignerProvider for OnlyReadsKeysInterface {
 		))
 	}
 
-	fn get_destination_script(&self) -> Script { unreachable!(); }
-	fn get_shutdown_scriptpubkey(&self) -> ShutdownScript { unreachable!(); }
+	fn get_destination_script(&self) -> Result<Script, ()> { Err(()) }
+	fn get_shutdown_scriptpubkey(&self) -> Result<ShutdownScript, ()> { Err(()) }
 }
 
 pub struct TestChainMonitor<'a> {
@@ -809,14 +809,14 @@ impl SignerProvider for TestKeysInterface {
 		))
 	}
 
-	fn get_destination_script(&self) -> Script { self.backing.get_destination_script() }
+	fn get_destination_script(&self) -> Result<Script, ()> { self.backing.get_destination_script() }
 
-	fn get_shutdown_scriptpubkey(&self) -> ShutdownScript {
+	fn get_shutdown_scriptpubkey(&self) -> Result<ShutdownScript, ()> {
 		match &mut *self.expectations.lock().unwrap() {
 			None => self.backing.get_shutdown_scriptpubkey(),
 			Some(expectations) => match expectations.pop_front() {
 				None => panic!("Unexpected get_shutdown_scriptpubkey"),
-				Some(expectation) => expectation.returns,
+				Some(expectation) => Ok(expectation.returns),
 			},
 		}
 	}

@@ -141,9 +141,9 @@ impl SignerProvider for KeyProvider {
 
 	fn read_chan_signer(&self, _data: &[u8]) -> Result<EnforcingSigner, DecodeError> { unreachable!() }
 
-	fn get_destination_script(&self) -> Script { unreachable!() }
+	fn get_destination_script(&self) -> Result<Script, ()> { unreachable!() }
 
-	fn get_shutdown_scriptpubkey(&self) -> ShutdownScript { unreachable!() }
+	fn get_shutdown_scriptpubkey(&self) -> Result<ShutdownScript, ()> { unreachable!() }
 }
 
 #[cfg(test)]

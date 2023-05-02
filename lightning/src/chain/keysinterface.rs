@@ -543,15 +543,21 @@ pub trait SignerProvider {
 
 	/// Get a script pubkey which we send funds to when claiming on-chain contestable outputs.
 	///
-	/// This method should return a different value each time it is called, to avoid linking
-	/// on-chain funds across channels as controlled to the same user.
-	fn get_destination_script(&self) -> Script;
-
-	/// Get a script pubkey which we will send funds to when closing a channel.
+	/// If this function returns an error, this will result in a channel failing to open.
 	///
 	/// This method should return a different value each time it is called, to avoid linking
 	/// on-chain funds across channels as controlled to the same user.
-	fn get_shutdown_scriptpubkey(&self) -> ShutdownScript;
+	fn get_destination_script(&self) -> Result<Script, ()>;
+
+	/// Get a script pubkey which we will send funds to when closing a channel.
+	///
+	/// If this function returns an error, this will result in a channel failing to open or close.
+	/// In the event of a failure when the counterparty is initiating a close, this can result in a
+	/// channel force close.
+	///
+	/// This method should return a different value each time it is called, to avoid linking
+	/// on-chain funds across channels as controlled to the same user.
+	fn get_shutdown_scriptpubkey(&self) -> Result<ShutdownScript, ()>;
 }
 
 /// A simple implementation of [`WriteableEcdsaChannelSigner`] that just keeps the private keys in memory.
@@ -1366,12 +1372,12 @@ impl SignerProvider for KeysManager {
 		InMemorySigner::read(&mut io::Cursor::new(reader), self)
 	}
 
-	fn get_destination_script(&self) -> Script {
-		self.destination_script.clone()
+	fn get_destination_script(&self) -> Result<Script, ()> {
+		Ok(self.destination_script.clone())
 	}
 
-	fn get_shutdown_scriptpubkey(&self) -> ShutdownScript {
-		ShutdownScript::new_p2wpkh_from_pubkey(self.shutdown_pubkey.clone())
+	fn get_shutdown_scriptpubkey(&self) -> Result<ShutdownScript, ()> {
+		Ok(ShutdownScript::new_p2wpkh_from_pubkey(self.shutdown_pubkey.clone()))
 	}
 }
 
@@ -1461,11 +1467,11 @@ impl SignerProvider for PhantomKeysManager {
 		self.inner.read_chan_signer(reader)
 	}
 
-	fn get_destination_script(&self) -> Script {
+	fn get_destination_script(&self) -> Result<Script, ()> {
 		self.inner.get_destination_script()
 	}
 
-	fn get_shutdown_scriptpubkey(&self) -> ShutdownScript {
+	fn get_shutdown_scriptpubkey(&self) -> Result<ShutdownScript, ()> {
 		self.inner.get_shutdown_scriptpubkey()
 	}
 }

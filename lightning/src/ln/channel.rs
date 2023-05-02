@@ -986,7 +986,10 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		secp_ctx.seeded_randomize(&entropy_source.get_secure_random_bytes());
 
 		let shutdown_scriptpubkey = if config.channel_handshake_config.commit_upfront_shutdown_pubkey {
-			Some(signer_provider.get_shutdown_scriptpubkey())
+			match signer_provider.get_shutdown_scriptpubkey() {
+				Ok(scriptpubkey) => Some(scriptpubkey),
+				Err(_) => return Err(APIError::ChannelUnavailable { err: "Failed to get shutdown scriptpubkey".to_owned()}),
+			}
 		} else { None };
 
 		if let Some(shutdown_scriptpubkey) = &shutdown_scriptpubkey {
@@ -994,6 +997,11 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 				return Err(APIError::IncompatibleShutdownScript { script: shutdown_scriptpubkey.clone() });
 			}
 		}
+
+		let destination_script = match signer_provider.get_destination_script() {
+			Ok(script) => script,
+			Err(_) => return Err(APIError::ChannelUnavailable { err: "Failed to get destination script".to_owned()}),
+		};
 
 		let temporary_channel_id = entropy_source.get_secure_random_bytes();
 
@@ -1021,7 +1029,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 
 			holder_signer,
 			shutdown_scriptpubkey,
-			destination_script: signer_provider.get_destination_script(),
+			destination_script,
 
 			cur_holder_commitment_transaction_number: INITIAL_COMMITMENT_NUMBER,
 			cur_counterparty_commitment_transaction_number: INITIAL_COMMITMENT_NUMBER,
@@ -1333,7 +1341,10 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		} else { None };
 
 		let shutdown_scriptpubkey = if config.channel_handshake_config.commit_upfront_shutdown_pubkey {
-			Some(signer_provider.get_shutdown_scriptpubkey())
+			match signer_provider.get_shutdown_scriptpubkey() {
+				Ok(scriptpubkey) => Some(scriptpubkey),
+				Err(_) => return Err(ChannelError::Close("Failed to get upfront shutdown scriptpubkey".to_owned())),
+			}
 		} else { None };
 
 		if let Some(shutdown_scriptpubkey) = &shutdown_scriptpubkey {
@@ -1341,6 +1352,11 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 				return Err(ChannelError::Close(format!("Provided a scriptpubkey format not accepted by peer: {}", shutdown_scriptpubkey)));
 			}
 		}
+
+		let destination_script = match signer_provider.get_destination_script() {
+			Ok(script) => script,
+			Err(_) => return Err(ChannelError::Close("Failed to get destination script".to_owned())),
+		};
 
 		let mut secp_ctx = Secp256k1::new();
 		secp_ctx.seeded_randomize(&entropy_source.get_secure_random_bytes());
@@ -1368,7 +1384,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 
 			holder_signer,
 			shutdown_scriptpubkey,
-			destination_script: signer_provider.get_destination_script(),
+			destination_script,
 
 			cur_holder_commitment_transaction_number: INITIAL_COMMITMENT_NUMBER,
 			cur_counterparty_commitment_transaction_number: INITIAL_COMMITMENT_NUMBER,
@@ -4355,7 +4371,10 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			Some(_) => false,
 			None => {
 				assert!(send_shutdown);
-				let shutdown_scriptpubkey = signer_provider.get_shutdown_scriptpubkey();
+				let shutdown_scriptpubkey = match signer_provider.get_shutdown_scriptpubkey() {
+					Ok(scriptpubkey) => scriptpubkey,
+					Err(_) => return Err(ChannelError::Close("Failed to get shutdown scriptpubkey".to_owned())),
+				};
 				if !shutdown_scriptpubkey.is_compatible(their_features) {
 					return Err(ChannelError::Close(format!("Provided a scriptpubkey format not accepted by peer: {}", shutdown_scriptpubkey)));
 				}
@@ -6062,7 +6081,10 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		let update_shutdown_script = match self.shutdown_scriptpubkey {
 			Some(_) => false,
 			None if !chan_closed => {
-				let shutdown_scriptpubkey = signer_provider.get_shutdown_scriptpubkey();
+				let shutdown_scriptpubkey = match signer_provider.get_shutdown_scriptpubkey() {
+					Ok(scriptpubkey) => scriptpubkey,
+					Err(_) => return Err(APIError::ChannelUnavailable { err: "Failed to get shutdown scriptpubkey".to_owned() }),
+				};
 				if !shutdown_scriptpubkey.is_compatible(their_features) {
 					return Err(APIError::IncompatibleShutdownScript { script: shutdown_scriptpubkey.clone() });
 				}
@@ -7087,17 +7109,17 @@ mod tests {
 
 		fn read_chan_signer(&self, _data: &[u8]) -> Result<Self::Signer, DecodeError> { panic!(); }
 
-		fn get_destination_script(&self) -> Script {
+		fn get_destination_script(&self) -> Result<Script, ()> {
 			let secp_ctx = Secp256k1::signing_only();
 			let channel_monitor_claim_key = SecretKey::from_slice(&hex::decode("0fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff").unwrap()[..]).unwrap();
 			let channel_monitor_claim_key_hash = WPubkeyHash::hash(&PublicKey::from_secret_key(&secp_ctx, &channel_monitor_claim_key).serialize());
-			Builder::new().push_opcode(opcodes::all::OP_PUSHBYTES_0).push_slice(&channel_monitor_claim_key_hash[..]).into_script()
+			Ok(Builder::new().push_opcode(opcodes::all::OP_PUSHBYTES_0).push_slice(&channel_monitor_claim_key_hash[..]).into_script())
 		}
 
-		fn get_shutdown_scriptpubkey(&self) -> ShutdownScript {
+		fn get_shutdown_scriptpubkey(&self) -> Result<ShutdownScript, ()> {
 			let secp_ctx = Secp256k1::signing_only();
 			let channel_close_key = SecretKey::from_slice(&hex::decode("0fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff").unwrap()[..]).unwrap();
-			ShutdownScript::new_p2wpkh_from_pubkey(PublicKey::from_secret_key(&secp_ctx, &channel_close_key))
+			Ok(ShutdownScript::new_p2wpkh_from_pubkey(PublicKey::from_secret_key(&secp_ctx, &channel_close_key)))
 		}
 	}
 
