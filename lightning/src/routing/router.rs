@@ -16,7 +16,7 @@ use bitcoin::hashes::sha256::Hash as Sha256;
 use crate::blinded_path::{BlindedHop, BlindedPath};
 use crate::ln::PaymentHash;
 use crate::ln::channelmanager::{ChannelDetails, PaymentId};
-use crate::ln::features::{ChannelFeatures, InvoiceFeatures, NodeFeatures};
+use crate::ln::features::{Bolt12InvoiceFeatures, ChannelFeatures, InvoiceFeatures, NodeFeatures};
 use crate::ln::msgs::{DecodeError, ErrorAction, LightningError, MAX_VALUE_MSAT};
 use crate::offers::invoice::BlindedPayInfo;
 use crate::routing::gossip::{DirectedChannelInfo, EffectiveCapacity, ReadOnlyNetworkGraph, NetworkGraph, NodeId, RoutingFees};
@@ -537,12 +537,12 @@ impl Writeable for PaymentParameters {
 		let mut blinded_hints = &vec![];
 		match &self.payee {
 			Payee::Clear { route_hints, .. } => clear_hints = route_hints,
-			Payee::Blinded { route_hints } => blinded_hints = route_hints,
+			Payee::Blinded { route_hints, .. } => blinded_hints = route_hints,
 		}
 		write_tlv_fields!(writer, {
 			(0, self.payee.node_id(), option),
 			(1, self.max_total_cltv_expiry_delta, required),
-			(2, if let Payee::Clear { features, .. } = &self.payee { features } else { &None }, option),
+			(2, self.payee.features(), option),
 			(3, self.max_path_count, required),
 			(4, *clear_hints, vec_type),
 			(5, self.max_channel_saturation_power_of_half, required),
@@ -560,7 +560,7 @@ impl ReadableArgs<u32> for PaymentParameters {
 		_init_and_read_tlv_fields!(reader, {
 			(0, payee_pubkey, option),
 			(1, max_total_cltv_expiry_delta, (default_value, DEFAULT_MAX_TOTAL_CLTV_EXPIRY_DELTA)),
-			(2, features, option),
+			(2, features, (option: ReadableArgs, payee_pubkey.is_some())),
 			(3, max_path_count, (default_value, DEFAULT_MAX_PATH_COUNT)),
 			(4, route_hints, vec_type),
 			(5, max_channel_saturation_power_of_half, (default_value, 2)),
@@ -573,12 +573,15 @@ impl ReadableArgs<u32> for PaymentParameters {
 		let blinded_route_hints = blinded_route_hints.unwrap_or(vec![]);
 		let payee = if blinded_route_hints.len() != 0 {
 			if clear_route_hints.len() != 0 || payee_pubkey.is_some() { return Err(DecodeError::InvalidValue) }
-			Payee::Blinded { route_hints: blinded_route_hints }
+			Payee::Blinded {
+				route_hints: blinded_route_hints,
+				features: features.and_then(|f: Features| f.bolt12()),
+			}
 		} else {
 			Payee::Clear {
 				route_hints: clear_route_hints,
 				node_id: payee_pubkey.ok_or(DecodeError::InvalidValue)?,
-				features,
+				features: features.and_then(|f| f.bolt11()),
 			}
 		};
 		Ok(Self {
@@ -682,6 +685,11 @@ pub enum Payee {
 		/// Aggregated routing info and blinded paths, for routing to the payee without knowing their
 		/// node id.
 		route_hints: Vec<(BlindedPayInfo, BlindedPath)>,
+		/// Features supported by the payee.
+		///
+		/// May be set from the payee's invoice. May be `None` if the invoice does not contain any
+		/// features.
+		features: Option<Bolt12InvoiceFeatures>,
 	},
 	/// The recipient included these route hints in their BOLT11 invoice.
 	Clear {
@@ -709,14 +717,60 @@ impl Payee {
 	fn node_features(&self) -> Option<NodeFeatures> {
 		match self {
 			Self::Clear { features, .. } => features.as_ref().map(|f| f.to_context()),
-			_ => None,
+			Self::Blinded { features, .. } => features.as_ref().map(|f| f.to_context()),
 		}
 	}
 	fn supports_basic_mpp(&self) -> bool {
 		match self {
 			Self::Clear { features, .. } => features.as_ref().map_or(false, |f| f.supports_basic_mpp()),
-			_ => false,
+			Self::Blinded { features, .. } => features.as_ref().map_or(false, |f| f.supports_basic_mpp()),
 		}
+	}
+	fn features(&self) -> Option<FeaturesRef> {
+		match self {
+			Self::Clear { features, .. } => features.as_ref().map(|f| FeaturesRef::Bolt11(f)),
+			Self::Blinded { features, .. } => features.as_ref().map(|f| FeaturesRef::Bolt12(f)),
+		}
+	}
+}
+
+enum FeaturesRef<'a> {
+	Bolt11(&'a InvoiceFeatures),
+	Bolt12(&'a Bolt12InvoiceFeatures),
+}
+enum Features {
+	Bolt11(InvoiceFeatures),
+	Bolt12(Bolt12InvoiceFeatures),
+}
+
+impl Features {
+	fn bolt12(self) -> Option<Bolt12InvoiceFeatures> {
+		match self {
+			Self::Bolt12(f) => Some(f),
+			_ => None,
+		}
+	}
+	fn bolt11(self) -> Option<InvoiceFeatures> {
+		match self {
+			Self::Bolt11(f) => Some(f),
+			_ => None,
+		}
+	}
+}
+
+impl<'a> Writeable for FeaturesRef<'a> {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		match self {
+			Self::Bolt11(f) => Ok(f.write(w)?),
+			Self::Bolt12(f) => Ok(f.write(w)?),
+		}
+	}
+}
+
+impl ReadableArgs<bool> for Features {
+	fn read<R: io::Read>(reader: &mut R, bolt11: bool) -> Result<Self, DecodeError> {
+		if bolt11 { return Ok(Self::Bolt11(Readable::read(reader)?)) }
+		Ok(Self::Bolt12(Readable::read(reader)?))
 	}
 }
 
