@@ -2659,6 +2659,16 @@ where
 		amt_msat: u64, cltv_expiry: u32, phantom_shared_secret: Option<[u8; 32]>, allow_underpay: bool,
 		counterparty_skimmed_fee_msat: Option<u64>,
 	) -> Result<PendingHTLCInfo, InboundOnionErr> {
+		let (payment_data, keysend_preimage, payment_metadata) = match hop_data.format {
+			msgs::OnionHopDataFormat::FinalNode { payment_data, keysend_preimage, payment_metadata } =>
+				(payment_data, keysend_preimage, payment_metadata),
+			_ =>
+				return Err(InboundOnionErr {
+					err_code: 0x4000|22,
+					err_data: Vec::new(),
+					msg: "Got non final data with an HMAC of 0",
+				}),
+		};
 		// final_incorrect_cltv_expiry
 		if hop_data.outgoing_cltv_value > cltv_expiry {
 			return Err(InboundOnionErr {
@@ -2695,57 +2705,46 @@ where
 			});
 		}
 
-		let routing = match hop_data.format {
-			msgs::OnionHopDataFormat::NonFinalNode { .. } => {
+		let routing = if let Some(payment_preimage) = keysend_preimage {
+			// We need to check that the sender knows the keysend preimage before processing this
+			// payment further. Otherwise, an intermediary routing hop forwarding non-keysend-HTLC X
+			// could discover the final destination of X, by probing the adjacent nodes on the route
+			// with a keysend payment of identical payment hash to X and observing the processing
+			// time discrepancies due to a hash collision with X.
+			let hashed_preimage = PaymentHash(Sha256::hash(&payment_preimage.0).into_inner());
+			if hashed_preimage != payment_hash {
 				return Err(InboundOnionErr {
 					err_code: 0x4000|22,
 					err_data: Vec::new(),
-					msg: "Got non final data with an HMAC of 0",
+					msg: "Payment preimage didn't match payment hash",
 				});
-			},
-			msgs::OnionHopDataFormat::FinalNode { payment_data, keysend_preimage, payment_metadata } => {
-				if let Some(payment_preimage) = keysend_preimage {
-					// We need to check that the sender knows the keysend preimage before processing this
-					// payment further. Otherwise, an intermediary routing hop forwarding non-keysend-HTLC X
-					// could discover the final destination of X, by probing the adjacent nodes on the route
-					// with a keysend payment of identical payment hash to X and observing the processing
-					// time discrepancies due to a hash collision with X.
-					let hashed_preimage = PaymentHash(Sha256::hash(&payment_preimage.0).into_inner());
-					if hashed_preimage != payment_hash {
-						return Err(InboundOnionErr {
-							err_code: 0x4000|22,
-							err_data: Vec::new(),
-							msg: "Payment preimage didn't match payment hash",
-						});
-					}
-					if !self.default_configuration.accept_mpp_keysend && payment_data.is_some() {
-						return Err(InboundOnionErr {
-							err_code: 0x4000|22,
-							err_data: Vec::new(),
-							msg: "We don't support MPP keysend payments",
-						});
-					}
-					PendingHTLCRouting::ReceiveKeysend {
-						payment_data,
-						payment_preimage,
-						payment_metadata,
-						incoming_cltv_expiry: hop_data.outgoing_cltv_value,
-					}
-				} else if let Some(data) = payment_data {
-					PendingHTLCRouting::Receive {
-						payment_data: data,
-						payment_metadata,
-						incoming_cltv_expiry: hop_data.outgoing_cltv_value,
-						phantom_shared_secret,
-					}
-				} else {
-					return Err(InboundOnionErr {
-						err_code: 0x4000|0x2000|3,
-						err_data: Vec::new(),
-						msg: "We require payment_secrets",
-					});
-				}
-			},
+			}
+			if !self.default_configuration.accept_mpp_keysend && payment_data.is_some() {
+				return Err(InboundOnionErr {
+					err_code: 0x4000|22,
+					err_data: Vec::new(),
+					msg: "We don't support MPP keysend payments",
+				});
+			}
+			PendingHTLCRouting::ReceiveKeysend {
+				payment_data,
+				payment_preimage,
+				payment_metadata,
+				incoming_cltv_expiry: hop_data.outgoing_cltv_value,
+			}
+		} else if let Some(data) = payment_data {
+			PendingHTLCRouting::Receive {
+				payment_data: data,
+				payment_metadata,
+				incoming_cltv_expiry: hop_data.outgoing_cltv_value,
+				phantom_shared_secret,
+			}
+		} else {
+			return Err(InboundOnionErr {
+				err_code: 0x4000|0x2000|3,
+				err_data: Vec::new(),
+				msg: "We require payment_secrets",
+			});
 		};
 		Ok(PendingHTLCInfo {
 			routing,
