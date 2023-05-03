@@ -458,7 +458,8 @@ pub fn do_test(data: &[u8], logger: &Arc<dyn Logger>) {
 		chan_handler: channelmanager.clone(),
 		route_handler: gossip_sync.clone(),
 		onion_message_handler: IgnoringMessageHandler {},
-	}, 0, &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 15, 0], Arc::clone(&logger), IgnoringMessageHandler{}, keys_manager.clone()));
+		custom_message_handler: IgnoringMessageHandler {},
+	}, 0, &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 15, 0], Arc::clone(&logger), keys_manager.clone()));
 
 	let mut should_forward = false;
 	let mut payments_received: Vec<PaymentHash> = Vec::new();
