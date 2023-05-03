@@ -16,7 +16,7 @@ use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::secp256k1::{self, PublicKey, Scalar, Secp256k1, SecretKey};
 
 use crate::blinded_path::{BlindedPath, ForwardTlvs, ReceiveTlvs, utils};
-use crate::chain::keysinterface::{EntropySource, KeysManager, NodeSigner, Recipient};
+use crate::sign::{EntropySource, KeysManager, NodeSigner, Recipient};
 use crate::events::OnionMessageProvider;
 use crate::ln::features::{InitFeatures, NodeFeatures};
 use crate::ln::msgs::{self, OnionMessageHandler};
@@ -43,7 +43,7 @@ use crate::prelude::*;
 /// # use bitcoin::hashes::_export::_core::time::Duration;
 /// # use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
 /// # use lightning::blinded_path::BlindedPath;
-/// # use lightning::chain::keysinterface::KeysManager;
+/// # use lightning::sign::KeysManager;
 /// # use lightning::ln::peer_handler::IgnoringMessageHandler;
 /// # use lightning::onion_message::{CustomOnionMessageContents, Destination, OnionMessageContents, OnionMessenger};
 /// # use lightning::util::logger::{Logger, Record};
@@ -157,7 +157,7 @@ pub enum SendError {
 	BufferFull,
 	/// Failed to retrieve our node id from the provided [`NodeSigner`].
 	///
-	/// [`NodeSigner`]: crate::chain::keysinterface::NodeSigner
+	/// [`NodeSigner`]: crate::sign::NodeSigner
 	GetNodeIdFailed,
 	/// We attempted to send to a blinded path where we are the introduction node, and failed to
 	/// advance the blinded path to make the second hop the new introduction node. Either

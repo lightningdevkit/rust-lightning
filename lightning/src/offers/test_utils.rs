@@ -14,7 +14,7 @@ use bitcoin::secp256k1::schnorr::Signature;
 use core::convert::Infallible;
 use core::time::Duration;
 use crate::blinded_path::{BlindedHop, BlindedPath};
-use crate::chain::keysinterface::EntropySource;
+use crate::sign::EntropySource;
 use crate::ln::PaymentHash;
 use crate::ln::features::BlindedHopFeatures;
 use crate::offers::invoice::BlindedPayInfo;

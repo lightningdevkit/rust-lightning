@@ -42,7 +42,7 @@ use crate::chain;
 use crate::chain::{BestBlock, WatchedOutput};
 use crate::chain::chaininterface::{BroadcasterInterface, FeeEstimator, LowerBoundedFeeEstimator};
 use crate::chain::transaction::{OutPoint, TransactionData};
-use crate::chain::keysinterface::{SpendableOutputDescriptor, StaticPaymentOutputDescriptor, DelayedPaymentOutputDescriptor, WriteableEcdsaChannelSigner, SignerProvider, EntropySource};
+use crate::sign::{SpendableOutputDescriptor, StaticPaymentOutputDescriptor, DelayedPaymentOutputDescriptor, WriteableEcdsaChannelSigner, SignerProvider, EntropySource};
 #[cfg(anchors)]
 use crate::chain::onchaintx::ClaimEvent;
 use crate::chain::onchaintx::OnchainTxHandler;
@@ -4097,7 +4097,7 @@ mod tests {
 	use crate::chain::channelmonitor::ChannelMonitor;
 	use crate::chain::package::{weight_offered_htlc, weight_received_htlc, weight_revoked_offered_htlc, weight_revoked_received_htlc, WEIGHT_REVOKED_OUTPUT};
 	use crate::chain::transaction::OutPoint;
-	use crate::chain::keysinterface::InMemorySigner;
+	use crate::sign::InMemorySigner;
 	use crate::events::ClosureReason;
 	use crate::ln::{PaymentPreimage, PaymentHash};
 	use crate::ln::chan_utils;

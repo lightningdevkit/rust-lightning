@@ -20,7 +20,7 @@ extern crate libc;
 use bitcoin::hash_types::{BlockHash, Txid};
 use bitcoin::hashes::hex::FromHex;
 use lightning::chain::channelmonitor::ChannelMonitor;
-use lightning::chain::keysinterface::{EntropySource, SignerProvider};
+use lightning::sign::{EntropySource, SignerProvider};
 use lightning::util::ser::{ReadableArgs, Writeable};
 use lightning::util::persist::KVStorePersister;
 use std::fs;

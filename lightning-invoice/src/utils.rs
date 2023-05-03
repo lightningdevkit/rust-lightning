@@ -7,7 +7,7 @@ use bech32::ToBase32;
 use bitcoin_hashes::Hash;
 use lightning::chain;
 use lightning::chain::chaininterface::{BroadcasterInterface, FeeEstimator};
-use lightning::chain::keysinterface::{Recipient, NodeSigner, SignerProvider, EntropySource};
+use lightning::sign::{Recipient, NodeSigner, SignerProvider, EntropySource};
 use lightning::ln::{PaymentHash, PaymentSecret};
 use lightning::ln::channelmanager::{ChannelDetails, ChannelManager, MIN_FINAL_CLTV_EXPIRY_DELTA};
 use lightning::ln::channelmanager::{PhantomRouteHints, MIN_CLTV_EXPIRY_DELTA};
@@ -50,7 +50,7 @@ use core::time::Duration;
 /// invoices in its `sign_invoice` implementation ([`PhantomKeysManager`] satisfies this
 /// requirement).
 ///
-/// [`PhantomKeysManager`]: lightning::chain::keysinterface::PhantomKeysManager
+/// [`PhantomKeysManager`]: lightning::sign::PhantomKeysManager
 /// [`ChannelManager::get_phantom_route_hints`]: lightning::ln::channelmanager::ChannelManager::get_phantom_route_hints
 /// [`ChannelManager::create_inbound_payment`]: lightning::ln::channelmanager::ChannelManager::create_inbound_payment
 /// [`ChannelManager::create_inbound_payment_for_hash`]: lightning::ln::channelmanager::ChannelManager::create_inbound_payment_for_hash
@@ -107,7 +107,7 @@ where
 /// invoices in its `sign_invoice` implementation ([`PhantomKeysManager`] satisfies this
 /// requirement).
 ///
-/// [`PhantomKeysManager`]: lightning::chain::keysinterface::PhantomKeysManager
+/// [`PhantomKeysManager`]: lightning::sign::PhantomKeysManager
 /// [`ChannelManager::get_phantom_route_hints`]: lightning::ln::channelmanager::ChannelManager::get_phantom_route_hints
 /// [`ChannelManager::create_inbound_payment`]: lightning::ln::channelmanager::ChannelManager::create_inbound_payment
 /// [`ChannelManager::create_inbound_payment_for_hash`]: lightning::ln::channelmanager::ChannelManager::create_inbound_payment_for_hash
@@ -227,7 +227,7 @@ where
 /// * Select up to three channels per node.
 /// * Select one hint from each node, up to three hints or until we run out of hints.
 ///
-/// [`PhantomKeysManager`]: lightning::chain::keysinterface::PhantomKeysManager
+/// [`PhantomKeysManager`]: lightning::sign::PhantomKeysManager
 fn select_phantom_hints<L: Deref>(amt_msat: Option<u64>, phantom_route_hints: Vec<PhantomRouteHints>,
 	logger: L) -> Vec<RouteHint>
 where
@@ -629,7 +629,7 @@ fn sort_and_filter_channels<L: Deref>(
 				// previous channel to avoid announcing non-public channels.
 				let new_now_public = channel.is_public && !entry.get().is_public;
 				// Decide whether we prefer the currently selected channel with the node to the new one,
-				// based on their inbound capacity. 
+				// based on their inbound capacity.
 				let prefer_current = prefer_current_channel(min_inbound_capacity_msat, current_max_capacity,
 					channel.inbound_capacity_msat);
 				// If the public-ness of the channel has not changed (in which case simply defer to
@@ -768,7 +768,7 @@ mod test {
 	use crate::{Currency, Description, InvoiceDescription, SignOrCreationError, CreationError};
 	use bitcoin_hashes::{Hash, sha256};
 	use bitcoin_hashes::sha256::Hash as Sha256;
-	use lightning::chain::keysinterface::PhantomKeysManager;
+	use lightning::sign::PhantomKeysManager;
 	use lightning::events::{MessageSendEvent, MessageSendEventsProvider, Event};
 	use lightning::ln::{PaymentPreimage, PaymentHash};
 	use lightning::ln::channelmanager::{PhantomRouteHints, MIN_FINAL_CLTV_EXPIRY_DELTA, PaymentId, RecipientOnionFields, Retry};
@@ -793,10 +793,10 @@ mod test {
 
 		// Minimum set, prefer candidate channel over minimum + buffer.
 		assert_eq!(crate::utils::prefer_current_channel(Some(100), 105, 125), false);
-		
+
 		// Minimum set, both channels sufficient, prefer smaller current channel.
 		assert_eq!(crate::utils::prefer_current_channel(Some(100), 115, 125), true);
-		
+
 		// Minimum set, both channels sufficient, prefer smaller candidate channel.
 		assert_eq!(crate::utils::prefer_current_channel(Some(100), 200, 160), false);
 

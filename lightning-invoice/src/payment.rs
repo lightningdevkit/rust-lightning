@@ -15,7 +15,7 @@ use bitcoin_hashes::Hash;
 
 use lightning::chain;
 use lightning::chain::chaininterface::{BroadcasterInterface, FeeEstimator};
-use lightning::chain::keysinterface::{NodeSigner, SignerProvider, EntropySource};
+use lightning::sign::{NodeSigner, SignerProvider, EntropySource};
 use lightning::ln::PaymentHash;
 use lightning::ln::channelmanager::{ChannelManager, PaymentId, Retry, RetryableSendFailure, RecipientOnionFields};
 use lightning::routing::router::{PaymentParameters, RouteParameters, Router};

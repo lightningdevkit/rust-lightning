@@ -24,13 +24,13 @@ pub struct AnchorDescriptor {
 	/// A unique identifier used along with `channel_value_satoshis` to re-derive the
 	/// [`InMemorySigner`] required to sign `input`.
 	///
-	/// [`InMemorySigner`]: crate::chain::keysinterface::InMemorySigner
+	/// [`InMemorySigner`]: crate::sign::InMemorySigner
 	pub channel_keys_id: [u8; 32],
 	/// The value in satoshis of the channel we're attempting to spend the anchor output of. This is
 	/// used along with `channel_keys_id` to re-derive the [`InMemorySigner`] required to sign
 	/// `input`.
 	///
-	/// [`InMemorySigner`]: crate::chain::keysinterface::InMemorySigner
+	/// [`InMemorySigner`]: crate::sign::InMemorySigner
 	pub channel_value_satoshis: u64,
 	/// The transaction input's outpoint corresponding to the commitment transaction's anchor
 	/// output.
@@ -43,19 +43,19 @@ pub struct HTLCDescriptor {
 	/// A unique identifier used along with `channel_value_satoshis` to re-derive the
 	/// [`InMemorySigner`] required to sign `input`.
 	///
-	/// [`InMemorySigner`]: crate::chain::keysinterface::InMemorySigner
+	/// [`InMemorySigner`]: crate::sign::InMemorySigner
 	pub channel_keys_id: [u8; 32],
 	/// The value in satoshis of the channel we're attempting to spend the anchor output of. This is
 	/// used along with `channel_keys_id` to re-derive the [`InMemorySigner`] required to sign
 	/// `input`.
 	///
-	/// [`InMemorySigner`]: crate::chain::keysinterface::InMemorySigner
+	/// [`InMemorySigner`]: crate::sign::InMemorySigner
 	pub channel_value_satoshis: u64,
 	/// The necessary channel parameters that need to be provided to the re-derived
 	/// [`InMemorySigner`] through [`ChannelSigner::provide_channel_parameters`].
 	///
-	/// [`InMemorySigner`]: crate::chain::keysinterface::InMemorySigner
-	/// [`ChannelSigner::provide_channel_parameters`]: crate::chain::keysinterface::ChannelSigner::provide_channel_parameters
+	/// [`InMemorySigner`]: crate::sign::InMemorySigner
+	/// [`ChannelSigner::provide_channel_parameters`]: crate::sign::ChannelSigner::provide_channel_parameters
 	pub channel_parameters: ChannelTransactionParameters,
 	/// The txid of the commitment transaction in which the HTLC output lives.
 	pub commitment_txid: Txid,
@@ -168,9 +168,9 @@ pub enum BumpTransactionEvent {
 	/// an empty `pending_htlcs`), confirmation of the commitment transaction can be considered to
 	/// be not urgent.
 	///
-	/// [`InMemorySigner`]: crate::chain::keysinterface::InMemorySigner
-	/// [`KeysManager::derive_channel_keys`]: crate::chain::keysinterface::KeysManager::derive_channel_keys
-	/// [`EcdsaChannelSigner::sign_holder_anchor_input`]: crate::chain::keysinterface::EcdsaChannelSigner::sign_holder_anchor_input
+	/// [`InMemorySigner`]: crate::sign::InMemorySigner
+	/// [`KeysManager::derive_channel_keys`]: crate::sign::KeysManager::derive_channel_keys
+	/// [`EcdsaChannelSigner::sign_holder_anchor_input`]: crate::sign::EcdsaChannelSigner::sign_holder_anchor_input
 	/// [`build_anchor_input_witness`]: crate::ln::chan_utils::build_anchor_input_witness
 	ChannelClose {
 		/// The target feerate that the transaction package, which consists of the commitment
@@ -217,9 +217,9 @@ pub enum BumpTransactionEvent {
 	/// longer able to commit external confirmed funds to the HTLC transaction or the fee committed
 	/// to the HTLC transaction is greater in value than the HTLCs being claimed.
 	///
-	/// [`InMemorySigner`]: crate::chain::keysinterface::InMemorySigner
-	/// [`KeysManager::derive_channel_keys`]: crate::chain::keysinterface::KeysManager::derive_channel_keys
-	/// [`EcdsaChannelSigner::sign_holder_htlc_transaction`]: crate::chain::keysinterface::EcdsaChannelSigner::sign_holder_htlc_transaction
+	/// [`InMemorySigner`]: crate::sign::InMemorySigner
+	/// [`KeysManager::derive_channel_keys`]: crate::sign::KeysManager::derive_channel_keys
+	/// [`EcdsaChannelSigner::sign_holder_htlc_transaction`]: crate::sign::EcdsaChannelSigner::sign_holder_htlc_transaction
 	/// [`HTLCDescriptor::tx_input_witness`]: HTLCDescriptor::tx_input_witness
 	HTLCResolution {
 		/// The target feerate that the resulting HTLC transaction must meet.

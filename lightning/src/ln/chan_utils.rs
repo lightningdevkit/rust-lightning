@@ -8,7 +8,7 @@
 // licenses.
 
 //! Various utilities for building scripts and deriving keys related to channels. These are
-//! largely of interest for those implementing the traits on [`chain::keysinterface`] by hand.
+//! largely of interest for those implementing the traits on [`crate::sign`] by hand.
 
 use bitcoin::blockdata::script::{Script,Builder};
 use bitcoin::blockdata::opcodes;
@@ -21,7 +21,7 @@ use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::ripemd160::Hash as Ripemd160;
 use bitcoin::hash_types::{Txid, PubkeyHash};
 
-use crate::chain::keysinterface::EntropySource;
+use crate::sign::EntropySource;
 use crate::ln::{PaymentHash, PaymentPreimage};
 use crate::ln::msgs::DecodeError;
 use crate::util::ser::{Readable, Writeable, Writer};
@@ -1655,7 +1655,7 @@ mod tests {
 	use crate::ln::chan_utils::{get_htlc_redeemscript, get_to_countersignatory_with_anchors_redeemscript, CommitmentTransaction, TxCreationKeys, ChannelTransactionParameters, CounterpartyChannelTransactionParameters, HTLCOutputInCommitment};
 	use bitcoin::secp256k1::{PublicKey, SecretKey, Secp256k1};
 	use crate::util::test_utils;
-	use crate::chain::keysinterface::{ChannelSigner, SignerProvider};
+	use crate::sign::{ChannelSigner, SignerProvider};
 	use bitcoin::{Network, Txid};
 	use bitcoin::hashes::Hash;
 	use crate::ln::PaymentHash;

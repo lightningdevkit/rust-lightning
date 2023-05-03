@@ -58,7 +58,7 @@ use bitcoin::secp256k1::{KeyPair, Message, PublicKey, Secp256k1, self};
 use bitcoin::secp256k1::schnorr::Signature;
 use core::convert::{Infallible, TryFrom};
 use core::ops::Deref;
-use crate::chain::keysinterface::EntropySource;
+use crate::sign::EntropySource;
 use crate::io;
 use crate::blinded_path::BlindedPath;
 use crate::ln::PaymentHash;
@@ -785,7 +785,7 @@ mod tests {
 	use core::num::NonZeroU64;
 	#[cfg(feature = "std")]
 	use core::time::Duration;
-	use crate::chain::keysinterface::KeyMaterial;
+	use crate::sign::KeyMaterial;
 	use crate::ln::features::InvoiceRequestFeatures;
 	use crate::ln::inbound_payment::ExpandedKey;
 	use crate::ln::msgs::{DecodeError, MAX_VALUE_MSAT};

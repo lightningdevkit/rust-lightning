@@ -80,6 +80,7 @@ pub mod chain;
 pub mod ln;
 pub mod offers;
 pub mod routing;
+pub mod sign;
 pub mod onion_message;
 pub mod blinded_path;
 pub mod events;

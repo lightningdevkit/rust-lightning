@@ -23,7 +23,7 @@ use bitcoin::hash_types::{Txid, BlockHash};
 use bitcoin::secp256k1::{Secp256k1, ecdsa::Signature};
 use bitcoin::secp256k1;
 
-use crate::chain::keysinterface::{ChannelSigner, EntropySource, SignerProvider};
+use crate::sign::{ChannelSigner, EntropySource, SignerProvider};
 use crate::ln::msgs::DecodeError;
 use crate::ln::PaymentPreimage;
 #[cfg(anchors)]
@@ -33,7 +33,7 @@ use crate::ln::chan_utils::{ChannelTransactionParameters, HolderCommitmentTransa
 use crate::chain::chaininterface::ConfirmationTarget;
 use crate::chain::chaininterface::{FeeEstimator, BroadcasterInterface, LowerBoundedFeeEstimator};
 use crate::chain::channelmonitor::{ANTI_REORG_DELAY, CLTV_SHARED_CLAIM_BUFFER};
-use crate::chain::keysinterface::WriteableEcdsaChannelSigner;
+use crate::sign::WriteableEcdsaChannelSigner;
 #[cfg(anchors)]
 use crate::chain::package::PackageSolvingData;
 use crate::chain::package::PackageTemplate;
