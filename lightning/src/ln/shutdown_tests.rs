@@ -31,6 +31,7 @@ use bitcoin::util::address::WitnessVersion;
 use regex;
 
 use core::default::Default;
+use std::convert::TryFrom;
 
 use crate::ln::functional_test_utils::*;
 
@@ -722,6 +723,58 @@ fn test_invalid_shutdown_script() {
 			"Got a nonstandard scriptpubkey (00020000) from remote peer");
 }
 
+#[test]
+fn test_user_shutdown_script() {
+	let mut config = test_default_channel_config();
+	config.channel_handshake_config.announced_channel = true;
+	config.channel_handshake_limits.force_announced_channel_preference = false;
+	config.channel_handshake_config.commit_upfront_shutdown_pubkey = false;
+	let user_cfgs = [None, Some(config), None];
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &user_cfgs);
+	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+
+	// Segwit v0 script of the form OP_0 <20-byte hash>
+	let script = Builder::new().push_int(0)
+		.push_slice(&[0; 20])
+		.into_script();
+
+	let shutdown_script = ShutdownScript::try_from(script.clone()).unwrap();
+
+	let chan = create_announced_chan_between_nodes(&nodes, 0, 1);
+	nodes[1].node.close_channel_with_feerate_and_script(&OutPoint { txid: chan.3.txid(), index: 0 }.to_channel_id(), &nodes[0].node.get_our_node_id(), None, Some(shutdown_script)).unwrap();
+	check_added_monitors!(nodes[1], 1);
+
+	let mut node_0_shutdown = get_event_msg!(nodes[1], MessageSendEvent::SendShutdown, nodes[0].node.get_our_node_id());
+
+	assert_eq!(node_0_shutdown.scriptpubkey, script);
+}
+
+#[test]
+fn test_already_set_user_shutdown_script() {
+	let mut config = test_default_channel_config();
+	config.channel_handshake_config.announced_channel = true;
+	config.channel_handshake_limits.force_announced_channel_preference = false;
+	let user_cfgs = [None, Some(config), None];
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &user_cfgs);
+	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+
+	// Segwit v0 script of the form OP_0 <20-byte hash>
+	let script = Builder::new().push_int(0)
+		.push_slice(&[0; 20])
+		.into_script();
+
+	let shutdown_script = ShutdownScript::try_from(script).unwrap();
+
+	let chan = create_announced_chan_between_nodes(&nodes, 0, 1);
+	let result = nodes[1].node.close_channel_with_feerate_and_script(&OutPoint { txid: chan.3.txid(), index: 0 }.to_channel_id(), &nodes[0].node.get_our_node_id(), None, Some(shutdown_script));
+
+	assert_eq!(result, Err(APIError::APIMisuseError { err: "Cannot override shutdown script for a channel with one already set".to_string() }));
+}
+
 #[derive(PartialEq)]
 enum TimeoutStep {
 	AfterShutdown,
@@ -890,9 +943,9 @@ fn simple_target_feerate_shutdown() {
 	let chan = create_announced_chan_between_nodes(&nodes, 0, 1);
 	let chan_id = OutPoint { txid: chan.3.txid(), index: 0 }.to_channel_id();
 
-	nodes[0].node.close_channel_with_target_feerate(&chan_id, &nodes[1].node.get_our_node_id(), 253 * 10).unwrap();
+	nodes[0].node.close_channel_with_feerate_and_script(&chan_id, &nodes[1].node.get_our_node_id(), Some(253 * 10), None).unwrap();
 	let node_0_shutdown = get_event_msg!(nodes[0], MessageSendEvent::SendShutdown, nodes[1].node.get_our_node_id());
-	nodes[1].node.close_channel_with_target_feerate(&chan_id, &nodes[0].node.get_our_node_id(), 253 * 5).unwrap();
+	nodes[1].node.close_channel_with_feerate_and_script(&chan_id, &nodes[0].node.get_our_node_id(), Some(253 * 5), None).unwrap();
 	let node_1_shutdown = get_event_msg!(nodes[1], MessageSendEvent::SendShutdown, nodes[0].node.get_our_node_id());
 
 	nodes[1].node.handle_shutdown(&nodes[0].node.get_our_node_id(), &node_0_shutdown);
