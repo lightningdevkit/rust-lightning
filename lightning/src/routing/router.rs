@@ -493,14 +493,6 @@ const MAX_PATH_LENGTH_ESTIMATE: u8 = 19;
 /// Information used to route a payment.
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct PaymentParameters {
-	/// Features supported by the payee.
-	///
-	/// May be set from the payee's invoice or via [`for_keysend`]. May be `None` if the invoice
-	/// does not contain any features.
-	///
-	/// [`for_keysend`]: Self::for_keysend
-	pub features: Option<InvoiceFeatures>,
-
 	/// Information about the payee, such as their features and route hints for their channels.
 	pub payee: Payee,
 
@@ -550,7 +542,7 @@ impl Writeable for PaymentParameters {
 		write_tlv_fields!(writer, {
 			(0, self.payee.node_id(), option),
 			(1, self.max_total_cltv_expiry_delta, required),
-			(2, self.features, option),
+			(2, if let Payee::Clear { features, .. } = &self.payee { features } else { &None }, option),
 			(3, self.max_path_count, required),
 			(4, *clear_hints, vec_type),
 			(5, self.max_channel_saturation_power_of_half, required),
@@ -586,11 +578,11 @@ impl ReadableArgs<u32> for PaymentParameters {
 			Payee::Clear {
 				route_hints: clear_route_hints,
 				node_id: payee_pubkey.ok_or(DecodeError::InvalidValue)?,
+				features,
 			}
 		};
 		Ok(Self {
 			max_total_cltv_expiry_delta: _init_tlv_based_struct_field!(max_total_cltv_expiry_delta, (default_value, unused)),
-			features,
 			max_path_count: _init_tlv_based_struct_field!(max_path_count, (default_value, unused)),
 			payee,
 			max_channel_saturation_power_of_half: _init_tlv_based_struct_field!(max_channel_saturation_power_of_half, (default_value, unused)),
@@ -609,8 +601,7 @@ impl PaymentParameters {
 	/// provided.
 	pub fn from_node_id(payee_pubkey: PublicKey, final_cltv_expiry_delta: u32) -> Self {
 		Self {
-			features: None,
-			payee: Payee::Clear { node_id: payee_pubkey, route_hints: vec![] },
+			payee: Payee::Clear { node_id: payee_pubkey, route_hints: vec![], features: None },
 			expiry_time: None,
 			max_total_cltv_expiry_delta: DEFAULT_MAX_TOTAL_CLTV_EXPIRY_DELTA,
 			max_path_count: DEFAULT_MAX_PATH_COUNT,
@@ -633,8 +624,11 @@ impl PaymentParameters {
 	///
 	/// This is not exported to bindings users since bindings don't support move semantics
 	pub fn with_bolt11_features(self, features: InvoiceFeatures) -> Result<Self, ()> {
-		if let Payee::Blinded { .. } = self.payee { return Err(()) }
-		Ok(Self { features: Some(features), ..self })
+		match self.payee {
+			Payee::Blinded { .. } => Err(()),
+			Payee::Clear { route_hints, node_id, .. } =>
+				Ok(Self { payee: Payee::Clear { route_hints, node_id, features: Some(features) }, ..self })
+		}
 	}
 
 	/// Includes hints for routing to the payee. Errors if the parameters were initialized with
@@ -644,8 +638,8 @@ impl PaymentParameters {
 	pub fn with_route_hints(self, route_hints: Vec<RouteHint>) -> Result<Self, ()> {
 		match self.payee {
 			Payee::Blinded { .. } => Err(()),
-			Payee::Clear { node_id, .. } =>
-				Ok(Self { payee: Payee::Clear { route_hints, node_id }, ..self })
+			Payee::Clear { node_id, features, .. } =>
+				Ok(Self { payee: Payee::Clear { route_hints, node_id, features }, ..self })
 		}
 	}
 
@@ -695,6 +689,13 @@ pub enum Payee {
 		node_id: PublicKey,
 		/// Hints for routing to the payee, containing channels connecting the payee to public nodes.
 		route_hints: Vec<RouteHint>,
+		/// Features supported by the payee.
+		///
+		/// May be set from the payee's invoice or via [`for_keysend`]. May be `None` if the invoice
+		/// does not contain any features.
+		///
+		/// [`for_keysend`]: PaymentParameters::for_keysend
+		features: Option<InvoiceFeatures>,
 	},
 }
 
@@ -703,6 +704,18 @@ impl Payee {
 		match self {
 			Self::Clear { node_id, .. } => Some(*node_id),
 			_ => None,
+		}
+	}
+	fn node_features(&self) -> Option<NodeFeatures> {
+		match self {
+			Self::Clear { features, .. } => features.as_ref().map(|f| f.to_context()),
+			_ => None,
+		}
+	}
+	fn supports_basic_mpp(&self) -> bool {
+		match self {
+			Self::Clear { features, .. } => features.as_ref().map_or(false, |f| f.supports_basic_mpp()),
+			_ => false,
 		}
 	}
 }
@@ -1177,7 +1190,7 @@ where L::Target: Logger {
 	}
 
 	match &payment_params.payee {
-		Payee::Clear { route_hints, node_id } => {
+		Payee::Clear { route_hints, node_id, .. } => {
 			for route in route_hints.iter() {
 				for hop in &route.0 {
 					if hop.src_node_id == *node_id {
@@ -1261,8 +1274,8 @@ where L::Target: Logger {
 	// work reliably.
 	let allow_mpp = if payment_params.max_path_count == 1 {
 		false
-	} else if let Some(features) = &payment_params.features {
-		features.supports_basic_mpp()
+	} else if payment_params.payee.supports_basic_mpp() {
+		true
 	} else if let Some(payee) = payee_node_id_opt {
 		network_nodes.get(&payee).map_or(false, |node| node.announcement_info.as_ref().map_or(false,
 			|info| info.features.supports_basic_mpp()))
@@ -2120,10 +2133,10 @@ where L::Target: Logger {
 	// Make sure we would never create a route with more paths than we allow.
 	debug_assert!(selected_paths.len() <= payment_params.max_path_count.into());
 
-	if let Some(features) = &payment_params.features {
+	if let Some(node_features) = payment_params.payee.node_features() {
 		for path in selected_paths.iter_mut() {
 			if let Ok(route_hop) = path.last_mut().unwrap() {
-				route_hop.node_features = features.to_context();
+				route_hop.node_features = node_features.clone();
 			}
 		}
 	}
