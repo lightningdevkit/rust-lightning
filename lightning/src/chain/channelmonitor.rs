@@ -2457,7 +2457,9 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 
 		self.latest_update_id = updates.update_id;
 
-		if ret.is_ok() && self.funding_spend_seen {
+		// Refuse updates after we've detected a spend onchain, but only if we haven't processed a
+		// force closed monitor update yet.
+		if ret.is_ok() && self.funding_spend_seen && self.latest_update_id != CLOSED_CHANNEL_UPDATE_ID {
 			log_error!(logger, "Refusing Channel Monitor Update as counterparty attempted to update commitment after funding was spent");
 			Err(())
 		} else { ret }
