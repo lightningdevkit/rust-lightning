@@ -2339,8 +2339,16 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		F::Target: FeeEstimator,
 		L::Target: Logger,
 	{
-		log_info!(logger, "Applying update to monitor {}, bringing update_id from {} to {} with {} changes.",
-			log_funding_info!(self), self.latest_update_id, updates.update_id, updates.updates.len());
+		if self.latest_update_id == CLOSED_CHANNEL_UPDATE_ID && updates.update_id == CLOSED_CHANNEL_UPDATE_ID {
+			log_info!(logger, "Applying post-force-closed update to monitor {} with {} change(s).",
+				log_funding_info!(self), updates.updates.len());
+		} else if updates.update_id == CLOSED_CHANNEL_UPDATE_ID {
+			log_info!(logger, "Applying force close update to monitor {} with {} change(s).",
+				log_funding_info!(self), updates.updates.len());
+		} else {
+			log_info!(logger, "Applying update to monitor {}, bringing update_id from {} to {} with {} change(s).",
+				log_funding_info!(self), self.latest_update_id, updates.update_id, updates.updates.len());
+		}
 		// ChannelMonitor updates may be applied after force close if we receive a preimage for a
 		// broadcasted commitment transaction HTLC output that we'd like to claim on-chain. If this
 		// is the case, we no longer have guaranteed access to the monitor's update ID, so we use a
@@ -2407,6 +2415,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 								_ => false,
 							}).is_some();
 						if detected_funding_spend {
+							log_trace!(logger, "Avoiding commitment broadcast, already detected confirmed spend onchain");
 							continue;
 						}
 						self.broadcast_latest_holder_commitment_txn(broadcaster, logger);
