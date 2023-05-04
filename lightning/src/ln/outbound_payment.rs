@@ -16,7 +16,7 @@ use bitcoin::secp256k1::{self, Secp256k1, SecretKey};
 use crate::sign::{EntropySource, NodeSigner, Recipient};
 use crate::events::{self, PaymentFailureReason};
 use crate::ln::{PaymentHash, PaymentPreimage, PaymentSecret};
-use crate::ln::channelmanager::{ChannelDetails, HTLCSource, IDEMPOTENCY_TIMEOUT_TICKS, PaymentId};
+use crate::ln::channelmanager::{ChannelDetails, EventCompletionAction, HTLCSource, IDEMPOTENCY_TIMEOUT_TICKS, PaymentId};
 use crate::ln::onion_utils::HTLCFailReason;
 use crate::routing::router::{InFlightHtlcs, Path, PaymentParameters, Route, RouteParameters, Router};
 use crate::util::errors::APIError;
@@ -487,7 +487,7 @@ impl OutboundPayments {
 		retry_strategy: Retry, route_params: RouteParameters, router: &R,
 		first_hops: Vec<ChannelDetails>, compute_inflight_htlcs: IH, entropy_source: &ES,
 		node_signer: &NS, best_block_height: u32, logger: &L,
-		pending_events: &Mutex<Vec<events::Event>>, send_payment_along_path: SP,
+		pending_events: &Mutex<VecDeque<(events::Event, Option<EventCompletionAction>)>>, send_payment_along_path: SP,
 	) -> Result<(), RetryableSendFailure>
 	where
 		R::Target: Router,
@@ -525,7 +525,7 @@ impl OutboundPayments {
 		payment_id: PaymentId, retry_strategy: Retry, route_params: RouteParameters, router: &R,
 		first_hops: Vec<ChannelDetails>, inflight_htlcs: IH, entropy_source: &ES,
 		node_signer: &NS, best_block_height: u32, logger: &L,
-		pending_events: &Mutex<Vec<events::Event>>, send_payment_along_path: SP
+		pending_events: &Mutex<VecDeque<(events::Event, Option<EventCompletionAction>)>>, send_payment_along_path: SP
 	) -> Result<PaymentHash, RetryableSendFailure>
 	where
 		R::Target: Router,
@@ -575,7 +575,8 @@ impl OutboundPayments {
 
 	pub(super) fn check_retry_payments<R: Deref, ES: Deref, NS: Deref, SP, IH, FH, L: Deref>(
 		&self, router: &R, first_hops: FH, inflight_htlcs: IH, entropy_source: &ES, node_signer: &NS,
-		best_block_height: u32, pending_events: &Mutex<Vec<events::Event>>, logger: &L,
+		best_block_height: u32,
+		pending_events: &Mutex<VecDeque<(events::Event, Option<EventCompletionAction>)>>, logger: &L,
 		send_payment_along_path: SP,
 	)
 	where
@@ -617,11 +618,11 @@ impl OutboundPayments {
 			if !pmt.is_auto_retryable_now() && pmt.remaining_parts() == 0 {
 				pmt.mark_abandoned(PaymentFailureReason::RetriesExhausted);
 				if let PendingOutboundPayment::Abandoned { payment_hash, reason, .. } = pmt {
-					pending_events.lock().unwrap().push(events::Event::PaymentFailed {
+					pending_events.lock().unwrap().push_back((events::Event::PaymentFailed {
 						payment_id: *pmt_id,
 						payment_hash: *payment_hash,
 						reason: *reason,
-					});
+					}, None));
 					retain = false;
 				}
 			}
@@ -645,7 +646,7 @@ impl OutboundPayments {
 		keysend_preimage: Option<PaymentPreimage>, retry_strategy: Retry, route_params: RouteParameters,
 		router: &R, first_hops: Vec<ChannelDetails>, inflight_htlcs: IH, entropy_source: &ES,
 		node_signer: &NS, best_block_height: u32, logger: &L,
-		pending_events: &Mutex<Vec<events::Event>>, send_payment_along_path: SP,
+		pending_events: &Mutex<VecDeque<(events::Event, Option<EventCompletionAction>)>>, send_payment_along_path: SP,
 	) -> Result<(), RetryableSendFailure>
 	where
 		R::Target: Router,
@@ -686,7 +687,7 @@ impl OutboundPayments {
 		&self, payment_hash: PaymentHash, payment_id: PaymentId, route_params: RouteParameters,
 		router: &R, first_hops: Vec<ChannelDetails>, inflight_htlcs: &IH, entropy_source: &ES,
 		node_signer: &NS, best_block_height: u32, logger: &L,
-		pending_events: &Mutex<Vec<events::Event>>, send_payment_along_path: &SP,
+		pending_events: &Mutex<VecDeque<(events::Event, Option<EventCompletionAction>)>>, send_payment_along_path: &SP,
 	)
 	where
 		R::Target: Router,
@@ -736,11 +737,11 @@ impl OutboundPayments {
 				$payment.get_mut().mark_abandoned($reason);
 				if let PendingOutboundPayment::Abandoned { reason, .. } = $payment.get() {
 					if $payment.get().remaining_parts() == 0 {
-						pending_events.lock().unwrap().push(events::Event::PaymentFailed {
+						pending_events.lock().unwrap().push_back((events::Event::PaymentFailed {
 							payment_id,
 							payment_hash,
 							reason: *reason,
-						});
+						}, None));
 						$payment.remove();
 					}
 				}
@@ -808,7 +809,7 @@ impl OutboundPayments {
 		&self, err: PaymentSendFailure, payment_id: PaymentId, payment_hash: PaymentHash, route: Route,
 		mut route_params: RouteParameters, router: &R, first_hops: Vec<ChannelDetails>,
 		inflight_htlcs: &IH, entropy_source: &ES, node_signer: &NS, best_block_height: u32, logger: &L,
-		pending_events: &Mutex<Vec<events::Event>>, send_payment_along_path: &SP,
+		pending_events: &Mutex<VecDeque<(events::Event, Option<EventCompletionAction>)>>, send_payment_along_path: &SP,
 	)
 	where
 		R::Target: Router,
@@ -851,7 +852,8 @@ impl OutboundPayments {
 
 	fn push_path_failed_evs_and_scids<I: ExactSizeIterator + Iterator<Item = Result<(), APIError>>, L: Deref>(
 		payment_id: PaymentId, payment_hash: PaymentHash, route_params: &mut RouteParameters,
-		paths: Vec<Path>, path_results: I, logger: &L, pending_events: &Mutex<Vec<events::Event>>
+		paths: Vec<Path>, path_results: I, logger: &L,
+		pending_events: &Mutex<VecDeque<(events::Event, Option<EventCompletionAction>)>>,
 	) where L::Target: Logger {
 		let mut events = pending_events.lock().unwrap();
 		debug_assert_eq!(paths.len(), path_results.len());
@@ -865,7 +867,7 @@ impl OutboundPayments {
 					failed_scid = Some(scid);
 					route_params.payment_params.previously_failed_channels.push(scid);
 				}
-				events.push(events::Event::PaymentPathFailed {
+				events.push_back((events::Event::PaymentPathFailed {
 					payment_id: Some(payment_id),
 					payment_hash,
 					payment_failed_permanently: false,
@@ -876,7 +878,7 @@ impl OutboundPayments {
 					error_code: None,
 					#[cfg(test)]
 					error_data: None,
-				});
+				}, None));
 			}
 		}
 	}
@@ -1112,7 +1114,9 @@ impl OutboundPayments {
 
 	pub(super) fn claim_htlc<L: Deref>(
 		&self, payment_id: PaymentId, payment_preimage: PaymentPreimage, session_priv: SecretKey,
-		path: Path, from_onchain: bool, pending_events: &Mutex<Vec<events::Event>>, logger: &L
+		path: Path, from_onchain: bool,
+		pending_events: &Mutex<VecDeque<(events::Event, Option<EventCompletionAction>)>>,
+		logger: &L,
 	) where L::Target: Logger {
 		let mut session_priv_bytes = [0; 32];
 		session_priv_bytes.copy_from_slice(&session_priv[..]);
@@ -1122,14 +1126,12 @@ impl OutboundPayments {
 			if !payment.get().is_fulfilled() {
 				let payment_hash = PaymentHash(Sha256::hash(&payment_preimage.0).into_inner());
 				let fee_paid_msat = payment.get().get_pending_fee_msat();
-				pending_events.push(
-					events::Event::PaymentSent {
-						payment_id: Some(payment_id),
-						payment_preimage,
-						payment_hash,
-						fee_paid_msat,
-					}
-				);
+				pending_events.push_back((events::Event::PaymentSent {
+					payment_id: Some(payment_id),
+					payment_preimage,
+					payment_hash,
+					fee_paid_msat,
+				}, None));
 				payment.get_mut().mark_fulfilled();
 			}
 
@@ -1142,13 +1144,11 @@ impl OutboundPayments {
 				// irrevocably fulfilled.
 				if payment.get_mut().remove(&session_priv_bytes, Some(&path)) {
 					let payment_hash = Some(PaymentHash(Sha256::hash(&payment_preimage.0).into_inner()));
-					pending_events.push(
-						events::Event::PaymentPathSuccessful {
-							payment_id,
-							payment_hash,
-							path,
-						}
-					);
+					pending_events.push_back((events::Event::PaymentPathSuccessful {
+						payment_id,
+						payment_hash,
+						path,
+					}, None));
 				}
 			}
 		} else {
@@ -1156,7 +1156,9 @@ impl OutboundPayments {
 		}
 	}
 
-	pub(super) fn finalize_claims(&self, sources: Vec<HTLCSource>, pending_events: &Mutex<Vec<events::Event>>) {
+	pub(super) fn finalize_claims(&self, sources: Vec<HTLCSource>,
+		pending_events: &Mutex<VecDeque<(events::Event, Option<EventCompletionAction>)>>)
+	{
 		let mut outbounds = self.pending_outbound_payments.lock().unwrap();
 		let mut pending_events = pending_events.lock().unwrap();
 		for source in sources {
@@ -1166,20 +1168,20 @@ impl OutboundPayments {
 				if let hash_map::Entry::Occupied(mut payment) = outbounds.entry(payment_id) {
 					assert!(payment.get().is_fulfilled());
 					if payment.get_mut().remove(&session_priv_bytes, None) {
-						pending_events.push(
-							events::Event::PaymentPathSuccessful {
-								payment_id,
-								payment_hash: payment.get().payment_hash(),
-								path,
-							}
-						);
+						pending_events.push_back((events::Event::PaymentPathSuccessful {
+							payment_id,
+							payment_hash: payment.get().payment_hash(),
+							path,
+						}, None));
 					}
 				}
 			}
 		}
 	}
 
-	pub(super) fn remove_stale_resolved_payments(&self, pending_events: &Mutex<Vec<events::Event>>) {
+	pub(super) fn remove_stale_resolved_payments(&self,
+		pending_events: &Mutex<VecDeque<(events::Event, Option<EventCompletionAction>)>>)
+	{
 		// If an outbound payment was completed, and no pending HTLCs remain, we should remove it
 		// from the map. However, if we did that immediately when the last payment HTLC is claimed,
 		// this could race the user making a duplicate send_payment call and our idempotency
@@ -1193,7 +1195,7 @@ impl OutboundPayments {
 			if let PendingOutboundPayment::Fulfilled { session_privs, timer_ticks_without_htlcs, .. } = payment {
 				let mut no_remaining_entries = session_privs.is_empty();
 				if no_remaining_entries {
-					for ev in pending_events.iter() {
+					for (ev, _) in pending_events.iter() {
 						match ev {
 							events::Event::PaymentSent { payment_id: Some(ev_payment_id), .. } |
 								events::Event::PaymentPathSuccessful { payment_id: ev_payment_id, .. } |
@@ -1221,8 +1223,9 @@ impl OutboundPayments {
 	// Returns a bool indicating whether a PendingHTLCsForwardable event should be generated.
 	pub(super) fn fail_htlc<L: Deref>(
 		&self, source: &HTLCSource, payment_hash: &PaymentHash, onion_error: &HTLCFailReason,
-		path: &Path, session_priv: &SecretKey, payment_id: &PaymentId, probing_cookie_secret: [u8; 32],
-		secp_ctx: &Secp256k1<secp256k1::All>, pending_events: &Mutex<Vec<events::Event>>, logger: &L
+		path: &Path, session_priv: &SecretKey, payment_id: &PaymentId,
+		probing_cookie_secret: [u8; 32], secp_ctx: &Secp256k1<secp256k1::All>,
+		pending_events: &Mutex<VecDeque<(events::Event, Option<EventCompletionAction>)>>, logger: &L,
 	) -> bool where L::Target: Logger {
 		#[cfg(test)]
 		let (network_update, short_channel_id, payment_retryable, onion_error_code, onion_error_data) = onion_error.decode_onion_failure(secp_ctx, logger, &source);
@@ -1334,24 +1337,25 @@ impl OutboundPayments {
 			}
 		};
 		let mut pending_events = pending_events.lock().unwrap();
-		pending_events.push(path_failure);
-		if let Some(ev) = full_failure_ev { pending_events.push(ev); }
+		pending_events.push_back((path_failure, None));
+		if let Some(ev) = full_failure_ev { pending_events.push_back((ev, None)); }
 		pending_retry_ev
 	}
 
 	pub(super) fn abandon_payment(
-		&self, payment_id: PaymentId, reason: PaymentFailureReason, pending_events: &Mutex<Vec<events::Event>>
+		&self, payment_id: PaymentId, reason: PaymentFailureReason,
+		pending_events: &Mutex<VecDeque<(events::Event, Option<EventCompletionAction>)>>
 	) {
 		let mut outbounds = self.pending_outbound_payments.lock().unwrap();
 		if let hash_map::Entry::Occupied(mut payment) = outbounds.entry(payment_id) {
 			payment.get_mut().mark_abandoned(reason);
 			if let PendingOutboundPayment::Abandoned { payment_hash, reason, .. } = payment.get() {
 				if payment.get().remaining_parts() == 0 {
-					pending_events.lock().unwrap().push(events::Event::PaymentFailed {
+					pending_events.lock().unwrap().push_back((events::Event::PaymentFailed {
 						payment_id,
 						payment_hash: *payment_hash,
 						reason: *reason,
-					});
+					}, None));
 					payment.remove();
 				}
 			}
@@ -1435,6 +1439,8 @@ mod tests {
 	use crate::util::errors::APIError;
 	use crate::util::test_utils;
 
+	use alloc::collections::VecDeque;
+
 	#[test]
 	#[cfg(feature = "std")]
 	fn fails_paying_after_expiration() {
@@ -1460,7 +1466,7 @@ mod tests {
 			payment_params,
 			final_value_msat: 0,
 		};
-		let pending_events = Mutex::new(Vec::new());
+		let pending_events = Mutex::new(VecDeque::new());
 		if on_retry {
 			outbound_payments.add_new_pending_payment(PaymentHash([0; 32]), RecipientOnionFields::spontaneous_empty(),
 				PaymentId([0; 32]), None, &Route { paths: vec![], payment_params: None },
@@ -1472,7 +1478,7 @@ mod tests {
 				&pending_events, &|_, _, _, _, _, _, _, _| Ok(()));
 			let events = pending_events.lock().unwrap();
 			assert_eq!(events.len(), 1);
-			if let Event::PaymentFailed { ref reason, .. } = events[0] {
+			if let Event::PaymentFailed { ref reason, .. } = events[0].0 {
 				assert_eq!(reason.unwrap(), PaymentFailureReason::PaymentExpired);
 			} else { panic!("Unexpected event"); }
 		} else {
@@ -1508,7 +1514,7 @@ mod tests {
 		router.expect_find_route(route_params.clone(),
 			Err(LightningError { err: String::new(), action: ErrorAction::IgnoreError }));
 
-		let pending_events = Mutex::new(Vec::new());
+		let pending_events = Mutex::new(VecDeque::new());
 		if on_retry {
 			outbound_payments.add_new_pending_payment(PaymentHash([0; 32]), RecipientOnionFields::spontaneous_empty(),
 				PaymentId([0; 32]), None, &Route { paths: vec![], payment_params: None },
@@ -1520,7 +1526,7 @@ mod tests {
 				&pending_events, &|_, _, _, _, _, _, _, _| Ok(()));
 			let events = pending_events.lock().unwrap();
 			assert_eq!(events.len(), 1);
-			if let Event::PaymentFailed { .. } = events[0] { } else { panic!("Unexpected event"); }
+			if let Event::PaymentFailed { .. } = events[0].0 { } else { panic!("Unexpected event"); }
 		} else {
 			let err = outbound_payments.send_payment(
 				PaymentHash([0; 32]), RecipientOnionFields::spontaneous_empty(), PaymentId([0; 32]),
@@ -1570,7 +1576,7 @@ mod tests {
 
 		// Ensure that a ChannelUnavailable error will result in blaming an scid in the
 		// PaymentPathFailed event.
-		let pending_events = Mutex::new(Vec::new());
+		let pending_events = Mutex::new(VecDeque::new());
 		outbound_payments.send_payment(
 			PaymentHash([0; 32]), RecipientOnionFields::spontaneous_empty(), PaymentId([0; 32]),
 			Retry::Attempts(0), route_params.clone(), &&router, vec![], || InFlightHtlcs::new(),
@@ -1581,11 +1587,11 @@ mod tests {
 		assert_eq!(events.len(), 2);
 		if let Event::PaymentPathFailed {
 			short_channel_id,
-			failure: PathFailure::InitialSend { err: APIError::ChannelUnavailable { .. }}, .. } = events[0]
+			failure: PathFailure::InitialSend { err: APIError::ChannelUnavailable { .. }}, .. } = events[0].0
 		{
 			assert_eq!(short_channel_id, Some(failed_scid));
 		} else { panic!("Unexpected event"); }
-		if let Event::PaymentFailed { .. } = events[1] { } else { panic!("Unexpected event"); }
+		if let Event::PaymentFailed { .. } = events[1].0 { } else { panic!("Unexpected event"); }
 		events.clear();
 		core::mem::drop(events);
 
@@ -1608,10 +1614,10 @@ mod tests {
 		assert_eq!(events.len(), 2);
 		if let Event::PaymentPathFailed {
 			short_channel_id,
-			failure: PathFailure::InitialSend { err: APIError::APIMisuseError { .. }}, .. } = events[0]
+			failure: PathFailure::InitialSend { err: APIError::APIMisuseError { .. }}, .. } = events[0].0
 		{
 			assert_eq!(short_channel_id, None);
 		} else { panic!("Unexpected event"); }
-		if let Event::PaymentFailed { .. } = events[1] { } else { panic!("Unexpected event"); }
+		if let Event::PaymentFailed { .. } = events[1].0 { } else { panic!("Unexpected event"); }
 	}
 }
