@@ -520,6 +520,8 @@ pub enum Event {
 	PaymentPathFailed {
 		/// The `payment_id` passed to [`ChannelManager::send_payment`].
 		///
+		/// This will be `Some` for all payment paths which failed on LDK 0.0.103 or later.
+		///
 		/// [`ChannelManager::send_payment`]: crate::ln::channelmanager::ChannelManager::send_payment
 		/// [`ChannelManager::abandon_payment`]: crate::ln::channelmanager::ChannelManager::abandon_payment
 		payment_id: Option<PaymentId>,
