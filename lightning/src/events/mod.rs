@@ -498,6 +498,8 @@ pub enum Event {
 		payment_id: PaymentId,
 		/// The hash that was given to [`ChannelManager::send_payment`].
 		///
+		/// This will be `Some` for all payments which completed on LDK 0.0.104 or later.
+		///
 		/// [`ChannelManager::send_payment`]: crate::ln::channelmanager::ChannelManager::send_payment
 		payment_hash: Option<PaymentHash>,
 		/// The payment path that was successful.
