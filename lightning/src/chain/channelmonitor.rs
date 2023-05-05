@@ -2327,10 +2327,13 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		where B::Target: BroadcasterInterface,
 					L::Target: Logger,
 	{
-		for tx in self.get_latest_holder_commitment_txn(logger).iter() {
+		let commit_txs = self.get_latest_holder_commitment_txn(logger);
+		let mut txs = vec![];
+		for tx in commit_txs.iter() {
 			log_info!(logger, "Broadcasting local {}", log_tx!(tx));
-			broadcaster.broadcast_transaction(tx);
+			txs.push(tx);
 		}
+		broadcaster.broadcast_transactions(&txs);
 		self.pending_monitor_events.push(MonitorEvent::CommitmentTxConfirmed(self.funding_info.0));
 	}
 

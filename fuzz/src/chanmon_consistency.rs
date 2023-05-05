@@ -101,7 +101,7 @@ impl Router for FuzzRouter {
 
 pub struct TestBroadcaster {}
 impl BroadcasterInterface for TestBroadcaster {
-	fn broadcast_transaction(&self, _tx: &Transaction) { }
+	fn broadcast_transactions(&self, _txs: &[&Transaction]) { }
 }
 
 pub struct VecWriter(pub Vec<u8>);
