@@ -679,6 +679,25 @@ impl<T: sealed::Context> Features<T> {
 		self.flags.iter().any(|&byte| (byte & 0b10_10_10_10) != 0)
 	}
 
+	/// Returns true if this `Features` object contains required features unknown by `other`.
+	pub fn requires_unknown_bits_from(&self, other: &Features<T>) -> bool {
+		// Bitwise AND-ing with all even bits set except for known features will select required
+		// unknown features.
+		self.flags.iter().enumerate().any(|(i, &byte)| {
+			const REQUIRED_FEATURES: u8 = 0b01_01_01_01;
+			const OPTIONAL_FEATURES: u8 = 0b10_10_10_10;
+			let unknown_features = if i < other.flags.len() {
+				// Form a mask similar to !T::KNOWN_FEATURE_MASK only for `other`
+				!(other.flags[i]
+					| ((other.flags[i] >> 1) & REQUIRED_FEATURES)
+					| ((other.flags[i] << 1) & OPTIONAL_FEATURES))
+			} else {
+				0b11_11_11_11
+			};
+			(byte & (REQUIRED_FEATURES & unknown_features)) != 0
+		})
+	}
+
 	/// Returns true if this `Features` object contains unknown feature flags which are set as
 	/// "required".
 	pub fn requires_unknown_bits(&self) -> bool {
@@ -850,6 +869,43 @@ mod tests {
 		features.set_unknown_feature_optional();
 		assert!(!features.requires_unknown_bits());
 		assert!(features.supports_unknown_bits());
+	}
+
+	#[test]
+	fn requires_unknown_bits_from() {
+		let mut features1 = InitFeatures::empty();
+		let mut features2 = InitFeatures::empty();
+		assert!(!features1.requires_unknown_bits_from(&features2));
+		assert!(!features2.requires_unknown_bits_from(&features1));
+
+		features1.set_data_loss_protect_required();
+		assert!(features1.requires_unknown_bits_from(&features2));
+		assert!(!features2.requires_unknown_bits_from(&features1));
+
+		features2.set_data_loss_protect_optional();
+		assert!(!features1.requires_unknown_bits_from(&features2));
+		assert!(!features2.requires_unknown_bits_from(&features1));
+
+		features2.set_gossip_queries_required();
+		assert!(!features1.requires_unknown_bits_from(&features2));
+		assert!(features2.requires_unknown_bits_from(&features1));
+
+		features1.set_gossip_queries_optional();
+		assert!(!features1.requires_unknown_bits_from(&features2));
+		assert!(!features2.requires_unknown_bits_from(&features1));
+
+		features1.set_variable_length_onion_required();
+		assert!(features1.requires_unknown_bits_from(&features2));
+		assert!(!features2.requires_unknown_bits_from(&features1));
+
+		features2.set_variable_length_onion_optional();
+		assert!(!features1.requires_unknown_bits_from(&features2));
+		assert!(!features2.requires_unknown_bits_from(&features1));
+
+		features1.set_basic_mpp_required();
+		features2.set_wumbo_required();
+		assert!(features1.requires_unknown_bits_from(&features2));
+		assert!(features2.requires_unknown_bits_from(&features1));
 	}
 
 	#[test]
