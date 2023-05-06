@@ -17,7 +17,7 @@ use lightning::ln::msgs;
 use lightning::routing::gossip::{NetworkGraph, RoutingFees};
 use lightning::routing::utxo::{UtxoFuture, UtxoLookup, UtxoLookupError, UtxoResult};
 use lightning::routing::router::{find_route, PaymentParameters, RouteHint, RouteHintHop, RouteParameters};
-use lightning::routing::scoring::ProbabilisticScorer;
+use lightning::routing::scoring::{ProbabilisticScorer, ProbabilisticScoringFeeParameters, ProbabilisticScoringDecayParameters};
 use lightning::util::config::UserConfig;
 use lightning::util::ser::Readable;
 
@@ -293,7 +293,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 						}]));
 					}
 				}
-				let scorer = ProbabilisticScorer::new(Default::default(), &net_graph, &logger);
+				let scorer = ProbabilisticScorer::new(ProbabilisticScoringDecayParameters::default(), &net_graph, &logger);
 				let random_seed_bytes: [u8; 32] = [get_slice!(1)[0]; 32];
 				for target in node_pks.iter() {
 					let final_value_msat = slice_to_be64(get_slice!(8));
@@ -305,7 +305,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 					};
 					let _ = find_route(&our_pubkey, &route_params, &net_graph,
 						first_hops.map(|c| c.iter().collect::<Vec<_>>()).as_ref().map(|a| a.as_slice()),
-						&logger, &scorer, &random_seed_bytes);
+						&logger, &scorer, &ProbabilisticScoringFeeParameters::default(), &random_seed_bytes);
 				}
 			},
 		}

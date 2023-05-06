@@ -46,7 +46,7 @@ use crate::ln::features::{ChannelFeatures, ChannelTypeFeatures, InitFeatures, No
 use crate::ln::features::InvoiceFeatures;
 use crate::routing::gossip::NetworkGraph;
 use crate::routing::router::{BlindedTail, DefaultRouter, InFlightHtlcs, Path, Payee, PaymentParameters, Route, RouteHop, RouteParameters, Router};
-use crate::routing::scoring::ProbabilisticScorer;
+use crate::routing::scoring::{ProbabilisticScorer, ProbabilisticScoringFeeParameters};
 use crate::ln::msgs;
 use crate::ln::onion_utils;
 use crate::ln::onion_utils::HTLCFailReason;
@@ -625,7 +625,9 @@ pub type SimpleArcChannelManager<M, T, F, L> = ChannelManager<
 	Arc<DefaultRouter<
 		Arc<NetworkGraph<Arc<L>>>,
 		Arc<L>,
-		Arc<Mutex<ProbabilisticScorer<Arc<NetworkGraph<Arc<L>>>, Arc<L>>>>
+		Arc<Mutex<ProbabilisticScorer<Arc<NetworkGraph<Arc<L>>>, Arc<L>>>>,
+		ProbabilisticScoringFeeParameters,
+		ProbabilisticScorer<Arc<NetworkGraph<Arc<L>>>, Arc<L>>,
 	>>,
 	Arc<L>
 >;
@@ -641,7 +643,7 @@ pub type SimpleArcChannelManager<M, T, F, L> = ChannelManager<
 /// of [`KeysManager`] and [`DefaultRouter`].
 ///
 /// This is not exported to bindings users as Arcs don't make sense in bindings
-pub type SimpleRefChannelManager<'a, 'b, 'c, 'd, 'e, 'f, 'g, 'h, M, T, F, L> = ChannelManager<&'a M, &'b T, &'c KeysManager, &'c KeysManager, &'c KeysManager, &'d F, &'e DefaultRouter<&'f NetworkGraph<&'g L>, &'g L, &'h Mutex<ProbabilisticScorer<&'f NetworkGraph<&'g L>, &'g L>>>, &'g L>;
+pub type SimpleRefChannelManager<'a, 'b, 'c, 'd, 'e, 'f, 'g, 'h, M, T, F, L> = ChannelManager<&'a M, &'b T, &'c KeysManager, &'c KeysManager, &'c KeysManager, &'d F, &'e DefaultRouter<&'f NetworkGraph<&'g L>, &'g L, &'h Mutex<ProbabilisticScorer<&'f NetworkGraph<&'g L>, &'g L>>, ProbabilisticScoringFeeParameters, ProbabilisticScorer<&'f NetworkGraph<&'g L>, &'g L>>, &'g L>;
 
 /// A trivial trait which describes any [`ChannelManager`] used in testing.
 #[cfg(any(test, feature = "_test_utils"))]
@@ -8584,7 +8586,7 @@ mod tests {
 		};
 		let route = find_route(
 			&nodes[0].node.get_our_node_id(), &route_params, &nodes[0].network_graph,
-			None, nodes[0].logger, &scorer, &random_seed_bytes
+			None, nodes[0].logger, &scorer, &(), &random_seed_bytes
 		).unwrap();
 		nodes[0].node.send_spontaneous_payment(&route, Some(payment_preimage),
 			RecipientOnionFields::spontaneous_empty(), PaymentId(payment_preimage.0)).unwrap();
@@ -8618,7 +8620,7 @@ mod tests {
 		let payment_preimage = PaymentPreimage([42; 32]);
 		let route = find_route(
 			&nodes[0].node.get_our_node_id(), &route_params, &nodes[0].network_graph,
-			None, nodes[0].logger, &scorer, &random_seed_bytes
+			None, nodes[0].logger, &scorer, &(), &random_seed_bytes
 		).unwrap();
 		let payment_hash = nodes[0].node.send_spontaneous_payment(&route, Some(payment_preimage),
 			RecipientOnionFields::spontaneous_empty(), PaymentId(payment_preimage.0)).unwrap();
@@ -8681,7 +8683,7 @@ mod tests {
 		let random_seed_bytes = chanmon_cfgs[1].keys_manager.get_secure_random_bytes();
 		let route = find_route(
 			&payer_pubkey, &route_params, &network_graph, Some(&first_hops.iter().collect::<Vec<_>>()),
-			nodes[0].logger, &scorer, &random_seed_bytes
+			nodes[0].logger, &scorer, &(), &random_seed_bytes
 		).unwrap();
 
 		let test_preimage = PaymentPreimage([42; 32]);
@@ -8725,7 +8727,7 @@ mod tests {
 		let random_seed_bytes = chanmon_cfgs[1].keys_manager.get_secure_random_bytes();
 		let route = find_route(
 			&payer_pubkey, &route_params, &network_graph, Some(&first_hops.iter().collect::<Vec<_>>()),
-			nodes[0].logger, &scorer, &random_seed_bytes
+			nodes[0].logger, &scorer, &(), &random_seed_bytes
 		).unwrap();
 
 		let test_preimage = PaymentPreimage([42; 32]);

@@ -864,7 +864,7 @@ fn get_ldk_payment_preimage() {
 	let route = get_route(
 		&nodes[0].node.get_our_node_id(), &payment_params, &nodes[0].network_graph.read_only(),
 		Some(&nodes[0].node.list_usable_channels().iter().collect::<Vec<_>>()),
-		amt_msat, nodes[0].logger, &scorer, &random_seed_bytes).unwrap();
+		amt_msat, nodes[0].logger, &scorer, &(), &random_seed_bytes).unwrap();
 	nodes[0].node.send_payment_with_route(&route, payment_hash,
 		RecipientOnionFields::secret_only(payment_secret), PaymentId(payment_hash.0)).unwrap();
 	check_added_monitors!(nodes[0], 1);
@@ -1418,7 +1418,7 @@ fn do_test_intercepted_payment(test: InterceptTest) {
 	let route = get_route(
 		&nodes[0].node.get_our_node_id(), &route_params.payment_params,
 		&nodes[0].network_graph.read_only(), None, route_params.final_value_msat,
-		nodes[0].logger, &scorer, &random_seed_bytes,
+		nodes[0].logger, &scorer, &(), &random_seed_bytes,
 	).unwrap();
 
 	let (payment_hash, payment_secret) = nodes[2].node.create_inbound_payment(Some(amt_msat), 60 * 60, None).unwrap();
