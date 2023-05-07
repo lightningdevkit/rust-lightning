@@ -61,6 +61,9 @@ use crate::util::invoice::construct_invoice_preimage;
 
 pub(crate) mod type_resolver;
 
+#[cfg(taproot)]
+pub mod taproot;
+
 /// Used as initial key material, to be expanded into multiple secret keys (but not to be used
 /// directly). This is used within LDK to encrypt/decrypt inbound payment data.
 ///
