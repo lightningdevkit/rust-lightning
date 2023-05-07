@@ -31,7 +31,8 @@ impl SerialIdExt for SerialId {
 	fn is_valid_for_initiator(&self) -> bool { self % 2 == 0 }
 }
 
-pub(crate) enum InteractiveTxConstructionError {
+pub(crate) enum AbortReason {
+	CounterpartyAborted,
 	InputsNotConfirmed,
 	ReceivedTooManyTxAddInputs,
 	ReceivedTooManyTxAddOutputs,
@@ -40,11 +41,41 @@ pub(crate) enum InteractiveTxConstructionError {
 	SerialIdUnknown,
 	DuplicateSerialId,
 	PrevTxOutInvalid,
-	ExceedMaxiumSatsAllowed,
+	ExceededMaximumSatsAllowed,
 }
 
-// States
-// TODO: ASCII state machine
+//                   Interactive Transaction Construction negotiation
+//                           from the perspective of a holder
+//
+//                               AcceptingChanges
+//                        ┌──────────────────────────────┐
+//                        │                              │
+//                        │           ┌────────────────┐ │
+//                        │           │(sent/received) │ │
+//                        │           │tx_add_input    │ │
+//                        │           │tx_add_output   │ │
+//                        │           │tx_remove_input │ │
+//                        │           │tx_remove_output│ │
+//                        │           └───┐       ┌────┘ │
+//                        │               │       ▼      │
+//            ────────────┼──────────►┌───┴───────────┐  │        received_tx_complete                   ┌─────────────────────┐
+//    accept_channel2     │           │               ├──┼───────────────────┐          sent_tx_complete │                     │
+// or splice_ack          │     ┌─────┤  Negotiating  │  │                   ▼          ┌───────────────►│ NegotiationComplete │◄──┐
+// or tx_ack_rbf          │     │     │               │  │          ┌─────────────────┐ │                │                     │   │
+//    (sent or received)  │     │ ┌──►└───────────────┘  │          │                 │ │                └─────────────────────┘   │
+//                              │ │                      │          │ TheirTxComplete ├─┘                                          │
+//             sent_tx_complete │ │ received_tx_add_*    │          │                 │                   ┌────────────────────┐   │
+//                              │ │ received_tx_remove_* │          └─────────────────┘                   │                    │   │
+//                        │     │ │                      │                                            ┌──►│ NegotiationAborted │   │
+//                        │     │ └───┬───────────────┐  │        (sent/received)_tx_abort            │   │                    │   │
+//                        │     │     │               │  ├────────────────────────────────────────────┘   └────────────────────┘   │
+//                        │     └────►│ OurTxComplete │  │                                                                         │
+//                        │           │               ├──┼──┐                                                                      │
+//                        │           └───────────────┘  │  └──────────────────────────────────────────────────────────────────────┘
+//                        │                              │                         received_tx_complete
+//                        │                              │
+//                        └──────────────────────────────┘
+//
 pub(crate) trait AcceptingChanges {}
 
 /// We are currently in the process of negotiating the transaction.
@@ -56,16 +87,8 @@ pub(crate) struct TheirTxComplete;
 /// We have exchanged consecutive `tx_complete` messages with the counterparty and the transaction
 /// negotiation is complete.
 pub(crate) struct NegotiationComplete;
-/// We have sent a `tx_signatures` message and the counterparty is awaiting ours.
-pub(crate) struct OurTxSignatures;
-/// We have received a `tx_signatures` message from the counterparty
-pub(crate) struct TheirTxSignatures;
 /// The negotiation has failed and cannot be continued.
-pub(crate) struct NegotiationFailed {
-	error: InteractiveTxConstructionError,
-}
-
-// TODO: Add RBF negotiation
+pub(crate) struct NegotiationAborted(AbortReason);
 
 impl AcceptingChanges for Negotiating {}
 impl AcceptingChanges for OurTxComplete {}
@@ -116,31 +139,32 @@ impl InteractiveTxConstructor<Negotiating> {
 
 impl<S> InteractiveTxConstructor<S>
 	where S: AcceptingChanges {
-	fn fail_negotiation(self, error: InteractiveTxConstructionError) ->
-	Result<InteractiveTxConstructor<Negotiating>, InteractiveTxConstructor<NegotiationFailed>> {
-		Err(InteractiveTxConstructor { context: self.context, state: NegotiationFailed { error } })
+	fn abort_negotiation(self, reason: AbortReason) ->
+	Result<InteractiveTxConstructor<Negotiating>, InteractiveTxConstructor<NegotiationAborted>> {
+
+		Err(InteractiveTxConstructor { context: self.context, state: NegotiationAborted(reason) })
 	}
 
 	fn receive_tx_add_input(mut self, serial_id: SerialId, msg: TxAddInput, confirmed: bool) ->
-	Result<InteractiveTxConstructor<Negotiating>, InteractiveTxConstructor<NegotiationFailed>> {
+	Result<InteractiveTxConstructor<Negotiating>, InteractiveTxConstructor<NegotiationAborted>> {
 		// - TODO: MUST fail the negotiation if:
 		//   - `prevtx` is not a valid transaction
 		if !self.is_valid_counterparty_serial_id(serial_id) {
 			// The receiving node:
 			//  - MUST fail the negotiation if:
 			//     - the `serial_id` has the wrong parity
-			return self.fail_negotiation(InteractiveTxConstructionError::IncorrectSerialIdParity);
+			return self.abort_negotiation(AbortReason::IncorrectSerialIdParity);
 		}
 
 		if msg.sequence >= 0xFFFFFFFE {
 			// The receiving node:
 			//  - MUST fail the negotiation if:
 			//    - `sequence` is set to `0xFFFFFFFE` or `0xFFFFFFFF`
-			return self.fail_negotiation(InteractiveTxConstructionError::IncorrectInputSequenceValue);
+			return self.abort_negotiation(AbortReason::IncorrectInputSequenceValue);
 		}
 
 		if self.context.require_confirmed_inputs && !confirmed {
-			return self.fail_negotiation(InteractiveTxConstructionError::InputsNotConfirmed);
+			return self.abort_negotiation(AbortReason::InputsNotConfirmed);
 		}
 
 		if let Some(tx_out) = msg.prevtx.output.get(msg.prevtx_out as usize) {
@@ -148,19 +172,19 @@ impl<S> InteractiveTxConstructor<S>
 				// The receiving node:
 				//  - MUST fail the negotiation if:
 				//     - the `scriptPubKey` is not a witness program
-				return self.fail_negotiation(InteractiveTxConstructionError::PrevTxOutInvalid);
+				return self.abort_negotiation(AbortReason::PrevTxOutInvalid);
 			} else if !self.context.prevtx_outpoints.insert(OutPoint { txid: msg.prevtx.txid(), vout: msg.prevtx_out }) {
 				// The receiving node:
 				//  - MUST fail the negotiation if:
 				//     - the `prevtx` and `prevtx_vout` are identical to a previously added
 				//       (and not removed) input's
-				return self.fail_negotiation(InteractiveTxConstructionError::PrevTxOutInvalid);
+				return self.abort_negotiation(AbortReason::PrevTxOutInvalid);
 			}
 		} else {
 			// The receiving node:
 			//  - MUST fail the negotiation if:
 			//     - `prevtx_vout` is greater or equal to the number of outputs on `prevtx`
-			return self.fail_negotiation(InteractiveTxConstructionError::PrevTxOutInvalid);
+			return self.abort_negotiation(AbortReason::PrevTxOutInvalid);
 		}
 
 		self.context.received_tx_add_input_count += 1;
@@ -168,7 +192,7 @@ impl<S> InteractiveTxConstructor<S>
 			// The receiving node:
 			//  - MUST fail the negotiation if:
 			//     - if has received 4096 `tx_add_input` messages during this negotiation
-			return self.fail_negotiation(InteractiveTxConstructionError::ReceivedTooManyTxAddInputs);
+			return self.abort_negotiation(AbortReason::ReceivedTooManyTxAddInputs);
 		}
 
 		if let None = self.context.inputs.insert(serial_id, TxIn {
@@ -181,14 +205,14 @@ impl<S> InteractiveTxConstructor<S>
 			// The receiving node:
 			//  - MUST fail the negotiation if:
 			//    - the `serial_id` is already included in the transaction
-			self.fail_negotiation(InteractiveTxConstructionError::DuplicateSerialId)
+			self.abort_negotiation(AbortReason::DuplicateSerialId)
 		}
 	}
 
 	fn receive_tx_remove_input(mut self, serial_id: SerialId) ->
-	Result<InteractiveTxConstructor<Negotiating>, InteractiveTxConstructor<NegotiationFailed>> {
+	Result<InteractiveTxConstructor<Negotiating>, InteractiveTxConstructor<NegotiationAborted>> {
 		if !self.is_valid_counterparty_serial_id(serial_id) {
-			return self.fail_negotiation(InteractiveTxConstructionError::IncorrectSerialIdParity);
+			return self.abort_negotiation(AbortReason::IncorrectSerialIdParity);
 		}
 
 		if let Some(input) = self.context.inputs.remove(&serial_id) {
@@ -199,26 +223,26 @@ impl<S> InteractiveTxConstructor<S>
 			//  - MUST fail the negotiation if:
 			//    - the input or output identified by the `serial_id` was not added by the sender
 			//    - the `serial_id` does not correspond to a currently added input
-			self.fail_negotiation(InteractiveTxConstructionError::SerialIdUnknown)
+			self.abort_negotiation(AbortReason::SerialIdUnknown)
 		}
 	}
 
 	fn receive_tx_add_output(mut self, serial_id: u64, output: TxOut) ->
-	Result<InteractiveTxConstructor<Negotiating>, InteractiveTxConstructor<NegotiationFailed>> {
+	Result<InteractiveTxConstructor<Negotiating>, InteractiveTxConstructor<NegotiationAborted>> {
 		// TODO: the sats amount is less than the dust_limit
 		self.context.received_tx_add_output_count += 1;
 		if self.context.received_tx_add_output_count > MAX_RECEIVED_TX_ADD_OUTPUT_COUNT {
 			// The receiving node:
 			//  - MUST fail the negotiation if:
 			//     - if has received 4096 `tx_add_output` messages during this negotiation
-			return self.fail_negotiation(InteractiveTxConstructionError::ReceivedTooManyTxAddOutputs);
+			return self.abort_negotiation(AbortReason::ReceivedTooManyTxAddOutputs);
 		}
 
 		if output.value > MAX_MONEY {
 			// The receiving node:
 			// - MUST fail the negotiation if:
 			//		- the sats amount is greater than 2,100,000,000,000,000 (MAX_MONEY)
-			return self.fail_negotiation(InteractiveTxConstructionError::ExceedMaxiumSatsAllowed);
+			return self.abort_negotiation(AbortReason::ExceededMaximumSatsAllowed);
 		}
 
 		if let None = self.context.outputs.insert(serial_id, output) {
@@ -227,11 +251,11 @@ impl<S> InteractiveTxConstructor<S>
 			// The receiving node:
 			//  - MUST fail the negotiation if:
 			//    - the `serial_id` is already included in the transaction
-			self.fail_negotiation(InteractiveTxConstructionError::DuplicateSerialId)
+			self.abort_negotiation(AbortReason::DuplicateSerialId)
 		}
 	}
 
-	pub(crate) fn receive_tx_abort(mut self) -> InteractiveTxConstructor<NegotiationFailed> {
+	pub(crate) fn receive_tx_abort(mut self) -> InteractiveTxConstructor<NegotiationAborted> {
 		todo!();
 	}
 
@@ -245,7 +269,7 @@ impl<S> InteractiveTxConstructor<S>
 		InteractiveTxConstructor { context: self.context, state: Negotiating {} }
 	}
 
-	pub(crate) fn send_tx_abort(mut self) -> InteractiveTxConstructor<NegotiationFailed> {
+	pub(crate) fn send_tx_abort(mut self) -> InteractiveTxConstructor<NegotiationAborted> {
 		// A sending node:
 		// 	- MUST NOT have already transmitted tx_signatures
 		// 	- SHOULD forget the current negotiation and reset their state.
@@ -277,7 +301,7 @@ impl InteractiveTxConstructor<OurTxComplete> {
 }
 
 impl InteractiveTxConstructor<NegotiationComplete> {
-	fn get_psbt(&self) -> Result<Transaction, InteractiveTxConstructionError> {
+	fn get_psbt(&self) -> Result<Transaction, AbortReason> {
 		// Build transaction from inputs & outputs in `NegotiationContext`.
 		return Ok(Transaction {
 			version: self.context.base_tx.version,
@@ -293,9 +317,7 @@ enum ChannelMode {
 	OurTxComplete(InteractiveTxConstructor<OurTxComplete>),
 	TheirTxComplete(InteractiveTxConstructor<TheirTxComplete>),
 	NegotiationComplete(InteractiveTxConstructor<NegotiationComplete>),
-	OurTxSignatures(InteractiveTxConstructor<OurTxSignatures>),
-	TheirTxSignatures(InteractiveTxConstructor<TheirTxSignatures>),
-	NegotiationFailed(InteractiveTxConstructor<NegotiationFailed>),
+	NegotiationAborted(InteractiveTxConstructor<NegotiationAborted>),
 	Indeterminate,
 }
 
@@ -307,7 +329,7 @@ impl Default for ChannelMode {
 mod tests {
 	use core::str::FromStr;
 	use std::collections::HashMap;
-	use crate::ln::interactivetxs::ChannelMode::{Negotiating, NegotiationFailed};
+	use crate::ln::interactivetxs::ChannelMode::{Negotiating, NegotiationAborted};
 	use crate::ln::interactivetxs::{ChannelMode, InteractiveTxConstructor};
 	use crate::ln::msgs::TransactionU16LenLimited;
 	use bitcoin::consensus::encode;
@@ -352,7 +374,7 @@ mod tests {
 					true
 				) {
 					Ok(c) => Negotiating(c),
-					Err(c) => NegotiationFailed(c),
+					Err(c) => NegotiationAborted(c),
 				}
 			} else {
 				mode
