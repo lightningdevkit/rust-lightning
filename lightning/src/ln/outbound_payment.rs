@@ -60,6 +60,7 @@ pub(crate) enum PendingOutboundPayment {
 	/// and add a pending payment that was already fulfilled.
 	Fulfilled {
 		session_privs: HashSet<[u8; 32]>,
+		/// Filled in for any payment which moved to `Fulfilled` on LDK 0.0.104 or later.
 		payment_hash: Option<PaymentHash>,
 		timer_ticks_without_htlcs: u8,
 	},
@@ -1168,9 +1169,11 @@ impl OutboundPayments {
 				if let hash_map::Entry::Occupied(mut payment) = outbounds.entry(payment_id) {
 					assert!(payment.get().is_fulfilled());
 					if payment.get_mut().remove(&session_priv_bytes, None) {
+						let payment_hash = payment.get().payment_hash();
+						debug_assert!(payment_hash.is_some());
 						pending_events.push_back((events::Event::PaymentPathSuccessful {
 							payment_id,
-							payment_hash: payment.get().payment_hash(),
+							payment_hash,
 							path,
 						}, None));
 					}
