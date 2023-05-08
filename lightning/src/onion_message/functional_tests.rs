@@ -284,3 +284,20 @@ fn peer_buffer_full() {
 	let err = nodes[0].messenger.send_onion_message(&[], Destination::Node(nodes[1].get_node_pk()), OnionMessageContents::Custom(test_msg), None).unwrap_err();
 	assert_eq!(err, SendError::BufferFull);
 }
+
+#[test]
+fn many_hops() {
+	// Check we can send over a route with many hops. This will exercise our logic for onion messages
+	// of size [`crate::onion_message::packet::BIG_PACKET_HOP_DATA_LEN`].
+	let num_nodes: usize = 25;
+	let nodes = create_nodes(num_nodes as u8);
+	let test_msg = OnionMessageContents::Custom(TestCustomMessage {});
+
+	let mut intermediates = vec![];
+	for i in 1..(num_nodes-1) {
+		intermediates.push(nodes[i].get_node_pk());
+	}
+
+	nodes[0].messenger.send_onion_message(&intermediates, Destination::Node(nodes[num_nodes-1].get_node_pk()), test_msg, None).unwrap();
+	pass_along_path(&nodes);
+}
