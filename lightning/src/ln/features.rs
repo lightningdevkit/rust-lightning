@@ -532,6 +532,14 @@ impl InvoiceFeatures {
 	}
 }
 
+impl Bolt12InvoiceFeatures {
+	/// Converts `Bolt12InvoiceFeatures` to `Features<C>`. Only known `Bolt12InvoiceFeatures` relevant
+	/// to context `C` are included in the result.
+	pub(crate) fn to_context<C: sealed::Context>(&self) -> Features<C> {
+		self.to_context_internal()
+	}
+}
+
 impl ChannelTypeFeatures {
 	// Maps the relevant `InitFeatures` to `ChannelTypeFeatures`. Any unknown features to
 	// `ChannelTypeFeatures` are not included in the result.
@@ -791,6 +799,7 @@ impl_feature_len_prefixed_write!(InitFeatures);
 impl_feature_len_prefixed_write!(ChannelFeatures);
 impl_feature_len_prefixed_write!(NodeFeatures);
 impl_feature_len_prefixed_write!(InvoiceFeatures);
+impl_feature_len_prefixed_write!(Bolt12InvoiceFeatures);
 impl_feature_len_prefixed_write!(BlindedHopFeatures);
 
 // Some features only appear inside of TLVs, so they don't have a length prefix when serialized.

@@ -45,7 +45,7 @@ use crate::ln::features::{ChannelFeatures, ChannelTypeFeatures, InitFeatures, No
 #[cfg(any(feature = "_test_utils", test))]
 use crate::ln::features::InvoiceFeatures;
 use crate::routing::gossip::NetworkGraph;
-use crate::routing::router::{BlindedTail, DefaultRouter, InFlightHtlcs, Path, PaymentParameters, Route, RouteHop, RouteParameters, Router};
+use crate::routing::router::{BlindedTail, DefaultRouter, InFlightHtlcs, Path, Payee, PaymentParameters, Route, RouteHop, RouteParameters, Router};
 use crate::routing::scoring::ProbabilisticScorer;
 use crate::ln::msgs;
 use crate::ln::onion_utils;
@@ -7251,8 +7251,10 @@ impl Readable for HTLCSource {
 					return Err(DecodeError::InvalidValue);
 				}
 				if let Some(params) = payment_params.as_mut() {
-					if params.final_cltv_expiry_delta == 0 {
-						params.final_cltv_expiry_delta = path.final_cltv_expiry_delta().ok_or(DecodeError::InvalidValue)?;
+					if let Payee::Clear { ref mut final_cltv_expiry_delta, .. } = params.payee {
+						if final_cltv_expiry_delta == &0 {
+							*final_cltv_expiry_delta = path.final_cltv_expiry_delta().ok_or(DecodeError::InvalidValue)?;
+						}
 					}
 				}
 				Ok(HTLCSource::OutboundRoute {
@@ -9428,7 +9430,7 @@ pub mod bench {
 		macro_rules! send_payment {
 			($node_a: expr, $node_b: expr) => {
 				let payment_params = PaymentParameters::from_node_id($node_b.get_our_node_id(), TEST_FINAL_CLTV)
-					.with_features($node_b.invoice_features());
+					.with_bolt11_features($node_b.invoice_features()).unwrap();
 				let mut payment_preimage = PaymentPreimage([0; 32]);
 				payment_preimage.0[0..8].copy_from_slice(&payment_count.to_le_bytes());
 				payment_count += 1;

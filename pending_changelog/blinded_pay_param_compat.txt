@@ -1,0 +1,3 @@
+## Backwards Compatibility
+
+* `PaymentParameters` written with blinded path info using 0.0.115 will not be readable in 0.0.116

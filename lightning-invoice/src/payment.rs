@@ -152,9 +152,9 @@ fn pay_invoice_using_amount<P: Deref>(
 	let mut payment_params = PaymentParameters::from_node_id(invoice.recover_payee_pub_key(),
 		invoice.min_final_cltv_expiry_delta() as u32)
 		.with_expiry_time(expiry_time_from_unix_epoch(invoice).as_secs())
-		.with_route_hints(invoice.route_hints());
+		.with_route_hints(invoice.route_hints()).unwrap();
 	if let Some(features) = invoice.features() {
-		payment_params = payment_params.with_features(features.clone());
+		payment_params = payment_params.with_bolt11_features(features.clone()).unwrap();
 	}
 	let route_params = RouteParameters {
 		payment_params,

@@ -300,7 +300,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 					let final_cltv_expiry_delta = slice_to_be32(get_slice!(4));
 					let route_params = RouteParameters {
 						payment_params: PaymentParameters::from_node_id(*target, final_cltv_expiry_delta)
-							.with_route_hints(last_hops.clone()),
+							.with_route_hints(last_hops.clone()).unwrap(),
 						final_value_msat,
 					};
 					let _ = find_route(&our_pubkey, &route_params, &net_graph,
