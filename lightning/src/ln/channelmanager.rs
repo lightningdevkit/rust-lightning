@@ -7756,6 +7756,8 @@ where
 
 		for (funding_txo, _) in args.channel_monitors.iter() {
 			if !funding_txo_set.contains(funding_txo) {
+				log_info!(args.logger, "Queueing monitor update to ensure missing channel {} is force closed",
+					log_bytes!(funding_txo.to_channel_id()));
 				let monitor_update = ChannelMonitorUpdate {
 					update_id: CLOSED_CHANNEL_UPDATE_ID,
 					updates: vec![ChannelMonitorUpdateStep::ChannelForceClosed { should_broadcast: true }],
