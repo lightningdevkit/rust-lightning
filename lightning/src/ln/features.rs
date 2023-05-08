@@ -533,11 +533,17 @@ impl InvoiceFeatures {
 	/// [`PaymentParameters::for_keysend`], thus omitting the need for payers to manually construct an
 	/// `InvoiceFeatures` for [`find_route`].
 	///
+	/// MPP keysend is not widely supported yet, so we parameterize support to allow the user to
+	/// choose whether their router should find multi-part routes.
+	///
 	/// [`PaymentParameters::for_keysend`]: crate::routing::router::PaymentParameters::for_keysend
 	/// [`find_route`]: crate::routing::router::find_route
-	pub(crate) fn for_keysend() -> InvoiceFeatures {
+	pub(crate) fn for_keysend(allow_mpp: bool) -> InvoiceFeatures {
 		let mut res = InvoiceFeatures::empty();
 		res.set_variable_length_onion_optional();
+		if allow_mpp {
+			res.set_basic_mpp_optional();
+		}
 		res
 	}
 }

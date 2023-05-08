@@ -414,9 +414,9 @@ pub struct RecipientOnionFields {
 	/// If you do not have one, the [`Route`] you pay over must not contain multiple paths as
 	/// multi-path payments require a recipient-provided secret.
 	///
-	/// Note that for spontaneous payments most lightning nodes do not currently support MPP
-	/// receives, thus you should generally never be providing a secret here for spontaneous
-	/// payments.
+	/// Some implementations may reject spontaneous payments with payment secrets, so you may only
+	/// want to provide a secret for a spontaneous payment if MPP is needed and you know your
+	/// recipient will not reject it.
 	pub payment_secret: Option<PaymentSecret>,
 	/// The payment metadata serves a similar purpose as [`Self::payment_secret`] but is of
 	/// arbitrary length. This gives recipients substantially more flexibility to receive
@@ -447,10 +447,13 @@ impl RecipientOnionFields {
 	}
 
 	/// Creates a new [`RecipientOnionFields`] with no fields. This generally does not create
-	/// payable HTLCs except for spontaneous payments, i.e. this should generally only be used for
-	/// calls to [`ChannelManager::send_spontaneous_payment`].
+	/// payable HTLCs except for single-path spontaneous payments, i.e. this should generally
+	/// only be used for calls to [`ChannelManager::send_spontaneous_payment`]. If you are sending
+	/// a spontaneous MPP this will not work as all MPP require payment secrets; you may
+	/// instead want to use [`RecipientOnionFields::secret_only`].
 	///
 	/// [`ChannelManager::send_spontaneous_payment`]: super::channelmanager::ChannelManager::send_spontaneous_payment
+	/// [`RecipientOnionFields::secret_only`]: RecipientOnionFields::secret_only
 	pub fn spontaneous_empty() -> Self {
 		Self { payment_secret: None, payment_metadata: None }
 	}

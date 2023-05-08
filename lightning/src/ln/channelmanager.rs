@@ -2924,8 +2924,6 @@ where
 	/// Similar to regular payments, you MUST NOT reuse a `payment_preimage` value. See
 	/// [`send_payment`] for more information about the risks of duplicate preimage usage.
 	///
-	/// Note that `route` must have exactly one path.
-	///
 	/// [`send_payment`]: Self::send_payment
 	pub fn send_spontaneous_payment(&self, route: &Route, payment_preimage: Option<PaymentPreimage>, recipient_onion: RecipientOnionFields, payment_id: PaymentId) -> Result<PaymentHash, PaymentSendFailure> {
 		let best_block_height = self.best_block.read().unwrap().height();
@@ -8580,7 +8578,7 @@ mod tests {
 
 		// Next, attempt a keysend payment and make sure it fails.
 		let route_params = RouteParameters {
-			payment_params: PaymentParameters::for_keysend(expected_route.last().unwrap().node.get_our_node_id(), TEST_FINAL_CLTV),
+			payment_params: PaymentParameters::for_keysend(expected_route.last().unwrap().node.get_our_node_id(), TEST_FINAL_CLTV, false),
 			final_value_msat: 100_000,
 		};
 		let route = find_route(
@@ -8673,7 +8671,7 @@ mod tests {
 
 		let _chan = create_chan_between_nodes(&nodes[0], &nodes[1]);
 		let route_params = RouteParameters {
-			payment_params: PaymentParameters::for_keysend(payee_pubkey, 40),
+			payment_params: PaymentParameters::for_keysend(payee_pubkey, 40, false),
 			final_value_msat: 10_000,
 		};
 		let network_graph = nodes[0].network_graph.clone();
@@ -8717,7 +8715,7 @@ mod tests {
 
 		let _chan = create_chan_between_nodes(&nodes[0], &nodes[1]);
 		let route_params = RouteParameters {
-			payment_params: PaymentParameters::for_keysend(payee_pubkey, 40),
+			payment_params: PaymentParameters::for_keysend(payee_pubkey, 40, false),
 			final_value_msat: 10_000,
 		};
 		let network_graph = nodes[0].network_graph.clone();
