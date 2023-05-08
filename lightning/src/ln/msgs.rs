@@ -26,7 +26,7 @@
 
 use bitcoin::secp256k1::PublicKey;
 use bitcoin::secp256k1::ecdsa::Signature;
-use bitcoin::secp256k1;
+use bitcoin::{secp256k1, Witness, Transaction};
 use bitcoin::blockdata::script::Script;
 use bitcoin::hash_types::{Txid, BlockHash};
 
@@ -158,6 +158,8 @@ pub struct Pong {
 
 /// An [`open_channel`] message to be sent to or received from a peer.
 ///
+/// Used in V1 channel establishment
+///
 /// [`open_channel`]: https://github.com/lightning/bolts/blob/master/02-peer-protocol.md#the-open_channel-message
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OpenChannel {
@@ -208,7 +210,68 @@ pub struct OpenChannel {
 	pub channel_type: Option<ChannelTypeFeatures>,
 }
 
+/// An open_channel2 message to be sent by or received from the channel initiator.
+///
+/// Used in V2 channel establishment
+///
+// TODO(dual_funding): Add spec link for `open_channel2`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OpenChannelV2 {
+	/// The genesis hash of the blockchain where the channel is to be opened
+	pub chain_hash: BlockHash,
+	/// A temporary channel ID derived using a zeroed out value for the channel acceptor's revocation basepoint
+	pub temporary_channel_id: [u8; 32],
+	/// The feerate for the funding transaction set by the channel initiator
+	pub funding_feerate_sat_per_1000_weight: u32,
+	/// The feerate for the commitment transaction set by the channel initiator
+	pub commitment_feerate_sat_per_1000_weight: u32,
+	/// Part of the channel value contributed by the channel initiator
+	pub funding_satoshis: u64,
+	/// The threshold below which outputs on transactions broadcast by the channel initiator will be
+	/// omitted
+	pub dust_limit_satoshis: u64,
+	/// The maximum inbound HTLC value in flight towards channel initiator, in milli-satoshi
+	pub max_htlc_value_in_flight_msat: u64,
+	/// The minimum HTLC size incoming to channel initiator, in milli-satoshi
+	pub htlc_minimum_msat: u64,
+	/// The number of blocks which the counterparty will have to wait to claim on-chain funds if they
+	/// broadcast a commitment transaction
+	pub to_self_delay: u16,
+	/// The maximum number of inbound HTLCs towards channel initiator
+	pub max_accepted_htlcs: u16,
+	/// The locktime for the funding transaction
+	pub locktime: u32,
+	/// The channel initiator's key controlling the funding transaction
+	pub funding_pubkey: PublicKey,
+	/// Used to derive a revocation key for transactions broadcast by counterparty
+	pub revocation_basepoint: PublicKey,
+	/// A payment key to channel initiator for transactions broadcast by counterparty
+	pub payment_basepoint: PublicKey,
+	/// Used to derive a payment key to channel initiator for transactions broadcast by channel
+	/// initiator
+	pub delayed_payment_basepoint: PublicKey,
+	/// Used to derive an HTLC payment key to channel initiator
+	pub htlc_basepoint: PublicKey,
+	/// The first to-be-broadcast-by-channel-initiator transaction's per commitment point
+	pub first_per_commitment_point: PublicKey,
+	/// The second to-be-broadcast-by-channel-initiator transaction's per commitment point
+	pub second_per_commitment_point: PublicKey,
+	/// Channel flags
+	pub channel_flags: u8,
+	/// Optionally, a request to pre-set the to-channel-initiator output's scriptPubkey for when we
+	/// collaboratively close
+	pub shutdown_scriptpubkey: Option<Script>,
+	/// The channel type that this channel will represent. If none is set, we derive the channel
+	/// type from the intersection of our feature bits with our counterparty's feature bits from
+	/// the Init message.
+	pub channel_type: Option<ChannelTypeFeatures>,
+	/// Optionally, a requirement that only confirmed inputs can be added
+	pub require_confirmed_inputs: Option<()>,
+}
+
 /// An [`accept_channel`] message to be sent to or received from a peer.
+///
+/// Used in V1 channel establishment
 ///
 /// [`accept_channel`]: https://github.com/lightning/bolts/blob/master/02-peer-protocol.md#the-accept_channel-message
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -254,7 +317,62 @@ pub struct AcceptChannel {
 	pub next_local_nonce: Option<musig2::types::PublicNonce>,
 }
 
+/// An accept_channel2 message to be sent by or received from the channel accepter.
+///
+/// Used in V2 channel establishment
+///
+// TODO(dual_funding): Add spec link for `accept_channel2`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AcceptChannelV2 {
+	/// The same `temporary_channel_id` received from the initiator's `open_channel2` message.
+	pub temporary_channel_id: [u8; 32],
+	/// Part of the channel value contributed by the channel acceptor
+	pub funding_satoshis: u64,
+	/// The threshold below which outputs on transactions broadcast by the channel acceptor will be
+	/// omitted
+	pub dust_limit_satoshis: u64,
+	/// The maximum inbound HTLC value in flight towards channel acceptor, in milli-satoshi
+	pub max_htlc_value_in_flight_msat: u64,
+	/// The minimum HTLC size incoming to channel acceptor, in milli-satoshi
+	pub htlc_minimum_msat: u64,
+	/// Minimum depth of the funding transaction before the channel is considered open
+	pub minimum_depth: u32,
+	/// The number of blocks which the counterparty will have to wait to claim on-chain funds if they
+	/// broadcast a commitment transaction
+	pub to_self_delay: u16,
+	/// The maximum number of inbound HTLCs towards channel acceptor
+	pub max_accepted_htlcs: u16,
+	/// The channel acceptor's key controlling the funding transaction
+	pub funding_pubkey: PublicKey,
+	/// Used to derive a revocation key for transactions broadcast by counterparty
+	pub revocation_basepoint: PublicKey,
+	/// A payment key to channel acceptor for transactions broadcast by counterparty
+	pub payment_basepoint: PublicKey,
+	/// Used to derive a payment key to channel acceptor for transactions broadcast by channel
+	/// acceptor
+	pub delayed_payment_basepoint: PublicKey,
+	/// Used to derive an HTLC payment key to channel acceptor for transactions broadcast by counterparty
+	pub htlc_basepoint: PublicKey,
+	/// The first to-be-broadcast-by-channel-acceptor transaction's per commitment point
+	pub first_per_commitment_point: PublicKey,
+	/// The second to-be-broadcast-by-channel-acceptor transaction's per commitment point
+	pub second_per_commitment_point: PublicKey,
+	/// Optionally, a request to pre-set the to-channel-acceptor output's scriptPubkey for when we
+	/// collaboratively close
+	pub shutdown_scriptpubkey: Option<Script>,
+	/// The channel type that this channel will represent. If none is set, we derive the channel
+	/// type from the intersection of our feature bits with our counterparty's feature bits from
+	/// the Init message.
+	///
+	/// This is required to match the equivalent field in [`OpenChannelV2::channel_type`].
+	pub channel_type: Option<ChannelTypeFeatures>,
+	/// Optionally, a requirement that only confirmed inputs can be added
+	pub require_confirmed_inputs: Option<()>,
+}
+
 /// A [`funding_created`] message to be sent to or received from a peer.
+///
+/// Used in V1 channel establishment
 ///
 /// [`funding_created`]: https://github.com/lightning/bolts/blob/master/02-peer-protocol.md#the-funding_created-message
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -276,6 +394,8 @@ pub struct FundingCreated {
 }
 
 /// A [`funding_signed`] message to be sent to or received from a peer.
+///
+/// Used in V1 channel establishment
 ///
 /// [`funding_signed`]: https://github.com/lightning/bolts/blob/master/02-peer-protocol.md#the-funding_signed-message
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -303,6 +423,167 @@ pub struct ChannelReady {
 	/// The sender will accept payments to be forwarded over this SCID and forward them to this
 	/// messages' recipient.
 	pub short_channel_id_alias: Option<u64>,
+}
+
+/// A wrapper for a `Transaction` which can only be constructed with [`TransactionU16LenLimited::new`]
+/// if the `Transaction`'s consensus-serialized length is <= u16::MAX.
+///
+/// Use [`TransactionU16LenLimited::into_transaction`] to convert into the contained `Transaction`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TransactionU16LenLimited(Transaction);
+
+impl TransactionU16LenLimited {
+	/// Constructs a new `TransactionU16LenLimited` from a `Transaction` only if it's consensus-
+	/// serialized length is <= u16::MAX.
+	pub fn new(transaction: Transaction) -> Result<Self, ()> {
+		if transaction.serialized_length() > (u16::MAX as usize) {
+			Err(())
+		} else {
+			Ok(Self(transaction))
+		}
+	}
+
+	/// Consumes this `TransactionU16LenLimited` and returns its contained `Transaction`.
+	pub fn into_transaction(self) -> Transaction {
+		self.0
+	}
+}
+
+impl Writeable for TransactionU16LenLimited {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		(self.0.serialized_length() as u16).write(w)?;
+		self.0.write(w)
+	}
+}
+
+impl Readable for TransactionU16LenLimited {
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+		let len = <u16 as Readable>::read(r)?;
+		let mut tx_reader = FixedLengthReader::new(r, len as u64);
+		Ok(Self(Readable::read(&mut tx_reader)?))
+	}
+}
+
+/// A tx_add_input message for adding an input during interactive transaction construction
+///
+// TODO(dual_funding): Add spec link for `tx_add_input`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TxAddInput {
+	/// The channel ID
+	pub channel_id: [u8; 32],
+	/// A randomly chosen unique identifier for this input, which is even for initiators and odd for
+	/// non-initiators.
+	pub serial_id: u64,
+	/// Serialized transaction that contains the output this input spends to verify that it is non
+	/// malleable.
+	pub prevtx: TransactionU16LenLimited,
+	/// The index of the output being spent
+	pub prevtx_out: u32,
+	/// The sequence number of this input
+	pub sequence: u32,
+}
+
+/// A tx_add_output message for adding an output during interactive transaction construction.
+///
+// TODO(dual_funding): Add spec link for `tx_add_output`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TxAddOutput {
+	/// The channel ID
+	pub channel_id: [u8; 32],
+	/// A randomly chosen unique identifier for this output, which is even for initiators and odd for
+	/// non-initiators.
+	pub serial_id: u64,
+	/// The satoshi value of the output
+	pub sats: u64,
+	/// The scriptPubKey for the output
+	pub script: Script,
+}
+
+/// A tx_remove_input message for removing an input during interactive transaction construction.
+///
+// TODO(dual_funding): Add spec link for `tx_remove_input`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TxRemoveInput {
+	/// The channel ID
+	pub channel_id: [u8; 32],
+	/// The serial ID of the input to be removed
+	pub serial_id: u64,
+}
+
+/// A tx_remove_output message for removing an output during interactive transaction construction.
+///
+// TODO(dual_funding): Add spec link for `tx_remove_output`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TxRemoveOutput {
+	/// The channel ID
+	pub channel_id: [u8; 32],
+	/// The serial ID of the output to be removed
+	pub serial_id: u64,
+}
+
+/// A tx_complete message signalling the conclusion of a peer's transaction contributions during
+/// interactive transaction construction.
+///
+// TODO(dual_funding): Add spec link for `tx_complete`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TxComplete {
+	/// The channel ID
+	pub channel_id: [u8; 32],
+}
+
+/// A tx_signatures message containing the sender's signatures for a transaction constructed with
+/// interactive transaction construction.
+///
+// TODO(dual_funding): Add spec link for `tx_signatures`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TxSignatures {
+	/// The channel ID
+	pub channel_id: [u8; 32],
+	/// The TXID
+	pub tx_hash: Txid,
+	/// The list of witnesses
+	pub witnesses: Vec<Witness>,
+}
+
+/// A tx_init_rbf message which initiates a replacement of the transaction after it's been
+/// completed.
+///
+// TODO(dual_funding): Add spec link for `tx_init_rbf`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TxInitRbf {
+	/// The channel ID
+	pub channel_id: [u8; 32],
+	/// The locktime of the transaction
+	pub locktime: u32,
+	/// The feerate of the transaction
+	pub feerate_sat_per_1000_weight: u32,
+	/// The number of satoshis the sender will contribute to or, if negative, remove from
+	/// (e.g. splice-out) the funding output of the transaction
+	pub funding_output_contribution: Option<i64>,
+}
+
+/// A tx_ack_rbf message which acknowledges replacement of the transaction after it's been
+/// completed.
+///
+// TODO(dual_funding): Add spec link for `tx_ack_rbf`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TxAckRbf {
+	/// The channel ID
+	pub channel_id: [u8; 32],
+	/// The number of satoshis the sender will contribute to or, if negative, remove from
+	/// (e.g. splice-out) the funding output of the transaction
+	pub funding_output_contribution: Option<i64>,
+}
+
+/// A tx_abort message which signals the cancellation of an in-progress transaction negotiation.
+///
+// TODO(dual_funding): Add spec link for `tx_abort`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TxAbort {
+	/// The channel ID
+	pub channel_id: [u8; 32],
+	/// Message data
+	pub data: Vec<u8>,
 }
 
 /// A [`shutdown`] message to be sent to or received from a peer.
@@ -474,6 +755,8 @@ pub struct ChannelReestablish {
 	pub your_last_per_commitment_secret: [u8; 32],
 	/// The sender's per-commitment point for their current commitment transaction
 	pub my_current_per_commitment_point: PublicKey,
+	/// The next funding transaction ID
+	pub next_funding_txid: Option<Txid>,
 }
 
 /// An [`announcement_signatures`] message to be sent to or received from a peer.
@@ -567,7 +850,7 @@ impl NetAddress {
 }
 
 impl Writeable for NetAddress {
-	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		match self {
 			&NetAddress::IPv4 { ref addr, ref port } => {
 				1u8.write(writer)?;
@@ -954,8 +1237,12 @@ pub trait ChannelMessageHandler : MessageSendEventsProvider {
 	// Channel init:
 	/// Handle an incoming `open_channel` message from the given peer.
 	fn handle_open_channel(&self, their_node_id: &PublicKey, msg: &OpenChannel);
+	/// Handle an incoming `open_channel2` message from the given peer.
+	fn handle_open_channel_v2(&self, their_node_id: &PublicKey, msg: &OpenChannelV2);
 	/// Handle an incoming `accept_channel` message from the given peer.
 	fn handle_accept_channel(&self, their_node_id: &PublicKey, msg: &AcceptChannel);
+	/// Handle an incoming `accept_channel2` message from the given peer.
+	fn handle_accept_channel_v2(&self, their_node_id: &PublicKey, msg: &AcceptChannelV2);
 	/// Handle an incoming `funding_created` message from the given peer.
 	fn handle_funding_created(&self, their_node_id: &PublicKey, msg: &FundingCreated);
 	/// Handle an incoming `funding_signed` message from the given peer.
@@ -968,6 +1255,26 @@ pub trait ChannelMessageHandler : MessageSendEventsProvider {
 	fn handle_shutdown(&self, their_node_id: &PublicKey, msg: &Shutdown);
 	/// Handle an incoming `closing_signed` message from the given peer.
 	fn handle_closing_signed(&self, their_node_id: &PublicKey, msg: &ClosingSigned);
+
+	// Interactive channel construction
+	/// Handle an incoming `tx_add_input message` from the given peer.
+	fn handle_tx_add_input(&self, their_node_id: &PublicKey, msg: &TxAddInput);
+	/// Handle an incoming `tx_add_output` message from the given peer.
+	fn handle_tx_add_output(&self, their_node_id: &PublicKey, msg: &TxAddOutput);
+	/// Handle an incoming `tx_remove_input` message from the given peer.
+	fn handle_tx_remove_input(&self, their_node_id: &PublicKey, msg: &TxRemoveInput);
+	/// Handle an incoming `tx_remove_output` message from the given peer.
+	fn handle_tx_remove_output(&self, their_node_id: &PublicKey, msg: &TxRemoveOutput);
+	/// Handle an incoming `tx_complete message` from the given peer.
+	fn handle_tx_complete(&self, their_node_id: &PublicKey, msg: &TxComplete);
+	/// Handle an incoming `tx_signatures` message from the given peer.
+	fn handle_tx_signatures(&self, their_node_id: &PublicKey, msg: &TxSignatures);
+	/// Handle an incoming `tx_init_rbf` message from the given peer.
+	fn handle_tx_init_rbf(&self, their_node_id: &PublicKey, msg: &TxInitRbf);
+	/// Handle an incoming `tx_ack_rbf` message from the given peer.
+	fn handle_tx_ack_rbf(&self, their_node_id: &PublicKey, msg: &TxAckRbf);
+	/// Handle an incoming `tx_abort message` from the given peer.
+	fn handle_tx_abort(&self, their_node_id: &PublicKey, msg: &TxAbort);
 
 	// HTLC handling:
 	/// Handle an incoming `update_add_htlc` message from the given peer.
@@ -1284,6 +1591,82 @@ impl_writeable_msg!(AcceptChannel, {
 	(4, next_local_nonce, option),
 });
 
+impl_writeable_msg!(AcceptChannelV2, {
+	temporary_channel_id,
+	funding_satoshis,
+	dust_limit_satoshis,
+	max_htlc_value_in_flight_msat,
+	htlc_minimum_msat,
+	minimum_depth,
+	to_self_delay,
+	max_accepted_htlcs,
+	funding_pubkey,
+	revocation_basepoint,
+	payment_basepoint,
+	delayed_payment_basepoint,
+	htlc_basepoint,
+	first_per_commitment_point,
+	second_per_commitment_point,
+}, {
+	(0, shutdown_scriptpubkey, option),
+	(1, channel_type, option),
+	(2, require_confirmed_inputs, option),
+});
+
+impl_writeable_msg!(TxAddInput, {
+	channel_id,
+	serial_id,
+	prevtx,
+	prevtx_out,
+	sequence,
+}, {});
+
+impl_writeable_msg!(TxAddOutput, {
+	channel_id,
+	serial_id,
+	sats,
+	script,
+}, {});
+
+impl_writeable_msg!(TxRemoveInput, {
+	channel_id,
+	serial_id,
+}, {});
+
+impl_writeable_msg!(TxRemoveOutput, {
+	channel_id,
+	serial_id,
+}, {});
+
+impl_writeable_msg!(TxComplete, {
+	channel_id,
+}, {});
+
+impl_writeable_msg!(TxSignatures, {
+	channel_id,
+	tx_hash,
+	witnesses,
+}, {});
+
+impl_writeable_msg!(TxInitRbf, {
+	channel_id,
+	locktime,
+	feerate_sat_per_1000_weight,
+}, {
+	(0, funding_output_contribution, option),
+});
+
+impl_writeable_msg!(TxAckRbf, {
+	channel_id,
+}, {
+	(0, funding_output_contribution, option),
+});
+
+impl_writeable_msg!(TxAbort, {
+	channel_id,
+	data,
+}, {});
+
 impl_writeable_msg!(AnnouncementSignatures, {
 	channel_id,
 	short_channel_id,
@@ -1297,7 +1680,9 @@ impl_writeable_msg!(ChannelReestablish, {
 	next_remote_commitment_number,
 	your_last_per_commitment_secret,
 	my_current_per_commitment_point,
-}, {});
+}, {
+	(0, next_funding_txid, option),
+});
 
 impl_writeable_msg!(ClosingSigned,
 	{ channel_id, fee_satoshis, signature },
@@ -1420,6 +1805,32 @@ impl_writeable_msg!(OpenChannel, {
 }, {
 	(0, shutdown_scriptpubkey, (option, encoding: (Script, WithoutLength))), // Don't encode length twice.
 	(1, channel_type, option),
+});
+
+impl_writeable_msg!(OpenChannelV2, {
+	chain_hash,
+	temporary_channel_id,
+	funding_feerate_sat_per_1000_weight,
+	commitment_feerate_sat_per_1000_weight,
+	funding_satoshis,
+	dust_limit_satoshis,
+	max_htlc_value_in_flight_msat,
+	htlc_minimum_msat,
+	to_self_delay,
+	max_accepted_htlcs,
+	locktime,
+	funding_pubkey,
+	revocation_basepoint,
+	payment_basepoint,
+	delayed_payment_basepoint,
+	htlc_basepoint,
+	first_per_commitment_point,
+	second_per_commitment_point,
+	channel_flags,
+}, {
+	(0, shutdown_scriptpubkey, option),
+	(1, channel_type, option),
+	(2, require_confirmed_inputs, option),
 });
 
 #[cfg(not(taproot))]
@@ -2039,10 +2450,11 @@ impl_writeable_msg!(GossipTimestampFilter, {
 
 #[cfg(test)]
 mod tests {
+	use bitcoin::{Transaction, PackedLockTime, TxIn, Script, Sequence, Witness, TxOut};
 	use hex;
 	use crate::ln::{PaymentPreimage, PaymentHash, PaymentSecret};
 	use crate::ln::features::{ChannelFeatures, ChannelTypeFeatures, InitFeatures, NodeFeatures};
-	use crate::ln::msgs;
+	use crate::ln::msgs::{self, TransactionU16LenLimited};
 	use crate::ln::msgs::{FinalOnionHopData, OnionErrorPacket, OnionHopDataFormat};
 	use crate::routing::gossip::{NodeAlias, NodeId};
 	use crate::util::ser::{Writeable, Readable, Hostname};
@@ -2060,6 +2472,9 @@ mod tests {
 	use crate::io::{self, Cursor};
 	use crate::prelude::*;
 	use core::convert::TryFrom;
+	use core::str::FromStr;
+
+	use crate::chain::transaction::OutPoint;
 
 	#[test]
 	fn encoding_channel_reestablish() {
@@ -2074,12 +2489,53 @@ mod tests {
 			next_remote_commitment_number: 4,
 			your_last_per_commitment_secret: [9;32],
 			my_current_per_commitment_point: public_key,
+			next_funding_txid: None,
 		};
 
 		let encoded_value = cr.encode();
 		assert_eq!(
 			encoded_value,
-			vec![4, 0, 0, 0, 0, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 0, 6, 0, 0, 0, 0, 0, 0, 0, 7, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 4, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 3, 27, 132, 197, 86, 123, 18, 100, 64, 153, 93, 62, 213, 170, 186, 5, 101, 215, 30, 24, 52, 96, 72, 25, 255, 156, 23, 245, 233, 213, 221, 7, 143]
+			vec![
+				4, 0, 0, 0, 0, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 0, 6, 0, 0, 0, 0, 0, 0, 0, 7, 0, 0, 0, 0, 0, 0, 0, // channel_id
+				0, 0, 0, 0, 0, 0, 0, 3, // next_local_commitment_number
+				0, 0, 0, 0, 0, 0, 0, 4, // next_remote_commitment_number
+				9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, // your_last_per_commitment_secret
+				3, 27, 132, 197, 86, 123, 18, 100, 64, 153, 93, 62, 213, 170, 186, 5, 101, 215, 30, 24, 52, 96, 72, 25, 255, 156, 23, 245, 233, 213, 221, 7, 143, // my_current_per_commitment_point
+			]
+		);
+	}
+
+	#[test]
+	fn encoding_channel_reestablish_with_next_funding_txid() {
+		let public_key = {
+			let secp_ctx = Secp256k1::new();
+			PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&hex::decode("0101010101010101010101010101010101010101010101010101010101010101").unwrap()[..]).unwrap())
+		};
+
+		let cr = msgs::ChannelReestablish {
+			channel_id: [4, 0, 0, 0, 0, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 0, 6, 0, 0, 0, 0, 0, 0, 0, 7, 0, 0, 0, 0, 0, 0, 0],
+			next_local_commitment_number: 3,
+			next_remote_commitment_number: 4,
+			your_last_per_commitment_secret: [9;32],
+			my_current_per_commitment_point: public_key,
+			next_funding_txid: Some(Txid::from_hash(bitcoin::hashes::Hash::from_slice(&[
+				48, 167, 250, 69, 152, 48, 103, 172, 164, 99, 59, 19, 23, 11, 92, 84, 15, 80, 4, 12, 98, 82, 75, 31, 201, 11, 91, 23, 98, 23, 53, 124,
+			]).unwrap())),
+		};
+
+		let encoded_value = cr.encode();
+		assert_eq!(
+			encoded_value,
+			vec![
+				4, 0, 0, 0, 0, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 0, 6, 0, 0, 0, 0, 0, 0, 0, 7, 0, 0, 0, 0, 0, 0, 0, // channel_id
+				0, 0, 0, 0, 0, 0, 0, 3, // next_local_commitment_number
+				0, 0, 0, 0, 0, 0, 0, 4, // next_remote_commitment_number
+				9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, // your_last_per_commitment_secret
+				3, 27, 132, 197, 86, 123, 18, 100, 64, 153, 93, 62, 213, 170, 186, 5, 101, 215, 30, 24, 52, 96, 72, 25, 255, 156, 23, 245, 233, 213, 221, 7, 143, // my_current_per_commitment_point
+				0, // Type (next_funding_txid)
+				32, // Length
+				48, 167, 250, 69, 152, 48, 103, 172, 164, 99, 59, 19, 23, 11, 92, 84, 15, 80, 4, 12, 98, 82, 75, 31, 201, 11, 91, 23, 98, 23, 53, 124, // Value
+			]
 		);
 	}
 
@@ -2395,6 +2851,98 @@ mod tests {
 		do_encoding_open_channel(true, true, true);
 	}
 
+	fn do_encoding_open_channelv2(random_bit: bool, shutdown: bool, incl_chan_type: bool, require_confirmed_inputs: bool) {
+		let secp_ctx = Secp256k1::new();
+		let (_, pubkey_1) = get_keys_from!("0101010101010101010101010101010101010101010101010101010101010101", secp_ctx);
+		let (_, pubkey_2) = get_keys_from!("0202020202020202020202020202020202020202020202020202020202020202", secp_ctx);
+		let (_, pubkey_3) = get_keys_from!("0303030303030303030303030303030303030303030303030303030303030303", secp_ctx);
+		let (_, pubkey_4) = get_keys_from!("0404040404040404040404040404040404040404040404040404040404040404", secp_ctx);
+		let (_, pubkey_5) = get_keys_from!("0505050505050505050505050505050505050505050505050505050505050505", secp_ctx);
+		let (_, pubkey_6) = get_keys_from!("0606060606060606060606060606060606060606060606060606060606060606", secp_ctx);
+		let (_, pubkey_7) = get_keys_from!("0707070707070707070707070707070707070707070707070707070707070707", secp_ctx);
+		let open_channelv2 = msgs::OpenChannelV2 {
+			chain_hash: BlockHash::from_hex("6fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d6190000000000").unwrap(),
+			temporary_channel_id: [2; 32],
+			funding_feerate_sat_per_1000_weight: 821716,
+			commitment_feerate_sat_per_1000_weight: 821716,
+			funding_satoshis: 1311768467284833366,
+			dust_limit_satoshis: 3608586615801332854,
+			max_htlc_value_in_flight_msat: 8517154655701053848,
+			htlc_minimum_msat: 2316138423780173,
+			to_self_delay: 49340,
+			max_accepted_htlcs: 49340,
+			locktime: 305419896,
+			funding_pubkey: pubkey_1,
+			revocation_basepoint: pubkey_2,
+			payment_basepoint: pubkey_3,
+			delayed_payment_basepoint: pubkey_4,
+			htlc_basepoint: pubkey_5,
+			first_per_commitment_point: pubkey_6,
+			second_per_commitment_point: pubkey_7,
+			channel_flags: if random_bit { 1 << 5 } else { 0 },
+			shutdown_scriptpubkey: if shutdown { Some(Address::p2pkh(&::bitcoin::PublicKey{compressed: true, inner: pubkey_1}, Network::Testnet).script_pubkey()) } else { None },
+			channel_type: if incl_chan_type { Some(ChannelTypeFeatures::empty()) } else { None },
+			require_confirmed_inputs: if require_confirmed_inputs { Some(()) } else { None },
+		};
+		let encoded_value = open_channelv2.encode();
+		let mut target_value = Vec::new();
+		target_value.append(&mut hex::decode("000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f").unwrap());
+		target_value.append(&mut hex::decode("0202020202020202020202020202020202020202020202020202020202020202").unwrap());
+		target_value.append(&mut hex::decode("000c89d4").unwrap());
+		target_value.append(&mut hex::decode("000c89d4").unwrap());
+		target_value.append(&mut hex::decode("1234567890123456").unwrap());
+		target_value.append(&mut hex::decode("3214466870114476").unwrap());
+		target_value.append(&mut hex::decode("7633030896203198").unwrap());
+		target_value.append(&mut hex::decode("00083a840000034d").unwrap());
+		target_value.append(&mut hex::decode("c0bc").unwrap());
+		target_value.append(&mut hex::decode("c0bc").unwrap());
+		target_value.append(&mut hex::decode("12345678").unwrap());
+		target_value.append(&mut hex::decode("031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f").unwrap());
+		target_value.append(&mut hex::decode("024d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766").unwrap());
+		target_value.append(&mut hex::decode("02531fe6068134503d2723133227c867ac8fa6c83c537e9a44c3c5bdbdcb1fe337").unwrap());
+		target_value.append(&mut hex::decode("03462779ad4aad39514614751a71085f2f10e1c7a593e4e030efb5b8721ce55b0b").unwrap());
+		target_value.append(&mut hex::decode("0362c0a046dacce86ddd0343c6d3c7c79c2208ba0d9c9cf24a6d046d21d21f90f7").unwrap());
+		target_value.append(&mut hex::decode("03f006a18d5653c4edf5391ff23a61f03ff83d237e880ee61187fa9f379a028e0a").unwrap());
+		target_value.append(&mut hex::decode("02989c0b76cb563971fdc9bef31ec06c3560f3249d6ee9e5d83c57625596e05f6f").unwrap());
+
+		if random_bit {
+			target_value.append(&mut hex::decode("20").unwrap());
+		} else {
+			target_value.append(&mut hex::decode("00").unwrap());
+		}
+		if shutdown {
+			target_value.append(&mut hex::decode("001b").unwrap()); // Type 0 + Length 27
+			target_value.append(&mut hex::decode("001976a91479b000887626b294a914501a4cd226b58b23598388ac").unwrap());
+		}
+		if incl_chan_type {
+			target_value.append(&mut hex::decode("0100").unwrap());
+		}
+		if require_confirmed_inputs {
+			target_value.append(&mut hex::decode("0200").unwrap());
+		}
+		assert_eq!(encoded_value, target_value);
+	}
+
+	#[test]
+	fn encoding_open_channelv2() {
+		do_encoding_open_channelv2(false, false, false, false);
+		do_encoding_open_channelv2(false, false, false, true);
+		do_encoding_open_channelv2(false, false, true, false);
+		do_encoding_open_channelv2(false, false, true, true);
+		do_encoding_open_channelv2(false, true, false, false);
+		do_encoding_open_channelv2(false, true, false, true);
+		do_encoding_open_channelv2(false, true, true, false);
+		do_encoding_open_channelv2(false, true, true, true);
+		do_encoding_open_channelv2(true, false, false, false);
+		do_encoding_open_channelv2(true, false, false, true);
+		do_encoding_open_channelv2(true, false, true, false);
+		do_encoding_open_channelv2(true, false, true, true);
+		do_encoding_open_channelv2(true, true, false, false);
+		do_encoding_open_channelv2(true, true, false, true);
+		do_encoding_open_channelv2(true, true, true, false);
+		do_encoding_open_channelv2(true, true, true, true);
+	}
+
 	fn do_encoding_accept_channel(shutdown: bool) {
 		let secp_ctx = Secp256k1::new();
 		let (_, pubkey_1) = get_keys_from!("0101010101010101010101010101010101010101010101010101010101010101", secp_ctx);
@@ -2435,6 +2983,64 @@ mod tests {
 	fn encoding_accept_channel() {
 		do_encoding_accept_channel(false);
 		do_encoding_accept_channel(true);
+	}
+
+	fn do_encoding_accept_channelv2(shutdown: bool) {
+		let secp_ctx = Secp256k1::new();
+		let (_, pubkey_1) = get_keys_from!("0101010101010101010101010101010101010101010101010101010101010101", secp_ctx);
+		let (_, pubkey_2) = get_keys_from!("0202020202020202020202020202020202020202020202020202020202020202", secp_ctx);
+		let (_, pubkey_3) = get_keys_from!("0303030303030303030303030303030303030303030303030303030303030303", secp_ctx);
+		let (_, pubkey_4) = get_keys_from!("0404040404040404040404040404040404040404040404040404040404040404", secp_ctx);
+		let (_, pubkey_5) = get_keys_from!("0505050505050505050505050505050505050505050505050505050505050505", secp_ctx);
+		let (_, pubkey_6) = get_keys_from!("0606060606060606060606060606060606060606060606060606060606060606", secp_ctx);
+		let (_, pubkey_7) = get_keys_from!("0707070707070707070707070707070707070707070707070707070707070707", secp_ctx);
+		let accept_channelv2 = msgs::AcceptChannelV2 {
+			temporary_channel_id: [2; 32],
+			funding_satoshis: 1311768467284833366,
+			dust_limit_satoshis: 1311768467284833366,
+			max_htlc_value_in_flight_msat: 2536655962884945560,
+			htlc_minimum_msat: 2316138423780173,
+			minimum_depth: 821716,
+			to_self_delay: 49340,
+			max_accepted_htlcs: 49340,
+			funding_pubkey: pubkey_1,
+			revocation_basepoint: pubkey_2,
+			payment_basepoint: pubkey_3,
+			delayed_payment_basepoint: pubkey_4,
+			htlc_basepoint: pubkey_5,
+			first_per_commitment_point: pubkey_6,
+			second_per_commitment_point: pubkey_7,
+			shutdown_scriptpubkey: if shutdown { Some(Address::p2pkh(&::bitcoin::PublicKey{compressed: true, inner: pubkey_1}, Network::Testnet).script_pubkey()) } else { None },
+			channel_type: None,
+			require_confirmed_inputs: None,
+		};
+		let encoded_value = accept_channelv2.encode();
+		let mut target_value = hex::decode("0202020202020202020202020202020202020202020202020202020202020202").unwrap(); // temporary_channel_id
+		target_value.append(&mut hex::decode("1234567890123456").unwrap()); // funding_satoshis
+		target_value.append(&mut hex::decode("1234567890123456").unwrap()); // dust_limit_satoshis
+		target_value.append(&mut hex::decode("2334032891223698").unwrap()); // max_htlc_value_in_flight_msat
+		target_value.append(&mut hex::decode("00083a840000034d").unwrap()); // htlc_minimum_msat
+		target_value.append(&mut hex::decode("000c89d4").unwrap()); //  minimum_depth
+		target_value.append(&mut hex::decode("c0bc").unwrap()); // to_self_delay
+		target_value.append(&mut hex::decode("c0bc").unwrap()); // max_accepted_htlcs
+		target_value.append(&mut hex::decode("031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f").unwrap()); // funding_pubkey
+		target_value.append(&mut hex::decode("024d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766").unwrap()); // revocation_basepoint
+		target_value.append(&mut hex::decode("02531fe6068134503d2723133227c867ac8fa6c83c537e9a44c3c5bdbdcb1fe337").unwrap()); // payment_basepoint
+		target_value.append(&mut hex::decode("03462779ad4aad39514614751a71085f2f10e1c7a593e4e030efb5b8721ce55b0b").unwrap()); // delayed_payment_basepoint
+		target_value.append(&mut hex::decode("0362c0a046dacce86ddd0343c6d3c7c79c2208ba0d9c9cf24a6d046d21d21f90f7").unwrap()); // htlc_basepoint
+		target_value.append(&mut hex::decode("03f006a18d5653c4edf5391ff23a61f03ff83d237e880ee61187fa9f379a028e0a").unwrap()); // first_per_commitment_point
+		target_value.append(&mut hex::decode("02989c0b76cb563971fdc9bef31ec06c3560f3249d6ee9e5d83c57625596e05f6f").unwrap()); // second_per_commitment_point
+		if shutdown {
+			target_value.append(&mut hex::decode("001b").unwrap()); // Type 0 + Length 27
+			target_value.append(&mut hex::decode("001976a91479b000887626b294a914501a4cd226b58b23598388ac").unwrap());
+		}
+		assert_eq!(encoded_value, target_value);
+	}
+
+	#[test]
+	fn encoding_accept_channelv2() {
+		do_encoding_accept_channelv2(false);
+		do_encoding_accept_channelv2(true);
 	}
 
 	#[test]
@@ -2484,6 +3090,180 @@ mod tests {
 		};
 		let encoded_value = channel_ready.encode();
 		let target_value = hex::decode("0202020202020202020202020202020202020202020202020202020202020202031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f").unwrap();
+		assert_eq!(encoded_value, target_value);
+	}
+
+	#[test]
+	fn encoding_tx_add_input() {
+		let tx_add_input = msgs::TxAddInput {
+			channel_id: [2; 32],
+			serial_id: 4886718345,
+			prevtx: TransactionU16LenLimited::new(Transaction {
+				version: 2,
+				lock_time: PackedLockTime(0),
+				input: vec![TxIn {
+					previous_output: OutPoint { txid: Txid::from_hex("305bab643ee297b8b6b76b320792c8223d55082122cb606bf89382146ced9c77").unwrap(), index: 2 }.into_bitcoin_outpoint(),
+					script_sig: Script::new(),
+					sequence: Sequence(0xfffffffd),
+					witness: Witness::from_vec(vec![
+						hex::decode("304402206af85b7dd67450ad12c979302fac49dfacbc6a8620f49c5da2b5721cf9565ca502207002b32fed9ce1bf095f57aeb10c36928ac60b12e723d97d2964a54640ceefa701").unwrap(),
+						hex::decode("0301ab7dc16488303549bfcdd80f6ae5ee4c20bf97ab5410bbd6b1bfa85dcd6944").unwrap()]),
+				}],
+				output: vec![
+					TxOut {
+						value: 12704566,
+						script_pubkey: Address::from_str("bc1qzlffunw52jav8vwdu5x3jfk6sr8u22rmq3xzw2").unwrap().script_pubkey(),
+					},
+					TxOut {
+						value: 245148,
+						script_pubkey: Address::from_str("bc1qxmk834g5marzm227dgqvynd23y2nvt2ztwcw2z").unwrap().script_pubkey(),
+					},
+				],
+			}).unwrap(),
+			prevtx_out: 305419896,
+			sequence: 305419896,
+		};
+		let encoded_value = tx_add_input.encode();
+		let target_value = hex::decode("0202020202020202020202020202020202020202020202020202020202020202000000012345678900de02000000000101779ced6c148293f86b60cb222108553d22c89207326bb7b6b897e23e64ab5b300200000000fdffffff0236dbc1000000000016001417d29e4dd454bac3b1cde50d1926da80cfc5287b9cbd03000000000016001436ec78d514df462da95e6a00c24daa8915362d420247304402206af85b7dd67450ad12c979302fac49dfacbc6a8620f49c5da2b5721cf9565ca502207002b32fed9ce1bf095f57aeb10c36928ac60b12e723d97d2964a54640ceefa701210301ab7dc16488303549bfcdd80f6ae5ee4c20bf97ab5410bbd6b1bfa85dcd6944000000001234567812345678").unwrap();
+		assert_eq!(encoded_value, target_value);
+	}
+
+	#[test]
+	fn encoding_tx_add_output() {
+		let tx_add_output = msgs::TxAddOutput {
+			channel_id: [2; 32],
+			serial_id: 4886718345,
+			sats: 4886718345,
+			script: Address::from_str("bc1qxmk834g5marzm227dgqvynd23y2nvt2ztwcw2z").unwrap().script_pubkey(),
+		};
+		let encoded_value = tx_add_output.encode();
+		let target_value = hex::decode("0202020202020202020202020202020202020202020202020202020202020202000000012345678900000001234567890016001436ec78d514df462da95e6a00c24daa8915362d42").unwrap();
+		assert_eq!(encoded_value, target_value);
+	}
+
+	#[test]
+	fn encoding_tx_remove_input() {
+		let tx_remove_input = msgs::TxRemoveInput {
+			channel_id: [2; 32],
+			serial_id: 4886718345,
+		};
+		let encoded_value = tx_remove_input.encode();
+		let target_value = hex::decode("02020202020202020202020202020202020202020202020202020202020202020000000123456789").unwrap();
+		assert_eq!(encoded_value, target_value);
+	}
+
+	#[test]
+	fn encoding_tx_remove_output() {
+		let tx_remove_output = msgs::TxRemoveOutput {
+			channel_id: [2; 32],
+			serial_id: 4886718345,
+		};
+		let encoded_value = tx_remove_output.encode();
+		let target_value = hex::decode("02020202020202020202020202020202020202020202020202020202020202020000000123456789").unwrap();
+		assert_eq!(encoded_value, target_value);
+	}
+
+	#[test]
+	fn encoding_tx_complete() {
+		let tx_complete = msgs::TxComplete {
+			channel_id: [2; 32],
+		};
+		let encoded_value = tx_complete.encode();
+		let target_value = hex::decode("0202020202020202020202020202020202020202020202020202020202020202").unwrap();
+		assert_eq!(encoded_value, target_value);
+	}
+
+	#[test]
+	fn encoding_tx_signatures() {
+		let tx_signatures = msgs::TxSignatures {
+			channel_id: [2; 32],
+			tx_hash: Txid::from_hex("c2d4449afa8d26140898dd54d3390b057ba2a5afcf03ba29d7dc0d8b9ffe966e").unwrap(),
+			witnesses: vec![
+				Witness::from_vec(vec![
+					hex::decode("304402206af85b7dd67450ad12c979302fac49dfacbc6a8620f49c5da2b5721cf9565ca502207002b32fed9ce1bf095f57aeb10c36928ac60b12e723d97d2964a54640ceefa701").unwrap(),
+					hex::decode("0301ab7dc16488303549bfcdd80f6ae5ee4c20bf97ab5410bbd6b1bfa85dcd6944").unwrap()]),
+				Witness::from_vec(vec![
+					hex::decode("3045022100ee00dbf4a862463e837d7c08509de814d620e4d9830fa84818713e0fa358f145022021c3c7060c4d53fe84fd165d60208451108a778c13b92ca4c6bad439236126cc01").unwrap(),
+					hex::decode("028fbbf0b16f5ba5bcb5dd37cd4047ce6f726a21c06682f9ec2f52b057de1dbdb5").unwrap()]),
+			],
+		};
+		let encoded_value = tx_signatures.encode();
+		let mut target_value = hex::decode("0202020202020202020202020202020202020202020202020202020202020202").unwrap(); // channel_id
+		target_value.append(&mut hex::decode("6e96fe9f8b0ddcd729ba03cfafa5a27b050b39d354dd980814268dfa9a44d4c2").unwrap()); // tx_hash (sha256) (big endian byte order)
+		target_value.append(&mut hex::decode("0002").unwrap()); // num_witnesses (u16)
+		// Witness 1
+		target_value.append(&mut hex::decode("006b").unwrap()); // len of witness_data
+		target_value.append(&mut hex::decode("02").unwrap()); // num_witness_elements (VarInt)
+		target_value.append(&mut hex::decode("47").unwrap()); // len of witness element data (VarInt)
+		target_value.append(&mut hex::decode("304402206af85b7dd67450ad12c979302fac49dfacbc6a8620f49c5da2b5721cf9565ca502207002b32fed9ce1bf095f57aeb10c36928ac60b12e723d97d2964a54640ceefa701").unwrap());
+		target_value.append(&mut hex::decode("21").unwrap()); // len of witness element data (VarInt)
+		target_value.append(&mut hex::decode("0301ab7dc16488303549bfcdd80f6ae5ee4c20bf97ab5410bbd6b1bfa85dcd6944").unwrap());
+		// Witness 2
+		target_value.append(&mut hex::decode("006c").unwrap()); // len of witness_data
+		target_value.append(&mut hex::decode("02").unwrap()); // num_witness_elements (VarInt)
+		target_value.append(&mut hex::decode("48").unwrap()); // len of witness element data (VarInt)
+		target_value.append(&mut hex::decode("3045022100ee00dbf4a862463e837d7c08509de814d620e4d9830fa84818713e0fa358f145022021c3c7060c4d53fe84fd165d60208451108a778c13b92ca4c6bad439236126cc01").unwrap());
+		target_value.append(&mut hex::decode("21").unwrap()); // len of witness element data (VarInt)
+		target_value.append(&mut hex::decode("028fbbf0b16f5ba5bcb5dd37cd4047ce6f726a21c06682f9ec2f52b057de1dbdb5").unwrap());
+		assert_eq!(encoded_value, target_value);
+	}
+
+	fn do_encoding_tx_init_rbf(funding_value_with_hex_target: Option<(i64, &str)>) {
+		let tx_init_rbf = msgs::TxInitRbf {
+			channel_id: [2; 32],
+			locktime: 305419896,
+			feerate_sat_per_1000_weight: 20190119,
+			funding_output_contribution: if let Some((value, _)) = funding_value_with_hex_target { Some(value) } else { None },
+		};
+		let encoded_value = tx_init_rbf.encode();
+		let mut target_value = hex::decode("0202020202020202020202020202020202020202020202020202020202020202").unwrap(); // channel_id
+		target_value.append(&mut hex::decode("12345678").unwrap()); // locktime
+		target_value.append(&mut hex::decode("013413a7").unwrap()); // feerate_sat_per_1000_weight
+		if let Some((_, target)) = funding_value_with_hex_target {
+			target_value.push(0x00); // Type
+			target_value.push(target.len() as u8 / 2); // Length
+			target_value.append(&mut hex::decode(target).unwrap()); // Value (i64)
+		}
+		assert_eq!(encoded_value, target_value);
+	}
+
+	#[test]
+	fn encoding_tx_init_rbf() {
+		do_encoding_tx_init_rbf(Some((1311768467284833366, "1234567890123456")));
+		do_encoding_tx_init_rbf(Some((13117684672, "000000030DDFFBC0")));
+		do_encoding_tx_init_rbf(None);
+	}
+
+	fn do_encoding_tx_ack_rbf(funding_value_with_hex_target: Option<(i64, &str)>) {
+		let tx_ack_rbf = msgs::TxAckRbf {
+			channel_id: [2; 32],
+			funding_output_contribution: if let Some((value, _)) = funding_value_with_hex_target { Some(value) } else { None },
+		};
+		let encoded_value = tx_ack_rbf.encode();
+		let mut target_value = hex::decode("0202020202020202020202020202020202020202020202020202020202020202").unwrap();
+		if let Some((_, target)) = funding_value_with_hex_target {
+			target_value.push(0x00); // Type
+			target_value.push(target.len() as u8 / 2); // Length
+			target_value.append(&mut hex::decode(target).unwrap()); // Value (i64)
+		}
+		assert_eq!(encoded_value, target_value);
+	}
+
+	#[test]
+	fn encoding_tx_ack_rbf() {
+		do_encoding_tx_ack_rbf(Some((1311768467284833366, "1234567890123456")));
+		do_encoding_tx_ack_rbf(Some((13117684672, "000000030DDFFBC0")));
+		do_encoding_tx_ack_rbf(None);
+	}
+
+	#[test]
+	fn encoding_tx_abort() {
+		let tx_abort = msgs::TxAbort {
+			channel_id: [2; 32],
+			data: hex::decode("54686520717569636B2062726F776E20666F78206A756D7073206F76657220746865206C617A7920646F672E").unwrap(),
+		};
+		let encoded_value = tx_abort.encode();
+		let target_value = hex::decode("0202020202020202020202020202020202020202020202020202020202020202002C54686520717569636B2062726F776E20666F78206A756D7073206F76657220746865206C617A7920646F672E").unwrap();
 		assert_eq!(encoded_value, target_value);
 	}
 

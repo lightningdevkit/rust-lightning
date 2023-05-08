@@ -1440,6 +1440,14 @@ pub enum MessageSendEvent {
 		/// The message which should be sent.
 		msg: msgs::AcceptChannel,
 	},
+	/// Used to indicate that we've accepted a V2 channel open and should send the accept_channel2
+	/// message provided to the given peer.
+	SendAcceptChannelV2 {
+		/// The node_id of the node which should receive this message
+		node_id: PublicKey,
+		/// The message which should be sent.
+		msg: msgs::AcceptChannelV2,
+	},
 	/// Used to indicate that we've initiated a channel open and should send the open_channel
 	/// message provided to the given peer.
 	SendOpenChannel {
@@ -1447,6 +1455,14 @@ pub enum MessageSendEvent {
 		node_id: PublicKey,
 		/// The message which should be sent.
 		msg: msgs::OpenChannel,
+	},
+	/// Used to indicate that we've initiated a V2 channel open and should send the open_channel2
+	/// message provided to the given peer.
+	SendOpenChannelV2 {
+		/// The node_id of the node which should receive this message
+		node_id: PublicKey,
+		/// The message which should be sent.
+		msg: msgs::OpenChannelV2,
 	},
 	/// Used to indicate that a funding_created message should be sent to the peer with the given node_id.
 	SendFundingCreated {
@@ -1461,6 +1477,69 @@ pub enum MessageSendEvent {
 		node_id: PublicKey,
 		/// The message which should be sent.
 		msg: msgs::FundingSigned,
+	},
+	/// Used to indicate that a tx_add_input message should be sent to the peer with the given node_id.
+	SendTxAddInput {
+		/// The node_id of the node which should receive this message
+		node_id: PublicKey,
+		/// The message which should be sent.
+		msg: msgs::TxAddInput,
+	},
+	/// Used to indicate that a tx_add_output message should be sent to the peer with the given node_id.
+	SendTxAddOutput {
+		/// The node_id of the node which should receive this message
+		node_id: PublicKey,
+		/// The message which should be sent.
+		msg: msgs::TxAddOutput,
+	},
+	/// Used to indicate that a tx_remove_input message should be sent to the peer with the given node_id.
+	SendTxRemoveInput {
+		/// The node_id of the node which should receive this message
+		node_id: PublicKey,
+		/// The message which should be sent.
+		msg: msgs::TxRemoveInput,
+	},
+	/// Used to indicate that a tx_remove_output message should be sent to the peer with the given node_id.
+	SendTxRemoveOutput {
+		/// The node_id of the node which should receive this message
+		node_id: PublicKey,
+		/// The message which should be sent.
+		msg: msgs::TxRemoveOutput,
+	},
+	/// Used to indicate that a tx_complete message should be sent to the peer with the given node_id.
+	SendTxComplete {
+		/// The node_id of the node which should receive this message
+		node_id: PublicKey,
+		/// The message which should be sent.
+		msg: msgs::TxComplete,
+	},
+	/// Used to indicate that a tx_signatures message should be sent to the peer with the given node_id.
+	SendTxSignatures {
+		/// The node_id of the node which should receive this message
+		node_id: PublicKey,
+		/// The message which should be sent.
+		msg: msgs::TxSignatures,
+	},
+	/// Used to indicate that a tx_init_rbf message should be sent to the peer with the given node_id.
+	SendTxInitRbf {
+		/// The node_id of the node which should receive this message
+		node_id: PublicKey,
+		/// The message which should be sent.
+		msg: msgs::TxInitRbf,
+	},
+	/// Used to indicate that a tx_ack_rbf message should be sent to the peer with the given node_id.
+	SendTxAckRbf {
+		/// The node_id of the node which should receive this message
+		node_id: PublicKey,
+		/// The message which should be sent.
+		msg: msgs::TxAckRbf,
+	},
+	/// Used to indicate that a tx_abort message should be sent to the peer with the given node_id.
+	SendTxAbort {
+		/// The node_id of the node which should receive this message
+		node_id: PublicKey,
+		/// The message which should be sent.
+		msg: msgs::TxAddInput,
 	},
 	/// Used to indicate that a channel_ready message should be sent to the peer with the given node_id.
 	SendChannelReady {

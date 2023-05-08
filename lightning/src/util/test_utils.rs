@@ -469,6 +469,50 @@ impl msgs::ChannelMessageHandler for TestChannelMessageHandler {
 	fn provided_init_features(&self, _their_init_features: &PublicKey) -> InitFeatures {
 		channelmanager::provided_init_features(&UserConfig::default())
 	}
+
+	fn handle_open_channel_v2(&self, _their_node_id: &PublicKey, msg: &msgs::OpenChannelV2) {
+		self.received_msg(wire::Message::OpenChannelV2(msg.clone()));
+	}
+
+	fn handle_accept_channel_v2(&self, _their_node_id: &PublicKey, msg: &msgs::AcceptChannelV2) {
+		self.received_msg(wire::Message::AcceptChannelV2(msg.clone()));
+	}
+
+	fn handle_tx_add_input(&self, _their_node_id: &PublicKey, msg: &msgs::TxAddInput) {
+		self.received_msg(wire::Message::TxAddInput(msg.clone()));
+	}
+
+	fn handle_tx_add_output(&self, _their_node_id: &PublicKey, msg: &msgs::TxAddOutput) {
+		self.received_msg(wire::Message::TxAddOutput(msg.clone()));
+	}
+
+	fn handle_tx_remove_input(&self, _their_node_id: &PublicKey, msg: &msgs::TxRemoveInput) {
+		self.received_msg(wire::Message::TxRemoveInput(msg.clone()));
+	}
+
+	fn handle_tx_remove_output(&self, _their_node_id: &PublicKey, msg: &msgs::TxRemoveOutput) {
+		self.received_msg(wire::Message::TxRemoveOutput(msg.clone()));
+	}
+
+	fn handle_tx_complete(&self, _their_node_id: &PublicKey, msg: &msgs::TxComplete) {
+		self.received_msg(wire::Message::TxComplete(msg.clone()));
+	}
+
+	fn handle_tx_signatures(&self, _their_node_id: &PublicKey, msg: &msgs::TxSignatures) {
+		self.received_msg(wire::Message::TxSignatures(msg.clone()));
+	}
+
+	fn handle_tx_init_rbf(&self, _their_node_id: &PublicKey, msg: &msgs::TxInitRbf) {
+		self.received_msg(wire::Message::TxInitRbf(msg.clone()));
+	}
+
+	fn handle_tx_ack_rbf(&self, _their_node_id: &PublicKey, msg: &msgs::TxAckRbf) {
+		self.received_msg(wire::Message::TxAckRbf(msg.clone()));
+	}
+
+	fn handle_tx_abort(&self, _their_node_id: &PublicKey, msg: &msgs::TxAbort) {
+		self.received_msg(wire::Message::TxAbort(msg.clone()));
+	}
 }
 
 impl events::MessageSendEventsProvider for TestChannelMessageHandler {

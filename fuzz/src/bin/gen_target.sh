@@ -56,3 +56,15 @@ GEN_TEST msg_ping msg_targets::
 GEN_TEST msg_pong msg_targets::
 
 GEN_TEST msg_channel_details msg_targets::
+
+GEN_TEST msg_open_channel_v2 msg_targets::
+GEN_TEST msg_accept_channel_v2 msg_targets::
+GEN_TEST msg_tx_add_input msg_targets::
+GEN_TEST msg_tx_add_output msg_targets::
+GEN_TEST msg_tx_remove_input msg_targets::
+GEN_TEST msg_tx_remove_output msg_targets::
+GEN_TEST msg_tx_complete msg_targets::
+GEN_TEST msg_tx_signatures msg_targets::
+GEN_TEST msg_tx_init_rbf msg_targets::
+GEN_TEST msg_tx_ack_rbf msg_targets::
+GEN_TEST msg_tx_abort msg_targets::

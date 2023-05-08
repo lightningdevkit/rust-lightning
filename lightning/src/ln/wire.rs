@@ -54,9 +54,20 @@ pub(crate) enum Message<T> where T: core::fmt::Debug + Type + TestEq {
 	Ping(msgs::Ping),
 	Pong(msgs::Pong),
 	OpenChannel(msgs::OpenChannel),
+	OpenChannelV2(msgs::OpenChannelV2),
 	AcceptChannel(msgs::AcceptChannel),
+	AcceptChannelV2(msgs::AcceptChannelV2),
 	FundingCreated(msgs::FundingCreated),
 	FundingSigned(msgs::FundingSigned),
+	TxAddInput(msgs::TxAddInput),
+	TxAddOutput(msgs::TxAddOutput),
+	TxRemoveInput(msgs::TxRemoveInput),
+	TxRemoveOutput(msgs::TxRemoveOutput),
+	TxComplete(msgs::TxComplete),
+	TxSignatures(msgs::TxSignatures),
+	TxInitRbf(msgs::TxInitRbf),
+	TxAckRbf(msgs::TxAckRbf),
+	TxAbort(msgs::TxAbort),
 	ChannelReady(msgs::ChannelReady),
 	Shutdown(msgs::Shutdown),
 	ClosingSigned(msgs::ClosingSigned),
@@ -95,9 +106,20 @@ impl<T> Message<T> where T: core::fmt::Debug + Type + TestEq {
 			&Message::Ping(ref msg) => msg.type_id(),
 			&Message::Pong(ref msg) => msg.type_id(),
 			&Message::OpenChannel(ref msg) => msg.type_id(),
+			&Message::OpenChannelV2(ref msg) => msg.type_id(),
 			&Message::AcceptChannel(ref msg) => msg.type_id(),
+			&Message::AcceptChannelV2(ref msg) => msg.type_id(),
 			&Message::FundingCreated(ref msg) => msg.type_id(),
 			&Message::FundingSigned(ref msg) => msg.type_id(),
+			&Message::TxAddInput(ref msg) => msg.type_id(),
+			&Message::TxAddOutput(ref msg) => msg.type_id(),
+			&Message::TxRemoveInput(ref msg) => msg.type_id(),
+			&Message::TxRemoveOutput(ref msg) => msg.type_id(),
+			&Message::TxComplete(ref msg) => msg.type_id(),
+			&Message::TxSignatures(ref msg) => msg.type_id(),
+			&Message::TxInitRbf(ref msg) => msg.type_id(),
+			&Message::TxAckRbf(ref msg) => msg.type_id(),
+			&Message::TxAbort(ref msg) => msg.type_id(),
 			&Message::ChannelReady(ref msg) => msg.type_id(),
 			&Message::Shutdown(ref msg) => msg.type_id(),
 			&Message::ClosingSigned(ref msg) => msg.type_id(),
@@ -135,7 +157,7 @@ impl<T> Message<T> where T: core::fmt::Debug + Type + TestEq {
 ///
 /// # Errors
 ///
-/// Returns an error if the message payload code not be decoded as the specified type.
+/// Returns an error if the message payload could not be decoded as the specified type.
 pub(crate) fn read<R: io::Read, T, H: core::ops::Deref>(buffer: &mut R, custom_reader: H)
 -> Result<Message<T>, (msgs::DecodeError, Option<u16>)> where
 	T: core::fmt::Debug + Type + Writeable,
@@ -169,14 +191,47 @@ fn do_read<R: io::Read, T, H: core::ops::Deref>(buffer: &mut R, message_type: u1
 		msgs::OpenChannel::TYPE => {
 			Ok(Message::OpenChannel(Readable::read(buffer)?))
 		},
+		msgs::OpenChannelV2::TYPE => {
+			Ok(Message::OpenChannelV2(Readable::read(buffer)?))
+		},
 		msgs::AcceptChannel::TYPE => {
 			Ok(Message::AcceptChannel(Readable::read(buffer)?))
+		},
+		msgs::AcceptChannelV2::TYPE => {
+			Ok(Message::AcceptChannelV2(Readable::read(buffer)?))
 		},
 		msgs::FundingCreated::TYPE => {
 			Ok(Message::FundingCreated(Readable::read(buffer)?))
 		},
 		msgs::FundingSigned::TYPE => {
 			Ok(Message::FundingSigned(Readable::read(buffer)?))
+		},
+		msgs::TxAddInput::TYPE => {
+			Ok(Message::TxAddInput(Readable::read(buffer)?))
+		},
+		msgs::TxAddOutput::TYPE => {
+			Ok(Message::TxAddOutput(Readable::read(buffer)?))
+		},
+		msgs::TxRemoveInput::TYPE => {
+			Ok(Message::TxRemoveInput(Readable::read(buffer)?))
+		},
+		msgs::TxRemoveOutput::TYPE => {
+			Ok(Message::TxRemoveOutput(Readable::read(buffer)?))
+		},
+		msgs::TxComplete::TYPE => {
+			Ok(Message::TxComplete(Readable::read(buffer)?))
+		},
+		msgs::TxSignatures::TYPE => {
+			Ok(Message::TxSignatures(Readable::read(buffer)?))
+		},
+		msgs::TxInitRbf::TYPE => {
+			Ok(Message::TxInitRbf(Readable::read(buffer)?))
+		},
+		msgs::TxAckRbf::TYPE => {
+			Ok(Message::TxAckRbf(Readable::read(buffer)?))
+		},
+		msgs::TxAbort::TYPE => {
+			Ok(Message::TxAbort(Readable::read(buffer)?))
 		},
 		msgs::ChannelReady::TYPE => {
 			Ok(Message::ChannelReady(Readable::read(buffer)?))
@@ -347,6 +402,50 @@ impl Encode for msgs::Shutdown {
 
 impl Encode for msgs::ClosingSigned {
 	const TYPE: u16 = 39;
+}
+
+impl Encode for msgs::OpenChannelV2 {
+	const TYPE: u16 = 64;
+}
+
+impl Encode for msgs::AcceptChannelV2 {
+	const TYPE: u16 = 65;
+}
+
+impl Encode for msgs::TxAddInput {
+	const TYPE: u16 = 66;
+}
+
+impl Encode for msgs::TxAddOutput {
+	const TYPE: u16 = 67;
+}
+
+impl Encode for msgs::TxRemoveInput {
+	const TYPE: u16 = 68;
+}
+
+impl Encode for msgs::TxRemoveOutput {
+	const TYPE: u16 = 69;
+}
+
+impl Encode for msgs::TxComplete {
+	const TYPE: u16 = 70;
+}
+
+impl Encode for msgs::TxSignatures {
+	const TYPE: u16 = 71;
+}
+
+impl Encode for msgs::TxInitRbf {
+	const TYPE: u16 = 72;
+}
+
+impl Encode for msgs::TxAckRbf {
+	const TYPE: u16 = 73;
+}
+
+impl Encode for msgs::TxAbort {
+	const TYPE: u16 = 74;
 }
 
 impl Encode for msgs::OnionMessage {

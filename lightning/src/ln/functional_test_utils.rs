@@ -724,6 +724,39 @@ pub fn remove_first_msg_event_to_node(msg_node_id: &PublicKey, msg_events: &mut 
 		MessageSendEvent::SendGossipTimestampFilter { node_id, .. } => {
 			node_id == msg_node_id
 		},
+		MessageSendEvent::SendAcceptChannelV2 { node_id, .. } => {
+			node_id == msg_node_id
+		},
+		MessageSendEvent::SendOpenChannelV2 { node_id, .. } => {
+			node_id == msg_node_id
+		},
+		MessageSendEvent::SendTxAddInput { node_id, .. } => {
+			node_id == msg_node_id
+		},
+		MessageSendEvent::SendTxAddOutput { node_id, .. } => {
+			node_id == msg_node_id
+		},
+		MessageSendEvent::SendTxRemoveInput { node_id, .. } => {
+			node_id == msg_node_id
+		},
+		MessageSendEvent::SendTxRemoveOutput { node_id, .. } => {
+			node_id == msg_node_id
+		},
+		MessageSendEvent::SendTxComplete { node_id, .. } => {
+			node_id == msg_node_id
+		},
+		MessageSendEvent::SendTxSignatures { node_id, .. } => {
+			node_id == msg_node_id
+		},
+		MessageSendEvent::SendTxInitRbf { node_id, .. } => {
+			node_id == msg_node_id
+		},
+		MessageSendEvent::SendTxAckRbf { node_id, .. } => {
+			node_id == msg_node_id
+		},
+		MessageSendEvent::SendTxAbort { node_id, .. } => {
+			node_id == msg_node_id
+		},
 	}});
 	if ev_index.is_some() {
 		msg_events.remove(ev_index.unwrap())
