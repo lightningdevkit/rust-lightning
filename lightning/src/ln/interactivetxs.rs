@@ -167,13 +167,20 @@ impl<S> InteractiveTxConstructor<S>
 			return self.abort_negotiation(AbortReason::InputsNotConfirmed);
 		}
 
-		if let Some(tx_out) = msg.prevtx.output.get(msg.prevtx_out as usize) {
+		let transaction = msg.prevtx.into_transaction();
+
+		if let Some(tx_out) = transaction.output.get(msg.prevtx_out as usize) {
 			if !tx_out.script_pubkey.is_witness_program() {
 				// The receiving node:
 				//  - MUST fail the negotiation if:
 				//     - the `scriptPubKey` is not a witness program
 				return self.abort_negotiation(AbortReason::PrevTxOutInvalid);
-			} else if !self.context.prevtx_outpoints.insert(OutPoint { txid: msg.prevtx.txid(), vout: msg.prevtx_out }) {
+			} else if !self.context.prevtx_outpoints.insert(
+				OutPoint {
+					txid: transaction.txid(),
+					vout: msg.prevtx_out
+				}
+			) {
 				// The receiving node:
 				//  - MUST fail the negotiation if:
 				//     - the `prevtx` and `prevtx_vout` are identical to a previously added
@@ -196,7 +203,7 @@ impl<S> InteractiveTxConstructor<S>
 		}
 
 		if let None = self.context.inputs.insert(serial_id, TxIn {
-			previous_output: OutPoint { txid: msg.prevtx.txid(), vout: msg.prevtx_out },
+			previous_output: OutPoint { txid: transaction.txid(), vout: msg.prevtx_out },
 			sequence: Sequence(msg.sequence),
 			..Default::default()
 		}) {
