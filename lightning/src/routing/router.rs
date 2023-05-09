@@ -1295,7 +1295,7 @@ where L::Target: Logger {
 	// unblinded payee id as an option. We also need a non-optional "payee id" for path construction,
 	// so use a dummy id for this in the blinded case.
 	let payee_node_id_opt = payment_params.payee.node_id().map(|pk| NodeId::from_pubkey(&pk));
-	const DUMMY_BLINDED_PAYEE_ID: [u8; 33] = [42u8; 33];
+	const DUMMY_BLINDED_PAYEE_ID: [u8; 33] = [2; 33];
 	let maybe_dummy_payee_pk = payment_params.payee.node_id().unwrap_or_else(|| PublicKey::from_slice(&DUMMY_BLINDED_PAYEE_ID).unwrap());
 	let maybe_dummy_payee_node_id = NodeId::from_pubkey(&maybe_dummy_payee_pk);
 	let our_node_id = NodeId::from_pubkey(&our_node_pubkey);
