@@ -684,7 +684,7 @@ pub enum Hints {
 }
 
 /// A list of hops along a payment path terminating with a channel to the recipient.
-#[derive(Clone, Debug, Hash, Eq, PartialEq)]
+#[derive(Clone, Debug, Hash, Eq, PartialEq, Ord, PartialOrd)]
 pub struct RouteHint(pub Vec<RouteHintHop>);
 
 impl Writeable for RouteHint {
@@ -709,7 +709,7 @@ impl Readable for RouteHint {
 }
 
 /// A channel descriptor for a hop along a payment path.
-#[derive(Clone, Debug, Hash, Eq, PartialEq)]
+#[derive(Clone, Debug, Hash, Eq, PartialEq, Ord, PartialOrd)]
 pub struct RouteHintHop {
 	/// The node_id of the non-target end of the route
 	pub src_node_id: PublicKey,
