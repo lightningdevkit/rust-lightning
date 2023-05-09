@@ -3090,6 +3090,12 @@ where
 			}
 		}
 		self.funding_transaction_generated_intern(temporary_channel_id, counterparty_node_id, funding_transaction, |chan, tx| {
+			if tx.output.len() > u16::max_value() as usize {
+				return Err(APIError::APIMisuseError {
+					err: "Transaction had more than 2^16 outputs, which is not supported".to_owned()
+				});
+			}
+
 			let mut output_index = None;
 			let expected_spk = chan.get_funding_redeemscript().to_v0_p2wsh();
 			for (idx, outp) in tx.output.iter().enumerate() {
@@ -3097,11 +3103,6 @@ where
 					if output_index.is_some() {
 						return Err(APIError::APIMisuseError {
 							err: "Multiple outputs matched the expected script and value".to_owned()
-						});
-					}
-					if idx > u16::max_value() as usize {
-						return Err(APIError::APIMisuseError {
-							err: "Transaction had more than 2^16 outputs, which is not supported".to_owned()
 						});
 					}
 					output_index = Some(idx as u16);
