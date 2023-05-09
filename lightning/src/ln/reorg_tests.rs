@@ -587,7 +587,7 @@ fn do_test_to_remote_after_local_detection(style: ConnectStyle) {
 	if let Event::SpendableOutputs { outputs } = node_a_spendable.pop().unwrap() {
 		assert_eq!(outputs.len(), 1);
 		let spend_tx = nodes[0].keys_manager.backing.spend_spendable_outputs(&[&outputs[0]], Vec::new(),
-			Builder::new().push_opcode(opcodes::all::OP_RETURN).into_script(), 253, &Secp256k1::new()).unwrap();
+			Builder::new().push_opcode(opcodes::all::OP_RETURN).into_script(), 253, None, &Secp256k1::new()).unwrap();
 		check_spends!(spend_tx, remote_txn_b[0]);
 	}
 
@@ -607,7 +607,7 @@ fn do_test_to_remote_after_local_detection(style: ConnectStyle) {
 	if let Event::SpendableOutputs { outputs } = node_b_spendable.pop().unwrap() {
 		assert_eq!(outputs.len(), 1);
 		let spend_tx = nodes[1].keys_manager.backing.spend_spendable_outputs(&[&outputs[0]], Vec::new(),
-			Builder::new().push_opcode(opcodes::all::OP_RETURN).into_script(), 253, &Secp256k1::new()).unwrap();
+			Builder::new().push_opcode(opcodes::all::OP_RETURN).into_script(), 253, None, &Secp256k1::new()).unwrap();
 		check_spends!(spend_tx, remote_txn_a[0]);
 	}
 }
