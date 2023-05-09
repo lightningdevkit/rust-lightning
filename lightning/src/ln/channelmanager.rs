@@ -7448,17 +7448,12 @@ where
 			}
 		}
 
-		let background_events = self.pending_background_events.lock().unwrap();
-		(background_events.len() as u64).write(writer)?;
-		for event in background_events.iter() {
-			match event {
-				BackgroundEvent::ClosingMonitorUpdate((funding_txo, monitor_update)) => {
-					0u8.write(writer)?;
-					funding_txo.write(writer)?;
-					monitor_update.write(writer)?;
-				},
-			}
-		}
+		// LDK versions prior to 0.0.116 wrote the `pending_background_events`
+		// `ClosingMonitorUpdate`s here, however there was never a reason to do so - the closing
+		// monitor updates were always effectively replayed on startup (either directly by calling
+		// `broadcast_latest_holder_commitment_txn` on a `ChannelMonitor` during deserialization
+		// or, in 0.0.115, by regenerating the monitor update itself).
+		0u64.write(writer)?;
 
 		// Prior to 0.0.111 we tracked node_announcement serials here, however that now happens in
 		// `PeerManager`, and thus we simply write the `highest_seen_timestamp` twice, which is
@@ -7905,13 +7900,11 @@ where
 		for _ in 0..background_event_count {
 			match <u8 as Readable>::read(reader)? {
 				0 => {
-					let (funding_txo, monitor_update): (OutPoint, ChannelMonitorUpdate) = (Readable::read(reader)?, Readable::read(reader)?);
-					if pending_background_events.iter().find(|e| {
-						let BackgroundEvent::ClosingMonitorUpdate((pending_funding_txo, pending_monitor_update)) = e;
-						*pending_funding_txo == funding_txo && *pending_monitor_update == monitor_update
-					}).is_none() {
-						pending_background_events.push(BackgroundEvent::ClosingMonitorUpdate((funding_txo, monitor_update)));
-					}
+					// LDK versions prior to 0.0.116 wrote pending `ClosingMonitorUpdate`s here,
+					// however we really don't (and never did) need them - we regenerate all
+					// on-startup monitor updates.
+					let _: OutPoint = Readable::read(reader)?;
+					let _: ChannelMonitorUpdate = Readable::read(reader)?;
 				}
 				_ => return Err(DecodeError::InvalidValue),
 			}
