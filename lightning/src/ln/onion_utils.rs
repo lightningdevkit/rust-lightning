@@ -324,7 +324,8 @@ fn construct_onion_packet_with_init_noise<HD: Writeable, P: Packet>(
 		chacha.process_in_place(packet_data);
 
 		if i == 0 {
-			packet_data[ONION_DATA_LEN - filler.len()..ONION_DATA_LEN].copy_from_slice(&filler[..]);
+			let onion_data_len = packet_data.len();
+			packet_data[onion_data_len - filler.len()..onion_data_len].copy_from_slice(&filler[..]);
 		}
 
 		let mut hmac = HmacEngine::<Sha256>::new(&keys.mu);
