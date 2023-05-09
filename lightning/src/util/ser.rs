@@ -1384,7 +1384,12 @@ impl Readable for TransactionU16LenLimited {
 	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
 		let len = <u16 as Readable>::read(r)?;
 		let mut tx_reader = FixedLengthReader::new(r, len as u64);
-		Ok(Self(Readable::read(&mut tx_reader)?))
+		let tx: Transaction = Readable::read(&mut tx_reader)?;
+		if tx_reader.bytes_remain() {
+			Err(DecodeError::BadLengthDescriptor)
+		} else {
+			Ok(Self(tx))
+		}
 	}
 }
 
