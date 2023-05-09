@@ -501,9 +501,11 @@ struct ClaimablePayments {
 /// for some reason. They are handled in timer_tick_occurred, so may be processed with
 /// quite some time lag.
 enum BackgroundEvent {
-	/// Handle a ChannelMonitorUpdate that closes a channel, broadcasting its current latest holder
-	/// commitment transaction.
-	ClosingMonitorUpdate((OutPoint, ChannelMonitorUpdate)),
+	/// Handle a ChannelMonitorUpdate
+	///
+	/// Note that any such events are lost on shutdown, so in general they must be updates which
+	/// are regenerated on startup.
+	MonitorUpdateRegeneratedOnStartup((OutPoint, ChannelMonitorUpdate)),
 }
 
 #[derive(Debug)]
@@ -3774,7 +3776,7 @@ where
 
 		for event in background_events.drain(..) {
 			match event {
-				BackgroundEvent::ClosingMonitorUpdate((funding_txo, update)) => {
+				BackgroundEvent::MonitorUpdateRegeneratedOnStartup((funding_txo, update)) => {
 					// The channel has already been closed, so no use bothering to care about the
 					// monitor updating completing.
 					let _ = self.chain_monitor.update_channel(funding_txo, &update);
@@ -5694,7 +5696,7 @@ where
 				if let ChannelMonitorUpdateStep::ChannelForceClosed { should_broadcast } = update.updates[0] {
 					assert!(should_broadcast);
 				} else { unreachable!(); }
-				self.pending_background_events.lock().unwrap().push(BackgroundEvent::ClosingMonitorUpdate((funding_txo, update)));
+				self.pending_background_events.lock().unwrap().push(BackgroundEvent::MonitorUpdateRegeneratedOnStartup((funding_txo, update)));
 			}
 			self.finish_force_close_channel(failure);
 		}
@@ -7449,10 +7451,10 @@ where
 		}
 
 		// LDK versions prior to 0.0.116 wrote the `pending_background_events`
-		// `ClosingMonitorUpdate`s here, however there was never a reason to do so - the closing
-		// monitor updates were always effectively replayed on startup (either directly by calling
-		// `broadcast_latest_holder_commitment_txn` on a `ChannelMonitor` during deserialization
-		// or, in 0.0.115, by regenerating the monitor update itself).
+		// `MonitorUpdateRegeneratedOnStartup`s here, however there was never a reason to do so -
+		// the closing monitor updates were always effectively replayed on startup (either directly
+		// by calling `broadcast_latest_holder_commitment_txn` on a `ChannelMonitor` during
+		// deserialization or, in 0.0.115, by regenerating the monitor update itself).
 		0u64.write(writer)?;
 
 		// Prior to 0.0.111 we tracked node_announcement serials here, however that now happens in
@@ -7768,7 +7770,7 @@ where
 						log_bytes!(channel.channel_id()), monitor.get_latest_update_id(), channel.get_latest_monitor_update_id());
 					let (monitor_update, mut new_failed_htlcs) = channel.force_shutdown(true);
 					if let Some(monitor_update) = monitor_update {
-						pending_background_events.push(BackgroundEvent::ClosingMonitorUpdate(monitor_update));
+						pending_background_events.push(BackgroundEvent::MonitorUpdateRegeneratedOnStartup(monitor_update));
 					}
 					failed_htlcs.append(&mut new_failed_htlcs);
 					channel_closures.push_back((events::Event::ChannelClosed {
@@ -7843,7 +7845,7 @@ where
 					update_id: CLOSED_CHANNEL_UPDATE_ID,
 					updates: vec![ChannelMonitorUpdateStep::ChannelForceClosed { should_broadcast: true }],
 				};
-				pending_background_events.push(BackgroundEvent::ClosingMonitorUpdate((*funding_txo, monitor_update)));
+				pending_background_events.push(BackgroundEvent::MonitorUpdateRegeneratedOnStartup((*funding_txo, monitor_update)));
 			}
 		}
 
@@ -7900,7 +7902,7 @@ where
 		for _ in 0..background_event_count {
 			match <u8 as Readable>::read(reader)? {
 				0 => {
-					// LDK versions prior to 0.0.116 wrote pending `ClosingMonitorUpdate`s here,
+					// LDK versions prior to 0.0.116 wrote pending `MonitorUpdateRegeneratedOnStartup`s here,
 					// however we really don't (and never did) need them - we regenerate all
 					// on-startup monitor updates.
 					let _: OutPoint = Readable::read(reader)?;
