@@ -26,7 +26,7 @@
 
 use bitcoin::secp256k1::PublicKey;
 use bitcoin::secp256k1::ecdsa::Signature;
-use bitcoin::{secp256k1, Witness, Transaction};
+use bitcoin::{secp256k1, Witness};
 use bitcoin::blockdata::script::Script;
 use bitcoin::hash_types::{Txid, BlockHash};
 
@@ -42,7 +42,7 @@ use crate::io_extras::read_to_end;
 
 use crate::events::{MessageSendEventsProvider, OnionMessageProvider};
 use crate::util::logger;
-use crate::util::ser::{LengthReadable, Readable, ReadableArgs, Writeable, Writer, WithoutLength, FixedLengthReader, HighZeroBytesDroppedBigSize, Hostname};
+use crate::util::ser::{LengthReadable, Readable, ReadableArgs, Writeable, Writer, WithoutLength, FixedLengthReader, HighZeroBytesDroppedBigSize, Hostname, TransactionU16LenLimited};
 
 use crate::ln::{PaymentPreimage, PaymentHash, PaymentSecret};
 
@@ -423,45 +423,6 @@ pub struct ChannelReady {
 	/// The sender will accept payments to be forwarded over this SCID and forward them to this
 	/// messages' recipient.
 	pub short_channel_id_alias: Option<u64>,
-}
-
-/// A wrapper for a `Transaction` which can only be constructed with [`TransactionU16LenLimited::new`]
-/// if the `Transaction`'s consensus-serialized length is <= u16::MAX.
-///
-/// Use [`TransactionU16LenLimited::into_transaction`] to convert into the contained `Transaction`.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct TransactionU16LenLimited(Transaction);
-
-impl TransactionU16LenLimited {
-	/// Constructs a new `TransactionU16LenLimited` from a `Transaction` only if it's consensus-
-	/// serialized length is <= u16::MAX.
-	pub fn new(transaction: Transaction) -> Result<Self, ()> {
-		if transaction.serialized_length() > (u16::MAX as usize) {
-			Err(())
-		} else {
-			Ok(Self(transaction))
-		}
-	}
-
-	/// Consumes this `TransactionU16LenLimited` and returns its contained `Transaction`.
-	pub fn into_transaction(self) -> Transaction {
-		self.0
-	}
-}
-
-impl Writeable for TransactionU16LenLimited {
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
-		(self.0.serialized_length() as u16).write(w)?;
-		self.0.write(w)
-	}
-}
-
-impl Readable for TransactionU16LenLimited {
-	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
-		let len = <u16 as Readable>::read(r)?;
-		let mut tx_reader = FixedLengthReader::new(r, len as u64);
-		Ok(Self(Readable::read(&mut tx_reader)?))
-	}
 }
 
 /// A tx_add_input message for adding an input during interactive transaction construction
@@ -850,7 +811,7 @@ impl NetAddress {
 }
 
 impl Writeable for NetAddress {
-fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		match self {
 			&NetAddress::IPv4 { ref addr, ref port } => {
 				1u8.write(writer)?;
@@ -2454,10 +2415,9 @@ mod tests {
 	use hex;
 	use crate::ln::{PaymentPreimage, PaymentHash, PaymentSecret};
 	use crate::ln::features::{ChannelFeatures, ChannelTypeFeatures, InitFeatures, NodeFeatures};
-	use crate::ln::msgs::{self, TransactionU16LenLimited};
-	use crate::ln::msgs::{FinalOnionHopData, OnionErrorPacket, OnionHopDataFormat};
+	use crate::ln::msgs::{self, FinalOnionHopData, OnionErrorPacket, OnionHopDataFormat};
 	use crate::routing::gossip::{NodeAlias, NodeId};
-	use crate::util::ser::{Writeable, Readable, Hostname};
+	use crate::util::ser::{Writeable, Readable, Hostname, TransactionU16LenLimited};
 
 	use bitcoin::hashes::hex::FromHex;
 	use bitcoin::util::address::Address;
