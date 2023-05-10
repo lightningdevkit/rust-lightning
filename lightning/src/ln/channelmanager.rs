@@ -656,40 +656,44 @@ pub type SimpleArcChannelManager<M, T, F, L> = ChannelManager<
 /// This is not exported to bindings users as Arcs don't make sense in bindings
 pub type SimpleRefChannelManager<'a, 'b, 'c, 'd, 'e, 'f, 'g, 'h, M, T, F, L> = ChannelManager<&'a M, &'b T, &'c KeysManager, &'c KeysManager, &'c KeysManager, &'d F, &'e DefaultRouter<&'f NetworkGraph<&'g L>, &'g L, &'h Mutex<ProbabilisticScorer<&'f NetworkGraph<&'g L>, &'g L>>>, &'g L>;
 
+macro_rules! define_test_pub_trait { ($vis: vis) => {
 /// A trivial trait which describes any [`ChannelManager`] used in testing.
-#[cfg(any(test, feature = "_test_utils"))]
-pub trait AChannelManager {
-	type Watch: chain::Watch<Self::Signer>;
+$vis trait AChannelManager {
+	type Watch: chain::Watch<Self::Signer> + ?Sized;
 	type M: Deref<Target = Self::Watch>;
-	type Broadcaster: BroadcasterInterface;
+	type Broadcaster: BroadcasterInterface + ?Sized;
 	type T: Deref<Target = Self::Broadcaster>;
-	type EntropySource: EntropySource;
+	type EntropySource: EntropySource + ?Sized;
 	type ES: Deref<Target = Self::EntropySource>;
-	type NodeSigner: NodeSigner;
+	type NodeSigner: NodeSigner + ?Sized;
 	type NS: Deref<Target = Self::NodeSigner>;
-	type Signer: WriteableEcdsaChannelSigner;
-	type SignerProvider: SignerProvider<Signer = Self::Signer>;
+	type Signer: WriteableEcdsaChannelSigner + Sized;
+	type SignerProvider: SignerProvider<Signer = Self::Signer> + ?Sized;
 	type SP: Deref<Target = Self::SignerProvider>;
-	type FeeEstimator: FeeEstimator;
+	type FeeEstimator: FeeEstimator + ?Sized;
 	type F: Deref<Target = Self::FeeEstimator>;
-	type Router: Router;
+	type Router: Router + ?Sized;
 	type R: Deref<Target = Self::Router>;
-	type Logger: Logger;
+	type Logger: Logger + ?Sized;
 	type L: Deref<Target = Self::Logger>;
 	fn get_cm(&self) -> &ChannelManager<Self::M, Self::T, Self::ES, Self::NS, Self::SP, Self::F, Self::R, Self::L>;
 }
+} }
 #[cfg(any(test, feature = "_test_utils"))]
+define_test_pub_trait!(pub);
+#[cfg(not(any(test, feature = "_test_utils")))]
+define_test_pub_trait!(pub(crate));
 impl<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, L: Deref> AChannelManager
 for ChannelManager<M, T, ES, NS, SP, F, R, L>
 where
-	M::Target: chain::Watch<<SP::Target as SignerProvider>::Signer> + Sized,
-	T::Target: BroadcasterInterface + Sized,
-	ES::Target: EntropySource + Sized,
-	NS::Target: NodeSigner + Sized,
-	SP::Target: SignerProvider + Sized,
-	F::Target: FeeEstimator + Sized,
-	R::Target: Router + Sized,
-	L::Target: Logger + Sized,
+	M::Target: chain::Watch<<SP::Target as SignerProvider>::Signer>,
+	T::Target: BroadcasterInterface,
+	ES::Target: EntropySource,
+	NS::Target: NodeSigner,
+	SP::Target: SignerProvider,
+	F::Target: FeeEstimator,
+	R::Target: Router,
+	L::Target: Logger,
 {
 	type Watch = M::Target;
 	type M = M;
