@@ -451,6 +451,16 @@ impl<T: sealed::Context> PartialEq for Features<T> {
 		self.flags.eq(&o.flags)
 	}
 }
+impl<T: sealed::Context> PartialOrd for Features<T> {
+	fn partial_cmp(&self, other: &Self) -> Option<cmp::Ordering> {
+		self.flags.partial_cmp(&other.flags)
+	}
+}
+impl<T: sealed::Context + Eq> Ord for Features<T> {
+	fn cmp(&self, other: &Self) -> cmp::Ordering {
+		self.flags.cmp(&other.flags)
+	}
+}
 impl<T: sealed::Context> fmt::Debug for Features<T> {
 	fn fmt(&self, fmt: &mut fmt::Formatter) -> Result<(), fmt::Error> {
 		self.flags.fmt(fmt)

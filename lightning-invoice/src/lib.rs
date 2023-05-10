@@ -61,6 +61,7 @@ use secp256k1::PublicKey;
 use secp256k1::{Message, Secp256k1};
 use secp256k1::ecdsa::RecoverableSignature;
 
+use core::cmp::Ordering;
 use core::fmt::{Display, Formatter, self};
 use core::iter::FilterMap;
 use core::num::ParseIntError;
@@ -248,7 +249,7 @@ pub struct InvoiceBuilder<D: tb::Bool, H: tb::Bool, T: tb::Bool, C: tb::Bool, S:
 ///  3. using `str::parse::<Invoice>(&str)` (see [`Invoice::from_str`])
 ///
 /// [`Invoice::from_str`]: crate::Invoice#impl-FromStr
-#[derive(Eq, PartialEq, Debug, Clone, Hash)]
+#[derive(Eq, PartialEq, Debug, Clone, Hash, Ord, PartialOrd)]
 pub struct Invoice {
 	signed_invoice: SignedRawInvoice,
 }
@@ -258,7 +259,7 @@ pub struct Invoice {
 ///
 /// This is not exported to bindings users as we don't have a good way to map the reference lifetimes making this
 /// practically impossible to use safely in languages like C.
-#[derive(Eq, PartialEq, Debug, Clone)]
+#[derive(Eq, PartialEq, Debug, Clone, Ord, PartialOrd)]
 pub enum InvoiceDescription<'f> {
 	/// Reference to the directly supplied description in the invoice
 	Direct(&'f Description),
@@ -272,7 +273,7 @@ pub enum InvoiceDescription<'f> {
 ///
 /// # Invariants
 /// The hash has to be either from the deserialized invoice or from the serialized [`RawInvoice`].
-#[derive(Eq, PartialEq, Debug, Clone, Hash)]
+#[derive(Eq, PartialEq, Debug, Clone, Hash, Ord, PartialOrd)]
 pub struct SignedRawInvoice {
 	/// The rawInvoice that the signature belongs to
 	raw_invoice: RawInvoice,
@@ -295,7 +296,7 @@ pub struct SignedRawInvoice {
 /// Decoding and encoding should not lead to information loss but may lead to different hashes.
 ///
 /// For methods without docs see the corresponding methods in [`Invoice`].
-#[derive(Eq, PartialEq, Debug, Clone, Hash)]
+#[derive(Eq, PartialEq, Debug, Clone, Hash, Ord, PartialOrd)]
 pub struct RawInvoice {
 	/// human readable part
 	pub hrp: RawHrp,
@@ -307,7 +308,7 @@ pub struct RawInvoice {
 /// Data of the [`RawInvoice`] that is encoded in the human readable part.
 ///
 /// This is not exported to bindings users as we don't yet support `Option<Enum>`
-#[derive(Eq, PartialEq, Debug, Clone, Hash)]
+#[derive(Eq, PartialEq, Debug, Clone, Hash, Ord, PartialOrd)]
 pub struct RawHrp {
 	/// The currency deferred from the 3rd and 4th character of the bech32 transaction
 	pub currency: Currency,
@@ -320,7 +321,7 @@ pub struct RawHrp {
 }
 
 /// Data of the [`RawInvoice`] that is encoded in the data part
-#[derive(Eq, PartialEq, Debug, Clone, Hash)]
+#[derive(Eq, PartialEq, Debug, Clone, Hash, Ord, PartialOrd)]
 pub struct RawDataPart {
 	/// generation time of the invoice
 	pub timestamp: PositiveTimestamp,
@@ -335,11 +336,11 @@ pub struct RawDataPart {
 ///
 /// The Unix timestamp representing the stored time has to be positive and no greater than
 /// [`MAX_TIMESTAMP`].
-#[derive(Eq, PartialEq, Debug, Clone, Hash)]
+#[derive(Eq, PartialEq, Debug, Clone, Hash, Ord, PartialOrd)]
 pub struct PositiveTimestamp(Duration);
 
 /// SI prefixes for the human readable part
-#[derive(Eq, PartialEq, Debug, Clone, Copy, Hash)]
+#[derive(Eq, PartialEq, Debug, Clone, Copy, Hash, Ord, PartialOrd)]
 pub enum SiPrefix {
 	/// 10^-3
 	Milli,
@@ -376,7 +377,7 @@ impl SiPrefix {
 }
 
 /// Enum representing the crypto currencies (or networks) supported by this library
-#[derive(Clone, Debug, Hash, Eq, PartialEq)]
+#[derive(Clone, Debug, Hash, Eq, PartialEq, Ord, PartialOrd)]
 pub enum Currency {
 	/// Bitcoin mainnet
 	Bitcoin,
@@ -420,7 +421,7 @@ impl From<Currency> for Network {
 /// Tagged field which may have an unknown tag
 ///
 /// This is not exported to bindings users as we don't currently support TaggedField
-#[derive(Clone, Debug, Hash, Eq, PartialEq)]
+#[derive(Clone, Debug, Hash, Eq, PartialEq, Ord, PartialOrd)]
 pub enum RawTaggedField {
 	/// Parsed tagged field with known tag
 	KnownSemantics(TaggedField),
@@ -435,7 +436,7 @@ pub enum RawTaggedField {
 /// This is not exported to bindings users as we don't yet support enum variants with the same name the struct contained
 /// in the variant.
 #[allow(missing_docs)]
-#[derive(Clone, Debug, Hash, Eq, PartialEq)]
+#[derive(Clone, Debug, Hash, Eq, PartialEq, Ord, PartialOrd)]
 pub enum TaggedField {
 	PaymentHash(Sha256),
 	Description(Description),
@@ -451,7 +452,7 @@ pub enum TaggedField {
 }
 
 /// SHA-256 hash
-#[derive(Clone, Debug, Hash, Eq, PartialEq)]
+#[derive(Clone, Debug, Hash, Eq, PartialEq, Ord, PartialOrd)]
 pub struct Sha256(/// This is not exported to bindings users as the native hash types are not currently mapped
 	pub sha256::Hash);
 
@@ -468,25 +469,25 @@ impl Sha256 {
 ///
 /// # Invariants
 /// The description can be at most 639 __bytes__ long
-#[derive(Clone, Debug, Hash, Eq, PartialEq)]
+#[derive(Clone, Debug, Hash, Eq, PartialEq, Ord, PartialOrd)]
 pub struct Description(String);
 
 /// Payee public key
-#[derive(Clone, Debug, Hash, Eq, PartialEq)]
+#[derive(Clone, Debug, Hash, Eq, PartialEq, Ord, PartialOrd)]
 pub struct PayeePubKey(pub PublicKey);
 
 /// Positive duration that defines when (relatively to the timestamp) in the future the invoice
 /// expires
-#[derive(Clone, Debug, Hash, Eq, PartialEq)]
+#[derive(Clone, Debug, Hash, Eq, PartialEq, Ord, PartialOrd)]
 pub struct ExpiryTime(Duration);
 
 /// `min_final_cltv_expiry_delta` to use for the last HTLC in the route
-#[derive(Clone, Debug, Hash, Eq, PartialEq)]
+#[derive(Clone, Debug, Hash, Eq, PartialEq, Ord, PartialOrd)]
 pub struct MinFinalCltvExpiryDelta(pub u64);
 
 /// Fallback address in case no LN payment is possible
 #[allow(missing_docs)]
-#[derive(Clone, Debug, Hash, Eq, PartialEq)]
+#[derive(Clone, Debug, Hash, Eq, PartialEq, Ord, PartialOrd)]
 pub enum Fallback {
 	SegWitProgram {
 		version: WitnessVersion,
@@ -500,12 +501,24 @@ pub enum Fallback {
 #[derive(Clone, Debug, Hash, Eq, PartialEq)]
 pub struct InvoiceSignature(pub RecoverableSignature);
 
+impl PartialOrd for InvoiceSignature {
+	fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+		self.0.serialize_compact().1.partial_cmp(&other.0.serialize_compact().1)
+	}
+}
+
+impl Ord for InvoiceSignature {
+	fn cmp(&self, other: &Self) -> Ordering {
+		self.0.serialize_compact().1.cmp(&other.0.serialize_compact().1)
+	}
+}
+
 /// Private routing information
 ///
 /// # Invariants
 /// The encoded route has to be <1024 5bit characters long (<=639 bytes or <=12 hops)
 ///
-#[derive(Clone, Debug, Hash, Eq, PartialEq)]
+#[derive(Clone, Debug, Hash, Eq, PartialEq, Ord, PartialOrd)]
 pub struct PrivateRoute(RouteHint);
 
 /// Tag constants as specified in BOLT11
