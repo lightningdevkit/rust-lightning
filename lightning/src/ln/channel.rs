@@ -434,7 +434,7 @@ pub(super) struct ReestablishResponses {
 
 /// The return type of `force_shutdown`
 pub(crate) type ShutdownResult = (
-	Option<(OutPoint, ChannelMonitorUpdate)>,
+	Option<(PublicKey, OutPoint, ChannelMonitorUpdate)>,
 	Vec<(HTLCSource, PaymentHash, PublicKey, [u8; 32])>
 );
 
@@ -6263,7 +6263,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			// See test_duplicate_chan_id and test_pre_lockin_no_chan_closed_update for more.
 			if self.channel_state & (ChannelState::FundingSent as u32 | ChannelState::ChannelReady as u32 | ChannelState::ShutdownComplete as u32) != 0 {
 				self.latest_monitor_update_id = CLOSED_CHANNEL_UPDATE_ID;
-				Some((funding_txo, ChannelMonitorUpdate {
+				Some((self.get_counterparty_node_id(), funding_txo, ChannelMonitorUpdate {
 					update_id: self.latest_monitor_update_id,
 					updates: vec![ChannelMonitorUpdateStep::ChannelForceClosed { should_broadcast }],
 				}))

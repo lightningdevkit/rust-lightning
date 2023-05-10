@@ -499,11 +499,26 @@ struct ClaimablePayments {
 /// for some reason. They are handled in timer_tick_occurred, so may be processed with
 /// quite some time lag.
 enum BackgroundEvent {
-	/// Handle a ChannelMonitorUpdate
+	/// Handle a ChannelMonitorUpdate which closes the channel. This is only separated from
+	/// [`Self::MonitorUpdateRegeneratedOnStartup`] as the non-closing variant needs a public key
+	/// to handle channel resumption, whereas if the channel has been force-closed we do not need
+	/// the counterparty node_id.
 	///
 	/// Note that any such events are lost on shutdown, so in general they must be updates which
 	/// are regenerated on startup.
-	MonitorUpdateRegeneratedOnStartup((OutPoint, ChannelMonitorUpdate)),
+	ClosingMonitorUpdateRegeneratedOnStartup((OutPoint, ChannelMonitorUpdate)),
+	/// Handle a ChannelMonitorUpdate which may or may not close the channel. In general this
+	/// should be used rather than [`Self::ClosingMonitorUpdateRegeneratedOnStartup`], however in
+	/// cases where the `counterparty_node_id` is not available as the channel has closed from a
+	/// [`ChannelMonitor`] error the other variant is acceptable.
+	///
+	/// Note that any such events are lost on shutdown, so in general they must be updates which
+	/// are regenerated on startup.
+	MonitorUpdateRegeneratedOnStartup {
+		counterparty_node_id: PublicKey,
+		funding_txo: OutPoint,
+		update: ChannelMonitorUpdate
+	},
 }
 
 #[derive(Debug)]
@@ -2193,7 +2208,7 @@ where
 			let receiver = HTLCDestination::NextHopChannel { node_id: Some(counterparty_node_id), channel_id };
 			self.fail_htlc_backwards_internal(&source, &payment_hash, &reason, receiver);
 		}
-		if let Some((funding_txo, monitor_update)) = monitor_update_option {
+		if let Some((_, funding_txo, monitor_update)) = monitor_update_option {
 			// There isn't anything we can do if we get an update failure - we're already
 			// force-closing. The monitor update on the required in-memory copy should broadcast
 			// the latest local state, which is the best we can do anyway. Thus, it is safe to
@@ -3774,7 +3789,12 @@ where
 
 		for event in background_events.drain(..) {
 			match event {
-				BackgroundEvent::MonitorUpdateRegeneratedOnStartup((funding_txo, update)) => {
+				BackgroundEvent::ClosingMonitorUpdateRegeneratedOnStartup((funding_txo, update)) => {
+					// The channel has already been closed, so no use bothering to care about the
+					// monitor updating completing.
+					let _ = self.chain_monitor.update_channel(funding_txo, &update);
+				},
+				BackgroundEvent::MonitorUpdateRegeneratedOnStartup { funding_txo, update, .. } => {
 					// The channel has already been closed, so no use bothering to care about the
 					// monitor updating completing.
 					let _ = self.chain_monitor.update_channel(funding_txo, &update);
@@ -5689,12 +5709,15 @@ where
 			// Channel::force_shutdown tries to make us do) as we may still be in initialization,
 			// so we track the update internally and handle it when the user next calls
 			// timer_tick_occurred, guaranteeing we're running normally.
-			if let Some((funding_txo, update)) = failure.0.take() {
+			if let Some((counterparty_node_id, funding_txo, update)) = failure.0.take() {
 				assert_eq!(update.updates.len(), 1);
 				if let ChannelMonitorUpdateStep::ChannelForceClosed { should_broadcast } = update.updates[0] {
 					assert!(should_broadcast);
 				} else { unreachable!(); }
-				self.pending_background_events.lock().unwrap().push(BackgroundEvent::MonitorUpdateRegeneratedOnStartup((funding_txo, update)));
+				self.pending_background_events.lock().unwrap().push(
+					BackgroundEvent::MonitorUpdateRegeneratedOnStartup {
+						counterparty_node_id, funding_txo, update
+					});
 			}
 			self.finish_force_close_channel(failure);
 		}
@@ -7767,8 +7790,10 @@ where
 					log_error!(args.logger, " The ChannelMonitor for channel {} is at update_id {} but the ChannelManager is at update_id {}.",
 						log_bytes!(channel.channel_id()), monitor.get_latest_update_id(), channel.get_latest_monitor_update_id());
 					let (monitor_update, mut new_failed_htlcs) = channel.force_shutdown(true);
-					if let Some(monitor_update) = monitor_update {
-						pending_background_events.push(BackgroundEvent::MonitorUpdateRegeneratedOnStartup(monitor_update));
+					if let Some((counterparty_node_id, funding_txo, update)) = monitor_update {
+						pending_background_events.push(BackgroundEvent::MonitorUpdateRegeneratedOnStartup {
+							counterparty_node_id, funding_txo, update
+						});
 					}
 					failed_htlcs.append(&mut new_failed_htlcs);
 					channel_closures.push_back((events::Event::ChannelClosed {
@@ -7843,7 +7868,7 @@ where
 					update_id: CLOSED_CHANNEL_UPDATE_ID,
 					updates: vec![ChannelMonitorUpdateStep::ChannelForceClosed { should_broadcast: true }],
 				};
-				pending_background_events.push(BackgroundEvent::MonitorUpdateRegeneratedOnStartup((*funding_txo, monitor_update)));
+				pending_background_events.push(BackgroundEvent::ClosingMonitorUpdateRegeneratedOnStartup((*funding_txo, monitor_update)));
 			}
 		}
 
