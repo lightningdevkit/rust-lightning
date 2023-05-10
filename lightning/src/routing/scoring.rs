@@ -519,6 +519,75 @@ pub struct ProbabilisticScoringFeeParameters {
 	pub considered_impossible_penalty_msat: u64,
 }
 
+impl Default for ProbabilisticScoringFeeParameters {
+	fn default() -> Self {
+		Self {
+			base_penalty_msat: 500,
+			base_penalty_amount_multiplier_msat: 8192,
+			liquidity_penalty_multiplier_msat: 30_000,
+			liquidity_penalty_amount_multiplier_msat: 192,
+			manual_node_penalties: HashMap::new(),
+			anti_probing_penalty_msat: 250,
+			considered_impossible_penalty_msat: 1_0000_0000_000,
+			historical_liquidity_penalty_multiplier_msat: 10_000,
+			historical_liquidity_penalty_amount_multiplier_msat: 64,
+		}
+	}
+}
+
+impl ProbabilisticScoringFeeParameters {
+	/// Marks the node with the given `node_id` as banned,
+	/// i.e it will be avoided during path finding.
+	pub fn add_banned(&mut self, node_id: &NodeId) {
+		self.manual_node_penalties.insert(*node_id, u64::max_value());
+	}
+
+	/// Marks all nodes in the given list as banned, i.e.,
+	/// they will be avoided during path finding.
+	pub fn add_banned_from_list(&mut self, node_ids: Vec<NodeId>) {
+		for id in node_ids {
+			self.manual_node_penalties.insert(id, u64::max_value());
+		}
+	}
+
+	/// Removes the node with the given `node_id` from the list of nodes to avoid.
+	pub fn remove_banned(&mut self, node_id: &NodeId) {
+		self.manual_node_penalties.remove(node_id);
+	}
+
+	/// Sets a manual penalty for the given node.
+	pub fn set_manual_penalty(&mut self, node_id: &NodeId, penalty: u64) {
+		self.manual_node_penalties.insert(*node_id, penalty);
+	}
+
+	/// Removes the node with the given `node_id` from the list of manual penalties.
+	pub fn remove_manual_penalty(&mut self, node_id: &NodeId) {
+		self.manual_node_penalties.remove(node_id);
+	}
+
+	/// Clears the list of manual penalties that are applied during path finding.
+	pub fn clear_manual_penalties(&mut self) {
+		self.manual_node_penalties = HashMap::new();
+	}
+}
+
+#[cfg(test)]
+impl ProbabilisticScoringFeeParameters {
+	fn zero_penalty() -> Self {
+		Self {
+			base_penalty_msat: 0,
+			base_penalty_amount_multiplier_msat: 0,
+			liquidity_penalty_multiplier_msat: 0,
+			liquidity_penalty_amount_multiplier_msat: 0,
+			historical_liquidity_penalty_multiplier_msat: 0,
+			historical_liquidity_penalty_amount_multiplier_msat: 0,
+			manual_node_penalties: HashMap::new(),
+			anti_probing_penalty_msat: 0,
+			considered_impossible_penalty_msat: 0,
+		}
+	}
+}
+
 /// Parameters for configuring [`ProbabilisticScorer`].
 ///
 /// Used to configure decay parameters that are static throughout the lifetime of the scorer.
@@ -561,6 +630,15 @@ pub struct ProbabilisticScoringDecayParameters {
 	pub liquidity_offset_half_life: Duration,
 }
 
+impl Default for ProbabilisticScoringDecayParameters {
+	fn default() -> Self {
+		Self {
+			liquidity_offset_half_life: Duration::from_secs(6 * 60 * 60),
+			historical_no_updates_half_life: Duration::from_secs(60 * 60 * 24 * 14),
+		}
+	}
+}
+
 #[cfg(test)]
 impl ProbabilisticScoringDecayParameters {
 	fn zero_penalty() -> Self {
@@ -571,14 +649,6 @@ impl ProbabilisticScoringDecayParameters {
 	}
 }
 
-impl Default for ProbabilisticScoringDecayParameters {
-	fn default() -> Self {
-		Self {
-			liquidity_offset_half_life: Duration::from_secs(6 * 60 * 60),
-			historical_no_updates_half_life: Duration::from_secs(60 * 60 * 24 * 14),
-		}
-	}
-}
 /// Tracks the historical state of a distribution as a weighted average of how much time was spent
 /// in each of 8 buckets.
 #[derive(Clone, Copy)]
@@ -879,73 +949,6 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, T: Time> ProbabilisticScorerU
 			}
 		}
 		None
-	}
-}
-
-impl ProbabilisticScoringFeeParameters {
-	#[cfg(test)]
-	fn zero_penalty() -> Self {
-		Self {
-			base_penalty_msat: 0,
-			base_penalty_amount_multiplier_msat: 0,
-			liquidity_penalty_multiplier_msat: 0,
-			liquidity_penalty_amount_multiplier_msat: 0,
-			historical_liquidity_penalty_multiplier_msat: 0,
-			historical_liquidity_penalty_amount_multiplier_msat: 0,
-			manual_node_penalties: HashMap::new(),
-			anti_probing_penalty_msat: 0,
-			considered_impossible_penalty_msat: 0,
-		}
-	}
-
-	/// Marks the node with the given `node_id` as banned, i.e.,
-	/// it will be avoided during path finding.
-	pub fn add_banned(&mut self, node_id: &NodeId) {
-		self.manual_node_penalties.insert(*node_id, u64::max_value());
-	}
-
-	/// Marks all nodes in the given list as banned, i.e.,
-	/// they will be avoided during path finding.
-	pub fn add_banned_from_list(&mut self, node_ids: Vec<NodeId>) {
-		for id in node_ids {
-			self.manual_node_penalties.insert(id, u64::max_value());
-		}
-	}
-
-	/// Removes the node with the given `node_id` from the list of nodes to avoid.
-	pub fn remove_banned(&mut self, node_id: &NodeId) {
-		self.manual_node_penalties.remove(node_id);
-	}
-
-	/// Sets a manual penalty for the given node.
-	pub fn set_manual_penalty(&mut self, node_id: &NodeId, penalty: u64) {
-		self.manual_node_penalties.insert(*node_id, penalty);
-	}
-
-	/// Removes the node with the given `node_id` from the list of manual penalties.
-	pub fn remove_manual_penalty(&mut self, node_id: &NodeId) {
-		self.manual_node_penalties.remove(node_id);
-	}
-
-	/// Clears the list of manual penalties that are applied during path finding.
-	pub fn clear_manual_penalties(&mut self) {
-		self.manual_node_penalties = HashMap::new();
-	}
-}
-
-impl Default for ProbabilisticScoringFeeParameters {
-	fn default() -> Self {
-		Self {
-			base_penalty_msat: 500,
-			base_penalty_amount_multiplier_msat: 8192,
-			liquidity_penalty_multiplier_msat: 30_000,
-			liquidity_penalty_amount_multiplier_msat: 192,
-			manual_node_penalties: HashMap::new(),
-			anti_probing_penalty_msat: 250,
-			considered_impossible_penalty_msat: 1_0000_0000_000,
-			historical_liquidity_penalty_multiplier_msat: 10_000,
-			historical_liquidity_penalty_amount_multiplier_msat: 64,
-		}
 	}
 }
 
