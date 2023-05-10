@@ -500,17 +500,20 @@ struct ClaimablePayments {
 /// quite some time lag.
 enum BackgroundEvent {
 	/// Handle a ChannelMonitorUpdate which closes the channel. This is only separated from
-	/// [`Self::MonitorUpdateRegeneratedOnStartup`] as the non-closing variant needs a public key
-	/// to handle channel resumption, whereas if the channel has been force-closed we do not need
-	/// the counterparty node_id.
+	/// [`Self::MonitorUpdateRegeneratedOnStartup`] as the maybe-non-closing variant needs a public
+	/// key to handle channel resumption, whereas if the channel has been force-closed we do not
+	/// need the counterparty node_id.
 	///
 	/// Note that any such events are lost on shutdown, so in general they must be updates which
 	/// are regenerated on startup.
 	ClosingMonitorUpdateRegeneratedOnStartup((OutPoint, ChannelMonitorUpdate)),
-	/// Handle a ChannelMonitorUpdate which may or may not close the channel. In general this
-	/// should be used rather than [`Self::ClosingMonitorUpdateRegeneratedOnStartup`], however in
-	/// cases where the `counterparty_node_id` is not available as the channel has closed from a
-	/// [`ChannelMonitor`] error the other variant is acceptable.
+	/// Handle a ChannelMonitorUpdate which may or may not close the channel and may unblock the
+	/// channel to continue normal operation.
+	///
+	/// In general this should be used rather than
+	/// [`Self::ClosingMonitorUpdateRegeneratedOnStartup`], however in cases where the
+	/// `counterparty_node_id` is not available as the channel has closed from a [`ChannelMonitor`]
+	/// error the other variant is acceptable.
 	///
 	/// Note that any such events are lost on shutdown, so in general they must be updates which
 	/// are regenerated on startup.
@@ -3798,10 +3801,30 @@ where
 					// monitor updating completing.
 					let _ = self.chain_monitor.update_channel(funding_txo, &update);
 				},
-				BackgroundEvent::MonitorUpdateRegeneratedOnStartup { funding_txo, update, .. } => {
-					// The channel has already been closed, so no use bothering to care about the
-					// monitor updating completing.
-					let _ = self.chain_monitor.update_channel(funding_txo, &update);
+				BackgroundEvent::MonitorUpdateRegeneratedOnStartup { counterparty_node_id, funding_txo, update } => {
+					let update_res = self.chain_monitor.update_channel(funding_txo, &update);
+
+					let res = {
+						let per_peer_state = self.per_peer_state.read().unwrap();
+						if let Some(peer_state_mutex) = per_peer_state.get(&counterparty_node_id) {
+							let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+							let peer_state = &mut *peer_state_lock;
+							match peer_state.channel_by_id.entry(funding_txo.to_channel_id()) {
+								hash_map::Entry::Occupied(mut chan) => {
+									handle_new_monitor_update!(self, update_res, update.update_id, peer_state_lock, peer_state, per_peer_state, chan)
+								},
+								hash_map::Entry::Vacant(_) => Ok(()),
+							}
+						} else { Ok(()) }
+					};
+					// TODO: If this channel has since closed, we're likely providing a payment
+					// preimage update, which we must ensure is durable! We currently don't,
+					// however, ensure that.
+					if res.is_err() {
+						log_error!(self.logger,
+							"Failed to provide ChannelMonitorUpdate to closed channel! This likely lost us a payment preimage!");
+					}
+					let _ = handle_error!(self, res, counterparty_node_id);
 				},
 			}
 		}
