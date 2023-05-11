@@ -2505,7 +2505,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		let mut ret = Vec::new();
 		mem::swap(&mut ret, &mut self.pending_events);
 		#[cfg(anchors)]
-		for claim_event in self.onchain_tx_handler.get_and_clear_pending_claim_events().drain(..) {
+		for (claim_id, claim_event) in self.onchain_tx_handler.get_and_clear_pending_claim_events().drain(..) {
 			match claim_event {
 				ClaimEvent::BumpCommitment {
 					package_target_feerate_sat_per_1000_weight, commitment_tx, anchor_output_idx,
@@ -2516,6 +2516,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 					let commitment_tx_fee_satoshis = self.channel_value_satoshis -
 						commitment_tx.output.iter().fold(0u64, |sum, output| sum + output.value);
 					ret.push(Event::BumpTransaction(BumpTransactionEvent::ChannelClose {
+						claim_id,
 						package_target_feerate_sat_per_1000_weight,
 						commitment_tx,
 						commitment_tx_fee_satoshis,
@@ -2547,6 +2548,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 						});
 					}
 					ret.push(Event::BumpTransaction(BumpTransactionEvent::HTLCResolution {
+						claim_id,
 						target_feerate_sat_per_1000_weight,
 						htlc_descriptors,
 						tx_lock_time,

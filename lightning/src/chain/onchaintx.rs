@@ -475,10 +475,10 @@ impl<ChannelSigner: WriteableEcdsaChannelSigner> OnchainTxHandler<ChannelSigner>
 	}
 
 	#[cfg(anchors)]
-	pub(crate) fn get_and_clear_pending_claim_events(&mut self) -> Vec<ClaimEvent> {
+	pub(crate) fn get_and_clear_pending_claim_events(&mut self) -> Vec<(ClaimId, ClaimEvent)> {
 		let mut events = Vec::new();
 		swap(&mut events, &mut self.pending_claim_events);
-		events.into_iter().map(|(_, event)| event).collect()
+		events
 	}
 
 	/// Triggers rebroadcasts/fee-bumps of pending claims from a force-closed channel. This is

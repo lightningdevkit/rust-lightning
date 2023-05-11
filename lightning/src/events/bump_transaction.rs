@@ -9,6 +9,7 @@
 
 //! Utitilies for bumping transactions originating from [`super::Event`]s.
 
+use crate::chain::ClaimId;
 use crate::ln::PaymentPreimage;
 use crate::ln::chan_utils;
 use crate::ln::chan_utils::{ChannelTransactionParameters, HTLCOutputInCommitment};
@@ -173,6 +174,12 @@ pub enum BumpTransactionEvent {
 	/// [`EcdsaChannelSigner::sign_holder_anchor_input`]: crate::sign::EcdsaChannelSigner::sign_holder_anchor_input
 	/// [`build_anchor_input_witness`]: crate::ln::chan_utils::build_anchor_input_witness
 	ChannelClose {
+		/// The unique identifier for the claim of the anchor output in the commitment transaction.
+		///
+		/// The identifier must map to the set of external UTXOs assigned to the claim, such that
+		/// they can be reused when a new claim with the same identifier needs to be made, resulting
+		/// in a fee-bumping attempt.
+		claim_id: ClaimId,
 		/// The target feerate that the transaction package, which consists of the commitment
 		/// transaction and the to-be-crafted child anchor transaction, must meet.
 		package_target_feerate_sat_per_1000_weight: u32,
@@ -222,6 +229,13 @@ pub enum BumpTransactionEvent {
 	/// [`EcdsaChannelSigner::sign_holder_htlc_transaction`]: crate::sign::EcdsaChannelSigner::sign_holder_htlc_transaction
 	/// [`HTLCDescriptor::tx_input_witness`]: HTLCDescriptor::tx_input_witness
 	HTLCResolution {
+		/// The unique identifier for the claim of the HTLCs in the confirmed commitment
+		/// transaction.
+		///
+		/// The identifier must map to the set of external UTXOs assigned to the claim, such that
+		/// they can be reused when a new claim with the same identifier needs to be made, resulting
+		/// in a fee-bumping attempt.
+		claim_id: ClaimId,
 		/// The target feerate that the resulting HTLC transaction must meet.
 		target_feerate_sat_per_1000_weight: u32,
 		/// The set of pending HTLCs on the confirmed commitment that need to be claimed, preferably
