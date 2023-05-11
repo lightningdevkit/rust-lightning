@@ -14,6 +14,7 @@ exclude = [
     "lightning-custom-message",
     "lightning-transaction-sync",
     "no-std-check",
+    "bench",
 ]
 
 # Our tests do actual crypto and lots of work, the tradeoff for -O2 is well
@@ -35,8 +36,3 @@ lto = "off"
 opt-level = 3
 lto = true
 panic = "abort"
-
-[profile.bench]
-opt-level = 3
-codegen-units = 1
-lto = true

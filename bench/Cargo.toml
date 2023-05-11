@@ -1,0 +1,25 @@
+[package]
+name = "lightning-bench"
+version = "0.0.1"
+authors = ["Matt Corallo"]
+edition = "2018"
+
+[[bench]]
+name = "bench"
+harness = false
+
+[features]
+hashbrown = ["lightning/hashbrown"]
+
+[dependencies]
+lightning = { path = "../lightning", features = ["_test_utils", "criterion"] }
+lightning-persister = { path = "../lightning-persister", features = ["criterion"] }
+lightning-rapid-gossip-sync = { path = "../lightning-rapid-gossip-sync", features = ["criterion"] }
+criterion = { version = "0.4", default-features = false }
+
+[profile.release]
+opt-level = 3
+codegen-units = 1
+lto = true
+panic = "abort"
+debug = true

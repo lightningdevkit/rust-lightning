@@ -8,8 +8,7 @@
 
 #![cfg_attr(docsrs, feature(doc_auto_cfg))]
 
-#![cfg_attr(all(test, feature = "_bench_unstable"), feature(test))]
-#[cfg(all(test, feature = "_bench_unstable"))] extern crate test;
+#[cfg(ldk_bench)] extern crate criterion;
 
 mod util;
 
@@ -91,13 +90,13 @@ impl FilesystemPersister {
 				continue;
 			}
 
-			let txid = Txid::from_hex(filename.split_at(64).0)
+			let txid: Txid = Txid::from_hex(filename.split_at(64).0)
 				.map_err(|_| std::io::Error::new(
 					std::io::ErrorKind::InvalidData,
 					"Invalid tx ID in filename",
 				))?;
 
-			let index = filename.split_at(65).1.parse()
+			let index: u16 = filename.split_at(65).1.parse()
 				.map_err(|_| std::io::Error::new(
 					std::io::ErrorKind::InvalidData,
 					"Invalid tx index in filename",
@@ -338,14 +337,16 @@ mod tests {
 	}
 }
 
-#[cfg(all(test, feature = "_bench_unstable"))]
+#[cfg(ldk_bench)]
+/// Benches
 pub mod bench {
-	use test::Bencher;
+	use criterion::Criterion;
 
-	#[bench]
-	fn bench_sends(bench: &mut Bencher) {
+	/// Bench!
+	pub fn bench_sends(bench: &mut Criterion) {
 		let persister_a = super::FilesystemPersister::new("bench_filesystem_persister_a".to_string());
 		let persister_b = super::FilesystemPersister::new("bench_filesystem_persister_b".to_string());
-		lightning::ln::channelmanager::bench::bench_two_sends(bench, persister_a, persister_b);
+		lightning::ln::channelmanager::bench::bench_two_sends(
+			bench, "bench_filesystem_persisted_sends", persister_a, persister_b);
 	}
 }

@@ -1015,7 +1015,7 @@ struct PathBuildingHop<'a> {
 	/// decrease as well. Thus, we have to explicitly track which nodes have been processed and
 	/// avoid processing them again.
 	was_processed: bool,
-	#[cfg(all(not(feature = "_bench_unstable"), any(test, fuzzing)))]
+	#[cfg(all(not(ldk_bench), any(test, fuzzing)))]
 	// In tests, we apply further sanity checks on cases where we skip nodes we already processed
 	// to ensure it is specifically in cases where the fee has gone down because of a decrease in
 	// value_contribution_msat, which requires tracking it here. See comments below where it is
@@ -1036,7 +1036,7 @@ impl<'a> core::fmt::Debug for PathBuildingHop<'a> {
 			.field("path_penalty_msat", &self.path_penalty_msat)
 			.field("path_htlc_minimum_msat", &self.path_htlc_minimum_msat)
 			.field("cltv_expiry_delta", &self.candidate.cltv_expiry_delta());
-		#[cfg(all(not(feature = "_bench_unstable"), any(test, fuzzing)))]
+		#[cfg(all(not(ldk_bench), any(test, fuzzing)))]
 		let debug_struct = debug_struct
 			.field("value_contribution_msat", &self.value_contribution_msat);
 		debug_struct.finish()
@@ -1570,14 +1570,14 @@ where L::Target: Logger {
 								path_htlc_minimum_msat,
 								path_penalty_msat: u64::max_value(),
 								was_processed: false,
-								#[cfg(all(not(feature = "_bench_unstable"), any(test, fuzzing)))]
+								#[cfg(all(not(ldk_bench), any(test, fuzzing)))]
 								value_contribution_msat,
 							}
 						});
 
 						#[allow(unused_mut)] // We only use the mut in cfg(test)
 						let mut should_process = !old_entry.was_processed;
-						#[cfg(all(not(feature = "_bench_unstable"), any(test, fuzzing)))]
+						#[cfg(all(not(ldk_bench), any(test, fuzzing)))]
 						{
 							// In test/fuzzing builds, we do extra checks to make sure the skipping
 							// of already-seen nodes only happens in cases we expect (see below).
@@ -1648,13 +1648,13 @@ where L::Target: Logger {
 								old_entry.fee_msat = 0; // This value will be later filled with hop_use_fee_msat of the following channel
 								old_entry.path_htlc_minimum_msat = path_htlc_minimum_msat;
 								old_entry.path_penalty_msat = path_penalty_msat;
-								#[cfg(all(not(feature = "_bench_unstable"), any(test, fuzzing)))]
+								#[cfg(all(not(ldk_bench), any(test, fuzzing)))]
 								{
 									old_entry.value_contribution_msat = value_contribution_msat;
 								}
 								did_add_update_path_to_src_node = true;
 							} else if old_entry.was_processed && new_cost < old_cost {
-								#[cfg(all(not(feature = "_bench_unstable"), any(test, fuzzing)))]
+								#[cfg(all(not(ldk_bench), any(test, fuzzing)))]
 								{
 									// If we're skipping processing a node which was previously
 									// processed even though we found another path to it with a
@@ -6038,7 +6038,7 @@ mod tests {
 	}
 }
 
-#[cfg(all(test, not(feature = "no-std")))]
+#[cfg(all(any(test, ldk_bench), not(feature = "no-std")))]
 pub(crate) mod bench_utils {
 	use super::*;
 	use std::fs::File;
@@ -6068,7 +6068,18 @@ pub(crate) mod bench_utils {
 				path.pop(); // target
 				path.push("lightning");
 				path.push("net_graph-2023-01-18.bin");
-				eprintln!("{}", path.to_str().unwrap());
+				File::open(path)
+			})
+			.or_else(|_| { // Fall back to guessing based on the binary location for a subcrate
+				// path is likely something like .../rust-lightning/bench/target/debug/deps/bench..
+				let mut path = std::env::current_exe().unwrap();
+				path.pop(); // bench...
+				path.pop(); // deps
+				path.pop(); // debug
+				path.pop(); // target
+				path.pop(); // bench
+				path.push("lightning");
+				path.push("net_graph-2023-01-18.bin");
 				File::open(path)
 			})
 		.map_err(|_| "Please fetch https://bitcoin.ninja/ldk-net_graph-v0.0.113-2023-01-18.bin and place it at lightning/net_graph-2023-01-18.bin");
@@ -6204,8 +6215,8 @@ pub(crate) mod bench_utils {
 	}
 }
 
-#[cfg(all(test, feature = "_bench_unstable", not(feature = "no-std")))]
-mod benches {
+#[cfg(ldk_bench)]
+pub mod benches {
 	use super::*;
 	use crate::sign::{EntropySource, KeysManager};
 	use crate::ln::channelmanager;
@@ -6216,60 +6227,63 @@ mod benches {
 	use crate::util::logger::{Logger, Record};
 	use crate::util::test_utils::TestLogger;
 
-	use test::Bencher;
+	use criterion::Criterion;
 
 	struct DummyLogger {}
 	impl Logger for DummyLogger {
 		fn log(&self, _record: &Record) {}
 	}
 
-
-	#[bench]
-	fn generate_routes_with_zero_penalty_scorer(bench: &mut Bencher) {
+	pub fn generate_routes_with_zero_penalty_scorer(bench: &mut Criterion) {
 		let logger = TestLogger::new();
 		let network_graph = bench_utils::read_network_graph(&logger).unwrap();
 		let scorer = FixedPenaltyScorer::with_penalty(0);
-		generate_routes(bench, &network_graph, scorer, &(), InvoiceFeatures::empty(), 0);
+		generate_routes(bench, &network_graph, scorer, &(), InvoiceFeatures::empty(), 0,
+			"generate_routes_with_zero_penalty_scorer");
 	}
 
-	#[bench]
-	fn generate_mpp_routes_with_zero_penalty_scorer(bench: &mut Bencher) {
+	pub fn generate_mpp_routes_with_zero_penalty_scorer(bench: &mut Criterion) {
 		let logger = TestLogger::new();
 		let network_graph = bench_utils::read_network_graph(&logger).unwrap();
 		let scorer = FixedPenaltyScorer::with_penalty(0);
-		generate_routes(bench, &network_graph, scorer, &(), channelmanager::provided_invoice_features(&UserConfig::default()), 0);
+		generate_routes(bench, &network_graph, scorer, &(),
+			channelmanager::provided_invoice_features(&UserConfig::default()), 0,
+			"generate_mpp_routes_with_zero_penalty_scorer");
 	}
 
-	#[bench]
-	fn generate_routes_with_probabilistic_scorer(bench: &mut Bencher) {
+	pub fn generate_routes_with_probabilistic_scorer(bench: &mut Criterion) {
 		let logger = TestLogger::new();
 		let network_graph = bench_utils::read_network_graph(&logger).unwrap();
 		let params = ProbabilisticScoringFeeParameters::default();
 		let scorer = ProbabilisticScorer::new(ProbabilisticScoringDecayParameters::default(), &network_graph, &logger);
-		generate_routes(bench, &network_graph, scorer, &params, InvoiceFeatures::empty(), 0);
+		generate_routes(bench, &network_graph, scorer, &params, InvoiceFeatures::empty(), 0,
+			"generate_routes_with_probabilistic_scorer");
 	}
 
-	#[bench]
-	fn generate_mpp_routes_with_probabilistic_scorer(bench: &mut Bencher) {
+	pub fn generate_mpp_routes_with_probabilistic_scorer(bench: &mut Criterion) {
 		let logger = TestLogger::new();
 		let network_graph = bench_utils::read_network_graph(&logger).unwrap();
 		let params = ProbabilisticScoringFeeParameters::default();
 		let scorer = ProbabilisticScorer::new(ProbabilisticScoringDecayParameters::default(), &network_graph, &logger);
-		generate_routes(bench, &network_graph, scorer, &params, channelmanager::provided_invoice_features(&UserConfig::default()), 0);
+		generate_routes(bench, &network_graph, scorer, &params,
+			channelmanager::provided_invoice_features(&UserConfig::default()), 0,
+			"generate_mpp_routes_with_probabilistic_scorer");
 	}
 
-	#[bench]
-	fn generate_large_mpp_routes_with_probabilistic_scorer(bench: &mut Bencher) {
+	pub fn generate_large_mpp_routes_with_probabilistic_scorer(bench: &mut Criterion) {
 		let logger = TestLogger::new();
 		let network_graph = bench_utils::read_network_graph(&logger).unwrap();
 		let params = ProbabilisticScoringFeeParameters::default();
 		let scorer = ProbabilisticScorer::new(ProbabilisticScoringDecayParameters::default(), &network_graph, &logger);
-		generate_routes(bench, &network_graph, scorer, &params, channelmanager::provided_invoice_features(&UserConfig::default()), 100_000_000);
+		generate_routes(bench, &network_graph, scorer, &params,
+			channelmanager::provided_invoice_features(&UserConfig::default()), 100_000_000,
+			"generate_large_mpp_routes_with_probabilistic_scorer");
 	}
 
 	fn generate_routes<S: Score>(
-		bench: &mut Bencher, graph: &NetworkGraph<&TestLogger>, mut scorer: S,
+		bench: &mut Criterion, graph: &NetworkGraph<&TestLogger>, mut scorer: S,
 		score_params: &S::ScoreParams, features: InvoiceFeatures, starting_amount: u64,
+		bench_name: &'static str,
 	) {
 		let payer = bench_utils::payer_pubkey();
 		let keys_manager = KeysManager::new(&[0u8; 32], 42, 42);
@@ -6280,11 +6294,11 @@ mod benches {
 
 		// ...then benchmark finding paths between the nodes we learned.
 		let mut idx = 0;
-		bench.iter(|| {
+		bench.bench_function(bench_name, |b| b.iter(|| {
 			let (first_hop, params, amt) = &route_endpoints[idx % route_endpoints.len()];
 			assert!(get_route(&payer, params, &graph.read_only(), Some(&[first_hop]), *amt,
 				&DummyLogger{}, &scorer, score_params, &random_seed_bytes).is_ok());
 			idx += 1;
-		});
+		}));
 	}
 }
