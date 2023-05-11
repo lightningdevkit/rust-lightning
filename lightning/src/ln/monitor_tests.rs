@@ -114,7 +114,7 @@ fn test_spendable_output<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, spendable_t
 	if let Event::SpendableOutputs { outputs } = spendable.pop().unwrap() {
 		assert_eq!(outputs.len(), 1);
 		let spend_tx = node.keys_manager.backing.spend_spendable_outputs(&[&outputs[0]], Vec::new(),
-			Builder::new().push_opcode(opcodes::all::OP_RETURN).into_script(), 253, &Secp256k1::new()).unwrap();
+			Builder::new().push_opcode(opcodes::all::OP_RETURN).into_script(), 253, None, &Secp256k1::new()).unwrap();
 		check_spends!(spend_tx, spendable_tx);
 	} else { panic!(); }
 }
@@ -2348,7 +2348,7 @@ fn test_anchors_aggregated_revoked_htlc_tx() {
 		if let Event::SpendableOutputs { outputs } = event {
 			assert_eq!(outputs.len(), 1);
 			let spend_tx = nodes[0].keys_manager.backing.spend_spendable_outputs(
-				&[&outputs[0]], Vec::new(), Script::new_op_return(&[]), 253, &Secp256k1::new(),
+				&[&outputs[0]], Vec::new(), Script::new_op_return(&[]), 253, None, &Secp256k1::new(),
 			).unwrap();
 			check_spends!(spend_tx, revoked_claims[idx]);
 		} else {

@@ -16,6 +16,7 @@ use bitcoin::blockdata::transaction::{Transaction, TxOut, TxIn, EcdsaSighashType
 use bitcoin::blockdata::script::{Script, Builder};
 use bitcoin::blockdata::opcodes;
 use bitcoin::network::constants::Network;
+use bitcoin::psbt::PartiallySignedTransaction;
 use bitcoin::util::bip32::{ExtendedPrivKey, ExtendedPubKey, ChildNumber};
 use bitcoin::util::sighash;
 
@@ -217,6 +218,126 @@ impl_writeable_tlv_based_enum!(SpendableOutputDescriptor,
 	(1, DelayedPaymentOutput),
 	(2, StaticPaymentOutput),
 );
+
+impl SpendableOutputDescriptor {
+	/// Turns this into a [`bitcoin::psbt::Input`] which can be used to create a
+	/// [`PartiallySignedTransaction`] which spends the given descriptor.
+	///
+	/// Note that this does not include any signatures, just the information required to
+	/// construct the transaction and sign it.
+	pub fn to_psbt_input(&self) -> bitcoin::psbt::Input {
+		match self {
+			SpendableOutputDescriptor::StaticOutput { output, .. } => {
+				// Is a standard P2WPKH, no need for witness script
+				bitcoin::psbt::Input {
+					witness_utxo: Some(output.clone()),
+					..Default::default()
+				}
+			},
+			SpendableOutputDescriptor::DelayedPaymentOutput(descriptor) => {
+				// TODO we could add the witness script as well
+				bitcoin::psbt::Input {
+					witness_utxo: Some(descriptor.output.clone()),
+					..Default::default()
+				}
+			},
+			SpendableOutputDescriptor::StaticPaymentOutput(descriptor) => {
+				// TODO we could add the witness script as well
+				bitcoin::psbt::Input {
+					witness_utxo: Some(descriptor.output.clone()),
+					..Default::default()
+				}
+			},
+		}
+	}
+
+	/// Creates an unsigned [`PartiallySignedTransaction`] which spends the given descriptors to
+	/// the given outputs, plus an output to the given change destination (if sufficient
+	/// change value remains). The PSBT will have a feerate, at least, of the given value.
+	///
+	/// The `locktime` argument is used to set the transaction's locktime. If `None`, the
+	/// transaction will have a locktime of 0. It it recommended to set this to the current block
+	/// height to avoid fee sniping, unless you have some specific reason to use a different
+	/// locktime.
+	///
+	/// Returns the PSBT and expected max transaction weight.
+	///
+	/// Returns `Err(())` if the output value is greater than the input value minus required fee,
+	/// if a descriptor was duplicated, or if an output descriptor `script_pubkey`
+	/// does not match the one we can spend.
+	///
+	/// We do not enforce that outputs meet the dust limit or that any output scripts are standard.
+	pub fn create_spendable_outputs_psbt(descriptors: &[&SpendableOutputDescriptor], outputs: Vec<TxOut>, change_destination_script: Script, feerate_sat_per_1000_weight: u32, locktime: Option<PackedLockTime>) -> Result<(PartiallySignedTransaction, usize), ()> {
+		let mut input = Vec::with_capacity(descriptors.len());
+		let mut input_value = 0;
+		let mut witness_weight = 0;
+		let mut output_set = HashSet::with_capacity(descriptors.len());
+		for outp in descriptors {
+			match outp {
+				SpendableOutputDescriptor::StaticPaymentOutput(descriptor) => {
+					if !output_set.insert(descriptor.outpoint) { return Err(()); }
+					input.push(TxIn {
+						previous_output: descriptor.outpoint.into_bitcoin_outpoint(),
+						script_sig: Script::new(),
+						sequence: Sequence::ZERO,
+						witness: Witness::new(),
+					});
+					witness_weight += StaticPaymentOutputDescriptor::MAX_WITNESS_LENGTH;
+					#[cfg(feature = "grind_signatures")]
+					{ witness_weight -= 1; } // Guarantees a low R signature
+					input_value += descriptor.output.value;
+				},
+				SpendableOutputDescriptor::DelayedPaymentOutput(descriptor) => {
+					if !output_set.insert(descriptor.outpoint) { return Err(()); }
+					input.push(TxIn {
+						previous_output: descriptor.outpoint.into_bitcoin_outpoint(),
+						script_sig: Script::new(),
+						sequence: Sequence(descriptor.to_self_delay as u32),
+						witness: Witness::new(),
+					});
+					witness_weight += DelayedPaymentOutputDescriptor::MAX_WITNESS_LENGTH;
+					#[cfg(feature = "grind_signatures")]
+					{ witness_weight -= 1; } // Guarantees a low R signature
+					input_value += descriptor.output.value;
+				},
+				SpendableOutputDescriptor::StaticOutput { ref outpoint, ref output } => {
+					if !output_set.insert(*outpoint) { return Err(()); }
+					input.push(TxIn {
+						previous_output: outpoint.into_bitcoin_outpoint(),
+						script_sig: Script::new(),
+						sequence: Sequence::ZERO,
+						witness: Witness::new(),
+					});
+					witness_weight += 1 + 73 + 34;
+					#[cfg(feature = "grind_signatures")]
+					{ witness_weight -= 1; } // Guarantees a low R signature
+					input_value += output.value;
+				}
+			}
+			if input_value > MAX_VALUE_MSAT / 1000 { return Err(()); }
+		}
+		let mut tx = Transaction {
+			version: 2,
+			lock_time: locktime.unwrap_or(PackedLockTime::ZERO),
+			input,
+			output: outputs,
+		};
+		let expected_max_weight =
+			transaction_utils::maybe_add_change_output(&mut tx, input_value, witness_weight, feerate_sat_per_1000_weight, change_destination_script)?;
+
+		let psbt_inputs = descriptors.iter().map(|d| d.to_psbt_input()).collect::<Vec<_>>();
+		let psbt = PartiallySignedTransaction {
+			inputs: psbt_inputs,
+			outputs: vec![Default::default(); tx.output.len()],
+			unsigned_tx: tx,
+			xpub: Default::default(),
+			version: 0,
+			proprietary: Default::default(),
+			unknown: Default::default(),
+		};
+		Ok((psbt, expected_max_weight))
+	}
+}
 
 /// A trait to handle Lightning channel key material without concretizing the channel type or
 /// the signature mechanism.
@@ -1171,97 +1292,40 @@ impl KeysManager {
 		)
 	}
 
-	/// Creates a [`Transaction`] which spends the given descriptors to the given outputs, plus an
-	/// output to the given change destination (if sufficient change value remains). The
-	/// transaction will have a feerate, at least, of the given value.
+	/// Signs the given [`PartiallySignedTransaction`] which spends the given [`SpendableOutputDescriptor`]s.
+	/// The resulting inputs will be finalized and the PSBT will be ready for broadcast if there
+	/// are no other inputs that need signing.
 	///
-	/// Returns `Err(())` if the output value is greater than the input value minus required fee,
-	/// if a descriptor was duplicated, or if an output descriptor `script_pubkey`
-	/// does not match the one we can spend.
-	///
-	/// We do not enforce that outputs meet the dust limit or that any output scripts are standard.
+	/// Returns `Err(())` if the PSBT is missing a descriptor or if we fail to sign.
 	///
 	/// May panic if the [`SpendableOutputDescriptor`]s were not generated by channels which used
 	/// this [`KeysManager`] or one of the [`InMemorySigner`] created by this [`KeysManager`].
-	pub fn spend_spendable_outputs<C: Signing>(&self, descriptors: &[&SpendableOutputDescriptor], outputs: Vec<TxOut>, change_destination_script: Script, feerate_sat_per_1000_weight: u32, secp_ctx: &Secp256k1<C>) -> Result<Transaction, ()> {
-		let mut input = Vec::new();
-		let mut input_value = 0;
-		let mut witness_weight = 0;
-		let mut output_set = HashSet::with_capacity(descriptors.len());
+	pub fn sign_spendable_outputs_psbt<C: Signing>(&self, descriptors: &[&SpendableOutputDescriptor], psbt: &mut PartiallySignedTransaction, secp_ctx: &Secp256k1<C>) -> Result<(), ()> {
+		let mut keys_cache: Option<(InMemorySigner, [u8; 32])> = None;
 		for outp in descriptors {
 			match outp {
 				SpendableOutputDescriptor::StaticPaymentOutput(descriptor) => {
-					input.push(TxIn {
-						previous_output: descriptor.outpoint.into_bitcoin_outpoint(),
-						script_sig: Script::new(),
-						sequence: Sequence::ZERO,
-						witness: Witness::new(),
-					});
-					witness_weight += StaticPaymentOutputDescriptor::MAX_WITNESS_LENGTH;
-					#[cfg(feature = "grind_signatures")]
-					{ witness_weight -= 1; } // Guarantees a low R signature
-					input_value += descriptor.output.value;
-					if !output_set.insert(descriptor.outpoint) { return Err(()); }
+					let input_idx = psbt.unsigned_tx.input.iter().position(|i| i.previous_output == descriptor.outpoint.into_bitcoin_outpoint()).ok_or(())?;
+					if keys_cache.is_none() || keys_cache.as_ref().unwrap().1 != descriptor.channel_keys_id {
+						keys_cache = Some((
+							self.derive_channel_keys(descriptor.channel_value_satoshis, &descriptor.channel_keys_id),
+							descriptor.channel_keys_id));
+					}
+					let witness = Witness::from_vec(keys_cache.as_ref().unwrap().0.sign_counterparty_payment_input(&psbt.unsigned_tx, input_idx, &descriptor, &secp_ctx)?);
+					psbt.inputs[input_idx].final_script_witness = Some(witness);
 				},
 				SpendableOutputDescriptor::DelayedPaymentOutput(descriptor) => {
-					input.push(TxIn {
-						previous_output: descriptor.outpoint.into_bitcoin_outpoint(),
-						script_sig: Script::new(),
-						sequence: Sequence(descriptor.to_self_delay as u32),
-						witness: Witness::new(),
-					});
-					witness_weight += DelayedPaymentOutputDescriptor::MAX_WITNESS_LENGTH;
-					#[cfg(feature = "grind_signatures")]
-					{ witness_weight -= 1; } // Guarantees a low R signature
-					input_value += descriptor.output.value;
-					if !output_set.insert(descriptor.outpoint) { return Err(()); }
+					let input_idx = psbt.unsigned_tx.input.iter().position(|i| i.previous_output == descriptor.outpoint.into_bitcoin_outpoint()).ok_or(())?;
+					if keys_cache.is_none() || keys_cache.as_ref().unwrap().1 != descriptor.channel_keys_id {
+						keys_cache = Some((
+							self.derive_channel_keys(descriptor.channel_value_satoshis, &descriptor.channel_keys_id),
+							descriptor.channel_keys_id));
+					}
+					let witness = Witness::from_vec(keys_cache.as_ref().unwrap().0.sign_dynamic_p2wsh_input(&psbt.unsigned_tx, input_idx, &descriptor, &secp_ctx)?);
+					psbt.inputs[input_idx].final_script_witness = Some(witness);
 				},
 				SpendableOutputDescriptor::StaticOutput { ref outpoint, ref output } => {
-					input.push(TxIn {
-						previous_output: outpoint.into_bitcoin_outpoint(),
-						script_sig: Script::new(),
-						sequence: Sequence::ZERO,
-						witness: Witness::new(),
-					});
-					witness_weight += 1 + 73 + 34;
-					#[cfg(feature = "grind_signatures")]
-					{ witness_weight -= 1; } // Guarantees a low R signature
-					input_value += output.value;
-					if !output_set.insert(*outpoint) { return Err(()); }
-				}
-			}
-			if input_value > MAX_VALUE_MSAT / 1000 { return Err(()); }
-		}
-		let mut spend_tx = Transaction {
-			version: 2,
-			lock_time: PackedLockTime(0),
-			input,
-			output: outputs,
-		};
-		let expected_max_weight =
-			transaction_utils::maybe_add_change_output(&mut spend_tx, input_value, witness_weight, feerate_sat_per_1000_weight, change_destination_script)?;
-
-		let mut keys_cache: Option<(InMemorySigner, [u8; 32])> = None;
-		let mut input_idx = 0;
-		for outp in descriptors {
-			match outp {
-				SpendableOutputDescriptor::StaticPaymentOutput(descriptor) => {
-					if keys_cache.is_none() || keys_cache.as_ref().unwrap().1 != descriptor.channel_keys_id {
-						keys_cache = Some((
-							self.derive_channel_keys(descriptor.channel_value_satoshis, &descriptor.channel_keys_id),
-							descriptor.channel_keys_id));
-					}
-					spend_tx.input[input_idx].witness = Witness::from_vec(keys_cache.as_ref().unwrap().0.sign_counterparty_payment_input(&spend_tx, input_idx, &descriptor, &secp_ctx)?);
-				},
-				SpendableOutputDescriptor::DelayedPaymentOutput(descriptor) => {
-					if keys_cache.is_none() || keys_cache.as_ref().unwrap().1 != descriptor.channel_keys_id {
-						keys_cache = Some((
-							self.derive_channel_keys(descriptor.channel_value_satoshis, &descriptor.channel_keys_id),
-							descriptor.channel_keys_id));
-					}
-					spend_tx.input[input_idx].witness = Witness::from_vec(keys_cache.as_ref().unwrap().0.sign_dynamic_p2wsh_input(&spend_tx, input_idx, &descriptor, &secp_ctx)?);
-				},
-				SpendableOutputDescriptor::StaticOutput { ref output, .. } => {
+					let input_idx = psbt.unsigned_tx.input.iter().position(|i| i.previous_output == outpoint.into_bitcoin_outpoint()).ok_or(())?;
 					let derivation_idx = if output.script_pubkey == self.destination_script {
 						1
 					} else {
@@ -1288,16 +1352,41 @@ impl KeysManager {
 
 					if payment_script != output.script_pubkey { return Err(()); };
 
-					let sighash = hash_to_message!(&sighash::SighashCache::new(&spend_tx).segwit_signature_hash(input_idx, &witness_script, output.value, EcdsaSighashType::All).unwrap()[..]);
+					let sighash = hash_to_message!(&sighash::SighashCache::new(&psbt.unsigned_tx).segwit_signature_hash(input_idx, &witness_script, output.value, EcdsaSighashType::All).unwrap()[..]);
 					let sig = sign_with_aux_rand(secp_ctx, &sighash, &secret.private_key, &self);
 					let mut sig_ser = sig.serialize_der().to_vec();
 					sig_ser.push(EcdsaSighashType::All as u8);
-					spend_tx.input[input_idx].witness.push(sig_ser);
-					spend_tx.input[input_idx].witness.push(pubkey.inner.serialize().to_vec());
+					let witness = Witness::from_vec(vec![sig_ser, pubkey.inner.serialize().to_vec()]);
+					psbt.inputs[input_idx].final_script_witness = Some(witness);
 				},
 			}
-			input_idx += 1;
 		}
+
+		Ok(())
+	}
+
+	/// Creates a [`Transaction`] which spends the given descriptors to the given outputs, plus an
+	/// output to the given change destination (if sufficient change value remains). The
+	/// transaction will have a feerate, at least, of the given value.
+	///
+	/// The `locktime` argument is used to set the transaction's locktime. If `None`, the
+	/// transaction will have a locktime of 0. It it recommended to set this to the current block
+	/// height to avoid fee sniping, unless you have some specific reason to use a different
+	/// locktime.
+	///
+	/// Returns `Err(())` if the output value is greater than the input value minus required fee,
+	/// if a descriptor was duplicated, or if an output descriptor `script_pubkey`
+	/// does not match the one we can spend.
+	///
+	/// We do not enforce that outputs meet the dust limit or that any output scripts are standard.
+	///
+	/// May panic if the [`SpendableOutputDescriptor`]s were not generated by channels which used
+	/// this [`KeysManager`] or one of the [`InMemorySigner`] created by this [`KeysManager`].
+	pub fn spend_spendable_outputs<C: Signing>(&self, descriptors: &[&SpendableOutputDescriptor], outputs: Vec<TxOut>, change_destination_script: Script, feerate_sat_per_1000_weight: u32, locktime: Option<PackedLockTime>, secp_ctx: &Secp256k1<C>) -> Result<Transaction, ()> {
+		let (mut psbt, expected_max_weight) = SpendableOutputDescriptor::create_spendable_outputs_psbt(descriptors, outputs, change_destination_script, feerate_sat_per_1000_weight, locktime)?;
+		self.sign_spendable_outputs_psbt(descriptors, &mut psbt, secp_ctx)?;
+
+		let spend_tx = psbt.extract_tx();
 
 		debug_assert!(expected_max_weight >= spend_tx.weight());
 		// Note that witnesses with a signature vary somewhat in size, so allow
@@ -1512,8 +1601,8 @@ impl PhantomKeysManager {
 	}
 
 	/// See [`KeysManager::spend_spendable_outputs`] for documentation on this method.
-	pub fn spend_spendable_outputs<C: Signing>(&self, descriptors: &[&SpendableOutputDescriptor], outputs: Vec<TxOut>, change_destination_script: Script, feerate_sat_per_1000_weight: u32, secp_ctx: &Secp256k1<C>) -> Result<Transaction, ()> {
-		self.inner.spend_spendable_outputs(descriptors, outputs, change_destination_script, feerate_sat_per_1000_weight, secp_ctx)
+	pub fn spend_spendable_outputs<C: Signing>(&self, descriptors: &[&SpendableOutputDescriptor], outputs: Vec<TxOut>, change_destination_script: Script, feerate_sat_per_1000_weight: u32, locktime: Option<PackedLockTime>, secp_ctx: &Secp256k1<C>) -> Result<Transaction, ()> {
+		self.inner.spend_spendable_outputs(descriptors, outputs, change_destination_script, feerate_sat_per_1000_weight, locktime, secp_ctx)
 	}
 
 	/// See [`KeysManager::derive_channel_keys`] for documentation on this method.

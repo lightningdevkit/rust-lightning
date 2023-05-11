@@ -4263,7 +4263,7 @@ macro_rules! check_spendable_outputs {
 				match event {
 					Event::SpendableOutputs { mut outputs } => {
 						for outp in outputs.drain(..) {
-							txn.push($keysinterface.backing.spend_spendable_outputs(&[&outp], Vec::new(), Builder::new().push_opcode(opcodes::all::OP_RETURN).into_script(), 253, &secp_ctx).unwrap());
+							txn.push($keysinterface.backing.spend_spendable_outputs(&[&outp], Vec::new(), Builder::new().push_opcode(opcodes::all::OP_RETURN).into_script(), 253, None, &secp_ctx).unwrap());
 							all_outputs.push(outp);
 						}
 					},
@@ -4271,7 +4271,7 @@ macro_rules! check_spendable_outputs {
 				};
 			}
 			if all_outputs.len() > 1 {
-				if let Ok(tx) = $keysinterface.backing.spend_spendable_outputs(&all_outputs.iter().map(|a| a).collect::<Vec<_>>(), Vec::new(), Builder::new().push_opcode(opcodes::all::OP_RETURN).into_script(), 253, &secp_ctx) {
+				if let Ok(tx) = $keysinterface.backing.spend_spendable_outputs(&all_outputs.iter().map(|a| a).collect::<Vec<_>>(), Vec::new(), Builder::new().push_opcode(opcodes::all::OP_RETURN).into_script(), 253, None, &secp_ctx) {
 					txn.push(tx);
 				}
 			}
