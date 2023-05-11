@@ -17,9 +17,12 @@ use bitcoin::PackedLockTime;
 use bitcoin::blockdata::transaction::Transaction;
 use bitcoin::blockdata::transaction::OutPoint as BitcoinOutPoint;
 use bitcoin::blockdata::script::Script;
-
+use bitcoin::hashes::Hash;
+#[cfg(anchors)]
+use bitcoin::hashes::HashEngine;
+#[cfg(anchors)]
+use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hash_types::{Txid, BlockHash};
-
 use bitcoin::secp256k1::{Secp256k1, ecdsa::Signature};
 use bitcoin::secp256k1;
 
@@ -48,7 +51,6 @@ use core::ops::Deref;
 use core::mem::replace;
 #[cfg(anchors)]
 use core::mem::swap;
-use bitcoin::hashes::Hash;
 
 const MAX_ALLOC_SIZE: usize = 64*1024;
 
@@ -774,19 +776,24 @@ impl<ChannelSigner: WriteableEcdsaChannelSigner> OnchainTxHandler<ChannelSigner>
 					OnchainClaim::Event(claim_event) => {
 						log_info!(logger, "Yielding onchain event to spend inputs {:?}", req.outpoints());
 						let package_id = match claim_event {
-							ClaimEvent::BumpCommitment { ref commitment_tx, .. } => commitment_tx.txid().into_inner(),
+							ClaimEvent::BumpCommitment { ref commitment_tx, .. } =>
+								// For commitment claims, we can just use their txid as it should
+								// already be unique.
+								commitment_tx.txid().into_inner(),
 							ClaimEvent::BumpHTLC { ref htlcs, .. } => {
-								// Use the same construction as a lightning channel id to generate
-								// the package id for this request based on the first HTLC. It
-								// doesn't matter what we use as long as it's unique per request.
-								let mut package_id = [0; 32];
-								package_id[..].copy_from_slice(&htlcs[0].commitment_txid[..]);
-								let htlc_output_index = htlcs[0].htlc.transaction_output_index.unwrap();
-								package_id[30] ^= ((htlc_output_index >> 8) & 0xff) as u8;
-								package_id[31] ^= ((htlc_output_index >> 0) & 0xff) as u8;
-								package_id
+								// For HTLC claims, commit to the entire set of HTLC outputs to
+								// claim, which will always be unique per request. Once a claim ID
+								// is generated, it is assigned and remains unchanged, even if the
+								// underlying set of HTLCs changes.
+								let mut engine = Sha256::engine();
+								for htlc in htlcs {
+									engine.input(&htlc.commitment_txid.into_inner());
+									engine.input(&htlc.htlc.transaction_output_index.unwrap().to_be_bytes());
+								}
+								Sha256::from_engine(engine).into_inner()
 							},
 						};
+						debug_assert!(self.pending_claim_requests.get(&package_id).is_none());
 						debug_assert_eq!(self.pending_claim_events.iter().filter(|entry| entry.0 == package_id).count(), 0);
 						self.pending_claim_events.push((package_id, claim_event));
 						package_id
