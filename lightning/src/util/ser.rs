@@ -37,6 +37,7 @@ use bitcoin::hashes::sha256d::Hash as Sha256dHash;
 use bitcoin::hash_types::{Txid, BlockHash};
 use core::marker::Sized;
 use core::time::Duration;
+use crate::chain::ClaimId;
 use crate::ln::msgs::DecodeError;
 #[cfg(taproot)]
 use crate::ln::msgs::PartialSignatureWithNonce;
@@ -1390,6 +1391,18 @@ impl Readable for TransactionU16LenLimited {
 		} else {
 			Ok(Self(tx))
 		}
+	}
+}
+
+impl Writeable for ClaimId {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+		self.0.write(writer)
+	}
+}
+
+impl Readable for ClaimId {
+	fn read<R: io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
+		Ok(Self(Readable::read(reader)?))
 	}
 }
 
