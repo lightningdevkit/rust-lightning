@@ -126,10 +126,10 @@ impl<'a> Router for TestRouter<'a> {
 						// Since the path is reversed, the last element in our iteration is the first
 						// hop.
 						if idx == path.hops.len() - 1 {
-							scorer.channel_penalty_msat(hop.short_channel_id, &NodeId::from_pubkey(payer), &NodeId::from_pubkey(&hop.pubkey), usage);
+							scorer.channel_penalty_msat(hop.short_channel_id, &NodeId::from_pubkey(payer), &NodeId::from_pubkey(&hop.pubkey), usage, &());
 						} else {
 							let curr_hop_path_idx = path.hops.len() - 1 - idx;
-							scorer.channel_penalty_msat(hop.short_channel_id, &NodeId::from_pubkey(&path.hops[curr_hop_path_idx - 1].pubkey), &NodeId::from_pubkey(&hop.pubkey), usage);
+							scorer.channel_penalty_msat(hop.short_channel_id, &NodeId::from_pubkey(&path.hops[curr_hop_path_idx - 1].pubkey), &NodeId::from_pubkey(&hop.pubkey), usage, &());
 						}
 					}
 				}
@@ -140,7 +140,7 @@ impl<'a> Router for TestRouter<'a> {
 		let scorer = self.scorer.lock().unwrap();
 		find_route(
 			payer, params, &self.network_graph, first_hops, &logger,
-			&ScorerAccountingForInFlightHtlcs::new(scorer, &inflight_htlcs),
+			&ScorerAccountingForInFlightHtlcs::new(scorer, &inflight_htlcs), &(),
 			&[42; 32]
 		)
 	}
@@ -1012,8 +1012,9 @@ impl crate::util::ser::Writeable for TestScorer {
 }
 
 impl Score for TestScorer {
+	type ScoreParams = ();
 	fn channel_penalty_msat(
-		&self, short_channel_id: u64, _source: &NodeId, _target: &NodeId, usage: ChannelUsage
+		&self, short_channel_id: u64, _source: &NodeId, _target: &NodeId, usage: ChannelUsage, _score_params: &Self::ScoreParams
 	) -> u64 {
 		if let Some(scorer_expectations) = self.scorer_expectations.borrow_mut().as_mut() {
 			match scorer_expectations.pop_front() {

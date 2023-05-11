@@ -48,7 +48,7 @@ use lightning::util::config::UserConfig;
 use lightning::util::errors::APIError;
 use lightning::util::enforcing_trait_impls::{EnforcingSigner, EnforcementState};
 use lightning::util::logger::Logger;
-use lightning::util::ser::{Readable, ReadableArgs, Writeable};
+use lightning::util::ser::{ReadableArgs, Writeable};
 
 use crate::utils::test_logger;
 use crate::utils::test_persister::TestPersister;
