@@ -479,6 +479,13 @@ pub(crate) const MIN_AFFORDABLE_HTLC_COUNT: usize = 4;
 ///   * `EXPIRE_PREV_CONFIG_TICKS` = convergence_delay / tick_interval
 pub(crate) const EXPIRE_PREV_CONFIG_TICKS: usize = 5;
 
+/// The number of ticks that may elapse while we're waiting for a response to a
+/// [`msgs::RevokeAndACK`] or [`msgs::ChannelReestablish`] message before we attempt to disconnect
+/// them.
+///
+/// See [`Channel::sent_message_awaiting_response`] for more information.
+pub(crate) const DISCONNECT_PEER_AWAITING_RESPONSE_TICKS: usize = 2;
+
 struct PendingChannelMonitorUpdate {
 	update: ChannelMonitorUpdate,
 	/// In some cases we need to delay letting the [`ChannelMonitorUpdate`] go until after an
@@ -714,6 +721,19 @@ pub(super) struct Channel<Signer: ChannelSigner> {
 	///
 	/// See-also <https://github.com/lightningnetwork/lnd/issues/4006>
 	pub workaround_lnd_bug_4006: Option<msgs::ChannelReady>,
+
+	/// An option set when we wish to track how many ticks have elapsed while waiting for a response
+	/// from our counterparty after sending a message. If the peer has yet to respond after reaching
+	/// `DISCONNECT_PEER_AWAITING_RESPONSE_TICKS`, a reconnection should be attempted to try to
+	/// unblock the state machine.
+	///
+	/// This behavior is mostly motivated by a lnd bug in which we don't receive a message we expect
+	/// to in a timely manner, which may lead to channels becoming unusable and/or force-closed. An
+	/// example of such can be found at <https://github.com/lightningnetwork/lnd/issues/7682>.
+	///
+	/// This is currently only used when waiting for a [`msgs::ChannelReestablish`] or
+	/// [`msgs::RevokeAndACK`] message from the counterparty.
+	sent_message_awaiting_response: Option<usize>,
 
 	#[cfg(any(test, fuzzing))]
 	// When we receive an HTLC fulfill on an outbound path, we may immediately fulfill the
@@ -1130,6 +1150,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			next_remote_commitment_tx_fee_info_cached: Mutex::new(None),
 
 			workaround_lnd_bug_4006: None,
+			sent_message_awaiting_response: None,
 
 			latest_inbound_scid_alias: None,
 			outbound_scid_alias,
@@ -1489,6 +1510,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			next_remote_commitment_tx_fee_info_cached: Mutex::new(None),
 
 			workaround_lnd_bug_4006: None,
+			sent_message_awaiting_response: None,
 
 			latest_inbound_scid_alias: None,
 			outbound_scid_alias,
@@ -3526,6 +3548,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		// OK, we step the channel here and *then* if the new generation fails we can fail the
 		// channel based on that, but stepping stuff here should be safe either way.
 		self.channel_state &= !(ChannelState::AwaitingRemoteRevoke as u32);
+		self.sent_message_awaiting_response = None;
 		self.counterparty_prev_commitment_point = self.counterparty_cur_commitment_point;
 		self.counterparty_cur_commitment_point = Some(msg.next_per_commitment_point);
 		self.cur_counterparty_commitment_transaction_number -= 1;
@@ -3841,6 +3864,8 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			}
 		}
 
+		self.sent_message_awaiting_response = None;
+
 		self.channel_state |= ChannelState::PeerDisconnected as u32;
 		log_trace!(logger, "Peer disconnection resulted in {} remote-announced HTLC drops on channel {}", inbound_drop_count, log_bytes!(self.channel_id()));
 	}
@@ -3943,6 +3968,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			Some(self.get_last_revoke_and_ack())
 		} else { None };
 		let commitment_update = if self.monitor_pending_commitment_signed {
+			self.mark_awaiting_response();
 			Some(self.get_last_commitment_update(logger))
 		} else { None };
 
@@ -4132,6 +4158,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		// Go ahead and unmark PeerDisconnected as various calls we may make check for it (and all
 		// remaining cases either succeed or ErrorMessage-fail).
 		self.channel_state &= !(ChannelState::PeerDisconnected as u32);
+		self.sent_message_awaiting_response = None;
 
 		let shutdown_msg = if self.channel_state & (ChannelState::LocalShutdownSent as u32) != 0 {
 			assert!(self.shutdown_scriptpubkey.is_some());
@@ -4192,7 +4219,11 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		// revoke_and_ack, not on sending commitment_signed, so we add one if have
 		// AwaitingRemoteRevoke set, which indicates we sent a commitment_signed but haven't gotten
 		// the corresponding revoke_and_ack back yet.
-		let next_counterparty_commitment_number = INITIAL_COMMITMENT_NUMBER - self.cur_counterparty_commitment_transaction_number + if (self.channel_state & ChannelState::AwaitingRemoteRevoke as u32) != 0 { 1 } else { 0 };
+		let is_awaiting_remote_revoke = self.channel_state & ChannelState::AwaitingRemoteRevoke as u32 != 0;
+		if is_awaiting_remote_revoke && !self.is_awaiting_monitor_update() {
+			self.mark_awaiting_response();
+		}
+		let next_counterparty_commitment_number = INITIAL_COMMITMENT_NUMBER - self.cur_counterparty_commitment_transaction_number + if is_awaiting_remote_revoke { 1 } else { 0 };
 
 		let channel_ready = if msg.next_local_commitment_number == 1 && INITIAL_COMMITMENT_NUMBER - self.cur_holder_commitment_transaction_number == 1 {
 			// We should never have to worry about MonitorUpdateInProgress resending ChannelReady
@@ -4359,6 +4390,28 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 				max_fee_satoshis: our_max_fee,
 			}),
 		}), None))
+	}
+
+	// Marks a channel as waiting for a response from the counterparty. If it's not received
+	// [`DISCONNECT_PEER_AWAITING_RESPONSE_TICKS`] after sending our own to them, then we'll attempt
+	// a reconnection.
+	fn mark_awaiting_response(&mut self) {
+		self.sent_message_awaiting_response = Some(0);
+	}
+
+	/// Determines whether we should disconnect the counterparty due to not receiving a response
+	/// within our expected timeframe.
+	///
+	/// This should be called on every [`super::channelmanager::ChannelManager::timer_tick_occurred`].
+	pub fn should_disconnect_peer_awaiting_response(&mut self) -> bool {
+		let ticks_elapsed = if let Some(ticks_elapsed) = self.sent_message_awaiting_response.as_mut() {
+			ticks_elapsed
+		} else {
+			// Don't disconnect when we're not waiting on a response.
+			return false;
+		};
+		*ticks_elapsed += 1;
+		*ticks_elapsed >= DISCONNECT_PEER_AWAITING_RESPONSE_TICKS
 	}
 
 	pub fn shutdown<SP: Deref>(
@@ -5733,7 +5786,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 
 	/// May panic if called on a channel that wasn't immediately-previously
 	/// self.remove_uncommitted_htlcs_and_mark_paused()'d
-	pub fn get_channel_reestablish<L: Deref>(&self, logger: &L) -> msgs::ChannelReestablish where L::Target: Logger {
+	pub fn get_channel_reestablish<L: Deref>(&mut self, logger: &L) -> msgs::ChannelReestablish where L::Target: Logger {
 		assert_eq!(self.channel_state & ChannelState::PeerDisconnected as u32, ChannelState::PeerDisconnected as u32);
 		assert_ne!(self.cur_counterparty_commitment_transaction_number, INITIAL_COMMITMENT_NUMBER);
 		// Prior to static_remotekey, my_current_per_commitment_point was critical to claiming
@@ -5752,6 +5805,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			log_info!(logger, "Sending a data_loss_protect with no previous remote per_commitment_secret for channel {}", log_bytes!(self.channel_id()));
 			[0;32]
 		};
+		self.mark_awaiting_response();
 		msgs::ChannelReestablish {
 			channel_id: self.channel_id(),
 			// The protocol has two different commitment number concepts - the "commitment
@@ -7090,6 +7144,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 			next_remote_commitment_tx_fee_info_cached: Mutex::new(None),
 
 			workaround_lnd_bug_4006: None,
+			sent_message_awaiting_response: None,
 
 			latest_inbound_scid_alias,
 			// Later in the ChannelManager deserialization phase we scan for channels and assign scid aliases if its missing

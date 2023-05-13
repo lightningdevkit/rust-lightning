@@ -3921,6 +3921,20 @@ where
 
 						chan.maybe_expire_prev_config();
 
+						if chan.should_disconnect_peer_awaiting_response() {
+							log_debug!(self.logger, "Disconnecting peer {} due to not making any progress on channel {}",
+									counterparty_node_id, log_bytes!(*chan_id));
+							pending_msg_events.push(MessageSendEvent::HandleError {
+								node_id: counterparty_node_id,
+								action: msgs::ErrorAction::DisconnectPeerWithWarning {
+									msg: msgs::WarningMessage {
+										channel_id: *chan_id,
+										data: "Disconnecting due to timeout awaiting response".to_owned(),
+									},
+								},
+							});
+						}
+
 						true
 					});
 					if peer_state.ok_to_remove(true) {
