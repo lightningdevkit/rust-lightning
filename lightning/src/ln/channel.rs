@@ -5857,14 +5857,13 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			return Err(ChannelError::Ignore(format!("Cannot send value that would put us over the max HTLC value in flight our peer will accept ({})", self.counterparty_max_htlc_value_in_flight_msat)));
 		}
 
-		let keys = self.build_holder_transaction_keys(self.cur_holder_commitment_transaction_number);
-		let commitment_stats = self.build_commitment_transaction(self.cur_holder_commitment_transaction_number, &keys, true, true, logger);
 		if !self.is_outbound() {
 			// Check that we won't violate the remote channel reserve by adding this HTLC.
 			let htlc_candidate = HTLCCandidate::new(amount_msat, HTLCInitiator::LocalOffered);
 			let counterparty_commit_tx_fee_msat = self.next_remote_commit_tx_fee_msat(htlc_candidate, None);
 			let holder_selected_chan_reserve_msat = self.holder_selected_channel_reserve_satoshis * 1000;
-			if commitment_stats.remote_balance_msat < counterparty_commit_tx_fee_msat + holder_selected_chan_reserve_msat {
+			let remote_balance_msat = (self.channel_value_satoshis * 1000 - self.value_to_self_msat).saturating_sub(inbound_stats.pending_htlcs_value_msat);
+			if remote_balance_msat < counterparty_commit_tx_fee_msat + holder_selected_chan_reserve_msat {
 				return Err(ChannelError::Ignore("Cannot send value that would put counterparty balance under holder-announced channel reserve value".to_owned()));
 			}
 		}
@@ -5894,7 +5893,8 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			}
 		}
 
-		let holder_balance_msat = commitment_stats.local_balance_msat - outbound_stats.holding_cell_msat;
+		let holder_balance_msat = self.value_to_self_msat
+			.saturating_sub(outbound_stats.pending_htlcs_value_msat);
 		if holder_balance_msat < amount_msat {
 			return Err(ChannelError::Ignore(format!("Cannot send value that would overdraw remaining funds. Amount: {}, pending value to self {}", amount_msat, holder_balance_msat)));
 		}
@@ -5915,7 +5915,13 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			return Err(ChannelError::Ignore(format!("Cannot send value that would put our balance under counterparty-announced channel reserve value ({})", chan_reserve_msat)));
 		}
 
-		if (self.channel_state & (ChannelState::AwaitingRemoteRevoke as u32 | ChannelState::MonitorUpdateInProgress as u32)) != 0 {
+		let need_holding_cell = (self.channel_state & (ChannelState::AwaitingRemoteRevoke as u32 | ChannelState::MonitorUpdateInProgress as u32)) != 0;
+		log_debug!(logger, "Pushing new outbound HTLC for {} msat {}", amount_msat,
+			if force_holding_cell { "into holding cell" }
+			else if need_holding_cell { "into holding cell as we're awaiting an RAA or monitor" }
+			else { "to peer" });
+
+		if need_holding_cell {
 			force_holding_cell = true;
 		}
 

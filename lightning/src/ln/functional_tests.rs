@@ -7619,45 +7619,6 @@ fn test_bump_txn_sanitize_tracking_maps() {
 }
 
 #[test]
-fn test_pending_claimed_htlc_no_balance_underflow() {
-	// Tests that if we have a pending outbound HTLC as well as a claimed-but-not-fully-removed
-	// HTLC we will not underflow when we call `Channel::get_balance_msat()`.
-	let chanmon_cfgs = create_chanmon_cfgs(2);
-	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
-	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100_000, 0);
-
-	let (payment_preimage, payment_hash, _) = route_payment(&nodes[0], &[&nodes[1]], 1_010_000);
-	nodes[1].node.claim_funds(payment_preimage);
-	expect_payment_claimed!(nodes[1], payment_hash, 1_010_000);
-	check_added_monitors!(nodes[1], 1);
-	let fulfill_ev = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
-
-	nodes[0].node.handle_update_fulfill_htlc(&nodes[1].node.get_our_node_id(), &fulfill_ev.update_fulfill_htlcs[0]);
-	expect_payment_sent_without_paths!(nodes[0], payment_preimage);
-	nodes[0].node.handle_commitment_signed(&nodes[1].node.get_our_node_id(), &fulfill_ev.commitment_signed);
-	check_added_monitors!(nodes[0], 1);
-	let (_raa, _cs) = get_revoke_commit_msgs!(nodes[0], nodes[1].node.get_our_node_id());
-
-	// At this point nodes[1] has received 1,010k msat (10k msat more than their reserve) and can
-	// send an HTLC back (though it will go in the holding cell). Send an HTLC back and check we
-	// can get our balance.
-
-	// Get a route from nodes[1] to nodes[0] by getting a route going the other way and then flip
-	// the public key of the only hop. This works around ChannelDetails not showing the
-	// almost-claimed HTLC as available balance.
-	let (mut route, _, _, _) = get_route_and_payment_hash!(nodes[0], nodes[1], 10_000);
-	route.payment_params = None; // This is all wrong, but unnecessary
-	route.paths[0].hops[0].pubkey = nodes[0].node.get_our_node_id();
-	let (_, payment_hash_2, payment_secret_2) = get_payment_preimage_hash!(nodes[0]);
-	nodes[1].node.send_payment_with_route(&route, payment_hash_2,
-		RecipientOnionFields::secret_only(payment_secret_2), PaymentId(payment_hash_2.0)).unwrap();
-
-	assert_eq!(nodes[1].node.list_channels()[0].balance_msat, 1_000_000);
-}
-
-#[test]
 fn test_channel_conf_timeout() {
 	// Tests that, for inbound channels, we give up on them if the funding transaction does not
 	// confirm within 2016 blocks, as recommended by BOLT 2.
