@@ -51,6 +51,7 @@ use core::ops::Deref;
 #[cfg(any(test, fuzzing, debug_assertions))]
 use crate::sync::Mutex;
 use bitcoin::hashes::hex::ToHex;
+use crate::sign::type_resolver::ChannelSignerType;
 
 #[cfg(test)]
 pub struct ChannelValueStat {
@@ -534,7 +535,7 @@ pub(super) struct Channel<Signer: ChannelSigner> {
 
 	latest_monitor_update_id: u64,
 
-	holder_signer: Signer,
+	holder_signer: ChannelSignerType<Signer>,
 	shutdown_scriptpubkey: Option<ShutdownScript>,
 	destination_script: Script,
 
@@ -1042,7 +1043,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 
 			latest_monitor_update_id: 0,
 
-			holder_signer,
+			holder_signer: ChannelSignerType::Ecdsa(holder_signer),
 			shutdown_scriptpubkey,
 			destination_script,
 
@@ -1397,7 +1398,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 
 			latest_monitor_update_id: 0,
 
-			holder_signer,
+			holder_signer: ChannelSignerType::Ecdsa(holder_signer),
 			shutdown_scriptpubkey,
 			destination_script,
 
@@ -1836,7 +1837,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 	/// The result is a transaction which we can revoke broadcastership of (ie a "local" transaction)
 	/// TODO Some magic rust shit to compile-time check this?
 	fn build_holder_transaction_keys(&self, commitment_number: u64) -> TxCreationKeys {
-		let per_commitment_point = self.holder_signer.get_per_commitment_point(commitment_number, &self.secp_ctx);
+		let per_commitment_point = self.holder_signer.as_ref().get_per_commitment_point(commitment_number, &self.secp_ctx);
 		let delayed_payment_base = &self.get_holder_pubkeys().delayed_payment_basepoint;
 		let htlc_basepoint = &self.get_holder_pubkeys().htlc_basepoint;
 		let counterparty_pubkeys = self.get_counterparty_pubkeys();
@@ -2323,7 +2324,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		log_trace!(logger, "Initial counterparty tx for channel {} is: txid {} tx {}",
 			log_bytes!(self.channel_id()), counterparty_initial_bitcoin_tx.txid, encode::serialize_hex(&counterparty_initial_bitcoin_tx.transaction));
 
-		let counterparty_signature = self.holder_signer.sign_counterparty_commitment(&counterparty_initial_commitment_tx, Vec::new(), &self.secp_ctx)
+		let counterparty_signature = self.holder_signer.as_ecdsa().sign_counterparty_commitment(&counterparty_initial_commitment_tx, Vec::new(), &self.secp_ctx)
 				.map_err(|_| ChannelError::Close("Failed to get signatures for new commitment_signed".to_owned()))?.0;
 
 		// We sign "counterparty" commitment transaction, allowing them to broadcast the tx if they wish.
@@ -2363,7 +2364,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		self.channel_transaction_parameters.funding_outpoint = Some(funding_txo);
 		// This is an externally observable change before we finish all our checks.  In particular
 		// funding_created_signature may fail.
-		self.holder_signer.provide_channel_parameters(&self.channel_transaction_parameters);
+		self.holder_signer.as_mut().provide_channel_parameters(&self.channel_transaction_parameters);
 
 		let (counterparty_initial_commitment_txid, initial_commitment_tx, signature) = match self.funding_created_signature(&msg.signature, logger) {
 			Ok(res) => res,
@@ -2386,7 +2387,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			self.counterparty_funding_pubkey()
 		);
 
-		self.holder_signer.validate_holder_commitment(&holder_commitment_tx, Vec::new())
+		self.holder_signer.as_ref().validate_holder_commitment(&holder_commitment_tx, Vec::new())
 			.map_err(|_| ChannelError::Close("Failed to validate our commitment".to_owned()))?;
 
 		// Now that we're past error-generating stuff, update our local state:
@@ -2476,7 +2477,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			self.counterparty_funding_pubkey()
 		);
 
-		self.holder_signer.validate_holder_commitment(&holder_commitment_tx, Vec::new())
+		self.holder_signer.as_ref().validate_holder_commitment(&holder_commitment_tx, Vec::new())
 			.map_err(|_| ChannelError::Close("Failed to validate our commitment".to_owned()))?;
 
 
@@ -3245,7 +3246,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			self.counterparty_funding_pubkey()
 		);
 
-		self.holder_signer.validate_holder_commitment(&holder_commitment_tx, commitment_stats.preimages)
+		self.holder_signer.as_ref().validate_holder_commitment(&holder_commitment_tx, commitment_stats.preimages)
 			.map_err(|_| ChannelError::Close("Failed to validate our commitment".to_owned()))?;
 
 		// Update state now that we've passed all the can-fail calls...
@@ -3505,7 +3506,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			*self.next_remote_commitment_tx_fee_info_cached.lock().unwrap() = None;
 		}
 
-		self.holder_signer.validate_counterparty_revocation(
+		self.holder_signer.as_ecdsa().validate_counterparty_revocation(
 			self.cur_counterparty_commitment_transaction_number + 1,
 			&secret
 		).map_err(|_| ChannelError::Close("Failed to validate revocation from peer".to_owned()))?;
@@ -3913,7 +3914,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			assert!(!self.is_outbound() || self.minimum_depth == Some(0),
 				"Funding transaction broadcast by the local client before it should have - LDK didn't do it!");
 			self.monitor_pending_channel_ready = false;
-			let next_per_commitment_point = self.holder_signer.get_per_commitment_point(self.cur_holder_commitment_transaction_number, &self.secp_ctx);
+			let next_per_commitment_point = self.holder_signer.as_ref().get_per_commitment_point(self.cur_holder_commitment_transaction_number, &self.secp_ctx);
 			Some(msgs::ChannelReady {
 				channel_id: self.channel_id(),
 				next_per_commitment_point,
@@ -3993,8 +3994,8 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 	}
 
 	fn get_last_revoke_and_ack(&self) -> msgs::RevokeAndACK {
-		let next_per_commitment_point = self.holder_signer.get_per_commitment_point(self.cur_holder_commitment_transaction_number, &self.secp_ctx);
-		let per_commitment_secret = self.holder_signer.release_commitment_secret(self.cur_holder_commitment_transaction_number + 2);
+		let next_per_commitment_point = self.holder_signer.as_ref().get_per_commitment_point(self.cur_holder_commitment_transaction_number, &self.secp_ctx);
+		let per_commitment_secret = self.holder_signer.as_ref().release_commitment_secret(self.cur_holder_commitment_transaction_number + 2);
 		msgs::RevokeAndACK {
 			channel_id: self.channel_id,
 			per_commitment_secret,
@@ -4096,7 +4097,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		}
 
 		if msg.next_remote_commitment_number > 0 {
-			let expected_point = self.holder_signer.get_per_commitment_point(INITIAL_COMMITMENT_NUMBER - msg.next_remote_commitment_number + 1, &self.secp_ctx);
+			let expected_point = self.holder_signer.as_ref().get_per_commitment_point(INITIAL_COMMITMENT_NUMBER - msg.next_remote_commitment_number + 1, &self.secp_ctx);
 			let given_secret = SecretKey::from_slice(&msg.your_last_per_commitment_secret)
 				.map_err(|_| ChannelError::Close("Peer sent a garbage channel_reestablish with unparseable secret key".to_owned()))?;
 			if expected_point != PublicKey::from_secret_key(&self.secp_ctx, &given_secret) {
@@ -4160,7 +4161,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			}
 
 			// We have OurChannelReady set!
-			let next_per_commitment_point = self.holder_signer.get_per_commitment_point(self.cur_holder_commitment_transaction_number, &self.secp_ctx);
+			let next_per_commitment_point = self.holder_signer.as_ref().get_per_commitment_point(self.cur_holder_commitment_transaction_number, &self.secp_ctx);
 			return Ok(ReestablishResponses {
 				channel_ready: Some(msgs::ChannelReady {
 					channel_id: self.channel_id(),
@@ -4196,7 +4197,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 
 		let channel_ready = if msg.next_local_commitment_number == 1 && INITIAL_COMMITMENT_NUMBER - self.cur_holder_commitment_transaction_number == 1 {
 			// We should never have to worry about MonitorUpdateInProgress resending ChannelReady
-			let next_per_commitment_point = self.holder_signer.get_per_commitment_point(self.cur_holder_commitment_transaction_number, &self.secp_ctx);
+			let next_per_commitment_point = self.holder_signer.as_ref().get_per_commitment_point(self.cur_holder_commitment_transaction_number, &self.secp_ctx);
 			Some(msgs::ChannelReady {
 				channel_id: self.channel_id(),
 				next_per_commitment_point,
@@ -4345,7 +4346,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		log_trace!(logger, "Proposing initial closing_signed for our counterparty with a fee range of {}-{} sat (with initial proposal {} sats)",
 			our_min_fee, our_max_fee, total_fee_satoshis);
 
-		let sig = self.holder_signer
+		let sig = self.holder_signer.as_ecdsa()
 			.sign_closing_transaction(&closing_tx, &self.secp_ctx)
 			.map_err(|()| ChannelError::Close("Failed to get signature for closing transaction.".to_owned()))?;
 
@@ -4555,7 +4556,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 					self.build_closing_transaction($new_fee, false)
 				};
 
-				let sig = self.holder_signer
+				let sig = self.holder_signer.as_ecdsa()
 					.sign_closing_transaction(&closing_tx, &self.secp_ctx)
 					.map_err(|_| ChannelError::Close("External signer refused to sign closing transaction".to_owned()))?;
 
@@ -4927,7 +4928,8 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 
 	#[cfg(test)]
 	pub fn get_signer(&self) -> &Signer {
-		&self.holder_signer
+		// the Signer parameterization will only ever be used for the ECDSA signer
+		self.holder_signer.as_ecdsa()
 	}
 
 	#[cfg(test)]
@@ -5170,7 +5172,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			if self.channel_state & (ChannelState::MonitorUpdateInProgress as u32) == 0 {
 				if self.channel_state & (ChannelState::PeerDisconnected as u32) == 0 {
 					let next_per_commitment_point =
-						self.holder_signer.get_per_commitment_point(INITIAL_COMMITMENT_NUMBER - 1, &self.secp_ctx);
+						self.holder_signer.as_ref().get_per_commitment_point(INITIAL_COMMITMENT_NUMBER - 1, &self.secp_ctx);
 					return Some(msgs::ChannelReady {
 						channel_id: self.channel_id,
 						next_per_commitment_point,
@@ -5394,7 +5396,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			panic!("Tried to send an open_channel for a channel that has already advanced");
 		}
 
-		let first_per_commitment_point = self.holder_signer.get_per_commitment_point(self.cur_holder_commitment_transaction_number, &self.secp_ctx);
+		let first_per_commitment_point = self.holder_signer.as_ref().get_per_commitment_point(self.cur_holder_commitment_transaction_number, &self.secp_ctx);
 		let keys = self.get_holder_pubkeys();
 
 		msgs::OpenChannel {
@@ -5464,7 +5466,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 	///
 	/// [`msgs::AcceptChannel`]: crate::ln::msgs::AcceptChannel
 	fn generate_accept_channel_message(&self) -> msgs::AcceptChannel {
-		let first_per_commitment_point = self.holder_signer.get_per_commitment_point(self.cur_holder_commitment_transaction_number, &self.secp_ctx);
+		let first_per_commitment_point = self.holder_signer.as_ref().get_per_commitment_point(self.cur_holder_commitment_transaction_number, &self.secp_ctx);
 		let keys = self.get_holder_pubkeys();
 
 		msgs::AcceptChannel {
@@ -5505,7 +5507,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 	fn get_outbound_funding_created_signature<L: Deref>(&mut self, logger: &L) -> Result<Signature, ChannelError> where L::Target: Logger {
 		let counterparty_keys = self.build_remote_transaction_keys();
 		let counterparty_initial_commitment_tx = self.build_commitment_transaction(self.cur_counterparty_commitment_transaction_number, &counterparty_keys, false, false, logger).tx;
-		Ok(self.holder_signer.sign_counterparty_commitment(&counterparty_initial_commitment_tx, Vec::new(), &self.secp_ctx)
+		Ok(self.holder_signer.as_ecdsa().sign_counterparty_commitment(&counterparty_initial_commitment_tx, Vec::new(), &self.secp_ctx)
 				.map_err(|_| ChannelError::Close("Failed to get signatures for new commitment_signed".to_owned()))?.0)
 	}
 
@@ -5530,7 +5532,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		}
 
 		self.channel_transaction_parameters.funding_outpoint = Some(funding_txo);
-		self.holder_signer.provide_channel_parameters(&self.channel_transaction_parameters);
+		self.holder_signer.as_mut().provide_channel_parameters(&self.channel_transaction_parameters);
 
 		let signature = match self.get_outbound_funding_created_signature(logger) {
 			Ok(res) => res,
@@ -5639,7 +5641,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			},
 			Ok(v) => v
 		};
-		let our_bitcoin_sig = match self.holder_signer.sign_channel_announcement_with_funding_key(&announcement, &self.secp_ctx) {
+		let our_bitcoin_sig = match self.holder_signer.as_ecdsa().sign_channel_announcement_with_funding_key(&announcement, &self.secp_ctx) {
 			Err(_) => {
 				log_error!(logger, "Signer rejected channel_announcement signing. Channel will not be announced!");
 				return None;
@@ -5668,7 +5670,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 
 			let our_node_sig = node_signer.sign_gossip_message(msgs::UnsignedGossipMessage::ChannelAnnouncement(&announcement))
 				.map_err(|_| ChannelError::Ignore("Failed to generate node signature for channel_announcement".to_owned()))?;
-			let our_bitcoin_sig = self.holder_signer.sign_channel_announcement_with_funding_key(&announcement, &self.secp_ctx)
+			let our_bitcoin_sig = self.holder_signer.as_ecdsa().sign_channel_announcement_with_funding_key(&announcement, &self.secp_ctx)
 				.map_err(|_| ChannelError::Ignore("Signer rejected channel_announcement".to_owned()))?;
 			Ok(msgs::ChannelAnnouncement {
 				node_signature_1: if were_node_one { our_node_sig } else { their_node_sig },
@@ -6048,7 +6050,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 				htlcs.push(htlc);
 			}
 
-			let res = self.holder_signer.sign_counterparty_commitment(&commitment_stats.tx, commitment_stats.preimages, &self.secp_ctx)
+			let res = self.holder_signer.as_ecdsa().sign_counterparty_commitment(&commitment_stats.tx, commitment_stats.preimages, &self.secp_ctx)
 				.map_err(|_| ChannelError::Close("Failed to get signatures for new commitment_signed".to_owned()))?;
 			signature = res.0;
 			htlc_signatures = res.1;
@@ -6360,7 +6362,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Writeable for Channel<Signer> {
 		self.latest_monitor_update_id.write(writer)?;
 
 		let mut key_data = VecWriter(Vec::new());
-		self.holder_signer.write(&mut key_data)?;
+		self.holder_signer.as_ecdsa().write(&mut key_data)?;
 		assert!(key_data.0.len() < core::usize::MAX);
 		assert!(key_data.0.len() < core::u32::MAX as usize);
 		(key_data.0.len() as u32).write(writer)?;
@@ -7005,7 +7007,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 
 			latest_monitor_update_id,
 
-			holder_signer,
+			holder_signer: ChannelSignerType::Ecdsa(holder_signer),
 			shutdown_scriptpubkey,
 			destination_script,
 
@@ -7688,10 +7690,10 @@ mod tests {
 		// We can't just use build_holder_transaction_keys here as the per_commitment_secret is not
 		// derived from a commitment_seed, so instead we copy it here and call
 		// build_commitment_transaction.
-		let delayed_payment_base = &chan.holder_signer.pubkeys().delayed_payment_basepoint;
+		let delayed_payment_base = &chan.holder_signer.as_ref().pubkeys().delayed_payment_basepoint;
 		let per_commitment_secret = SecretKey::from_slice(&hex::decode("1f1e1d1c1b1a191817161514131211100f0e0d0c0b0a09080706050403020100").unwrap()[..]).unwrap();
 		let per_commitment_point = PublicKey::from_secret_key(&secp_ctx, &per_commitment_secret);
-		let htlc_basepoint = &chan.holder_signer.pubkeys().htlc_basepoint;
+		let htlc_basepoint = &chan.holder_signer.as_ref().pubkeys().htlc_basepoint;
 		let keys = TxCreationKeys::derive_new(&secp_ctx, &per_commitment_point, delayed_payment_base, htlc_basepoint, &counterparty_pubkeys.revocation_basepoint, &counterparty_pubkeys.htlc_basepoint);
 
 		macro_rules! test_commitment {
@@ -7743,7 +7745,7 @@ mod tests {
 					commitment_tx.clone(),
 					counterparty_signature,
 					counterparty_htlc_sigs,
-					&chan.holder_signer.pubkeys().funding_pubkey,
+					&chan.holder_signer.as_ref().pubkeys().funding_pubkey,
 					chan.counterparty_funding_pubkey()
 				);
 				let (holder_sig, htlc_sigs) = signer.sign_holder_commitment_and_htlcs(&holder_commitment_tx, &secp_ctx).unwrap();
