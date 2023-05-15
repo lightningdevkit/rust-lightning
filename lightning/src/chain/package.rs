@@ -17,6 +17,7 @@ use bitcoin::blockdata::transaction::OutPoint as BitcoinOutPoint;
 use bitcoin::blockdata::script::Script;
 
 use bitcoin::hash_types::Txid;
+use bitcoin::hashes::sha256::Hash as Sha256;
 
 use bitcoin::secp256k1::{SecretKey,PublicKey};
 
@@ -322,11 +323,29 @@ impl_writeable_tlv_based!(HolderFundingOutput, {
 	(3, funding_amount, option),
 });
 
+pub(crate) trait CustomClaimOutput {
+	fn get_malleability_flags(&self) -> (PackageMalleability, bool);
+	fn get_custom_claim_output(&self) -> PackageSolvingData;
+	fn get_custom_claim_output_cmp(&self) -> PackageSolvingData;
+	fn hash(&self) -> Sha256;
+	fn amount(&self) -> u64;
+	fn weight(&self) -> usize;
+	fn is_compatible(&self, input: &PackageSolvingData) -> bool;
+	fn absolute_tx_timelock(&self, current_height: u32) -> u32;
+	fn package_malleability(&self) -> PackageMalleability;
+}
+
+impl Eq for dyn CustomClaimOutput {}
+impl PartialEq for dyn CustomClaimOutput + '_ {
+	fn eq(&self, other: &Self) -> bool {
+		self.hash() == other.hash()
+	}
+}
+
 /// A wrapper encapsulating all in-protocol differing outputs types.
 ///
 /// The generic API offers access to an outputs common attributes or allow transformation such as
 /// finalizing an input claiming the output.
-#[derive(Clone, PartialEq, Eq)]
 pub(crate) enum PackageSolvingData {
 	RevokedOutput(RevokedOutput),
 	RevokedHTLCOutput(RevokedHTLCOutput),
@@ -334,6 +353,106 @@ pub(crate) enum PackageSolvingData {
 	CounterpartyReceivedHTLCOutput(CounterpartyReceivedHTLCOutput),
 	HolderHTLCOutput(HolderHTLCOutput),
 	HolderFundingOutput(HolderFundingOutput),
+	CustomClaimOutput(Box<CustomClaimOutput>),
+}
+
+impl Clone for PackageSolvingData {
+	fn clone(&self) -> Self {
+		match self {
+			PackageSolvingData::RevokedOutput(ref outp) => PackageSolvingData::RevokedOutput(outp.clone()),
+			PackageSolvingData::RevokedHTLCOutput(ref outp) => PackageSolvingData::RevokedHTLCOutput(outp.clone()),
+			PackageSolvingData::CounterpartyOfferedHTLCOutput(ref outp) => PackageSolvingData::CounterpartyOfferedHTLCOutput(outp.clone()),
+			PackageSolvingData::CounterpartyReceivedHTLCOutput(ref outp) => PackageSolvingData::CounterpartyReceivedHTLCOutput(outp.clone()),
+			PackageSolvingData::HolderHTLCOutput(ref outp) => PackageSolvingData::HolderHTLCOutput(outp.clone()),
+			PackageSolvingData::HolderFundingOutput(ref outp) => PackageSolvingData::HolderFundingOutput(outp.clone()),
+			PackageSolvingData::CustomClaimOutput(ref outp) => outp.get_custom_claim_output()
+		}
+	}
+}
+
+impl Eq for PackageSolvingData {}
+impl PartialEq for PackageSolvingData {
+	fn eq(&self, other: &PackageSolvingData) -> bool {
+		match self {
+			PackageSolvingData::RevokedOutput(ref outp) => {
+				match other {
+					PackageSolvingData::RevokedOutput(ref other_outp) => { return outp.eq(other_outp) },
+					PackageSolvingData::RevokedHTLCOutput(..) => { return false },
+					PackageSolvingData::CounterpartyOfferedHTLCOutput(..) => { return false },
+					PackageSolvingData::CounterpartyReceivedHTLCOutput(..) => { return false },
+					PackageSolvingData::HolderHTLCOutput(..) => { return false },
+					PackageSolvingData::HolderFundingOutput(..) => { return false },
+					PackageSolvingData::CustomClaimOutput(..) => { return false },
+				}
+			},
+			PackageSolvingData::RevokedHTLCOutput(ref outp) => {
+				match other {
+					PackageSolvingData::RevokedOutput(..) => { return false },
+					PackageSolvingData::RevokedHTLCOutput(ref other_outp) => { return outp.eq(other_outp) },
+					PackageSolvingData::CounterpartyOfferedHTLCOutput(..) => { return false },
+					PackageSolvingData::CounterpartyReceivedHTLCOutput(..) => { return false },
+					PackageSolvingData::HolderHTLCOutput(..) => { return false },
+					PackageSolvingData::HolderFundingOutput(..) => { return false },
+					PackageSolvingData::CustomClaimOutput(..) => { return false },
+				}
+			},
+			PackageSolvingData::CounterpartyOfferedHTLCOutput(ref outp) => {
+				match other {
+					PackageSolvingData::RevokedOutput(..) => { return false },
+					PackageSolvingData::RevokedHTLCOutput(..) => { return false },
+					PackageSolvingData::CounterpartyOfferedHTLCOutput(ref other_outp) => { return outp.eq(other_outp) },
+					PackageSolvingData::CounterpartyReceivedHTLCOutput(..) => { return false },
+					PackageSolvingData::HolderHTLCOutput(..) => { return false },
+					PackageSolvingData::HolderFundingOutput(..) => { return false },
+					PackageSolvingData::CustomClaimOutput(..) => { return false },
+				}
+			},
+			PackageSolvingData::CounterpartyReceivedHTLCOutput(ref outp) => {
+				match other {
+					PackageSolvingData::RevokedOutput(..) => { return false },
+					PackageSolvingData::RevokedHTLCOutput(..) => { return false },
+					PackageSolvingData::CounterpartyOfferedHTLCOutput(..) => { return false },
+					PackageSolvingData::CounterpartyReceivedHTLCOutput(ref other_outp) => { return outp.eq(other_outp) },
+					PackageSolvingData::HolderHTLCOutput(..) => { return false },
+					PackageSolvingData::HolderFundingOutput(..) => { return false },
+					PackageSolvingData::CustomClaimOutput(..) => { return false },
+				}
+			},
+			PackageSolvingData::HolderHTLCOutput(ref outp) => {
+				match other {
+					PackageSolvingData::RevokedOutput(..) => { return false },
+					PackageSolvingData::RevokedHTLCOutput(..) => { return false },
+					PackageSolvingData::CounterpartyOfferedHTLCOutput(..) => { return false },
+					PackageSolvingData::CounterpartyReceivedHTLCOutput(..) => { return false },
+					PackageSolvingData::HolderHTLCOutput(ref other_outp) => { return outp.eq(other_outp) },
+					PackageSolvingData::HolderFundingOutput(..) => { return false },
+					PackageSolvingData::CustomClaimOutput(..) => { return false },
+				}
+			},
+			PackageSolvingData::HolderFundingOutput(ref outp) => {
+				match other {
+					PackageSolvingData::RevokedOutput(..) => { return false },
+					PackageSolvingData::RevokedHTLCOutput(..) => { return false },
+					PackageSolvingData::CounterpartyOfferedHTLCOutput(..) => { return false },
+					PackageSolvingData::CounterpartyReceivedHTLCOutput(..) => { return false },
+					PackageSolvingData::HolderHTLCOutput(..) => { return false },
+					PackageSolvingData::HolderFundingOutput(ref other_outp) => { return outp.eq(other_outp) },
+					PackageSolvingData::CustomClaimOutput(..) => { return false },
+				}
+			},
+			PackageSolvingData::CustomClaimOutput(ref outp) => {
+				match other {
+					PackageSolvingData::RevokedOutput(..) => { return false },
+					PackageSolvingData::RevokedHTLCOutput(..) => { return false },
+					PackageSolvingData::CounterpartyOfferedHTLCOutput(..) => { return false },
+					PackageSolvingData::CounterpartyReceivedHTLCOutput(..) => { return false },
+					PackageSolvingData::HolderHTLCOutput(..) => { return false },
+					PackageSolvingData::HolderFundingOutput(..) => { return false },
+					PackageSolvingData::CustomClaimOutput(ref other_outp) => { return outp.eq(other_outp) },
+				}
+			}
+		}
+	}
 }
 
 impl PackageSolvingData {
@@ -350,6 +469,9 @@ impl PackageSolvingData {
 			PackageSolvingData::HolderFundingOutput(ref outp) => {
 				debug_assert!(outp.opt_anchors());
 				outp.funding_amount.unwrap()
+			},
+			PackageSolvingData::CustomClaimOutput(ref outp) => {
+				outp.amount()
 			}
 		};
 		amt
@@ -371,6 +493,9 @@ impl PackageSolvingData {
 			// Since HolderFundingOutput maps to an untractable package that is already signed, its
 			// weight can be determined from the transaction itself.
 			PackageSolvingData::HolderFundingOutput(..) => unreachable!(),
+			PackageSolvingData::CustomClaimOutput(ref outp) => {
+				outp.weight()
+			}
 		}
 	}
 	fn is_compatible(&self, input: &PackageSolvingData) -> bool {
@@ -388,6 +513,9 @@ impl PackageSolvingData {
 					PackageSolvingData::RevokedHTLCOutput(..) => { true },
 					_ => { false }
 				}
+			},
+			PackageSolvingData::CustomClaimOutput(ref outp) => {
+				outp.is_compatible(&input)
 			},
 			_ => { mem::discriminant(self) == mem::discriminant(&input) }
 		}
@@ -476,19 +604,27 @@ impl PackageSolvingData {
 				outp.cltv_expiry
 			},
 			PackageSolvingData::HolderFundingOutput(_) => current_height,
+			PackageSolvingData::CustomClaimOutput(ref outp) => {
+				outp.absolute_tx_timelock(current_height)
+			}
 		};
 		absolute_timelock
 	}
 }
 
-impl_writeable_tlv_based_enum!(PackageSolvingData, ;
-	(0, RevokedOutput),
-	(1, RevokedHTLCOutput),
-	(2, CounterpartyOfferedHTLCOutput),
-	(3, CounterpartyReceivedHTLCOutput),
-	(4, HolderHTLCOutput),
-	(5, HolderFundingOutput),
-);
+impl Writeable for PackageSolvingData {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		//TODO
+		Ok(())
+	}
+}
+
+impl Readable for PackageSolvingData {
+	fn read<R: io::Read>(r: &mut R) -> Result<Self, DecodeError> {
+		//TODO
+		return Err(DecodeError::InvalidValue);
+	}
+}
 
 /// A malleable package might be aggregated with other packages to save on fees.
 /// A untractable package has been counter-signed and aggregable will break cached counterparty
@@ -838,6 +974,9 @@ impl PackageTemplate {
 				PackageMalleability::Untractable
 			},
 			PackageSolvingData::HolderFundingOutput(..) => PackageMalleability::Untractable,
+			PackageSolvingData::CustomClaimOutput(ref outp) => {
+				outp.package_malleability()
+			}
 		};
 		let mut inputs = Vec::with_capacity(1);
 		inputs.push((BitcoinOutPoint { txid, vout }, input_solving_data));
@@ -891,6 +1030,7 @@ impl Readable for PackageTemplate {
 					(PackageMalleability::Untractable, false)
 				},
 				PackageSolvingData::HolderFundingOutput(..) => { (PackageMalleability::Untractable, false) },
+				PackageSolvingData::CustomClaimOutput(ref outp) => outp.get_malleability_flags()
 			}
 		} else { return Err(DecodeError::InvalidValue); };
 		let mut soonest_conf_deadline = 0;
