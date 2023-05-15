@@ -5878,10 +5878,10 @@ fn test_free_and_fail_holding_cell_htlcs() {
 fn test_fail_holding_cell_htlc_upon_free_multihop() {
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
-	// When this test was written, the default base fee floated based on the HTLC count.
-	// It is now fixed, so we simply set the fee to the expected value here.
+	// Avoid having to include routing fees in calculations
 	let mut config = test_default_channel_config();
-	config.channel_config.forwarding_fee_base_msat = 196;
+	config.channel_config.forwarding_fee_base_msat = 0;
+	config.channel_config.forwarding_fee_proportional_millionths = 0;
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[Some(config.clone()), Some(config.clone()), Some(config.clone())]);
 	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 	let chan_0_1 = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 95000000);
@@ -5913,9 +5913,7 @@ fn test_fail_holding_cell_htlc_upon_free_multihop() {
 	let opt_anchors = get_opt_anchors!(nodes[0], nodes[1], chan_0_1.2);
 
 	// Send a payment which passes reserve checks but gets stuck in the holding cell.
-	let feemsat = 239;
-	let total_routing_fee_msat = (nodes.len() - 2) as u64 * feemsat;
-	let max_can_send = 5000000 - channel_reserve - 2*commit_tx_fee_msat(feerate, 1 + 1, opt_anchors) - total_routing_fee_msat;
+	let max_can_send = 5000000 - channel_reserve - 2*commit_tx_fee_msat(feerate, 1 + 1, opt_anchors);
 	let (route, our_payment_hash, _, our_payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[2], max_can_send);
 	let payment_event = {
 		nodes[0].node.send_payment_with_route(&route, our_payment_hash,
