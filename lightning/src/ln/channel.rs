@@ -2725,6 +2725,14 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 				available_capacity_msat = capacity_minus_commitment_fee_msat as u64;
 			}
 		}
+
+		available_capacity_msat = cmp::min(available_capacity_msat,
+			self.counterparty_max_htlc_value_in_flight_msat - outbound_stats.pending_htlcs_value_msat);
+
+		if outbound_stats.pending_htlcs + 1 > self.counterparty_max_accepted_htlcs as u32 {
+			available_capacity_msat = 0;
+		}
+
 		AvailableBalances {
 			inbound_capacity_msat: cmp::max(self.channel_value_satoshis as i64 * 1000
 					- self.value_to_self_msat as i64
@@ -2732,10 +2740,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 					- self.holder_selected_channel_reserve_satoshis as i64 * 1000,
 				0) as u64,
 			outbound_capacity_msat,
-			next_outbound_htlc_limit_msat: cmp::max(cmp::min(available_capacity_msat as i64,
-					self.counterparty_max_htlc_value_in_flight_msat as i64
-						- outbound_stats.pending_htlcs_value_msat as i64),
-				0) as u64,
+			next_outbound_htlc_limit_msat: available_capacity_msat,
 			balance_msat,
 		}
 	}
@@ -5885,10 +5890,12 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		let inbound_stats = self.get_inbound_pending_htlc_stats(None);
 		let outbound_stats = self.get_outbound_pending_htlc_stats(None);
 		if outbound_stats.pending_htlcs + 1 > self.counterparty_max_accepted_htlcs as u32 {
+			debug_assert!(amount_msat > self.get_available_balances().next_outbound_htlc_limit_msat);
 			return Err(ChannelError::Ignore(format!("Cannot push more than their max accepted HTLCs ({})", self.counterparty_max_accepted_htlcs)));
 		}
 		// Check their_max_htlc_value_in_flight_msat
 		if outbound_stats.pending_htlcs_value_msat + amount_msat > self.counterparty_max_htlc_value_in_flight_msat {
+			debug_assert!(amount_msat > self.get_available_balances().next_outbound_htlc_limit_msat);
 			return Err(ChannelError::Ignore(format!("Cannot send value that would put us over the max HTLC value in flight our peer will accept ({})", self.counterparty_max_htlc_value_in_flight_msat)));
 		}
 

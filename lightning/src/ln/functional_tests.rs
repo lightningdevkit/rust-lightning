@@ -1102,6 +1102,9 @@ fn holding_cell_htlc_counting() {
 	create_announced_chan_between_nodes(&nodes, 0, 1);
 	let chan_2 = create_announced_chan_between_nodes(&nodes, 1, 2);
 
+	// Fetch a route in advance as we will be unable to once we're unable to send.
+	let (route, payment_hash_1, _, payment_secret_1) = get_route_and_payment_hash!(nodes[1], nodes[2], 100000);
+
 	let mut payments = Vec::new();
 	for _ in 0..50 {
 		let (route, payment_hash, payment_preimage, payment_secret) = get_route_and_payment_hash!(nodes[1], nodes[2], 100000);
@@ -1119,7 +1122,6 @@ fn holding_cell_htlc_counting() {
 	// There is now one HTLC in an outbound commitment transaction and (OUR_MAX_HTLCS - 1) HTLCs in
 	// the holding cell waiting on B's RAA to send. At this point we should not be able to add
 	// another HTLC.
-	let (route, payment_hash_1, _, payment_secret_1) = get_route_and_payment_hash!(nodes[1], nodes[2], 100000);
 	{
 		unwrap_send_err!(nodes[1].node.send_payment_with_route(&route, payment_hash_1,
 				RecipientOnionFields::secret_only(payment_secret_1), PaymentId(payment_hash_1.0)
@@ -6112,6 +6114,8 @@ fn test_update_add_htlc_bolt2_sender_exceed_max_htlc_num_and_htlc_id_increment()
 	let max_accepted_htlcs = nodes[1].node.per_peer_state.read().unwrap().get(&nodes[0].node.get_our_node_id())
 		.unwrap().lock().unwrap().channel_by_id.get(&chan.2).unwrap().counterparty_max_accepted_htlcs as u64;
 
+	// Fetch a route in advance as we will be unable to once we're unable to send.
+	let (route, our_payment_hash, _, our_payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[1], 100000);
 	for i in 0..max_accepted_htlcs {
 		let (route, our_payment_hash, _, our_payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[1], 100000);
 		let payment_event = {
@@ -6135,7 +6139,6 @@ fn test_update_add_htlc_bolt2_sender_exceed_max_htlc_num_and_htlc_id_increment()
 		expect_pending_htlcs_forwardable!(nodes[1]);
 		expect_payment_claimable!(nodes[1], our_payment_hash, our_payment_secret, 100000);
 	}
-	let (route, our_payment_hash, _, our_payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[1], 100000);
 	unwrap_send_err!(nodes[0].node.send_payment_with_route(&route, our_payment_hash,
 			RecipientOnionFields::secret_only(our_payment_secret), PaymentId(our_payment_hash.0)
 		), true, APIError::ChannelUnavailable { ref err },
