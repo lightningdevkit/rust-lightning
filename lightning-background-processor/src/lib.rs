@@ -351,9 +351,15 @@ macro_rules! define_run_body {
 			// Note that we want to run a graph prune once not long after startup before
 			// falling back to our usual hourly prunes. This avoids short-lived clients never
 			// pruning their network graph. We run once 60 seconds after startup before
-			// continuing our normal cadence.
+			// continuing our normal cadence. For RGS, since 60 seconds is likely too long,
+			// we prune after an initial sync completes.
 			let prune_timer = if have_pruned { NETWORK_PRUNE_TIMER } else { FIRST_NETWORK_PRUNE_TIMER };
-			if $timer_elapsed(&mut last_prune_call, prune_timer) {
+			let prune_timer_elapsed = $timer_elapsed(&mut last_prune_call, prune_timer);
+			let should_prune = match $gossip_sync {
+				GossipSync::Rapid(_) => !have_pruned || prune_timer_elapsed,
+				_ => prune_timer_elapsed,
+			};
+			if should_prune {
 				// The network graph must not be pruned while rapid sync completion is pending
 				if let Some(network_graph) = $gossip_sync.prunable_network_graph() {
 					#[cfg(feature = "std")] {
