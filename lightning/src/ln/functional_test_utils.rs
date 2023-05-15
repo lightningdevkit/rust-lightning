@@ -85,16 +85,14 @@ pub fn confirm_transactions_at<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, txn: 
 	if conf_height > first_connect_height {
 		connect_blocks(node, conf_height - first_connect_height);
 	}
-	let mut block = Block {
-		header: BlockHeader { version: 0x20000000, prev_blockhash: node.best_block_hash(), merkle_root: TxMerkleNode::all_zeros(), time: conf_height, bits: 42, nonce: 42 },
-		txdata: Vec::new(),
-	};
+	let mut txdata = Vec::new();
 	for _ in 0..*node.network_chan_count.borrow() { // Make sure we don't end up with channels at the same short id by offsetting by chan_count
-		block.txdata.push(Transaction { version: 0, lock_time: PackedLockTime::ZERO, input: Vec::new(), output: Vec::new() });
+		txdata.push(Transaction { version: 0, lock_time: PackedLockTime::ZERO, input: Vec::new(), output: Vec::new() });
 	}
 	for tx in txn {
-		block.txdata.push((*tx).clone());
+		txdata.push((*tx).clone());
 	}
+	let block = create_dummy_block(node.best_block_hash(), conf_height, txdata);
 	connect_block(node, &block);
 	scid_utils::scid_from_parts(conf_height as u64, block.txdata.len() as u64 - 1, 0).unwrap()
 }
@@ -191,22 +189,31 @@ impl ConnectStyle {
 	}
 }
 
+pub fn create_dummy_header(prev_blockhash: BlockHash, time: u32) -> BlockHeader {
+	BlockHeader {
+		version: 0x2000_0000,
+		prev_blockhash,
+		merkle_root: TxMerkleNode::all_zeros(),
+		time,
+		bits: 42,
+		nonce: 42,
+	}
+}
+
+pub fn create_dummy_block(prev_blockhash: BlockHash, time: u32, txdata: Vec<Transaction>) -> Block {
+	Block { header: create_dummy_header(prev_blockhash, time), txdata }
+}
+
 pub fn connect_blocks<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, depth: u32) -> BlockHash {
 	let skip_intermediaries = node.connect_style.borrow().skips_blocks();
 
 	let height = node.best_block_info().1 + 1;
-	let mut block = Block {
-		header: BlockHeader { version: 0x2000000, prev_blockhash: node.best_block_hash(), merkle_root: TxMerkleNode::all_zeros(), time: height, bits: 42, nonce: 42 },
-		txdata: vec![],
-	};
+	let mut block = create_dummy_block(node.best_block_hash(), height, Vec::new());
 	assert!(depth >= 1);
 	for i in 1..depth {
 		let prev_blockhash = block.header.block_hash();
 		do_connect_block(node, block, skip_intermediaries);
-		block = Block {
-			header: BlockHeader { version: 0x20000000, prev_blockhash, merkle_root: TxMerkleNode::all_zeros(), time: height + i, bits: 42, nonce: 42 },
-			txdata: vec![],
-		};
+		block = create_dummy_block(prev_blockhash, height + i, Vec::new());
 	}
 	let hash = block.header.block_hash();
 	do_connect_block(node, block, false);

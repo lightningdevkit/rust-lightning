@@ -30,8 +30,6 @@ use crate::util::errors::APIError;
 use crate::util::ser::Writeable;
 use crate::util::string::UntrustedString;
 
-use bitcoin::{Block, BlockHeader, TxMerkleNode};
-use bitcoin::hashes::Hash;
 use bitcoin::network::constants::Network;
 
 use crate::prelude::*;
@@ -693,8 +691,7 @@ fn do_test_dup_htlc_onchain_fails_on_reload(persist_manager_post_event: bool, co
 	check_added_monitors!(nodes[1], 1);
 	expect_payment_claimed!(nodes[1], payment_hash, 10_000_000);
 
-	let mut header = BlockHeader { version: 0x20000000, prev_blockhash: nodes[1].best_block_hash(), merkle_root: TxMerkleNode::all_zeros(), time: 42, bits: 42, nonce: 42 };
-	connect_block(&nodes[1], &Block { header, txdata: vec![node_txn[1].clone()]});
+	connect_block(&nodes[1], &create_dummy_block(nodes[1].best_block_hash(), 42, vec![node_txn[1].clone()]));
 	check_closed_broadcast!(nodes[1], true);
 	check_added_monitors!(nodes[1], 1);
 	check_closed_event!(nodes[1], 1, ClosureReason::CommitmentTxConfirmed);
@@ -702,15 +699,13 @@ fn do_test_dup_htlc_onchain_fails_on_reload(persist_manager_post_event: bool, co
 	assert_eq!(claim_txn.len(), 1);
 	check_spends!(claim_txn[0], node_txn[1]);
 
-	header.prev_blockhash = nodes[0].best_block_hash();
-	connect_block(&nodes[0], &Block { header, txdata: vec![node_txn[1].clone()]});
+	connect_block(&nodes[0], &create_dummy_block(nodes[0].best_block_hash(), 42, vec![node_txn[1].clone()]));
 
 	if confirm_commitment_tx {
 		connect_blocks(&nodes[0], BREAKDOWN_TIMEOUT as u32 - 1);
 	}
 
-	header.prev_blockhash = nodes[0].best_block_hash();
-	let claim_block = Block { header, txdata: if payment_timeout { timeout_txn } else { vec![claim_txn[0].clone()] } };
+	let claim_block = create_dummy_block(nodes[0].best_block_hash(), 42, if payment_timeout { timeout_txn } else { vec![claim_txn[0].clone()] });
 
 	if payment_timeout {
 		assert!(confirm_commitment_tx); // Otherwise we're spending below our CSV!
@@ -1522,10 +1517,7 @@ fn do_test_intercepted_payment(test: InterceptTest) {
 			_ => panic!("Unexpected event")
 		}
 	} else if test == InterceptTest::Timeout {
-		let mut block = Block {
-			header: BlockHeader { version: 0x20000000, prev_blockhash: nodes[0].best_block_hash(), merkle_root: TxMerkleNode::all_zeros(), time: 42, bits: 42, nonce: 42 },
-			txdata: vec![],
-		};
+		let mut block = create_dummy_block(nodes[0].best_block_hash(), 42, Vec::new());
 		connect_block(&nodes[0], &block);
 		connect_block(&nodes[1], &block);
 		for _ in 0..TEST_FINAL_CLTV {

@@ -13,8 +13,6 @@
 //! or payments to send/ways to handle events generated.
 //! This test has been very useful, though due to its complexity good starting inputs are critical.
 
-use bitcoin::TxMerkleNode;
-use bitcoin::blockdata::block::BlockHeader;
 use bitcoin::blockdata::constants::genesis_block;
 use bitcoin::blockdata::transaction::{Transaction, TxOut};
 use bitcoin::blockdata::script::{Builder, Script};
@@ -41,6 +39,7 @@ use lightning::ln::channelmanager::{ChainParameters, ChannelDetails, ChannelMana
 use lightning::ln::peer_handler::{MessageHandler,PeerManager,SocketDescriptor,IgnoringMessageHandler};
 use lightning::ln::msgs::{self, DecodeError};
 use lightning::ln::script::ShutdownScript;
+use lightning::ln::functional_test_utils::*;
 use lightning::routing::gossip::{P2PGossipSync, NetworkGraph};
 use lightning::routing::utxo::UtxoLookup;
 use lightning::routing::router::{InFlightHtlcs, PaymentParameters, Route, RouteParameters, Router};
@@ -228,7 +227,7 @@ impl<'a> MoneyLossDetector<'a> {
 		}
 
 		self.blocks_connected += 1;
-		let header = BlockHeader { version: 0x20000000, prev_blockhash: self.header_hashes[self.height].0, merkle_root: TxMerkleNode::all_zeros(), time: self.blocks_connected, bits: 42, nonce: 42 };
+		let header = create_dummy_header(self.header_hashes[self.height].0, self.blocks_connected);
 		self.height += 1;
 		self.manager.transactions_confirmed(&header, &txdata, self.height as u32);
 		self.manager.best_block_updated(&header, self.height as u32);
@@ -245,7 +244,7 @@ impl<'a> MoneyLossDetector<'a> {
 
 	fn disconnect_block(&mut self) {
 		if self.height > 0 && (self.max_height < 6 || self.height >= self.max_height - 6) {
-			let header = BlockHeader { version: 0x20000000, prev_blockhash: self.header_hashes[self.height - 1].0, merkle_root: TxMerkleNode::all_zeros(), time: self.header_hashes[self.height].1, bits: 42, nonce: 42 };
+			let header = create_dummy_header(self.header_hashes[self.height - 1].0, self.header_hashes[self.height].1);
 			self.manager.block_disconnected(&header, self.height as u32);
 			self.monitor.block_disconnected(&header, self.height as u32);
 			self.height -= 1;

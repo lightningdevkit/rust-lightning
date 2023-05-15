@@ -18,8 +18,6 @@
 //! send-side handling is correct, other peers. We consider it a failure if any action results in a
 //! channel being force-closed.
 
-use bitcoin::TxMerkleNode;
-use bitcoin::blockdata::block::BlockHeader;
 use bitcoin::blockdata::constants::genesis_block;
 use bitcoin::blockdata::transaction::{Transaction, TxOut};
 use bitcoin::blockdata::script::{Builder, Script};
@@ -45,6 +43,7 @@ use lightning::ln::channelmanager::{ChainParameters, ChannelDetails, ChannelMana
 use lightning::ln::channel::FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE;
 use lightning::ln::msgs::{self, CommitmentUpdate, ChannelMessageHandler, DecodeError, UpdateAddHTLC, Init};
 use lightning::ln::script::ShutdownScript;
+use lightning::ln::functional_test_utils::*;
 use lightning::util::enforcing_trait_impls::{EnforcingSigner, EnforcementState};
 use lightning::util::errors::APIError;
 use lightning::util::logger::Logger;
@@ -547,11 +546,11 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out) {
 	macro_rules! confirm_txn {
 		($node: expr) => { {
 			let chain_hash = genesis_block(Network::Bitcoin).block_hash();
-			let mut header = BlockHeader { version: 0x20000000, prev_blockhash: chain_hash, merkle_root: TxMerkleNode::all_zeros(), time: 42, bits: 42, nonce: 42 };
+			let mut header = create_dummy_header(chain_hash, 42);
 			let txdata: Vec<_> = channel_txn.iter().enumerate().map(|(i, tx)| (i + 1, tx)).collect();
 			$node.transactions_confirmed(&header, &txdata, 1);
 			for _ in 2..100 {
-				header = BlockHeader { version: 0x20000000, prev_blockhash: header.block_hash(), merkle_root: TxMerkleNode::all_zeros(), time: 42, bits: 42, nonce: 42 };
+				header = create_dummy_header(header.block_hash(), 42);
 			}
 			$node.best_block_updated(&header, 99);
 		} }

@@ -4084,7 +4084,6 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 
 #[cfg(test)]
 mod tests {
-	use bitcoin::blockdata::block::BlockHeader;
 	use bitcoin::blockdata::script::{Script, Builder};
 	use bitcoin::blockdata::opcodes;
 	use bitcoin::blockdata::transaction::{Transaction, TxIn, TxOut, EcdsaSighashType};
@@ -4121,7 +4120,7 @@ mod tests {
 	use crate::util::ser::{ReadableArgs, Writeable};
 	use crate::sync::{Arc, Mutex};
 	use crate::io;
-	use bitcoin::{PackedLockTime, Sequence, TxMerkleNode, Witness};
+	use bitcoin::{PackedLockTime, Sequence, Witness};
 	use crate::prelude::*;
 
 	fn do_test_funding_spend_refuses_updates(use_local_txn: bool) {
@@ -4160,10 +4159,7 @@ mod tests {
 
 		// Connect a commitment transaction, but only to the ChainMonitor/ChannelMonitor. The
 		// channel is now closed, but the ChannelManager doesn't know that yet.
-		let new_header = BlockHeader {
-			version: 2, time: 0, bits: 0, nonce: 0,
-			prev_blockhash: nodes[0].best_block_info().0,
-			merkle_root: TxMerkleNode::all_zeros() };
+		let new_header = create_dummy_header(nodes[0].best_block_info().0, 0);
 		let conf_height = nodes[0].best_block_info().1 + 1;
 		nodes[1].chain_monitor.chain_monitor.transactions_confirmed(&new_header,
 			&[(0, broadcast_tx)], conf_height);
