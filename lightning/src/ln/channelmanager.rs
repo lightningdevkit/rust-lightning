@@ -3923,11 +3923,14 @@ where
 											htlcs.push(claimable_htlc);
 											let amount_msat = htlcs.iter().map(|htlc| htlc.value).sum();
 											htlcs.iter_mut().for_each(|htlc| htlc.total_value_received = Some(amount_msat));
+											let counterparty_skimmed_fee_msat = htlcs.iter()
+												.map(|htlc| htlc.counterparty_skimmed_fee_msat.unwrap_or(0)).sum();
 											new_events.push_back((events::Event::PaymentClaimable {
 												receiver_node_id: Some(receiver_node_id),
 												payment_hash,
 												purpose: $purpose,
 												amount_msat,
+												counterparty_skimmed_fee_msat,
 												via_channel_id: Some(prev_channel_id),
 												via_user_channel_id: Some(prev_user_channel_id),
 												claim_deadline: Some(earliest_expiry - HTLC_FAIL_BACK_BUFFER),

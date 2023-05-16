@@ -2,3 +2,5 @@
 
 * Forwarding less than the expected amount in `ChannelManager::forward_intercepted_htlc` may break
 	compatibility with versions of LDK prior to 0.0.116
+* Setting `ChannelConfig::accept_underpaying_htlcs` may break compatibility with versions of LDK
+	prior to 0.0.116, and unsetting the feature between restarts may lead to payment failures.

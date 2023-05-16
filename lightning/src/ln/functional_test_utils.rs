@@ -2124,7 +2124,7 @@ pub fn do_pass_along_path<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_p
 				match &events_2[0] {
 					Event::PaymentClaimable { ref payment_hash, ref purpose, amount_msat,
 						receiver_node_id, ref via_channel_id, ref via_user_channel_id,
-						claim_deadline, onion_fields,
+						claim_deadline, onion_fields, ..
 					} => {
 						assert_eq!(our_payment_hash, *payment_hash);
 						assert_eq!(node.node.get_our_node_id(), receiver_node_id.unwrap());

@@ -412,9 +412,12 @@ pub struct ChannelConfig {
 	/// # Note
 	/// It's important for payee wallet software to verify that [`PaymentClaimable::amount_msat`] is
 	/// as-expected if this feature is activated, otherwise they may lose money!
+	/// [`PaymentClaimable::counterparty_skimmed_fee_msat`] provides the fee taken by the
+	/// counterparty.
 	///
 	/// # Note
 	/// Switching this config flag on may break compatibility with versions of LDK prior to 0.0.116.
+	/// Unsetting this flag between restarts may lead to payment receive failures.
 	///
 	/// Default value: false.
 	///
@@ -423,6 +426,7 @@ pub struct ChannelConfig {
 	/// [`HTLCIntercepted`]: crate::events::Event::HTLCIntercepted
 	/// [`HTLCIntercepted::expected_outbound_amount_msat`]: crate::events::Event::HTLCIntercepted::expected_outbound_amount_msat
 	/// [`PaymentClaimable::amount_msat`]: crate::events::Event::PaymentClaimable::amount_msat
+	/// [`PaymentClaimable::counterparty_skimmed_fee_msat`]: crate::events::Event::PaymentClaimable::counterparty_skimmed_fee_msat
 	//  TODO: link to bLIP when it's merged
 	pub accept_underpaying_htlcs: bool,
 }
