@@ -3943,15 +3943,16 @@ where
 								let (cltv_expiry, onion_payload, payment_data, phantom_shared_secret, mut onion_fields) = match routing {
 									PendingHTLCRouting::Receive { payment_data, payment_metadata, incoming_cltv_expiry, phantom_shared_secret } => {
 										let _legacy_hop_data = Some(payment_data.clone());
-										let onion_fields =
-											RecipientOnionFields { payment_secret: Some(payment_data.payment_secret), payment_metadata };
+										let onion_fields = RecipientOnionFields { payment_secret: Some(payment_data.payment_secret),
+												payment_metadata, custom_tlvs: vec![] };
 										(incoming_cltv_expiry, OnionPayload::Invoice { _legacy_hop_data },
 											Some(payment_data), phantom_shared_secret, onion_fields)
 									},
 									PendingHTLCRouting::ReceiveKeysend { payment_data, payment_preimage, payment_metadata, incoming_cltv_expiry } => {
 										let onion_fields = RecipientOnionFields {
 											payment_secret: payment_data.as_ref().map(|data| data.payment_secret),
-											payment_metadata
+											payment_metadata,
+											custom_tlvs: vec![],
 										};
 										(incoming_cltv_expiry, OnionPayload::Spontaneous(payment_preimage),
 											payment_data, None, onion_fields)

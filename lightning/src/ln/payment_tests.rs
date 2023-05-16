@@ -3424,7 +3424,7 @@ fn do_test_payment_metadata_consistency(do_reload: bool, do_modify: bool) {
 
 	// Send the MPP payment, delivering the updated commitment state to nodes[1].
 	nodes[0].node.send_payment(payment_hash, RecipientOnionFields {
-			payment_secret: Some(payment_secret), payment_metadata: Some(payment_metadata),
+			payment_secret: Some(payment_secret), payment_metadata: Some(payment_metadata), custom_tlvs: vec![],
 		}, payment_id, route_params.clone(), Retry::Attempts(1)).unwrap();
 	check_added_monitors!(nodes[0], 2);
 
