@@ -1527,13 +1527,14 @@ fn test_chan_reserve_violation_outbound_htlc_inbound_chan() {
 
 	let _ = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100_000, push_amt);
 
+	// Fetch a route in advance as we will be unable to once we're unable to send.
+	let (route, our_payment_hash, _, our_payment_secret) = get_route_and_payment_hash!(nodes[1], nodes[0], 1_000_000);
 	// Sending exactly enough to hit the reserve amount should be accepted
 	for _ in 0..MIN_AFFORDABLE_HTLC_COUNT {
 		let (_, _, _) = route_payment(&nodes[1], &[&nodes[0]], 1_000_000);
 	}
 
 	// However one more HTLC should be significantly over the reserve amount and fail.
-	let (route, our_payment_hash, _, our_payment_secret) = get_route_and_payment_hash!(nodes[1], nodes[0], 1_000_000);
 	unwrap_send_err!(nodes[1].node.send_payment_with_route(&route, our_payment_hash,
 			RecipientOnionFields::secret_only(our_payment_secret), PaymentId(our_payment_hash.0)
 		), true, APIError::ChannelUnavailable { ref err },
@@ -1565,7 +1566,9 @@ fn test_chan_reserve_violation_inbound_htlc_outbound_channel() {
 		let (_, _, _) = route_payment(&nodes[1], &[&nodes[0]], 1_000_000);
 	}
 
-	let (route, payment_hash, _, payment_secret) = get_route_and_payment_hash!(nodes[1], nodes[0], 700_000);
+	let (mut route, payment_hash, _, payment_secret) =
+		get_route_and_payment_hash!(nodes[1], nodes[0], 1000);
+	route.paths[0].hops[0].fee_msat = 700_000;
 	// Need to manually create the update_add_htlc message to go around the channel reserve check in send_htlc()
 	let secp_ctx = Secp256k1::new();
 	let session_priv = SecretKey::from_slice(&[42; 32]).unwrap();
@@ -1627,7 +1630,9 @@ fn test_chan_reserve_dust_inbound_htlcs_outbound_chan() {
 	}
 
 	// One more than the dust amt should fail, however.
-	let (route, our_payment_hash, _, our_payment_secret) = get_route_and_payment_hash!(nodes[1], nodes[0], dust_amt + 1);
+	let (mut route, our_payment_hash, _, our_payment_secret) =
+		get_route_and_payment_hash!(nodes[1], nodes[0], dust_amt);
+	route.paths[0].hops[0].fee_msat += 1;
 	unwrap_send_err!(nodes[1].node.send_payment_with_route(&route, our_payment_hash,
 			RecipientOnionFields::secret_only(our_payment_secret), PaymentId(our_payment_hash.0)
 		), true, APIError::ChannelUnavailable { ref err },

@@ -2676,6 +2676,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 	/// corner case properly.
 	pub fn get_available_balances(&self) -> AvailableBalances {
 		// Note that we have to handle overflow due to the above case.
+		let inbound_stats = self.get_inbound_pending_htlc_stats(None);
 		let outbound_stats = self.get_outbound_pending_htlc_stats(None);
 
 		let mut balance_msat = self.value_to_self_msat;
@@ -2723,6 +2724,26 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 				available_capacity_msat = cmp::max(0, cmp::min(capacity_minus_commitment_fee_msat, available_capacity_msat as i64)) as u64;
 			} else {
 				available_capacity_msat = capacity_minus_commitment_fee_msat as u64;
+			}
+		} else {
+			// If the channel is inbound (i.e. counterparty pays the fee), we need to make sure
+			// sending a new HTLC won't reduce their balance below our reserve threshold.
+			let mut real_dust_limit_success_sat = self.counterparty_dust_limit_satoshis;
+			if !self.opt_anchors() {
+				real_dust_limit_success_sat += self.feerate_per_kw as u64 * htlc_success_tx_weight(false) / 1000;
+			}
+
+			let htlc_above_dust = HTLCCandidate::new(real_dust_limit_success_sat * 1000, HTLCInitiator::LocalOffered);
+			let max_reserved_commit_tx_fee_msat = self.next_remote_commit_tx_fee_msat(htlc_above_dust, None);
+
+			let holder_selected_chan_reserve_msat = self.holder_selected_channel_reserve_satoshis * 1000;
+			let remote_balance_msat = (self.channel_value_satoshis * 1000 - self.value_to_self_msat)
+				.saturating_sub(inbound_stats.pending_htlcs_value_msat);
+
+			if remote_balance_msat < max_reserved_commit_tx_fee_msat + holder_selected_chan_reserve_msat {
+				// If another HTLC's fee would reduce the remote's balance below the reserve limit
+				// we've selected for them, we can only send dust HTLCs.
+				available_capacity_msat = cmp::min(available_capacity_msat, real_dust_limit_success_sat * 1000 - 1);
 			}
 		}
 
@@ -5906,6 +5927,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			let holder_selected_chan_reserve_msat = self.holder_selected_channel_reserve_satoshis * 1000;
 			let remote_balance_msat = (self.channel_value_satoshis * 1000 - self.value_to_self_msat).saturating_sub(inbound_stats.pending_htlcs_value_msat);
 			if remote_balance_msat < counterparty_commit_tx_fee_msat + holder_selected_chan_reserve_msat {
+				debug_assert!(amount_msat > self.get_available_balances().next_outbound_htlc_limit_msat);
 				return Err(ChannelError::Ignore("Cannot send value that would put counterparty balance under holder-announced channel reserve value".to_owned()));
 			}
 		}
