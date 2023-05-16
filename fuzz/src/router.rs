@@ -265,6 +265,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 								balance_msat: 0,
 								outbound_capacity_msat: capacity.saturating_mul(1000),
 								next_outbound_htlc_limit_msat: capacity.saturating_mul(1000),
+								next_outbound_htlc_minimum_msat: 0,
 								inbound_htlc_minimum_msat: None,
 								inbound_htlc_maximum_msat: None,
 								config: None,

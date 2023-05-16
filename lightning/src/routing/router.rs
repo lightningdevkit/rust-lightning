@@ -929,7 +929,7 @@ impl<'a> CandidateRouteHop<'a> {
 
 	fn htlc_minimum_msat(&self) -> u64 {
 		match self {
-			CandidateRouteHop::FirstHop { .. } => 0,
+			CandidateRouteHop::FirstHop { details } => details.next_outbound_htlc_minimum_msat,
 			CandidateRouteHop::PublicHop { info, .. } => info.direction().htlc_minimum_msat,
 			CandidateRouteHop::PrivateHop { hint } => hint.htlc_minimum_msat.unwrap_or(0),
 		}
@@ -2460,6 +2460,7 @@ mod tests {
 			balance_msat: 0,
 			outbound_capacity_msat,
 			next_outbound_htlc_limit_msat: outbound_capacity_msat,
+			next_outbound_htlc_minimum_msat: 0,
 			inbound_capacity_msat: 42,
 			unspendable_punishment_reserve: None,
 			confirmations_required: None,
@@ -6121,6 +6122,7 @@ pub(crate) mod bench_utils {
 			user_channel_id: 0,
 			balance_msat: 10_000_000_000,
 			outbound_capacity_msat: 10_000_000_000,
+			next_outbound_htlc_minimum_msat: 0,
 			next_outbound_htlc_limit_msat: 10_000_000_000,
 			inbound_capacity_msat: 0,
 			unspendable_punishment_reserve: None,

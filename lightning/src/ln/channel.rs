@@ -73,6 +73,8 @@ pub struct AvailableBalances {
 	pub outbound_capacity_msat: u64,
 	/// The maximum value we can assign to the next outbound HTLC
 	pub next_outbound_htlc_limit_msat: u64,
+	/// The minimum value we can assign to the next outbound HTLC
+	pub next_outbound_htlc_minimum_msat: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -2762,6 +2764,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 				0) as u64,
 			outbound_capacity_msat,
 			next_outbound_htlc_limit_msat: available_capacity_msat,
+			next_outbound_htlc_minimum_msat: 0,
 			balance_msat,
 		}
 	}
