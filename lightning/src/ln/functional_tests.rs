@@ -9635,6 +9635,10 @@ fn do_test_max_dust_htlc_exposure(dust_outbound_balance: bool, exposure_breach_e
 	let (announcement, as_update, bs_update) = create_chan_between_nodes_with_value_b(&nodes[0], &nodes[1], &channel_ready);
 	update_nodes_with_chan_announce(&nodes, 0, 1, &announcement, &as_update, &bs_update);
 
+	// Fetch a route in advance as we will be unable to once we're unable to send.
+	let (mut route, payment_hash, _, payment_secret) =
+		get_route_and_payment_hash!(nodes[0], nodes[1], 1000);
+
 	let dust_buffer_feerate = {
 		let per_peer_state = nodes[0].node.per_peer_state.read().unwrap();
 		let chan_lock = per_peer_state.get(&nodes[1].node.get_our_node_id()).unwrap().lock().unwrap();
@@ -9647,7 +9651,7 @@ fn do_test_max_dust_htlc_exposure(dust_outbound_balance: bool, exposure_breach_e
 	let dust_inbound_htlc_on_holder_tx_msat: u64 = (dust_buffer_feerate * htlc_success_tx_weight(opt_anchors) / 1000 + open_channel.dust_limit_satoshis - 1) * 1000;
 	let dust_inbound_htlc_on_holder_tx: u64 = config.channel_config.max_dust_htlc_exposure_msat / dust_inbound_htlc_on_holder_tx_msat;
 
-	let dust_htlc_on_counterparty_tx: u64 = 25;
+	let dust_htlc_on_counterparty_tx: u64 = 4;
 	let dust_htlc_on_counterparty_tx_msat: u64 = config.channel_config.max_dust_htlc_exposure_msat / dust_htlc_on_counterparty_tx;
 
 	if on_holder_tx {
@@ -9672,7 +9676,7 @@ fn do_test_max_dust_htlc_exposure(dust_outbound_balance: bool, exposure_breach_e
 		if dust_outbound_balance {
 			// Outbound dust threshold: 2132 sats (`dust_buffer_feerate` * HTLC_TIMEOUT_TX_WEIGHT / 1000 + counteparty's `dust_limit_satoshis`)
 			// Outbound dust balance: 5000 sats
-			for _ in 0..dust_htlc_on_counterparty_tx {
+			for _ in 0..dust_htlc_on_counterparty_tx - 1 {
 				let (route, payment_hash, _, payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[1], dust_htlc_on_counterparty_tx_msat);
 				nodes[0].node.send_payment_with_route(&route, payment_hash,
 					RecipientOnionFields::secret_only(payment_secret), PaymentId(payment_hash.0)).unwrap();
@@ -9680,15 +9684,15 @@ fn do_test_max_dust_htlc_exposure(dust_outbound_balance: bool, exposure_breach_e
 		} else {
 			// Inbound dust threshold: 2031 sats (`dust_buffer_feerate` * HTLC_TIMEOUT_TX_WEIGHT / 1000 + counteparty's `dust_limit_satoshis`)
 			// Inbound dust balance: 5000 sats
-			for _ in 0..dust_htlc_on_counterparty_tx {
+			for _ in 0..dust_htlc_on_counterparty_tx - 1 {
 				route_payment(&nodes[1], &[&nodes[0]], dust_htlc_on_counterparty_tx_msat);
 			}
 		}
 	}
 
-	let dust_overflow = dust_htlc_on_counterparty_tx_msat * (dust_htlc_on_counterparty_tx + 1);
 	if exposure_breach_event == ExposureEvent::AtHTLCForward {
-		let (route, payment_hash, _, payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[1], if on_holder_tx { dust_outbound_htlc_on_holder_tx_msat } else { dust_htlc_on_counterparty_tx_msat });
+		route.paths[0].hops.last_mut().unwrap().fee_msat =
+			if on_holder_tx { dust_outbound_htlc_on_holder_tx_msat } else { dust_htlc_on_counterparty_tx_msat + 1 };
 		let mut config = UserConfig::default();
 		// With default dust exposure: 5000 sats
 		if on_holder_tx {
@@ -9702,10 +9706,13 @@ fn do_test_max_dust_htlc_exposure(dust_outbound_balance: bool, exposure_breach_e
 			unwrap_send_err!(nodes[0].node.send_payment_with_route(&route, payment_hash,
 					RecipientOnionFields::secret_only(payment_secret), PaymentId(payment_hash.0)
 				), true, APIError::ChannelUnavailable { ref err },
-				assert_eq!(err, &format!("Cannot send value that would put our exposure to dust HTLCs at {} over the limit {} on counterparty commitment tx", dust_overflow, config.channel_config.max_dust_htlc_exposure_msat)));
+				assert_eq!(err,
+					&format!("Cannot send value that would put our exposure to dust HTLCs at {} over the limit {} on counterparty commitment tx",
+						dust_htlc_on_counterparty_tx_msat * (dust_htlc_on_counterparty_tx - 1) + dust_htlc_on_counterparty_tx_msat + 1,
+						config.channel_config.max_dust_htlc_exposure_msat)));
 		}
 	} else if exposure_breach_event == ExposureEvent::AtHTLCReception {
-		let (route, payment_hash, _, payment_secret) = get_route_and_payment_hash!(nodes[1], nodes[0], if on_holder_tx { dust_inbound_htlc_on_holder_tx_msat } else { dust_htlc_on_counterparty_tx_msat });
+		let (route, payment_hash, _, payment_secret) = get_route_and_payment_hash!(nodes[1], nodes[0], if on_holder_tx { dust_inbound_htlc_on_holder_tx_msat } else { dust_htlc_on_counterparty_tx_msat + 1 });
 		nodes[1].node.send_payment_with_route(&route, payment_hash,
 			RecipientOnionFields::secret_only(payment_secret), PaymentId(payment_hash.0)).unwrap();
 		check_added_monitors!(nodes[1], 1);
@@ -9721,10 +9728,13 @@ fn do_test_max_dust_htlc_exposure(dust_outbound_balance: bool, exposure_breach_e
 			nodes[0].logger.assert_log("lightning::ln::channel".to_string(), format!("Cannot accept value that would put our exposure to dust HTLCs at {} over the limit {} on holder commitment tx", if dust_outbound_balance { dust_outbound_overflow } else { dust_inbound_overflow }, config.channel_config.max_dust_htlc_exposure_msat), 1);
 		} else {
 			// Outbound dust balance: 5200 sats
-			nodes[0].logger.assert_log("lightning::ln::channel".to_string(), format!("Cannot accept value that would put our exposure to dust HTLCs at {} over the limit {} on counterparty commitment tx", dust_overflow, config.channel_config.max_dust_htlc_exposure_msat), 1);
+			nodes[0].logger.assert_log("lightning::ln::channel".to_string(),
+				format!("Cannot accept value that would put our exposure to dust HTLCs at {} over the limit {} on counterparty commitment tx",
+					dust_htlc_on_counterparty_tx_msat * (dust_htlc_on_counterparty_tx - 1) + dust_htlc_on_counterparty_tx_msat + 1,
+					config.channel_config.max_dust_htlc_exposure_msat), 1);
 		}
 	} else if exposure_breach_event == ExposureEvent::AtUpdateFeeOutbound {
-		let (route, payment_hash, _, payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[1], 2_500_000);
+		route.paths[0].hops.last_mut().unwrap().fee_msat = 2_500_000;
 		nodes[0].node.send_payment_with_route(&route, payment_hash,
 			RecipientOnionFields::secret_only(payment_secret), PaymentId(payment_hash.0)).unwrap();
 		{

@@ -2749,6 +2749,45 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			}
 		}
 
+		let mut next_outbound_htlc_minimum_msat = self.counterparty_htlc_minimum_msat;
+
+		// If we get close to our maximum dust exposure, we end up in a situation where we can send
+		// between zero and the remaining dust exposure limit remaining OR above the dust limit.
+		// Because we cannot express this as a simple min/max, we prefer to tell the user they can
+		// send above the dust limit (as the router can always overpay to meet the dust limit).
+		let mut remaining_msat_below_dust_exposure_limit = None;
+		let mut dust_exposure_dust_limit_msat = 0;
+
+		let (htlc_success_dust_limit, htlc_timeout_dust_limit) = if self.opt_anchors() {
+			(self.counterparty_dust_limit_satoshis, self.holder_dust_limit_satoshis)
+		} else {
+			let dust_buffer_feerate = self.get_dust_buffer_feerate(None) as u64;
+			(self.counterparty_dust_limit_satoshis + dust_buffer_feerate * htlc_success_tx_weight(false) / 1000,
+			 self.holder_dust_limit_satoshis       + dust_buffer_feerate * htlc_timeout_tx_weight(false) / 1000)
+		};
+		let on_counterparty_dust_htlc_exposure_msat = inbound_stats.on_counterparty_tx_dust_exposure_msat + outbound_stats.on_counterparty_tx_dust_exposure_msat;
+		if on_counterparty_dust_htlc_exposure_msat as i64 + htlc_success_dust_limit as i64 * 1000 - 1 > self.get_max_dust_htlc_exposure_msat() as i64 {
+			remaining_msat_below_dust_exposure_limit =
+				Some(self.get_max_dust_htlc_exposure_msat().saturating_sub(on_counterparty_dust_htlc_exposure_msat));
+			dust_exposure_dust_limit_msat = cmp::max(dust_exposure_dust_limit_msat, htlc_success_dust_limit * 1000);
+		}
+
+		let on_holder_dust_htlc_exposure_msat = inbound_stats.on_holder_tx_dust_exposure_msat + outbound_stats.on_holder_tx_dust_exposure_msat;
+		if on_holder_dust_htlc_exposure_msat as i64 + htlc_timeout_dust_limit as i64 * 1000 - 1 > self.get_max_dust_htlc_exposure_msat() as i64 {
+			remaining_msat_below_dust_exposure_limit = Some(cmp::min(
+				remaining_msat_below_dust_exposure_limit.unwrap_or(u64::max_value()),
+				self.get_max_dust_htlc_exposure_msat().saturating_sub(on_holder_dust_htlc_exposure_msat)));
+			dust_exposure_dust_limit_msat = cmp::max(dust_exposure_dust_limit_msat, htlc_timeout_dust_limit * 1000);
+		}
+
+		if let Some(remaining_limit_msat) = remaining_msat_below_dust_exposure_limit {
+			if available_capacity_msat < dust_exposure_dust_limit_msat {
+				available_capacity_msat = cmp::min(available_capacity_msat, remaining_limit_msat);
+			} else {
+				next_outbound_htlc_minimum_msat = cmp::max(next_outbound_htlc_minimum_msat, dust_exposure_dust_limit_msat);
+			}
+		}
+
 		available_capacity_msat = cmp::min(available_capacity_msat,
 			self.counterparty_max_htlc_value_in_flight_msat - outbound_stats.pending_htlcs_value_msat);
 
@@ -2764,7 +2803,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 				0) as u64,
 			outbound_capacity_msat,
 			next_outbound_htlc_limit_msat: available_capacity_msat,
-			next_outbound_htlc_minimum_msat: 0,
+			next_outbound_htlc_minimum_msat,
 			balance_msat,
 		}
 	}
@@ -5898,6 +5937,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		}
 
 		if amount_msat < self.counterparty_htlc_minimum_msat {
+			debug_assert!(amount_msat < self.get_available_balances().next_outbound_htlc_minimum_msat);
 			return Err(ChannelError::Ignore(format!("Cannot send less than their minimum HTLC value ({})", self.counterparty_htlc_minimum_msat)));
 		}
 
@@ -5946,6 +5986,8 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		if amount_msat / 1000 < exposure_dust_limit_success_sats {
 			let on_counterparty_dust_htlc_exposure_msat = inbound_stats.on_counterparty_tx_dust_exposure_msat + outbound_stats.on_counterparty_tx_dust_exposure_msat + amount_msat;
 			if on_counterparty_dust_htlc_exposure_msat > self.get_max_dust_htlc_exposure_msat() {
+				debug_assert!(amount_msat > self.get_available_balances().next_outbound_htlc_limit_msat ||
+					amount_msat < self.get_available_balances().next_outbound_htlc_minimum_msat);
 				return Err(ChannelError::Ignore(format!("Cannot send value that would put our exposure to dust HTLCs at {} over the limit {} on counterparty commitment tx",
 					on_counterparty_dust_htlc_exposure_msat, self.get_max_dust_htlc_exposure_msat())));
 			}
@@ -5955,6 +5997,8 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		if amount_msat / 1000 <  exposure_dust_limit_timeout_sats {
 			let on_holder_dust_htlc_exposure_msat = inbound_stats.on_holder_tx_dust_exposure_msat + outbound_stats.on_holder_tx_dust_exposure_msat + amount_msat;
 			if on_holder_dust_htlc_exposure_msat > self.get_max_dust_htlc_exposure_msat() {
+				debug_assert!(amount_msat > self.get_available_balances().next_outbound_htlc_limit_msat ||
+					amount_msat < self.get_available_balances().next_outbound_htlc_minimum_msat);
 				return Err(ChannelError::Ignore(format!("Cannot send value that would put our exposure to dust HTLCs at {} over the limit {} on holder commitment tx",
 					on_holder_dust_htlc_exposure_msat, self.get_max_dust_htlc_exposure_msat())));
 			}
