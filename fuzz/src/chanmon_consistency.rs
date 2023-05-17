@@ -296,13 +296,8 @@ fn check_api_err(api_err: APIError, sendable_bounds_violated: bool) {
 			// is probably just stale and you should add new messages here.
 			match err.as_str() {
 				"Peer for first hop currently disconnected" => {},
-				_ if err.starts_with("Cannot push more than their max accepted HTLCs ") => {},
-				_ if err.starts_with("Cannot send value that would put us over the max HTLC value in flight our peer will accept ") => {},
-				_ if err.starts_with("Cannot send value that would put our balance under counterparty-announced channel reserve value") => {},
-				_ if err.starts_with("Cannot send value that would put counterparty balance under holder-announced channel reserve value") => {},
-				_ if err.starts_with("Cannot send value that would overdraw remaining funds.") => {},
-				_ if err.starts_with("Cannot send value that would not leave enough to pay for fees.") => {},
-				_ if err.starts_with("Cannot send value that would put our exposure to dust HTLCs at") => {},
+				_ if err.starts_with("Cannot send less than our next-HTLC minimum - ") => {},
+				_ if err.starts_with("Cannot send more than our next-HTLC maximum - ") => {},
 				_ => panic!("{}", err),
 			}
 			assert!(sendable_bounds_violated);

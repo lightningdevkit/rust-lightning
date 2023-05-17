@@ -5936,9 +5936,15 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			return Err(ChannelError::Ignore("Cannot send 0-msat HTLC".to_owned()));
 		}
 
-		if amount_msat < self.counterparty_htlc_minimum_msat {
-			debug_assert!(amount_msat < self.get_available_balances().next_outbound_htlc_minimum_msat);
-			return Err(ChannelError::Ignore(format!("Cannot send less than their minimum HTLC value ({})", self.counterparty_htlc_minimum_msat)));
+		let available_balances = self.get_available_balances();
+		if amount_msat < available_balances.next_outbound_htlc_minimum_msat {
+			return Err(ChannelError::Ignore(format!("Cannot send less than our next-HTLC minimum - {} msat",
+				available_balances.next_outbound_htlc_minimum_msat)));
+		}
+
+		if amount_msat > available_balances.next_outbound_htlc_limit_msat {
+			return Err(ChannelError::Ignore(format!("Cannot send more than our next-HTLC maximum - {} msat",
+				available_balances.next_outbound_htlc_limit_msat)));
 		}
 
 		if (self.channel_state & (ChannelState::PeerDisconnected as u32)) != 0 {
@@ -5950,86 +5956,6 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			// IgnoreError will get ChannelManager to do the right thing and fail backwards now.
 			return Err(ChannelError::Ignore("Cannot send an HTLC while disconnected from channel counterparty".to_owned()));
 		}
-
-		let inbound_stats = self.get_inbound_pending_htlc_stats(None);
-		let outbound_stats = self.get_outbound_pending_htlc_stats(None);
-		if outbound_stats.pending_htlcs + 1 > self.counterparty_max_accepted_htlcs as u32 {
-			debug_assert!(amount_msat > self.get_available_balances().next_outbound_htlc_limit_msat);
-			return Err(ChannelError::Ignore(format!("Cannot push more than their max accepted HTLCs ({})", self.counterparty_max_accepted_htlcs)));
-		}
-		// Check their_max_htlc_value_in_flight_msat
-		if outbound_stats.pending_htlcs_value_msat + amount_msat > self.counterparty_max_htlc_value_in_flight_msat {
-			debug_assert!(amount_msat > self.get_available_balances().next_outbound_htlc_limit_msat);
-			return Err(ChannelError::Ignore(format!("Cannot send value that would put us over the max HTLC value in flight our peer will accept ({})", self.counterparty_max_htlc_value_in_flight_msat)));
-		}
-
-		if !self.is_outbound() {
-			// Check that we won't violate the remote channel reserve by adding this HTLC.
-			let htlc_candidate = HTLCCandidate::new(amount_msat, HTLCInitiator::LocalOffered);
-			let counterparty_commit_tx_fee_msat = self.next_remote_commit_tx_fee_msat(htlc_candidate, None);
-			let holder_selected_chan_reserve_msat = self.holder_selected_channel_reserve_satoshis * 1000;
-			let remote_balance_msat = (self.channel_value_satoshis * 1000 - self.value_to_self_msat).saturating_sub(inbound_stats.pending_htlcs_value_msat);
-			if remote_balance_msat < counterparty_commit_tx_fee_msat + holder_selected_chan_reserve_msat {
-				debug_assert!(amount_msat > self.get_available_balances().next_outbound_htlc_limit_msat);
-				return Err(ChannelError::Ignore("Cannot send value that would put counterparty balance under holder-announced channel reserve value".to_owned()));
-			}
-		}
-
-		let (htlc_success_dust_limit, htlc_timeout_dust_limit) = if self.opt_anchors() {
-			(0, 0)
-		} else {
-			let dust_buffer_feerate = self.get_dust_buffer_feerate(None) as u64;
-			(dust_buffer_feerate * htlc_success_tx_weight(false) / 1000,
-				dust_buffer_feerate * htlc_timeout_tx_weight(false) / 1000)
-		};
-		let exposure_dust_limit_success_sats = htlc_success_dust_limit + self.counterparty_dust_limit_satoshis;
-		if amount_msat / 1000 < exposure_dust_limit_success_sats {
-			let on_counterparty_dust_htlc_exposure_msat = inbound_stats.on_counterparty_tx_dust_exposure_msat + outbound_stats.on_counterparty_tx_dust_exposure_msat + amount_msat;
-			if on_counterparty_dust_htlc_exposure_msat > self.get_max_dust_htlc_exposure_msat() {
-				debug_assert!(amount_msat > self.get_available_balances().next_outbound_htlc_limit_msat ||
-					amount_msat < self.get_available_balances().next_outbound_htlc_minimum_msat);
-				return Err(ChannelError::Ignore(format!("Cannot send value that would put our exposure to dust HTLCs at {} over the limit {} on counterparty commitment tx",
-					on_counterparty_dust_htlc_exposure_msat, self.get_max_dust_htlc_exposure_msat())));
-			}
-		}
-
-		let exposure_dust_limit_timeout_sats = htlc_timeout_dust_limit + self.holder_dust_limit_satoshis;
-		if amount_msat / 1000 <  exposure_dust_limit_timeout_sats {
-			let on_holder_dust_htlc_exposure_msat = inbound_stats.on_holder_tx_dust_exposure_msat + outbound_stats.on_holder_tx_dust_exposure_msat + amount_msat;
-			if on_holder_dust_htlc_exposure_msat > self.get_max_dust_htlc_exposure_msat() {
-				debug_assert!(amount_msat > self.get_available_balances().next_outbound_htlc_limit_msat ||
-					amount_msat < self.get_available_balances().next_outbound_htlc_minimum_msat);
-				return Err(ChannelError::Ignore(format!("Cannot send value that would put our exposure to dust HTLCs at {} over the limit {} on holder commitment tx",
-					on_holder_dust_htlc_exposure_msat, self.get_max_dust_htlc_exposure_msat())));
-			}
-		}
-
-		let holder_balance_msat = self.value_to_self_msat
-			.saturating_sub(outbound_stats.pending_htlcs_value_msat);
-		if holder_balance_msat < amount_msat {
-			debug_assert!(amount_msat > self.get_available_balances().next_outbound_htlc_limit_msat);
-			return Err(ChannelError::Ignore(format!("Cannot send value that would overdraw remaining funds. Amount: {}, pending value to self {}", amount_msat, holder_balance_msat)));
-		}
-
-		// `2 *` and extra HTLC are for the fee spike buffer.
-		let commit_tx_fee_msat = if self.is_outbound() {
-			let htlc_candidate = HTLCCandidate::new(amount_msat, HTLCInitiator::LocalOffered);
-			FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE * self.next_local_commit_tx_fee_msat(htlc_candidate, Some(()))
-		} else { 0 };
-		if holder_balance_msat - amount_msat < commit_tx_fee_msat {
-			debug_assert!(amount_msat > self.get_available_balances().next_outbound_htlc_limit_msat);
-			return Err(ChannelError::Ignore(format!("Cannot send value that would not leave enough to pay for fees. Pending value to self: {}. local_commit_tx_fee {}", holder_balance_msat, commit_tx_fee_msat)));
-		}
-
-		// Check self.counterparty_selected_channel_reserve_satoshis (the amount we must keep as
-		// reserve for the remote to have something to claim if we misbehave)
-		let chan_reserve_msat = self.counterparty_selected_channel_reserve_satoshis.unwrap() * 1000;
-		if holder_balance_msat - amount_msat - commit_tx_fee_msat < chan_reserve_msat {
-			debug_assert!(amount_msat > self.get_available_balances().next_outbound_htlc_limit_msat);
-			return Err(ChannelError::Ignore(format!("Cannot send value that would put our balance under counterparty-announced channel reserve value ({})", chan_reserve_msat)));
-		}
-
-		debug_assert!(amount_msat <= self.get_available_balances().next_outbound_htlc_limit_msat);
 
 		let need_holding_cell = (self.channel_state & (ChannelState::AwaitingRemoteRevoke as u32 | ChannelState::MonitorUpdateInProgress as u32)) != 0;
 		log_debug!(logger, "Pushing new outbound HTLC for {} msat {}", amount_msat,

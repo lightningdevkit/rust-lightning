@@ -2167,12 +2167,11 @@ fn retry_multi_path_single_failed_payment() {
 	assert_eq!(events.len(), 1);
 	match events[0] {
 		Event::PaymentPathFailed { payment_hash: ev_payment_hash, payment_failed_permanently: false,
-			failure: PathFailure::InitialSend { err: APIError::ChannelUnavailable { err: ref err_msg }},
+			failure: PathFailure::InitialSend { err: APIError::ChannelUnavailable { .. }},
 			short_channel_id: Some(expected_scid), .. } =>
 		{
 			assert_eq!(payment_hash, ev_payment_hash);
 			assert_eq!(expected_scid, route.paths[1].hops[0].short_channel_id);
-			assert!(err_msg.contains("max HTLC"));
 		},
 		_ => panic!("Unexpected event"),
 	}
@@ -2242,12 +2241,11 @@ fn immediate_retry_on_failure() {
 	assert_eq!(events.len(), 1);
 	match events[0] {
 		Event::PaymentPathFailed { payment_hash: ev_payment_hash, payment_failed_permanently: false,
-			failure: PathFailure::InitialSend { err: APIError::ChannelUnavailable { err: ref err_msg }},
+			failure: PathFailure::InitialSend { err: APIError::ChannelUnavailable { .. }},
 			short_channel_id: Some(expected_scid), .. } =>
 		{
 			assert_eq!(payment_hash, ev_payment_hash);
 			assert_eq!(expected_scid, route.paths[1].hops[0].short_channel_id);
-			assert!(err_msg.contains("max HTLC"));
 		},
 		_ => panic!("Unexpected event"),
 	}
