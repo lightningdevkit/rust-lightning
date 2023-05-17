@@ -6029,6 +6029,8 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			return Err(ChannelError::Ignore(format!("Cannot send value that would put our balance under counterparty-announced channel reserve value ({})", chan_reserve_msat)));
 		}
 
+		debug_assert!(amount_msat <= self.get_available_balances().next_outbound_htlc_limit_msat);
+
 		let need_holding_cell = (self.channel_state & (ChannelState::AwaitingRemoteRevoke as u32 | ChannelState::MonitorUpdateInProgress as u32)) != 0;
 		log_debug!(logger, "Pushing new outbound HTLC for {} msat {}", amount_msat,
 			if force_holding_cell { "into holding cell" }
