@@ -963,7 +963,7 @@ fn max_htlc_from_capacity(capacity: EffectiveCapacity, max_channel_saturation_po
 		EffectiveCapacity::ExactLiquidity { liquidity_msat } => liquidity_msat,
 		EffectiveCapacity::Infinite => u64::max_value(),
 		EffectiveCapacity::Unknown => EffectiveCapacity::Unknown.as_msat(),
-		EffectiveCapacity::MaximumHTLC { amount_msat } =>
+		EffectiveCapacity::AdvertisedMaxHTLC { amount_msat } =>
 			amount_msat.checked_shr(saturation_shift).unwrap_or(0),
 		EffectiveCapacity::Total { capacity_msat, htlc_maximum_msat } =>
 			cmp::min(capacity_msat.checked_shr(saturation_shift).unwrap_or(0), htlc_maximum_msat),

@@ -2869,7 +2869,7 @@ mod tests {
 		let usage = ChannelUsage {
 			amount_msat: 1,
 			inflight_htlc_msat: 0,
-			effective_capacity: EffectiveCapacity::MaximumHTLC { amount_msat: 0 },
+			effective_capacity: EffectiveCapacity::AdvertisedMaxHTLC { amount_msat: 0 },
 		};
 		assert_eq!(scorer.channel_penalty_msat(42, &target, &source, usage, &params), 2048);
 
