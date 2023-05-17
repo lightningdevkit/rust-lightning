@@ -15,7 +15,7 @@ use crate::chain::{ChannelMonitorUpdateStatus, Confirm, Listen, Watch};
 use crate::chain::channelmonitor::{ANTI_REORG_DELAY, HTLC_FAIL_BACK_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS};
 use crate::sign::EntropySource;
 use crate::chain::transaction::OutPoint;
-use crate::events::{ClosureReason, Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider, PathFailure, PaymentFailureReason};
+use crate::events::{ClosureReason, Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider, PathFailure, PaymentFailureReason, PaymentPurpose};
 use crate::ln::channel::EXPIRE_PREV_CONFIG_TICKS;
 use crate::ln::channelmanager::{BREAKDOWN_TIMEOUT, ChannelManager, MPP_TIMEOUT_TICKS, MIN_CLTV_EXPIRY_DELTA, PaymentId, PaymentSendFailure, IDEMPOTENCY_TIMEOUT_TICKS, RecentPaymentDetails, RecipientOnionFields, HTLCForwardInfo, PendingHTLCRouting, PendingAddHTLCInfo};
 use crate::ln::features::Bolt11InvoiceFeatures;
@@ -3383,6 +3383,170 @@ fn do_claim_from_closed_chan(fail_payment: bool) {
 fn claim_from_closed_chan() {
 	do_claim_from_closed_chan(true);
 	do_claim_from_closed_chan(false);
+}
+
+#[test]
+fn test_custom_tlvs() {
+	do_test_custom_tlvs(true);
+	do_test_custom_tlvs(false);
+}
+
+fn do_test_custom_tlvs(spontaneous: bool) {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None; 2]);
+	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	create_announced_chan_between_nodes(&nodes, 0, 1);
+
+	let amt_msat = 100_000;
+	let (mut route, our_payment_hash, our_payment_preimage, our_payment_secret) = get_route_and_payment_hash!(&nodes[0], &nodes[1], amt_msat);
+	let payment_id = PaymentId(our_payment_hash.0);
+	let custom_tlvs = vec![
+		(5482373483, vec![1, 2, 3, 4]),
+		(5482373487, vec![0x42u8; 16]),
+	];
+	let onion_fields = RecipientOnionFields {
+		payment_secret: if spontaneous { None } else { Some(our_payment_secret) },
+		payment_metadata: None,
+		custom_tlvs: custom_tlvs.clone()
+	};
+	if spontaneous {
+		nodes[0].node.send_spontaneous_payment(&route, Some(our_payment_preimage), onion_fields, payment_id).unwrap();
+	} else {
+		nodes[0].node.send_payment_with_route(&route, our_payment_hash, onion_fields, payment_id).unwrap();
+	}
+	check_added_monitors(&nodes[0], 1);
+
+	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
+	let ev = remove_first_msg_event_to_node(&nodes[1].node.get_our_node_id(), &mut events);
+	let mut payment_event = SendEvent::from_event(ev);
+
+	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &payment_event.msgs[0]);
+	check_added_monitors!(&nodes[1], 0);
+	commitment_signed_dance!(nodes[1], nodes[0], payment_event.commitment_msg, false);
+	expect_pending_htlcs_forwardable!(nodes[1]);
+
+	let events = nodes[1].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1);
+	match events[0] {
+		Event::PaymentClaimable { ref purpose, amount_msat, ref onion_fields, .. } => {
+			match &purpose {
+				PaymentPurpose::InvoicePayment { payment_secret, .. } => {
+					assert_eq!(our_payment_secret, *payment_secret);
+					assert_eq!(Some(*payment_secret), onion_fields.as_ref().unwrap().payment_secret);
+				},
+				PaymentPurpose::SpontaneousPayment(payment_preimage) => {
+					assert_eq!(our_payment_preimage, *payment_preimage);
+				},
+			}
+			assert_eq!(amount_msat, amt_msat);
+			assert_eq!(onion_fields.clone().unwrap().custom_tlvs().clone(), custom_tlvs);
+		},
+		_ => panic!("Unexpected event"),
+	}
+
+	claim_payment(&nodes[0], &[&nodes[1]], our_payment_preimage);
+}
+
+#[test]
+fn test_retry_custom_tlvs() {
+	// Test that custom TLVs are successfully sent on retries
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
+	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+
+	create_announced_chan_between_nodes(&nodes, 0, 1);
+	let (chan_2_update, _, chan_2_id, _) = create_announced_chan_between_nodes(&nodes, 2, 1);
+
+	// Rebalance
+	send_payment(&nodes[2], &vec!(&nodes[1])[..], 1_500_000);
+
+	let amt_msat = 1_000_000;
+	let (route, payment_hash, payment_preimage, payment_secret) =
+		get_route_and_payment_hash!(nodes[0], nodes[2], amt_msat);
+
+	// Initiate the payment
+	let payment_id = PaymentId(payment_hash.0);
+	let mut route_params = RouteParameters {
+		payment_params: route.payment_params.clone().unwrap(),
+		final_value_msat: amt_msat,
+	};
+
+	let custom_tlvs = vec![((1 << 16) + 1, vec![0x42u8; 16])];
+	let onion_fields = RecipientOnionFields::secret_only(payment_secret);
+	let onion_fields = onion_fields.with_custom_tlvs(custom_tlvs.clone()).unwrap();
+
+	nodes[0].router.expect_find_route(route_params.clone(), Ok(route.clone()));
+	nodes[0].node.send_payment(payment_hash, onion_fields,
+		payment_id, route_params.clone(), Retry::Attempts(1)).unwrap();
+	check_added_monitors!(nodes[0], 1); // one monitor per path
+	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 1);
+
+	// Add the HTLC along the first hop.
+	let fail_path_msgs_1 = remove_first_msg_event_to_node(&nodes[1].node.get_our_node_id(), &mut events);
+	let (update_add, commitment_signed) = match fail_path_msgs_1 {
+		MessageSendEvent::UpdateHTLCs { node_id: _, updates: msgs::CommitmentUpdate {
+			ref update_add_htlcs, ref update_fulfill_htlcs, ref update_fail_htlcs,
+			ref update_fail_malformed_htlcs, ref update_fee, ref commitment_signed }
+		} => {
+			assert_eq!(update_add_htlcs.len(), 1);
+			assert!(update_fail_htlcs.is_empty());
+			assert!(update_fulfill_htlcs.is_empty());
+			assert!(update_fail_malformed_htlcs.is_empty());
+			assert!(update_fee.is_none());
+			(update_add_htlcs[0].clone(), commitment_signed.clone())
+		},
+		_ => panic!("Unexpected event"),
+	};
+	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &update_add);
+	commitment_signed_dance!(nodes[1], nodes[0], commitment_signed, false);
+
+	// Attempt to forward the payment and complete the path's failure.
+	expect_pending_htlcs_forwardable!(&nodes[1]);
+	expect_pending_htlcs_forwardable_and_htlc_handling_failed!(&nodes[1],
+		vec![HTLCDestination::NextHopChannel {
+			node_id: Some(nodes[2].node.get_our_node_id()),
+			channel_id: chan_2_id
+		}]);
+	let htlc_updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+	assert!(htlc_updates.update_add_htlcs.is_empty());
+	assert_eq!(htlc_updates.update_fail_htlcs.len(), 1);
+	assert!(htlc_updates.update_fulfill_htlcs.is_empty());
+	assert!(htlc_updates.update_fail_malformed_htlcs.is_empty());
+	check_added_monitors!(nodes[1], 1);
+	nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(),
+		&htlc_updates.update_fail_htlcs[0]);
+	commitment_signed_dance!(nodes[0], nodes[1], htlc_updates.commitment_signed, false);
+	let mut events = nodes[0].node.get_and_clear_pending_events();
+	match events[1] {
+		Event::PendingHTLCsForwardable { .. } => {},
+		_ => panic!("Unexpected event")
+	}
+	events.remove(1);
+	expect_payment_failed_conditions_event(events, payment_hash, false,
+		PaymentFailedConditions::new().mpp_parts_remain());
+
+	// Rebalance the channel so the retry of the payment can succeed.
+	send_payment(&nodes[2], &vec!(&nodes[1])[..], 1_500_000);
+
+	// Retry the payment and make sure it succeeds
+	route_params.payment_params.previously_failed_channels.push(chan_2_update.contents.short_channel_id);
+	nodes[0].router.expect_find_route(route_params, Ok(route));
+	nodes[0].node.process_pending_htlc_forwards();
+	check_added_monitors!(nodes[0], 1);
+	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 1);
+	let payment_claimable = pass_along_path(&nodes[0], &[&nodes[1], &nodes[2]], 1_000_000,
+		payment_hash, Some(payment_secret), events.pop().unwrap(), true, None).unwrap();
+	let onion_fields = match payment_claimable {
+		Event::PaymentClaimable { onion_fields, .. } => onion_fields,
+		_ => panic!("Unexpected event"),
+	};
+	assert_eq!(onion_fields.unwrap().custom_tlvs(), &custom_tlvs);
+	claim_payment_along_route(&nodes[0], &[&[&nodes[1], &nodes[2]]], false, payment_preimage);
 }
 
 fn do_test_payment_metadata_consistency(do_reload: bool, do_modify: bool) {

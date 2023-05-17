@@ -110,6 +110,8 @@ pub(super) enum PendingHTLCRouting {
 		payment_metadata: Option<Vec<u8>>,
 		incoming_cltv_expiry: u32, // Used to track when we should expire pending HTLCs that go unclaimed
 		phantom_shared_secret: Option<[u8; 32]>,
+		/// See [`RecipientOnionFields::custom_tlvs`] for more info.
+		custom_tlvs: Vec<(u64, Vec<u8>)>,
 	},
 	ReceiveKeysend {
 		/// This was added in 0.0.116 and will break deserialization on downgrades.
@@ -117,6 +119,8 @@ pub(super) enum PendingHTLCRouting {
 		payment_preimage: PaymentPreimage,
 		payment_metadata: Option<Vec<u8>>,
 		incoming_cltv_expiry: u32, // Used to track when we should expire pending HTLCs that go unclaimed
+		/// See [`RecipientOnionFields::custom_tlvs`] for more info.
+		custom_tlvs: Vec<(u64, Vec<u8>)>,
 	},
 }
 
@@ -2748,6 +2752,7 @@ where
 				payment_preimage,
 				payment_metadata,
 				incoming_cltv_expiry: outgoing_cltv_value,
+				custom_tlvs,
 			}
 		} else if let Some(data) = payment_data {
 			PendingHTLCRouting::Receive {
@@ -2755,6 +2760,7 @@ where
 				payment_metadata,
 				incoming_cltv_expiry: outgoing_cltv_value,
 				phantom_shared_secret,
+				custom_tlvs,
 			}
 		} else {
 			return Err(InboundOnionErr {
@@ -3941,18 +3947,18 @@ where
 								}
 							}) => {
 								let (cltv_expiry, onion_payload, payment_data, phantom_shared_secret, mut onion_fields) = match routing {
-									PendingHTLCRouting::Receive { payment_data, payment_metadata, incoming_cltv_expiry, phantom_shared_secret } => {
+									PendingHTLCRouting::Receive { payment_data, payment_metadata, incoming_cltv_expiry, phantom_shared_secret, custom_tlvs } => {
 										let _legacy_hop_data = Some(payment_data.clone());
 										let onion_fields = RecipientOnionFields { payment_secret: Some(payment_data.payment_secret),
-												payment_metadata, custom_tlvs: vec![] };
+												payment_metadata, custom_tlvs };
 										(incoming_cltv_expiry, OnionPayload::Invoice { _legacy_hop_data },
 											Some(payment_data), phantom_shared_secret, onion_fields)
 									},
-									PendingHTLCRouting::ReceiveKeysend { payment_data, payment_preimage, payment_metadata, incoming_cltv_expiry } => {
+									PendingHTLCRouting::ReceiveKeysend { payment_data, payment_preimage, payment_metadata, incoming_cltv_expiry, custom_tlvs } => {
 										let onion_fields = RecipientOnionFields {
 											payment_secret: payment_data.as_ref().map(|data| data.payment_secret),
 											payment_metadata,
-											custom_tlvs: vec![],
+											custom_tlvs,
 										};
 										(incoming_cltv_expiry, OnionPayload::Spontaneous(payment_preimage),
 											payment_data, None, onion_fields)
@@ -7639,12 +7645,14 @@ impl_writeable_tlv_based_enum!(PendingHTLCRouting,
 		(1, phantom_shared_secret, option),
 		(2, incoming_cltv_expiry, required),
 		(3, payment_metadata, option),
+		(5, custom_tlvs, optional_vec),
 	},
 	(2, ReceiveKeysend) => {
 		(0, payment_preimage, required),
 		(2, incoming_cltv_expiry, required),
 		(3, payment_metadata, option),
 		(4, payment_data, option), // Added in 0.0.116
+		(5, custom_tlvs, optional_vec),
 	},
 ;);
 
