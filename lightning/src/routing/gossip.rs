@@ -1033,6 +1033,11 @@ pub enum EffectiveCapacity {
 	/// A capacity sufficient to route any payment, typically used for private channels provided by
 	/// an invoice.
 	Infinite,
+	/// The maximum HTLC amount as provided by an invoice route hint.
+	HintMaxHTLC {
+		/// The maximum HTLC amount denominated in millisatoshi.
+		amount_msat: u64,
+	},
 	/// A capacity that is unknown possibly because either the chain state is unavailable to know
 	/// the total capacity or the `htlc_maximum_msat` was not advertised on the gossip network.
 	Unknown,
@@ -1049,6 +1054,7 @@ impl EffectiveCapacity {
 			EffectiveCapacity::ExactLiquidity { liquidity_msat } => *liquidity_msat,
 			EffectiveCapacity::AdvertisedMaxHTLC { amount_msat } => *amount_msat,
 			EffectiveCapacity::Total { capacity_msat, .. } => *capacity_msat,
+			EffectiveCapacity::HintMaxHTLC { amount_msat } => *amount_msat,
 			EffectiveCapacity::Infinite => u64::max_value(),
 			EffectiveCapacity::Unknown => UNKNOWN_CHANNEL_CAPACITY_MSAT,
 		}

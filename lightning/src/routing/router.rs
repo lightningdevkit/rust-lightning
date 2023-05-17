@@ -951,7 +951,10 @@ impl<'a> CandidateRouteHop<'a> {
 				liquidity_msat: details.next_outbound_htlc_limit_msat,
 			},
 			CandidateRouteHop::PublicHop { info, .. } => info.effective_capacity(),
-			CandidateRouteHop::PrivateHop { .. } => EffectiveCapacity::Infinite,
+			CandidateRouteHop::PrivateHop { hint: RouteHintHop { htlc_maximum_msat: Some(max), .. }} =>
+				EffectiveCapacity::HintMaxHTLC { amount_msat: *max },
+			CandidateRouteHop::PrivateHop { hint: RouteHintHop { htlc_maximum_msat: None, .. }} =>
+				EffectiveCapacity::Infinite,
 		}
 	}
 }
@@ -965,6 +968,9 @@ fn max_htlc_from_capacity(capacity: EffectiveCapacity, max_channel_saturation_po
 		EffectiveCapacity::Unknown => EffectiveCapacity::Unknown.as_msat(),
 		EffectiveCapacity::AdvertisedMaxHTLC { amount_msat } =>
 			amount_msat.checked_shr(saturation_shift).unwrap_or(0),
+		// Treat htlc_maximum_msat from a route hint as an exact liquidity amount, since the invoice is
+		// expected to have been generated from up-to-date capacity information.
+		EffectiveCapacity::HintMaxHTLC { amount_msat } => amount_msat,
 		EffectiveCapacity::Total { capacity_msat, htlc_maximum_msat } =>
 			cmp::min(capacity_msat.checked_shr(saturation_shift).unwrap_or(0), htlc_maximum_msat),
 	}
@@ -1470,8 +1476,9 @@ where L::Target: Logger {
 		( $candidate: expr, $src_node_id: expr, $dest_node_id: expr, $next_hops_fee_msat: expr,
 			$next_hops_value_contribution: expr, $next_hops_path_htlc_minimum_msat: expr,
 			$next_hops_path_penalty_msat: expr, $next_hops_cltv_delta: expr, $next_hops_path_length: expr ) => { {
-			// We "return" whether we updated the path at the end, via this:
-			let mut did_add_update_path_to_src_node = false;
+			// We "return" whether we updated the path at the end, and how much we can route via
+			// this channel, via this:
+			let mut did_add_update_path_to_src_node = None;
 			// Channels to self should not be used. This is more of belt-and-suspenders, because in
 			// practice these cases should be caught earlier:
 			// - for regular channels at channel announcement (TODO)
@@ -1652,7 +1659,7 @@ where L::Target: Logger {
 								{
 									old_entry.value_contribution_msat = value_contribution_msat;
 								}
-								did_add_update_path_to_src_node = true;
+								did_add_update_path_to_src_node = Some(value_contribution_msat);
 							} else if old_entry.was_processed && new_cost < old_cost {
 								#[cfg(all(not(feature = "_bench_unstable"), any(test, fuzzing)))]
 								{
@@ -1773,7 +1780,7 @@ where L::Target: Logger {
 			for details in first_channels {
 				let candidate = CandidateRouteHop::FirstHop { details };
 				let added = add_entry!(candidate, our_node_id, payee, 0, path_value_msat,
-									0, 0u64, 0, 0);
+									0, 0u64, 0, 0).is_some();
 				log_trace!(logger, "{} direct route to payee via SCID {}",
 						if added { "Added" } else { "Skipped" }, candidate.short_channel_id());
 			}
@@ -1820,6 +1827,7 @@ where L::Target: Logger {
 				let mut aggregate_next_hops_path_penalty_msat: u64 = 0;
 				let mut aggregate_next_hops_cltv_delta: u32 = 0;
 				let mut aggregate_next_hops_path_length: u8 = 0;
+				let mut aggregate_path_contribution_msat = path_value_msat;
 
 				for (idx, (hop, prev_hop_id)) in hop_iter.zip(prev_hop_iter).enumerate() {
 					let source = NodeId::from_pubkey(&hop.src_node_id);
@@ -1833,10 +1841,13 @@ where L::Target: Logger {
 						})
 						.unwrap_or_else(|| CandidateRouteHop::PrivateHop { hint: hop });
 
-					if !add_entry!(candidate, source, target, aggregate_next_hops_fee_msat,
-								path_value_msat, aggregate_next_hops_path_htlc_minimum_msat,
-								aggregate_next_hops_path_penalty_msat,
-								aggregate_next_hops_cltv_delta, aggregate_next_hops_path_length) {
+					if let Some(hop_used_msat) = add_entry!(candidate, source, target,
+						aggregate_next_hops_fee_msat, aggregate_path_contribution_msat,
+						aggregate_next_hops_path_htlc_minimum_msat, aggregate_next_hops_path_penalty_msat,
+						aggregate_next_hops_cltv_delta, aggregate_next_hops_path_length)
+					{
+						aggregate_path_contribution_msat = hop_used_msat;
+					} else {
 						// If this hop was not used then there is no use checking the preceding
 						// hops in the RouteHint. We can break by just searching for a direct
 						// channel between last checked hop and first_hop_targets.
@@ -1865,12 +1876,11 @@ where L::Target: Logger {
 					// Searching for a direct channel between last checked hop and first_hop_targets
 					if let Some(first_channels) = first_hop_targets.get(&NodeId::from_pubkey(&prev_hop_id)) {
 						for details in first_channels {
-							let candidate = CandidateRouteHop::FirstHop { details };
-							add_entry!(candidate, our_node_id, NodeId::from_pubkey(&prev_hop_id),
-								aggregate_next_hops_fee_msat, path_value_msat,
-								aggregate_next_hops_path_htlc_minimum_msat,
-								aggregate_next_hops_path_penalty_msat, aggregate_next_hops_cltv_delta,
-								aggregate_next_hops_path_length);
+							let first_hop_candidate = CandidateRouteHop::FirstHop { details };
+							add_entry!(first_hop_candidate, our_node_id, NodeId::from_pubkey(&prev_hop_id),
+								aggregate_next_hops_fee_msat, aggregate_path_contribution_msat,
+								aggregate_next_hops_path_htlc_minimum_msat, aggregate_next_hops_path_penalty_msat,
+								aggregate_next_hops_cltv_delta, aggregate_next_hops_path_length);
 						}
 					}
 
@@ -1905,10 +1915,11 @@ where L::Target: Logger {
 						// path.
 						if let Some(first_channels) = first_hop_targets.get(&NodeId::from_pubkey(&hop.src_node_id)) {
 							for details in first_channels {
-								let candidate = CandidateRouteHop::FirstHop { details };
-								add_entry!(candidate, our_node_id,
+								let first_hop_candidate = CandidateRouteHop::FirstHop { details };
+								add_entry!(first_hop_candidate, our_node_id,
 									NodeId::from_pubkey(&hop.src_node_id),
-									aggregate_next_hops_fee_msat, path_value_msat,
+									aggregate_next_hops_fee_msat,
+									aggregate_path_contribution_msat,
 									aggregate_next_hops_path_htlc_minimum_msat,
 									aggregate_next_hops_path_penalty_msat,
 									aggregate_next_hops_cltv_delta,
@@ -5904,6 +5915,130 @@ mod tests {
 		scorer_params.remove_banned(&NodeId::from_pubkey(&nodes[3]));
 		let route = get_route(&our_id, &payment_params, &network_graph.read_only(), None, 100, Arc::clone(&logger), &scorer, &scorer_params,&random_seed_bytes);
 		assert!(route.is_ok());
+	}
+
+	#[test]
+	fn abide_by_route_hint_max_htlc() {
+		// Check that we abide by any htlc_maximum_msat provided in the route hints of the payment
+		// params in the final route.
+		let (secp_ctx, network_graph, _, _, logger) = build_graph();
+		let netgraph = network_graph.read_only();
+		let (_, our_id, _, nodes) = get_nodes(&secp_ctx);
+		let scorer = ln_test_utils::TestScorer::new();
+		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
+		let random_seed_bytes = keys_manager.get_secure_random_bytes();
+		let config = UserConfig::default();
+
+		let max_htlc_msat = 50_000;
+		let route_hint_1 = RouteHint(vec![RouteHintHop {
+			src_node_id: nodes[2],
+			short_channel_id: 42,
+			fees: RoutingFees {
+				base_msat: 100,
+				proportional_millionths: 0,
+			},
+			cltv_expiry_delta: 10,
+			htlc_minimum_msat: None,
+			htlc_maximum_msat: Some(max_htlc_msat),
+		}]);
+		let dest_node_id = ln_test_utils::pubkey(42);
+		let payment_params = PaymentParameters::from_node_id(dest_node_id, 42)
+			.with_route_hints(vec![route_hint_1.clone()]).unwrap()
+			.with_bolt11_features(channelmanager::provided_invoice_features(&config)).unwrap();
+
+		// Make sure we'll error if our route hints don't have enough liquidity according to their
+		// htlc_maximum_msat.
+		if let Err(LightningError{err, action: ErrorAction::IgnoreError}) = get_route(&our_id,
+			&payment_params, &netgraph, None, max_htlc_msat + 1, Arc::clone(&logger), &scorer, &(),
+			&random_seed_bytes)
+		{
+			assert_eq!(err, "Failed to find a sufficient route to the given destination");
+		} else { panic!(); }
+
+		// Make sure we'll split an MPP payment across route hints if their htlc_maximum_msat warrants.
+		let mut route_hint_2 = route_hint_1.clone();
+		route_hint_2.0[0].short_channel_id = 43;
+		let payment_params = PaymentParameters::from_node_id(dest_node_id, 42)
+			.with_route_hints(vec![route_hint_1, route_hint_2]).unwrap()
+			.with_bolt11_features(channelmanager::provided_invoice_features(&config)).unwrap();
+		let route = get_route(&our_id, &payment_params, &netgraph, None, max_htlc_msat + 1,
+			Arc::clone(&logger), &scorer, &(), &random_seed_bytes).unwrap();
+		assert_eq!(route.paths.len(), 2);
+		assert!(route.paths[0].hops.last().unwrap().fee_msat <= max_htlc_msat);
+		assert!(route.paths[1].hops.last().unwrap().fee_msat <= max_htlc_msat);
+	}
+
+	#[test]
+	fn direct_channel_to_hints_with_max_htlc() {
+		// Check that if we have a first hop channel peer that's connected to multiple provided route
+		// hints, that we properly split the payment between the route hints if needed.
+		let logger = Arc::new(ln_test_utils::TestLogger::new());
+		let network_graph = Arc::new(NetworkGraph::new(Network::Testnet, Arc::clone(&logger)));
+		let scorer = ln_test_utils::TestScorer::new();
+		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
+		let random_seed_bytes = keys_manager.get_secure_random_bytes();
+		let config = UserConfig::default();
+
+		let our_node_id = ln_test_utils::pubkey(42);
+		let intermed_node_id = ln_test_utils::pubkey(43);
+		let first_hop = vec![get_channel_details(Some(42), intermed_node_id, InitFeatures::from_le_bytes(vec![0b11]), 10_000_000)];
+
+		let amt_msat = 900_000;
+		let max_htlc_msat = 500_000;
+		let route_hint_1 = RouteHint(vec![RouteHintHop {
+			src_node_id: intermed_node_id,
+			short_channel_id: 44,
+			fees: RoutingFees {
+				base_msat: 100,
+				proportional_millionths: 0,
+			},
+			cltv_expiry_delta: 10,
+			htlc_minimum_msat: None,
+			htlc_maximum_msat: Some(max_htlc_msat),
+		}, RouteHintHop {
+			src_node_id: intermed_node_id,
+			short_channel_id: 45,
+			fees: RoutingFees {
+				base_msat: 100,
+				proportional_millionths: 0,
+			},
+			cltv_expiry_delta: 10,
+			htlc_minimum_msat: None,
+			// Check that later route hint max htlcs don't override earlier ones
+			htlc_maximum_msat: Some(max_htlc_msat - 50),
+		}]);
+		let mut route_hint_2 = route_hint_1.clone();
+		route_hint_2.0[0].short_channel_id = 46;
+		route_hint_2.0[1].short_channel_id = 47;
+		let dest_node_id = ln_test_utils::pubkey(44);
+		let payment_params = PaymentParameters::from_node_id(dest_node_id, 42)
+			.with_route_hints(vec![route_hint_1, route_hint_2]).unwrap()
+			.with_bolt11_features(channelmanager::provided_invoice_features(&config)).unwrap();
+
+		let route = get_route(&our_node_id, &payment_params, &network_graph.read_only(),
+			Some(&first_hop.iter().collect::<Vec<_>>()), amt_msat, Arc::clone(&logger), &scorer, &(),
+			&random_seed_bytes).unwrap();
+		assert_eq!(route.paths.len(), 2);
+		assert!(route.paths[0].hops.last().unwrap().fee_msat <= max_htlc_msat);
+		assert!(route.paths[1].hops.last().unwrap().fee_msat <= max_htlc_msat);
+		assert_eq!(route.get_total_amount(), amt_msat);
+
+		// Re-run but with two first hop channels connected to the same route hint peers that must be
+		// split between.
+		let first_hops = vec![
+			get_channel_details(Some(42), intermed_node_id, InitFeatures::from_le_bytes(vec![0b11]), amt_msat - 10),
+			get_channel_details(Some(43), intermed_node_id, InitFeatures::from_le_bytes(vec![0b11]), amt_msat - 10),
+		];
+		let route = get_route(&our_node_id, &payment_params, &network_graph.read_only(),
+			Some(&first_hops.iter().collect::<Vec<_>>()), amt_msat, Arc::clone(&logger), &scorer, &(),
+			&random_seed_bytes).unwrap();
+		// TODO: `get_route` returns a suboptimal route here because first hop channels are not
+		// resorted on the fly when processing route hints.
+		assert_eq!(route.paths.len(), 3);
+		assert!(route.paths[0].hops.last().unwrap().fee_msat <= max_htlc_msat);
+		assert!(route.paths[1].hops.last().unwrap().fee_msat <= max_htlc_msat);
+		assert!(route.paths[2].hops.last().unwrap().fee_msat <= max_htlc_msat);
+		assert_eq!(route.get_total_amount(), amt_msat);
 	}
 
 	#[test]

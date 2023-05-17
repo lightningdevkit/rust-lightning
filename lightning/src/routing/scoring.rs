@@ -1243,8 +1243,10 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, T: Time> Score for Probabilis
 
 		let mut anti_probing_penalty_msat = 0;
 		match usage.effective_capacity {
-			EffectiveCapacity::ExactLiquidity { liquidity_msat } => {
-				if usage.amount_msat > liquidity_msat {
+			EffectiveCapacity::ExactLiquidity { liquidity_msat: amount_msat } |
+				EffectiveCapacity::HintMaxHTLC { amount_msat } =>
+			{
+				if usage.amount_msat > amount_msat {
 					return u64::max_value();
 				} else {
 					return base_penalty_msat;
