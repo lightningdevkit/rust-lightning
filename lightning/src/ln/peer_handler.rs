@@ -64,6 +64,20 @@ pub trait CustomMessageHandler: wire::CustomMessageReader {
 	/// in the process. Each message is paired with the node id of the intended recipient. If no
 	/// connection to the node exists, then the message is simply not sent.
 	fn get_and_clear_pending_msg(&self) -> Vec<(PublicKey, Self::CustomMessage)>;
+
+	/// Gets the node feature flags which this handler itself supports. All available handlers are
+	/// queried similarly and their feature flags are OR'd together to form the [`NodeFeatures`]
+	/// which are broadcasted in our [`NodeAnnouncement`] message.
+	///
+	/// [`NodeAnnouncement`]: crate::ln::msgs::NodeAnnouncement
+	fn provided_node_features(&self) -> NodeFeatures;
+
+	/// Gets the init feature flags which should be sent to the given peer. All available handlers
+	/// are queried similarly and their feature flags are OR'd together to form the [`InitFeatures`]
+	/// which are sent in our [`Init`] message.
+	///
+	/// [`Init`]: crate::ln::msgs::Init
+	fn provided_init_features(&self, their_node_id: &PublicKey) -> InitFeatures;
 }
 
 /// A dummy struct which implements `RoutingMessageHandler` without storing any routing information
@@ -149,6 +163,12 @@ impl CustomMessageHandler for IgnoringMessageHandler {
 	}
 
 	fn get_and_clear_pending_msg(&self) -> Vec<(PublicKey, Self::CustomMessage)> { Vec::new() }
+
+	fn provided_node_features(&self) -> NodeFeatures { NodeFeatures::empty() }
+
+	fn provided_init_features(&self, _their_node_id: &PublicKey) -> InitFeatures {
+		InitFeatures::empty()
+	}
 }
 
 /// A dummy struct which implements `ChannelMessageHandler` without having any channels.
@@ -895,6 +915,13 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 		SecretKey::from_slice(&Sha256::from_engine(ephemeral_hash).into_inner()).expect("You broke SHA-256!")
 	}
 
+	fn init_features(&self, their_node_id: &PublicKey) -> InitFeatures {
+		self.message_handler.chan_handler.provided_init_features(their_node_id)
+			| self.message_handler.route_handler.provided_init_features(their_node_id)
+			| self.message_handler.onion_message_handler.provided_init_features(their_node_id)
+			| self.message_handler.custom_message_handler.provided_init_features(their_node_id)
+	}
+
 	/// Indicates a new outbound connection has been established to a node with the given `node_id`
 	/// and an optional remote network address.
 	///
@@ -1290,9 +1317,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 
 								peer.set_their_node_id(their_node_id);
 								insert_node_id!();
-								let features = self.message_handler.chan_handler.provided_init_features(&their_node_id)
-									.or(self.message_handler.route_handler.provided_init_features(&their_node_id))
-									.or(self.message_handler.onion_message_handler.provided_init_features(&their_node_id));
+								let features = self.init_features(&their_node_id);
 								let resp = msgs::Init { features, remote_network_address: filter_addresses(peer.their_net_address.clone()) };
 								self.enqueue_message(peer, &resp);
 								peer.awaiting_pong_timer_tick_intervals = 0;
@@ -1304,9 +1329,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 								peer.pending_read_is_header = true;
 								peer.set_their_node_id(their_node_id);
 								insert_node_id!();
-								let features = self.message_handler.chan_handler.provided_init_features(&their_node_id)
-									.or(self.message_handler.route_handler.provided_init_features(&their_node_id))
-									.or(self.message_handler.onion_message_handler.provided_init_features(&their_node_id));
+								let features = self.init_features(&their_node_id);
 								let resp = msgs::Init { features, remote_network_address: filter_addresses(peer.their_net_address.clone()) };
 								self.enqueue_message(peer, &resp);
 								peer.awaiting_pong_timer_tick_intervals = 0;
@@ -1423,10 +1446,17 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 
 		// Need an Init as first message
 		if let wire::Message::Init(msg) = message {
-			if msg.features.requires_unknown_bits() {
-				log_debug!(self.logger, "Peer features required unknown version bits");
+			let our_features = self.init_features(&their_node_id);
+			if msg.features.requires_unknown_bits_from(&our_features) {
+				log_debug!(self.logger, "Peer requires features unknown to us");
 				return Err(PeerHandleError { }.into());
 			}
+
+			if our_features.requires_unknown_bits_from(&msg.features) {
+				log_debug!(self.logger, "We require features unknown to our peer");
+				return Err(PeerHandleError { }.into());
+			}
+
 			if peer_lock.their_features.is_some() {
 				return Err(PeerHandleError { }.into());
 			}
@@ -2348,8 +2378,9 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 		addresses.sort_by_key(|addr| addr.get_id());
 
 		let features = self.message_handler.chan_handler.provided_node_features()
-			.or(self.message_handler.route_handler.provided_node_features())
-			.or(self.message_handler.onion_message_handler.provided_node_features());
+			| self.message_handler.route_handler.provided_node_features()
+			| self.message_handler.onion_message_handler.provided_node_features()
+			| self.message_handler.custom_message_handler.provided_node_features();
 		let announcement = msgs::UnsignedNodeAnnouncement {
 			features,
 			timestamp: self.last_node_announcement_serial.fetch_add(1, Ordering::AcqRel),
@@ -2398,16 +2429,19 @@ fn is_gossip_msg(type_id: u16) -> bool {
 mod tests {
 	use crate::sign::{NodeSigner, Recipient};
 	use crate::events;
+	use crate::io;
+	use crate::ln::features::{InitFeatures, NodeFeatures};
 	use crate::ln::peer_channel_encryptor::PeerChannelEncryptor;
-	use crate::ln::peer_handler::{PeerManager, MessageHandler, SocketDescriptor, IgnoringMessageHandler, filter_addresses};
+	use crate::ln::peer_handler::{CustomMessageHandler, PeerManager, MessageHandler, SocketDescriptor, IgnoringMessageHandler, filter_addresses};
 	use crate::ln::{msgs, wire};
-	use crate::ln::msgs::NetAddress;
+	use crate::ln::msgs::{LightningError, NetAddress};
 	use crate::util::test_utils;
 
-	use bitcoin::secp256k1::SecretKey;
+	use bitcoin::secp256k1::{PublicKey, SecretKey};
 
 	use crate::prelude::*;
 	use crate::sync::{Arc, Mutex};
+	use core::convert::Infallible;
 	use core::sync::atomic::{AtomicBool, Ordering};
 
 	#[derive(Clone)]
@@ -2440,19 +2474,51 @@ mod tests {
 	struct PeerManagerCfg {
 		chan_handler: test_utils::TestChannelMessageHandler,
 		routing_handler: test_utils::TestRoutingMessageHandler,
+		custom_handler: TestCustomMessageHandler,
 		logger: test_utils::TestLogger,
 		node_signer: test_utils::TestNodeSigner,
+	}
+
+	struct TestCustomMessageHandler {
+		features: InitFeatures,
+	}
+
+	impl wire::CustomMessageReader for TestCustomMessageHandler {
+		type CustomMessage = Infallible;
+		fn read<R: io::Read>(&self, _: u16, _: &mut R) -> Result<Option<Self::CustomMessage>, msgs::DecodeError> {
+			Ok(None)
+		}
+	}
+
+	impl CustomMessageHandler for TestCustomMessageHandler {
+		fn handle_custom_message(&self, _: Infallible, _: &PublicKey) -> Result<(), LightningError> {
+			unreachable!();
+		}
+
+		fn get_and_clear_pending_msg(&self) -> Vec<(PublicKey, Self::CustomMessage)> { Vec::new() }
+
+		fn provided_node_features(&self) -> NodeFeatures { NodeFeatures::empty() }
+
+		fn provided_init_features(&self, _: &PublicKey) -> InitFeatures {
+			self.features.clone()
+		}
 	}
 
 	fn create_peermgr_cfgs(peer_count: usize) -> Vec<PeerManagerCfg> {
 		let mut cfgs = Vec::new();
 		for i in 0..peer_count {
 			let node_secret = SecretKey::from_slice(&[42 + i as u8; 32]).unwrap();
+			let features = {
+				let mut feature_bits = vec![0u8; 33];
+				feature_bits[32] = 0b00000001;
+				InitFeatures::from_le_bytes(feature_bits)
+			};
 			cfgs.push(
 				PeerManagerCfg{
 					chan_handler: test_utils::TestChannelMessageHandler::new(),
 					logger: test_utils::TestLogger::new(),
 					routing_handler: test_utils::TestRoutingMessageHandler::new(),
+					custom_handler: TestCustomMessageHandler { features },
 					node_signer: test_utils::TestNodeSigner::new(node_secret),
 				}
 			);
@@ -2461,13 +2527,36 @@ mod tests {
 		cfgs
 	}
 
-	fn create_network<'a>(peer_count: usize, cfgs: &'a Vec<PeerManagerCfg>) -> Vec<PeerManager<FileDescriptor, &'a test_utils::TestChannelMessageHandler, &'a test_utils::TestRoutingMessageHandler, IgnoringMessageHandler, &'a test_utils::TestLogger, IgnoringMessageHandler, &'a test_utils::TestNodeSigner>> {
+	fn create_incompatible_peermgr_cfgs(peer_count: usize) -> Vec<PeerManagerCfg> {
+		let mut cfgs = Vec::new();
+		for i in 0..peer_count {
+			let node_secret = SecretKey::from_slice(&[42 + i as u8; 32]).unwrap();
+			let features = {
+				let mut feature_bits = vec![0u8; 33 + i + 1];
+				feature_bits[33 + i] = 0b00000001;
+				InitFeatures::from_le_bytes(feature_bits)
+			};
+			cfgs.push(
+				PeerManagerCfg{
+					chan_handler: test_utils::TestChannelMessageHandler::new(),
+					logger: test_utils::TestLogger::new(),
+					routing_handler: test_utils::TestRoutingMessageHandler::new(),
+					custom_handler: TestCustomMessageHandler { features },
+					node_signer: test_utils::TestNodeSigner::new(node_secret),
+				}
+			);
+		}
+
+		cfgs
+	}
+
+	fn create_network<'a>(peer_count: usize, cfgs: &'a Vec<PeerManagerCfg>) -> Vec<PeerManager<FileDescriptor, &'a test_utils::TestChannelMessageHandler, &'a test_utils::TestRoutingMessageHandler, IgnoringMessageHandler, &'a test_utils::TestLogger, &'a TestCustomMessageHandler, &'a test_utils::TestNodeSigner>> {
 		let mut peers = Vec::new();
 		for i in 0..peer_count {
 			let ephemeral_bytes = [i as u8; 32];
 			let msg_handler = MessageHandler {
 				chan_handler: &cfgs[i].chan_handler, route_handler: &cfgs[i].routing_handler,
-				onion_message_handler: IgnoringMessageHandler {}, custom_message_handler: IgnoringMessageHandler {}
+				onion_message_handler: IgnoringMessageHandler {}, custom_message_handler: &cfgs[i].custom_handler
 			};
 			let peer = PeerManager::new(msg_handler, 0, &ephemeral_bytes, &cfgs[i].logger, &cfgs[i].node_signer);
 			peers.push(peer);
@@ -2476,7 +2565,7 @@ mod tests {
 		peers
 	}
 
-	fn establish_connection<'a>(peer_a: &PeerManager<FileDescriptor, &'a test_utils::TestChannelMessageHandler, &'a test_utils::TestRoutingMessageHandler, IgnoringMessageHandler, &'a test_utils::TestLogger, IgnoringMessageHandler, &'a test_utils::TestNodeSigner>, peer_b: &PeerManager<FileDescriptor, &'a test_utils::TestChannelMessageHandler, &'a test_utils::TestRoutingMessageHandler, IgnoringMessageHandler, &'a test_utils::TestLogger, IgnoringMessageHandler, &'a test_utils::TestNodeSigner>) -> (FileDescriptor, FileDescriptor) {
+	fn establish_connection<'a>(peer_a: &PeerManager<FileDescriptor, &'a test_utils::TestChannelMessageHandler, &'a test_utils::TestRoutingMessageHandler, IgnoringMessageHandler, &'a test_utils::TestLogger, &'a TestCustomMessageHandler, &'a test_utils::TestNodeSigner>, peer_b: &PeerManager<FileDescriptor, &'a test_utils::TestChannelMessageHandler, &'a test_utils::TestRoutingMessageHandler, IgnoringMessageHandler, &'a test_utils::TestLogger, &'a TestCustomMessageHandler, &'a test_utils::TestNodeSigner>) -> (FileDescriptor, FileDescriptor) {
 		let id_a = peer_a.node_signer.get_node_id(Recipient::Node).unwrap();
 		let mut fd_a = FileDescriptor {
 			fd: 1, outbound_data: Arc::new(Mutex::new(Vec::new())),
@@ -2589,6 +2678,42 @@ mod tests {
 
 		thrd_a.join().unwrap();
 		thrd_b.join().unwrap();
+	}
+
+	#[test]
+	fn test_incompatible_peers() {
+		let cfgs = create_peermgr_cfgs(2);
+		let incompatible_cfgs = create_incompatible_peermgr_cfgs(2);
+
+		let peers = create_network(2, &cfgs);
+		let incompatible_peers = create_network(2, &incompatible_cfgs);
+		let peer_pairs = [(&peers[0], &incompatible_peers[0]), (&incompatible_peers[1], &peers[1])];
+		for (peer_a, peer_b) in peer_pairs.iter() {
+			let id_a = peer_a.node_signer.get_node_id(Recipient::Node).unwrap();
+			let mut fd_a = FileDescriptor {
+				fd: 1, outbound_data: Arc::new(Mutex::new(Vec::new())),
+				disconnect: Arc::new(AtomicBool::new(false)),
+			};
+			let addr_a = NetAddress::IPv4{addr: [127, 0, 0, 1], port: 1000};
+			let mut fd_b = FileDescriptor {
+				fd: 1, outbound_data: Arc::new(Mutex::new(Vec::new())),
+				disconnect: Arc::new(AtomicBool::new(false)),
+			};
+			let addr_b = NetAddress::IPv4{addr: [127, 0, 0, 1], port: 1001};
+			let initial_data = peer_b.new_outbound_connection(id_a, fd_b.clone(), Some(addr_a.clone())).unwrap();
+			peer_a.new_inbound_connection(fd_a.clone(), Some(addr_b.clone())).unwrap();
+			assert_eq!(peer_a.read_event(&mut fd_a, &initial_data).unwrap(), false);
+			peer_a.process_events();
+
+			let a_data = fd_a.outbound_data.lock().unwrap().split_off(0);
+			assert_eq!(peer_b.read_event(&mut fd_b, &a_data).unwrap(), false);
+
+			peer_b.process_events();
+			let b_data = fd_b.outbound_data.lock().unwrap().split_off(0);
+
+			// Should fail because of unknown required features
+			assert!(peer_a.read_event(&mut fd_a, &b_data).is_err());
+		}
 	}
 
 	#[test]

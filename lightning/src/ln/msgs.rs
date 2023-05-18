@@ -1738,7 +1738,7 @@ impl Readable for Init {
 			(3, remote_network_address, option)
 		});
 		Ok(Init {
-			features: features.or(global_features),
+			features: features | global_features,
 			remote_network_address,
 		})
 	}

@@ -422,8 +422,10 @@ pub struct Features<T: sealed::Context> {
 	mark: PhantomData<T>,
 }
 
-impl <T: sealed::Context> Features<T> {
-	pub(crate) fn or(mut self, o: Self) -> Self {
+impl<T: sealed::Context> core::ops::BitOr for Features<T> {
+	type Output = Self;
+
+	fn bitor(mut self, o: Self) -> Self {
 		let total_feature_len = cmp::max(self.flags.len(), o.flags.len());
 		self.flags.resize(total_feature_len, 0u8);
 		for (byte, o_byte) in self.flags.iter_mut().zip(o.flags.iter()) {
@@ -695,6 +697,25 @@ impl<T: sealed::Context> Features<T> {
 		self.flags.iter().any(|&byte| (byte & 0b10_10_10_10) != 0)
 	}
 
+	/// Returns true if this `Features` object contains required features unknown by `other`.
+	pub fn requires_unknown_bits_from(&self, other: &Features<T>) -> bool {
+		// Bitwise AND-ing with all even bits set except for known features will select required
+		// unknown features.
+		self.flags.iter().enumerate().any(|(i, &byte)| {
+			const REQUIRED_FEATURES: u8 = 0b01_01_01_01;
+			const OPTIONAL_FEATURES: u8 = 0b10_10_10_10;
+			let unknown_features = if i < other.flags.len() {
+				// Form a mask similar to !T::KNOWN_FEATURE_MASK only for `other`
+				!(other.flags[i]
+					| ((other.flags[i] >> 1) & REQUIRED_FEATURES)
+					| ((other.flags[i] << 1) & OPTIONAL_FEATURES))
+			} else {
+				0b11_11_11_11
+			};
+			(byte & (REQUIRED_FEATURES & unknown_features)) != 0
+		})
+	}
+
 	/// Returns true if this `Features` object contains unknown feature flags which are set as
 	/// "required".
 	pub fn requires_unknown_bits(&self) -> bool {
@@ -742,6 +763,50 @@ impl<T: sealed::Context> Features<T> {
 			}
 		}
 		true
+	}
+
+	/// Sets a required custom feature bit. Errors if `bit` is outside the custom range as defined
+	/// by [bLIP 2] or if it is a known `T` feature.
+	///
+	/// Note: Required bits are even. If an odd bit is given, then the corresponding even bit will
+	/// be set instead (i.e., `bit - 1`).
+	///
+	/// [bLIP 2]: https://github.com/lightning/blips/blob/master/blip-0002.md#feature-bits
+	pub fn set_required_custom_bit(&mut self, bit: usize) -> Result<(), ()> {
+		self.set_custom_bit(bit - (bit % 2))
+	}
+
+	/// Sets an optional custom feature bit. Errors if `bit` is outside the custom range as defined
+	/// by [bLIP 2] or if it is a known `T` feature.
+	///
+	/// Note: Optional bits are odd. If an even bit is given, then the corresponding odd bit will be
+	/// set instead (i.e., `bit + 1`).
+	///
+	/// [bLIP 2]: https://github.com/lightning/blips/blob/master/blip-0002.md#feature-bits
+	pub fn set_optional_custom_bit(&mut self, bit: usize) -> Result<(), ()> {
+		self.set_custom_bit(bit + (1 - (bit % 2)))
+	}
+
+	fn set_custom_bit(&mut self, bit: usize) -> Result<(), ()> {
+		if bit < 256 {
+			return Err(());
+		}
+
+		let byte_offset = bit / 8;
+		let mask = 1 << (bit - 8 * byte_offset);
+		if byte_offset < T::KNOWN_FEATURE_MASK.len() {
+			if (T::KNOWN_FEATURE_MASK[byte_offset] & mask) != 0 {
+				return Err(());
+			}
+		}
+
+		if self.flags.len() <= byte_offset {
+			self.flags.resize(byte_offset + 1, 0u8);
+		}
+
+		self.flags[byte_offset] |= mask;
+
+		Ok(())
 	}
 }
 
@@ -870,6 +935,43 @@ mod tests {
 	}
 
 	#[test]
+	fn requires_unknown_bits_from() {
+		let mut features1 = InitFeatures::empty();
+		let mut features2 = InitFeatures::empty();
+		assert!(!features1.requires_unknown_bits_from(&features2));
+		assert!(!features2.requires_unknown_bits_from(&features1));
+
+		features1.set_data_loss_protect_required();
+		assert!(features1.requires_unknown_bits_from(&features2));
+		assert!(!features2.requires_unknown_bits_from(&features1));
+
+		features2.set_data_loss_protect_optional();
+		assert!(!features1.requires_unknown_bits_from(&features2));
+		assert!(!features2.requires_unknown_bits_from(&features1));
+
+		features2.set_gossip_queries_required();
+		assert!(!features1.requires_unknown_bits_from(&features2));
+		assert!(features2.requires_unknown_bits_from(&features1));
+
+		features1.set_gossip_queries_optional();
+		assert!(!features1.requires_unknown_bits_from(&features2));
+		assert!(!features2.requires_unknown_bits_from(&features1));
+
+		features1.set_variable_length_onion_required();
+		assert!(features1.requires_unknown_bits_from(&features2));
+		assert!(!features2.requires_unknown_bits_from(&features1));
+
+		features2.set_variable_length_onion_optional();
+		assert!(!features1.requires_unknown_bits_from(&features2));
+		assert!(!features2.requires_unknown_bits_from(&features1));
+
+		features1.set_basic_mpp_required();
+		features2.set_wumbo_required();
+		assert!(features1.requires_unknown_bits_from(&features2));
+		assert!(features2.requires_unknown_bits_from(&features1));
+	}
+
+	#[test]
 	fn convert_to_context_with_relevant_flags() {
 		let mut init_features = InitFeatures::empty();
 		// Set a bunch of features we use, plus initial_routing_sync_required (which shouldn't get
@@ -881,12 +983,12 @@ mod tests {
 		init_features.set_payment_secret_required();
 		init_features.set_basic_mpp_optional();
 		init_features.set_wumbo_optional();
+		init_features.set_anchors_zero_fee_htlc_tx_optional();
 		init_features.set_shutdown_any_segwit_optional();
 		init_features.set_onion_messages_optional();
 		init_features.set_channel_type_optional();
 		init_features.set_scid_privacy_optional();
 		init_features.set_zero_conf_optional();
-		init_features.set_anchors_zero_fee_htlc_tx_optional();
 
 		assert!(init_features.initial_routing_sync());
 		assert!(!init_features.supports_upfront_shutdown_script());
@@ -897,7 +999,7 @@ mod tests {
 			// Check that the flags are as expected:
 			// - option_data_loss_protect (req)
 			// - var_onion_optin (req) | static_remote_key (req) | payment_secret(req)
-			// - basic_mpp | wumbo
+			// - basic_mpp | wumbo | anchors_zero_fee_htlc_tx
 			// - opt_shutdown_anysegwit
 			// - onion_messages
 			// - option_channel_type | option_scid_alias
@@ -943,6 +1045,36 @@ mod tests {
 		assert!(!features.requires_basic_mpp());
 		assert!(features.requires_payment_secret());
 		assert!(features.supports_payment_secret());
+	}
+
+	#[test]
+	fn set_custom_bits() {
+		let mut features = InvoiceFeatures::empty();
+		features.set_variable_length_onion_optional();
+		assert_eq!(features.flags[1], 0b00000010);
+
+		assert!(features.set_optional_custom_bit(255).is_err());
+		assert!(features.set_required_custom_bit(256).is_ok());
+		assert!(features.set_required_custom_bit(258).is_ok());
+		assert_eq!(features.flags[31], 0b00000000);
+		assert_eq!(features.flags[32], 0b00000101);
+
+		let known_bit = <sealed::InvoiceContext as sealed::PaymentSecret>::EVEN_BIT;
+		let byte_offset = <sealed::InvoiceContext as sealed::PaymentSecret>::BYTE_OFFSET;
+		assert_eq!(byte_offset, 1);
+		assert_eq!(features.flags[byte_offset], 0b00000010);
+		assert!(features.set_required_custom_bit(known_bit).is_err());
+		assert_eq!(features.flags[byte_offset], 0b00000010);
+
+		let mut features = InvoiceFeatures::empty();
+		assert!(features.set_optional_custom_bit(256).is_ok());
+		assert!(features.set_optional_custom_bit(259).is_ok());
+		assert_eq!(features.flags[32], 0b00001010);
+
+		let mut features = InvoiceFeatures::empty();
+		assert!(features.set_required_custom_bit(257).is_ok());
+		assert!(features.set_required_custom_bit(258).is_ok());
+		assert_eq!(features.flags[32], 0b00000101);
 	}
 
 	#[test]

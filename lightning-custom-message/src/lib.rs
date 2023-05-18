@@ -20,6 +20,7 @@
 //! # use bitcoin::secp256k1::PublicKey;
 //! # use lightning::io;
 //! # use lightning::ln::msgs::{DecodeError, LightningError};
+//! # use lightning::ln::features::{InitFeatures, NodeFeatures};
 //! use lightning::ln::peer_handler::CustomMessageHandler;
 //! use lightning::ln::wire::{CustomMessageReader, self};
 //! use lightning::util::ser::Writeable;
@@ -66,6 +67,12 @@
 //! #     fn get_and_clear_pending_msg(&self) -> Vec<(PublicKey, Self::CustomMessage)> {
 //! #         unimplemented!()
 //! #     }
+//! #     fn provided_node_features(&self) -> NodeFeatures {
+//! #         unimplemented!()
+//! #     }
+//! #     fn provided_init_features(&self, _their_node_id: &PublicKey) -> InitFeatures {
+//! #         unimplemented!()
+//! #     }
 //! }
 //!
 //! #[derive(Debug)]
@@ -106,6 +113,12 @@
 //! #     fn get_and_clear_pending_msg(&self) -> Vec<(PublicKey, Self::CustomMessage)> {
 //! #         unimplemented!()
 //! #     }
+//! #     fn provided_node_features(&self) -> NodeFeatures {
+//! #         unimplemented!()
+//! #     }
+//! #     fn provided_init_features(&self, _their_node_id: &PublicKey) -> InitFeatures {
+//! #         unimplemented!()
+//! #     }
 //! }
 //!
 //! #[derive(Debug)]
@@ -144,6 +157,12 @@
 //! #         unimplemented!()
 //! #     }
 //! #     fn get_and_clear_pending_msg(&self) -> Vec<(PublicKey, Self::CustomMessage)> {
+//! #         unimplemented!()
+//! #     }
+//! #     fn provided_node_features(&self) -> NodeFeatures {
+//! #         unimplemented!()
+//! #     }
+//! #     fn provided_init_features(&self, _their_node_id: &PublicKey) -> InitFeatures {
 //! #         unimplemented!()
 //! #     }
 //! }
@@ -267,6 +286,22 @@ macro_rules! composite_custom_message_handler {
 						)
 					)*
 					.collect()
+			}
+
+			fn provided_node_features(&self) -> $crate::lightning::ln::features::NodeFeatures {
+				$crate::lightning::ln::features::NodeFeatures::empty()
+					$(
+						| self.$field.provided_node_features()
+					)*
+			}
+
+			fn provided_init_features(
+				&self, their_node_id: &$crate::bitcoin::secp256k1::PublicKey
+			) -> $crate::lightning::ln::features::InitFeatures {
+				$crate::lightning::ln::features::InitFeatures::empty()
+					$(
+						| self.$field.provided_init_features(their_node_id)
+					)*
 			}
 		}
 
