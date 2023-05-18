@@ -1383,9 +1383,8 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 													});
 													continue;
 												}
-												(msgs::DecodeError::UnknownRequiredFeature, ty) => {
-													log_gossip!(self.logger, "Received a message with an unknown required feature flag or TLV, you may want to update!");
-													self.enqueue_message(peer, &msgs::WarningMessage { channel_id: [0; 32], data: format!("Received an unknown required feature/TLV in message type {:?}", ty) });
+												(msgs::DecodeError::UnknownRequiredFeature, _) => {
+													log_debug!(self.logger, "Received a message with an unknown required feature flag or TLV, you may want to update!");
 													return Err(PeerHandleError { });
 												}
 												(msgs::DecodeError::UnknownVersion, _) => return Err(PeerHandleError { }),
