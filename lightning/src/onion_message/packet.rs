@@ -250,13 +250,12 @@ ReadableArgs<(SharedSecret, &H, &L)> for Payload<<H as CustomOnionMessageHandler
 				Ok(Payload::Forward(ForwardControlTlvs::Unblinded(tlvs)))
 			},
 			Some(ChaChaPolyReadAdapter { readable: ControlTlvs::Receive(tlvs)}) => {
-				if message.is_none() { return Err(DecodeError::InvalidValue) }
 				Ok(Payload::Receive {
 					control_tlvs: ReceiveControlTlvs::Unblinded(tlvs),
 					reply_path,
-					message: message.unwrap(),
+					message: message.ok_or(DecodeError::InvalidValue)?,
 				})
-			}
+			},
 		}
 	}
 }
