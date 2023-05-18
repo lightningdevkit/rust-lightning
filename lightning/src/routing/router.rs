@@ -1198,6 +1198,41 @@ impl fmt::Display for LoggedPayeePubkey {
 	}
 }
 
+#[inline]
+fn sort_first_hop_channels(
+	channels: &mut Vec<&ChannelDetails>, used_channel_liquidities: &HashMap<(u64, bool), u64>,
+	recommended_value_msat: u64, our_node_pubkey: &PublicKey
+) {
+	// Sort the first_hops channels to the same node(s) in priority order of which channel we'd
+	// most like to use.
+	//
+	// First, if channels are below `recommended_value_msat`, sort them in descending order,
+	// preferring larger channels to avoid splitting the payment into more MPP parts than is
+	// required.
+	//
+	// Second, because simply always sorting in descending order would always use our largest
+	// available outbound capacity, needlessly fragmenting our available channel capacities,
+	// sort channels above `recommended_value_msat` in ascending order, preferring channels
+	// which have enough, but not too much, capacity for the payment.
+	//
+	// Available outbound balances factor in liquidity already reserved for previously found paths.
+	channels.sort_unstable_by(|chan_a, chan_b| {
+		let chan_a_outbound_limit_msat = chan_a.next_outbound_htlc_limit_msat
+			.saturating_sub(*used_channel_liquidities.get(&(chan_a.get_outbound_payment_scid().unwrap(),
+			our_node_pubkey < &chan_a.counterparty.node_id)).unwrap_or(&0));
+		let chan_b_outbound_limit_msat = chan_b.next_outbound_htlc_limit_msat
+			.saturating_sub(*used_channel_liquidities.get(&(chan_b.get_outbound_payment_scid().unwrap(),
+			our_node_pubkey < &chan_b.counterparty.node_id)).unwrap_or(&0));
+		if chan_b_outbound_limit_msat < recommended_value_msat || chan_a_outbound_limit_msat < recommended_value_msat {
+			// Sort in descending order
+			chan_b_outbound_limit_msat.cmp(&chan_a_outbound_limit_msat)
+		} else {
+			// Sort in ascending order
+			chan_a_outbound_limit_msat.cmp(&chan_b_outbound_limit_msat)
+		}
+	});
+}
+
 /// Finds a route from us (payer) to the given target node (payee).
 ///
 /// If the payee provided features in their invoice, they should be provided via `params.payee`.
@@ -1443,26 +1478,8 @@ where L::Target: Logger {
 	let mut already_collected_value_msat = 0;
 
 	for (_, channels) in first_hop_targets.iter_mut() {
-		// Sort the first_hops channels to the same node(s) in priority order of which channel we'd
-		// most like to use.
-		//
-		// First, if channels are below `recommended_value_msat`, sort them in descending order,
-		// preferring larger channels to avoid splitting the payment into more MPP parts than is
-		// required.
-		//
-		// Second, because simply always sorting in descending order would always use our largest
-		// available outbound capacity, needlessly fragmenting our available channel capacities,
-		// sort channels above `recommended_value_msat` in ascending order, preferring channels
-		// which have enough, but not too much, capacity for the payment.
-		channels.sort_unstable_by(|chan_a, chan_b| {
-			if chan_b.next_outbound_htlc_limit_msat < recommended_value_msat || chan_a.next_outbound_htlc_limit_msat < recommended_value_msat {
-				// Sort in descending order
-				chan_b.next_outbound_htlc_limit_msat.cmp(&chan_a.next_outbound_htlc_limit_msat)
-			} else {
-				// Sort in ascending order
-				chan_a.next_outbound_htlc_limit_msat.cmp(&chan_b.next_outbound_htlc_limit_msat)
-			}
-		});
+		sort_first_hop_channels(channels, &used_channel_liquidities, recommended_value_msat,
+			our_node_pubkey);
 	}
 
 	log_trace!(logger, "Building path from {} to payer {} for value {} msat.",
@@ -1874,7 +1891,9 @@ where L::Target: Logger {
 						.saturating_add(1);
 
 					// Searching for a direct channel between last checked hop and first_hop_targets
-					if let Some(first_channels) = first_hop_targets.get(&NodeId::from_pubkey(&prev_hop_id)) {
+					if let Some(first_channels) = first_hop_targets.get_mut(&NodeId::from_pubkey(&prev_hop_id)) {
+						sort_first_hop_channels(first_channels, &used_channel_liquidities,
+							recommended_value_msat, our_node_pubkey);
 						for details in first_channels {
 							let first_hop_candidate = CandidateRouteHop::FirstHop { details };
 							add_entry!(first_hop_candidate, our_node_id, NodeId::from_pubkey(&prev_hop_id),
@@ -1913,7 +1932,9 @@ where L::Target: Logger {
 						// Note that we *must* check if the last hop was added as `add_entry`
 						// always assumes that the third argument is a node to which we have a
 						// path.
-						if let Some(first_channels) = first_hop_targets.get(&NodeId::from_pubkey(&hop.src_node_id)) {
+						if let Some(first_channels) = first_hop_targets.get_mut(&NodeId::from_pubkey(&hop.src_node_id)) {
+							sort_first_hop_channels(first_channels, &used_channel_liquidities,
+								recommended_value_msat, our_node_pubkey);
 							for details in first_channels {
 								let first_hop_candidate = CandidateRouteHop::FirstHop { details };
 								add_entry!(first_hop_candidate, our_node_id,
@@ -6032,12 +6053,9 @@ mod tests {
 		let route = get_route(&our_node_id, &payment_params, &network_graph.read_only(),
 			Some(&first_hops.iter().collect::<Vec<_>>()), amt_msat, Arc::clone(&logger), &scorer, &(),
 			&random_seed_bytes).unwrap();
-		// TODO: `get_route` returns a suboptimal route here because first hop channels are not
-		// resorted on the fly when processing route hints.
-		assert_eq!(route.paths.len(), 3);
+		assert_eq!(route.paths.len(), 2);
 		assert!(route.paths[0].hops.last().unwrap().fee_msat <= max_htlc_msat);
 		assert!(route.paths[1].hops.last().unwrap().fee_msat <= max_htlc_msat);
-		assert!(route.paths[2].hops.last().unwrap().fee_msat <= max_htlc_msat);
 		assert_eq!(route.get_total_amount(), amt_msat);
 	}
 
