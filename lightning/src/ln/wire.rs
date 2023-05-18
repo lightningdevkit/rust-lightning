@@ -96,9 +96,59 @@ pub(crate) enum Message<T> where T: core::fmt::Debug + Type + TestEq {
 	Custom(T),
 }
 
-impl<T> Message<T> where T: core::fmt::Debug + Type + TestEq {
+impl<T> Writeable for Message<T> where T: core::fmt::Debug + Type + TestEq {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+		match self {
+			&Message::Init(ref msg) => msg.write(writer),
+			&Message::Error(ref msg) => msg.write(writer),
+			&Message::Warning(ref msg) => msg.write(writer),
+			&Message::Ping(ref msg) => msg.write(writer),
+			&Message::Pong(ref msg) => msg.write(writer),
+			&Message::OpenChannel(ref msg) => msg.write(writer),
+			&Message::OpenChannelV2(ref msg) => msg.write(writer),
+			&Message::AcceptChannel(ref msg) => msg.write(writer),
+			&Message::AcceptChannelV2(ref msg) => msg.write(writer),
+			&Message::FundingCreated(ref msg) => msg.write(writer),
+			&Message::FundingSigned(ref msg) => msg.write(writer),
+			&Message::TxAddInput(ref msg) => msg.write(writer),
+			&Message::TxAddOutput(ref msg) => msg.write(writer),
+			&Message::TxRemoveInput(ref msg) => msg.write(writer),
+			&Message::TxRemoveOutput(ref msg) => msg.write(writer),
+			&Message::TxComplete(ref msg) => msg.write(writer),
+			&Message::TxSignatures(ref msg) => msg.write(writer),
+			&Message::TxInitRbf(ref msg) => msg.write(writer),
+			&Message::TxAckRbf(ref msg) => msg.write(writer),
+			&Message::TxAbort(ref msg) => msg.write(writer),
+			&Message::ChannelReady(ref msg) => msg.write(writer),
+			&Message::Shutdown(ref msg) => msg.write(writer),
+			&Message::ClosingSigned(ref msg) => msg.write(writer),
+			&Message::OnionMessage(ref msg) => msg.write(writer),
+			&Message::UpdateAddHTLC(ref msg) => msg.write(writer),
+			&Message::UpdateFulfillHTLC(ref msg) => msg.write(writer),
+			&Message::UpdateFailHTLC(ref msg) => msg.write(writer),
+			&Message::UpdateFailMalformedHTLC(ref msg) => msg.write(writer),
+			&Message::CommitmentSigned(ref msg) => msg.write(writer),
+			&Message::RevokeAndACK(ref msg) => msg.write(writer),
+			&Message::UpdateFee(ref msg) => msg.write(writer),
+			&Message::ChannelReestablish(ref msg) => msg.write(writer),
+			&Message::AnnouncementSignatures(ref msg) => msg.write(writer),
+			&Message::ChannelAnnouncement(ref msg) => msg.write(writer),
+			&Message::NodeAnnouncement(ref msg) => msg.write(writer),
+			&Message::ChannelUpdate(ref msg) => msg.write(writer),
+			&Message::QueryShortChannelIds(ref msg) => msg.write(writer),
+			&Message::ReplyShortChannelIdsEnd(ref msg) => msg.write(writer),
+			&Message::QueryChannelRange(ref msg) => msg.write(writer),
+			&Message::ReplyChannelRange(ref msg) => msg.write(writer),
+			&Message::GossipTimestampFilter(ref msg) => msg.write(writer),
+			&Message::Unknown(_) => { Ok(()) },
+			&Message::Custom(ref msg) => msg.write(writer),
+		}
+	}
+}
+
+impl<T> Type for Message<T> where T: core::fmt::Debug + Type + TestEq {
 	/// Returns the type that was used to decode the message payload.
-	pub fn type_id(&self) -> u16 {
+	fn type_id(&self) -> u16 {
 		match self {
 			&Message::Init(ref msg) => msg.type_id(),
 			&Message::Error(ref msg) => msg.type_id(),
@@ -145,7 +195,9 @@ impl<T> Message<T> where T: core::fmt::Debug + Type + TestEq {
 			&Message::Custom(ref msg) => msg.type_id(),
 		}
 	}
+}
 
+impl<T> Message<T> where T: core::fmt::Debug + Type + TestEq {
 	/// Returns whether the message's type is even, indicating both endpoints must support it.
 	pub fn is_even(&self) -> bool {
 		(self.type_id() & 1) == 0
