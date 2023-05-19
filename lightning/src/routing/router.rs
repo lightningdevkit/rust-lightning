@@ -18,7 +18,7 @@ use crate::ln::PaymentHash;
 use crate::ln::channelmanager::{ChannelDetails, PaymentId};
 use crate::ln::features::{Bolt12InvoiceFeatures, ChannelFeatures, InvoiceFeatures, NodeFeatures};
 use crate::ln::msgs::{DecodeError, ErrorAction, LightningError, MAX_VALUE_MSAT};
-use crate::offers::invoice::BlindedPayInfo;
+use crate::offers::invoice::{BlindedPayInfo, Invoice as Bolt12Invoice};
 use crate::routing::gossip::{DirectedChannelInfo, EffectiveCapacity, ReadOnlyNetworkGraph, NetworkGraph, NodeId, RoutingFees};
 use crate::routing::scoring::{ChannelUsage, LockableScore, Score};
 use crate::util::ser::{Writeable, Readable, ReadableArgs, Writer};
@@ -634,8 +634,40 @@ impl PaymentParameters {
 			.expect("PaymentParameters::from_node_id should always initialize the payee as unblinded")
 	}
 
-	/// Includes the payee's features. Errors if the parameters were initialized with blinded payment
-	/// paths.
+	/// Creates parameters for paying to a blinded payee from the provided invoice. Sets
+	/// [`Payee::Blinded::route_hints`], [`Payee::Blinded::features`], and
+	/// [`PaymentParameters::expiry_time`].
+	pub fn from_bolt12_invoice(invoice: &Bolt12Invoice) -> Self {
+		Self::blinded(invoice.payment_paths().to_vec())
+			.with_bolt12_features(invoice.features().clone()).unwrap()
+			.with_expiry_time(invoice.created_at().as_secs().saturating_add(invoice.relative_expiry().as_secs()))
+	}
+
+	fn blinded(blinded_route_hints: Vec<(BlindedPayInfo, BlindedPath)>) -> Self {
+		Self {
+			payee: Payee::Blinded { route_hints: blinded_route_hints, features: None },
+			expiry_time: None,
+			max_total_cltv_expiry_delta: DEFAULT_MAX_TOTAL_CLTV_EXPIRY_DELTA,
+			max_path_count: DEFAULT_MAX_PATH_COUNT,
+			max_channel_saturation_power_of_half: 2,
+			previously_failed_channels: Vec::new(),
+		}
+	}
+
+	/// Includes the payee's features. Errors if the parameters were not initialized with
+	/// [`PaymentParameters::from_bolt12_invoice`].
+	///
+	/// This is not exported to bindings users since bindings don't support move semantics
+	pub fn with_bolt12_features(self, features: Bolt12InvoiceFeatures) -> Result<Self, ()> {
+		match self.payee {
+			Payee::Clear { .. } => Err(()),
+			Payee::Blinded { route_hints, .. } =>
+				Ok(Self { payee: Payee::Blinded { route_hints, features: Some(features) }, ..self })
+		}
+	}
+
+	/// Includes the payee's features. Errors if the parameters were initialized with
+	/// [`PaymentParameters::from_bolt12_invoice`].
 	///
 	/// This is not exported to bindings users since bindings don't support move semantics
 	pub fn with_bolt11_features(self, features: InvoiceFeatures) -> Result<Self, ()> {
@@ -651,7 +683,7 @@ impl PaymentParameters {
 	}
 
 	/// Includes hints for routing to the payee. Errors if the parameters were initialized with
-	/// blinded payment paths.
+	/// [`PaymentParameters::from_bolt12_invoice`].
 	///
 	/// This is not exported to bindings users since bindings don't support move semantics
 	pub fn with_route_hints(self, route_hints: Vec<RouteHint>) -> Result<Self, ()> {
