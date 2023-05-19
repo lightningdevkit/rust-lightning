@@ -687,7 +687,8 @@ impl PaymentParameters {
 		Self { max_path_count, ..self }
 	}
 
-	/// Includes a limit for the maximum number of payment paths that may be used.
+	/// Includes a limit for the maximum share of a channel's total capacity that can be sent over, as
+	/// a power of 1/2. See [`PaymentParameters::max_channel_saturation_power_of_half`].
 	///
 	/// This is not exported to bindings users since bindings don't support move semantics
 	pub fn with_max_channel_saturation_power_of_half(self, max_channel_saturation_power_of_half: u8) -> Self {
