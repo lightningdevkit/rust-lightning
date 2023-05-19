@@ -3549,6 +3549,167 @@ fn test_retry_custom_tlvs() {
 	claim_payment_along_route(&nodes[0], &[&[&nodes[1], &nodes[2]]], false, payment_preimage);
 }
 
+#[test]
+fn test_custom_tlvs_consistency() {
+	let even_type_1 = 1 << 16;
+	let odd_type_1	= (1 << 16)+ 1;
+	let even_type_2 = (1 << 16) + 2;
+	let odd_type_2	= (1 << 16) + 3;
+	let value_1 = || vec![1, 2, 3, 4];
+	let differing_value_1 = || vec![1, 2, 3, 5];
+	let value_2 = || vec![42u8; 16];
+
+	// Drop missing odd tlvs
+	do_test_custom_tlvs_consistency(
+		vec![(odd_type_1, value_1()), (odd_type_2, value_2())],
+		vec![(odd_type_1, value_1())],
+		Some(vec![(odd_type_1, value_1())]),
+	);
+	// Drop non-matching odd tlvs
+	do_test_custom_tlvs_consistency(
+		vec![(odd_type_1, value_1()), (odd_type_2, value_2())],
+		vec![(odd_type_1, differing_value_1()), (odd_type_2, value_2())],
+		Some(vec![(odd_type_2, value_2())]),
+	);
+	// Fail missing even tlvs
+	do_test_custom_tlvs_consistency(
+		vec![(odd_type_1, value_1()), (even_type_2, value_2())],
+		vec![(odd_type_1, value_1())],
+		None,
+	);
+	// Fail non-matching even tlvs
+	do_test_custom_tlvs_consistency(
+		vec![(even_type_1, value_1()), (odd_type_2, value_2())],
+		vec![(even_type_1, differing_value_1()), (odd_type_2, value_2())],
+		None,
+	);
+}
+
+fn do_test_custom_tlvs_consistency(first_tlvs: Vec<(u64, Vec<u8>)>, second_tlvs: Vec<(u64, Vec<u8>)>,
+	expected_receive_tlvs: Option<Vec<(u64, Vec<u8>)>>) {
+
+	let chanmon_cfgs = create_chanmon_cfgs(4);
+	let node_cfgs = create_node_cfgs(4, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(4, &node_cfgs, &[None, None, None, None]);
+	let nodes = create_network(4, &node_cfgs, &node_chanmgrs);
+
+	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100_000, 0);
+	create_announced_chan_between_nodes_with_value(&nodes, 0, 2, 100_000, 0);
+	create_announced_chan_between_nodes_with_value(&nodes, 1, 3, 100_000, 0);
+	let chan_2_3 = create_announced_chan_between_nodes_with_value(&nodes, 2, 3, 100_000, 0);
+
+	let payment_params = PaymentParameters::from_node_id(nodes[3].node.get_our_node_id(), TEST_FINAL_CLTV)
+		.with_bolt11_features(nodes[3].node.invoice_features()).unwrap();
+	let mut route = get_route!(nodes[0], payment_params, 15_000_000).unwrap();
+	assert_eq!(route.paths.len(), 2);
+	route.paths.sort_by(|path_a, _| {
+		// Sort the path so that the path through nodes[1] comes first
+		if path_a.hops[0].pubkey == nodes[1].node.get_our_node_id() {
+			core::cmp::Ordering::Less } else { core::cmp::Ordering::Greater }
+	});
+
+	let (our_payment_preimage, our_payment_hash, our_payment_secret) = get_payment_preimage_hash!(&nodes[3]);
+	let payment_id = PaymentId([42; 32]);
+	let amt_msat = 15_000_000;
+
+	// Send first part
+	let onion_fields = RecipientOnionFields {
+		payment_secret: Some(our_payment_secret),
+		payment_metadata: None,
+		custom_tlvs: first_tlvs
+	};
+	let session_privs = nodes[0].node.test_add_new_pending_payment(our_payment_hash,
+			onion_fields.clone(), payment_id, &route).unwrap();
+	let cur_height = nodes[0].best_block_info().1;
+	nodes[0].node.test_send_payment_along_path(&route.paths[0], &our_payment_hash,
+		onion_fields.clone(), amt_msat, cur_height, payment_id,
+		&None, session_privs[0]).unwrap();
+	check_added_monitors!(nodes[0], 1);
+
+	{
+		let mut events = nodes[0].node.get_and_clear_pending_msg_events();
+		assert_eq!(events.len(), 1);
+		pass_along_path(&nodes[0], &[&nodes[1], &nodes[3]], amt_msat, our_payment_hash, Some(our_payment_secret), events.pop().unwrap(), false, None);
+	}
+	assert!(nodes[3].node.get_and_clear_pending_events().is_empty());
+
+	// Send second part
+	let onion_fields = RecipientOnionFields {
+		payment_secret: Some(our_payment_secret),
+		payment_metadata: None,
+		custom_tlvs: second_tlvs
+	};
+	nodes[0].node.test_send_payment_along_path(&route.paths[1], &our_payment_hash,
+		onion_fields.clone(), amt_msat, cur_height, payment_id, &None, session_privs[1]).unwrap();
+	check_added_monitors!(nodes[0], 1);
+
+	{
+		let mut events = nodes[0].node.get_and_clear_pending_msg_events();
+		assert_eq!(events.len(), 1);
+		let payment_event = SendEvent::from_event(events.pop().unwrap());
+
+		nodes[2].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &payment_event.msgs[0]);
+		commitment_signed_dance!(nodes[2], nodes[0], payment_event.commitment_msg, false);
+
+		expect_pending_htlcs_forwardable!(nodes[2]);
+		check_added_monitors!(nodes[2], 1);
+
+		let mut events = nodes[2].node.get_and_clear_pending_msg_events();
+		assert_eq!(events.len(), 1);
+		let payment_event = SendEvent::from_event(events.pop().unwrap());
+
+		nodes[3].node.handle_update_add_htlc(&nodes[2].node.get_our_node_id(), &payment_event.msgs[0]);
+		check_added_monitors!(nodes[3], 0);
+		commitment_signed_dance!(nodes[3], nodes[2], payment_event.commitment_msg, true, true);
+	}
+	expect_pending_htlcs_forwardable_ignore!(nodes[3]);
+	nodes[3].node.process_pending_htlc_forwards();
+
+	if let Some(expected_tlvs) = expected_receive_tlvs {
+		// Claim and match expected
+		let events = nodes[3].node.get_and_clear_pending_events();
+		println!("events: {:?}", events);
+		assert_eq!(events.len(), 1);
+		match events[0] {
+			Event::PaymentClaimable { ref purpose, amount_msat, ref onion_fields, .. } => {
+				match &purpose {
+					PaymentPurpose::InvoicePayment { payment_secret, .. } => {
+						assert_eq!(our_payment_secret, *payment_secret);
+						assert_eq!(Some(*payment_secret), onion_fields.as_ref().unwrap().payment_secret);
+					},
+					PaymentPurpose::SpontaneousPayment(payment_preimage) => {
+						assert_eq!(our_payment_preimage, *payment_preimage);
+					},
+				}
+				assert_eq!(amount_msat, amt_msat);
+				assert_eq!(onion_fields.clone().unwrap().custom_tlvs, expected_tlvs);
+			},
+			_ => panic!("Unexpected event"),
+		}
+
+		do_claim_payment_along_route(&nodes[0], &[&[&nodes[1], &nodes[3]], &[&nodes[2], &nodes[3]]], false, our_payment_preimage);
+		expect_payment_sent(&nodes[0], our_payment_preimage, Some(Some(2000)), true);
+	} else {
+		// Expect fail back
+		let expected_destinations = vec![HTLCDestination::FailedPayment { payment_hash: our_payment_hash }];
+		expect_pending_htlcs_forwardable_and_htlc_handling_failed!(nodes[3], expected_destinations);
+		check_added_monitors!(nodes[3], 1);
+
+		let fail_updates_1 = get_htlc_update_msgs!(nodes[3], nodes[2].node.get_our_node_id());
+		nodes[2].node.handle_update_fail_htlc(&nodes[3].node.get_our_node_id(), &fail_updates_1.update_fail_htlcs[0]);
+		commitment_signed_dance!(nodes[2], nodes[3], fail_updates_1.commitment_signed, false);
+
+		expect_pending_htlcs_forwardable_and_htlc_handling_failed!(nodes[2], vec![HTLCDestination::NextHopChannel { node_id: Some(nodes[3].node.get_our_node_id()), channel_id: chan_2_3.2 }]);
+		check_added_monitors!(nodes[2], 1);
+
+		let fail_updates_2 = get_htlc_update_msgs!(nodes[2], nodes[0].node.get_our_node_id());
+		nodes[0].node.handle_update_fail_htlc(&nodes[2].node.get_our_node_id(), &fail_updates_2.update_fail_htlcs[0]);
+		commitment_signed_dance!(nodes[0], nodes[2], fail_updates_2.commitment_signed, false);
+
+		expect_payment_failed_conditions(&nodes[0], our_payment_hash, true, PaymentFailedConditions::new().mpp_parts_remain());
+	}
+}
+
 fn do_test_payment_metadata_consistency(do_reload: bool, do_modify: bool) {
 	// Check that a payment metadata received on one HTLC that doesn't match the one received on
 	// another results in the HTLC being rejected.

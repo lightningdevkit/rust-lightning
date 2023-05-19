@@ -511,7 +511,17 @@ impl RecipientOnionFields {
 	pub(super) fn check_merge(&mut self, further_htlc_fields: &mut Self) -> Result<(), ()> {
 		if self.payment_secret != further_htlc_fields.payment_secret { return Err(()); }
 		if self.payment_metadata != further_htlc_fields.payment_metadata { return Err(()); }
-		// For custom TLVs we should just drop non-matching ones, but not reject the payment.
+
+		let tlvs = &mut self.custom_tlvs;
+		let further_tlvs = &mut further_htlc_fields.custom_tlvs;
+
+		let even_tlvs: Vec<&(u64, Vec<u8>)> = tlvs.iter().filter(|(typ, _)| *typ % 2 == 0).collect();
+		let further_even_tlvs: Vec<&(u64, Vec<u8>)> = further_tlvs.iter().filter(|(typ, _)| *typ % 2 == 0).collect();
+		if even_tlvs != further_even_tlvs { return Err(()) }
+
+		tlvs.retain(|tlv| further_tlvs.iter().any(|further_tlv| tlv == further_tlv));
+		further_tlvs.retain(|further_tlv| tlvs.iter().any(|tlv| tlv == further_tlv));
+
 		Ok(())
 	}
 }
