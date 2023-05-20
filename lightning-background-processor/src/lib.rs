@@ -108,7 +108,7 @@ const PING_TIMER: u64 = 1;
 const NETWORK_PRUNE_TIMER: u64 = 60 * 60;
 
 #[cfg(not(test))]
-const SCORER_PERSIST_TIMER: u64 = 30;
+const SCORER_PERSIST_TIMER: u64 = 60 * 60;
 #[cfg(test)]
 const SCORER_PERSIST_TIMER: u64 = 1;
 
@@ -236,9 +236,11 @@ fn handle_network_graph_update<L: Deref>(
 	}
 }
 
+/// Updates scorer based on event and returns whether an update occurred so we can decide whether
+/// to persist.
 fn update_scorer<'a, S: 'static + Deref<Target = SC> + Send + Sync, SC: 'a + WriteableScore<'a>>(
 	scorer: &'a S, event: &Event
-) {
+) -> bool {
 	let mut score = scorer.lock();
 	match event {
 		Event::PaymentPathFailed { ref path, short_channel_id: Some(scid), .. } => {
@@ -258,8 +260,9 @@ fn update_scorer<'a, S: 'static + Deref<Target = SC> + Send + Sync, SC: 'a + Wri
 		Event::ProbeFailed { path, short_channel_id: Some(scid), .. } => {
 			score.probe_failed(path, *scid);
 		},
-		_ => {},
+		_ => return false,
 	}
+	true
 }
 
 macro_rules! define_run_body {
@@ -352,9 +355,15 @@ macro_rules! define_run_body {
 			// Note that we want to run a graph prune once not long after startup before
 			// falling back to our usual hourly prunes. This avoids short-lived clients never
 			// pruning their network graph. We run once 60 seconds after startup before
-			// continuing our normal cadence.
+			// continuing our normal cadence. For RGS, since 60 seconds is likely too long,
+			// we prune after an initial sync completes.
 			let prune_timer = if have_pruned { NETWORK_PRUNE_TIMER } else { FIRST_NETWORK_PRUNE_TIMER };
-			if $timer_elapsed(&mut last_prune_call, prune_timer) {
+			let prune_timer_elapsed = $timer_elapsed(&mut last_prune_call, prune_timer);
+			let should_prune = match $gossip_sync {
+				GossipSync::Rapid(_) => !have_pruned || prune_timer_elapsed,
+				_ => prune_timer_elapsed,
+			};
+			if should_prune {
 				// The network graph must not be pruned while rapid sync completion is pending
 				if let Some(network_graph) = $gossip_sync.prunable_network_graph() {
 					#[cfg(feature = "std")] {
@@ -616,12 +625,19 @@ where
 		let network_graph = gossip_sync.network_graph();
 		let event_handler = &event_handler;
 		let scorer = &scorer;
+		let logger = &logger;
+		let persister = &persister;
 		async move {
 			if let Some(network_graph) = network_graph {
 				handle_network_graph_update(network_graph, &event)
 			}
 			if let Some(ref scorer) = scorer {
-				update_scorer(scorer, &event);
+				if update_scorer(scorer, &event) {
+					log_trace!(logger, "Persisting scorer after update");
+					if let Err(e) = persister.persist_scorer(&scorer) {
+						log_error!(logger, "Error: Failed to persist scorer, check your disk and permissions {}", e)
+					}
+				}
 			}
 			event_handler(event).await;
 		}
@@ -751,7 +767,12 @@ impl BackgroundProcessor {
 					handle_network_graph_update(network_graph, &event)
 				}
 				if let Some(ref scorer) = scorer {
-					update_scorer(scorer, &event);
+					if update_scorer(scorer, &event) {
+						log_trace!(logger, "Persisting scorer after update");
+						if let Err(e) = persister.persist_scorer(&scorer) {
+							log_error!(logger, "Error: Failed to persist scorer, check your disk and permissions {}", e)
+						}
+					}
 				}
 				event_handler.handle_event(event);
 			};
@@ -1708,6 +1729,10 @@ mod tests {
 		if !std::thread::panicking() {
 			bg_processor.stop().unwrap();
 		}
+
+		let log_entries = nodes[0].logger.lines.lock().unwrap();
+		let expected_log = "Persisting scorer after update".to_string();
+		assert_eq!(*log_entries.get(&("lightning_background_processor".to_string(), expected_log)).unwrap(), 5);
 	}
 
 	#[tokio::test]
@@ -1750,6 +1775,10 @@ mod tests {
 		let t2 = tokio::spawn(async move {
 			do_test_payment_path_scoring!(nodes, receiver.recv().await);
 			exit_sender.send(()).unwrap();
+
+			let log_entries = nodes[0].logger.lines.lock().unwrap();
+			let expected_log = "Persisting scorer after update".to_string();
+			assert_eq!(*log_entries.get(&("lightning_background_processor".to_string(), expected_log)).unwrap(), 5);
 		});
 
 		let (r1, r2) = tokio::join!(t1, t2);
