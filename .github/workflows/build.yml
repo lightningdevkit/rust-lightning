@@ -141,7 +141,12 @@ jobs:
           cd ..
       - name: Run benchmarks on Rust ${{ matrix.toolchain }}
         run: |
-          RUSTC_BOOTSTRAP=1 cargo bench --features _bench_unstable
+          cd bench
+          RUSTFLAGS="--cfg=ldk_bench --cfg=require_route_graph_test" cargo bench
+      - name: Run benchmarks with hashbrown on Rust ${{ matrix.toolchain }}
+        run: |
+          cd bench
+          RUSTFLAGS="--cfg=ldk_bench --cfg=require_route_graph_test" cargo bench --features hashbrown
 
   check_commits:
     runs-on: ubuntu-latest

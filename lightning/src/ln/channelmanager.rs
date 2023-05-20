@@ -9266,7 +9266,7 @@ mod tests {
 	}
 }
 
-#[cfg(all(any(test, feature = "_test_utils"), feature = "_bench_unstable"))]
+#[cfg(ldk_bench)]
 pub mod bench {
 	use crate::chain::Listen;
 	use crate::chain::chainmonitor::{ChainMonitor, Persist};
@@ -9286,7 +9286,7 @@ pub mod bench {
 
 	use crate::sync::{Arc, Mutex};
 
-	use test::Bencher;
+	use criterion::Criterion;
 
 	type Manager<'a, P> = ChannelManager<
 		&'a ChainMonitor<InMemorySigner, &'a test_utils::TestChainSource,
@@ -9307,13 +9307,11 @@ pub mod bench {
 		fn chain_monitor(&self) -> Option<&test_utils::TestChainMonitor> { None }
 	}
 
-	#[cfg(test)]
-	#[bench]
-	fn bench_sends(bench: &mut Bencher) {
-		bench_two_sends(bench, test_utils::TestPersister::new(), test_utils::TestPersister::new());
+	pub fn bench_sends(bench: &mut Criterion) {
+		bench_two_sends(bench, "bench_sends", test_utils::TestPersister::new(), test_utils::TestPersister::new());
 	}
 
-	pub fn bench_two_sends<P: Persist<InMemorySigner>>(bench: &mut Bencher, persister_a: P, persister_b: P) {
+	pub fn bench_two_sends<P: Persist<InMemorySigner>>(bench: &mut Criterion, bench_name: &str, persister_a: P, persister_b: P) {
 		// Do a simple benchmark of sending a payment back and forth between two nodes.
 		// Note that this is unrealistic as each payment send will require at least two fsync
 		// calls per node.
@@ -9466,9 +9464,9 @@ pub mod bench {
 			}
 		}
 
-		bench.iter(|| {
+		bench.bench_function(bench_name, |b| b.iter(|| {
 			send_payment!(node_a, node_b);
 			send_payment!(node_b, node_a);
-		});
+		}));
 	}
 }

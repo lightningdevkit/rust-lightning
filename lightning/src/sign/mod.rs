@@ -1628,8 +1628,8 @@ pub fn dyn_sign() {
 	let _signer: Box<dyn EcdsaChannelSigner>;
 }
 
-#[cfg(all(test, feature = "_bench_unstable", not(feature = "no-std")))]
-mod benches {
+#[cfg(ldk_bench)]
+pub mod benches {
 	use std::sync::{Arc, mpsc};
 	use std::sync::mpsc::TryRecvError;
 	use std::thread;
@@ -1638,10 +1638,9 @@ mod benches {
 	use bitcoin::Network;
 	use crate::sign::{EntropySource, KeysManager};
 
-	use test::Bencher;
+	use criterion::Criterion;
 
-	#[bench]
-	fn bench_get_secure_random_bytes(bench: &mut Bencher) {
+	pub fn bench_get_secure_random_bytes(bench: &mut Criterion) {
 		let seed = [0u8; 32];
 		let now = Duration::from_secs(genesis_block(Network::Testnet).header.time as u64);
 		let keys_manager = Arc::new(KeysManager::new(&seed, now.as_secs(), now.subsec_micros()));
@@ -1667,11 +1666,8 @@ mod benches {
 			stops.push(stop_sender);
 		}
 
-		bench.iter(|| {
-			for _ in 1..100 {
-				keys_manager.get_secure_random_bytes();
-			}
-		});
+		bench.bench_function("get_secure_random_bytes", |b| b.iter(||
+			keys_manager.get_secure_random_bytes()));
 
 		for stop in stops {
 			let _ = stop.send(());
@@ -1680,5 +1676,4 @@ mod benches {
 			handle.join().unwrap();
 		}
 	}
-
 }

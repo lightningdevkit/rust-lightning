@@ -1776,7 +1776,7 @@ macro_rules! get_route_and_payment_hash {
 }
 
 #[macro_export]
-#[cfg(any(test, feature = "_bench_unstable", feature = "_test_utils"))]
+#[cfg(any(test, ldk_bench, feature = "_test_utils"))]
 macro_rules! expect_payment_claimable {
 	($node: expr, $expected_payment_hash: expr, $expected_payment_secret: expr, $expected_recv_value: expr) => {
 		expect_payment_claimable!($node, $expected_payment_hash, $expected_payment_secret, $expected_recv_value, None, $node.node.get_our_node_id())
@@ -1803,7 +1803,7 @@ macro_rules! expect_payment_claimable {
 }
 
 #[macro_export]
-#[cfg(any(test, feature = "_bench_unstable", feature = "_test_utils"))]
+#[cfg(any(test, ldk_bench, feature = "_test_utils"))]
 macro_rules! expect_payment_claimed {
 	($node: expr, $expected_payment_hash: expr, $expected_recv_value: expr) => {
 		let events = $node.node.get_and_clear_pending_events();
@@ -1920,7 +1920,7 @@ macro_rules! expect_payment_forwarded {
 	}
 }
 
-#[cfg(any(test, feature = "_bench_unstable", feature = "_test_utils"))]
+#[cfg(any(test, ldk_bench, feature = "_test_utils"))]
 pub fn expect_channel_pending_event<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, expected_counterparty_node_id: &PublicKey) {
 	let events = node.node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);
@@ -1932,7 +1932,7 @@ pub fn expect_channel_pending_event<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, 
 	}
 }
 
-#[cfg(any(test, feature = "_bench_unstable", feature = "_test_utils"))]
+#[cfg(any(test, ldk_bench, feature = "_test_utils"))]
 pub fn expect_channel_ready_event<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, expected_counterparty_node_id: &PublicKey) {
 	let events = node.node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);

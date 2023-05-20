@@ -8,7 +8,8 @@ lightning-c-bindings/a.out
 Cargo.lock
 .idea
 lightning/target
-lightning/ldk-net_graph-*.bin
+lightning/net_graph-*.bin
+lightning-rapid-gossip-sync/res/full_graph.lngossip
 lightning-custom-message/target
 lightning-transaction-sync/target
 no-std-check/target

@@ -1015,7 +1015,7 @@ struct PathBuildingHop<'a> {
 	/// decrease as well. Thus, we have to explicitly track which nodes have been processed and
 	/// avoid processing them again.
 	was_processed: bool,
-	#[cfg(all(not(feature = "_bench_unstable"), any(test, fuzzing)))]
+	#[cfg(all(not(ldk_bench), any(test, fuzzing)))]
 	// In tests, we apply further sanity checks on cases where we skip nodes we already processed
 	// to ensure it is specifically in cases where the fee has gone down because of a decrease in
 	// value_contribution_msat, which requires tracking it here. See comments below where it is
@@ -1036,7 +1036,7 @@ impl<'a> core::fmt::Debug for PathBuildingHop<'a> {
 			.field("path_penalty_msat", &self.path_penalty_msat)
 			.field("path_htlc_minimum_msat", &self.path_htlc_minimum_msat)
 			.field("cltv_expiry_delta", &self.candidate.cltv_expiry_delta());
-		#[cfg(all(not(feature = "_bench_unstable"), any(test, fuzzing)))]
+		#[cfg(all(not(ldk_bench), any(test, fuzzing)))]
 		let debug_struct = debug_struct
 			.field("value_contribution_msat", &self.value_contribution_msat);
 		debug_struct.finish()
@@ -1570,14 +1570,14 @@ where L::Target: Logger {
 								path_htlc_minimum_msat,
 								path_penalty_msat: u64::max_value(),
 								was_processed: false,
-								#[cfg(all(not(feature = "_bench_unstable"), any(test, fuzzing)))]
+								#[cfg(all(not(ldk_bench), any(test, fuzzing)))]
 								value_contribution_msat,
 							}
 						});
 
 						#[allow(unused_mut)] // We only use the mut in cfg(test)
 						let mut should_process = !old_entry.was_processed;
-						#[cfg(all(not(feature = "_bench_unstable"), any(test, fuzzing)))]
+						#[cfg(all(not(ldk_bench), any(test, fuzzing)))]
 						{
 							// In test/fuzzing builds, we do extra checks to make sure the skipping
 							// of already-seen nodes only happens in cases we expect (see below).
@@ -1648,13 +1648,13 @@ where L::Target: Logger {
 								old_entry.fee_msat = 0; // This value will be later filled with hop_use_fee_msat of the following channel
 								old_entry.path_htlc_minimum_msat = path_htlc_minimum_msat;
 								old_entry.path_penalty_msat = path_penalty_msat;
-								#[cfg(all(not(feature = "_bench_unstable"), any(test, fuzzing)))]
+								#[cfg(all(not(ldk_bench), any(test, fuzzing)))]
 								{
 									old_entry.value_contribution_msat = value_contribution_msat;
 								}
 								did_add_update_path_to_src_node = true;
 							} else if old_entry.was_processed && new_cost < old_cost {
-								#[cfg(all(not(feature = "_bench_unstable"), any(test, fuzzing)))]
+								#[cfg(all(not(ldk_bench), any(test, fuzzing)))]
 								{
 									// If we're skipping processing a node which was previously
 									// processed even though we found another path to it with a
@@ -5791,44 +5791,26 @@ mod tests {
 		println!("Using seed of {}", seed);
 		seed
 	}
-	#[cfg(not(feature = "no-std"))]
-	use crate::util::ser::ReadableArgs;
 
 	#[test]
 	#[cfg(not(feature = "no-std"))]
 	fn generate_routes() {
 		use crate::routing::scoring::{ProbabilisticScorer, ProbabilisticScoringFeeParameters};
 
-		let mut d = match super::bench_utils::get_route_file() {
+		let logger = ln_test_utils::TestLogger::new();
+		let graph = match super::bench_utils::read_network_graph(&logger) {
 			Ok(f) => f,
 			Err(e) => {
 				eprintln!("{}", e);
 				return;
 			},
 		};
-		let logger = ln_test_utils::TestLogger::new();
-		let graph = NetworkGraph::read(&mut d, &logger).unwrap();
-		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
-		let random_seed_bytes = keys_manager.get_secure_random_bytes();
 
-		// First, get 100 (source, destination) pairs for which route-getting actually succeeds...
-		let mut seed = random_init_seed() as usize;
-		let nodes = graph.read_only().nodes().clone();
-		'load_endpoints: for _ in 0..10 {
-			loop {
-				seed = seed.overflowing_mul(0xdeadbeef).0;
-				let src = &PublicKey::from_slice(nodes.unordered_keys().skip(seed % nodes.len()).next().unwrap().as_slice()).unwrap();
-				seed = seed.overflowing_mul(0xdeadbeef).0;
-				let dst = PublicKey::from_slice(nodes.unordered_keys().skip(seed % nodes.len()).next().unwrap().as_slice()).unwrap();
-				let payment_params = PaymentParameters::from_node_id(dst, 42);
-				let amt = seed as u64 % 200_000_000;
-				let params = ProbabilisticScoringFeeParameters::default();
-				let scorer = ProbabilisticScorer::new(ProbabilisticScoringDecayParameters::default(), &graph, &logger);
-				if get_route(src, &payment_params, &graph.read_only(), None, amt, &logger, &scorer, &params, &random_seed_bytes).is_ok() {
-					continue 'load_endpoints;
-				}
-			}
-		}
+		let params = ProbabilisticScoringFeeParameters::default();
+		let mut scorer = ProbabilisticScorer::new(ProbabilisticScoringDecayParameters::default(), &graph, &logger);
+		let features = super::InvoiceFeatures::empty();
+
+		super::bench_utils::generate_test_routes(&graph, &mut scorer, &params, features, random_init_seed(), 0, 2);
 	}
 
 	#[test]
@@ -5836,37 +5818,41 @@ mod tests {
 	fn generate_routes_mpp() {
 		use crate::routing::scoring::{ProbabilisticScorer, ProbabilisticScoringFeeParameters};
 
-		let mut d = match super::bench_utils::get_route_file() {
+		let logger = ln_test_utils::TestLogger::new();
+		let graph = match super::bench_utils::read_network_graph(&logger) {
 			Ok(f) => f,
 			Err(e) => {
 				eprintln!("{}", e);
 				return;
 			},
 		};
-		let logger = ln_test_utils::TestLogger::new();
-		let graph = NetworkGraph::read(&mut d, &logger).unwrap();
-		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
-		let random_seed_bytes = keys_manager.get_secure_random_bytes();
-		let config = UserConfig::default();
 
-		// First, get 100 (source, destination) pairs for which route-getting actually succeeds...
-		let mut seed = random_init_seed() as usize;
-		let nodes = graph.read_only().nodes().clone();
-		'load_endpoints: for _ in 0..10 {
-			loop {
-				seed = seed.overflowing_mul(0xdeadbeef).0;
-				let src = &PublicKey::from_slice(nodes.unordered_keys().skip(seed % nodes.len()).next().unwrap().as_slice()).unwrap();
-				seed = seed.overflowing_mul(0xdeadbeef).0;
-				let dst = PublicKey::from_slice(nodes.unordered_keys().skip(seed % nodes.len()).next().unwrap().as_slice()).unwrap();
-				let payment_params = PaymentParameters::from_node_id(dst, 42).with_bolt11_features(channelmanager::provided_invoice_features(&config)).unwrap();
-				let amt = seed as u64 % 200_000_000;
-				let params = ProbabilisticScoringFeeParameters::default();
-				let scorer = ProbabilisticScorer::new(ProbabilisticScoringDecayParameters::default(), &graph, &logger);
-				if get_route(src, &payment_params, &graph.read_only(), None, amt, &logger, &scorer, &params, &random_seed_bytes).is_ok() {
-					continue 'load_endpoints;
-				}
-			}
-		}
+		let params = ProbabilisticScoringFeeParameters::default();
+		let mut scorer = ProbabilisticScorer::new(ProbabilisticScoringDecayParameters::default(), &graph, &logger);
+		let features = channelmanager::provided_invoice_features(&UserConfig::default());
+
+		super::bench_utils::generate_test_routes(&graph, &mut scorer, &params, features, random_init_seed(), 0, 2);
+	}
+
+	#[test]
+	#[cfg(not(feature = "no-std"))]
+	fn generate_large_mpp_routes() {
+		use crate::routing::scoring::{ProbabilisticScorer, ProbabilisticScoringFeeParameters};
+
+		let logger = ln_test_utils::TestLogger::new();
+		let graph = match super::bench_utils::read_network_graph(&logger) {
+			Ok(f) => f,
+			Err(e) => {
+				eprintln!("{}", e);
+				return;
+			},
+		};
+
+		let params = ProbabilisticScoringFeeParameters::default();
+		let mut scorer = ProbabilisticScorer::new(ProbabilisticScoringDecayParameters::default(), &graph, &logger);
+		let features = channelmanager::provided_invoice_features(&UserConfig::default());
+
+		super::bench_utils::generate_test_routes(&graph, &mut scorer, &params, features, random_init_seed(), 1_000_000, 2);
 	}
 
 	#[test]
@@ -6052,9 +6038,23 @@ mod tests {
 	}
 }
 
-#[cfg(all(test, not(feature = "no-std")))]
+#[cfg(all(any(test, ldk_bench), not(feature = "no-std")))]
 pub(crate) mod bench_utils {
+	use super::*;
 	use std::fs::File;
+
+	use bitcoin::hashes::Hash;
+	use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
+
+	use crate::chain::transaction::OutPoint;
+	use crate::sign::{EntropySource, KeysManager};
+	use crate::ln::channelmanager::{self, ChannelCounterparty, ChannelDetails};
+	use crate::ln::features::InvoiceFeatures;
+	use crate::routing::gossip::NetworkGraph;
+	use crate::util::config::UserConfig;
+	use crate::util::ser::ReadableArgs;
+	use crate::util::test_utils::TestLogger;
+
 	/// Tries to open a network graph file, or panics with a URL to fetch it.
 	pub(crate) fn get_route_file() -> Result<std::fs::File, &'static str> {
 		let res = File::open("net_graph-2023-01-18.bin") // By default we're run in RL/lightning
@@ -6068,7 +6068,18 @@ pub(crate) mod bench_utils {
 				path.pop(); // target
 				path.push("lightning");
 				path.push("net_graph-2023-01-18.bin");
-				eprintln!("{}", path.to_str().unwrap());
+				File::open(path)
+			})
+			.or_else(|_| { // Fall back to guessing based on the binary location for a subcrate
+				// path is likely something like .../rust-lightning/bench/target/debug/deps/bench..
+				let mut path = std::env::current_exe().unwrap();
+				path.pop(); // bench...
+				path.pop(); // deps
+				path.pop(); // debug
+				path.pop(); // target
+				path.pop(); // bench
+				path.push("lightning");
+				path.push("net_graph-2023-01-18.bin");
 				File::open(path)
 			})
 		.map_err(|_| "Please fetch https://bitcoin.ninja/ldk-net_graph-v0.0.113-2023-01-18.bin and place it at lightning/net_graph-2023-01-18.bin");
@@ -6077,42 +6088,18 @@ pub(crate) mod bench_utils {
 		#[cfg(not(require_route_graph_test))]
 		return res;
 	}
-}
 
-#[cfg(all(test, feature = "_bench_unstable", not(feature = "no-std")))]
-mod benches {
-	use super::*;
-	use bitcoin::hashes::Hash;
-	use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
-	use crate::chain::transaction::OutPoint;
-	use crate::sign::{EntropySource, KeysManager};
-	use crate::ln::channelmanager::{self, ChannelCounterparty, ChannelDetails};
-	use crate::ln::features::InvoiceFeatures;
-	use crate::routing::gossip::NetworkGraph;
-	use crate::routing::scoring::{FixedPenaltyScorer, ProbabilisticScorer, ProbabilisticScoringFeeParameters, ProbabilisticScoringDecayParameters};
-	use crate::util::config::UserConfig;
-	use crate::util::logger::{Logger, Record};
-	use crate::util::ser::ReadableArgs;
-
-	use test::Bencher;
-
-	struct DummyLogger {}
-	impl Logger for DummyLogger {
-		fn log(&self, _record: &Record) {}
+	pub(crate) fn read_network_graph(logger: &TestLogger) -> Result<NetworkGraph<&TestLogger>, &'static str> {
+		get_route_file().map(|mut f| NetworkGraph::read(&mut f, logger).unwrap())
 	}
 
-	fn read_network_graph(logger: &DummyLogger) -> NetworkGraph<&DummyLogger> {
-		let mut d = bench_utils::get_route_file().unwrap();
-		NetworkGraph::read(&mut d, logger).unwrap()
-	}
-
-	fn payer_pubkey() -> PublicKey {
+	pub(crate) fn payer_pubkey() -> PublicKey {
 		let secp_ctx = Secp256k1::new();
 		PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap())
 	}
 
 	#[inline]
-	fn first_hop(node_id: PublicKey) -> ChannelDetails {
+	pub(crate) fn first_hop(node_id: PublicKey) -> ChannelDetails {
 		ChannelDetails {
 			channel_id: [0; 32],
 			counterparty: ChannelCounterparty {
@@ -6130,11 +6117,11 @@ mod benches {
 			short_channel_id: Some(1),
 			inbound_scid_alias: None,
 			outbound_scid_alias: None,
-			channel_value_satoshis: 10_000_000,
+			channel_value_satoshis: 10_000_000_000,
 			user_channel_id: 0,
-			balance_msat: 10_000_000,
-			outbound_capacity_msat: 10_000_000,
-			next_outbound_htlc_limit_msat: 10_000_000,
+			balance_msat: 10_000_000_000,
+			outbound_capacity_msat: 10_000_000_000,
+			next_outbound_htlc_limit_msat: 10_000_000_000,
 			inbound_capacity_msat: 0,
 			unspendable_punishment_reserve: None,
 			confirmations_required: None,
@@ -6151,100 +6138,167 @@ mod benches {
 		}
 	}
 
-	#[bench]
-	fn generate_routes_with_zero_penalty_scorer(bench: &mut Bencher) {
-		let logger = DummyLogger {};
-		let network_graph = read_network_graph(&logger);
-		let scorer = FixedPenaltyScorer::with_penalty(0);
-		generate_routes(bench, &network_graph, scorer, &(), InvoiceFeatures::empty());
-	}
-
-	#[bench]
-	fn generate_mpp_routes_with_zero_penalty_scorer(bench: &mut Bencher) {
-		let logger = DummyLogger {};
-		let network_graph = read_network_graph(&logger);
-		let scorer = FixedPenaltyScorer::with_penalty(0);
-		generate_routes(bench, &network_graph, scorer, &(), channelmanager::provided_invoice_features(&UserConfig::default()));
-	}
-
-	#[bench]
-	fn generate_routes_with_probabilistic_scorer(bench: &mut Bencher) {
-		let logger = DummyLogger {};
-		let network_graph = read_network_graph(&logger);
-		let params = ProbabilisticScoringFeeParameters::default();
-		let scorer = ProbabilisticScorer::new(ProbabilisticScoringDecayParameters::default(), &network_graph, &logger);
-		generate_routes(bench, &network_graph, scorer, &params, InvoiceFeatures::empty());
-	}
-
-	#[bench]
-	fn generate_mpp_routes_with_probabilistic_scorer(bench: &mut Bencher) {
-		let logger = DummyLogger {};
-		let network_graph = read_network_graph(&logger);
-		let params = ProbabilisticScoringFeeParameters::default();
-		let scorer = ProbabilisticScorer::new(ProbabilisticScoringDecayParameters::default(), &network_graph, &logger);
-		generate_routes(bench, &network_graph, scorer, &params, channelmanager::provided_invoice_features(&UserConfig::default()));
-	}
-
-	fn generate_routes<S: Score>(
-		bench: &mut Bencher, graph: &NetworkGraph<&DummyLogger>, mut scorer: S, score_params: &S::ScoreParams,
-		features: InvoiceFeatures
-	) {
-		let nodes = graph.read_only().nodes().clone();
+	pub(crate) fn generate_test_routes<S: Score>(graph: &NetworkGraph<&TestLogger>, scorer: &mut S,
+		score_params: &S::ScoreParams, features: InvoiceFeatures, mut seed: u64,
+		starting_amount: u64, route_count: usize,
+	) -> Vec<(ChannelDetails, PaymentParameters, u64)> {
 		let payer = payer_pubkey();
 		let keys_manager = KeysManager::new(&[0u8; 32], 42, 42);
 		let random_seed_bytes = keys_manager.get_secure_random_bytes();
 
-		// First, get 100 (source, destination) pairs for which route-getting actually succeeds...
-		let mut routes = Vec::new();
+		let nodes = graph.read_only().nodes().clone();
 		let mut route_endpoints = Vec::new();
-		let mut seed: usize = 0xdeadbeef;
-		'load_endpoints: for _ in 0..150 {
+		// Fetch 1.5x more routes than we need as after we do some scorer updates we may end up
+		// with some routes we picked being un-routable.
+		for _ in 0..route_count * 3 / 2 {
 			loop {
-				seed *= 0xdeadbeef;
-				let src = PublicKey::from_slice(nodes.unordered_keys().skip(seed % nodes.len()).next().unwrap().as_slice()).unwrap();
-				seed *= 0xdeadbeef;
-				let dst = PublicKey::from_slice(nodes.unordered_keys().skip(seed % nodes.len()).next().unwrap().as_slice()).unwrap();
-				let params = PaymentParameters::from_node_id(dst, 42).with_bolt11_features(features.clone()).unwrap();
+				seed = seed.overflowing_mul(6364136223846793005).0.overflowing_add(1).0;
+				let src = PublicKey::from_slice(nodes.unordered_keys()
+					.skip((seed as usize) % nodes.len()).next().unwrap().as_slice()).unwrap();
+				seed = seed.overflowing_mul(6364136223846793005).0.overflowing_add(1).0;
+				let dst = PublicKey::from_slice(nodes.unordered_keys()
+					.skip((seed as usize) % nodes.len()).next().unwrap().as_slice()).unwrap();
+				let params = PaymentParameters::from_node_id(dst, 42)
+					.with_bolt11_features(features.clone()).unwrap();
 				let first_hop = first_hop(src);
-				let amt = seed as u64 % 1_000_000;
-				if let Ok(route) = get_route(&payer, &params, &graph.read_only(), Some(&[&first_hop]), amt, &DummyLogger{}, &scorer, score_params, &random_seed_bytes) {
-					routes.push(route);
+				let amt = starting_amount + seed % 1_000_000;
+				let path_exists =
+					get_route(&payer, &params, &graph.read_only(), Some(&[&first_hop]),
+						amt, &TestLogger::new(), &scorer, score_params, &random_seed_bytes).is_ok();
+				if path_exists {
+					// ...and seed the scorer with success and failure data...
+					seed = seed.overflowing_mul(6364136223846793005).0.overflowing_add(1).0;
+					let mut score_amt = seed % 1_000_000_000;
+					loop {
+						// Generate fail/success paths for a wider range of potential amounts with
+						// MPP enabled to give us a chance to apply penalties for more potential
+						// routes.
+						let mpp_features = channelmanager::provided_invoice_features(&UserConfig::default());
+						let params = PaymentParameters::from_node_id(dst, 42)
+							.with_bolt11_features(mpp_features).unwrap();
+
+						let route_res = get_route(&payer, &params, &graph.read_only(),
+							Some(&[&first_hop]), score_amt, &TestLogger::new(), &scorer,
+							score_params, &random_seed_bytes);
+						if let Ok(route) = route_res {
+							for path in route.paths {
+								if seed & 0x80 == 0 {
+									scorer.payment_path_successful(&path);
+								} else {
+									let short_channel_id = path.hops[path.hops.len() / 2].short_channel_id;
+									scorer.payment_path_failed(&path, short_channel_id);
+								}
+								seed = seed.overflowing_mul(6364136223846793005).0.overflowing_add(1).0;
+							}
+							break;
+						}
+						// If we couldn't find a path with a higer amount, reduce and try again.
+						score_amt /= 100;
+					}
+
 					route_endpoints.push((first_hop, params, amt));
-					continue 'load_endpoints;
+					break;
 				}
 			}
 		}
 
-		// ...and seed the scorer with success and failure data...
-		for route in routes {
-			let amount = route.get_total_amount();
-			if amount < 250_000 {
-				for path in route.paths {
-					scorer.payment_path_successful(&path);
-				}
-			} else if amount > 750_000 {
-				for path in route.paths {
-					let short_channel_id = path.hops[path.hops.len() / 2].short_channel_id;
-					scorer.payment_path_failed(&path, short_channel_id);
-				}
-			}
-		}
-
-		// Because we've changed channel scores, its possible we'll take different routes to the
+		// Because we've changed channel scores, it's possible we'll take different routes to the
 		// selected destinations, possibly causing us to fail because, eg, the newly-selected path
 		// requires a too-high CLTV delta.
 		route_endpoints.retain(|(first_hop, params, amt)| {
-			get_route(&payer, params, &graph.read_only(), Some(&[first_hop]), *amt, &DummyLogger{}, &scorer, score_params, &random_seed_bytes).is_ok()
+			get_route(&payer, params, &graph.read_only(), Some(&[first_hop]), *amt,
+				&TestLogger::new(), &scorer, score_params, &random_seed_bytes).is_ok()
 		});
-		route_endpoints.truncate(100);
-		assert_eq!(route_endpoints.len(), 100);
+		route_endpoints.truncate(route_count);
+		assert_eq!(route_endpoints.len(), route_count);
+		route_endpoints
+	}
+}
+
+#[cfg(ldk_bench)]
+pub mod benches {
+	use super::*;
+	use crate::sign::{EntropySource, KeysManager};
+	use crate::ln::channelmanager;
+	use crate::ln::features::InvoiceFeatures;
+	use crate::routing::gossip::NetworkGraph;
+	use crate::routing::scoring::{FixedPenaltyScorer, ProbabilisticScorer, ProbabilisticScoringFeeParameters, ProbabilisticScoringDecayParameters};
+	use crate::util::config::UserConfig;
+	use crate::util::logger::{Logger, Record};
+	use crate::util::test_utils::TestLogger;
+
+	use criterion::Criterion;
+
+	struct DummyLogger {}
+	impl Logger for DummyLogger {
+		fn log(&self, _record: &Record) {}
+	}
+
+	pub fn generate_routes_with_zero_penalty_scorer(bench: &mut Criterion) {
+		let logger = TestLogger::new();
+		let network_graph = bench_utils::read_network_graph(&logger).unwrap();
+		let scorer = FixedPenaltyScorer::with_penalty(0);
+		generate_routes(bench, &network_graph, scorer, &(), InvoiceFeatures::empty(), 0,
+			"generate_routes_with_zero_penalty_scorer");
+	}
+
+	pub fn generate_mpp_routes_with_zero_penalty_scorer(bench: &mut Criterion) {
+		let logger = TestLogger::new();
+		let network_graph = bench_utils::read_network_graph(&logger).unwrap();
+		let scorer = FixedPenaltyScorer::with_penalty(0);
+		generate_routes(bench, &network_graph, scorer, &(),
+			channelmanager::provided_invoice_features(&UserConfig::default()), 0,
+			"generate_mpp_routes_with_zero_penalty_scorer");
+	}
+
+	pub fn generate_routes_with_probabilistic_scorer(bench: &mut Criterion) {
+		let logger = TestLogger::new();
+		let network_graph = bench_utils::read_network_graph(&logger).unwrap();
+		let params = ProbabilisticScoringFeeParameters::default();
+		let scorer = ProbabilisticScorer::new(ProbabilisticScoringDecayParameters::default(), &network_graph, &logger);
+		generate_routes(bench, &network_graph, scorer, &params, InvoiceFeatures::empty(), 0,
+			"generate_routes_with_probabilistic_scorer");
+	}
+
+	pub fn generate_mpp_routes_with_probabilistic_scorer(bench: &mut Criterion) {
+		let logger = TestLogger::new();
+		let network_graph = bench_utils::read_network_graph(&logger).unwrap();
+		let params = ProbabilisticScoringFeeParameters::default();
+		let scorer = ProbabilisticScorer::new(ProbabilisticScoringDecayParameters::default(), &network_graph, &logger);
+		generate_routes(bench, &network_graph, scorer, &params,
+			channelmanager::provided_invoice_features(&UserConfig::default()), 0,
+			"generate_mpp_routes_with_probabilistic_scorer");
+	}
+
+	pub fn generate_large_mpp_routes_with_probabilistic_scorer(bench: &mut Criterion) {
+		let logger = TestLogger::new();
+		let network_graph = bench_utils::read_network_graph(&logger).unwrap();
+		let params = ProbabilisticScoringFeeParameters::default();
+		let scorer = ProbabilisticScorer::new(ProbabilisticScoringDecayParameters::default(), &network_graph, &logger);
+		generate_routes(bench, &network_graph, scorer, &params,
+			channelmanager::provided_invoice_features(&UserConfig::default()), 100_000_000,
+			"generate_large_mpp_routes_with_probabilistic_scorer");
+	}
+
+	fn generate_routes<S: Score>(
+		bench: &mut Criterion, graph: &NetworkGraph<&TestLogger>, mut scorer: S,
+		score_params: &S::ScoreParams, features: InvoiceFeatures, starting_amount: u64,
+		bench_name: &'static str,
+	) {
+		let payer = bench_utils::payer_pubkey();
+		let keys_manager = KeysManager::new(&[0u8; 32], 42, 42);
+		let random_seed_bytes = keys_manager.get_secure_random_bytes();
+
+		// First, get 100 (source, destination) pairs for which route-getting actually succeeds...
+		let route_endpoints = bench_utils::generate_test_routes(graph, &mut scorer, score_params, features, 0xdeadbeef, starting_amount, 50);
 
 		// ...then benchmark finding paths between the nodes we learned.
 		let mut idx = 0;
-		bench.iter(|| {
+		bench.bench_function(bench_name, |b| b.iter(|| {
 			let (first_hop, params, amt) = &route_endpoints[idx % route_endpoints.len()];
-			assert!(get_route(&payer, params, &graph.read_only(), Some(&[first_hop]), *amt, &DummyLogger{}, &scorer, score_params, &random_seed_bytes).is_ok());
+			assert!(get_route(&payer, params, &graph.read_only(), Some(&[first_hop]), *amt,
+				&DummyLogger{}, &scorer, score_params, &random_seed_bytes).is_ok());
 			idx += 1;
-		});
+		}));
 	}
 }

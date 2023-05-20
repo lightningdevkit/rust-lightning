@@ -64,10 +64,7 @@
 
 #![cfg_attr(all(not(feature = "std"), not(test)), no_std)]
 
-// Allow and import test features for benching
-#![cfg_attr(all(test, feature = "_bench_unstable"), feature(test))]
-#[cfg(all(test, feature = "_bench_unstable"))]
-extern crate test;
+#[cfg(ldk_bench)] extern crate criterion;
 
 #[cfg(not(feature = "std"))]
 extern crate alloc;
@@ -287,36 +284,42 @@ mod tests {
 	}
 }
 
-#[cfg(all(test, feature = "_bench_unstable"))]
+#[cfg(ldk_bench)]
+/// Benches
 pub mod bench {
-	use test::Bencher;
-
 	use bitcoin::Network;
 
-	use lightning::ln::msgs::DecodeError;
+	use criterion::Criterion;
+
+	use std::fs;
+
 	use lightning::routing::gossip::NetworkGraph;
 	use lightning::util::test_utils::TestLogger;
 
 	use crate::RapidGossipSync;
 
-	#[bench]
-	fn bench_reading_full_graph_from_file(b: &mut Bencher) {
+	/// Bench!
+	pub fn bench_reading_full_graph_from_file(b: &mut Criterion) {
 		let logger = TestLogger::new();
-		b.iter(|| {
+		b.bench_function("read_full_graph_from_rgs", |b| b.iter(|| {
 			let network_graph = NetworkGraph::new(Network::Bitcoin, &logger);
 			let rapid_sync = RapidGossipSync::new(&network_graph, &logger);
-			let sync_result = rapid_sync.sync_network_graph_with_file_path("./res/full_graph.lngossip");
-			if let Err(crate::error::GraphSyncError::DecodeError(DecodeError::Io(io_error))) = &sync_result {
-				let error_string = format!("Input file lightning-rapid-gossip-sync/res/full_graph.lngossip is missing! Download it from https://bitcoin.ninja/ldk-compressed_graph-bc08df7542-2022-05-05.bin\n\n{:?}", io_error);
-				#[cfg(not(require_route_graph_test))]
-				{
-					println!("{}", error_string);
-					return;
-				}
-				#[cfg(require_route_graph_test)]
-				panic!("{}", error_string);
-			}
-			assert!(sync_result.is_ok())
-		});
+			let mut file = match fs::read("../lightning-rapid-gossip-sync/res/full_graph.lngossip") {
+				Ok(f) => f,
+				Err(io_error) => {
+					let error_string = format!(
+						"Input file lightning-rapid-gossip-sync/res/full_graph.lngossip is missing! Download it from https://bitcoin.ninja/ldk-compressed_graph-bc08df7542-2022-05-05.bin\n\n{:?}",
+						io_error);
+					#[cfg(not(require_route_graph_test))]
+					{
+						println!("{}", error_string);
+						return;
+					}
+					#[cfg(require_route_graph_test)]
+					panic!("{}", error_string);
+				},
+			};
+			rapid_sync.update_network_graph_no_std(&mut file, None).unwrap();
+		}));
 	}
 }
