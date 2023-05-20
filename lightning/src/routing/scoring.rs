@@ -939,6 +939,9 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, T: Time> ProbabilisticScorerU
 	///
 	/// Because the datapoints are decayed slowly over time, values will eventually return to
 	/// `Some(([0; 8], [0; 8]))`.
+	///
+	/// In order to fetch a single success probability from the buckets provided here, as used in
+	/// the scoring model, see [`Self::historical_estimated_payment_success_probability`].
 	pub fn historical_estimated_channel_liquidity_probabilities(&self, scid: u64, target: &NodeId)
 	-> Option<([u16; 8], [u16; 8])> {
 		let graph = self.network_graph.read_only();
@@ -953,12 +956,45 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, T: Time> ProbabilisticScorerU
 						min_liquidity_offset_history: &dir_liq.min_liquidity_offset_history,
 						max_liquidity_offset_history: &dir_liq.max_liquidity_offset_history,
 					};
-					let (min_buckets, mut max_buckets, _) = buckets.get_decayed_buckets(T::now(),
+					let (min_buckets, mut max_buckets, _) = buckets.get_decayed_buckets(dir_liq.now,
 						*dir_liq.last_updated, self.decay_params.historical_no_updates_half_life);
 					// Note that the liquidity buckets are an offset from the edge, so we inverse
 					// the max order to get the probabilities from zero.
 					max_buckets.reverse();
 					return Some((min_buckets, max_buckets));
+				}
+			}
+		}
+		None
+	}
+
+	/// Query the probability of payment success sending the given `amount_msat` over the channel
+	/// with `scid` towards the given `target` node, based on the historical estimated liquidity
+	/// bounds.
+	///
+	/// These are the same bounds as returned by
+	/// [`Self::historical_estimated_channel_liquidity_probabilities`] (but not those returned by
+	/// [`Self::estimated_channel_liquidity_range`]).
+	pub fn historical_estimated_payment_success_probability(
+		&self, scid: u64, target: &NodeId, amount_msat: u64)
+	-> Option<f64> {
+		let graph = self.network_graph.read_only();
+
+		if let Some(chan) = graph.channels().get(&scid) {
+			if let Some(liq) = self.channel_liquidities.get(&scid) {
+				if let Some((directed_info, source)) = chan.as_directed_to(target) {
+					let capacity_msat = directed_info.effective_capacity().as_msat();
+					let dir_liq = liq.as_directed(source, target, 0, capacity_msat, self.decay_params);
+
+					let buckets = HistoricalMinMaxBuckets {
+						min_liquidity_offset_history: &dir_liq.min_liquidity_offset_history,
+						max_liquidity_offset_history: &dir_liq.max_liquidity_offset_history,
+					};
+
+					return buckets.calculate_success_probability_times_billion(dir_liq.now,
+						*dir_liq.last_updated, self.decay_params.historical_no_updates_half_life,
+						amount_msat, capacity_msat
+					).map(|p| p as f64 / (1024 * 1024 * 1024) as f64);
 				}
 			}
 		}
@@ -2847,6 +2883,8 @@ mod tests {
 		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 47);
 		assert_eq!(scorer.historical_estimated_channel_liquidity_probabilities(42, &target),
 			None);
+		assert_eq!(scorer.historical_estimated_payment_success_probability(42, &target, 42),
+			None);
 
 		scorer.payment_path_failed(&payment_path_for_amount(1), 42);
 		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 2048);
@@ -2854,6 +2892,10 @@ mod tests {
 		// octile.
 		assert_eq!(scorer.historical_estimated_channel_liquidity_probabilities(42, &target),
 			Some(([32, 0, 0, 0, 0, 0, 0, 0], [32, 0, 0, 0, 0, 0, 0, 0])));
+		assert_eq!(scorer.historical_estimated_payment_success_probability(42, &target, 1),
+			Some(1.0));
+		assert_eq!(scorer.historical_estimated_payment_success_probability(42, &target, 500),
+			Some(0.0));
 
 		// Even after we tell the scorer we definitely have enough available liquidity, it will
 		// still remember that there was some failure in the past, and assign a non-0 penalty.
@@ -2863,6 +2905,17 @@ mod tests {
 		assert_eq!(scorer.historical_estimated_channel_liquidity_probabilities(42, &target),
 			Some(([31, 0, 0, 0, 0, 0, 0, 32], [31, 0, 0, 0, 0, 0, 0, 32])));
 
+		// The exact success probability is a bit complicated and involves integer rounding, so we
+		// simply check bounds here.
+		let five_hundred_prob =
+			scorer.historical_estimated_payment_success_probability(42, &target, 500).unwrap();
+		assert!(five_hundred_prob > 0.5);
+		assert!(five_hundred_prob < 0.52);
+		let one_prob =
+			scorer.historical_estimated_payment_success_probability(42, &target, 1).unwrap();
+		assert!(one_prob < 1.0);
+		assert!(one_prob > 0.99);
+
 		// Advance the time forward 16 half-lives (which the docs claim will ensure all data is
 		// gone), and check that we're back to where we started.
 		SinceEpoch::advance(Duration::from_secs(10 * 16));
@@ -2871,6 +2924,7 @@ mod tests {
 		// data entirely instead.
 		assert_eq!(scorer.historical_estimated_channel_liquidity_probabilities(42, &target),
 			Some(([0; 8], [0; 8])));
+		assert_eq!(scorer.historical_estimated_payment_success_probability(42, &target, 1), None);
 
 		let mut usage = ChannelUsage {
 			amount_msat: 100,
