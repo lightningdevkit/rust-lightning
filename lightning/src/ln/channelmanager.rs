@@ -4517,7 +4517,7 @@ where
 
 		if let Some(tx) = funding_broadcastable {
 			log_info!(self.logger, "Broadcasting funding transaction with txid {}", tx.txid());
-			self.tx_broadcaster.broadcast_transaction(&tx);
+			self.tx_broadcaster.broadcast_transactions(&[&tx]);
 		}
 
 		{
@@ -5047,7 +5047,7 @@ where
 		};
 		if let Some(broadcast_tx) = tx {
 			log_info!(self.logger, "Broadcasting {}", log_tx!(broadcast_tx));
-			self.tx_broadcaster.broadcast_transaction(&broadcast_tx);
+			self.tx_broadcaster.broadcast_transactions(&[&broadcast_tx]);
 		}
 		if let Some(chan) = chan_option {
 			if let Ok(update) = self.get_channel_update_for_broadcast(&chan) {
@@ -5657,7 +5657,7 @@ where
 								self.issue_channel_close_events(chan, ClosureReason::CooperativeClosure);
 
 								log_info!(self.logger, "Broadcasting {}", log_tx!(tx));
-								self.tx_broadcaster.broadcast_transaction(&tx);
+								self.tx_broadcaster.broadcast_transactions(&[&tx]);
 								update_maps_on_chan_removal!(self, chan);
 								false
 							} else { true }

@@ -144,8 +144,9 @@ struct TestBroadcaster {
 	txn_broadcasted: Mutex<Vec<Transaction>>,
 }
 impl BroadcasterInterface for TestBroadcaster {
-	fn broadcast_transaction(&self, tx: &Transaction) {
-		self.txn_broadcasted.lock().unwrap().push(tx.clone());
+	fn broadcast_transactions(&self, txs: &[&Transaction]) {
+		let owned_txs: Vec<Transaction> = txs.iter().map(|tx| (*tx).clone()).collect();
+		self.txn_broadcasted.lock().unwrap().extend(owned_txs);
 	}
 }
 

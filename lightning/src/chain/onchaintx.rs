@@ -513,7 +513,7 @@ impl<ChannelSigner: WriteableEcdsaChannelSigner> OnchainTxHandler<ChannelSigner>
 						OnchainClaim::Tx(tx) => {
 							let log_start = if bumped_feerate { "Broadcasting RBF-bumped" } else { "Rebroadcasting" };
 							log_info!(logger, "{} onchain {}", log_start, log_tx!(tx));
-							broadcaster.broadcast_transaction(&tx);
+							broadcaster.broadcast_transactions(&[&tx]);
 						},
 						#[cfg(anchors)]
 						OnchainClaim::Event(event) => {
@@ -767,7 +767,7 @@ impl<ChannelSigner: WriteableEcdsaChannelSigner> OnchainTxHandler<ChannelSigner>
 				let package_id = match claim {
 					OnchainClaim::Tx(tx) => {
 						log_info!(logger, "Broadcasting onchain {}", log_tx!(tx));
-						broadcaster.broadcast_transaction(&tx);
+						broadcaster.broadcast_transactions(&[&tx]);
 						tx.txid().into_inner()
 					},
 					#[cfg(anchors)]
@@ -960,7 +960,7 @@ impl<ChannelSigner: WriteableEcdsaChannelSigner> OnchainTxHandler<ChannelSigner>
 				match bump_claim {
 					OnchainClaim::Tx(bump_tx) => {
 						log_info!(logger, "Broadcasting RBF-bumped onchain {}", log_tx!(bump_tx));
-						broadcaster.broadcast_transaction(&bump_tx);
+						broadcaster.broadcast_transactions(&[&bump_tx]);
 					},
 					#[cfg(anchors)]
 					OnchainClaim::Event(claim_event) => {
@@ -1046,7 +1046,7 @@ impl<ChannelSigner: WriteableEcdsaChannelSigner> OnchainTxHandler<ChannelSigner>
 				match bump_claim {
 					OnchainClaim::Tx(bump_tx) => {
 						log_info!(logger, "Broadcasting onchain {}", log_tx!(bump_tx));
-						broadcaster.broadcast_transaction(&bump_tx);
+						broadcaster.broadcast_transactions(&[&bump_tx]);
 					},
 					#[cfg(anchors)]
 					OnchainClaim::Event(claim_event) => {

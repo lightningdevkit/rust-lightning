@@ -341,17 +341,20 @@ impl TestBroadcaster {
 }
 
 impl chaininterface::BroadcasterInterface for TestBroadcaster {
-	fn broadcast_transaction(&self, tx: &Transaction) {
-		let lock_time = tx.lock_time.0;
-		assert!(lock_time < 1_500_000_000);
-		if bitcoin::LockTime::from(tx.lock_time).is_block_height() && lock_time > self.blocks.lock().unwrap().last().unwrap().1 {
-			for inp in tx.input.iter() {
-				if inp.sequence != Sequence::MAX {
-					panic!("We should never broadcast a transaction before its locktime ({})!", tx.lock_time);
+	fn broadcast_transactions(&self, txs: &[&Transaction]) {
+		for tx in txs {
+			let lock_time = tx.lock_time.0;
+			assert!(lock_time < 1_500_000_000);
+			if bitcoin::LockTime::from(tx.lock_time).is_block_height() && lock_time > self.blocks.lock().unwrap().last().unwrap().1 {
+				for inp in tx.input.iter() {
+					if inp.sequence != Sequence::MAX {
+						panic!("We should never broadcast a transaction before its locktime ({})!", tx.lock_time);
+					}
 				}
 			}
 		}
-		self.txn_broadcasted.lock().unwrap().push(tx.clone());
+		let owned_txs: Vec<Transaction> = txs.iter().map(|tx| (*tx).clone()).collect();
+		self.txn_broadcasted.lock().unwrap().extend(owned_txs);
 	}
 }
 
