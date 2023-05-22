@@ -8529,13 +8529,26 @@ mod tests {
 
 	#[test]
 	fn test_keysend_dup_payment_hash() {
+		do_test_keysend_dup_payment_hash(false);
+		do_test_keysend_dup_payment_hash(true);
+	}
+
+	fn do_test_keysend_dup_payment_hash(accept_mpp_keysend: bool) {
 		// (1): Test that a keysend payment with a duplicate payment hash to an existing pending
 		//      outbound regular payment fails as expected.
 		// (2): Test that a regular payment with a duplicate payment hash to an existing keysend payment
 		//      fails as expected.
+		// (3): Test that a keysend payment with a duplicate payment hash to an existing keysend
+		//      payment fails as expected. When `accept_mpp_keysend` is false, this tests that we
+		//      reject MPP keysend payments, since in this case where the payment has no payment
+		//      secret, a keysend payment with a duplicate hash is basically an MPP keysend. If
+		//      `accept_mpp_keysend` is true, this tests that we only accept MPP keysends with
+		//      payment secrets and reject otherwise.
 		let chanmon_cfgs = create_chanmon_cfgs(2);
 		let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+		let mut mpp_keysend_cfg = test_default_channel_config();
+		mpp_keysend_cfg.accept_mpp_keysend = accept_mpp_keysend;
+		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, Some(mpp_keysend_cfg)]);
 		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 		create_announced_chan_between_nodes(&nodes, 0, 1);
 		let scorer = test_utils::TestScorer::new();
@@ -8623,6 +8636,53 @@ mod tests {
 		expect_payment_failed!(nodes[0], payment_hash, true);
 
 		// Finally, succeed the keysend payment.
+		claim_payment(&nodes[0], &expected_route, payment_preimage);
+
+		// To start (3), send a keysend payment but don't claim it.
+		let payment_id_1 = PaymentId([44; 32]);
+		let payment_hash = nodes[0].node.send_spontaneous_payment(&route, Some(payment_preimage),
+			RecipientOnionFields::spontaneous_empty(), payment_id_1).unwrap();
+		check_added_monitors!(nodes[0], 1);
+		let mut events = nodes[0].node.get_and_clear_pending_msg_events();
+		assert_eq!(events.len(), 1);
+		let event = events.pop().unwrap();
+		let path = vec![&nodes[1]];
+		pass_along_path(&nodes[0], &path, 100_000, payment_hash, None, event, true, Some(payment_preimage));
+
+		// Next, attempt a keysend payment and make sure it fails.
+		let route_params = RouteParameters {
+			payment_params: PaymentParameters::for_keysend(expected_route.last().unwrap().node.get_our_node_id(), TEST_FINAL_CLTV, false),
+			final_value_msat: 100_000,
+		};
+		let route = find_route(
+			&nodes[0].node.get_our_node_id(), &route_params, &nodes[0].network_graph,
+			None, nodes[0].logger, &scorer, &(), &random_seed_bytes
+		).unwrap();
+		let payment_id_2 = PaymentId([45; 32]);
+		nodes[0].node.send_spontaneous_payment(&route, Some(payment_preimage),
+			RecipientOnionFields::spontaneous_empty(), payment_id_2).unwrap();
+		check_added_monitors!(nodes[0], 1);
+		let mut events = nodes[0].node.get_and_clear_pending_msg_events();
+		assert_eq!(events.len(), 1);
+		let ev = events.drain(..).next().unwrap();
+		let payment_event = SendEvent::from_event(ev);
+		nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &payment_event.msgs[0]);
+		check_added_monitors!(nodes[1], 0);
+		commitment_signed_dance!(nodes[1], nodes[0], payment_event.commitment_msg, false);
+		expect_pending_htlcs_forwardable!(nodes[1]);
+		expect_pending_htlcs_forwardable_and_htlc_handling_failed!(nodes[1], vec![HTLCDestination::FailedPayment { payment_hash }]);
+		check_added_monitors!(nodes[1], 1);
+		let updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+		assert!(updates.update_add_htlcs.is_empty());
+		assert!(updates.update_fulfill_htlcs.is_empty());
+		assert_eq!(updates.update_fail_htlcs.len(), 1);
+		assert!(updates.update_fail_malformed_htlcs.is_empty());
+		assert!(updates.update_fee.is_none());
+		nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &updates.update_fail_htlcs[0]);
+		commitment_signed_dance!(nodes[0], nodes[1], updates.commitment_signed, true, true);
+		expect_payment_failed!(nodes[0], payment_hash, true);
+
+		// Finally, claim the original payment.
 		claim_payment(&nodes[0], &expected_route, payment_preimage);
 	}
 
