@@ -1182,7 +1182,7 @@ impl<L: DerefMut<Target = u64>, BRT: DerefMut<Target = HistoricalBucketRangeTrac
 
 	/// Adjusts the channel liquidity balance bounds when successfully routing `amount_msat`.
 	fn successful<Log: Deref>(&mut self, amount_msat: u64, chan_descr: fmt::Arguments, logger: &Log) where Log::Target: Logger {
-		let max_liquidity_msat = self.max_liquidity_msat().checked_sub(amount_msat).unwrap_or(0);
+		let max_liquidity_msat = self.max_liquidity_msat().saturating_sub(amount_msat);
 		log_debug!(logger, "Subtracting {} from max liquidity of {} (setting it to {})", amount_msat, chan_descr, max_liquidity_msat);
 		self.set_max_liquidity_msat(max_liquidity_msat);
 		self.update_history_buckets();
@@ -1218,7 +1218,7 @@ impl<L: DerefMut<Target = u64>, BRT: DerefMut<Target = HistoricalBucketRangeTrac
 
 	/// Adjusts the upper bound of the channel liquidity balance in this direction.
 	fn set_max_liquidity_msat(&mut self, amount_msat: u64) {
-		*self.max_liquidity_offset_msat = self.capacity_msat.checked_sub(amount_msat).unwrap_or(0);
+		*self.max_liquidity_offset_msat = self.available_capacity().saturating_sub(amount_msat);
 		*self.min_liquidity_offset_msat = if amount_msat < self.min_liquidity_msat() {
 			0
 		} else {
