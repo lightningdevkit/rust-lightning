@@ -169,7 +169,7 @@ fn expiry_time_from_unix_epoch(invoice: &Invoice) -> Duration {
 }
 
 /// An error that may occur when making a payment.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PaymentError {
 	/// An error resulting from the provided [`Invoice`] or payment hash.
 	Invoice(&'static str),
