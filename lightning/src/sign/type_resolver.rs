@@ -18,15 +18,19 @@ impl<ECS: EcdsaChannelSigner> ChannelSignerType<ECS> {
 		}
 	}
 
-	pub(crate) fn as_ecdsa(&self) -> &ECS {
+	pub(crate) fn as_ecdsa(&self) -> Option<&ECS> {
 		match self {
-			ChannelSignerType::Ecdsa(ecs) => ecs
+			ChannelSignerType::Ecdsa(ecs) => Some(ecs),
+			#[cfg(taproot)]
+			_ => None
 		}
 	}
 
-	pub(crate) fn as_mut_ecdsa(&mut self) -> &mut ECS {
+	pub(crate) fn as_mut_ecdsa(&mut self) -> Option<&mut ECS> {
 		match self {
-			ChannelSignerType::Ecdsa(ecs) => ecs
+			ChannelSignerType::Ecdsa(ecs) => Some(ecs),
+			#[cfg(taproot)]
+			_ => None
 		}
 	}
 }

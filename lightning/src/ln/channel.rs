@@ -2324,7 +2324,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		log_trace!(logger, "Initial counterparty tx for channel {} is: txid {} tx {}",
 			log_bytes!(self.channel_id()), counterparty_initial_bitcoin_tx.txid, encode::serialize_hex(&counterparty_initial_bitcoin_tx.transaction));
 
-		let counterparty_signature = self.holder_signer.as_ecdsa().sign_counterparty_commitment(&counterparty_initial_commitment_tx, Vec::new(), &self.secp_ctx)
+		let counterparty_signature = self.holder_signer.as_ecdsa().unwrap().sign_counterparty_commitment(&counterparty_initial_commitment_tx, Vec::new(), &self.secp_ctx)
 				.map_err(|_| ChannelError::Close("Failed to get signatures for new commitment_signed".to_owned()))?.0;
 
 		// We sign "counterparty" commitment transaction, allowing them to broadcast the tx if they wish.
@@ -3506,7 +3506,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			*self.next_remote_commitment_tx_fee_info_cached.lock().unwrap() = None;
 		}
 
-		self.holder_signer.as_ecdsa().validate_counterparty_revocation(
+		self.holder_signer.as_ecdsa().unwrap().validate_counterparty_revocation(
 			self.cur_counterparty_commitment_transaction_number + 1,
 			&secret
 		).map_err(|_| ChannelError::Close("Failed to validate revocation from peer".to_owned()))?;
@@ -4346,7 +4346,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		log_trace!(logger, "Proposing initial closing_signed for our counterparty with a fee range of {}-{} sat (with initial proposal {} sats)",
 			our_min_fee, our_max_fee, total_fee_satoshis);
 
-		let sig = self.holder_signer.as_ecdsa()
+		let sig = self.holder_signer.as_ecdsa().unwrap()
 			.sign_closing_transaction(&closing_tx, &self.secp_ctx)
 			.map_err(|()| ChannelError::Close("Failed to get signature for closing transaction.".to_owned()))?;
 
@@ -4556,7 +4556,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 					self.build_closing_transaction($new_fee, false)
 				};
 
-				let sig = self.holder_signer.as_ecdsa()
+				let sig = self.holder_signer.as_ecdsa().unwrap()
 					.sign_closing_transaction(&closing_tx, &self.secp_ctx)
 					.map_err(|_| ChannelError::Close("External signer refused to sign closing transaction".to_owned()))?;
 
@@ -4929,7 +4929,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 	#[cfg(test)]
 	pub fn get_signer(&self) -> &Signer {
 		// the Signer parameterization will only ever be used for the ECDSA signer
-		self.holder_signer.as_ecdsa()
+		self.holder_signer.as_ecdsa().unwrap()
 	}
 
 	#[cfg(test)]
@@ -5507,7 +5507,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 	fn get_outbound_funding_created_signature<L: Deref>(&mut self, logger: &L) -> Result<Signature, ChannelError> where L::Target: Logger {
 		let counterparty_keys = self.build_remote_transaction_keys();
 		let counterparty_initial_commitment_tx = self.build_commitment_transaction(self.cur_counterparty_commitment_transaction_number, &counterparty_keys, false, false, logger).tx;
-		Ok(self.holder_signer.as_ecdsa().sign_counterparty_commitment(&counterparty_initial_commitment_tx, Vec::new(), &self.secp_ctx)
+		Ok(self.holder_signer.as_ecdsa().unwrap().sign_counterparty_commitment(&counterparty_initial_commitment_tx, Vec::new(), &self.secp_ctx)
 				.map_err(|_| ChannelError::Close("Failed to get signatures for new commitment_signed".to_owned()))?.0)
 	}
 
@@ -5641,7 +5641,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			},
 			Ok(v) => v
 		};
-		let our_bitcoin_sig = match self.holder_signer.as_ecdsa().sign_channel_announcement_with_funding_key(&announcement, &self.secp_ctx) {
+		let our_bitcoin_sig = match self.holder_signer.as_ecdsa().unwrap().sign_channel_announcement_with_funding_key(&announcement, &self.secp_ctx) {
 			Err(_) => {
 				log_error!(logger, "Signer rejected channel_announcement signing. Channel will not be announced!");
 				return None;
@@ -5670,7 +5670,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 
 			let our_node_sig = node_signer.sign_gossip_message(msgs::UnsignedGossipMessage::ChannelAnnouncement(&announcement))
 				.map_err(|_| ChannelError::Ignore("Failed to generate node signature for channel_announcement".to_owned()))?;
-			let our_bitcoin_sig = self.holder_signer.as_ecdsa().sign_channel_announcement_with_funding_key(&announcement, &self.secp_ctx)
+			let our_bitcoin_sig = self.holder_signer.as_ecdsa().unwrap().sign_channel_announcement_with_funding_key(&announcement, &self.secp_ctx)
 				.map_err(|_| ChannelError::Ignore("Signer rejected channel_announcement".to_owned()))?;
 			Ok(msgs::ChannelAnnouncement {
 				node_signature_1: if were_node_one { our_node_sig } else { their_node_sig },
@@ -6050,7 +6050,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 				htlcs.push(htlc);
 			}
 
-			let res = self.holder_signer.as_ecdsa().sign_counterparty_commitment(&commitment_stats.tx, commitment_stats.preimages, &self.secp_ctx)
+			let res = self.holder_signer.as_ecdsa().unwrap().sign_counterparty_commitment(&commitment_stats.tx, commitment_stats.preimages, &self.secp_ctx)
 				.map_err(|_| ChannelError::Close("Failed to get signatures for new commitment_signed".to_owned()))?;
 			signature = res.0;
 			htlc_signatures = res.1;
@@ -6362,7 +6362,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Writeable for Channel<Signer> {
 		self.latest_monitor_update_id.write(writer)?;
 
 		let mut key_data = VecWriter(Vec::new());
-		self.holder_signer.as_ecdsa().write(&mut key_data)?;
+		self.holder_signer.as_ecdsa().unwrap().write(&mut key_data)?;
 		assert!(key_data.0.len() < core::usize::MAX);
 		assert!(key_data.0.len() < core::u32::MAX as usize);
 		(key_data.0.len() as u32).write(writer)?;
