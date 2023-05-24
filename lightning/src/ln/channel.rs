@@ -432,6 +432,12 @@ pub(super) struct ReestablishResponses {
 	pub shutdown_msg: Option<msgs::Shutdown>,
 }
 
+/// The return type of `force_shutdown`
+pub(crate) type ShutdownResult = (
+	Option<(OutPoint, ChannelMonitorUpdate)>,
+	Vec<(HTLCSource, PaymentHash, PublicKey, [u8; 32])>
+);
+
 /// If the majority of the channels funds are to the fundee and the initiator holds only just
 /// enough funds to cover their reserve value, channels are at risk of getting "stuck". Because the
 /// initiator controls the feerate, if they then go to increase the channel fee, they may have no
@@ -6228,7 +6234,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 	/// those explicitly stated to be allowed after shutdown completes, eg some simple getters).
 	/// Also returns the list of payment_hashes for channels which we can safely fail backwards
 	/// immediately (others we will have to allow to time out).
-	pub fn force_shutdown(&mut self, should_broadcast: bool) -> (Option<(OutPoint, ChannelMonitorUpdate)>, Vec<(HTLCSource, PaymentHash, PublicKey, [u8; 32])>) {
+	pub fn force_shutdown(&mut self, should_broadcast: bool) -> ShutdownResult {
 		// Note that we MUST only generate a monitor update that indicates force-closure - we're
 		// called during initialization prior to the chain_monitor in the encompassing ChannelManager
 		// being fully configured in some cases. Thus, its likely any monitor events we generate will
