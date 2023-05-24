@@ -2526,9 +2526,10 @@ where
 		}
 	}
 
-	fn construct_recv_pending_htlc_info(&self, hop_data: msgs::OnionHopData, shared_secret: [u8; 32],
-		payment_hash: PaymentHash, amt_msat: u64, cltv_expiry: u32, phantom_shared_secret: Option<[u8; 32]>) -> Result<PendingHTLCInfo, ReceiveError>
-	{
+	fn construct_recv_pending_htlc_info(
+		&self, hop_data: msgs::OnionHopData, shared_secret: [u8; 32], payment_hash: PaymentHash,
+		amt_msat: u64, cltv_expiry: u32, phantom_shared_secret: Option<[u8; 32]>, allow_underpay: bool
+	) -> Result<PendingHTLCInfo, ReceiveError> {
 		// final_incorrect_cltv_expiry
 		if hop_data.outgoing_cltv_value > cltv_expiry {
 			return Err(ReceiveError {
@@ -2554,7 +2555,7 @@ where
 				msg: "The final CLTV expiry is too soon to handle",
 			});
 		}
-		if hop_data.amt_to_forward > amt_msat {
+		if !allow_underpay && hop_data.amt_to_forward > amt_msat {
 			return Err(ReceiveError {
 				err_code: 19,
 				err_data: amt_msat.to_be_bytes().to_vec(),
@@ -2841,7 +2842,7 @@ where
 
 	fn construct_pending_htlc_status<'a>(
 		&self, msg: &msgs::UpdateAddHTLC, shared_secret: [u8; 32], decoded_hop: onion_utils::Hop,
-		next_packet_pubkey_opt: Option<Result<PublicKey, secp256k1::Error>>
+		allow_underpay: bool, next_packet_pubkey_opt: Option<Result<PublicKey, secp256k1::Error>>
 	) -> PendingHTLCStatus {
 		macro_rules! return_err {
 			($msg: expr, $err_code: expr, $data: expr) => {
@@ -2859,7 +2860,9 @@ where
 		match decoded_hop {
 			onion_utils::Hop::Receive(next_hop_data) => {
 				// OUR PAYMENT!
-				match self.construct_recv_pending_htlc_info(next_hop_data, shared_secret, msg.payment_hash, msg.amount_msat, msg.cltv_expiry, None) {
+				match self.construct_recv_pending_htlc_info(next_hop_data, shared_secret, msg.payment_hash,
+					msg.amount_msat, msg.cltv_expiry, None, allow_underpay)
+				{
 					Ok(info) => {
 						// Note that we could obviously respond immediately with an update_fulfill_htlc
 						// message, however that would leak that we are the recipient of this payment, so
@@ -3675,7 +3678,10 @@ where
 												};
 												match next_hop {
 													onion_utils::Hop::Receive(hop_data) => {
-														match self.construct_recv_pending_htlc_info(hop_data, incoming_shared_secret, payment_hash, outgoing_amt_msat, outgoing_cltv_value, Some(phantom_shared_secret)) {
+														match self.construct_recv_pending_htlc_info(hop_data,
+															incoming_shared_secret, payment_hash, outgoing_amt_msat,
+															outgoing_cltv_value, Some(phantom_shared_secret), false)
+														{
 															Ok(info) => phantom_receives.push((prev_short_channel_id, prev_funding_outpoint, prev_user_channel_id, vec![(info, prev_htlc_id)])),
 															Err(ReceiveError { err_code, err_data, msg }) => failed_payment!(msg, err_code, err_data, Some(phantom_shared_secret))
 														}
@@ -5424,7 +5430,8 @@ where
 
 				let pending_forward_info = match decoded_hop_res {
 					Ok((next_hop, shared_secret, next_packet_pk_opt)) =>
-						self.construct_pending_htlc_status(msg, shared_secret, next_hop, next_packet_pk_opt),
+						self.construct_pending_htlc_status(msg, shared_secret, next_hop,
+							chan.get().context.config().accept_underpaying_htlcs, next_packet_pk_opt),
 					Err(e) => PendingHTLCStatus::Fail(e)
 				};
 				let create_pending_htlc_status = |chan: &Channel<<SP::Target as SignerProvider>::Signer>, pending_forward_info: PendingHTLCStatus, error_code: u16| {
