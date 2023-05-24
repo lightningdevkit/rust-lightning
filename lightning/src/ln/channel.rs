@@ -3055,8 +3055,13 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 				// handling this case better and maybe fulfilling some of the HTLCs while attempting
 				// to rebalance channels.
 				match &htlc_update {
-					&HTLCUpdateAwaitingACK::AddHTLC {amount_msat, cltv_expiry, ref payment_hash, ref source, ref onion_routing_packet, ..} => {
-						match self.send_htlc(amount_msat, *payment_hash, cltv_expiry, source.clone(), onion_routing_packet.clone(), false, logger) {
+					&HTLCUpdateAwaitingACK::AddHTLC {
+						amount_msat, cltv_expiry, ref payment_hash, ref source, ref onion_routing_packet,
+						skimmed_fee_msat, ..
+					} => {
+						match self.send_htlc(amount_msat, *payment_hash, cltv_expiry, source.clone(),
+							onion_routing_packet.clone(), false, skimmed_fee_msat, logger)
+						{
 							Ok(update_add_msg_option) => update_add_htlcs.push(update_add_msg_option.unwrap()),
 							Err(e) => {
 								match e {
@@ -3698,7 +3703,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 					payment_hash: htlc.payment_hash,
 					cltv_expiry: htlc.cltv_expiry,
 					onion_routing_packet: (**onion_packet).clone(),
-					skimmed_fee_msat: None,
+					skimmed_fee_msat: htlc.skimmed_fee_msat,
 				});
 			}
 		}
@@ -5046,11 +5051,13 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 	/// commitment update.
 	///
 	/// `Err`s will only be [`ChannelError::Ignore`].
-	pub fn queue_add_htlc<L: Deref>(&mut self, amount_msat: u64, payment_hash: PaymentHash, cltv_expiry: u32, source: HTLCSource,
-		onion_routing_packet: msgs::OnionPacket, logger: &L)
-	-> Result<(), ChannelError> where L::Target: Logger {
+	pub fn queue_add_htlc<L: Deref>(
+		&mut self, amount_msat: u64, payment_hash: PaymentHash, cltv_expiry: u32, source: HTLCSource,
+		onion_routing_packet: msgs::OnionPacket, skimmed_fee_msat: Option<u64>, logger: &L
+	) -> Result<(), ChannelError> where L::Target: Logger {
 		self
-			.send_htlc(amount_msat, payment_hash, cltv_expiry, source, onion_routing_packet, true, logger)
+			.send_htlc(amount_msat, payment_hash, cltv_expiry, source, onion_routing_packet, true,
+				skimmed_fee_msat, logger)
 			.map(|msg_opt| assert!(msg_opt.is_none(), "We forced holding cell?"))
 			.map_err(|err| {
 				if let ChannelError::Ignore(_) = err { /* fine */ }
@@ -5075,9 +5082,11 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 	/// on this [`Channel`] if `force_holding_cell` is false.
 	///
 	/// `Err`s will only be [`ChannelError::Ignore`].
-	fn send_htlc<L: Deref>(&mut self, amount_msat: u64, payment_hash: PaymentHash, cltv_expiry: u32, source: HTLCSource,
-		onion_routing_packet: msgs::OnionPacket, mut force_holding_cell: bool, logger: &L)
-	-> Result<Option<msgs::UpdateAddHTLC>, ChannelError> where L::Target: Logger {
+	fn send_htlc<L: Deref>(
+		&mut self, amount_msat: u64, payment_hash: PaymentHash, cltv_expiry: u32, source: HTLCSource,
+		onion_routing_packet: msgs::OnionPacket, mut force_holding_cell: bool,
+		skimmed_fee_msat: Option<u64>, logger: &L
+	) -> Result<Option<msgs::UpdateAddHTLC>, ChannelError> where L::Target: Logger {
 		if (self.context.channel_state & (ChannelState::ChannelReady as u32 | BOTH_SIDES_SHUTDOWN_MASK)) != (ChannelState::ChannelReady as u32) {
 			return Err(ChannelError::Ignore("Cannot send HTLC until channel is fully established and we haven't started shutting down".to_owned()));
 		}
@@ -5129,7 +5138,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 				cltv_expiry,
 				source,
 				onion_routing_packet,
-				skimmed_fee_msat: None,
+				skimmed_fee_msat,
 			});
 			return Ok(None);
 		}
@@ -5141,7 +5150,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			cltv_expiry,
 			state: OutboundHTLCState::LocalAnnounced(Box::new(onion_routing_packet.clone())),
 			source,
-			skimmed_fee_msat: None,
+			skimmed_fee_msat,
 		});
 
 		let res = msgs::UpdateAddHTLC {
@@ -5151,7 +5160,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			payment_hash,
 			cltv_expiry,
 			onion_routing_packet,
-			skimmed_fee_msat: None,
+			skimmed_fee_msat,
 		};
 		self.context.next_holder_htlc_id += 1;
 
@@ -5290,8 +5299,12 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 	///
 	/// Shorthand for calling [`Self::send_htlc`] followed by a commitment update, see docs on
 	/// [`Self::send_htlc`] and [`Self::build_commitment_no_state_update`] for more info.
-	pub fn send_htlc_and_commit<L: Deref>(&mut self, amount_msat: u64, payment_hash: PaymentHash, cltv_expiry: u32, source: HTLCSource, onion_routing_packet: msgs::OnionPacket, logger: &L) -> Result<Option<&ChannelMonitorUpdate>, ChannelError> where L::Target: Logger {
-		let send_res = self.send_htlc(amount_msat, payment_hash, cltv_expiry, source, onion_routing_packet, false, logger);
+	pub fn send_htlc_and_commit<L: Deref>(
+		&mut self, amount_msat: u64, payment_hash: PaymentHash, cltv_expiry: u32, source: HTLCSource,
+		onion_routing_packet: msgs::OnionPacket, skimmed_fee_msat: Option<u64>, logger: &L
+	) -> Result<Option<&ChannelMonitorUpdate>, ChannelError> where L::Target: Logger {
+		let send_res = self.send_htlc(amount_msat, payment_hash, cltv_expiry, source,
+			onion_routing_packet, false, skimmed_fee_msat, logger);
 		if let Err(e) = &send_res { if let ChannelError::Ignore(_) = e {} else { debug_assert!(false, "Sending cannot trigger channel failure"); } }
 		match send_res? {
 			Some(_) => {
