@@ -2528,7 +2528,8 @@ where
 
 	fn construct_recv_pending_htlc_info(
 		&self, hop_data: msgs::OnionHopData, shared_secret: [u8; 32], payment_hash: PaymentHash,
-		amt_msat: u64, cltv_expiry: u32, phantom_shared_secret: Option<[u8; 32]>, allow_underpay: bool
+		amt_msat: u64, cltv_expiry: u32, phantom_shared_secret: Option<[u8; 32]>, allow_underpay: bool,
+		counterparty_skimmed_fee_msat: Option<u64>,
 	) -> Result<PendingHTLCInfo, ReceiveError> {
 		// final_incorrect_cltv_expiry
 		if hop_data.outgoing_cltv_value > cltv_expiry {
@@ -2555,7 +2556,10 @@ where
 				msg: "The final CLTV expiry is too soon to handle",
 			});
 		}
-		if !allow_underpay && hop_data.amt_to_forward > amt_msat {
+		if (!allow_underpay && hop_data.amt_to_forward > amt_msat) ||
+			(allow_underpay && hop_data.amt_to_forward >
+			 amt_msat.saturating_add(counterparty_skimmed_fee_msat.unwrap_or(0)))
+		{
 			return Err(ReceiveError {
 				err_code: 19,
 				err_data: amt_msat.to_be_bytes().to_vec(),
@@ -2622,7 +2626,7 @@ where
 			incoming_amt_msat: Some(amt_msat),
 			outgoing_amt_msat: hop_data.amt_to_forward,
 			outgoing_cltv_value: hop_data.outgoing_cltv_value,
-			skimmed_fee_msat: None,
+			skimmed_fee_msat: counterparty_skimmed_fee_msat,
 		})
 	}
 
@@ -2861,7 +2865,7 @@ where
 			onion_utils::Hop::Receive(next_hop_data) => {
 				// OUR PAYMENT!
 				match self.construct_recv_pending_htlc_info(next_hop_data, shared_secret, msg.payment_hash,
-					msg.amount_msat, msg.cltv_expiry, None, allow_underpay)
+					msg.amount_msat, msg.cltv_expiry, None, allow_underpay, msg.skimmed_fee_msat)
 				{
 					Ok(info) => {
 						// Note that we could obviously respond immediately with an update_fulfill_htlc
@@ -3680,7 +3684,7 @@ where
 													onion_utils::Hop::Receive(hop_data) => {
 														match self.construct_recv_pending_htlc_info(hop_data,
 															incoming_shared_secret, payment_hash, outgoing_amt_msat,
-															outgoing_cltv_value, Some(phantom_shared_secret), false)
+															outgoing_cltv_value, Some(phantom_shared_secret), false, None)
 														{
 															Ok(info) => phantom_receives.push((prev_short_channel_id, prev_funding_outpoint, prev_user_channel_id, vec![(info, prev_htlc_id)])),
 															Err(ReceiveError { err_code, err_data, msg }) => failed_payment!(msg, err_code, err_data, Some(phantom_shared_secret))
@@ -3931,6 +3935,8 @@ where
 											htlcs.iter_mut().for_each(|htlc| htlc.total_value_received = Some(amount_msat));
 											let counterparty_skimmed_fee_msat = htlcs.iter()
 												.map(|htlc| htlc.counterparty_skimmed_fee_msat.unwrap_or(0)).sum();
+											debug_assert!(total_value.saturating_sub(amount_msat) <=
+												counterparty_skimmed_fee_msat);
 											new_events.push_back((events::Event::PaymentClaimable {
 												receiver_node_id: Some(receiver_node_id),
 												payment_hash,
@@ -9741,6 +9747,50 @@ mod tests {
 			_ => panic!("Unexpected event"),
 		}
 		get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, last_random_pk);
+	}
+
+	#[test]
+	fn reject_excessively_underpaying_htlcs() {
+		let chanmon_cfg = create_chanmon_cfgs(1);
+		let node_cfg = create_node_cfgs(1, &chanmon_cfg);
+		let node_chanmgr = create_node_chanmgrs(1, &node_cfg, &[None]);
+		let node = create_network(1, &node_cfg, &node_chanmgr);
+		let sender_intended_amt_msat = 100;
+		let extra_fee_msat = 10;
+		let hop_data = msgs::OnionHopData {
+			amt_to_forward: 100,
+			outgoing_cltv_value: 42,
+			format: msgs::OnionHopDataFormat::FinalNode {
+				keysend_preimage: None,
+				payment_metadata: None,
+				payment_data: Some(msgs::FinalOnionHopData {
+					payment_secret: PaymentSecret([0; 32]), total_msat: sender_intended_amt_msat,
+				}),
+			}
+		};
+		// Check that if the amount we received + the penultimate hop extra fee is less than the sender
+		// intended amount, we fail the payment.
+		if let Err(crate::ln::channelmanager::ReceiveError { err_code, .. }) =
+			node[0].node.construct_recv_pending_htlc_info(hop_data, [0; 32], PaymentHash([0; 32]),
+				sender_intended_amt_msat - extra_fee_msat - 1, 42, None, true, Some(extra_fee_msat))
+		{
+			assert_eq!(err_code, 19);
+		} else { panic!(); }
+
+		// If amt_received + extra_fee is equal to the sender intended amount, we're fine.
+		let hop_data = msgs::OnionHopData { // This is the same hop_data as above, OnionHopData doesn't implement Clone
+			amt_to_forward: 100,
+			outgoing_cltv_value: 42,
+			format: msgs::OnionHopDataFormat::FinalNode {
+				keysend_preimage: None,
+				payment_metadata: None,
+				payment_data: Some(msgs::FinalOnionHopData {
+					payment_secret: PaymentSecret([0; 32]), total_msat: sender_intended_amt_msat,
+				}),
+			}
+		};
+		assert!(node[0].node.construct_recv_pending_htlc_info(hop_data, [0; 32], PaymentHash([0; 32]),
+			sender_intended_amt_msat - extra_fee_msat, 42, None, true, Some(extra_fee_msat)).is_ok());
 	}
 
 	#[cfg(anchors)]
