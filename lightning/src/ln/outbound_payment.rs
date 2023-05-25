@@ -312,7 +312,7 @@ impl<T: Time> Display for PaymentAttemptsUsingTime<T> {
 /// [`ChannelManager::send_payment`]: crate::ln::channelmanager::ChannelManager::send_payment
 /// [`Event::PaymentPathFailed`]: crate::events::Event::PaymentPathFailed
 /// [`Event::PaymentFailed`]: crate::events::Event::PaymentFailed
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RetryableSendFailure {
 	/// The provided [`PaymentParameters::expiry_time`] indicated that the payment has expired. Note
 	/// that this error is *not* caused by [`Retry::Timeout`].
