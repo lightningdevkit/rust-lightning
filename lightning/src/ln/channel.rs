@@ -3695,6 +3695,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 					payment_hash: htlc.payment_hash,
 					cltv_expiry: htlc.cltv_expiry,
 					onion_routing_packet: (**onion_packet).clone(),
+					skimmed_fee_msat: None,
 				});
 			}
 		}
@@ -5145,6 +5146,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			payment_hash,
 			cltv_expiry,
 			onion_routing_packet,
+			skimmed_fee_msat: None,
 		};
 		self.context.next_holder_htlc_id += 1;
 
