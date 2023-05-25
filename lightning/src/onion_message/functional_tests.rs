@@ -13,7 +13,7 @@ use crate::blinded_path::BlindedPath;
 use crate::sign::{NodeSigner, Recipient};
 use crate::ln::features::InitFeatures;
 use crate::ln::msgs::{self, DecodeError, OnionMessageHandler};
-use super::{CustomOnionMessageContents, CustomOnionMessageHandler, Destination, OffersMessage, OffersMessageHandler, OnionMessageContents, OnionMessenger, SendError};
+use super::{CustomOnionMessageContents, CustomOnionMessageHandler, Destination, OffersMessage, OffersMessageHandler, OnionMessageContents, OnionMessagePath, OnionMessenger, SendError};
 use crate::util::ser::{Writeable, Writer};
 use crate::util::test_utils;
 
@@ -146,7 +146,11 @@ fn one_hop() {
 	let nodes = create_nodes(2);
 	let test_msg = OnionMessageContents::Custom(TestCustomMessage {});
 
-	nodes[0].messenger.send_onion_message(&[], Destination::Node(nodes[1].get_node_pk()), test_msg, None).unwrap();
+	let path = OnionMessagePath {
+		intermediate_nodes: vec![],
+		destination: Destination::Node(nodes[1].get_node_pk()),
+	};
+	nodes[0].messenger.send_onion_message(path, test_msg, None).unwrap();
 	pass_along_path(&nodes);
 }
 
@@ -155,7 +159,11 @@ fn two_unblinded_hops() {
 	let nodes = create_nodes(3);
 	let test_msg = OnionMessageContents::Custom(TestCustomMessage {});
 
-	nodes[0].messenger.send_onion_message(&[nodes[1].get_node_pk()], Destination::Node(nodes[2].get_node_pk()), test_msg, None).unwrap();
+	let path = OnionMessagePath {
+		intermediate_nodes: vec![nodes[1].get_node_pk()],
+		destination: Destination::Node(nodes[2].get_node_pk()),
+	};
+	nodes[0].messenger.send_onion_message(path, test_msg, None).unwrap();
 	pass_along_path(&nodes);
 }
 
@@ -166,8 +174,12 @@ fn two_unblinded_two_blinded() {
 
 	let secp_ctx = Secp256k1::new();
 	let blinded_path = BlindedPath::new_for_message(&[nodes[3].get_node_pk(), nodes[4].get_node_pk()], &*nodes[4].keys_manager, &secp_ctx).unwrap();
+	let path = OnionMessagePath {
+		intermediate_nodes: vec![nodes[1].get_node_pk(), nodes[2].get_node_pk()],
+		destination: Destination::BlindedPath(blinded_path),
+	};
 
-	nodes[0].messenger.send_onion_message(&[nodes[1].get_node_pk(), nodes[2].get_node_pk()], Destination::BlindedPath(blinded_path), test_msg, None).unwrap();
+	nodes[0].messenger.send_onion_message(path, test_msg, None).unwrap();
 	pass_along_path(&nodes);
 }
 
@@ -178,8 +190,12 @@ fn three_blinded_hops() {
 
 	let secp_ctx = Secp256k1::new();
 	let blinded_path = BlindedPath::new_for_message(&[nodes[1].get_node_pk(), nodes[2].get_node_pk(), nodes[3].get_node_pk()], &*nodes[3].keys_manager, &secp_ctx).unwrap();
+	let path = OnionMessagePath {
+		intermediate_nodes: vec![],
+		destination: Destination::BlindedPath(blinded_path),
+	};
 
-	nodes[0].messenger.send_onion_message(&[], Destination::BlindedPath(blinded_path), test_msg, None).unwrap();
+	nodes[0].messenger.send_onion_message(path, test_msg, None).unwrap();
 	pass_along_path(&nodes);
 }
 
@@ -190,8 +206,12 @@ fn too_big_packet_error() {
 	let test_msg = OnionMessageContents::Custom(TestCustomMessage {});
 
 	let hop_node_id = nodes[1].get_node_pk();
-	let hops = [hop_node_id; 400];
-	let err = nodes[0].messenger.send_onion_message(&hops, Destination::Node(hop_node_id), test_msg, None).unwrap_err();
+	let hops = vec![hop_node_id; 400];
+	let path = OnionMessagePath {
+		intermediate_nodes: hops,
+		destination: Destination::Node(hop_node_id),
+	};
+	let err = nodes[0].messenger.send_onion_message(path, test_msg, None).unwrap_err();
 	assert_eq!(err, SendError::TooBigPacket);
 }
 
@@ -204,13 +224,21 @@ fn we_are_intro_node() {
 
 	let secp_ctx = Secp256k1::new();
 	let blinded_path = BlindedPath::new_for_message(&[nodes[0].get_node_pk(), nodes[1].get_node_pk(), nodes[2].get_node_pk()], &*nodes[2].keys_manager, &secp_ctx).unwrap();
+	let path = OnionMessagePath {
+		intermediate_nodes: vec![],
+		destination: Destination::BlindedPath(blinded_path),
+	};
 
-	nodes[0].messenger.send_onion_message(&[], Destination::BlindedPath(blinded_path), OnionMessageContents::Custom(test_msg.clone()), None).unwrap();
+	nodes[0].messenger.send_onion_message(path, OnionMessageContents::Custom(test_msg.clone()), None).unwrap();
 	pass_along_path(&nodes);
 
 	// Try with a two-hop blinded path where we are the introduction node.
 	let blinded_path = BlindedPath::new_for_message(&[nodes[0].get_node_pk(), nodes[1].get_node_pk()], &*nodes[1].keys_manager, &secp_ctx).unwrap();
-	nodes[0].messenger.send_onion_message(&[], Destination::BlindedPath(blinded_path), OnionMessageContents::Custom(test_msg), None).unwrap();
+	let path = OnionMessagePath {
+		intermediate_nodes: vec![],
+		destination: Destination::BlindedPath(blinded_path),
+	};
+	nodes[0].messenger.send_onion_message(path, OnionMessageContents::Custom(test_msg), None).unwrap();
 	nodes.remove(2);
 	pass_along_path(&nodes);
 }
@@ -225,14 +253,22 @@ fn invalid_blinded_path_error() {
 	let secp_ctx = Secp256k1::new();
 	let mut blinded_path = BlindedPath::new_for_message(&[nodes[1].get_node_pk(), nodes[2].get_node_pk()], &*nodes[2].keys_manager, &secp_ctx).unwrap();
 	blinded_path.blinded_hops.clear();
-	let err = nodes[0].messenger.send_onion_message(&[], Destination::BlindedPath(blinded_path), OnionMessageContents::Custom(test_msg.clone()), None).unwrap_err();
+	let path = OnionMessagePath {
+		intermediate_nodes: vec![],
+		destination: Destination::BlindedPath(blinded_path),
+	};
+	let err = nodes[0].messenger.send_onion_message(path, OnionMessageContents::Custom(test_msg.clone()), None).unwrap_err();
 	assert_eq!(err, SendError::TooFewBlindedHops);
 
 	// 1 hop
 	let mut blinded_path = BlindedPath::new_for_message(&[nodes[1].get_node_pk(), nodes[2].get_node_pk()], &*nodes[2].keys_manager, &secp_ctx).unwrap();
 	blinded_path.blinded_hops.remove(0);
 	assert_eq!(blinded_path.blinded_hops.len(), 1);
-	let err = nodes[0].messenger.send_onion_message(&[], Destination::BlindedPath(blinded_path), OnionMessageContents::Custom(test_msg), None).unwrap_err();
+	let path = OnionMessagePath {
+		intermediate_nodes: vec![],
+		destination: Destination::BlindedPath(blinded_path),
+	};
+	let err = nodes[0].messenger.send_onion_message(path, OnionMessageContents::Custom(test_msg), None).unwrap_err();
 	assert_eq!(err, SendError::TooFewBlindedHops);
 }
 
@@ -243,8 +279,12 @@ fn reply_path() {
 	let secp_ctx = Secp256k1::new();
 
 	// Destination::Node
+	let path = OnionMessagePath {
+		intermediate_nodes: vec![nodes[1].get_node_pk(), nodes[2].get_node_pk()],
+		destination: Destination::Node(nodes[3].get_node_pk()),
+	};
 	let reply_path = BlindedPath::new_for_message(&[nodes[2].get_node_pk(), nodes[1].get_node_pk(), nodes[0].get_node_pk()], &*nodes[0].keys_manager, &secp_ctx).unwrap();
-	nodes[0].messenger.send_onion_message(&[nodes[1].get_node_pk(), nodes[2].get_node_pk()], Destination::Node(nodes[3].get_node_pk()), OnionMessageContents::Custom(test_msg.clone()), Some(reply_path)).unwrap();
+	nodes[0].messenger.send_onion_message(path, OnionMessageContents::Custom(test_msg.clone()), Some(reply_path)).unwrap();
 	pass_along_path(&nodes);
 	// Make sure the last node successfully decoded the reply path.
 	nodes[3].logger.assert_log_contains(
@@ -253,9 +293,13 @@ fn reply_path() {
 
 	// Destination::BlindedPath
 	let blinded_path = BlindedPath::new_for_message(&[nodes[1].get_node_pk(), nodes[2].get_node_pk(), nodes[3].get_node_pk()], &*nodes[3].keys_manager, &secp_ctx).unwrap();
+	let path = OnionMessagePath {
+		intermediate_nodes: vec![],
+		destination: Destination::BlindedPath(blinded_path),
+	};
 	let reply_path = BlindedPath::new_for_message(&[nodes[2].get_node_pk(), nodes[1].get_node_pk(), nodes[0].get_node_pk()], &*nodes[0].keys_manager, &secp_ctx).unwrap();
 
-	nodes[0].messenger.send_onion_message(&[], Destination::BlindedPath(blinded_path), OnionMessageContents::Custom(test_msg), Some(reply_path)).unwrap();
+	nodes[0].messenger.send_onion_message(path, OnionMessageContents::Custom(test_msg), Some(reply_path)).unwrap();
 	pass_along_path(&nodes);
 	nodes[3].logger.assert_log_contains(
 		"lightning::onion_message::messenger",
@@ -279,7 +323,11 @@ fn invalid_custom_message_type() {
 	}
 
 	let test_msg = OnionMessageContents::Custom(InvalidCustomMessage {});
-	let err = nodes[0].messenger.send_onion_message(&[], Destination::Node(nodes[1].get_node_pk()), test_msg, None).unwrap_err();
+	let path = OnionMessagePath {
+		intermediate_nodes: vec![],
+		destination: Destination::Node(nodes[1].get_node_pk()),
+	};
+	let err = nodes[0].messenger.send_onion_message(path, test_msg, None).unwrap_err();
 	assert_eq!(err, SendError::InvalidMessage);
 }
 
@@ -287,10 +335,14 @@ fn invalid_custom_message_type() {
 fn peer_buffer_full() {
 	let nodes = create_nodes(2);
 	let test_msg = TestCustomMessage {};
+	let path = OnionMessagePath {
+		intermediate_nodes: vec![],
+		destination: Destination::Node(nodes[1].get_node_pk()),
+	};
 	for _ in 0..188 { // Based on MAX_PER_PEER_BUFFER_SIZE in OnionMessenger
-		nodes[0].messenger.send_onion_message(&[], Destination::Node(nodes[1].get_node_pk()), OnionMessageContents::Custom(test_msg.clone()), None).unwrap();
+		nodes[0].messenger.send_onion_message(path.clone(), OnionMessageContents::Custom(test_msg.clone()), None).unwrap();
 	}
-	let err = nodes[0].messenger.send_onion_message(&[], Destination::Node(nodes[1].get_node_pk()), OnionMessageContents::Custom(test_msg), None).unwrap_err();
+	let err = nodes[0].messenger.send_onion_message(path, OnionMessageContents::Custom(test_msg), None).unwrap_err();
 	assert_eq!(err, SendError::BufferFull);
 }
 
@@ -302,11 +354,15 @@ fn many_hops() {
 	let nodes = create_nodes(num_nodes as u8);
 	let test_msg = OnionMessageContents::Custom(TestCustomMessage {});
 
-	let mut intermediates = vec![];
+	let mut intermediate_nodes = vec![];
 	for i in 1..(num_nodes-1) {
-		intermediates.push(nodes[i].get_node_pk());
+		intermediate_nodes.push(nodes[i].get_node_pk());
 	}
 
-	nodes[0].messenger.send_onion_message(&intermediates, Destination::Node(nodes[num_nodes-1].get_node_pk()), test_msg, None).unwrap();
+	let path = OnionMessagePath {
+		intermediate_nodes,
+		destination: Destination::Node(nodes[num_nodes-1].get_node_pk()),
+	};
+	nodes[0].messenger.send_onion_message(path, test_msg, None).unwrap();
 	pass_along_path(&nodes);
 }

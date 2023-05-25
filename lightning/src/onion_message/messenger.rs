@@ -46,7 +46,7 @@ use crate::prelude::*;
 /// # use lightning::blinded_path::BlindedPath;
 /// # use lightning::sign::KeysManager;
 /// # use lightning::ln::peer_handler::IgnoringMessageHandler;
-/// # use lightning::onion_message::{CustomOnionMessageContents, Destination, OnionMessageContents, OnionMessenger};
+/// # use lightning::onion_message::{CustomOnionMessageContents, Destination, OnionMessageContents, OnionMessagePath, OnionMessenger};
 /// # use lightning::util::logger::{Logger, Record};
 /// # use lightning::util::ser::{Writeable, Writer};
 /// # use lightning::io;
@@ -84,11 +84,14 @@ use crate::prelude::*;
 /// 	}
 /// }
 /// // Send a custom onion message to a node id.
-/// let intermediate_hops = [hop_node_id1, hop_node_id2];
+/// let path = OnionMessagePath {
+/// 	intermediate_nodes: vec![hop_node_id1, hop_node_id2],
+/// 	destination: Destination::Node(destination_node_id),
+/// };
 /// let reply_path = None;
 /// # let your_custom_message = YourCustomMessage {};
 /// let message = OnionMessageContents::Custom(your_custom_message);
-/// onion_messenger.send_onion_message(&intermediate_hops, Destination::Node(destination_node_id), message, reply_path);
+/// onion_messenger.send_onion_message(path, message, reply_path);
 ///
 /// // Create a blinded path to yourself, for someone to send an onion message to.
 /// # let your_node_id = hop_node_id1;
@@ -96,11 +99,14 @@ use crate::prelude::*;
 /// let blinded_path = BlindedPath::new_for_message(&hops, &keys_manager, &secp_ctx).unwrap();
 ///
 /// // Send a custom onion message to a blinded path.
-/// # let intermediate_hops = [hop_node_id1, hop_node_id2];
+/// let path = OnionMessagePath {
+/// 	intermediate_nodes: vec![hop_node_id1, hop_node_id2],
+/// 	destination: Destination::BlindedPath(blinded_path),
+/// };
 /// let reply_path = None;
 /// # let your_custom_message = YourCustomMessage {};
 /// let message = OnionMessageContents::Custom(your_custom_message);
-/// onion_messenger.send_onion_message(&intermediate_hops, Destination::BlindedPath(blinded_path), message, reply_path);
+/// onion_messenger.send_onion_message(path, message, reply_path);
 /// ```
 ///
 /// [offers]: <https://github.com/lightning/bolts/pull/798>
@@ -122,7 +128,18 @@ where
 	custom_handler: CMH,
 }
 
+/// A path for sending an [`msgs::OnionMessage`].
+#[derive(Clone)]
+pub struct OnionMessagePath {
+	/// Nodes on the path between the sender and the destination.
+	pub intermediate_nodes: Vec<PublicKey>,
+
+	/// The recipient of the message.
+	pub destination: Destination,
+}
+
 /// The destination of an onion message.
+#[derive(Clone)]
 pub enum Destination {
 	/// We're sending this onion message to a node.
 	Node(PublicKey),
@@ -216,9 +233,14 @@ where
 		}
 	}
 
-	/// Send an onion message with contents `message` to `destination`, routing it through `intermediate_nodes`.
+	/// Send an onion message with contents `message` to the destination of `path`.
+	///
 	/// See [`OnionMessenger`] for example usage.
-	pub fn send_onion_message<T: CustomOnionMessageContents>(&self, intermediate_nodes: &[PublicKey], mut destination: Destination, message: OnionMessageContents<T>, reply_path: Option<BlindedPath>) -> Result<(), SendError> {
+	pub fn send_onion_message<T: CustomOnionMessageContents>(
+		&self, path: OnionMessagePath, message: OnionMessageContents<T>,
+		reply_path: Option<BlindedPath>
+	) -> Result<(), SendError> {
+		let OnionMessagePath { intermediate_nodes, mut destination } = path;
 		if let Destination::BlindedPath(BlindedPath { ref blinded_hops, .. }) = destination {
 			if blinded_hops.len() < 2 {
 				return Err(SendError::TooFewBlindedHops);
@@ -252,7 +274,7 @@ where
 			}
 		};
 		let (packet_payloads, packet_keys) = packet_payloads_and_keys(
-			&self.secp_ctx, intermediate_nodes, destination, message, reply_path, &blinding_secret)
+			&self.secp_ctx, &intermediate_nodes, destination, message, reply_path, &blinding_secret)
 			.map_err(|e| SendError::Secp256k1(e))?;
 
 		let prng_seed = self.entropy_source.get_secure_random_bytes();
