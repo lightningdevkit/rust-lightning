@@ -52,6 +52,34 @@ use core::ops::Deref;
 use crate::sync::Mutex;
 use bitcoin::hashes::hex::ToHex;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+/// Enum denoting the type of channel that's being used.
+///
+/// It will be serialized within ChannelTransactionParameters.
+pub enum ChannelType {
+	/// A legacy channel, without support for anchors
+	Legacy,
+	/// An ECDSA channel with anchor support
+	Anchors,
+	/// A Taproot channel. All Taproot channels will be supporting anchors.
+	Taproot
+}
+
+impl ChannelType {
+	pub fn supports_anchors(&self) -> bool {
+		match self {
+			ChannelType::Legacy => false,
+			_ => true
+		}
+	}
+}
+
+impl_writeable_tlv_based_enum!(ChannelType,
+	(0, Legacy) => {},
+	(1, Anchors) => {},
+	(2, Taproot) => {}, ;
+);
+
 #[cfg(test)]
 pub struct ChannelValueStat {
 	pub value_to_self_msat: u64,
@@ -892,7 +920,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 	}
 
 	pub(crate) fn opt_anchors(&self) -> bool {
-		self.channel_transaction_parameters.opt_anchors.is_some()
+		self.channel_transaction_parameters.channel_type.supports_anchors()
 	}
 
 	fn get_initial_channel_type(config: &UserConfig, their_features: &InitFeatures) -> ChannelTypeFeatures {
@@ -942,7 +970,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		if self.channel_type.supports_anchors_zero_fee_htlc_tx() {
 			self.channel_type.clear_anchors_zero_fee_htlc_tx();
 			assert!(self.channel_transaction_parameters.opt_non_zero_fee_anchors.is_none());
-			self.channel_transaction_parameters.opt_anchors = None;
+			self.channel_transaction_parameters.channel_type = ChannelType::Legacy;
 		} else if self.channel_type.supports_scid_privacy() {
 			self.channel_type.clear_scid_privacy();
 		} else {
@@ -1106,7 +1134,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 				is_outbound_from_holder: true,
 				counterparty_parameters: None,
 				funding_outpoint: None,
-				opt_anchors: if channel_type.requires_anchors_zero_fee_htlc_tx() { Some(()) } else { None },
+				channel_type: if channel_type.requires_anchors_zero_fee_htlc_tx() { ChannelType::Anchors } else { ChannelType::Legacy },
 				opt_non_zero_fee_anchors: None
 			},
 			funding_transaction: None,
@@ -1465,7 +1493,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 					pubkeys: counterparty_pubkeys,
 				}),
 				funding_outpoint: None,
-				opt_anchors: if opt_anchors { Some(()) } else { None },
+				channel_type: if opt_anchors { ChannelType::Anchors } else { ChannelType::Legacy },
 				opt_non_zero_fee_anchors: None
 			},
 			funding_transaction: None,
@@ -1690,8 +1718,8 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			broadcaster_max_commitment_tx_output.1 = cmp::max(broadcaster_max_commitment_tx_output.1, value_to_remote_msat as u64);
 		}
 
-		let total_fee_sat = Channel::<Signer>::commit_tx_fee_sat(feerate_per_kw, included_non_dust_htlcs.len(), self.channel_transaction_parameters.opt_anchors.is_some());
-		let anchors_val = if self.channel_transaction_parameters.opt_anchors.is_some() { ANCHOR_OUTPUT_VALUE_SATOSHI * 2 } else { 0 } as i64;
+		let total_fee_sat = Channel::<Signer>::commit_tx_fee_sat(feerate_per_kw, included_non_dust_htlcs.len(), self.channel_transaction_parameters.channel_type.supports_anchors());
+		let anchors_val = if self.channel_transaction_parameters.channel_type.supports_anchors() { ANCHOR_OUTPUT_VALUE_SATOSHI * 2 } else { 0 } as i64;
 		let (value_to_self, value_to_remote) = if self.is_outbound() {
 			(value_to_self_msat / 1000 - anchors_val - total_fee_sat as i64, value_to_remote_msat / 1000)
 		} else {
@@ -1726,7 +1754,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		let tx = CommitmentTransaction::new_with_auxiliary_htlc_data(commitment_number,
 		                                                             value_to_a as u64,
 		                                                             value_to_b as u64,
-		                                                             self.channel_transaction_parameters.opt_anchors.is_some(),
+		                                                             self.channel_transaction_parameters.channel_type.supports_anchors(),
 		                                                             funding_pubkey_a,
 		                                                             funding_pubkey_b,
 		                                                             keys.clone(),

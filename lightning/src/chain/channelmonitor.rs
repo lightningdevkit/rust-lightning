@@ -1566,7 +1566,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 					debug_assert!(htlc_input_idx_opt.is_some());
 					BitcoinOutPoint::new(*txid, htlc_input_idx_opt.unwrap_or(0))
 				} else {
-					debug_assert!(!self.onchain_tx_handler.opt_anchors());
+					debug_assert!(!self.onchain_tx_handler.channel_type().supports_anchors());
 					BitcoinOutPoint::new(*txid, 0)
 				}
 			} else {
@@ -2425,10 +2425,10 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 						// If the channel supports anchor outputs, we'll need to emit an external
 						// event to be consumed such that a child transaction is broadcast with a
 						// high enough feerate for the parent commitment transaction to confirm.
-						if self.onchain_tx_handler.opt_anchors() {
+						if self.onchain_tx_handler.channel_type().supports_anchors() {
 							let funding_output = HolderFundingOutput::build(
 								self.funding_redeemscript.clone(), self.channel_value_satoshis,
-								self.onchain_tx_handler.opt_anchors(),
+								self.onchain_tx_handler.channel_type().supports_anchors(),
 							);
 							let best_block_height = self.best_block.height();
 							let commitment_package = PackageTemplate::build_package(
@@ -2617,7 +2617,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			// First, process non-htlc outputs (to_holder & to_counterparty)
 			for (idx, outp) in tx.output.iter().enumerate() {
 				if outp.script_pubkey == revokeable_p2wsh {
-					let revk_outp = RevokedOutput::build(per_commitment_point, self.counterparty_commitment_params.counterparty_delayed_payment_base_key, self.counterparty_commitment_params.counterparty_htlc_base_key, per_commitment_key, outp.value, self.counterparty_commitment_params.on_counterparty_tx_csv, self.onchain_tx_handler.opt_anchors());
+					let revk_outp = RevokedOutput::build(per_commitment_point, self.counterparty_commitment_params.counterparty_delayed_payment_base_key, self.counterparty_commitment_params.counterparty_htlc_base_key, per_commitment_key, outp.value, self.counterparty_commitment_params.on_counterparty_tx_csv, self.onchain_tx_handler.channel_type().supports_anchors());
 					let justice_package = PackageTemplate::build_package(commitment_txid, idx as u32, PackageSolvingData::RevokedOutput(revk_outp), height + self.counterparty_commitment_params.on_counterparty_tx_csv as u32, height);
 					claimable_outpoints.push(justice_package);
 					to_counterparty_output_info =
@@ -2635,7 +2635,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 							return (claimable_outpoints, (commitment_txid, watch_outputs),
 								to_counterparty_output_info);
 						}
-						let revk_htlc_outp = RevokedHTLCOutput::build(per_commitment_point, self.counterparty_commitment_params.counterparty_delayed_payment_base_key, self.counterparty_commitment_params.counterparty_htlc_base_key, per_commitment_key, htlc.amount_msat / 1000, htlc.clone(), self.onchain_tx_handler.channel_transaction_parameters.opt_anchors.is_some());
+						let revk_htlc_outp = RevokedHTLCOutput::build(per_commitment_point, self.counterparty_commitment_params.counterparty_delayed_payment_base_key, self.counterparty_commitment_params.counterparty_htlc_base_key, per_commitment_key, htlc.amount_msat / 1000, htlc.clone(), &self.onchain_tx_handler.channel_transaction_parameters.channel_type);
 						let justice_package = PackageTemplate::build_package(commitment_txid, transaction_output_index, PackageSolvingData::RevokedHTLCOutput(revk_htlc_outp), htlc.cltv_expiry, height);
 						claimable_outpoints.push(justice_package);
 					}
@@ -2753,13 +2753,13 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 							CounterpartyOfferedHTLCOutput::build(*per_commitment_point,
 								self.counterparty_commitment_params.counterparty_delayed_payment_base_key,
 								self.counterparty_commitment_params.counterparty_htlc_base_key,
-								preimage.unwrap(), htlc.clone(), self.onchain_tx_handler.opt_anchors()))
+								preimage.unwrap(), htlc.clone(), self.onchain_tx_handler.channel_type().supports_anchors()))
 					} else {
 						PackageSolvingData::CounterpartyReceivedHTLCOutput(
 							CounterpartyReceivedHTLCOutput::build(*per_commitment_point,
 								self.counterparty_commitment_params.counterparty_delayed_payment_base_key,
 								self.counterparty_commitment_params.counterparty_htlc_base_key,
-								htlc.clone(), self.onchain_tx_handler.opt_anchors()))
+								htlc.clone(), self.onchain_tx_handler.channel_type().supports_anchors()))
 					};
 					let counterparty_package = PackageTemplate::build_package(commitment_txid, transaction_output_index, counterparty_htlc_outp, htlc.cltv_expiry, 0);
 					claimable_outpoints.push(counterparty_package);
@@ -2830,7 +2830,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			if let Some(transaction_output_index) = htlc.transaction_output_index {
 				let htlc_output = if htlc.offered {
 					let htlc_output = HolderHTLCOutput::build_offered(
-						htlc.amount_msat, htlc.cltv_expiry, self.onchain_tx_handler.opt_anchors()
+						htlc.amount_msat, htlc.cltv_expiry, self.onchain_tx_handler.channel_type().supports_anchors()
 					);
 					htlc_output
 				} else {
@@ -2841,7 +2841,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 						continue;
 					};
 					let htlc_output = HolderHTLCOutput::build_accepted(
-						payment_preimage, htlc.amount_msat, self.onchain_tx_handler.opt_anchors()
+						payment_preimage, htlc.amount_msat, self.onchain_tx_handler.channel_type().supports_anchors()
 					);
 					htlc_output
 				};
@@ -2925,7 +2925,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		let mut holder_transactions = vec![commitment_tx];
 		// When anchor outputs are present, the HTLC transactions are only valid once the commitment
 		// transaction confirms.
-		if self.onchain_tx_handler.opt_anchors() {
+		if self.onchain_tx_handler.channel_type().supports_anchors() {
 			return holder_transactions;
 		}
 		for htlc in self.current_holder_commitment_tx.htlc_outputs.iter() {
@@ -3187,7 +3187,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 
 		let should_broadcast = self.should_broadcast_holder_commitment_txn(logger);
 		if should_broadcast {
-			let funding_outp = HolderFundingOutput::build(self.funding_redeemscript.clone(), self.channel_value_satoshis, self.onchain_tx_handler.opt_anchors());
+			let funding_outp = HolderFundingOutput::build(self.funding_redeemscript.clone(), self.channel_value_satoshis, self.onchain_tx_handler.channel_type().supports_anchors());
 			let commitment_package = PackageTemplate::build_package(self.funding_info.0.txid.clone(), self.funding_info.0.index as u32, PackageSolvingData::HolderFundingOutput(funding_outp), self.best_block.height(), self.best_block.height());
 			claimable_outpoints.push(commitment_package);
 			self.pending_monitor_events.push(MonitorEvent::CommitmentTxConfirmed(self.funding_info.0));
@@ -3196,7 +3196,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			// We can't broadcast our HTLC transactions while the commitment transaction is
 			// unconfirmed. We'll delay doing so until we detect the confirmed commitment in
 			// `transactions_confirmed`.
-			if !self.onchain_tx_handler.opt_anchors() {
+			if !self.onchain_tx_handler.channel_type().supports_anchors() {
 				// Because we're broadcasting a commitment transaction, we should construct the package
 				// assuming it gets confirmed in the next block. Sadly, we have code which considers
 				// "not yet confirmed" things as discardable, so we cannot do that here.

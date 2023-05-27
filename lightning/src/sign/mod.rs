@@ -822,7 +822,7 @@ impl InMemorySigner {
 	///
 	/// Will panic if [`ChannelSigner::provide_channel_parameters`] has not been called before.
 	pub fn opt_anchors(&self) -> bool {
-		self.get_channel_parameters().opt_anchors.is_some()
+		self.get_channel_parameters().channel_type.supports_anchors()
 	}
 	/// Sign the single input of `spend_tx` at index `input_idx`, which spends the output described
 	/// by `descriptor`, returning the witness stack for the input.

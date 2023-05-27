@@ -40,24 +40,25 @@ use core::convert::TryInto;
 use core::mem;
 use core::ops::Deref;
 use bitcoin::{PackedLockTime, Sequence, Witness};
+use crate::ln::channel::ChannelType;
 
 use super::chaininterface::LowerBoundedFeeEstimator;
 
 const MAX_ALLOC_SIZE: usize = 64*1024;
 
 
-pub(crate) fn weight_revoked_offered_htlc(opt_anchors: bool) -> u64 {
+pub(crate) fn weight_revoked_offered_htlc(channel_type: &ChannelType) -> u64 {
 	// number_of_witness_elements + sig_length + revocation_sig + pubkey_length + revocationpubkey + witness_script_length + witness_script
 	const WEIGHT_REVOKED_OFFERED_HTLC: u64 = 1 + 1 + 73 + 1 + 33 + 1 + 133;
 	const WEIGHT_REVOKED_OFFERED_HTLC_ANCHORS: u64 = WEIGHT_REVOKED_OFFERED_HTLC + 3; // + OP_1 + OP_CSV + OP_DROP
-	if opt_anchors { WEIGHT_REVOKED_OFFERED_HTLC_ANCHORS } else { WEIGHT_REVOKED_OFFERED_HTLC }
+	if channel_type.supports_anchors() { WEIGHT_REVOKED_OFFERED_HTLC_ANCHORS } else { WEIGHT_REVOKED_OFFERED_HTLC }
 }
 
-pub(crate) fn weight_revoked_received_htlc(opt_anchors: bool) -> u64 {
+pub(crate) fn weight_revoked_received_htlc(channel_type: &ChannelType) -> u64 {
 	// number_of_witness_elements + sig_length + revocation_sig + pubkey_length + revocationpubkey + witness_script_length + witness_script
 	const WEIGHT_REVOKED_RECEIVED_HTLC: u64 = 1 + 1 + 73 + 1 + 33 + 1 +  139;
 	const WEIGHT_REVOKED_RECEIVED_HTLC_ANCHORS: u64 = WEIGHT_REVOKED_RECEIVED_HTLC + 3; // + OP_1 + OP_CSV + OP_DROP
-	if opt_anchors { WEIGHT_REVOKED_RECEIVED_HTLC_ANCHORS } else { WEIGHT_REVOKED_RECEIVED_HTLC }
+	if channel_type.supports_anchors() { WEIGHT_REVOKED_RECEIVED_HTLC_ANCHORS } else { WEIGHT_REVOKED_RECEIVED_HTLC }
 }
 
 pub(crate) fn weight_offered_htlc(opt_anchors: bool) -> u64 {
@@ -147,8 +148,8 @@ pub(crate) struct RevokedHTLCOutput {
 }
 
 impl RevokedHTLCOutput {
-	pub(crate) fn build(per_commitment_point: PublicKey, counterparty_delayed_payment_base_key: PublicKey, counterparty_htlc_base_key: PublicKey, per_commitment_key: SecretKey, amount: u64, htlc: HTLCOutputInCommitment, opt_anchors: bool) -> Self {
-		let weight = if htlc.offered { weight_revoked_offered_htlc(opt_anchors) } else { weight_revoked_received_htlc(opt_anchors) };
+	pub(crate) fn build(per_commitment_point: PublicKey, counterparty_delayed_payment_base_key: PublicKey, counterparty_htlc_base_key: PublicKey, per_commitment_key: SecretKey, amount: u64, htlc: HTLCOutputInCommitment, channel_type: &ChannelType) -> Self {
+		let weight = if htlc.offered { weight_revoked_offered_htlc(channel_type) } else { weight_revoked_received_htlc(channel_type) };
 		RevokedHTLCOutput {
 			per_commitment_point,
 			counterparty_delayed_payment_base_key,
@@ -411,7 +412,7 @@ impl PackageSolvingData {
 			},
 			PackageSolvingData::RevokedHTLCOutput(ref outp) => {
 				let chan_keys = TxCreationKeys::derive_new(&onchain_handler.secp_ctx, &outp.per_commitment_point, &outp.counterparty_delayed_payment_base_key, &outp.counterparty_htlc_base_key, &onchain_handler.signer.pubkeys().revocation_basepoint, &onchain_handler.signer.pubkeys().htlc_basepoint);
-				let witness_script = chan_utils::get_htlc_redeemscript_with_explicit_keys(&outp.htlc, onchain_handler.opt_anchors(), &chan_keys.broadcaster_htlc_key, &chan_keys.countersignatory_htlc_key, &chan_keys.revocation_key);
+				let witness_script = chan_utils::get_htlc_redeemscript_with_explicit_keys(&outp.htlc, onchain_handler.channel_type().supports_anchors(), &chan_keys.broadcaster_htlc_key, &chan_keys.countersignatory_htlc_key, &chan_keys.revocation_key);
 				//TODO: should we panic on signer failure ?
 				if let Ok(sig) = onchain_handler.signer.sign_justice_revoked_htlc(&bumped_tx, i, outp.amount, &outp.per_commitment_key, &outp.htlc, &onchain_handler.secp_ctx) {
 					let mut ser_sig = sig.serialize_der().to_vec();
@@ -423,7 +424,7 @@ impl PackageSolvingData {
 			},
 			PackageSolvingData::CounterpartyOfferedHTLCOutput(ref outp) => {
 				let chan_keys = TxCreationKeys::derive_new(&onchain_handler.secp_ctx, &outp.per_commitment_point, &outp.counterparty_delayed_payment_base_key, &outp.counterparty_htlc_base_key, &onchain_handler.signer.pubkeys().revocation_basepoint, &onchain_handler.signer.pubkeys().htlc_basepoint);
-				let witness_script = chan_utils::get_htlc_redeemscript_with_explicit_keys(&outp.htlc, onchain_handler.opt_anchors(), &chan_keys.broadcaster_htlc_key, &chan_keys.countersignatory_htlc_key, &chan_keys.revocation_key);
+				let witness_script = chan_utils::get_htlc_redeemscript_with_explicit_keys(&outp.htlc, onchain_handler.channel_type().supports_anchors(), &chan_keys.broadcaster_htlc_key, &chan_keys.countersignatory_htlc_key, &chan_keys.revocation_key);
 
 				if let Ok(sig) = onchain_handler.signer.sign_counterparty_htlc_transaction(&bumped_tx, i, &outp.htlc.amount_msat / 1000, &outp.per_commitment_point, &outp.htlc, &onchain_handler.secp_ctx) {
 					let mut ser_sig = sig.serialize_der().to_vec();
@@ -435,7 +436,7 @@ impl PackageSolvingData {
 			},
 			PackageSolvingData::CounterpartyReceivedHTLCOutput(ref outp) => {
 				let chan_keys = TxCreationKeys::derive_new(&onchain_handler.secp_ctx, &outp.per_commitment_point, &outp.counterparty_delayed_payment_base_key, &outp.counterparty_htlc_base_key, &onchain_handler.signer.pubkeys().revocation_basepoint, &onchain_handler.signer.pubkeys().htlc_basepoint);
-				let witness_script = chan_utils::get_htlc_redeemscript_with_explicit_keys(&outp.htlc, onchain_handler.opt_anchors(), &chan_keys.broadcaster_htlc_key, &chan_keys.countersignatory_htlc_key, &chan_keys.revocation_key);
+				let witness_script = chan_utils::get_htlc_redeemscript_with_explicit_keys(&outp.htlc, onchain_handler.channel_type().supports_anchors(), &chan_keys.broadcaster_htlc_key, &chan_keys.countersignatory_htlc_key, &chan_keys.revocation_key);
 
 				if let Ok(sig) = onchain_handler.signer.sign_counterparty_htlc_transaction(&bumped_tx, i, &outp.htlc.amount_msat / 1000, &outp.per_commitment_point, &outp.htlc, &onchain_handler.secp_ctx) {
 					let mut ser_sig = sig.serialize_der().to_vec();

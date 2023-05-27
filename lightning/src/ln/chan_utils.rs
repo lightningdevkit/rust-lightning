@@ -24,7 +24,7 @@ use bitcoin::hash_types::{Txid, PubkeyHash};
 use crate::sign::EntropySource;
 use crate::ln::{PaymentHash, PaymentPreimage};
 use crate::ln::msgs::DecodeError;
-use crate::util::ser::{Readable, Writeable, Writer};
+use crate::util::ser::{Readable, RequiredWrapper, Writeable, Writer};
 use crate::util::transaction_utils;
 
 use bitcoin::secp256k1::{SecretKey, PublicKey, Scalar};
@@ -33,11 +33,12 @@ use bitcoin::{PackedLockTime, secp256k1, Sequence, Witness};
 use bitcoin::PublicKey as BitcoinPublicKey;
 
 use crate::io;
+use crate::io::Read;
 use crate::prelude::*;
 use core::cmp;
 use crate::ln::chan_utils;
 use crate::util::transaction_utils::sort_outputs;
-use crate::ln::channel::{INITIAL_COMMITMENT_NUMBER, ANCHOR_OUTPUT_VALUE_SATOSHI};
+use crate::ln::channel::{INITIAL_COMMITMENT_NUMBER, ANCHOR_OUTPUT_VALUE_SATOSHI, ChannelType};
 use core::ops::Deref;
 use crate::chain;
 use crate::util::crypto::{sign, sign_with_aux_rand};
@@ -826,9 +827,8 @@ pub struct ChannelTransactionParameters {
 	pub counterparty_parameters: Option<CounterpartyChannelTransactionParameters>,
 	/// The late-bound funding outpoint
 	pub funding_outpoint: Option<chain::transaction::OutPoint>,
-	/// Are anchors (zero fee HTLC transaction variant) used for this channel. Boolean is
-	/// serialization backwards-compatible.
-	pub opt_anchors: Option<()>,
+	/// Describes the channel type
+	pub channel_type: ChannelType,
 	/// Are non-zero-fee anchors are enabled (used in conjuction with opt_anchors)
 	/// It is intended merely for backwards compatibility with signers that need it.
 	/// There is no support for this feature in LDK channel negotiation.
@@ -880,15 +880,55 @@ impl_writeable_tlv_based!(CounterpartyChannelTransactionParameters, {
 	(2, selected_contest_delay, required),
 });
 
-impl_writeable_tlv_based!(ChannelTransactionParameters, {
-	(0, holder_pubkeys, required),
-	(2, holder_selected_contest_delay, required),
-	(4, is_outbound_from_holder, required),
-	(6, counterparty_parameters, option),
-	(8, funding_outpoint, option),
-	(10, opt_anchors, option),
-	(12, opt_non_zero_fee_anchors, option),
-});
+impl Writeable for ChannelTransactionParameters {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		let mut channel_type = Some(self.channel_type.clone());
+		match self.channel_type {
+			ChannelType::Legacy => { channel_type = None }
+			_ => {}
+		};
+		encode_tlv_stream!(w, {
+			(0, self.holder_pubkeys, required),
+			(2, self.holder_selected_contest_delay, required),
+			(4, self.is_outbound_from_holder, required),
+			(6, self.counterparty_parameters, option),
+			(8, self.funding_outpoint, option),
+			(10, channel_type, option),
+			(12, self.opt_non_zero_fee_anchors, option),
+		});
+		Ok(())
+	}
+}
+
+impl Readable for ChannelTransactionParameters {
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+		let mut holder_pubkeys = RequiredWrapper(None);
+		let mut holder_selected_contest_delay = RequiredWrapper(None);
+		let mut is_outbound_from_holder = RequiredWrapper(None);
+		let mut counterparty_parameters = None;
+		let mut funding_outpoint = None;
+		let mut channel_type = Some(ChannelType::Legacy);
+		let mut opt_non_zero_fee_anchors = None;
+		decode_tlv_stream!(r, {
+			(0, holder_pubkeys, required),
+			(2, holder_selected_contest_delay, required),
+			(4, is_outbound_from_holder, required),
+			(6, counterparty_parameters, option),
+			(8, funding_outpoint, option),
+			(10, channel_type, option),
+			(12, opt_non_zero_fee_anchors, option),
+		});
+		Ok(Self {
+			holder_pubkeys: holder_pubkeys.0.unwrap(),
+			holder_selected_contest_delay: holder_selected_contest_delay.0.unwrap(),
+			is_outbound_from_holder: is_outbound_from_holder.0.unwrap(),
+			counterparty_parameters,
+			funding_outpoint,
+			channel_type: channel_type.unwrap(),
+			opt_non_zero_fee_anchors,
+		})
+	}
+}
 
 /// Static channel fields used to build transactions given per-commitment fields, organized by
 /// broadcaster/countersignatory.
@@ -941,9 +981,9 @@ impl<'a> DirectedChannelTransactionParameters<'a> {
 		self.inner.funding_outpoint.unwrap().into_bitcoin_outpoint()
 	}
 
-	/// Whether to use anchors for this channel
-	pub fn opt_anchors(&self) -> bool {
-		self.inner.opt_anchors.is_some()
+	/// Returns channel type enum
+	pub fn channel_type(&self) -> ChannelType {
+		self.inner.channel_type.clone()
 	}
 }
 
@@ -1010,7 +1050,7 @@ impl HolderCommitmentTransaction {
 			is_outbound_from_holder: false,
 			counterparty_parameters: Some(CounterpartyChannelTransactionParameters { pubkeys: channel_pubkeys.clone(), selected_contest_delay: 0 }),
 			funding_outpoint: Some(chain::transaction::OutPoint { txid: Txid::all_zeros(), index: 0 }),
-			opt_anchors: None,
+			channel_type: ChannelType::Legacy,
 			opt_non_zero_fee_anchors: None,
 		};
 		let mut counterparty_htlc_sigs = Vec::new();

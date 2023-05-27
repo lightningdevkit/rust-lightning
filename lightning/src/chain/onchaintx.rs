@@ -49,6 +49,7 @@ use core::mem::replace;
 #[cfg(anchors)]
 use core::mem::swap;
 use bitcoin::hashes::Hash;
+use crate::ln::channel::ChannelType;
 
 const MAX_ALLOC_SIZE: usize = 64*1024;
 
@@ -1209,8 +1210,8 @@ impl<ChannelSigner: WriteableEcdsaChannelSigner> OnchainTxHandler<ChannelSigner>
 			.or_else(|| self.prev_holder_commitment.as_ref().map(|c| find_htlc(c)).flatten())
 	}
 
-	pub(crate) fn opt_anchors(&self) -> bool {
-		self.channel_transaction_parameters.opt_anchors.is_some()
+	pub(crate) fn channel_type(&self) -> ChannelType {
+		self.channel_transaction_parameters.channel_type.clone()
 	}
 
 	#[cfg(any(test,feature = "unsafe_revoked_tx_signing"))]
