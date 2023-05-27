@@ -60,18 +60,18 @@ pub const MAX_ACCEPTED_HTLC_SCRIPT_WEIGHT: usize = 143;
 
 /// Gets the weight for an HTLC-Success transaction.
 #[inline]
-pub fn htlc_success_tx_weight(opt_anchors: bool) -> u64 {
+pub fn htlc_success_tx_weight(channel_type: &ChannelType) -> u64 {
 	const HTLC_SUCCESS_TX_WEIGHT: u64 = 703;
 	const HTLC_SUCCESS_ANCHOR_TX_WEIGHT: u64 = 706;
-	if opt_anchors { HTLC_SUCCESS_ANCHOR_TX_WEIGHT } else { HTLC_SUCCESS_TX_WEIGHT }
+	if channel_type.supports_anchors() { HTLC_SUCCESS_ANCHOR_TX_WEIGHT } else { HTLC_SUCCESS_TX_WEIGHT }
 }
 
 /// Gets the weight for an HTLC-Timeout transaction.
 #[inline]
-pub fn htlc_timeout_tx_weight(opt_anchors: bool) -> u64 {
+pub fn htlc_timeout_tx_weight(channel_type: &ChannelType) -> u64 {
 	const HTLC_TIMEOUT_TX_WEIGHT: u64 = 663;
 	const HTLC_TIMEOUT_ANCHOR_TX_WEIGHT: u64 = 666;
-	if opt_anchors { HTLC_TIMEOUT_ANCHOR_TX_WEIGHT } else { HTLC_TIMEOUT_TX_WEIGHT }
+	if channel_type.supports_anchors() { HTLC_TIMEOUT_ANCHOR_TX_WEIGHT } else { HTLC_TIMEOUT_TX_WEIGHT }
 }
 
 /// Describes the type of HTLC claim as determined by analyzing the witness.
@@ -575,7 +575,7 @@ impl_writeable_tlv_based!(HTLCOutputInCommitment, {
 });
 
 #[inline]
-pub(crate) fn get_htlc_redeemscript_with_explicit_keys(htlc: &HTLCOutputInCommitment, opt_anchors: bool, broadcaster_htlc_key: &PublicKey, countersignatory_htlc_key: &PublicKey, revocation_key: &PublicKey) -> Script {
+pub(crate) fn get_htlc_redeemscript_with_explicit_keys(htlc: &HTLCOutputInCommitment, channel_type: &ChannelType, broadcaster_htlc_key: &PublicKey, countersignatory_htlc_key: &PublicKey, revocation_key: &PublicKey) -> Script {
 	let payment_hash160 = Ripemd160::hash(&htlc.payment_hash.0[..]).into_inner();
 	if htlc.offered {
 		let mut bldr = Builder::new().push_opcode(opcodes::all::OP_DUP)
@@ -603,7 +603,7 @@ pub(crate) fn get_htlc_redeemscript_with_explicit_keys(htlc: &HTLCOutputInCommit
 		              .push_opcode(opcodes::all::OP_EQUALVERIFY)
 		              .push_opcode(opcodes::all::OP_CHECKSIG)
 		              .push_opcode(opcodes::all::OP_ENDIF);
-		if opt_anchors {
+		if channel_type.supports_anchors() {
 			bldr = bldr.push_opcode(opcodes::all::OP_PUSHNUM_1)
 				.push_opcode(opcodes::all::OP_CSV)
 				.push_opcode(opcodes::all::OP_DROP);
@@ -639,7 +639,7 @@ pub(crate) fn get_htlc_redeemscript_with_explicit_keys(htlc: &HTLCOutputInCommit
 		              .push_opcode(opcodes::all::OP_DROP)
 		              .push_opcode(opcodes::all::OP_CHECKSIG)
 		              .push_opcode(opcodes::all::OP_ENDIF);
-		if opt_anchors {
+		if channel_type.supports_anchors() {
 			bldr = bldr.push_opcode(opcodes::all::OP_PUSHNUM_1)
 				.push_opcode(opcodes::all::OP_CSV)
 				.push_opcode(opcodes::all::OP_DROP);
@@ -652,8 +652,8 @@ pub(crate) fn get_htlc_redeemscript_with_explicit_keys(htlc: &HTLCOutputInCommit
 /// Gets the witness redeemscript for an HTLC output in a commitment transaction. Note that htlc
 /// does not need to have its previous_output_index filled.
 #[inline]
-pub fn get_htlc_redeemscript(htlc: &HTLCOutputInCommitment, opt_anchors: bool, keys: &TxCreationKeys) -> Script {
-	get_htlc_redeemscript_with_explicit_keys(htlc, opt_anchors, &keys.broadcaster_htlc_key, &keys.countersignatory_htlc_key, &keys.revocation_key)
+pub fn get_htlc_redeemscript(htlc: &HTLCOutputInCommitment, channel_type: &ChannelType, keys: &TxCreationKeys) -> Script {
+	get_htlc_redeemscript_with_explicit_keys(htlc, channel_type, &keys.broadcaster_htlc_key, &keys.countersignatory_htlc_key, &keys.revocation_key)
 }
 
 /// Gets the redeemscript for a funding output from the two funding public keys.
@@ -683,13 +683,13 @@ pub(crate) fn make_funding_redeemscript_from_slices(broadcaster_funding_key: &[u
 ///
 /// Panics if htlc.transaction_output_index.is_none() (as such HTLCs do not appear in the
 /// commitment transaction).
-pub fn build_htlc_transaction(commitment_txid: &Txid, feerate_per_kw: u32, contest_delay: u16, htlc: &HTLCOutputInCommitment, opt_anchors: bool, use_non_zero_fee_anchors: bool, broadcaster_delayed_payment_key: &PublicKey, revocation_key: &PublicKey) -> Transaction {
+pub fn build_htlc_transaction(commitment_txid: &Txid, feerate_per_kw: u32, contest_delay: u16, htlc: &HTLCOutputInCommitment, channel_type: &ChannelType, use_non_zero_fee_anchors: bool, broadcaster_delayed_payment_key: &PublicKey, revocation_key: &PublicKey) -> Transaction {
 	let mut txins: Vec<TxIn> = Vec::new();
-	txins.push(build_htlc_input(commitment_txid, htlc, opt_anchors));
+	txins.push(build_htlc_input(commitment_txid, htlc, channel_type));
 
 	let mut txouts: Vec<TxOut> = Vec::new();
 	txouts.push(build_htlc_output(
-		feerate_per_kw, contest_delay, htlc, opt_anchors, use_non_zero_fee_anchors,
+		feerate_per_kw, contest_delay, htlc, channel_type, use_non_zero_fee_anchors,
 		broadcaster_delayed_payment_key, revocation_key
 	));
 
@@ -701,28 +701,28 @@ pub fn build_htlc_transaction(commitment_txid: &Txid, feerate_per_kw: u32, conte
 	}
 }
 
-pub(crate) fn build_htlc_input(commitment_txid: &Txid, htlc: &HTLCOutputInCommitment, opt_anchors: bool) -> TxIn {
+pub(crate) fn build_htlc_input(commitment_txid: &Txid, htlc: &HTLCOutputInCommitment, channel_type: &ChannelType) -> TxIn {
 	TxIn {
 		previous_output: OutPoint {
 			txid: commitment_txid.clone(),
 			vout: htlc.transaction_output_index.expect("Can't build an HTLC transaction for a dust output"),
 		},
 		script_sig: Script::new(),
-		sequence: Sequence(if opt_anchors { 1 } else { 0 }),
+		sequence: Sequence(if channel_type.supports_anchors() { 1 } else { 0 }),
 		witness: Witness::new(),
 	}
 }
 
 pub(crate) fn build_htlc_output(
-	feerate_per_kw: u32, contest_delay: u16, htlc: &HTLCOutputInCommitment, opt_anchors: bool,
+	feerate_per_kw: u32, contest_delay: u16, htlc: &HTLCOutputInCommitment, channel_type: &ChannelType,
 	use_non_zero_fee_anchors: bool, broadcaster_delayed_payment_key: &PublicKey, revocation_key: &PublicKey
 ) -> TxOut {
 	let weight = if htlc.offered {
-		htlc_timeout_tx_weight(opt_anchors)
+		htlc_timeout_tx_weight(channel_type)
 	} else {
-		htlc_success_tx_weight(opt_anchors)
+		htlc_success_tx_weight(channel_type)
 	};
-	let output_value = if opt_anchors && !use_non_zero_fee_anchors {
+	let output_value = if channel_type.supports_anchors() && !use_non_zero_fee_anchors {
 		htlc.amount_msat / 1000
 	} else {
 		let total_fee = feerate_per_kw as u64 * weight / 1000;
@@ -738,9 +738,9 @@ pub(crate) fn build_htlc_output(
 /// Returns the witness required to satisfy and spend a HTLC input.
 pub fn build_htlc_input_witness(
 	local_sig: &Signature, remote_sig: &Signature, preimage: &Option<PaymentPreimage>,
-	redeem_script: &Script, opt_anchors: bool,
+	redeem_script: &Script, channel_type: &ChannelType,
 ) -> Witness {
-	let remote_sighash_type = if opt_anchors {
+	let remote_sighash_type = if channel_type.supports_anchors() {
 		EcdsaSighashType::SinglePlusAnyoneCanPay
 	} else {
 		EcdsaSighashType::All
@@ -907,7 +907,7 @@ impl Readable for ChannelTransactionParameters {
 		let mut is_outbound_from_holder = RequiredWrapper(None);
 		let mut counterparty_parameters = None;
 		let mut funding_outpoint = None;
-		let mut channel_type = Some(ChannelType::Legacy);
+		let mut channel_type = None;
 		let mut opt_non_zero_fee_anchors = None;
 		decode_tlv_stream!(r, {
 			(0, holder_pubkeys, required),
@@ -924,7 +924,7 @@ impl Readable for ChannelTransactionParameters {
 			is_outbound_from_holder: is_outbound_from_holder.0.unwrap(),
 			counterparty_parameters,
 			funding_outpoint,
-			channel_type: channel_type.unwrap(),
+			channel_type: channel_type.unwrap_or(ChannelType::Legacy),
 			opt_non_zero_fee_anchors,
 		})
 	}
@@ -1057,7 +1057,7 @@ impl HolderCommitmentTransaction {
 		for _ in 0..htlcs.len() {
 			counterparty_htlc_sigs.push(dummy_sig);
 		}
-		let inner = CommitmentTransaction::new_with_auxiliary_htlc_data(0, 0, 0, false, dummy_key.clone(), dummy_key.clone(), keys, 0, htlcs, &channel_parameters.as_counterparty_broadcastable());
+		let inner = CommitmentTransaction::new_with_auxiliary_htlc_data(0, 0, 0, dummy_key.clone(), dummy_key.clone(), keys, 0, htlcs, &channel_parameters.as_counterparty_broadcastable());
 		htlcs.sort_by_key(|htlc| htlc.0.transaction_output_index);
 		HolderCommitmentTransaction {
 			inner,
@@ -1276,7 +1276,7 @@ pub struct CommitmentTransaction {
 	feerate_per_kw: u32,
 	htlcs: Vec<HTLCOutputInCommitment>,
 	// A boolean that is serialization backwards-compatible
-	opt_anchors: Option<()>,
+	channel_type: ChannelType,
 	// Whether non-zero-fee anchors should be used
 	opt_non_zero_fee_anchors: Option<()>,
 	// A cache of the parties' pubkeys required to construct the transaction, see doc for trust()
@@ -1293,7 +1293,7 @@ impl PartialEq for CommitmentTransaction {
 			self.to_countersignatory_value_sat == o.to_countersignatory_value_sat &&
 			self.feerate_per_kw == o.feerate_per_kw &&
 			self.htlcs == o.htlcs &&
-			self.opt_anchors == o.opt_anchors &&
+			self.channel_type == o.channel_type &&
 			self.keys == o.keys;
 		if eq {
 			debug_assert_eq!(self.built.transaction, o.built.transaction);
@@ -1303,17 +1303,63 @@ impl PartialEq for CommitmentTransaction {
 	}
 }
 
-impl_writeable_tlv_based!(CommitmentTransaction, {
-	(0, commitment_number, required),
-	(2, to_broadcaster_value_sat, required),
-	(4, to_countersignatory_value_sat, required),
-	(6, feerate_per_kw, required),
-	(8, keys, required),
-	(10, built, required),
-	(12, htlcs, vec_type),
-	(14, opt_anchors, option),
-	(16, opt_non_zero_fee_anchors, option),
-});
+impl Writeable for CommitmentTransaction {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		let mut channel_type = Some(self.channel_type.clone());
+		match self.channel_type {
+			ChannelType::Legacy => { channel_type = None }
+			_ => {}
+		};
+		encode_tlv_stream!(w, {
+			(0, self.commitment_number, required),
+			(2, self.to_broadcaster_value_sat, required),
+			(4, self.to_countersignatory_value_sat, required),
+			(6, self.feerate_per_kw, required),
+			(8, self.keys, required),
+			(10, self.built, required),
+			(12, self.htlcs, vec_type),
+			(14, channel_type, option),
+			(16, self.opt_non_zero_fee_anchors, option),
+		});
+		Ok(())
+	}
+}
+
+impl Readable for CommitmentTransaction {
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+		let mut commitment_number = RequiredWrapper(None);
+		let mut to_broadcaster_value_sat = RequiredWrapper(None);
+		let mut to_countersignatory_value_sat = RequiredWrapper(None);
+		let mut feerate_per_kw = RequiredWrapper(None);
+		let mut keys = RequiredWrapper(None);
+		let mut built = RequiredWrapper(None);
+		let mut htlcs = None;
+		let mut channel_type = None;
+		let mut opt_non_zero_fee_anchors = None;
+		decode_tlv_stream!(r, {
+			(0, commitment_number, required),
+			(2, to_broadcaster_value_sat, required),
+			(4, to_countersignatory_value_sat, required),
+			(6, feerate_per_kw, required),
+			(8, keys, required),
+			(10, built, required),
+			(12, htlcs, vec_type),
+			(14, channel_type, option),
+			(16, opt_non_zero_fee_anchors, option),
+		});
+		Ok(Self {
+			commitment_number: commitment_number.0.unwrap(),
+			to_broadcaster_value_sat: to_broadcaster_value_sat.0.unwrap(),
+			to_countersignatory_value_sat: to_countersignatory_value_sat.0.unwrap(),
+			feerate_per_kw: feerate_per_kw.0.unwrap(),
+			keys: keys.0.unwrap(),
+			built: built.0.unwrap(),
+			htlcs: htlcs.unwrap(),
+			channel_type: channel_type.unwrap_or(ChannelType::Legacy),
+			opt_non_zero_fee_anchors,
+		})
+	}
+}
 
 impl CommitmentTransaction {
 	/// Construct an object of the class while assigning transaction output indices to HTLCs.
@@ -1326,9 +1372,9 @@ impl CommitmentTransaction {
 	/// Only include HTLCs that are above the dust limit for the channel.
 	///
 	/// This is not exported to bindings users due to the generic though we likely should expose a version without
-	pub fn new_with_auxiliary_htlc_data<T>(commitment_number: u64, to_broadcaster_value_sat: u64, to_countersignatory_value_sat: u64, opt_anchors: bool, broadcaster_funding_key: PublicKey, countersignatory_funding_key: PublicKey, keys: TxCreationKeys, feerate_per_kw: u32, htlcs_with_aux: &mut Vec<(HTLCOutputInCommitment, T)>, channel_parameters: &DirectedChannelTransactionParameters) -> CommitmentTransaction {
+	pub fn new_with_auxiliary_htlc_data<T>(commitment_number: u64, to_broadcaster_value_sat: u64, to_countersignatory_value_sat: u64, broadcaster_funding_key: PublicKey, countersignatory_funding_key: PublicKey, keys: TxCreationKeys, feerate_per_kw: u32, htlcs_with_aux: &mut Vec<(HTLCOutputInCommitment, T)>, channel_parameters: &DirectedChannelTransactionParameters) -> CommitmentTransaction {
 		// Sort outputs and populate output indices while keeping track of the auxiliary data
-		let (outputs, htlcs) = Self::internal_build_outputs(&keys, to_broadcaster_value_sat, to_countersignatory_value_sat, htlcs_with_aux, channel_parameters, opt_anchors, &broadcaster_funding_key, &countersignatory_funding_key).unwrap();
+		let (outputs, htlcs) = Self::internal_build_outputs(&keys, to_broadcaster_value_sat, to_countersignatory_value_sat, htlcs_with_aux, channel_parameters, &broadcaster_funding_key, &countersignatory_funding_key).unwrap();
 
 		let (obscured_commitment_transaction_number, txins) = Self::internal_build_inputs(commitment_number, channel_parameters);
 		let transaction = Self::make_transaction(obscured_commitment_transaction_number, txins, outputs);
@@ -1339,7 +1385,7 @@ impl CommitmentTransaction {
 			to_countersignatory_value_sat,
 			feerate_per_kw,
 			htlcs,
-			opt_anchors: if opt_anchors { Some(()) } else { None },
+			channel_type: channel_parameters.channel_type(),
 			keys,
 			built: BuiltCommitmentTransaction {
 				transaction,
@@ -1361,7 +1407,7 @@ impl CommitmentTransaction {
 		let (obscured_commitment_transaction_number, txins) = Self::internal_build_inputs(self.commitment_number, channel_parameters);
 
 		let mut htlcs_with_aux = self.htlcs.iter().map(|h| (h.clone(), ())).collect();
-		let (outputs, _) = Self::internal_build_outputs(keys, self.to_broadcaster_value_sat, self.to_countersignatory_value_sat, &mut htlcs_with_aux, channel_parameters, self.opt_anchors.is_some(), broadcaster_funding_key, countersignatory_funding_key)?;
+		let (outputs, _) = Self::internal_build_outputs(keys, self.to_broadcaster_value_sat, self.to_countersignatory_value_sat, &mut htlcs_with_aux, channel_parameters, broadcaster_funding_key, countersignatory_funding_key)?;
 
 		let transaction = Self::make_transaction(obscured_commitment_transaction_number, txins, outputs);
 		let txid = transaction.txid();
@@ -1385,14 +1431,15 @@ impl CommitmentTransaction {
 	// - initial sorting of outputs / HTLCs in the constructor, in which case T is auxiliary data the
 	//   caller needs to have sorted together with the HTLCs so it can keep track of the output index
 	// - building of a bitcoin transaction during a verify() call, in which case T is just ()
-	fn internal_build_outputs<T>(keys: &TxCreationKeys, to_broadcaster_value_sat: u64, to_countersignatory_value_sat: u64, htlcs_with_aux: &mut Vec<(HTLCOutputInCommitment, T)>, channel_parameters: &DirectedChannelTransactionParameters, opt_anchors: bool, broadcaster_funding_key: &PublicKey, countersignatory_funding_key: &PublicKey) -> Result<(Vec<TxOut>, Vec<HTLCOutputInCommitment>), ()> {
+	fn internal_build_outputs<T>(keys: &TxCreationKeys, to_broadcaster_value_sat: u64, to_countersignatory_value_sat: u64, htlcs_with_aux: &mut Vec<(HTLCOutputInCommitment, T)>, channel_parameters: &DirectedChannelTransactionParameters, broadcaster_funding_key: &PublicKey, countersignatory_funding_key: &PublicKey) -> Result<(Vec<TxOut>, Vec<HTLCOutputInCommitment>), ()> {
 		let countersignatory_pubkeys = channel_parameters.countersignatory_pubkeys();
 		let contest_delay = channel_parameters.contest_delay();
+		let channel_type = channel_parameters.channel_type();
 
 		let mut txouts: Vec<(TxOut, Option<&mut HTLCOutputInCommitment>)> = Vec::new();
 
 		if to_countersignatory_value_sat > 0 {
-			let script = if opt_anchors {
+			let script = if channel_type.supports_anchors() {
 			    get_to_countersignatory_with_anchors_redeemscript(&countersignatory_pubkeys.payment_point).to_v0_p2wsh()
 			} else {
 			    Payload::p2wpkh(&BitcoinPublicKey::new(countersignatory_pubkeys.payment_point)).unwrap().script_pubkey()
@@ -1421,7 +1468,7 @@ impl CommitmentTransaction {
 			));
 		}
 
-		if opt_anchors {
+		if channel_type.supports_anchors() {
 			if to_broadcaster_value_sat > 0 || !htlcs_with_aux.is_empty() {
 				let anchor_script = get_anchor_redeemscript(broadcaster_funding_key);
 				txouts.push((
@@ -1447,7 +1494,7 @@ impl CommitmentTransaction {
 
 		let mut htlcs = Vec::with_capacity(htlcs_with_aux.len());
 		for (htlc, _) in htlcs_with_aux {
-			let script = chan_utils::get_htlc_redeemscript(&htlc, opt_anchors, &keys);
+			let script = chan_utils::get_htlc_redeemscript(&htlc, &channel_type, &keys);
 			let txout = TxOut {
 				script_pubkey: script.to_v0_p2wsh(),
 				value: htlc.amount_msat / 1000,
@@ -1601,11 +1648,6 @@ impl<'a> TrustedCommitmentTransaction<'a> {
 		&self.inner.keys
 	}
 
-	/// Should anchors be used.
-	pub fn opt_anchors(&self) -> bool {
-		self.opt_anchors.is_some()
-	}
-
 	/// Get a signature for each HTLC which was included in the commitment transaction (ie for
 	/// which HTLCOutputInCommitment::transaction_output_index.is_some()).
 	///
@@ -1624,9 +1666,9 @@ impl<'a> TrustedCommitmentTransaction<'a> {
 
 		for this_htlc in inner.htlcs.iter() {
 			assert!(this_htlc.transaction_output_index.is_some());
-			let htlc_tx = build_htlc_transaction(&txid, inner.feerate_per_kw, channel_parameters.contest_delay(), &this_htlc, self.opt_anchors(), self.opt_non_zero_fee_anchors.is_some(), &keys.broadcaster_delayed_payment_key, &keys.revocation_key);
+			let htlc_tx = build_htlc_transaction(&txid, inner.feerate_per_kw, channel_parameters.contest_delay(), &this_htlc, &self.channel_type, self.opt_non_zero_fee_anchors.is_some(), &keys.broadcaster_delayed_payment_key, &keys.revocation_key);
 
-			let htlc_redeemscript = get_htlc_redeemscript_with_explicit_keys(&this_htlc, self.opt_anchors(), &keys.broadcaster_htlc_key, &keys.countersignatory_htlc_key, &keys.revocation_key);
+			let htlc_redeemscript = get_htlc_redeemscript_with_explicit_keys(&this_htlc, &self.channel_type, &keys.broadcaster_htlc_key, &keys.countersignatory_htlc_key, &keys.revocation_key);
 
 			let sighash = hash_to_message!(&sighash::SighashCache::new(&htlc_tx).segwit_signature_hash(0, &htlc_redeemscript, this_htlc.amount_msat / 1000, EcdsaSighashType::All).unwrap()[..]);
 			ret.push(sign_with_aux_rand(secp_ctx, &sighash, &holder_htlc_key, entropy_source));
@@ -1646,12 +1688,12 @@ impl<'a> TrustedCommitmentTransaction<'a> {
 		// Further, we should never be provided the preimage for an HTLC-Timeout transaction.
 		if  this_htlc.offered && preimage.is_some() { unreachable!(); }
 
-		let mut htlc_tx = build_htlc_transaction(&txid, inner.feerate_per_kw, channel_parameters.contest_delay(), &this_htlc, self.opt_anchors(), self.opt_non_zero_fee_anchors.is_some(), &keys.broadcaster_delayed_payment_key, &keys.revocation_key);
+		let mut htlc_tx = build_htlc_transaction(&txid, inner.feerate_per_kw, channel_parameters.contest_delay(), &this_htlc, &self.channel_type, self.opt_non_zero_fee_anchors.is_some(), &keys.broadcaster_delayed_payment_key, &keys.revocation_key);
 
-		let htlc_redeemscript = get_htlc_redeemscript_with_explicit_keys(&this_htlc, self.opt_anchors(), &keys.broadcaster_htlc_key, &keys.countersignatory_htlc_key, &keys.revocation_key);
+		let htlc_redeemscript = get_htlc_redeemscript_with_explicit_keys(&this_htlc, &self.channel_type, &keys.broadcaster_htlc_key, &keys.countersignatory_htlc_key, &keys.revocation_key);
 
 		htlc_tx.input[0].witness = chan_utils::build_htlc_input_witness(
-			signature, counterparty_signature, preimage, &htlc_redeemscript, self.opt_anchors(),
+			signature, counterparty_signature, preimage, &htlc_redeemscript, &self.channel_type,
 		);
 		htlc_tx
 	}
@@ -1702,6 +1744,7 @@ mod tests {
 	use bitcoin::hashes::hex::ToHex;
 	use bitcoin::util::address::Payload;
 	use bitcoin::PublicKey as BitcoinPublicKey;
+	use crate::ln::channel::ChannelType;
 
 	#[test]
 	fn test_anchors() {
@@ -1725,7 +1768,7 @@ mod tests {
 			is_outbound_from_holder: false,
 			counterparty_parameters: Some(CounterpartyChannelTransactionParameters { pubkeys: counterparty_pubkeys.clone(), selected_contest_delay: 0 }),
 			funding_outpoint: Some(chain::transaction::OutPoint { txid: Txid::all_zeros(), index: 0 }),
-			opt_anchors: None,
+			channel_type: ChannelType::Legacy,
 			opt_non_zero_fee_anchors: None,
 		};
 
@@ -1734,7 +1777,6 @@ mod tests {
 		// Generate broadcaster and counterparty outputs
 		let tx = CommitmentTransaction::new_with_auxiliary_htlc_data(
 			0, 1000, 2000,
-			false,
 			holder_pubkeys.funding_pubkey,
 			counterparty_pubkeys.funding_pubkey,
 			keys.clone(), 1,
@@ -1746,7 +1788,6 @@ mod tests {
 		// Generate broadcaster and counterparty outputs as well as two anchors
 		let tx = CommitmentTransaction::new_with_auxiliary_htlc_data(
 			0, 1000, 2000,
-			true,
 			holder_pubkeys.funding_pubkey,
 			counterparty_pubkeys.funding_pubkey,
 			keys.clone(), 1,
@@ -1758,7 +1799,6 @@ mod tests {
 		// Generate broadcaster output and anchor
 		let tx = CommitmentTransaction::new_with_auxiliary_htlc_data(
 			0, 3000, 0,
-			true,
 			holder_pubkeys.funding_pubkey,
 			counterparty_pubkeys.funding_pubkey,
 			keys.clone(), 1,
@@ -1769,7 +1809,6 @@ mod tests {
 		// Generate counterparty output and anchor
 		let tx = CommitmentTransaction::new_with_auxiliary_htlc_data(
 			0, 0, 3000,
-			true,
 			holder_pubkeys.funding_pubkey,
 			counterparty_pubkeys.funding_pubkey,
 			keys.clone(), 1,
@@ -1796,7 +1835,6 @@ mod tests {
 		// Generate broadcaster output and received and offered HTLC outputs,  w/o anchors
 		let tx = CommitmentTransaction::new_with_auxiliary_htlc_data(
 			0, 3000, 0,
-			false,
 			holder_pubkeys.funding_pubkey,
 			counterparty_pubkeys.funding_pubkey,
 			keys.clone(), 1,
@@ -1804,18 +1842,17 @@ mod tests {
 			&channel_parameters.as_holder_broadcastable()
 		);
 		assert_eq!(tx.built.transaction.output.len(), 3);
-		assert_eq!(tx.built.transaction.output[0].script_pubkey, get_htlc_redeemscript(&received_htlc, false, &keys).to_v0_p2wsh());
-		assert_eq!(tx.built.transaction.output[1].script_pubkey, get_htlc_redeemscript(&offered_htlc, false, &keys).to_v0_p2wsh());
-		assert_eq!(get_htlc_redeemscript(&received_htlc, false, &keys).to_v0_p2wsh().to_hex(),
+		assert_eq!(tx.built.transaction.output[0].script_pubkey, get_htlc_redeemscript(&received_htlc, &ChannelType::Legacy, &keys).to_v0_p2wsh());
+		assert_eq!(tx.built.transaction.output[1].script_pubkey, get_htlc_redeemscript(&offered_htlc, &ChannelType::Legacy, &keys).to_v0_p2wsh());
+		assert_eq!(get_htlc_redeemscript(&received_htlc, &ChannelType::Legacy, &keys).to_v0_p2wsh().to_hex(),
 				   "0020e43a7c068553003fe68fcae424fb7b28ec5ce48cd8b6744b3945631389bad2fb");
-		assert_eq!(get_htlc_redeemscript(&offered_htlc, false, &keys).to_v0_p2wsh().to_hex(),
+		assert_eq!(get_htlc_redeemscript(&offered_htlc, &ChannelType::Legacy, &keys).to_v0_p2wsh().to_hex(),
 				   "0020215d61bba56b19e9eadb6107f5a85d7f99c40f65992443f69229c290165bc00d");
 
 		// Generate broadcaster output and received and offered HTLC outputs,  with anchors
-		channel_parameters.opt_anchors = Some(());
+		channel_parameters.channel_type = ChannelType::Anchors;
 		let tx = CommitmentTransaction::new_with_auxiliary_htlc_data(
 			0, 3000, 0,
-			true,
 			holder_pubkeys.funding_pubkey,
 			counterparty_pubkeys.funding_pubkey,
 			keys.clone(), 1,
@@ -1823,11 +1860,11 @@ mod tests {
 			&channel_parameters.as_holder_broadcastable()
 		);
 		assert_eq!(tx.built.transaction.output.len(), 5);
-		assert_eq!(tx.built.transaction.output[2].script_pubkey, get_htlc_redeemscript(&received_htlc, true, &keys).to_v0_p2wsh());
-		assert_eq!(tx.built.transaction.output[3].script_pubkey, get_htlc_redeemscript(&offered_htlc, true, &keys).to_v0_p2wsh());
-		assert_eq!(get_htlc_redeemscript(&received_htlc, true, &keys).to_v0_p2wsh().to_hex(),
+		assert_eq!(tx.built.transaction.output[2].script_pubkey, get_htlc_redeemscript(&received_htlc, &ChannelType::Anchors, &keys).to_v0_p2wsh());
+		assert_eq!(tx.built.transaction.output[3].script_pubkey, get_htlc_redeemscript(&offered_htlc, &ChannelType::Anchors, &keys).to_v0_p2wsh());
+		assert_eq!(get_htlc_redeemscript(&received_htlc, &ChannelType::Anchors, &keys).to_v0_p2wsh().to_hex(),
 				   "0020b70d0649c72b38756885c7a30908d912a7898dd5d79457a7280b8e9a20f3f2bc");
-		assert_eq!(get_htlc_redeemscript(&offered_htlc, true, &keys).to_v0_p2wsh().to_hex(),
+		assert_eq!(get_htlc_redeemscript(&offered_htlc, &ChannelType::Anchors, &keys).to_v0_p2wsh().to_hex(),
 				   "002087a3faeb1950a469c0e2db4a79b093a41b9526e5a6fc6ef5cb949bde3be379c7");
 	}
 

@@ -7,7 +7,7 @@
 // You may not use this file except in accordance with one or both of these
 // licenses.
 
-use crate::ln::channel::{ANCHOR_OUTPUT_VALUE_SATOSHI, MIN_CHAN_DUST_LIMIT_SATOSHIS};
+use crate::ln::channel::{ANCHOR_OUTPUT_VALUE_SATOSHI, ChannelType, MIN_CHAN_DUST_LIMIT_SATOSHIS};
 use crate::ln::chan_utils::{HTLCOutputInCommitment, ChannelPublicKeys, HolderCommitmentTransaction, CommitmentTransaction, ChannelTransactionParameters, TrustedCommitmentTransaction, ClosingTransaction};
 use crate::ln::{chan_utils, msgs, PaymentPreimage};
 use crate::sign::{WriteableEcdsaChannelSigner, InMemorySigner, ChannelSigner, EcdsaChannelSigner};
@@ -88,7 +88,7 @@ impl EnforcingSigner {
 		}
 	}
 
-	pub fn opt_anchors(&self) -> bool { self.inner.opt_anchors() }
+	pub fn channel_type(&self) -> ChannelType { self.inner.channel_type() }
 
 	#[cfg(test)]
 	pub fn get_enforcement_state(&self) -> MutexGuard<EnforcementState> {
@@ -172,11 +172,11 @@ impl EcdsaChannelSigner for EnforcingSigner {
 		for (this_htlc, sig) in trusted_tx.htlcs().iter().zip(&commitment_tx.counterparty_htlc_sigs) {
 			assert!(this_htlc.transaction_output_index.is_some());
 			let keys = trusted_tx.keys();
-			let htlc_tx = chan_utils::build_htlc_transaction(&commitment_txid, trusted_tx.feerate_per_kw(), holder_csv, &this_htlc, self.opt_anchors(), false, &keys.broadcaster_delayed_payment_key, &keys.revocation_key);
+			let htlc_tx = chan_utils::build_htlc_transaction(&commitment_txid, trusted_tx.feerate_per_kw(), holder_csv, &this_htlc, &self.channel_type(), false, &keys.broadcaster_delayed_payment_key, &keys.revocation_key);
 
-			let htlc_redeemscript = chan_utils::get_htlc_redeemscript(&this_htlc, self.opt_anchors(), &keys);
+			let htlc_redeemscript = chan_utils::get_htlc_redeemscript(&this_htlc, &self.channel_type(), &keys);
 
-			let sighash_type = if self.opt_anchors() {
+			let sighash_type = if self.channel_type().supports_anchors() {
 				EcdsaSighashType::SinglePlusAnyoneCanPay
 			} else {
 				EcdsaSighashType::All

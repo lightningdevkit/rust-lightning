@@ -801,10 +801,10 @@ struct CommitmentTxInfoCached {
 
 pub const DEFAULT_MAX_HTLCS: u16 = 50;
 
-pub(crate) fn commitment_tx_base_weight(opt_anchors: bool) -> u64 {
+pub(crate) fn commitment_tx_base_weight(channel_type: &ChannelType) -> u64 {
 	const COMMITMENT_TX_BASE_WEIGHT: u64 = 724;
 	const COMMITMENT_TX_BASE_ANCHOR_WEIGHT: u64 = 1124;
-	if opt_anchors { COMMITMENT_TX_BASE_ANCHOR_WEIGHT } else { COMMITMENT_TX_BASE_WEIGHT }
+	if channel_type.supports_anchors() { COMMITMENT_TX_BASE_ANCHOR_WEIGHT } else { COMMITMENT_TX_BASE_WEIGHT }
 }
 
 #[cfg(not(test))]
@@ -919,8 +919,8 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		cmp::min(channel_value_satoshis, cmp::max(q, 1000))
 	}
 
-	pub(crate) fn opt_anchors(&self) -> bool {
-		self.channel_transaction_parameters.channel_type.supports_anchors()
+	pub(crate) fn channel_type(&self) -> ChannelType {
+		self.channel_transaction_parameters.channel_type.clone()
 	}
 
 	fn get_initial_channel_type(config: &UserConfig, their_features: &InitFeatures) -> ChannelTypeFeatures {
@@ -1014,13 +1014,19 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			return Err(APIError::APIMisuseError { err: format!("Holder selected channel  reserve below implemention limit dust_limit_satoshis {}", holder_selected_channel_reserve_satoshis) });
 		}
 
-		let channel_type = Self::get_initial_channel_type(&config, their_features);
-		debug_assert!(channel_type.is_subset(&channelmanager::provided_channel_type_features(&config)));
+		let channel_features = Self::get_initial_channel_type(&config, their_features);
+		debug_assert!(channel_features.is_subset(&channelmanager::provided_channel_type_features(&config)));
+
+		let channel_type = if channel_features.requires_anchors_zero_fee_htlc_tx() {
+			ChannelType::Anchors
+		} else {
+			ChannelType::Legacy
+		};
 
 		let feerate = fee_estimator.bounded_sat_per_1000_weight(ConfirmationTarget::Normal);
 
 		let value_to_self_msat = channel_value_satoshis * 1000 - push_msat;
-		let commitment_tx_fee = Self::commit_tx_fee_msat(feerate, MIN_AFFORDABLE_HTLC_COUNT, channel_type.requires_anchors_zero_fee_htlc_tx());
+		let commitment_tx_fee = Self::commit_tx_fee_msat(feerate, MIN_AFFORDABLE_HTLC_COUNT, &channel_type);
 		if value_to_self_msat < commitment_tx_fee {
 			return Err(APIError::APIMisuseError{ err: format!("Funding amount ({}) can't even pay fee for initial commitment transaction fee of {}.", value_to_self_msat / 1000, commitment_tx_fee / 1000) });
 		}
@@ -1134,7 +1140,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 				is_outbound_from_holder: true,
 				counterparty_parameters: None,
 				funding_outpoint: None,
-				channel_type: if channel_type.requires_anchors_zero_fee_htlc_tx() { ChannelType::Anchors } else { ChannelType::Legacy },
+				channel_type: if channel_features.requires_anchors_zero_fee_htlc_tx() { ChannelType::Anchors } else { ChannelType::Legacy },
 				opt_non_zero_fee_anchors: None
 			},
 			funding_transaction: None,
@@ -1168,7 +1174,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			#[cfg(any(test, fuzzing))]
 			historical_inbound_htlc_fulfills: HashSet::new(),
 
-			channel_type,
+			channel_type: channel_features,
 			channel_keys_id,
 
 			pending_monitor_updates: Vec::new(),
@@ -1224,7 +1230,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 
 		// First check the channel type is known, failing before we do anything else if we don't
 		// support this channel type.
-		let channel_type = if let Some(channel_type) = &msg.channel_type {
+		let channel_features = if let Some(channel_type) = &msg.channel_type {
 			if channel_type.supports_any_optional_bits() {
 				return Err(ChannelError::Close("Channel Type field contained optional bits - this is not allowed".to_owned()));
 			}
@@ -1250,7 +1256,11 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			}
 			channel_type
 		};
-		let opt_anchors = channel_type.supports_anchors_zero_fee_htlc_tx();
+		let channel_type = if channel_features.supports_anchors_zero_fee_htlc_tx() {
+			ChannelType::Anchors
+		} else {
+			ChannelType::Legacy
+		};
 
 		let channel_keys_id = signer_provider.generate_channel_keys_id(true, msg.funding_satoshis, user_id);
 		let holder_signer = signer_provider.derive_channel_signer(msg.funding_satoshis, channel_keys_id);
@@ -1351,7 +1361,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		// check if the funder's amount for the initial commitment tx is sufficient
 		// for full fee payment plus a few HTLCs to ensure the channel will be useful.
 		let funders_amount_msat = msg.funding_satoshis * 1000 - msg.push_msat;
-		let commitment_tx_fee = Self::commit_tx_fee_msat(msg.feerate_per_kw, MIN_AFFORDABLE_HTLC_COUNT, opt_anchors) / 1000;
+		let commitment_tx_fee = Self::commit_tx_fee_msat(msg.feerate_per_kw, MIN_AFFORDABLE_HTLC_COUNT, &channel_type) / 1000;
 		if funders_amount_msat / 1000 < commitment_tx_fee {
 			return Err(ChannelError::Close(format!("Funding amount ({} sats) can't even pay fee for initial commitment transaction fee of {} sats.", funders_amount_msat / 1000, commitment_tx_fee)));
 		}
@@ -1493,7 +1503,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 					pubkeys: counterparty_pubkeys,
 				}),
 				funding_outpoint: None,
-				channel_type: if opt_anchors { ChannelType::Anchors } else { ChannelType::Legacy },
+				channel_type,
 				opt_non_zero_fee_anchors: None
 			},
 			funding_transaction: None,
@@ -1527,7 +1537,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			#[cfg(any(test, fuzzing))]
 			historical_inbound_htlc_fulfills: HashSet::new(),
 
-			channel_type,
+			channel_type: channel_features,
 			channel_keys_id,
 
 			pending_monitor_updates: Vec::new(),
@@ -1596,10 +1606,10 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			($htlc: expr, $outbound: expr, $source: expr, $state_name: expr) => {
 				if $outbound == local { // "offered HTLC output"
 					let htlc_in_tx = get_htlc_in_commitment!($htlc, true);
-					let htlc_tx_fee = if self.opt_anchors() {
+					let htlc_tx_fee = if self.channel_type().supports_anchors() {
 						0
 					} else {
-						feerate_per_kw as u64 * htlc_timeout_tx_weight(false) / 1000
+						feerate_per_kw as u64 * htlc_timeout_tx_weight(&ChannelType::Legacy) / 1000
 					};
 					if $htlc.amount_msat / 1000 >= broadcaster_dust_limit_satoshis + htlc_tx_fee {
 						log_trace!(logger, "   ...including {} {} HTLC {} (hash {}) with value {}", if $outbound { "outbound" } else { "inbound" }, $state_name, $htlc.htlc_id, log_bytes!($htlc.payment_hash.0), $htlc.amount_msat);
@@ -1610,10 +1620,10 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 					}
 				} else {
 					let htlc_in_tx = get_htlc_in_commitment!($htlc, false);
-					let htlc_tx_fee = if self.opt_anchors() {
+					let htlc_tx_fee = if self.channel_type().supports_anchors() {
 						0
 					} else {
-						feerate_per_kw as u64 * htlc_success_tx_weight(false) / 1000
+						feerate_per_kw as u64 * htlc_success_tx_weight(&ChannelType::Legacy) / 1000
 					};
 					if $htlc.amount_msat / 1000 >= broadcaster_dust_limit_satoshis + htlc_tx_fee {
 						log_trace!(logger, "   ...including {} {} HTLC {} (hash {}) with value {}", if $outbound { "outbound" } else { "inbound" }, $state_name, $htlc.htlc_id, log_bytes!($htlc.payment_hash.0), $htlc.amount_msat);
@@ -1718,7 +1728,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			broadcaster_max_commitment_tx_output.1 = cmp::max(broadcaster_max_commitment_tx_output.1, value_to_remote_msat as u64);
 		}
 
-		let total_fee_sat = Channel::<Signer>::commit_tx_fee_sat(feerate_per_kw, included_non_dust_htlcs.len(), self.channel_transaction_parameters.channel_type.supports_anchors());
+		let total_fee_sat = Channel::<Signer>::commit_tx_fee_sat(feerate_per_kw, included_non_dust_htlcs.len(), &self.channel_type());
 		let anchors_val = if self.channel_transaction_parameters.channel_type.supports_anchors() { ANCHOR_OUTPUT_VALUE_SATOSHI * 2 } else { 0 } as i64;
 		let (value_to_self, value_to_remote) = if self.is_outbound() {
 			(value_to_self_msat / 1000 - anchors_val - total_fee_sat as i64, value_to_remote_msat / 1000)
@@ -1754,7 +1764,6 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		let tx = CommitmentTransaction::new_with_auxiliary_htlc_data(commitment_number,
 		                                                             value_to_a as u64,
 		                                                             value_to_b as u64,
-		                                                             self.channel_transaction_parameters.channel_type.supports_anchors(),
 		                                                             funding_pubkey_a,
 		                                                             funding_pubkey_b,
 		                                                             keys.clone(),
@@ -2629,12 +2638,13 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			on_holder_tx_holding_cell_htlcs_count: 0,
 		};
 
-		let (htlc_timeout_dust_limit, htlc_success_dust_limit) = if self.opt_anchors() {
+		let channel_type = self.channel_type();
+		let (htlc_timeout_dust_limit, htlc_success_dust_limit) = if channel_type.supports_anchors() {
 			(0, 0)
 		} else {
 			let dust_buffer_feerate = self.get_dust_buffer_feerate(outbound_feerate_update) as u64;
-			(dust_buffer_feerate * htlc_timeout_tx_weight(false) / 1000,
-				dust_buffer_feerate * htlc_success_tx_weight(false) / 1000)
+			(dust_buffer_feerate * htlc_timeout_tx_weight(&channel_type) / 1000,
+				dust_buffer_feerate * htlc_success_tx_weight(&channel_type) / 1000)
 		};
 		let counterparty_dust_limit_timeout_sat = htlc_timeout_dust_limit + self.counterparty_dust_limit_satoshis;
 		let holder_dust_limit_success_sat = htlc_success_dust_limit + self.holder_dust_limit_satoshis;
@@ -2661,12 +2671,13 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			on_holder_tx_holding_cell_htlcs_count: 0,
 		};
 
-		let (htlc_timeout_dust_limit, htlc_success_dust_limit) = if self.opt_anchors() {
+		let channel_type = self.channel_type();
+		let (htlc_timeout_dust_limit, htlc_success_dust_limit) = if channel_type.supports_anchors() {
 			(0, 0)
 		} else {
 			let dust_buffer_feerate = self.get_dust_buffer_feerate(outbound_feerate_update) as u64;
-			(dust_buffer_feerate * htlc_timeout_tx_weight(false) / 1000,
-				dust_buffer_feerate * htlc_success_tx_weight(false) / 1000)
+			(dust_buffer_feerate * htlc_timeout_tx_weight(&channel_type) / 1000,
+				dust_buffer_feerate * htlc_success_tx_weight(&channel_type) / 1000)
 		};
 		let counterparty_dust_limit_success_sat = htlc_success_dust_limit + self.counterparty_dust_limit_satoshis;
 		let holder_dust_limit_timeout_sat = htlc_timeout_dust_limit + self.holder_dust_limit_satoshis;
@@ -2739,17 +2750,17 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 
 	// Get the fee cost in MSATS of a commitment tx with a given number of HTLC outputs.
 	// Note that num_htlcs should not include dust HTLCs.
-	fn commit_tx_fee_msat(feerate_per_kw: u32, num_htlcs: usize, opt_anchors: bool) -> u64 {
+	fn commit_tx_fee_msat(feerate_per_kw: u32, num_htlcs: usize, channel_type: &ChannelType) -> u64 {
 		// Note that we need to divide before multiplying to round properly,
 		// since the lowest denomination of bitcoin on-chain is the satoshi.
-		(commitment_tx_base_weight(opt_anchors) + num_htlcs as u64 * COMMITMENT_TX_WEIGHT_PER_HTLC) * feerate_per_kw as u64 / 1000 * 1000
+		(commitment_tx_base_weight(channel_type) + num_htlcs as u64 * COMMITMENT_TX_WEIGHT_PER_HTLC) * feerate_per_kw as u64 / 1000 * 1000
 	}
 
 	// Get the fee cost in SATS of a commitment tx with a given number of HTLC outputs.
 	// Note that num_htlcs should not include dust HTLCs.
 	#[inline]
-	fn commit_tx_fee_sat(feerate_per_kw: u32, num_htlcs: usize, opt_anchors: bool) -> u64 {
-		feerate_per_kw as u64 * (commitment_tx_base_weight(opt_anchors) + num_htlcs as u64 * COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000
+	fn commit_tx_fee_sat(feerate_per_kw: u32, num_htlcs: usize, channel_type: &ChannelType) -> u64 {
+		feerate_per_kw as u64 * (commitment_tx_base_weight(channel_type) + num_htlcs as u64 * COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000
 	}
 
 	// Get the commitment tx fee for the local's (i.e. our) next commitment transaction based on the
@@ -2759,11 +2770,12 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 	fn next_local_commit_tx_fee_msat(&self, htlc: HTLCCandidate, fee_spike_buffer_htlc: Option<()>) -> u64 {
 		assert!(self.is_outbound());
 
-		let (htlc_success_dust_limit, htlc_timeout_dust_limit) = if self.opt_anchors() {
+		let channel_type = self.channel_type();
+		let (htlc_success_dust_limit, htlc_timeout_dust_limit) = if channel_type.supports_anchors() {
 			(0, 0)
 		} else {
-			(self.feerate_per_kw as u64 * htlc_success_tx_weight(false) / 1000,
-				self.feerate_per_kw as u64 * htlc_timeout_tx_weight(false) / 1000)
+			(self.feerate_per_kw as u64 * htlc_success_tx_weight(&channel_type) / 1000,
+				self.feerate_per_kw as u64 * htlc_timeout_tx_weight(&channel_type) / 1000)
 		};
 		let real_dust_limit_success_sat = htlc_success_dust_limit + self.holder_dust_limit_satoshis;
 		let real_dust_limit_timeout_sat = htlc_timeout_dust_limit + self.holder_dust_limit_satoshis;
@@ -2821,13 +2833,14 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			}
 		}
 
+		let channel_type = self.channel_type();
 		let num_htlcs = included_htlcs + addl_htlcs;
-		let res = Self::commit_tx_fee_msat(self.feerate_per_kw, num_htlcs, self.opt_anchors());
+		let res = Self::commit_tx_fee_msat(self.feerate_per_kw, num_htlcs, &channel_type);
 		#[cfg(any(test, fuzzing))]
 		{
 			let mut fee = res;
 			if fee_spike_buffer_htlc.is_some() {
-				fee = Self::commit_tx_fee_msat(self.feerate_per_kw, num_htlcs - 1, self.opt_anchors());
+				fee = Self::commit_tx_fee_msat(self.feerate_per_kw, num_htlcs - 1, &channel_type);
 			}
 			let total_pending_htlcs = self.pending_inbound_htlcs.len() + self.pending_outbound_htlcs.len()
 				+ self.holding_cell_htlc_updates.len();
@@ -2856,11 +2869,12 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 	fn next_remote_commit_tx_fee_msat(&self, htlc: HTLCCandidate, fee_spike_buffer_htlc: Option<()>) -> u64 {
 		assert!(!self.is_outbound());
 
-		let (htlc_success_dust_limit, htlc_timeout_dust_limit) = if self.opt_anchors() {
+		let channel_type = self.channel_type();
+		let (htlc_success_dust_limit, htlc_timeout_dust_limit) = if channel_type.supports_anchors() {
 			(0, 0)
 		} else {
-			(self.feerate_per_kw as u64 * htlc_success_tx_weight(false) / 1000,
-				self.feerate_per_kw as u64 * htlc_timeout_tx_weight(false) / 1000)
+			(self.feerate_per_kw as u64 * htlc_success_tx_weight(&channel_type) / 1000,
+				self.feerate_per_kw as u64 * htlc_timeout_tx_weight(&channel_type) / 1000)
 		};
 		let real_dust_limit_success_sat = htlc_success_dust_limit + self.counterparty_dust_limit_satoshis;
 		let real_dust_limit_timeout_sat = htlc_timeout_dust_limit + self.counterparty_dust_limit_satoshis;
@@ -2906,12 +2920,12 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		}
 
 		let num_htlcs = included_htlcs + addl_htlcs;
-		let res = Self::commit_tx_fee_msat(self.feerate_per_kw, num_htlcs, self.opt_anchors());
+		let res = Self::commit_tx_fee_msat(self.feerate_per_kw, num_htlcs, &channel_type);
 		#[cfg(any(test, fuzzing))]
 		{
 			let mut fee = res;
 			if fee_spike_buffer_htlc.is_some() {
-				fee = Self::commit_tx_fee_msat(self.feerate_per_kw, num_htlcs - 1, self.opt_anchors());
+				fee = Self::commit_tx_fee_msat(self.feerate_per_kw, num_htlcs - 1, &channel_type);
 			}
 			let total_pending_htlcs = self.pending_inbound_htlcs.len() + self.pending_outbound_htlcs.len();
 			let commitment_tx_info = CommitmentTxInfoCached {
@@ -2986,12 +3000,13 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			}
 		}
 
-		let (htlc_timeout_dust_limit, htlc_success_dust_limit) = if self.opt_anchors() {
+		let channel_type = self.channel_type();
+		let (htlc_timeout_dust_limit, htlc_success_dust_limit) = if channel_type.supports_anchors() {
 			(0, 0)
 		} else {
 			let dust_buffer_feerate = self.get_dust_buffer_feerate(None) as u64;
-			(dust_buffer_feerate * htlc_timeout_tx_weight(false) / 1000,
-				dust_buffer_feerate * htlc_success_tx_weight(false) / 1000)
+			(dust_buffer_feerate * htlc_timeout_tx_weight(&channel_type) / 1000,
+				dust_buffer_feerate * htlc_success_tx_weight(&channel_type) / 1000)
 		};
 		let exposure_dust_limit_timeout_sats = htlc_timeout_dust_limit + self.counterparty_dust_limit_satoshis;
 		if msg.amount_msat / 1000 < exposure_dust_limit_timeout_sats {
@@ -3236,14 +3251,15 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 
 		let mut nondust_htlc_sources = Vec::with_capacity(htlcs_cloned.len());
 		let mut htlcs_and_sigs = Vec::with_capacity(htlcs_cloned.len());
+		let channel_type = self.channel_type();
 		for (idx, (htlc, mut source_opt)) in htlcs_cloned.drain(..).enumerate() {
 			if let Some(_) = htlc.transaction_output_index {
 				let htlc_tx = chan_utils::build_htlc_transaction(&commitment_txid, commitment_stats.feerate_per_kw,
-					self.get_counterparty_selected_contest_delay().unwrap(), &htlc, self.opt_anchors(),
+					self.get_counterparty_selected_contest_delay().unwrap(), &htlc, &channel_type,
 					false, &keys.broadcaster_delayed_payment_key, &keys.revocation_key);
 
-				let htlc_redeemscript = chan_utils::get_htlc_redeemscript(&htlc, self.opt_anchors(), &keys);
-				let htlc_sighashtype = if self.opt_anchors() { EcdsaSighashType::SinglePlusAnyoneCanPay } else { EcdsaSighashType::All };
+				let htlc_redeemscript = chan_utils::get_htlc_redeemscript(&htlc, &channel_type, &keys);
+				let htlc_sighashtype = if channel_type.supports_anchors() { EcdsaSighashType::SinglePlusAnyoneCanPay } else { EcdsaSighashType::All };
 				let htlc_sighash = hash_to_message!(&sighash::SighashCache::new(&htlc_tx).segwit_signature_hash(0, &htlc_redeemscript, htlc.amount_msat / 1000, htlc_sighashtype).unwrap()[..]);
 				log_trace!(logger, "Checking HTLC tx signature {} by key {} against tx {} (sighash {}) with redeemscript {} in channel {}.",
 					log_bytes!(msg.htlc_signatures[idx].serialize_compact()[..]), log_bytes!(keys.countersignatory_htlc_key.serialize()),
@@ -3759,7 +3775,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		let outbound_stats = self.get_outbound_pending_htlc_stats(Some(feerate_per_kw));
 		let keys = self.build_holder_transaction_keys(self.cur_holder_commitment_transaction_number);
 		let commitment_stats = self.build_commitment_transaction(self.cur_holder_commitment_transaction_number, &keys, true, true, logger);
-		let buffer_fee_msat = Channel::<Signer>::commit_tx_fee_sat(feerate_per_kw, commitment_stats.num_nondust_htlcs + outbound_stats.on_holder_tx_holding_cell_htlcs_count as usize + CONCURRENT_INBOUND_HTLC_FEE_BUFFER as usize, self.opt_anchors()) * 1000;
+		let buffer_fee_msat = Channel::<Signer>::commit_tx_fee_sat(feerate_per_kw, commitment_stats.num_nondust_htlcs + outbound_stats.on_holder_tx_holding_cell_htlcs_count as usize + CONCURRENT_INBOUND_HTLC_FEE_BUFFER as usize, &self.channel_type()) * 1000;
 		let holder_balance_msat = commitment_stats.local_balance_msat - outbound_stats.holding_cell_msat;
 		if holder_balance_msat < buffer_fee_msat  + self.counterparty_selected_channel_reserve_satoshis.unwrap() * 1000 {
 			//TODO: auto-close after a number of failures?
@@ -5897,12 +5913,12 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			}
 		}
 
-		let (htlc_success_dust_limit, htlc_timeout_dust_limit) = if self.opt_anchors() {
+		let (htlc_success_dust_limit, htlc_timeout_dust_limit) = if self.channel_type().supports_anchors() {
 			(0, 0)
 		} else {
 			let dust_buffer_feerate = self.get_dust_buffer_feerate(None) as u64;
-			(dust_buffer_feerate * htlc_success_tx_weight(false) / 1000,
-				dust_buffer_feerate * htlc_timeout_tx_weight(false) / 1000)
+			(dust_buffer_feerate * htlc_success_tx_weight(&self.channel_type()) / 1000,
+				dust_buffer_feerate * htlc_timeout_tx_weight(&self.channel_type()) / 1000)
 		};
 		let exposure_dust_limit_success_sats = htlc_success_dust_limit + self.counterparty_dust_limit_satoshis;
 		if amount_msat / 1000 < exposure_dust_limit_success_sats {
@@ -6052,7 +6068,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 						&& info.next_holder_htlc_id == self.next_holder_htlc_id
 						&& info.next_counterparty_htlc_id == self.next_counterparty_htlc_id
 						&& info.feerate == self.feerate_per_kw {
-							let actual_fee = Self::commit_tx_fee_msat(self.feerate_per_kw, commitment_stats.num_nondust_htlcs, self.opt_anchors());
+							let actual_fee = Self::commit_tx_fee_msat(self.feerate_per_kw, commitment_stats.num_nondust_htlcs, &self.channel_type());
 							assert_eq!(actual_fee, info.fee);
 						}
 				}
@@ -6092,8 +6108,8 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 
 			for (ref htlc_sig, ref htlc) in htlc_signatures.iter().zip(htlcs) {
 				log_trace!(logger, "Signed remote HTLC tx {} with redeemscript {} with pubkey {} -> {} in channel {}",
-					encode::serialize_hex(&chan_utils::build_htlc_transaction(&counterparty_commitment_txid, commitment_stats.feerate_per_kw, self.get_holder_selected_contest_delay(), htlc, self.opt_anchors(), false, &counterparty_keys.broadcaster_delayed_payment_key, &counterparty_keys.revocation_key)),
-					encode::serialize_hex(&chan_utils::get_htlc_redeemscript(&htlc, self.opt_anchors(), &counterparty_keys)),
+					encode::serialize_hex(&chan_utils::build_htlc_transaction(&counterparty_commitment_txid, commitment_stats.feerate_per_kw, self.get_holder_selected_contest_delay(), htlc, &self.channel_type(), false, &counterparty_keys.broadcaster_delayed_payment_key, &counterparty_keys.revocation_key)),
+					encode::serialize_hex(&chan_utils::get_htlc_redeemscript(&htlc, &self.channel_type(), &counterparty_keys)),
 					log_bytes!(counterparty_keys.broadcaster_htlc_key.serialize()),
 					log_bytes!(htlc_sig.serialize_compact()[..]), log_bytes!(self.channel_id()));
 			}
@@ -7348,15 +7364,16 @@ mod tests {
 
 		// Make sure when Node A calculates their local commitment transaction, none of the HTLCs pass
 		// the dust limit check.
+		let node_a_channel_type = node_a_chan.channel_type();
 		let htlc_candidate = HTLCCandidate::new(htlc_amount_msat, HTLCInitiator::LocalOffered);
 		let local_commit_tx_fee = node_a_chan.next_local_commit_tx_fee_msat(htlc_candidate, None);
-		let local_commit_fee_0_htlcs = Channel::<EnforcingSigner>::commit_tx_fee_msat(node_a_chan.feerate_per_kw, 0, node_a_chan.opt_anchors());
+		let local_commit_fee_0_htlcs = Channel::<EnforcingSigner>::commit_tx_fee_msat(node_a_chan.feerate_per_kw, 0, &node_a_channel_type);
 		assert_eq!(local_commit_tx_fee, local_commit_fee_0_htlcs);
 
 		// Finally, make sure that when Node A calculates the remote's commitment transaction fees, all
 		// of the HTLCs are seen to be above the dust limit.
 		node_a_chan.channel_transaction_parameters.is_outbound_from_holder = false;
-		let remote_commit_fee_3_htlcs = Channel::<EnforcingSigner>::commit_tx_fee_msat(node_a_chan.feerate_per_kw, 3, node_a_chan.opt_anchors());
+		let remote_commit_fee_3_htlcs = Channel::<EnforcingSigner>::commit_tx_fee_msat(node_a_chan.feerate_per_kw, 3, &node_a_channel_type);
 		let htlc_candidate = HTLCCandidate::new(htlc_amount_msat, HTLCInitiator::LocalOffered);
 		let remote_commit_tx_fee = node_a_chan.next_remote_commit_tx_fee_msat(htlc_candidate, None);
 		assert_eq!(remote_commit_tx_fee, remote_commit_fee_3_htlcs);
@@ -7378,18 +7395,19 @@ mod tests {
 		let config = UserConfig::default();
 		let mut chan = Channel::<EnforcingSigner>::new_outbound(&fee_est, &&keys_provider, &&keys_provider, node_id, &channelmanager::provided_init_features(&config), 10000000, 100000, 42, &config, 0, 42).unwrap();
 
-		let commitment_tx_fee_0_htlcs = Channel::<EnforcingSigner>::commit_tx_fee_msat(chan.feerate_per_kw, 0, chan.opt_anchors());
-		let commitment_tx_fee_1_htlc = Channel::<EnforcingSigner>::commit_tx_fee_msat(chan.feerate_per_kw, 1, chan.opt_anchors());
+		let channel_type = chan.channel_type();
+		let commitment_tx_fee_0_htlcs = Channel::<EnforcingSigner>::commit_tx_fee_msat(chan.feerate_per_kw, 0, &channel_type);
+		let commitment_tx_fee_1_htlc = Channel::<EnforcingSigner>::commit_tx_fee_msat(chan.feerate_per_kw, 1, &channel_type);
 
 		// If HTLC_SUCCESS_TX_WEIGHT and HTLC_TIMEOUT_TX_WEIGHT were swapped: then this HTLC would be
 		// counted as dust when it shouldn't be.
-		let htlc_amt_above_timeout = ((253 * htlc_timeout_tx_weight(chan.opt_anchors()) / 1000) + chan.holder_dust_limit_satoshis + 1) * 1000;
+		let htlc_amt_above_timeout = ((253 * htlc_timeout_tx_weight(&channel_type) / 1000) + chan.holder_dust_limit_satoshis + 1) * 1000;
 		let htlc_candidate = HTLCCandidate::new(htlc_amt_above_timeout, HTLCInitiator::LocalOffered);
 		let commitment_tx_fee = chan.next_local_commit_tx_fee_msat(htlc_candidate, None);
 		assert_eq!(commitment_tx_fee, commitment_tx_fee_1_htlc);
 
 		// If swapped: this HTLC would be counted as non-dust when it shouldn't be.
-		let dust_htlc_amt_below_success = ((253 * htlc_success_tx_weight(chan.opt_anchors()) / 1000) + chan.holder_dust_limit_satoshis - 1) * 1000;
+		let dust_htlc_amt_below_success = ((253 * htlc_success_tx_weight(&channel_type) / 1000) + chan.holder_dust_limit_satoshis - 1) * 1000;
 		let htlc_candidate = HTLCCandidate::new(dust_htlc_amt_below_success, HTLCInitiator::RemoteOffered);
 		let commitment_tx_fee = chan.next_local_commit_tx_fee_msat(htlc_candidate, None);
 		assert_eq!(commitment_tx_fee, commitment_tx_fee_0_htlcs);
@@ -7397,13 +7415,13 @@ mod tests {
 		chan.channel_transaction_parameters.is_outbound_from_holder = false;
 
 		// If swapped: this HTLC would be counted as non-dust when it shouldn't be.
-		let dust_htlc_amt_above_timeout = ((253 * htlc_timeout_tx_weight(chan.opt_anchors()) / 1000) + chan.counterparty_dust_limit_satoshis + 1) * 1000;
+		let dust_htlc_amt_above_timeout = ((253 * htlc_timeout_tx_weight(&channel_type) / 1000) + chan.counterparty_dust_limit_satoshis + 1) * 1000;
 		let htlc_candidate = HTLCCandidate::new(dust_htlc_amt_above_timeout, HTLCInitiator::LocalOffered);
 		let commitment_tx_fee = chan.next_remote_commit_tx_fee_msat(htlc_candidate, None);
 		assert_eq!(commitment_tx_fee, commitment_tx_fee_0_htlcs);
 
 		// If swapped: this HTLC would be counted as dust when it shouldn't be.
-		let htlc_amt_below_success = ((253 * htlc_success_tx_weight(chan.opt_anchors()) / 1000) + chan.counterparty_dust_limit_satoshis - 1) * 1000;
+		let htlc_amt_below_success = ((253 * htlc_success_tx_weight(&channel_type) / 1000) + chan.counterparty_dust_limit_satoshis - 1) * 1000;
 		let htlc_candidate = HTLCCandidate::new(htlc_amt_below_success, HTLCInitiator::RemoteOffered);
 		let commitment_tx_fee = chan.next_remote_commit_tx_fee_msat(htlc_candidate, None);
 		assert_eq!(commitment_tx_fee, commitment_tx_fee_1_htlc);
