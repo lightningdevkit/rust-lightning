@@ -2827,10 +2827,16 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		feerate_per_kw as u64 * (commitment_tx_base_weight(opt_anchors) + num_htlcs as u64 * COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000
 	}
 
-	// Get the commitment tx fee for the local's (i.e. our) next commitment transaction based on the
-	// number of pending HTLCs that are on track to be in our next commitment tx, plus an additional
-	// HTLC if `fee_spike_buffer_htlc` is Some, plus a new HTLC given by `new_htlc_amount`. Dust HTLCs
-	// are excluded.
+	/// Get the commitment tx fee for the local's (i.e. our) next commitment transaction based on the
+	/// number of pending HTLCs that are on track to be in our next commitment tx.
+	///
+	/// Optionally includes the `HTLCCandidate` given by `htlc` and an additional non-dust HTLC if
+	/// `fee_spike_buffer_htlc` is `Some`.
+	///
+	/// The first extra HTLC is useful for determining whether we can accept a further HTLC, the
+	/// second allows for creating a buffer to ensure a further HTLC can always be accepted/added.
+	///
+	/// Dust HTLCs are excluded.
 	fn next_local_commit_tx_fee_msat(&self, htlc: HTLCCandidate, fee_spike_buffer_htlc: Option<()>) -> u64 {
 		assert!(self.is_outbound());
 
@@ -2924,10 +2930,16 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		res
 	}
 
-	// Get the commitment tx fee for the remote's next commitment transaction based on the number of
-	// pending HTLCs that are on track to be in their next commitment tx, plus an additional HTLC if
-	// `fee_spike_buffer_htlc` is Some, plus a new HTLC given by `new_htlc_amount`. Dust HTLCs are
-	// excluded.
+	/// Get the commitment tx fee for the remote's next commitment transaction based on the number of
+	/// pending HTLCs that are on track to be in their next commitment tx
+	///
+	/// Optionally includes the `HTLCCandidate` given by `htlc` and an additional non-dust HTLC if
+	/// `fee_spike_buffer_htlc` is `Some`.
+	///
+	/// The first extra HTLC is useful for determining whether we can accept a further HTLC, the
+	/// second allows for creating a buffer to ensure a further HTLC can always be accepted/added.
+	///
+	/// Dust HTLCs are excluded.
 	fn next_remote_commit_tx_fee_msat(&self, htlc: HTLCCandidate, fee_spike_buffer_htlc: Option<()>) -> u64 {
 		assert!(!self.is_outbound());
 
