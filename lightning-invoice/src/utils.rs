@@ -18,6 +18,7 @@ use lightning::util::logger::Logger;
 use secp256k1::PublicKey;
 use core::ops::Deref;
 use core::time::Duration;
+use core::iter::Iterator;
 
 /// Utility to create an invoice that can be paid to one of multiple nodes, or a "phantom invoice."
 /// See [`PhantomKeysManager`] for more information on phantom node payments.
@@ -290,6 +291,33 @@ where
 
 		hint_idx +=1;
 	}
+}
+
+/// Draw items iteratively from multiple iterators.  The items are retrieved by index and
+/// rotates through the iterators - first the zero index then the first index then second index, etc.
+fn rotate_through_iterators<T, I: Iterator<Item = T>>(mut vecs: Vec<I>) -> impl Iterator<Item = T> {
+	let mut iterations = 0;
+
+	core::iter::from_fn(move || {
+		let mut exhausted_iterators = 0;
+		loop {
+			if vecs.is_empty() {
+				return None;
+			}
+			let next_idx = iterations % vecs.len();
+			iterations += 1;
+			if let Some(item) = vecs[next_idx].next() {
+				return Some(item);
+			}
+			// exhausted_vectors increase when the "next_idx" vector is exhausted
+			exhausted_iterators += 1;
+			// The check for exhausted iterators gets reset to 0 after each yield of `Some()`
+			// The loop will return None when all of the nested iterators are exhausted
+			if exhausted_iterators == vecs.len() {
+				return None;
+			}
+		}
+	})
 }
 
 #[cfg(feature = "std")]
@@ -777,7 +805,7 @@ mod test {
 	use lightning::routing::router::{PaymentParameters, RouteParameters};
 	use lightning::util::test_utils;
 	use lightning::util::config::UserConfig;
-	use crate::utils::create_invoice_from_channelmanager_and_duration_since_epoch;
+	use crate::utils::{create_invoice_from_channelmanager_and_duration_since_epoch, rotate_through_iterators};
 	use std::collections::HashSet;
 
 	#[test]
@@ -1885,5 +1913,112 @@ mod test {
 			Err(SignOrCreationError::CreationError(CreationError::MinFinalCltvExpiryDeltaTooShort)) => {},
 			_ => panic!(),
 		}
+	}
+
+	#[test]
+	fn test_rotate_through_iterators() {
+		// two nested vectors
+		let a = vec![vec!["a0", "b0", "c0"].into_iter(), vec!["a1", "b1"].into_iter()];
+		let result = rotate_through_iterators(a).collect::<Vec<_>>();
+
+		let expected = vec!["a0", "a1", "b0", "b1", "c0"];
+		assert_eq!(expected, result);
+
+		// test single nested vector
+		let a = vec![vec!["a0", "b0", "c0"].into_iter()];
+		let result = rotate_through_iterators(a).collect::<Vec<_>>();
+
+		let expected = vec!["a0", "b0", "c0"];
+		assert_eq!(expected, result);
+
+		// test second vector with only one element
+		let a = vec![vec!["a0", "b0", "c0"].into_iter(), vec!["a1"].into_iter()];
+		let result = rotate_through_iterators(a).collect::<Vec<_>>();
+
+		let expected = vec!["a0", "a1", "b0", "c0"];
+		assert_eq!(expected, result);
+
+		// test three nestend vectors
+		let a = vec![vec!["a0"].into_iter(), vec!["a1", "b1", "c1"].into_iter(), vec!["a2"].into_iter()];
+		let result = rotate_through_iterators(a).collect::<Vec<_>>();
+
+		let expected = vec!["a0", "a1", "a2", "b1", "c1"];
+		assert_eq!(expected, result);
+
+		// test single nested vector with a single value
+		let a = vec![vec!["a0"].into_iter()];
+		let result = rotate_through_iterators(a).collect::<Vec<_>>();
+
+		let expected = vec!["a0"];
+		assert_eq!(expected, result);
+
+		// test single empty nested vector
+		let a:Vec<std::vec::IntoIter<&str>> = vec![vec![].into_iter()];
+		let result = rotate_through_iterators(a).collect::<Vec<&str>>();
+		let expected:Vec<&str> = vec![];
+
+		assert_eq!(expected, result);
+
+		// test first nested vector is empty
+		let a:Vec<std::vec::IntoIter<&str>>= vec![vec![].into_iter(), vec!["a1", "b1", "c1"].into_iter()];
+		let result = rotate_through_iterators(a).collect::<Vec<&str>>();
+
+		let expected = vec!["a1", "b1", "c1"];
+		assert_eq!(expected, result);
+
+		// test two empty vectors
+		let a:Vec<std::vec::IntoIter<&str>> = vec![vec![].into_iter(), vec![].into_iter()];
+		let result = rotate_through_iterators(a).collect::<Vec<&str>>();
+
+		let expected:Vec<&str> = vec![];
+		assert_eq!(expected, result);
+
+		// test an empty vector amongst other filled vectors
+		let a = vec![
+			vec!["a0", "b0", "c0"].into_iter(),
+			vec![].into_iter(),
+			vec!["a1", "b1", "c1"].into_iter(),
+			vec!["a2", "b2", "c2"].into_iter(),
+		];
+		let result = rotate_through_iterators(a).collect::<Vec<_>>();
+
+		let expected = vec!["a0", "a1", "a2", "b0", "b1", "b2", "c0", "c1", "c2"];
+		assert_eq!(expected, result);
+
+		// test a filled vector between two empty vectors
+		let a = vec![vec![].into_iter(), vec!["a1", "b1", "c1"].into_iter(), vec![].into_iter()];
+		let result = rotate_through_iterators(a).collect::<Vec<_>>();
+
+		let expected = vec!["a1", "b1", "c1"];
+		assert_eq!(expected, result);
+
+		// test an empty vector at the end of the vectors
+		let a = vec![vec!["a0", "b0", "c0"].into_iter(), vec![].into_iter()];
+		let result = rotate_through_iterators(a).collect::<Vec<_>>();
+
+		let expected = vec!["a0", "b0", "c0"];
+		assert_eq!(expected, result);
+
+		// test multiple empty vectors amongst multiple filled vectors
+		let a = vec![
+			vec![].into_iter(),
+			vec!["a1", "b1", "c1"].into_iter(),
+			vec![].into_iter(),
+			vec!["a3", "b3"].into_iter(),
+			vec![].into_iter(),
+		];
+
+		let result = rotate_through_iterators(a).collect::<Vec<_>>();
+
+		let expected = vec!["a1", "a3", "b1", "b3", "c1"];
+		assert_eq!(expected, result);
+
+		// test one element in the first nested vectore and two elements in the second nested
+		// vector
+		let a = vec![vec!["a0"].into_iter(), vec!["a1", "b1"].into_iter()];
+		let result = rotate_through_iterators(a).collect::<Vec<_>>();
+
+		let expected = vec!["a0", "a1", "b1"];
+		assert_eq!(expected, result);
 	}
 }
