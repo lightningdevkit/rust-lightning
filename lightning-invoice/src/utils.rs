@@ -133,6 +133,8 @@ where
 	)
 }
 
+const MAX_CHANNEL_HINTS: usize = 3;
+
 fn _create_phantom_invoice<ES: Deref, NS: Deref, L: Deref>(
 	amt_msat: Option<u64>, payment_hash: Option<PaymentHash>, description: InvoiceDescription,
 	invoice_expiry_delta_secs: u32, phantom_route_hints: Vec<PhantomRouteHints>, entropy_source: ES,
@@ -203,7 +205,8 @@ where
 		invoice = invoice.amount_milli_satoshis(amt);
 	}
 
-	for route_hint in select_phantom_hints(amt_msat, phantom_route_hints, logger) {
+
+	for route_hint in select_phantom_hints(amt_msat, phantom_route_hints, logger).take(MAX_CHANNEL_HINTS) {
 		invoice = invoice.private_route(route_hint);
 	}
 
@@ -230,36 +233,48 @@ where
 ///
 /// [`PhantomKeysManager`]: lightning::sign::PhantomKeysManager
 fn select_phantom_hints<L: Deref>(amt_msat: Option<u64>, phantom_route_hints: Vec<PhantomRouteHints>,
-	logger: L) -> Vec<RouteHint>
+	logger: L) -> impl Iterator<Item = RouteHint>
 where
 	L::Target: Logger,
 {
-	let mut phantom_hints: Vec<Vec<RouteHint>> = Vec::new();
+	let mut phantom_hints: Vec<_> = Vec::new();
 
 	for PhantomRouteHints { channels, phantom_scid, real_node_pubkey } in phantom_route_hints {
 		log_trace!(logger, "Generating phantom route hints for node {}",
 			log_pubkey!(real_node_pubkey));
-		let mut route_hints = sort_and_filter_channels(channels, amt_msat, &logger);
+		let route_hints = sort_and_filter_channels(channels, amt_msat, &logger);
 
 		// If we have any public channel, the route hints from `sort_and_filter_channels` will be
 		// empty. In that case we create a RouteHint on which we will push a single hop with the
 		// phantom route into the invoice, and let the sender find the path to the `real_node_pubkey`
 		// node by looking at our public channels.
-		if route_hints.is_empty() {
-			route_hints.push(RouteHint(vec![]))
-		}
-		for route_hint in &mut route_hints {
-			route_hint.0.push(RouteHintHop {
-				src_node_id: real_node_pubkey,
-				short_channel_id: phantom_scid,
-				fees: RoutingFees {
-					base_msat: 0,
-					proportional_millionths: 0,
-				},
-				cltv_expiry_delta: MIN_CLTV_EXPIRY_DELTA,
-				htlc_minimum_msat: None,
-				htlc_maximum_msat: None,});
-		}
+		let empty_route_hints = route_hints.len() == 0;
+		let mut have_pushed_empty = false;
+		let route_hints = route_hints
+			.chain(core::iter::from_fn(move || {
+				if empty_route_hints && !have_pushed_empty {
+					// set flag of having handled the empty route_hints and ensure empty vector
+					// returned only once
+					have_pushed_empty = true;
+					Some(RouteHint(Vec::new()))
+				} else {
+					None
+				}
+			}))
+			.map(move |mut hint| {
+				hint.0.push(RouteHintHop {
+					src_node_id: real_node_pubkey,
+					short_channel_id: phantom_scid,
+					fees: RoutingFees {
+						base_msat: 0,
+						proportional_millionths: 0,
+					},
+					cltv_expiry_delta: MIN_CLTV_EXPIRY_DELTA,
+					htlc_minimum_msat: None,
+					htlc_maximum_msat: None,
+				});
+				hint
+			});
 
 		phantom_hints.push(route_hints);
 	}
@@ -268,29 +283,7 @@ where
 	// the hints across our real nodes we add one hint from each in turn until no node has any hints
 	// left (if one node has more hints than any other, these will accumulate at the end of the
 	// vector).
-	let mut invoice_hints: Vec<RouteHint> = Vec::new();
-	let mut hint_idx = 0;
-
-	loop {
-		let mut remaining_hints = false;
-
-		for hints in phantom_hints.iter() {
-			if invoice_hints.len() == 3 {
-				return invoice_hints
-			}
-
-			if hint_idx < hints.len() {
-				invoice_hints.push(hints[hint_idx].clone());
-				remaining_hints = true
-			}
-		}
-
-		if !remaining_hints {
-			return invoice_hints
-		}
-
-		hint_idx +=1;
-	}
+	rotate_through_iterators(phantom_hints)
 }
 
 /// Draw items iteratively from multiple iterators.  The items are retrieved by index and
@@ -603,14 +596,33 @@ fn _create_invoice_from_channelmanager_and_duration_since_epoch_with_payment_has
 /// * Sorted by lowest inbound capacity if an online channel with the minimum amount requested exists,
 ///   otherwise sort by highest inbound capacity to give the payment the best chance of succeeding.
 fn sort_and_filter_channels<L: Deref>(
-	channels: Vec<ChannelDetails>, min_inbound_capacity_msat: Option<u64>, logger: &L
-) -> Vec<RouteHint> where L::Target: Logger {
+	channels: Vec<ChannelDetails>,
+	min_inbound_capacity_msat: Option<u64>,
+	logger: &L,
+) -> impl ExactSizeIterator<Item = RouteHint>
+where
+	L::Target: Logger,
+{
 	let mut filtered_channels: HashMap<PublicKey, ChannelDetails> = HashMap::new();
 	let min_inbound_capacity = min_inbound_capacity_msat.unwrap_or(0);
 	let mut min_capacity_channel_exists = false;
 	let mut online_channel_exists = false;
 	let mut online_min_capacity_channel_exists = false;
 	let mut has_pub_unconf_chan = false;
+
+	let route_hint_from_channel = |channel: ChannelDetails| {
+		let forwarding_info = channel.counterparty.forwarding_info.as_ref().unwrap();
+		RouteHint(vec![RouteHintHop {
+			src_node_id: channel.counterparty.node_id,
+			short_channel_id: channel.get_inbound_payment_scid().unwrap(),
+			fees: RoutingFees {
+				base_msat: forwarding_info.fee_base_msat,
+				proportional_millionths: forwarding_info.fee_proportional_millionths,
+			},
+			cltv_expiry_delta: forwarding_info.cltv_expiry_delta,
+			htlc_minimum_msat: channel.inbound_htlc_minimum_msat,
+			htlc_maximum_msat: channel.inbound_htlc_maximum_msat,}])
+	};
 
 	log_trace!(logger, "Considering {} channels for invoice route hints", channels.len());
 	for channel in channels.into_iter().filter(|chan| chan.is_channel_ready) {
@@ -630,7 +642,7 @@ fn sort_and_filter_channels<L: Deref>(
 				// look at the public channels instead.
 				log_trace!(logger, "Not including channels in invoice route hints on account of public channel {}",
 					log_bytes!(channel.channel_id));
-				return vec![]
+				return vec![].into_iter().take(MAX_CHANNEL_HINTS).map(route_hint_from_channel);
 			}
 		}
 
@@ -690,19 +702,6 @@ fn sort_and_filter_channels<L: Deref>(
 		}
 	}
 
-	let route_hint_from_channel = |channel: ChannelDetails| {
-		let forwarding_info = channel.counterparty.forwarding_info.as_ref().unwrap();
-		RouteHint(vec![RouteHintHop {
-			src_node_id: channel.counterparty.node_id,
-			short_channel_id: channel.get_inbound_payment_scid().unwrap(),
-			fees: RoutingFees {
-				base_msat: forwarding_info.fee_base_msat,
-				proportional_millionths: forwarding_info.fee_proportional_millionths,
-			},
-			cltv_expiry_delta: forwarding_info.cltv_expiry_delta,
-			htlc_minimum_msat: channel.inbound_htlc_minimum_msat,
-			htlc_maximum_msat: channel.inbound_htlc_maximum_msat,}])
-	};
 	// If all channels are private, prefer to return route hints which have a higher capacity than
 	// the payment value and where we're currently connected to the channel counterparty.
 	// Even if we cannot satisfy both goals, always ensure we include *some* hints, preferring
@@ -752,7 +751,8 @@ fn sort_and_filter_channels<L: Deref>(
 			} else {
 				b.inbound_capacity_msat.cmp(&a.inbound_capacity_msat)
 			}});
-		eligible_channels.into_iter().take(3).map(route_hint_from_channel).collect::<Vec<RouteHint>>()
+
+		eligible_channels.into_iter().take(MAX_CHANNEL_HINTS).map(route_hint_from_channel)
 }
 
 /// prefer_current_channel chooses a channel to use for route hints between a currently selected and candidate
