@@ -1137,6 +1137,11 @@ pub enum ErrorAction {
 		/// An error message which we should make an effort to send before we disconnect.
 		msg: Option<ErrorMessage>
 	},
+	/// The peer did something incorrect. Tell them without closing any channels and disconnect them.
+	DisconnectPeerWithWarning {
+		/// A warning message which we should make an effort to send before we disconnect.
+		msg: WarningMessage,
+	},
 	/// The peer did something harmless that we weren't able to process, just log and ignore
 	// New code should *not* use this. New code must use IgnoreAndLog, below!
 	IgnoreError,

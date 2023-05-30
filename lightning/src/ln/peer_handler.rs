@@ -26,7 +26,7 @@ use crate::ln::channelmanager::{SimpleArcChannelManager, SimpleRefChannelManager
 use crate::util::ser::{VecWriter, Writeable, Writer};
 use crate::ln::peer_channel_encryptor::{PeerChannelEncryptor,NextNoiseStep};
 use crate::ln::wire;
-use crate::ln::wire::Encode;
+use crate::ln::wire::{Encode, Type};
 use crate::onion_message::{CustomOnionMessageContents, CustomOnionMessageHandler, SimpleArcOnionMessenger, SimpleRefOnionMessenger};
 use crate::routing::gossip::{NetworkGraph, P2PGossipSync, NodeId, NodeAlias};
 use crate::util::atomic_counter::AtomicCounter;
@@ -1230,8 +1230,21 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 								Ok(x) => x,
 								Err(e) => {
 									match e.action {
-										msgs::ErrorAction::DisconnectPeer { msg: _ } => {
-											//TODO: Try to push msg
+										msgs::ErrorAction::DisconnectPeer { .. } => {
+											// We may have an `ErrorMessage` to send to the peer,
+											// but writing to the socket while reading can lead to
+											// re-entrant code and possibly unexpected behavior. The
+											// message send is optimistic anyway, and in this case
+											// we immediately disconnect the peer.
+											log_debug!(self.logger, "Error handling message{}; disconnecting peer with: {}", OptionalFromDebugger(&peer_node_id), e.err);
+											return Err(PeerHandleError { });
+										},
+										msgs::ErrorAction::DisconnectPeerWithWarning { .. } => {
+											// We have a `WarningMessage` to send to the peer, but
+											// writing to the socket while reading can lead to
+											// re-entrant code and possibly unexpected behavior. The
+											// message send is optimistic anyway, and in this case
+											// we immediately disconnect the peer.
 											log_debug!(self.logger, "Error handling message{}; disconnecting peer with: {}", OptionalFromDebugger(&peer_node_id), e.err);
 											return Err(PeerHandleError { });
 										},
@@ -1362,7 +1375,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 										Ok(x) => x,
 										Err(e) => {
 											match e {
-												// Note that to avoid recursion we never call
+												// Note that to avoid re-entrancy we never call
 												// `do_attempt_write_data` from here, causing
 												// the messages enqueued here to not actually
 												// be sent before the peer is disconnected.
@@ -1383,9 +1396,8 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 													});
 													continue;
 												}
-												(msgs::DecodeError::UnknownRequiredFeature, ty) => {
-													log_gossip!(self.logger, "Received a message with an unknown required feature flag or TLV, you may want to update!");
-													self.enqueue_message(peer, &msgs::WarningMessage { channel_id: [0; 32], data: format!("Received an unknown required feature/TLV in message type {:?}", ty) });
+												(msgs::DecodeError::UnknownRequiredFeature, _) => {
+													log_debug!(self.logger, "Received a message with an unknown required feature flag or TLV, you may want to update!");
 													return Err(PeerHandleError { });
 												}
 												(msgs::DecodeError::UnknownVersion, _) => return Err(PeerHandleError { }),
@@ -2065,32 +2077,48 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 									log_pubkey!(node_id), msg.contents.short_channel_id);
 							self.enqueue_message(&mut *get_peer_for_forwarding!(node_id), msg);
 						},
-						MessageSendEvent::HandleError { ref node_id, ref action } => {
-							match *action {
-								msgs::ErrorAction::DisconnectPeer { ref msg } => {
+						MessageSendEvent::HandleError { node_id, action } => {
+							match action {
+								msgs::ErrorAction::DisconnectPeer { msg } => {
+									if let Some(msg) = msg.as_ref() {
+										log_trace!(self.logger, "Handling DisconnectPeer HandleError event in peer_handler for node {} with message {}",
+											log_pubkey!(node_id), msg.data);
+									} else {
+										log_trace!(self.logger, "Handling DisconnectPeer HandleError event in peer_handler for node {}",
+											log_pubkey!(node_id));
+									}
 									// We do not have the peers write lock, so we just store that we're
 									// about to disconenct the peer and do it after we finish
 									// processing most messages.
-									peers_to_disconnect.insert(*node_id, msg.clone());
+									let msg = msg.map(|msg| wire::Message::<<<CMH as core::ops::Deref>::Target as wire::CustomMessageReader>::CustomMessage>::Error(msg));
+									peers_to_disconnect.insert(node_id, msg);
+								},
+								msgs::ErrorAction::DisconnectPeerWithWarning { msg } => {
+									log_trace!(self.logger, "Handling DisconnectPeer HandleError event in peer_handler for node {} with message {}",
+										log_pubkey!(node_id), msg.data);
+									// We do not have the peers write lock, so we just store that we're
+									// about to disconenct the peer and do it after we finish
+									// processing most messages.
+									peers_to_disconnect.insert(node_id, Some(wire::Message::Warning(msg)));
 								},
 								msgs::ErrorAction::IgnoreAndLog(level) => {
 									log_given_level!(self.logger, level, "Received a HandleError event to be ignored for node {}", log_pubkey!(node_id));
 								},
 								msgs::ErrorAction::IgnoreDuplicateGossip => {},
 								msgs::ErrorAction::IgnoreError => {
-									log_debug!(self.logger, "Received a HandleError event to be ignored for node {}", log_pubkey!(node_id));
-								},
+										log_debug!(self.logger, "Received a HandleError event to be ignored for node {}", log_pubkey!(node_id));
+									},
 								msgs::ErrorAction::SendErrorMessage { ref msg } => {
 									log_trace!(self.logger, "Handling SendErrorMessage HandleError event in peer_handler for node {} with message {}",
 											log_pubkey!(node_id),
 											msg.data);
-									self.enqueue_message(&mut *get_peer_for_forwarding!(node_id), msg);
+									self.enqueue_message(&mut *get_peer_for_forwarding!(&node_id), msg);
 								},
 								msgs::ErrorAction::SendWarningMessage { ref msg, ref log_level } => {
 									log_given_level!(self.logger, *log_level, "Handling SendWarningMessage HandleError event in peer_handler for node {} with message {}",
 											log_pubkey!(node_id),
 											msg.data);
-									self.enqueue_message(&mut *get_peer_for_forwarding!(node_id), msg);
+									self.enqueue_message(&mut *get_peer_for_forwarding!(&node_id), msg);
 								},
 							}
 						},
@@ -2140,9 +2168,6 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 						if let Some(peer_mutex) = peers.remove(&descriptor) {
 							let mut peer = peer_mutex.lock().unwrap();
 							if let Some(msg) = msg {
-								log_trace!(self.logger, "Handling DisconnectPeer HandleError event in peer_handler for node {} with message {}",
-										log_pubkey!(node_id),
-										msg.data);
 								self.enqueue_message(&mut *peer, &msg);
 								// This isn't guaranteed to work, but if there is enough free
 								// room in the send buffer, put the error message there...

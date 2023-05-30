@@ -22,7 +22,7 @@ use crate::events::{Event, MessageSendEvent, MessageSendEventsProvider, PathFail
 use crate::ln::{PaymentPreimage, PaymentSecret, PaymentHash};
 use crate::ln::channel::{commitment_tx_base_weight, COMMITMENT_TX_WEIGHT_PER_HTLC, CONCURRENT_INBOUND_HTLC_FEE_BUFFER, FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE, MIN_AFFORDABLE_HTLC_COUNT};
 use crate::ln::channelmanager::{self, PaymentId, RAACommitmentOrder, PaymentSendFailure, RecipientOnionFields, BREAKDOWN_TIMEOUT, ENABLE_GOSSIP_TICKS, DISABLE_GOSSIP_TICKS, MIN_CLTV_EXPIRY_DELTA};
-use crate::ln::channel::{Channel, ChannelError};
+use crate::ln::channel::{DISCONNECT_PEER_AWAITING_RESPONSE_TICKS, Channel, ChannelError};
 use crate::ln::{chan_utils, onion_utils};
 use crate::ln::chan_utils::{OFFERED_HTLC_SCRIPT_WEIGHT, htlc_success_tx_weight, htlc_timeout_tx_weight, HTLCOutputInCommitment};
 use crate::routing::gossip::{NetworkGraph, NetworkUpdate};
@@ -9954,4 +9954,129 @@ fn test_payment_with_custom_min_cltv_expiry_delta() {
 	do_payment_with_custom_min_final_cltv_expiry(false, true);
 	do_payment_with_custom_min_final_cltv_expiry(true, false);
 	do_payment_with_custom_min_final_cltv_expiry(true, true);
+}
+
+#[test]
+fn test_disconnects_peer_awaiting_response_ticks() {
+	// Tests that nodes which are awaiting on a response critical for channel responsiveness
+	// disconnect their counterparty after `DISCONNECT_PEER_AWAITING_RESPONSE_TICKS`.
+	let mut chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	// Asserts a disconnect event is queued to the user.
+	let check_disconnect_event = |node: &Node, should_disconnect: bool| {
+		let disconnect_event = node.node.get_and_clear_pending_msg_events().iter().find_map(|event|
+			if let MessageSendEvent::HandleError { action, .. } = event {
+				if let msgs::ErrorAction::DisconnectPeerWithWarning { .. } = action {
+					Some(())
+				} else {
+					None
+				}
+			} else {
+				None
+			}
+		);
+		assert_eq!(disconnect_event.is_some(), should_disconnect);
+	};
+
+	// Fires timer ticks ensuring we only attempt to disconnect peers after reaching
+	// `DISCONNECT_PEER_AWAITING_RESPONSE_TICKS`.
+	let check_disconnect = |node: &Node| {
+		// No disconnect without any timer ticks.
+		check_disconnect_event(node, false);
+
+		// No disconnect with 1 timer tick less than required.
+		for _ in 0..DISCONNECT_PEER_AWAITING_RESPONSE_TICKS - 1 {
+			node.node.timer_tick_occurred();
+			check_disconnect_event(node, false);
+		}
+
+		// Disconnect after reaching the required ticks.
+		node.node.timer_tick_occurred();
+		check_disconnect_event(node, true);
+
+		// Disconnect again on the next tick if the peer hasn't been disconnected yet.
+		node.node.timer_tick_occurred();
+		check_disconnect_event(node, true);
+	};
+
+	create_chan_between_nodes(&nodes[0], &nodes[1]);
+
+	// We'll start by performing a fee update with Alice (nodes[0]) on the channel.
+	*nodes[0].fee_estimator.sat_per_kw.lock().unwrap() *= 2;
+	nodes[0].node.timer_tick_occurred();
+	check_added_monitors!(&nodes[0], 1);
+	let alice_fee_update = get_htlc_update_msgs(&nodes[0], &nodes[1].node.get_our_node_id());
+	nodes[1].node.handle_update_fee(&nodes[0].node.get_our_node_id(), alice_fee_update.update_fee.as_ref().unwrap());
+	nodes[1].node.handle_commitment_signed(&nodes[0].node.get_our_node_id(), &alice_fee_update.commitment_signed);
+	check_added_monitors!(&nodes[1], 1);
+
+	// This will prompt Bob (nodes[1]) to respond with his `CommitmentSigned` and `RevokeAndACK`.
+	let (bob_revoke_and_ack, bob_commitment_signed) = get_revoke_commit_msgs!(&nodes[1], nodes[0].node.get_our_node_id());
+	nodes[0].node.handle_revoke_and_ack(&nodes[1].node.get_our_node_id(), &bob_revoke_and_ack);
+	check_added_monitors!(&nodes[0], 1);
+	nodes[0].node.handle_commitment_signed(&nodes[1].node.get_our_node_id(), &bob_commitment_signed);
+	check_added_monitors(&nodes[0], 1);
+
+	// Alice then needs to send her final `RevokeAndACK` to complete the commitment dance. We
+	// pretend Bob hasn't received the message and check whether he'll disconnect Alice after
+	// reaching `DISCONNECT_PEER_AWAITING_RESPONSE_TICKS`.
+	let alice_revoke_and_ack = get_event_msg!(nodes[0], MessageSendEvent::SendRevokeAndACK, nodes[1].node.get_our_node_id());
+	check_disconnect(&nodes[1]);
+
+	// Now, we'll reconnect them to test awaiting a `ChannelReestablish` message.
+	//
+	// Note that since the commitment dance didn't complete above, Alice is expected to resend her
+	// final `RevokeAndACK` to Bob to complete it.
+	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id());
+	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id());
+	let bob_init = msgs::Init { features: nodes[1].node.init_features(), remote_network_address: None };
+	nodes[0].node.peer_connected(&nodes[1].node.get_our_node_id(), &bob_init, true).unwrap();
+	let alice_init = msgs::Init { features: nodes[0].node.init_features(), remote_network_address: None };
+	nodes[1].node.peer_connected(&nodes[0].node.get_our_node_id(), &alice_init, true).unwrap();
+
+	// Upon reconnection, Alice sends her `ChannelReestablish` to Bob. Alice, however, hasn't
+	// received Bob's yet, so she should disconnect him after reaching
+	// `DISCONNECT_PEER_AWAITING_RESPONSE_TICKS`.
+	let alice_channel_reestablish = get_event_msg!(
+		nodes[0], MessageSendEvent::SendChannelReestablish, nodes[1].node.get_our_node_id()
+	);
+	nodes[1].node.handle_channel_reestablish(&nodes[0].node.get_our_node_id(), &alice_channel_reestablish);
+	check_disconnect(&nodes[0]);
+
+	// Bob now sends his `ChannelReestablish` to Alice to resume the channel and consider it "live".
+	let bob_channel_reestablish = nodes[1].node.get_and_clear_pending_msg_events().iter().find_map(|event|
+		if let MessageSendEvent::SendChannelReestablish { node_id, msg } = event {
+			assert_eq!(*node_id, nodes[0].node.get_our_node_id());
+			Some(msg.clone())
+		} else {
+			None
+		}
+	).unwrap();
+	nodes[0].node.handle_channel_reestablish(&nodes[1].node.get_our_node_id(), &bob_channel_reestablish);
+
+	// Sanity check that Alice won't disconnect Bob since she's no longer waiting for any messages.
+	for _ in 0..DISCONNECT_PEER_AWAITING_RESPONSE_TICKS {
+		nodes[0].node.timer_tick_occurred();
+		check_disconnect_event(&nodes[0], false);
+	}
+
+	// However, Bob is still waiting on Alice's `RevokeAndACK`, so he should disconnect her after
+	// reaching `DISCONNECT_PEER_AWAITING_RESPONSE_TICKS`.
+	check_disconnect(&nodes[1]);
+
+	// Finally, have Bob process the last message.
+	nodes[1].node.handle_revoke_and_ack(&nodes[0].node.get_our_node_id(), &alice_revoke_and_ack);
+	check_added_monitors(&nodes[1], 1);
+
+	// At this point, neither node should attempt to disconnect each other, since they aren't
+	// waiting on any messages.
+	for node in &nodes {
+		for _ in 0..DISCONNECT_PEER_AWAITING_RESPONSE_TICKS {
+			node.node.timer_tick_occurred();
+			check_disconnect_event(node, false);
+		}
+	}
 }
