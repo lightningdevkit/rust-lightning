@@ -689,6 +689,7 @@ pub trait SignerProvider {
 ///
 /// This implementation performs no policy checks and is insufficient by itself as
 /// a secure external signer.
+#[derive(Debug)]
 pub struct InMemorySigner {
 	/// Holder secret key in the 2-of-2 multisig script of a channel. This key also backs the
 	/// holder's anchor output in a commitment transaction, if one is present.
@@ -716,6 +717,21 @@ pub struct InMemorySigner {
 	/// Tracks the number of times we've produced randomness to ensure we don't return the same
 	/// bytes twice.
 	rand_bytes_index: AtomicCounter,
+}
+
+impl PartialEq for InMemorySigner {
+	fn eq(&self, other: &Self) -> bool {
+		self.funding_key == other.funding_key &&
+			self.revocation_base_key == other.revocation_base_key &&
+			self.payment_key == other.payment_key &&
+			self.delayed_payment_base_key == other.delayed_payment_base_key &&
+			self.htlc_base_key == other.htlc_base_key &&
+			self.commitment_seed == other.commitment_seed &&
+			self.holder_channel_pubkeys == other.holder_channel_pubkeys &&
+			self.channel_parameters == other.channel_parameters &&
+			self.channel_value_satoshis == other.channel_value_satoshis &&
+			self.channel_keys_id == other.channel_keys_id
+	}
 }
 
 impl Clone for InMemorySigner {
