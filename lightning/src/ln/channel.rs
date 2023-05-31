@@ -527,6 +527,10 @@ pub(super) struct ReestablishResponses {
 }
 
 /// The return type of `force_shutdown`
+///
+/// Contains a (counterparty_node_id, funding_txo, [`ChannelMonitorUpdate`]) tuple
+/// followed by a list of HTLCs to fail back in the form of the (source, payment hash, and this
+/// channel's counterparty_node_id and channel_id).
 pub(crate) type ShutdownResult = (
 	Option<(PublicKey, OutPoint, ChannelMonitorUpdate)>,
 	Vec<(HTLCSource, PaymentHash, PublicKey, [u8; 32])>
