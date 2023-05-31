@@ -289,8 +289,6 @@ fn do_test_unconf_chan(reload_node: bool, reorg_after_reload: bool, use_funding_
 		let relevant_txids = nodes[0].node.get_relevant_txids();
 		assert_eq!(relevant_txids.len(), 0);
 
-		handle_announce_close_broadcast_events(&nodes, 0, 1, true, "Channel closed because of an exception: Funding transaction was un-confirmed. Locked at 6 confs, now have 0 confs.");
-		check_added_monitors!(nodes[1], 1);
 		{
 			let per_peer_state = nodes[0].node.per_peer_state.read().unwrap();
 			let peer_state = per_peer_state.get(&nodes[1].node.get_our_node_id()).unwrap().lock().unwrap();
@@ -336,8 +334,6 @@ fn do_test_unconf_chan(reload_node: bool, reorg_after_reload: bool, use_funding_
 		let relevant_txids = nodes[0].node.get_relevant_txids();
 		assert_eq!(relevant_txids.len(), 0);
 
-		handle_announce_close_broadcast_events(&nodes, 0, 1, true, "Channel closed because of an exception: Funding transaction was un-confirmed. Locked at 6 confs, now have 0 confs.");
-		check_added_monitors!(nodes[1], 1);
 		{
 			let per_peer_state = nodes[0].node.per_peer_state.read().unwrap();
 			let peer_state = per_peer_state.get(&nodes[1].node.get_our_node_id()).unwrap().lock().unwrap();
@@ -351,7 +347,12 @@ fn do_test_unconf_chan(reload_node: bool, reorg_after_reload: bool, use_funding_
 	nodes[0].node.test_process_background_events(); // Required to free the pending background monitor update
 	check_added_monitors!(nodes[0], 1);
 	let expected_err = "Funding transaction was un-confirmed. Locked at 6 confs, now have 0 confs.";
-	check_closed_event!(nodes[1], 1, ClosureReason::CounterpartyForceClosed { peer_msg: UntrustedString(format!("Channel closed because of an exception: {}", expected_err)) });
+	if reorg_after_reload || !reload_node {
+		handle_announce_close_broadcast_events(&nodes, 0, 1, true, "Channel closed because of an exception: Funding transaction was un-confirmed. Locked at 6 confs, now have 0 confs.");
+		check_added_monitors!(nodes[1], 1);
+		check_closed_event!(nodes[1], 1, ClosureReason::CounterpartyForceClosed { peer_msg: UntrustedString(format!("Channel closed because of an exception: {}", expected_err)) });
+	}
+
 	check_closed_event!(nodes[0], 1, ClosureReason::ProcessingError { err: expected_err.to_owned() });
 	assert_eq!(nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().len(), 1);
 	nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().clear();

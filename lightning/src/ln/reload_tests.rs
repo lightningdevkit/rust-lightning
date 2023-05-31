@@ -774,6 +774,9 @@ fn do_test_partial_claim_before_restart(persist_both_monitors: bool) {
 	if let Event::ChannelClosed { reason: ClosureReason::OutdatedChannelManager, .. } = events[1] { } else { panic!(); }
 	if persist_both_monitors {
 		if let Event::ChannelClosed { reason: ClosureReason::OutdatedChannelManager, .. } = events[2] { } else { panic!(); }
+		check_added_monitors(&nodes[3], 2);
+	} else {
+		check_added_monitors(&nodes[3], 1);
 	}
 
 	// On restart, we should also get a duplicate PaymentClaimed event as we persisted the
@@ -1046,6 +1049,9 @@ fn removed_payment_no_manager_persistence() {
 		},
 		_ => panic!("Unexpected event"),
 	}
+
+	nodes[1].node.test_process_background_events();
+	check_added_monitors(&nodes[1], 1);
 
 	// Now that the ChannelManager has force-closed the channel which had the HTLC removed, it is
 	// now forgotten everywhere. The ChannelManager should have, as a side-effect of reload,

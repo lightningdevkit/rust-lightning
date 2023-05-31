@@ -40,7 +40,7 @@ use crate::events::{Event, EventHandler, EventsProvider, MessageSendEvent, Messa
 // Since this struct is returned in `list_channels` methods, expose it here in case users want to
 // construct one themselves.
 use crate::ln::{inbound_payment, PaymentHash, PaymentPreimage, PaymentSecret};
-use crate::ln::channel::{Channel, ChannelError, ChannelUpdateStatus, UpdateFulfillCommitFetch};
+use crate::ln::channel::{Channel, ChannelError, ChannelUpdateStatus, ShutdownResult, UpdateFulfillCommitFetch};
 use crate::ln::features::{ChannelFeatures, ChannelTypeFeatures, InitFeatures, NodeFeatures};
 #[cfg(any(feature = "_test_utils", test))]
 use crate::ln::features::InvoiceFeatures;
@@ -359,8 +359,6 @@ pub enum FailureCode {
 	IncorrectOrUnknownPaymentDetails = 0x4000 | 15,
 }
 
-type ShutdownResult = (Option<(OutPoint, ChannelMonitorUpdate)>, Vec<(HTLCSource, PaymentHash, PublicKey, [u8; 32])>);
-
 /// Error type returned across the peer_state mutex boundary. When an Err is generated for a
 /// Channel, we generally end up with a ChannelError::Close for which we have to close the channel
 /// immediately (ie with no further calls on it made). Thus, this step happens inside a
@@ -497,15 +495,34 @@ struct ClaimablePayments {
 	pending_claiming_payments: HashMap<PaymentHash, ClaimingPayment>,
 }
 
-/// Events which we process internally but cannot be procsesed immediately at the generation site
-/// for some reason. They are handled in timer_tick_occurred, so may be processed with
-/// quite some time lag.
+/// Events which we process internally but cannot be processed immediately at the generation site
+/// usually because we're running pre-full-init. They are handled immediately once we detect we are
+/// running normally, and specifically must be processed before any other non-background
+/// [`ChannelMonitorUpdate`]s are applied.
 enum BackgroundEvent {
-	/// Handle a ChannelMonitorUpdate
+	/// Handle a ChannelMonitorUpdate which closes the channel. This is only separated from
+	/// [`Self::MonitorUpdateRegeneratedOnStartup`] as the maybe-non-closing variant needs a public
+	/// key to handle channel resumption, whereas if the channel has been force-closed we do not
+	/// need the counterparty node_id.
 	///
 	/// Note that any such events are lost on shutdown, so in general they must be updates which
 	/// are regenerated on startup.
-	MonitorUpdateRegeneratedOnStartup((OutPoint, ChannelMonitorUpdate)),
+	ClosingMonitorUpdateRegeneratedOnStartup((OutPoint, ChannelMonitorUpdate)),
+	/// Handle a ChannelMonitorUpdate which may or may not close the channel and may unblock the
+	/// channel to continue normal operation.
+	///
+	/// In general this should be used rather than
+	/// [`Self::ClosingMonitorUpdateRegeneratedOnStartup`], however in cases where the
+	/// `counterparty_node_id` is not available as the channel has closed from a [`ChannelMonitor`]
+	/// error the other variant is acceptable.
+	///
+	/// Note that any such events are lost on shutdown, so in general they must be updates which
+	/// are regenerated on startup.
+	MonitorUpdateRegeneratedOnStartup {
+		counterparty_node_id: PublicKey,
+		funding_txo: OutPoint,
+		update: ChannelMonitorUpdate
+	},
 }
 
 #[derive(Debug)]
@@ -515,13 +532,31 @@ pub(crate) enum MonitorUpdateCompletionAction {
 	/// this payment. Note that this is only best-effort. On restart it's possible such a duplicate
 	/// event can be generated.
 	PaymentClaimed { payment_hash: PaymentHash },
-	/// Indicates an [`events::Event`] should be surfaced to the user.
-	EmitEvent { event: events::Event },
+	/// Indicates an [`events::Event`] should be surfaced to the user and possibly resume the
+	/// operation of another channel.
+	///
+	/// This is usually generated when we've forwarded an HTLC and want to block the outbound edge
+	/// from completing a monitor update which removes the payment preimage until the inbound edge
+	/// completes a monitor update containing the payment preimage. In that case, after the inbound
+	/// edge completes, we will surface an [`Event::PaymentForwarded`] as well as unblock the
+	/// outbound edge.
+	EmitEventAndFreeOtherChannel {
+		event: events::Event,
+		downstream_counterparty_and_funding_outpoint: Option<(PublicKey, OutPoint, RAAMonitorUpdateBlockingAction)>,
+	},
 }
 
 impl_writeable_tlv_based_enum_upgradable!(MonitorUpdateCompletionAction,
 	(0, PaymentClaimed) => { (0, payment_hash, required) },
-	(2, EmitEvent) => { (0, event, upgradable_required) },
+	(2, EmitEventAndFreeOtherChannel) => {
+		(0, event, upgradable_required),
+		// LDK prior to 0.0.116 did not have this field as the monitor update application order was
+		// required by clients. If we downgrade to something prior to 0.0.116 this may result in
+		// monitor updates which aren't properly blocked or resumed, however that's fine - we don't
+		// support async monitor updates even in LDK 0.0.116 and once we do we'll require no
+		// downgrades to prior versions.
+		(1, downstream_counterparty_and_funding_outpoint, option),
+	},
 );
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -537,6 +572,36 @@ impl_writeable_tlv_based_enum!(EventCompletionAction,
 		(2, counterparty_node_id, required),
 	};
 );
+
+#[derive(Clone, PartialEq, Eq, Debug)]
+/// If something is blocked on the completion of an RAA-generated [`ChannelMonitorUpdate`] we track
+/// the blocked action here. See enum variants for more info.
+pub(crate) enum RAAMonitorUpdateBlockingAction {
+	/// A forwarded payment was claimed. We block the downstream channel completing its monitor
+	/// update which removes the HTLC preimage until the upstream channel has gotten the preimage
+	/// durably to disk.
+	ForwardedPaymentInboundClaim {
+		/// The upstream channel ID (i.e. the inbound edge).
+		channel_id: [u8; 32],
+		/// The HTLC ID on the inbound edge.
+		htlc_id: u64,
+	},
+}
+
+impl RAAMonitorUpdateBlockingAction {
+	#[allow(unused)]
+	fn from_prev_hop_data(prev_hop: &HTLCPreviousHopData) -> Self {
+		Self::ForwardedPaymentInboundClaim {
+			channel_id: prev_hop.outpoint.to_channel_id(),
+			htlc_id: prev_hop.htlc_id,
+		}
+	}
+}
+
+impl_writeable_tlv_based_enum!(RAAMonitorUpdateBlockingAction,
+	(0, ForwardedPaymentInboundClaim) => { (0, channel_id, required), (2, htlc_id, required) }
+;);
+
 
 /// State we hold per-peer.
 pub(super) struct PeerState<Signer: ChannelSigner> {
@@ -566,6 +631,11 @@ pub(super) struct PeerState<Signer: ChannelSigner> {
 	/// to funding appearing on-chain), the downstream `ChannelMonitor` set is required to ensure
 	/// duplicates do not occur, so such channels should fail without a monitor update completing.
 	monitor_update_blocked_actions: BTreeMap<[u8; 32], Vec<MonitorUpdateCompletionAction>>,
+	/// If another channel's [`ChannelMonitorUpdate`] needs to complete before a channel we have
+	/// with this peer can complete an RAA [`ChannelMonitorUpdate`] (e.g. because the RAA update
+	/// will remove a preimage that needs to be durably in an upstream channel first), we put an
+	/// entry here to note that the channel with the key's ID is blocked on a set of actions.
+	actions_blocking_raa_monitor_updates: BTreeMap<[u8; 32], Vec<RAAMonitorUpdateBlockingAction>>,
 	/// The peer is currently connected (i.e. we've seen a
 	/// [`ChannelMessageHandler::peer_connected`] and no corresponding
 	/// [`ChannelMessageHandler::peer_disconnected`].
@@ -645,40 +715,44 @@ pub type SimpleArcChannelManager<M, T, F, L> = ChannelManager<
 /// This is not exported to bindings users as Arcs don't make sense in bindings
 pub type SimpleRefChannelManager<'a, 'b, 'c, 'd, 'e, 'f, 'g, 'h, M, T, F, L> = ChannelManager<&'a M, &'b T, &'c KeysManager, &'c KeysManager, &'c KeysManager, &'d F, &'e DefaultRouter<&'f NetworkGraph<&'g L>, &'g L, &'h Mutex<ProbabilisticScorer<&'f NetworkGraph<&'g L>, &'g L>>, ProbabilisticScoringFeeParameters, ProbabilisticScorer<&'f NetworkGraph<&'g L>, &'g L>>, &'g L>;
 
+macro_rules! define_test_pub_trait { ($vis: vis) => {
 /// A trivial trait which describes any [`ChannelManager`] used in testing.
-#[cfg(any(test, feature = "_test_utils"))]
-pub trait AChannelManager {
-	type Watch: chain::Watch<Self::Signer>;
+$vis trait AChannelManager {
+	type Watch: chain::Watch<Self::Signer> + ?Sized;
 	type M: Deref<Target = Self::Watch>;
-	type Broadcaster: BroadcasterInterface;
+	type Broadcaster: BroadcasterInterface + ?Sized;
 	type T: Deref<Target = Self::Broadcaster>;
-	type EntropySource: EntropySource;
+	type EntropySource: EntropySource + ?Sized;
 	type ES: Deref<Target = Self::EntropySource>;
-	type NodeSigner: NodeSigner;
+	type NodeSigner: NodeSigner + ?Sized;
 	type NS: Deref<Target = Self::NodeSigner>;
-	type Signer: WriteableEcdsaChannelSigner;
-	type SignerProvider: SignerProvider<Signer = Self::Signer>;
+	type Signer: WriteableEcdsaChannelSigner + Sized;
+	type SignerProvider: SignerProvider<Signer = Self::Signer> + ?Sized;
 	type SP: Deref<Target = Self::SignerProvider>;
-	type FeeEstimator: FeeEstimator;
+	type FeeEstimator: FeeEstimator + ?Sized;
 	type F: Deref<Target = Self::FeeEstimator>;
-	type Router: Router;
+	type Router: Router + ?Sized;
 	type R: Deref<Target = Self::Router>;
-	type Logger: Logger;
+	type Logger: Logger + ?Sized;
 	type L: Deref<Target = Self::Logger>;
 	fn get_cm(&self) -> &ChannelManager<Self::M, Self::T, Self::ES, Self::NS, Self::SP, Self::F, Self::R, Self::L>;
 }
+} }
 #[cfg(any(test, feature = "_test_utils"))]
+define_test_pub_trait!(pub);
+#[cfg(not(any(test, feature = "_test_utils")))]
+define_test_pub_trait!(pub(crate));
 impl<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, L: Deref> AChannelManager
 for ChannelManager<M, T, ES, NS, SP, F, R, L>
 where
-	M::Target: chain::Watch<<SP::Target as SignerProvider>::Signer> + Sized,
-	T::Target: BroadcasterInterface + Sized,
-	ES::Target: EntropySource + Sized,
-	NS::Target: NodeSigner + Sized,
-	SP::Target: SignerProvider + Sized,
-	F::Target: FeeEstimator + Sized,
-	R::Target: Router + Sized,
-	L::Target: Logger + Sized,
+	M::Target: chain::Watch<<SP::Target as SignerProvider>::Signer>,
+	T::Target: BroadcasterInterface,
+	ES::Target: EntropySource,
+	NS::Target: NodeSigner,
+	SP::Target: SignerProvider,
+	F::Target: FeeEstimator,
+	R::Target: Router,
+	L::Target: Logger,
 {
 	type Watch = M::Target;
 	type M = M;
@@ -964,7 +1038,18 @@ where
 	pending_events: Mutex<VecDeque<(events::Event, Option<EventCompletionAction>)>>,
 	/// A simple atomic flag to ensure only one task at a time can be processing events asynchronously.
 	pending_events_processor: AtomicBool,
+
+	/// If we are running during init (either directly during the deserialization method or in
+	/// block connection methods which run after deserialization but before normal operation) we
+	/// cannot provide the user with [`ChannelMonitorUpdate`]s through the normal update flow -
+	/// prior to normal operation the user may not have loaded the [`ChannelMonitor`]s into their
+	/// [`ChainMonitor`] and thus attempting to update it will fail or panic.
+	///
+	/// Thus, we place them here to be handled as soon as possible once we are running normally.
+	///
 	/// See `ChannelManager` struct-level documentation for lock order requirements.
+	///
+	/// [`ChainMonitor`]: crate::chain::chainmonitor::ChainMonitor
 	pending_background_events: Mutex<Vec<BackgroundEvent>>,
 	/// Used when we have to take a BIG lock to make sure everything is self-consistent.
 	/// Essentially just when we're serializing ourselves out.
@@ -973,6 +1058,9 @@ where
 	/// `PersistenceNotifierGuard::notify_on_drop(..)` and pass the lock to it, to ensure the
 	/// Notifier the lock contains sends out a notification when the lock is released.
 	total_consistency_lock: RwLock<()>,
+
+	#[cfg(debug_assertions)]
+	background_events_processed_since_startup: AtomicBool,
 
 	persistence_notifier: Notifier,
 
@@ -1000,6 +1088,7 @@ pub struct ChainParameters {
 }
 
 #[derive(Copy, Clone, PartialEq)]
+#[must_use]
 enum NotifyOption {
 	DoPersist,
 	SkipPersist,
@@ -1023,10 +1112,20 @@ struct PersistenceNotifierGuard<'a, F: Fn() -> NotifyOption> {
 }
 
 impl<'a> PersistenceNotifierGuard<'a, fn() -> NotifyOption> { // We don't care what the concrete F is here, it's unused
-	fn notify_on_drop(lock: &'a RwLock<()>, notifier: &'a Notifier) -> PersistenceNotifierGuard<'a, impl Fn() -> NotifyOption> {
-		PersistenceNotifierGuard::optionally_notify(lock, notifier, || -> NotifyOption { NotifyOption::DoPersist })
+	fn notify_on_drop<C: AChannelManager>(cm: &'a C) -> PersistenceNotifierGuard<'a, impl Fn() -> NotifyOption> {
+		let read_guard = cm.get_cm().total_consistency_lock.read().unwrap();
+		let _ = cm.get_cm().process_background_events(); // We always persist
+
+		PersistenceNotifierGuard {
+			persistence_notifier: &cm.get_cm().persistence_notifier,
+			should_persist: || -> NotifyOption { NotifyOption::DoPersist },
+			_read_guard: read_guard,
+		}
+
 	}
 
+	/// Note that if any [`ChannelMonitorUpdate`]s are possibly generated,
+	/// [`ChannelManager::process_background_events`] MUST be called first.
 	fn optionally_notify<F: Fn() -> NotifyOption>(lock: &'a RwLock<()>, notifier: &'a Notifier, persist_check: F) -> PersistenceNotifierGuard<'a, F> {
 		let read_guard = lock.read().unwrap();
 
@@ -1690,6 +1789,9 @@ macro_rules! handle_new_monitor_update {
 		// update_maps_on_chan_removal needs to be able to take id_to_peer, so make sure we can in
 		// any case so that it won't deadlock.
 		debug_assert_ne!($self.id_to_peer.held_by_thread(), LockHeldState::HeldByThread);
+		#[cfg(debug_assertions)] {
+			debug_assert!($self.background_events_processed_since_startup.load(Ordering::Acquire));
+		}
 		match $update_res {
 			ChannelMonitorUpdateStatus::InProgress => {
 				log_debug!($self.logger, "ChannelMonitor update for {} in flight, holding messages until the update completes.",
@@ -1735,6 +1837,10 @@ macro_rules! process_events_body {
 				// We'll acquire our total consistency lock so that we can be sure no other
 				// persists happen while processing monitor events.
 				let _read_guard = $self.total_consistency_lock.read().unwrap();
+
+				// Because `handle_post_event_actions` may send `ChannelMonitorUpdate`s to the user we must
+				// ensure any startup-generated background events are handled first.
+				if $self.process_background_events() == NotifyOption::DoPersist { result = NotifyOption::DoPersist; }
 
 				// TODO: This behavior should be documented. It's unintuitive that we query
 				// ChannelMonitors when clearing other events.
@@ -1845,6 +1951,8 @@ where
 			pending_events_processor: AtomicBool::new(false),
 			pending_background_events: Mutex::new(Vec::new()),
 			total_consistency_lock: RwLock::new(()),
+			#[cfg(debug_assertions)]
+			background_events_processed_since_startup: AtomicBool::new(false),
 			persistence_notifier: Notifier::new(),
 
 			entropy_source,
@@ -1913,7 +2021,7 @@ where
 			return Err(APIError::APIMisuseError { err: format!("Channel value must be at least 1000 satoshis. It was {}", channel_value_satoshis) });
 		}
 
-		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 		// We want to make sure the lock is actually acquired by PersistenceNotifierGuard.
 		debug_assert!(&self.total_consistency_lock.try_write().is_err());
 
@@ -2067,7 +2175,7 @@ where
 	}
 
 	fn close_channel_internal(&self, channel_id: &[u8; 32], counterparty_node_id: &PublicKey, target_feerate_sats_per_1000_weight: Option<u32>, override_shutdown_script: Option<ShutdownScript>) -> Result<(), APIError> {
-		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 
 		let mut failed_htlcs: Vec<(HTLCSource, PaymentHash)>;
 		let result: Result<(), _> = loop {
@@ -2197,7 +2305,7 @@ where
 			let receiver = HTLCDestination::NextHopChannel { node_id: Some(counterparty_node_id), channel_id };
 			self.fail_htlc_backwards_internal(&source, &payment_hash, &reason, receiver);
 		}
-		if let Some((funding_txo, monitor_update)) = monitor_update_option {
+		if let Some((_, funding_txo, monitor_update)) = monitor_update_option {
 			// There isn't anything we can do if we get an update failure - we're already
 			// force-closing. The monitor update on the required in-memory copy should broadcast
 			// the latest local state, which is the best we can do anyway. Thus, it is safe to
@@ -2240,7 +2348,7 @@ where
 	}
 
 	fn force_close_sending_error(&self, channel_id: &[u8; 32], counterparty_node_id: &PublicKey, broadcast: bool) -> Result<(), APIError> {
-		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 		match self.force_close_channel_with_peer(channel_id, counterparty_node_id, None, broadcast) {
 			Ok(counterparty_node_id) => {
 				let per_peer_state = self.per_peer_state.read().unwrap();
@@ -2849,7 +2957,7 @@ where
 	/// [`ChannelMonitorUpdateStatus::InProgress`]: crate::chain::ChannelMonitorUpdateStatus::InProgress
 	pub fn send_payment_with_route(&self, route: &Route, payment_hash: PaymentHash, recipient_onion: RecipientOnionFields, payment_id: PaymentId) -> Result<(), PaymentSendFailure> {
 		let best_block_height = self.best_block.read().unwrap().height();
-		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 		self.pending_outbound_payments
 			.send_payment_with_route(route, payment_hash, recipient_onion, payment_id, &self.entropy_source, &self.node_signer, best_block_height,
 				|path, payment_hash, recipient_onion, total_value, cur_height, payment_id, keysend_preimage, session_priv|
@@ -2860,7 +2968,7 @@ where
 	/// `route_params` and retry failed payment paths based on `retry_strategy`.
 	pub fn send_payment(&self, payment_hash: PaymentHash, recipient_onion: RecipientOnionFields, payment_id: PaymentId, route_params: RouteParameters, retry_strategy: Retry) -> Result<(), RetryableSendFailure> {
 		let best_block_height = self.best_block.read().unwrap().height();
-		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 		self.pending_outbound_payments
 			.send_payment(payment_hash, recipient_onion, payment_id, retry_strategy, route_params,
 				&self.router, self.list_usable_channels(), || self.compute_inflight_htlcs(),
@@ -2873,7 +2981,7 @@ where
 	#[cfg(test)]
 	pub(super) fn test_send_payment_internal(&self, route: &Route, payment_hash: PaymentHash, recipient_onion: RecipientOnionFields, keysend_preimage: Option<PaymentPreimage>, payment_id: PaymentId, recv_value_msat: Option<u64>, onion_session_privs: Vec<[u8; 32]>) -> Result<(), PaymentSendFailure> {
 		let best_block_height = self.best_block.read().unwrap().height();
-		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 		self.pending_outbound_payments.test_send_payment_internal(route, payment_hash, recipient_onion, keysend_preimage, payment_id, recv_value_msat, onion_session_privs, &self.node_signer, best_block_height,
 			|path, payment_hash, recipient_onion, total_value, cur_height, payment_id, keysend_preimage, session_priv|
 			self.send_payment_along_path(path, payment_hash, recipient_onion, total_value, cur_height, payment_id, keysend_preimage, session_priv))
@@ -2908,7 +3016,7 @@ where
 	/// [`Event::PaymentFailed`]: events::Event::PaymentFailed
 	/// [`Event::PaymentSent`]: events::Event::PaymentSent
 	pub fn abandon_payment(&self, payment_id: PaymentId) {
-		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 		self.pending_outbound_payments.abandon_payment(payment_id, PaymentFailureReason::UserAbandoned, &self.pending_events);
 	}
 
@@ -2929,7 +3037,7 @@ where
 	/// [`send_payment`]: Self::send_payment
 	pub fn send_spontaneous_payment(&self, route: &Route, payment_preimage: Option<PaymentPreimage>, recipient_onion: RecipientOnionFields, payment_id: PaymentId) -> Result<PaymentHash, PaymentSendFailure> {
 		let best_block_height = self.best_block.read().unwrap().height();
-		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 		self.pending_outbound_payments.send_spontaneous_payment_with_route(
 			route, payment_preimage, recipient_onion, payment_id, &self.entropy_source,
 			&self.node_signer, best_block_height,
@@ -2946,7 +3054,7 @@ where
 	/// [`PaymentParameters::for_keysend`]: crate::routing::router::PaymentParameters::for_keysend
 	pub fn send_spontaneous_payment_with_retry(&self, payment_preimage: Option<PaymentPreimage>, recipient_onion: RecipientOnionFields, payment_id: PaymentId, route_params: RouteParameters, retry_strategy: Retry) -> Result<PaymentHash, RetryableSendFailure> {
 		let best_block_height = self.best_block.read().unwrap().height();
-		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 		self.pending_outbound_payments.send_spontaneous_payment(payment_preimage, recipient_onion,
 			payment_id, retry_strategy, route_params, &self.router, self.list_usable_channels(),
 			|| self.compute_inflight_htlcs(),  &self.entropy_source, &self.node_signer, best_block_height,
@@ -2960,7 +3068,7 @@ where
 	/// us to easily discern them from real payments.
 	pub fn send_probe(&self, path: Path) -> Result<(PaymentHash, PaymentId), PaymentSendFailure> {
 		let best_block_height = self.best_block.read().unwrap().height();
-		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 		self.pending_outbound_payments.send_probe(path, self.probing_cookie_secret, &self.entropy_source, &self.node_signer, best_block_height,
 			|path, payment_hash, recipient_onion, total_value, cur_height, payment_id, keysend_preimage, session_priv|
 			self.send_payment_along_path(path, payment_hash, recipient_onion, total_value, cur_height, payment_id, keysend_preimage, session_priv))
@@ -3071,7 +3179,7 @@ where
 	/// [`Event::FundingGenerationReady`]: crate::events::Event::FundingGenerationReady
 	/// [`Event::ChannelClosed`]: crate::events::Event::ChannelClosed
 	pub fn funding_transaction_generated(&self, temporary_channel_id: &[u8; 32], counterparty_node_id: &PublicKey, funding_transaction: Transaction) -> Result<(), APIError> {
-		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 
 		for inp in funding_transaction.input.iter() {
 			if inp.witness.is_empty() {
@@ -3151,9 +3259,7 @@ where
 			});
 		}
 
-		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(
-			&self.total_consistency_lock, &self.persistence_notifier,
-		);
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 		let per_peer_state = self.per_peer_state.read().unwrap();
 		let peer_state_mutex = per_peer_state.get(counterparty_node_id)
 			.ok_or_else(|| APIError::ChannelUnavailable { err: format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id) })?;
@@ -3206,7 +3312,7 @@ where
 	// TODO: when we move to deciding the best outbound channel at forward time, only take
 	// `next_node_id` and not `next_hop_channel_id`
 	pub fn forward_intercepted_htlc(&self, intercept_id: InterceptId, next_hop_channel_id: &[u8; 32], next_node_id: PublicKey, amt_to_forward_msat: u64) -> Result<(), APIError> {
-		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 
 		let next_hop_scid = {
 			let peer_state_lock = self.per_peer_state.read().unwrap();
@@ -3262,7 +3368,7 @@ where
 	///
 	/// [`HTLCIntercepted`]: events::Event::HTLCIntercepted
 	pub fn fail_intercepted_htlc(&self, intercept_id: InterceptId) -> Result<(), APIError> {
-		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 
 		let payment = self.pending_intercepted_htlcs.lock().unwrap().remove(&intercept_id)
 			.ok_or_else(|| APIError::APIMisuseError {
@@ -3291,7 +3397,7 @@ where
 	/// Should only really ever be called in response to a PendingHTLCsForwardable event.
 	/// Will likely generate further events.
 	pub fn process_pending_htlc_forwards(&self) {
-		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 
 		let mut new_events = VecDeque::new();
 		let mut failed_forwards = Vec::new();
@@ -3762,35 +3868,63 @@ where
 		events.append(&mut new_events);
 	}
 
-	/// Free the background events, generally called from timer_tick_occurred.
-	///
-	/// Exposed for testing to allow us to process events quickly without generating accidental
-	/// BroadcastChannelUpdate events in timer_tick_occurred.
+	/// Free the background events, generally called from [`PersistenceNotifierGuard`] constructors.
 	///
 	/// Expects the caller to have a total_consistency_lock read lock.
-	fn process_background_events(&self) -> bool {
+	fn process_background_events(&self) -> NotifyOption {
+		debug_assert_ne!(self.total_consistency_lock.held_by_thread(), LockHeldState::NotHeldByThread);
+
+		#[cfg(debug_assertions)]
+		self.background_events_processed_since_startup.store(true, Ordering::Release);
+
 		let mut background_events = Vec::new();
 		mem::swap(&mut *self.pending_background_events.lock().unwrap(), &mut background_events);
 		if background_events.is_empty() {
-			return false;
+			return NotifyOption::SkipPersist;
 		}
 
 		for event in background_events.drain(..) {
 			match event {
-				BackgroundEvent::MonitorUpdateRegeneratedOnStartup((funding_txo, update)) => {
+				BackgroundEvent::ClosingMonitorUpdateRegeneratedOnStartup((funding_txo, update)) => {
 					// The channel has already been closed, so no use bothering to care about the
 					// monitor updating completing.
 					let _ = self.chain_monitor.update_channel(funding_txo, &update);
 				},
+				BackgroundEvent::MonitorUpdateRegeneratedOnStartup { counterparty_node_id, funding_txo, update } => {
+					let update_res = self.chain_monitor.update_channel(funding_txo, &update);
+
+					let res = {
+						let per_peer_state = self.per_peer_state.read().unwrap();
+						if let Some(peer_state_mutex) = per_peer_state.get(&counterparty_node_id) {
+							let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+							let peer_state = &mut *peer_state_lock;
+							match peer_state.channel_by_id.entry(funding_txo.to_channel_id()) {
+								hash_map::Entry::Occupied(mut chan) => {
+									handle_new_monitor_update!(self, update_res, update.update_id, peer_state_lock, peer_state, per_peer_state, chan)
+								},
+								hash_map::Entry::Vacant(_) => Ok(()),
+							}
+						} else { Ok(()) }
+					};
+					// TODO: If this channel has since closed, we're likely providing a payment
+					// preimage update, which we must ensure is durable! We currently don't,
+					// however, ensure that.
+					if res.is_err() {
+						log_error!(self.logger,
+							"Failed to provide ChannelMonitorUpdate to closed channel! This likely lost us a payment preimage!");
+					}
+					let _ = handle_error!(self, res, counterparty_node_id);
+				},
 			}
 		}
-		true
+		NotifyOption::DoPersist
 	}
 
 	#[cfg(any(test, feature = "_test_utils"))]
 	/// Process background events, for functional testing
 	pub fn test_process_background_events(&self) {
-		self.process_background_events();
+		let _lck = self.total_consistency_lock.read().unwrap();
+		let _ = self.process_background_events();
 	}
 
 	fn update_channel_fee(&self, chan_id: &[u8; 32], chan: &mut Channel<<SP::Target as SignerProvider>::Signer>, new_feerate: u32) -> NotifyOption {
@@ -3820,7 +3954,7 @@ where
 	/// it wants to detect). Thus, we have a variant exposed here for its benefit.
 	pub fn maybe_update_chan_fees(&self) {
 		PersistenceNotifierGuard::optionally_notify(&self.total_consistency_lock, &self.persistence_notifier, || {
-			let mut should_persist = NotifyOption::SkipPersist;
+			let mut should_persist = self.process_background_events();
 
 			let new_feerate = self.fee_estimator.bounded_sat_per_1000_weight(ConfirmationTarget::Normal);
 
@@ -3856,8 +3990,7 @@ where
 	/// [`ChannelConfig`]: crate::util::config::ChannelConfig
 	pub fn timer_tick_occurred(&self) {
 		PersistenceNotifierGuard::optionally_notify(&self.total_consistency_lock, &self.persistence_notifier, || {
-			let mut should_persist = NotifyOption::SkipPersist;
-			if self.process_background_events() { should_persist = NotifyOption::DoPersist; }
+			let mut should_persist = self.process_background_events();
 
 			let new_feerate = self.fee_estimator.bounded_sat_per_1000_weight(ConfirmationTarget::Normal);
 
@@ -4043,7 +4176,7 @@ where
 	///
 	/// See [`FailureCode`] for valid failure codes.
 	pub fn fail_htlc_backwards_with_reason(&self, payment_hash: &PaymentHash, failure_code: FailureCode) {
-		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 
 		let removed_source = self.claimable_payments.lock().unwrap().claimable_payments.remove(payment_hash);
 		if let Some(payment) = removed_source {
@@ -4220,7 +4353,7 @@ where
 	pub fn claim_funds(&self, payment_preimage: PaymentPreimage) {
 		let payment_hash = PaymentHash(Sha256::hash(&payment_preimage.0).into_inner());
 
-		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 
 		let mut sources = {
 			let mut claimable_payments = self.claimable_payments.lock().unwrap();
@@ -4425,16 +4558,16 @@ where
 								Some(claimed_htlc_value - forwarded_htlc_value)
 							} else { None };
 
-							let prev_channel_id = Some(prev_outpoint.to_channel_id());
-							let next_channel_id = Some(next_channel_id);
-
-							Some(MonitorUpdateCompletionAction::EmitEvent { event: events::Event::PaymentForwarded {
-								fee_earned_msat,
-								claim_from_onchain_tx: from_onchain,
-								prev_channel_id,
-								next_channel_id,
-								outbound_amount_forwarded_msat: forwarded_htlc_value_msat,
-							}})
+							Some(MonitorUpdateCompletionAction::EmitEventAndFreeOtherChannel {
+								event: events::Event::PaymentForwarded {
+									fee_earned_msat,
+									claim_from_onchain_tx: from_onchain,
+									prev_channel_id: Some(prev_outpoint.to_channel_id()),
+									next_channel_id: Some(next_channel_id),
+									outbound_amount_forwarded_msat: forwarded_htlc_value_msat,
+								},
+								downstream_counterparty_and_funding_outpoint: None,
+							})
 						} else { None }
 					});
 				if let Err((pk, err)) = res {
@@ -4461,8 +4594,13 @@ where
 						}, None));
 					}
 				},
-				MonitorUpdateCompletionAction::EmitEvent { event } => {
+				MonitorUpdateCompletionAction::EmitEventAndFreeOtherChannel {
+					event, downstream_counterparty_and_funding_outpoint
+				} => {
 					self.pending_events.lock().unwrap().push_back((event, None));
+					if let Some((node_id, funding_outpoint, blocker)) = downstream_counterparty_and_funding_outpoint {
+						self.handle_monitor_update_release(node_id, funding_outpoint, Some(blocker));
+					}
 				},
 			}
 		}
@@ -4621,7 +4759,7 @@ where
 	}
 
 	fn do_accept_inbound_channel(&self, temporary_channel_id: &[u8; 32], counterparty_node_id: &PublicKey, accept_0conf: bool, user_channel_id: u128) -> Result<(), APIError> {
-		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 
 		let peers_without_funded_channels = self.peers_without_funded_channels(|peer| !peer.channel_by_id.is_empty());
 		let per_peer_state = self.per_peer_state.read().unwrap();
@@ -5309,6 +5447,24 @@ where
 		}
 	}
 
+	/// Checks whether [`ChannelMonitorUpdate`]s generated by the receipt of a remote
+	/// [`msgs::RevokeAndACK`] should be held for the given channel until some other event
+	/// completes. Note that this needs to happen in the same [`PeerState`] mutex as any release of
+	/// the [`ChannelMonitorUpdate`] in question.
+	fn raa_monitor_updates_held(&self,
+		actions_blocking_raa_monitor_updates: &BTreeMap<[u8; 32], Vec<RAAMonitorUpdateBlockingAction>>,
+		channel_funding_outpoint: OutPoint, counterparty_node_id: PublicKey
+	) -> bool {
+		actions_blocking_raa_monitor_updates
+			.get(&channel_funding_outpoint.to_channel_id()).map(|v| !v.is_empty()).unwrap_or(false)
+		|| self.pending_events.lock().unwrap().iter().any(|(_, action)| {
+			action == &Some(EventCompletionAction::ReleaseRAAChannelMonitorUpdate {
+				channel_funding_outpoint,
+				counterparty_node_id,
+			})
+		})
+	}
+
 	fn internal_revoke_and_ack(&self, counterparty_node_id: &PublicKey, msg: &msgs::RevokeAndACK) -> Result<(), MsgHandleErrInternal> {
 		let (htlcs_to_fail, res) = {
 			let per_peer_state = self.per_peer_state.read().unwrap();
@@ -5568,13 +5724,8 @@ where
 	/// update events as a separate process method here.
 	#[cfg(fuzzing)]
 	pub fn process_monitor_events(&self) {
-		PersistenceNotifierGuard::optionally_notify(&self.total_consistency_lock, &self.persistence_notifier, || {
-			if self.process_pending_monitor_events() {
-				NotifyOption::DoPersist
-			} else {
-				NotifyOption::SkipPersist
-			}
-		});
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
+		self.process_pending_monitor_events();
 	}
 
 	/// Check the holding cell in each channel and free any pending HTLCs in them if possible.
@@ -5706,12 +5857,15 @@ where
 			// Channel::force_shutdown tries to make us do) as we may still be in initialization,
 			// so we track the update internally and handle it when the user next calls
 			// timer_tick_occurred, guaranteeing we're running normally.
-			if let Some((funding_txo, update)) = failure.0.take() {
+			if let Some((counterparty_node_id, funding_txo, update)) = failure.0.take() {
 				assert_eq!(update.updates.len(), 1);
 				if let ChannelMonitorUpdateStep::ChannelForceClosed { should_broadcast } = update.updates[0] {
 					assert!(should_broadcast);
 				} else { unreachable!(); }
-				self.pending_background_events.lock().unwrap().push(BackgroundEvent::MonitorUpdateRegeneratedOnStartup((funding_txo, update)));
+				self.pending_background_events.lock().unwrap().push(
+					BackgroundEvent::MonitorUpdateRegeneratedOnStartup {
+						counterparty_node_id, funding_txo, update
+					});
 			}
 			self.finish_force_close_channel(failure);
 		}
@@ -5726,7 +5880,7 @@ where
 
 		let payment_secret = PaymentSecret(self.entropy_source.get_secure_random_bytes());
 
-		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 		let mut payment_secrets = self.pending_inbound_payments.lock().unwrap();
 		match payment_secrets.entry(payment_hash) {
 			hash_map::Entry::Vacant(e) => {
@@ -5975,25 +6129,37 @@ where
 		self.pending_outbound_payments.clear_pending_payments()
 	}
 
-	fn handle_monitor_update_release(&self, counterparty_node_id: PublicKey, channel_funding_outpoint: OutPoint) {
+	/// When something which was blocking a channel from updating its [`ChannelMonitor`] (e.g. an
+	/// [`Event`] being handled) completes, this should be called to restore the channel to normal
+	/// operation. It will double-check that nothing *else* is also blocking the same channel from
+	/// making progress and then any blocked [`ChannelMonitorUpdate`]s fly.
+	fn handle_monitor_update_release(&self, counterparty_node_id: PublicKey, channel_funding_outpoint: OutPoint, mut completed_blocker: Option<RAAMonitorUpdateBlockingAction>) {
 		let mut errors = Vec::new();
 		loop {
 			let per_peer_state = self.per_peer_state.read().unwrap();
 			if let Some(peer_state_mtx) = per_peer_state.get(&counterparty_node_id) {
 				let mut peer_state_lck = peer_state_mtx.lock().unwrap();
 				let peer_state = &mut *peer_state_lck;
-				if self.pending_events.lock().unwrap().iter()
-					.any(|(_ev, action_opt)| action_opt == &Some(EventCompletionAction::ReleaseRAAChannelMonitorUpdate {
-						channel_funding_outpoint, counterparty_node_id
-					}))
-				{
-					// Check that, while holding the peer lock, we don't have another event
-					// blocking any monitor updates for this channel. If we do, let those
-					// events be the ones that ultimately release the monitor update(s).
-					log_trace!(self.logger, "Delaying monitor unlock for channel {} as another event is pending",
+
+				if let Some(blocker) = completed_blocker.take() {
+					// Only do this on the first iteration of the loop.
+					if let Some(blockers) = peer_state.actions_blocking_raa_monitor_updates
+						.get_mut(&channel_funding_outpoint.to_channel_id())
+					{
+						blockers.retain(|iter| iter != &blocker);
+					}
+				}
+
+				if self.raa_monitor_updates_held(&peer_state.actions_blocking_raa_monitor_updates,
+					channel_funding_outpoint, counterparty_node_id) {
+					// Check that, while holding the peer lock, we don't have anything else
+					// blocking monitor updates for this channel. If we do, release the monitor
+					// update(s) when those blockers complete.
+					log_trace!(self.logger, "Delaying monitor unlock for channel {} as another channel's mon update needs to complete first",
 						log_bytes!(&channel_funding_outpoint.to_channel_id()[..]));
 					break;
 				}
+
 				if let hash_map::Entry::Occupied(mut chan) = peer_state.channel_by_id.entry(channel_funding_outpoint.to_channel_id()) {
 					debug_assert_eq!(chan.get().get_funding_txo().unwrap(), channel_funding_outpoint);
 					if let Some((monitor_update, further_update_exists)) = chan.get_mut().unblock_next_blocked_monitor_update() {
@@ -6035,7 +6201,7 @@ where
 				EventCompletionAction::ReleaseRAAChannelMonitorUpdate {
 					channel_funding_outpoint, counterparty_node_id
 				} => {
-					self.handle_monitor_update_release(counterparty_node_id, channel_funding_outpoint);
+					self.handle_monitor_update_release(counterparty_node_id, channel_funding_outpoint, None);
 				}
 			}
 		}
@@ -6080,7 +6246,7 @@ where
 	fn get_and_clear_pending_msg_events(&self) -> Vec<MessageSendEvent> {
 		let events = RefCell::new(Vec::new());
 		PersistenceNotifierGuard::optionally_notify(&self.total_consistency_lock, &self.persistence_notifier, || {
-			let mut result = NotifyOption::SkipPersist;
+			let mut result = self.process_background_events();
 
 			// TODO: This behavior should be documented. It's unintuitive that we query
 			// ChannelMonitors when clearing other events.
@@ -6161,7 +6327,8 @@ where
 	}
 
 	fn block_disconnected(&self, header: &BlockHeader, height: u32) {
-		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
+		let _persistence_guard = PersistenceNotifierGuard::optionally_notify(&self.total_consistency_lock,
+			&self.persistence_notifier, || -> NotifyOption { NotifyOption::DoPersist });
 		let new_height = height - 1;
 		{
 			let mut best_block = self.best_block.write().unwrap();
@@ -6195,7 +6362,8 @@ where
 		let block_hash = header.block_hash();
 		log_trace!(self.logger, "{} transactions included in block {} at height {} provided", txdata.len(), block_hash, height);
 
-		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
+		let _persistence_guard = PersistenceNotifierGuard::optionally_notify(&self.total_consistency_lock,
+			&self.persistence_notifier, || -> NotifyOption { NotifyOption::DoPersist });
 		self.do_chain_event(Some(height), |channel| channel.transactions_confirmed(&block_hash, height, txdata, self.genesis_hash.clone(), &self.node_signer, &self.default_configuration, &self.logger)
 			.map(|(a, b)| (a, Vec::new(), b)));
 
@@ -6214,8 +6382,8 @@ where
 		let block_hash = header.block_hash();
 		log_trace!(self.logger, "New best block: {} at height {}", block_hash, height);
 
-		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
-
+		let _persistence_guard = PersistenceNotifierGuard::optionally_notify(&self.total_consistency_lock,
+			&self.persistence_notifier, || -> NotifyOption { NotifyOption::DoPersist });
 		*self.best_block.write().unwrap() = BestBlock::new(block_hash, height);
 
 		self.do_chain_event(Some(height), |channel| channel.best_block_updated(height, header.time, self.genesis_hash.clone(), &self.node_signer, &self.default_configuration, &self.logger));
@@ -6258,7 +6426,8 @@ where
 	}
 
 	fn transaction_unconfirmed(&self, txid: &Txid) {
-		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
+		let _persistence_guard = PersistenceNotifierGuard::optionally_notify(&self.total_consistency_lock,
+			&self.persistence_notifier, || -> NotifyOption { NotifyOption::DoPersist });
 		self.do_chain_event(None, |channel| {
 			if let Some(funding_txo) = channel.get_funding_txo() {
 				if funding_txo.txid == *txid {
@@ -6502,7 +6671,7 @@ where
 	L::Target: Logger,
 {
 	fn handle_open_channel(&self, counterparty_node_id: &PublicKey, msg: &msgs::OpenChannel) {
-		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 		let _ = handle_error!(self, self.internal_open_channel(counterparty_node_id, msg), *counterparty_node_id);
 	}
 
@@ -6513,7 +6682,7 @@ where
 	}
 
 	fn handle_accept_channel(&self, counterparty_node_id: &PublicKey, msg: &msgs::AcceptChannel) {
-		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 		let _ = handle_error!(self, self.internal_accept_channel(counterparty_node_id, msg), *counterparty_node_id);
 	}
 
@@ -6524,74 +6693,75 @@ where
 	}
 
 	fn handle_funding_created(&self, counterparty_node_id: &PublicKey, msg: &msgs::FundingCreated) {
-		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 		let _ = handle_error!(self, self.internal_funding_created(counterparty_node_id, msg), *counterparty_node_id);
 	}
 
 	fn handle_funding_signed(&self, counterparty_node_id: &PublicKey, msg: &msgs::FundingSigned) {
-		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 		let _ = handle_error!(self, self.internal_funding_signed(counterparty_node_id, msg), *counterparty_node_id);
 	}
 
 	fn handle_channel_ready(&self, counterparty_node_id: &PublicKey, msg: &msgs::ChannelReady) {
-		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 		let _ = handle_error!(self, self.internal_channel_ready(counterparty_node_id, msg), *counterparty_node_id);
 	}
 
 	fn handle_shutdown(&self, counterparty_node_id: &PublicKey, msg: &msgs::Shutdown) {
-		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 		let _ = handle_error!(self, self.internal_shutdown(counterparty_node_id, msg), *counterparty_node_id);
 	}
 
 	fn handle_closing_signed(&self, counterparty_node_id: &PublicKey, msg: &msgs::ClosingSigned) {
-		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 		let _ = handle_error!(self, self.internal_closing_signed(counterparty_node_id, msg), *counterparty_node_id);
 	}
 
 	fn handle_update_add_htlc(&self, counterparty_node_id: &PublicKey, msg: &msgs::UpdateAddHTLC) {
-		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 		let _ = handle_error!(self, self.internal_update_add_htlc(counterparty_node_id, msg), *counterparty_node_id);
 	}
 
 	fn handle_update_fulfill_htlc(&self, counterparty_node_id: &PublicKey, msg: &msgs::UpdateFulfillHTLC) {
-		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 		let _ = handle_error!(self, self.internal_update_fulfill_htlc(counterparty_node_id, msg), *counterparty_node_id);
 	}
 
 	fn handle_update_fail_htlc(&self, counterparty_node_id: &PublicKey, msg: &msgs::UpdateFailHTLC) {
-		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 		let _ = handle_error!(self, self.internal_update_fail_htlc(counterparty_node_id, msg), *counterparty_node_id);
 	}
 
 	fn handle_update_fail_malformed_htlc(&self, counterparty_node_id: &PublicKey, msg: &msgs::UpdateFailMalformedHTLC) {
-		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 		let _ = handle_error!(self, self.internal_update_fail_malformed_htlc(counterparty_node_id, msg), *counterparty_node_id);
 	}
 
 	fn handle_commitment_signed(&self, counterparty_node_id: &PublicKey, msg: &msgs::CommitmentSigned) {
-		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 		let _ = handle_error!(self, self.internal_commitment_signed(counterparty_node_id, msg), *counterparty_node_id);
 	}
 
 	fn handle_revoke_and_ack(&self, counterparty_node_id: &PublicKey, msg: &msgs::RevokeAndACK) {
-		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 		let _ = handle_error!(self, self.internal_revoke_and_ack(counterparty_node_id, msg), *counterparty_node_id);
 	}
 
 	fn handle_update_fee(&self, counterparty_node_id: &PublicKey, msg: &msgs::UpdateFee) {
-		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 		let _ = handle_error!(self, self.internal_update_fee(counterparty_node_id, msg), *counterparty_node_id);
 	}
 
 	fn handle_announcement_signatures(&self, counterparty_node_id: &PublicKey, msg: &msgs::AnnouncementSignatures) {
-		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 		let _ = handle_error!(self, self.internal_announcement_signatures(counterparty_node_id, msg), *counterparty_node_id);
 	}
 
 	fn handle_channel_update(&self, counterparty_node_id: &PublicKey, msg: &msgs::ChannelUpdate) {
 		PersistenceNotifierGuard::optionally_notify(&self.total_consistency_lock, &self.persistence_notifier, || {
+			let force_persist = self.process_background_events();
 			if let Ok(persist) = handle_error!(self, self.internal_channel_update(counterparty_node_id, msg), *counterparty_node_id) {
-				persist
+				if force_persist == NotifyOption::DoPersist { NotifyOption::DoPersist } else { persist }
 			} else {
 				NotifyOption::SkipPersist
 			}
@@ -6599,12 +6769,12 @@ where
 	}
 
 	fn handle_channel_reestablish(&self, counterparty_node_id: &PublicKey, msg: &msgs::ChannelReestablish) {
-		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 		let _ = handle_error!(self, self.internal_channel_reestablish(counterparty_node_id, msg), *counterparty_node_id);
 	}
 
 	fn peer_disconnected(&self, counterparty_node_id: &PublicKey) {
-		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 		let mut failed_channels = Vec::new();
 		let mut per_peer_state = self.per_peer_state.write().unwrap();
 		let remove_peer = {
@@ -6686,7 +6856,7 @@ where
 			return Err(());
 		}
 
-		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 
 		// If we have too many peers connected which don't have funded channels, disconnect the
 		// peer immediately (as long as it doesn't have funded channels). If we have a bunch of
@@ -6707,6 +6877,7 @@ where
 						latest_features: init_msg.features.clone(),
 						pending_msg_events: Vec::new(),
 						monitor_update_blocked_actions: BTreeMap::new(),
+						actions_blocking_raa_monitor_updates: BTreeMap::new(),
 						is_connected: true,
 					}));
 				},
@@ -6769,7 +6940,7 @@ where
 	}
 
 	fn handle_error(&self, counterparty_node_id: &PublicKey, msg: &msgs::ErrorMessage) {
-		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 
 		if msg.channel_id == [0; 32] {
 			let channel_ids: Vec<[u8; 32]> = {
@@ -7784,8 +7955,10 @@ where
 					log_error!(args.logger, " The ChannelMonitor for channel {} is at update_id {} but the ChannelManager is at update_id {}.",
 						log_bytes!(channel.channel_id()), monitor.get_latest_update_id(), channel.get_latest_monitor_update_id());
 					let (monitor_update, mut new_failed_htlcs) = channel.force_shutdown(true);
-					if let Some(monitor_update) = monitor_update {
-						pending_background_events.push(BackgroundEvent::MonitorUpdateRegeneratedOnStartup(monitor_update));
+					if let Some((counterparty_node_id, funding_txo, update)) = monitor_update {
+						pending_background_events.push(BackgroundEvent::MonitorUpdateRegeneratedOnStartup {
+							counterparty_node_id, funding_txo, update
+						});
 					}
 					failed_htlcs.append(&mut new_failed_htlcs);
 					channel_closures.push_back((events::Event::ChannelClosed {
@@ -7813,7 +7986,10 @@ where
 						}
 					}
 				} else {
-					log_info!(args.logger, "Successfully loaded channel {}", log_bytes!(channel.channel_id()));
+					log_info!(args.logger, "Successfully loaded channel {} at update_id {} against monitor at update id {}",
+						log_bytes!(channel.channel_id()), channel.get_latest_monitor_update_id(),
+						monitor.get_latest_update_id());
+					channel.complete_all_mon_updates_through(monitor.get_latest_update_id());
 					if let Some(short_channel_id) = channel.get_short_channel_id() {
 						short_to_chan_info.insert(short_channel_id, (channel.get_counterparty_node_id(), channel.channel_id()));
 					}
@@ -7860,7 +8036,7 @@ where
 					update_id: CLOSED_CHANNEL_UPDATE_ID,
 					updates: vec![ChannelMonitorUpdateStep::ChannelForceClosed { should_broadcast: true }],
 				};
-				pending_background_events.push(BackgroundEvent::MonitorUpdateRegeneratedOnStartup((*funding_txo, monitor_update)));
+				pending_background_events.push(BackgroundEvent::ClosingMonitorUpdateRegeneratedOnStartup((*funding_txo, monitor_update)));
 			}
 		}
 
@@ -7898,6 +8074,7 @@ where
 				latest_features: Readable::read(reader)?,
 				pending_msg_events: Vec::new(),
 				monitor_update_blocked_actions: BTreeMap::new(),
+				actions_blocking_raa_monitor_updates: BTreeMap::new(),
 				is_connected: false,
 			};
 			per_peer_state.insert(peer_pubkey, Mutex::new(peer_state));
@@ -7924,6 +8101,24 @@ where
 					let _: ChannelMonitorUpdate = Readable::read(reader)?;
 				}
 				_ => return Err(DecodeError::InvalidValue),
+			}
+		}
+
+		for (node_id, peer_mtx) in per_peer_state.iter() {
+			let peer_state = peer_mtx.lock().unwrap();
+			for (_, chan) in peer_state.channel_by_id.iter() {
+				for update in chan.uncompleted_unblocked_mon_updates() {
+					if let Some(funding_txo) = chan.get_funding_txo() {
+						log_trace!(args.logger, "Replaying ChannelMonitorUpdate {} for channel {}",
+							update.update_id, log_bytes!(funding_txo.to_channel_id()));
+						pending_background_events.push(
+							BackgroundEvent::MonitorUpdateRegeneratedOnStartup {
+								counterparty_node_id: *node_id, funding_txo, update: update.clone(),
+							});
+					} else {
+						return Err(DecodeError::InvalidValue);
+					}
+				}
 			}
 		}
 
@@ -7961,7 +8156,7 @@ where
 		let mut claimable_htlc_purposes = None;
 		let mut claimable_htlc_onion_fields = None;
 		let mut pending_claiming_payments = Some(HashMap::new());
-		let mut monitor_update_blocked_actions_per_peer = Some(Vec::new());
+		let mut monitor_update_blocked_actions_per_peer: Option<Vec<(_, BTreeMap<_, Vec<_>>)>> = Some(Vec::new());
 		let mut events_override = None;
 		read_tlv_fields!(reader, {
 			(1, pending_outbound_payments_no_retry, option),
@@ -8286,7 +8481,21 @@ where
 		}
 
 		for (node_id, monitor_update_blocked_actions) in monitor_update_blocked_actions_per_peer.unwrap() {
-			if let Some(peer_state) = per_peer_state.get_mut(&node_id) {
+			if let Some(peer_state) = per_peer_state.get(&node_id) {
+				for (_, actions) in monitor_update_blocked_actions.iter() {
+					for action in actions.iter() {
+						if let MonitorUpdateCompletionAction::EmitEventAndFreeOtherChannel {
+							downstream_counterparty_and_funding_outpoint:
+								Some((blocked_node_id, blocked_channel_outpoint, blocking_action)), ..
+						} = action {
+							if let Some(blocked_peer_state) = per_peer_state.get(&blocked_node_id) {
+								blocked_peer_state.lock().unwrap().actions_blocking_raa_monitor_updates
+									.entry(blocked_channel_outpoint.to_channel_id())
+									.or_insert_with(Vec::new).push(blocking_action.clone());
+							}
+						}
+					}
+				}
 				peer_state.lock().unwrap().monitor_update_blocked_actions = monitor_update_blocked_actions;
 			} else {
 				log_error!(args.logger, "Got blocked actions without a per-peer-state for {}", node_id);
@@ -8328,6 +8537,8 @@ where
 			pending_events_processor: AtomicBool::new(false),
 			pending_background_events: Mutex::new(pending_background_events),
 			total_consistency_lock: RwLock::new(()),
+			#[cfg(debug_assertions)]
+			background_events_processed_since_startup: AtomicBool::new(false),
 			persistence_notifier: Notifier::new(),
 
 			entropy_source: args.entropy_source,

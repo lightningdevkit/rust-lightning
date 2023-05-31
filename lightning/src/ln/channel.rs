@@ -432,6 +432,12 @@ pub(super) struct ReestablishResponses {
 	pub shutdown_msg: Option<msgs::Shutdown>,
 }
 
+/// The return type of `force_shutdown`
+pub(crate) type ShutdownResult = (
+	Option<(PublicKey, OutPoint, ChannelMonitorUpdate)>,
+	Vec<(HTLCSource, PaymentHash, PublicKey, [u8; 32])>
+);
+
 /// If the majority of the channels funds are to the fundee and the initiator holds only just
 /// enough funds to cover their reserve value, channels are at risk of getting "stuck". Because the
 /// initiator controls the feerate, if they then go to increase the channel fee, they may have no
@@ -5097,8 +5103,23 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		self.pending_monitor_updates.is_empty()
 	}
 
+	pub fn complete_all_mon_updates_through(&mut self, update_id: u64) {
+		self.pending_monitor_updates.retain(|upd| {
+			if upd.update.update_id <= update_id {
+				assert!(!upd.blocked, "Completed update must have flown");
+				false
+			} else { true }
+		});
+	}
+
 	pub fn complete_one_mon_update(&mut self, update_id: u64) {
 		self.pending_monitor_updates.retain(|upd| upd.update.update_id != update_id);
+	}
+
+	/// Returns an iterator over all unblocked monitor updates which have not yet completed.
+	pub fn uncompleted_unblocked_mon_updates(&self) -> impl Iterator<Item=&ChannelMonitorUpdate> {
+		self.pending_monitor_updates.iter()
+			.filter_map(|upd| if upd.blocked { None } else { Some(&upd.update) })
 	}
 
 	/// Returns true if funding_created was sent/received.
@@ -6282,7 +6303,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 	/// those explicitly stated to be allowed after shutdown completes, eg some simple getters).
 	/// Also returns the list of payment_hashes for channels which we can safely fail backwards
 	/// immediately (others we will have to allow to time out).
-	pub fn force_shutdown(&mut self, should_broadcast: bool) -> (Option<(OutPoint, ChannelMonitorUpdate)>, Vec<(HTLCSource, PaymentHash, PublicKey, [u8; 32])>) {
+	pub fn force_shutdown(&mut self, should_broadcast: bool) -> ShutdownResult {
 		// Note that we MUST only generate a monitor update that indicates force-closure - we're
 		// called during initialization prior to the chain_monitor in the encompassing ChannelManager
 		// being fully configured in some cases. Thus, its likely any monitor events we generate will
@@ -6311,7 +6332,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			// See test_duplicate_chan_id and test_pre_lockin_no_chan_closed_update for more.
 			if self.channel_state & (ChannelState::FundingSent as u32 | ChannelState::ChannelReady as u32 | ChannelState::ShutdownComplete as u32) != 0 {
 				self.latest_monitor_update_id = CLOSED_CHANNEL_UPDATE_ID;
-				Some((funding_txo, ChannelMonitorUpdate {
+				Some((self.get_counterparty_node_id(), funding_txo, ChannelMonitorUpdate {
 					update_id: self.latest_monitor_update_id,
 					updates: vec![ChannelMonitorUpdateStep::ChannelForceClosed { should_broadcast }],
 				}))
