@@ -68,6 +68,16 @@ impl<NG: Deref<Target=NetworkGraph<L>>, L: Deref> RapidGossipSync<NG, L> where L
 		}
 
 		let chain_hash: BlockHash = Readable::read(read_cursor)?;
+		let ng_genesis_hash = self.network_graph.get_genesis_hash();
+		if chain_hash != ng_genesis_hash {
+			return Err(
+				LightningError {
+					err: "Rapid Gossip Sync data's chain hash does not match the network graph's".to_owned(),
+					action: ErrorAction::IgnoreError,
+				}.into()
+			);
+		}
+
 		let latest_seen_timestamp: u32 = Readable::read(read_cursor)?;
 
 		if let Some(time) = current_time_unix {
@@ -663,6 +673,24 @@ mod tests {
 
 		if let Err(GraphSyncError::DecodeError(DecodeError::UnknownVersion)) = update_result {
 			// this is the expected error type
+		} else {
+			panic!("Unexpected update result: {:?}", update_result)
+		}
+	}
+
+	#[test]
+	fn fails_early_on_chain_hash_mismatch() {
+		let logger = TestLogger::new();
+		// Set to testnet so that the VALID_RGS_BINARY chain hash of mainnet does not match.
+		let network_graph = NetworkGraph::new(Network::Testnet, &logger);
+
+		assert_eq!(network_graph.read_only().channels().len(), 0);
+
+		let rapid_sync = RapidGossipSync::new(&network_graph, &logger);
+		let update_result = rapid_sync.update_network_graph_no_std(&VALID_RGS_BINARY, Some(0));
+		assert!(update_result.is_err());
+		if let Err(GraphSyncError::LightningError(err)) = update_result {
+			assert_eq!(err.err, "Rapid Gossip Sync data's chain hash does not match the network graph's");
 		} else {
 			panic!("Unexpected update result: {:?}", update_result)
 		}

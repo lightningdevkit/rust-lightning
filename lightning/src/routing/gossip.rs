@@ -366,6 +366,11 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 			},
 		}
 	}
+
+	/// Gets the genesis hash for this network graph.
+	pub fn get_genesis_hash(&self) -> BlockHash {
+		self.genesis_hash
+	}
 }
 
 macro_rules! secp_verify_sig {

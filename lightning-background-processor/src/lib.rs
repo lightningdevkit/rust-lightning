@@ -1124,7 +1124,7 @@ mod tests {
 	fn create_nodes(num_nodes: usize, persist_dir: &str) -> (String, Vec<Node>) {
 		let persist_temp_path = env::temp_dir().join(persist_dir);
 		let persist_dir = persist_temp_path.to_string_lossy().to_string();
-		let network = Network::Testnet;
+		let network = Network::Bitcoin;
 		let mut nodes = Vec::new();
 		for i in 0..num_nodes {
 			let tx_broadcaster = Arc::new(test_utils::TestBroadcaster::new(network));
@@ -1135,7 +1135,7 @@ mod tests {
 			let scorer = Arc::new(Mutex::new(TestScorer::new()));
 			let seed = [i as u8; 32];
 			let router = Arc::new(DefaultRouter::new(network_graph.clone(), logger.clone(), seed, scorer.clone(), ()));
-			let chain_source = Arc::new(test_utils::TestChainSource::new(Network::Testnet));
+			let chain_source = Arc::new(test_utils::TestChainSource::new(Network::Bitcoin));
 			let persister = Arc::new(FilesystemPersister::new(format!("{}_persister_{}", &persist_dir, i)));
 			let now = Duration::from_secs(genesis_block.header.time as u64);
 			let keys_manager = Arc::new(KeysManager::new(&seed, now.as_secs(), now.subsec_nanos()));
