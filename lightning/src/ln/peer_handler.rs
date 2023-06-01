@@ -1333,7 +1333,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 								peer.set_their_node_id(their_node_id);
 								insert_node_id!();
 								let features = self.init_features(&their_node_id);
-								let resp = msgs::Init { features, remote_network_address: filter_addresses(peer.their_net_address.clone()) };
+								let resp = msgs::Init { features, networks: None, remote_network_address: filter_addresses(peer.their_net_address.clone()) };
 								self.enqueue_message(peer, &resp);
 								peer.awaiting_pong_timer_tick_intervals = 0;
 							},
@@ -1345,7 +1345,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 								peer.set_their_node_id(their_node_id);
 								insert_node_id!();
 								let features = self.init_features(&their_node_id);
-								let resp = msgs::Init { features, remote_network_address: filter_addresses(peer.their_net_address.clone()) };
+								let resp = msgs::Init { features, networks: None, remote_network_address: filter_addresses(peer.their_net_address.clone()) };
 								self.enqueue_message(peer, &resp);
 								peer.awaiting_pong_timer_tick_intervals = 0;
 							},
