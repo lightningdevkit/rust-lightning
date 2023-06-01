@@ -56,7 +56,7 @@ use crate::ln::outbound_payment;
 use crate::ln::outbound_payment::{OutboundPayments, PaymentAttempts, PendingOutboundPayment};
 use crate::ln::wire::Encode;
 use crate::sign::{EntropySource, KeysManager, NodeSigner, Recipient, SignerProvider, ChannelSigner, WriteableEcdsaChannelSigner};
-use crate::util::config::{UserConfig, ChannelConfig};
+use crate::util::config::{UserConfig, ChannelConfig, ChannelConfigUpdate};
 use crate::util::wakers::{Future, Notifier};
 use crate::util::scid_utils::fake_scid;
 use crate::util::string::UntrustedString;
@@ -3228,6 +3228,69 @@ where
 		})
 	}
 
+	/// Atomically applies partial updates to the [`ChannelConfig`] of the given channels.
+	///
+	/// Once the updates are applied, each eligible channel (advertised with a known short channel
+	/// ID and a change in [`forwarding_fee_proportional_millionths`], [`forwarding_fee_base_msat`],
+	/// or [`cltv_expiry_delta`]) has a [`BroadcastChannelUpdate`] event message generated
+	/// containing the new [`ChannelUpdate`] message which should be broadcast to the network.
+	///
+	/// Returns [`ChannelUnavailable`] when a channel is not found or an incorrect
+	/// `counterparty_node_id` is provided.
+	///
+	/// Returns [`APIMisuseError`] when a [`cltv_expiry_delta`] update is to be applied with a value
+	/// below [`MIN_CLTV_EXPIRY_DELTA`].
+	///
+	/// If an error is returned, none of the updates should be considered applied.
+	///
+	/// [`forwarding_fee_proportional_millionths`]: ChannelConfig::forwarding_fee_proportional_millionths
+	/// [`forwarding_fee_base_msat`]: ChannelConfig::forwarding_fee_base_msat
+	/// [`cltv_expiry_delta`]: ChannelConfig::cltv_expiry_delta
+	/// [`BroadcastChannelUpdate`]: events::MessageSendEvent::BroadcastChannelUpdate
+	/// [`ChannelUpdate`]: msgs::ChannelUpdate
+	/// [`ChannelUnavailable`]: APIError::ChannelUnavailable
+	/// [`APIMisuseError`]: APIError::APIMisuseError
+	pub fn update_partial_channel_config(
+		&self, counterparty_node_id: &PublicKey, channel_ids: &[[u8; 32]], config_update: &ChannelConfigUpdate,
+	) -> Result<(), APIError> {
+		if config_update.cltv_expiry_delta.map(|delta| delta < MIN_CLTV_EXPIRY_DELTA).unwrap_or(false) {
+			return Err(APIError::APIMisuseError {
+				err: format!("The chosen CLTV expiry delta is below the minimum of {}", MIN_CLTV_EXPIRY_DELTA),
+			});
+		}
+
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
+		let per_peer_state = self.per_peer_state.read().unwrap();
+		let peer_state_mutex = per_peer_state.get(counterparty_node_id)
+			.ok_or_else(|| APIError::ChannelUnavailable { err: format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id) })?;
+		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+		let peer_state = &mut *peer_state_lock;
+		for channel_id in channel_ids {
+			if !peer_state.channel_by_id.contains_key(channel_id) {
+				return Err(APIError::ChannelUnavailable {
+					err: format!("Channel with ID {} was not found for the passed counterparty_node_id {}", log_bytes!(*channel_id), counterparty_node_id),
+				});
+			}
+		}
+		for channel_id in channel_ids {
+			let channel = peer_state.channel_by_id.get_mut(channel_id).unwrap();
+			let mut config = channel.config();
+			config.apply(config_update);
+			if !channel.update_config(&config) {
+				continue;
+			}
+			if let Ok(msg) = self.get_channel_update_for_broadcast(channel) {
+				peer_state.pending_msg_events.push(events::MessageSendEvent::BroadcastChannelUpdate { msg });
+			} else if let Ok(msg) = self.get_channel_update_for_unicast(channel) {
+				peer_state.pending_msg_events.push(events::MessageSendEvent::SendChannelUpdate {
+					node_id: channel.get_counterparty_node_id(),
+					msg,
+				});
+			}
+		}
+		Ok(())
+	}
+
 	/// Atomically updates the [`ChannelConfig`] for the given channels.
 	///
 	/// Once the updates are applied, each eligible channel (advertised with a known short channel
@@ -3253,40 +3316,7 @@ where
 	pub fn update_channel_config(
 		&self, counterparty_node_id: &PublicKey, channel_ids: &[[u8; 32]], config: &ChannelConfig,
 	) -> Result<(), APIError> {
-		if config.cltv_expiry_delta < MIN_CLTV_EXPIRY_DELTA {
-			return Err(APIError::APIMisuseError {
-				err: format!("The chosen CLTV expiry delta is below the minimum of {}", MIN_CLTV_EXPIRY_DELTA),
-			});
-		}
-
-		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
-		let per_peer_state = self.per_peer_state.read().unwrap();
-		let peer_state_mutex = per_peer_state.get(counterparty_node_id)
-			.ok_or_else(|| APIError::ChannelUnavailable { err: format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id) })?;
-		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
-		let peer_state = &mut *peer_state_lock;
-		for channel_id in channel_ids {
-			if !peer_state.channel_by_id.contains_key(channel_id) {
-				return Err(APIError::ChannelUnavailable {
-					err: format!("Channel with ID {} was not found for the passed counterparty_node_id {}", log_bytes!(*channel_id), counterparty_node_id),
-				});
-			}
-		}
-		for channel_id in channel_ids {
-			let channel = peer_state.channel_by_id.get_mut(channel_id).unwrap();
-			if !channel.update_config(config) {
-				continue;
-			}
-			if let Ok(msg) = self.get_channel_update_for_broadcast(channel) {
-				peer_state.pending_msg_events.push(events::MessageSendEvent::BroadcastChannelUpdate { msg });
-			} else if let Ok(msg) = self.get_channel_update_for_unicast(channel) {
-				peer_state.pending_msg_events.push(events::MessageSendEvent::SendChannelUpdate {
-					node_id: channel.get_counterparty_node_id(),
-					msg,
-				});
-			}
-		}
-		Ok(())
+		return self.update_partial_channel_config(counterparty_node_id, channel_ids, &(*config).into());
 	}
 
 	/// Attempts to forward an intercepted HTLC over the provided channel id and with the provided
@@ -8578,7 +8608,7 @@ mod tests {
 	use crate::routing::router::{PaymentParameters, RouteParameters, find_route};
 	use crate::util::errors::APIError;
 	use crate::util::test_utils;
-	use crate::util::config::ChannelConfig;
+	use crate::util::config::{ChannelConfig, ChannelConfigUpdate};
 	use crate::sign::EntropySource;
 
 	#[test]
@@ -9488,6 +9518,62 @@ mod tests {
 		assert!(!open_channel_msg.channel_type.unwrap().supports_anchors_zero_fee_htlc_tx());
 
 		check_closed_event!(nodes[1], 1, ClosureReason::HolderForceClosed);
+	}
+
+	#[test]
+	fn test_update_channel_config() {
+		let chanmon_cfg = create_chanmon_cfgs(2);
+		let node_cfg = create_node_cfgs(2, &chanmon_cfg);
+		let mut user_config = test_default_channel_config();
+		let node_chanmgr = create_node_chanmgrs(2, &node_cfg, &[Some(user_config), Some(user_config)]);
+		let nodes = create_network(2, &node_cfg, &node_chanmgr);
+		let _ = create_announced_chan_between_nodes(&nodes, 0, 1);
+		let channel = &nodes[0].node.list_channels()[0];
+
+		nodes[0].node.update_channel_config(&channel.counterparty.node_id, &[channel.channel_id], &user_config.channel_config).unwrap();
+		let events = nodes[0].node.get_and_clear_pending_msg_events();
+		assert_eq!(events.len(), 0);
+
+		user_config.channel_config.forwarding_fee_base_msat += 10;
+		nodes[0].node.update_channel_config(&channel.counterparty.node_id, &[channel.channel_id], &user_config.channel_config).unwrap();
+		assert_eq!(nodes[0].node.list_channels()[0].config.unwrap().forwarding_fee_base_msat, user_config.channel_config.forwarding_fee_base_msat);
+		let events = nodes[0].node.get_and_clear_pending_msg_events();
+		assert_eq!(events.len(), 1);
+		match &events[0] {
+			MessageSendEvent::BroadcastChannelUpdate { .. } => {},
+			_ => panic!("expected BroadcastChannelUpdate event"),
+		}
+
+		nodes[0].node.update_partial_channel_config(&channel.counterparty.node_id, &[channel.channel_id], &ChannelConfigUpdate::default()).unwrap();
+		let events = nodes[0].node.get_and_clear_pending_msg_events();
+		assert_eq!(events.len(), 0);
+
+		let new_cltv_expiry_delta = user_config.channel_config.cltv_expiry_delta + 6;
+		nodes[0].node.update_partial_channel_config(&channel.counterparty.node_id, &[channel.channel_id], &ChannelConfigUpdate {
+			cltv_expiry_delta: Some(new_cltv_expiry_delta),
+			..Default::default()
+		}).unwrap();
+		assert_eq!(nodes[0].node.list_channels()[0].config.unwrap().cltv_expiry_delta, new_cltv_expiry_delta);
+		let events = nodes[0].node.get_and_clear_pending_msg_events();
+		assert_eq!(events.len(), 1);
+		match &events[0] {
+			MessageSendEvent::BroadcastChannelUpdate { .. } => {},
+			_ => panic!("expected BroadcastChannelUpdate event"),
+		}
+
+		let new_fee = user_config.channel_config.forwarding_fee_proportional_millionths + 100;
+		nodes[0].node.update_partial_channel_config(&channel.counterparty.node_id, &[channel.channel_id], &ChannelConfigUpdate {
+			forwarding_fee_proportional_millionths: Some(new_fee),
+			..Default::default()
+		}).unwrap();
+		assert_eq!(nodes[0].node.list_channels()[0].config.unwrap().cltv_expiry_delta, new_cltv_expiry_delta);
+		assert_eq!(nodes[0].node.list_channels()[0].config.unwrap().forwarding_fee_proportional_millionths, new_fee);
+		let events = nodes[0].node.get_and_clear_pending_msg_events();
+		assert_eq!(events.len(), 1);
+		match &events[0] {
+			MessageSendEvent::BroadcastChannelUpdate { .. } => {},
+			_ => panic!("expected BroadcastChannelUpdate event"),
+		}
 	}
 }
 

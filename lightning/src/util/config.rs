@@ -399,6 +399,27 @@ pub struct ChannelConfig {
 	pub force_close_avoidance_max_fee_satoshis: u64,
 }
 
+impl ChannelConfig {
+	/// Applies the given [`ChannelConfigUpdate`] as a partial update to the [`ChannelConfig`].
+	pub fn apply(&mut self, update: &ChannelConfigUpdate) {
+		if let Some(forwarding_fee_proportional_millionths) = update.forwarding_fee_proportional_millionths {
+			self.forwarding_fee_proportional_millionths = forwarding_fee_proportional_millionths;
+		}
+		if let Some(forwarding_fee_base_msat) = update.forwarding_fee_base_msat {
+			self.forwarding_fee_base_msat = forwarding_fee_base_msat;
+		}
+		if let Some(cltv_expiry_delta) = update.cltv_expiry_delta {
+			self.cltv_expiry_delta = cltv_expiry_delta;
+		}
+		if let Some(max_dust_htlc_exposure_msat) = update.max_dust_htlc_exposure_msat {
+			self.max_dust_htlc_exposure_msat = max_dust_htlc_exposure_msat;
+		}
+		if let Some(force_close_avoidance_max_fee_satoshis) = update.force_close_avoidance_max_fee_satoshis {
+			self.force_close_avoidance_max_fee_satoshis = force_close_avoidance_max_fee_satoshis;
+		}
+	}
+}
+
 impl Default for ChannelConfig {
 	/// Provides sane defaults for most configurations (but with zero relay fees!).
 	fn default() -> Self {
@@ -422,6 +443,40 @@ impl_writeable_tlv_based!(ChannelConfig, {
 	// the next required type of 10, which if seen by the old serialization will always fail.
 	(10, force_close_avoidance_max_fee_satoshis, required),
 });
+
+/// A parallel struct to [`ChannelConfig`] to define partial updates.
+#[allow(missing_docs)]
+pub struct ChannelConfigUpdate {
+	pub forwarding_fee_proportional_millionths: Option<u32>,
+	pub forwarding_fee_base_msat: Option<u32>,
+	pub cltv_expiry_delta: Option<u16>,
+	pub max_dust_htlc_exposure_msat: Option<u64>,
+	pub force_close_avoidance_max_fee_satoshis: Option<u64>,
+}
+
+impl Default for ChannelConfigUpdate {
+	fn default() -> ChannelConfigUpdate {
+		ChannelConfigUpdate {
+			forwarding_fee_proportional_millionths: None,
+			forwarding_fee_base_msat: None,
+			cltv_expiry_delta: None,
+			max_dust_htlc_exposure_msat: None,
+			force_close_avoidance_max_fee_satoshis: None,
+		}
+	}
+}
+
+impl From<ChannelConfig> for ChannelConfigUpdate {
+	fn from(config: ChannelConfig) -> ChannelConfigUpdate {
+		ChannelConfigUpdate {
+			forwarding_fee_proportional_millionths: Some(config.forwarding_fee_proportional_millionths),
+			forwarding_fee_base_msat: Some(config.forwarding_fee_base_msat),
+			cltv_expiry_delta: Some(config.cltv_expiry_delta),
+			max_dust_htlc_exposure_msat: Some(config.max_dust_htlc_exposure_msat),
+			force_close_avoidance_max_fee_satoshis: Some(config.force_close_avoidance_max_fee_satoshis),
+		}
+	}
+}
 
 /// Legacy version of [`ChannelConfig`] that stored the static
 /// [`ChannelHandshakeConfig::announced_channel`] and
