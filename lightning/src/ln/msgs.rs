@@ -1300,6 +1300,12 @@ pub trait ChannelMessageHandler : MessageSendEventsProvider {
 	///
 	/// Note that this method is called before [`Self::peer_connected`].
 	fn provided_init_features(&self, their_node_id: &PublicKey) -> InitFeatures;
+
+	/// Gets the genesis hashes for this `ChannelMessageHandler` indicating which chains it supports.
+	///
+	/// If it's `None`, then no particular network chain hash compatibility will be enforced when
+	/// connecting to peers.
+	fn get_genesis_hashes(&self) -> Option<Vec<ChainHash>>;
 }
 
 /// A trait to describe an object which can receive routing messages.

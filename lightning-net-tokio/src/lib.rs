@@ -474,6 +474,8 @@ mod tests {
 	use lightning::routing::gossip::NodeId;
 	use lightning::events::*;
 	use lightning::util::test_utils::TestNodeSigner;
+	use bitcoin::Network;
+	use bitcoin::blockdata::constants::ChainHash;
 	use bitcoin::secp256k1::{Secp256k1, SecretKey, PublicKey};
 
 	use tokio::sync::mpsc;
@@ -556,6 +558,9 @@ mod tests {
 		fn handle_error(&self, _their_node_id: &PublicKey, _msg: &ErrorMessage) {}
 		fn provided_node_features(&self) -> NodeFeatures { NodeFeatures::empty() }
 		fn provided_init_features(&self, _their_node_id: &PublicKey) -> InitFeatures { InitFeatures::empty() }
+		fn get_genesis_hashes(&self) -> Option<Vec<ChainHash>> {
+			Some(vec![ChainHash::using_genesis_block(Network::Testnet)])
+		}
 	}
 	impl MessageSendEventsProvider for MsgHandler {
 		fn get_and_clear_pending_msg_events(&self) -> Vec<MessageSendEvent> {

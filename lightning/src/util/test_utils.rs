@@ -32,6 +32,7 @@ use crate::util::enforcing_trait_impls::{EnforcingSigner, EnforcementState};
 use crate::util::logger::{Logger, Level, Record};
 use crate::util::ser::{Readable, ReadableArgs, Writer, Writeable};
 
+use bitcoin::blockdata::constants::ChainHash;
 use bitcoin::blockdata::constants::genesis_block;
 use bitcoin::blockdata::transaction::{Transaction, TxOut};
 use bitcoin::blockdata::script::{Builder, Script};
@@ -363,15 +364,17 @@ pub struct TestChannelMessageHandler {
 	expected_recv_msgs: Mutex<Option<Vec<wire::Message<()>>>>,
 	connected_peers: Mutex<HashSet<PublicKey>>,
 	pub message_fetch_counter: AtomicUsize,
+	genesis_hash: ChainHash,
 }
 
 impl TestChannelMessageHandler {
-	pub fn new() -> Self {
+	pub fn new(genesis_hash: ChainHash) -> Self {
 		TestChannelMessageHandler {
 			pending_events: Mutex::new(Vec::new()),
 			expected_recv_msgs: Mutex::new(None),
 			connected_peers: Mutex::new(HashSet::new()),
 			message_fetch_counter: AtomicUsize::new(0),
+			genesis_hash,
 		}
 	}
 
@@ -473,6 +476,10 @@ impl msgs::ChannelMessageHandler for TestChannelMessageHandler {
 	}
 	fn provided_init_features(&self, _their_init_features: &PublicKey) -> InitFeatures {
 		channelmanager::provided_init_features(&UserConfig::default())
+	}
+
+	fn get_genesis_hashes(&self) -> Option<Vec<ChainHash>> {
+		Some(vec![self.genesis_hash])
 	}
 
 	fn handle_open_channel_v2(&self, _their_node_id: &PublicKey, msg: &msgs::OpenChannelV2) {

@@ -19,7 +19,7 @@
 
 use bitcoin::blockdata::block::BlockHeader;
 use bitcoin::blockdata::transaction::Transaction;
-use bitcoin::blockdata::constants::genesis_block;
+use bitcoin::blockdata::constants::{genesis_block, ChainHash};
 use bitcoin::network::constants::Network;
 
 use bitcoin::hashes::Hash;
@@ -6985,6 +6985,10 @@ where
 
 	fn provided_init_features(&self, _their_init_features: &PublicKey) -> InitFeatures {
 		provided_init_features(&self.default_configuration)
+	}
+
+	fn get_genesis_hashes(&self) -> Option<Vec<ChainHash>> {
+		Some(vec![ChainHash::from(&self.genesis_hash[..])])
 	}
 
 	fn handle_tx_add_input(&self, counterparty_node_id: &PublicKey, msg: &msgs::TxAddInput) {
