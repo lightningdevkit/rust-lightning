@@ -226,6 +226,7 @@ mod tests {
 
 	use bitcoin::hashes::{Hash, sha256};
 	use bitcoin::secp256k1::{KeyPair, Secp256k1, SecretKey};
+	use bitcoin::secp256k1::schnorr::Signature;
 	use core::convert::Infallible;
 	use crate::offers::offer::{Amount, OfferBuilder};
 	use crate::offers::invoice_request::InvoiceRequest;
@@ -279,6 +280,10 @@ mod tests {
 		assert_eq!(
 			super::root_hash(&invoice_request.bytes[..]),
 			sha256::Hash::from_slice(&hex::decode("608407c18ad9a94d9ea2bcdbe170b6c20c462a7833a197621c916f78cf18e624").unwrap()).unwrap(),
+		);
+		assert_eq!(
+			invoice_request.signature(),
+			Signature::from_slice(&hex::decode("b8f83ea3288cfd6ea510cdb481472575141e8d8744157f98562d162cc1c472526fdb24befefbdebab4dbb726bbd1b7d8aec057f8fa805187e5950d2bbe0e5642").unwrap()).unwrap(),
 		);
 	}
 
