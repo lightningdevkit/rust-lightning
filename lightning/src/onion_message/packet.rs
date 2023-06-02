@@ -17,6 +17,7 @@ use crate::ln::msgs::DecodeError;
 use crate::ln::onion_utils;
 use super::messenger::CustomOnionMessageHandler;
 use crate::util::chacha20poly1305rfc::{ChaChaPolyReadAdapter, ChaChaPolyWriteAdapter};
+use crate::util::logger::Logger;
 use crate::util::ser::{BigSize, FixedLengthReader, LengthRead, LengthReadable, LengthReadableArgs, Readable, ReadableArgs, Writeable, Writer};
 
 use core::cmp;
@@ -201,9 +202,10 @@ impl<T: CustomOnionMessageContents> Writeable for (Payload<T>, [u8; 32]) {
 }
 
 // Uses the provided secret to simultaneously decode and decrypt the control TLVs and data TLV.
-impl<H: CustomOnionMessageHandler> ReadableArgs<(SharedSecret, &H)> for Payload<<H as CustomOnionMessageHandler>::CustomMessage> {
-	fn read<R: Read>(r: &mut R, args: (SharedSecret, &H)) -> Result<Self, DecodeError> {
-		let (encrypted_tlvs_ss, handler) = args;
+impl<H: CustomOnionMessageHandler, L: Logger>
+ReadableArgs<(SharedSecret, &H, &L)> for Payload<<H as CustomOnionMessageHandler>::CustomMessage> {
+	fn read<R: Read>(r: &mut R, args: (SharedSecret, &H, &L)) -> Result<Self, DecodeError> {
+		let (encrypted_tlvs_ss, handler, _logger) = args;
 
 		let v: BigSize = Readable::read(r)?;
 		let mut rd = FixedLengthReader::new(r, v.0);

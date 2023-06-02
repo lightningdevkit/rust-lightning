@@ -301,7 +301,7 @@ fn outbound_buffer_full(peer_node_id: &PublicKey, buffer: &HashMap<PublicKey, Ve
 impl<ES: Deref, NS: Deref, L: Deref, CMH: Deref> OnionMessageHandler for OnionMessenger<ES, NS, L, CMH>
 	where ES::Target: EntropySource,
 		  NS::Target: NodeSigner,
-		  L::Target: Logger,
+		  L::Target: Logger + Sized,
 		  CMH::Target: CustomOnionMessageHandler + Sized,
 {
 	/// Handle an incoming onion message. Currently, if a message was destined for us we will log, but
@@ -331,9 +331,10 @@ impl<ES: Deref, NS: Deref, L: Deref, CMH: Deref> OnionMessageHandler for OnionMe
 				}
 			}
 		};
-		match onion_utils::decode_next_untagged_hop(onion_decode_ss, &msg.onion_routing_packet.hop_data[..],
-			msg.onion_routing_packet.hmac, (control_tlvs_ss, &*self.custom_handler))
-		{
+		match onion_utils::decode_next_untagged_hop(
+			onion_decode_ss, &msg.onion_routing_packet.hop_data[..], msg.onion_routing_packet.hmac,
+			(control_tlvs_ss, &*self.custom_handler, &*self.logger)
+		) {
 			Ok((Payload::Receive::<<<CMH as Deref>::Target as CustomOnionMessageHandler>::CustomMessage> {
 				message, control_tlvs: ReceiveControlTlvs::Unblinded(ReceiveTlvs { path_id }), reply_path,
 			}, None)) => {
