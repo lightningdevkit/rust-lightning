@@ -556,6 +556,25 @@ where C::Target: chain::Filter,
 	}
 }
 
+impl<ChannelSigner: WriteableEcdsaChannelSigner, C: Deref, T: Deref, F: Deref, L: Deref, P: Deref> ChainMonitor<ChannelSigner, C, T, F, L, P>
+	where C::Target: chain::Filter,
+	      T::Target: BroadcasterInterface,
+	      F::Target: FeeEstimator,
+	      L::Target: Logger,
+	      P::Target: Persist<ChannelSigner>,
+	      ChannelSigner: Clone
+{
+	/// Gets all the funding outpoints with each [`ChannelMonitor`] being monitored.
+	///
+	/// Note that [`ChannelMonitor`]s are not removed when a channel is closed as they are always
+	/// monitoring for on-chain state resolutions.
+	pub fn get_monitors(&self) -> HashMap<OutPoint, ChannelMonitor<ChannelSigner>> {
+		self.monitors.read().unwrap().iter().map(|(outpoint, holder)| {
+			(*outpoint, holder.monitor.clone())
+		}).collect()
+	}
+}
+
 impl<ChannelSigner: WriteableEcdsaChannelSigner, C: Deref, T: Deref, F: Deref, L: Deref, P: Deref>
 chain::Listen for ChainMonitor<ChannelSigner, C, T, F, L, P>
 where
