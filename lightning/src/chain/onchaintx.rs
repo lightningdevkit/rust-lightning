@@ -50,7 +50,7 @@ const MAX_ALLOC_SIZE: usize = 64*1024;
 /// transaction causing it.
 ///
 /// Used to determine when the on-chain event can be considered safe from a chain reorganization.
-#[derive(PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 struct OnchainEventEntry {
 	txid: Txid,
 	height: u32,
@@ -70,7 +70,7 @@ impl OnchainEventEntry {
 
 /// Events for claims the [`OnchainTxHandler`] has generated. Once the events are considered safe
 /// from a chain reorg, the [`OnchainTxHandler`] will act accordingly.
-#[derive(PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 enum OnchainEvent {
 	/// A pending request has been claimed by a transaction spending the exact same set of outpoints
 	/// as the request. This claim can either be ours or from the counterparty. Once the claiming
@@ -172,6 +172,7 @@ impl Writeable for Option<Vec<Option<(usize, Signature)>>> {
 }
 
 /// The claim commonly referred to as the pre-signed second-stage HTLC transaction.
+#[derive(Clone, PartialEq, Eq)]
 pub(crate) struct ExternalHTLCClaim {
 	pub(crate) commitment_txid: Txid,
 	pub(crate) per_commitment_number: u64,
@@ -182,6 +183,7 @@ pub(crate) struct ExternalHTLCClaim {
 
 // Represents the different types of claims for which events are yielded externally to satisfy said
 // claims.
+#[derive(Clone, PartialEq, Eq)]
 pub(crate) enum ClaimEvent {
 	/// Event yielded to signal that the commitment transaction fee must be bumped to claim any
 	/// encumbered funds and proceed to HTLC resolution, if any HTLCs exist.
@@ -211,6 +213,7 @@ pub(crate) enum OnchainClaim {
 
 /// OnchainTxHandler receives claiming requests, aggregates them if it's sound, broadcast and
 /// do RBF bumping if possible.
+#[derive(Clone)]
 pub struct OnchainTxHandler<ChannelSigner: WriteableEcdsaChannelSigner> {
 	destination_script: Script,
 	holder_commitment: HolderCommitmentTransaction,
