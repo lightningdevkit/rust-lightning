@@ -2964,7 +2964,7 @@ where
 				self.send_payment_along_path(path, payment_hash, recipient_onion, total_value, cur_height, payment_id, keysend_preimage, session_priv))
 	}
 
-	/// Similar to [`ChannelManager::send_payment`], but will automatically find a route based on
+	/// Similar to [`ChannelManager::send_payment_with_route`], but will automatically find a route based on
 	/// `route_params` and retry failed payment paths based on `retry_strategy`.
 	pub fn send_payment(&self, payment_hash: PaymentHash, recipient_onion: RecipientOnionFields, payment_id: PaymentId, route_params: RouteParameters, retry_strategy: Retry) -> Result<(), RetryableSendFailure> {
 		let best_block_height = self.best_block.read().unwrap().height();
