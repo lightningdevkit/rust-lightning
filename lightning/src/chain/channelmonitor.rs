@@ -886,6 +886,18 @@ impl<Signer: WriteableEcdsaChannelSigner> PartialEq for ChannelMonitor<Signer> w
 	}
 }
 
+impl<Signer: WriteableEcdsaChannelSigner> PartialOrd for ChannelMonitor<Signer> where Signer: PartialEq {
+	fn partial_cmp(&self, other: &Self) -> Option<cmp::Ordering> {
+		let inner = self.inner.lock().unwrap();
+		let other_inner = other.inner.lock().unwrap();
+		if inner.get_funding_txo() != other_inner.get_funding_txo() {
+			return None;
+		}
+
+		inner.latest_update_id.partial_cmp(&other_inner.latest_update_id)
+	}
+}
+
 impl<Signer: WriteableEcdsaChannelSigner> Writeable for ChannelMonitor<Signer> {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), Error> {
 		self.inner.lock().unwrap().write(writer)
