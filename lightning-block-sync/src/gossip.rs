@@ -2,7 +2,7 @@
 //! current UTXO set. This module defines an implementation of the LDK API required to do so
 //! against a [`BlockSource`] which implements a few additional methods for accessing the UTXO set.
 
-use crate::{AsyncBlockSourceResult, BlockData, BlockSource};
+use crate::{AsyncBlockSourceResult, BlockData, BlockSource, BlockSourceError};
 
 use bitcoin::blockdata::block::Block;
 use bitcoin::blockdata::transaction::{TxOut, OutPoint};
@@ -22,6 +22,8 @@ use std::sync::{Arc, Mutex};
 use std::collections::VecDeque;
 use std::future::Future;
 use std::ops::Deref;
+use std::pin::Pin;
+use std::task::Poll;
 
 /// A trait which extends [`BlockSource`] and can be queried to fetch the block at a given height
 /// as well as whether a given output is unspent (i.e. a member of the current UTXO set).
@@ -59,6 +61,65 @@ pub struct TokioSpawner;
 impl FutureSpawner for TokioSpawner {
 	fn spawn<T: Future<Output = ()> + Send + 'static>(&self, future: T) {
 		tokio::spawn(future);
+	}
+}
+
+/// A trivial future which joins two other futures and polls them at the same time, returning only
+/// once both complete.
+pub(crate) struct Joiner<
+	A: Future<Output=Result<(BlockHash, Option<u32>), BlockSourceError>> + Unpin,
+	B: Future<Output=Result<BlockHash, BlockSourceError>> + Unpin,
+> {
+	pub a: A,
+	pub b: B,
+	a_res: Option<(BlockHash, Option<u32>)>,
+	b_res: Option<BlockHash>,
+}
+
+impl<
+	A: Future<Output=Result<(BlockHash, Option<u32>), BlockSourceError>> + Unpin,
+	B: Future<Output=Result<BlockHash, BlockSourceError>> + Unpin,
+> Joiner<A, B> {
+	fn new(a: A, b: B) -> Self { Self { a, b, a_res: None, b_res: None } }
+}
+
+impl<
+	A: Future<Output=Result<(BlockHash, Option<u32>), BlockSourceError>> + Unpin,
+	B: Future<Output=Result<BlockHash, BlockSourceError>> + Unpin,
+> Future for Joiner<A, B> {
+	type Output = Result<((BlockHash, Option<u32>), BlockHash), BlockSourceError>;
+	fn poll(mut self: Pin<&mut Self>, ctx: &mut core::task::Context<'_>) -> Poll<Self::Output> {
+		if self.a_res.is_none() {
+			match Pin::new(&mut self.a).poll(ctx) {
+				Poll::Ready(res) => {
+					if let Ok(ok) = res {
+						self.a_res = Some(ok);
+					} else {
+						return Poll::Ready(Err(res.unwrap_err()));
+					}
+				},
+				Poll::Pending => {},
+			}
+		}
+		if self.b_res.is_none() {
+			match Pin::new(&mut self.b).poll(ctx) {
+				Poll::Ready(res) => {
+					if let Ok(ok) = res {
+						self.b_res = Some(ok);
+					} else {
+						return Poll::Ready(Err(res.unwrap_err()));
+					}
+
+				},
+				Poll::Pending => {},
+			}
+		}
+		if let Some(b_res) = self.b_res {
+			if let Some(a_res) = self.a_res {
+				return Poll::Ready(Ok((a_res, b_res)))
+			}
+		}
+		Poll::Pending
 	}
 }
 
@@ -156,8 +217,20 @@ impl<S: FutureSpawner,
 				}
 			}
 
-			let block_hash = source.get_block_hash_by_height(block_height).await
+			let ((_, tip_height_opt), block_hash) =
+				Joiner::new(source.get_best_block(), source.get_block_hash_by_height(block_height))
+				.await
 				.map_err(|_| UtxoLookupError::UnknownTx)?;
+			if let Some(tip_height) = tip_height_opt {
+				// If the block doesn't yet have five confirmations, error out.
+				//
+				// The BOLT spec requires nodes wait for six confirmations before announcing a
+				// channel, and we give them one block of headroom in case we're delayed seeing a
+				// block.
+				if block_height + 5 > tip_height {
+					return Err(UtxoLookupError::UnknownTx);
+				}
+			}
 			let block_data = source.get_block(&block_hash).await
 				.map_err(|_| UtxoLookupError::UnknownTx)?;
 			let block = match block_data {
