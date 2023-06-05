@@ -110,7 +110,7 @@ fn create_nodes(num_messengers: u8) -> Vec<MessengerNode> {
 		let i = idx as usize;
 		let mut features = InitFeatures::empty();
 		features.set_onion_messages_optional();
-		let init_msg = msgs::Init { features, remote_network_address: None };
+		let init_msg = msgs::Init { features, networks: None, remote_network_address: None };
 		nodes[i].messenger.peer_connected(&nodes[i + 1].get_node_pk(), &init_msg.clone(), true).unwrap();
 		nodes[i + 1].messenger.peer_connected(&nodes[i].get_node_pk(), &init_msg.clone(), false).unwrap();
 	}

@@ -19,7 +19,7 @@
 
 use bitcoin::blockdata::block::BlockHeader;
 use bitcoin::blockdata::transaction::Transaction;
-use bitcoin::blockdata::constants::genesis_block;
+use bitcoin::blockdata::constants::{genesis_block, ChainHash};
 use bitcoin::network::constants::Network;
 
 use bitcoin::hashes::Hash;
@@ -6987,6 +6987,10 @@ where
 		provided_init_features(&self.default_configuration)
 	}
 
+	fn get_genesis_hashes(&self) -> Option<Vec<ChainHash>> {
+		Some(vec![ChainHash::from(&self.genesis_hash[..])])
+	}
+
 	fn handle_tx_add_input(&self, counterparty_node_id: &PublicKey, msg: &msgs::TxAddInput) {
 		let _: Result<(), _> = handle_error!(self, Err(MsgHandleErrInternal::send_err_msg_no_close(
 			"Dual-funded channels not supported".to_owned(),
@@ -9297,12 +9301,14 @@ mod tests {
 				&SecretKey::from_slice(&nodes[1].keys_manager.get_secure_random_bytes()).unwrap());
 			peer_pks.push(random_pk);
 			nodes[1].node.peer_connected(&random_pk, &msgs::Init {
-				features: nodes[0].node.init_features(), remote_network_address: None }, true).unwrap();
+				features: nodes[0].node.init_features(), networks: None, remote_network_address: None
+			}, true).unwrap();
 		}
 		let last_random_pk = PublicKey::from_secret_key(&nodes[0].node.secp_ctx,
 			&SecretKey::from_slice(&nodes[1].keys_manager.get_secure_random_bytes()).unwrap());
 		nodes[1].node.peer_connected(&last_random_pk, &msgs::Init {
-			features: nodes[0].node.init_features(), remote_network_address: None }, true).unwrap_err();
+			features: nodes[0].node.init_features(), networks: None, remote_network_address: None
+		}, true).unwrap_err();
 
 		// Also importantly, because nodes[0] isn't "protected", we will refuse a reconnection from
 		// them if we have too many un-channel'd peers.
@@ -9313,13 +9319,16 @@ mod tests {
 			if let Event::ChannelClosed { .. } = ev { } else { panic!(); }
 		}
 		nodes[1].node.peer_connected(&last_random_pk, &msgs::Init {
-			features: nodes[0].node.init_features(), remote_network_address: None }, true).unwrap();
+			features: nodes[0].node.init_features(), networks: None, remote_network_address: None
+		}, true).unwrap();
 		nodes[1].node.peer_connected(&nodes[0].node.get_our_node_id(), &msgs::Init {
-			features: nodes[0].node.init_features(), remote_network_address: None }, true).unwrap_err();
+			features: nodes[0].node.init_features(), networks: None, remote_network_address: None
+		}, true).unwrap_err();
 
 		// but of course if the connection is outbound its allowed...
 		nodes[1].node.peer_connected(&nodes[0].node.get_our_node_id(), &msgs::Init {
-			features: nodes[0].node.init_features(), remote_network_address: None }, false).unwrap();
+			features: nodes[0].node.init_features(), networks: None, remote_network_address: None
+		}, false).unwrap();
 		nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id());
 
 		// Now nodes[0] is disconnected but still has a pending, un-funded channel lying around.
@@ -9343,7 +9352,8 @@ mod tests {
 		// "protected" and can connect again.
 		mine_transaction(&nodes[1], funding_tx.as_ref().unwrap());
 		nodes[1].node.peer_connected(&nodes[0].node.get_our_node_id(), &msgs::Init {
-			features: nodes[0].node.init_features(), remote_network_address: None }, true).unwrap();
+			features: nodes[0].node.init_features(), networks: None, remote_network_address: None
+		}, true).unwrap();
 		get_event_msg!(nodes[1], MessageSendEvent::SendChannelReestablish, nodes[0].node.get_our_node_id());
 
 		// Further, because the first channel was funded, we can open another channel with
@@ -9408,7 +9418,8 @@ mod tests {
 			let random_pk = PublicKey::from_secret_key(&nodes[0].node.secp_ctx,
 				&SecretKey::from_slice(&nodes[1].keys_manager.get_secure_random_bytes()).unwrap());
 			nodes[1].node.peer_connected(&random_pk, &msgs::Init {
-				features: nodes[0].node.init_features(), remote_network_address: None }, true).unwrap();
+				features: nodes[0].node.init_features(), networks: None, remote_network_address: None
+			}, true).unwrap();
 
 			nodes[1].node.handle_open_channel(&random_pk, &open_channel_msg);
 			let events = nodes[1].node.get_and_clear_pending_events();
@@ -9426,7 +9437,8 @@ mod tests {
 		let last_random_pk = PublicKey::from_secret_key(&nodes[0].node.secp_ctx,
 			&SecretKey::from_slice(&nodes[1].keys_manager.get_secure_random_bytes()).unwrap());
 		nodes[1].node.peer_connected(&last_random_pk, &msgs::Init {
-			features: nodes[0].node.init_features(), remote_network_address: None }, true).unwrap();
+			features: nodes[0].node.init_features(), networks: None, remote_network_address: None
+		}, true).unwrap();
 		nodes[1].node.handle_open_channel(&last_random_pk, &open_channel_msg);
 		let events = nodes[1].node.get_and_clear_pending_events();
 		match events[0] {
@@ -9570,8 +9582,12 @@ pub mod bench {
 		});
 		let node_b_holder = ANodeHolder { node: &node_b };
 
-		node_a.peer_connected(&node_b.get_our_node_id(), &Init { features: node_b.init_features(), remote_network_address: None }, true).unwrap();
-		node_b.peer_connected(&node_a.get_our_node_id(), &Init { features: node_a.init_features(), remote_network_address: None }, false).unwrap();
+		node_a.peer_connected(&node_b.get_our_node_id(), &Init {
+			features: node_b.init_features(), networks: None, remote_network_address: None
+		}, true).unwrap();
+		node_b.peer_connected(&node_a.get_our_node_id(), &Init {
+			features: node_a.init_features(), networks: None, remote_network_address: None
+		}, false).unwrap();
 		node_a.create_channel(node_b.get_our_node_id(), 8_000_000, 100_000_000, 42, None).unwrap();
 		node_b.handle_open_channel(&node_a.get_our_node_id(), &get_event_msg!(node_a_holder, MessageSendEvent::SendOpenChannel, node_b.get_our_node_id()));
 		node_a.handle_accept_channel(&node_b.get_our_node_id(), &get_event_msg!(node_b_holder, MessageSendEvent::SendAcceptChannel, node_a.get_our_node_id()));

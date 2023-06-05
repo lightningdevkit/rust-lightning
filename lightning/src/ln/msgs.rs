@@ -24,6 +24,7 @@
 //! raw socket events into your non-internet-facing system and then send routing events back to
 //! track the network on the less-secure system.
 
+use bitcoin::blockdata::constants::ChainHash;
 use bitcoin::secp256k1::PublicKey;
 use bitcoin::secp256k1::ecdsa::Signature;
 use bitcoin::{secp256k1, Witness};
@@ -88,6 +89,10 @@ pub enum DecodeError {
 pub struct Init {
 	/// The relevant features which the sender supports.
 	pub features: InitFeatures,
+	/// Indicates chains the sender is interested in.
+	///
+	/// If there are no common chains, the connection will be closed.
+	pub networks: Option<Vec<ChainHash>>,
 	/// The receipient's network address.
 	///
 	/// This adds the option to report a remote IP address back to a connecting peer using the init
@@ -1295,6 +1300,12 @@ pub trait ChannelMessageHandler : MessageSendEventsProvider {
 	///
 	/// Note that this method is called before [`Self::peer_connected`].
 	fn provided_init_features(&self, their_node_id: &PublicKey) -> InitFeatures;
+
+	/// Gets the genesis hashes for this `ChannelMessageHandler` indicating which chains it supports.
+	///
+	/// If it's `None`, then no particular network chain hash compatibility will be enforced when
+	/// connecting to peers.
+	fn get_genesis_hashes(&self) -> Option<Vec<ChainHash>>;
 }
 
 /// A trait to describe an object which can receive routing messages.
@@ -1728,7 +1739,8 @@ impl Writeable for Init {
 		self.features.write_up_to_13(w)?;
 		self.features.write(w)?;
 		encode_tlv_stream!(w, {
-			(3, self.remote_network_address, option)
+			(1, self.networks.as_ref().map(|n| WithoutLength(n)), option),
+			(3, self.remote_network_address, option),
 		});
 		Ok(())
 	}
@@ -1739,11 +1751,14 @@ impl Readable for Init {
 		let global_features: InitFeatures = Readable::read(r)?;
 		let features: InitFeatures = Readable::read(r)?;
 		let mut remote_network_address: Option<NetAddress> = None;
+		let mut networks: Option<WithoutLength<Vec<ChainHash>>> = None;
 		decode_tlv_stream!(r, {
+			(1, networks, option),
 			(3, remote_network_address, option)
 		});
 		Ok(Init {
 			features: features | global_features,
+			networks: networks.map(|n| n.0),
 			remote_network_address,
 		})
 	}
@@ -2416,6 +2431,7 @@ impl_writeable_msg!(GossipTimestampFilter, {
 
 #[cfg(test)]
 mod tests {
+	use bitcoin::blockdata::constants::ChainHash;
 	use bitcoin::{Transaction, PackedLockTime, TxIn, Script, Sequence, Witness, TxOut};
 	use hex;
 	use crate::ln::{PaymentPreimage, PaymentHash, PaymentSecret};
@@ -3423,27 +3439,36 @@ mod tests {
 
 	#[test]
 	fn encoding_init() {
+		let mainnet_hash = ChainHash::from_hex("6fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d6190000000000").unwrap();
 		assert_eq!(msgs::Init {
 			features: InitFeatures::from_le_bytes(vec![0xFF, 0xFF, 0xFF]),
+			networks: Some(vec![mainnet_hash]),
 			remote_network_address: None,
-		}.encode(), hex::decode("00023fff0003ffffff").unwrap());
+		}.encode(), hex::decode("00023fff0003ffffff01206fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d6190000000000").unwrap());
 		assert_eq!(msgs::Init {
 			features: InitFeatures::from_le_bytes(vec![0xFF]),
+			networks: None,
 			remote_network_address: None,
 		}.encode(), hex::decode("0001ff0001ff").unwrap());
 		assert_eq!(msgs::Init {
 			features: InitFeatures::from_le_bytes(vec![]),
+			networks: Some(vec![mainnet_hash]),
 			remote_network_address: None,
-		}.encode(), hex::decode("00000000").unwrap());
-
+		}.encode(), hex::decode("0000000001206fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d6190000000000").unwrap());
+		assert_eq!(msgs::Init {
+			features: InitFeatures::from_le_bytes(vec![]),
+			networks: Some(vec![ChainHash::from(&[1; 32][..]), ChainHash::from(&[2; 32][..])]),
+			remote_network_address: None,
+		}.encode(), hex::decode("00000000014001010101010101010101010101010101010101010101010101010101010101010202020202020202020202020202020202020202020202020202020202020202").unwrap());
 		let init_msg = msgs::Init { features: InitFeatures::from_le_bytes(vec![]),
+			networks: Some(vec![mainnet_hash]),
 			remote_network_address: Some(msgs::NetAddress::IPv4 {
 				addr: [127, 0, 0, 1],
 				port: 1000,
 			}),
 		};
 		let encoded_value = init_msg.encode();
-		let target_value = hex::decode("000000000307017f00000103e8").unwrap();
+		let target_value = hex::decode("0000000001206fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d61900000000000307017f00000103e8").unwrap();
 		assert_eq!(encoded_value, target_value);
 		assert_eq!(msgs::Init::read(&mut Cursor::new(&target_value)).unwrap(), init_msg);
 	}

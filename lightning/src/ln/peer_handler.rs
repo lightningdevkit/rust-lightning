@@ -15,6 +15,7 @@
 //! call into the provided message handlers (probably a ChannelManager and P2PGossipSync) with
 //! messages they should handle, and encoding/sending response messages.
 
+use bitcoin::blockdata::constants::ChainHash;
 use bitcoin::secp256k1::{self, Secp256k1, SecretKey, PublicKey};
 
 use crate::sign::{KeysManager, NodeSigner, Recipient};
@@ -271,6 +272,13 @@ impl ChannelMessageHandler for ErroringMessageHandler {
 		features.set_scid_privacy_optional();
 		features.set_zero_conf_optional();
 		features
+	}
+
+	fn get_genesis_hashes(&self) -> Option<Vec<ChainHash>> {
+		// We don't enforce any chains upon peer connection for `ErroringMessageHandler` and leave it up
+		// to users of `ErroringMessageHandler` to make decisions on network compatiblility.
+		// There's not really any way to pull in specific networks here, and hardcoding can cause breakages.
+		None
 	}
 
 	fn handle_open_channel_v2(&self, their_node_id: &PublicKey, msg: &msgs::OpenChannelV2) {
@@ -1333,7 +1341,8 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 								peer.set_their_node_id(their_node_id);
 								insert_node_id!();
 								let features = self.init_features(&their_node_id);
-								let resp = msgs::Init { features, remote_network_address: filter_addresses(peer.their_net_address.clone()) };
+								let networks = self.message_handler.chan_handler.get_genesis_hashes();
+								let resp = msgs::Init { features, networks, remote_network_address: filter_addresses(peer.their_net_address.clone()) };
 								self.enqueue_message(peer, &resp);
 								peer.awaiting_pong_timer_tick_intervals = 0;
 							},
@@ -1345,7 +1354,8 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 								peer.set_their_node_id(their_node_id);
 								insert_node_id!();
 								let features = self.init_features(&their_node_id);
-								let resp = msgs::Init { features, remote_network_address: filter_addresses(peer.their_net_address.clone()) };
+								let networks = self.message_handler.chan_handler.get_genesis_hashes();
+								let resp = msgs::Init { features, networks, remote_network_address: filter_addresses(peer.their_net_address.clone()) };
 								self.enqueue_message(peer, &resp);
 								peer.awaiting_pong_timer_tick_intervals = 0;
 							},
@@ -1460,6 +1470,25 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 
 		// Need an Init as first message
 		if let wire::Message::Init(msg) = message {
+			// Check if we have any compatible chains if the `networks` field is specified.
+			if let Some(networks) = &msg.networks {
+				if let Some(our_chains) = self.message_handler.chan_handler.get_genesis_hashes() {
+					let mut have_compatible_chains = false;
+					'our_chains: for our_chain in our_chains.iter() {
+						for their_chain in networks {
+							if our_chain == their_chain {
+								have_compatible_chains = true;
+								break 'our_chains;
+							}
+						}
+					}
+					if !have_compatible_chains {
+						log_debug!(self.logger, "Peer does not support any of our supported chains");
+						return Err(PeerHandleError { }.into());
+					}
+				}
+			}
+
 			let our_features = self.init_features(&their_node_id);
 			if msg.features.requires_unknown_bits_from(&our_features) {
 				log_debug!(self.logger, "Peer requires features unknown to us");
@@ -2459,6 +2488,8 @@ mod tests {
 	use crate::ln::msgs::{LightningError, NetAddress};
 	use crate::util::test_utils;
 
+	use bitcoin::Network;
+	use bitcoin::blockdata::constants::ChainHash;
 	use bitcoin::secp256k1::{PublicKey, SecretKey};
 
 	use crate::prelude::*;
@@ -2537,7 +2568,7 @@ mod tests {
 			};
 			cfgs.push(
 				PeerManagerCfg{
-					chan_handler: test_utils::TestChannelMessageHandler::new(),
+					chan_handler: test_utils::TestChannelMessageHandler::new(ChainHash::using_genesis_block(Network::Testnet)),
 					logger: test_utils::TestLogger::new(),
 					routing_handler: test_utils::TestRoutingMessageHandler::new(),
 					custom_handler: TestCustomMessageHandler { features },
@@ -2549,7 +2580,7 @@ mod tests {
 		cfgs
 	}
 
-	fn create_incompatible_peermgr_cfgs(peer_count: usize) -> Vec<PeerManagerCfg> {
+	fn create_feature_incompatible_peermgr_cfgs(peer_count: usize) -> Vec<PeerManagerCfg> {
 		let mut cfgs = Vec::new();
 		for i in 0..peer_count {
 			let node_secret = SecretKey::from_slice(&[42 + i as u8; 32]).unwrap();
@@ -2560,7 +2591,27 @@ mod tests {
 			};
 			cfgs.push(
 				PeerManagerCfg{
-					chan_handler: test_utils::TestChannelMessageHandler::new(),
+					chan_handler: test_utils::TestChannelMessageHandler::new(ChainHash::using_genesis_block(Network::Testnet)),
+					logger: test_utils::TestLogger::new(),
+					routing_handler: test_utils::TestRoutingMessageHandler::new(),
+					custom_handler: TestCustomMessageHandler { features },
+					node_signer: test_utils::TestNodeSigner::new(node_secret),
+				}
+			);
+		}
+
+		cfgs
+	}
+
+	fn create_chain_incompatible_peermgr_cfgs(peer_count: usize) -> Vec<PeerManagerCfg> {
+		let mut cfgs = Vec::new();
+		for i in 0..peer_count {
+			let node_secret = SecretKey::from_slice(&[42 + i as u8; 32]).unwrap();
+			let features = InitFeatures::from_le_bytes(vec![0u8; 33]);
+			let network = ChainHash::from(&[i as u8; 32][..]);
+			cfgs.push(
+				PeerManagerCfg{
+					chan_handler: test_utils::TestChannelMessageHandler::new(network),
 					logger: test_utils::TestLogger::new(),
 					routing_handler: test_utils::TestRoutingMessageHandler::new(),
 					custom_handler: TestCustomMessageHandler { features },
@@ -2703,9 +2754,9 @@ mod tests {
 	}
 
 	#[test]
-	fn test_incompatible_peers() {
+	fn test_feature_incompatible_peers() {
 		let cfgs = create_peermgr_cfgs(2);
-		let incompatible_cfgs = create_incompatible_peermgr_cfgs(2);
+		let incompatible_cfgs = create_feature_incompatible_peermgr_cfgs(2);
 
 		let peers = create_network(2, &cfgs);
 		let incompatible_peers = create_network(2, &incompatible_cfgs);
@@ -2739,6 +2790,42 @@ mod tests {
 	}
 
 	#[test]
+	fn test_chain_incompatible_peers() {
+		let cfgs = create_peermgr_cfgs(2);
+		let incompatible_cfgs = create_chain_incompatible_peermgr_cfgs(2);
+
+		let peers = create_network(2, &cfgs);
+		let incompatible_peers = create_network(2, &incompatible_cfgs);
+		let peer_pairs = [(&peers[0], &incompatible_peers[0]), (&incompatible_peers[1], &peers[1])];
+		for (peer_a, peer_b) in peer_pairs.iter() {
+			let id_a = peer_a.node_signer.get_node_id(Recipient::Node).unwrap();
+			let mut fd_a = FileDescriptor {
+				fd: 1, outbound_data: Arc::new(Mutex::new(Vec::new())),
+				disconnect: Arc::new(AtomicBool::new(false)),
+			};
+			let addr_a = NetAddress::IPv4{addr: [127, 0, 0, 1], port: 1000};
+			let mut fd_b = FileDescriptor {
+				fd: 1, outbound_data: Arc::new(Mutex::new(Vec::new())),
+				disconnect: Arc::new(AtomicBool::new(false)),
+			};
+			let addr_b = NetAddress::IPv4{addr: [127, 0, 0, 1], port: 1001};
+			let initial_data = peer_b.new_outbound_connection(id_a, fd_b.clone(), Some(addr_a.clone())).unwrap();
+			peer_a.new_inbound_connection(fd_a.clone(), Some(addr_b.clone())).unwrap();
+			assert_eq!(peer_a.read_event(&mut fd_a, &initial_data).unwrap(), false);
+			peer_a.process_events();
+
+			let a_data = fd_a.outbound_data.lock().unwrap().split_off(0);
+			assert_eq!(peer_b.read_event(&mut fd_b, &a_data).unwrap(), false);
+
+			peer_b.process_events();
+			let b_data = fd_b.outbound_data.lock().unwrap().split_off(0);
+
+			// Should fail because of incompatible chains
+			assert!(peer_a.read_event(&mut fd_a, &b_data).is_err());
+		}
+	}
+
+	#[test]
 	fn test_disconnect_peer() {
 		// Simple test which builds a network of PeerManager, connects and brings them to NoiseState::Finished and
 		// push a DisconnectPeer event to remove the node flagged by id
@@ -2762,8 +2849,8 @@ mod tests {
 		// Simple test which builds a network of PeerManager, connects and brings them to NoiseState::Finished and
 		// push a message from one peer to another.
 		let cfgs = create_peermgr_cfgs(2);
-		let a_chan_handler = test_utils::TestChannelMessageHandler::new();
-		let b_chan_handler = test_utils::TestChannelMessageHandler::new();
+		let a_chan_handler = test_utils::TestChannelMessageHandler::new(ChainHash::using_genesis_block(Network::Testnet));
+		let b_chan_handler = test_utils::TestChannelMessageHandler::new(ChainHash::using_genesis_block(Network::Testnet));
 		let mut peers = create_network(2, &cfgs);
 		let (fd_a, mut fd_b) = establish_connection(&peers[0], &peers[1]);
 		assert_eq!(peers[0].peers.read().unwrap().len(), 1);

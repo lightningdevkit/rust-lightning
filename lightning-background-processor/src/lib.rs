@@ -838,7 +838,7 @@ impl Drop for BackgroundProcessor {
 
 #[cfg(all(feature = "std", test))]
 mod tests {
-	use bitcoin::blockdata::constants::genesis_block;
+	use bitcoin::blockdata::constants::{genesis_block, ChainHash};
 	use bitcoin::blockdata::locktime::PackedLockTime;
 	use bitcoin::blockdata::transaction::{Transaction, TxOut};
 	use bitcoin::network::constants::Network;
@@ -1146,7 +1146,7 @@ mod tests {
 			let p2p_gossip_sync = Arc::new(P2PGossipSync::new(network_graph.clone(), Some(chain_source.clone()), logger.clone()));
 			let rapid_gossip_sync = Arc::new(RapidGossipSync::new(network_graph.clone(), logger.clone()));
 			let msg_handler = MessageHandler {
-				chan_handler: Arc::new(test_utils::TestChannelMessageHandler::new()),
+				chan_handler: Arc::new(test_utils::TestChannelMessageHandler::new(ChainHash::using_genesis_block(Network::Testnet))),
 				route_handler: Arc::new(test_utils::TestRoutingMessageHandler::new()),
 				onion_message_handler: IgnoringMessageHandler{}, custom_message_handler: IgnoringMessageHandler{}
 			};
@@ -1157,8 +1157,12 @@ mod tests {
 
 		for i in 0..num_nodes {
 			for j in (i+1)..num_nodes {
-				nodes[i].node.peer_connected(&nodes[j].node.get_our_node_id(), &Init { features: nodes[j].node.init_features(), remote_network_address: None }, true).unwrap();
-				nodes[j].node.peer_connected(&nodes[i].node.get_our_node_id(), &Init { features: nodes[i].node.init_features(), remote_network_address: None }, false).unwrap();
+				nodes[i].node.peer_connected(&nodes[j].node.get_our_node_id(), &Init {
+					features: nodes[j].node.init_features(), networks: None, remote_network_address: None
+				}, true).unwrap();
+				nodes[j].node.peer_connected(&nodes[i].node.get_our_node_id(), &Init {
+					features: nodes[i].node.init_features(), networks: None, remote_network_address: None
+				}, false).unwrap();
 			}
 		}
 
