@@ -28,8 +28,8 @@ use core::time::Duration;
 /// Pays the given [`Invoice`], retrying if needed based on [`Retry`].
 ///
 /// [`Invoice::payment_hash`] is used as the [`PaymentId`], which ensures idempotency as long
-/// as the payment is still pending. Once the payment completes or fails, you must ensure that
-/// a second payment with the same [`PaymentHash`] is never sent.
+/// as the payment is still pending. If the payment succeeds, you must ensure that a second payment
+/// with the same [`PaymentHash`] is never sent.
 ///
 /// If you wish to use a different payment idempotency token, see [`pay_invoice_with_id`].
 pub fn pay_invoice<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, L: Deref>(
@@ -82,8 +82,8 @@ where
 /// [`Retry`].
 ///
 /// [`Invoice::payment_hash`] is used as the [`PaymentId`], which ensures idempotency as long
-/// as the payment is still pending. Once the payment completes or fails, you must ensure that
-/// a second payment with the same [`PaymentHash`] is never sent.
+/// as the payment is still pending. If the payment succeeds, you must ensure that a second payment
+/// with the same [`PaymentHash`] is never sent.
 ///
 /// If you wish to use a different payment idempotency token, see
 /// [`pay_zero_value_invoice_with_id`].
