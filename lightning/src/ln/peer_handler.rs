@@ -613,7 +613,7 @@ pub type SimpleArcPeerManager<SD, M, T, F, C, L> = PeerManager<
 	SD,
 	Arc<SimpleArcChannelManager<M, T, F, L>>,
 	Arc<P2PGossipSync<Arc<NetworkGraph<Arc<L>>>, C, Arc<L>>>,
-	Arc<SimpleArcOnionMessenger<L>>,
+	Arc<SimpleArcOnionMessenger<M, T, F, L>>,
 	Arc<L>,
 	IgnoringMessageHandler,
 	Arc<KeysManager>
@@ -628,12 +628,12 @@ pub type SimpleArcPeerManager<SD, M, T, F, C, L> = PeerManager<
 ///
 /// This is not exported to bindings users as general type aliases don't make sense in bindings.
 pub type SimpleRefPeerManager<
-	'a, 'b, 'c, 'd, 'e, 'f, 'logger, 'h, 'i, 'j, 'graph, SD, M, T, F, C, L
+	'a, 'b, 'c, 'd, 'e, 'f, 'logger, 'h, 'i, 'j, 'graph, 'k, SD, M, T, F, C, L
 > = PeerManager<
 	SD,
 	&'j SimpleRefChannelManager<'a, 'b, 'c, 'd, 'e, 'graph, 'logger, 'i, M, T, F, L>,
 	&'f P2PGossipSync<&'graph NetworkGraph<&'logger L>, C, &'logger L>,
-	&'h SimpleRefOnionMessenger<'logger, 'i, 'j, L>,
+	&'h SimpleRefOnionMessenger<'a, 'b, 'c, 'd, 'e, 'graph, 'logger, 'i, 'j, 'k, M, T, F, L>,
 	&'logger L,
 	IgnoringMessageHandler,
 	&'c KeysManager
