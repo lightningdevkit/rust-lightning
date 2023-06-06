@@ -706,9 +706,10 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, T: Time> ProbabilisticScorerU
 						let amt = directed_info.effective_capacity().as_msat();
 						let dir_liq = liq.as_directed(source, target, 0, amt, self.decay_params);
 
-						let (min_buckets, max_buckets, _) = dir_liq.liquidity_history
+						let (min_buckets, max_buckets) = dir_liq.liquidity_history
 							.get_decayed_buckets(now, *dir_liq.last_updated,
-								self.decay_params.historical_no_updates_half_life);
+								self.decay_params.historical_no_updates_half_life)
+							.unwrap_or(([0; 32], [0; 32]));
 
 						log_debug!(self.logger, core::concat!(
 							"Liquidity from {} to {} via {} is in the range ({}, {}).\n",
@@ -787,7 +788,7 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, T: Time> ProbabilisticScorerU
 	/// in the top and bottom bucket, and roughly with similar (recent) frequency.
 	///
 	/// Because the datapoints are decayed slowly over time, values will eventually return to
-	/// `Some(([0; 32], [0; 32]))`.
+	/// `Some(([1; 32], [1; 32]))` and then to `None` once no datapoints remain.
 	///
 	/// In order to fetch a single success probability from the buckets provided here, as used in
 	/// the scoring model, see [`Self::historical_estimated_payment_success_probability`].
@@ -801,9 +802,12 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, T: Time> ProbabilisticScorerU
 					let amt = directed_info.effective_capacity().as_msat();
 					let dir_liq = liq.as_directed(source, target, 0, amt, self.decay_params);
 
-					let (min_buckets, mut max_buckets, _) = dir_liq.liquidity_history
-						.get_decayed_buckets(dir_liq.now, *dir_liq.last_updated,
-							self.decay_params.historical_no_updates_half_life);
+					let (min_buckets, mut max_buckets) =
+						dir_liq.liquidity_history.get_decayed_buckets(
+							dir_liq.now, *dir_liq.last_updated,
+							self.decay_params.historical_no_updates_half_life
+						)?;
+
 					// Note that the liquidity buckets are an offset from the edge, so we inverse
 					// the max order to get the probabilities from zero.
 					max_buckets.reverse();
@@ -1738,17 +1742,37 @@ mod bucketed_history {
 	}
 
 	impl<D: Deref<Target = HistoricalBucketRangeTracker>> HistoricalMinMaxBuckets<D> {
-		#[inline]
 		pub(super) fn get_decayed_buckets<T: Time>(&self, now: T, last_updated: T, half_life: Duration)
-		-> ([u16; 32], [u16; 32], u32) {
-			let required_decays = now.duration_since(last_updated).as_secs()
-				.checked_div(half_life.as_secs())
-				.map_or(u32::max_value(), |decays| cmp::min(decays, u32::max_value() as u64) as u32);
+		-> Option<([u16; 32], [u16; 32])> {
+			let (_, required_decays) = self.get_total_valid_points(now, last_updated, half_life)?;
+
 			let mut min_buckets = *self.min_liquidity_offset_history;
 			min_buckets.time_decay_data(required_decays);
 			let mut max_buckets = *self.max_liquidity_offset_history;
 			max_buckets.time_decay_data(required_decays);
-			(min_buckets.buckets, max_buckets.buckets, required_decays)
+			Some((min_buckets.buckets, max_buckets.buckets))
+		}
+		#[inline]
+		pub(super) fn get_total_valid_points<T: Time>(&self, now: T, last_updated: T, half_life: Duration)
+		-> Option<(u64, u32)> {
+			let required_decays = now.duration_since(last_updated).as_secs()
+				.checked_div(half_life.as_secs())
+				.map_or(u32::max_value(), |decays| cmp::min(decays, u32::max_value() as u64) as u32);
+
+			let mut total_valid_points_tracked = 0;
+			for (min_idx, min_bucket) in self.min_liquidity_offset_history.buckets.iter().enumerate() {
+				for max_bucket in self.max_liquidity_offset_history.buckets.iter().take(32 - min_idx) {
+					total_valid_points_tracked += (*min_bucket as u64) * (*max_bucket as u64);
+				}
+			}
+
+			// If the total valid points is smaller than 1.0 (i.e. 32 in our fixed-point scheme),
+			// treat it as if we were fully decayed.
+			if total_valid_points_tracked.checked_shr(required_decays).unwrap_or(0) < 32*32 {
+				return None;
+			}
+
+			Some((total_valid_points_tracked, required_decays))
 		}
 
 		#[inline]
@@ -1762,29 +1786,13 @@ mod bucketed_history {
 			// state). For each pair, we calculate the probability as if the bucket's corresponding
 			// min- and max- liquidity bounds were our current liquidity bounds and then multiply
 			// that probability by the weight of the selected buckets.
-			let mut total_valid_points_tracked = 0;
-
 			let payment_pos = amount_to_pos(amount_msat, capacity_msat);
 			if payment_pos >= POSITION_TICKS { return None; }
 
 			// Check if all our buckets are zero, once decayed and treat it as if we had no data. We
 			// don't actually use the decayed buckets, though, as that would lose precision.
-			let (decayed_min_buckets, decayed_max_buckets, required_decays) =
-				self.get_decayed_buckets(now, last_updated, half_life);
-			if decayed_min_buckets.iter().all(|v| *v == 0) || decayed_max_buckets.iter().all(|v| *v == 0) {
-				return None;
-			}
-
-			for (min_idx, min_bucket) in self.min_liquidity_offset_history.buckets.iter().enumerate() {
-				for max_bucket in self.max_liquidity_offset_history.buckets.iter().take(32 - min_idx) {
-					total_valid_points_tracked += (*min_bucket as u64) * (*max_bucket as u64);
-				}
-			}
-			// If the total valid points is smaller than 1.0 (i.e. 32 in our fixed-point scheme), treat
-			// it as if we were fully decayed.
-			if total_valid_points_tracked.checked_shr(required_decays).unwrap_or(0) < 32*32 {
-				return None;
-			}
+			let (total_valid_points_tracked, _)
+				= self.get_total_valid_points(now, last_updated, half_life)?;
 
 			let mut cumulative_success_prob_times_billion = 0;
 			// Special-case the 0th min bucket - it generally means we failed a payment, so only
@@ -3107,7 +3115,7 @@ mod tests {
 		// Once fully decayed we still have data, but its all-0s. In the future we may remove the
 		// data entirely instead.
 		assert_eq!(scorer.historical_estimated_channel_liquidity_probabilities(42, &target),
-			Some(([0; 32], [0; 32])));
+			None);
 		assert_eq!(scorer.historical_estimated_payment_success_probability(42, &target, 1), None);
 
 		let mut usage = ChannelUsage {
