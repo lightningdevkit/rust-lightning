@@ -108,7 +108,7 @@ where
 }
 
 /// Pays the given zero-value [`Invoice`] using the given amount and custom idempotency key,
-/// , retrying if needed based on [`Retry`].
+/// retrying if needed based on [`Retry`].
 ///
 /// Note that idempotency is only guaranteed as long as the payment is still pending. Once the
 /// payment completes or fails, no idempotency guarantees are made.
