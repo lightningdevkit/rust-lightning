@@ -1484,16 +1484,16 @@ impl ChannelDetails {
 				// message (as they are always the first message from the counterparty).
 				// Else `Channel::get_counterparty_htlc_minimum_msat` could return the
 				// default `0` value set by `Channel::new_outbound`.
-				outbound_htlc_minimum_msat: if channel.have_received_message() {
+				outbound_htlc_minimum_msat: if channel.context.have_received_message() {
 					Some(channel.get_counterparty_htlc_minimum_msat()) } else { None },
 				outbound_htlc_maximum_msat: channel.get_counterparty_htlc_maximum_msat(),
 			},
 			funding_txo: channel.get_funding_txo(),
 			// Note that accept_channel (or open_channel) is always the first message, so
 			// `have_received_message` indicates that type negotiation has completed.
-			channel_type: if channel.have_received_message() { Some(channel.get_channel_type().clone()) } else { None },
+			channel_type: if channel.context.have_received_message() { Some(channel.get_channel_type().clone()) } else { None },
 			short_channel_id: channel.get_short_channel_id(),
-			outbound_scid_alias: if channel.is_usable() { Some(channel.outbound_scid_alias()) } else { None },
+			outbound_scid_alias: if channel.context.is_usable() { Some(channel.outbound_scid_alias()) } else { None },
 			inbound_scid_alias: channel.latest_inbound_scid_alias(),
 			channel_value_satoshis: channel.get_value_satoshis(),
 			feerate_sat_per_1000_weight: Some(channel.get_feerate_sat_per_1000_weight()),
@@ -1507,10 +1507,10 @@ impl ChannelDetails {
 			confirmations_required: channel.minimum_depth(),
 			confirmations: Some(channel.get_funding_tx_confirmations(best_block_height)),
 			force_close_spend_delay: channel.get_counterparty_selected_contest_delay(),
-			is_outbound: channel.is_outbound(),
-			is_channel_ready: channel.is_usable(),
-			is_usable: channel.is_live(),
-			is_public: channel.should_announce(),
+			is_outbound: channel.context.is_outbound(),
+			is_channel_ready: channel.context.is_usable(),
+			is_usable: channel.context.is_live(),
+			is_public: channel.context.should_announce(),
 			inbound_htlc_minimum_msat: Some(channel.get_holder_htlc_minimum_msat()),
 			inbound_htlc_maximum_msat: channel.get_holder_htlc_maximum_msat(),
 			config: Some(channel.config()),
@@ -1750,7 +1750,7 @@ macro_rules! handle_monitor_update_completion {
 			&$self.node_signer, $self.genesis_hash, &$self.default_configuration,
 			$self.best_block.read().unwrap().height());
 		let counterparty_node_id = $chan.get_counterparty_node_id();
-		let channel_update = if updates.channel_ready.is_some() && $chan.is_usable() {
+		let channel_update = if updates.channel_ready.is_some() && $chan.context.is_usable() {
 			// We only send a channel_update in the case where we are just now sending a
 			// channel_ready and the channel is in a usable state. We may re-send a
 			// channel_update later through the announcement_signatures process for public
@@ -2116,7 +2116,7 @@ where
 		// Note we use is_live here instead of usable which leads to somewhat confused
 		// internal/external nomenclature, but that's ok cause that's probably what the user
 		// really wanted anyway.
-		self.list_channels_with_filter(|&(_, ref channel)| channel.is_live())
+		self.list_channels_with_filter(|&(_, ref channel)| channel.context.is_live())
 	}
 
 	/// Gets the list of channels we have with a given counterparty, in random order.
@@ -2650,7 +2650,7 @@ where
 							},
 							Some(chan) => chan
 						};
-						if !chan.should_announce() && !self.default_configuration.accept_forwards_to_priv_channels {
+						if !chan.context.should_announce() && !self.default_configuration.accept_forwards_to_priv_channels {
 							// Note that the behavior here should be identical to the above block - we
 							// should NOT reveal the existence or non-existence of a private channel if
 							// we don't allow forwards outbound over them.
@@ -2669,7 +2669,7 @@ where
 						// around to doing the actual forward, but better to fail early if we can and
 						// hopefully an attacker trying to path-trace payments cannot make this occur
 						// on a small/per-node/per-channel scale.
-						if !chan.is_live() { // channel_disabled
+						if !chan.context.is_live() { // channel_disabled
 							// If the channel_update we're going to return is disabled (i.e. the
 							// peer has been disabled for some time), return `channel_disabled`,
 							// otherwise return `temporary_channel_failure`.
@@ -2765,7 +2765,7 @@ where
 	/// [`channel_update`]: msgs::ChannelUpdate
 	/// [`internal_closing_signed`]: Self::internal_closing_signed
 	fn get_channel_update_for_broadcast(&self, chan: &Channel<<SP::Target as SignerProvider>::Signer>) -> Result<msgs::ChannelUpdate, LightningError> {
-		if !chan.should_announce() {
+		if !chan.context.should_announce() {
 			return Err(LightningError {
 				err: "Cannot broadcast a channel_update for a private channel".to_owned(),
 				action: msgs::ErrorAction::IgnoreError
@@ -2802,7 +2802,7 @@ where
 		log_trace!(self.logger, "Generating channel update for channel {}", log_bytes!(chan.channel_id()));
 		let were_node_one = self.our_network_pubkey.serialize()[..] < chan.get_counterparty_node_id().serialize()[..];
 
-		let enabled = chan.is_usable() && match chan.channel_update_status() {
+		let enabled = chan.context.is_usable() && match chan.channel_update_status() {
 			ChannelUpdateStatus::Enabled => true,
 			ChannelUpdateStatus::DisabledStaged(_) => true,
 			ChannelUpdateStatus::Disabled => false,
@@ -2812,12 +2812,12 @@ where
 		let unsigned = msgs::UnsignedChannelUpdate {
 			chain_hash: self.genesis_hash,
 			short_channel_id,
-			timestamp: chan.get_update_time_counter(),
+			timestamp: chan.context.get_update_time_counter(),
 			flags: (!were_node_one) as u8 | ((!enabled as u8) << 1),
 			cltv_expiry_delta: chan.get_cltv_expiry_delta(),
 			htlc_minimum_msat: chan.get_counterparty_htlc_minimum_msat(),
 			htlc_maximum_msat: chan.get_announced_htlc_max_msat(),
-			fee_base_msat: chan.get_outbound_forwarding_fee_base_msat(),
+			fee_base_msat: chan.context.get_outbound_forwarding_fee_base_msat(),
 			fee_proportional_millionths: chan.get_fee_proportional_millionths(),
 			excess_data: Vec::new(),
 		};
@@ -2866,7 +2866,7 @@ where
 			let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 			let peer_state = &mut *peer_state_lock;
 			if let hash_map::Entry::Occupied(mut chan) = peer_state.channel_by_id.entry(id) {
-				if !chan.get().is_live() {
+				if !chan.get().context.is_live() {
 					return Err(APIError::ChannelUnavailable{err: "Peer for first hop currently disconnected".to_owned()});
 				}
 				let funding_txo = chan.get().get_funding_txo().unwrap();
@@ -3360,7 +3360,7 @@ where
 			let peer_state = &mut *peer_state_lock;
 			match peer_state.channel_by_id.get(next_hop_channel_id) {
 				Some(chan) => {
-					if !chan.is_usable() {
+					if !chan.context.is_usable() {
 						return Err(APIError::ChannelUnavailable {
 							err: format!("Channel with id {} not fully established", log_bytes!(*next_hop_channel_id))
 						})
@@ -3943,14 +3943,14 @@ where
 	}
 
 	fn update_channel_fee(&self, chan_id: &[u8; 32], chan: &mut Channel<<SP::Target as SignerProvider>::Signer>, new_feerate: u32) -> NotifyOption {
-		if !chan.is_outbound() { return NotifyOption::SkipPersist; }
+		if !chan.context.is_outbound() { return NotifyOption::SkipPersist; }
 		// If the feerate has decreased by less than half, don't bother
 		if new_feerate <= chan.get_feerate_sat_per_1000_weight() && new_feerate * 2 > chan.get_feerate_sat_per_1000_weight() {
 			log_trace!(self.logger, "Channel {} does not qualify for a feerate change from {} to {}.",
 				log_bytes!(chan_id[..]), chan.get_feerate_sat_per_1000_weight(), new_feerate);
 			return NotifyOption::SkipPersist;
 		}
-		if !chan.is_live() {
+		if !chan.context.is_live() {
 			log_trace!(self.logger, "Channel {} does not qualify for a feerate change from {} to {} as it cannot currently be updated (probably the peer is disconnected).",
 				log_bytes!(chan_id[..]), chan.get_feerate_sat_per_1000_weight(), new_feerate);
 			return NotifyOption::SkipPersist;
@@ -4030,13 +4030,13 @@ where
 						}
 
 						match chan.channel_update_status() {
-							ChannelUpdateStatus::Enabled if !chan.is_live() => chan.set_channel_update_status(ChannelUpdateStatus::DisabledStaged(0)),
-							ChannelUpdateStatus::Disabled if chan.is_live() => chan.set_channel_update_status(ChannelUpdateStatus::EnabledStaged(0)),
-							ChannelUpdateStatus::DisabledStaged(_) if chan.is_live()
+							ChannelUpdateStatus::Enabled if !chan.context.is_live() => chan.set_channel_update_status(ChannelUpdateStatus::DisabledStaged(0)),
+							ChannelUpdateStatus::Disabled if chan.context.is_live() => chan.set_channel_update_status(ChannelUpdateStatus::EnabledStaged(0)),
+							ChannelUpdateStatus::DisabledStaged(_) if chan.context.is_live()
 								=> chan.set_channel_update_status(ChannelUpdateStatus::Enabled),
-							ChannelUpdateStatus::EnabledStaged(_) if !chan.is_live()
+							ChannelUpdateStatus::EnabledStaged(_) if !chan.context.is_live()
 								=> chan.set_channel_update_status(ChannelUpdateStatus::Disabled),
-							ChannelUpdateStatus::DisabledStaged(mut n) if !chan.is_live() => {
+							ChannelUpdateStatus::DisabledStaged(mut n) if !chan.context.is_live() => {
 								n += 1;
 								if n >= DISABLE_GOSSIP_TICKS {
 									chan.set_channel_update_status(ChannelUpdateStatus::Disabled);
@@ -4050,7 +4050,7 @@ where
 									chan.set_channel_update_status(ChannelUpdateStatus::DisabledStaged(n));
 								}
 							},
-							ChannelUpdateStatus::EnabledStaged(mut n) if chan.is_live() => {
+							ChannelUpdateStatus::EnabledStaged(mut n) if chan.context.is_live() => {
 								n += 1;
 								if n >= ENABLE_GOSSIP_TICKS {
 									chan.set_channel_update_status(ChannelUpdateStatus::Enabled);
@@ -4227,7 +4227,7 @@ where
 		// guess somewhat. If its a public channel, we figure best to just use the real SCID (as
 		// we're not leaking that we have a channel with the counterparty), otherwise we try to use
 		// an inbound SCID alias before the real SCID.
-		let scid_pref = if chan.should_announce() {
+		let scid_pref = if chan.context.should_announce() {
 			chan.get_short_channel_id().or(chan.latest_inbound_scid_alias())
 		} else {
 			chan.latest_inbound_scid_alias().or(chan.get_short_channel_id())
@@ -4712,8 +4712,8 @@ where
 			}
 		};
 		log_trace!(self.logger, "ChannelMonitor updated to {}. Current highest is {}",
-			highest_applied_update_id, channel.get().get_latest_monitor_update_id());
-		if !channel.get().is_awaiting_monitor_update() || channel.get().get_latest_monitor_update_id() != highest_applied_update_id {
+			highest_applied_update_id, channel.get().context.get_latest_monitor_update_id());
+		if !channel.get().is_awaiting_monitor_update() || channel.get().context.get_latest_monitor_update_id() != highest_applied_update_id {
 			return;
 		}
 		handle_monitor_update_completion!(self, highest_applied_update_id, peer_state_lock, peer_state, per_peer_state, channel.get_mut());
@@ -4845,7 +4845,7 @@ where
 	) -> usize {
 		let mut num_unfunded_channels = 0;
 		for (_, chan) in peer.channel_by_id.iter() {
-			if !chan.is_outbound() && chan.minimum_depth().unwrap_or(1) != 0 &&
+			if !chan.context.is_outbound() && chan.minimum_depth().unwrap_or(1) != 0 &&
 				chan.get_funding_tx_confirmations(best_block_height) == 0
 			{
 				num_unfunded_channels += 1;
@@ -5088,7 +5088,7 @@ where
 						node_id: counterparty_node_id.clone(),
 						msg: announcement_sigs,
 					});
-				} else if chan.get().is_usable() {
+				} else if chan.get().context.is_usable() {
 					// If we're sending an announcement_signatures, we'll send the (public)
 					// channel_update after sending a channel_announcement when we receive our
 					// counterparty's announcement_signatures. Thus, we only bother to send a
@@ -5525,7 +5525,7 @@ where
 		let peer_state = &mut *peer_state_lock;
 		match peer_state.channel_by_id.entry(msg.channel_id) {
 			hash_map::Entry::Occupied(mut chan) => {
-				if !chan.get().is_usable() {
+				if !chan.get().context.is_usable() {
 					return Err(MsgHandleErrInternal::from_no_close(LightningError{err: "Got an announcement_signatures before we were ready for it".to_owned(), action: msgs::ErrorAction::IgnoreError}));
 				}
 
@@ -5563,7 +5563,7 @@ where
 		match peer_state.channel_by_id.entry(chan_id) {
 			hash_map::Entry::Occupied(mut chan) => {
 				if chan.get().get_counterparty_node_id() != *counterparty_node_id {
-					if chan.get().should_announce() {
+					if chan.get().context.should_announce() {
 						// If the announcement is about a channel of ours which is public, some
 						// other peer may simply be forwarding all its gossip to us. Don't provide
 						// a scary-looking error message and return Ok instead.
@@ -5612,7 +5612,7 @@ where
 							node_id: counterparty_node_id.clone(),
 							msg,
 						});
-					} else if chan.get().is_usable() {
+					} else if chan.get().context.is_usable() {
 						// If the channel is in a usable state (ie the channel is not being shut
 						// down), send a unicast channel_update to our counterparty to make sure
 						// they have the latest channel parameters.
@@ -6479,7 +6479,7 @@ where
 						}
 						if let Some(channel_ready) = channel_ready_opt {
 							send_channel_ready!(self, pending_msg_events, channel, channel_ready);
-							if channel.is_usable() {
+							if channel.context.is_usable() {
 								log_trace!(self.logger, "Sending channel_ready with private initial channel_update for our counterparty on channel {}", log_bytes!(channel.channel_id()));
 								if let Ok(msg) = self.get_channel_update_for_unicast(channel) {
 									pending_msg_events.push(events::MessageSendEvent::SendChannelUpdate {
@@ -6911,7 +6911,7 @@ where
 			let pending_msg_events = &mut peer_state.pending_msg_events;
 			peer_state.channel_by_id.retain(|_, chan| {
 				let retain = if chan.get_counterparty_node_id() == *counterparty_node_id {
-					if !chan.have_received_message() {
+					if !chan.context.have_received_message() {
 						// If we created this (outbound) channel while we were disconnected from the
 						// peer we probably failed to send the open_channel message, which is now
 						// lost. We can't have had anything pending related to this channel, so we just
@@ -7957,12 +7957,12 @@ where
 				} else if channel.get_cur_holder_commitment_transaction_number() > monitor.get_cur_holder_commitment_number() ||
 						channel.get_revoked_counterparty_commitment_transaction_number() > monitor.get_min_seen_secret() ||
 						channel.get_cur_counterparty_commitment_transaction_number() > monitor.get_cur_counterparty_commitment_number() ||
-						channel.get_latest_monitor_update_id() < monitor.get_latest_update_id() {
+						channel.context.get_latest_monitor_update_id() < monitor.get_latest_update_id() {
 					// But if the channel is behind of the monitor, close the channel:
 					log_error!(args.logger, "A ChannelManager is stale compared to the current ChannelMonitor!");
 					log_error!(args.logger, " The channel will be force-closed and the latest commitment transaction from the ChannelMonitor broadcast.");
 					log_error!(args.logger, " The ChannelMonitor for channel {} is at update_id {} but the ChannelManager is at update_id {}.",
-						log_bytes!(channel.channel_id()), monitor.get_latest_update_id(), channel.get_latest_monitor_update_id());
+						log_bytes!(channel.channel_id()), monitor.get_latest_update_id(), channel.context.get_latest_monitor_update_id());
 					let (monitor_update, mut new_failed_htlcs) = channel.force_shutdown(true);
 					if let Some((counterparty_node_id, funding_txo, update)) = monitor_update {
 						pending_background_events.push(BackgroundEvent::MonitorUpdateRegeneratedOnStartup {
@@ -7996,7 +7996,7 @@ where
 					}
 				} else {
 					log_info!(args.logger, "Successfully loaded channel {} at update_id {} against monitor at update id {}",
-						log_bytes!(channel.channel_id()), channel.get_latest_monitor_update_id(),
+						log_bytes!(channel.channel_id()), channel.context.get_latest_monitor_update_id(),
 						monitor.get_latest_update_id());
 					channel.complete_all_mon_updates_through(monitor.get_latest_update_id());
 					if let Some(short_channel_id) = channel.get_short_channel_id() {
@@ -8423,7 +8423,7 @@ where
 					log_error!(args.logger, "Got duplicate outbound SCID alias; {}", chan.outbound_scid_alias());
 					return Err(DecodeError::InvalidValue);
 				}
-				if chan.is_usable() {
+				if chan.context.is_usable() {
 					if short_to_chan_info.insert(chan.outbound_scid_alias(), (chan.get_counterparty_node_id(), *chan_id)).is_some() {
 						// Note that in rare cases its possible to hit this while reading an older
 						// channel if we just happened to pick a colliding outbound alias above.
