@@ -970,7 +970,7 @@ impl<'a> DirectedChannelInfo<'a> {
 				htlc_maximum_msat = cmp::min(htlc_maximum_msat, capacity_msat);
 				EffectiveCapacity::Total { capacity_msat, htlc_maximum_msat: htlc_maximum_msat }
 			},
-			None => EffectiveCapacity::MaximumHTLC { amount_msat: htlc_maximum_msat },
+			None => EffectiveCapacity::AdvertisedMaxHTLC { amount_msat: htlc_maximum_msat },
 		};
 
 		Self {
@@ -1024,7 +1024,7 @@ pub enum EffectiveCapacity {
 		liquidity_msat: u64,
 	},
 	/// The maximum HTLC amount in one direction as advertised on the gossip network.
-	MaximumHTLC {
+	AdvertisedMaxHTLC {
 		/// The maximum HTLC amount denominated in millisatoshi.
 		amount_msat: u64,
 	},
@@ -1038,6 +1038,11 @@ pub enum EffectiveCapacity {
 	/// A capacity sufficient to route any payment, typically used for private channels provided by
 	/// an invoice.
 	Infinite,
+	/// The maximum HTLC amount as provided by an invoice route hint.
+	HintMaxHTLC {
+		/// The maximum HTLC amount denominated in millisatoshi.
+		amount_msat: u64,
+	},
 	/// A capacity that is unknown possibly because either the chain state is unavailable to know
 	/// the total capacity or the `htlc_maximum_msat` was not advertised on the gossip network.
 	Unknown,
@@ -1052,8 +1057,9 @@ impl EffectiveCapacity {
 	pub fn as_msat(&self) -> u64 {
 		match self {
 			EffectiveCapacity::ExactLiquidity { liquidity_msat } => *liquidity_msat,
-			EffectiveCapacity::MaximumHTLC { amount_msat } => *amount_msat,
+			EffectiveCapacity::AdvertisedMaxHTLC { amount_msat } => *amount_msat,
 			EffectiveCapacity::Total { capacity_msat, .. } => *capacity_msat,
+			EffectiveCapacity::HintMaxHTLC { amount_msat } => *amount_msat,
 			EffectiveCapacity::Infinite => u64::max_value(),
 			EffectiveCapacity::Unknown => UNKNOWN_CHANNEL_CAPACITY_MSAT,
 		}
@@ -1585,7 +1591,7 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 
 		if msg.chain_hash != self.genesis_hash {
 			return Err(LightningError {
-				err: "Channel announcement chain hash does not match genesis hash".to_owned(), 
+				err: "Channel announcement chain hash does not match genesis hash".to_owned(),
 				action: ErrorAction::IgnoreAndLog(Level::Debug),
 			});
 		}
