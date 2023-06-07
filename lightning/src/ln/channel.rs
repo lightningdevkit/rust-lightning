@@ -4396,6 +4396,22 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		}
 	}
 
+	fn calculate_proposed_fee_limits(&self, proposed_feerate: u32, normal_feerate: u32, proposed_max_feerate: u32, a_scriptpubkey: Option<&Script>, b_scriptpubkey: Option<&Script>) -> (u64, u64) {
+		let tx_weight = self.get_closing_transaction_weight(a_scriptpubkey, b_scriptpubkey);
+		let proposed_total_fee_satoshis = proposed_feerate as u64 * tx_weight / 1000;
+		let proposed_max_total_fee_satoshis = if self.is_outbound() {
+			// We always add force_close_avoidance_max_fee_satoshis to our normal
+			// feerate-calculated fee, but allow the max to be overridden if we're using a
+			// target feerate-calculated fee.
+			cmp::max(normal_feerate as u64 * tx_weight / 1000 + self.config.options.force_close_avoidance_max_fee_satoshis,
+			         proposed_max_feerate as u64 * tx_weight / 1000)
+		} else {
+			self.channel_value_satoshis - (self.value_to_self_msat + 999) / 1000
+		};
+
+		(proposed_total_fee_satoshis, proposed_max_total_fee_satoshis)
+	}
+
 	/// Calculates and returns our minimum and maximum closing transaction fee amounts, in whole
 	/// satoshis. The amounts remain consistent unless a peer disconnects/reconnects or we restart,
 	/// at which point they will be recalculated.
@@ -4424,24 +4440,20 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			proposed_max_feerate = cmp::max(proposed_max_feerate, min_feerate);
 		}
 
-		// Note that technically we could end up with a lower minimum fee if one sides' balance is
-		// below our dust limit, causing the output to disappear. We don't bother handling this
-		// case, however, as this should only happen if a channel is closed before any (material)
-		// payments have been made on it. This may cause slight fee overpayment and/or failure to
-		// come to consensus with our counterparty on appropriate fees, however it should be a
-		// relatively rare case. We can revisit this later, though note that in order to determine
-		// if the funders' output is dust we have to know the absolute fee we're going to use.
-		let tx_weight = self.get_closing_transaction_weight(Some(&self.get_closing_scriptpubkey()), Some(self.counterparty_shutdown_scriptpubkey.as_ref().unwrap()));
-		let proposed_total_fee_satoshis = proposed_feerate as u64 * tx_weight / 1000;
-		let proposed_max_total_fee_satoshis = if self.is_outbound() {
-				// We always add force_close_avoidance_max_fee_satoshis to our normal
-				// feerate-calculated fee, but allow the max to be overridden if we're using a
-				// target feerate-calculated fee.
-				cmp::max(normal_feerate as u64 * tx_weight / 1000 + self.config.options.force_close_avoidance_max_fee_satoshis,
-					proposed_max_feerate as u64 * tx_weight / 1000)
-			} else {
-				self.channel_value_satoshis - (self.value_to_self_msat + 999) / 1000
-			};
+		let (mut proposed_total_fee_satoshis, mut proposed_max_total_fee_satoshis) =
+			self.calculate_proposed_fee_limits(proposed_feerate, normal_feerate, proposed_max_feerate, Some(&self.get_closing_scriptpubkey()), Some(self.counterparty_shutdown_scriptpubkey.as_ref().unwrap()));
+
+		let (closing_tx, _) = self.build_closing_transaction(proposed_total_fee_satoshis, false);
+
+		// if one of the outputs is dust, we need to recalculate the fee limits to account for the
+		// dust output being removed
+		if closing_tx.to_holder_value_sat() == 0 {
+			(proposed_total_fee_satoshis, proposed_max_total_fee_satoshis) =
+				self.calculate_proposed_fee_limits(proposed_feerate, normal_feerate, proposed_max_feerate, Some(&self.get_closing_scriptpubkey()), None);
+		} else if closing_tx.to_counterparty_value_sat() == 0 {
+			(proposed_total_fee_satoshis, proposed_max_total_fee_satoshis) =
+				self.calculate_proposed_fee_limits(proposed_feerate, normal_feerate, proposed_max_feerate, None, Some(self.counterparty_shutdown_scriptpubkey.as_ref().unwrap()));
+		}
 
 		self.closing_fee_limits = Some((proposed_total_fee_satoshis, proposed_max_total_fee_satoshis));
 		self.closing_fee_limits.clone().unwrap()
