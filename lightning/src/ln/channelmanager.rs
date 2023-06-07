@@ -1478,7 +1478,7 @@ impl ChannelDetails {
 				node_id: channel.context.get_counterparty_node_id(),
 				features: latest_features,
 				unspendable_punishment_reserve: to_remote_reserve_satoshis,
-				forwarding_info: channel.counterparty_forwarding_info(),
+				forwarding_info: channel.context.counterparty_forwarding_info(),
 				// Ensures that we have actually received the `htlc_minimum_msat` value
 				// from the counterparty through the `OpenChannel` or `AcceptChannel`
 				// message (as they are always the first message from the counterparty).
@@ -1496,7 +1496,7 @@ impl ChannelDetails {
 			outbound_scid_alias: if channel.context.is_usable() { Some(channel.context.outbound_scid_alias()) } else { None },
 			inbound_scid_alias: channel.context.latest_inbound_scid_alias(),
 			channel_value_satoshis: channel.context.get_value_satoshis(),
-			feerate_sat_per_1000_weight: Some(channel.get_feerate_sat_per_1000_weight()),
+			feerate_sat_per_1000_weight: Some(channel.context.get_feerate_sat_per_1000_weight()),
 			unspendable_punishment_reserve: to_self_reserve_satoshis,
 			balance_msat: balance.balance_msat,
 			inbound_capacity_msat: balance.inbound_capacity_msat,
@@ -3945,18 +3945,18 @@ where
 	fn update_channel_fee(&self, chan_id: &[u8; 32], chan: &mut Channel<<SP::Target as SignerProvider>::Signer>, new_feerate: u32) -> NotifyOption {
 		if !chan.context.is_outbound() { return NotifyOption::SkipPersist; }
 		// If the feerate has decreased by less than half, don't bother
-		if new_feerate <= chan.get_feerate_sat_per_1000_weight() && new_feerate * 2 > chan.get_feerate_sat_per_1000_weight() {
+		if new_feerate <= chan.context.get_feerate_sat_per_1000_weight() && new_feerate * 2 > chan.context.get_feerate_sat_per_1000_weight() {
 			log_trace!(self.logger, "Channel {} does not qualify for a feerate change from {} to {}.",
-				log_bytes!(chan_id[..]), chan.get_feerate_sat_per_1000_weight(), new_feerate);
+				log_bytes!(chan_id[..]), chan.context.get_feerate_sat_per_1000_weight(), new_feerate);
 			return NotifyOption::SkipPersist;
 		}
 		if !chan.context.is_live() {
 			log_trace!(self.logger, "Channel {} does not qualify for a feerate change from {} to {} as it cannot currently be updated (probably the peer is disconnected).",
-				log_bytes!(chan_id[..]), chan.get_feerate_sat_per_1000_weight(), new_feerate);
+				log_bytes!(chan_id[..]), chan.context.get_feerate_sat_per_1000_weight(), new_feerate);
 			return NotifyOption::SkipPersist;
 		}
 		log_trace!(self.logger, "Channel {} qualifies for a feerate change from {} to {}.",
-			log_bytes!(chan_id[..]), chan.get_feerate_sat_per_1000_weight(), new_feerate);
+			log_bytes!(chan_id[..]), chan.context.get_feerate_sat_per_1000_weight(), new_feerate);
 
 		chan.queue_update_fee(new_feerate, &self.logger);
 		NotifyOption::DoPersist

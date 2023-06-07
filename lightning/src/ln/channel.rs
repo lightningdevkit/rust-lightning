@@ -1341,6 +1341,33 @@ impl<Signer: ChannelSigner> ChannelContext<Signer> {
 	fn counterparty_funding_pubkey(&self) -> &PublicKey {
 		&self.get_counterparty_pubkeys().funding_pubkey
 	}
+
+	pub fn get_feerate_sat_per_1000_weight(&self) -> u32 {
+		self.feerate_per_kw
+	}
+
+	pub fn get_dust_buffer_feerate(&self, outbound_feerate_update: Option<u32>) -> u32 {
+		// When calculating our exposure to dust HTLCs, we assume that the channel feerate
+		// may, at any point, increase by at least 10 sat/vB (i.e 2530 sat/kWU) or 25%,
+		// whichever is higher. This ensures that we aren't suddenly exposed to significantly
+		// more dust balance if the feerate increases when we have several HTLCs pending
+		// which are near the dust limit.
+		let mut feerate_per_kw = self.feerate_per_kw;
+		// If there's a pending update fee, use it to ensure we aren't under-estimating
+		// potential feerate updates coming soon.
+		if let Some((feerate, _)) = self.pending_update_fee {
+			feerate_per_kw = cmp::max(feerate_per_kw, feerate);
+		}
+		if let Some(feerate) = outbound_feerate_update {
+			feerate_per_kw = cmp::max(feerate_per_kw, feerate);
+		}
+		cmp::max(2530, feerate_per_kw * 1250 / 1000)
+	}
+
+	/// Get forwarding information for the counterparty.
+	pub fn counterparty_forwarding_info(&self) -> Option<CounterpartyForwardingInfo> {
+		self.counterparty_forwarding_info.clone()
+	}
 }
 
 // Internal utility functions for channels
@@ -2920,7 +2947,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		let (htlc_timeout_dust_limit, htlc_success_dust_limit) = if self.context.opt_anchors() {
 			(0, 0)
 		} else {
-			let dust_buffer_feerate = self.get_dust_buffer_feerate(outbound_feerate_update) as u64;
+			let dust_buffer_feerate = self.context.get_dust_buffer_feerate(outbound_feerate_update) as u64;
 			(dust_buffer_feerate * htlc_timeout_tx_weight(false) / 1000,
 				dust_buffer_feerate * htlc_success_tx_weight(false) / 1000)
 		};
@@ -2952,7 +2979,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		let (htlc_timeout_dust_limit, htlc_success_dust_limit) = if self.context.opt_anchors() {
 			(0, 0)
 		} else {
-			let dust_buffer_feerate = self.get_dust_buffer_feerate(outbound_feerate_update) as u64;
+			let dust_buffer_feerate = self.context.get_dust_buffer_feerate(outbound_feerate_update) as u64;
 			(dust_buffer_feerate * htlc_timeout_tx_weight(false) / 1000,
 				dust_buffer_feerate * htlc_success_tx_weight(false) / 1000)
 		};
@@ -3075,7 +3102,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		let (htlc_success_dust_limit, htlc_timeout_dust_limit) = if self.context.opt_anchors() {
 			(self.context.counterparty_dust_limit_satoshis, self.context.holder_dust_limit_satoshis)
 		} else {
-			let dust_buffer_feerate = self.get_dust_buffer_feerate(None) as u64;
+			let dust_buffer_feerate = self.context.get_dust_buffer_feerate(None) as u64;
 			(self.context.counterparty_dust_limit_satoshis + dust_buffer_feerate * htlc_success_tx_weight(false) / 1000,
 			 self.context.holder_dust_limit_satoshis       + dust_buffer_feerate * htlc_timeout_tx_weight(false) / 1000)
 		};
@@ -3383,7 +3410,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		let (htlc_timeout_dust_limit, htlc_success_dust_limit) = if self.context.opt_anchors() {
 			(0, 0)
 		} else {
-			let dust_buffer_feerate = self.get_dust_buffer_feerate(None) as u64;
+			let dust_buffer_feerate = self.context.get_dust_buffer_feerate(None) as u64;
 			(dust_buffer_feerate * htlc_timeout_tx_weight(false) / 1000,
 				dust_buffer_feerate * htlc_success_tx_weight(false) / 1000)
 		};
@@ -4394,7 +4421,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			return Err(ChannelError::Close("Peer sent update_fee when we needed a channel_reestablish".to_owned()));
 		}
 		Channel::<Signer>::check_remote_fee(fee_estimator, msg.feerate_per_kw, Some(self.context.feerate_per_kw), logger)?;
-		let feerate_over_dust_buffer = msg.feerate_per_kw > self.get_dust_buffer_feerate(None);
+		let feerate_over_dust_buffer = msg.feerate_per_kw > self.context.get_dust_buffer_feerate(None);
 
 		self.context.pending_update_fee = Some((msg.feerate_per_kw, FeeUpdateState::RemoteAnnounced));
 		self.context.update_time_counter += 1;
@@ -5124,28 +5151,6 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 					Err(err)
 				}
 			})
-	}
-
-	pub fn get_feerate_sat_per_1000_weight(&self) -> u32 {
-		self.context.feerate_per_kw
-	}
-
-	pub fn get_dust_buffer_feerate(&self, outbound_feerate_update: Option<u32>) -> u32 {
-		// When calculating our exposure to dust HTLCs, we assume that the channel feerate
-		// may, at any point, increase by at least 10 sat/vB (i.e 2530 sat/kWU) or 25%,
-		// whichever is higher. This ensures that we aren't suddenly exposed to significantly
-		// more dust balance if the feerate increases when we have several HTLCs pending
-		// which are near the dust limit.
-		let mut feerate_per_kw = self.context.feerate_per_kw;
-		// If there's a pending update fee, use it to ensure we aren't under-estimating
-		// potential feerate updates coming soon.
-		if let Some((feerate, _)) = self.context.pending_update_fee {
-			feerate_per_kw = cmp::max(feerate_per_kw, feerate);
-		}
-		if let Some(feerate) = outbound_feerate_update {
-			feerate_per_kw = cmp::max(feerate_per_kw, feerate);
-		}
-		cmp::max(2530, feerate_per_kw * 1250 / 1000)
 	}
 
 	pub fn get_cur_holder_commitment_transaction_number(&self) -> u64 {
@@ -6245,11 +6250,6 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			},
 			None => Ok(None)
 		}
-	}
-
-	/// Get forwarding information for the counterparty.
-	pub fn counterparty_forwarding_info(&self) -> Option<CounterpartyForwardingInfo> {
-		self.context.counterparty_forwarding_info.clone()
 	}
 
 	pub fn channel_update(&mut self, msg: &msgs::ChannelUpdate) -> Result<(), ChannelError> {
@@ -7735,7 +7735,7 @@ mod tests {
 		let mut node_a_chan = Channel::<EnforcingSigner>::new_outbound(&feeest, &&keys_provider, &&keys_provider, node_b_node_id, &channelmanager::provided_init_features(&config), 10000000, 100000, 42, &config, 0, 42).unwrap();
 		assert!(node_a_chan.context.counterparty_forwarding_info.is_none());
 		assert_eq!(node_a_chan.context.holder_htlc_minimum_msat, 1); // the default
-		assert!(node_a_chan.counterparty_forwarding_info().is_none());
+		assert!(node_a_chan.context.counterparty_forwarding_info().is_none());
 
 		// Make sure that receiving a channel update will update the Channel as expected.
 		let update = ChannelUpdate {
@@ -7758,7 +7758,7 @@ mod tests {
 		// The counterparty can send an update with a higher minimum HTLC, but that shouldn't
 		// change our official htlc_minimum_msat.
 		assert_eq!(node_a_chan.context.holder_htlc_minimum_msat, 1);
-		match node_a_chan.counterparty_forwarding_info() {
+		match node_a_chan.context.counterparty_forwarding_info() {
 			Some(info) => {
 				assert_eq!(info.cltv_expiry_delta, 100);
 				assert_eq!(info.fee_base_msat, 110);
