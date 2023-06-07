@@ -20,7 +20,7 @@ use crate::chain::transaction::OutPoint;
 use crate::sign::{ChannelSigner, EcdsaChannelSigner, EntropySource};
 use crate::events::{Event, MessageSendEvent, MessageSendEventsProvider, PathFailure, PaymentPurpose, ClosureReason, HTLCDestination, PaymentFailureReason};
 use crate::ln::{PaymentPreimage, PaymentSecret, PaymentHash};
-use crate::ln::channel::{commitment_tx_base_weight, COMMITMENT_TX_WEIGHT_PER_HTLC, CONCURRENT_INBOUND_HTLC_FEE_BUFFER, FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE, MIN_AFFORDABLE_HTLC_COUNT};
+use crate::ln::channel::{commitment_tx_base_weight, COMMITMENT_TX_WEIGHT_PER_HTLC, CONCURRENT_INBOUND_HTLC_FEE_BUFFER, FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE, MIN_AFFORDABLE_HTLC_COUNT, get_holder_selected_channel_reserve_satoshis};
 use crate::ln::channelmanager::{self, PaymentId, RAACommitmentOrder, PaymentSendFailure, RecipientOnionFields, BREAKDOWN_TIMEOUT, ENABLE_GOSSIP_TICKS, DISABLE_GOSSIP_TICKS, MIN_CLTV_EXPIRY_DELTA};
 use crate::ln::channel::{DISCONNECT_PEER_AWAITING_RESPONSE_TICKS, Channel, ChannelError};
 use crate::ln::{chan_utils, onion_utils};
@@ -75,7 +75,7 @@ fn test_insane_channel_opens() {
 	// Instantiate channel parameters where we push the maximum msats given our
 	// funding satoshis
 	let channel_value_sat = 31337; // same as funding satoshis
-	let channel_reserve_satoshis = Channel::<EnforcingSigner>::get_holder_selected_channel_reserve_satoshis(channel_value_sat, &cfg);
+	let channel_reserve_satoshis = get_holder_selected_channel_reserve_satoshis(channel_value_sat, &cfg);
 	let push_msat = (channel_value_sat - channel_reserve_satoshis) * 1000;
 
 	// Have node0 initiate a channel to node1 with aforementioned parameters
@@ -157,7 +157,7 @@ fn do_test_counterparty_no_reserve(send_from_initiator: bool) {
 	let feerate_per_kw = 253;
 	let opt_anchors = false;
 	push_amt -= feerate_per_kw as u64 * (commitment_tx_base_weight(opt_anchors) + 4 * COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000 * 1000;
-	push_amt -= Channel::<EnforcingSigner>::get_holder_selected_channel_reserve_satoshis(100_000, &default_config) * 1000;
+	push_amt -= get_holder_selected_channel_reserve_satoshis(100_000, &default_config) * 1000;
 
 	let temp_channel_id = nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 100_000, if send_from_initiator { 0 } else { push_amt }, 42, None).unwrap();
 	let mut open_channel_message = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
@@ -643,7 +643,7 @@ fn test_update_fee_that_funder_cannot_afford() {
 	let channel_id = chan.2;
 	let secp_ctx = Secp256k1::new();
 	let default_config = UserConfig::default();
-	let bs_channel_reserve_sats = Channel::<EnforcingSigner>::get_holder_selected_channel_reserve_satoshis(channel_value, &default_config);
+	let bs_channel_reserve_sats = get_holder_selected_channel_reserve_satoshis(channel_value, &default_config);
 
 	let opt_anchors = false;
 
@@ -1453,7 +1453,7 @@ fn test_fee_spike_violation_fails_htlc() {
 			commitment_number,
 			95000,
 			local_chan_balance,
-			local_chan.opt_anchors(), local_funding, remote_funding,
+			local_chan.context.opt_anchors(), local_funding, remote_funding,
 			commit_tx_keys.clone(),
 			feerate_per_kw,
 			&mut vec![(accepted_htlc_info, ())],
@@ -1517,7 +1517,7 @@ fn test_chan_reserve_violation_outbound_htlc_inbound_chan() {
 	let mut push_amt = 100_000_000;
 	push_amt -= commit_tx_fee_msat(feerate_per_kw, MIN_AFFORDABLE_HTLC_COUNT as u64, opt_anchors);
 
-	push_amt -= Channel::<EnforcingSigner>::get_holder_selected_channel_reserve_satoshis(100_000, &default_config) * 1000;
+	push_amt -= get_holder_selected_channel_reserve_satoshis(100_000, &default_config) * 1000;
 
 	let _ = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100_000, push_amt);
 
@@ -1550,7 +1550,7 @@ fn test_chan_reserve_violation_inbound_htlc_outbound_channel() {
 	// transaction fee with 0 HTLCs (183 sats)).
 	let mut push_amt = 100_000_000;
 	push_amt -= commit_tx_fee_msat(feerate_per_kw, MIN_AFFORDABLE_HTLC_COUNT as u64, opt_anchors);
-	push_amt -= Channel::<EnforcingSigner>::get_holder_selected_channel_reserve_satoshis(100_000, &default_config) * 1000;
+	push_amt -= get_holder_selected_channel_reserve_satoshis(100_000, &default_config) * 1000;
 	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100_000, push_amt);
 
 	// Send four HTLCs to cover the initial push_msat buffer we're required to include
@@ -1606,7 +1606,7 @@ fn test_chan_reserve_dust_inbound_htlcs_outbound_chan() {
 	// transaction fee with 0 HTLCs (183 sats)).
 	let mut push_amt = 100_000_000;
 	push_amt -= commit_tx_fee_msat(feerate_per_kw, MIN_AFFORDABLE_HTLC_COUNT as u64, opt_anchors);
-	push_amt -= Channel::<EnforcingSigner>::get_holder_selected_channel_reserve_satoshis(100_000, &default_config) * 1000;
+	push_amt -= get_holder_selected_channel_reserve_satoshis(100_000, &default_config) * 1000;
 	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, push_amt);
 
 	let dust_amt = crate::ln::channel::MIN_CHAN_DUST_LIMIT_SATOSHIS * 1000
@@ -1651,7 +1651,7 @@ fn test_chan_init_feerate_unaffordability() {
 
 	// During open, we don't have a "counterparty channel reserve" to check against, so that
 	// requirement only comes into play on the open_channel handling side.
-	push_amt -= Channel::<EnforcingSigner>::get_holder_selected_channel_reserve_satoshis(100_000, &default_config) * 1000;
+	push_amt -= get_holder_selected_channel_reserve_satoshis(100_000, &default_config) * 1000;
 	nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 100_000, push_amt, 42, None).unwrap();
 	let mut open_channel_msg = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
 	open_channel_msg.push_msat += 1;
@@ -1777,7 +1777,7 @@ fn test_inbound_outbound_capacity_is_not_zero() {
 	assert_eq!(channels0.len(), 1);
 	assert_eq!(channels1.len(), 1);
 
-	let reserve = Channel::<EnforcingSigner>::get_holder_selected_channel_reserve_satoshis(100_000, &default_config);
+	let reserve = get_holder_selected_channel_reserve_satoshis(100_000, &default_config);
 	assert_eq!(channels0[0].inbound_capacity_msat, 95000000 - reserve*1000);
 	assert_eq!(channels1[0].outbound_capacity_msat, 95000000 - reserve*1000);
 

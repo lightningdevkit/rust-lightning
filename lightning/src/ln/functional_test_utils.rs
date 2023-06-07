@@ -802,7 +802,7 @@ macro_rules! get_opt_anchors {
 			let mut per_peer_state_lock;
 			let mut peer_state_lock;
 			let chan = get_channel_ref!($node, $counterparty_node, per_peer_state_lock, peer_state_lock, $channel_id);
-			chan.opt_anchors()
+			chan.context.opt_anchors()
 		}
 	}
 }
