@@ -5022,7 +5022,7 @@ where
 				msg.temporary_channel_id.clone()));
 		}
 
-		let mut channel = match InboundV1Channel::new_from_req(&self.fee_estimator, &self.entropy_source, &self.signer_provider,
+		let mut channel = match InboundV1Channel::new(&self.fee_estimator, &self.entropy_source, &self.signer_provider,
 			counterparty_node_id.clone(), &self.channel_type_features(), &peer_state.latest_features, msg, user_channel_id,
 			&self.default_configuration, best_block_height, &self.logger, outbound_scid_alias)
 		{
