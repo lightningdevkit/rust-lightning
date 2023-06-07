@@ -40,7 +40,7 @@ use crate::events::{Event, EventHandler, EventsProvider, MessageSendEvent, Messa
 // Since this struct is returned in `list_channels` methods, expose it here in case users want to
 // construct one themselves.
 use crate::ln::{inbound_payment, PaymentHash, PaymentPreimage, PaymentSecret};
-use crate::ln::channel::{Channel, ChannelError, ChannelUpdateStatus, ShutdownResult, UpdateFulfillCommitFetch};
+use crate::ln::channel::{Channel, ChannelContext, ChannelError, ChannelUpdateStatus, ShutdownResult, UpdateFulfillCommitFetch};
 use crate::ln::features::{ChannelFeatures, ChannelTypeFeatures, InitFeatures, NodeFeatures};
 #[cfg(any(feature = "_test_utils", test))]
 use crate::ln::features::InvoiceFeatures;
@@ -1466,54 +1466,54 @@ impl ChannelDetails {
 		self.short_channel_id.or(self.outbound_scid_alias)
 	}
 
-	fn from_channel<Signer: WriteableEcdsaChannelSigner>(channel: &Channel<Signer>,
+	fn from_channel_context<Signer: WriteableEcdsaChannelSigner>(context: &ChannelContext<Signer>,
 		best_block_height: u32, latest_features: InitFeatures) -> Self {
 
-		let balance = channel.context.get_available_balances();
+		let balance = context.get_available_balances();
 		let (to_remote_reserve_satoshis, to_self_reserve_satoshis) =
-			channel.context.get_holder_counterparty_selected_channel_reserve_satoshis();
+			context.get_holder_counterparty_selected_channel_reserve_satoshis();
 		ChannelDetails {
-			channel_id: channel.context.channel_id(),
+			channel_id: context.channel_id(),
 			counterparty: ChannelCounterparty {
-				node_id: channel.context.get_counterparty_node_id(),
+				node_id: context.get_counterparty_node_id(),
 				features: latest_features,
 				unspendable_punishment_reserve: to_remote_reserve_satoshis,
-				forwarding_info: channel.context.counterparty_forwarding_info(),
+				forwarding_info: context.counterparty_forwarding_info(),
 				// Ensures that we have actually received the `htlc_minimum_msat` value
 				// from the counterparty through the `OpenChannel` or `AcceptChannel`
 				// message (as they are always the first message from the counterparty).
 				// Else `Channel::get_counterparty_htlc_minimum_msat` could return the
 				// default `0` value set by `Channel::new_outbound`.
-				outbound_htlc_minimum_msat: if channel.context.have_received_message() {
-					Some(channel.context.get_counterparty_htlc_minimum_msat()) } else { None },
-				outbound_htlc_maximum_msat: channel.context.get_counterparty_htlc_maximum_msat(),
+				outbound_htlc_minimum_msat: if context.have_received_message() {
+					Some(context.get_counterparty_htlc_minimum_msat()) } else { None },
+				outbound_htlc_maximum_msat: context.get_counterparty_htlc_maximum_msat(),
 			},
-			funding_txo: channel.context.get_funding_txo(),
+			funding_txo: context.get_funding_txo(),
 			// Note that accept_channel (or open_channel) is always the first message, so
 			// `have_received_message` indicates that type negotiation has completed.
-			channel_type: if channel.context.have_received_message() { Some(channel.context.get_channel_type().clone()) } else { None },
-			short_channel_id: channel.context.get_short_channel_id(),
-			outbound_scid_alias: if channel.context.is_usable() { Some(channel.context.outbound_scid_alias()) } else { None },
-			inbound_scid_alias: channel.context.latest_inbound_scid_alias(),
-			channel_value_satoshis: channel.context.get_value_satoshis(),
-			feerate_sat_per_1000_weight: Some(channel.context.get_feerate_sat_per_1000_weight()),
+			channel_type: if context.have_received_message() { Some(context.get_channel_type().clone()) } else { None },
+			short_channel_id: context.get_short_channel_id(),
+			outbound_scid_alias: if context.is_usable() { Some(context.outbound_scid_alias()) } else { None },
+			inbound_scid_alias: context.latest_inbound_scid_alias(),
+			channel_value_satoshis: context.get_value_satoshis(),
+			feerate_sat_per_1000_weight: Some(context.get_feerate_sat_per_1000_weight()),
 			unspendable_punishment_reserve: to_self_reserve_satoshis,
 			balance_msat: balance.balance_msat,
 			inbound_capacity_msat: balance.inbound_capacity_msat,
 			outbound_capacity_msat: balance.outbound_capacity_msat,
 			next_outbound_htlc_limit_msat: balance.next_outbound_htlc_limit_msat,
 			next_outbound_htlc_minimum_msat: balance.next_outbound_htlc_minimum_msat,
-			user_channel_id: channel.context.get_user_id(),
-			confirmations_required: channel.context.minimum_depth(),
-			confirmations: Some(channel.context.get_funding_tx_confirmations(best_block_height)),
-			force_close_spend_delay: channel.context.get_counterparty_selected_contest_delay(),
-			is_outbound: channel.context.is_outbound(),
-			is_channel_ready: channel.context.is_usable(),
-			is_usable: channel.context.is_live(),
-			is_public: channel.context.should_announce(),
-			inbound_htlc_minimum_msat: Some(channel.context.get_holder_htlc_minimum_msat()),
-			inbound_htlc_maximum_msat: channel.context.get_holder_htlc_maximum_msat(),
-			config: Some(channel.context.config()),
+			user_channel_id: context.get_user_id(),
+			confirmations_required: context.minimum_depth(),
+			confirmations: Some(context.get_funding_tx_confirmations(best_block_height)),
+			force_close_spend_delay: context.get_counterparty_selected_contest_delay(),
+			is_outbound: context.is_outbound(),
+			is_channel_ready: context.is_usable(),
+			is_usable: context.is_live(),
+			is_public: context.should_announce(),
+			inbound_htlc_minimum_msat: Some(context.get_holder_htlc_minimum_msat()),
+			inbound_htlc_maximum_msat: context.get_holder_htlc_maximum_msat(),
+			config: Some(context.config()),
 		}
 	}
 }
@@ -2091,7 +2091,7 @@ where
 				let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 				let peer_state = &mut *peer_state_lock;
 				for (_channel_id, channel) in peer_state.channel_by_id.iter().filter(f) {
-					let details = ChannelDetails::from_channel(channel, best_block_height,
+					let details = ChannelDetails::from_channel_context(&channel.context, best_block_height,
 						peer_state.latest_features.clone());
 					res.push(details);
 				}
@@ -2131,7 +2131,7 @@ where
 			return peer_state.channel_by_id
 				.iter()
 				.map(|(_, channel)|
-					ChannelDetails::from_channel(channel, best_block_height, features.clone()))
+					ChannelDetails::from_channel_context(&channel.context, best_block_height, features.clone()))
 				.collect();
 		}
 		vec![]
