@@ -784,6 +784,28 @@ macro_rules! get_channel_ref {
 }
 
 #[cfg(test)]
+macro_rules! get_inbound_v1_channel_ref {
+	($node: expr, $counterparty_node: expr, $per_peer_state_lock: ident, $peer_state_lock: ident, $channel_id: expr) => {
+		{
+			$per_peer_state_lock = $node.node.per_peer_state.read().unwrap();
+			$peer_state_lock = $per_peer_state_lock.get(&$counterparty_node.node.get_our_node_id()).unwrap().lock().unwrap();
+			$peer_state_lock.inbound_v1_channel_by_id.get_mut(&$channel_id).unwrap()
+		}
+	}
+}
+
+#[cfg(test)]
+macro_rules! get_outbound_v1_channel_ref {
+	($node: expr, $counterparty_node: expr, $per_peer_state_lock: ident, $peer_state_lock: ident, $channel_id: expr) => {
+		{
+			$per_peer_state_lock = $node.node.per_peer_state.read().unwrap();
+			$peer_state_lock = $per_peer_state_lock.get(&$counterparty_node.node.get_our_node_id()).unwrap().lock().unwrap();
+			$peer_state_lock.outbound_v1_channel_by_id.get_mut(&$channel_id).unwrap()
+		}
+	}
+}
+
+#[cfg(test)]
 macro_rules! get_feerate {
 	($node: expr, $counterparty_node: expr, $channel_id: expr) => {
 		{

@@ -613,6 +613,18 @@ pub(super) struct PeerState<Signer: ChannelSigner> {
 	/// `channel_id`, the `temporary_channel_id` key in the map is updated and is replaced by the
 	/// `channel_id`.
 	pub(super) channel_by_id: HashMap<[u8; 32], Channel<Signer>>,
+	/// `temporary_channel_id` -> `OutboundV1Channel`.
+	///
+	/// Holds all outbound V1 channels where the peer is the counterparty. Once an outbound channel has
+	/// been assigned a `channel_id`, the entry in this map is removed and one is created in
+	/// `channel_by_id`.
+	pub(super) outbound_v1_channel_by_id: HashMap<[u8; 32], OutboundV1Channel<Signer>>,
+	/// `temporary_channel_id` -> `InboundV1Channel`.
+	///
+	/// Holds all inbound V1 channels where the peer is the counterparty. Once an inbound channel has
+	/// been assigned a `channel_id`, the entry in this map is removed and one is created in
+	/// `channel_by_id`.
+	pub(super) inbound_v1_channel_by_id: HashMap<[u8; 32], InboundV1Channel<Signer>>,
 	/// The latest `InitFeatures` we heard from the peer.
 	latest_features: InitFeatures,
 	/// Messages to send to the peer - pushed to in the same lock that they are generated in (except
@@ -653,6 +665,20 @@ impl <Signer: ChannelSigner> PeerState<Signer> {
 			return false
 		}
 		self.channel_by_id.is_empty() && self.monitor_update_blocked_actions.is_empty()
+	}
+
+	// Returns a count of all channels we have with this peer, including pending channels.
+	fn total_channel_count(&self) -> usize {
+		self.channel_by_id.len() +
+			self.outbound_v1_channel_by_id.len() +
+			self.inbound_v1_channel_by_id.len()
+	}
+
+	// Returns a bool indicating if the given `channel_id` matches a channel we have with this peer.
+	fn has_channel(&self, channel_id: &[u8; 32]) -> bool {
+		self.channel_by_id.contains_key(channel_id) ||
+			self.outbound_v1_channel_by_id.contains_key(channel_id) ||
+			self.inbound_v1_channel_by_id.contains_key(channel_id)
 	}
 }
 
@@ -4765,13 +4791,14 @@ where
 	fn do_accept_inbound_channel(&self, temporary_channel_id: &[u8; 32], counterparty_node_id: &PublicKey, accept_0conf: bool, user_channel_id: u128) -> Result<(), APIError> {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 
-		let peers_without_funded_channels = self.peers_without_funded_channels(|peer| !peer.channel_by_id.is_empty());
+		let peers_without_funded_channels =
+			self.peers_without_funded_channels(|peer| { peer.total_channel_count() > 0 });
 		let per_peer_state = self.per_peer_state.read().unwrap();
 		let peer_state_mutex = per_peer_state.get(counterparty_node_id)
 			.ok_or_else(|| APIError::ChannelUnavailable { err: format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id) })?;
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 		let peer_state = &mut *peer_state_lock;
-		let is_only_peer_channel = peer_state.channel_by_id.len() == 1;
+		let is_only_peer_channel = peer_state.total_channel_count() == 1;
 		match peer_state.channel_by_id.entry(temporary_channel_id.clone()) {
 			hash_map::Entry::Occupied(mut channel) => {
 				if !channel.get().inbound_is_awaiting_accept() {
@@ -4833,7 +4860,7 @@ where
 				let peer = peer_mtx.lock().unwrap();
 				if !maybe_count_peer(&*peer) { continue; }
 				let num_unfunded_channels = Self::unfunded_channel_count(&peer, best_block_height);
-				if num_unfunded_channels == peer.channel_by_id.len() {
+				if num_unfunded_channels == peer.total_channel_count() {
 					peers_without_funded_channels += 1;
 				}
 			}
@@ -4912,33 +4939,31 @@ where
 			},
 			Ok(res) => res
 		};
-		match peer_state.channel_by_id.entry(channel.context.channel_id()) {
-			hash_map::Entry::Occupied(_) => {
-				self.outbound_scid_aliases.lock().unwrap().remove(&outbound_scid_alias);
-				return Err(MsgHandleErrInternal::send_err_msg_no_close("temporary_channel_id collision for the same peer!".to_owned(), msg.temporary_channel_id.clone()))
-			},
-			hash_map::Entry::Vacant(entry) => {
-				if !self.default_configuration.manually_accept_inbound_channels {
-					if channel.context.get_channel_type().requires_zero_conf() {
-						return Err(MsgHandleErrInternal::send_err_msg_no_close("No zero confirmation channels accepted".to_owned(), msg.temporary_channel_id.clone()));
-					}
-					peer_state.pending_msg_events.push(events::MessageSendEvent::SendAcceptChannel {
-						node_id: counterparty_node_id.clone(),
-						msg: channel.accept_inbound_channel(user_channel_id),
-					});
-				} else {
-					let mut pending_events = self.pending_events.lock().unwrap();
-					pending_events.push_back((events::Event::OpenChannelRequest {
-						temporary_channel_id: msg.temporary_channel_id.clone(),
-						counterparty_node_id: counterparty_node_id.clone(),
-						funding_satoshis: msg.funding_satoshis,
-						push_msat: msg.push_msat,
-						channel_type: channel.context.get_channel_type().clone(),
-					}, None));
+		let channel_id = channel.context.channel_id();
+		let channel_exists = peer_state.has_channel(&channel_id);
+		if channel_exists {
+			self.outbound_scid_aliases.lock().unwrap().remove(&outbound_scid_alias);
+			return Err(MsgHandleErrInternal::send_err_msg_no_close("temporary_channel_id collision for the same peer!".to_owned(), msg.temporary_channel_id.clone()))
+		} else {
+			if !self.default_configuration.manually_accept_inbound_channels {
+				if channel.context.get_channel_type().requires_zero_conf() {
+					return Err(MsgHandleErrInternal::send_err_msg_no_close("No zero confirmation channels accepted".to_owned(), msg.temporary_channel_id.clone()));
 				}
-
-				entry.insert(channel);
+				peer_state.pending_msg_events.push(events::MessageSendEvent::SendAcceptChannel {
+					node_id: counterparty_node_id.clone(),
+					msg: channel.accept_inbound_channel(user_channel_id),
+				});
+			} else {
+				let mut pending_events = self.pending_events.lock().unwrap();
+				pending_events.push_back((events::Event::OpenChannelRequest {
+					temporary_channel_id: msg.temporary_channel_id.clone(),
+					counterparty_node_id: counterparty_node_id.clone(),
+					funding_satoshis: msg.funding_satoshis,
+					push_msat: msg.push_msat,
+					channel_type: channel.context.get_channel_type().clone(),
+				}, None));
 			}
+			peer_state.channel_by_id.insert(channel_id, channel);
 		}
 		Ok(())
 	}
@@ -6878,6 +6903,8 @@ where
 					}
 					e.insert(Mutex::new(PeerState {
 						channel_by_id: HashMap::new(),
+						outbound_v1_channel_by_id: HashMap::new(),
+						inbound_v1_channel_by_id: HashMap::new(),
 						latest_features: init_msg.features.clone(),
 						pending_msg_events: Vec::new(),
 						monitor_update_blocked_actions: BTreeMap::new(),
@@ -8081,6 +8108,8 @@ where
 			let peer_pubkey = Readable::read(reader)?;
 			let peer_state = PeerState {
 				channel_by_id: peer_channels.remove(&peer_pubkey).unwrap_or(HashMap::new()),
+				outbound_v1_channel_by_id: HashMap::new(),
+				inbound_v1_channel_by_id: HashMap::new(),
 				latest_features: Readable::read(reader)?,
 				pending_msg_events: Vec::new(),
 				monitor_update_blocked_actions: BTreeMap::new(),
