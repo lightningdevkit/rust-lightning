@@ -31,6 +31,7 @@ use crate::onion_message::{CustomOnionMessageContents, CustomOnionMessageHandler
 use crate::routing::gossip::{NetworkGraph, P2PGossipSync, NodeId, NodeAlias};
 use crate::util::atomic_counter::AtomicCounter;
 use crate::util::logger::Logger;
+use crate::util::string::PrintableString;
 
 use crate::prelude::*;
 use crate::io;
@@ -1536,38 +1537,14 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 				// Handled above
 			},
 			wire::Message::Error(msg) => {
-				let mut data_is_printable = true;
-				for b in msg.data.bytes() {
-					if b < 32 || b > 126 {
-						data_is_printable = false;
-						break;
-					}
-				}
-
-				if data_is_printable {
-					log_debug!(self.logger, "Got Err message from {}: {}", log_pubkey!(their_node_id), msg.data);
-				} else {
-					log_debug!(self.logger, "Got Err message from {} with non-ASCII error message", log_pubkey!(their_node_id));
-				}
+				log_debug!(self.logger, "Got Err message from {}: {}", log_pubkey!(their_node_id), PrintableString(&msg.data));
 				self.message_handler.chan_handler.handle_error(&their_node_id, &msg);
 				if msg.channel_id == [0; 32] {
 					return Err(PeerHandleError { }.into());
 				}
 			},
 			wire::Message::Warning(msg) => {
-				let mut data_is_printable = true;
-				for b in msg.data.bytes() {
-					if b < 32 || b > 126 {
-						data_is_printable = false;
-						break;
-					}
-				}
-
-				if data_is_printable {
-					log_debug!(self.logger, "Got warning message from {}: {}", log_pubkey!(their_node_id), msg.data);
-				} else {
-					log_debug!(self.logger, "Got warning message from {} with non-ASCII error message", log_pubkey!(their_node_id));
-				}
+				log_debug!(self.logger, "Got warning message from {}: {}", log_pubkey!(their_node_id), PrintableString(&msg.data));
 			},
 
 			wire::Message::Ping(msg) => {
