@@ -6172,7 +6172,7 @@ fn test_update_add_htlc_bolt2_receiver_check_amount_received_more_than_min() {
 		let per_peer_state = nodes[0].node.per_peer_state.read().unwrap();
 		let chan_lock = per_peer_state.get(&nodes[1].node.get_our_node_id()).unwrap().lock().unwrap();
 		let channel = chan_lock.channel_by_id.get(&chan.2).unwrap();
-		htlc_minimum_msat = channel.get_holder_htlc_minimum_msat();
+		htlc_minimum_msat = channel.context.get_holder_htlc_minimum_msat();
 	}
 
 	let (route, our_payment_hash, _, our_payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[1], htlc_minimum_msat);
