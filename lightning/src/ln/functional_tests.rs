@@ -180,7 +180,7 @@ fn do_test_counterparty_no_reserve(send_from_initiator: bool) {
 		let mut sender_node_per_peer_lock;
 		let mut sender_node_peer_state_lock;
 		if send_from_initiator {
-			let chan = get_channel_ref!(sender_node, counterparty_node, sender_node_per_peer_lock, sender_node_peer_state_lock, temp_channel_id);
+			let chan = get_inbound_v1_channel_ref!(sender_node, counterparty_node, sender_node_per_peer_lock, sender_node_peer_state_lock, temp_channel_id);
 			chan.context.holder_selected_channel_reserve_satoshis = 0;
 			chan.context.holder_max_htlc_value_in_flight_msat = 100_000_000;
 		} else {
@@ -7874,7 +7874,7 @@ fn test_reject_funding_before_inbound_channel_accepted() {
 	let accept_chan_msg = {
 		let mut node_1_per_peer_lock;
 		let mut node_1_peer_state_lock;
-		let channel =  get_channel_ref!(&nodes[1], nodes[0], node_1_per_peer_lock, node_1_peer_state_lock, temp_channel_id);
+		let channel =  get_inbound_v1_channel_ref!(&nodes[1], nodes[0], node_1_per_peer_lock, node_1_peer_state_lock, temp_channel_id);
 		channel.get_accept_channel_message()
 	};
 	nodes[0].node.handle_accept_channel(&nodes[1].node.get_our_node_id(), &accept_chan_msg);

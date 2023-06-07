@@ -2010,8 +2010,6 @@ struct CommitmentTxInfoCached {
 }
 
 impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
-	// Constructors:
-
 	fn check_remote_fee<F: Deref, L: Deref>(fee_estimator: &LowerBoundedFeeEstimator<F>,
 		feerate_per_kw: u32, cur_feerate_per_kw: Option<u32>, logger: &L)
 		-> Result<(), ChannelError> where F::Target: FeeEstimator, L::Target: Logger,
@@ -2421,129 +2419,6 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 	}
 
 	// Message handlers:
-
-	fn funding_created_signature<L: Deref>(&mut self, sig: &Signature, logger: &L) -> Result<(Txid, CommitmentTransaction, Signature), ChannelError> where L::Target: Logger {
-		let funding_script = self.context.get_funding_redeemscript();
-
-		let keys = self.context.build_holder_transaction_keys(self.context.cur_holder_commitment_transaction_number);
-		let initial_commitment_tx = self.context.build_commitment_transaction(self.context.cur_holder_commitment_transaction_number, &keys, true, false, logger).tx;
-		{
-			let trusted_tx = initial_commitment_tx.trust();
-			let initial_commitment_bitcoin_tx = trusted_tx.built_transaction();
-			let sighash = initial_commitment_bitcoin_tx.get_sighash_all(&funding_script, self.context.channel_value_satoshis);
-			// They sign the holder commitment transaction...
-			log_trace!(logger, "Checking funding_created tx signature {} by key {} against tx {} (sighash {}) with redeemscript {} for channel {}.",
-				log_bytes!(sig.serialize_compact()[..]), log_bytes!(self.context.counterparty_funding_pubkey().serialize()),
-				encode::serialize_hex(&initial_commitment_bitcoin_tx.transaction), log_bytes!(sighash[..]),
-				encode::serialize_hex(&funding_script), log_bytes!(self.context.channel_id()));
-			secp_check!(self.context.secp_ctx.verify_ecdsa(&sighash, &sig, self.context.counterparty_funding_pubkey()), "Invalid funding_created signature from peer".to_owned());
-		}
-
-		let counterparty_keys = self.context.build_remote_transaction_keys();
-		let counterparty_initial_commitment_tx = self.context.build_commitment_transaction(self.context.cur_counterparty_commitment_transaction_number, &counterparty_keys, false, false, logger).tx;
-
-		let counterparty_trusted_tx = counterparty_initial_commitment_tx.trust();
-		let counterparty_initial_bitcoin_tx = counterparty_trusted_tx.built_transaction();
-		log_trace!(logger, "Initial counterparty tx for channel {} is: txid {} tx {}",
-			log_bytes!(self.context.channel_id()), counterparty_initial_bitcoin_tx.txid, encode::serialize_hex(&counterparty_initial_bitcoin_tx.transaction));
-
-		let counterparty_signature = self.context.holder_signer.sign_counterparty_commitment(&counterparty_initial_commitment_tx, Vec::new(), &self.context.secp_ctx)
-				.map_err(|_| ChannelError::Close("Failed to get signatures for new commitment_signed".to_owned()))?.0;
-
-		// We sign "counterparty" commitment transaction, allowing them to broadcast the tx if they wish.
-		Ok((counterparty_initial_bitcoin_tx.txid, initial_commitment_tx, counterparty_signature))
-	}
-
-	pub fn funding_created<SP: Deref, L: Deref>(
-		&mut self, msg: &msgs::FundingCreated, best_block: BestBlock, signer_provider: &SP, logger: &L
-	) -> Result<(msgs::FundingSigned, ChannelMonitor<Signer>), ChannelError>
-	where
-		SP::Target: SignerProvider<Signer = Signer>,
-		L::Target: Logger
-	{
-		if self.context.is_outbound() {
-			return Err(ChannelError::Close("Received funding_created for an outbound channel?".to_owned()));
-		}
-		if self.context.channel_state != (ChannelState::OurInitSent as u32 | ChannelState::TheirInitSent as u32) {
-			// BOLT 2 says that if we disconnect before we send funding_signed we SHOULD NOT
-			// remember the channel, so it's safe to just send an error_message here and drop the
-			// channel.
-			return Err(ChannelError::Close("Received funding_created after we got the channel!".to_owned()));
-		}
-		if self.context.inbound_awaiting_accept {
-			return Err(ChannelError::Close("FundingCreated message received before the channel was accepted".to_owned()));
-		}
-		if self.context.commitment_secrets.get_min_seen_secret() != (1 << 48) ||
-				self.context.cur_counterparty_commitment_transaction_number != INITIAL_COMMITMENT_NUMBER ||
-				self.context.cur_holder_commitment_transaction_number != INITIAL_COMMITMENT_NUMBER {
-			panic!("Should not have advanced channel commitment tx numbers prior to funding_created");
-		}
-
-		let funding_txo = OutPoint { txid: msg.funding_txid, index: msg.funding_output_index };
-		self.context.channel_transaction_parameters.funding_outpoint = Some(funding_txo);
-		// This is an externally observable change before we finish all our checks.  In particular
-		// funding_created_signature may fail.
-		self.context.holder_signer.provide_channel_parameters(&self.context.channel_transaction_parameters);
-
-		let (counterparty_initial_commitment_txid, initial_commitment_tx, signature) = match self.funding_created_signature(&msg.signature, logger) {
-			Ok(res) => res,
-			Err(ChannelError::Close(e)) => {
-				self.context.channel_transaction_parameters.funding_outpoint = None;
-				return Err(ChannelError::Close(e));
-			},
-			Err(e) => {
-				// The only error we know how to handle is ChannelError::Close, so we fall over here
-				// to make sure we don't continue with an inconsistent state.
-				panic!("unexpected error type from funding_created_signature {:?}", e);
-			}
-		};
-
-		let holder_commitment_tx = HolderCommitmentTransaction::new(
-			initial_commitment_tx,
-			msg.signature,
-			Vec::new(),
-			&self.context.get_holder_pubkeys().funding_pubkey,
-			self.context.counterparty_funding_pubkey()
-		);
-
-		self.context.holder_signer.validate_holder_commitment(&holder_commitment_tx, Vec::new())
-			.map_err(|_| ChannelError::Close("Failed to validate our commitment".to_owned()))?;
-
-	        	// Now that we're past error-generating stuff, update our local state:
-
-		let funding_redeemscript = self.context.get_funding_redeemscript();
-		let funding_txo_script = funding_redeemscript.to_v0_p2wsh();
-		let obscure_factor = get_commitment_transaction_number_obscure_factor(&self.context.get_holder_pubkeys().payment_point, &self.context.get_counterparty_pubkeys().payment_point, self.context.is_outbound());
-		let shutdown_script = self.context.shutdown_scriptpubkey.clone().map(|script| script.into_inner());
-		let mut monitor_signer = signer_provider.derive_channel_signer(self.context.channel_value_satoshis, self.context.channel_keys_id);
-		monitor_signer.provide_channel_parameters(&self.context.channel_transaction_parameters);
-		let channel_monitor = ChannelMonitor::new(self.context.secp_ctx.clone(), monitor_signer,
-		                                          shutdown_script, self.context.get_holder_selected_contest_delay(),
-		                                          &self.context.destination_script, (funding_txo, funding_txo_script.clone()),
-		                                          &self.context.channel_transaction_parameters,
-		                                          funding_redeemscript.clone(), self.context.channel_value_satoshis,
-		                                          obscure_factor,
-		                                          holder_commitment_tx, best_block, self.context.counterparty_node_id);
-
-		channel_monitor.provide_latest_counterparty_commitment_tx(counterparty_initial_commitment_txid, Vec::new(), self.context.cur_counterparty_commitment_transaction_number, self.context.counterparty_cur_commitment_point.unwrap(), logger);
-
-		self.context.channel_state = ChannelState::FundingSent as u32;
-		self.context.channel_id = funding_txo.to_channel_id();
-		self.context.cur_counterparty_commitment_transaction_number -= 1;
-		self.context.cur_holder_commitment_transaction_number -= 1;
-
-		log_info!(logger, "Generated funding_signed for peer for channel {}", log_bytes!(self.context.channel_id()));
-
-		let need_channel_ready = self.check_get_channel_ready(0).is_some();
-		self.monitor_updating_paused(false, false, need_channel_ready, Vec::new(), Vec::new(), Vec::new());
-
-		Ok((msgs::FundingSigned {
-			channel_id: self.context.channel_id,
-			signature,
-			#[cfg(taproot)]
-			partial_signature_with_nonce: None,
-		}, channel_monitor))
-	}
 
 	/// Handles a funding_signed message from the remote end.
 	/// If this call is successful, broadcast the funding transaction (and not before!)
@@ -4938,83 +4813,6 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 	// Methods to get unprompted messages to send to the remote end (or where we already returned
 	// something in the handler for the message that prompted this message):
 
-	pub fn inbound_is_awaiting_accept(&self) -> bool {
-		self.context.inbound_awaiting_accept
-	}
-
-	/// Sets this channel to accepting 0conf, must be done before `get_accept_channel`
-	pub fn set_0conf(&mut self) {
-		assert!(self.context.inbound_awaiting_accept);
-		self.context.minimum_depth = Some(0);
-	}
-
-	/// Marks an inbound channel as accepted and generates a [`msgs::AcceptChannel`] message which
-	/// should be sent back to the counterparty node.
-	///
-	/// [`msgs::AcceptChannel`]: crate::ln::msgs::AcceptChannel
-	pub fn accept_inbound_channel(&mut self, user_id: u128) -> msgs::AcceptChannel {
-		if self.context.is_outbound() {
-			panic!("Tried to send accept_channel for an outbound channel?");
-		}
-		if self.context.channel_state != (ChannelState::OurInitSent as u32) | (ChannelState::TheirInitSent as u32) {
-			panic!("Tried to send accept_channel after channel had moved forward");
-		}
-		if self.context.cur_holder_commitment_transaction_number != INITIAL_COMMITMENT_NUMBER {
-			panic!("Tried to send an accept_channel for a channel that has already advanced");
-		}
-		if !self.context.inbound_awaiting_accept {
-			panic!("The inbound channel has already been accepted");
-		}
-
-		self.context.user_id = user_id;
-		self.context.inbound_awaiting_accept = false;
-
-		self.generate_accept_channel_message()
-	}
-
-	/// This function is used to explicitly generate a [`msgs::AcceptChannel`] message for an
-	/// inbound channel. If the intention is to accept an inbound channel, use
-	/// [`Channel::accept_inbound_channel`] instead.
-	///
-	/// [`msgs::AcceptChannel`]: crate::ln::msgs::AcceptChannel
-	fn generate_accept_channel_message(&self) -> msgs::AcceptChannel {
-		let first_per_commitment_point = self.context.holder_signer.get_per_commitment_point(self.context.cur_holder_commitment_transaction_number, &self.context.secp_ctx);
-		let keys = self.context.get_holder_pubkeys();
-
-		msgs::AcceptChannel {
-			temporary_channel_id: self.context.channel_id,
-			dust_limit_satoshis: self.context.holder_dust_limit_satoshis,
-			max_htlc_value_in_flight_msat: self.context.holder_max_htlc_value_in_flight_msat,
-			channel_reserve_satoshis: self.context.holder_selected_channel_reserve_satoshis,
-			htlc_minimum_msat: self.context.holder_htlc_minimum_msat,
-			minimum_depth: self.context.minimum_depth.unwrap(),
-			to_self_delay: self.context.get_holder_selected_contest_delay(),
-			max_accepted_htlcs: self.context.holder_max_accepted_htlcs,
-			funding_pubkey: keys.funding_pubkey,
-			revocation_basepoint: keys.revocation_basepoint,
-			payment_point: keys.payment_point,
-			delayed_payment_basepoint: keys.delayed_payment_basepoint,
-			htlc_basepoint: keys.htlc_basepoint,
-			first_per_commitment_point,
-			shutdown_scriptpubkey: Some(match &self.context.shutdown_scriptpubkey {
-				Some(script) => script.clone().into_inner(),
-				None => Builder::new().into_script(),
-			}),
-			channel_type: Some(self.context.channel_type.clone()),
-			#[cfg(taproot)]
-			next_local_nonce: None,
-		}
-	}
-
-	/// Enables the possibility for tests to extract a [`msgs::AcceptChannel`] message for an
-	/// inbound channel without accepting it.
-	///
-	/// [`msgs::AcceptChannel`]: crate::ln::msgs::AcceptChannel
-	#[cfg(test)]
-	pub fn get_accept_channel_message(&self) -> msgs::AcceptChannel {
-		self.generate_accept_channel_message()
-	}
-
 	/// Gets an UnsignedChannelAnnouncement for this channel. The channel must be publicly
 	/// announceable and available for use (have exchanged ChannelReady messages in both
 	/// directions). Should be used for both broadcasted announcements and in response to an
@@ -6142,7 +5940,7 @@ impl<Signer: WriteableEcdsaChannelSigner> InboundV1Channel<Signer> {
 		counterparty_node_id: PublicKey, our_supported_features: &ChannelTypeFeatures,
 		their_features: &InitFeatures, msg: &msgs::OpenChannel, user_id: u128, config: &UserConfig,
 		current_chain_height: u32, logger: &L, outbound_scid_alias: u64
-	) -> Result<Channel<Signer>, ChannelError>
+	) -> Result<InboundV1Channel<Signer>, ChannelError>
 		where ES::Target: EntropySource,
 			  SP::Target: SignerProvider<Signer = Signer>,
 			  F::Target: FeeEstimator,
@@ -6332,7 +6130,7 @@ impl<Signer: WriteableEcdsaChannelSigner> InboundV1Channel<Signer> {
 		let mut secp_ctx = Secp256k1::new();
 		secp_ctx.seeded_randomize(&entropy_source.get_secure_random_bytes());
 
-		let chan = Channel {
+		let chan = Self {
 			context: ChannelContext {
 				user_id,
 
@@ -6465,6 +6263,213 @@ impl<Signer: WriteableEcdsaChannelSigner> InboundV1Channel<Signer> {
 		};
 
 		Ok(chan)
+	}
+
+	pub fn inbound_is_awaiting_accept(&self) -> bool {
+		self.context.inbound_awaiting_accept
+	}
+
+	/// Sets this channel to accepting 0conf, must be done before `get_accept_channel`
+	pub fn set_0conf(&mut self) {
+		assert!(self.context.inbound_awaiting_accept);
+		self.context.minimum_depth = Some(0);
+	}
+
+	/// Marks an inbound channel as accepted and generates a [`msgs::AcceptChannel`] message which
+	/// should be sent back to the counterparty node.
+	///
+	/// [`msgs::AcceptChannel`]: crate::ln::msgs::AcceptChannel
+	pub fn accept_inbound_channel(&mut self, user_id: u128) -> msgs::AcceptChannel {
+		if self.context.is_outbound() {
+			panic!("Tried to send accept_channel for an outbound channel?");
+		}
+		if self.context.channel_state != (ChannelState::OurInitSent as u32) | (ChannelState::TheirInitSent as u32) {
+			panic!("Tried to send accept_channel after channel had moved forward");
+		}
+		if self.context.cur_holder_commitment_transaction_number != INITIAL_COMMITMENT_NUMBER {
+			panic!("Tried to send an accept_channel for a channel that has already advanced");
+		}
+		if !self.context.inbound_awaiting_accept {
+			panic!("The inbound channel has already been accepted");
+		}
+
+		self.context.user_id = user_id;
+		self.context.inbound_awaiting_accept = false;
+
+		self.generate_accept_channel_message()
+	}
+
+	/// This function is used to explicitly generate a [`msgs::AcceptChannel`] message for an
+	/// inbound channel. If the intention is to accept an inbound channel, use
+	/// [`InboundV1Channel::accept_inbound_channel`] instead.
+	///
+	/// [`msgs::AcceptChannel`]: crate::ln::msgs::AcceptChannel
+	fn generate_accept_channel_message(&self) -> msgs::AcceptChannel {
+		let first_per_commitment_point = self.context.holder_signer.get_per_commitment_point(self.context.cur_holder_commitment_transaction_number, &self.context.secp_ctx);
+		let keys = self.context.get_holder_pubkeys();
+
+		msgs::AcceptChannel {
+			temporary_channel_id: self.context.channel_id,
+			dust_limit_satoshis: self.context.holder_dust_limit_satoshis,
+			max_htlc_value_in_flight_msat: self.context.holder_max_htlc_value_in_flight_msat,
+			channel_reserve_satoshis: self.context.holder_selected_channel_reserve_satoshis,
+			htlc_minimum_msat: self.context.holder_htlc_minimum_msat,
+			minimum_depth: self.context.minimum_depth.unwrap(),
+			to_self_delay: self.context.get_holder_selected_contest_delay(),
+			max_accepted_htlcs: self.context.holder_max_accepted_htlcs,
+			funding_pubkey: keys.funding_pubkey,
+			revocation_basepoint: keys.revocation_basepoint,
+			payment_point: keys.payment_point,
+			delayed_payment_basepoint: keys.delayed_payment_basepoint,
+			htlc_basepoint: keys.htlc_basepoint,
+			first_per_commitment_point,
+			shutdown_scriptpubkey: Some(match &self.context.shutdown_scriptpubkey {
+				Some(script) => script.clone().into_inner(),
+				None => Builder::new().into_script(),
+			}),
+			channel_type: Some(self.context.channel_type.clone()),
+			#[cfg(taproot)]
+			next_local_nonce: None,
+		}
+	}
+
+	/// Enables the possibility for tests to extract a [`msgs::AcceptChannel`] message for an
+	/// inbound channel without accepting it.
+	///
+	/// [`msgs::AcceptChannel`]: crate::ln::msgs::AcceptChannel
+	#[cfg(test)]
+	pub fn get_accept_channel_message(&self) -> msgs::AcceptChannel {
+		self.generate_accept_channel_message()
+	}
+
+	fn funding_created_signature<L: Deref>(&mut self, sig: &Signature, logger: &L) -> Result<(Txid, CommitmentTransaction, Signature), ChannelError> where L::Target: Logger {
+		let funding_script = self.context.get_funding_redeemscript();
+
+		let keys = self.context.build_holder_transaction_keys(self.context.cur_holder_commitment_transaction_number);
+		let initial_commitment_tx = self.context.build_commitment_transaction(self.context.cur_holder_commitment_transaction_number, &keys, true, false, logger).tx;
+		{
+			let trusted_tx = initial_commitment_tx.trust();
+			let initial_commitment_bitcoin_tx = trusted_tx.built_transaction();
+			let sighash = initial_commitment_bitcoin_tx.get_sighash_all(&funding_script, self.context.channel_value_satoshis);
+			// They sign the holder commitment transaction...
+			log_trace!(logger, "Checking funding_created tx signature {} by key {} against tx {} (sighash {}) with redeemscript {} for channel {}.",
+				log_bytes!(sig.serialize_compact()[..]), log_bytes!(self.context.counterparty_funding_pubkey().serialize()),
+				encode::serialize_hex(&initial_commitment_bitcoin_tx.transaction), log_bytes!(sighash[..]),
+				encode::serialize_hex(&funding_script), log_bytes!(self.context.channel_id()));
+			secp_check!(self.context.secp_ctx.verify_ecdsa(&sighash, &sig, self.context.counterparty_funding_pubkey()), "Invalid funding_created signature from peer".to_owned());
+		}
+
+		let counterparty_keys = self.context.build_remote_transaction_keys();
+		let counterparty_initial_commitment_tx = self.context.build_commitment_transaction(self.context.cur_counterparty_commitment_transaction_number, &counterparty_keys, false, false, logger).tx;
+
+		let counterparty_trusted_tx = counterparty_initial_commitment_tx.trust();
+		let counterparty_initial_bitcoin_tx = counterparty_trusted_tx.built_transaction();
+		log_trace!(logger, "Initial counterparty tx for channel {} is: txid {} tx {}",
+			log_bytes!(self.context.channel_id()), counterparty_initial_bitcoin_tx.txid, encode::serialize_hex(&counterparty_initial_bitcoin_tx.transaction));
+
+		let counterparty_signature = self.context.holder_signer.sign_counterparty_commitment(&counterparty_initial_commitment_tx, Vec::new(), &self.context.secp_ctx)
+				.map_err(|_| ChannelError::Close("Failed to get signatures for new commitment_signed".to_owned()))?.0;
+
+		// We sign "counterparty" commitment transaction, allowing them to broadcast the tx if they wish.
+		Ok((counterparty_initial_bitcoin_tx.txid, initial_commitment_tx, counterparty_signature))
+	}
+
+	pub fn funding_created<SP: Deref, L: Deref>(
+		mut self, msg: &msgs::FundingCreated, best_block: BestBlock, signer_provider: &SP, logger: &L
+	) -> Result<(Channel<Signer>, msgs::FundingSigned, ChannelMonitor<Signer>), (Self, ChannelError)>
+	where
+		SP::Target: SignerProvider<Signer = Signer>,
+		L::Target: Logger
+	{
+		if self.context.is_outbound() {
+			return Err((self, ChannelError::Close("Received funding_created for an outbound channel?".to_owned())));
+		}
+		if self.context.channel_state != (ChannelState::OurInitSent as u32 | ChannelState::TheirInitSent as u32) {
+			// BOLT 2 says that if we disconnect before we send funding_signed we SHOULD NOT
+			// remember the channel, so it's safe to just send an error_message here and drop the
+			// channel.
+			return Err((self, ChannelError::Close("Received funding_created after we got the channel!".to_owned())));
+		}
+		if self.context.inbound_awaiting_accept {
+			return Err((self, ChannelError::Close("FundingCreated message received before the channel was accepted".to_owned())));
+		}
+		if self.context.commitment_secrets.get_min_seen_secret() != (1 << 48) ||
+				self.context.cur_counterparty_commitment_transaction_number != INITIAL_COMMITMENT_NUMBER ||
+				self.context.cur_holder_commitment_transaction_number != INITIAL_COMMITMENT_NUMBER {
+			panic!("Should not have advanced channel commitment tx numbers prior to funding_created");
+		}
+
+		let funding_txo = OutPoint { txid: msg.funding_txid, index: msg.funding_output_index };
+		self.context.channel_transaction_parameters.funding_outpoint = Some(funding_txo);
+		// This is an externally observable change before we finish all our checks.  In particular
+		// funding_created_signature may fail.
+		self.context.holder_signer.provide_channel_parameters(&self.context.channel_transaction_parameters);
+
+		let (counterparty_initial_commitment_txid, initial_commitment_tx, signature) = match self.funding_created_signature(&msg.signature, logger) {
+			Ok(res) => res,
+			Err(ChannelError::Close(e)) => {
+				self.context.channel_transaction_parameters.funding_outpoint = None;
+				return Err((self, ChannelError::Close(e)));
+			},
+			Err(e) => {
+				// The only error we know how to handle is ChannelError::Close, so we fall over here
+				// to make sure we don't continue with an inconsistent state.
+				panic!("unexpected error type from funding_created_signature {:?}", e);
+			}
+		};
+
+		let holder_commitment_tx = HolderCommitmentTransaction::new(
+			initial_commitment_tx,
+			msg.signature,
+			Vec::new(),
+			&self.context.get_holder_pubkeys().funding_pubkey,
+			self.context.counterparty_funding_pubkey()
+		);
+
+		if let Err(_) = self.context.holder_signer.validate_holder_commitment(&holder_commitment_tx, Vec::new()) {
+			return Err((self, ChannelError::Close("Failed to validate our commitment".to_owned())));
+		}
+
+		// Now that we're past error-generating stuff, update our local state:
+
+		let funding_redeemscript = self.context.get_funding_redeemscript();
+		let funding_txo_script = funding_redeemscript.to_v0_p2wsh();
+		let obscure_factor = get_commitment_transaction_number_obscure_factor(&self.context.get_holder_pubkeys().payment_point, &self.context.get_counterparty_pubkeys().payment_point, self.context.is_outbound());
+		let shutdown_script = self.context.shutdown_scriptpubkey.clone().map(|script| script.into_inner());
+		let mut monitor_signer = signer_provider.derive_channel_signer(self.context.channel_value_satoshis, self.context.channel_keys_id);
+		monitor_signer.provide_channel_parameters(&self.context.channel_transaction_parameters);
+		let channel_monitor = ChannelMonitor::new(self.context.secp_ctx.clone(), monitor_signer,
+		                                          shutdown_script, self.context.get_holder_selected_contest_delay(),
+		                                          &self.context.destination_script, (funding_txo, funding_txo_script.clone()),
+		                                          &self.context.channel_transaction_parameters,
+		                                          funding_redeemscript.clone(), self.context.channel_value_satoshis,
+		                                          obscure_factor,
+		                                          holder_commitment_tx, best_block, self.context.counterparty_node_id);
+
+		channel_monitor.provide_latest_counterparty_commitment_tx(counterparty_initial_commitment_txid, Vec::new(), self.context.cur_counterparty_commitment_transaction_number, self.context.counterparty_cur_commitment_point.unwrap(), logger);
+
+		self.context.channel_state = ChannelState::FundingSent as u32;
+		self.context.channel_id = funding_txo.to_channel_id();
+		self.context.cur_counterparty_commitment_transaction_number -= 1;
+		self.context.cur_holder_commitment_transaction_number -= 1;
+
+		log_info!(logger, "Generated funding_signed for peer for channel {}", log_bytes!(self.context.channel_id()));
+
+		// Promote the channel to a full-fledged one now that we have updated the state and have a
+		// `ChannelMonitor`.
+		let mut channel = Channel {
+			context: self.context,
+		};
+		let channel_id = channel.context.channel_id.clone();
+		let need_channel_ready = channel.check_get_channel_ready(0).is_some();
+		channel.monitor_updating_paused(false, false, need_channel_ready, Vec::new(), Vec::new(), Vec::new());
+
+		Ok((channel, msgs::FundingSigned {
+			channel_id,
+			signature,
+			#[cfg(taproot)]
+			partial_signature_with_nonce: None,
+		}, channel_monitor))
 	}
 }
 
@@ -7491,7 +7496,7 @@ mod tests {
 		}]};
 		let funding_outpoint = OutPoint{ txid: tx.txid(), index: 0 };
 		let (mut node_a_chan, funding_created_msg) = node_a_chan.get_outbound_funding_created(tx.clone(), funding_outpoint, &&logger).map_err(|_| ()).unwrap();
-		let (funding_signed_msg, _) = node_b_chan.funding_created(&funding_created_msg, best_block, &&keys_provider, &&logger).unwrap();
+		let (_, funding_signed_msg, _) = node_b_chan.funding_created(&funding_created_msg, best_block, &&keys_provider, &&logger).map_err(|_| ()).unwrap();
 
 		// Node B --> Node A: funding signed
 		let _ = node_a_chan.funding_signed(&funding_signed_msg, best_block, &&keys_provider, &&logger).unwrap();
@@ -7617,7 +7622,7 @@ mod tests {
 		}]};
 		let funding_outpoint = OutPoint{ txid: tx.txid(), index: 0 };
 		let (mut node_a_chan, funding_created_msg) = node_a_chan.get_outbound_funding_created(tx.clone(), funding_outpoint, &&logger).map_err(|_| ()).unwrap();
-		let (funding_signed_msg, _) = node_b_chan.funding_created(&funding_created_msg, best_block, &&keys_provider, &&logger).unwrap();
+		let (mut node_b_chan, funding_signed_msg, _) = node_b_chan.funding_created(&funding_created_msg, best_block, &&keys_provider, &&logger).map_err(|_| ()).unwrap();
 
 		// Node B --> Node A: funding signed
 		let _ = node_a_chan.funding_signed(&funding_signed_msg, best_block, &&keys_provider, &&logger).unwrap();
@@ -7805,7 +7810,7 @@ mod tests {
 		}]};
 		let funding_outpoint = OutPoint{ txid: tx.txid(), index: 0 };
 		let (mut node_a_chan, funding_created_msg) = node_a_chan.get_outbound_funding_created(tx.clone(), funding_outpoint, &&logger).map_err(|_| ()).unwrap();
-		let (funding_signed_msg, _) = node_b_chan.funding_created(&funding_created_msg, best_block, &&keys_provider, &&logger).unwrap();
+		let (_, funding_signed_msg, _) = node_b_chan.funding_created(&funding_created_msg, best_block, &&keys_provider, &&logger).map_err(|_| ()).unwrap();
 
 		// Node B --> Node A: funding signed
 		let _ = node_a_chan.funding_signed(&funding_signed_msg, best_block, &&keys_provider, &&logger).unwrap();
