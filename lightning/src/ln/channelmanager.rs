@@ -3216,7 +3216,7 @@ where
 			}
 
 			let mut output_index = None;
-			let expected_spk = chan.get_funding_redeemscript().to_v0_p2wsh();
+			let expected_spk = chan.context.get_funding_redeemscript().to_v0_p2wsh();
 			for (idx, outp) in tx.output.iter().enumerate() {
 				if outp.script_pubkey == expected_spk && outp.value == chan.context.get_value_satoshis() {
 					if output_index.is_some() {
@@ -4955,7 +4955,7 @@ where
 			match peer_state.channel_by_id.entry(msg.temporary_channel_id) {
 				hash_map::Entry::Occupied(mut chan) => {
 					try_chan_entry!(self, chan.get_mut().accept_channel(&msg, &self.default_configuration.channel_handshake_limits, &peer_state.latest_features), chan);
-					(chan.get().context.get_value_satoshis(), chan.get().get_funding_redeemscript().to_v0_p2wsh(), chan.get().context.get_user_id())
+					(chan.get().context.get_value_satoshis(), chan.get().context.get_funding_redeemscript().to_v0_p2wsh(), chan.get().context.get_user_id())
 				},
 				hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.temporary_channel_id))
 			}

@@ -1301,6 +1301,46 @@ impl<Signer: ChannelSigner> ChannelContext<Signer> {
 			preimages
 		}
 	}
+
+	#[inline]
+	/// Creates a set of keys for build_commitment_transaction to generate a transaction which our
+	/// counterparty will sign (ie DO NOT send signatures over a transaction created by this to
+	/// our counterparty!)
+	/// The result is a transaction which we can revoke broadcastership of (ie a "local" transaction)
+	/// TODO Some magic rust shit to compile-time check this?
+	fn build_holder_transaction_keys(&self, commitment_number: u64) -> TxCreationKeys {
+		let per_commitment_point = self.holder_signer.get_per_commitment_point(commitment_number, &self.secp_ctx);
+		let delayed_payment_base = &self.get_holder_pubkeys().delayed_payment_basepoint;
+		let htlc_basepoint = &self.get_holder_pubkeys().htlc_basepoint;
+		let counterparty_pubkeys = self.get_counterparty_pubkeys();
+
+		TxCreationKeys::derive_new(&self.secp_ctx, &per_commitment_point, delayed_payment_base, htlc_basepoint, &counterparty_pubkeys.revocation_basepoint, &counterparty_pubkeys.htlc_basepoint)
+	}
+
+	#[inline]
+	/// Creates a set of keys for build_commitment_transaction to generate a transaction which we
+	/// will sign and send to our counterparty.
+	/// If an Err is returned, it is a ChannelError::Close (for get_outbound_funding_created)
+	fn build_remote_transaction_keys(&self) -> TxCreationKeys {
+		//TODO: Ensure that the payment_key derived here ends up in the library users' wallet as we
+		//may see payments to it!
+		let revocation_basepoint = &self.get_holder_pubkeys().revocation_basepoint;
+		let htlc_basepoint = &self.get_holder_pubkeys().htlc_basepoint;
+		let counterparty_pubkeys = self.get_counterparty_pubkeys();
+
+		TxCreationKeys::derive_new(&self.secp_ctx, &self.counterparty_cur_commitment_point.unwrap(), &counterparty_pubkeys.delayed_payment_basepoint, &counterparty_pubkeys.htlc_basepoint, revocation_basepoint, htlc_basepoint)
+	}
+
+	/// Gets the redeemscript for the funding transaction output (ie the funding transaction output
+	/// pays to get_funding_redeemscript().to_v0_p2wsh()).
+	/// Panics if called before accept_channel/new_from_req
+	pub fn get_funding_redeemscript(&self) -> Script {
+		make_funding_redeemscript(&self.get_holder_pubkeys().funding_pubkey, self.counterparty_funding_pubkey())
+	}
+
+	fn counterparty_funding_pubkey(&self) -> &PublicKey {
+		&self.get_counterparty_pubkeys().funding_pubkey
+	}
 }
 
 // Internal utility functions for channels
@@ -2082,26 +2122,26 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 	#[inline]
 	fn get_closing_transaction_weight(&self, a_scriptpubkey: Option<&Script>, b_scriptpubkey: Option<&Script>) -> u64 {
 		let mut ret =
-		(4 +                                           // version
-		 1 +                                           // input count
-		 36 +                                          // prevout
-		 1 +                                           // script length (0)
-		 4 +                                           // sequence
-		 1 +                                           // output count
-		 4                                             // lock time
-		 )*4 +                                         // * 4 for non-witness parts
-		2 +                                            // witness marker and flag
-		1 +                                            // witness element count
-		4 +                                            // 4 element lengths (2 sigs, multisig dummy, and witness script)
-		self.get_funding_redeemscript().len() as u64 + // funding witness script
-		2*(1 + 71);                                    // two signatures + sighash type flags
+		(4 +                                                   // version
+		 1 +                                                   // input count
+		 36 +                                                  // prevout
+		 1 +                                                   // script length (0)
+		 4 +                                                   // sequence
+		 1 +                                                   // output count
+		 4                                                     // lock time
+		 )*4 +                                                 // * 4 for non-witness parts
+		2 +                                                    // witness marker and flag
+		1 +                                                    // witness element count
+		4 +                                                    // 4 element lengths (2 sigs, multisig dummy, and witness script)
+		self.context.get_funding_redeemscript().len() as u64 + // funding witness script
+		2*(1 + 71);                                            // two signatures + sighash type flags
 		if let Some(spk) = a_scriptpubkey {
-			ret += ((8+1) +                            // output values and script length
-				spk.len() as u64) * 4;                 // scriptpubkey and witness multiplier
+			ret += ((8+1) +                                    // output values and script length
+				spk.len() as u64) * 4;                         // scriptpubkey and witness multiplier
 		}
 		if let Some(spk) = b_scriptpubkey {
-			ret += ((8+1) +                            // output values and script length
-				spk.len() as u64) * 4;                 // scriptpubkey and witness multiplier
+			ret += ((8+1) +                                    // output values and script length
+				spk.len() as u64) * 4;                         // scriptpubkey and witness multiplier
 		}
 		ret
 	}
@@ -2143,42 +2183,6 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 
 	fn funding_outpoint(&self) -> OutPoint {
 		self.context.channel_transaction_parameters.funding_outpoint.unwrap()
-	}
-
-	#[inline]
-	/// Creates a set of keys for build_commitment_transaction to generate a transaction which our
-	/// counterparty will sign (ie DO NOT send signatures over a transaction created by this to
-	/// our counterparty!)
-	/// The result is a transaction which we can revoke broadcastership of (ie a "local" transaction)
-	/// TODO Some magic rust shit to compile-time check this?
-	fn build_holder_transaction_keys(&self, commitment_number: u64) -> TxCreationKeys {
-		let per_commitment_point = self.context.holder_signer.get_per_commitment_point(commitment_number, &self.context.secp_ctx);
-		let delayed_payment_base = &self.context.get_holder_pubkeys().delayed_payment_basepoint;
-		let htlc_basepoint = &self.context.get_holder_pubkeys().htlc_basepoint;
-		let counterparty_pubkeys = self.context.get_counterparty_pubkeys();
-
-		TxCreationKeys::derive_new(&self.context.secp_ctx, &per_commitment_point, delayed_payment_base, htlc_basepoint, &counterparty_pubkeys.revocation_basepoint, &counterparty_pubkeys.htlc_basepoint)
-	}
-
-	#[inline]
-	/// Creates a set of keys for build_commitment_transaction to generate a transaction which we
-	/// will sign and send to our counterparty.
-	/// If an Err is returned, it is a ChannelError::Close (for get_outbound_funding_created)
-	fn build_remote_transaction_keys(&self) -> TxCreationKeys {
-		//TODO: Ensure that the payment_key derived here ends up in the library users' wallet as we
-		//may see payments to it!
-		let revocation_basepoint = &self.context.get_holder_pubkeys().revocation_basepoint;
-		let htlc_basepoint = &self.context.get_holder_pubkeys().htlc_basepoint;
-		let counterparty_pubkeys = self.context.get_counterparty_pubkeys();
-
-		TxCreationKeys::derive_new(&self.context.secp_ctx, &self.context.counterparty_cur_commitment_point.unwrap(), &counterparty_pubkeys.delayed_payment_basepoint, &counterparty_pubkeys.htlc_basepoint, revocation_basepoint, htlc_basepoint)
-	}
-
-	/// Gets the redeemscript for the funding transaction output (ie the funding transaction output
-	/// pays to get_funding_redeemscript().to_v0_p2wsh()).
-	/// Panics if called before accept_channel/new_from_req
-	pub fn get_funding_redeemscript(&self) -> Script {
-		make_funding_redeemscript(&self.context.get_holder_pubkeys().funding_pubkey, self.counterparty_funding_pubkey())
 	}
 
 	/// Claims an HTLC while we're disconnected from a peer, dropping the [`ChannelMonitorUpdate`]
@@ -2615,9 +2619,9 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 	}
 
 	fn funding_created_signature<L: Deref>(&mut self, sig: &Signature, logger: &L) -> Result<(Txid, CommitmentTransaction, Signature), ChannelError> where L::Target: Logger {
-		let funding_script = self.get_funding_redeemscript();
+		let funding_script = self.context.get_funding_redeemscript();
 
-		let keys = self.build_holder_transaction_keys(self.context.cur_holder_commitment_transaction_number);
+		let keys = self.context.build_holder_transaction_keys(self.context.cur_holder_commitment_transaction_number);
 		let initial_commitment_tx = self.context.build_commitment_transaction(self.context.cur_holder_commitment_transaction_number, &keys, true, false, logger).tx;
 		{
 			let trusted_tx = initial_commitment_tx.trust();
@@ -2625,13 +2629,13 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			let sighash = initial_commitment_bitcoin_tx.get_sighash_all(&funding_script, self.context.channel_value_satoshis);
 			// They sign the holder commitment transaction...
 			log_trace!(logger, "Checking funding_created tx signature {} by key {} against tx {} (sighash {}) with redeemscript {} for channel {}.",
-				log_bytes!(sig.serialize_compact()[..]), log_bytes!(self.counterparty_funding_pubkey().serialize()),
+				log_bytes!(sig.serialize_compact()[..]), log_bytes!(self.context.counterparty_funding_pubkey().serialize()),
 				encode::serialize_hex(&initial_commitment_bitcoin_tx.transaction), log_bytes!(sighash[..]),
 				encode::serialize_hex(&funding_script), log_bytes!(self.context.channel_id()));
-			secp_check!(self.context.secp_ctx.verify_ecdsa(&sighash, &sig, self.counterparty_funding_pubkey()), "Invalid funding_created signature from peer".to_owned());
+			secp_check!(self.context.secp_ctx.verify_ecdsa(&sighash, &sig, self.context.counterparty_funding_pubkey()), "Invalid funding_created signature from peer".to_owned());
 		}
 
-		let counterparty_keys = self.build_remote_transaction_keys();
+		let counterparty_keys = self.context.build_remote_transaction_keys();
 		let counterparty_initial_commitment_tx = self.context.build_commitment_transaction(self.context.cur_counterparty_commitment_transaction_number, &counterparty_keys, false, false, logger).tx;
 
 		let counterparty_trusted_tx = counterparty_initial_commitment_tx.trust();
@@ -2644,10 +2648,6 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 
 		// We sign "counterparty" commitment transaction, allowing them to broadcast the tx if they wish.
 		Ok((counterparty_initial_bitcoin_tx.txid, initial_commitment_tx, counterparty_signature))
-	}
-
-	fn counterparty_funding_pubkey(&self) -> &PublicKey {
-		&self.context.get_counterparty_pubkeys().funding_pubkey
 	}
 
 	pub fn funding_created<SP: Deref, L: Deref>(
@@ -2699,15 +2699,15 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			msg.signature,
 			Vec::new(),
 			&self.context.get_holder_pubkeys().funding_pubkey,
-			self.counterparty_funding_pubkey()
+			self.context.counterparty_funding_pubkey()
 		);
 
 		self.context.holder_signer.validate_holder_commitment(&holder_commitment_tx, Vec::new())
 			.map_err(|_| ChannelError::Close("Failed to validate our commitment".to_owned()))?;
 
-		// Now that we're past error-generating stuff, update our local state:
+	        	// Now that we're past error-generating stuff, update our local state:
 
-		let funding_redeemscript = self.get_funding_redeemscript();
+		let funding_redeemscript = self.context.get_funding_redeemscript();
 		let funding_txo_script = funding_redeemscript.to_v0_p2wsh();
 		let obscure_factor = get_commitment_transaction_number_obscure_factor(&self.context.get_holder_pubkeys().payment_point, &self.context.get_counterparty_pubkeys().payment_point, self.context.is_outbound());
 		let shutdown_script = self.context.shutdown_scriptpubkey.clone().map(|script| script.into_inner());
@@ -2762,9 +2762,9 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			panic!("Should not have advanced channel commitment tx numbers prior to funding_created");
 		}
 
-		let funding_script = self.get_funding_redeemscript();
+		let funding_script = self.context.get_funding_redeemscript();
 
-		let counterparty_keys = self.build_remote_transaction_keys();
+		let counterparty_keys = self.context.build_remote_transaction_keys();
 		let counterparty_initial_commitment_tx = self.context.build_commitment_transaction(self.context.cur_counterparty_commitment_transaction_number, &counterparty_keys, false, false, logger).tx;
 		let counterparty_trusted_tx = counterparty_initial_commitment_tx.trust();
 		let counterparty_initial_bitcoin_tx = counterparty_trusted_tx.built_transaction();
@@ -2772,7 +2772,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		log_trace!(logger, "Initial counterparty tx for channel {} is: txid {} tx {}",
 			log_bytes!(self.context.channel_id()), counterparty_initial_bitcoin_tx.txid, encode::serialize_hex(&counterparty_initial_bitcoin_tx.transaction));
 
-		let holder_signer = self.build_holder_transaction_keys(self.context.cur_holder_commitment_transaction_number);
+		let holder_signer = self.context.build_holder_transaction_keys(self.context.cur_holder_commitment_transaction_number);
 		let initial_commitment_tx = self.context.build_commitment_transaction(self.context.cur_holder_commitment_transaction_number, &holder_signer, true, false, logger).tx;
 		{
 			let trusted_tx = initial_commitment_tx.trust();
@@ -2789,14 +2789,14 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			msg.signature,
 			Vec::new(),
 			&self.context.get_holder_pubkeys().funding_pubkey,
-			self.counterparty_funding_pubkey()
+			self.context.counterparty_funding_pubkey()
 		);
 
 		self.context.holder_signer.validate_holder_commitment(&holder_commitment_tx, Vec::new())
 			.map_err(|_| ChannelError::Close("Failed to validate our commitment".to_owned()))?;
 
 
-		let funding_redeemscript = self.get_funding_redeemscript();
+		let funding_redeemscript = self.context.get_funding_redeemscript();
 		let funding_txo = self.context.get_funding_txo().unwrap();
 		let funding_txo_script = funding_redeemscript.to_v0_p2wsh();
 		let obscure_factor = get_commitment_transaction_number_obscure_factor(&self.context.get_holder_pubkeys().payment_point, &self.context.get_counterparty_pubkeys().payment_point, self.context.is_outbound());
@@ -3558,9 +3558,9 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			return Err(ChannelError::Close("Peer sent commitment_signed after we'd started exchanging closing_signeds".to_owned()));
 		}
 
-		let funding_script = self.get_funding_redeemscript();
+		let funding_script = self.context.get_funding_redeemscript();
 
-		let keys = self.build_holder_transaction_keys(self.context.cur_holder_commitment_transaction_number);
+		let keys = self.context.build_holder_transaction_keys(self.context.cur_holder_commitment_transaction_number);
 
 		let commitment_stats = self.context.build_commitment_transaction(self.context.cur_holder_commitment_transaction_number, &keys, true, false, logger);
 		let commitment_txid = {
@@ -3570,9 +3570,9 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 
 			log_trace!(logger, "Checking commitment tx signature {} by key {} against tx {} (sighash {}) with redeemscript {} in channel {}",
 				log_bytes!(msg.signature.serialize_compact()[..]),
-				log_bytes!(self.counterparty_funding_pubkey().serialize()), encode::serialize_hex(&bitcoin_tx.transaction),
+				log_bytes!(self.context.counterparty_funding_pubkey().serialize()), encode::serialize_hex(&bitcoin_tx.transaction),
 				log_bytes!(sighash[..]), encode::serialize_hex(&funding_script), log_bytes!(self.context.channel_id()));
-			if let Err(_) = self.context.secp_ctx.verify_ecdsa(&sighash, &msg.signature, &self.counterparty_funding_pubkey()) {
+			if let Err(_) = self.context.secp_ctx.verify_ecdsa(&sighash, &msg.signature, &self.context.counterparty_funding_pubkey()) {
 				return Err(ChannelError::Close("Invalid commitment tx signature from peer".to_owned()));
 			}
 			bitcoin_tx.txid
@@ -3664,7 +3664,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			msg.signature,
 			msg.htlc_signatures.clone(),
 			&self.context.get_holder_pubkeys().funding_pubkey,
-			self.counterparty_funding_pubkey()
+			self.context.counterparty_funding_pubkey()
 		);
 
 		self.context.holder_signer.validate_holder_commitment(&holder_commitment_tx, commitment_stats.preimages)
@@ -4152,7 +4152,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		// Before proposing a feerate update, check that we can actually afford the new fee.
 		let inbound_stats = self.get_inbound_pending_htlc_stats(Some(feerate_per_kw));
 		let outbound_stats = self.get_outbound_pending_htlc_stats(Some(feerate_per_kw));
-		let keys = self.build_holder_transaction_keys(self.context.cur_holder_commitment_transaction_number);
+		let keys = self.context.build_holder_transaction_keys(self.context.cur_holder_commitment_transaction_number);
 		let commitment_stats = self.context.build_commitment_transaction(self.context.cur_holder_commitment_transaction_number, &keys, true, true, logger);
 		let buffer_fee_msat = commit_tx_fee_sat(feerate_per_kw, commitment_stats.num_nondust_htlcs + outbound_stats.on_holder_tx_holding_cell_htlcs_count as usize + CONCURRENT_INBOUND_HTLC_FEE_BUFFER as usize, self.context.opt_anchors()) * 1000;
 		let holder_balance_msat = commitment_stats.local_balance_msat - outbound_stats.holding_cell_msat;
@@ -4920,7 +4920,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		tx.input[0].witness.push(Vec::new()); // First is the multisig dummy
 
 		let funding_key = self.context.get_holder_pubkeys().funding_pubkey.serialize();
-		let counterparty_funding_key = self.counterparty_funding_pubkey().serialize();
+		let counterparty_funding_key = self.context.counterparty_funding_pubkey().serialize();
 		let mut holder_sig = sig.serialize_der().to_vec();
 		holder_sig.push(EcdsaSighashType::All as u8);
 		let mut cp_sig = counterparty_sig.serialize_der().to_vec();
@@ -4933,7 +4933,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			tx.input[0].witness.push(holder_sig);
 		}
 
-		tx.input[0].witness.push(self.get_funding_redeemscript().into_bytes());
+		tx.input[0].witness.push(self.context.get_funding_redeemscript().into_bytes());
 		tx
 	}
 
@@ -4964,7 +4964,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			return Ok((None, None));
 		}
 
-		let funding_redeemscript = self.get_funding_redeemscript();
+		let funding_redeemscript = self.context.get_funding_redeemscript();
 		let (mut closing_tx, used_total_fee) = self.build_closing_transaction(msg.fee_satoshis, false);
 		if used_total_fee != msg.fee_satoshis {
 			return Err(ChannelError::Close(format!("Remote sent us a closing_signed with a fee other than the value they can claim. Fee in message: {}. Actual closing tx fee: {}", msg.fee_satoshis, used_total_fee)));
@@ -4978,7 +4978,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 				// limits, so check for that case by re-checking the signature here.
 				closing_tx = self.build_closing_transaction(msg.fee_satoshis, true).0;
 				let sighash = closing_tx.trust().get_sighash_all(&funding_redeemscript, self.context.channel_value_satoshis);
-				secp_check!(self.context.secp_ctx.verify_ecdsa(&sighash, &msg.signature, self.counterparty_funding_pubkey()), "Invalid closing tx signature from peer".to_owned());
+				secp_check!(self.context.secp_ctx.verify_ecdsa(&sighash, &msg.signature, self.context.counterparty_funding_pubkey()), "Invalid closing tx signature from peer".to_owned());
 			},
 		};
 
@@ -5405,7 +5405,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 				if self.context.funding_tx_confirmation_height == 0 {
 					if tx.txid() == funding_txo.txid {
 						let txo_idx = funding_txo.index as usize;
-						if txo_idx >= tx.output.len() || tx.output[txo_idx].script_pubkey != self.get_funding_redeemscript().to_v0_p2wsh() ||
+						if txo_idx >= tx.output.len() || tx.output[txo_idx].script_pubkey != self.context.get_funding_redeemscript().to_v0_p2wsh() ||
 								tx.output[txo_idx].value != self.context.channel_value_satoshis {
 							if self.context.is_outbound() {
 								// If we generated the funding transaction and it doesn't match what it
@@ -5706,7 +5706,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 
 	/// If an Err is returned, it is a ChannelError::Close (for get_outbound_funding_created)
 	fn get_outbound_funding_created_signature<L: Deref>(&mut self, logger: &L) -> Result<Signature, ChannelError> where L::Target: Logger {
-		let counterparty_keys = self.build_remote_transaction_keys();
+		let counterparty_keys = self.context.build_remote_transaction_keys();
 		let counterparty_initial_commitment_tx = self.context.build_commitment_transaction(self.context.cur_counterparty_commitment_transaction_number, &counterparty_keys, false, false, logger).tx;
 		Ok(self.context.holder_signer.sign_counterparty_commitment(&counterparty_initial_commitment_tx, Vec::new(), &self.context.secp_ctx)
 				.map_err(|_| ChannelError::Close("Failed to get signatures for new commitment_signed".to_owned()))?.0)
@@ -5794,8 +5794,8 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			short_channel_id: self.context.get_short_channel_id().unwrap(),
 			node_id_1: if were_node_one { node_id } else { counterparty_node_id },
 			node_id_2: if were_node_one { counterparty_node_id } else { node_id },
-			bitcoin_key_1: NodeId::from_pubkey(if were_node_one { &self.context.get_holder_pubkeys().funding_pubkey } else { self.counterparty_funding_pubkey() }),
-			bitcoin_key_2: NodeId::from_pubkey(if were_node_one { self.counterparty_funding_pubkey() } else { &self.context.get_holder_pubkeys().funding_pubkey }),
+			bitcoin_key_1: NodeId::from_pubkey(if were_node_one { &self.context.get_holder_pubkeys().funding_pubkey } else { self.context.counterparty_funding_pubkey() }),
+			bitcoin_key_2: NodeId::from_pubkey(if were_node_one { self.context.counterparty_funding_pubkey() } else { &self.context.get_holder_pubkeys().funding_pubkey }),
 			excess_data: Vec::new(),
 		};
 
@@ -5901,10 +5901,10 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 				"Bad announcement_signatures. Failed to verify node_signature. UnsignedChannelAnnouncement used for verification is {:?}. their_node_key is {:?}",
 				 &announcement, self.context.get_counterparty_node_id())));
 		}
-		if self.context.secp_ctx.verify_ecdsa(&msghash, &msg.bitcoin_signature, self.counterparty_funding_pubkey()).is_err() {
+		if self.context.secp_ctx.verify_ecdsa(&msghash, &msg.bitcoin_signature, self.context.counterparty_funding_pubkey()).is_err() {
 			return Err(ChannelError::Close(format!(
 				"Bad announcement_signatures. Failed to verify bitcoin_signature. UnsignedChannelAnnouncement used for verification is {:?}. their_bitcoin_key is ({:?})",
-				&announcement, self.counterparty_funding_pubkey())));
+				&announcement, self.context.counterparty_funding_pubkey())));
 		}
 
 		self.context.announcement_sigs = Some((msg.node_signature, msg.bitcoin_signature));
@@ -6158,7 +6158,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 	}
 
 	fn build_commitment_no_state_update<L: Deref>(&self, logger: &L) -> (Txid, Vec<(HTLCOutputInCommitment, Option<&HTLCSource>)>) where L::Target: Logger {
-		let counterparty_keys = self.build_remote_transaction_keys();
+		let counterparty_keys = self.context.build_remote_transaction_keys();
 		let commitment_stats = self.context.build_commitment_transaction(self.context.cur_counterparty_commitment_transaction_number, &counterparty_keys, false, true, logger);
 		let counterparty_commitment_txid = commitment_stats.tx.trust().txid();
 
@@ -6190,7 +6190,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		#[cfg(any(test, fuzzing))]
 		self.build_commitment_no_state_update(logger);
 
-		let counterparty_keys = self.build_remote_transaction_keys();
+		let counterparty_keys = self.context.build_remote_transaction_keys();
 		let commitment_stats = self.context.build_commitment_transaction(self.context.cur_counterparty_commitment_transaction_number, &counterparty_keys, false, true, logger);
 		let counterparty_commitment_txid = commitment_stats.tx.trust().txid();
 		let (signature, htlc_signatures);
@@ -6208,7 +6208,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 
 			log_trace!(logger, "Signed remote commitment tx {} (txid {}) with redeemscript {} -> {} in channel {}",
 				encode::serialize_hex(&commitment_stats.tx.trust().built_transaction().transaction),
-				&counterparty_commitment_txid, encode::serialize_hex(&self.get_funding_redeemscript()),
+				&counterparty_commitment_txid, encode::serialize_hex(&self.context.get_funding_redeemscript()),
 				log_bytes!(signature.serialize_compact()[..]), log_bytes!(self.context.channel_id()));
 
 			for (ref htlc_sig, ref htlc) in htlc_signatures.iter().zip(htlcs) {
@@ -7561,7 +7561,7 @@ mod tests {
 		node_a_chan.accept_channel(&accept_channel_msg, &config.channel_handshake_limits, &channelmanager::provided_init_features(&config)).unwrap();
 
 		// Node A --> Node B: funding created
-		let output_script = node_a_chan.get_funding_redeemscript();
+		let output_script = node_a_chan.context.get_funding_redeemscript();
 		let tx = Transaction { version: 1, lock_time: PackedLockTime::ZERO, input: Vec::new(), output: vec![TxOut {
 			value: 10000000, script_pubkey: output_script.clone(),
 		}]};
@@ -7878,11 +7878,11 @@ mod tests {
 				};
 				let trusted_tx = commitment_tx.trust();
 				let unsigned_tx = trusted_tx.built_transaction();
-				let redeemscript = chan.get_funding_redeemscript();
+				let redeemscript = chan.context.get_funding_redeemscript();
 				let counterparty_signature = Signature::from_der(&hex::decode($counterparty_sig_hex).unwrap()[..]).unwrap();
 				let sighash = unsigned_tx.get_sighash_all(&redeemscript, chan.context.channel_value_satoshis);
 				log_trace!(logger, "unsigned_tx = {}", hex::encode(serialize(&unsigned_tx.transaction)));
-				assert!(secp_ctx.verify_ecdsa(&sighash, &counterparty_signature, chan.counterparty_funding_pubkey()).is_ok(), "verify counterparty commitment sig");
+				assert!(secp_ctx.verify_ecdsa(&sighash, &counterparty_signature, chan.context.counterparty_funding_pubkey()).is_ok(), "verify counterparty commitment sig");
 
 				let mut per_htlc: Vec<(HTLCOutputInCommitment, Option<Signature>)> = Vec::new();
 				per_htlc.clear(); // Don't warn about excess mut for no-HTLC calls
@@ -7900,12 +7900,12 @@ mod tests {
 					counterparty_signature,
 					counterparty_htlc_sigs,
 					&chan.context.holder_signer.pubkeys().funding_pubkey,
-					chan.counterparty_funding_pubkey()
+					chan.context.counterparty_funding_pubkey()
 				);
 				let (holder_sig, htlc_sigs) = signer.sign_holder_commitment_and_htlcs(&holder_commitment_tx, &secp_ctx).unwrap();
 				assert_eq!(Signature::from_der(&hex::decode($sig_hex).unwrap()[..]).unwrap(), holder_sig, "holder_sig");
 
-				let funding_redeemscript = chan.get_funding_redeemscript();
+				let funding_redeemscript = chan.context.get_funding_redeemscript();
 				let tx = holder_commitment_tx.add_holder_sig(&funding_redeemscript, holder_sig);
 				assert_eq!(serialize(&tx)[..], hex::decode($tx_hex).unwrap()[..], "tx");
 
