@@ -1614,10 +1614,10 @@ macro_rules! handle_error {
 }
 
 macro_rules! update_maps_on_chan_removal {
-	($self: expr, $channel: expr) => {{
-		$self.id_to_peer.lock().unwrap().remove(&$channel.context.channel_id());
+	($self: expr, $channel_context: expr) => {{
+		$self.id_to_peer.lock().unwrap().remove(&$channel_context.channel_id());
 		let mut short_to_chan_info = $self.short_to_chan_info.write().unwrap();
-		if let Some(short_id) = $channel.context.get_short_channel_id() {
+		if let Some(short_id) = $channel_context.get_short_channel_id() {
 			short_to_chan_info.remove(&short_id);
 		} else {
 			// If the channel was never confirmed on-chain prior to its closure, remove the
@@ -1626,10 +1626,10 @@ macro_rules! update_maps_on_chan_removal {
 			// also don't want a counterparty to be able to trivially cause a memory leak by simply
 			// opening a million channels with us which are closed before we ever reach the funding
 			// stage.
-			let alias_removed = $self.outbound_scid_aliases.lock().unwrap().remove(&$channel.context.outbound_scid_alias());
+			let alias_removed = $self.outbound_scid_aliases.lock().unwrap().remove(&$channel_context.outbound_scid_alias());
 			debug_assert!(alias_removed);
 		}
-		short_to_chan_info.remove(&$channel.context.outbound_scid_alias());
+		short_to_chan_info.remove(&$channel_context.outbound_scid_alias());
 	}}
 }
 
@@ -1645,7 +1645,7 @@ macro_rules! convert_chan_err {
 			},
 			ChannelError::Close(msg) => {
 				log_error!($self.logger, "Closing channel {} due to close-required error: {}", log_bytes!($channel_id[..]), msg);
-				update_maps_on_chan_removal!($self, $channel);
+				update_maps_on_chan_removal!($self, &$channel.context);
 				let shutdown_res = $channel.context.force_shutdown(true);
 				(true, MsgHandleErrInternal::from_finish_shutdown(msg, *$channel_id, $channel.context.get_user_id(),
 					shutdown_res, $self.get_channel_update_for_broadcast(&$channel).ok()))
@@ -1688,7 +1688,7 @@ macro_rules! remove_channel {
 	($self: expr, $entry: expr) => {
 		{
 			let channel = $entry.remove_entry().1;
-			update_maps_on_chan_removal!($self, channel);
+			update_maps_on_chan_removal!($self, &channel.context);
 			channel
 		}
 	}
@@ -1810,7 +1810,7 @@ macro_rules! handle_new_monitor_update {
 			ChannelMonitorUpdateStatus::PermanentFailure => {
 				log_error!($self.logger, "Closing channel {} due to monitor update ChannelMonitorUpdateStatus::PermanentFailure",
 					log_bytes!($chan.context.channel_id()[..]));
-				update_maps_on_chan_removal!($self, $chan);
+				update_maps_on_chan_removal!($self, &$chan.context);
 				let res: Result<(), _> = Err(MsgHandleErrInternal::from_finish_shutdown(
 					"ChannelMonitor storage failure".to_owned(), $chan.context.channel_id(),
 					$chan.context.get_user_id(), $chan.context.force_shutdown(false),
@@ -2798,6 +2798,7 @@ where
 
 		self.get_channel_update_for_onion(short_channel_id, chan)
 	}
+
 	fn get_channel_update_for_onion(&self, short_channel_id: u64, chan: &Channel<<SP::Target as SignerProvider>::Signer>) -> Result<msgs::ChannelUpdate, LightningError> {
 		log_trace!(self.logger, "Generating channel update for channel {}", log_bytes!(chan.context.channel_id()));
 		let were_node_one = self.our_network_pubkey.serialize()[..] < chan.context.get_counterparty_node_id().serialize()[..];
@@ -5826,7 +5827,7 @@ where
 
 								log_info!(self.logger, "Broadcasting {}", log_tx!(tx));
 								self.tx_broadcaster.broadcast_transactions(&[&tx]);
-								update_maps_on_chan_removal!(self, chan);
+								update_maps_on_chan_removal!(self, &chan.context);
 								false
 							} else { true }
 						},
@@ -6530,7 +6531,7 @@ where
 							}
 						}
 					} else if let Err(reason) = res {
-						update_maps_on_chan_removal!(self, channel);
+						update_maps_on_chan_removal!(self, &channel.context);
 						// It looks like our counterparty went on-chain or funding transaction was
 						// reorged out of the main chain. Close the channel.
 						failed_channels.push(channel.context.force_shutdown(true));
@@ -6790,7 +6791,7 @@ where
 				peer_state.channel_by_id.retain(|_, chan| {
 					chan.remove_uncommitted_htlcs_and_mark_paused(&self.logger);
 					if chan.is_shutdown() {
-						update_maps_on_chan_removal!(self, chan);
+						update_maps_on_chan_removal!(self, &chan.context);
 						self.issue_channel_close_events(&chan.context, ClosureReason::DisconnectedPeer);
 						return false;
 					}
