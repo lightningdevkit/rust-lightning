@@ -1373,8 +1373,14 @@ pub struct ChannelDetails {
 	/// the current state and per-HTLC limit(s). This is intended for use when routing, allowing us
 	/// to use a limit as close as possible to the HTLC limit we can currently send.
 	///
-	/// See also [`ChannelDetails::balance_msat`] and [`ChannelDetails::outbound_capacity_msat`].
+	/// See also [`ChannelDetails::next_outbound_htlc_minimum_msat`],
+	/// [`ChannelDetails::balance_msat`], and [`ChannelDetails::outbound_capacity_msat`].
 	pub next_outbound_htlc_limit_msat: u64,
+	/// The minimum value for sending a single HTLC to the remote peer. This is the equivalent of
+	/// [`ChannelDetails::next_outbound_htlc_limit_msat`] but represents a lower-bound, rather than
+	/// an upper-bound. This is intended for use when routing, allowing us to ensure we pick a
+	/// route which is valid.
+	pub next_outbound_htlc_minimum_msat: u64,
 	/// The available inbound capacity for the remote peer to send HTLCs to us. This does not
 	/// include any pending HTLCs which are not yet fully resolved (and, thus, whose balance is not
 	/// available for inclusion in new inbound HTLCs).
@@ -1494,6 +1500,7 @@ impl ChannelDetails {
 			inbound_capacity_msat: balance.inbound_capacity_msat,
 			outbound_capacity_msat: balance.outbound_capacity_msat,
 			next_outbound_htlc_limit_msat: balance.next_outbound_htlc_limit_msat,
+			next_outbound_htlc_minimum_msat: balance.next_outbound_htlc_minimum_msat,
 			user_channel_id: channel.get_user_id(),
 			confirmations_required: channel.minimum_depth(),
 			confirmations: Some(channel.get_funding_tx_confirmations(best_block_height)),
@@ -7170,10 +7177,9 @@ impl Writeable for ChannelDetails {
 			(14, user_channel_id_low, required),
 			(16, self.balance_msat, required),
 			(18, self.outbound_capacity_msat, required),
-			// Note that by the time we get past the required read above, outbound_capacity_msat will be
-			// filled in, so we can safely unwrap it here.
-			(19, self.next_outbound_htlc_limit_msat, (default_value, outbound_capacity_msat.0.unwrap() as u64)),
+			(19, self.next_outbound_htlc_limit_msat, required),
 			(20, self.inbound_capacity_msat, required),
+			(21, self.next_outbound_htlc_minimum_msat, required),
 			(22, self.confirmations_required, option),
 			(24, self.force_close_spend_delay, option),
 			(26, self.is_outbound, required),
@@ -7210,6 +7216,7 @@ impl Readable for ChannelDetails {
 			// filled in, so we can safely unwrap it here.
 			(19, next_outbound_htlc_limit_msat, (default_value, outbound_capacity_msat.0.unwrap() as u64)),
 			(20, inbound_capacity_msat, required),
+			(21, next_outbound_htlc_minimum_msat, (default_value, 0)),
 			(22, confirmations_required, option),
 			(24, force_close_spend_delay, option),
 			(26, is_outbound, required),
@@ -7243,6 +7250,7 @@ impl Readable for ChannelDetails {
 			balance_msat: balance_msat.0.unwrap(),
 			outbound_capacity_msat: outbound_capacity_msat.0.unwrap(),
 			next_outbound_htlc_limit_msat: next_outbound_htlc_limit_msat.0.unwrap(),
+			next_outbound_htlc_minimum_msat: next_outbound_htlc_minimum_msat.0.unwrap(),
 			inbound_capacity_msat: inbound_capacity_msat.0.unwrap(),
 			confirmations_required,
 			confirmations,

@@ -285,7 +285,7 @@ impl KeyProvider {
 }
 
 #[inline]
-fn check_api_err(api_err: APIError) {
+fn check_api_err(api_err: APIError, sendable_bounds_violated: bool) {
 	match api_err {
 		APIError::APIMisuseError { .. } => panic!("We can't misuse the API"),
 		APIError::FeeRateTooHigh { .. } => panic!("We can't send too much fee?"),
@@ -296,15 +296,11 @@ fn check_api_err(api_err: APIError) {
 			// is probably just stale and you should add new messages here.
 			match err.as_str() {
 				"Peer for first hop currently disconnected" => {},
-				_ if err.starts_with("Cannot push more than their max accepted HTLCs ") => {},
-				_ if err.starts_with("Cannot send value that would put us over the max HTLC value in flight our peer will accept ") => {},
-				_ if err.starts_with("Cannot send value that would put our balance under counterparty-announced channel reserve value") => {},
-				_ if err.starts_with("Cannot send value that would put counterparty balance under holder-announced channel reserve value") => {},
-				_ if err.starts_with("Cannot send value that would overdraw remaining funds.") => {},
-				_ if err.starts_with("Cannot send value that would not leave enough to pay for fees.") => {},
-				_ if err.starts_with("Cannot send value that would put our exposure to dust HTLCs at") => {},
+				_ if err.starts_with("Cannot send less than our next-HTLC minimum - ") => {},
+				_ if err.starts_with("Cannot send more than our next-HTLC maximum - ") => {},
 				_ => panic!("{}", err),
 			}
+			assert!(sendable_bounds_violated);
 		},
 		APIError::MonitorUpdateInProgress => {
 			// We can (obviously) temp-fail a monitor update
@@ -313,17 +309,17 @@ fn check_api_err(api_err: APIError) {
 	}
 }
 #[inline]
-fn check_payment_err(send_err: PaymentSendFailure) {
+fn check_payment_err(send_err: PaymentSendFailure, sendable_bounds_violated: bool) {
 	match send_err {
-		PaymentSendFailure::ParameterError(api_err) => check_api_err(api_err),
+		PaymentSendFailure::ParameterError(api_err) => check_api_err(api_err, sendable_bounds_violated),
 		PaymentSendFailure::PathParameterError(per_path_results) => {
-			for res in per_path_results { if let Err(api_err) = res { check_api_err(api_err); } }
+			for res in per_path_results { if let Err(api_err) = res { check_api_err(api_err, sendable_bounds_violated); } }
 		},
 		PaymentSendFailure::AllFailedResendSafe(per_path_results) => {
-			for api_err in per_path_results { check_api_err(api_err); }
+			for api_err in per_path_results { check_api_err(api_err, sendable_bounds_violated); }
 		},
 		PaymentSendFailure::PartialFailure { results, .. } => {
-			for res in results { if let Err(api_err) = res { check_api_err(api_err); } }
+			for res in results { if let Err(api_err) = res { check_api_err(api_err, sendable_bounds_violated); } }
 		},
 		PaymentSendFailure::DuplicatePayment => panic!(),
 	}
@@ -351,6 +347,11 @@ fn send_payment(source: &ChanMan, dest: &ChanMan, dest_chan_id: u64, amt: u64, p
 	let mut payment_id = [0; 32];
 	payment_id[0..8].copy_from_slice(&payment_idx.to_ne_bytes());
 	*payment_idx += 1;
+	let (min_value_sendable, max_value_sendable) = source.list_usable_channels()
+		.iter().find(|chan| chan.short_channel_id == Some(dest_chan_id))
+		.map(|chan|
+			(chan.next_outbound_htlc_minimum_msat, chan.next_outbound_htlc_limit_msat))
+		.unwrap_or((0, 0));
 	if let Err(err) = source.send_payment_with_route(&Route {
 		paths: vec![Path { hops: vec![RouteHop {
 			pubkey: dest.get_our_node_id(),
@@ -362,9 +363,15 @@ fn send_payment(source: &ChanMan, dest: &ChanMan, dest_chan_id: u64, amt: u64, p
 		}], blinded_tail: None }],
 		payment_params: None,
 	}, payment_hash, RecipientOnionFields::secret_only(payment_secret), PaymentId(payment_id)) {
-		check_payment_err(err);
+		check_payment_err(err, amt > max_value_sendable || amt < min_value_sendable);
 		false
-	} else { true }
+	} else {
+		// Note that while the max is a strict upper-bound, we can occasionally send substantially
+		// below the minimum, with some gap which is unusable immediately below the minimum. Thus,
+		// we don't check against min_value_sendable here.
+		assert!(amt <= max_value_sendable);
+		true
+	}
 }
 #[inline]
 fn send_hop_payment(source: &ChanMan, middle: &ChanMan, middle_chan_id: u64, dest: &ChanMan, dest_chan_id: u64, amt: u64, payment_id: &mut u8, payment_idx: &mut u64) -> bool {
@@ -373,13 +380,19 @@ fn send_hop_payment(source: &ChanMan, middle: &ChanMan, middle_chan_id: u64, des
 	let mut payment_id = [0; 32];
 	payment_id[0..8].copy_from_slice(&payment_idx.to_ne_bytes());
 	*payment_idx += 1;
+	let (min_value_sendable, max_value_sendable) = source.list_usable_channels()
+		.iter().find(|chan| chan.short_channel_id == Some(middle_chan_id))
+		.map(|chan|
+			(chan.next_outbound_htlc_minimum_msat, chan.next_outbound_htlc_limit_msat))
+		.unwrap_or((0, 0));
+	let first_hop_fee = 50_000;
 	if let Err(err) = source.send_payment_with_route(&Route {
 		paths: vec![Path { hops: vec![RouteHop {
 			pubkey: middle.get_our_node_id(),
 			node_features: middle.node_features(),
 			short_channel_id: middle_chan_id,
 			channel_features: middle.channel_features(),
-			fee_msat: 50000,
+			fee_msat: first_hop_fee,
 			cltv_expiry_delta: 100,
 		},RouteHop {
 			pubkey: dest.get_our_node_id(),
@@ -391,9 +404,16 @@ fn send_hop_payment(source: &ChanMan, middle: &ChanMan, middle_chan_id: u64, des
 		}], blinded_tail: None }],
 		payment_params: None,
 	}, payment_hash, RecipientOnionFields::secret_only(payment_secret), PaymentId(payment_id)) {
-		check_payment_err(err);
+		let sent_amt = amt + first_hop_fee;
+		check_payment_err(err, sent_amt < min_value_sendable || sent_amt > max_value_sendable);
 		false
-	} else { true }
+	} else {
+		// Note that while the max is a strict upper-bound, we can occasionally send substantially
+		// below the minimum, with some gap which is unusable immediately below the minimum. Thus,
+		// we don't check against min_value_sendable here.
+		assert!(amt + first_hop_fee <= max_value_sendable);
+		true
+	}
 }
 
 #[inline]

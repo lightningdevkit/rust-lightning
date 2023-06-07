@@ -1102,6 +1102,9 @@ fn holding_cell_htlc_counting() {
 	create_announced_chan_between_nodes(&nodes, 0, 1);
 	let chan_2 = create_announced_chan_between_nodes(&nodes, 1, 2);
 
+	// Fetch a route in advance as we will be unable to once we're unable to send.
+	let (route, payment_hash_1, _, payment_secret_1) = get_route_and_payment_hash!(nodes[1], nodes[2], 100000);
+
 	let mut payments = Vec::new();
 	for _ in 0..50 {
 		let (route, payment_hash, payment_preimage, payment_secret) = get_route_and_payment_hash!(nodes[1], nodes[2], 100000);
@@ -1119,14 +1122,11 @@ fn holding_cell_htlc_counting() {
 	// There is now one HTLC in an outbound commitment transaction and (OUR_MAX_HTLCS - 1) HTLCs in
 	// the holding cell waiting on B's RAA to send. At this point we should not be able to add
 	// another HTLC.
-	let (route, payment_hash_1, _, payment_secret_1) = get_route_and_payment_hash!(nodes[1], nodes[2], 100000);
 	{
 		unwrap_send_err!(nodes[1].node.send_payment_with_route(&route, payment_hash_1,
 				RecipientOnionFields::secret_only(payment_secret_1), PaymentId(payment_hash_1.0)
-			), true, APIError::ChannelUnavailable { ref err },
-			assert!(regex::Regex::new(r"Cannot push more than their max accepted HTLCs \(\d+\)").unwrap().is_match(err)));
+			), true, APIError::ChannelUnavailable { .. }, {});
 		assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
-		nodes[1].logger.assert_log_contains("lightning::ln::channelmanager", "Cannot push more than their max accepted HTLCs", 1);
 	}
 
 	// This should also be true if we try to forward a payment.
@@ -1342,21 +1342,19 @@ fn test_basic_channel_reserve() {
 	// The 2* and +1 are for the fee spike reserve.
 	let commit_tx_fee = 2 * commit_tx_fee_msat(get_feerate!(nodes[0], nodes[1], chan.2), 1 + 1, get_opt_anchors!(nodes[0], nodes[1], chan.2));
 	let max_can_send = 5000000 - channel_reserve - commit_tx_fee;
-	let (route, our_payment_hash, _, our_payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[1], max_can_send + 1);
+	let (mut route, our_payment_hash, _, our_payment_secret) =
+		get_route_and_payment_hash!(nodes[0], nodes[1], max_can_send);
+	route.paths[0].hops.last_mut().unwrap().fee_msat += 1;
 	let err = nodes[0].node.send_payment_with_route(&route, our_payment_hash,
 		RecipientOnionFields::secret_only(our_payment_secret), PaymentId(our_payment_hash.0)).err().unwrap();
 	match err {
 		PaymentSendFailure::AllFailedResendSafe(ref fails) => {
-			match &fails[0] {
-				&APIError::ChannelUnavailable{ref err} =>
-					assert!(regex::Regex::new(r"Cannot send value that would put our balance under counterparty-announced channel reserve value \(\d+\)").unwrap().is_match(err)),
-				_ => panic!("Unexpected error variant"),
-			}
+			if let &APIError::ChannelUnavailable { .. } = &fails[0] {}
+			else { panic!("Unexpected error variant"); }
 		},
 		_ => panic!("Unexpected error variant"),
 	}
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
-	nodes[0].logger.assert_log_contains("lightning::ln::channelmanager", "Cannot send value that would put our balance under counterparty-announced channel reserve value", 1);
 
 	send_payment(&nodes[0], &vec![&nodes[1]], max_can_send);
 }
@@ -1369,7 +1367,9 @@ fn test_fee_spike_violation_fails_htlc() {
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 95000000);
 
-	let (route, payment_hash, _, payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[1], 3460001);
+	let (mut route, payment_hash, _, payment_secret) =
+		get_route_and_payment_hash!(nodes[0], nodes[1], 3460000);
+	route.paths[0].hops[0].fee_msat += 1;
 	// Need to manually create the update_add_htlc message to go around the channel reserve check in send_htlc()
 	let secp_ctx = Secp256k1::new();
 	let session_priv = SecretKey::from_slice(&[42; 32]).expect("RNG is bad!");
@@ -1521,19 +1521,18 @@ fn test_chan_reserve_violation_outbound_htlc_inbound_chan() {
 
 	let _ = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100_000, push_amt);
 
+	// Fetch a route in advance as we will be unable to once we're unable to send.
+	let (route, our_payment_hash, _, our_payment_secret) = get_route_and_payment_hash!(nodes[1], nodes[0], 1_000_000);
 	// Sending exactly enough to hit the reserve amount should be accepted
 	for _ in 0..MIN_AFFORDABLE_HTLC_COUNT {
 		let (_, _, _) = route_payment(&nodes[1], &[&nodes[0]], 1_000_000);
 	}
 
 	// However one more HTLC should be significantly over the reserve amount and fail.
-	let (route, our_payment_hash, _, our_payment_secret) = get_route_and_payment_hash!(nodes[1], nodes[0], 1_000_000);
 	unwrap_send_err!(nodes[1].node.send_payment_with_route(&route, our_payment_hash,
 			RecipientOnionFields::secret_only(our_payment_secret), PaymentId(our_payment_hash.0)
-		), true, APIError::ChannelUnavailable { ref err },
-		assert_eq!(err, "Cannot send value that would put counterparty balance under holder-announced channel reserve value"));
+		), true, APIError::ChannelUnavailable { .. }, {});
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
-	nodes[1].logger.assert_log("lightning::ln::channelmanager".to_string(), "Cannot send value that would put counterparty balance under holder-announced channel reserve value".to_string(), 1);
 }
 
 #[test]
@@ -1559,7 +1558,9 @@ fn test_chan_reserve_violation_inbound_htlc_outbound_channel() {
 		let (_, _, _) = route_payment(&nodes[1], &[&nodes[0]], 1_000_000);
 	}
 
-	let (route, payment_hash, _, payment_secret) = get_route_and_payment_hash!(nodes[1], nodes[0], 700_000);
+	let (mut route, payment_hash, _, payment_secret) =
+		get_route_and_payment_hash!(nodes[1], nodes[0], 1000);
+	route.paths[0].hops[0].fee_msat = 700_000;
 	// Need to manually create the update_add_htlc message to go around the channel reserve check in send_htlc()
 	let secp_ctx = Secp256k1::new();
 	let session_priv = SecretKey::from_slice(&[42; 32]).unwrap();
@@ -1621,11 +1622,12 @@ fn test_chan_reserve_dust_inbound_htlcs_outbound_chan() {
 	}
 
 	// One more than the dust amt should fail, however.
-	let (route, our_payment_hash, _, our_payment_secret) = get_route_and_payment_hash!(nodes[1], nodes[0], dust_amt + 1);
+	let (mut route, our_payment_hash, _, our_payment_secret) =
+		get_route_and_payment_hash!(nodes[1], nodes[0], dust_amt);
+	route.paths[0].hops[0].fee_msat += 1;
 	unwrap_send_err!(nodes[1].node.send_payment_with_route(&route, our_payment_hash,
 			RecipientOnionFields::secret_only(our_payment_secret), PaymentId(our_payment_hash.0)
-		), true, APIError::ChannelUnavailable { ref err },
-		assert_eq!(err, "Cannot send value that would put counterparty balance under holder-announced channel reserve value"));
+		), true, APIError::ChannelUnavailable { .. }, {});
 }
 
 #[test]
@@ -1732,7 +1734,8 @@ fn test_chan_reserve_violation_inbound_htlc_inbound_chan() {
 	let commit_tx_fee_2_htlcs = commit_tx_fee_msat(feerate, 2, opt_anchors);
 	let recv_value_2 = chan_stat.value_to_self_msat - amt_msat_1 - chan_stat.channel_reserve_msat - total_routing_fee_msat - commit_tx_fee_2_htlcs + 1;
 	let amt_msat_2 = recv_value_2 + total_routing_fee_msat;
-	let (route_2, _, _, _) = get_route_and_payment_hash!(nodes[0], nodes[2], amt_msat_2);
+	let mut route_2 = route_1.clone();
+	route_2.paths[0].hops.last_mut().unwrap().fee_msat = amt_msat_2;
 
 	// Need to manually create the update_add_htlc message to go around the channel reserve check in send_htlc()
 	let secp_ctx = Secp256k1::new();
@@ -1832,10 +1835,8 @@ fn test_channel_reserve_holding_cell_htlcs() {
 
 		unwrap_send_err!(nodes[0].node.send_payment_with_route(&route, our_payment_hash,
 				RecipientOnionFields::secret_only(our_payment_secret), PaymentId(our_payment_hash.0)
-			), true, APIError::ChannelUnavailable { ref err },
-			assert!(regex::Regex::new(r"Cannot send value that would put us over the max HTLC value in flight our peer will accept \(\d+\)").unwrap().is_match(err)));
+			), true, APIError::ChannelUnavailable { .. }, {});
 		assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
-		nodes[0].logger.assert_log_contains("lightning::ln::channelmanager", "Cannot send value that would put us over the max HTLC value in flight our peer will accept", 1);
 	}
 
 	// channel reserve is bigger than their_max_htlc_value_in_flight_msat so loop to deplete
@@ -1901,11 +1902,12 @@ fn test_channel_reserve_holding_cell_htlcs() {
 	// channel reserve test with htlc pending output > 0
 	let recv_value_2 = stat01.value_to_self_msat - amt_msat_1 - stat01.channel_reserve_msat - total_fee_msat - commit_tx_fee_2_htlcs;
 	{
-		let (route, our_payment_hash, _, our_payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[2], recv_value_2 + 1);
+		let mut route = route_1.clone();
+		route.paths[0].hops.last_mut().unwrap().fee_msat = recv_value_2 + 1;
+		let (_, our_payment_hash, our_payment_secret) = get_payment_preimage_hash!(nodes[2]);
 		unwrap_send_err!(nodes[0].node.send_payment_with_route(&route, our_payment_hash,
 				RecipientOnionFields::secret_only(our_payment_secret), PaymentId(our_payment_hash.0)
-			), true, APIError::ChannelUnavailable { ref err },
-			assert!(regex::Regex::new(r"Cannot send value that would put our balance under counterparty-announced channel reserve value \(\d+\)").unwrap().is_match(err)));
+			), true, APIError::ChannelUnavailable { .. }, {});
 		assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 	}
 
@@ -1930,13 +1932,13 @@ fn test_channel_reserve_holding_cell_htlcs() {
 
 	// test with outbound holding cell amount > 0
 	{
-		let (route, our_payment_hash, _, our_payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[2], recv_value_22+1);
+		let (mut route, our_payment_hash, _, our_payment_secret) =
+			get_route_and_payment_hash!(nodes[0], nodes[2], recv_value_22);
+		route.paths[0].hops.last_mut().unwrap().fee_msat += 1;
 		unwrap_send_err!(nodes[0].node.send_payment_with_route(&route, our_payment_hash,
 				RecipientOnionFields::secret_only(our_payment_secret), PaymentId(our_payment_hash.0)
-			), true, APIError::ChannelUnavailable { ref err },
-			assert!(regex::Regex::new(r"Cannot send value that would put our balance under counterparty-announced channel reserve value \(\d+\)").unwrap().is_match(err)));
+			), true, APIError::ChannelUnavailable { .. }, {});
 		assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
-		nodes[0].logger.assert_log_contains("lightning::ln::channelmanager", "Cannot send value that would put our balance under counterparty-announced channel reserve value", 2);
 	}
 
 	let (route_22, our_payment_hash_22, our_payment_preimage_22, our_payment_secret_22) = get_route_and_payment_hash!(nodes[0], nodes[2], recv_value_22);
@@ -5723,9 +5725,6 @@ fn test_fail_holding_cell_htlc_upon_free() {
 	chan_stat = get_channel_value_stat!(nodes[0], nodes[1], chan.2);
 	assert_eq!(chan_stat.holding_cell_outbound_amount_msat, 0);
 	nodes[0].logger.assert_log("lightning::ln::channel".to_string(), format!("Freeing holding cell with 1 HTLC updates in channel {}", hex::encode(chan.2)), 1);
-	let failure_log = format!("Failed to send HTLC with payment_hash {} due to Cannot send value that would put our balance under counterparty-announced channel reserve value ({}) in channel {}",
-		hex::encode(our_payment_hash.0), chan_stat.channel_reserve_msat, hex::encode(chan.2));
-	nodes[0].logger.assert_log("lightning::ln::channel".to_string(), failure_log.to_string(), 1);
 
 	// Check that the payment failed to be sent out.
 	let events = nodes[0].node.get_and_clear_pending_events();
@@ -5814,9 +5813,6 @@ fn test_free_and_fail_holding_cell_htlcs() {
 	chan_stat = get_channel_value_stat!(nodes[0], nodes[1], chan.2);
 	assert_eq!(chan_stat.holding_cell_outbound_amount_msat, 0);
 	nodes[0].logger.assert_log("lightning::ln::channel".to_string(), format!("Freeing holding cell with 2 HTLC updates in channel {}", hex::encode(chan.2)), 1);
-	let failure_log = format!("Failed to send HTLC with payment_hash {} due to Cannot send value that would put our balance under counterparty-announced channel reserve value ({}) in channel {}",
-		hex::encode(payment_hash_2.0), chan_stat.channel_reserve_msat, hex::encode(chan.2));
-	nodes[0].logger.assert_log("lightning::ln::channel".to_string(), failure_log.to_string(), 1);
 
 	// Check that the second payment failed to be sent out.
 	let events = nodes[0].node.get_and_clear_pending_events();
@@ -5882,10 +5878,10 @@ fn test_free_and_fail_holding_cell_htlcs() {
 fn test_fail_holding_cell_htlc_upon_free_multihop() {
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
-	// When this test was written, the default base fee floated based on the HTLC count.
-	// It is now fixed, so we simply set the fee to the expected value here.
+	// Avoid having to include routing fees in calculations
 	let mut config = test_default_channel_config();
-	config.channel_config.forwarding_fee_base_msat = 196;
+	config.channel_config.forwarding_fee_base_msat = 0;
+	config.channel_config.forwarding_fee_proportional_millionths = 0;
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[Some(config.clone()), Some(config.clone()), Some(config.clone())]);
 	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 	let chan_0_1 = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 95000000);
@@ -5917,9 +5913,7 @@ fn test_fail_holding_cell_htlc_upon_free_multihop() {
 	let opt_anchors = get_opt_anchors!(nodes[0], nodes[1], chan_0_1.2);
 
 	// Send a payment which passes reserve checks but gets stuck in the holding cell.
-	let feemsat = 239;
-	let total_routing_fee_msat = (nodes.len() - 2) as u64 * feemsat;
-	let max_can_send = 5000000 - channel_reserve - 2*commit_tx_fee_msat(feerate, 1 + 1, opt_anchors) - total_routing_fee_msat;
+	let max_can_send = 5000000 - channel_reserve - 2*commit_tx_fee_msat(feerate, 1 + 1, opt_anchors);
 	let (route, our_payment_hash, _, our_payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[2], max_can_send);
 	let payment_event = {
 		nodes[0].node.send_payment_with_route(&route, our_payment_hash,
@@ -6027,10 +6021,8 @@ fn test_update_add_htlc_bolt2_sender_value_below_minimum_msat() {
 
 	unwrap_send_err!(nodes[0].node.send_payment_with_route(&route, our_payment_hash,
 			RecipientOnionFields::secret_only(our_payment_secret), PaymentId(our_payment_hash.0)
-		), true, APIError::ChannelUnavailable { ref err },
-		assert!(regex::Regex::new(r"Cannot send less than their minimum HTLC value \(\d+\)").unwrap().is_match(err)));
+		), true, APIError::ChannelUnavailable { .. }, {});
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
-	nodes[0].logger.assert_log_contains("lightning::ln::channelmanager", "Cannot send less than their minimum HTLC value", 1);
 }
 
 #[test]
@@ -6109,6 +6101,8 @@ fn test_update_add_htlc_bolt2_sender_exceed_max_htlc_num_and_htlc_id_increment()
 	let max_accepted_htlcs = nodes[1].node.per_peer_state.read().unwrap().get(&nodes[0].node.get_our_node_id())
 		.unwrap().lock().unwrap().channel_by_id.get(&chan.2).unwrap().counterparty_max_accepted_htlcs as u64;
 
+	// Fetch a route in advance as we will be unable to once we're unable to send.
+	let (route, our_payment_hash, _, our_payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[1], 100000);
 	for i in 0..max_accepted_htlcs {
 		let (route, our_payment_hash, _, our_payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[1], 100000);
 		let payment_event = {
@@ -6132,14 +6126,11 @@ fn test_update_add_htlc_bolt2_sender_exceed_max_htlc_num_and_htlc_id_increment()
 		expect_pending_htlcs_forwardable!(nodes[1]);
 		expect_payment_claimable!(nodes[1], our_payment_hash, our_payment_secret, 100000);
 	}
-	let (route, our_payment_hash, _, our_payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[1], 100000);
 	unwrap_send_err!(nodes[0].node.send_payment_with_route(&route, our_payment_hash,
 			RecipientOnionFields::secret_only(our_payment_secret), PaymentId(our_payment_hash.0)
-		), true, APIError::ChannelUnavailable { ref err },
-		assert!(regex::Regex::new(r"Cannot push more than their max accepted HTLCs \(\d+\)").unwrap().is_match(err)));
+		), true, APIError::ChannelUnavailable { .. }, {});
 
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
-	nodes[0].logger.assert_log_contains("lightning::ln::channelmanager", "Cannot push more than their max accepted HTLCs", 1);
 }
 
 #[test]
@@ -6161,11 +6152,8 @@ fn test_update_add_htlc_bolt2_sender_exceed_max_htlc_value_in_flight() {
 	route.paths[0].hops[0].fee_msat =  max_in_flight + 1;
 	unwrap_send_err!(nodes[0].node.send_payment_with_route(&route, our_payment_hash,
 			RecipientOnionFields::secret_only(our_payment_secret), PaymentId(our_payment_hash.0)
-		), true, APIError::ChannelUnavailable { ref err },
-		assert!(regex::Regex::new(r"Cannot send value that would put us over the max HTLC value in flight our peer will accept \(\d+\)").unwrap().is_match(err)));
-
+		), true, APIError::ChannelUnavailable { .. }, {});
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
-	nodes[0].logger.assert_log_contains("lightning::ln::channelmanager", "Cannot send value that would put us over the max HTLC value in flight our peer will accept", 1);
 
 	send_payment(&nodes[0], &[&nodes[1]], max_in_flight);
 }
@@ -6247,12 +6235,15 @@ fn test_update_add_htlc_bolt2_receiver_check_max_htlc_limit() {
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 95000000);
 
-	let (route, our_payment_hash, _, our_payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[1], 3999999);
+	let send_amt = 3999999;
+	let (mut route, our_payment_hash, _, our_payment_secret) =
+		get_route_and_payment_hash!(nodes[0], nodes[1], 1000);
+	route.paths[0].hops[0].fee_msat = send_amt;
 	let session_priv = SecretKey::from_slice(&[42; 32]).unwrap();
 	let cur_height = nodes[0].node.best_block.read().unwrap().height() + 1;
 	let onion_keys = onion_utils::construct_onion_keys(&Secp256k1::signing_only(), &route.paths[0], &session_priv).unwrap();
 	let (onion_payloads, _htlc_msat, htlc_cltv) = onion_utils::build_onion_payloads(
-		&route.paths[0], 3999999, RecipientOnionFields::secret_only(our_payment_secret), cur_height, &None).unwrap();
+		&route.paths[0], send_amt, RecipientOnionFields::secret_only(our_payment_secret), cur_height, &None).unwrap();
 	let onion_packet = onion_utils::construct_onion_packet(onion_payloads, onion_keys, [0; 32], &our_payment_hash).unwrap();
 
 	let mut msg = msgs::UpdateAddHTLC {
@@ -7628,45 +7619,6 @@ fn test_bump_txn_sanitize_tracking_maps() {
 		assert!(monitor.inner.lock().unwrap().onchain_tx_handler.pending_claim_requests.is_empty());
 		assert!(monitor.inner.lock().unwrap().onchain_tx_handler.claimable_outpoints.is_empty());
 	}
-}
-
-#[test]
-fn test_pending_claimed_htlc_no_balance_underflow() {
-	// Tests that if we have a pending outbound HTLC as well as a claimed-but-not-fully-removed
-	// HTLC we will not underflow when we call `Channel::get_balance_msat()`.
-	let chanmon_cfgs = create_chanmon_cfgs(2);
-	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
-	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100_000, 0);
-
-	let (payment_preimage, payment_hash, _) = route_payment(&nodes[0], &[&nodes[1]], 1_010_000);
-	nodes[1].node.claim_funds(payment_preimage);
-	expect_payment_claimed!(nodes[1], payment_hash, 1_010_000);
-	check_added_monitors!(nodes[1], 1);
-	let fulfill_ev = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
-
-	nodes[0].node.handle_update_fulfill_htlc(&nodes[1].node.get_our_node_id(), &fulfill_ev.update_fulfill_htlcs[0]);
-	expect_payment_sent_without_paths!(nodes[0], payment_preimage);
-	nodes[0].node.handle_commitment_signed(&nodes[1].node.get_our_node_id(), &fulfill_ev.commitment_signed);
-	check_added_monitors!(nodes[0], 1);
-	let (_raa, _cs) = get_revoke_commit_msgs!(nodes[0], nodes[1].node.get_our_node_id());
-
-	// At this point nodes[1] has received 1,010k msat (10k msat more than their reserve) and can
-	// send an HTLC back (though it will go in the holding cell). Send an HTLC back and check we
-	// can get our balance.
-
-	// Get a route from nodes[1] to nodes[0] by getting a route going the other way and then flip
-	// the public key of the only hop. This works around ChannelDetails not showing the
-	// almost-claimed HTLC as available balance.
-	let (mut route, _, _, _) = get_route_and_payment_hash!(nodes[0], nodes[1], 10_000);
-	route.payment_params = None; // This is all wrong, but unnecessary
-	route.paths[0].hops[0].pubkey = nodes[0].node.get_our_node_id();
-	let (_, payment_hash_2, payment_secret_2) = get_payment_preimage_hash!(nodes[0]);
-	nodes[1].node.send_payment_with_route(&route, payment_hash_2,
-		RecipientOnionFields::secret_only(payment_secret_2), PaymentId(payment_hash_2.0)).unwrap();
-
-	assert_eq!(nodes[1].node.list_channels()[0].balance_msat, 1_000_000);
 }
 
 #[test]
@@ -9668,6 +9620,10 @@ fn do_test_max_dust_htlc_exposure(dust_outbound_balance: bool, exposure_breach_e
 	let (announcement, as_update, bs_update) = create_chan_between_nodes_with_value_b(&nodes[0], &nodes[1], &channel_ready);
 	update_nodes_with_chan_announce(&nodes, 0, 1, &announcement, &as_update, &bs_update);
 
+	// Fetch a route in advance as we will be unable to once we're unable to send.
+	let (mut route, payment_hash, _, payment_secret) =
+		get_route_and_payment_hash!(nodes[0], nodes[1], 1000);
+
 	let dust_buffer_feerate = {
 		let per_peer_state = nodes[0].node.per_peer_state.read().unwrap();
 		let chan_lock = per_peer_state.get(&nodes[1].node.get_our_node_id()).unwrap().lock().unwrap();
@@ -9680,7 +9636,7 @@ fn do_test_max_dust_htlc_exposure(dust_outbound_balance: bool, exposure_breach_e
 	let dust_inbound_htlc_on_holder_tx_msat: u64 = (dust_buffer_feerate * htlc_success_tx_weight(opt_anchors) / 1000 + open_channel.dust_limit_satoshis - 1) * 1000;
 	let dust_inbound_htlc_on_holder_tx: u64 = config.channel_config.max_dust_htlc_exposure_msat / dust_inbound_htlc_on_holder_tx_msat;
 
-	let dust_htlc_on_counterparty_tx: u64 = 25;
+	let dust_htlc_on_counterparty_tx: u64 = 4;
 	let dust_htlc_on_counterparty_tx_msat: u64 = config.channel_config.max_dust_htlc_exposure_msat / dust_htlc_on_counterparty_tx;
 
 	if on_holder_tx {
@@ -9705,7 +9661,7 @@ fn do_test_max_dust_htlc_exposure(dust_outbound_balance: bool, exposure_breach_e
 		if dust_outbound_balance {
 			// Outbound dust threshold: 2132 sats (`dust_buffer_feerate` * HTLC_TIMEOUT_TX_WEIGHT / 1000 + counteparty's `dust_limit_satoshis`)
 			// Outbound dust balance: 5000 sats
-			for _ in 0..dust_htlc_on_counterparty_tx {
+			for _ in 0..dust_htlc_on_counterparty_tx - 1 {
 				let (route, payment_hash, _, payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[1], dust_htlc_on_counterparty_tx_msat);
 				nodes[0].node.send_payment_with_route(&route, payment_hash,
 					RecipientOnionFields::secret_only(payment_secret), PaymentId(payment_hash.0)).unwrap();
@@ -9713,32 +9669,27 @@ fn do_test_max_dust_htlc_exposure(dust_outbound_balance: bool, exposure_breach_e
 		} else {
 			// Inbound dust threshold: 2031 sats (`dust_buffer_feerate` * HTLC_TIMEOUT_TX_WEIGHT / 1000 + counteparty's `dust_limit_satoshis`)
 			// Inbound dust balance: 5000 sats
-			for _ in 0..dust_htlc_on_counterparty_tx {
+			for _ in 0..dust_htlc_on_counterparty_tx - 1 {
 				route_payment(&nodes[1], &[&nodes[0]], dust_htlc_on_counterparty_tx_msat);
 			}
 		}
 	}
 
-	let dust_overflow = dust_htlc_on_counterparty_tx_msat * (dust_htlc_on_counterparty_tx + 1);
 	if exposure_breach_event == ExposureEvent::AtHTLCForward {
-		let (route, payment_hash, _, payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[1], if on_holder_tx { dust_outbound_htlc_on_holder_tx_msat } else { dust_htlc_on_counterparty_tx_msat });
-		let mut config = UserConfig::default();
+		route.paths[0].hops.last_mut().unwrap().fee_msat =
+			if on_holder_tx { dust_outbound_htlc_on_holder_tx_msat } else { dust_htlc_on_counterparty_tx_msat + 1 };
 		// With default dust exposure: 5000 sats
 		if on_holder_tx {
-			let dust_outbound_overflow = dust_outbound_htlc_on_holder_tx_msat * (dust_outbound_htlc_on_holder_tx + 1);
-			let dust_inbound_overflow = dust_inbound_htlc_on_holder_tx_msat * dust_inbound_htlc_on_holder_tx + dust_outbound_htlc_on_holder_tx_msat;
 			unwrap_send_err!(nodes[0].node.send_payment_with_route(&route, payment_hash,
 					RecipientOnionFields::secret_only(payment_secret), PaymentId(payment_hash.0)
-				), true, APIError::ChannelUnavailable { ref err },
-				assert_eq!(err, &format!("Cannot send value that would put our exposure to dust HTLCs at {} over the limit {} on holder commitment tx", if dust_outbound_balance { dust_outbound_overflow } else { dust_inbound_overflow }, config.channel_config.max_dust_htlc_exposure_msat)));
+				), true, APIError::ChannelUnavailable { .. }, {});
 		} else {
 			unwrap_send_err!(nodes[0].node.send_payment_with_route(&route, payment_hash,
 					RecipientOnionFields::secret_only(payment_secret), PaymentId(payment_hash.0)
-				), true, APIError::ChannelUnavailable { ref err },
-				assert_eq!(err, &format!("Cannot send value that would put our exposure to dust HTLCs at {} over the limit {} on counterparty commitment tx", dust_overflow, config.channel_config.max_dust_htlc_exposure_msat)));
+				), true, APIError::ChannelUnavailable { .. }, {});
 		}
 	} else if exposure_breach_event == ExposureEvent::AtHTLCReception {
-		let (route, payment_hash, _, payment_secret) = get_route_and_payment_hash!(nodes[1], nodes[0], if on_holder_tx { dust_inbound_htlc_on_holder_tx_msat } else { dust_htlc_on_counterparty_tx_msat });
+		let (route, payment_hash, _, payment_secret) = get_route_and_payment_hash!(nodes[1], nodes[0], if on_holder_tx { dust_inbound_htlc_on_holder_tx_msat } else { dust_htlc_on_counterparty_tx_msat + 1 });
 		nodes[1].node.send_payment_with_route(&route, payment_hash,
 			RecipientOnionFields::secret_only(payment_secret), PaymentId(payment_hash.0)).unwrap();
 		check_added_monitors!(nodes[1], 1);
@@ -9754,10 +9705,13 @@ fn do_test_max_dust_htlc_exposure(dust_outbound_balance: bool, exposure_breach_e
 			nodes[0].logger.assert_log("lightning::ln::channel".to_string(), format!("Cannot accept value that would put our exposure to dust HTLCs at {} over the limit {} on holder commitment tx", if dust_outbound_balance { dust_outbound_overflow } else { dust_inbound_overflow }, config.channel_config.max_dust_htlc_exposure_msat), 1);
 		} else {
 			// Outbound dust balance: 5200 sats
-			nodes[0].logger.assert_log("lightning::ln::channel".to_string(), format!("Cannot accept value that would put our exposure to dust HTLCs at {} over the limit {} on counterparty commitment tx", dust_overflow, config.channel_config.max_dust_htlc_exposure_msat), 1);
+			nodes[0].logger.assert_log("lightning::ln::channel".to_string(),
+				format!("Cannot accept value that would put our exposure to dust HTLCs at {} over the limit {} on counterparty commitment tx",
+					dust_htlc_on_counterparty_tx_msat * (dust_htlc_on_counterparty_tx - 1) + dust_htlc_on_counterparty_tx_msat + 1,
+					config.channel_config.max_dust_htlc_exposure_msat), 1);
 		}
 	} else if exposure_breach_event == ExposureEvent::AtUpdateFeeOutbound {
-		let (route, payment_hash, _, payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[1], 2_500_000);
+		route.paths[0].hops.last_mut().unwrap().fee_msat = 2_500_000;
 		nodes[0].node.send_payment_with_route(&route, payment_hash,
 			RecipientOnionFields::secret_only(payment_secret), PaymentId(payment_hash.0)).unwrap();
 		{
