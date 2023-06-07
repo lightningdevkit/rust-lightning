@@ -1635,7 +1635,9 @@ fn do_test_intercepted_payment(test: InterceptTest) {
 
 	// Check for unknown channel id error.
 	let unknown_chan_id_err = nodes[1].node.forward_intercepted_htlc(intercept_id, &[42; 32], nodes[2].node.get_our_node_id(), expected_outbound_amount_msat).unwrap_err();
-	assert_eq!(unknown_chan_id_err , APIError::ChannelUnavailable  { err: format!("Channel with id {} not found for the passed counterparty node_id {}", log_bytes!([42; 32]), nodes[2].node.get_our_node_id()) });
+	assert_eq!(unknown_chan_id_err , APIError::ChannelUnavailable  {
+		err: format!("Funded channel with id {} not found for the passed counterparty node_id {}. Channel may still be opening.",
+			log_bytes!([42; 32]), nodes[2].node.get_our_node_id()) });
 
 	if test == InterceptTest::Fail {
 		// Ensure we can fail the intercepted payment back.
@@ -1659,7 +1661,9 @@ fn do_test_intercepted_payment(test: InterceptTest) {
 		// Check that we'll fail as expected when sending to a channel that isn't in `ChannelReady` yet.
 		let temp_chan_id = nodes[1].node.create_channel(nodes[2].node.get_our_node_id(), 100_000, 0, 42, None).unwrap();
 		let unusable_chan_err = nodes[1].node.forward_intercepted_htlc(intercept_id, &temp_chan_id, nodes[2].node.get_our_node_id(), expected_outbound_amount_msat).unwrap_err();
-		assert_eq!(unusable_chan_err , APIError::ChannelUnavailable { err: format!("Channel with id {} not fully established", log_bytes!(temp_chan_id)) });
+		assert_eq!(unusable_chan_err , APIError::ChannelUnavailable {
+			err: format!("Funded channel with id {} not found for the passed counterparty node_id {}. Channel may still be opening.",
+				log_bytes!(temp_chan_id), nodes[2].node.get_our_node_id()) });
 		assert_eq!(nodes[1].node.get_and_clear_pending_msg_events().len(), 1);
 
 		// Open the just-in-time channel so the payment can then be forwarded.
