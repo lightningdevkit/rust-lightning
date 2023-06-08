@@ -416,7 +416,7 @@ where
 	L::Target: Logger,
 	MR::Target: MessageRouter,
 	OMH::Target: OffersMessageHandler,
-	CMH::Target: CustomOnionMessageHandler + Sized,
+	CMH::Target: CustomOnionMessageHandler,
 {
 	/// Handle an incoming onion message. Currently, if a message was destined for us we will log, but
 	/// soon we'll delegate the onion message to a handler that can generate invoices or send
