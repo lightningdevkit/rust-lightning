@@ -359,15 +359,32 @@ struct InboundOnionErr {
 pub enum FailureCode {
 	/// We had a temporary error processing the payment. Useful if no other error codes fit
 	/// and you want to indicate that the payer may want to retry.
-	TemporaryNodeFailure             = 0x2000 | 2,
+	TemporaryNodeFailure,
 	/// We have a required feature which was not in this onion. For example, you may require
 	/// some additional metadata that was not provided with this payment.
-	RequiredNodeFeatureMissing       = 0x4000 | 0x2000 | 3,
+	RequiredNodeFeatureMissing,
 	/// You may wish to use this when a `payment_preimage` is unknown, or the CLTV expiry of
 	/// the HTLC is too close to the current block height for safe handling.
 	/// Using this failure code in [`ChannelManager::fail_htlc_backwards_with_reason`] is
 	/// equivalent to calling [`ChannelManager::fail_htlc_backwards`].
-	IncorrectOrUnknownPaymentDetails = 0x4000 | 15,
+	IncorrectOrUnknownPaymentDetails,
+	/// We failed to process the payload after the onion was decrypted. You may wish to
+	/// use this when receiving custom HTLC TLVs with even type numbers that you don't recognize.
+	///
+	/// If available, the tuple data may include the type number and byte offset in the
+	/// decrypted byte stream where the failure occurred.
+	InvalidOnionPayload(Option<(u64, u16)>),
+}
+
+impl Into<u16> for FailureCode {
+    fn into(self) -> u16 {
+		match self {
+			FailureCode::TemporaryNodeFailure => 0x2000 | 2,
+			FailureCode::RequiredNodeFeatureMissing => 0x4000 | 0x2000 | 3,
+			FailureCode::IncorrectOrUnknownPaymentDetails => 0x4000 | 15,
+			FailureCode::InvalidOnionPayload(_) => 0x4000 | 22,
+		}
+	}
 }
 
 /// Error type returned across the peer_state mutex boundary. When an Err is generated for a
@@ -4583,12 +4600,19 @@ where
 	/// Gets error data to form an [`HTLCFailReason`] given a [`FailureCode`] and [`ClaimableHTLC`].
 	fn get_htlc_fail_reason_from_failure_code(&self, failure_code: FailureCode, htlc: &ClaimableHTLC) -> HTLCFailReason {
 		match failure_code {
-			FailureCode::TemporaryNodeFailure => HTLCFailReason::from_failure_code(failure_code as u16),
-			FailureCode::RequiredNodeFeatureMissing => HTLCFailReason::from_failure_code(failure_code as u16),
+			FailureCode::TemporaryNodeFailure => HTLCFailReason::from_failure_code(failure_code.into()),
+			FailureCode::RequiredNodeFeatureMissing => HTLCFailReason::from_failure_code(failure_code.into()),
 			FailureCode::IncorrectOrUnknownPaymentDetails => {
 				let mut htlc_msat_height_data = htlc.value.to_be_bytes().to_vec();
 				htlc_msat_height_data.extend_from_slice(&self.best_block.read().unwrap().height().to_be_bytes());
-				HTLCFailReason::reason(failure_code as u16, htlc_msat_height_data)
+				HTLCFailReason::reason(failure_code.into(), htlc_msat_height_data)
+			},
+			FailureCode::InvalidOnionPayload(data) => {
+				let fail_data = match data {
+					Some((typ, offset)) => [BigSize(typ).encode(), offset.encode()].concat(),
+					None => Vec::new(),
+				};
+				HTLCFailReason::reason(failure_code.into(), fail_data)
 			}
 		}
 	}

@@ -24,7 +24,7 @@ use crate::ln::features::{InitFeatures, Bolt11InvoiceFeatures};
 use crate::ln::msgs;
 use crate::ln::msgs::{ChannelMessageHandler, ChannelUpdate};
 use crate::ln::wire::Encode;
-use crate::util::ser::{Writeable, Writer};
+use crate::util::ser::{Writeable, Writer, BigSize};
 use crate::util::test_utils;
 use crate::util::config::{UserConfig, ChannelConfig, MaxDustHTLCExposure};
 use crate::util::errors::APIError;
@@ -942,10 +942,16 @@ fn do_test_fail_htlc_backwards_with_reason(failure_code: FailureCode) {
 			let mut htlc_msat_height_data = (payment_amount as u64).to_be_bytes().to_vec();
 			htlc_msat_height_data.extend_from_slice(&CHAN_CONFIRM_DEPTH.to_be_bytes());
 			htlc_msat_height_data
+		},
+		FailureCode::InvalidOnionPayload(data) => {
+			match data {
+				Some((typ, offset)) => [BigSize(typ).encode(), offset.encode()].concat(),
+				None => Vec::new(),
+			}
 		}
 	};
 
-	let failure_code = failure_code as u16;
+	let failure_code = failure_code.into();
 	let permanent_flag = 0x4000;
 	let permanent_fail = (failure_code & permanent_flag) != 0;
 	expect_payment_failed!(nodes[0], payment_hash, permanent_fail, failure_code, failure_data);
@@ -957,6 +963,8 @@ fn test_fail_htlc_backwards_with_reason() {
 	do_test_fail_htlc_backwards_with_reason(FailureCode::TemporaryNodeFailure);
 	do_test_fail_htlc_backwards_with_reason(FailureCode::RequiredNodeFeatureMissing);
 	do_test_fail_htlc_backwards_with_reason(FailureCode::IncorrectOrUnknownPaymentDetails);
+	do_test_fail_htlc_backwards_with_reason(FailureCode::InvalidOnionPayload(Some((1 << 16, 42))));
+	do_test_fail_htlc_backwards_with_reason(FailureCode::InvalidOnionPayload(None));
 }
 
 macro_rules! get_phantom_route {
