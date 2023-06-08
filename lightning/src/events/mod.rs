@@ -356,9 +356,19 @@ pub enum Event {
 	/// Note that if the preimage is not known, you should call
 	/// [`ChannelManager::fail_htlc_backwards`] or [`ChannelManager::fail_htlc_backwards_with_reason`]
 	/// to free up resources for this HTLC and avoid network congestion.
-	/// If you fail to call either [`ChannelManager::claim_funds`], [`ChannelManager::fail_htlc_backwards`],
-	/// or [`ChannelManager::fail_htlc_backwards_with_reason`] within the HTLC's timeout, the HTLC will be
-	/// automatically failed.
+	///
+	/// If [`Event::PaymentClaimable::onion_fields`] is `Some`, and includes custom TLVs with even type
+	/// numbers, you should use [`ChannelManager::fail_htlc_backwards_with_reason`] with
+	/// [`FailureCode::InvalidOnionPayload`] if you fail to understand and handle the contents, or
+	/// [`ChannelManager::claim_funds_with_known_custom_tlvs`] upon successful handling.
+	/// If you don't intend to check for custom TLVs, you can simply use
+	/// [`ChannelManager::claim_funds`], which will automatically fail back even custom TLVs.
+	///
+	/// If you fail to call [`ChannelManager::claim_funds`],
+	/// [`ChannelManager::claim_funds_with_known_custom_tlvs`],
+	/// [`ChannelManager::fail_htlc_backwards`], or
+	/// [`ChannelManager::fail_htlc_backwards_with_reason`] within the HTLC's timeout, the HTLC will
+	/// be automatically failed.
 	///
 	/// # Note
 	/// LDK will not stop an inbound payment from being paid multiple times, so multiple
@@ -370,6 +380,8 @@ pub enum Event {
 	/// This event used to be called `PaymentReceived` in LDK versions 0.0.112 and earlier.
 	///
 	/// [`ChannelManager::claim_funds`]: crate::ln::channelmanager::ChannelManager::claim_funds
+	/// [`ChannelManager::claim_funds_with_known_custom_tlvs`]: crate::ln::channelmanager::ChannelManager::claim_funds_with_known_custom_tlvs
+	/// [`FailureCode::InvalidOnionPayload`]: crate::ln::channelmanager::FailureCode::InvalidOnionPayload
 	/// [`ChannelManager::fail_htlc_backwards`]: crate::ln::channelmanager::ChannelManager::fail_htlc_backwards
 	/// [`ChannelManager::fail_htlc_backwards_with_reason`]: crate::ln::channelmanager::ChannelManager::fail_htlc_backwards_with_reason
 	PaymentClaimable {

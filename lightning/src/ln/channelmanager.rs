@@ -4759,13 +4759,35 @@ where
 	/// event matches your expectation. If you fail to do so and call this method, you may provide
 	/// the sender "proof-of-payment" when they did not fulfill the full expected payment.
 	///
+	/// This function will fail the payment if it has custom TLVs with even type numbers, as we
+	/// will assume they are unknown. If you intend to accept even custom TLVs, you should use
+	/// [`claim_funds_with_known_custom_tlvs`].
+	///
 	/// [`Event::PaymentClaimable`]: crate::events::Event::PaymentClaimable
 	/// [`Event::PaymentClaimable::claim_deadline`]: crate::events::Event::PaymentClaimable::claim_deadline
 	/// [`Event::PaymentClaimed`]: crate::events::Event::PaymentClaimed
 	/// [`process_pending_events`]: EventsProvider::process_pending_events
 	/// [`create_inbound_payment`]: Self::create_inbound_payment
 	/// [`create_inbound_payment_for_hash`]: Self::create_inbound_payment_for_hash
+	/// [`claim_funds_with_known_custom_tlvs`]: Self::claim_funds_with_known_custom_tlvs
 	pub fn claim_funds(&self, payment_preimage: PaymentPreimage) {
+		self.claim_payment_internal(payment_preimage, false);
+	}
+
+	/// This is a variant of [`claim_funds`] that allows accepting a payment with custom TLVs with
+	/// even type numbers.
+	///
+	/// # Note
+	///
+	/// You MUST check you've understood all even TLVs before using this to
+	/// claim, otherwise you may unintentionally agree to some protocol you do not understand.
+	///
+	/// [`claim_funds`]: Self::claim_funds
+	pub fn claim_funds_with_known_custom_tlvs(&self, payment_preimage: PaymentPreimage) {
+		self.claim_payment_internal(payment_preimage, true);
+	}
+
+	fn claim_payment_internal(&self, payment_preimage: PaymentPreimage, custom_tlvs_known: bool) {
 		let payment_hash = PaymentHash(Sha256::hash(&payment_preimage.0).into_inner());
 
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
@@ -4792,6 +4814,23 @@ where
 					log_error!(self.logger, "Got a duplicate pending claimable event on payment hash {}! Please report this bug",
 						log_bytes!(payment_hash.0));
 				}
+
+				if let Some(RecipientOnionFields { ref custom_tlvs, .. }) = payment.onion_fields {
+					if !custom_tlvs_known && custom_tlvs.iter().any(|(typ, _)| typ % 2 == 0) {
+						log_info!(self.logger, "Rejecting payment with payment hash {} as we cannot accept payment with unknown even TLVs: {}",
+							log_bytes!(payment_hash.0), log_iter!(custom_tlvs.iter().map(|(typ, _)| typ).filter(|typ| *typ % 2 == 0)));
+						claimable_payments.pending_claiming_payments.remove(&payment_hash);
+						mem::drop(claimable_payments);
+						for htlc in payment.htlcs {
+							let reason = self.get_htlc_fail_reason_from_failure_code(FailureCode::InvalidOnionPayload(None), &htlc);
+							let source = HTLCSource::PreviousHopData(htlc.prev_hop);
+							let receiver = HTLCDestination::FailedPayment { payment_hash };
+							self.fail_htlc_backwards_internal(&source, &payment_hash, &reason, receiver);
+						}
+						return;
+					}
+				}
+
 				payment.htlcs
 			} else { return; }
 		};

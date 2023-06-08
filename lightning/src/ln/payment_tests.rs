@@ -3386,12 +3386,20 @@ fn claim_from_closed_chan() {
 }
 
 #[test]
-fn test_custom_tlvs() {
-	do_test_custom_tlvs(true);
-	do_test_custom_tlvs(false);
+fn test_custom_tlvs_basic() {
+	do_test_custom_tlvs(false, false, false);
+	do_test_custom_tlvs(true, false, false);
 }
 
-fn do_test_custom_tlvs(spontaneous: bool) {
+#[test]
+fn test_custom_tlvs_explicit_claim() {
+	// Test that when receiving even custom TLVs the user must explicitly accept in case they
+	// are unknown.
+	do_test_custom_tlvs(false, true, false);
+	do_test_custom_tlvs(false, true, true);
+}
+
+fn do_test_custom_tlvs(spontaneous: bool, even_tlvs: bool, known_tlvs: bool) {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None; 2]);
@@ -3403,7 +3411,7 @@ fn do_test_custom_tlvs(spontaneous: bool) {
 	let (mut route, our_payment_hash, our_payment_preimage, our_payment_secret) = get_route_and_payment_hash!(&nodes[0], &nodes[1], amt_msat);
 	let payment_id = PaymentId(our_payment_hash.0);
 	let custom_tlvs = vec![
-		(5482373483, vec![1, 2, 3, 4]),
+		(if even_tlvs { 5482373482 } else { 5482373483 }, vec![1, 2, 3, 4]),
 		(5482373487, vec![0x42u8; 16]),
 	];
 	let onion_fields = RecipientOnionFields {
@@ -3446,7 +3454,22 @@ fn do_test_custom_tlvs(spontaneous: bool) {
 		_ => panic!("Unexpected event"),
 	}
 
-	claim_payment(&nodes[0], &[&nodes[1]], our_payment_preimage);
+	match (known_tlvs, even_tlvs) {
+		(true, _) => {
+			nodes[1].node.claim_funds_with_known_custom_tlvs(our_payment_preimage);
+			let expected_total_fee_msat = pass_claimed_payment_along_route(&nodes[0], &[&[&nodes[1]]], &[0; 1], false, our_payment_preimage);
+			expect_payment_sent!(&nodes[0], our_payment_preimage, Some(expected_total_fee_msat));
+		},
+		(false, false) => {
+			claim_payment(&nodes[0], &[&nodes[1]], our_payment_preimage);
+		},
+		(false, true) => {
+			nodes[1].node.claim_funds(our_payment_preimage);
+			let expected_destinations = vec![HTLCDestination::FailedPayment { payment_hash: our_payment_hash }];
+			expect_pending_htlcs_forwardable_and_htlc_handling_failed!(nodes[1], expected_destinations);
+			pass_failed_payment_back(&nodes[0], &[&[&nodes[1]]], false, our_payment_hash, PaymentFailureReason::RecipientRejected);
+		}
+	}
 }
 
 #[test]
