@@ -651,6 +651,40 @@ pub enum Balance {
 	},
 }
 
+impl Balance {
+	/// The amount claimable, in satoshis. This excludes balances that we are unsure if we are able
+	/// to claim, this is because we are waiting for a preimage or for a timeout to expire. For more
+	/// information on these balances see [`Balance::MaybeTimeoutClaimableHTLC`] and
+	/// [`Balance::MaybePreimageClaimableHTLC`].
+	///
+	/// On-chain fees required to claim the balance are not included in this amount.
+	pub fn claimable_amount_satoshis(&self) -> u64 {
+		match self {
+			Balance::ClaimableOnChannelClose {
+				claimable_amount_satoshis,
+			} => *claimable_amount_satoshis,
+			Balance::ClaimableAwaitingConfirmations {
+				claimable_amount_satoshis,
+				..
+			} => *claimable_amount_satoshis,
+			Balance::ContentiousClaimable {
+				claimable_amount_satoshis,
+				..
+			} => *claimable_amount_satoshis,
+			Balance::MaybeTimeoutClaimableHTLC {
+				..
+			} => 0,
+			Balance::MaybePreimageClaimableHTLC {
+				..
+			} => 0,
+			Balance::CounterpartyRevokedOutputClaimable {
+				claimable_amount_satoshis,
+				..
+			} => *claimable_amount_satoshis,
+		}
+	}
+}
+
 /// An HTLC which has been irrevocably resolved on-chain, and has reached ANTI_REORG_DELAY.
 #[derive(PartialEq, Eq)]
 struct IrrevocablyResolvedHTLC {
