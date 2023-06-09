@@ -27,7 +27,7 @@ use crate::ln::features::{ChannelTypeFeatures, InitFeatures};
 use crate::ln::msgs;
 use crate::ln::msgs::DecodeError;
 use crate::ln::script::{self, ShutdownScript};
-use crate::ln::channelmanager::{self, CounterpartyForwardingInfo, PendingHTLCStatus, HTLCSource, SentHTLCId, HTLCFailureMsg, PendingHTLCInfo, RAACommitmentOrder, BREAKDOWN_TIMEOUT, MIN_CLTV_EXPIRY_DELTA, MAX_LOCAL_BREAKDOWN_TIMEOUT};
+use crate::ln::channelmanager::{self, CounterpartyForwardingInfo, PendingHTLCStatus, HTLCSource, HTLCStats, SentHTLCId, HTLCFailureMsg, PendingHTLCInfo, RAACommitmentOrder, BREAKDOWN_TIMEOUT, MIN_CLTV_EXPIRY_DELTA, MAX_LOCAL_BREAKDOWN_TIMEOUT};
 use crate::ln::chan_utils::{CounterpartyCommitmentSecrets, TxCreationKeys, HTLCOutputInCommitment, htlc_success_tx_weight, htlc_timeout_tx_weight, make_funding_redeemscript, ChannelPublicKeys, CommitmentTransaction, HolderCommitmentTransaction, ChannelTransactionParameters, CounterpartyChannelTransactionParameters, MAX_HTLCS, get_commitment_transaction_number_obscure_factor, ClosingTransaction};
 use crate::ln::chan_utils;
 use crate::ln::onion_utils::HTLCFailReason;
@@ -345,16 +345,6 @@ pub enum AnnouncementSigsState {
 enum HTLCInitiator {
 	LocalOffered,
 	RemoteOffered,
-}
-
-/// An enum gathering stats on pending HTLCs, either inbound or outbound side.
-struct HTLCStats {
-	pending_htlcs: u32,
-	pending_htlcs_value_msat: u64,
-	on_counterparty_tx_dust_exposure_msat: u64,
-	on_holder_tx_dust_exposure_msat: u64,
-	holding_cell_msat: u64,
-	on_holder_tx_holding_cell_htlcs_count: u32, // dust HTLCs *non*-included
 }
 
 /// An enum gathering stats on commitment transaction, either local or remote.
@@ -2621,7 +2611,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 	}
 
 	/// Returns a HTLCStats about inbound pending htlcs
-	fn get_inbound_pending_htlc_stats(&self, outbound_feerate_update: Option<u32>) -> HTLCStats {
+	pub(super) fn get_inbound_pending_htlc_stats(&self, outbound_feerate_update: Option<u32>) -> HTLCStats {
 		let mut stats = HTLCStats {
 			pending_htlcs: self.pending_inbound_htlcs.len() as u32,
 			pending_htlcs_value_msat: 0,
@@ -2653,7 +2643,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 	}
 
 	/// Returns a HTLCStats about pending outbound htlcs, *including* pending adds in our holding cell.
-	fn get_outbound_pending_htlc_stats(&self, outbound_feerate_update: Option<u32>) -> HTLCStats {
+	pub(super) fn get_outbound_pending_htlc_stats(&self, outbound_feerate_update: Option<u32>) -> HTLCStats {
 		let mut stats = HTLCStats {
 			pending_htlcs: self.pending_outbound_htlcs.len() as u32,
 			pending_htlcs_value_msat: 0,

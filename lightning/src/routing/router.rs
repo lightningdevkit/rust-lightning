@@ -2512,7 +2512,9 @@ mod tests {
 			inbound_htlc_minimum_msat: None,
 			inbound_htlc_maximum_msat: None,
 			config: None,
-			feerate_sat_per_1000_weight: None
+			feerate_sat_per_1000_weight: None,
+			incoming_htlc_stats: None,
+			outgoing_htlc_stats: None,
 		}
 	}
 
@@ -6299,6 +6301,8 @@ pub(crate) mod bench_utils {
 			inbound_htlc_maximum_msat: None,
 			config: None,
 			feerate_sat_per_1000_weight: None,
+			incoming_htlc_stats: None,
+			outgoing_htlc_stats: None,
 		}
 	}
 

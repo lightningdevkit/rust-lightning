@@ -1272,6 +1272,39 @@ pub struct ChannelCounterparty {
 	pub outbound_htlc_maximum_msat: Option<u64>,
 }
 
+/// An enum gathering stats on pending HTLCs, either inbound or outbound side.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct HTLCStats {
+	/// The number of pending HTLCs.
+	pub pending_htlcs: u32,
+	/// The total value of pending HTLCs.
+	pub pending_htlcs_value_msat: u64,
+	/// The total dust exposure for the counterparty.
+	pub on_counterparty_tx_dust_exposure_msat: u64,
+	/// The total dust exposure for the local node.
+	pub on_holder_tx_dust_exposure_msat: u64,
+	/// The total value of pending, outgoing HTLCs being held.
+	///
+	/// These HTLCs are being held temporarily after sending commitment_signed to discern them
+	/// from HTLCs implicitly included in the counterparty's revoke_and_ack.
+	pub holding_cell_msat: u64,
+	/// The number of pending, outgoing HTLCs being added that are being held,
+	/// dust HTLCS not included.
+	///
+	/// These HTLCs are being held temporarily after sending commitment_signed to discern them
+	/// from HTLCs implicitly included in the counterparty's revoke_and_ack.
+	pub on_holder_tx_holding_cell_htlcs_count: u32,
+}
+
+impl_writeable_tlv_based!(HTLCStats, {
+	(0, pending_htlcs, required),
+	(2, pending_htlcs_value_msat, required),
+	(4, on_counterparty_tx_dust_exposure_msat, required),
+	(6, on_holder_tx_dust_exposure_msat, required),
+	(8, holding_cell_msat, required),
+	(10, on_holder_tx_holding_cell_htlcs_count, required),
+});
+
 /// Details of a channel, as returned by [`ChannelManager::list_channels`] and [`ChannelManager::list_usable_channels`]
 #[derive(Clone, Debug, PartialEq)]
 pub struct ChannelDetails {
@@ -1443,6 +1476,14 @@ pub struct ChannelDetails {
 	///
 	/// This field is only `None` for `ChannelDetails` objects serialized prior to LDK 0.0.109.
 	pub config: Option<ChannelConfig>,
+	/// Statistics on pending incoming HTLCs.
+	///
+	/// This field is only `None` for `ChannelDetails` objects serialized prior to LDK 0.0.116.
+	pub incoming_htlc_stats: Option<HTLCStats>,
+	/// Statistics on pending outgoing HTLCs.
+	///
+	/// This field is only `None` for `ChannelDetails` objects serialized prior to LDK 0.0.116.
+	pub outgoing_htlc_stats: Option<HTLCStats>,
 }
 
 impl ChannelDetails {
@@ -1514,6 +1555,8 @@ impl ChannelDetails {
 			inbound_htlc_minimum_msat: Some(channel.get_holder_htlc_minimum_msat()),
 			inbound_htlc_maximum_msat: channel.get_holder_htlc_maximum_msat(),
 			config: Some(channel.config()),
+			incoming_htlc_stats: Some(channel.get_inbound_pending_htlc_stats(None)),
+			outgoing_htlc_stats: Some(channel.get_outbound_pending_htlc_stats(None)),
 		}
 	}
 }
@@ -7156,6 +7199,8 @@ impl Writeable for ChannelDetails {
 			(35, self.inbound_htlc_maximum_msat, option),
 			(37, user_channel_id_high_opt, option),
 			(39, self.feerate_sat_per_1000_weight, option),
+			(41, self.incoming_htlc_stats, option),
+			(43, self.outgoing_htlc_stats, option),
 		});
 		Ok(())
 	}
@@ -7193,6 +7238,8 @@ impl Readable for ChannelDetails {
 			(35, inbound_htlc_maximum_msat, option),
 			(37, user_channel_id_high_opt, option),
 			(39, feerate_sat_per_1000_weight, option),
+			(40, incoming_htlc_stats, option),
+			(41, outgoing_htlc_stats, option),
 		});
 
 		// `user_channel_id` used to be a single u64 value. In order to remain backwards compatible with
@@ -7228,6 +7275,8 @@ impl Readable for ChannelDetails {
 			inbound_htlc_minimum_msat,
 			inbound_htlc_maximum_msat,
 			feerate_sat_per_1000_weight,
+			incoming_htlc_stats,
+			outgoing_htlc_stats,
 		})
 	}
 }
