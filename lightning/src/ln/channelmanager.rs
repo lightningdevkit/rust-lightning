@@ -50,7 +50,7 @@ use crate::routing::scoring::{ProbabilisticScorer, ProbabilisticScoringFeeParame
 use crate::ln::msgs;
 use crate::ln::onion_utils;
 use crate::ln::onion_utils::HTLCFailReason;
-use crate::ln::msgs::{ChannelMessageHandler, DecodeError, LightningError, MAX_VALUE_MSAT};
+use crate::ln::msgs::{ChannelMessageHandler, DecodeError, LightningError};
 #[cfg(test)]
 use crate::ln::outbound_payment;
 use crate::ln::outbound_payment::{OutboundPayments, PaymentAttempts, PendingOutboundPayment};
@@ -5874,37 +5874,6 @@ where
 		}
 	}
 
-	fn set_payment_hash_secret_map(&self, payment_hash: PaymentHash, payment_preimage: Option<PaymentPreimage>, min_value_msat: Option<u64>, invoice_expiry_delta_secs: u32) -> Result<PaymentSecret, APIError> {
-		assert!(invoice_expiry_delta_secs <= 60*60*24*365); // Sadly bitcoin timestamps are u32s, so panic before 2106
-
-		if min_value_msat.is_some() && min_value_msat.unwrap() > MAX_VALUE_MSAT {
-			return Err(APIError::APIMisuseError { err: format!("min_value_msat of {} greater than total 21 million bitcoin supply", min_value_msat.unwrap()) });
-		}
-
-		let payment_secret = PaymentSecret(self.entropy_source.get_secure_random_bytes());
-
-		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
-		let mut payment_secrets = self.pending_inbound_payments.lock().unwrap();
-		match payment_secrets.entry(payment_hash) {
-			hash_map::Entry::Vacant(e) => {
-				e.insert(PendingInboundPayment {
-					payment_secret, min_value_msat, payment_preimage,
-					user_payment_id: 0, // For compatibility with version 0.0.103 and earlier
-					// We assume that highest_seen_timestamp is pretty close to the current time -
-					// it's updated when we receive a new block with the maximum time we've seen in
-					// a header. It should never be more than two hours in the future.
-					// Thus, we add two hours here as a buffer to ensure we absolutely
-					// never fail a payment too early.
-					// Note that we assume that received blocks have reasonably up-to-date
-					// timestamps.
-					expiry_time: self.highest_seen_timestamp.load(Ordering::Acquire) as u64 + invoice_expiry_delta_secs as u64 + 7200,
-				});
-			},
-			hash_map::Entry::Occupied(_) => return Err(APIError::APIMisuseError { err: "Duplicate payment hash".to_owned() }),
-		}
-		Ok(payment_secret)
-	}
-
 	/// Gets a payment secret and payment hash for use in an invoice given to a third party wishing
 	/// to pay us.
 	///
@@ -5942,23 +5911,6 @@ where
 		inbound_payment::create(&self.inbound_payment_key, min_value_msat, invoice_expiry_delta_secs,
 			&self.entropy_source, self.highest_seen_timestamp.load(Ordering::Acquire) as u64,
 			min_final_cltv_expiry_delta)
-	}
-
-	/// Legacy version of [`create_inbound_payment`]. Use this method if you wish to share
-	/// serialized state with LDK node(s) running 0.0.103 and earlier.
-	///
-	/// May panic if `invoice_expiry_delta_secs` is greater than one year.
-	///
-	/// # Note
-	/// This method is deprecated and will be removed soon.
-	///
-	/// [`create_inbound_payment`]: Self::create_inbound_payment
-	#[deprecated]
-	pub fn create_inbound_payment_legacy(&self, min_value_msat: Option<u64>, invoice_expiry_delta_secs: u32) -> Result<(PaymentHash, PaymentSecret), APIError> {
-		let payment_preimage = PaymentPreimage(self.entropy_source.get_secure_random_bytes());
-		let payment_hash = PaymentHash(Sha256::hash(&payment_preimage.0).into_inner());
-		let payment_secret = self.set_payment_hash_secret_map(payment_hash, Some(payment_preimage), min_value_msat, invoice_expiry_delta_secs)?;
-		Ok((payment_hash, payment_secret))
 	}
 
 	/// Gets a [`PaymentSecret`] for a given [`PaymentHash`], for which the payment preimage is
@@ -6012,20 +5964,6 @@ where
 		inbound_payment::create_from_hash(&self.inbound_payment_key, min_value_msat, payment_hash,
 			invoice_expiry_delta_secs, self.highest_seen_timestamp.load(Ordering::Acquire) as u64,
 			min_final_cltv_expiry)
-	}
-
-	/// Legacy version of [`create_inbound_payment_for_hash`]. Use this method if you wish to share
-	/// serialized state with LDK node(s) running 0.0.103 and earlier.
-	///
-	/// May panic if `invoice_expiry_delta_secs` is greater than one year.
-	///
-	/// # Note
-	/// This method is deprecated and will be removed soon.
-	///
-	/// [`create_inbound_payment_for_hash`]: Self::create_inbound_payment_for_hash
-	#[deprecated]
-	pub fn create_inbound_payment_for_hash_legacy(&self, payment_hash: PaymentHash, min_value_msat: Option<u64>, invoice_expiry_delta_secs: u32) -> Result<PaymentSecret, APIError> {
-		self.set_payment_hash_secret_map(payment_hash, None, min_value_msat, invoice_expiry_delta_secs)
 	}
 
 	/// Gets an LDK-generated payment preimage from a payment hash and payment secret that were
