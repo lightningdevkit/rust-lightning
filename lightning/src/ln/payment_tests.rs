@@ -17,13 +17,13 @@ use crate::sign::EntropySource;
 use crate::chain::transaction::OutPoint;
 use crate::events::{ClosureReason, Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider, PathFailure, PaymentFailureReason};
 use crate::ln::channel::EXPIRE_PREV_CONFIG_TICKS;
-use crate::ln::channelmanager::{BREAKDOWN_TIMEOUT, ChannelManager, MPP_TIMEOUT_TICKS, MIN_CLTV_EXPIRY_DELTA, PaymentId, PaymentSendFailure, IDEMPOTENCY_TIMEOUT_TICKS, RecentPaymentDetails, RecipientOnionFields};
+use crate::ln::channelmanager::{BREAKDOWN_TIMEOUT, ChannelManager, MPP_TIMEOUT_TICKS, MIN_CLTV_EXPIRY_DELTA, PaymentId, PaymentSendFailure, IDEMPOTENCY_TIMEOUT_TICKS, RecentPaymentDetails, RecipientOnionFields, HTLCForwardInfo, PendingHTLCRouting, PendingAddHTLCInfo};
 use crate::ln::features::InvoiceFeatures;
-use crate::ln::msgs;
+use crate::ln::{msgs, PaymentSecret, PaymentPreimage};
 use crate::ln::msgs::ChannelMessageHandler;
 use crate::ln::outbound_payment::Retry;
 use crate::routing::gossip::{EffectiveCapacity, RoutingFees};
-use crate::routing::router::{get_route, Path, PaymentParameters, Route, Router, RouteHint, RouteHintHop, RouteHop, RouteParameters};
+use crate::routing::router::{get_route, Path, PaymentParameters, Route, Router, RouteHint, RouteHintHop, RouteHop, RouteParameters, find_route};
 use crate::routing::scoring::ChannelUsage;
 use crate::util::test_utils;
 use crate::util::errors::APIError;
@@ -235,6 +235,177 @@ fn mpp_receive_timeout() {
 	do_mpp_receive_timeout(true);
 	do_mpp_receive_timeout(false);
 }
+
+#[test]
+fn test_mpp_keysend() {
+	let mut mpp_keysend_config = test_default_channel_config();
+	mpp_keysend_config.accept_mpp_keysend = true;
+	let chanmon_cfgs = create_chanmon_cfgs(4);
+	let node_cfgs = create_node_cfgs(4, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(4, &node_cfgs, &[None, None, None, Some(mpp_keysend_config)]);
+	let nodes = create_network(4, &node_cfgs, &node_chanmgrs);
+
+	create_announced_chan_between_nodes(&nodes, 0, 1);
+	create_announced_chan_between_nodes(&nodes, 0, 2);
+	create_announced_chan_between_nodes(&nodes, 1, 3);
+	create_announced_chan_between_nodes(&nodes, 2, 3);
+	let network_graph = nodes[0].network_graph.clone();
+
+	let payer_pubkey = nodes[0].node.get_our_node_id();
+	let payee_pubkey = nodes[3].node.get_our_node_id();
+	let recv_value = 15_000_000;
+	let route_params = RouteParameters {
+		payment_params: PaymentParameters::for_keysend(payee_pubkey, 40, true),
+		final_value_msat: recv_value,
+	};
+	let scorer = test_utils::TestScorer::new();
+	let random_seed_bytes = chanmon_cfgs[0].keys_manager.get_secure_random_bytes();
+	let route = find_route(&payer_pubkey, &route_params, &network_graph, None, nodes[0].logger,
+		&scorer, &(), &random_seed_bytes).unwrap();
+
+	let payment_preimage = PaymentPreimage([42; 32]);
+	let payment_secret = PaymentSecret(payment_preimage.0);
+	let payment_hash = nodes[0].node.send_spontaneous_payment(&route, Some(payment_preimage),
+		RecipientOnionFields::secret_only(payment_secret), PaymentId(payment_preimage.0)).unwrap();
+	check_added_monitors!(nodes[0], 2);
+
+	let expected_route: &[&[&Node]] = &[&[&nodes[1], &nodes[3]], &[&nodes[2], &nodes[3]]];
+	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 2);
+
+	let ev = remove_first_msg_event_to_node(&nodes[1].node.get_our_node_id(), &mut events);
+	pass_along_path(&nodes[0], expected_route[0], recv_value, payment_hash.clone(),
+		Some(payment_secret), ev.clone(), false, Some(payment_preimage));
+
+	let ev = remove_first_msg_event_to_node(&nodes[2].node.get_our_node_id(), &mut events);
+	pass_along_path(&nodes[0], expected_route[1], recv_value, payment_hash.clone(),
+		Some(payment_secret), ev.clone(), true, Some(payment_preimage));
+	claim_payment_along_route(&nodes[0], expected_route, false, payment_preimage);
+}
+
+#[test]
+fn test_reject_mpp_keysend_htlc() {
+	// This test enforces that we reject MPP keysend HTLCs if our config states we don't support
+	// MPP keysend. When receiving a payment, if we don't support MPP keysend we'll reject the
+	// payment if it's keysend and has a payment secret, never reaching our payment validation
+	// logic. To check that we enforce rejecting MPP keysends in our payment logic, here we send
+	// keysend payments without payment secrets, then modify them by adding payment secrets in the
+	// final node in between receiving the HTLCs and actually processing them.
+	let mut reject_mpp_keysend_cfg = test_default_channel_config();
+	reject_mpp_keysend_cfg.accept_mpp_keysend = false;
+
+	let chanmon_cfgs = create_chanmon_cfgs(4);
+	let node_cfgs = create_node_cfgs(4, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(4, &node_cfgs, &[None, None, None, Some(reject_mpp_keysend_cfg)]);
+	let nodes = create_network(4, &node_cfgs, &node_chanmgrs);
+	let chan_1_id = create_announced_chan_between_nodes(&nodes, 0, 1).0.contents.short_channel_id;
+	let chan_2_id = create_announced_chan_between_nodes(&nodes, 0, 2).0.contents.short_channel_id;
+	let chan_3_id = create_announced_chan_between_nodes(&nodes, 1, 3).0.contents.short_channel_id;
+	let (update_a, _, chan_4_channel_id, _) = create_announced_chan_between_nodes(&nodes, 2, 3);
+	let chan_4_id = update_a.contents.short_channel_id;
+	let amount = 40_000;
+	let (mut route, payment_hash, payment_preimage, _) = get_route_and_payment_hash!(nodes[0], nodes[3], amount);
+
+	// Pay along nodes[1]
+	route.paths[0].hops[0].pubkey = nodes[1].node.get_our_node_id();
+	route.paths[0].hops[0].short_channel_id = chan_1_id;
+	route.paths[0].hops[1].short_channel_id = chan_3_id;
+
+	let payment_id_0 = PaymentId(nodes[0].keys_manager.backing.get_secure_random_bytes());
+	nodes[0].node.send_spontaneous_payment(&route, Some(payment_preimage), RecipientOnionFields::spontaneous_empty(), payment_id_0).unwrap();
+	check_added_monitors!(nodes[0], 1);
+
+	let update_0 = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
+	let update_add_0 = update_0.update_add_htlcs[0].clone();
+	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &update_add_0);
+	commitment_signed_dance!(nodes[1], nodes[0], &update_0.commitment_signed, false, true);
+	expect_pending_htlcs_forwardable!(nodes[1]);
+
+	check_added_monitors!(&nodes[1], 1);
+	let update_1 = get_htlc_update_msgs!(nodes[1], nodes[3].node.get_our_node_id());
+	let update_add_1 = update_1.update_add_htlcs[0].clone();
+	nodes[3].node.handle_update_add_htlc(&nodes[1].node.get_our_node_id(), &update_add_1);
+	commitment_signed_dance!(nodes[3], nodes[1], update_1.commitment_signed, false, true);
+
+	assert!(nodes[3].node.get_and_clear_pending_msg_events().is_empty());
+	for (_, pending_forwards) in nodes[3].node.forward_htlcs.lock().unwrap().iter_mut() {
+		for f in pending_forwards.iter_mut() {
+			match f {
+				&mut HTLCForwardInfo::AddHTLC(PendingAddHTLCInfo { ref mut forward_info, .. }) => {
+					match forward_info.routing {
+						PendingHTLCRouting::ReceiveKeysend { ref mut payment_data, .. } => {
+							*payment_data = Some(msgs::FinalOnionHopData {
+								payment_secret: PaymentSecret([42; 32]),
+								total_msat: amount * 2,
+							});
+						},
+						_ => panic!("Expected PendingHTLCRouting::ReceiveKeysend"),
+					}
+				},
+				_ => {},
+			}
+		}
+	}
+	expect_pending_htlcs_forwardable!(nodes[3]);
+
+	// Pay along nodes[2]
+	route.paths[0].hops[0].pubkey = nodes[2].node.get_our_node_id();
+	route.paths[0].hops[0].short_channel_id = chan_2_id;
+	route.paths[0].hops[1].short_channel_id = chan_4_id;
+
+	let payment_id_1 = PaymentId(nodes[0].keys_manager.backing.get_secure_random_bytes());
+	nodes[0].node.send_spontaneous_payment(&route, Some(payment_preimage), RecipientOnionFields::spontaneous_empty(), payment_id_1).unwrap();
+	check_added_monitors!(nodes[0], 1);
+
+	let update_2 = get_htlc_update_msgs!(nodes[0], nodes[2].node.get_our_node_id());
+	let update_add_2 = update_2.update_add_htlcs[0].clone();
+	nodes[2].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &update_add_2);
+	commitment_signed_dance!(nodes[2], nodes[0], &update_2.commitment_signed, false, true);
+	expect_pending_htlcs_forwardable!(nodes[2]);
+
+	check_added_monitors!(&nodes[2], 1);
+	let update_3 = get_htlc_update_msgs!(nodes[2], nodes[3].node.get_our_node_id());
+	let update_add_3 = update_3.update_add_htlcs[0].clone();
+	nodes[3].node.handle_update_add_htlc(&nodes[2].node.get_our_node_id(), &update_add_3);
+	commitment_signed_dance!(nodes[3], nodes[2], update_3.commitment_signed, false, true);
+
+	assert!(nodes[3].node.get_and_clear_pending_msg_events().is_empty());
+	for (_, pending_forwards) in nodes[3].node.forward_htlcs.lock().unwrap().iter_mut() {
+		for f in pending_forwards.iter_mut() {
+			match f {
+				&mut HTLCForwardInfo::AddHTLC(PendingAddHTLCInfo { ref mut forward_info, .. }) => {
+					match forward_info.routing {
+						PendingHTLCRouting::ReceiveKeysend { ref mut payment_data, .. } => {
+							*payment_data = Some(msgs::FinalOnionHopData {
+								payment_secret: PaymentSecret([42; 32]),
+								total_msat: amount * 2,
+							});
+						},
+						_ => panic!("Expected PendingHTLCRouting::ReceiveKeysend"),
+					}
+				},
+				_ => {},
+			}
+		}
+	}
+	expect_pending_htlcs_forwardable!(nodes[3]);
+	check_added_monitors!(nodes[3], 1);
+
+	// Fail back along nodes[2]
+	let update_fail_0 = get_htlc_update_msgs!(&nodes[3], &nodes[2].node.get_our_node_id());
+	nodes[2].node.handle_update_fail_htlc(&nodes[3].node.get_our_node_id(), &update_fail_0.update_fail_htlcs[0]);
+	commitment_signed_dance!(nodes[2], nodes[3], update_fail_0.commitment_signed, false);
+	expect_pending_htlcs_forwardable_and_htlc_handling_failed!(nodes[2], vec![HTLCDestination::NextHopChannel { node_id: Some(nodes[3].node.get_our_node_id()), channel_id: chan_4_channel_id }]);
+	check_added_monitors!(nodes[2], 1);
+
+	let update_fail_1 = get_htlc_update_msgs!(nodes[2], nodes[0].node.get_our_node_id());
+	nodes[0].node.handle_update_fail_htlc(&nodes[2].node.get_our_node_id(), &update_fail_1.update_fail_htlcs[0]);
+	commitment_signed_dance!(nodes[0], nodes[2], update_fail_1.commitment_signed, false);
+
+	expect_payment_failed_conditions(&nodes[0], payment_hash, true, PaymentFailedConditions::new());
+	expect_pending_htlcs_forwardable_and_htlc_handling_failed!(nodes[3], vec![HTLCDestination::FailedPayment { payment_hash }]);
+}
+
 
 #[test]
 fn no_pending_leak_on_initial_send_failure() {

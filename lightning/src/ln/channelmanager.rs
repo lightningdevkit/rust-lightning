@@ -112,6 +112,8 @@ pub(super) enum PendingHTLCRouting {
 		phantom_shared_secret: Option<[u8; 32]>,
 	},
 	ReceiveKeysend {
+		/// This was added in 0.0.116 and will break deserialization on downgrades.
+		payment_data: Option<msgs::FinalOnionHopData>,
 		payment_preimage: PaymentPreimage,
 		payment_metadata: Option<Vec<u8>>,
 		incoming_cltv_expiry: u32, // Used to track when we should expire pending HTLCs that go unclaimed
@@ -2457,20 +2459,7 @@ where
 				});
 			},
 			msgs::OnionHopDataFormat::FinalNode { payment_data, keysend_preimage, payment_metadata } => {
-				if payment_data.is_some() && keysend_preimage.is_some() {
-					return Err(ReceiveError {
-						err_code: 0x4000|22,
-						err_data: Vec::new(),
-						msg: "We don't support MPP keysend payments",
-					});
-				} else if let Some(data) = payment_data {
-					PendingHTLCRouting::Receive {
-						payment_data: data,
-						payment_metadata,
-						incoming_cltv_expiry: hop_data.outgoing_cltv_value,
-						phantom_shared_secret,
-					}
-				} else if let Some(payment_preimage) = keysend_preimage {
+				if let Some(payment_preimage) = keysend_preimage {
 					// We need to check that the sender knows the keysend preimage before processing this
 					// payment further. Otherwise, an intermediary routing hop forwarding non-keysend-HTLC X
 					// could discover the final destination of X, by probing the adjacent nodes on the route
@@ -2484,11 +2473,25 @@ where
 							msg: "Payment preimage didn't match payment hash",
 						});
 					}
-
+					if !self.default_configuration.accept_mpp_keysend && payment_data.is_some() {
+						return Err(ReceiveError {
+							err_code: 0x4000|22,
+							err_data: Vec::new(),
+							msg: "We don't support MPP keysend payments",
+						});
+					}
 					PendingHTLCRouting::ReceiveKeysend {
+						payment_data,
 						payment_preimage,
 						payment_metadata,
 						incoming_cltv_expiry: hop_data.outgoing_cltv_value,
+					}
+				} else if let Some(data) = payment_data {
+					PendingHTLCRouting::Receive {
+						payment_data: data,
+						payment_metadata,
+						incoming_cltv_expiry: hop_data.outgoing_cltv_value,
+						phantom_shared_secret,
 					}
 				} else {
 					return Err(ReceiveError {
@@ -3038,8 +3041,6 @@ where
 	///
 	/// Similar to regular payments, you MUST NOT reuse a `payment_preimage` value. See
 	/// [`send_payment`] for more information about the risks of duplicate preimage usage.
-	///
-	/// Note that `route` must have exactly one path.
 	///
 	/// [`send_payment`]: Self::send_payment
 	pub fn send_spontaneous_payment(&self, route: &Route, payment_preimage: Option<PaymentPreimage>, recipient_onion: RecipientOnionFields, payment_id: PaymentId) -> Result<PaymentHash, PaymentSendFailure> {
@@ -3635,16 +3636,19 @@ where
 										(incoming_cltv_expiry, OnionPayload::Invoice { _legacy_hop_data },
 											Some(payment_data), phantom_shared_secret, onion_fields)
 									},
-									PendingHTLCRouting::ReceiveKeysend { payment_preimage, payment_metadata, incoming_cltv_expiry } => {
-										let onion_fields = RecipientOnionFields { payment_secret: None, payment_metadata };
+									PendingHTLCRouting::ReceiveKeysend { payment_data, payment_preimage, payment_metadata, incoming_cltv_expiry } => {
+										let onion_fields = RecipientOnionFields {
+											payment_secret: payment_data.as_ref().map(|data| data.payment_secret),
+											payment_metadata
+										};
 										(incoming_cltv_expiry, OnionPayload::Spontaneous(payment_preimage),
-											None, None, onion_fields)
+											payment_data, None, onion_fields)
 									},
 									_ => {
 										panic!("short_channel_id == 0 should imply any pending_forward entries are of type Receive");
 									}
 								};
-								let mut claimable_htlc = ClaimableHTLC {
+								let claimable_htlc = ClaimableHTLC {
 									prev_hop: HTLCPreviousHopData {
 										short_channel_id: prev_short_channel_id,
 										outpoint: prev_funding_outpoint,
@@ -3694,13 +3698,11 @@ where
 								}
 
 								macro_rules! check_total_value {
-									($payment_data: expr, $payment_preimage: expr) => {{
+									($purpose: expr) => {{
 										let mut payment_claimable_generated = false;
-										let purpose = || {
-											events::PaymentPurpose::InvoicePayment {
-												payment_preimage: $payment_preimage,
-												payment_secret: $payment_data.payment_secret,
-											}
+										let is_keysend = match $purpose {
+											events::PaymentPurpose::SpontaneousPayment(_) => true,
+											events::PaymentPurpose::InvoicePayment { .. } => false,
 										};
 										let mut claimable_payments = self.claimable_payments.lock().unwrap();
 										if claimable_payments.pending_claiming_payments.contains_key(&payment_hash) {
@@ -3712,9 +3714,18 @@ where
 											.or_insert_with(|| {
 												committed_to_claimable = true;
 												ClaimablePayment {
-													purpose: purpose(), htlcs: Vec::new(), onion_fields: None,
+													purpose: $purpose.clone(), htlcs: Vec::new(), onion_fields: None,
 												}
 											});
+										if $purpose != claimable_payment.purpose {
+											let log_keysend = |keysend| if keysend { "keysend" } else { "non-keysend" };
+											log_trace!(self.logger, "Failing new {} HTLC with payment_hash {} as we already had an existing {} HTLC with the same payment hash", log_keysend(is_keysend), log_bytes!(payment_hash.0), log_keysend(!is_keysend));
+											fail_htlc!(claimable_htlc, payment_hash);
+										}
+										if !self.default_configuration.accept_mpp_keysend && is_keysend && !claimable_payment.htlcs.is_empty() {
+											log_trace!(self.logger, "Failing new keysend HTLC with payment_hash {} as we already had an existing keysend HTLC with the same payment hash and our config states we don't accept MPP keysend", log_bytes!(payment_hash.0));
+											fail_htlc!(claimable_htlc, payment_hash);
+										}
 										if let Some(earlier_fields) = &mut claimable_payment.onion_fields {
 											if earlier_fields.check_merge(&mut onion_fields).is_err() {
 												fail_htlc!(claimable_htlc, payment_hash);
@@ -3723,38 +3734,27 @@ where
 											claimable_payment.onion_fields = Some(onion_fields);
 										}
 										let ref mut htlcs = &mut claimable_payment.htlcs;
-										if htlcs.len() == 1 {
-											if let OnionPayload::Spontaneous(_) = htlcs[0].onion_payload {
-												log_trace!(self.logger, "Failing new HTLC with payment_hash {} as we already had an existing keysend HTLC with the same payment hash", log_bytes!(payment_hash.0));
-												fail_htlc!(claimable_htlc, payment_hash);
-											}
-										}
 										let mut total_value = claimable_htlc.sender_intended_value;
 										let mut earliest_expiry = claimable_htlc.cltv_expiry;
 										for htlc in htlcs.iter() {
 											total_value += htlc.sender_intended_value;
 											earliest_expiry = cmp::min(earliest_expiry, htlc.cltv_expiry);
-											match &htlc.onion_payload {
-												OnionPayload::Invoice { .. } => {
-													if htlc.total_msat != $payment_data.total_msat {
-														log_trace!(self.logger, "Failing HTLCs with payment_hash {} as the HTLCs had inconsistent total values (eg {} and {})",
-															log_bytes!(payment_hash.0), $payment_data.total_msat, htlc.total_msat);
-														total_value = msgs::MAX_VALUE_MSAT;
-													}
-													if total_value >= msgs::MAX_VALUE_MSAT { break; }
-												},
-												_ => unreachable!(),
+											if htlc.total_msat != claimable_htlc.total_msat {
+												log_trace!(self.logger, "Failing HTLCs with payment_hash {} as the HTLCs had inconsistent total values (eg {} and {})",
+													log_bytes!(payment_hash.0), claimable_htlc.total_msat, htlc.total_msat);
+												total_value = msgs::MAX_VALUE_MSAT;
 											}
+											if total_value >= msgs::MAX_VALUE_MSAT { break; }
 										}
 										// The condition determining whether an MPP is complete must
 										// match exactly the condition used in `timer_tick_occurred`
 										if total_value >= msgs::MAX_VALUE_MSAT {
 											fail_htlc!(claimable_htlc, payment_hash);
-										} else if total_value - claimable_htlc.sender_intended_value >= $payment_data.total_msat {
+										} else if total_value - claimable_htlc.sender_intended_value >= claimable_htlc.total_msat {
 											log_trace!(self.logger, "Failing HTLC with payment_hash {} as payment is already claimable",
 												log_bytes!(payment_hash.0));
 											fail_htlc!(claimable_htlc, payment_hash);
-										} else if total_value >= $payment_data.total_msat {
+										} else if total_value >= claimable_htlc.total_msat {
 											#[allow(unused_assignments)] {
 												committed_to_claimable = true;
 											}
@@ -3765,7 +3765,7 @@ where
 											new_events.push_back((events::Event::PaymentClaimable {
 												receiver_node_id: Some(receiver_node_id),
 												payment_hash,
-												purpose: purpose(),
+												purpose: $purpose,
 												amount_msat,
 												via_channel_id: Some(prev_channel_id),
 												via_user_channel_id: Some(prev_user_channel_id),
@@ -3813,49 +3813,23 @@ where
 														fail_htlc!(claimable_htlc, payment_hash);
 													}
 												}
-												check_total_value!(payment_data, payment_preimage);
+												let purpose = events::PaymentPurpose::InvoicePayment {
+													payment_preimage: payment_preimage.clone(),
+													payment_secret: payment_data.payment_secret,
+												};
+												check_total_value!(purpose);
 											},
 											OnionPayload::Spontaneous(preimage) => {
-												let mut claimable_payments = self.claimable_payments.lock().unwrap();
-												if claimable_payments.pending_claiming_payments.contains_key(&payment_hash) {
-													fail_htlc!(claimable_htlc, payment_hash);
-												}
-												match claimable_payments.claimable_payments.entry(payment_hash) {
-													hash_map::Entry::Vacant(e) => {
-														let amount_msat = claimable_htlc.value;
-														claimable_htlc.total_value_received = Some(amount_msat);
-														let claim_deadline = Some(claimable_htlc.cltv_expiry - HTLC_FAIL_BACK_BUFFER);
-														let purpose = events::PaymentPurpose::SpontaneousPayment(preimage);
-														e.insert(ClaimablePayment {
-															purpose: purpose.clone(),
-															onion_fields: Some(onion_fields.clone()),
-															htlcs: vec![claimable_htlc],
-														});
-														let prev_channel_id = prev_funding_outpoint.to_channel_id();
-														new_events.push_back((events::Event::PaymentClaimable {
-															receiver_node_id: Some(receiver_node_id),
-															payment_hash,
-															amount_msat,
-															purpose,
-															via_channel_id: Some(prev_channel_id),
-															via_user_channel_id: Some(prev_user_channel_id),
-															claim_deadline,
-															onion_fields: Some(onion_fields),
-														}, None));
-													},
-													hash_map::Entry::Occupied(_) => {
-														log_trace!(self.logger, "Failing new keysend HTLC with payment_hash {} for a duplicative payment hash", log_bytes!(payment_hash.0));
-														fail_htlc!(claimable_htlc, payment_hash);
-													}
-												}
+												let purpose = events::PaymentPurpose::SpontaneousPayment(preimage);
+												check_total_value!(purpose);
 											}
 										}
 									},
 									hash_map::Entry::Occupied(inbound_payment) => {
-										if payment_data.is_none() {
+										if let OnionPayload::Spontaneous(_) = claimable_htlc.onion_payload {
 											log_trace!(self.logger, "Failing new keysend HTLC with payment_hash {} because we already have an inbound payment with the same payment hash", log_bytes!(payment_hash.0));
 											fail_htlc!(claimable_htlc, payment_hash);
-										};
+										}
 										let payment_data = payment_data.unwrap();
 										if inbound_payment.get().payment_secret != payment_data.payment_secret {
 											log_trace!(self.logger, "Failing new HTLC with payment_hash {} as it didn't match our expected payment secret.", log_bytes!(payment_hash.0));
@@ -3865,7 +3839,11 @@ where
 												log_bytes!(payment_hash.0), payment_data.total_msat, inbound_payment.get().min_value_msat.unwrap());
 											fail_htlc!(claimable_htlc, payment_hash);
 										} else {
-											let payment_claimable_generated = check_total_value!(payment_data, inbound_payment.get().payment_preimage);
+											let purpose = events::PaymentPurpose::InvoicePayment {
+												payment_preimage: inbound_payment.get().payment_preimage,
+												payment_secret: payment_data.payment_secret,
+											};
+											let payment_claimable_generated = check_total_value!(purpose);
 											if payment_claimable_generated {
 												inbound_payment.remove_entry();
 											}
@@ -4445,18 +4423,6 @@ where
 				break;
 			}
 			expected_amt_msat = htlc.total_value_received;
-
-			if let OnionPayload::Spontaneous(_) = &htlc.onion_payload {
-				// We don't currently support MPP for spontaneous payments, so just check
-				// that there's one payment here and move on.
-				if sources.len() != 1 {
-					log_error!(self.logger, "Somehow ended up with an MPP spontaneous payment - this should not be reachable!");
-					debug_assert!(false);
-					valid_mpp = false;
-					break;
-				}
-			}
-
 			claimable_amt_msat += htlc.value;
 		}
 		mem::drop(per_peer_state);
@@ -7287,6 +7253,7 @@ impl_writeable_tlv_based_enum!(PendingHTLCRouting,
 		(0, payment_preimage, required),
 		(2, incoming_cltv_expiry, required),
 		(3, payment_metadata, option),
+		(4, payment_data, option), // Added in 0.0.116
 	},
 ;);
 
@@ -8829,13 +8796,26 @@ mod tests {
 
 	#[test]
 	fn test_keysend_dup_payment_hash() {
+		do_test_keysend_dup_payment_hash(false);
+		do_test_keysend_dup_payment_hash(true);
+	}
+
+	fn do_test_keysend_dup_payment_hash(accept_mpp_keysend: bool) {
 		// (1): Test that a keysend payment with a duplicate payment hash to an existing pending
 		//      outbound regular payment fails as expected.
 		// (2): Test that a regular payment with a duplicate payment hash to an existing keysend payment
 		//      fails as expected.
+		// (3): Test that a keysend payment with a duplicate payment hash to an existing keysend
+		//      payment fails as expected. When `accept_mpp_keysend` is false, this tests that we
+		//      reject MPP keysend payments, since in this case where the payment has no payment
+		//      secret, a keysend payment with a duplicate hash is basically an MPP keysend. If
+		//      `accept_mpp_keysend` is true, this tests that we only accept MPP keysends with
+		//      payment secrets and reject otherwise.
 		let chanmon_cfgs = create_chanmon_cfgs(2);
 		let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+		let mut mpp_keysend_cfg = test_default_channel_config();
+		mpp_keysend_cfg.accept_mpp_keysend = accept_mpp_keysend;
+		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, Some(mpp_keysend_cfg)]);
 		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 		create_announced_chan_between_nodes(&nodes, 0, 1);
 		let scorer = test_utils::TestScorer::new();
@@ -8847,7 +8827,7 @@ mod tests {
 
 		// Next, attempt a keysend payment and make sure it fails.
 		let route_params = RouteParameters {
-			payment_params: PaymentParameters::for_keysend(expected_route.last().unwrap().node.get_our_node_id(), TEST_FINAL_CLTV),
+			payment_params: PaymentParameters::for_keysend(expected_route.last().unwrap().node.get_our_node_id(), TEST_FINAL_CLTV, false),
 			final_value_msat: 100_000,
 		};
 		let route = find_route(
@@ -8924,6 +8904,53 @@ mod tests {
 
 		// Finally, succeed the keysend payment.
 		claim_payment(&nodes[0], &expected_route, payment_preimage);
+
+		// To start (3), send a keysend payment but don't claim it.
+		let payment_id_1 = PaymentId([44; 32]);
+		let payment_hash = nodes[0].node.send_spontaneous_payment(&route, Some(payment_preimage),
+			RecipientOnionFields::spontaneous_empty(), payment_id_1).unwrap();
+		check_added_monitors!(nodes[0], 1);
+		let mut events = nodes[0].node.get_and_clear_pending_msg_events();
+		assert_eq!(events.len(), 1);
+		let event = events.pop().unwrap();
+		let path = vec![&nodes[1]];
+		pass_along_path(&nodes[0], &path, 100_000, payment_hash, None, event, true, Some(payment_preimage));
+
+		// Next, attempt a keysend payment and make sure it fails.
+		let route_params = RouteParameters {
+			payment_params: PaymentParameters::for_keysend(expected_route.last().unwrap().node.get_our_node_id(), TEST_FINAL_CLTV, false),
+			final_value_msat: 100_000,
+		};
+		let route = find_route(
+			&nodes[0].node.get_our_node_id(), &route_params, &nodes[0].network_graph,
+			None, nodes[0].logger, &scorer, &(), &random_seed_bytes
+		).unwrap();
+		let payment_id_2 = PaymentId([45; 32]);
+		nodes[0].node.send_spontaneous_payment(&route, Some(payment_preimage),
+			RecipientOnionFields::spontaneous_empty(), payment_id_2).unwrap();
+		check_added_monitors!(nodes[0], 1);
+		let mut events = nodes[0].node.get_and_clear_pending_msg_events();
+		assert_eq!(events.len(), 1);
+		let ev = events.drain(..).next().unwrap();
+		let payment_event = SendEvent::from_event(ev);
+		nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &payment_event.msgs[0]);
+		check_added_monitors!(nodes[1], 0);
+		commitment_signed_dance!(nodes[1], nodes[0], payment_event.commitment_msg, false);
+		expect_pending_htlcs_forwardable!(nodes[1]);
+		expect_pending_htlcs_forwardable_and_htlc_handling_failed!(nodes[1], vec![HTLCDestination::FailedPayment { payment_hash }]);
+		check_added_monitors!(nodes[1], 1);
+		let updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+		assert!(updates.update_add_htlcs.is_empty());
+		assert!(updates.update_fulfill_htlcs.is_empty());
+		assert_eq!(updates.update_fail_htlcs.len(), 1);
+		assert!(updates.update_fail_malformed_htlcs.is_empty());
+		assert!(updates.update_fee.is_none());
+		nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &updates.update_fail_htlcs[0]);
+		commitment_signed_dance!(nodes[0], nodes[1], updates.commitment_signed, true, true);
+		expect_payment_failed!(nodes[0], payment_hash, true);
+
+		// Finally, claim the original payment.
+		claim_payment(&nodes[0], &expected_route, payment_preimage);
 	}
 
 	#[test]
@@ -8940,7 +8967,7 @@ mod tests {
 
 		let _chan = create_chan_between_nodes(&nodes[0], &nodes[1]);
 		let route_params = RouteParameters {
-			payment_params: PaymentParameters::for_keysend(payee_pubkey, 40),
+			payment_params: PaymentParameters::for_keysend(payee_pubkey, 40, false),
 			final_value_msat: 10_000,
 		};
 		let network_graph = nodes[0].network_graph.clone();
@@ -8973,10 +9000,13 @@ mod tests {
 
 	#[test]
 	fn test_keysend_msg_with_secret_err() {
-		// Test that we error as expected if we receive a keysend payment that includes a payment secret.
+		// Test that we error as expected if we receive a keysend payment that includes a payment
+		// secret when we don't support MPP keysend.
+		let mut reject_mpp_keysend_cfg = test_default_channel_config();
+		reject_mpp_keysend_cfg.accept_mpp_keysend = false;
 		let chanmon_cfgs = create_chanmon_cfgs(2);
 		let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, Some(reject_mpp_keysend_cfg)]);
 		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 		let payer_pubkey = nodes[0].node.get_our_node_id();
@@ -8984,7 +9014,7 @@ mod tests {
 
 		let _chan = create_chan_between_nodes(&nodes[0], &nodes[1]);
 		let route_params = RouteParameters {
-			payment_params: PaymentParameters::for_keysend(payee_pubkey, 40),
+			payment_params: PaymentParameters::for_keysend(payee_pubkey, 40, false),
 			final_value_msat: 10_000,
 		};
 		let network_graph = nodes[0].network_graph.clone();

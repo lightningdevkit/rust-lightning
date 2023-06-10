@@ -9442,7 +9442,7 @@ fn test_keysend_payments_to_public_node() {
 	let payer_pubkey = nodes[0].node.get_our_node_id();
 	let payee_pubkey = nodes[1].node.get_our_node_id();
 	let route_params = RouteParameters {
-		payment_params: PaymentParameters::for_keysend(payee_pubkey, 40),
+		payment_params: PaymentParameters::for_keysend(payee_pubkey, 40, false),
 		final_value_msat: 10000,
 	};
 	let scorer = test_utils::TestScorer::new();
@@ -9473,7 +9473,7 @@ fn test_keysend_payments_to_private_node() {
 
 	let _chan = create_chan_between_nodes(&nodes[0], &nodes[1]);
 	let route_params = RouteParameters {
-		payment_params: PaymentParameters::for_keysend(payee_pubkey, 40),
+		payment_params: PaymentParameters::for_keysend(payee_pubkey, 40, false),
 		final_value_msat: 10000,
 	};
 	let network_graph = nodes[0].network_graph.clone();

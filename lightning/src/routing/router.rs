@@ -621,8 +621,17 @@ impl PaymentParameters {
 	///
 	/// The `final_cltv_expiry_delta` should match the expected final CLTV delta the recipient has
 	/// provided.
-	pub fn for_keysend(payee_pubkey: PublicKey, final_cltv_expiry_delta: u32) -> Self {
-		Self::from_node_id(payee_pubkey, final_cltv_expiry_delta).with_bolt11_features(InvoiceFeatures::for_keysend()).expect("PaymentParameters::from_node_id should always initialize the payee as unblinded")
+	///
+	/// Note that MPP keysend is not widely supported yet. The `allow_mpp` lets you choose
+	/// whether your router will be allowed to find a multi-part route for this payment. If you
+	/// set `allow_mpp` to true, you should ensure a payment secret is set on send, likely via
+	/// [`RecipientOnionFields::secret_only`].
+	///
+	/// [`RecipientOnionFields::secret_only`]: crate::ln::channelmanager::RecipientOnionFields::secret_only
+	pub fn for_keysend(payee_pubkey: PublicKey, final_cltv_expiry_delta: u32, allow_mpp: bool) -> Self {
+		Self::from_node_id(payee_pubkey, final_cltv_expiry_delta)
+			.with_bolt11_features(InvoiceFeatures::for_keysend(allow_mpp))
+			.expect("PaymentParameters::from_node_id should always initialize the payee as unblinded")
 	}
 
 	/// Includes the payee's features. Errors if the parameters were initialized with blinded payment

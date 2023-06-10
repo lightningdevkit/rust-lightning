@@ -607,6 +607,17 @@ pub struct UserConfig {
 	/// [`ChannelManager::get_intercept_scid`]: crate::ln::channelmanager::ChannelManager::get_intercept_scid
 	/// [`Event::HTLCIntercepted`]: crate::events::Event::HTLCIntercepted
 	pub accept_intercept_htlcs: bool,
+	/// If this is set to false, when receiving a keysend payment we'll fail it if it has multiple
+	/// parts. If this is set to true, we'll accept the payment.
+	///
+	/// Setting this to true will break backwards compatibility upon downgrading to an LDK
+	/// version < 0.0.116 while receiving an MPP keysend. If we have already received an MPP
+	/// keysend, downgrading will cause us to fail to deserialize [`ChannelManager`].
+	///
+	/// Default value: false.
+	///
+	/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
+	pub accept_mpp_keysend: bool,
 }
 
 impl Default for UserConfig {
@@ -619,6 +630,7 @@ impl Default for UserConfig {
 			accept_inbound_channels: true,
 			manually_accept_inbound_channels: false,
 			accept_intercept_htlcs: false,
+			accept_mpp_keysend: false,
 		}
 	}
 }

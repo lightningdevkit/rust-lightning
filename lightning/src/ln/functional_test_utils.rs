@@ -2115,7 +2115,7 @@ pub fn do_pass_along_path<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_p
 							},
 							PaymentPurpose::SpontaneousPayment(payment_preimage) => {
 								assert_eq!(expected_preimage.unwrap(), *payment_preimage);
-								assert!(our_payment_secret.is_none());
+								assert_eq!(our_payment_secret, onion_fields.as_ref().unwrap().payment_secret);
 							},
 						}
 						assert_eq!(*amount_msat, recv_value);
