@@ -1,4 +1,6 @@
  * Legacy inbound payment creation has been removed, thus there is no way to
    create a pending inbound payment which will still be claimable on LDK
    0.0.103 or earlier. Support for claiming such payments is still retained,
-   however is likely to be removed in the next release.
+   however is likely to be removed in the next release (#2351).
+ * Some fields required in 0.0.103 and earlier are no longer written, thus
+   deserializing objects written in 0.0.116 with 0.0.103 may now fail (#2351).

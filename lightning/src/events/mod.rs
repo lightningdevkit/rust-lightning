@@ -855,7 +855,7 @@ impl Writeable for Event {
 					(3, via_channel_id, option),
 					(4, amount_msat, required),
 					(5, via_user_channel_id, option),
-					(6, 0u64, required), // user_payment_id required for compatibility with 0.0.103 and earlier
+					// Type 6 was `user_payment_id` on 0.0.103 and earlier
 					(7, claim_deadline, option),
 					(8, payment_preimage, option),
 					(9, onion_fields, option),
@@ -1059,7 +1059,7 @@ impl MaybeReadable for Event {
 					let mut payment_secret = None;
 					let mut amount_msat = 0;
 					let mut receiver_node_id = None;
-					let mut _user_payment_id = None::<u64>; // For compatibility with 0.0.103 and earlier
+					let mut _user_payment_id = None::<u64>; // Used in 0.0.103 and earlier, no longer written in 0.0.116+.
 					let mut via_channel_id = None;
 					let mut claim_deadline = None;
 					let mut via_user_channel_id = None;
