@@ -5,8 +5,12 @@ RUSTC_MINOR_VERSION=$(rustc --version | awk '{ split($2,a,"."); print a[2] }')
 HOST_PLATFORM="$(rustc --version --verbose | grep "host:" | awk '{ print $2 }')"
 
 # Tokio MSRV on versions 1.17 through 1.26 is rustc 1.49. Above 1.26 MSRV is 1.56.
-[ "$RUSTC_MINOR_VERSION" -lt 49 ] && cargo update -p tokio --precise "1.14.0" --verbose
-[[ "$RUSTC_MINOR_VERSION" -gt 48  &&  "$RUSTC_MINOR_VERSION" -lt 56 ]] && cargo update -p tokio --precise "1.26.0" --verbose
+[ "$RUSTC_MINOR_VERSION" -lt 49 ] && cargo update -p tokio --precise "1.14.1" --verbose
+[[ "$RUSTC_MINOR_VERSION" -gt 48  &&  "$RUSTC_MINOR_VERSION" -lt 56 ]] && cargo update -p tokio --precise "1.25.1" --verbose
+
+# Sadly the log crate is always a dependency of tokio until 1.20, and has no reasonable MSRV guarantees
+[ "$RUSTC_MINOR_VERSION" -lt 49 ] && cargo update -p log --precise "0.4.18" --verbose
+
 [ "$LDK_COVERAGE_BUILD" != "" ] && export RUSTFLAGS="-C link-dead-code"
 
 export RUST_BACKTRACE=1
