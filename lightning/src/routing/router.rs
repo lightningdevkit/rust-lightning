@@ -946,11 +946,11 @@ enum CandidateRouteHop<'a> {
 }
 
 impl<'a> CandidateRouteHop<'a> {
-	fn short_channel_id(&self) -> u64 {
+	fn short_channel_id(&self) -> Option<u64> {
 		match self {
-			CandidateRouteHop::FirstHop { details } => details.get_outbound_payment_scid().unwrap(),
-			CandidateRouteHop::PublicHop { short_channel_id, .. } => *short_channel_id,
-			CandidateRouteHop::PrivateHop { hint } => hint.short_channel_id,
+			CandidateRouteHop::FirstHop { details } => Some(details.get_outbound_payment_scid().unwrap()),
+			CandidateRouteHop::PublicHop { short_channel_id, .. } => Some(*short_channel_id),
+			CandidateRouteHop::PrivateHop { hint } => Some(hint.short_channel_id),
 		}
 	}
 
@@ -1002,11 +1002,13 @@ impl<'a> CandidateRouteHop<'a> {
 		}
 	}
 	fn id(&self, channel_direction: bool /* src_node_id < target_node_id */) -> CandidateHopId {
-		CandidateHopId::Clear((self.short_channel_id(), channel_direction))
+		match self {
+			_ => CandidateHopId::Clear((self.short_channel_id().unwrap(), channel_direction)),
+		}
 	}
 }
 
-#[derive(Eq, Hash, PartialEq)]
+#[derive(Clone, Copy, Eq, Hash, Ord, PartialOrd, PartialEq)]
 enum CandidateHopId {
 	/// Contains (scid, src_node_id < target_node_id)
 	Clear((u64, bool)),
@@ -1248,6 +1250,18 @@ impl fmt::Display for LoggedPayeePubkey {
 			},
 			None => {
 				"blinded payee".fmt(f)
+			},
+		}
+	}
+}
+
+struct LoggedCandidateHop<'a>(&'a CandidateRouteHop<'a>);
+impl<'a> fmt::Display for LoggedCandidateHop<'a> {
+	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+		match self.0 {
+			_ => {
+				"SCID ".fmt(f)?;
+				self.0.short_channel_id().unwrap().fmt(f)
 			},
 		}
 	}
@@ -1557,7 +1571,7 @@ where L::Target: Logger {
 			// - for regular channels at channel announcement (TODO)
 			// - for first and last hops early in get_route
 			if $src_node_id != $dest_node_id {
-				let short_channel_id = $candidate.short_channel_id();
+				let scid_opt = $candidate.short_channel_id();
 				let effective_capacity = $candidate.effective_capacity();
 				let htlc_maximum_msat = max_htlc_from_capacity(effective_capacity, channel_saturation_pow_half);
 
@@ -1612,8 +1626,8 @@ where L::Target: Logger {
 						 (amount_to_transfer_over_msat < $next_hops_path_htlc_minimum_msat &&
 						  recommended_value_msat > $next_hops_path_htlc_minimum_msat));
 
-					let payment_failed_on_this_channel =
-						payment_params.previously_failed_channels.contains(&short_channel_id);
+					let payment_failed_on_this_channel = scid_opt.map_or(false,
+						|scid| payment_params.previously_failed_channels.contains(&scid));
 
 					// If HTLC minimum is larger than the amount we're going to transfer, we shouldn't
 					// bother considering this channel. If retrying with recommended_value_msat may
@@ -1682,9 +1696,9 @@ where L::Target: Logger {
 								inflight_htlc_msat: used_liquidity_msat,
 								effective_capacity,
 							};
-							let channel_penalty_msat = scorer.channel_penalty_msat(
-								short_channel_id, &$src_node_id, &$dest_node_id, channel_usage, score_params
-							);
+							let channel_penalty_msat = scid_opt.map_or(0,
+								|scid| scorer.channel_penalty_msat(scid, &$src_node_id, &$dest_node_id,
+									channel_usage, score_params));
 							let path_penalty_msat = $next_hops_path_penalty_msat
 								.saturating_add(channel_penalty_msat);
 							let new_graph_node = RouteGraphNode {
@@ -1854,8 +1868,8 @@ where L::Target: Logger {
 				let candidate = CandidateRouteHop::FirstHop { details };
 				let added = add_entry!(candidate, our_node_id, payee, 0, path_value_msat,
 									0, 0u64, 0, 0).is_some();
-				log_trace!(logger, "{} direct route to payee via SCID {}",
-						if added { "Added" } else { "Skipped" }, candidate.short_channel_id());
+				log_trace!(logger, "{} direct route to payee via {}",
+						if added { "Added" } else { "Skipped" }, LoggedCandidateHop(&candidate));
 			}
 		}));
 
@@ -2036,10 +2050,12 @@ where L::Target: Logger {
 					let mut features_set = false;
 					if let Some(first_channels) = first_hop_targets.get(&ordered_hops.last().unwrap().0.node_id) {
 						for details in first_channels {
-							if details.get_outbound_payment_scid().unwrap() == ordered_hops.last().unwrap().0.candidate.short_channel_id() {
-								ordered_hops.last_mut().unwrap().1 = details.counterparty.features.to_context();
-								features_set = true;
-								break;
+							if let Some(scid) = ordered_hops.last().unwrap().0.candidate.short_channel_id() {
+								if details.get_outbound_payment_scid().unwrap() == scid {
+									ordered_hops.last_mut().unwrap().1 = details.counterparty.features.to_context();
+									features_set = true;
+									break;
+								}
 							}
 						}
 					}
@@ -2125,11 +2141,12 @@ where L::Target: Logger {
 					// If we weren't capped by hitting a liquidity limit on a channel in the path,
 					// we'll probably end up picking the same path again on the next iteration.
 					// Decrease the available liquidity of a hop in the middle of the path.
-					let victim_scid = payment_path.hops[(payment_path.hops.len()) / 2].0.candidate.short_channel_id();
+					let victim_candidate = &payment_path.hops[(payment_path.hops.len()) / 2].0.candidate;
 					let exhausted = u64::max_value();
-					log_trace!(logger, "Disabling channel {} for future path building iterations to avoid duplicates.", victim_scid);
-					*used_liquidities.entry(CandidateHopId::Clear((victim_scid, false))).or_default() = exhausted;
-					*used_liquidities.entry(CandidateHopId::Clear((victim_scid, true))).or_default() = exhausted;
+					log_trace!(logger, "Disabling route candidate {} for future path building iterations to
+						avoid duplicates.", LoggedCandidateHop(victim_candidate));
+					*used_liquidities.entry(victim_candidate.id(false)).or_default() = exhausted;
+					*used_liquidities.entry(victim_candidate.id(true)).or_default() = exhausted;
 				}
 
 				// Track the total amount all our collected paths allow to send so that we know
@@ -2257,9 +2274,9 @@ where L::Target: Logger {
 	// compare both SCIDs and NodeIds as individual nodes may use random aliases causing collisions
 	// across nodes.
 	selected_route.sort_unstable_by_key(|path| {
-		let mut key = [0u64; MAX_PATH_LENGTH_ESTIMATE as usize];
+		let mut key = [CandidateHopId::Clear((42, true)) ; MAX_PATH_LENGTH_ESTIMATE as usize];
 		debug_assert!(path.hops.len() <= key.len());
-		for (scid, key) in path.hops.iter().map(|h| h.0.candidate.short_channel_id()).zip(key.iter_mut()) {
+		for (scid, key) in path.hops.iter() .map(|h| h.0.candidate.id(true)).zip(key.iter_mut()) {
 			*key = scid;
 		}
 		key
@@ -2276,15 +2293,16 @@ where L::Target: Logger {
 
 	let mut selected_paths = Vec::<Vec<Result<RouteHop, LightningError>>>::new();
 	for payment_path in selected_route {
-		let mut path = payment_path.hops.iter().map(|(payment_hop, node_features)| {
-			Ok(RouteHop {
-				pubkey: PublicKey::from_slice(payment_hop.node_id.as_slice()).map_err(|_| LightningError{err: format!("Public key {:?} is invalid", &payment_hop.node_id), action: ErrorAction::IgnoreAndLog(Level::Trace)})?,
-				node_features: node_features.clone(),
-				short_channel_id: payment_hop.candidate.short_channel_id(),
-				channel_features: payment_hop.candidate.features(),
-				fee_msat: payment_hop.fee_msat,
-				cltv_expiry_delta: payment_hop.candidate.cltv_expiry_delta(),
-			})
+		let mut path = payment_path.hops.iter().filter(|(h, _)| h.candidate.short_channel_id().is_some())
+			.map(|(payment_hop, node_features)| {
+				Ok(RouteHop {
+					pubkey: PublicKey::from_slice(payment_hop.node_id.as_slice()).map_err(|_| LightningError{err: format!("Public key {:?} is invalid", &payment_hop.node_id), action: ErrorAction::IgnoreAndLog(Level::Trace)})?,
+					node_features: node_features.clone(),
+					short_channel_id: payment_hop.candidate.short_channel_id().unwrap(),
+					channel_features: payment_hop.candidate.features(),
+					fee_msat: payment_hop.fee_msat,
+					cltv_expiry_delta: payment_hop.candidate.cltv_expiry_delta(),
+				})
 		}).collect::<Vec<_>>();
 		// Propagate the cltv_expiry_delta one hop backwards since the delta from the current hop is
 		// applicable for the previous hop.
