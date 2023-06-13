@@ -1368,6 +1368,88 @@ impl<Signer: ChannelSigner> ChannelContext<Signer> {
 	pub fn counterparty_forwarding_info(&self) -> Option<CounterpartyForwardingInfo> {
 		self.counterparty_forwarding_info.clone()
 	}
+
+	/// Returns a HTLCStats about inbound pending htlcs
+	fn get_inbound_pending_htlc_stats(&self, outbound_feerate_update: Option<u32>) -> HTLCStats {
+		let context = self;
+		let mut stats = HTLCStats {
+			pending_htlcs: context.pending_inbound_htlcs.len() as u32,
+			pending_htlcs_value_msat: 0,
+			on_counterparty_tx_dust_exposure_msat: 0,
+			on_holder_tx_dust_exposure_msat: 0,
+			holding_cell_msat: 0,
+			on_holder_tx_holding_cell_htlcs_count: 0,
+		};
+
+		let (htlc_timeout_dust_limit, htlc_success_dust_limit) = if context.opt_anchors() {
+			(0, 0)
+		} else {
+			let dust_buffer_feerate = context.get_dust_buffer_feerate(outbound_feerate_update) as u64;
+			(dust_buffer_feerate * htlc_timeout_tx_weight(false) / 1000,
+				dust_buffer_feerate * htlc_success_tx_weight(false) / 1000)
+		};
+		let counterparty_dust_limit_timeout_sat = htlc_timeout_dust_limit + context.counterparty_dust_limit_satoshis;
+		let holder_dust_limit_success_sat = htlc_success_dust_limit + context.holder_dust_limit_satoshis;
+		for ref htlc in context.pending_inbound_htlcs.iter() {
+			stats.pending_htlcs_value_msat += htlc.amount_msat;
+			if htlc.amount_msat / 1000 < counterparty_dust_limit_timeout_sat {
+				stats.on_counterparty_tx_dust_exposure_msat += htlc.amount_msat;
+			}
+			if htlc.amount_msat / 1000 < holder_dust_limit_success_sat {
+				stats.on_holder_tx_dust_exposure_msat += htlc.amount_msat;
+			}
+		}
+		stats
+	}
+
+	/// Returns a HTLCStats about pending outbound htlcs, *including* pending adds in our holding cell.
+	fn get_outbound_pending_htlc_stats(&self, outbound_feerate_update: Option<u32>) -> HTLCStats {
+		let context = self;
+		let mut stats = HTLCStats {
+			pending_htlcs: context.pending_outbound_htlcs.len() as u32,
+			pending_htlcs_value_msat: 0,
+			on_counterparty_tx_dust_exposure_msat: 0,
+			on_holder_tx_dust_exposure_msat: 0,
+			holding_cell_msat: 0,
+			on_holder_tx_holding_cell_htlcs_count: 0,
+		};
+
+		let (htlc_timeout_dust_limit, htlc_success_dust_limit) = if context.opt_anchors() {
+			(0, 0)
+		} else {
+			let dust_buffer_feerate = context.get_dust_buffer_feerate(outbound_feerate_update) as u64;
+			(dust_buffer_feerate * htlc_timeout_tx_weight(false) / 1000,
+				dust_buffer_feerate * htlc_success_tx_weight(false) / 1000)
+		};
+		let counterparty_dust_limit_success_sat = htlc_success_dust_limit + context.counterparty_dust_limit_satoshis;
+		let holder_dust_limit_timeout_sat = htlc_timeout_dust_limit + context.holder_dust_limit_satoshis;
+		for ref htlc in context.pending_outbound_htlcs.iter() {
+			stats.pending_htlcs_value_msat += htlc.amount_msat;
+			if htlc.amount_msat / 1000 < counterparty_dust_limit_success_sat {
+				stats.on_counterparty_tx_dust_exposure_msat += htlc.amount_msat;
+			}
+			if htlc.amount_msat / 1000 < holder_dust_limit_timeout_sat {
+				stats.on_holder_tx_dust_exposure_msat += htlc.amount_msat;
+			}
+		}
+
+		for update in context.holding_cell_htlc_updates.iter() {
+			if let &HTLCUpdateAwaitingACK::AddHTLC { ref amount_msat, .. } = update {
+				stats.pending_htlcs += 1;
+				stats.pending_htlcs_value_msat += amount_msat;
+				stats.holding_cell_msat += amount_msat;
+				if *amount_msat / 1000 < counterparty_dust_limit_success_sat {
+					stats.on_counterparty_tx_dust_exposure_msat += amount_msat;
+				}
+				if *amount_msat / 1000 < holder_dust_limit_timeout_sat {
+					stats.on_holder_tx_dust_exposure_msat += amount_msat;
+				} else {
+					stats.on_holder_tx_holding_cell_htlcs_count += 1;
+				}
+			}
+		}
+		stats
+	}
 }
 
 // Internal utility functions for channels
@@ -2933,88 +3015,6 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		}
 	}
 
-	/// Returns a HTLCStats about inbound pending htlcs
-	fn get_inbound_pending_htlc_stats(&self, outbound_feerate_update: Option<u32>) -> HTLCStats {
-		let context = &self.context;
-		let mut stats = HTLCStats {
-			pending_htlcs: context.pending_inbound_htlcs.len() as u32,
-			pending_htlcs_value_msat: 0,
-			on_counterparty_tx_dust_exposure_msat: 0,
-			on_holder_tx_dust_exposure_msat: 0,
-			holding_cell_msat: 0,
-			on_holder_tx_holding_cell_htlcs_count: 0,
-		};
-
-		let (htlc_timeout_dust_limit, htlc_success_dust_limit) = if context.opt_anchors() {
-			(0, 0)
-		} else {
-			let dust_buffer_feerate = context.get_dust_buffer_feerate(outbound_feerate_update) as u64;
-			(dust_buffer_feerate * htlc_timeout_tx_weight(false) / 1000,
-				dust_buffer_feerate * htlc_success_tx_weight(false) / 1000)
-		};
-		let counterparty_dust_limit_timeout_sat = htlc_timeout_dust_limit + context.counterparty_dust_limit_satoshis;
-		let holder_dust_limit_success_sat = htlc_success_dust_limit + context.holder_dust_limit_satoshis;
-		for ref htlc in context.pending_inbound_htlcs.iter() {
-			stats.pending_htlcs_value_msat += htlc.amount_msat;
-			if htlc.amount_msat / 1000 < counterparty_dust_limit_timeout_sat {
-				stats.on_counterparty_tx_dust_exposure_msat += htlc.amount_msat;
-			}
-			if htlc.amount_msat / 1000 < holder_dust_limit_success_sat {
-				stats.on_holder_tx_dust_exposure_msat += htlc.amount_msat;
-			}
-		}
-		stats
-	}
-
-	/// Returns a HTLCStats about pending outbound htlcs, *including* pending adds in our holding cell.
-	fn get_outbound_pending_htlc_stats(&self, outbound_feerate_update: Option<u32>) -> HTLCStats {
-		let context = &self.context;
-		let mut stats = HTLCStats {
-			pending_htlcs: context.pending_outbound_htlcs.len() as u32,
-			pending_htlcs_value_msat: 0,
-			on_counterparty_tx_dust_exposure_msat: 0,
-			on_holder_tx_dust_exposure_msat: 0,
-			holding_cell_msat: 0,
-			on_holder_tx_holding_cell_htlcs_count: 0,
-		};
-
-		let (htlc_timeout_dust_limit, htlc_success_dust_limit) = if context.opt_anchors() {
-			(0, 0)
-		} else {
-			let dust_buffer_feerate = context.get_dust_buffer_feerate(outbound_feerate_update) as u64;
-			(dust_buffer_feerate * htlc_timeout_tx_weight(false) / 1000,
-				dust_buffer_feerate * htlc_success_tx_weight(false) / 1000)
-		};
-		let counterparty_dust_limit_success_sat = htlc_success_dust_limit + context.counterparty_dust_limit_satoshis;
-		let holder_dust_limit_timeout_sat = htlc_timeout_dust_limit + context.holder_dust_limit_satoshis;
-		for ref htlc in context.pending_outbound_htlcs.iter() {
-			stats.pending_htlcs_value_msat += htlc.amount_msat;
-			if htlc.amount_msat / 1000 < counterparty_dust_limit_success_sat {
-				stats.on_counterparty_tx_dust_exposure_msat += htlc.amount_msat;
-			}
-			if htlc.amount_msat / 1000 < holder_dust_limit_timeout_sat {
-				stats.on_holder_tx_dust_exposure_msat += htlc.amount_msat;
-			}
-		}
-
-		for update in context.holding_cell_htlc_updates.iter() {
-			if let &HTLCUpdateAwaitingACK::AddHTLC { ref amount_msat, .. } = update {
-				stats.pending_htlcs += 1;
-				stats.pending_htlcs_value_msat += amount_msat;
-				stats.holding_cell_msat += amount_msat;
-				if *amount_msat / 1000 < counterparty_dust_limit_success_sat {
-					stats.on_counterparty_tx_dust_exposure_msat += amount_msat;
-				}
-				if *amount_msat / 1000 < holder_dust_limit_timeout_sat {
-					stats.on_holder_tx_dust_exposure_msat += amount_msat;
-				} else {
-					stats.on_holder_tx_holding_cell_htlcs_count += 1;
-				}
-			}
-		}
-		stats
-	}
-
 	/// Get the available balances, see [`AvailableBalances`]'s fields for more info.
 	/// Doesn't bother handling the
 	/// if-we-removed-it-already-but-haven't-fully-resolved-they-can-still-send-an-inbound-HTLC
@@ -3022,8 +3022,8 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 	pub fn get_available_balances(&self) -> AvailableBalances {
 		let context = &self.context;
 		// Note that we have to handle overflow due to the above case.
-		let inbound_stats = self.get_inbound_pending_htlc_stats(None);
-		let outbound_stats = self.get_outbound_pending_htlc_stats(None);
+		let inbound_stats = context.get_inbound_pending_htlc_stats(None);
+		let outbound_stats = context.get_outbound_pending_htlc_stats(None);
 
 		let mut balance_msat = context.value_to_self_msat;
 		for ref htlc in context.pending_inbound_htlcs.iter() {
@@ -3142,7 +3142,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		AvailableBalances {
 			inbound_capacity_msat: cmp::max(context.channel_value_satoshis as i64 * 1000
 					- context.value_to_self_msat as i64
-					- self.get_inbound_pending_htlc_stats(None).pending_htlcs_value_msat as i64
+					- context.get_inbound_pending_htlc_stats(None).pending_htlcs_value_msat as i64
 					- context.holder_selected_channel_reserve_satoshis as i64 * 1000,
 				0) as u64,
 			outbound_capacity_msat,
@@ -3384,8 +3384,8 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			return Err(ChannelError::Close(format!("Remote side tried to send less than our minimum HTLC value. Lower limit: ({}). Actual: ({})", self.context.holder_htlc_minimum_msat, msg.amount_msat)));
 		}
 
-		let inbound_stats = self.get_inbound_pending_htlc_stats(None);
-		let outbound_stats = self.get_outbound_pending_htlc_stats(None);
+		let inbound_stats = self.context.get_inbound_pending_htlc_stats(None);
+		let outbound_stats = self.context.get_outbound_pending_htlc_stats(None);
 		if inbound_stats.pending_htlcs + 1 > self.context.holder_max_accepted_htlcs as u32 {
 			return Err(ChannelError::Close(format!("Remote tried to push more than our max accepted HTLCs ({})", self.context.holder_max_accepted_htlcs)));
 		}
@@ -4183,8 +4183,8 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		}
 
 		// Before proposing a feerate update, check that we can actually afford the new fee.
-		let inbound_stats = self.get_inbound_pending_htlc_stats(Some(feerate_per_kw));
-		let outbound_stats = self.get_outbound_pending_htlc_stats(Some(feerate_per_kw));
+		let inbound_stats = self.context.get_inbound_pending_htlc_stats(Some(feerate_per_kw));
+		let outbound_stats = self.context.get_outbound_pending_htlc_stats(Some(feerate_per_kw));
 		let keys = self.context.build_holder_transaction_keys(self.context.cur_holder_commitment_transaction_number);
 		let commitment_stats = self.context.build_commitment_transaction(self.context.cur_holder_commitment_transaction_number, &keys, true, true, logger);
 		let buffer_fee_msat = commit_tx_fee_sat(feerate_per_kw, commitment_stats.num_nondust_htlcs + outbound_stats.on_holder_tx_holding_cell_htlcs_count as usize + CONCURRENT_INBOUND_HTLC_FEE_BUFFER as usize, self.context.opt_anchors()) * 1000;
@@ -4435,8 +4435,8 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		// `get_dust_buffer_feerate` considers the `pending_update_fee` status), check that we
 		// won't be pushed over our dust exposure limit by the feerate increase.
 		if feerate_over_dust_buffer {
-			let inbound_stats = self.get_inbound_pending_htlc_stats(None);
-			let outbound_stats = self.get_outbound_pending_htlc_stats(None);
+			let inbound_stats = self.context.get_inbound_pending_htlc_stats(None);
+			let outbound_stats = self.context.get_outbound_pending_htlc_stats(None);
 			let holder_tx_dust_exposure = inbound_stats.on_holder_tx_dust_exposure_msat + outbound_stats.on_holder_tx_dust_exposure_msat;
 			let counterparty_tx_dust_exposure = inbound_stats.on_counterparty_tx_dust_exposure_msat + outbound_stats.on_counterparty_tx_dust_exposure_msat;
 			if holder_tx_dust_exposure > self.context.get_max_dust_htlc_exposure_msat() {
