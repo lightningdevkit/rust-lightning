@@ -4886,7 +4886,7 @@ where
 		let is_only_peer_channel = peer_state.total_channel_count() == 1;
 		match peer_state.inbound_v1_channel_by_id.entry(temporary_channel_id.clone()) {
 			hash_map::Entry::Occupied(mut channel) => {
-				if !channel.get().inbound_is_awaiting_accept() {
+				if !channel.get().is_awaiting_accept() {
 					return Err(APIError::APIMisuseError { err: "The channel isn't currently awaiting to be accepted.".to_owned() });
 				}
 				if accept_0conf {

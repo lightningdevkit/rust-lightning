@@ -6265,7 +6265,7 @@ impl<Signer: WriteableEcdsaChannelSigner> InboundV1Channel<Signer> {
 		Ok(chan)
 	}
 
-	pub fn inbound_is_awaiting_accept(&self) -> bool {
+	pub fn is_awaiting_accept(&self) -> bool {
 		self.context.inbound_awaiting_accept
 	}
 
