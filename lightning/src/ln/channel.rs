@@ -1450,6 +1450,205 @@ impl<Signer: ChannelSigner> ChannelContext<Signer> {
 		}
 		stats
 	}
+
+	pub fn get_holder_counterparty_selected_channel_reserve_satoshis(&self) -> (u64, Option<u64>) {
+		let context = &self;
+		(context.holder_selected_channel_reserve_satoshis, context.counterparty_selected_channel_reserve_satoshis)
+	}
+
+	/// Get the commitment tx fee for the local's (i.e. our) next commitment transaction based on the
+	/// number of pending HTLCs that are on track to be in our next commitment tx.
+	///
+	/// Optionally includes the `HTLCCandidate` given by `htlc` and an additional non-dust HTLC if
+	/// `fee_spike_buffer_htlc` is `Some`.
+	///
+	/// The first extra HTLC is useful for determining whether we can accept a further HTLC, the
+	/// second allows for creating a buffer to ensure a further HTLC can always be accepted/added.
+	///
+	/// Dust HTLCs are excluded.
+	fn next_local_commit_tx_fee_msat(&self, htlc: HTLCCandidate, fee_spike_buffer_htlc: Option<()>) -> u64 {
+		let context = &self;
+		assert!(context.is_outbound());
+
+		let (htlc_success_dust_limit, htlc_timeout_dust_limit) = if context.opt_anchors() {
+			(0, 0)
+		} else {
+			(context.feerate_per_kw as u64 * htlc_success_tx_weight(false) / 1000,
+				context.feerate_per_kw as u64 * htlc_timeout_tx_weight(false) / 1000)
+		};
+		let real_dust_limit_success_sat = htlc_success_dust_limit + context.holder_dust_limit_satoshis;
+		let real_dust_limit_timeout_sat = htlc_timeout_dust_limit + context.holder_dust_limit_satoshis;
+
+		let mut addl_htlcs = 0;
+		if fee_spike_buffer_htlc.is_some() { addl_htlcs += 1; }
+		match htlc.origin {
+			HTLCInitiator::LocalOffered => {
+				if htlc.amount_msat / 1000 >= real_dust_limit_timeout_sat {
+					addl_htlcs += 1;
+				}
+			},
+			HTLCInitiator::RemoteOffered => {
+				if htlc.amount_msat / 1000 >= real_dust_limit_success_sat {
+					addl_htlcs += 1;
+				}
+			}
+		}
+
+		let mut included_htlcs = 0;
+		for ref htlc in context.pending_inbound_htlcs.iter() {
+			if htlc.amount_msat / 1000 < real_dust_limit_success_sat {
+				continue
+			}
+			// We include LocalRemoved HTLCs here because we may still need to broadcast a commitment
+			// transaction including this HTLC if it times out before they RAA.
+			included_htlcs += 1;
+		}
+
+		for ref htlc in context.pending_outbound_htlcs.iter() {
+			if htlc.amount_msat / 1000 < real_dust_limit_timeout_sat {
+				continue
+			}
+			match htlc.state {
+				OutboundHTLCState::LocalAnnounced {..} => included_htlcs += 1,
+				OutboundHTLCState::Committed => included_htlcs += 1,
+				OutboundHTLCState::RemoteRemoved {..} => included_htlcs += 1,
+				// We don't include AwaitingRemoteRevokeToRemove HTLCs because our next commitment
+				// transaction won't be generated until they send us their next RAA, which will mean
+				// dropping any HTLCs in this state.
+				_ => {},
+			}
+		}
+
+		for htlc in context.holding_cell_htlc_updates.iter() {
+			match htlc {
+				&HTLCUpdateAwaitingACK::AddHTLC { amount_msat, .. } => {
+					if amount_msat / 1000 < real_dust_limit_timeout_sat {
+						continue
+					}
+					included_htlcs += 1
+				},
+				_ => {}, // Don't include claims/fails that are awaiting ack, because once we get the
+				         // ack we're guaranteed to never include them in commitment txs anymore.
+			}
+		}
+
+		let num_htlcs = included_htlcs + addl_htlcs;
+		let res = commit_tx_fee_msat(context.feerate_per_kw, num_htlcs, context.opt_anchors());
+		#[cfg(any(test, fuzzing))]
+		{
+			let mut fee = res;
+			if fee_spike_buffer_htlc.is_some() {
+				fee = commit_tx_fee_msat(context.feerate_per_kw, num_htlcs - 1, context.opt_anchors());
+			}
+			let total_pending_htlcs = context.pending_inbound_htlcs.len() + context.pending_outbound_htlcs.len()
+				+ context.holding_cell_htlc_updates.len();
+			let commitment_tx_info = CommitmentTxInfoCached {
+				fee,
+				total_pending_htlcs,
+				next_holder_htlc_id: match htlc.origin {
+					HTLCInitiator::LocalOffered => context.next_holder_htlc_id + 1,
+					HTLCInitiator::RemoteOffered => context.next_holder_htlc_id,
+				},
+				next_counterparty_htlc_id: match htlc.origin {
+					HTLCInitiator::LocalOffered => context.next_counterparty_htlc_id,
+					HTLCInitiator::RemoteOffered => context.next_counterparty_htlc_id + 1,
+				},
+				feerate: context.feerate_per_kw,
+			};
+			*context.next_local_commitment_tx_fee_info_cached.lock().unwrap() = Some(commitment_tx_info);
+		}
+		res
+	}
+
+	/// Get the commitment tx fee for the remote's next commitment transaction based on the number of
+	/// pending HTLCs that are on track to be in their next commitment tx
+	///
+	/// Optionally includes the `HTLCCandidate` given by `htlc` and an additional non-dust HTLC if
+	/// `fee_spike_buffer_htlc` is `Some`.
+	///
+	/// The first extra HTLC is useful for determining whether we can accept a further HTLC, the
+	/// second allows for creating a buffer to ensure a further HTLC can always be accepted/added.
+	///
+	/// Dust HTLCs are excluded.
+	fn next_remote_commit_tx_fee_msat(&self, htlc: HTLCCandidate, fee_spike_buffer_htlc: Option<()>) -> u64 {
+		let context = &self;
+		assert!(!context.is_outbound());
+
+		let (htlc_success_dust_limit, htlc_timeout_dust_limit) = if context.opt_anchors() {
+			(0, 0)
+		} else {
+			(context.feerate_per_kw as u64 * htlc_success_tx_weight(false) / 1000,
+				context.feerate_per_kw as u64 * htlc_timeout_tx_weight(false) / 1000)
+		};
+		let real_dust_limit_success_sat = htlc_success_dust_limit + context.counterparty_dust_limit_satoshis;
+		let real_dust_limit_timeout_sat = htlc_timeout_dust_limit + context.counterparty_dust_limit_satoshis;
+
+		let mut addl_htlcs = 0;
+		if fee_spike_buffer_htlc.is_some() { addl_htlcs += 1; }
+		match htlc.origin {
+			HTLCInitiator::LocalOffered => {
+				if htlc.amount_msat / 1000 >= real_dust_limit_success_sat {
+					addl_htlcs += 1;
+				}
+			},
+			HTLCInitiator::RemoteOffered => {
+				if htlc.amount_msat / 1000 >= real_dust_limit_timeout_sat {
+					addl_htlcs += 1;
+				}
+			}
+		}
+
+		// When calculating the set of HTLCs which will be included in their next commitment_signed, all
+		// non-dust inbound HTLCs are included (as all states imply it will be included) and only
+		// committed outbound HTLCs, see below.
+		let mut included_htlcs = 0;
+		for ref htlc in context.pending_inbound_htlcs.iter() {
+			if htlc.amount_msat / 1000 <= real_dust_limit_timeout_sat {
+				continue
+			}
+			included_htlcs += 1;
+		}
+
+		for ref htlc in context.pending_outbound_htlcs.iter() {
+			if htlc.amount_msat / 1000 <= real_dust_limit_success_sat {
+				continue
+			}
+			// We only include outbound HTLCs if it will not be included in their next commitment_signed,
+			// i.e. if they've responded to us with an RAA after announcement.
+			match htlc.state {
+				OutboundHTLCState::Committed => included_htlcs += 1,
+				OutboundHTLCState::RemoteRemoved {..} => included_htlcs += 1,
+				OutboundHTLCState::LocalAnnounced { .. } => included_htlcs += 1,
+				_ => {},
+			}
+		}
+
+		let num_htlcs = included_htlcs + addl_htlcs;
+		let res = commit_tx_fee_msat(context.feerate_per_kw, num_htlcs, context.opt_anchors());
+		#[cfg(any(test, fuzzing))]
+		{
+			let mut fee = res;
+			if fee_spike_buffer_htlc.is_some() {
+				fee = commit_tx_fee_msat(context.feerate_per_kw, num_htlcs - 1, context.opt_anchors());
+			}
+			let total_pending_htlcs = context.pending_inbound_htlcs.len() + context.pending_outbound_htlcs.len();
+			let commitment_tx_info = CommitmentTxInfoCached {
+				fee,
+				total_pending_htlcs,
+				next_holder_htlc_id: match htlc.origin {
+					HTLCInitiator::LocalOffered => context.next_holder_htlc_id + 1,
+					HTLCInitiator::RemoteOffered => context.next_holder_htlc_id,
+				},
+				next_counterparty_htlc_id: match htlc.origin {
+					HTLCInitiator::LocalOffered => context.next_counterparty_htlc_id,
+					HTLCInitiator::RemoteOffered => context.next_counterparty_htlc_id + 1,
+				},
+				feerate: context.feerate_per_kw,
+			};
+			*context.next_remote_commitment_tx_fee_info_cached.lock().unwrap() = Some(commitment_tx_info);
+		}
+		res
+	}
 }
 
 // Internal utility functions for channels
@@ -3062,9 +3261,9 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			}
 
 			let htlc_above_dust = HTLCCandidate::new(real_dust_limit_timeout_sat * 1000, HTLCInitiator::LocalOffered);
-			let max_reserved_commit_tx_fee_msat = FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE * self.next_local_commit_tx_fee_msat(htlc_above_dust, Some(()));
+			let max_reserved_commit_tx_fee_msat = FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE * context.next_local_commit_tx_fee_msat(htlc_above_dust, Some(()));
 			let htlc_dust = HTLCCandidate::new(real_dust_limit_timeout_sat * 1000 - 1, HTLCInitiator::LocalOffered);
-			let min_reserved_commit_tx_fee_msat = FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE * self.next_local_commit_tx_fee_msat(htlc_dust, Some(()));
+			let min_reserved_commit_tx_fee_msat = FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE * context.next_local_commit_tx_fee_msat(htlc_dust, Some(()));
 
 			// We will first subtract the fee as if we were above-dust. Then, if the resulting
 			// value ends up being below dust, we have this fee available again. In that case,
@@ -3088,7 +3287,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			}
 
 			let htlc_above_dust = HTLCCandidate::new(real_dust_limit_success_sat * 1000, HTLCInitiator::LocalOffered);
-			let max_reserved_commit_tx_fee_msat = self.next_remote_commit_tx_fee_msat(htlc_above_dust, None);
+			let max_reserved_commit_tx_fee_msat = context.next_remote_commit_tx_fee_msat(htlc_above_dust, None);
 
 			let holder_selected_chan_reserve_msat = context.holder_selected_channel_reserve_satoshis * 1000;
 			let remote_balance_msat = (context.channel_value_satoshis * 1000 - context.value_to_self_msat)
@@ -3158,205 +3357,6 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			next_outbound_htlc_minimum_msat,
 			balance_msat,
 		}
-	}
-
-	pub fn get_holder_counterparty_selected_channel_reserve_satoshis(&self) -> (u64, Option<u64>) {
-		let context = &self.context;
-		(context.holder_selected_channel_reserve_satoshis, context.counterparty_selected_channel_reserve_satoshis)
-	}
-
-	/// Get the commitment tx fee for the local's (i.e. our) next commitment transaction based on the
-	/// number of pending HTLCs that are on track to be in our next commitment tx.
-	///
-	/// Optionally includes the `HTLCCandidate` given by `htlc` and an additional non-dust HTLC if
-	/// `fee_spike_buffer_htlc` is `Some`.
-	///
-	/// The first extra HTLC is useful for determining whether we can accept a further HTLC, the
-	/// second allows for creating a buffer to ensure a further HTLC can always be accepted/added.
-	///
-	/// Dust HTLCs are excluded.
-	fn next_local_commit_tx_fee_msat(&self, htlc: HTLCCandidate, fee_spike_buffer_htlc: Option<()>) -> u64 {
-		let context = &self.context;
-		assert!(context.is_outbound());
-
-		let (htlc_success_dust_limit, htlc_timeout_dust_limit) = if context.opt_anchors() {
-			(0, 0)
-		} else {
-			(context.feerate_per_kw as u64 * htlc_success_tx_weight(false) / 1000,
-				context.feerate_per_kw as u64 * htlc_timeout_tx_weight(false) / 1000)
-		};
-		let real_dust_limit_success_sat = htlc_success_dust_limit + context.holder_dust_limit_satoshis;
-		let real_dust_limit_timeout_sat = htlc_timeout_dust_limit + context.holder_dust_limit_satoshis;
-
-		let mut addl_htlcs = 0;
-		if fee_spike_buffer_htlc.is_some() { addl_htlcs += 1; }
-		match htlc.origin {
-			HTLCInitiator::LocalOffered => {
-				if htlc.amount_msat / 1000 >= real_dust_limit_timeout_sat {
-					addl_htlcs += 1;
-				}
-			},
-			HTLCInitiator::RemoteOffered => {
-				if htlc.amount_msat / 1000 >= real_dust_limit_success_sat {
-					addl_htlcs += 1;
-				}
-			}
-		}
-
-		let mut included_htlcs = 0;
-		for ref htlc in context.pending_inbound_htlcs.iter() {
-			if htlc.amount_msat / 1000 < real_dust_limit_success_sat {
-				continue
-			}
-			// We include LocalRemoved HTLCs here because we may still need to broadcast a commitment
-			// transaction including this HTLC if it times out before they RAA.
-			included_htlcs += 1;
-		}
-
-		for ref htlc in context.pending_outbound_htlcs.iter() {
-			if htlc.amount_msat / 1000 < real_dust_limit_timeout_sat {
-				continue
-			}
-			match htlc.state {
-				OutboundHTLCState::LocalAnnounced {..} => included_htlcs += 1,
-				OutboundHTLCState::Committed => included_htlcs += 1,
-				OutboundHTLCState::RemoteRemoved {..} => included_htlcs += 1,
-				// We don't include AwaitingRemoteRevokeToRemove HTLCs because our next commitment
-				// transaction won't be generated until they send us their next RAA, which will mean
-				// dropping any HTLCs in this state.
-				_ => {},
-			}
-		}
-
-		for htlc in context.holding_cell_htlc_updates.iter() {
-			match htlc {
-				&HTLCUpdateAwaitingACK::AddHTLC { amount_msat, .. } => {
-					if amount_msat / 1000 < real_dust_limit_timeout_sat {
-						continue
-					}
-					included_htlcs += 1
-				},
-				_ => {}, // Don't include claims/fails that are awaiting ack, because once we get the
-				         // ack we're guaranteed to never include them in commitment txs anymore.
-			}
-		}
-
-		let num_htlcs = included_htlcs + addl_htlcs;
-		let res = commit_tx_fee_msat(context.feerate_per_kw, num_htlcs, context.opt_anchors());
-		#[cfg(any(test, fuzzing))]
-		{
-			let mut fee = res;
-			if fee_spike_buffer_htlc.is_some() {
-				fee = commit_tx_fee_msat(context.feerate_per_kw, num_htlcs - 1, context.opt_anchors());
-			}
-			let total_pending_htlcs = context.pending_inbound_htlcs.len() + context.pending_outbound_htlcs.len()
-				+ context.holding_cell_htlc_updates.len();
-			let commitment_tx_info = CommitmentTxInfoCached {
-				fee,
-				total_pending_htlcs,
-				next_holder_htlc_id: match htlc.origin {
-					HTLCInitiator::LocalOffered => context.next_holder_htlc_id + 1,
-					HTLCInitiator::RemoteOffered => context.next_holder_htlc_id,
-				},
-				next_counterparty_htlc_id: match htlc.origin {
-					HTLCInitiator::LocalOffered => context.next_counterparty_htlc_id,
-					HTLCInitiator::RemoteOffered => context.next_counterparty_htlc_id + 1,
-				},
-				feerate: context.feerate_per_kw,
-			};
-			*context.next_local_commitment_tx_fee_info_cached.lock().unwrap() = Some(commitment_tx_info);
-		}
-		res
-	}
-
-	/// Get the commitment tx fee for the remote's next commitment transaction based on the number of
-	/// pending HTLCs that are on track to be in their next commitment tx
-	///
-	/// Optionally includes the `HTLCCandidate` given by `htlc` and an additional non-dust HTLC if
-	/// `fee_spike_buffer_htlc` is `Some`.
-	///
-	/// The first extra HTLC is useful for determining whether we can accept a further HTLC, the
-	/// second allows for creating a buffer to ensure a further HTLC can always be accepted/added.
-	///
-	/// Dust HTLCs are excluded.
-	fn next_remote_commit_tx_fee_msat(&self, htlc: HTLCCandidate, fee_spike_buffer_htlc: Option<()>) -> u64 {
-		let context = &self.context;
-		assert!(!context.is_outbound());
-
-		let (htlc_success_dust_limit, htlc_timeout_dust_limit) = if context.opt_anchors() {
-			(0, 0)
-		} else {
-			(context.feerate_per_kw as u64 * htlc_success_tx_weight(false) / 1000,
-				context.feerate_per_kw as u64 * htlc_timeout_tx_weight(false) / 1000)
-		};
-		let real_dust_limit_success_sat = htlc_success_dust_limit + context.counterparty_dust_limit_satoshis;
-		let real_dust_limit_timeout_sat = htlc_timeout_dust_limit + context.counterparty_dust_limit_satoshis;
-
-		let mut addl_htlcs = 0;
-		if fee_spike_buffer_htlc.is_some() { addl_htlcs += 1; }
-		match htlc.origin {
-			HTLCInitiator::LocalOffered => {
-				if htlc.amount_msat / 1000 >= real_dust_limit_success_sat {
-					addl_htlcs += 1;
-				}
-			},
-			HTLCInitiator::RemoteOffered => {
-				if htlc.amount_msat / 1000 >= real_dust_limit_timeout_sat {
-					addl_htlcs += 1;
-				}
-			}
-		}
-
-		// When calculating the set of HTLCs which will be included in their next commitment_signed, all
-		// non-dust inbound HTLCs are included (as all states imply it will be included) and only
-		// committed outbound HTLCs, see below.
-		let mut included_htlcs = 0;
-		for ref htlc in context.pending_inbound_htlcs.iter() {
-			if htlc.amount_msat / 1000 <= real_dust_limit_timeout_sat {
-				continue
-			}
-			included_htlcs += 1;
-		}
-
-		for ref htlc in context.pending_outbound_htlcs.iter() {
-			if htlc.amount_msat / 1000 <= real_dust_limit_success_sat {
-				continue
-			}
-			// We only include outbound HTLCs if it will not be included in their next commitment_signed,
-			// i.e. if they've responded to us with an RAA after announcement.
-			match htlc.state {
-				OutboundHTLCState::Committed => included_htlcs += 1,
-				OutboundHTLCState::RemoteRemoved {..} => included_htlcs += 1,
-				OutboundHTLCState::LocalAnnounced { .. } => included_htlcs += 1,
-				_ => {},
-			}
-		}
-
-		let num_htlcs = included_htlcs + addl_htlcs;
-		let res = commit_tx_fee_msat(context.feerate_per_kw, num_htlcs, context.opt_anchors());
-		#[cfg(any(test, fuzzing))]
-		{
-			let mut fee = res;
-			if fee_spike_buffer_htlc.is_some() {
-				fee = commit_tx_fee_msat(context.feerate_per_kw, num_htlcs - 1, context.opt_anchors());
-			}
-			let total_pending_htlcs = context.pending_inbound_htlcs.len() + context.pending_outbound_htlcs.len();
-			let commitment_tx_info = CommitmentTxInfoCached {
-				fee,
-				total_pending_htlcs,
-				next_holder_htlc_id: match htlc.origin {
-					HTLCInitiator::LocalOffered => context.next_holder_htlc_id + 1,
-					HTLCInitiator::RemoteOffered => context.next_holder_htlc_id,
-				},
-				next_counterparty_htlc_id: match htlc.origin {
-					HTLCInitiator::LocalOffered => context.next_counterparty_htlc_id,
-					HTLCInitiator::RemoteOffered => context.next_counterparty_htlc_id + 1,
-				},
-				feerate: context.feerate_per_kw,
-			};
-			*context.next_remote_commitment_tx_fee_info_cached.lock().unwrap() = Some(commitment_tx_info);
-		}
-		res
 	}
 
 	pub fn update_add_htlc<F, L: Deref>(&mut self, msg: &msgs::UpdateAddHTLC, mut pending_forward_status: PendingHTLCStatus, create_pending_htlc_status: F, logger: &L) -> Result<(), ChannelError>
@@ -3452,7 +3452,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		// feerate_per_kw, while maintaining their channel reserve (as required by the spec).
 		let remote_commit_tx_fee_msat = if self.context.is_outbound() { 0 } else {
 			let htlc_candidate = HTLCCandidate::new(msg.amount_msat, HTLCInitiator::RemoteOffered);
-			self.next_remote_commit_tx_fee_msat(htlc_candidate, None) // Don't include the extra fee spike buffer HTLC in calculations
+			self.context.next_remote_commit_tx_fee_msat(htlc_candidate, None) // Don't include the extra fee spike buffer HTLC in calculations
 		};
 		if pending_remote_value_msat - msg.amount_msat < remote_commit_tx_fee_msat {
 			return Err(ChannelError::Close("Remote HTLC add would not leave enough to pay for fees".to_owned()));
@@ -3472,7 +3472,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			// still be able to afford adding this HTLC plus one more future HTLC, regardless of being
 			// sensitive to fee spikes.
 			let htlc_candidate = HTLCCandidate::new(msg.amount_msat, HTLCInitiator::RemoteOffered);
-			let remote_fee_cost_incl_stuck_buffer_msat = 2 * self.next_remote_commit_tx_fee_msat(htlc_candidate, Some(()));
+			let remote_fee_cost_incl_stuck_buffer_msat = 2 * self.context.next_remote_commit_tx_fee_msat(htlc_candidate, Some(()));
 			if pending_remote_value_msat - msg.amount_msat - self.context.holder_selected_channel_reserve_satoshis * 1000 < remote_fee_cost_incl_stuck_buffer_msat {
 				// Note that if the pending_forward_status is not updated here, then it's because we're already failing
 				// the HTLC, i.e. its status is already set to failing.
@@ -3482,7 +3482,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		} else {
 			// Check that they won't violate our local required channel reserve by adding this HTLC.
 			let htlc_candidate = HTLCCandidate::new(msg.amount_msat, HTLCInitiator::RemoteOffered);
-			let local_commit_tx_fee_msat = self.next_local_commit_tx_fee_msat(htlc_candidate, None);
+			let local_commit_tx_fee_msat = self.context.next_local_commit_tx_fee_msat(htlc_candidate, None);
 			if self.context.value_to_self_msat < self.context.counterparty_selected_channel_reserve_satoshis.unwrap() * 1000 + local_commit_tx_fee_msat {
 				return Err(ChannelError::Close("Cannot accept HTLC that would put our balance under counterparty-announced channel reserve value".to_owned()));
 			}
@@ -7479,7 +7479,7 @@ mod tests {
 		// Make sure when Node A calculates their local commitment transaction, none of the HTLCs pass
 		// the dust limit check.
 		let htlc_candidate = HTLCCandidate::new(htlc_amount_msat, HTLCInitiator::LocalOffered);
-		let local_commit_tx_fee = node_a_chan.next_local_commit_tx_fee_msat(htlc_candidate, None);
+		let local_commit_tx_fee = node_a_chan.context.next_local_commit_tx_fee_msat(htlc_candidate, None);
 		let local_commit_fee_0_htlcs = commit_tx_fee_msat(node_a_chan.context.feerate_per_kw, 0, node_a_chan.context.opt_anchors());
 		assert_eq!(local_commit_tx_fee, local_commit_fee_0_htlcs);
 
@@ -7488,7 +7488,7 @@ mod tests {
 		node_a_chan.context.channel_transaction_parameters.is_outbound_from_holder = false;
 		let remote_commit_fee_3_htlcs = commit_tx_fee_msat(node_a_chan.context.feerate_per_kw, 3, node_a_chan.context.opt_anchors());
 		let htlc_candidate = HTLCCandidate::new(htlc_amount_msat, HTLCInitiator::LocalOffered);
-		let remote_commit_tx_fee = node_a_chan.next_remote_commit_tx_fee_msat(htlc_candidate, None);
+		let remote_commit_tx_fee = node_a_chan.context.next_remote_commit_tx_fee_msat(htlc_candidate, None);
 		assert_eq!(remote_commit_tx_fee, remote_commit_fee_3_htlcs);
 	}
 
@@ -7515,13 +7515,13 @@ mod tests {
 		// counted as dust when it shouldn't be.
 		let htlc_amt_above_timeout = ((253 * htlc_timeout_tx_weight(chan.context.opt_anchors()) / 1000) + chan.context.holder_dust_limit_satoshis + 1) * 1000;
 		let htlc_candidate = HTLCCandidate::new(htlc_amt_above_timeout, HTLCInitiator::LocalOffered);
-		let commitment_tx_fee = chan.next_local_commit_tx_fee_msat(htlc_candidate, None);
+		let commitment_tx_fee = chan.context.next_local_commit_tx_fee_msat(htlc_candidate, None);
 		assert_eq!(commitment_tx_fee, commitment_tx_fee_1_htlc);
 
 		// If swapped: this HTLC would be counted as non-dust when it shouldn't be.
 		let dust_htlc_amt_below_success = ((253 * htlc_success_tx_weight(chan.context.opt_anchors()) / 1000) + chan.context.holder_dust_limit_satoshis - 1) * 1000;
 		let htlc_candidate = HTLCCandidate::new(dust_htlc_amt_below_success, HTLCInitiator::RemoteOffered);
-		let commitment_tx_fee = chan.next_local_commit_tx_fee_msat(htlc_candidate, None);
+		let commitment_tx_fee = chan.context.next_local_commit_tx_fee_msat(htlc_candidate, None);
 		assert_eq!(commitment_tx_fee, commitment_tx_fee_0_htlcs);
 
 		chan.context.channel_transaction_parameters.is_outbound_from_holder = false;
@@ -7529,13 +7529,13 @@ mod tests {
 		// If swapped: this HTLC would be counted as non-dust when it shouldn't be.
 		let dust_htlc_amt_above_timeout = ((253 * htlc_timeout_tx_weight(chan.context.opt_anchors()) / 1000) + chan.context.counterparty_dust_limit_satoshis + 1) * 1000;
 		let htlc_candidate = HTLCCandidate::new(dust_htlc_amt_above_timeout, HTLCInitiator::LocalOffered);
-		let commitment_tx_fee = chan.next_remote_commit_tx_fee_msat(htlc_candidate, None);
+		let commitment_tx_fee = chan.context.next_remote_commit_tx_fee_msat(htlc_candidate, None);
 		assert_eq!(commitment_tx_fee, commitment_tx_fee_0_htlcs);
 
 		// If swapped: this HTLC would be counted as dust when it shouldn't be.
 		let htlc_amt_below_success = ((253 * htlc_success_tx_weight(chan.context.opt_anchors()) / 1000) + chan.context.counterparty_dust_limit_satoshis - 1) * 1000;
 		let htlc_candidate = HTLCCandidate::new(htlc_amt_below_success, HTLCInitiator::RemoteOffered);
-		let commitment_tx_fee = chan.next_remote_commit_tx_fee_msat(htlc_candidate, None);
+		let commitment_tx_fee = chan.context.next_remote_commit_tx_fee_msat(htlc_candidate, None);
 		assert_eq!(commitment_tx_fee, commitment_tx_fee_1_htlc);
 	}
 

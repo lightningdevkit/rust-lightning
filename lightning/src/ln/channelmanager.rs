@@ -1471,7 +1471,7 @@ impl ChannelDetails {
 
 		let balance = channel.get_available_balances();
 		let (to_remote_reserve_satoshis, to_self_reserve_satoshis) =
-			channel.get_holder_counterparty_selected_channel_reserve_satoshis();
+			channel.context.get_holder_counterparty_selected_channel_reserve_satoshis();
 		ChannelDetails {
 			channel_id: channel.context.channel_id(),
 			counterparty: ChannelCounterparty {
