@@ -49,7 +49,7 @@ use crate::routing::router::{BlindedTail, DefaultRouter, InFlightHtlcs, Path, Pa
 use crate::routing::scoring::{ProbabilisticScorer, ProbabilisticScoringFeeParameters};
 use crate::ln::msgs;
 use crate::ln::onion_utils;
-use crate::ln::onion_utils::HTLCFailReason;
+use crate::ln::onion_utils::{HTLCFailReason,FailureStructure};
 use crate::ln::msgs::{ChannelMessageHandler, DecodeError, LightningError, MAX_VALUE_MSAT};
 #[cfg(test)]
 use crate::ln::outbound_payment;
@@ -131,6 +131,7 @@ pub(super) struct PendingHTLCInfo {
 	/// may overshoot this in either case)
 	pub(super) outgoing_amt_msat: u64,
 	pub(super) outgoing_cltv_value: u32,
+	pub(super) structure: Option<FailureStructure>,
 }
 
 #[derive(Clone)] // See Channel::revoke_and_ack for why, tl;dr: Rust bug
@@ -170,7 +171,7 @@ pub(super) enum HTLCForwardInfo {
 }
 
 /// Tracks the inbound corresponding to an outbound HTLC
-#[derive(Clone, Hash, PartialEq, Eq)]
+#[derive(Clone, Hash, PartialEq, Eq, Debug)]
 pub(crate) struct HTLCPreviousHopData {
 	// Note that this may be an outbound SCID alias for the associated channel.
 	short_channel_id: u64,
@@ -181,6 +182,8 @@ pub(crate) struct HTLCPreviousHopData {
 	// This field is consumed by `claim_funds_from_hop()` when updating a force-closed backwards
 	// channel with a preimage provided by the forward channel.
 	outpoint: OutPoint,
+
+	structure: Option<FailureStructure>,
 }
 
 enum OnionPayload {
@@ -281,7 +284,7 @@ impl_writeable_tlv_based_enum!(SentHTLCId,
 
 /// Tracks the inbound corresponding to an outbound HTLC
 #[allow(clippy::derive_hash_xor_eq)] // Our Hash is faithful to the data, we just don't have SecretKey::hash
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub(crate) enum HTLCSource {
 	PreviousHopData(HTLCPreviousHopData),
 	OutboundRoute {
@@ -2502,6 +2505,7 @@ where
 				}
 			},
 		};
+				
 		Ok(PendingHTLCInfo {
 			routing,
 			payment_hash,
@@ -2509,6 +2513,7 @@ where
 			incoming_amt_msat: Some(amt_msat),
 			outgoing_amt_msat: hop_data.amt_to_forward,
 			outgoing_cltv_value: hop_data.outgoing_cltv_value,
+			structure: hop_data.structure,
 		})
 	}
 
@@ -2548,11 +2553,15 @@ where
 			($msg: expr, $err_code: expr, $data: expr) => {
 				{
 					log_info!(self.logger, "Failed to accept/forward incoming HTLC: {}", $msg);
+					let no_structure = FailureStructure {	// TODO: Return legacy failure.
+						max_hops: 3,
+						payload_len: 8,
+					};
 					return PendingHTLCStatus::Fail(HTLCFailureMsg::Relay(msgs::UpdateFailHTLC {
 						channel_id: msg.channel_id,
 						htlc_id: msg.htlc_id,
 						reason: HTLCFailReason::reason($err_code, $data.to_vec())
-							.get_encrypted_failure_packet(&shared_secret, &None),
+							.get_encrypted_failure_packet(&shared_secret, &None, &no_structure),
 					}));
 				}
 			}
@@ -2608,6 +2617,7 @@ where
 					incoming_amt_msat: Some(msg.amount_msat),
 					outgoing_amt_msat: next_hop_data.amt_to_forward,
 					outgoing_cltv_value: next_hop_data.outgoing_cltv_value,
+					structure: next_hop_data.structure,
 				})
 			}
 		};
@@ -3420,6 +3430,7 @@ where
 				htlc_id: payment.prev_htlc_id,
 				incoming_packet_shared_secret: payment.forward_info.incoming_shared_secret,
 				phantom_shared_secret: None,
+				structure: payment.forward_info.structure,
 			});
 
 			let failure_reason = HTLCFailReason::from_failure_code(0x4000 | 10);
@@ -3454,7 +3465,8 @@ where
 										prev_short_channel_id, prev_htlc_id, prev_funding_outpoint, prev_user_channel_id,
 										forward_info: PendingHTLCInfo {
 											routing, incoming_shared_secret, payment_hash, outgoing_amt_msat,
-											outgoing_cltv_value, incoming_amt_msat: _
+											outgoing_cltv_value, incoming_amt_msat: _,
+											structure,
 										}
 									}) => {
 										macro_rules! failure_handler {
@@ -3467,6 +3479,7 @@ where
 													htlc_id: prev_htlc_id,
 													incoming_packet_shared_secret: incoming_shared_secret,
 													phantom_shared_secret: $phantom_ss,
+													structure,
 												});
 
 												let reason = if $next_hop_unknown {
@@ -3568,6 +3581,7 @@ where
 										forward_info: PendingHTLCInfo {
 											incoming_shared_secret, payment_hash, outgoing_amt_msat, outgoing_cltv_value,
 											routing: PendingHTLCRouting::Forward { onion_packet, .. }, incoming_amt_msat: _,
+											structure,
 										},
 									}) => {
 										log_trace!(self.logger, "Adding HTLC from short id {} with payment_hash {} to channel with short id {} after delay", prev_short_channel_id, log_bytes!(payment_hash.0), short_chan_id);
@@ -3578,6 +3592,7 @@ where
 											incoming_packet_shared_secret: incoming_shared_secret,
 											// Phantom payments are only PendingHTLCRouting::Receive.
 											phantom_shared_secret: None,
+											structure,
 										});
 										if let Err(e) = chan.get_mut().queue_add_htlc(outgoing_amt_msat,
 											payment_hash, outgoing_cltv_value, htlc_source.clone(),
@@ -3625,7 +3640,8 @@ where
 							HTLCForwardInfo::AddHTLC(PendingAddHTLCInfo {
 								prev_short_channel_id, prev_htlc_id, prev_funding_outpoint, prev_user_channel_id,
 								forward_info: PendingHTLCInfo {
-									routing, incoming_shared_secret, payment_hash, incoming_amt_msat, outgoing_amt_msat, ..
+									routing, incoming_shared_secret, payment_hash, incoming_amt_msat, outgoing_amt_msat, 
+									structure, ..
 								}
 							}) => {
 								let (cltv_expiry, onion_payload, payment_data, phantom_shared_secret, mut onion_fields) = match routing {
@@ -3655,6 +3671,7 @@ where
 										htlc_id: prev_htlc_id,
 										incoming_packet_shared_secret: incoming_shared_secret,
 										phantom_shared_secret,
+										structure: structure,
 									},
 									// We differentiate the received value from the sender intended value
 									// if possible so that we don't prematurely mark MPP payments complete
@@ -3683,6 +3700,7 @@ where
 												htlc_id: $htlc.prev_hop.htlc_id,
 												incoming_packet_shared_secret: $htlc.prev_hop.incoming_packet_shared_secret,
 												phantom_shared_secret,
+												structure: $htlc.prev_hop.structure,
 											}), payment_hash,
 											HTLCFailReason::reason(0x4000 | 15, htlc_msat_height_data),
 											HTLCDestination::FailedPayment { payment_hash: $payment_hash },
@@ -3854,6 +3872,7 @@ where
 							HTLCForwardInfo::FailHTLC { .. } => {
 								panic!("Got pending fail of our own HTLC");
 							}
+							_ => panic!("Unsupported forward info"),
 						}
 					}
 				}
@@ -4318,9 +4337,11 @@ where
 					&self.pending_events, &self.logger)
 				{ self.push_pending_forwards_ev(); }
 			},
-			HTLCSource::PreviousHopData(HTLCPreviousHopData { ref short_channel_id, ref htlc_id, ref incoming_packet_shared_secret, ref phantom_shared_secret, ref outpoint }) => {
+			HTLCSource::PreviousHopData(HTLCPreviousHopData { ref short_channel_id, ref htlc_id, ref incoming_packet_shared_secret, ref phantom_shared_secret, ref outpoint, structure: Some(structure) }) => {
 				log_trace!(self.logger, "Failing HTLC with payment_hash {} backwards from us with {:?}", log_bytes!(payment_hash.0), onion_error);
-				let err_packet = onion_error.get_encrypted_failure_packet(incoming_packet_shared_secret, phantom_shared_secret);
+				let err_packet = onion_error.get_encrypted_failure_packet(incoming_packet_shared_secret, phantom_shared_secret, structure);
+
+				log_trace!(self.logger, "Failure packet length: {}", err_packet.data.len());
 
 				let mut push_forward_ev = false;
 				let mut forward_htlcs = self.forward_htlcs.lock().unwrap();
@@ -4343,6 +4364,7 @@ where
 					failed_next_destination: destination,
 				}, None));
 			},
+			_ => panic!("Unhandled htlc source type {:?}", source),
 		}
 	}
 
@@ -5244,13 +5266,13 @@ where
 					// but if we've sent a shutdown and they haven't acknowledged it yet, we just
 					// want to reject the new HTLC and fail it backwards instead of forwarding.
 					match pending_forward_info {
-						PendingHTLCStatus::Forward(PendingHTLCInfo { ref incoming_shared_secret, .. }) => {
+						PendingHTLCStatus::Forward(PendingHTLCInfo { ref incoming_shared_secret, structure: Some(structure), .. }) => {  // TODO: Implement legacy.
 							let reason = if (error_code & 0x1000) != 0 {
 								let (real_code, error_data) = self.get_htlc_inbound_temp_fail_err_and_data(error_code, chan);
 								HTLCFailReason::reason(real_code, error_data)
 							} else {
 								HTLCFailReason::from_failure_code(error_code)
-							}.get_encrypted_failure_packet(incoming_shared_secret, &None);
+							}.get_encrypted_failure_packet(incoming_shared_secret, &None, &structure);
 							let msg = msgs::UpdateFailHTLC {
 								channel_id: msg.channel_id,
 								htlc_id: msg.htlc_id,
@@ -5402,6 +5424,7 @@ where
 											htlc_id: prev_htlc_id,
 											incoming_packet_shared_secret: forward_info.incoming_shared_secret,
 											phantom_shared_secret: None,
+											structure: forward_info.structure,
 										});
 
 										failed_intercept_forwards.push((htlc_source, forward_info.payment_hash,
@@ -6584,6 +6607,7 @@ where
 						incoming_packet_shared_secret: htlc.forward_info.incoming_shared_secret,
 						phantom_shared_secret: None,
 						outpoint: htlc.prev_funding_outpoint,
+						structure: htlc.forward_info.structure.clone(),
 					});
 
 					let requested_forward_scid /* intercept scid */ = match htlc.forward_info.routing {
@@ -7095,6 +7119,7 @@ pub fn provided_init_features(_config: &UserConfig) -> InitFeatures {
 	features.set_channel_type_optional();
 	features.set_scid_privacy_optional();
 	features.set_zero_conf_optional();
+	features.set_attributable_errors_optional();
 	#[cfg(anchors)]
 	{ // Attributes are not allowed on if expressions on our current MSRV of 1.41.
 		if _config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx {
@@ -7257,6 +7282,26 @@ impl_writeable_tlv_based_enum!(PendingHTLCRouting,
 	},
 ;);
 
+impl Writeable for FailureStructure {
+	fn write<W:Writer>(&self,w: &mut W) -> Result<(),io::Error>{
+		self.max_hops.write(w)?;
+		self.payload_len.write(w)?;
+
+		Ok(())
+	}
+}
+
+impl Readable for FailureStructure {
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+		let max_hops: u8 = Readable::read(r)?;
+		let payload_len: u8 = Readable::read(r)?;
+		Ok(FailureStructure {
+			max_hops,
+			payload_len,
+		})
+	}
+}
+
 impl_writeable_tlv_based!(PendingHTLCInfo, {
 	(0, routing, required),
 	(2, incoming_shared_secret, required),
@@ -7264,6 +7309,7 @@ impl_writeable_tlv_based!(PendingHTLCInfo, {
 	(6, outgoing_amt_msat, required),
 	(8, outgoing_cltv_value, required),
 	(9, incoming_amt_msat, option),
+	(11, structure, option),
 });
 
 
@@ -7344,7 +7390,8 @@ impl_writeable_tlv_based!(HTLCPreviousHopData, {
 	(1, phantom_shared_secret, option),
 	(2, outpoint, required),
 	(4, htlc_id, required),
-	(6, incoming_packet_shared_secret, required)
+	(6, incoming_packet_shared_secret, required),
+	(7, structure, option)
 });
 
 impl Writeable for ClaimableHTLC {

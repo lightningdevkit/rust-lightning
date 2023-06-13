@@ -541,12 +541,15 @@ impl InvoiceBuilder<tb::False, tb::False, tb::False, tb::False, tb::False, tb::F
 	/// Construct new, empty `InvoiceBuilder`. All necessary fields have to be filled first before
 	/// `InvoiceBuilder::build(self)` becomes available.
 	pub fn new(currency: Currency) -> Self {
+		let mut features = InvoiceFeatures::empty();
+		features.set_attributable_errors_optional();
+
 		InvoiceBuilder {
 			currency,
 			amount: None,
 			si_prefix: None,
 			timestamp: None,
-			tagged_fields: Vec::new(),
+			tagged_fields: vec![TaggedField::Features(features)],
 			error: None,
 
 			phantom_d: core::marker::PhantomData,

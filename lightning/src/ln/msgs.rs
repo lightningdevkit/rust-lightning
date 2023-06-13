@@ -32,7 +32,7 @@ use bitcoin::blockdata::script::Script;
 use bitcoin::hash_types::{Txid, BlockHash};
 
 use crate::ln::features::{ChannelFeatures, ChannelTypeFeatures, InitFeatures, NodeFeatures};
-use crate::ln::onion_utils;
+use crate::ln::onion_utils::{self, FailureStructure};
 use crate::onion_message;
 
 use crate::prelude::*;
@@ -1408,6 +1408,7 @@ pub trait OnionMessageHandler : OnionMessageProvider {
 }
 
 mod fuzzy_internal_msgs {
+	use crate::ln::onion_utils::FailureStructure;
 	use crate::prelude::*;
 	use crate::ln::{PaymentPreimage, PaymentSecret};
 
@@ -1438,12 +1439,14 @@ mod fuzzy_internal_msgs {
 		/// Message serialization may panic if this value is more than 21 million Bitcoin.
 		pub(crate) amt_to_forward: u64,
 		pub(crate) outgoing_cltv_value: u32,
+		pub(crate) structure: Option<FailureStructure>,
 	}
 
 	pub struct DecodedOnionErrorPacket {
-		pub(crate) hmac: [u8; 32],
 		pub(crate) failuremsg: Vec<u8>,
 		pub(crate) pad: Vec<u8>,
+		pub(crate) payloads: Vec<u8>,
+		pub(crate) hmac: Vec<u8>,
 	}
 }
 #[cfg(fuzzing)]
@@ -1687,11 +1690,16 @@ impl_writeable_msg!(CommitmentSigned, {
 	(2, partial_signature_with_nonce, option)
 });
 
-impl_writeable!(DecodedOnionErrorPacket, {
-	hmac,
-	failuremsg,
-	pad
-});
+impl Writeable for DecodedOnionErrorPacket {
+	fn write<W:Writer>(&self,w: &mut W) -> Result<(),io::Error>{
+		self.failuremsg.write(w)?;
+		self.pad.write(w)?;
+		w.write_all(&self.payloads)?;
+		w.write_all(&self.hmac)?;
+		
+		Ok(())
+	}
+}
 
 #[cfg(not(taproot))]
 impl_writeable_msg!(FundingCreated, {
@@ -1951,7 +1959,8 @@ impl Writeable for OnionHopData {
 				_encode_varint_length_prefixed_tlv!(w, {
 					(2, HighZeroBytesDroppedBigSize(self.amt_to_forward), required),
 					(4, HighZeroBytesDroppedBigSize(self.outgoing_cltv_value), required),
-					(6, short_channel_id, required)
+					(6, short_channel_id, required),
+					(20, self.structure, option)
 				});
 			},
 			OnionHopDataFormat::FinalNode { ref payment_data, ref payment_metadata, ref keysend_preimage } => {
@@ -1960,6 +1969,7 @@ impl Writeable for OnionHopData {
 					(4, HighZeroBytesDroppedBigSize(self.outgoing_cltv_value), required),
 					(8, payment_data, option),
 					(16, payment_metadata.as_ref().map(|m| WithoutLength(m)), option),
+					(20, self.structure, option),
 					(5482373484, keysend_preimage, option)
 				});
 			},
@@ -1976,12 +1986,14 @@ impl Readable for OnionHopData {
 		let mut payment_data: Option<FinalOnionHopData> = None;
 		let mut payment_metadata: Option<WithoutLength<Vec<u8>>> = None;
 		let mut keysend_preimage: Option<PaymentPreimage> = None;
+		let mut structure: Option<FailureStructure> = None;
 		read_tlv_fields!(r, {
 			(2, amt, required),
 			(4, cltv_value, required),
 			(6, short_id, option),
 			(8, payment_data, option),
 			(16, payment_metadata, option),
+			(20, structure, option),
 			// See https://github.com/lightning/blips/blob/master/blip-0003.md
 			(5482373484, keysend_preimage, option)
 		});
@@ -2008,10 +2020,12 @@ impl Readable for OnionHopData {
 		if amt.0 > MAX_VALUE_MSAT {
 			return Err(DecodeError::InvalidValue);
 		}
+
 		Ok(OnionHopData {
 			format,
 			amt_to_forward: amt.0,
 			outgoing_cltv_value: cltv_value.0,
+			structure,
 		})
 	}
 }
@@ -3524,6 +3538,7 @@ mod tests {
 			},
 			amt_to_forward: 0x0badf00d01020304,
 			outgoing_cltv_value: 0xffffffff,
+			structure: None,
 		};
 		let encoded_value = msg.encode();
 		let target_value = hex::decode("1a02080badf00d010203040404ffffffff0608deadbeef1bad1dea").unwrap();
@@ -3546,6 +3561,7 @@ mod tests {
 			},
 			amt_to_forward: 0x0badf00d01020304,
 			outgoing_cltv_value: 0xffffffff,
+			structure: None,
 		};
 		let encoded_value = msg.encode();
 		let target_value = hex::decode("1002080badf00d010203040404ffffffff").unwrap();
@@ -3570,6 +3586,7 @@ mod tests {
 			},
 			amt_to_forward: 0x0badf00d01020304,
 			outgoing_cltv_value: 0xffffffff,
+			structure: None,
 		};
 		let encoded_value = msg.encode();
 		let target_value = hex::decode("3602080badf00d010203040404ffffffff082442424242424242424242424242424242424242424242424242424242424242421badca1f").unwrap();
@@ -3747,6 +3764,7 @@ mod tests {
 			},
 			amt_to_forward: 1000,
 			outgoing_cltv_value: 0xffffffff,
+			structure: None,
 		};
 		let mut encoded_payload = Vec::new();
 		let test_bytes = vec![42u8; 1000];

@@ -33,6 +33,17 @@ use crate::io::{Cursor, Read};
 use core::convert::{AsMut, TryInto};
 use core::ops::Deref;
 
+use core::panic;
+use std::io::{self, Write};
+
+const DEFAULT_FAILURE_STRUCTURE: FailureStructure = FailureStructure { max_hops: 27, payload_len: 8 };
+
+#[derive(Clone, Hash, PartialEq, Eq, Debug)]
+pub struct FailureStructure {
+	pub max_hops: u8,
+	pub payload_len: u8,
+}
+
 pub(crate) struct OnionKeys {
 	#[cfg(test)]
 	pub(crate) shared_secret: SharedSecret,
@@ -180,6 +191,7 @@ pub(super) fn build_onion_payloads(path: &Path, total_msat: u64, mut recipient_o
 			},
 			amt_to_forward: value_msat,
 			outgoing_cltv_value: cltv,
+			structure: Some(DEFAULT_FAILURE_STRUCTURE), // TODO: Use hop feature bits to determine whether this is supported.
 		});
 		cur_value_msat += hop.fee_msat;
 		if cur_value_msat >= 21000000 * 100000000 * 1000 {
@@ -339,11 +351,12 @@ pub(super) fn encrypt_failure_packet(shared_secret: &[u8], raw_packet: &[u8]) ->
 	}
 }
 
-pub(super) fn build_failure_packet(shared_secret: &[u8], failure_type: u16, failure_data: &[u8]) -> msgs::DecodedOnionErrorPacket {
+pub(super) fn build_failure_packet(shared_secret: &[u8], failure_type: u16, failure_data: &[u8], max_hops: u8, payload_len: u8) -> msgs::DecodedOnionErrorPacket {
 	assert_eq!(shared_secret.len(), 32);
 	assert!(failure_data.len() <= 256 - 2);
 
-	let um = gen_um_from_shared_secret(&shared_secret);
+	let max_hops = max_hops as usize;
+	let full_payload_len = payload_len as usize + 1; // Including the marker byte.ß
 
 	let failuremsg = {
 		let mut res = Vec::with_capacity(2 + failure_data.len());
@@ -357,22 +370,27 @@ pub(super) fn build_failure_packet(shared_secret: &[u8], failure_type: u16, fail
 		res.resize(256 - 2 - failure_data.len(), 0);
 		res
 	};
-	let mut packet = msgs::DecodedOnionErrorPacket {
-		hmac: [0; 32],
-		failuremsg,
-		pad,
+
+	let payloads = {
+		let mut payloads = vec![0; max_hops * full_payload_len];
+		payloads[0] = 1; // final node
+		payloads
 	};
 
-	let mut hmac = HmacEngine::<Sha256>::new(&um);
-	hmac.input(&packet.encode()[32..]);
-	packet.hmac = Hmac::from_engine(hmac).into_inner();
+	let hmac_count = max_hops * (max_hops + 1) / 2;
+	let hmacs = vec![0;32*hmac_count];
 
-	packet
+	msgs::DecodedOnionErrorPacket {
+		failuremsg: failuremsg,
+		pad: pad,
+		payloads: payloads,
+		hmac: hmacs,
+	}
 }
 
 #[cfg(test)]
 pub(super) fn build_first_hop_failure_packet(shared_secret: &[u8], failure_type: u16, failure_data: &[u8]) -> msgs::OnionErrorPacket {
-	let failure_packet = build_failure_packet(shared_secret, failure_type, failure_data);
+	let failure_packet = build_failure_packet(shared_secret, failure_type, failure_data, 3, 9);
 	encrypt_failure_packet(shared_secret, &failure_packet.encode()[..])
 }
 
@@ -391,6 +409,8 @@ pub(super) fn process_onion_failure<T: secp256k1::Signing, L: Deref>(secp_ctx: &
 
 		// Handle packed channel/node updates for passing back for the route handler
 		construct_onion_keys_callback(secp_ctx, &path.hops, session_priv, |shared_secret, _, _, route_hop, route_hop_idx| {
+			log_debug!(logger, "Processing at pos {}", route_hop_idx);
+
 			if res.is_some() { return; }
 
 			let amt_to_forward = htlc_msat - route_hop.fee_msat;
@@ -409,13 +429,60 @@ pub(super) fn process_onion_failure<T: secp256k1::Signing, L: Deref>(secp_ctx: &
 			is_from_final_node = route_hop_idx + 1 == path.hops.len();
 			let failing_route_hop = if is_from_final_node { route_hop } else { &path.hops[route_hop_idx + 1] };
 
-			if let Ok(err_packet) = msgs::DecodedOnionErrorPacket::read(&mut Cursor::new(&packet_decrypted)) {
-				let um = gen_um_from_shared_secret(shared_secret.as_ref());
-				let mut hmac = HmacEngine::<Sha256>::new(&um);
-				hmac.input(&err_packet.encode()[32..]);
+			let max_hops = DEFAULT_FAILURE_STRUCTURE.max_hops as usize;
+			let full_payload_len = DEFAULT_FAILURE_STRUCTURE.payload_len as usize + 1;
 
-				if fixed_time_eq(&Hmac::from_engine(hmac).into_inner(), &err_packet.hmac) {
-					if let Some(error_code_slice) = err_packet.failuremsg.get(0..2) {
+			let packet_len = packet_decrypted.len();
+			let hmac_count = max_hops * (max_hops + 1) / 2;
+
+			let message = &packet_decrypted[..packet_len - max_hops * full_payload_len-hmac_count*32];
+			let payloads = &packet_decrypted[packet_len - max_hops * full_payload_len-hmac_count*32..packet_len-hmac_count*32];
+			let hmacs = &packet_decrypted[packet_len - hmac_count*32..];
+
+			let um = gen_um_from_shared_secret(shared_secret.as_ref());
+			let mut hmac = HmacEngine::<Sha256>::new(&um);
+
+			hmac.input(&message);
+			hmac.input(&payloads[..(max_hops - route_hop_idx) * full_payload_len]);
+			write_downstream_hmacs(route_hop_idx, max_hops, hmacs, &mut hmac).unwrap();
+
+			let actual_hmac = &hmacs[route_hop_idx * 32..route_hop_idx*32+32];
+			let expected_hmac = Hmac::from_engine(hmac).into_inner();
+
+			if !fixed_time_eq(&expected_hmac, actual_hmac)  {
+				log_debug!(logger, "Invalid HMAC in onion failure packet at pos {}", route_hop_idx);
+
+				return;
+			}
+
+			log_debug!(logger, "Valid HMAC in onion failure packet at pos {}", route_hop_idx);
+
+			match payloads[0] {
+				0 => {
+					// Shift payloads left.
+					let payloads = &mut packet_decrypted[packet_len - max_hops * full_payload_len-hmac_count*32..packet_len-hmac_count*32];
+					payloads.copy_within(full_payload_len.., 0);
+
+					// Shift hmacs left.
+					let hmacs = &mut packet_decrypted[packet_len - hmac_count*32..];
+					let mut src_idx = max_hops;
+					let mut dest_idx = 1;
+					let mut copy_len = max_hops - 1;
+
+					for i in 0..max_hops - 1 {
+						hmacs.copy_within(src_idx * 32 .. (src_idx + copy_len) * 32, dest_idx * 32);
+
+						src_idx += copy_len;
+						dest_idx += copy_len + 1;
+						copy_len -= 1;
+					}
+				}
+				1 => {
+					// Final payload, parse failure msg.
+					let cursor = &mut Cursor::new(message);
+					let failuremsg: Vec<u8> = Readable::read(cursor).unwrap();
+
+					if let Some(error_code_slice) = failuremsg.get(0..2) {
 						const BADONION: u16 = 0x8000;
 						const PERM: u16 = 0x4000;
 						const NODE: u16 = 0x2000;
@@ -423,7 +490,7 @@ pub(super) fn process_onion_failure<T: secp256k1::Signing, L: Deref>(secp_ctx: &
 
 						let error_code = u16::from_be_bytes(error_code_slice.try_into().expect("len is 2"));
 						error_code_ret = Some(error_code);
-						error_packet_ret = Some(err_packet.failuremsg[2..].to_vec());
+						error_packet_ret = Some(failuremsg[2..].to_vec());
 
 						let (debug_field, debug_field_size) = errors::get_onion_debug_field(error_code);
 
@@ -463,9 +530,9 @@ pub(super) fn process_onion_failure<T: secp256k1::Signing, L: Deref>(secp_ctx: &
 								short_channel_id = Some(failing_route_hop.short_channel_id);
 							}
 						} else if error_code & UPDATE == UPDATE {
-							if let Some(update_len_slice) = err_packet.failuremsg.get(debug_field_size+2..debug_field_size+4) {
+							if let Some(update_len_slice) = failuremsg.get(debug_field_size+2..debug_field_size+4) {
 								let update_len = u16::from_be_bytes(update_len_slice.try_into().expect("len is 2")) as usize;
-								if let Some(mut update_slice) = err_packet.failuremsg.get(debug_field_size + 4..debug_field_size + 4 + update_len) {
+								if let Some(mut update_slice) = failuremsg.get(debug_field_size + 4..debug_field_size + 4 + update_len) {
 									// Historically, the BOLTs were unclear if the message type
 									// bytes should be included here or not. The BOLTs have now
 									// been updated to indicate that they *are* included, but many
@@ -572,8 +639,8 @@ pub(super) fn process_onion_failure<T: secp256k1::Signing, L: Deref>(secp_ctx: &
 						res = Some((network_update, short_channel_id, !(error_code & PERM == PERM && is_from_final_node)));
 
 						let (description, title) = errors::get_onion_error_description(error_code);
-						if debug_field_size > 0 && err_packet.failuremsg.len() >= 4 + debug_field_size {
-							log_info!(logger, "Onion Error[from {}: {}({:#x}) {}({})] {}", route_hop.pubkey, title, error_code, debug_field, log_bytes!(&err_packet.failuremsg[4..4+debug_field_size]), description);
+						if debug_field_size > 0 && failuremsg.len() >= 4 + debug_field_size {
+							log_info!(logger, "Onion Error[from {}: {}({:#x}) {}({})] {}", route_hop.pubkey, title, error_code, debug_field, log_bytes!(&failuremsg[4..4+debug_field_size]), description);
 						}
 						else {
 							log_info!(logger, "Onion Error[from {}: {}({:#x})] {}", route_hop.pubkey, title, error_code, description);
@@ -589,7 +656,11 @@ pub(super) fn process_onion_failure<T: secp256k1::Signing, L: Deref>(secp_ctx: &
 						res = Some((network_update, short_channel_id, !is_from_final_node));
 					}
 				}
+				_ => {
+					panic!("Got a payload type we don't know how to handle!");
+				}
 			}
+		
 		}).expect("Route that we sent via spontaneously grew invalid keys in the middle of it?");
 		if let Some((channel_update, short_channel_id, payment_retryable)) = res {
 			(channel_update, short_channel_id, payment_retryable, error_code_ret, error_packet_ret)
@@ -700,24 +771,34 @@ impl HTLCFailReason {
 		Self(HTLCFailReasonRepr::LightningError { err: msg.reason.clone() })
 	}
 
-	pub(super) fn get_encrypted_failure_packet(&self, incoming_packet_shared_secret: &[u8; 32], phantom_shared_secret: &Option<[u8; 32]>)
+	pub(super) fn get_encrypted_failure_packet(&self, incoming_packet_shared_secret: &[u8; 32], phantom_shared_secret: &Option<[u8; 32]>, structure: &FailureStructure)
 	-> msgs::OnionErrorPacket {
 		match self.0 {
 			HTLCFailReasonRepr::Reason { ref failure_code, ref data } => {
 				if let Some(phantom_ss) = phantom_shared_secret {
-					let phantom_packet = build_failure_packet(phantom_ss, *failure_code, &data[..]).encode();
+					let phantom_packet = build_failure_packet(phantom_ss, *failure_code, &data[..], structure.max_hops, structure.payload_len).encode();
 					let encrypted_phantom_packet = encrypt_failure_packet(phantom_ss, &phantom_packet);
 					encrypt_failure_packet(incoming_packet_shared_secret, &encrypted_phantom_packet.data[..])
 				} else {
-					let packet = build_failure_packet(incoming_packet_shared_secret, *failure_code, &data[..]).encode();
+					let mut packet = build_failure_packet(incoming_packet_shared_secret, *failure_code, &data[..], structure.max_hops, structure.payload_len).encode();
+
+					add_hmacs(incoming_packet_shared_secret, &mut packet, structure);
+
+					println!("Failure packet: {}", log_bytes!(&packet));
+					io::stdout().flush().unwrap();
+
 					encrypt_failure_packet(incoming_packet_shared_secret, &packet)
 				}
 			},
 			HTLCFailReasonRepr::LightningError { ref err } => {
-				encrypt_failure_packet(incoming_packet_shared_secret, &err.data)
+				let packet = process_failure_packet(&err.data, incoming_packet_shared_secret, structure);
+
+				encrypt_failure_packet(incoming_packet_shared_secret, &packet)
 			}
 		}
 	}
+
+	
 
 	pub(super) fn decode_onion_failure<T: secp256k1::Signing, L: Deref>(
 		&self, secp_ctx: &Secp256k1<T>, logger: &L, htlc_source: &HTLCSource
@@ -740,6 +821,114 @@ impl HTLCFailReason {
 		}
 	}
 }
+
+fn process_failure_packet(packet: &[u8], shared_secret: &[u8], structure: &FailureStructure) -> Vec<u8> {
+	println!("Failure packet: {}", log_bytes!(&packet));
+
+	let full_payload_len = structure.payload_len as usize + 1; // Including the marker byte.
+	let max_hops = structure.max_hops as usize;
+	let hmac_count = max_hops * (max_hops + 1) / 2;
+
+	// Create new packet.
+	let mut processed_packet = vec![0; packet.len()];
+
+	// Copy message.
+	let message = &packet[..packet.len() - max_hops * full_payload_len - hmac_count * 32];
+	processed_packet[..packet.len() - max_hops * full_payload_len - hmac_count * 32].copy_from_slice(message);
+
+	println!("Message: {}", log_bytes!(&message));
+
+	// Shift payloads right.
+	{
+		let payloads = &packet[packet.len() - max_hops * full_payload_len - hmac_count * 32..packet.len()-hmac_count*32];
+		let processed_payloads = &mut processed_packet[packet.len() - max_hops * full_payload_len - hmac_count * 32..packet.len()-hmac_count*32];
+		processed_payloads[full_payload_len..].copy_from_slice(&payloads[..payloads.len()-full_payload_len]);
+	}
+
+	// TODO: Add this nodes payload.
+
+	// Shift hmacs right.
+	{
+		let hmacs = &packet[packet.len() - hmac_count*32..];
+		let processed_hmacs = &mut processed_packet[packet.len() - hmac_count*32..];
+
+		let mut src_idx = hmac_count - 2;
+		let mut dest_idx = hmac_count - 1;
+		let mut copy_len = 1;
+
+		for i in 0..max_hops - 1 {
+			processed_hmacs[dest_idx * 32..(dest_idx + copy_len) * 32].
+				copy_from_slice(&hmacs[src_idx * 32..(src_idx + copy_len) * 32]);	
+
+			// Break at last iteration to prevent underflow when updating indices.
+			if i == max_hops - 2 {
+				break;
+			}
+
+			copy_len += 1;
+			src_idx -= copy_len + 1;
+			dest_idx -= copy_len;
+		}
+	}
+
+	// Add this node's hmacs.
+	add_hmacs(&shared_secret, &mut processed_packet, structure);
+
+	println!("Failure packet post-hmac: {}", log_bytes!(&processed_packet));
+
+	processed_packet
+}
+
+// Adds the current node's hmacs for all possible positions to this packet.
+fn add_hmacs(shared_secret: &[u8], packet: &mut [u8], structure: &FailureStructure) {
+	let full_payload_len = structure.payload_len as usize + 1; // Including the marker byte.
+	let max_hops = structure.max_hops as usize;
+	let packet_len = packet.len();
+	let hmac_count = max_hops * (max_hops + 1) / 2;
+
+	let message = &packet[..packet_len - max_hops * full_payload_len-hmac_count*32];
+	let payloads = &packet[packet_len - max_hops * full_payload_len-hmac_count*32..packet_len-hmac_count*32];
+	let hmacs = &packet[packet_len - hmac_count*32..];
+
+	let mut new_hmacs = vec![0u8; max_hops * 32];
+	let um = gen_um_from_shared_secret(&shared_secret);
+
+	for i in 0..max_hops {
+		let mut hmac_engine = HmacEngine::<Sha256>::new(&um);
+
+		hmac_engine.input(&message);
+		hmac_engine.input(&payloads[..(max_hops - i) * full_payload_len]);
+		write_downstream_hmacs(i, max_hops, hmacs, &mut hmac_engine).unwrap();
+				
+		let hmac = Hmac::from_engine(hmac_engine).into_inner();
+
+		println!("hmac {}: {}", i, log_bytes!(hmac));
+
+		new_hmacs[i * 32..(i + 1) * 32].copy_from_slice(&hmac);
+	}
+
+	let processed_hmacs = &mut packet[packet_len - hmac_count*32..];
+	processed_hmacs[..new_hmacs.len()].copy_from_slice(&new_hmacs);
+}
+
+pub fn write_downstream_hmacs(
+    position: usize,
+    max_hops: usize,
+    hmacs: &[u8],
+    w: &mut Write,
+) -> Result<(), io::Error> {
+    let mut hmac_idx = max_hops + position;
+
+    for j in 0..max_hops - position - 1 {
+        w.write_all(&hmacs[hmac_idx * 32..(hmac_idx + 1) * 32])?;
+
+        let block_size = max_hops - j - 1;
+        hmac_idx += block_size;
+    }
+
+    Ok(())
+}
+
 
 /// Allows `decode_next_hop` to return the next hop packet bytes for either payments or onion
 /// message forwards.
@@ -842,7 +1031,7 @@ fn decode_next_hop<T, R: ReadableArgs<T>, N: NextPacketBytes>(shared_secret: [u8
 			let mut hmac = [0; 32];
 			if let Err(_) = chacha_stream.read_exact(&mut hmac[..]) {
 				return Err(OnionDecodeErr::Relay {
-					err_msg: "Unable to decode our hop data",
+					err_msg: "Unable to decode our hop data - cha cha",
 					err_code: 0x4000 | 22,
 				});
 			}
@@ -888,11 +1077,12 @@ fn decode_next_hop<T, R: ReadableArgs<T>, N: NextPacketBytes>(shared_secret: [u8
 #[cfg(test)]
 mod tests {
 	use crate::io;
+	use crate::ln::onion_utils::build_failure_packet;
 	use crate::prelude::*;
 	use crate::ln::PaymentHash;
 	use crate::ln::features::{ChannelFeatures, NodeFeatures};
 	use crate::routing::router::{Path, Route, RouteHop};
-	use crate::ln::msgs;
+	use crate::ln::msgs::{self, UpdateFailHTLC};
 	use crate::util::ser::{Writeable, Writer, VecWriter};
 
 	use hex;
@@ -901,6 +1091,9 @@ mod tests {
 	use bitcoin::secp256k1::{PublicKey,SecretKey};
 
 	use super::OnionKeys;
+	use super::write_downstream_hmacs;
+	use super::HTLCFailReason;
+	use super::FailureStructure;
 
 	fn get_test_session_key() -> SecretKey {
 		SecretKey::from_slice(&hex::decode("4141414141414141414141414141414141414141414141414141414141414141").unwrap()[..]).unwrap()
@@ -994,6 +1187,7 @@ mod tests {
 				},
 				amt_to_forward: 15000,
 				outgoing_cltv_value: 1500,
+				structure: None,
 			}),
 			/*
 			The second payload is represented by raw hex as it contains custom type data. Content:
@@ -1019,6 +1213,7 @@ mod tests {
 				},
 				amt_to_forward: 12500,
 				outgoing_cltv_value: 1250,
+				structure: None,
 			}),
 			RawOnionHopData::new(msgs::OnionHopData {
 				format: msgs::OnionHopDataFormat::NonFinalNode {
@@ -1026,6 +1221,7 @@ mod tests {
 				},
 				amt_to_forward: 10000,
 				outgoing_cltv_value: 1000,
+				structure: None,
 			}),
 			/*
 			The fifth payload is represented by raw hex as it contains custom type data. Content:
@@ -1078,7 +1274,7 @@ mod tests {
 		// Returning Errors test vectors from BOLT 4
 
 		let onion_keys = build_test_onion_keys();
-		let onion_error = super::build_failure_packet(onion_keys[4].shared_secret.as_ref(), 0x2002, &[0; 0]);
+		let onion_error = super::build_failure_packet(onion_keys[4].shared_secret.as_ref(), 0x2002, &[0; 0], 3, 9);
 		assert_eq!(onion_error.encode(), hex::decode("4c2fc8bc08510334b6833ad9c3e79cd1b52ae59dfe5c2a4b23ead50f09f7ee0b0002200200fe0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000").unwrap());
 
 		let onion_packet_1 = super::encrypt_failure_packet(onion_keys[4].shared_secret.as_ref(), &onion_error.encode()[..]);
@@ -1096,6 +1292,64 @@ mod tests {
 		let onion_packet_5 = super::encrypt_failure_packet(onion_keys[0].shared_secret.as_ref(), &onion_packet_4.data[..]);
 		assert_eq!(onion_packet_5.data, hex::decode("9c5add3963fc7f6ed7f148623c84134b5647e1306419dbe2174e523fa9e2fbed3a06a19f899145610741c83ad40b7712aefaddec8c6baf7325d92ea4ca4d1df8bce517f7e54554608bf2bd8071a4f52a7a2f7ffbb1413edad81eeea5785aa9d990f2865dc23b4bc3c301a94eec4eabebca66be5cf638f693ec256aec514620cc28ee4a94bd9565bc4d4962b9d3641d4278fb319ed2b84de5b665f307a2db0f7fbb757366067d88c50f7e829138fde4f78d39b5b5802f1b92a8a820865af5cc79f9f30bc3f461c66af95d13e5e1f0381c184572a91dee1c849048a647a1158cf884064deddbf1b0b88dfe2f791428d0ba0f6fb2f04e14081f69165ae66d9297c118f0907705c9c4954a199bae0bb96fad763d690e7daa6cfda59ba7f2c8d11448b604d12d").unwrap());
 	}
+
+	fn generate_hash_list(values: &[u8]) -> Vec<u8> {
+        let mut hmacs = Vec::new();
+        for i in values {
+            let mut hmac: [u8; 32] = [0; 32];
+            hmac[0] = *i;
+            hmacs.extend_from_slice(&hmac);
+        }
+
+        hmacs
+    }
+
+    #[test]
+    fn test_write_downstream_hmacs() {
+        let mut downstream_hmacs = Vec::new();
+
+        let hmacs = generate_hash_list(&[11, 12, 13, 14, 21, 22, 23, 31, 32, 41]);
+
+        let result = write_downstream_hmacs(0, 4, &hmacs, &mut downstream_hmacs);
+        assert!(result.is_ok());
+
+        let expected_hmacs = generate_hash_list(&[21, 31, 41]);
+        assert_eq!(downstream_hmacs, expected_hmacs);
+    }
+
+	#[test]
+    fn test_encrypt_attributable_error() {
+        // let structure = AttributableErrorStructure {
+        //     hop_count: 4,
+        //     fixed_payload_len: 8,
+        // };
+
+        let mut shared_secret_1: [u8; 32] = [0; 32];
+        shared_secret_1[..3].copy_from_slice(&[1, 2, 3]);
+
+//        let final_payload: [u8; 8] = [1, 0, 0, 0, 0, 0, 0, 0];
+
+		let structure = FailureStructure{ max_hops: 3, payload_len: 8 };
+
+		let reason = HTLCFailReason::reason(0x4000 | 15, vec![2;12]);
+		let packet = reason.get_encrypted_failure_packet(&shared_secret_1, &None, &structure);
+
+        assert_eq!(packet.data, hex::decode("3b27b01e4de8aa28b4c0be023fb989d99f056d22ee27703e526221a5445cf0c11720708fbe1e4da8bf78fdbe2c2af9d223302b227d61a731fb5e5807f26abdac7ab37ac0bcd5445234586d9dd50c9eda7b64efa950e546c470a38f22a8b677effcc83e070340d68144334a99499ab9b40ac0f26402dba41365c5f9413d678a1e2ad90ebbaeafd00155880c0073f98f7f6d6789caa3cf23b82559dae2f241e2e3787f8055b7c4b90faadb6e8226ca51d0019d75263e89a83d6e7e724d91220fa54718e1318e6da3db5de4bb25a866ccbd666099a2a130dd93dba1fdce46eb3f43c149fb22e2aab36fe0b06e4c07440a54c4f8444369b974268accbd36d7ebc00862b4c2ab7fde699da6a9293f45922fe8edcc964ee117bdcb3e6dcfabc372228304202a4c36f4288d52d883e6e1d52902c05d36a5aaadbb97a2509ba6be66a8fcd0bdae09341eeffdb9c63efb367643a3fe820e40a062f9fdb115cfba7aa7fa1642b3c3f17b04a13766b4f2b511fa79a3172157c581d6dc8239bdf604eba81bf7f07e7355b4d706ffb78270cd3ff4c0d8e7c8bac1b0608891e857714c46904e707098885003160a1c00aab60754b2f97c25ecc5fa4efa96ad0ec1048c5372195de4537247f848913b41837f90f38c7de90503f3b9be69ef7446697a7e03ea6b").unwrap());
+
+		let fail_msg_1 = UpdateFailHTLC{
+			channel_id:[0;32],
+			htlc_id:0,
+			reason: packet,
+		};
+		
+		let mut shared_secret_2: [u8; 32] = [0; 32];
+        shared_secret_2[..3].copy_from_slice(&[11, 12, 13]);
+
+		let reason = HTLCFailReason::from_msg(&fail_msg_1);
+		let packet = reason.get_encrypted_failure_packet(&shared_secret_2, &None, &structure);
+
+        assert_eq!(packet.data, hex::decode("bb20b6518ef912a899b287ed87fce227275e71147fd533cad7988998db0d528cb74006582904f3af979317a9c2d334510c1cc62d5230890aace77b5563f4a1fdbfdd716266bcf38958a7ecf6c881b9ca08a5b904cfa711b8ebb47ce0385d8d57fc82959152f0d9aa01d73c5179b35a461be00df5c4cbfff270c005139fd92eb43a62d9994b3fe9d8ee428aeda6c737110ca34c73c6ceb06d5c603b3c4a5dbe2ab3311defe1cf5fad6cb34d48ca158eab76fd81b17895df2c3f7a363320a1f2653763cce30dc65212263adf59fb4993857596597ef85da13db2b60f467be41da7c11f516ebb24c2cdc71e2680d500fb69bb57f3932ba36001d7a74a7b96bfce65999efb57287ef08e59f90e08cde40dcc40c446a5a9fceddff1f3063b822b1ebb27426dfa3df2054643803934194ea8e94216b7e8aca68daaf9b659a8165ed7e69e2fd7e8a23500ae79593429a827c055893b02389dd195a3b02729cd0a952b01d0034240cef411644fe377072423b39fa12a0f6ff404d4c8601241bc5ed2ab4d1c3d8a946c30cd8443b9219442f49da1a58e29248ba133768312a94328e6bca8eb628b746d849d75924a660cc89013174034db13012e4b2bdd8e2c07b994f290a3a06d8a1464005a5c1d5725f8bff81a641ba14962c3520991ec61880e1e58").unwrap());
+    }
 
 	struct RawOnionHopData {
 		data: Vec<u8>

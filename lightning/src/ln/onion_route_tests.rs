@@ -344,6 +344,14 @@ fn test_onion_failure() {
 	// positive case
 	send_payment(&nodes[0], &vec!(&nodes[1], &nodes[2])[..], 40000);
 
+	// TEMP: Test final node failure.
+	run_onion_failure_test("unknown_payment_hash", 2, &nodes, &route, &payment_hash, &payment_secret, |_| {}, || {
+		nodes[2].node.fail_htlc_backwards(&payment_hash);
+	}, false, Some(PERM|15), None, None);
+	let (_, payment_hash, payment_secret) = get_payment_preimage_hash!(nodes[2]);
+
+	return;
+
 	// intermediate node failure
 	let short_channel_id = channels[1].0.contents.short_channel_id;
 	run_onion_failure_test("invalid_realm", 0, &nodes, &route, &payment_hash, &payment_secret, |msg| {

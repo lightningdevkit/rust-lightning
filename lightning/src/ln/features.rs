@@ -136,7 +136,7 @@ mod sealed {
 		// Byte 2
 		BasicMPP | Wumbo | AnchorsZeroFeeHtlcTx,
 		// Byte 3
-		ShutdownAnySegwit,
+		ShutdownAnySegwit | AttributableErrors,
 		// Byte 4
 		OnionMessages,
 		// Byte 5
@@ -152,7 +152,7 @@ mod sealed {
 		// Byte 2
 		BasicMPP | Wumbo | AnchorsZeroFeeHtlcTx,
 		// Byte 3
-		ShutdownAnySegwit,
+		ShutdownAnySegwit | AttributableErrors,
 		// Byte 4
 		OnionMessages,
 		// Byte 5
@@ -169,7 +169,7 @@ mod sealed {
 		// Byte 2
 		BasicMPP,
 		// Byte 3
-		,
+		AttributableErrors,
 		// Byte 4
 		,
 		// Byte 5
@@ -384,6 +384,9 @@ mod sealed {
 	define_feature!(27, ShutdownAnySegwit, [InitContext, NodeContext],
 		"Feature flags for `opt_shutdown_anysegwit`.", set_shutdown_any_segwit_optional,
 		set_shutdown_any_segwit_required, supports_shutdown_anysegwit, requires_shutdown_anysegwit);
+	define_feature!(29, AttributableErrors, [InitContext, NodeContext, InvoiceContext],
+			"Feature flags for `option_attributable_errors`.", set_attributable_errors_optional,
+			set_attributable_errors_required, supports_attributable_errors, requires_attributable_errors);
 	define_feature!(39, OnionMessages, [InitContext, NodeContext],
 		"Feature flags for `option_onion_messages`.", set_onion_messages_optional,
 		set_onion_messages_required, supports_onion_messages, requires_onion_messages);
@@ -991,6 +994,7 @@ mod tests {
 		init_features.set_wumbo_optional();
 		init_features.set_anchors_zero_fee_htlc_tx_optional();
 		init_features.set_shutdown_any_segwit_optional();
+		init_features.set_attributable_errors_optional();
 		init_features.set_onion_messages_optional();
 		init_features.set_channel_type_optional();
 		init_features.set_scid_privacy_optional();
