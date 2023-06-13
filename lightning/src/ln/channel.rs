@@ -1874,6 +1874,52 @@ impl<Signer: ChannelSigner> ChannelContext<Signer> {
 			None
 		}
 	}
+
+	/// Gets the latest commitment transaction and any dependent transactions for relay (forcing
+	/// shutdown of this channel - no more calls into this Channel may be made afterwards except
+	/// those explicitly stated to be allowed after shutdown completes, eg some simple getters).
+	/// Also returns the list of payment_hashes for channels which we can safely fail backwards
+	/// immediately (others we will have to allow to time out).
+	pub fn force_shutdown(&mut self, should_broadcast: bool) -> ShutdownResult {
+		// Note that we MUST only generate a monitor update that indicates force-closure - we're
+		// called during initialization prior to the chain_monitor in the encompassing ChannelManager
+		// being fully configured in some cases. Thus, its likely any monitor events we generate will
+		// be delayed in being processed! See the docs for `ChannelManagerReadArgs` for more.
+		assert!(self.channel_state != ChannelState::ShutdownComplete as u32);
+
+		// We go ahead and "free" any holding cell HTLCs or HTLCs we haven't yet committed to and
+		// return them to fail the payment.
+		let mut dropped_outbound_htlcs = Vec::with_capacity(self.holding_cell_htlc_updates.len());
+		let counterparty_node_id = self.get_counterparty_node_id();
+		for htlc_update in self.holding_cell_htlc_updates.drain(..) {
+			match htlc_update {
+				HTLCUpdateAwaitingACK::AddHTLC { source, payment_hash, .. } => {
+					dropped_outbound_htlcs.push((source, payment_hash, counterparty_node_id, self.channel_id));
+				},
+				_ => {}
+			}
+		}
+		let monitor_update = if let Some(funding_txo) = self.get_funding_txo() {
+			// If we haven't yet exchanged funding signatures (ie channel_state < FundingSent),
+			// returning a channel monitor update here would imply a channel monitor update before
+			// we even registered the channel monitor to begin with, which is invalid.
+			// Thus, if we aren't actually at a point where we could conceivably broadcast the
+			// funding transaction, don't return a funding txo (which prevents providing the
+			// monitor update to the user, even if we return one).
+			// See test_duplicate_chan_id and test_pre_lockin_no_chan_closed_update for more.
+			if self.channel_state & (ChannelState::FundingSent as u32 | ChannelState::ChannelReady as u32 | ChannelState::ShutdownComplete as u32) != 0 {
+				self.latest_monitor_update_id = CLOSED_CHANNEL_UPDATE_ID;
+				Some((self.get_counterparty_node_id(), funding_txo, ChannelMonitorUpdate {
+					update_id: self.latest_monitor_update_id,
+					updates: vec![ChannelMonitorUpdateStep::ChannelForceClosed { should_broadcast }],
+				}))
+			} else { None }
+		} else { None };
+
+		self.channel_state = ChannelState::ShutdownComplete as u32;
+		self.update_time_counter += 1;
+		(monitor_update, dropped_outbound_htlcs)
+	}
 }
 
 // Internal utility functions for channels
@@ -5821,52 +5867,6 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			"we can't both complete shutdown and return a monitor update");
 
 		Ok((shutdown, monitor_update, dropped_outbound_htlcs))
-	}
-
-	/// Gets the latest commitment transaction and any dependent transactions for relay (forcing
-	/// shutdown of this channel - no more calls into this Channel may be made afterwards except
-	/// those explicitly stated to be allowed after shutdown completes, eg some simple getters).
-	/// Also returns the list of payment_hashes for channels which we can safely fail backwards
-	/// immediately (others we will have to allow to time out).
-	pub fn force_shutdown(&mut self, should_broadcast: bool) -> ShutdownResult {
-		// Note that we MUST only generate a monitor update that indicates force-closure - we're
-		// called during initialization prior to the chain_monitor in the encompassing ChannelManager
-		// being fully configured in some cases. Thus, its likely any monitor events we generate will
-		// be delayed in being processed! See the docs for `ChannelManagerReadArgs` for more.
-		assert!(self.context.channel_state != ChannelState::ShutdownComplete as u32);
-
-		// We go ahead and "free" any holding cell HTLCs or HTLCs we haven't yet committed to and
-		// return them to fail the payment.
-		let mut dropped_outbound_htlcs = Vec::with_capacity(self.context.holding_cell_htlc_updates.len());
-		let counterparty_node_id = self.context.get_counterparty_node_id();
-		for htlc_update in self.context.holding_cell_htlc_updates.drain(..) {
-			match htlc_update {
-				HTLCUpdateAwaitingACK::AddHTLC { source, payment_hash, .. } => {
-					dropped_outbound_htlcs.push((source, payment_hash, counterparty_node_id, self.context.channel_id));
-				},
-				_ => {}
-			}
-		}
-		let monitor_update = if let Some(funding_txo) = self.context.get_funding_txo() {
-			// If we haven't yet exchanged funding signatures (ie channel_state < FundingSent),
-			// returning a channel monitor update here would imply a channel monitor update before
-			// we even registered the channel monitor to begin with, which is invalid.
-			// Thus, if we aren't actually at a point where we could conceivably broadcast the
-			// funding transaction, don't return a funding txo (which prevents providing the
-			// monitor update to the user, even if we return one).
-			// See test_duplicate_chan_id and test_pre_lockin_no_chan_closed_update for more.
-			if self.context.channel_state & (ChannelState::FundingSent as u32 | ChannelState::ChannelReady as u32 | ChannelState::ShutdownComplete as u32) != 0 {
-				self.context.latest_monitor_update_id = CLOSED_CHANNEL_UPDATE_ID;
-				Some((self.context.get_counterparty_node_id(), funding_txo, ChannelMonitorUpdate {
-					update_id: self.context.latest_monitor_update_id,
-					updates: vec![ChannelMonitorUpdateStep::ChannelForceClosed { should_broadcast }],
-				}))
-			} else { None }
-		} else { None };
-
-		self.context.channel_state = ChannelState::ShutdownComplete as u32;
-		self.context.update_time_counter += 1;
-		(monitor_update, dropped_outbound_htlcs)
 	}
 
 	pub fn inflight_htlc_sources(&self) -> impl Iterator<Item=(&HTLCSource, &PaymentHash)> {

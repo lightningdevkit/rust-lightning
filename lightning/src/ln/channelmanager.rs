@@ -1646,7 +1646,7 @@ macro_rules! convert_chan_err {
 			ChannelError::Close(msg) => {
 				log_error!($self.logger, "Closing channel {} due to close-required error: {}", log_bytes!($channel_id[..]), msg);
 				update_maps_on_chan_removal!($self, $channel);
-				let shutdown_res = $channel.force_shutdown(true);
+				let shutdown_res = $channel.context.force_shutdown(true);
 				(true, MsgHandleErrInternal::from_finish_shutdown(msg, *$channel_id, $channel.context.get_user_id(),
 					shutdown_res, $self.get_channel_update_for_broadcast(&$channel).ok()))
 			},
@@ -1813,7 +1813,7 @@ macro_rules! handle_new_monitor_update {
 				update_maps_on_chan_removal!($self, $chan);
 				let res: Result<(), _> = Err(MsgHandleErrInternal::from_finish_shutdown(
 					"ChannelMonitor storage failure".to_owned(), $chan.context.channel_id(),
-					$chan.context.get_user_id(), $chan.force_shutdown(false),
+					$chan.context.get_user_id(), $chan.context.force_shutdown(false),
 					$self.get_channel_update_for_broadcast(&$chan).ok()));
 				$remove;
 				res
@@ -2345,7 +2345,7 @@ where
 			}
 		};
 		log_error!(self.logger, "Force-closing channel {}", log_bytes!(channel_id[..]));
-		self.finish_force_close_channel(chan.force_shutdown(broadcast));
+		self.finish_force_close_channel(chan.context.force_shutdown(broadcast));
 		if let Ok(update) = self.get_channel_update_for_broadcast(&chan) {
 			let mut peer_state = peer_state_mutex.lock().unwrap();
 			peer_state.pending_msg_events.push(events::MessageSendEvent::BroadcastChannelUpdate {
@@ -3106,7 +3106,7 @@ where
 
 				let funding_res = chan.get_outbound_funding_created(funding_transaction, funding_txo, &self.logger)
 					.map_err(|e| if let ChannelError::Close(msg) = e {
-						MsgHandleErrInternal::from_finish_shutdown(msg, chan.context.channel_id(), chan.context.get_user_id(), chan.force_shutdown(true), None)
+						MsgHandleErrInternal::from_finish_shutdown(msg, chan.context.channel_id(), chan.context.get_user_id(), chan.context.force_shutdown(true), None)
 					} else { unreachable!(); });
 				match funding_res {
 					Ok(funding_msg) => (funding_msg, chan),
@@ -5686,7 +5686,7 @@ where
 								let pending_msg_events = &mut peer_state.pending_msg_events;
 								if let hash_map::Entry::Occupied(chan_entry) = peer_state.channel_by_id.entry(funding_outpoint.to_channel_id()) {
 									let mut chan = remove_channel!(self, chan_entry);
-									failed_channels.push(chan.force_shutdown(false));
+									failed_channels.push(chan.context.force_shutdown(false));
 									if let Ok(update) = self.get_channel_update_for_broadcast(&chan) {
 										pending_msg_events.push(events::MessageSendEvent::BroadcastChannelUpdate {
 											msg: update
@@ -6533,7 +6533,7 @@ where
 						update_maps_on_chan_removal!(self, channel);
 						// It looks like our counterparty went on-chain or funding transaction was
 						// reorged out of the main chain. Close the channel.
-						failed_channels.push(channel.force_shutdown(true));
+						failed_channels.push(channel.context.force_shutdown(true));
 						if let Ok(update) = self.get_channel_update_for_broadcast(&channel) {
 							pending_msg_events.push(events::MessageSendEvent::BroadcastChannelUpdate {
 								msg: update
@@ -7963,7 +7963,7 @@ where
 					log_error!(args.logger, " The channel will be force-closed and the latest commitment transaction from the ChannelMonitor broadcast.");
 					log_error!(args.logger, " The ChannelMonitor for channel {} is at update_id {} but the ChannelManager is at update_id {}.",
 						log_bytes!(channel.context.channel_id()), monitor.get_latest_update_id(), channel.context.get_latest_monitor_update_id());
-					let (monitor_update, mut new_failed_htlcs) = channel.force_shutdown(true);
+					let (monitor_update, mut new_failed_htlcs) = channel.context.force_shutdown(true);
 					if let Some((counterparty_node_id, funding_txo, update)) = monitor_update {
 						pending_background_events.push(BackgroundEvent::MonitorUpdateRegeneratedOnStartup {
 							counterparty_node_id, funding_txo, update
@@ -8021,7 +8021,7 @@ where
 				// If we were persisted and shut down while the initial ChannelMonitor persistence
 				// was in-progress, we never broadcasted the funding transaction and can still
 				// safely discard the channel.
-				let _ = channel.force_shutdown(false);
+				let _ = channel.context.force_shutdown(false);
 				channel_closures.push_back((events::Event::ChannelClosed {
 					channel_id: channel.context.channel_id(),
 					user_channel_id: channel.context.get_user_id(),
