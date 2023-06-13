@@ -1001,6 +1001,17 @@ impl<'a> CandidateRouteHop<'a> {
 				EffectiveCapacity::Infinite,
 		}
 	}
+	fn id(&self, channel_direction: bool /* src_node_id < target_node_id */) -> CandidateHopId {
+		CandidateHopId::Clear((self.short_channel_id(), channel_direction))
+	}
+}
+
+#[derive(Eq, Hash, PartialEq)]
+enum CandidateHopId {
+	/// Contains (scid, src_node_id < target_node_id)
+	Clear((u64, bool)),
+	/// Index of the blinded route hint in [`Payee::Blinded::route_hints`].
+	Blinded(usize),
 }
 
 #[inline]
@@ -1244,7 +1255,7 @@ impl fmt::Display for LoggedPayeePubkey {
 
 #[inline]
 fn sort_first_hop_channels(
-	channels: &mut Vec<&ChannelDetails>, used_channel_liquidities: &HashMap<(u64, bool), u64>,
+	channels: &mut Vec<&ChannelDetails>, used_liquidities: &HashMap<CandidateHopId, u64>,
 	recommended_value_msat: u64, our_node_pubkey: &PublicKey
 ) {
 	// Sort the first_hops channels to the same node(s) in priority order of which channel we'd
@@ -1262,11 +1273,11 @@ fn sort_first_hop_channels(
 	// Available outbound balances factor in liquidity already reserved for previously found paths.
 	channels.sort_unstable_by(|chan_a, chan_b| {
 		let chan_a_outbound_limit_msat = chan_a.next_outbound_htlc_limit_msat
-			.saturating_sub(*used_channel_liquidities.get(&(chan_a.get_outbound_payment_scid().unwrap(),
-			our_node_pubkey < &chan_a.counterparty.node_id)).unwrap_or(&0));
+			.saturating_sub(*used_liquidities.get(&CandidateHopId::Clear((chan_a.get_outbound_payment_scid().unwrap(),
+			our_node_pubkey < &chan_a.counterparty.node_id))).unwrap_or(&0));
 		let chan_b_outbound_limit_msat = chan_b.next_outbound_htlc_limit_msat
-			.saturating_sub(*used_channel_liquidities.get(&(chan_b.get_outbound_payment_scid().unwrap(),
-			our_node_pubkey < &chan_b.counterparty.node_id)).unwrap_or(&0));
+			.saturating_sub(*used_liquidities.get(&CandidateHopId::Clear((chan_b.get_outbound_payment_scid().unwrap(),
+			our_node_pubkey < &chan_b.counterparty.node_id))).unwrap_or(&0));
 		if chan_b_outbound_limit_msat < recommended_value_msat || chan_a_outbound_limit_msat < recommended_value_msat {
 			// Sort in descending order
 			chan_b_outbound_limit_msat.cmp(&chan_a_outbound_limit_msat)
@@ -1510,11 +1521,12 @@ where L::Target: Logger {
 	// drop the requirement by setting this to 0.
 	let mut channel_saturation_pow_half = payment_params.max_channel_saturation_power_of_half;
 
-	// Keep track of how much liquidity has been used in selected channels. Used to determine
-	// if the channel can be used by additional MPP paths or to inform path finding decisions. It is
-	// aware of direction *only* to ensure that the correct htlc_maximum_msat value is used. Hence,
-	// liquidity used in one direction will not offset any used in the opposite direction.
-	let mut used_channel_liquidities: HashMap<(u64, bool), u64> =
+	// Keep track of how much liquidity has been used in selected channels or blinded paths. Used to
+	// determine if the channel can be used by additional MPP paths or to inform path finding
+	// decisions. It is aware of direction *only* to ensure that the correct htlc_maximum_msat value
+	// is used. Hence, liquidity used in one direction will not offset any used in the opposite
+	// direction.
+	let mut used_liquidities: HashMap<CandidateHopId, u64> =
 		HashMap::with_capacity(network_nodes.len());
 
 	// Keeping track of how much value we already collected across other paths. Helps to decide
@@ -1522,7 +1534,7 @@ where L::Target: Logger {
 	let mut already_collected_value_msat = 0;
 
 	for (_, channels) in first_hop_targets.iter_mut() {
-		sort_first_hop_channels(channels, &used_channel_liquidities, recommended_value_msat,
+		sort_first_hop_channels(channels, &used_liquidities, recommended_value_msat,
 			our_node_pubkey);
 	}
 
@@ -1557,8 +1569,8 @@ where L::Target: Logger {
 				// if the amount being transferred over this path is lower.
 				// We do this for now, but this is a subject for removal.
 				if let Some(mut available_value_contribution_msat) = htlc_maximum_msat.checked_sub($next_hops_fee_msat) {
-					let used_liquidity_msat = used_channel_liquidities
-						.get(&(short_channel_id, $src_node_id < $dest_node_id))
+					let used_liquidity_msat = used_liquidities
+						.get(&$candidate.id($src_node_id < $dest_node_id))
 						.map_or(0, |used_liquidity_msat| {
 							available_value_contribution_msat = available_value_contribution_msat
 								.saturating_sub(*used_liquidity_msat);
@@ -1829,7 +1841,7 @@ where L::Target: Logger {
 
 	// TODO: diversify by nodes (so that all paths aren't doomed if one node is offline).
 	'paths_collection: loop {
-		// For every new path, start from scratch, except for used_channel_liquidities, which
+		// For every new path, start from scratch, except for used_liquidities, which
 		// helps to avoid reusing previously selected paths in future iterations.
 		targets.clear();
 		dist.clear();
@@ -1915,8 +1927,9 @@ where L::Target: Logger {
 						hop_used = false;
 					}
 
-					let used_liquidity_msat = used_channel_liquidities
-						.get(&(hop.short_channel_id, source < target)).copied().unwrap_or(0);
+					let used_liquidity_msat = used_liquidities
+						.get(&candidate.id(source < target)).copied()
+						.unwrap_or(0);
 					let channel_usage = ChannelUsage {
 						amount_msat: final_value_msat + aggregate_next_hops_fee_msat,
 						inflight_htlc_msat: used_liquidity_msat,
@@ -1936,7 +1949,7 @@ where L::Target: Logger {
 
 					// Searching for a direct channel between last checked hop and first_hop_targets
 					if let Some(first_channels) = first_hop_targets.get_mut(&NodeId::from_pubkey(&prev_hop_id)) {
-						sort_first_hop_channels(first_channels, &used_channel_liquidities,
+						sort_first_hop_channels(first_channels, &used_liquidities,
 							recommended_value_msat, our_node_pubkey);
 						for details in first_channels {
 							let first_hop_candidate = CandidateRouteHop::FirstHop { details };
@@ -1977,7 +1990,7 @@ where L::Target: Logger {
 						// always assumes that the third argument is a node to which we have a
 						// path.
 						if let Some(first_channels) = first_hop_targets.get_mut(&NodeId::from_pubkey(&hop.src_node_id)) {
-							sort_first_hop_channels(first_channels, &used_channel_liquidities,
+							sort_first_hop_channels(first_channels, &used_liquidities,
 								recommended_value_msat, our_node_pubkey);
 							for details in first_channels {
 								let first_hop_candidate = CandidateRouteHop::FirstHop { details };
@@ -2095,8 +2108,8 @@ where L::Target: Logger {
 					.chain(payment_path.hops.iter().map(|(hop, _)| &hop.node_id));
 				for (prev_hop, (hop, _)) in prev_hop_iter.zip(payment_path.hops.iter()) {
 					let spent_on_hop_msat = value_contribution_msat + hop.next_hops_fee_msat;
-					let used_liquidity_msat = used_channel_liquidities
-						.entry((hop.candidate.short_channel_id(), *prev_hop < hop.node_id))
+					let used_liquidity_msat = used_liquidities
+						.entry(hop.candidate.id(*prev_hop < hop.node_id))
 						.and_modify(|used_liquidity_msat| *used_liquidity_msat += spent_on_hop_msat)
 						.or_insert(spent_on_hop_msat);
 					let hop_capacity = hop.candidate.effective_capacity();
@@ -2115,8 +2128,8 @@ where L::Target: Logger {
 					let victim_scid = payment_path.hops[(payment_path.hops.len()) / 2].0.candidate.short_channel_id();
 					let exhausted = u64::max_value();
 					log_trace!(logger, "Disabling channel {} for future path building iterations to avoid duplicates.", victim_scid);
-					*used_channel_liquidities.entry((victim_scid, false)).or_default() = exhausted;
-					*used_channel_liquidities.entry((victim_scid, true)).or_default() = exhausted;
+					*used_liquidities.entry(CandidateHopId::Clear((victim_scid, false))).or_default() = exhausted;
+					*used_liquidities.entry(CandidateHopId::Clear((victim_scid, true))).or_default() = exhausted;
 				}
 
 				// Track the total amount all our collected paths allow to send so that we know
