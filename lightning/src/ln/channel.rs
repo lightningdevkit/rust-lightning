@@ -1786,6 +1786,15 @@ impl<Signer: ChannelSigner> ChannelContext<Signer> {
 		}
 		res
 	}
+
+	/// Returns transaction if there is pending funding transaction that is yet to broadcast
+	pub fn unbroadcasted_funding(&self) -> Option<Transaction> {
+		if self.channel_state & (ChannelState::FundingCreated as u32) != 0 {
+			self.funding_transaction.clone()
+		} else {
+			None
+		}
+	}
 }
 
 // Internal utility functions for channels
@@ -3348,15 +3357,6 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		log_info!(logger, "Received channel_ready from peer for channel {}", log_bytes!(self.context.channel_id()));
 
 		Ok(self.get_announcement_sigs(node_signer, genesis_block_hash, user_config, best_block.height(), logger))
-	}
-
-	/// Returns transaction if there is pending funding transaction that is yet to broadcast
-	pub fn unbroadcasted_funding(&self) -> Option<Transaction> {
-		if self.context.channel_state & (ChannelState::FundingCreated as u32) != 0 {
-			self.context.funding_transaction.clone()
-		} else {
-			None
-		}
 	}
 
 	pub fn update_add_htlc<F, L: Deref>(&mut self, msg: &msgs::UpdateAddHTLC, mut pending_forward_status: PendingHTLCStatus, create_pending_htlc_status: F, logger: &L) -> Result<(), ChannelError>
