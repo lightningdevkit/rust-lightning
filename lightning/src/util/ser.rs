@@ -43,6 +43,7 @@ use crate::ln::msgs::PartialSignatureWithNonce;
 use crate::ln::{PaymentPreimage, PaymentHash, PaymentSecret};
 
 use crate::util::byte_utils::{be48_to_array, slice_to_be48};
+use crate::util::string::UntrustedString;
 
 /// serialization buffer size
 pub const MAX_BUF_SIZE: usize = 64 * 1024;
@@ -627,6 +628,21 @@ impl Readable for WithoutLength<String> {
 }
 impl<'a> From<&'a String> for WithoutLength<&'a String> {
 	fn from(s: &'a String) -> Self { Self(s) }
+}
+
+
+impl Writeable for WithoutLength<&UntrustedString> {
+	#[inline]
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		WithoutLength(&self.0.0).write(w)
+	}
+}
+impl Readable for WithoutLength<UntrustedString> {
+	#[inline]
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+		let s: WithoutLength<String> = Readable::read(r)?;
+		Ok(Self(UntrustedString(s.0)))
+	}
 }
 
 impl<'a, T: Writeable> Writeable for WithoutLength<&'a Vec<T>> {

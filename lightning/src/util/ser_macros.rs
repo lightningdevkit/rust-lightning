@@ -178,6 +178,9 @@ macro_rules! _get_varint_length_prefixed_tlv_length {
 	($len: expr, $type: expr, $field: expr, (option: $trait: ident $(, $read_arg: expr)?)) => {
 		$crate::_get_varint_length_prefixed_tlv_length!($len, $type, $field, option);
 	};
+	($len: expr, $type: expr, $field: expr, (option, encoding: ($fieldty: ty, $encoding: ident))) => {
+		$crate::_get_varint_length_prefixed_tlv_length!($len, $type, $field.map(|f| $encoding(f)), option);
+	};
 	($len: expr, $type: expr, $field: expr, upgradable_required) => {
 		$crate::_get_varint_length_prefixed_tlv_length!($len, $type, $field, required);
 	};

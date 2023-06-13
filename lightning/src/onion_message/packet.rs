@@ -16,7 +16,9 @@ use crate::blinded_path::{BlindedPath, ForwardTlvs, ReceiveTlvs};
 use crate::ln::msgs::DecodeError;
 use crate::ln::onion_utils;
 use super::messenger::CustomOnionMessageHandler;
+use super::offers::OffersMessage;
 use crate::util::chacha20poly1305rfc::{ChaChaPolyReadAdapter, ChaChaPolyWriteAdapter};
+use crate::util::logger::Logger;
 use crate::util::ser::{BigSize, FixedLengthReader, LengthRead, LengthReadable, LengthReadableArgs, Readable, ReadableArgs, Writeable, Writer};
 
 use core::cmp;
@@ -108,10 +110,8 @@ pub(super) enum Payload<T: CustomOnionMessageContents> {
 /// The contents of an onion message. In the context of offers, this would be the invoice, invoice
 /// request, or invoice error.
 pub enum OnionMessageContents<T: CustomOnionMessageContents> {
-	// Coming soon:
-	// Invoice,
-	// InvoiceRequest,
-	// InvoiceError,
+	/// A message related to BOLT 12 Offers.
+	Offers(OffersMessage),
 	/// A custom onion message specified by the user.
 	Custom(T),
 }
@@ -122,6 +122,7 @@ impl<T: CustomOnionMessageContents> OnionMessageContents<T> {
 	/// This is not exported to bindings users as methods on non-cloneable enums are not currently exportable
 	pub fn tlv_type(&self) -> u64 {
 		match self {
+			&OnionMessageContents::Offers(ref msg) => msg.tlv_type(),
 			&OnionMessageContents::Custom(ref msg) => msg.tlv_type(),
 		}
 	}
@@ -131,6 +132,7 @@ impl<T: CustomOnionMessageContents> OnionMessageContents<T> {
 impl<T: CustomOnionMessageContents> Writeable for OnionMessageContents<T> {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
 		match self {
+			OnionMessageContents::Offers(msg) => Ok(msg.write(w)?),
 			OnionMessageContents::Custom(msg) => Ok(msg.write(w)?),
 		}
 	}
@@ -201,9 +203,10 @@ impl<T: CustomOnionMessageContents> Writeable for (Payload<T>, [u8; 32]) {
 }
 
 // Uses the provided secret to simultaneously decode and decrypt the control TLVs and data TLV.
-impl<H: CustomOnionMessageHandler> ReadableArgs<(SharedSecret, &H)> for Payload<<H as CustomOnionMessageHandler>::CustomMessage> {
-	fn read<R: Read>(r: &mut R, args: (SharedSecret, &H)) -> Result<Self, DecodeError> {
-		let (encrypted_tlvs_ss, handler) = args;
+impl<H: CustomOnionMessageHandler + ?Sized, L: Logger + ?Sized>
+ReadableArgs<(SharedSecret, &H, &L)> for Payload<<H as CustomOnionMessageHandler>::CustomMessage> {
+	fn read<R: Read>(r: &mut R, args: (SharedSecret, &H, &L)) -> Result<Self, DecodeError> {
+		let (encrypted_tlvs_ss, handler, logger) = args;
 
 		let v: BigSize = Readable::read(r)?;
 		let mut rd = FixedLengthReader::new(r, v.0);
@@ -221,13 +224,19 @@ impl<H: CustomOnionMessageHandler> ReadableArgs<(SharedSecret, &H)> for Payload<
 			if message_type.is_some() { return Err(DecodeError::InvalidValue) }
 
 			message_type = Some(msg_type);
-			match handler.read_custom_message(msg_type, msg_reader) {
-				Ok(Some(msg)) => {
-					message = Some(msg);
+			match msg_type {
+				tlv_type if OffersMessage::is_known_type(tlv_type) => {
+					let msg = OffersMessage::read(msg_reader, (tlv_type, logger))?;
+					message = Some(OnionMessageContents::Offers(msg));
 					Ok(true)
 				},
-				Ok(None) => Ok(false),
-				Err(e) => Err(e),
+				_ => match handler.read_custom_message(msg_type, msg_reader)? {
+					Some(msg) => {
+						message = Some(OnionMessageContents::Custom(msg));
+						Ok(true)
+					},
+					None => Ok(false),
+				},
 			}
 		});
 		rd.eat_remaining().map_err(|_| DecodeError::ShortRead)?;
@@ -241,13 +250,12 @@ impl<H: CustomOnionMessageHandler> ReadableArgs<(SharedSecret, &H)> for Payload<
 				Ok(Payload::Forward(ForwardControlTlvs::Unblinded(tlvs)))
 			},
 			Some(ChaChaPolyReadAdapter { readable: ControlTlvs::Receive(tlvs)}) => {
-				if message.is_none() { return Err(DecodeError::InvalidValue) }
 				Ok(Payload::Receive {
 					control_tlvs: ReceiveControlTlvs::Unblinded(tlvs),
 					reply_path,
-					message: OnionMessageContents::Custom(message.unwrap()),
+					message: message.ok_or(DecodeError::InvalidValue)?,
 				})
-			}
+			},
 		}
 	}
 }
