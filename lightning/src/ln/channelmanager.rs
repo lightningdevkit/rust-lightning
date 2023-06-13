@@ -1469,7 +1469,7 @@ impl ChannelDetails {
 	fn from_channel<Signer: WriteableEcdsaChannelSigner>(channel: &Channel<Signer>,
 		best_block_height: u32, latest_features: InitFeatures) -> Self {
 
-		let balance = channel.get_available_balances();
+		let balance = channel.context.get_available_balances();
 		let (to_remote_reserve_satoshis, to_self_reserve_satoshis) =
 			channel.context.get_holder_counterparty_selected_channel_reserve_satoshis();
 		ChannelDetails {

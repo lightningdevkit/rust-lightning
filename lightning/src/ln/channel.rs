@@ -1451,6 +1451,143 @@ impl<Signer: ChannelSigner> ChannelContext<Signer> {
 		stats
 	}
 
+	/// Get the available balances, see [`AvailableBalances`]'s fields for more info.
+	/// Doesn't bother handling the
+	/// if-we-removed-it-already-but-haven't-fully-resolved-they-can-still-send-an-inbound-HTLC
+	/// corner case properly.
+	pub fn get_available_balances(&self) -> AvailableBalances {
+		let context = &self;
+		// Note that we have to handle overflow due to the above case.
+		let inbound_stats = context.get_inbound_pending_htlc_stats(None);
+		let outbound_stats = context.get_outbound_pending_htlc_stats(None);
+
+		let mut balance_msat = context.value_to_self_msat;
+		for ref htlc in context.pending_inbound_htlcs.iter() {
+			if let InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::Fulfill(_)) = htlc.state {
+				balance_msat += htlc.amount_msat;
+			}
+		}
+		balance_msat -= outbound_stats.pending_htlcs_value_msat;
+
+		let outbound_capacity_msat = context.value_to_self_msat
+				.saturating_sub(outbound_stats.pending_htlcs_value_msat)
+				.saturating_sub(
+					context.counterparty_selected_channel_reserve_satoshis.unwrap_or(0) * 1000);
+
+		let mut available_capacity_msat = outbound_capacity_msat;
+
+		if context.is_outbound() {
+			// We should mind channel commit tx fee when computing how much of the available capacity
+			// can be used in the next htlc. Mirrors the logic in send_htlc.
+			//
+			// The fee depends on whether the amount we will be sending is above dust or not,
+			// and the answer will in turn change the amount itself — making it a circular
+			// dependency.
+			// This complicates the computation around dust-values, up to the one-htlc-value.
+			let mut real_dust_limit_timeout_sat = context.holder_dust_limit_satoshis;
+			if !context.opt_anchors() {
+				real_dust_limit_timeout_sat += context.feerate_per_kw as u64 * htlc_timeout_tx_weight(false) / 1000;
+			}
+
+			let htlc_above_dust = HTLCCandidate::new(real_dust_limit_timeout_sat * 1000, HTLCInitiator::LocalOffered);
+			let max_reserved_commit_tx_fee_msat = FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE * context.next_local_commit_tx_fee_msat(htlc_above_dust, Some(()));
+			let htlc_dust = HTLCCandidate::new(real_dust_limit_timeout_sat * 1000 - 1, HTLCInitiator::LocalOffered);
+			let min_reserved_commit_tx_fee_msat = FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE * context.next_local_commit_tx_fee_msat(htlc_dust, Some(()));
+
+			// We will first subtract the fee as if we were above-dust. Then, if the resulting
+			// value ends up being below dust, we have this fee available again. In that case,
+			// match the value to right-below-dust.
+			let mut capacity_minus_commitment_fee_msat: i64 = (available_capacity_msat as i64) - (max_reserved_commit_tx_fee_msat as i64);
+			if capacity_minus_commitment_fee_msat < (real_dust_limit_timeout_sat as i64) * 1000 {
+				let one_htlc_difference_msat = max_reserved_commit_tx_fee_msat - min_reserved_commit_tx_fee_msat;
+				debug_assert!(one_htlc_difference_msat != 0);
+				capacity_minus_commitment_fee_msat += one_htlc_difference_msat as i64;
+				capacity_minus_commitment_fee_msat = cmp::min(real_dust_limit_timeout_sat as i64 * 1000 - 1, capacity_minus_commitment_fee_msat);
+				available_capacity_msat = cmp::max(0, cmp::min(capacity_minus_commitment_fee_msat, available_capacity_msat as i64)) as u64;
+			} else {
+				available_capacity_msat = capacity_minus_commitment_fee_msat as u64;
+			}
+		} else {
+			// If the channel is inbound (i.e. counterparty pays the fee), we need to make sure
+			// sending a new HTLC won't reduce their balance below our reserve threshold.
+			let mut real_dust_limit_success_sat = context.counterparty_dust_limit_satoshis;
+			if !context.opt_anchors() {
+				real_dust_limit_success_sat += context.feerate_per_kw as u64 * htlc_success_tx_weight(false) / 1000;
+			}
+
+			let htlc_above_dust = HTLCCandidate::new(real_dust_limit_success_sat * 1000, HTLCInitiator::LocalOffered);
+			let max_reserved_commit_tx_fee_msat = context.next_remote_commit_tx_fee_msat(htlc_above_dust, None);
+
+			let holder_selected_chan_reserve_msat = context.holder_selected_channel_reserve_satoshis * 1000;
+			let remote_balance_msat = (context.channel_value_satoshis * 1000 - context.value_to_self_msat)
+				.saturating_sub(inbound_stats.pending_htlcs_value_msat);
+
+			if remote_balance_msat < max_reserved_commit_tx_fee_msat + holder_selected_chan_reserve_msat {
+				// If another HTLC's fee would reduce the remote's balance below the reserve limit
+				// we've selected for them, we can only send dust HTLCs.
+				available_capacity_msat = cmp::min(available_capacity_msat, real_dust_limit_success_sat * 1000 - 1);
+			}
+		}
+
+		let mut next_outbound_htlc_minimum_msat = context.counterparty_htlc_minimum_msat;
+
+		// If we get close to our maximum dust exposure, we end up in a situation where we can send
+		// between zero and the remaining dust exposure limit remaining OR above the dust limit.
+		// Because we cannot express this as a simple min/max, we prefer to tell the user they can
+		// send above the dust limit (as the router can always overpay to meet the dust limit).
+		let mut remaining_msat_below_dust_exposure_limit = None;
+		let mut dust_exposure_dust_limit_msat = 0;
+
+		let (htlc_success_dust_limit, htlc_timeout_dust_limit) = if context.opt_anchors() {
+			(context.counterparty_dust_limit_satoshis, context.holder_dust_limit_satoshis)
+		} else {
+			let dust_buffer_feerate = context.get_dust_buffer_feerate(None) as u64;
+			(context.counterparty_dust_limit_satoshis + dust_buffer_feerate * htlc_success_tx_weight(false) / 1000,
+			 context.holder_dust_limit_satoshis       + dust_buffer_feerate * htlc_timeout_tx_weight(false) / 1000)
+		};
+		let on_counterparty_dust_htlc_exposure_msat = inbound_stats.on_counterparty_tx_dust_exposure_msat + outbound_stats.on_counterparty_tx_dust_exposure_msat;
+		if on_counterparty_dust_htlc_exposure_msat as i64 + htlc_success_dust_limit as i64 * 1000 - 1 > context.get_max_dust_htlc_exposure_msat() as i64 {
+			remaining_msat_below_dust_exposure_limit =
+				Some(context.get_max_dust_htlc_exposure_msat().saturating_sub(on_counterparty_dust_htlc_exposure_msat));
+			dust_exposure_dust_limit_msat = cmp::max(dust_exposure_dust_limit_msat, htlc_success_dust_limit * 1000);
+		}
+
+		let on_holder_dust_htlc_exposure_msat = inbound_stats.on_holder_tx_dust_exposure_msat + outbound_stats.on_holder_tx_dust_exposure_msat;
+		if on_holder_dust_htlc_exposure_msat as i64 + htlc_timeout_dust_limit as i64 * 1000 - 1 > context.get_max_dust_htlc_exposure_msat() as i64 {
+			remaining_msat_below_dust_exposure_limit = Some(cmp::min(
+				remaining_msat_below_dust_exposure_limit.unwrap_or(u64::max_value()),
+				context.get_max_dust_htlc_exposure_msat().saturating_sub(on_holder_dust_htlc_exposure_msat)));
+			dust_exposure_dust_limit_msat = cmp::max(dust_exposure_dust_limit_msat, htlc_timeout_dust_limit * 1000);
+		}
+
+		if let Some(remaining_limit_msat) = remaining_msat_below_dust_exposure_limit {
+			if available_capacity_msat < dust_exposure_dust_limit_msat {
+				available_capacity_msat = cmp::min(available_capacity_msat, remaining_limit_msat);
+			} else {
+				next_outbound_htlc_minimum_msat = cmp::max(next_outbound_htlc_minimum_msat, dust_exposure_dust_limit_msat);
+			}
+		}
+
+		available_capacity_msat = cmp::min(available_capacity_msat,
+			context.counterparty_max_htlc_value_in_flight_msat - outbound_stats.pending_htlcs_value_msat);
+
+		if outbound_stats.pending_htlcs + 1 > context.counterparty_max_accepted_htlcs as u32 {
+			available_capacity_msat = 0;
+		}
+
+		AvailableBalances {
+			inbound_capacity_msat: cmp::max(context.channel_value_satoshis as i64 * 1000
+					- context.value_to_self_msat as i64
+					- context.get_inbound_pending_htlc_stats(None).pending_htlcs_value_msat as i64
+					- context.holder_selected_channel_reserve_satoshis as i64 * 1000,
+				0) as u64,
+			outbound_capacity_msat,
+			next_outbound_htlc_limit_msat: available_capacity_msat,
+			next_outbound_htlc_minimum_msat,
+			balance_msat,
+		}
+	}
+
 	pub fn get_holder_counterparty_selected_channel_reserve_satoshis(&self) -> (u64, Option<u64>) {
 		let context = &self;
 		(context.holder_selected_channel_reserve_satoshis, context.counterparty_selected_channel_reserve_satoshis)
@@ -3219,143 +3356,6 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			self.context.funding_transaction.clone()
 		} else {
 			None
-		}
-	}
-
-	/// Get the available balances, see [`AvailableBalances`]'s fields for more info.
-	/// Doesn't bother handling the
-	/// if-we-removed-it-already-but-haven't-fully-resolved-they-can-still-send-an-inbound-HTLC
-	/// corner case properly.
-	pub fn get_available_balances(&self) -> AvailableBalances {
-		let context = &self.context;
-		// Note that we have to handle overflow due to the above case.
-		let inbound_stats = context.get_inbound_pending_htlc_stats(None);
-		let outbound_stats = context.get_outbound_pending_htlc_stats(None);
-
-		let mut balance_msat = context.value_to_self_msat;
-		for ref htlc in context.pending_inbound_htlcs.iter() {
-			if let InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::Fulfill(_)) = htlc.state {
-				balance_msat += htlc.amount_msat;
-			}
-		}
-		balance_msat -= outbound_stats.pending_htlcs_value_msat;
-
-		let outbound_capacity_msat = context.value_to_self_msat
-				.saturating_sub(outbound_stats.pending_htlcs_value_msat)
-				.saturating_sub(
-					context.counterparty_selected_channel_reserve_satoshis.unwrap_or(0) * 1000);
-
-		let mut available_capacity_msat = outbound_capacity_msat;
-
-		if context.is_outbound() {
-			// We should mind channel commit tx fee when computing how much of the available capacity
-			// can be used in the next htlc. Mirrors the logic in send_htlc.
-			//
-			// The fee depends on whether the amount we will be sending is above dust or not,
-			// and the answer will in turn change the amount itself — making it a circular
-			// dependency.
-			// This complicates the computation around dust-values, up to the one-htlc-value.
-			let mut real_dust_limit_timeout_sat = context.holder_dust_limit_satoshis;
-			if !context.opt_anchors() {
-				real_dust_limit_timeout_sat += context.feerate_per_kw as u64 * htlc_timeout_tx_weight(false) / 1000;
-			}
-
-			let htlc_above_dust = HTLCCandidate::new(real_dust_limit_timeout_sat * 1000, HTLCInitiator::LocalOffered);
-			let max_reserved_commit_tx_fee_msat = FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE * context.next_local_commit_tx_fee_msat(htlc_above_dust, Some(()));
-			let htlc_dust = HTLCCandidate::new(real_dust_limit_timeout_sat * 1000 - 1, HTLCInitiator::LocalOffered);
-			let min_reserved_commit_tx_fee_msat = FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE * context.next_local_commit_tx_fee_msat(htlc_dust, Some(()));
-
-			// We will first subtract the fee as if we were above-dust. Then, if the resulting
-			// value ends up being below dust, we have this fee available again. In that case,
-			// match the value to right-below-dust.
-			let mut capacity_minus_commitment_fee_msat: i64 = (available_capacity_msat as i64) - (max_reserved_commit_tx_fee_msat as i64);
-			if capacity_minus_commitment_fee_msat < (real_dust_limit_timeout_sat as i64) * 1000 {
-				let one_htlc_difference_msat = max_reserved_commit_tx_fee_msat - min_reserved_commit_tx_fee_msat;
-				debug_assert!(one_htlc_difference_msat != 0);
-				capacity_minus_commitment_fee_msat += one_htlc_difference_msat as i64;
-				capacity_minus_commitment_fee_msat = cmp::min(real_dust_limit_timeout_sat as i64 * 1000 - 1, capacity_minus_commitment_fee_msat);
-				available_capacity_msat = cmp::max(0, cmp::min(capacity_minus_commitment_fee_msat, available_capacity_msat as i64)) as u64;
-			} else {
-				available_capacity_msat = capacity_minus_commitment_fee_msat as u64;
-			}
-		} else {
-			// If the channel is inbound (i.e. counterparty pays the fee), we need to make sure
-			// sending a new HTLC won't reduce their balance below our reserve threshold.
-			let mut real_dust_limit_success_sat = context.counterparty_dust_limit_satoshis;
-			if !context.opt_anchors() {
-				real_dust_limit_success_sat += context.feerate_per_kw as u64 * htlc_success_tx_weight(false) / 1000;
-			}
-
-			let htlc_above_dust = HTLCCandidate::new(real_dust_limit_success_sat * 1000, HTLCInitiator::LocalOffered);
-			let max_reserved_commit_tx_fee_msat = context.next_remote_commit_tx_fee_msat(htlc_above_dust, None);
-
-			let holder_selected_chan_reserve_msat = context.holder_selected_channel_reserve_satoshis * 1000;
-			let remote_balance_msat = (context.channel_value_satoshis * 1000 - context.value_to_self_msat)
-				.saturating_sub(inbound_stats.pending_htlcs_value_msat);
-
-			if remote_balance_msat < max_reserved_commit_tx_fee_msat + holder_selected_chan_reserve_msat {
-				// If another HTLC's fee would reduce the remote's balance below the reserve limit
-				// we've selected for them, we can only send dust HTLCs.
-				available_capacity_msat = cmp::min(available_capacity_msat, real_dust_limit_success_sat * 1000 - 1);
-			}
-		}
-
-		let mut next_outbound_htlc_minimum_msat = context.counterparty_htlc_minimum_msat;
-
-		// If we get close to our maximum dust exposure, we end up in a situation where we can send
-		// between zero and the remaining dust exposure limit remaining OR above the dust limit.
-		// Because we cannot express this as a simple min/max, we prefer to tell the user they can
-		// send above the dust limit (as the router can always overpay to meet the dust limit).
-		let mut remaining_msat_below_dust_exposure_limit = None;
-		let mut dust_exposure_dust_limit_msat = 0;
-
-		let (htlc_success_dust_limit, htlc_timeout_dust_limit) = if context.opt_anchors() {
-			(context.counterparty_dust_limit_satoshis, context.holder_dust_limit_satoshis)
-		} else {
-			let dust_buffer_feerate = context.get_dust_buffer_feerate(None) as u64;
-			(context.counterparty_dust_limit_satoshis + dust_buffer_feerate * htlc_success_tx_weight(false) / 1000,
-			 context.holder_dust_limit_satoshis       + dust_buffer_feerate * htlc_timeout_tx_weight(false) / 1000)
-		};
-		let on_counterparty_dust_htlc_exposure_msat = inbound_stats.on_counterparty_tx_dust_exposure_msat + outbound_stats.on_counterparty_tx_dust_exposure_msat;
-		if on_counterparty_dust_htlc_exposure_msat as i64 + htlc_success_dust_limit as i64 * 1000 - 1 > context.get_max_dust_htlc_exposure_msat() as i64 {
-			remaining_msat_below_dust_exposure_limit =
-				Some(context.get_max_dust_htlc_exposure_msat().saturating_sub(on_counterparty_dust_htlc_exposure_msat));
-			dust_exposure_dust_limit_msat = cmp::max(dust_exposure_dust_limit_msat, htlc_success_dust_limit * 1000);
-		}
-
-		let on_holder_dust_htlc_exposure_msat = inbound_stats.on_holder_tx_dust_exposure_msat + outbound_stats.on_holder_tx_dust_exposure_msat;
-		if on_holder_dust_htlc_exposure_msat as i64 + htlc_timeout_dust_limit as i64 * 1000 - 1 > context.get_max_dust_htlc_exposure_msat() as i64 {
-			remaining_msat_below_dust_exposure_limit = Some(cmp::min(
-				remaining_msat_below_dust_exposure_limit.unwrap_or(u64::max_value()),
-				context.get_max_dust_htlc_exposure_msat().saturating_sub(on_holder_dust_htlc_exposure_msat)));
-			dust_exposure_dust_limit_msat = cmp::max(dust_exposure_dust_limit_msat, htlc_timeout_dust_limit * 1000);
-		}
-
-		if let Some(remaining_limit_msat) = remaining_msat_below_dust_exposure_limit {
-			if available_capacity_msat < dust_exposure_dust_limit_msat {
-				available_capacity_msat = cmp::min(available_capacity_msat, remaining_limit_msat);
-			} else {
-				next_outbound_htlc_minimum_msat = cmp::max(next_outbound_htlc_minimum_msat, dust_exposure_dust_limit_msat);
-			}
-		}
-
-		available_capacity_msat = cmp::min(available_capacity_msat,
-			context.counterparty_max_htlc_value_in_flight_msat - outbound_stats.pending_htlcs_value_msat);
-
-		if outbound_stats.pending_htlcs + 1 > context.counterparty_max_accepted_htlcs as u32 {
-			available_capacity_msat = 0;
-		}
-
-		AvailableBalances {
-			inbound_capacity_msat: cmp::max(context.channel_value_satoshis as i64 * 1000
-					- context.value_to_self_msat as i64
-					- context.get_inbound_pending_htlc_stats(None).pending_htlcs_value_msat as i64
-					- context.holder_selected_channel_reserve_satoshis as i64 * 1000,
-				0) as u64,
-			outbound_capacity_msat,
-			next_outbound_htlc_limit_msat: available_capacity_msat,
-			next_outbound_htlc_minimum_msat,
-			balance_msat,
 		}
 	}
 
@@ -6048,7 +6048,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			return Err(ChannelError::Ignore("Cannot send 0-msat HTLC".to_owned()));
 		}
 
-		let available_balances = self.get_available_balances();
+		let available_balances = self.context.get_available_balances();
 		if amount_msat < available_balances.next_outbound_htlc_minimum_msat {
 			return Err(ChannelError::Ignore(format!("Cannot send less than our next-HTLC minimum - {} msat",
 				available_balances.next_outbound_htlc_minimum_msat)));
