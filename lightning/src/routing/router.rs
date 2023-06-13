@@ -939,10 +939,24 @@ enum CandidateRouteHop<'a> {
 		info: DirectedChannelInfo<'a>,
 		short_channel_id: u64,
 	},
-	/// A hop to the payee found in the payment invoice, though not necessarily a direct channel.
+	/// A hop to the payee found in the BOLT 11 payment invoice, though not necessarily a direct
+	/// channel.
 	PrivateHop {
 		hint: &'a RouteHintHop,
-	}
+	},
+	/// The payee's identity is concealed behind blinded paths provided in a BOLT 12 invoice.
+	Blinded {
+		hint: &'a (BlindedPayInfo, BlindedPath),
+		hint_idx: usize,
+	},
+	/// Similar to [`Self::Blinded`], but the path here has 1 blinded hop. `BlindedPayInfo` provided
+	/// for 1-hop blinded paths is ignored because it is meant to apply to the hops *between* the
+	/// introduction node and the destination. Useful for tracking that we need to include a blinded
+	/// path at the end of our [`Route`].
+	OneHopBlinded {
+		hint: &'a (BlindedPayInfo, BlindedPath),
+		hint_idx: usize,
+	},
 }
 
 impl<'a> CandidateRouteHop<'a> {
@@ -951,6 +965,8 @@ impl<'a> CandidateRouteHop<'a> {
 			CandidateRouteHop::FirstHop { details } => Some(details.get_outbound_payment_scid().unwrap()),
 			CandidateRouteHop::PublicHop { short_channel_id, .. } => Some(*short_channel_id),
 			CandidateRouteHop::PrivateHop { hint } => Some(hint.short_channel_id),
+			CandidateRouteHop::Blinded { .. } => None,
+			CandidateRouteHop::OneHopBlinded { .. } => None,
 		}
 	}
 
@@ -960,6 +976,8 @@ impl<'a> CandidateRouteHop<'a> {
 			CandidateRouteHop::FirstHop { details } => details.counterparty.features.to_context(),
 			CandidateRouteHop::PublicHop { info, .. } => info.channel().features.clone(),
 			CandidateRouteHop::PrivateHop { .. } => ChannelFeatures::empty(),
+			CandidateRouteHop::Blinded { .. } => ChannelFeatures::empty(),
+			CandidateRouteHop::OneHopBlinded { .. } => ChannelFeatures::empty(),
 		}
 	}
 
@@ -968,6 +986,8 @@ impl<'a> CandidateRouteHop<'a> {
 			CandidateRouteHop::FirstHop { .. } => 0,
 			CandidateRouteHop::PublicHop { info, .. } => info.direction().cltv_expiry_delta as u32,
 			CandidateRouteHop::PrivateHop { hint } => hint.cltv_expiry_delta as u32,
+			CandidateRouteHop::Blinded { hint, .. } => hint.0.cltv_expiry_delta as u32,
+			CandidateRouteHop::OneHopBlinded { .. } => 0,
 		}
 	}
 
@@ -976,6 +996,8 @@ impl<'a> CandidateRouteHop<'a> {
 			CandidateRouteHop::FirstHop { details } => details.next_outbound_htlc_minimum_msat,
 			CandidateRouteHop::PublicHop { info, .. } => info.direction().htlc_minimum_msat,
 			CandidateRouteHop::PrivateHop { hint } => hint.htlc_minimum_msat.unwrap_or(0),
+			CandidateRouteHop::Blinded { hint, .. } => hint.0.htlc_minimum_msat,
+			CandidateRouteHop::OneHopBlinded { .. } => 0,
 		}
 	}
 
@@ -986,6 +1008,14 @@ impl<'a> CandidateRouteHop<'a> {
 			},
 			CandidateRouteHop::PublicHop { info, .. } => info.direction().fees,
 			CandidateRouteHop::PrivateHop { hint } => hint.fees,
+			CandidateRouteHop::Blinded { hint, .. } => {
+				RoutingFees {
+					base_msat: hint.0.fee_base_msat,
+					proportional_millionths: hint.0.fee_proportional_millionths
+				}
+			},
+			CandidateRouteHop::OneHopBlinded { .. } =>
+				RoutingFees { base_msat: 0, proportional_millionths: 0 },
 		}
 	}
 
@@ -999,10 +1029,16 @@ impl<'a> CandidateRouteHop<'a> {
 				EffectiveCapacity::HintMaxHTLC { amount_msat: *max },
 			CandidateRouteHop::PrivateHop { hint: RouteHintHop { htlc_maximum_msat: None, .. }} =>
 				EffectiveCapacity::Infinite,
+			CandidateRouteHop::Blinded { hint, .. } =>
+				EffectiveCapacity::HintMaxHTLC { amount_msat: hint.0.htlc_maximum_msat },
+			CandidateRouteHop::OneHopBlinded { .. } => EffectiveCapacity::Infinite,
 		}
 	}
+
 	fn id(&self, channel_direction: bool /* src_node_id < target_node_id */) -> CandidateHopId {
 		match self {
+			CandidateRouteHop::Blinded { hint_idx, .. } => CandidateHopId::Blinded(*hint_idx),
+			CandidateRouteHop::OneHopBlinded { hint_idx, .. } => CandidateHopId::Blinded(*hint_idx),
 			_ => CandidateHopId::Clear((self.short_channel_id().unwrap(), channel_direction)),
 		}
 	}
@@ -1259,6 +1295,12 @@ struct LoggedCandidateHop<'a>(&'a CandidateRouteHop<'a>);
 impl<'a> fmt::Display for LoggedCandidateHop<'a> {
 	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
 		match self.0 {
+			CandidateRouteHop::Blinded { hint, .. } | CandidateRouteHop::OneHopBlinded { hint, .. } => {
+				"blinded route hint with introduction node id ".fmt(f)?;
+				hint.1.introduction_node_id.fmt(f)?;
+				" and blinding point ".fmt(f)?;
+				hint.1.blinding_point.fmt(f)
+			},
 			_ => {
 				"SCID ".fmt(f)?;
 				self.0.short_channel_id().unwrap().fmt(f)
