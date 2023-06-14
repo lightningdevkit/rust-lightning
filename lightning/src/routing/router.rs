@@ -481,6 +481,8 @@ pub const DEFAULT_MAX_TOTAL_CLTV_EXPIRY_DELTA: u32 = 1008;
 // limits, but for now more than 10 paths likely carries too much one-path failure.
 pub const DEFAULT_MAX_PATH_COUNT: u8 = 10;
 
+const DEFAULT_MAX_CHANNEL_SATURATION_POW_HALF: u8 = 2;
+
 // The median hop CLTV expiry delta currently seen in the network.
 const MEDIAN_HOP_CLTV_EXPIRY_DELTA: u32 = 40;
 
@@ -567,7 +569,7 @@ impl ReadableArgs<u32> for PaymentParameters {
 			(2, features, (option: ReadableArgs, payee_pubkey.is_some())),
 			(3, max_path_count, (default_value, DEFAULT_MAX_PATH_COUNT)),
 			(4, route_hints, vec_type),
-			(5, max_channel_saturation_power_of_half, (default_value, 2)),
+			(5, max_channel_saturation_power_of_half, (default_value, DEFAULT_MAX_CHANNEL_SATURATION_POW_HALF)),
 			(6, expiry_time, option),
 			(7, previously_failed_channels, vec_type),
 			(8, blinded_route_hints, optional_vec),
@@ -612,7 +614,7 @@ impl PaymentParameters {
 			expiry_time: None,
 			max_total_cltv_expiry_delta: DEFAULT_MAX_TOTAL_CLTV_EXPIRY_DELTA,
 			max_path_count: DEFAULT_MAX_PATH_COUNT,
-			max_channel_saturation_power_of_half: 2,
+			max_channel_saturation_power_of_half: DEFAULT_MAX_CHANNEL_SATURATION_POW_HALF,
 			previously_failed_channels: Vec::new(),
 		}
 	}
@@ -649,7 +651,7 @@ impl PaymentParameters {
 			expiry_time: None,
 			max_total_cltv_expiry_delta: DEFAULT_MAX_TOTAL_CLTV_EXPIRY_DELTA,
 			max_path_count: DEFAULT_MAX_PATH_COUNT,
-			max_channel_saturation_power_of_half: 2,
+			max_channel_saturation_power_of_half: DEFAULT_MAX_CHANNEL_SATURATION_POW_HALF,
 			previously_failed_channels: Vec::new(),
 		}
 	}
