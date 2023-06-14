@@ -795,6 +795,19 @@ impl Payee {
 			_ => None,
 		}
 	}
+	fn blinded_route_hints(&self) -> &[(BlindedPayInfo, BlindedPath)] {
+		match self {
+			Self::Blinded { route_hints, .. } => &route_hints[..],
+			Self::Clear { .. } => &[]
+		}
+	}
+
+	fn unblinded_route_hints(&self) -> &[RouteHint] {
+		match self {
+			Self::Blinded { .. } => &[],
+			Self::Clear { route_hints, .. } => &route_hints[..]
+		}
+	}
 }
 
 enum FeaturesRef<'a> {
@@ -1040,6 +1053,14 @@ impl<'a> CandidateRouteHop<'a> {
 			CandidateRouteHop::Blinded { hint_idx, .. } => CandidateHopId::Blinded(*hint_idx),
 			CandidateRouteHop::OneHopBlinded { hint_idx, .. } => CandidateHopId::Blinded(*hint_idx),
 			_ => CandidateHopId::Clear((self.short_channel_id().unwrap(), channel_direction)),
+		}
+	}
+	fn blinded_path(&self) -> Option<&'a BlindedPath> {
+		match self {
+			CandidateRouteHop::Blinded { hint, .. } | CandidateRouteHop::OneHopBlinded { hint, .. } => {
+				Some(&hint.1)
+			},
+			_ => None,
 		}
 	}
 }
@@ -1424,8 +1445,23 @@ where L::Target: Logger {
 				}
 			}
 		},
-		_ => return Err(LightningError{err: "Routing to blinded paths isn't supported yet".to_owned(), action: ErrorAction::IgnoreError}),
-
+		Payee::Blinded { route_hints, .. } => {
+			if route_hints.iter().all(|(_, path)| &path.introduction_node_id == our_node_pubkey) {
+				return Err(LightningError{err: "Cannot generate a route to blinded paths if we are the introduction node to all of them".to_owned(), action: ErrorAction::IgnoreError});
+			}
+			for (_, blinded_path) in route_hints.iter() {
+				if blinded_path.blinded_hops.len() == 0 {
+					return Err(LightningError{err: "0-hop blinded path provided".to_owned(), action: ErrorAction::IgnoreError});
+				} else if &blinded_path.introduction_node_id == our_node_pubkey {
+					log_info!(logger, "Got blinded path with ourselves as the introduction node, ignoring");
+				} else if blinded_path.blinded_hops.len() == 1 &&
+					route_hints.iter().any( |(_, p)| p.blinded_hops.len() == 1
+						&& p.introduction_node_id != blinded_path.introduction_node_id)
+				{
+					return Err(LightningError{err: format!("1-hop blinded paths must all have matching introduction node ids"), action: ErrorAction::IgnoreError});
+				}
+			}
+		}
 	}
 	let final_cltv_expiry_delta = payment_params.payee.final_cltv_expiry_delta().unwrap_or(0);
 	if payment_params.max_total_cltv_expiry_delta <= final_cltv_expiry_delta {
@@ -1932,11 +1968,37 @@ where L::Target: Logger {
 		// If a caller provided us with last hops, add them to routing targets. Since this happens
 		// earlier than general path finding, they will be somewhat prioritized, although currently
 		// it matters only if the fees are exactly the same.
-		let route_hints = match &payment_params.payee {
-			Payee::Clear { route_hints, .. } => route_hints,
-			_ => return Err(LightningError{err: "Routing to blinded paths isn't supported yet".to_owned(), action: ErrorAction::IgnoreError}),
-		};
-		for route in route_hints.iter().filter(|route| !route.0.is_empty()) {
+		for (hint_idx, hint) in payment_params.payee.blinded_route_hints().iter().enumerate() {
+			let intro_node_id = NodeId::from_pubkey(&hint.1.introduction_node_id);
+			let have_intro_node_in_graph =
+				// Only add the hops in this route to our candidate set if either
+				// we have a direct channel to the first hop or the first hop is
+				// in the regular network graph.
+				first_hop_targets.get(&intro_node_id).is_some() ||
+				network_nodes.get(&intro_node_id).is_some();
+			if !have_intro_node_in_graph { continue }
+			let candidate = if hint.1.blinded_hops.len() == 1 {
+				CandidateRouteHop::OneHopBlinded { hint, hint_idx }
+			} else { CandidateRouteHop::Blinded { hint, hint_idx } };
+			let mut path_contribution_msat = path_value_msat;
+			if let Some(hop_used_msat) = add_entry!(candidate, intro_node_id, maybe_dummy_payee_node_id,
+				0, path_contribution_msat, 0, 0_u64, 0, 0)
+			{
+				path_contribution_msat = hop_used_msat;
+			} else { continue }
+			if let Some(first_channels) = first_hop_targets.get_mut(&NodeId::from_pubkey(&hint.1.introduction_node_id)) {
+				sort_first_hop_channels(first_channels, &used_liquidities, recommended_value_msat,
+					our_node_pubkey);
+				for details in first_channels {
+					let first_hop_candidate = CandidateRouteHop::FirstHop { details };
+					add_entry!(first_hop_candidate, our_node_id, intro_node_id, 0, path_contribution_msat, 0,
+						0_u64, 0, 0);
+				}
+			}
+		}
+		for route in payment_params.payee.unblinded_route_hints().iter()
+			.filter(|route| !route.0.is_empty())
+		{
 			let first_hop_in_route = &(route.0)[0];
 			let have_hop_src_in_graph =
 				// Only add the hops in this route to our candidate set if either
@@ -2325,8 +2387,8 @@ where L::Target: Logger {
 	});
 	for idx in 0..(selected_route.len() - 1) {
 		if idx + 1 >= selected_route.len() { break; }
-		if iter_equal(selected_route[idx    ].hops.iter().map(|h| (h.0.candidate.short_channel_id(), h.0.node_id)),
-		              selected_route[idx + 1].hops.iter().map(|h| (h.0.candidate.short_channel_id(), h.0.node_id))) {
+		if iter_equal(selected_route[idx    ].hops.iter().map(|h| (h.0.candidate.id(true), h.0.node_id)),
+		              selected_route[idx + 1].hops.iter().map(|h| (h.0.candidate.id(true), h.0.node_id))) {
 			let new_value = selected_route[idx].get_value_msat() + selected_route[idx + 1].get_value_msat();
 			selected_route[idx].update_value_and_recompute_fees(new_value);
 			selected_route.remove(idx + 1);
@@ -2348,12 +2410,25 @@ where L::Target: Logger {
 				cltv_expiry_delta: hop.candidate.cltv_expiry_delta(),
 			});
 		}
+		let mut final_cltv_delta = final_cltv_expiry_delta;
+		let blinded_tail = payment_path.hops.last().and_then(|(h, _)| {
+			if let Some(blinded_path) = h.candidate.blinded_path() {
+				final_cltv_delta = h.candidate.cltv_expiry_delta();
+				Some(BlindedTail {
+					hops: blinded_path.blinded_hops.clone(),
+					blinding_point: blinded_path.blinding_point,
+					excess_final_cltv_expiry_delta: 0,
+					final_value_msat: h.fee_msat,
+				})
+			} else { None }
+		});
 		// Propagate the cltv_expiry_delta one hop backwards since the delta from the current hop is
 		// applicable for the previous hop.
-		hops.iter_mut().rev().fold(final_cltv_expiry_delta, |prev_cltv_expiry_delta, hop| {
+		hops.iter_mut().rev().fold(final_cltv_delta, |prev_cltv_expiry_delta, hop| {
 			core::mem::replace(&mut hop.cltv_expiry_delta, prev_cltv_expiry_delta)
 		});
-		paths.push(Path { hops, blinded_tail: None });
+
+		paths.push(Path { hops, blinded_tail });
 	}
 	// Make sure we would never create a route with more paths than we allow.
 	debug_assert!(paths.len() <= payment_params.max_path_count.into());
@@ -2550,9 +2625,10 @@ mod tests {
 	use crate::routing::test_utils::{add_channel, add_or_update_node, build_graph, build_line_graph, id_to_feature_flags, get_nodes, update_channel};
 	use crate::chain::transaction::OutPoint;
 	use crate::sign::EntropySource;
-	use crate::ln::features::{ChannelFeatures, InitFeatures, NodeFeatures};
+	use crate::ln::features::{BlindedHopFeatures, Bolt12InvoiceFeatures, ChannelFeatures, InitFeatures, NodeFeatures};
 	use crate::ln::msgs::{ErrorAction, LightningError, UnsignedChannelUpdate, MAX_VALUE_MSAT};
 	use crate::ln::channelmanager;
+	use crate::offers::invoice::BlindedPayInfo;
 	use crate::util::config::UserConfig;
 	use crate::util::test_utils as ln_test_utils;
 	use crate::util::chacha20::ChaCha20;
@@ -4219,14 +4295,66 @@ mod tests {
 
 	#[test]
 	fn simple_mpp_route_test() {
+		let (secp_ctx, _, _, _, _) = build_graph();
+		let (_, _, _, nodes) = get_nodes(&secp_ctx);
+		let config = UserConfig::default();
+		let clear_payment_params = PaymentParameters::from_node_id(nodes[2], 42)
+			.with_bolt11_features(channelmanager::provided_invoice_features(&config)).unwrap();
+		do_simple_mpp_route_test(clear_payment_params);
+
+		// MPP to a 1-hop blinded path for nodes[2]
+		let bolt12_features: Bolt12InvoiceFeatures = channelmanager::provided_invoice_features(&config).to_context();
+		let blinded_path = BlindedPath {
+			introduction_node_id: nodes[2],
+			blinding_point: ln_test_utils::pubkey(42),
+			blinded_hops: vec![BlindedHop { blinded_node_id: ln_test_utils::pubkey(42 as u8), encrypted_payload: Vec::new() }],
+		};
+		let blinded_payinfo = BlindedPayInfo { // These fields are ignored for 1-hop blinded paths
+			fee_base_msat: 0,
+			fee_proportional_millionths: 0,
+			htlc_minimum_msat: 0,
+			htlc_maximum_msat: 0,
+			cltv_expiry_delta: 0,
+			features: BlindedHopFeatures::empty(),
+		};
+		let one_hop_blinded_payment_params = PaymentParameters::blinded(vec![(blinded_payinfo.clone(), blinded_path.clone())])
+			.with_bolt12_features(bolt12_features.clone()).unwrap();
+		do_simple_mpp_route_test(one_hop_blinded_payment_params.clone());
+
+		// MPP to 3 2-hop blinded paths
+		let mut blinded_path_node_0 = blinded_path.clone();
+		blinded_path_node_0.introduction_node_id = nodes[0];
+		blinded_path_node_0.blinded_hops.push(blinded_path.blinded_hops[0].clone());
+		let mut node_0_payinfo = blinded_payinfo.clone();
+		node_0_payinfo.htlc_maximum_msat = 50_000;
+
+		let mut blinded_path_node_7 = blinded_path_node_0.clone();
+		blinded_path_node_7.introduction_node_id = nodes[7];
+		let mut node_7_payinfo = blinded_payinfo.clone();
+		node_7_payinfo.htlc_maximum_msat = 60_000;
+
+		let mut blinded_path_node_1 = blinded_path_node_0.clone();
+		blinded_path_node_1.introduction_node_id = nodes[1];
+		let mut node_1_payinfo = blinded_payinfo.clone();
+		node_1_payinfo.htlc_maximum_msat = 180_000;
+
+		let two_hop_blinded_payment_params = PaymentParameters::blinded(
+			vec![
+				(node_0_payinfo, blinded_path_node_0),
+				(node_7_payinfo, blinded_path_node_7),
+				(node_1_payinfo, blinded_path_node_1)
+			])
+			.with_bolt12_features(bolt12_features).unwrap();
+		do_simple_mpp_route_test(two_hop_blinded_payment_params);
+	}
+
+
+	fn do_simple_mpp_route_test(payment_params: PaymentParameters) {
 		let (secp_ctx, network_graph, gossip_sync, _, logger) = build_graph();
 		let (our_privkey, our_id, privkeys, nodes) = get_nodes(&secp_ctx);
 		let scorer = ln_test_utils::TestScorer::new();
 		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
 		let random_seed_bytes = keys_manager.get_secure_random_bytes();
-		let config = UserConfig::default();
-		let payment_params = PaymentParameters::from_node_id(nodes[2], 42)
-			.with_bolt11_features(channelmanager::provided_invoice_features(&config)).unwrap();
 
 		// We need a route consisting of 3 paths:
 		// From our node to node2 via node0, node7, node1 (three paths one hop each).
@@ -4355,8 +4483,12 @@ mod tests {
 			assert_eq!(route.paths.len(), 3);
 			let mut total_amount_paid_msat = 0;
 			for path in &route.paths {
-				assert_eq!(path.hops.len(), 2);
-				assert_eq!(path.hops.last().unwrap().pubkey, nodes[2]);
+				if let Some(bt) = &path.blinded_tail {
+					assert_eq!(path.hops.len() + if bt.hops.len() == 1 { 0 } else { 1 }, 2);
+				} else {
+					assert_eq!(path.hops.len(), 2);
+					assert_eq!(path.hops.last().unwrap().pubkey, nodes[2]);
+				}
 				total_amount_paid_msat += path.final_value_msat();
 			}
 			assert_eq!(total_amount_paid_msat, 250_000);
@@ -4369,8 +4501,22 @@ mod tests {
 			assert_eq!(route.paths.len(), 3);
 			let mut total_amount_paid_msat = 0;
 			for path in &route.paths {
-				assert_eq!(path.hops.len(), 2);
-				assert_eq!(path.hops.last().unwrap().pubkey, nodes[2]);
+				if payment_params.payee.blinded_route_hints().len() != 0 {
+					assert!(path.blinded_tail.is_some()) } else { assert!(path.blinded_tail.is_none()) }
+				if let Some(bt) = &path.blinded_tail {
+					assert_eq!(path.hops.len() + if bt.hops.len() == 1 { 0 } else { 1 }, 2);
+					if bt.hops.len() > 1 {
+						assert_eq!(path.hops.last().unwrap().pubkey,
+							payment_params.payee.blinded_route_hints().iter()
+								.find(|(p, _)| p.htlc_maximum_msat == path.final_value_msat())
+								.map(|(_, p)| p.introduction_node_id).unwrap());
+					} else {
+						assert_eq!(path.hops.last().unwrap().pubkey, nodes[2]);
+					}
+				} else {
+					assert_eq!(path.hops.len(), 2);
+					assert_eq!(path.hops.last().unwrap().pubkey, nodes[2]);
+				}
 				total_amount_paid_msat += path.final_value_msat();
 			}
 			assert_eq!(total_amount_paid_msat, 290_000);
@@ -6152,6 +6298,36 @@ mod tests {
 		assert!(route.paths[0].hops.last().unwrap().fee_msat <= max_htlc_msat);
 		assert!(route.paths[1].hops.last().unwrap().fee_msat <= max_htlc_msat);
 		assert_eq!(route.get_total_amount(), amt_msat);
+
+		// Make sure this works for blinded route hints.
+		let blinded_path = BlindedPath {
+			introduction_node_id: intermed_node_id,
+			blinding_point: ln_test_utils::pubkey(42),
+			blinded_hops: vec![
+				BlindedHop { blinded_node_id: ln_test_utils::pubkey(42), encrypted_payload: vec![] },
+				BlindedHop { blinded_node_id: ln_test_utils::pubkey(43), encrypted_payload: vec![] },
+			],
+		};
+		let blinded_payinfo = BlindedPayInfo {
+			fee_base_msat: 100,
+			fee_proportional_millionths: 0,
+			htlc_minimum_msat: 1,
+			htlc_maximum_msat: max_htlc_msat,
+			cltv_expiry_delta: 10,
+			features: BlindedHopFeatures::empty(),
+		};
+		let bolt12_features: Bolt12InvoiceFeatures = channelmanager::provided_invoice_features(&config).to_context();
+		let payment_params = PaymentParameters::blinded(vec![
+			(blinded_payinfo.clone(), blinded_path.clone()),
+			(blinded_payinfo.clone(), blinded_path.clone())])
+			.with_bolt12_features(bolt12_features).unwrap();
+		let route = get_route(&our_node_id, &payment_params, &network_graph.read_only(),
+			Some(&first_hops.iter().collect::<Vec<_>>()), amt_msat, Arc::clone(&logger), &scorer, &(),
+			&random_seed_bytes).unwrap();
+		assert_eq!(route.paths.len(), 2);
+		assert!(route.paths[0].hops.last().unwrap().fee_msat <= max_htlc_msat);
+		assert!(route.paths[1].hops.last().unwrap().fee_msat <= max_htlc_msat);
+		assert_eq!(route.get_total_amount(), amt_msat);
 	}
 
 	#[test]
@@ -6297,6 +6473,190 @@ mod tests {
 		add_random_cltv_offset(&mut route, &payment_params, &network_graph.read_only(), &[0; 32]);
 		assert_eq!(route.paths[0].blinded_tail.as_ref().unwrap().excess_final_cltv_expiry_delta, 40);
 		assert_eq!(route.paths[0].hops.last().unwrap().cltv_expiry_delta, 40);
+	}
+
+	#[test]
+	fn simple_blinded_route_hints() {
+		do_simple_blinded_route_hints(1);
+		do_simple_blinded_route_hints(2);
+		do_simple_blinded_route_hints(3);
+	}
+
+	fn do_simple_blinded_route_hints(num_blinded_hops: usize) {
+		// Check that we can generate a route to a blinded path with the expected hops.
+		let (secp_ctx, network, _, _, logger) = build_graph();
+		let (_, our_id, _, nodes) = get_nodes(&secp_ctx);
+		let network_graph = network.read_only();
+
+		let scorer = ln_test_utils::TestScorer::new();
+		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
+		let random_seed_bytes = keys_manager.get_secure_random_bytes();
+
+		let mut blinded_path = BlindedPath {
+			introduction_node_id: nodes[2],
+			blinding_point: ln_test_utils::pubkey(42),
+			blinded_hops: Vec::with_capacity(num_blinded_hops),
+		};
+		for i in 0..num_blinded_hops {
+			blinded_path.blinded_hops.push(
+				BlindedHop { blinded_node_id: ln_test_utils::pubkey(42 + i as u8), encrypted_payload: Vec::new() },
+			);
+		}
+		let blinded_payinfo = BlindedPayInfo {
+			fee_base_msat: 100,
+			fee_proportional_millionths: 500,
+			htlc_minimum_msat: 1000,
+			htlc_maximum_msat: 100_000_000,
+			cltv_expiry_delta: 15,
+			features: BlindedHopFeatures::empty(),
+		};
+
+		let final_amt_msat = 1001;
+		let payment_params = PaymentParameters::blinded(vec![(blinded_payinfo.clone(), blinded_path.clone())]);
+		let route = get_route(&our_id, &payment_params, &network_graph, None, final_amt_msat , Arc::clone(&logger),
+			&scorer, &(), &random_seed_bytes).unwrap();
+		assert_eq!(route.paths.len(), 1);
+		assert_eq!(route.paths[0].hops.len(), 2);
+
+		let tail = route.paths[0].blinded_tail.as_ref().unwrap();
+		assert_eq!(tail.hops, blinded_path.blinded_hops);
+		assert_eq!(tail.excess_final_cltv_expiry_delta, 0);
+		assert_eq!(tail.final_value_msat, 1001);
+
+		let final_hop = route.paths[0].hops.last().unwrap();
+		assert_eq!(final_hop.pubkey, blinded_path.introduction_node_id);
+		if tail.hops.len() > 1 {
+			assert_eq!(final_hop.fee_msat,
+				blinded_payinfo.fee_base_msat as u64 + blinded_payinfo.fee_proportional_millionths as u64 * tail.final_value_msat / 1000000);
+			assert_eq!(final_hop.cltv_expiry_delta, blinded_payinfo.cltv_expiry_delta as u32);
+		} else {
+			assert_eq!(final_hop.fee_msat, 0);
+			assert_eq!(final_hop.cltv_expiry_delta, 0);
+		}
+	}
+
+	#[test]
+	fn blinded_path_routing_errors() {
+		// Check that we can generate a route to a blinded path with the expected hops.
+		let (secp_ctx, network, _, _, logger) = build_graph();
+		let (_, our_id, _, nodes) = get_nodes(&secp_ctx);
+		let network_graph = network.read_only();
+
+		let scorer = ln_test_utils::TestScorer::new();
+		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
+		let random_seed_bytes = keys_manager.get_secure_random_bytes();
+
+		let mut invalid_blinded_path = BlindedPath {
+			introduction_node_id: nodes[2],
+			blinding_point: ln_test_utils::pubkey(42),
+			blinded_hops: vec![
+				BlindedHop { blinded_node_id: ln_test_utils::pubkey(43), encrypted_payload: vec![0; 43] },
+			],
+		};
+		let blinded_payinfo = BlindedPayInfo {
+			fee_base_msat: 100,
+			fee_proportional_millionths: 500,
+			htlc_minimum_msat: 1000,
+			htlc_maximum_msat: 100_000_000,
+			cltv_expiry_delta: 15,
+			features: BlindedHopFeatures::empty(),
+		};
+
+		let mut invalid_blinded_path_2 = invalid_blinded_path.clone();
+		invalid_blinded_path_2.introduction_node_id = ln_test_utils::pubkey(45);
+		let payment_params = PaymentParameters::blinded(vec![
+			(blinded_payinfo.clone(), invalid_blinded_path.clone()),
+			(blinded_payinfo.clone(), invalid_blinded_path_2)]);
+		match get_route(&our_id, &payment_params, &network_graph, None, 1001, Arc::clone(&logger),
+			&scorer, &(), &random_seed_bytes)
+		{
+			Err(LightningError { err, .. }) => {
+				assert_eq!(err, "1-hop blinded paths must all have matching introduction node ids");
+			},
+			_ => panic!("Expected error")
+		}
+
+		invalid_blinded_path.introduction_node_id = our_id;
+		let payment_params = PaymentParameters::blinded(vec![(blinded_payinfo.clone(), invalid_blinded_path.clone())]);
+		match get_route(&our_id, &payment_params, &network_graph, None, 1001, Arc::clone(&logger),
+			&scorer, &(), &random_seed_bytes)
+		{
+			Err(LightningError { err, .. }) => {
+				assert_eq!(err, "Cannot generate a route to blinded paths if we are the introduction node to all of them");
+			},
+			_ => panic!("Expected error")
+		}
+
+		invalid_blinded_path.introduction_node_id = ln_test_utils::pubkey(46);
+		invalid_blinded_path.blinded_hops.clear();
+		let payment_params = PaymentParameters::blinded(vec![(blinded_payinfo, invalid_blinded_path)]);
+		match get_route(&our_id, &payment_params, &network_graph, None, 1001, Arc::clone(&logger),
+			&scorer, &(), &random_seed_bytes)
+		{
+			Err(LightningError { err, .. }) => {
+				assert_eq!(err, "0-hop blinded path provided");
+			},
+			_ => panic!("Expected error")
+		}
+	}
+
+	#[test]
+	fn matching_intro_node_paths_provided() {
+		// Check that if multiple blinded paths with the same intro node are provided in payment
+		// parameters, we'll return the correct paths in the resulting MPP route.
+		let (secp_ctx, network, _, _, logger) = build_graph();
+		let (_, our_id, _, nodes) = get_nodes(&secp_ctx);
+		let network_graph = network.read_only();
+
+		let scorer = ln_test_utils::TestScorer::new();
+		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
+		let random_seed_bytes = keys_manager.get_secure_random_bytes();
+		let config = UserConfig::default();
+
+		let bolt12_features: Bolt12InvoiceFeatures = channelmanager::provided_invoice_features(&config).to_context();
+		let blinded_path_1 = BlindedPath {
+			introduction_node_id: nodes[2],
+			blinding_point: ln_test_utils::pubkey(42),
+			blinded_hops: vec![
+				BlindedHop { blinded_node_id: ln_test_utils::pubkey(42 as u8), encrypted_payload: Vec::new() },
+				BlindedHop { blinded_node_id: ln_test_utils::pubkey(42 as u8), encrypted_payload: Vec::new() }
+			],
+		};
+		let blinded_payinfo_1 = BlindedPayInfo {
+			fee_base_msat: 0,
+			fee_proportional_millionths: 0,
+			htlc_minimum_msat: 0,
+			htlc_maximum_msat: 30_000,
+			cltv_expiry_delta: 0,
+			features: BlindedHopFeatures::empty(),
+		};
+
+		let mut blinded_path_2 = blinded_path_1.clone();
+		blinded_path_2.blinding_point = ln_test_utils::pubkey(43);
+		let mut blinded_payinfo_2 = blinded_payinfo_1.clone();
+		blinded_payinfo_2.htlc_maximum_msat = 70_000;
+
+		let blinded_hints = vec![
+			(blinded_payinfo_1.clone(), blinded_path_1.clone()),
+			(blinded_payinfo_2.clone(), blinded_path_2.clone()),
+		];
+		let payment_params = PaymentParameters::blinded(blinded_hints.clone())
+			.with_bolt12_features(bolt12_features.clone()).unwrap();
+
+		let route = get_route(&our_id, &payment_params, &network_graph, None,
+			100_000, Arc::clone(&logger), &scorer, &(), &random_seed_bytes).unwrap();
+		assert_eq!(route.paths.len(), 2);
+		let mut total_amount_paid_msat = 0;
+		for path in route.paths.into_iter() {
+			assert_eq!(path.hops.last().unwrap().pubkey, nodes[2]);
+			if let Some(bt) = &path.blinded_tail {
+				assert_eq!(bt.blinding_point,
+					blinded_hints.iter().find(|(p, _)| p.htlc_maximum_msat == path.final_value_msat())
+						.map(|(_, bp)| bp.blinding_point).unwrap());
+			} else { panic!(); }
+			total_amount_paid_msat += path.final_value_msat();
+		}
+		assert_eq!(total_amount_paid_msat, 100_000);
 	}
 }
 
