@@ -5289,7 +5289,9 @@ impl<SP: Deref> Channel<SP> where
 		}
 		self.context.resend_order = RAACommitmentOrder::RevokeAndACKFirst;
 
-		let (counterparty_commitment_txid, mut htlcs_ref) = self.build_commitment_no_state_update(logger);
+		let (mut htlcs_ref, counterparty_commitment_tx) =
+			self.build_commitment_no_state_update(logger);
+		let counterparty_commitment_txid = counterparty_commitment_tx.trust().txid();
 		let htlcs: Vec<(HTLCOutputInCommitment, Option<Box<HTLCSource>>)> =
 			htlcs_ref.drain(..).map(|(htlc, htlc_source)| (htlc, htlc_source.map(|source_ref| Box::new(source_ref.clone())))).collect();
 
@@ -5304,17 +5306,23 @@ impl<SP: Deref> Channel<SP> where
 				commitment_txid: counterparty_commitment_txid,
 				htlc_outputs: htlcs.clone(),
 				commitment_number: self.context.cur_counterparty_commitment_transaction_number,
-				their_per_commitment_point: self.context.counterparty_cur_commitment_point.unwrap()
+				their_per_commitment_point: self.context.counterparty_cur_commitment_point.unwrap(),
+				feerate_per_kw: Some(counterparty_commitment_tx.feerate_per_kw()),
+				to_broadcaster_value_sat: Some(counterparty_commitment_tx.to_broadcaster_value_sat()),
+				to_countersignatory_value_sat: Some(counterparty_commitment_tx.to_countersignatory_value_sat()),
 			}]
 		};
 		self.context.channel_state |= ChannelState::AwaitingRemoteRevoke as u32;
 		monitor_update
 	}
 
-	fn build_commitment_no_state_update<L: Deref>(&self, logger: &L) -> (Txid, Vec<(HTLCOutputInCommitment, Option<&HTLCSource>)>) where L::Target: Logger {
+	fn build_commitment_no_state_update<L: Deref>(&self, logger: &L)
+	-> (Vec<(HTLCOutputInCommitment, Option<&HTLCSource>)>, CommitmentTransaction)
+	where L::Target: Logger
+	{
 		let counterparty_keys = self.context.build_remote_transaction_keys();
 		let commitment_stats = self.context.build_commitment_transaction(self.context.cur_counterparty_commitment_transaction_number, &counterparty_keys, false, true, logger);
-		let counterparty_commitment_txid = commitment_stats.tx.trust().txid();
+		let counterparty_commitment_tx = commitment_stats.tx;
 
 		#[cfg(any(test, fuzzing))]
 		{
@@ -5334,7 +5342,7 @@ impl<SP: Deref> Channel<SP> where
 			}
 		}
 
-		(counterparty_commitment_txid, commitment_stats.htlcs_included)
+		(commitment_stats.htlcs_included, counterparty_commitment_tx)
 	}
 
 	/// Only fails in case of signer rejection. Used for channel_reestablish commitment_signed

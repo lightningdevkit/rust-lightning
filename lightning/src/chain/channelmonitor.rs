@@ -502,6 +502,9 @@ pub(crate) enum ChannelMonitorUpdateStep {
 		htlc_outputs: Vec<(HTLCOutputInCommitment, Option<Box<HTLCSource>>)>,
 		commitment_number: u64,
 		their_per_commitment_point: PublicKey,
+		feerate_per_kw: Option<u32>,
+		to_broadcaster_value_sat: Option<u64>,
+		to_countersignatory_value_sat: Option<u64>,
 	},
 	PaymentPreimage {
 		payment_preimage: PaymentPreimage,
@@ -544,8 +547,11 @@ impl_writeable_tlv_based_enum_upgradable!(ChannelMonitorUpdateStep,
 	},
 	(1, LatestCounterpartyCommitmentTXInfo) => {
 		(0, commitment_txid, required),
+		(1, feerate_per_kw, option),
 		(2, commitment_number, required),
+		(3, to_broadcaster_value_sat, option),
 		(4, their_per_commitment_point, required),
+		(5, to_countersignatory_value_sat, option),
 		(6, htlc_outputs, required_vec),
 	},
 	(2, PaymentPreimage) => {
@@ -2471,7 +2477,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 						ret = Err(());
 					}
 				}
-				ChannelMonitorUpdateStep::LatestCounterpartyCommitmentTXInfo { commitment_txid, htlc_outputs, commitment_number, their_per_commitment_point } => {
+				ChannelMonitorUpdateStep::LatestCounterpartyCommitmentTXInfo { commitment_txid, htlc_outputs, commitment_number, their_per_commitment_point, .. } => {
 					log_trace!(logger, "Updating ChannelMonitor with latest counterparty commitment transaction info");
 					self.provide_latest_counterparty_commitment_tx(*commitment_txid, htlc_outputs.clone(), *commitment_number, *their_per_commitment_point, logger)
 				},
