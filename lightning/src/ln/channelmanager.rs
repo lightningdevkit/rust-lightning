@@ -213,6 +213,8 @@ struct ClaimableHTLC {
 	total_value_received: Option<u64>,
 	/// The sender intended sum total of all MPP parts specified in the onion
 	total_msat: u64,
+	/// The extra fee our counterparty skimmed off the top of this HTLC.
+	counterparty_skimmed_fee_msat: Option<u64>,
 }
 
 /// A payment identifier used to uniquely identify a payment to LDK.
@@ -3782,7 +3784,8 @@ where
 							HTLCForwardInfo::AddHTLC(PendingAddHTLCInfo {
 								prev_short_channel_id, prev_htlc_id, prev_funding_outpoint, prev_user_channel_id,
 								forward_info: PendingHTLCInfo {
-									routing, incoming_shared_secret, payment_hash, incoming_amt_msat, outgoing_amt_msat, ..
+									routing, incoming_shared_secret, payment_hash, incoming_amt_msat, outgoing_amt_msat,
+									skimmed_fee_msat, ..
 								}
 							}) => {
 								let (cltv_expiry, onion_payload, payment_data, phantom_shared_secret, mut onion_fields) = match routing {
@@ -3823,6 +3826,7 @@ where
 									total_msat: if let Some(data) = &payment_data { data.total_msat } else { outgoing_amt_msat },
 									cltv_expiry,
 									onion_payload,
+									counterparty_skimmed_fee_msat: skimmed_fee_msat,
 								};
 
 								let mut committed_to_claimable = false;
@@ -7558,6 +7562,7 @@ impl Writeable for ClaimableHTLC {
 			(5, self.total_value_received, option),
 			(6, self.cltv_expiry, required),
 			(8, keysend_preimage, option),
+			(10, self.counterparty_skimmed_fee_msat, option),
 		});
 		Ok(())
 	}
@@ -7565,24 +7570,19 @@ impl Writeable for ClaimableHTLC {
 
 impl Readable for ClaimableHTLC {
 	fn read<R: Read>(reader: &mut R) -> Result<Self, DecodeError> {
-		let mut prev_hop = crate::util::ser::RequiredWrapper(None);
-		let mut value = 0;
-		let mut sender_intended_value = None;
-		let mut payment_data: Option<msgs::FinalOnionHopData> = None;
-		let mut cltv_expiry = 0;
-		let mut total_value_received = None;
-		let mut total_msat = None;
-		let mut keysend_preimage: Option<PaymentPreimage> = None;
-		read_tlv_fields!(reader, {
+		_init_and_read_tlv_fields!(reader, {
 			(0, prev_hop, required),
 			(1, total_msat, option),
-			(2, value, required),
+			(2, value_ser, required),
 			(3, sender_intended_value, option),
-			(4, payment_data, option),
+			(4, payment_data_opt, option),
 			(5, total_value_received, option),
 			(6, cltv_expiry, required),
-			(8, keysend_preimage, option)
+			(8, keysend_preimage, option),
+			(10, counterparty_skimmed_fee_msat, option),
 		});
+		let payment_data: Option<msgs::FinalOnionHopData> = payment_data_opt;
+		let value = value_ser.0.unwrap();
 		let onion_payload = match keysend_preimage {
 			Some(p) => {
 				if payment_data.is_some() {
@@ -7611,7 +7611,8 @@ impl Readable for ClaimableHTLC {
 			total_value_received,
 			total_msat: total_msat.unwrap(),
 			onion_payload,
-			cltv_expiry,
+			cltv_expiry: cltv_expiry.0.unwrap(),
+			counterparty_skimmed_fee_msat,
 		})
 	}
 }
