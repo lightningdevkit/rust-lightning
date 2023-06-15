@@ -387,7 +387,8 @@ pub enum Event {
 		///
 		/// Payments received on LDK versions prior to 0.0.115 will have this field unset.
 		onion_fields: Option<RecipientOnionFields>,
-		/// The value, in thousandths of a satoshi, that this payment is claimable for.
+		/// The value, in thousandths of a satoshi, that this payment is claimable for. May be greater
+		/// than the invoice amount.
 		///
 		/// May be less than the invoice amount if [`ChannelConfig::accept_underpaying_htlcs`] is set
 		/// and the previous hop took an extra fee.
@@ -446,7 +447,8 @@ pub enum Event {
 		/// The payment hash of the claimed payment. Note that LDK will not stop you from
 		/// registering duplicate payment hashes for inbound payments.
 		payment_hash: PaymentHash,
-		/// The value, in thousandths of a satoshi, that this payment is for.
+		/// The value, in thousandths of a satoshi, that this payment is for. May be greater than the
+		/// invoice amount.
 		amount_msat: u64,
 		/// The purpose of the claimed payment, i.e. whether the payment was for an invoice or a
 		/// spontaneous payment.
