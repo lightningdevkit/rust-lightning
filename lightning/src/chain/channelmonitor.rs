@@ -31,7 +31,7 @@ use bitcoin::hash_types::{Txid, BlockHash, WPubkeyHash};
 
 use bitcoin::secp256k1::{Secp256k1, ecdsa::Signature};
 use bitcoin::secp256k1::{SecretKey, PublicKey};
-use bitcoin::secp256k1;
+use bitcoin::{secp256k1, EcdsaSighashType};
 
 use crate::ln::channel::INITIAL_COMMITMENT_NUMBER;
 use crate::ln::{PaymentHash, PaymentPreimage};
@@ -1430,7 +1430,8 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 	/// This is provided so that watchtower clients in the persistence pipeline are able to build
 	/// justice transactions for each counterparty commitment upon each update. It's intended to be
 	/// used within an implementation of [`Persist::update_persisted_channel`], which is provided
-	/// with a monitor and an update.
+	/// with a monitor and an update. Once revoked, signing a justice transaction can be done using
+	/// [`Self::sign_to_local_justice_tx`].
 	///
 	/// It is expected that a watchtower client may use this method to retrieve the latest counterparty
 	/// commitment transaction(s), and then hold the necessary data until a later update in which
@@ -1444,6 +1445,27 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 	/// [`Persist::update_persisted_channel`]: crate::chain::chainmonitor::Persist::update_persisted_channel
 	pub fn counterparty_commitment_txs_from_update(&self, update: &ChannelMonitorUpdate) -> Vec<CommitmentTransaction> {
 		self.inner.lock().unwrap().counterparty_commitment_txs_from_update(update)
+	}
+
+	/// Wrapper around [`EcdsaChannelSigner::sign_justice_revoked_output`] to make
+	/// signing the justice transaction easier for implementors of
+	/// [`chain::chainmonitor::Persist`]. On success this method returns the provided transaction
+	/// signing the input at `input_idx`. This method will only produce a valid signature for
+	/// a transaction spending the `to_local` output of a commitment transaction, i.e. this cannot
+	/// be used for revoked HTLC outputs.
+	///
+	/// `Value` is the value of the output being spent by the input at `input_idx`, committed
+	/// in the BIP 143 signature.
+	///
+	/// This method will only succeed if this monitor has received the revocation secret for the
+	/// provided `commitment_number`. If a commitment number is provided that does not correspond
+	/// to the commitment transaction being revoked, this will return a signed transaction, but
+	/// the signature will not be valid.
+	///
+	/// [`EcdsaChannelSigner::sign_justice_revoked_output`]: crate::sign::EcdsaChannelSigner::sign_justice_revoked_output
+	/// [`Persist`]: crate::chain::chainmonitor::Persist
+	pub fn sign_to_local_justice_tx(&self, justice_tx: Transaction, input_idx: usize, value: u64, commitment_number: u64) -> Result<Transaction, ()> {
+		self.inner.lock().unwrap().sign_to_local_justice_tx(justice_tx, input_idx, value, commitment_number)
 	}
 
 	pub(crate) fn get_min_seen_secret(&self) -> u64 {
@@ -2808,6 +2830,31 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				_ => None,
 			}
 		}).collect()
+	}
+
+	pub(crate) fn sign_to_local_justice_tx(
+		&self, mut justice_tx: Transaction, input_idx: usize, value: u64, commitment_number: u64
+	) -> Result<Transaction, ()> {
+		let secret = self.get_secret(commitment_number).ok_or(())?;
+		let per_commitment_key = SecretKey::from_slice(&secret).map_err(|_| ())?;
+		let their_per_commitment_point = PublicKey::from_secret_key(
+			&self.onchain_tx_handler.secp_ctx, &per_commitment_key);
+
+		let revocation_pubkey = chan_utils::derive_public_revocation_key(
+			&self.onchain_tx_handler.secp_ctx, &their_per_commitment_point,
+			&self.holder_revocation_basepoint);
+		let delayed_key = chan_utils::derive_public_key(&self.onchain_tx_handler.secp_ctx,
+			&their_per_commitment_point,
+			&self.counterparty_commitment_params.counterparty_delayed_payment_base_key);
+		let revokeable_redeemscript = chan_utils::get_revokeable_redeemscript(&revocation_pubkey,
+			self.counterparty_commitment_params.on_counterparty_tx_csv, &delayed_key);
+
+		let sig = self.onchain_tx_handler.signer.sign_justice_revoked_output(
+			&justice_tx, input_idx, value, &per_commitment_key, &self.onchain_tx_handler.secp_ctx)?;
+		justice_tx.input[input_idx].witness.push_bitcoin_signature(&sig.serialize_der(), EcdsaSighashType::All);
+		justice_tx.input[input_idx].witness.push(&[1u8]);
+		justice_tx.input[input_idx].witness.push(revokeable_redeemscript.as_bytes());
+		Ok(justice_tx)
 	}
 
 	/// Can only fail if idx is < get_min_seen_secret
