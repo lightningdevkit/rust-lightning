@@ -2333,47 +2333,38 @@ where L::Target: Logger {
 		}
 	}
 
-	let mut selected_paths = Vec::<Vec<Result<RouteHop, LightningError>>>::new();
+	let mut paths = Vec::new();
 	for payment_path in selected_route {
-		let mut path = payment_path.hops.iter().filter(|(h, _)| h.candidate.short_channel_id().is_some())
-			.map(|(payment_hop, node_features)| {
-				Ok(RouteHop {
-					pubkey: PublicKey::from_slice(payment_hop.node_id.as_slice()).map_err(|_| LightningError{err: format!("Public key {:?} is invalid", &payment_hop.node_id), action: ErrorAction::IgnoreAndLog(Level::Trace)})?,
-					node_features: node_features.clone(),
-					short_channel_id: payment_hop.candidate.short_channel_id().unwrap(),
-					channel_features: payment_hop.candidate.features(),
-					fee_msat: payment_hop.fee_msat,
-					cltv_expiry_delta: payment_hop.candidate.cltv_expiry_delta(),
-				})
-		}).collect::<Vec<_>>();
+		let mut hops = Vec::with_capacity(payment_path.hops.len());
+		for (hop, node_features) in payment_path.hops.iter()
+			.filter(|(h, _)| h.candidate.short_channel_id().is_some())
+		{
+			hops.push(RouteHop {
+				pubkey: PublicKey::from_slice(hop.node_id.as_slice()).map_err(|_| LightningError{err: format!("Public key {:?} is invalid", &hop.node_id), action: ErrorAction::IgnoreAndLog(Level::Trace)})?,
+				node_features: node_features.clone(),
+				short_channel_id: hop.candidate.short_channel_id().unwrap(),
+				channel_features: hop.candidate.features(),
+				fee_msat: hop.fee_msat,
+				cltv_expiry_delta: hop.candidate.cltv_expiry_delta(),
+			});
+		}
 		// Propagate the cltv_expiry_delta one hop backwards since the delta from the current hop is
 		// applicable for the previous hop.
-		path.iter_mut().rev().fold(final_cltv_expiry_delta, |prev_cltv_expiry_delta, hop| {
-			core::mem::replace(&mut hop.as_mut().unwrap().cltv_expiry_delta, prev_cltv_expiry_delta)
+		hops.iter_mut().rev().fold(final_cltv_expiry_delta, |prev_cltv_expiry_delta, hop| {
+			core::mem::replace(&mut hop.cltv_expiry_delta, prev_cltv_expiry_delta)
 		});
-		selected_paths.push(path);
+		paths.push(Path { hops, blinded_tail: None });
 	}
 	// Make sure we would never create a route with more paths than we allow.
-	debug_assert!(selected_paths.len() <= payment_params.max_path_count.into());
+	debug_assert!(paths.len() <= payment_params.max_path_count.into());
 
 	if let Some(node_features) = payment_params.payee.node_features() {
-		for path in selected_paths.iter_mut() {
-			if let Ok(route_hop) = path.last_mut().unwrap() {
-				route_hop.node_features = node_features.clone();
-			}
+		for path in paths.iter_mut() {
+			path.hops.last_mut().unwrap().node_features = node_features.clone();
 		}
 	}
 
-	let mut paths: Vec<Path> = Vec::new();
-	for results_vec in selected_paths {
-		let mut hops = Vec::with_capacity(results_vec.len());
-		for res in results_vec { hops.push(res?); }
-		paths.push(Path { hops, blinded_tail: None });
-	}
-	let route = Route {
-		paths,
-		payment_params: Some(payment_params.clone()),
-	};
+	let route = Route { paths, payment_params: Some(payment_params.clone()) };
 	log_info!(logger, "Got route: {}", log_route!(route));
 	Ok(route)
 }
