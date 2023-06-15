@@ -623,6 +623,7 @@ pub enum Event {
 		inbound_amount_msat: u64,
 		/// How many msats the payer intended to route to the next node. Depending on the reason you are
 		/// intercepting this payment, you might take a fee by forwarding less than this amount.
+		/// Forwarding less than this amount may break compatibility with LDK versions prior to 0.0.116.
 		///
 		/// Note that LDK will NOT check that expected fees were factored into this value. You MUST
 		/// check that whatever fee you want has been included here or subtract it as required. Further,

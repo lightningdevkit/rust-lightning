@@ -131,6 +131,9 @@ pub(super) struct PendingHTLCInfo {
 	/// may overshoot this in either case)
 	pub(super) outgoing_amt_msat: u64,
 	pub(super) outgoing_cltv_value: u32,
+	/// The fee being skimmed off the top of this HTLC. If this is a forward, it'll be the fee we are
+	/// skimming. If we're receiving this HTLC, it's the fee that our counterparty skimmed.
+	pub(super) skimmed_fee_msat: Option<u64>,
 }
 
 #[derive(Clone)] // See Channel::revoke_and_ack for why, tl;dr: Rust bug
@@ -2616,6 +2619,7 @@ where
 			incoming_amt_msat: Some(amt_msat),
 			outgoing_amt_msat: hop_data.amt_to_forward,
 			outgoing_cltv_value: hop_data.outgoing_cltv_value,
+			skimmed_fee_msat: None,
 		})
 	}
 
@@ -2890,6 +2894,7 @@ where
 					incoming_amt_msat: Some(msg.amount_msat),
 					outgoing_amt_msat: next_hop_data.amt_to_forward,
 					outgoing_cltv_value: next_hop_data.outgoing_cltv_value,
+					skimmed_fee_msat: None,
 				})
 			}
 		}
@@ -3485,13 +3490,16 @@ where
 	/// [`ChannelManager::fail_intercepted_htlc`] MUST be called in response to the event.
 	///
 	/// Note that LDK does not enforce fee requirements in `amt_to_forward_msat`, and will not stop
-	/// you from forwarding more than you received.
+	/// you from forwarding more than you received. See
+	/// [`HTLCIntercepted::expected_outbound_amount_msat`] for more on forwarding a different amount
+	/// than expected.
 	///
 	/// Errors if the event was not handled in time, in which case the HTLC was automatically failed
 	/// backwards.
 	///
 	/// [`UserConfig::accept_intercept_htlcs`]: crate::util::config::UserConfig::accept_intercept_htlcs
 	/// [`HTLCIntercepted`]: events::Event::HTLCIntercepted
+	/// [`HTLCIntercepted::expected_outbound_amount_msat`]: events::Event::HTLCIntercepted::expected_outbound_amount_msat
 	// TODO: when we move to deciding the best outbound channel at forward time, only take
 	// `next_node_id` and not `next_hop_channel_id`
 	pub fn forward_intercepted_htlc(&self, intercept_id: InterceptId, next_hop_channel_id: &[u8; 32], next_node_id: PublicKey, amt_to_forward_msat: u64) -> Result<(), APIError> {
@@ -3530,7 +3538,10 @@ where
 			},
 			_ => unreachable!() // Only `PendingHTLCRouting::Forward`s are intercepted
 		};
+		let skimmed_fee_msat =
+			payment.forward_info.outgoing_amt_msat.saturating_sub(amt_to_forward_msat);
 		let pending_htlc_info = PendingHTLCInfo {
+			skimmed_fee_msat: if skimmed_fee_msat == 0 { None } else { Some(skimmed_fee_msat) },
 			outgoing_amt_msat: amt_to_forward_msat, routing, ..payment.forward_info
 		};
 
@@ -3600,7 +3611,7 @@ where
 										prev_short_channel_id, prev_htlc_id, prev_funding_outpoint, prev_user_channel_id,
 										forward_info: PendingHTLCInfo {
 											routing, incoming_shared_secret, payment_hash, outgoing_amt_msat,
-											outgoing_cltv_value, incoming_amt_msat: _
+											outgoing_cltv_value, ..
 										}
 									}) => {
 										macro_rules! failure_handler {
@@ -3713,7 +3724,7 @@ where
 										prev_short_channel_id, prev_htlc_id, prev_funding_outpoint, prev_user_channel_id: _,
 										forward_info: PendingHTLCInfo {
 											incoming_shared_secret, payment_hash, outgoing_amt_msat, outgoing_cltv_value,
-											routing: PendingHTLCRouting::Forward { onion_packet, .. }, incoming_amt_msat: _,
+											routing: PendingHTLCRouting::Forward { onion_packet, .. }, ..
 										},
 									}) => {
 										log_trace!(self.logger, "Adding HTLC from short id {} with payment_hash {} to channel with short id {} after delay", prev_short_channel_id, log_bytes!(payment_hash.0), short_chan_id);
@@ -7448,6 +7459,7 @@ impl_writeable_tlv_based!(PendingHTLCInfo, {
 	(6, outgoing_amt_msat, required),
 	(8, outgoing_cltv_value, required),
 	(9, incoming_amt_msat, option),
+	(10, skimmed_fee_msat, option),
 });
 
 
