@@ -424,6 +424,24 @@ pub struct InvoiceRequest {
 	signature: Signature,
 }
 
+/// An [`InvoiceRequest`] that has been verified by [`InvoiceRequest::verify`] and exposes different
+/// ways to respond depending on whether the signing keys were derived.
+#[derive(Clone, Debug)]
+pub struct VerifiedInvoiceRequest {
+	/// The verified request.
+	inner: InvoiceRequest,
+
+	/// Keys used for signing a [`Bolt12Invoice`] if they can be derived.
+	///
+	/// If `Some`, must call [`respond_using_derived_keys`] when responding. Otherwise, call
+	/// [`respond_with`].
+	///
+	/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
+	/// [`respond_using_derived_keys`]: Self::respond_using_derived_keys
+	/// [`respond_with`]: Self::respond_with
+	pub keys: Option<KeyPair>,
+}
+
 /// The contents of an [`InvoiceRequest`], which may be shared with an [`Bolt12Invoice`].
 ///
 /// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
@@ -542,9 +560,15 @@ impl InvoiceRequest {
 	///
 	/// Errors if the request contains unknown required features.
 	///
+	/// # Note
+	///
+	/// If the originating [`Offer`] was created using [`OfferBuilder::deriving_signing_pubkey`],
+	/// then use [`InvoiceRequest::verify`] and [`VerifiedInvoiceRequest`] methods instead.
+	///
 	/// This is not exported to bindings users as builder patterns don't map outside of move semantics.
 	///
 	/// [`Bolt12Invoice::created_at`]: crate::offers::invoice::Bolt12Invoice::created_at
+	/// [`OfferBuilder::deriving_signing_pubkey`]: crate::offers::offer::OfferBuilder::deriving_signing_pubkey
 	pub fn respond_with_no_std(
 		&self, payment_paths: Vec<(BlindedPayInfo, BlindedPath)>, payment_hash: PaymentHash,
 		created_at: core::time::Duration
@@ -554,6 +578,63 @@ impl InvoiceRequest {
 		}
 
 		InvoiceBuilder::for_offer(self, payment_paths, created_at, payment_hash)
+	}
+
+	/// Verifies that the request was for an offer created using the given key. Returns the verified
+	/// request which contains the derived keys needed to sign a [`Bolt12Invoice`] for the request
+	/// if they could be extracted from the metadata.
+	///
+	/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
+	pub fn verify<T: secp256k1::Signing>(
+		self, key: &ExpandedKey, secp_ctx: &Secp256k1<T>
+	) -> Result<VerifiedInvoiceRequest, ()> {
+		let keys = self.contents.inner.offer.verify(&self.bytes, key, secp_ctx)?;
+		Ok(VerifiedInvoiceRequest {
+			inner: self,
+			keys,
+		})
+	}
+
+	#[cfg(test)]
+	fn as_tlv_stream(&self) -> FullInvoiceRequestTlvStreamRef {
+		let (payer_tlv_stream, offer_tlv_stream, invoice_request_tlv_stream) =
+			self.contents.as_tlv_stream();
+		let signature_tlv_stream = SignatureTlvStreamRef {
+			signature: Some(&self.signature),
+		};
+		(payer_tlv_stream, offer_tlv_stream, invoice_request_tlv_stream, signature_tlv_stream)
+	}
+}
+
+impl VerifiedInvoiceRequest {
+	offer_accessors!(self, self.inner.contents.inner.offer);
+	invoice_request_accessors!(self, self.inner.contents);
+
+	/// Creates an [`InvoiceBuilder`] for the request with the given required fields and using the
+	/// [`Duration`] since [`std::time::SystemTime::UNIX_EPOCH`] as the creation time.
+	///
+	/// See [`InvoiceRequest::respond_with_no_std`] for further details.
+	///
+	/// This is not exported to bindings users as builder patterns don't map outside of move semantics.
+	///
+	/// [`Duration`]: core::time::Duration
+	#[cfg(feature = "std")]
+	pub fn respond_with(
+		&self, payment_paths: Vec<(BlindedPayInfo, BlindedPath)>, payment_hash: PaymentHash
+	) -> Result<InvoiceBuilder<ExplicitSigningPubkey>, Bolt12SemanticError> {
+		self.inner.respond_with(payment_paths, payment_hash)
+	}
+
+	/// Creates an [`InvoiceBuilder`] for the request with the given required fields.
+	///
+	/// See [`InvoiceRequest::respond_with_no_std`] for further details.
+	///
+	/// This is not exported to bindings users as builder patterns don't map outside of move semantics.
+	pub fn respond_with_no_std(
+		&self, payment_paths: Vec<(BlindedPayInfo, BlindedPath)>, payment_hash: PaymentHash,
+		created_at: core::time::Duration
+	) -> Result<InvoiceBuilder<ExplicitSigningPubkey>, Bolt12SemanticError> {
+		self.inner.respond_with_no_std(payment_paths, payment_hash, created_at)
 	}
 
 	/// Creates an [`InvoiceBuilder`] for the request using the given required fields and that uses
@@ -566,17 +647,14 @@ impl InvoiceRequest {
 	///
 	/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
 	#[cfg(feature = "std")]
-	pub fn verify_and_respond_using_derived_keys<T: secp256k1::Signing>(
-		&self, payment_paths: Vec<(BlindedPayInfo, BlindedPath)>, payment_hash: PaymentHash,
-		expanded_key: &ExpandedKey, secp_ctx: &Secp256k1<T>
+	pub fn respond_using_derived_keys(
+		&self, payment_paths: Vec<(BlindedPayInfo, BlindedPath)>, payment_hash: PaymentHash
 	) -> Result<InvoiceBuilder<DerivedSigningPubkey>, Bolt12SemanticError> {
 		let created_at = std::time::SystemTime::now()
 			.duration_since(std::time::SystemTime::UNIX_EPOCH)
 			.expect("SystemTime::now() should come after SystemTime::UNIX_EPOCH");
 
-		self.verify_and_respond_using_derived_keys_no_std(
-			payment_paths, payment_hash, created_at, expanded_key, secp_ctx
-		)
+		self.respond_using_derived_keys_no_std(payment_paths, payment_hash, created_at)
 	}
 
 	/// Creates an [`InvoiceBuilder`] for the request using the given required fields and that uses
@@ -588,42 +666,22 @@ impl InvoiceRequest {
 	/// This is not exported to bindings users as builder patterns don't map outside of move semantics.
 	///
 	/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
-	pub fn verify_and_respond_using_derived_keys_no_std<T: secp256k1::Signing>(
+	pub fn respond_using_derived_keys_no_std(
 		&self, payment_paths: Vec<(BlindedPayInfo, BlindedPath)>, payment_hash: PaymentHash,
-		created_at: core::time::Duration, expanded_key: &ExpandedKey, secp_ctx: &Secp256k1<T>
+		created_at: core::time::Duration
 	) -> Result<InvoiceBuilder<DerivedSigningPubkey>, Bolt12SemanticError> {
-		if self.invoice_request_features().requires_unknown_bits() {
+		if self.inner.invoice_request_features().requires_unknown_bits() {
 			return Err(Bolt12SemanticError::UnknownRequiredFeatures);
 		}
 
-		let keys = match self.verify(expanded_key, secp_ctx) {
-			Err(()) => return Err(Bolt12SemanticError::InvalidMetadata),
-			Ok(None) => return Err(Bolt12SemanticError::InvalidMetadata),
-			Ok(Some(keys)) => keys,
+		let keys = match self.keys {
+			None => return Err(Bolt12SemanticError::InvalidMetadata),
+			Some(keys) => keys,
 		};
 
-		InvoiceBuilder::for_offer_using_keys(self, payment_paths, created_at, payment_hash, keys)
-	}
-
-	/// Verifies that the request was for an offer created using the given key. Returns the derived
-	/// keys need to sign an [`Bolt12Invoice`] for the request if they could be extracted from the
-	/// metadata.
-	///
-	/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
-	pub fn verify<T: secp256k1::Signing>(
-		&self, key: &ExpandedKey, secp_ctx: &Secp256k1<T>
-	) -> Result<Option<KeyPair>, ()> {
-		self.contents.inner.offer.verify(&self.bytes, key, secp_ctx)
-	}
-
-	#[cfg(test)]
-	fn as_tlv_stream(&self) -> FullInvoiceRequestTlvStreamRef {
-		let (payer_tlv_stream, offer_tlv_stream, invoice_request_tlv_stream) =
-			self.contents.as_tlv_stream();
-		let signature_tlv_stream = SignatureTlvStreamRef {
-			signature: Some(&self.signature),
-		};
-		(payer_tlv_stream, offer_tlv_stream, invoice_request_tlv_stream, signature_tlv_stream)
+		InvoiceBuilder::for_offer_using_keys(
+			&self.inner, payment_paths, created_at, payment_hash, keys
+		)
 	}
 }
 

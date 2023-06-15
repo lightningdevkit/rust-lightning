@@ -1642,36 +1642,31 @@ mod tests {
 			.build().unwrap()
 			.sign(payer_sign).unwrap();
 
-		if let Err(e) = invoice_request
-			.verify_and_respond_using_derived_keys_no_std(
-				payment_paths(), payment_hash(), now(), &expanded_key, &secp_ctx
-			)
-			.unwrap()
+		if let Err(e) = invoice_request.clone()
+			.verify(&expanded_key, &secp_ctx).unwrap()
+			.respond_using_derived_keys_no_std(payment_paths(), payment_hash(), now()).unwrap()
 			.build_and_sign(&secp_ctx)
 		{
 			panic!("error building invoice: {:?}", e);
 		}
 
 		let expanded_key = ExpandedKey::new(&KeyMaterial([41; 32]));
-		match invoice_request.verify_and_respond_using_derived_keys_no_std(
-			payment_paths(), payment_hash(), now(), &expanded_key, &secp_ctx
-		) {
-			Ok(_) => panic!("expected error"),
-			Err(e) => assert_eq!(e, Bolt12SemanticError::InvalidMetadata),
-		}
+		assert!(invoice_request.verify(&expanded_key, &secp_ctx).is_err());
 
 		let desc = "foo".to_string();
 		let offer = OfferBuilder
 			::deriving_signing_pubkey(desc, node_id, &expanded_key, &entropy, &secp_ctx)
 			.amount_msats(1000)
+			// Omit the path so that node_id is used for the signing pubkey instead of deriving
 			.build().unwrap();
 		let invoice_request = offer.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
 			.build().unwrap()
 			.sign(payer_sign).unwrap();
 
-		match invoice_request.verify_and_respond_using_derived_keys_no_std(
-			payment_paths(), payment_hash(), now(), &expanded_key, &secp_ctx
-		) {
+		match invoice_request
+			.verify(&expanded_key, &secp_ctx).unwrap()
+			.respond_using_derived_keys_no_std(payment_paths(), payment_hash(), now())
+		{
 			Ok(_) => panic!("expected error"),
 			Err(e) => assert_eq!(e, Bolt12SemanticError::InvalidMetadata),
 		}
