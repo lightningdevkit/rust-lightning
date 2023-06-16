@@ -15,7 +15,9 @@ use bitcoin::hashes::hmac::{Hmac, HmacEngine};
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::secp256k1::{self, PublicKey, Scalar, Secp256k1, SecretKey};
 
-use crate::blinded_path::{BlindedPath, ForwardTlvs, ReceiveTlvs, utils};
+use crate::blinded_path::BlindedPath;
+use crate::blinded_path::message::{ForwardTlvs, ReceiveTlvs};
+use crate::blinded_path::utils;
 use crate::sign::{EntropySource, KeysManager, NodeSigner, Recipient};
 use crate::events::OnionMessageProvider;
 use crate::ln::features::{InitFeatures, NodeFeatures};

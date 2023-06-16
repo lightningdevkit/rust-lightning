@@ -12,7 +12,8 @@
 use bitcoin::secp256k1::PublicKey;
 use bitcoin::secp256k1::ecdh::SharedSecret;
 
-use crate::blinded_path::{BlindedPath, ForwardTlvs, ReceiveTlvs};
+use crate::blinded_path::BlindedPath;
+use crate::blinded_path::message::{ForwardTlvs, ReceiveTlvs};
 use crate::ln::msgs::DecodeError;
 use crate::ln::onion_utils;
 use super::messenger::CustomOnionMessageHandler;
@@ -151,7 +152,8 @@ pub(super) enum ForwardControlTlvs {
 	Blinded(Vec<u8>),
 	/// If we're constructing an onion message hop through an intermediate unblinded node, we'll need
 	/// to construct the intermediate hop's control TLVs in their unblinded state to avoid encoding
-	/// them into an intermediate Vec. See [`crate::blinded_path::ForwardTlvs`] for more info.
+	/// them into an intermediate Vec. See [`crate::blinded_path::message::ForwardTlvs`] for more
+	/// info.
 	Unblinded(ForwardTlvs),
 }
 
@@ -159,7 +161,7 @@ pub(super) enum ForwardControlTlvs {
 pub(super) enum ReceiveControlTlvs {
 	/// See [`ForwardControlTlvs::Blinded`].
 	Blinded(Vec<u8>),
-	/// See [`ForwardControlTlvs::Unblinded`] and [`crate::blinded_path::ReceiveTlvs`].
+	/// See [`ForwardControlTlvs::Unblinded`] and [`crate::blinded_path::message::ReceiveTlvs`].
 	Unblinded(ReceiveTlvs),
 }
 
