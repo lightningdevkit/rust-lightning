@@ -97,7 +97,7 @@ fn build_response<'a, T: secp256k1::Signing + secp256k1::Verification>(
 		},
 	];
 
-	let payment_paths = paths.into_iter().zip(payinfo.into_iter()).collect();
+	let payment_paths = payinfo.into_iter().zip(paths.into_iter()).collect();
 	let payment_hash = PaymentHash([42; 32]);
 	invoice_request.respond_with(payment_paths, payment_hash)?.build()
 }

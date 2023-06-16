@@ -58,7 +58,7 @@ pub(super) fn privkey(byte: u8) -> SecretKey {
 	SecretKey::from_slice(&[byte; 32]).unwrap()
 }
 
-pub(super) fn payment_paths() -> Vec<(BlindedPath, BlindedPayInfo)> {
+pub(super) fn payment_paths() -> Vec<(BlindedPayInfo, BlindedPath)> {
 	let paths = vec![
 		BlindedPath {
 			introduction_node_id: pubkey(40),
@@ -97,7 +97,7 @@ pub(super) fn payment_paths() -> Vec<(BlindedPath, BlindedPayInfo)> {
 		},
 	];
 
-	paths.into_iter().zip(payinfo.into_iter()).collect()
+	payinfo.into_iter().zip(paths.into_iter()).collect()
 }
 
 pub(super) fn payment_hash() -> PaymentHash {

@@ -31,7 +31,7 @@
 //! # use lightning::offers::invoice::BlindedPayInfo;
 //! # use lightning::blinded_path::BlindedPath;
 //! #
-//! # fn create_payment_paths() -> Vec<(BlindedPath, BlindedPayInfo)> { unimplemented!() }
+//! # fn create_payment_paths() -> Vec<(BlindedPayInfo, BlindedPath)> { unimplemented!() }
 //! # fn create_payment_hash() -> PaymentHash { unimplemented!() }
 //! #
 //! # fn parse_invoice_request(bytes: Vec<u8>) -> Result<(), lightning::offers::parse::ParseError> {
@@ -166,7 +166,7 @@ impl SigningPubkeyStrategy for DerivedSigningPubkey {}
 
 impl<'a> InvoiceBuilder<'a, ExplicitSigningPubkey> {
 	pub(super) fn for_offer(
-		invoice_request: &'a InvoiceRequest, payment_paths: Vec<(BlindedPath, BlindedPayInfo)>,
+		invoice_request: &'a InvoiceRequest, payment_paths: Vec<(BlindedPayInfo, BlindedPath)>,
 		created_at: Duration, payment_hash: PaymentHash
 	) -> Result<Self, SemanticError> {
 		let amount_msats = Self::check_amount_msats(invoice_request)?;
@@ -182,7 +182,7 @@ impl<'a> InvoiceBuilder<'a, ExplicitSigningPubkey> {
 	}
 
 	pub(super) fn for_refund(
-		refund: &'a Refund, payment_paths: Vec<(BlindedPath, BlindedPayInfo)>, created_at: Duration,
+		refund: &'a Refund, payment_paths: Vec<(BlindedPayInfo, BlindedPath)>, created_at: Duration,
 		payment_hash: PaymentHash, signing_pubkey: PublicKey
 	) -> Result<Self, SemanticError> {
 		let amount_msats = refund.amount_msats();
@@ -199,7 +199,7 @@ impl<'a> InvoiceBuilder<'a, ExplicitSigningPubkey> {
 
 impl<'a> InvoiceBuilder<'a, DerivedSigningPubkey> {
 	pub(super) fn for_offer_using_keys(
-		invoice_request: &'a InvoiceRequest, payment_paths: Vec<(BlindedPath, BlindedPayInfo)>,
+		invoice_request: &'a InvoiceRequest, payment_paths: Vec<(BlindedPayInfo, BlindedPath)>,
 		created_at: Duration, payment_hash: PaymentHash, keys: KeyPair
 	) -> Result<Self, SemanticError> {
 		let amount_msats = Self::check_amount_msats(invoice_request)?;
@@ -215,7 +215,7 @@ impl<'a> InvoiceBuilder<'a, DerivedSigningPubkey> {
 	}
 
 	pub(super) fn for_refund_using_keys(
-		refund: &'a Refund, payment_paths: Vec<(BlindedPath, BlindedPayInfo)>, created_at: Duration,
+		refund: &'a Refund, payment_paths: Vec<(BlindedPayInfo, BlindedPath)>, created_at: Duration,
 		payment_hash: PaymentHash, keys: KeyPair,
 	) -> Result<Self, SemanticError> {
 		let amount_msats = refund.amount_msats();
@@ -247,7 +247,7 @@ impl<'a, S: SigningPubkeyStrategy> InvoiceBuilder<'a, S> {
 	}
 
 	fn fields(
-		payment_paths: Vec<(BlindedPath, BlindedPayInfo)>, created_at: Duration,
+		payment_paths: Vec<(BlindedPayInfo, BlindedPath)>, created_at: Duration,
 		payment_hash: PaymentHash, amount_msats: u64, signing_pubkey: PublicKey
 	) -> InvoiceFields {
 		InvoiceFields {
@@ -454,7 +454,7 @@ enum InvoiceContents {
 /// Invoice-specific fields for an `invoice` message.
 #[derive(Clone, Debug, PartialEq)]
 struct InvoiceFields {
-	payment_paths: Vec<(BlindedPath, BlindedPayInfo)>,
+	payment_paths: Vec<(BlindedPayInfo, BlindedPath)>,
 	created_at: Duration,
 	relative_expiry: Option<Duration>,
 	payment_hash: PaymentHash,
@@ -476,7 +476,7 @@ impl Invoice {
 	///
 	/// Blinded paths provide recipient privacy by obfuscating its node id. Note, however, that this
 	/// privacy is lost if a public node id is used for [`Invoice::signing_pubkey`].
-	pub fn payment_paths(&self) -> &[(BlindedPath, BlindedPayInfo)] {
+	pub fn payment_paths(&self) -> &[(BlindedPayInfo, BlindedPath)] {
 		&self.contents.fields().payment_paths[..]
 	}
 
@@ -703,8 +703,8 @@ impl InvoiceFields {
 		};
 
 		InvoiceTlvStreamRef {
-			paths: Some(Iterable(self.payment_paths.iter().map(|(path, _)| path))),
-			blindedpay: Some(Iterable(self.payment_paths.iter().map(|(_, payinfo)| payinfo))),
+			paths: Some(Iterable(self.payment_paths.iter().map(|(_, path)| path))),
+			blindedpay: Some(Iterable(self.payment_paths.iter().map(|(payinfo, _)| payinfo))),
 			created_at: Some(self.created_at.as_secs()),
 			relative_expiry: self.relative_expiry.map(|duration| duration.as_secs() as u32),
 			payment_hash: Some(&self.payment_hash),
@@ -750,13 +750,13 @@ tlv_stream!(InvoiceTlvStream, InvoiceTlvStreamRef, 160..240, {
 });
 
 type BlindedPathIter<'a> = core::iter::Map<
-	core::slice::Iter<'a, (BlindedPath, BlindedPayInfo)>,
-	for<'r> fn(&'r (BlindedPath, BlindedPayInfo)) -> &'r BlindedPath,
+	core::slice::Iter<'a, (BlindedPayInfo, BlindedPath)>,
+	for<'r> fn(&'r (BlindedPayInfo, BlindedPath)) -> &'r BlindedPath,
 >;
 
 type BlindedPayInfoIter<'a> = core::iter::Map<
-	core::slice::Iter<'a, (BlindedPath, BlindedPayInfo)>,
-	for<'r> fn(&'r (BlindedPath, BlindedPayInfo)) -> &'r BlindedPayInfo,
+	core::slice::Iter<'a, (BlindedPayInfo, BlindedPath)>,
+	for<'r> fn(&'r (BlindedPayInfo, BlindedPath)) -> &'r BlindedPayInfo,
 >;
 
 /// Information needed to route a payment across a [`BlindedPath`].
@@ -878,15 +878,15 @@ impl TryFrom<PartialInvoiceTlvStream> for InvoiceContents {
 			},
 		) = tlv_stream;
 
-		let payment_paths = match (paths, blindedpay) {
-			(None, _) => return Err(SemanticError::MissingPaths),
-			(_, None) => return Err(SemanticError::InvalidPayInfo),
-			(Some(paths), _) if paths.is_empty() => return Err(SemanticError::MissingPaths),
-			(Some(paths), Some(blindedpay)) if paths.len() != blindedpay.len() => {
+		let payment_paths = match (blindedpay, paths) {
+			(_, None) => return Err(SemanticError::MissingPaths),
+			(None, _) => return Err(SemanticError::InvalidPayInfo),
+			(_, Some(paths)) if paths.is_empty() => return Err(SemanticError::MissingPaths),
+			(Some(blindedpay), Some(paths)) if paths.len() != blindedpay.len() => {
 				return Err(SemanticError::InvalidPayInfo);
 			},
-			(Some(paths), Some(blindedpay)) => {
-				paths.into_iter().zip(blindedpay.into_iter()).collect::<Vec<_>>()
+			(Some(blindedpay), Some(paths)) => {
+				blindedpay.into_iter().zip(paths.into_iter()).collect::<Vec<_>>()
 			},
 		};
 
@@ -1052,8 +1052,8 @@ mod tests {
 					payer_note: None,
 				},
 				InvoiceTlvStreamRef {
-					paths: Some(Iterable(payment_paths.iter().map(|(path, _)| path))),
-					blindedpay: Some(Iterable(payment_paths.iter().map(|(_, payinfo)| payinfo))),
+					paths: Some(Iterable(payment_paths.iter().map(|(_, path)| path))),
+					blindedpay: Some(Iterable(payment_paths.iter().map(|(payinfo, _)| payinfo))),
 					created_at: Some(now.as_secs()),
 					relative_expiry: None,
 					payment_hash: Some(&payment_hash),
@@ -1130,8 +1130,8 @@ mod tests {
 					payer_note: None,
 				},
 				InvoiceTlvStreamRef {
-					paths: Some(Iterable(payment_paths.iter().map(|(path, _)| path))),
-					blindedpay: Some(Iterable(payment_paths.iter().map(|(_, payinfo)| payinfo))),
+					paths: Some(Iterable(payment_paths.iter().map(|(_, path)| path))),
+					blindedpay: Some(Iterable(payment_paths.iter().map(|(payinfo, _)| payinfo))),
 					created_at: Some(now.as_secs()),
 					relative_expiry: None,
 					payment_hash: Some(&payment_hash),
@@ -1516,7 +1516,7 @@ mod tests {
 
 		let empty_payment_paths = vec![];
 		let mut tlv_stream = invoice.as_tlv_stream();
-		tlv_stream.3.paths = Some(Iterable(empty_payment_paths.iter().map(|(path, _)| path)));
+		tlv_stream.3.paths = Some(Iterable(empty_payment_paths.iter().map(|(_, path)| path)));
 
 		match Invoice::try_from(tlv_stream.to_bytes()) {
 			Ok(_) => panic!("expected error"),
@@ -1526,7 +1526,7 @@ mod tests {
 		let mut payment_paths = payment_paths();
 		payment_paths.pop();
 		let mut tlv_stream = invoice.as_tlv_stream();
-		tlv_stream.3.blindedpay = Some(Iterable(payment_paths.iter().map(|(_, payinfo)| payinfo)));
+		tlv_stream.3.blindedpay = Some(Iterable(payment_paths.iter().map(|(payinfo, _)| payinfo)));
 
 		match Invoice::try_from(tlv_stream.to_bytes()) {
 			Ok(_) => panic!("expected error"),
