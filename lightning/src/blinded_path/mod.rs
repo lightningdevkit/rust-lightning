@@ -40,13 +40,14 @@ pub struct BlindedPath {
 	pub blinded_hops: Vec<BlindedHop>,
 }
 
-/// Used to construct the blinded hops portion of a blinded path. These hops cannot be identified
-/// by outside observers and thus can be used to hide the identity of the recipient.
+/// An encrypted payload and node id corresponding to a hop in a payment or onion message path, to
+/// be encoded in the sender's onion packet. These hops cannot be identified by outside observers
+/// and thus can be used to hide the identity of the recipient.
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct BlindedHop {
-	/// The blinded node id of this hop in a blinded path.
+	/// The blinded node id of this hop in a [`BlindedPath`].
 	pub blinded_node_id: PublicKey,
-	/// The encrypted payload intended for this hop in a blinded path.
+	/// The encrypted payload intended for this hop in a [`BlindedPath`].
 	// The node sending to this blinded path will later encode this payload into the onion packet for
 	// this hop.
 	pub encrypted_payload: Vec<u8>,
