@@ -18,6 +18,8 @@ use bitcoin::secp256k1::ecdh::SharedSecret;
 use super::BlindedPath;
 use crate::ln::onion_utils;
 use crate::onion_message::Destination;
+use crate::util::chacha20poly1305rfc::ChaChaPolyWriteAdapter;
+use crate::util::ser::{VecWriter, Writeable};
 
 use crate::prelude::*;
 
@@ -96,3 +98,12 @@ pub(crate) fn construct_keys_callback<T: secp256k1::Signing + secp256k1::Verific
 	}
 	Ok(())
 }
+
+/// Encrypt TLV payload to be used as a [`crate::blinded_path::BlindedHop::encrypted_payload`].
+pub(super) fn encrypt_payload<P: Writeable>(payload: P, encrypted_tlvs_ss: [u8; 32]) -> Vec<u8> {
+	let mut writer = VecWriter(Vec::new());
+	let write_adapter = ChaChaPolyWriteAdapter::new(encrypted_tlvs_ss, &payload);
+	write_adapter.write(&mut writer).expect("In-memory writes cannot fail");
+	writer.0
+}
+

@@ -17,8 +17,8 @@ use crate::sign::{EntropySource, NodeSigner, Recipient};
 use crate::onion_message::ControlTlvs;
 use crate::ln::msgs::DecodeError;
 use crate::ln::onion_utils;
-use crate::util::chacha20poly1305rfc::{ChaChaPolyReadAdapter, ChaChaPolyWriteAdapter};
-use crate::util::ser::{FixedLengthReader, LengthReadableArgs, Readable, VecWriter, Writeable, Writer};
+use crate::util::chacha20poly1305rfc::ChaChaPolyReadAdapter;
+use crate::util::ser::{FixedLengthReader, LengthReadableArgs, Readable, Writeable, Writer};
 
 use core::mem;
 use core::ops::Deref;
@@ -124,7 +124,7 @@ fn blinded_message_hops<T: secp256k1::Signing + secp256k1::Verification>(
 				};
 				blinded_hops.push(BlindedHop {
 					blinded_node_id: prev_blinded_node_id,
-					encrypted_payload: encrypt_payload(payload, prev_ss),
+					encrypted_payload: utils::encrypt_payload(payload, prev_ss),
 				});
 			} else { debug_assert!(false); }
 		}
@@ -135,19 +135,11 @@ fn blinded_message_hops<T: secp256k1::Signing + secp256k1::Verification>(
 		let final_payload = ReceiveTlvs { path_id: None };
 		blinded_hops.push(BlindedHop {
 			blinded_node_id: final_blinded_node_id,
-			encrypted_payload: encrypt_payload(final_payload, final_ss),
+			encrypted_payload: utils::encrypt_payload(final_payload, final_ss),
 		});
 	} else { debug_assert!(false) }
 
 	Ok(blinded_hops)
-}
-
-/// Encrypt TLV payload to be used as a [`BlindedHop::encrypted_payload`].
-fn encrypt_payload<P: Writeable>(payload: P, encrypted_tlvs_ss: [u8; 32]) -> Vec<u8> {
-	let mut writer = VecWriter(Vec::new());
-	let write_adapter = ChaChaPolyWriteAdapter::new(encrypted_tlvs_ss, &payload);
-	write_adapter.write(&mut writer).expect("In-memory writes cannot fail");
-	writer.0
 }
 
 impl Writeable for BlindedPath {
