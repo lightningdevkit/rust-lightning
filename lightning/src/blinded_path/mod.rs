@@ -14,16 +14,11 @@ pub(crate) mod utils;
 
 use bitcoin::secp256k1::{self, PublicKey, Secp256k1, SecretKey};
 
-use crate::sign::{EntropySource, NodeSigner, Recipient};
-use crate::onion_message::ControlTlvs;
+use crate::sign::EntropySource;
 use crate::ln::msgs::DecodeError;
-use crate::ln::onion_utils;
-use crate::util::chacha20poly1305rfc::ChaChaPolyReadAdapter;
-use crate::util::ser::{FixedLengthReader, LengthReadableArgs, Readable, Writeable, Writer};
+use crate::util::ser::{Readable, Writeable, Writer};
 
-use core::mem;
-use core::ops::Deref;
-use crate::io::{self, Cursor};
+use crate::io;
 use crate::prelude::*;
 
 /// Onion messages and payments can be sent and received to blinded paths, which serve to hide the
@@ -76,36 +71,6 @@ impl BlindedPath {
 			blinding_point: PublicKey::from_secret_key(secp_ctx, &blinding_secret),
 			blinded_hops: message::blinded_hops(secp_ctx, node_pks, &blinding_secret).map_err(|_| ())?,
 		})
-	}
-
-	// Advance the blinded onion message path by one hop, so make the second hop into the new
-	// introduction node.
-	pub(super) fn advance_message_path_by_one<NS: Deref, T: secp256k1::Signing + secp256k1::Verification>
-		(&mut self, node_signer: &NS, secp_ctx: &Secp256k1<T>) -> Result<(), ()>
-		where NS::Target: NodeSigner
-	{
-		let control_tlvs_ss = node_signer.ecdh(Recipient::Node, &self.blinding_point, None)?;
-		let rho = onion_utils::gen_rho_from_shared_secret(&control_tlvs_ss.secret_bytes());
-		let encrypted_control_tlvs = self.blinded_hops.remove(0).encrypted_payload;
-		let mut s = Cursor::new(&encrypted_control_tlvs);
-		let mut reader = FixedLengthReader::new(&mut s, encrypted_control_tlvs.len() as u64);
-		match ChaChaPolyReadAdapter::read(&mut reader, rho) {
-			Ok(ChaChaPolyReadAdapter { readable: ControlTlvs::Forward(message::ForwardTlvs {
-				mut next_node_id, next_blinding_override,
-			})}) => {
-				let mut new_blinding_point = match next_blinding_override {
-					Some(blinding_point) => blinding_point,
-					None => {
-						onion_utils::next_hop_pubkey(secp_ctx, self.blinding_point,
-							control_tlvs_ss.as_ref()).map_err(|_| ())?
-					}
-				};
-				mem::swap(&mut self.blinding_point, &mut new_blinding_point);
-				mem::swap(&mut self.introduction_node_id, &mut next_node_id);
-				Ok(())
-			},
-			_ => Err(())
-		}
 	}
 }
 
