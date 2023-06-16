@@ -650,46 +650,48 @@ fn packet_payloads_and_keys<T: CustomOnionMessageContents, S: secp256k1::Signing
 	let mut blinded_path_idx = 0;
 	let mut prev_control_tlvs_ss = None;
 	let mut final_control_tlvs = None;
-	utils::construct_keys_callback(secp_ctx, unblinded_path, Some(destination), session_priv, |_, onion_packet_ss, ephemeral_pubkey, control_tlvs_ss, unblinded_pk_opt, enc_payload_opt| {
-		if num_unblinded_hops != 0 && unblinded_path_idx < num_unblinded_hops {
-			if let Some(ss) = prev_control_tlvs_ss.take() {
-				payloads.push((Payload::Forward(ForwardControlTlvs::Unblinded(
-					ForwardTlvs {
-						next_node_id: unblinded_pk_opt.unwrap(),
-						next_blinding_override: None,
-					}
-				)), ss));
+	utils::construct_keys_callback(secp_ctx, unblinded_path.iter(), Some(destination), session_priv,
+		|_, onion_packet_ss, ephemeral_pubkey, control_tlvs_ss, unblinded_pk_opt, enc_payload_opt| {
+			if num_unblinded_hops != 0 && unblinded_path_idx < num_unblinded_hops {
+				if let Some(ss) = prev_control_tlvs_ss.take() {
+					payloads.push((Payload::Forward(ForwardControlTlvs::Unblinded(
+						ForwardTlvs {
+							next_node_id: unblinded_pk_opt.unwrap(),
+							next_blinding_override: None,
+						}
+					)), ss));
+				}
+				prev_control_tlvs_ss = Some(control_tlvs_ss);
+				unblinded_path_idx += 1;
+			} else if let Some((intro_node_id, blinding_pt)) = intro_node_id_blinding_pt.take() {
+				if let Some(control_tlvs_ss) = prev_control_tlvs_ss.take() {
+					payloads.push((Payload::Forward(ForwardControlTlvs::Unblinded(ForwardTlvs {
+						next_node_id: intro_node_id,
+						next_blinding_override: Some(blinding_pt),
+					})), control_tlvs_ss));
+				}
 			}
-			prev_control_tlvs_ss = Some(control_tlvs_ss);
-			unblinded_path_idx += 1;
-		} else if let Some((intro_node_id, blinding_pt)) = intro_node_id_blinding_pt.take() {
-			if let Some(control_tlvs_ss) = prev_control_tlvs_ss.take() {
-				payloads.push((Payload::Forward(ForwardControlTlvs::Unblinded(ForwardTlvs {
-					next_node_id: intro_node_id,
-					next_blinding_override: Some(blinding_pt),
-				})), control_tlvs_ss));
+			if blinded_path_idx < num_blinded_hops.saturating_sub(1) && enc_payload_opt.is_some() {
+				payloads.push((Payload::Forward(ForwardControlTlvs::Blinded(enc_payload_opt.unwrap())),
+					control_tlvs_ss));
+				blinded_path_idx += 1;
+			} else if let Some(encrypted_payload) = enc_payload_opt {
+				final_control_tlvs = Some(ReceiveControlTlvs::Blinded(encrypted_payload));
+				prev_control_tlvs_ss = Some(control_tlvs_ss);
 			}
-		}
-		if blinded_path_idx < num_blinded_hops.saturating_sub(1) && enc_payload_opt.is_some() {
-			payloads.push((Payload::Forward(ForwardControlTlvs::Blinded(enc_payload_opt.unwrap())),
-				control_tlvs_ss));
-			blinded_path_idx += 1;
-		} else if let Some(encrypted_payload) = enc_payload_opt {
-			final_control_tlvs = Some(ReceiveControlTlvs::Blinded(encrypted_payload));
-			prev_control_tlvs_ss = Some(control_tlvs_ss);
-		}
 
-		let (rho, mu) = onion_utils::gen_rho_mu_from_shared_secret(onion_packet_ss.as_ref());
-		onion_packet_keys.push(onion_utils::OnionKeys {
-			#[cfg(test)]
-			shared_secret: onion_packet_ss,
-			#[cfg(test)]
-			blinding_factor: [0; 32],
-			ephemeral_pubkey,
-			rho,
-			mu,
-		});
-	})?;
+			let (rho, mu) = onion_utils::gen_rho_mu_from_shared_secret(onion_packet_ss.as_ref());
+			onion_packet_keys.push(onion_utils::OnionKeys {
+				#[cfg(test)]
+				shared_secret: onion_packet_ss,
+				#[cfg(test)]
+				blinding_factor: [0; 32],
+				ephemeral_pubkey,
+				rho,
+				mu,
+			});
+		}
+	)?;
 
 	if let Some(control_tlvs) = final_control_tlvs {
 		payloads.push((Payload::Receive {

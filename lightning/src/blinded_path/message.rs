@@ -60,21 +60,22 @@ pub(super) fn blinded_hops<T: secp256k1::Signing + secp256k1::Verification>(
 	let mut blinded_hops = Vec::with_capacity(unblinded_path.len());
 
 	let mut prev_ss_and_blinded_node_id = None;
-	utils::construct_keys_callback(secp_ctx, unblinded_path, None, session_priv, |blinded_node_id, _, _, encrypted_payload_ss, unblinded_pk, _| {
-		if let Some((prev_ss, prev_blinded_node_id)) = prev_ss_and_blinded_node_id {
-			if let Some(pk) = unblinded_pk {
-				let payload = ForwardTlvs {
-					next_node_id: pk,
-					next_blinding_override: None,
-				};
-				blinded_hops.push(BlindedHop {
-					blinded_node_id: prev_blinded_node_id,
-					encrypted_payload: utils::encrypt_payload(payload, prev_ss),
-				});
-			} else { debug_assert!(false); }
-		}
-		prev_ss_and_blinded_node_id = Some((encrypted_payload_ss, blinded_node_id));
-	})?;
+	utils::construct_keys_callback(secp_ctx, unblinded_path.iter(), None, session_priv,
+		|blinded_node_id, _, _, encrypted_payload_ss, unblinded_pk, _| {
+			if let Some((prev_ss, prev_blinded_node_id)) = prev_ss_and_blinded_node_id {
+				if let Some(pk) = unblinded_pk {
+					let payload = ForwardTlvs {
+						next_node_id: pk,
+						next_blinding_override: None,
+					};
+					blinded_hops.push(BlindedHop {
+						blinded_node_id: prev_blinded_node_id,
+						encrypted_payload: utils::encrypt_payload(payload, prev_ss),
+					});
+				} else { debug_assert!(false); }
+			}
+			prev_ss_and_blinded_node_id = Some((encrypted_payload_ss, blinded_node_id));
+		})?;
 
 	if let Some((final_ss, final_blinded_node_id)) = prev_ss_and_blinded_node_id {
 		let final_payload = ReceiveTlvs { path_id: None };

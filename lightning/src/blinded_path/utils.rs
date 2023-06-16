@@ -27,11 +27,15 @@ use crate::prelude::*;
 
 // TODO: DRY with onion_utils::construct_onion_keys_callback
 #[inline]
-pub(crate) fn construct_keys_callback<T: secp256k1::Signing + secp256k1::Verification,
-	FType: FnMut(PublicKey, SharedSecret, PublicKey, [u8; 32], Option<PublicKey>, Option<Vec<u8>>)>(
-	secp_ctx: &Secp256k1<T>, unblinded_path: &[PublicKey], destination: Option<Destination>,
-	session_priv: &SecretKey, mut callback: FType
-) -> Result<(), secp256k1::Error> {
+pub(crate) fn construct_keys_callback<'a, T, I, F>(
+	secp_ctx: &Secp256k1<T>, unblinded_path: I, destination: Option<Destination>,
+	session_priv: &SecretKey, mut callback: F
+) -> Result<(), secp256k1::Error>
+where
+	T: secp256k1::Signing + secp256k1::Verification,
+	I: Iterator<Item=&'a PublicKey>,
+	F: FnMut(PublicKey, SharedSecret, PublicKey, [u8; 32], Option<PublicKey>, Option<Vec<u8>>),
+{
 	let mut msg_blinding_point_priv = session_priv.clone();
 	let mut msg_blinding_point = PublicKey::from_secret_key(secp_ctx, &msg_blinding_point_priv);
 	let mut onion_packet_pubkey_priv = msg_blinding_point_priv.clone();
