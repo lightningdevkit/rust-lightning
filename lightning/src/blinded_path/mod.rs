@@ -9,6 +9,7 @@
 
 //! Creating blinded paths and related utilities live here.
 
+pub mod payment;
 pub(crate) mod message;
 pub(crate) mod utils;
 
@@ -71,6 +72,27 @@ impl BlindedPath {
 			introduction_node_id,
 			blinding_point: PublicKey::from_secret_key(secp_ctx, &blinding_secret),
 			blinded_hops: message::blinded_hops(secp_ctx, node_pks, &blinding_secret).map_err(|_| ())?,
+		})
+	}
+
+	/// Create a blinded path for a payment, to be forwarded along `path`. The last node
+	/// in `path` will be the destination node.
+	///
+	/// Errors if `path` is empty or a node id in `path` is invalid.
+	//  TODO: make all payloads the same size with padding + add dummy hops
+	pub fn new_for_payment<ES: EntropySource, T: secp256k1::Signing + secp256k1::Verification>(
+		intermediate_nodes: &[(PublicKey, payment::ForwardTlvs)], payee_node_id: PublicKey,
+		payee_tlvs: payment::ReceiveTlvs, entropy_source: &ES, secp_ctx: &Secp256k1<T>
+	) -> Result<Self, ()> {
+		let blinding_secret_bytes = entropy_source.get_secure_random_bytes();
+		let blinding_secret = SecretKey::from_slice(&blinding_secret_bytes[..]).expect("RNG is busted");
+
+		Ok(BlindedPath {
+			introduction_node_id: intermediate_nodes.first().map_or(payee_node_id, |n| n.0),
+			blinding_point: PublicKey::from_secret_key(secp_ctx, &blinding_secret),
+			blinded_hops: payment::blinded_hops(
+				secp_ctx, intermediate_nodes, payee_node_id, payee_tlvs, &blinding_secret
+			).map_err(|_| ())?,
 		})
 	}
 }

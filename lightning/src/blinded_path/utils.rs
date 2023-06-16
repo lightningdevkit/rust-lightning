@@ -111,11 +111,11 @@ pub(super) fn construct_blinded_hops<'a, T, I1, I2>(
 ) -> Result<Vec<BlindedHop>, secp256k1::Error>
 where
 	T: secp256k1::Signing + secp256k1::Verification,
-	I1: ExactSizeIterator<Item=&'a PublicKey>,
+	I1: Iterator<Item=&'a PublicKey>,
 	I2: Iterator,
 	I2::Item: Writeable
 {
-	let mut blinded_hops = Vec::with_capacity(unblinded_pks.len());
+	let mut blinded_hops = Vec::with_capacity(unblinded_pks.size_hint().0);
 	construct_keys_callback(
 		secp_ctx, unblinded_pks, None, session_priv,
 		|blinded_node_id, _, _, encrypted_payload_rho, _, _| {
