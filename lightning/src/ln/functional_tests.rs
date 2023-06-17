@@ -8203,67 +8203,6 @@ fn test_preimage_storage() {
 }
 
 #[test]
-#[allow(deprecated)]
-fn test_secret_timeout() {
-	// Simple test of payment secret storage time outs. After
-	// `create_inbound_payment(_for_hash)_legacy` is removed, this test will be removed as well.
-	let chanmon_cfgs = create_chanmon_cfgs(2);
-	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
-	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-
-	create_announced_chan_between_nodes(&nodes, 0, 1).0.contents.short_channel_id;
-
-	let (payment_hash, payment_secret_1) = nodes[1].node.create_inbound_payment_legacy(Some(100_000), 2).unwrap();
-
-	// We should fail to register the same payment hash twice, at least until we've connected a
-	// block with time 7200 + CHAN_CONFIRM_DEPTH + 1.
-	if let Err(APIError::APIMisuseError { err }) = nodes[1].node.create_inbound_payment_for_hash_legacy(payment_hash, Some(100_000), 2) {
-		assert_eq!(err, "Duplicate payment hash");
-	} else { panic!(); }
-	let mut block = {
-		let node_1_blocks = nodes[1].blocks.lock().unwrap();
-		create_dummy_block(node_1_blocks.last().unwrap().0.block_hash(), node_1_blocks.len() as u32 + 7200, Vec::new())
-	};
-	connect_block(&nodes[1], &block);
-	if let Err(APIError::APIMisuseError { err }) = nodes[1].node.create_inbound_payment_for_hash_legacy(payment_hash, Some(100_000), 2) {
-		assert_eq!(err, "Duplicate payment hash");
-	} else { panic!(); }
-
-	// If we then connect the second block, we should be able to register the same payment hash
-	// again (this time getting a new payment secret).
-	block.header.prev_blockhash = block.header.block_hash();
-	block.header.time += 1;
-	connect_block(&nodes[1], &block);
-	let our_payment_secret = nodes[1].node.create_inbound_payment_for_hash_legacy(payment_hash, Some(100_000), 2).unwrap();
-	assert_ne!(payment_secret_1, our_payment_secret);
-
-	{
-		let (route, _, _, _) = get_route_and_payment_hash!(nodes[0], nodes[1], 100_000);
-		nodes[0].node.send_payment_with_route(&route, payment_hash,
-			RecipientOnionFields::secret_only(our_payment_secret), PaymentId(payment_hash.0)).unwrap();
-		check_added_monitors!(nodes[0], 1);
-		let mut events = nodes[0].node.get_and_clear_pending_msg_events();
-		let mut payment_event = SendEvent::from_event(events.pop().unwrap());
-		nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &payment_event.msgs[0]);
-		commitment_signed_dance!(nodes[1], nodes[0], payment_event.commitment_msg, false);
-	}
-	// Note that after leaving the above scope we have no knowledge of any arguments or return
-	// values from previous calls.
-	expect_pending_htlcs_forwardable!(nodes[1]);
-	let events = nodes[1].node.get_and_clear_pending_events();
-	assert_eq!(events.len(), 1);
-	match events[0] {
-		Event::PaymentClaimable { purpose: PaymentPurpose::InvoicePayment { payment_preimage, payment_secret }, .. } => {
-			assert!(payment_preimage.is_none());
-			assert_eq!(payment_secret, our_payment_secret);
-			// We don't actually have the payment preimage with which to claim this payment!
-		},
-		_ => panic!("Unexpected event"),
-	}
-}
-
-#[test]
 fn test_bad_secret_hash() {
 	// Simple test of unregistered payment hash/invalid payment secret handling
 	let chanmon_cfgs = create_chanmon_cfgs(2);
