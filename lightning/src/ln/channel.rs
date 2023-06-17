@@ -4900,11 +4900,16 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			},
 			Ok(v) => v
 		};
+		let short_channel_id = match self.context.get_short_channel_id() {
+			Some(scid) => scid,
+			None => return None,
+		};
+
 		self.context.announcement_sigs_state = AnnouncementSigsState::MessageSent;
 
 		Some(msgs::AnnouncementSignatures {
 			channel_id: self.context.channel_id(),
-			short_channel_id: self.context.get_short_channel_id().unwrap(),
+			short_channel_id,
 			node_signature: our_node_sig,
 			bitcoin_signature: our_bitcoin_sig,
 		})
