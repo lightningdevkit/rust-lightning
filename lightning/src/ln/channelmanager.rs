@@ -1860,7 +1860,7 @@ macro_rules! handle_monitor_update_completion {
 }
 
 macro_rules! handle_new_monitor_update {
-	($self: ident, $update_res: expr, $update_id: expr, $peer_state_lock: expr, $peer_state: expr, $per_peer_state_lock: expr, $chan: expr, MANUALLY_REMOVING_ALREADY_APPLIED, $remove: expr) => { {
+	($self: ident, $update_res: expr, $update_id: expr, $peer_state_lock: expr, $peer_state: expr, $per_peer_state_lock: expr, $chan: expr, MANUALLY_REMOVING_INITIAL_MONITOR, $remove: expr) => { {
 		// update_maps_on_chan_removal needs to be able to take id_to_peer, so make sure we can in
 		// any case so that it won't deadlock.
 		debug_assert_ne!($self.id_to_peer.held_by_thread(), LockHeldState::HeldByThread);
@@ -1871,13 +1871,13 @@ macro_rules! handle_new_monitor_update {
 			ChannelMonitorUpdateStatus::InProgress => {
 				log_debug!($self.logger, "ChannelMonitor update for {} in flight, holding messages until the update completes.",
 					log_bytes!($chan.context.channel_id()[..]));
-				Ok(())
+				Ok(false)
 			},
 			ChannelMonitorUpdateStatus::PermanentFailure => {
 				log_error!($self.logger, "Closing channel {} due to monitor update ChannelMonitorUpdateStatus::PermanentFailure",
 					log_bytes!($chan.context.channel_id()[..]));
 				update_maps_on_chan_removal!($self, &$chan.context);
-				let res: Result<(), _> = Err(MsgHandleErrInternal::from_finish_shutdown(
+				let res = Err(MsgHandleErrInternal::from_finish_shutdown(
 					"ChannelMonitor storage failure".to_owned(), $chan.context.channel_id(),
 					$chan.context.get_user_id(), $chan.context.force_shutdown(false),
 					$self.get_channel_update_for_broadcast(&$chan).ok()));
@@ -1889,16 +1889,16 @@ macro_rules! handle_new_monitor_update {
 				if $chan.no_monitor_updates_pending() {
 					handle_monitor_update_completion!($self, $update_id, $peer_state_lock, $peer_state, $per_peer_state_lock, $chan);
 				}
-				Ok(())
+				Ok(true)
 			},
 		}
 	} };
-	($self: ident, $update_res: expr, $update_id: expr, $peer_state_lock: expr, $peer_state: expr, $per_peer_state_lock: expr, $chan_entry: expr, ALREADY_APPLIED) => {
-		handle_new_monitor_update!($self, $update_res, $update_id, $peer_state_lock, $peer_state, $per_peer_state_lock, $chan_entry.get_mut(), MANUALLY_REMOVING_ALREADY_APPLIED, $chan_entry.remove_entry())
+	($self: ident, $update_res: expr, $update_id: expr, $peer_state_lock: expr, $peer_state: expr, $per_peer_state_lock: expr, $chan_entry: expr, INITIAL_MONITOR) => {
+		handle_new_monitor_update!($self, $update_res, $update_id, $peer_state_lock, $peer_state, $per_peer_state_lock, $chan_entry.get_mut(), MANUALLY_REMOVING_INITIAL_MONITOR, $chan_entry.remove_entry())
 	};
 	($self: ident, $funding_txo: expr, $update: expr, $peer_state_lock: expr, $peer_state: expr, $per_peer_state_lock: expr, $chan: expr, MANUALLY_REMOVING, $remove: expr) => { {
 		let update_res = $self.chain_monitor.update_channel($funding_txo, &$update);
-		handle_new_monitor_update!($self, update_res, $update.update_id, $peer_state_lock, $peer_state, $per_peer_state_lock, $chan, MANUALLY_REMOVING_ALREADY_APPLIED, $remove)
+		handle_new_monitor_update!($self, update_res, $update.update_id, $peer_state_lock, $peer_state, $per_peer_state_lock, $chan, MANUALLY_REMOVING_INITIAL_MONITOR, $remove)
 	} };
 	($self: ident, $funding_txo: expr, $update: expr, $peer_state_lock: expr, $peer_state: expr, $per_peer_state_lock: expr, $chan_entry: expr) => {
 		handle_new_monitor_update!($self, $funding_txo, $update, $peer_state_lock, $peer_state, $per_peer_state_lock, $chan_entry.get_mut(), MANUALLY_REMOVING, $chan_entry.remove_entry())
@@ -2316,7 +2316,8 @@ where
 
 					// Update the monitor with the shutdown script if necessary.
 					if let Some(monitor_update) = monitor_update_opt.take() {
-						break handle_new_monitor_update!(self, funding_txo_opt.unwrap(), monitor_update, peer_state_lock, peer_state, per_peer_state, chan_entry);
+						break handle_new_monitor_update!(self, funding_txo_opt.unwrap(), monitor_update,
+							peer_state_lock, peer_state, per_peer_state, chan_entry).map(|_| ());
 					}
 
 					if chan_entry.get().is_shutdown() {
@@ -3040,19 +3041,18 @@ where
 					}, onion_packet, None, &self.logger);
 				match break_chan_entry!(self, send_res, chan) {
 					Some(monitor_update) => {
-						let update_id = monitor_update.update_id;
-						let update_res = self.chain_monitor.update_channel(funding_txo, &monitor_update);
-						if let Err(e) = handle_new_monitor_update!(self, update_res, update_id, peer_state_lock, peer_state, per_peer_state, chan, ALREADY_APPLIED) {
-							break Err(e);
-						}
-						if update_res == ChannelMonitorUpdateStatus::InProgress {
-							// Note that MonitorUpdateInProgress here indicates (per function
-							// docs) that we will resend the commitment update once monitor
-							// updating completes. Therefore, we must return an error
-							// indicating that it is unsafe to retry the payment wholesale,
-							// which we do in the send_payment check for
-							// MonitorUpdateInProgress, below.
-							return Err(APIError::MonitorUpdateInProgress);
+						match handle_new_monitor_update!(self, funding_txo, monitor_update, peer_state_lock, peer_state, per_peer_state, chan) {
+							Err(e) => break Err(e),
+							Ok(false) => {
+								// Note that MonitorUpdateInProgress here indicates (per function
+								// docs) that we will resend the commitment update once monitor
+								// updating completes. Therefore, we must return an error
+								// indicating that it is unsafe to retry the payment wholesale,
+								// which we do in the send_payment check for
+								// MonitorUpdateInProgress, below.
+								return Err(APIError::MonitorUpdateInProgress);
+							},
+							Ok(true) => {},
 						}
 					},
 					None => { },
@@ -4087,8 +4087,7 @@ where
 					let _ = self.chain_monitor.update_channel(funding_txo, &update);
 				},
 				BackgroundEvent::MonitorUpdateRegeneratedOnStartup { counterparty_node_id, funding_txo, update } => {
-					let update_res = self.chain_monitor.update_channel(funding_txo, &update);
-
+					let mut updated_chan = false;
 					let res = {
 						let per_peer_state = self.per_peer_state.read().unwrap();
 						if let Some(peer_state_mutex) = per_peer_state.get(&counterparty_node_id) {
@@ -4096,12 +4095,18 @@ where
 							let peer_state = &mut *peer_state_lock;
 							match peer_state.channel_by_id.entry(funding_txo.to_channel_id()) {
 								hash_map::Entry::Occupied(mut chan) => {
-									handle_new_monitor_update!(self, update_res, update.update_id, peer_state_lock, peer_state, per_peer_state, chan, ALREADY_APPLIED)
+									updated_chan = true;
+									handle_new_monitor_update!(self, funding_txo, update,
+										peer_state_lock, peer_state, per_peer_state, chan).map(|_| ())
 								},
 								hash_map::Entry::Vacant(_) => Ok(()),
 							}
 						} else { Ok(()) }
 					};
+					if !updated_chan {
+						// TODO: Track this as in-flight even though the channel is closed.
+						let _ = self.chain_monitor.update_channel(funding_txo, &update);
+					}
 					// TODO: If this channel has since closed, we're likely providing a payment
 					// preimage update, which we must ensure is durable! We currently don't,
 					// however, ensure that.
@@ -5219,7 +5224,7 @@ where
 
 				let chan = e.insert(chan);
 				let mut res = handle_new_monitor_update!(self, monitor_res, 0, peer_state_lock, peer_state,
-					per_peer_state, chan, MANUALLY_REMOVING_ALREADY_APPLIED,
+					per_peer_state, chan, MANUALLY_REMOVING_INITIAL_MONITOR,
 					{ peer_state.channel_by_id.remove(&new_channel_id) });
 
 				// Note that we reply with the new channel_id in error messages if we gave up on the
@@ -5232,7 +5237,7 @@ where
 				if let Err(MsgHandleErrInternal { shutdown_finish: Some((res, _)), .. }) = &mut res {
 					res.0 = None;
 				}
-				res
+				res.map(|_| ())
 			}
 		}
 	}
@@ -5253,7 +5258,7 @@ where
 				let monitor = try_chan_entry!(self,
 					chan.get_mut().funding_signed(&msg, best_block, &self.signer_provider, &self.logger), chan);
 				let update_res = self.chain_monitor.watch_channel(chan.get().context.get_funding_txo().unwrap(), monitor);
-				let mut res = handle_new_monitor_update!(self, update_res, 0, peer_state_lock, peer_state, per_peer_state, chan, ALREADY_APPLIED);
+				let mut res = handle_new_monitor_update!(self, update_res, 0, peer_state_lock, peer_state, per_peer_state, chan, INITIAL_MONITOR);
 				if let Err(MsgHandleErrInternal { ref mut shutdown_finish, .. }) = res {
 					// We weren't able to watch the channel to begin with, so no updates should be made on
 					// it. Previously, full_stack_target found an (unreachable) panic when the
@@ -5262,7 +5267,7 @@ where
 						shutdown_finish.0.take();
 					}
 				}
-				res
+				res.map(|_| ())
 			},
 			hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel".to_owned(), msg.channel_id))
 		}
@@ -5350,7 +5355,8 @@ where
 
 					// Update the monitor with the shutdown script if necessary.
 					if let Some(monitor_update) = monitor_update_opt {
-						break handle_new_monitor_update!(self, funding_txo_opt.unwrap(), monitor_update, peer_state_lock, peer_state, per_peer_state, chan_entry);
+						break handle_new_monitor_update!(self, funding_txo_opt.unwrap(), monitor_update,
+							peer_state_lock, peer_state, per_peer_state, chan_entry).map(|_| ());
 					}
 					break Ok(());
 				},
@@ -5547,7 +5553,7 @@ where
 				let monitor_update_opt = try_chan_entry!(self, chan.get_mut().commitment_signed(&msg, &self.logger), chan);
 				if let Some(monitor_update) = monitor_update_opt {
 					handle_new_monitor_update!(self, funding_txo.unwrap(), monitor_update, peer_state_lock,
-						peer_state, per_peer_state, chan)
+						peer_state, per_peer_state, chan).map(|_| ())
 				} else { Ok(()) }
 			},
 			hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id))
@@ -5684,7 +5690,7 @@ where
 					let (htlcs_to_fail, monitor_update_opt) = try_chan_entry!(self, chan.get_mut().revoke_and_ack(&msg, &self.logger), chan);
 					let res = if let Some(monitor_update) = monitor_update_opt {
 						handle_new_monitor_update!(self, funding_txo.unwrap(), monitor_update,
-							peer_state_lock, peer_state, per_peer_state, chan)
+							peer_state_lock, peer_state, per_peer_state, chan).map(|_| ())
 					} else { Ok(()) };
 					(htlcs_to_fail, res)
 				},
