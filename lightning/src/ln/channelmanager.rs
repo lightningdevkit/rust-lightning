@@ -1860,7 +1860,7 @@ macro_rules! handle_monitor_update_completion {
 }
 
 macro_rules! handle_new_monitor_update {
-	($self: ident, $update_res: expr, $update_id: expr, $peer_state_lock: expr, $peer_state: expr, $per_peer_state_lock: expr, $chan: expr, MANUALLY_REMOVING, $remove: expr) => { {
+	($self: ident, $update_res: expr, $update_id: expr, $peer_state_lock: expr, $peer_state: expr, $per_peer_state_lock: expr, $chan: expr, MANUALLY_REMOVING_ALREADY_APPLIED, $remove: expr) => { {
 		// update_maps_on_chan_removal needs to be able to take id_to_peer, so make sure we can in
 		// any case so that it won't deadlock.
 		debug_assert_ne!($self.id_to_peer.held_by_thread(), LockHeldState::HeldByThread);
@@ -1893,8 +1893,15 @@ macro_rules! handle_new_monitor_update {
 			},
 		}
 	} };
-	($self: ident, $update_res: expr, $update_id: expr, $peer_state_lock: expr, $peer_state: expr, $per_peer_state_lock: expr, $chan_entry: expr) => {
-		handle_new_monitor_update!($self, $update_res, $update_id, $peer_state_lock, $peer_state, $per_peer_state_lock, $chan_entry.get_mut(), MANUALLY_REMOVING, $chan_entry.remove_entry())
+	($self: ident, $update_res: expr, $update_id: expr, $peer_state_lock: expr, $peer_state: expr, $per_peer_state_lock: expr, $chan_entry: expr, ALREADY_APPLIED) => {
+		handle_new_monitor_update!($self, $update_res, $update_id, $peer_state_lock, $peer_state, $per_peer_state_lock, $chan_entry.get_mut(), MANUALLY_REMOVING_ALREADY_APPLIED, $chan_entry.remove_entry())
+	};
+	($self: ident, $funding_txo: expr, $update: expr, $peer_state_lock: expr, $peer_state: expr, $per_peer_state_lock: expr, $chan: expr, MANUALLY_REMOVING, $remove: expr) => { {
+		let update_res = $self.chain_monitor.update_channel($funding_txo, &$update);
+		handle_new_monitor_update!($self, update_res, $update.update_id, $peer_state_lock, $peer_state, $per_peer_state_lock, $chan, MANUALLY_REMOVING_ALREADY_APPLIED, $remove)
+	} };
+	($self: ident, $funding_txo: expr, $update: expr, $peer_state_lock: expr, $peer_state: expr, $per_peer_state_lock: expr, $chan_entry: expr) => {
+		handle_new_monitor_update!($self, $funding_txo, $update, $peer_state_lock, $peer_state, $per_peer_state_lock, $chan_entry.get_mut(), MANUALLY_REMOVING, $chan_entry.remove_entry())
 	}
 }
 
@@ -2309,9 +2316,7 @@ where
 
 					// Update the monitor with the shutdown script if necessary.
 					if let Some(monitor_update) = monitor_update_opt.take() {
-						let update_id = monitor_update.update_id;
-						let update_res = self.chain_monitor.update_channel(funding_txo_opt.unwrap(), &monitor_update);
-						break handle_new_monitor_update!(self, update_res, update_id, peer_state_lock, peer_state, per_peer_state, chan_entry);
+						break handle_new_monitor_update!(self, funding_txo_opt.unwrap(), monitor_update, peer_state_lock, peer_state, per_peer_state, chan_entry);
 					}
 
 					if chan_entry.get().is_shutdown() {
@@ -3037,7 +3042,7 @@ where
 					Some(monitor_update) => {
 						let update_id = monitor_update.update_id;
 						let update_res = self.chain_monitor.update_channel(funding_txo, &monitor_update);
-						if let Err(e) = handle_new_monitor_update!(self, update_res, update_id, peer_state_lock, peer_state, per_peer_state, chan) {
+						if let Err(e) = handle_new_monitor_update!(self, update_res, update_id, peer_state_lock, peer_state, per_peer_state, chan, ALREADY_APPLIED) {
 							break Err(e);
 						}
 						if update_res == ChannelMonitorUpdateStatus::InProgress {
@@ -4091,7 +4096,7 @@ where
 							let peer_state = &mut *peer_state_lock;
 							match peer_state.channel_by_id.entry(funding_txo.to_channel_id()) {
 								hash_map::Entry::Occupied(mut chan) => {
-									handle_new_monitor_update!(self, update_res, update.update_id, peer_state_lock, peer_state, per_peer_state, chan)
+									handle_new_monitor_update!(self, update_res, update.update_id, peer_state_lock, peer_state, per_peer_state, chan, ALREADY_APPLIED)
 								},
 								hash_map::Entry::Vacant(_) => Ok(()),
 							}
@@ -4677,9 +4682,7 @@ where
 								log_bytes!(chan_id), action);
 							peer_state.monitor_update_blocked_actions.entry(chan_id).or_insert(Vec::new()).push(action);
 						}
-						let update_id = monitor_update.update_id;
-						let update_res = self.chain_monitor.update_channel(prev_hop.outpoint, &monitor_update);
-						let res = handle_new_monitor_update!(self, update_res, update_id, peer_state_lock,
+						let res = handle_new_monitor_update!(self, prev_hop.outpoint, monitor_update, peer_state_lock,
 							peer_state, per_peer_state, chan);
 						if let Err(e) = res {
 							// TODO: This is a *critical* error - we probably updated the outbound edge
@@ -5216,7 +5219,8 @@ where
 
 				let chan = e.insert(chan);
 				let mut res = handle_new_monitor_update!(self, monitor_res, 0, peer_state_lock, peer_state,
-					per_peer_state, chan, MANUALLY_REMOVING, { peer_state.channel_by_id.remove(&new_channel_id) });
+					per_peer_state, chan, MANUALLY_REMOVING_ALREADY_APPLIED,
+					{ peer_state.channel_by_id.remove(&new_channel_id) });
 
 				// Note that we reply with the new channel_id in error messages if we gave up on the
 				// channel, not the temporary_channel_id. This is compatible with ourselves, but the
@@ -5249,7 +5253,7 @@ where
 				let monitor = try_chan_entry!(self,
 					chan.get_mut().funding_signed(&msg, best_block, &self.signer_provider, &self.logger), chan);
 				let update_res = self.chain_monitor.watch_channel(chan.get().context.get_funding_txo().unwrap(), monitor);
-				let mut res = handle_new_monitor_update!(self, update_res, 0, peer_state_lock, peer_state, per_peer_state, chan);
+				let mut res = handle_new_monitor_update!(self, update_res, 0, peer_state_lock, peer_state, per_peer_state, chan, ALREADY_APPLIED);
 				if let Err(MsgHandleErrInternal { ref mut shutdown_finish, .. }) = res {
 					// We weren't able to watch the channel to begin with, so no updates should be made on
 					// it. Previously, full_stack_target found an (unreachable) panic when the
@@ -5346,9 +5350,7 @@ where
 
 					// Update the monitor with the shutdown script if necessary.
 					if let Some(monitor_update) = monitor_update_opt {
-						let update_id = monitor_update.update_id;
-						let update_res = self.chain_monitor.update_channel(funding_txo_opt.unwrap(), &monitor_update);
-						break handle_new_monitor_update!(self, update_res, update_id, peer_state_lock, peer_state, per_peer_state, chan_entry);
+						break handle_new_monitor_update!(self, funding_txo_opt.unwrap(), monitor_update, peer_state_lock, peer_state, per_peer_state, chan_entry);
 					}
 					break Ok(());
 				},
@@ -5544,9 +5546,7 @@ where
 				let funding_txo = chan.get().context.get_funding_txo();
 				let monitor_update_opt = try_chan_entry!(self, chan.get_mut().commitment_signed(&msg, &self.logger), chan);
 				if let Some(monitor_update) = monitor_update_opt {
-					let update_res = self.chain_monitor.update_channel(funding_txo.unwrap(), &monitor_update);
-					let update_id = monitor_update.update_id;
-					handle_new_monitor_update!(self, update_res, update_id, peer_state_lock,
+					handle_new_monitor_update!(self, funding_txo.unwrap(), monitor_update, peer_state_lock,
 						peer_state, per_peer_state, chan)
 				} else { Ok(()) }
 			},
@@ -5683,9 +5683,7 @@ where
 					let funding_txo = chan.get().context.get_funding_txo();
 					let (htlcs_to_fail, monitor_update_opt) = try_chan_entry!(self, chan.get_mut().revoke_and_ack(&msg, &self.logger), chan);
 					let res = if let Some(monitor_update) = monitor_update_opt {
-						let update_res = self.chain_monitor.update_channel(funding_txo.unwrap(), &monitor_update);
-						let update_id = monitor_update.update_id;
-						handle_new_monitor_update!(self, update_res, update_id,
+						handle_new_monitor_update!(self, funding_txo.unwrap(), monitor_update,
 							peer_state_lock, peer_state, per_peer_state, chan)
 					} else { Ok(()) };
 					(htlcs_to_fail, res)
@@ -5961,11 +5959,8 @@ where
 						if let Some(monitor_update) = monitor_opt {
 							has_monitor_update = true;
 
-							let update_res = self.chain_monitor.update_channel(
-								funding_txo.expect("channel is live"), &monitor_update);
-							let update_id = monitor_update.update_id;
 							let channel_id: [u8; 32] = *channel_id;
-							let res = handle_new_monitor_update!(self, update_res, update_id,
+							let res = handle_new_monitor_update!(self, funding_txo.unwrap(), monitor_update,
 								peer_state_lock, peer_state, per_peer_state, chan, MANUALLY_REMOVING,
 								peer_state.channel_by_id.remove(&channel_id));
 							if res.is_err() {
@@ -6307,9 +6302,7 @@ where
 					if let Some((monitor_update, further_update_exists)) = chan.get_mut().unblock_next_blocked_monitor_update() {
 						log_debug!(self.logger, "Unlocking monitor updating for channel {} and updating monitor",
 							log_bytes!(&channel_funding_outpoint.to_channel_id()[..]));
-						let update_res = self.chain_monitor.update_channel(channel_funding_outpoint, &monitor_update);
-						let update_id = monitor_update.update_id;
-						if let Err(e) = handle_new_monitor_update!(self, update_res, update_id,
+						if let Err(e) = handle_new_monitor_update!(self, channel_funding_outpoint, monitor_update,
 							peer_state_lck, peer_state, per_peer_state, chan)
 						{
 							errors.push((e, counterparty_node_id));
