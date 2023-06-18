@@ -488,13 +488,13 @@ enum UpdateFulfillFetch {
 }
 
 /// The return type of get_update_fulfill_htlc_and_commit.
-pub enum UpdateFulfillCommitFetch<'a> {
+pub enum UpdateFulfillCommitFetch {
 	/// Indicates the HTLC fulfill is new, and either generated an update_fulfill message, placed
 	/// it in the holding cell, or re-generated the update_fulfill message after the same claim was
 	/// previously placed in the holding cell (and has since been removed).
 	NewClaim {
 		/// The ChannelMonitorUpdate which places the new payment preimage in the channel monitor
-		monitor_update: &'a ChannelMonitorUpdate,
+		monitor_update: ChannelMonitorUpdate,
 		/// The value of the HTLC which was claimed, in msat.
 		htlc_value_msat: u64,
 	},
@@ -2305,8 +2305,8 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 				};
 				self.monitor_updating_paused(false, msg.is_some(), false, Vec::new(), Vec::new(), Vec::new());
 				UpdateFulfillCommitFetch::NewClaim {
-					monitor_update: &self.context.pending_monitor_updates.get(unblocked_update_pos)
-						.expect("We just pushed the monitor update").update,
+					monitor_update: self.context.pending_monitor_updates.get(unblocked_update_pos)
+						.expect("We just pushed the monitor update").update.clone(),
 					htlc_value_msat,
 				}
 			},
@@ -2798,7 +2798,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		Ok(())
 	}
 
-	pub fn commitment_signed<L: Deref>(&mut self, msg: &msgs::CommitmentSigned, logger: &L) -> Result<Option<&ChannelMonitorUpdate>, ChannelError>
+	pub fn commitment_signed<L: Deref>(&mut self, msg: &msgs::CommitmentSigned, logger: &L) -> Result<Option<ChannelMonitorUpdate>, ChannelError>
 		where L::Target: Logger
 	{
 		if (self.context.channel_state & (ChannelState::ChannelReady as u32)) != (ChannelState::ChannelReady as u32) {
@@ -3022,7 +3022,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 	/// Public version of the below, checking relevant preconditions first.
 	/// If we're not in a state where freeing the holding cell makes sense, this is a no-op and
 	/// returns `(None, Vec::new())`.
-	pub fn maybe_free_holding_cell_htlcs<L: Deref>(&mut self, logger: &L) -> (Option<&ChannelMonitorUpdate>, Vec<(HTLCSource, PaymentHash)>) where L::Target: Logger {
+	pub fn maybe_free_holding_cell_htlcs<L: Deref>(&mut self, logger: &L) -> (Option<ChannelMonitorUpdate>, Vec<(HTLCSource, PaymentHash)>) where L::Target: Logger {
 		if self.context.channel_state >= ChannelState::ChannelReady as u32 &&
 		   (self.context.channel_state & (ChannelState::AwaitingRemoteRevoke as u32 | ChannelState::PeerDisconnected as u32 | ChannelState::MonitorUpdateInProgress as u32)) == 0 {
 			self.free_holding_cell_htlcs(logger)
@@ -3031,7 +3031,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 
 	/// Frees any pending commitment updates in the holding cell, generating the relevant messages
 	/// for our counterparty.
-	fn free_holding_cell_htlcs<L: Deref>(&mut self, logger: &L) -> (Option<&ChannelMonitorUpdate>, Vec<(HTLCSource, PaymentHash)>) where L::Target: Logger {
+	fn free_holding_cell_htlcs<L: Deref>(&mut self, logger: &L) -> (Option<ChannelMonitorUpdate>, Vec<(HTLCSource, PaymentHash)>) where L::Target: Logger {
 		assert_eq!(self.context.channel_state & ChannelState::MonitorUpdateInProgress as u32, 0);
 		if self.context.holding_cell_htlc_updates.len() != 0 || self.context.holding_cell_update_fee.is_some() {
 			log_trace!(logger, "Freeing holding cell with {} HTLC updates{} in channel {}", self.context.holding_cell_htlc_updates.len(),
@@ -3147,7 +3147,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 	/// waiting on this revoke_and_ack. The generation of this new commitment_signed may also fail,
 	/// generating an appropriate error *after* the channel state has been updated based on the
 	/// revoke_and_ack message.
-	pub fn revoke_and_ack<L: Deref>(&mut self, msg: &msgs::RevokeAndACK, logger: &L) -> Result<(Vec<(HTLCSource, PaymentHash)>, Option<&ChannelMonitorUpdate>), ChannelError>
+	pub fn revoke_and_ack<L: Deref>(&mut self, msg: &msgs::RevokeAndACK, logger: &L) -> Result<(Vec<(HTLCSource, PaymentHash)>, Option<ChannelMonitorUpdate>), ChannelError>
 		where L::Target: Logger,
 	{
 		if (self.context.channel_state & (ChannelState::ChannelReady as u32)) != (ChannelState::ChannelReady as u32) {
@@ -4075,7 +4075,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 
 	pub fn shutdown<SP: Deref>(
 		&mut self, signer_provider: &SP, their_features: &InitFeatures, msg: &msgs::Shutdown
-	) -> Result<(Option<msgs::Shutdown>, Option<&ChannelMonitorUpdate>, Vec<(HTLCSource, PaymentHash)>), ChannelError>
+	) -> Result<(Option<msgs::Shutdown>, Option<ChannelMonitorUpdate>, Vec<(HTLCSource, PaymentHash)>), ChannelError>
 	where SP::Target: SignerProvider
 	{
 		if self.context.channel_state & (ChannelState::PeerDisconnected as u32) == ChannelState::PeerDisconnected as u32 {
@@ -4141,9 +4141,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 				}],
 			};
 			self.monitor_updating_paused(false, false, false, Vec::new(), Vec::new(), Vec::new());
-			if self.push_blockable_mon_update(monitor_update) {
-				self.context.pending_monitor_updates.last().map(|upd| &upd.update)
-			} else { None }
+			self.push_ret_blockable_mon_update(monitor_update)
 		} else { None };
 		let shutdown = if send_shutdown {
 			Some(msgs::Shutdown {
@@ -4440,11 +4438,11 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 
 	/// Returns the next blocked monitor update, if one exists, and a bool which indicates a
 	/// further blocked monitor update exists after the next.
-	pub fn unblock_next_blocked_monitor_update(&mut self) -> Option<(&ChannelMonitorUpdate, bool)> {
+	pub fn unblock_next_blocked_monitor_update(&mut self) -> Option<(ChannelMonitorUpdate, bool)> {
 		for i in 0..self.context.pending_monitor_updates.len() {
 			if self.context.pending_monitor_updates[i].blocked {
 				self.context.pending_monitor_updates[i].blocked = false;
-				return Some((&self.context.pending_monitor_updates[i].update,
+				return Some((self.context.pending_monitor_updates[i].update.clone(),
 					self.context.pending_monitor_updates.len() > i + 1));
 			}
 		}
@@ -4465,9 +4463,9 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 	/// it should be immediately given to the user for persisting or `None` if it should be held as
 	/// blocked.
 	fn push_ret_blockable_mon_update(&mut self, update: ChannelMonitorUpdate)
-	-> Option<&ChannelMonitorUpdate> {
+	-> Option<ChannelMonitorUpdate> {
 		let release_monitor = self.push_blockable_mon_update(update);
-		if release_monitor { self.context.pending_monitor_updates.last().map(|upd| &upd.update) } else { None }
+		if release_monitor { self.context.pending_monitor_updates.last().map(|upd| upd.update.clone()) } else { None }
 	}
 
 	pub fn no_monitor_updates_pending(&self) -> bool {
@@ -5302,7 +5300,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 	pub fn send_htlc_and_commit<L: Deref>(
 		&mut self, amount_msat: u64, payment_hash: PaymentHash, cltv_expiry: u32, source: HTLCSource,
 		onion_routing_packet: msgs::OnionPacket, skimmed_fee_msat: Option<u64>, logger: &L
-	) -> Result<Option<&ChannelMonitorUpdate>, ChannelError> where L::Target: Logger {
+	) -> Result<Option<ChannelMonitorUpdate>, ChannelError> where L::Target: Logger {
 		let send_res = self.send_htlc(amount_msat, payment_hash, cltv_expiry, source,
 			onion_routing_packet, false, skimmed_fee_msat, logger);
 		if let Err(e) = &send_res { if let ChannelError::Ignore(_) = e {} else { debug_assert!(false, "Sending cannot trigger channel failure"); } }
@@ -5336,7 +5334,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 	/// [`ChannelMonitorUpdate`] will be returned).
 	pub fn get_shutdown<SP: Deref>(&mut self, signer_provider: &SP, their_features: &InitFeatures,
 		target_feerate_sats_per_kw: Option<u32>, override_shutdown_script: Option<ShutdownScript>)
-	-> Result<(msgs::Shutdown, Option<&ChannelMonitorUpdate>, Vec<(HTLCSource, PaymentHash)>), APIError>
+	-> Result<(msgs::Shutdown, Option<ChannelMonitorUpdate>, Vec<(HTLCSource, PaymentHash)>), APIError>
 	where SP::Target: SignerProvider {
 		for htlc in self.context.pending_outbound_htlcs.iter() {
 			if let OutboundHTLCState::LocalAnnounced(_) = htlc.state {
@@ -5407,9 +5405,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 				}],
 			};
 			self.monitor_updating_paused(false, false, false, Vec::new(), Vec::new(), Vec::new());
-			if self.push_blockable_mon_update(monitor_update) {
-				self.context.pending_monitor_updates.last().map(|upd| &upd.update)
-			} else { None }
+			self.push_ret_blockable_mon_update(monitor_update)
 		} else { None };
 		let shutdown = msgs::Shutdown {
 			channel_id: self.context.channel_id,

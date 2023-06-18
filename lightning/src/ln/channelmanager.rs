@@ -2310,7 +2310,7 @@ where
 					// Update the monitor with the shutdown script if necessary.
 					if let Some(monitor_update) = monitor_update_opt.take() {
 						let update_id = monitor_update.update_id;
-						let update_res = self.chain_monitor.update_channel(funding_txo_opt.unwrap(), monitor_update);
+						let update_res = self.chain_monitor.update_channel(funding_txo_opt.unwrap(), &monitor_update);
 						break handle_new_monitor_update!(self, update_res, update_id, peer_state_lock, peer_state, per_peer_state, chan_entry);
 					}
 
@@ -3036,7 +3036,7 @@ where
 				match break_chan_entry!(self, send_res, chan) {
 					Some(monitor_update) => {
 						let update_id = monitor_update.update_id;
-						let update_res = self.chain_monitor.update_channel(funding_txo, monitor_update);
+						let update_res = self.chain_monitor.update_channel(funding_txo, &monitor_update);
 						if let Err(e) = handle_new_monitor_update!(self, update_res, update_id, peer_state_lock, peer_state, per_peer_state, chan) {
 							break Err(e);
 						}
@@ -4678,7 +4678,7 @@ where
 							peer_state.monitor_update_blocked_actions.entry(chan_id).or_insert(Vec::new()).push(action);
 						}
 						let update_id = monitor_update.update_id;
-						let update_res = self.chain_monitor.update_channel(prev_hop.outpoint, monitor_update);
+						let update_res = self.chain_monitor.update_channel(prev_hop.outpoint, &monitor_update);
 						let res = handle_new_monitor_update!(self, update_res, update_id, peer_state_lock,
 							peer_state, per_peer_state, chan);
 						if let Err(e) = res {
@@ -5347,7 +5347,7 @@ where
 					// Update the monitor with the shutdown script if necessary.
 					if let Some(monitor_update) = monitor_update_opt {
 						let update_id = monitor_update.update_id;
-						let update_res = self.chain_monitor.update_channel(funding_txo_opt.unwrap(), monitor_update);
+						let update_res = self.chain_monitor.update_channel(funding_txo_opt.unwrap(), &monitor_update);
 						break handle_new_monitor_update!(self, update_res, update_id, peer_state_lock, peer_state, per_peer_state, chan_entry);
 					}
 					break Ok(());
@@ -5544,7 +5544,7 @@ where
 				let funding_txo = chan.get().context.get_funding_txo();
 				let monitor_update_opt = try_chan_entry!(self, chan.get_mut().commitment_signed(&msg, &self.logger), chan);
 				if let Some(monitor_update) = monitor_update_opt {
-					let update_res = self.chain_monitor.update_channel(funding_txo.unwrap(), monitor_update);
+					let update_res = self.chain_monitor.update_channel(funding_txo.unwrap(), &monitor_update);
 					let update_id = monitor_update.update_id;
 					handle_new_monitor_update!(self, update_res, update_id, peer_state_lock,
 						peer_state, per_peer_state, chan)
@@ -5683,7 +5683,7 @@ where
 					let funding_txo = chan.get().context.get_funding_txo();
 					let (htlcs_to_fail, monitor_update_opt) = try_chan_entry!(self, chan.get_mut().revoke_and_ack(&msg, &self.logger), chan);
 					let res = if let Some(monitor_update) = monitor_update_opt {
-						let update_res = self.chain_monitor.update_channel(funding_txo.unwrap(), monitor_update);
+						let update_res = self.chain_monitor.update_channel(funding_txo.unwrap(), &monitor_update);
 						let update_id = monitor_update.update_id;
 						handle_new_monitor_update!(self, update_res, update_id,
 							peer_state_lock, peer_state, per_peer_state, chan)
@@ -5962,7 +5962,7 @@ where
 							has_monitor_update = true;
 
 							let update_res = self.chain_monitor.update_channel(
-								funding_txo.expect("channel is live"), monitor_update);
+								funding_txo.expect("channel is live"), &monitor_update);
 							let update_id = monitor_update.update_id;
 							let channel_id: [u8; 32] = *channel_id;
 							let res = handle_new_monitor_update!(self, update_res, update_id,
@@ -6307,7 +6307,7 @@ where
 					if let Some((monitor_update, further_update_exists)) = chan.get_mut().unblock_next_blocked_monitor_update() {
 						log_debug!(self.logger, "Unlocking monitor updating for channel {} and updating monitor",
 							log_bytes!(&channel_funding_outpoint.to_channel_id()[..]));
-						let update_res = self.chain_monitor.update_channel(channel_funding_outpoint, monitor_update);
+						let update_res = self.chain_monitor.update_channel(channel_funding_outpoint, &monitor_update);
 						let update_id = monitor_update.update_id;
 						if let Err(e) = handle_new_monitor_update!(self, update_res, update_id,
 							peer_state_lck, peer_state, per_peer_state, chan)
