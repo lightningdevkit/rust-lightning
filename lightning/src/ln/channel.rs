@@ -4449,22 +4449,14 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		None
 	}
 
-	/// Pushes a new monitor update into our monitor update queue, returning whether it should be
-	/// immediately given to the user for persisting or if it should be held as blocked.
-	fn push_blockable_mon_update(&mut self, update: ChannelMonitorUpdate) -> bool {
-		let release_monitor = self.context.pending_monitor_updates.iter().all(|upd| !upd.blocked);
-		self.context.pending_monitor_updates.push(PendingChannelMonitorUpdate {
-			update, blocked: !release_monitor
-		});
-		release_monitor
-	}
-
-	/// Pushes a new monitor update into our monitor update queue, returning a reference to it if
-	/// it should be immediately given to the user for persisting or `None` if it should be held as
-	/// blocked.
+	/// Pushes a new monitor update into our monitor update queue, returning it if it should be
+	/// immediately given to the user for persisting or `None` if it should be held as blocked.
 	fn push_ret_blockable_mon_update(&mut self, update: ChannelMonitorUpdate)
 	-> Option<ChannelMonitorUpdate> {
-		let release_monitor = self.push_blockable_mon_update(update);
+		let release_monitor = self.context.pending_monitor_updates.iter().all(|upd| !upd.blocked);
+		self.context.pending_monitor_updates.push(PendingChannelMonitorUpdate {
+			update, blocked: !release_monitor,
+		});
 		if release_monitor { self.context.pending_monitor_updates.last().map(|upd| upd.update.clone()) } else { None }
 	}
 
