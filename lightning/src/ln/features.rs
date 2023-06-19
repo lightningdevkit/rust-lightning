@@ -594,6 +594,15 @@ impl ChannelTypeFeatures {
 		<sealed::ChannelTypeContext as sealed::StaticRemoteKey>::set_required_bit(&mut ret.flags);
 		ret
 	}
+
+	#[cfg(any(anchors, test))]
+	/// Constructs a ChannelTypeFeatures with anchors support
+	pub(crate) fn anchors_zero_htlc_fee_and_dependencies() -> Self {
+		let mut ret = Self::empty();
+		<sealed::ChannelTypeContext as sealed::StaticRemoteKey>::set_required_bit(&mut ret.flags);
+		<sealed::ChannelTypeContext as sealed::AnchorsZeroFeeHtlcTx>::set_required_bit(&mut ret.flags);
+		ret
+	}
 }
 
 impl ToBase32 for InvoiceFeatures {
