@@ -8732,8 +8732,8 @@ mod tests {
 		let simple_anchors_raw_features = static_remote_key_required | simple_anchors_required;
 		let simple_anchors_init = InitFeatures::from_le_bytes(simple_anchors_raw_features.to_le_bytes().to_vec());
 		let simple_anchors_channel_type = ChannelTypeFeatures::from_le_bytes(simple_anchors_raw_features.to_le_bytes().to_vec());
-		assert!(simple_anchors_init.requires_unknown_bits());
-		assert!(simple_anchors_channel_type.requires_unknown_bits());
+		assert!(!simple_anchors_init.requires_unknown_bits());
+		assert!(!simple_anchors_channel_type.requires_unknown_bits());
 
 		// First, we'll try to open a channel between A and B where A requests a channel type for
 		// the original `option_anchors` feature (non zero fee htlc tx). This should be rejected by

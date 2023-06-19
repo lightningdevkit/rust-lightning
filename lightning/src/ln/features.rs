@@ -134,7 +134,7 @@ mod sealed {
 		// Byte 1
 		VariableLengthOnion | StaticRemoteKey | PaymentSecret,
 		// Byte 2
-		BasicMPP | Wumbo | AnchorsZeroFeeHtlcTx,
+		BasicMPP | Wumbo | AnchorsNonzeroFeeHtlcTx | AnchorsZeroFeeHtlcTx,
 		// Byte 3
 		ShutdownAnySegwit,
 		// Byte 4
@@ -150,7 +150,7 @@ mod sealed {
 		// Byte 1
 		VariableLengthOnion | StaticRemoteKey | PaymentSecret,
 		// Byte 2
-		BasicMPP | Wumbo | AnchorsZeroFeeHtlcTx,
+		BasicMPP | Wumbo | AnchorsNonzeroFeeHtlcTx | AnchorsZeroFeeHtlcTx,
 		// Byte 3
 		ShutdownAnySegwit,
 		// Byte 4
@@ -196,7 +196,7 @@ mod sealed {
 		// Byte 1
 		StaticRemoteKey,
 		// Byte 2
-		AnchorsZeroFeeHtlcTx,
+		AnchorsNonzeroFeeHtlcTx | AnchorsZeroFeeHtlcTx,
 		// Byte 3
 		,
 		// Byte 4
@@ -378,6 +378,9 @@ mod sealed {
 	define_feature!(19, Wumbo, [InitContext, NodeContext],
 		"Feature flags for `option_support_large_channel` (aka wumbo channels).", set_wumbo_optional, set_wumbo_required,
 		supports_wumbo, requires_wumbo);
+	define_feature!(21, AnchorsNonzeroFeeHtlcTx, [InitContext, NodeContext, ChannelTypeContext],
+		"Feature flags for `option_anchors_nonzero_fee_htlc_tx`.", set_anchors_nonzero_fee_htlc_tx_optional,
+		set_anchors_nonzero_fee_htlc_tx_required, supports_anchors_nonzero_fee_htlc_tx, requires_anchors_nonzero_fee_htlc_tx);
 	define_feature!(23, AnchorsZeroFeeHtlcTx, [InitContext, NodeContext, ChannelTypeContext],
 		"Feature flags for `option_anchors_zero_fee_htlc_tx`.", set_anchors_zero_fee_htlc_tx_optional,
 		set_anchors_zero_fee_htlc_tx_required, supports_anchors_zero_fee_htlc_tx, requires_anchors_zero_fee_htlc_tx);
