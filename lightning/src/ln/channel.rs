@@ -588,17 +588,10 @@ pub(crate) const DISCONNECT_PEER_AWAITING_RESPONSE_TICKS: usize = 2;
 
 struct PendingChannelMonitorUpdate {
 	update: ChannelMonitorUpdate,
-	/// In some cases we need to delay letting the [`ChannelMonitorUpdate`] go until after an
-	/// `Event` is processed by the user. This bool indicates the [`ChannelMonitorUpdate`] is
-	/// blocked on some external event and the [`ChannelManager`] will update us when we're ready.
-	///
-	/// [`ChannelManager`]: super::channelmanager::ChannelManager
-	blocked: bool,
 }
 
 impl_writeable_tlv_based!(PendingChannelMonitorUpdate, {
 	(0, update, required),
-	(2, blocked, required),
 });
 
 /// Contains everything about the channel including state, and various flags.
@@ -2289,7 +2282,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 						debug_assert!(false, "If there is a pending blocked monitor we should have MonitorUpdateInProgress set");
 						let update = self.build_commitment_no_status_check(logger);
 						self.context.pending_monitor_updates.push(PendingChannelMonitorUpdate {
-							update, blocked: true,
+							update,
 						});
 					}
 				}
@@ -3552,9 +3545,6 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 	{
 		assert_eq!(self.context.channel_state & ChannelState::MonitorUpdateInProgress as u32, ChannelState::MonitorUpdateInProgress as u32);
 		self.context.channel_state &= !(ChannelState::MonitorUpdateInProgress as u32);
-		for upd in self.context.pending_monitor_updates.iter() {
-			debug_assert!(upd.blocked);
-		}
 
 		// If we're past (or at) the FundingSent stage on an outbound channel, try to
 		// (re-)broadcast the funding transaction as we may have declined to broadcast it when we
@@ -4422,9 +4412,6 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 	/// Returns the next blocked monitor update, if one exists, and a bool which indicates a
 	/// further blocked monitor update exists after the next.
 	pub fn unblock_next_blocked_monitor_update(&mut self) -> Option<(ChannelMonitorUpdate, bool)> {
-		for upd in self.context.pending_monitor_updates.iter() {
-			debug_assert!(upd.blocked);
-		}
 		if self.context.pending_monitor_updates.is_empty() { return None; }
 		Some((self.context.pending_monitor_updates.remove(0).update,
 			!self.context.pending_monitor_updates.is_empty()))
@@ -4437,7 +4424,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		let release_monitor = self.context.pending_monitor_updates.is_empty();
 		if !release_monitor {
 			self.context.pending_monitor_updates.push(PendingChannelMonitorUpdate {
-				update, blocked: true,
+				update,
 			});
 			None
 		} else {
