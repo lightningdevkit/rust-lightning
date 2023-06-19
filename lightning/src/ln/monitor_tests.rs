@@ -1785,7 +1785,7 @@ fn do_test_monitor_rebroadcast_pending_claims(anchors: bool) {
 			let mut feerate = 0;
 			#[cfg(anchors)] {
 				feerate = if let Event::BumpTransaction(BumpTransactionEvent::HTLCResolution {
-					target_feerate_sat_per_1000_weight, mut htlc_descriptors, tx_lock_time,
+					target_feerate_sat_per_1000_weight, mut htlc_descriptors, tx_lock_time, ..
 				}) = events.pop().unwrap() {
 					let secp = Secp256k1::new();
 					assert_eq!(htlc_descriptors.len(), 1);

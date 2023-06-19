@@ -57,6 +57,15 @@ pub(crate) const MIN_ACCEPTED_HTLC_SCRIPT_WEIGHT: usize = 136;
 /// This is the maximum post-anchor value.
 pub const MAX_ACCEPTED_HTLC_SCRIPT_WEIGHT: usize = 143;
 
+/// The upper bound weight of an anchor input.
+pub const ANCHOR_INPUT_WITNESS_WEIGHT: u64 = 116;
+/// The upper bound weight of an HTLC timeout input from a commitment transaction with anchor
+/// outputs.
+pub const HTLC_TIMEOUT_INPUT_ANCHOR_WITNESS_WEIGHT: u64 = 288;
+/// The upper bound weight of an HTLC success input from a commitment transaction with anchor
+/// outputs.
+pub const HTLC_SUCCESS_INPUT_ANCHOR_WITNESS_WEIGHT: u64 = 327;
+
 /// Gets the weight for an HTLC-Success transaction.
 #[inline]
 pub fn htlc_success_tx_weight(opt_anchors: bool) -> u64 {

@@ -389,3 +389,7 @@ where
 		self.1.block_disconnected(header, height);
 	}
 }
+
+/// A unique identifier to track each pending output claim within a [`ChannelMonitor`].
+#[derive(Copy, Clone, Debug, Hash, PartialEq, Eq)]
+pub struct ClaimId(pub [u8; 32]);

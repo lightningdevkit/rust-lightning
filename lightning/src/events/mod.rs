@@ -33,8 +33,6 @@ use crate::util::string::UntrustedString;
 use crate::routing::router::{BlindedTail, Path, RouteHop, RouteParameters};
 
 use bitcoin::{PackedLockTime, Transaction, OutPoint};
-#[cfg(anchors)]
-use bitcoin::{Txid, TxIn, TxOut, Witness};
 use bitcoin::blockdata::script::Script;
 use bitcoin::hashes::Hash;
 use bitcoin::hashes::sha256::Hash as Sha256;
