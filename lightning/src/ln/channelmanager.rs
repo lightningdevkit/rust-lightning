@@ -1819,7 +1819,7 @@ macro_rules! emit_channel_ready_event {
 }
 
 macro_rules! handle_monitor_update_completion {
-	($self: ident, $update_id: expr, $peer_state_lock: expr, $peer_state: expr, $per_peer_state_lock: expr, $chan: expr) => { {
+	($self: ident, $peer_state_lock: expr, $peer_state: expr, $per_peer_state_lock: expr, $chan: expr) => { {
 		let mut updates = $chan.monitor_updating_restored(&$self.logger,
 			&$self.node_signer, $self.genesis_hash, &$self.default_configuration,
 			$self.best_block.read().unwrap().height());
@@ -1898,16 +1898,15 @@ macro_rules! handle_new_monitor_update {
 			},
 		}
 	} };
-	($self: ident, $update_res: expr, $update_id: expr, $peer_state_lock: expr, $peer_state: expr, $per_peer_state_lock: expr, $chan: expr, MANUALLY_REMOVING_INITIAL_MONITOR, $remove: expr) => {
+	($self: ident, $update_res: expr, $peer_state_lock: expr, $peer_state: expr, $per_peer_state_lock: expr, $chan: expr, MANUALLY_REMOVING_INITIAL_MONITOR, $remove: expr) => {
 		handle_new_monitor_update!($self, $update_res, $peer_state_lock, $peer_state,
 			$per_peer_state_lock, $chan, _internal, $remove,
-			handle_monitor_update_completion!($self, $update_id, $peer_state_lock, $peer_state, $per_peer_state_lock, $chan))
+			handle_monitor_update_completion!($self, $peer_state_lock, $peer_state, $per_peer_state_lock, $chan))
 	};
-	($self: ident, $update_res: expr, $update_id: expr, $peer_state_lock: expr, $peer_state: expr, $per_peer_state_lock: expr, $chan_entry: expr, INITIAL_MONITOR) => {
-		handle_new_monitor_update!($self, $update_res, $update_id, $peer_state_lock, $peer_state, $per_peer_state_lock, $chan_entry.get_mut(), MANUALLY_REMOVING_INITIAL_MONITOR, $chan_entry.remove_entry())
+	($self: ident, $update_res: expr, $peer_state_lock: expr, $peer_state: expr, $per_peer_state_lock: expr, $chan_entry: expr, INITIAL_MONITOR) => {
+		handle_new_monitor_update!($self, $update_res, $peer_state_lock, $peer_state, $per_peer_state_lock, $chan_entry.get_mut(), MANUALLY_REMOVING_INITIAL_MONITOR, $chan_entry.remove_entry())
 	};
 	($self: ident, $funding_txo: expr, $update: expr, $peer_state_lock: expr, $peer_state: expr, $per_peer_state_lock: expr, $chan: expr, MANUALLY_REMOVING, $remove: expr) => { {
-		let update_id = $update.update_id;
 		let in_flight_updates = $peer_state.in_flight_monitor_updates.entry($funding_txo)
 			.or_insert_with(Vec::new);
 		// During startup, we push monitor updates as background events through to here in
@@ -1924,7 +1923,7 @@ macro_rules! handle_new_monitor_update {
 			{
 				let _ = in_flight_updates.remove(idx);
 				if in_flight_updates.is_empty() && $chan.blocked_monitor_updates_pending() == 0 {
-					handle_monitor_update_completion!($self, update_id, $peer_state_lock, $peer_state, $per_peer_state_lock, $chan);
+					handle_monitor_update_completion!($self, $peer_state_lock, $peer_state, $per_peer_state_lock, $chan);
 				}
 			})
 	} };
@@ -4934,7 +4933,7 @@ where
 		if !channel.get().is_awaiting_monitor_update() || channel.get().context.get_latest_monitor_update_id() != highest_applied_update_id {
 			return;
 		}
-		handle_monitor_update_completion!(self, highest_applied_update_id, peer_state_lock, peer_state, per_peer_state, channel.get_mut());
+		handle_monitor_update_completion!(self, peer_state_lock, peer_state, per_peer_state, channel.get_mut());
 	}
 
 	/// Accepts a request to open a channel after a [`Event::OpenChannelRequest`].
@@ -5257,7 +5256,7 @@ where
 				let monitor_res = self.chain_monitor.watch_channel(monitor.get_funding_txo().0, monitor);
 
 				let chan = e.insert(chan);
-				let mut res = handle_new_monitor_update!(self, monitor_res, 0, peer_state_lock, peer_state,
+				let mut res = handle_new_monitor_update!(self, monitor_res, peer_state_lock, peer_state,
 					per_peer_state, chan, MANUALLY_REMOVING_INITIAL_MONITOR,
 					{ peer_state.channel_by_id.remove(&new_channel_id) });
 
@@ -5292,7 +5291,7 @@ where
 				let monitor = try_chan_entry!(self,
 					chan.get_mut().funding_signed(&msg, best_block, &self.signer_provider, &self.logger), chan);
 				let update_res = self.chain_monitor.watch_channel(chan.get().context.get_funding_txo().unwrap(), monitor);
-				let mut res = handle_new_monitor_update!(self, update_res, 0, peer_state_lock, peer_state, per_peer_state, chan, INITIAL_MONITOR);
+				let mut res = handle_new_monitor_update!(self, update_res, peer_state_lock, peer_state, per_peer_state, chan, INITIAL_MONITOR);
 				if let Err(MsgHandleErrInternal { ref mut shutdown_finish, .. }) = res {
 					// We weren't able to watch the channel to begin with, so no updates should be made on
 					// it. Previously, full_stack_target found an (unreachable) panic when the
