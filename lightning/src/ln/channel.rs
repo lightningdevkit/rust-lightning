@@ -41,7 +41,7 @@ use crate::routing::gossip::NodeId;
 use crate::util::ser::{Readable, ReadableArgs, Writeable, Writer, VecWriter};
 use crate::util::logger::Logger;
 use crate::util::errors::APIError;
-use crate::util::config::{UserConfig, ChannelConfig, LegacyChannelConfig, ChannelHandshakeConfig, ChannelHandshakeLimits};
+use crate::util::config::{UserConfig, ChannelConfig, LegacyChannelConfig, ChannelHandshakeConfig, ChannelHandshakeLimits, MaxDustHTLCExposure};
 use crate::util::scid_utils::scid_from_parts;
 
 use crate::io;
@@ -1060,7 +1060,10 @@ impl<Signer: ChannelSigner> ChannelContext<Signer> {
 	}
 
 	pub fn get_max_dust_htlc_exposure_msat(&self) -> u64 {
-		self.config.options.max_dust_htlc_exposure_msat
+		match self.config.options.max_dust_htlc_exposure {
+			MaxDustHTLCExposure::FixedLimitMsat(limit) => limit,
+			MaxDustHTLCExposure::FeeRateMultiplier(_) => 5_000_000,
+		}
 	}
 
 	/// Returns the previous [`ChannelConfig`] applied to this channel, if any.

@@ -315,6 +315,55 @@ impl Default for ChannelHandshakeLimits {
 	}
 }
 
+/// Options for how to set the max dust HTLC exposure allowed on a channel. See
+/// [`ChannelConfig::max_dust_htlc_exposure`] for details.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum MaxDustHTLCExposure {
+	/// This sets a fixed limit on the total dust exposure in millisatoshis. Setting this too low
+	/// may prevent the sending or receipt of low-value HTLCs on high-traffic nodes, however this
+	/// limit is very important to prevent stealing of large amounts of dust HTLCs by miners
+	/// through [fee griefing
+	/// attacks](https://lists.linuxfoundation.org/pipermail/lightning-dev/2020-May/002714.html).
+	///
+	/// Note that if the feerate increases significantly, without a manual increase
+	/// to this maximum the channel may be unable to send/receive HTLCs between the maximum dust
+	/// exposure and the new minimum value for HTLCs to be economically viable to claim.
+	FixedLimitMsat(u64),
+	/// This sets a multiplier on the estimated high priority feerate (sats/KW, as obtained from
+	/// [`FeeEstimator`]) to determine the maximum allowed dust exposure. If this variant is used
+	/// then the maximum dust exposure in millisatoshis is calculated as:
+	/// `high_priority_feerate_per_kw * value`. For example, with our default value
+	/// `FeeRateMultiplier(5000)`:
+	///
+	/// - For the minimum fee rate of 1 sat/vByte (250 sat/KW, although the minimum
+	/// defaults to 253 sats/KW for rounding, see [`FeeEstimator`]), the max dust exposure would
+	/// be 253 * 5000 = 1,265,000 msats.
+	/// - For a fee rate of 30 sat/vByte (7500 sat/KW), the max dust exposure would be
+	/// 7500 * 5000 = 37,500,000 msats.
+	///
+	/// This allows the maximum dust exposure to automatically scale with fee rate changes.
+	///
+	/// Note, if you're using a third-party fee estimator, this may leave you more exposed to a
+	/// fee griefing attack, where your fee estimator may purposely overestimate the fee rate,
+	/// causing you to accept more dust HTLCs than you would otherwise.
+	///
+	/// This variant is primarily meant to serve pre-anchor channels, as HTLC fees being included
+	/// on HTLC outputs means your channel may be subject to more dust exposure in the event of
+	/// increases in fee rate.
+	///
+	/// # Backwards Compatibility
+	/// This variant only became available in LDK 0.0.116, so if you downgrade to a prior version
+	/// by default this will be set to a [`Self::FixedLimitMsat`] of 5,000,000 msat.
+	///
+	/// [`FeeEstimator`]: crate::chain::chaininterface::FeeEstimator
+	FeeRateMultiplier(u64),
+}
+
+impl_writeable_tlv_based_enum!(MaxDustHTLCExposure, ;
+	(1, FixedLimitMsat),
+	(3, FeeRateMultiplier),
+);
+
 /// Options which apply on a per-channel basis and may change at runtime or based on negotiation
 /// with our counterparty.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -372,15 +421,15 @@ pub struct ChannelConfig {
 	/// channel negotiated throughout the channel open process, along with the fees required to have
 	/// a broadcastable HTLC spending transaction. When a channel supports anchor outputs
 	/// (specifically the zero fee HTLC transaction variant), this threshold no longer takes into
-	/// account the HTLC transaction fee as it is zero.
+	/// account the HTLC transaction fee as it is zero. Because of this, you may want to set this
+	/// value to a fixed limit for channels using anchor outputs, while the fee rate multiplier
+	/// variant is primarily intended for use with pre-anchor channels.
 	///
-	/// This limit is applied for sent, forwarded, and received HTLCs and limits the total
-	/// exposure across all three types per-channel. Setting this too low may prevent the
-	/// sending or receipt of low-value HTLCs on high-traffic nodes, and this limit is very
-	/// important to prevent stealing of dust HTLCs by miners.
+	/// The selected limit is applied for sent, forwarded, and received HTLCs and limits the total
+	/// exposure across all three types per-channel.
 	///
-	/// Default value: 5_000_000 msat.
-	pub max_dust_htlc_exposure_msat: u64,
+	/// Default value: [`MaxDustHTLCExposure::FeeRateMultiplier`] with a multiplier of 5000.
+	pub max_dust_htlc_exposure: MaxDustHTLCExposure,
 	/// The additional fee we're willing to pay to avoid waiting for the counterparty's
 	/// `to_self_delay` to reclaim funds.
 	///
@@ -451,7 +500,7 @@ impl ChannelConfig {
 			self.cltv_expiry_delta = cltv_expiry_delta;
 		}
 		if let Some(max_dust_htlc_exposure_msat) = update.max_dust_htlc_exposure_msat {
-			self.max_dust_htlc_exposure_msat = max_dust_htlc_exposure_msat;
+			self.max_dust_htlc_exposure = max_dust_htlc_exposure_msat;
 		}
 		if let Some(force_close_avoidance_max_fee_satoshis) = update.force_close_avoidance_max_fee_satoshis {
 			self.force_close_avoidance_max_fee_satoshis = force_close_avoidance_max_fee_satoshis;
@@ -466,24 +515,67 @@ impl Default for ChannelConfig {
 			forwarding_fee_proportional_millionths: 0,
 			forwarding_fee_base_msat: 1000,
 			cltv_expiry_delta: 6 * 12, // 6 blocks/hour * 12 hours
-			max_dust_htlc_exposure_msat: 5_000_000,
+			max_dust_htlc_exposure: MaxDustHTLCExposure::FeeRateMultiplier(5000),
 			force_close_avoidance_max_fee_satoshis: 1000,
 			accept_underpaying_htlcs: false,
 		}
 	}
 }
 
-impl_writeable_tlv_based!(ChannelConfig, {
-	(0, forwarding_fee_proportional_millionths, required),
-	(1, accept_underpaying_htlcs, (default_value, false)),
-	(2, forwarding_fee_base_msat, required),
-	(4, cltv_expiry_delta, required),
-	(6, max_dust_htlc_exposure_msat, required),
-	// ChannelConfig serialized this field with a required type of 8 prior to the introduction of
-	// LegacyChannelConfig. To make sure that serialization is not compatible with this one, we use
-	// the next required type of 10, which if seen by the old serialization will always fail.
-	(10, force_close_avoidance_max_fee_satoshis, required),
-});
+impl crate::util::ser::Writeable for ChannelConfig {
+	fn write<W: crate::util::ser::Writer>(&self, writer: &mut W) -> Result<(), crate::io::Error> {
+		let max_dust_htlc_exposure_msat_fixed_limit = match self.max_dust_htlc_exposure {
+			MaxDustHTLCExposure::FixedLimitMsat(limit) => limit,
+			MaxDustHTLCExposure::FeeRateMultiplier(_) => 5_000_000,
+		};
+		write_tlv_fields!(writer, {
+			(0, self.forwarding_fee_proportional_millionths, required),
+			(1, self.accept_underpaying_htlcs, (default_value, false)),
+			(2, self.forwarding_fee_base_msat, required),
+			(3, self.max_dust_htlc_exposure, required),
+			(4, self.cltv_expiry_delta, required),
+			(6, max_dust_htlc_exposure_msat_fixed_limit, required),
+			// ChannelConfig serialized this field with a required type of 8 prior to the introduction of
+			// LegacyChannelConfig. To make sure that serialization is not compatible with this one, we use
+			// the next required type of 10, which if seen by the old serialization will always fail.
+			(10, self.force_close_avoidance_max_fee_satoshis, required),
+		});
+		Ok(())
+	}
+}
+
+impl crate::util::ser::Readable for ChannelConfig {
+	fn read<R: crate::io::Read>(reader: &mut R) -> Result<Self, crate::ln::msgs::DecodeError> {
+		let mut forwarding_fee_proportional_millionths = 0;
+		let mut accept_underpaying_htlcs = false;
+		let mut forwarding_fee_base_msat = 1000;
+		let mut cltv_expiry_delta = 6 * 12;
+		let mut max_dust_htlc_exposure_msat = None;
+		let mut max_dust_htlc_exposure_enum = None;
+		let mut force_close_avoidance_max_fee_satoshis = 1000;
+		read_tlv_fields!(reader, {
+			(0, forwarding_fee_proportional_millionths, required),
+			(1, accept_underpaying_htlcs, (default_value, false)),
+			(2, forwarding_fee_base_msat, required),
+			(3, max_dust_htlc_exposure_enum, option),
+			(4, cltv_expiry_delta, required),
+			// Has always been written, but became optionally read in 0.0.116
+			(6, max_dust_htlc_exposure_msat, option),
+			(10, force_close_avoidance_max_fee_satoshis, required),
+		});
+		let max_dust_htlc_fixed_limit = max_dust_htlc_exposure_msat.unwrap_or(5_000_000);
+		let max_dust_htlc_exposure_msat = max_dust_htlc_exposure_enum
+			.unwrap_or(MaxDustHTLCExposure::FixedLimitMsat(max_dust_htlc_fixed_limit));
+		Ok(Self {
+			forwarding_fee_proportional_millionths,
+			accept_underpaying_htlcs,
+			forwarding_fee_base_msat,
+			cltv_expiry_delta,
+			max_dust_htlc_exposure: max_dust_htlc_exposure_msat,
+			force_close_avoidance_max_fee_satoshis,
+		})
+	}
+}
 
 /// A parallel struct to [`ChannelConfig`] to define partial updates.
 #[allow(missing_docs)]
@@ -491,7 +583,7 @@ pub struct ChannelConfigUpdate {
 	pub forwarding_fee_proportional_millionths: Option<u32>,
 	pub forwarding_fee_base_msat: Option<u32>,
 	pub cltv_expiry_delta: Option<u16>,
-	pub max_dust_htlc_exposure_msat: Option<u64>,
+	pub max_dust_htlc_exposure_msat: Option<MaxDustHTLCExposure>,
 	pub force_close_avoidance_max_fee_satoshis: Option<u64>,
 }
 
@@ -513,7 +605,7 @@ impl From<ChannelConfig> for ChannelConfigUpdate {
 			forwarding_fee_proportional_millionths: Some(config.forwarding_fee_proportional_millionths),
 			forwarding_fee_base_msat: Some(config.forwarding_fee_base_msat),
 			cltv_expiry_delta: Some(config.cltv_expiry_delta),
-			max_dust_htlc_exposure_msat: Some(config.max_dust_htlc_exposure_msat),
+			max_dust_htlc_exposure_msat: Some(config.max_dust_htlc_exposure),
 			force_close_avoidance_max_fee_satoshis: Some(config.force_close_avoidance_max_fee_satoshis),
 		}
 	}
@@ -546,12 +638,17 @@ impl Default for LegacyChannelConfig {
 
 impl crate::util::ser::Writeable for LegacyChannelConfig {
 	fn write<W: crate::util::ser::Writer>(&self, writer: &mut W) -> Result<(), crate::io::Error> {
+		let max_dust_htlc_exposure_msat_fixed_limit = match self.options.max_dust_htlc_exposure {
+			MaxDustHTLCExposure::FixedLimitMsat(limit) => limit,
+			MaxDustHTLCExposure::FeeRateMultiplier(_) => 5_000_000,
+		};
 		write_tlv_fields!(writer, {
 			(0, self.options.forwarding_fee_proportional_millionths, required),
-			(1, self.options.max_dust_htlc_exposure_msat, (default_value, 5_000_000)),
+			(1, max_dust_htlc_exposure_msat_fixed_limit, required),
 			(2, self.options.cltv_expiry_delta, required),
 			(3, self.options.force_close_avoidance_max_fee_satoshis, (default_value, 1000)),
 			(4, self.announced_channel, required),
+			(5, self.options.max_dust_htlc_exposure, required),
 			(6, self.commit_upfront_shutdown_pubkey, required),
 			(8, self.options.forwarding_fee_base_msat, required),
 		});
@@ -562,25 +659,32 @@ impl crate::util::ser::Writeable for LegacyChannelConfig {
 impl crate::util::ser::Readable for LegacyChannelConfig {
 	fn read<R: crate::io::Read>(reader: &mut R) -> Result<Self, crate::ln::msgs::DecodeError> {
 		let mut forwarding_fee_proportional_millionths = 0;
-		let mut max_dust_htlc_exposure_msat = 5_000_000;
+		let mut max_dust_htlc_exposure_msat_fixed_limit = None;
 		let mut cltv_expiry_delta = 0;
 		let mut force_close_avoidance_max_fee_satoshis = 1000;
 		let mut announced_channel = false;
 		let mut commit_upfront_shutdown_pubkey = false;
 		let mut forwarding_fee_base_msat = 0;
+		let mut max_dust_htlc_exposure_enum = None;
 		read_tlv_fields!(reader, {
 			(0, forwarding_fee_proportional_millionths, required),
-			(1, max_dust_htlc_exposure_msat, (default_value, 5_000_000u64)),
+			// Has always been written, but became optionally read in 0.0.116
+			(1, max_dust_htlc_exposure_msat_fixed_limit, option),
 			(2, cltv_expiry_delta, required),
 			(3, force_close_avoidance_max_fee_satoshis, (default_value, 1000u64)),
 			(4, announced_channel, required),
+			(5, max_dust_htlc_exposure_enum, option),
 			(6, commit_upfront_shutdown_pubkey, required),
 			(8, forwarding_fee_base_msat, required),
 		});
+		let max_dust_htlc_exposure_msat_fixed_limit =
+			max_dust_htlc_exposure_msat_fixed_limit.unwrap_or(5_000_000);
+		let max_dust_htlc_exposure_msat = max_dust_htlc_exposure_enum
+			.unwrap_or(MaxDustHTLCExposure::FixedLimitMsat(max_dust_htlc_exposure_msat_fixed_limit));
 		Ok(Self {
 			options: ChannelConfig {
 				forwarding_fee_proportional_millionths,
-				max_dust_htlc_exposure_msat,
+				max_dust_htlc_exposure: max_dust_htlc_exposure_msat,
 				cltv_expiry_delta,
 				force_close_avoidance_max_fee_satoshis,
 				forwarding_fee_base_msat,

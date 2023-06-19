@@ -27,7 +27,7 @@ use crate::util::scid_utils;
 use crate::util::test_utils;
 use crate::util::test_utils::{panicking, TestChainMonitor, TestScorer, TestKeysInterface};
 use crate::util::errors::APIError;
-use crate::util::config::UserConfig;
+use crate::util::config::{UserConfig, MaxDustHTLCExposure};
 use crate::util::ser::{ReadableArgs, Writeable};
 
 use bitcoin::blockdata::block::{Block, BlockHeader};
@@ -2573,7 +2573,7 @@ pub fn test_default_channel_config() -> UserConfig {
 	default_config.channel_handshake_config.our_htlc_minimum_msat = 1000;
 	// When most of our tests were written, we didn't have the notion of a `max_dust_htlc_exposure_msat`,
 	// It now defaults to 5_000_000 msat; to avoid interfering with tests we bump it to 50_000_000 msat.
-	default_config.channel_config.max_dust_htlc_exposure_msat = 50_000_000;
+	default_config.channel_config.max_dust_htlc_exposure = MaxDustHTLCExposure::FixedLimitMsat(50_000_000);
 	default_config
 }
 

@@ -26,7 +26,7 @@ use crate::ln::msgs::{ChannelMessageHandler, ChannelUpdate};
 use crate::ln::wire::Encode;
 use crate::util::ser::{Writeable, Writer};
 use crate::util::test_utils;
-use crate::util::config::{UserConfig, ChannelConfig};
+use crate::util::config::{UserConfig, ChannelConfig, MaxDustHTLCExposure};
 use crate::util::errors::APIError;
 
 use bitcoin::hash_types::BlockHash;
@@ -1374,7 +1374,8 @@ fn test_phantom_dust_exposure_failure() {
 	// Set the max dust exposure to the dust limit.
 	let max_dust_exposure = 546;
 	let mut receiver_config = UserConfig::default();
-	receiver_config.channel_config.max_dust_htlc_exposure_msat = max_dust_exposure;
+	receiver_config.channel_config.max_dust_htlc_exposure =
+		MaxDustHTLCExposure::FixedLimitMsat(max_dust_exposure);
 	receiver_config.channel_handshake_config.announced_channel = true;
 
 	let chanmon_cfgs = create_chanmon_cfgs(2);
