@@ -1600,7 +1600,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 					debug_assert!(htlc_input_idx_opt.is_some());
 					BitcoinOutPoint::new(*txid, htlc_input_idx_opt.unwrap_or(0))
 				} else {
-					debug_assert!(!self.onchain_tx_handler.opt_anchors());
+					debug_assert!(!self.onchain_tx_handler.channel_type_features().supports_anchors_zero_fee_htlc_tx());
 					BitcoinOutPoint::new(*txid, 0)
 				}
 			} else {
@@ -2459,10 +2459,10 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 						// If the channel supports anchor outputs, we'll need to emit an external
 						// event to be consumed such that a child transaction is broadcast with a
 						// high enough feerate for the parent commitment transaction to confirm.
-						if self.onchain_tx_handler.opt_anchors() {
+						if self.onchain_tx_handler.channel_type_features().supports_anchors_zero_fee_htlc_tx() {
 							let funding_output = HolderFundingOutput::build(
 								self.funding_redeemscript.clone(), self.channel_value_satoshis,
-								self.onchain_tx_handler.opt_anchors(),
+								self.onchain_tx_handler.channel_type_features().clone(),
 							);
 							let best_block_height = self.best_block.height();
 							let commitment_package = PackageTemplate::build_package(
@@ -2653,7 +2653,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			// First, process non-htlc outputs (to_holder & to_counterparty)
 			for (idx, outp) in tx.output.iter().enumerate() {
 				if outp.script_pubkey == revokeable_p2wsh {
-					let revk_outp = RevokedOutput::build(per_commitment_point, self.counterparty_commitment_params.counterparty_delayed_payment_base_key, self.counterparty_commitment_params.counterparty_htlc_base_key, per_commitment_key, outp.value, self.counterparty_commitment_params.on_counterparty_tx_csv, self.onchain_tx_handler.opt_anchors());
+					let revk_outp = RevokedOutput::build(per_commitment_point, self.counterparty_commitment_params.counterparty_delayed_payment_base_key, self.counterparty_commitment_params.counterparty_htlc_base_key, per_commitment_key, outp.value, self.counterparty_commitment_params.on_counterparty_tx_csv, self.onchain_tx_handler.channel_type_features().supports_anchors_zero_fee_htlc_tx());
 					let justice_package = PackageTemplate::build_package(commitment_txid, idx as u32, PackageSolvingData::RevokedOutput(revk_outp), height + self.counterparty_commitment_params.on_counterparty_tx_csv as u32, height);
 					claimable_outpoints.push(justice_package);
 					to_counterparty_output_info =
@@ -2671,7 +2671,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 							return (claimable_outpoints, (commitment_txid, watch_outputs),
 								to_counterparty_output_info);
 						}
-						let revk_htlc_outp = RevokedHTLCOutput::build(per_commitment_point, self.counterparty_commitment_params.counterparty_delayed_payment_base_key, self.counterparty_commitment_params.counterparty_htlc_base_key, per_commitment_key, htlc.amount_msat / 1000, htlc.clone(), self.onchain_tx_handler.channel_transaction_parameters.opt_anchors.is_some());
+						let revk_htlc_outp = RevokedHTLCOutput::build(per_commitment_point, self.counterparty_commitment_params.counterparty_delayed_payment_base_key, self.counterparty_commitment_params.counterparty_htlc_base_key, per_commitment_key, htlc.amount_msat / 1000, htlc.clone(), &self.onchain_tx_handler.channel_transaction_parameters.channel_type_features);
 						let justice_package = PackageTemplate::build_package(commitment_txid, transaction_output_index, PackageSolvingData::RevokedHTLCOutput(revk_htlc_outp), htlc.cltv_expiry, height);
 						claimable_outpoints.push(justice_package);
 					}
@@ -2789,13 +2789,13 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 							CounterpartyOfferedHTLCOutput::build(*per_commitment_point,
 								self.counterparty_commitment_params.counterparty_delayed_payment_base_key,
 								self.counterparty_commitment_params.counterparty_htlc_base_key,
-								preimage.unwrap(), htlc.clone(), self.onchain_tx_handler.opt_anchors()))
+								preimage.unwrap(), htlc.clone(), self.onchain_tx_handler.channel_type_features().clone()))
 					} else {
 						PackageSolvingData::CounterpartyReceivedHTLCOutput(
 							CounterpartyReceivedHTLCOutput::build(*per_commitment_point,
 								self.counterparty_commitment_params.counterparty_delayed_payment_base_key,
 								self.counterparty_commitment_params.counterparty_htlc_base_key,
-								htlc.clone(), self.onchain_tx_handler.opt_anchors()))
+								htlc.clone(), self.onchain_tx_handler.channel_type_features().clone()))
 					};
 					let counterparty_package = PackageTemplate::build_package(commitment_txid, transaction_output_index, counterparty_htlc_outp, htlc.cltv_expiry, 0);
 					claimable_outpoints.push(counterparty_package);
@@ -2866,7 +2866,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			if let Some(transaction_output_index) = htlc.transaction_output_index {
 				let htlc_output = if htlc.offered {
 					let htlc_output = HolderHTLCOutput::build_offered(
-						htlc.amount_msat, htlc.cltv_expiry, self.onchain_tx_handler.opt_anchors()
+						htlc.amount_msat, htlc.cltv_expiry, self.onchain_tx_handler.channel_type_features().clone()
 					);
 					htlc_output
 				} else {
@@ -2877,7 +2877,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 						continue;
 					};
 					let htlc_output = HolderHTLCOutput::build_accepted(
-						payment_preimage, htlc.amount_msat, self.onchain_tx_handler.opt_anchors()
+						payment_preimage, htlc.amount_msat, self.onchain_tx_handler.channel_type_features().clone()
 					);
 					htlc_output
 				};
@@ -2961,7 +2961,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		let mut holder_transactions = vec![commitment_tx];
 		// When anchor outputs are present, the HTLC transactions are only valid once the commitment
 		// transaction confirms.
-		if self.onchain_tx_handler.opt_anchors() {
+		if self.onchain_tx_handler.channel_type_features().supports_anchors_zero_fee_htlc_tx() {
 			return holder_transactions;
 		}
 		for htlc in self.current_holder_commitment_tx.htlc_outputs.iter() {
@@ -2999,7 +2999,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		let mut holder_transactions = vec![commitment_tx];
 		// When anchor outputs are present, the HTLC transactions are only final once the commitment
 		// transaction confirms due to the CSV 1 encumberance.
-		if self.onchain_tx_handler.opt_anchors() {
+		if self.onchain_tx_handler.channel_type_features().supports_anchors_zero_fee_htlc_tx() {
 			return holder_transactions;
 		}
 		for htlc in self.current_holder_commitment_tx.htlc_outputs.iter() {
@@ -3223,7 +3223,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 
 		let should_broadcast = self.should_broadcast_holder_commitment_txn(logger);
 		if should_broadcast {
-			let funding_outp = HolderFundingOutput::build(self.funding_redeemscript.clone(), self.channel_value_satoshis, self.onchain_tx_handler.opt_anchors());
+			let funding_outp = HolderFundingOutput::build(self.funding_redeemscript.clone(), self.channel_value_satoshis, self.onchain_tx_handler.channel_type_features().clone());
 			let commitment_package = PackageTemplate::build_package(self.funding_info.0.txid.clone(), self.funding_info.0.index as u32, PackageSolvingData::HolderFundingOutput(funding_outp), self.best_block.height(), self.best_block.height());
 			claimable_outpoints.push(commitment_package);
 			self.pending_monitor_events.push(MonitorEvent::CommitmentTxConfirmed(self.funding_info.0));
@@ -3232,7 +3232,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			// We can't broadcast our HTLC transactions while the commitment transaction is
 			// unconfirmed. We'll delay doing so until we detect the confirmed commitment in
 			// `transactions_confirmed`.
-			if !self.onchain_tx_handler.opt_anchors() {
+			if !self.onchain_tx_handler.channel_type_features().supports_anchors_zero_fee_htlc_tx() {
 				// Because we're broadcasting a commitment transaction, we should construct the package
 				// assuming it gets confirmed in the next block. Sadly, we have code which considers
 				// "not yet confirmed" things as discardable, so we cannot do that here.
@@ -4160,6 +4160,7 @@ mod tests {
 	use crate::sync::{Arc, Mutex};
 	use crate::io;
 	use bitcoin::{PackedLockTime, Sequence, Witness};
+	use crate::ln::features::ChannelTypeFeatures;
 	use crate::prelude::*;
 
 	fn do_test_funding_spend_refuses_updates(use_local_txn: bool) {
@@ -4333,8 +4334,7 @@ mod tests {
 				selected_contest_delay: 67,
 			}),
 			funding_outpoint: Some(funding_outpoint),
-			opt_anchors: None,
-			opt_non_zero_fee_anchors: None,
+			channel_type_features: ChannelTypeFeatures::only_static_remote_key()
 		};
 		// Prune with one old state and a holder commitment tx holding a few overlaps with the
 		// old state.
@@ -4450,7 +4450,7 @@ mod tests {
 		let txid = Txid::from_hex("56944c5d3f98413ef45cf54545538103cc9f298e0575820ad3591376e2e0f65d").unwrap();
 
 		// Justice tx with 1 to_holder, 2 revoked offered HTLCs, 1 revoked received HTLCs
-		for &opt_anchors in [false, true].iter() {
+		for channel_type_features in [ChannelTypeFeatures::only_static_remote_key(), ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies()].iter() {
 			let mut claim_tx = Transaction { version: 0, lock_time: PackedLockTime::ZERO, input: Vec::new(), output: Vec::new() };
 			let mut sum_actual_sigs = 0;
 			for i in 0..4 {
@@ -4469,12 +4469,12 @@ mod tests {
 				value: 0,
 			});
 			let base_weight = claim_tx.weight();
-			let inputs_weight = vec![WEIGHT_REVOKED_OUTPUT, weight_revoked_offered_htlc(opt_anchors), weight_revoked_offered_htlc(opt_anchors), weight_revoked_received_htlc(opt_anchors)];
+			let inputs_weight = vec![WEIGHT_REVOKED_OUTPUT, weight_revoked_offered_htlc(channel_type_features), weight_revoked_offered_htlc(channel_type_features), weight_revoked_received_htlc(channel_type_features)];
 			let mut inputs_total_weight = 2; // count segwit flags
 			{
 				let mut sighash_parts = sighash::SighashCache::new(&mut claim_tx);
 				for (idx, inp) in inputs_weight.iter().enumerate() {
-					sign_input!(sighash_parts, idx, 0, inp, sum_actual_sigs, opt_anchors);
+					sign_input!(sighash_parts, idx, 0, inp, sum_actual_sigs, channel_type_features);
 					inputs_total_weight += inp;
 				}
 			}
@@ -4482,7 +4482,7 @@ mod tests {
 		}
 
 		// Claim tx with 1 offered HTLCs, 3 received HTLCs
-		for &opt_anchors in [false, true].iter() {
+		for channel_type_features in [ChannelTypeFeatures::only_static_remote_key(), ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies()].iter() {
 			let mut claim_tx = Transaction { version: 0, lock_time: PackedLockTime::ZERO, input: Vec::new(), output: Vec::new() };
 			let mut sum_actual_sigs = 0;
 			for i in 0..4 {
@@ -4501,12 +4501,12 @@ mod tests {
 				value: 0,
 			});
 			let base_weight = claim_tx.weight();
-			let inputs_weight = vec![weight_offered_htlc(opt_anchors), weight_received_htlc(opt_anchors), weight_received_htlc(opt_anchors), weight_received_htlc(opt_anchors)];
+			let inputs_weight = vec![weight_offered_htlc(channel_type_features), weight_received_htlc(channel_type_features), weight_received_htlc(channel_type_features), weight_received_htlc(channel_type_features)];
 			let mut inputs_total_weight = 2; // count segwit flags
 			{
 				let mut sighash_parts = sighash::SighashCache::new(&mut claim_tx);
 				for (idx, inp) in inputs_weight.iter().enumerate() {
-					sign_input!(sighash_parts, idx, 0, inp, sum_actual_sigs, opt_anchors);
+					sign_input!(sighash_parts, idx, 0, inp, sum_actual_sigs, channel_type_features);
 					inputs_total_weight += inp;
 				}
 			}
@@ -4514,7 +4514,7 @@ mod tests {
 		}
 
 		// Justice tx with 1 revoked HTLC-Success tx output
-		for &opt_anchors in [false, true].iter() {
+		for channel_type_features in [ChannelTypeFeatures::only_static_remote_key(), ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies()].iter() {
 			let mut claim_tx = Transaction { version: 0, lock_time: PackedLockTime::ZERO, input: Vec::new(), output: Vec::new() };
 			let mut sum_actual_sigs = 0;
 			claim_tx.input.push(TxIn {
@@ -4536,7 +4536,7 @@ mod tests {
 			{
 				let mut sighash_parts = sighash::SighashCache::new(&mut claim_tx);
 				for (idx, inp) in inputs_weight.iter().enumerate() {
-					sign_input!(sighash_parts, idx, 0, inp, sum_actual_sigs, opt_anchors);
+					sign_input!(sighash_parts, idx, 0, inp, sum_actual_sigs, channel_type_features);
 					inputs_total_weight += inp;
 				}
 			}

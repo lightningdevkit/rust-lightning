@@ -52,6 +52,7 @@ use core::ops::Deref;
 use core::mem::replace;
 #[cfg(anchors)]
 use core::mem::swap;
+use crate::ln::features::ChannelTypeFeatures;
 
 const MAX_ALLOC_SIZE: usize = 64*1024;
 
@@ -1215,8 +1216,8 @@ impl<ChannelSigner: WriteableEcdsaChannelSigner> OnchainTxHandler<ChannelSigner>
 			.or_else(|| self.prev_holder_commitment.as_ref().map(|c| find_htlc(c)).flatten())
 	}
 
-	pub(crate) fn opt_anchors(&self) -> bool {
-		self.channel_transaction_parameters.opt_anchors.is_some()
+	pub(crate) fn channel_type_features(&self) -> &ChannelTypeFeatures {
+		&self.channel_transaction_parameters.channel_type_features
 	}
 
 	#[cfg(any(test,feature = "unsafe_revoked_tx_signing"))]
