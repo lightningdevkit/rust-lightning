@@ -9579,7 +9579,7 @@ fn do_test_max_dust_htlc_exposure(dust_outbound_balance: bool, exposure_breach_e
 		let chan_lock = per_peer_state.get(&nodes[1].node.get_our_node_id()).unwrap().lock().unwrap();
 		let chan = chan_lock.channel_by_id.get(&channel_id).unwrap();
 		(chan.context.get_dust_buffer_feerate(None) as u64,
-		chan.context.get_max_dust_htlc_exposure_msat())
+		chan.context.get_max_dust_htlc_exposure_msat(&LowerBoundedFeeEstimator(nodes[0].fee_estimator)))
 	};
 	let dust_outbound_htlc_on_holder_tx_msat: u64 = (dust_buffer_feerate * htlc_timeout_tx_weight(&channel_type_features) / 1000 + open_channel.dust_limit_satoshis - 1) * 1000;
 	let dust_outbound_htlc_on_holder_tx: u64 = max_dust_htlc_exposure_msat / dust_outbound_htlc_on_holder_tx_msat;

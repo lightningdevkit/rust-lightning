@@ -1059,7 +1059,10 @@ impl<Signer: ChannelSigner> ChannelContext<Signer> {
 		cmp::max(self.config.options.cltv_expiry_delta, MIN_CLTV_EXPIRY_DELTA)
 	}
 
-	pub fn get_max_dust_htlc_exposure_msat(&self) -> u64 {
+	pub fn get_max_dust_htlc_exposure_msat<F: Deref>(&self,
+		_fee_estimator: &LowerBoundedFeeEstimator<F>) -> u64
+	where F::Target: FeeEstimator
+	{
 		match self.config.options.max_dust_htlc_exposure {
 			MaxDustHTLCExposure::FixedLimitMsat(limit) => limit,
 			MaxDustHTLCExposure::FeeRateMultiplier(_) => 5_000_000,
@@ -1536,7 +1539,10 @@ impl<Signer: ChannelSigner> ChannelContext<Signer> {
 	/// Doesn't bother handling the
 	/// if-we-removed-it-already-but-haven't-fully-resolved-they-can-still-send-an-inbound-HTLC
 	/// corner case properly.
-	pub fn get_available_balances(&self) -> AvailableBalances {
+	pub fn get_available_balances<F: Deref>(&self, fee_estimator: &LowerBoundedFeeEstimator<F>)
+	-> AvailableBalances
+	where F::Target: FeeEstimator
+	{
 		let context = &self;
 		// Note that we have to handle overflow due to the above case.
 		let inbound_stats = context.get_inbound_pending_htlc_stats(None);
@@ -1618,6 +1624,7 @@ impl<Signer: ChannelSigner> ChannelContext<Signer> {
 		// send above the dust limit (as the router can always overpay to meet the dust limit).
 		let mut remaining_msat_below_dust_exposure_limit = None;
 		let mut dust_exposure_dust_limit_msat = 0;
+		let max_dust_htlc_exposure_msat = context.get_max_dust_htlc_exposure_msat(fee_estimator);
 
 		let (htlc_success_dust_limit, htlc_timeout_dust_limit) = if context.get_channel_type().supports_anchors_zero_fee_htlc_tx() {
 			(context.counterparty_dust_limit_satoshis, context.holder_dust_limit_satoshis)
@@ -1627,17 +1634,17 @@ impl<Signer: ChannelSigner> ChannelContext<Signer> {
 			 context.holder_dust_limit_satoshis       + dust_buffer_feerate * htlc_timeout_tx_weight(context.get_channel_type()) / 1000)
 		};
 		let on_counterparty_dust_htlc_exposure_msat = inbound_stats.on_counterparty_tx_dust_exposure_msat + outbound_stats.on_counterparty_tx_dust_exposure_msat;
-		if on_counterparty_dust_htlc_exposure_msat as i64 + htlc_success_dust_limit as i64 * 1000 - 1 > context.get_max_dust_htlc_exposure_msat() as i64 {
+		if on_counterparty_dust_htlc_exposure_msat as i64 + htlc_success_dust_limit as i64 * 1000 - 1 > max_dust_htlc_exposure_msat as i64 {
 			remaining_msat_below_dust_exposure_limit =
-				Some(context.get_max_dust_htlc_exposure_msat().saturating_sub(on_counterparty_dust_htlc_exposure_msat));
+				Some(max_dust_htlc_exposure_msat.saturating_sub(on_counterparty_dust_htlc_exposure_msat));
 			dust_exposure_dust_limit_msat = cmp::max(dust_exposure_dust_limit_msat, htlc_success_dust_limit * 1000);
 		}
 
 		let on_holder_dust_htlc_exposure_msat = inbound_stats.on_holder_tx_dust_exposure_msat + outbound_stats.on_holder_tx_dust_exposure_msat;
-		if on_holder_dust_htlc_exposure_msat as i64 + htlc_timeout_dust_limit as i64 * 1000 - 1 > context.get_max_dust_htlc_exposure_msat() as i64 {
+		if on_holder_dust_htlc_exposure_msat as i64 + htlc_timeout_dust_limit as i64 * 1000 - 1 > max_dust_htlc_exposure_msat as i64 {
 			remaining_msat_below_dust_exposure_limit = Some(cmp::min(
 				remaining_msat_below_dust_exposure_limit.unwrap_or(u64::max_value()),
-				context.get_max_dust_htlc_exposure_msat().saturating_sub(on_holder_dust_htlc_exposure_msat)));
+				max_dust_htlc_exposure_msat.saturating_sub(on_holder_dust_htlc_exposure_msat)));
 			dust_exposure_dust_limit_msat = cmp::max(dust_exposure_dust_limit_msat, htlc_timeout_dust_limit * 1000);
 		}
 
@@ -2555,8 +2562,13 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		Ok(self.get_announcement_sigs(node_signer, genesis_block_hash, user_config, best_block.height(), logger))
 	}
 
-	pub fn update_add_htlc<F, L: Deref>(&mut self, msg: &msgs::UpdateAddHTLC, mut pending_forward_status: PendingHTLCStatus, create_pending_htlc_status: F, logger: &L) -> Result<(), ChannelError>
-	where F: for<'a> Fn(&'a Self, PendingHTLCStatus, u16) -> PendingHTLCStatus, L::Target: Logger {
+	pub fn update_add_htlc<F, FE: Deref, L: Deref>(
+		&mut self, msg: &msgs::UpdateAddHTLC, mut pending_forward_status: PendingHTLCStatus,
+		create_pending_htlc_status: F, fee_estimator: &LowerBoundedFeeEstimator<FE>, logger: &L
+	) -> Result<(), ChannelError>
+	where F: for<'a> Fn(&'a Self, PendingHTLCStatus, u16) -> PendingHTLCStatus,
+		FE::Target: FeeEstimator, L::Target: Logger,
+	{
 		// We can't accept HTLCs sent after we've sent a shutdown.
 		let local_sent_shutdown = (self.context.channel_state & (ChannelState::ChannelReady as u32 | ChannelState::LocalShutdownSent as u32)) != (ChannelState::ChannelReady as u32);
 		if local_sent_shutdown {
@@ -2609,6 +2621,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			}
 		}
 
+		let max_dust_htlc_exposure_msat = self.context.get_max_dust_htlc_exposure_msat(fee_estimator);
 		let (htlc_timeout_dust_limit, htlc_success_dust_limit) = if self.context.get_channel_type().supports_anchors_zero_fee_htlc_tx() {
 			(0, 0)
 		} else {
@@ -2619,9 +2632,9 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		let exposure_dust_limit_timeout_sats = htlc_timeout_dust_limit + self.context.counterparty_dust_limit_satoshis;
 		if msg.amount_msat / 1000 < exposure_dust_limit_timeout_sats {
 			let on_counterparty_tx_dust_htlc_exposure_msat = inbound_stats.on_counterparty_tx_dust_exposure_msat + outbound_stats.on_counterparty_tx_dust_exposure_msat + msg.amount_msat;
-			if on_counterparty_tx_dust_htlc_exposure_msat > self.context.get_max_dust_htlc_exposure_msat() {
+			if on_counterparty_tx_dust_htlc_exposure_msat > max_dust_htlc_exposure_msat {
 				log_info!(logger, "Cannot accept value that would put our exposure to dust HTLCs at {} over the limit {} on counterparty commitment tx",
-					on_counterparty_tx_dust_htlc_exposure_msat, self.context.get_max_dust_htlc_exposure_msat());
+					on_counterparty_tx_dust_htlc_exposure_msat, max_dust_htlc_exposure_msat);
 				pending_forward_status = create_pending_htlc_status(self, pending_forward_status, 0x1000|7);
 			}
 		}
@@ -2629,9 +2642,9 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		let exposure_dust_limit_success_sats = htlc_success_dust_limit + self.context.holder_dust_limit_satoshis;
 		if msg.amount_msat / 1000 < exposure_dust_limit_success_sats {
 			let on_holder_tx_dust_htlc_exposure_msat = inbound_stats.on_holder_tx_dust_exposure_msat + outbound_stats.on_holder_tx_dust_exposure_msat + msg.amount_msat;
-			if on_holder_tx_dust_htlc_exposure_msat > self.context.get_max_dust_htlc_exposure_msat() {
+			if on_holder_tx_dust_htlc_exposure_msat > max_dust_htlc_exposure_msat {
 				log_info!(logger, "Cannot accept value that would put our exposure to dust HTLCs at {} over the limit {} on holder commitment tx",
-					on_holder_tx_dust_htlc_exposure_msat, self.context.get_max_dust_htlc_exposure_msat());
+					on_holder_tx_dust_htlc_exposure_msat, max_dust_htlc_exposure_msat);
 				pending_forward_status = create_pending_htlc_status(self, pending_forward_status, 0x1000|7);
 			}
 		}
@@ -2998,16 +3011,24 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 	/// Public version of the below, checking relevant preconditions first.
 	/// If we're not in a state where freeing the holding cell makes sense, this is a no-op and
 	/// returns `(None, Vec::new())`.
-	pub fn maybe_free_holding_cell_htlcs<L: Deref>(&mut self, logger: &L) -> (Option<ChannelMonitorUpdate>, Vec<(HTLCSource, PaymentHash)>) where L::Target: Logger {
+	pub fn maybe_free_holding_cell_htlcs<F: Deref, L: Deref>(
+		&mut self, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L
+	) -> (Option<ChannelMonitorUpdate>, Vec<(HTLCSource, PaymentHash)>)
+	where F::Target: FeeEstimator, L::Target: Logger
+	{
 		if self.context.channel_state >= ChannelState::ChannelReady as u32 &&
 		   (self.context.channel_state & (ChannelState::AwaitingRemoteRevoke as u32 | ChannelState::PeerDisconnected as u32 | ChannelState::MonitorUpdateInProgress as u32)) == 0 {
-			self.free_holding_cell_htlcs(logger)
+			self.free_holding_cell_htlcs(fee_estimator, logger)
 		} else { (None, Vec::new()) }
 	}
 
 	/// Frees any pending commitment updates in the holding cell, generating the relevant messages
 	/// for our counterparty.
-	fn free_holding_cell_htlcs<L: Deref>(&mut self, logger: &L) -> (Option<ChannelMonitorUpdate>, Vec<(HTLCSource, PaymentHash)>) where L::Target: Logger {
+	fn free_holding_cell_htlcs<F: Deref, L: Deref>(
+		&mut self, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L
+	) -> (Option<ChannelMonitorUpdate>, Vec<(HTLCSource, PaymentHash)>)
+	where F::Target: FeeEstimator, L::Target: Logger
+	{
 		assert_eq!(self.context.channel_state & ChannelState::MonitorUpdateInProgress as u32, 0);
 		if self.context.holding_cell_htlc_updates.len() != 0 || self.context.holding_cell_update_fee.is_some() {
 			log_trace!(logger, "Freeing holding cell with {} HTLC updates{} in channel {}", self.context.holding_cell_htlc_updates.len(),
@@ -3036,7 +3057,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 						skimmed_fee_msat, ..
 					} => {
 						match self.send_htlc(amount_msat, *payment_hash, cltv_expiry, source.clone(),
-							onion_routing_packet.clone(), false, skimmed_fee_msat, logger)
+							onion_routing_packet.clone(), false, skimmed_fee_msat, fee_estimator, logger)
 						{
 							Ok(update_add_msg_option) => update_add_htlcs.push(update_add_msg_option.unwrap()),
 							Err(e) => {
@@ -3096,7 +3117,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 				return (None, htlcs_to_fail);
 			}
 			let update_fee = if let Some(feerate) = self.context.holding_cell_update_fee.take() {
-				self.send_update_fee(feerate, false, logger)
+				self.send_update_fee(feerate, false, fee_estimator, logger)
 			} else {
 				None
 			};
@@ -3123,8 +3144,10 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 	/// waiting on this revoke_and_ack. The generation of this new commitment_signed may also fail,
 	/// generating an appropriate error *after* the channel state has been updated based on the
 	/// revoke_and_ack message.
-	pub fn revoke_and_ack<L: Deref>(&mut self, msg: &msgs::RevokeAndACK, logger: &L) -> Result<(Vec<(HTLCSource, PaymentHash)>, Option<ChannelMonitorUpdate>), ChannelError>
-		where L::Target: Logger,
+	pub fn revoke_and_ack<F: Deref, L: Deref>(&mut self, msg: &msgs::RevokeAndACK,
+		fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L
+	) -> Result<(Vec<(HTLCSource, PaymentHash)>, Option<ChannelMonitorUpdate>), ChannelError>
+	where F::Target: FeeEstimator, L::Target: Logger,
 	{
 		if (self.context.channel_state & (ChannelState::ChannelReady as u32)) != (ChannelState::ChannelReady as u32) {
 			return Err(ChannelError::Close("Got revoke/ACK message when channel was not in an operational state".to_owned()));
@@ -3324,7 +3347,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			return Ok((Vec::new(), self.push_ret_blockable_mon_update(monitor_update)));
 		}
 
-		match self.free_holding_cell_htlcs(logger) {
+		match self.free_holding_cell_htlcs(fee_estimator, logger) {
 			(Some(mut additional_update), htlcs_to_fail) => {
 				// free_holding_cell_htlcs may bump latest_monitor_id multiple times but we want them to be
 				// strictly increasing by one, so decrement it here.
@@ -3359,8 +3382,11 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 	/// Queues up an outbound update fee by placing it in the holding cell. You should call
 	/// [`Self::maybe_free_holding_cell_htlcs`] in order to actually generate and send the
 	/// commitment update.
-	pub fn queue_update_fee<L: Deref>(&mut self, feerate_per_kw: u32, logger: &L) where L::Target: Logger {
-		let msg_opt = self.send_update_fee(feerate_per_kw, true, logger);
+	pub fn queue_update_fee<F: Deref, L: Deref>(&mut self, feerate_per_kw: u32,
+		fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L)
+	where F::Target: FeeEstimator, L::Target: Logger
+	{
+		let msg_opt = self.send_update_fee(feerate_per_kw, true, fee_estimator, logger);
 		assert!(msg_opt.is_none(), "We forced holding cell?");
 	}
 
@@ -3371,7 +3397,12 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 	///
 	/// You MUST call [`Self::send_commitment_no_state_update`] prior to any other calls on this
 	/// [`Channel`] if `force_holding_cell` is false.
-	fn send_update_fee<L: Deref>(&mut self, feerate_per_kw: u32, mut force_holding_cell: bool, logger: &L) -> Option<msgs::UpdateFee> where L::Target: Logger {
+	fn send_update_fee<F: Deref, L: Deref>(
+		&mut self, feerate_per_kw: u32, mut force_holding_cell: bool,
+		fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L
+	) -> Option<msgs::UpdateFee>
+	where F::Target: FeeEstimator, L::Target: Logger
+	{
 		if !self.context.is_outbound() {
 			panic!("Cannot send fee from inbound channel");
 		}
@@ -3398,11 +3429,12 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		// Note, we evaluate pending htlc "preemptive" trimmed-to-dust threshold at the proposed `feerate_per_kw`.
 		let holder_tx_dust_exposure = inbound_stats.on_holder_tx_dust_exposure_msat + outbound_stats.on_holder_tx_dust_exposure_msat;
 		let counterparty_tx_dust_exposure = inbound_stats.on_counterparty_tx_dust_exposure_msat + outbound_stats.on_counterparty_tx_dust_exposure_msat;
-		if holder_tx_dust_exposure > self.context.get_max_dust_htlc_exposure_msat() {
+		let max_dust_htlc_exposure_msat = self.context.get_max_dust_htlc_exposure_msat(fee_estimator);
+		if holder_tx_dust_exposure > max_dust_htlc_exposure_msat {
 			log_debug!(logger, "Cannot afford to send new feerate at {} without infringing max dust htlc exposure", feerate_per_kw);
 			return None;
 		}
-		if counterparty_tx_dust_exposure > self.context.get_max_dust_htlc_exposure_msat() {
+		if counterparty_tx_dust_exposure > max_dust_htlc_exposure_msat {
 			log_debug!(logger, "Cannot afford to send new feerate at {} without infringing max dust htlc exposure", feerate_per_kw);
 			return None;
 		}
@@ -3633,11 +3665,12 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			let outbound_stats = self.context.get_outbound_pending_htlc_stats(None);
 			let holder_tx_dust_exposure = inbound_stats.on_holder_tx_dust_exposure_msat + outbound_stats.on_holder_tx_dust_exposure_msat;
 			let counterparty_tx_dust_exposure = inbound_stats.on_counterparty_tx_dust_exposure_msat + outbound_stats.on_counterparty_tx_dust_exposure_msat;
-			if holder_tx_dust_exposure > self.context.get_max_dust_htlc_exposure_msat() {
+			let max_dust_htlc_exposure_msat = self.context.get_max_dust_htlc_exposure_msat(fee_estimator);
+			if holder_tx_dust_exposure > max_dust_htlc_exposure_msat {
 				return Err(ChannelError::Close(format!("Peer sent update_fee with a feerate ({}) which may over-expose us to dust-in-flight on our own transactions (totaling {} msat)",
 					msg.feerate_per_kw, holder_tx_dust_exposure)));
 			}
-			if counterparty_tx_dust_exposure > self.context.get_max_dust_htlc_exposure_msat() {
+			if counterparty_tx_dust_exposure > max_dust_htlc_exposure_msat {
 				return Err(ChannelError::Close(format!("Peer sent update_fee with a feerate ({}) which may over-expose us to dust-in-flight on our counterparty's transactions (totaling {} msat)",
 					msg.feerate_per_kw, counterparty_tx_dust_exposure)));
 			}
@@ -4991,13 +5024,16 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 	/// commitment update.
 	///
 	/// `Err`s will only be [`ChannelError::Ignore`].
-	pub fn queue_add_htlc<L: Deref>(
+	pub fn queue_add_htlc<F: Deref, L: Deref>(
 		&mut self, amount_msat: u64, payment_hash: PaymentHash, cltv_expiry: u32, source: HTLCSource,
-		onion_routing_packet: msgs::OnionPacket, skimmed_fee_msat: Option<u64>, logger: &L
-	) -> Result<(), ChannelError> where L::Target: Logger {
+		onion_routing_packet: msgs::OnionPacket, skimmed_fee_msat: Option<u64>,
+		fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L
+	) -> Result<(), ChannelError>
+	where F::Target: FeeEstimator, L::Target: Logger
+	{
 		self
 			.send_htlc(amount_msat, payment_hash, cltv_expiry, source, onion_routing_packet, true,
-				skimmed_fee_msat, logger)
+				skimmed_fee_msat, fee_estimator, logger)
 			.map(|msg_opt| assert!(msg_opt.is_none(), "We forced holding cell?"))
 			.map_err(|err| {
 				if let ChannelError::Ignore(_) = err { /* fine */ }
@@ -5022,11 +5058,13 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 	/// on this [`Channel`] if `force_holding_cell` is false.
 	///
 	/// `Err`s will only be [`ChannelError::Ignore`].
-	fn send_htlc<L: Deref>(
+	fn send_htlc<F: Deref, L: Deref>(
 		&mut self, amount_msat: u64, payment_hash: PaymentHash, cltv_expiry: u32, source: HTLCSource,
 		onion_routing_packet: msgs::OnionPacket, mut force_holding_cell: bool,
-		skimmed_fee_msat: Option<u64>, logger: &L
-	) -> Result<Option<msgs::UpdateAddHTLC>, ChannelError> where L::Target: Logger {
+		skimmed_fee_msat: Option<u64>, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L
+	) -> Result<Option<msgs::UpdateAddHTLC>, ChannelError>
+	where F::Target: FeeEstimator, L::Target: Logger
+	{
 		if (self.context.channel_state & (ChannelState::ChannelReady as u32 | BOTH_SIDES_SHUTDOWN_MASK)) != (ChannelState::ChannelReady as u32) {
 			return Err(ChannelError::Ignore("Cannot send HTLC until channel is fully established and we haven't started shutting down".to_owned()));
 		}
@@ -5039,7 +5077,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			return Err(ChannelError::Ignore("Cannot send 0-msat HTLC".to_owned()));
 		}
 
-		let available_balances = self.context.get_available_balances();
+		let available_balances = self.context.get_available_balances(fee_estimator);
 		if amount_msat < available_balances.next_outbound_htlc_minimum_msat {
 			return Err(ChannelError::Ignore(format!("Cannot send less than our next-HTLC minimum - {} msat",
 				available_balances.next_outbound_htlc_minimum_msat)));
@@ -5239,12 +5277,15 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 	///
 	/// Shorthand for calling [`Self::send_htlc`] followed by a commitment update, see docs on
 	/// [`Self::send_htlc`] and [`Self::build_commitment_no_state_update`] for more info.
-	pub fn send_htlc_and_commit<L: Deref>(
-		&mut self, amount_msat: u64, payment_hash: PaymentHash, cltv_expiry: u32, source: HTLCSource,
-		onion_routing_packet: msgs::OnionPacket, skimmed_fee_msat: Option<u64>, logger: &L
-	) -> Result<Option<ChannelMonitorUpdate>, ChannelError> where L::Target: Logger {
+	pub fn send_htlc_and_commit<F: Deref, L: Deref>(
+		&mut self, amount_msat: u64, payment_hash: PaymentHash, cltv_expiry: u32,
+		source: HTLCSource, onion_routing_packet: msgs::OnionPacket, skimmed_fee_msat: Option<u64>,
+		fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L
+	) -> Result<Option<ChannelMonitorUpdate>, ChannelError>
+	where F::Target: FeeEstimator, L::Target: Logger
+	{
 		let send_res = self.send_htlc(amount_msat, payment_hash, cltv_expiry, source,
-			onion_routing_packet, false, skimmed_fee_msat, logger);
+			onion_routing_packet, false, skimmed_fee_msat, fee_estimator, logger);
 		if let Err(e) = &send_res { if let ChannelError::Ignore(_) = e {} else { debug_assert!(false, "Sending cannot trigger channel failure"); } }
 		match send_res? {
 			Some(_) => {
