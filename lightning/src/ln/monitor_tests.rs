@@ -1721,6 +1721,7 @@ fn do_test_monitor_rebroadcast_pending_claims(anchors: bool) {
 	let mut config = test_default_channel_config();
 	if anchors {
 		config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
+		config.manually_accept_inbound_channels = true;
 	}
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(config), Some(config)]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
@@ -1870,6 +1871,7 @@ fn test_yield_anchors_events() {
 	let mut anchors_config = UserConfig::default();
 	anchors_config.channel_handshake_config.announced_channel = true;
 	anchors_config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
+	anchors_config.manually_accept_inbound_channels = true;
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(anchors_config), Some(anchors_config)]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
@@ -2002,6 +2004,7 @@ fn test_anchors_aggregated_revoked_htlc_tx() {
 	let mut anchors_config = UserConfig::default();
 	anchors_config.channel_handshake_config.announced_channel = true;
 	anchors_config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
+	anchors_config.manually_accept_inbound_channels = true;
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(anchors_config), Some(anchors_config)]);
 
 	let bob_persister: test_utils::TestPersister;
