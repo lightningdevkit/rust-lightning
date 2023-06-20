@@ -862,11 +862,9 @@ pub(super) struct ChannelContext<Signer: ChannelSigner> {
 	/// [`SignerProvider::derive_channel_signer`].
 	channel_keys_id: [u8; 32],
 
-	/// When we generate [`ChannelMonitorUpdate`]s to persist, they may not be persisted immediately.
-	/// If we then persist the [`channelmanager::ChannelManager`] and crash before the persistence
-	/// completes we still need to be able to complete the persistence. Thus, we have to keep a
-	/// copy of the [`ChannelMonitorUpdate`] here until it is complete.
-	pending_monitor_updates: Vec<PendingChannelMonitorUpdate>,
+	/// If we can't release a [`ChannelMonitorUpdate`] until some external action completes, we
+	/// store it here and only release it to the `ChannelManager` once it asks for it.
+	blocked_monitor_updates: Vec<PendingChannelMonitorUpdate>,
 }
 
 impl<Signer: ChannelSigner> ChannelContext<Signer> {
@@ -2257,7 +2255,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 	}
 
 	pub fn get_update_fulfill_htlc_and_commit<L: Deref>(&mut self, htlc_id: u64, payment_preimage: PaymentPreimage, logger: &L) -> UpdateFulfillCommitFetch where L::Target: Logger {
-		let release_cs_monitor = self.context.pending_monitor_updates.is_empty();
+		let release_cs_monitor = self.context.blocked_monitor_updates.is_empty();
 		match self.get_update_fulfill_htlc(htlc_id, payment_preimage, logger) {
 			UpdateFulfillFetch::NewClaim { mut monitor_update, htlc_value_msat, msg } => {
 				// Even if we aren't supposed to let new monitor updates with commitment state
@@ -2272,16 +2270,16 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 					self.context.latest_monitor_update_id = monitor_update.update_id;
 					monitor_update.updates.append(&mut additional_update.updates);
 				} else {
-					let new_mon_id = self.context.pending_monitor_updates.get(0)
+					let new_mon_id = self.context.blocked_monitor_updates.get(0)
 						.map(|upd| upd.update.update_id).unwrap_or(monitor_update.update_id);
 					monitor_update.update_id = new_mon_id;
-					for held_update in self.context.pending_monitor_updates.iter_mut() {
+					for held_update in self.context.blocked_monitor_updates.iter_mut() {
 						held_update.update.update_id += 1;
 					}
 					if msg.is_some() {
 						debug_assert!(false, "If there is a pending blocked monitor we should have MonitorUpdateInProgress set");
 						let update = self.build_commitment_no_status_check(logger);
-						self.context.pending_monitor_updates.push(PendingChannelMonitorUpdate {
+						self.context.blocked_monitor_updates.push(PendingChannelMonitorUpdate {
 							update,
 						});
 					}
@@ -4406,25 +4404,25 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 
 	/// Gets the latest [`ChannelMonitorUpdate`] ID which has been released and is in-flight.
 	pub fn get_latest_unblocked_monitor_update_id(&self) -> u64 {
-		if self.context.pending_monitor_updates.is_empty() { return self.context.get_latest_monitor_update_id(); }
-		self.context.pending_monitor_updates[0].update.update_id - 1
+		if self.context.blocked_monitor_updates.is_empty() { return self.context.get_latest_monitor_update_id(); }
+		self.context.blocked_monitor_updates[0].update.update_id - 1
 	}
 
 	/// Returns the next blocked monitor update, if one exists, and a bool which indicates a
 	/// further blocked monitor update exists after the next.
 	pub fn unblock_next_blocked_monitor_update(&mut self) -> Option<(ChannelMonitorUpdate, bool)> {
-		if self.context.pending_monitor_updates.is_empty() { return None; }
-		Some((self.context.pending_monitor_updates.remove(0).update,
-			!self.context.pending_monitor_updates.is_empty()))
+		if self.context.blocked_monitor_updates.is_empty() { return None; }
+		Some((self.context.blocked_monitor_updates.remove(0).update,
+			!self.context.blocked_monitor_updates.is_empty()))
 	}
 
 	/// Pushes a new monitor update into our monitor update queue, returning it if it should be
 	/// immediately given to the user for persisting or `None` if it should be held as blocked.
 	fn push_ret_blockable_mon_update(&mut self, update: ChannelMonitorUpdate)
 	-> Option<ChannelMonitorUpdate> {
-		let release_monitor = self.context.pending_monitor_updates.is_empty();
+		let release_monitor = self.context.blocked_monitor_updates.is_empty();
 		if !release_monitor {
-			self.context.pending_monitor_updates.push(PendingChannelMonitorUpdate {
+			self.context.blocked_monitor_updates.push(PendingChannelMonitorUpdate {
 				update,
 			});
 			None
@@ -4434,7 +4432,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 	}
 
 	pub fn blocked_monitor_updates_pending(&self) -> usize {
-		self.context.pending_monitor_updates.len()
+		self.context.blocked_monitor_updates.len()
 	}
 
 	/// Returns true if the channel is awaiting the persistence of the initial ChannelMonitor.
@@ -5590,7 +5588,7 @@ impl<Signer: WriteableEcdsaChannelSigner> OutboundV1Channel<Signer> {
 				channel_type,
 				channel_keys_id,
 
-				pending_monitor_updates: Vec::new(),
+				blocked_monitor_updates: Vec::new(),
 			}
 		})
 	}
@@ -6220,7 +6218,7 @@ impl<Signer: WriteableEcdsaChannelSigner> InboundV1Channel<Signer> {
 				channel_type,
 				channel_keys_id,
 
-				pending_monitor_updates: Vec::new(),
+				blocked_monitor_updates: Vec::new(),
 			}
 		};
 
@@ -6806,7 +6804,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Writeable for Channel<Signer> {
 			(28, holder_max_accepted_htlcs, option),
 			(29, self.context.temporary_channel_id, option),
 			(31, channel_pending_event_emitted, option),
-			(33, self.context.pending_monitor_updates, vec_type),
+			(33, self.context.blocked_monitor_updates, vec_type),
 			(35, pending_outbound_skimmed_fees, optional_vec),
 			(37, holding_cell_skimmed_fees, optional_vec),
 		});
@@ -7087,7 +7085,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 		let mut temporary_channel_id: Option<[u8; 32]> = None;
 		let mut holder_max_accepted_htlcs: Option<u16> = None;
 
-		let mut pending_monitor_updates = Some(Vec::new());
+		let mut blocked_monitor_updates = Some(Vec::new());
 
 		let mut pending_outbound_skimmed_fees_opt: Option<Vec<Option<u64>>> = None;
 		let mut holding_cell_skimmed_fees_opt: Option<Vec<Option<u64>>> = None;
@@ -7114,7 +7112,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 			(28, holder_max_accepted_htlcs, option),
 			(29, temporary_channel_id, option),
 			(31, channel_pending_event_emitted, option),
-			(33, pending_monitor_updates, vec_type),
+			(33, blocked_monitor_updates, vec_type),
 			(35, pending_outbound_skimmed_fees_opt, optional_vec),
 			(37, holding_cell_skimmed_fees_opt, optional_vec),
 		});
@@ -7307,7 +7305,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 				channel_type: channel_type.unwrap(),
 				channel_keys_id,
 
-				pending_monitor_updates: pending_monitor_updates.unwrap(),
+				blocked_monitor_updates: blocked_monitor_updates.unwrap(),
 			}
 		})
 	}
