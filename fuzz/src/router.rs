@@ -11,9 +11,12 @@ use bitcoin::blockdata::script::Builder;
 use bitcoin::blockdata::transaction::TxOut;
 use bitcoin::hash_types::BlockHash;
 
+use lightning::blinded_path::{BlindedHop, BlindedPath};
 use lightning::chain::transaction::OutPoint;
 use lightning::ln::channelmanager::{self, ChannelDetails, ChannelCounterparty};
+use lightning::ln::features::{BlindedHopFeatures, Bolt12InvoiceFeatures};
 use lightning::ln::msgs;
+use lightning::offers::invoice::BlindedPayInfo;
 use lightning::routing::gossip::{NetworkGraph, RoutingFees};
 use lightning::routing::utxo::{UtxoFuture, UtxoLookup, UtxoLookupError, UtxoResult};
 use lightning::routing::router::{find_route, PaymentParameters, RouteHint, RouteHintHop, RouteParameters};
@@ -315,7 +318,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 				net_graph.channel_failed_permanent(short_channel_id);
 			},
 			_ if node_pks.is_empty() => {},
-			_ => {
+			x if x < 250 => {
 				let mut first_hops_vec = Vec::new();
 				// Use macros here and in the blinded match arm to ensure values are fetched from the fuzz
 				// input in the same order, for better coverage.
@@ -330,6 +333,46 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 					}
 				});
 			},
+			x => {
+				let mut first_hops_vec = Vec::new();
+				let first_hops = first_hops!(first_hops_vec);
+				let mut last_hops_unblinded = Vec::new();
+				last_hops!(last_hops_unblinded);
+				let dummy_pk = PublicKey::from_slice(&[2; 33]).unwrap();
+				let last_hops: Vec<(BlindedPayInfo, BlindedPath)> = last_hops_unblinded.into_iter().map(|hint| {
+					let hop = &hint.0[0];
+					let payinfo = BlindedPayInfo {
+						fee_base_msat: hop.fees.base_msat,
+						fee_proportional_millionths: hop.fees.proportional_millionths,
+						htlc_minimum_msat: hop.htlc_minimum_msat.unwrap(),
+						htlc_maximum_msat: hop.htlc_minimum_msat.unwrap().saturating_mul(100),
+						cltv_expiry_delta: hop.cltv_expiry_delta,
+						features: BlindedHopFeatures::empty(),
+					};
+					let num_blinded_hops = x % 250;
+					let mut blinded_hops = Vec::new();
+					for _ in 0..num_blinded_hops {
+						blinded_hops.push(BlindedHop {
+							blinded_node_id: dummy_pk,
+							encrypted_payload: Vec::new()
+						});
+					}
+					(payinfo, BlindedPath {
+						introduction_node_id: hop.src_node_id,
+						blinding_point: dummy_pk,
+						blinded_hops,
+					})
+				}).collect();
+				let mut features = Bolt12InvoiceFeatures::empty();
+				features.set_basic_mpp_optional();
+				find_routes!(first_hops, vec![dummy_pk].iter(), |final_amt, _, _| {
+					RouteParameters {
+						payment_params: PaymentParameters::blinded(last_hops.clone())
+							.with_bolt12_features(features.clone()).unwrap(),
+						final_value_msat: final_amt,
+					}
+				});
+			}
 		}
 	}
 }
