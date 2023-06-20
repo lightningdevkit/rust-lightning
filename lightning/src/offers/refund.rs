@@ -394,7 +394,7 @@ impl Refund {
 	/// [`Duration`]: core::time::Duration
 	#[cfg(feature = "std")]
 	pub fn respond_with(
-		&self, payment_paths: Vec<(BlindedPath, BlindedPayInfo)>, payment_hash: PaymentHash,
+		&self, payment_paths: Vec<(BlindedPayInfo, BlindedPath)>, payment_hash: PaymentHash,
 		signing_pubkey: PublicKey,
 	) -> Result<InvoiceBuilder<ExplicitSigningPubkey>, SemanticError> {
 		let created_at = std::time::SystemTime::now()
@@ -427,7 +427,7 @@ impl Refund {
 	///
 	/// [`Invoice::created_at`]: crate::offers::invoice::Invoice::created_at
 	pub fn respond_with_no_std(
-		&self, payment_paths: Vec<(BlindedPath, BlindedPayInfo)>, payment_hash: PaymentHash,
+		&self, payment_paths: Vec<(BlindedPayInfo, BlindedPath)>, payment_hash: PaymentHash,
 		signing_pubkey: PublicKey, created_at: Duration
 	) -> Result<InvoiceBuilder<ExplicitSigningPubkey>, SemanticError> {
 		if self.features().requires_unknown_bits() {
@@ -447,7 +447,7 @@ impl Refund {
 	/// [`Invoice`]: crate::offers::invoice::Invoice
 	#[cfg(feature = "std")]
 	pub fn respond_using_derived_keys<ES: Deref>(
-		&self, payment_paths: Vec<(BlindedPath, BlindedPayInfo)>, payment_hash: PaymentHash,
+		&self, payment_paths: Vec<(BlindedPayInfo, BlindedPath)>, payment_hash: PaymentHash,
 		expanded_key: &ExpandedKey, entropy_source: ES
 	) -> Result<InvoiceBuilder<DerivedSigningPubkey>, SemanticError>
 	where
@@ -471,7 +471,7 @@ impl Refund {
 	///
 	/// [`Invoice`]: crate::offers::invoice::Invoice
 	pub fn respond_using_derived_keys_no_std<ES: Deref>(
-		&self, payment_paths: Vec<(BlindedPath, BlindedPayInfo)>, payment_hash: PaymentHash,
+		&self, payment_paths: Vec<(BlindedPayInfo, BlindedPath)>, payment_hash: PaymentHash,
 		created_at: core::time::Duration, expanded_key: &ExpandedKey, entropy_source: ES
 	) -> Result<InvoiceBuilder<DerivedSigningPubkey>, SemanticError>
 	where
