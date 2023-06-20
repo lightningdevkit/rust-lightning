@@ -952,6 +952,10 @@ impl Readable for ChannelTransactionParameters {
 			(11, channel_type_features, option),
 		});
 
+		let mut additional_features = ChannelTypeFeatures::empty();
+		additional_features.set_anchors_nonzero_fee_htlc_tx_required();
+		chain::package::verify_channel_type_features(&channel_type_features, Some(&additional_features))?;
+
 		Ok(Self {
 			holder_pubkeys: holder_pubkeys.0.unwrap(),
 			holder_selected_contest_delay: holder_selected_contest_delay.0.unwrap(),
@@ -1374,6 +1378,10 @@ impl Readable for CommitmentTransaction {
 			(14, legacy_deserialization_prevention_marker, option),
 			(15, channel_type_features, option),
 		});
+
+		let mut additional_features = ChannelTypeFeatures::empty();
+		additional_features.set_anchors_nonzero_fee_htlc_tx_required();
+		chain::package::verify_channel_type_features(&channel_type_features, Some(&additional_features))?;
 
 		Ok(Self {
 			commitment_number: commitment_number.0.unwrap(),

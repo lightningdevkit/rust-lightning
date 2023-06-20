@@ -75,6 +75,30 @@ pub(crate) fn weight_received_htlc(channel_type_features: &ChannelTypeFeatures) 
 	if channel_type_features.supports_anchors_zero_fee_htlc_tx() { WEIGHT_RECEIVED_HTLC_ANCHORS } else { WEIGHT_RECEIVED_HTLC }
 }
 
+/// Verifies deserializable channel type features
+pub(crate) fn verify_channel_type_features(channel_type_features: &Option<ChannelTypeFeatures>, additional_permitted_features: Option<&ChannelTypeFeatures>) -> Result<(), DecodeError> {
+	if let Some(features) = channel_type_features.as_ref() {
+		if features.requires_unknown_bits() {
+			return Err(DecodeError::UnknownRequiredFeature);
+		}
+
+		let mut supported_feature_set = ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies();
+		supported_feature_set.set_scid_privacy_required();
+		supported_feature_set.set_zero_conf_required();
+
+		// allow the passing of an additional necessary permitted flag
+		if let Some(additional_permitted_features) = additional_permitted_features {
+			supported_feature_set |= additional_permitted_features;
+		}
+
+		if !features.is_subset(&supported_feature_set) {
+			return Err(DecodeError::UnknownRequiredFeature);
+		}
+	}
+
+	Ok(())
+}
+
 // number_of_witness_elements + sig_length + revocation_sig + true_length + op_true + witness_script_length + witness_script
 pub(crate) const WEIGHT_REVOKED_OUTPUT: u64 = 1 + 1 + 73 + 1 + 1 + 1 + 77;
 
@@ -239,6 +263,8 @@ impl Readable for CounterpartyOfferedHTLCOutput {
 			(11, channel_type_features, option),
 		});
 
+		verify_channel_type_features(&channel_type_features, None)?;
+
 		Ok(Self {
 			per_commitment_point: per_commitment_point.0.unwrap(),
 			counterparty_delayed_payment_base_key: counterparty_delayed_payment_base_key.0.unwrap(),
@@ -309,6 +335,8 @@ impl Readable for CounterpartyReceivedHTLCOutput {
 			(8, legacy_deserialization_prevention_marker, option),
 			(9, channel_type_features, option),
 		});
+
+		verify_channel_type_features(&channel_type_features, None)?;
 
 		Ok(Self {
 			per_commitment_point: per_commitment_point.0.unwrap(),
@@ -385,6 +413,8 @@ impl Readable for HolderHTLCOutput {
 			(7, channel_type_features, option),
 		});
 
+		verify_channel_type_features(&channel_type_features, None)?;
+
 		Ok(Self {
 			amount_msat: amount_msat.0.unwrap(),
 			cltv_expiry: cltv_expiry.0.unwrap(),
@@ -443,6 +473,8 @@ impl Readable for HolderFundingOutput {
 			(2, legacy_deserialization_prevention_marker, option),
 			(3, funding_amount, option)
 		});
+
+		verify_channel_type_features(&channel_type_features, None)?;
 
 		Ok(Self {
 			funding_redeemscript: funding_redeemscript.0.unwrap(),

@@ -595,7 +595,6 @@ impl ChannelTypeFeatures {
 		ret
 	}
 
-	#[cfg(any(anchors, test))]
 	/// Constructs a ChannelTypeFeatures with anchors support
 	pub(crate) fn anchors_zero_htlc_fee_and_dependencies() -> Self {
 		let mut ret = Self::empty();
