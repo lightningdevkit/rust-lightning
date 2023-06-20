@@ -13,6 +13,23 @@ and networking can be provided by LDK's [sample modules](#crates), or you may pr
 own custom implementations.
 More information is available in the [`About`](#about) section.
 
+Splicing Prototype
+------------------
+
+'Happy Path' PoC for Splicing
+
+Objective, Restrictions:
+- Splice-in supported
+- between two LDK instances
+- No quiscence is used/checked
+- Happy path only, no complex combinations, no error scenarios
+- Prototype with minimal changes
+
+
+See also `ldk-sample` https://github.com/catenocrypt/ldk-sample/tree/splicing-hapa1
+
+
+
 Status
 ------
 The project implements all of the [BOLT specifications](https://github.com/lightning/bolts),
