@@ -2621,7 +2621,7 @@ where
 
 	fn decode_update_add_htlc_onion(
 		&self, msg: &msgs::UpdateAddHTLC
-	) -> Result<(onion_utils::Hop, [u8; 32]), HTLCFailureMsg> {
+	) -> Result<(onion_utils::Hop, [u8; 32], Option<Result<PublicKey, secp256k1::Error>>), HTLCFailureMsg> {
 		macro_rules! return_malformed_err {
 			($msg: expr, $err_code: expr) => {
 				{
@@ -2676,16 +2676,20 @@ where
 				return_err!(err_msg, err_code, &[0; 0]);
 			},
 		};
-		let (outgoing_scid, outgoing_amt_msat, outgoing_cltv_value) = match next_hop {
+		let (outgoing_scid, outgoing_amt_msat, outgoing_cltv_value, next_packet_pk_opt) = match next_hop {
 			onion_utils::Hop::Forward {
 				next_hop_data: msgs::OnionHopData {
 					format: msgs::OnionHopDataFormat::NonFinalNode { short_channel_id }, amt_to_forward,
 					outgoing_cltv_value,
 				}, ..
-			} => (short_channel_id, amt_to_forward, outgoing_cltv_value),
+			} => {
+				let next_pk = onion_utils::next_hop_packet_pubkey(&self.secp_ctx,
+					msg.onion_routing_packet.public_key.unwrap(), &shared_secret);
+				(short_channel_id, amt_to_forward, outgoing_cltv_value, Some(next_pk))
+			},
 			// We'll do receive checks in [`Self::construct_pending_htlc_info`] so we have access to the
 			// inbound channel's state.
-			onion_utils::Hop::Receive { .. } => return Ok((next_hop, shared_secret)),
+			onion_utils::Hop::Receive { .. } => return Ok((next_hop, shared_secret, None)),
 			onion_utils::Hop::Forward {
 				next_hop_data: msgs::OnionHopData { format: msgs::OnionHopDataFormat::FinalNode { .. }, .. }, ..
 			} => {
@@ -2826,11 +2830,12 @@ where
 			}
 			return_err!(err, code, &res.0[..]);
 		}
-		Ok((next_hop, shared_secret))
+		Ok((next_hop, shared_secret, next_packet_pk_opt))
 	}
 
 	fn construct_pending_htlc_status<'a>(
 		&self, msg: &msgs::UpdateAddHTLC, shared_secret: [u8; 32], decoded_hop: onion_utils::Hop,
+		next_packet_pubkey_opt: Option<Result<PublicKey, secp256k1::Error>>
 	) -> PendingHTLCStatus {
 		macro_rules! return_err {
 			($msg: expr, $err_code: expr, $data: expr) => {
@@ -2860,10 +2865,10 @@ where
 				}
 			},
 			onion_utils::Hop::Forward { next_hop_data, next_hop_hmac, new_packet_bytes } => {
-				let new_pubkey = msg.onion_routing_packet.public_key.unwrap();
+				debug_assert!(next_packet_pubkey_opt.is_some());
 				let outgoing_packet = msgs::OnionPacket {
 					version: 0,
-					public_key: onion_utils::next_hop_packet_pubkey(&self.secp_ctx, new_pubkey, &shared_secret),
+					public_key: next_packet_pubkey_opt.unwrap_or(Err(secp256k1::Error::InvalidPublicKey)),
 					hop_data: new_packet_bytes,
 					hmac: next_hop_hmac.clone(),
 				};
@@ -5400,8 +5405,8 @@ where
 			hash_map::Entry::Occupied(mut chan) => {
 
 				let pending_forward_info = match decoded_hop_res {
-					Ok((next_hop, shared_secret)) =>
-						self.construct_pending_htlc_status(msg, shared_secret, next_hop),
+					Ok((next_hop, shared_secret, next_packet_pk_opt)) =>
+						self.construct_pending_htlc_status(msg, shared_secret, next_hop, next_packet_pk_opt),
 					Err(e) => PendingHTLCStatus::Fail(e)
 				};
 				let create_pending_htlc_status = |chan: &Channel<<SP::Target as SignerProvider>::Signer>, pending_forward_info: PendingHTLCStatus, error_code: u16| {
