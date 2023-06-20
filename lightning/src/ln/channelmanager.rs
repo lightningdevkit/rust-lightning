@@ -7232,7 +7232,7 @@ pub(crate) fn provided_channel_type_features(config: &UserConfig) -> ChannelType
 
 /// Fetches the set of [`InitFeatures`] flags which are provided by or required by
 /// [`ChannelManager`].
-pub fn provided_init_features(_config: &UserConfig) -> InitFeatures {
+pub fn provided_init_features(config: &UserConfig) -> InitFeatures {
 	// Note that if new features are added here which other peers may (eventually) require, we
 	// should also add the corresponding (optional) bit to the [`ChannelMessageHandler`] impl for
 	// [`ErroringMessageHandler`].
@@ -7248,11 +7248,8 @@ pub fn provided_init_features(_config: &UserConfig) -> InitFeatures {
 	features.set_channel_type_optional();
 	features.set_scid_privacy_optional();
 	features.set_zero_conf_optional();
-	#[cfg(anchors)]
-	{ // Attributes are not allowed on if expressions on our current MSRV of 1.41.
-		if _config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx {
-			features.set_anchors_zero_fee_htlc_tx_optional();
-		}
+	if config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx {
+		features.set_anchors_zero_fee_htlc_tx_optional();
 	}
 	features
 }
@@ -9731,7 +9728,6 @@ mod tests {
 			sender_intended_amt_msat - extra_fee_msat, 42, None, true, Some(extra_fee_msat)).is_ok());
 	}
 
-	#[cfg(anchors)]
 	#[test]
 	fn test_anchors_zero_fee_htlc_tx_fallback() {
 		// Tests that if both nodes support anchors, but the remote node does not want to accept

@@ -14,16 +14,17 @@ use core::ops::Deref;
 
 use crate::chain::chaininterface::BroadcasterInterface;
 use crate::chain::ClaimId;
-use crate::sign::{ChannelSigner, EcdsaChannelSigner, SignerProvider};
+use crate::events::Event;
 use crate::io_extras::sink;
-use crate::ln::PaymentPreimage;
 use crate::ln::chan_utils;
 use crate::ln::chan_utils::{
 	ANCHOR_INPUT_WITNESS_WEIGHT, HTLC_SUCCESS_INPUT_ANCHOR_WITNESS_WEIGHT,
 	HTLC_TIMEOUT_INPUT_ANCHOR_WITNESS_WEIGHT, ChannelTransactionParameters, HTLCOutputInCommitment
 };
-use crate::events::Event;
-use crate::prelude::HashMap;
+use crate::ln::features::ChannelTypeFeatures;
+use crate::ln::PaymentPreimage;
+use crate::prelude::*;
+use crate::sign::{ChannelSigner, EcdsaChannelSigner, SignerProvider};
 use crate::sync::Mutex;
 use crate::util::logger::Logger;
 
@@ -33,7 +34,6 @@ use bitcoin::consensus::Encodable;
 use bitcoin::secp256k1;
 use bitcoin::secp256k1::{PublicKey, Secp256k1};
 use bitcoin::secp256k1::ecdsa::Signature;
-use crate::ln::features::ChannelTypeFeatures;
 
 const EMPTY_SCRIPT_SIG_WEIGHT: u64 = 1 /* empty script_sig */ * WITNESS_SCALE_FACTOR as u64;
 

@@ -194,7 +194,6 @@ jobs:
           cargo check --no-default-features --features=no-std --release
           cargo check --no-default-features --features=futures --release
           cargo doc --release
-          RUSTDOCFLAGS="--cfg=anchors" cargo doc --release
       - name: Run cargo check for Taproot build.
         run: |
           cargo check --release
@@ -202,8 +201,8 @@ jobs:
           cargo check --no-default-features --features=futures --release
           cargo doc --release
         env:
-          RUSTFLAGS: '--cfg=anchors --cfg=taproot'
-          RUSTDOCFLAGS: '--cfg=anchors --cfg=taproot'
+          RUSTFLAGS: '--cfg=taproot'
+          RUSTDOCFLAGS: '--cfg=taproot'
 
   fuzz:
     runs-on: ubuntu-latest

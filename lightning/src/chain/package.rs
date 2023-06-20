@@ -26,16 +26,13 @@ use crate::ln::chan_utils;
 use crate::ln::msgs::DecodeError;
 use crate::chain::chaininterface::{FeeEstimator, ConfirmationTarget, MIN_RELAY_FEE_SAT_PER_1000_WEIGHT};
 use crate::sign::WriteableEcdsaChannelSigner;
-#[cfg(anchors)]
-use crate::chain::onchaintx::ExternalHTLCClaim;
-use crate::chain::onchaintx::OnchainTxHandler;
+use crate::chain::onchaintx::{ExternalHTLCClaim, OnchainTxHandler};
 use crate::util::logger::Logger;
 use crate::util::ser::{Readable, Writer, Writeable, RequiredWrapper};
 
 use crate::io;
 use crate::prelude::*;
 use core::cmp;
-#[cfg(anchors)]
 use core::convert::TryInto;
 use core::mem;
 use core::ops::Deref;
@@ -866,7 +863,6 @@ impl PackageTemplate {
 		let output_weight = (8 + 1 + destination_script.len()) * WITNESS_SCALE_FACTOR;
 		inputs_weight + witnesses_weight + transaction_weight + output_weight
 	}
-	#[cfg(anchors)]
 	pub(crate) fn construct_malleable_package_with_external_funding<Signer: WriteableEcdsaChannelSigner>(
 		&self, onchain_handler: &mut OnchainTxHandler<Signer>,
 	) -> Option<Vec<ExternalHTLCClaim>> {
@@ -971,7 +967,6 @@ impl PackageTemplate {
 		None
 	}
 
-	#[cfg(anchors)]
 	/// Computes a feerate based on the given confirmation target. If a previous feerate was used,
 	/// the new feerate is below it, and `force_feerate_bump` is set, we'll use a 25% increase of
 	/// the previous feerate instead of the new feerate.

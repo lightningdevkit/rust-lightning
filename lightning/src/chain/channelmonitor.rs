@@ -43,16 +43,13 @@ use crate::chain::{BestBlock, WatchedOutput};
 use crate::chain::chaininterface::{BroadcasterInterface, FeeEstimator, LowerBoundedFeeEstimator};
 use crate::chain::transaction::{OutPoint, TransactionData};
 use crate::sign::{SpendableOutputDescriptor, StaticPaymentOutputDescriptor, DelayedPaymentOutputDescriptor, WriteableEcdsaChannelSigner, SignerProvider, EntropySource};
-#[cfg(anchors)]
-use crate::chain::onchaintx::ClaimEvent;
-use crate::chain::onchaintx::OnchainTxHandler;
+use crate::chain::onchaintx::{ClaimEvent, OnchainTxHandler};
 use crate::chain::package::{CounterpartyOfferedHTLCOutput, CounterpartyReceivedHTLCOutput, HolderFundingOutput, HolderHTLCOutput, PackageSolvingData, PackageTemplate, RevokedOutput, RevokedHTLCOutput};
 use crate::chain::Filter;
 use crate::util::logger::Logger;
 use crate::util::ser::{Readable, ReadableArgs, RequiredWrapper, MaybeReadable, UpgradableRequired, Writer, Writeable, U48};
 use crate::util::byte_utils;
 use crate::events::Event;
-#[cfg(anchors)]
 use crate::events::bump_transaction::{AnchorDescriptor, HTLCDescriptor, BumpTransactionEvent};
 
 use crate::prelude::*;
@@ -268,7 +265,6 @@ impl_writeable_tlv_based!(HolderSignedTx, {
 	(14, htlc_outputs, vec_type)
 });
 
-#[cfg(anchors)]
 impl HolderSignedTx {
 	fn non_dust_htlcs(&self) -> Vec<HTLCOutputInCommitment> {
 		self.htlc_outputs.iter().filter_map(|(htlc, _, _)| {
@@ -2538,7 +2534,6 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 	pub fn get_and_clear_pending_events(&mut self) -> Vec<Event> {
 		let mut ret = Vec::new();
 		mem::swap(&mut ret, &mut self.pending_events);
-		#[cfg(anchors)]
 		for (claim_id, claim_event) in self.onchain_tx_handler.get_and_clear_pending_claim_events().drain(..) {
 			match claim_event {
 				ClaimEvent::BumpCommitment {

@@ -149,11 +149,12 @@ pub struct ChannelHandshakeConfig {
 	/// Maximum value: 1,000,000, any values larger than 1 Million will be treated as 1 Million (or 100%)
 	///                instead, although channel negotiations will fail in that case.
 	pub their_channel_reserve_proportional_millionths: u32,
-	#[cfg(anchors)]
-	/// If set, we attempt to negotiate the `anchors_zero_fee_htlc_tx`option for outbound channels.
+	/// If set, we attempt to negotiate the `anchors_zero_fee_htlc_tx`option for all future
+	/// channels. This feature requires having a reserve of onchain funds readily available to bump
+	/// transactions in the event of a channel force close to avoid the possibility of losing funds.
 	///
 	/// If this option is set, channels may be created that will not be readable by LDK versions
-	/// prior to 0.0.114, causing [`ChannelManager`]'s read method to return a
+	/// prior to 0.0.116, causing [`ChannelManager`]'s read method to return a
 	/// [`DecodeError::InvalidValue`].
 	///
 	/// Note that setting this to true does *not* prevent us from opening channels with
@@ -196,7 +197,6 @@ impl Default for ChannelHandshakeConfig {
 			announced_channel: false,
 			commit_upfront_shutdown_pubkey: true,
 			their_channel_reserve_proportional_millionths: 10_000,
-			#[cfg(anchors)]
 			negotiate_anchors_zero_fee_htlc_tx: false,
 			our_max_accepted_htlcs: 50,
 		}
