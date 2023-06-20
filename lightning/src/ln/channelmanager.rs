@@ -6171,7 +6171,7 @@ where
 		inflight_htlcs
 	}
 
-	#[cfg(any(test, fuzzing, feature = "_test_utils"))]
+	#[cfg(any(test, feature = "_test_utils"))]
 	pub fn get_and_clear_pending_events(&self) -> Vec<events::Event> {
 		let events = core::cell::RefCell::new(Vec::new());
 		let event_handler = |event: events::Event| events.borrow_mut().push(event);
