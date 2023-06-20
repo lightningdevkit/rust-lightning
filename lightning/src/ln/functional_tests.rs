@@ -35,7 +35,7 @@ use crate::util::test_utils;
 use crate::util::errors::APIError;
 use crate::util::ser::{Writeable, ReadableArgs};
 use crate::util::string::UntrustedString;
-use crate::util::config::UserConfig;
+use crate::util::config::{ChannelHandshakeConfig, UserConfig};
 
 use bitcoin::hash_types::BlockHash;
 use bitcoin::blockdata::block::{Block, BlockHeader};
@@ -61,6 +61,59 @@ use crate::sync::{Arc, Mutex};
 
 use crate::ln::functional_test_utils::*;
 use crate::ln::chan_utils::CommitmentTransaction;
+
+/// Simple open channel flow
+#[test]
+fn test_channel_open_simple() {
+	// Stand up a network of 2 nodes
+	let announced_channel = true;
+	let cfg = UserConfig {
+		channel_handshake_config: ChannelHandshakeConfig {
+			announced_channel,
+			..Default::default()
+		},
+		..Default::default()
+	};
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, Some(cfg)]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	// Instantiate channel parameters where we push the maximum msats given our
+	// funding satoshis
+	let channel_value_sat = 100000; // same as funding satoshis
+	// let channel_reserve_satoshis = Channel::<EnforcingSigner>::get_holder_selected_channel_reserve_satoshis(channel_value_sat, &cfg);
+	let push_msat = 0;
+	// (channel_value_sat - channel_reserve_satoshis) * 1000;
+
+	// Have node0 initiate a channel to node1 with aforementioned parameters
+	nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), channel_value_sat, push_msat, 42, None).unwrap();
+
+	// Extract the channel open message from node0 to node1
+	let open_channel_message = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
+
+	let _res = nodes[1].node.handle_open_channel(&nodes[0].node.get_our_node_id(), &open_channel_message.clone());
+
+	// Extract the accept channel message from node1 to node0
+	let accept_channel_message = get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, nodes[0].node.get_our_node_id());
+	let _res = nodes[0].node.handle_accept_channel(&nodes[1].node.get_our_node_id(), &accept_channel_message.clone());
+
+	// let _ev = get_event!(nodes[0], Event::FundingGenerationReady);
+	let (temporary_channel_id, funding_tx, _funding_output) = create_funding_transaction(&nodes[0], &nodes[1].node.get_our_node_id(), channel_value_sat, 42);
+	let _res = nodes[0].node.funding_transaction_generated(&temporary_channel_id, &nodes[1].node.get_our_node_id(), funding_tx.clone()).unwrap();
+
+	let funding_created_message = get_event_msg!(nodes[0], MessageSendEvent::SendFundingCreated, nodes[1].node.get_our_node_id());
+	let _channel_id = OutPoint { txid: funding_created_message.funding_txid, index: funding_created_message.funding_output_index }.to_channel_id();
+	let _res = nodes[1].node.handle_funding_created(&nodes[0].node.get_our_node_id(), &funding_created_message);
+
+	let funding_signed_message = get_event_msg!(nodes[1], MessageSendEvent::SendFundingSigned, nodes[0].node.get_our_node_id());
+	let _res = nodes[0].node.handle_funding_signed(&nodes[1].node.get_our_node_id(), &funding_signed_message);
+
+	check_added_monitors!(nodes[0], 1);
+	let _ev = get_event!(nodes[0], Event::ChannelPending);
+	check_added_monitors!(nodes[1], 1);
+	let _ev = get_event!(nodes[1], Event::ChannelPending);
+}
 
 #[test]
 fn test_insane_channel_opens() {
