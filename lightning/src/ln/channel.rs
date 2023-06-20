@@ -4404,7 +4404,8 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		(self.context.channel_state & ChannelState::MonitorUpdateInProgress as u32) != 0
 	}
 
-	pub fn get_latest_complete_monitor_update_id(&self) -> u64 {
+	/// Gets the latest [`ChannelMonitorUpdate`] ID which has been released and is in-flight.
+	pub fn get_latest_unblocked_monitor_update_id(&self) -> u64 {
 		if self.context.pending_monitor_updates.is_empty() { return self.context.get_latest_monitor_update_id(); }
 		self.context.pending_monitor_updates[0].update.update_id - 1
 	}

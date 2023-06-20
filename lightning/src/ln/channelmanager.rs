@@ -8441,12 +8441,12 @@ where
 								funding_txo, monitor, peer_state, ""));
 					}
 				}
-				if chan.get_latest_complete_monitor_update_id() > max_in_flight_update_id {
+				if chan.get_latest_unblocked_monitor_update_id() > max_in_flight_update_id {
 					// If the channel is ahead of the monitor, return InvalidValue:
 					log_error!(args.logger, "A ChannelMonitor is stale compared to the current ChannelManager! This indicates a potentially-critical violation of the chain::Watch API!");
 					log_error!(args.logger, " The ChannelMonitor for channel {} is at update_id {} with update_id through {} in-flight",
 						log_bytes!(chan.context.channel_id()), monitor.get_latest_update_id(), max_in_flight_update_id);
-					log_error!(args.logger, " but the ChannelManager is at update_id {}.", chan.get_latest_complete_monitor_update_id());
+					log_error!(args.logger, " but the ChannelManager is at update_id {}.", chan.get_latest_unblocked_monitor_update_id());
 					log_error!(args.logger, " The chain::Watch API *requires* that monitors are persisted durably before returning,");
 					log_error!(args.logger, " client applications must ensure that ChannelMonitor data is always available and the latest to avoid funds loss!");
 					log_error!(args.logger, " Without the latest ChannelMonitor we cannot continue without risking funds.");
