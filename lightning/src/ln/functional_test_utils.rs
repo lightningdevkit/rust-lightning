@@ -1100,6 +1100,15 @@ pub fn create_chan_between_nodes_with_value_init<'a, 'b, 'c>(node_a: &Node<'a, '
 	assert_eq!(open_channel_msg.temporary_channel_id, create_chan_id);
 	assert_eq!(node_a.node.list_channels().iter().find(|channel| channel.channel_id == create_chan_id).unwrap().user_channel_id, 42);
 	node_b.node.handle_open_channel(&node_a.node.get_our_node_id(), &open_channel_msg);
+	if node_b.node.get_current_default_configuration().manually_accept_inbound_channels {
+		let events = node_b.node.get_and_clear_pending_events();
+		assert_eq!(events.len(), 1);
+		match &events[0] {
+			Event::OpenChannelRequest { temporary_channel_id, counterparty_node_id, .. } =>
+				node_b.node.accept_inbound_channel(temporary_channel_id, counterparty_node_id, 42).unwrap(),
+			_ => panic!("Unexpected event"),
+		};
+	}
 	let accept_channel_msg = get_event_msg!(node_b, MessageSendEvent::SendAcceptChannel, node_a.node.get_our_node_id());
 	assert_eq!(accept_channel_msg.temporary_channel_id, create_chan_id);
 	node_a.node.handle_accept_channel(&node_b.node.get_our_node_id(), &accept_channel_msg);
