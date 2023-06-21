@@ -2124,7 +2124,7 @@ pub fn do_pass_along_path<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_p
 				match &events_2[0] {
 					Event::PaymentClaimable { ref payment_hash, ref purpose, amount_msat,
 						receiver_node_id, ref via_channel_id, ref via_user_channel_id,
-						claim_deadline, onion_fields,
+						claim_deadline, onion_fields, ..
 					} => {
 						assert_eq!(our_payment_hash, *payment_hash);
 						assert_eq!(node.node.get_our_node_id(), receiver_node_id.unwrap());
@@ -2186,7 +2186,20 @@ pub fn send_along_route<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, route: Route
 	(our_payment_preimage, our_payment_hash, our_payment_secret, payment_id)
 }
 
-pub fn do_claim_payment_along_route<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_paths: &[&[&Node<'a, 'b, 'c>]], skip_last: bool, our_payment_preimage: PaymentPreimage) -> u64 {
+pub fn do_claim_payment_along_route<'a, 'b, 'c>(
+	origin_node: &Node<'a, 'b, 'c>, expected_paths: &[&[&Node<'a, 'b, 'c>]], skip_last: bool,
+	our_payment_preimage: PaymentPreimage
+) -> u64 {
+	let extra_fees = vec![0; expected_paths.len()];
+	do_claim_payment_along_route_with_extra_penultimate_hop_fees(origin_node, expected_paths,
+		&extra_fees[..], skip_last, our_payment_preimage)
+}
+
+pub fn do_claim_payment_along_route_with_extra_penultimate_hop_fees<'a, 'b, 'c>(
+	origin_node: &Node<'a, 'b, 'c>, expected_paths: &[&[&Node<'a, 'b, 'c>]], expected_extra_fees:
+	&[u32], skip_last: bool, our_payment_preimage: PaymentPreimage
+) -> u64 {
+	assert_eq!(expected_paths.len(), expected_extra_fees.len());
 	for path in expected_paths.iter() {
 		assert_eq!(path.last().unwrap().node.get_our_node_id(), expected_paths[0].last().unwrap().node.get_our_node_id());
 	}
@@ -2236,7 +2249,7 @@ pub fn do_claim_payment_along_route<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, 
 		}
 	}
 
-	for (expected_route, (path_msgs, next_hop)) in expected_paths.iter().zip(per_path_msgs.drain(..)) {
+	for (i, (expected_route, (path_msgs, next_hop))) in expected_paths.iter().zip(per_path_msgs.drain(..)).enumerate() {
 		let mut next_msgs = Some(path_msgs);
 		let mut expected_next_node = next_hop;
 
@@ -2251,10 +2264,10 @@ pub fn do_claim_payment_along_route<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, 
 			}
 		}
 		macro_rules! mid_update_fulfill_dance {
-			($node: expr, $prev_node: expr, $next_node: expr, $new_msgs: expr) => {
+			($idx: expr, $node: expr, $prev_node: expr, $next_node: expr, $new_msgs: expr) => {
 				{
 					$node.node.handle_update_fulfill_htlc(&$prev_node.node.get_our_node_id(), &next_msgs.as_ref().unwrap().0);
-					let fee = {
+					let mut fee = {
 						let per_peer_state = $node.node.per_peer_state.read().unwrap();
 						let peer_state = per_peer_state.get(&$prev_node.node.get_our_node_id())
 							.unwrap().lock().unwrap();
@@ -2265,6 +2278,7 @@ pub fn do_claim_payment_along_route<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, 
 							channel.context.config().forwarding_fee_base_msat
 						}
 					};
+					if $idx == 1 { fee += expected_extra_fees[i]; }
 					expect_payment_forwarded!($node, $next_node, $prev_node, Some(fee as u64), false, false);
 					expected_total_fee_msat += fee as u64;
 					check_added_monitors!($node, 1);
@@ -2296,7 +2310,7 @@ pub fn do_claim_payment_along_route<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, 
 				} else {
 					next_node = expected_route[expected_route.len() - 1 - idx - 1];
 				}
-				mid_update_fulfill_dance!(node, prev_node, next_node, update_next_msgs);
+				mid_update_fulfill_dance!(idx, node, prev_node, next_node, update_next_msgs);
 			} else {
 				assert!(!update_next_msgs);
 				assert!(node.node.get_and_clear_pending_msg_events().is_empty());

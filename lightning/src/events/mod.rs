@@ -385,8 +385,25 @@ pub enum Event {
 		///
 		/// Payments received on LDK versions prior to 0.0.115 will have this field unset.
 		onion_fields: Option<RecipientOnionFields>,
-		/// The value, in thousandths of a satoshi, that this payment is for.
+		/// The value, in thousandths of a satoshi, that this payment is claimable for. May be greater
+		/// than the invoice amount.
+		///
+		/// May be less than the invoice amount if [`ChannelConfig::accept_underpaying_htlcs`] is set
+		/// and the previous hop took an extra fee.
+		///
+		/// # Note
+		/// If [`ChannelConfig::accept_underpaying_htlcs`] is set and you claim without verifying this
+		/// field, you may lose money!
+		///
+		/// [`ChannelConfig::accept_underpaying_htlcs`]: crate::util::config::ChannelConfig::accept_underpaying_htlcs
 		amount_msat: u64,
+		/// The value, in thousands of a satoshi, that was skimmed off of this payment as an extra fee
+		/// taken by our channel counterparty.
+		///
+		/// Will always be 0 unless [`ChannelConfig::accept_underpaying_htlcs`] is set.
+		///
+		/// [`ChannelConfig::accept_underpaying_htlcs`]: crate::util::config::ChannelConfig::accept_underpaying_htlcs
+		counterparty_skimmed_fee_msat: u64,
 		/// Information for claiming this received payment, based on whether the purpose of the
 		/// payment is to pay an invoice or to send a spontaneous payment.
 		purpose: PaymentPurpose,
@@ -428,7 +445,8 @@ pub enum Event {
 		/// The payment hash of the claimed payment. Note that LDK will not stop you from
 		/// registering duplicate payment hashes for inbound payments.
 		payment_hash: PaymentHash,
-		/// The value, in thousandths of a satoshi, that this payment is for.
+		/// The value, in thousandths of a satoshi, that this payment is for. May be greater than the
+		/// invoice amount.
 		amount_msat: u64,
 		/// The purpose of the claimed payment, i.e. whether the payment was for an invoice or a
 		/// spontaneous payment.
@@ -621,6 +639,7 @@ pub enum Event {
 		inbound_amount_msat: u64,
 		/// How many msats the payer intended to route to the next node. Depending on the reason you are
 		/// intercepting this payment, you might take a fee by forwarding less than this amount.
+		/// Forwarding less than this amount may break compatibility with LDK versions prior to 0.0.116.
 		///
 		/// Note that LDK will NOT check that expected fees were factored into this value. You MUST
 		/// check that whatever fee you want has been included here or subtract it as required. Further,
@@ -830,8 +849,8 @@ impl Writeable for Event {
 				// We never write out FundingGenerationReady events as, upon disconnection, peers
 				// drop any channels which have not yet exchanged funding_signed.
 			},
-			&Event::PaymentClaimable { ref payment_hash, ref amount_msat, ref purpose,
-				ref receiver_node_id, ref via_channel_id, ref via_user_channel_id,
+			&Event::PaymentClaimable { ref payment_hash, ref amount_msat, counterparty_skimmed_fee_msat,
+				ref purpose, ref receiver_node_id, ref via_channel_id, ref via_user_channel_id,
 				ref claim_deadline, ref onion_fields
 			} => {
 				1u8.write(writer)?;
@@ -846,6 +865,8 @@ impl Writeable for Event {
 						payment_preimage = Some(*preimage);
 					}
 				}
+				let skimmed_fee_opt = if counterparty_skimmed_fee_msat == 0 { None }
+					else { Some(counterparty_skimmed_fee_msat) };
 				write_tlv_fields!(writer, {
 					(0, payment_hash, required),
 					(1, receiver_node_id, option),
@@ -857,6 +878,7 @@ impl Writeable for Event {
 					(7, claim_deadline, option),
 					(8, payment_preimage, option),
 					(9, onion_fields, option),
+					(10, skimmed_fee_opt, option),
 				});
 			},
 			&Event::PaymentSent { ref payment_id, ref payment_preimage, ref payment_hash, ref fee_paid_msat } => {
@@ -1056,6 +1078,7 @@ impl MaybeReadable for Event {
 					let mut payment_preimage = None;
 					let mut payment_secret = None;
 					let mut amount_msat = 0;
+					let mut counterparty_skimmed_fee_msat_opt = None;
 					let mut receiver_node_id = None;
 					let mut _user_payment_id = None::<u64>; // Used in 0.0.103 and earlier, no longer written in 0.0.116+.
 					let mut via_channel_id = None;
@@ -1073,6 +1096,7 @@ impl MaybeReadable for Event {
 						(7, claim_deadline, option),
 						(8, payment_preimage, option),
 						(9, onion_fields, option),
+						(10, counterparty_skimmed_fee_msat_opt, option),
 					});
 					let purpose = match payment_secret {
 						Some(secret) => PaymentPurpose::InvoicePayment {
@@ -1086,6 +1110,7 @@ impl MaybeReadable for Event {
 						receiver_node_id,
 						payment_hash,
 						amount_msat,
+						counterparty_skimmed_fee_msat: counterparty_skimmed_fee_msat_opt.unwrap_or(0),
 						purpose,
 						via_channel_id,
 						via_user_channel_id,
