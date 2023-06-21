@@ -5744,6 +5744,7 @@ impl<Signer: WriteableEcdsaChannelSigner> OutboundV1Channel<Signer> {
 		} else {
 			self.context.channel_type = ChannelTypeFeatures::only_static_remote_key();
 		}
+		self.context.channel_transaction_parameters.channel_type_features = self.context.channel_type.clone();
 		Ok(self.get_open_channel(chain_hash))
 	}
 
@@ -5862,7 +5863,8 @@ impl<Signer: WriteableEcdsaChannelSigner> OutboundV1Channel<Signer> {
 			if channel_type != ChannelTypeFeatures::only_static_remote_key() {
 				return Err(ChannelError::Close("Only static_remote_key is supported for non-negotiated channel types".to_owned()));
 			}
-			self.context.channel_type = channel_type;
+			self.context.channel_type = channel_type.clone();
+			self.context.channel_transaction_parameters.channel_type_features = channel_type;
 		}
 
 		let counterparty_shutdown_scriptpubkey = if their_features.supports_upfront_shutdown_script() {
@@ -7035,7 +7037,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 			_ => return Err(DecodeError::InvalidValue),
 		};
 
-		let channel_parameters: ChannelTransactionParameters = Readable::read(reader)?;
+		let mut channel_parameters: ChannelTransactionParameters = Readable::read(reader)?;
 		let funding_transaction = Readable::read(reader)?;
 
 		let counterparty_cur_commitment_point = Readable::read(reader)?;
@@ -7160,6 +7162,10 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 			// understand yet, refuse to read it.
 			return Err(DecodeError::UnknownRequiredFeature);
 		}
+
+		// ChannelTransactionParameters may have had an empty features set upon deserialization.
+		// To account for that, we're proactively setting/overriding the field here.
+		channel_parameters.channel_type_features = chan_features.clone();
 
 		let mut secp_ctx = Secp256k1::new();
 		secp_ctx.seeded_randomize(&entropy_source.get_secure_random_bytes());
