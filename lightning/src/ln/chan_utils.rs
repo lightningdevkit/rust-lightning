@@ -40,6 +40,7 @@ use crate::util::transaction_utils::sort_outputs;
 use crate::ln::channel::{INITIAL_COMMITMENT_NUMBER, ANCHOR_OUTPUT_VALUE_SATOSHI};
 use core::ops::Deref;
 use crate::chain;
+use crate::ln::features::ChannelTypeFeatures;
 use crate::util::crypto::{sign, sign_with_aux_rand};
 
 /// Maximum number of one-way in-flight HTLC (protocol-level value).
@@ -767,6 +768,37 @@ pub fn build_htlc_input_witness(
 	}
 	witness.push(redeem_script.to_bytes());
 	witness
+}
+
+/// Pre-anchors channel type features did not use to get serialized in the following six structs:
+/// — [`ChannelTransactionParameters`]
+/// — [`CommitmentTransaction`]
+/// — [`CounterpartyOfferedHTLCOutput`]
+/// — [`CounterpartyReceivedHTLCOutput`]
+/// — [`HolderHTLCOutput`]
+/// — [`HolderFundingOutput`]
+///
+/// To ensure a forwards-compatible serialization, we use odd TLV fields. However, if new features
+/// are used that could break security, where old signers should be prevented from handling the
+/// serialized data, an optional even-field TLV will be used as a stand-in to break compatibility.
+///
+/// This method determines whether or not that option needs to be set based on the chanenl type
+/// features, and returns it.
+///
+/// [`CounterpartyOfferedHTLCOutput`]: crate::chain::package::CounterpartyOfferedHTLCOutput
+/// [`CounterpartyReceivedHTLCOutput`]: crate::chain::package::CounterpartyReceivedHTLCOutput
+/// [`HolderHTLCOutput`]: crate::chain::package::HolderHTLCOutput
+/// [`HolderFundingOutput`]: crate::chain::package::HolderFundingOutput
+pub(crate) fn legacy_deserialization_prevention_marker_for_channel_type_features(features: &ChannelTypeFeatures) -> Option<()> {
+	let mut legacy_version_bit_set = ChannelTypeFeatures::only_static_remote_key();
+	legacy_version_bit_set.set_scid_privacy_required();
+	legacy_version_bit_set.set_zero_conf_required();
+
+	if features.is_subset(&legacy_version_bit_set) {
+		None
+	} else {
+		Some(())
+	}
 }
 
 /// Gets the witnessScript for the to_remote output when anchors are enabled.
