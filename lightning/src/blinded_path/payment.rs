@@ -10,8 +10,11 @@ use crate::io;
 use crate::ln::PaymentSecret;
 use crate::ln::features::BlindedHopFeatures;
 use crate::ln::msgs::DecodeError;
+use crate::offers::invoice::BlindedPayInfo;
 use crate::prelude::*;
 use crate::util::ser::{Readable, Writeable, Writer};
+
+use core::convert::TryFrom;
 
 /// Data to construct a [`BlindedHop`] for forwarding a payment.
 pub struct ForwardTlvs {
@@ -150,6 +153,46 @@ pub(super) fn blinded_hops<T: secp256k1::Signing + secp256k1::Verification>(
 	utils::construct_blinded_hops(secp_ctx, pks, tlvs, session_priv)
 }
 
+pub(super) fn compute_payinfo(
+	intermediate_nodes: &[(PublicKey, ForwardTlvs)], payee_tlvs: &ReceiveTlvs
+) -> Result<BlindedPayInfo, ()> {
+	let mut curr_base_fee: u64 = 0;
+	let mut curr_prop_mil: u64 = 0;
+	let mut cltv_expiry_delta: u16 = 0;
+	for (_, tlvs) in intermediate_nodes.iter().rev() {
+		// In the future, we'll want to take the intersection of all supported features for the
+		// `BlindedPayInfo`, but there are no features in that context right now.
+		if tlvs.features.requires_unknown_bits_from(&BlindedHopFeatures::empty()) { return Err(()) }
+
+		let next_base_fee = tlvs.payment_relay.fee_base_msat as u64;
+		let next_prop_mil = tlvs.payment_relay.fee_proportional_millionths as u64;
+		// Use integer arithmetic to compute `ceil(a/b)` as `(a+b-1)/b`
+		// ((curr_base_fee * (1_000_000 + next_prop_mil)) / 1_000_000) + next_base_fee
+		curr_base_fee = curr_base_fee.checked_mul(1_000_000 + next_prop_mil)
+			.and_then(|f| f.checked_add(1_000_000 - 1))
+			.map(|f| f / 1_000_000)
+			.and_then(|f| f.checked_add(next_base_fee))
+			.ok_or(())?;
+		// ceil(((curr_prop_mil + 1_000_000) * (next_prop_mil + 1_000_000)) / 1_000_000) - 1_000_000
+		curr_prop_mil = curr_prop_mil.checked_add(1_000_000)
+			.and_then(|f1| next_prop_mil.checked_add(1_000_000).and_then(|f2| f2.checked_mul(f1)))
+			.and_then(|f| f.checked_add(1_000_000 - 1))
+			.map(|f| f / 1_000_000)
+			.and_then(|f| f.checked_sub(1_000_000))
+			.ok_or(())?;
+
+		cltv_expiry_delta = cltv_expiry_delta.checked_add(tlvs.payment_relay.cltv_expiry_delta).ok_or(())?;
+	}
+	Ok(BlindedPayInfo {
+		fee_base_msat: u32::try_from(curr_base_fee).map_err(|_| ())?,
+		fee_proportional_millionths: u32::try_from(curr_prop_mil).map_err(|_| ())?,
+		cltv_expiry_delta,
+		htlc_minimum_msat: 1, // TODO
+		htlc_maximum_msat: 21_000_000 * 100_000_000 * 1_000, // TODO
+		features: BlindedHopFeatures::empty(),
+	})
+}
+
 impl_writeable_msg!(PaymentRelay, {
 	cltv_expiry_delta,
 	fee_proportional_millionths,
@@ -160,3 +203,69 @@ impl_writeable_msg!(PaymentConstraints, {
 	max_cltv_expiry,
 	htlc_minimum_msat
 }, {});
+
+#[cfg(test)]
+mod tests {
+	use bitcoin::secp256k1::PublicKey;
+	use crate::blinded_path::payment::{ForwardTlvs, ReceiveTlvs, PaymentConstraints, PaymentRelay};
+	use crate::ln::PaymentSecret;
+	use crate::ln::features::BlindedHopFeatures;
+
+	#[test]
+	fn compute_payinfo() {
+		// Taken from the spec example for aggregating blinded payment info. See
+		// https://github.com/lightning/bolts/blob/master/proposals/route-blinding.md#blinded-payments
+		let dummy_pk = PublicKey::from_slice(&[2; 33]).unwrap();
+		let intermediate_nodes = vec![(dummy_pk, ForwardTlvs {
+			short_channel_id: 0,
+			payment_relay: PaymentRelay {
+				cltv_expiry_delta: 144,
+				fee_proportional_millionths: 500,
+				fee_base_msat: 100,
+			},
+			payment_constraints: PaymentConstraints {
+				max_cltv_expiry: 0,
+				htlc_minimum_msat: 100,
+			},
+			features: BlindedHopFeatures::empty(),
+		}), (dummy_pk, ForwardTlvs {
+			short_channel_id: 0,
+			payment_relay: PaymentRelay {
+				cltv_expiry_delta: 144,
+				fee_proportional_millionths: 500,
+				fee_base_msat: 100,
+			},
+			payment_constraints: PaymentConstraints {
+				max_cltv_expiry: 0,
+				htlc_minimum_msat: 1_000,
+			},
+			features: BlindedHopFeatures::empty(),
+		})];
+		let recv_tlvs = ReceiveTlvs {
+			payment_secret: PaymentSecret([0; 32]),
+			payment_constraints: PaymentConstraints {
+				max_cltv_expiry: 0,
+				htlc_minimum_msat: 1,
+			},
+		};
+		let blinded_payinfo = super::compute_payinfo(&intermediate_nodes[..], &recv_tlvs).unwrap();
+		assert_eq!(blinded_payinfo.fee_base_msat, 201);
+		assert_eq!(blinded_payinfo.fee_proportional_millionths, 1001);
+		assert_eq!(blinded_payinfo.cltv_expiry_delta, 288);
+	}
+
+	#[test]
+	fn compute_payinfo_1_hop() {
+		let recv_tlvs = ReceiveTlvs {
+			payment_secret: PaymentSecret([0; 32]),
+			payment_constraints: PaymentConstraints {
+				max_cltv_expiry: 0,
+				htlc_minimum_msat: 1,
+			},
+		};
+		let blinded_payinfo = super::compute_payinfo(&[], &recv_tlvs).unwrap();
+		assert_eq!(blinded_payinfo.fee_base_msat, 0);
+		assert_eq!(blinded_payinfo.fee_proportional_millionths, 0);
+		assert_eq!(blinded_payinfo.cltv_expiry_delta, 0);
+	}
+}
