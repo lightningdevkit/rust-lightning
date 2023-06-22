@@ -77,6 +77,7 @@
 use crate::{io, io_extras};
 use crate::prelude::*;
 use core::{cmp, fmt};
+use core::borrow::Borrow;
 use core::hash::{Hash, Hasher};
 use core::marker::PhantomData;
 
@@ -431,15 +432,21 @@ pub struct Features<T: sealed::Context> {
 	mark: PhantomData<T>,
 }
 
+impl<T: sealed::Context, Rhs: Borrow<Self>> core::ops::BitOrAssign<Rhs> for Features<T> {
+	fn bitor_assign(&mut self, rhs: Rhs) {
+		let total_feature_len = cmp::max(self.flags.len(), rhs.borrow().flags.len());
+		self.flags.resize(total_feature_len, 0u8);
+		for (byte, rhs_byte) in self.flags.iter_mut().zip(rhs.borrow().flags.iter()) {
+			*byte |= *rhs_byte;
+		}
+	}
+}
+
 impl<T: sealed::Context> core::ops::BitOr for Features<T> {
 	type Output = Self;
 
 	fn bitor(mut self, o: Self) -> Self {
-		let total_feature_len = cmp::max(self.flags.len(), o.flags.len());
-		self.flags.resize(total_feature_len, 0u8);
-		for (byte, o_byte) in self.flags.iter_mut().zip(o.flags.iter()) {
-			*byte |= *o_byte;
-		}
+		self |= o;
 		self
 	}
 }
