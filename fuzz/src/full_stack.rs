@@ -441,11 +441,12 @@ pub fn do_test(data: &[u8], logger: &Arc<dyn Logger>) {
 	config.channel_config.forwarding_fee_proportional_millionths =  slice_to_be32(get_slice!(4));
 	config.channel_handshake_config.announced_channel = get_slice!(1)[0] != 0;
 	let network = Network::Bitcoin;
+	let best_block_timestamp = genesis_block(network).header.time;
 	let params = ChainParameters {
 		network,
 		best_block: BestBlock::from_network(network),
 	};
-	let channelmanager = Arc::new(ChannelManager::new(fee_est.clone(), monitor.clone(), broadcast.clone(), &router, Arc::clone(&logger), keys_manager.clone(), keys_manager.clone(), keys_manager.clone(), config, params));
+	let channelmanager = Arc::new(ChannelManager::new(fee_est.clone(), monitor.clone(), broadcast.clone(), &router, Arc::clone(&logger), keys_manager.clone(), keys_manager.clone(), keys_manager.clone(), config, params, best_block_timestamp));
 	// Adding new calls to `EntropySource::get_secure_random_bytes` during startup can change all the
 	// keys subsequently generated in this test. Rather than regenerating all the messages manually,
 	// it's easier to just increment the counter here so the keys don't change.

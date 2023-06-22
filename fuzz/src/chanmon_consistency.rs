@@ -436,11 +436,12 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out) {
 			config.channel_config.forwarding_fee_proportional_millionths = 0;
 			config.channel_handshake_config.announced_channel = true;
 			let network = Network::Bitcoin;
+			let best_block_timestamp = genesis_block(network).header.time;
 			let params = ChainParameters {
 				network,
 				best_block: BestBlock::from_network(network),
 			};
-			(ChannelManager::new($fee_estimator.clone(), monitor.clone(), broadcast.clone(), &router, Arc::clone(&logger), keys_manager.clone(), keys_manager.clone(), keys_manager.clone(), config, params),
+			(ChannelManager::new($fee_estimator.clone(), monitor.clone(), broadcast.clone(), &router, Arc::clone(&logger), keys_manager.clone(), keys_manager.clone(), keys_manager.clone(), config, params, best_block_timestamp),
 			monitor, keys_manager)
 		} }
 	}

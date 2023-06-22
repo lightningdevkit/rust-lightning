@@ -1299,13 +1299,14 @@ mod test {
 		} else {
 			None
 		};
+		let genesis_timestamp = bitcoin::blockdata::constants::genesis_block(bitcoin::Network::Testnet).header.time as u64;
 		let non_default_invoice_expiry_secs = 4200;
 
 		let invoice =
 			crate::utils::create_phantom_invoice::<&test_utils::TestKeysInterface, &test_utils::TestKeysInterface, &test_utils::TestLogger>(
 				Some(payment_amt), payment_hash, "test".to_string(), non_default_invoice_expiry_secs,
 				route_hints, nodes[1].keys_manager, nodes[1].keys_manager, nodes[1].logger,
-				Currency::BitcoinTestnet, None, Duration::from_secs(1234567)
+				Currency::BitcoinTestnet, None, Duration::from_secs(genesis_timestamp)
 			).unwrap();
 		let (payment_hash, payment_secret) = (PaymentHash(invoice.payment_hash().into_inner()), *invoice.payment_secret());
 		let payment_preimage = if user_generated_pmt_hash {

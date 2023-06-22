@@ -1973,6 +1973,8 @@ where
 {
 	/// Constructs a new `ChannelManager` to hold several channels and route between them.
 	///
+	/// The current time or latest block header time can be provided as the `current_timestamp`.
+	///
 	/// This is the main "logic hub" for all channel-related actions, and implements
 	/// [`ChannelMessageHandler`].
 	///
@@ -1986,7 +1988,11 @@ where
 	/// [`block_connected`]: chain::Listen::block_connected
 	/// [`block_disconnected`]: chain::Listen::block_disconnected
 	/// [`params.best_block.block_hash`]: chain::BestBlock::block_hash
-	pub fn new(fee_est: F, chain_monitor: M, tx_broadcaster: T, router: R, logger: L, entropy_source: ES, node_signer: NS, signer_provider: SP, config: UserConfig, params: ChainParameters) -> Self {
+	pub fn new(
+		fee_est: F, chain_monitor: M, tx_broadcaster: T, router: R, logger: L, entropy_source: ES,
+		node_signer: NS, signer_provider: SP, config: UserConfig, params: ChainParameters,
+		current_timestamp: u32,
+	) -> Self {
 		let mut secp_ctx = Secp256k1::new();
 		secp_ctx.seeded_randomize(&entropy_source.get_secure_random_bytes());
 		let inbound_pmt_key_material = node_signer.get_inbound_payment_key_material();
@@ -2018,7 +2024,7 @@ where
 
 			probing_cookie_secret: entropy_source.get_secure_random_bytes(),
 
-			highest_seen_timestamp: AtomicUsize::new(0),
+			highest_seen_timestamp: AtomicUsize::new(current_timestamp as usize),
 
 			per_peer_state: FairRwLock::new(HashMap::new()),
 
@@ -9874,6 +9880,7 @@ pub mod bench {
 		// Note that this is unrealistic as each payment send will require at least two fsync
 		// calls per node.
 		let network = bitcoin::Network::Testnet;
+		let genesis_block = bitcoin::blockdata::constants::genesis_block(network);
 
 		let tx_broadcaster = test_utils::TestBroadcaster::new(network);
 		let fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: Mutex::new(253) };
@@ -9890,7 +9897,7 @@ pub mod bench {
 		let node_a = ChannelManager::new(&fee_estimator, &chain_monitor_a, &tx_broadcaster, &router, &logger_a, &keys_manager_a, &keys_manager_a, &keys_manager_a, config.clone(), ChainParameters {
 			network,
 			best_block: BestBlock::from_network(network),
-		});
+		}, genesis_block.header.time);
 		let node_a_holder = ANodeHolder { node: &node_a };
 
 		let logger_b = test_utils::TestLogger::with_id("node a".to_owned());
@@ -9900,7 +9907,7 @@ pub mod bench {
 		let node_b = ChannelManager::new(&fee_estimator, &chain_monitor_b, &tx_broadcaster, &router, &logger_b, &keys_manager_b, &keys_manager_b, &keys_manager_b, config.clone(), ChainParameters {
 			network,
 			best_block: BestBlock::from_network(network),
-		});
+		}, genesis_block.header.time);
 		let node_b_holder = ANodeHolder { node: &node_b };
 
 		node_a.peer_connected(&node_b.get_our_node_id(), &Init {
