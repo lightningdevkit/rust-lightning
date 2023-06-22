@@ -502,7 +502,7 @@ where C::Target: chain::Filter,
 		self.event_notifier.notify();
 	}
 
-	#[cfg(any(test, fuzzing, feature = "_test_utils"))]
+	#[cfg(any(test, feature = "_test_utils"))]
 	pub fn get_and_clear_pending_events(&self) -> Vec<events::Event> {
 		use crate::events::EventsProvider;
 		let events = core::cell::RefCell::new(Vec::new());

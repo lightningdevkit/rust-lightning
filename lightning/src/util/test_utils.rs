@@ -45,6 +45,7 @@ use bitcoin::secp256k1::{SecretKey, PublicKey, Secp256k1, ecdsa::Signature, Scal
 use bitcoin::secp256k1::ecdh::SharedSecret;
 use bitcoin::secp256k1::ecdsa::RecoverableSignature;
 
+#[cfg(any(test, feature = "_test_utils"))]
 use regex;
 
 use crate::io;
@@ -738,6 +739,7 @@ impl TestLogger {
 	/// 1. belong to the specified module and
 	/// 2. match the given regex pattern.
 	/// Assert that the number of occurrences equals the given `count`
+	#[cfg(any(test, feature = "_test_utils"))]
 	pub fn assert_log_regex(&self, module: &str, pattern: regex::Regex, count: usize) {
 		let log_entries = self.lines.lock().unwrap();
 		let l: usize = log_entries.iter().filter(|&(&(ref m, ref l), _c)| {
