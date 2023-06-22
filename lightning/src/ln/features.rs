@@ -65,6 +65,12 @@
 //!     [BOLT-3](https://github.com/lightning/bolts/blob/master/03-transactions.md) for more
 //!     information).
 //!
+//! LDK knows about the following features, but does not support them:
+//! - `AnchorsNonzeroFeeHtlcTx` - the initial version of anchor outputs, which was later found to be
+//!     vulnerable (see this
+//!     [mailing list post](https://lists.linuxfoundation.org/pipermail/lightning-dev/2020-September/002796.html)
+//!     for more information).
+//!
 //! [BOLT #9]: https://github.com/lightning/bolts/blob/master/09-features.md
 //! [messages]: crate::ln::msgs
 
