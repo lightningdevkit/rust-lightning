@@ -65,12 +65,19 @@
 //!     [BOLT-3](https://github.com/lightning/bolts/blob/master/03-transactions.md) for more
 //!     information).
 //!
+//! LDK knows about the following features, but does not support them:
+//! - `AnchorsNonzeroFeeHtlcTx` - the initial version of anchor outputs, which was later found to be
+//!     vulnerable (see this
+//!     [mailing list post](https://lists.linuxfoundation.org/pipermail/lightning-dev/2020-September/002796.html)
+//!     for more information).
+//!
 //! [BOLT #9]: https://github.com/lightning/bolts/blob/master/09-features.md
 //! [messages]: crate::ln::msgs
 
 use crate::{io, io_extras};
 use crate::prelude::*;
 use core::{cmp, fmt};
+use core::borrow::Borrow;
 use core::hash::{Hash, Hasher};
 use core::marker::PhantomData;
 
@@ -134,7 +141,7 @@ mod sealed {
 		// Byte 1
 		VariableLengthOnion | StaticRemoteKey | PaymentSecret,
 		// Byte 2
-		BasicMPP | Wumbo | AnchorsZeroFeeHtlcTx,
+		BasicMPP | Wumbo | AnchorsNonzeroFeeHtlcTx | AnchorsZeroFeeHtlcTx,
 		// Byte 3
 		ShutdownAnySegwit,
 		// Byte 4
@@ -150,7 +157,7 @@ mod sealed {
 		// Byte 1
 		VariableLengthOnion | StaticRemoteKey | PaymentSecret,
 		// Byte 2
-		BasicMPP | Wumbo | AnchorsZeroFeeHtlcTx,
+		BasicMPP | Wumbo | AnchorsNonzeroFeeHtlcTx | AnchorsZeroFeeHtlcTx,
 		// Byte 3
 		ShutdownAnySegwit,
 		// Byte 4
@@ -196,7 +203,7 @@ mod sealed {
 		// Byte 1
 		StaticRemoteKey,
 		// Byte 2
-		AnchorsZeroFeeHtlcTx,
+		AnchorsNonzeroFeeHtlcTx | AnchorsZeroFeeHtlcTx,
 		// Byte 3
 		,
 		// Byte 4
@@ -378,6 +385,9 @@ mod sealed {
 	define_feature!(19, Wumbo, [InitContext, NodeContext],
 		"Feature flags for `option_support_large_channel` (aka wumbo channels).", set_wumbo_optional, set_wumbo_required,
 		supports_wumbo, requires_wumbo);
+	define_feature!(21, AnchorsNonzeroFeeHtlcTx, [InitContext, NodeContext, ChannelTypeContext],
+		"Feature flags for `option_anchors_nonzero_fee_htlc_tx`.", set_anchors_nonzero_fee_htlc_tx_optional,
+		set_anchors_nonzero_fee_htlc_tx_required, supports_anchors_nonzero_fee_htlc_tx, requires_anchors_nonzero_fee_htlc_tx);
 	define_feature!(23, AnchorsZeroFeeHtlcTx, [InitContext, NodeContext, ChannelTypeContext],
 		"Feature flags for `option_anchors_zero_fee_htlc_tx`.", set_anchors_zero_fee_htlc_tx_optional,
 		set_anchors_zero_fee_htlc_tx_required, supports_anchors_zero_fee_htlc_tx, requires_anchors_zero_fee_htlc_tx);
@@ -422,15 +432,21 @@ pub struct Features<T: sealed::Context> {
 	mark: PhantomData<T>,
 }
 
+impl<T: sealed::Context, Rhs: Borrow<Self>> core::ops::BitOrAssign<Rhs> for Features<T> {
+	fn bitor_assign(&mut self, rhs: Rhs) {
+		let total_feature_len = cmp::max(self.flags.len(), rhs.borrow().flags.len());
+		self.flags.resize(total_feature_len, 0u8);
+		for (byte, rhs_byte) in self.flags.iter_mut().zip(rhs.borrow().flags.iter()) {
+			*byte |= *rhs_byte;
+		}
+	}
+}
+
 impl<T: sealed::Context> core::ops::BitOr for Features<T> {
 	type Output = Self;
 
 	fn bitor(mut self, o: Self) -> Self {
-		let total_feature_len = cmp::max(self.flags.len(), o.flags.len());
-		self.flags.resize(total_feature_len, 0u8);
-		for (byte, o_byte) in self.flags.iter_mut().zip(o.flags.iter()) {
-			*byte |= *o_byte;
-		}
+		self |= o;
 		self
 	}
 }
@@ -576,6 +592,14 @@ impl ChannelTypeFeatures {
 	pub(crate) fn only_static_remote_key() -> Self {
 		let mut ret = Self::empty();
 		<sealed::ChannelTypeContext as sealed::StaticRemoteKey>::set_required_bit(&mut ret.flags);
+		ret
+	}
+
+	/// Constructs a ChannelTypeFeatures with anchors support
+	pub(crate) fn anchors_zero_htlc_fee_and_dependencies() -> Self {
+		let mut ret = Self::empty();
+		<sealed::ChannelTypeContext as sealed::StaticRemoteKey>::set_required_bit(&mut ret.flags);
+		<sealed::ChannelTypeContext as sealed::AnchorsZeroFeeHtlcTx>::set_required_bit(&mut ret.flags);
 		ret
 	}
 }

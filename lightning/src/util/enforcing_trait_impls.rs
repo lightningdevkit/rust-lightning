@@ -27,6 +27,7 @@ use bitcoin::secp256k1::{Secp256k1, ecdsa::Signature};
 use crate::events::bump_transaction::HTLCDescriptor;
 use crate::util::ser::{Writeable, Writer};
 use crate::io::Error;
+use crate::ln::features::ChannelTypeFeatures;
 
 /// Initial value for revoked commitment downward counter
 pub const INITIAL_REVOKED_COMMITMENT_NUMBER: u64 = 1 << 48;
@@ -88,7 +89,7 @@ impl EnforcingSigner {
 		}
 	}
 
-	pub fn opt_anchors(&self) -> bool { self.inner.opt_anchors() }
+	pub fn channel_type_features(&self) -> &ChannelTypeFeatures { self.inner.channel_type_features() }
 
 	#[cfg(test)]
 	pub fn get_enforcement_state(&self) -> MutexGuard<EnforcementState> {
@@ -172,11 +173,11 @@ impl EcdsaChannelSigner for EnforcingSigner {
 		for (this_htlc, sig) in trusted_tx.htlcs().iter().zip(&commitment_tx.counterparty_htlc_sigs) {
 			assert!(this_htlc.transaction_output_index.is_some());
 			let keys = trusted_tx.keys();
-			let htlc_tx = chan_utils::build_htlc_transaction(&commitment_txid, trusted_tx.feerate_per_kw(), holder_csv, &this_htlc, self.opt_anchors(), false, &keys.broadcaster_delayed_payment_key, &keys.revocation_key);
+			let htlc_tx = chan_utils::build_htlc_transaction(&commitment_txid, trusted_tx.feerate_per_kw(), holder_csv, &this_htlc, self.channel_type_features(), &keys.broadcaster_delayed_payment_key, &keys.revocation_key);
 
-			let htlc_redeemscript = chan_utils::get_htlc_redeemscript(&this_htlc, self.opt_anchors(), &keys);
+			let htlc_redeemscript = chan_utils::get_htlc_redeemscript(&this_htlc, self.channel_type_features(), &keys);
 
-			let sighash_type = if self.opt_anchors() {
+			let sighash_type = if self.channel_type_features().supports_anchors_zero_fee_htlc_tx() {
 				EcdsaSighashType::SinglePlusAnyoneCanPay
 			} else {
 				EcdsaSighashType::All

@@ -309,10 +309,10 @@ pub const INITIAL_COMMITMENT_NUMBER: u64 = (1 << 48) - 1;
 
 pub const DEFAULT_MAX_HTLCS: u16 = 50;
 
-pub(crate) fn commitment_tx_base_weight(opt_anchors: bool) -> u64 {
+pub(crate) fn commitment_tx_base_weight(channel_type_features: &ChannelTypeFeatures) -> u64 {
 	const COMMITMENT_TX_BASE_WEIGHT: u64 = 724;
 	const COMMITMENT_TX_BASE_ANCHOR_WEIGHT: u64 = 1124;
-	if opt_anchors { COMMITMENT_TX_BASE_ANCHOR_WEIGHT } else { COMMITMENT_TX_BASE_WEIGHT }
+	if channel_type_features.supports_anchors_zero_fee_htlc_tx() { COMMITMENT_TX_BASE_ANCHOR_WEIGHT } else { COMMITMENT_TX_BASE_WEIGHT }
 }
 
 #[cfg(not(test))]
@@ -877,10 +877,6 @@ pub(super) struct ChannelContext<Signer: ChannelSigner> {
 }
 
 impl<Signer: ChannelSigner> ChannelContext<Signer> {
-	pub(crate) fn opt_anchors(&self) -> bool {
-		self.channel_transaction_parameters.opt_anchors.is_some()
-	}
-
 	/// Allowed in any state (including after shutdown)
 	pub fn get_update_time_counter(&self) -> u32 {
 		self.update_time_counter
@@ -1207,10 +1203,10 @@ impl<Signer: ChannelSigner> ChannelContext<Signer> {
 			($htlc: expr, $outbound: expr, $source: expr, $state_name: expr) => {
 				if $outbound == local { // "offered HTLC output"
 					let htlc_in_tx = get_htlc_in_commitment!($htlc, true);
-					let htlc_tx_fee = if self.opt_anchors() {
+					let htlc_tx_fee = if self.get_channel_type().supports_anchors_zero_fee_htlc_tx() {
 						0
 					} else {
-						feerate_per_kw as u64 * htlc_timeout_tx_weight(false) / 1000
+						feerate_per_kw as u64 * htlc_timeout_tx_weight(self.get_channel_type()) / 1000
 					};
 					if $htlc.amount_msat / 1000 >= broadcaster_dust_limit_satoshis + htlc_tx_fee {
 						log_trace!(logger, "   ...including {} {} HTLC {} (hash {}) with value {}", if $outbound { "outbound" } else { "inbound" }, $state_name, $htlc.htlc_id, log_bytes!($htlc.payment_hash.0), $htlc.amount_msat);
@@ -1221,10 +1217,10 @@ impl<Signer: ChannelSigner> ChannelContext<Signer> {
 					}
 				} else {
 					let htlc_in_tx = get_htlc_in_commitment!($htlc, false);
-					let htlc_tx_fee = if self.opt_anchors() {
+					let htlc_tx_fee = if self.get_channel_type().supports_anchors_zero_fee_htlc_tx() {
 						0
 					} else {
-						feerate_per_kw as u64 * htlc_success_tx_weight(false) / 1000
+						feerate_per_kw as u64 * htlc_success_tx_weight(self.get_channel_type()) / 1000
 					};
 					if $htlc.amount_msat / 1000 >= broadcaster_dust_limit_satoshis + htlc_tx_fee {
 						log_trace!(logger, "   ...including {} {} HTLC {} (hash {}) with value {}", if $outbound { "outbound" } else { "inbound" }, $state_name, $htlc.htlc_id, log_bytes!($htlc.payment_hash.0), $htlc.amount_msat);
@@ -1329,8 +1325,8 @@ impl<Signer: ChannelSigner> ChannelContext<Signer> {
 			broadcaster_max_commitment_tx_output.1 = cmp::max(broadcaster_max_commitment_tx_output.1, value_to_remote_msat as u64);
 		}
 
-		let total_fee_sat = commit_tx_fee_sat(feerate_per_kw, included_non_dust_htlcs.len(), self.channel_transaction_parameters.opt_anchors.is_some());
-		let anchors_val = if self.channel_transaction_parameters.opt_anchors.is_some() { ANCHOR_OUTPUT_VALUE_SATOSHI * 2 } else { 0 } as i64;
+		let total_fee_sat = commit_tx_fee_sat(feerate_per_kw, included_non_dust_htlcs.len(), &self.channel_transaction_parameters.channel_type_features);
+		let anchors_val = if self.channel_transaction_parameters.channel_type_features.supports_anchors_zero_fee_htlc_tx() { ANCHOR_OUTPUT_VALUE_SATOSHI * 2 } else { 0 } as i64;
 		let (value_to_self, value_to_remote) = if self.is_outbound() {
 			(value_to_self_msat / 1000 - anchors_val - total_fee_sat as i64, value_to_remote_msat / 1000)
 		} else {
@@ -1365,7 +1361,6 @@ impl<Signer: ChannelSigner> ChannelContext<Signer> {
 		let tx = CommitmentTransaction::new_with_auxiliary_htlc_data(commitment_number,
 		                                                             value_to_a as u64,
 		                                                             value_to_b as u64,
-		                                                             self.channel_transaction_parameters.opt_anchors.is_some(),
 		                                                             funding_pubkey_a,
 		                                                             funding_pubkey_b,
 		                                                             keys.clone(),
@@ -1473,12 +1468,12 @@ impl<Signer: ChannelSigner> ChannelContext<Signer> {
 			on_holder_tx_holding_cell_htlcs_count: 0,
 		};
 
-		let (htlc_timeout_dust_limit, htlc_success_dust_limit) = if context.opt_anchors() {
+		let (htlc_timeout_dust_limit, htlc_success_dust_limit) = if context.get_channel_type().supports_anchors_zero_fee_htlc_tx() {
 			(0, 0)
 		} else {
 			let dust_buffer_feerate = context.get_dust_buffer_feerate(outbound_feerate_update) as u64;
-			(dust_buffer_feerate * htlc_timeout_tx_weight(false) / 1000,
-				dust_buffer_feerate * htlc_success_tx_weight(false) / 1000)
+			(dust_buffer_feerate * htlc_timeout_tx_weight(context.get_channel_type()) / 1000,
+				dust_buffer_feerate * htlc_success_tx_weight(context.get_channel_type()) / 1000)
 		};
 		let counterparty_dust_limit_timeout_sat = htlc_timeout_dust_limit + context.counterparty_dust_limit_satoshis;
 		let holder_dust_limit_success_sat = htlc_success_dust_limit + context.holder_dust_limit_satoshis;
@@ -1506,12 +1501,12 @@ impl<Signer: ChannelSigner> ChannelContext<Signer> {
 			on_holder_tx_holding_cell_htlcs_count: 0,
 		};
 
-		let (htlc_timeout_dust_limit, htlc_success_dust_limit) = if context.opt_anchors() {
+		let (htlc_timeout_dust_limit, htlc_success_dust_limit) = if context.get_channel_type().supports_anchors_zero_fee_htlc_tx() {
 			(0, 0)
 		} else {
 			let dust_buffer_feerate = context.get_dust_buffer_feerate(outbound_feerate_update) as u64;
-			(dust_buffer_feerate * htlc_timeout_tx_weight(false) / 1000,
-				dust_buffer_feerate * htlc_success_tx_weight(false) / 1000)
+			(dust_buffer_feerate * htlc_timeout_tx_weight(context.get_channel_type()) / 1000,
+				dust_buffer_feerate * htlc_success_tx_weight(context.get_channel_type()) / 1000)
 		};
 		let counterparty_dust_limit_success_sat = htlc_success_dust_limit + context.counterparty_dust_limit_satoshis;
 		let holder_dust_limit_timeout_sat = htlc_timeout_dust_limit + context.holder_dust_limit_satoshis;
@@ -1577,8 +1572,8 @@ impl<Signer: ChannelSigner> ChannelContext<Signer> {
 			// dependency.
 			// This complicates the computation around dust-values, up to the one-htlc-value.
 			let mut real_dust_limit_timeout_sat = context.holder_dust_limit_satoshis;
-			if !context.opt_anchors() {
-				real_dust_limit_timeout_sat += context.feerate_per_kw as u64 * htlc_timeout_tx_weight(false) / 1000;
+			if !context.get_channel_type().supports_anchors_zero_fee_htlc_tx() {
+				real_dust_limit_timeout_sat += context.feerate_per_kw as u64 * htlc_timeout_tx_weight(context.get_channel_type()) / 1000;
 			}
 
 			let htlc_above_dust = HTLCCandidate::new(real_dust_limit_timeout_sat * 1000, HTLCInitiator::LocalOffered);
@@ -1603,8 +1598,8 @@ impl<Signer: ChannelSigner> ChannelContext<Signer> {
 			// If the channel is inbound (i.e. counterparty pays the fee), we need to make sure
 			// sending a new HTLC won't reduce their balance below our reserve threshold.
 			let mut real_dust_limit_success_sat = context.counterparty_dust_limit_satoshis;
-			if !context.opt_anchors() {
-				real_dust_limit_success_sat += context.feerate_per_kw as u64 * htlc_success_tx_weight(false) / 1000;
+			if !context.get_channel_type().supports_anchors_zero_fee_htlc_tx() {
+				real_dust_limit_success_sat += context.feerate_per_kw as u64 * htlc_success_tx_weight(context.get_channel_type()) / 1000;
 			}
 
 			let htlc_above_dust = HTLCCandidate::new(real_dust_limit_success_sat * 1000, HTLCInitiator::LocalOffered);
@@ -1630,12 +1625,12 @@ impl<Signer: ChannelSigner> ChannelContext<Signer> {
 		let mut remaining_msat_below_dust_exposure_limit = None;
 		let mut dust_exposure_dust_limit_msat = 0;
 
-		let (htlc_success_dust_limit, htlc_timeout_dust_limit) = if context.opt_anchors() {
+		let (htlc_success_dust_limit, htlc_timeout_dust_limit) = if context.get_channel_type().supports_anchors_zero_fee_htlc_tx() {
 			(context.counterparty_dust_limit_satoshis, context.holder_dust_limit_satoshis)
 		} else {
 			let dust_buffer_feerate = context.get_dust_buffer_feerate(None) as u64;
-			(context.counterparty_dust_limit_satoshis + dust_buffer_feerate * htlc_success_tx_weight(false) / 1000,
-			 context.holder_dust_limit_satoshis       + dust_buffer_feerate * htlc_timeout_tx_weight(false) / 1000)
+			(context.counterparty_dust_limit_satoshis + dust_buffer_feerate * htlc_success_tx_weight(context.get_channel_type()) / 1000,
+			 context.holder_dust_limit_satoshis       + dust_buffer_feerate * htlc_timeout_tx_weight(context.get_channel_type()) / 1000)
 		};
 		let on_counterparty_dust_htlc_exposure_msat = inbound_stats.on_counterparty_tx_dust_exposure_msat + outbound_stats.on_counterparty_tx_dust_exposure_msat;
 		if on_counterparty_dust_htlc_exposure_msat as i64 + htlc_success_dust_limit as i64 * 1000 - 1 > context.get_max_dust_htlc_exposure_msat() as i64 {
@@ -1699,11 +1694,11 @@ impl<Signer: ChannelSigner> ChannelContext<Signer> {
 		let context = &self;
 		assert!(context.is_outbound());
 
-		let (htlc_success_dust_limit, htlc_timeout_dust_limit) = if context.opt_anchors() {
+		let (htlc_success_dust_limit, htlc_timeout_dust_limit) = if context.get_channel_type().supports_anchors_zero_fee_htlc_tx() {
 			(0, 0)
 		} else {
-			(context.feerate_per_kw as u64 * htlc_success_tx_weight(false) / 1000,
-				context.feerate_per_kw as u64 * htlc_timeout_tx_weight(false) / 1000)
+			(context.feerate_per_kw as u64 * htlc_success_tx_weight(context.get_channel_type()) / 1000,
+				context.feerate_per_kw as u64 * htlc_timeout_tx_weight(context.get_channel_type()) / 1000)
 		};
 		let real_dust_limit_success_sat = htlc_success_dust_limit + context.holder_dust_limit_satoshis;
 		let real_dust_limit_timeout_sat = htlc_timeout_dust_limit + context.holder_dust_limit_satoshis;
@@ -1762,12 +1757,12 @@ impl<Signer: ChannelSigner> ChannelContext<Signer> {
 		}
 
 		let num_htlcs = included_htlcs + addl_htlcs;
-		let res = commit_tx_fee_msat(context.feerate_per_kw, num_htlcs, context.opt_anchors());
+		let res = commit_tx_fee_msat(context.feerate_per_kw, num_htlcs, &context.channel_type);
 		#[cfg(any(test, fuzzing))]
 		{
 			let mut fee = res;
 			if fee_spike_buffer_htlc.is_some() {
-				fee = commit_tx_fee_msat(context.feerate_per_kw, num_htlcs - 1, context.opt_anchors());
+				fee = commit_tx_fee_msat(context.feerate_per_kw, num_htlcs - 1, &context.channel_type);
 			}
 			let total_pending_htlcs = context.pending_inbound_htlcs.len() + context.pending_outbound_htlcs.len()
 				+ context.holding_cell_htlc_updates.len();
@@ -1803,11 +1798,11 @@ impl<Signer: ChannelSigner> ChannelContext<Signer> {
 		let context = &self;
 		assert!(!context.is_outbound());
 
-		let (htlc_success_dust_limit, htlc_timeout_dust_limit) = if context.opt_anchors() {
+		let (htlc_success_dust_limit, htlc_timeout_dust_limit) = if context.get_channel_type().supports_anchors_zero_fee_htlc_tx() {
 			(0, 0)
 		} else {
-			(context.feerate_per_kw as u64 * htlc_success_tx_weight(false) / 1000,
-				context.feerate_per_kw as u64 * htlc_timeout_tx_weight(false) / 1000)
+			(context.feerate_per_kw as u64 * htlc_success_tx_weight(context.get_channel_type()) / 1000,
+				context.feerate_per_kw as u64 * htlc_timeout_tx_weight(context.get_channel_type()) / 1000)
 		};
 		let real_dust_limit_success_sat = htlc_success_dust_limit + context.counterparty_dust_limit_satoshis;
 		let real_dust_limit_timeout_sat = htlc_timeout_dust_limit + context.counterparty_dust_limit_satoshis;
@@ -1853,12 +1848,12 @@ impl<Signer: ChannelSigner> ChannelContext<Signer> {
 		}
 
 		let num_htlcs = included_htlcs + addl_htlcs;
-		let res = commit_tx_fee_msat(context.feerate_per_kw, num_htlcs, context.opt_anchors());
+		let res = commit_tx_fee_msat(context.feerate_per_kw, num_htlcs, &context.channel_type);
 		#[cfg(any(test, fuzzing))]
 		{
 			let mut fee = res;
 			if fee_spike_buffer_htlc.is_some() {
-				fee = commit_tx_fee_msat(context.feerate_per_kw, num_htlcs - 1, context.opt_anchors());
+				fee = commit_tx_fee_msat(context.feerate_per_kw, num_htlcs - 1, &context.channel_type);
 			}
 			let total_pending_htlcs = context.pending_inbound_htlcs.len() + context.pending_outbound_htlcs.len();
 			let commitment_tx_info = CommitmentTxInfoCached {
@@ -1980,16 +1975,16 @@ pub(crate) fn get_legacy_default_holder_selected_channel_reserve_satoshis(channe
 // Get the fee cost in SATS of a commitment tx with a given number of HTLC outputs.
 // Note that num_htlcs should not include dust HTLCs.
 #[inline]
-fn commit_tx_fee_sat(feerate_per_kw: u32, num_htlcs: usize, opt_anchors: bool) -> u64 {
-	feerate_per_kw as u64 * (commitment_tx_base_weight(opt_anchors) + num_htlcs as u64 * COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000
+fn commit_tx_fee_sat(feerate_per_kw: u32, num_htlcs: usize, channel_type_features: &ChannelTypeFeatures) -> u64 {
+	feerate_per_kw as u64 * (commitment_tx_base_weight(channel_type_features) + num_htlcs as u64 * COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000
 }
 
 // Get the fee cost in MSATS of a commitment tx with a given number of HTLC outputs.
 // Note that num_htlcs should not include dust HTLCs.
-fn commit_tx_fee_msat(feerate_per_kw: u32, num_htlcs: usize, opt_anchors: bool) -> u64 {
+fn commit_tx_fee_msat(feerate_per_kw: u32, num_htlcs: usize, channel_type_features: &ChannelTypeFeatures) -> u64 {
 	// Note that we need to divide before multiplying to round properly,
 	// since the lowest denomination of bitcoin on-chain is the satoshi.
-	(commitment_tx_base_weight(opt_anchors) + num_htlcs as u64 * COMMITMENT_TX_WEIGHT_PER_HTLC) * feerate_per_kw as u64 / 1000 * 1000
+	(commitment_tx_base_weight(channel_type_features) + num_htlcs as u64 * COMMITMENT_TX_WEIGHT_PER_HTLC) * feerate_per_kw as u64 / 1000 * 1000
 }
 
 // TODO: We should refactor this to be an Inbound/OutboundChannel until initial setup handshaking
@@ -2633,12 +2628,12 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			}
 		}
 
-		let (htlc_timeout_dust_limit, htlc_success_dust_limit) = if self.context.opt_anchors() {
+		let (htlc_timeout_dust_limit, htlc_success_dust_limit) = if self.context.get_channel_type().supports_anchors_zero_fee_htlc_tx() {
 			(0, 0)
 		} else {
 			let dust_buffer_feerate = self.context.get_dust_buffer_feerate(None) as u64;
-			(dust_buffer_feerate * htlc_timeout_tx_weight(false) / 1000,
-				dust_buffer_feerate * htlc_success_tx_weight(false) / 1000)
+			(dust_buffer_feerate * htlc_timeout_tx_weight(self.context.get_channel_type()) / 1000,
+				dust_buffer_feerate * htlc_success_tx_weight(self.context.get_channel_type()) / 1000)
 		};
 		let exposure_dust_limit_timeout_sats = htlc_timeout_dust_limit + self.context.counterparty_dust_limit_satoshis;
 		if msg.amount_msat / 1000 < exposure_dust_limit_timeout_sats {
@@ -2886,11 +2881,11 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		for (idx, (htlc, mut source_opt)) in htlcs_cloned.drain(..).enumerate() {
 			if let Some(_) = htlc.transaction_output_index {
 				let htlc_tx = chan_utils::build_htlc_transaction(&commitment_txid, commitment_stats.feerate_per_kw,
-					self.context.get_counterparty_selected_contest_delay().unwrap(), &htlc, self.context.opt_anchors(),
-					false, &keys.broadcaster_delayed_payment_key, &keys.revocation_key);
+					self.context.get_counterparty_selected_contest_delay().unwrap(), &htlc, &self.context.channel_type,
+					&keys.broadcaster_delayed_payment_key, &keys.revocation_key);
 
-				let htlc_redeemscript = chan_utils::get_htlc_redeemscript(&htlc, self.context.opt_anchors(), &keys);
-				let htlc_sighashtype = if self.context.opt_anchors() { EcdsaSighashType::SinglePlusAnyoneCanPay } else { EcdsaSighashType::All };
+				let htlc_redeemscript = chan_utils::get_htlc_redeemscript(&htlc, &self.context.channel_type, &keys);
+				let htlc_sighashtype = if self.context.channel_type.supports_anchors_zero_fee_htlc_tx() { EcdsaSighashType::SinglePlusAnyoneCanPay } else { EcdsaSighashType::All };
 				let htlc_sighash = hash_to_message!(&sighash::SighashCache::new(&htlc_tx).segwit_signature_hash(0, &htlc_redeemscript, htlc.amount_msat / 1000, htlc_sighashtype).unwrap()[..]);
 				log_trace!(logger, "Checking HTLC tx signature {} by key {} against tx {} (sighash {}) with redeemscript {} in channel {}.",
 					log_bytes!(msg.htlc_signatures[idx].serialize_compact()[..]), log_bytes!(keys.countersignatory_htlc_key.serialize()),
@@ -3412,7 +3407,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		let outbound_stats = self.context.get_outbound_pending_htlc_stats(Some(feerate_per_kw));
 		let keys = self.context.build_holder_transaction_keys(self.context.cur_holder_commitment_transaction_number);
 		let commitment_stats = self.context.build_commitment_transaction(self.context.cur_holder_commitment_transaction_number, &keys, true, true, logger);
-		let buffer_fee_msat = commit_tx_fee_sat(feerate_per_kw, commitment_stats.num_nondust_htlcs + outbound_stats.on_holder_tx_holding_cell_htlcs_count as usize + CONCURRENT_INBOUND_HTLC_FEE_BUFFER as usize, self.context.opt_anchors()) * 1000;
+		let buffer_fee_msat = commit_tx_fee_sat(feerate_per_kw, commitment_stats.num_nondust_htlcs + outbound_stats.on_holder_tx_holding_cell_htlcs_count as usize + CONCURRENT_INBOUND_HTLC_FEE_BUFFER as usize, self.context.get_channel_type()) * 1000;
 		let holder_balance_msat = commitment_stats.local_balance_msat - outbound_stats.holding_cell_msat;
 		if holder_balance_msat < buffer_fee_msat  + self.context.counterparty_selected_channel_reserve_satoshis.unwrap() * 1000 {
 			//TODO: auto-close after a number of failures?
@@ -5238,7 +5233,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 						&& info.next_holder_htlc_id == self.context.next_holder_htlc_id
 						&& info.next_counterparty_htlc_id == self.context.next_counterparty_htlc_id
 						&& info.feerate == self.context.feerate_per_kw {
-							let actual_fee = commit_tx_fee_msat(self.context.feerate_per_kw, commitment_stats.num_nondust_htlcs, self.context.opt_anchors());
+							let actual_fee = commit_tx_fee_msat(self.context.feerate_per_kw, commitment_stats.num_nondust_htlcs, self.context.get_channel_type());
 							assert_eq!(actual_fee, info.fee);
 						}
 				}
@@ -5278,8 +5273,8 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 
 			for (ref htlc_sig, ref htlc) in htlc_signatures.iter().zip(htlcs) {
 				log_trace!(logger, "Signed remote HTLC tx {} with redeemscript {} with pubkey {} -> {} in channel {}",
-					encode::serialize_hex(&chan_utils::build_htlc_transaction(&counterparty_commitment_txid, commitment_stats.feerate_per_kw, self.context.get_holder_selected_contest_delay(), htlc, self.context.opt_anchors(), false, &counterparty_keys.broadcaster_delayed_payment_key, &counterparty_keys.revocation_key)),
-					encode::serialize_hex(&chan_utils::get_htlc_redeemscript(&htlc, self.context.opt_anchors(), &counterparty_keys)),
+					encode::serialize_hex(&chan_utils::build_htlc_transaction(&counterparty_commitment_txid, commitment_stats.feerate_per_kw, self.context.get_holder_selected_contest_delay(), htlc, &self.context.channel_type, &counterparty_keys.broadcaster_delayed_payment_key, &counterparty_keys.revocation_key)),
+					encode::serialize_hex(&chan_utils::get_htlc_redeemscript(&htlc, &self.context.channel_type, &counterparty_keys)),
 					log_bytes!(counterparty_keys.broadcaster_htlc_key.serialize()),
 					log_bytes!(htlc_sig.serialize_compact()[..]), log_bytes!(self.context.channel_id()));
 			}
@@ -5495,7 +5490,7 @@ impl<Signer: WriteableEcdsaChannelSigner> OutboundV1Channel<Signer> {
 		let feerate = fee_estimator.bounded_sat_per_1000_weight(ConfirmationTarget::Normal);
 
 		let value_to_self_msat = channel_value_satoshis * 1000 - push_msat;
-		let commitment_tx_fee = commit_tx_fee_msat(feerate, MIN_AFFORDABLE_HTLC_COUNT, channel_type.requires_anchors_zero_fee_htlc_tx());
+		let commitment_tx_fee = commit_tx_fee_msat(feerate, MIN_AFFORDABLE_HTLC_COUNT, &channel_type);
 		if value_to_self_msat < commitment_tx_fee {
 			return Err(APIError::APIMisuseError{ err: format!("Funding amount ({}) can't even pay fee for initial commitment transaction fee of {}.", value_to_self_msat / 1000, commitment_tx_fee / 1000) });
 		}
@@ -5610,8 +5605,7 @@ impl<Signer: WriteableEcdsaChannelSigner> OutboundV1Channel<Signer> {
 					is_outbound_from_holder: true,
 					counterparty_parameters: None,
 					funding_outpoint: None,
-					opt_anchors: if channel_type.requires_anchors_zero_fee_htlc_tx() { Some(()) } else { None },
-					opt_non_zero_fee_anchors: None
+					channel_type_features: channel_type.clone()
 				},
 				funding_transaction: None,
 
@@ -5764,13 +5758,13 @@ impl<Signer: WriteableEcdsaChannelSigner> OutboundV1Channel<Signer> {
 		// whatever reason.
 		if self.context.channel_type.supports_anchors_zero_fee_htlc_tx() {
 			self.context.channel_type.clear_anchors_zero_fee_htlc_tx();
-			assert!(self.context.channel_transaction_parameters.opt_non_zero_fee_anchors.is_none());
-			self.context.channel_transaction_parameters.opt_anchors = None;
+			assert!(!self.context.channel_transaction_parameters.channel_type_features.supports_anchors_nonzero_fee_htlc_tx());
 		} else if self.context.channel_type.supports_scid_privacy() {
 			self.context.channel_type.clear_scid_privacy();
 		} else {
 			self.context.channel_type = ChannelTypeFeatures::only_static_remote_key();
 		}
+		self.context.channel_transaction_parameters.channel_type_features = self.context.channel_type.clone();
 		Ok(self.get_open_channel(chain_hash))
 	}
 
@@ -5889,7 +5883,8 @@ impl<Signer: WriteableEcdsaChannelSigner> OutboundV1Channel<Signer> {
 			if channel_type != ChannelTypeFeatures::only_static_remote_key() {
 				return Err(ChannelError::Close("Only static_remote_key is supported for non-negotiated channel types".to_owned()));
 			}
-			self.context.channel_type = channel_type;
+			self.context.channel_type = channel_type.clone();
+			self.context.channel_transaction_parameters.channel_type_features = channel_type;
 		}
 
 		let counterparty_shutdown_scriptpubkey = if their_features.supports_upfront_shutdown_script() {
@@ -5996,7 +5991,6 @@ impl<Signer: WriteableEcdsaChannelSigner> InboundV1Channel<Signer> {
 			}
 			channel_type
 		};
-		let opt_anchors = channel_type.supports_anchors_zero_fee_htlc_tx();
 
 		let channel_keys_id = signer_provider.generate_channel_keys_id(true, msg.funding_satoshis, user_id);
 		let holder_signer = signer_provider.derive_channel_signer(msg.funding_satoshis, channel_keys_id);
@@ -6097,7 +6091,7 @@ impl<Signer: WriteableEcdsaChannelSigner> InboundV1Channel<Signer> {
 		// check if the funder's amount for the initial commitment tx is sufficient
 		// for full fee payment plus a few HTLCs to ensure the channel will be useful.
 		let funders_amount_msat = msg.funding_satoshis * 1000 - msg.push_msat;
-		let commitment_tx_fee = commit_tx_fee_msat(msg.feerate_per_kw, MIN_AFFORDABLE_HTLC_COUNT, opt_anchors) / 1000;
+		let commitment_tx_fee = commit_tx_fee_msat(msg.feerate_per_kw, MIN_AFFORDABLE_HTLC_COUNT, &channel_type) / 1000;
 		if funders_amount_msat / 1000 < commitment_tx_fee {
 			return Err(ChannelError::Close(format!("Funding amount ({} sats) can't even pay fee for initial commitment transaction fee of {} sats.", funders_amount_msat / 1000, commitment_tx_fee)));
 		}
@@ -6240,8 +6234,7 @@ impl<Signer: WriteableEcdsaChannelSigner> InboundV1Channel<Signer> {
 						pubkeys: counterparty_pubkeys,
 					}),
 					funding_outpoint: None,
-					opt_anchors: if opt_anchors { Some(()) } else { None },
-					opt_non_zero_fee_anchors: None
+					channel_type_features: channel_type.clone()
 				},
 				funding_transaction: None,
 
@@ -7088,7 +7081,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 			_ => return Err(DecodeError::InvalidValue),
 		};
 
-		let channel_parameters: ChannelTransactionParameters = Readable::read(reader)?;
+		let mut channel_parameters: ChannelTransactionParameters = Readable::read(reader)?;
 		let funding_transaction = Readable::read(reader)?;
 
 		let counterparty_cur_commitment_point = Readable::read(reader)?;
@@ -7218,6 +7211,10 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 			// understand yet, refuse to read it.
 			return Err(DecodeError::UnknownRequiredFeature);
 		}
+
+		// ChannelTransactionParameters may have had an empty features set upon deserialization.
+		// To account for that, we're proactively setting/overriding the field here.
+		channel_parameters.channel_type_features = chan_features.clone();
 
 		let mut secp_ctx = Secp256k1::new();
 		secp_ctx.seeded_randomize(&entropy_source.get_secure_random_bytes());
@@ -7598,13 +7595,13 @@ mod tests {
 		// the dust limit check.
 		let htlc_candidate = HTLCCandidate::new(htlc_amount_msat, HTLCInitiator::LocalOffered);
 		let local_commit_tx_fee = node_a_chan.context.next_local_commit_tx_fee_msat(htlc_candidate, None);
-		let local_commit_fee_0_htlcs = commit_tx_fee_msat(node_a_chan.context.feerate_per_kw, 0, node_a_chan.context.opt_anchors());
+		let local_commit_fee_0_htlcs = commit_tx_fee_msat(node_a_chan.context.feerate_per_kw, 0, node_a_chan.context.get_channel_type());
 		assert_eq!(local_commit_tx_fee, local_commit_fee_0_htlcs);
 
 		// Finally, make sure that when Node A calculates the remote's commitment transaction fees, all
 		// of the HTLCs are seen to be above the dust limit.
 		node_a_chan.context.channel_transaction_parameters.is_outbound_from_holder = false;
-		let remote_commit_fee_3_htlcs = commit_tx_fee_msat(node_a_chan.context.feerate_per_kw, 3, node_a_chan.context.opt_anchors());
+		let remote_commit_fee_3_htlcs = commit_tx_fee_msat(node_a_chan.context.feerate_per_kw, 3, node_a_chan.context.get_channel_type());
 		let htlc_candidate = HTLCCandidate::new(htlc_amount_msat, HTLCInitiator::LocalOffered);
 		let remote_commit_tx_fee = node_a_chan.context.next_remote_commit_tx_fee_msat(htlc_candidate, None);
 		assert_eq!(remote_commit_tx_fee, remote_commit_fee_3_htlcs);
@@ -7626,18 +7623,18 @@ mod tests {
 		let config = UserConfig::default();
 		let mut chan = OutboundV1Channel::<EnforcingSigner>::new(&fee_est, &&keys_provider, &&keys_provider, node_id, &channelmanager::provided_init_features(&config), 10000000, 100000, 42, &config, 0, 42).unwrap();
 
-		let commitment_tx_fee_0_htlcs = commit_tx_fee_msat(chan.context.feerate_per_kw, 0, chan.context.opt_anchors());
-		let commitment_tx_fee_1_htlc = commit_tx_fee_msat(chan.context.feerate_per_kw, 1, chan.context.opt_anchors());
+		let commitment_tx_fee_0_htlcs = commit_tx_fee_msat(chan.context.feerate_per_kw, 0, chan.context.get_channel_type());
+		let commitment_tx_fee_1_htlc = commit_tx_fee_msat(chan.context.feerate_per_kw, 1, chan.context.get_channel_type());
 
 		// If HTLC_SUCCESS_TX_WEIGHT and HTLC_TIMEOUT_TX_WEIGHT were swapped: then this HTLC would be
 		// counted as dust when it shouldn't be.
-		let htlc_amt_above_timeout = ((253 * htlc_timeout_tx_weight(chan.context.opt_anchors()) / 1000) + chan.context.holder_dust_limit_satoshis + 1) * 1000;
+		let htlc_amt_above_timeout = ((253 * htlc_timeout_tx_weight(chan.context.get_channel_type()) / 1000) + chan.context.holder_dust_limit_satoshis + 1) * 1000;
 		let htlc_candidate = HTLCCandidate::new(htlc_amt_above_timeout, HTLCInitiator::LocalOffered);
 		let commitment_tx_fee = chan.context.next_local_commit_tx_fee_msat(htlc_candidate, None);
 		assert_eq!(commitment_tx_fee, commitment_tx_fee_1_htlc);
 
 		// If swapped: this HTLC would be counted as non-dust when it shouldn't be.
-		let dust_htlc_amt_below_success = ((253 * htlc_success_tx_weight(chan.context.opt_anchors()) / 1000) + chan.context.holder_dust_limit_satoshis - 1) * 1000;
+		let dust_htlc_amt_below_success = ((253 * htlc_success_tx_weight(chan.context.get_channel_type()) / 1000) + chan.context.holder_dust_limit_satoshis - 1) * 1000;
 		let htlc_candidate = HTLCCandidate::new(dust_htlc_amt_below_success, HTLCInitiator::RemoteOffered);
 		let commitment_tx_fee = chan.context.next_local_commit_tx_fee_msat(htlc_candidate, None);
 		assert_eq!(commitment_tx_fee, commitment_tx_fee_0_htlcs);
@@ -7645,13 +7642,13 @@ mod tests {
 		chan.context.channel_transaction_parameters.is_outbound_from_holder = false;
 
 		// If swapped: this HTLC would be counted as non-dust when it shouldn't be.
-		let dust_htlc_amt_above_timeout = ((253 * htlc_timeout_tx_weight(chan.context.opt_anchors()) / 1000) + chan.context.counterparty_dust_limit_satoshis + 1) * 1000;
+		let dust_htlc_amt_above_timeout = ((253 * htlc_timeout_tx_weight(chan.context.get_channel_type()) / 1000) + chan.context.counterparty_dust_limit_satoshis + 1) * 1000;
 		let htlc_candidate = HTLCCandidate::new(dust_htlc_amt_above_timeout, HTLCInitiator::LocalOffered);
 		let commitment_tx_fee = chan.context.next_remote_commit_tx_fee_msat(htlc_candidate, None);
 		assert_eq!(commitment_tx_fee, commitment_tx_fee_0_htlcs);
 
 		// If swapped: this HTLC would be counted as dust when it shouldn't be.
-		let htlc_amt_below_success = ((253 * htlc_success_tx_weight(chan.context.opt_anchors()) / 1000) + chan.context.counterparty_dust_limit_satoshis - 1) * 1000;
+		let htlc_amt_below_success = ((253 * htlc_success_tx_weight(chan.context.get_channel_type()) / 1000) + chan.context.counterparty_dust_limit_satoshis - 1) * 1000;
 		let htlc_candidate = HTLCCandidate::new(htlc_amt_below_success, HTLCInitiator::RemoteOffered);
 		let commitment_tx_fee = chan.context.next_remote_commit_tx_fee_msat(htlc_candidate, None);
 		assert_eq!(commitment_tx_fee, commitment_tx_fee_1_htlc);
@@ -7999,15 +7996,15 @@ mod tests {
 
 		macro_rules! test_commitment {
 			( $counterparty_sig_hex: expr, $sig_hex: expr, $tx_hex: expr, $($remain:tt)* ) => {
-				chan.context.channel_transaction_parameters.opt_anchors = None;
-				test_commitment_common!($counterparty_sig_hex, $sig_hex, $tx_hex, false, $($remain)*);
+				chan.context.channel_transaction_parameters.channel_type_features = ChannelTypeFeatures::only_static_remote_key();
+				test_commitment_common!($counterparty_sig_hex, $sig_hex, $tx_hex, &ChannelTypeFeatures::only_static_remote_key(), $($remain)*);
 			};
 		}
 
 		macro_rules! test_commitment_with_anchors {
 			( $counterparty_sig_hex: expr, $sig_hex: expr, $tx_hex: expr, $($remain:tt)* ) => {
-				chan.context.channel_transaction_parameters.opt_anchors = Some(());
-				test_commitment_common!($counterparty_sig_hex, $sig_hex, $tx_hex, true, $($remain)*);
+				chan.context.channel_transaction_parameters.channel_type_features = ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies();
+				test_commitment_common!($counterparty_sig_hex, $sig_hex, $tx_hex, &ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies(), $($remain)*);
 			};
 		}
 
@@ -8066,9 +8063,9 @@ mod tests {
 					let ref htlc = htlcs[$htlc_idx];
 					let htlc_tx = chan_utils::build_htlc_transaction(&unsigned_tx.txid, chan.context.feerate_per_kw,
 						chan.context.get_counterparty_selected_contest_delay().unwrap(),
-						&htlc, $opt_anchors, false, &keys.broadcaster_delayed_payment_key, &keys.revocation_key);
+						&htlc, $opt_anchors, &keys.broadcaster_delayed_payment_key, &keys.revocation_key);
 					let htlc_redeemscript = chan_utils::get_htlc_redeemscript(&htlc, $opt_anchors, &keys);
-					let htlc_sighashtype = if $opt_anchors { EcdsaSighashType::SinglePlusAnyoneCanPay } else { EcdsaSighashType::All };
+					let htlc_sighashtype = if $opt_anchors.supports_anchors_zero_fee_htlc_tx() { EcdsaSighashType::SinglePlusAnyoneCanPay } else { EcdsaSighashType::All };
 					let htlc_sighash = Message::from_slice(&sighash::SighashCache::new(&htlc_tx).segwit_signature_hash(0, &htlc_redeemscript, htlc.amount_msat / 1000, htlc_sighashtype).unwrap()[..]).unwrap();
 					assert!(secp_ctx.verify_ecdsa(&htlc_sighash, &remote_signature, &keys.countersignatory_htlc_key).is_ok(), "verify counterparty htlc sig");
 
@@ -8085,7 +8082,7 @@ mod tests {
 					}
 
 					let htlc_sig = htlc_sig_iter.next().unwrap();
-					let num_anchors = if $opt_anchors { 2 } else { 0 };
+					let num_anchors = if $opt_anchors.supports_anchors_zero_fee_htlc_tx() { 2 } else { 0 };
 					assert_eq!((htlc_sig.0).0.transaction_output_index, Some($htlc_idx + num_anchors), "output index");
 
 					let signature = Signature::from_der(&hex::decode($htlc_sig_hex).unwrap()[..]).unwrap();
@@ -8406,6 +8403,8 @@ mod tests {
 		chan.context.value_to_self_msat = 6993000000; // 7000000000 - 7000000
 		chan.context.feerate_per_kw = 2185;
 		chan.context.holder_dust_limit_satoshis = 2001;
+		let cached_channel_type = chan.context.channel_type;
+		chan.context.channel_type = ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies();
 
 		test_commitment_with_anchors!("3044022040f63a16148cf35c8d3d41827f5ae7f7c3746885bb64d4d1b895892a83812b3e02202fcf95c2bf02c466163b3fa3ced6a24926fbb4035095a96842ef516e86ba54c0",
 		                 "3045022100cd8479cfe1edb1e5a1d487391e0451a469c7171e51e680183f19eb4321f20e9b02204eab7d5a6384b1b08e03baa6e4d9748dfd2b5ab2bae7e39604a0d0055bbffdd5",
@@ -8426,6 +8425,7 @@ mod tests {
 		chan.context.value_to_self_msat = 6993000000; // 7000000000 - 7000000
 		chan.context.feerate_per_kw = 3702;
 		chan.context.holder_dust_limit_satoshis = 546;
+		chan.context.channel_type = cached_channel_type.clone();
 
 		test_commitment!("304502210092a587aeb777f869e7ff0d7898ea619ee26a3dacd1f3672b945eea600be431100220077ee9eae3528d15251f2a52b607b189820e57a6ccfac8d1af502b132ee40169",
 		                 "3045022100e5efb73c32d32da2d79702299b6317de6fb24a60476e3855926d78484dd1b3c802203557cb66a42c944ef06e00bcc4da35a5bcb2f185aab0f8e403e519e1d66aaf75",
@@ -8460,6 +8460,7 @@ mod tests {
 		chan.context.value_to_self_msat = 6993000000; // 7000000000 - 7000000
 		chan.context.feerate_per_kw = 3687;
 		chan.context.holder_dust_limit_satoshis = 3001;
+		chan.context.channel_type = ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies();
 
 		test_commitment_with_anchors!("3045022100ad6c71569856b2d7ff42e838b4abe74a713426b37f22fa667a195a4c88908c6902202b37272b02a42dc6d9f4f82cab3eaf84ac882d9ed762859e1e75455c2c228377",
 		                 "3045022100c970799bcb33f43179eb43b3378a0a61991cf2923f69b36ef12548c3df0e6d500220413dc27d2e39ee583093adfcb7799be680141738babb31cc7b0669a777a31f5d",
@@ -8475,6 +8476,7 @@ mod tests {
 		chan.context.value_to_self_msat = 6993000000; // 7000000000 - 7000000
 		chan.context.feerate_per_kw = 4914;
 		chan.context.holder_dust_limit_satoshis = 546;
+		chan.context.channel_type = cached_channel_type.clone();
 
 		test_commitment!("3045022100b4b16d5f8cc9fc4c1aff48831e832a0d8990e133978a66e302c133550954a44d022073573ce127e2200d316f6b612803a5c0c97b8d20e1e44dbe2ac0dd2fb8c95244",
 		                 "3045022100d72638bc6308b88bb6d45861aae83e5b9ff6e10986546e13bce769c70036e2620220320be7c6d66d22f30b9fcd52af66531505b1310ca3b848c19285b38d8a1a8c19",
@@ -8499,6 +8501,7 @@ mod tests {
 		chan.context.value_to_self_msat = 6993000000; // 7000000000 - 7000000
 		chan.context.feerate_per_kw = 4894;
 		chan.context.holder_dust_limit_satoshis = 4001;
+		chan.context.channel_type = ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies();
 
 		test_commitment_with_anchors!("3045022100e784a66b1588575801e237d35e510fd92a81ae3a4a2a1b90c031ad803d07b3f3022021bc5f16501f167607d63b681442da193eb0a76b4b7fd25c2ed4f8b28fd35b95",
 		                 "30450221009f16ac85d232e4eddb3fcd750a68ebf0b58e3356eaada45d3513ede7e817bf4c02207c2b043b4e5f971261975406cb955219fa56bffe5d834a833694b5abc1ce4cfd",
@@ -8508,6 +8511,7 @@ mod tests {
 		chan.context.value_to_self_msat = 6993000000; // 7000000000 - 7000000
 		chan.context.feerate_per_kw = 9651180;
 		chan.context.holder_dust_limit_satoshis = 546;
+		chan.context.channel_type = cached_channel_type.clone();
 
 		test_commitment!("304402200a8544eba1d216f5c5e530597665fa9bec56943c0f66d98fc3d028df52d84f7002201e45fa5c6bc3a506cc2553e7d1c0043a9811313fc39c954692c0d47cfce2bbd3",
 		                 "3045022100e11b638c05c650c2f63a421d36ef8756c5ce82f2184278643520311cdf50aa200220259565fb9c8e4a87ccaf17f27a3b9ca4f20625754a0920d9c6c239d8156a11de",
@@ -8525,6 +8529,7 @@ mod tests {
 		chan.context.value_to_self_msat = 6993000000; // 7000000000 - 7000000
 		chan.context.feerate_per_kw = 6216010;
 		chan.context.holder_dust_limit_satoshis = 4001;
+		chan.context.channel_type = ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies();
 
 		test_commitment_with_anchors!("30450221008fd5dbff02e4b59020d4cd23a3c30d3e287065fda75a0a09b402980adf68ccda022001e0b8b620cd915ddff11f1de32addf23d81d51b90e6841b2cb8dcaf3faa5ecf",
 		                 "30450221009ad80792e3038fe6968d12ff23e6888a565c3ddd065037f357445f01675d63f3022018384915e5f1f4ae157e15debf4f49b61c8d9d2b073c7d6f97c4a68caa3ed4c1",
@@ -8534,6 +8539,7 @@ mod tests {
 		chan.context.value_to_self_msat = 6993000000; // 7000000000 - 7000000
 		chan.context.feerate_per_kw = 9651936;
 		chan.context.holder_dust_limit_satoshis = 546;
+		chan.context.channel_type = cached_channel_type;
 
 		test_commitment!("304402202ade0142008309eb376736575ad58d03e5b115499709c6db0b46e36ff394b492022037b63d78d66404d6504d4c4ac13be346f3d1802928a6d3ad95a6a944227161a2",
 		                 "304402207e8d51e0c570a5868a78414f4e0cbfaed1106b171b9581542c30718ee4eb95ba02203af84194c97adf98898c9afe2f2ed4a7f8dba05a2dfab28ac9d9c604aa49a379",
@@ -8600,6 +8606,7 @@ mod tests {
 		                  "020000000001014bdccf28653066a2c554cafeffdfe1e678e64a69b056684deb0c4fba909423ec02000000000000000001e1120000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e05004730440220471c9f3ad92e49b13b7b8059f43ecf8f7887b0dccbb9fdb54bfe23d62a8ae332022024bd22fae0740e86a44228c35330da9526fd7306dffb2b9dc362d5e78abef7cc0147304402207157f452f2506d73c315192311893800cfb3cc235cc1185b1cfcc136b55230db022014be242dbc6c5da141fec4034e7f387f74d6ff1899453d72ba957467540e1ecb01008576a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c820120876475527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae67a9142002cc93ebefbb1b73f0af055dcc27a0b504ad7688ac6868fa010000" }
 		} );
 
+		chan.context.channel_type = ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies();
 		test_commitment_with_anchors!("3044022027b38dfb654c34032ffb70bb43022981652fce923cbbe3cbe7394e2ade8b34230220584195b78da6e25c2e8da6b4308d9db25b65b64975db9266163ef592abb7c725",
 		                 "3045022100b4014970d9d7962853f3f85196144671d7d5d87426250f0a5fdaf9a55292e92502205360910c9abb397467e19dbd63d081deb4a3240903114c98cec0a23591b79b76",
 		                 "02000000000101bef67e4e2fb9ddeeb3461973cd4c62abb35050b1add772995b820b584a488489000000000038b02b80074a010000000000002200202b1b5854183c12d3316565972c4668929d314d81c5dcdbb21cb45fe8a9a8114f4a01000000000000220020e9e86e4823faa62e222ebc858a226636856158f07e69898da3b0d1af0ddb3994d007000000000000220020fe0598d74fee2205cc3672e6e6647706b4f3099713b4661b62482c3addd04a5e881300000000000022002018e40f9072c44350f134bdc887bab4d9bdfc8aa468a25616c80e21757ba5dac7881300000000000022002018e40f9072c44350f134bdc887bab4d9bdfc8aa468a25616c80e21757ba5dac7c0c62d0000000000220020f3394e1e619b0eca1f91be2fb5ab4dfc59ba5b84ebe014ad1d43a564d012994aad9c6a00000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0400483045022100b4014970d9d7962853f3f85196144671d7d5d87426250f0a5fdaf9a55292e92502205360910c9abb397467e19dbd63d081deb4a3240903114c98cec0a23591b79b7601473044022027b38dfb654c34032ffb70bb43022981652fce923cbbe3cbe7394e2ade8b34230220584195b78da6e25c2e8da6b4308d9db25b65b64975db9266163ef592abb7c72501475221023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb21030e9f7b623d2ccc7c9bd44d66d5ce21ce504c0acf6385a132cec6d3c39fa711c152ae3e195220", {
@@ -8805,8 +8812,8 @@ mod tests {
 		let simple_anchors_raw_features = static_remote_key_required | simple_anchors_required;
 		let simple_anchors_init = InitFeatures::from_le_bytes(simple_anchors_raw_features.to_le_bytes().to_vec());
 		let simple_anchors_channel_type = ChannelTypeFeatures::from_le_bytes(simple_anchors_raw_features.to_le_bytes().to_vec());
-		assert!(simple_anchors_init.requires_unknown_bits());
-		assert!(simple_anchors_channel_type.requires_unknown_bits());
+		assert!(!simple_anchors_init.requires_unknown_bits());
+		assert!(!simple_anchors_channel_type.requires_unknown_bits());
 
 		// First, we'll try to open a channel between A and B where A requests a channel type for
 		// the original `option_anchors` feature (non zero fee htlc tx). This should be rejected by

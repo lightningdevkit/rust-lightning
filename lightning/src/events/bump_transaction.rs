@@ -33,6 +33,7 @@ use bitcoin::consensus::Encodable;
 use bitcoin::secp256k1;
 use bitcoin::secp256k1::{PublicKey, Secp256k1};
 use bitcoin::secp256k1::ecdsa::Signature;
+use crate::ln::features::ChannelTypeFeatures;
 
 const EMPTY_SCRIPT_SIG_WEIGHT: u64 = 1 /* empty script_sig */ * WITNESS_SCALE_FACTOR as u64;
 
@@ -104,7 +105,7 @@ impl HTLCDescriptor {
 	/// Returns the unsigned transaction input spending the HTLC output in the commitment
 	/// transaction.
 	pub fn unsigned_tx_input(&self) -> TxIn {
-		chan_utils::build_htlc_input(&self.commitment_txid, &self.htlc, true /* opt_anchors */)
+		chan_utils::build_htlc_input(&self.commitment_txid, &self.htlc, &ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies())
 	}
 
 	/// Returns the delayed output created as a result of spending the HTLC output in the commitment
@@ -122,8 +123,8 @@ impl HTLCDescriptor {
 			secp, per_commitment_point, &counterparty_keys.revocation_basepoint
 		);
 		chan_utils::build_htlc_output(
-			0 /* feerate_per_kw */, channel_params.contest_delay(), &self.htlc, true /* opt_anchors */,
-			false /* use_non_zero_fee_anchors */, &broadcaster_delayed_key, &counterparty_revocation_key
+			0 /* feerate_per_kw */, channel_params.contest_delay(), &self.htlc,
+			&ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies(), &broadcaster_delayed_key, &counterparty_revocation_key
 		)
 	}
 
@@ -144,7 +145,7 @@ impl HTLCDescriptor {
 			secp, per_commitment_point, &counterparty_keys.revocation_basepoint
 		);
 		chan_utils::get_htlc_redeemscript_with_explicit_keys(
-			&self.htlc, true /* opt_anchors */, &broadcaster_htlc_key, &counterparty_htlc_key,
+			&self.htlc, &ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies(), &broadcaster_htlc_key, &counterparty_htlc_key,
 			&counterparty_revocation_key,
 		)
 	}
@@ -153,7 +154,7 @@ impl HTLCDescriptor {
 	/// transaction.
 	pub fn tx_input_witness(&self, signature: &Signature, witness_script: &Script) -> Witness {
 		chan_utils::build_htlc_input_witness(
-			signature, &self.counterparty_sig, &self.preimage, witness_script, true /* opt_anchors */
+			signature, &self.counterparty_sig, &self.preimage, witness_script, &ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies() /* opt_anchors */
 		)
 	}
 }

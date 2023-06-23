@@ -49,6 +49,7 @@ use core::convert::TryInto;
 use core::ops::Deref;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use crate::io::{self, Error};
+use crate::ln::features::ChannelTypeFeatures;
 use crate::ln::msgs::{DecodeError, MAX_VALUE_MSAT};
 use crate::util::atomic_counter::AtomicCounter;
 use crate::util::chacha20::ChaCha20;
@@ -834,11 +835,12 @@ impl InMemorySigner {
 	pub fn get_channel_parameters(&self) -> &ChannelTransactionParameters {
 		self.channel_parameters.as_ref().unwrap()
 	}
-	/// Returns whether anchors should be used.
+	/// Returns the channel type features of the channel parameters. Should be helpful for
+	/// determining a channel's category, i. e. legacy/anchors/taproot/etc.
 	///
 	/// Will panic if [`ChannelSigner::provide_channel_parameters`] has not been called before.
-	pub fn opt_anchors(&self) -> bool {
-		self.get_channel_parameters().opt_anchors.is_some()
+	pub fn channel_type_features(&self) -> &ChannelTypeFeatures {
+		&self.get_channel_parameters().channel_type_features
 	}
 	/// Sign the single input of `spend_tx` at index `input_idx`, which spends the output described
 	/// by `descriptor`, returning the witness stack for the input.
@@ -963,9 +965,9 @@ impl EcdsaChannelSigner for InMemorySigner {
 		let mut htlc_sigs = Vec::with_capacity(commitment_tx.htlcs().len());
 		for htlc in commitment_tx.htlcs() {
 			let channel_parameters = self.get_channel_parameters();
-			let htlc_tx = chan_utils::build_htlc_transaction(&commitment_txid, commitment_tx.feerate_per_kw(), self.holder_selected_contest_delay(), htlc, self.opt_anchors(), channel_parameters.opt_non_zero_fee_anchors.is_some(), &keys.broadcaster_delayed_payment_key, &keys.revocation_key);
-			let htlc_redeemscript = chan_utils::get_htlc_redeemscript(&htlc, self.opt_anchors(), &keys);
-			let htlc_sighashtype = if self.opt_anchors() { EcdsaSighashType::SinglePlusAnyoneCanPay } else { EcdsaSighashType::All };
+			let htlc_tx = chan_utils::build_htlc_transaction(&commitment_txid, commitment_tx.feerate_per_kw(), self.holder_selected_contest_delay(), htlc, &channel_parameters.channel_type_features, &keys.broadcaster_delayed_payment_key, &keys.revocation_key);
+			let htlc_redeemscript = chan_utils::get_htlc_redeemscript(&htlc, self.channel_type_features(), &keys);
+			let htlc_sighashtype = if self.channel_type_features().supports_anchors_zero_fee_htlc_tx() { EcdsaSighashType::SinglePlusAnyoneCanPay } else { EcdsaSighashType::All };
 			let htlc_sighash = hash_to_message!(&sighash::SighashCache::new(&htlc_tx).segwit_signature_hash(0, &htlc_redeemscript, htlc.amount_msat / 1000, htlc_sighashtype).unwrap()[..]);
 			let holder_htlc_key = chan_utils::derive_private_key(&secp_ctx, &keys.per_commitment_point, &self.htlc_base_key);
 			htlc_sigs.push(sign(secp_ctx, &htlc_sighash, &holder_htlc_key));
@@ -1019,7 +1021,7 @@ impl EcdsaChannelSigner for InMemorySigner {
 		let witness_script = {
 			let counterparty_htlcpubkey = chan_utils::derive_public_key(&secp_ctx, &per_commitment_point, &self.counterparty_pubkeys().htlc_basepoint);
 			let holder_htlcpubkey = chan_utils::derive_public_key(&secp_ctx, &per_commitment_point, &self.pubkeys().htlc_basepoint);
-			chan_utils::get_htlc_redeemscript_with_explicit_keys(&htlc, self.opt_anchors(), &counterparty_htlcpubkey, &holder_htlcpubkey, &revocation_pubkey)
+			chan_utils::get_htlc_redeemscript_with_explicit_keys(&htlc, self.channel_type_features(), &counterparty_htlcpubkey, &holder_htlcpubkey, &revocation_pubkey)
 		};
 		let mut sighash_parts = sighash::SighashCache::new(justice_tx);
 		let sighash = hash_to_message!(&sighash_parts.segwit_signature_hash(input, &witness_script, amount, EcdsaSighashType::All).unwrap()[..]);
@@ -1049,7 +1051,7 @@ impl EcdsaChannelSigner for InMemorySigner {
 		let revocation_pubkey = chan_utils::derive_public_revocation_key(&secp_ctx, &per_commitment_point, &self.pubkeys().revocation_basepoint);
 		let counterparty_htlcpubkey = chan_utils::derive_public_key(&secp_ctx, &per_commitment_point, &self.counterparty_pubkeys().htlc_basepoint);
 		let htlcpubkey = chan_utils::derive_public_key(&secp_ctx, &per_commitment_point, &self.pubkeys().htlc_basepoint);
-		let witness_script = chan_utils::get_htlc_redeemscript_with_explicit_keys(&htlc, self.opt_anchors(), &counterparty_htlcpubkey, &htlcpubkey, &revocation_pubkey);
+		let witness_script = chan_utils::get_htlc_redeemscript_with_explicit_keys(&htlc, self.channel_type_features(), &counterparty_htlcpubkey, &htlcpubkey, &revocation_pubkey);
 		let mut sighash_parts = sighash::SighashCache::new(htlc_tx);
 		let sighash = hash_to_message!(&sighash_parts.segwit_signature_hash(input, &witness_script, amount, EcdsaSighashType::All).unwrap()[..]);
 		Ok(sign_with_aux_rand(secp_ctx, &sighash, &htlc_key, &self))

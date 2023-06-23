@@ -818,13 +818,13 @@ macro_rules! get_feerate {
 }
 
 #[cfg(test)]
-macro_rules! get_opt_anchors {
+macro_rules! get_channel_type_features {
 	($node: expr, $counterparty_node: expr, $channel_id: expr) => {
 		{
 			let mut per_peer_state_lock;
 			let mut peer_state_lock;
 			let chan = get_channel_ref!($node, $counterparty_node, per_peer_state_lock, peer_state_lock, $channel_id);
-			chan.context.opt_anchors()
+			chan.context.get_channel_type().clone()
 		}
 	}
 }
