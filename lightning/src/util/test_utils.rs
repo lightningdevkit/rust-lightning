@@ -451,6 +451,10 @@ impl msgs::ChannelMessageHandler for TestChannelMessageHandler {
 	fn handle_channel_reestablish(&self, _their_node_id: &PublicKey, msg: &msgs::ChannelReestablish) {
 		self.received_msg(wire::Message::ChannelReestablish(msg.clone()));
 	}
+	// #SPLICING
+	fn handle_splice(&self, _their_node_id: &PublicKey, msg: &msgs::Splice) {
+		self.received_msg(wire::Message::Splice(msg.clone()));
+	}
 	fn peer_disconnected(&self, their_node_id: &PublicKey) {
 		assert!(self.connected_peers.lock().unwrap().remove(their_node_id));
 	}

@@ -5452,6 +5452,60 @@ where
 		Ok(())
 	}
 
+	// #SPLICING Inspired by handle_open_channel()
+	// Logic for incoming splicing request
+	fn internal_splice(&self, counterparty_node_id: &PublicKey, msg: &msgs::Splice) -> Result<(), MsgHandleErrInternal> {
+		if msg.chain_hash != self.genesis_hash {
+			return Err(MsgHandleErrInternal::send_err_msg_no_close("Unknown genesis block hash".to_owned(), msg.channel_id.clone()));
+		}
+
+		// TODO checks
+		// TODO check if we accept splicing
+
+		// Get the number of peers with channels, but without funded ones. We don't care too much
+		// about peers that never open a channel, so we filter by peers that have at least one
+		// channel, and then limit the number of those with unfunded channels.
+		let _channeled_peers_without_funding = self.peers_without_funded_channels(|node| !node.channel_by_id.is_empty());
+
+		let per_peer_state = self.per_peer_state.read().unwrap();
+		let peer_state_mutex = per_peer_state.get(counterparty_node_id)
+			.ok_or_else(|| {
+				debug_assert!(false);
+				MsgHandleErrInternal::send_err_msg_no_close(format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id), msg.channel_id.clone())
+			})?;
+		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+		let peer_state = &mut *peer_state_lock;
+
+		/*
+		// If this peer already has some channels, a new channel won't increase our number of peers
+		// with unfunded channels, so as long as we aren't over the maximum number of unfunded
+		// channels per-peer we can accept channels from a peer with existing ones.
+		if peer_state.channel_by_id.is_empty() &&
+			channeled_peers_without_funding >= MAX_UNFUNDED_CHANNEL_PEERS &&
+			!self.default_configuration.manually_accept_inbound_channels
+		{
+			return Err(MsgHandleErrInternal::send_err_msg_no_close(
+				"Have too many peers with unfunded channels, not accepting new ones".to_owned(),
+				msg.temporary_channel_id.clone()));
+		}
+
+		let best_block_height = self.best_block.read().unwrap().height();
+		if Self::unfunded_channel_count(peer_state, best_block_height) >= MAX_UNFUNDED_CHANS_PER_PEER {
+			return Err(MsgHandleErrInternal::send_err_msg_no_close(
+				format!("Refusing more than {} unfunded channels.", MAX_UNFUNDED_CHANS_PER_PEER),
+				msg.temporary_channel_id.clone()));
+		}
+		*/
+
+		match peer_state.channel_by_id.entry(msg.channel_id) {
+			hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id)),
+			hash_map::Entry::Occupied(_) => {
+				// TODO!
+			},
+		}
+		Ok(())
+	}
+
 	/// Process pending events from the [`chain::Watch`], returning whether any events were processed.
 	fn process_pending_monitor_events(&self) -> bool {
 		debug_assert!(self.total_consistency_lock.try_write().is_err()); // Caller holds read lock
@@ -6488,6 +6542,12 @@ where
 	fn handle_channel_reestablish(&self, counterparty_node_id: &PublicKey, msg: &msgs::ChannelReestablish) {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 		let _ = handle_error!(self, self.internal_channel_reestablish(counterparty_node_id, msg), *counterparty_node_id);
+	}
+
+	// #SPLICING
+	fn handle_splice(&self, counterparty_node_id: &PublicKey, msg: &msgs::Splice) {
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
+		let _ = handle_error!(self, self.internal_splice(counterparty_node_id, msg), *counterparty_node_id);
 	}
 
 	fn peer_disconnected(&self, counterparty_node_id: &PublicKey) {

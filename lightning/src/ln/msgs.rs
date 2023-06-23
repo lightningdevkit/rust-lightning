@@ -888,7 +888,7 @@ pub struct GossipTimestampFilter {
 	pub timestamp_range: u32,
 }
 
-/// #SPLICING
+/// #SPLICING Inspired by OpenChannel, Shutdown
 /// An [`splice`] message to be sent to or received from a peer.
 ///
 /// [`splice`]: TODO spec in progress, see PR https://github.com/lightning/bolts/pull/863/files#diff-ed04ca2c673fd6aabde69389511fa9ee60cb44d6b2ef6c88b549ffaa753d6afeR510
@@ -1034,6 +1034,10 @@ pub trait ChannelMessageHandler : MessageSendEventsProvider {
 	// Channel-to-announce:
 	/// Handle an incoming `announcement_signatures` message from the given peer.
 	fn handle_announcement_signatures(&self, their_node_id: &PublicKey, msg: &AnnouncementSignatures);
+
+	// #SPLICING
+	/// Handle and incoming `splice` message from the given peer.
+	fn handle_splice(&self, counterparty_node_id: &PublicKey, msg: &Splice);
 
 	// Connection loss/reestablish:
 	/// Indicates a connection to the peer failed/an existing connection was lost.
@@ -2155,6 +2159,16 @@ impl_writeable_msg!(GossipTimestampFilter, {
 	chain_hash,
 	first_timestamp,
 	timestamp_range,
+}, {});
+
+// #SPLICING Inspired by OpenChannel
+impl_writeable_msg!(Splice, {
+	chain_hash,
+	channel_id,
+	funding_satoshis,
+	funding_feerate_perkw,
+	locktime,
+	funding_pubkey,
 }, {});
 
 #[cfg(test)]

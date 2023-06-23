@@ -228,7 +228,11 @@ impl ChannelMessageHandler for ErroringMessageHandler {
 	fn handle_channel_reestablish(&self, their_node_id: &PublicKey, msg: &msgs::ChannelReestablish) {
 		ErroringMessageHandler::push_error(self, their_node_id, msg.channel_id);
 	}
-	// msgs::ChannelUpdate does not contain the channel_id field, so we just drop them.
+	// #SPLICING
+	fn handle_splice(&self, their_node_id: &PublicKey, msg: &msgs::Splice) {
+		ErroringMessageHandler::push_error(self, their_node_id, msg.channel_id);
+	}
+		// msgs::ChannelUpdate does not contain the channel_id field, so we just drop them.
 	fn handle_channel_update(&self, _their_node_id: &PublicKey, _msg: &msgs::ChannelUpdate) {}
 	fn peer_disconnected(&self, _their_node_id: &PublicKey) {}
 	fn peer_connected(&self, _their_node_id: &PublicKey, _init: &msgs::Init, _inbound: bool) -> Result<(), ()> { Ok(()) }
@@ -1461,6 +1465,10 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 			},
 			wire::Message::ClosingSigned(msg) => {
 				self.message_handler.chan_handler.handle_closing_signed(&their_node_id, &msg);
+			},
+			// #SPLICING
+			wire::Message::Splice(msg) => {
+				self.message_handler.chan_handler.handle_splice(&their_node_id, &msg);
 			},
 
 			// Commitment messages:

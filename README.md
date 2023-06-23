@@ -25,6 +25,7 @@ Objective, Restrictions:
 - Happy path only, no complex combinations, no error scenarios
 - Prototype with minimal changes
 
+Branched off v0.0.115.
 
 See also `ldk-sample` https://github.com/catenocrypt/ldk-sample/tree/splicing-hapa1
 

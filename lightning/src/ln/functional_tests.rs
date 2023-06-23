@@ -186,8 +186,8 @@ fn test_splice_in_simple() {
 	let locktime = 0; // TODO
 
 	let _res = nodes[0].node.splice_channel(&channel_id, &nodes[1].node.get_our_node_id(), post_splice_funding_satoshis, funding_feerate_perkw, locktime).unwrap();
-	let _splice_message = get_event_msg!(nodes[0], MessageSendEvent::SendSplice, nodes[1].node.get_our_node_id());
-	// let _res = nodes[1].node.handle_splice(&nodes[0].node.get_our_node_id(), &splice_message);
+	let splice_message = get_event_msg!(nodes[0], MessageSendEvent::SendSplice, nodes[1].node.get_our_node_id());
+	let _res = nodes[1].node.handle_splice(&nodes[0].node.get_our_node_id(), &splice_message);
 
 	// create splicing tx
 	// let (temporary_channel_id, funding_tx, _funding_output) = create_funding_transaction(&nodes[0], &nodes[1].node.get_our_node_id(), channel_value_sat, 42);

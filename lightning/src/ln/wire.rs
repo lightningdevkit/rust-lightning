@@ -78,6 +78,7 @@ pub(crate) enum Message<T> where T: core::fmt::Debug + Type + TestEq {
 	QueryChannelRange(msgs::QueryChannelRange),
 	ReplyChannelRange(msgs::ReplyChannelRange),
 	GossipTimestampFilter(msgs::GossipTimestampFilter),
+	Splice(msgs::Splice),
 	/// A message that could not be decoded because its type is unknown.
 	Unknown(u16),
 	/// A message that was produced by a [`CustomMessageReader`] and is to be handled by a
@@ -119,6 +120,7 @@ impl<T> Message<T> where T: core::fmt::Debug + Type + TestEq {
 			&Message::QueryChannelRange(ref msg) => msg.type_id(),
 			&Message::ReplyChannelRange(ref msg) => msg.type_id(),
 			&Message::GossipTimestampFilter(ref msg) => msg.type_id(),
+			&Message::Splice(ref msg) => msg.type_id(),
 			&Message::Unknown(type_id) => type_id,
 			&Message::Custom(ref msg) => msg.type_id(),
 		}
@@ -241,6 +243,10 @@ fn do_read<R: io::Read, T, H: core::ops::Deref>(buffer: &mut R, message_type: u1
 		msgs::GossipTimestampFilter::TYPE => {
 			Ok(Message::GossipTimestampFilter(Readable::read(buffer)?))
 		},
+		// #SPLICING
+		msgs::Splice::TYPE => {
+			Ok(Message::Splice(Readable::read(buffer)?))
+		},
 		_ => {
 			if let Some(custom) = custom_reader.read(message_type, buffer)? {
 				Ok(Message::Custom(custom))
@@ -347,6 +353,11 @@ impl Encode for msgs::Shutdown {
 
 impl Encode for msgs::ClosingSigned {
 	const TYPE: u16 = 39;
+}
+
+// #SPLICING
+impl Encode for msgs::Splice {
+	const TYPE: u16 = 74;
 }
 
 impl Encode for msgs::OnionMessage {
