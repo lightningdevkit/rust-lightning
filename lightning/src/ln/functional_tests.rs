@@ -82,12 +82,10 @@ fn test_channel_open_simple() {
 	// Instantiate channel parameters where we push the maximum msats given our
 	// funding satoshis
 	let channel_value_sat = 100000; // same as funding satoshis
-	// let channel_reserve_satoshis = Channel::<EnforcingSigner>::get_holder_selected_channel_reserve_satoshis(channel_value_sat, &cfg);
 	let push_msat = 0;
-	// (channel_value_sat - channel_reserve_satoshis) * 1000;
 
 	// Have node0 initiate a channel to node1 with aforementioned parameters
-	nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), channel_value_sat, push_msat, 42, None).unwrap();
+	let _res = nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), channel_value_sat, push_msat, 42, None).unwrap();
 
 	// Extract the channel open message from node0 to node1
 	let open_channel_message = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
