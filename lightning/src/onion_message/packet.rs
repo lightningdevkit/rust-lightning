@@ -274,19 +274,16 @@ pub(crate) enum ControlTlvs {
 }
 
 impl Readable for ControlTlvs {
-	fn read<R: Read>(mut r: &mut R) -> Result<Self, DecodeError> {
-		let mut _padding: Option<Padding> = None;
-		let mut _short_channel_id: Option<u64> = None;
-		let mut next_node_id: Option<PublicKey> = None;
-		let mut path_id: Option<[u8; 32]> = None;
-		let mut next_blinding_override: Option<PublicKey> = None;
-		decode_tlv_stream!(&mut r, {
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+		_init_and_read_tlv_stream!(r, {
 			(1, _padding, option),
 			(2, _short_channel_id, option),
 			(4, next_node_id, option),
 			(6, path_id, option),
 			(8, next_blinding_override, option),
 		});
+		let _padding: Option<Padding> = _padding;
+		let _short_channel_id: Option<u64> = _short_channel_id;
 
 		let valid_fwd_fmt  = next_node_id.is_some() && path_id.is_none();
 		let valid_recv_fmt = next_node_id.is_none() && next_blinding_override.is_none();

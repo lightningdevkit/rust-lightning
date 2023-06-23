@@ -806,6 +806,19 @@ macro_rules! _init_and_read_len_prefixed_tlv_fields {
 	}
 }
 
+/// Equivalent to running [`_init_tlv_field_var`] then [`decode_tlv_stream`].
+macro_rules! _init_and_read_tlv_stream {
+	($reader: ident, {$(($type: expr, $field: ident, $fieldty: tt)),* $(,)*}) => {
+		$(
+			$crate::_init_tlv_field_var!($field, $fieldty);
+		)*
+
+		$crate::decode_tlv_stream!($reader, {
+			$(($type, $field, $fieldty)),*
+		});
+	}
+}
+
 /// Implements [`Readable`]/[`Writeable`] for a struct storing it as a set of TLVs
 /// If `$fieldty` is `required`, then `$field` is a required field that is not an [`Option`] nor a [`Vec`].
 /// If `$fieldty` is `(default_value, $default)`, then `$field` will be set to `$default` if not present.
