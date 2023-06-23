@@ -5689,6 +5689,42 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		}
 	}
 
+	/// #SPLICING Inspiration from get_open_channel()
+	/// Get the splice message that can be sent during splice initiation
+	pub fn get_splice(&self, chain_hash: BlockHash,
+		// TODO; should this be a param, or stored in the channel?
+		post_splice_funding_satoshis: u64
+	) -> msgs::Splice {
+		if !self.is_outbound() {
+			panic!("Tried to initiate a plice on an inbound channel?");
+		}
+
+		// TODO impl, checks
+		/*
+		if self.channel_state != ChannelState::OurInitSent as u32 {
+			panic!("Cannot generate an open_channel after we've moved forward");
+		}
+
+		if self.cur_holder_commitment_transaction_number != INITIAL_COMMITMENT_NUMBER {
+			panic!("Tried to send an open_channel for a channel that has already advanced");
+		}
+
+		let first_per_commitment_point = self.holder_signer.get_per_commitment_point(self.cur_holder_commitment_transaction_number, &self.secp_ctx);
+		*/
+
+		let keys = self.get_holder_pubkeys();
+
+		// TODO how to handle channel capacity, orig is stored in Channel, has to be updated, in the interim there are two
+		msgs::Splice {
+			chain_hash,
+			channel_id: self.channel_id,
+			funding_satoshis: post_splice_funding_satoshis,
+			funding_feerate_perkw: self.feerate_per_kw, // TODO not necessary the same as the original stored in the Channel
+			locktime: 0, // TODO!
+			funding_pubkey: keys.funding_pubkey,
+		}
+	}
+
 
 	// Send stuff to our remote peers:
 

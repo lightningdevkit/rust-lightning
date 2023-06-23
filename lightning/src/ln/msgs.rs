@@ -888,6 +888,26 @@ pub struct GossipTimestampFilter {
 	pub timestamp_range: u32,
 }
 
+/// #SPLICING
+/// An [`splice`] message to be sent to or received from a peer.
+///
+/// [`splice`]: TODO spec in progress, see PR https://github.com/lightning/bolts/pull/863/files#diff-ed04ca2c673fd6aabde69389511fa9ee60cb44d6b2ef6c88b549ffaa753d6afeR510
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Splice {
+	/// The genesis hash of the blockchain where the channel is to be opened
+	pub chain_hash: BlockHash,
+	/// The channel ID
+	pub channel_id: [u8; 32],
+	/// The post-slice channel value
+	pub funding_satoshis: u64,
+	/// The feerate per 1000-weight of sender generated transactions
+	pub funding_feerate_perkw: u32,
+	/// TODO doc ?
+	pub locktime: u32,
+	/// The sender's key controlling the funding transaction
+	pub funding_pubkey: PublicKey,
+}
+
 /// Encoding type for data compression of collections in gossip queries.
 ///
 /// We do not support `encoding_type=1` zlib serialization [defined in BOLT

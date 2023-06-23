@@ -125,6 +125,82 @@ fn test_channel_open_simple() {
 	let _ = get_event_msg!(nodes[0], MessageSendEvent::SendClosingSigned, nodes[1].node.get_our_node_id());
 }
 
+/// #SPLICING Builds on test_channel_open_simple()
+/// Splicing test, simple splice-in flow. Starts with opening a channel first.
+#[test]
+fn test_splice_in_simple() {
+	// Stand up a network of 2 nodes
+	let announced_channel = true;
+	let cfg = UserConfig {
+		channel_handshake_config: ChannelHandshakeConfig {
+			announced_channel,
+			..Default::default()
+		},
+		..Default::default()
+	};
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, Some(cfg)]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	// Instantiate channel parameters where we push the maximum msats given our funding satoshis
+	let channel_value_sat = 100000; // same as funding satoshis
+	let push_msat = 0;
+
+	// Have node0 initiate a channel to node1 with aforementioned parameters
+	let _res = nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), channel_value_sat, push_msat, 42, None).unwrap();
+
+	// Extract the channel open message from node0 to node1
+	let open_channel_message = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
+
+	let _res = nodes[1].node.handle_open_channel(&nodes[0].node.get_our_node_id(), &open_channel_message.clone());
+
+	// Extract the accept channel message from node1 to node0
+	let accept_channel_message = get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, nodes[0].node.get_our_node_id());
+	let _res = nodes[0].node.handle_accept_channel(&nodes[1].node.get_our_node_id(), &accept_channel_message.clone());
+
+	// let _ev = get_event!(nodes[0], Event::FundingGenerationReady);
+	let (temporary_channel_id, funding_tx, _funding_output) = create_funding_transaction(&nodes[0], &nodes[1].node.get_our_node_id(), channel_value_sat, 42);
+	let _res = nodes[0].node.funding_transaction_generated(&temporary_channel_id, &nodes[1].node.get_our_node_id(), funding_tx.clone()).unwrap();
+
+	let funding_created_message = get_event_msg!(nodes[0], MessageSendEvent::SendFundingCreated, nodes[1].node.get_our_node_id());
+	let channel_id = OutPoint { txid: funding_created_message.funding_txid, index: funding_created_message.funding_output_index }.to_channel_id();
+	let _res = nodes[1].node.handle_funding_created(&nodes[0].node.get_our_node_id(), &funding_created_message);
+
+	let funding_signed_message = get_event_msg!(nodes[1], MessageSendEvent::SendFundingSigned, nodes[0].node.get_our_node_id());
+	let _res = nodes[0].node.handle_funding_signed(&nodes[1].node.get_our_node_id(), &funding_signed_message);
+
+	confirm_transaction(&nodes[0], &funding_tx);
+	let channel_ready_message = get_event_msg!(nodes[0], MessageSendEvent::SendChannelReady, nodes[1].node.get_our_node_id());
+	let _res = nodes[1].node.handle_channel_ready(&nodes[0].node.get_our_node_id(), &channel_ready_message);
+
+	check_added_monitors!(nodes[0], 1);
+	let _ev = get_event!(nodes[0], Event::ChannelPending);
+	check_added_monitors!(nodes[1], 1);
+	let _ev = get_event!(nodes[1], Event::ChannelPending);
+
+	// Amount being added to the channel through the splice-in
+	let splice_in_sats = 20000;
+	let post_splice_funding_satoshis = channel_value_sat + splice_in_sats;
+	let funding_feerate_perkw = 1024; // TODO
+	let locktime = 0; // TODO
+
+	let _res = nodes[0].node.splice_channel(&channel_id, &nodes[1].node.get_our_node_id(), post_splice_funding_satoshis, funding_feerate_perkw, locktime).unwrap();
+	let _splice_message = get_event_msg!(nodes[0], MessageSendEvent::SendSplice, nodes[1].node.get_our_node_id());
+	// let _res = nodes[1].node.handle_splice(&nodes[0].node.get_our_node_id(), &splice_message);
+
+	// create splicing tx
+	// let (temporary_channel_id, funding_tx, _funding_output) = create_funding_transaction(&nodes[0], &nodes[1].node.get_our_node_id(), channel_value_sat, 42);
+
+	// close channel
+	nodes[0].node.close_channel(&channel_id, &nodes[1].node.get_our_node_id()).unwrap();
+	let node0_shutdown_message = get_event_msg!(nodes[0], MessageSendEvent::SendShutdown, nodes[1].node.get_our_node_id());
+	nodes[1].node.handle_shutdown(&nodes[0].node.get_our_node_id(), &node0_shutdown_message);
+	let nodes_1_shutdown = get_event_msg!(nodes[1], MessageSendEvent::SendShutdown, nodes[0].node.get_our_node_id());
+	nodes[0].node.handle_shutdown(&nodes[1].node.get_our_node_id(), &nodes_1_shutdown);
+	let _ = get_event_msg!(nodes[0], MessageSendEvent::SendClosingSigned, nodes[1].node.get_our_node_id());
+}
+
 #[test]
 fn test_insane_channel_opens() {
 	// Stand up a network of 2 nodes

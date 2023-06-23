@@ -1893,6 +1893,14 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 					MessageSendEvent::SendGossipTimestampFilter { ref node_id, ref msg } => {
 						self.enqueue_message(&mut *get_peer_for_forwarding!(node_id), msg);
 					}
+					// #SPLICING
+					MessageSendEvent::SendSplice { ref node_id, ref msg } => {
+						log_debug!(self.logger, "Handling SendSplice event in peer_handler for node {} for channel {}",
+								log_pubkey!(node_id),
+								log_bytes!(msg.channel_id));
+						// TODO, implement encode()
+						//self.enqueue_message(&mut *get_peer_for_forwarding!(node_id), msg);
+					},
 				}
 			}
 

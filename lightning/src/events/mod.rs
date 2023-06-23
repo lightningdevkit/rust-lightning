@@ -1591,6 +1591,14 @@ pub enum MessageSendEvent {
 		/// The gossip_timestamp_filter which should be sent.
 		msg: msgs::GossipTimestampFilter,
 	},
+	/// #SPLICING
+	/// Used to indicate that we've initiated a splice and should send the splice message
+	SendSplice {
+		/// The node_id of the node which should receive this message
+		node_id: PublicKey,
+		/// The message which should be sent.
+		msg: msgs::Splice,
+	},
 }
 
 /// A trait indicating an object may generate message send events

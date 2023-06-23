@@ -1919,6 +1919,44 @@ where
 		Ok(temporary_channel_id)
 	}
 
+	/// #SPLICING Inspired by create_channel() and close_channel()
+	/// Initiate a splice, to change the channel capacity
+	/// TODO funding_feerate_perkw
+	/// TODO locktime
+	pub fn splice_channel(&self, channel_id: &[u8; 32], counterparty_node_id: &PublicKey, post_splice_funding_satoshis: u64, _funding_feerate_perkw: u32, _locktime: u32) -> Result<(), APIError> {
+		// TODO handle code duplication with create_channel
+		if post_splice_funding_satoshis < 1000 {
+			return Err(APIError::APIMisuseError { err: format!("Post-splicing channel value must be at least 1000 satoshis. It was {}", post_splice_funding_satoshis) });
+		}
+
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
+		// We want to make sure the lock is actually acquired by PersistenceNotifierGuard.
+		debug_assert!(&self.total_consistency_lock.try_write().is_err());
+
+		let per_peer_state = self.per_peer_state.read().unwrap();
+
+		let peer_state_mutex = per_peer_state.get(counterparty_node_id)
+			.ok_or_else(|| APIError::ChannelUnavailable { err: format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id) })?;
+
+		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+		let peer_state = &mut *peer_state_lock;
+		match peer_state.channel_by_id.entry(channel_id.clone()) {
+			hash_map::Entry::Vacant(_) => return Err(APIError::ChannelUnavailable{err: format!("Channel with id {} not found for the passed counterparty node_id {}", log_bytes!(*channel_id), counterparty_node_id) }),
+			hash_map::Entry::Occupied(chan_entry) => {
+				let channel = chan_entry.get();
+
+				let res = channel.get_splice(self.genesis_hash.clone(), post_splice_funding_satoshis);
+
+				peer_state.pending_msg_events.push(events::MessageSendEvent::SendSplice {
+					node_id: *counterparty_node_id,
+					msg: res,
+				});
+			},
+		}
+
+		Ok(())
+	}
+
 	fn list_channels_with_filter<Fn: FnMut(&(&[u8; 32], &Channel<<SP::Target as SignerProvider>::Signer>)) -> bool + Copy>(&self, f: Fn) -> Vec<ChannelDetails> {
 		// Allocate our best estimate of the number of channels we have in the `res`
 		// Vec. Sadly the `short_to_chan_info` map doesn't cover channels without
@@ -6495,6 +6533,7 @@ where
 						&events::MessageSendEvent::SendShortIdsQuery { .. } => false,
 						&events::MessageSendEvent::SendReplyChannelRange { .. } => false,
 						&events::MessageSendEvent::SendGossipTimestampFilter { .. } => false,
+						&events::MessageSendEvent::SendSplice { .. } => false,
 					}
 				});
 				debug_assert!(peer_state.is_connected, "A disconnected peer cannot disconnect");
