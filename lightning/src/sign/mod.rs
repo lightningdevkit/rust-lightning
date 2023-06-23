@@ -36,7 +36,6 @@ use crate::util::transaction_utils;
 use crate::util::crypto::{hkdf_extract_expand_twice, sign, sign_with_aux_rand};
 use crate::util::ser::{Writeable, Writer, Readable, ReadableArgs};
 use crate::chain::transaction::OutPoint;
-#[cfg(anchors)]
 use crate::events::bump_transaction::HTLCDescriptor;
 use crate::ln::channel::ANCHOR_OUTPUT_VALUE_SATOSHI;
 use crate::ln::{chan_utils, PaymentPreimage};
@@ -489,7 +488,6 @@ pub trait EcdsaChannelSigner: ChannelSigner {
 	fn sign_justice_revoked_htlc(&self, justice_tx: &Transaction, input: usize, amount: u64,
 		per_commitment_key: &SecretKey, htlc: &HTLCOutputInCommitment,
 		secp_ctx: &Secp256k1<secp256k1::All>) -> Result<Signature, ()>;
-	#[cfg(anchors)]
 	/// Computes the signature for a commitment transaction's HTLC output used as an input within
 	/// `htlc_tx`, which spends the commitment transaction at index `input`. The signature returned
 	/// must be be computed using [`EcdsaSighashType::All`]. Note that this should only be used to
@@ -1028,7 +1026,6 @@ impl EcdsaChannelSigner for InMemorySigner {
 		return Ok(sign_with_aux_rand(secp_ctx, &sighash, &revocation_key, &self))
 	}
 
-	#[cfg(anchors)]
 	fn sign_holder_htlc_transaction(
 		&self, htlc_tx: &Transaction, input: usize, htlc_descriptor: &HTLCDescriptor,
 		secp_ctx: &Secp256k1<secp256k1::All>

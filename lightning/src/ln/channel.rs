@@ -5667,12 +5667,9 @@ impl<Signer: WriteableEcdsaChannelSigner> OutboundV1Channel<Signer> {
 		// Optionally, if the user would like to negotiate the `anchors_zero_fee_htlc_tx` option, we
 		// set it now. If they don't understand it, we'll fall back to our default of
 		// `only_static_remotekey`.
-		#[cfg(anchors)]
-		{ // Attributes are not allowed on if expressions on our current MSRV of 1.41.
-			if config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx &&
-				their_features.supports_anchors_zero_fee_htlc_tx() {
-				ret.set_anchors_zero_fee_htlc_tx_required();
-			}
+		if config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx &&
+			their_features.supports_anchors_zero_fee_htlc_tx() {
+			ret.set_anchors_zero_fee_htlc_tx_required();
 		}
 
 		ret
@@ -7319,7 +7316,6 @@ mod tests {
 	use hex;
 	use crate::ln::PaymentHash;
 	use crate::ln::channelmanager::{self, HTLCSource, PaymentId};
-	#[cfg(anchors)]
 	use crate::ln::channel::InitFeatures;
 	use crate::ln::channel::{Channel, InboundHTLCOutput, OutboundV1Channel, InboundV1Channel, OutboundHTLCOutput, InboundHTLCState, OutboundHTLCState, HTLCCandidate, HTLCInitiator, commit_tx_fee_msat};
 	use crate::ln::channel::{MAX_FUNDING_SATOSHIS_NO_WUMBO, TOTAL_BITCOIN_SUPPLY_SATOSHIS, MIN_THEIR_CHAN_RESERVE_SATOSHIS};
@@ -8643,7 +8639,6 @@ mod tests {
 		assert!(res.is_ok());
 	}
 
-	#[cfg(anchors)]
 	#[test]
 	fn test_supports_anchors_zero_htlc_tx_fee() {
 		// Tests that if both sides support and negotiate `anchors_zero_fee_htlc_tx`, it is the
@@ -8689,7 +8684,6 @@ mod tests {
 		assert_eq!(channel_b.context.channel_type, expected_channel_type);
 	}
 
-	#[cfg(anchors)]
 	#[test]
 	fn test_rejects_implicit_simple_anchors() {
 		// Tests that if `option_anchors` is being negotiated implicitly through the intersection of
@@ -8730,7 +8724,6 @@ mod tests {
 		assert!(channel_b.is_err());
 	}
 
-	#[cfg(anchors)]
 	#[test]
 	fn test_rejects_simple_anchors_channel_type() {
 		// Tests that if `option_anchors` is being negotiated through the `channel_type` feature,

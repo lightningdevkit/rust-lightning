@@ -101,9 +101,7 @@ if [ "$RUSTC_MINOR_VERSION" -gt 55 ]; then
 	popd
 fi
 
-echo -e "\n\nTest anchors builds"
-pushd lightning
-RUSTFLAGS="$RUSTFLAGS --cfg=anchors" cargo test --verbose --color always -p lightning
 echo -e "\n\nTest Taproot builds"
-RUSTFLAGS="$RUSTFLAGS --cfg=anchors --cfg=taproot" cargo test --verbose --color always -p lightning
+pushd lightning
+RUSTFLAGS="$RUSTFLAGS --cfg=taproot" cargo test --verbose --color always -p lightning
 popd

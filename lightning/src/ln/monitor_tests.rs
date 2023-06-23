@@ -9,41 +9,26 @@
 
 //! Further functional tests which test blockchain reorganizations.
 
-#[cfg(anchors)]
 use crate::sign::{ChannelSigner, EcdsaChannelSigner};
-#[cfg(anchors)]
-use crate::chain::channelmonitor::LATENCY_GRACE_PERIOD_BLOCKS;
-use crate::chain::channelmonitor::{ANTI_REORG_DELAY, Balance};
+use crate::chain::channelmonitor::{ANTI_REORG_DELAY, LATENCY_GRACE_PERIOD_BLOCKS, Balance};
 use crate::chain::transaction::OutPoint;
 use crate::chain::chaininterface::LowerBoundedFeeEstimator;
-#[cfg(anchors)]
 use crate::events::bump_transaction::BumpTransactionEvent;
 use crate::events::{Event, MessageSendEvent, MessageSendEventsProvider, ClosureReason, HTLCDestination};
 use crate::ln::channel;
-#[cfg(anchors)]
 use crate::ln::chan_utils;
-#[cfg(anchors)]
-use crate::ln::channelmanager::ChannelManager;
-use crate::ln::channelmanager::{BREAKDOWN_TIMEOUT, PaymentId, RecipientOnionFields};
+use crate::ln::channelmanager::{BREAKDOWN_TIMEOUT, ChannelManager, PaymentId, RecipientOnionFields};
 use crate::ln::msgs::ChannelMessageHandler;
-#[cfg(anchors)]
 use crate::util::config::UserConfig;
-#[cfg(anchors)]
 use crate::util::crypto::sign;
 use crate::util::ser::Writeable;
 use crate::util::test_utils;
 
-#[cfg(anchors)]
 use bitcoin::blockdata::transaction::EcdsaSighashType;
 use bitcoin::blockdata::script::Builder;
 use bitcoin::blockdata::opcodes;
-use bitcoin::secp256k1::Secp256k1;
-#[cfg(anchors)]
-use bitcoin::secp256k1::SecretKey;
-#[cfg(anchors)]
-use bitcoin::{Amount, PublicKey, Script, TxIn, TxOut, PackedLockTime, Witness};
-use bitcoin::Transaction;
-#[cfg(anchors)]
+use bitcoin::secp256k1::{Secp256k1, SecretKey};
+use bitcoin::{Amount, PublicKey, Script, Transaction, TxIn, TxOut, PackedLockTime, Witness};
 use bitcoin::util::sighash::SighashCache;
 
 use crate::prelude::*;
@@ -1731,16 +1716,11 @@ fn test_restored_packages_retry() {
 fn do_test_monitor_rebroadcast_pending_claims(anchors: bool) {
 	// Test that we will retry broadcasting pending claims for a force-closed channel on every
 	// `ChainMonitor::rebroadcast_pending_claims` call.
-	if anchors {
-		assert!(cfg!(anchors));
-	}
 	let mut chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let mut config = test_default_channel_config();
 	if anchors {
-		#[cfg(anchors)] {
-			config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
-		}
+		config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
 	}
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(config), Some(config)]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
@@ -1783,34 +1763,32 @@ fn do_test_monitor_rebroadcast_pending_claims(anchors: bool) {
 			};
 			#[allow(unused_assignments)]
 			let mut feerate = 0;
-			#[cfg(anchors)] {
-				feerate = if let Event::BumpTransaction(BumpTransactionEvent::HTLCResolution {
-					target_feerate_sat_per_1000_weight, mut htlc_descriptors, tx_lock_time, ..
-				}) = events.pop().unwrap() {
-					let secp = Secp256k1::new();
-					assert_eq!(htlc_descriptors.len(), 1);
-					let descriptor = htlc_descriptors.pop().unwrap();
-					assert_eq!(descriptor.commitment_txid, commitment_txn[0].txid());
-					let htlc_output_idx = descriptor.htlc.transaction_output_index.unwrap() as usize;
-					assert!(htlc_output_idx < commitment_txn[0].output.len());
-					tx.lock_time = tx_lock_time;
-					// Note that we don't care about actually making the HTLC transaction meet the
-					// feerate for the test, we just want to make sure the feerates we receive from
-					// the events never decrease.
-					tx.input.push(descriptor.unsigned_tx_input());
-					let signer = nodes[0].keys_manager.derive_channel_keys(
-						descriptor.channel_value_satoshis, &descriptor.channel_keys_id,
-					);
-					let per_commitment_point = signer.get_per_commitment_point(
-						descriptor.per_commitment_number, &secp
-					);
-					tx.output.push(descriptor.tx_output(&per_commitment_point, &secp));
-					let our_sig = signer.sign_holder_htlc_transaction(&mut tx, 0, &descriptor, &secp).unwrap();
-					let witness_script = descriptor.witness_script(&per_commitment_point, &secp);
-					tx.input[0].witness = descriptor.tx_input_witness(&our_sig, &witness_script);
-					target_feerate_sat_per_1000_weight as u64
-				} else { panic!("unexpected event"); };
-			}
+			feerate = if let Event::BumpTransaction(BumpTransactionEvent::HTLCResolution {
+				target_feerate_sat_per_1000_weight, mut htlc_descriptors, tx_lock_time, ..
+			}) = events.pop().unwrap() {
+				let secp = Secp256k1::new();
+				assert_eq!(htlc_descriptors.len(), 1);
+				let descriptor = htlc_descriptors.pop().unwrap();
+				assert_eq!(descriptor.commitment_txid, commitment_txn[0].txid());
+				let htlc_output_idx = descriptor.htlc.transaction_output_index.unwrap() as usize;
+				assert!(htlc_output_idx < commitment_txn[0].output.len());
+				tx.lock_time = tx_lock_time;
+				// Note that we don't care about actually making the HTLC transaction meet the
+				// feerate for the test, we just want to make sure the feerates we receive from
+				// the events never decrease.
+				tx.input.push(descriptor.unsigned_tx_input());
+				let signer = nodes[0].keys_manager.derive_channel_keys(
+					descriptor.channel_value_satoshis, &descriptor.channel_keys_id,
+				);
+				let per_commitment_point = signer.get_per_commitment_point(
+					descriptor.per_commitment_number, &secp
+				);
+				tx.output.push(descriptor.tx_output(&per_commitment_point, &secp));
+				let our_sig = signer.sign_holder_htlc_transaction(&mut tx, 0, &descriptor, &secp).unwrap();
+				let witness_script = descriptor.witness_script(&per_commitment_point, &secp);
+				tx.input[0].witness = descriptor.tx_input_witness(&our_sig, &witness_script);
+				target_feerate_sat_per_1000_weight as u64
+			} else { panic!("unexpected event"); };
 			(tx, feerate)
 		} else {
 			assert!(nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events().is_empty());
@@ -1875,11 +1853,9 @@ fn do_test_monitor_rebroadcast_pending_claims(anchors: bool) {
 #[test]
 fn test_monitor_timer_based_claim() {
 	do_test_monitor_rebroadcast_pending_claims(false);
-	#[cfg(anchors)]
 	do_test_monitor_rebroadcast_pending_claims(true);
 }
 
-#[cfg(anchors)]
 #[test]
 fn test_yield_anchors_events() {
 	// Tests that two parties supporting anchor outputs can open a channel, route payments over
@@ -2013,7 +1989,6 @@ fn test_yield_anchors_events() {
 	nodes[0].node.get_and_clear_pending_events();
 }
 
-#[cfg(anchors)]
 #[test]
 fn test_anchors_aggregated_revoked_htlc_tx() {
 	// Test that `ChannelMonitor`s can properly detect and claim funds from a counterparty claiming

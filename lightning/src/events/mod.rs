@@ -14,10 +14,8 @@
 //! future, as well as generate and broadcast funding transactions handle payment preimages and a
 //! few other things.
 
-#[cfg(anchors)]
 pub mod bump_transaction;
 
-#[cfg(anchors)]
 pub use bump_transaction::BumpTransactionEvent;
 
 use crate::sign::SpendableOutputDescriptor;
@@ -832,7 +830,6 @@ pub enum Event {
 		/// Destination of the HTLC that failed to be processed.
 		failed_next_destination: HTLCDestination,
 	},
-	#[cfg(anchors)]
 	/// Indicates that a transaction originating from LDK needs to have its fee bumped. This event
 	/// requires confirmed external funds to be readily available to spend.
 	///
@@ -1029,7 +1026,6 @@ impl Writeable for Event {
 					(2, failed_next_destination, required),
 				})
 			},
-			#[cfg(anchors)]
 			&Event::BumpTransaction(ref event)=> {
 				27u8.write(writer)?;
 				match event {
