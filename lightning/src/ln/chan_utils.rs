@@ -938,7 +938,7 @@ impl Readable for ChannelTransactionParameters {
 		let mut is_outbound_from_holder = RequiredWrapper(None);
 		let mut counterparty_parameters = None;
 		let mut funding_outpoint = None;
-		let mut legacy_deserialization_prevention_marker: Option<()> = None;
+		let mut _legacy_deserialization_prevention_marker: Option<()> = None;
 		let mut channel_type_features = None;
 
 		read_tlv_fields!(reader, {
@@ -947,7 +947,7 @@ impl Readable for ChannelTransactionParameters {
 			(4, is_outbound_from_holder, required),
 			(6, counterparty_parameters, option),
 			(8, funding_outpoint, option),
-			(10, legacy_deserialization_prevention_marker, option),
+			(10, _legacy_deserialization_prevention_marker, option),
 			(11, channel_type_features, option),
 		});
 
@@ -1363,7 +1363,7 @@ impl Readable for CommitmentTransaction {
 		let mut keys = RequiredWrapper(None);
 		let mut built = RequiredWrapper(None);
 		_init_tlv_field_var!(htlcs, vec_type);
-		let mut legacy_deserialization_prevention_marker: Option<()> = None;
+		let mut _legacy_deserialization_prevention_marker: Option<()> = None;
 		let mut channel_type_features = None;
 
 		read_tlv_fields!(reader, {
@@ -1374,7 +1374,7 @@ impl Readable for CommitmentTransaction {
 			(8, keys, required),
 			(10, built, required),
 			(12, htlcs, vec_type),
-			(14, legacy_deserialization_prevention_marker, option),
+			(14, _legacy_deserialization_prevention_marker, option),
 			(15, channel_type_features, option),
 		});
 
