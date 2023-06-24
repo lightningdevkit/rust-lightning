@@ -5144,8 +5144,12 @@ where
 			return Err(MsgHandleErrInternal::send_err_msg_no_close("temporary_channel_id collision for the same peer!".to_owned(), msg.temporary_channel_id.clone()))
 		} else {
 			if !self.default_configuration.manually_accept_inbound_channels {
-				if channel.context.get_channel_type().requires_zero_conf() {
+				let channel_type = channel.context.get_channel_type();
+				if channel_type.requires_zero_conf() {
 					return Err(MsgHandleErrInternal::send_err_msg_no_close("No zero confirmation channels accepted".to_owned(), msg.temporary_channel_id.clone()));
+				}
+				if channel_type.requires_anchors_zero_fee_htlc_tx() {
+					return Err(MsgHandleErrInternal::send_err_msg_no_close("No channels with anchor outputs accepted".to_owned(), msg.temporary_channel_id.clone()));
 				}
 				peer_state.pending_msg_events.push(events::MessageSendEvent::SendAcceptChannel {
 					node_id: counterparty_node_id.clone(),
@@ -8853,7 +8857,7 @@ mod tests {
 	use crate::ln::{PaymentPreimage, PaymentHash, PaymentSecret};
 	use crate::ln::channelmanager::{inbound_payment, PaymentId, PaymentSendFailure, RecipientOnionFields, InterceptId};
 	use crate::ln::functional_test_utils::*;
-	use crate::ln::msgs;
+	use crate::ln::msgs::{self, ErrorAction};
 	use crate::ln::msgs::ChannelMessageHandler;
 	use crate::routing::router::{PaymentParameters, RouteParameters, find_route};
 	use crate::util::errors::APIError;
@@ -9847,6 +9851,50 @@ mod tests {
 		};
 		assert!(node[0].node.construct_recv_pending_htlc_info(hop_data, [0; 32], PaymentHash([0; 32]),
 			sender_intended_amt_msat - extra_fee_msat, 42, None, true, Some(extra_fee_msat)).is_ok());
+	}
+
+	#[test]
+	fn test_inbound_anchors_manual_acceptance() {
+		// Tests that we properly limit inbound channels when we have the manual-channel-acceptance
+		// flag set and (sometimes) accept channels as 0conf.
+		let mut anchors_cfg = test_default_channel_config();
+		anchors_cfg.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
+
+		let mut anchors_manual_accept_cfg = anchors_cfg.clone();
+		anchors_manual_accept_cfg.manually_accept_inbound_channels = true;
+
+		let chanmon_cfgs = create_chanmon_cfgs(3);
+		let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+		let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs,
+			&[Some(anchors_cfg.clone()), Some(anchors_cfg.clone()), Some(anchors_manual_accept_cfg.clone())]);
+		let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+
+		nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 100_000, 0, 42, None).unwrap();
+		let open_channel_msg = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
+
+		nodes[1].node.handle_open_channel(&nodes[0].node.get_our_node_id(), &open_channel_msg);
+		assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
+		let msg_events = nodes[1].node.get_and_clear_pending_msg_events();
+		match &msg_events[0] {
+			MessageSendEvent::HandleError { node_id, action } => {
+				assert_eq!(*node_id, nodes[0].node.get_our_node_id());
+				match action {
+					ErrorAction::SendErrorMessage { msg } =>
+						assert_eq!(msg.data, "No channels with anchor outputs accepted".to_owned()),
+					_ => panic!("Unexpected error action"),
+				}
+			}
+			_ => panic!("Unexpected event"),
+		}
+
+		nodes[2].node.handle_open_channel(&nodes[0].node.get_our_node_id(), &open_channel_msg);
+		let events = nodes[2].node.get_and_clear_pending_events();
+		match events[0] {
+			Event::OpenChannelRequest { temporary_channel_id, .. } =>
+				nodes[2].node.accept_inbound_channel(&temporary_channel_id, &nodes[0].node.get_our_node_id(), 23).unwrap(),
+			_ => panic!("Unexpected event"),
+		}
+		get_event_msg!(nodes[2], MessageSendEvent::SendAcceptChannel, nodes[0].node.get_our_node_id());
 	}
 
 	#[test]

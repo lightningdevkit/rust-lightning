@@ -153,6 +153,12 @@ pub struct ChannelHandshakeConfig {
 	/// channels. This feature requires having a reserve of onchain funds readily available to bump
 	/// transactions in the event of a channel force close to avoid the possibility of losing funds.
 	///
+	/// Note that if you wish accept inbound channels with anchor outputs, you must enable
+	/// [`UserConfig::manually_accept_inbound_channels`] and manually accept them with
+	/// [`ChannelManager::accept_inbound_channel`]. This is done to give you the chance to check
+	/// whether your reserve of onchain funds is enough to cover the fees for all existing and new
+	/// channels featuring anchor outputs in the event of a force close.
+	///
 	/// If this option is set, channels may be created that will not be readable by LDK versions
 	/// prior to 0.0.116, causing [`ChannelManager`]'s read method to return a
 	/// [`DecodeError::InvalidValue`].
@@ -168,6 +174,7 @@ pub struct ChannelHandshakeConfig {
 	/// Default value: false. This value is likely to change to true in the future.
 	///
 	/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
+	/// [`ChannelManager::accept_inbound_channel`]: crate::ln::channelmanager::ChannelManager::accept_inbound_channel
 	/// [`DecodeError::InvalidValue`]: crate::ln::msgs::DecodeError::InvalidValue
 	/// [`SIGHASH_SINGLE + update_fee Considered Harmful`]: https://lists.linuxfoundation.org/pipermail/lightning-dev/2020-September/002796.html
 	pub negotiate_anchors_zero_fee_htlc_tx: bool,
