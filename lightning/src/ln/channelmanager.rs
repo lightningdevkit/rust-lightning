@@ -2380,48 +2380,58 @@ where
 
 		let mut failed_htlcs: Vec<(HTLCSource, PaymentHash)>;
 		let result: Result<(), _> = loop {
-			let per_peer_state = self.per_peer_state.read().unwrap();
+			{
+				let per_peer_state = self.per_peer_state.read().unwrap();
 
-			let peer_state_mutex = per_peer_state.get(counterparty_node_id)
-				.ok_or_else(|| APIError::ChannelUnavailable { err: format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id) })?;
+				let peer_state_mutex = per_peer_state.get(counterparty_node_id)
+					.ok_or_else(|| APIError::ChannelUnavailable { err: format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id) })?;
 
-			let mut peer_state_lock = peer_state_mutex.lock().unwrap();
-			let peer_state = &mut *peer_state_lock;
-			match peer_state.channel_by_id.entry(channel_id.clone()) {
-				hash_map::Entry::Occupied(mut chan_entry) => {
-					let funding_txo_opt = chan_entry.get().context.get_funding_txo();
-					let their_features = &peer_state.latest_features;
-					let (shutdown_msg, mut monitor_update_opt, htlcs) = chan_entry.get_mut()
-						.get_shutdown(&self.signer_provider, their_features, target_feerate_sats_per_1000_weight, override_shutdown_script)?;
-					failed_htlcs = htlcs;
+				let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+				let peer_state = &mut *peer_state_lock;
 
-					// We can send the `shutdown` message before updating the `ChannelMonitor`
-					// here as we don't need the monitor update to complete until we send a
-					// `shutdown_signed`, which we'll delay if we're pending a monitor update.
-					peer_state.pending_msg_events.push(events::MessageSendEvent::SendShutdown {
-						node_id: *counterparty_node_id,
-						msg: shutdown_msg,
-					});
+				match peer_state.channel_by_id.entry(channel_id.clone()) {
+					hash_map::Entry::Occupied(mut chan_entry) => {
+						let funding_txo_opt = chan_entry.get().context.get_funding_txo();
+						let their_features = &peer_state.latest_features;
+						let (shutdown_msg, mut monitor_update_opt, htlcs) = chan_entry.get_mut()
+							.get_shutdown(&self.signer_provider, their_features, target_feerate_sats_per_1000_weight, override_shutdown_script)?;
+						failed_htlcs = htlcs;
 
-					// Update the monitor with the shutdown script if necessary.
-					if let Some(monitor_update) = monitor_update_opt.take() {
-						break handle_new_monitor_update!(self, funding_txo_opt.unwrap(), monitor_update,
-							peer_state_lock, peer_state, per_peer_state, chan_entry).map(|_| ());
-					}
+						// We can send the `shutdown` message before updating the `ChannelMonitor`
+						// here as we don't need the monitor update to complete until we send a
+						// `shutdown_signed`, which we'll delay if we're pending a monitor update.
+						peer_state.pending_msg_events.push(events::MessageSendEvent::SendShutdown {
+							node_id: *counterparty_node_id,
+							msg: shutdown_msg,
+						});
 
-					if chan_entry.get().is_shutdown() {
-						let channel = remove_channel!(self, chan_entry);
-						if let Ok(channel_update) = self.get_channel_update_for_broadcast(&channel) {
-							peer_state.pending_msg_events.push(events::MessageSendEvent::BroadcastChannelUpdate {
-								msg: channel_update
-							});
+						// Update the monitor with the shutdown script if necessary.
+						if let Some(monitor_update) = monitor_update_opt.take() {
+							break handle_new_monitor_update!(self, funding_txo_opt.unwrap(), monitor_update,
+								peer_state_lock, peer_state, per_peer_state, chan_entry).map(|_| ());
 						}
-						self.issue_channel_close_events(&channel.context, ClosureReason::HolderForceClosed);
-					}
-					break Ok(());
-				},
-				hash_map::Entry::Vacant(_) => return Err(APIError::ChannelUnavailable{err: format!("Channel with id {} not found for the passed counterparty node_id {}", log_bytes!(*channel_id), counterparty_node_id) })
+
+						if chan_entry.get().is_shutdown() {
+							let channel = remove_channel!(self, chan_entry);
+							if let Ok(channel_update) = self.get_channel_update_for_broadcast(&channel) {
+								peer_state.pending_msg_events.push(events::MessageSendEvent::BroadcastChannelUpdate {
+									msg: channel_update
+								});
+							}
+							self.issue_channel_close_events(&channel.context, ClosureReason::HolderForceClosed);
+						}
+						break Ok(());
+					},
+					hash_map::Entry::Vacant(_) => (),
+				}
 			}
+			// If we reach this point, it means that the channel_id either refers to an unfunded channel or
+			// it does not exist for this peer. Either way, we can attempt to force-close it.
+			//
+			// An appropriate error will be returned for non-existence of the channel if that's the case.
+			return self.force_close_channel_with_peer(&channel_id, counterparty_node_id, None, false).map(|_| ())
+			// TODO(dunxen): This is still not ideal as we're doing some extra lookups.
+			// Fix this with https://github.com/lightningdevkit/rust-lightning/issues/2422
 		};
 
 		for htlc_source in failed_htlcs.drain(..) {
