@@ -179,4 +179,4 @@ mod prelude {
 #[cfg(all(not(ldk_bench), feature = "backtrace", feature = "std", test))]
 extern crate backtrace;
 
-mod sync;
+pub mod sync;
