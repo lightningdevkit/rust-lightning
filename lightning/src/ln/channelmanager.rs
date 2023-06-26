@@ -2246,6 +2246,7 @@ where
 			for (_cp_id, peer_state_mutex) in per_peer_state.iter() {
 				let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 				let peer_state = &mut *peer_state_lock;
+				// Only `Channels` in the channel_by_id map can be considered funded.
 				for (_channel_id, channel) in peer_state.channel_by_id.iter().filter(f) {
 					let details = ChannelDetails::from_channel_context(&channel.context, best_block_height,
 						peer_state.latest_features.clone(), &self.fee_estimator);
@@ -2314,11 +2315,15 @@ where
 			let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 			let peer_state = &mut *peer_state_lock;
 			let features = &peer_state.latest_features;
+			let chan_context_to_details = |context| {
+				ChannelDetails::from_channel_context(context, best_block_height, features.clone(), &self.fee_estimator)
+			};
 			return peer_state.channel_by_id
 				.iter()
-				.map(|(_, channel)|
-					ChannelDetails::from_channel_context(&channel.context, best_block_height,
-					features.clone(), &self.fee_estimator))
+				.map(|(_, channel)| &channel.context)
+				.chain(peer_state.outbound_v1_channel_by_id.iter().map(|(_, channel)| &channel.context))
+				.chain(peer_state.inbound_v1_channel_by_id.iter().map(|(_, channel)| &channel.context))
+				.map(chan_context_to_details)
 				.collect();
 		}
 		vec![]
@@ -7226,37 +7231,20 @@ where
 		log_debug!(self.logger, "Generating channel_reestablish events for {}", log_pubkey!(counterparty_node_id));
 
 		let per_peer_state = self.per_peer_state.read().unwrap();
-		for (_cp_id, peer_state_mutex) in per_peer_state.iter() {
+		if let Some(peer_state_mutex) = per_peer_state.get(counterparty_node_id) {
 			let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 			let peer_state = &mut *peer_state_lock;
 			let pending_msg_events = &mut peer_state.pending_msg_events;
-			peer_state.channel_by_id.retain(|_, chan| {
-				let retain = if chan.context.get_counterparty_node_id() == *counterparty_node_id {
-					if !chan.context.have_received_message() {
-						// If we created this (outbound) channel while we were disconnected from the
-						// peer we probably failed to send the open_channel message, which is now
-						// lost. We can't have had anything pending related to this channel, so we just
-						// drop it.
-						false
-					} else {
-						pending_msg_events.push(events::MessageSendEvent::SendChannelReestablish {
-							node_id: chan.context.get_counterparty_node_id(),
-							msg: chan.get_channel_reestablish(&self.logger),
-						});
-						true
-					}
-				} else { true };
-				if retain && chan.context.get_counterparty_node_id() != *counterparty_node_id {
-					if let Some(msg) = chan.get_signed_channel_announcement(&self.node_signer, self.genesis_hash.clone(), self.best_block.read().unwrap().height(), &self.default_configuration) {
-						if let Ok(update_msg) = self.get_channel_update_for_broadcast(chan) {
-							pending_msg_events.push(events::MessageSendEvent::SendChannelAnnouncement {
-								node_id: *counterparty_node_id,
-								msg, update_msg,
-							});
-						}
-					}
-				}
-				retain
+
+			// Since unfunded channel maps are cleared upon disconnecting a peer, and they're not persisted
+			// (so won't be recovered after a crash) we don't need to bother closing unfunded channels and
+			// clearing their maps here. Instead we can just send queue channel_reestablish messages for
+			// channels in the channel_by_id map.
+			peer_state.channel_by_id.iter_mut().for_each(|(_, chan)| {
+				pending_msg_events.push(events::MessageSendEvent::SendChannelReestablish {
+					node_id: chan.context.get_counterparty_node_id(),
+					msg: chan.get_channel_reestablish(&self.logger),
+				});
 			});
 		}
 		//TODO: Also re-broadcast announcement_signatures
