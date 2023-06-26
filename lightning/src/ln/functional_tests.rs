@@ -91,12 +91,10 @@ fn test_channel_open_simple() {
 	let open_channel_message = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
 
 	let _res = nodes[1].node.handle_open_channel(&nodes[0].node.get_our_node_id(), &open_channel_message.clone());
-
 	// Extract the accept channel message from node1 to node0
 	let accept_channel_message = get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, nodes[0].node.get_our_node_id());
 	let _res = nodes[0].node.handle_accept_channel(&nodes[1].node.get_our_node_id(), &accept_channel_message.clone());
 
-	// let _ev = get_event!(nodes[0], Event::FundingGenerationReady);
 	let (temporary_channel_id, funding_tx, _funding_output) = create_funding_transaction(&nodes[0], &nodes[1].node.get_our_node_id(), channel_value_sat, 42);
 	let _res = nodes[0].node.funding_transaction_generated(&temporary_channel_id, &nodes[1].node.get_our_node_id(), funding_tx.clone()).unwrap();
 
@@ -154,12 +152,10 @@ fn test_splice_in_simple() {
 	let open_channel_message = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
 
 	let _res = nodes[1].node.handle_open_channel(&nodes[0].node.get_our_node_id(), &open_channel_message.clone());
-
 	// Extract the accept channel message from node1 to node0
 	let accept_channel_message = get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, nodes[0].node.get_our_node_id());
 	let _res = nodes[0].node.handle_accept_channel(&nodes[1].node.get_our_node_id(), &accept_channel_message.clone());
 
-	// let _ev = get_event!(nodes[0], Event::FundingGenerationReady);
 	let (temporary_channel_id, funding_tx, _funding_output) = create_funding_transaction(&nodes[0], &nodes[1].node.get_our_node_id(), channel_value_sat, 42);
 	let _res = nodes[0].node.funding_transaction_generated(&temporary_channel_id, &nodes[1].node.get_our_node_id(), funding_tx.clone()).unwrap();
 
@@ -185,9 +181,16 @@ fn test_splice_in_simple() {
 	let funding_feerate_perkw = 1024; // TODO
 	let locktime = 0; // TODO
 
+	// Initiate splice-in (on node0)
 	let _res = nodes[0].node.splice_channel(&channel_id, &nodes[1].node.get_our_node_id(), post_splice_funding_satoshis, funding_feerate_perkw, locktime).unwrap();
+	// Extract the splice message from node0 to node1
 	let splice_message = get_event_msg!(nodes[0], MessageSendEvent::SendSplice, nodes[1].node.get_our_node_id());
+
 	let _res = nodes[1].node.handle_splice(&nodes[0].node.get_our_node_id(), &splice_message);
+	// Extract the splice_ack message from node1 to node0
+	let splice_ack_message = get_event_msg!(nodes[1], MessageSendEvent::SendSpliceAck, nodes[0].node.get_our_node_id());
+
+	let _res = nodes[0].node.handle_splice_ack(&nodes[1].node.get_our_node_id(), &splice_ack_message);
 
 	// create splicing tx
 	// let (temporary_channel_id, funding_tx, _funding_output) = create_funding_transaction(&nodes[0], &nodes[1].node.get_our_node_id(), channel_value_sat, 42);

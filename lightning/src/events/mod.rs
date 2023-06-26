@@ -1599,6 +1599,13 @@ pub enum MessageSendEvent {
 		/// The message which should be sent.
 		msg: msgs::Splice,
 	},
+	/// Used to indicate that we've accepted a splice and should send the splice_ack message
+	SendSpliceAck {
+		/// The node_id of the node which should receive this message
+		node_id: PublicKey,
+		/// The message which should be sent.
+		msg: msgs::SpliceAck,
+	},
 }
 
 /// A trait indicating an object may generate message send events

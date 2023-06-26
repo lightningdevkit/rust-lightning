@@ -5696,7 +5696,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		post_splice_funding_satoshis: u64
 	) -> msgs::Splice {
 		if !self.is_outbound() {
-			panic!("Tried to initiate a plice on an inbound channel?");
+			panic!("Tried to initiate a splice on an inbound channel?");
 		}
 
 		// TODO impl, checks
@@ -5725,6 +5725,28 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		}
 	}
 
+	/// #SPLICING
+	/// Get the splice_ack message that can be sent in response splice initiation
+	pub fn get_splice_ack(&self, chain_hash: BlockHash,
+		// TODO; should this be a param, or stored in the channel?
+		post_splice_funding_satoshis: u64
+	) -> msgs::SpliceAck {
+		if self.is_outbound() {
+			panic!("Tried to accept a splice on an outound channel?");
+		}
+
+		// TODO checks
+
+		let keys = self.get_holder_pubkeys();
+
+		// TODO how to handle channel capacity, orig is stored in Channel, has to be updated, in the interim there are two
+		msgs::SpliceAck {
+			chain_hash,
+			channel_id: self.channel_id,
+			funding_satoshis: post_splice_funding_satoshis,
+			funding_pubkey: keys.funding_pubkey,
+		}
+	}
 
 	// Send stuff to our remote peers:
 

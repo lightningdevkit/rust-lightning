@@ -889,7 +889,7 @@ pub struct GossipTimestampFilter {
 }
 
 /// #SPLICING Inspired by OpenChannel, Shutdown
-/// An [`splice`] message to be sent to or received from a peer.
+/// A [`splice`] message to be sent to or received from a peer.
 ///
 /// [`splice`]: TODO spec in progress, see PR https://github.com/lightning/bolts/pull/863/files#diff-ed04ca2c673fd6aabde69389511fa9ee60cb44d6b2ef6c88b549ffaa753d6afeR510
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -905,6 +905,21 @@ pub struct Splice {
 	/// TODO doc ?
 	pub locktime: u32,
 	/// The sender's key controlling the funding transaction
+	pub funding_pubkey: PublicKey,
+}
+
+/// A [`splice_ack`] message to be sent to or received from a peer.
+///
+/// [`splice_ack`]: TODO spec in progress, see PR https://github.com/lightning/bolts/pull/863/files#diff-ed04ca2c673fd6aabde69389511fa9ee60cb44d6b2ef6c88b549ffaa753d6afeR510
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SpliceAck {
+	/// The genesis hash of the blockchain where the channel is to be opened
+	pub chain_hash: BlockHash,
+	/// The channel ID
+	pub channel_id: [u8; 32],
+	/// The post-slice channel value
+	pub funding_satoshis: u64,
+	/// The acceptors's key controlling the funding transaction
 	pub funding_pubkey: PublicKey,
 }
 
@@ -1036,8 +1051,10 @@ pub trait ChannelMessageHandler : MessageSendEventsProvider {
 	fn handle_announcement_signatures(&self, their_node_id: &PublicKey, msg: &AnnouncementSignatures);
 
 	// #SPLICING
-	/// Handle and incoming `splice` message from the given peer.
+	/// Handle an incoming `splice` message from the given peer.
 	fn handle_splice(&self, counterparty_node_id: &PublicKey, msg: &Splice);
+	/// Handle an incoming `splice_ack` message from the given peer.
+	fn handle_splice_ack(&self, counterparty_node_id: &PublicKey, msg: &SpliceAck);
 
 	// Connection loss/reestablish:
 	/// Indicates a connection to the peer failed/an existing connection was lost.
@@ -2168,6 +2185,14 @@ impl_writeable_msg!(Splice, {
 	funding_satoshis,
 	funding_feerate_perkw,
 	locktime,
+	funding_pubkey,
+}, {});
+
+// #SPLICING
+impl_writeable_msg!(SpliceAck, {
+	chain_hash,
+	channel_id,
+	funding_satoshis,
 	funding_pubkey,
 }, {});
 

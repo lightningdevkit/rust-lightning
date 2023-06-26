@@ -5460,12 +5460,14 @@ where
 		}
 
 		// TODO checks
-		// TODO check if we accept splicing
+		// TODO check if we accept splicing, quiscence
 
+		/*
 		// Get the number of peers with channels, but without funded ones. We don't care too much
 		// about peers that never open a channel, so we filter by peers that have at least one
 		// channel, and then limit the number of those with unfunded channels.
 		let _channeled_peers_without_funding = self.peers_without_funded_channels(|node| !node.channel_by_id.is_empty());
+		*/
 
 		let per_peer_state = self.per_peer_state.read().unwrap();
 		let peer_state_mutex = per_peer_state.get(counterparty_node_id)
@@ -5496,6 +5498,40 @@ where
 				msg.temporary_channel_id.clone()));
 		}
 		*/
+
+		match peer_state.channel_by_id.entry(msg.channel_id) {
+			hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id)),
+			hash_map::Entry::Occupied(chan_entry) => {
+					let channel = chan_entry.get();
+
+				let msg = channel.get_splice_ack(self.genesis_hash.clone(), msg.funding_satoshis);
+				peer_state.pending_msg_events.push(events::MessageSendEvent::SendSpliceAck {
+					node_id: *counterparty_node_id,
+					msg,
+				});
+			},
+		}
+		Ok(())
+	}
+
+	// #SPLICING
+	// Logic for incoming splicing_ack message
+	fn internal_splice_ack(&self, counterparty_node_id: &PublicKey, msg: &msgs::SpliceAck) -> Result<(), MsgHandleErrInternal> {
+		if msg.chain_hash != self.genesis_hash {
+			return Err(MsgHandleErrInternal::send_err_msg_no_close("Unknown genesis block hash".to_owned(), msg.channel_id.clone()));
+		}
+
+		// TODO checks
+		// TODO check if we have initiated splicing
+
+		let per_peer_state = self.per_peer_state.read().unwrap();
+		let peer_state_mutex = per_peer_state.get(counterparty_node_id)
+			.ok_or_else(|| {
+				debug_assert!(false);
+				MsgHandleErrInternal::send_err_msg_no_close(format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id), msg.channel_id.clone())
+			})?;
+		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+		let peer_state = &mut *peer_state_lock;
 
 		match peer_state.channel_by_id.entry(msg.channel_id) {
 			hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id)),
@@ -6550,6 +6586,12 @@ where
 		let _ = handle_error!(self, self.internal_splice(counterparty_node_id, msg), *counterparty_node_id);
 	}
 
+	// #SPLICING
+	fn handle_splice_ack(&self, counterparty_node_id: &PublicKey, msg: &msgs::SpliceAck) {
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
+		let _ = handle_error!(self, self.internal_splice_ack(counterparty_node_id, msg), *counterparty_node_id);
+	}
+
 	fn peer_disconnected(&self, counterparty_node_id: &PublicKey) {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 		let mut failed_channels = Vec::new();
@@ -6594,6 +6636,7 @@ where
 						&events::MessageSendEvent::SendReplyChannelRange { .. } => false,
 						&events::MessageSendEvent::SendGossipTimestampFilter { .. } => false,
 						&events::MessageSendEvent::SendSplice { .. } => false,
+						&events::MessageSendEvent::SendSpliceAck { .. } => false,
 					}
 				});
 				debug_assert!(peer_state.is_connected, "A disconnected peer cannot disconnect");

@@ -598,7 +598,9 @@ mod tests {
 		fn handle_update_fee(&self, _their_node_id: &PublicKey, _msg: &UpdateFee) {}
 		fn handle_announcement_signatures(&self, _their_node_id: &PublicKey, _msg: &AnnouncementSignatures) {}
 		fn handle_channel_update(&self, _their_node_id: &PublicKey, _msg: &ChannelUpdate) {}
+		// #SPLICING
 		fn handle_splice(&self, _their_node_id: &PublicKey, _msg: &Splice) {}
+		fn handle_splice_ack(&self, _their_node_id: &PublicKey, _msg: &SpliceAck) {}
 		fn peer_disconnected(&self, their_node_id: &PublicKey) {
 			if *their_node_id == self.expected_pubkey {
 				self.disconnected_flag.store(true, Ordering::SeqCst);
