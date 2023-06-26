@@ -3538,27 +3538,48 @@ where
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 		let peer_state = &mut *peer_state_lock;
 		for channel_id in channel_ids {
-			if !peer_state.channel_by_id.contains_key(channel_id) {
+			if !peer_state.has_channel(channel_id) {
 				return Err(APIError::ChannelUnavailable {
 					err: format!("Channel with ID {} was not found for the passed counterparty_node_id {}", log_bytes!(*channel_id), counterparty_node_id),
 				});
-			}
+			};
 		}
 		for channel_id in channel_ids {
-			let channel = peer_state.channel_by_id.get_mut(channel_id).unwrap();
-			let mut config = channel.context.config();
-			config.apply(config_update);
-			if !channel.context.update_config(&config) {
+			if let Some(channel) = peer_state.channel_by_id.get_mut(channel_id) {
+				let mut config = channel.context.config();
+				config.apply(config_update);
+				if !channel.context.update_config(&config) {
+					continue;
+				}
+				if let Ok(msg) = self.get_channel_update_for_broadcast(channel) {
+					peer_state.pending_msg_events.push(events::MessageSendEvent::BroadcastChannelUpdate { msg });
+				} else if let Ok(msg) = self.get_channel_update_for_unicast(channel) {
+					peer_state.pending_msg_events.push(events::MessageSendEvent::SendChannelUpdate {
+						node_id: channel.context.get_counterparty_node_id(),
+						msg,
+					});
+				}
 				continue;
 			}
-			if let Ok(msg) = self.get_channel_update_for_broadcast(channel) {
-				peer_state.pending_msg_events.push(events::MessageSendEvent::BroadcastChannelUpdate { msg });
-			} else if let Ok(msg) = self.get_channel_update_for_unicast(channel) {
-				peer_state.pending_msg_events.push(events::MessageSendEvent::SendChannelUpdate {
-					node_id: channel.context.get_counterparty_node_id(),
-					msg,
+
+			let context = if let Some(channel) = peer_state.inbound_v1_channel_by_id.get_mut(channel_id) {
+				&mut channel.context
+			} else if let Some(channel) = peer_state.outbound_v1_channel_by_id.get_mut(channel_id) {
+				&mut channel.context
+			} else {
+				// This should not be reachable as we've already checked for non-existence in the previous channel_id loop.
+				debug_assert!(false);
+				return Err(APIError::ChannelUnavailable {
+					err: format!(
+						"Channel with ID {} for passed counterparty_node_id {} disappeared after we confirmed its existence - this should not be reachable!",
+						log_bytes!(*channel_id), counterparty_node_id),
 				});
-			}
+			};
+			let mut config = context.config();
+			config.apply(config_update);
+			// We update the config, but we MUST NOT broadcast a `channel_update` before `channel_ready`
+			// which would be the case for pending inbound/outbound channels.
+			context.update_config(&config);
 		}
 		Ok(())
 	}
@@ -10184,6 +10205,25 @@ mod tests {
 			MessageSendEvent::BroadcastChannelUpdate { .. } => {},
 			_ => panic!("expected BroadcastChannelUpdate event"),
 		}
+
+		// If we provide a channel_id not associated with the peer, we should get an error and no updates
+		// should be applied to ensure update atomicity as specified in the API docs.
+		let bad_channel_id = [10; 32];
+		let current_fee = nodes[0].node.list_channels()[0].config.unwrap().forwarding_fee_proportional_millionths;
+		let new_fee = current_fee + 100;
+		assert!(
+			matches!(
+				nodes[0].node.update_partial_channel_config(&channel.counterparty.node_id, &[channel.channel_id, bad_channel_id], &ChannelConfigUpdate {
+					forwarding_fee_proportional_millionths: Some(new_fee),
+					..Default::default()
+				}),
+				Err(APIError::ChannelUnavailable { err: _ }),
+			)
+		);
+		// Check that the fee hasn't changed for the channel that exists.
+		assert_eq!(nodes[0].node.list_channels()[0].config.unwrap().forwarding_fee_proportional_millionths, current_fee);
+		let events = nodes[0].node.get_and_clear_pending_msg_events();
+		assert_eq!(events.len(), 0);
 	}
 }
 
