@@ -995,7 +995,7 @@ impl<Signer: ChannelSigner> ChannelContext<Signer> {
 	}
 
 	/// Returns the funding_txo we either got from our peer, or were given by
-	/// get_outbound_funding_created.
+	/// get_funding_created.
 	pub fn get_funding_txo(&self) -> Option<OutPoint> {
 		self.channel_transaction_parameters.funding_outpoint
 	}
@@ -1440,7 +1440,7 @@ impl<Signer: ChannelSigner> ChannelContext<Signer> {
 	#[inline]
 	/// Creates a set of keys for build_commitment_transaction to generate a transaction which we
 	/// will sign and send to our counterparty.
-	/// If an Err is returned, it is a ChannelError::Close (for get_outbound_funding_created)
+	/// If an Err is returned, it is a ChannelError::Close (for get_funding_created)
 	fn build_remote_transaction_keys(&self) -> TxCreationKeys {
 		//TODO: Ensure that the payment_key derived here ends up in the library users' wallet as we
 		//may see payments to it!
@@ -2026,7 +2026,7 @@ fn commit_tx_fee_msat(feerate_per_kw: u32, num_htlcs: usize, channel_type_featur
 
 // TODO: We should refactor this to be an Inbound/OutboundChannel until initial setup handshaking
 // has been completed, and then turn into a Channel to get compiler-time enforcement of things like
-// calling channel_id() before we're set up or things like get_outbound_funding_signed on an
+// calling channel_id() before we're set up or things like get_funding_signed on an
 // inbound channel.
 //
 // Holder designates channel data owned for the benefit of the user client.
@@ -5682,8 +5682,8 @@ impl<Signer: WriteableEcdsaChannelSigner> OutboundV1Channel<Signer> {
 		})
 	}
 
-	/// If an Err is returned, it is a ChannelError::Close (for get_outbound_funding_created)
-	fn get_outbound_funding_created_signature<L: Deref>(&mut self, logger: &L) -> Result<Signature, ChannelError> where L::Target: Logger {
+	/// If an Err is returned, it is a ChannelError::Close (for get_funding_created)
+	fn get_funding_created_signature<L: Deref>(&mut self, logger: &L) -> Result<Signature, ChannelError> where L::Target: Logger {
 		let counterparty_keys = self.context.build_remote_transaction_keys();
 		let counterparty_initial_commitment_tx = self.context.build_commitment_transaction(self.context.cur_counterparty_commitment_transaction_number, &counterparty_keys, false, false, logger).tx;
 		Ok(self.context.holder_signer.sign_counterparty_commitment(&counterparty_initial_commitment_tx, Vec::new(), &self.context.secp_ctx)
@@ -5697,7 +5697,7 @@ impl<Signer: WriteableEcdsaChannelSigner> OutboundV1Channel<Signer> {
 	/// Note that channel_id changes during this call!
 	/// Do NOT broadcast the funding transaction until after a successful funding_signed call!
 	/// If an Err is returned, it is a ChannelError::Close.
-	pub fn get_outbound_funding_created<L: Deref>(mut self, funding_transaction: Transaction, funding_txo: OutPoint, logger: &L)
+	pub fn get_funding_created<L: Deref>(mut self, funding_transaction: Transaction, funding_txo: OutPoint, logger: &L)
 	-> Result<(Channel<Signer>, msgs::FundingCreated), (Self, ChannelError)> where L::Target: Logger {
 		if !self.context.is_outbound() {
 			panic!("Tried to create outbound funding_created message on an inbound channel!");
@@ -5714,7 +5714,7 @@ impl<Signer: WriteableEcdsaChannelSigner> OutboundV1Channel<Signer> {
 		self.context.channel_transaction_parameters.funding_outpoint = Some(funding_txo);
 		self.context.holder_signer.provide_channel_parameters(&self.context.channel_transaction_parameters);
 
-		let signature = match self.get_outbound_funding_created_signature(logger) {
+		let signature = match self.get_funding_created_signature(logger) {
 			Ok(res) => res,
 			Err(e) => {
 				log_error!(logger, "Got bad signatures: {:?}!", e);
@@ -7598,7 +7598,7 @@ mod tests {
 			value: 10000000, script_pubkey: output_script.clone(),
 		}]};
 		let funding_outpoint = OutPoint{ txid: tx.txid(), index: 0 };
-		let (mut node_a_chan, funding_created_msg) = node_a_chan.get_outbound_funding_created(tx.clone(), funding_outpoint, &&logger).map_err(|_| ()).unwrap();
+		let (mut node_a_chan, funding_created_msg) = node_a_chan.get_funding_created(tx.clone(), funding_outpoint, &&logger).map_err(|_| ()).unwrap();
 		let (_, funding_signed_msg, _) = node_b_chan.funding_created(&funding_created_msg, best_block, &&keys_provider, &&logger).map_err(|_| ()).unwrap();
 
 		// Node B --> Node A: funding signed
@@ -7725,7 +7725,7 @@ mod tests {
 			value: 10000000, script_pubkey: output_script.clone(),
 		}]};
 		let funding_outpoint = OutPoint{ txid: tx.txid(), index: 0 };
-		let (mut node_a_chan, funding_created_msg) = node_a_chan.get_outbound_funding_created(tx.clone(), funding_outpoint, &&logger).map_err(|_| ()).unwrap();
+		let (mut node_a_chan, funding_created_msg) = node_a_chan.get_funding_created(tx.clone(), funding_outpoint, &&logger).map_err(|_| ()).unwrap();
 		let (mut node_b_chan, funding_signed_msg, _) = node_b_chan.funding_created(&funding_created_msg, best_block, &&keys_provider, &&logger).map_err(|_| ()).unwrap();
 
 		// Node B --> Node A: funding signed
@@ -7913,7 +7913,7 @@ mod tests {
 			value: 10000000, script_pubkey: output_script.clone(),
 		}]};
 		let funding_outpoint = OutPoint{ txid: tx.txid(), index: 0 };
-		let (mut node_a_chan, funding_created_msg) = node_a_chan.get_outbound_funding_created(tx.clone(), funding_outpoint, &&logger).map_err(|_| ()).unwrap();
+		let (mut node_a_chan, funding_created_msg) = node_a_chan.get_funding_created(tx.clone(), funding_outpoint, &&logger).map_err(|_| ()).unwrap();
 		let (_, funding_signed_msg, _) = node_b_chan.funding_created(&funding_created_msg, best_block, &&keys_provider, &&logger).map_err(|_| ()).unwrap();
 
 		// Node B --> Node A: funding signed

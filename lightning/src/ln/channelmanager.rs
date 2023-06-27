@@ -3365,7 +3365,7 @@ where
 			Some(chan) => {
 				let funding_txo = find_funding_output(&chan, &funding_transaction)?;
 
-				let funding_res = chan.get_outbound_funding_created(funding_transaction, funding_txo, &self.logger)
+				let funding_res = chan.get_funding_created(funding_transaction, funding_txo, &self.logger)
 					.map_err(|(mut chan, e)| if let ChannelError::Close(msg) = e {
 						let channel_id = chan.context.channel_id();
 						let user_id = chan.context.get_user_id();
