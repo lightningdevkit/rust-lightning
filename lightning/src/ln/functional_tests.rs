@@ -94,7 +94,7 @@ fn test_channel_open_simple() {
 	// Extract the accept channel message from node1 to node0
 	let accept_channel_message = get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, nodes[0].node.get_our_node_id());
 	let _res = nodes[0].node.handle_accept_channel(&nodes[1].node.get_our_node_id(), &accept_channel_message.clone());
-
+	// Note: FundingGenerationReady emitted, checked and used below
 	let (temporary_channel_id, funding_tx, _funding_output) = create_funding_transaction(&nodes[0], &nodes[1].node.get_our_node_id(), channel_value_sat, 42);
 	let _res = nodes[0].node.funding_transaction_generated(&temporary_channel_id, &nodes[1].node.get_our_node_id(), funding_tx.clone()).unwrap();
 
@@ -155,7 +155,7 @@ fn test_splice_in_simple() {
 	// Extract the accept channel message from node1 to node0
 	let accept_channel_message = get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, nodes[0].node.get_our_node_id());
 	let _res = nodes[0].node.handle_accept_channel(&nodes[1].node.get_our_node_id(), &accept_channel_message.clone());
-
+	// Note: FundingGenerationReady emitted, checked and used below
 	let (temporary_channel_id, funding_tx, _funding_output) = create_funding_transaction(&nodes[0], &nodes[1].node.get_our_node_id(), channel_value_sat, 42);
 	let _res = nodes[0].node.funding_transaction_generated(&temporary_channel_id, &nodes[1].node.get_our_node_id(), funding_tx.clone()).unwrap();
 
@@ -190,6 +190,7 @@ fn test_splice_in_simple() {
 	let splice_ack_message = get_event_msg!(nodes[1], MessageSendEvent::SendSpliceAck, nodes[0].node.get_our_node_id());
 
 	let _res = nodes[0].node.handle_splice_ack(&nodes[1].node.get_our_node_id(), &splice_ack_message);
+	let _ev = get_event!(nodes[0], Event::SpliceAcked);
 
 	// create splicing tx
 	// let (temporary_channel_id, funding_tx, _funding_output) = create_funding_transaction(&nodes[0], &nodes[1].node.get_our_node_id(), channel_value_sat, 42);

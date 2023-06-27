@@ -29,6 +29,7 @@ Branched off v0.0.115.
 
 See also `ldk-sample` https://github.com/catenocrypt/ldk-sample/tree/splicing-hapa1
 
+To test: `cargo test splic`
 
 
 Status

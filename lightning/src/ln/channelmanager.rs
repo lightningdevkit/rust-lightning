@@ -5531,21 +5531,39 @@ where
 		// TODO checks
 		// TODO check if we have initiated splicing
 
-		let per_peer_state = self.per_peer_state.read().unwrap();
-		let peer_state_mutex = per_peer_state.get(counterparty_node_id)
-			.ok_or_else(|| {
-				debug_assert!(false);
-				MsgHandleErrInternal::send_err_msg_no_close(format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id), msg.channel_id.clone())
-			})?;
-		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
-		let peer_state = &mut *peer_state_lock;
+		let (pre_value, output_script) = { // note: user_id skipped
+			let per_peer_state = self.per_peer_state.read().unwrap();
+			let peer_state_mutex = per_peer_state.get(counterparty_node_id)
+				.ok_or_else(|| {
+					debug_assert!(false);
+					MsgHandleErrInternal::send_err_msg_no_close(format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id), msg.channel_id.clone())
+				})?;
+			let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+			let peer_state = &mut *peer_state_lock;
 
-		match peer_state.channel_by_id.entry(msg.channel_id) {
-			hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id)),
-			hash_map::Entry::Occupied(_) => {
-				// TODO!
-			},
-		}
+			match peer_state.channel_by_id.entry(msg.channel_id) {
+				hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id)),
+				hash_map::Entry::Occupied(chan) => {
+
+					// TODO!
+
+					(
+						chan.get().get_value_satoshis(),
+						chan.get().get_funding_redeemscript().to_v0_p2wsh(), // TODO check wether this is correct, correct keys used (from splice negot, and not from pre)
+						// chan.get().get_user_id(), // TODO check if this is correct
+					)
+				},
+			}
+		};
+
+		// Prepare SpliceAcked event
+		let mut pending_events = self.pending_events.lock().unwrap();
+		pending_events.push(events::Event::SpliceAcked {
+			channel_id: msg.channel_id,
+			pre_channel_value_satoshis: pre_value,
+			post_channel_value_satoshis: msg.funding_satoshis,
+			output_script,
+		});
 		Ok(())
 	}
 

@@ -818,6 +818,19 @@ pub enum Event {
 	/// LDK does not currently generate this event. It is limited to the scope of channels with
 	/// anchor outputs, which will be introduced in a future release.
 	BumpTransaction(BumpTransactionEvent),
+	/// #SPLICING
+	/// Indicates that the splice negotiation is done, `splice_ack` msg was received
+	/// TODO Change name, this should come after tx negotiation, maybe not needed in this form
+	SpliceAcked {
+		/// The channel_id of the channel where the splice was initiated
+		channel_id: [u8; 32],
+		/// The pre-splice channel value, in satoshis.
+		pre_channel_value_satoshis: u64,
+		/// The post-splice channel value, in satoshis.
+		post_channel_value_satoshis: u64,
+		/// The script which should be used in the transaction output (channel funding output).
+		output_script: Script,
+	}
 }
 
 impl Writeable for Event {
@@ -1033,6 +1046,16 @@ impl Writeable for Event {
 					(4, former_temporary_channel_id, required),
 					(6, counterparty_node_id, required),
 					(8, funding_txo, required),
+				});
+			},
+			// #SPLICING
+			&Event::SpliceAcked { ref channel_id, ref pre_channel_value_satoshis, ref post_channel_value_satoshis, ref output_script } => {
+				33u8.write(writer)?; // TODO value
+				write_tlv_fields!(writer, {
+					(0, channel_id, required),
+					(2, pre_channel_value_satoshis, required),
+					(4, post_channel_value_satoshis, required),
+					(6, output_script, required),
 				});
 			},
 			// Note that, going forward, all new events must only write data inside of
