@@ -1923,11 +1923,8 @@ where
 	/// Initiate a splice, to change the channel capacity
 	/// TODO funding_feerate_perkw
 	/// TODO locktime
-	pub fn splice_channel(&self, channel_id: &[u8; 32], counterparty_node_id: &PublicKey, post_splice_funding_satoshis: u64, _funding_feerate_perkw: u32, _locktime: u32) -> Result<(), APIError> {
+	pub fn splice_channel(&self, channel_id: &[u8; 32], counterparty_node_id: &PublicKey, value_delta_sats: i64, funding_feerate_perkw: u32, locktime: u32) -> Result<(), APIError> {
 		// TODO handle code duplication with create_channel
-		if post_splice_funding_satoshis < 1000 {
-			return Err(APIError::APIMisuseError { err: format!("Post-splicing channel value must be at least 1000 satoshis. It was {}", post_splice_funding_satoshis) });
-		}
 
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 		// We want to make sure the lock is actually acquired by PersistenceNotifierGuard.
@@ -1944,8 +1941,18 @@ where
 			hash_map::Entry::Vacant(_) => return Err(APIError::ChannelUnavailable{err: format!("Channel with id {} not found for the passed counterparty node_id {}", log_bytes!(*channel_id), counterparty_node_id) }),
 			hash_map::Entry::Occupied(chan_entry) => {
 				let channel = chan_entry.get();
+				let current_value_sats = channel.get_value_satoshis();
+				if value_delta_sats < 0 && -value_delta_sats > (current_value_sats as i64) {
+					return Err(APIError::APIMisuseError { err: format!("Post-splicing channel value cannot be negative. It was {} - {}", current_value_sats, -value_delta_sats) });
+				}
+				let post_splice_funding_satoshis: u64 = (current_value_sats as i64 + value_delta_sats) as u64;
 
-				let res = channel.get_splice(self.genesis_hash.clone(), post_splice_funding_satoshis);
+				// TODO handle code duplication with create_channel
+				if post_splice_funding_satoshis < 1000 {
+					return Err(APIError::APIMisuseError { err: format!("Post-splicing channel value must be at least 1000 satoshis. It was {}", post_splice_funding_satoshis) });
+				}
+		
+				let res = channel.get_splice(self.genesis_hash.clone(), post_splice_funding_satoshis, funding_feerate_perkw, locktime);
 
 				peer_state.pending_msg_events.push(events::MessageSendEvent::SendSplice {
 					node_id: *counterparty_node_id,
@@ -5502,7 +5509,7 @@ where
 		match peer_state.channel_by_id.entry(msg.channel_id) {
 			hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id)),
 			hash_map::Entry::Occupied(chan_entry) => {
-					let channel = chan_entry.get();
+				let channel = chan_entry.get();
 
 				let msg = channel.get_splice_ack(self.genesis_hash.clone(), msg.funding_satoshis);
 				peer_state.pending_msg_events.push(events::MessageSendEvent::SendSpliceAck {

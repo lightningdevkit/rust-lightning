@@ -5693,7 +5693,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 	/// Get the splice message that can be sent during splice initiation
 	pub fn get_splice(&self, chain_hash: BlockHash,
 		// TODO; should this be a param, or stored in the channel?
-		post_splice_funding_satoshis: u64
+		post_splice_funding_satoshis: u64, funding_feerate_perkw: u32, locktime: u32
 	) -> msgs::Splice {
 		if !self.is_outbound() {
 			panic!("Tried to initiate a splice on an inbound channel?");
@@ -5719,8 +5719,8 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			chain_hash,
 			channel_id: self.channel_id,
 			funding_satoshis: post_splice_funding_satoshis,
-			funding_feerate_perkw: self.feerate_per_kw, // TODO not necessary the same as the original stored in the Channel
-			locktime: 0, // TODO!
+			funding_feerate_perkw,
+			locktime,
 			funding_pubkey: keys.funding_pubkey,
 		}
 	}

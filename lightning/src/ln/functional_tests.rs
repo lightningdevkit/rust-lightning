@@ -177,12 +177,11 @@ fn test_splice_in_simple() {
 
 	// Amount being added to the channel through the splice-in
 	let splice_in_sats = 20000;
-	let post_splice_funding_satoshis = channel_value_sat + splice_in_sats;
 	let funding_feerate_perkw = 1024; // TODO
 	let locktime = 0; // TODO
 
 	// Initiate splice-in (on node0)
-	let _res = nodes[0].node.splice_channel(&channel_id, &nodes[1].node.get_our_node_id(), post_splice_funding_satoshis, funding_feerate_perkw, locktime).unwrap();
+	let _res = nodes[0].node.splice_channel(&channel_id, &nodes[1].node.get_our_node_id(), splice_in_sats, funding_feerate_perkw, locktime).unwrap();
 	// Extract the splice message from node0 to node1
 	let splice_message = get_event_msg!(nodes[0], MessageSendEvent::SendSplice, nodes[1].node.get_our_node_id());
 
