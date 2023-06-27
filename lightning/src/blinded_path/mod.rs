@@ -11,9 +11,7 @@
 
 pub(crate) mod utils;
 
-use bitcoin::hashes::{Hash, HashEngine};
-use bitcoin::hashes::sha256::Hash as Sha256;
-use bitcoin::secp256k1::{self, PublicKey, Scalar, Secp256k1, SecretKey};
+use bitcoin::secp256k1::{self, PublicKey, Secp256k1, SecretKey};
 
 use crate::sign::{EntropySource, NodeSigner, Recipient};
 use crate::onion_message::ControlTlvs;
@@ -97,14 +95,8 @@ impl BlindedPath {
 				let mut new_blinding_point = match next_blinding_override {
 					Some(blinding_point) => blinding_point,
 					None => {
-						let blinding_factor = {
-							let mut sha = Sha256::engine();
-							sha.input(&self.blinding_point.serialize()[..]);
-							sha.input(control_tlvs_ss.as_ref());
-							Sha256::from_engine(sha).into_inner()
-						};
-						self.blinding_point.mul_tweak(secp_ctx, &Scalar::from_be_bytes(blinding_factor).unwrap())
-							.map_err(|_| ())?
+						onion_utils::next_hop_pubkey(secp_ctx, self.blinding_point,
+							control_tlvs_ss.as_ref()).map_err(|_| ())?
 					}
 				};
 				mem::swap(&mut self.blinding_point, &mut new_blinding_point);

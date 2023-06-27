@@ -91,15 +91,18 @@ pub(super) fn gen_pad_from_shared_secret(shared_secret: &[u8]) -> [u8; 32] {
 	Hmac::from_engine(hmac).into_inner()
 }
 
-pub(crate) fn next_hop_packet_pubkey<T: secp256k1::Signing + secp256k1::Verification>(secp_ctx: &Secp256k1<T>, packet_pubkey: PublicKey, packet_shared_secret: &[u8; 32]) -> Result<PublicKey, secp256k1::Error> {
+/// Calculates a pubkey for the next hop, such as the next hop's packet pubkey or blinding point.
+pub(crate) fn next_hop_pubkey<T: secp256k1::Signing + secp256k1::Verification>(
+	secp_ctx: &Secp256k1<T>, curr_pubkey: PublicKey, shared_secret: &[u8]
+) -> Result<PublicKey, secp256k1::Error> {
 	let blinding_factor = {
 		let mut sha = Sha256::engine();
-		sha.input(&packet_pubkey.serialize()[..]);
-		sha.input(packet_shared_secret);
+		sha.input(&curr_pubkey.serialize()[..]);
+		sha.input(shared_secret);
 		Sha256::from_engine(sha).into_inner()
 	};
 
-	packet_pubkey.mul_tweak(secp_ctx, &Scalar::from_be_bytes(blinding_factor).unwrap())
+	curr_pubkey.mul_tweak(secp_ctx, &Scalar::from_be_bytes(blinding_factor).unwrap())
 }
 
 // can only fail if an intermediary hop has an invalid public key or session_priv is invalid

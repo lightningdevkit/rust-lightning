@@ -490,7 +490,7 @@ where
 				// unwrapping the onion layers to get to the final payload. Since we don't have the option
 				// of creating blinded paths with dummy hops currently, we should be ok to not handle this
 				// for now.
-				let new_pubkey = match onion_utils::next_hop_packet_pubkey(&self.secp_ctx, msg.onion_routing_packet.public_key, &onion_decode_ss) {
+				let new_pubkey = match onion_utils::next_hop_pubkey(&self.secp_ctx, msg.onion_routing_packet.public_key, &onion_decode_ss) {
 					Ok(pk) => pk,
 					Err(e) => {
 						log_trace!(self.logger, "Failed to compute next hop packet pubkey: {}", e);
@@ -507,21 +507,16 @@ where
 					blinding_point: match next_blinding_override {
 						Some(blinding_point) => blinding_point,
 						None => {
-							let blinding_factor = {
-								let mut sha = Sha256::engine();
-								sha.input(&msg.blinding_point.serialize()[..]);
-								sha.input(control_tlvs_ss.as_ref());
-								Sha256::from_engine(sha).into_inner()
-							};
-							let next_blinding_point = msg.blinding_point;
-							match next_blinding_point.mul_tweak(&self.secp_ctx, &Scalar::from_be_bytes(blinding_factor).unwrap()) {
+							match onion_utils::next_hop_pubkey(
+								&self.secp_ctx, msg.blinding_point, control_tlvs_ss.as_ref()
+							) {
 								Ok(bp) => bp,
 								Err(e) => {
 									log_trace!(self.logger, "Failed to compute next blinding point: {}", e);
 									return
 								}
 							}
-						},
+						}
 					},
 					onion_routing_packet: outgoing_packet,
 				};

@@ -2868,9 +2868,9 @@ where
 					short_channel_id, amt_to_forward, outgoing_cltv_value
 				}, ..
 			} => {
-				let next_pk = onion_utils::next_hop_packet_pubkey(&self.secp_ctx,
+				let next_packet_pk = onion_utils::next_hop_pubkey(&self.secp_ctx,
 					msg.onion_routing_packet.public_key.unwrap(), &shared_secret);
-				(short_channel_id, amt_to_forward, outgoing_cltv_value, Some(next_pk))
+				(short_channel_id, amt_to_forward, outgoing_cltv_value, Some(next_packet_pk))
 			},
 			// We'll do receive checks in [`Self::construct_pending_htlc_info`] so we have access to the
 			// inbound channel's state.
