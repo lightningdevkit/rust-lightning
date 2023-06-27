@@ -7405,7 +7405,7 @@ mod tests {
 		}
 	}
 
-	#[cfg(not(feature = "grind_signatures"))]
+	#[cfg(all(feature = "_test_vectors", not(feature = "grind_signatures")))]
 	fn public_from_secret_hex(secp_ctx: &Secp256k1<bitcoin::secp256k1::All>, hex: &str) -> PublicKey {
 		PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&hex::decode(hex).unwrap()[..]).unwrap())
 	}

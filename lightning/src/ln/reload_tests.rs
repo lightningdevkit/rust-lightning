@@ -384,7 +384,7 @@ fn test_manager_serialize_deserialize_inconsistent_monitor() {
 	fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: Mutex::new(253) };
 	persister = test_utils::TestPersister::new();
 	let keys_manager = &chanmon_cfgs[0].keys_manager;
-	new_chain_monitor = test_utils::TestChainMonitor::new(Some(nodes[0].chain_source), nodes[0].tx_broadcaster.clone(), &logger, &fee_estimator, &persister, keys_manager);
+	new_chain_monitor = test_utils::TestChainMonitor::new(Some(nodes[0].chain_source), nodes[0].tx_broadcaster, &logger, &fee_estimator, &persister, keys_manager);
 	nodes[0].chain_monitor = &new_chain_monitor;
 
 

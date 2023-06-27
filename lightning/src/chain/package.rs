@@ -247,7 +247,7 @@ impl Readable for CounterpartyOfferedHTLCOutput {
 		let mut counterparty_htlc_base_key = RequiredWrapper(None);
 		let mut preimage = RequiredWrapper(None);
 		let mut htlc = RequiredWrapper(None);
-		let mut legacy_deserialization_prevention_marker: Option<()> = None;
+		let mut _legacy_deserialization_prevention_marker: Option<()> = None;
 		let mut channel_type_features = None;
 
 		read_tlv_fields!(reader, {
@@ -256,7 +256,7 @@ impl Readable for CounterpartyOfferedHTLCOutput {
 			(4, counterparty_htlc_base_key, required),
 			(6, preimage, required),
 			(8, htlc, required),
-			(10, legacy_deserialization_prevention_marker, option),
+			(10, _legacy_deserialization_prevention_marker, option),
 			(11, channel_type_features, option),
 		});
 
@@ -321,7 +321,7 @@ impl Readable for CounterpartyReceivedHTLCOutput {
 		let mut counterparty_delayed_payment_base_key = RequiredWrapper(None);
 		let mut counterparty_htlc_base_key = RequiredWrapper(None);
 		let mut htlc = RequiredWrapper(None);
-		let mut legacy_deserialization_prevention_marker: Option<()> = None;
+		let mut _legacy_deserialization_prevention_marker: Option<()> = None;
 		let mut channel_type_features = None;
 
 		read_tlv_fields!(reader, {
@@ -329,7 +329,7 @@ impl Readable for CounterpartyReceivedHTLCOutput {
 			(2, counterparty_delayed_payment_base_key, required),
 			(4, counterparty_htlc_base_key, required),
 			(6, htlc, required),
-			(8, legacy_deserialization_prevention_marker, option),
+			(8, _legacy_deserialization_prevention_marker, option),
 			(9, channel_type_features, option),
 		});
 
@@ -399,14 +399,14 @@ impl Readable for HolderHTLCOutput {
 		let mut amount_msat = RequiredWrapper(None);
 		let mut cltv_expiry = RequiredWrapper(None);
 		let mut preimage = None;
-		let mut legacy_deserialization_prevention_marker: Option<()> = None;
+		let mut _legacy_deserialization_prevention_marker: Option<()> = None;
 		let mut channel_type_features = None;
 
 		read_tlv_fields!(reader, {
 			(0, amount_msat, required),
 			(2, cltv_expiry, required),
 			(4, preimage, option),
-			(6, legacy_deserialization_prevention_marker, option),
+			(6, _legacy_deserialization_prevention_marker, option),
 			(7, channel_type_features, option),
 		});
 
@@ -460,14 +460,14 @@ impl Writeable for HolderFundingOutput {
 impl Readable for HolderFundingOutput {
 	fn read<R: io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
 		let mut funding_redeemscript = RequiredWrapper(None);
-		let mut legacy_deserialization_prevention_marker: Option<()> = None;
+		let mut _legacy_deserialization_prevention_marker: Option<()> = None;
 		let mut channel_type_features = None;
 		let mut funding_amount = None;
 
 		read_tlv_fields!(reader, {
 			(0, funding_redeemscript, required),
 			(1, channel_type_features, option),
-			(2, legacy_deserialization_prevention_marker, option),
+			(2, _legacy_deserialization_prevention_marker, option),
 			(3, funding_amount, option)
 		});
 

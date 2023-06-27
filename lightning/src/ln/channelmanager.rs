@@ -317,7 +317,7 @@ impl core::hash::Hash for HTLCSource {
 	}
 }
 impl HTLCSource {
-	#[cfg(not(feature = "grind_signatures"))]
+	#[cfg(all(feature = "_test_vectors", not(feature = "grind_signatures")))]
 	#[cfg(test)]
 	pub fn dummy() -> Self {
 		HTLCSource::OutboundRoute {
