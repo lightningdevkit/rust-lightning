@@ -5530,38 +5530,50 @@ where
 				})?;
 			let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 			let peer_state = &mut *peer_state_lock;
-			match peer_state.channel_by_id.entry(msg.channel_id.clone()) {
-				hash_map::Entry::Occupied(mut chan_entry) => {
+			// TODO(dunxen): Fix this duplication when we switch to a single map with enums as per
+			// https://github.com/lightningdevkit/rust-lightning/issues/2422
+			if let hash_map::Entry::Occupied(chan_entry) = peer_state.outbound_v1_channel_by_id.entry(msg.channel_id.clone()) {
+				log_error!(self.logger, "Immediately closing unfunded channel {} as peer asked to cooperatively shut it down (which is unnecessary)", log_bytes!(&msg.channel_id[..]));
+				self.issue_channel_close_events(&chan_entry.get().context, ClosureReason::CounterpartyCoopClosedUnfundedChannel);
+				let mut chan = remove_channel!(self, chan_entry);
+				self.finish_force_close_channel(chan.context.force_shutdown(false));
+				return Ok(());
+			} else if let hash_map::Entry::Occupied(chan_entry) = peer_state.inbound_v1_channel_by_id.entry(msg.channel_id.clone()) {
+				log_error!(self.logger, "Immediately closing unfunded channel {} as peer asked to cooperatively shut it down (which is unnecessary)", log_bytes!(&msg.channel_id[..]));
+				self.issue_channel_close_events(&chan_entry.get().context, ClosureReason::CounterpartyCoopClosedUnfundedChannel);
+				let mut chan = remove_channel!(self, chan_entry);
+				self.finish_force_close_channel(chan.context.force_shutdown(false));
+				return Ok(());
+			} else if let hash_map::Entry::Occupied(mut chan_entry) = peer_state.channel_by_id.entry(msg.channel_id.clone()) {
+				if !chan_entry.get().received_shutdown() {
+					log_info!(self.logger, "Received a shutdown message from our counterparty for channel {}{}.",
+						log_bytes!(msg.channel_id),
+						if chan_entry.get().sent_shutdown() { " after we initiated shutdown" } else { "" });
+				}
 
-					if !chan_entry.get().received_shutdown() {
-						log_info!(self.logger, "Received a shutdown message from our counterparty for channel {}{}.",
-							log_bytes!(msg.channel_id),
-							if chan_entry.get().sent_shutdown() { " after we initiated shutdown" } else { "" });
-					}
+				let funding_txo_opt = chan_entry.get().context.get_funding_txo();
+				let (shutdown, monitor_update_opt, htlcs) = try_chan_entry!(self,
+					chan_entry.get_mut().shutdown(&self.signer_provider, &peer_state.latest_features, &msg), chan_entry);
+				dropped_htlcs = htlcs;
 
-					let funding_txo_opt = chan_entry.get().context.get_funding_txo();
-					let (shutdown, monitor_update_opt, htlcs) = try_chan_entry!(self,
-						chan_entry.get_mut().shutdown(&self.signer_provider, &peer_state.latest_features, &msg), chan_entry);
-					dropped_htlcs = htlcs;
+				if let Some(msg) = shutdown {
+					// We can send the `shutdown` message before updating the `ChannelMonitor`
+					// here as we don't need the monitor update to complete until we send a
+					// `shutdown_signed`, which we'll delay if we're pending a monitor update.
+					peer_state.pending_msg_events.push(events::MessageSendEvent::SendShutdown {
+						node_id: *counterparty_node_id,
+						msg,
+					});
+				}
 
-					if let Some(msg) = shutdown {
-						// We can send the `shutdown` message before updating the `ChannelMonitor`
-						// here as we don't need the monitor update to complete until we send a
-						// `shutdown_signed`, which we'll delay if we're pending a monitor update.
-						peer_state.pending_msg_events.push(events::MessageSendEvent::SendShutdown {
-							node_id: *counterparty_node_id,
-							msg,
-						});
-					}
-
-					// Update the monitor with the shutdown script if necessary.
-					if let Some(monitor_update) = monitor_update_opt {
-						break handle_new_monitor_update!(self, funding_txo_opt.unwrap(), monitor_update,
-							peer_state_lock, peer_state, per_peer_state, chan_entry).map(|_| ());
-					}
-					break Ok(());
-				},
-				hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id))
+				// Update the monitor with the shutdown script if necessary.
+				if let Some(monitor_update) = monitor_update_opt {
+					break handle_new_monitor_update!(self, funding_txo_opt.unwrap(), monitor_update,
+						peer_state_lock, peer_state, per_peer_state, chan_entry).map(|_| ());
+				}
+				break Ok(());
+			} else {
+				return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id))
 			}
 		};
 		for htlc_source in dropped_htlcs.drain(..) {
