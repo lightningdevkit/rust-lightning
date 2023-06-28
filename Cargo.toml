@@ -7,7 +7,7 @@ members = [
     "lightning-net-tokio",
     "lightning-persister",
     "lightning-background-processor",
-    "lightning-rapid-gossip-sync"
+    "lightning-rapid-gossip-sync",
 ]
 
 exclude = [
@@ -15,6 +15,7 @@ exclude = [
     "lightning-transaction-sync",
     "no-std-check",
     "bench",
+    "time-utils",
 ]
 
 # Our tests do actual crypto and lots of work, the tradeoff for -O2 is well

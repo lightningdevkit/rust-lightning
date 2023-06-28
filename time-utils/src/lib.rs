@@ -82,7 +82,7 @@ impl Time for std::time::Instant {
 	}
 }
 
-#[cfg(test)]
+#[cfg(feature = "test")]
 pub mod tests {
 	use super::{Time, Eternity};
 

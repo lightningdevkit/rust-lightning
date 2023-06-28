@@ -13,3 +13,4 @@ lightning-rapid-gossip-sync/res/full_graph.lngossip
 lightning-custom-message/target
 lightning-transaction-sync/target
 no-std-check/target
+time-utils/target

@@ -30,7 +30,7 @@ compile_error!("at least one of the `std` or `no-std` features must be enabled")
 pub mod payment;
 pub mod utils;
 
-pub(crate) mod time_utils;
+pub(crate) use time_utils;
 
 extern crate bech32;
 extern crate bitcoin_hashes;
