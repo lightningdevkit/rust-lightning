@@ -197,11 +197,11 @@ impl Connection {
 
 fn get_addr_from_stream(stream: &StdTcpStream) -> Option<NetAddress> {
 	match stream.peer_addr() {
-		Ok(SocketAddr::V4(sockaddr)) => Some(NetAddress::IPv4 {
+		Ok(SocketAddr::V4(sockaddr)) => Some(NetAddress::TcpV4 {
 			addr: sockaddr.ip().octets(),
 			port: sockaddr.port(),
 		}),
-		Ok(SocketAddr::V6(sockaddr)) => Some(NetAddress::IPv6 {
+		Ok(SocketAddr::V6(sockaddr)) => Some(NetAddress::TcpV6 {
 			addr: sockaddr.ip().octets(),
 			port: sockaddr.port(),
 		}),
