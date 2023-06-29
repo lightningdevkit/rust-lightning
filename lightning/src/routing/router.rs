@@ -27,15 +27,15 @@ use crate::util::chacha20::ChaCha20;
 
 use crate::io;
 use crate::prelude::*;
-use crate::sync::{Mutex, MutexGuard};
+use crate::sync::{Mutex};
 use alloc::collections::BinaryHeap;
 use core::{cmp, fmt};
-use core::ops::Deref;
+use core::ops::{Deref, DerefMut};
 
 /// A [`Router`] implemented using [`find_route`].
 pub struct DefaultRouter<G: Deref<Target = NetworkGraph<L>>, L: Deref, S: Deref, SP: Sized, Sc: Score<ScoreParams = SP>> where
 	L::Target: Logger,
-	S::Target: for <'a> LockableScore<'a, Locked = MutexGuard<'a, Sc>>,
+	S::Target: for <'a> LockableScore<'a, Score = Sc>,
 {
 	network_graph: G,
 	logger: L,
@@ -46,7 +46,7 @@ pub struct DefaultRouter<G: Deref<Target = NetworkGraph<L>>, L: Deref, S: Deref,
 
 impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, S: Deref, SP: Sized, Sc: Score<ScoreParams = SP>> DefaultRouter<G, L, S, SP, Sc> where
 	L::Target: Logger,
-	S::Target: for <'a> LockableScore<'a, Locked = MutexGuard<'a, Sc>>,
+	S::Target: for <'a> LockableScore<'a, Score = Sc>,
 {
 	/// Creates a new router.
 	pub fn new(network_graph: G, logger: L, random_seed_bytes: [u8; 32], scorer: S, score_params: SP) -> Self {
@@ -55,9 +55,9 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, S: Deref, SP: Sized, Sc: Scor
 	}
 }
 
-impl< G: Deref<Target = NetworkGraph<L>>, L: Deref, S: Deref,  SP: Sized, Sc: Score<ScoreParams = SP>> Router for DefaultRouter<G, L, S, SP, Sc> where
+impl< G: Deref<Target = NetworkGraph<L>>, L: Deref, S: Deref, SP: Sized, Sc: Score<ScoreParams = SP>> Router for DefaultRouter<G, L, S, SP, Sc> where
 	L::Target: Logger,
-	S::Target: for <'a> LockableScore<'a, Locked = MutexGuard<'a, Sc>>,
+	S::Target: for <'a> LockableScore<'a, Score = Sc>,
 {
 	fn find_route(
 		&self,
@@ -73,7 +73,7 @@ impl< G: Deref<Target = NetworkGraph<L>>, L: Deref, S: Deref,  SP: Sized, Sc: Sc
 		};
 		find_route(
 			payer, params, &self.network_graph, first_hops, &*self.logger,
-			&ScorerAccountingForInFlightHtlcs::new(self.scorer.lock(), inflight_htlcs),
+			&ScorerAccountingForInFlightHtlcs::new(self.scorer.lock().deref_mut(), inflight_htlcs),
 			&self.score_params,
 			&random_seed_bytes
 		)
@@ -104,15 +104,15 @@ pub trait Router {
 /// [`find_route`].
 ///
 /// [`Score`]: crate::routing::scoring::Score
-pub struct ScorerAccountingForInFlightHtlcs<'a, S: Score> {
-	scorer: S,
+pub struct ScorerAccountingForInFlightHtlcs<'a, S: Score<ScoreParams = SP>, SP: Sized> {
+	scorer: &'a mut S,
 	// Maps a channel's short channel id and its direction to the liquidity used up.
 	inflight_htlcs: &'a InFlightHtlcs,
 }
 
-impl<'a, S: Score> ScorerAccountingForInFlightHtlcs<'a, S> {
+impl<'a, S: Score<ScoreParams = SP>, SP: Sized> ScorerAccountingForInFlightHtlcs<'a, S, SP> {
 	/// Initialize a new `ScorerAccountingForInFlightHtlcs`.
-	pub fn new(scorer: S, inflight_htlcs: &'a InFlightHtlcs) -> Self {
+	pub fn new(scorer:  &'a mut S, inflight_htlcs: &'a InFlightHtlcs) -> Self {
 		ScorerAccountingForInFlightHtlcs {
 			scorer,
 			inflight_htlcs
@@ -121,11 +121,11 @@ impl<'a, S: Score> ScorerAccountingForInFlightHtlcs<'a, S> {
 }
 
 #[cfg(c_bindings)]
-impl<'a, S: Score> Writeable for ScorerAccountingForInFlightHtlcs<'a, S> {
+impl<'a, S: Score<ScoreParams = SP>, SP: Sized> Writeable for ScorerAccountingForInFlightHtlcs<'a, S, SP> {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> { self.scorer.write(writer) }
 }
 
-impl<'a, S: Score> Score for ScorerAccountingForInFlightHtlcs<'a, S> {
+impl<'a, S: Score<ScoreParams = SP>, SP: Sized> Score for ScorerAccountingForInFlightHtlcs<'a, S, SP>  {
 	type ScoreParams = S::ScoreParams;
 	fn channel_penalty_msat(&self, short_channel_id: u64, source: &NodeId, target: &NodeId, usage: ChannelUsage, score_params: &Self::ScoreParams) -> u64 {
 		if let Some(used_liquidity) = self.inflight_htlcs.used_liquidity_msat(

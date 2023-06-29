@@ -157,8 +157,11 @@ define_score!();
 ///
 /// [`find_route`]: crate::routing::router::find_route
 pub trait LockableScore<'a> {
+	/// The [`Score`] type.
+	type Score: 'a + Score;
+
 	/// The locked [`Score`] type.
-	type Locked: 'a + Score;
+	type Locked: DerefMut<Target = Self::Score> + Sized;
 
 	/// Returns the locked scorer.
 	fn lock(&'a self) -> Self::Locked;
@@ -174,60 +177,35 @@ pub trait WriteableScore<'a>: LockableScore<'a> + Writeable {}
 impl<'a, T> WriteableScore<'a> for T where T: LockableScore<'a> + Writeable {}
 /// This is not exported to bindings users
 impl<'a, T: 'a + Score> LockableScore<'a> for Mutex<T> {
+	type Score = T;
 	type Locked = MutexGuard<'a, T>;
 
-	fn lock(&'a self) -> MutexGuard<'a, T> {
+	fn lock(&'a self) -> Self::Locked {
 		Mutex::lock(self).unwrap()
 	}
 }
 
 impl<'a, T: 'a + Score> LockableScore<'a> for RefCell<T> {
+	type Score = T;
 	type Locked = RefMut<'a, T>;
 
-	fn lock(&'a self) -> RefMut<'a, T> {
+	fn lock(&'a self) -> Self::Locked {
 		self.borrow_mut()
 	}
 }
 
 #[cfg(c_bindings)]
 /// A concrete implementation of [`LockableScore`] which supports multi-threading.
-pub struct MultiThreadedLockableScore<S: Score> {
-	score: Mutex<S>,
-}
-#[cfg(c_bindings)]
-/// A locked `MultiThreadedLockableScore`.
-pub struct MultiThreadedScoreLock<'a, S: Score>(MutexGuard<'a, S>);
-#[cfg(c_bindings)]
-impl<'a, T: Score + 'a> Score for MultiThreadedScoreLock<'a, T> {
-	type ScoreParams = <T as Score>::ScoreParams;
-	fn channel_penalty_msat(&self, scid: u64, source: &NodeId, target: &NodeId, usage: ChannelUsage, score_params: &Self::ScoreParams) -> u64 {
-		self.0.channel_penalty_msat(scid, source, target, usage, score_params)
-	}
-	fn payment_path_failed(&mut self, path: &Path, short_channel_id: u64) {
-		self.0.payment_path_failed(path, short_channel_id)
-	}
-	fn payment_path_successful(&mut self, path: &Path) {
-		self.0.payment_path_successful(path)
-	}
-	fn probe_failed(&mut self, path: &Path, short_channel_id: u64) {
-		self.0.probe_failed(path, short_channel_id)
-	}
-	fn probe_successful(&mut self, path: &Path) {
-		self.0.probe_successful(path)
-	}
-}
-#[cfg(c_bindings)]
-impl<'a, T: Score + 'a> Writeable for MultiThreadedScoreLock<'a, T> {
-	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
-		self.0.write(writer)
-	}
+pub struct MultiThreadedLockableScore<T: Score> {
+	score: Mutex<T>,
 }
 
 #[cfg(c_bindings)]
-impl<'a, T: Score + 'a> LockableScore<'a> for MultiThreadedLockableScore<T> {
+impl<'a, T: 'a + Score> LockableScore<'a> for MultiThreadedLockableScore<T> {
+	type Score = T;
 	type Locked = MultiThreadedScoreLock<'a, T>;
 
-	fn lock(&'a self) -> MultiThreadedScoreLock<'a, T> {
+	fn lock(&'a self) -> Self::Locked {
 		MultiThreadedScoreLock(Mutex::lock(&self.score).unwrap())
 	}
 }
@@ -240,7 +218,7 @@ impl<T: Score> Writeable for MultiThreadedLockableScore<T> {
 }
 
 #[cfg(c_bindings)]
-impl<'a, T: Score + 'a> WriteableScore<'a> for MultiThreadedLockableScore<T> {}
+impl<'a, T: 'a + Score> WriteableScore<'a> for MultiThreadedLockableScore<T> {}
 
 #[cfg(c_bindings)]
 impl<T: Score> MultiThreadedLockableScore<T> {
@@ -248,6 +226,33 @@ impl<T: Score> MultiThreadedLockableScore<T> {
 	pub fn new(score: T) -> Self {
 		MultiThreadedLockableScore { score: Mutex::new(score) }
 	}
+}
+
+#[cfg(c_bindings)]
+/// A locked `MultiThreadedLockableScore`.
+pub struct MultiThreadedScoreLock<'a, T: Score>(MutexGuard<'a, T>);
+
+#[cfg(c_bindings)]
+impl<'a, T: 'a + Score> Writeable for MultiThreadedScoreLock<'a, T> {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+		self.0.write(writer)
+	}
+}
+
+#[cfg(c_bindings)]
+impl<'a, T: 'a + Score> DerefMut for MultiThreadedScoreLock<'a, T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.0.deref_mut()
+    }
+}
+
+#[cfg(c_bindings)]
+impl<'a, T: 'a + Score> Deref for MultiThreadedScoreLock<'a, T> {
+	type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        self.0.deref()
+    }
 }
 
 #[cfg(c_bindings)]

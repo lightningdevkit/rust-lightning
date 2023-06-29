@@ -885,7 +885,22 @@ mod tests {
 		fn disconnect_socket(&mut self) {}
 	}
 
-	type ChannelManager = channelmanager::ChannelManager<Arc<ChainMonitor>, Arc<test_utils::TestBroadcaster>, Arc<KeysManager>, Arc<KeysManager>, Arc<KeysManager>, Arc<test_utils::TestFeeEstimator>, Arc<DefaultRouter<Arc<NetworkGraph<Arc<test_utils::TestLogger>>>, Arc<test_utils::TestLogger>, Arc<Mutex<TestScorer>>, (), TestScorer>>, Arc<test_utils::TestLogger>>;
+	type ChannelManager =
+		channelmanager::ChannelManager<
+			Arc<ChainMonitor>,
+			Arc<test_utils::TestBroadcaster>,
+			Arc<KeysManager>,
+			Arc<KeysManager>,
+			Arc<KeysManager>,
+			Arc<test_utils::TestFeeEstimator>,
+			Arc<DefaultRouter<
+				Arc<NetworkGraph<Arc<test_utils::TestLogger>>>,
+				Arc<test_utils::TestLogger>,
+				Arc<Mutex<TestScorer>>,
+				(),
+				TestScorer>
+			>,
+			Arc<test_utils::TestLogger>>;
 
 	type ChainMonitor = chainmonitor::ChainMonitor<InMemorySigner, Arc<test_utils::TestChainSource>, Arc<test_utils::TestBroadcaster>, Arc<test_utils::TestFeeEstimator>, Arc<test_utils::TestLogger>, Arc<FilesystemPersister>>;
 

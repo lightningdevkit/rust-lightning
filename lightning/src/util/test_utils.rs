@@ -51,6 +51,7 @@ use regex;
 use crate::io;
 use crate::prelude::*;
 use core::cell::RefCell;
+use core::ops::DerefMut;
 use core::time::Duration;
 use crate::sync::{Mutex, Arc};
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -113,8 +114,8 @@ impl<'a> Router for TestRouter<'a> {
 		if let Some((find_route_query, find_route_res)) = self.next_routes.lock().unwrap().pop_front() {
 			assert_eq!(find_route_query, *params);
 			if let Ok(ref route) = find_route_res {
-				let locked_scorer = self.scorer.lock().unwrap();
-				let scorer = ScorerAccountingForInFlightHtlcs::new(locked_scorer, inflight_htlcs);
+				let mut binding = self.scorer.lock().unwrap();
+				let scorer = ScorerAccountingForInFlightHtlcs::new(binding.deref_mut(), inflight_htlcs);
 				for path in &route.paths {
 					let mut aggregate_msat = 0u64;
 					for (idx, hop) in path.hops.iter().rev().enumerate() {
@@ -139,10 +140,9 @@ impl<'a> Router for TestRouter<'a> {
 			return find_route_res;
 		}
 		let logger = TestLogger::new();
-		let scorer = self.scorer.lock().unwrap();
 		find_route(
 			payer, params, &self.network_graph, first_hops, &logger,
-			&ScorerAccountingForInFlightHtlcs::new(scorer, &inflight_htlcs), &(),
+			&ScorerAccountingForInFlightHtlcs::new(self.scorer.lock().unwrap().deref_mut(), &inflight_htlcs), &(),
 			&[42; 32]
 		)
 	}
