@@ -239,7 +239,7 @@ impl Retry {
 			},
 			#[cfg(all(not(feature = "no-std"), not(test)))]
 			(Retry::Timeout(max_duration), PaymentAttempts { first_attempted_at, .. }) =>
-				*max_duration >= std::time::Instant::now().duration_since(*first_attempted_at),
+				*max_duration >= crate::util::time::MonotonicTime::now().duration_since(*first_attempted_at),
 			#[cfg(all(not(feature = "no-std"), test))]
 			(Retry::Timeout(max_duration), PaymentAttempts { first_attempted_at, .. }) =>
 				*max_duration >= SinceEpoch::now().duration_since(*first_attempted_at),
@@ -274,7 +274,7 @@ pub(crate) struct PaymentAttemptsUsingTime<T: Time> {
 }
 
 #[cfg(not(any(feature = "no-std", test)))]
-type ConfiguredTime = std::time::Instant;
+type ConfiguredTime = crate::util::time::MonotonicTime;
 #[cfg(feature = "no-std")]
 type ConfiguredTime = crate::util::time::Eternity;
 #[cfg(all(not(feature = "no-std"), test))]
