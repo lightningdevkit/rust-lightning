@@ -11,6 +11,9 @@ HOST_PLATFORM="$(rustc --version --verbose | grep "host:" | awk '{ print $2 }')"
 # Sadly the log crate is always a dependency of tokio until 1.20, and has no reasonable MSRV guarantees
 [ "$RUSTC_MINOR_VERSION" -lt 49 ] && cargo update -p log --precise "0.4.18" --verbose
 
+# The addr2line v0.20 crate (a dependency of `backtrace` starting with 0.3.68) relies on 1.55+
+[ "$RUSTC_MINOR_VERSION" -lt 55 ] && cargo update -p backtrace --precise "0.3.67" --verbose
+
 [ "$LDK_COVERAGE_BUILD" != "" ] && export RUSTFLAGS="-C link-dead-code"
 
 export RUST_BACKTRACE=1
