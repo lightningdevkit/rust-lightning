@@ -376,6 +376,7 @@ struct MsgHandleErrInternal {
 	err: msgs::LightningError,
 	chan_id: Option<([u8; 32], u128)>, // If Some a channel of ours has been closed
 	shutdown_finish: Option<(ShutdownResult, Option<msgs::ChannelUpdate>)>,
+	channel_capacity: Option<u64>,
 }
 impl MsgHandleErrInternal {
 	#[inline]
@@ -392,14 +393,15 @@ impl MsgHandleErrInternal {
 			},
 			chan_id: None,
 			shutdown_finish: None,
+			channel_capacity: None,
 		}
 	}
 	#[inline]
 	fn from_no_close(err: msgs::LightningError) -> Self {
-		Self { err, chan_id: None, shutdown_finish: None }
+		Self { err, chan_id: None, shutdown_finish: None, channel_capacity: None }
 	}
 	#[inline]
-	fn from_finish_shutdown(err: String, channel_id: [u8; 32], user_channel_id: u128, shutdown_res: ShutdownResult, channel_update: Option<msgs::ChannelUpdate>) -> Self {
+	fn from_finish_shutdown(err: String, channel_id: [u8; 32], user_channel_id: u128, shutdown_res: ShutdownResult, channel_update: Option<msgs::ChannelUpdate>, channel_capacity: u64) -> Self {
 		Self {
 			err: LightningError {
 				err: err.clone(),
@@ -412,6 +414,7 @@ impl MsgHandleErrInternal {
 			},
 			chan_id: Some((channel_id, user_channel_id)),
 			shutdown_finish: Some((shutdown_res, channel_update)),
+			channel_capacity: Some(channel_capacity)
 		}
 	}
 	#[inline]
@@ -444,6 +447,7 @@ impl MsgHandleErrInternal {
 			},
 			chan_id: None,
 			shutdown_finish: None,
+			channel_capacity: None,
 		}
 	}
 }
@@ -1659,7 +1663,7 @@ macro_rules! handle_error {
 
 		match $internal {
 			Ok(msg) => Ok(msg),
-			Err(MsgHandleErrInternal { err, chan_id, shutdown_finish }) => {
+			Err(MsgHandleErrInternal { err, chan_id, shutdown_finish, channel_capacity }) => {
 				let mut msg_events = Vec::with_capacity(2);
 
 				if let Some((shutdown_res, update_option)) = shutdown_finish {
@@ -1672,7 +1676,9 @@ macro_rules! handle_error {
 					if let Some((channel_id, user_channel_id)) = chan_id {
 						$self.pending_events.lock().unwrap().push_back((events::Event::ChannelClosed {
 							channel_id, user_channel_id,
-							reason: ClosureReason::ProcessingError { err: err.err.clone() }
+							reason: ClosureReason::ProcessingError { err: err.err.clone() },
+							counterparty_node_id: Some($counterparty_node_id),
+							channel_capacity_sats: channel_capacity,
 						}, None));
 					}
 				}
@@ -1745,7 +1751,7 @@ macro_rules! convert_chan_err {
 				update_maps_on_chan_removal!($self, &$channel.context);
 				let shutdown_res = $channel.context.force_shutdown(true);
 				(true, MsgHandleErrInternal::from_finish_shutdown(msg, *$channel_id, $channel.context.get_user_id(),
-					shutdown_res, $self.get_channel_update_for_broadcast(&$channel).ok()))
+					shutdown_res, $self.get_channel_update_for_broadcast(&$channel).ok(), $channel.context.get_value_satoshis()))
 			},
 		}
 	};
@@ -1758,7 +1764,7 @@ macro_rules! convert_chan_err {
 				update_maps_on_chan_removal!($self, &$channel_context);
 				let shutdown_res = $channel_context.force_shutdown(false);
 				(true, MsgHandleErrInternal::from_finish_shutdown(msg, *$channel_id, $channel_context.get_user_id(),
-					shutdown_res, None))
+					shutdown_res, None, $channel_context.get_value_satoshis()))
 			},
 		}
 	}
@@ -1937,7 +1943,7 @@ macro_rules! handle_new_monitor_update {
 				let res = Err(MsgHandleErrInternal::from_finish_shutdown(
 					"ChannelMonitor storage failure".to_owned(), $chan.context.channel_id(),
 					$chan.context.get_user_id(), $chan.context.force_shutdown(false),
-					$self.get_channel_update_for_broadcast(&$chan).ok()));
+					$self.get_channel_update_for_broadcast(&$chan).ok(), $chan.context.get_value_satoshis()));
 				$remove;
 				res
 			},
@@ -2371,7 +2377,9 @@ where
 		pending_events_lock.push_back((events::Event::ChannelClosed {
 			channel_id: context.channel_id(),
 			user_channel_id: context.get_user_id(),
-			reason: closure_reason
+			reason: closure_reason,
+			counterparty_node_id: Some(context.get_counterparty_node_id()),
+			channel_capacity_sats: Some(context.get_value_satoshis()),
 		}, None));
 	}
 
@@ -3371,7 +3379,8 @@ where
 						let channel_id = chan.context.channel_id();
 						let user_id = chan.context.get_user_id();
 						let shutdown_res = chan.context.force_shutdown(false);
-						(chan, MsgHandleErrInternal::from_finish_shutdown(msg, channel_id, user_id, shutdown_res, None))
+						let channel_capacity = chan.context.get_value_satoshis();
+						(chan, MsgHandleErrInternal::from_finish_shutdown(msg, channel_id, user_id, shutdown_res, None, channel_capacity))
 					} else { unreachable!(); });
 				match funding_res {
 					Ok((chan, funding_msg)) => (chan, funding_msg),
@@ -5408,7 +5417,7 @@ where
 							let user_id = inbound_chan.context.get_user_id();
 							let shutdown_res = inbound_chan.context.force_shutdown(false);
 							return Err(MsgHandleErrInternal::from_finish_shutdown(format!("{}", err),
-								msg.temporary_channel_id, user_id, shutdown_res, None));
+								msg.temporary_channel_id, user_id, shutdown_res, None, inbound_chan.context.get_value_satoshis()));
 						},
 					}
 				},
@@ -8356,7 +8365,9 @@ where
 					channel_closures.push_back((events::Event::ChannelClosed {
 						channel_id: channel.context.channel_id(),
 						user_channel_id: channel.context.get_user_id(),
-						reason: ClosureReason::OutdatedChannelManager
+						reason: ClosureReason::OutdatedChannelManager,
+						counterparty_node_id: Some(channel.context.get_counterparty_node_id()),
+						channel_capacity_sats: Some(channel.context.get_value_satoshis()),
 					}, None));
 					for (channel_htlc_source, payment_hash) in channel.inflight_htlc_sources() {
 						let mut found_htlc = false;
@@ -8408,6 +8419,8 @@ where
 					channel_id: channel.context.channel_id(),
 					user_channel_id: channel.context.get_user_id(),
 					reason: ClosureReason::DisconnectedPeer,
+					counterparty_node_id: Some(channel.context.get_counterparty_node_id()),
+					channel_capacity_sats: Some(channel.context.get_value_satoshis()),
 				}, None));
 			} else {
 				log_error!(args.logger, "Missing ChannelMonitor for channel {} needed by ChannelManager.", log_bytes!(channel.context.channel_id()));

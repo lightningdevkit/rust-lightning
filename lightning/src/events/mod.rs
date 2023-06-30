@@ -755,7 +755,15 @@ pub enum Event {
 		/// [`UserConfig::manually_accept_inbound_channels`]: crate::util::config::UserConfig::manually_accept_inbound_channels
 		user_channel_id: u128,
 		/// The reason the channel was closed.
-		reason: ClosureReason
+		reason: ClosureReason,
+		/// Counterparty in the closed channel. 
+		/// 
+		/// This field will be `None` for objects serialized prior to LDK 0.0.117.
+		counterparty_node_id: Option<PublicKey>,
+		/// Channel capacity of the closing channel (sats). 
+		/// 
+		/// This field will be `None` for objects serialized prior to LDK 0.0.117.
+		channel_capacity_sats: Option<u64>,
 	},
 	/// Used to indicate to the user that they can abandon the funding transaction and recycle the
 	/// inputs for another purpose.
@@ -956,7 +964,9 @@ impl Writeable for Event {
 					(5, outbound_amount_forwarded_msat, option),
 				});
 			},
-			&Event::ChannelClosed { ref channel_id, ref user_channel_id, ref reason } => {
+			&Event::ChannelClosed { ref channel_id, ref user_channel_id, ref reason, 
+				ref counterparty_node_id, ref channel_capacity_sats 
+			} => {
 				9u8.write(writer)?;
 				// `user_channel_id` used to be a single u64 value. In order to remain backwards
 				// compatible with versions prior to 0.0.113, the u128 is serialized as two
@@ -968,6 +978,8 @@ impl Writeable for Event {
 					(1, user_channel_id_low, required),
 					(2, reason, required),
 					(3, user_channel_id_high, required),
+					(5, counterparty_node_id, option),
+					(7, channel_capacity_sats, option),
 				});
 			},
 			&Event::DiscardFunding { ref channel_id, ref transaction } => {
@@ -1252,11 +1264,15 @@ impl MaybeReadable for Event {
 					let mut reason = UpgradableRequired(None);
 					let mut user_channel_id_low_opt: Option<u64> = None;
 					let mut user_channel_id_high_opt: Option<u64> = None;
+					let mut counterparty_node_id = None;
+					let mut channel_capacity_sats = None;
 					read_tlv_fields!(reader, {
 						(0, channel_id, required),
 						(1, user_channel_id_low_opt, option),
 						(2, reason, upgradable_required),
 						(3, user_channel_id_high_opt, option),
+						(5, counterparty_node_id, option),
+						(7, channel_capacity_sats, option),
 					});
 
 					// `user_channel_id` used to be a single u64 value. In order to remain
@@ -1265,7 +1281,8 @@ impl MaybeReadable for Event {
 					let user_channel_id = (user_channel_id_low_opt.unwrap_or(0) as u128) +
 						((user_channel_id_high_opt.unwrap_or(0) as u128) << 64);
 
-					Ok(Some(Event::ChannelClosed { channel_id, user_channel_id, reason: _init_tlv_based_struct_field!(reason, upgradable_required) }))
+					Ok(Some(Event::ChannelClosed { channel_id, user_channel_id, reason: _init_tlv_based_struct_field!(reason, upgradable_required),
+						counterparty_node_id, channel_capacity_sats }))
 				};
 				f()
 			},
