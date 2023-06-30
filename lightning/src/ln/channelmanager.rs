@@ -5531,7 +5531,7 @@ where
 		// TODO checks
 		// TODO check if we have initiated splicing
 
-		let (pre_value, output_script) = { // note: user_id skipped
+		let (pre_value, funding_outpoint, output_script) = { // note: user_id skipped
 			let per_peer_state = self.per_peer_state.read().unwrap();
 			let peer_state_mutex = per_peer_state.get(counterparty_node_id)
 				.ok_or_else(|| {
@@ -5544,13 +5544,14 @@ where
 			match peer_state.channel_by_id.entry(msg.channel_id) {
 				hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id)),
 				hash_map::Entry::Occupied(chan) => {
+					let channel = chan.get();
 
 					// TODO!
 
 					(
-						chan.get().get_value_satoshis(),
-						chan.get().get_funding_redeemscript().to_v0_p2wsh(), // TODO check wether this is correct, correct keys used (from splice negot, and not from pre)
-						// chan.get().get_user_id(), // TODO check if this is correct
+						channel.get_value_satoshis(),
+						channel.channel_transaction_parameters.funding_outpoint.unwrap().into_bitcoin_outpoint(),
+						channel.get_funding_redeemscript().to_v0_p2wsh(), // TODO check wether this is correct, correct keys used (from splice negot, and not from pre)
 					)
 				},
 			}
@@ -5560,6 +5561,7 @@ where
 		let mut pending_events = self.pending_events.lock().unwrap();
 		pending_events.push(events::Event::SpliceAcked {
 			channel_id: msg.channel_id,
+			current_funding_outpoint: funding_outpoint,
 			pre_channel_value_satoshis: pre_value,
 			post_channel_value_satoshis: msg.funding_satoshis,
 			output_script,

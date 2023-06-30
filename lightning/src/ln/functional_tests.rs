@@ -176,12 +176,12 @@ fn test_splice_in_simple() {
 	let _ev = get_event!(nodes[1], Event::ChannelPending);
 
 	// Amount being added to the channel through the splice-in
-	let splice_in_sats = 20000;
+	let splice_in_sats: u64 = 20000;
 	let funding_feerate_perkw = 1024; // TODO
 	let locktime = 0; // TODO
 
 	// Initiate splice-in (on node0)
-	let _res = nodes[0].node.splice_channel(&channel_id, &nodes[1].node.get_our_node_id(), splice_in_sats, funding_feerate_perkw, locktime).unwrap();
+	let _res = nodes[0].node.splice_channel(&channel_id, &nodes[1].node.get_our_node_id(), splice_in_sats as i64, funding_feerate_perkw, locktime).unwrap();
 	// Extract the splice message from node0 to node1
 	let splice_message = get_event_msg!(nodes[0], MessageSendEvent::SendSplice, nodes[1].node.get_our_node_id());
 
@@ -190,10 +190,12 @@ fn test_splice_in_simple() {
 	let splice_ack_message = get_event_msg!(nodes[1], MessageSendEvent::SendSpliceAck, nodes[0].node.get_our_node_id());
 
 	let _res = nodes[0].node.handle_splice_ack(&nodes[1].node.get_our_node_id(), &splice_ack_message);
-	let _ev = get_event!(nodes[0], Event::SpliceAcked);
+	// Note: SpliceAcked emitted, checked and used below
+	// Create splicing tx
+	let post_splice_channel_value = channel_value_sat + splice_in_sats;
+	let (_funding_tx, _funding_output) = create_splice_in_transaction(&nodes[0], &channel_id, post_splice_channel_value);
 
-	// create splicing tx
-	// let (temporary_channel_id, funding_tx, _funding_output) = create_funding_transaction(&nodes[0], &nodes[1].node.get_our_node_id(), channel_value_sat, 42);
+	// TODO ...
 
 	// close channel
 	nodes[0].node.close_channel(&channel_id, &nodes[1].node.get_our_node_id()).unwrap();
