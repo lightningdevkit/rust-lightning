@@ -105,14 +105,24 @@ fn test_channel_open_simple() {
 	let funding_signed_message = get_event_msg!(nodes[1], MessageSendEvent::SendFundingSigned, nodes[0].node.get_our_node_id());
 	let _res = nodes[0].node.handle_funding_signed(&nodes[1].node.get_our_node_id(), &funding_signed_message);
 
-	confirm_transaction(&nodes[0], &funding_tx);
-	let channel_ready_message = get_event_msg!(nodes[0], MessageSendEvent::SendChannelReady, nodes[1].node.get_our_node_id());
-	let _res = nodes[1].node.handle_channel_ready(&nodes[0].node.get_our_node_id(), &channel_ready_message);
-
 	check_added_monitors!(nodes[0], 1);
 	let _ev = get_event!(nodes[0], Event::ChannelPending);
 	check_added_monitors!(nodes[1], 1);
 	let _ev = get_event!(nodes[1], Event::ChannelPending);
+
+	confirm_transaction(&nodes[0], &funding_tx);
+	let channel_ready_message = get_event_msg!(nodes[0], MessageSendEvent::SendChannelReady, nodes[1].node.get_our_node_id());
+
+	confirm_transaction(&nodes[1], &funding_tx);
+	let channel_ready_message2 = get_event_msg!(nodes[1], MessageSendEvent::SendChannelReady, nodes[0].node.get_our_node_id());
+
+	let _res = nodes[1].node.handle_channel_ready(&nodes[0].node.get_our_node_id(), &channel_ready_message);
+	let _ev = get_event!(nodes[1], Event::ChannelReady);
+	let _announcement_signatures = get_event_msg!(nodes[1], MessageSendEvent::SendAnnouncementSignatures, nodes[0].node.get_our_node_id());
+
+	let _res = nodes[0].node.handle_channel_ready(&nodes[1].node.get_our_node_id(), &channel_ready_message2);
+	let _ev = get_event!(nodes[0], Event::ChannelReady);
+	let _announcement_signatures = get_event_msg!(nodes[0], MessageSendEvent::SendAnnouncementSignatures, nodes[1].node.get_our_node_id());
 
 	// close channel
 	nodes[0].node.close_channel(&channel_id, &nodes[1].node.get_our_node_id()).unwrap();
@@ -166,14 +176,24 @@ fn test_splice_in_simple() {
 	let funding_signed_message = get_event_msg!(nodes[1], MessageSendEvent::SendFundingSigned, nodes[0].node.get_our_node_id());
 	let _res = nodes[0].node.handle_funding_signed(&nodes[1].node.get_our_node_id(), &funding_signed_message);
 
-	confirm_transaction(&nodes[0], &funding_tx);
-	let channel_ready_message = get_event_msg!(nodes[0], MessageSendEvent::SendChannelReady, nodes[1].node.get_our_node_id());
-	let _res = nodes[1].node.handle_channel_ready(&nodes[0].node.get_our_node_id(), &channel_ready_message);
-
 	check_added_monitors!(nodes[0], 1);
 	let _ev = get_event!(nodes[0], Event::ChannelPending);
 	check_added_monitors!(nodes[1], 1);
 	let _ev = get_event!(nodes[1], Event::ChannelPending);
+
+	confirm_transaction(&nodes[0], &funding_tx);
+	let channel_ready_message = get_event_msg!(nodes[0], MessageSendEvent::SendChannelReady, nodes[1].node.get_our_node_id());
+
+	confirm_transaction(&nodes[1], &funding_tx);
+	let channel_ready_message2 = get_event_msg!(nodes[1], MessageSendEvent::SendChannelReady, nodes[0].node.get_our_node_id());
+
+	let _res = nodes[1].node.handle_channel_ready(&nodes[0].node.get_our_node_id(), &channel_ready_message);
+	let _ev = get_event!(nodes[1], Event::ChannelReady);
+	let _announcement_signatures = get_event_msg!(nodes[1], MessageSendEvent::SendAnnouncementSignatures, nodes[0].node.get_our_node_id());
+
+	let _res = nodes[0].node.handle_channel_ready(&nodes[1].node.get_our_node_id(), &channel_ready_message2);
+	let _ev = get_event!(nodes[0], Event::ChannelReady);
+	let _announcement_signatures = get_event_msg!(nodes[0], MessageSendEvent::SendAnnouncementSignatures, nodes[1].node.get_our_node_id());
 
 	// Amount being added to the channel through the splice-in
 	let splice_in_sats: u64 = 20000;
