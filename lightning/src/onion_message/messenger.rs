@@ -152,6 +152,17 @@ pub trait MessageRouter {
 	) -> Result<OnionMessagePath, ()>;
 }
 
+/// A [`MessageRouter`] that always fails.
+pub struct DefaultMessageRouter;
+
+impl MessageRouter for DefaultMessageRouter {
+	fn find_path(
+		&self, _sender: PublicKey, _peers: Vec<PublicKey>, _destination: Destination
+	) -> Result<OnionMessagePath, ()> {
+		Err(())
+	}
+}
+
 /// A path for sending an [`msgs::OnionMessage`].
 #[derive(Clone)]
 pub struct OnionMessagePath {
@@ -598,11 +609,11 @@ where
 ///
 /// [`SimpleArcChannelManager`]: crate::ln::channelmanager::SimpleArcChannelManager
 /// [`SimpleArcPeerManager`]: crate::ln::peer_handler::SimpleArcPeerManager
-pub type SimpleArcOnionMessenger<L, R> = OnionMessenger<
+pub type SimpleArcOnionMessenger<L> = OnionMessenger<
 	Arc<KeysManager>,
 	Arc<KeysManager>,
 	Arc<L>,
-	Arc<R>,
+	Arc<DefaultMessageRouter>,
 	IgnoringMessageHandler,
 	IgnoringMessageHandler
 >;
@@ -614,11 +625,11 @@ pub type SimpleArcOnionMessenger<L, R> = OnionMessenger<
 ///
 /// [`SimpleRefChannelManager`]: crate::ln::channelmanager::SimpleRefChannelManager
 /// [`SimpleRefPeerManager`]: crate::ln::peer_handler::SimpleRefPeerManager
-pub type SimpleRefOnionMessenger<'a, 'b, 'c, L, R> = OnionMessenger<
+pub type SimpleRefOnionMessenger<'a, 'b, 'c, L> = OnionMessenger<
 	&'a KeysManager,
 	&'a KeysManager,
 	&'b L,
-	&'c R,
+	&'c DefaultMessageRouter,
 	IgnoringMessageHandler,
 	IgnoringMessageHandler
 >;
