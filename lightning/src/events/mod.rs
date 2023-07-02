@@ -833,8 +833,11 @@ pub enum Event {
 	/// Indicates that a transaction originating from LDK needs to have its fee bumped. This event
 	/// requires confirmed external funds to be readily available to spend.
 	///
-	/// LDK does not currently generate this event. It is limited to the scope of channels with
-	/// anchor outputs, which will be introduced in a future release.
+	/// LDK does not currently generate this event unless the
+	/// [`ChannelHandshakeConfig::negotiate_anchors_zero_fee_htlc_tx`] config flag is set to true.
+	/// It is limited to the scope of channels with anchor outputs.
+	///
+	/// [`ChannelHandshakeConfig::negotiate_anchors_zero_fee_htlc_tx`]: crate::util::config::ChannelHandshakeConfig::negotiate_anchors_zero_fee_htlc_tx
 	BumpTransaction(BumpTransactionEvent),
 }
 
