@@ -361,12 +361,12 @@ impl Utxo {
 pub struct CoinSelection {
 	/// The set of UTXOs (with at least 1 confirmation) to spend and use within a transaction
 	/// requiring additional fees.
-	confirmed_utxos: Vec<Utxo>,
+	pub confirmed_utxos: Vec<Utxo>,
 	/// An additional output tracking whether any change remained after coin selection. This output
 	/// should always have a value above dust for its given `script_pubkey`. It should not be
 	/// spent until the transaction it belongs to confirms to ensure mempool descendant limits are
 	/// not met. This implies no other party should be able to spend it except us.
-	change_output: Option<TxOut>,
+	pub change_output: Option<TxOut>,
 }
 
 /// An abstraction over a bitcoin wallet that can perform coin selection over a set of UTXOs and can
