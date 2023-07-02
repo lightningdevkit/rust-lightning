@@ -7,14 +7,15 @@
 // You may not use this file except in accordance with one or both of these
 // licenses.
 
-//! Utitilies for bumping transactions originating from [`super::Event`]s.
+//! Utilities for bumping transactions originating from [`Event`]s.
+//!
+//! [`Event`]: crate::events::Event
 
 use core::convert::TryInto;
 use core::ops::Deref;
 
 use crate::chain::chaininterface::BroadcasterInterface;
 use crate::chain::ClaimId;
-use crate::events::Event;
 use crate::io_extras::sink;
 use crate::ln::chan_utils;
 use crate::ln::chan_utils::{
@@ -553,6 +554,8 @@ impl<W: Deref> CoinSelectionSource for Wallet<W> where W::Target: WalletSource {
 /// A handler for [`Event::BumpTransaction`] events that sources confirmed UTXOs from a
 /// [`CoinSelectionSource`] to fee bump transactions via Child-Pays-For-Parent (CPFP) or
 /// Replace-By-Fee (RBF).
+///
+/// [`Event::BumpTransaction`]: crate::events::Event::BumpTransaction
 pub struct BumpTransactionEventHandler<B: Deref, C: Deref, SP: Deref, L: Deref>
 where
 	B::Target: BroadcasterInterface,
@@ -575,6 +578,8 @@ where
 	L::Target: Logger,
 {
 	/// Returns a new instance capable of handling [`Event::BumpTransaction`] events.
+	///
+	/// [`Event::BumpTransaction`]: crate::events::Event::BumpTransaction
 	pub fn new(broadcaster: B, utxo_source: C, signer_provider: SP, logger: L) -> Self {
 		Self {
 			broadcaster,
@@ -749,13 +754,8 @@ where
 		Ok(())
 	}
 
-	/// Handles all variants of [`BumpTransactionEvent`], immediately returning otherwise.
-	pub fn handle_event(&self, event: &Event) {
-		let event = if let Event::BumpTransaction(event) = event {
-			event
-		} else {
-			return;
-		};
+	/// Handles all variants of [`BumpTransactionEvent`].
+	pub fn handle_event(&self, event: &BumpTransactionEvent) {
 		match event {
 			BumpTransactionEvent::ChannelClose {
 				claim_id, package_target_feerate_sat_per_1000_weight, commitment_tx,
