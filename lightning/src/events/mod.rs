@@ -1625,12 +1625,29 @@ pub enum MessageSendEvent {
 		/// The message which should be sent.
 		msg: msgs::Splice,
 	},
+	/// #SPLICING
 	/// Used to indicate that we've accepted a splice and should send the splice_ack message
 	SendSpliceAck {
 		/// The node_id of the node which should receive this message
 		node_id: PublicKey,
 		/// The message which should be sent.
 		msg: msgs::SpliceAck,
+	},
+	/// #SPLICING
+	/// Used to indicate that a splice_created message should be sent to the peer with the given node_id.
+	SendSpliceCreated {
+		/// The node_id of the node which should receive this message
+		node_id: PublicKey,
+		/// The message which should be sent.
+		msg: msgs::SpliceCreated,
+	},
+	/// #SPLICING
+	/// Used to indicate that a splice_signed message should be sent to the peer with the given node_id.
+	SendSpliceSigned {
+		/// The node_id of the node which should receive this message
+		node_id: PublicKey,
+		/// The message which should be sent.
+		msg: msgs::SpliceSigned,
 	},
 }
 

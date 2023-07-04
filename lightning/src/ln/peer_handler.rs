@@ -1476,6 +1476,12 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 			wire::Message::SpliceAck(msg) => {
 				self.message_handler.chan_handler.handle_splice_ack(&their_node_id, &msg);
 			},
+			wire::Message::SpliceCreated(_msg) => {
+				// TODO!
+			},
+			wire::Message::SpliceSigned(_msg) => {
+				// TODO!
+			},
 
 			// Commitment messages:
 			wire::Message::UpdateAddHTLC(msg) => {
@@ -1916,6 +1922,21 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 					},
 					MessageSendEvent::SendSpliceAck { ref node_id, ref msg } => {
 						log_debug!(self.logger, "Handling SendSpliceAck event in peer_handler for node {} for channel {}",
+								log_pubkey!(node_id),
+								log_bytes!(msg.channel_id));
+						self.enqueue_message(&mut *get_peer_for_forwarding!(node_id), msg);
+					},
+					MessageSendEvent::SendSpliceCreated { ref node_id, ref msg } => {
+						log_debug!(self.logger, "Handling SendSpliceCreated event in peer_handler for node {} for channel {} (which becomes {})",
+								log_pubkey!(node_id),
+								log_bytes!(msg.channel_id),
+								log_funding_channel_id!(msg.splice_txid, msg.funding_output_index));
+						// TODO: If the peer is gone we should generate a DiscardFunding event
+						// indicating to the wallet that they should just throw away this funding transaction
+						self.enqueue_message(&mut *get_peer_for_forwarding!(node_id), msg);
+					},
+					MessageSendEvent::SendSpliceSigned { ref node_id, ref msg } => {
+						log_debug!(self.logger, "Handling SendSpliceSigned event in peer_handler for node {} for channel {}",
 								log_pubkey!(node_id),
 								log_bytes!(msg.channel_id));
 						self.enqueue_message(&mut *get_peer_for_forwarding!(node_id), msg);

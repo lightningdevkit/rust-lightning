@@ -24,6 +24,9 @@ Objective, Restrictions:
 - No quiscence is used/checked
 - Happy path only, no complex combinations, no error scenarios
 - Prototype with minimal changes
+- Semantics of some splicing messages is not fully according to specs
+- Some changed splicing messages (e.g. splice_created, splice_signed)
+- Only a single splicing supported
 
 Branched off v0.0.115.
 

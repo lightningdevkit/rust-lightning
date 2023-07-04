@@ -517,6 +517,10 @@ pub(super) struct Channel<Signer: ChannelSigner> {
 	secp_ctx: Secp256k1<secp256k1::All>,
 	channel_value_satoshis: u64,
 
+	/// #SPLICING
+	/// During an in-progress splicing, the post-splice channel value
+	pub(crate) pending_splicing_channel_value: u64,
+
 	latest_monitor_update_id: u64,
 
 	holder_signer: Signer,
@@ -660,6 +664,9 @@ pub(super) struct Channel<Signer: ChannelSigner> {
 
 	pub(crate) channel_transaction_parameters: ChannelTransactionParameters,
 	funding_transaction: Option<Transaction>,
+
+	/// #SPLICING Similar to channel_transaction_parameters, but held during an in-progress splicing.
+	// pending_splice_transaction_parameters: ChannelTransactionParameters,
 
 	counterparty_cur_commitment_point: Option<PublicKey>,
 	counterparty_prev_commitment_point: Option<PublicKey>,
@@ -1121,6 +1128,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			channel_keys_id,
 
 			pending_monitor_updates: Vec::new(),
+			pending_splicing_channel_value: 0,
 		})
 	}
 
@@ -1472,6 +1480,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			channel_keys_id,
 
 			pending_monitor_updates: Vec::new(),
+			pending_splicing_channel_value: 0,
 		};
 
 		Ok(chan)
@@ -5468,6 +5477,63 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		})
 	}
 
+	/// #SPLICING
+	/// Updates channel state with knowledge of the splicing transaction's txid/index, and generates
+	/// a splice_created message for the remote peer.
+	/// Panics if called at some time other than immediately after splice acknowledgement, if called twice,
+	/// or if called on an inbound channel.
+	/// Note that channel_id is not changed.
+	/// Do NOT broadcast the splicing transaction until after a successful splicing_signed call!
+	pub fn get_outbound_splice_created<L: Deref>(&mut self, splice_transaction: Transaction, splice_txo: OutPoint, logger: &L) -> Result<msgs::SpliceCreated, ChannelError> where L::Target: Logger {
+		if !self.is_outbound() {
+			panic!("Tried to create outbound splice_created message on an inbound channel!");
+		}
+		// TODO: Check for quiscence
+		if self.channel_state != (ChannelState::ChannelReady as u32) {
+			panic!("Tried to get a splice_created messsage at a time when channel is not ready {}", self.channel_state);
+		}
+		/* TODO change check; how is this affected?
+		if self.commitment_secrets.get_min_seen_secret() != (1 << 48) ||
+				self.cur_counterparty_commitment_transaction_number != INITIAL_COMMITMENT_NUMBER ||
+				self.cur_holder_commitment_transaction_number != INITIAL_COMMITMENT_NUMBER {
+			panic!("Should not have advanced channel commitment tx numbers prior to funding_created");
+		}
+		*/
+
+		// Save splice TX (in temp field?)
+		// TODO Do we need to store this in a separate (splice-specific) field, so that old funding is also available?
+		// self.pending_splice_transaction_parameters = self.channel_transaction_parameters;
+		self.channel_transaction_parameters.funding_outpoint = Some(splice_txo);
+		// Set tx parameters, for commitment signing TODO
+		// self.holder_signer.provide_channel_parameters(&self.channel_transaction_parameters);
+
+		let signature = match self.get_outbound_funding_created_signature(logger) {
+			Ok(res) => res,
+			Err(e) => {
+				log_error!(logger, "Got bad signatures: {:?}!", e);
+				// TODO: restore it. Maybe it should not be overwritten
+				// self.channel_transaction_parameters.funding_outpoint = None;
+				return Err(e);
+			}
+		};
+
+		// Now that we're past error-generating stuff, update our local state:
+		// self.channel_state = ChannelState::FundingCreated as u32; // TODO not needed. Or maybe new states are needed?
+		// self.channel_id = funding_txo.to_channel_id(); // TODO not needed, remove
+		self.funding_transaction = Some(splice_transaction);
+
+		Ok(msgs::SpliceCreated {
+			channel_id: self.channel_id,
+			splice_txid: splice_txo.txid,
+			funding_output_index: splice_txo.index,
+			signature,
+			// #[cfg(taproot)]
+			// partial_signature_with_nonce: None,
+			// #[cfg(taproot)]
+			// next_local_nonce: None,
+		})
+	}
+
 	/// Gets an UnsignedChannelAnnouncement for this channel. The channel must be publicly
 	/// announceable and available for use (have exchanged ChannelReady messages in both
 	/// directions). Should be used for both broadcasted announcements and in response to an
@@ -7054,6 +7120,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 			channel_keys_id,
 
 			pending_monitor_updates: Vec::new(),
+			pending_splicing_channel_value: 0,
 		})
 	}
 }

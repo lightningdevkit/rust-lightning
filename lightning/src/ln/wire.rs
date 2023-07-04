@@ -81,6 +81,8 @@ pub(crate) enum Message<T> where T: core::fmt::Debug + Type + TestEq {
 	// #SPLICING
 	Splice(msgs::Splice),
 	SpliceAck(msgs::SpliceAck),
+	SpliceCreated(msgs::SpliceCreated),
+	SpliceSigned(msgs::SpliceSigned),
 	/// A message that could not be decoded because its type is unknown.
 	Unknown(u16),
 	/// A message that was produced by a [`CustomMessageReader`] and is to be handled by a
@@ -125,6 +127,8 @@ impl<T> Message<T> where T: core::fmt::Debug + Type + TestEq {
 			// #SPLICING
 			&Message::Splice(ref msg) => msg.type_id(),
 			&Message::SpliceAck(ref msg) => msg.type_id(),
+			&Message::SpliceCreated(ref msg) => msg.type_id(),
+			&Message::SpliceSigned(ref msg) => msg.type_id(),
 			&Message::Unknown(type_id) => type_id,
 			&Message::Custom(ref msg) => msg.type_id(),
 		}
@@ -254,6 +258,12 @@ fn do_read<R: io::Read, T, H: core::ops::Deref>(buffer: &mut R, message_type: u1
 		msgs::SpliceAck::TYPE => {
 			Ok(Message::SpliceAck(Readable::read(buffer)?))
 		},
+		msgs::SpliceCreated::TYPE => {
+			Ok(Message::SpliceCreated(Readable::read(buffer)?))
+		},
+		msgs::SpliceSigned::TYPE => {
+			Ok(Message::SpliceSigned(Readable::read(buffer)?))
+		},
 		_ => {
 			if let Some(custom) = custom_reader.read(message_type, buffer)? {
 				Ok(Message::Custom(custom))
@@ -370,6 +380,18 @@ impl Encode for msgs::Splice {
 // #SPLICING
 impl Encode for msgs::SpliceAck {
 	const TYPE: u16 = 76;
+}
+
+// #SPLICING
+impl Encode for msgs::SpliceCreated {
+	// TODO: Made-up value!
+	const TYPE: u16 = 78;
+}
+
+// #SPLICING
+impl Encode for msgs::SpliceSigned {
+	// TODO: Made-up value!
+	const TYPE: u16 = 80;
 }
 
 // #SPLICING

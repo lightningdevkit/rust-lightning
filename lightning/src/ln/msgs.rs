@@ -908,6 +908,7 @@ pub struct Splice {
 	pub funding_pubkey: PublicKey,
 }
 
+/// #SPLICING
 /// A [`splice_ack`] message to be sent to or received from a peer.
 ///
 /// [`splice_ack`]: TODO spec in progress, see PR https://github.com/lightning/bolts/pull/863/files#diff-ed04ca2c673fd6aabde69389511fa9ee60cb44d6b2ef6c88b549ffaa753d6afeR510
@@ -921,6 +922,44 @@ pub struct SpliceAck {
 	pub funding_satoshis: u64,
 	/// The acceptors's key controlling the funding transaction
 	pub funding_pubkey: PublicKey,
+}
+
+/// #SPLICING
+/// A [`splice_created`] message to be sent to or received from a peer.
+/// Contains details of the splicing transaction
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SpliceCreated {
+	/// The channel ID
+	pub channel_id: [u8; 32],
+	/// The splicing transaction ID
+	pub splice_txid: Txid,
+	/// The specific output index funding this channel
+	pub funding_output_index: u16,
+	/// The signature of the channel initiator (funder) on the post-splice commitment transaction
+	pub signature: Signature,
+	/*
+	#[cfg(taproot)]
+	/// The partial signature of the channel initiator (funder)
+	pub partial_signature_with_nonce: Option<PartialSignatureWithNonce>,
+	#[cfg(taproot)]
+	/// Next nonce the channel acceptor should use to finalize the funding output signature
+	pub next_local_nonce: Option<musig2::types::PublicNonce>
+	*/
+}
+
+/// #SPLICING
+/// A [`splicing_signed`] message to be sent to or received from a peer. Naming is confusing, it is the commitment transaction that is signed here.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SpliceSigned {
+	/// The channel ID
+	pub channel_id: [u8; 32],
+	/// The signature of the channel acceptor (fundee) on the post-splice commitment transaction
+	pub signature: Signature,
+	/*
+	#[cfg(taproot)]
+	/// The partial signature of the channel acceptor (fundee)
+	pub partial_signature_with_nonce: Option<PartialSignatureWithNonce>,
+	*/
 }
 
 /// Encoding type for data compression of collections in gossip queries.
@@ -2194,6 +2233,22 @@ impl_writeable_msg!(SpliceAck, {
 	channel_id,
 	funding_satoshis,
 	funding_pubkey,
+}, {});
+
+// #SPLICING
+// #[cfg(not(taproot))]
+impl_writeable_msg!(SpliceCreated, {
+	channel_id,
+	splice_txid,
+	funding_output_index,
+	signature
+}, {});
+
+// #SPLICING
+// #[cfg(not(taproot))]
+impl_writeable_msg!(SpliceSigned, {
+	channel_id,
+	signature
 }, {});
 
 #[cfg(test)]

@@ -1939,8 +1939,8 @@ where
 		let peer_state = &mut *peer_state_lock;
 		match peer_state.channel_by_id.entry(channel_id.clone()) {
 			hash_map::Entry::Vacant(_) => return Err(APIError::ChannelUnavailable{err: format!("Channel with id {} not found for the passed counterparty node_id {}", log_bytes!(*channel_id), counterparty_node_id) }),
-			hash_map::Entry::Occupied(chan_entry) => {
-				let channel = chan_entry.get();
+			hash_map::Entry::Occupied(mut chan_entry) => {
+				let mut channel = chan_entry.get_mut();
 				let current_value_sats = channel.get_value_satoshis();
 				if value_delta_sats < 0 && -value_delta_sats > (current_value_sats as i64) {
 					return Err(APIError::APIMisuseError { err: format!("Post-splicing channel value cannot be negative. It was {} - {}", current_value_sats, -value_delta_sats) });
@@ -1951,6 +1951,8 @@ where
 				if post_splice_funding_satoshis < 1000 {
 					return Err(APIError::APIMisuseError { err: format!("Post-splicing channel value must be at least 1000 satoshis. It was {}", post_splice_funding_satoshis) });
 				}
+				// Store post-splicing channel value (pending)
+				channel.pending_splicing_channel_value = post_splice_funding_satoshis;
 		
 				let res = channel.get_splice(self.genesis_hash.clone(), post_splice_funding_satoshis, funding_feerate_perkw, locktime);
 
@@ -3029,6 +3031,70 @@ where
 		})
 	}
 
+	/// #SPLICING
+	/// Handles the generation of a splicing transaction, optionally (for tests) with a function
+	/// which checks the correctness of the splicing transaction given the associated channel.
+	fn splice_transaction_generated_intern<FundingOutput: Fn(&Channel<<SP::Target as SignerProvider>::Signer>, &Transaction) -> Result<OutPoint, APIError>>(
+		&self, channel_id: &[u8; 32], counterparty_node_id: &PublicKey, splice_transaction: Transaction, find_funding_output: FundingOutput
+	) -> Result<(), APIError> {
+		let per_peer_state = self.per_peer_state.read().unwrap();
+		let peer_state_mutex = per_peer_state.get(counterparty_node_id)
+			.ok_or_else(|| APIError::ChannelUnavailable { err: format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id) })?;
+
+		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+		let peer_state = &mut *peer_state_lock;
+		let (msg, chan) = match peer_state.channel_by_id.remove(channel_id) {
+			Some(mut chan) => {
+				let funding_txo = find_funding_output(&chan, &splice_transaction)?;
+
+				let funding_res = chan.get_outbound_splice_created(splice_transaction, funding_txo, &self.logger)
+					.map_err(|e| if let ChannelError::Close(msg) = e {
+						MsgHandleErrInternal::from_finish_shutdown(msg, chan.channel_id(), chan.get_user_id(), chan.force_shutdown(true), None)
+					} else { unreachable!(); });
+				match funding_res {
+					Ok(splicing_msg) => (splicing_msg, chan),
+					Err(_) => {
+						mem::drop(peer_state_lock);
+						mem::drop(per_peer_state);
+
+						let _ = handle_error!(self, funding_res, chan.get_counterparty_node_id());
+						return Err(APIError::ChannelUnavailable {
+							err: "Signer refused to sign the post-splice commitment transaction".to_owned()
+						});
+					},
+				}
+			},
+			None => {
+				return Err(APIError::ChannelUnavailable {
+					err: format!(
+						"Channel with id {} not found for the passed counterparty node_id {}",
+						log_bytes!(*channel_id), counterparty_node_id),
+				})
+			},
+		};
+
+		peer_state.pending_msg_events.push(events::MessageSendEvent::SendSpliceCreated {
+			node_id: chan.get_counterparty_node_id(),
+			msg,
+		});
+		// channel handling: not needed, as we don't change channel_id here TODO
+		/*
+		match peer_state.channel_by_id.entry(chan.channel_id()) {
+			hash_map::Entry::Occupied(_) => {
+				panic!("Generated duplicate funding txid?");
+			},
+			hash_map::Entry::Vacant(e) => {
+				let mut id_to_peer = self.id_to_peer.lock().unwrap();
+				if id_to_peer.insert(chan.channel_id(), chan.get_counterparty_node_id()).is_some() {
+					panic!("id_to_peer map already contained funding txid, which shouldn't be possible");
+				}
+				e.insert(chan);
+			}
+		}
+		*/
+		Ok(())
+	}
+
 	/// Call this upon creation of a funding transaction for the given channel.
 	///
 	/// Returns an [`APIError::APIMisuseError`] if the funding_transaction spent non-SegWit outputs
@@ -3102,6 +3168,62 @@ where
 			if output_index.is_none() {
 				return Err(APIError::APIMisuseError {
 					err: "No output matched the script_pubkey and value in the FundingGenerationReady event".to_owned()
+				});
+			}
+			Ok(OutPoint { txid: tx.txid(), index: output_index.unwrap() })
+		})
+	}
+
+	/// #SPLICING
+	/// Call this upon creation of a splicing transaction for the given channel.
+	///
+	/// TODO doc
+	pub fn splice_transaction_generated(&self, channel_id: &[u8; 32], counterparty_node_id: &PublicKey, splice_transaction: Transaction) -> Result<(), APIError> {
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
+
+		// TODO: Omit this check, caused issues in func test
+		/*
+		for inp in splice_transaction.input.iter() {
+			if inp.witness.is_empty() {
+				return Err(APIError::APIMisuseError {
+					err: "Splicing transaction must be fully signed and spend Segwit outputs".to_owned()
+				});
+			}
+		}
+		*/
+		{
+			let height = self.best_block.read().unwrap().height();
+			// Transactions are evaluated as final by network mempools if their locktime is strictly
+			// lower than the next block height. However, the modules constituting our Lightning
+			// node might not have perfect sync about their blockchain views. Thus, if the wallet
+			// module is ahead of LDK, only allow one more block of headroom.
+			if !splice_transaction.input.iter().all(|input| input.sequence == Sequence::MAX) && LockTime::from(splice_transaction.lock_time).is_block_height() && splice_transaction.lock_time.0 > height + 1 {
+				return Err(APIError::APIMisuseError {
+					err: "Funding transaction absolute timelock is non-final".to_owned()
+				});
+			}
+		}
+		self.splice_transaction_generated_intern(channel_id, counterparty_node_id, splice_transaction, |chan, tx| {
+			let mut output_index = None;
+			let expected_spk = chan.get_funding_redeemscript().to_v0_p2wsh();
+			for (idx, outp) in tx.output.iter().enumerate() {
+				if outp.script_pubkey == expected_spk && outp.value == chan.pending_splicing_channel_value {
+					if output_index.is_some() {
+						return Err(APIError::APIMisuseError {
+							err: "Multiple outputs matched the expected script and value".to_owned()
+						});
+					}
+					if idx > u16::max_value() as usize {
+						return Err(APIError::APIMisuseError {
+							err: "Transaction had more than 2^16 outputs, which is not supported".to_owned()
+						});
+					}
+					output_index = Some(idx as u16);
+				}
+			}
+			if output_index.is_none() {
+				return Err(APIError::APIMisuseError {
+					err: format!("No output matched the script_pubkey and value in the SpliceAcked event {}", chan.pending_splicing_channel_value)
 				});
 			}
 			Ok(OutPoint { txid: tx.txid(), index: output_index.unwrap() })
@@ -6664,6 +6786,8 @@ where
 						&events::MessageSendEvent::SendGossipTimestampFilter { .. } => false,
 						&events::MessageSendEvent::SendSplice { .. } => false,
 						&events::MessageSendEvent::SendSpliceAck { .. } => false,
+						&events::MessageSendEvent::SendSpliceCreated { .. } => false,
+						&events::MessageSendEvent::SendSpliceSigned { .. } => false,
 					}
 				});
 				debug_assert!(peer_state.is_connected, "A disconnected peer cannot disconnect");

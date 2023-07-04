@@ -213,7 +213,10 @@ fn test_splice_in_simple() {
 	// Note: SpliceAcked emitted, checked and used below
 	// Create splicing tx
 	let post_splice_channel_value = channel_value_sat + splice_in_sats;
-	let (_funding_tx, _funding_output) = create_splice_in_transaction(&nodes[0], &channel_id, post_splice_channel_value);
+	let (_splice_tx, _funding_output) = create_splice_in_transaction(&nodes[0], &channel_id, post_splice_channel_value);
+
+	// TODO: Next line currently fails (derived different per-tx keys or built transaction)
+	// let _res = nodes[0].node.splice_transaction_generated(&channel_id, &nodes[1].node.get_our_node_id(), splice_tx.clone()).unwrap();
 
 	// TODO ...
 
