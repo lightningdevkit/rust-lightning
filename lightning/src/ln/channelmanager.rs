@@ -5001,24 +5001,29 @@ where
 		if peer_state_mutex_opt.is_none() { return }
 		peer_state_lock = peer_state_mutex_opt.unwrap().lock().unwrap();
 		let peer_state = &mut *peer_state_lock;
-		let mut channel = {
-			match peer_state.channel_by_id.entry(funding_txo.to_channel_id()){
-				hash_map::Entry::Occupied(chan) => chan,
-				hash_map::Entry::Vacant(_) => return,
-			}
-		};
+		let channel =
+			if let Some(chan) = peer_state.channel_by_id.get_mut(&funding_txo.to_channel_id()) {
+				chan
+			} else {
+				let update_actions = peer_state.monitor_update_blocked_actions
+					.remove(&funding_txo.to_channel_id()).unwrap_or(Vec::new());
+				mem::drop(peer_state_lock);
+				mem::drop(per_peer_state);
+				self.handle_monitor_update_completion_actions(update_actions);
+				return;
+			};
 		let remaining_in_flight =
 			if let Some(pending) = peer_state.in_flight_monitor_updates.get_mut(funding_txo) {
 				pending.retain(|upd| upd.update_id > highest_applied_update_id);
 				pending.len()
 			} else { 0 };
 		log_trace!(self.logger, "ChannelMonitor updated to {}. Current highest is {}. {} pending in-flight updates.",
-			highest_applied_update_id, channel.get().context.get_latest_monitor_update_id(),
+			highest_applied_update_id, channel.context.get_latest_monitor_update_id(),
 			remaining_in_flight);
-		if !channel.get().is_awaiting_monitor_update() || channel.get().context.get_latest_monitor_update_id() != highest_applied_update_id {
+		if !channel.is_awaiting_monitor_update() || channel.context.get_latest_monitor_update_id() != highest_applied_update_id {
 			return;
 		}
-		handle_monitor_update_completion!(self, peer_state_lock, peer_state, per_peer_state, channel.get_mut());
+		handle_monitor_update_completion!(self, peer_state_lock, peer_state, per_peer_state, channel);
 	}
 
 	/// Accepts a request to open a channel after a [`Event::OpenChannelRequest`].
