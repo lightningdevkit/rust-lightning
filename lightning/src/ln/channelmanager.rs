@@ -8943,6 +8943,12 @@ where
 								blocked_peer_state.lock().unwrap().actions_blocking_raa_monitor_updates
 									.entry(blocked_channel_outpoint.to_channel_id())
 									.or_insert_with(Vec::new).push(blocking_action.clone());
+							} else {
+								// If the channel we were blocking has closed, we don't need to
+								// worry about it - the blocked monitor update should never have
+								// been released from the `Channel` object so it can't have
+								// completed, and if the channel closed there's no reason to bother
+								// anymore.
 							}
 						}
 					}
