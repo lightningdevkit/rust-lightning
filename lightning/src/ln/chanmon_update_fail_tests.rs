@@ -2346,6 +2346,7 @@ fn do_channel_holding_cell_serialize(disconnect: bool, reload_a: bool) {
 		RecipientOnionFields::secret_only(payment_secret_2), PaymentId(payment_hash_2.0)).unwrap();
 	check_added_monitors!(nodes[0], 0);
 
+	let chan_0_monitor_serialized = get_monitor!(nodes[0], chan_id).encode();
 	chanmon_cfgs[0].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
 	chanmon_cfgs[0].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
 	nodes[0].node.claim_funds(payment_preimage_0);
@@ -2365,8 +2366,9 @@ fn do_channel_holding_cell_serialize(disconnect: bool, reload_a: bool) {
 		// disconnect the peers. Note that the fuzzer originally found this issue because
 		// deserializing a ChannelManager in this state causes an assertion failure.
 		if reload_a {
-			let chan_0_monitor_serialized = get_monitor!(nodes[0], chan_id).encode();
 			reload_node!(nodes[0], &nodes[0].node.encode(), &[&chan_0_monitor_serialized], persister, new_chain_monitor, nodes_0_deserialized);
+			persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
+			persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
 		} else {
 			nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id());
 		}
@@ -2406,9 +2408,14 @@ fn do_channel_holding_cell_serialize(disconnect: bool, reload_a: bool) {
 			assert_eq!(pending_cs.commitment_signed, cs);
 		} else { panic!(); }
 
-		// There should be no monitor updates as we are still pending awaiting a failed one.
-		check_added_monitors!(nodes[0], 0);
-		check_added_monitors!(nodes[1], 0);
+		if reload_a {
+			// The two pending monitor updates were replayed (but are still pending).
+			check_added_monitors(&nodes[0], 2);
+		} else {
+			// There should be no monitor updates as we are still pending awaiting a failed one.
+			check_added_monitors(&nodes[0], 0);
+		}
+		check_added_monitors(&nodes[1], 0);
 	}
 
 	// If we finish updating the monitor, we should free the holding cell right away (this did

@@ -530,6 +530,13 @@ enum BackgroundEvent {
 		funding_txo: OutPoint,
 		update: ChannelMonitorUpdate
 	},
+	/// Some [`ChannelMonitorUpdate`] (s) completed before we were serialized but we still have
+	/// them marked pending, thus we need to run any [`MonitorUpdateCompletionAction`] (s) pending
+	/// on a channel.
+	MonitorUpdatesComplete {
+		counterparty_node_id: PublicKey,
+		channel_id: [u8; 32],
+	},
 }
 
 #[derive(Debug)]
@@ -4190,6 +4197,22 @@ where
 							"Failed to provide ChannelMonitorUpdate to closed channel! This likely lost us a payment preimage!");
 					}
 					let _ = handle_error!(self, res, counterparty_node_id);
+				},
+				BackgroundEvent::MonitorUpdatesComplete { counterparty_node_id, channel_id } => {
+					let per_peer_state = self.per_peer_state.read().unwrap();
+					if let Some(peer_state_mutex) = per_peer_state.get(&counterparty_node_id) {
+						let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+						let peer_state = &mut *peer_state_lock;
+						if let Some(chan) = peer_state.channel_by_id.get_mut(&channel_id) {
+							handle_monitor_update_completion!(self, peer_state_lock, peer_state, per_peer_state, chan);
+						} else {
+							let update_actions = peer_state.monitor_update_blocked_actions
+								.remove(&channel_id).unwrap_or(Vec::new());
+							mem::drop(peer_state_lock);
+							mem::drop(per_peer_state);
+							self.handle_monitor_update_completion_actions(update_actions);
+						}
+					}
 				},
 			}
 		}
@@ -8516,6 +8539,16 @@ where
 							counterparty_node_id: $counterparty_node_id,
 							funding_txo: $funding_txo,
 							update: update.clone(),
+						});
+				}
+				if $chan_in_flight_upds.is_empty() {
+					// We had some updates to apply, but it turns out they had completed before we
+					// were serialized, we just weren't notified of that. Thus, we may have to run
+					// the completion actions for any monitor updates, but otherwise are done.
+					pending_background_events.push(
+						BackgroundEvent::MonitorUpdatesComplete {
+							counterparty_node_id: $counterparty_node_id,
+							channel_id: $funding_txo.to_channel_id(),
 						});
 				}
 				if $peer_state.in_flight_monitor_updates.insert($funding_txo, $chan_in_flight_upds).is_some() {
