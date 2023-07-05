@@ -76,6 +76,30 @@ pub struct AnchorDescriptor {
 }
 
 impl AnchorDescriptor {
+	/// Returns the unsigned transaction input spending the anchor output in the commitment
+	/// transaction.
+	pub fn unsigned_tx_input(&self) -> TxIn {
+		TxIn {
+			previous_output: self.outpoint.clone(),
+			script_sig: Script::new(),
+			sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
+			witness: Witness::new(),
+		}
+	}
+
+	/// Returns the witness script of the anchor output in the commitment transaction.
+	pub fn witness_script(&self) -> Script {
+		let channel_params = self.channel_derivation_parameters.transaction_parameters.as_holder_broadcastable();
+		chan_utils::get_anchor_redeemscript(&channel_params.broadcaster_pubkeys().funding_pubkey)
+	}
+
+	/// Returns the fully signed witness required to spend the anchor output in the commitment
+	/// transaction.
+	pub fn tx_input_witness(&self, signature: &Signature) -> Witness {
+		let channel_params = self.channel_derivation_parameters.transaction_parameters.as_holder_broadcastable();
+		chan_utils::build_anchor_input_witness(&channel_params.broadcaster_pubkeys().funding_pubkey, signature)
+	}
+
 	/// Derives the channel signer required to sign the anchor input.
 	pub fn derive_channel_signer<SP: Deref>(&self, signer_provider: &SP) -> <SP::Target as SignerProvider>::Signer
 	where
@@ -649,12 +673,7 @@ where
 		let mut tx = Transaction {
 			version: 2,
 			lock_time: PackedLockTime::ZERO, // TODO: Use next best height.
-			input: vec![TxIn {
-				previous_output: anchor_descriptor.outpoint,
-				script_sig: Script::new(),
-				sequence: Sequence::ZERO,
-				witness: Witness::new(),
-			}],
+			input: vec![anchor_descriptor.unsigned_tx_input()],
 			output: vec![],
 		};
 		self.process_coin_selection(&mut tx, coin_selection);
@@ -688,8 +707,7 @@ where
 		self.utxo_source.sign_tx(&mut anchor_tx)?;
 		let signer = anchor_descriptor.derive_channel_signer(&self.signer_provider);
 		let anchor_sig = signer.sign_holder_anchor_input(&anchor_tx, 0, &self.secp)?;
-		anchor_tx.input[0].witness =
-			chan_utils::build_anchor_input_witness(&signer.pubkeys().funding_pubkey, &anchor_sig);
+		anchor_tx.input[0].witness = anchor_descriptor.tx_input_witness(&anchor_sig);
 
 		self.broadcaster.broadcast_transactions(&[&commitment_tx, &anchor_tx]);
 		Ok(())
