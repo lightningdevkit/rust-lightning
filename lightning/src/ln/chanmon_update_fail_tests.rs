@@ -3429,3 +3429,104 @@ fn test_durable_preimages_on_closed_channel() {
 	do_test_durable_preimages_on_closed_channel(false, false, true);
 	do_test_durable_preimages_on_closed_channel(false, false, false);
 }
+
+fn do_test_reload_mon_update_completion_actions(close_during_reload: bool) {
+	// Test that if a `ChannelMonitorUpdate` completes but a `ChannelManager` isn't serialized
+	// before restart we run the monitor update completion action on startup.
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+
+	let persister;
+	let new_chain_monitor;
+	let nodes_1_deserialized;
+
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
+	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+
+	let chan_id_ab = create_announced_chan_between_nodes(&nodes, 0, 1).2;
+	let chan_id_bc = create_announced_chan_between_nodes(&nodes, 1, 2).2;
+
+	// Route a payment from A, through B, to C, then claim it on C. Once we pass B the
+	// `update_fulfill_htlc`+`commitment_signed` we have a monitor update for both of B's channels.
+	// We complete the commitment signed dance on the B<->C channel but leave the A<->B monitor
+	// update pending, then reload B. At that point, the final monitor update on the B<->C channel
+	// is still pending because it can't fly until the preimage is persisted on the A<->B monitor.
+	let (payment_preimage, payment_hash, ..) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 1_000_000);
+
+	nodes[2].node.claim_funds(payment_preimage);
+	check_added_monitors(&nodes[2], 1);
+	expect_payment_claimed!(nodes[2], payment_hash, 1_000_000);
+
+	chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
+	let cs_updates = get_htlc_update_msgs(&nodes[2], &nodes[1].node.get_our_node_id());
+	nodes[1].node.handle_update_fulfill_htlc(&nodes[2].node.get_our_node_id(), &cs_updates.update_fulfill_htlcs[0]);
+
+	// B generates a new monitor update for the A <-> B channel, but doesn't send the new messages
+	// for it since the monitor update is marked in-progress.
+	check_added_monitors(&nodes[1], 1);
+	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+
+	// Now step the Commitment Signed Dance between B and C and check that after the final RAA B
+	// doesn't let the preimage-removing monitor update fly.
+	nodes[1].node.handle_commitment_signed(&nodes[2].node.get_our_node_id(), &cs_updates.commitment_signed);
+	check_added_monitors(&nodes[1], 1);
+	let (bs_raa, bs_cs) = get_revoke_commit_msgs!(nodes[1], nodes[2].node.get_our_node_id());
+
+	nodes[2].node.handle_revoke_and_ack(&nodes[1].node.get_our_node_id(), &bs_raa);
+	check_added_monitors(&nodes[2], 1);
+	nodes[2].node.handle_commitment_signed(&nodes[1].node.get_our_node_id(), &bs_cs);
+	check_added_monitors(&nodes[2], 1);
+
+	let cs_final_raa = get_event_msg!(nodes[2], MessageSendEvent::SendRevokeAndACK, nodes[1].node.get_our_node_id());
+	nodes[1].node.handle_revoke_and_ack(&nodes[2].node.get_our_node_id(), &cs_final_raa);
+	check_added_monitors(&nodes[1], 0);
+
+	// Finally, reload node B and check that after we call `process_pending_events` once we realize
+	// we've completed the A<->B preimage-including monitor update and so can release the B<->C
+	// preimage-removing monitor update.
+	let mon_ab = get_monitor!(nodes[1], chan_id_ab).encode();
+	let mon_bc = get_monitor!(nodes[1], chan_id_bc).encode();
+	let manager_b = nodes[1].node.encode();
+	reload_node!(nodes[1], &manager_b, &[&mon_ab, &mon_bc], persister, new_chain_monitor, nodes_1_deserialized);
+
+	if close_during_reload {
+		// Test that we still free the B<->C channel if the A<->B channel closed while we reloaded
+		// (as learned about during the on-reload block connection).
+		nodes[0].node.force_close_broadcasting_latest_txn(&chan_id_ab, &nodes[1].node.get_our_node_id()).unwrap();
+		check_added_monitors!(nodes[0], 1);
+		check_closed_broadcast!(nodes[0], true);
+		check_closed_event(&nodes[0], 1, ClosureReason::HolderForceClosed, false, &[nodes[1].node.get_our_node_id()], 100_000);
+		let as_closing_tx = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
+		mine_transaction_without_consistency_checks(&nodes[1], &as_closing_tx[0]);
+	}
+
+	let bc_update_id = nodes[1].chain_monitor.latest_monitor_update_id.lock().unwrap().get(&chan_id_bc).unwrap().2;
+	let mut events = nodes[1].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), if close_during_reload { 2 } else { 1 });
+	expect_payment_forwarded(events.pop().unwrap(), &nodes[1], &nodes[0], &nodes[2], Some(1000), close_during_reload, false);
+	if close_during_reload {
+		match events[0] {
+			Event::ChannelClosed { .. } => {},
+			_ => panic!(),
+		}
+		check_closed_broadcast!(nodes[1], true);
+	}
+
+	// Once we run event processing the monitor should free, check that it was indeed the B<->C
+	// channel which was updated.
+	check_added_monitors(&nodes[1], if close_during_reload { 2 } else { 1 });
+	let post_ev_bc_update_id = nodes[1].chain_monitor.latest_monitor_update_id.lock().unwrap().get(&chan_id_bc).unwrap().2;
+	assert!(bc_update_id != post_ev_bc_update_id);
+
+	// Finally, check that there's nothing left to do on B<->C reconnect and the channel operates
+	// fine.
+	nodes[2].node.peer_disconnected(&nodes[1].node.get_our_node_id());
+	reconnect_nodes(ReconnectArgs::new(&nodes[1], &nodes[2]));
+	send_payment(&nodes[1], &[&nodes[2]], 100_000);
+}
+
+#[test]
+fn test_reload_mon_update_completion_actions() {
+	do_test_reload_mon_update_completion_actions(true);
+	do_test_reload_mon_update_completion_actions(false);
+}
