@@ -18,6 +18,7 @@ use core::ops::Deref;
 use crate::chain::chaininterface::BroadcasterInterface;
 use crate::chain::ClaimId;
 use crate::io_extras::sink;
+use crate::ln::channel::ANCHOR_OUTPUT_VALUE_SATOSHI;
 use crate::ln::chan_utils;
 use crate::ln::chan_utils::{
 	ANCHOR_INPUT_WITNESS_WEIGHT, HTLC_SUCCESS_INPUT_ANCHOR_WITNESS_WEIGHT,
@@ -76,6 +77,15 @@ pub struct AnchorDescriptor {
 }
 
 impl AnchorDescriptor {
+	/// Returns the UTXO to be spent by the anchor input, which can be obtained via
+	/// [`Self::unsigned_tx_input`].
+	pub fn previous_utxo(&self) -> TxOut {
+		TxOut {
+			script_pubkey: self.witness_script().to_v0_p2wsh(),
+			value: ANCHOR_OUTPUT_VALUE_SATOSHI,
+		}
+	}
+
 	/// Returns the unsigned transaction input spending the anchor output in the commitment
 	/// transaction.
 	pub fn unsigned_tx_input(&self) -> TxIn {
@@ -139,6 +149,15 @@ pub struct HTLCDescriptor {
 }
 
 impl HTLCDescriptor {
+	/// Returns the UTXO to be spent by the HTLC input, which can be obtained via
+	/// [`Self::unsigned_tx_input`].
+	pub fn previous_utxo<C: secp256k1::Signing + secp256k1::Verification>(&self, secp: &Secp256k1<C>) -> TxOut {
+		TxOut {
+			script_pubkey: self.witness_script(secp).to_v0_p2wsh(),
+			value: self.htlc.amount_msat / 1000,
+		}
+	}
+
 	/// Returns the unsigned transaction input spending the HTLC output in the commitment
 	/// transaction.
 	pub fn unsigned_tx_input(&self) -> TxIn {
@@ -325,6 +344,8 @@ pub enum BumpTransactionEvent {
 pub struct Input {
 	/// The unique identifier of the input.
 	pub outpoint: OutPoint,
+	/// The UTXO being spent by the input.
+	pub previous_utxo: TxOut,
 	/// The upper-bound weight consumed by the input's full [`TxIn::script_sig`] and
 	/// [`TxIn::witness`], each with their lengths included, required to satisfy the output's
 	/// script.
@@ -664,6 +685,7 @@ where
 	) -> Result<Transaction, ()> {
 		let must_spend = vec![Input {
 			outpoint: anchor_descriptor.outpoint,
+			previous_utxo: anchor_descriptor.previous_utxo(),
 			satisfaction_weight: commitment_tx.weight() as u64 + ANCHOR_INPUT_WITNESS_WEIGHT + EMPTY_SCRIPT_SIG_WEIGHT,
 		}];
 		let coin_selection = self.utxo_source.select_confirmed_utxos(
@@ -730,6 +752,7 @@ where
 			let htlc_input = htlc_descriptor.unsigned_tx_input();
 			must_spend.push(Input {
 				outpoint: htlc_input.previous_output.clone(),
+				previous_utxo: htlc_descriptor.previous_utxo(&self.secp),
 				satisfaction_weight: EMPTY_SCRIPT_SIG_WEIGHT + if htlc_descriptor.preimage.is_some() {
 					HTLC_SUCCESS_INPUT_ANCHOR_WITNESS_WEIGHT
 				} else {
