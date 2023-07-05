@@ -1978,6 +1978,8 @@ macro_rules! process_events_body {
 				let mut pending_events = $self.pending_events.lock().unwrap();
 				pending_events.drain(..num_events);
 				processed_all_events = pending_events.is_empty();
+				// Note that `push_pending_forwards_ev` relies on `pending_events_processor` being
+				// updated here with the `pending_events` lock acquired.
 				$self.pending_events_processor.store(false, Ordering::Release);
 			}
 
@@ -5686,16 +5688,21 @@ where
 		}
 	}
 
-	// We only want to push a PendingHTLCsForwardable event if no others are queued.
 	fn push_pending_forwards_ev(&self) {
 		let mut pending_events = self.pending_events.lock().unwrap();
-		let forward_ev_exists = pending_events.iter()
-			.find(|(ev, _)| if let events::Event::PendingHTLCsForwardable { .. } = ev { true } else { false })
-			.is_some();
-		if !forward_ev_exists {
-			pending_events.push_back((events::Event::PendingHTLCsForwardable {
-				time_forwardable:
-					Duration::from_millis(MIN_HTLC_RELAY_HOLDING_CELL_MILLIS),
+		let is_processing_events = self.pending_events_processor.load(Ordering::Acquire);
+		let num_forward_events = pending_events.iter().filter(|(ev, _)|
+			if let events::Event::PendingHTLCsForwardable { .. } = ev { true } else { false }
+		).count();
+		// We only want to push a PendingHTLCsForwardable event if no others are queued. Processing
+		// events is done in batches and they are not removed until we're done processing each
+		// batch. Since handling a `PendingHTLCsForwardable` event will call back into the
+		// `ChannelManager`, we'll still see the original forwarding event not removed. Phantom
+		// payments will need an additional forwarding event before being claimed to make them look
+		// real by taking more time.
+		if (is_processing_events && num_forward_events <= 1) || num_forward_events < 1 {
+			pending_events.push_back((Event::PendingHTLCsForwardable {
+				time_forwardable: Duration::from_millis(MIN_HTLC_RELAY_HOLDING_CELL_MILLIS),
 			}, None));
 		}
 	}

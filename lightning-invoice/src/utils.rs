@@ -792,12 +792,13 @@ fn prefer_current_channel(min_inbound_capacity_msat: Option<u64>, current_channe
 
 #[cfg(test)]
 mod test {
+	use core::cell::RefCell;
 	use core::time::Duration;
 	use crate::{Currency, Description, InvoiceDescription, SignOrCreationError, CreationError};
 	use bitcoin_hashes::{Hash, sha256};
 	use bitcoin_hashes::sha256::Hash as Sha256;
 	use lightning::sign::PhantomKeysManager;
-	use lightning::events::{MessageSendEvent, MessageSendEventsProvider, Event};
+	use lightning::events::{MessageSendEvent, MessageSendEventsProvider, Event, EventsProvider};
 	use lightning::ln::{PaymentPreimage, PaymentHash};
 	use lightning::ln::channelmanager::{PhantomRouteHints, MIN_FINAL_CLTV_EXPIRY_DELTA, PaymentId, RecipientOnionFields, Retry};
 	use lightning::ln::functional_test_utils::*;
@@ -1357,13 +1358,20 @@ mod test {
 		// Note that we have to "forward pending HTLCs" twice before we see the PaymentClaimable as
 		// this "emulates" the payment taking two hops, providing some privacy to make phantom node
 		// payments "look real" by taking more time.
-		expect_pending_htlcs_forwardable_ignore!(nodes[fwd_idx]);
-		nodes[fwd_idx].node.process_pending_htlc_forwards();
-		expect_pending_htlcs_forwardable_ignore!(nodes[fwd_idx]);
-		nodes[fwd_idx].node.process_pending_htlc_forwards();
+		let other_events = RefCell::new(Vec::new());
+		let forward_event_handler = |event: Event| {
+			if let Event::PendingHTLCsForwardable { .. } = event {
+				nodes[fwd_idx].node.process_pending_htlc_forwards();
+			} else {
+				other_events.borrow_mut().push(event);
+			}
+		};
+		nodes[fwd_idx].node.process_pending_events(&forward_event_handler);
+		nodes[fwd_idx].node.process_pending_events(&forward_event_handler);
 
 		let payment_preimage_opt = if user_generated_pmt_hash { None } else { Some(payment_preimage) };
-		expect_payment_claimable!(&nodes[fwd_idx], payment_hash, payment_secret, payment_amt, payment_preimage_opt, invoice.recover_payee_pub_key());
+		assert_eq!(other_events.borrow().len(), 1);
+		check_payment_claimable(&other_events.borrow()[0], payment_hash, payment_secret, payment_amt, payment_preimage_opt, invoice.recover_payee_pub_key());
 		do_claim_payment_along_route(&nodes[0], &[&vec!(&nodes[fwd_idx])[..]], false, payment_preimage);
 		let events = nodes[0].node.get_and_clear_pending_events();
 		assert_eq!(events.len(), 2);

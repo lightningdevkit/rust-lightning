@@ -1806,6 +1806,28 @@ macro_rules! get_route_and_payment_hash {
 	}}
 }
 
+pub fn check_payment_claimable(
+	event: &Event, expected_payment_hash: PaymentHash, expected_payment_secret: PaymentSecret,
+	expected_recv_value: u64, expected_payment_preimage: Option<PaymentPreimage>,
+	expected_receiver_node_id: PublicKey,
+) {
+	match event {
+		Event::PaymentClaimable { ref payment_hash, ref purpose, amount_msat, receiver_node_id, .. } => {
+			assert_eq!(expected_payment_hash, *payment_hash);
+			assert_eq!(expected_recv_value, *amount_msat);
+			assert_eq!(expected_receiver_node_id, receiver_node_id.unwrap());
+			match purpose {
+				PaymentPurpose::InvoicePayment { payment_preimage, payment_secret, .. } => {
+					assert_eq!(&expected_payment_preimage, payment_preimage);
+					assert_eq!(expected_payment_secret, *payment_secret);
+				},
+				_ => {},
+			}
+		},
+		_ => panic!("Unexpected event"),
+	}
+}
+
 #[macro_export]
 #[cfg(any(test, ldk_bench, feature = "_test_utils"))]
 macro_rules! expect_payment_claimable {
@@ -1815,22 +1837,8 @@ macro_rules! expect_payment_claimable {
 	($node: expr, $expected_payment_hash: expr, $expected_payment_secret: expr, $expected_recv_value: expr, $expected_payment_preimage: expr, $expected_receiver_node_id: expr) => {
 		let events = $node.node.get_and_clear_pending_events();
 		assert_eq!(events.len(), 1);
-		match events[0] {
-			$crate::events::Event::PaymentClaimable { ref payment_hash, ref purpose, amount_msat, receiver_node_id, .. } => {
-				assert_eq!($expected_payment_hash, *payment_hash);
-				assert_eq!($expected_recv_value, amount_msat);
-				assert_eq!($expected_receiver_node_id, receiver_node_id.unwrap());
-				match purpose {
-					$crate::events::PaymentPurpose::InvoicePayment { payment_preimage, payment_secret, .. } => {
-						assert_eq!(&$expected_payment_preimage, payment_preimage);
-						assert_eq!($expected_payment_secret, *payment_secret);
-					},
-					_ => {},
-				}
-			},
-			_ => panic!("Unexpected event"),
-		}
-	}
+		$crate::ln::functional_test_utils::check_payment_claimable(&events[0], $expected_payment_hash, $expected_payment_secret, $expected_recv_value, $expected_payment_preimage, $expected_receiver_node_id)
+	};
 }
 
 #[macro_export]
