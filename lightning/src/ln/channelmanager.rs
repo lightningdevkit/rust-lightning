@@ -1509,7 +1509,6 @@ impl ChannelDetails {
 	) -> Self
 	where F::Target: FeeEstimator
 	{
-
 		let balance = context.get_available_balances(fee_estimator);
 		let (to_remote_reserve_satoshis, to_self_reserve_satoshis) =
 			context.get_holder_counterparty_selected_channel_reserve_satoshis();
@@ -10007,7 +10006,7 @@ pub mod bench {
 	use crate::routing::gossip::NetworkGraph;
 	use crate::routing::router::{PaymentParameters, RouteParameters};
 	use crate::util::test_utils;
-	use crate::util::config::UserConfig;
+	use crate::util::config::{UserConfig, MaxDustHTLCExposure};
 
 	use bitcoin::hashes::Hash;
 	use bitcoin::hashes::sha256::Hash as Sha256;
@@ -10053,6 +10052,7 @@ pub mod bench {
 		let router = test_utils::TestRouter::new(Arc::new(NetworkGraph::new(network, &logger_a)), &scorer);
 
 		let mut config: UserConfig = Default::default();
+		config.channel_config.max_dust_htlc_exposure = MaxDustHTLCExposure::FeeRateMultiplier(5_000_000 / 253);
 		config.channel_handshake_config.minimum_depth = 1;
 
 		let chain_monitor_a = ChainMonitor::new(None, &tx_broadcaster, &logger_a, &fee_estimator, &persister_a);

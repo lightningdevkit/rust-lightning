@@ -1060,12 +1060,16 @@ impl<Signer: ChannelSigner> ChannelContext<Signer> {
 	}
 
 	pub fn get_max_dust_htlc_exposure_msat<F: Deref>(&self,
-		_fee_estimator: &LowerBoundedFeeEstimator<F>) -> u64
+		fee_estimator: &LowerBoundedFeeEstimator<F>) -> u64
 	where F::Target: FeeEstimator
 	{
 		match self.config.options.max_dust_htlc_exposure {
+			MaxDustHTLCExposure::FeeRateMultiplier(multiplier) => {
+				let feerate_per_kw = fee_estimator.bounded_sat_per_1000_weight(
+					ConfirmationTarget::HighPriority);
+				feerate_per_kw as u64 * multiplier
+			},
 			MaxDustHTLCExposure::FixedLimitMsat(limit) => limit,
-			MaxDustHTLCExposure::FeeRateMultiplier(_) => 5_000_000,
 		}
 	}
 
