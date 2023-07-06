@@ -50,7 +50,7 @@ use crate::util::logger::Logger;
 use crate::util::ser::{Readable, ReadableArgs, RequiredWrapper, MaybeReadable, UpgradableRequired, Writer, Writeable, U48};
 use crate::util::byte_utils;
 use crate::events::{Event, EventHandler};
-use crate::events::bump_transaction::{AnchorDescriptor, HTLCDescriptor, BumpTransactionEvent};
+use crate::events::bump_transaction::{ChannelDerivationParameters, AnchorDescriptor, HTLCDescriptor, BumpTransactionEvent};
 
 use crate::prelude::*;
 use core::{cmp, mem};
@@ -2611,8 +2611,11 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 						commitment_tx,
 						commitment_tx_fee_satoshis,
 						anchor_descriptor: AnchorDescriptor {
-							channel_keys_id: self.channel_keys_id,
-							channel_value_satoshis: self.channel_value_satoshis,
+							channel_derivation_parameters: ChannelDerivationParameters {
+								keys_id: self.channel_keys_id,
+								value_satoshis: self.channel_value_satoshis,
+								transaction_parameters: self.onchain_tx_handler.channel_transaction_parameters.clone(),
+							},
 							outpoint: BitcoinOutPoint {
 								txid: commitment_txid,
 								vout: anchor_output_idx,
@@ -2627,9 +2630,11 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 					let mut htlc_descriptors = Vec::with_capacity(htlcs.len());
 					for htlc in htlcs {
 						htlc_descriptors.push(HTLCDescriptor {
-							channel_keys_id: self.channel_keys_id,
-							channel_value_satoshis: self.channel_value_satoshis,
-							channel_parameters: self.onchain_tx_handler.channel_transaction_parameters.clone(),
+							channel_derivation_parameters: ChannelDerivationParameters {
+								keys_id: self.channel_keys_id,
+								value_satoshis: self.channel_value_satoshis,
+								transaction_parameters: self.onchain_tx_handler.channel_transaction_parameters.clone(),
+							},
 							commitment_txid: htlc.commitment_txid,
 							per_commitment_number: htlc.per_commitment_number,
 							per_commitment_point: self.onchain_tx_handler.signer.get_per_commitment_point(

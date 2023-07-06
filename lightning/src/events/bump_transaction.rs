@@ -11,6 +11,7 @@
 //!
 //! [`Event`]: crate::events::Event
 
+use alloc::collections::BTreeMap;
 use core::convert::TryInto;
 use core::ops::Deref;
 
@@ -50,45 +51,50 @@ const fn fee_for_weight(feerate_sat_per_1000_weight: u32, weight: u64) -> u64 {
 	((feerate_sat_per_1000_weight as u64 * weight) + 1000 - 1) / 1000
 }
 
+/// The parameters required to derive a channel signer via [`SignerProvider`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ChannelDerivationParameters {
+	/// The value in satoshis of the channel we're attempting to spend the anchor output of.
+	pub value_satoshis: u64,
+	/// The unique identifier to re-derive the signer for the associated channel.
+	pub keys_id: [u8; 32],
+	/// The necessary channel parameters that need to be provided to the re-derived signer through
+	/// [`ChannelSigner::provide_channel_parameters`].
+	///
+	/// [`ChannelSigner::provide_channel_parameters`]: crate::sign::ChannelSigner::provide_channel_parameters
+	pub transaction_parameters: ChannelTransactionParameters,
+}
+
 /// A descriptor used to sign for a commitment transaction's anchor output.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AnchorDescriptor {
-	/// A unique identifier used along with `channel_value_satoshis` to re-derive the
-	/// [`InMemorySigner`] required to sign `input`.
-	///
-	/// [`InMemorySigner`]: crate::sign::InMemorySigner
-	pub channel_keys_id: [u8; 32],
-	/// The value in satoshis of the channel we're attempting to spend the anchor output of. This is
-	/// used along with `channel_keys_id` to re-derive the [`InMemorySigner`] required to sign
-	/// `input`.
-	///
-	/// [`InMemorySigner`]: crate::sign::InMemorySigner
-	pub channel_value_satoshis: u64,
+	/// The parameters required to derive the signer for the anchor input.
+	pub channel_derivation_parameters: ChannelDerivationParameters,
 	/// The transaction input's outpoint corresponding to the commitment transaction's anchor
 	/// output.
 	pub outpoint: OutPoint,
 }
 
+impl AnchorDescriptor {
+	/// Derives the channel signer required to sign the anchor input.
+	pub fn derive_channel_signer<SP: Deref>(&self, signer_provider: &SP) -> <SP::Target as SignerProvider>::Signer
+	where
+		SP::Target: SignerProvider
+	{
+		let mut signer = signer_provider.derive_channel_signer(
+			self.channel_derivation_parameters.value_satoshis,
+			self.channel_derivation_parameters.keys_id,
+		);
+		signer.provide_channel_parameters(&self.channel_derivation_parameters.transaction_parameters);
+		signer
+	}
+}
+
 /// A descriptor used to sign for a commitment transaction's HTLC output.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HTLCDescriptor {
-	/// A unique identifier used along with `channel_value_satoshis` to re-derive the
-	/// [`InMemorySigner`] required to sign `input`.
-	///
-	/// [`InMemorySigner`]: crate::sign::InMemorySigner
-	pub channel_keys_id: [u8; 32],
-	/// The value in satoshis of the channel we're attempting to spend the anchor output of. This is
-	/// used along with `channel_keys_id` to re-derive the [`InMemorySigner`] required to sign
-	/// `input`.
-	///
-	/// [`InMemorySigner`]: crate::sign::InMemorySigner
-	pub channel_value_satoshis: u64,
-	/// The necessary channel parameters that need to be provided to the re-derived
-	/// [`InMemorySigner`] through [`ChannelSigner::provide_channel_parameters`].
-	///
-	/// [`InMemorySigner`]: crate::sign::InMemorySigner
-	/// [`ChannelSigner::provide_channel_parameters`]: crate::sign::ChannelSigner::provide_channel_parameters
-	pub channel_parameters: ChannelTransactionParameters,
+	/// The parameters required to derive the signer for the HTLC input.
+	pub channel_derivation_parameters: ChannelDerivationParameters,
 	/// The txid of the commitment transaction in which the HTLC output lives.
 	pub commitment_txid: Txid,
 	/// The number of the commitment transaction in which the HTLC output lives.
@@ -118,7 +124,7 @@ impl HTLCDescriptor {
 	/// Returns the delayed output created as a result of spending the HTLC output in the commitment
 	/// transaction.
 	pub fn tx_output<C: secp256k1::Signing + secp256k1::Verification>(&self, secp: &Secp256k1<C>) -> TxOut {
-		let channel_params = self.channel_parameters.as_holder_broadcastable();
+		let channel_params = self.channel_derivation_parameters.transaction_parameters.as_holder_broadcastable();
 		let broadcaster_keys = channel_params.broadcaster_pubkeys();
 		let counterparty_keys = channel_params.countersignatory_pubkeys();
 		let broadcaster_delayed_key = chan_utils::derive_public_key(
@@ -135,7 +141,7 @@ impl HTLCDescriptor {
 
 	/// Returns the witness script of the HTLC output in the commitment transaction.
 	pub fn witness_script<C: secp256k1::Signing + secp256k1::Verification>(&self, secp: &Secp256k1<C>) -> Script {
-		let channel_params = self.channel_parameters.as_holder_broadcastable();
+		let channel_params = self.channel_derivation_parameters.transaction_parameters.as_holder_broadcastable();
 		let broadcaster_keys = channel_params.broadcaster_pubkeys();
 		let counterparty_keys = channel_params.countersignatory_pubkeys();
 		let broadcaster_htlc_key = chan_utils::derive_public_key(
@@ -160,6 +166,19 @@ impl HTLCDescriptor {
 			signature, &self.counterparty_sig, &self.preimage, witness_script, &ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies() /* opt_anchors */
 		)
 	}
+
+	/// Derives the channel signer required to sign the HTLC input.
+	pub fn derive_channel_signer<SP: Deref>(&self, signer_provider: &SP) -> <SP::Target as SignerProvider>::Signer
+	where
+		SP::Target: SignerProvider
+	{
+		let mut signer = signer_provider.derive_channel_signer(
+			self.channel_derivation_parameters.value_satoshis,
+			self.channel_derivation_parameters.keys_id,
+		);
+		signer.provide_channel_parameters(&self.channel_derivation_parameters.transaction_parameters);
+		signer
+	}
 }
 
 /// Represents the different types of transactions, originating from LDK, to be bumped.
@@ -178,12 +197,11 @@ pub enum BumpTransactionEvent {
 	/// broadcast first, as the child anchor transaction depends on it.
 	///
 	/// The consumer should be able to sign for any of the additional inputs included within the
-	/// child anchor transaction. To sign its anchor input, an [`InMemorySigner`] should be
-	/// re-derived through [`KeysManager::derive_channel_keys`] with the help of
-	/// [`AnchorDescriptor::channel_keys_id`] and [`AnchorDescriptor::channel_value_satoshis`]. The
-	/// anchor input signature can be computed with [`EcdsaChannelSigner::sign_holder_anchor_input`],
-	/// which can then be provided to [`build_anchor_input_witness`] along with the `funding_pubkey`
-	/// to obtain the full witness required to spend.
+	/// child anchor transaction. To sign its anchor input, an [`EcdsaChannelSigner`] should be
+	/// re-derived through [`AnchorDescriptor::derive_channel_signer`]. The anchor input signature
+	/// can be computed with [`EcdsaChannelSigner::sign_holder_anchor_input`], which can then be
+	/// provided to [`build_anchor_input_witness`] along with the `funding_pubkey` to obtain the
+	/// full witness required to spend.
 	///
 	/// It is possible to receive more than one instance of this event if a valid child anchor
 	/// transaction is never broadcast or is but not with a sufficient fee to be mined. Care should
@@ -202,8 +220,7 @@ pub enum BumpTransactionEvent {
 	/// an empty `pending_htlcs`), confirmation of the commitment transaction can be considered to
 	/// be not urgent.
 	///
-	/// [`InMemorySigner`]: crate::sign::InMemorySigner
-	/// [`KeysManager::derive_channel_keys`]: crate::sign::KeysManager::derive_channel_keys
+	/// [`EcdsaChannelSigner`]: crate::sign::EcdsaChannelSigner
 	/// [`EcdsaChannelSigner::sign_holder_anchor_input`]: crate::sign::EcdsaChannelSigner::sign_holder_anchor_input
 	/// [`build_anchor_input_witness`]: crate::ln::chan_utils::build_anchor_input_witness
 	ChannelClose {
@@ -241,11 +258,11 @@ pub enum BumpTransactionEvent {
 	/// broadcast by the consumer of the event.
 	///
 	/// The consumer should be able to sign for any of the non-HTLC inputs added to the resulting
-	/// HTLC transaction. To sign HTLC inputs, an [`InMemorySigner`] should be re-derived through
-	/// [`KeysManager::derive_channel_keys`] with the help of `channel_keys_id` and
-	/// `channel_value_satoshis`. Each HTLC input's signature can be computed with
-	/// [`EcdsaChannelSigner::sign_holder_htlc_transaction`], which can then be provided to
-	/// [`HTLCDescriptor::tx_input_witness`] to obtain the fully signed witness required to spend.
+	/// HTLC transaction. To sign HTLC inputs, an [`EcdsaChannelSigner`] should be re-derived
+	/// through [`HTLCDescriptor::derive_channel_signer`]. Each HTLC input's signature can be
+	/// computed with [`EcdsaChannelSigner::sign_holder_htlc_transaction`], which can then be
+	/// provided to [`HTLCDescriptor::tx_input_witness`] to obtain the fully signed witness required
+	/// to spend.
 	///
 	/// It is possible to receive more than one instance of this event if a valid HTLC transaction
 	/// is never broadcast or is but not with a sufficient fee to be mined. Care should be taken by
@@ -257,8 +274,7 @@ pub enum BumpTransactionEvent {
 	/// longer able to commit external confirmed funds to the HTLC transaction or the fee committed
 	/// to the HTLC transaction is greater in value than the HTLCs being claimed.
 	///
-	/// [`InMemorySigner`]: crate::sign::InMemorySigner
-	/// [`KeysManager::derive_channel_keys`]: crate::sign::KeysManager::derive_channel_keys
+	/// [`EcdsaChannelSigner`]: crate::sign::EcdsaChannelSigner
 	/// [`EcdsaChannelSigner::sign_holder_htlc_transaction`]: crate::sign::EcdsaChannelSigner::sign_holder_htlc_transaction
 	/// [`HTLCDescriptor::tx_input_witness`]: HTLCDescriptor::tx_input_witness
 	HTLCResolution {
@@ -670,9 +686,7 @@ where
 		debug_assert_eq!(anchor_tx.output.len(), 1);
 
 		self.utxo_source.sign_tx(&mut anchor_tx)?;
-		let signer = self.signer_provider.derive_channel_signer(
-			anchor_descriptor.channel_value_satoshis, anchor_descriptor.channel_keys_id,
-		);
+		let signer = anchor_descriptor.derive_channel_signer(&self.signer_provider);
 		let anchor_sig = signer.sign_holder_anchor_input(&anchor_tx, 0, &self.secp)?;
 		anchor_tx.input[0].witness =
 			chan_utils::build_anchor_input_witness(&signer.pubkeys().funding_pubkey, &anchor_sig);
@@ -686,25 +700,15 @@ where
 	fn build_htlc_tx(
 		&self, claim_id: ClaimId, target_feerate_sat_per_1000_weight: u32,
 		htlc_descriptors: &[HTLCDescriptor], tx_lock_time: PackedLockTime,
-	) -> Result<(Transaction, HashMap<[u8; 32], <SP::Target as SignerProvider>::Signer>), ()> {
+	) -> Result<Transaction, ()> {
 		let mut tx = Transaction {
 			version: 2,
 			lock_time: tx_lock_time,
 			input: vec![],
 			output: vec![],
 		};
-		// Unfortunately, we need to derive the signer for each HTLC ahead of time to obtain its
-		// input.
-		let mut signers = HashMap::new();
 		let mut must_spend = Vec::with_capacity(htlc_descriptors.len());
 		for htlc_descriptor in htlc_descriptors {
-			signers.entry(htlc_descriptor.channel_keys_id)
-				.or_insert_with(||
-					self.signer_provider.derive_channel_signer(
-						htlc_descriptor.channel_value_satoshis, htlc_descriptor.channel_keys_id,
-					)
-				);
-
 			let htlc_input = htlc_descriptor.unsigned_tx_input();
 			must_spend.push(Input {
 				outpoint: htlc_input.previous_output.clone(),
@@ -723,7 +727,7 @@ where
 			claim_id, &must_spend, &tx.output, target_feerate_sat_per_1000_weight,
 		)?;
 		self.process_coin_selection(&mut tx, coin_selection);
-		Ok((tx, signers))
+		Ok(tx)
 	}
 
 	/// Handles a [`BumpTransactionEvent::HTLCResolution`] event variant by producing a
@@ -732,16 +736,16 @@ where
 		&self, claim_id: ClaimId, target_feerate_sat_per_1000_weight: u32,
 		htlc_descriptors: &[HTLCDescriptor], tx_lock_time: PackedLockTime,
 	) -> Result<(), ()> {
-		let (mut htlc_tx, signers) = self.build_htlc_tx(
+		let mut htlc_tx = self.build_htlc_tx(
 			claim_id, target_feerate_sat_per_1000_weight, htlc_descriptors, tx_lock_time,
 		)?;
 
 		self.utxo_source.sign_tx(&mut htlc_tx)?;
+		let mut signers = BTreeMap::new();
 		for (idx, htlc_descriptor) in htlc_descriptors.iter().enumerate() {
-			let signer = signers.get(&htlc_descriptor.channel_keys_id).unwrap();
-			let htlc_sig = signer.sign_holder_htlc_transaction(
-				&htlc_tx, idx, htlc_descriptor, &self.secp
-			)?;
+			let signer = signers.entry(htlc_descriptor.channel_derivation_parameters.keys_id)
+				.or_insert_with(|| htlc_descriptor.derive_channel_signer(&self.signer_provider));
+			let htlc_sig = signer.sign_holder_htlc_transaction(&htlc_tx, idx, htlc_descriptor, &self.secp)?;
 			let witness_script = htlc_descriptor.witness_script(&self.secp);
 			htlc_tx.input[idx].witness = htlc_descriptor.tx_input_witness(&htlc_sig, &witness_script);
 		}
