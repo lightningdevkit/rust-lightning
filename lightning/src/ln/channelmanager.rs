@@ -752,7 +752,23 @@ pub type SimpleArcChannelManager<M, T, F, L> = ChannelManager<
 /// of [`KeysManager`] and [`DefaultRouter`].
 ///
 /// This is not exported to bindings users as Arcs don't make sense in bindings
-pub type SimpleRefChannelManager<'a, 'b, 'c, 'd, 'e, 'f, 'g, 'h, M, T, F, L> = ChannelManager<&'a M, &'b T, &'c KeysManager, &'c KeysManager, &'c KeysManager, &'d F, &'e DefaultRouter<&'f NetworkGraph<&'g L>, &'g L, &'h Mutex<ProbabilisticScorer<&'f NetworkGraph<&'g L>, &'g L>>, ProbabilisticScoringFeeParameters, ProbabilisticScorer<&'f NetworkGraph<&'g L>, &'g L>>, &'g L>;
+pub type SimpleRefChannelManager<'a, 'b, 'c, 'd, 'e, 'f, 'g, 'h, M, T, F, L> =
+	ChannelManager<
+		&'a M,
+		&'b T,
+		&'c KeysManager,
+		&'c KeysManager,
+		&'c KeysManager,
+		&'d F,
+		&'e DefaultRouter<
+			&'f NetworkGraph<&'g L>,
+			&'g L,
+			&'h Mutex<ProbabilisticScorer<&'f NetworkGraph<&'g L>, &'g L>>,
+			ProbabilisticScoringFeeParameters,
+			ProbabilisticScorer<&'f NetworkGraph<&'g L>, &'g L>
+		>,
+		&'g L
+	>;
 
 macro_rules! define_test_pub_trait { ($vis: vis) => {
 /// A trivial trait which describes any [`ChannelManager`] used in testing.
