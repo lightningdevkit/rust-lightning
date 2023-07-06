@@ -1030,15 +1030,12 @@ impl EcdsaChannelSigner for InMemorySigner {
 		&self, htlc_tx: &Transaction, input: usize, htlc_descriptor: &HTLCDescriptor,
 		secp_ctx: &Secp256k1<secp256k1::All>
 	) -> Result<Signature, ()> {
-		let per_commitment_point = self.get_per_commitment_point(
-			htlc_descriptor.per_commitment_number, &secp_ctx
-		);
-		let witness_script = htlc_descriptor.witness_script(&per_commitment_point, secp_ctx);
+		let witness_script = htlc_descriptor.witness_script(secp_ctx);
 		let sighash = &sighash::SighashCache::new(&*htlc_tx).segwit_signature_hash(
 			input, &witness_script, htlc_descriptor.htlc.amount_msat / 1000, EcdsaSighashType::All
 		).map_err(|_| ())?;
 		let our_htlc_private_key = chan_utils::derive_private_key(
-			&secp_ctx, &per_commitment_point, &self.htlc_base_key
+			&secp_ctx, &htlc_descriptor.per_commitment_point, &self.htlc_base_key
 		);
 		Ok(sign_with_aux_rand(&secp_ctx, &hash_to_message!(sighash), &our_htlc_private_key, &self))
 	}

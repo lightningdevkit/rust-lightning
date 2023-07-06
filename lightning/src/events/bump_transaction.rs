@@ -93,6 +93,12 @@ pub struct HTLCDescriptor {
 	pub commitment_txid: Txid,
 	/// The number of the commitment transaction in which the HTLC output lives.
 	pub per_commitment_number: u64,
+	/// The key tweak corresponding to the number of the commitment transaction in which the HTLC
+	/// output lives. This tweak is applied to all the basepoints for both parties in the channel to
+	/// arrive at unique keys per commitment.
+	///
+	/// See <https://github.com/lightning/bolts/blob/master/03-transactions.md#keys> for more info.
+	pub per_commitment_point: PublicKey,
 	/// The details of the HTLC as it appears in the commitment transaction.
 	pub htlc: HTLCOutputInCommitment,
 	/// The preimage, if `Some`, to claim the HTLC output with. If `None`, the timeout path must be
@@ -111,17 +117,15 @@ impl HTLCDescriptor {
 
 	/// Returns the delayed output created as a result of spending the HTLC output in the commitment
 	/// transaction.
-	pub fn tx_output<C: secp256k1::Signing + secp256k1::Verification>(
-		&self, per_commitment_point: &PublicKey, secp: &Secp256k1<C>
-	) -> TxOut {
+	pub fn tx_output<C: secp256k1::Signing + secp256k1::Verification>(&self, secp: &Secp256k1<C>) -> TxOut {
 		let channel_params = self.channel_parameters.as_holder_broadcastable();
 		let broadcaster_keys = channel_params.broadcaster_pubkeys();
 		let counterparty_keys = channel_params.countersignatory_pubkeys();
 		let broadcaster_delayed_key = chan_utils::derive_public_key(
-			secp, per_commitment_point, &broadcaster_keys.delayed_payment_basepoint
+			secp, &self.per_commitment_point, &broadcaster_keys.delayed_payment_basepoint
 		);
 		let counterparty_revocation_key = chan_utils::derive_public_revocation_key(
-			secp, per_commitment_point, &counterparty_keys.revocation_basepoint
+			secp, &self.per_commitment_point, &counterparty_keys.revocation_basepoint
 		);
 		chan_utils::build_htlc_output(
 			0 /* feerate_per_kw */, channel_params.contest_delay(), &self.htlc,
@@ -130,20 +134,18 @@ impl HTLCDescriptor {
 	}
 
 	/// Returns the witness script of the HTLC output in the commitment transaction.
-	pub fn witness_script<C: secp256k1::Signing + secp256k1::Verification>(
-		&self, per_commitment_point: &PublicKey, secp: &Secp256k1<C>
-	) -> Script {
+	pub fn witness_script<C: secp256k1::Signing + secp256k1::Verification>(&self, secp: &Secp256k1<C>) -> Script {
 		let channel_params = self.channel_parameters.as_holder_broadcastable();
 		let broadcaster_keys = channel_params.broadcaster_pubkeys();
 		let counterparty_keys = channel_params.countersignatory_pubkeys();
 		let broadcaster_htlc_key = chan_utils::derive_public_key(
-			secp, per_commitment_point, &broadcaster_keys.htlc_basepoint
+			secp, &self.per_commitment_point, &broadcaster_keys.htlc_basepoint
 		);
 		let counterparty_htlc_key = chan_utils::derive_public_key(
-			secp, per_commitment_point, &counterparty_keys.htlc_basepoint
+			secp, &self.per_commitment_point, &counterparty_keys.htlc_basepoint
 		);
 		let counterparty_revocation_key = chan_utils::derive_public_revocation_key(
-			secp, per_commitment_point, &counterparty_keys.revocation_basepoint
+			secp, &self.per_commitment_point, &counterparty_keys.revocation_basepoint
 		);
 		chan_utils::get_htlc_redeemscript_with_explicit_keys(
 			&self.htlc, &ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies(), &broadcaster_htlc_key, &counterparty_htlc_key,
@@ -696,15 +698,12 @@ where
 		let mut signers = HashMap::new();
 		let mut must_spend = Vec::with_capacity(htlc_descriptors.len());
 		for htlc_descriptor in htlc_descriptors {
-			let signer = signers.entry(htlc_descriptor.channel_keys_id)
+			signers.entry(htlc_descriptor.channel_keys_id)
 				.or_insert_with(||
 					self.signer_provider.derive_channel_signer(
 						htlc_descriptor.channel_value_satoshis, htlc_descriptor.channel_keys_id,
 					)
 				);
-			let per_commitment_point = signer.get_per_commitment_point(
-				htlc_descriptor.per_commitment_number, &self.secp
-			);
 
 			let htlc_input = htlc_descriptor.unsigned_tx_input();
 			must_spend.push(Input {
@@ -716,7 +715,7 @@ where
 				},
 			});
 			tx.input.push(htlc_input);
-			let htlc_output = htlc_descriptor.tx_output(&per_commitment_point, &self.secp);
+			let htlc_output = htlc_descriptor.tx_output(&self.secp);
 			tx.output.push(htlc_output);
 		}
 
@@ -743,10 +742,7 @@ where
 			let htlc_sig = signer.sign_holder_htlc_transaction(
 				&htlc_tx, idx, htlc_descriptor, &self.secp
 			)?;
-			let per_commitment_point = signer.get_per_commitment_point(
-				htlc_descriptor.per_commitment_number, &self.secp
-			);
-			let witness_script = htlc_descriptor.witness_script(&per_commitment_point, &self.secp);
+			let witness_script = htlc_descriptor.witness_script(&self.secp);
 			htlc_tx.input[idx].witness = htlc_descriptor.tx_input_witness(&htlc_sig, &witness_script);
 		}
 
