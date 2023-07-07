@@ -1480,6 +1480,9 @@ pub struct ChannelDetails {
 	///
 	/// [`confirmations_required`]: ChannelDetails::confirmations_required
 	pub is_channel_ready: bool,
+	/// The stage of the channel's shutdown.
+	/// `None` for `ChannelDetails` serialized on LDK versions prior to 0.0.116.
+	pub channel_shutdown_state: Option<ChannelShutdownState>,
 	/// True if the channel is (a) confirmed and channel_ready messages have been exchanged, (b)
 	/// the peer is connected, and (c) the channel is not currently negotiating a shutdown.
 	///
@@ -1567,8 +1570,31 @@ impl ChannelDetails {
 			inbound_htlc_minimum_msat: Some(context.get_holder_htlc_minimum_msat()),
 			inbound_htlc_maximum_msat: context.get_holder_htlc_maximum_msat(),
 			config: Some(context.config()),
+			channel_shutdown_state: Some(context.shutdown_state()),
 		}
 	}
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Further information on the details of the channel shutdown.
+/// Upon channels being forced closed (i.e. commitment transaction confirmation detected
+/// by `ChainMonitor`), ChannelShutdownState will be set to `ShutdownComplete` or
+/// the channel will be removed shortly.
+/// Also note, that in normal operation, peers could disconnect at any of these states
+/// and require peer re-connection before making progress onto other states
+pub enum ChannelShutdownState {
+	/// Channel has not sent or received a shutdown message.
+	NotShuttingDown,
+	/// Local node has sent a shutdown message for this channel.
+	ShutdownInitiated,
+	/// Shutdown message exchanges have concluded and the channels are in the midst of
+	/// resolving all existing open HTLCs before closing can continue.
+	ResolvingHTLCs,
+	/// All HTLCs have been resolved, nodes are currently negotiating channel close onchain fee rates.
+	NegotiatingClosingFee,
+	/// We've successfully negotiated a closing_signed dance. At this point `ChannelManager` is about
+	/// to drop the channel.
+	ShutdownComplete,
 }
 
 /// Used by [`ChannelManager::list_recent_payments`] to express the status of recent payments.
@@ -7365,6 +7391,7 @@ impl Writeable for ChannelDetails {
 			(35, self.inbound_htlc_maximum_msat, option),
 			(37, user_channel_id_high_opt, option),
 			(39, self.feerate_sat_per_1000_weight, option),
+			(41, self.channel_shutdown_state, option),
 		});
 		Ok(())
 	}
@@ -7402,6 +7429,7 @@ impl Readable for ChannelDetails {
 			(35, inbound_htlc_maximum_msat, option),
 			(37, user_channel_id_high_opt, option),
 			(39, feerate_sat_per_1000_weight, option),
+			(41, channel_shutdown_state, option),
 		});
 
 		// `user_channel_id` used to be a single u64 value. In order to remain backwards compatible with
@@ -7437,6 +7465,7 @@ impl Readable for ChannelDetails {
 			inbound_htlc_minimum_msat,
 			inbound_htlc_maximum_msat,
 			feerate_sat_per_1000_weight,
+			channel_shutdown_state,
 		})
 	}
 }
@@ -7986,6 +8015,14 @@ impl Readable for VecDeque<(Event, Option<EventCompletionAction>)> {
 		Ok(events)
 	}
 }
+
+impl_writeable_tlv_based_enum!(ChannelShutdownState,
+	(0, NotShuttingDown) => {},
+	(2, ShutdownInitiated) => {},
+	(4, ResolvingHTLCs) => {},
+	(6, NegotiatingClosingFee) => {},
+	(8, ShutdownComplete) => {}, ;
+);
 
 /// Arguments for the creation of a ChannelManager that are not deserialized.
 ///

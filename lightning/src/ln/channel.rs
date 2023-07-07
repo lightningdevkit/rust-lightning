@@ -27,7 +27,7 @@ use crate::ln::features::{ChannelTypeFeatures, InitFeatures};
 use crate::ln::msgs;
 use crate::ln::msgs::DecodeError;
 use crate::ln::script::{self, ShutdownScript};
-use crate::ln::channelmanager::{self, CounterpartyForwardingInfo, PendingHTLCStatus, HTLCSource, SentHTLCId, HTLCFailureMsg, PendingHTLCInfo, RAACommitmentOrder, BREAKDOWN_TIMEOUT, MIN_CLTV_EXPIRY_DELTA, MAX_LOCAL_BREAKDOWN_TIMEOUT};
+use crate::ln::channelmanager::{self, CounterpartyForwardingInfo, PendingHTLCStatus, HTLCSource, SentHTLCId, HTLCFailureMsg, PendingHTLCInfo, RAACommitmentOrder, BREAKDOWN_TIMEOUT, MIN_CLTV_EXPIRY_DELTA, MAX_LOCAL_BREAKDOWN_TIMEOUT, ChannelShutdownState};
 use crate::ln::chan_utils::{CounterpartyCommitmentSecrets, TxCreationKeys, HTLCOutputInCommitment, htlc_success_tx_weight, htlc_timeout_tx_weight, make_funding_redeemscript, ChannelPublicKeys, CommitmentTransaction, HolderCommitmentTransaction, ChannelTransactionParameters, CounterpartyChannelTransactionParameters, MAX_HTLCS, get_commitment_transaction_number_obscure_factor, ClosingTransaction};
 use crate::ln::chan_utils;
 use crate::ln::onion_utils::HTLCFailReason;
@@ -901,6 +901,34 @@ impl<Signer: ChannelSigner> ChannelContext<Signer> {
 	pub fn is_usable(&self) -> bool {
 		let mask = ChannelState::ChannelReady as u32 | BOTH_SIDES_SHUTDOWN_MASK;
 		(self.channel_state & mask) == (ChannelState::ChannelReady as u32) && !self.monitor_pending_channel_ready
+	}
+
+	/// shutdown state returns the state of the channel in its various stages of shutdown
+	pub fn shutdown_state(&self) -> ChannelShutdownState {
+		if self.channel_state & (ChannelState::ShutdownComplete as u32) != 0 {
+			return ChannelShutdownState::ShutdownComplete;
+		}
+		if self.channel_state & (ChannelState::LocalShutdownSent as u32) != 0 &&  self.channel_state & (ChannelState::RemoteShutdownSent as u32) == 0 {
+			return ChannelShutdownState::ShutdownInitiated;
+		}
+		if (self.channel_state & BOTH_SIDES_SHUTDOWN_MASK != 0) && !self.closing_negotiation_ready() {
+			return ChannelShutdownState::ResolvingHTLCs;
+		}
+		if (self.channel_state & BOTH_SIDES_SHUTDOWN_MASK != 0) && self.closing_negotiation_ready() {
+			return ChannelShutdownState::NegotiatingClosingFee;
+		}
+		return ChannelShutdownState::NotShuttingDown;
+	}
+
+	fn closing_negotiation_ready(&self) -> bool {
+		self.pending_inbound_htlcs.is_empty() &&
+		self.pending_outbound_htlcs.is_empty() &&
+		self.pending_update_fee.is_none() &&
+		self.channel_state &
+		(BOTH_SIDES_SHUTDOWN_MASK |
+			ChannelState::AwaitingRemoteRevoke as u32 |
+			ChannelState::PeerDisconnected as u32 |
+			ChannelState::MonitorUpdateInProgress as u32) == BOTH_SIDES_SHUTDOWN_MASK
 	}
 
 	/// Returns true if this channel is currently available for use. This is a superset of
@@ -3956,12 +3984,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 	/// this point if we're the funder we should send the initial closing_signed, and in any case
 	/// shutdown should complete within a reasonable timeframe.
 	fn closing_negotiation_ready(&self) -> bool {
-		self.context.pending_inbound_htlcs.is_empty() && self.context.pending_outbound_htlcs.is_empty() &&
-			self.context.channel_state &
-				(BOTH_SIDES_SHUTDOWN_MASK | ChannelState::AwaitingRemoteRevoke as u32 |
-				 ChannelState::PeerDisconnected as u32 | ChannelState::MonitorUpdateInProgress as u32)
-				== BOTH_SIDES_SHUTDOWN_MASK &&
-			self.context.pending_update_fee.is_none()
+		self.context.closing_negotiation_ready()
 	}
 
 	/// Checks if the closing_signed negotiation is making appropriate progress, possibly returning

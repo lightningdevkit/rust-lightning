@@ -270,6 +270,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 								inbound_htlc_maximum_msat: None,
 								config: None,
 								feerate_sat_per_1000_weight: None,
+								channel_shutdown_state: Some(channelmanager::ChannelShutdownState::NotShuttingDown),
 							});
 						}
 						Some(&first_hops_vec[..])

@@ -1951,6 +1951,16 @@ macro_rules! expect_payment_forwarded {
 	}
 }
 
+#[cfg(test)]
+#[macro_export]
+macro_rules! expect_channel_shutdown_state {
+	($node: expr, $chan_id: expr, $state: path) => {
+		let chan_details = $node.node.list_channels().into_iter().filter(|cd| cd.channel_id == $chan_id).collect::<Vec<ChannelDetails>>();
+		assert_eq!(chan_details.len(), 1);
+		assert_eq!(chan_details[0].channel_shutdown_state, Some($state));
+	}
+}
+
 #[cfg(any(test, ldk_bench, feature = "_test_utils"))]
 pub fn expect_channel_pending_event<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, expected_counterparty_node_id: &PublicKey) {
 	let events = node.node.get_and_clear_pending_events();

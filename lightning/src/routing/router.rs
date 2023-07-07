@@ -2687,7 +2687,8 @@ mod tests {
 			inbound_htlc_minimum_msat: None,
 			inbound_htlc_maximum_msat: None,
 			config: None,
-			feerate_sat_per_1000_weight: None
+			feerate_sat_per_1000_weight: None,
+			channel_shutdown_state: Some(channelmanager::ChannelShutdownState::NotShuttingDown),
 		}
 	}
 
@@ -6758,6 +6759,7 @@ pub(crate) mod bench_utils {
 			inbound_htlc_maximum_msat: None,
 			config: None,
 			feerate_sat_per_1000_weight: None,
+			channel_shutdown_state: Some(channelmanager::ChannelShutdownState::NotShuttingDown),
 		}
 	}
 
