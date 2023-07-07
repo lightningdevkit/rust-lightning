@@ -1056,7 +1056,7 @@ impl_writeable_tlv_based!(HolderCommitmentTransaction, {
 	(0, inner, required),
 	(2, counterparty_sig, required),
 	(4, holder_sig_first, required),
-	(6, counterparty_htlc_sigs, vec_type),
+	(6, counterparty_htlc_sigs, required_vec),
 });
 
 impl HolderCommitmentTransaction {
@@ -1346,7 +1346,7 @@ impl Writeable for CommitmentTransaction {
 			(6, self.feerate_per_kw, required),
 			(8, self.keys, required),
 			(10, self.built, required),
-			(12, self.htlcs, vec_type),
+			(12, self.htlcs, required_vec),
 			(14, legacy_deserialization_prevention_marker, option),
 			(15, self.channel_type_features, required),
 		});
@@ -1356,24 +1356,14 @@ impl Writeable for CommitmentTransaction {
 
 impl Readable for CommitmentTransaction {
 	fn read<R: io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
-		let mut commitment_number = RequiredWrapper(None);
-		let mut to_broadcaster_value_sat = RequiredWrapper(None);
-		let mut to_countersignatory_value_sat = RequiredWrapper(None);
-		let mut feerate_per_kw = RequiredWrapper(None);
-		let mut keys = RequiredWrapper(None);
-		let mut built = RequiredWrapper(None);
-		_init_tlv_field_var!(htlcs, vec_type);
-		let mut _legacy_deserialization_prevention_marker: Option<()> = None;
-		let mut channel_type_features = None;
-
-		read_tlv_fields!(reader, {
+		_init_and_read_tlv_fields!(reader, {
 			(0, commitment_number, required),
 			(2, to_broadcaster_value_sat, required),
 			(4, to_countersignatory_value_sat, required),
 			(6, feerate_per_kw, required),
 			(8, keys, required),
 			(10, built, required),
-			(12, htlcs, vec_type),
+			(12, htlcs, required_vec),
 			(14, _legacy_deserialization_prevention_marker, option),
 			(15, channel_type_features, option),
 		});
@@ -1389,7 +1379,7 @@ impl Readable for CommitmentTransaction {
 			feerate_per_kw: feerate_per_kw.0.unwrap(),
 			keys: keys.0.unwrap(),
 			built: built.0.unwrap(),
-			htlcs: _init_tlv_based_struct_field!(htlcs, vec_type),
+			htlcs,
 			channel_type_features: channel_type_features.unwrap_or(ChannelTypeFeatures::only_static_remote_key())
 		})
 	}
