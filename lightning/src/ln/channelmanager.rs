@@ -507,19 +507,19 @@ struct ClaimablePayments {
 /// running normally, and specifically must be processed before any other non-background
 /// [`ChannelMonitorUpdate`]s are applied.
 enum BackgroundEvent {
-	/// Handle a ChannelMonitorUpdate which closes the channel. This is only separated from
-	/// [`Self::MonitorUpdateRegeneratedOnStartup`] as the maybe-non-closing variant needs a public
-	/// key to handle channel resumption, whereas if the channel has been force-closed we do not
-	/// need the counterparty node_id.
+	/// Handle a ChannelMonitorUpdate which closes the channel or for an already-closed channel.
+	/// This is only separated from [`Self::MonitorUpdateRegeneratedOnStartup`] as the
+	/// maybe-non-closing variant needs a public key to handle channel resumption, whereas if the
+	/// channel has been force-closed we do not need the counterparty node_id.
 	///
 	/// Note that any such events are lost on shutdown, so in general they must be updates which
 	/// are regenerated on startup.
-	ClosingMonitorUpdateRegeneratedOnStartup((OutPoint, ChannelMonitorUpdate)),
+	ClosedMonitorUpdateRegeneratedOnStartup((OutPoint, ChannelMonitorUpdate)),
 	/// Handle a ChannelMonitorUpdate which may or may not close the channel and may unblock the
 	/// channel to continue normal operation.
 	///
 	/// In general this should be used rather than
-	/// [`Self::ClosingMonitorUpdateRegeneratedOnStartup`], however in cases where the
+	/// [`Self::ClosedMonitorUpdateRegeneratedOnStartup`], however in cases where the
 	/// `counterparty_node_id` is not available as the channel has closed from a [`ChannelMonitor`]
 	/// error the other variant is acceptable.
 	///
@@ -4103,7 +4103,7 @@ where
 
 		for event in background_events.drain(..) {
 			match event {
-				BackgroundEvent::ClosingMonitorUpdateRegeneratedOnStartup((funding_txo, update)) => {
+				BackgroundEvent::ClosedMonitorUpdateRegeneratedOnStartup((funding_txo, update)) => {
 					// The channel has already been closed, so no use bothering to care about the
 					// monitor updating completing.
 					let _ = self.chain_monitor.update_channel(funding_txo, &update);
@@ -4763,7 +4763,7 @@ where
 			// If we're running during init we cannot update a monitor directly - they probably
 			// haven't actually been loaded yet. Instead, push the monitor update as a background
 			// event.
-			// Note that while its safe to use `ClosingMonitorUpdateRegeneratedOnStartup` here (the
+			// Note that while it's safe to use `ClosedMonitorUpdateRegeneratedOnStartup` here (the
 			// channel is already closed) we need to ultimately handle the monitor update
 			// completion action only after we've completed the monitor update. This is the only
 			// way to guarantee this update *will* be regenerated on startup (otherwise if this was
@@ -4771,7 +4771,7 @@ where
 			// upstream). Thus, we need to transition to some new `BackgroundEvent` type which will
 			// complete the monitor update completion action from `completion_action`.
 			self.pending_background_events.lock().unwrap().push(
-				BackgroundEvent::ClosingMonitorUpdateRegeneratedOnStartup((
+				BackgroundEvent::ClosedMonitorUpdateRegeneratedOnStartup((
 					prev_hop.outpoint, preimage_update,
 				)));
 		}
@@ -8262,7 +8262,7 @@ where
 					update_id: CLOSED_CHANNEL_UPDATE_ID,
 					updates: vec![ChannelMonitorUpdateStep::ChannelForceClosed { should_broadcast: true }],
 				};
-				close_background_events.push(BackgroundEvent::ClosingMonitorUpdateRegeneratedOnStartup((*funding_txo, monitor_update)));
+				close_background_events.push(BackgroundEvent::ClosedMonitorUpdateRegeneratedOnStartup((*funding_txo, monitor_update)));
 			}
 		}
 
