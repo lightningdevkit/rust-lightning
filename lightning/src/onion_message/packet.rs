@@ -169,7 +169,7 @@ impl<T: CustomOnionMessageContents> Writeable for (Payload<T>, [u8; 32]) {
 		match &self.0 {
 			Payload::Forward(ForwardControlTlvs::Blinded(encrypted_bytes)) => {
 				_encode_varint_length_prefixed_tlv!(w, {
-					(4, *encrypted_bytes, vec_type)
+					(4, *encrypted_bytes, required_vec)
 				})
 			},
 			Payload::Receive {
@@ -177,7 +177,7 @@ impl<T: CustomOnionMessageContents> Writeable for (Payload<T>, [u8; 32]) {
 			} => {
 				_encode_varint_length_prefixed_tlv!(w, {
 					(2, reply_path, option),
-					(4, *encrypted_bytes, vec_type),
+					(4, *encrypted_bytes, required_vec),
 					(message.tlv_type(), message, required)
 				})
 			},

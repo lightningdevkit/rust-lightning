@@ -645,7 +645,7 @@ impl_writeable_tlv_based_enum!(HTLCFailReasonRepr,
 	},
 	(1, Reason) => {
 		(0, failure_code, required),
-		(2, data, vec_type),
+		(2, data, required_vec),
 	},
 ;);
 

@@ -3760,7 +3760,7 @@ mod tests {
 		let test_bytes = vec![42u8; 1000];
 		if let OnionHopDataFormat::NonFinalNode { short_channel_id } = payload.format {
 			_encode_varint_length_prefixed_tlv!(&mut encoded_payload, {
-				(1, test_bytes, vec_type),
+				(1, test_bytes, required_vec),
 				(2, HighZeroBytesDroppedBigSize(payload.amt_to_forward), required),
 				(4, HighZeroBytesDroppedBigSize(payload.outgoing_cltv_value), required),
 				(6, short_channel_id, required)

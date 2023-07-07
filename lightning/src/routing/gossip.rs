@@ -1120,26 +1120,26 @@ impl Writeable for NodeAnnouncementInfo {
 			(4, self.rgb, required),
 			(6, self.alias, required),
 			(8, self.announcement_message, option),
-			(10, empty_addresses, vec_type), // Versions prior to 0.0.115 require this field
+			(10, empty_addresses, required_vec), // Versions prior to 0.0.115 require this field
 		});
 		Ok(())
 	}
 }
 
 impl Readable for NodeAnnouncementInfo {
-    fn read<R: io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
+	fn read<R: io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
 		_init_and_read_tlv_fields!(reader, {
 			(0, features, required),
 			(2, last_update, required),
 			(4, rgb, required),
 			(6, alias, required),
 			(8, announcement_message, option),
-			(10, _addresses, vec_type), // deprecated, not used anymore
+			(10, _addresses, optional_vec), // deprecated, not used anymore
 		});
 		let _: Option<Vec<NetAddress>> = _addresses;
 		Ok(Self { features: features.0.unwrap(), last_update: last_update.0.unwrap(), rgb: rgb.0.unwrap(),
 			alias: alias.0.unwrap(), announcement_message })
-    }
+	}
 }
 
 /// A user-defined name for a node, which may be used when displaying the node in a graph.
@@ -1205,7 +1205,7 @@ impl Writeable for NodeInfo {
 		write_tlv_fields!(writer, {
 			// Note that older versions of LDK wrote the lowest inbound fees here at type 0
 			(2, self.announcement_info, option),
-			(4, self.channels, vec_type),
+			(4, self.channels, required_vec),
 		});
 		Ok(())
 	}
@@ -1236,19 +1236,17 @@ impl Readable for NodeInfo {
 		// with zero inbound fees, causing that heuristic to provide little gain. Worse, because it
 		// requires additional complexity and lookups during routing, it ends up being a
 		// performance loss. Thus, we simply ignore the old field here and no longer track it.
-		let mut _lowest_inbound_channel_fees: Option<RoutingFees> = None;
-		let mut announcement_info_wrap: Option<NodeAnnouncementInfoDeserWrapper> = None;
-		_init_tlv_field_var!(channels, vec_type);
-
-		read_tlv_fields!(reader, {
+		_init_and_read_tlv_fields!(reader, {
 			(0, _lowest_inbound_channel_fees, option),
 			(2, announcement_info_wrap, upgradable_option),
-			(4, channels, vec_type),
+			(4, channels, required_vec),
 		});
+		let _: Option<RoutingFees> = _lowest_inbound_channel_fees;
+		let announcement_info_wrap: Option<NodeAnnouncementInfoDeserWrapper> = announcement_info_wrap;
 
 		Ok(NodeInfo {
 			announcement_info: announcement_info_wrap.map(|w| w.0),
-			channels: _init_tlv_based_struct_field!(channels, vec_type),
+			channels,
 		})
 	}
 }
