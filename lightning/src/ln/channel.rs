@@ -6781,7 +6781,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Writeable for Channel<Signer> {
 			(5, self.context.config, required),
 			(6, serialized_holder_htlc_max_in_flight, option),
 			(7, self.context.shutdown_scriptpubkey, option),
-			(8, self.context.blocked_monitor_updates, vec_type),
+			(8, self.context.blocked_monitor_updates, optional_vec),
 			(9, self.context.target_closing_feerate_sats_per_kw, option),
 			(11, self.context.monitor_pending_finalized_fulfills, vec_type),
 			(13, self.context.channel_creation_height, required),
@@ -7089,7 +7089,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 			(5, config, option), // Note that if none is provided we will *not* overwrite the existing one.
 			(6, holder_max_htlc_value_in_flight_msat, option),
 			(7, shutdown_scriptpubkey, option),
-			(8, blocked_monitor_updates, vec_type),
+			(8, blocked_monitor_updates, optional_vec),
 			(9, target_closing_feerate_sats_per_kw, option),
 			(11, monitor_pending_finalized_fulfills, vec_type),
 			(13, channel_creation_height, option),
