@@ -104,12 +104,23 @@ pub(crate) fn next_hop_packet_pubkey<T: secp256k1::Signing + secp256k1::Verifica
 
 // can only fail if an intermediary hop has an invalid public key or session_priv is invalid
 #[inline]
-pub(super) fn construct_onion_keys_callback<T: secp256k1::Signing, FType: FnMut(SharedSecret, [u8; 32], PublicKey, &RouteHop, usize)> (secp_ctx: &Secp256k1<T>, path: &Vec<RouteHop>, session_priv: &SecretKey, mut callback: FType) -> Result<(), secp256k1::Error> {
+pub(super) fn construct_onion_keys_callback<T, FType>(
+	secp_ctx: &Secp256k1<T>, path: &Path, session_priv: &SecretKey, mut callback: FType
+) -> Result<(), secp256k1::Error>
+where
+	T: secp256k1::Signing,
+	FType: FnMut(SharedSecret, [u8; 32], PublicKey, Option<&RouteHop>, usize)
+{
 	let mut blinded_priv = session_priv.clone();
 	let mut blinded_pub = PublicKey::from_secret_key(secp_ctx, &blinded_priv);
 
-	for (idx, hop) in path.iter().enumerate() {
-		let shared_secret = SharedSecret::new(&hop.pubkey, &blinded_priv);
+	let unblinded_hops_iter = path.hops.iter().map(|h| (&h.pubkey, Some(h)));
+	let blinded_pks_iter = path.blinded_tail.as_ref()
+		.map(|t| t.hops.iter()).unwrap_or([].iter())
+		.skip(1) // Skip the intro node because it's included in the unblinded hops
+		.map(|h| (&h.blinded_node_id, None));
+	for (idx, (pubkey, route_hop_opt)) in unblinded_hops_iter.chain(blinded_pks_iter).enumerate() {
+		let shared_secret = SharedSecret::new(pubkey, &blinded_priv);
 
 		let mut sha = Sha256::engine();
 		sha.input(&blinded_pub.serialize()[..]);
@@ -121,7 +132,7 @@ pub(super) fn construct_onion_keys_callback<T: secp256k1::Signing, FType: FnMut(
 		blinded_priv = blinded_priv.mul_tweak(&Scalar::from_be_bytes(blinding_factor).unwrap())?;
 		blinded_pub = PublicKey::from_secret_key(secp_ctx, &blinded_priv);
 
-		callback(shared_secret, blinding_factor, ephemeral_pubkey, hop, idx);
+		callback(shared_secret, blinding_factor, ephemeral_pubkey, route_hop_opt, idx);
 	}
 
 	Ok(())
@@ -131,7 +142,9 @@ pub(super) fn construct_onion_keys_callback<T: secp256k1::Signing, FType: FnMut(
 pub(super) fn construct_onion_keys<T: secp256k1::Signing>(secp_ctx: &Secp256k1<T>, path: &Path, session_priv: &SecretKey) -> Result<Vec<OnionKeys>, secp256k1::Error> {
 	let mut res = Vec::with_capacity(path.hops.len());
 
-	construct_onion_keys_callback(secp_ctx, &path.hops, session_priv, |shared_secret, _blinding_factor, ephemeral_pubkey, _, _| {
+	construct_onion_keys_callback(secp_ctx, &path, session_priv,
+		|shared_secret, _blinding_factor, ephemeral_pubkey, _, _|
+	{
 		let (rho, mu) = gen_rho_mu_from_shared_secret(shared_secret.as_ref());
 
 		res.push(OnionKeys {
@@ -400,9 +413,27 @@ where L::Target: Logger {
 	let mut error_packet_ret = None;
 	let mut is_from_final_node = false;
 
+	const BADONION: u16 = 0x8000;
+	const PERM: u16 = 0x4000;
+	const NODE: u16 = 0x2000;
+	const UPDATE: u16 = 0x1000;
+
 	// Handle packed channel/node updates for passing back for the route handler
-	construct_onion_keys_callback(secp_ctx, &path.hops, session_priv, |shared_secret, _, _, route_hop, route_hop_idx| {
+	construct_onion_keys_callback(secp_ctx, &path, session_priv,
+		|shared_secret, _, _, route_hop_opt, route_hop_idx|
+	{
 		if res.is_some() { return; }
+
+		let route_hop = match route_hop_opt {
+			Some(hop) => hop,
+			None => {
+				// Got an error from within a blinded route.
+				error_code_ret = Some(BADONION | PERM | 24); // invalid_onion_blinding
+				error_packet_ret = Some(vec![0; 32]);
+				is_from_final_node = false;
+				return
+			},
+		};
 
 		let amt_to_forward = htlc_msat - route_hop.fee_msat;
 		htlc_msat = amt_to_forward;
@@ -443,10 +474,6 @@ where L::Target: Logger {
 				return
 			}
 		};
-		const BADONION: u16 = 0x8000;
-		const PERM: u16 = 0x4000;
-		const NODE: u16 = 0x2000;
-		const UPDATE: u16 = 0x1000;
 
 		let error_code = u16::from_be_bytes(error_code_slice.try_into().expect("len is 2"));
 		error_code_ret = Some(error_code);
