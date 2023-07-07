@@ -3043,8 +3043,12 @@ where
 
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 		let peer_state = &mut *peer_state_lock;
-		let (msg, chan) = match peer_state.channel_by_id.remove(channel_id) {
-			Some(mut chan) => {
+		// Note on channel/channel_id handling:
+		// In funding_transaction_generated_intern(), channel is removed (with temp ID), then re-added (with new ID)
+		// Here we don't change the channel_id (which is a gross oversimplification and incorrect), hence no need to remove and readd.
+		// Here we don't change the channel.
+		let (msg, chan_cparty_node_id) = match peer_state.channel_by_id.get_mut(channel_id) {
+			Some(chan) => {
 				let funding_txo = find_funding_output(&chan, &splice_transaction)?;
 
 				let funding_res = chan.get_outbound_splice_created(splice_transaction, funding_txo, &self.logger)
@@ -3052,12 +3056,13 @@ where
 						MsgHandleErrInternal::from_finish_shutdown(msg, chan.channel_id(), chan.get_user_id(), chan.force_shutdown(true), None)
 					} else { unreachable!(); });
 				match funding_res {
-					Ok(splicing_msg) => (splicing_msg, chan),
+					Ok(splicing_msg) => (splicing_msg, chan.get_counterparty_node_id()),
 					Err(_) => {
+						let counterparty_node_id = chan.get_counterparty_node_id().clone();
 						mem::drop(peer_state_lock);
 						mem::drop(per_peer_state);
 
-						let _ = handle_error!(self, funding_res, chan.get_counterparty_node_id());
+						let _ = handle_error!(self, funding_res, counterparty_node_id);
 						return Err(APIError::ChannelUnavailable {
 							err: "Signer refused to sign the post-splice commitment transaction".to_owned()
 						});
@@ -3074,10 +3079,10 @@ where
 		};
 
 		peer_state.pending_msg_events.push(events::MessageSendEvent::SendSpliceCreated {
-			node_id: chan.get_counterparty_node_id(),
+			node_id: chan_cparty_node_id, // chan.get_counterparty_node_id(),
 			msg,
 		});
-		// channel handling: not needed, as we don't change channel_id here TODO
+		// No need to re-add channel; see above
 		/*
 		match peer_state.channel_by_id.entry(chan.channel_id()) {
 			hash_map::Entry::Occupied(_) => {

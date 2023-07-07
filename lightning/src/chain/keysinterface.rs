@@ -267,6 +267,10 @@ pub trait ChannelSigner {
 	///
 	/// channel_parameters.is_populated() MUST be true.
 	fn provide_channel_parameters(&mut self, channel_parameters: &ChannelTransactionParameters);
+
+	/// #SPLICING
+	/// Similar to provide_channel_parameters(), but can be called a second time (or even more)
+	fn reprovide_channel_parameters(&mut self, channel_parameters: &ChannelTransactionParameters);
 }
 
 /// A trait to sign Lightning channel transactions as described in
@@ -796,6 +800,13 @@ impl ChannelSigner for InMemorySigner {
 			// The channel parameters were already set and they match, return early.
 			return;
 		}
+		assert!(channel_parameters.is_populated(), "Channel parameters must be fully populated");
+		self.channel_parameters = Some(channel_parameters.clone());
+	}
+
+	/// #SPLICING
+	fn reprovide_channel_parameters(&mut self, channel_parameters: &ChannelTransactionParameters) {
+		assert!(self.channel_parameters.is_some());
 		assert!(channel_parameters.is_populated(), "Channel parameters must be fully populated");
 		self.channel_parameters = Some(channel_parameters.clone());
 	}

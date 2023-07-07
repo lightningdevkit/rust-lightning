@@ -126,6 +126,11 @@ impl ChannelSigner for EnforcingSigner {
 	fn provide_channel_parameters(&mut self, channel_parameters: &ChannelTransactionParameters) {
 		self.inner.provide_channel_parameters(channel_parameters)
 	}
+
+	/// #SPLICING
+	fn reprovide_channel_parameters(&mut self, channel_parameters: &ChannelTransactionParameters) {
+		self.inner.reprovide_channel_parameters(channel_parameters)
+	}
 }
 
 impl EcdsaChannelSigner for EnforcingSigner {

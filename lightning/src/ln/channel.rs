@@ -1644,7 +1644,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			}
 		}
 
-		let mut value_to_self_msat: i64 = (self.value_to_self_msat - local_htlc_total_msat) as i64 + value_to_self_msat_offset;
+	let mut value_to_self_msat: i64 = (self.value_to_self_msat - local_htlc_total_msat) as i64 + value_to_self_msat_offset;
 		assert!(value_to_self_msat >= 0);
 		// Note that in case they have several just-awaiting-last-RAA fulfills in-progress (ie
 		// AwaitingRemoteRevokeToRemove or AwaitingRemovedRemoteRevoke) we may have allowed them to
@@ -5478,6 +5478,33 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 	}
 
 	/// #SPLICING
+	/// Update channel capacity to a new value
+	/// It is assumed that the increase is coming to A's side
+	fn update_channel_value<L: Deref>(&mut self, new_value_sats: u64, logger: &L) -> Result<(), ChannelError> where L::Target: Logger {
+		let old_value = self.channel_value_satoshis;
+		let delta_msats = (new_value_sats as i64 - old_value as i64) * 1000;
+		// Check if not reducing by too much
+		if delta_msats < 0 && -delta_msats > self.value_to_self_msat as i64 {
+			return Err(ChannelError::Close("Cannot decrease channel value to requested amount, too low".to_string()));
+		}
+		self.value_to_self_msat = (self.value_to_self_msat as i64 + delta_msats) as u64;
+
+		self.channel_value_satoshis = new_value_sats;
+		log_trace!(logger, "Changing channel value, channel_id {:?}  old {}  new {}", self.channel_id(), old_value, self.channel_value_satoshis);
+		Ok(())
+	}
+
+	/// #SPLICING
+	/// Update channel capacity (value) during a splicing process
+	pub fn commit_pending_splicing_channel_value<L: Deref>(&mut self, logger: &L) -> Result<(), ChannelError> where L::Target: Logger {
+		let old_value = self.channel_value_satoshis;
+		let _ = self.update_channel_value(self.pending_splicing_channel_value, logger)?;
+		self.pending_splicing_channel_value = 0;
+		log_trace!(logger, "Changing channel value, channel_id {:?}  old {}  new {}", self.channel_id(), old_value, self.channel_value_satoshis);
+		Ok(())
+	}
+
+	/// #SPLICING
 	/// Updates channel state with knowledge of the splicing transaction's txid/index, and generates
 	/// a splice_created message for the remote peer.
 	/// Panics if called at some time other than immediately after splice acknowledgement, if called twice,
@@ -5500,12 +5527,16 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		}
 		*/
 
+		// Commit to the new channel value (capacity)
+		// TODO: what if the the new splicing TX never locks?
+		let _ = self.commit_pending_splicing_channel_value(logger)?;
+
 		// Save splice TX (in temp field?)
 		// TODO Do we need to store this in a separate (splice-specific) field, so that old funding is also available?
 		// self.pending_splice_transaction_parameters = self.channel_transaction_parameters;
 		self.channel_transaction_parameters.funding_outpoint = Some(splice_txo);
-		// Set tx parameters, for commitment signing TODO
-		// self.holder_signer.provide_channel_parameters(&self.channel_transaction_parameters);
+		// Set tx parameters, for commitment signing
+		self.holder_signer.reprovide_channel_parameters(&self.channel_transaction_parameters);
 
 		let signature = match self.get_outbound_funding_created_signature(logger) {
 			Ok(res) => res,

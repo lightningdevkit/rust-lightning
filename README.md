@@ -19,14 +19,16 @@ Splicing Prototype
 'Happy Path' PoC for Splicing
 
 Objective, Restrictions:
-- Splice-in supported
+- Splice-in supported (increase channel capacity)
 - between two LDK instances
 - No quiscence is used/checked
 - Happy path only, no complex combinations, no error scenarios
 - Prototype with minimal changes
 - Semantics of some splicing messages is not fully according to specs
-- Some changed splicing messages (e.g. splice_created, splice_signed)
-- Only a single splicing supported
+- TX negotiation messages are skipped, two simpler messages are used instead (splice_created, splice_signed)
+- It is assumed that all extra inputs belong to the initiator (the full capacity increase is credited to the channel initiator)
+- Only a single pending splicing is supported
+- The channel ID is not changed during splicing (which is incorrect)
 
 Branched off v0.0.115.
 
