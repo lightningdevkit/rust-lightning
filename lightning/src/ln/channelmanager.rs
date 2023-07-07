@@ -45,7 +45,7 @@ use crate::ln::features::{ChannelFeatures, ChannelTypeFeatures, InitFeatures, No
 #[cfg(any(feature = "_test_utils", test))]
 use crate::ln::features::InvoiceFeatures;
 use crate::routing::gossip::NetworkGraph;
-use crate::routing::router::{BlindedTail, DefaultRouter, InFlightHtlcs, Path, Payee, PaymentParameters, Route, RouteHop, RouteParameters, Router};
+use crate::routing::router::{BlindedTail, DefaultRouter, InFlightHtlcs, Path, Payee, PaymentParameters, Route, RouteParameters, Router};
 use crate::routing::scoring::{ProbabilisticScorer, ProbabilisticScoringFeeParameters};
 use crate::ln::msgs;
 use crate::ln::onion_utils;
@@ -3170,6 +3170,7 @@ where
 	/// irrevocably committed to on our end. In such a case, do NOT retry the payment with a
 	/// different route unless you intend to pay twice!
 	///
+	/// [`RouteHop`]: crate::routing::router::RouteHop
 	/// [`Event::PaymentSent`]: events::Event::PaymentSent
 	/// [`Event::PaymentFailed`]: events::Event::PaymentFailed
 	/// [`UpdateHTLCs`]: events::MessageSendEvent::UpdateHTLCs
@@ -7442,7 +7443,7 @@ impl Readable for ChannelDetails {
 }
 
 impl_writeable_tlv_based!(PhantomRouteHints, {
-	(2, channels, vec_type),
+	(2, channels, required_vec),
 	(4, phantom_scid, required),
 	(6, real_node_pubkey, required),
 });
@@ -7634,7 +7635,7 @@ impl Readable for HTLCSource {
 			0 => {
 				let mut session_priv: crate::util::ser::RequiredWrapper<SecretKey> = crate::util::ser::RequiredWrapper(None);
 				let mut first_hop_htlc_msat: u64 = 0;
-				let mut path_hops: Option<Vec<RouteHop>> = Some(Vec::new());
+				let mut path_hops = Vec::new();
 				let mut payment_id = None;
 				let mut payment_params: Option<PaymentParameters> = None;
 				let mut blinded_tail: Option<BlindedTail> = None;
@@ -7642,7 +7643,7 @@ impl Readable for HTLCSource {
 					(0, session_priv, required),
 					(1, payment_id, option),
 					(2, first_hop_htlc_msat, required),
-					(4, path_hops, vec_type),
+					(4, path_hops, required_vec),
 					(5, payment_params, (option: ReadableArgs, 0)),
 					(6, blinded_tail, option),
 				});
@@ -7651,7 +7652,7 @@ impl Readable for HTLCSource {
 					// instead.
 					payment_id = Some(PaymentId(*session_priv.0.unwrap().as_ref()));
 				}
-				let path = Path { hops: path_hops.ok_or(DecodeError::InvalidValue)?, blinded_tail };
+				let path = Path { hops: path_hops, blinded_tail };
 				if path.hops.len() == 0 {
 					return Err(DecodeError::InvalidValue);
 				}
@@ -7686,7 +7687,7 @@ impl Writeable for HTLCSource {
 					(1, payment_id_opt, option),
 					(2, first_hop_htlc_msat, required),
 					// 3 was previously used to write a PaymentSecret for the payment.
-					(4, path.hops, vec_type),
+					(4, path.hops, required_vec),
 					(5, None::<PaymentParameters>, option), // payment_params in LDK versions prior to 0.0.115
 					(6, path.blinded_tail, option),
 				 });
@@ -7936,7 +7937,7 @@ where
 			(6, monitor_update_blocked_actions_per_peer, option),
 			(7, self.fake_scid_rand_bytes, required),
 			(8, if events_not_backwards_compatible { Some(&*events) } else { None }, option),
-			(9, htlc_purposes, vec_type),
+			(9, htlc_purposes, required_vec),
 			(10, in_flight_monitor_updates, option),
 			(11, self.probing_cookie_secret, required),
 			(13, htlc_onion_fields, optional_vec),
@@ -8375,7 +8376,7 @@ where
 			(6, monitor_update_blocked_actions_per_peer, option),
 			(7, fake_scid_rand_bytes, option),
 			(8, events_override, option),
-			(9, claimable_htlc_purposes, vec_type),
+			(9, claimable_htlc_purposes, optional_vec),
 			(10, in_flight_monitor_updates, option),
 			(11, probing_cookie_secret, option),
 			(13, claimable_htlc_onion_fields, optional_vec),
