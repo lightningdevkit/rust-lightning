@@ -32,9 +32,6 @@ macro_rules! _encode_tlv {
 	($stream: expr, $type: expr, $field: expr, required_vec) => {
 		$crate::_encode_tlv!($stream, $type, $crate::util::ser::WithoutLength(&$field), required);
 	};
-	($stream: expr, $type: expr, $field: expr, vec_type) => {
-		$crate::_encode_tlv!($stream, $type, $crate::util::ser::WithoutLength(&$field), required);
-	};
 	($stream: expr, $optional_type: expr, $optional_field: expr, option) => {
 		if let Some(ref field) = $optional_field {
 			BigSize($optional_type).write($stream)?;
@@ -165,9 +162,6 @@ macro_rules! _get_varint_length_prefixed_tlv_length {
 	($len: expr, $type: expr, $field: expr, required_vec) => {
 		$crate::_get_varint_length_prefixed_tlv_length!($len, $type, $crate::util::ser::WithoutLength(&$field), required);
 	};
-	($len: expr, $type: expr, $field: expr, vec_type) => {
-		$crate::_get_varint_length_prefixed_tlv_length!($len, $type, $crate::util::ser::WithoutLength(&$field), required);
-	};
 	($len: expr, $optional_type: expr, $optional_field: expr, option) => {
 		if let Some(ref field) = $optional_field {
 			BigSize($optional_type).write(&mut $len).expect("No in-memory data may fail to serialize");
@@ -245,9 +239,6 @@ macro_rules! _check_decoded_tlv_order {
 	($last_seen_type: expr, $typ: expr, $type: expr, $field: ident, required_vec) => {{
 		$crate::_check_decoded_tlv_order!($last_seen_type, $typ, $type, $field, required);
 	}};
-	($last_seen_type: expr, $typ: expr, $type: expr, $field: ident, vec_type) => {{
-		// no-op
-	}};
 	($last_seen_type: expr, $typ: expr, $type: expr, $field: ident, optional_vec) => {{
 		// no-op
 	}};
@@ -293,9 +284,6 @@ macro_rules! _check_missing_tlv {
 	($last_seen_type: expr, $type: expr, $field: ident, required_vec) => {{
 		$crate::_check_missing_tlv!($last_seen_type, $type, $field, required);
 	}};
-	($last_seen_type: expr, $type: expr, $field: ident, vec_type) => {{
-		// no-op
-	}};
 	($last_seen_type: expr, $type: expr, $field: ident, option) => {{
 		// no-op
 	}};
@@ -336,15 +324,12 @@ macro_rules! _decode_tlv {
 		let f: $crate::util::ser::WithoutLength<Vec<_>> = $crate::util::ser::Readable::read(&mut $reader)?;
 		$field = f.0;
 	}};
-	($reader: expr, $field: ident, vec_type) => {{
-		let f: $crate::util::ser::WithoutLength<Vec<_>> = $crate::util::ser::Readable::read(&mut $reader)?;
-		$field = Some(f.0);
-	}};
 	($reader: expr, $field: ident, option) => {{
 		$field = Some($crate::util::ser::Readable::read(&mut $reader)?);
 	}};
 	($reader: expr, $field: ident, optional_vec) => {{
-		$crate::_decode_tlv!($reader, $field, vec_type);
+		let f: $crate::util::ser::WithoutLength<Vec<_>> = $crate::util::ser::Readable::read(&mut $reader)?;
+		$field = Some(f.0);
 	}};
 	// `upgradable_required` indicates we're reading a required TLV that may have been upgraded
 	// without backwards compat. We'll error if the field is missing, and return `Ok(None)` if the
@@ -713,9 +698,6 @@ macro_rules! _init_tlv_based_struct_field {
 	($field: ident, required_vec) => {
 		$field
 	};
-	($field: ident, vec_type) => {
-		$field.unwrap()
-	};
 	($field: ident, optional_vec) => {
 		$field.unwrap()
 	};
@@ -741,9 +723,6 @@ macro_rules! _init_tlv_field_var {
 	};
 	($field: ident, required_vec) => {
 		let mut $field = Vec::new();
-	};
-	($field: ident, vec_type) => {
-		let mut $field = Some(Vec::new());
 	};
 	($field: ident, option) => {
 		let mut $field = None;
