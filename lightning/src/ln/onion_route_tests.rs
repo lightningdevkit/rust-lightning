@@ -26,7 +26,7 @@ use crate::ln::msgs::{ChannelMessageHandler, ChannelUpdate};
 use crate::ln::wire::Encode;
 use crate::util::ser::{Writeable, Writer};
 use crate::util::test_utils;
-use crate::util::config::{UserConfig, ChannelConfig};
+use crate::util::config::{UserConfig, ChannelConfig, MaxDustHTLCExposure};
 use crate::util::errors::APIError;
 
 use bitcoin::hash_types::BlockHash;
@@ -671,6 +671,7 @@ fn do_test_onion_failure_stale_channel_update(announced_channel: bool) {
 	config.channel_handshake_config.announced_channel = announced_channel;
 	config.channel_handshake_limits.force_announced_channel_preference = false;
 	config.accept_forwards_to_priv_channels = !announced_channel;
+	config.channel_config.max_dust_htlc_exposure = MaxDustHTLCExposure::FeeRateMultiplier(5_000_000 / 253);
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 	let persister;
 	let chain_monitor;
@@ -1371,10 +1372,19 @@ fn test_phantom_failure_too_low_recv_amt() {
 
 #[test]
 fn test_phantom_dust_exposure_failure() {
+	do_test_phantom_dust_exposure_failure(false);
+	do_test_phantom_dust_exposure_failure(true);
+}
+
+fn do_test_phantom_dust_exposure_failure(multiplier_dust_limit: bool) {
 	// Set the max dust exposure to the dust limit.
 	let max_dust_exposure = 546;
 	let mut receiver_config = UserConfig::default();
-	receiver_config.channel_config.max_dust_htlc_exposure_msat = max_dust_exposure;
+	// Default test fee estimator rate is 253, so to set the max dust exposure to the dust limit,
+	// we need to set the multiplier to 2.
+	receiver_config.channel_config.max_dust_htlc_exposure =
+		if multiplier_dust_limit { MaxDustHTLCExposure::FeeRateMultiplier(2) }
+		else { MaxDustHTLCExposure::FixedLimitMsat(max_dust_exposure) };
 	receiver_config.channel_handshake_config.announced_channel = true;
 
 	let chanmon_cfgs = create_chanmon_cfgs(2);

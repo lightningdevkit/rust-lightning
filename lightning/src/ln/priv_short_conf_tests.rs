@@ -21,7 +21,7 @@ use crate::ln::features::ChannelTypeFeatures;
 use crate::ln::msgs;
 use crate::ln::msgs::{ChannelMessageHandler, RoutingMessageHandler, ChannelUpdate, ErrorAction};
 use crate::ln::wire::Encode;
-use crate::util::config::UserConfig;
+use crate::util::config::{UserConfig, MaxDustHTLCExposure};
 use crate::util::ser::Writeable;
 use crate::util::test_utils;
 
@@ -141,10 +141,12 @@ fn do_test_1_conf_open(connect_style: ConnectStyle) {
 	alice_config.channel_handshake_config.minimum_depth = 1;
 	alice_config.channel_handshake_config.announced_channel = true;
 	alice_config.channel_handshake_limits.force_announced_channel_preference = false;
+	alice_config.channel_config.max_dust_htlc_exposure = MaxDustHTLCExposure::FeeRateMultiplier(5_000_000 / 253);
 	let mut bob_config = UserConfig::default();
 	bob_config.channel_handshake_config.minimum_depth = 1;
 	bob_config.channel_handshake_config.announced_channel = true;
 	bob_config.channel_handshake_limits.force_announced_channel_preference = false;
+	bob_config.channel_config.max_dust_htlc_exposure = MaxDustHTLCExposure::FeeRateMultiplier(5_000_000 / 253);
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(alice_config), Some(bob_config)]);

@@ -981,7 +981,7 @@ macro_rules! impl_writeable_tlv_based_enum {
 						f()
 					}),*
 					$($tuple_variant_id => {
-						Ok($st::$tuple_variant_name(Readable::read(reader)?))
+						Ok($st::$tuple_variant_name($crate::util::ser::Readable::read(reader)?))
 					}),*
 					_ => {
 						Err($crate::ln::msgs::DecodeError::UnknownRequiredFeature)

@@ -1522,10 +1522,13 @@ impl ChannelDetails {
 		self.short_channel_id.or(self.outbound_scid_alias)
 	}
 
-	fn from_channel_context<Signer: WriteableEcdsaChannelSigner>(context: &ChannelContext<Signer>,
-		best_block_height: u32, latest_features: InitFeatures) -> Self {
-
-		let balance = context.get_available_balances();
+	fn from_channel_context<Signer: WriteableEcdsaChannelSigner, F: Deref>(
+		context: &ChannelContext<Signer>, best_block_height: u32, latest_features: InitFeatures,
+		fee_estimator: &LowerBoundedFeeEstimator<F>
+	) -> Self
+	where F::Target: FeeEstimator
+	{
+		let balance = context.get_available_balances(fee_estimator);
 		let (to_remote_reserve_satoshis, to_self_reserve_satoshis) =
 			context.get_holder_counterparty_selected_channel_reserve_satoshis();
 		ChannelDetails {
@@ -2240,7 +2243,7 @@ where
 				let peer_state = &mut *peer_state_lock;
 				for (_channel_id, channel) in peer_state.channel_by_id.iter().filter(f) {
 					let details = ChannelDetails::from_channel_context(&channel.context, best_block_height,
-						peer_state.latest_features.clone());
+						peer_state.latest_features.clone(), &self.fee_estimator);
 					res.push(details);
 				}
 			}
@@ -2266,17 +2269,17 @@ where
 				let peer_state = &mut *peer_state_lock;
 				for (_channel_id, channel) in peer_state.channel_by_id.iter() {
 					let details = ChannelDetails::from_channel_context(&channel.context, best_block_height,
-						peer_state.latest_features.clone());
+						peer_state.latest_features.clone(), &self.fee_estimator);
 					res.push(details);
 				}
 				for (_channel_id, channel) in peer_state.inbound_v1_channel_by_id.iter() {
 					let details = ChannelDetails::from_channel_context(&channel.context, best_block_height,
-						peer_state.latest_features.clone());
+						peer_state.latest_features.clone(), &self.fee_estimator);
 					res.push(details);
 				}
 				for (_channel_id, channel) in peer_state.outbound_v1_channel_by_id.iter() {
 					let details = ChannelDetails::from_channel_context(&channel.context, best_block_height,
-						peer_state.latest_features.clone());
+						peer_state.latest_features.clone(), &self.fee_estimator);
 					res.push(details);
 				}
 			}
@@ -2309,7 +2312,8 @@ where
 			return peer_state.channel_by_id
 				.iter()
 				.map(|(_, channel)|
-					ChannelDetails::from_channel_context(&channel.context, best_block_height, features.clone()))
+					ChannelDetails::from_channel_context(&channel.context, best_block_height,
+					features.clone(), &self.fee_estimator))
 				.collect();
 		}
 		vec![]
@@ -3113,7 +3117,7 @@ where
 						session_priv: session_priv.clone(),
 						first_hop_htlc_msat: htlc_msat,
 						payment_id,
-					}, onion_packet, None, &self.logger);
+					}, onion_packet, None, &self.fee_estimator, &self.logger);
 				match break_chan_entry!(self, send_res, chan) {
 					Some(monitor_update) => {
 						match handle_new_monitor_update!(self, funding_txo, monitor_update, peer_state_lock, peer_state, per_peer_state, chan) {
@@ -3830,7 +3834,8 @@ where
 										});
 										if let Err(e) = chan.get_mut().queue_add_htlc(outgoing_amt_msat,
 											payment_hash, outgoing_cltv_value, htlc_source.clone(),
-											onion_packet, skimmed_fee_msat, &self.logger)
+											onion_packet, skimmed_fee_msat, &self.fee_estimator,
+											&self.logger)
 										{
 											if let ChannelError::Ignore(msg) = e {
 												log_trace!(self.logger, "Failed to forward HTLC with payment_hash {}: {}", log_bytes!(payment_hash.0), msg);
@@ -4219,7 +4224,7 @@ where
 		log_trace!(self.logger, "Channel {} qualifies for a feerate change from {} to {}.",
 			log_bytes!(chan_id[..]), chan.context.get_feerate_sat_per_1000_weight(), new_feerate);
 
-		chan.queue_update_fee(new_feerate, &self.logger);
+		chan.queue_update_fee(new_feerate, &self.fee_estimator, &self.logger);
 		NotifyOption::DoPersist
 	}
 
@@ -5555,7 +5560,7 @@ where
 						_ => pending_forward_info
 					}
 				};
-				try_chan_entry!(self, chan.get_mut().update_add_htlc(&msg, pending_forward_info, create_pending_htlc_status, &self.logger), chan);
+				try_chan_entry!(self, chan.get_mut().update_add_htlc(&msg, pending_forward_info, create_pending_htlc_status, &self.fee_estimator, &self.logger), chan);
 			},
 			hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id))
 		}
@@ -5772,7 +5777,7 @@ where
 			match peer_state.channel_by_id.entry(msg.channel_id) {
 				hash_map::Entry::Occupied(mut chan) => {
 					let funding_txo = chan.get().context.get_funding_txo();
-					let (htlcs_to_fail, monitor_update_opt) = try_chan_entry!(self, chan.get_mut().revoke_and_ack(&msg, &self.logger), chan);
+					let (htlcs_to_fail, monitor_update_opt) = try_chan_entry!(self, chan.get_mut().revoke_and_ack(&msg, &self.fee_estimator, &self.logger), chan);
 					let res = if let Some(monitor_update) = monitor_update_opt {
 						handle_new_monitor_update!(self, funding_txo.unwrap(), monitor_update,
 							peer_state_lock, peer_state, per_peer_state, chan).map(|_| ())
@@ -6043,7 +6048,7 @@ where
 						let counterparty_node_id = chan.context.get_counterparty_node_id();
 						let funding_txo = chan.context.get_funding_txo();
 						let (monitor_opt, holding_cell_failed_htlcs) =
-							chan.maybe_free_holding_cell_htlcs(&self.logger);
+							chan.maybe_free_holding_cell_htlcs(&self.fee_estimator, &self.logger);
 						if !holding_cell_failed_htlcs.is_empty() {
 							failed_htlcs.push((holding_cell_failed_htlcs, *channel_id, counterparty_node_id));
 						}
@@ -10060,7 +10065,7 @@ pub mod bench {
 	use crate::routing::gossip::NetworkGraph;
 	use crate::routing::router::{PaymentParameters, RouteParameters};
 	use crate::util::test_utils;
-	use crate::util::config::UserConfig;
+	use crate::util::config::{UserConfig, MaxDustHTLCExposure};
 
 	use bitcoin::hashes::Hash;
 	use bitcoin::hashes::sha256::Hash as Sha256;
@@ -10107,6 +10112,7 @@ pub mod bench {
 		let router = test_utils::TestRouter::new(Arc::new(NetworkGraph::new(network, &logger_a)), &scorer);
 
 		let mut config: UserConfig = Default::default();
+		config.channel_config.max_dust_htlc_exposure = MaxDustHTLCExposure::FeeRateMultiplier(5_000_000 / 253);
 		config.channel_handshake_config.minimum_depth = 1;
 
 		let chain_monitor_a = ChainMonitor::new(None, &tx_broadcaster, &logger_a, &fee_estimator, &persister_a);
