@@ -269,8 +269,8 @@ pub trait ChannelSigner {
 	fn provide_channel_parameters(&mut self, channel_parameters: &ChannelTransactionParameters);
 
 	/// #SPLICING
-	/// Similar to provide_channel_parameters(), but can be called a second time (or even more)
-	fn reprovide_channel_parameters(&mut self, channel_parameters: &ChannelTransactionParameters);
+	/// Similar to provide_channel_parameters(), but can be called a second time (or even more). Also update channel value (capacity)
+	fn reprovide_channel_parameters(&mut self, channel_parameters: &ChannelTransactionParameters, channel_value_satoshis: u64);
 }
 
 /// A trait to sign Lightning channel transactions as described in
@@ -805,10 +805,13 @@ impl ChannelSigner for InMemorySigner {
 	}
 
 	/// #SPLICING
-	fn reprovide_channel_parameters(&mut self, channel_parameters: &ChannelTransactionParameters) {
+	fn reprovide_channel_parameters(&mut self, channel_parameters: &ChannelTransactionParameters, channel_value_satoshis: u64) {
 		assert!(self.channel_parameters.is_some());
 		assert!(channel_parameters.is_populated(), "Channel parameters must be fully populated");
 		self.channel_parameters = Some(channel_parameters.clone());
+
+		self.channel_value_satoshis = channel_value_satoshis;
+		println!("reprovide_channel_parameters  channel_value {}", self.channel_value_satoshis);
 	}
 }
 
@@ -821,6 +824,7 @@ impl EcdsaChannelSigner for InMemorySigner {
 		let channel_funding_redeemscript = make_funding_redeemscript(&funding_pubkey, &self.counterparty_pubkeys().funding_pubkey);
 
 		let built_tx = trusted_tx.built_transaction();
+		// println!("sign_counterparty_commitment tx {:?} {:?}  channel_value_satoshis {}", built_tx.txid, built_tx.transaction.encode(), self.channel_value_satoshis);
 		let commitment_sig = built_tx.sign_counterparty_commitment(&self.funding_key, &channel_funding_redeemscript, self.channel_value_satoshis, secp_ctx);
 		let commitment_txid = built_tx.txid;
 

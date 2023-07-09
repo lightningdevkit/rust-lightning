@@ -166,10 +166,12 @@ fn test_splice_in_simple() {
 	let accept_channel_message = get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, nodes[0].node.get_our_node_id());
 	let _res = nodes[0].node.handle_accept_channel(&nodes[1].node.get_our_node_id(), &accept_channel_message.clone());
 	// Note: FundingGenerationReady emitted, checked and used below
+	// Create funding tx
 	let (temporary_channel_id, funding_tx, _funding_output) = create_funding_transaction(&nodes[0], &nodes[1].node.get_our_node_id(), channel_value_sat, 42);
 	let _res = nodes[0].node.funding_transaction_generated(&temporary_channel_id, &nodes[1].node.get_our_node_id(), funding_tx.clone()).unwrap();
 
 	let funding_created_message = get_event_msg!(nodes[0], MessageSendEvent::SendFundingCreated, nodes[1].node.get_our_node_id());
+	// TODO: take channel_id from message
 	let channel_id = OutPoint { txid: funding_created_message.funding_txid, index: funding_created_message.funding_output_index }.to_channel_id();
 	let _res = nodes[1].node.handle_funding_created(&nodes[0].node.get_our_node_id(), &funding_created_message);
 
@@ -211,6 +213,7 @@ fn test_splice_in_simple() {
 
 	let _res = nodes[0].node.handle_splice_ack(&nodes[1].node.get_our_node_id(), &splice_ack_message);
 	// Note: SpliceAcked emitted, checked and used below
+
 	// Create splicing tx
 	let post_splice_channel_value = channel_value_sat + splice_in_sats;
 	let (splice_tx, _funding_output) = create_splice_in_transaction(&nodes[0], &channel_id, post_splice_channel_value);
@@ -218,8 +221,15 @@ fn test_splice_in_simple() {
 	// Splicing transaction has been created, provide it
 	let _res = nodes[0].node.splice_transaction_generated(&channel_id, &nodes[1].node.get_our_node_id(), splice_tx.clone()).unwrap();
 	// Extract the splice_created message from node0 to node1
-	let _splice_created_message = get_event_msg!(nodes[0], MessageSendEvent::SendSpliceCreated, nodes[1].node.get_our_node_id());
-	// let _res = nodes[1].node.handle_splice_created();
+	let splice_created_message = get_event_msg!(nodes[0], MessageSendEvent::SendSpliceCreated, nodes[1].node.get_our_node_id());
+	let _res = nodes[1].node.handle_splice_created(&nodes[0].node.get_our_node_id(), &splice_created_message);
+
+	let _splice_signed_message = get_event_msg!(nodes[1], MessageSendEvent::SendSpliceSigned, nodes[0].node.get_our_node_id());
+
+	// check_added_monitors!(nodes[0], 0);
+	// let _ev = get_event!(nodes[0], Event::ChannelPending);
+	check_added_monitors!(nodes[1], 1);
+	// let _ev = get_event!(nodes[1], Event::ChannelPending);
 
 	// TODO ...
 

@@ -601,6 +601,8 @@ mod tests {
 		// #SPLICING
 		fn handle_splice(&self, _their_node_id: &PublicKey, _msg: &Splice) {}
 		fn handle_splice_ack(&self, _their_node_id: &PublicKey, _msg: &SpliceAck) {}
+		fn handle_splice_created(&self, _their_node_id: &PublicKey, _msg: &SpliceCreated) {}
+		fn handle_splice_signed(&self, _their_node_id: &PublicKey, _msg: &SpliceSigned) {}
 		fn peer_disconnected(&self, their_node_id: &PublicKey) {
 			if *their_node_id == self.expected_pubkey {
 				self.disconnected_flag.store(true, Ordering::SeqCst);

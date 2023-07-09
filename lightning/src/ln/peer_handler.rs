@@ -235,6 +235,12 @@ impl ChannelMessageHandler for ErroringMessageHandler {
 	fn handle_splice_ack(&self, their_node_id: &PublicKey, msg: &msgs::SpliceAck) {
 		ErroringMessageHandler::push_error(self, their_node_id, msg.channel_id);
 	}
+	fn handle_splice_created(&self, their_node_id: &PublicKey, msg: &msgs::SpliceCreated) {
+		ErroringMessageHandler::push_error(self, their_node_id, msg.channel_id);
+	}
+	fn handle_splice_signed(&self, their_node_id: &PublicKey, msg: &msgs::SpliceSigned) {
+		ErroringMessageHandler::push_error(self, their_node_id, msg.channel_id);
+	}
 		// msgs::ChannelUpdate does not contain the channel_id field, so we just drop them.
 	fn handle_channel_update(&self, _their_node_id: &PublicKey, _msg: &msgs::ChannelUpdate) {}
 	fn peer_disconnected(&self, _their_node_id: &PublicKey) {}

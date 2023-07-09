@@ -1529,6 +1529,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			commitment_number, (INITIAL_COMMITMENT_NUMBER - commitment_number),
 			get_commitment_transaction_number_obscure_factor(&self.get_holder_pubkeys().payment_point, &self.get_counterparty_pubkeys().payment_point, self.is_outbound()),
 			log_bytes!(self.channel_id), if local { "us" } else { "remote" }, if generated_by_local { "us" } else { "remote" }, feerate_per_kw);
+		log_trace!(logger, "... value {}  to_self {} \n", self.channel_value_satoshis, self.value_to_self_msat);
 
 		macro_rules! get_htlc_in_commitment {
 			($htlc: expr, $offered: expr) => {
@@ -1712,6 +1713,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		                                                             &mut included_non_dust_htlcs,
 		                                                             &channel_parameters
 		);
+		// log_trace!(logger, "build_commitment_transaction tx {}", tx);
 		let mut htlcs_included = included_non_dust_htlcs;
 		// The unwrap is safe, because all non-dust HTLCs have been assigned an output index
 		htlcs_included.sort_unstable_by_key(|h| h.0.transaction_output_index.unwrap());
@@ -2260,12 +2262,17 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		{
 			let trusted_tx = initial_commitment_tx.trust();
 			let initial_commitment_bitcoin_tx = trusted_tx.built_transaction();
+			// log_trace!(logger, "funding_created_signature tx {:?} {:?}", initial_commitment_bitcoin_tx.txid, initial_commitment_bitcoin_tx.transaction.encode());
+			// log_trace!(logger, "... channel_value_satoshis {}", self.channel_value_satoshis);
+
 			let sighash = initial_commitment_bitcoin_tx.get_sighash_all(&funding_script, self.channel_value_satoshis);
+			// log_trace!(logger, "... sighash {}", sighash.to_hex());
 			// They sign the holder commitment transaction...
 			log_trace!(logger, "Checking funding_created tx signature {} by key {} against tx {} (sighash {}) with redeemscript {} for channel {}.",
 				log_bytes!(sig.serialize_compact()[..]), log_bytes!(self.counterparty_funding_pubkey().serialize()),
 				encode::serialize_hex(&initial_commitment_bitcoin_tx.transaction), log_bytes!(sighash[..]),
 				encode::serialize_hex(&funding_script), log_bytes!(self.channel_id()));
+			// log_trace!(logger, " ... commitment_tx_number {} channel_value {}", self.cur_holder_commitment_transaction_number, self.channel_value_satoshis);
 			secp_check!(self.secp_ctx.verify_ecdsa(&sighash, &sig, self.counterparty_funding_pubkey()), "Invalid funding_created signature from peer".to_owned());
 		}
 
@@ -5480,27 +5487,31 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 	/// #SPLICING
 	/// Update channel capacity to a new value
 	/// It is assumed that the increase is coming to A's side
-	fn update_channel_value<L: Deref>(&mut self, new_value_sats: u64, logger: &L) -> Result<(), ChannelError> where L::Target: Logger {
+	fn update_channel_value<L: Deref>(&mut self, new_value_sats: u64, belongs_to_local: bool, logger: &L) -> Result<(), ChannelError> where L::Target: Logger {
 		let old_value = self.channel_value_satoshis;
-		let delta_msats = (new_value_sats as i64 - old_value as i64) * 1000;
-		// Check if not reducing by too much
-		if delta_msats < 0 && -delta_msats > self.value_to_self_msat as i64 {
-			return Err(ChannelError::Close("Cannot decrease channel value to requested amount, too low".to_string()));
+		let old_to_self = self.value_to_self_msat;
+		if belongs_to_local {
+			let delta_msats = (new_value_sats as i64 - old_value as i64) * 1000;
+			// Check if not reducing by too much
+			if delta_msats < 0 && -delta_msats > self.value_to_self_msat as i64 {
+				return Err(ChannelError::Close("Cannot decrease channel value to requested amount, too low".to_string()));
+			}
+			self.value_to_self_msat = (self.value_to_self_msat as i64 + delta_msats) as u64;
 		}
-		self.value_to_self_msat = (self.value_to_self_msat as i64 + delta_msats) as u64;
 
 		self.channel_value_satoshis = new_value_sats;
-		log_trace!(logger, "Changing channel value, channel_id {:?}  old {}  new {}", self.channel_id(), old_value, self.channel_value_satoshis);
+		log_trace!(logger, "Changed channel value, channel_id {}  value old {} new {}  to_self old {} new {}", log_bytes!(self.channel_id()), old_value, self.channel_value_satoshis, old_to_self, self.value_to_self_msat);
 		Ok(())
 	}
 
 	/// #SPLICING
 	/// Update channel capacity (value) during a splicing process
-	pub fn commit_pending_splicing_channel_value<L: Deref>(&mut self, logger: &L) -> Result<(), ChannelError> where L::Target: Logger {
+	pub fn commit_pending_splicing_channel_value<L: Deref>(&mut self, belongs_to_local: bool, logger: &L) -> Result<(), ChannelError>
+	where L::Target: Logger {
 		let old_value = self.channel_value_satoshis;
-		let _ = self.update_channel_value(self.pending_splicing_channel_value, logger)?;
+		let _ = self.update_channel_value(self.pending_splicing_channel_value, belongs_to_local, logger)?;
 		self.pending_splicing_channel_value = 0;
-		log_trace!(logger, "Changing channel value, channel_id {:?}  old {}  new {}", self.channel_id(), old_value, self.channel_value_satoshis);
+		log_trace!(logger, "Changed channel value, channel_id {}  old {}  new {}", log_bytes!(self.channel_id()), old_value, self.channel_value_satoshis);
 		Ok(())
 	}
 
@@ -5527,16 +5538,18 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		}
 		*/
 
-		// Commit to the new channel value (capacity)
+		// Commit to the new channel value (capacity). The increase belongs to us (initiator, local).
 		// TODO: what if the the new splicing TX never locks?
-		let _ = self.commit_pending_splicing_channel_value(logger)?;
+		let _ = self.commit_pending_splicing_channel_value(true, logger)?;
 
 		// Save splice TX (in temp field?)
 		// TODO Do we need to store this in a separate (splice-specific) field, so that old funding is also available?
 		// self.pending_splice_transaction_parameters = self.channel_transaction_parameters;
 		self.channel_transaction_parameters.funding_outpoint = Some(splice_txo);
 		// Set tx parameters, for commitment signing
-		self.holder_signer.reprovide_channel_parameters(&self.channel_transaction_parameters);
+		self.holder_signer.reprovide_channel_parameters(&self.channel_transaction_parameters, self.channel_value_satoshis);
+		// let txoutp = &self.channel_transaction_parameters.funding_outpoint.unwrap();
+		// log_trace!(logger, "fund_tx_outpoint {} {}  channel_value_satoshis {}", log_bytes!(txoutp.txid), txoutp.index, self.channel_value_satoshis);
 
 		let signature = match self.get_outbound_funding_created_signature(logger) {
 			Ok(res) => res,
@@ -5549,7 +5562,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		};
 
 		// Now that we're past error-generating stuff, update our local state:
-		// self.channel_state = ChannelState::FundingCreated as u32; // TODO not needed. Or maybe new states are needed?
+		self.channel_state = ChannelState::FundingCreated as u32; // TODO not needed. Or maybe new states are needed?
 		// self.channel_id = funding_txo.to_channel_id(); // TODO not needed, remove
 		self.funding_transaction = Some(splice_transaction);
 
@@ -5563,6 +5576,112 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			// #[cfg(taproot)]
 			// next_local_nonce: None,
 		})
+	}
+
+	/// #SPLICING
+	pub fn splice_created<SP: Deref, L: Deref>(
+		&mut self, msg: &msgs::SpliceCreated, best_block: BestBlock, signer_provider: &SP, logger: &L
+	) -> Result<(msgs::SpliceSigned, ChannelMonitor<Signer>), ChannelError>
+	where
+		SP::Target: SignerProvider<Signer = Signer>,
+		L::Target: Logger
+	{
+		if self.is_outbound() {
+			return Err(ChannelError::Close("Received splice_created for an outbound channel?".to_owned()));
+		}
+		// TODO checks taken out
+		/*
+		if self.channel_state != (ChannelState::OurInitSent as u32 | ChannelState::TheirInitSent as u32) {
+			// BOLT 2 says that if we disconnect before we send funding_signed we SHOULD NOT
+			// remember the channel, so it's safe to just send an error_message here and drop the
+			// channel.
+			return Err(ChannelError::Close("Received splice_created after we got the channel!".to_owned()));
+		}
+		if self.inbound_awaiting_accept {
+			return Err(ChannelError::Close("SpliceCreated message received before the channel was accepted".to_owned()));
+		}
+		if self.commitment_secrets.get_min_seen_secret() != (1 << 48) ||
+				self.cur_counterparty_commitment_transaction_number != INITIAL_COMMITMENT_NUMBER ||
+				self.cur_holder_commitment_transaction_number != INITIAL_COMMITMENT_NUMBER {
+			panic!("Should not have advanced channel commitment tx numbers prior to funding_created");
+		}
+		*/
+
+		// Commit to the new channel value (capacity). The increase belongs to them.
+		// TODO: what if the the new splicing TX never locks?
+		let _ = self.commit_pending_splicing_channel_value(false, logger)?;
+
+		// Save splice TX (in temp field?)
+		// TODO Do we need to store this in a separate (splice-specific) field, so that old funding is also available?
+		// self.pending_splice_transaction_parameters = self.channel_transaction_parameters;
+		let splicing_txo = OutPoint { txid: msg.splice_txid, index: msg.funding_output_index };
+		self.channel_transaction_parameters.funding_outpoint = Some(splicing_txo);
+		// This is an externally observable change before we finish all our checks.  In particular
+		// funding_created_signature may fail.
+		self.holder_signer.reprovide_channel_parameters(&self.channel_transaction_parameters, self.channel_value_satoshis);
+		let txoutp = &self.channel_transaction_parameters.funding_outpoint.unwrap();
+		log_trace!(logger, "fund_tx_outpoint {} {}", log_bytes!(txoutp.txid), txoutp.index);
+
+		let (counterparty_initial_commitment_txid, initial_commitment_tx, signature) = match self.funding_created_signature(&msg.signature, logger) {
+			Ok(res) => res,
+			Err(ChannelError::Close(e)) => {
+				self.channel_transaction_parameters.funding_outpoint = None;
+				return Err(ChannelError::Close(e));
+			},
+			Err(e) => {
+				// The only error we know how to handle is ChannelError::Close, so we fall over here
+				// to make sure we don't continue with an inconsistent state.
+				panic!("unexpected error type from splice_created_signature {:?}", e);
+			}
+		};
+
+		let holder_commitment_tx = HolderCommitmentTransaction::new(
+			initial_commitment_tx,
+			msg.signature,
+			Vec::new(),
+			&self.get_holder_pubkeys().funding_pubkey,
+			self.counterparty_funding_pubkey()
+		);
+
+		self.holder_signer.validate_holder_commitment(&holder_commitment_tx, Vec::new())
+			.map_err(|_| ChannelError::Close("Failed to validate our commitment".to_owned()))?;
+
+		// Now that we're past error-generating stuff, update our local state:
+
+		let funding_redeemscript = self.get_funding_redeemscript();
+		let funding_txo_script = funding_redeemscript.to_v0_p2wsh();
+		let obscure_factor = get_commitment_transaction_number_obscure_factor(&self.get_holder_pubkeys().payment_point, &self.get_counterparty_pubkeys().payment_point, self.is_outbound());
+		let shutdown_script = self.shutdown_scriptpubkey.clone().map(|script| script.into_inner());
+		let mut monitor_signer = signer_provider.derive_channel_signer(self.channel_value_satoshis, self.channel_keys_id);
+		monitor_signer.provide_channel_parameters(&self.channel_transaction_parameters);
+		let channel_monitor = ChannelMonitor::new(self.secp_ctx.clone(), monitor_signer,
+		                                          shutdown_script, self.get_holder_selected_contest_delay(),
+		                                          &self.destination_script, (splicing_txo, funding_txo_script.clone()),
+		                                          &self.channel_transaction_parameters,
+		                                          funding_redeemscript.clone(), self.channel_value_satoshis,
+		                                          obscure_factor,
+		                                          holder_commitment_tx, best_block, self.counterparty_node_id);
+
+		channel_monitor.provide_latest_counterparty_commitment_tx(counterparty_initial_commitment_txid, Vec::new(), self.cur_counterparty_commitment_transaction_number, self.counterparty_cur_commitment_point.unwrap(), logger);
+
+		self.channel_state = ChannelState::FundingSent as u32;
+		// Note: channel_id is not changed
+		// self.channel_id = splicing_txo.to_channel_id();
+		// TODO: Check if we reset transation number counters or not
+		self.cur_counterparty_commitment_transaction_number -= 1;
+		self.cur_holder_commitment_transaction_number -= 1;
+
+		log_info!(logger, "Generated funding_signed for peer for channel {}", log_bytes!(self.channel_id()));
+
+		let need_channel_ready = self.check_get_channel_ready(0).is_some();
+		self.monitor_updating_paused(false, false, need_channel_ready, Vec::new(), Vec::new(), Vec::new());
+
+		Ok((msgs::SpliceSigned {
+			channel_id: self.channel_id,
+			signature,
+			#[cfg(taproot)]
+			partial_signature_with_nonce: None,
+		}, channel_monitor))
 	}
 
 	/// Gets an UnsignedChannelAnnouncement for this channel. The channel must be publicly

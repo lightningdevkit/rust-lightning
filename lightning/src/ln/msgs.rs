@@ -1094,6 +1094,10 @@ pub trait ChannelMessageHandler : MessageSendEventsProvider {
 	fn handle_splice(&self, counterparty_node_id: &PublicKey, msg: &Splice);
 	/// Handle an incoming `splice_ack` message from the given peer.
 	fn handle_splice_ack(&self, counterparty_node_id: &PublicKey, msg: &SpliceAck);
+	/// Handle an incoming `splice_created` message from the given peer.
+	fn handle_splice_created(&self, their_node_id: &PublicKey, msg: &SpliceCreated);
+	/// Handle an incoming `splice_signed` message from the given peer.
+	fn handle_splice_signed(&self, their_node_id: &PublicKey, msg: &SpliceSigned);
 
 	// Connection loss/reestablish:
 	/// Indicates a connection to the peer failed/an existing connection was lost.

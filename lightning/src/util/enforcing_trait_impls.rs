@@ -128,8 +128,8 @@ impl ChannelSigner for EnforcingSigner {
 	}
 
 	/// #SPLICING
-	fn reprovide_channel_parameters(&mut self, channel_parameters: &ChannelTransactionParameters) {
-		self.inner.reprovide_channel_parameters(channel_parameters)
+	fn reprovide_channel_parameters(&mut self, channel_parameters: &ChannelTransactionParameters, channel_value_satoshis: u64) {
+		self.inner.reprovide_channel_parameters(channel_parameters, channel_value_satoshis)
 	}
 }
 

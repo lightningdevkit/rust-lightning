@@ -3050,6 +3050,7 @@ where
 		let (msg, chan_cparty_node_id) = match peer_state.channel_by_id.get_mut(channel_id) {
 			Some(chan) => {
 				let funding_txo = find_funding_output(&chan, &splice_transaction)?;
+				// log_trace!(self.logger, "... fund_tx_outpoint {} {}", log_bytes!(funding_txo.txid), funding_txo.index);
 
 				let funding_res = chan.get_outbound_splice_created(splice_transaction, funding_txo, &self.logger)
 					.map_err(|e| if let ChannelError::Close(msg) = e {
@@ -5635,8 +5636,11 @@ where
 
 		match peer_state.channel_by_id.entry(msg.channel_id) {
 			hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id)),
-			hash_map::Entry::Occupied(chan_entry) => {
-				let channel = chan_entry.get();
+			hash_map::Entry::Occupied(mut chan_entry) => {
+				let channel = chan_entry.get_mut();
+
+				// Store post-splicing channel value (pending)
+				channel.pending_splicing_channel_value = msg.funding_satoshis;
 
 				let msg = channel.get_splice_ack(self.genesis_hash.clone(), msg.funding_satoshis);
 				peer_state.pending_msg_events.push(events::MessageSendEvent::SendSpliceAck {
@@ -5694,6 +5698,81 @@ where
 			output_script,
 		});
 		Ok(())
+	}
+
+	/// #SPLICING
+	fn internal_splice_created(&self, counterparty_node_id: &PublicKey, msg: &msgs::SpliceCreated) -> Result<(), MsgHandleErrInternal> {
+		let best_block = *self.best_block.read().unwrap();
+
+		let per_peer_state = self.per_peer_state.read().unwrap();
+		let peer_state_mutex = per_peer_state.get(counterparty_node_id)
+			.ok_or_else(|| {
+				debug_assert!(false);
+				MsgHandleErrInternal::send_err_msg_no_close(format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id), msg.channel_id)
+			})?;
+
+		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+		let peer_state = &mut *peer_state_lock;
+		let ((splice_signed_msg, monitor), chan) =
+			match peer_state.channel_by_id.entry(msg.channel_id) {
+				hash_map::Entry::Occupied(mut chan) => {
+					// Note: do not remove the channel (no change in channel_id)
+					(try_chan_entry!(self, chan.get_mut().splice_created(msg, best_block, &self.signer_provider, &self.logger), chan), chan.into_mut()) // chan.remove())
+				},
+				hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id))
+			};
+
+		// No need to re-add channel to map
+		/*
+		match peer_state.channel_by_id.entry(splice_signed_msg.channel_id) {
+			hash_map::Entry::Occupied(_) => {
+				Err(MsgHandleErrInternal::send_err_msg_no_close("Already had channel with the new channel_id".to_owned(), splice_signed_msg.channel_id))
+			},
+			hash_map::Entry::Vacant(e) => {
+				match self.id_to_peer.lock().unwrap().entry(chan.channel_id()) {
+					hash_map::Entry::Occupied(_) => {
+						return Err(MsgHandleErrInternal::send_err_msg_no_close(
+							"The splice_created message had the same funding_txid as an existing channel - funding is not possible".to_owned(),
+							splice_signed_msg.channel_id))
+					},
+					hash_map::Entry::Vacant(i_e) => {
+						i_e.insert(chan.get_counterparty_node_id());
+					}
+				}
+				*/
+
+				// There's no problem signing a counterparty's funding transaction if our monitor
+				// hasn't persisted to disk yet - we can't lose money on a transaction that we haven't
+				// accepted payment from yet. We do, however, need to wait to send our channel_ready
+				// until we have persisted our monitor.
+				let new_channel_id = splice_signed_msg.channel_id;
+				peer_state.pending_msg_events.push(events::MessageSendEvent::SendSpliceSigned {
+					node_id: counterparty_node_id.clone(),
+					msg: splice_signed_msg,
+				});
+				println!("internal_splice_created channel_id new {} old {} should be same", log_bytes!(new_channel_id), log_bytes!(msg.channel_id));
+
+				let monitor_res = self.chain_monitor.watch_channel(monitor.get_funding_txo().0, monitor);
+
+				// let chan = e.insert(chan);
+				let mut res = handle_new_monitor_update!(self, monitor_res, 0, peer_state_lock, peer_state,
+					per_peer_state, chan, MANUALLY_REMOVING, { peer_state.channel_by_id.remove(&new_channel_id) });
+
+				// Note that we reply with the new channel_id in error messages if we gave up on the
+				// channel, not the temporary_channel_id. This is compatible with ourselves, but the
+				// spec is somewhat ambiguous here. Not a huge deal since we'll send error messages for
+				// any messages referencing a previously-closed channel anyway.
+				// We do not propagate the monitor update to the user as it would be for a monitor
+				// that we didn't manage to store (and that we don't care about - we don't respond
+				// with the funding_signed so the channel can never go on chain).
+				if let Err(MsgHandleErrInternal { shutdown_finish: Some((res, _)), .. }) = &mut res {
+					res.0 = None;
+				}
+				res
+				/*
+			}
+		}
+		*/
 	}
 
 	/// Process pending events from the [`chain::Watch`], returning whether any events were processed.
@@ -6744,6 +6823,19 @@ where
 	fn handle_splice_ack(&self, counterparty_node_id: &PublicKey, msg: &msgs::SpliceAck) {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 		let _ = handle_error!(self, self.internal_splice_ack(counterparty_node_id, msg), *counterparty_node_id);
+	}
+
+	// #SPLICING
+	fn handle_splice_created(&self, counterparty_node_id: &PublicKey, msg: &msgs::SpliceCreated) {
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
+		let _ = handle_error!(self, self.internal_splice_created(counterparty_node_id, msg), *counterparty_node_id);
+	}
+
+	// #SPLICING
+	fn handle_splice_signed(&self, _counterparty_node_id: &PublicKey, _msg: &msgs::SpliceSigned) {
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
+		// TODO!
+		// let _ = handle_error!(self, self.internal_splice_signed(counterparty_node_id, msg), *counterparty_node_id);
 	}
 
 	fn peer_disconnected(&self, counterparty_node_id: &PublicKey) {
