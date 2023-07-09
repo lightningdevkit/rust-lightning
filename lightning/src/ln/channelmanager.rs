@@ -5775,6 +5775,38 @@ where
 		*/
 	}
 
+	/// #SPLICING
+	fn internal_splice_signed(&self, counterparty_node_id: &PublicKey, msg: &msgs::SpliceSigned) -> Result<(), MsgHandleErrInternal> {
+		let best_block = *self.best_block.read().unwrap();
+		let per_peer_state = self.per_peer_state.read().unwrap();
+		let peer_state_mutex = per_peer_state.get(counterparty_node_id)
+			.ok_or_else(|| {
+				debug_assert!(false);
+				MsgHandleErrInternal::send_err_msg_no_close(format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id), msg.channel_id)
+			})?;
+
+		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+		let peer_state = &mut *peer_state_lock;
+		match peer_state.channel_by_id.entry(msg.channel_id) {
+			hash_map::Entry::Occupied(mut chan) => {
+				let monitor = try_chan_entry!(self,
+					chan.get_mut().splice_signed(&msg, best_block, &self.signer_provider, &self.logger), chan);
+				let update_res = self.chain_monitor.watch_channel(chan.get().get_funding_txo().unwrap(), monitor);
+				let mut res = handle_new_monitor_update!(self, update_res, 0, peer_state_lock, peer_state, per_peer_state, chan);
+				if let Err(MsgHandleErrInternal { ref mut shutdown_finish, .. }) = res {
+					// We weren't able to watch the channel to begin with, so no updates should be made on
+					// it. Previously, full_stack_target found an (unreachable) panic when the
+					// monitor update contained within `shutdown_finish` was applied.
+					if let Some((ref mut shutdown_finish, _)) = shutdown_finish {
+						shutdown_finish.0.take();
+					}
+				}
+				res
+			},
+			hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel".to_owned(), msg.channel_id))
+		}
+	}
+
 	/// Process pending events from the [`chain::Watch`], returning whether any events were processed.
 	fn process_pending_monitor_events(&self) -> bool {
 		debug_assert!(self.total_consistency_lock.try_write().is_err()); // Caller holds read lock
@@ -6832,10 +6864,9 @@ where
 	}
 
 	// #SPLICING
-	fn handle_splice_signed(&self, _counterparty_node_id: &PublicKey, _msg: &msgs::SpliceSigned) {
+	fn handle_splice_signed(&self, counterparty_node_id: &PublicKey, msg: &msgs::SpliceSigned) {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
-		// TODO!
-		// let _ = handle_error!(self, self.internal_splice_signed(counterparty_node_id, msg), *counterparty_node_id);
+		let _ = handle_error!(self, self.internal_splice_signed(counterparty_node_id, msg), *counterparty_node_id);
 	}
 
 	fn peer_disconnected(&self, counterparty_node_id: &PublicKey) {

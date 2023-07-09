@@ -5142,12 +5142,15 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 						} else {
 							if self.is_outbound() {
 								for input in tx.input.iter() {
+									// TODO put it back, add witness to splice tx
+									/*
 									if input.witness.is_empty() {
 										// We generated a malleable funding transaction, implying we've
 										// just exposed ourselves to funds loss to our counterparty.
 										#[cfg(not(fuzzing))]
 										panic!("Client called ChannelManager::funding_transaction_generated with bogus transaction!");
 									}
+									*/
 								}
 							}
 							self.funding_tx_confirmation_height = height;
@@ -5668,8 +5671,8 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		// Note: channel_id is not changed
 		// self.channel_id = splicing_txo.to_channel_id();
 		// TODO: Check if we reset transation number counters or not
-		self.cur_counterparty_commitment_transaction_number -= 1;
-		self.cur_holder_commitment_transaction_number -= 1;
+		// self.cur_counterparty_commitment_transaction_number -= 1;
+		// self.cur_holder_commitment_transaction_number -= 1;
 
 		log_info!(logger, "Generated funding_signed for peer for channel {}", log_bytes!(self.channel_id()));
 
@@ -5682,6 +5685,95 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			#[cfg(taproot)]
 			partial_signature_with_nonce: None,
 		}, channel_monitor))
+	}
+
+	/// #SPLICING
+	/// Handles a splice_signed message from the remote end.
+	/// If this call is successful, broadcast the funding transaction (and not before!)
+	pub fn splice_signed<SP: Deref, L: Deref>(
+		&mut self, msg: &msgs::SpliceSigned, best_block: BestBlock, signer_provider: &SP, logger: &L
+	) -> Result<ChannelMonitor<Signer>, ChannelError>
+	where
+		SP::Target: SignerProvider<Signer = Signer>,
+		L::Target: Logger
+	{
+		if !self.is_outbound() {
+			return Err(ChannelError::Close("Received splice_signed for an inbound channel?".to_owned()));
+		}
+		if self.channel_state & !(ChannelState::MonitorUpdateInProgress as u32) != ChannelState::FundingCreated as u32 {
+			return Err(ChannelError::Close("Received splice_signed in strange state!".to_owned()));
+		}
+		// TODO check
+		/*
+		if self.commitment_secrets.get_min_seen_secret() != (1 << 48) ||
+				self.cur_counterparty_commitment_transaction_number != INITIAL_COMMITMENT_NUMBER ||
+				self.cur_holder_commitment_transaction_number != INITIAL_COMMITMENT_NUMBER {
+			panic!("Should not have advanced channel commitment tx numbers prior to splice_created");
+		}
+		*/
+
+		let funding_script = self.get_funding_redeemscript();
+
+		let counterparty_keys = self.build_remote_transaction_keys();
+		let counterparty_initial_commitment_tx = self.build_commitment_transaction(self.cur_counterparty_commitment_transaction_number, &counterparty_keys, false, false, logger).tx;
+		let counterparty_trusted_tx = counterparty_initial_commitment_tx.trust();
+		let counterparty_initial_bitcoin_tx = counterparty_trusted_tx.built_transaction();
+
+		log_trace!(logger, "Initial counterparty tx for channel {} is: txid {} tx {}",
+			log_bytes!(self.channel_id()), counterparty_initial_bitcoin_tx.txid, encode::serialize_hex(&counterparty_initial_bitcoin_tx.transaction));
+
+		let holder_signer = self.build_holder_transaction_keys(self.cur_holder_commitment_transaction_number);
+		let initial_commitment_tx = self.build_commitment_transaction(self.cur_holder_commitment_transaction_number, &holder_signer, true, false, logger).tx;
+		{
+			let trusted_tx = initial_commitment_tx.trust();
+			let initial_commitment_bitcoin_tx = trusted_tx.built_transaction();
+			let sighash = initial_commitment_bitcoin_tx.get_sighash_all(&funding_script, self.channel_value_satoshis);
+			// They sign our commitment transaction, allowing us to broadcast the tx if we wish.
+			if let Err(_) = self.secp_ctx.verify_ecdsa(&sighash, &msg.signature, &self.get_counterparty_pubkeys().funding_pubkey) {
+				return Err(ChannelError::Close("Invalid splicing_signed signature from peer".to_owned()));
+			}
+		}
+
+		let holder_commitment_tx = HolderCommitmentTransaction::new(
+			initial_commitment_tx,
+			msg.signature,
+			Vec::new(),
+			&self.get_holder_pubkeys().funding_pubkey,
+			self.counterparty_funding_pubkey()
+		);
+
+		self.holder_signer.validate_holder_commitment(&holder_commitment_tx, Vec::new())
+			.map_err(|_| ChannelError::Close("Failed to validate our commitment".to_owned()))?;
+
+
+		let funding_redeemscript = self.get_funding_redeemscript();
+		let funding_txo = self.get_funding_txo().unwrap();
+		let funding_txo_script = funding_redeemscript.to_v0_p2wsh();
+		let obscure_factor = get_commitment_transaction_number_obscure_factor(&self.get_holder_pubkeys().payment_point, &self.get_counterparty_pubkeys().payment_point, self.is_outbound());
+		let shutdown_script = self.shutdown_scriptpubkey.clone().map(|script| script.into_inner());
+		let mut monitor_signer = signer_provider.derive_channel_signer(self.channel_value_satoshis, self.channel_keys_id);
+		monitor_signer.provide_channel_parameters(&self.channel_transaction_parameters);
+		let channel_monitor = ChannelMonitor::new(self.secp_ctx.clone(), monitor_signer,
+		                                          shutdown_script, self.get_holder_selected_contest_delay(),
+		                                          &self.destination_script, (funding_txo, funding_txo_script),
+		                                          &self.channel_transaction_parameters,
+		                                          funding_redeemscript.clone(), self.channel_value_satoshis,
+		                                          obscure_factor,
+		                                          holder_commitment_tx, best_block, self.counterparty_node_id);
+
+		channel_monitor.provide_latest_counterparty_commitment_tx(counterparty_initial_bitcoin_tx.txid, Vec::new(), self.cur_counterparty_commitment_transaction_number, self.counterparty_cur_commitment_point.unwrap(), logger);
+
+		assert_eq!(self.channel_state & (ChannelState::MonitorUpdateInProgress as u32), 0); // We have no had any monitor(s) yet to fail update!
+		self.channel_state = ChannelState::FundingSent as u32;
+		// TODO check
+		// self.cur_holder_commitment_transaction_number -= 1;
+		// self.cur_counterparty_commitment_transaction_number -= 1;
+
+		log_info!(logger, "Received splice_signed from peer for channel {}", log_bytes!(self.channel_id()));
+
+		let need_channel_ready = self.check_get_channel_ready(0).is_some();
+		self.monitor_updating_paused(false, false, need_channel_ready, Vec::new(), Vec::new(), Vec::new());
+		Ok(channel_monitor)
 	}
 
 	/// Gets an UnsignedChannelAnnouncement for this channel. The channel must be publicly

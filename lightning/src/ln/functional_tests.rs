@@ -197,6 +197,8 @@ fn test_splice_in_simple() {
 	let _ev = get_event!(nodes[0], Event::ChannelReady);
 	let _announcement_signatures = get_event_msg!(nodes[0], MessageSendEvent::SendAnnouncementSignatures, nodes[1].node.get_our_node_id());
 
+	// Start of Splicing ...
+
 	// Amount being added to the channel through the splice-in
 	let splice_in_sats: u64 = 20000;
 	let funding_feerate_perkw = 1024; // TODO
@@ -224,14 +226,25 @@ fn test_splice_in_simple() {
 	let splice_created_message = get_event_msg!(nodes[0], MessageSendEvent::SendSpliceCreated, nodes[1].node.get_our_node_id());
 	let _res = nodes[1].node.handle_splice_created(&nodes[0].node.get_our_node_id(), &splice_created_message);
 
-	let _splice_signed_message = get_event_msg!(nodes[1], MessageSendEvent::SendSpliceSigned, nodes[0].node.get_our_node_id());
+	let splice_signed_message = get_event_msg!(nodes[1], MessageSendEvent::SendSpliceSigned, nodes[0].node.get_our_node_id());
+	let _res = nodes[0].node.handle_splice_signed(&nodes[1].node.get_our_node_id(), &splice_signed_message);
 
-	// check_added_monitors!(nodes[0], 0);
-	// let _ev = get_event!(nodes[0], Event::ChannelPending);
+	check_added_monitors!(nodes[0], 1);
 	check_added_monitors!(nodes[1], 1);
-	// let _ev = get_event!(nodes[1], Event::ChannelPending);
 
-	// TODO ...
+	confirm_transaction(&nodes[0], &splice_tx);
+	let channel_ready_message = get_event_msg!(nodes[0], MessageSendEvent::SendChannelReady, nodes[1].node.get_our_node_id());
+
+	confirm_transaction(&nodes[1], &splice_tx);
+	let channel_ready_message2 = get_event_msg!(nodes[1], MessageSendEvent::SendChannelReady, nodes[0].node.get_our_node_id());
+
+	let _res = nodes[1].node.handle_channel_ready(&nodes[0].node.get_our_node_id(), &channel_ready_message);
+	let _channel_update = get_event_msg!(nodes[1], MessageSendEvent::SendChannelUpdate, nodes[0].node.get_our_node_id());
+
+	let _res = nodes[0].node.handle_channel_ready(&nodes[1].node.get_our_node_id(), &channel_ready_message2);
+	let _channel_update = get_event_msg!(nodes[0], MessageSendEvent::SendChannelUpdate, nodes[1].node.get_our_node_id());
+
+	// ... End of Splicing
 
 	// close channel
 	nodes[0].node.close_channel(&channel_id, &nodes[1].node.get_our_node_id()).unwrap();

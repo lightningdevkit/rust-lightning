@@ -990,6 +990,7 @@ pub fn create_splice_in_transaction<'a, 'b, 'c>(node: &Node<'a, 'b, 'c>, expecte
 			let tx = Transaction {
 				version: chan_id as i32,
 				lock_time: PackedLockTime::ZERO,
+				// TODO: witness! must not be empty
 				input: vec![TxIn {previous_output: *current_funding_outpoint, script_sig: Script::new(), sequence: Sequence::ENABLE_RBF_NO_LOCKTIME, witness: Witness::new()}],
 				output: vec![TxOut {value: *post_channel_value_satoshis, script_pubkey: output_script.clone()}]
 			};
