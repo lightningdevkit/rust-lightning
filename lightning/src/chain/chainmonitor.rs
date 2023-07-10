@@ -520,12 +520,13 @@ where C::Target: chain::Filter,
 	pub async fn process_pending_events_async<Future: core::future::Future, H: Fn(Event) -> Future>(
 		&self, handler: H
 	) {
-		let mut pending_events = Vec::new();
-		for monitor_state in self.monitors.read().unwrap().values() {
-			pending_events.append(&mut monitor_state.monitor.get_and_clear_pending_events());
-		}
-		for event in pending_events {
-			handler(event).await;
+		// Sadly we can't hold the monitors read lock through an async call. Thus we have to do a
+		// crazy dance to process a monitor's events then only remove them once we've done so.
+		let mons_to_process = self.monitors.read().unwrap().keys().cloned().collect::<Vec<_>>();
+		for funding_txo in mons_to_process {
+			let mut ev;
+			super::channelmonitor::process_events_body!(
+				self.monitors.read().unwrap().get(&funding_txo).map(|m| &m.monitor), ev, handler(ev).await);
 		}
 	}
 
@@ -796,12 +797,8 @@ impl<ChannelSigner: WriteableEcdsaChannelSigner, C: Deref, T: Deref, F: Deref, L
 	/// [`SpendableOutputs`]: events::Event::SpendableOutputs
 	/// [`BumpTransaction`]: events::Event::BumpTransaction
 	fn process_pending_events<H: Deref>(&self, handler: H) where H::Target: EventHandler {
-		let mut pending_events = Vec::new();
 		for monitor_state in self.monitors.read().unwrap().values() {
-			pending_events.append(&mut monitor_state.monitor.get_and_clear_pending_events());
-		}
-		for event in pending_events {
-			handler.handle_event(event);
+			monitor_state.monitor.process_pending_events(&handler);
 		}
 	}
 }
