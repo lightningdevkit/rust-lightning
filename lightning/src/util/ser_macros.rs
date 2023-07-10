@@ -13,6 +13,21 @@
 //! [`Readable`]: crate::util::ser::Readable
 //! [`Writeable`]: crate::util::ser::Writeable
 
+// There are quite a few TLV serialization "types" which behave differently. We currently only
+// publicly document the `optional` and `required` types, not supporting anything else publicly and
+// changing them at will.
+//
+// Some of the other types include:
+//  * (default_value, $default) - reads optionally, reading $default if no TLV is present
+//  * (static_value, $value) - ignores any TLVs, always using $value
+//  * required_vec - reads into a Vec without a length prefix, failing if no TLV is present.
+//  * optional_vec - reads into an Option<Vec> without a length prefix, continuing if no TLV is
+//                   present. Writes from a Vec directly, only if any elements are present. Note
+//                   that the struct deserialization macros return a Vec, not an Option.
+//  * upgradable_option - reads via MaybeReadable.
+//  * upgradable_required - reads via MaybeReadable, requiring a TLV be present but may return None
+//                          if MaybeReadable::read() returns None.
+
 /// Implements serialization for a single TLV record.
 /// This is exported for use by other exported macros, do not use directly.
 #[doc(hidden)]
