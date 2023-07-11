@@ -14,7 +14,7 @@
 use alloc::collections::BTreeMap;
 use core::ops::Deref;
 
-use crate::chain::chaininterface::{BroadcasterInterface, compute_feerate_sat_per_1000_weight, fee_for_weight};
+use crate::chain::chaininterface::{BroadcasterInterface, compute_feerate_sat_per_1000_weight, fee_for_weight, FEERATE_FLOOR_SATS_PER_KW};
 use crate::chain::ClaimId;
 use crate::io_extras::sink;
 use crate::ln::channel::ANCHOR_OUTPUT_VALUE_SATOSHI;
@@ -700,8 +700,21 @@ where
 		&self, claim_id: ClaimId, package_target_feerate_sat_per_1000_weight: u32,
 		commitment_tx: &Transaction, commitment_tx_fee_sat: u64, anchor_descriptor: &AnchorDescriptor,
 	) -> Result<(), ()> {
+		// Our commitment transaction already has fees allocated to it, so we should take them into
+		// account. We compute its feerate and subtract it from the package target, using the result
+		// as the target feerate for our anchor transaction. Unfortunately, this results in users
+		// overpaying by a small margin since we don't yet know the anchor transaction size, and
+		// avoiding the small overpayment only makes our API even more complex.
+		let commitment_tx_sat_per_1000_weight: u32 = compute_feerate_sat_per_1000_weight(
+			commitment_tx_fee_sat, commitment_tx.weight() as u64,
+		);
+		let anchor_target_feerate_sat_per_1000_weight = core::cmp::max(
+			package_target_feerate_sat_per_1000_weight - commitment_tx_sat_per_1000_weight,
+			FEERATE_FLOOR_SATS_PER_KW,
+		);
+
 		let mut anchor_tx = self.build_anchor_tx(
-			claim_id, package_target_feerate_sat_per_1000_weight, commitment_tx, anchor_descriptor,
+			claim_id, anchor_target_feerate_sat_per_1000_weight, commitment_tx, anchor_descriptor,
 		)?;
 		debug_assert_eq!(anchor_tx.output.len(), 1);
 
