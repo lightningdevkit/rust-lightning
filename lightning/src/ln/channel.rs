@@ -598,6 +598,9 @@ impl_writeable_tlv_based!(PendingChannelMonitorUpdate, {
 	(0, update, required),
 });
 
+/// Channel ID is 32 bytes
+pub type ChannelId = [u8; 32];
+
 /// Contains everything about the channel including state, and various flags.
 pub(super) struct ChannelContext<Signer: ChannelSigner> {
 	config: LegacyChannelConfig,
@@ -611,8 +614,8 @@ pub(super) struct ChannelContext<Signer: ChannelSigner> {
 
 	user_id: u128,
 
-	channel_id: [u8; 32],
-	temporary_channel_id: Option<[u8; 32]>, // Will be `None` for channels created prior to 0.0.115.
+	channel_id: ChannelId,
+	temporary_channel_id: Option<ChannelId>, // Will be `None` for channels created prior to 0.0.115.
 	channel_state: u32,
 
 	// When we reach max(6 blocks, minimum_depth), we need to send an AnnouncementSigs message to
@@ -944,7 +947,7 @@ impl<Signer: ChannelSigner> ChannelContext<Signer> {
 
 	// Public utilities:
 
-	pub fn channel_id(&self) -> [u8; 32] {
+	pub fn channel_id(&self) -> ChannelId {
 		self.channel_id
 	}
 
@@ -7147,7 +7150,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 
 		let mut user_id_high_opt: Option<u64> = None;
 		let mut channel_keys_id: Option<[u8; 32]> = None;
-		let mut temporary_channel_id: Option<[u8; 32]> = None;
+		let mut temporary_channel_id: Option<ChannelId> = None;
 		let mut holder_max_accepted_htlcs: Option<u16> = None;
 
 		let mut blocked_monitor_updates = Some(Vec::new());
@@ -7389,16 +7392,16 @@ mod tests {
 	use bitcoin::blockdata::opcodes;
 	use bitcoin::network::constants::Network;
 	use hex;
-	use crate::ln::PaymentHash;
-	use crate::ln::channelmanager::{self, HTLCSource, PaymentId};
-	use crate::ln::channel::InitFeatures;
-	use crate::ln::channel::{Channel, InboundHTLCOutput, OutboundV1Channel, InboundV1Channel, OutboundHTLCOutput, InboundHTLCState, OutboundHTLCState, HTLCCandidate, HTLCInitiator, commit_tx_fee_msat};
-	use crate::ln::channel::{MAX_FUNDING_SATOSHIS_NO_WUMBO, TOTAL_BITCOIN_SUPPLY_SATOSHIS, MIN_THEIR_CHAN_RESERVE_SATOSHIS};
-	use crate::ln::features::ChannelTypeFeatures;
-	use crate::ln::msgs::{ChannelUpdate, DecodeError, UnsignedChannelUpdate, MAX_VALUE_MSAT};
-	use crate::ln::script::ShutdownScript;
-	use crate::ln::chan_utils;
-	use crate::ln::chan_utils::{htlc_success_tx_weight, htlc_timeout_tx_weight};
+use crate::ln::PaymentHash;
+use crate::ln::channelmanager::{self, HTLCSource, PaymentId};
+use crate::ln::channel::InitFeatures;
+use crate::ln::channel::{Channel, InboundHTLCOutput, OutboundV1Channel, InboundV1Channel, OutboundHTLCOutput, InboundHTLCState, OutboundHTLCState, HTLCCandidate, HTLCInitiator, commit_tx_fee_msat};
+use crate::ln::channel::{MAX_FUNDING_SATOSHIS_NO_WUMBO, TOTAL_BITCOIN_SUPPLY_SATOSHIS, MIN_THEIR_CHAN_RESERVE_SATOSHIS};
+use crate::ln::features::ChannelTypeFeatures;
+use crate::ln::msgs::{ChannelUpdate, DecodeError, UnsignedChannelUpdate, MAX_VALUE_MSAT};
+use crate::ln::script::ShutdownScript;
+use crate::ln::chan_utils;
+use crate::ln::chan_utils::{htlc_success_tx_weight, htlc_timeout_tx_weight};
 	use crate::chain::BestBlock;
 	use crate::chain::chaininterface::{FeeEstimator, LowerBoundedFeeEstimator, ConfirmationTarget};
 	use crate::sign::{ChannelSigner, InMemorySigner, EntropySource, SignerProvider};

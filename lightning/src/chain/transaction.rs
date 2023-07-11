@@ -9,6 +9,7 @@
 
 //! Types describing on-chain transactions.
 
+use crate::ln::channel::ChannelId;
 use bitcoin::hash_types::Txid;
 use bitcoin::blockdata::transaction::OutPoint as BitcoinOutPoint;
 use bitcoin::blockdata::transaction::Transaction;
@@ -57,7 +58,7 @@ pub struct OutPoint {
 
 impl OutPoint {
 	/// Convert an `OutPoint` to a lightning channel id.
-	pub fn to_channel_id(&self) -> [u8; 32] {
+	pub fn to_channel_id(&self) -> ChannelId {
 		let mut res = [0; 32];
 		res[..].copy_from_slice(&self.txid[..]);
 		res[30] ^= ((self.index >> 8) & 0xff) as u8;

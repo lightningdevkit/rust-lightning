@@ -20,6 +20,7 @@ use bitcoin::secp256k1::{self, Secp256k1, SecretKey, PublicKey};
 
 use crate::sign::{KeysManager, NodeSigner, Recipient};
 use crate::events::{MessageSendEvent, MessageSendEventsProvider, OnionMessageProvider};
+use crate::ln::channel::ChannelId;
 use crate::ln::features::{InitFeatures, NodeFeatures};
 use crate::ln::msgs;
 use crate::ln::msgs::{ChannelMessageHandler, LightningError, NetAddress, OnionMessageHandler, RoutingMessageHandler};
@@ -186,7 +187,7 @@ impl ErroringMessageHandler {
 	pub fn new() -> Self {
 		Self { message_queue: Mutex::new(Vec::new()) }
 	}
-	fn push_error(&self, node_id: &PublicKey, channel_id: [u8; 32]) {
+	fn push_error(&self, node_id: &PublicKey, channel_id: ChannelId) {
 		self.message_queue.lock().unwrap().push(MessageSendEvent::HandleError {
 			action: msgs::ErrorAction::SendErrorMessage {
 				msg: msgs::ErrorMessage { channel_id, data: "We do not support channel messages, sorry.".to_owned() },

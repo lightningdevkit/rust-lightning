@@ -20,7 +20,7 @@ pub use bump_transaction::BumpTransactionEvent;
 
 use crate::sign::SpendableOutputDescriptor;
 use crate::ln::channelmanager::{InterceptId, PaymentId, RecipientOnionFields};
-use crate::ln::channel::FUNDING_CONF_DEADLINE_BLOCKS;
+use crate::ln::channel::{ChannelId, FUNDING_CONF_DEADLINE_BLOCKS};
 use crate::ln::features::ChannelTypeFeatures;
 use crate::ln::msgs;
 use crate::ln::{PaymentPreimage, PaymentHash, PaymentSecret};
@@ -210,7 +210,7 @@ pub enum HTLCDestination {
 		/// counterparty node information.
 		node_id: Option<PublicKey>,
 		/// The outgoing `channel_id` between us and the next node.
-		channel_id: [u8; 32],
+		channel_id: ChannelId,
 	},
 	/// Scenario where we are unsure of the next node to forward the HTLC to.
 	UnknownNextHop {
@@ -328,7 +328,7 @@ pub enum Event {
 		/// [`ChannelManager::funding_transaction_generated`].
 		///
 		/// [`ChannelManager::funding_transaction_generated`]: crate::ln::channelmanager::ChannelManager::funding_transaction_generated
-		temporary_channel_id: [u8; 32],
+		temporary_channel_id: ChannelId,
 		/// The counterparty's node_id, which you'll need to pass back into
 		/// [`ChannelManager::funding_transaction_generated`].
 		///
@@ -406,7 +406,7 @@ pub enum Event {
 		/// payment is to pay an invoice or to send a spontaneous payment.
 		purpose: PaymentPurpose,
 		/// The `channel_id` indicating over which channel we received the payment.
-		via_channel_id: Option<[u8; 32]>,
+		via_channel_id: Option<ChannelId>,
 		/// The `user_channel_id` indicating over which channel we received the payment.
 		via_user_channel_id: Option<u128>,
 		/// The block height at which this payment will be failed back and will no longer be
@@ -658,10 +658,10 @@ pub enum Event {
 	PaymentForwarded {
 		/// The incoming channel between the previous node and us. This is only `None` for events
 		/// generated or serialized by versions prior to 0.0.107.
-		prev_channel_id: Option<[u8; 32]>,
+		prev_channel_id: Option<ChannelId>,
 		/// The outgoing channel between the next node and us. This is only `None` for events
 		/// generated or serialized by versions prior to 0.0.107.
-		next_channel_id: Option<[u8; 32]>,
+		next_channel_id: Option<ChannelId>,
 		/// The fee, in milli-satoshis, which was earned as a result of the payment.
 		///
 		/// Note that if we force-closed the channel over which we forwarded an HTLC while the HTLC
@@ -692,7 +692,7 @@ pub enum Event {
 	/// [`Event::ChannelReady`] event.
 	ChannelPending {
 		/// The `channel_id` of the channel that is pending confirmation.
-		channel_id: [u8; 32],
+		channel_id: ChannelId,
 		/// The `user_channel_id` value passed in to [`ChannelManager::create_channel`] for outbound
 		/// channels, or to [`ChannelManager::accept_inbound_channel`] for inbound channels if
 		/// [`UserConfig::manually_accept_inbound_channels`] config flag is set to true. Otherwise
@@ -705,7 +705,7 @@ pub enum Event {
 		/// The `temporary_channel_id` this channel used to be known by during channel establishment.
 		///
 		/// Will be `None` for channels created prior to LDK version 0.0.115.
-		former_temporary_channel_id: Option<[u8; 32]>,
+		former_temporary_channel_id: Option<ChannelId>,
 		/// The `node_id` of the channel counterparty.
 		counterparty_node_id: PublicKey,
 		/// The outpoint of the channel's funding transaction.
@@ -717,7 +717,7 @@ pub enum Event {
 	/// establishment.
 	ChannelReady {
 		/// The `channel_id` of the channel that is ready.
-		channel_id: [u8; 32],
+		channel_id: ChannelId,
 		/// The `user_channel_id` value passed in to [`ChannelManager::create_channel`] for outbound
 		/// channels, or to [`ChannelManager::accept_inbound_channel`] for inbound channels if
 		/// [`UserConfig::manually_accept_inbound_channels`] config flag is set to true. Otherwise
@@ -737,7 +737,7 @@ pub enum Event {
 	ChannelClosed  {
 		/// The `channel_id` of the channel which has been closed. Note that on-chain transactions
 		/// resolving the channel are likely still awaiting confirmation.
-		channel_id: [u8; 32],
+		channel_id: ChannelId,
 		/// The `user_channel_id` value passed in to [`ChannelManager::create_channel`] for outbound
 		/// channels, or to [`ChannelManager::accept_inbound_channel`] for inbound channels if
 		/// [`UserConfig::manually_accept_inbound_channels`] config flag is set to true. Otherwise
@@ -756,7 +756,7 @@ pub enum Event {
 	/// inputs for another purpose.
 	DiscardFunding {
 		/// The channel_id of the channel which has been closed.
-		channel_id: [u8; 32],
+		channel_id: ChannelId,
 		/// The full transaction received from the user
 		transaction: Transaction
 	},
@@ -780,7 +780,7 @@ pub enum Event {
 		///
 		/// [`ChannelManager::accept_inbound_channel`]: crate::ln::channelmanager::ChannelManager::accept_inbound_channel
 		/// [`ChannelManager::force_close_without_broadcasting_txn`]: crate::ln::channelmanager::ChannelManager::force_close_without_broadcasting_txn
-		temporary_channel_id: [u8; 32],
+		temporary_channel_id: ChannelId,
 		/// The node_id of the counterparty requesting to open the channel.
 		///
 		/// When responding to the request, the `counterparty_node_id` should be passed
@@ -826,7 +826,7 @@ pub enum Event {
 	/// requirements (i.e. insufficient fees paid, or a CLTV that is too soon).
 	HTLCHandlingFailed {
 		/// The channel over which the HTLC was received.
-		prev_channel_id: [u8; 32],
+		prev_channel_id: ChannelId,
 		/// Destination of the HTLC that failed to be processed.
 		failed_next_destination: HTLCDestination,
 	},

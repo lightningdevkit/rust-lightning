@@ -18,6 +18,7 @@ use crate::chain::channelmonitor::MonitorEvent;
 use crate::chain::transaction::OutPoint;
 use crate::sign;
 use crate::events;
+use crate::ln::channel::ChannelId;
 use crate::ln::channelmanager;
 use crate::ln::features::{ChannelFeatures, InitFeatures, NodeFeatures};
 use crate::ln::{msgs, wire};
@@ -209,7 +210,7 @@ impl<'a> TestChainMonitor<'a> {
 		}
 	}
 
-	pub fn complete_sole_pending_chan_update(&self, channel_id: &[u8; 32]) {
+	pub fn complete_sole_pending_chan_update(&self, channel_id: &ChannelId) {
 		let (outpoint, _, latest_update) = self.latest_monitor_update_id.lock().unwrap().get(channel_id).unwrap().clone();
 		self.chain_monitor.channel_monitor_updated(outpoint, latest_update).unwrap();
 	}

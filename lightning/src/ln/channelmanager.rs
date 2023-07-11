@@ -40,7 +40,7 @@ use crate::events::{Event, EventHandler, EventsProvider, MessageSendEvent, Messa
 // Since this struct is returned in `list_channels` methods, expose it here in case users want to
 // construct one themselves.
 use crate::ln::{inbound_payment, PaymentHash, PaymentPreimage, PaymentSecret};
-use crate::ln::channel::{Channel, ChannelContext, ChannelError, ChannelUpdateStatus, ShutdownResult, UpdateFulfillCommitFetch, OutboundV1Channel, InboundV1Channel};
+use crate::ln::channel::{Channel, ChannelContext, ChannelError, ChannelId, ChannelUpdateStatus, ShutdownResult, UpdateFulfillCommitFetch, OutboundV1Channel, InboundV1Channel};
 use crate::ln::features::{ChannelFeatures, ChannelTypeFeatures, InitFeatures, NodeFeatures};
 #[cfg(any(feature = "_test_utils", test))]
 use crate::ln::features::InvoiceFeatures;
@@ -379,7 +379,7 @@ struct MsgHandleErrInternal {
 }
 impl MsgHandleErrInternal {
 	#[inline]
-	fn send_err_msg_no_close(err: String, channel_id: [u8; 32]) -> Self {
+	fn send_err_msg_no_close(err: String, channel_id: ChannelId) -> Self {
 		Self {
 			err: LightningError {
 				err: err.clone(),
@@ -399,7 +399,7 @@ impl MsgHandleErrInternal {
 		Self { err, chan_id: None, shutdown_finish: None }
 	}
 	#[inline]
-	fn from_finish_shutdown(err: String, channel_id: [u8; 32], user_channel_id: u128, shutdown_res: ShutdownResult, channel_update: Option<msgs::ChannelUpdate>) -> Self {
+	fn from_finish_shutdown(err: String, channel_id: ChannelId, user_channel_id: u128, shutdown_res: ShutdownResult, channel_update: Option<msgs::ChannelUpdate>) -> Self {
 		Self {
 			err: LightningError {
 				err: err.clone(),
@@ -415,7 +415,7 @@ impl MsgHandleErrInternal {
 		}
 	}
 	#[inline]
-	fn from_chan_no_close(err: ChannelError, channel_id: [u8; 32]) -> Self {
+	fn from_chan_no_close(err: ChannelError, channel_id: ChannelId) -> Self {
 		Self {
 			err: match err {
 				ChannelError::Warn(msg) =>  LightningError {
@@ -589,7 +589,7 @@ pub(crate) enum RAAMonitorUpdateBlockingAction {
 	/// durably to disk.
 	ForwardedPaymentInboundClaim {
 		/// The upstream channel ID (i.e. the inbound edge).
-		channel_id: [u8; 32],
+		channel_id: ChannelId,
 		/// The HTLC ID on the inbound edge.
 		htlc_id: u64,
 	},
@@ -686,7 +686,7 @@ impl <Signer: ChannelSigner> PeerState<Signer> {
 	}
 
 	// Returns a bool indicating if the given `channel_id` matches a channel we have with this peer.
-	fn has_channel(&self, channel_id: &[u8; 32]) -> bool {
+	fn has_channel(&self, channel_id: &ChannelId) -> bool {
 		self.channel_by_id.contains_key(channel_id) ||
 			self.outbound_v1_channel_by_id.contains_key(channel_id) ||
 			self.inbound_v1_channel_by_id.contains_key(channel_id)
@@ -1331,7 +1331,7 @@ pub struct ChannelDetails {
 	/// thereafter this is the txid of the funding transaction xor the funding transaction output).
 	/// Note that this means this value is *not* persistent - it can change once during the
 	/// lifetime of the channel.
-	pub channel_id: [u8; 32],
+	pub channel_id: ChannelId,
 	/// Parameters which apply to our counterparty. See individual fields for more information.
 	pub counterparty: ChannelCounterparty,
 	/// The Channel's funding transaction output, if we've negotiated the funding transaction with
@@ -2363,7 +2363,7 @@ where
 		}, None));
 	}
 
-	fn close_channel_internal(&self, channel_id: &[u8; 32], counterparty_node_id: &PublicKey, target_feerate_sats_per_1000_weight: Option<u32>, override_shutdown_script: Option<ShutdownScript>) -> Result<(), APIError> {
+	fn close_channel_internal(&self, channel_id: &ChannelId, counterparty_node_id: &PublicKey, target_feerate_sats_per_1000_weight: Option<u32>, override_shutdown_script: Option<ShutdownScript>) -> Result<(), APIError> {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 
 		let mut failed_htlcs: Vec<(HTLCSource, PaymentHash)>;
@@ -2445,7 +2445,7 @@ where
 	/// [`Background`]: crate::chain::chaininterface::ConfirmationTarget::Background
 	/// [`Normal`]: crate::chain::chaininterface::ConfirmationTarget::Normal
 	/// [`SendShutdown`]: crate::events::MessageSendEvent::SendShutdown
-	pub fn close_channel(&self, channel_id: &[u8; 32], counterparty_node_id: &PublicKey) -> Result<(), APIError> {
+	pub fn close_channel(&self, channel_id: &ChannelId, counterparty_node_id: &PublicKey) -> Result<(), APIError> {
 		self.close_channel_internal(channel_id, counterparty_node_id, None, None)
 	}
 
@@ -2479,7 +2479,7 @@ where
 	/// [`Background`]: crate::chain::chaininterface::ConfirmationTarget::Background
 	/// [`Normal`]: crate::chain::chaininterface::ConfirmationTarget::Normal
 	/// [`SendShutdown`]: crate::events::MessageSendEvent::SendShutdown
-	pub fn close_channel_with_feerate_and_script(&self, channel_id: &[u8; 32], counterparty_node_id: &PublicKey, target_feerate_sats_per_1000_weight: Option<u32>, shutdown_script: Option<ShutdownScript>) -> Result<(), APIError> {
+	pub fn close_channel_with_feerate_and_script(&self, channel_id: &ChannelId, counterparty_node_id: &PublicKey, target_feerate_sats_per_1000_weight: Option<u32>, shutdown_script: Option<ShutdownScript>) -> Result<(), APIError> {
 		self.close_channel_internal(channel_id, counterparty_node_id, target_feerate_sats_per_1000_weight, shutdown_script)
 	}
 
@@ -2504,7 +2504,7 @@ where
 
 	/// `peer_msg` should be set when we receive a message from a peer, but not set when the
 	/// user closes, which will be re-exposed as the `ChannelClosed` reason.
-	fn force_close_channel_with_peer(&self, channel_id: &[u8; 32], peer_node_id: &PublicKey, peer_msg: Option<&String>, broadcast: bool)
+	fn force_close_channel_with_peer(&self, channel_id: &ChannelId, peer_node_id: &PublicKey, peer_msg: Option<&String>, broadcast: bool)
 	-> Result<PublicKey, APIError> {
 		let per_peer_state = self.per_peer_state.read().unwrap();
 		let peer_state_mutex = per_peer_state.get(peer_node_id)
@@ -2551,7 +2551,7 @@ where
 		Ok(counterparty_node_id)
 	}
 
-	fn force_close_sending_error(&self, channel_id: &[u8; 32], counterparty_node_id: &PublicKey, broadcast: bool) -> Result<(), APIError> {
+	fn force_close_sending_error(&self, channel_id: &ChannelId, counterparty_node_id: &PublicKey, broadcast: bool) -> Result<(), APIError> {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 		match self.force_close_channel_with_peer(channel_id, counterparty_node_id, None, broadcast) {
 			Ok(counterparty_node_id) => {
@@ -2577,7 +2577,7 @@ where
 	/// rejecting new HTLCs on the given channel. Fails if `channel_id` is unknown to
 	/// the manager, or if the `counterparty_node_id` isn't the counterparty of the corresponding
 	/// channel.
-	pub fn force_close_broadcasting_latest_txn(&self, channel_id: &[u8; 32], counterparty_node_id: &PublicKey)
+	pub fn force_close_broadcasting_latest_txn(&self, channel_id: &ChannelId, counterparty_node_id: &PublicKey)
 	-> Result<(), APIError> {
 		self.force_close_sending_error(channel_id, counterparty_node_id, true)
 	}
@@ -2588,7 +2588,7 @@ where
 	///
 	/// You can always get the latest local transaction(s) to broadcast from
 	/// [`ChannelMonitor::get_latest_holder_commitment_txn`].
-	pub fn force_close_without_broadcasting_txn(&self, channel_id: &[u8; 32], counterparty_node_id: &PublicKey)
+	pub fn force_close_without_broadcasting_txn(&self, channel_id: &ChannelId, counterparty_node_id: &PublicKey)
 	-> Result<(), APIError> {
 		self.force_close_sending_error(channel_id, counterparty_node_id, false)
 	}
@@ -3331,7 +3331,7 @@ where
 	/// Handles the generation of a funding transaction, optionally (for tests) with a function
 	/// which checks the correctness of the funding transaction given the associated channel.
 	fn funding_transaction_generated_intern<FundingOutput: Fn(&OutboundV1Channel<<SP::Target as SignerProvider>::Signer>, &Transaction) -> Result<OutPoint, APIError>>(
-		&self, temporary_channel_id: &[u8; 32], counterparty_node_id: &PublicKey, funding_transaction: Transaction, find_funding_output: FundingOutput
+		&self, temporary_channel_id: &ChannelId, counterparty_node_id: &PublicKey, funding_transaction: Transaction, find_funding_output: FundingOutput
 	) -> Result<(), APIError> {
 		let per_peer_state = self.per_peer_state.read().unwrap();
 		let peer_state_mutex = per_peer_state.get(counterparty_node_id)
@@ -3392,7 +3392,7 @@ where
 	}
 
 	#[cfg(test)]
-	pub(crate) fn funding_transaction_generated_unchecked(&self, temporary_channel_id: &[u8; 32], counterparty_node_id: &PublicKey, funding_transaction: Transaction, output_index: u16) -> Result<(), APIError> {
+	pub(crate) fn funding_transaction_generated_unchecked(&self, temporary_channel_id: &ChannelId, counterparty_node_id: &PublicKey, funding_transaction: Transaction, output_index: u16) -> Result<(), APIError> {
 		self.funding_transaction_generated_intern(temporary_channel_id, counterparty_node_id, funding_transaction, |_, tx| {
 			Ok(OutPoint { txid: tx.txid(), index: output_index })
 		})
@@ -3428,7 +3428,7 @@ where
 	///
 	/// [`Event::FundingGenerationReady`]: crate::events::Event::FundingGenerationReady
 	/// [`Event::ChannelClosed`]: crate::events::Event::ChannelClosed
-	pub fn funding_transaction_generated(&self, temporary_channel_id: &[u8; 32], counterparty_node_id: &PublicKey, funding_transaction: Transaction) -> Result<(), APIError> {
+	pub fn funding_transaction_generated(&self, temporary_channel_id: &ChannelId, counterparty_node_id: &PublicKey, funding_transaction: Transaction) -> Result<(), APIError> {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 
 		for inp in funding_transaction.input.iter() {
@@ -3594,7 +3594,7 @@ where
 	/// [`HTLCIntercepted::expected_outbound_amount_msat`]: events::Event::HTLCIntercepted::expected_outbound_amount_msat
 	// TODO: when we move to deciding the best outbound channel at forward time, only take
 	// `next_node_id` and not `next_hop_channel_id`
-	pub fn forward_intercepted_htlc(&self, intercept_id: InterceptId, next_hop_channel_id: &[u8; 32], next_node_id: PublicKey, amt_to_forward_msat: u64) -> Result<(), APIError> {
+	pub fn forward_intercepted_htlc(&self, intercept_id: InterceptId, next_hop_channel_id: &ChannelId, next_node_id: PublicKey, amt_to_forward_msat: u64) -> Result<(), APIError> {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 
 		let next_hop_scid = {
@@ -4532,7 +4532,7 @@ where
 	// failed backwards or, if they were one of our outgoing HTLCs, then their failure needs to
 	// be surfaced to the user.
 	fn fail_holding_cell_htlcs(
-		&self, mut htlcs_to_fail: Vec<(HTLCSource, PaymentHash)>, channel_id: [u8; 32],
+		&self, mut htlcs_to_fail: Vec<(HTLCSource, PaymentHash)>, channel_id: ChannelId,
 		counterparty_node_id: &PublicKey
 	) {
 		let (failure_code, onion_failure_data) = {
@@ -4844,7 +4844,7 @@ where
 		self.pending_outbound_payments.finalize_claims(sources, &self.pending_events);
 	}
 
-	fn claim_funds_internal(&self, source: HTLCSource, payment_preimage: PaymentPreimage, forwarded_htlc_value_msat: Option<u64>, from_onchain: bool, next_channel_id: [u8; 32]) {
+	fn claim_funds_internal(&self, source: HTLCSource, payment_preimage: PaymentPreimage, forwarded_htlc_value_msat: Option<u64>, from_onchain: bool, next_channel_id: ChannelId) {
 		match source {
 			HTLCSource::OutboundRoute { session_priv, payment_id, path, .. } => {
 				debug_assert!(self.background_events_processed_since_startup.load(Ordering::Acquire),
@@ -5040,7 +5040,7 @@ where
 	///
 	/// [`Event::OpenChannelRequest`]: events::Event::OpenChannelRequest
 	/// [`Event::ChannelClosed::user_channel_id`]: events::Event::ChannelClosed::user_channel_id
-	pub fn accept_inbound_channel(&self, temporary_channel_id: &[u8; 32], counterparty_node_id: &PublicKey, user_channel_id: u128) -> Result<(), APIError> {
+	pub fn accept_inbound_channel(&self, temporary_channel_id: &ChannelId, counterparty_node_id: &PublicKey, user_channel_id: u128) -> Result<(), APIError> {
 		self.do_accept_inbound_channel(temporary_channel_id, counterparty_node_id, false, user_channel_id)
 	}
 
@@ -5062,11 +5062,11 @@ where
 	///
 	/// [`Event::OpenChannelRequest`]: events::Event::OpenChannelRequest
 	/// [`Event::ChannelClosed::user_channel_id`]: events::Event::ChannelClosed::user_channel_id
-	pub fn accept_inbound_channel_from_trusted_peer_0conf(&self, temporary_channel_id: &[u8; 32], counterparty_node_id: &PublicKey, user_channel_id: u128) -> Result<(), APIError> {
+	pub fn accept_inbound_channel_from_trusted_peer_0conf(&self, temporary_channel_id: &ChannelId, counterparty_node_id: &PublicKey, user_channel_id: u128) -> Result<(), APIError> {
 		self.do_accept_inbound_channel(temporary_channel_id, counterparty_node_id, true, user_channel_id)
 	}
 
-	fn do_accept_inbound_channel(&self, temporary_channel_id: &[u8; 32], counterparty_node_id: &PublicKey, accept_0conf: bool, user_channel_id: u128) -> Result<(), APIError> {
+	fn do_accept_inbound_channel(&self, temporary_channel_id: &ChannelId, counterparty_node_id: &PublicKey, accept_0conf: bool, user_channel_id: u128) -> Result<(), APIError> {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 
 		let peers_without_funded_channels =
@@ -6095,7 +6095,7 @@ where
 						if let Some(monitor_update) = monitor_opt {
 							has_monitor_update = true;
 
-							let channel_id: [u8; 32] = *channel_id;
+							let channel_id: ChannelId = *channel_id;
 							let res = handle_new_monitor_update!(self, funding_txo.unwrap(), monitor_update,
 								peer_state_lock, peer_state, per_peer_state, chan, MANUALLY_REMOVING,
 								peer_state.channel_by_id.remove(&channel_id));
