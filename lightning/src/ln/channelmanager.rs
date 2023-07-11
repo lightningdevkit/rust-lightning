@@ -730,7 +730,8 @@ struct PendingInboundPayment {
 /// or, respectively, [`Router`] for its router, but this type alias chooses the concrete types
 /// of [`KeysManager`] and [`DefaultRouter`].
 ///
-/// This is not exported to bindings users as Arcs don't make sense in bindings
+/// This is not exported to bindings users as type aliases aren't supported in most languages
+#[cfg(not(c_bindings))]
 pub type SimpleArcChannelManager<M, T, F, L> = ChannelManager<
 	Arc<M>,
 	Arc<T>,
@@ -758,7 +759,8 @@ pub type SimpleArcChannelManager<M, T, F, L> = ChannelManager<
 /// or, respectively, [`Router`]  for its router, but this type alias chooses the concrete types
 /// of [`KeysManager`] and [`DefaultRouter`].
 ///
-/// This is not exported to bindings users as Arcs don't make sense in bindings
+/// This is not exported to bindings users as type aliases aren't supported in most languages
+#[cfg(not(c_bindings))]
 pub type SimpleRefChannelManager<'a, 'b, 'c, 'd, 'e, 'f, 'g, 'h, M, T, F, L> =
 	ChannelManager<
 		&'a M,
@@ -9359,7 +9361,7 @@ mod tests {
 		};
 		let route = find_route(
 			&nodes[0].node.get_our_node_id(), &route_params, &nodes[0].network_graph,
-			None, nodes[0].logger, &scorer, &(), &random_seed_bytes
+			None, nodes[0].logger, &scorer, &Default::default(), &random_seed_bytes
 		).unwrap();
 		nodes[0].node.send_spontaneous_payment(&route, Some(payment_preimage),
 			RecipientOnionFields::spontaneous_empty(), PaymentId(payment_preimage.0)).unwrap();
@@ -9393,7 +9395,7 @@ mod tests {
 		let payment_preimage = PaymentPreimage([42; 32]);
 		let route = find_route(
 			&nodes[0].node.get_our_node_id(), &route_params, &nodes[0].network_graph,
-			None, nodes[0].logger, &scorer, &(), &random_seed_bytes
+			None, nodes[0].logger, &scorer, &Default::default(), &random_seed_bytes
 		).unwrap();
 		let payment_hash = nodes[0].node.send_spontaneous_payment(&route, Some(payment_preimage),
 			RecipientOnionFields::spontaneous_empty(), PaymentId(payment_preimage.0)).unwrap();
@@ -9450,7 +9452,7 @@ mod tests {
 		};
 		let route = find_route(
 			&nodes[0].node.get_our_node_id(), &route_params, &nodes[0].network_graph,
-			None, nodes[0].logger, &scorer, &(), &random_seed_bytes
+			None, nodes[0].logger, &scorer, &Default::default(), &random_seed_bytes
 		).unwrap();
 		let payment_id_2 = PaymentId([45; 32]);
 		nodes[0].node.send_spontaneous_payment(&route, Some(payment_preimage),
@@ -9503,7 +9505,7 @@ mod tests {
 		let random_seed_bytes = chanmon_cfgs[1].keys_manager.get_secure_random_bytes();
 		let route = find_route(
 			&payer_pubkey, &route_params, &network_graph, Some(&first_hops.iter().collect::<Vec<_>>()),
-			nodes[0].logger, &scorer, &(), &random_seed_bytes
+			nodes[0].logger, &scorer, &Default::default(), &random_seed_bytes
 		).unwrap();
 
 		let test_preimage = PaymentPreimage([42; 32]);
@@ -9550,7 +9552,7 @@ mod tests {
 		let random_seed_bytes = chanmon_cfgs[1].keys_manager.get_secure_random_bytes();
 		let route = find_route(
 			&payer_pubkey, &route_params, &network_graph, Some(&first_hops.iter().collect::<Vec<_>>()),
-			nodes[0].logger, &scorer, &(), &random_seed_bytes
+			nodes[0].logger, &scorer, &Default::default(), &random_seed_bytes
 		).unwrap();
 
 		let test_preimage = PaymentPreimage([42; 32]);

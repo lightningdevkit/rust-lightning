@@ -1795,7 +1795,7 @@ pub fn get_route(send_node: &Node, payment_params: &PaymentParameters, recv_valu
 	router::get_route(
 		&send_node.node.get_our_node_id(), payment_params, &send_node.network_graph.read_only(),
 		Some(&send_node.node.list_usable_channels().iter().collect::<Vec<_>>()),
-		recv_value, send_node.logger, &scorer, &(), &random_seed_bytes
+		recv_value, send_node.logger, &scorer, &Default::default(), &random_seed_bytes
 	)
 }
 
@@ -2417,7 +2417,7 @@ pub fn route_over_limit<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_rou
 	let random_seed_bytes = keys_manager.get_secure_random_bytes();
 	let route = router::get_route(
 		&origin_node.node.get_our_node_id(), &payment_params, &network_graph,
-		None, recv_value, origin_node.logger, &scorer, &(), &random_seed_bytes).unwrap();
+		None, recv_value, origin_node.logger, &scorer, &Default::default(), &random_seed_bytes).unwrap();
 	assert_eq!(route.paths.len(), 1);
 	assert_eq!(route.paths[0].hops.len(), expected_route.len());
 	for (node, hop) in expected_route.iter().zip(route.paths[0].hops.iter()) {

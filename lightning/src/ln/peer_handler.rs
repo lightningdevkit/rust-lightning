@@ -23,6 +23,7 @@ use crate::events::{MessageSendEvent, MessageSendEventsProvider, OnionMessagePro
 use crate::ln::features::{InitFeatures, NodeFeatures};
 use crate::ln::msgs;
 use crate::ln::msgs::{ChannelMessageHandler, LightningError, NetAddress, OnionMessageHandler, RoutingMessageHandler};
+#[cfg(not(c_bindings))]
 use crate::ln::channelmanager::{SimpleArcChannelManager, SimpleRefChannelManager};
 use crate::util::ser::{VecWriter, Writeable, Writer};
 use crate::ln::peer_channel_encryptor::{PeerChannelEncryptor,NextNoiseStep};
@@ -607,7 +608,8 @@ impl Peer {
 /// SimpleRefPeerManager is the more appropriate type. Defining these type aliases prevents
 /// issues such as overly long function definitions.
 ///
-/// This is not exported to bindings users as `Arc`s don't make sense in bindings.
+/// This is not exported to bindings users as type aliases aren't supported in most languages.
+#[cfg(not(c_bindings))]
 pub type SimpleArcPeerManager<SD, M, T, F, C, L> = PeerManager<
 	SD,
 	Arc<SimpleArcChannelManager<M, T, F, L>>,
@@ -625,7 +627,8 @@ pub type SimpleArcPeerManager<SD, M, T, F, C, L> = PeerManager<
 /// But if this is not necessary, using a reference is more efficient. Defining these type aliases
 /// helps with issues such as long function definitions.
 ///
-/// This is not exported to bindings users as general type aliases don't make sense in bindings.
+/// This is not exported to bindings users as type aliases aren't supported in most languages.
+#[cfg(not(c_bindings))]
 pub type SimpleRefPeerManager<
 	'a, 'b, 'c, 'd, 'e, 'f, 'g, 'h, 'i, 'j, 'k, 'l, 'm, 'n, SD, M, T, F, C, L
 > = PeerManager<
