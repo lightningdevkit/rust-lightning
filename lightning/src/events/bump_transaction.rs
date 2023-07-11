@@ -140,6 +140,15 @@ pub struct HTLCDescriptor {
 }
 
 impl HTLCDescriptor {
+	/// Returns the outpoint of the HTLC output in the commitment transaction. This is the outpoint
+	/// being spent by the HTLC input in the HTLC transaction.
+	pub fn outpoint(&self) -> OutPoint {
+		OutPoint {
+			txid: self.commitment_txid,
+			vout: self.htlc.transaction_output_index.unwrap(),
+		}
+	}
+
 	/// Returns the UTXO to be spent by the HTLC input, which can be obtained via
 	/// [`Self::unsigned_tx_input`].
 	pub fn previous_utxo<C: secp256k1::Signing + secp256k1::Verification>(&self, secp: &Secp256k1<C>) -> TxOut {
@@ -480,19 +489,28 @@ pub trait WalletSource {
 /// A wrapper over [`WalletSource`] that implements [`CoinSelection`] by preferring UTXOs that would
 /// avoid conflicting double spends. If not enough UTXOs are available to do so, conflicting double
 /// spends may happen.
-pub struct Wallet<W: Deref> where W::Target: WalletSource {
+pub struct Wallet<W: Deref, L: Deref>
+where
+	W::Target: WalletSource,
+	L::Target: Logger
+{
 	source: W,
+	logger: L,
 	// TODO: Do we care about cleaning this up once the UTXOs have a confirmed spend? We can do so
 	// by checking whether any UTXOs that exist in the map are no longer returned in
 	// `list_confirmed_utxos`.
 	locked_utxos: Mutex<HashMap<OutPoint, ClaimId>>,
 }
 
-impl<W: Deref> Wallet<W> where W::Target: WalletSource {
+impl<W: Deref, L: Deref> Wallet<W, L>
+where
+	W::Target: WalletSource,
+	L::Target: Logger
+{
 	/// Returns a new instance backed by the given [`WalletSource`] that serves as an implementation
 	/// of [`CoinSelectionSource`].
-	pub fn new(source: W) -> Self {
-		Self { source, locked_utxos: Mutex::new(HashMap::new()) }
+	pub fn new(source: W, logger: L) -> Self {
+		Self { source, logger, locked_utxos: Mutex::new(HashMap::new()) }
 	}
 
 	/// Performs coin selection on the set of UTXOs obtained from
@@ -512,6 +530,7 @@ impl<W: Deref> Wallet<W> where W::Target: WalletSource {
 		let mut eligible_utxos = utxos.iter().filter_map(|utxo| {
 			if let Some(utxo_claim_id) = locked_utxos.get(&utxo.outpoint) {
 				if *utxo_claim_id != claim_id && !force_conflicting_utxo_spend {
+					log_trace!(self.logger, "Skipping UTXO {} to prevent conflicting spend", utxo.outpoint);
 					return None;
 				}
 			}
@@ -526,6 +545,7 @@ impl<W: Deref> Wallet<W> where W::Target: WalletSource {
 			if should_spend {
 				Some((utxo, fee_to_spend_utxo))
 			} else {
+				log_trace!(self.logger, "Skipping UTXO {} due to dust proximity after spend", utxo.outpoint);
 				None
 			}
 		}).collect::<Vec<_>>();
@@ -543,6 +563,8 @@ impl<W: Deref> Wallet<W> where W::Target: WalletSource {
 			selected_utxos.push(utxo.clone());
 		}
 		if selected_amount < target_amount_sat + total_fees {
+			log_debug!(self.logger, "Insufficient funds to meet target feerate {} sat/kW",
+				target_feerate_sat_per_1000_weight);
 			return Err(());
 		}
 		for utxo in &selected_utxos {
@@ -559,6 +581,7 @@ impl<W: Deref> Wallet<W> where W::Target: WalletSource {
 		);
 		let change_output_amount = remaining_amount.saturating_sub(change_output_fee);
 		let change_output = if change_output_amount < change_script.dust_value().to_sat() {
+			log_debug!(self.logger, "Coin selection attempt did not yield change output");
 			None
 		} else {
 			Some(TxOut { script_pubkey: change_script, value: change_output_amount })
@@ -571,7 +594,11 @@ impl<W: Deref> Wallet<W> where W::Target: WalletSource {
 	}
 }
 
-impl<W: Deref> CoinSelectionSource for Wallet<W> where W::Target: WalletSource {
+impl<W: Deref, L: Deref> CoinSelectionSource for Wallet<W, L>
+where
+	W::Target: WalletSource,
+	L::Target: Logger
+{
 	fn select_confirmed_utxos(
 		&self, claim_id: ClaimId, must_spend: &[Input], must_pay_to: &[TxOut],
 		target_feerate_sat_per_1000_weight: u32,
@@ -589,6 +616,8 @@ impl<W: Deref> CoinSelectionSource for Wallet<W> where W::Target: WalletSource {
 			((BASE_TX_SIZE + total_output_size) * WITNESS_SCALE_FACTOR as u64);
 		let target_amount_sat = must_pay_to.iter().map(|output| output.value).sum();
 		let do_coin_selection = |force_conflicting_utxo_spend: bool, tolerate_high_network_feerates: bool| {
+			log_debug!(self.logger, "Attempting coin selection targeting {} sat/kW (force_conflicting_utxo_spend = {}, tolerate_high_network_feerates = {})",
+				target_feerate_sat_per_1000_weight, force_conflicting_utxo_spend, tolerate_high_network_feerates);
 			self.select_confirmed_utxos_internal(
 				&utxos, claim_id, force_conflicting_utxo_spend, tolerate_high_network_feerates,
 				target_feerate_sat_per_1000_weight, preexisting_tx_weight, target_amount_sat,
@@ -661,6 +690,7 @@ where
 			// match, but we still need to have at least one output in the transaction for it to be
 			// considered standard. We choose to go with an empty OP_RETURN as it is the cheapest
 			// way to include a dummy output.
+			log_debug!(self.logger, "Including dummy OP_RETURN output since an output is needed and a change output was not provided");
 			tx.output.push(TxOut {
 				value: 0,
 				script_pubkey: Script::new_op_return(&[]),
@@ -688,6 +718,8 @@ where
 			FEERATE_FLOOR_SATS_PER_KW,
 		);
 
+		log_debug!(self.logger, "Peforming coin selection for anchor transaction targeting {} sat/kW",
+			anchor_target_feerate_sat_per_1000_weight);
 		let must_spend = vec![Input {
 			outpoint: anchor_descriptor.outpoint,
 			previous_utxo: anchor_descriptor.previous_utxo(),
@@ -709,11 +741,13 @@ where
 				ANCHOR_INPUT_WITNESS_WEIGHT + EMPTY_SCRIPT_SIG_WEIGHT;
 
 		self.process_coin_selection(&mut anchor_tx, coin_selection);
+		let anchor_txid = anchor_tx.txid();
 
 		debug_assert_eq!(anchor_tx.output.len(), 1);
 		#[cfg(debug_assertions)]
 		let unsigned_tx_weight = anchor_tx.weight() as u64 - (anchor_tx.input.len() as u64 * EMPTY_SCRIPT_SIG_WEIGHT);
 
+		log_debug!(self.logger, "Signing anchor transaction {}", anchor_txid);
 		self.utxo_source.sign_tx(&mut anchor_tx)?;
 		let signer = anchor_descriptor.derive_channel_signer(&self.signer_provider);
 		let anchor_sig = signer.sign_holder_anchor_input(&anchor_tx, 0, &self.secp)?;
@@ -722,10 +756,14 @@ where
 		#[cfg(debug_assertions)] {
 			let signed_tx_weight = anchor_tx.weight() as u64;
 			let expected_signed_tx_weight = unsigned_tx_weight + total_satisfaction_weight;
-			// Our estimate should be within a 1% error margin of the actual weight.
-			assert!(expected_signed_tx_weight - (expected_signed_tx_weight / 100) <= signed_tx_weight);
+			// Our estimate should be within a 1% error margin of the actual weight and we should
+			// never underestimate.
+			assert!(expected_signed_tx_weight >= signed_tx_weight &&
+				expected_signed_tx_weight - (expected_signed_tx_weight / 100) <= signed_tx_weight);
 		}
 
+		log_info!(self.logger, "Broadcasting anchor transaction {} to bump channel close with txid {}",
+			anchor_txid, commitment_tx.txid());
 		self.broadcaster.broadcast_transactions(&[&commitment_tx, &anchor_tx]);
 		Ok(())
 	}
@@ -759,6 +797,8 @@ where
 			htlc_tx.output.push(htlc_output);
 		}
 
+		log_debug!(self.logger, "Peforming coin selection for HTLC transaction targeting {} sat/kW",
+			target_feerate_sat_per_1000_weight);
 		let coin_selection = self.utxo_source.select_confirmed_utxos(
 			claim_id, &must_spend, &htlc_tx.output, target_feerate_sat_per_1000_weight,
 		)?;
@@ -771,6 +811,7 @@ where
 		#[cfg(debug_assertions)]
 		let unsigned_tx_weight = htlc_tx.weight() as u64 - (htlc_tx.input.len() as u64 * EMPTY_SCRIPT_SIG_WEIGHT);
 
+		log_debug!(self.logger, "Signing HTLC transaction {}", htlc_tx.txid());
 		self.utxo_source.sign_tx(&mut htlc_tx)?;
 		let mut signers = BTreeMap::new();
 		for (idx, htlc_descriptor) in htlc_descriptors.iter().enumerate() {
@@ -784,10 +825,13 @@ where
 		#[cfg(debug_assertions)] {
 			let signed_tx_weight = htlc_tx.weight() as u64;
 			let expected_signed_tx_weight = unsigned_tx_weight + total_satisfaction_weight;
-			// Our estimate should be within a 1% error margin of the actual weight.
-			assert!(expected_signed_tx_weight - (expected_signed_tx_weight / 100) <= signed_tx_weight);
+			// Our estimate should be within a 1% error margin of the actual weight and we should
+			// never underestimate.
+			assert!(expected_signed_tx_weight >= signed_tx_weight &&
+				expected_signed_tx_weight - (expected_signed_tx_weight / 100) <= signed_tx_weight);
 		}
 
+		log_info!(self.logger, "Broadcasting {}", log_tx!(htlc_tx));
 		self.broadcaster.broadcast_transactions(&[&htlc_tx]);
 		Ok(())
 	}
@@ -799,6 +843,8 @@ where
 				claim_id, package_target_feerate_sat_per_1000_weight, commitment_tx,
 				commitment_tx_fee_satoshis, anchor_descriptor, ..
 			} => {
+				log_info!(self.logger, "Handling channel close bump (claim_id = {}, commitment_txid = {})",
+					log_bytes!(claim_id.0), commitment_tx.txid());
 				if let Err(_) = self.handle_channel_close(
 					*claim_id, *package_target_feerate_sat_per_1000_weight, commitment_tx,
 					*commitment_tx_fee_satoshis, anchor_descriptor,
@@ -810,6 +856,8 @@ where
 			BumpTransactionEvent::HTLCResolution {
 				claim_id, target_feerate_sat_per_1000_weight, htlc_descriptors, tx_lock_time,
 			} => {
+				log_info!(self.logger, "Handling HTLC bump (claim_id = {}, htlcs_to_claim = {})",
+					log_bytes!(claim_id.0), log_iter!(htlc_descriptors.iter().map(|d| d.outpoint())));
 				if let Err(_) = self.handle_htlc_resolution(
 					*claim_id, *target_feerate_sat_per_1000_weight, htlc_descriptors, *tx_lock_time,
 				) {
