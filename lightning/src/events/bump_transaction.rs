@@ -12,10 +12,9 @@
 //! [`Event`]: crate::events::Event
 
 use alloc::collections::BTreeMap;
-use core::convert::TryInto;
 use core::ops::Deref;
 
-use crate::chain::chaininterface::BroadcasterInterface;
+use crate::chain::chaininterface::{BroadcasterInterface, compute_feerate_sat_per_1000_weight, fee_for_weight};
 use crate::chain::ClaimId;
 use crate::io_extras::sink;
 use crate::ln::channel::ANCHOR_OUTPUT_VALUE_SATOSHI;
@@ -43,14 +42,6 @@ const EMPTY_SCRIPT_SIG_WEIGHT: u64 = 1 /* empty script_sig */ * WITNESS_SCALE_FA
 const BASE_INPUT_SIZE: u64 = 32 /* txid */ + 4 /* vout */ + 4 /* sequence */;
 
 const BASE_INPUT_WEIGHT: u64 = BASE_INPUT_SIZE * WITNESS_SCALE_FACTOR as u64;
-
-// TODO: Define typed abstraction over feerates to handle their conversions.
-fn compute_feerate_sat_per_1000_weight(fee_sat: u64, weight: u64) -> u32 {
-	(fee_sat * 1000 / weight).try_into().unwrap_or(u32::max_value())
-}
-const fn fee_for_weight(feerate_sat_per_1000_weight: u32, weight: u64) -> u64 {
-	((feerate_sat_per_1000_weight as u64 * weight) + 1000 - 1) / 1000
-}
 
 /// The parameters required to derive a channel signer via [`SignerProvider`].
 #[derive(Clone, Debug, PartialEq, Eq)]
