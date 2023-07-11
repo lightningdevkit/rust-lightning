@@ -668,31 +668,6 @@ where
 		}
 	}
 
-	/// Returns an unsigned transaction spending an anchor output of the commitment transaction, and
-	/// any additional UTXOs sourced, to bump the commitment transaction's fee.
-	fn build_anchor_tx(
-		&self, claim_id: ClaimId, target_feerate_sat_per_1000_weight: u32,
-		commitment_tx: &Transaction, anchor_descriptor: &AnchorDescriptor,
-	) -> Result<Transaction, ()> {
-		let must_spend = vec![Input {
-			outpoint: anchor_descriptor.outpoint,
-			previous_utxo: anchor_descriptor.previous_utxo(),
-			satisfaction_weight: commitment_tx.weight() as u64 + ANCHOR_INPUT_WITNESS_WEIGHT + EMPTY_SCRIPT_SIG_WEIGHT,
-		}];
-		let coin_selection = self.utxo_source.select_confirmed_utxos(
-			claim_id, &must_spend, &[], target_feerate_sat_per_1000_weight,
-		)?;
-
-		let mut tx = Transaction {
-			version: 2,
-			lock_time: PackedLockTime::ZERO, // TODO: Use next best height.
-			input: vec![anchor_descriptor.unsigned_tx_input()],
-			output: vec![],
-		};
-		self.process_coin_selection(&mut tx, coin_selection);
-		Ok(tx)
-	}
-
 	/// Handles a [`BumpTransactionEvent::ChannelClose`] event variant by producing a fully-signed
 	/// transaction spending an anchor output of the commitment transaction to bump its fee and
 	/// broadcasts them to the network as a package.
@@ -713,27 +688,55 @@ where
 			FEERATE_FLOOR_SATS_PER_KW,
 		);
 
-		let mut anchor_tx = self.build_anchor_tx(
-			claim_id, anchor_target_feerate_sat_per_1000_weight, commitment_tx, anchor_descriptor,
+		let must_spend = vec![Input {
+			outpoint: anchor_descriptor.outpoint,
+			previous_utxo: anchor_descriptor.previous_utxo(),
+			satisfaction_weight: commitment_tx.weight() as u64 + ANCHOR_INPUT_WITNESS_WEIGHT + EMPTY_SCRIPT_SIG_WEIGHT,
+		}];
+		let coin_selection = self.utxo_source.select_confirmed_utxos(
+			claim_id, &must_spend, &[], anchor_target_feerate_sat_per_1000_weight,
 		)?;
+
+		let mut anchor_tx = Transaction {
+			version: 2,
+			lock_time: PackedLockTime::ZERO, // TODO: Use next best height.
+			input: vec![anchor_descriptor.unsigned_tx_input()],
+			output: vec![],
+		};
+		#[cfg(debug_assertions)]
+		let total_satisfaction_weight =
+			coin_selection.confirmed_utxos.iter().map(|utxo| utxo.satisfaction_weight).sum::<u64>() +
+				ANCHOR_INPUT_WITNESS_WEIGHT + EMPTY_SCRIPT_SIG_WEIGHT;
+
+		self.process_coin_selection(&mut anchor_tx, coin_selection);
+
 		debug_assert_eq!(anchor_tx.output.len(), 1);
+		#[cfg(debug_assertions)]
+		let unsigned_tx_weight = anchor_tx.weight() as u64 - (anchor_tx.input.len() as u64 * EMPTY_SCRIPT_SIG_WEIGHT);
 
 		self.utxo_source.sign_tx(&mut anchor_tx)?;
 		let signer = anchor_descriptor.derive_channel_signer(&self.signer_provider);
 		let anchor_sig = signer.sign_holder_anchor_input(&anchor_tx, 0, &self.secp)?;
 		anchor_tx.input[0].witness = anchor_descriptor.tx_input_witness(&anchor_sig);
 
+		#[cfg(debug_assertions)] {
+			let signed_tx_weight = anchor_tx.weight() as u64;
+			let expected_signed_tx_weight = unsigned_tx_weight + total_satisfaction_weight;
+			// Our estimate should be within a 1% error margin of the actual weight.
+			assert!(expected_signed_tx_weight - (expected_signed_tx_weight / 100) <= signed_tx_weight);
+		}
+
 		self.broadcaster.broadcast_transactions(&[&commitment_tx, &anchor_tx]);
 		Ok(())
 	}
 
-	/// Returns an unsigned, fee-bumped HTLC transaction, along with the set of signers required to
-	/// fulfill the witness for each HTLC input within it.
-	fn build_htlc_tx(
+	/// Handles a [`BumpTransactionEvent::HTLCResolution`] event variant by producing a
+	/// fully-signed, fee-bumped HTLC transaction that is broadcast to the network.
+	fn handle_htlc_resolution(
 		&self, claim_id: ClaimId, target_feerate_sat_per_1000_weight: u32,
 		htlc_descriptors: &[HTLCDescriptor], tx_lock_time: PackedLockTime,
-	) -> Result<Transaction, ()> {
-		let mut tx = Transaction {
+	) -> Result<(), ()> {
+		let mut htlc_tx = Transaction {
 			version: 2,
 			lock_time: tx_lock_time,
 			input: vec![],
@@ -751,27 +754,22 @@ where
 					HTLC_TIMEOUT_INPUT_ANCHOR_WITNESS_WEIGHT
 				},
 			});
-			tx.input.push(htlc_input);
+			htlc_tx.input.push(htlc_input);
 			let htlc_output = htlc_descriptor.tx_output(&self.secp);
-			tx.output.push(htlc_output);
+			htlc_tx.output.push(htlc_output);
 		}
 
 		let coin_selection = self.utxo_source.select_confirmed_utxos(
-			claim_id, &must_spend, &tx.output, target_feerate_sat_per_1000_weight,
+			claim_id, &must_spend, &htlc_tx.output, target_feerate_sat_per_1000_weight,
 		)?;
-		self.process_coin_selection(&mut tx, coin_selection);
-		Ok(tx)
-	}
+		#[cfg(debug_assertions)]
+		let total_satisfaction_weight =
+			coin_selection.confirmed_utxos.iter().map(|utxo| utxo.satisfaction_weight).sum::<u64>() +
+				must_spend.iter().map(|input| input.satisfaction_weight).sum::<u64>();
+		self.process_coin_selection(&mut htlc_tx, coin_selection);
 
-	/// Handles a [`BumpTransactionEvent::HTLCResolution`] event variant by producing a
-	/// fully-signed, fee-bumped HTLC transaction that is broadcast to the network.
-	fn handle_htlc_resolution(
-		&self, claim_id: ClaimId, target_feerate_sat_per_1000_weight: u32,
-		htlc_descriptors: &[HTLCDescriptor], tx_lock_time: PackedLockTime,
-	) -> Result<(), ()> {
-		let mut htlc_tx = self.build_htlc_tx(
-			claim_id, target_feerate_sat_per_1000_weight, htlc_descriptors, tx_lock_time,
-		)?;
+		#[cfg(debug_assertions)]
+		let unsigned_tx_weight = htlc_tx.weight() as u64 - (htlc_tx.input.len() as u64 * EMPTY_SCRIPT_SIG_WEIGHT);
 
 		self.utxo_source.sign_tx(&mut htlc_tx)?;
 		let mut signers = BTreeMap::new();
@@ -783,6 +781,13 @@ where
 			htlc_tx.input[idx].witness = htlc_descriptor.tx_input_witness(&htlc_sig, &witness_script);
 		}
 
+		#[cfg(debug_assertions)] {
+			let signed_tx_weight = htlc_tx.weight() as u64;
+			let expected_signed_tx_weight = unsigned_tx_weight + total_satisfaction_weight;
+			// Our estimate should be within a 1% error margin of the actual weight.
+			assert!(expected_signed_tx_weight - (expected_signed_tx_weight / 100) <= signed_tx_weight);
+		}
+
 		self.broadcaster.broadcast_transactions(&[&htlc_tx]);
 		Ok(())
 	}
@@ -792,7 +797,7 @@ where
 		match event {
 			BumpTransactionEvent::ChannelClose {
 				claim_id, package_target_feerate_sat_per_1000_weight, commitment_tx,
-				anchor_descriptor, commitment_tx_fee_satoshis,	..
+				commitment_tx_fee_satoshis, anchor_descriptor, ..
 			} => {
 				if let Err(_) = self.handle_channel_close(
 					*claim_id, *package_target_feerate_sat_per_1000_weight, commitment_tx,
