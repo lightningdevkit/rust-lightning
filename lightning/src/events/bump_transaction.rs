@@ -700,18 +700,6 @@ where
 		&self, claim_id: ClaimId, package_target_feerate_sat_per_1000_weight: u32,
 		commitment_tx: &Transaction, commitment_tx_fee_sat: u64, anchor_descriptor: &AnchorDescriptor,
 	) -> Result<(), ()> {
-		// Compute the feerate the anchor transaction must meet to meet the overall feerate for the
-		// package (commitment + anchor transactions).
-		let commitment_tx_sat_per_1000_weight: u32 = compute_feerate_sat_per_1000_weight(
-			commitment_tx_fee_sat, commitment_tx.weight() as u64,
-		);
-		if commitment_tx_sat_per_1000_weight >= package_target_feerate_sat_per_1000_weight {
-			// If the commitment transaction already has a feerate high enough on its own, broadcast
-			// it as is without a child.
-			self.broadcaster.broadcast_transactions(&[&commitment_tx]);
-			return Ok(());
-		}
-
 		let mut anchor_tx = self.build_anchor_tx(
 			claim_id, package_target_feerate_sat_per_1000_weight, commitment_tx, anchor_descriptor,
 		)?;

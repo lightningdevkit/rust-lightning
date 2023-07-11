@@ -1878,6 +1878,7 @@ fn test_yield_anchors_events() {
 
 	assert!(nodes[0].node.get_and_clear_pending_events().is_empty());
 
+	*nodes[0].fee_estimator.sat_per_kw.lock().unwrap() *= 2;
 	connect_blocks(&nodes[0], TEST_FINAL_CLTV + LATENCY_GRACE_PERIOD_BLOCKS + 1);
 	check_closed_broadcast!(&nodes[0], true);
 	assert!(nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().is_empty());
@@ -2054,6 +2055,7 @@ fn test_anchors_aggregated_revoked_htlc_tx() {
 	// Bob force closes by restarting with the outdated state, prompting the ChannelMonitors to
 	// broadcast the latest commitment transaction known to them, which in our case is the one with
 	// the HTLCs still pending.
+	*nodes[1].fee_estimator.sat_per_kw.lock().unwrap() *= 2;
 	nodes[1].node.timer_tick_occurred();
 	check_added_monitors(&nodes[1], 2);
 	check_closed_event!(&nodes[1], 2, ClosureReason::OutdatedChannelManager);
