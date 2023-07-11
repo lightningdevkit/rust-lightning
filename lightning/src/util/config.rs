@@ -322,8 +322,8 @@ pub enum MaxDustHTLCExposure {
 	/// This sets a fixed limit on the total dust exposure in millisatoshis. Setting this too low
 	/// may prevent the sending or receipt of low-value HTLCs on high-traffic nodes, however this
 	/// limit is very important to prevent stealing of large amounts of dust HTLCs by miners
-	/// through [fee griefing
-	/// attacks](https://lists.linuxfoundation.org/pipermail/lightning-dev/2020-May/002714.html).
+	/// through dust inflation capture attacks or [fee griefing attacks](https://lists.linuxfoundation.org/pipermail/lightning-dev/2021-October/003257.html)
+	/// by counterparties wihout hashrate capabilities.
 	///
 	/// Note that if the feerate increases significantly, without a manual increase
 	/// to this maximum the channel may be unable to send/receive HTLCs between the maximum dust
