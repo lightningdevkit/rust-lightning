@@ -799,7 +799,8 @@ impl TryFrom<Vec<u8>> for InvoiceRequest {
 			None => return Err(Bolt12ParseError::InvalidSemantics(Bolt12SemanticError::MissingSignature)),
 			Some(signature) => signature,
 		};
-		merkle::verify_signature(&signature, SIGNATURE_TAG, &bytes, contents.payer_id)?;
+		let message = TaggedHash::new(SIGNATURE_TAG, &bytes);
+		merkle::verify_signature(&signature, message, contents.payer_id)?;
 
 		Ok(InvoiceRequest { bytes, contents, signature })
 	}
@@ -933,11 +934,9 @@ mod tests {
 		assert_eq!(invoice_request.quantity(), None);
 		assert_eq!(invoice_request.payer_id(), payer_pubkey());
 		assert_eq!(invoice_request.payer_note(), None);
-		assert!(
-			merkle::verify_signature(
-				&invoice_request.signature, SIGNATURE_TAG, &invoice_request.bytes, payer_pubkey()
-			).is_ok()
-		);
+
+		let message = TaggedHash::new(SIGNATURE_TAG, &invoice_request.bytes);
+		assert!(merkle::verify_signature(&invoice_request.signature, message, payer_pubkey()).is_ok());
 
 		assert_eq!(
 			invoice_request.as_tlv_stream(),

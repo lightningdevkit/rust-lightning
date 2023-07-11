@@ -88,17 +88,15 @@ where
 	Ok(signature)
 }
 
-/// Verifies the signature with a pubkey over the given bytes using a tagged hash as the message
+/// Verifies the signature with a pubkey over the given message using a tagged hash as the message
 /// digest.
-///
-/// Panics if `bytes` is not a well-formed TLV stream containing at least one TLV record.
 pub(super) fn verify_signature(
-	signature: &Signature, tag: &str, bytes: &[u8], pubkey: PublicKey,
+	signature: &Signature, message: TaggedHash, pubkey: PublicKey,
 ) -> Result<(), secp256k1::Error> {
-	let digest = message_digest(tag, bytes);
+	let digest = message.as_digest();
 	let pubkey = pubkey.into();
 	let secp_ctx = Secp256k1::verification_only();
-	secp_ctx.verify_schnorr(signature, &digest, &pubkey)
+	secp_ctx.verify_schnorr(signature, digest, &pubkey)
 }
 
 pub(super) fn message_digest(tag: &str, bytes: &[u8]) -> Message {
