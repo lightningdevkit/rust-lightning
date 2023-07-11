@@ -15,6 +15,7 @@ use crate::sign::EntropySource;
 use crate::chain::channelmonitor::ChannelMonitor;
 use crate::chain::transaction::OutPoint;
 use crate::events::{ClosureReason, Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider, PathFailure, PaymentPurpose, PaymentFailureReason};
+use crate::events::bump_transaction::{BumpTransactionEventHandler, Wallet, WalletSource};
 use crate::ln::{PaymentPreimage, PaymentHash, PaymentSecret};
 use crate::ln::channelmanager::{AChannelManager, ChainParameters, ChannelManager, ChannelManagerReadArgs, RAACommitmentOrder, PaymentSendFailure, RecipientOnionFields, PaymentId, MIN_CLTV_EXPIRY_DELTA};
 use crate::routing::gossip::{P2PGossipSync, NetworkGraph, NetworkUpdate};
@@ -32,13 +33,11 @@ use crate::util::ser::{ReadableArgs, Writeable};
 
 use bitcoin::blockdata::block::{Block, BlockHeader};
 use bitcoin::blockdata::transaction::{Transaction, TxOut};
-use bitcoin::network::constants::Network;
-
 use bitcoin::hash_types::BlockHash;
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::Hash as _;
-
-use bitcoin::secp256k1::PublicKey;
+use bitcoin::network::constants::Network;
+use bitcoin::secp256k1::{PublicKey, SecretKey};
 
 use crate::io;
 use crate::prelude::*;
@@ -289,6 +288,19 @@ fn do_connect_block<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, block: Block, sk
 	}
 	call_claimable_balances(node);
 	node.node.test_process_background_events();
+
+	for tx in &block.txdata {
+		for input in &tx.input {
+			node.wallet_source.remove_utxo(input.previous_output);
+		}
+		let wallet_script = node.wallet_source.get_change_script().unwrap();
+		for (idx, output) in tx.output.iter().enumerate() {
+			if output.script_pubkey == wallet_script {
+				let outpoint = bitcoin::OutPoint { txid: tx.txid(), vout: idx as u32 };
+				node.wallet_source.add_utxo(outpoint, output.value);
+			}
+		}
+	}
 }
 
 pub fn disconnect_blocks<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, count: u32) {
@@ -375,6 +387,13 @@ pub struct Node<'a, 'b: 'a, 'c: 'b> {
 	pub blocks: Arc<Mutex<Vec<(Block, u32)>>>,
 	pub connect_style: Rc<RefCell<ConnectStyle>>,
 	pub override_init_features: Rc<RefCell<Option<InitFeatures>>>,
+	pub wallet_source: Arc<test_utils::TestWalletSource>,
+	pub bump_tx_handler: BumpTransactionEventHandler<
+		&'c test_utils::TestBroadcaster,
+		Arc<Wallet<Arc<test_utils::TestWalletSource>, &'c test_utils::TestLogger>>,
+		&'b test_utils::TestKeysInterface,
+		&'c test_utils::TestLogger,
+	>,
 }
 impl<'a, 'b, 'c> Node<'a, 'b, 'c> {
 	pub fn best_block_hash(&self) -> BlockHash {
@@ -2622,6 +2641,7 @@ pub fn create_network<'a, 'b: 'a, 'c: 'b>(node_count: usize, cfgs: &'b Vec<NodeC
 
 	for i in 0..node_count {
 		let gossip_sync = P2PGossipSync::new(cfgs[i].network_graph.as_ref(), None, cfgs[i].logger);
+		let wallet_source = Arc::new(test_utils::TestWalletSource::new(SecretKey::from_slice(&[i as u8 + 1; 32]).unwrap()));
 		nodes.push(Node{
 			chain_source: cfgs[i].chain_source, tx_broadcaster: cfgs[i].tx_broadcaster,
 			fee_estimator: cfgs[i].fee_estimator, router: &cfgs[i].router,
@@ -2632,6 +2652,11 @@ pub fn create_network<'a, 'b: 'a, 'c: 'b>(node_count: usize, cfgs: &'b Vec<NodeC
 			blocks: Arc::clone(&cfgs[i].tx_broadcaster.blocks),
 			connect_style: Rc::clone(&connect_style),
 			override_init_features: Rc::clone(&cfgs[i].override_init_features),
+			wallet_source: Arc::clone(&wallet_source),
+			bump_tx_handler: BumpTransactionEventHandler::new(
+				cfgs[i].tx_broadcaster, Arc::new(Wallet::new(Arc::clone(&wallet_source), cfgs[i].logger)),
+				&cfgs[i].keys_manager, cfgs[i].logger,
+			),
 		})
 	}
 
