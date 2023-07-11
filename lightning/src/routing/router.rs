@@ -292,7 +292,7 @@ pub struct BlindedTail {
 }
 
 impl_writeable_tlv_based!(BlindedTail, {
-	(0, hops, vec_type),
+	(0, hops, required_vec),
 	(2, blinding_point, required),
 	(4, excess_final_cltv_expiry_delta, required),
 	(6, final_value_msat, required),
@@ -559,10 +559,10 @@ impl Writeable for PaymentParameters {
 			(1, self.max_total_cltv_expiry_delta, required),
 			(2, self.payee.features(), option),
 			(3, self.max_path_count, required),
-			(4, *clear_hints, vec_type),
+			(4, *clear_hints, required_vec),
 			(5, self.max_channel_saturation_power_of_half, required),
 			(6, self.expiry_time, option),
-			(7, self.previously_failed_channels, vec_type),
+			(7, self.previously_failed_channels, required_vec),
 			(8, *blinded_hints, optional_vec),
 			(9, self.payee.final_cltv_expiry_delta(), option),
 		});
@@ -577,14 +577,13 @@ impl ReadableArgs<u32> for PaymentParameters {
 			(1, max_total_cltv_expiry_delta, (default_value, DEFAULT_MAX_TOTAL_CLTV_EXPIRY_DELTA)),
 			(2, features, (option: ReadableArgs, payee_pubkey.is_some())),
 			(3, max_path_count, (default_value, DEFAULT_MAX_PATH_COUNT)),
-			(4, route_hints, vec_type),
+			(4, clear_route_hints, required_vec),
 			(5, max_channel_saturation_power_of_half, (default_value, DEFAULT_MAX_CHANNEL_SATURATION_POW_HALF)),
 			(6, expiry_time, option),
-			(7, previously_failed_channels, vec_type),
+			(7, previously_failed_channels, optional_vec),
 			(8, blinded_route_hints, optional_vec),
 			(9, final_cltv_expiry_delta, (default_value, default_final_cltv_expiry_delta)),
 		});
-		let clear_route_hints = route_hints.unwrap_or(vec![]);
 		let blinded_route_hints = blinded_route_hints.unwrap_or(vec![]);
 		let payee = if blinded_route_hints.len() != 0 {
 			if clear_route_hints.len() != 0 || payee_pubkey.is_some() { return Err(DecodeError::InvalidValue) }

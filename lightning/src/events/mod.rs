@@ -909,7 +909,7 @@ impl Writeable for Event {
 					(2, payment_failed_permanently, required),
 					(3, false, required), // all_paths_failed in LDK versions prior to 0.0.114
 					(4, path.blinded_tail, option),
-					(5, path.hops, vec_type),
+					(5, path.hops, required_vec),
 					(7, short_channel_id, option),
 					(9, None::<RouteParameters>, option), // retry in LDK versions prior to 0.0.115
 					(11, payment_id, option),
@@ -977,7 +977,7 @@ impl Writeable for Event {
 				write_tlv_fields!(writer, {
 					(0, payment_id, required),
 					(2, payment_hash, option),
-					(4, path.hops, vec_type),
+					(4, path.hops, required_vec),
 					(6, path.blinded_tail, option),
 				})
 			},
@@ -1008,7 +1008,7 @@ impl Writeable for Event {
 				write_tlv_fields!(writer, {
 					(0, payment_id, required),
 					(2, payment_hash, required),
-					(4, path.hops, vec_type),
+					(4, path.hops, required_vec),
 					(6, path.blinded_tail, option),
 				})
 			},
@@ -1017,7 +1017,7 @@ impl Writeable for Event {
 				write_tlv_fields!(writer, {
 					(0, payment_id, required),
 					(2, payment_hash, required),
-					(4, path.hops, vec_type),
+					(4, path.hops, required_vec),
 					(6, short_channel_id, option),
 					(8, path.blinded_tail, option),
 				})
@@ -1162,7 +1162,9 @@ impl MaybeReadable for Event {
 						(1, network_update, upgradable_option),
 						(2, payment_failed_permanently, required),
 						(4, blinded_tail, option),
-						(5, path, vec_type),
+						// Added as a part of LDK 0.0.101 and always filled in since.
+						// Defaults to an empty Vec, though likely should have been `Option`al.
+						(5, path, optional_vec),
 						(7, short_channel_id, option),
 						(11, payment_id, option),
 						(13, failure_opt, upgradable_option),
@@ -1279,13 +1281,13 @@ impl MaybeReadable for Event {
 					_init_and_read_tlv_fields!(reader, {
 						(0, payment_id, required),
 						(2, payment_hash, option),
-						(4, path, vec_type),
+						(4, path, required_vec),
 						(6, blinded_tail, option),
 					});
 					Ok(Some(Event::PaymentPathSuccessful {
 						payment_id: payment_id.0.unwrap(),
 						payment_hash,
-						path: Path { hops: path.unwrap(), blinded_tail },
+						path: Path { hops: path, blinded_tail },
 					}))
 				};
 				f()
@@ -1338,13 +1340,13 @@ impl MaybeReadable for Event {
 					_init_and_read_tlv_fields!(reader, {
 						(0, payment_id, required),
 						(2, payment_hash, required),
-						(4, path, vec_type),
+						(4, path, required_vec),
 						(6, blinded_tail, option),
 					});
 					Ok(Some(Event::ProbeSuccessful {
 						payment_id: payment_id.0.unwrap(),
 						payment_hash: payment_hash.0.unwrap(),
-						path: Path { hops: path.unwrap(), blinded_tail },
+						path: Path { hops: path, blinded_tail },
 					}))
 				};
 				f()
@@ -1354,14 +1356,14 @@ impl MaybeReadable for Event {
 					_init_and_read_tlv_fields!(reader, {
 						(0, payment_id, required),
 						(2, payment_hash, required),
-						(4, path, vec_type),
+						(4, path, required_vec),
 						(6, short_channel_id, option),
 						(8, blinded_tail, option),
 					});
 					Ok(Some(Event::ProbeFailed {
 						payment_id: payment_id.0.unwrap(),
 						payment_hash: payment_hash.0.unwrap(),
-						path: Path { hops: path.unwrap(), blinded_tail },
+						path: Path { hops: path, blinded_tail },
 						short_channel_id,
 					}))
 				};

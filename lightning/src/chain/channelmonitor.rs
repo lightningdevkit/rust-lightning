@@ -262,7 +262,7 @@ impl_writeable_tlv_based!(HolderSignedTx, {
 	(8, delayed_payment_key, required),
 	(10, per_commitment_point, required),
 	(12, feerate_per_kw, required),
-	(14, htlc_outputs, vec_type)
+	(14, htlc_outputs, required_vec)
 });
 
 impl HolderSignedTx {
@@ -538,15 +538,15 @@ impl ChannelMonitorUpdateStep {
 impl_writeable_tlv_based_enum_upgradable!(ChannelMonitorUpdateStep,
 	(0, LatestHolderCommitmentTXInfo) => {
 		(0, commitment_tx, required),
-		(1, claimed_htlcs, vec_type),
-		(2, htlc_outputs, vec_type),
+		(1, claimed_htlcs, optional_vec),
+		(2, htlc_outputs, required_vec),
 		(4, nondust_htlc_sources, optional_vec),
 	},
 	(1, LatestCounterpartyCommitmentTXInfo) => {
 		(0, commitment_txid, required),
 		(2, commitment_number, required),
 		(4, their_per_commitment_point, required),
-		(6, htlc_outputs, vec_type),
+		(6, htlc_outputs, required_vec),
 	},
 	(2, PaymentPreimage) => {
 		(0, payment_preimage, required),
@@ -1071,12 +1071,12 @@ impl<Signer: WriteableEcdsaChannelSigner> Writeable for ChannelMonitorImpl<Signe
 
 		write_tlv_fields!(writer, {
 			(1, self.funding_spend_confirmed, option),
-			(3, self.htlcs_resolved_on_chain, vec_type),
-			(5, self.pending_monitor_events, vec_type),
+			(3, self.htlcs_resolved_on_chain, required_vec),
+			(5, self.pending_monitor_events, required_vec),
 			(7, self.funding_spend_seen, required),
 			(9, self.counterparty_node_id, option),
 			(11, self.confirmed_commitment_tx_counterparty_output, option),
-			(13, self.spendable_txids_confirmed, vec_type),
+			(13, self.spendable_txids_confirmed, required_vec),
 			(15, self.counterparty_fulfilled_htlcs, required),
 		});
 
@@ -4112,12 +4112,12 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 		let mut counterparty_fulfilled_htlcs = Some(HashMap::new());
 		read_tlv_fields!(reader, {
 			(1, funding_spend_confirmed, option),
-			(3, htlcs_resolved_on_chain, vec_type),
-			(5, pending_monitor_events, vec_type),
+			(3, htlcs_resolved_on_chain, optional_vec),
+			(5, pending_monitor_events, optional_vec),
 			(7, funding_spend_seen, option),
 			(9, counterparty_node_id, option),
 			(11, confirmed_commitment_tx_counterparty_output, option),
-			(13, spendable_txids_confirmed, vec_type),
+			(13, spendable_txids_confirmed, optional_vec),
 			(15, counterparty_fulfilled_htlcs, option),
 		});
 
