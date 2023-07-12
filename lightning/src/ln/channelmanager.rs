@@ -9636,7 +9636,7 @@ mod tests {
 		nodes[0].node.force_close_broadcasting_latest_txn(&chan.2, &nodes[1].node.get_our_node_id()).unwrap();
 		check_closed_broadcast!(nodes[0], true);
 		check_added_monitors!(nodes[0], 1);
-		check_closed_event!(nodes[0], 1, ClosureReason::HolderForceClosed);
+		check_closed_event!(nodes[0], 1, ClosureReason::HolderForceClosed, [nodes[1].node.get_our_node_id()], 100000);
 
 		{
 			// Assert that nodes[1] is awaiting removal for nodes[0] once nodes[1] has been
@@ -9799,8 +9799,8 @@ mod tests {
 		}
 		let (_nodes_1_update, _none) = get_closing_signed_broadcast!(nodes[1].node, nodes[0].node.get_our_node_id());
 
-		check_closed_event!(nodes[0], 1, ClosureReason::CooperativeClosure);
-		check_closed_event!(nodes[1], 1, ClosureReason::CooperativeClosure);
+		check_closed_event!(nodes[0], 1, ClosureReason::CooperativeClosure, [nodes[1].node.get_our_node_id()], 1000000);
+		check_closed_event!(nodes[1], 1, ClosureReason::CooperativeClosure, [nodes[0].node.get_our_node_id()], 1000000);
 	}
 
 	fn check_not_connected_to_peer_error<T>(res_err: Result<T, APIError>, expected_public_key: PublicKey) {
@@ -10195,7 +10195,7 @@ mod tests {
 		let open_channel_msg = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
 		assert!(!open_channel_msg.channel_type.unwrap().supports_anchors_zero_fee_htlc_tx());
 
-		check_closed_event!(nodes[1], 1, ClosureReason::HolderForceClosed);
+		check_closed_event!(nodes[1], 1, ClosureReason::HolderForceClosed, [nodes[0].node.get_our_node_id()], 100000);
 	}
 
 	#[test]

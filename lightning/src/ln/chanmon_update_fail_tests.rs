@@ -70,7 +70,8 @@ fn test_simple_monitor_permanent_update_fail() {
 	// PaymentPathFailed event
 
 	assert_eq!(nodes[0].node.list_channels().len(), 0);
-	check_closed_event!(nodes[0], 1, ClosureReason::ProcessingError { err: "ChannelMonitor storage failure".to_string() });
+	check_closed_event!(nodes[0], 1, ClosureReason::ProcessingError { err: "ChannelMonitor storage failure".to_string() },
+		[nodes[1].node.get_our_node_id()], 100000);
 }
 
 #[test]
@@ -247,7 +248,7 @@ fn do_test_simple_monitor_temporary_update_fail(disconnect: bool) {
 	// PaymentPathFailed event
 
 	assert_eq!(nodes[0].node.list_channels().len(), 0);
-	check_closed_event!(nodes[0], 1, ClosureReason::HolderForceClosed);
+	check_closed_event!(nodes[0], 1, ClosureReason::HolderForceClosed, [nodes[1].node.get_our_node_id()], 100000);
 }
 
 #[test]
@@ -1987,8 +1988,8 @@ fn do_during_funding_monitor_fail(confirm_a_first: bool, restore_b_before_conf: 
 
 	send_payment(&nodes[0], &[&nodes[1]], 8000000);
 	close_channel(&nodes[0], &nodes[1], &channel_id, funding_tx, true);
-	check_closed_event!(nodes[0], 1, ClosureReason::CooperativeClosure);
-	check_closed_event!(nodes[1], 1, ClosureReason::CooperativeClosure);
+	check_closed_event!(nodes[0], 1, ClosureReason::CooperativeClosure, [nodes[1].node.get_our_node_id()], 100000);
+	check_closed_event!(nodes[1], 1, ClosureReason::CooperativeClosure, [nodes[0].node.get_our_node_id()], 100000);
 }
 
 #[test]
@@ -2188,7 +2189,7 @@ fn test_fail_htlc_on_broadcast_after_claim() {
 	expect_payment_forwarded!(nodes[1], nodes[0], nodes[2], Some(1000), false, false);
 
 	mine_transaction(&nodes[1], &bs_txn[0]);
-	check_closed_event!(nodes[1], 1, ClosureReason::CommitmentTxConfirmed);
+	check_closed_event!(nodes[1], 1, ClosureReason::CommitmentTxConfirmed, [nodes[2].node.get_our_node_id()], 100000);
 	check_closed_broadcast!(nodes[1], true);
 	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
 	check_added_monitors!(nodes[1], 1);
@@ -2666,8 +2667,8 @@ fn test_temporary_error_during_shutdown() {
 	assert_eq!(txn_a, txn_b);
 	assert_eq!(txn_a.len(), 1);
 	check_spends!(txn_a[0], funding_tx);
-	check_closed_event!(nodes[1], 1, ClosureReason::CooperativeClosure);
-	check_closed_event!(nodes[0], 1, ClosureReason::CooperativeClosure);
+	check_closed_event!(nodes[1], 1, ClosureReason::CooperativeClosure, [nodes[0].node.get_our_node_id()], 100000);
+	check_closed_event!(nodes[0], 1, ClosureReason::CooperativeClosure, [nodes[1].node.get_our_node_id()], 100000);
 }
 
 #[test]
@@ -2696,7 +2697,8 @@ fn test_permanent_error_during_sending_shutdown() {
 	if let MessageSendEvent::HandleError { .. } =  msg_events[2] {} else { panic!(); }
 
 	check_added_monitors!(nodes[0], 2);
-	check_closed_event!(nodes[0], 1, ClosureReason::ProcessingError { err: "ChannelMonitor storage failure".to_string() });
+	check_closed_event!(nodes[0], 1, ClosureReason::ProcessingError { err: "ChannelMonitor storage failure".to_string() },
+		[nodes[1].node.get_our_node_id()], 100000);
 }
 
 #[test]
@@ -2727,7 +2729,8 @@ fn test_permanent_error_during_handling_shutdown() {
 	if let MessageSendEvent::HandleError { .. } =  msg_events[2] {} else { panic!(); }
 
 	check_added_monitors!(nodes[1], 2);
-	check_closed_event!(nodes[1], 1, ClosureReason::ProcessingError { err: "ChannelMonitor storage failure".to_string() });
+	check_closed_event!(nodes[1], 1, ClosureReason::ProcessingError { err: "ChannelMonitor storage failure".to_string() },
+		[nodes[0].node.get_our_node_id()], 100000);
 }
 
 #[test]
@@ -2921,7 +2924,7 @@ fn do_test_outbound_reload_without_init_mon(use_0conf: bool) {
 	nodes[0].chain_source.watched_outputs.lock().unwrap().clear();
 
 	reload_node!(nodes[0], &nodes[0].node.encode(), &[], persister, new_chain_monitor, nodes_0_deserialized);
-	check_closed_event!(nodes[0], 1, ClosureReason::DisconnectedPeer);
+	check_closed_event!(nodes[0], 1, ClosureReason::DisconnectedPeer, [nodes[1].node.get_our_node_id()], 100000);
 	assert!(nodes[0].node.list_channels().is_empty());
 }
 
@@ -3008,7 +3011,7 @@ fn do_test_inbound_reload_without_init_mon(use_0conf: bool, lock_commitment: boo
 
 	reload_node!(nodes[1], &nodes[1].node.encode(), &[], persister, new_chain_monitor, nodes_1_deserialized);
 
-	check_closed_event!(nodes[1], 1, ClosureReason::DisconnectedPeer);
+	check_closed_event!(nodes[1], 1, ClosureReason::DisconnectedPeer, [nodes[0].node.get_our_node_id()], 100000);
 	assert!(nodes[1].node.list_channels().is_empty());
 }
 

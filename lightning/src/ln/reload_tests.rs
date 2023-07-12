@@ -447,7 +447,7 @@ fn test_manager_serialize_deserialize_inconsistent_monitor() {
 	}
 	nodes[0].node = &nodes_0_deserialized;
 
-	check_closed_event!(nodes[0], 1, ClosureReason::OutdatedChannelManager);
+	check_closed_event!(nodes[0], 1, ClosureReason::OutdatedChannelManager, [nodes[3].node.get_our_node_id()], 100000);
 	{ // Channel close should result in a commitment tx
 		nodes[0].node.timer_tick_occurred();
 		let txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap();
@@ -548,7 +548,7 @@ fn do_test_data_loss_protect(reconnect_panicing: bool) {
 
 	nodes[0].node.force_close_without_broadcasting_txn(&chan.2, &nodes[1].node.get_our_node_id()).unwrap();
 	check_added_monitors!(nodes[0], 1);
-	check_closed_event!(nodes[0], 1, ClosureReason::HolderForceClosed);
+	check_closed_event!(nodes[0], 1, ClosureReason::HolderForceClosed, [nodes[1].node.get_our_node_id()], 1000000);
 	{
 		let node_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap();
 		assert_eq!(node_txn.len(), 0);
@@ -598,7 +598,8 @@ fn do_test_data_loss_protect(reconnect_panicing: bool) {
 	nodes[1].node.handle_error(&nodes[0].node.get_our_node_id(), &err_msgs_0[0]);
 	assert!(nodes[1].node.list_usable_channels().is_empty());
 	check_added_monitors!(nodes[1], 1);
-	check_closed_event!(nodes[1], 1, ClosureReason::CounterpartyForceClosed { peer_msg: UntrustedString(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", &nodes[1].node.get_our_node_id())) });
+	check_closed_event!(nodes[1], 1, ClosureReason::CounterpartyForceClosed { peer_msg: UntrustedString(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", &nodes[1].node.get_our_node_id())) }
+		, [nodes[0].node.get_our_node_id()], 1000000);
 	check_closed_broadcast!(nodes[1], false);
 }
 
@@ -944,7 +945,7 @@ fn do_forwarded_payment_no_manager_persistence(use_cs_commitment: bool, claim_ht
 	assert_eq!(cs_commitment_tx.len(), if claim_htlc { 2 } else { 1 });
 
 	check_added_monitors!(nodes[2], 1);
-	check_closed_event!(nodes[2], 1, ClosureReason::HolderForceClosed);
+	check_closed_event!(nodes[2], 1, ClosureReason::HolderForceClosed, [nodes[1].node.get_our_node_id()], 100000);
 	check_closed_broadcast!(nodes[2], true);
 
 	let chan_0_monitor_serialized = get_monitor!(nodes[1], chan_id_1).encode();
@@ -953,7 +954,7 @@ fn do_forwarded_payment_no_manager_persistence(use_cs_commitment: bool, claim_ht
 
 	// Note that this checks that this is the only event on nodes[1], implying the
 	// `HTLCIntercepted` event has been removed in the `use_intercept` case.
-	check_closed_event!(nodes[1], 1, ClosureReason::OutdatedChannelManager);
+	check_closed_event!(nodes[1], 1, ClosureReason::OutdatedChannelManager, [nodes[2].node.get_our_node_id()], 100000);
 
 	if use_intercept {
 		// Attempt to forward the HTLC back out over nodes[1]' still-open channel, ensuring we get

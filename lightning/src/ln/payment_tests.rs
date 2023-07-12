@@ -505,7 +505,7 @@ fn do_retry_with_no_persist(confirm_before_reload: bool) {
 
 	// On reload, the ChannelManager should realize it is stale compared to the ChannelMonitor and
 	// force-close the channel.
-	check_closed_event!(nodes[0], 1, ClosureReason::OutdatedChannelManager);
+	check_closed_event!(nodes[0], 1, ClosureReason::OutdatedChannelManager, [nodes[1].node.get_our_node_id()], 100000);
 	assert!(nodes[0].node.list_channels().is_empty());
 	assert!(nodes[0].node.has_pending_payments());
 	nodes[0].node.timer_tick_occurred();
@@ -537,7 +537,8 @@ fn do_retry_with_no_persist(confirm_before_reload: bool) {
 		MessageSendEvent::HandleError { node_id, action: msgs::ErrorAction::SendErrorMessage { ref msg } } => {
 			assert_eq!(node_id, nodes[1].node.get_our_node_id());
 			nodes[1].node.handle_error(&nodes[0].node.get_our_node_id(), msg);
-			check_closed_event!(nodes[1], 1, ClosureReason::CounterpartyForceClosed { peer_msg: UntrustedString(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", &nodes[1].node.get_our_node_id())) });
+			check_closed_event!(nodes[1], 1, ClosureReason::CounterpartyForceClosed { peer_msg: UntrustedString(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", 
+				&nodes[1].node.get_our_node_id())) }, [nodes[0].node.get_our_node_id()], 100000);
 			check_added_monitors!(nodes[1], 1);
 			assert_eq!(nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0).len(), 1);
 		},
@@ -686,7 +687,7 @@ fn do_test_completed_payment_not_retryable_on_reload(use_dust: bool) {
 
 	// On reload, the ChannelManager should realize it is stale compared to the ChannelMonitor and
 	// force-close the channel.
-	check_closed_event!(nodes[0], 1, ClosureReason::OutdatedChannelManager);
+	check_closed_event!(nodes[0], 1, ClosureReason::OutdatedChannelManager, [nodes[1].node.get_our_node_id()], 100000);
 	nodes[0].node.timer_tick_occurred();
 	assert!(nodes[0].node.list_channels().is_empty());
 	assert!(nodes[0].node.has_pending_payments());
@@ -712,7 +713,8 @@ fn do_test_completed_payment_not_retryable_on_reload(use_dust: bool) {
 		MessageSendEvent::HandleError { node_id, action: msgs::ErrorAction::SendErrorMessage { ref msg } } => {
 			assert_eq!(node_id, nodes[1].node.get_our_node_id());
 			nodes[1].node.handle_error(&nodes[0].node.get_our_node_id(), msg);
-			check_closed_event!(nodes[1], 1, ClosureReason::CounterpartyForceClosed { peer_msg: UntrustedString(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", &nodes[1].node.get_our_node_id())) });
+			check_closed_event!(nodes[1], 1, ClosureReason::CounterpartyForceClosed { peer_msg: UntrustedString(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", &nodes[1].node.get_our_node_id())) }
+				, [nodes[0].node.get_our_node_id()], 100000);
 			check_added_monitors!(nodes[1], 1);
 			bs_commitment_tx = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
 		},
@@ -860,7 +862,7 @@ fn do_test_dup_htlc_onchain_fails_on_reload(persist_manager_post_event: bool, co
 	nodes[0].node.force_close_broadcasting_latest_txn(&nodes[0].node.list_channels()[0].channel_id, &nodes[1].node.get_our_node_id()).unwrap();
 	check_closed_broadcast!(nodes[0], true);
 	check_added_monitors!(nodes[0], 1);
-	check_closed_event!(nodes[0], 1, ClosureReason::HolderForceClosed);
+	check_closed_event!(nodes[0], 1, ClosureReason::HolderForceClosed, [nodes[1].node.get_our_node_id()], 100000);
 
 	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id());
 	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id());
@@ -881,7 +883,7 @@ fn do_test_dup_htlc_onchain_fails_on_reload(persist_manager_post_event: bool, co
 	connect_block(&nodes[1], &create_dummy_block(nodes[1].best_block_hash(), 42, vec![node_txn[1].clone()]));
 	check_closed_broadcast!(nodes[1], true);
 	check_added_monitors!(nodes[1], 1);
-	check_closed_event!(nodes[1], 1, ClosureReason::CommitmentTxConfirmed);
+	check_closed_event!(nodes[1], 1, ClosureReason::CommitmentTxConfirmed, [nodes[0].node.get_our_node_id()], 100000);
 	let claim_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
 	assert_eq!(claim_txn.len(), 1);
 	check_spends!(claim_txn[0], node_txn[1]);
@@ -3270,7 +3272,8 @@ fn do_claim_from_closed_chan(fail_payment: bool) {
 		pass_failed_payment_back(&nodes[0], &[&[&nodes[1], &nodes[3]], &[&nodes[2], &nodes[3]]], false, payment_hash, PaymentFailureReason::RecipientRejected);
 	} else {
 		nodes[1].node.force_close_broadcasting_latest_txn(&chan_bd, &nodes[3].node.get_our_node_id()).unwrap();
-		check_closed_event(&nodes[1], 1, ClosureReason::HolderForceClosed, false);
+		check_closed_event!(&nodes[1], 1, ClosureReason::HolderForceClosed, false,
+			[nodes[3].node.get_our_node_id()], 1000000);
 		check_closed_broadcast(&nodes[1], 1, true);
 		let bs_tx = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
 		assert_eq!(bs_tx.len(), 1);
@@ -3278,7 +3281,8 @@ fn do_claim_from_closed_chan(fail_payment: bool) {
 		mine_transaction(&nodes[3], &bs_tx[0]);
 		check_added_monitors(&nodes[3], 1);
 		check_closed_broadcast(&nodes[3], 1, true);
-		check_closed_event(&nodes[3], 1, ClosureReason::CommitmentTxConfirmed, false);
+		check_closed_event!(&nodes[3], 1, ClosureReason::CommitmentTxConfirmed, false,
+			[nodes[1].node.get_our_node_id()], 1000000);
 
 		nodes[3].node.claim_funds(payment_preimage);
 		check_added_monitors(&nodes[3], 2);
