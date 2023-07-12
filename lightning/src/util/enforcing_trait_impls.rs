@@ -209,9 +209,8 @@ impl EcdsaChannelSigner for EnforcingSigner {
 		&self, htlc_tx: &Transaction, input: usize, htlc_descriptor: &HTLCDescriptor,
 		secp_ctx: &Secp256k1<secp256k1::All>
 	) -> Result<Signature, ()> {
-		let per_commitment_point = self.get_per_commitment_point(htlc_descriptor.per_commitment_number, secp_ctx);
 		assert_eq!(htlc_tx.input[input], htlc_descriptor.unsigned_tx_input());
-		assert_eq!(htlc_tx.output[input], htlc_descriptor.tx_output(&per_commitment_point, secp_ctx));
+		assert_eq!(htlc_tx.output[input], htlc_descriptor.tx_output(secp_ctx));
 		Ok(self.inner.sign_holder_htlc_transaction(htlc_tx, input, htlc_descriptor, secp_ctx).unwrap())
 	}
 

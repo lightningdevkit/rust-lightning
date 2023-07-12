@@ -1778,15 +1778,10 @@ fn do_test_monitor_rebroadcast_pending_claims(anchors: bool) {
 				// feerate for the test, we just want to make sure the feerates we receive from
 				// the events never decrease.
 				tx.input.push(descriptor.unsigned_tx_input());
-				let signer = nodes[0].keys_manager.derive_channel_keys(
-					descriptor.channel_value_satoshis, &descriptor.channel_keys_id,
-				);
-				let per_commitment_point = signer.get_per_commitment_point(
-					descriptor.per_commitment_number, &secp
-				);
-				tx.output.push(descriptor.tx_output(&per_commitment_point, &secp));
+				tx.output.push(descriptor.tx_output(&secp));
+				let signer = descriptor.derive_channel_signer(&nodes[0].keys_manager);
 				let our_sig = signer.sign_holder_htlc_transaction(&mut tx, 0, &descriptor, &secp).unwrap();
-				let witness_script = descriptor.witness_script(&per_commitment_point, &secp);
+				let witness_script = descriptor.witness_script(&secp);
 				tx.input[0].witness = descriptor.tx_input_witness(&our_sig, &witness_script);
 				target_feerate_sat_per_1000_weight as u64
 			} else { panic!("unexpected event"); };
@@ -1910,9 +1905,7 @@ fn test_yield_anchors_events() {
 					script_pubkey: Script::new_op_return(&[]),
 				}],
 			};
-			let signer = nodes[0].keys_manager.derive_channel_keys(
-				anchor_descriptor.channel_value_satoshis, &anchor_descriptor.channel_keys_id,
-			);
+			let signer = anchor_descriptor.derive_channel_signer(&nodes[0].keys_manager);
 			let funding_sig = signer.sign_holder_anchor_input(&mut anchor_tx, 0, &secp).unwrap();
 			anchor_tx.input[0].witness = chan_utils::build_anchor_input_witness(
 				&signer.pubkeys().funding_pubkey, &funding_sig
@@ -1943,10 +1936,6 @@ fn test_yield_anchors_events() {
 			Event::BumpTransaction(BumpTransactionEvent::HTLCResolution { htlc_descriptors, tx_lock_time, .. }) => {
 				assert_eq!(htlc_descriptors.len(), 1);
 				let htlc_descriptor = &htlc_descriptors[0];
-				let signer = nodes[0].keys_manager.derive_channel_keys(
-					htlc_descriptor.channel_value_satoshis, &htlc_descriptor.channel_keys_id
-				);
-				let per_commitment_point = signer.get_per_commitment_point(htlc_descriptor.per_commitment_number, &secp);
 				let mut htlc_tx = Transaction {
 					version: 2,
 					lock_time: tx_lock_time,
@@ -1955,15 +1944,16 @@ fn test_yield_anchors_events() {
 						TxIn { ..Default::default() } // Fee input
 					],
 					output: vec![
-						htlc_descriptor.tx_output(&per_commitment_point, &secp), // HTLC output
+						htlc_descriptor.tx_output(&secp), // HTLC output
 						TxOut { // Fee input change
 							value: Amount::ONE_BTC.to_sat(),
 							script_pubkey: Script::new_op_return(&[]),
 						}
 					]
 				};
+				let signer = htlc_descriptor.derive_channel_signer(&nodes[0].keys_manager);
 				let our_sig = signer.sign_holder_htlc_transaction(&mut htlc_tx, 0, htlc_descriptor, &secp).unwrap();
-				let witness_script = htlc_descriptor.witness_script(&per_commitment_point, &secp);
+				let witness_script = htlc_descriptor.witness_script(&secp);
 				htlc_tx.input[0].witness = htlc_descriptor.tx_input_witness(&our_sig, &witness_script);
 				htlc_txs.push(htlc_tx);
 			},
@@ -2122,9 +2112,7 @@ fn test_anchors_aggregated_revoked_htlc_tx() {
 						previous_output: anchor_descriptor.outpoint,
 						..Default::default()
 					});
-					let signer = nodes[1].keys_manager.derive_channel_keys(
-						anchor_descriptor.channel_value_satoshis, &anchor_descriptor.channel_keys_id,
-					);
+					let signer = anchor_descriptor.derive_channel_signer(&nodes[1].keys_manager);
 					signers.push(signer);
 				},
 				_ => panic!("Unexpected event"),
@@ -2227,12 +2215,8 @@ fn test_anchors_aggregated_revoked_htlc_tx() {
 				assert_eq!(htlc_descriptors.len(), 2);
 				for htlc_descriptor in &htlc_descriptors {
 					assert!(!htlc_descriptor.htlc.offered);
-					let signer = nodes[1].keys_manager.derive_channel_keys(
-						htlc_descriptor.channel_value_satoshis, &htlc_descriptor.channel_keys_id
-					);
-					let per_commitment_point = signer.get_per_commitment_point(htlc_descriptor.per_commitment_number, &secp);
 					htlc_tx.input.push(htlc_descriptor.unsigned_tx_input());
-					htlc_tx.output.push(htlc_descriptor.tx_output(&per_commitment_point, &secp));
+					htlc_tx.output.push(htlc_descriptor.tx_output(&secp));
 				}
 				descriptors.append(&mut htlc_descriptors);
 				htlc_tx.lock_time = tx_lock_time;
@@ -2242,12 +2226,9 @@ fn test_anchors_aggregated_revoked_htlc_tx() {
 		}
 		for (idx, htlc_descriptor) in descriptors.into_iter().enumerate() {
 			let htlc_input_idx = idx + 1;
-			let signer = nodes[1].keys_manager.derive_channel_keys(
-				htlc_descriptor.channel_value_satoshis, &htlc_descriptor.channel_keys_id
-			);
+			let signer = htlc_descriptor.derive_channel_signer(&nodes[1].keys_manager);
 			let our_sig = signer.sign_holder_htlc_transaction(&htlc_tx, htlc_input_idx, &htlc_descriptor, &secp).unwrap();
-			let per_commitment_point = signer.get_per_commitment_point(htlc_descriptor.per_commitment_number, &secp);
-			let witness_script = htlc_descriptor.witness_script(&per_commitment_point, &secp);
+			let witness_script = htlc_descriptor.witness_script(&secp);
 			htlc_tx.input[htlc_input_idx].witness = htlc_descriptor.tx_input_witness(&our_sig, &witness_script);
 		}
 		let fee_utxo_sig = {
