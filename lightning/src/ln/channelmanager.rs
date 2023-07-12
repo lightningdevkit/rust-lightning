@@ -530,6 +530,13 @@ enum BackgroundEvent {
 		funding_txo: OutPoint,
 		update: ChannelMonitorUpdate
 	},
+	/// Some [`ChannelMonitorUpdate`] (s) completed before we were serialized but we still have
+	/// them marked pending, thus we need to run any [`MonitorUpdateCompletionAction`] (s) pending
+	/// on a channel.
+	MonitorUpdatesComplete {
+		counterparty_node_id: PublicKey,
+		channel_id: [u8; 32],
+	},
 }
 
 #[derive(Debug)]
@@ -4194,6 +4201,22 @@ where
 					}
 					let _ = handle_error!(self, res, counterparty_node_id);
 				},
+				BackgroundEvent::MonitorUpdatesComplete { counterparty_node_id, channel_id } => {
+					let per_peer_state = self.per_peer_state.read().unwrap();
+					if let Some(peer_state_mutex) = per_peer_state.get(&counterparty_node_id) {
+						let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+						let peer_state = &mut *peer_state_lock;
+						if let Some(chan) = peer_state.channel_by_id.get_mut(&channel_id) {
+							handle_monitor_update_completion!(self, peer_state_lock, peer_state, per_peer_state, chan);
+						} else {
+							let update_actions = peer_state.monitor_update_blocked_actions
+								.remove(&channel_id).unwrap_or(Vec::new());
+							mem::drop(peer_state_lock);
+							mem::drop(per_peer_state);
+							self.handle_monitor_update_completion_actions(update_actions);
+						}
+					}
+				},
 			}
 		}
 		NotifyOption::DoPersist
@@ -5004,24 +5027,29 @@ where
 		if peer_state_mutex_opt.is_none() { return }
 		peer_state_lock = peer_state_mutex_opt.unwrap().lock().unwrap();
 		let peer_state = &mut *peer_state_lock;
-		let mut channel = {
-			match peer_state.channel_by_id.entry(funding_txo.to_channel_id()){
-				hash_map::Entry::Occupied(chan) => chan,
-				hash_map::Entry::Vacant(_) => return,
-			}
-		};
+		let channel =
+			if let Some(chan) = peer_state.channel_by_id.get_mut(&funding_txo.to_channel_id()) {
+				chan
+			} else {
+				let update_actions = peer_state.monitor_update_blocked_actions
+					.remove(&funding_txo.to_channel_id()).unwrap_or(Vec::new());
+				mem::drop(peer_state_lock);
+				mem::drop(per_peer_state);
+				self.handle_monitor_update_completion_actions(update_actions);
+				return;
+			};
 		let remaining_in_flight =
 			if let Some(pending) = peer_state.in_flight_monitor_updates.get_mut(funding_txo) {
 				pending.retain(|upd| upd.update_id > highest_applied_update_id);
 				pending.len()
 			} else { 0 };
 		log_trace!(self.logger, "ChannelMonitor updated to {}. Current highest is {}. {} pending in-flight updates.",
-			highest_applied_update_id, channel.get().context.get_latest_monitor_update_id(),
+			highest_applied_update_id, channel.context.get_latest_monitor_update_id(),
 			remaining_in_flight);
-		if !channel.get().is_awaiting_monitor_update() || channel.get().context.get_latest_monitor_update_id() != highest_applied_update_id {
+		if !channel.is_awaiting_monitor_update() || channel.context.get_latest_monitor_update_id() != highest_applied_update_id {
 			return;
 		}
-		handle_monitor_update_completion!(self, peer_state_lock, peer_state, per_peer_state, channel.get_mut());
+		handle_monitor_update_completion!(self, peer_state_lock, peer_state, per_peer_state, channel);
 	}
 
 	/// Accepts a request to open a channel after a [`Event::OpenChannelRequest`].
@@ -8521,6 +8549,16 @@ where
 							update: update.clone(),
 						});
 				}
+				if $chan_in_flight_upds.is_empty() {
+					// We had some updates to apply, but it turns out they had completed before we
+					// were serialized, we just weren't notified of that. Thus, we may have to run
+					// the completion actions for any monitor updates, but otherwise are done.
+					pending_background_events.push(
+						BackgroundEvent::MonitorUpdatesComplete {
+							counterparty_node_id: $counterparty_node_id,
+							channel_id: $funding_txo.to_channel_id(),
+						});
+				}
 				if $peer_state.in_flight_monitor_updates.insert($funding_txo, $chan_in_flight_upds).is_some() {
 					log_error!(args.logger, "Duplicate in-flight monitor update set for the same channel!");
 					return Err(DecodeError::InvalidValue);
@@ -8913,6 +8951,12 @@ where
 								blocked_peer_state.lock().unwrap().actions_blocking_raa_monitor_updates
 									.entry(blocked_channel_outpoint.to_channel_id())
 									.or_insert_with(Vec::new).push(blocking_action.clone());
+							} else {
+								// If the channel we were blocking has closed, we don't need to
+								// worry about it - the blocked monitor update should never have
+								// been released from the `Channel` object so it can't have
+								// completed, and if the channel closed there's no reason to bother
+								// anymore.
 							}
 						}
 					}
