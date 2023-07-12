@@ -744,14 +744,14 @@ pub struct AnnouncementSignatures {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum NetAddress {
 	/// A Tcp socket based on IPv4 address/port on which the peer is listening.
-	TcpV4 {
+	TcpV4SockAddr {
 		/// The 4-byte IPv4 address
 		addr: [u8; 4],
 		/// The port on which the node is listening
 		port: u16,
 	},
 	/// A Tcp socket based on IPv6 address/port on which the peer is listening.
-	TcpV6 {
+	TcpV6SockAddr {
 		/// The 16-byte IPv6 address
 		addr: [u8; 16],
 		/// The port on which the node is listening
@@ -789,8 +789,8 @@ impl NetAddress {
 	/// by this.
 	pub(crate) fn get_id(&self) -> u8 {
 		match self {
-			&NetAddress::TcpV4 {..} => { 1 },
-			&NetAddress::TcpV6 {..} => { 2 },
+			&NetAddress::TcpV4SockAddr {..} => { 1 },
+			&NetAddress::TcpV6SockAddr {..} => { 2 },
 			&NetAddress::OnionV2(_) => { 3 },
 			&NetAddress::OnionV3 {..} => { 4 },
 			&NetAddress::Hostname {..} => { 5 },
@@ -800,8 +800,8 @@ impl NetAddress {
 	/// Strict byte-length of address descriptor, 1-byte type not recorded
 	fn len(&self) -> u16 {
 		match self {
-			&NetAddress::TcpV4 { .. } => { 6 },
-			&NetAddress::TcpV6 { .. } => { 18 },
+			&NetAddress::TcpV4SockAddr { .. } => { 6 },
+			&NetAddress::TcpV6SockAddr { .. } => { 18 },
 			&NetAddress::OnionV2(_) => { 12 },
 			&NetAddress::OnionV3 { .. } => { 37 },
 			// Consists of 1-byte hostname length, hostname bytes, and 2-byte port.
@@ -818,12 +818,12 @@ impl NetAddress {
 impl Writeable for NetAddress {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		match self {
-			&NetAddress::TcpV4 { ref addr, ref port } => {
+			&NetAddress::TcpV4SockAddr { ref addr, ref port } => {
 				1u8.write(writer)?;
 				addr.write(writer)?;
 				port.write(writer)?;
 			},
-			&NetAddress::TcpV6 { ref addr, ref port } => {
+			&NetAddress::TcpV6SockAddr { ref addr, ref port } => {
 				2u8.write(writer)?;
 				addr.write(writer)?;
 				port.write(writer)?;
@@ -854,13 +854,13 @@ impl Readable for Result<NetAddress, u8> {
 		let byte = <u8 as Readable>::read(reader)?;
 		match byte {
 			1 => {
-				Ok(Ok(NetAddress::TcpV4 {
+				Ok(Ok(NetAddress::TcpV4SockAddr {
 					addr: Readable::read(reader)?,
 					port: Readable::read(reader)?,
 				}))
 			},
 			2 => {
-				Ok(Ok(NetAddress::TcpV6 {
+				Ok(Ok(NetAddress::TcpV6SockAddr {
 					addr: Readable::read(reader)?,
 					port: Readable::read(reader)?,
 				}))
@@ -2622,13 +2622,13 @@ mod tests {
 		};
 		let mut addresses = Vec::new();
 		if ipv4 {
-			addresses.push(msgs::NetAddress::TcpV4 {
+			addresses.push(msgs::NetAddress::TcpV4SockAddr {
 				addr: [255, 254, 253, 252],
 				port: 9735
 			});
 		}
 		if ipv6 {
-			addresses.push(msgs::NetAddress::TcpV6 {
+			addresses.push(msgs::NetAddress::TcpV6SockAddr {
 				addr: [255, 254, 253, 252, 251, 250, 249, 248, 247, 246, 245, 244, 243, 242, 241, 240],
 				port: 9735
 			});
@@ -3462,7 +3462,7 @@ mod tests {
 		}.encode(), hex::decode("00000000014001010101010101010101010101010101010101010101010101010101010101010202020202020202020202020202020202020202020202020202020202020202").unwrap());
 		let init_msg = msgs::Init { features: InitFeatures::from_le_bytes(vec![]),
 			networks: Some(vec![mainnet_hash]),
-			remote_network_address: Some(msgs::NetAddress::TcpV4 {
+			remote_network_address: Some(msgs::NetAddress::TcpV4SockAddr {
 				addr: [127, 0, 0, 1],
 				port: 1000,
 			}),

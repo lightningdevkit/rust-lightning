@@ -854,25 +854,25 @@ impl core::fmt::Display for OptionalFromDebugger<'_> {
 fn filter_addresses(ip_address: Option<NetAddress>) -> Option<NetAddress> {
 	match ip_address{
 		// For IPv4 range 10.0.0.0 - 10.255.255.255 (10/8)
-		Some(NetAddress::TcpV4{addr: [10, _, _, _], port: _}) => None,
+		Some(NetAddress::TcpV4SockAddr{addr: [10, _, _, _], port: _}) => None,
 		// For IPv4 range 0.0.0.0 - 0.255.255.255 (0/8)
-		Some(NetAddress::TcpV4{addr: [0, _, _, _], port: _}) => None,
+		Some(NetAddress::TcpV4SockAddr{addr: [0, _, _, _], port: _}) => None,
 		// For IPv4 range 100.64.0.0 - 100.127.255.255 (100.64/10)
-		Some(NetAddress::TcpV4{addr: [100, 64..=127, _, _], port: _}) => None,
+		Some(NetAddress::TcpV4SockAddr{addr: [100, 64..=127, _, _], port: _}) => None,
 		// For IPv4 range  	127.0.0.0 - 127.255.255.255 (127/8)
-		Some(NetAddress::TcpV4{addr: [127, _, _, _], port: _}) => None,
+		Some(NetAddress::TcpV4SockAddr{addr: [127, _, _, _], port: _}) => None,
 		// For IPv4 range  	169.254.0.0 - 169.254.255.255 (169.254/16)
-		Some(NetAddress::TcpV4{addr: [169, 254, _, _], port: _}) => None,
+		Some(NetAddress::TcpV4SockAddr{addr: [169, 254, _, _], port: _}) => None,
 		// For IPv4 range 172.16.0.0 - 172.31.255.255 (172.16/12)
-		Some(NetAddress::TcpV4{addr: [172, 16..=31, _, _], port: _}) => None,
+		Some(NetAddress::TcpV4SockAddr{addr: [172, 16..=31, _, _], port: _}) => None,
 		// For IPv4 range 192.168.0.0 - 192.168.255.255 (192.168/16)
-		Some(NetAddress::TcpV4{addr: [192, 168, _, _], port: _}) => None,
+		Some(NetAddress::TcpV4SockAddr{addr: [192, 168, _, _], port: _}) => None,
 		// For IPv4 range 192.88.99.0 - 192.88.99.255  (192.88.99/24)
-		Some(NetAddress::TcpV4{addr: [192, 88, 99, _], port: _}) => None,
+		Some(NetAddress::TcpV4SockAddr{addr: [192, 88, 99, _], port: _}) => None,
 		// For IPv6 range 2000:0000:0000:0000:0000:0000:0000:0000 - 3fff:ffff:ffff:ffff:ffff:ffff:ffff:ffff (2000::/3)
-		Some(NetAddress::TcpV6{addr: [0x20..=0x3F, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _], port: _}) => ip_address,
+		Some(NetAddress::TcpV6SockAddr{addr: [0x20..=0x3F, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _], port: _}) => ip_address,
 		// For remaining addresses
-		Some(NetAddress::TcpV6{addr: _, port: _}) => None,
+		Some(NetAddress::TcpV6SockAddr{addr: _, port: _}) => None,
 		Some(..) => ip_address,
 		None => None,
 	}
@@ -2642,13 +2642,13 @@ mod tests {
 			fd: 1, outbound_data: Arc::new(Mutex::new(Vec::new())),
 			disconnect: Arc::new(AtomicBool::new(false)),
 		};
-		let addr_a = NetAddress::TcpV4{addr: [127, 0, 0, 1], port: 1000};
+		let addr_a = NetAddress::TcpV4SockAddr{addr: [127, 0, 0, 1], port: 1000};
 		let id_b = peer_b.node_signer.get_node_id(Recipient::Node).unwrap();
 		let mut fd_b = FileDescriptor {
 			fd: 1, outbound_data: Arc::new(Mutex::new(Vec::new())),
 			disconnect: Arc::new(AtomicBool::new(false)),
 		};
-		let addr_b = NetAddress::TcpV4{addr: [127, 0, 0, 1], port: 1001};
+		let addr_b = NetAddress::TcpV4SockAddr{addr: [127, 0, 0, 1], port: 1001};
 		let initial_data = peer_b.new_outbound_connection(id_a, fd_b.clone(), Some(addr_a.clone())).unwrap();
 		peer_a.new_inbound_connection(fd_a.clone(), Some(addr_b.clone())).unwrap();
 		assert_eq!(peer_a.read_event(&mut fd_a, &initial_data).unwrap(), false);
@@ -2693,12 +2693,12 @@ mod tests {
 						fd: $id  + ctr * 3, outbound_data: Arc::new(Mutex::new(Vec::new())),
 						disconnect: Arc::new(AtomicBool::new(false)),
 					};
-					let addr_a = NetAddress::TcpV4{addr: [127, 0, 0, 1], port: 1000};
+					let addr_a = NetAddress::TcpV4SockAddr{addr: [127, 0, 0, 1], port: 1000};
 					let mut fd_b = FileDescriptor {
 						fd: $id + ctr * 3, outbound_data: Arc::new(Mutex::new(Vec::new())),
 						disconnect: Arc::new(AtomicBool::new(false)),
 					};
-					let addr_b = NetAddress::TcpV4{addr: [127, 0, 0, 1], port: 1001};
+					let addr_b = NetAddress::TcpV4SockAddr{addr: [127, 0, 0, 1], port: 1001};
 					let initial_data = peers[1].new_outbound_connection(id_a, fd_b.clone(), Some(addr_a.clone())).unwrap();
 					peers[0].new_inbound_connection(fd_a.clone(), Some(addr_b.clone())).unwrap();
 					if peers[0].read_event(&mut fd_a, &initial_data).is_err() { break; }
@@ -2765,12 +2765,12 @@ mod tests {
 				fd: 1, outbound_data: Arc::new(Mutex::new(Vec::new())),
 				disconnect: Arc::new(AtomicBool::new(false)),
 			};
-			let addr_a = NetAddress::TcpV4{addr: [127, 0, 0, 1], port: 1000};
+			let addr_a = NetAddress::TcpV4SockAddr{addr: [127, 0, 0, 1], port: 1000};
 			let mut fd_b = FileDescriptor {
 				fd: 1, outbound_data: Arc::new(Mutex::new(Vec::new())),
 				disconnect: Arc::new(AtomicBool::new(false)),
 			};
-			let addr_b = NetAddress::TcpV4{addr: [127, 0, 0, 1], port: 1001};
+			let addr_b = NetAddress::TcpV4SockAddr{addr: [127, 0, 0, 1], port: 1001};
 			let initial_data = peer_b.new_outbound_connection(id_a, fd_b.clone(), Some(addr_a.clone())).unwrap();
 			peer_a.new_inbound_connection(fd_a.clone(), Some(addr_b.clone())).unwrap();
 			assert_eq!(peer_a.read_event(&mut fd_a, &initial_data).unwrap(), false);
@@ -2801,12 +2801,12 @@ mod tests {
 				fd: 1, outbound_data: Arc::new(Mutex::new(Vec::new())),
 				disconnect: Arc::new(AtomicBool::new(false)),
 			};
-			let addr_a = NetAddress::TcpV4{addr: [127, 0, 0, 1], port: 1000};
+			let addr_a = NetAddress::TcpV4SockAddr{addr: [127, 0, 0, 1], port: 1000};
 			let mut fd_b = FileDescriptor {
 				fd: 1, outbound_data: Arc::new(Mutex::new(Vec::new())),
 				disconnect: Arc::new(AtomicBool::new(false)),
 			};
-			let addr_b = NetAddress::TcpV4{addr: [127, 0, 0, 1], port: 1001};
+			let addr_b = NetAddress::TcpV4SockAddr{addr: [127, 0, 0, 1], port: 1001};
 			let initial_data = peer_b.new_outbound_connection(id_a, fd_b.clone(), Some(addr_a.clone())).unwrap();
 			peer_a.new_inbound_connection(fd_a.clone(), Some(addr_b.clone())).unwrap();
 			assert_eq!(peer_a.read_event(&mut fd_a, &initial_data).unwrap(), false);
@@ -2883,7 +2883,7 @@ mod tests {
 			fd: 3, outbound_data: Arc::new(Mutex::new(Vec::new())),
 			disconnect: Arc::new(AtomicBool::new(false)),
 		};
-		let addr_dup = NetAddress::TcpV4{addr: [127, 0, 0, 1], port: 1003};
+		let addr_dup = NetAddress::TcpV4SockAddr{addr: [127, 0, 0, 1], port: 1003};
 		let id_a = cfgs[0].node_signer.get_node_id(Recipient::Node).unwrap();
 		peers[0].new_inbound_connection(fd_dup.clone(), Some(addr_dup.clone())).unwrap();
 
@@ -3021,91 +3021,91 @@ mod tests {
 		// Tests the filter_addresses function.
 
 		// For (10/8)
-		let ip_address = NetAddress::TcpV4{addr: [10, 0, 0, 0], port: 1000};
+		let ip_address = NetAddress::TcpV4SockAddr{addr: [10, 0, 0, 0], port: 1000};
 		assert_eq!(filter_addresses(Some(ip_address.clone())), None);
-		let ip_address = NetAddress::TcpV4{addr: [10, 0, 255, 201], port: 1000};
+		let ip_address = NetAddress::TcpV4SockAddr{addr: [10, 0, 255, 201], port: 1000};
 		assert_eq!(filter_addresses(Some(ip_address.clone())), None);
-		let ip_address = NetAddress::TcpV4{addr: [10, 255, 255, 255], port: 1000};
+		let ip_address = NetAddress::TcpV4SockAddr{addr: [10, 255, 255, 255], port: 1000};
 		assert_eq!(filter_addresses(Some(ip_address.clone())), None);
 
 		// For (0/8)
-		let ip_address = NetAddress::TcpV4{addr: [0, 0, 0, 0], port: 1000};
+		let ip_address = NetAddress::TcpV4SockAddr{addr: [0, 0, 0, 0], port: 1000};
 		assert_eq!(filter_addresses(Some(ip_address.clone())), None);
-		let ip_address = NetAddress::TcpV4{addr: [0, 0, 255, 187], port: 1000};
+		let ip_address = NetAddress::TcpV4SockAddr{addr: [0, 0, 255, 187], port: 1000};
 		assert_eq!(filter_addresses(Some(ip_address.clone())), None);
-		let ip_address = NetAddress::TcpV4{addr: [0, 255, 255, 255], port: 1000};
+		let ip_address = NetAddress::TcpV4SockAddr{addr: [0, 255, 255, 255], port: 1000};
 		assert_eq!(filter_addresses(Some(ip_address.clone())), None);
 
 		// For (100.64/10)
-		let ip_address = NetAddress::TcpV4{addr: [100, 64, 0, 0], port: 1000};
+		let ip_address = NetAddress::TcpV4SockAddr{addr: [100, 64, 0, 0], port: 1000};
 		assert_eq!(filter_addresses(Some(ip_address.clone())), None);
-		let ip_address = NetAddress::TcpV4{addr: [100, 78, 255, 0], port: 1000};
+		let ip_address = NetAddress::TcpV4SockAddr{addr: [100, 78, 255, 0], port: 1000};
 		assert_eq!(filter_addresses(Some(ip_address.clone())), None);
-		let ip_address = NetAddress::TcpV4{addr: [100, 127, 255, 255], port: 1000};
+		let ip_address = NetAddress::TcpV4SockAddr{addr: [100, 127, 255, 255], port: 1000};
 		assert_eq!(filter_addresses(Some(ip_address.clone())), None);
 
 		// For (127/8)
-		let ip_address = NetAddress::TcpV4{addr: [127, 0, 0, 0], port: 1000};
+		let ip_address = NetAddress::TcpV4SockAddr{addr: [127, 0, 0, 0], port: 1000};
 		assert_eq!(filter_addresses(Some(ip_address.clone())), None);
-		let ip_address = NetAddress::TcpV4{addr: [127, 65, 73, 0], port: 1000};
+		let ip_address = NetAddress::TcpV4SockAddr{addr: [127, 65, 73, 0], port: 1000};
 		assert_eq!(filter_addresses(Some(ip_address.clone())), None);
-		let ip_address = NetAddress::TcpV4{addr: [127, 255, 255, 255], port: 1000};
+		let ip_address = NetAddress::TcpV4SockAddr{addr: [127, 255, 255, 255], port: 1000};
 		assert_eq!(filter_addresses(Some(ip_address.clone())), None);
 
 		// For (169.254/16)
-		let ip_address = NetAddress::TcpV4{addr: [169, 254, 0, 0], port: 1000};
+		let ip_address = NetAddress::TcpV4SockAddr{addr: [169, 254, 0, 0], port: 1000};
 		assert_eq!(filter_addresses(Some(ip_address.clone())), None);
-		let ip_address = NetAddress::TcpV4{addr: [169, 254, 221, 101], port: 1000};
+		let ip_address = NetAddress::TcpV4SockAddr{addr: [169, 254, 221, 101], port: 1000};
 		assert_eq!(filter_addresses(Some(ip_address.clone())), None);
-		let ip_address = NetAddress::TcpV4{addr: [169, 254, 255, 255], port: 1000};
+		let ip_address = NetAddress::TcpV4SockAddr{addr: [169, 254, 255, 255], port: 1000};
 		assert_eq!(filter_addresses(Some(ip_address.clone())), None);
 
 		// For (172.16/12)
-		let ip_address = NetAddress::TcpV4{addr: [172, 16, 0, 0], port: 1000};
+		let ip_address = NetAddress::TcpV4SockAddr{addr: [172, 16, 0, 0], port: 1000};
 		assert_eq!(filter_addresses(Some(ip_address.clone())), None);
-		let ip_address = NetAddress::TcpV4{addr: [172, 27, 101, 23], port: 1000};
+		let ip_address = NetAddress::TcpV4SockAddr{addr: [172, 27, 101, 23], port: 1000};
 		assert_eq!(filter_addresses(Some(ip_address.clone())), None);
-		let ip_address = NetAddress::TcpV4{addr: [172, 31, 255, 255], port: 1000};
+		let ip_address = NetAddress::TcpV4SockAddr{addr: [172, 31, 255, 255], port: 1000};
 		assert_eq!(filter_addresses(Some(ip_address.clone())), None);
 
 		// For (192.168/16)
-		let ip_address = NetAddress::TcpV4{addr: [192, 168, 0, 0], port: 1000};
+		let ip_address = NetAddress::TcpV4SockAddr{addr: [192, 168, 0, 0], port: 1000};
 		assert_eq!(filter_addresses(Some(ip_address.clone())), None);
-		let ip_address = NetAddress::TcpV4{addr: [192, 168, 205, 159], port: 1000};
+		let ip_address = NetAddress::TcpV4SockAddr{addr: [192, 168, 205, 159], port: 1000};
 		assert_eq!(filter_addresses(Some(ip_address.clone())), None);
-		let ip_address = NetAddress::TcpV4{addr: [192, 168, 255, 255], port: 1000};
+		let ip_address = NetAddress::TcpV4SockAddr{addr: [192, 168, 255, 255], port: 1000};
 		assert_eq!(filter_addresses(Some(ip_address.clone())), None);
 
 		// For (192.88.99/24)
-		let ip_address = NetAddress::TcpV4{addr: [192, 88, 99, 0], port: 1000};
+		let ip_address = NetAddress::TcpV4SockAddr{addr: [192, 88, 99, 0], port: 1000};
 		assert_eq!(filter_addresses(Some(ip_address.clone())), None);
-		let ip_address = NetAddress::TcpV4{addr: [192, 88, 99, 140], port: 1000};
+		let ip_address = NetAddress::TcpV4SockAddr{addr: [192, 88, 99, 140], port: 1000};
 		assert_eq!(filter_addresses(Some(ip_address.clone())), None);
-		let ip_address = NetAddress::TcpV4{addr: [192, 88, 99, 255], port: 1000};
+		let ip_address = NetAddress::TcpV4SockAddr{addr: [192, 88, 99, 255], port: 1000};
 		assert_eq!(filter_addresses(Some(ip_address.clone())), None);
 
 		// For other IPv4 addresses
-		let ip_address = NetAddress::TcpV4{addr: [188, 255, 99, 0], port: 1000};
+		let ip_address = NetAddress::TcpV4SockAddr{addr: [188, 255, 99, 0], port: 1000};
 		assert_eq!(filter_addresses(Some(ip_address.clone())), Some(ip_address.clone()));
-		let ip_address = NetAddress::TcpV4{addr: [123, 8, 129, 14], port: 1000};
+		let ip_address = NetAddress::TcpV4SockAddr{addr: [123, 8, 129, 14], port: 1000};
 		assert_eq!(filter_addresses(Some(ip_address.clone())), Some(ip_address.clone()));
-		let ip_address = NetAddress::TcpV4{addr: [2, 88, 9, 255], port: 1000};
+		let ip_address = NetAddress::TcpV4SockAddr{addr: [2, 88, 9, 255], port: 1000};
 		assert_eq!(filter_addresses(Some(ip_address.clone())), Some(ip_address.clone()));
 
 		// For (2000::/3)
-		let ip_address = NetAddress::TcpV6{addr: [32, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], port: 1000};
+		let ip_address = NetAddress::TcpV6SockAddr{addr: [32, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], port: 1000};
 		assert_eq!(filter_addresses(Some(ip_address.clone())), Some(ip_address.clone()));
-		let ip_address = NetAddress::TcpV6{addr: [45, 34, 209, 190, 0, 123, 55, 34, 0, 0, 3, 27, 201, 0, 0, 0], port: 1000};
+		let ip_address = NetAddress::TcpV6SockAddr{addr: [45, 34, 209, 190, 0, 123, 55, 34, 0, 0, 3, 27, 201, 0, 0, 0], port: 1000};
 		assert_eq!(filter_addresses(Some(ip_address.clone())), Some(ip_address.clone()));
-		let ip_address = NetAddress::TcpV6{addr: [63, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255], port: 1000};
+		let ip_address = NetAddress::TcpV6SockAddr{addr: [63, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255], port: 1000};
 		assert_eq!(filter_addresses(Some(ip_address.clone())), Some(ip_address.clone()));
 
 		// For other IPv6 addresses
-		let ip_address = NetAddress::TcpV6{addr: [24, 240, 12, 32, 0, 0, 0, 0, 20, 97, 0, 32, 121, 254, 0, 0], port: 1000};
+		let ip_address = NetAddress::TcpV6SockAddr{addr: [24, 240, 12, 32, 0, 0, 0, 0, 20, 97, 0, 32, 121, 254, 0, 0], port: 1000};
 		assert_eq!(filter_addresses(Some(ip_address.clone())), None);
-		let ip_address = NetAddress::TcpV6{addr: [68, 23, 56, 63, 0, 0, 2, 7, 75, 109, 0, 39, 0, 0, 0, 0], port: 1000};
+		let ip_address = NetAddress::TcpV6SockAddr{addr: [68, 23, 56, 63, 0, 0, 2, 7, 75, 109, 0, 39, 0, 0, 0, 0], port: 1000};
 		assert_eq!(filter_addresses(Some(ip_address.clone())), None);
-		let ip_address = NetAddress::TcpV6{addr: [101, 38, 140, 230, 100, 0, 30, 98, 0, 26, 0, 0, 57, 96, 0, 0], port: 1000};
+		let ip_address = NetAddress::TcpV6SockAddr{addr: [101, 38, 140, 230, 100, 0, 30, 98, 0, 26, 0, 0, 57, 96, 0, 0], port: 1000};
 		assert_eq!(filter_addresses(Some(ip_address.clone())), None);
 
 		// For (None)
