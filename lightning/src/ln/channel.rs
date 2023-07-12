@@ -2534,7 +2534,13 @@ impl<SP: Deref> Channel<SP> where
 		                                          obscure_factor,
 		                                          holder_commitment_tx, best_block, self.context.counterparty_node_id);
 
-		channel_monitor.provide_latest_counterparty_commitment_tx(counterparty_initial_bitcoin_tx.txid, Vec::new(), self.context.cur_counterparty_commitment_transaction_number, self.context.counterparty_cur_commitment_point.unwrap(), logger);
+		channel_monitor.provide_initial_counterparty_commitment_tx(
+			counterparty_initial_bitcoin_tx.txid, Vec::new(),
+			self.context.cur_counterparty_commitment_transaction_number,
+			self.context.counterparty_cur_commitment_point.unwrap(),
+			counterparty_initial_commitment_tx.feerate_per_kw(),
+			counterparty_initial_commitment_tx.to_broadcaster_value_sat(),
+			counterparty_initial_commitment_tx.to_countersignatory_value_sat(), logger);
 
 		assert_eq!(self.context.channel_state & (ChannelState::MonitorUpdateInProgress as u32), 0); // We have no had any monitor(s) yet to fail update!
 		self.context.channel_state = ChannelState::FundingSent as u32;
@@ -6464,7 +6470,7 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 		self.generate_accept_channel_message()
 	}
 
-	fn funding_created_signature<L: Deref>(&mut self, sig: &Signature, logger: &L) -> Result<(Txid, CommitmentTransaction, Signature), ChannelError> where L::Target: Logger {
+	fn funding_created_signature<L: Deref>(&mut self, sig: &Signature, logger: &L) -> Result<(CommitmentTransaction, CommitmentTransaction, Signature), ChannelError> where L::Target: Logger {
 		let funding_script = self.context.get_funding_redeemscript();
 
 		let keys = self.context.build_holder_transaction_keys(self.context.cur_holder_commitment_transaction_number);
@@ -6496,7 +6502,7 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 					.map_err(|_| ChannelError::Close("Failed to get signatures for new commitment_signed".to_owned()))?.0;
 
 				// We sign "counterparty" commitment transaction, allowing them to broadcast the tx if they wish.
-				Ok((counterparty_initial_bitcoin_tx.txid, initial_commitment_tx, counterparty_signature))
+				Ok((counterparty_initial_commitment_tx, initial_commitment_tx, counterparty_signature))
 			}
 		}
 	}
@@ -6528,7 +6534,7 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 		// funding_created_signature may fail.
 		self.context.holder_signer.as_mut().provide_channel_parameters(&self.context.channel_transaction_parameters);
 
-		let (counterparty_initial_commitment_txid, initial_commitment_tx, signature) = match self.funding_created_signature(&msg.signature, logger) {
+		let (counterparty_initial_commitment_tx, initial_commitment_tx, signature) = match self.funding_created_signature(&msg.signature, logger) {
 			Ok(res) => res,
 			Err(ChannelError::Close(e)) => {
 				self.context.channel_transaction_parameters.funding_outpoint = None;
@@ -6569,7 +6575,12 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 		                                          obscure_factor,
 		                                          holder_commitment_tx, best_block, self.context.counterparty_node_id);
 
-		channel_monitor.provide_latest_counterparty_commitment_tx(counterparty_initial_commitment_txid, Vec::new(), self.context.cur_counterparty_commitment_transaction_number, self.context.counterparty_cur_commitment_point.unwrap(), logger);
+		channel_monitor.provide_initial_counterparty_commitment_tx(
+			counterparty_initial_commitment_tx.trust().txid(), Vec::new(),
+			self.context.cur_counterparty_commitment_transaction_number,
+			self.context.counterparty_cur_commitment_point.unwrap(), self.context.feerate_per_kw,
+			counterparty_initial_commitment_tx.to_broadcaster_value_sat(),
+			counterparty_initial_commitment_tx.to_countersignatory_value_sat(), logger);
 
 		self.context.channel_state = ChannelState::FundingSent as u32;
 		self.context.channel_id = funding_txo.to_channel_id();
