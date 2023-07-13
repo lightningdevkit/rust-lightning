@@ -17,27 +17,27 @@ use crate::util::string::UntrustedString;
 
 use crate::prelude::*;
 
-/// An error in response to an [`InvoiceRequest`] or an [`Invoice`].
+/// An error in response to an [`InvoiceRequest`] or an [`Bolt12Invoice`].
 ///
 /// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
-/// [`Invoice`]: crate::offers::invoice::Invoice
+/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
 #[derive(Clone, Debug)]
 #[cfg_attr(test, derive(PartialEq))]
 pub struct InvoiceError {
-	/// The field in the [`InvoiceRequest`] or the [`Invoice`] that contained an error.
+	/// The field in the [`InvoiceRequest`] or the [`Bolt12Invoice`] that contained an error.
 	///
 	/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
-	/// [`Invoice`]: crate::offers::invoice::Invoice
+	/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
 	pub erroneous_field: Option<ErroneousField>,
 
 	/// An explanation of the error.
 	pub message: UntrustedString,
 }
 
-/// The field in the [`InvoiceRequest`] or the [`Invoice`] that contained an error.
+/// The field in the [`InvoiceRequest`] or the [`Bolt12Invoice`] that contained an error.
 ///
 /// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
-/// [`Invoice`]: crate::offers::invoice::Invoice
+/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
 #[derive(Clone, Debug)]
 #[cfg_attr(test, derive(PartialEq))]
 pub struct ErroneousField {

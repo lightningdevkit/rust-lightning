@@ -319,8 +319,8 @@ impl<'a, M: MetadataStrategy, T: secp256k1::Signing> OfferBuilder<'a, M, T> {
 /// An `Offer` is a potentially long-lived proposal for payment of a good or service.
 ///
 /// An offer is a precursor to an [`InvoiceRequest`]. A merchant publishes an offer from which a
-/// customer may request an [`Invoice`] for a specific quantity and using an amount sufficient to
-/// cover that quantity (i.e., at least `quantity * amount`). See [`Offer::amount`].
+/// customer may request an [`Bolt12Invoice`] for a specific quantity and using an amount sufficient
+/// to cover that quantity (i.e., at least `quantity * amount`). See [`Offer::amount`].
 ///
 /// Offers may be denominated in currency other than bitcoin but are ultimately paid using the
 /// latter.
@@ -328,7 +328,7 @@ impl<'a, M: MetadataStrategy, T: secp256k1::Signing> OfferBuilder<'a, M, T> {
 /// Through the use of [`BlindedPath`]s, offers provide recipient privacy.
 ///
 /// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
-/// [`Invoice`]: crate::offers::invoice::Invoice
+/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
 #[derive(Clone, Debug)]
 #[cfg_attr(test, derive(PartialEq))]
 pub struct Offer {
@@ -338,10 +338,11 @@ pub struct Offer {
 	pub(super) contents: OfferContents,
 }
 
-/// The contents of an [`Offer`], which may be shared with an [`InvoiceRequest`] or an [`Invoice`].
+/// The contents of an [`Offer`], which may be shared with an [`InvoiceRequest`] or a
+/// [`Bolt12Invoice`].
 ///
 /// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
-/// [`Invoice`]: crate::offers::invoice::Invoice
+/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
 #[derive(Clone, Debug)]
 #[cfg_attr(test, derive(PartialEq))]
 pub(super) struct OfferContents {
@@ -451,8 +452,8 @@ impl Offer {
 	/// - derives the [`InvoiceRequest::payer_id`] such that a different key can be used for each
 	///   request, and
 	/// - sets the [`InvoiceRequest::metadata`] when [`InvoiceRequestBuilder::build`] is called such
-	///   that it can be used by [`Invoice::verify`] to determine if the invoice was requested using
-	///   a base [`ExpandedKey`] from which the payer id was derived.
+	///   that it can be used by [`Bolt12Invoice::verify`] to determine if the invoice was requested
+	///   using a base [`ExpandedKey`] from which the payer id was derived.
 	///
 	/// Useful to protect the sender's privacy.
 	///
@@ -460,7 +461,7 @@ impl Offer {
 	///
 	/// [`InvoiceRequest::payer_id`]: crate::offers::invoice_request::InvoiceRequest::payer_id
 	/// [`InvoiceRequest::metadata`]: crate::offers::invoice_request::InvoiceRequest::metadata
-	/// [`Invoice::verify`]: crate::offers::invoice::Invoice::verify
+	/// [`Bolt12Invoice::verify`]: crate::offers::invoice::Bolt12Invoice::verify
 	/// [`ExpandedKey`]: crate::ln::inbound_payment::ExpandedKey
 	pub fn request_invoice_deriving_payer_id<'a, 'b, ES: Deref, T: secp256k1::Signing>(
 		&'a self, expanded_key: &ExpandedKey, entropy_source: ES, secp_ctx: &'b Secp256k1<T>
@@ -497,7 +498,7 @@ impl Offer {
 	}
 
 	/// Creates an [`InvoiceRequestBuilder`] for the offer with the given `metadata` and `payer_id`,
-	/// which will be reflected in the `Invoice` response.
+	/// which will be reflected in the `Bolt12Invoice` response.
 	///
 	/// The `metadata` is useful for including information about the derivation of `payer_id` such
 	/// that invoice response handling can be stateless. Also serves as payer-provided entropy while

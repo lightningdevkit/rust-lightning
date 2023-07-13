@@ -10,11 +10,11 @@
 //! Data structures and encoding for refunds.
 //!
 //! A [`Refund`] is an "offer for money" and is typically constructed by a merchant and presented
-//! directly to the customer. The recipient responds with an [`Invoice`] to be paid.
+//! directly to the customer. The recipient responds with a [`Bolt12Invoice`] to be paid.
 //!
 //! This is an [`InvoiceRequest`] produced *not* in response to an [`Offer`].
 //!
-//! [`Invoice`]: crate::offers::invoice::Invoice
+//! [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
 //! [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
 //! [`Offer`]: crate::offers::offer::Offer
 //!
@@ -207,12 +207,12 @@ impl<'a, T: secp256k1::Signing> RefundBuilder<'a, T> {
 	}
 
 	/// Sets [`Refund::quantity`] of items. This is purely for informational purposes. It is useful
-	/// when the refund pertains to an [`Invoice`] that paid for more than one item from an
+	/// when the refund pertains to a [`Bolt12Invoice`] that paid for more than one item from an
 	/// [`Offer`] as specified by [`InvoiceRequest::quantity`].
 	///
 	/// Successive calls to this method will override the previous setting.
 	///
-	/// [`Invoice`]: crate::offers::invoice::Invoice
+	/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
 	/// [`InvoiceRequest::quantity`]: crate::offers::invoice_request::InvoiceRequest::quantity
 	/// [`Offer`]: crate::offers::offer::Offer
 	pub fn quantity(mut self, quantity: u64) -> Self {
@@ -234,7 +234,7 @@ impl<'a, T: secp256k1::Signing> RefundBuilder<'a, T> {
 			self.refund.chain = None;
 		}
 
-		// Create the metadata for stateless verification of an Invoice.
+		// Create the metadata for stateless verification of a Bolt12Invoice.
 		if self.refund.payer.0.has_derivation_material() {
 			let mut metadata = core::mem::take(&mut self.refund.payer.0);
 
@@ -272,13 +272,13 @@ impl<'a, T: secp256k1::Signing> RefundBuilder<'a, T> {
 	}
 }
 
-/// A `Refund` is a request to send an [`Invoice`] without a preceding [`Offer`].
+/// A `Refund` is a request to send an [`Bolt12Invoice`] without a preceding [`Offer`].
 ///
 /// Typically, after an invoice is paid, the recipient may publish a refund allowing the sender to
 /// recoup their funds. A refund may be used more generally as an "offer for money", such as with a
 /// bitcoin ATM.
 ///
-/// [`Invoice`]: crate::offers::invoice::Invoice
+/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
 /// [`Offer`]: crate::offers::offer::Offer
 #[derive(Clone, Debug)]
 #[cfg_attr(test, derive(PartialEq))]
@@ -287,9 +287,9 @@ pub struct Refund {
 	pub(super) contents: RefundContents,
 }
 
-/// The contents of a [`Refund`], which may be shared with an [`Invoice`].
+/// The contents of a [`Refund`], which may be shared with an [`Bolt12Invoice`].
 ///
-/// [`Invoice`]: crate::offers::invoice::Invoice
+/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
 #[derive(Clone, Debug)]
 #[cfg_attr(test, derive(PartialEq))]
 pub(super) struct RefundContents {
@@ -407,8 +407,8 @@ impl Refund {
 	/// Creates an [`InvoiceBuilder`] for the refund with the given required fields.
 	///
 	/// Unless [`InvoiceBuilder::relative_expiry`] is set, the invoice will expire two hours after
-	/// `created_at`, which is used to set [`Invoice::created_at`]. Useful for `no-std` builds where
-	/// [`std::time::SystemTime`] is not available.
+	/// `created_at`, which is used to set [`Bolt12Invoice::created_at`]. Useful for `no-std` builds
+	/// where [`std::time::SystemTime`] is not available.
 	///
 	/// The caller is expected to remember the preimage of `payment_hash` in order to
 	/// claim a payment for the invoice.
@@ -425,7 +425,7 @@ impl Refund {
 	///
 	/// This is not exported to bindings users as builder patterns don't map outside of move semantics.
 	///
-	/// [`Invoice::created_at`]: crate::offers::invoice::Invoice::created_at
+	/// [`Bolt12Invoice::created_at`]: crate::offers::invoice::Bolt12Invoice::created_at
 	pub fn respond_with_no_std(
 		&self, payment_paths: Vec<(BlindedPayInfo, BlindedPath)>, payment_hash: PaymentHash,
 		signing_pubkey: PublicKey, created_at: Duration
@@ -438,13 +438,13 @@ impl Refund {
 	}
 
 	/// Creates an [`InvoiceBuilder`] for the refund using the given required fields and that uses
-	/// derived signing keys to sign the [`Invoice`].
+	/// derived signing keys to sign the [`Bolt12Invoice`].
 	///
 	/// See [`Refund::respond_with`] for further details.
 	///
 	/// This is not exported to bindings users as builder patterns don't map outside of move semantics.
 	///
-	/// [`Invoice`]: crate::offers::invoice::Invoice
+	/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
 	#[cfg(feature = "std")]
 	pub fn respond_using_derived_keys<ES: Deref>(
 		&self, payment_paths: Vec<(BlindedPayInfo, BlindedPath)>, payment_hash: PaymentHash,
@@ -463,13 +463,13 @@ impl Refund {
 	}
 
 	/// Creates an [`InvoiceBuilder`] for the refund using the given required fields and that uses
-	/// derived signing keys to sign the [`Invoice`].
+	/// derived signing keys to sign the [`Bolt12Invoice`].
 	///
 	/// See [`Refund::respond_with_no_std`] for further details.
 	///
 	/// This is not exported to bindings users as builder patterns don't map outside of move semantics.
 	///
-	/// [`Invoice`]: crate::offers::invoice::Invoice
+	/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
 	pub fn respond_using_derived_keys_no_std<ES: Deref>(
 		&self, payment_paths: Vec<(BlindedPayInfo, BlindedPath)>, payment_hash: PaymentHash,
 		created_at: core::time::Duration, expanded_key: &ExpandedKey, entropy_source: ES

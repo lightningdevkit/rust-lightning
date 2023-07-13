@@ -9,9 +9,9 @@
 
 //! Data structures and encoding for `invoice` messages.
 //!
-//! An [`Invoice`] can be built from a parsed [`InvoiceRequest`] for the "offer to be paid" flow or
-//! from a [`Refund`] as an "offer for money" flow. The expected recipient of the payment then sends
-//! the invoice to the intended payer, who will then pay it.
+//! A [`Bolt12Invoice`] can be built from a parsed [`InvoiceRequest`] for the "offer to be paid"
+//! flow or from a [`Refund`] as an "offer for money" flow. The expected recipient of the payment
+//! then sends the invoice to the intended payer, who will then pay it.
 //!
 //! The payment recipient must include a [`PaymentHash`], so as to reveal the preimage upon payment
 //! receipt, and one or more [`BlindedPath`]s for the payer to use when sending the payment.
@@ -128,7 +128,7 @@ const DEFAULT_RELATIVE_EXPIRY: Duration = Duration::from_secs(7200);
 
 pub(super) const SIGNATURE_TAG: &'static str = concat!("lightning", "invoice", "signature");
 
-/// Builds an [`Invoice`] from either:
+/// Builds a [`Bolt12Invoice`] from either:
 /// - an [`InvoiceRequest`] for the "offer to be paid" flow or
 /// - a [`Refund`] for the "offer for money" flow.
 ///
@@ -146,17 +146,17 @@ pub struct InvoiceBuilder<'a, S: SigningPubkeyStrategy> {
 	signing_pubkey_strategy: core::marker::PhantomData<S>,
 }
 
-/// Indicates how [`Invoice::signing_pubkey`] was set.
+/// Indicates how [`Bolt12Invoice::signing_pubkey`] was set.
 ///
 /// This is not exported to bindings users as builder patterns don't map outside of move semantics.
 pub trait SigningPubkeyStrategy {}
 
-/// [`Invoice::signing_pubkey`] was explicitly set.
+/// [`Bolt12Invoice::signing_pubkey`] was explicitly set.
 ///
 /// This is not exported to bindings users as builder patterns don't map outside of move semantics.
 pub struct ExplicitSigningPubkey {}
 
-/// [`Invoice::signing_pubkey`] was derived.
+/// [`Bolt12Invoice::signing_pubkey`] was derived.
 ///
 /// This is not exported to bindings users as builder patterns don't map outside of move semantics.
 pub struct DerivedSigningPubkey {}
@@ -271,8 +271,9 @@ impl<'a, S: SigningPubkeyStrategy> InvoiceBuilder<'a, S> {
 		})
 	}
 
-	/// Sets the [`Invoice::relative_expiry`] as seconds since [`Invoice::created_at`]. Any expiry
-	/// that has already passed is valid and can be checked for using [`Invoice::is_expired`].
+	/// Sets the [`Bolt12Invoice::relative_expiry`] as seconds since [`Bolt12Invoice::created_at`].
+	/// Any expiry that has already passed is valid and can be checked for using
+	/// [`Bolt12Invoice::is_expired`].
 	///
 	/// Successive calls to this method will override the previous setting.
 	pub fn relative_expiry(mut self, relative_expiry_secs: u32) -> Self {
@@ -281,7 +282,7 @@ impl<'a, S: SigningPubkeyStrategy> InvoiceBuilder<'a, S> {
 		self
 	}
 
-	/// Adds a P2WSH address to [`Invoice::fallbacks`].
+	/// Adds a P2WSH address to [`Bolt12Invoice::fallbacks`].
 	///
 	/// Successive calls to this method will add another address. Caller is responsible for not
 	/// adding duplicate addresses and only calling if capable of receiving to P2WSH addresses.
@@ -294,7 +295,7 @@ impl<'a, S: SigningPubkeyStrategy> InvoiceBuilder<'a, S> {
 		self
 	}
 
-	/// Adds a P2WPKH address to [`Invoice::fallbacks`].
+	/// Adds a P2WPKH address to [`Bolt12Invoice::fallbacks`].
 	///
 	/// Successive calls to this method will add another address. Caller is responsible for not
 	/// adding duplicate addresses and only calling if capable of receiving to P2WPKH addresses.
@@ -307,7 +308,7 @@ impl<'a, S: SigningPubkeyStrategy> InvoiceBuilder<'a, S> {
 		self
 	}
 
-	/// Adds a P2TR address to [`Invoice::fallbacks`].
+	/// Adds a P2TR address to [`Bolt12Invoice::fallbacks`].
 	///
 	/// Successive calls to this method will add another address. Caller is responsible for not
 	/// adding duplicate addresses and only calling if capable of receiving to P2TR addresses.
@@ -320,7 +321,7 @@ impl<'a, S: SigningPubkeyStrategy> InvoiceBuilder<'a, S> {
 		self
 	}
 
-	/// Sets [`Invoice::features`] to indicate MPP may be used. Otherwise, MPP is disallowed.
+	/// Sets [`Bolt12Invoice::features`] to indicate MPP may be used. Otherwise, MPP is disallowed.
 	pub fn allow_mpp(mut self) -> Self {
 		self.invoice.fields_mut().features.set_basic_mpp_optional();
 		self
@@ -328,7 +329,7 @@ impl<'a, S: SigningPubkeyStrategy> InvoiceBuilder<'a, S> {
 }
 
 impl<'a> InvoiceBuilder<'a, ExplicitSigningPubkey> {
-	/// Builds an unsigned [`Invoice`] after checking for valid semantics. It can be signed by
+	/// Builds an unsigned [`Bolt12Invoice`] after checking for valid semantics. It can be signed by
 	/// [`UnsignedInvoice::sign`].
 	pub fn build(self) -> Result<UnsignedInvoice<'a>, SemanticError> {
 		#[cfg(feature = "std")] {
@@ -343,10 +344,10 @@ impl<'a> InvoiceBuilder<'a, ExplicitSigningPubkey> {
 }
 
 impl<'a> InvoiceBuilder<'a, DerivedSigningPubkey> {
-	/// Builds a signed [`Invoice`] after checking for valid semantics.
+	/// Builds a signed [`Bolt12Invoice`] after checking for valid semantics.
 	pub fn build_and_sign<T: secp256k1::Signing>(
 		self, secp_ctx: &Secp256k1<T>
-	) -> Result<Invoice, SemanticError> {
+	) -> Result<Bolt12Invoice, SemanticError> {
 		#[cfg(feature = "std")] {
 			if self.invoice.is_offer_or_refund_expired() {
 				return Err(SemanticError::AlreadyExpired);
@@ -364,7 +365,7 @@ impl<'a> InvoiceBuilder<'a, DerivedSigningPubkey> {
 	}
 }
 
-/// A semantically valid [`Invoice`] that hasn't been signed.
+/// A semantically valid [`Bolt12Invoice`] that hasn't been signed.
 pub struct UnsignedInvoice<'a> {
 	invreq_bytes: &'a Vec<u8>,
 	invoice: InvoiceContents,
@@ -379,7 +380,7 @@ impl<'a> UnsignedInvoice<'a> {
 	/// Signs the invoice using the given function.
 	///
 	/// This is not exported to bindings users as functions aren't currently mapped.
-	pub fn sign<F, E>(self, sign: F) -> Result<Invoice, SignError<E>>
+	pub fn sign<F, E>(self, sign: F) -> Result<Bolt12Invoice, SignError<E>>
 	where
 		F: FnOnce(&Message) -> Result<Signature, E>
 	{
@@ -402,7 +403,7 @@ impl<'a> UnsignedInvoice<'a> {
 		};
 		signature_tlv_stream.write(&mut bytes).unwrap();
 
-		Ok(Invoice {
+		Ok(Bolt12Invoice {
 			bytes,
 			contents: self.invoice,
 			signature,
@@ -410,39 +411,37 @@ impl<'a> UnsignedInvoice<'a> {
 	}
 }
 
-/// An `Invoice` is a payment request, typically corresponding to an [`Offer`] or a [`Refund`].
+/// A `Bolt12Invoice` is a payment request, typically corresponding to an [`Offer`] or a [`Refund`].
 ///
 /// An invoice may be sent in response to an [`InvoiceRequest`] in the case of an offer or sent
 /// directly after scanning a refund. It includes all the information needed to pay a recipient.
-///
-/// This is not exported to bindings users as its name conflicts with the BOLT 11 Invoice type.
 ///
 /// [`Offer`]: crate::offers::offer::Offer
 /// [`Refund`]: crate::offers::refund::Refund
 /// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
 #[derive(Clone, Debug)]
 #[cfg_attr(test, derive(PartialEq))]
-pub struct Invoice {
+pub struct Bolt12Invoice {
 	bytes: Vec<u8>,
 	contents: InvoiceContents,
 	signature: Signature,
 }
 
-/// The contents of an [`Invoice`] for responding to either an [`Offer`] or a [`Refund`].
+/// The contents of an [`Bolt12Invoice`] for responding to either an [`Offer`] or a [`Refund`].
 ///
 /// [`Offer`]: crate::offers::offer::Offer
 /// [`Refund`]: crate::offers::refund::Refund
 #[derive(Clone, Debug)]
 #[cfg_attr(test, derive(PartialEq))]
 enum InvoiceContents {
-	/// Contents for an [`Invoice`] corresponding to an [`Offer`].
+	/// Contents for an [`Bolt12Invoice`] corresponding to an [`Offer`].
 	///
 	/// [`Offer`]: crate::offers::offer::Offer
 	ForOffer {
 		invoice_request: InvoiceRequestContents,
 		fields: InvoiceFields,
 	},
-	/// Contents for an [`Invoice`] corresponding to a [`Refund`].
+	/// Contents for an [`Bolt12Invoice`] corresponding to a [`Refund`].
 	///
 	/// [`Refund`]: crate::offers::refund::Refund
 	ForRefund {
@@ -464,7 +463,7 @@ struct InvoiceFields {
 	signing_pubkey: PublicKey,
 }
 
-impl Invoice {
+impl Bolt12Invoice {
 	/// A complete description of the purpose of the originating offer or refund. Intended to be
 	/// displayed to the user but with the caveat that it has not been verified in any way.
 	pub fn description(&self) -> PrintableString {
@@ -475,7 +474,7 @@ impl Invoice {
 	/// needed for routing payments across them.
 	///
 	/// Blinded paths provide recipient privacy by obfuscating its node id. Note, however, that this
-	/// privacy is lost if a public node id is used for [`Invoice::signing_pubkey`].
+	/// privacy is lost if a public node id is used for [`Bolt12Invoice::signing_pubkey`].
 	pub fn payment_paths(&self) -> &[(BlindedPayInfo, BlindedPath)] {
 		&self.contents.fields().payment_paths[..]
 	}
@@ -485,8 +484,8 @@ impl Invoice {
 		self.contents.fields().created_at
 	}
 
-	/// Duration since [`Invoice::created_at`] when the invoice has expired and therefore should no
-	/// longer be paid.
+	/// Duration since [`Bolt12Invoice::created_at`] when the invoice has expired and therefore
+	/// should no longer be paid.
 	pub fn relative_expiry(&self) -> Duration {
 		self.contents.fields().relative_expiry.unwrap_or(DEFAULT_RELATIVE_EXPIRY)
 	}
@@ -579,7 +578,7 @@ impl Invoice {
 		self.contents.fields().signing_pubkey
 	}
 
-	/// Signature of the invoice verified using [`Invoice::signing_pubkey`].
+	/// Signature of the invoice verified using [`Bolt12Invoice::signing_pubkey`].
 	pub fn signature(&self) -> Signature {
 		self.signature
 	}
@@ -716,7 +715,7 @@ impl InvoiceFields {
 	}
 }
 
-impl Writeable for Invoice {
+impl Writeable for Bolt12Invoice {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		WithoutLength(&self.bytes).write(writer)
 	}
@@ -728,12 +727,12 @@ impl Writeable for InvoiceContents {
 	}
 }
 
-impl TryFrom<Vec<u8>> for Invoice {
+impl TryFrom<Vec<u8>> for Bolt12Invoice {
 	type Error = ParseError;
 
 	fn try_from(bytes: Vec<u8>) -> Result<Self, Self::Error> {
 		let parsed_invoice = ParsedMessage::<FullInvoiceTlvStream>::try_from(bytes)?;
-		Invoice::try_from(parsed_invoice)
+		Bolt12Invoice::try_from(parsed_invoice)
 	}
 }
 
@@ -840,7 +839,7 @@ type PartialInvoiceTlvStreamRef<'a> = (
 	InvoiceTlvStreamRef<'a>,
 );
 
-impl TryFrom<ParsedMessage<FullInvoiceTlvStream>> for Invoice {
+impl TryFrom<ParsedMessage<FullInvoiceTlvStream>> for Bolt12Invoice {
 	type Error = ParseError;
 
 	fn try_from(invoice: ParsedMessage<FullInvoiceTlvStream>) -> Result<Self, Self::Error> {
@@ -860,7 +859,7 @@ impl TryFrom<ParsedMessage<FullInvoiceTlvStream>> for Invoice {
 		let pubkey = contents.fields().signing_pubkey;
 		merkle::verify_signature(&signature, SIGNATURE_TAG, &bytes, pubkey)?;
 
-		Ok(Invoice { bytes, contents, signature })
+		Ok(Bolt12Invoice { bytes, contents, signature })
 	}
 }
 
@@ -944,7 +943,7 @@ impl TryFrom<PartialInvoiceTlvStream> for InvoiceContents {
 
 #[cfg(test)]
 mod tests {
-	use super::{DEFAULT_RELATIVE_EXPIRY, FallbackAddress, FullInvoiceTlvStreamRef, Invoice, InvoiceTlvStreamRef, SIGNATURE_TAG};
+	use super::{Bolt12Invoice, DEFAULT_RELATIVE_EXPIRY, FallbackAddress, FullInvoiceTlvStreamRef, InvoiceTlvStreamRef, SIGNATURE_TAG};
 
 	use bitcoin::blockdata::script::Script;
 	use bitcoin::hashes::Hash;
@@ -1066,7 +1065,7 @@ mod tests {
 			),
 		);
 
-		if let Err(e) = Invoice::try_from(buffer) {
+		if let Err(e) = Bolt12Invoice::try_from(buffer) {
 			panic!("error parsing invoice: {:?}", e);
 		}
 	}
@@ -1144,7 +1143,7 @@ mod tests {
 			),
 		);
 
-		if let Err(e) = Invoice::try_from(buffer) {
+		if let Err(e) = Bolt12Invoice::try_from(buffer) {
 			panic!("error parsing invoice: {:?}", e);
 		}
 	}
@@ -1494,14 +1493,14 @@ mod tests {
 		let mut buffer = Vec::new();
 		invoice.write(&mut buffer).unwrap();
 
-		if let Err(e) = Invoice::try_from(buffer) {
+		if let Err(e) = Bolt12Invoice::try_from(buffer) {
 			panic!("error parsing invoice: {:?}", e);
 		}
 
 		let mut tlv_stream = invoice.as_tlv_stream();
 		tlv_stream.3.paths = None;
 
-		match Invoice::try_from(tlv_stream.to_bytes()) {
+		match Bolt12Invoice::try_from(tlv_stream.to_bytes()) {
 			Ok(_) => panic!("expected error"),
 			Err(e) => assert_eq!(e, ParseError::InvalidSemantics(SemanticError::MissingPaths)),
 		}
@@ -1509,7 +1508,7 @@ mod tests {
 		let mut tlv_stream = invoice.as_tlv_stream();
 		tlv_stream.3.blindedpay = None;
 
-		match Invoice::try_from(tlv_stream.to_bytes()) {
+		match Bolt12Invoice::try_from(tlv_stream.to_bytes()) {
 			Ok(_) => panic!("expected error"),
 			Err(e) => assert_eq!(e, ParseError::InvalidSemantics(SemanticError::InvalidPayInfo)),
 		}
@@ -1518,7 +1517,7 @@ mod tests {
 		let mut tlv_stream = invoice.as_tlv_stream();
 		tlv_stream.3.paths = Some(Iterable(empty_payment_paths.iter().map(|(_, path)| path)));
 
-		match Invoice::try_from(tlv_stream.to_bytes()) {
+		match Bolt12Invoice::try_from(tlv_stream.to_bytes()) {
 			Ok(_) => panic!("expected error"),
 			Err(e) => assert_eq!(e, ParseError::InvalidSemantics(SemanticError::MissingPaths)),
 		}
@@ -1528,7 +1527,7 @@ mod tests {
 		let mut tlv_stream = invoice.as_tlv_stream();
 		tlv_stream.3.blindedpay = Some(Iterable(payment_paths.iter().map(|(payinfo, _)| payinfo)));
 
-		match Invoice::try_from(tlv_stream.to_bytes()) {
+		match Bolt12Invoice::try_from(tlv_stream.to_bytes()) {
 			Ok(_) => panic!("expected error"),
 			Err(e) => assert_eq!(e, ParseError::InvalidSemantics(SemanticError::InvalidPayInfo)),
 		}
@@ -1549,14 +1548,14 @@ mod tests {
 		let mut buffer = Vec::new();
 		invoice.write(&mut buffer).unwrap();
 
-		if let Err(e) = Invoice::try_from(buffer) {
+		if let Err(e) = Bolt12Invoice::try_from(buffer) {
 			panic!("error parsing invoice: {:?}", e);
 		}
 
 		let mut tlv_stream = invoice.as_tlv_stream();
 		tlv_stream.3.created_at = None;
 
-		match Invoice::try_from(tlv_stream.to_bytes()) {
+		match Bolt12Invoice::try_from(tlv_stream.to_bytes()) {
 			Ok(_) => panic!("expected error"),
 			Err(e) => {
 				assert_eq!(e, ParseError::InvalidSemantics(SemanticError::MissingCreationTime));
@@ -1580,7 +1579,7 @@ mod tests {
 		let mut buffer = Vec::new();
 		invoice.write(&mut buffer).unwrap();
 
-		match Invoice::try_from(buffer) {
+		match Bolt12Invoice::try_from(buffer) {
 			Ok(invoice) => assert_eq!(invoice.relative_expiry(), Duration::from_secs(3600)),
 			Err(e) => panic!("error parsing invoice: {:?}", e),
 		}
@@ -1601,14 +1600,14 @@ mod tests {
 		let mut buffer = Vec::new();
 		invoice.write(&mut buffer).unwrap();
 
-		if let Err(e) = Invoice::try_from(buffer) {
+		if let Err(e) = Bolt12Invoice::try_from(buffer) {
 			panic!("error parsing invoice: {:?}", e);
 		}
 
 		let mut tlv_stream = invoice.as_tlv_stream();
 		tlv_stream.3.payment_hash = None;
 
-		match Invoice::try_from(tlv_stream.to_bytes()) {
+		match Bolt12Invoice::try_from(tlv_stream.to_bytes()) {
 			Ok(_) => panic!("expected error"),
 			Err(e) => {
 				assert_eq!(e, ParseError::InvalidSemantics(SemanticError::MissingPaymentHash));
@@ -1631,14 +1630,14 @@ mod tests {
 		let mut buffer = Vec::new();
 		invoice.write(&mut buffer).unwrap();
 
-		if let Err(e) = Invoice::try_from(buffer) {
+		if let Err(e) = Bolt12Invoice::try_from(buffer) {
 			panic!("error parsing invoice: {:?}", e);
 		}
 
 		let mut tlv_stream = invoice.as_tlv_stream();
 		tlv_stream.3.amount = None;
 
-		match Invoice::try_from(tlv_stream.to_bytes()) {
+		match Bolt12Invoice::try_from(tlv_stream.to_bytes()) {
 			Ok(_) => panic!("expected error"),
 			Err(e) => assert_eq!(e, ParseError::InvalidSemantics(SemanticError::MissingAmount)),
 		}
@@ -1660,7 +1659,7 @@ mod tests {
 		let mut buffer = Vec::new();
 		invoice.write(&mut buffer).unwrap();
 
-		match Invoice::try_from(buffer) {
+		match Bolt12Invoice::try_from(buffer) {
 			Ok(invoice) => {
 				let mut features = Bolt12InvoiceFeatures::empty();
 				features.set_basic_mpp_optional();
@@ -1705,7 +1704,7 @@ mod tests {
 		let mut buffer = Vec::new();
 		invoice.write(&mut buffer).unwrap();
 
-		match Invoice::try_from(buffer) {
+		match Bolt12Invoice::try_from(buffer) {
 			Ok(invoice) => {
 				assert_eq!(
 					invoice.fallbacks(),
@@ -1749,14 +1748,14 @@ mod tests {
 		let mut buffer = Vec::new();
 		invoice.write(&mut buffer).unwrap();
 
-		if let Err(e) = Invoice::try_from(buffer) {
+		if let Err(e) = Bolt12Invoice::try_from(buffer) {
 			panic!("error parsing invoice: {:?}", e);
 		}
 
 		let mut tlv_stream = invoice.as_tlv_stream();
 		tlv_stream.3.node_id = None;
 
-		match Invoice::try_from(tlv_stream.to_bytes()) {
+		match Bolt12Invoice::try_from(tlv_stream.to_bytes()) {
 			Ok(_) => panic!("expected error"),
 			Err(e) => {
 				assert_eq!(e, ParseError::InvalidSemantics(SemanticError::MissingSigningPubkey));
@@ -1767,7 +1766,7 @@ mod tests {
 		let mut tlv_stream = invoice.as_tlv_stream();
 		tlv_stream.3.node_id = Some(&invalid_pubkey);
 
-		match Invoice::try_from(tlv_stream.to_bytes()) {
+		match Bolt12Invoice::try_from(tlv_stream.to_bytes()) {
 			Ok(_) => panic!("expected error"),
 			Err(e) => {
 				assert_eq!(e, ParseError::InvalidSemantics(SemanticError::InvalidSigningPubkey));
@@ -1789,7 +1788,7 @@ mod tests {
 			.invoice
 			.write(&mut buffer).unwrap();
 
-		match Invoice::try_from(buffer) {
+		match Bolt12Invoice::try_from(buffer) {
 			Ok(_) => panic!("expected error"),
 			Err(e) => assert_eq!(e, ParseError::InvalidSemantics(SemanticError::MissingSignature)),
 		}
@@ -1812,7 +1811,7 @@ mod tests {
 		let mut buffer = Vec::new();
 		invoice.write(&mut buffer).unwrap();
 
-		match Invoice::try_from(buffer) {
+		match Bolt12Invoice::try_from(buffer) {
 			Ok(_) => panic!("expected error"),
 			Err(e) => {
 				assert_eq!(e, ParseError::InvalidSignature(secp256k1::Error::InvalidSignature));
@@ -1838,7 +1837,7 @@ mod tests {
 		BigSize(32).write(&mut encoded_invoice).unwrap();
 		[42u8; 32].write(&mut encoded_invoice).unwrap();
 
-		match Invoice::try_from(encoded_invoice) {
+		match Bolt12Invoice::try_from(encoded_invoice) {
 			Ok(_) => panic!("expected error"),
 			Err(e) => assert_eq!(e, ParseError::Decode(DecodeError::InvalidValue)),
 		}

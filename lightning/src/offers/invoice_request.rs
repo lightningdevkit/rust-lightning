@@ -11,12 +11,12 @@
 //!
 //! An [`InvoiceRequest`] can be built from a parsed [`Offer`] as an "offer to be paid". It is
 //! typically constructed by a customer and sent to the merchant who had published the corresponding
-//! offer. The recipient of the request responds with an [`Invoice`].
+//! offer. The recipient of the request responds with a [`Bolt12Invoice`].
 //!
 //! For an "offer for money" (e.g., refund, ATM withdrawal), where an offer doesn't exist as a
 //! precursor, see [`Refund`].
 //!
-//! [`Invoice`]: crate::offers::invoice::Invoice
+//! [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
 //! [`Refund`]: crate::offers::refund::Refund
 //!
 //! ```
@@ -247,7 +247,7 @@ impl<'a, 'b, P: PayerIdStrategy, T: secp256k1::Signing> InvoiceRequestBuilder<'a
 	fn build_without_checks(mut self) ->
 		(UnsignedInvoiceRequest<'a>, Option<KeyPair>, Option<&'b Secp256k1<T>>)
 	{
-		// Create the metadata for stateless verification of an Invoice.
+		// Create the metadata for stateless verification of a Bolt12Invoice.
 		let mut keys = None;
 		let secp_ctx = self.secp_ctx.clone();
 		if self.invoice_request.payer.0.has_derivation_material() {
@@ -381,12 +381,12 @@ impl<'a> UnsignedInvoiceRequest<'a> {
 	}
 }
 
-/// An `InvoiceRequest` is a request for an [`Invoice`] formulated from an [`Offer`].
+/// An `InvoiceRequest` is a request for a [`Bolt12Invoice`] formulated from an [`Offer`].
 ///
 /// An offer may provide choices such as quantity, amount, chain, features, etc. An invoice request
 /// specifies these such that its recipient can send an invoice for payment.
 ///
-/// [`Invoice`]: crate::offers::invoice::Invoice
+/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
 /// [`Offer`]: crate::offers::offer::Offer
 #[derive(Clone, Debug)]
 #[cfg_attr(test, derive(PartialEq))]
@@ -396,9 +396,9 @@ pub struct InvoiceRequest {
 	signature: Signature,
 }
 
-/// The contents of an [`InvoiceRequest`], which may be shared with an [`Invoice`].
+/// The contents of an [`InvoiceRequest`], which may be shared with an [`Bolt12Invoice`].
 ///
-/// [`Invoice`]: crate::offers::invoice::Invoice
+/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
 #[derive(Clone, Debug)]
 #[cfg_attr(test, derive(PartialEq))]
 pub(super) struct InvoiceRequestContents {
@@ -492,8 +492,8 @@ impl InvoiceRequest {
 	/// Creates an [`InvoiceBuilder`] for the request with the given required fields.
 	///
 	/// Unless [`InvoiceBuilder::relative_expiry`] is set, the invoice will expire two hours after
-	/// `created_at`, which is used to set [`Invoice::created_at`]. Useful for `no-std` builds where
-	/// [`std::time::SystemTime`] is not available.
+	/// `created_at`, which is used to set [`Bolt12Invoice::created_at`]. Useful for `no-std` builds
+	/// where [`std::time::SystemTime`] is not available.
 	///
 	/// The caller is expected to remember the preimage of `payment_hash` in order to claim a payment
 	/// for the invoice.
@@ -507,7 +507,7 @@ impl InvoiceRequest {
 	///
 	/// This is not exported to bindings users as builder patterns don't map outside of move semantics.
 	///
-	/// [`Invoice::created_at`]: crate::offers::invoice::Invoice::created_at
+	/// [`Bolt12Invoice::created_at`]: crate::offers::invoice::Bolt12Invoice::created_at
 	pub fn respond_with_no_std(
 		&self, payment_paths: Vec<(BlindedPayInfo, BlindedPath)>, payment_hash: PaymentHash,
 		created_at: core::time::Duration
@@ -520,14 +520,14 @@ impl InvoiceRequest {
 	}
 
 	/// Creates an [`InvoiceBuilder`] for the request using the given required fields and that uses
-	/// derived signing keys from the originating [`Offer`] to sign the [`Invoice`]. Must use the
-	/// same [`ExpandedKey`] as the one used to create the offer.
+	/// derived signing keys from the originating [`Offer`] to sign the [`Bolt12Invoice`]. Must use
+	/// the same [`ExpandedKey`] as the one used to create the offer.
 	///
 	/// See [`InvoiceRequest::respond_with`] for further details.
 	///
 	/// This is not exported to bindings users as builder patterns don't map outside of move semantics.
 	///
-	/// [`Invoice`]: crate::offers::invoice::Invoice
+	/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
 	#[cfg(feature = "std")]
 	pub fn verify_and_respond_using_derived_keys<T: secp256k1::Signing>(
 		&self, payment_paths: Vec<(BlindedPayInfo, BlindedPath)>, payment_hash: PaymentHash,
@@ -543,14 +543,14 @@ impl InvoiceRequest {
 	}
 
 	/// Creates an [`InvoiceBuilder`] for the request using the given required fields and that uses
-	/// derived signing keys from the originating [`Offer`] to sign the [`Invoice`]. Must use the
-	/// same [`ExpandedKey`] as the one used to create the offer.
+	/// derived signing keys from the originating [`Offer`] to sign the [`Bolt12Invoice`]. Must use
+	/// the same [`ExpandedKey`] as the one used to create the offer.
 	///
 	/// See [`InvoiceRequest::respond_with_no_std`] for further details.
 	///
 	/// This is not exported to bindings users as builder patterns don't map outside of move semantics.
 	///
-	/// [`Invoice`]: crate::offers::invoice::Invoice
+	/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
 	pub fn verify_and_respond_using_derived_keys_no_std<T: secp256k1::Signing>(
 		&self, payment_paths: Vec<(BlindedPayInfo, BlindedPath)>, payment_hash: PaymentHash,
 		created_at: core::time::Duration, expanded_key: &ExpandedKey, secp_ctx: &Secp256k1<T>
@@ -569,10 +569,10 @@ impl InvoiceRequest {
 	}
 
 	/// Verifies that the request was for an offer created using the given key. Returns the derived
-	/// keys need to sign an [`Invoice`] for the request if they could be extracted from the
+	/// keys need to sign an [`Bolt12Invoice`] for the request if they could be extracted from the
 	/// metadata.
 	///
-	/// [`Invoice`]: crate::offers::invoice::Invoice
+	/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
 	pub fn verify<T: secp256k1::Signing>(
 		&self, key: &ExpandedKey, secp_ctx: &Secp256k1<T>
 	) -> Result<Option<KeyPair>, ()> {
@@ -789,7 +789,7 @@ mod tests {
 	use crate::ln::features::InvoiceRequestFeatures;
 	use crate::ln::inbound_payment::ExpandedKey;
 	use crate::ln::msgs::{DecodeError, MAX_VALUE_MSAT};
-	use crate::offers::invoice::{Invoice, SIGNATURE_TAG as INVOICE_SIGNATURE_TAG};
+	use crate::offers::invoice::{Bolt12Invoice, SIGNATURE_TAG as INVOICE_SIGNATURE_TAG};
 	use crate::offers::merkle::{SignError, SignatureTlvStreamRef, self};
 	use crate::offers::offer::{Amount, OfferBuilder, OfferTlvStreamRef, Quantity};
 	use crate::offers::parse::{ParseError, SemanticError};
@@ -930,7 +930,7 @@ mod tests {
 		let mut encoded_invoice = bytes;
 		signature_tlv_stream.write(&mut encoded_invoice).unwrap();
 
-		let invoice = Invoice::try_from(encoded_invoice).unwrap();
+		let invoice = Bolt12Invoice::try_from(encoded_invoice).unwrap();
 		assert!(!invoice.verify(&expanded_key, &secp_ctx));
 
 		// Fails verification with altered metadata
@@ -954,7 +954,7 @@ mod tests {
 		let mut encoded_invoice = bytes;
 		signature_tlv_stream.write(&mut encoded_invoice).unwrap();
 
-		let invoice = Invoice::try_from(encoded_invoice).unwrap();
+		let invoice = Bolt12Invoice::try_from(encoded_invoice).unwrap();
 		assert!(!invoice.verify(&expanded_key, &secp_ctx));
 	}
 
@@ -1000,7 +1000,7 @@ mod tests {
 		let mut encoded_invoice = bytes;
 		signature_tlv_stream.write(&mut encoded_invoice).unwrap();
 
-		let invoice = Invoice::try_from(encoded_invoice).unwrap();
+		let invoice = Bolt12Invoice::try_from(encoded_invoice).unwrap();
 		assert!(!invoice.verify(&expanded_key, &secp_ctx));
 
 		// Fails verification with altered payer id
@@ -1024,7 +1024,7 @@ mod tests {
 		let mut encoded_invoice = bytes;
 		signature_tlv_stream.write(&mut encoded_invoice).unwrap();
 
-		let invoice = Invoice::try_from(encoded_invoice).unwrap();
+		let invoice = Bolt12Invoice::try_from(encoded_invoice).unwrap();
 		assert!(!invoice.verify(&expanded_key, &secp_ctx));
 	}
 
