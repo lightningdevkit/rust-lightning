@@ -14,7 +14,7 @@ use lightning::blinded_path::BlindedPath;
 use lightning::sign::EntropySource;
 use lightning::ln::PaymentHash;
 use lightning::ln::features::BlindedHopFeatures;
-use lightning::offers::invoice::{BlindedPayInfo, UnsignedInvoice};
+use lightning::offers::invoice::{BlindedPayInfo, UnsignedBolt12Invoice};
 use lightning::offers::invoice_request::InvoiceRequest;
 use lightning::offers::parse::SemanticError;
 use lightning::util::ser::Writeable;
@@ -71,7 +71,7 @@ fn privkey(byte: u8) -> SecretKey {
 
 fn build_response<'a, T: secp256k1::Signing + secp256k1::Verification>(
 	invoice_request: &'a InvoiceRequest, secp_ctx: &Secp256k1<T>
-) -> Result<UnsignedInvoice<'a>, SemanticError> {
+) -> Result<UnsignedBolt12Invoice<'a>, SemanticError> {
 	let entropy_source = Randomness {};
 	let paths = vec![
 		BlindedPath::new_for_message(&[pubkey(43), pubkey(44), pubkey(42)], &entropy_source, secp_ctx).unwrap(),

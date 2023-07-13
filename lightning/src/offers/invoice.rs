@@ -330,8 +330,8 @@ impl<'a, S: SigningPubkeyStrategy> InvoiceBuilder<'a, S> {
 
 impl<'a> InvoiceBuilder<'a, ExplicitSigningPubkey> {
 	/// Builds an unsigned [`Bolt12Invoice`] after checking for valid semantics. It can be signed by
-	/// [`UnsignedInvoice::sign`].
-	pub fn build(self) -> Result<UnsignedInvoice<'a>, SemanticError> {
+	/// [`UnsignedBolt12Invoice::sign`].
+	pub fn build(self) -> Result<UnsignedBolt12Invoice<'a>, SemanticError> {
 		#[cfg(feature = "std")] {
 			if self.invoice.is_offer_or_refund_expired() {
 				return Err(SemanticError::AlreadyExpired);
@@ -339,7 +339,7 @@ impl<'a> InvoiceBuilder<'a, ExplicitSigningPubkey> {
 		}
 
 		let InvoiceBuilder { invreq_bytes, invoice, .. } = self;
-		Ok(UnsignedInvoice { invreq_bytes, invoice })
+		Ok(UnsignedBolt12Invoice { invreq_bytes, invoice })
 	}
 }
 
@@ -355,7 +355,7 @@ impl<'a> InvoiceBuilder<'a, DerivedSigningPubkey> {
 		}
 
 		let InvoiceBuilder { invreq_bytes, invoice, keys, .. } = self;
-		let unsigned_invoice = UnsignedInvoice { invreq_bytes, invoice };
+		let unsigned_invoice = UnsignedBolt12Invoice { invreq_bytes, invoice };
 
 		let keys = keys.unwrap();
 		let invoice = unsigned_invoice
@@ -366,12 +366,12 @@ impl<'a> InvoiceBuilder<'a, DerivedSigningPubkey> {
 }
 
 /// A semantically valid [`Bolt12Invoice`] that hasn't been signed.
-pub struct UnsignedInvoice<'a> {
+pub struct UnsignedBolt12Invoice<'a> {
 	invreq_bytes: &'a Vec<u8>,
 	invoice: InvoiceContents,
 }
 
-impl<'a> UnsignedInvoice<'a> {
+impl<'a> UnsignedBolt12Invoice<'a> {
 	/// The public key corresponding to the key needed to sign the invoice.
 	pub fn signing_pubkey(&self) -> PublicKey {
 		self.invoice.fields().signing_pubkey
