@@ -28,7 +28,7 @@
 //!
 //! use bitcoin::network::constants::Network;
 //! use bitcoin::secp256k1::{KeyPair, PublicKey, Secp256k1, SecretKey};
-//! use lightning::offers::parse::ParseError;
+//! use lightning::offers::parse::Bolt12ParseError;
 //! use lightning::offers::refund::{Refund, RefundBuilder};
 //! use lightning::util::ser::{Readable, Writeable};
 //!
@@ -40,7 +40,7 @@
 //! # fn create_another_blinded_path() -> BlindedPath { unimplemented!() }
 //! #
 //! # #[cfg(feature = "std")]
-//! # fn build() -> Result<(), ParseError> {
+//! # fn build() -> Result<(), Bolt12ParseError> {
 //! let secp_ctx = Secp256k1::new();
 //! let keys = KeyPair::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 //! let pubkey = PublicKey::from(keys);
@@ -88,7 +88,7 @@ use crate::ln::msgs::{DecodeError, MAX_VALUE_MSAT};
 use crate::offers::invoice::{BlindedPayInfo, DerivedSigningPubkey, ExplicitSigningPubkey, InvoiceBuilder};
 use crate::offers::invoice_request::{InvoiceRequestTlvStream, InvoiceRequestTlvStreamRef};
 use crate::offers::offer::{OfferTlvStream, OfferTlvStreamRef};
-use crate::offers::parse::{Bech32Encode, ParseError, ParsedMessage, SemanticError};
+use crate::offers::parse::{Bech32Encode, Bolt12ParseError, ParsedMessage, SemanticError};
 use crate::offers::payer::{PayerContents, PayerTlvStream, PayerTlvStreamRef};
 use crate::offers::signer::{Metadata, MetadataMaterial, self};
 use crate::util::ser::{SeekReadable, WithoutLength, Writeable, Writer};
@@ -606,7 +606,7 @@ impl Bech32Encode for Refund {
 }
 
 impl FromStr for Refund {
-	type Err = ParseError;
+	type Err = Bolt12ParseError;
 
 	fn from_str(s: &str) -> Result<Self, <Self as FromStr>::Err> {
 		Refund::from_bech32_str(s)
@@ -614,7 +614,7 @@ impl FromStr for Refund {
 }
 
 impl TryFrom<Vec<u8>> for Refund {
-	type Error = ParseError;
+	type Error = Bolt12ParseError;
 
 	fn try_from(bytes: Vec<u8>) -> Result<Self, Self::Error> {
 		let refund = ParsedMessage::<RefundTlvStream>::try_from(bytes)?;
@@ -718,7 +718,7 @@ mod tests {
 	use crate::ln::msgs::{DecodeError, MAX_VALUE_MSAT};
 	use crate::offers::invoice_request::InvoiceRequestTlvStreamRef;
 	use crate::offers::offer::OfferTlvStreamRef;
-	use crate::offers::parse::{ParseError, SemanticError};
+	use crate::offers::parse::{Bolt12ParseError, SemanticError};
 	use crate::offers::payer::PayerTlvStreamRef;
 	use crate::offers::test_utils::*;
 	use crate::util::ser::{BigSize, Writeable};
@@ -1082,7 +1082,7 @@ mod tests {
 		match Refund::try_from(tlv_stream.to_bytes()) {
 			Ok(_) => panic!("expected error"),
 			Err(e) => {
-				assert_eq!(e, ParseError::InvalidSemantics(SemanticError::MissingPayerMetadata));
+				assert_eq!(e, Bolt12ParseError::InvalidSemantics(SemanticError::MissingPayerMetadata));
 			},
 		}
 	}
@@ -1101,7 +1101,7 @@ mod tests {
 		match Refund::try_from(tlv_stream.to_bytes()) {
 			Ok(_) => panic!("expected error"),
 			Err(e) => {
-				assert_eq!(e, ParseError::InvalidSemantics(SemanticError::MissingDescription));
+				assert_eq!(e, Bolt12ParseError::InvalidSemantics(SemanticError::MissingDescription));
 			},
 		}
 	}
@@ -1120,7 +1120,7 @@ mod tests {
 		match Refund::try_from(tlv_stream.to_bytes()) {
 			Ok(_) => panic!("expected error"),
 			Err(e) => {
-				assert_eq!(e, ParseError::InvalidSemantics(SemanticError::MissingAmount));
+				assert_eq!(e, Bolt12ParseError::InvalidSemantics(SemanticError::MissingAmount));
 			},
 		}
 
@@ -1130,7 +1130,7 @@ mod tests {
 		match Refund::try_from(tlv_stream.to_bytes()) {
 			Ok(_) => panic!("expected error"),
 			Err(e) => {
-				assert_eq!(e, ParseError::InvalidSemantics(SemanticError::InvalidAmount));
+				assert_eq!(e, Bolt12ParseError::InvalidSemantics(SemanticError::InvalidAmount));
 			},
 		}
 	}
@@ -1149,7 +1149,7 @@ mod tests {
 		match Refund::try_from(tlv_stream.to_bytes()) {
 			Ok(_) => panic!("expected error"),
 			Err(e) => {
-				assert_eq!(e, ParseError::InvalidSemantics(SemanticError::MissingPayerId));
+				assert_eq!(e, Bolt12ParseError::InvalidSemantics(SemanticError::MissingPayerId));
 			},
 		}
 	}
@@ -1218,7 +1218,7 @@ mod tests {
 		match Refund::try_from(tlv_stream.to_bytes()) {
 			Ok(_) => panic!("expected error"),
 			Err(e) => {
-				assert_eq!(e, ParseError::InvalidSemantics(SemanticError::UnexpectedMetadata));
+				assert_eq!(e, Bolt12ParseError::InvalidSemantics(SemanticError::UnexpectedMetadata));
 			},
 		}
 
@@ -1229,7 +1229,7 @@ mod tests {
 		match Refund::try_from(tlv_stream.to_bytes()) {
 			Ok(_) => panic!("expected error"),
 			Err(e) => {
-				assert_eq!(e, ParseError::InvalidSemantics(SemanticError::UnexpectedChain));
+				assert_eq!(e, Bolt12ParseError::InvalidSemantics(SemanticError::UnexpectedChain));
 			},
 		}
 
@@ -1240,7 +1240,7 @@ mod tests {
 		match Refund::try_from(tlv_stream.to_bytes()) {
 			Ok(_) => panic!("expected error"),
 			Err(e) => {
-				assert_eq!(e, ParseError::InvalidSemantics(SemanticError::UnexpectedAmount));
+				assert_eq!(e, Bolt12ParseError::InvalidSemantics(SemanticError::UnexpectedAmount));
 			},
 		}
 
@@ -1251,7 +1251,7 @@ mod tests {
 		match Refund::try_from(tlv_stream.to_bytes()) {
 			Ok(_) => panic!("expected error"),
 			Err(e) => {
-				assert_eq!(e, ParseError::InvalidSemantics(SemanticError::UnexpectedFeatures));
+				assert_eq!(e, Bolt12ParseError::InvalidSemantics(SemanticError::UnexpectedFeatures));
 			},
 		}
 
@@ -1261,7 +1261,7 @@ mod tests {
 		match Refund::try_from(tlv_stream.to_bytes()) {
 			Ok(_) => panic!("expected error"),
 			Err(e) => {
-				assert_eq!(e, ParseError::InvalidSemantics(SemanticError::UnexpectedQuantity));
+				assert_eq!(e, Bolt12ParseError::InvalidSemantics(SemanticError::UnexpectedQuantity));
 			},
 		}
 
@@ -1272,7 +1272,7 @@ mod tests {
 		match Refund::try_from(tlv_stream.to_bytes()) {
 			Ok(_) => panic!("expected error"),
 			Err(e) => {
-				assert_eq!(e, ParseError::InvalidSemantics(SemanticError::UnexpectedSigningPubkey));
+				assert_eq!(e, Bolt12ParseError::InvalidSemantics(SemanticError::UnexpectedSigningPubkey));
 			},
 		}
 	}
@@ -1292,7 +1292,7 @@ mod tests {
 
 		match Refund::try_from(encoded_refund) {
 			Ok(_) => panic!("expected error"),
-			Err(e) => assert_eq!(e, ParseError::Decode(DecodeError::InvalidValue)),
+			Err(e) => assert_eq!(e, Bolt12ParseError::Decode(DecodeError::InvalidValue)),
 		}
 	}
 }

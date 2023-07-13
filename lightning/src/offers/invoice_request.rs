@@ -30,7 +30,7 @@
 //! use lightning::offers::offer::Offer;
 //! use lightning::util::ser::Writeable;
 //!
-//! # fn parse() -> Result<(), lightning::offers::parse::ParseError> {
+//! # fn parse() -> Result<(), lightning::offers::parse::Bolt12ParseError> {
 //! let secp_ctx = Secp256k1::new();
 //! let keys = KeyPair::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32])?);
 //! let pubkey = PublicKey::from(keys);
@@ -68,7 +68,7 @@ use crate::ln::msgs::DecodeError;
 use crate::offers::invoice::{BlindedPayInfo, DerivedSigningPubkey, ExplicitSigningPubkey, InvoiceBuilder};
 use crate::offers::merkle::{SignError, SignatureTlvStream, SignatureTlvStreamRef, self};
 use crate::offers::offer::{Offer, OfferContents, OfferTlvStream, OfferTlvStreamRef};
-use crate::offers::parse::{ParseError, ParsedMessage, SemanticError};
+use crate::offers::parse::{Bolt12ParseError, ParsedMessage, SemanticError};
 use crate::offers::payer::{PayerContents, PayerTlvStream, PayerTlvStreamRef};
 use crate::offers::signer::{Metadata, MetadataMaterial};
 use crate::util::ser::{HighZeroBytesDroppedBigSize, SeekReadable, WithoutLength, Writeable, Writer};
@@ -708,7 +708,7 @@ type PartialInvoiceRequestTlvStreamRef<'a> = (
 );
 
 impl TryFrom<Vec<u8>> for InvoiceRequest {
-	type Error = ParseError;
+	type Error = Bolt12ParseError;
 
 	fn try_from(bytes: Vec<u8>) -> Result<Self, Self::Error> {
 		let invoice_request = ParsedMessage::<FullInvoiceRequestTlvStream>::try_from(bytes)?;
@@ -722,7 +722,7 @@ impl TryFrom<Vec<u8>> for InvoiceRequest {
 		)?;
 
 		let signature = match signature {
-			None => return Err(ParseError::InvalidSemantics(SemanticError::MissingSignature)),
+			None => return Err(Bolt12ParseError::InvalidSemantics(SemanticError::MissingSignature)),
 			Some(signature) => signature,
 		};
 		merkle::verify_signature(&signature, SIGNATURE_TAG, &bytes, contents.payer_id)?;
@@ -792,7 +792,7 @@ mod tests {
 	use crate::offers::invoice::{Bolt12Invoice, SIGNATURE_TAG as INVOICE_SIGNATURE_TAG};
 	use crate::offers::merkle::{SignError, SignatureTlvStreamRef, self};
 	use crate::offers::offer::{Amount, OfferBuilder, OfferTlvStreamRef, Quantity};
-	use crate::offers::parse::{ParseError, SemanticError};
+	use crate::offers::parse::{Bolt12ParseError, SemanticError};
 	use crate::offers::payer::PayerTlvStreamRef;
 	use crate::offers::test_utils::*;
 	use crate::util::ser::{BigSize, Writeable};
@@ -1438,7 +1438,7 @@ mod tests {
 
 		match InvoiceRequest::try_from(buffer) {
 			Ok(_) => panic!("expected error"),
-			Err(e) => assert_eq!(e, ParseError::InvalidSemantics(SemanticError::UnsupportedChain)),
+			Err(e) => assert_eq!(e, Bolt12ParseError::InvalidSemantics(SemanticError::UnsupportedChain)),
 		}
 	}
 
@@ -1483,7 +1483,7 @@ mod tests {
 
 		match InvoiceRequest::try_from(buffer) {
 			Ok(_) => panic!("expected error"),
-			Err(e) => assert_eq!(e, ParseError::InvalidSemantics(SemanticError::MissingAmount)),
+			Err(e) => assert_eq!(e, Bolt12ParseError::InvalidSemantics(SemanticError::MissingAmount)),
 		}
 
 		let invoice_request = OfferBuilder::new("foo".into(), recipient_pubkey())
@@ -1499,7 +1499,7 @@ mod tests {
 
 		match InvoiceRequest::try_from(buffer) {
 			Ok(_) => panic!("expected error"),
-			Err(e) => assert_eq!(e, ParseError::InvalidSemantics(SemanticError::InsufficientAmount)),
+			Err(e) => assert_eq!(e, Bolt12ParseError::InvalidSemantics(SemanticError::InsufficientAmount)),
 		}
 
 		let invoice_request = OfferBuilder::new("foo".into(), recipient_pubkey())
@@ -1515,7 +1515,7 @@ mod tests {
 		match InvoiceRequest::try_from(buffer) {
 			Ok(_) => panic!("expected error"),
 			Err(e) => {
-				assert_eq!(e, ParseError::InvalidSemantics(SemanticError::UnsupportedCurrency));
+				assert_eq!(e, Bolt12ParseError::InvalidSemantics(SemanticError::UnsupportedCurrency));
 			},
 		}
 
@@ -1533,7 +1533,7 @@ mod tests {
 
 		match InvoiceRequest::try_from(buffer) {
 			Ok(_) => panic!("expected error"),
-			Err(e) => assert_eq!(e, ParseError::InvalidSemantics(SemanticError::InvalidAmount)),
+			Err(e) => assert_eq!(e, Bolt12ParseError::InvalidSemantics(SemanticError::InvalidAmount)),
 		}
 	}
 
@@ -1573,7 +1573,7 @@ mod tests {
 		match InvoiceRequest::try_from(buffer) {
 			Ok(_) => panic!("expected error"),
 			Err(e) => {
-				assert_eq!(e, ParseError::InvalidSemantics(SemanticError::UnexpectedQuantity));
+				assert_eq!(e, Bolt12ParseError::InvalidSemantics(SemanticError::UnexpectedQuantity));
 			},
 		}
 
@@ -1609,7 +1609,7 @@ mod tests {
 
 		match InvoiceRequest::try_from(buffer) {
 			Ok(_) => panic!("expected error"),
-			Err(e) => assert_eq!(e, ParseError::InvalidSemantics(SemanticError::InvalidQuantity)),
+			Err(e) => assert_eq!(e, Bolt12ParseError::InvalidSemantics(SemanticError::InvalidQuantity)),
 		}
 
 		let invoice_request = OfferBuilder::new("foo".into(), recipient_pubkey())
@@ -1642,7 +1642,7 @@ mod tests {
 
 		match InvoiceRequest::try_from(buffer) {
 			Ok(_) => panic!("expected error"),
-			Err(e) => assert_eq!(e, ParseError::InvalidSemantics(SemanticError::MissingQuantity)),
+			Err(e) => assert_eq!(e, Bolt12ParseError::InvalidSemantics(SemanticError::MissingQuantity)),
 		}
 
 		let invoice_request = OfferBuilder::new("foo".into(), recipient_pubkey())
@@ -1658,7 +1658,7 @@ mod tests {
 
 		match InvoiceRequest::try_from(buffer) {
 			Ok(_) => panic!("expected error"),
-			Err(e) => assert_eq!(e, ParseError::InvalidSemantics(SemanticError::MissingQuantity)),
+			Err(e) => assert_eq!(e, Bolt12ParseError::InvalidSemantics(SemanticError::MissingQuantity)),
 		}
 	}
 
@@ -1678,7 +1678,7 @@ mod tests {
 		match InvoiceRequest::try_from(buffer) {
 			Ok(_) => panic!("expected error"),
 			Err(e) => {
-				assert_eq!(e, ParseError::InvalidSemantics(SemanticError::MissingPayerMetadata));
+				assert_eq!(e, Bolt12ParseError::InvalidSemantics(SemanticError::MissingPayerMetadata));
 			},
 		}
 	}
@@ -1698,7 +1698,7 @@ mod tests {
 
 		match InvoiceRequest::try_from(buffer) {
 			Ok(_) => panic!("expected error"),
-			Err(e) => assert_eq!(e, ParseError::InvalidSemantics(SemanticError::MissingPayerId)),
+			Err(e) => assert_eq!(e, Bolt12ParseError::InvalidSemantics(SemanticError::MissingPayerId)),
 		}
 	}
 
@@ -1718,7 +1718,7 @@ mod tests {
 		match InvoiceRequest::try_from(buffer) {
 			Ok(_) => panic!("expected error"),
 			Err(e) => {
-				assert_eq!(e, ParseError::InvalidSemantics(SemanticError::MissingSigningPubkey));
+				assert_eq!(e, Bolt12ParseError::InvalidSemantics(SemanticError::MissingSigningPubkey));
 			},
 		}
 	}
@@ -1736,7 +1736,7 @@ mod tests {
 
 		match InvoiceRequest::try_from(buffer) {
 			Ok(_) => panic!("expected error"),
-			Err(e) => assert_eq!(e, ParseError::InvalidSemantics(SemanticError::MissingSignature)),
+			Err(e) => assert_eq!(e, Bolt12ParseError::InvalidSemantics(SemanticError::MissingSignature)),
 		}
 	}
 
@@ -1757,7 +1757,7 @@ mod tests {
 		match InvoiceRequest::try_from(buffer) {
 			Ok(_) => panic!("expected error"),
 			Err(e) => {
-				assert_eq!(e, ParseError::InvalidSignature(secp256k1::Error::InvalidSignature));
+				assert_eq!(e, Bolt12ParseError::InvalidSignature(secp256k1::Error::InvalidSignature));
 			},
 		}
 	}
@@ -1782,7 +1782,7 @@ mod tests {
 
 		match InvoiceRequest::try_from(encoded_invoice_request) {
 			Ok(_) => panic!("expected error"),
-			Err(e) => assert_eq!(e, ParseError::Decode(DecodeError::InvalidValue)),
+			Err(e) => assert_eq!(e, Bolt12ParseError::Decode(DecodeError::InvalidValue)),
 		}
 	}
 }

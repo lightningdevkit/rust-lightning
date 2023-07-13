@@ -24,7 +24,7 @@
 //!
 //! use bitcoin::secp256k1::{KeyPair, PublicKey, Secp256k1, SecretKey};
 //! use lightning::offers::offer::{Offer, OfferBuilder, Quantity};
-//! use lightning::offers::parse::ParseError;
+//! use lightning::offers::parse::Bolt12ParseError;
 //! use lightning::util::ser::{Readable, Writeable};
 //!
 //! # use lightning::blinded_path::BlindedPath;
@@ -35,7 +35,7 @@
 //! # fn create_another_blinded_path() -> BlindedPath { unimplemented!() }
 //! #
 //! # #[cfg(feature = "std")]
-//! # fn build() -> Result<(), ParseError> {
+//! # fn build() -> Result<(), Bolt12ParseError> {
 //! let secp_ctx = Secp256k1::new();
 //! let keys = KeyPair::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 //! let pubkey = PublicKey::from(keys);
@@ -82,7 +82,7 @@ use crate::ln::inbound_payment::{ExpandedKey, IV_LEN, Nonce};
 use crate::ln::msgs::MAX_VALUE_MSAT;
 use crate::offers::invoice_request::{DerivedPayerId, ExplicitPayerId, InvoiceRequestBuilder};
 use crate::offers::merkle::TlvStream;
-use crate::offers::parse::{Bech32Encode, ParseError, ParsedMessage, SemanticError};
+use crate::offers::parse::{Bech32Encode, Bolt12ParseError, ParsedMessage, SemanticError};
 use crate::offers::signer::{Metadata, MetadataMaterial, self};
 use crate::util::ser::{HighZeroBytesDroppedBigSize, WithoutLength, Writeable, Writer};
 use crate::util::string::PrintableString;
@@ -768,7 +768,7 @@ impl Bech32Encode for Offer {
 }
 
 impl FromStr for Offer {
-	type Err = ParseError;
+	type Err = Bolt12ParseError;
 
 	fn from_str(s: &str) -> Result<Self, <Self as FromStr>::Err> {
 		Self::from_bech32_str(s)
@@ -776,7 +776,7 @@ impl FromStr for Offer {
 }
 
 impl TryFrom<Vec<u8>> for Offer {
-	type Error = ParseError;
+	type Error = Bolt12ParseError;
 
 	fn try_from(bytes: Vec<u8>) -> Result<Self, Self::Error> {
 		let offer = ParsedMessage::<OfferTlvStream>::try_from(bytes)?;
@@ -856,7 +856,7 @@ mod tests {
 	use crate::ln::features::OfferFeatures;
 	use crate::ln::inbound_payment::ExpandedKey;
 	use crate::ln::msgs::{DecodeError, MAX_VALUE_MSAT};
-	use crate::offers::parse::{ParseError, SemanticError};
+	use crate::offers::parse::{Bolt12ParseError, SemanticError};
 	use crate::offers::test_utils::*;
 	use crate::util::ser::{BigSize, Writeable};
 	use crate::util::string::PrintableString;
@@ -1305,7 +1305,7 @@ mod tests {
 
 		match Offer::try_from(encoded_offer) {
 			Ok(_) => panic!("expected error"),
-			Err(e) => assert_eq!(e, ParseError::InvalidSemantics(SemanticError::MissingAmount)),
+			Err(e) => assert_eq!(e, Bolt12ParseError::InvalidSemantics(SemanticError::MissingAmount)),
 		}
 
 		let mut tlv_stream = offer.as_tlv_stream();
@@ -1317,7 +1317,7 @@ mod tests {
 
 		match Offer::try_from(encoded_offer) {
 			Ok(_) => panic!("expected error"),
-			Err(e) => assert_eq!(e, ParseError::InvalidSemantics(SemanticError::InvalidAmount)),
+			Err(e) => assert_eq!(e, Bolt12ParseError::InvalidSemantics(SemanticError::InvalidAmount)),
 		}
 	}
 
@@ -1337,7 +1337,7 @@ mod tests {
 		match Offer::try_from(encoded_offer) {
 			Ok(_) => panic!("expected error"),
 			Err(e) => {
-				assert_eq!(e, ParseError::InvalidSemantics(SemanticError::MissingDescription));
+				assert_eq!(e, Bolt12ParseError::InvalidSemantics(SemanticError::MissingDescription));
 			},
 		}
 	}
@@ -1427,7 +1427,7 @@ mod tests {
 		match Offer::try_from(encoded_offer) {
 			Ok(_) => panic!("expected error"),
 			Err(e) => {
-				assert_eq!(e, ParseError::InvalidSemantics(SemanticError::MissingSigningPubkey));
+				assert_eq!(e, Bolt12ParseError::InvalidSemantics(SemanticError::MissingSigningPubkey));
 			},
 		}
 	}
@@ -1444,14 +1444,14 @@ mod tests {
 
 		match Offer::try_from(encoded_offer) {
 			Ok(_) => panic!("expected error"),
-			Err(e) => assert_eq!(e, ParseError::Decode(DecodeError::InvalidValue)),
+			Err(e) => assert_eq!(e, Bolt12ParseError::Decode(DecodeError::InvalidValue)),
 		}
 	}
 }
 
 #[cfg(test)]
 mod bech32_tests {
-	use super::{Offer, ParseError};
+	use super::{Bolt12ParseError, Offer};
 	use bitcoin::bech32;
 	use crate::ln::msgs::DecodeError;
 
@@ -1493,7 +1493,7 @@ mod bech32_tests {
 		for encoded_offer in &offers {
 			match encoded_offer.parse::<Offer>() {
 				Ok(_) => panic!("Valid offer: {}", encoded_offer),
-				Err(e) => assert_eq!(e, ParseError::InvalidContinuation),
+				Err(e) => assert_eq!(e, Bolt12ParseError::InvalidContinuation),
 			}
 		}
 
@@ -1504,7 +1504,7 @@ mod bech32_tests {
 		let encoded_offer = "lni1pqps7sjqpgtyzm3qv4uxzmtsd3jjqer9wd3hy6tsw35k7msjzfpy7nz5yqcnygrfdej82um5wf5k2uckyypwa3eyt44h6txtxquqh7lz5djge4afgfjn7k4rgrkuag0jsd5xvxg";
 		match encoded_offer.parse::<Offer>() {
 			Ok(_) => panic!("Valid offer: {}", encoded_offer),
-			Err(e) => assert_eq!(e, ParseError::InvalidBech32Hrp),
+			Err(e) => assert_eq!(e, Bolt12ParseError::InvalidBech32Hrp),
 		}
 	}
 
@@ -1513,7 +1513,7 @@ mod bech32_tests {
 		let encoded_offer = "lno1pqps7sjqpgtyzm3qv4uxzmtsd3jjqer9wd3hy6tsw35k7msjzfpy7nz5yqcnygrfdej82um5wf5k2uckyypwa3eyt44h6txtxquqh7lz5djge4afgfjn7k4rgrkuag0jsd5xvxo";
 		match encoded_offer.parse::<Offer>() {
 			Ok(_) => panic!("Valid offer: {}", encoded_offer),
-			Err(e) => assert_eq!(e, ParseError::Bech32(bech32::Error::InvalidChar('o'))),
+			Err(e) => assert_eq!(e, Bolt12ParseError::Bech32(bech32::Error::InvalidChar('o'))),
 		}
 	}
 
@@ -1522,7 +1522,7 @@ mod bech32_tests {
 		let encoded_offer = "lno1pqps7sjqpgtyzm3qv4uxzmtsd3jjqer9wd3hy6tsw35k7msjzfpy7nz5yqcnygrfdej82um5wf5k2uckyypwa3eyt44h6txtxquqh7lz5djge4afgfjn7k4rgrkuag0jsd5xvxgqqqqq";
 		match encoded_offer.parse::<Offer>() {
 			Ok(_) => panic!("Valid offer: {}", encoded_offer),
-			Err(e) => assert_eq!(e, ParseError::Decode(DecodeError::InvalidValue)),
+			Err(e) => assert_eq!(e, Bolt12ParseError::Decode(DecodeError::InvalidValue)),
 		}
 	}
 }

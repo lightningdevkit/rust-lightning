@@ -9,7 +9,7 @@
 
 use crate::utils::test_logger;
 use core::convert::TryFrom;
-use lightning::offers::parse::{Bech32Encode, ParseError};
+use lightning::offers::parse::{Bech32Encode, Bolt12ParseError};
 
 #[inline]
 pub fn do_test<Out: test_logger::Output>(data: &[u8], _out: Out) {
@@ -35,8 +35,8 @@ impl AsRef<[u8]> for Bytes {
 }
 
 impl TryFrom<Vec<u8>> for Bytes {
-	type Error = ParseError;
-	fn try_from(data: Vec<u8>) -> Result<Self, ParseError> {
+	type Error = Bolt12ParseError;
+	fn try_from(data: Vec<u8>) -> Result<Self, Bolt12ParseError> {
 		Ok(Bytes(data))
 	}
 }
