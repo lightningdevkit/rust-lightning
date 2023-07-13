@@ -1,6 +1,6 @@
 //! Convenient utilities to create an invoice.
 
-use crate::{CreationError, Currency, Invoice, InvoiceBuilder, SignOrCreationError};
+use crate::{Bolt11Invoice, CreationError, Currency, InvoiceBuilder, SignOrCreationError};
 
 use crate::{prelude::*, Description, InvoiceDescription, Sha256};
 use bech32::ToBase32;
@@ -64,7 +64,7 @@ pub fn create_phantom_invoice<ES: Deref, NS: Deref, L: Deref>(
 	amt_msat: Option<u64>, payment_hash: Option<PaymentHash>, description: String,
 	invoice_expiry_delta_secs: u32, phantom_route_hints: Vec<PhantomRouteHints>, entropy_source: ES,
 	node_signer: NS, logger: L, network: Currency, min_final_cltv_expiry_delta: Option<u16>, duration_since_epoch: Duration,
-) -> Result<Invoice, SignOrCreationError<()>>
+) -> Result<Bolt11Invoice, SignOrCreationError<()>>
 where
 	ES::Target: EntropySource,
 	NS::Target: NodeSigner,
@@ -120,7 +120,7 @@ pub fn create_phantom_invoice_with_description_hash<ES: Deref, NS: Deref, L: Der
 	amt_msat: Option<u64>, payment_hash: Option<PaymentHash>, invoice_expiry_delta_secs: u32,
 	description_hash: Sha256, phantom_route_hints: Vec<PhantomRouteHints>, entropy_source: ES,
 	node_signer: NS, logger: L, network: Currency, min_final_cltv_expiry_delta: Option<u16>, duration_since_epoch: Duration,
-) -> Result<Invoice, SignOrCreationError<()>>
+) -> Result<Bolt11Invoice, SignOrCreationError<()>>
 where
 	ES::Target: EntropySource,
 	NS::Target: NodeSigner,
@@ -139,7 +139,7 @@ fn _create_phantom_invoice<ES: Deref, NS: Deref, L: Deref>(
 	amt_msat: Option<u64>, payment_hash: Option<PaymentHash>, description: InvoiceDescription,
 	invoice_expiry_delta_secs: u32, phantom_route_hints: Vec<PhantomRouteHints>, entropy_source: ES,
 	node_signer: NS, logger: L, network: Currency, min_final_cltv_expiry_delta: Option<u16>, duration_since_epoch: Duration,
-) -> Result<Invoice, SignOrCreationError<()>>
+) -> Result<Bolt11Invoice, SignOrCreationError<()>>
 where
 	ES::Target: EntropySource,
 	NS::Target: NodeSigner,
@@ -219,7 +219,7 @@ where
 	let data_without_signature = raw_invoice.data.to_base32();
 	let signed_raw_invoice = raw_invoice.sign(|_| node_signer.sign_invoice(hrp_bytes, &data_without_signature, Recipient::PhantomNode));
 	match signed_raw_invoice {
-		Ok(inv) => Ok(Invoice::from_signed(inv).unwrap()),
+		Ok(inv) => Ok(Bolt11Invoice::from_signed(inv).unwrap()),
 		Err(e) => Err(SignOrCreationError::SignError(e))
 	}
 }
@@ -333,7 +333,7 @@ pub fn create_invoice_from_channelmanager<M: Deref, T: Deref, ES: Deref, NS: Der
 	channelmanager: &ChannelManager<M, T, ES, NS, SP, F, R, L>, node_signer: NS, logger: L,
 	network: Currency, amt_msat: Option<u64>, description: String, invoice_expiry_delta_secs: u32,
 	min_final_cltv_expiry_delta: Option<u16>,
-) -> Result<Invoice, SignOrCreationError<()>>
+) -> Result<Bolt11Invoice, SignOrCreationError<()>>
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::Signer>,
 	T::Target: BroadcasterInterface,
@@ -374,7 +374,7 @@ pub fn create_invoice_from_channelmanager_with_description_hash<M: Deref, T: Der
 	channelmanager: &ChannelManager<M, T, ES, NS, SP, F, R, L>, node_signer: NS, logger: L,
 	network: Currency, amt_msat: Option<u64>, description_hash: Sha256,
 	invoice_expiry_delta_secs: u32, min_final_cltv_expiry_delta: Option<u16>,
-) -> Result<Invoice, SignOrCreationError<()>>
+) -> Result<Bolt11Invoice, SignOrCreationError<()>>
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::Signer>,
 	T::Target: BroadcasterInterface,
@@ -404,7 +404,7 @@ pub fn create_invoice_from_channelmanager_with_description_hash_and_duration_sin
 	channelmanager: &ChannelManager<M, T, ES, NS, SP, F, R, L>, node_signer: NS, logger: L,
 	network: Currency, amt_msat: Option<u64>, description_hash: Sha256,
 	duration_since_epoch: Duration, invoice_expiry_delta_secs: u32, min_final_cltv_expiry_delta: Option<u16>,
-) -> Result<Invoice, SignOrCreationError<()>>
+) -> Result<Bolt11Invoice, SignOrCreationError<()>>
 		where
 			M::Target: chain::Watch<<SP::Target as SignerProvider>::Signer>,
 			T::Target: BroadcasterInterface,
@@ -429,7 +429,7 @@ pub fn create_invoice_from_channelmanager_and_duration_since_epoch<M: Deref, T: 
 	channelmanager: &ChannelManager<M, T, ES, NS, SP, F, R, L>, node_signer: NS, logger: L,
 	network: Currency, amt_msat: Option<u64>, description: String, duration_since_epoch: Duration,
 	invoice_expiry_delta_secs: u32, min_final_cltv_expiry_delta: Option<u16>,
-) -> Result<Invoice, SignOrCreationError<()>>
+) -> Result<Bolt11Invoice, SignOrCreationError<()>>
 		where
 			M::Target: chain::Watch<<SP::Target as SignerProvider>::Signer>,
 			T::Target: BroadcasterInterface,
@@ -453,7 +453,7 @@ fn _create_invoice_from_channelmanager_and_duration_since_epoch<M: Deref, T: Der
 	channelmanager: &ChannelManager<M, T, ES, NS, SP, F, R, L>, node_signer: NS, logger: L,
 	network: Currency, amt_msat: Option<u64>, description: InvoiceDescription,
 	duration_since_epoch: Duration, invoice_expiry_delta_secs: u32, min_final_cltv_expiry_delta: Option<u16>,
-) -> Result<Invoice, SignOrCreationError<()>>
+) -> Result<Bolt11Invoice, SignOrCreationError<()>>
 		where
 			M::Target: chain::Watch<<SP::Target as SignerProvider>::Signer>,
 			T::Target: BroadcasterInterface,
@@ -486,7 +486,7 @@ pub fn create_invoice_from_channelmanager_and_duration_since_epoch_with_payment_
 	channelmanager: &ChannelManager<M, T, ES, NS, SP, F, R, L>, node_signer: NS, logger: L,
 	network: Currency, amt_msat: Option<u64>, description: String, duration_since_epoch: Duration,
 	invoice_expiry_delta_secs: u32, payment_hash: PaymentHash, min_final_cltv_expiry_delta: Option<u16>,
-) -> Result<Invoice, SignOrCreationError<()>>
+) -> Result<Bolt11Invoice, SignOrCreationError<()>>
 	where
 		M::Target: chain::Watch<<SP::Target as SignerProvider>::Signer>,
 		T::Target: BroadcasterInterface,
@@ -516,7 +516,7 @@ fn _create_invoice_from_channelmanager_and_duration_since_epoch_with_payment_has
 	network: Currency, amt_msat: Option<u64>, description: InvoiceDescription, duration_since_epoch: Duration,
 	invoice_expiry_delta_secs: u32, payment_hash: PaymentHash, payment_secret: PaymentSecret,
 	min_final_cltv_expiry_delta: Option<u16>,
-) -> Result<Invoice, SignOrCreationError<()>>
+) -> Result<Bolt11Invoice, SignOrCreationError<()>>
 	where
 		M::Target: chain::Watch<<SP::Target as SignerProvider>::Signer>,
 		T::Target: BroadcasterInterface,
@@ -571,7 +571,7 @@ fn _create_invoice_from_channelmanager_and_duration_since_epoch_with_payment_has
 	let data_without_signature = raw_invoice.data.to_base32();
 	let signed_raw_invoice = raw_invoice.sign(|_| node_signer.sign_invoice(hrp_bytes, &data_without_signature, Recipient::Node));
 	match signed_raw_invoice {
-		Ok(inv) => Ok(Invoice::from_signed(inv).unwrap()),
+		Ok(inv) => Ok(Bolt11Invoice::from_signed(inv).unwrap()),
 		Err(e) => Err(SignOrCreationError::SignError(e))
 	}
 }

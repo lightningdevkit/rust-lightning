@@ -23,7 +23,7 @@ use num_traits::{CheckedAdd, CheckedMul};
 use secp256k1::ecdsa::{RecoveryId, RecoverableSignature};
 use secp256k1::PublicKey;
 
-use super::{Invoice, Sha256, TaggedField, ExpiryTime, MinFinalCltvExpiryDelta, Fallback, PayeePubKey, InvoiceSignature, PositiveTimestamp,
+use super::{Bolt11Invoice, Sha256, TaggedField, ExpiryTime, MinFinalCltvExpiryDelta, Fallback, PayeePubKey, InvoiceSignature, PositiveTimestamp,
 	SemanticError, PrivateRoute, ParseError, ParseOrSemanticError, Description, RawTaggedField, Currency, RawHrp, SiPrefix, RawInvoice,
 	constants, SignedRawInvoice, RawDataPart, InvoiceFeatures};
 
@@ -210,7 +210,7 @@ impl FromStr for SiPrefix {
 }
 
 /// ```
-/// use lightning_invoice::Invoice;
+/// use lightning_invoice::Bolt11Invoice;
 ///
 ///
 /// let invoice = "lnbc100p1psj9jhxdqud3jxktt5w46x7unfv9kz6mn0v3jsnp4q0d3p2sfluzdx45tqcs\
@@ -225,14 +225,14 @@ impl FromStr for SiPrefix {
 /// 8s0gyuxjjgux34w75dnc6xp2l35j7es3jd4ugt3lu0xzre26yg5m7ke54n2d5sym4xcmxtl8238xxvw5h5h5\
 /// j5r6drg6k6zcqj0fcwg";
 ///
-/// assert!(invoice.parse::<Invoice>().is_ok());
+/// assert!(invoice.parse::<Bolt11Invoice>().is_ok());
 /// ```
-impl FromStr for Invoice {
+impl FromStr for Bolt11Invoice {
 	type Err = ParseOrSemanticError;
 
 	fn from_str(s: &str) -> Result<Self, <Self as FromStr>::Err> {
 		let signed = s.parse::<SignedRawInvoice>()?;
-		Ok(Invoice::from_signed(signed)?)
+		Ok(Bolt11Invoice::from_signed(signed)?)
 	}
 }
 
@@ -251,10 +251,10 @@ impl FromStr for Invoice {
 /// 8s0gyuxjjgux34w75dnc6xp2l35j7es3jd4ugt3lu0xzre26yg5m7ke54n2d5sym4xcmxtl8238xxvw5h5h5\
 /// j5r6drg6k6zcqj0fcwg";
 ///
-/// let parsed_1 = invoice.parse::<Invoice>();
+/// let parsed_1 = invoice.parse::<Bolt11Invoice>();
 ///
 /// let parsed_2 = match invoice.parse::<SignedRawInvoice>() {
-/// 	Ok(signed) => match Invoice::from_signed(signed) {
+/// 	Ok(signed) => match Bolt11Invoice::from_signed(signed) {
 /// 		Ok(invoice) => Ok(invoice),
 /// 		Err(e) => Err(ParseOrSemanticError::SemanticError(e)),
 /// 	},

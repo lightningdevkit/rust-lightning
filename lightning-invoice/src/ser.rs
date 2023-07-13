@@ -3,7 +3,7 @@ use core::fmt::{Display, Formatter};
 use bech32::{ToBase32, u5, WriteBase32, Base32Len};
 use crate::prelude::*;
 
-use super::{Invoice, Sha256, TaggedField, ExpiryTime, MinFinalCltvExpiryDelta, Fallback, PayeePubKey, InvoiceSignature, PositiveTimestamp,
+use super::{Bolt11Invoice, Sha256, TaggedField, ExpiryTime, MinFinalCltvExpiryDelta, Fallback, PayeePubKey, InvoiceSignature, PositiveTimestamp,
 	PrivateRoute, Description, RawTaggedField, Currency, RawHrp, SiPrefix, constants, SignedRawInvoice, RawDataPart};
 
 /// Converts a stream of bytes written to it to base32. On finalization the according padding will
@@ -106,7 +106,7 @@ fn bytes_size_to_base32_size(byte_size: usize) -> usize {
 	}
 }
 
-impl Display for Invoice {
+impl Display for Bolt11Invoice {
 	fn fmt(&self, f: &mut Formatter) -> Result<(), fmt::Error> {
 		self.signed_invoice.fmt(f)
 	}
