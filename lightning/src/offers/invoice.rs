@@ -112,7 +112,7 @@ use crate::ln::msgs::DecodeError;
 use crate::offers::invoice_request::{INVOICE_REQUEST_PAYER_ID_TYPE, INVOICE_REQUEST_TYPES, IV_BYTES as INVOICE_REQUEST_IV_BYTES, InvoiceRequest, InvoiceRequestContents, InvoiceRequestTlvStream, InvoiceRequestTlvStreamRef};
 use crate::offers::merkle::{SignError, SignatureTlvStream, SignatureTlvStreamRef, TlvStream, WithoutSignatures, self};
 use crate::offers::offer::{Amount, OFFER_TYPES, OfferTlvStream, OfferTlvStreamRef};
-use crate::offers::parse::{Bolt12ParseError, ParsedMessage, SemanticError};
+use crate::offers::parse::{Bolt12ParseError, Bolt12SemanticError, ParsedMessage};
 use crate::offers::payer::{PAYER_METADATA_TYPE, PayerTlvStream, PayerTlvStreamRef};
 use crate::offers::refund::{IV_BYTES as REFUND_IV_BYTES, Refund, RefundContents};
 use crate::offers::signer;
@@ -168,7 +168,7 @@ impl<'a> InvoiceBuilder<'a, ExplicitSigningPubkey> {
 	pub(super) fn for_offer(
 		invoice_request: &'a InvoiceRequest, payment_paths: Vec<(BlindedPayInfo, BlindedPath)>,
 		created_at: Duration, payment_hash: PaymentHash
-	) -> Result<Self, SemanticError> {
+	) -> Result<Self, Bolt12SemanticError> {
 		let amount_msats = Self::check_amount_msats(invoice_request)?;
 		let signing_pubkey = invoice_request.contents.inner.offer.signing_pubkey();
 		let contents = InvoiceContents::ForOffer {
@@ -184,7 +184,7 @@ impl<'a> InvoiceBuilder<'a, ExplicitSigningPubkey> {
 	pub(super) fn for_refund(
 		refund: &'a Refund, payment_paths: Vec<(BlindedPayInfo, BlindedPath)>, created_at: Duration,
 		payment_hash: PaymentHash, signing_pubkey: PublicKey
-	) -> Result<Self, SemanticError> {
+	) -> Result<Self, Bolt12SemanticError> {
 		let amount_msats = refund.amount_msats();
 		let contents = InvoiceContents::ForRefund {
 			refund: refund.contents.clone(),
@@ -201,7 +201,7 @@ impl<'a> InvoiceBuilder<'a, DerivedSigningPubkey> {
 	pub(super) fn for_offer_using_keys(
 		invoice_request: &'a InvoiceRequest, payment_paths: Vec<(BlindedPayInfo, BlindedPath)>,
 		created_at: Duration, payment_hash: PaymentHash, keys: KeyPair
-	) -> Result<Self, SemanticError> {
+	) -> Result<Self, Bolt12SemanticError> {
 		let amount_msats = Self::check_amount_msats(invoice_request)?;
 		let signing_pubkey = invoice_request.contents.inner.offer.signing_pubkey();
 		let contents = InvoiceContents::ForOffer {
@@ -217,7 +217,7 @@ impl<'a> InvoiceBuilder<'a, DerivedSigningPubkey> {
 	pub(super) fn for_refund_using_keys(
 		refund: &'a Refund, payment_paths: Vec<(BlindedPayInfo, BlindedPath)>, created_at: Duration,
 		payment_hash: PaymentHash, keys: KeyPair,
-	) -> Result<Self, SemanticError> {
+	) -> Result<Self, Bolt12SemanticError> {
 		let amount_msats = refund.amount_msats();
 		let signing_pubkey = keys.public_key();
 		let contents = InvoiceContents::ForRefund {
@@ -232,16 +232,16 @@ impl<'a> InvoiceBuilder<'a, DerivedSigningPubkey> {
 }
 
 impl<'a, S: SigningPubkeyStrategy> InvoiceBuilder<'a, S> {
-	fn check_amount_msats(invoice_request: &InvoiceRequest) -> Result<u64, SemanticError> {
+	fn check_amount_msats(invoice_request: &InvoiceRequest) -> Result<u64, Bolt12SemanticError> {
 		match invoice_request.amount_msats() {
 			Some(amount_msats) => Ok(amount_msats),
 			None => match invoice_request.contents.inner.offer.amount() {
 				Some(Amount::Bitcoin { amount_msats }) => {
 					amount_msats.checked_mul(invoice_request.quantity().unwrap_or(1))
-						.ok_or(SemanticError::InvalidAmount)
+						.ok_or(Bolt12SemanticError::InvalidAmount)
 				},
-				Some(Amount::Currency { .. }) => Err(SemanticError::UnsupportedCurrency),
-				None => Err(SemanticError::MissingAmount),
+				Some(Amount::Currency { .. }) => Err(Bolt12SemanticError::UnsupportedCurrency),
+				None => Err(Bolt12SemanticError::MissingAmount),
 			},
 		}
 	}
@@ -258,9 +258,9 @@ impl<'a, S: SigningPubkeyStrategy> InvoiceBuilder<'a, S> {
 
 	fn new(
 		invreq_bytes: &'a Vec<u8>, contents: InvoiceContents, keys: Option<KeyPair>
-	) -> Result<Self, SemanticError> {
+	) -> Result<Self, Bolt12SemanticError> {
 		if contents.fields().payment_paths.is_empty() {
-			return Err(SemanticError::MissingPaths);
+			return Err(Bolt12SemanticError::MissingPaths);
 		}
 
 		Ok(Self {
@@ -331,10 +331,10 @@ impl<'a, S: SigningPubkeyStrategy> InvoiceBuilder<'a, S> {
 impl<'a> InvoiceBuilder<'a, ExplicitSigningPubkey> {
 	/// Builds an unsigned [`Bolt12Invoice`] after checking for valid semantics. It can be signed by
 	/// [`UnsignedBolt12Invoice::sign`].
-	pub fn build(self) -> Result<UnsignedBolt12Invoice<'a>, SemanticError> {
+	pub fn build(self) -> Result<UnsignedBolt12Invoice<'a>, Bolt12SemanticError> {
 		#[cfg(feature = "std")] {
 			if self.invoice.is_offer_or_refund_expired() {
-				return Err(SemanticError::AlreadyExpired);
+				return Err(Bolt12SemanticError::AlreadyExpired);
 			}
 		}
 
@@ -347,10 +347,10 @@ impl<'a> InvoiceBuilder<'a, DerivedSigningPubkey> {
 	/// Builds a signed [`Bolt12Invoice`] after checking for valid semantics.
 	pub fn build_and_sign<T: secp256k1::Signing>(
 		self, secp_ctx: &Secp256k1<T>
-	) -> Result<Bolt12Invoice, SemanticError> {
+	) -> Result<Bolt12Invoice, Bolt12SemanticError> {
 		#[cfg(feature = "std")] {
 			if self.invoice.is_offer_or_refund_expired() {
-				return Err(SemanticError::AlreadyExpired);
+				return Err(Bolt12SemanticError::AlreadyExpired);
 			}
 		}
 
@@ -853,7 +853,7 @@ impl TryFrom<ParsedMessage<FullInvoiceTlvStream>> for Bolt12Invoice {
 		)?;
 
 		let signature = match signature {
-			None => return Err(Bolt12ParseError::InvalidSemantics(SemanticError::MissingSignature)),
+			None => return Err(Bolt12ParseError::InvalidSemantics(Bolt12SemanticError::MissingSignature)),
 			Some(signature) => signature,
 		};
 		let pubkey = contents.fields().signing_pubkey;
@@ -864,7 +864,7 @@ impl TryFrom<ParsedMessage<FullInvoiceTlvStream>> for Bolt12Invoice {
 }
 
 impl TryFrom<PartialInvoiceTlvStream> for InvoiceContents {
-	type Error = SemanticError;
+	type Error = Bolt12SemanticError;
 
 	fn try_from(tlv_stream: PartialInvoiceTlvStream) -> Result<Self, Self::Error> {
 		let (
@@ -878,11 +878,11 @@ impl TryFrom<PartialInvoiceTlvStream> for InvoiceContents {
 		) = tlv_stream;
 
 		let payment_paths = match (blindedpay, paths) {
-			(_, None) => return Err(SemanticError::MissingPaths),
-			(None, _) => return Err(SemanticError::InvalidPayInfo),
-			(_, Some(paths)) if paths.is_empty() => return Err(SemanticError::MissingPaths),
+			(_, None) => return Err(Bolt12SemanticError::MissingPaths),
+			(None, _) => return Err(Bolt12SemanticError::InvalidPayInfo),
+			(_, Some(paths)) if paths.is_empty() => return Err(Bolt12SemanticError::MissingPaths),
 			(Some(blindedpay), Some(paths)) if paths.len() != blindedpay.len() => {
-				return Err(SemanticError::InvalidPayInfo);
+				return Err(Bolt12SemanticError::InvalidPayInfo);
 			},
 			(Some(blindedpay), Some(paths)) => {
 				blindedpay.into_iter().zip(paths.into_iter()).collect::<Vec<_>>()
@@ -890,7 +890,7 @@ impl TryFrom<PartialInvoiceTlvStream> for InvoiceContents {
 		};
 
 		let created_at = match created_at {
-			None => return Err(SemanticError::MissingCreationTime),
+			None => return Err(Bolt12SemanticError::MissingCreationTime),
 			Some(timestamp) => Duration::from_secs(timestamp),
 		};
 
@@ -899,19 +899,19 @@ impl TryFrom<PartialInvoiceTlvStream> for InvoiceContents {
 			.map(Duration::from_secs);
 
 		let payment_hash = match payment_hash {
-			None => return Err(SemanticError::MissingPaymentHash),
+			None => return Err(Bolt12SemanticError::MissingPaymentHash),
 			Some(payment_hash) => payment_hash,
 		};
 
 		let amount_msats = match amount {
-			None => return Err(SemanticError::MissingAmount),
+			None => return Err(Bolt12SemanticError::MissingAmount),
 			Some(amount) => amount,
 		};
 
 		let features = features.unwrap_or_else(Bolt12InvoiceFeatures::empty);
 
 		let signing_pubkey = match node_id {
-			None => return Err(SemanticError::MissingSigningPubkey),
+			None => return Err(Bolt12SemanticError::MissingSigningPubkey),
 			Some(node_id) => node_id,
 		};
 
@@ -923,7 +923,7 @@ impl TryFrom<PartialInvoiceTlvStream> for InvoiceContents {
 		match offer_tlv_stream.node_id {
 			Some(expected_signing_pubkey) => {
 				if fields.signing_pubkey != expected_signing_pubkey {
-					return Err(SemanticError::InvalidSigningPubkey);
+					return Err(Bolt12SemanticError::InvalidSigningPubkey);
 				}
 
 				let invoice_request = InvoiceRequestContents::try_from(
@@ -961,7 +961,7 @@ mod tests {
 	use crate::offers::invoice_request::InvoiceRequestTlvStreamRef;
 	use crate::offers::merkle::{SignError, SignatureTlvStreamRef, self};
 	use crate::offers::offer::{OfferBuilder, OfferTlvStreamRef, Quantity};
-	use crate::offers::parse::{Bolt12ParseError, SemanticError};
+	use crate::offers::parse::{Bolt12ParseError, Bolt12SemanticError};
 	use crate::offers::payer::PayerTlvStreamRef;
 	use crate::offers::refund::RefundBuilder;
 	use crate::offers::test_utils::*;
@@ -1180,7 +1180,7 @@ mod tests {
 			.build()
 		{
 			Ok(_) => panic!("expected error"),
-			Err(e) => assert_eq!(e, SemanticError::AlreadyExpired),
+			Err(e) => assert_eq!(e, Bolt12SemanticError::AlreadyExpired),
 		}
 	}
 
@@ -1208,7 +1208,7 @@ mod tests {
 			.build()
 		{
 			Ok(_) => panic!("expected error"),
-			Err(e) => assert_eq!(e, SemanticError::AlreadyExpired),
+			Err(e) => assert_eq!(e, Bolt12SemanticError::AlreadyExpired),
 		}
 	}
 
@@ -1253,7 +1253,7 @@ mod tests {
 			payment_paths(), payment_hash(), now(), &expanded_key, &secp_ctx
 		) {
 			Ok(_) => panic!("expected error"),
-			Err(e) => assert_eq!(e, SemanticError::InvalidMetadata),
+			Err(e) => assert_eq!(e, Bolt12SemanticError::InvalidMetadata),
 		}
 
 		let desc = "foo".to_string();
@@ -1269,7 +1269,7 @@ mod tests {
 			payment_paths(), payment_hash(), now(), &expanded_key, &secp_ctx
 		) {
 			Ok(_) => panic!("expected error"),
-			Err(e) => assert_eq!(e, SemanticError::InvalidMetadata),
+			Err(e) => assert_eq!(e, Bolt12SemanticError::InvalidMetadata),
 		}
 	}
 
@@ -1376,7 +1376,7 @@ mod tests {
 			.respond_with_no_std(payment_paths(), payment_hash(), now())
 		{
 			Ok(_) => panic!("expected error"),
-			Err(e) => assert_eq!(e, SemanticError::InvalidAmount),
+			Err(e) => assert_eq!(e, Bolt12SemanticError::InvalidAmount),
 		}
 	}
 
@@ -1502,7 +1502,7 @@ mod tests {
 
 		match Bolt12Invoice::try_from(tlv_stream.to_bytes()) {
 			Ok(_) => panic!("expected error"),
-			Err(e) => assert_eq!(e, Bolt12ParseError::InvalidSemantics(SemanticError::MissingPaths)),
+			Err(e) => assert_eq!(e, Bolt12ParseError::InvalidSemantics(Bolt12SemanticError::MissingPaths)),
 		}
 
 		let mut tlv_stream = invoice.as_tlv_stream();
@@ -1510,7 +1510,7 @@ mod tests {
 
 		match Bolt12Invoice::try_from(tlv_stream.to_bytes()) {
 			Ok(_) => panic!("expected error"),
-			Err(e) => assert_eq!(e, Bolt12ParseError::InvalidSemantics(SemanticError::InvalidPayInfo)),
+			Err(e) => assert_eq!(e, Bolt12ParseError::InvalidSemantics(Bolt12SemanticError::InvalidPayInfo)),
 		}
 
 		let empty_payment_paths = vec![];
@@ -1519,7 +1519,7 @@ mod tests {
 
 		match Bolt12Invoice::try_from(tlv_stream.to_bytes()) {
 			Ok(_) => panic!("expected error"),
-			Err(e) => assert_eq!(e, Bolt12ParseError::InvalidSemantics(SemanticError::MissingPaths)),
+			Err(e) => assert_eq!(e, Bolt12ParseError::InvalidSemantics(Bolt12SemanticError::MissingPaths)),
 		}
 
 		let mut payment_paths = payment_paths();
@@ -1529,7 +1529,7 @@ mod tests {
 
 		match Bolt12Invoice::try_from(tlv_stream.to_bytes()) {
 			Ok(_) => panic!("expected error"),
-			Err(e) => assert_eq!(e, Bolt12ParseError::InvalidSemantics(SemanticError::InvalidPayInfo)),
+			Err(e) => assert_eq!(e, Bolt12ParseError::InvalidSemantics(Bolt12SemanticError::InvalidPayInfo)),
 		}
 	}
 
@@ -1558,7 +1558,7 @@ mod tests {
 		match Bolt12Invoice::try_from(tlv_stream.to_bytes()) {
 			Ok(_) => panic!("expected error"),
 			Err(e) => {
-				assert_eq!(e, Bolt12ParseError::InvalidSemantics(SemanticError::MissingCreationTime));
+				assert_eq!(e, Bolt12ParseError::InvalidSemantics(Bolt12SemanticError::MissingCreationTime));
 			},
 		}
 	}
@@ -1610,7 +1610,7 @@ mod tests {
 		match Bolt12Invoice::try_from(tlv_stream.to_bytes()) {
 			Ok(_) => panic!("expected error"),
 			Err(e) => {
-				assert_eq!(e, Bolt12ParseError::InvalidSemantics(SemanticError::MissingPaymentHash));
+				assert_eq!(e, Bolt12ParseError::InvalidSemantics(Bolt12SemanticError::MissingPaymentHash));
 			},
 		}
 	}
@@ -1639,7 +1639,7 @@ mod tests {
 
 		match Bolt12Invoice::try_from(tlv_stream.to_bytes()) {
 			Ok(_) => panic!("expected error"),
-			Err(e) => assert_eq!(e, Bolt12ParseError::InvalidSemantics(SemanticError::MissingAmount)),
+			Err(e) => assert_eq!(e, Bolt12ParseError::InvalidSemantics(Bolt12SemanticError::MissingAmount)),
 		}
 	}
 
@@ -1758,7 +1758,7 @@ mod tests {
 		match Bolt12Invoice::try_from(tlv_stream.to_bytes()) {
 			Ok(_) => panic!("expected error"),
 			Err(e) => {
-				assert_eq!(e, Bolt12ParseError::InvalidSemantics(SemanticError::MissingSigningPubkey));
+				assert_eq!(e, Bolt12ParseError::InvalidSemantics(Bolt12SemanticError::MissingSigningPubkey));
 			},
 		}
 
@@ -1769,7 +1769,7 @@ mod tests {
 		match Bolt12Invoice::try_from(tlv_stream.to_bytes()) {
 			Ok(_) => panic!("expected error"),
 			Err(e) => {
-				assert_eq!(e, Bolt12ParseError::InvalidSemantics(SemanticError::InvalidSigningPubkey));
+				assert_eq!(e, Bolt12ParseError::InvalidSemantics(Bolt12SemanticError::InvalidSigningPubkey));
 			},
 		}
 	}
@@ -1790,7 +1790,7 @@ mod tests {
 
 		match Bolt12Invoice::try_from(buffer) {
 			Ok(_) => panic!("expected error"),
-			Err(e) => assert_eq!(e, Bolt12ParseError::InvalidSemantics(SemanticError::MissingSignature)),
+			Err(e) => assert_eq!(e, Bolt12ParseError::InvalidSemantics(Bolt12SemanticError::MissingSignature)),
 		}
 	}
 

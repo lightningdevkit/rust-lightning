@@ -129,16 +129,14 @@ pub enum Bolt12ParseError {
 	/// The bech32 decoded string could not be decoded as the expected message type.
 	Decode(DecodeError),
 	/// The parsed message has invalid semantics.
-	InvalidSemantics(SemanticError),
+	InvalidSemantics(Bolt12SemanticError),
 	/// The parsed message has an invalid signature.
 	InvalidSignature(secp256k1::Error),
 }
 
 /// Error when interpreting a TLV stream as a specific type.
-///
-/// This is not exported to bindings users as its name conflicts with the BOLT 11 SemanticError type.
 #[derive(Debug, PartialEq)]
-pub enum SemanticError {
+pub enum Bolt12SemanticError {
 	/// The current [`std::time::SystemTime`] is past the offer or invoice's expiration.
 	AlreadyExpired,
 	/// The provided chain hash does not correspond to a supported chain.
@@ -205,8 +203,8 @@ impl From<DecodeError> for Bolt12ParseError {
 	}
 }
 
-impl From<SemanticError> for Bolt12ParseError {
-	fn from(error: SemanticError) -> Self {
+impl From<Bolt12SemanticError> for Bolt12ParseError {
+	fn from(error: Bolt12SemanticError) -> Self {
 		Self::InvalidSemantics(error)
 	}
 }

@@ -82,7 +82,7 @@ use crate::ln::inbound_payment::{ExpandedKey, IV_LEN, Nonce};
 use crate::ln::msgs::MAX_VALUE_MSAT;
 use crate::offers::invoice_request::{DerivedPayerId, ExplicitPayerId, InvoiceRequestBuilder};
 use crate::offers::merkle::TlvStream;
-use crate::offers::parse::{Bech32Encode, Bolt12ParseError, ParsedMessage, SemanticError};
+use crate::offers::parse::{Bech32Encode, Bolt12ParseError, Bolt12SemanticError, ParsedMessage};
 use crate::offers::signer::{Metadata, MetadataMaterial, self};
 use crate::util::ser::{HighZeroBytesDroppedBigSize, WithoutLength, Writeable, Writer};
 use crate::util::string::PrintableString;
@@ -146,7 +146,7 @@ impl<'a> OfferBuilder<'a, ExplicitMetadata, secp256k1::SignOnly> {
 	/// Sets the [`Offer::metadata`] to the given bytes.
 	///
 	/// Successive calls to this method will override the previous setting.
-	pub fn metadata(mut self, metadata: Vec<u8>) -> Result<Self, SemanticError> {
+	pub fn metadata(mut self, metadata: Vec<u8>) -> Result<Self, Bolt12SemanticError> {
 		self.offer.metadata = Some(Metadata::Bytes(metadata));
 		Ok(self)
 	}
@@ -252,14 +252,14 @@ impl<'a, M: MetadataStrategy, T: secp256k1::Signing> OfferBuilder<'a, M, T> {
 	}
 
 	/// Builds an [`Offer`] from the builder's settings.
-	pub fn build(mut self) -> Result<Offer, SemanticError> {
+	pub fn build(mut self) -> Result<Offer, Bolt12SemanticError> {
 		match self.offer.amount {
 			Some(Amount::Bitcoin { amount_msats }) => {
 				if amount_msats > MAX_VALUE_MSAT {
-					return Err(SemanticError::InvalidAmount);
+					return Err(Bolt12SemanticError::InvalidAmount);
 				}
 			},
-			Some(Amount::Currency { .. }) => return Err(SemanticError::UnsupportedCurrency),
+			Some(Amount::Currency { .. }) => return Err(Bolt12SemanticError::UnsupportedCurrency),
 			None => {},
 		}
 
@@ -465,12 +465,12 @@ impl Offer {
 	/// [`ExpandedKey`]: crate::ln::inbound_payment::ExpandedKey
 	pub fn request_invoice_deriving_payer_id<'a, 'b, ES: Deref, T: secp256k1::Signing>(
 		&'a self, expanded_key: &ExpandedKey, entropy_source: ES, secp_ctx: &'b Secp256k1<T>
-	) -> Result<InvoiceRequestBuilder<'a, 'b, DerivedPayerId, T>, SemanticError>
+	) -> Result<InvoiceRequestBuilder<'a, 'b, DerivedPayerId, T>, Bolt12SemanticError>
 	where
 		ES::Target: EntropySource,
 	{
 		if self.features().requires_unknown_bits() {
-			return Err(SemanticError::UnknownRequiredFeatures);
+			return Err(Bolt12SemanticError::UnknownRequiredFeatures);
 		}
 
 		Ok(InvoiceRequestBuilder::deriving_payer_id(self, expanded_key, entropy_source, secp_ctx))
@@ -486,12 +486,12 @@ impl Offer {
 	/// [`InvoiceRequest::payer_id`]: crate::offers::invoice_request::InvoiceRequest::payer_id
 	pub fn request_invoice_deriving_metadata<ES: Deref>(
 		&self, payer_id: PublicKey, expanded_key: &ExpandedKey, entropy_source: ES
-	) -> Result<InvoiceRequestBuilder<ExplicitPayerId, secp256k1::SignOnly>, SemanticError>
+	) -> Result<InvoiceRequestBuilder<ExplicitPayerId, secp256k1::SignOnly>, Bolt12SemanticError>
 	where
 		ES::Target: EntropySource,
 	{
 		if self.features().requires_unknown_bits() {
-			return Err(SemanticError::UnknownRequiredFeatures);
+			return Err(Bolt12SemanticError::UnknownRequiredFeatures);
 		}
 
 		Ok(InvoiceRequestBuilder::deriving_metadata(self, payer_id, expanded_key, entropy_source))
@@ -514,9 +514,9 @@ impl Offer {
 	/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
 	pub fn request_invoice(
 		&self, metadata: Vec<u8>, payer_id: PublicKey
-	) -> Result<InvoiceRequestBuilder<ExplicitPayerId, secp256k1::SignOnly>, SemanticError> {
+	) -> Result<InvoiceRequestBuilder<ExplicitPayerId, secp256k1::SignOnly>, Bolt12SemanticError> {
 		if self.features().requires_unknown_bits() {
-			return Err(SemanticError::UnknownRequiredFeatures);
+			return Err(Bolt12SemanticError::UnknownRequiredFeatures);
 		}
 
 		Ok(InvoiceRequestBuilder::new(self, metadata, payer_id))
@@ -572,24 +572,24 @@ impl OfferContents {
 
 	pub(super) fn check_amount_msats_for_quantity(
 		&self, amount_msats: Option<u64>, quantity: Option<u64>
-	) -> Result<(), SemanticError> {
+	) -> Result<(), Bolt12SemanticError> {
 		let offer_amount_msats = match self.amount {
 			None => 0,
 			Some(Amount::Bitcoin { amount_msats }) => amount_msats,
-			Some(Amount::Currency { .. }) => return Err(SemanticError::UnsupportedCurrency),
+			Some(Amount::Currency { .. }) => return Err(Bolt12SemanticError::UnsupportedCurrency),
 		};
 
 		if !self.expects_quantity() || quantity.is_some() {
 			let expected_amount_msats = offer_amount_msats.checked_mul(quantity.unwrap_or(1))
-				.ok_or(SemanticError::InvalidAmount)?;
+				.ok_or(Bolt12SemanticError::InvalidAmount)?;
 			let amount_msats = amount_msats.unwrap_or(expected_amount_msats);
 
 			if amount_msats < expected_amount_msats {
-				return Err(SemanticError::InsufficientAmount);
+				return Err(Bolt12SemanticError::InsufficientAmount);
 			}
 
 			if amount_msats > MAX_VALUE_MSAT {
-				return Err(SemanticError::InvalidAmount);
+				return Err(Bolt12SemanticError::InvalidAmount);
 			}
 		}
 
@@ -600,13 +600,13 @@ impl OfferContents {
 		self.supported_quantity
 	}
 
-	pub(super) fn check_quantity(&self, quantity: Option<u64>) -> Result<(), SemanticError> {
+	pub(super) fn check_quantity(&self, quantity: Option<u64>) -> Result<(), Bolt12SemanticError> {
 		let expects_quantity = self.expects_quantity();
 		match quantity {
-			None if expects_quantity => Err(SemanticError::MissingQuantity),
-			Some(_) if !expects_quantity => Err(SemanticError::UnexpectedQuantity),
+			None if expects_quantity => Err(Bolt12SemanticError::MissingQuantity),
+			Some(_) if !expects_quantity => Err(Bolt12SemanticError::UnexpectedQuantity),
 			Some(quantity) if !self.is_valid_quantity(quantity) => {
-				Err(SemanticError::InvalidQuantity)
+				Err(Bolt12SemanticError::InvalidQuantity)
 			},
 			_ => Ok(()),
 		}
@@ -787,7 +787,7 @@ impl TryFrom<Vec<u8>> for Offer {
 }
 
 impl TryFrom<OfferTlvStream> for OfferContents {
-	type Error = SemanticError;
+	type Error = Bolt12SemanticError;
 
 	fn try_from(tlv_stream: OfferTlvStream) -> Result<Self, Self::Error> {
 		let OfferTlvStream {
@@ -800,15 +800,15 @@ impl TryFrom<OfferTlvStream> for OfferContents {
 		let amount = match (currency, amount) {
 			(None, None) => None,
 			(None, Some(amount_msats)) if amount_msats > MAX_VALUE_MSAT => {
-				return Err(SemanticError::InvalidAmount);
+				return Err(Bolt12SemanticError::InvalidAmount);
 			},
 			(None, Some(amount_msats)) => Some(Amount::Bitcoin { amount_msats }),
-			(Some(_), None) => return Err(SemanticError::MissingAmount),
+			(Some(_), None) => return Err(Bolt12SemanticError::MissingAmount),
 			(Some(iso4217_code), Some(amount)) => Some(Amount::Currency { iso4217_code, amount }),
 		};
 
 		let description = match description {
-			None => return Err(SemanticError::MissingDescription),
+			None => return Err(Bolt12SemanticError::MissingDescription),
 			Some(description) => description,
 		};
 
@@ -824,7 +824,7 @@ impl TryFrom<OfferTlvStream> for OfferContents {
 		};
 
 		let signing_pubkey = match node_id {
-			None => return Err(SemanticError::MissingSigningPubkey),
+			None => return Err(Bolt12SemanticError::MissingSigningPubkey),
 			Some(node_id) => node_id,
 		};
 
@@ -856,7 +856,7 @@ mod tests {
 	use crate::ln::features::OfferFeatures;
 	use crate::ln::inbound_payment::ExpandedKey;
 	use crate::ln::msgs::{DecodeError, MAX_VALUE_MSAT};
-	use crate::offers::parse::{Bolt12ParseError, SemanticError};
+	use crate::offers::parse::{Bolt12ParseError, Bolt12SemanticError};
 	use crate::offers::test_utils::*;
 	use crate::util::ser::{BigSize, Writeable};
 	use crate::util::string::PrintableString;
@@ -1090,7 +1090,7 @@ mod tests {
 		assert_eq!(tlv_stream.currency, Some(b"USD"));
 		match builder.build() {
 			Ok(_) => panic!("expected error"),
-			Err(e) => assert_eq!(e, SemanticError::UnsupportedCurrency),
+			Err(e) => assert_eq!(e, Bolt12SemanticError::UnsupportedCurrency),
 		}
 
 		let offer = OfferBuilder::new("foo".into(), pubkey(42))
@@ -1105,7 +1105,7 @@ mod tests {
 		let invalid_amount = Amount::Bitcoin { amount_msats: MAX_VALUE_MSAT + 1 };
 		match OfferBuilder::new("foo".into(), pubkey(42)).amount(invalid_amount).build() {
 			Ok(_) => panic!("expected error"),
-			Err(e) => assert_eq!(e, SemanticError::InvalidAmount),
+			Err(e) => assert_eq!(e, Bolt12SemanticError::InvalidAmount),
 		}
 	}
 
@@ -1259,7 +1259,7 @@ mod tests {
 			.request_invoice(vec![1; 32], pubkey(43))
 		{
 			Ok(_) => panic!("expected error"),
-			Err(e) => assert_eq!(e, SemanticError::UnknownRequiredFeatures),
+			Err(e) => assert_eq!(e, Bolt12SemanticError::UnknownRequiredFeatures),
 		}
 	}
 
@@ -1305,7 +1305,7 @@ mod tests {
 
 		match Offer::try_from(encoded_offer) {
 			Ok(_) => panic!("expected error"),
-			Err(e) => assert_eq!(e, Bolt12ParseError::InvalidSemantics(SemanticError::MissingAmount)),
+			Err(e) => assert_eq!(e, Bolt12ParseError::InvalidSemantics(Bolt12SemanticError::MissingAmount)),
 		}
 
 		let mut tlv_stream = offer.as_tlv_stream();
@@ -1317,7 +1317,7 @@ mod tests {
 
 		match Offer::try_from(encoded_offer) {
 			Ok(_) => panic!("expected error"),
-			Err(e) => assert_eq!(e, Bolt12ParseError::InvalidSemantics(SemanticError::InvalidAmount)),
+			Err(e) => assert_eq!(e, Bolt12ParseError::InvalidSemantics(Bolt12SemanticError::InvalidAmount)),
 		}
 	}
 
@@ -1337,7 +1337,7 @@ mod tests {
 		match Offer::try_from(encoded_offer) {
 			Ok(_) => panic!("expected error"),
 			Err(e) => {
-				assert_eq!(e, Bolt12ParseError::InvalidSemantics(SemanticError::MissingDescription));
+				assert_eq!(e, Bolt12ParseError::InvalidSemantics(Bolt12SemanticError::MissingDescription));
 			},
 		}
 	}
@@ -1427,7 +1427,7 @@ mod tests {
 		match Offer::try_from(encoded_offer) {
 			Ok(_) => panic!("expected error"),
 			Err(e) => {
-				assert_eq!(e, Bolt12ParseError::InvalidSemantics(SemanticError::MissingSigningPubkey));
+				assert_eq!(e, Bolt12ParseError::InvalidSemantics(Bolt12SemanticError::MissingSigningPubkey));
 			},
 		}
 	}

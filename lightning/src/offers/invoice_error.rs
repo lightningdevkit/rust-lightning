@@ -11,7 +11,7 @@
 
 use crate::io;
 use crate::ln::msgs::DecodeError;
-use crate::offers::parse::SemanticError;
+use crate::offers::parse::Bolt12SemanticError;
 use crate::util::ser::{HighZeroBytesDroppedBigSize, Readable, WithoutLength, Writeable, Writer};
 use crate::util::string::UntrustedString;
 
@@ -93,8 +93,8 @@ impl Readable for InvoiceError {
 	}
 }
 
-impl From<SemanticError> for InvoiceError {
-	fn from(error: SemanticError) -> Self {
+impl From<Bolt12SemanticError> for InvoiceError {
+	fn from(error: Bolt12SemanticError) -> Self {
 		InvoiceError {
 			erroneous_field: None,
 			message: UntrustedString(format!("{:?}", error)),
