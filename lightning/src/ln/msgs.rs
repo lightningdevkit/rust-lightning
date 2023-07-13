@@ -1517,6 +1517,7 @@ pub trait OnionMessageHandler : OnionMessageProvider {
 }
 
 mod fuzzy_internal_msgs {
+	use bitcoin::secp256k1::PublicKey;
 	use crate::prelude::*;
 	use crate::ln::{PaymentPreimage, PaymentSecret};
 
@@ -1562,6 +1563,17 @@ mod fuzzy_internal_msgs {
 			amt_msat: u64,
 			outgoing_cltv_value: u32,
 		},
+		BlindedForward {
+			encrypted_tlvs: Vec<u8>,
+			intro_node_blinding_point: Option<PublicKey>,
+		},
+		BlindedReceive {
+			amt_msat: u64,
+			total_msat: u64,
+			outgoing_cltv_value: u32,
+			encrypted_tlvs: Vec<u8>,
+			intro_node_blinding_point: Option<PublicKey>, // Set if the introduction node of the blinded path is the final node
+		}
 	}
 
 	pub struct DecodedOnionErrorPacket {
@@ -2096,6 +2108,24 @@ impl Writeable for OutboundOnionPayload {
 					(8, payment_data, option),
 					(16, payment_metadata.as_ref().map(|m| WithoutLength(m)), option)
 				}, custom_tlvs.iter());
+			},
+			Self::BlindedForward { encrypted_tlvs, intro_node_blinding_point } => {
+				_encode_varint_length_prefixed_tlv!(w, {
+					(10, *encrypted_tlvs, required_vec),
+					(12, intro_node_blinding_point, option)
+				});
+			},
+			Self::BlindedReceive {
+				amt_msat, total_msat, outgoing_cltv_value, encrypted_tlvs,
+				intro_node_blinding_point,
+			} => {
+				_encode_varint_length_prefixed_tlv!(w, {
+					(2, HighZeroBytesDroppedBigSize(*amt_msat), required),
+					(4, HighZeroBytesDroppedBigSize(*outgoing_cltv_value), required),
+					(10, *encrypted_tlvs, required_vec),
+					(12, intro_node_blinding_point, option),
+					(18, HighZeroBytesDroppedBigSize(*total_msat), required)
+				});
 			},
 		}
 		Ok(())
