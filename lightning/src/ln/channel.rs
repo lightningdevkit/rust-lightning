@@ -5517,10 +5517,15 @@ impl<Signer: WriteableEcdsaChannelSigner> OutboundV1Channel<Signer> {
 		let channel_type = Self::get_initial_channel_type(&config, their_features);
 		debug_assert!(channel_type.is_subset(&channelmanager::provided_channel_type_features(&config)));
 
-		let feerate = fee_estimator.bounded_sat_per_1000_weight(ConfirmationTarget::Normal);
+		let commitment_conf_target = if channel_type.supports_anchors_zero_fee_htlc_tx() {
+			ConfirmationTarget::MempoolMinimum
+		} else {
+			ConfirmationTarget::Normal
+		};
+		let commitment_feerate = fee_estimator.bounded_sat_per_1000_weight(commitment_conf_target);
 
 		let value_to_self_msat = channel_value_satoshis * 1000 - push_msat;
-		let commitment_tx_fee = commit_tx_fee_msat(feerate, MIN_AFFORDABLE_HTLC_COUNT, &channel_type);
+		let commitment_tx_fee = commit_tx_fee_msat(commitment_feerate, MIN_AFFORDABLE_HTLC_COUNT, &channel_type);
 		if value_to_self_msat < commitment_tx_fee {
 			return Err(APIError::APIMisuseError{ err: format!("Funding amount ({}) can't even pay fee for initial commitment transaction fee of {}.", value_to_self_msat / 1000, commitment_tx_fee / 1000) });
 		}
@@ -5614,7 +5619,7 @@ impl<Signer: WriteableEcdsaChannelSigner> OutboundV1Channel<Signer> {
 				short_channel_id: None,
 				channel_creation_height: current_chain_height,
 
-				feerate_per_kw: feerate,
+				feerate_per_kw: commitment_feerate,
 				counterparty_dust_limit_satoshis: 0,
 				holder_dust_limit_satoshis: MIN_CHAN_DUST_LIMIT_SATOSHIS,
 				counterparty_max_htlc_value_in_flight_msat: 0,
@@ -5768,7 +5773,12 @@ impl<Signer: WriteableEcdsaChannelSigner> OutboundV1Channel<Signer> {
 	/// If we receive an error message, it may only be a rejection of the channel type we tried,
 	/// not of our ability to open any channel at all. Thus, on error, we should first call this
 	/// and see if we get a new `OpenChannel` message, otherwise the channel is failed.
-	pub(crate) fn maybe_handle_error_without_close(&mut self, chain_hash: BlockHash) -> Result<msgs::OpenChannel, ()> {
+	pub(crate) fn maybe_handle_error_without_close<F: Deref>(
+		&mut self, chain_hash: BlockHash, fee_estimator: &LowerBoundedFeeEstimator<F>
+	) -> Result<msgs::OpenChannel, ()>
+	where
+		F::Target: FeeEstimator
+	{
 		if !self.context.is_outbound() || self.context.channel_state != ChannelState::OurInitSent as u32 { return Err(()); }
 		if self.context.channel_type == ChannelTypeFeatures::only_static_remote_key() {
 			// We've exhausted our options
@@ -5785,6 +5795,7 @@ impl<Signer: WriteableEcdsaChannelSigner> OutboundV1Channel<Signer> {
 		// whatever reason.
 		if self.context.channel_type.supports_anchors_zero_fee_htlc_tx() {
 			self.context.channel_type.clear_anchors_zero_fee_htlc_tx();
+			self.context.feerate_per_kw = fee_estimator.bounded_sat_per_1000_weight(ConfirmationTarget::Normal);
 			assert!(!self.context.channel_transaction_parameters.channel_type_features.supports_anchors_nonzero_fee_htlc_tx());
 		} else if self.context.channel_type.supports_scid_privacy() {
 			self.context.channel_type.clear_scid_privacy();
