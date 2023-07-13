@@ -2045,20 +2045,35 @@ struct CommitmentTxInfoCached {
 }
 
 impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
-	fn check_remote_fee<F: Deref, L: Deref>(fee_estimator: &LowerBoundedFeeEstimator<F>,
-		feerate_per_kw: u32, cur_feerate_per_kw: Option<u32>, logger: &L)
-		-> Result<(), ChannelError> where F::Target: FeeEstimator, L::Target: Logger,
+	fn check_remote_fee<F: Deref, L: Deref>(
+		channel_type: &ChannelTypeFeatures, fee_estimator: &LowerBoundedFeeEstimator<F>,
+		feerate_per_kw: u32, cur_feerate_per_kw: Option<u32>, logger: &L
+	) -> Result<(), ChannelError> where F::Target: FeeEstimator, L::Target: Logger,
 	{
 		// We only bound the fee updates on the upper side to prevent completely absurd feerates,
 		// always accepting up to 25 sat/vByte or 10x our fee estimator's "High Priority" fee.
 		// We generally don't care too much if they set the feerate to something very high, but it
-		// could result in the channel being useless due to everything being dust.
-		let upper_limit = cmp::max(250 * 25,
-			fee_estimator.bounded_sat_per_1000_weight(ConfirmationTarget::HighPriority) as u64 * 10);
-		if feerate_per_kw as u64 > upper_limit {
-			return Err(ChannelError::Close(format!("Peer's feerate much too high. Actual: {}. Our expected upper limit: {}", feerate_per_kw, upper_limit)));
+		// could result in the channel being useless due to everything being dust. This doesn't
+		// apply to channels supporting anchor outputs since HTLC transactions are pre-signed with a
+		// zero fee, so their fee is no longer considered to determine dust limits.
+		if !channel_type.supports_anchors_zero_fee_htlc_tx() {
+			let upper_limit = cmp::max(250 * 25,
+				fee_estimator.bounded_sat_per_1000_weight(ConfirmationTarget::HighPriority) as u64 * 10);
+			if feerate_per_kw as u64 > upper_limit {
+				return Err(ChannelError::Close(format!("Peer's feerate much too high. Actual: {}. Our expected upper limit: {}", feerate_per_kw, upper_limit)));
+			}
 		}
-		let lower_limit = fee_estimator.bounded_sat_per_1000_weight(ConfirmationTarget::Background);
+
+		// We can afford to use a lower bound with anchors than previously since we can now bump
+		// fees when broadcasting our commitment. However, we must still make sure we meet the
+		// minimum mempool feerate, until package relay is deployed, such that we can ensure the
+		// commitment transaction propagates throughout node mempools on its own.
+		let lower_limit_conf_target = if channel_type.supports_anchors_zero_fee_htlc_tx() {
+			ConfirmationTarget::MempoolMinimum
+		} else {
+			ConfirmationTarget::Background
+		};
+		let lower_limit = fee_estimator.bounded_sat_per_1000_weight(lower_limit_conf_target);
 		// Some fee estimators round up to the next full sat/vbyte (ie 250 sats per kw), causing
 		// occasional issues with feerate disagreements between an initiator that wants a feerate
 		// of 1.1 sat/vbyte and a receiver that wants 1.1 rounded up to 2. Thus, we always add 250
@@ -3688,7 +3703,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		if self.context.channel_state & (ChannelState::PeerDisconnected as u32) == ChannelState::PeerDisconnected as u32 {
 			return Err(ChannelError::Close("Peer sent update_fee when we needed a channel_reestablish".to_owned()));
 		}
-		Channel::<Signer>::check_remote_fee(fee_estimator, msg.feerate_per_kw, Some(self.context.feerate_per_kw), logger)?;
+		Channel::<Signer>::check_remote_fee(&self.context.channel_type, fee_estimator, msg.feerate_per_kw, Some(self.context.feerate_per_kw), logger)?;
 		let feerate_over_dust_buffer = msg.feerate_per_kw > self.context.get_dust_buffer_feerate(None);
 
 		self.context.pending_update_fee = Some((msg.feerate_per_kw, FeeUpdateState::RemoteAnnounced));
@@ -6039,7 +6054,7 @@ impl<Signer: WriteableEcdsaChannelSigner> InboundV1Channel<Signer> {
 		if msg.htlc_minimum_msat >= full_channel_value_msat {
 			return Err(ChannelError::Close(format!("Minimum htlc value ({}) was larger than full channel value ({})", msg.htlc_minimum_msat, full_channel_value_msat)));
 		}
-		Channel::<Signer>::check_remote_fee(fee_estimator, msg.feerate_per_kw, None, logger)?;
+		Channel::<Signer>::check_remote_fee(&channel_type, fee_estimator, msg.feerate_per_kw, None, logger)?;
 
 		let max_counterparty_selected_contest_delay = u16::min(config.channel_handshake_limits.their_to_self_delay, MAX_LOCAL_BREAKDOWN_TIMEOUT);
 		if msg.to_self_delay > max_counterparty_selected_contest_delay {
@@ -7441,7 +7456,8 @@ mod tests {
 		// arithmetic, causing a panic with debug assertions enabled.
 		let fee_est = TestFeeEstimator { fee_est: 42 };
 		let bounded_fee_estimator = LowerBoundedFeeEstimator::new(&fee_est);
-		assert!(Channel::<InMemorySigner>::check_remote_fee(&bounded_fee_estimator,
+		assert!(Channel::<InMemorySigner>::check_remote_fee(
+			&ChannelTypeFeatures::only_static_remote_key(), &bounded_fee_estimator,
 			u32::max_value(), None, &&test_utils::TestLogger::new()).is_err());
 	}
 
