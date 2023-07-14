@@ -260,7 +260,7 @@ pub struct Bolt11Invoice {
 /// This is not exported to bindings users as we don't have a good way to map the reference lifetimes making this
 /// practically impossible to use safely in languages like C.
 #[derive(Eq, PartialEq, Debug, Clone, Ord, PartialOrd)]
-pub enum InvoiceDescription<'f> {
+pub enum Bolt11InvoiceDescription<'f> {
 	/// Reference to the directly supplied description in the invoice
 	Direct(&'f Description),
 
@@ -671,12 +671,12 @@ impl<H: tb::Bool, T: tb::Bool, C: tb::Bool, S: tb::Bool, M: tb::Bool> InvoiceBui
 	}
 
 	/// Set the description or description hash. This function is only available if no description (hash) was set.
-	pub fn invoice_description(self, description: InvoiceDescription) -> InvoiceBuilder<tb::True, H, T, C, S, M> {
+	pub fn invoice_description(self, description: Bolt11InvoiceDescription) -> InvoiceBuilder<tb::True, H, T, C, S, M> {
 		match description {
-			InvoiceDescription::Direct(desc) => {
+			Bolt11InvoiceDescription::Direct(desc) => {
 				self.description(desc.clone().into_inner())
 			}
-			InvoiceDescription::Hash(hash) => {
+			Bolt11InvoiceDescription::Hash(hash) => {
 				self.description_hash(hash.0)
 			}
 		}
@@ -1310,12 +1310,12 @@ impl Bolt11Invoice {
 
 	/// Return the description or a hash of it for longer ones
 	///
-	/// This is not exported to bindings users because we don't yet export InvoiceDescription
-	pub fn description(&self) -> InvoiceDescription {
+	/// This is not exported to bindings users because we don't yet export Bolt11InvoiceDescription
+	pub fn description(&self) -> Bolt11InvoiceDescription {
 		if let Some(direct) = self.signed_invoice.description() {
-			return InvoiceDescription::Direct(direct);
+			return Bolt11InvoiceDescription::Direct(direct);
 		} else if let Some(hash) = self.signed_invoice.description_hash() {
-			return InvoiceDescription::Hash(hash);
+			return Bolt11InvoiceDescription::Hash(hash);
 		}
 		unreachable!("ensured by constructor");
 	}
@@ -2142,7 +2142,7 @@ mod test {
 		assert_eq!(invoice.private_routes(), vec![&PrivateRoute(route_1), &PrivateRoute(route_2)]);
 		assert_eq!(
 			invoice.description(),
-			InvoiceDescription::Hash(&Sha256(sha256::Hash::from_slice(&[3;32][..]).unwrap()))
+			Bolt11InvoiceDescription::Hash(&Sha256(sha256::Hash::from_slice(&[3;32][..]).unwrap()))
 		);
 		assert_eq!(invoice.payment_hash(), &sha256::Hash::from_slice(&[21;32][..]).unwrap());
 		assert_eq!(invoice.payment_secret(), &PaymentSecret([42; 32]));
