@@ -24,7 +24,7 @@ use secp256k1::ecdsa::{RecoveryId, RecoverableSignature};
 use secp256k1::PublicKey;
 
 use super::{Bolt11Invoice, Sha256, TaggedField, ExpiryTime, MinFinalCltvExpiryDelta, Fallback, PayeePubKey, InvoiceSignature, PositiveTimestamp,
-	SemanticError, PrivateRoute, ParseError, ParseOrSemanticError, Description, RawTaggedField, Currency, RawHrp, SiPrefix, RawBolt11Invoice,
+	SemanticError, PrivateRoute, Bolt11ParseError, ParseOrSemanticError, Description, RawTaggedField, Currency, RawHrp, SiPrefix, RawBolt11Invoice,
 	constants, SignedRawBolt11Invoice, RawDataPart, InvoiceFeatures};
 
 use self::hrp_sm::parse_hrp;
@@ -44,20 +44,20 @@ mod hrp_sm {
 	}
 
 	impl States {
-		fn next_state(&self, read_symbol: char) -> Result<States, super::ParseError> {
+		fn next_state(&self, read_symbol: char) -> Result<States, super::Bolt11ParseError> {
 			match *self {
 				States::Start => {
 					if read_symbol == 'l' {
 						Ok(States::ParseL)
 					} else {
-						Err(super::ParseError::MalformedHRP)
+						Err(super::Bolt11ParseError::MalformedHRP)
 					}
 				}
 				States::ParseL => {
 					if read_symbol == 'n' {
 						Ok(States::ParseN)
 					} else {
-						Err(super::ParseError::MalformedHRP)
+						Err(super::Bolt11ParseError::MalformedHRP)
 					}
 				},
 				States::ParseN => {
@@ -80,10 +80,10 @@ mod hrp_sm {
 					} else if ['m', 'u', 'n', 'p'].contains(&read_symbol) {
 						Ok(States::ParseAmountSiPrefix)
 					} else {
-						Err(super::ParseError::UnknownSiPrefix)
+						Err(super::Bolt11ParseError::UnknownSiPrefix)
 					}
 				},
-				States::ParseAmountSiPrefix => Err(super::ParseError::MalformedHRP),
+				States::ParseAmountSiPrefix => Err(super::Bolt11ParseError::MalformedHRP),
 			}
 		}
 
@@ -120,7 +120,7 @@ mod hrp_sm {
 			*range = Some(new_range);
 		}
 
-		fn step(&mut self, c: char) -> Result<(), super::ParseError> {
+		fn step(&mut self, c: char) -> Result<(), super::Bolt11ParseError> {
 			let next_state = self.state.next_state(c)?;
 			match next_state {
 				States::ParseCurrencyPrefix => {
@@ -157,14 +157,14 @@ mod hrp_sm {
 		}
 	}
 
-	pub fn parse_hrp(input: &str) -> Result<(&str, &str, &str), super::ParseError> {
+	pub fn parse_hrp(input: &str) -> Result<(&str, &str, &str), super::Bolt11ParseError> {
 		let mut sm = StateMachine::new();
 		for c in input.chars() {
 			sm.step(c)?;
 		}
 
 		if !sm.is_final() {
-			return Err(super::ParseError::MalformedHRP);
+			return Err(super::Bolt11ParseError::MalformedHRP);
 		}
 
 		let currency = sm.currency_prefix().clone()
@@ -180,31 +180,31 @@ mod hrp_sm {
 
 
 impl FromStr for super::Currency {
-	type Err = ParseError;
+	type Err = Bolt11ParseError;
 
-	fn from_str(currency_prefix: &str) -> Result<Self, ParseError> {
+	fn from_str(currency_prefix: &str) -> Result<Self, Bolt11ParseError> {
 		match currency_prefix {
 			"bc" => Ok(Currency::Bitcoin),
 			"tb" => Ok(Currency::BitcoinTestnet),
 			"bcrt" => Ok(Currency::Regtest),
 			"sb" => Ok(Currency::Simnet),
 			"tbs" => Ok(Currency::Signet),
-			_ => Err(ParseError::UnknownCurrency)
+			_ => Err(Bolt11ParseError::UnknownCurrency)
 		}
 	}
 }
 
 impl FromStr for SiPrefix {
-	type Err = ParseError;
+	type Err = Bolt11ParseError;
 
-	fn from_str(currency_prefix: &str) -> Result<Self, ParseError> {
+	fn from_str(currency_prefix: &str) -> Result<Self, Bolt11ParseError> {
 		use crate::SiPrefix::*;
 		match currency_prefix {
 			"m" => Ok(Milli),
 			"u" => Ok(Micro),
 			"n" => Ok(Nano),
 			"p" => Ok(Pico),
-			_ => Err(ParseError::UnknownSiPrefix)
+			_ => Err(Bolt11ParseError::UnknownSiPrefix)
 		}
 	}
 }
@@ -265,7 +265,7 @@ impl FromStr for Bolt11Invoice {
 /// assert_eq!(parsed_1, parsed_2);
 /// ```
 impl FromStr for SignedRawBolt11Invoice {
-	type Err = ParseError;
+	type Err = Bolt11ParseError;
 
 	fn from_str(s: &str) -> Result<Self, Self::Err> {
 		let (hrp, data, var) = bech32::decode(s)?;
@@ -273,11 +273,11 @@ impl FromStr for SignedRawBolt11Invoice {
 		if var == bech32::Variant::Bech32m {
 			// Consider Bech32m addresses to be "Invalid Checksum", since that is what we'd get if
 			// we didn't support Bech32m (which lightning does not use).
-			return Err(ParseError::Bech32Error(bech32::Error::InvalidChecksum));
+			return Err(Bolt11ParseError::Bech32Error(bech32::Error::InvalidChecksum));
 		}
 
 		if data.len() < 104 {
-			return Err(ParseError::TooShortDataPart);
+			return Err(Bolt11ParseError::TooShortDataPart);
 		}
 
 		let raw_hrp: RawHrp = hrp.parse()?;
@@ -298,7 +298,7 @@ impl FromStr for SignedRawBolt11Invoice {
 }
 
 impl FromStr for RawHrp {
-	type Err = ParseError;
+	type Err = Bolt11ParseError;
 
 	fn from_str(hrp: &str) -> Result<Self, <Self as FromStr>::Err> {
 		let parts = parse_hrp(hrp)?;
@@ -317,7 +317,7 @@ impl FromStr for RawHrp {
 			let si: SiPrefix = parts.2.parse()?;
 			if let Some(amt) = amount {
 				if amt.checked_mul(si.multiplier()).is_none() {
-					return Err(ParseError::IntegerOverflowError);
+					return Err(Bolt11ParseError::IntegerOverflowError);
 				}
 			}
 			Some(si)
@@ -332,11 +332,11 @@ impl FromStr for RawHrp {
 }
 
 impl FromBase32 for RawDataPart {
-	type Err = ParseError;
+	type Err = Bolt11ParseError;
 
 	fn from_base32(data: &[u5]) -> Result<Self, Self::Err> {
 		if data.len() < 7 { // timestamp length
-			return Err(ParseError::TooShortDataPart);
+			return Err(Bolt11ParseError::TooShortDataPart);
 		}
 
 		let timestamp = PositiveTimestamp::from_base32(&data[0..7])?;
@@ -350,11 +350,11 @@ impl FromBase32 for RawDataPart {
 }
 
 impl FromBase32 for PositiveTimestamp {
-	type Err = ParseError;
+	type Err = Bolt11ParseError;
 
 	fn from_base32(b32: &[u5]) -> Result<Self, Self::Err> {
 		if b32.len() != 7 {
-			return Err(ParseError::InvalidSliceLength("PositiveTimestamp::from_base32()".into()));
+			return Err(Bolt11ParseError::InvalidSliceLength("PositiveTimestamp::from_base32()".into()));
 		}
 		let timestamp: u64 = parse_int_be(b32, 32)
 			.expect("7*5bit < 64bit, no overflow possible");
@@ -366,10 +366,10 @@ impl FromBase32 for PositiveTimestamp {
 }
 
 impl FromBase32 for InvoiceSignature {
-	type Err = ParseError;
+	type Err = Bolt11ParseError;
 	fn from_base32(signature: &[u5]) -> Result<Self, Self::Err> {
 		if signature.len() != 104 {
-			return Err(ParseError::InvalidSliceLength("InvoiceSignature::from_base32()".into()));
+			return Err(Bolt11ParseError::InvalidSliceLength("InvoiceSignature::from_base32()".into()));
 		}
 		let recoverable_signature_bytes = Vec::<u8>::from_base32(signature)?;
 		let signature = &recoverable_signature_bytes[0..64];
@@ -393,13 +393,13 @@ pub(crate) fn parse_int_be<T, U>(digits: &[U], base: T) -> Option<T>
 	)
 }
 
-fn parse_tagged_parts(data: &[u5]) -> Result<Vec<RawTaggedField>, ParseError> {
+fn parse_tagged_parts(data: &[u5]) -> Result<Vec<RawTaggedField>, Bolt11ParseError> {
 	let mut parts = Vec::<RawTaggedField>::new();
 	let mut data = data;
 
 	while !data.is_empty() {
 		if data.len() < 3 {
-			return Err(ParseError::UnexpectedEndOfTaggedFields);
+			return Err(Bolt11ParseError::UnexpectedEndOfTaggedFields);
 		}
 
 		// Ignore tag at data[0], it will be handled in the TaggedField parsers and
@@ -408,7 +408,7 @@ fn parse_tagged_parts(data: &[u5]) -> Result<Vec<RawTaggedField>, ParseError> {
 		let last_element = 3 + len;
 
 		if data.len() < last_element {
-			return Err(ParseError::UnexpectedEndOfTaggedFields);
+			return Err(Bolt11ParseError::UnexpectedEndOfTaggedFields);
 		}
 
 		// Get the tagged field's data slice
@@ -421,7 +421,7 @@ fn parse_tagged_parts(data: &[u5]) -> Result<Vec<RawTaggedField>, ParseError> {
 			Ok(field) => {
 				parts.push(RawTaggedField::KnownSemantics(field))
 			},
-			Err(ParseError::Skip)|Err(ParseError::Bech32Error(bech32::Error::InvalidLength)) => {
+			Err(Bolt11ParseError::Skip)|Err(Bolt11ParseError::Bech32Error(bech32::Error::InvalidLength)) => {
 				parts.push(RawTaggedField::UnknownSemantics(field.into()))
 			},
 			Err(e) => {return Err(e)}
@@ -431,11 +431,11 @@ fn parse_tagged_parts(data: &[u5]) -> Result<Vec<RawTaggedField>, ParseError> {
 }
 
 impl FromBase32 for TaggedField {
-	type Err = ParseError;
+	type Err = Bolt11ParseError;
 
-	fn from_base32(field: &[u5]) -> Result<TaggedField, ParseError> {
+	fn from_base32(field: &[u5]) -> Result<TaggedField, Bolt11ParseError> {
 		if field.len() < 3 {
-			return Err(ParseError::UnexpectedEndOfTaggedFields);
+			return Err(Bolt11ParseError::UnexpectedEndOfTaggedFields);
 		}
 
 		let tag = field[0];
@@ -466,19 +466,19 @@ impl FromBase32 for TaggedField {
 				Ok(TaggedField::Features(InvoiceFeatures::from_base32(field_data)?)),
 			_ => {
 				// "A reader MUST skip over unknown fields"
-				Err(ParseError::Skip)
+				Err(Bolt11ParseError::Skip)
 			}
 		}
 	}
 }
 
 impl FromBase32 for Sha256 {
-	type Err = ParseError;
+	type Err = Bolt11ParseError;
 
-	fn from_base32(field_data: &[u5]) -> Result<Sha256, ParseError> {
+	fn from_base32(field_data: &[u5]) -> Result<Sha256, Bolt11ParseError> {
 		if field_data.len() != 52 {
 			// "A reader MUST skip over […] a p, [or] h […] field that does not have data_length 52 […]."
-			Err(ParseError::Skip)
+			Err(Bolt11ParseError::Skip)
 		} else {
 			Ok(Sha256(sha256::Hash::from_slice(&Vec::<u8>::from_base32(field_data)?)
 				.expect("length was checked before (52 u5 -> 32 u8)")))
@@ -487,9 +487,9 @@ impl FromBase32 for Sha256 {
 }
 
 impl FromBase32 for Description {
-	type Err = ParseError;
+	type Err = Bolt11ParseError;
 
-	fn from_base32(field_data: &[u5]) -> Result<Description, ParseError> {
+	fn from_base32(field_data: &[u5]) -> Result<Description, Bolt11ParseError> {
 		let bytes = Vec::<u8>::from_base32(field_data)?;
 		let description = String::from(str::from_utf8(&bytes)?);
 		Ok(Description::new(description).expect(
@@ -499,12 +499,12 @@ impl FromBase32 for Description {
 }
 
 impl FromBase32 for PayeePubKey {
-	type Err = ParseError;
+	type Err = Bolt11ParseError;
 
-	fn from_base32(field_data: &[u5]) -> Result<PayeePubKey, ParseError> {
+	fn from_base32(field_data: &[u5]) -> Result<PayeePubKey, Bolt11ParseError> {
 		if field_data.len() != 53 {
 			// "A reader MUST skip over […] a n […] field that does not have data_length 53 […]."
-			Err(ParseError::Skip)
+			Err(Bolt11ParseError::Skip)
 		} else {
 			let data_bytes = Vec::<u8>::from_base32(field_data)?;
 			let pub_key = PublicKey::from_slice(&data_bytes)?;
@@ -514,37 +514,37 @@ impl FromBase32 for PayeePubKey {
 }
 
 impl FromBase32 for ExpiryTime {
-	type Err = ParseError;
+	type Err = Bolt11ParseError;
 
-	fn from_base32(field_data: &[u5]) -> Result<ExpiryTime, ParseError> {
+	fn from_base32(field_data: &[u5]) -> Result<ExpiryTime, Bolt11ParseError> {
 		match parse_int_be::<u64, u5>(field_data, 32)
 			.map(ExpiryTime::from_seconds)
 		{
 			Some(t) => Ok(t),
-			None => Err(ParseError::IntegerOverflowError),
+			None => Err(Bolt11ParseError::IntegerOverflowError),
 		}
 	}
 }
 
 impl FromBase32 for MinFinalCltvExpiryDelta {
-	type Err = ParseError;
+	type Err = Bolt11ParseError;
 
-	fn from_base32(field_data: &[u5]) -> Result<MinFinalCltvExpiryDelta, ParseError> {
+	fn from_base32(field_data: &[u5]) -> Result<MinFinalCltvExpiryDelta, Bolt11ParseError> {
 		let expiry = parse_int_be::<u64, u5>(field_data, 32);
 		if let Some(expiry) = expiry {
 			Ok(MinFinalCltvExpiryDelta(expiry))
 		} else {
-			Err(ParseError::IntegerOverflowError)
+			Err(Bolt11ParseError::IntegerOverflowError)
 		}
 	}
 }
 
 impl FromBase32 for Fallback {
-	type Err = ParseError;
+	type Err = Bolt11ParseError;
 
-	fn from_base32(field_data: &[u5]) -> Result<Fallback, ParseError> {
+	fn from_base32(field_data: &[u5]) -> Result<Fallback, Bolt11ParseError> {
 		if field_data.is_empty() {
-			return Err(ParseError::UnexpectedEndOfTaggedFields);
+			return Err(Bolt11ParseError::UnexpectedEndOfTaggedFields);
 		}
 
 		let version = field_data[0];
@@ -553,7 +553,7 @@ impl FromBase32 for Fallback {
 		match version.to_u8() {
 			0..=16 => {
 				if bytes.len() < 2 || bytes.len() > 40 {
-					return Err(ParseError::InvalidSegWitProgramLength);
+					return Err(Bolt11ParseError::InvalidSegWitProgramLength);
 				}
 				let version = WitnessVersion::try_from(version).expect("0 through 16 are valid SegWit versions");
 				Ok(Fallback::SegWitProgram {
@@ -564,30 +564,30 @@ impl FromBase32 for Fallback {
 			17 => {
 				let pkh = match PubkeyHash::from_slice(&bytes) {
 					Ok(pkh) => pkh,
-					Err(bitcoin_hashes::Error::InvalidLength(_, _)) => return Err(ParseError::InvalidPubKeyHashLength),
+					Err(bitcoin_hashes::Error::InvalidLength(_, _)) => return Err(Bolt11ParseError::InvalidPubKeyHashLength),
 				};
 				Ok(Fallback::PubKeyHash(pkh))
 			}
 			18 => {
 				let sh = match ScriptHash::from_slice(&bytes) {
 					Ok(sh) => sh,
-					Err(bitcoin_hashes::Error::InvalidLength(_, _)) => return Err(ParseError::InvalidScriptHashLength),
+					Err(bitcoin_hashes::Error::InvalidLength(_, _)) => return Err(Bolt11ParseError::InvalidScriptHashLength),
 				};
 				Ok(Fallback::ScriptHash(sh))
 			}
-			_ => Err(ParseError::Skip)
+			_ => Err(Bolt11ParseError::Skip)
 		}
 	}
 }
 
 impl FromBase32 for PrivateRoute {
-	type Err = ParseError;
+	type Err = Bolt11ParseError;
 
-	fn from_base32(field_data: &[u5]) -> Result<PrivateRoute, ParseError> {
+	fn from_base32(field_data: &[u5]) -> Result<PrivateRoute, Bolt11ParseError> {
 		let bytes = Vec::<u8>::from_base32(field_data)?;
 
 		if bytes.len() % 51 != 0 {
-			return Err(ParseError::UnexpectedEndOfTaggedFields);
+			return Err(Bolt11ParseError::UnexpectedEndOfTaggedFields);
 		}
 
 		let mut route_hops = Vec::<RouteHintHop>::new();
@@ -619,52 +619,52 @@ impl FromBase32 for PrivateRoute {
 	}
 }
 
-impl Display for ParseError {
+impl Display for Bolt11ParseError {
 	fn fmt(&self, f: &mut Formatter) -> fmt::Result {
 		match *self {
 			// TODO: find a way to combine the first three arms (e as error::Error?)
-			ParseError::Bech32Error(ref e) => {
+			Bolt11ParseError::Bech32Error(ref e) => {
 				write!(f, "Invalid bech32: {}", e)
 			}
-			ParseError::ParseAmountError(ref e) => {
+			Bolt11ParseError::ParseAmountError(ref e) => {
 				write!(f, "Invalid amount in hrp ({})", e)
 			}
-			ParseError::MalformedSignature(ref e) => {
+			Bolt11ParseError::MalformedSignature(ref e) => {
 				write!(f, "Invalid secp256k1 signature: {}", e)
 			}
-			ParseError::DescriptionDecodeError(ref e) => {
+			Bolt11ParseError::DescriptionDecodeError(ref e) => {
 				write!(f, "Description is not a valid utf-8 string: {}", e)
 			}
-			ParseError::InvalidSliceLength(ref function) => {
+			Bolt11ParseError::InvalidSliceLength(ref function) => {
 				write!(f, "Slice in function {} had the wrong length", function)
 			}
-			ParseError::BadPrefix => f.write_str("did not begin with 'ln'"),
-			ParseError::UnknownCurrency => f.write_str("currency code unknown"),
-			ParseError::UnknownSiPrefix => f.write_str("unknown SI prefix"),
-			ParseError::MalformedHRP => f.write_str("malformed human readable part"),
-			ParseError::TooShortDataPart => {
+			Bolt11ParseError::BadPrefix => f.write_str("did not begin with 'ln'"),
+			Bolt11ParseError::UnknownCurrency => f.write_str("currency code unknown"),
+			Bolt11ParseError::UnknownSiPrefix => f.write_str("unknown SI prefix"),
+			Bolt11ParseError::MalformedHRP => f.write_str("malformed human readable part"),
+			Bolt11ParseError::TooShortDataPart => {
 				f.write_str("data part too short (should be at least 111 bech32 chars long)")
 			},
-			ParseError::UnexpectedEndOfTaggedFields => {
+			Bolt11ParseError::UnexpectedEndOfTaggedFields => {
 				f.write_str("tagged fields part ended unexpectedly")
 			},
-			ParseError::PaddingError => f.write_str("some data field had bad padding"),
-			ParseError::IntegerOverflowError => {
+			Bolt11ParseError::PaddingError => f.write_str("some data field had bad padding"),
+			Bolt11ParseError::IntegerOverflowError => {
 				f.write_str("parsed integer doesn't fit into receiving type")
 			},
-			ParseError::InvalidSegWitProgramLength => {
+			Bolt11ParseError::InvalidSegWitProgramLength => {
 				f.write_str("fallback SegWit program is too long or too short")
 			},
-			ParseError::InvalidPubKeyHashLength => {
+			Bolt11ParseError::InvalidPubKeyHashLength => {
 				f.write_str("fallback public key hash has a length unequal 20 bytes")
 			},
-			ParseError::InvalidScriptHashLength => {
+			Bolt11ParseError::InvalidScriptHashLength => {
 				f.write_str("fallback script hash has a length unequal 32 bytes")
 			},
-			ParseError::InvalidRecoveryId => {
+			Bolt11ParseError::InvalidRecoveryId => {
 				f.write_str("recovery id is out of range (should be in [0,3])")
 			},
-			ParseError::Skip => {
+			Bolt11ParseError::Skip => {
 				f.write_str("the tagged field has to be skipped because of an unexpected, but allowed property")
 			},
 		}
@@ -681,14 +681,14 @@ impl Display for ParseOrSemanticError {
 }
 
 #[cfg(feature = "std")]
-impl error::Error for ParseError {}
+impl error::Error for Bolt11ParseError {}
 
 #[cfg(feature = "std")]
 impl error::Error for ParseOrSemanticError {}
 
 macro_rules! from_error {
     ($my_error:expr, $extern_error:ty) => {
-        impl From<$extern_error> for ParseError {
+        impl From<$extern_error> for Bolt11ParseError {
             fn from(e: $extern_error) -> Self {
                 $my_error(e)
             }
@@ -696,21 +696,21 @@ macro_rules! from_error {
     }
 }
 
-from_error!(ParseError::MalformedSignature, secp256k1::Error);
-from_error!(ParseError::ParseAmountError, ParseIntError);
-from_error!(ParseError::DescriptionDecodeError, str::Utf8Error);
+from_error!(Bolt11ParseError::MalformedSignature, secp256k1::Error);
+from_error!(Bolt11ParseError::ParseAmountError, ParseIntError);
+from_error!(Bolt11ParseError::DescriptionDecodeError, str::Utf8Error);
 
-impl From<bech32::Error> for ParseError {
+impl From<bech32::Error> for Bolt11ParseError {
 	fn from(e: bech32::Error) -> Self {
 		match e {
-			bech32::Error::InvalidPadding => ParseError::PaddingError,
-			_ => ParseError::Bech32Error(e)
+			bech32::Error::InvalidPadding => Bolt11ParseError::PaddingError,
+			_ => Bolt11ParseError::Bech32Error(e)
 		}
 	}
 }
 
-impl From<ParseError> for ParseOrSemanticError {
-	fn from(e: ParseError) -> Self {
+impl From<Bolt11ParseError> for ParseOrSemanticError {
+	fn from(e: Bolt11ParseError) -> Self {
 		ParseOrSemanticError::ParseError(e)
 	}
 }
@@ -723,7 +723,7 @@ impl From<crate::SemanticError> for ParseOrSemanticError {
 
 #[cfg(test)]
 mod test {
-	use crate::de::ParseError;
+	use crate::de::Bolt11ParseError;
 	use secp256k1::PublicKey;
 	use bech32::u5;
 	use bitcoin_hashes::hex::FromHex;
@@ -756,7 +756,7 @@ mod test {
 		assert_eq!("bcrt".parse::<Currency>(), Ok(Currency::Regtest));
 		assert_eq!("sb".parse::<Currency>(), Ok(Currency::Simnet));
 		assert_eq!("tbs".parse::<Currency>(), Ok(Currency::Signet));
-		assert_eq!("something_else".parse::<Currency>(), Err(ParseError::UnknownCurrency))
+		assert_eq!("something_else".parse::<Currency>(), Err(Bolt11ParseError::UnknownCurrency))
 	}
 
 	#[test]
@@ -789,7 +789,7 @@ mod test {
 		let input_unexpected_length = from_bech32(
 			"qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypyq".as_bytes()
 		);
-		assert_eq!(Sha256::from_base32(&input_unexpected_length), Err(ParseError::Skip));
+		assert_eq!(Sha256::from_base32(&input_unexpected_length), Err(Bolt11ParseError::Skip));
 	}
 
 	#[test]
@@ -823,7 +823,7 @@ mod test {
 		let input_unexpected_length = from_bech32(
 			"q0n326hr8v9zprg8gsvezcch06gfaqqhde2aj730yg0durunfhvq".as_bytes()
 		);
-		assert_eq!(PayeePubKey::from_base32(&input_unexpected_length), Err(ParseError::Skip));
+		assert_eq!(PayeePubKey::from_base32(&input_unexpected_length), Err(Bolt11ParseError::Skip));
 	}
 
 	#[test]
@@ -836,7 +836,7 @@ mod test {
 		assert_eq!(ExpiryTime::from_base32(&input), expected);
 
 		let input_too_large = from_bech32("sqqqqqqqqqqqq".as_bytes());
-		assert_eq!(ExpiryTime::from_base32(&input_too_large), Err(ParseError::IntegerOverflowError));
+		assert_eq!(ExpiryTime::from_base32(&input_too_large), Err(Bolt11ParseError::IntegerOverflowError));
 	}
 
 	#[test]
@@ -885,23 +885,23 @@ mod test {
 			),
 			(
 				vec![u5::try_from_u8(21).unwrap(); 41],
-				Err(ParseError::Skip)
+				Err(Bolt11ParseError::Skip)
 			),
 			(
 				vec![],
-				Err(ParseError::UnexpectedEndOfTaggedFields)
+				Err(Bolt11ParseError::UnexpectedEndOfTaggedFields)
 			),
 			(
 				vec![u5::try_from_u8(1).unwrap(); 81],
-				Err(ParseError::InvalidSegWitProgramLength)
+				Err(Bolt11ParseError::InvalidSegWitProgramLength)
 			),
 			(
 				vec![u5::try_from_u8(17).unwrap(); 1],
-				Err(ParseError::InvalidPubKeyHashLength)
+				Err(Bolt11ParseError::InvalidPubKeyHashLength)
 			),
 			(
 				vec![u5::try_from_u8(18).unwrap(); 1],
-				Err(ParseError::InvalidScriptHashLength)
+				Err(Bolt11ParseError::InvalidScriptHashLength)
 			)
 		];
 
@@ -963,7 +963,7 @@ mod test {
 
 		assert_eq!(
 			PrivateRoute::from_base32(&[u5::try_from_u8(0).unwrap(); 40][..]),
-			Err(ParseError::UnexpectedEndOfTaggedFields)
+			Err(Bolt11ParseError::UnexpectedEndOfTaggedFields)
 		);
 	}
 

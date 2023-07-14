@@ -106,7 +106,7 @@ mod sync;
 /// reasons, but should generally result in an "invalid BOLT11 invoice" message for the user.
 #[allow(missing_docs)]
 #[derive(PartialEq, Eq, Debug, Clone)]
-pub enum ParseError {
+pub enum Bolt11ParseError {
 	Bech32Error(bech32::Error),
 	ParseAmountError(ParseIntError),
 	MalformedSignature(secp256k1::Error),
@@ -136,7 +136,7 @@ pub enum ParseError {
 #[derive(PartialEq, Eq, Debug, Clone)]
 pub enum ParseOrSemanticError {
 	/// The invoice couldn't be decoded
-	ParseError(ParseError),
+	ParseError(Bolt11ParseError),
 
 	/// The invoice could be decoded but violates the BOLT11 standard
 	SemanticError(crate::SemanticError),

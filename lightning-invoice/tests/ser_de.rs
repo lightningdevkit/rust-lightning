@@ -424,22 +424,22 @@ fn test_bolt_invalid_invoices() {
 		), Err(ParseOrSemanticError::SemanticError(SemanticError::InvalidFeatures)));
 	assert_eq!(Bolt11Invoice::from_str(
 		"lnbc2500u1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdpquwpc4curk03c9wlrswe78q4eyqc7d8d0xqzpuyk0sg5g70me25alkluzd2x62aysf2pyy8edtjeevuv4p2d5p76r4zkmneet7uvyakky2zr4cusd45tftc9c5fh0nnqpnl2jfll544esqchsrnt"
-		), Err(ParseOrSemanticError::ParseError(ParseError::Bech32Error(bech32::Error::InvalidChecksum))));
+		), Err(ParseOrSemanticError::ParseError(Bolt11ParseError::Bech32Error(bech32::Error::InvalidChecksum))));
 	assert_eq!(Bolt11Invoice::from_str(
 		"pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdpquwpc4curk03c9wlrswe78q4eyqc7d8d0xqzpuyk0sg5g70me25alkluzd2x62aysf2pyy8edtjeevuv4p2d5p76r4zkmneet7uvyakky2zr4cusd45tftc9c5fh0nnqpnl2jfll544esqchsrny"
-		), Err(ParseOrSemanticError::ParseError(ParseError::Bech32Error(bech32::Error::MissingSeparator))));
+		), Err(ParseOrSemanticError::ParseError(Bolt11ParseError::Bech32Error(bech32::Error::MissingSeparator))));
 	assert_eq!(Bolt11Invoice::from_str(
 		"LNBC2500u1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdpquwpc4curk03c9wlrswe78q4eyqc7d8d0xqzpuyk0sg5g70me25alkluzd2x62aysf2pyy8edtjeevuv4p2d5p76r4zkmneet7uvyakky2zr4cusd45tftc9c5fh0nnqpnl2jfll544esqchsrny"
-		), Err(ParseOrSemanticError::ParseError(ParseError::Bech32Error(bech32::Error::MixedCase))));
+		), Err(ParseOrSemanticError::ParseError(Bolt11ParseError::Bech32Error(bech32::Error::MixedCase))));
 	assert_eq!(Bolt11Invoice::from_str(
 		"lnbc2500u1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdq5xysxxatsyp3k7enxv4jsxqzpusp5zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygs9qrsgqwgt7mcn5yqw3yx0w94pswkpq6j9uh6xfqqqtsk4tnarugeektd4hg5975x9am52rz4qskukxdmjemg92vvqz8nvmsye63r5ykel43pgz7zq0g2"
 		), Err(ParseOrSemanticError::SemanticError(SemanticError::InvalidSignature)));
 	assert_eq!(Bolt11Invoice::from_str(
 		"lnbc1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdpl2pkx2ctnv5sxxmmwwd5kgetjypeh2ursdae8g6na6hlh"
-		), Err(ParseOrSemanticError::ParseError(ParseError::TooShortDataPart)));
+		), Err(ParseOrSemanticError::ParseError(Bolt11ParseError::TooShortDataPart)));
 	assert_eq!(Bolt11Invoice::from_str(
 		"lnbc2500x1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdq5xysxxatsyp3k7enxv4jsxqzpusp5zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygs9qrsgqrrzc4cvfue4zp3hggxp47ag7xnrlr8vgcmkjxk3j5jqethnumgkpqp23z9jclu3v0a7e0aruz366e9wqdykw6dxhdzcjjhldxq0w6wgqcnu43j"
-		), Err(ParseOrSemanticError::ParseError(ParseError::UnknownSiPrefix)));
+		), Err(ParseOrSemanticError::ParseError(Bolt11ParseError::UnknownSiPrefix)));
 	assert_eq!(Bolt11Invoice::from_str(
 		"lnbc2500000001p1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdq5xysxxatsyp3k7enxv4jsxqzpusp5zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygs9qrsgq0lzc236j96a95uv0m3umg28gclm5lqxtqqwk32uuk4k6673k6n5kfvx3d2h8s295fad45fdhmusm8sjudfhlf6dcsxmfvkeywmjdkxcp99202x"
 		), Err(ParseOrSemanticError::SemanticError(SemanticError::ImpreciseAmount)));
