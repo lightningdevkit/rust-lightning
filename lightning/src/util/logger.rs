@@ -169,6 +169,29 @@ impl<'a> core::fmt::Display for DebugBytes<'a> {
 	}
 }
 
+/// Wrapper for logging `Iterator`s.
+///
+/// This is not exported to bindings users as fmt can't be used in C
+#[doc(hidden)]
+pub struct DebugIter<T: fmt::Display, I: core::iter::Iterator<Item = T> + Clone>(pub core::cell::RefCell<I>);
+impl<T: fmt::Display, I: core::iter::Iterator<Item = T> + Clone> fmt::Display for DebugIter<T, I> {
+	fn fmt(&self, f: &mut fmt::Formatter) -> Result<(), fmt::Error> {
+		use core::ops::DerefMut;
+		write!(f, "[")?;
+		let iter_ref = self.0.clone();
+		let mut iter = iter_ref.borrow_mut();
+		for item in iter.deref_mut() {
+			write!(f, "{}", item)?;
+			break;
+		}
+		for item in iter.deref_mut() {
+			write!(f, ", {}", item)?;
+		}
+		write!(f, "]")?;
+		Ok(())
+	}
+}
+
 #[cfg(test)]
 mod tests {
 	use crate::util::logger::{Logger, Level};

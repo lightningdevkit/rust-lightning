@@ -17,6 +17,12 @@ use crate::routing::router::Route;
 use crate::ln::chan_utils::HTLCClaim;
 use crate::util::logger::DebugBytes;
 
+macro_rules! log_iter {
+	($obj: expr) => {
+		$crate::util::logger::DebugIter(core::cell::RefCell::new($obj))
+	}
+}
+
 /// Logs a pubkey in hex format.
 #[macro_export]
 macro_rules! log_pubkey {
