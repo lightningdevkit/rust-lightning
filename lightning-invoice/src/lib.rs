@@ -51,7 +51,7 @@ use bitcoin::{Address, Network, PubkeyHash, ScriptHash};
 use bitcoin::util::address::{Payload, WitnessVersion};
 use bitcoin_hashes::{Hash, sha256};
 use lightning::ln::PaymentSecret;
-use lightning::ln::features::InvoiceFeatures;
+use lightning::ln::features::Bolt11InvoiceFeatures;
 #[cfg(any(doc, test))]
 use lightning::routing::gossip::RoutingFees;
 use lightning::routing::router::RouteHint;
@@ -448,7 +448,7 @@ pub enum TaggedField {
 	PrivateRoute(PrivateRoute),
 	PaymentSecret(PaymentSecret),
 	PaymentMetadata(Vec<u8>),
-	Features(InvoiceFeatures),
+	Features(Bolt11InvoiceFeatures),
 }
 
 /// SHA-256 hash
@@ -744,7 +744,7 @@ impl<D: tb::Bool, H: tb::Bool, T: tb::Bool, C: tb::Bool, M: tb::Bool> InvoiceBui
 		}
 		self.tagged_fields.push(TaggedField::PaymentSecret(payment_secret));
 		if !found_features {
-			let mut features = InvoiceFeatures::empty();
+			let mut features = Bolt11InvoiceFeatures::empty();
 			features.set_variable_length_onion_required();
 			features.set_payment_secret_required();
 			self.tagged_fields.push(TaggedField::Features(features));
@@ -770,7 +770,7 @@ impl<D: tb::Bool, H: tb::Bool, T: tb::Bool, C: tb::Bool, S: tb::Bool> InvoiceBui
 			}
 		}
 		if !found_features {
-			let mut features = InvoiceFeatures::empty();
+			let mut features = Bolt11InvoiceFeatures::empty();
 			features.set_payment_metadata_optional();
 			self.tagged_fields.push(TaggedField::Features(features));
 		}
@@ -1059,7 +1059,7 @@ impl RawBolt11Invoice {
 		find_extract!(self.known_tagged_fields(), TaggedField::PaymentMetadata(ref x), x)
 	}
 
-	pub fn features(&self) -> Option<&InvoiceFeatures> {
+	pub fn features(&self) -> Option<&Bolt11InvoiceFeatures> {
 		find_extract!(self.known_tagged_fields(), TaggedField::Features(ref x), x)
 	}
 
@@ -1336,7 +1336,7 @@ impl Bolt11Invoice {
 	}
 
 	/// Get the invoice features if they were included in the invoice
-	pub fn features(&self) -> Option<&InvoiceFeatures> {
+	pub fn features(&self) -> Option<&Bolt11InvoiceFeatures> {
 		self.signed_invoice.features()
 	}
 
@@ -1863,7 +1863,7 @@ mod test {
 	#[test]
 	fn test_check_feature_bits() {
 		use crate::TaggedField::*;
-		use lightning::ln::features::InvoiceFeatures;
+		use lightning::ln::features::Bolt11InvoiceFeatures;
 		use secp256k1::Secp256k1;
 		use secp256k1::SecretKey;
 		use crate::{Bolt11Invoice, RawBolt11Invoice, RawHrp, RawDataPart, Currency, Sha256, PositiveTimestamp, 
@@ -1904,12 +1904,12 @@ mod test {
 		let invoice = {
 			let mut invoice = invoice_template.clone();
 			invoice.data.tagged_fields.push(PaymentSecret(payment_secret).into());
-			invoice.data.tagged_fields.push(Features(InvoiceFeatures::empty()).into());
+			invoice.data.tagged_fields.push(Features(Bolt11InvoiceFeatures::empty()).into());
 			invoice.sign::<_, ()>(|hash| Ok(Secp256k1::new().sign_ecdsa_recoverable(hash, &private_key)))
 		}.unwrap();
 		assert_eq!(Bolt11Invoice::from_signed(invoice), Err(Bolt11SemanticError::InvalidFeatures));
 
-		let mut payment_secret_features = InvoiceFeatures::empty();
+		let mut payment_secret_features = Bolt11InvoiceFeatures::empty();
 		payment_secret_features.set_payment_secret_required();
 
 		// Including payment secret and feature bits
@@ -1931,7 +1931,7 @@ mod test {
 		// No payment secret or feature bits
 		let invoice = {
 			let mut invoice = invoice_template.clone();
-			invoice.data.tagged_fields.push(Features(InvoiceFeatures::empty()).into());
+			invoice.data.tagged_fields.push(Features(Bolt11InvoiceFeatures::empty()).into());
 			invoice.sign::<_, ()>(|hash| Ok(Secp256k1::new().sign_ecdsa_recoverable(hash, &private_key)))
 		}.unwrap();
 		assert_eq!(Bolt11Invoice::from_signed(invoice), Err(Bolt11SemanticError::NoPaymentSecret));
@@ -2147,7 +2147,7 @@ mod test {
 		assert_eq!(invoice.payment_hash(), &sha256::Hash::from_slice(&[21;32][..]).unwrap());
 		assert_eq!(invoice.payment_secret(), &PaymentSecret([42; 32]));
 
-		let mut expected_features = InvoiceFeatures::empty();
+		let mut expected_features = Bolt11InvoiceFeatures::empty();
 		expected_features.set_variable_length_onion_required();
 		expected_features.set_payment_secret_required();
 		expected_features.set_basic_mpp_optional();

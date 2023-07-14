@@ -25,7 +25,7 @@ use secp256k1::PublicKey;
 
 use super::{Bolt11Invoice, Sha256, TaggedField, ExpiryTime, MinFinalCltvExpiryDelta, Fallback, PayeePubKey, InvoiceSignature, PositiveTimestamp,
 	Bolt11SemanticError, PrivateRoute, Bolt11ParseError, ParseOrSemanticError, Description, RawTaggedField, Currency, RawHrp, SiPrefix, RawBolt11Invoice,
-	constants, SignedRawBolt11Invoice, RawDataPart, InvoiceFeatures};
+	constants, SignedRawBolt11Invoice, RawDataPart, Bolt11InvoiceFeatures};
 
 use self::hrp_sm::parse_hrp;
 
@@ -463,7 +463,7 @@ impl FromBase32 for TaggedField {
 			constants::TAG_PAYMENT_METADATA =>
 				Ok(TaggedField::PaymentMetadata(Vec::<u8>::from_base32(field_data)?)),
 			constants::TAG_FEATURES =>
-				Ok(TaggedField::Features(InvoiceFeatures::from_base32(field_data)?)),
+				Ok(TaggedField::Features(Bolt11InvoiceFeatures::from_base32(field_data)?)),
 			_ => {
 				// "A reader MUST skip over unknown fields"
 				Err(Bolt11ParseError::Skip)
@@ -969,14 +969,14 @@ mod test {
 
 	#[test]
 	fn test_payment_secret_and_features_de_and_ser() {
-		use lightning::ln::features::InvoiceFeatures;
+		use lightning::ln::features::Bolt11InvoiceFeatures;
 		use secp256k1::ecdsa::{RecoveryId, RecoverableSignature};
 		use crate::TaggedField::*;
 		use crate::{SiPrefix, SignedRawBolt11Invoice, InvoiceSignature, RawBolt11Invoice, RawHrp, RawDataPart,
 				 Currency, Sha256, PositiveTimestamp};
 
 		// Feature bits 9, 15, and 99 are set.
-		let expected_features = InvoiceFeatures::from_le_bytes(vec![0, 130, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 8]);
+		let expected_features = Bolt11InvoiceFeatures::from_le_bytes(vec![0, 130, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 8]);
 		let invoice_str = "lnbc25m1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdq5vdhkven9v5sxyetpdeessp5zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygs9q5sqqqqqqqqqqqqqqqpqsq67gye39hfg3zd8rgc80k32tvy9xk2xunwm5lzexnvpx6fd77en8qaq424dxgt56cag2dpt359k3ssyhetktkpqh24jqnjyw6uqd08sgptq44qu";
 		let invoice = SignedRawBolt11Invoice {
 					raw_invoice: RawBolt11Invoice {
