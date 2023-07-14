@@ -1148,7 +1148,7 @@ impl Invoice {
 		self.signed_invoice.hash
 	}
 
-	/// Transform the `Invoice` into it's unchecked version
+	/// Transform the `Invoice` into its unchecked version.
 	pub fn into_signed_raw(self) -> SignedRawInvoice {
 		self.signed_invoice
 	}
