@@ -288,7 +288,7 @@ pub struct SignedRawBolt11Invoice {
 	hash: [u8; 32],
 
 	/// signature of the payment request
-	signature: InvoiceSignature,
+	signature: Bolt11InvoiceSignature,
 }
 
 /// Represents an syntactically correct [`Bolt11Invoice`] for a payment on the lightning network,
@@ -499,15 +499,15 @@ pub enum Fallback {
 
 /// Recoverable signature
 #[derive(Clone, Debug, Hash, Eq, PartialEq)]
-pub struct InvoiceSignature(pub RecoverableSignature);
+pub struct Bolt11InvoiceSignature(pub RecoverableSignature);
 
-impl PartialOrd for InvoiceSignature {
+impl PartialOrd for Bolt11InvoiceSignature {
 	fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
 		self.0.serialize_compact().1.partial_cmp(&other.0.serialize_compact().1)
 	}
 }
 
-impl Ord for InvoiceSignature {
+impl Ord for Bolt11InvoiceSignature {
 	fn cmp(&self, other: &Self) -> Ordering {
 		self.0.serialize_compact().1.cmp(&other.0.serialize_compact().1)
 	}
@@ -855,7 +855,7 @@ impl SignedRawBolt11Invoice {
 	///  1. raw invoice
 	///  2. hash of the raw invoice
 	///  3. signature
-	pub fn into_parts(self) -> (RawBolt11Invoice, [u8; 32], InvoiceSignature) {
+	pub fn into_parts(self) -> (RawBolt11Invoice, [u8; 32], Bolt11InvoiceSignature) {
 		(self.raw_invoice, self.hash, self.signature)
 	}
 
@@ -870,7 +870,7 @@ impl SignedRawBolt11Invoice {
 	}
 
 	/// Signature for the invoice.
-	pub fn signature(&self) -> &InvoiceSignature {
+	pub fn signature(&self) -> &Bolt11InvoiceSignature {
 		&self.signature
 	}
 
@@ -1004,7 +1004,7 @@ impl RawBolt11Invoice {
 		Ok(SignedRawBolt11Invoice {
 			raw_invoice: self,
 			hash: raw_hash,
-			signature: InvoiceSignature(signature),
+			signature: Bolt11InvoiceSignature(signature),
 		})
 	}
 
@@ -1591,7 +1591,7 @@ impl Deref for PrivateRoute {
 	}
 }
 
-impl Deref for InvoiceSignature {
+impl Deref for Bolt11InvoiceSignature {
 	type Target = RecoverableSignature;
 
 	fn deref(&self) -> &RecoverableSignature {
@@ -1797,7 +1797,7 @@ mod test {
 		use secp256k1::Secp256k1;
 		use secp256k1::ecdsa::{RecoveryId, RecoverableSignature};
 		use secp256k1::{SecretKey, PublicKey};
-		use crate::{SignedRawBolt11Invoice, InvoiceSignature, RawBolt11Invoice, RawHrp, RawDataPart, Currency, Sha256,
+		use crate::{SignedRawBolt11Invoice, Bolt11InvoiceSignature, RawBolt11Invoice, RawHrp, RawDataPart, Currency, Sha256,
 			 PositiveTimestamp};
 
 		let invoice = SignedRawBolt11Invoice {
@@ -1826,7 +1826,7 @@ mod test {
 				0x7b, 0x1d, 0x85, 0x8d, 0xb1, 0xd1, 0xf7, 0xab, 0x71, 0x37, 0xdc, 0xb7,
 				0x83, 0x5d, 0xb2, 0xec, 0xd5, 0x18, 0xe1, 0xc9
 			],
-			signature: InvoiceSignature(RecoverableSignature::from_compact(
+			signature: Bolt11InvoiceSignature(RecoverableSignature::from_compact(
 				& [
 					0x38u8, 0xec, 0x68, 0x91, 0x34, 0x5e, 0x20, 0x41, 0x45, 0xbe, 0x8a,
 					0x3a, 0x99, 0xde, 0x38, 0xe9, 0x8a, 0x39, 0xd6, 0xa5, 0x69, 0x43,

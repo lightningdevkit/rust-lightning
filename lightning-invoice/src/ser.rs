@@ -3,7 +3,7 @@ use core::fmt::{Display, Formatter};
 use bech32::{ToBase32, u5, WriteBase32, Base32Len};
 use crate::prelude::*;
 
-use super::{Bolt11Invoice, Sha256, TaggedField, ExpiryTime, MinFinalCltvExpiryDelta, Fallback, PayeePubKey, InvoiceSignature, PositiveTimestamp,
+use super::{Bolt11Invoice, Sha256, TaggedField, ExpiryTime, MinFinalCltvExpiryDelta, Fallback, PayeePubKey, Bolt11InvoiceSignature, PositiveTimestamp,
 	PrivateRoute, Description, RawTaggedField, Currency, RawHrp, SiPrefix, constants, SignedRawBolt11Invoice, RawDataPart};
 
 /// Converts a stream of bytes written to it to base32. On finalization the according padding will
@@ -456,7 +456,7 @@ impl ToBase32 for TaggedField {
 	}
 }
 
-impl ToBase32 for InvoiceSignature {
+impl ToBase32 for Bolt11InvoiceSignature {
 	fn write_base32<W: WriteBase32>(&self, writer: &mut W) -> Result<(), <W as WriteBase32>::Err> {
 		let mut converter = BytesToBase32::new(writer);
 		let (recovery_id, signature) = self.0.serialize_compact();

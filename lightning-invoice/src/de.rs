@@ -23,7 +23,7 @@ use num_traits::{CheckedAdd, CheckedMul};
 use secp256k1::ecdsa::{RecoveryId, RecoverableSignature};
 use secp256k1::PublicKey;
 
-use super::{Bolt11Invoice, Sha256, TaggedField, ExpiryTime, MinFinalCltvExpiryDelta, Fallback, PayeePubKey, InvoiceSignature, PositiveTimestamp,
+use super::{Bolt11Invoice, Sha256, TaggedField, ExpiryTime, MinFinalCltvExpiryDelta, Fallback, PayeePubKey, Bolt11InvoiceSignature, PositiveTimestamp,
 	Bolt11SemanticError, PrivateRoute, Bolt11ParseError, ParseOrSemanticError, Description, RawTaggedField, Currency, RawHrp, SiPrefix, RawBolt11Invoice,
 	constants, SignedRawBolt11Invoice, RawDataPart, Bolt11InvoiceFeatures};
 
@@ -292,7 +292,7 @@ impl FromStr for SignedRawBolt11Invoice {
 				hrp.as_bytes(),
 				&data[..data.len()-104]
 			),
-			signature: InvoiceSignature::from_base32(&data[data.len()-104..])?,
+			signature: Bolt11InvoiceSignature::from_base32(&data[data.len()-104..])?,
 		})
 	}
 }
@@ -365,17 +365,17 @@ impl FromBase32 for PositiveTimestamp {
 	}
 }
 
-impl FromBase32 for InvoiceSignature {
+impl FromBase32 for Bolt11InvoiceSignature {
 	type Err = Bolt11ParseError;
 	fn from_base32(signature: &[u5]) -> Result<Self, Self::Err> {
 		if signature.len() != 104 {
-			return Err(Bolt11ParseError::InvalidSliceLength("InvoiceSignature::from_base32()".into()));
+			return Err(Bolt11ParseError::InvalidSliceLength("Bolt11InvoiceSignature::from_base32()".into()));
 		}
 		let recoverable_signature_bytes = Vec::<u8>::from_base32(signature)?;
 		let signature = &recoverable_signature_bytes[0..64];
 		let recovery_id = RecoveryId::from_i32(recoverable_signature_bytes[64] as i32)?;
 
-		Ok(InvoiceSignature(RecoverableSignature::from_compact(
+		Ok(Bolt11InvoiceSignature(RecoverableSignature::from_compact(
 			signature,
 			recovery_id
 		)?))
@@ -972,7 +972,7 @@ mod test {
 		use lightning::ln::features::Bolt11InvoiceFeatures;
 		use secp256k1::ecdsa::{RecoveryId, RecoverableSignature};
 		use crate::TaggedField::*;
-		use crate::{SiPrefix, SignedRawBolt11Invoice, InvoiceSignature, RawBolt11Invoice, RawHrp, RawDataPart,
+		use crate::{SiPrefix, SignedRawBolt11Invoice, Bolt11InvoiceSignature, RawBolt11Invoice, RawHrp, RawDataPart,
 				 Currency, Sha256, PositiveTimestamp};
 
 		// Feature bits 9, 15, and 99 are set.
@@ -998,7 +998,7 @@ mod test {
 					hash: [0xb1, 0x96, 0x46, 0xc3, 0xbc, 0x56, 0x76, 0x1d, 0x20, 0x65, 0x6e, 0x0e, 0x32,
 									0xec, 0xd2, 0x69, 0x27, 0xb7, 0x62, 0x6e, 0x2a, 0x8b, 0xe6, 0x97, 0x71, 0x9f,
 									0xf8, 0x7e, 0x44, 0x54, 0x55, 0xb9],
-					signature: InvoiceSignature(RecoverableSignature::from_compact(
+					signature: Bolt11InvoiceSignature(RecoverableSignature::from_compact(
 										&[0xd7, 0x90, 0x4c, 0xc4, 0xb7, 0x4a, 0x22, 0x26, 0x9c, 0x68, 0xc1, 0xdf, 0x68,
 											0xa9, 0x6c, 0x21, 0x4d, 0x65, 0x1b, 0x93, 0x76, 0xe9, 0xf1, 0x64, 0xd3, 0x60,
 											0x4d, 0xa4, 0xb7, 0xde, 0xcc, 0xce, 0x0e, 0x82, 0xaa, 0xab, 0x4c, 0x85, 0xd3,
@@ -1018,7 +1018,7 @@ mod test {
 	fn test_raw_signed_invoice_deserialization() {
 		use crate::TaggedField::*;
 		use secp256k1::ecdsa::{RecoveryId, RecoverableSignature};
-		use crate::{SignedRawBolt11Invoice, InvoiceSignature, RawBolt11Invoice, RawHrp, RawDataPart, Currency, Sha256,
+		use crate::{SignedRawBolt11Invoice, Bolt11InvoiceSignature, RawBolt11Invoice, RawHrp, RawDataPart, Currency, Sha256,
 			 PositiveTimestamp};
 
 		assert_eq!(
@@ -1051,7 +1051,7 @@ mod test {
 					0x7b, 0x1d, 0x85, 0x8d, 0xb1, 0xd1, 0xf7, 0xab, 0x71, 0x37, 0xdc, 0xb7,
 					0x83, 0x5d, 0xb2, 0xec, 0xd5, 0x18, 0xe1, 0xc9
 				],
-				signature: InvoiceSignature(RecoverableSignature::from_compact(
+				signature: Bolt11InvoiceSignature(RecoverableSignature::from_compact(
 					& [
 						0x38u8, 0xec, 0x68, 0x91, 0x34, 0x5e, 0x20, 0x41, 0x45, 0xbe, 0x8a,
 						0x3a, 0x99, 0xde, 0x38, 0xe9, 0x8a, 0x39, 0xd6, 0xa5, 0x69, 0x43,
