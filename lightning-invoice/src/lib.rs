@@ -139,7 +139,7 @@ pub enum ParseOrSemanticError {
 	ParseError(Bolt11ParseError),
 
 	/// The invoice could be decoded but violates the BOLT11 standard
-	SemanticError(crate::SemanticError),
+	SemanticError(crate::Bolt11SemanticError),
 }
 
 /// The number of bits used to represent timestamps as defined in BOLT 11.
@@ -1154,16 +1154,16 @@ impl Bolt11Invoice {
 	}
 
 	/// Check that all mandatory fields are present
-	fn check_field_counts(&self) -> Result<(), SemanticError> {
+	fn check_field_counts(&self) -> Result<(), Bolt11SemanticError> {
 		// "A writer MUST include exactly one p field […]."
 		let payment_hash_cnt = self.tagged_fields().filter(|&tf| match *tf {
 			TaggedField::PaymentHash(_) => true,
 			_ => false,
 		}).count();
 		if payment_hash_cnt < 1 {
-			return Err(SemanticError::NoPaymentHash);
+			return Err(Bolt11SemanticError::NoPaymentHash);
 		} else if payment_hash_cnt > 1 {
-			return Err(SemanticError::MultiplePaymentHashes);
+			return Err(Bolt11SemanticError::MultiplePaymentHashes);
 		}
 
 		// "A writer MUST include either exactly one d or exactly one h field."
@@ -1172,9 +1172,9 @@ impl Bolt11Invoice {
 			_ => false,
 		}).count();
 		if  description_cnt < 1 {
-			return Err(SemanticError::NoDescription);
+			return Err(Bolt11SemanticError::NoDescription);
 		} else if description_cnt > 1 {
-			return  Err(SemanticError::MultipleDescriptions);
+			return  Err(Bolt11SemanticError::MultipleDescriptions);
 		}
 
 		self.check_payment_secret()?;
@@ -1183,33 +1183,33 @@ impl Bolt11Invoice {
 	}
 
 	/// Checks that there is exactly one payment secret field
-	fn check_payment_secret(&self) -> Result<(), SemanticError> {
+	fn check_payment_secret(&self) -> Result<(), Bolt11SemanticError> {
 		// "A writer MUST include exactly one `s` field."
 		let payment_secret_count = self.tagged_fields().filter(|&tf| match *tf {
 			TaggedField::PaymentSecret(_) => true,
 			_ => false,
 		}).count();
 		if payment_secret_count < 1 {
-			return Err(SemanticError::NoPaymentSecret);
+			return Err(Bolt11SemanticError::NoPaymentSecret);
 		} else if payment_secret_count > 1 {
-			return Err(SemanticError::MultiplePaymentSecrets);
+			return Err(Bolt11SemanticError::MultiplePaymentSecrets);
 		}
 
 		Ok(())
 	}
 
 	/// Check that amount is a whole number of millisatoshis
-	fn check_amount(&self) -> Result<(), SemanticError> {
+	fn check_amount(&self) -> Result<(), Bolt11SemanticError> {
 		if let Some(amount_pico_btc) = self.amount_pico_btc() {
 			if amount_pico_btc % 10 != 0 {
-				return Err(SemanticError::ImpreciseAmount);
+				return Err(Bolt11SemanticError::ImpreciseAmount);
 			}
 		}
 		Ok(())
 	}
 
 	/// Check that feature bits are set as required
-	fn check_feature_bits(&self) -> Result<(), SemanticError> {
+	fn check_feature_bits(&self) -> Result<(), Bolt11SemanticError> {
 		self.check_payment_secret()?;
 
 		// "A writer MUST set an s field if and only if the payment_secret feature is set."
@@ -1220,12 +1220,12 @@ impl Bolt11Invoice {
 			_ => false,
 		});
 		match features {
-			None => Err(SemanticError::InvalidFeatures),
+			None => Err(Bolt11SemanticError::InvalidFeatures),
 			Some(TaggedField::Features(features)) => {
 				if features.requires_unknown_bits() {
-					Err(SemanticError::InvalidFeatures)
+					Err(Bolt11SemanticError::InvalidFeatures)
 				} else if !features.supports_payment_secret() {
-					Err(SemanticError::InvalidFeatures)
+					Err(Bolt11SemanticError::InvalidFeatures)
 				} else {
 					Ok(())
 				}
@@ -1235,18 +1235,18 @@ impl Bolt11Invoice {
 	}
 
 	/// Check that the invoice is signed correctly and that key recovery works
-	pub fn check_signature(&self) -> Result<(), SemanticError> {
+	pub fn check_signature(&self) -> Result<(), Bolt11SemanticError> {
 		match self.signed_invoice.recover_payee_pub_key() {
 			Err(secp256k1::Error::InvalidRecoveryId) =>
-				return Err(SemanticError::InvalidRecoveryId),
+				return Err(Bolt11SemanticError::InvalidRecoveryId),
 			Err(secp256k1::Error::InvalidSignature) =>
-				return Err(SemanticError::InvalidSignature),
+				return Err(Bolt11SemanticError::InvalidSignature),
 			Err(e) => panic!("no other error may occur, got {:?}", e),
 			Ok(_) => {},
 		}
 
 		if !self.signed_invoice.check_signature() {
-			return Err(SemanticError::InvalidSignature);
+			return Err(Bolt11SemanticError::InvalidSignature);
 		}
 
 		Ok(())
@@ -1272,7 +1272,7 @@ impl Bolt11Invoice {
 	///
 	/// assert!(Bolt11Invoice::from_signed(signed).is_ok());
 	/// ```
-	pub fn from_signed(signed_invoice: SignedRawBolt11Invoice) -> Result<Self, SemanticError> {
+	pub fn from_signed(signed_invoice: SignedRawBolt11Invoice) -> Result<Self, Bolt11SemanticError> {
 		let invoice = Bolt11Invoice {
 			signed_invoice,
 		};
@@ -1654,7 +1654,7 @@ impl std::error::Error for CreationError { }
 /// Errors that may occur when converting a [`RawBolt11Invoice`] to a [`Bolt11Invoice`]. They relate to
 /// the requirements sections in BOLT #11
 #[derive(Eq, PartialEq, Debug, Clone)]
-pub enum SemanticError {
+pub enum Bolt11SemanticError {
 	/// The invoice is missing the mandatory payment hash
 	NoPaymentHash,
 
@@ -1687,25 +1687,25 @@ pub enum SemanticError {
 	ImpreciseAmount,
 }
 
-impl Display for SemanticError {
+impl Display for Bolt11SemanticError {
 	fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
 		match self {
-			SemanticError::NoPaymentHash => f.write_str("The invoice is missing the mandatory payment hash"),
-			SemanticError::MultiplePaymentHashes => f.write_str("The invoice has multiple payment hashes which isn't allowed"),
-			SemanticError::NoDescription => f.write_str("No description or description hash are part of the invoice"),
-			SemanticError::MultipleDescriptions => f.write_str("The invoice contains multiple descriptions and/or description hashes which isn't allowed"),
-			SemanticError::NoPaymentSecret => f.write_str("The invoice is missing the mandatory payment secret"),
-			SemanticError::MultiplePaymentSecrets => f.write_str("The invoice contains multiple payment secrets"),
-			SemanticError::InvalidFeatures => f.write_str("The invoice's features are invalid"),
-			SemanticError::InvalidRecoveryId => f.write_str("The recovery id doesn't fit the signature/pub key"),
-			SemanticError::InvalidSignature => f.write_str("The invoice's signature is invalid"),
-			SemanticError::ImpreciseAmount => f.write_str("The invoice's amount was not a whole number of millisatoshis"),
+			Bolt11SemanticError::NoPaymentHash => f.write_str("The invoice is missing the mandatory payment hash"),
+			Bolt11SemanticError::MultiplePaymentHashes => f.write_str("The invoice has multiple payment hashes which isn't allowed"),
+			Bolt11SemanticError::NoDescription => f.write_str("No description or description hash are part of the invoice"),
+			Bolt11SemanticError::MultipleDescriptions => f.write_str("The invoice contains multiple descriptions and/or description hashes which isn't allowed"),
+			Bolt11SemanticError::NoPaymentSecret => f.write_str("The invoice is missing the mandatory payment secret"),
+			Bolt11SemanticError::MultiplePaymentSecrets => f.write_str("The invoice contains multiple payment secrets"),
+			Bolt11SemanticError::InvalidFeatures => f.write_str("The invoice's features are invalid"),
+			Bolt11SemanticError::InvalidRecoveryId => f.write_str("The recovery id doesn't fit the signature/pub key"),
+			Bolt11SemanticError::InvalidSignature => f.write_str("The invoice's signature is invalid"),
+			Bolt11SemanticError::ImpreciseAmount => f.write_str("The invoice's amount was not a whole number of millisatoshis"),
 		}
 	}
 }
 
 #[cfg(feature = "std")]
-impl std::error::Error for SemanticError { }
+impl std::error::Error for Bolt11SemanticError { }
 
 /// When signing using a fallible method either an user-supplied `SignError` or a [`CreationError`]
 /// may occur.
@@ -1867,7 +1867,7 @@ mod test {
 		use secp256k1::Secp256k1;
 		use secp256k1::SecretKey;
 		use crate::{Bolt11Invoice, RawBolt11Invoice, RawHrp, RawDataPart, Currency, Sha256, PositiveTimestamp, 
-			 SemanticError};
+			 Bolt11SemanticError};
 
 		let private_key = SecretKey::from_slice(&[42; 32]).unwrap();
 		let payment_secret = lightning::ln::PaymentSecret([21; 32]);
@@ -1898,7 +1898,7 @@ mod test {
 			invoice.data.tagged_fields.push(PaymentSecret(payment_secret).into());
 			invoice.sign::<_, ()>(|hash| Ok(Secp256k1::new().sign_ecdsa_recoverable(hash, &private_key)))
 		}.unwrap();
-		assert_eq!(Bolt11Invoice::from_signed(invoice), Err(SemanticError::InvalidFeatures));
+		assert_eq!(Bolt11Invoice::from_signed(invoice), Err(Bolt11SemanticError::InvalidFeatures));
 
 		// Missing feature bits
 		let invoice = {
@@ -1907,7 +1907,7 @@ mod test {
 			invoice.data.tagged_fields.push(Features(InvoiceFeatures::empty()).into());
 			invoice.sign::<_, ()>(|hash| Ok(Secp256k1::new().sign_ecdsa_recoverable(hash, &private_key)))
 		}.unwrap();
-		assert_eq!(Bolt11Invoice::from_signed(invoice), Err(SemanticError::InvalidFeatures));
+		assert_eq!(Bolt11Invoice::from_signed(invoice), Err(Bolt11SemanticError::InvalidFeatures));
 
 		let mut payment_secret_features = InvoiceFeatures::empty();
 		payment_secret_features.set_payment_secret_required();
@@ -1926,7 +1926,7 @@ mod test {
 			let invoice = invoice_template.clone();
 			invoice.sign::<_, ()>(|hash| Ok(Secp256k1::new().sign_ecdsa_recoverable(hash, &private_key)))
 		}.unwrap();
-		assert_eq!(Bolt11Invoice::from_signed(invoice), Err(SemanticError::NoPaymentSecret));
+		assert_eq!(Bolt11Invoice::from_signed(invoice), Err(Bolt11SemanticError::NoPaymentSecret));
 
 		// No payment secret or feature bits
 		let invoice = {
@@ -1934,7 +1934,7 @@ mod test {
 			invoice.data.tagged_fields.push(Features(InvoiceFeatures::empty()).into());
 			invoice.sign::<_, ()>(|hash| Ok(Secp256k1::new().sign_ecdsa_recoverable(hash, &private_key)))
 		}.unwrap();
-		assert_eq!(Bolt11Invoice::from_signed(invoice), Err(SemanticError::NoPaymentSecret));
+		assert_eq!(Bolt11Invoice::from_signed(invoice), Err(Bolt11SemanticError::NoPaymentSecret));
 
 		// Missing payment secret
 		let invoice = {
@@ -1942,7 +1942,7 @@ mod test {
 			invoice.data.tagged_fields.push(Features(payment_secret_features).into());
 			invoice.sign::<_, ()>(|hash| Ok(Secp256k1::new().sign_ecdsa_recoverable(hash, &private_key)))
 		}.unwrap();
-		assert_eq!(Bolt11Invoice::from_signed(invoice), Err(SemanticError::NoPaymentSecret));
+		assert_eq!(Bolt11Invoice::from_signed(invoice), Err(Bolt11SemanticError::NoPaymentSecret));
 
 		// Multiple payment secrets
 		let invoice = {
@@ -1951,7 +1951,7 @@ mod test {
 			invoice.data.tagged_fields.push(PaymentSecret(payment_secret).into());
 			invoice.sign::<_, ()>(|hash| Ok(Secp256k1::new().sign_ecdsa_recoverable(hash, &private_key)))
 		}.unwrap();
-		assert_eq!(Bolt11Invoice::from_signed(invoice), Err(SemanticError::MultiplePaymentSecrets));
+		assert_eq!(Bolt11Invoice::from_signed(invoice), Err(Bolt11SemanticError::MultiplePaymentSecrets));
 	}
 
 	#[test]

@@ -24,7 +24,7 @@ use secp256k1::ecdsa::{RecoveryId, RecoverableSignature};
 use secp256k1::PublicKey;
 
 use super::{Bolt11Invoice, Sha256, TaggedField, ExpiryTime, MinFinalCltvExpiryDelta, Fallback, PayeePubKey, InvoiceSignature, PositiveTimestamp,
-	SemanticError, PrivateRoute, Bolt11ParseError, ParseOrSemanticError, Description, RawTaggedField, Currency, RawHrp, SiPrefix, RawBolt11Invoice,
+	Bolt11SemanticError, PrivateRoute, Bolt11ParseError, ParseOrSemanticError, Description, RawTaggedField, Currency, RawHrp, SiPrefix, RawBolt11Invoice,
 	constants, SignedRawBolt11Invoice, RawDataPart, InvoiceFeatures};
 
 use self::hrp_sm::parse_hrp;
@@ -715,8 +715,8 @@ impl From<Bolt11ParseError> for ParseOrSemanticError {
 	}
 }
 
-impl From<crate::SemanticError> for ParseOrSemanticError {
-	fn from(e: SemanticError) -> Self {
+impl From<crate::Bolt11SemanticError> for ParseOrSemanticError {
+	fn from(e: Bolt11SemanticError) -> Self {
 		ParseOrSemanticError::SemanticError(e)
 	}
 }
