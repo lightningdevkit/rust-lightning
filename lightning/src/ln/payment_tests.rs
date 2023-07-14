@@ -1337,7 +1337,7 @@ fn preflight_probes_yield_event_and_skip() {
 	let mut payment_params = PaymentParameters::from_node_id(nodes[4].node.get_our_node_id(), TEST_FINAL_CLTV)
 		.with_bolt11_features(invoice_features).unwrap();
 
-	let route_params = RouteParameters { payment_params, final_value_msat: 80_000_000 };
+	let route_params = RouteParameters::from_payment_params_and_value(payment_params, 80_000_000);
 	let res = nodes[0].node.send_preflight_probes(route_params, None).unwrap();
 
 	// We check that only one probe was sent, the other one was skipped due to limited liquidity.

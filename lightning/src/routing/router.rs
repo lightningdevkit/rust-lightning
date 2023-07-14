@@ -409,6 +409,7 @@ impl Writeable for Route {
 			(1, self.route_params.as_ref().map(|p| &p.payment_params), option),
 			(2, blinded_tails, optional_vec),
 			(3, self.route_params.as_ref().map(|p| p.final_value_msat), option),
+			(5, self.route_params.as_ref().map(|p| p.max_total_routing_fee_msat), option),
 		});
 		Ok(())
 	}
@@ -436,6 +437,7 @@ impl Readable for Route {
 			(1, payment_params, (option: ReadableArgs, min_final_cltv_expiry_delta)),
 			(2, blinded_tails, optional_vec),
 			(3, final_value_msat, option),
+			(5, max_total_routing_fee_msat, option)
 		});
 		let blinded_tails = blinded_tails.unwrap_or(Vec::new());
 		if blinded_tails.len() != 0 {
@@ -448,7 +450,7 @@ impl Readable for Route {
 		// If we previously wrote the corresponding fields, reconstruct RouteParameters.
 		let route_params = match (payment_params, final_value_msat) {
 			(Some(payment_params), Some(final_value_msat)) => {
-				Some(RouteParameters { payment_params, final_value_msat })
+				Some(RouteParameters { payment_params, final_value_msat, max_total_routing_fee_msat })
 			}
 			_ => None,
 		};
@@ -467,12 +469,20 @@ pub struct RouteParameters {
 
 	/// The amount in msats sent on the failed payment path.
 	pub final_value_msat: u64,
+
+	/// The maximum total fees, in millisatoshi, that may accrue during route finding.
+	///
+	/// This limit also applies to the total fees that may arise while retrying failed payment
+	/// paths.
+	///
+	/// Default value: `None`
+	pub max_total_routing_fee_msat: Option<u64>,
 }
 
 impl RouteParameters {
 	/// Constructs [`RouteParameters`] from the given [`PaymentParameters`] and a payment amount.
 	pub fn from_payment_params_and_value(payment_params: PaymentParameters, final_value_msat: u64) -> Self {
-		Self { payment_params, final_value_msat }
+		Self { payment_params, final_value_msat, max_total_routing_fee_msat: None }
 	}
 }
 
@@ -480,6 +490,7 @@ impl Writeable for RouteParameters {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		write_tlv_fields!(writer, {
 			(0, self.payment_params, required),
+			(1, self.max_total_routing_fee_msat, option),
 			(2, self.final_value_msat, required),
 			// LDK versions prior to 0.0.114 had the `final_cltv_expiry_delta` parameter in
 			// `RouteParameters` directly. For compatibility, we write it here.
@@ -493,6 +504,7 @@ impl Readable for RouteParameters {
 	fn read<R: io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
 		_init_and_read_len_prefixed_tlv_fields!(reader, {
 			(0, payment_params, (required: ReadableArgs, 0)),
+			(1, max_total_routing_fee_msat, option),
 			(2, final_value_msat, required),
 			(4, final_cltv_delta, option),
 		});
@@ -505,6 +517,7 @@ impl Readable for RouteParameters {
 		Ok(Self {
 			payment_params,
 			final_value_msat: final_value_msat.0.unwrap(),
+			max_total_routing_fee_msat,
 		})
 	}
 }

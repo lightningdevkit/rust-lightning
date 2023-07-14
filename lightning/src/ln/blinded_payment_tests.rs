@@ -47,10 +47,10 @@ fn do_one_hop_blinded_path(success: bool) {
 		nodes[1].node.get_our_node_id(), payee_tlvs, &chanmon_cfgs[1].keys_manager, &secp_ctx
 	).unwrap();
 
-	let route_params = RouteParameters {
-		payment_params: PaymentParameters::blinded(vec![blinded_path]),
-		final_value_msat: amt_msat
-	};
+	let route_params = RouteParameters::from_payment_params_and_value(
+		PaymentParameters::blinded(vec![blinded_path]),
+		amt_msat,
+	);
 	nodes[0].node.send_payment(payment_hash, RecipientOnionFields::spontaneous_empty(),
 	PaymentId(payment_hash.0), route_params, Retry::Attempts(0)).unwrap();
 	check_added_monitors(&nodes[0], 1);
@@ -90,11 +90,11 @@ fn mpp_to_one_hop_blinded_path() {
 
 	let bolt12_features: Bolt12InvoiceFeatures =
 		channelmanager::provided_invoice_features(&UserConfig::default()).to_context();
-	let route_params = RouteParameters {
-		payment_params: PaymentParameters::blinded(vec![blinded_path])
+	let route_params = RouteParameters::from_payment_params_and_value(
+		PaymentParameters::blinded(vec![blinded_path])
 			.with_bolt12_features(bolt12_features).unwrap(),
-		final_value_msat: amt_msat,
-	};
+		amt_msat,
+	);
 	nodes[0].node.send_payment(payment_hash, RecipientOnionFields::spontaneous_empty(), PaymentId(payment_hash.0), route_params, Retry::Attempts(0)).unwrap();
 	check_added_monitors(&nodes[0], 2);
 

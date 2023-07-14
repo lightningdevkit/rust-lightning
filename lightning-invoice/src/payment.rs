@@ -116,10 +116,7 @@ fn pay_invoice_using_amount<P: Deref>(
 	if let Some(features) = invoice.features() {
 		payment_params = payment_params.with_bolt11_features(features.clone()).unwrap();
 	}
-	let route_params = RouteParameters {
-		payment_params,
-		final_value_msat: amount_msats,
-	};
+	let route_params = RouteParameters::from_payment_params_and_value(payment_params, amount_msats);
 
 	payer.send_payment(payment_hash, recipient_onion, payment_id, route_params, retry_strategy)
 }
@@ -148,7 +145,7 @@ pub fn preflight_probe_invoice<C: AChannelManager>(
 	if let Some(features) = invoice.features() {
 		payment_params = payment_params.with_bolt11_features(features.clone()).unwrap();
 	}
-	let route_params = RouteParameters { payment_params, final_value_msat: amount_msat };
+	let route_params = RouteParameters::from_payment_params_and_value(payment_params, amount_msat);
 
 	channelmanager.get_cm().send_preflight_probes(route_params, liquidity_limit_multiplier)
 		.map_err(ProbingError::Sending)
@@ -178,7 +175,7 @@ pub fn preflight_probe_zero_value_invoice<C: AChannelManager>(
 	if let Some(features) = invoice.features() {
 		payment_params = payment_params.with_bolt11_features(features.clone()).unwrap();
 	}
-	let route_params = RouteParameters { payment_params, final_value_msat: amount_msat };
+	let route_params = RouteParameters::from_payment_params_and_value(payment_params, amount_msat);
 
 	channelmanager.get_cm().send_preflight_probes(route_params, liquidity_limit_multiplier)
 		.map_err(ProbingError::Sending)
