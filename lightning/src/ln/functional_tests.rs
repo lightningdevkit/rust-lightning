@@ -61,6 +61,8 @@ use crate::sync::{Arc, Mutex};
 use crate::ln::functional_test_utils::*;
 use crate::ln::chan_utils::CommitmentTransaction;
 
+use super::channel::UNFUNDED_CHANNEL_AGE_LIMIT_TICKS;
+
 #[test]
 fn test_insane_channel_opens() {
 	// Stand up a network of 2 nodes
@@ -10016,4 +10018,90 @@ fn test_disconnects_peer_awaiting_response_ticks() {
 			check_disconnect_event(node, false);
 		}
 	}
+}
+
+#[test]
+fn test_remove_expired_outbound_unfunded_channels() {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let temp_channel_id = nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 100_000, 0, 42, None).unwrap();
+	let open_channel_message = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
+	nodes[1].node.handle_open_channel(&nodes[0].node.get_our_node_id(), &open_channel_message);
+	let accept_channel_message = get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, nodes[0].node.get_our_node_id());
+	nodes[0].node.handle_accept_channel(&nodes[1].node.get_our_node_id(), &accept_channel_message);
+
+	let events = nodes[0].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1);
+	match events[0] {
+		Event::FundingGenerationReady { .. } => (),
+		_ => panic!("Unexpected event"),
+	};
+
+	// Asserts the outbound channel has been removed from a nodes[0]'s peer state map.
+	let check_outbound_channel_existence = |should_exist: bool| {
+		let per_peer_state = nodes[0].node.per_peer_state.read().unwrap();
+		let chan_lock = per_peer_state.get(&nodes[1].node.get_our_node_id()).unwrap().lock().unwrap();
+		assert_eq!(chan_lock.outbound_v1_channel_by_id.contains_key(&temp_channel_id), should_exist);
+	};
+
+	// Channel should exist without any timer ticks.
+	check_outbound_channel_existence(true);
+
+	// Channel should exist with 1 timer tick less than required.
+	for _ in 0..UNFUNDED_CHANNEL_AGE_LIMIT_TICKS - 1 {
+		nodes[0].node.timer_tick_occurred();
+		check_outbound_channel_existence(true)
+	}
+
+	// Remove channel after reaching the required ticks.
+	nodes[0].node.timer_tick_occurred();
+	check_outbound_channel_existence(false);
+
+	check_closed_event!(nodes[0], 1, ClosureReason::HolderForceClosed);
+}
+
+#[test]
+fn test_remove_expired_inbound_unfunded_channels() {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let temp_channel_id = nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 100_000, 0, 42, None).unwrap();
+	let open_channel_message = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
+	nodes[1].node.handle_open_channel(&nodes[0].node.get_our_node_id(), &open_channel_message);
+	let accept_channel_message = get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, nodes[0].node.get_our_node_id());
+	nodes[0].node.handle_accept_channel(&nodes[1].node.get_our_node_id(), &accept_channel_message);
+
+	let events = nodes[0].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1);
+	match events[0] {
+		Event::FundingGenerationReady { .. } => (),
+		_ => panic!("Unexpected event"),
+	};
+
+	// Asserts the inbound channel has been removed from a nodes[1]'s peer state map.
+	let check_inbound_channel_existence = |should_exist: bool| {
+		let per_peer_state = nodes[1].node.per_peer_state.read().unwrap();
+		let chan_lock = per_peer_state.get(&nodes[0].node.get_our_node_id()).unwrap().lock().unwrap();
+		assert_eq!(chan_lock.inbound_v1_channel_by_id.contains_key(&temp_channel_id), should_exist);
+	};
+
+	// Channel should exist without any timer ticks.
+	check_inbound_channel_existence(true);
+
+	// Channel should exist with 1 timer tick less than required.
+	for _ in 0..UNFUNDED_CHANNEL_AGE_LIMIT_TICKS - 1 {
+		nodes[1].node.timer_tick_occurred();
+		check_inbound_channel_existence(true)
+	}
+
+	// Remove channel after reaching the required ticks.
+	nodes[1].node.timer_tick_occurred();
+	check_inbound_channel_existence(false);
+
+	check_closed_event!(nodes[1], 1, ClosureReason::HolderForceClosed);
 }

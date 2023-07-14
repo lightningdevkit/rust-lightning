@@ -40,7 +40,7 @@ use crate::events::{Event, EventHandler, EventsProvider, MessageSendEvent, Messa
 // Since this struct is returned in `list_channels` methods, expose it here in case users want to
 // construct one themselves.
 use crate::ln::{inbound_payment, PaymentHash, PaymentPreimage, PaymentSecret};
-use crate::ln::channel::{Channel, ChannelContext, ChannelError, ChannelUpdateStatus, ShutdownResult, UpdateFulfillCommitFetch, OutboundV1Channel, InboundV1Channel};
+use crate::ln::channel::{Channel, ChannelContext, ChannelError, ChannelUpdateStatus, ShutdownResult, UnfundedChannelContext, UpdateFulfillCommitFetch, OutboundV1Channel, InboundV1Channel};
 use crate::ln::features::{ChannelFeatures, ChannelTypeFeatures, InitFeatures, NodeFeatures};
 #[cfg(any(feature = "_test_utils", test))]
 use crate::ln::features::Bolt11InvoiceFeatures;
@@ -4326,6 +4326,7 @@ where
 	///  * Expiring a channel's previous [`ChannelConfig`] if necessary to only allow forwarding HTLCs
 	///    with the current [`ChannelConfig`].
 	///  * Removing peers which have disconnected but and no longer have any channels.
+	///  * Force-closing and removing channels which have not completed establishment in a timely manner.
 	///
 	/// Note that this may cause reentrancy through [`chain::Watch::update_channel`] calls or feerate
 	/// estimate fetches.
@@ -4420,6 +4421,26 @@ where
 
 						true
 					});
+
+					let process_unfunded_channel_tick = |
+						chan_id: &[u8; 32],
+						chan_context: &mut ChannelContext<<SP::Target as SignerProvider>::Signer>,
+						unfunded_chan_context: &mut UnfundedChannelContext,
+					| {
+						chan_context.maybe_expire_prev_config();
+						if unfunded_chan_context.should_expire_unfunded_channel() {
+							log_error!(self.logger, "Force-closing pending outbound channel {} for not establishing in a timely manner", log_bytes!(&chan_id[..]));
+							update_maps_on_chan_removal!(self, &chan_context);
+							self.issue_channel_close_events(&chan_context, ClosureReason::HolderForceClosed);
+							self.finish_force_close_channel(chan_context.force_shutdown(false));
+							false
+						} else {
+							true
+						}
+					};
+					peer_state.outbound_v1_channel_by_id.retain(|chan_id, chan| process_unfunded_channel_tick(chan_id, &mut chan.context, &mut chan.unfunded_context));
+					peer_state.inbound_v1_channel_by_id.retain(|chan_id, chan| process_unfunded_channel_tick(chan_id, &mut chan.context, &mut chan.unfunded_context));
+
 					if peer_state.ok_to_remove(true) {
 						pending_peers_awaiting_removal.push(counterparty_node_id);
 					}

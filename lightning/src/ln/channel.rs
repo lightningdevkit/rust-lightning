@@ -590,6 +590,11 @@ pub(crate) const EXPIRE_PREV_CONFIG_TICKS: usize = 5;
 /// See [`ChannelContext::sent_message_awaiting_response`] for more information.
 pub(crate) const DISCONNECT_PEER_AWAITING_RESPONSE_TICKS: usize = 2;
 
+/// The number of ticks that may elapse while we're waiting for an unfunded outbound/inbound channel
+/// to be promoted to a [`Channel`] since the unfunded channel was created. An unfunded channel
+/// exceeding this age limit will be force-closed and purged from memory.
+pub(crate) const UNFUNDED_CHANNEL_AGE_LIMIT_TICKS: usize = 60;
+
 struct PendingChannelMonitorUpdate {
 	update: ChannelMonitorUpdate,
 }
@@ -597,6 +602,28 @@ struct PendingChannelMonitorUpdate {
 impl_writeable_tlv_based!(PendingChannelMonitorUpdate, {
 	(0, update, required),
 });
+
+/// Contains all state common to unfunded inbound/outbound channels.
+pub(super) struct UnfundedChannelContext {
+	/// A counter tracking how many ticks have elapsed since this unfunded channel was
+	/// created. If this unfunded channel reaches peer has yet to respond after reaching
+	/// `UNFUNDED_CHANNEL_AGE_LIMIT_TICKS`, it will be force-closed and purged from memory.
+	///
+	/// This is so that we don't keep channels around that haven't progressed to a funded state
+	/// in a timely manner.
+	unfunded_channel_age_ticks: usize,
+}
+
+impl UnfundedChannelContext {
+	/// Determines whether we should force-close and purge this unfunded channel from memory due to it
+	/// having reached the unfunded channel age limit.
+	///
+	/// This should be called on every [`super::channelmanager::ChannelManager::timer_tick_occurred`].
+	pub fn should_expire_unfunded_channel(&mut self) -> bool {
+		self.unfunded_channel_age_ticks += 1;
+		self.unfunded_channel_age_ticks >= UNFUNDED_CHANNEL_AGE_LIMIT_TICKS
+	}
+}
 
 /// Contains everything about the channel including state, and various flags.
 pub(super) struct ChannelContext<Signer: ChannelSigner> {
@@ -5477,6 +5504,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 /// A not-yet-funded outbound (from holder) channel using V1 channel establishment.
 pub(super) struct OutboundV1Channel<Signer: ChannelSigner> {
 	pub context: ChannelContext<Signer>,
+	pub unfunded_context: UnfundedChannelContext,
 }
 
 impl<Signer: WriteableEcdsaChannelSigner> OutboundV1Channel<Signer> {
@@ -5678,7 +5706,8 @@ impl<Signer: WriteableEcdsaChannelSigner> OutboundV1Channel<Signer> {
 				channel_keys_id,
 
 				blocked_monitor_updates: Vec::new(),
-			}
+			},
+			unfunded_context: UnfundedChannelContext { unfunded_channel_age_ticks: 0 }
 		})
 	}
 
@@ -5983,6 +6012,7 @@ impl<Signer: WriteableEcdsaChannelSigner> OutboundV1Channel<Signer> {
 /// A not-yet-funded inbound (from counterparty) channel using V1 channel establishment.
 pub(super) struct InboundV1Channel<Signer: ChannelSigner> {
 	pub context: ChannelContext<Signer>,
+	pub unfunded_context: UnfundedChannelContext,
 }
 
 impl<Signer: WriteableEcdsaChannelSigner> InboundV1Channel<Signer> {
@@ -6310,7 +6340,8 @@ impl<Signer: WriteableEcdsaChannelSigner> InboundV1Channel<Signer> {
 				channel_keys_id,
 
 				blocked_monitor_updates: Vec::new(),
-			}
+			},
+			unfunded_context: UnfundedChannelContext { unfunded_channel_age_ticks: 0 }
 		};
 
 		Ok(chan)
