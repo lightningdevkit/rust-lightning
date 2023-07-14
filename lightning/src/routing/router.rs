@@ -5270,8 +5270,20 @@ mod tests {
 		}
 
 		{
+			// Attempt to route while setting max_total_routing_fee_msat to 149_999 results in a failure.
+			let route_params = RouteParameters { payment_params: payment_params.clone(), final_value_msat: 200_000,
+				max_total_routing_fee_msat: Some(149_999) };
+			if let Err(LightningError{err, action: ErrorAction::IgnoreError}) = get_route(
+				&our_id, &route_params, &network_graph.read_only(), None, Arc::clone(&logger),
+				&scorer, &(), &random_seed_bytes) {
+					assert_eq!(err, "Failed to find a sufficient route to the given destination");
+			} else { panic!(); }
+		}
+
+		{
 			// Now, attempt to route 200 sats (exact amount we can route).
-			let route_params = RouteParameters::from_payment_params_and_value(payment_params, 200_000);
+			let route_params = RouteParameters { payment_params: payment_params.clone(), final_value_msat: 200_000,
+				max_total_routing_fee_msat: Some(150_000) };
 			let route = get_route(&our_id, &route_params, &network_graph.read_only(), None,
 				Arc::clone(&logger), &scorer, &(), &random_seed_bytes).unwrap();
 			assert_eq!(route.paths.len(), 2);
