@@ -375,6 +375,18 @@ impl InteractiveTxConstructor {
 			mode
 		}
 	}
+
+	fn abort_negotation(&mut self, reason: AbortReason) {
+		let mut mode = core::mem::take(&mut self.mode);
+		self.mode = if let ChannelMode::Negotiating(constructor) = mode {
+			match constructor.abort_negotiation(reason) {
+				Err(c) => ChannelMode::NegotiationAborted(c),
+				Ok(c) => ChannelMode::Negotiating(c),
+			}
+		} else {
+			mode
+		}
+	}
 }
 
 #[cfg(test)]
