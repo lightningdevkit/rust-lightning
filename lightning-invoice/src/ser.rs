@@ -4,7 +4,7 @@ use bech32::{ToBase32, u5, WriteBase32, Base32Len};
 use crate::prelude::*;
 
 use super::{Bolt11Invoice, Sha256, TaggedField, ExpiryTime, MinFinalCltvExpiryDelta, Fallback, PayeePubKey, InvoiceSignature, PositiveTimestamp,
-	PrivateRoute, Description, RawTaggedField, Currency, RawHrp, SiPrefix, constants, SignedRawInvoice, RawDataPart};
+	PrivateRoute, Description, RawTaggedField, Currency, RawHrp, SiPrefix, constants, SignedRawBolt11Invoice, RawDataPart};
 
 /// Converts a stream of bytes written to it to base32. On finalization the according padding will
 /// be applied. That means the results of writing two data blocks with one or two `BytesToBase32`
@@ -112,7 +112,7 @@ impl Display for Bolt11Invoice {
 	}
 }
 
-impl Display for SignedRawInvoice {
+impl Display for SignedRawBolt11Invoice {
 	fn fmt(&self, f: &mut Formatter) -> Result<(), fmt::Error> {
 		let hrp = self.raw_invoice.hrp.to_string();
 		let mut data  = self.raw_invoice.data.to_base32();

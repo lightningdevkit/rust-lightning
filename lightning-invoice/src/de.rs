@@ -24,8 +24,8 @@ use secp256k1::ecdsa::{RecoveryId, RecoverableSignature};
 use secp256k1::PublicKey;
 
 use super::{Bolt11Invoice, Sha256, TaggedField, ExpiryTime, MinFinalCltvExpiryDelta, Fallback, PayeePubKey, InvoiceSignature, PositiveTimestamp,
-	SemanticError, PrivateRoute, ParseError, ParseOrSemanticError, Description, RawTaggedField, Currency, RawHrp, SiPrefix, RawInvoice,
-	constants, SignedRawInvoice, RawDataPart, InvoiceFeatures};
+	SemanticError, PrivateRoute, ParseError, ParseOrSemanticError, Description, RawTaggedField, Currency, RawHrp, SiPrefix, RawBolt11Invoice,
+	constants, SignedRawBolt11Invoice, RawDataPart, InvoiceFeatures};
 
 use self::hrp_sm::parse_hrp;
 
@@ -231,7 +231,7 @@ impl FromStr for Bolt11Invoice {
 	type Err = ParseOrSemanticError;
 
 	fn from_str(s: &str) -> Result<Self, <Self as FromStr>::Err> {
-		let signed = s.parse::<SignedRawInvoice>()?;
+		let signed = s.parse::<SignedRawBolt11Invoice>()?;
 		Ok(Bolt11Invoice::from_signed(signed)?)
 	}
 }
@@ -253,7 +253,7 @@ impl FromStr for Bolt11Invoice {
 ///
 /// let parsed_1 = invoice.parse::<Bolt11Invoice>();
 ///
-/// let parsed_2 = match invoice.parse::<SignedRawInvoice>() {
+/// let parsed_2 = match invoice.parse::<SignedRawBolt11Invoice>() {
 /// 	Ok(signed) => match Bolt11Invoice::from_signed(signed) {
 /// 		Ok(invoice) => Ok(invoice),
 /// 		Err(e) => Err(ParseOrSemanticError::SemanticError(e)),
@@ -264,7 +264,7 @@ impl FromStr for Bolt11Invoice {
 /// assert!(parsed_1.is_ok());
 /// assert_eq!(parsed_1, parsed_2);
 /// ```
-impl FromStr for SignedRawInvoice {
+impl FromStr for SignedRawBolt11Invoice {
 	type Err = ParseError;
 
 	fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -283,12 +283,12 @@ impl FromStr for SignedRawInvoice {
 		let raw_hrp: RawHrp = hrp.parse()?;
 		let data_part = RawDataPart::from_base32(&data[..data.len()-104])?;
 
-		Ok(SignedRawInvoice {
-			raw_invoice: RawInvoice {
+		Ok(SignedRawBolt11Invoice {
+			raw_invoice: RawBolt11Invoice {
 				hrp: raw_hrp,
 				data: data_part,
 			},
-			hash: RawInvoice::hash_from_parts(
+			hash: RawBolt11Invoice::hash_from_parts(
 				hrp.as_bytes(),
 				&data[..data.len()-104]
 			),
@@ -972,14 +972,14 @@ mod test {
 		use lightning::ln::features::InvoiceFeatures;
 		use secp256k1::ecdsa::{RecoveryId, RecoverableSignature};
 		use crate::TaggedField::*;
-		use crate::{SiPrefix, SignedRawInvoice, InvoiceSignature, RawInvoice, RawHrp, RawDataPart,
+		use crate::{SiPrefix, SignedRawBolt11Invoice, InvoiceSignature, RawBolt11Invoice, RawHrp, RawDataPart,
 				 Currency, Sha256, PositiveTimestamp};
 
 		// Feature bits 9, 15, and 99 are set.
 		let expected_features = InvoiceFeatures::from_le_bytes(vec![0, 130, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 8]);
 		let invoice_str = "lnbc25m1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdq5vdhkven9v5sxyetpdeessp5zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygs9q5sqqqqqqqqqqqqqqqpqsq67gye39hfg3zd8rgc80k32tvy9xk2xunwm5lzexnvpx6fd77en8qaq424dxgt56cag2dpt359k3ssyhetktkpqh24jqnjyw6uqd08sgptq44qu";
-		let invoice = SignedRawInvoice {
-					raw_invoice: RawInvoice {
+		let invoice = SignedRawBolt11Invoice {
+					raw_invoice: RawBolt11Invoice {
 						hrp: RawHrp {
 							currency: Currency::Bitcoin,
 							raw_amount: Some(25),
@@ -1018,15 +1018,15 @@ mod test {
 	fn test_raw_signed_invoice_deserialization() {
 		use crate::TaggedField::*;
 		use secp256k1::ecdsa::{RecoveryId, RecoverableSignature};
-		use crate::{SignedRawInvoice, InvoiceSignature, RawInvoice, RawHrp, RawDataPart, Currency, Sha256,
+		use crate::{SignedRawBolt11Invoice, InvoiceSignature, RawBolt11Invoice, RawHrp, RawDataPart, Currency, Sha256,
 			 PositiveTimestamp};
 
 		assert_eq!(
 			"lnbc1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdpl2pkx2ctnv5sxxmmw\
 			wd5kgetjypeh2ursdae8g6twvus8g6rfwvs8qun0dfjkxaq8rkx3yf5tcsyz3d73gafnh3cax9rn449d9p5uxz9\
 			ezhhypd0elx87sjle52x86fux2ypatgddc6k63n7erqz25le42c4u4ecky03ylcqca784w".parse(),
-			Ok(SignedRawInvoice {
-				raw_invoice: RawInvoice {
+			Ok(SignedRawBolt11Invoice {
+				raw_invoice: RawBolt11Invoice {
 					hrp: RawHrp {
 						currency: Currency::Bitcoin,
 						raw_amount: None,

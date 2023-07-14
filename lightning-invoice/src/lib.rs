@@ -251,7 +251,7 @@ pub struct InvoiceBuilder<D: tb::Bool, H: tb::Bool, T: tb::Bool, C: tb::Bool, S:
 /// [`Bolt11Invoice::from_str`]: crate::Bolt11Invoice#impl-FromStr
 #[derive(Eq, PartialEq, Debug, Clone, Hash, Ord, PartialOrd)]
 pub struct Bolt11Invoice {
-	signed_invoice: SignedRawInvoice,
+	signed_invoice: SignedRawBolt11Invoice,
 }
 
 /// Represents the description of an invoice which has to be either a directly included string or
@@ -268,23 +268,23 @@ pub enum InvoiceDescription<'f> {
 	Hash(&'f Sha256),
 }
 
-/// Represents a signed [`RawInvoice`] with cached hash. The signature is not checked and may be
+/// Represents a signed [`RawBolt11Invoice`] with cached hash. The signature is not checked and may be
 /// invalid.
 ///
 /// # Invariants
-/// The hash has to be either from the deserialized invoice or from the serialized [`RawInvoice`].
+/// The hash has to be either from the deserialized invoice or from the serialized [`RawBolt11Invoice`].
 #[derive(Eq, PartialEq, Debug, Clone, Hash, Ord, PartialOrd)]
-pub struct SignedRawInvoice {
-	/// The rawInvoice that the signature belongs to
-	raw_invoice: RawInvoice,
+pub struct SignedRawBolt11Invoice {
+	/// The raw invoice that the signature belongs to
+	raw_invoice: RawBolt11Invoice,
 
-	/// Hash of the [`RawInvoice`] that will be used to check the signature.
+	/// Hash of the [`RawBolt11Invoice`] that will be used to check the signature.
 	///
-	/// * if the `SignedRawInvoice` was deserialized the hash is of from the original encoded form,
+	/// * if the `SignedRawBolt11Invoice` was deserialized the hash is of from the original encoded form,
 	/// since it's not guaranteed that encoding it again will lead to the same result since integers
 	/// could have been encoded with leading zeroes etc.
-	/// * if the `SignedRawInvoice` was constructed manually the hash will be the calculated hash
-	/// from the [`RawInvoice`]
+	/// * if the `SignedRawBolt11Invoice` was constructed manually the hash will be the calculated hash
+	/// from the [`RawBolt11Invoice`]
 	hash: [u8; 32],
 
 	/// signature of the payment request
@@ -297,7 +297,7 @@ pub struct SignedRawInvoice {
 ///
 /// For methods without docs see the corresponding methods in [`Bolt11Invoice`].
 #[derive(Eq, PartialEq, Debug, Clone, Hash, Ord, PartialOrd)]
-pub struct RawInvoice {
+pub struct RawBolt11Invoice {
 	/// human readable part
 	pub hrp: RawHrp,
 
@@ -305,7 +305,7 @@ pub struct RawInvoice {
 	pub data: RawDataPart,
 }
 
-/// Data of the [`RawInvoice`] that is encoded in the human readable part.
+/// Data of the [`RawBolt11Invoice`] that is encoded in the human readable part.
 ///
 /// This is not exported to bindings users as we don't yet support `Option<Enum>`
 #[derive(Eq, PartialEq, Debug, Clone, Hash, Ord, PartialOrd)]
@@ -320,7 +320,7 @@ pub struct RawHrp {
 	pub si_prefix: Option<SiPrefix>,
 }
 
-/// Data of the [`RawInvoice`] that is encoded in the data part
+/// Data of the [`RawBolt11Invoice`] that is encoded in the data part
 #[derive(Eq, PartialEq, Debug, Clone, Hash, Ord, PartialOrd)]
 pub struct RawDataPart {
 	/// generation time of the invoice
@@ -621,9 +621,9 @@ impl<D: tb::Bool, H: tb::Bool, T: tb::Bool, C: tb::Bool, S: tb::Bool, M: tb::Boo
 }
 
 impl<D: tb::Bool, H: tb::Bool, C: tb::Bool, S: tb::Bool, M: tb::Bool> InvoiceBuilder<D, H, tb::True, C, S, M> {
-	/// Builds a [`RawInvoice`] if no [`CreationError`] occurred while construction any of the
+	/// Builds a [`RawBolt11Invoice`] if no [`CreationError`] occurred while construction any of the
 	/// fields.
-	pub fn build_raw(self) -> Result<RawInvoice, CreationError> {
+	pub fn build_raw(self) -> Result<RawBolt11Invoice, CreationError> {
 
 		// If an error occurred at any time before, return it now
 		if let Some(e) = self.error {
@@ -647,7 +647,7 @@ impl<D: tb::Bool, H: tb::Bool, C: tb::Bool, S: tb::Bool, M: tb::Bool> InvoiceBui
 			tagged_fields,
 		};
 
-		Ok(RawInvoice {
+		Ok(RawBolt11Invoice {
 			hrp,
 			data,
 		})
@@ -850,21 +850,21 @@ impl<M: tb::Bool> InvoiceBuilder<tb::True, tb::True, tb::True, tb::True, tb::Tru
 }
 
 
-impl SignedRawInvoice {
-	/// Disassembles the `SignedRawInvoice` into its three parts:
+impl SignedRawBolt11Invoice {
+	/// Disassembles the `SignedRawBolt11Invoice` into its three parts:
 	///  1. raw invoice
 	///  2. hash of the raw invoice
 	///  3. signature
-	pub fn into_parts(self) -> (RawInvoice, [u8; 32], InvoiceSignature) {
+	pub fn into_parts(self) -> (RawBolt11Invoice, [u8; 32], InvoiceSignature) {
 		(self.raw_invoice, self.hash, self.signature)
 	}
 
-	/// The [`RawInvoice`] which was signed.
-	pub fn raw_invoice(&self) -> &RawInvoice {
+	/// The [`RawBolt11Invoice`] which was signed.
+	pub fn raw_invoice(&self) -> &RawBolt11Invoice {
 		&self.raw_invoice
 	}
 
-	/// The hash of the [`RawInvoice`] that was signed.
+	/// The hash of the [`RawBolt11Invoice`] that was signed.
 	pub fn signable_hash(&self) -> &[u8; 32] {
 		&self.hash
 	}
@@ -968,7 +968,7 @@ macro_rules! find_all_extract {
 }
 
 #[allow(missing_docs)]
-impl RawInvoice {
+impl RawBolt11Invoice {
 	/// Hash the HRP as bytes and signatureless data part.
 	fn hash_from_parts(hrp_bytes: &[u8], data_without_signature: &[u5]) -> [u8; 32] {
 		let preimage = construct_invoice_preimage(hrp_bytes, data_without_signature);
@@ -977,23 +977,23 @@ impl RawInvoice {
 		hash
 	}
 
-	/// Calculate the hash of the encoded `RawInvoice` which should be signed.
+	/// Calculate the hash of the encoded `RawBolt11Invoice` which should be signed.
 	pub fn signable_hash(&self) -> [u8; 32] {
 		use bech32::ToBase32;
 
-		RawInvoice::hash_from_parts(
+		RawBolt11Invoice::hash_from_parts(
 			self.hrp.to_string().as_bytes(),
 			&self.data.to_base32()
 		)
 	}
 
 	/// Signs the invoice using the supplied `sign_method`. This function MAY fail with an error of
-	/// type `E`. Since the signature of a [`SignedRawInvoice`] is not required to be valid there
+	/// type `E`. Since the signature of a [`SignedRawBolt11Invoice`] is not required to be valid there
 	/// are no constraints regarding the validity of the produced signature.
 	///
 	/// This is not exported to bindings users as we don't currently support passing function pointers into methods
 	/// explicitly.
-	pub fn sign<F, E>(self, sign_method: F) -> Result<SignedRawInvoice, E>
+	pub fn sign<F, E>(self, sign_method: F) -> Result<SignedRawBolt11Invoice, E>
 		where F: FnOnce(&Message) -> Result<RecoverableSignature, E>
 	{
 		let raw_hash = self.signable_hash();
@@ -1001,7 +1001,7 @@ impl RawInvoice {
 			.expect("Hash is 32 bytes long, same as MESSAGE_SIZE");
 		let signature = sign_method(&hash)?;
 
-		Ok(SignedRawInvoice {
+		Ok(SignedRawBolt11Invoice {
 			raw_invoice: self,
 			hash: raw_hash,
 			signature: InvoiceSignature(signature),
@@ -1143,13 +1143,13 @@ impl From<PositiveTimestamp> for SystemTime {
 }
 
 impl Bolt11Invoice {
-	/// The hash of the [`RawInvoice`] that was signed.
+	/// The hash of the [`RawBolt11Invoice`] that was signed.
 	pub fn signable_hash(&self) -> [u8; 32] {
 		self.signed_invoice.hash
 	}
 
 	/// Transform the `Bolt11Invoice` into its unchecked version.
-	pub fn into_signed_raw(self) -> SignedRawInvoice {
+	pub fn into_signed_raw(self) -> SignedRawBolt11Invoice {
 		self.signed_invoice
 	}
 
@@ -1252,7 +1252,7 @@ impl Bolt11Invoice {
 		Ok(())
 	}
 
-	/// Constructs a `Bolt11Invoice` from a [`SignedRawInvoice`] by checking all its invariants.
+	/// Constructs a `Bolt11Invoice` from a [`SignedRawBolt11Invoice`] by checking all its invariants.
 	/// ```
 	/// use lightning_invoice::*;
 	///
@@ -1268,11 +1268,11 @@ impl Bolt11Invoice {
 	/// 8s0gyuxjjgux34w75dnc6xp2l35j7es3jd4ugt3lu0xzre26yg5m7ke54n2d5sym4xcmxtl8238xxvw5h5h5\
 	/// j5r6drg6k6zcqj0fcwg";
 	///
-	/// let signed = invoice.parse::<SignedRawInvoice>().unwrap();
+	/// let signed = invoice.parse::<SignedRawBolt11Invoice>().unwrap();
 	///
 	/// assert!(Bolt11Invoice::from_signed(signed).is_ok());
 	/// ```
-	pub fn from_signed(signed_invoice: SignedRawInvoice) -> Result<Self, SemanticError> {
+	pub fn from_signed(signed_invoice: SignedRawBolt11Invoice) -> Result<Self, SemanticError> {
 		let invoice = Bolt11Invoice {
 			signed_invoice,
 		};
@@ -1599,15 +1599,15 @@ impl Deref for InvoiceSignature {
 	}
 }
 
-impl Deref for SignedRawInvoice {
-	type Target = RawInvoice;
+impl Deref for SignedRawBolt11Invoice {
+	type Target = RawBolt11Invoice;
 
-	fn deref(&self) -> &RawInvoice {
+	fn deref(&self) -> &RawBolt11Invoice {
 		&self.raw_invoice
 	}
 }
 
-/// Errors that may occur when constructing a new [`RawInvoice`] or [`Bolt11Invoice`]
+/// Errors that may occur when constructing a new [`RawBolt11Invoice`] or [`Bolt11Invoice`]
 #[derive(Eq, PartialEq, Debug, Clone)]
 pub enum CreationError {
 	/// The supplied description string was longer than 639 __bytes__ (see [`Description::new`])
@@ -1651,7 +1651,7 @@ impl Display for CreationError {
 #[cfg(feature = "std")]
 impl std::error::Error for CreationError { }
 
-/// Errors that may occur when converting a [`RawInvoice`] to a [`Bolt11Invoice`]. They relate to
+/// Errors that may occur when converting a [`RawBolt11Invoice`] to a [`Bolt11Invoice`]. They relate to
 /// the requirements sections in BOLT #11
 #[derive(Eq, PartialEq, Debug, Clone)]
 pub enum SemanticError {
@@ -1760,10 +1760,10 @@ mod test {
 
 	#[test]
 	fn test_calc_invoice_hash() {
-		use crate::{RawInvoice, RawHrp, RawDataPart, Currency, PositiveTimestamp};
+		use crate::{RawBolt11Invoice, RawHrp, RawDataPart, Currency, PositiveTimestamp};
 		use crate::TaggedField::*;
 
-		let invoice = RawInvoice {
+		let invoice = RawBolt11Invoice {
 			hrp: RawHrp {
 				currency: Currency::Bitcoin,
 				raw_amount: None,
@@ -1797,11 +1797,11 @@ mod test {
 		use secp256k1::Secp256k1;
 		use secp256k1::ecdsa::{RecoveryId, RecoverableSignature};
 		use secp256k1::{SecretKey, PublicKey};
-		use crate::{SignedRawInvoice, InvoiceSignature, RawInvoice, RawHrp, RawDataPart, Currency, Sha256,
+		use crate::{SignedRawBolt11Invoice, InvoiceSignature, RawBolt11Invoice, RawHrp, RawDataPart, Currency, Sha256,
 			 PositiveTimestamp};
 
-		let invoice = SignedRawInvoice {
-			raw_invoice: RawInvoice {
+		let invoice = SignedRawBolt11Invoice {
+			raw_invoice: RawBolt11Invoice {
 				hrp: RawHrp {
 					currency: Currency::Bitcoin,
 					raw_amount: None,
@@ -1866,12 +1866,12 @@ mod test {
 		use lightning::ln::features::InvoiceFeatures;
 		use secp256k1::Secp256k1;
 		use secp256k1::SecretKey;
-		use crate::{Bolt11Invoice, RawInvoice, RawHrp, RawDataPart, Currency, Sha256, PositiveTimestamp, 
+		use crate::{Bolt11Invoice, RawBolt11Invoice, RawHrp, RawDataPart, Currency, Sha256, PositiveTimestamp, 
 			 SemanticError};
 
 		let private_key = SecretKey::from_slice(&[42; 32]).unwrap();
 		let payment_secret = lightning::ln::PaymentSecret([21; 32]);
-		let invoice_template = RawInvoice {
+		let invoice_template = RawBolt11Invoice {
 			hrp: RawHrp {
 				currency: Currency::Bitcoin,
 				raw_amount: None,

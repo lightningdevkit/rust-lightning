@@ -19,7 +19,7 @@ use std::collections::HashSet;
 use std::time::Duration;
 use std::str::FromStr;
 
-fn get_test_tuples() -> Vec<(String, SignedRawInvoice, bool, bool)> {
+fn get_test_tuples() -> Vec<(String, SignedRawBolt11Invoice, bool, bool)> {
 	vec![
 		(
 			"lnbc1pvjluezsp5zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygspp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdpl2pkx2ctnv5sxxmmwwd5kgetjypeh2ursdae8g6twvus8g6rfwvs8qun0dfjkxaq9qrsgq357wnc5r2ueh7ck6q93dj32dlqnls087fxdwk8qakdyafkq3yap9us6v52vjjsrvywa6rt52cm9r9zqt8r2t7mlcwspyetp5h2tztugp9lfyql".to_owned(),
@@ -389,7 +389,7 @@ fn get_test_tuples() -> Vec<(String, SignedRawInvoice, bool, bool)> {
 fn invoice_deserialize() {
 	for (serialized, deserialized, ignore_feature_diff, ignore_unknown_fields) in get_test_tuples() {
 		eprintln!("Testing invoice {}...", serialized);
-		let parsed = serialized.parse::<SignedRawInvoice>().unwrap();
+		let parsed = serialized.parse::<SignedRawBolt11Invoice>().unwrap();
 
 		let (parsed_invoice, _, parsed_sig) = parsed.into_parts();
 		let (deserialized_invoice, _, deserialized_sig) = deserialized.into_parts();
@@ -412,7 +412,7 @@ fn invoice_deserialize() {
 		}
 		assert_eq!(deserialized_hunks, parsed_hunks);
 
-		Bolt11Invoice::from_signed(serialized.parse::<SignedRawInvoice>().unwrap()).unwrap();
+		Bolt11Invoice::from_signed(serialized.parse::<SignedRawBolt11Invoice>().unwrap()).unwrap();
 	}
 }
 
