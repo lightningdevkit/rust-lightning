@@ -14,8 +14,8 @@ use crate::io::{self, Read};
 use crate::ln::msgs::DecodeError;
 use crate::offers::invoice_error::InvoiceError;
 use crate::offers::invoice_request::InvoiceRequest;
-use crate::offers::invoice::Invoice;
-use crate::offers::parse::ParseError;
+use crate::offers::invoice::Bolt12Invoice;
+use crate::offers::parse::Bolt12ParseError;
 use crate::util::logger::Logger;
 use crate::util::ser::{Readable, ReadableArgs, Writeable, Writer};
 
@@ -30,8 +30,8 @@ const INVOICE_ERROR_TLV_TYPE: u64 = 68;
 ///
 /// [`OnionMessage`]: crate::ln::msgs::OnionMessage
 pub trait OffersMessageHandler {
-	/// Handles the given message by either responding with an [`Invoice`], sending a payment, or
-	/// replying with an error.
+	/// Handles the given message by either responding with an [`Bolt12Invoice`], sending a payment,
+	/// or replying with an error.
 	fn handle_message(&self, message: OffersMessage) -> Option<OffersMessage>;
 }
 
@@ -40,15 +40,15 @@ pub trait OffersMessageHandler {
 /// [`OnionMessage`]: crate::ln::msgs::OnionMessage
 #[derive(Debug)]
 pub enum OffersMessage {
-	/// A request for an [`Invoice`] for a particular [`Offer`].
+	/// A request for a [`Bolt12Invoice`] for a particular [`Offer`].
 	///
 	/// [`Offer`]: crate::offers::offer::Offer
 	InvoiceRequest(InvoiceRequest),
 
-	/// An [`Invoice`] sent in response to an [`InvoiceRequest`] or a [`Refund`].
+	/// A [`Bolt12Invoice`] sent in response to an [`InvoiceRequest`] or a [`Refund`].
 	///
 	/// [`Refund`]: crate::offers::refund::Refund
-	Invoice(Invoice),
+	Invoice(Bolt12Invoice),
 
 	/// An error from handling an [`OffersMessage`].
 	InvoiceError(InvoiceError),
@@ -72,11 +72,11 @@ impl OffersMessage {
 		}
 	}
 
-	fn parse(tlv_type: u64, bytes: Vec<u8>) -> Result<Self, ParseError> {
+	fn parse(tlv_type: u64, bytes: Vec<u8>) -> Result<Self, Bolt12ParseError> {
 		match tlv_type {
 			INVOICE_REQUEST_TLV_TYPE => Ok(Self::InvoiceRequest(InvoiceRequest::try_from(bytes)?)),
-			INVOICE_TLV_TYPE => Ok(Self::Invoice(Invoice::try_from(bytes)?)),
-			_ => Err(ParseError::Decode(DecodeError::InvalidValue)),
+			INVOICE_TLV_TYPE => Ok(Self::Invoice(Bolt12Invoice::try_from(bytes)?)),
+			_ => Err(Bolt12ParseError::Decode(DecodeError::InvalidValue)),
 		}
 	}
 }
@@ -103,12 +103,12 @@ impl<L: Logger + ?Sized> ReadableArgs<(u64, &L)> for OffersMessage {
 
 		match Self::parse(tlv_type, bytes) {
 			Ok(message) => Ok(message),
-			Err(ParseError::Decode(e)) => Err(e),
-			Err(ParseError::InvalidSemantics(e)) => {
+			Err(Bolt12ParseError::Decode(e)) => Err(e),
+			Err(Bolt12ParseError::InvalidSemantics(e)) => {
 				log_trace!(logger, "Invalid semantics for TLV type {}: {:?}", tlv_type, e);
 				Err(DecodeError::InvalidValue)
 			},
-			Err(ParseError::InvalidSignature(e)) => {
+			Err(Bolt12ParseError::InvalidSignature(e)) => {
 				log_trace!(logger, "Invalid signature for TLV type {}: {:?}", tlv_type, e);
 				Err(DecodeError::InvalidValue)
 			},

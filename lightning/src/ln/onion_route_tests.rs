@@ -20,7 +20,7 @@ use crate::ln::channelmanager::{HTLCForwardInfo, FailureCode, CLTV_FAR_FAR_AWAY,
 use crate::ln::onion_utils;
 use crate::routing::gossip::{NetworkUpdate, RoutingFees};
 use crate::routing::router::{get_route, PaymentParameters, Route, RouteHint, RouteHintHop};
-use crate::ln::features::{InitFeatures, InvoiceFeatures};
+use crate::ln::features::{InitFeatures, Bolt11InvoiceFeatures};
 use crate::ln::msgs;
 use crate::ln::msgs::{ChannelMessageHandler, ChannelUpdate};
 use crate::ln::wire::Encode;
@@ -862,7 +862,7 @@ fn test_always_create_tlv_format_onion_payloads() {
 	create_announced_chan_between_nodes(&nodes, 1, 2);
 
 	let payment_params = PaymentParameters::from_node_id(nodes[2].node.get_our_node_id(), TEST_FINAL_CLTV)
-		.with_bolt11_features(InvoiceFeatures::empty()).unwrap();
+		.with_bolt11_features(Bolt11InvoiceFeatures::empty()).unwrap();
 	let (route, _payment_hash, _payment_preimage, _payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[2], payment_params, 40000);
 
 	let hops = &route.paths[0].hops;

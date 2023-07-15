@@ -16,9 +16,9 @@ use bitcoin::hashes::sha256::Hash as Sha256;
 use crate::blinded_path::{BlindedHop, BlindedPath};
 use crate::ln::PaymentHash;
 use crate::ln::channelmanager::{ChannelDetails, PaymentId};
-use crate::ln::features::{Bolt12InvoiceFeatures, ChannelFeatures, InvoiceFeatures, NodeFeatures};
+use crate::ln::features::{Bolt11InvoiceFeatures, Bolt12InvoiceFeatures, ChannelFeatures, NodeFeatures};
 use crate::ln::msgs::{DecodeError, ErrorAction, LightningError, MAX_VALUE_MSAT};
-use crate::offers::invoice::{BlindedPayInfo, Invoice as Bolt12Invoice};
+use crate::offers::invoice::{BlindedPayInfo, Bolt12Invoice};
 use crate::routing::gossip::{DirectedChannelInfo, EffectiveCapacity, ReadOnlyNetworkGraph, NetworkGraph, NodeId, RoutingFees};
 use crate::routing::scoring::{ChannelUsage, LockableScore, Score};
 use crate::util::ser::{Writeable, Readable, ReadableArgs, Writer};
@@ -271,9 +271,9 @@ impl_writeable_tlv_based!(RouteHop, {
 });
 
 /// The blinded portion of a [`Path`], if we're routing to a recipient who provided blinded paths in
-/// their BOLT12 [`Invoice`].
+/// their [`Bolt12Invoice`].
 ///
-/// [`Invoice`]: crate::offers::invoice::Invoice
+/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct BlindedTail {
 	/// The hops of the [`BlindedPath`] provided by the recipient.
@@ -640,7 +640,7 @@ impl PaymentParameters {
 	/// [`RecipientOnionFields::secret_only`]: crate::ln::channelmanager::RecipientOnionFields::secret_only
 	pub fn for_keysend(payee_pubkey: PublicKey, final_cltv_expiry_delta: u32, allow_mpp: bool) -> Self {
 		Self::from_node_id(payee_pubkey, final_cltv_expiry_delta)
-			.with_bolt11_features(InvoiceFeatures::for_keysend(allow_mpp))
+			.with_bolt11_features(Bolt11InvoiceFeatures::for_keysend(allow_mpp))
 			.expect("PaymentParameters::from_node_id should always initialize the payee as unblinded")
 	}
 
@@ -680,7 +680,7 @@ impl PaymentParameters {
 	/// [`PaymentParameters::from_bolt12_invoice`].
 	///
 	/// This is not exported to bindings users since bindings don't support move semantics
-	pub fn with_bolt11_features(self, features: InvoiceFeatures) -> Result<Self, ()> {
+	pub fn with_bolt11_features(self, features: Bolt11InvoiceFeatures) -> Result<Self, ()> {
 		match self.payee {
 			Payee::Blinded { .. } => Err(()),
 			Payee::Clear { route_hints, node_id, final_cltv_expiry_delta, .. } =>
@@ -766,7 +766,7 @@ pub enum Payee {
 		/// does not contain any features.
 		///
 		/// [`for_keysend`]: PaymentParameters::for_keysend
-		features: Option<InvoiceFeatures>,
+		features: Option<Bolt11InvoiceFeatures>,
 		/// The minimum CLTV delta at the end of the route. This value must not be zero.
 		final_cltv_expiry_delta: u32,
 	},
@@ -819,11 +819,11 @@ impl Payee {
 }
 
 enum FeaturesRef<'a> {
-	Bolt11(&'a InvoiceFeatures),
+	Bolt11(&'a Bolt11InvoiceFeatures),
 	Bolt12(&'a Bolt12InvoiceFeatures),
 }
 enum Features {
-	Bolt11(InvoiceFeatures),
+	Bolt11(Bolt11InvoiceFeatures),
 	Bolt12(Bolt12InvoiceFeatures),
 }
 
@@ -834,7 +834,7 @@ impl Features {
 			_ => None,
 		}
 	}
-	fn bolt11(self) -> Option<InvoiceFeatures> {
+	fn bolt11(self) -> Option<Bolt11InvoiceFeatures> {
 		match self {
 			Self::Bolt11(f) => Some(f),
 			_ => None,
@@ -6104,7 +6104,7 @@ mod tests {
 
 		let params = ProbabilisticScoringFeeParameters::default();
 		let mut scorer = ProbabilisticScorer::new(ProbabilisticScoringDecayParameters::default(), &graph, &logger);
-		let features = super::InvoiceFeatures::empty();
+		let features = super::Bolt11InvoiceFeatures::empty();
 
 		super::bench_utils::generate_test_routes(&graph, &mut scorer, &params, features, random_init_seed(), 0, 2);
 	}
@@ -6680,7 +6680,7 @@ pub(crate) mod bench_utils {
 	use crate::chain::transaction::OutPoint;
 	use crate::sign::{EntropySource, KeysManager};
 	use crate::ln::channelmanager::{self, ChannelCounterparty, ChannelDetails};
-	use crate::ln::features::InvoiceFeatures;
+	use crate::ln::features::Bolt11InvoiceFeatures;
 	use crate::routing::gossip::NetworkGraph;
 	use crate::util::config::UserConfig;
 	use crate::util::ser::ReadableArgs;
@@ -6772,7 +6772,7 @@ pub(crate) mod bench_utils {
 	}
 
 	pub(crate) fn generate_test_routes<S: Score>(graph: &NetworkGraph<&TestLogger>, scorer: &mut S,
-		score_params: &S::ScoreParams, features: InvoiceFeatures, mut seed: u64,
+		score_params: &S::ScoreParams, features: Bolt11InvoiceFeatures, mut seed: u64,
 		starting_amount: u64, route_count: usize,
 	) -> Vec<(ChannelDetails, PaymentParameters, u64)> {
 		let payer = payer_pubkey();
@@ -6853,7 +6853,7 @@ pub mod benches {
 	use super::*;
 	use crate::sign::{EntropySource, KeysManager};
 	use crate::ln::channelmanager;
-	use crate::ln::features::InvoiceFeatures;
+	use crate::ln::features::Bolt11InvoiceFeatures;
 	use crate::routing::gossip::NetworkGraph;
 	use crate::routing::scoring::{FixedPenaltyScorer, ProbabilisticScorer, ProbabilisticScoringFeeParameters, ProbabilisticScoringDecayParameters};
 	use crate::util::config::UserConfig;
@@ -6871,7 +6871,7 @@ pub mod benches {
 		let logger = TestLogger::new();
 		let network_graph = bench_utils::read_network_graph(&logger).unwrap();
 		let scorer = FixedPenaltyScorer::with_penalty(0);
-		generate_routes(bench, &network_graph, scorer, &(), InvoiceFeatures::empty(), 0,
+		generate_routes(bench, &network_graph, scorer, &(), Bolt11InvoiceFeatures::empty(), 0,
 			"generate_routes_with_zero_penalty_scorer");
 	}
 
@@ -6889,7 +6889,7 @@ pub mod benches {
 		let network_graph = bench_utils::read_network_graph(&logger).unwrap();
 		let params = ProbabilisticScoringFeeParameters::default();
 		let scorer = ProbabilisticScorer::new(ProbabilisticScoringDecayParameters::default(), &network_graph, &logger);
-		generate_routes(bench, &network_graph, scorer, &params, InvoiceFeatures::empty(), 0,
+		generate_routes(bench, &network_graph, scorer, &params, Bolt11InvoiceFeatures::empty(), 0,
 			"generate_routes_with_probabilistic_scorer");
 	}
 
@@ -6915,7 +6915,7 @@ pub mod benches {
 
 	fn generate_routes<S: Score>(
 		bench: &mut Criterion, graph: &NetworkGraph<&TestLogger>, mut scorer: S,
-		score_params: &S::ScoreParams, features: InvoiceFeatures, starting_amount: u64,
+		score_params: &S::ScoreParams, features: Bolt11InvoiceFeatures, starting_amount: u64,
 		bench_name: &'static str,
 	) {
 		let payer = bench_utils::payer_pubkey();

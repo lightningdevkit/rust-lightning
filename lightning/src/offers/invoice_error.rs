@@ -11,33 +11,33 @@
 
 use crate::io;
 use crate::ln::msgs::DecodeError;
-use crate::offers::parse::SemanticError;
+use crate::offers::parse::Bolt12SemanticError;
 use crate::util::ser::{HighZeroBytesDroppedBigSize, Readable, WithoutLength, Writeable, Writer};
 use crate::util::string::UntrustedString;
 
 use crate::prelude::*;
 
-/// An error in response to an [`InvoiceRequest`] or an [`Invoice`].
+/// An error in response to an [`InvoiceRequest`] or an [`Bolt12Invoice`].
 ///
 /// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
-/// [`Invoice`]: crate::offers::invoice::Invoice
+/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
 #[derive(Clone, Debug)]
 #[cfg_attr(test, derive(PartialEq))]
 pub struct InvoiceError {
-	/// The field in the [`InvoiceRequest`] or the [`Invoice`] that contained an error.
+	/// The field in the [`InvoiceRequest`] or the [`Bolt12Invoice`] that contained an error.
 	///
 	/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
-	/// [`Invoice`]: crate::offers::invoice::Invoice
+	/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
 	pub erroneous_field: Option<ErroneousField>,
 
 	/// An explanation of the error.
 	pub message: UntrustedString,
 }
 
-/// The field in the [`InvoiceRequest`] or the [`Invoice`] that contained an error.
+/// The field in the [`InvoiceRequest`] or the [`Bolt12Invoice`] that contained an error.
 ///
 /// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
-/// [`Invoice`]: crate::offers::invoice::Invoice
+/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
 #[derive(Clone, Debug)]
 #[cfg_attr(test, derive(PartialEq))]
 pub struct ErroneousField {
@@ -93,8 +93,8 @@ impl Readable for InvoiceError {
 	}
 }
 
-impl From<SemanticError> for InvoiceError {
-	fn from(error: SemanticError) -> Self {
+impl From<Bolt12SemanticError> for InvoiceError {
+	fn from(error: Bolt12SemanticError) -> Self {
 		InvoiceError {
 			erroneous_field: None,
 			message: UntrustedString(format!("{:?}", error)),

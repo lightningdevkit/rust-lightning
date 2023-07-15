@@ -29,24 +29,24 @@ mod sealed {
 	use bitcoin::bech32::{FromBase32, ToBase32};
 	use core::convert::TryFrom;
 	use core::fmt;
-	use super::ParseError;
+	use super::Bolt12ParseError;
 
 	use crate::prelude::*;
 
 	/// Indicates a message can be encoded using bech32.
-	pub trait Bech32Encode: AsRef<[u8]> + TryFrom<Vec<u8>, Error=ParseError> {
+	pub trait Bech32Encode: AsRef<[u8]> + TryFrom<Vec<u8>, Error=Bolt12ParseError> {
 		/// Human readable part of the message's bech32 encoding.
 		const BECH32_HRP: &'static str;
 
 		/// Parses a bech32-encoded message into a TLV stream.
-		fn from_bech32_str(s: &str) -> Result<Self, ParseError> {
+		fn from_bech32_str(s: &str) -> Result<Self, Bolt12ParseError> {
 			// Offer encoding may be split by '+' followed by optional whitespace.
 			let encoded = match s.split('+').skip(1).next() {
 				Some(_) => {
 					for chunk in s.split('+') {
 						let chunk = chunk.trim_start();
 						if chunk.is_empty() || chunk.contains(char::is_whitespace) {
-							return Err(ParseError::InvalidContinuation);
+							return Err(Bolt12ParseError::InvalidContinuation);
 						}
 					}
 
@@ -59,7 +59,7 @@ mod sealed {
 			let (hrp, data) = bech32::decode_without_checksum(encoded.as_ref())?;
 
 			if hrp != Self::BECH32_HRP {
-				return Err(ParseError::InvalidBech32Hrp);
+				return Err(Bolt12ParseError::InvalidBech32Hrp);
 			}
 
 			let data = Vec::<u8>::from_base32(&data)?;
@@ -116,10 +116,8 @@ impl<T: SeekReadable> TryFrom<Vec<u8>> for ParsedMessage<T> {
 }
 
 /// Error when parsing a bech32 encoded message using [`str::parse`].
-///
-/// This is not exported to bindings users as its name conflicts with the BOLT 11 ParseError type.
 #[derive(Debug, PartialEq)]
-pub enum ParseError {
+pub enum Bolt12ParseError {
 	/// The bech32 encoding does not conform to the BOLT 12 requirements for continuing messages
 	/// across multiple parts (i.e., '+' followed by whitespace).
 	InvalidContinuation,
@@ -131,16 +129,14 @@ pub enum ParseError {
 	/// The bech32 decoded string could not be decoded as the expected message type.
 	Decode(DecodeError),
 	/// The parsed message has invalid semantics.
-	InvalidSemantics(SemanticError),
+	InvalidSemantics(Bolt12SemanticError),
 	/// The parsed message has an invalid signature.
 	InvalidSignature(secp256k1::Error),
 }
 
 /// Error when interpreting a TLV stream as a specific type.
-///
-/// This is not exported to bindings users as its name conflicts with the BOLT 11 SemanticError type.
 #[derive(Debug, PartialEq)]
-pub enum SemanticError {
+pub enum Bolt12SemanticError {
 	/// The current [`std::time::SystemTime`] is past the offer or invoice's expiration.
 	AlreadyExpired,
 	/// The provided chain hash does not correspond to a supported chain.
@@ -195,25 +191,25 @@ pub enum SemanticError {
 	MissingSignature,
 }
 
-impl From<bech32::Error> for ParseError {
+impl From<bech32::Error> for Bolt12ParseError {
 	fn from(error: bech32::Error) -> Self {
 		Self::Bech32(error)
 	}
 }
 
-impl From<DecodeError> for ParseError {
+impl From<DecodeError> for Bolt12ParseError {
 	fn from(error: DecodeError) -> Self {
 		Self::Decode(error)
 	}
 }
 
-impl From<SemanticError> for ParseError {
-	fn from(error: SemanticError) -> Self {
+impl From<Bolt12SemanticError> for Bolt12ParseError {
+	fn from(error: Bolt12SemanticError) -> Self {
 		Self::InvalidSemantics(error)
 	}
 }
 
-impl From<secp256k1::Error> for ParseError {
+impl From<secp256k1::Error> for Bolt12ParseError {
 	fn from(error: secp256k1::Error) -> Self {
 		Self::InvalidSignature(error)
 	}

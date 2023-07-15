@@ -18,7 +18,7 @@ use crate::chain::transaction::OutPoint;
 use crate::events::{ClosureReason, Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider, PathFailure, PaymentFailureReason};
 use crate::ln::channel::EXPIRE_PREV_CONFIG_TICKS;
 use crate::ln::channelmanager::{BREAKDOWN_TIMEOUT, ChannelManager, MPP_TIMEOUT_TICKS, MIN_CLTV_EXPIRY_DELTA, PaymentId, PaymentSendFailure, IDEMPOTENCY_TIMEOUT_TICKS, RecentPaymentDetails, RecipientOnionFields, HTLCForwardInfo, PendingHTLCRouting, PendingAddHTLCInfo};
-use crate::ln::features::InvoiceFeatures;
+use crate::ln::features::Bolt11InvoiceFeatures;
 use crate::ln::{msgs, PaymentSecret, PaymentPreimage};
 use crate::ln::msgs::ChannelMessageHandler;
 use crate::ln::outbound_payment::Retry;
@@ -1903,7 +1903,7 @@ fn do_automatic_retries(test: AutoRetry) {
 	#[cfg(not(feature = "std"))]
 	let payment_expiry_secs = 60 * 60;
 	let amt_msat = 1000;
-	let mut invoice_features = InvoiceFeatures::empty();
+	let mut invoice_features = Bolt11InvoiceFeatures::empty();
 	invoice_features.set_variable_length_onion_required();
 	invoice_features.set_payment_secret_required();
 	invoice_features.set_basic_mpp_optional();
@@ -2122,7 +2122,7 @@ fn auto_retry_partial_failure() {
 	let payment_expiry_secs = SystemTime::UNIX_EPOCH.elapsed().unwrap().as_secs() + 60 * 60;
 	#[cfg(not(feature = "std"))]
 	let payment_expiry_secs = 60 * 60;
-	let mut invoice_features = InvoiceFeatures::empty();
+	let mut invoice_features = Bolt11InvoiceFeatures::empty();
 	invoice_features.set_variable_length_onion_required();
 	invoice_features.set_payment_secret_required();
 	invoice_features.set_basic_mpp_optional();
@@ -2334,7 +2334,7 @@ fn auto_retry_zero_attempts_send_error() {
 	let payment_expiry_secs = SystemTime::UNIX_EPOCH.elapsed().unwrap().as_secs() + 60 * 60;
 	#[cfg(not(feature = "std"))]
 	let payment_expiry_secs = 60 * 60;
-	let mut invoice_features = InvoiceFeatures::empty();
+	let mut invoice_features = Bolt11InvoiceFeatures::empty();
 	invoice_features.set_variable_length_onion_required();
 	invoice_features.set_payment_secret_required();
 	invoice_features.set_basic_mpp_optional();
@@ -2374,7 +2374,7 @@ fn fails_paying_after_rejected_by_payee() {
 	let payment_expiry_secs = SystemTime::UNIX_EPOCH.elapsed().unwrap().as_secs() + 60 * 60;
 	#[cfg(not(feature = "std"))]
 	let payment_expiry_secs = 60 * 60;
-	let mut invoice_features = InvoiceFeatures::empty();
+	let mut invoice_features = Bolt11InvoiceFeatures::empty();
 	invoice_features.set_variable_length_onion_required();
 	invoice_features.set_payment_secret_required();
 	invoice_features.set_basic_mpp_optional();
@@ -2421,7 +2421,7 @@ fn retry_multi_path_single_failed_payment() {
 	let payment_expiry_secs = SystemTime::UNIX_EPOCH.elapsed().unwrap().as_secs() + 60 * 60;
 	#[cfg(not(feature = "std"))]
 	let payment_expiry_secs = 60 * 60;
-	let mut invoice_features = InvoiceFeatures::empty();
+	let mut invoice_features = Bolt11InvoiceFeatures::empty();
 	invoice_features.set_variable_length_onion_required();
 	invoice_features.set_payment_secret_required();
 	invoice_features.set_basic_mpp_optional();
@@ -2514,7 +2514,7 @@ fn immediate_retry_on_failure() {
 	let payment_expiry_secs = SystemTime::UNIX_EPOCH.elapsed().unwrap().as_secs() + 60 * 60;
 	#[cfg(not(feature = "std"))]
 	let payment_expiry_secs = 60 * 60;
-	let mut invoice_features = InvoiceFeatures::empty();
+	let mut invoice_features = Bolt11InvoiceFeatures::empty();
 	invoice_features.set_variable_length_onion_required();
 	invoice_features.set_payment_secret_required();
 	invoice_features.set_basic_mpp_optional();
@@ -2602,7 +2602,7 @@ fn no_extra_retries_on_back_to_back_fail() {
 	let payment_expiry_secs = SystemTime::UNIX_EPOCH.elapsed().unwrap().as_secs() + 60 * 60;
 	#[cfg(not(feature = "std"))]
 	let payment_expiry_secs = 60 * 60;
-	let mut invoice_features = InvoiceFeatures::empty();
+	let mut invoice_features = Bolt11InvoiceFeatures::empty();
 	invoice_features.set_variable_length_onion_required();
 	invoice_features.set_payment_secret_required();
 	invoice_features.set_basic_mpp_optional();
@@ -2804,7 +2804,7 @@ fn test_simple_partial_retry() {
 	let payment_expiry_secs = SystemTime::UNIX_EPOCH.elapsed().unwrap().as_secs() + 60 * 60;
 	#[cfg(not(feature = "std"))]
 	let payment_expiry_secs = 60 * 60;
-	let mut invoice_features = InvoiceFeatures::empty();
+	let mut invoice_features = Bolt11InvoiceFeatures::empty();
 	invoice_features.set_variable_length_onion_required();
 	invoice_features.set_payment_secret_required();
 	invoice_features.set_basic_mpp_optional();
@@ -2970,7 +2970,7 @@ fn test_threaded_payment_retries() {
 	let payment_expiry_secs = SystemTime::UNIX_EPOCH.elapsed().unwrap().as_secs() + 60 * 60;
 	#[cfg(not(feature = "std"))]
 	let payment_expiry_secs = 60 * 60;
-	let mut invoice_features = InvoiceFeatures::empty();
+	let mut invoice_features = Bolt11InvoiceFeatures::empty();
 	invoice_features.set_variable_length_onion_required();
 	invoice_features.set_payment_secret_required();
 	invoice_features.set_basic_mpp_optional();

@@ -147,7 +147,7 @@ jobs:
   check_commits:
     runs-on: ubuntu-latest
     env:
-      TOOLCHAIN: 1.57.0
+      TOOLCHAIN: stable
     steps:
       - name: Checkout source code
         uses: actions/checkout@v3

@@ -43,7 +43,7 @@ use crate::ln::{inbound_payment, PaymentHash, PaymentPreimage, PaymentSecret};
 use crate::ln::channel::{Channel, ChannelContext, ChannelError, ChannelUpdateStatus, ShutdownResult, UpdateFulfillCommitFetch, OutboundV1Channel, InboundV1Channel};
 use crate::ln::features::{ChannelFeatures, ChannelTypeFeatures, InitFeatures, NodeFeatures};
 #[cfg(any(feature = "_test_utils", test))]
-use crate::ln::features::InvoiceFeatures;
+use crate::ln::features::Bolt11InvoiceFeatures;
 use crate::routing::gossip::NetworkGraph;
 use crate::routing::router::{BlindedTail, DefaultRouter, InFlightHtlcs, Path, Payee, PaymentParameters, Route, RouteParameters, Router};
 use crate::routing::scoring::{ProbabilisticScorer, ProbabilisticScoringFeeParameters};
@@ -6928,13 +6928,13 @@ where
 		provided_node_features(&self.default_configuration)
 	}
 
-	/// Fetches the set of [`InvoiceFeatures`] flags which are provided by or required by
+	/// Fetches the set of [`Bolt11InvoiceFeatures`] flags which are provided by or required by
 	/// [`ChannelManager`].
 	///
 	/// Note that the invoice feature flags can vary depending on if the invoice is a "phantom invoice"
 	/// or not. Thus, this method is not public.
 	#[cfg(any(feature = "_test_utils", test))]
-	pub fn invoice_features(&self) -> InvoiceFeatures {
+	pub fn invoice_features(&self) -> Bolt11InvoiceFeatures {
 		provided_invoice_features(&self.default_configuration)
 	}
 
@@ -7366,13 +7366,13 @@ pub(crate) fn provided_node_features(config: &UserConfig) -> NodeFeatures {
 	provided_init_features(config).to_context()
 }
 
-/// Fetches the set of [`InvoiceFeatures`] flags which are provided by or required by
+/// Fetches the set of [`Bolt11InvoiceFeatures`] flags which are provided by or required by
 /// [`ChannelManager`].
 ///
 /// Note that the invoice feature flags can vary depending on if the invoice is a "phantom invoice"
 /// or not. Thus, this method is not public.
 #[cfg(any(feature = "_test_utils", test))]
-pub(crate) fn provided_invoice_features(config: &UserConfig) -> InvoiceFeatures {
+pub(crate) fn provided_invoice_features(config: &UserConfig) -> Bolt11InvoiceFeatures {
 	provided_init_features(config).to_context()
 }
 
