@@ -357,35 +357,38 @@ impl InteractiveTxConstructor {
 		}
 	}
 
-	fn add_tx_input(&mut self, transaction_input: TxAddInput) {
+	// Functions that handle the case where mode is [`ChannelMode::Negotiating`]
+	fn handle_negotiating<F>(&mut self, f: F)
+		where F: FnOnce(InteractiveTxStateMachine<Negotiating>) -> Result<InteractiveTxStateMachine<Negotiating>, InteractiveTxStateMachine<NegotiationAborted>> {
 		// We use mem::take here because we want to update `self.mode` based on its value and
 		// avoid cloning `ChannelMode`.
 		// By moving the value out of the struct, we can now safely modify it in this scope.
 		let mut mode = core::mem::take(&mut self.mode);
 		self.mode = if let ChannelMode::Negotiating(constructor) = mode {
-			match constructor.receive_tx_add_input(
-				1234,
-				transaction_input,
-				true
-			) {
+			match f(constructor) {
 				Ok(c) => ChannelMode::Negotiating(c),
 				Err(c) => ChannelMode::NegotiationAborted(c),
 			}
 		} else {
 			mode
 		}
+
 	}
 
 	fn abort_negotation(&mut self, reason: AbortReason) {
-		let mut mode = core::mem::take(&mut self.mode);
-		self.mode = if let ChannelMode::Negotiating(constructor) = mode {
-			match constructor.abort_negotiation(reason) {
-				Err(c) => ChannelMode::NegotiationAborted(c),
-				Ok(c) => ChannelMode::Negotiating(c),
-			}
-		} else {
-			mode
-		}
+		self.handle_negotiating(|state_machine| state_machine.abort_negotiation(reason))
+	}
+
+	fn add_tx_input(&mut self, serial_id: SerialId, transaction_input: TxAddInput, confirmed: bool) {
+		self.handle_negotiating(|state_machine| state_machine.receive_tx_add_input(serial_id, transaction_input, confirmed))
+	}
+
+	fn remove_tx_input(&mut self, serial_id: SerialId) {
+		self.handle_negotiating(|state_machine| state_machine.receive_tx_remove_input(serial_id))
+	}
+
+	fn add_tx_output(&mut self, serial_id: SerialId, output: TxOut) {
+		self.handle_negotiating(|state_machine| state_machine.receive_tx_add_output(serial_id, output))
 	}
 }
 
@@ -428,7 +431,7 @@ mod tests {
 		}
 
 		fn handle_add_tx_input(&mut self) {
-			self.tx_constructor.add_tx_input(get_sample_tx_add_input())
+			self.tx_constructor.add_tx_input(1234, get_sample_tx_add_input(), true)
 		}
 	}
 
