@@ -21,6 +21,14 @@ const MAX_RECEIVED_TX_ADD_INPUT_COUNT: u16 = 4096;
 /// The number of received `tx_add_output` messages during a negotiation at which point the
 /// negotiation MUST be failed.
 const MAX_RECEIVED_TX_ADD_OUTPUT_COUNT: u16 = 4096;
+
+/// The number of inputs or outputs that the state machine can have, before it MUST fail the
+/// negotiation.
+const MAX_INPUTS_OUTPUTS_COUNT: usize = 252;
+
+/// Maximum weight of bitcoin transaction
+const MAX_STANDARD_TX_WEIGHT: usize = 400_000;
+
 const MAX_MONEY: u64 = 2_100_000_000_000_000;
 
 type SerialId = u64;
@@ -42,6 +50,9 @@ pub(crate) enum AbortReason {
 	DuplicateSerialId,
 	PrevTxOutInvalid,
 	ExceededMaximumSatsAllowed,
+	ExceededNumberOfInputsOrOutputs,
+	InvalidTransactionState,
+	TransactionTooLarge,
 }
 
 //                   Interactive Transaction Construction negotiation
@@ -306,6 +317,49 @@ impl<S> InteractiveTxStateMachine<S>
 		todo!();
 	}
 
+	fn is_current_transaction_state_able_to_complete(&self) -> Result<(), AbortReason> {
+		let tx_to_validate = Transaction {
+			version: self.context.base_tx.version,
+			lock_time: self.context.base_tx.lock_time,
+			input: self.context.inputs.values().cloned().collect(),
+			output: self.context.outputs.values().cloned().collect(),
+		};
+
+		// The receiving node:
+		// MUST fail the negotiation if:
+
+		// TODO: Verify this is the correct way to do this.
+		// - the peer's total input satoshis is less than their outputs
+		let get_output = |outpoint: &OutPoint| {
+			if outpoint.txid == tx_to_validate.txid() {
+				return tx_to_validate.output.get(outpoint.vout as usize).cloned()
+			} else {
+				None
+			}
+		};
+		if let Err(_) = tx_to_validate.verify(get_output) {
+			return Err(AbortReason::InvalidTransactionState)
+		};
+
+		// - there are more than 252 inputs
+		// - there are more than 252 outputs
+		if self.context.inputs.len() > MAX_INPUTS_OUTPUTS_COUNT ||
+			self.context.outputs.len() > MAX_INPUTS_OUTPUTS_COUNT {
+			return Err(AbortReason::ExceededNumberOfInputsOrOutputs)
+		}
+
+		if tx_to_validate.weight() > MAX_STANDARD_TX_WEIGHT {
+			return Err(AbortReason::TransactionTooLarge)
+		}
+
+		// TODO: Need to figure out how to do this
+		// if is the non-initiator:
+		// 	- the initiator's fees do not cover the common fields (version, segwit marker + flag,
+		// 		input count, output count, locktime)
+
+		return Ok(())
+	}
+
 	fn is_valid_counterparty_serial_id(&self, serial_id: SerialId) -> bool {
 		// A received `SerialId`'s parity must match the role of the counterparty.
 		self.context.holder_is_initiator == !serial_id.is_valid_for_initiator()
@@ -321,11 +375,33 @@ impl InteractiveTxStateMachine<TheirTxComplete> {
 	}
 }
 
-impl InteractiveTxStateMachine<OurTxComplete> {
-	fn receive_tx_complete(self) -> InteractiveTxStateMachine<NegotiationComplete> {
+impl InteractiveTxStateMachine<Negotiating> {
+	fn receive_tx_complete(self) -> Result<InteractiveTxStateMachine<TheirTxComplete>, InteractiveTxStateMachine<NegotiationAborted>> {
+		match self.is_current_transaction_state_able_to_complete() {
+			Err(e) => Err(InteractiveTxStateMachine { context: self.context, state: NegotiationAborted(e) }),
+			_ => Ok(InteractiveTxStateMachine {
+				context: self.context,
+				state: TheirTxComplete {}
+			})
+		}
+	}
+
+	fn send_tx_complete(self) -> InteractiveTxStateMachine<OurTxComplete> {
 		InteractiveTxStateMachine {
 			context: self.context,
-			state: NegotiationComplete {}
+			state: OurTxComplete {}
+		}
+	}
+}
+
+impl InteractiveTxStateMachine<OurTxComplete> {
+	fn receive_tx_complete(self) -> Result<InteractiveTxStateMachine<NegotiationComplete>, InteractiveTxStateMachine<NegotiationAborted>> {
+		match self.is_current_transaction_state_able_to_complete() {
+			Err(e) => Err(InteractiveTxStateMachine { context: self.context, state: NegotiationAborted(e) }),
+			_ => Ok(InteractiveTxStateMachine {
+				context: self.context,
+				state: NegotiationComplete {}
+			})
 		}
 	}
 }
