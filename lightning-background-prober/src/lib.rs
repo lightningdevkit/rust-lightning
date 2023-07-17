@@ -199,14 +199,29 @@ fn node_selector(network_graph: &ReadOnlyNetworkGraph,) -> NodeId {
 	return node;
 }
 
-fn node_state_handler() -> Arc<Mutex<HashMap<NodeId, ProbePerister>>> {
-    let map: Arc<Mutex<HashMap<NodeId, ProbePerister>>> = Arc::new(Mutex::new(HashMap::new()));
+fn node_state_handler() -> Arc<Mutex<HashMap<NodeId, ProbePersister>>> {
+    let map: Arc<Mutex<HashMap<NodeId, ProbePersister>>> = Arc::new(Mutex::new(HashMap::new()));
     map
 }
 
-struct ProbePerister {
+fn channel_state_handler() -> Arc<Mutex<HashMap<NodeId, ChannelPersister>>> {
+    let map: Arc<Mutex<HashMap<NodeId, ChannelPersister>>> = Arc::new(Mutex::new(HashMap::new()));
+    map
+}
+struct NodePersister {
 	node_info: NodeInfo,
-	value : HashMap<NodeId, Vec<u64>>
+	liquidiy: (u64, u64), // estimated liquidity (lower, higher)
+	value : HashMap<NodeId, Vec<EventPersister>>
+}
+
+struct EventPersister {
+	event:Event,
+	value:u64
+}
+
+struct ChannelPersister {
+	channel_info: u64, //ssid or channel id
+	value : HashMap<u64, Vec<u64>>
 }
 
 // will return route parameters for send_probe
@@ -258,8 +273,18 @@ macro_rules! run_body {
     }};
 }
 
-use tokio::task;
+fn event_handler() -> () {
+	match event {
+		Event::ProbeSuccessful { path, .. } => {
+			score.probe_successful(path);
+		},
+		Event::ProbeFailed { path, short_channel_id: Some(scid), .. } => {
+			score.probe_failed(path, *scid);
+		},
+		_ => return false,
+}
 
+use tokio::task;
 pub fn channel<Route>(capacity: NUM_MPSC_CHANNEL_CAPACITY) -> (mpsc::Sender<Route>, mpsc::Receiver<Route>)
 where
     Route: Send + 'static,{
