@@ -561,13 +561,42 @@ mod tests {
 	use core::str::FromStr;
 	use std::collections::HashMap;
 	use crate::ln::interactivetxs::ChannelMode::{Negotiating, NegotiationAborted};
-	use crate::ln::interactivetxs::{ChannelMode, InteractiveTxConstructor, InteractiveTxStateMachine};
+	use crate::ln::interactivetxs::{AbortReason, ChannelMode, InteractiveTxConstructor, InteractiveTxStateMachine};
 	use crate::ln::msgs::TransactionU16LenLimited;
 	use bitcoin::consensus::encode;
 	use bitcoin::{Address, PackedLockTime, Script, Sequence, Transaction, Txid, TxIn, TxOut, Witness};
 	use bitcoin::hashes::hex::FromHex;
 	use crate::chain::transaction::OutPoint;
+	use crate::ln::interactivetxs::AbortReason::IncorrectSerialIdParity;
 	use crate::ln::msgs::TxAddInput;
+
+	#[test]
+	fn test_invalid_counterparty_serial_id_should_abort_negotiation() {
+		let tx: Transaction = encode::deserialize(&hex::decode("020000000001010e0ade\
+			f48412e4361325ac1c6e36411299ab09d4f083b9d8ddb55fbc06e1b0c00000000000feffffff0220a107000\
+			0000000220020f81d95e040bd0a493e38bae27bff52fe2bb58b93b293eb579c01c31b05c5af1dc072cfee54\
+			a3000016001434b1d6211af5551905dc2642d05f5b04d25a8fe80247304402207f570e3f0de50546aad25a8\
+			72e3df059d277e776dda4269fa0d2cc8c2ee6ec9a022054e7fae5ca94d47534c86705857c24ceea3ad51c69\
+			dd6051c5850304880fc43a012103cb11a1bacc223d98d91f1946c6752e358a5eb1a1c983b3e6fb15378f453\
+			b76bd00000000").unwrap()[..]).unwrap();
+
+		let mut constructor = InteractiveTxConstructor::new(
+			[0; 32],
+			true,
+			true,
+			tx,
+			false,
+		);
+
+		constructor.receive_tx_add_input(
+			2,
+			get_sample_tx_add_input(),
+			false
+		);
+
+		assert!(matches!(constructor.mode, ChannelMode::NegotiationAborted { .. }))
+	}
+
 
 	struct DummyChannel {
 		tx_constructor: InteractiveTxConstructor
