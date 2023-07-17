@@ -119,7 +119,7 @@ struct NegotiationContext {
 	did_send_tx_signatures: bool,
 }
 
-pub(crate) struct InteractiveTxStateMachine<S> {
+struct InteractiveTxStateMachine<S> {
 	context: NegotiationContext,
 	state: S,
 }
@@ -288,34 +288,34 @@ impl<S> InteractiveTxStateMachine<S>
 		}
 	}
 
-	pub(crate) fn send_tx_add_input(mut self, serial_id: u64, input: TxIn) -> InteractiveTxStateMachine<Negotiating> {
+	fn send_tx_add_input(mut self, serial_id: u64, input: TxIn) -> InteractiveTxStateMachine<Negotiating> {
 		self.context.inputs.insert(serial_id, input);
 		InteractiveTxStateMachine { context: self.context, state: Negotiating {} }
 	}
 
-	pub(crate) fn send_tx_add_output(mut self, serial_id: SerialId, output: TxOut) -> InteractiveTxStateMachine<Negotiating> {
+	fn send_tx_add_output(mut self, serial_id: SerialId, output: TxOut) -> InteractiveTxStateMachine<Negotiating> {
 		self.context.outputs.insert(serial_id, output);
 		InteractiveTxStateMachine { context: self.context, state: Negotiating {} }
 	}
 
-	pub(crate) fn send_tx_remove_input(mut self, serial_id: SerialId) -> InteractiveTxStateMachine<Negotiating> {
+	fn send_tx_remove_input(mut self, serial_id: SerialId) -> InteractiveTxStateMachine<Negotiating> {
 		self.context.inputs.remove(&serial_id);
 		InteractiveTxStateMachine { context: self.context, state: Negotiating {} }
 	}
 
-	pub(crate) fn send_tx_remove_output(mut self, serial_id: SerialId) -> InteractiveTxStateMachine<Negotiating> {
+	fn send_tx_remove_output(mut self, serial_id: SerialId) -> InteractiveTxStateMachine<Negotiating> {
 		self.context.outputs.remove(&serial_id);
 		InteractiveTxStateMachine { context: self.context, state: Negotiating {} }
 	}
 
-	pub(crate) fn send_tx_abort(mut self) -> InteractiveTxStateMachine<NegotiationAborted> {
+	fn send_tx_abort(mut self) -> InteractiveTxStateMachine<NegotiationAborted> {
 		// A sending node:
 		// 	- MUST NOT have already transmitted tx_signatures
 		// 	- SHOULD forget the current negotiation and reset their state.
 		todo!();
 	}
 
-	pub(crate) fn receive_tx_abort(mut self) -> InteractiveTxStateMachine<NegotiationAborted> {
+	fn receive_tx_abort(mut self) -> InteractiveTxStateMachine<NegotiationAborted> {
 		todo!();
 	}
 
@@ -438,12 +438,12 @@ impl Default for ChannelMode {
 	fn default() -> Self { Indeterminate }
 }
 
-struct InteractiveTxConstructor {
+pub(crate) struct InteractiveTxConstructor {
 	mode: ChannelMode,
 }
 
 impl InteractiveTxConstructor {
-	fn new(
+	pub(crate) fn new(
 		channel_id: [u8; 32],
 		require_confirmed_inputs: bool,
 		is_initiator: bool,
@@ -462,43 +462,43 @@ impl InteractiveTxConstructor {
 		}
 	}
 
-	fn abort_negotation(&mut self, reason: AbortReason) {
+	pub(crate) fn abort_negotation(&mut self, reason: AbortReason) {
 		self.handle_negotiating_receive(|state_machine| state_machine.abort_negotiation(reason))
 	}
 
-	fn receive_tx_add_input(&mut self, serial_id: SerialId, transaction_input: TxAddInput, confirmed: bool) {
+	pub(crate) fn receive_tx_add_input(&mut self, serial_id: SerialId, transaction_input: TxAddInput, confirmed: bool) {
 		self.handle_negotiating_receive(|state_machine| state_machine.receive_tx_add_input(serial_id, transaction_input, confirmed))
 	}
 
-	fn receive_tx_remove_input(&mut self, serial_id: SerialId) {
+	pub(crate) fn receive_tx_remove_input(&mut self, serial_id: SerialId) {
 		self.handle_negotiating_receive(|state_machine| state_machine.receive_tx_remove_input(serial_id))
 	}
 
-	fn receive_tx_add_output(&mut self, serial_id: SerialId, output: TxOut) {
+	pub(crate) fn receive_tx_add_output(&mut self, serial_id: SerialId, output: TxOut) {
 		self.handle_negotiating_receive(|state_machine| state_machine.receive_tx_add_output(serial_id, output))
 	}
 
-	fn receive_tx_remove_output(&mut self, serial_id: SerialId) {
+	pub(crate) fn receive_tx_remove_output(&mut self, serial_id: SerialId) {
 		self.handle_negotiating_receive(|state_machine| state_machine.receive_tx_remove_output(serial_id))
 	}
 
-	fn send_tx_add_input(&mut self, serial_id: SerialId, transaction_input: TxIn) {
+	pub(crate) fn send_tx_add_input(&mut self, serial_id: SerialId, transaction_input: TxIn) {
 		self.handle_negotiating_send(|state_machine| state_machine.send_tx_add_input(serial_id, transaction_input))
 	}
 
-	fn send_tx_remove_input(&mut self, serial_id: SerialId) {
+	pub(crate) fn send_tx_remove_input(&mut self, serial_id: SerialId) {
 		self.handle_negotiating_send(|state_machine| state_machine.send_tx_remove_input(serial_id))
 	}
 
-	fn send_tx_add_output(&mut self, serial_id: SerialId, transaction_output: TxOut) {
+	pub(crate) fn send_tx_add_output(&mut self, serial_id: SerialId, transaction_output: TxOut) {
 		self.handle_negotiating_send(|state_machine| state_machine.send_tx_add_output(serial_id, transaction_output))
 	}
 
-	fn send_tx_remove_output(&mut self, serial_id: SerialId) {
+	pub(crate) fn send_tx_remove_output(&mut self, serial_id: SerialId) {
 		self.handle_negotiating_send(|state_machine| state_machine.send_tx_remove_output(serial_id))
 	}
 
-	fn send_tx_complete(&mut self) {
+	pub(crate) fn send_tx_complete(&mut self) {
 		let mut mode = core::mem::take(&mut self.mode);
 		self.mode = match mode {
 			ChannelMode::Negotiating(c) => { ChannelMode::OurTxComplete(c.send_tx_complete()) }
@@ -507,7 +507,7 @@ impl InteractiveTxConstructor {
 		}
 	}
 
-	fn receive_tx_complete(&mut self) {
+	pub(crate) fn receive_tx_complete(&mut self) {
 		let mut mode = core::mem::take(&mut self.mode);
 		self.mode = match mode {
 			ChannelMode::Negotiating(c) => {
