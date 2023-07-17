@@ -87,6 +87,8 @@ pub(crate) enum AbortReason {
 //                        │                              │
 //                        └──────────────────────────────┘
 //
+
+// Channel states that can receive `(send|receive)_tx_(add|remove)_(input|output)`
 pub(crate) trait AcceptingChanges {}
 
 /// We are currently in the process of negotiating the transaction.
@@ -368,6 +370,8 @@ impl<S> InteractiveTxStateMachine<S>
 
 impl InteractiveTxStateMachine<TheirTxComplete> {
 	fn send_tx_complete(self) -> InteractiveTxStateMachine<NegotiationComplete> {
+		// TODO: Should we validate before transitioning states? If so, do we want to abort negotiation
+		// if our current transaction state is invalid?
 		InteractiveTxStateMachine {
 			context: self.context,
 			state: NegotiationComplete {}
@@ -387,6 +391,8 @@ impl InteractiveTxStateMachine<Negotiating> {
 	}
 
 	fn send_tx_complete(self) -> InteractiveTxStateMachine<OurTxComplete> {
+		// TODO: Should we validate before transitioning states? If so, do we want to abort negotiation
+		// if our current transaction state is invalid?
 		InteractiveTxStateMachine {
 			context: self.context,
 			state: OurTxComplete {}
@@ -456,7 +462,6 @@ impl InteractiveTxConstructor {
 		}
 	}
 
-	// Functions that handle the case where mode is [`ChannelMode::Negotiating`]
 	fn abort_negotation(&mut self, reason: AbortReason) {
 		self.handle_negotiating_receive(|state_machine| state_machine.abort_negotiation(reason))
 	}
