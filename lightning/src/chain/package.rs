@@ -429,7 +429,7 @@ impl Readable for HolderHTLCOutput {
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct HolderFundingOutput {
 	funding_redeemscript: Script,
-	funding_amount: Option<u64>,
+	pub(crate) funding_amount: Option<u64>,
 	channel_type_features: ChannelTypeFeatures,
 }
 

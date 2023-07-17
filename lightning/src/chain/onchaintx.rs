@@ -22,6 +22,7 @@ use bitcoin::hash_types::{Txid, BlockHash};
 use bitcoin::secp256k1::{Secp256k1, ecdsa::Signature};
 use bitcoin::secp256k1;
 
+use crate::chain::chaininterface::compute_feerate_sat_per_1000_weight;
 use crate::sign::{ChannelSigner, EntropySource, SignerProvider};
 use crate::ln::msgs::DecodeError;
 use crate::ln::PaymentPreimage;
@@ -623,9 +624,24 @@ impl<ChannelSigner: WriteableEcdsaChannelSigner> OnchainTxHandler<ChannelSigner>
 			return inputs.find_map(|input| match input {
 				// Commitment inputs with anchors support are the only untractable inputs supported
 				// thus far that require external funding.
-				PackageSolvingData::HolderFundingOutput(..) => {
+				PackageSolvingData::HolderFundingOutput(output) => {
 					debug_assert_eq!(tx.txid(), self.holder_commitment.trust().txid(),
 						"Holder commitment transaction mismatch");
+
+					let conf_target = ConfirmationTarget::HighPriority;
+					let package_target_feerate_sat_per_1000_weight = cached_request
+						.compute_package_feerate(fee_estimator, conf_target, force_feerate_bump);
+					if let Some(input_amount_sat) = output.funding_amount {
+						let fee_sat = input_amount_sat - tx.output.iter().map(|output| output.value).sum::<u64>();
+						if compute_feerate_sat_per_1000_weight(fee_sat, tx.weight() as u64) >=
+							 package_target_feerate_sat_per_1000_weight
+						{
+							log_debug!(logger, "Commitment transaction {} already meets required feerate {} sat/kW",
+								tx.txid(), package_target_feerate_sat_per_1000_weight);
+							return Some((new_timer, 0, OnchainClaim::Tx(tx.clone())));
+						}
+					}
+
 					// We'll locate an anchor output we can spend within the commitment transaction.
 					let funding_pubkey = &self.channel_transaction_parameters.holder_pubkeys.funding_pubkey;
 					match chan_utils::get_anchor_output(&tx, funding_pubkey) {
@@ -633,9 +649,6 @@ impl<ChannelSigner: WriteableEcdsaChannelSigner> OnchainTxHandler<ChannelSigner>
 						Some((idx, _)) => {
 							// TODO: Use a lower confirmation target when both our and the
 							// counterparty's latest commitment don't have any HTLCs present.
-							let conf_target = ConfirmationTarget::HighPriority;
-							let package_target_feerate_sat_per_1000_weight = cached_request
-								.compute_package_feerate(fee_estimator, conf_target, force_feerate_bump);
 							Some((
 								new_timer,
 								package_target_feerate_sat_per_1000_weight as u64,
@@ -739,6 +752,9 @@ impl<ChannelSigner: WriteableEcdsaChannelSigner> OnchainTxHandler<ChannelSigner>
 			) {
 				req.set_timer(new_timer);
 				req.set_feerate(new_feerate);
+				// Once a pending claim has an id assigned, it remains fixed until the claim is
+				// satisfied, regardless of whether the claim switches between different variants of
+				// `OnchainClaim`.
 				let claim_id = match claim {
 					OnchainClaim::Tx(tx) => {
 						log_info!(logger, "Broadcasting onchain {}", log_tx!(tx));

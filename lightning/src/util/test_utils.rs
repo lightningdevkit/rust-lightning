@@ -18,6 +18,7 @@ use crate::chain::channelmonitor::MonitorEvent;
 use crate::chain::transaction::OutPoint;
 use crate::sign;
 use crate::events;
+use crate::events::bump_transaction::{WalletSource, Utxo};
 use crate::ln::channelmanager;
 use crate::ln::features::{ChannelFeatures, InitFeatures, NodeFeatures};
 use crate::ln::{msgs, wire};
@@ -32,6 +33,7 @@ use crate::util::enforcing_trait_impls::{EnforcingSigner, EnforcementState};
 use crate::util::logger::{Logger, Level, Record};
 use crate::util::ser::{Readable, ReadableArgs, Writer, Writeable};
 
+use bitcoin::EcdsaSighashType;
 use bitcoin::blockdata::constants::ChainHash;
 use bitcoin::blockdata::constants::genesis_block;
 use bitcoin::blockdata::transaction::{Transaction, TxOut};
@@ -40,6 +42,7 @@ use bitcoin::blockdata::opcodes;
 use bitcoin::blockdata::block::Block;
 use bitcoin::network::constants::Network;
 use bitcoin::hash_types::{BlockHash, Txid};
+use bitcoin::util::sighash::SighashCache;
 
 use bitcoin::secp256k1::{SecretKey, PublicKey, Secp256k1, ecdsa::Signature, Scalar};
 use bitcoin::secp256k1::ecdh::SharedSecret;
@@ -1066,4 +1069,66 @@ impl Drop for TestScorer {
 			}
 		}
 	}
+}
+
+pub struct TestWalletSource {
+	secret_key: SecretKey,
+	utxos: RefCell<Vec<Utxo>>,
+	secp: Secp256k1<bitcoin::secp256k1::All>,
+}
+
+impl TestWalletSource {
+	pub fn new(secret_key: SecretKey) -> Self {
+		Self {
+			secret_key,
+			utxos: RefCell::new(Vec::new()),
+			secp: Secp256k1::new(),
+		}
+	}
+
+	pub fn add_utxo(&self, outpoint: bitcoin::OutPoint, value: u64) -> TxOut {
+		let public_key = bitcoin::PublicKey::new(self.secret_key.public_key(&self.secp));
+		let utxo = Utxo::new_p2pkh(outpoint, value, &public_key.pubkey_hash());
+		self.utxos.borrow_mut().push(utxo.clone());
+		utxo.output
+	}
+
+	pub fn add_custom_utxo(&self, utxo: Utxo) -> TxOut {
+		let output = utxo.output.clone();
+		self.utxos.borrow_mut().push(utxo);
+		output
+	}
+
+	pub fn remove_utxo(&self, outpoint: bitcoin::OutPoint) {
+		self.utxos.borrow_mut().retain(|utxo| utxo.outpoint != outpoint);
+	}
+}
+
+impl WalletSource for TestWalletSource {
+    fn list_confirmed_utxos(&self) -> Result<Vec<Utxo>, ()> {
+		Ok(self.utxos.borrow().clone())
+    }
+
+    fn get_change_script(&self) -> Result<Script, ()> {
+		let public_key = bitcoin::PublicKey::new(self.secret_key.public_key(&self.secp));
+		Ok(Script::new_p2pkh(&public_key.pubkey_hash()))
+    }
+
+    fn sign_tx(&self, tx: &mut Transaction) -> Result<(), ()> {
+		let utxos = self.utxos.borrow();
+		for i in 0..tx.input.len() {
+			if let Some(utxo) = utxos.iter().find(|utxo| utxo.outpoint == tx.input[i].previous_output) {
+				let sighash = SighashCache::new(&*tx)
+					.legacy_signature_hash(i, &utxo.output.script_pubkey, EcdsaSighashType::All as u32)
+					.map_err(|_| ())?;
+				let sig = self.secp.sign_ecdsa(&sighash.as_hash().into(), &self.secret_key);
+				let bitcoin_sig = bitcoin::EcdsaSig { sig, hash_ty: EcdsaSighashType::All }.to_vec();
+				tx.input[i].script_sig = Builder::new()
+					.push_slice(&bitcoin_sig)
+					.push_slice(&self.secret_key.public_key(&self.secp).serialize())
+					.into_script();
+			}
+		}
+		Ok(())
+    }
 }

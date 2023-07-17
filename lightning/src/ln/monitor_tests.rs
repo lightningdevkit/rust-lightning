@@ -9,14 +9,13 @@
 
 //! Further functional tests which test blockchain reorganizations.
 
-use crate::sign::{ChannelSigner, EcdsaChannelSigner};
+use crate::sign::EcdsaChannelSigner;
 use crate::chain::channelmonitor::{ANTI_REORG_DELAY, LATENCY_GRACE_PERIOD_BLOCKS, Balance};
 use crate::chain::transaction::OutPoint;
-use crate::chain::chaininterface::LowerBoundedFeeEstimator;
-use crate::events::bump_transaction::BumpTransactionEvent;
+use crate::chain::chaininterface::{LowerBoundedFeeEstimator, compute_feerate_sat_per_1000_weight};
+use crate::events::bump_transaction::{BumpTransactionEvent, WalletSource};
 use crate::events::{Event, MessageSendEvent, MessageSendEventsProvider, ClosureReason, HTLCDestination};
 use crate::ln::channel;
-use crate::ln::chan_utils;
 use crate::ln::channelmanager::{BREAKDOWN_TIMEOUT, ChannelManager, PaymentId, RecipientOnionFields};
 use crate::ln::msgs::ChannelMessageHandler;
 use crate::util::config::UserConfig;
@@ -1743,6 +1742,17 @@ fn do_test_monitor_rebroadcast_pending_claims(anchors: bool) {
 	check_closed_event(&nodes[0], 1, ClosureReason::CommitmentTxConfirmed, false);
 	check_added_monitors(&nodes[0], 1);
 
+	let coinbase_tx = Transaction {
+		version: 2,
+		lock_time: PackedLockTime::ZERO,
+		input: vec![TxIn { ..Default::default() }],
+		output: vec![TxOut { // UTXO to attach fees to `htlc_tx` on anchors
+			value: Amount::ONE_BTC.to_sat(),
+			script_pubkey: nodes[0].wallet_source.get_change_script().unwrap(),
+		}],
+	};
+	nodes[0].wallet_source.add_utxo(bitcoin::OutPoint { txid: coinbase_tx.txid(), vout: 0 }, coinbase_tx.output[0].value);
+
 	// Set up a helper closure we'll use throughout our test. We should only expect retries without
 	// bumps if fees have not increased after a block has been connected (assuming the height timer
 	// re-evaluates at every block) or after `ChainMonitor::rebroadcast_pending_claims` is called.
@@ -1750,42 +1760,25 @@ fn do_test_monitor_rebroadcast_pending_claims(anchors: bool) {
 	let mut check_htlc_retry = |should_retry: bool, should_bump: bool| -> Option<Transaction> {
 		let (htlc_tx, htlc_tx_feerate) = if anchors {
 			assert!(nodes[0].tx_broadcaster.txn_broadcast().is_empty());
-			let mut events = nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events();
+			let events = nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events();
 			assert_eq!(events.len(), if should_retry { 1 } else { 0 });
 			if !should_retry {
 				return None;
 			}
-			#[allow(unused_assignments)]
-			let mut tx = Transaction {
-				version: 2,
-				lock_time: bitcoin::PackedLockTime::ZERO,
-				input: vec![],
-				output: vec![],
-			};
-			#[allow(unused_assignments)]
-			let mut feerate = 0;
-			feerate = if let Event::BumpTransaction(BumpTransactionEvent::HTLCResolution {
-				target_feerate_sat_per_1000_weight, mut htlc_descriptors, tx_lock_time, ..
-			}) = events.pop().unwrap() {
-				let secp = Secp256k1::new();
-				assert_eq!(htlc_descriptors.len(), 1);
-				let descriptor = htlc_descriptors.pop().unwrap();
-				assert_eq!(descriptor.commitment_txid, commitment_txn[0].txid());
-				let htlc_output_idx = descriptor.htlc.transaction_output_index.unwrap() as usize;
-				assert!(htlc_output_idx < commitment_txn[0].output.len());
-				tx.lock_time = tx_lock_time;
-				// Note that we don't care about actually making the HTLC transaction meet the
-				// feerate for the test, we just want to make sure the feerates we receive from
-				// the events never decrease.
-				tx.input.push(descriptor.unsigned_tx_input());
-				tx.output.push(descriptor.tx_output(&secp));
-				let signer = descriptor.derive_channel_signer(&nodes[0].keys_manager);
-				let our_sig = signer.sign_holder_htlc_transaction(&mut tx, 0, &descriptor, &secp).unwrap();
-				let witness_script = descriptor.witness_script(&secp);
-				tx.input[0].witness = descriptor.tx_input_witness(&our_sig, &witness_script);
-				target_feerate_sat_per_1000_weight as u64
-			} else { panic!("unexpected event"); };
-			(tx, feerate)
+			match &events[0] {
+				Event::BumpTransaction(event) => {
+					nodes[0].bump_tx_handler.handle_event(&event);
+					let mut txn = nodes[0].tx_broadcaster.unique_txn_broadcast();
+					assert_eq!(txn.len(), 1);
+					let htlc_tx = txn.pop().unwrap();
+					check_spends!(&htlc_tx, &commitment_txn[0], &coinbase_tx);
+					let htlc_tx_fee = HTLC_AMT_SAT + coinbase_tx.output[0].value -
+						htlc_tx.output.iter().map(|output| output.value).sum::<u64>();
+					let htlc_tx_weight = htlc_tx.weight() as u64;
+					(htlc_tx, compute_feerate_sat_per_1000_weight(htlc_tx_fee, htlc_tx_weight))
+				}
+				_ => panic!("Unexpected event"),
+			}
 		} else {
 			assert!(nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events().is_empty());
 			let mut txn = nodes[0].tx_broadcaster.txn_broadcast();
@@ -1796,8 +1789,8 @@ fn do_test_monitor_rebroadcast_pending_claims(anchors: bool) {
 			let htlc_tx = txn.pop().unwrap();
 			check_spends!(htlc_tx, commitment_txn[0]);
 			let htlc_tx_fee = HTLC_AMT_SAT - htlc_tx.output[0].value;
-			let htlc_tx_feerate = htlc_tx_fee * 1000 / htlc_tx.weight() as u64;
-			(htlc_tx, htlc_tx_feerate)
+			let htlc_tx_weight = htlc_tx.weight() as u64;
+			(htlc_tx, compute_feerate_sat_per_1000_weight(htlc_tx_fee, htlc_tx_weight))
 		};
 		if should_bump {
 			assert!(htlc_tx_feerate > prev_htlc_tx_feerate.take().unwrap());
@@ -1837,9 +1830,11 @@ fn do_test_monitor_rebroadcast_pending_claims(anchors: bool) {
 
 	// Mine the HTLC transaction to ensure we don't retry claims while they're confirmed.
 	mine_transaction(&nodes[0], &htlc_tx);
-	// If we have a `ConnectStyle` that advertises the new block first without the transasctions,
+	// If we have a `ConnectStyle` that advertises the new block first without the transactions,
 	// we'll receive an extra bumped claim.
 	if nodes[0].connect_style.borrow().updates_best_block_first() {
+		nodes[0].wallet_source.add_utxo(bitcoin::OutPoint { txid: coinbase_tx.txid(), vout: 0 }, coinbase_tx.output[0].value);
+		nodes[0].wallet_source.remove_utxo(bitcoin::OutPoint { txid: htlc_tx.txid(), vout: 1 });
 		check_htlc_retry(true, anchors);
 	}
 	nodes[0].chain_monitor.chain_monitor.rebroadcast_pending_claims();
@@ -1860,7 +1855,6 @@ fn test_yield_anchors_events() {
 	// allowing the consumer to provide additional fees to the commitment transaction to be
 	// broadcast. Once the commitment transaction confirms, events for the HTLC resolution should be
 	// emitted by LDK, such that the consumer can attach fees to the zero fee HTLC transactions.
-	let secp = Secp256k1::new();
 	let mut chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let mut anchors_config = UserConfig::default();
@@ -1878,6 +1872,7 @@ fn test_yield_anchors_events() {
 
 	assert!(nodes[0].node.get_and_clear_pending_events().is_empty());
 
+	*nodes[0].fee_estimator.sat_per_kw.lock().unwrap() *= 2;
 	connect_blocks(&nodes[0], TEST_FINAL_CLTV + LATENCY_GRACE_PERIOD_BLOCKS + 1);
 	check_closed_broadcast!(&nodes[0], true);
 	assert!(nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().is_empty());
@@ -1890,26 +1885,23 @@ fn test_yield_anchors_events() {
 	let mut holder_events = nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events();
 	assert_eq!(holder_events.len(), 1);
 	let (commitment_tx, anchor_tx) = match holder_events.pop().unwrap() {
-		Event::BumpTransaction(BumpTransactionEvent::ChannelClose { commitment_tx, anchor_descriptor, .. })  => {
-			assert_eq!(commitment_tx.input.len(), 1);
-			assert_eq!(commitment_tx.output.len(), 6);
-			let mut anchor_tx = Transaction {
+		Event::BumpTransaction(event) => {
+			let coinbase_tx = Transaction {
 				version: 2,
 				lock_time: PackedLockTime::ZERO,
-				input: vec![
-					TxIn { previous_output: anchor_descriptor.outpoint, ..Default::default() },
-					TxIn { ..Default::default() },
-				],
-				output: vec![TxOut {
+				input: vec![TxIn { ..Default::default() }],
+				output: vec![TxOut { // UTXO to attach fees to `anchor_tx`
 					value: Amount::ONE_BTC.to_sat(),
-					script_pubkey: Script::new_op_return(&[]),
+					script_pubkey: nodes[0].wallet_source.get_change_script().unwrap(),
 				}],
 			};
-			let signer = anchor_descriptor.derive_channel_signer(&nodes[0].keys_manager);
-			let funding_sig = signer.sign_holder_anchor_input(&mut anchor_tx, 0, &secp).unwrap();
-			anchor_tx.input[0].witness = chan_utils::build_anchor_input_witness(
-				&signer.pubkeys().funding_pubkey, &funding_sig
-			);
+			nodes[0].wallet_source.add_utxo(bitcoin::OutPoint { txid: coinbase_tx.txid(), vout: 0 }, coinbase_tx.output[0].value);
+			nodes[0].bump_tx_handler.handle_event(&event);
+			let mut txn = nodes[0].tx_broadcaster.unique_txn_broadcast();
+			assert_eq!(txn.len(), 2);
+			let anchor_tx = txn.pop().unwrap();
+			let commitment_tx = txn.pop().unwrap();
+			check_spends!(anchor_tx, coinbase_tx, commitment_tx);
 			(commitment_tx, anchor_tx)
 		},
 		_ => panic!("Unexpected event"),
@@ -1933,28 +1925,12 @@ fn test_yield_anchors_events() {
 	let mut htlc_txs = Vec::with_capacity(2);
 	for event in holder_events {
 		match event {
-			Event::BumpTransaction(BumpTransactionEvent::HTLCResolution { htlc_descriptors, tx_lock_time, .. }) => {
-				assert_eq!(htlc_descriptors.len(), 1);
-				let htlc_descriptor = &htlc_descriptors[0];
-				let mut htlc_tx = Transaction {
-					version: 2,
-					lock_time: tx_lock_time,
-					input: vec![
-						htlc_descriptor.unsigned_tx_input(), // HTLC input
-						TxIn { ..Default::default() } // Fee input
-					],
-					output: vec![
-						htlc_descriptor.tx_output(&secp), // HTLC output
-						TxOut { // Fee input change
-							value: Amount::ONE_BTC.to_sat(),
-							script_pubkey: Script::new_op_return(&[]),
-						}
-					]
-				};
-				let signer = htlc_descriptor.derive_channel_signer(&nodes[0].keys_manager);
-				let our_sig = signer.sign_holder_htlc_transaction(&mut htlc_tx, 0, htlc_descriptor, &secp).unwrap();
-				let witness_script = htlc_descriptor.witness_script(&secp);
-				htlc_tx.input[0].witness = htlc_descriptor.tx_input_witness(&our_sig, &witness_script);
+			Event::BumpTransaction(event) => {
+				nodes[0].bump_tx_handler.handle_event(&event);
+				let mut txn = nodes[0].tx_broadcaster.unique_txn_broadcast();
+				assert_eq!(txn.len(), 1);
+				let htlc_tx = txn.pop().unwrap();
+				check_spends!(htlc_tx, commitment_tx, anchor_tx);
 				htlc_txs.push(htlc_tx);
 			},
 			_ => panic!("Unexpected event"),
@@ -2054,11 +2030,12 @@ fn test_anchors_aggregated_revoked_htlc_tx() {
 	// Bob force closes by restarting with the outdated state, prompting the ChannelMonitors to
 	// broadcast the latest commitment transaction known to them, which in our case is the one with
 	// the HTLCs still pending.
+	*nodes[1].fee_estimator.sat_per_kw.lock().unwrap() *= 2;
 	nodes[1].node.timer_tick_occurred();
 	check_added_monitors(&nodes[1], 2);
 	check_closed_event!(&nodes[1], 2, ClosureReason::OutdatedChannelManager);
 	let (revoked_commitment_a, revoked_commitment_b) = {
-		let txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
+		let txn = nodes[1].tx_broadcaster.unique_txn_broadcast();
 		assert_eq!(txn.len(), 2);
 		assert_eq!(txn[0].output.len(), 6); // 2 HTLC outputs + 1 to_self output + 1 to_remote output + 2 anchor outputs
 		assert_eq!(txn[1].output.len(), 6); // 2 HTLC outputs + 1 to_self output + 1 to_remote output + 2 anchor outputs
@@ -2077,71 +2054,32 @@ fn test_anchors_aggregated_revoked_htlc_tx() {
 	assert!(nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events().is_empty());
 	let events = nodes[1].chain_monitor.chain_monitor.get_and_clear_pending_events();
 	assert_eq!(events.len(), 2);
-	let anchor_tx = {
-		let secret_key = SecretKey::from_slice(&[1; 32]).unwrap();
-		let public_key = PublicKey::new(secret_key.public_key(&secp));
-		let fee_utxo_script = Script::new_v0_p2wpkh(&public_key.wpubkey_hash().unwrap());
+	let mut anchor_txs = Vec::with_capacity(events.len());
+	for (idx, event) in events.into_iter().enumerate() {
+		let utxo_value = Amount::ONE_BTC.to_sat() * (idx + 1) as u64;
 		let coinbase_tx = Transaction {
 			version: 2,
 			lock_time: PackedLockTime::ZERO,
 			input: vec![TxIn { ..Default::default() }],
 			output: vec![TxOut { // UTXO to attach fees to `anchor_tx`
-				value: Amount::ONE_BTC.to_sat(),
-				script_pubkey: fee_utxo_script.clone(),
+				value: utxo_value,
+				script_pubkey: nodes[1].wallet_source.get_change_script().unwrap(),
 			}],
 		};
-		let mut anchor_tx = Transaction {
-			version: 2,
-			lock_time: PackedLockTime::ZERO,
-			input: vec![
-				TxIn { // Fee input
-					previous_output: bitcoin::OutPoint { txid: coinbase_tx.txid(), vout: 0 },
-					..Default::default()
-				},
-			],
-			output: vec![TxOut { // Fee input change
-				value: coinbase_tx.output[0].value / 2 ,
-				script_pubkey: Script::new_op_return(&[]),
-			}],
+		nodes[1].wallet_source.add_utxo(bitcoin::OutPoint { txid: coinbase_tx.txid(), vout: 0 }, utxo_value);
+		match event {
+			Event::BumpTransaction(event) => nodes[1].bump_tx_handler.handle_event(&event),
+			_ => panic!("Unexpected event"),
 		};
-		let mut signers = Vec::with_capacity(2);
-		for event in events {
-			match event {
-				Event::BumpTransaction(BumpTransactionEvent::ChannelClose { anchor_descriptor, .. })  => {
-					anchor_tx.input.push(TxIn {
-						previous_output: anchor_descriptor.outpoint,
-						..Default::default()
-					});
-					let signer = anchor_descriptor.derive_channel_signer(&nodes[1].keys_manager);
-					signers.push(signer);
-				},
-				_ => panic!("Unexpected event"),
-			}
-		}
-		for (i, signer) in signers.into_iter().enumerate() {
-			let anchor_idx = i + 1;
-			let funding_sig = signer.sign_holder_anchor_input(&mut anchor_tx, anchor_idx, &secp).unwrap();
-			anchor_tx.input[anchor_idx].witness = chan_utils::build_anchor_input_witness(
-				&signer.pubkeys().funding_pubkey, &funding_sig
-			);
-		}
-		let fee_utxo_sig = {
-			let witness_script = Script::new_p2pkh(&public_key.pubkey_hash());
-			let sighash = hash_to_message!(&SighashCache::new(&anchor_tx).segwit_signature_hash(
-				0, &witness_script, coinbase_tx.output[0].value, EcdsaSighashType::All
-			).unwrap()[..]);
-			let sig = sign(&secp, &sighash, &secret_key);
-			let mut sig = sig.serialize_der().to_vec();
-			sig.push(EcdsaSighashType::All as u8);
-			sig
-		};
-		anchor_tx.input[0].witness = Witness::from_vec(vec![fee_utxo_sig, public_key.to_bytes()]);
-		check_spends!(anchor_tx, coinbase_tx, revoked_commitment_a, revoked_commitment_b);
-		anchor_tx
+		let txn = nodes[1].tx_broadcaster.txn_broadcast();
+		assert_eq!(txn.len(), 2);
+		let (commitment_tx, anchor_tx) = (&txn[0], &txn[1]);
+		check_spends!(anchor_tx, coinbase_tx, commitment_tx);
+		anchor_txs.push(anchor_tx.clone());
 	};
 
 	for node in &nodes {
-		mine_transactions(node, &[&revoked_commitment_a, &revoked_commitment_b, &anchor_tx]);
+		mine_transactions(node, &[&revoked_commitment_a, &anchor_txs[0], &revoked_commitment_b, &anchor_txs[1]]);
 	}
 	check_added_monitors!(&nodes[0], 2);
 	check_closed_broadcast(&nodes[0], 2, true);
@@ -2211,6 +2149,8 @@ fn test_anchors_aggregated_revoked_htlc_tx() {
 		};
 		let mut descriptors = Vec::with_capacity(4);
 		for event in events {
+			// We don't use the `BumpTransactionEventHandler` here because it does not support
+			// creating one transaction from multiple `HTLCResolution` events.
 			if let Event::BumpTransaction(BumpTransactionEvent::HTLCResolution { mut htlc_descriptors, tx_lock_time, .. }) = event {
 				assert_eq!(htlc_descriptors.len(), 2);
 				for htlc_descriptor in &htlc_descriptors {
