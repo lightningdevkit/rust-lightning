@@ -493,6 +493,34 @@ impl InteractiveTxConstructor {
 		self.handle_negotiating_send(|state_machine| state_machine.send_tx_remove_output(serial_id))
 	}
 
+	fn send_tx_complete(&mut self) {
+		let mut mode = core::mem::take(&mut self.mode);
+		self.mode = match mode {
+			ChannelMode::Negotiating(c) => { ChannelMode::OurTxComplete(c.send_tx_complete()) }
+			ChannelMode::TheirTxComplete(c) => { ChannelMode::NegotiationComplete(c.send_tx_complete()) }
+			_ => mode
+		}
+	}
+
+	fn receive_tx_complete(&mut self) {
+		let mut mode = core::mem::take(&mut self.mode);
+		self.mode = match mode {
+			ChannelMode::Negotiating(c) => {
+				match c.receive_tx_complete() {
+					Ok(c) => ChannelMode::TheirTxComplete(c),
+					Err(c) => ChannelMode::NegotiationAborted(c)
+				}
+			}
+			ChannelMode::OurTxComplete(c) => {
+				match c.receive_tx_complete() {
+					Ok(c) => ChannelMode::NegotiationComplete(c),
+					Err(c) => ChannelMode::NegotiationAborted(c)
+				}
+			}
+			_ => mode
+		}
+	}
+
 	fn handle_negotiating_receive<F>(&mut self, f: F)
 		where F: FnOnce(InteractiveTxStateMachine<Negotiating>) -> Result<InteractiveTxStateMachine<Negotiating>, InteractiveTxStateMachine<NegotiationAborted>> {
 		// We use mem::take here because we want to update `self.mode` based on its value and
