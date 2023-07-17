@@ -633,11 +633,12 @@ impl<ChannelSigner: WriteableEcdsaChannelSigner> OnchainTxHandler<ChannelSigner>
 						.compute_package_feerate(fee_estimator, conf_target, force_feerate_bump);
 					if let Some(input_amount_sat) = output.funding_amount {
 						let fee_sat = input_amount_sat - tx.output.iter().map(|output| output.value).sum::<u64>();
-						if compute_feerate_sat_per_1000_weight(fee_sat, tx.weight() as u64) >=
-							 package_target_feerate_sat_per_1000_weight
-						{
-							log_debug!(logger, "Commitment transaction {} already meets required feerate {} sat/kW",
-								tx.txid(), package_target_feerate_sat_per_1000_weight);
+						let commitment_tx_feerate_sat_per_1000_weight =
+							compute_feerate_sat_per_1000_weight(fee_sat, tx.weight() as u64);
+						if commitment_tx_feerate_sat_per_1000_weight >= package_target_feerate_sat_per_1000_weight {
+							log_debug!(logger, "Pre-signed {} already has feerate {} sat/kW above required {} sat/kW",
+								log_tx!(tx), commitment_tx_feerate_sat_per_1000_weight,
+								package_target_feerate_sat_per_1000_weight);
 							return Some((new_timer, 0, OnchainClaim::Tx(tx.clone())));
 						}
 					}
