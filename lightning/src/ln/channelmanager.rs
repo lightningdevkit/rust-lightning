@@ -685,7 +685,7 @@ impl <Signer: ChannelSigner> PeerState<Signer> {
 			&& self.in_flight_monitor_updates.is_empty()
 	}
 
-	// Returns a count of all channels we have with this peer, including pending channels.
+	// Returns a count of all channels we have with this peer, including unfunded channels.
 	fn total_channel_count(&self) -> usize {
 		self.channel_by_id.len() +
 			self.outbound_v1_channel_by_id.len() +
@@ -1749,12 +1749,12 @@ macro_rules! convert_chan_err {
 			},
 		}
 	};
-	($self: ident, $err: expr, $channel_context: expr, $channel_id: expr, PREFUNDED) => {
+	($self: ident, $err: expr, $channel_context: expr, $channel_id: expr, UNFUNDED) => {
 		match $err {
-			// We should only ever have `ChannelError::Close` when prefunded channels error.
+			// We should only ever have `ChannelError::Close` when unfunded channels error.
 			// In any case, just close the channel.
 			ChannelError::Warn(msg) | ChannelError::Ignore(msg) | ChannelError::Close(msg) => {
-				log_error!($self.logger, "Closing prefunded channel {} due to an error: {}", log_bytes!($channel_id[..]), msg);
+				log_error!($self.logger, "Closing unfunded channel {} due to an error: {}", log_bytes!($channel_id[..]), msg);
 				update_maps_on_chan_removal!($self, &$channel_context);
 				let shutdown_res = $channel_context.force_shutdown(false);
 				(true, MsgHandleErrInternal::from_finish_shutdown(msg, *$channel_id, $channel_context.get_user_id(),
@@ -1784,7 +1784,7 @@ macro_rules! try_v1_outbound_chan_entry {
 		match $res {
 			Ok(res) => res,
 			Err(e) => {
-				let (drop, res) = convert_chan_err!($self, e, $entry.get_mut().context, $entry.key(), PREFUNDED);
+				let (drop, res) = convert_chan_err!($self, e, $entry.get_mut().context, $entry.key(), UNFUNDED);
 				if drop {
 					$entry.remove_entry();
 				}
@@ -2535,14 +2535,14 @@ where
 				self.issue_channel_close_events(&chan.get().context, closure_reason);
 				let mut chan = remove_channel!(self, chan);
 				self.finish_force_close_channel(chan.context.force_shutdown(false));
-				// Prefunded channel has no update
+				// Unfunded channel has no update
 				(None, chan.context.get_counterparty_node_id())
 			} else if let hash_map::Entry::Occupied(chan) = peer_state.inbound_v1_channel_by_id.entry(channel_id.clone()) {
 				log_error!(self.logger, "Force-closing channel {}", log_bytes!(channel_id[..]));
 				self.issue_channel_close_events(&chan.get().context, closure_reason);
 				let mut chan = remove_channel!(self, chan);
 				self.finish_force_close_channel(chan.context.force_shutdown(false));
-				// Prefunded channel has no update
+				// Unfunded channel has no update
 				(None, chan.context.get_counterparty_node_id())
 			} else {
 				return Err(APIError::ChannelUnavailable{ err: format!("Channel with id {} not found for the passed counterparty node_id {}", log_bytes!(*channel_id), peer_node_id) });
