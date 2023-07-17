@@ -78,7 +78,7 @@ impl FeeEstimator for FuzzEstimator {
 		// Background feerate which is <= the minimum Normal feerate.
 		match conf_target {
 			ConfirmationTarget::HighPriority => MAX_FEE,
-			ConfirmationTarget::Background => 253,
+			ConfirmationTarget::Background|ConfirmationTarget::MempoolMinimum => 253,
 			ConfirmationTarget::Normal => cmp::min(self.ret_val.load(atomic::Ordering::Acquire), MAX_FEE),
 		}
 	}

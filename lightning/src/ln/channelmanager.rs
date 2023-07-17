@@ -4258,13 +4258,19 @@ where
 		PersistenceNotifierGuard::optionally_notify(&self.total_consistency_lock, &self.persistence_notifier, || {
 			let mut should_persist = self.process_background_events();
 
-			let new_feerate = self.fee_estimator.bounded_sat_per_1000_weight(ConfirmationTarget::Normal);
+			let normal_feerate = self.fee_estimator.bounded_sat_per_1000_weight(ConfirmationTarget::Normal);
+			let min_mempool_feerate = self.fee_estimator.bounded_sat_per_1000_weight(ConfirmationTarget::MempoolMinimum);
 
 			let per_peer_state = self.per_peer_state.read().unwrap();
 			for (_cp_id, peer_state_mutex) in per_peer_state.iter() {
 				let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 				let peer_state = &mut *peer_state_lock;
 				for (chan_id, chan) in peer_state.channel_by_id.iter_mut() {
+					let new_feerate = if chan.context.get_channel_type().supports_anchors_zero_fee_htlc_tx() {
+						min_mempool_feerate
+					} else {
+						normal_feerate
+					};
 					let chan_needs_persist = self.update_channel_fee(chan_id, chan, new_feerate);
 					if chan_needs_persist == NotifyOption::DoPersist { should_persist = NotifyOption::DoPersist; }
 				}
@@ -4294,7 +4300,8 @@ where
 		PersistenceNotifierGuard::optionally_notify(&self.total_consistency_lock, &self.persistence_notifier, || {
 			let mut should_persist = self.process_background_events();
 
-			let new_feerate = self.fee_estimator.bounded_sat_per_1000_weight(ConfirmationTarget::Normal);
+			let normal_feerate = self.fee_estimator.bounded_sat_per_1000_weight(ConfirmationTarget::Normal);
+			let min_mempool_feerate = self.fee_estimator.bounded_sat_per_1000_weight(ConfirmationTarget::MempoolMinimum);
 
 			let mut handle_errors: Vec<(Result<(), _>, _)> = Vec::new();
 			let mut timed_out_mpp_htlcs = Vec::new();
@@ -4307,6 +4314,11 @@ where
 					let pending_msg_events = &mut peer_state.pending_msg_events;
 					let counterparty_node_id = *counterparty_node_id;
 					peer_state.channel_by_id.retain(|chan_id, chan| {
+						let new_feerate = if chan.context.get_channel_type().supports_anchors_zero_fee_htlc_tx() {
+							min_mempool_feerate
+						} else {
+							normal_feerate
+						};
 						let chan_needs_persist = self.update_channel_fee(chan_id, chan, new_feerate);
 						if chan_needs_persist == NotifyOption::DoPersist { should_persist = NotifyOption::DoPersist; }
 
@@ -7278,7 +7290,7 @@ where
 				let mut peer_state_lock = peer_state_mutex_opt.unwrap().lock().unwrap();
 				let peer_state = &mut *peer_state_lock;
 				if let Some(chan) = peer_state.outbound_v1_channel_by_id.get_mut(&msg.channel_id) {
-					if let Ok(msg) = chan.maybe_handle_error_without_close(self.genesis_hash) {
+					if let Ok(msg) = chan.maybe_handle_error_without_close(self.genesis_hash, &self.fee_estimator) {
 						peer_state.pending_msg_events.push(events::MessageSendEvent::SendOpenChannel {
 							node_id: *counterparty_node_id,
 							msg,
