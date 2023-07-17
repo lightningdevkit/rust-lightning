@@ -32,11 +32,20 @@ use core::ops::Deref;
 use crate::prelude::*;
 use crate::sync::Mutex;
 
+/// The number of ticks of [`ChannelManager::timer_tick_occurred`] until an invoice request without
+/// a response is timed out.
+///
+/// [`ChannelManager::timer_tick_occurred`]: crate::ln::channelmanager::ChannelManager::timer_tick_occurred
+const INVOICE_REQUEST_TIMEOUT_TICKS: u8 = 3;
+
 /// Stores the session_priv for each part of a payment that is still pending. For versions 0.0.102
 /// and later, also stores information for retrying the payment.
 pub(crate) enum PendingOutboundPayment {
 	Legacy {
 		session_privs: HashSet<[u8; 32]>,
+	},
+	AwaitingInvoice {
+		timer_ticks_without_response: u8,
 	},
 	Retryable {
 		retry_strategy: Option<Retry>,
@@ -108,6 +117,12 @@ impl PendingOutboundPayment {
 			params.previously_failed_channels.push(scid);
 		}
 	}
+	fn is_awaiting_invoice(&self) -> bool {
+		match self {
+			PendingOutboundPayment::AwaitingInvoice { .. } => true,
+			_ => false,
+		}
+	}
 	pub(super) fn is_fulfilled(&self) -> bool {
 		match self {
 			PendingOutboundPayment::Fulfilled { .. } => true,
@@ -130,6 +145,7 @@ impl PendingOutboundPayment {
 	fn payment_hash(&self) -> Option<PaymentHash> {
 		match self {
 			PendingOutboundPayment::Legacy { .. } => None,
+			PendingOutboundPayment::AwaitingInvoice { .. } => None,
 			PendingOutboundPayment::Retryable { payment_hash, .. } => Some(*payment_hash),
 			PendingOutboundPayment::Fulfilled { payment_hash, .. } => *payment_hash,
 			PendingOutboundPayment::Abandoned { payment_hash, .. } => Some(*payment_hash),
@@ -142,8 +158,11 @@ impl PendingOutboundPayment {
 			PendingOutboundPayment::Legacy { session_privs } |
 				PendingOutboundPayment::Retryable { session_privs, .. } |
 				PendingOutboundPayment::Fulfilled { session_privs, .. } |
-				PendingOutboundPayment::Abandoned { session_privs, .. }
-			=> session_privs,
+				PendingOutboundPayment::Abandoned { session_privs, .. } => session_privs,
+			PendingOutboundPayment::AwaitingInvoice { .. } => {
+				debug_assert!(false);
+				return;
+			},
 		});
 		let payment_hash = self.payment_hash();
 		*self = PendingOutboundPayment::Fulfilled { session_privs, payment_hash, timer_ticks_without_htlcs: 0 };
@@ -169,7 +188,11 @@ impl PendingOutboundPayment {
 				PendingOutboundPayment::Fulfilled { session_privs, .. } |
 				PendingOutboundPayment::Abandoned { session_privs, .. } => {
 					session_privs.remove(session_priv)
-				}
+				},
+			PendingOutboundPayment::AwaitingInvoice { .. } => {
+				debug_assert!(false);
+				false
+			},
 		};
 		if remove_res {
 			if let PendingOutboundPayment::Retryable { ref mut pending_amt_msat, ref mut pending_fee_msat, .. } = self {
@@ -189,6 +212,10 @@ impl PendingOutboundPayment {
 				PendingOutboundPayment::Retryable { session_privs, .. } => {
 					session_privs.insert(session_priv)
 				}
+			PendingOutboundPayment::AwaitingInvoice { .. } => {
+				debug_assert!(false);
+				false
+			},
 			PendingOutboundPayment::Fulfilled { .. } => false,
 			PendingOutboundPayment::Abandoned { .. } => false,
 		};
@@ -210,7 +237,8 @@ impl PendingOutboundPayment {
 				PendingOutboundPayment::Fulfilled { session_privs, .. } |
 				PendingOutboundPayment::Abandoned { session_privs, .. } => {
 					session_privs.len()
-				}
+				},
+			PendingOutboundPayment::AwaitingInvoice { .. } => 0,
 		}
 	}
 }
@@ -679,7 +707,7 @@ impl OutboundPayments {
 		let mut outbounds = self.pending_outbound_payments.lock().unwrap();
 		outbounds.retain(|pmt_id, pmt| {
 			let mut retain = true;
-			if !pmt.is_auto_retryable_now() && pmt.remaining_parts() == 0 {
+			if !pmt.is_auto_retryable_now() && pmt.remaining_parts() == 0 && !pmt.is_awaiting_invoice() {
 				pmt.mark_abandoned(PaymentFailureReason::RetriesExhausted);
 				if let PendingOutboundPayment::Abandoned { payment_hash, reason, .. } = pmt {
 					pending_events.lock().unwrap().push_back((events::Event::PaymentFailed {
@@ -697,7 +725,8 @@ impl OutboundPayments {
 	pub(super) fn needs_abandon(&self) -> bool {
 		let outbounds = self.pending_outbound_payments.lock().unwrap();
 		outbounds.iter().any(|(_, pmt)|
-			!pmt.is_auto_retryable_now() && pmt.remaining_parts() == 0 && !pmt.is_fulfilled())
+			!pmt.is_auto_retryable_now() && pmt.remaining_parts() == 0 && !pmt.is_fulfilled() &&
+			!pmt.is_awaiting_invoice())
 	}
 
 	/// Errors immediately on [`RetryableSendFailure`] error conditions. Otherwise, further errors may
@@ -843,6 +872,10 @@ impl OutboundPayments {
 						},
 						PendingOutboundPayment::Legacy { .. } => {
 							log_error!(logger, "Unable to retry payments that were initially sent on LDK versions prior to 0.0.102");
+							return
+						},
+						PendingOutboundPayment::AwaitingInvoice { .. } => {
+							log_error!(logger, "Payment not yet sent");
 							return
 						},
 						PendingOutboundPayment::Fulfilled { .. } => {
@@ -1047,6 +1080,21 @@ impl OutboundPayments {
 				}
 
 				Ok(onion_session_privs)
+			},
+		}
+	}
+
+	#[allow(unused)]
+	pub(super) fn add_new_awaiting_invoice(&self, payment_id: PaymentId) -> Result<(), ()> {
+		let mut pending_outbounds = self.pending_outbound_payments.lock().unwrap();
+		match pending_outbounds.entry(payment_id) {
+			hash_map::Entry::Occupied(_) => Err(()),
+			hash_map::Entry::Vacant(entry) => {
+				entry.insert(PendingOutboundPayment::AwaitingInvoice {
+					timer_ticks_without_response: 0,
+				});
+
+				Ok(())
 			},
 		}
 	}
@@ -1256,19 +1304,19 @@ impl OutboundPayments {
 		}
 	}
 
-	pub(super) fn remove_stale_resolved_payments(&self,
-		pending_events: &Mutex<VecDeque<(events::Event, Option<EventCompletionAction>)>>)
+	pub(super) fn remove_stale_payments(
+		&self, pending_events: &Mutex<VecDeque<(events::Event, Option<EventCompletionAction>)>>)
 	{
-		// If an outbound payment was completed, and no pending HTLCs remain, we should remove it
-		// from the map. However, if we did that immediately when the last payment HTLC is claimed,
-		// this could race the user making a duplicate send_payment call and our idempotency
-		// guarantees would be violated. Instead, we wait a few timer ticks to do the actual
-		// removal. This should be more than sufficient to ensure the idempotency of any
-		// `send_payment` calls that were made at the same time the `PaymentSent` event was being
-		// processed.
 		let mut pending_outbound_payments = self.pending_outbound_payments.lock().unwrap();
-		let pending_events = pending_events.lock().unwrap();
+		let mut pending_events = pending_events.lock().unwrap();
 		pending_outbound_payments.retain(|payment_id, payment| {
+			// If an outbound payment was completed, and no pending HTLCs remain, we should remove it
+			// from the map. However, if we did that immediately when the last payment HTLC is claimed,
+			// this could race the user making a duplicate send_payment call and our idempotency
+			// guarantees would be violated. Instead, we wait a few timer ticks to do the actual
+			// removal. This should be more than sufficient to ensure the idempotency of any
+			// `send_payment` calls that were made at the same time the `PaymentSent` event was being
+			// processed.
 			if let PendingOutboundPayment::Fulfilled { session_privs, timer_ticks_without_htlcs, .. } = payment {
 				let mut no_remaining_entries = session_privs.is_empty();
 				if no_remaining_entries {
@@ -1292,6 +1340,16 @@ impl OutboundPayments {
 				} else {
 					*timer_ticks_without_htlcs = 0;
 					true
+				}
+			} else if let PendingOutboundPayment::AwaitingInvoice { timer_ticks_without_response, .. } = payment {
+				*timer_ticks_without_response += 1;
+				if *timer_ticks_without_response <= INVOICE_REQUEST_TIMEOUT_TICKS {
+					true
+				} else {
+					pending_events.push_back(
+						(events::Event::InvoiceRequestFailed { payment_id: *payment_id }, None)
+					);
+					false
 				}
 			} else { true }
 		});
@@ -1438,6 +1496,11 @@ impl OutboundPayments {
 					}, None));
 					payment.remove();
 				}
+			} else if let PendingOutboundPayment::AwaitingInvoice { .. } = payment.get() {
+				pending_events.lock().unwrap().push_back((events::Event::InvoiceRequestFailed {
+					payment_id,
+				}, None));
+				payment.remove();
 			}
 		}
 	}
@@ -1500,6 +1563,9 @@ impl_writeable_tlv_based_enum_upgradable!(PendingOutboundPayment,
 		(0, session_privs, required),
 		(1, reason, option),
 		(2, payment_hash, required),
+	},
+	(5, AwaitingInvoice) => {
+		(0, timer_ticks_without_response, required),
 	},
 );
 
