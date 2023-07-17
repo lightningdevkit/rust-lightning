@@ -29,6 +29,9 @@ PIN_RELEASE_DEPS # pin the release dependencies in our main workspace
 # The quote crate switched to Rust edition 2021 starting with v1.0.31, i.e., has MSRV of 1.56
 [ "$RUSTC_MINOR_VERSION" -lt 56 ] && cargo update -p quote --precise "1.0.30" --verbose
 
+# The proc-macro2 crate switched to Rust edition 2021 starting with v1.0.66, i.e., has MSRV of 1.56
+[ "$RUSTC_MINOR_VERSION" -lt 56 ] && cargo update -p proc-macro2 --precise "1.0.65" --verbose
+
 [ "$LDK_COVERAGE_BUILD" != "" ] && export RUSTFLAGS="-C link-dead-code"
 
 export RUST_BACKTRACE=1
