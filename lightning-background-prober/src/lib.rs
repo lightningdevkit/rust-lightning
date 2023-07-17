@@ -26,11 +26,13 @@ use lightning::util::persist::Persister;
 use lightning::util::wakers::Sleeper;
 use lightning_rapid_gossip_sync::RapidGossipSync;
 use tokio::runtime::Handle;
+use tokio::sync::Mutex;
 use tokio::sync::mpsc::{Receiver, Sender, self};
 
 use core::ops::Deref;
 use core::time::Duration;
 
+use std::collections::HashMap;
 use std::{path, clone};
 #[cfg(feature = "std")]
 use std::sync::Arc;
@@ -179,9 +181,7 @@ const OUR_NODE_PUBKEY : &bitcoin::secp256k1::PublicKey; // Need to be defined by
 
 //will only return node with maximum number of channels (has no implementation for state restoration)
 //Final implementation will have NetworkGraph as input, it will be cloned and then pasrsed for sorting nodes with max number of channels
-fn node_selector(
-	network_graph: &ReadOnlyNetworkGraph,
-) -> NodeId {
+fn node_selector(network_graph: &ReadOnlyNetworkGraph,) -> NodeId {
     let mut temp: u64 = 0;
 	let mut node_id: NodeId;
 
@@ -197,6 +197,16 @@ fn node_selector(
 	}
 	let node = node_id.clone();
 	return node;
+}
+
+fn node_state_handler() -> Arc<Mutex<HashMap<NodeId, ProbePerister>>> {
+    let map: Arc<Mutex<HashMap<NodeId, ProbePerister>>> = Arc::new(Mutex::new(HashMap::new()));
+    map
+}
+
+struct ProbePerister {
+	node_info: NodeInfo,
+	value : HashMap<NodeId, Vec<u64>>
 }
 
 // will return route parameters for send_probe
@@ -219,6 +229,34 @@ pub fn send () -> (PaymentHash, PaymentId) {
 	return probe_return;
 }
 
+
+macro_rules! run_body {
+    ($body:block) => {{
+        let mut handles = Vec::new();
+        let mut probe_return_values = Vec::new();
+
+        for _ in 0..NUM_THREADS {
+            let path = $path.clone();
+            let (tx, rx) = tokio::sync::oneshot::channel();
+
+            let handle = tokio::spawn(async move {
+                let probe_return = send_probe(path).await;
+                let _ = tx.send(probe_return);
+                $body
+            });
+            handles.push(handle);
+
+            let probe_return = rx.await.unwrap();
+            probe_return_values.push(probe_return);
+        }
+
+        for handle in handles {
+            handle.await.unwrap();
+        }
+
+        probe_return_values
+    }};
+}
 
 use tokio::task;
 
