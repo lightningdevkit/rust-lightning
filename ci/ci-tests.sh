@@ -4,18 +4,30 @@ set -eox pipefail
 RUSTC_MINOR_VERSION=$(rustc --version | awk '{ split($2,a,"."); print a[2] }')
 HOST_PLATFORM="$(rustc --version --verbose | grep "host:" | awk '{ print $2 }')"
 
-# Tokio MSRV on versions 1.17 through 1.26 is rustc 1.49. Above 1.26 MSRV is 1.56.
-[ "$RUSTC_MINOR_VERSION" -lt 49 ] && cargo update -p tokio --precise "1.14.1" --verbose
-[[ "$RUSTC_MINOR_VERSION" -gt 48  &&  "$RUSTC_MINOR_VERSION" -lt 56 ]] && cargo update -p tokio --precise "1.25.1" --verbose
+# Some crates require pinning to meet our MSRV even for our downstream users,
+# which we do here.
+# Further crates which appear only as dev-dependencies are pinned further down.
+function PIN_RELEASE_DEPS {
+	# Tokio MSRV on versions 1.17 through 1.26 is rustc 1.49. Above 1.26 MSRV is 1.56.
+	[ "$RUSTC_MINOR_VERSION" -lt 49 ] && cargo update -p tokio --precise "1.14.1" --verbose
+	[[ "$RUSTC_MINOR_VERSION" -gt 48  &&  "$RUSTC_MINOR_VERSION" -lt 56 ]] && cargo update -p tokio --precise "1.25.1" --verbose
 
-# Sadly the log crate is always a dependency of tokio until 1.20, and has no reasonable MSRV guarantees
-[ "$RUSTC_MINOR_VERSION" -lt 49 ] && cargo update -p log --precise "0.4.18" --verbose
+	# Sadly the log crate is always a dependency of tokio until 1.20, and has no reasonable MSRV guarantees
+	[ "$RUSTC_MINOR_VERSION" -lt 49 ] && cargo update -p log --precise "0.4.18" --verbose
+
+	# The serde_json crate switched to Rust edition 2021 starting with v1.0.101, i.e., has MSRV of 1.56
+	[ "$RUSTC_MINOR_VERSION" -lt 56 ] && cargo update -p serde_json --precise "1.0.100" --verbose
+
+	return 0 # Don't fail the script if our rustc is higher than the last check
+}
+
+PIN_RELEASE_DEPS # pin the release dependencies in our main workspace
 
 # The addr2line v0.20 crate (a dependency of `backtrace` starting with 0.3.68) relies on 1.55+
 [ "$RUSTC_MINOR_VERSION" -lt 55 ] && cargo update -p backtrace --precise "0.3.67" --verbose
 
-# The serde_json crate switched to Rust edition 2021 starting with v1.0.101, i.e., has MSRV of 1.56
-[ "$RUSTC_MINOR_VERSION" -lt 56 ] && cargo update -p serde_json --precise "1.0.100" --verbose
+# The quote crate switched to Rust edition 2021 starting with v1.0.31, i.e., has MSRV of 1.56
+[ "$RUSTC_MINOR_VERSION" -lt 56 ] && cargo update -p quote --precise "1.0.30" --verbose
 
 [ "$LDK_COVERAGE_BUILD" != "" ] && export RUSTFLAGS="-C link-dead-code"
 
@@ -63,6 +75,12 @@ echo -e "\n\nTesting no-std build on a downstream no-std crate"
 # check no-std compatibility across dependencies
 pushd no-std-check
 cargo check --verbose --color always --features lightning-transaction-sync
+popd
+
+# Test that we can build downstream code with only the "release pins".
+pushd msrv-no-dev-deps-check
+PIN_RELEASE_DEPS
+cargo check
 popd
 
 if [ -f "$(which arm-none-eabi-gcc)" ]; then
