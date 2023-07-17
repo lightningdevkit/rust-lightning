@@ -1,4 +1,4 @@
-# 0.0.116rc1 - Jul 14, 2023 - "Anchoring the Roadmap"
+# 0.0.116 - Jul 21, 2023 - "Anchoring the Roadmap"
 
 ## API Updates
 
@@ -6,9 +6,12 @@
    considered beta (#2367). Users who set
    `ChannelHandshakeConfig::negotiate_anchors_zero_fee_htlc_tx` should be
    prepared to handle the new `Event::BumpTransaction`, e.g. via the
-   `BumpTransactionEventHandler` (#2089). Users who set the same and wish to
-   accept inbound anchor-based channels must do so manually by setting
-   `UserConfig::manually_accept_inbound_channels` (#2368).
+   `BumpTransactionEventHandler` (#2089). Note that in order to do so you must
+   ensure you always have a reserve of available unspent on-chain funds to use
+   for CPFP. LDK currently makes no attempt to ensure this for you.
+ * Users who set `ChannelHandshakeConfig::negotiate_anchors_zero_fee_htlc_tx`
+   and wish to accept inbound anchor-based channels must do so manually by
+   setting `UserConfig::manually_accept_inbound_channels` (#2368).
  * Support forwarding and accepting HTLCs with a reduced amount has been added,
    to support LSPs skimming a fee on the penultimate hop (#2319).
  * BOLT11 and BOLT12 Invoice and related types have been renamed to include a
@@ -119,6 +122,39 @@
  * Rapid Gossip Sync processing now fails on an unknown chain hash (#2324).
  * `RouteHintHop::htlc_maximum_msat` is now enforced. Note that BOLT11 route
    hints do not have such a field so this code is generally unused (#2305).
+
+## Security
+0.0.116 fixes a denial-of-service vulnerability which is reachable from
+untrusted input from channel counterparties if a 0-conf channel exists with
+that counterparty.
+ * A premature `announcement_signatures` message from a peer prior to a 0-conf
+   channel's funding transaction receiving any confirmations would panic in any
+   version since 0-conf channels were introduced (#2439).
+
+In total, this release features 142 files changed, 21033 insertions, 11066
+deletions in 327 commits from 21 authors, in alphabetical order:
+ * Alec Chen
+ * Andrei
+ * Antoine Riard
+ * Arik Sosman
+ * Chad Upjohn
+ * Daniel Granhão
+ * Duncan Dean
+ * Elias Rohrer
+ * Fred Walker
+ * Gleb Naumenko
+ * Jeffrey Czyz
+ * Martin Habovstiak
+ * Matt Corallo
+ * Tony Giorgio
+ * Valentine Wallace
+ * Vladimir Fomene
+ * Willem Van Lint
+ * Wilmer Paulino
+ * benthecarman
+ * ff
+ * henghonglee
+
 
 # 0.0.115 - Apr 24, 2023 - "Rebroadcast the Bugfixes"
 
