@@ -464,7 +464,7 @@ pub trait CoinSelectionSource {
 	/// which UTXOs to double spend is left to the implementation, but it must strive to keep the
 	/// set of other claims being double spent to a minimum.
 	fn select_confirmed_utxos(
-		&self, claim_id: ClaimId, must_spend: &[Input], must_pay_to: &[TxOut],
+		&self, claim_id: ClaimId, must_spend: Vec<Input>, must_pay_to: &[TxOut],
 		target_feerate_sat_per_1000_weight: u32,
 	) -> Result<CoinSelection, ()>;
 	/// Signs and provides the full witness for all inputs within the transaction known to the
@@ -600,7 +600,7 @@ where
 	L::Target: Logger
 {
 	fn select_confirmed_utxos(
-		&self, claim_id: ClaimId, must_spend: &[Input], must_pay_to: &[TxOut],
+		&self, claim_id: ClaimId, must_spend: Vec<Input>, must_pay_to: &[TxOut],
 		target_feerate_sat_per_1000_weight: u32,
 	) -> Result<CoinSelection, ()> {
 		let utxos = self.source.list_confirmed_utxos()?;
@@ -726,7 +726,7 @@ where
 			satisfaction_weight: commitment_tx.weight() as u64 + ANCHOR_INPUT_WITNESS_WEIGHT + EMPTY_SCRIPT_SIG_WEIGHT,
 		}];
 		let coin_selection = self.utxo_source.select_confirmed_utxos(
-			claim_id, &must_spend, &[], anchor_target_feerate_sat_per_1000_weight,
+			claim_id, must_spend, &[], anchor_target_feerate_sat_per_1000_weight,
 		)?;
 
 		let mut anchor_tx = Transaction {
@@ -800,13 +800,16 @@ where
 
 		log_debug!(self.logger, "Peforming coin selection for HTLC transaction targeting {} sat/kW",
 			target_feerate_sat_per_1000_weight);
+		#[cfg(debug_assertions)]
+		let must_spend_satisfaction_weight =
+			must_spend.iter().map(|input| input.satisfaction_weight).sum::<u64>();
 		let coin_selection = self.utxo_source.select_confirmed_utxos(
-			claim_id, &must_spend, &htlc_tx.output, target_feerate_sat_per_1000_weight,
+			claim_id, must_spend, &htlc_tx.output, target_feerate_sat_per_1000_weight,
 		)?;
 		#[cfg(debug_assertions)]
 		let total_satisfaction_weight =
 			coin_selection.confirmed_utxos.iter().map(|utxo| utxo.satisfaction_weight).sum::<u64>() +
-				must_spend.iter().map(|input| input.satisfaction_weight).sum::<u64>();
+				must_spend_satisfaction_weight;
 		self.process_coin_selection(&mut htlc_tx, coin_selection);
 
 		#[cfg(debug_assertions)]
