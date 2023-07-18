@@ -3381,9 +3381,11 @@ where
 	}
 
 
-	/// Signals that no further retries for the given payment should occur. Useful if you have a
+	/// Signals that no further attempts for the given payment should occur. Useful if you have a
 	/// pending outbound payment with retries remaining, but wish to stop retrying the payment before
 	/// retries are exhausted.
+	///
+	/// # Event Generation
 	///
 	/// If no [`Event::PaymentFailed`] event had been generated before, one will be generated as soon
 	/// as there are no remaining pending HTLCs for this payment.
@@ -3392,11 +3394,19 @@ where
 	/// wait until you receive either a [`Event::PaymentFailed`] or [`Event::PaymentSent`] event to
 	/// determine the ultimate status of a payment.
 	///
-	/// If an [`Event::PaymentFailed`] event is generated and we restart without this
-	/// [`ChannelManager`] having been persisted, another [`Event::PaymentFailed`] may be generated.
+	/// # Requested Invoices
 	///
-	/// [`Event::PaymentFailed`]: events::Event::PaymentFailed
-	/// [`Event::PaymentSent`]: events::Event::PaymentSent
+	/// In the case of paying a [`Bolt12Invoice`], abandoning the payment prior to receiving the
+	/// invoice will result in an [`Event::InvoiceRequestFailed`] and prevent any attempts at paying
+	/// it once received. The other events may only be generated once the invoice has been received.
+	///
+	/// # Restart Behavior
+	///
+	/// If an [`Event::PaymentFailed`] is generated and we restart without first persisting the
+	/// [`ChannelManager`], another [`Event::PaymentFailed`] may be generated; likewise for
+	/// [`Event::InvoiceRequestFailed`].
+	///
+	/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
 	pub fn abandon_payment(&self, payment_id: PaymentId) {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 		self.pending_outbound_payments.abandon_payment(payment_id, PaymentFailureReason::UserAbandoned, &self.pending_events);
