@@ -1322,14 +1322,19 @@ impl OutboundPayments {
 		let mut has_ok = false;
 		let mut has_err = false;
 		let mut pending_amt_unsent = 0;
+		let mut total_ok_fees_msat = 0;
 		for (res, path) in results.iter().zip(route.paths.iter()) {
-			if res.is_ok() { has_ok = true; }
+			if res.is_ok() {
+				has_ok = true;
+				total_ok_fees_msat += path.fee_msat();
+			}
 			if res.is_err() { has_err = true; }
 			if let &Err(APIError::MonitorUpdateInProgress) = res {
 				// MonitorUpdateInProgress is inherently unsafe to retry, so we call it a
 				// PartialFailure.
 				has_err = true;
 				has_ok = true;
+				total_ok_fees_msat += path.fee_msat();
 			} else if res.is_err() {
 				pending_amt_unsent += path.final_value_msat();
 			}
@@ -1339,12 +1344,15 @@ impl OutboundPayments {
 				results,
 				payment_id,
 				failed_paths_retry: if pending_amt_unsent != 0 {
-					if let Some(payment_params) = route.route_params.as_ref().map(|p| p.payment_params.clone()) {
-						Some(RouteParameters {
-							payment_params,
-							final_value_msat: pending_amt_unsent,
-							max_total_routing_fee_msat: None,
-						})
+					if let Some(route_params) = &route.route_params {
+						let mut route_params = route_params.clone();
+						// We calculate the leftover fee budget we're allowed to spend by
+						// subtracting the used fee from the total fee budget.
+						route_params.max_total_routing_fee_msat = route_params
+							.max_total_routing_fee_msat.map(|m| m.saturating_sub(total_ok_fees_msat));
+						route_params.final_value_msat = pending_amt_unsent;
+
+						Some(route_params)
 					} else { None }
 				} else { None },
 			})
