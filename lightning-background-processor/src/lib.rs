@@ -897,9 +897,7 @@ mod tests {
 			Arc<DefaultRouter<
 				Arc<NetworkGraph<Arc<test_utils::TestLogger>>>,
 				Arc<test_utils::TestLogger>,
-				Arc<Mutex<TestScorer>>,
-				(),
-				TestScorer>
+				Arc<Mutex<TestScorer>>>
 			>,
 			Arc<test_utils::TestLogger>>;
 	#[cfg(c_bindings)]
@@ -1054,7 +1052,7 @@ mod tests {
 		#[cfg(not(c_bindings))]
 		type ScoreParams = ();
 		fn channel_penalty_msat(
-			&self, _short_channel_id: u64, _source: &NodeId, _target: &NodeId, _usage: ChannelUsage, _score_params: &Self::ScoreParams
+			&self, _short_channel_id: u64, _source: &NodeId, _target: &NodeId, _usage: ChannelUsage, _score_params: &lightning::routing::scoring::ProbabilisticScoringFeeParameters
 		) -> u64 { unimplemented!(); }
 
 		fn payment_path_failed(&mut self, actual_path: &Path, actual_short_channel_id: u64) {

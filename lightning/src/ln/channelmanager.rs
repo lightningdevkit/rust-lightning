@@ -743,8 +743,6 @@ pub type SimpleArcChannelManager<M, T, F, L> = ChannelManager<
 		Arc<NetworkGraph<Arc<L>>>,
 		Arc<L>,
 		Arc<Mutex<ProbabilisticScorer<Arc<NetworkGraph<Arc<L>>>, Arc<L>>>>,
-		ProbabilisticScoringFeeParameters,
-		ProbabilisticScorer<Arc<NetworkGraph<Arc<L>>>, Arc<L>>,
 	>>,
 	Arc<L>
 >;
@@ -773,8 +771,6 @@ pub type SimpleRefChannelManager<'a, 'b, 'c, 'd, 'e, 'f, 'g, 'h, M, T, F, L> =
 			&'f NetworkGraph<&'g L>,
 			&'g L,
 			&'h Mutex<ProbabilisticScorer<&'f NetworkGraph<&'g L>, &'g L>>,
-			ProbabilisticScoringFeeParameters,
-			ProbabilisticScorer<&'f NetworkGraph<&'g L>, &'g L>
 		>,
 		&'g L
 	>;

@@ -105,7 +105,7 @@ pub trait Score $(: $supertrait)* {
 	/// [`u64::max_value`] is given to indicate sufficient capacity for the invoice's full amount.
 	/// Thus, implementations should be overflow-safe.
 	fn channel_penalty_msat(
-		&self, short_channel_id: u64, source: &NodeId, target: &NodeId, usage: ChannelUsage, score_params: &Self::ScoreParams
+		&self, short_channel_id: u64, source: &NodeId, target: &NodeId, usage: ChannelUsage, score_params: &ProbabilisticScoringFeeParameters
 	) -> u64;
 
 	/// Handles updating channel penalties after failing to route through a channel.
@@ -124,8 +124,9 @@ pub trait Score $(: $supertrait)* {
 impl<S: Score, T: DerefMut<Target=S> $(+ $supertrait)*> Score for T {
 	#[cfg(not(c_bindings))]
 	type ScoreParams = S::ScoreParams;
+
 	fn channel_penalty_msat(
-		&self, short_channel_id: u64, source: &NodeId, target: &NodeId, usage: ChannelUsage, score_params: &Self::ScoreParams
+		&self, short_channel_id: u64, source: &NodeId, target: &NodeId, usage: ChannelUsage, score_params: &ProbabilisticScoringFeeParameters
 	) -> u64 {
 		self.deref().channel_penalty_msat(short_channel_id, source, target, usage, score_params)
 	}
@@ -293,7 +294,7 @@ impl FixedPenaltyScorer {
 impl Score for FixedPenaltyScorer {
 	#[cfg(not(c_bindings))]
 	type ScoreParams = ();
-	fn channel_penalty_msat(&self, _: u64, _: &NodeId, _: &NodeId, _: ChannelUsage, _score_params: &Self::ScoreParams) -> u64 {
+	fn channel_penalty_msat(&self, _: u64, _: &NodeId, _: &NodeId, _: ChannelUsage, _score_params: &ProbabilisticScoringFeeParameters) -> u64 {
 		self.penalty_msat
 	}
 
