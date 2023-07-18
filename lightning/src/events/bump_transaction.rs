@@ -26,7 +26,7 @@ use crate::ln::chan_utils::{
 use crate::ln::features::ChannelTypeFeatures;
 use crate::ln::PaymentPreimage;
 use crate::prelude::*;
-use crate::sign::{ChannelSigner, EcdsaChannelSigner, SignerProvider};
+use crate::sign::{ChannelSigner, EcdsaChannelSigner, SignerProvider, WriteableEcdsaChannelSigner};
 use crate::sync::Mutex;
 use crate::util::logger::Logger;
 
@@ -102,9 +102,9 @@ impl AnchorDescriptor {
 	}
 
 	/// Derives the channel signer required to sign the anchor input.
-	pub fn derive_channel_signer<SP: Deref>(&self, signer_provider: &SP) -> <SP::Target as SignerProvider>::Signer
+	pub fn derive_channel_signer<S: WriteableEcdsaChannelSigner, SP: Deref>(&self, signer_provider: &SP) -> S
 	where
-		SP::Target: SignerProvider
+		SP::Target: SignerProvider<Signer = S>
 	{
 		let mut signer = signer_provider.derive_channel_signer(
 			self.channel_derivation_parameters.value_satoshis,
@@ -211,9 +211,9 @@ impl HTLCDescriptor {
 	}
 
 	/// Derives the channel signer required to sign the HTLC input.
-	pub fn derive_channel_signer<SP: Deref>(&self, signer_provider: &SP) -> <SP::Target as SignerProvider>::Signer
+	pub fn derive_channel_signer<S: WriteableEcdsaChannelSigner, SP: Deref>(&self, signer_provider: &SP) -> S
 	where
-		SP::Target: SignerProvider
+		SP::Target: SignerProvider<Signer = S>
 	{
 		let mut signer = signer_provider.derive_channel_signer(
 			self.channel_derivation_parameters.value_satoshis,
