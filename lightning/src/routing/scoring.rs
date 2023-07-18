@@ -175,7 +175,7 @@ pub trait WriteableScore<'a>: LockableScore<'a> + Writeable {}
 
 #[cfg(not(c_bindings))]
 impl<'a, T> WriteableScore<'a> for T where T: LockableScore<'a> + Writeable {}
-/// This is not exported to bindings users
+#[cfg(not(c_bindings))]
 impl<'a, T: 'a + Score> LockableScore<'a> for Mutex<T> {
 	type Score = T;
 	type Locked = MutexGuard<'a, T>;
@@ -185,6 +185,7 @@ impl<'a, T: 'a + Score> LockableScore<'a> for Mutex<T> {
 	}
 }
 
+#[cfg(not(c_bindings))]
 impl<'a, T: 'a + Score> LockableScore<'a> for RefCell<T> {
 	type Score = T;
 	type Locked = RefMut<'a, T>;
@@ -255,21 +256,7 @@ impl<'a, T: 'a + Score> Deref for MultiThreadedScoreLock<'a, T> {
     }
 }
 
-#[cfg(c_bindings)]
-/// This is not exported to bindings users
-impl<'a, T: Writeable> Writeable for RefMut<'a, T> {
-	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
-		T::write(&**self, writer)
-	}
-}
 
-#[cfg(c_bindings)]
-/// This is not exported to bindings users
-impl<'a, S: Writeable> Writeable for MutexGuard<'a, S> {
-	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
-		S::write(&**self, writer)
-	}
-}
 
 /// Proposed use of a channel passed as a parameter to [`Score::channel_penalty_msat`].
 #[derive(Clone, Copy, Debug, PartialEq)]
