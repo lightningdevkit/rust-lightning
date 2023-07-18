@@ -131,7 +131,7 @@ struct FuzzRouter {}
 impl Router for FuzzRouter {
 	fn find_route(
 		&self, _payer: &PublicKey, _params: &RouteParameters, _first_hops: Option<&[&ChannelDetails]>,
-		_inflight_htlcs: &InFlightHtlcs
+		_inflight_htlcs: InFlightHtlcs
 	) -> Result<Route, msgs::LightningError> {
 		Err(msgs::LightningError {
 			err: String::from("Not implemented"),

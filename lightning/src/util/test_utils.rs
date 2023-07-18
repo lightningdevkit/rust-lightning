@@ -112,13 +112,13 @@ impl<'a> TestRouter<'a> {
 impl<'a> Router for TestRouter<'a> {
 	fn find_route(
 		&self, payer: &PublicKey, params: &RouteParameters, first_hops: Option<&[&channelmanager::ChannelDetails]>,
-		inflight_htlcs: &InFlightHtlcs
+		inflight_htlcs: InFlightHtlcs
 	) -> Result<Route, msgs::LightningError> {
 		if let Some((find_route_query, find_route_res)) = self.next_routes.lock().unwrap().pop_front() {
 			assert_eq!(find_route_query, *params);
 			if let Ok(ref route) = find_route_res {
 				let mut binding = self.scorer.lock().unwrap();
-				let scorer = ScorerAccountingForInFlightHtlcs::new(binding.deref_mut(), inflight_htlcs);
+				let scorer = ScorerAccountingForInFlightHtlcs::new(binding.deref_mut(), &inflight_htlcs);
 				for path in &route.paths {
 					let mut aggregate_msat = 0u64;
 					for (idx, hop) in path.hops.iter().rev().enumerate() {

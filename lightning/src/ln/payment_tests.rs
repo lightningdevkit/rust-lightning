@@ -3218,7 +3218,7 @@ fn do_claim_from_closed_chan(fail_payment: bool) {
 		final_value_msat: 10_000_000,
 	};
 	let mut route = nodes[0].router.find_route(&nodes[0].node.get_our_node_id(), &route_params,
-		None, &nodes[0].node.compute_inflight_htlcs()).unwrap();
+		None, nodes[0].node.compute_inflight_htlcs()).unwrap();
 	// Make sure the route is ordered as the B->D path before C->D
 	route.paths.sort_by(|a, _| if a.hops[0].pubkey == nodes[1].node.get_our_node_id() {
 		std::cmp::Ordering::Less } else { std::cmp::Ordering::Greater });
