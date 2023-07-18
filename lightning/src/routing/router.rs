@@ -82,13 +82,21 @@ impl< G: Deref<Target = NetworkGraph<L>>, L: Deref, S: Deref, SP: Sized, Sc: Sco
 
 /// A trait defining behavior for routing a payment.
 pub trait Router {
-	/// Finds a [`Route`] between `payer` and `payee` for a payment with the given values.
+	/// Finds a [`Route`] for a payment between the given `payer` and a payee.
+	///
+	/// The `payee` and the payment's value are given in [`RouteParameters::payment_params`]
+	/// and [`RouteParameters::final_value_msat`], respectively.
 	fn find_route(
 		&self, payer: &PublicKey, route_params: &RouteParameters,
 		first_hops: Option<&[&ChannelDetails]>, inflight_htlcs: InFlightHtlcs
 	) -> Result<Route, LightningError>;
-	/// Finds a [`Route`] between `payer` and `payee` for a payment with the given values. Includes
-	/// `PaymentHash` and `PaymentId` to be able to correlate the request with a specific payment.
+	/// Finds a [`Route`] for a payment between the given `payer` and a payee.
+	///
+	/// The `payee` and the payment's value are given in [`RouteParameters::payment_params`]
+	/// and [`RouteParameters::final_value_msat`], respectively.
+	///
+	/// Includes a [`PaymentHash`] and a [`PaymentId`] to be able to correlate the request with a specific
+	/// payment.
 	fn find_route_with_id(
 		&self, payer: &PublicKey, route_params: &RouteParameters,
 		first_hops: Option<&[&ChannelDetails]>, inflight_htlcs: InFlightHtlcs,
@@ -346,11 +354,9 @@ pub struct Route {
 	/// [`BlindedTail`]s are present, then the pubkey of the last [`RouteHop`] in each path must be
 	/// the same.
 	pub paths: Vec<Path>,
-	/// The `payment_params` parameter passed to [`find_route`].
-	/// This is used by `ChannelManager` to track information which may be required for retries,
-	/// provided back to you via [`Event::PaymentPathFailed`].
+	/// The `payment_params` parameter passed via [`RouteParameters`] to [`find_route`].
 	///
-	/// [`Event::PaymentPathFailed`]: crate::events::Event::PaymentPathFailed
+	/// This is used by `ChannelManager` to track information which may be required for retries.
 	pub payment_params: Option<PaymentParameters>,
 }
 
@@ -358,7 +364,7 @@ impl Route {
 	/// Returns the total amount of fees paid on this [`Route`].
 	///
 	/// This doesn't include any extra payment made to the recipient, which can happen in excess of
-	/// the amount passed to [`find_route`]'s `params.final_value_msat`.
+	/// the amount passed to [`find_route`]'s `route_params.final_value_msat`.
 	pub fn get_total_fees(&self) -> u64 {
 		self.paths.iter().map(|path| path.fee_msat()).sum()
 	}
@@ -436,10 +442,7 @@ impl Readable for Route {
 
 /// Parameters needed to find a [`Route`].
 ///
-/// Passed to [`find_route`] and [`build_route_from_hops`], but also provided in
-/// [`Event::PaymentPathFailed`].
-///
-/// [`Event::PaymentPathFailed`]: crate::events::Event::PaymentPathFailed
+/// Passed to [`find_route`] and [`build_route_from_hops`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RouteParameters {
 	/// The parameters of the failed payment path.
@@ -1375,10 +1378,12 @@ fn sort_first_hop_channels(
 
 /// Finds a route from us (payer) to the given target node (payee).
 ///
-/// If the payee provided features in their invoice, they should be provided via `params.payee`.
+/// If the payee provided features in their invoice, they should be provided via the `payee` field
+/// in the given [`RouteParameters::payment_params`].
 /// Without this, MPP will only be used if the payee's features are available in the network graph.
 ///
-/// Private routing paths between a public node and the target may be included in `params.payee`.
+/// Private routing paths between a public node and the target may be included in the `payee` field
+/// of [`RouteParameters::payment_params`].
 ///
 /// If some channels aren't announced, it may be useful to fill in `first_hops` with the results
 /// from [`ChannelManager::list_usable_channels`]. If it is filled in, the view of these channels
@@ -1388,15 +1393,9 @@ fn sort_first_hop_channels(
 /// However, the enabled/disabled bit on such channels as well as the `htlc_minimum_msat` /
 /// `htlc_maximum_msat` *are* checked as they may change based on the receiving node.
 ///
-/// # Note
-///
-/// May be used to re-compute a [`Route`] when handling a [`Event::PaymentPathFailed`]. Any
-/// adjustments to the [`NetworkGraph`] and channel scores should be made prior to calling this
-/// function.
-///
 /// # Panics
 ///
-/// Panics if first_hops contains channels without short_channel_ids;
+/// Panics if first_hops contains channels without `short_channel_id`s;
 /// [`ChannelManager::list_usable_channels`] will never include such channels.
 ///
 /// [`ChannelManager::list_usable_channels`]: crate::ln::channelmanager::ChannelManager::list_usable_channels
