@@ -469,7 +469,7 @@ pub trait CoinSelectionSource {
 	) -> Result<CoinSelection, ()>;
 	/// Signs and provides the full witness for all inputs within the transaction known to the
 	/// trait (i.e., any provided via [`CoinSelectionSource::select_confirmed_utxos`]).
-	fn sign_tx(&self, tx: &mut Transaction) -> Result<(), ()>;
+	fn sign_tx(&self, tx: Transaction) -> Result<Transaction, ()>;
 }
 
 /// An alternative to [`CoinSelectionSource`] that can be implemented and used along [`Wallet`] to
@@ -483,7 +483,7 @@ pub trait WalletSource {
 	/// Signs and provides the full [`TxIn::script_sig`] and [`TxIn::witness`] for all inputs within
 	/// the transaction known to the wallet (i.e., any provided via
 	/// [`WalletSource::list_confirmed_utxos`]).
-	fn sign_tx(&self, tx: &mut Transaction) -> Result<(), ()>;
+	fn sign_tx(&self, tx: Transaction) -> Result<Transaction, ()>;
 }
 
 /// A wrapper over [`WalletSource`] that implements [`CoinSelection`] by preferring UTXOs that would
@@ -629,7 +629,7 @@ where
 			.or_else(|_| do_coin_selection(true, true))
 	}
 
-	fn sign_tx(&self, tx: &mut Transaction) -> Result<(), ()> {
+	fn sign_tx(&self, tx: Transaction) -> Result<Transaction, ()> {
 		self.source.sign_tx(tx)
 	}
 }
@@ -748,7 +748,8 @@ where
 		let unsigned_tx_weight = anchor_tx.weight() as u64 - (anchor_tx.input.len() as u64 * EMPTY_SCRIPT_SIG_WEIGHT);
 
 		log_debug!(self.logger, "Signing anchor transaction {}", anchor_txid);
-		self.utxo_source.sign_tx(&mut anchor_tx)?;
+		anchor_tx = self.utxo_source.sign_tx(anchor_tx)?;
+
 		let signer = anchor_descriptor.derive_channel_signer(&self.signer_provider);
 		let anchor_sig = signer.sign_holder_anchor_input(&anchor_tx, 0, &self.secp)?;
 		anchor_tx.input[0].witness = anchor_descriptor.tx_input_witness(&anchor_sig);
@@ -812,7 +813,8 @@ where
 		let unsigned_tx_weight = htlc_tx.weight() as u64 - (htlc_tx.input.len() as u64 * EMPTY_SCRIPT_SIG_WEIGHT);
 
 		log_debug!(self.logger, "Signing HTLC transaction {}", htlc_tx.txid());
-		self.utxo_source.sign_tx(&mut htlc_tx)?;
+		htlc_tx = self.utxo_source.sign_tx(htlc_tx)?;
+
 		let mut signers = BTreeMap::new();
 		for (idx, htlc_descriptor) in htlc_descriptors.iter().enumerate() {
 			let signer = signers.entry(htlc_descriptor.channel_derivation_parameters.keys_id)

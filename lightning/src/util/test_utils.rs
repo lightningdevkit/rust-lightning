@@ -1105,20 +1105,20 @@ impl TestWalletSource {
 }
 
 impl WalletSource for TestWalletSource {
-    fn list_confirmed_utxos(&self) -> Result<Vec<Utxo>, ()> {
+	fn list_confirmed_utxos(&self) -> Result<Vec<Utxo>, ()> {
 		Ok(self.utxos.borrow().clone())
-    }
+	}
 
-    fn get_change_script(&self) -> Result<Script, ()> {
+	fn get_change_script(&self) -> Result<Script, ()> {
 		let public_key = bitcoin::PublicKey::new(self.secret_key.public_key(&self.secp));
 		Ok(Script::new_p2pkh(&public_key.pubkey_hash()))
-    }
+	}
 
-    fn sign_tx(&self, tx: &mut Transaction) -> Result<(), ()> {
+	fn sign_tx(&self, mut tx: Transaction) -> Result<Transaction, ()> {
 		let utxos = self.utxos.borrow();
 		for i in 0..tx.input.len() {
 			if let Some(utxo) = utxos.iter().find(|utxo| utxo.outpoint == tx.input[i].previous_output) {
-				let sighash = SighashCache::new(&*tx)
+				let sighash = SighashCache::new(&tx)
 					.legacy_signature_hash(i, &utxo.output.script_pubkey, EcdsaSighashType::All as u32)
 					.map_err(|_| ())?;
 				let sig = self.secp.sign_ecdsa(&sighash.as_hash().into(), &self.secret_key);
@@ -1129,6 +1129,6 @@ impl WalletSource for TestWalletSource {
 					.into_script();
 			}
 		}
-		Ok(())
-    }
+		Ok(tx)
+	}
 }
