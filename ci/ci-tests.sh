@@ -77,7 +77,12 @@ popd
 echo -e "\n\nTesting no-std build on a downstream no-std crate"
 # check no-std compatibility across dependencies
 pushd no-std-check
-cargo check --verbose --color always --features lightning-transaction-sync
+if [[ $RUSTC_MINOR_VERSION -gt 67 ]]; then
+	# lightning-transaction-sync's MSRV is 1.67
+	cargo check --verbose --color always --features lightning-transaction-sync
+else
+	cargo check --verbose --color always
+fi
 popd
 
 # Test that we can build downstream code with only the "release pins".
