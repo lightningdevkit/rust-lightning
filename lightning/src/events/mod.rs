@@ -343,11 +343,15 @@ pub enum Event {
 		channel_value_satoshis: u64,
 		/// The script which should be used in the transaction output.
 		output_script: Script,
-		/// The `user_channel_id` value passed in to [`ChannelManager::create_channel`], or a
-		/// random value for an inbound channel. This may be zero for objects serialized with LDK
-		/// versions prior to 0.0.113.
+		/// The `user_channel_id` value passed in to [`ChannelManager::create_channel`] for outbound
+		/// channels, or to [`ChannelManager::accept_inbound_channel`] for inbound channels if
+		/// [`UserConfig::manually_accept_inbound_channels`] config flag is set to true. Otherwise
+		/// `user_channel_id` will be randomized for an inbound channel.  This may be zero for objects
+		/// serialized with LDK versions prior to 0.0.113.
 		///
 		/// [`ChannelManager::create_channel`]: crate::ln::channelmanager::ChannelManager::create_channel
+		/// [`ChannelManager::accept_inbound_channel`]: crate::ln::channelmanager::ChannelManager::accept_inbound_channel
+		/// [`UserConfig::manually_accept_inbound_channels`]: crate::util::config::UserConfig::manually_accept_inbound_channels
 		user_channel_id: u128,
 	},
 	/// Indicates that we've been offered a payment and it needs to be claimed via calling
@@ -751,6 +755,13 @@ pub enum Event {
 	},
 	/// Used to indicate that a previously opened channel with the given `channel_id` is in the
 	/// process of closure.
+	///
+	/// Note that this event is only triggered for accepted channels: if the
+	/// [`UserConfig::manually_accept_inbound_channels`] config flag is set to true and the channel is
+	/// rejected, no `ChannelClosed` event will be sent.
+	///
+	/// [`ChannelManager::accept_inbound_channel`]: crate::ln::channelmanager::ChannelManager::accept_inbound_channel
+	/// [`UserConfig::manually_accept_inbound_channels`]: crate::util::config::UserConfig::manually_accept_inbound_channels
 	ChannelClosed  {
 		/// The `channel_id` of the channel which has been closed. Note that on-chain transactions
 		/// resolving the channel are likely still awaiting confirmation.
@@ -787,8 +798,9 @@ pub enum Event {
 	},
 	/// Indicates a request to open a new channel by a peer.
 	///
-	/// To accept the request, call [`ChannelManager::accept_inbound_channel`]. To reject the
-	/// request, call [`ChannelManager::force_close_without_broadcasting_txn`].
+	/// To accept the request, call [`ChannelManager::accept_inbound_channel`]. To reject the request,
+	/// call [`ChannelManager::force_close_without_broadcasting_txn`]. Note that a ['ChannelClosed`]
+	/// event will _not_ be triggered if the channel is rejected.
 	///
 	/// The event is only triggered when a new open channel request is received and the
 	/// [`UserConfig::manually_accept_inbound_channels`] config flag is set to true.

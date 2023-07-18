@@ -740,19 +740,6 @@ pub(super) struct ChannelContext<Signer: ChannelSigner> {
 	#[cfg(not(test))]
 	closing_fee_limits: Option<(u64, u64)>,
 
-	/// Flag that ensures that `accept_inbound_channel` must be called before `funding_created`
-	/// is executed successfully. The reason for this flag is that when the
-	/// `UserConfig::manually_accept_inbound_channels` config flag is set to true, inbound channels
-	/// are required to be manually accepted by the node operator before the `msgs::AcceptChannel`
-	/// message is created and sent out. During the manual accept process, `accept_inbound_channel`
-	/// is called by `ChannelManager::accept_inbound_channel`.
-	///
-	/// The flag counteracts that a counterparty node could theoretically send a
-	/// `msgs::FundingCreated` message before the node operator has manually accepted an inbound
-	/// channel request made by the counterparty node. That would execute `funding_created` before
-	/// `accept_inbound_channel`, and `funding_created` should therefore not execute successfully.
-	inbound_awaiting_accept: bool,
-
 	/// The hash of the block in which the funding transaction was included.
 	funding_tx_confirmed_in: Option<BlockHash>,
 	funding_tx_confirmation_height: u32,
@@ -5650,8 +5637,6 @@ impl<Signer: WriteableEcdsaChannelSigner> OutboundV1Channel<Signer> {
 				closing_fee_limits: None,
 				target_closing_feerate_sats_per_kw: None,
 
-				inbound_awaiting_accept: false,
-
 				funding_tx_confirmed_in: None,
 				funding_tx_confirmation_height: 0,
 				short_channel_id: None,
@@ -6032,7 +6017,7 @@ impl<Signer: WriteableEcdsaChannelSigner> InboundV1Channel<Signer> {
 		fee_estimator: &LowerBoundedFeeEstimator<F>, entropy_source: &ES, signer_provider: &SP,
 		counterparty_node_id: PublicKey, our_supported_features: &ChannelTypeFeatures,
 		their_features: &InitFeatures, msg: &msgs::OpenChannel, user_id: u128, config: &UserConfig,
-		current_chain_height: u32, logger: &L, outbound_scid_alias: u64
+		current_chain_height: u32, logger: &L, outbound_scid_alias: u64, is_0conf: bool,
 	) -> Result<InboundV1Channel<Signer>, ChannelError>
 		where ES::Target: EntropySource,
 			  SP::Target: SignerProvider<Signer = Signer>,
@@ -6222,6 +6207,12 @@ impl<Signer: WriteableEcdsaChannelSigner> InboundV1Channel<Signer> {
 		let mut secp_ctx = Secp256k1::new();
 		secp_ctx.seeded_randomize(&entropy_source.get_secure_random_bytes());
 
+		let minimum_depth = if is_0conf {
+			Some(0)
+		} else {
+			Some(cmp::max(config.channel_handshake_config.minimum_depth, 1))
+		};
+
 		let chan = Self {
 			context: ChannelContext {
 				user_id,
@@ -6280,8 +6271,6 @@ impl<Signer: WriteableEcdsaChannelSigner> InboundV1Channel<Signer> {
 				closing_fee_limits: None,
 				target_closing_feerate_sats_per_kw: None,
 
-				inbound_awaiting_accept: true,
-
 				funding_tx_confirmed_in: None,
 				funding_tx_confirmation_height: 0,
 				short_channel_id: None,
@@ -6299,7 +6288,7 @@ impl<Signer: WriteableEcdsaChannelSigner> InboundV1Channel<Signer> {
 				holder_htlc_minimum_msat: if config.channel_handshake_config.our_htlc_minimum_msat == 0 { 1 } else { config.channel_handshake_config.our_htlc_minimum_msat },
 				counterparty_max_accepted_htlcs: msg.max_accepted_htlcs,
 				holder_max_accepted_htlcs: cmp::min(config.channel_handshake_config.our_max_accepted_htlcs, MAX_HTLCS),
-				minimum_depth: Some(cmp::max(config.channel_handshake_config.minimum_depth, 1)),
+				minimum_depth,
 
 				counterparty_forwarding_info: None,
 
@@ -6357,21 +6346,11 @@ impl<Signer: WriteableEcdsaChannelSigner> InboundV1Channel<Signer> {
 		Ok(chan)
 	}
 
-	pub fn is_awaiting_accept(&self) -> bool {
-		self.context.inbound_awaiting_accept
-	}
-
-	/// Sets this channel to accepting 0conf, must be done before `get_accept_channel`
-	pub fn set_0conf(&mut self) {
-		assert!(self.context.inbound_awaiting_accept);
-		self.context.minimum_depth = Some(0);
-	}
-
 	/// Marks an inbound channel as accepted and generates a [`msgs::AcceptChannel`] message which
 	/// should be sent back to the counterparty node.
 	///
 	/// [`msgs::AcceptChannel`]: crate::ln::msgs::AcceptChannel
-	pub fn accept_inbound_channel(&mut self, user_id: u128) -> msgs::AcceptChannel {
+	pub fn accept_inbound_channel(&mut self) -> msgs::AcceptChannel {
 		if self.context.is_outbound() {
 			panic!("Tried to send accept_channel for an outbound channel?");
 		}
@@ -6381,12 +6360,6 @@ impl<Signer: WriteableEcdsaChannelSigner> InboundV1Channel<Signer> {
 		if self.context.cur_holder_commitment_transaction_number != INITIAL_COMMITMENT_NUMBER {
 			panic!("Tried to send an accept_channel for a channel that has already advanced");
 		}
-		if !self.context.inbound_awaiting_accept {
-			panic!("The inbound channel has already been accepted");
-		}
-
-		self.context.user_id = user_id;
-		self.context.inbound_awaiting_accept = false;
 
 		self.generate_accept_channel_message()
 	}
@@ -6481,9 +6454,6 @@ impl<Signer: WriteableEcdsaChannelSigner> InboundV1Channel<Signer> {
 			// remember the channel, so it's safe to just send an error_message here and drop the
 			// channel.
 			return Err((self, ChannelError::Close("Received funding_created after we got the channel!".to_owned())));
-		}
-		if self.context.inbound_awaiting_accept {
-			return Err((self, ChannelError::Close("FundingCreated message received before the channel was accepted".to_owned())));
 		}
 		if self.context.commitment_secrets.get_min_seen_secret() != (1 << 48) ||
 				self.context.cur_counterparty_commitment_transaction_number != INITIAL_COMMITMENT_NUMBER ||
@@ -7384,8 +7354,6 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 				closing_fee_limits: None,
 				target_closing_feerate_sats_per_kw,
 
-				inbound_awaiting_accept: false,
-
 				funding_tx_confirmed_in,
 				funding_tx_confirmation_height,
 				short_channel_id,
@@ -7625,10 +7593,10 @@ mod tests {
 		// Make sure A's dust limit is as we expect.
 		let open_channel_msg = node_a_chan.get_open_channel(genesis_block(network).header.block_hash());
 		let node_b_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[7; 32]).unwrap());
-		let mut node_b_chan = InboundV1Channel::<EnforcingSigner>::new(&feeest, &&keys_provider, &&keys_provider, node_b_node_id, &channelmanager::provided_channel_type_features(&config), &channelmanager::provided_init_features(&config), &open_channel_msg, 7, &config, 0, &&logger, 42).unwrap();
+		let mut node_b_chan = InboundV1Channel::<EnforcingSigner>::new(&feeest, &&keys_provider, &&keys_provider, node_b_node_id, &channelmanager::provided_channel_type_features(&config), &channelmanager::provided_init_features(&config), &open_channel_msg, 7, &config, 0, &&logger, 42, /*is_0conf=*/false).unwrap();
 
 		// Node B --> Node A: accept channel, explicitly setting B's dust limit.
-		let mut accept_channel_msg = node_b_chan.accept_inbound_channel(0);
+		let mut accept_channel_msg = node_b_chan.accept_inbound_channel();
 		accept_channel_msg.dust_limit_satoshis = 546;
 		node_a_chan.accept_channel(&accept_channel_msg, &config.channel_handshake_limits, &channelmanager::provided_init_features(&config)).unwrap();
 		node_a_chan.context.holder_dust_limit_satoshis = 1560;
@@ -7754,10 +7722,10 @@ mod tests {
 		// Create Node B's channel by receiving Node A's open_channel message
 		let open_channel_msg = node_a_chan.get_open_channel(chain_hash);
 		let node_b_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[7; 32]).unwrap());
-		let mut node_b_chan = InboundV1Channel::<EnforcingSigner>::new(&feeest, &&keys_provider, &&keys_provider, node_b_node_id, &channelmanager::provided_channel_type_features(&config), &channelmanager::provided_init_features(&config), &open_channel_msg, 7, &config, 0, &&logger, 42).unwrap();
+		let mut node_b_chan = InboundV1Channel::<EnforcingSigner>::new(&feeest, &&keys_provider, &&keys_provider, node_b_node_id, &channelmanager::provided_channel_type_features(&config), &channelmanager::provided_init_features(&config), &open_channel_msg, 7, &config, 0, &&logger, 42, /*is_0conf=*/false).unwrap();
 
 		// Node B --> Node A: accept channel
-		let accept_channel_msg = node_b_chan.accept_inbound_channel(0);
+		let accept_channel_msg = node_b_chan.accept_inbound_channel();
 		node_a_chan.accept_channel(&accept_channel_msg, &config.channel_handshake_limits, &channelmanager::provided_init_features(&config)).unwrap();
 
 		// Node A --> Node B: funding created
@@ -7826,12 +7794,12 @@ mod tests {
 		// Test that `InboundV1Channel::new` creates a channel with the correct value for
 		// `holder_max_htlc_value_in_flight_msat`, when configured with a valid percentage value,
 		// which is set to the lower bound - 1 (2%) of the `channel_value`.
-		let chan_3 = InboundV1Channel::<EnforcingSigner>::new(&feeest, &&keys_provider, &&keys_provider, inbound_node_id, &channelmanager::provided_channel_type_features(&config_2_percent), &channelmanager::provided_init_features(&config_2_percent), &chan_1_open_channel_msg, 7, &config_2_percent, 0, &&logger, 42).unwrap();
+		let chan_3 = InboundV1Channel::<EnforcingSigner>::new(&feeest, &&keys_provider, &&keys_provider, inbound_node_id, &channelmanager::provided_channel_type_features(&config_2_percent), &channelmanager::provided_init_features(&config_2_percent), &chan_1_open_channel_msg, 7, &config_2_percent, 0, &&logger, 42, /*is_0conf=*/false).unwrap();
 		let chan_3_value_msat = chan_3.context.channel_value_satoshis * 1000;
 		assert_eq!(chan_3.context.holder_max_htlc_value_in_flight_msat, (chan_3_value_msat as f64 * 0.02) as u64);
 
 		// Test with the upper bound - 1 of valid values (99%).
-		let chan_4 = InboundV1Channel::<EnforcingSigner>::new(&feeest, &&keys_provider, &&keys_provider, inbound_node_id, &channelmanager::provided_channel_type_features(&config_99_percent), &channelmanager::provided_init_features(&config_99_percent), &chan_1_open_channel_msg, 7, &config_99_percent, 0, &&logger, 42).unwrap();
+		let chan_4 = InboundV1Channel::<EnforcingSigner>::new(&feeest, &&keys_provider, &&keys_provider, inbound_node_id, &channelmanager::provided_channel_type_features(&config_99_percent), &channelmanager::provided_init_features(&config_99_percent), &chan_1_open_channel_msg, 7, &config_99_percent, 0, &&logger, 42, /*is_0conf=*/false).unwrap();
 		let chan_4_value_msat = chan_4.context.channel_value_satoshis * 1000;
 		assert_eq!(chan_4.context.holder_max_htlc_value_in_flight_msat, (chan_4_value_msat as f64 * 0.99) as u64);
 
@@ -7850,14 +7818,14 @@ mod tests {
 
 		// Test that `InboundV1Channel::new` uses the lower bound of the configurable percentage values (1%)
 		// if `max_inbound_htlc_value_in_flight_percent_of_channel` is set to a value less than 1.
-		let chan_7 = InboundV1Channel::<EnforcingSigner>::new(&feeest, &&keys_provider, &&keys_provider, inbound_node_id, &channelmanager::provided_channel_type_features(&config_0_percent), &channelmanager::provided_init_features(&config_0_percent), &chan_1_open_channel_msg, 7, &config_0_percent, 0, &&logger, 42).unwrap();
+		let chan_7 = InboundV1Channel::<EnforcingSigner>::new(&feeest, &&keys_provider, &&keys_provider, inbound_node_id, &channelmanager::provided_channel_type_features(&config_0_percent), &channelmanager::provided_init_features(&config_0_percent), &chan_1_open_channel_msg, 7, &config_0_percent, 0, &&logger, 42, /*is_0conf=*/false).unwrap();
 		let chan_7_value_msat = chan_7.context.channel_value_satoshis * 1000;
 		assert_eq!(chan_7.context.holder_max_htlc_value_in_flight_msat, (chan_7_value_msat as f64 * 0.01) as u64);
 
 		// Test that `InboundV1Channel::new` uses the upper bound of the configurable percentage values
 		// (100%) if `max_inbound_htlc_value_in_flight_percent_of_channel` is set to a larger value
 		// than 100.
-		let chan_8 = InboundV1Channel::<EnforcingSigner>::new(&feeest, &&keys_provider, &&keys_provider, inbound_node_id, &channelmanager::provided_channel_type_features(&config_101_percent), &channelmanager::provided_init_features(&config_101_percent), &chan_1_open_channel_msg, 7, &config_101_percent, 0, &&logger, 42).unwrap();
+		let chan_8 = InboundV1Channel::<EnforcingSigner>::new(&feeest, &&keys_provider, &&keys_provider, inbound_node_id, &channelmanager::provided_channel_type_features(&config_101_percent), &channelmanager::provided_init_features(&config_101_percent), &chan_1_open_channel_msg, 7, &config_101_percent, 0, &&logger, 42, /*is_0conf=*/false).unwrap();
 		let chan_8_value_msat = chan_8.context.channel_value_satoshis * 1000;
 		assert_eq!(chan_8.context.holder_max_htlc_value_in_flight_msat, chan_8_value_msat);
 	}
@@ -7907,7 +7875,7 @@ mod tests {
 		inbound_node_config.channel_handshake_config.their_channel_reserve_proportional_millionths = (inbound_selected_channel_reserve_perc * 1_000_000.0) as u32;
 
 		if outbound_selected_channel_reserve_perc + inbound_selected_channel_reserve_perc < 1.0 {
-			let chan_inbound_node = InboundV1Channel::<EnforcingSigner>::new(&&fee_est, &&keys_provider, &&keys_provider, inbound_node_id, &channelmanager::provided_channel_type_features(&inbound_node_config), &channelmanager::provided_init_features(&outbound_node_config), &chan_open_channel_msg, 7, &inbound_node_config, 0, &&logger, 42).unwrap();
+			let chan_inbound_node = InboundV1Channel::<EnforcingSigner>::new(&&fee_est, &&keys_provider, &&keys_provider, inbound_node_id, &channelmanager::provided_channel_type_features(&inbound_node_config), &channelmanager::provided_init_features(&outbound_node_config), &chan_open_channel_msg, 7, &inbound_node_config, 0, &&logger, 42, /*is_0conf=*/false).unwrap();
 
 			let expected_inbound_selected_chan_reserve = cmp::max(MIN_THEIR_CHAN_RESERVE_SATOSHIS, (chan.context.channel_value_satoshis as f64 * inbound_selected_channel_reserve_perc) as u64);
 
@@ -7915,7 +7883,7 @@ mod tests {
 			assert_eq!(chan_inbound_node.context.counterparty_selected_channel_reserve_satoshis.unwrap(), expected_outbound_selected_chan_reserve);
 		} else {
 			// Channel Negotiations failed
-			let result = InboundV1Channel::<EnforcingSigner>::new(&&fee_est, &&keys_provider, &&keys_provider, inbound_node_id, &channelmanager::provided_channel_type_features(&inbound_node_config), &channelmanager::provided_init_features(&outbound_node_config), &chan_open_channel_msg, 7, &inbound_node_config, 0, &&logger, 42);
+			let result = InboundV1Channel::<EnforcingSigner>::new(&&fee_est, &&keys_provider, &&keys_provider, inbound_node_id, &channelmanager::provided_channel_type_features(&inbound_node_config), &channelmanager::provided_init_features(&outbound_node_config), &chan_open_channel_msg, 7, &inbound_node_config, 0, &&logger, 42, /*is_0conf=*/false);
 			assert!(result.is_err());
 		}
 	}
@@ -7940,10 +7908,10 @@ mod tests {
 		// Make sure A's dust limit is as we expect.
 		let open_channel_msg = node_a_chan.get_open_channel(genesis_block(network).header.block_hash());
 		let node_b_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[7; 32]).unwrap());
-		let mut node_b_chan = InboundV1Channel::<EnforcingSigner>::new(&feeest, &&keys_provider, &&keys_provider, node_b_node_id, &channelmanager::provided_channel_type_features(&config), &channelmanager::provided_init_features(&config), &open_channel_msg, 7, &config, 0, &&logger, 42).unwrap();
+		let mut node_b_chan = InboundV1Channel::<EnforcingSigner>::new(&feeest, &&keys_provider, &&keys_provider, node_b_node_id, &channelmanager::provided_channel_type_features(&config), &channelmanager::provided_init_features(&config), &open_channel_msg, 7, &config, 0, &&logger, 42, /*is_0conf=*/false).unwrap();
 
 		// Node B --> Node A: accept channel, explicitly setting B's dust limit.
-		let mut accept_channel_msg = node_b_chan.accept_inbound_channel(0);
+		let mut accept_channel_msg = node_b_chan.accept_inbound_channel();
 		accept_channel_msg.dust_limit_satoshis = 546;
 		node_a_chan.accept_channel(&accept_channel_msg, &config.channel_handshake_limits, &channelmanager::provided_init_features(&config)).unwrap();
 		node_a_chan.context.holder_dust_limit_satoshis = 1560;
@@ -8778,7 +8746,7 @@ mod tests {
 		let node_b_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[7; 32]).unwrap());
 		let res = InboundV1Channel::<EnforcingSigner>::new(&feeest, &&keys_provider, &&keys_provider,
 			node_b_node_id, &channelmanager::provided_channel_type_features(&config),
-			&channelmanager::provided_init_features(&config), &open_channel_msg, 7, &config, 0, &&logger, 42);
+			&channelmanager::provided_init_features(&config), &open_channel_msg, 7, &config, 0, &&logger, 42, /*is_0conf=*/false);
 		assert!(res.is_ok());
 	}
 
@@ -8820,7 +8788,7 @@ mod tests {
 		let channel_b = InboundV1Channel::<EnforcingSigner>::new(
 			&fee_estimator, &&keys_provider, &&keys_provider, node_id_a,
 			&channelmanager::provided_channel_type_features(&config), &channelmanager::provided_init_features(&config),
-			&open_channel_msg, 7, &config, 0, &&logger, 42
+			&open_channel_msg, 7, &config, 0, &&logger, 42, /*is_0conf=*/false
 		).unwrap();
 
 		assert_eq!(channel_a.context.channel_type, expected_channel_type);
@@ -8862,7 +8830,7 @@ mod tests {
 		let channel_b = InboundV1Channel::<EnforcingSigner>::new(
 			&fee_estimator, &&keys_provider, &&keys_provider, node_id_a,
 			&channelmanager::provided_channel_type_features(&config), &init_features_with_simple_anchors,
-			&open_channel_msg, 7, &config, 0, &&logger, 42
+			&open_channel_msg, 7, &config, 0, &&logger, 42, /*is_0conf=*/false
 		);
 		assert!(channel_b.is_err());
 	}
@@ -8905,7 +8873,7 @@ mod tests {
 		let res = InboundV1Channel::<EnforcingSigner>::new(
 			&fee_estimator, &&keys_provider, &&keys_provider, node_id_a,
 			&channelmanager::provided_channel_type_features(&config), &simple_anchors_init,
-			&open_channel_msg, 7, &config, 0, &&logger, 42
+			&open_channel_msg, 7, &config, 0, &&logger, 42, /*is_0conf=*/false
 		);
 		assert!(res.is_err());
 
@@ -8923,7 +8891,7 @@ mod tests {
 		let channel_b = InboundV1Channel::<EnforcingSigner>::new(
 			&fee_estimator, &&keys_provider, &&keys_provider, node_id_a,
 			&channelmanager::provided_channel_type_features(&config), &channelmanager::provided_init_features(&config),
-			&open_channel_msg, 7, &config, 0, &&logger, 42
+			&open_channel_msg, 7, &config, 0, &&logger, 42, /*is_0conf=*/false
 		).unwrap();
 
 		let mut accept_channel_msg = channel_b.get_accept_channel_message();
