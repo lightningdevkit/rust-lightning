@@ -1351,6 +1351,7 @@ impl Readable for Hostname {
 	}
 }
 
+/// This is not exported to bindings users as `Duration`s are simply mapped as ints.
 impl Writeable for Duration {
 	#[inline]
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
@@ -1358,6 +1359,7 @@ impl Writeable for Duration {
 		self.subsec_nanos().write(w)
 	}
 }
+/// This is not exported to bindings users as `Duration`s are simply mapped as ints.
 impl Readable for Duration {
 	#[inline]
 	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
