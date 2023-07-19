@@ -38,7 +38,7 @@ pub trait OffersMessageHandler {
 /// Possible BOLT 12 Offers messages sent and received via an [`OnionMessage`].
 ///
 /// [`OnionMessage`]: crate::ln::msgs::OnionMessage
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum OffersMessage {
 	/// A request for a [`Bolt12Invoice`] for a particular [`Offer`].
 	///
