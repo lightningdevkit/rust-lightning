@@ -475,6 +475,9 @@ impl Bolt12Invoice {
 	///
 	/// Blinded paths provide recipient privacy by obfuscating its node id. Note, however, that this
 	/// privacy is lost if a public node id is used for [`Bolt12Invoice::signing_pubkey`].
+	///
+	/// This is not exported to bindings users as slices with non-reference types cannot be ABI
+	/// matched in another language.
 	pub fn payment_paths(&self) -> &[(BlindedPayInfo, BlindedPath)] {
 		&self.contents.fields().payment_paths[..]
 	}
