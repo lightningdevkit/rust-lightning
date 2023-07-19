@@ -454,6 +454,7 @@ pub struct Features<T: sealed::Context> {
 	mark: PhantomData<T>,
 }
 
+/// This is not exported to bindings users but probably should be.
 impl<T: sealed::Context, Rhs: Borrow<Self>> core::ops::BitOrAssign<Rhs> for Features<T> {
 	fn bitor_assign(&mut self, rhs: Rhs) {
 		let total_feature_len = cmp::max(self.flags.len(), rhs.borrow().flags.len());
@@ -464,6 +465,7 @@ impl<T: sealed::Context, Rhs: Borrow<Self>> core::ops::BitOrAssign<Rhs> for Feat
 	}
 }
 
+/// This is not exported to bindings users but probably should be.
 impl<T: sealed::Context> core::ops::BitOr for Features<T> {
 	type Output = Self;
 
