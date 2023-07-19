@@ -973,7 +973,11 @@ pub struct UnsignedChannelAnnouncement {
 	pub bitcoin_key_1: NodeId,
 	/// The funding key for the second node
 	pub bitcoin_key_2: NodeId,
-	pub(crate) excess_data: Vec<u8>,
+	/// Excess data which was signed as a part of the message which we do not (yet) understand how
+	/// to decode.
+	///
+	/// This is stored to ensure forward-compatibility as new fields are added to the lightning gossip protocol.
+	pub excess_data: Vec<u8>,
 }
 /// A [`channel_announcement`] message to be sent to or received from a peer.
 ///
