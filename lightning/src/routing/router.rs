@@ -73,7 +73,7 @@ impl< G: Deref<Target = NetworkGraph<L>>, L: Deref, S: Deref> Router for Default
 		};
 		find_route(
 			payer, params, &self.network_graph, first_hops, &*self.logger,
-			&ScorerAccountingForInFlightHtlcs::new(self.scorer.lock().deref_mut(), &inflight_htlcs),
+			&ScorerAccountingForInFlightHtlcs::new(self.scorer.lock(), &inflight_htlcs),
 			&self.score_params,
 			&random_seed_bytes
 		)
@@ -112,15 +112,15 @@ pub trait Router {
 /// [`find_route`].
 ///
 /// [`Score`]: crate::routing::scoring::Score
-pub struct ScorerAccountingForInFlightHtlcs<'a, S: Score<ScoreParams = SP>, SP: Sized> {
-	scorer: &'a mut S,
+pub struct ScorerAccountingForInFlightHtlcs<'a, S: Score> {
+	scorer: S,
 	// Maps a channel's short channel id and its direction to the liquidity used up.
 	inflight_htlcs: &'a InFlightHtlcs,
 }
 
-impl<'a, S: Score<ScoreParams = SP>, SP: Sized> ScorerAccountingForInFlightHtlcs<'a, S, SP> {
+impl<'a, S: Score> ScorerAccountingForInFlightHtlcs<'a, S> {
 	/// Initialize a new `ScorerAccountingForInFlightHtlcs`.
-	pub fn new(scorer: &'a mut S, inflight_htlcs: &'a InFlightHtlcs) -> Self {
+	pub fn new(scorer: S, inflight_htlcs: &'a InFlightHtlcs) -> Self {
 		ScorerAccountingForInFlightHtlcs {
 			scorer,
 			inflight_htlcs
@@ -129,11 +129,11 @@ impl<'a, S: Score<ScoreParams = SP>, SP: Sized> ScorerAccountingForInFlightHtlcs
 }
 
 #[cfg(c_bindings)]
-impl<'a, S: Score<ScoreParams = SP>, SP: Sized> Writeable for ScorerAccountingForInFlightHtlcs<'a, S, SP> {
+impl<'a, S: Score> Writeable for ScorerAccountingForInFlightHtlcs<'a, S> {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> { self.scorer.write(writer) }
 }
 
-impl<'a, S: Score<ScoreParams = SP>, SP: Sized> Score for ScorerAccountingForInFlightHtlcs<'a, S, SP>  {
+impl<'a, S: Score> Score for ScorerAccountingForInFlightHtlcs<'a, S>  {
 	#[cfg(not(c_bindings))]
 	type ScoreParams = S::ScoreParams;
 	fn channel_penalty_msat(&self, short_channel_id: u64, source: &NodeId, target: &NodeId, usage: ChannelUsage, score_params: &crate::routing::scoring::ProbabilisticScoringFeeParameters) -> u64 {

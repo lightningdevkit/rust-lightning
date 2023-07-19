@@ -163,11 +163,8 @@ define_score!();
 ///
 /// [`find_route`]: crate::routing::router::find_route
 pub trait LockableScore<'a> {
-	/// The [`Score`] type.
-	type Score: 'a + Score;
-
 	/// The locked [`Score`] type.
-	type Locked: DerefMut<Target = Self::Score> + Sized;
+	type Locked: 'a + Score;
 
 	/// Returns the locked scorer.
 	fn lock(&'a self) -> Self::Locked;
@@ -183,7 +180,6 @@ pub trait WriteableScore<'a>: LockableScore<'a> + Writeable {}
 impl<'a, T> WriteableScore<'a> for T where T: LockableScore<'a> + Writeable {}
 #[cfg(not(c_bindings))]
 impl<'a, T: 'a + Score> LockableScore<'a> for Mutex<T> {
-	type Score = T;
 	type Locked = MutexGuard<'a, T>;
 
 	fn lock(&'a self) -> Self::Locked {
@@ -193,7 +189,6 @@ impl<'a, T: 'a + Score> LockableScore<'a> for Mutex<T> {
 
 #[cfg(not(c_bindings))]
 impl<'a, T: 'a + Score> LockableScore<'a> for RefCell<T> {
-	type Score = T;
 	type Locked = RefMut<'a, T>;
 
 	fn lock(&'a self) -> Self::Locked {
@@ -209,7 +204,6 @@ pub struct MultiThreadedLockableScore<T: Score> {
 
 #[cfg(c_bindings)]
 impl<'a, T: 'a + Score> LockableScore<'a> for MultiThreadedLockableScore<T> {
-	type Score = T;
 	type Locked = MultiThreadedScoreLock<'a, T>;
 
 	fn lock(&'a self) -> Self::Locked {
@@ -247,22 +241,29 @@ impl<'a, T: 'a + Score> Writeable for MultiThreadedScoreLock<'a, T> {
 }
 
 #[cfg(c_bindings)]
-impl<'a, T: 'a + Score> DerefMut for MultiThreadedScoreLock<'a, T> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        self.0.deref_mut()
-    }
+impl<'a, T: 'a + Score> Score for MultiThreadedScoreLock<'a, T> {
+	fn channel_penalty_msat(
+		&self, short_channel_id: u64, source: &NodeId, target: &NodeId, usage: ChannelUsage, score_params: &ProbabilisticScoringFeeParameters
+	) -> u64 {
+		self.0.channel_penalty_msat(short_channel_id, source, target, usage, score_params)
+	}
+
+	fn payment_path_failed(&mut self, path: &Path, short_channel_id: u64) {
+		self.0.payment_path_failed(path, short_channel_id)
+	}
+
+	fn payment_path_successful(&mut self, path: &Path) {
+		self.0.payment_path_successful(path)
+	}
+
+	fn probe_failed(&mut self, path: &Path, short_channel_id: u64) {
+		self.0.probe_failed(path, short_channel_id)
+	}
+
+	fn probe_successful(&mut self, path: &Path) {
+		self.0.probe_successful(path)
+	}
 }
-
-#[cfg(c_bindings)]
-impl<'a, T: 'a + Score> Deref for MultiThreadedScoreLock<'a, T> {
-	type Target = T;
-
-    fn deref(&self) -> &Self::Target {
-        self.0.deref()
-    }
-}
-
-
 
 /// Proposed use of a channel passed as a parameter to [`Score::channel_penalty_msat`].
 #[derive(Clone, Copy, Debug, PartialEq)]
