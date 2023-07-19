@@ -1,0 +1,13 @@
+[package]
+name = "msrv-check"
+version = "0.1.0"
+edition = "2018"
+
+[dependencies]
+lightning = { path = "../lightning" }
+lightning-block-sync = { path = "../lightning-block-sync", features = [ "rest-client", "rpc-client" ] }
+lightning-invoice = { path = "../lightning-invoice" }
+lightning-net-tokio = { path = "../lightning-net-tokio" }
+lightning-persister = { path = "../lightning-persister" }
+lightning-background-processor = { path = "../lightning-background-processor", features = ["futures"] }
+lightning-rapid-gossip-sync = { path = "../lightning-rapid-gossip-sync" }

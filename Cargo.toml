@@ -14,6 +14,7 @@ exclude = [
     "lightning-custom-message",
     "lightning-transaction-sync",
     "no-std-check",
+    "msrv-no-dev-deps-check",
     "bench",
 ]
 
