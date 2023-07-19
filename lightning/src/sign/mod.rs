@@ -225,6 +225,8 @@ impl SpendableOutputDescriptor {
 	///
 	/// Note that this does not include any signatures, just the information required to
 	/// construct the transaction and sign it.
+	///
+	/// This is not exported to bindings users as there is no standard serialization for an input.
 	pub fn to_psbt_input(&self) -> bitcoin::psbt::Input {
 		match self {
 			SpendableOutputDescriptor::StaticOutput { output, .. } => {

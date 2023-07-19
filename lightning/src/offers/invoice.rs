@@ -586,6 +586,8 @@ impl Bolt12Invoice {
 	}
 
 	/// Signature of the invoice verified using [`Bolt12Invoice::signing_pubkey`].
+	///
+	/// This is not exported to bindings users as Signature is not yet mapped.
 	pub fn signature(&self) -> Signature {
 		self.signature
 	}
