@@ -68,6 +68,11 @@ pub enum ConfirmationTarget {
 /// A trait which should be implemented to provide feerate information on a number of time
 /// horizons.
 ///
+/// If access to a local mempool is not feasible, feerate estimates should be fetched from a set of
+/// third-parties hosting them. Note that this enables them to affect the propagation of your
+/// pre-signed transactions at any time and therefore endangers the safety of channels funds. It
+/// should be considered carefully as a deployment.
+///
 /// Note that all of the functions implemented here *must* be reentrant-safe (obviously - they're
 /// called from inside the library in response to chain events, P2P events, or timer events).
 pub trait FeeEstimator {

@@ -19,7 +19,7 @@ use crate::util::logger::DebugBytes;
 
 macro_rules! log_iter {
 	($obj: expr) => {
-		$crate::util::logger::DebugIter(core::cell::RefCell::new($obj))
+		$crate::util::logger::DebugIter($obj)
 	}
 }
 
