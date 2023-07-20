@@ -113,7 +113,7 @@ impl_writeable_tlv_based_enum_upgradable!(PathFailure,
 );
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-/// The reason the channel was closed. See individual variants more details.
+/// The reason the channel was closed. See individual variants for more details.
 pub enum ClosureReason {
 	/// Closure generated from receiving a peer error message.
 	///
@@ -164,7 +164,10 @@ pub enum ClosureReason {
 	///
 	/// [`ChannelMonitor`]: crate::chain::channelmonitor::ChannelMonitor
 	/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
-	OutdatedChannelManager
+	OutdatedChannelManager,
+	/// The counterparty requested a cooperative close of a channel that had not been funded yet.
+	/// The channel has been immediately closed.
+	CounterpartyCoopClosedUnfundedChannel,
 }
 
 impl core::fmt::Display for ClosureReason {
@@ -184,6 +187,7 @@ impl core::fmt::Display for ClosureReason {
 			},
 			ClosureReason::DisconnectedPeer => f.write_str("the peer disconnected prior to the channel being funded"),
 			ClosureReason::OutdatedChannelManager => f.write_str("the ChannelManager read from disk was stale compared to ChannelMonitor(s)"),
+			ClosureReason::CounterpartyCoopClosedUnfundedChannel => f.write_str("the peer requested the unfunded channel be closed"),
 		}
 	}
 }
@@ -197,6 +201,7 @@ impl_writeable_tlv_based_enum_upgradable!(ClosureReason,
 	(8, ProcessingError) => { (1, err, required) },
 	(10, DisconnectedPeer) => {},
 	(12, OutdatedChannelManager) => {},
+	(13, CounterpartyCoopClosedUnfundedChannel) => {},
 );
 
 /// Intended destination of a failed HTLC as indicated in [`Event::HTLCHandlingFailed`].

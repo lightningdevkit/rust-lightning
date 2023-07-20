@@ -2861,13 +2861,6 @@ macro_rules! get_chan_reestablish_msgs {
 					panic!("Unexpected event")
 				}
 			}
-			for chan in $src_node.node.list_channels() {
-				if chan.is_public && chan.counterparty.node_id != $dst_node.node.get_our_node_id() {
-					if let Some(scid) = chan.short_channel_id {
-						assert!(announcements.remove(&scid));
-					}
-				}
-			}
 			assert!(announcements.is_empty());
 			res
 		}
