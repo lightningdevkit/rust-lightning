@@ -64,7 +64,7 @@ impl< G: Deref<Target = NetworkGraph<L>>, L: Deref, S: Deref, SP: Sized, Sc: Sco
 		payer: &PublicKey,
 		params: &RouteParameters,
 		first_hops: Option<&[&ChannelDetails]>,
-		inflight_htlcs: &InFlightHtlcs
+		inflight_htlcs: InFlightHtlcs
 	) -> Result<Route, LightningError> {
 		let random_seed_bytes = {
 			let mut locked_random_seed_bytes = self.random_seed_bytes.lock().unwrap();
@@ -73,7 +73,7 @@ impl< G: Deref<Target = NetworkGraph<L>>, L: Deref, S: Deref, SP: Sized, Sc: Sco
 		};
 		find_route(
 			payer, params, &self.network_graph, first_hops, &*self.logger,
-			&ScorerAccountingForInFlightHtlcs::new(self.scorer.lock().deref_mut(), inflight_htlcs),
+			&ScorerAccountingForInFlightHtlcs::new(self.scorer.lock().deref_mut(), &inflight_htlcs),
 			&self.score_params,
 			&random_seed_bytes
 		)
@@ -85,13 +85,13 @@ pub trait Router {
 	/// Finds a [`Route`] between `payer` and `payee` for a payment with the given values.
 	fn find_route(
 		&self, payer: &PublicKey, route_params: &RouteParameters,
-		first_hops: Option<&[&ChannelDetails]>, inflight_htlcs: &InFlightHtlcs
+		first_hops: Option<&[&ChannelDetails]>, inflight_htlcs: InFlightHtlcs
 	) -> Result<Route, LightningError>;
 	/// Finds a [`Route`] between `payer` and `payee` for a payment with the given values. Includes
 	/// `PaymentHash` and `PaymentId` to be able to correlate the request with a specific payment.
 	fn find_route_with_id(
 		&self, payer: &PublicKey, route_params: &RouteParameters,
-		first_hops: Option<&[&ChannelDetails]>, inflight_htlcs: &InFlightHtlcs,
+		first_hops: Option<&[&ChannelDetails]>, inflight_htlcs: InFlightHtlcs,
 		_payment_hash: PaymentHash, _payment_id: PaymentId
 	) -> Result<Route, LightningError> {
 		self.find_route(payer, route_params, first_hops, inflight_htlcs)
@@ -112,7 +112,7 @@ pub struct ScorerAccountingForInFlightHtlcs<'a, S: Score<ScoreParams = SP>, SP: 
 
 impl<'a, S: Score<ScoreParams = SP>, SP: Sized> ScorerAccountingForInFlightHtlcs<'a, S, SP> {
 	/// Initialize a new `ScorerAccountingForInFlightHtlcs`.
-	pub fn new(scorer:  &'a mut S, inflight_htlcs: &'a InFlightHtlcs) -> Self {
+	pub fn new(scorer: &'a mut S, inflight_htlcs: &'a InFlightHtlcs) -> Self {
 		ScorerAccountingForInFlightHtlcs {
 			scorer,
 			inflight_htlcs

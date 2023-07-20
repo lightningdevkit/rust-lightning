@@ -669,7 +669,7 @@ impl OutboundPayments {
 
 		let route = router.find_route_with_id(
 			&node_signer.get_node_id(Recipient::Node).unwrap(), &route_params,
-			Some(&first_hops.iter().collect::<Vec<_>>()), &inflight_htlcs(),
+			Some(&first_hops.iter().collect::<Vec<_>>()), inflight_htlcs(),
 			payment_hash, payment_id,
 		).map_err(|_| RetryableSendFailure::RouteNotFound)?;
 
@@ -712,7 +712,7 @@ impl OutboundPayments {
 
 		let route = match router.find_route_with_id(
 			&node_signer.get_node_id(Recipient::Node).unwrap(), &route_params,
-			Some(&first_hops.iter().collect::<Vec<_>>()), &inflight_htlcs(),
+			Some(&first_hops.iter().collect::<Vec<_>>()), inflight_htlcs(),
 			payment_hash, payment_id,
 		) {
 			Ok(route) => route,

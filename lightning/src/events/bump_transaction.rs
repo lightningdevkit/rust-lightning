@@ -26,7 +26,7 @@ use crate::ln::chan_utils::{
 use crate::ln::features::ChannelTypeFeatures;
 use crate::ln::PaymentPreimage;
 use crate::prelude::*;
-use crate::sign::{ChannelSigner, EcdsaChannelSigner, SignerProvider};
+use crate::sign::{ChannelSigner, EcdsaChannelSigner, SignerProvider, WriteableEcdsaChannelSigner};
 use crate::sync::Mutex;
 use crate::util::logger::Logger;
 
@@ -102,9 +102,9 @@ impl AnchorDescriptor {
 	}
 
 	/// Derives the channel signer required to sign the anchor input.
-	pub fn derive_channel_signer<SP: Deref>(&self, signer_provider: &SP) -> <SP::Target as SignerProvider>::Signer
+	pub fn derive_channel_signer<S: WriteableEcdsaChannelSigner, SP: Deref>(&self, signer_provider: &SP) -> S
 	where
-		SP::Target: SignerProvider
+		SP::Target: SignerProvider<Signer = S>
 	{
 		let mut signer = signer_provider.derive_channel_signer(
 			self.channel_derivation_parameters.value_satoshis,
@@ -211,9 +211,9 @@ impl HTLCDescriptor {
 	}
 
 	/// Derives the channel signer required to sign the HTLC input.
-	pub fn derive_channel_signer<SP: Deref>(&self, signer_provider: &SP) -> <SP::Target as SignerProvider>::Signer
+	pub fn derive_channel_signer<S: WriteableEcdsaChannelSigner, SP: Deref>(&self, signer_provider: &SP) -> S
 	where
-		SP::Target: SignerProvider
+		SP::Target: SignerProvider<Signer = S>
 	{
 		let mut signer = signer_provider.derive_channel_signer(
 			self.channel_derivation_parameters.value_satoshis,
@@ -464,12 +464,12 @@ pub trait CoinSelectionSource {
 	/// which UTXOs to double spend is left to the implementation, but it must strive to keep the
 	/// set of other claims being double spent to a minimum.
 	fn select_confirmed_utxos(
-		&self, claim_id: ClaimId, must_spend: &[Input], must_pay_to: &[TxOut],
+		&self, claim_id: ClaimId, must_spend: Vec<Input>, must_pay_to: &[TxOut],
 		target_feerate_sat_per_1000_weight: u32,
 	) -> Result<CoinSelection, ()>;
 	/// Signs and provides the full witness for all inputs within the transaction known to the
 	/// trait (i.e., any provided via [`CoinSelectionSource::select_confirmed_utxos`]).
-	fn sign_tx(&self, tx: &mut Transaction) -> Result<(), ()>;
+	fn sign_tx(&self, tx: Transaction) -> Result<Transaction, ()>;
 }
 
 /// An alternative to [`CoinSelectionSource`] that can be implemented and used along [`Wallet`] to
@@ -483,7 +483,7 @@ pub trait WalletSource {
 	/// Signs and provides the full [`TxIn::script_sig`] and [`TxIn::witness`] for all inputs within
 	/// the transaction known to the wallet (i.e., any provided via
 	/// [`WalletSource::list_confirmed_utxos`]).
-	fn sign_tx(&self, tx: &mut Transaction) -> Result<(), ()>;
+	fn sign_tx(&self, tx: Transaction) -> Result<Transaction, ()>;
 }
 
 /// A wrapper over [`WalletSource`] that implements [`CoinSelection`] by preferring UTXOs that would
@@ -600,7 +600,7 @@ where
 	L::Target: Logger
 {
 	fn select_confirmed_utxos(
-		&self, claim_id: ClaimId, must_spend: &[Input], must_pay_to: &[TxOut],
+		&self, claim_id: ClaimId, must_spend: Vec<Input>, must_pay_to: &[TxOut],
 		target_feerate_sat_per_1000_weight: u32,
 	) -> Result<CoinSelection, ()> {
 		let utxos = self.source.list_confirmed_utxos()?;
@@ -629,7 +629,7 @@ where
 			.or_else(|_| do_coin_selection(true, true))
 	}
 
-	fn sign_tx(&self, tx: &mut Transaction) -> Result<(), ()> {
+	fn sign_tx(&self, tx: Transaction) -> Result<Transaction, ()> {
 		self.source.sign_tx(tx)
 	}
 }
@@ -726,7 +726,7 @@ where
 			satisfaction_weight: commitment_tx.weight() as u64 + ANCHOR_INPUT_WITNESS_WEIGHT + EMPTY_SCRIPT_SIG_WEIGHT,
 		}];
 		let coin_selection = self.utxo_source.select_confirmed_utxos(
-			claim_id, &must_spend, &[], anchor_target_feerate_sat_per_1000_weight,
+			claim_id, must_spend, &[], anchor_target_feerate_sat_per_1000_weight,
 		)?;
 
 		let mut anchor_tx = Transaction {
@@ -748,7 +748,8 @@ where
 		let unsigned_tx_weight = anchor_tx.weight() as u64 - (anchor_tx.input.len() as u64 * EMPTY_SCRIPT_SIG_WEIGHT);
 
 		log_debug!(self.logger, "Signing anchor transaction {}", anchor_txid);
-		self.utxo_source.sign_tx(&mut anchor_tx)?;
+		anchor_tx = self.utxo_source.sign_tx(anchor_tx)?;
+
 		let signer = anchor_descriptor.derive_channel_signer(&self.signer_provider);
 		let anchor_sig = signer.sign_holder_anchor_input(&anchor_tx, 0, &self.secp)?;
 		anchor_tx.input[0].witness = anchor_descriptor.tx_input_witness(&anchor_sig);
@@ -799,20 +800,24 @@ where
 
 		log_debug!(self.logger, "Peforming coin selection for HTLC transaction targeting {} sat/kW",
 			target_feerate_sat_per_1000_weight);
+		#[cfg(debug_assertions)]
+		let must_spend_satisfaction_weight =
+			must_spend.iter().map(|input| input.satisfaction_weight).sum::<u64>();
 		let coin_selection = self.utxo_source.select_confirmed_utxos(
-			claim_id, &must_spend, &htlc_tx.output, target_feerate_sat_per_1000_weight,
+			claim_id, must_spend, &htlc_tx.output, target_feerate_sat_per_1000_weight,
 		)?;
 		#[cfg(debug_assertions)]
 		let total_satisfaction_weight =
 			coin_selection.confirmed_utxos.iter().map(|utxo| utxo.satisfaction_weight).sum::<u64>() +
-				must_spend.iter().map(|input| input.satisfaction_weight).sum::<u64>();
+				must_spend_satisfaction_weight;
 		self.process_coin_selection(&mut htlc_tx, coin_selection);
 
 		#[cfg(debug_assertions)]
 		let unsigned_tx_weight = htlc_tx.weight() as u64 - (htlc_tx.input.len() as u64 * EMPTY_SCRIPT_SIG_WEIGHT);
 
 		log_debug!(self.logger, "Signing HTLC transaction {}", htlc_tx.txid());
-		self.utxo_source.sign_tx(&mut htlc_tx)?;
+		htlc_tx = self.utxo_source.sign_tx(htlc_tx)?;
+
 		let mut signers = BTreeMap::new();
 		for (idx, htlc_descriptor) in htlc_descriptors.iter().enumerate() {
 			let signer = signers.entry(htlc_descriptor.channel_derivation_parameters.keys_id)

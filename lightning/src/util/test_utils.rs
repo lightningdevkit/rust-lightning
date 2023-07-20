@@ -112,13 +112,13 @@ impl<'a> TestRouter<'a> {
 impl<'a> Router for TestRouter<'a> {
 	fn find_route(
 		&self, payer: &PublicKey, params: &RouteParameters, first_hops: Option<&[&channelmanager::ChannelDetails]>,
-		inflight_htlcs: &InFlightHtlcs
+		inflight_htlcs: InFlightHtlcs
 	) -> Result<Route, msgs::LightningError> {
 		if let Some((find_route_query, find_route_res)) = self.next_routes.lock().unwrap().pop_front() {
 			assert_eq!(find_route_query, *params);
 			if let Ok(ref route) = find_route_res {
 				let mut binding = self.scorer.lock().unwrap();
-				let scorer = ScorerAccountingForInFlightHtlcs::new(binding.deref_mut(), inflight_htlcs);
+				let scorer = ScorerAccountingForInFlightHtlcs::new(binding.deref_mut(), &inflight_htlcs);
 				for path in &route.paths {
 					let mut aggregate_msat = 0u64;
 					for (idx, hop) in path.hops.iter().rev().enumerate() {
@@ -1105,20 +1105,20 @@ impl TestWalletSource {
 }
 
 impl WalletSource for TestWalletSource {
-    fn list_confirmed_utxos(&self) -> Result<Vec<Utxo>, ()> {
+	fn list_confirmed_utxos(&self) -> Result<Vec<Utxo>, ()> {
 		Ok(self.utxos.borrow().clone())
-    }
+	}
 
-    fn get_change_script(&self) -> Result<Script, ()> {
+	fn get_change_script(&self) -> Result<Script, ()> {
 		let public_key = bitcoin::PublicKey::new(self.secret_key.public_key(&self.secp));
 		Ok(Script::new_p2pkh(&public_key.pubkey_hash()))
-    }
+	}
 
-    fn sign_tx(&self, tx: &mut Transaction) -> Result<(), ()> {
+	fn sign_tx(&self, mut tx: Transaction) -> Result<Transaction, ()> {
 		let utxos = self.utxos.borrow();
 		for i in 0..tx.input.len() {
 			if let Some(utxo) = utxos.iter().find(|utxo| utxo.outpoint == tx.input[i].previous_output) {
-				let sighash = SighashCache::new(&*tx)
+				let sighash = SighashCache::new(&tx)
 					.legacy_signature_hash(i, &utxo.output.script_pubkey, EcdsaSighashType::All as u32)
 					.map_err(|_| ())?;
 				let sig = self.secp.sign_ecdsa(&sighash.as_hash().into(), &self.secret_key);
@@ -1129,6 +1129,6 @@ impl WalletSource for TestWalletSource {
 					.into_script();
 			}
 		}
-		Ok(())
-    }
+		Ok(tx)
+	}
 }
