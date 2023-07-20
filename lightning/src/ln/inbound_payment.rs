@@ -70,7 +70,6 @@ impl ExpandedKey {
 	/// Returns an [`HmacEngine`] used to construct [`Offer::metadata`].
 	///
 	/// [`Offer::metadata`]: crate::offers::offer::Offer::metadata
-	#[allow(unused)]
 	pub(crate) fn hmac_for_offer(
 		&self, nonce: Nonce, iv_bytes: &[u8; IV_LEN]
 	) -> HmacEngine<Sha256> {
@@ -88,7 +87,6 @@ impl ExpandedKey {
 ///
 /// [`Offer::metadata`]: crate::offers::offer::Offer::metadata
 /// [`Offer::signing_pubkey`]: crate::offers::offer::Offer::signing_pubkey
-#[allow(unused)]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Nonce(pub(crate) [u8; Self::LENGTH]);
 
