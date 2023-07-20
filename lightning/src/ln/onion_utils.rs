@@ -396,15 +396,22 @@ pub(super) fn build_first_hop_failure_packet(shared_secret: &[u8], failure_type:
 	encrypt_failure_packet(shared_secret, &failure_packet.encode()[..])
 }
 
+pub(crate) struct DecodedOnionFailure {
+	pub(crate) network_update: Option<NetworkUpdate>,
+	pub(crate) short_channel_id: Option<u64>,
+	pub(crate) payment_retryable: bool,
+	#[cfg(test)]
+	pub(crate) onion_error_code: Option<u16>,
+	#[cfg(test)]
+	pub(crate) onion_error_data: Option<Vec<u8>>,
+}
+
 /// Process failure we got back from upstream on a payment we sent (implying htlc_source is an
 /// OutboundRoute).
-/// Returns update, a boolean indicating that the payment itself failed, the short channel id of
-/// the responsible channel, and the error code.
 #[inline]
 pub(super) fn process_onion_failure<T: secp256k1::Signing, L: Deref>(
 	secp_ctx: &Secp256k1<T>, logger: &L, htlc_source: &HTLCSource, mut packet_decrypted: Vec<u8>
-) -> (Option<NetworkUpdate>, Option<u64>, bool, Option<u16>, Option<Vec<u8>>)
-where L::Target: Logger {
+) -> DecodedOnionFailure where L::Target: Logger {
 	let (path, session_priv, first_hop_htlc_msat) = if let &HTLCSource::OutboundRoute {
 		ref path, ref session_priv, ref first_hop_htlc_msat, ..
 	} = htlc_source {
@@ -634,12 +641,24 @@ where L::Target: Logger {
 			log_info!(logger, "Onion Error[from {}: {}({:#x})] {}", route_hop.pubkey, title, error_code, description);
 		}
 	}).expect("Route that we sent via spontaneously grew invalid keys in the middle of it?");
-	if let Some((channel_update, short_channel_id, payment_retryable)) = res {
-		(channel_update, short_channel_id, payment_retryable, error_code_ret, error_packet_ret)
+	if let Some((network_update, short_channel_id, payment_retryable)) = res {
+		DecodedOnionFailure {
+			network_update, short_channel_id, payment_retryable,
+			#[cfg(test)]
+			onion_error_code: error_code_ret,
+			#[cfg(test)]
+			onion_error_data: error_packet_ret
+		}
 	} else {
 		// only not set either packet unparseable or hmac does not match with any
 		// payment not retryable only when garbage is from the final node
-		(None, None, !is_from_final_node, None, None)
+		DecodedOnionFailure {
+			network_update: None, short_channel_id: None, payment_retryable: !is_from_final_node,
+			#[cfg(test)]
+			onion_error_code: None,
+			#[cfg(test)]
+			onion_error_data: None
+		}
 	}
 }
 
@@ -763,12 +782,12 @@ impl HTLCFailReason {
 
 	pub(super) fn decode_onion_failure<T: secp256k1::Signing, L: Deref>(
 		&self, secp_ctx: &Secp256k1<T>, logger: &L, htlc_source: &HTLCSource
-	) -> (Option<NetworkUpdate>, Option<u64>, bool, Option<u16>, Option<Vec<u8>>)
-	where L::Target: Logger {
+	) -> DecodedOnionFailure where L::Target: Logger {
 		match self.0 {
 			HTLCFailReasonRepr::LightningError { ref err } => {
 				process_onion_failure(secp_ctx, logger, &htlc_source, err.data.clone())
 			},
+			#[allow(unused)]
 			HTLCFailReasonRepr::Reason { ref failure_code, ref data, .. } => {
 				// we get a fail_malformed_htlc from the first hop
 				// TODO: We'd like to generate a NetworkUpdate for temporary
@@ -776,7 +795,15 @@ impl HTLCFailReason {
 				// generally ignores its view of our own channels as we provide them via
 				// ChannelDetails.
 				if let &HTLCSource::OutboundRoute { ref path, .. } = htlc_source {
-					(None, Some(path.hops[0].short_channel_id), true, Some(*failure_code), Some(data.clone()))
+					DecodedOnionFailure {
+						network_update: None,
+						payment_retryable: true,
+						short_channel_id: Some(path.hops[0].short_channel_id),
+						#[cfg(test)]
+						onion_error_code: Some(*failure_code),
+						#[cfg(test)]
+						onion_error_data: Some(data.clone()),
+					}
 				} else { unreachable!(); }
 			}
 		}

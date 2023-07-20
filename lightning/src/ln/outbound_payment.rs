@@ -17,7 +17,7 @@ use crate::sign::{EntropySource, NodeSigner, Recipient};
 use crate::events::{self, PaymentFailureReason};
 use crate::ln::{PaymentHash, PaymentPreimage, PaymentSecret};
 use crate::ln::channelmanager::{ChannelDetails, EventCompletionAction, HTLCSource, IDEMPOTENCY_TIMEOUT_TICKS, PaymentId};
-use crate::ln::onion_utils::HTLCFailReason;
+use crate::ln::onion_utils::{DecodedOnionFailure, HTLCFailReason};
 use crate::routing::router::{InFlightHtlcs, Path, PaymentParameters, Route, RouteParameters, Router};
 use crate::util::errors::APIError;
 use crate::util::logger::Logger;
@@ -1293,9 +1293,12 @@ impl OutboundPayments {
 		pending_events: &Mutex<VecDeque<(events::Event, Option<EventCompletionAction>)>>, logger: &L,
 	) -> bool where L::Target: Logger {
 		#[cfg(test)]
-		let (network_update, short_channel_id, payment_retryable, onion_error_code, onion_error_data) = onion_error.decode_onion_failure(secp_ctx, logger, &source);
+		let DecodedOnionFailure {
+			network_update, short_channel_id, payment_retryable, onion_error_code, onion_error_data
+		} = onion_error.decode_onion_failure(secp_ctx, logger, &source);
 		#[cfg(not(test))]
-		let (network_update, short_channel_id, payment_retryable, _, _) = onion_error.decode_onion_failure(secp_ctx, logger, &source);
+		let DecodedOnionFailure { network_update, short_channel_id, payment_retryable } =
+			onion_error.decode_onion_failure(secp_ctx, logger, &source);
 
 		let payment_is_probe = payment_is_probe(payment_hash, &payment_id, probing_cookie_secret);
 		let mut session_priv_bytes = [0; 32];
