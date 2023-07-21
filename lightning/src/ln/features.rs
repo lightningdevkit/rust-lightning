@@ -143,7 +143,7 @@ mod sealed {
 		// Byte 2
 		BasicMPP | Wumbo | AnchorsNonzeroFeeHtlcTx | AnchorsZeroFeeHtlcTx,
 		// Byte 3
-		ShutdownAnySegwit,
+		ShutdownAnySegwit | Taproot,
 		// Byte 4
 		OnionMessages,
 		// Byte 5
@@ -159,7 +159,7 @@ mod sealed {
 		// Byte 2
 		BasicMPP | Wumbo | AnchorsNonzeroFeeHtlcTx | AnchorsZeroFeeHtlcTx,
 		// Byte 3
-		ShutdownAnySegwit,
+		ShutdownAnySegwit | Taproot,
 		// Byte 4
 		OnionMessages,
 		// Byte 5
@@ -205,7 +205,7 @@ mod sealed {
 		// Byte 2
 		AnchorsNonzeroFeeHtlcTx | AnchorsZeroFeeHtlcTx,
 		// Byte 3
-		,
+		Taproot,
 		// Byte 4
 		,
 		// Byte 5
@@ -394,6 +394,9 @@ mod sealed {
 	define_feature!(27, ShutdownAnySegwit, [InitContext, NodeContext],
 		"Feature flags for `opt_shutdown_anysegwit`.", set_shutdown_any_segwit_optional,
 		set_shutdown_any_segwit_required, supports_shutdown_anysegwit, requires_shutdown_anysegwit);
+	define_feature!(31, Taproot, [InitContext, NodeContext, ChannelTypeContext],
+		"Feature flags for `option_taproot`.", set_taproot_optional,
+		set_taproot_required, supports_taproot, requires_taproot);
 	define_feature!(39, OnionMessages, [InitContext, NodeContext],
 		"Feature flags for `option_onion_messages`.", set_onion_messages_optional,
 		set_onion_messages_required, supports_onion_messages, requires_onion_messages);
