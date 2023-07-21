@@ -15,7 +15,8 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
 futures = [ ]
-std = ["lightning/std", "lightning-rapid-gossip-sync/std"]
+std = ["bitcoin/std", "lightning/std", "lightning-rapid-gossip-sync/std"]
+no-std = ["bitcoin/no-std", "lightning/no-std", "lightning-rapid-gossip-sync/no-std"]
 
 default = ["std"]
 
