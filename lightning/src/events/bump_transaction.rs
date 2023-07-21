@@ -341,6 +341,7 @@ pub enum BumpTransactionEvent {
 /// An input that must be included in a transaction when performing coin selection through
 /// [`CoinSelectionSource::select_confirmed_utxos`]. It is guaranteed to be a SegWit input, so it
 /// must have an empty [`TxIn::script_sig`] when spent.
+#[derive(Clone, Debug, Hash, PartialOrd, Ord, PartialEq, Eq)]
 pub struct Input {
 	/// The unique identifier of the input.
 	pub outpoint: OutPoint,
@@ -354,7 +355,7 @@ pub struct Input {
 
 /// An unspent transaction output that is available to spend resulting from a successful
 /// [`CoinSelection`] attempt.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Hash, PartialOrd, Ord, PartialEq, Eq)]
 pub struct Utxo {
 	/// The unique identifier of the output.
 	pub outpoint: OutPoint,
@@ -421,6 +422,7 @@ impl Utxo {
 
 /// The result of a successful coin selection attempt for a transaction requiring additional UTXOs
 /// to cover its fees.
+#[derive(Clone, Debug)]
 pub struct CoinSelection {
 	/// The set of UTXOs (with at least 1 confirmation) to spend and use within a transaction
 	/// requiring additional fees.

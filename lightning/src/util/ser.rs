@@ -358,6 +358,7 @@ impl Readable for U48 {
 /// encoded in several different ways, which we must check for at deserialization-time. Thus, if
 /// you're looking for an example of a variable-length integer to use for your own project, move
 /// along, this is a rather poor design.
+#[derive(Clone, Copy, Debug, Hash, PartialOrd, Ord, PartialEq, Eq)]
 pub struct BigSize(pub u64);
 impl Writeable for BigSize {
 	#[inline]
@@ -1351,6 +1352,7 @@ impl Readable for Hostname {
 	}
 }
 
+/// This is not exported to bindings users as `Duration`s are simply mapped as ints.
 impl Writeable for Duration {
 	#[inline]
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
@@ -1358,6 +1360,7 @@ impl Writeable for Duration {
 		self.subsec_nanos().write(w)
 	}
 }
+/// This is not exported to bindings users as `Duration`s are simply mapped as ints.
 impl Readable for Duration {
 	#[inline]
 	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {

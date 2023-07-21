@@ -641,6 +641,9 @@ pub type SimpleRefPeerManager<
 /// A generic trait which is implemented for all [`PeerManager`]s. This makes bounding functions or
 /// structs on any [`PeerManager`] much simpler as only this trait is needed as a bound, rather
 /// than the full set of bounds on [`PeerManager`] itself.
+///
+/// This is not exported to bindings users as general cover traits aren't useful in other
+/// languages.
 #[allow(missing_docs)]
 pub trait APeerManager {
 	type Descriptor: SocketDescriptor;

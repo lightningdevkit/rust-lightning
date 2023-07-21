@@ -728,7 +728,7 @@ impl<T: sealed::Context> Features<T> {
 	}
 
 	/// Returns true if this `Features` object contains required features unknown by `other`.
-	pub fn requires_unknown_bits_from(&self, other: &Features<T>) -> bool {
+	pub fn requires_unknown_bits_from(&self, other: &Self) -> bool {
 		// Bitwise AND-ing with all even bits set except for known features will select required
 		// unknown features.
 		self.flags.iter().enumerate().any(|(i, &byte)| {
