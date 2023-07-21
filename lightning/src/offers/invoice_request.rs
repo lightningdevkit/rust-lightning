@@ -64,6 +64,7 @@ use crate::sign::EntropySource;
 use crate::io;
 use crate::blinded_path::BlindedPath;
 use crate::ln::PaymentHash;
+use crate::ln::channelmanager::PaymentId;
 use crate::ln::features::InvoiceRequestFeatures;
 use crate::ln::inbound_payment::{ExpandedKey, IV_LEN, Nonce};
 use crate::ln::msgs::DecodeError;
@@ -128,10 +129,12 @@ impl<'a, 'b, T: secp256k1::Signing> InvoiceRequestBuilder<'a, 'b, ExplicitPayerI
 	}
 
 	pub(super) fn deriving_metadata<ES: Deref>(
-		offer: &'a Offer, payer_id: PublicKey, expanded_key: &ExpandedKey, entropy_source: ES
+		offer: &'a Offer, payer_id: PublicKey, expanded_key: &ExpandedKey, entropy_source: ES,
+		payment_id: PaymentId,
 	) -> Self where ES::Target: EntropySource {
 		let nonce = Nonce::from_entropy_source(entropy_source);
-		let derivation_material = MetadataMaterial::new(nonce, expanded_key, IV_BYTES);
+		let payment_id = Some(payment_id);
+		let derivation_material = MetadataMaterial::new(nonce, expanded_key, IV_BYTES, payment_id);
 		let metadata = Metadata::Derived(derivation_material);
 		Self {
 			offer,
@@ -145,10 +148,12 @@ impl<'a, 'b, T: secp256k1::Signing> InvoiceRequestBuilder<'a, 'b, ExplicitPayerI
 
 impl<'a, 'b, T: secp256k1::Signing> InvoiceRequestBuilder<'a, 'b, DerivedPayerId, T> {
 	pub(super) fn deriving_payer_id<ES: Deref>(
-		offer: &'a Offer, expanded_key: &ExpandedKey, entropy_source: ES, secp_ctx: &'b Secp256k1<T>
+		offer: &'a Offer, expanded_key: &ExpandedKey, entropy_source: ES,
+		secp_ctx: &'b Secp256k1<T>, payment_id: PaymentId
 	) -> Self where ES::Target: EntropySource {
 		let nonce = Nonce::from_entropy_source(entropy_source);
-		let derivation_material = MetadataMaterial::new(nonce, expanded_key, IV_BYTES);
+		let payment_id = Some(payment_id);
+		let derivation_material = MetadataMaterial::new(nonce, expanded_key, IV_BYTES, payment_id);
 		let metadata = Metadata::DerivedSigningPubkey(derivation_material);
 		Self {
 			offer,
@@ -259,7 +264,7 @@ impl<'a, 'b, P: PayerIdStrategy, T: secp256k1::Signing> InvoiceRequestBuilder<'a
 			let mut tlv_stream = self.invoice_request.as_tlv_stream();
 			debug_assert!(tlv_stream.2.payer_id.is_none());
 			tlv_stream.0.metadata = None;
-			if !metadata.derives_keys() {
+			if !metadata.derives_payer_keys() {
 				tlv_stream.2.payer_id = self.payer_id.as_ref();
 			}
 
@@ -691,7 +696,7 @@ impl InvoiceRequestContents {
 	}
 
 	pub(super) fn derives_keys(&self) -> bool {
-		self.inner.payer.0.derives_keys()
+		self.inner.payer.0.derives_payer_keys()
 	}
 
 	pub(super) fn chain(&self) -> ChainHash {
@@ -924,6 +929,7 @@ mod tests {
 	#[cfg(feature = "std")]
 	use core::time::Duration;
 	use crate::sign::KeyMaterial;
+	use crate::ln::channelmanager::PaymentId;
 	use crate::ln::features::{InvoiceRequestFeatures, OfferFeatures};
 	use crate::ln::inbound_payment::ExpandedKey;
 	use crate::ln::msgs::{DecodeError, MAX_VALUE_MSAT};
@@ -1069,12 +1075,13 @@ mod tests {
 		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
 		let entropy = FixedEntropy {};
 		let secp_ctx = Secp256k1::new();
+		let payment_id = PaymentId([1; 32]);
 
 		let offer = OfferBuilder::new("foo".into(), recipient_pubkey())
 			.amount_msats(1000)
 			.build().unwrap();
 		let invoice_request = offer
-			.request_invoice_deriving_metadata(payer_id, &expanded_key, &entropy)
+			.request_invoice_deriving_metadata(payer_id, &expanded_key, &entropy, payment_id)
 			.unwrap()
 			.build().unwrap()
 			.sign(payer_sign).unwrap();
@@ -1084,7 +1091,10 @@ mod tests {
 			.unwrap()
 			.build().unwrap()
 			.sign(recipient_sign).unwrap();
-		assert!(invoice.verify(&expanded_key, &secp_ctx));
+		match invoice.verify(&expanded_key, &secp_ctx) {
+			Ok(payment_id) => assert_eq!(payment_id, PaymentId([1; 32])),
+			Err(()) => panic!("verification failed"),
+		}
 
 		// Fails verification with altered fields
 		let (
@@ -1107,7 +1117,7 @@ mod tests {
 		signature_tlv_stream.write(&mut encoded_invoice).unwrap();
 
 		let invoice = Bolt12Invoice::try_from(encoded_invoice).unwrap();
-		assert!(!invoice.verify(&expanded_key, &secp_ctx));
+		assert!(invoice.verify(&expanded_key, &secp_ctx).is_err());
 
 		// Fails verification with altered metadata
 		let (
@@ -1130,7 +1140,7 @@ mod tests {
 		signature_tlv_stream.write(&mut encoded_invoice).unwrap();
 
 		let invoice = Bolt12Invoice::try_from(encoded_invoice).unwrap();
-		assert!(!invoice.verify(&expanded_key, &secp_ctx));
+		assert!(invoice.verify(&expanded_key, &secp_ctx).is_err());
 	}
 
 	#[test]
@@ -1138,12 +1148,13 @@ mod tests {
 		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
 		let entropy = FixedEntropy {};
 		let secp_ctx = Secp256k1::new();
+		let payment_id = PaymentId([1; 32]);
 
 		let offer = OfferBuilder::new("foo".into(), recipient_pubkey())
 			.amount_msats(1000)
 			.build().unwrap();
 		let invoice_request = offer
-			.request_invoice_deriving_payer_id(&expanded_key, &entropy, &secp_ctx)
+			.request_invoice_deriving_payer_id(&expanded_key, &entropy, &secp_ctx, payment_id)
 			.unwrap()
 			.build_and_sign()
 			.unwrap();
@@ -1152,7 +1163,10 @@ mod tests {
 			.unwrap()
 			.build().unwrap()
 			.sign(recipient_sign).unwrap();
-		assert!(invoice.verify(&expanded_key, &secp_ctx));
+		match invoice.verify(&expanded_key, &secp_ctx) {
+			Ok(payment_id) => assert_eq!(payment_id, PaymentId([1; 32])),
+			Err(()) => panic!("verification failed"),
+		}
 
 		// Fails verification with altered fields
 		let (
@@ -1175,7 +1189,7 @@ mod tests {
 		signature_tlv_stream.write(&mut encoded_invoice).unwrap();
 
 		let invoice = Bolt12Invoice::try_from(encoded_invoice).unwrap();
-		assert!(!invoice.verify(&expanded_key, &secp_ctx));
+		assert!(invoice.verify(&expanded_key, &secp_ctx).is_err());
 
 		// Fails verification with altered payer id
 		let (
@@ -1198,7 +1212,7 @@ mod tests {
 		signature_tlv_stream.write(&mut encoded_invoice).unwrap();
 
 		let invoice = Bolt12Invoice::try_from(encoded_invoice).unwrap();
-		assert!(!invoice.verify(&expanded_key, &secp_ctx));
+		assert!(invoice.verify(&expanded_key, &secp_ctx).is_err());
 	}
 
 	#[test]
