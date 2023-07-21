@@ -997,9 +997,9 @@ impl<Signer: ChannelSigner> ChannelContext<Signer> {
 		&self.channel_type
 	}
 
-	/// Guaranteed to be Some after both ChannelReady messages have been exchanged (and, thus,
-	/// is_usable() returns true).
-	/// Allowed in any state (including after shutdown)
+	/// Gets the channel's `short_channel_id`.
+	///
+	/// Will return `None` if the channel hasn't been confirmed yet.
 	pub fn get_short_channel_id(&self) -> Option<u64> {
 		self.short_channel_id
 	}
@@ -4887,6 +4887,8 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			return Err(ChannelError::Ignore("Cannot get a ChannelAnnouncement if the channel is not currently usable".to_owned()));
 		}
 
+		let short_channel_id = self.context.get_short_channel_id()
+			.ok_or(ChannelError::Ignore("Cannot get a ChannelAnnouncement if the channel has not been confirmed yet".to_owned()))?;
 		let node_id = NodeId::from_pubkey(&node_signer.get_node_id(Recipient::Node)
 			.map_err(|_| ChannelError::Ignore("Failed to retrieve own public key".to_owned()))?);
 		let counterparty_node_id = NodeId::from_pubkey(&self.context.get_counterparty_node_id());
@@ -4895,7 +4897,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		let msg = msgs::UnsignedChannelAnnouncement {
 			features: channelmanager::provided_channel_features(&user_config),
 			chain_hash,
-			short_channel_id: self.context.get_short_channel_id().unwrap(),
+			short_channel_id,
 			node_id_1: if were_node_one { node_id } else { counterparty_node_id },
 			node_id_2: if were_node_one { counterparty_node_id } else { node_id },
 			bitcoin_key_1: NodeId::from_pubkey(if were_node_one { &self.context.get_holder_pubkeys().funding_pubkey } else { self.context.counterparty_funding_pubkey() }),
@@ -4953,11 +4955,16 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			},
 			Ok(v) => v
 		};
+		let short_channel_id = match self.context.get_short_channel_id() {
+			Some(scid) => scid,
+			None => return None,
+		};
+
 		self.context.announcement_sigs_state = AnnouncementSigsState::MessageSent;
 
 		Some(msgs::AnnouncementSignatures {
 			channel_id: self.context.channel_id(),
-			short_channel_id: self.context.get_short_channel_id().unwrap(),
+			short_channel_id,
 			node_signature: our_node_sig,
 			bitcoin_signature: our_bitcoin_sig,
 		})
