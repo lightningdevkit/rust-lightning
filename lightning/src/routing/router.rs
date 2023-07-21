@@ -82,13 +82,21 @@ impl< G: Deref<Target = NetworkGraph<L>>, L: Deref, S: Deref, SP: Sized, Sc: Sco
 
 /// A trait defining behavior for routing a payment.
 pub trait Router {
-	/// Finds a [`Route`] between `payer` and `payee` for a payment with the given values.
+	/// Finds a [`Route`] for a payment between the given `payer` and a payee.
+	///
+	/// The `payee` and the payment's value are given in [`RouteParameters::payment_params`]
+	/// and [`RouteParameters::final_value_msat`], respectively.
 	fn find_route(
 		&self, payer: &PublicKey, route_params: &RouteParameters,
 		first_hops: Option<&[&ChannelDetails]>, inflight_htlcs: InFlightHtlcs
 	) -> Result<Route, LightningError>;
-	/// Finds a [`Route`] between `payer` and `payee` for a payment with the given values. Includes
-	/// `PaymentHash` and `PaymentId` to be able to correlate the request with a specific payment.
+	/// Finds a [`Route`] for a payment between the given `payer` and a payee.
+	///
+	/// The `payee` and the payment's value are given in [`RouteParameters::payment_params`]
+	/// and [`RouteParameters::final_value_msat`], respectively.
+	///
+	/// Includes a [`PaymentHash`] and a [`PaymentId`] to be able to correlate the request with a specific
+	/// payment.
 	fn find_route_with_id(
 		&self, payer: &PublicKey, route_params: &RouteParameters,
 		first_hops: Option<&[&ChannelDetails]>, inflight_htlcs: InFlightHtlcs,
@@ -346,11 +354,9 @@ pub struct Route {
 	/// [`BlindedTail`]s are present, then the pubkey of the last [`RouteHop`] in each path must be
 	/// the same.
 	pub paths: Vec<Path>,
-	/// The `payment_params` parameter passed to [`find_route`].
-	/// This is used by `ChannelManager` to track information which may be required for retries,
-	/// provided back to you via [`Event::PaymentPathFailed`].
+	/// The `payment_params` parameter passed via [`RouteParameters`] to [`find_route`].
 	///
-	/// [`Event::PaymentPathFailed`]: crate::events::Event::PaymentPathFailed
+	/// This is used by `ChannelManager` to track information which may be required for retries.
 	pub payment_params: Option<PaymentParameters>,
 }
 
@@ -358,7 +364,7 @@ impl Route {
 	/// Returns the total amount of fees paid on this [`Route`].
 	///
 	/// This doesn't include any extra payment made to the recipient, which can happen in excess of
-	/// the amount passed to [`find_route`]'s `params.final_value_msat`.
+	/// the amount passed to [`find_route`]'s `route_params.final_value_msat`.
 	pub fn get_total_fees(&self) -> u64 {
 		self.paths.iter().map(|path| path.fee_msat()).sum()
 	}
@@ -436,10 +442,7 @@ impl Readable for Route {
 
 /// Parameters needed to find a [`Route`].
 ///
-/// Passed to [`find_route`] and [`build_route_from_hops`], but also provided in
-/// [`Event::PaymentPathFailed`].
-///
-/// [`Event::PaymentPathFailed`]: crate::events::Event::PaymentPathFailed
+/// Passed to [`find_route`] and [`build_route_from_hops`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RouteParameters {
 	/// The parameters of the failed payment path.
@@ -1330,6 +1333,14 @@ impl<'a> fmt::Display for LoggedCandidateHop<'a> {
 				" and blinding point ".fmt(f)?;
 				hint.1.blinding_point.fmt(f)
 			},
+			CandidateRouteHop::FirstHop { .. } => {
+				"first hop with SCID ".fmt(f)?;
+				self.0.short_channel_id().unwrap().fmt(f)
+			},
+			CandidateRouteHop::PrivateHop { .. } => {
+				"route hint with SCID ".fmt(f)?;
+				self.0.short_channel_id().unwrap().fmt(f)
+			},
 			_ => {
 				"SCID ".fmt(f)?;
 				self.0.short_channel_id().unwrap().fmt(f)
@@ -1375,10 +1386,12 @@ fn sort_first_hop_channels(
 
 /// Finds a route from us (payer) to the given target node (payee).
 ///
-/// If the payee provided features in their invoice, they should be provided via `params.payee`.
+/// If the payee provided features in their invoice, they should be provided via the `payee` field
+/// in the given [`RouteParameters::payment_params`].
 /// Without this, MPP will only be used if the payee's features are available in the network graph.
 ///
-/// Private routing paths between a public node and the target may be included in `params.payee`.
+/// Private routing paths between a public node and the target may be included in the `payee` field
+/// of [`RouteParameters::payment_params`].
 ///
 /// If some channels aren't announced, it may be useful to fill in `first_hops` with the results
 /// from [`ChannelManager::list_usable_channels`]. If it is filled in, the view of these channels
@@ -1388,15 +1401,9 @@ fn sort_first_hop_channels(
 /// However, the enabled/disabled bit on such channels as well as the `htlc_minimum_msat` /
 /// `htlc_maximum_msat` *are* checked as they may change based on the receiving node.
 ///
-/// # Note
-///
-/// May be used to re-compute a [`Route`] when handling a [`Event::PaymentPathFailed`]. Any
-/// adjustments to the [`NetworkGraph`] and channel scores should be made prior to calling this
-/// function.
-///
 /// # Panics
 ///
-/// Panics if first_hops contains channels without short_channel_ids;
+/// Panics if first_hops contains channels without `short_channel_id`s;
 /// [`ChannelManager::list_usable_channels`] will never include such channels.
 ///
 /// [`ChannelManager::list_usable_channels`]: crate::ln::channelmanager::ChannelManager::list_usable_channels
@@ -1641,6 +1648,12 @@ where L::Target: Logger {
 	log_trace!(logger, "Building path from {} to payer {} for value {} msat.",
 		LoggedPayeePubkey(payment_params.payee.node_id()), our_node_pubkey, final_value_msat);
 
+	// Remember how many candidates we ignored to allow for some logging afterwards.
+	let mut num_ignored_value_contribution = 0;
+	let mut num_ignored_path_length_limit = 0;
+	let mut num_ignored_cltv_delta_limit = 0;
+	let mut num_ignored_previously_failed = 0;
+
 	macro_rules! add_entry {
 		// Adds entry which goes from $src_node_id to $dest_node_id over the $candidate hop.
 		// $next_hops_fee_msat represents the fees paid for using all the channels *after* this one,
@@ -1715,13 +1728,37 @@ where L::Target: Logger {
 					let payment_failed_on_this_channel = scid_opt.map_or(false,
 						|scid| payment_params.previously_failed_channels.contains(&scid));
 
+					let should_log_candidate = match $candidate {
+						CandidateRouteHop::FirstHop { .. } => true,
+						CandidateRouteHop::PrivateHop { .. } => true,
+						CandidateRouteHop::Blinded { .. } => true,
+						_ => false,
+					};
+
 					// If HTLC minimum is larger than the amount we're going to transfer, we shouldn't
 					// bother considering this channel. If retrying with recommended_value_msat may
 					// allow us to hit the HTLC minimum limit, set htlc_minimum_limit so that we go
 					// around again with a higher amount.
-					if !contributes_sufficient_value || exceeds_max_path_length ||
-						exceeds_cltv_delta_limit || payment_failed_on_this_channel {
-						// Path isn't useful, ignore it and move on.
+					if !contributes_sufficient_value {
+						if should_log_candidate {
+							log_trace!(logger, "Ignoring {} due to insufficient value contribution.", LoggedCandidateHop(&$candidate));
+						}
+						num_ignored_value_contribution += 1;
+					} else if exceeds_max_path_length {
+						if should_log_candidate {
+							log_trace!(logger, "Ignoring {} due to exceeding maximum path length limit.", LoggedCandidateHop(&$candidate));
+						}
+						num_ignored_path_length_limit += 1;
+					} else if exceeds_cltv_delta_limit {
+						if should_log_candidate {
+							log_trace!(logger, "Ignoring {} due to exceeding CLTV delta limit.", LoggedCandidateHop(&$candidate));
+						}
+						num_ignored_cltv_delta_limit += 1;
+					} else if payment_failed_on_this_channel {
+						if should_log_candidate {
+							log_trace!(logger, "Ignoring {} due to a failed previous payment attempt.", LoggedCandidateHop(&$candidate));
+						}
+						num_ignored_previously_failed += 1;
 					} else if may_overpay_to_meet_path_minimum_msat {
 						hit_minimum_limit = true;
 					} else if over_path_minimum_msat {
@@ -2321,6 +2358,12 @@ where L::Target: Logger {
 			log_trace!(logger, "Collected our payment amount on the first pass, but running again to collect extra paths with a potentially higher limit.");
 			path_value_msat = recommended_value_msat;
 		}
+	}
+
+	let num_ignored_total = num_ignored_value_contribution + num_ignored_path_length_limit +
+		num_ignored_cltv_delta_limit + num_ignored_previously_failed;
+	if num_ignored_total > 0 {
+		log_trace!(logger, "Ignored {} candidate hops due to insufficient value contribution, {} due to path length limit, {} due to CLTV delta limit, {} due to previous payment failure. Total: {} ignored candidates.", num_ignored_value_contribution, num_ignored_path_length_limit, num_ignored_cltv_delta_limit, num_ignored_previously_failed, num_ignored_total);
 	}
 
 	// Step (5).
