@@ -3,7 +3,7 @@ name = "lightning-block-sync"
 version = "0.0.116"
 authors = ["Jeffrey Czyz", "Matt Corallo"]
 license = "MIT OR Apache-2.0"
-repository = "http://github.com/lightningdevkit/rust-lightning"
+repository = "https://github.com/lightningdevkit/rust-lightning"
 description = """
 Utilities to fetch the chain data from a block source and feed them into Rust Lightning.
 """

@@ -3,7 +3,7 @@ name = "lightning-background-processor"
 version = "0.0.116"
 authors = ["Valentine Wallace <vwallace@protonmail.com>"]
 license = "MIT OR Apache-2.0"
-repository = "http://github.com/lightningdevkit/rust-lightning"
+repository = "https://github.com/lightningdevkit/rust-lightning"
 description = """
 Utilities to perform required background tasks for Rust Lightning.
 """

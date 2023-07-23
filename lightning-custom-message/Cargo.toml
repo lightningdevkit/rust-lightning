@@ -3,7 +3,7 @@ name = "lightning-custom-message"
 version = "0.0.116"
 authors = ["Jeffrey Czyz"]
 license = "MIT OR Apache-2.0"
-repository = "http://github.com/lightningdevkit/rust-lightning"
+repository = "https://github.com/lightningdevkit/rust-lightning"
 description = """
 Utilities for supporting custom peer-to-peer messages in LDK.
 """
