@@ -2447,6 +2447,7 @@ mod tests {
 	use bitcoin::{Transaction, PackedLockTime, TxIn, Script, Sequence, Witness, TxOut};
 	use hex;
 	use crate::ln::{PaymentPreimage, PaymentHash, PaymentSecret};
+	use crate::ln::channel::ChannelId;
 	use crate::ln::features::{ChannelFeatures, ChannelTypeFeatures, InitFeatures, NodeFeatures};
 	use crate::ln::msgs::{self, FinalOnionHopData, OnionErrorPacket, OnionHopDataFormat};
 	use crate::routing::gossip::{NodeAlias, NodeId};
@@ -2477,7 +2478,7 @@ mod tests {
 		};
 
 		let cr = msgs::ChannelReestablish {
-			channel_id: [4, 0, 0, 0, 0, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 0, 6, 0, 0, 0, 0, 0, 0, 0, 7, 0, 0, 0, 0, 0, 0, 0],
+			channel_id: ChannelId([4, 0, 0, 0, 0, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 0, 6, 0, 0, 0, 0, 0, 0, 0, 7, 0, 0, 0, 0, 0, 0, 0]),
 			next_local_commitment_number: 3,
 			next_remote_commitment_number: 4,
 			your_last_per_commitment_secret: [9;32],
@@ -2506,7 +2507,7 @@ mod tests {
 		};
 
 		let cr = msgs::ChannelReestablish {
-			channel_id: [4, 0, 0, 0, 0, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 0, 6, 0, 0, 0, 0, 0, 0, 0, 7, 0, 0, 0, 0, 0, 0, 0],
+			channel_id: ChannelId([4, 0, 0, 0, 0, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 0, 6, 0, 0, 0, 0, 0, 0, 0, 7, 0, 0, 0, 0, 0, 0, 0]),
 			next_local_commitment_number: 3,
 			next_remote_commitment_number: 4,
 			your_last_per_commitment_secret: [9;32],
@@ -2558,7 +2559,7 @@ mod tests {
 		let sig_1 = get_sig_on!(privkey, secp_ctx, String::from("01010101010101010101010101010101"));
 		let sig_2 = get_sig_on!(privkey, secp_ctx, String::from("02020202020202020202020202020202"));
 		let announcement_signatures = msgs::AnnouncementSignatures {
-			channel_id: [4, 0, 0, 0, 0, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 0, 6, 0, 0, 0, 0, 0, 0, 0, 7, 0, 0, 0, 0, 0, 0, 0],
+			channel_id: ChannelId([4, 0, 0, 0, 0, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 0, 6, 0, 0, 0, 0, 0, 0, 0, 7, 0, 0, 0, 0, 0, 0, 0]),
 			short_channel_id: 2316138423780173,
 			node_signature: sig_1,
 			bitcoin_signature: sig_2,
@@ -2794,7 +2795,7 @@ mod tests {
 		let (_, pubkey_6) = get_keys_from!("0606060606060606060606060606060606060606060606060606060606060606", secp_ctx);
 		let open_channel = msgs::OpenChannel {
 			chain_hash: BlockHash::from_hex("6fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d6190000000000").unwrap(),
-			temporary_channel_id: [2; 32],
+			temporary_channel_id: ChannelId([2; 32]),
 			funding_satoshis: 1311768467284833366,
 			push_msat: 2536655962884945560,
 			dust_limit_satoshis: 3608586615801332854,
@@ -2855,7 +2856,7 @@ mod tests {
 		let (_, pubkey_7) = get_keys_from!("0707070707070707070707070707070707070707070707070707070707070707", secp_ctx);
 		let open_channelv2 = msgs::OpenChannelV2 {
 			chain_hash: BlockHash::from_hex("6fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d6190000000000").unwrap(),
-			temporary_channel_id: [2; 32],
+			temporary_channel_id: ChannelId([2; 32]),
 			funding_feerate_sat_per_1000_weight: 821716,
 			commitment_feerate_sat_per_1000_weight: 821716,
 			funding_satoshis: 1311768467284833366,
@@ -2945,7 +2946,7 @@ mod tests {
 		let (_, pubkey_5) = get_keys_from!("0505050505050505050505050505050505050505050505050505050505050505", secp_ctx);
 		let (_, pubkey_6) = get_keys_from!("0606060606060606060606060606060606060606060606060606060606060606", secp_ctx);
 		let accept_channel = msgs::AcceptChannel {
-			temporary_channel_id: [2; 32],
+			temporary_channel_id: ChannelId([2; 32]),
 			dust_limit_satoshis: 1311768467284833366,
 			max_htlc_value_in_flight_msat: 2536655962884945560,
 			channel_reserve_satoshis: 3608586615801332854,
@@ -2988,7 +2989,7 @@ mod tests {
 		let (_, pubkey_6) = get_keys_from!("0606060606060606060606060606060606060606060606060606060606060606", secp_ctx);
 		let (_, pubkey_7) = get_keys_from!("0707070707070707070707070707070707070707070707070707070707070707", secp_ctx);
 		let accept_channelv2 = msgs::AcceptChannelV2 {
-			temporary_channel_id: [2; 32],
+			temporary_channel_id: ChannelId([2; 32]),
 			funding_satoshis: 1311768467284833366,
 			dust_limit_satoshis: 1311768467284833366,
 			max_htlc_value_in_flight_msat: 2536655962884945560,
@@ -3042,7 +3043,7 @@ mod tests {
 		let (privkey_1, _) = get_keys_from!("0101010101010101010101010101010101010101010101010101010101010101", secp_ctx);
 		let sig_1 = get_sig_on!(privkey_1, secp_ctx, String::from("01010101010101010101010101010101"));
 		let funding_created = msgs::FundingCreated {
-			temporary_channel_id: [2; 32],
+			temporary_channel_id: ChannelId([2; 32]),
 			funding_txid: Txid::from_hex("c2d4449afa8d26140898dd54d3390b057ba2a5afcf03ba29d7dc0d8b9ffe966e").unwrap(),
 			funding_output_index: 255,
 			signature: sig_1,
@@ -3062,7 +3063,7 @@ mod tests {
 		let (privkey_1, _) = get_keys_from!("0101010101010101010101010101010101010101010101010101010101010101", secp_ctx);
 		let sig_1 = get_sig_on!(privkey_1, secp_ctx, String::from("01010101010101010101010101010101"));
 		let funding_signed = msgs::FundingSigned {
-			channel_id: [2; 32],
+			channel_id: ChannelId([2; 32]),
 			signature: sig_1,
 			#[cfg(taproot)]
 			partial_signature_with_nonce: None,
@@ -3077,7 +3078,7 @@ mod tests {
 		let secp_ctx = Secp256k1::new();
 		let (_, pubkey_1,) = get_keys_from!("0101010101010101010101010101010101010101010101010101010101010101", secp_ctx);
 		let channel_ready = msgs::ChannelReady {
-			channel_id: [2; 32],
+			channel_id: ChannelId([2; 32]),
 			next_per_commitment_point: pubkey_1,
 			short_channel_id_alias: None,
 		};
@@ -3089,7 +3090,7 @@ mod tests {
 	#[test]
 	fn encoding_tx_add_input() {
 		let tx_add_input = msgs::TxAddInput {
-			channel_id: [2; 32],
+			channel_id: ChannelId([2; 32]),
 			serial_id: 4886718345,
 			prevtx: TransactionU16LenLimited::new(Transaction {
 				version: 2,
@@ -3124,7 +3125,7 @@ mod tests {
 	#[test]
 	fn encoding_tx_add_output() {
 		let tx_add_output = msgs::TxAddOutput {
-			channel_id: [2; 32],
+			channel_id: ChannelId([2; 32]),
 			serial_id: 4886718345,
 			sats: 4886718345,
 			script: Address::from_str("bc1qxmk834g5marzm227dgqvynd23y2nvt2ztwcw2z").unwrap().script_pubkey(),
@@ -3137,7 +3138,7 @@ mod tests {
 	#[test]
 	fn encoding_tx_remove_input() {
 		let tx_remove_input = msgs::TxRemoveInput {
-			channel_id: [2; 32],
+			channel_id: ChannelId([2; 32]),
 			serial_id: 4886718345,
 		};
 		let encoded_value = tx_remove_input.encode();
@@ -3148,7 +3149,7 @@ mod tests {
 	#[test]
 	fn encoding_tx_remove_output() {
 		let tx_remove_output = msgs::TxRemoveOutput {
-			channel_id: [2; 32],
+			channel_id: ChannelId([2; 32]),
 			serial_id: 4886718345,
 		};
 		let encoded_value = tx_remove_output.encode();
@@ -3159,7 +3160,7 @@ mod tests {
 	#[test]
 	fn encoding_tx_complete() {
 		let tx_complete = msgs::TxComplete {
-			channel_id: [2; 32],
+			channel_id: ChannelId([2; 32]),
 		};
 		let encoded_value = tx_complete.encode();
 		let target_value = hex::decode("0202020202020202020202020202020202020202020202020202020202020202").unwrap();
@@ -3169,7 +3170,7 @@ mod tests {
 	#[test]
 	fn encoding_tx_signatures() {
 		let tx_signatures = msgs::TxSignatures {
-			channel_id: [2; 32],
+			channel_id: ChannelId([2; 32]),
 			tx_hash: Txid::from_hex("c2d4449afa8d26140898dd54d3390b057ba2a5afcf03ba29d7dc0d8b9ffe966e").unwrap(),
 			witnesses: vec![
 				Witness::from_vec(vec![
@@ -3203,7 +3204,7 @@ mod tests {
 
 	fn do_encoding_tx_init_rbf(funding_value_with_hex_target: Option<(i64, &str)>) {
 		let tx_init_rbf = msgs::TxInitRbf {
-			channel_id: [2; 32],
+			channel_id: ChannelId([2; 32]),
 			locktime: 305419896,
 			feerate_sat_per_1000_weight: 20190119,
 			funding_output_contribution: if let Some((value, _)) = funding_value_with_hex_target { Some(value) } else { None },
@@ -3229,7 +3230,7 @@ mod tests {
 
 	fn do_encoding_tx_ack_rbf(funding_value_with_hex_target: Option<(i64, &str)>) {
 		let tx_ack_rbf = msgs::TxAckRbf {
-			channel_id: [2; 32],
+			channel_id: ChannelId([2; 32]),
 			funding_output_contribution: if let Some((value, _)) = funding_value_with_hex_target { Some(value) } else { None },
 		};
 		let encoded_value = tx_ack_rbf.encode();
@@ -3252,7 +3253,7 @@ mod tests {
 	#[test]
 	fn encoding_tx_abort() {
 		let tx_abort = msgs::TxAbort {
-			channel_id: [2; 32],
+			channel_id: ChannelId([2; 32]),
 			data: hex::decode("54686520717569636B2062726F776E20666F78206A756D7073206F76657220746865206C617A7920646F672E").unwrap(),
 		};
 		let encoded_value = tx_abort.encode();
@@ -3265,7 +3266,7 @@ mod tests {
 		let (_, pubkey_1) = get_keys_from!("0101010101010101010101010101010101010101010101010101010101010101", secp_ctx);
 		let script = Builder::new().push_opcode(opcodes::OP_TRUE).into_script();
 		let shutdown = msgs::Shutdown {
-			channel_id: [2; 32],
+			channel_id: ChannelId([2; 32]),
 			scriptpubkey:
 				     if script_type == 1 { Address::p2pkh(&::bitcoin::PublicKey{compressed: true, inner: pubkey_1}, Network::Testnet).script_pubkey() }
 				else if script_type == 2 { Address::p2sh(&script, Network::Testnet).unwrap().script_pubkey() }
@@ -3300,7 +3301,7 @@ mod tests {
 		let (privkey_1, _) = get_keys_from!("0101010101010101010101010101010101010101010101010101010101010101", secp_ctx);
 		let sig_1 = get_sig_on!(privkey_1, secp_ctx, String::from("01010101010101010101010101010101"));
 		let closing_signed = msgs::ClosingSigned {
-			channel_id: [2; 32],
+			channel_id: ChannelId([2; 32]),
 			fee_satoshis: 2316138423780173,
 			signature: sig_1,
 			fee_range: None,
@@ -3311,7 +3312,7 @@ mod tests {
 		assert_eq!(msgs::ClosingSigned::read(&mut Cursor::new(&target_value)).unwrap(), closing_signed);
 
 		let closing_signed_with_range = msgs::ClosingSigned {
-			channel_id: [2; 32],
+			channel_id: ChannelId([2; 32]),
 			fee_satoshis: 2316138423780173,
 			signature: sig_1,
 			fee_range: Some(msgs::ClosingSignedFeeRange {
@@ -3337,7 +3338,7 @@ mod tests {
 			hmac: [2; 32]
 		};
 		let update_add_htlc = msgs::UpdateAddHTLC {
-			channel_id: [2; 32],
+			channel_id: ChannelId([2; 32]),
 			htlc_id: 2316138423780173,
 			amount_msat: 3608586615801332854,
 			payment_hash: PaymentHash([1; 32]),
@@ -3353,7 +3354,7 @@ mod tests {
 	#[test]
 	fn encoding_update_fulfill_htlc() {
 		let update_fulfill_htlc = msgs::UpdateFulfillHTLC {
-			channel_id: [2; 32],
+			channel_id: ChannelId([2; 32]),
 			htlc_id: 2316138423780173,
 			payment_preimage: PaymentPreimage([1; 32]),
 		};
@@ -3368,7 +3369,7 @@ mod tests {
 			data: [1; 32].to_vec(),
 		};
 		let update_fail_htlc = msgs::UpdateFailHTLC {
-			channel_id: [2; 32],
+			channel_id: ChannelId([2; 32]),
 			htlc_id: 2316138423780173,
 			reason
 		};
@@ -3380,7 +3381,7 @@ mod tests {
 	#[test]
 	fn encoding_update_fail_malformed_htlc() {
 		let update_fail_malformed_htlc = msgs::UpdateFailMalformedHTLC {
-			channel_id: [2; 32],
+			channel_id: ChannelId([2; 32]),
 			htlc_id: 2316138423780173,
 			sha256_of_onion: [1; 32],
 			failure_code: 255
@@ -3401,7 +3402,7 @@ mod tests {
 		let sig_3 = get_sig_on!(privkey_3, secp_ctx, String::from("01010101010101010101010101010101"));
 		let sig_4 = get_sig_on!(privkey_4, secp_ctx, String::from("01010101010101010101010101010101"));
 		let commitment_signed = msgs::CommitmentSigned {
-			channel_id: [2; 32],
+			channel_id: ChannelId([2; 32]),
 			signature: sig_1,
 			htlc_signatures: if htlcs { vec![sig_2, sig_3, sig_4] } else { Vec::new() },
 			#[cfg(taproot)]
@@ -3428,7 +3429,7 @@ mod tests {
 		let secp_ctx = Secp256k1::new();
 		let (_, pubkey_1) = get_keys_from!("0101010101010101010101010101010101010101010101010101010101010101", secp_ctx);
 		let raa = msgs::RevokeAndACK {
-			channel_id: [2; 32],
+			channel_id: ChannelId([2; 32]),
 			per_commitment_secret: [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
 			next_per_commitment_point: pubkey_1,
 			#[cfg(taproot)]
@@ -3442,7 +3443,7 @@ mod tests {
 	#[test]
 	fn encoding_update_fee() {
 		let update_fee = msgs::UpdateFee {
-			channel_id: [2; 32],
+			channel_id: ChannelId([2; 32]),
 			feerate_per_kw: 20190119,
 		};
 		let encoded_value = update_fee.encode();
@@ -3489,7 +3490,7 @@ mod tests {
 	#[test]
 	fn encoding_error() {
 		let error = msgs::ErrorMessage {
-			channel_id: [2; 32],
+			channel_id: ChannelId([2; 32]),
 			data: String::from("rust-lightning"),
 		};
 		let encoded_value = error.encode();
@@ -3500,7 +3501,7 @@ mod tests {
 	#[test]
 	fn encoding_warning() {
 		let error = msgs::WarningMessage {
-			channel_id: [2; 32],
+			channel_id: ChannelId([2; 32]),
 			data: String::from("rust-lightning"),
 		};
 		let encoded_value = error.encode();
