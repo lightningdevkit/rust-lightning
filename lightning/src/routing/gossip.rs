@@ -23,6 +23,7 @@ use bitcoin::network::constants::Network;
 use bitcoin::blockdata::constants::genesis_block;
 
 use crate::events::{MessageSendEvent, MessageSendEventsProvider};
+use crate::ln::channel::ChannelId;
 use crate::ln::features::{ChannelFeatures, NodeFeatures, InitFeatures};
 use crate::ln::msgs::{DecodeError, ErrorAction, Init, LightningError, RoutingMessageHandler, NetAddress, MAX_VALUE_MSAT};
 use crate::ln::msgs::{ChannelAnnouncement, ChannelUpdate, NodeAnnouncement, GossipTimestampFilter};
@@ -382,7 +383,7 @@ macro_rules! secp_verify_sig {
 					err: format!("Invalid signature on {} message", $msg_type),
 					action: ErrorAction::SendWarningMessage {
 						msg: msgs::WarningMessage {
-							channel_id: [0; 32],
+							channel_id: ChannelId([0; 32]),
 							data: format!("Invalid signature on {} message", $msg_type),
 						},
 						log_level: Level::Trace,
@@ -400,7 +401,7 @@ macro_rules! get_pubkey_from_node_id {
 				err: format!("Invalid public key on {} message", $msg_type),
 				action: ErrorAction::SendWarningMessage {
 					msg: msgs::WarningMessage {
-						channel_id: [0; 32],
+						channel_id: ChannelId([0; 32]),
 						data: format!("Invalid public key on {} message", $msg_type),
 					},
 					log_level: Level::Trace

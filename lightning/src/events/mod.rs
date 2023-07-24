@@ -1243,7 +1243,7 @@ impl MaybeReadable for Event {
 			},
 			9u8 => {
 				let f = || {
-					let mut channel_id = [0; 32];
+					let mut channel_id = ChannelId([0; 32]);
 					let mut reason = UpgradableRequired(None);
 					let mut user_channel_id_low_opt: Option<u64> = None;
 					let mut user_channel_id_high_opt: Option<u64> = None;
@@ -1266,7 +1266,7 @@ impl MaybeReadable for Event {
 			},
 			11u8 => {
 				let f = || {
-					let mut channel_id = [0; 32];
+					let mut channel_id = ChannelId([0; 32]);
 					let mut transaction = Transaction{ version: 2, lock_time: PackedLockTime::ZERO, input: Vec::new(), output: Vec::new() };
 					read_tlv_fields!(reader, {
 						(0, channel_id, required),
@@ -1371,7 +1371,7 @@ impl MaybeReadable for Event {
 			},
 			25u8 => {
 				let f = || {
-					let mut prev_channel_id = [0; 32];
+					let mut prev_channel_id = ChannelId([0; 32]);
 					let mut failed_next_destination_opt = UpgradableRequired(None);
 					read_tlv_fields!(reader, {
 						(0, prev_channel_id, required),
@@ -1387,7 +1387,7 @@ impl MaybeReadable for Event {
 			27u8 => Ok(None),
 			29u8 => {
 				let f = || {
-					let mut channel_id = [0; 32];
+					let mut channel_id = ChannelId([0; 32]);
 					let mut user_channel_id: u128 = 0;
 					let mut counterparty_node_id = RequiredWrapper(None);
 					let mut channel_type = RequiredWrapper(None);
@@ -1409,7 +1409,7 @@ impl MaybeReadable for Event {
 			},
 			31u8 => {
 				let f = || {
-					let mut channel_id = [0; 32];
+					let mut channel_id = ChannelId([0; 32]);
 					let mut user_channel_id: u128 = 0;
 					let mut former_temporary_channel_id = None;
 					let mut counterparty_node_id = RequiredWrapper(None);
