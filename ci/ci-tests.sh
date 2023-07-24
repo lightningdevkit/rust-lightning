@@ -40,12 +40,41 @@ echo -e "\n\nBuilding and testing all workspace crates..."
 cargo build --verbose --color always
 cargo test --verbose --color always
 
-echo -e "\n\nBuilding with all Log-Limiting features"
-pushd lightning
-grep '^max_level_' Cargo.toml | awk '{ print $1 }'| while read -r FEATURE; do
-	cargo build --verbose --color always --features "$FEATURE"
-done
+echo -e "\n\nBuilding and testing Block Sync Clients with features"
+pushd lightning-block-sync
+cargo build --verbose --color always --features rest-client
+cargo test --verbose --color always --features rest-client
+cargo build --verbose --color always --features rpc-client
+cargo test --verbose --color always --features rpc-client
+cargo build --verbose --color always --features rpc-client,rest-client
+cargo test --verbose --color always --features rpc-client,rest-client
+cargo build --verbose --color always --features rpc-client,rest-client,tokio
+cargo test --verbose --color always --features rpc-client,rest-client,tokio
 popd
+
+if [[ $RUSTC_MINOR_VERSION -gt 67 && "$HOST_PLATFORM" != *windows* ]]; then
+	echo -e "\n\nBuilding and testing Transaction Sync Clients with features"
+	pushd lightning-transaction-sync
+	cargo build --verbose --color always --features esplora-blocking
+	cargo test --verbose --color always --features esplora-blocking
+	cargo build --verbose --color always --features esplora-async
+	cargo test --verbose --color always --features esplora-async
+	cargo build --verbose --color always --features esplora-async-https
+	cargo test --verbose --color always --features esplora-async-https
+	popd
+fi
+
+echo -e "\n\nTest futures builds"
+pushd lightning-background-processor
+cargo test --verbose --color always --features futures
+popd
+
+if [ "$RUSTC_MINOR_VERSION" -gt 55 ]; then
+	echo -e "\n\nTest Custom Message Macros"
+	pushd lightning-custom-message
+	cargo test --verbose --color always
+	popd
+fi
 
 if [ "$RUSTC_MINOR_VERSION" -gt 51 ]; then # Current `object` MSRV, subject to change
 	echo -e "\n\nTest backtrace-debug builds"
@@ -53,6 +82,13 @@ if [ "$RUSTC_MINOR_VERSION" -gt 51 ]; then # Current `object` MSRV, subject to c
 	cargo test --verbose --color always --features backtrace
 	popd
 fi
+
+echo -e "\n\nBuilding with all Log-Limiting features"
+pushd lightning
+grep '^max_level_' Cargo.toml | awk '{ print $1 }'| while read -r FEATURE; do
+	cargo build --verbose --color always --features "$FEATURE"
+done
+popd
 
 echo -e "\n\nTesting no-std flags in various combinations"
 for DIR in lightning lightning-invoice lightning-rapid-gossip-sync; do
@@ -94,42 +130,6 @@ popd
 if [ -f "$(which arm-none-eabi-gcc)" ]; then
 	pushd no-std-check
 	cargo build --target=thumbv7m-none-eabi
-	popd
-fi
-
-echo -e "\n\nBuilding and testing Block Sync Clients with features"
-pushd lightning-block-sync
-cargo build --verbose --color always --features rest-client
-cargo test --verbose --color always --features rest-client
-cargo build --verbose --color always --features rpc-client
-cargo test --verbose --color always --features rpc-client
-cargo build --verbose --color always --features rpc-client,rest-client
-cargo test --verbose --color always --features rpc-client,rest-client
-cargo build --verbose --color always --features rpc-client,rest-client,tokio
-cargo test --verbose --color always --features rpc-client,rest-client,tokio
-popd
-
-if [[ $RUSTC_MINOR_VERSION -gt 67 && "$HOST_PLATFORM" != *windows* ]]; then
-	echo -e "\n\nBuilding and testing Transaction Sync Clients with features"
-	pushd lightning-transaction-sync
-	cargo build --verbose --color always --features esplora-blocking
-	cargo test --verbose --color always --features esplora-blocking
-	cargo build --verbose --color always --features esplora-async
-	cargo test --verbose --color always --features esplora-async
-	cargo build --verbose --color always --features esplora-async-https
-	cargo test --verbose --color always --features esplora-async-https
-	popd
-fi
-
-echo -e "\n\nTest futures builds"
-pushd lightning-background-processor
-cargo test --verbose --color always --features futures
-popd
-
-if [ "$RUSTC_MINOR_VERSION" -gt 55 ]; then
-	echo -e "\n\nTest Custom Message Macros"
-	pushd lightning-custom-message
-	cargo test --verbose --color always
 	popd
 fi
 
