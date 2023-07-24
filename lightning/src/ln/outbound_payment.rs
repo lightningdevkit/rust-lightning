@@ -47,6 +47,7 @@ pub(crate) enum PendingOutboundPayment {
 		payment_secret: Option<PaymentSecret>,
 		payment_metadata: Option<Vec<u8>>,
 		keysend_preimage: Option<PaymentPreimage>,
+		custom_tlvs: Vec<(u64, Vec<u8>)>,
 		pending_amt_msat: u64,
 		/// Used to track the fee paid. Only present if the payment was serialized on 0.0.103+.
 		pending_fee_msat: Option<u64>,
@@ -804,7 +805,8 @@ impl OutboundPayments {
 				hash_map::Entry::Occupied(mut payment) => {
 					let res = match payment.get() {
 						PendingOutboundPayment::Retryable {
-							total_msat, keysend_preimage, payment_secret, payment_metadata, pending_amt_msat, ..
+							total_msat, keysend_preimage, payment_secret, payment_metadata,
+							custom_tlvs, pending_amt_msat, ..
 						} => {
 							let retry_amt_msat = route.get_total_amount();
 							if retry_amt_msat + *pending_amt_msat > *total_msat * (100 + RETRY_OVERFLOW_PERCENTAGE) / 100 {
@@ -815,7 +817,7 @@ impl OutboundPayments {
 							(*total_msat, RecipientOnionFields {
 									payment_secret: *payment_secret,
 									payment_metadata: payment_metadata.clone(),
-									custom_tlvs: Vec::new(),
+									custom_tlvs: custom_tlvs.clone(),
 								}, *keysend_preimage)
 						},
 						PendingOutboundPayment::Legacy { .. } => {
@@ -1014,6 +1016,7 @@ impl OutboundPayments {
 					payment_secret: recipient_onion.payment_secret,
 					payment_metadata: recipient_onion.payment_metadata,
 					keysend_preimage,
+					custom_tlvs: recipient_onion.custom_tlvs,
 					starting_block_height: best_block_height,
 					total_msat: route.get_total_amount(),
 				});
@@ -1463,6 +1466,7 @@ impl_writeable_tlv_based_enum_upgradable!(PendingOutboundPayment,
 		(6, total_msat, required),
 		(7, payment_metadata, option),
 		(8, pending_amt_msat, required),
+		(9, custom_tlvs, optional_vec),
 		(10, starting_block_height, required),
 		(not_written, retry_strategy, (static_value, None)),
 		(not_written, attempts, (static_value, PaymentAttempts::new())),
