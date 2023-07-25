@@ -885,6 +885,22 @@ mod tests {
 		fn disconnect_socket(&mut self) {}
 	}
 
+	#[cfg(not(c_bindings))]
+	type ChannelManager =
+		channelmanager::ChannelManager<
+			Arc<ChainMonitor>,
+			Arc<test_utils::TestBroadcaster>,
+			Arc<KeysManager>,
+			Arc<KeysManager>,
+			Arc<KeysManager>,
+			Arc<test_utils::TestFeeEstimator>,
+			Arc<DefaultRouter<
+				Arc<NetworkGraph<Arc<test_utils::TestLogger>>>,
+				Arc<test_utils::TestLogger>,
+				Arc<Mutex<TestScorer>>>
+			>,
+			Arc<test_utils::TestLogger>>;
+	#[cfg(c_bindings)]
 	type ChannelManager =
 		channelmanager::ChannelManager<
 			Arc<ChainMonitor>,
@@ -897,7 +913,6 @@ mod tests {
 				Arc<NetworkGraph<Arc<test_utils::TestLogger>>>,
 				Arc<test_utils::TestLogger>,
 				Arc<Mutex<TestScorer>>,
-				(),
 				TestScorer>
 			>,
 			Arc<test_utils::TestLogger>>;
@@ -1034,9 +1049,10 @@ mod tests {
 	}
 
 	impl Score for TestScorer {
+		#[cfg(not(c_bindings))]
 		type ScoreParams = ();
 		fn channel_penalty_msat(
-			&self, _short_channel_id: u64, _source: &NodeId, _target: &NodeId, _usage: ChannelUsage, _score_params: &Self::ScoreParams
+			&self, _short_channel_id: u64, _source: &NodeId, _target: &NodeId, _usage: ChannelUsage, _score_params: &lightning::routing::scoring::ProbabilisticScoringFeeParameters
 		) -> u64 { unimplemented!(); }
 
 		fn payment_path_failed(&mut self, actual_path: &Path, actual_short_channel_id: u64) {
@@ -1149,7 +1165,7 @@ mod tests {
 			let network_graph = Arc::new(NetworkGraph::new(network, logger.clone()));
 			let scorer = Arc::new(Mutex::new(TestScorer::new()));
 			let seed = [i as u8; 32];
-			let router = Arc::new(DefaultRouter::new(network_graph.clone(), logger.clone(), seed, scorer.clone(), ()));
+			let router = Arc::new(DefaultRouter::new(network_graph.clone(), logger.clone(), seed, scorer.clone(), Default::default()));
 			let chain_source = Arc::new(test_utils::TestChainSource::new(Network::Bitcoin));
 			let persister = Arc::new(FilesystemPersister::new(format!("{}_persister_{}", &persist_dir, i)));
 			let now = Duration::from_secs(genesis_block.header.time as u64);

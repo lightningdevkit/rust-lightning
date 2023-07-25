@@ -464,6 +464,8 @@ impl InvoiceRequest {
 
 	/// Signature of the invoice request using [`payer_id`].
 	///
+	/// This is not exported to bindings users as Signature is not yet mapped.
+	///
 	/// [`payer_id`]: Self::payer_id
 	pub fn signature(&self) -> Signature {
 		self.signature
