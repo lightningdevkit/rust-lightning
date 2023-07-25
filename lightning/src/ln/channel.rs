@@ -51,7 +51,6 @@ use core::ops::Deref;
 #[cfg(any(test, fuzzing, debug_assertions))]
 use crate::sync::Mutex;
 use bitcoin::hashes::hex::ToHex;
-use std::io::Read;
 
 #[cfg(test)]
 pub struct ChannelValueStat {
@@ -623,7 +622,7 @@ impl Writeable for ChannelId {
 }
 
 impl Readable for ChannelId {
-	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+	fn read<R: io::Read>(r: &mut R) -> Result<Self, DecodeError> {
 		let buf: [u8; 32] = Readable::read(r)?;
 		Ok(ChannelId(buf))
 	}
