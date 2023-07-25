@@ -152,6 +152,7 @@ pub struct ChannelHandshakeConfig {
 	/// If set, we attempt to negotiate the `anchors_zero_fee_htlc_tx`option for all future
 	/// channels. This feature requires having a reserve of onchain funds readily available to bump
 	/// transactions in the event of a channel force close to avoid the possibility of losing funds.
+	/// The level of reserve maintained might follow the recommendations in [`bump_transaction`].
 	///
 	/// Note that if you wish accept inbound channels with anchor outputs, you must enable
 	/// [`UserConfig::manually_accept_inbound_channels`] and manually accept them with

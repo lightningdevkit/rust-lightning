@@ -11,6 +11,58 @@
 //!
 //! [`Event`]: crate::events::Event
 
+//! LDK offers the ability to its users to open Lightning [anchor-output](https://bitcoinops.org/en/topics/anchor-outputs/)
+//! channels (`option_anchors_zero_fee_htlc_tx`) with its counterparties.
+//!
+//! Anchor output channels are requiring from the user the provisioning and maintenance of fee-bumping reserves to accommodate
+//! fee rate increase to the commitment (via a Child-Pay-For-Parent) or the second-stage HTLC transactions (via Replace-by-Fee).
+//! Those fee-bumping reserves should be a collection of UTXOs, of which the state and signing capabilites should be maintained
+//! on a "hot" host. A "hot" host is a computing machine with 24/7 Internet connectivity as fee-bumping UTXOs might need to be
+//! signed as soon as a pending HTLC is detected. A LDK user can implement management of fee-bumping reserves through the
+//! [`CoinSelectionSource`] and [`WalletSource`] traits.
+//!
+//! The total value of the fee-bumping reserve must be high enough to ensure channel transactions are confirmed
+//! in a timely fashion, even in the face of full mempool and high fee rates. Transactions might have a dynamic
+//! weight due to carrying HTLCs.
+//!
+//! A _predictive_ worst-case `feerate_per_kw` based on historically observed network mempools congestion must be selected.
+//! I.e the prediction has to include an additional safety margin. A factor of 2 is a conservative estimation.
+//!
+//! The user is always involved in any decision to open an anchor channel and in the context of fee-bumping reserves
+//! management the user should track them as `current_opened_channels` (the outcome of `ChannelManager::list_channels()`).
+//! As of 0.0.116 release, LDK does not have a max number of opened channels enforced by default.
+//!
+//! The maximum number of HTLC outputs per-commitment transaction on both directions must be selected, i.e
+//! `max_htlc_allsides`.  As of 0.0.116 release, LDK has a BOLT3's `max_accepted_htlcs` of 50 (`DEFAULT_MAX_HTLCS`)
+//! and the value can be adjusted with the config setting `our_max_accepted_htlcs`. There is no LDK mechanism to
+//! limit the number of forward HTLCs (i.e offered HTLC outputs on a commitment transaction). As such `max_htlc_allsides`
+//! is `our_max_accepted_htlcs` + `483` (BOLT3 maximum for outgoing HTLCs).
+//!
+//! Each channel included in the `current_opened_channels` set has a combined transaction weight surface computed in
+//! the following (according to [BOLT3 annex](https://github.com/lightning/bolts/blob/master/03-transactions.md#appendix-a-expected-weights):
+//! - `a`: 900 WU for the base commitment fields with the 4 outputs (`output_paying_to_remote`, `output_paying_to_local`, `output_anchor`, `output_anchor`) present
+//! - `b`: 172 WU * `max_htlc_allsides`
+//! - `c`: 666 WU * `our_max_accepted_htlcs`
+//! - `d`: 706 WU * 483
+//!
+//! If the Lightning node does not accept HTLC routing (i.e incoming HTLCs), the compomnent `c` can be assigned a 0 value.
+//!
+//! The sum of `a` + `b` + `c` + `d` is called `max_channel_weight_surface`, a worst-case estimation of the transaction
+//! weight surface to fee-bump.
+//!
+//! To obtain the amount in satoshis that must be maintained as fee-bumping reserves, the following equation can be resolved:
+//!
+//!	`current_opened_channel` * `max_channel_weight_surface` * `worst_case_feerate_per_kw` / 1000
+//!
+//! The `worst_case_feerate_per_kw` is a conservative estimation of the level of fee-bumping reserves that must be
+//! maintained. A Lightning node operator may ponder this level of reserves with its subjective timevalue cost of the
+//! immobilized satoshis capital.
+//!
+//! Those fee-bumping reserves recommendations do not assume Taproot channel type usage, where the weight of the channel
+//! transactions weight are modified due to P2TR scriptpubkeys and corresponding witness spends. Those recommendations
+//! should be also revised in function of interactions with transaction standardness policy and its evolutions (e.g number
+//! of transactions allowed to be relayed as a package and as such how many LN commitment one CPFP can cover).
+
 use alloc::collections::BTreeMap;
 use core::ops::Deref;
 
