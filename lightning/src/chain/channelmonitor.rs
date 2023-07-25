@@ -280,7 +280,7 @@ impl HolderSignedTx {
 
 /// We use this to track static counterparty commitment transaction data and to generate any
 /// justice or 2nd-stage preimage/timeout transactions.
-#[derive(PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 struct CounterpartyCommitmentParameters {
 	counterparty_delayed_payment_base_key: PublicKey,
 	counterparty_htlc_base_key: PublicKey,
@@ -334,7 +334,7 @@ impl Readable for CounterpartyCommitmentParameters {
 /// observed, as well as the transaction causing it.
 ///
 /// Used to determine when the on-chain event can be considered safe from a chain reorganization.
-#[derive(PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 struct OnchainEventEntry {
 	txid: Txid,
 	height: u32,
@@ -377,7 +377,7 @@ type CommitmentTxCounterpartyOutputInfo = Option<(u32, u64)>;
 
 /// Upon discovering of some classes of onchain tx by ChannelMonitor, we may have to take actions on it
 /// once they mature to enough confirmations (ANTI_REORG_DELAY)
-#[derive(PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 enum OnchainEvent {
 	/// An outbound HTLC failing after a transaction is confirmed. Used
 	///  * when an outbound HTLC output is spent by us after the HTLC timed out
@@ -682,7 +682,7 @@ impl Balance {
 }
 
 /// An HTLC which has been irrevocably resolved on-chain, and has reached ANTI_REORG_DELAY.
-#[derive(PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 struct IrrevocablyResolvedHTLC {
 	commitment_tx_output_idx: Option<u32>,
 	/// The txid of the transaction which resolved the HTLC, this may be a commitment (if the HTLC
@@ -750,7 +750,14 @@ pub struct ChannelMonitor<Signer: WriteableEcdsaChannelSigner> {
 	pub(super) inner: Mutex<ChannelMonitorImpl<Signer>>,
 }
 
-#[derive(PartialEq)]
+impl<Signer: WriteableEcdsaChannelSigner> Clone for ChannelMonitor<Signer> where Signer: Clone {
+	fn clone(&self) -> Self {
+		let inner = self.inner.lock().unwrap().clone();
+		ChannelMonitor::from_impl(inner)
+	}
+}
+
+#[derive(Clone, PartialEq)]
 pub(crate) struct ChannelMonitorImpl<Signer: WriteableEcdsaChannelSigner> {
 	latest_update_id: u64,
 	commitment_transaction_number_obscure_factor: u64,
