@@ -10242,7 +10242,7 @@ mod tests {
 
 		// If we provide a channel_id not associated with the peer, we should get an error and no updates
 		// should be applied to ensure update atomicity as specified in the API docs.
-		let bad_channel_id = [10; 32];
+		let bad_channel_id = ChannelId([10; 32]);
 		let current_fee = nodes[0].node.list_channels()[0].config.unwrap().forwarding_fee_proportional_millionths;
 		let new_fee = current_fee + 100;
 		assert!(
