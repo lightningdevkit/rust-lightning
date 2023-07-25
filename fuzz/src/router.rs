@@ -12,6 +12,7 @@ use bitcoin::blockdata::transaction::TxOut;
 use bitcoin::hash_types::BlockHash;
 
 use lightning::chain::transaction::OutPoint;
+use lightning::ln::channel::ChannelId;
 use lightning::ln::channelmanager::{self, ChannelDetails, ChannelCounterparty};
 use lightning::ln::msgs;
 use lightning::routing::gossip::{NetworkGraph, RoutingFees};
