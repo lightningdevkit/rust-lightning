@@ -606,7 +606,7 @@ impl_writeable_tlv_based!(PendingChannelMonitorUpdate, {
 /// A unique 32-byte identifier for a channel.
 /// 
 /// This is not exported to bindings users as we just use [u8; 32] directly
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug)]
 pub enum ChannelId {
 	/// Common case: channel ID based on the ID of the funding TX.
 	FundingTxBased([u8; 32]),
@@ -646,6 +646,32 @@ impl ChannelId {
 	pub fn serialized_length(&self) -> usize {
 		self.bytes().serialized_length()
 	}
+}
+
+impl PartialEq for ChannelId {
+    fn eq(&self, other: &Self) -> bool {
+        *self.bytes() == *other.bytes()
+    }
+}
+
+impl Eq for ChannelId {}
+
+impl PartialOrd for ChannelId {
+    fn partial_cmp(&self, other: &Self) -> Option<cmp::Ordering> {
+        self.bytes().partial_cmp(other.bytes())
+    }
+}
+
+impl Ord for ChannelId {
+    fn cmp(&self, other: &Self) -> cmp::Ordering {
+        self.bytes().cmp(other.bytes())
+    }
+}
+
+impl core::hash::Hash for ChannelId {
+    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
+        self.bytes().hash(state);
+    }
 }
 
 impl Writeable for ChannelId {
@@ -7520,7 +7546,7 @@ mod tests {
 use crate::ln::PaymentHash;
 use crate::ln::channelmanager::{self, HTLCSource, PaymentId};
 use crate::ln::channel::InitFeatures;
-use crate::ln::channel::{Channel, InboundHTLCOutput, OutboundV1Channel, InboundV1Channel, OutboundHTLCOutput, InboundHTLCState, OutboundHTLCState, HTLCCandidate, HTLCInitiator, commit_tx_fee_msat};
+use crate::ln::channel::{Channel, ChannelId, InboundHTLCOutput, OutboundV1Channel, InboundV1Channel, OutboundHTLCOutput, InboundHTLCState, OutboundHTLCState, HTLCCandidate, HTLCInitiator, commit_tx_fee_msat};
 use crate::ln::channel::{MAX_FUNDING_SATOSHIS_NO_WUMBO, TOTAL_BITCOIN_SUPPLY_SATOSHIS, MIN_THEIR_CHAN_RESERVE_SATOSHIS};
 use crate::ln::features::ChannelTypeFeatures;
 use crate::ln::msgs::{ChannelUpdate, DecodeError, UnsignedChannelUpdate, MAX_VALUE_MSAT};
@@ -7554,6 +7580,35 @@ use crate::ln::chan_utils::{htlc_success_tx_weight, htlc_timeout_tx_weight};
 		fn get_est_sat_per_1000_weight(&self, _: ConfirmationTarget) -> u32 {
 			self.fee_est
 		}
+	}
+
+	#[test]
+	fn test_channel_id_new_bytes() {
+		let data: [u8; 32] = [2; 32];
+		{
+			let channel_id = ChannelId::new_funding_tx_based(data.clone());
+			assert_eq!(*channel_id.bytes(), data.clone());
+		}
+		{
+			let channel_id = ChannelId::new_temporary(data.clone());
+			assert_eq!(*channel_id.bytes(), data.clone());
+		}
+	}
+
+	#[test]
+	fn test_channel_id_equals() {
+		let channel_id11 = ChannelId::new_funding_tx_based([2; 32]);
+		let channel_id12 = ChannelId::new_funding_tx_based([2; 32]);
+		let channel_id21 = ChannelId::new_funding_tx_based([42; 32]);
+		assert_eq!(channel_id11, channel_id12);
+		assert_ne!(channel_id11, channel_id21);
+	}
+
+	#[test]
+	fn test_channel_id_equals_different_type_same_content() {
+		let channel_id1 = ChannelId::new_funding_tx_based([2; 32]);
+		let channel_id2 = ChannelId::new_temporary([2; 32]);
+		assert_eq!(channel_id1, channel_id2);
 	}
 
 	#[test]
