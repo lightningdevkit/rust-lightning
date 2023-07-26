@@ -42,7 +42,7 @@ macro_rules! log_bytes {
 pub(crate) struct DebugFundingChannelId<'a>(pub &'a Txid, pub u16);
 impl<'a> core::fmt::Display for DebugFundingChannelId<'a> {
 	fn fmt(&self, f: &mut core::fmt::Formatter) -> Result<(), core::fmt::Error> {
-		for i in (OutPoint { txid: self.0.clone(), index: self.1 }).to_channel_id().iter() {
+		for i in (OutPoint { txid: self.0.clone(), index: self.1 }).to_channel_id().0.iter() {
 			write!(f, "{:02x}", i)?;
 		}
 		Ok(())
@@ -57,7 +57,7 @@ macro_rules! log_funding_channel_id {
 pub(crate) struct DebugFundingInfo<'a, T: 'a>(pub &'a (OutPoint, T));
 impl<'a, T> core::fmt::Display for DebugFundingInfo<'a, T> {
 	fn fmt(&self, f: &mut core::fmt::Formatter) -> Result<(), core::fmt::Error> {
-		DebugBytes(&(self.0).0.to_channel_id()[..]).fmt(f)
+		DebugBytes(&(self.0).0.to_channel_id().0[..]).fmt(f)
 	}
 }
 macro_rules! log_funding_info {
