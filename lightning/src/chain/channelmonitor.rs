@@ -38,7 +38,7 @@ use crate::ln::{PaymentHash, PaymentPreimage};
 use crate::ln::msgs::DecodeError;
 use crate::ln::chan_utils;
 use crate::ln::chan_utils::{CommitmentTransaction, CounterpartyCommitmentSecrets, HTLCOutputInCommitment, HTLCClaim, ChannelTransactionParameters, HolderCommitmentTransaction, TxCreationKeys};
-use crate::ln::channelmanager::{HTLCSource, SentHTLCId};
+use crate::ln::channelmanager::{HTLCSource, SentHTLCId, HTLCPreviousHopData};
 use crate::chain;
 use crate::chain::{BestBlock, WatchedOutput};
 use crate::chain::chaininterface::{BroadcasterInterface, FeeEstimator, LowerBoundedFeeEstimator};
@@ -243,6 +243,15 @@ pub const ANTI_REORG_DELAY: u32 = 6;
 /// in a race condition between the user connecting a block (which would fail it) and the user
 /// providing us the preimage (which would claim it).
 pub(crate) const HTLC_FAIL_BACK_BUFFER: u32 = CLTV_CLAIM_BUFFER + LATENCY_GRACE_PERIOD_BLOCKS;
+/// Number of blocks before an inbound HTLC expires at which we fail it backwards.
+///
+/// If we have forwarded an HTLC to a peer and they have not claimed it on or off-chain by the
+/// time the previous hop's HTLC timeout expires, we're probably going to lose the inbound HTLC.
+/// Instead of also losing the channel, we fail the HTLC backwards.
+///
+/// To give us some buffer in case we're slow to process blocks, we fail a few blocks before the
+/// timeout officially expires to ensure we fail back before our counterparty force closes.
+pub(crate) const TIMEOUT_FAIL_BACK_BUFFER: u32 = 3;
 
 // TODO(devrandom) replace this with HolderCommitmentTransaction
 #[derive(Clone, PartialEq, Eq)]
@@ -3514,6 +3523,61 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				claimable_outpoints.append(&mut new_outpoints);
 			}
 		}
+
+		// Fail back HTLCs on backwards channels if they expire within `TIMEOUT_FAIL_BACK_BUFFER`
+		// blocks. If we haven't seen the preimage for an HTLC by the time the previous hop's
+		// timeout expires, we've lost that HTLC, so we might as well fail it back instead of having our
+		// counterparty force-close the channel.
+		let height = self.best_block.height();
+		macro_rules! fail_soon_to_expire_htlcs {
+			($htlcs: expr) => {{
+				for (htlc, source_opt) in $htlcs {
+					// Only check forwarded HTLCs' previous hops
+					let source = match source_opt {
+						Some(source) => source,
+						None => continue,
+					};
+					let cltv_expiry = match source {
+						HTLCSource::PreviousHopData(HTLCPreviousHopData { cltv_expiry: Some(cltv_expiry), .. }) => *cltv_expiry,
+						_ => continue,
+					};
+					if cltv_expiry <= height + TIMEOUT_FAIL_BACK_BUFFER {
+						let duplicate_event = self.pending_monitor_events.iter().any(
+							|update| if let &MonitorEvent::HTLCEvent(ref upd) = update {
+								upd.source == *source
+							} else { false });
+						if !duplicate_event {
+							log_debug!(logger, "Failing back HTLC {} upstream to preserve the \
+								channel as the forward HTLC hasn't resolved and our backward HTLC \
+								expires soon at {}", log_bytes!(htlc.payment_hash.0), cltv_expiry);
+							self.pending_monitor_events.push(MonitorEvent::HTLCEvent(HTLCUpdate {
+								source: source.clone(),
+								payment_preimage: None,
+								payment_hash: htlc.payment_hash,
+								htlc_value_satoshis: Some(htlc.amount_msat / 1000),
+								awaiting_downstream_confirmation: true,
+							}));
+						}
+					}
+				}
+			}}
+		}
+
+		let current_holder_htlcs = self.current_holder_commitment_tx.htlc_outputs.iter()
+			.map(|&(ref a, _, ref b)| (a, b.as_ref()));
+		fail_soon_to_expire_htlcs!(current_holder_htlcs);
+
+		if let Some(ref txid) = self.current_counterparty_commitment_txid {
+			if let Some(ref htlc_outputs) = self.counterparty_claimable_outpoints.get(txid) {
+				fail_soon_to_expire_htlcs!(htlc_outputs.iter().map(|&(ref a, ref b)| (a, (b.as_ref().clone()).map(|boxed| &**boxed))));
+			}
+		};
+
+		if let Some(ref txid) = self.prev_counterparty_commitment_txid {
+			if let Some(ref htlc_outputs) = self.counterparty_claimable_outpoints.get(txid) {
+				fail_soon_to_expire_htlcs!(htlc_outputs.iter().map(|&(ref a, ref b)| (a, (b.as_ref().clone()).map(|boxed| &**boxed))));
+			}
+		};
 
 		// Find which on-chain events have reached their confirmation threshold.
 		let onchain_events_awaiting_threshold_conf =

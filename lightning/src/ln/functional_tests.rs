@@ -14,7 +14,7 @@
 use crate::chain;
 use crate::chain::{ChannelMonitorUpdateStatus, Confirm, Listen, Watch};
 use crate::chain::chaininterface::LowerBoundedFeeEstimator;
-use crate::chain::channelmonitor;
+use crate::chain::channelmonitor::{self, TIMEOUT_FAIL_BACK_BUFFER};
 use crate::chain::channelmonitor::{CLTV_CLAIM_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS, ANTI_REORG_DELAY};
 use crate::chain::transaction::OutPoint;
 use crate::sign::{ChannelSigner, EcdsaChannelSigner, EntropySource, SignerProvider};
@@ -2214,6 +2214,120 @@ fn channel_reserve_in_flight_removes() {
 	claim_payment(&nodes[0], &[&nodes[1]], payment_preimage_3);
 }
 
+enum PostFailBackAction {
+	TimeoutOnChain,
+	ClaimOnChain,
+	FailOffChain,
+	ClaimOffChain,
+}
+
+#[test]
+fn test_fail_back_before_backwards_timeout() {
+	do_test_fail_back_before_backwards_timeout(PostFailBackAction::TimeoutOnChain);
+	do_test_fail_back_before_backwards_timeout(PostFailBackAction::ClaimOnChain);
+	do_test_fail_back_before_backwards_timeout(PostFailBackAction::FailOffChain);
+	do_test_fail_back_before_backwards_timeout(PostFailBackAction::ClaimOffChain);
+}
+
+fn do_test_fail_back_before_backwards_timeout(post_fail_back_action: PostFailBackAction) {
+	// Test that we fail an HTLC upstream if we are still waiting for confirmation downstream
+	// just before the upstream timeout expires
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
+	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+
+	create_announced_chan_between_nodes(&nodes, 0, 1);
+	let chan_2 = create_announced_chan_between_nodes(&nodes, 1, 2);
+
+	connect_blocks(&nodes[0], 2*CHAN_CONFIRM_DEPTH + 1 - nodes[0].best_block_info().1);
+	connect_blocks(&nodes[1], 2*CHAN_CONFIRM_DEPTH + 1 - nodes[1].best_block_info().1);
+	connect_blocks(&nodes[2], 2*CHAN_CONFIRM_DEPTH + 1 - nodes[2].best_block_info().1);
+
+	let (payment_preimage, payment_hash, _) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 3_000_000);
+
+	// Force close downstream with timeout
+	nodes[1].node.force_close_broadcasting_latest_txn(&chan_2.2, &nodes[2].node.get_our_node_id()).unwrap();
+	check_added_monitors!(nodes[1], 1);
+	check_closed_broadcast!(nodes[1], true);
+
+	connect_blocks(&nodes[1], TEST_FINAL_CLTV + LATENCY_GRACE_PERIOD_BLOCKS + 1);
+	let node_1_txn = test_txn_broadcast(&nodes[1], &chan_2, None, HTLCType::TIMEOUT);
+	check_closed_event(&nodes[1], 1, ClosureReason::HolderForceClosed, false,
+		&[nodes[2].node.get_our_node_id(); 1], 100_000);
+
+	// Nothing is confirmed for a while
+	connect_blocks(&nodes[1], MIN_CLTV_EXPIRY_DELTA as u32 - LATENCY_GRACE_PERIOD_BLOCKS - TIMEOUT_FAIL_BACK_BUFFER);
+
+	// Check that nodes[1] fails the HTLC upstream
+	expect_pending_htlcs_forwardable_and_htlc_handling_failed!(nodes[1], vec![HTLCDestination::NextHopChannel { node_id: Some(nodes[2].node.get_our_node_id()), channel_id: chan_2.2 }]);
+	check_added_monitors!(nodes[1], 1);
+	let events = nodes[1].node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 1);
+	let (update_fail, commitment_signed) = match events[0] {
+		MessageSendEvent::UpdateHTLCs { node_id: _, updates: msgs::CommitmentUpdate { ref update_add_htlcs, ref update_fulfill_htlcs, ref update_fail_htlcs, ref update_fail_malformed_htlcs, ref update_fee, ref commitment_signed } } => {
+			assert!(update_add_htlcs.is_empty());
+			assert!(update_fulfill_htlcs.is_empty());
+			assert_eq!(update_fail_htlcs.len(), 1);
+			assert!(update_fail_malformed_htlcs.is_empty());
+			assert!(update_fee.is_none());
+			(update_fail_htlcs[0].clone(), commitment_signed.clone())
+		},
+		_ => panic!("Unexpected event"),
+	};
+
+	nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &update_fail);
+	commitment_signed_dance!(nodes[0], nodes[1], commitment_signed, false);
+	expect_payment_failed_conditions(&nodes[0], payment_hash, false, PaymentFailedConditions::new().blamed_chan_closed(true));
+
+	// Make sure we handle possible duplicate fails or extra messages after failing back
+	match post_fail_back_action {
+		PostFailBackAction::TimeoutOnChain => {
+			// Confirm nodes[1]'s claim with timeout, make sure we don't fail upstream again
+			mine_transaction(&nodes[1], &node_1_txn[0]); // Commitment
+			mine_transaction(&nodes[1], &node_1_txn[1]); // HTLC timeout
+		},
+		PostFailBackAction::ClaimOnChain => {
+			nodes[2].node.claim_funds(payment_preimage);
+			expect_payment_claimed!(nodes[2], payment_hash, 3_000_000);
+			check_added_monitors!(nodes[2], 1);
+			get_htlc_update_msgs(&nodes[2], &nodes[1].node.get_our_node_id());
+
+			connect_blocks(&nodes[2], TEST_FINAL_CLTV - CLTV_CLAIM_BUFFER + 2);
+			let node_2_txn = test_txn_broadcast(&nodes[2], &chan_2, None, HTLCType::SUCCESS);
+			check_closed_broadcast!(nodes[2], true);
+			check_closed_event(&nodes[2], 1, ClosureReason::CommitmentTxConfirmed, false,
+				&[nodes[1].node.get_our_node_id(); 1], 100_000);
+			check_added_monitors!(nodes[2], 1);
+
+			mine_transaction(&nodes[1], &node_2_txn[0]); // Commitment
+			mine_transaction(&nodes[1], &node_2_txn[1]); // HTLC success
+		},
+		PostFailBackAction::FailOffChain => {
+			nodes[2].node.fail_htlc_backwards(&payment_hash);
+			expect_pending_htlcs_forwardable_and_htlc_handling_failed!(nodes[2], vec![HTLCDestination::FailedPayment { payment_hash: payment_hash.clone() }]);
+			check_added_monitors!(nodes[2], 1);
+			let commitment_update = get_htlc_update_msgs(&nodes[2], &nodes[1].node.get_our_node_id());
+			let update_fail = commitment_update.update_fail_htlcs[0].clone();
+
+			nodes[1].node.handle_update_fail_htlc(&nodes[2].node.get_our_node_id(), &update_fail);
+			let err_msg = get_err_msg(&nodes[1], &nodes[2].node.get_our_node_id());
+			assert_eq!(err_msg.channel_id, chan_2.2);
+		},
+		PostFailBackAction::ClaimOffChain => {
+			nodes[2].node.claim_funds(payment_preimage);
+			expect_payment_claimed!(nodes[2], payment_hash, 3_000_000);
+			check_added_monitors!(nodes[2], 1);
+			let commitment_update = get_htlc_update_msgs(&nodes[2], &nodes[1].node.get_our_node_id());
+			let update_fulfill = commitment_update.update_fulfill_htlcs[0].clone();
+
+			nodes[1].node.handle_update_fulfill_htlc(&nodes[2].node.get_our_node_id(), &update_fulfill);
+			let err_msg = get_err_msg(&nodes[1], &nodes[2].node.get_our_node_id());
+			assert_eq!(err_msg.channel_id, chan_2.2);
+		},
+	};
+}
+
 #[test]
 fn channel_monitor_network_test() {
 	// Simple test which builds a network of ChannelManagers, connects them to each other, and
@@ -2310,7 +2424,7 @@ fn channel_monitor_network_test() {
 	let node2_commitment_txid;
 	{
 		let node_txn = test_txn_broadcast(&nodes[2], &chan_3, None, HTLCType::NONE);
-		connect_blocks(&nodes[2], TEST_FINAL_CLTV + LATENCY_GRACE_PERIOD_BLOCKS + MIN_CLTV_EXPIRY_DELTA as u32 + 1);
+		connect_blocks(&nodes[2], TEST_FINAL_CLTV + LATENCY_GRACE_PERIOD_BLOCKS);
 		test_txn_broadcast(&nodes[2], &chan_3, None, HTLCType::TIMEOUT);
 		node2_commitment_txid = node_txn[0].txid();
 
@@ -3060,9 +3174,9 @@ fn do_test_htlc_on_chain_timeout(connect_style: ConnectStyle) {
 	// Broadcast timeout transaction by B on received output from C's commitment tx on B's chain
 	// Verify that B's ChannelManager is able to detect that HTLC is timeout by its own tx and react backward in consequence
 	mine_transaction(&nodes[1], &commitment_tx[0]);
-	check_closed_event!(&nodes[1], 1, ClosureReason::CommitmentTxConfirmed, false
-		, [nodes[2].node.get_our_node_id()], 100000);
-	connect_blocks(&nodes[1], 200 - nodes[2].best_block_info().1);
+	check_closed_event(&nodes[1], 1, ClosureReason::CommitmentTxConfirmed, false,
+		&[nodes[2].node.get_our_node_id()], 100000);
+	connect_blocks(&nodes[1], 100 - nodes[2].best_block_info().1);
 	let timeout_tx = {
 		let mut txn = nodes[1].tx_broadcaster.txn_broadcast();
 		if nodes[1].connect_style.borrow().skips_blocks() {
