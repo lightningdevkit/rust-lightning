@@ -26,7 +26,7 @@ use crate::ln::chan_utils::{
 use crate::ln::features::ChannelTypeFeatures;
 use crate::ln::PaymentPreimage;
 use crate::prelude::*;
-use crate::sign::{ChannelSigner, EcdsaChannelSigner, SignerProvider, WriteableEcdsaChannelSigner};
+use crate::sign::{EcdsaChannelSigner, SignerProvider, WriteableEcdsaChannelSigner};
 use crate::sync::Mutex;
 use crate::util::logger::Logger;
 
