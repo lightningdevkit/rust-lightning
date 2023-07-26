@@ -860,7 +860,7 @@ macro_rules! get_monitor {
 			for index in 0..2 {
 				if let Ok(mon) = $node.chain_monitor.chain_monitor.get_monitor(
 					$crate::chain::transaction::OutPoint {
-						txid: bitcoin::Txid::from_slice(&$channel_id.0[..]).unwrap(), index
+						txid: bitcoin::Txid::from_slice(&$channel_id.bytes()[..][..]).unwrap(), index
 					})
 				{
 					monitor = Some(mon);

@@ -383,7 +383,7 @@ macro_rules! secp_verify_sig {
 					err: format!("Invalid signature on {} message", $msg_type),
 					action: ErrorAction::SendWarningMessage {
 						msg: msgs::WarningMessage {
-							channel_id: ChannelId([0; 32]),
+							channel_id: ChannelId::new_zero(),
 							data: format!("Invalid signature on {} message", $msg_type),
 						},
 						log_level: Level::Trace,
@@ -401,7 +401,7 @@ macro_rules! get_pubkey_from_node_id {
 				err: format!("Invalid public key on {} message", $msg_type),
 				action: ErrorAction::SendWarningMessage {
 					msg: msgs::WarningMessage {
-						channel_id: ChannelId([0; 32]),
+						channel_id: ChannelId::new_zero(),
 						data: format!("Invalid public key on {} message", $msg_type),
 					},
 					log_level: Level::Trace

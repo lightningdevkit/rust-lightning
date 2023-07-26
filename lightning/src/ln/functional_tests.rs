@@ -1505,7 +1505,7 @@ fn test_fee_spike_violation_fails_htlc() {
 		_ => panic!("Unexpected event"),
 	};
 	nodes[1].logger.assert_log("lightning::ln::channel".to_string(),
-		format!("Attempting to fail HTLC due to fee spike buffer violation in channel {}. Rebalancing is required.", ::hex::encode(raa_msg.channel_id.0)), 1);
+		format!("Attempting to fail HTLC due to fee spike buffer violation in channel {}. Rebalancing is required.", ::hex::encode(raa_msg.channel_id.bytes())), 1);
 
 	check_added_monitors!(nodes[1], 2);
 }
@@ -5737,7 +5737,7 @@ fn test_fail_holding_cell_htlc_upon_free() {
 	// us to surface its failure to the user.
 	chan_stat = get_channel_value_stat!(nodes[0], nodes[1], chan.2);
 	assert_eq!(chan_stat.holding_cell_outbound_amount_msat, 0);
-	nodes[0].logger.assert_log("lightning::ln::channel".to_string(), format!("Freeing holding cell with 1 HTLC updates in channel {}", hex::encode(chan.2.0)), 1);
+	nodes[0].logger.assert_log("lightning::ln::channel".to_string(), format!("Freeing holding cell with 1 HTLC updates in channel {}", hex::encode(chan.2.bytes())), 1);
 
 	// Check that the payment failed to be sent out.
 	let events = nodes[0].node.get_and_clear_pending_events();
@@ -5825,7 +5825,7 @@ fn test_free_and_fail_holding_cell_htlcs() {
 	// to surface its failure to the user. The first payment should succeed.
 	chan_stat = get_channel_value_stat!(nodes[0], nodes[1], chan.2);
 	assert_eq!(chan_stat.holding_cell_outbound_amount_msat, 0);
-	nodes[0].logger.assert_log("lightning::ln::channel".to_string(), format!("Freeing holding cell with 2 HTLC updates in channel {}", hex::encode(chan.2.0)), 1);
+	nodes[0].logger.assert_log("lightning::ln::channel".to_string(), format!("Freeing holding cell with 2 HTLC updates in channel {}", hex::encode(chan.2.bytes())), 1);
 
 	// Check that the second payment failed to be sent out.
 	let events = nodes[0].node.get_and_clear_pending_events();
@@ -7964,11 +7964,11 @@ fn test_can_not_accept_unknown_inbound_channel() {
 	let node_chanmgr = create_node_chanmgrs(2, &node_cfg, &[None, None]);
 	let nodes = create_network(2, &node_cfg, &node_chanmgr);
 
-	let unknown_channel_id = ChannelId([0; 32]);
+	let unknown_channel_id = ChannelId::new_zero();
 	let api_res = nodes[0].node.accept_inbound_channel(&unknown_channel_id, &nodes[1].node.get_our_node_id(), 0);
 	match api_res {
 		Err(APIError::ChannelUnavailable { err }) => {
-			assert_eq!(err, format!("Channel with id {} not found for the passed counterparty node_id {}", log_bytes!(unknown_channel_id.0), nodes[1].node.get_our_node_id()));
+			assert_eq!(err, format!("Channel with id {} not found for the passed counterparty node_id {}", log_bytes!(unknown_channel_id.bytes()[..]), nodes[1].node.get_our_node_id()));
 		},
 		Ok(_) => panic!("It shouldn't be possible to accept an unkown channel"),
 		Err(_) => panic!("Unexpected Error"),
@@ -8973,7 +8973,7 @@ fn test_error_chans_closed() {
 
 	// A null channel ID should close all channels
 	let _chan_4 = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 10001);
-	nodes[0].node.handle_error(&nodes[1].node.get_our_node_id(), &msgs::ErrorMessage { channel_id: ChannelId([0; 32]), data: "ERR".to_owned() });
+	nodes[0].node.handle_error(&nodes[1].node.get_our_node_id(), &msgs::ErrorMessage { channel_id: ChannelId::new_zero(), data: "ERR".to_owned() });
 	check_added_monitors!(nodes[0], 2);
 	check_closed_event!(nodes[0], 2, ClosureReason::CounterpartyForceClosed { peer_msg: UntrustedString("ERR".to_string()) });
 	let events = nodes[0].node.get_and_clear_pending_msg_events();

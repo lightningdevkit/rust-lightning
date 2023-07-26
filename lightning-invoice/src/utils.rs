@@ -627,7 +627,7 @@ where
 	log_trace!(logger, "Considering {} channels for invoice route hints", channels.len());
 	for channel in channels.into_iter().filter(|chan| chan.is_channel_ready) {
 		if channel.get_inbound_payment_scid().is_none() || channel.counterparty.forwarding_info.is_none() {
-			log_trace!(logger, "Ignoring channel {} for invoice route hints", log_bytes!(channel.channel_id.0));
+			log_trace!(logger, "Ignoring channel {} for invoice route hints", log_bytes!(channel.channel_id.bytes()[..]));
 			continue;
 		}
 
@@ -641,7 +641,7 @@ where
 				// If any public channel exists, return no hints and let the sender
 				// look at the public channels instead.
 				log_trace!(logger, "Not including channels in invoice route hints on account of public channel {}",
-					log_bytes!(channel.channel_id.0));
+					log_bytes!(channel.channel_id.bytes()[..]));
 				return vec![].into_iter().take(MAX_CHANNEL_HINTS).map(route_hint_from_channel);
 			}
 		}
@@ -681,18 +681,18 @@ where
 					log_trace!(logger,
 						"Preferring counterparty {} channel {} (SCID {:?}, {} msats) over {} (SCID {:?}, {} msats) for invoice route hints",
 						log_pubkey!(channel.counterparty.node_id),
-						log_bytes!(channel.channel_id.0), channel.short_channel_id,
+						log_bytes!(channel.channel_id.bytes()[..]), channel.short_channel_id,
 						channel.inbound_capacity_msat,
-						log_bytes!(entry.get().channel_id.0), entry.get().short_channel_id,
+						log_bytes!(entry.get().channel_id.bytes()[..]), entry.get().short_channel_id,
 						current_max_capacity);
 					entry.insert(channel);
 				} else {
 					log_trace!(logger,
 						"Preferring counterparty {} channel {} (SCID {:?}, {} msats) over {} (SCID {:?}, {} msats) for invoice route hints",
 						log_pubkey!(channel.counterparty.node_id),
-						log_bytes!(entry.get().channel_id.0), entry.get().short_channel_id,
+						log_bytes!(entry.get().channel_id.bytes()[..]), entry.get().short_channel_id,
 						current_max_capacity,
-						log_bytes!(channel.channel_id.0), channel.short_channel_id,
+						log_bytes!(channel.channel_id.bytes()[..]), channel.short_channel_id,
 						channel.inbound_capacity_msat);
 				}
 			}
@@ -731,14 +731,14 @@ where
 
 			if include_channel {
 				log_trace!(logger, "Including channel {} in invoice route hints",
-					log_bytes!(channel.channel_id.0));
+					log_bytes!(channel.channel_id.bytes()[..]));
 			} else if !has_enough_capacity {
 				log_trace!(logger, "Ignoring channel {} without enough capacity for invoice route hints",
-					log_bytes!(channel.channel_id.0));
+					log_bytes!(channel.channel_id.bytes()[..]));
 			} else {
 				debug_assert!(!channel.is_usable || (has_pub_unconf_chan && !channel.is_public));
 				log_trace!(logger, "Ignoring channel {} with disconnected peer",
-					log_bytes!(channel.channel_id.0));
+					log_bytes!(channel.channel_id.bytes()[..]));
 			}
 
 			include_channel
