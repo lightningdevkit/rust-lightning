@@ -1623,7 +1623,7 @@ fn do_test_intercepted_payment(test: InterceptTest) {
 	assert_eq!(events.len(), 1);
 	let (intercept_id, expected_outbound_amount_msat) = match events[0] {
 		crate::events::Event::HTLCIntercepted {
-			intercept_id, expected_outbound_amount_msat, payment_hash: pmt_hash, inbound_amount_msat, requested_next_hop_scid: short_channel_id
+			intercept_id, expected_outbound_amount_msat, payment_hash: pmt_hash, inbound_amount_msat, requested_next_hop_scid: short_channel_id, ..
 		} => {
 			assert_eq!(pmt_hash, payment_hash);
 			assert_eq!(inbound_amount_msat, route.get_total_amount() + route.get_total_fees());

@@ -5801,10 +5801,10 @@ where
 			let mut failed_intercept_forwards = Vec::new();
 			if !pending_forwards.is_empty() {
 				for (forward_info, prev_htlc_id) in pending_forwards.drain(..) {
-					let scid = match forward_info.routing {
-						PendingHTLCRouting::Forward { short_channel_id, .. } => short_channel_id,
-						PendingHTLCRouting::Receive { .. } => 0,
-						PendingHTLCRouting::ReceiveKeysend { .. } => 0,
+					let (scid, onion) = match forward_info.routing {
+						PendingHTLCRouting::Forward { short_channel_id, ref onion_packet } => (short_channel_id, Some(onion_packet.encode())),
+						PendingHTLCRouting::Receive { .. } => (0, None),
+						PendingHTLCRouting::ReceiveKeysend { .. } => (0, None),
 					};
 					// Pull this now to avoid introducing a lock order with `forward_htlcs`.
 					let is_our_scid = self.short_to_chan_info.read().unwrap().contains_key(&scid);
@@ -5829,6 +5829,8 @@ where
 											payment_hash: forward_info.payment_hash,
 											inbound_amount_msat: forward_info.incoming_amt_msat.unwrap(),
 											expected_outbound_amount_msat: forward_info.outgoing_amt_msat,
+											onion: onion.unwrap(),
+											outgoing_cltv_value: forward_info.outgoing_cltv_value,
 											intercept_id
 										}, None));
 										entry.insert(PendingAddHTLCInfo {
