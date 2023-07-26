@@ -2709,7 +2709,7 @@ mod tests {
 	fn get_channel_details(short_channel_id: Option<u64>, node_id: PublicKey,
 			features: InitFeatures, outbound_capacity_msat: u64) -> channelmanager::ChannelDetails {
 		channelmanager::ChannelDetails {
-			channel_id: ChannelId([0; 32]),
+			channel_id: ChannelId::new_zero(),
 			counterparty: channelmanager::ChannelCounterparty {
 				features,
 				node_id,
@@ -6777,7 +6777,7 @@ pub(crate) mod bench_utils {
 	#[inline]
 	pub(crate) fn first_hop(node_id: PublicKey) -> ChannelDetails {
 		ChannelDetails {
-			channel_id: ChannelId([0; 32]),
+			channel_id: ChannelId::new_zero(),
 			counterparty: ChannelCounterparty {
 				features: channelmanager::provided_init_features(&UserConfig::default()),
 				node_id,

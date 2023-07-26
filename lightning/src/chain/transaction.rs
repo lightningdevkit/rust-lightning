@@ -63,7 +63,7 @@ impl OutPoint {
 		res[..].copy_from_slice(&self.txid[..]);
 		res[30] ^= ((self.index >> 8) & 0xff) as u8;
 		res[31] ^= ((self.index >> 0) & 0xff) as u8;
-		ChannelId(res)
+		ChannelId::new_funding_tx_based(res)
 	}
 
 	/// Converts this OutPoint into the OutPoint field as used by rust-bitcoin
@@ -95,10 +95,10 @@ mod tests {
 		assert_eq!(&OutPoint {
 			txid: tx.txid(),
 			index: 0
-		}.to_channel_id().0, &hex::decode("3e88dd7165faf7be58b3c5bb2c9c452aebef682807ea57080f62e6f6e113c25e").unwrap()[..]);
+		}.to_channel_id().bytes()[..], &hex::decode("3e88dd7165faf7be58b3c5bb2c9c452aebef682807ea57080f62e6f6e113c25e").unwrap()[..]);
 		assert_eq!(&OutPoint {
 			txid: tx.txid(),
 			index: 1
-		}.to_channel_id().0, &hex::decode("3e88dd7165faf7be58b3c5bb2c9c452aebef682807ea57080f62e6f6e113c25f").unwrap()[..]);
+		}.to_channel_id().bytes()[..], &hex::decode("3e88dd7165faf7be58b3c5bb2c9c452aebef682807ea57080f62e6f6e113c25f").unwrap()[..]);
 	}
 }
