@@ -604,43 +604,35 @@ impl_writeable_tlv_based!(PendingChannelMonitorUpdate, {
 });
 
 /// A unique 32-byte identifier for a channel.
-/// 
 /// This is not exported to bindings users as we just use [u8; 32] directly
-#[derive(Clone, Copy, Debug)]
-pub enum ChannelId {
-	/// Common case: channel ID based on the ID of the funding TX.
-	FundingTxBased([u8; 32]),
-	/// Temporary ID used during channel setup.
-	Temporary([u8; 32]),
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct ChannelId {
+	data: [u8; 32],
 }
 
 impl ChannelId {
-	/// Create new funding TX based channel ID from the data
-	pub fn new_funding_tx_based(data: [u8; 32]) -> Self {
-		Self::FundingTxBased(data)
-	}
-
-	/// Create new temporary channel ID from the data
-	pub fn new_temporary(data: [u8; 32]) -> Self {
-		Self::Temporary(data)
-	}
-
-	/// Create a new channel ID from the data, with default type
-	pub fn new_default(data: [u8; 32]) -> Self {
-		Self::new_funding_tx_based(data)
+	/// Create a new channel ID from the provided data
+	pub fn from_bytes(data: [u8; 32]) -> Self {
+		Self{data}
 	}
 
 	/// Create a channel ID consisting of all-zeros data
 	pub fn new_zero() -> Self {
-		Self::new_default([0; 32])
+			Self::from_bytes([0; 32])
+		}
+	
+	/// Create new funding TX based channel ID
+	pub fn from_funding_tx(txid: &[u8; 32], output_index: u16) -> Self {
+		let mut res = [0; 32];
+		res[..].copy_from_slice(&txid[..]);
+		res[30] ^= ((output_index >> 8) & 0xff) as u8;
+		res[31] ^= ((output_index >> 0) & 0xff) as u8;
+		Self::from_bytes(res)
 	}
 
 	/// Accessor for the channel ID data
 	pub fn bytes(&self) -> &[u8; 32] {
-		match self {
-			Self::FundingTxBased(d) => d,
-			Self::Temporary(d) => d,
-		}
+		&self.data
 	}
 
 	pub fn serialized_length(&self) -> usize {
@@ -648,44 +640,17 @@ impl ChannelId {
 	}
 }
 
-impl PartialEq for ChannelId {
-    fn eq(&self, other: &Self) -> bool {
-        *self.bytes() == *other.bytes()
-    }
-}
-
-impl Eq for ChannelId {}
-
-impl PartialOrd for ChannelId {
-    fn partial_cmp(&self, other: &Self) -> Option<cmp::Ordering> {
-        self.bytes().partial_cmp(other.bytes())
-    }
-}
-
-impl Ord for ChannelId {
-    fn cmp(&self, other: &Self) -> cmp::Ordering {
-        self.bytes().cmp(other.bytes())
-    }
-}
-
-impl core::hash::Hash for ChannelId {
-    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
-        self.bytes().hash(state);
-    }
-}
-
 impl Writeable for ChannelId {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
-		self.bytes().write(w)
+		self.data.write(w)
 	}
 }
 
 impl Readable for ChannelId {
-	// TODO how is type preserved during serialization ???
 	// TODO add serialize-deserialize unit test
 	fn read<R: io::Read>(r: &mut R) -> Result<Self, DecodeError> {
 		let buf: [u8; 32] = Readable::read(r)?;
-		Ok(ChannelId::new_default(buf))
+		Ok(ChannelId::from_bytes(buf))
 	}
 }
 
@@ -5676,7 +5641,7 @@ impl<Signer: WriteableEcdsaChannelSigner> OutboundV1Channel<Signer> {
 			Err(_) => return Err(APIError::ChannelUnavailable { err: "Failed to get destination script".to_owned()}),
 		};
 
-		let temporary_channel_id = ChannelId::new_temporary(entropy_source.get_secure_random_bytes());
+		let temporary_channel_id = ChannelId::from_bytes(entropy_source.get_secure_random_bytes());
 
 		Ok(Self {
 			context: ChannelContext {
@@ -7583,32 +7548,25 @@ use crate::ln::chan_utils::{htlc_success_tx_weight, htlc_timeout_tx_weight};
 	}
 
 	#[test]
-	fn test_channel_id_new_bytes() {
+	fn test_channel_id_new_from_data() {
 		let data: [u8; 32] = [2; 32];
-		{
-			let channel_id = ChannelId::new_funding_tx_based(data.clone());
-			assert_eq!(*channel_id.bytes(), data.clone());
-		}
-		{
-			let channel_id = ChannelId::new_temporary(data.clone());
-			assert_eq!(*channel_id.bytes(), data.clone());
-		}
+		let channel_id = ChannelId::from_bytes([2; 32]);
+		assert_eq!(*channel_id.bytes(), data.clone());
+	}
+
+	#[test]
+	fn test_channel_id_from_funding_tx() {
+		let channel_id = ChannelId::from_funding_tx(&[2; 32], 1);
+		assert_eq!(hex::encode(channel_id.bytes()), "0202020202020202020202020202020202020202020202020202020202020203");
 	}
 
 	#[test]
 	fn test_channel_id_equals() {
-		let channel_id11 = ChannelId::new_funding_tx_based([2; 32]);
-		let channel_id12 = ChannelId::new_funding_tx_based([2; 32]);
-		let channel_id21 = ChannelId::new_funding_tx_based([42; 32]);
+		let channel_id11 = ChannelId::from_funding_tx(&[2; 32], 2);
+		let channel_id12 = ChannelId::from_funding_tx(&[2; 32], 2);
+		let channel_id21 = ChannelId::from_funding_tx(&[2; 32], 42);
 		assert_eq!(channel_id11, channel_id12);
 		assert_ne!(channel_id11, channel_id21);
-	}
-
-	#[test]
-	fn test_channel_id_equals_different_type_same_content() {
-		let channel_id1 = ChannelId::new_funding_tx_based([2; 32]);
-		let channel_id2 = ChannelId::new_temporary([2; 32]);
-		assert_eq!(channel_id1, channel_id2);
 	}
 
 	#[test]

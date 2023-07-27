@@ -2860,7 +2860,7 @@ mod tests {
 
 		let their_id = peers[1].node_signer.get_node_id(Recipient::Node).unwrap();
 
-		let msg = msgs::Shutdown { channel_id: ChannelId::new_default([42; 32]), scriptpubkey: bitcoin::Script::new() };
+		let msg = msgs::Shutdown { channel_id: ChannelId::from_bytes([42; 32]), scriptpubkey: bitcoin::Script::new() };
 		a_chan_handler.pending_events.lock().unwrap().push(events::MessageSendEvent::SendShutdown {
 			node_id: their_id, msg: msg.clone()
 		});
