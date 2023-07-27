@@ -13,7 +13,6 @@ use crate::ln::channel::ChannelId;
 use bitcoin::hash_types::Txid;
 use bitcoin::blockdata::transaction::OutPoint as BitcoinOutPoint;
 use bitcoin::blockdata::transaction::Transaction;
-use bitcoin::hashes::Hash;
 
 /// Transaction data where each item consists of a transaction reference paired with the index of
 /// the transaction within a block.
@@ -58,9 +57,9 @@ pub struct OutPoint {
 }
 
 impl OutPoint {
-	/// Convert an `OutPoint` to a lightning channel id.
+	/// Convert an `OutPoint` to a lightning channel id. Alternatively use ChannelId::from_funding_outpoint().
 	pub fn to_channel_id(&self) -> ChannelId {
-		ChannelId::from_funding_tx(&self.txid.as_inner(), self.index)
+		ChannelId::from_funding_outpoint(&self)
 	}
 
 	/// Converts this OutPoint into the OutPoint field as used by rust-bitcoin

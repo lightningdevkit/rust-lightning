@@ -611,7 +611,7 @@ pub struct ChannelId {
 }
 
 impl ChannelId {
-	/// Create a new channel ID from the provided data
+	/// Create a new channel ID from the provided data. Use a more specific from_* constructor when possible.
 	pub fn from_bytes(data: [u8; 32]) -> Self {
 		Self{data}
 	}
@@ -620,9 +620,14 @@ impl ChannelId {
 	pub fn new_zero() -> Self {
 			Self::from_bytes([0; 32])
 		}
-	
-	/// Create new funding TX based channel ID
-	pub fn from_funding_tx(txid: &[u8; 32], output_index: u16) -> Self {
+
+	/// Create channel ID based on a funding TX outpoint
+	pub fn from_funding_outpoint(funding_tx_outpoint: &OutPoint) -> Self {
+		Self::from_funding_txid(&funding_tx_outpoint.txid.as_inner(), funding_tx_outpoint.index)
+	}
+
+	/// Create channel ID based on a funding TX ID and output index
+	pub fn from_funding_txid(txid: &[u8; 32], output_index: u16) -> Self {
 		let mut res = [0; 32];
 		res[..].copy_from_slice(&txid[..]);
 		res[30] ^= ((output_index >> 8) & 0xff) as u8;
@@ -7555,16 +7560,16 @@ use crate::ln::chan_utils::{htlc_success_tx_weight, htlc_timeout_tx_weight};
 	}
 
 	#[test]
-	fn test_channel_id_from_funding_tx() {
-		let channel_id = ChannelId::from_funding_tx(&[2; 32], 1);
+	fn test_channel_id_from_funding_tx2() {
+		let channel_id = ChannelId::from_funding_txid(&[2; 32], 1);
 		assert_eq!(hex::encode(channel_id.bytes()), "0202020202020202020202020202020202020202020202020202020202020203");
 	}
 
 	#[test]
 	fn test_channel_id_equals() {
-		let channel_id11 = ChannelId::from_funding_tx(&[2; 32], 2);
-		let channel_id12 = ChannelId::from_funding_tx(&[2; 32], 2);
-		let channel_id21 = ChannelId::from_funding_tx(&[2; 32], 42);
+		let channel_id11 = ChannelId::from_funding_txid(&[2; 32], 2);
+		let channel_id12 = ChannelId::from_funding_txid(&[2; 32], 2);
+		let channel_id21 = ChannelId::from_funding_txid(&[2; 32], 42);
 		assert_eq!(channel_id11, channel_id12);
 		assert_ne!(channel_id11, channel_id21);
 	}
