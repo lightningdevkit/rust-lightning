@@ -3585,7 +3585,9 @@ fn test_dup_events_on_peer_disconnect() {
 	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id());
 	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id());
 
-	reconnect_nodes(&nodes[0], &nodes[1], (false, false), (0, 0), (1, 0), (0, 0), (0, 0), (0, 0), (false, false));
+	let mut reconnect_args = ReconnectArgs::new(&nodes[0], &nodes[1]);
+	reconnect_args.pending_htlc_claims.0 = 1;
+	reconnect_nodes(reconnect_args);
 	expect_payment_path_successful!(nodes[0]);
 }
 
@@ -3642,7 +3644,9 @@ fn test_simple_peer_disconnect() {
 
 	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id());
 	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id());
-	reconnect_nodes(&nodes[0], &nodes[1], (true, true), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
+	let mut reconnect_args = ReconnectArgs::new(&nodes[0], &nodes[1]);
+	reconnect_args.send_channel_ready = (true, true);
+	reconnect_nodes(reconnect_args);
 
 	let payment_preimage_1 = route_payment(&nodes[0], &vec!(&nodes[1], &nodes[2])[..], 1000000).0;
 	let payment_hash_2 = route_payment(&nodes[0], &vec!(&nodes[1], &nodes[2])[..], 1000000).1;
@@ -3651,7 +3655,7 @@ fn test_simple_peer_disconnect() {
 
 	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id());
 	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id());
-	reconnect_nodes(&nodes[0], &nodes[1], (false, false), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
+	reconnect_nodes(ReconnectArgs::new(&nodes[0], &nodes[1]));
 
 	let (payment_preimage_3, payment_hash_3, _) = route_payment(&nodes[0], &vec!(&nodes[1], &nodes[2])[..], 1000000);
 	let payment_preimage_4 = route_payment(&nodes[0], &vec!(&nodes[1], &nodes[2])[..], 1000000).0;
@@ -3664,7 +3668,10 @@ fn test_simple_peer_disconnect() {
 	claim_payment_along_route(&nodes[0], &[&[&nodes[1], &nodes[2]]], true, payment_preimage_3);
 	fail_payment_along_route(&nodes[0], &[&[&nodes[1], &nodes[2]]], true, payment_hash_5);
 
-	reconnect_nodes(&nodes[0], &nodes[1], (false, false), (0, 0), (0, 0), (0, 0), (1, 0), (1, 0), (false, false));
+	let mut reconnect_args = ReconnectArgs::new(&nodes[0], &nodes[1]);
+	reconnect_args.pending_cell_htlc_fails.0 = 1;
+	reconnect_args.pending_cell_htlc_claims.0 = 1;
+	reconnect_nodes(reconnect_args);
 	{
 		let events = nodes[0].node.get_and_clear_pending_events();
 		assert_eq!(events.len(), 4);
@@ -3776,19 +3783,29 @@ fn do_test_drop_messages_peer_disconnect(messages_delivered: u8, simulate_broken
 		}
 		// Even if the channel_ready messages get exchanged, as long as nothing further was
 		// received on either side, both sides will need to resend them.
-		reconnect_nodes(&nodes[0], &nodes[1], (true, true), (0, 1), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
+		let mut reconnect_args = ReconnectArgs::new(&nodes[0], &nodes[1]);
+		reconnect_args.send_channel_ready = (true, true);
+		reconnect_args.pending_htlc_adds.1 = 1;
+		reconnect_nodes(reconnect_args);
 	} else if messages_delivered == 3 {
 		// nodes[0] still wants its RAA + commitment_signed
-		reconnect_nodes(&nodes[0], &nodes[1], (false, false), (-1, 0), (0, 0), (0, 0), (0, 0), (0, 0), (true, false));
+		let mut reconnect_args = ReconnectArgs::new(&nodes[0], &nodes[1]);
+		reconnect_args.pending_htlc_adds.0 = -1;
+		reconnect_args.pending_raa.0 = true;
+		reconnect_nodes(reconnect_args);
 	} else if messages_delivered == 4 {
 		// nodes[0] still wants its commitment_signed
-		reconnect_nodes(&nodes[0], &nodes[1], (false, false), (-1, 0), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
+		let mut reconnect_args = ReconnectArgs::new(&nodes[0], &nodes[1]);
+		reconnect_args.pending_htlc_adds.0 = -1;
+		reconnect_nodes(reconnect_args);
 	} else if messages_delivered == 5 {
 		// nodes[1] still wants its final RAA
-		reconnect_nodes(&nodes[0], &nodes[1], (false, false), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (false, true));
+		let mut reconnect_args = ReconnectArgs::new(&nodes[0], &nodes[1]);
+		reconnect_args.pending_raa.1 = true;
+		reconnect_nodes(reconnect_args);
 	} else if messages_delivered == 6 {
 		// Everything was delivered...
-		reconnect_nodes(&nodes[0], &nodes[1], (false, false), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
+		reconnect_nodes(ReconnectArgs::new(&nodes[0], &nodes[1]));
 	}
 
 	let events_1 = nodes[1].node.get_and_clear_pending_events();
@@ -3812,7 +3829,7 @@ fn do_test_drop_messages_peer_disconnect(messages_delivered: u8, simulate_broken
 
 	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id());
 	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id());
-	reconnect_nodes(&nodes[0], &nodes[1], (false, false), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
+	reconnect_nodes(ReconnectArgs::new(&nodes[0], &nodes[1]));
 
 	nodes[1].node.process_pending_htlc_forwards();
 
@@ -3896,7 +3913,9 @@ fn do_test_drop_messages_peer_disconnect(messages_delivered: u8, simulate_broken
 	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id());
 	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id());
 	if messages_delivered < 2 {
-		reconnect_nodes(&nodes[0], &nodes[1], (false, false), (0, 0), (1, 0), (0, 0), (0, 0), (0, 0), (false, false));
+		let mut reconnect_args = ReconnectArgs::new(&nodes[0], &nodes[1]);
+		reconnect_args.pending_htlc_claims.0 = 1;
+		reconnect_nodes(reconnect_args);
 		if messages_delivered < 1 {
 			expect_payment_sent!(nodes[0], payment_preimage_1);
 		} else {
@@ -3904,16 +3923,23 @@ fn do_test_drop_messages_peer_disconnect(messages_delivered: u8, simulate_broken
 		}
 	} else if messages_delivered == 2 {
 		// nodes[0] still wants its RAA + commitment_signed
-		reconnect_nodes(&nodes[0], &nodes[1], (false, false), (0, -1), (0, 0), (0, 0), (0, 0), (0, 0), (false, true));
+		let mut reconnect_args = ReconnectArgs::new(&nodes[0], &nodes[1]);
+		reconnect_args.pending_htlc_adds.1 = -1;
+		reconnect_args.pending_raa.1 = true;
+		reconnect_nodes(reconnect_args);
 	} else if messages_delivered == 3 {
 		// nodes[0] still wants its commitment_signed
-		reconnect_nodes(&nodes[0], &nodes[1], (false, false), (0, -1), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
+		let mut reconnect_args = ReconnectArgs::new(&nodes[0], &nodes[1]);
+		reconnect_args.pending_htlc_adds.1 = -1;
+		reconnect_nodes(reconnect_args);
 	} else if messages_delivered == 4 {
 		// nodes[1] still wants its final RAA
-		reconnect_nodes(&nodes[0], &nodes[1], (false, false), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (true, false));
+		let mut reconnect_args = ReconnectArgs::new(&nodes[0], &nodes[1]);
+		reconnect_args.pending_raa.0 = true;
+		reconnect_nodes(reconnect_args);
 	} else if messages_delivered == 5 {
 		// Everything was delivered...
-		reconnect_nodes(&nodes[0], &nodes[1], (false, false), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
+		reconnect_nodes(ReconnectArgs::new(&nodes[0], &nodes[1]));
 	}
 
 	if messages_delivered == 1 || messages_delivered == 2 {
@@ -3923,7 +3949,7 @@ fn do_test_drop_messages_peer_disconnect(messages_delivered: u8, simulate_broken
 		nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id());
 		nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id());
 	}
-	reconnect_nodes(&nodes[0], &nodes[1], (false, false), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
+	reconnect_nodes(ReconnectArgs::new(&nodes[0], &nodes[1]));
 
 	if messages_delivered > 2 {
 		expect_payment_path_successful!(nodes[0]);
