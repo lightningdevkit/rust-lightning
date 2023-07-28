@@ -3201,7 +3201,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 	/// generating an appropriate error *after* the channel state has been updated based on the
 	/// revoke_and_ack message.
 	pub fn revoke_and_ack<F: Deref, L: Deref>(&mut self, msg: &msgs::RevokeAndACK,
-		fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L
+		fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L, hold_mon_update: bool,
 	) -> Result<(Vec<(HTLCSource, PaymentHash)>, Option<ChannelMonitorUpdate>), ChannelError>
 	where F::Target: FeeEstimator, L::Target: Logger,
 	{
@@ -3382,6 +3382,22 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			}
 		}
 
+		let release_monitor = self.context.blocked_monitor_updates.is_empty() && !hold_mon_update;
+		let release_state_str =
+			if hold_mon_update { "Holding" } else if release_monitor { "Releasing" } else { "Blocked" };
+		macro_rules! return_with_htlcs_to_fail {
+			($htlcs_to_fail: expr) => {
+				if !release_monitor {
+					self.context.blocked_monitor_updates.push(PendingChannelMonitorUpdate {
+						update: monitor_update,
+					});
+					return Ok(($htlcs_to_fail, None));
+				} else {
+					return Ok(($htlcs_to_fail, Some(monitor_update)));
+				}
+			}
+		}
+
 		if (self.context.channel_state & ChannelState::MonitorUpdateInProgress as u32) == ChannelState::MonitorUpdateInProgress as u32 {
 			// We can't actually generate a new commitment transaction (incl by freeing holding
 			// cells) while we can't update the monitor, so we just return what we have.
@@ -3400,7 +3416,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			self.context.monitor_pending_failures.append(&mut revoked_htlcs);
 			self.context.monitor_pending_finalized_fulfills.append(&mut finalized_claimed_htlcs);
 			log_debug!(logger, "Received a valid revoke_and_ack for channel {} but awaiting a monitor update resolution to reply.", log_bytes!(self.context.channel_id()));
-			return Ok((Vec::new(), self.push_ret_blockable_mon_update(monitor_update)));
+			return_with_htlcs_to_fail!(Vec::new());
 		}
 
 		match self.free_holding_cell_htlcs(fee_estimator, logger) {
@@ -3410,8 +3426,11 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 				self.context.latest_monitor_update_id = monitor_update.update_id;
 				monitor_update.updates.append(&mut additional_update.updates);
 
+				log_debug!(logger, "Received a valid revoke_and_ack for channel {} with holding cell HTLCs freed. {} monitor update.",
+					log_bytes!(self.context.channel_id()), release_state_str);
+
 				self.monitor_updating_paused(false, true, false, to_forward_infos, revoked_htlcs, finalized_claimed_htlcs);
-				Ok((htlcs_to_fail, self.push_ret_blockable_mon_update(monitor_update)))
+				return_with_htlcs_to_fail!(htlcs_to_fail);
 			},
 			(None, htlcs_to_fail) => {
 				if require_commitment {
@@ -3422,14 +3441,19 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 					self.context.latest_monitor_update_id = monitor_update.update_id;
 					monitor_update.updates.append(&mut additional_update.updates);
 
-					log_debug!(logger, "Received a valid revoke_and_ack for channel {}. Responding with a commitment update with {} HTLCs failed.",
-						log_bytes!(self.context.channel_id()), update_fail_htlcs.len() + update_fail_malformed_htlcs.len());
+					log_debug!(logger, "Received a valid revoke_and_ack for channel {}. Responding with a commitment update with {} HTLCs failed. {} monitor update.",
+						log_bytes!(self.context.channel_id()),
+						update_fail_htlcs.len() + update_fail_malformed_htlcs.len(),
+						release_state_str);
+
 					self.monitor_updating_paused(false, true, false, to_forward_infos, revoked_htlcs, finalized_claimed_htlcs);
-					Ok((htlcs_to_fail, self.push_ret_blockable_mon_update(monitor_update)))
+					return_with_htlcs_to_fail!(htlcs_to_fail);
 				} else {
-					log_debug!(logger, "Received a valid revoke_and_ack for channel {} with no reply necessary.", log_bytes!(self.context.channel_id()));
+					log_debug!(logger, "Received a valid revoke_and_ack for channel {} with no reply necessary. {} monitor update.",
+						log_bytes!(self.context.channel_id()), release_state_str);
+
 					self.monitor_updating_paused(false, false, false, to_forward_infos, revoked_htlcs, finalized_claimed_htlcs);
-					Ok((htlcs_to_fail, self.push_ret_blockable_mon_update(monitor_update)))
+					return_with_htlcs_to_fail!(htlcs_to_fail);
 				}
 			}
 		}

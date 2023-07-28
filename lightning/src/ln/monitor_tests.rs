@@ -345,7 +345,7 @@ fn do_test_claim_value_force_close(prev_commitment_tx: bool) {
 	if prev_commitment_tx {
 		// To build a previous commitment transaction, deliver one round of commitment messages.
 		nodes[0].node.handle_update_fulfill_htlc(&nodes[1].node.get_our_node_id(), &b_htlc_msgs.update_fulfill_htlcs[0]);
-		expect_payment_sent_without_paths!(nodes[0], payment_preimage);
+		expect_payment_sent(&nodes[0], payment_preimage, None, false, false);
 		nodes[0].node.handle_commitment_signed(&nodes[1].node.get_our_node_id(), &b_htlc_msgs.commitment_signed);
 		check_added_monitors!(nodes[0], 1);
 		let (as_raa, as_cs) = get_revoke_commit_msgs!(nodes[0], nodes[1].node.get_our_node_id());
@@ -454,7 +454,7 @@ fn do_test_claim_value_force_close(prev_commitment_tx: bool) {
 	if prev_commitment_tx {
 		expect_payment_path_successful!(nodes[0]);
 	} else {
-		expect_payment_sent!(nodes[0], payment_preimage);
+		expect_payment_sent(&nodes[0], payment_preimage, None, true, false);
 	}
 	assert_eq!(sorted_vec(vec![sent_htlc_balance.clone(), sent_htlc_timeout_balance.clone()]),
 		sorted_vec(nodes[0].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances()));
@@ -681,7 +681,7 @@ fn test_balances_on_local_commitment_htlcs() {
 	// Now confirm nodes[1]'s HTLC claim, giving nodes[0] the preimage. Note that the "maybe
 	// claimable" balance remains until we see ANTI_REORG_DELAY blocks.
 	mine_transaction(&nodes[0], &bs_htlc_claim_txn[0]);
-	expect_payment_sent!(nodes[0], payment_preimage_2);
+	expect_payment_sent(&nodes[0], payment_preimage_2, None, true, false);
 	assert_eq!(sorted_vec(vec![Balance::ClaimableAwaitingConfirmations {
 			amount_satoshis: 1_000_000 - 10_000 - 20_000 - chan_feerate *
 				(channel::commitment_tx_base_weight(&channel_type_features) + 2 * channel::COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000,
@@ -1538,7 +1538,7 @@ fn test_revoked_counterparty_aggregated_claims() {
 	// Confirm A's HTLC-Success tranasction which presumably raced B's claim, causing B to create a
 	// new claim.
 	mine_transaction(&nodes[1], &as_revoked_txn[1]);
-	expect_payment_sent!(nodes[1], claimed_payment_preimage);
+	expect_payment_sent(&nodes[1], claimed_payment_preimage, None, true, false);
 	let mut claim_txn_2: Vec<_> = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().clone();
 	claim_txn_2.sort_unstable_by_key(|tx| if tx.input.iter().any(|inp| inp.previous_output.txid == as_revoked_txn[0].txid()) { 0 } else { 1 });
 	// Once B sees the HTLC-Success transaction it splits its claim transaction into two, though in

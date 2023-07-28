@@ -507,6 +507,11 @@ pub enum Event {
 	/// payment is no longer retryable, due either to the [`Retry`] provided or
 	/// [`ChannelManager::abandon_payment`] having been called for the corresponding payment.
 	///
+	/// In exceedingly rare cases, it is possible that an [`Event::PaymentFailed`] is generated for
+	/// a payment after an [`Event::PaymentSent`] event for this same payment has already been
+	/// received and processed. In this case, the [`Event::PaymentFailed`] event MUST be ignored,
+	/// and the payment MUST be treated as having succeeded.
+	///
 	/// [`Retry`]: crate::ln::channelmanager::Retry
 	/// [`ChannelManager::abandon_payment`]: crate::ln::channelmanager::ChannelManager::abandon_payment
 	PaymentFailed {

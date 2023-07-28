@@ -230,7 +230,7 @@ fn test_counterparty_revoked_reorg() {
 
 	// Connect the HTLC claim transaction for HTLC 3
 	mine_transaction(&nodes[1], &unrevoked_local_txn[2]);
-	expect_payment_sent!(nodes[1], payment_preimage_3);
+	expect_payment_sent(&nodes[1], payment_preimage_3, None, true, false);
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 
 	// Connect blocks to confirm the unrevoked commitment transaction
