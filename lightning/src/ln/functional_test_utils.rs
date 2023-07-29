@@ -1473,12 +1473,12 @@ pub fn check_closed_event(node: &Node, events_count: usize, expected_reason: Clo
 	let events = node.node.get_and_clear_pending_events();
 	assert_eq!(events.len(), events_count, "{:?}", events);
 	let mut issues_discard_funding = false;
-	for (idx, event) in events.into_iter().enumerate() {
+	for event in events {
 		match event {
-			Event::ChannelClosed { ref reason, counterparty_node_id, 
+			Event::ChannelClosed { ref reason, counterparty_node_id,
 				channel_capacity_sats, .. } => {
 				assert_eq!(*reason, expected_reason);
-				assert_eq!(counterparty_node_id.unwrap(), expected_counterparty_node_ids[idx]);
+				assert!(expected_counterparty_node_ids.iter().any(|id| id == &counterparty_node_id.unwrap()));
 				assert_eq!(channel_capacity_sats.unwrap(), expected_channel_capacity);
 			},
 			Event::DiscardFunding { .. } => {
@@ -1499,7 +1499,7 @@ macro_rules! check_closed_event {
 		check_closed_event!($node, $events, $reason, false, $counterparty_node_ids, $channel_capacity);
 	};
 	($node: expr, $events: expr, $reason: expr, $is_check_discard_funding: expr, $counterparty_node_ids: expr, $channel_capacity: expr) => {
-		$crate::ln::functional_test_utils::check_closed_event(&$node, $events, $reason, 
+		$crate::ln::functional_test_utils::check_closed_event(&$node, $events, $reason,
 			$is_check_discard_funding, &$counterparty_node_ids, $channel_capacity);
 	}
 }
@@ -3265,4 +3265,77 @@ pub fn reconnect_nodes<'a, 'b, 'c, 'd>(args: ReconnectArgs<'a, 'b, 'c, 'd>) {
 			assert!(chan_msgs.2.is_none());
 		}
 	}
+}
+
+/// Initiates channel opening and creates a single batch funding transaction.
+/// This will go through the open_channel / accept_channel flow, and return the batch funding
+/// transaction with corresponding funding_created messages.
+pub fn create_batch_channel_funding<'a, 'b, 'c>(
+	funding_node: &Node<'a, 'b, 'c>,
+	params: &[(&Node<'a, 'b, 'c>, u64, u64, u128, Option<UserConfig>)],
+) -> (Transaction, Vec<msgs::FundingCreated>) {
+	let mut tx_outs = Vec::new();
+	let mut temp_chan_ids = Vec::new();
+	let mut funding_created_msgs = Vec::new();
+
+	for (other_node, channel_value_satoshis, push_msat, user_channel_id, override_config) in params {
+		// Initialize channel opening.
+		let temp_chan_id = funding_node.node.create_channel(
+			other_node.node.get_our_node_id(), *channel_value_satoshis, *push_msat, *user_channel_id,
+			*override_config,
+		).unwrap();
+		let open_channel_msg = get_event_msg!(funding_node, MessageSendEvent::SendOpenChannel, other_node.node.get_our_node_id());
+		other_node.node.handle_open_channel(&funding_node.node.get_our_node_id(), &open_channel_msg);
+		let accept_channel_msg = get_event_msg!(other_node, MessageSendEvent::SendAcceptChannel, funding_node.node.get_our_node_id());
+		funding_node.node.handle_accept_channel(&other_node.node.get_our_node_id(), &accept_channel_msg);
+
+		// Create the corresponding funding output.
+		let events = funding_node.node.get_and_clear_pending_events();
+		assert_eq!(events.len(), 1);
+		match events[0] {
+			Event::FundingGenerationReady {
+				ref temporary_channel_id,
+				ref counterparty_node_id,
+				channel_value_satoshis: ref event_channel_value_satoshis,
+				ref output_script,
+				user_channel_id: ref event_user_channel_id
+			} => {
+				assert_eq!(temporary_channel_id, &temp_chan_id);
+				assert_eq!(counterparty_node_id, &other_node.node.get_our_node_id());
+				assert_eq!(channel_value_satoshis, event_channel_value_satoshis);
+				assert_eq!(user_channel_id, event_user_channel_id);
+				tx_outs.push(TxOut {
+					value: *channel_value_satoshis, script_pubkey: output_script.clone(),
+				});
+			},
+			_ => panic!("Unexpected event"),
+		};
+		temp_chan_ids.push((temp_chan_id, other_node.node.get_our_node_id()));
+	}
+
+	// Compose the batch funding transaction and give it to the ChannelManager.
+	let tx = Transaction {
+		version: 2,
+		lock_time: PackedLockTime::ZERO,
+		input: Vec::new(),
+		output: tx_outs,
+	};
+	assert!(funding_node.node.batch_funding_transaction_generated(
+		temp_chan_ids.iter().map(|(a, b)| (a, b)).collect::<Vec<_>>().as_slice(),
+		tx.clone(),
+	).is_ok());
+	check_added_monitors!(funding_node, 0);
+	let events = funding_node.node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), params.len());
+	for (other_node, ..) in params {
+		let funding_created = events
+			.iter()
+			.find_map(|event| match event {
+				MessageSendEvent::SendFundingCreated { node_id, msg } if node_id == &other_node.node.get_our_node_id() => Some(msg.clone()),
+				_ => None,
+			})
+			.unwrap();
+		funding_created_msgs.push(funding_created);
+	}
+	return (tx, funding_created_msgs);
 }
