@@ -483,7 +483,7 @@ pub struct ProbabilisticScoringFeeParameters {
 	pub manual_node_penalties: HashMap<NodeId, u64>,
 
 	/// This penalty is applied when `htlc_maximum_msat` is equal to or larger than half of the
-	/// channel's capacity, (ie. htlc_maximum_msat ≥ 0.5 * channel_capacity) which makes us
+	/// channel's capacity, (ie. htlc_maximum_msat >= 0.5 * channel_capacity) which makes us
 	/// prefer nodes with a smaller `htlc_maximum_msat`. We treat such nodes preferentially
 	/// as this makes balance discovery attacks harder to execute, thereby creating an incentive
 	/// to restrict `htlc_maximum_msat` and improve privacy.
