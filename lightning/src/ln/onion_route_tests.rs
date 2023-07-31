@@ -597,7 +597,7 @@ fn test_onion_failure() {
 		nodes[1].node.get_and_clear_pending_msg_events();
 		nodes[2].node.get_and_clear_pending_msg_events();
 	}, true, Some(UPDATE|20), Some(NetworkUpdate::ChannelUpdateMessage{msg: ChannelUpdate::dummy(short_channel_id)}), Some(short_channel_id));
-	reconnect_nodes(&nodes[1], &nodes[2], (false, false), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
+	reconnect_nodes(ReconnectArgs::new(&nodes[1], &nodes[2]));
 
 	run_onion_failure_test("expiry_too_far", 0, &nodes, &route, &payment_hash, &payment_secret, |msg| {
 		let session_priv = SecretKey::from_slice(&[3; 32]).unwrap();

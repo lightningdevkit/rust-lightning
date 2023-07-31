@@ -178,7 +178,9 @@ fn do_test_simple_monitor_temporary_update_fail(disconnect: bool) {
 	if disconnect {
 		nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id());
 		nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id());
-		reconnect_nodes(&nodes[0], &nodes[1], (true, true), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
+		let mut reconnect_args = ReconnectArgs::new(&nodes[0], &nodes[1]);
+		reconnect_args.send_channel_ready = (true, true);
+		reconnect_nodes(reconnect_args);
 	}
 
 	chanmon_cfgs[0].persister.set_update_ret(ChannelMonitorUpdateStatus::Completed);
@@ -233,7 +235,7 @@ fn do_test_simple_monitor_temporary_update_fail(disconnect: bool) {
 	if disconnect {
 		nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id());
 		nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id());
-		reconnect_nodes(&nodes[0], &nodes[1], (false, false), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
+		reconnect_nodes(ReconnectArgs::new(&nodes[0], &nodes[1]));
 	}
 
 	// ...and make sure we can force-close a frozen channel
@@ -1925,7 +1927,9 @@ fn do_during_funding_monitor_fail(confirm_a_first: bool, restore_b_before_conf: 
 	// Make sure nodes[1] isn't stupid enough to re-send the ChannelReady on reconnect
 	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id());
 	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id());
-	reconnect_nodes(&nodes[0], &nodes[1], (false, confirm_a_first), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
+	let mut reconnect_args = ReconnectArgs::new(&nodes[0], &nodes[1]);
+	reconnect_args.send_channel_ready.1 = confirm_a_first;
+	reconnect_nodes(reconnect_args);
 
 	// But we want to re-emit ChannelPending
 	expect_channel_pending_event(&nodes[1], &nodes[0].node.get_our_node_id());
@@ -2575,10 +2579,14 @@ fn do_test_reconnect_dup_htlc_claims(htlc_status: HTLCStatusAtDupClaim, second_f
 	nodes[2].node.peer_disconnected(&nodes[1].node.get_our_node_id());
 
 	if second_fails {
-		reconnect_nodes(&nodes[1], &nodes[2], (false, false), (0, 0), (0, 0), (1, 0), (0, 0), (0, 0), (false, false));
+		let mut reconnect_args = ReconnectArgs::new(&nodes[1], &nodes[2]);
+		reconnect_args.pending_htlc_fails.0 = 1;
+		reconnect_nodes(reconnect_args);
 		expect_pending_htlcs_forwardable_and_htlc_handling_failed!(nodes[1], vec![HTLCDestination::NextHopChannel { node_id: Some(nodes[2].node.get_our_node_id()), channel_id: chan_id_2 }]);
 	} else {
-		reconnect_nodes(&nodes[1], &nodes[2], (false, false), (0, 0), (1, 0), (0, 0), (0, 0), (0, 0), (false, false));
+		let mut reconnect_args = ReconnectArgs::new(&nodes[1], &nodes[2]);
+		reconnect_args.pending_htlc_claims.0 = 1;
+		reconnect_nodes(reconnect_args);
 	}
 
 	if htlc_status == HTLCStatusAtDupClaim::HoldingCell {

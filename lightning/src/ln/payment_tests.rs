@@ -490,7 +490,7 @@ fn do_retry_with_no_persist(confirm_before_reload: bool) {
 	// nodes[1] now immediately fails the HTLC as the next-hop channel is disconnected
 	let _ = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 
-	reconnect_nodes(&nodes[1], &nodes[2], (false, false), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
+	reconnect_nodes(ReconnectArgs::new(&nodes[1], &nodes[2]));
 
 	let as_commitment_tx = get_local_commitment_txn!(nodes[0], chan_id)[0].clone();
 	if confirm_before_reload {
@@ -789,7 +789,9 @@ fn do_test_completed_payment_not_retryable_on_reload(use_dust: bool) {
 	nodes[0].node.test_process_background_events();
 	check_added_monitors(&nodes[0], 1);
 
-	reconnect_nodes(&nodes[0], &nodes[1], (true, true), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
+	let mut reconnect_args = ReconnectArgs::new(&nodes[0], &nodes[1]);
+	reconnect_args.send_channel_ready = (true, true);
+	reconnect_nodes(reconnect_args);
 
 	// Now resend the payment, delivering the HTLC and actually claiming it this time. This ensures
 	// the payment is not (spuriously) listed as still pending.
@@ -817,7 +819,7 @@ fn do_test_completed_payment_not_retryable_on_reload(use_dust: bool) {
 	nodes[0].node.test_process_background_events();
 	check_added_monitors(&nodes[0], 1);
 
-	reconnect_nodes(&nodes[0], &nodes[1], (false, false), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
+	reconnect_nodes(ReconnectArgs::new(&nodes[0], &nodes[1]));
 
 	match nodes[0].node.send_payment_with_route(&new_route, payment_hash, RecipientOnionFields::secret_only(payment_secret), payment_id) {
 		Err(PaymentSendFailure::DuplicatePayment) => {},
@@ -1011,7 +1013,7 @@ fn test_fulfill_restart_failure() {
 	reload_node!(nodes[1], &chan_manager_serialized, &[&chan_0_monitor_serialized], persister, new_chain_monitor, nodes_1_deserialized);
 
 	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id());
-	reconnect_nodes(&nodes[0], &nodes[1], (false, false), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
+	reconnect_nodes(ReconnectArgs::new(&nodes[0], &nodes[1]));
 
 	nodes[1].node.fail_htlc_backwards(&payment_hash);
 	expect_pending_htlcs_forwardable_and_htlc_handling_failed!(nodes[1], vec![HTLCDestination::FailedPayment { payment_hash }]);
@@ -3422,9 +3424,11 @@ fn do_test_payment_metadata_consistency(do_reload: bool, do_modify: bool) {
 		reload_node!(nodes[3], config, &nodes[3].node.encode(), &[&mon_bd, &mon_cd],
 			persister, new_chain_monitor, nodes_0_deserialized);
 		nodes[1].node.peer_disconnected(&nodes[3].node.get_our_node_id());
-		reconnect_nodes(&nodes[1], &nodes[3], (false, false), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
+		reconnect_nodes(ReconnectArgs::new(&nodes[1], &nodes[3]));
 	}
-	reconnect_nodes(&nodes[2], &nodes[3], (true, true), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
+	let mut reconnect_args = ReconnectArgs::new(&nodes[2], &nodes[3]);
+	reconnect_args.send_channel_ready = (true, true);
+	reconnect_nodes(reconnect_args);
 
 	// Create a new channel between C and D as A will refuse to retry on the existing one because
 	// it just failed.
