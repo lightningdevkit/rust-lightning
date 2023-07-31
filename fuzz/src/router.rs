@@ -11,9 +11,12 @@ use bitcoin::blockdata::script::Builder;
 use bitcoin::blockdata::transaction::TxOut;
 use bitcoin::hash_types::BlockHash;
 
+use lightning::blinded_path::{BlindedHop, BlindedPath};
 use lightning::chain::transaction::OutPoint;
 use lightning::ln::channelmanager::{self, ChannelDetails, ChannelCounterparty};
+use lightning::ln::features::{BlindedHopFeatures, Bolt12InvoiceFeatures};
 use lightning::ln::msgs;
+use lightning::offers::invoice::BlindedPayInfo;
 use lightning::routing::gossip::{NetworkGraph, RoutingFees};
 use lightning::routing::utxo::{UtxoFuture, UtxoLookup, UtxoLookupError, UtxoResult};
 use lightning::routing::router::{find_route, PaymentParameters, RouteHint, RouteHintHop, RouteParameters};
@@ -197,6 +200,91 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 	let mut node_pks = HashSet::new();
 	let mut scid = 42;
 
+	macro_rules! first_hops {
+		($first_hops_vec: expr) => {
+			match get_slice!(1)[0] {
+				0 => None,
+				count => {
+					for _ in 0..count {
+						scid += 1;
+						let rnid = node_pks.iter().skip(u16::from_be_bytes(get_slice!(2).try_into().unwrap()) as usize % node_pks.len()).next().unwrap();
+						let capacity = u64::from_be_bytes(get_slice!(8).try_into().unwrap());
+						$first_hops_vec.push(ChannelDetails {
+							channel_id: [0; 32],
+							counterparty: ChannelCounterparty {
+								node_id: *rnid,
+								features: channelmanager::provided_init_features(&UserConfig::default()),
+								unspendable_punishment_reserve: 0,
+								forwarding_info: None,
+								outbound_htlc_minimum_msat: None,
+								outbound_htlc_maximum_msat: None,
+							},
+							funding_txo: Some(OutPoint { txid: bitcoin::Txid::from_slice(&[0; 32]).unwrap(), index: 0 }),
+							channel_type: None,
+							short_channel_id: Some(scid),
+							inbound_scid_alias: None,
+							outbound_scid_alias: None,
+							channel_value_satoshis: capacity,
+							user_channel_id: 0, inbound_capacity_msat: 0,
+							unspendable_punishment_reserve: None,
+							confirmations_required: None,
+							confirmations: None,
+							force_close_spend_delay: None,
+							is_outbound: true, is_channel_ready: true,
+							is_usable: true, is_public: true,
+							balance_msat: 0,
+							outbound_capacity_msat: capacity.saturating_mul(1000),
+							next_outbound_htlc_limit_msat: capacity.saturating_mul(1000),
+							next_outbound_htlc_minimum_msat: 0,
+							inbound_htlc_minimum_msat: None,
+							inbound_htlc_maximum_msat: None,
+							config: None,
+							feerate_sat_per_1000_weight: None,
+							channel_shutdown_state: Some(channelmanager::ChannelShutdownState::NotShuttingDown),
+						});
+					}
+					Some(&$first_hops_vec[..])
+				},
+			}
+		}
+	}
+
+	macro_rules! last_hops {
+		($last_hops: expr) => {
+			let count = get_slice!(1)[0];
+			for _ in 0..count {
+				scid += 1;
+				let rnid = node_pks.iter().skip(slice_to_be16(get_slice!(2))as usize % node_pks.len()).next().unwrap();
+				$last_hops.push(RouteHint(vec![RouteHintHop {
+					src_node_id: *rnid,
+					short_channel_id: scid,
+					fees: RoutingFees {
+						base_msat: slice_to_be32(get_slice!(4)),
+						proportional_millionths: slice_to_be32(get_slice!(4)),
+					},
+					cltv_expiry_delta: slice_to_be16(get_slice!(2)),
+					htlc_minimum_msat: Some(slice_to_be64(get_slice!(8))),
+					htlc_maximum_msat: None,
+				}]));
+			}
+		}
+	}
+
+	macro_rules! find_routes {
+		($first_hops: expr, $node_pks: expr, $route_params: expr) => {
+			let scorer = ProbabilisticScorer::new(ProbabilisticScoringDecayParameters::default(), &net_graph, &logger);
+			let random_seed_bytes: [u8; 32] = [get_slice!(1)[0]; 32];
+			for target in $node_pks {
+				let final_value_msat = slice_to_be64(get_slice!(8));
+				let final_cltv_expiry_delta = slice_to_be32(get_slice!(4));
+				let route_params = $route_params(final_value_msat, final_cltv_expiry_delta, target);
+				let _ = find_route(&our_pubkey, &route_params, &net_graph,
+					$first_hops.map(|c| c.iter().collect::<Vec<_>>()).as_ref().map(|a| a.as_slice()),
+					&logger, &scorer, &ProbabilisticScoringFeeParameters::default(), &random_seed_bytes);
+			}
+		}
+	}
+
 	loop {
 		match get_slice!(1)[0] {
 			0 => {
@@ -230,86 +318,61 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 				net_graph.channel_failed_permanent(short_channel_id);
 			},
 			_ if node_pks.is_empty() => {},
-			_ => {
+			x if x < 250 => {
 				let mut first_hops_vec = Vec::new();
-				let first_hops = match get_slice!(1)[0] {
-					0 => None,
-					count => {
-						for _ in 0..count {
-							scid += 1;
-							let rnid = node_pks.iter().skip(u16::from_be_bytes(get_slice!(2).try_into().unwrap()) as usize % node_pks.len()).next().unwrap();
-							let capacity = u64::from_be_bytes(get_slice!(8).try_into().unwrap());
-							first_hops_vec.push(ChannelDetails {
-								channel_id: [0; 32],
-								counterparty: ChannelCounterparty {
-									node_id: *rnid,
-									features: channelmanager::provided_init_features(&UserConfig::default()),
-									unspendable_punishment_reserve: 0,
-									forwarding_info: None,
-									outbound_htlc_minimum_msat: None,
-									outbound_htlc_maximum_msat: None,
-								},
-								funding_txo: Some(OutPoint { txid: bitcoin::Txid::from_slice(&[0; 32]).unwrap(), index: 0 }),
-								channel_type: None,
-								short_channel_id: Some(scid),
-								inbound_scid_alias: None,
-								outbound_scid_alias: None,
-								channel_value_satoshis: capacity,
-								user_channel_id: 0, inbound_capacity_msat: 0,
-								unspendable_punishment_reserve: None,
-								confirmations_required: None,
-								confirmations: None,
-								force_close_spend_delay: None,
-								is_outbound: true, is_channel_ready: true,
-								is_usable: true, is_public: true,
-								balance_msat: 0,
-								outbound_capacity_msat: capacity.saturating_mul(1000),
-								next_outbound_htlc_limit_msat: capacity.saturating_mul(1000),
-								next_outbound_htlc_minimum_msat: 0,
-								inbound_htlc_minimum_msat: None,
-								inbound_htlc_maximum_msat: None,
-								config: None,
-								feerate_sat_per_1000_weight: None,
-								channel_shutdown_state: Some(channelmanager::ChannelShutdownState::NotShuttingDown),
-							});
-						}
-						Some(&first_hops_vec[..])
-					},
-				};
+				// Use macros here and in the blinded match arm to ensure values are fetched from the fuzz
+				// input in the same order, for better coverage.
+				let first_hops = first_hops!(first_hops_vec);
 				let mut last_hops = Vec::new();
-				{
-					let count = get_slice!(1)[0];
-					for _ in 0..count {
-						scid += 1;
-						let rnid = node_pks.iter().skip(slice_to_be16(get_slice!(2))as usize % node_pks.len()).next().unwrap();
-						last_hops.push(RouteHint(vec![RouteHintHop {
-							src_node_id: *rnid,
-							short_channel_id: scid,
-							fees: RoutingFees {
-								base_msat: slice_to_be32(get_slice!(4)),
-								proportional_millionths: slice_to_be32(get_slice!(4)),
-							},
-							cltv_expiry_delta: slice_to_be16(get_slice!(2)),
-							htlc_minimum_msat: Some(slice_to_be64(get_slice!(8))),
-							htlc_maximum_msat: None,
-						}]));
-					}
-				}
-				let scorer = ProbabilisticScorer::new(ProbabilisticScoringDecayParameters::default(), &net_graph, &logger);
-				let random_seed_bytes: [u8; 32] = [get_slice!(1)[0]; 32];
-				for target in node_pks.iter() {
-					let final_value_msat = slice_to_be64(get_slice!(8));
-					let final_cltv_expiry_delta = slice_to_be32(get_slice!(4));
-					let route_params = RouteParameters {
-						payment_params: PaymentParameters::from_node_id(*target, final_cltv_expiry_delta)
+				last_hops!(last_hops);
+				find_routes!(first_hops, node_pks.iter(), |final_amt, final_delta, target: &PublicKey| {
+					RouteParameters {
+						payment_params: PaymentParameters::from_node_id(*target, final_delta)
 							.with_route_hints(last_hops.clone()).unwrap(),
-						final_value_msat,
-					};
-					let _ = find_route(&our_pubkey, &route_params, &net_graph,
-						first_hops.map(|c| c.iter().collect::<Vec<_>>()).as_ref().map(|a| a.as_slice()),
-						&logger, &scorer, &ProbabilisticScoringFeeParameters::default(), &random_seed_bytes);
-				}
+						final_value_msat: final_amt,
+					}
+				});
 			},
+			x => {
+				let mut first_hops_vec = Vec::new();
+				let first_hops = first_hops!(first_hops_vec);
+				let mut last_hops_unblinded = Vec::new();
+				last_hops!(last_hops_unblinded);
+				let dummy_pk = PublicKey::from_slice(&[2; 33]).unwrap();
+				let last_hops: Vec<(BlindedPayInfo, BlindedPath)> = last_hops_unblinded.into_iter().map(|hint| {
+					let hop = &hint.0[0];
+					let payinfo = BlindedPayInfo {
+						fee_base_msat: hop.fees.base_msat,
+						fee_proportional_millionths: hop.fees.proportional_millionths,
+						htlc_minimum_msat: hop.htlc_minimum_msat.unwrap(),
+						htlc_maximum_msat: hop.htlc_minimum_msat.unwrap().saturating_mul(100),
+						cltv_expiry_delta: hop.cltv_expiry_delta,
+						features: BlindedHopFeatures::empty(),
+					};
+					let num_blinded_hops = x % 250;
+					let mut blinded_hops = Vec::new();
+					for _ in 0..num_blinded_hops {
+						blinded_hops.push(BlindedHop {
+							blinded_node_id: dummy_pk,
+							encrypted_payload: Vec::new()
+						});
+					}
+					(payinfo, BlindedPath {
+						introduction_node_id: hop.src_node_id,
+						blinding_point: dummy_pk,
+						blinded_hops,
+					})
+				}).collect();
+				let mut features = Bolt12InvoiceFeatures::empty();
+				features.set_basic_mpp_optional();
+				find_routes!(first_hops, vec![dummy_pk].iter(), |final_amt, _, _| {
+					RouteParameters {
+						payment_params: PaymentParameters::blinded(last_hops.clone())
+							.with_bolt12_features(features.clone()).unwrap(),
+						final_value_msat: final_amt,
+					}
+				});
+			}
 		}
 	}
 }

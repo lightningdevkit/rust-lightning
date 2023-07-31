@@ -36,14 +36,14 @@ pub struct BlindedPath {
 	/// message or payment's next hop and forward it along.
 	///
 	/// [`encrypted_payload`]: BlindedHop::encrypted_payload
-	pub(crate) introduction_node_id: PublicKey,
+	pub introduction_node_id: PublicKey,
 	/// Used by the introduction node to decrypt its [`encrypted_payload`] to forward the onion
 	/// message or payment.
 	///
 	/// [`encrypted_payload`]: BlindedHop::encrypted_payload
-	pub(crate) blinding_point: PublicKey,
+	pub blinding_point: PublicKey,
 	/// The hops composing the blinded path.
-	pub(crate) blinded_hops: Vec<BlindedHop>,
+	pub blinded_hops: Vec<BlindedHop>,
 }
 
 /// Used to construct the blinded hops portion of a blinded path. These hops cannot be identified
@@ -51,11 +51,11 @@ pub struct BlindedPath {
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct BlindedHop {
 	/// The blinded node id of this hop in a blinded path.
-	pub(crate) blinded_node_id: PublicKey,
+	pub blinded_node_id: PublicKey,
 	/// The encrypted payload intended for this hop in a blinded path.
 	// The node sending to this blinded path will later encode this payload into the onion packet for
 	// this hop.
-	pub(crate) encrypted_payload: Vec<u8>,
+	pub encrypted_payload: Vec<u8>,
 }
 
 impl BlindedPath {
