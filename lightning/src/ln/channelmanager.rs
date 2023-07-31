@@ -7426,7 +7426,9 @@ where
 /// Fetches the set of [`NodeFeatures`] flags which are provided by or required by
 /// [`ChannelManager`].
 pub(crate) fn provided_node_features(config: &UserConfig) -> NodeFeatures {
-	provided_init_features(config).to_context()
+	let mut node_features = provided_init_features(config).to_context();
+	node_features.set_keysend_optional();
+	node_features
 }
 
 /// Fetches the set of [`Bolt11InvoiceFeatures`] flags which are provided by or required by
