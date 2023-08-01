@@ -4,13 +4,14 @@
 // You may not use this file except in accordance with one or both of these
 // licenses.
 
-//! This module contains a simple key-value store trait KVStorePersister that
+//! This module contains a simple key-value store trait [`KVStore`] that
 //! allows one to implement the persistence for [`ChannelManager`], [`NetworkGraph`],
 //! and [`ChannelMonitor`] all in one place.
 
 use core::ops::Deref;
 use bitcoin::hashes::hex::ToHex;
 use crate::io;
+use crate::prelude::{Vec, String};
 use crate::routing::scoring::WriteableScore;
 
 use crate::chain;
@@ -22,7 +23,94 @@ use crate::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate};
 use crate::ln::channelmanager::ChannelManager;
 use crate::routing::router::Router;
 use crate::routing::gossip::NetworkGraph;
-use super::{logger::Logger, ser::Writeable};
+use crate::util::logger::Logger;
+use crate::util::ser::Writeable;
+
+/// The alphabet of characters allowed for namespaces and keys.
+pub const KVSTORE_NAMESPACE_KEY_ALPHABET: &str = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-";
+
+/// The maximum number of characters namespaces and keys may have.
+pub const KVSTORE_NAMESPACE_KEY_MAX_LEN: usize = 120;
+
+/// The namespace under which the [`ChannelManager`] will be persisted.
+pub const CHANNEL_MANAGER_PERSISTENCE_NAMESPACE: &str = "";
+/// The sub-namespace under which the [`ChannelManager`] will be persisted.
+pub const CHANNEL_MANAGER_PERSISTENCE_SUB_NAMESPACE: &str = "";
+/// The key under which the [`ChannelManager`] will be persisted.
+pub const CHANNEL_MANAGER_PERSISTENCE_KEY: &str = "manager";
+
+/// The namespace under which [`ChannelMonitor`]s will be persisted.
+pub const CHANNEL_MONITOR_PERSISTENCE_NAMESPACE: &str = "monitors";
+/// The sub-namespace under which [`ChannelMonitor`]s will be persisted.
+pub const CHANNEL_MONITOR_PERSISTENCE_SUB_NAMESPACE: &str = "";
+
+/// The namespace under which the [`NetworkGraph`] will be persisted.
+pub const NETWORK_GRAPH_PERSISTENCE_NAMESPACE: &str = "";
+/// The sub-namespace under which the [`NetworkGraph`] will be persisted.
+pub const NETWORK_GRAPH_PERSISTENCE_SUB_NAMESPACE: &str = "";
+/// The key under which the [`NetworkGraph`] will be persisted.
+pub const NETWORK_GRAPH_PERSISTENCE_KEY: &str = "network_graph";
+
+/// The namespace under which the [`WriteableScore`] will be persisted.
+pub const SCORER_PERSISTENCE_NAMESPACE: &str = "";
+/// The sub-namespace under which the [`WriteableScore`] will be persisted.
+pub const SCORER_PERSISTENCE_SUB_NAMESPACE: &str = "";
+/// The key under which the [`WriteableScore`] will be persisted.
+pub const SCORER_PERSISTENCE_KEY: &str = "scorer";
+
+/// Provides an interface that allows storage and retrieval of persisted values that are associated
+/// with given keys.
+///
+/// In order to avoid collisions the key space is segmented based on the given `namespace`s and
+/// `sub_namespace`s. Implementations of this trait are free to handle them in different ways, as
+/// long as per-namespace key uniqueness is asserted.
+///
+/// Keys and namespaces are required to be valid ASCII strings in the range of
+/// [`KVSTORE_NAMESPACE_KEY_ALPHABET`] and no longer than [`KVSTORE_NAMESPACE_KEY_MAX_LEN`]. Empty
+/// namespaces and sub-namespaces (`""`) are assumed to be a valid, however, if `namespace` is
+/// empty, `sub_namespace` is required to be empty, too. This means that concerns should always be
+/// separated by namespace first, before sub-namespaces are used. While the number of namespaces
+/// will be relatively small and is determined at compile time, there may be many sub-namespaces
+/// per namespace. Note that per-namespace uniqueness needs to also hold for keys *and*
+/// namespaces/sub-namespaces in any given namespace/sub-namespace, i.e., conflicts between keys
+/// and equally named namespaces/sub-namespaces must be avoided.
+///
+/// **Note:** Users migrating custom persistence backends from the pre-v0.0.117 `KVStorePersister`
+/// interface can use a concatenation of `[{namespace}/[{sub_namespace}/]]{key}` to recover a `key` compatible with the
+/// data model previously assumed by `KVStorePersister::persist`.
+pub trait KVStore {
+	/// Returns the data stored for the given `namespace`, `sub_namespace`, and `key`.
+	///
+	/// Returns an [`ErrorKind::NotFound`] if the given `key` could not be found in the given
+	/// `namespace` and `sub_namespace`.
+	///
+	/// [`ErrorKind::NotFound`]: io::ErrorKind::NotFound
+	fn read(&self, namespace: &str, sub_namespace: &str, key: &str) -> io::Result<Vec<u8>>;
+	/// Persists the given data under the given `key`.
+	///
+	/// Will create the given `namespace` and `sub_namespace` if not already present in the store.
+	fn write(&self, namespace: &str, sub_namespace: &str, key: &str, buf: &[u8]) -> io::Result<()>;
+	/// Removes any data that had previously been persisted under the given `key`.
+	///
+	/// If the `lazy` flag is set to `true`, the backend implementation might choose to lazily
+	/// remove the given `key` at some point in time after the method returns, e.g., as part of an
+	/// eventual batch deletion of multiple keys. As a consequence, subsequent calls to
+	/// [`KVStore::list`] might include the removed key until the changes are actually persisted.
+	///
+	/// Note that while setting the `lazy` flag reduces the I/O burden of multiple subsequent
+	/// `remove` calls, it also influences the atomicity guarantees as lazy `remove`s could
+	/// potentially get lost on crash after the method returns. Therefore, this flag should only be
+	/// set for `remove` operations that can be safely replayed at a later time.
+	///
+	/// Returns successfully if no data will be stored for the given `namespace`, `sub_namespace`, and
+	/// `key`, independently of whether it was present before its invokation or not.
+	fn remove(&self, namespace: &str, sub_namespace: &str, key: &str, lazy: bool) -> io::Result<()>;
+	/// Returns a list of keys that are stored under the given `sub_namespace` in `namespace`.
+	///
+	/// Returns the keys in arbitrary order, so users requiring a particular order need to sort the
+	/// returned keys. Returns an empty list if `namespace` or `sub_namespace` is unknown.
+	fn list(&self, namespace: &str, sub_namespace: &str) -> io::Result<Vec<String>>;
+}
 
 /// Trait for a key-value store for persisting some writeable object at some key
 /// Implementing `KVStorePersister` provides auto-implementations for [`Persister`]

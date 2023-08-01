@@ -1,0 +1,3 @@
+## Backwards Compatibility
+
+* Users migrating custom persistence backends from the pre-v0.0.117 `KVStorePersister` interface can use a concatenation of `[{namespace}/[{sub_namespace}/]]{key}` to recover a `key` compatible with the data model previously assumed by `KVStorePersister::persist`.
