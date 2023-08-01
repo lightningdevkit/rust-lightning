@@ -1440,7 +1440,6 @@ mod fuzzy_internal_msgs {
 	pub struct OnionHopData {
 		pub(crate) format: OnionHopDataFormat,
 		/// The value, in msat, of the payment after this hop's fee is deducted.
-		/// Message serialization may panic if this value is more than 21 million Bitcoin.
 		pub(crate) amt_to_forward: u64,
 		pub(crate) outgoing_cltv_value: u32,
 	}
