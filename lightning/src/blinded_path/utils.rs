@@ -128,9 +128,9 @@ where
 }
 
 /// Encrypt TLV payload to be used as a [`crate::blinded_path::BlindedHop::encrypted_payload`].
-fn encrypt_payload<P: Writeable>(payload: P, encrypted_tlvs_ss: [u8; 32]) -> Vec<u8> {
+fn encrypt_payload<P: Writeable>(payload: P, encrypted_tlvs_rho: [u8; 32]) -> Vec<u8> {
 	let mut writer = VecWriter(Vec::new());
-	let write_adapter = ChaChaPolyWriteAdapter::new(encrypted_tlvs_ss, &payload);
+	let write_adapter = ChaChaPolyWriteAdapter::new(encrypted_tlvs_rho, &payload);
 	write_adapter.write(&mut writer).expect("In-memory writes cannot fail");
 	writer.0
 }
