@@ -114,15 +114,6 @@ pub trait KVStore {
 	fn list(&self, namespace: &str, sub_namespace: &str) -> io::Result<Vec<String>>;
 }
 
-/// Trait for a key-value store for persisting some writeable object at some key
-/// Implementing `KVStorePersister` provides auto-implementations for [`Persister`]
-/// and [`Persist`] traits.  It uses "manager", "network_graph",
-/// and "monitors/{funding_txo_id}_{funding_txo_index}" for keys.
-pub trait KVStorePersister {
-	/// Persist the given writeable using the provided key
-	fn persist<W: Writeable>(&self, key: &str, object: &W) -> io::Result<()>;
-}
-
 /// Trait that handles persisting a [`ChannelManager`], [`NetworkGraph`], and [`WriteableScore`] to disk.
 pub trait Persister<'a, M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, L: Deref, S: WriteableScore<'a>>
 	where M::Target: 'static + chain::Watch<<SP::Target as SignerProvider>::Signer>,
@@ -144,7 +135,8 @@ pub trait Persister<'a, M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: 
 	fn persist_scorer(&self, scorer: &S) -> Result<(), io::Error>;
 }
 
-impl<'a, A: KVStorePersister, M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, L: Deref, S: WriteableScore<'a>> Persister<'a, M, T, ES, NS, SP, F, R, L, S> for A
+
+impl<'a, A: KVStore, M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, L: Deref, S: WriteableScore<'a>> Persister<'a, M, T, ES, NS, SP, F, R, L, S> for A
 	where M::Target: 'static + chain::Watch<<SP::Target as SignerProvider>::Signer>,
 		T::Target: 'static + BroadcasterInterface,
 		ES::Target: 'static + EntropySource,
@@ -154,39 +146,56 @@ impl<'a, A: KVStorePersister, M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Dere
 		R::Target: 'static + Router,
 		L::Target: 'static + Logger,
 {
-	/// Persist the given ['ChannelManager'] to disk with the name "manager", returning an error if persistence failed.
+	/// Persist the given [`ChannelManager`] to disk, returning an error if persistence failed.
 	fn persist_manager(&self, channel_manager: &ChannelManager<M, T, ES, NS, SP, F, R, L>) -> Result<(), io::Error> {
-		self.persist("manager", channel_manager)
+		self.write(CHANNEL_MANAGER_PERSISTENCE_NAMESPACE,
+				   CHANNEL_MANAGER_PERSISTENCE_SUB_NAMESPACE,
+				   CHANNEL_MANAGER_PERSISTENCE_KEY,
+				   &channel_manager.encode())
 	}
 
-	/// Persist the given [`NetworkGraph`] to disk with the name "network_graph", returning an error if persistence failed.
+	/// Persist the given [`NetworkGraph`] to disk, returning an error if persistence failed.
 	fn persist_graph(&self, network_graph: &NetworkGraph<L>) -> Result<(), io::Error> {
-		self.persist("network_graph", network_graph)
+		self.write(NETWORK_GRAPH_PERSISTENCE_NAMESPACE,
+				   NETWORK_GRAPH_PERSISTENCE_SUB_NAMESPACE,
+				   NETWORK_GRAPH_PERSISTENCE_KEY,
+				   &network_graph.encode())
 	}
 
-	/// Persist the given [`WriteableScore`] to disk with name "scorer", returning an error if persistence failed.
+	/// Persist the given [`WriteableScore`] to disk, returning an error if persistence failed.
 	fn persist_scorer(&self, scorer: &S) -> Result<(), io::Error> {
-		self.persist("scorer", &scorer)
+		self.write(SCORER_PERSISTENCE_NAMESPACE,
+				   SCORER_PERSISTENCE_SUB_NAMESPACE,
+				   SCORER_PERSISTENCE_KEY,
+				   &scorer.encode())
 	}
 }
 
-impl<ChannelSigner: WriteableEcdsaChannelSigner, K: KVStorePersister> Persist<ChannelSigner> for K {
+impl<ChannelSigner: WriteableEcdsaChannelSigner, K: KVStore> Persist<ChannelSigner> for K {
 	// TODO: We really need a way for the persister to inform the user that its time to crash/shut
 	// down once these start returning failure.
 	// A PermanentFailure implies we should probably just shut down the node since we're
 	// force-closing channels without even broadcasting!
 
 	fn persist_new_channel(&self, funding_txo: OutPoint, monitor: &ChannelMonitor<ChannelSigner>, _update_id: MonitorUpdateId) -> chain::ChannelMonitorUpdateStatus {
-		let key = format!("monitors/{}_{}", funding_txo.txid.to_hex(), funding_txo.index);
-		match self.persist(&key, monitor) {
+		let key = format!("{}_{}", funding_txo.txid.to_hex(), funding_txo.index);
+		match self.write(
+			CHANNEL_MONITOR_PERSISTENCE_NAMESPACE,
+			CHANNEL_MONITOR_PERSISTENCE_SUB_NAMESPACE,
+			&key, &monitor.encode())
+		{
 			Ok(()) => chain::ChannelMonitorUpdateStatus::Completed,
 			Err(_) => chain::ChannelMonitorUpdateStatus::PermanentFailure,
 		}
 	}
 
 	fn update_persisted_channel(&self, funding_txo: OutPoint, _update: Option<&ChannelMonitorUpdate>, monitor: &ChannelMonitor<ChannelSigner>, _update_id: MonitorUpdateId) -> chain::ChannelMonitorUpdateStatus {
-		let key = format!("monitors/{}_{}", funding_txo.txid.to_hex(), funding_txo.index);
-		match self.persist(&key, monitor) {
+		let key = format!("{}_{}", funding_txo.txid.to_hex(), funding_txo.index);
+		match self.write(
+			CHANNEL_MONITOR_PERSISTENCE_NAMESPACE,
+			CHANNEL_MONITOR_PERSISTENCE_SUB_NAMESPACE,
+			&key, &monitor.encode())
+		{
 			Ok(()) => chain::ChannelMonitorUpdateStatus::Completed,
 			Err(_) => chain::ChannelMonitorUpdateStatus::PermanentFailure,
 		}
