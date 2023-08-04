@@ -10,6 +10,9 @@
 
 #[cfg(ldk_bench)] extern crate criterion;
 
+#[cfg(test)]
+mod test_utils;
+
 mod util;
 
 extern crate lightning;
