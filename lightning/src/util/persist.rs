@@ -9,7 +9,9 @@
 //! and [`ChannelMonitor`] all in one place.
 
 use core::ops::Deref;
-use bitcoin::hashes::hex::ToHex;
+use bitcoin::hashes::hex::{FromHex, ToHex};
+use bitcoin::{BlockHash, Txid};
+
 use crate::io;
 use crate::prelude::{Vec, String};
 use crate::routing::scoring::WriteableScore;
@@ -24,7 +26,7 @@ use crate::ln::channelmanager::ChannelManager;
 use crate::routing::router::Router;
 use crate::routing::gossip::NetworkGraph;
 use crate::util::logger::Logger;
-use crate::util::ser::Writeable;
+use crate::util::ser::{ReadableArgs, Writeable};
 
 /// The alphabet of characters allowed for namespaces and keys.
 pub const KVSTORE_NAMESPACE_KEY_ALPHABET: &str = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-";
@@ -189,4 +191,53 @@ impl<ChannelSigner: WriteableEcdsaChannelSigner, K: KVStorePersister> Persist<Ch
 			Err(_) => chain::ChannelMonitorUpdateStatus::PermanentFailure,
 		}
 	}
+}
+
+/// Read previously persisted [`ChannelMonitor`]s from the store.
+pub fn read_channel_monitors<K: Deref, ES: Deref, SP: Deref>(
+	kv_store: K, entropy_source: ES, signer_provider: SP,
+) -> io::Result<Vec<(BlockHash, ChannelMonitor<<SP::Target as SignerProvider>::Signer>)>>
+where
+	K::Target: KVStore,
+	ES::Target: EntropySource + Sized,
+	SP::Target: SignerProvider + Sized,
+{
+	let mut res = Vec::new();
+
+	for stored_key in kv_store.list(
+		CHANNEL_MONITOR_PERSISTENCE_NAMESPACE, CHANNEL_MONITOR_PERSISTENCE_SUB_NAMESPACE)?
+	{
+		let txid = Txid::from_hex(stored_key.split_at(64).0).map_err(|_| {
+			io::Error::new(io::ErrorKind::InvalidData, "Invalid tx ID in stored key")
+		})?;
+
+		let index: u16 = stored_key.split_at(65).1.parse().map_err(|_| {
+			io::Error::new(io::ErrorKind::InvalidData, "Invalid tx index in stored key")
+		})?;
+
+		match <(BlockHash, ChannelMonitor<<SP::Target as SignerProvider>::Signer>)>::read(
+			&mut io::Cursor::new(
+				kv_store.read(CHANNEL_MONITOR_PERSISTENCE_NAMESPACE, CHANNEL_MONITOR_PERSISTENCE_SUB_NAMESPACE, &stored_key)?),
+			(&*entropy_source, &*signer_provider),
+		) {
+			Ok((block_hash, channel_monitor)) => {
+				if channel_monitor.get_funding_txo().0.txid != txid
+					|| channel_monitor.get_funding_txo().0.index != index
+				{
+					return Err(io::Error::new(
+						io::ErrorKind::InvalidData,
+						"ChannelMonitor was stored under the wrong key",
+					));
+				}
+				res.push((block_hash, channel_monitor));
+			}
+			Err(_) => {
+				return Err(io::Error::new(
+					io::ErrorKind::InvalidData,
+					"Failed to deserialize ChannelMonitor"
+				))
+			}
+		}
+	}
+	Ok(res)
 }
