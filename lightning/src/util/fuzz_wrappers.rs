@@ -6,7 +6,7 @@
 // <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your option.
 // You may not use this file except in accordance with one or both of these
 // licenses.
-
+#[macro_export]
 macro_rules! hash_to_message {
 	($slice: expr) => {
 		{

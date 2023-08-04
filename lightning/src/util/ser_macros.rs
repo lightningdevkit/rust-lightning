@@ -442,6 +442,7 @@ macro_rules! decode_tlv_stream {
 ///
 /// [`FixedLengthReader`]: crate::util::ser::FixedLengthReader
 /// [`DecodeError`]: crate::ln::msgs::DecodeError
+#[macro_export]
 macro_rules! decode_tlv_stream_with_custom_tlv_decode {
 	($stream: expr, {$(($type: expr, $field: ident, $fieldty: tt)),* $(,)*}
 	 $(, $decode_custom_tlv: expr)?) => { {
@@ -590,7 +591,7 @@ macro_rules! impl_writeable_msg {
 		}
 	}
 }
-
+#[macro_export]
 macro_rules! impl_writeable {
 	($st:ident, {$($field:ident),*}) => {
 		impl $crate::util::ser::Writeable for $st {
@@ -632,6 +633,7 @@ macro_rules! impl_writeable {
 /// Both version fields can be specific to this type of object.
 ///
 /// [`DecodeError::UnknownVersion`]: crate::ln::msgs::DecodeError::UnknownVersion
+#[macro_export]
 macro_rules! write_ver_prefix {
 	($stream: expr, $this_version: expr, $min_version_that_can_read_this: expr) => {
 		$stream.write_all(&[$this_version; 1])?;
@@ -659,6 +661,7 @@ macro_rules! write_tlv_fields {
 /// Reads a prefix added by [`write_ver_prefix`], above. Takes the current version of the
 /// serialization logic for this object. This is compared against the
 /// `$min_version_that_can_read_this` added by [`write_ver_prefix`].
+#[macro_export]
 macro_rules! read_ver_prefix {
 	($stream: expr, $this_version: expr) => { {
 		let ver: u8 = Readable::read($stream)?;
@@ -855,6 +858,7 @@ macro_rules! impl_writeable_tlv_based {
 ///
 /// [`Readable`]: crate::util::ser::Readable
 /// [`Writeable`]: crate::util::ser::Writeable
+#[macro_export]
 macro_rules! tlv_stream {
 	($name:ident, $nameref:ident, $range:expr, {
 		$(($type:expr, $field:ident : $fieldty:tt)),* $(,)*
@@ -904,13 +908,13 @@ macro_rules! tlv_stream {
 		}
 	}
 }
-
+#[macro_export]
 macro_rules! tlv_record_type {
 	(($type:ty, $wrapper:ident)) => { $type };
 	(($type:ty, $wrapper:ident, $encoder:ty)) => { $type };
 	($type:ty) => { $type };
 }
-
+#[macro_export]
 macro_rules! tlv_record_ref_type {
 	(char) => { char };
 	(u8) => { u8 };
