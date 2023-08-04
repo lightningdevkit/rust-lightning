@@ -515,3 +515,17 @@ mod tests {
 		added_monitors.clear();
 	}
 }
+
+#[cfg(ldk_bench)]
+/// Benches
+pub mod bench {
+	use criterion::Criterion;
+
+	/// Bench!
+	pub fn bench_sends(bench: &mut Criterion) {
+		let store_a = super::FilesystemStore::new("bench_filesystem_store_a".into());
+		let store_b = super::FilesystemStore::new("bench_filesystem_store_b".into());
+		lightning::ln::channelmanager::bench::bench_two_sends(
+			bench, "bench_filesystem_persisted_sends", store_a, store_b);
+	}
+}
