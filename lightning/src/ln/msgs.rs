@@ -430,7 +430,7 @@ pub struct ChannelReady {
 ///
 /// Use [`TransactionU16LenLimited::into_transaction`] to convert into the contained `Transaction`.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct TransactionU16LenLimited(Transaction);
+pub struct TransactionU16LenLimited(pub Transaction);
 
 impl TransactionU16LenLimited {
 	/// Constructs a new `TransactionU16LenLimited` from a `Transaction` only if it's consensus-

@@ -9,7 +9,8 @@
 
 use std::collections::{HashMap, HashSet};
 
-use bitcoin::{TxIn, Sequence, Transaction, TxOut, OutPoint};
+use bitcoin::{TxIn, Sequence, Transaction, TxOut, OutPoint, Witness};
+use bitcoin::blockdata::constants::WITNESS_SCALE_FACTOR;
 use crate::ln::interactivetxs::ChannelMode::Indeterminate;
 
 use super::msgs::TxAddInput;
@@ -112,11 +113,12 @@ struct NegotiationContext {
 	holder_is_initiator: bool,
 	received_tx_add_input_count: u16,
 	received_tx_add_output_count: u16,
-	inputs: HashMap<u64, TxIn>,
+	inputs: HashMap<u64, (TxIn, TxOut)>,
 	prevtx_outpoints: HashSet<OutPoint>,
 	outputs: HashMap<u64, TxOut>,
 	base_tx: Transaction,
 	did_send_tx_signatures: bool,
+	feerate_sat_per_kw: u32,
 }
 
 struct InteractiveTxStateMachine<S> {
@@ -127,6 +129,7 @@ struct InteractiveTxStateMachine<S> {
 impl InteractiveTxStateMachine<Negotiating> {
 	fn new(
 		channel_id: [u8; 32],
+		feerate_sat_per_kw: u32,
 		require_confirmed_inputs: bool,
 		is_initiator: bool,
 		base_tx: Transaction,
@@ -144,6 +147,7 @@ impl InteractiveTxStateMachine<Negotiating> {
 				inputs: HashMap::new(),
 				prevtx_outpoints: HashSet::new(),
 				outputs: HashMap::new(),
+				feerate_sat_per_kw: feerate_sat_per_kw,
 			},
 			state: Negotiating,
 		}
@@ -160,7 +164,9 @@ impl<S> InteractiveTxStateMachine<S>
 
 	fn receive_tx_add_input(mut self, serial_id: SerialId, msg: TxAddInput, confirmed: bool) ->
 	Result<InteractiveTxStateMachine<Negotiating>, InteractiveTxStateMachine<NegotiationAborted>> {
-		// - TODO: MUST fail the negotiation if:
+		// TODO: clean up this comment
+		// No need to explicitly fail negotiation since PeerManager will disconnect the peer if
+		// `prevtx` is invalid, implicitly ending negotiation.
 		//   - `prevtx` is not a valid transaction
 		if !self.is_valid_counterparty_serial_id(serial_id) {
 			// The receiving node:
@@ -215,11 +221,17 @@ impl<S> InteractiveTxStateMachine<S>
 			return self.abort_negotiation(AbortReason::ReceivedTooManyTxAddInputs);
 		}
 
-		if let None = self.context.inputs.insert(serial_id, TxIn {
+		let prev_out = if let Some(prev_out) = msg.prevtx.0.output.get(msg.prevtx_out as usize) {
+			prev_out.clone()
+		} else {
+			// TODO: New error
+			return self.abort_negotiation(AbortReason::ReceivedTooManyTxAddInputs);
+		};
+		if let None = self.context.inputs.insert(serial_id, (TxIn {
 			previous_output: OutPoint { txid: transaction.txid(), vout: msg.prevtx_out },
 			sequence: Sequence(msg.sequence),
 			..Default::default()
-		}) {
+		}, prev_out)) {
 			Ok(InteractiveTxStateMachine { context: self.context, state: Negotiating {} })
 		} else {
 			// The receiving node:
@@ -323,25 +335,20 @@ impl<S> InteractiveTxStateMachine<S>
 		let tx_to_validate = Transaction {
 			version: self.context.base_tx.version,
 			lock_time: self.context.base_tx.lock_time,
-			input: self.context.inputs.values().cloned().collect(),
+			input: self.context.inputs.values().map(|(input, _)| input).cloned().collect(),
 			output: self.context.outputs.values().cloned().collect(),
 		};
 
 		// The receiving node:
 		// MUST fail the negotiation if:
 
-		// TODO: Verify this is the correct way to do this.
 		// - the peer's total input satoshis is less than their outputs
-		let get_output = |outpoint: &OutPoint| {
-			if outpoint.txid == tx_to_validate.txid() {
-				return tx_to_validate.output.get(outpoint.vout as usize).cloned()
-			} else {
-				None
-			}
-		};
-		if let Err(_) = tx_to_validate.verify(get_output) {
-			return Err(AbortReason::InvalidTransactionState)
-		};
+		let total_input_amount = self.context.inputs.values().map(|(_, prev_out)| prev_out.value).sum();
+		let total_output_amount = tx_to_validate.output.iter().map(|output| output.value).sum();
+		if total_input_amount < total_output_amount {
+			// TODO: New error
+			return Err(AbortReason::CounterpartyAborted);
+		}
 
 		// - there are more than 252 inputs
 		// - there are more than 252 outputs
@@ -358,6 +365,21 @@ impl<S> InteractiveTxStateMachine<S>
 		// if is the non-initiator:
 		// 	- the initiator's fees do not cover the common fields (version, segwit marker + flag,
 		// 		input count, output count, locktime)
+		if !self.context.holder_is_initiator {
+			let total_initiator_input_amount = self.context.inputs.iter().filter_map(|(serial_id, (input, prev_out))|
+				if (serial_id as SerialId).is_valid_for_initiator() { Some(prev_out.value) } else { None }
+			).sum();
+			let total_initiator_output_amount = self.context.outputs.iter().filter_map(|(serial_id, output)|
+				if (serial_id as SerialId).is_valid_for_initiator() { Some(output.value) } else { None }
+			).sum();
+			let initiator_fees_contributed = total_initiator_input_amount - total_initiator_output_amount;
+			let tx_common_fields_weight = (4 /* version */ + 4 /* locktime */ + 1 /* input count */ + 1 /* output count */) * WITNESS_SCALE_FACTOR as u64 + 2 /* segwit marker + flag */;
+			let tx_common_fields_fee = self.context.feerate_sat_per_kw as u64 * 1000 / tx_common_fields_weight;
+			if initiator_fees_contributed < tx_common_fields_weight {
+				// TODO: New error
+				return Err(AbortReason::CounterpartyAborted);
+			}
+		}
 
 		return Ok(())
 	}
