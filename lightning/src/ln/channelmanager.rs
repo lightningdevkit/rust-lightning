@@ -1357,6 +1357,12 @@ pub struct ChannelCounterparty {
 }
 
 /// Details of a channel, as returned by [`ChannelManager::list_channels`] and [`ChannelManager::list_usable_channels`]
+///
+/// Balances of a channel are available through [`ChainMonitor::get_claimable_balances`] and
+/// [`ChannelMonitor::get_claimable_balances`], calculated with respect to the corresponding on-chain
+/// transactions.
+///
+/// [`ChainMonitor::get_claimable_balances`]: crate::chain::chainmonitor::ChainMonitor::get_claimable_balances
 #[derive(Clone, Debug, PartialEq)]
 pub struct ChannelDetails {
 	/// The channel's ID (prior to funding transaction generation, this is a random 32 bytes,
@@ -1432,23 +1438,10 @@ pub struct ChannelDetails {
 	///
 	/// This value will be `None` for objects serialized with LDK versions prior to 0.0.115.
 	pub feerate_sat_per_1000_weight: Option<u32>,
-	/// Our total balance.  This is the amount we would get if we close the channel.
-	/// This value is not exact. Due to various in-flight changes and feerate changes, exactly this
-	/// amount is not likely to be recoverable on close.
-	///
-	/// This does not include any pending HTLCs which are not yet fully resolved (and, thus, whose
-	/// balance is not available for inclusion in new outbound HTLCs). This further does not include
-	/// any pending outgoing HTLCs which are awaiting some other resolution to be sent.
-	/// This does not consider any on-chain fees.
-	///
-	/// See also [`ChannelDetails::outbound_capacity_msat`]
-	pub balance_msat: u64,
 	/// The available outbound capacity for sending HTLCs to the remote peer. This does not include
 	/// any pending HTLCs which are not yet fully resolved (and, thus, whose balance is not
 	/// available for inclusion in new outbound HTLCs). This further does not include any pending
 	/// outgoing HTLCs which are awaiting some other resolution to be sent.
-	///
-	/// See also [`ChannelDetails::balance_msat`]
 	///
 	/// This value is not exact. Due to various in-flight changes, feerate changes, and our
 	/// conflict-avoidance policy, exactly this amount is not likely to be spendable. However, we
@@ -1459,8 +1452,8 @@ pub struct ChannelDetails {
 	/// the current state and per-HTLC limit(s). This is intended for use when routing, allowing us
 	/// to use a limit as close as possible to the HTLC limit we can currently send.
 	///
-	/// See also [`ChannelDetails::next_outbound_htlc_minimum_msat`],
-	/// [`ChannelDetails::balance_msat`], and [`ChannelDetails::outbound_capacity_msat`].
+	/// See also [`ChannelDetails::next_outbound_htlc_minimum_msat`] and
+	/// [`ChannelDetails::outbound_capacity_msat`].
 	pub next_outbound_htlc_limit_msat: u64,
 	/// The minimum value for sending a single HTLC to the remote peer. This is the equivalent of
 	/// [`ChannelDetails::next_outbound_htlc_limit_msat`] but represents a lower-bound, rather than
@@ -1588,7 +1581,6 @@ impl ChannelDetails {
 			channel_value_satoshis: context.get_value_satoshis(),
 			feerate_sat_per_1000_weight: Some(context.get_feerate_sat_per_1000_weight()),
 			unspendable_punishment_reserve: to_self_reserve_satoshis,
-			balance_msat: balance.balance_msat,
 			inbound_capacity_msat: balance.inbound_capacity_msat,
 			outbound_capacity_msat: balance.outbound_capacity_msat,
 			next_outbound_htlc_limit_msat: balance.next_outbound_htlc_limit_msat,
@@ -7621,7 +7613,7 @@ impl Writeable for ChannelDetails {
 			(10, self.channel_value_satoshis, required),
 			(12, self.unspendable_punishment_reserve, option),
 			(14, user_channel_id_low, required),
-			(16, self.balance_msat, required),
+			(16, self.next_outbound_htlc_limit_msat, required),  // Forwards compatibility for removed balance_msat field.
 			(18, self.outbound_capacity_msat, required),
 			(19, self.next_outbound_htlc_limit_msat, required),
 			(20, self.inbound_capacity_msat, required),
@@ -7657,7 +7649,7 @@ impl Readable for ChannelDetails {
 			(10, channel_value_satoshis, required),
 			(12, unspendable_punishment_reserve, option),
 			(14, user_channel_id_low, required),
-			(16, balance_msat, required),
+			(16, _balance_msat, option),  // Backwards compatibility for removed balance_msat field.
 			(18, outbound_capacity_msat, required),
 			// Note that by the time we get past the required read above, outbound_capacity_msat will be
 			// filled in, so we can safely unwrap it here.
@@ -7683,6 +7675,8 @@ impl Readable for ChannelDetails {
 		let user_channel_id = user_channel_id_low as u128 +
 			((user_channel_id_high_opt.unwrap_or(0 as u64) as u128) << 64);
 
+		let _balance_msat: Option<u64> = _balance_msat;
+
 		Ok(Self {
 			inbound_scid_alias,
 			channel_id: channel_id.0.unwrap(),
@@ -7695,7 +7689,6 @@ impl Readable for ChannelDetails {
 			channel_value_satoshis: channel_value_satoshis.0.unwrap(),
 			unspendable_punishment_reserve,
 			user_channel_id,
-			balance_msat: balance_msat.0.unwrap(),
 			outbound_capacity_msat: outbound_capacity_msat.0.unwrap(),
 			next_outbound_htlc_limit_msat: next_outbound_htlc_limit_msat.0.unwrap(),
 			next_outbound_htlc_minimum_msat: next_outbound_htlc_minimum_msat.0.unwrap(),
