@@ -126,6 +126,32 @@ struct NegotiationContext {
 	feerate_sat_per_kw: u32,
 }
 
+impl NegotiationContext {
+	fn initiator_inputs_contributed(&self) -> impl Iterator<Item = &TransactionInputWithPrevOutput> {
+		self.inputs.iter()
+			.filter(|(serial_id, _)| serial_id.is_valid_for_initiator())
+			.map(|(_, input_with_prevout)| input_with_prevout)
+	}
+
+	fn non_initiator_inputs_contributed(&self) -> impl Iterator<Item = &TransactionInputWithPrevOutput> {
+		self.inputs.iter()
+			.filter(|(serial_id, _)| !serial_id.is_valid_for_initiator())
+			.map(|(_, input_with_prevout)| input_with_prevout)
+	}
+
+	fn initiator_outputs_contributed(&self) -> impl Iterator<Item = &TxOut> {
+		self.outputs.iter()
+			.filter(|(serial_id, _)| serial_id.is_valid_for_initiator())
+			.map(|(_, output)| output)
+	}
+
+	fn non_initiator_outputs_contributed(&self) -> impl Iterator<Item = &TxOut> {
+		self.outputs.iter()
+			.filter(|(serial_id, _)| !serial_id.is_valid_for_initiator())
+			.map(|(_, output)| output)
+	}
+}
+
 struct InteractiveTxStateMachine<S> {
 	context: NegotiationContext,
 	state: S,
@@ -272,7 +298,18 @@ impl<S> InteractiveTxStateMachine<S>
 
 	fn receive_tx_add_output(mut self, serial_id: u64, output: TxOut) ->
 	Result<InteractiveTxStateMachine<Negotiating>, InteractiveTxStateMachine<NegotiationAborted>> {
-		// TODO: the sats amount is less than the dust_limit
+		// The receiving node:
+		//  - MUST fail the negotiation if:
+		//     - the serial_id has the wrong parity
+		if serial_id.is_valid_for_initiator() && self.context.holder_is_initiator {
+			// TODO: New error
+			return self.abort_negotiation(AbortReason::ReceivedTooManyTxAddOutputs);
+		}
+		if !serial_id.is_valid_for_initiator() && !self.context.holder_is_initiator {
+			// TODO: Same error as above
+			return self.abort_negotiation(AbortReason::ReceivedTooManyTxAddOutputs);
+		}
+
 		self.context.received_tx_add_output_count += 1;
 		if self.context.received_tx_add_output_count > MAX_RECEIVED_TX_ADD_OUTPUT_COUNT {
 			// The receiving node:
@@ -281,10 +318,27 @@ impl<S> InteractiveTxStateMachine<S>
 			return self.abort_negotiation(AbortReason::ReceivedTooManyTxAddOutputs);
 		}
 
+		if output.value < output.script_pubkey.dust_value().to_sat() {
+			// The receiving node:
+			// - MUST fail the negotiation if:
+			//		- the sats amount is less than the dust_limit
+			// TODO: New error
+			return self.abort_negotiation(AbortReason::ExceededMaximumSatsAllowed);
+		}
 		if output.value > MAX_MONEY {
 			// The receiving node:
 			// - MUST fail the negotiation if:
 			//		- the sats amount is greater than 2,100,000,000,000,000 (MAX_MONEY)
+			return self.abort_negotiation(AbortReason::ExceededMaximumSatsAllowed);
+		}
+
+		// The receiving node:
+		//   - MUST accept P2WSH, P2WPKH, P2TR scripts
+		//   - MAY fail the negotiation if script is non-standard
+		if !output.script_pubkey.is_v0_p2wpkh() && !output.script_pubkey.is_v0_p2wsh() &&
+			!output.script_pubkey.is_v1_p2tr()
+		{
+			// TODO: New error
 			return self.abort_negotiation(AbortReason::ExceededMaximumSatsAllowed);
 		}
 
@@ -303,7 +357,7 @@ impl<S> InteractiveTxStateMachine<S>
 		if !self.is_valid_counterparty_serial_id(serial_id) {
 			return self.abort_negotiation(AbortReason::IncorrectSerialIdParity);
 		}
-		
+
 		if let Some(output) = self.context.outputs.remove(&serial_id) {
 			Ok(InteractiveTxStateMachine { context: self.context, state: Negotiating {} })
 		} else {
@@ -378,21 +432,36 @@ impl<S> InteractiveTxStateMachine<S>
 			return Err(AbortReason::TransactionTooLarge)
 		}
 
-		// TODO: Need to figure out how to do this
-		// if is the non-initiator:
-		// 	- the initiator's fees do not cover the common fields (version, segwit marker + flag,
-		// 		input count, output count, locktime)
-		if !self.context.holder_is_initiator {
-			let total_initiator_input_amount: u64 = self.context.inputs.iter().filter_map(|(serial_id, input_with_prevout)|
-				if serial_id.is_valid_for_initiator() { Some(input_with_prevout.prev_output.value) } else { None }
-			).sum();
-			let total_initiator_output_amount: u64 = self.context.outputs.iter().filter_map(|(serial_id, output)|
-				if serial_id.is_valid_for_initiator() { Some(output.value) } else { None }
-			).sum();
-			let initiator_fees_contributed = total_initiator_input_amount - total_initiator_output_amount;
+		// TODO:
+		// - Use existing rust-lightning/rust-bitcoin constants.
+		// - How do we enforce their fees cover the witness without knowing its expected length?
+		// 	 - Read eclair's code to see if they do this?
+		const INPUT_WEIGHT: u64 = (32 + 4 + 4) * WITNESS_SCALE_FACTOR as u64;
+		const OUTPUT_WEIGHT: u64 = 8 * WITNESS_SCALE_FACTOR as u64;
+
+		// - the peer's paid feerate does not meet or exceed the agreed feerate (based on the minimum fee).
+		if self.context.holder_is_initiator {
+			let non_initiator_fees_contributed: u64 = self.context.non_initiator_outputs_contributed().map(|output| output.value).sum::<u64>() -
+				self.context.non_initiator_inputs_contributed().map(|input| input.prev_output.value).sum::<u64>();
+			let non_initiator_contribution_weight = self.context.non_initiator_inputs_contributed().count() as u64 * INPUT_WEIGHT +
+				self.context.non_initiator_outputs_contributed().count() as u64 * OUTPUT_WEIGHT;
+			let required_non_initiator_contribution_fee = self.context.feerate_sat_per_kw as u64 * 1000 / non_initiator_contribution_weight;
+			if non_initiator_fees_contributed < required_non_initiator_contribution_fee {
+				// TODO: New error
+				return Err(AbortReason::CounterpartyAborted);
+			}
+		} else {
+			// if is the non-initiator:
+			// 	- the initiator's fees do not cover the common fields (version, segwit marker + flag,
+			// 		input count, output count, locktime)
+			let initiator_fees_contributed: u64 = self.context.initiator_outputs_contributed().map(|output| output.value).sum::<u64>() -
+				self.context.initiator_inputs_contributed().map(|input| input.prev_output.value).sum::<u64>();
+			let initiator_contribution_weight = self.context.initiator_inputs_contributed().count() as u64 * INPUT_WEIGHT +
+				self.context.initiator_outputs_contributed().count() as u64 * OUTPUT_WEIGHT;
+			let required_initiator_contribution_fee = self.context.feerate_sat_per_kw as u64 * 1000 / initiator_contribution_weight;
 			let tx_common_fields_weight = (4 /* version */ + 4 /* locktime */ + 1 /* input count */ + 1 /* output count */) * WITNESS_SCALE_FACTOR as u64 + 2 /* segwit marker + flag */;
 			let tx_common_fields_fee = self.context.feerate_sat_per_kw as u64 * 1000 / tx_common_fields_weight;
-			if initiator_fees_contributed < tx_common_fields_weight {
+			if initiator_fees_contributed < tx_common_fields_fee + required_initiator_contribution_fee {
 				// TODO: New error
 				return Err(AbortReason::CounterpartyAborted);
 			}
