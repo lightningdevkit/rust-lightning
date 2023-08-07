@@ -684,7 +684,7 @@ impl OutboundPayments {
 			Some(route_params.payment_params.clone()), entropy_source, best_block_height)
 			.map_err(|_| RetryableSendFailure::DuplicatePayment)?;
 
-		let res = self.pay_route_internal(&route, payment_hash, recipient_onion, None, payment_id, None,
+		let res = self.pay_route_internal(&route, payment_hash, recipient_onion, keysend_preimage, payment_id, None,
 			onion_session_privs, node_signer, best_block_height, &send_payment_along_path);
 		log_info!(logger, "Result sending payment with id {}: {:?}", log_bytes!(payment_id.0), res);
 		if let Err(e) = res {

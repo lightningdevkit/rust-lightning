@@ -237,6 +237,62 @@ fn mpp_receive_timeout() {
 }
 
 #[test]
+fn test_keysend_payments() {
+	do_test_keysend_payments(false, false);
+	do_test_keysend_payments(false, true);
+	do_test_keysend_payments(true, false);
+	do_test_keysend_payments(true, true);
+}
+
+fn do_test_keysend_payments(public_node: bool, with_retry: bool) {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	if public_node {
+		create_announced_chan_between_nodes(&nodes, 0, 1);
+	} else {
+		create_chan_between_nodes(&nodes[0], &nodes[1]);
+	}
+	let payer_pubkey = nodes[0].node.get_our_node_id();
+	let payee_pubkey = nodes[1].node.get_our_node_id();
+	let route_params = RouteParameters {
+		payment_params: PaymentParameters::for_keysend(payee_pubkey, 40, false),
+		final_value_msat: 10000,
+	};
+
+	let network_graph = nodes[0].network_graph.clone();
+	let channels = nodes[0].node.list_usable_channels();
+	let first_hops = channels.iter().collect::<Vec<_>>();
+	let first_hops = if public_node { None } else { Some(first_hops.as_slice()) };
+
+	let scorer = test_utils::TestScorer::new();
+	let random_seed_bytes = chanmon_cfgs[1].keys_manager.get_secure_random_bytes();
+	let route = find_route(
+		&payer_pubkey, &route_params, &network_graph, first_hops,
+		nodes[0].logger, &scorer, &(), &random_seed_bytes
+	).unwrap();
+
+	let test_preimage = PaymentPreimage([42; 32]);
+	let payment_hash = if with_retry {
+		nodes[0].node.send_spontaneous_payment_with_retry(Some(test_preimage),
+			RecipientOnionFields::spontaneous_empty(), PaymentId(test_preimage.0),
+			route_params, Retry::Attempts(1)).unwrap()
+	} else {
+		nodes[0].node.send_spontaneous_payment(&route, Some(test_preimage),
+			RecipientOnionFields::spontaneous_empty(), PaymentId(test_preimage.0)).unwrap()
+	};
+	check_added_monitors!(nodes[0], 1);
+	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 1);
+	let event = events.pop().unwrap();
+	let path = vec![&nodes[1]];
+	pass_along_path(&nodes[0], &path, 10000, payment_hash, None, event, true, Some(test_preimage));
+	claim_payment(&nodes[0], &path, test_preimage);
+}
+
+#[test]
 fn test_mpp_keysend() {
 	let mut mpp_keysend_config = test_default_channel_config();
 	mpp_keysend_config.accept_mpp_keysend = true;
