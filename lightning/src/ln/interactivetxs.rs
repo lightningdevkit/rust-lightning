@@ -107,13 +107,18 @@ pub(crate) struct NegotiationAborted(AbortReason);
 impl AcceptingChanges for Negotiating {}
 impl AcceptingChanges for OurTxComplete {}
 
+struct TransactionInputWithPrevOutput {
+	input: TxIn,
+	prev_output: TxOut,
+}
+
 struct NegotiationContext {
 	channel_id: [u8; 32],
 	require_confirmed_inputs: bool,
 	holder_is_initiator: bool,
 	received_tx_add_input_count: u16,
 	received_tx_add_output_count: u16,
-	inputs: HashMap<u64, (TxIn, TxOut)>,
+	inputs: HashMap<u64, TransactionInputWithPrevOutput>,
 	prevtx_outpoints: HashSet<OutPoint>,
 	outputs: HashMap<u64, TxOut>,
 	base_tx: Transaction,
@@ -186,7 +191,7 @@ impl<S> InteractiveTxStateMachine<S>
 			return self.abort_negotiation(AbortReason::InputsNotConfirmed);
 		}
 
-		let transaction = msg.prevtx.into_transaction();
+		let transaction = msg.prevtx.clone().into_transaction();
 
 		if let Some(tx_out) = transaction.output.get(msg.prevtx_out as usize) {
 			if !tx_out.script_pubkey.is_witness_program() {
@@ -227,11 +232,17 @@ impl<S> InteractiveTxStateMachine<S>
 			// TODO: New error
 			return self.abort_negotiation(AbortReason::ReceivedTooManyTxAddInputs);
 		};
-		if let None = self.context.inputs.insert(serial_id, (TxIn {
-			previous_output: OutPoint { txid: transaction.txid(), vout: msg.prevtx_out },
-			sequence: Sequence(msg.sequence),
-			..Default::default()
-		}, prev_out)) {
+		if let None = self.context.inputs.insert(
+			serial_id,
+			TransactionInputWithPrevOutput {
+				input: TxIn {
+					previous_output: OutPoint { txid: transaction.txid(), vout: msg.prevtx_out },
+					sequence: Sequence(msg.sequence),
+					..Default::default()
+				},
+				prev_output: prev_out
+			}
+		) {
 			Ok(InteractiveTxStateMachine { context: self.context, state: Negotiating {} })
 		} else {
 			// The receiving node:
@@ -248,7 +259,7 @@ impl<S> InteractiveTxStateMachine<S>
 		}
 
 		if let Some(input) = self.context.inputs.remove(&serial_id) {
-			self.context.prevtx_outpoints.remove(&input.previous_output);
+			self.context.prevtx_outpoints.remove(&input.input.previous_output);
 			Ok(InteractiveTxStateMachine { context: self.context, state: Negotiating {} })
 		} else {
 			// The receiving node:
@@ -300,8 +311,14 @@ impl<S> InteractiveTxStateMachine<S>
 		}
 	}
 
-	fn send_tx_add_input(mut self, serial_id: u64, input: TxIn) -> InteractiveTxStateMachine<Negotiating> {
-		self.context.inputs.insert(serial_id, input);
+	fn send_tx_add_input(mut self, serial_id: u64, input: TxIn, prevout: TxOut) -> InteractiveTxStateMachine<Negotiating> {
+		self.context.inputs.insert(
+			serial_id,
+			TransactionInputWithPrevOutput {
+				input: input,
+				prev_output: prevout
+			}
+		);
 		InteractiveTxStateMachine { context: self.context, state: Negotiating {} }
 	}
 
@@ -335,7 +352,7 @@ impl<S> InteractiveTxStateMachine<S>
 		let tx_to_validate = Transaction {
 			version: self.context.base_tx.version,
 			lock_time: self.context.base_tx.lock_time,
-			input: self.context.inputs.values().map(|(input, _)| input).cloned().collect(),
+			input: self.context.inputs.values().map(|p| p.input.clone()).collect(),
 			output: self.context.outputs.values().cloned().collect(),
 		};
 
@@ -343,7 +360,7 @@ impl<S> InteractiveTxStateMachine<S>
 		// MUST fail the negotiation if:
 
 		// - the peer's total input satoshis is less than their outputs
-		let total_input_amount = self.context.inputs.values().map(|(_, prev_out)| prev_out.value).sum();
+		let total_input_amount: u64 = self.context.inputs.values().map(|p| p.prev_output.value).sum();
 		let total_output_amount = tx_to_validate.output.iter().map(|output| output.value).sum();
 		if total_input_amount < total_output_amount {
 			// TODO: New error
@@ -366,11 +383,11 @@ impl<S> InteractiveTxStateMachine<S>
 		// 	- the initiator's fees do not cover the common fields (version, segwit marker + flag,
 		// 		input count, output count, locktime)
 		if !self.context.holder_is_initiator {
-			let total_initiator_input_amount = self.context.inputs.iter().filter_map(|(serial_id, (input, prev_out))|
-				if (serial_id as SerialId).is_valid_for_initiator() { Some(prev_out.value) } else { None }
+			let total_initiator_input_amount: u64 = self.context.inputs.iter().filter_map(|(serial_id, input_with_prevout)|
+				if serial_id.is_valid_for_initiator() { Some(input_with_prevout.prev_output.value) } else { None }
 			).sum();
-			let total_initiator_output_amount = self.context.outputs.iter().filter_map(|(serial_id, output)|
-				if (serial_id as SerialId).is_valid_for_initiator() { Some(output.value) } else { None }
+			let total_initiator_output_amount: u64 = self.context.outputs.iter().filter_map(|(serial_id, output)|
+				if serial_id.is_valid_for_initiator() { Some(output.value) } else { None }
 			).sum();
 			let initiator_fees_contributed = total_initiator_input_amount - total_initiator_output_amount;
 			let tx_common_fields_weight = (4 /* version */ + 4 /* locktime */ + 1 /* input count */ + 1 /* output count */) * WITNESS_SCALE_FACTOR as u64 + 2 /* segwit marker + flag */;
@@ -440,7 +457,7 @@ impl InteractiveTxStateMachine<NegotiationComplete> {
 		return Ok(Transaction {
 			version: self.context.base_tx.version,
 			lock_time: self.context.base_tx.lock_time,
-			input: self.context.inputs.values().cloned().collect(),
+			input: self.context.inputs.values().map(|p| p.input.clone()).collect(),
 			output: self.context.outputs.values().cloned().collect(),
 		})
 	}
@@ -474,6 +491,7 @@ impl InteractiveTxConstructor {
 	) -> Self {
 		let initial_state_machine = InteractiveTxStateMachine::new(
 			channel_id,
+			4,
 			require_confirmed_inputs,
 			is_initiator,
 			base_tx,
@@ -504,8 +522,8 @@ impl InteractiveTxConstructor {
 		self.handle_negotiating_receive(|state_machine| state_machine.receive_tx_remove_output(serial_id))
 	}
 
-	pub(crate) fn send_tx_add_input(&mut self, serial_id: SerialId, transaction_input: TxIn) {
-		self.handle_negotiating_send(|state_machine| state_machine.send_tx_add_input(serial_id, transaction_input))
+	pub(crate) fn send_tx_add_input(&mut self, serial_id: SerialId, transaction_input: TxIn, previous_output: TxOut) {
+		self.handle_negotiating_send(|state_machine| state_machine.send_tx_add_input(serial_id, transaction_input, previous_output))
 	}
 
 	pub(crate) fn send_tx_remove_input(&mut self, serial_id: SerialId) {
