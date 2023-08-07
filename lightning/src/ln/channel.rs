@@ -5141,17 +5141,17 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 							return Err(ClosureReason::ProcessingError { err: err_reason.to_owned() });
 						} else {
 							if self.is_outbound() {
+								// TODO put it back, add witness to splice tx
+								/*
 								for input in tx.input.iter() {
-									// TODO put it back, add witness to splice tx
-									/*
 									if input.witness.is_empty() {
 										// We generated a malleable funding transaction, implying we've
 										// just exposed ourselves to funds loss to our counterparty.
 										#[cfg(not(fuzzing))]
 										panic!("Client called ChannelManager::funding_transaction_generated with bogus transaction!");
 									}
-									*/
 								}
+								*/
 							}
 							self.funding_tx_confirmation_height = height;
 							self.funding_tx_confirmed_in = Some(*block_hash);
@@ -5525,7 +5525,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 	/// or if called on an inbound channel.
 	/// Note that channel_id is not changed.
 	/// Do NOT broadcast the splicing transaction until after a successful splicing_signed call!
-	pub fn get_outbound_splice_created<L: Deref>(&mut self, splice_transaction: Transaction, splice_txo: OutPoint, logger: &L) -> Result<msgs::SpliceCreated, ChannelError> where L::Target: Logger {
+	pub fn get_outbound_splice_created<L: Deref>(&mut self, splice_transaction: Transaction, splice_txo: OutPoint, splice_prev_funding_input_index: u16, logger: &L) -> Result<msgs::SpliceCreated, ChannelError> where L::Target: Logger {
 		if !self.is_outbound() {
 			panic!("Tried to create outbound splice_created message on an inbound channel!");
 		}
@@ -5567,12 +5567,14 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		// Now that we're past error-generating stuff, update our local state:
 		self.channel_state = ChannelState::FundingCreated as u32; // TODO not needed. Or maybe new states are needed?
 		// self.channel_id = funding_txo.to_channel_id(); // TODO not needed, remove
-		self.funding_transaction = Some(splice_transaction);
+		self.funding_transaction = Some(splice_transaction.clone());
 
 		Ok(msgs::SpliceCreated {
 			channel_id: self.channel_id,
 			splice_txid: splice_txo.txid,
 			funding_output_index: splice_txo.index,
+			splice_transaction,
+			splice_prev_funding_input_index,
 			signature,
 			// #[cfg(taproot)]
 			// partial_signature_with_nonce: None,
@@ -5609,6 +5611,59 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			panic!("Should not have advanced channel commitment tx numbers prior to funding_created");
 		}
 		*/
+
+		/*
+		// Create our signature on the funding tx
+		// TODO
+		let funding_signature = self.holder_signer.sign_counterparty_commitment(commitment_tx, preimages, secp_ctx)
+		// let counterparty_signature = self.holder_signer.sign_counterparty_commitment(&counterparty_initial_commitment_tx, Vec::new(), &self.secp_ctx)
+		// 		.map_err(|_| ChannelError::Close("Failed to get signatures for new commitment_signed".to_owned()))?.0;
+
+
+
+		// from chan_utils
+		/// Get the SIGHASH_ALL sighash value of the transaction.
+		///
+		/// This can be used to verify a signature.
+		pub fn get_sighash_all(&self, funding_redeemscript: &Script, channel_value_satoshis: u64) -> Message {
+			let sighash = &sighash::SighashCache::new(&self.transaction).segwit_signature_hash(0, funding_redeemscript, channel_value_satoshis, EcdsaSighashType::All).unwrap()[..];
+			hash_to_message!(sighash)
+		}
+
+		/// Signs the counterparty's commitment transaction.
+		pub fn sign_counterparty_commitment<T: secp256k1::Signing>(&self, funding_key: &SecretKey, funding_redeemscript: &Script, channel_value_satoshis: u64, secp_ctx: &Secp256k1<T>) -> Signature {
+			let sighash = self.get_sighash_all(funding_redeemscript, channel_value_satoshis);
+			sign(secp_ctx, &sighash, funding_key)
+		}
+
+
+		// from keysinterface
+		fn sign_counterparty_commitment(&self, commitment_tx: &CommitmentTransaction, _preimages: Vec<PaymentPreimage>, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<(Signature, Vec<Signature>), ()> {
+			let trusted_tx = commitment_tx.trust();
+			let keys = trusted_tx.keys();
+	
+			let funding_pubkey = PublicKey::from_secret_key(secp_ctx, &self.funding_key);
+			let channel_funding_redeemscript = make_funding_redeemscript(&funding_pubkey, &self.counterparty_pubkeys().funding_pubkey);
+	
+			let built_tx = trusted_tx.built_transaction();
+			// println!("sign_counterparty_commitment tx {:?} {:?}  channel_value_satoshis {}", built_tx.txid, built_tx.transaction.encode(), self.channel_value_satoshis);
+			let commitment_sig = built_tx.sign_counterparty_commitment(&self.funding_key, &channel_funding_redeemscript, self.channel_value_satoshis, secp_ctx);
+			let commitment_txid = built_tx.txid;
+	
+			let mut htlc_sigs = Vec::with_capacity(commitment_tx.htlcs().len());
+			for htlc in commitment_tx.htlcs() {
+				let channel_parameters = self.get_channel_parameters();
+				let htlc_tx = chan_utils::build_htlc_transaction(&commitment_txid, commitment_tx.feerate_per_kw(), self.holder_selected_contest_delay(), htlc, self.opt_anchors(), channel_parameters.opt_non_zero_fee_anchors.is_some(), &keys.broadcaster_delayed_payment_key, &keys.revocation_key);
+				let htlc_redeemscript = chan_utils::get_htlc_redeemscript(&htlc, self.opt_anchors(), &keys);
+				let htlc_sighashtype = if self.opt_anchors() { EcdsaSighashType::SinglePlusAnyoneCanPay } else { EcdsaSighashType::All };
+				let htlc_sighash = hash_to_message!(&sighash::SighashCache::new(&htlc_tx).segwit_signature_hash(0, &htlc_redeemscript, htlc.amount_msat / 1000, htlc_sighashtype).unwrap()[..]);
+				let holder_htlc_key = chan_utils::derive_private_key(&secp_ctx, &keys.per_commitment_point, &self.htlc_base_key);
+				htlc_sigs.push(sign(secp_ctx, &htlc_sighash, &holder_htlc_key));
+			}
+	
+			Ok((commitment_sig, htlc_sigs))
+		*/
+
 
 		// Commit to the new channel value (capacity). The increase belongs to them.
 		// TODO: what if the the new splicing TX never locks?
@@ -5649,6 +5704,10 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		self.holder_signer.validate_holder_commitment(&holder_commitment_tx, Vec::new())
 			.map_err(|_| ChannelError::Close("Failed to validate our commitment".to_owned()))?;
 
+		// Create our signature on the funding tx
+		// TODO do it earlier, differently
+		let funding_signature = signature.clone(); // TODO this is only a placeholder
+
 		// Now that we're past error-generating stuff, update our local state:
 
 		let funding_redeemscript = self.get_funding_redeemscript();
@@ -5681,6 +5740,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 
 		Ok((msgs::SpliceSigned {
 			channel_id: self.channel_id,
+			funding_signature,
 			signature,
 			#[cfg(taproot)]
 			partial_signature_with_nonce: None,

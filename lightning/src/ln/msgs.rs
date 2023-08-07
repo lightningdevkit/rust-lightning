@@ -28,6 +28,7 @@ use bitcoin::secp256k1::PublicKey;
 use bitcoin::secp256k1::ecdsa::Signature;
 use bitcoin::secp256k1;
 use bitcoin::blockdata::script::Script;
+use bitcoin::blockdata::transaction::Transaction;
 use bitcoin::hash_types::{Txid, BlockHash};
 
 use crate::ln::features::{ChannelFeatures, ChannelTypeFeatures, InitFeatures, NodeFeatures};
@@ -918,7 +919,7 @@ pub struct SpliceAck {
 	pub chain_hash: BlockHash,
 	/// The channel ID
 	pub channel_id: [u8; 32],
-	/// The post-slice channel value
+	/// The post-splice channel value
 	pub funding_satoshis: u64,
 	/// The acceptors's key controlling the funding transaction
 	pub funding_pubkey: PublicKey,
@@ -931,11 +932,15 @@ pub struct SpliceAck {
 pub struct SpliceCreated {
 	/// The channel ID
 	pub channel_id: [u8; 32],
-	/// The splicing transaction ID
+	/// The splicing transaction ID (not yet signed nor broadcast)
 	pub splice_txid: Txid,
 	/// The specific output index funding this channel
 	pub funding_output_index: u16,
-	/// The signature of the channel initiator (funder) on the post-splice commitment transaction
+	/// The complete splice funding transaction, used for signing by the other party. Not needed in final version with tx negotiation, TODO remove
+	pub splice_transaction: Transaction,
+	/// The input index in the splice transaction that is the previous funding transaction, used by the other party for signing. Not needed in final version with tx negotiation, TODO remove
+	pub splice_prev_funding_input_index: u16,
+	/// The signature of the splice initiator (funder) on the post-splice commitment transaction
 	pub signature: Signature,
 	/*
 	#[cfg(taproot)]
@@ -953,7 +958,11 @@ pub struct SpliceCreated {
 pub struct SpliceSigned {
 	/// The channel ID
 	pub channel_id: [u8; 32],
-	/// The signature of the channel acceptor (fundee) on the post-splice commitment transaction
+	/// The signature of the splice acceptor (fundee) on the splicing transaction.
+	/// This should be the result of transaction negotiation, and not needed here, it is needed only in the prototype, TODO remove it later.
+	/// Not to be confused with the `signature` field.
+	pub funding_signature: Signature,
+	/// The signature of the splice acceptor (fundee) on the post-splice commitment transaction
 	pub signature: Signature,
 	/*
 	#[cfg(taproot)]
@@ -2245,6 +2254,8 @@ impl_writeable_msg!(SpliceCreated, {
 	channel_id,
 	splice_txid,
 	funding_output_index,
+	splice_transaction,
+	splice_prev_funding_input_index,
 	signature
 }, {});
 
@@ -2252,6 +2263,7 @@ impl_writeable_msg!(SpliceCreated, {
 // #[cfg(not(taproot))]
 impl_writeable_msg!(SpliceSigned, {
 	channel_id,
+	funding_signature,
 	signature
 }, {});
 

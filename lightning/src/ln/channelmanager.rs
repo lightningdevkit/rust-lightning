@@ -3034,8 +3034,11 @@ where
 	/// #SPLICING
 	/// Handles the generation of a splicing transaction, optionally (for tests) with a function
 	/// which checks the correctness of the splicing transaction given the associated channel.
-	fn splice_transaction_generated_intern<FundingOutput: Fn(&Channel<<SP::Target as SignerProvider>::Signer>, &Transaction) -> Result<OutPoint, APIError>>(
-		&self, channel_id: &[u8; 32], counterparty_node_id: &PublicKey, splice_transaction: Transaction, find_funding_output: FundingOutput
+	fn splice_transaction_generated_intern<
+		FundingInput: Fn(&Channel<<SP::Target as SignerProvider>::Signer>, &Transaction) -> Result<u16, APIError>,
+		FundingOutput: Fn(&Channel<<SP::Target as SignerProvider>::Signer>, &Transaction) -> Result<OutPoint, APIError>
+	>(
+		&self, channel_id: &[u8; 32], counterparty_node_id: &PublicKey, splice_transaction: Transaction, find_prev_funding_input: FundingInput, find_funding_output: FundingOutput
 	) -> Result<(), APIError> {
 		let per_peer_state = self.per_peer_state.read().unwrap();
 		let peer_state_mutex = per_peer_state.get(counterparty_node_id)
@@ -3049,10 +3052,11 @@ where
 		// Here we don't change the channel.
 		let (msg, chan_cparty_node_id) = match peer_state.channel_by_id.get_mut(channel_id) {
 			Some(chan) => {
+				let prev_funding_txinp = find_prev_funding_input(&chan, &splice_transaction)?;
 				let funding_txo = find_funding_output(&chan, &splice_transaction)?;
-				// log_trace!(self.logger, "... fund_tx_outpoint {} {}", log_bytes!(funding_txo.txid), funding_txo.index);
+				log_trace!(self.logger, "... prev_funding_txinp {}  fund_tx_outpoint {} {}", prev_funding_txinp,  log_bytes!(funding_txo.txid), funding_txo.index);
 
-				let funding_res = chan.get_outbound_splice_created(splice_transaction, funding_txo, &self.logger)
+				let funding_res = chan.get_outbound_splice_created(splice_transaction, funding_txo, prev_funding_txinp, &self.logger)
 					.map_err(|e| if let ChannelError::Close(msg) = e {
 						MsgHandleErrInternal::from_finish_shutdown(msg, chan.channel_id(), chan.get_user_id(), chan.force_shutdown(true), None)
 					} else { unreachable!(); });
@@ -3184,6 +3188,8 @@ where
 	/// Call this upon creation of a splicing transaction for the given channel.
 	///
 	/// TODO doc
+	///
+	/// splice_transaction: The new splice funding transaction being prepared, without all signatures. It must contain an input the previous funding transaction, and an output that is the new funding transaction.
 	pub fn splice_transaction_generated(&self, channel_id: &[u8; 32], counterparty_node_id: &PublicKey, splice_transaction: Transaction) -> Result<(), APIError> {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 
@@ -3209,31 +3215,58 @@ where
 				});
 			}
 		}
-		self.splice_transaction_generated_intern(channel_id, counterparty_node_id, splice_transaction, |chan, tx| {
-			let mut output_index = None;
-			let expected_spk = chan.get_funding_redeemscript().to_v0_p2wsh();
-			for (idx, outp) in tx.output.iter().enumerate() {
-				if outp.script_pubkey == expected_spk && outp.value == chan.pending_splicing_channel_value {
-					if output_index.is_some() {
-						return Err(APIError::APIMisuseError {
-							err: "Multiple outputs matched the expected script and value".to_owned()
-						});
+		self.splice_transaction_generated_intern(channel_id, counterparty_node_id, splice_transaction,
+			|chan, tx| {
+				let mut input_index = None;
+				let expected_inp = chan.get_funding_txo().unwrap();
+				for (idx, inp) in tx.input.iter().enumerate() {
+					if inp.previous_output.txid == expected_inp.txid && (inp.previous_output.vout == (expected_inp.index as u32)) /* && inp.value == chan.channel_value */ {
+						if input_index.is_some() {
+							return Err(APIError::APIMisuseError {
+								err: "Multiple inputs matched the expected input address and value".to_owned()
+							});
+						}
+						if idx > u16::max_value() as usize {
+							return Err(APIError::APIMisuseError {
+								err: "Transaction had more than 2^16 inputs, which is not supported".to_owned()
+							});
+						}
+						input_index = Some(idx as u16);
 					}
-					if idx > u16::max_value() as usize {
-						return Err(APIError::APIMisuseError {
-							err: "Transaction had more than 2^16 outputs, which is not supported".to_owned()
-						});
-					}
-					output_index = Some(idx as u16);
 				}
+				if input_index.is_none() {
+					return Err(APIError::APIMisuseError {
+						err: format!("No input matched the address and value in the SpliceAcked event {}", chan.pending_splicing_channel_value)
+					});
+				}
+				Ok(input_index.unwrap())
+			},
+			|chan, tx| {
+				let mut output_index = None;
+				let expected_spk = chan.get_funding_redeemscript().to_v0_p2wsh();
+				for (idx, outp) in tx.output.iter().enumerate() {
+					if outp.script_pubkey == expected_spk && outp.value == chan.pending_splicing_channel_value {
+						if output_index.is_some() {
+							return Err(APIError::APIMisuseError {
+								err: "Multiple outputs matched the expected script and value".to_owned()
+							});
+						}
+						if idx > u16::max_value() as usize {
+							return Err(APIError::APIMisuseError {
+								err: "Transaction had more than 2^16 outputs, which is not supported".to_owned()
+							});
+						}
+						output_index = Some(idx as u16);
+					}
+				}
+				if output_index.is_none() {
+					return Err(APIError::APIMisuseError {
+						err: format!("No output matched the script_pubkey and value in the SpliceAcked event {}", chan.pending_splicing_channel_value)
+					});
+				}
+				Ok(OutPoint { txid: tx.txid(), index: output_index.unwrap() })
 			}
-			if output_index.is_none() {
-				return Err(APIError::APIMisuseError {
-					err: format!("No output matched the script_pubkey and value in the SpliceAcked event {}", chan.pending_splicing_channel_value)
-				});
-			}
-			Ok(OutPoint { txid: tx.txid(), index: output_index.unwrap() })
-		})
+		)
 	}
 
 	/// Atomically updates the [`ChannelConfig`] for the given channels.

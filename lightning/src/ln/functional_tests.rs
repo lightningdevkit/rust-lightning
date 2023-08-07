@@ -37,6 +37,7 @@ use crate::util::ser::{Writeable, ReadableArgs};
 use crate::util::string::UntrustedString;
 use crate::util::config::{ChannelHandshakeConfig, UserConfig};
 
+// WIP payment use lightning_invoice::{Currency, utils};
 use bitcoin::hash_types::BlockHash;
 use bitcoin::blockdata::block::{Block, BlockHeader};
 use bitcoin::blockdata::script::{Builder, Script};
@@ -124,6 +125,23 @@ fn test_channel_open_simple() {
 	let _ev = get_event!(nodes[0], Event::ChannelReady);
 	let _announcement_signatures = get_event_msg!(nodes[0], MessageSendEvent::SendAnnouncementSignatures, nodes[1].node.get_our_node_id());
 
+	// check channel capacity and other parameters
+	assert_eq!(nodes[0].node.list_channels().len(), 1);
+	{
+		let channel = &nodes[0].node.list_channels()[0];
+		assert!(channel.is_usable);
+		assert!(channel.is_channel_ready);
+		assert_eq!(channel.channel_value_satoshis, channel_value_sat);
+		assert_eq!(channel.balance_msat, 100000000);
+		assert_eq!(channel.funding_txo.unwrap().txid, funding_tx.txid());
+		assert_eq!(channel.confirmations.unwrap(), 10);
+	}
+
+	// Normal operation
+	// TODO payment WIP
+	// WIP let _pay_amount = 3000;
+	// WIP utils::create_invoice_from_channelmanager(nodes[1].node, nodes[1].keys_manager, nodes[1].logger.clone(), Currency::Bitcoin, Some(pay_amount), "Test_payment_1".to_string(), 999999, None);
+
 	// close channel
 	nodes[0].node.close_channel(&channel_id, &nodes[1].node.get_our_node_id()).unwrap();
 	let node0_shutdown_message = get_event_msg!(nodes[0], MessageSendEvent::SendShutdown, nodes[1].node.get_our_node_id());
@@ -196,6 +214,18 @@ fn test_splice_in_simple() {
 	let _res = nodes[0].node.handle_channel_ready(&nodes[1].node.get_our_node_id(), &channel_ready_message2);
 	let _ev = get_event!(nodes[0], Event::ChannelReady);
 	let _announcement_signatures = get_event_msg!(nodes[0], MessageSendEvent::SendAnnouncementSignatures, nodes[1].node.get_our_node_id());
+
+	// check channel capacity and other parameters
+	assert_eq!(nodes[0].node.list_channels().len(), 1);
+	{
+		let channel = &nodes[0].node.list_channels()[0];
+		assert!(channel.is_usable);
+		assert!(channel.is_channel_ready);
+		assert_eq!(channel.channel_value_satoshis, channel_value_sat);
+		assert_eq!(channel.balance_msat, 100000000);
+		assert_eq!(channel.funding_txo.unwrap().txid, funding_tx.txid());
+		assert_eq!(channel.confirmations.unwrap(), 10);
+	}
 
 	// Start of Splicing ...
 
