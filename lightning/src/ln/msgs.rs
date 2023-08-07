@@ -938,7 +938,9 @@ pub struct SpliceCreated {
 	pub funding_output_index: u16,
 	/// The complete splice funding transaction, used for signing by the other party. Not needed in final version with tx negotiation, TODO remove
 	pub splice_transaction: Transaction,
-	/// The input index in the splice transaction that is the previous funding transaction, used by the other party for signing. Not needed in final version with tx negotiation, TODO remove
+	/// The input index in the splice transaction that is the previous funding transaction, used by the other party for signing.
+	/// It could be also omitted and found by looking for the previous funding tx among the inputs.
+	/// Not needed in final version with tx negotiation, TODO remove
 	pub splice_prev_funding_input_index: u16,
 	/// The signature of the splice initiator (funder) on the post-splice commitment transaction
 	pub signature: Signature,
@@ -962,6 +964,10 @@ pub struct SpliceSigned {
 	/// This should be the result of transaction negotiation, and not needed here, it is needed only in the prototype, TODO remove it later.
 	/// Not to be confused with the `signature` field.
 	pub funding_signature: Signature,
+	/// The input index in the splice transaction that is the previous funding transaction, for which signature is provided.
+	/// It could be also omitted and found by looking for the previous funding tx among the inputs.
+	/// Not needed in final version with tx negotiation, TODO remove
+	pub splice_prev_funding_input_index: u16,
 	/// The signature of the splice acceptor (fundee) on the post-splice commitment transaction
 	pub signature: Signature,
 	/*
@@ -2264,6 +2270,7 @@ impl_writeable_msg!(SpliceCreated, {
 impl_writeable_msg!(SpliceSigned, {
 	channel_id,
 	funding_signature,
+	splice_prev_funding_input_index,
 	signature
 }, {});
 

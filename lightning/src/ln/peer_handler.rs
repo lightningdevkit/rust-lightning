@@ -1482,11 +1482,11 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 			wire::Message::SpliceAck(msg) => {
 				self.message_handler.chan_handler.handle_splice_ack(&their_node_id, &msg);
 			},
-			wire::Message::SpliceCreated(_msg) => {
-				// TODO!
+			wire::Message::SpliceCreated(msg) => {
+				self.message_handler.chan_handler.handle_splice_created(&their_node_id, &msg);
 			},
-			wire::Message::SpliceSigned(_msg) => {
-				// TODO!
+			wire::Message::SpliceSigned(msg) => {
+				self.message_handler.chan_handler.handle_splice_signed(&their_node_id, &msg);
 			},
 
 			// Commitment messages:

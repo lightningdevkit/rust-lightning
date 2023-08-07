@@ -5741,6 +5741,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		Ok((msgs::SpliceSigned {
 			channel_id: self.channel_id,
 			funding_signature,
+			splice_prev_funding_input_index: msg.splice_prev_funding_input_index,
 			signature,
 			#[cfg(taproot)]
 			partial_signature_with_nonce: None,
@@ -5771,6 +5772,8 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			panic!("Should not have advanced channel commitment tx numbers prior to splice_created");
 		}
 		*/
+
+		// TODO update funding TX with signature!!!
 
 		let funding_script = self.get_funding_redeemscript();
 
