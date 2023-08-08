@@ -106,15 +106,21 @@ fn test_channel_open_simple() {
 	let funding_signed_message = get_event_msg!(nodes[1], MessageSendEvent::SendFundingSigned, nodes[0].node.get_our_node_id());
 	let _res = nodes[0].node.handle_funding_signed(&nodes[1].node.get_our_node_id(), &funding_signed_message);
 
+	// Check that funding transaction has been broadcasted
+	assert_eq!(chanmon_cfgs[0].tx_broadcaster.txn_broadcasted.lock().unwrap().len(), 1);
+	let broadcasted_funding_tx = chanmon_cfgs[0].tx_broadcaster.txn_broadcasted.lock().unwrap()[0].clone();
+	assert_eq!(broadcasted_funding_tx.encode().len(), 55);
+	assert_eq!(broadcasted_funding_tx.encode(), funding_tx.encode());
+
 	check_added_monitors!(nodes[0], 1);
 	let _ev = get_event!(nodes[0], Event::ChannelPending);
 	check_added_monitors!(nodes[1], 1);
 	let _ev = get_event!(nodes[1], Event::ChannelPending);
 
-	confirm_transaction(&nodes[0], &funding_tx);
+	confirm_transaction(&nodes[0], &broadcasted_funding_tx);
 	let channel_ready_message = get_event_msg!(nodes[0], MessageSendEvent::SendChannelReady, nodes[1].node.get_our_node_id());
 
-	confirm_transaction(&nodes[1], &funding_tx);
+	confirm_transaction(&nodes[1], &broadcasted_funding_tx);
 	let channel_ready_message2 = get_event_msg!(nodes[1], MessageSendEvent::SendChannelReady, nodes[0].node.get_our_node_id());
 
 	let _res = nodes[1].node.handle_channel_ready(&nodes[0].node.get_our_node_id(), &channel_ready_message);
@@ -196,15 +202,21 @@ fn test_splice_in_simple() {
 	let funding_signed_message = get_event_msg!(nodes[1], MessageSendEvent::SendFundingSigned, nodes[0].node.get_our_node_id());
 	let _res = nodes[0].node.handle_funding_signed(&nodes[1].node.get_our_node_id(), &funding_signed_message);
 
+	// Check that funding transaction has been broadcasted
+	assert_eq!(chanmon_cfgs[0].tx_broadcaster.txn_broadcasted.lock().unwrap().len(), 1);
+	let broadcasted_funding_tx = chanmon_cfgs[0].tx_broadcaster.txn_broadcasted.lock().unwrap()[0].clone();
+	assert_eq!(broadcasted_funding_tx.encode().len(), 55);
+	assert_eq!(broadcasted_funding_tx.encode(), funding_tx.encode());
+
 	check_added_monitors!(nodes[0], 1);
 	let _ev = get_event!(nodes[0], Event::ChannelPending);
 	check_added_monitors!(nodes[1], 1);
 	let _ev = get_event!(nodes[1], Event::ChannelPending);
 
-	confirm_transaction(&nodes[0], &funding_tx);
+	confirm_transaction(&nodes[0], &broadcasted_funding_tx);
 	let channel_ready_message = get_event_msg!(nodes[0], MessageSendEvent::SendChannelReady, nodes[1].node.get_our_node_id());
 
-	confirm_transaction(&nodes[1], &funding_tx);
+	confirm_transaction(&nodes[1], &broadcasted_funding_tx);
 	let channel_ready_message2 = get_event_msg!(nodes[1], MessageSendEvent::SendChannelReady, nodes[0].node.get_our_node_id());
 
 	let _res = nodes[1].node.handle_channel_ready(&nodes[0].node.get_our_node_id(), &channel_ready_message);
@@ -259,13 +271,19 @@ fn test_splice_in_simple() {
 	let splice_signed_message = get_event_msg!(nodes[1], MessageSendEvent::SendSpliceSigned, nodes[0].node.get_our_node_id());
 	let _res = nodes[0].node.handle_splice_signed(&nodes[1].node.get_our_node_id(), &splice_signed_message);
 
+	// Check that signed splice funding transaction has been broadcasted
+	assert_eq!(chanmon_cfgs[0].tx_broadcaster.txn_broadcasted.lock().unwrap().len(), 2);
+	let broadcasted_splice_tx = chanmon_cfgs[0].tx_broadcaster.txn_broadcasted.lock().unwrap()[1].clone();
+	assert_eq!(broadcasted_splice_tx.encode().len(), 162);
+	assert_ne!(broadcasted_splice_tx.encode(), splice_tx.encode());
+
 	check_added_monitors!(nodes[0], 1);
 	check_added_monitors!(nodes[1], 1);
 
-	confirm_transaction(&nodes[0], &splice_tx);
+	confirm_transaction(&nodes[0], &broadcasted_splice_tx);
 	let channel_ready_message = get_event_msg!(nodes[0], MessageSendEvent::SendChannelReady, nodes[1].node.get_our_node_id());
 
-	confirm_transaction(&nodes[1], &splice_tx);
+	confirm_transaction(&nodes[1], &broadcasted_splice_tx);
 	let channel_ready_message2 = get_event_msg!(nodes[1], MessageSendEvent::SendChannelReady, nodes[0].node.get_our_node_id());
 
 	let _res = nodes[1].node.handle_channel_ready(&nodes[0].node.get_our_node_id(), &channel_ready_message);

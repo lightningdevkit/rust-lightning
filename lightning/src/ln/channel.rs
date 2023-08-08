@@ -5142,7 +5142,6 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 						} else {
 							if self.is_outbound() {
 								// TODO put it back, add witness to splice tx
-								/*
 								for input in tx.input.iter() {
 									if input.witness.is_empty() {
 										// We generated a malleable funding transaction, implying we've
@@ -5151,7 +5150,6 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 										panic!("Client called ChannelManager::funding_transaction_generated with bogus transaction! witness len {}  txid {}  inputs {}  txlen {}", input.witness.len(), tx.txid(), tx.input.len(), tx.encode().len());
 									}
 								}
-								*/
 							}
 							self.funding_tx_confirmation_height = height;
 							self.funding_tx_confirmed_in = Some(*block_hash);
