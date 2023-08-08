@@ -5148,7 +5148,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 										// We generated a malleable funding transaction, implying we've
 										// just exposed ourselves to funds loss to our counterparty.
 										#[cfg(not(fuzzing))]
-										panic!("Client called ChannelManager::funding_transaction_generated with bogus transaction!");
+										panic!("Client called ChannelManager::funding_transaction_generated with bogus transaction! witness len {}  txid {}  inputs {}  txlen {}", input.witness.len(), tx.txid(), tx.input.len(), tx.encode().len());
 									}
 								}
 								*/
@@ -5541,6 +5541,14 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		}
 		*/
 
+		// Sign splice funding tx: add signature to the input that is the previous funding tx
+		let funding_input_signature = self.holder_signer.sign_splicing_funding_input(&splice_transaction, splice_prev_funding_input_index, self.channel_value_satoshis, &self.secp_ctx)
+			.map_err(|_| ChannelError::Close("Failed to sign the previous funding input in the new splicing funding tx".to_owned()))?;
+		let mut splice_transaction_with_one_sig = splice_transaction.clone();
+		splice_transaction_with_one_sig.input[splice_prev_funding_input_index as usize].witness.clear();
+		splice_transaction_with_one_sig.input[splice_prev_funding_input_index as usize].witness.push(funding_input_signature.encode());
+		log_info!(logger, "Created signature for funding tx input, index {}  txid {}  value {}  txlen {}  oldtxlen {}  sig {:?}", splice_prev_funding_input_index, splice_transaction_with_one_sig.txid(), self.channel_value_satoshis, splice_transaction_with_one_sig.encode().len(), splice_transaction.encode().len(), funding_input_signature.encode());
+
 		// Commit to the new channel value (capacity). The increase belongs to us (initiator, local).
 		// TODO: what if the the new splicing TX never locks?
 		let _ = self.commit_pending_splicing_channel_value(true, logger)?;
@@ -5567,13 +5575,14 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		// Now that we're past error-generating stuff, update our local state:
 		self.channel_state = ChannelState::FundingCreated as u32; // TODO not needed. Or maybe new states are needed?
 		// self.channel_id = funding_txo.to_channel_id(); // TODO not needed, remove
-		self.funding_transaction = Some(splice_transaction.clone());
+		self.funding_transaction = Some(splice_transaction_with_one_sig.clone());
+		log_info!(logger, "Stored splice funding tx, txid {}  len {}", splice_transaction_with_one_sig.txid(), splice_transaction_with_one_sig.encode().len());
 
 		Ok(msgs::SpliceCreated {
 			channel_id: self.channel_id,
 			splice_txid: splice_txo.txid,
 			funding_output_index: splice_txo.index,
-			splice_transaction,
+			splice_transaction: splice_transaction_with_one_sig,
 			splice_prev_funding_input_index,
 			signature,
 			// #[cfg(taproot)]
@@ -5612,61 +5621,10 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		}
 		*/
 
-		// Create our signature on the funding tx
+		// Sign splice funding tx: create our signature on the funding tx
 		let funding_signature = self.holder_signer.sign_splicing_funding_input(&msg.splice_transaction, msg.splice_prev_funding_input_index, self.channel_value_satoshis, &self.secp_ctx)
 			.map_err(|_| ChannelError::Close("Failed to sign the previous funding input in the new splicing funding tx".to_owned()))?;
-
-		/*
-		// TODO
-		let funding_signature = self.holder_signer.sign_counterparty_commitment(commitment_tx, preimages, secp_ctx)
-		// let counterparty_signature = self.holder_signer.sign_counterparty_commitment(&counterparty_initial_commitment_tx, Vec::new(), &self.secp_ctx)
-		// 		.map_err(|_| ChannelError::Close("Failed to get signatures for new commitment_signed".to_owned()))?.0;
-
-
-
-		// from chan_utils
-		/// Get the SIGHASH_ALL sighash value of the transaction.
-		///
-		/// This can be used to verify a signature.
-		pub fn get_sighash_all(&self, funding_redeemscript: &Script, channel_value_satoshis: u64) -> Message {
-			let sighash = &sighash::SighashCache::new(&self.transaction).segwit_signature_hash(0, funding_redeemscript, channel_value_satoshis, EcdsaSighashType::All).unwrap()[..];
-			hash_to_message!(sighash)
-		}
-
-		/// Signs the counterparty's commitment transaction.
-		pub fn sign_counterparty_commitment<T: secp256k1::Signing>(&self, funding_key: &SecretKey, funding_redeemscript: &Script, channel_value_satoshis: u64, secp_ctx: &Secp256k1<T>) -> Signature {
-			let sighash = self.get_sighash_all(funding_redeemscript, channel_value_satoshis);
-			sign(secp_ctx, &sighash, funding_key)
-		}
-
-
-		// from keysinterface
-		fn sign_counterparty_commitment(&self, commitment_tx: &CommitmentTransaction, _preimages: Vec<PaymentPreimage>, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<(Signature, Vec<Signature>), ()> {
-			let trusted_tx = commitment_tx.trust();
-			let keys = trusted_tx.keys();
-	
-			let funding_pubkey = PublicKey::from_secret_key(secp_ctx, &self.funding_key);
-			let channel_funding_redeemscript = make_funding_redeemscript(&funding_pubkey, &self.counterparty_pubkeys().funding_pubkey);
-	
-			let built_tx = trusted_tx.built_transaction();
-			// println!("sign_counterparty_commitment tx {:?} {:?}  channel_value_satoshis {}", built_tx.txid, built_tx.transaction.encode(), self.channel_value_satoshis);
-			let commitment_sig = built_tx.sign_counterparty_commitment(&self.funding_key, &channel_funding_redeemscript, self.channel_value_satoshis, secp_ctx);
-			let commitment_txid = built_tx.txid;
-	
-			let mut htlc_sigs = Vec::with_capacity(commitment_tx.htlcs().len());
-			for htlc in commitment_tx.htlcs() {
-				let channel_parameters = self.get_channel_parameters();
-				let htlc_tx = chan_utils::build_htlc_transaction(&commitment_txid, commitment_tx.feerate_per_kw(), self.holder_selected_contest_delay(), htlc, self.opt_anchors(), channel_parameters.opt_non_zero_fee_anchors.is_some(), &keys.broadcaster_delayed_payment_key, &keys.revocation_key);
-				let htlc_redeemscript = chan_utils::get_htlc_redeemscript(&htlc, self.opt_anchors(), &keys);
-				let htlc_sighashtype = if self.opt_anchors() { EcdsaSighashType::SinglePlusAnyoneCanPay } else { EcdsaSighashType::All };
-				let htlc_sighash = hash_to_message!(&sighash::SighashCache::new(&htlc_tx).segwit_signature_hash(0, &htlc_redeemscript, htlc.amount_msat / 1000, htlc_sighashtype).unwrap()[..]);
-				let holder_htlc_key = chan_utils::derive_private_key(&secp_ctx, &keys.per_commitment_point, &self.htlc_base_key);
-				htlc_sigs.push(sign(secp_ctx, &htlc_sighash, &holder_htlc_key));
-			}
-	
-			Ok((commitment_sig, htlc_sigs))
-		*/
-
+		log_info!(logger, "Created signature for funding tx input, input idx {}  txid {}  value {}  sig {:?}", msg.splice_prev_funding_input_index, msg.splice_transaction.txid(), self.channel_value_satoshis, funding_signature.encode());
 
 		// Commit to the new channel value (capacity). The increase belongs to them.
 		// TODO: what if the the new splicing TX never locks?

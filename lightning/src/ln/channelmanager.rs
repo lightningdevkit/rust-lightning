@@ -4665,7 +4665,7 @@ where
 		}
 
 		if let Some(tx) = funding_broadcastable {
-			log_info!(self.logger, "Broadcasting funding transaction with txid {}", tx.txid());
+			log_info!(self.logger, "Broadcasting funding transaction with txid {}  len {}", tx.txid(), tx.encode().len());
 			self.tx_broadcaster.broadcast_transaction(&tx);
 		}
 
