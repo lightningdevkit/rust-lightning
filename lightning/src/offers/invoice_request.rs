@@ -608,8 +608,7 @@ impl InvoiceRequest {
 		})
 	}
 
-	#[cfg(test)]
-	fn as_tlv_stream(&self) -> FullInvoiceRequestTlvStreamRef {
+	pub(crate) fn as_tlv_stream(&self) -> FullInvoiceRequestTlvStreamRef {
 		let (payer_tlv_stream, offer_tlv_stream, invoice_request_tlv_stream) =
 			self.contents.as_tlv_stream();
 		let signature_tlv_stream = SignatureTlvStreamRef {
@@ -811,7 +810,6 @@ tlv_stream!(InvoiceRequestTlvStream, InvoiceRequestTlvStreamRef, INVOICE_REQUEST
 type FullInvoiceRequestTlvStream =
 	(PayerTlvStream, OfferTlvStream, InvoiceRequestTlvStream, SignatureTlvStream);
 
-#[cfg(test)]
 type FullInvoiceRequestTlvStreamRef<'a> = (
 	PayerTlvStreamRef<'a>,
 	OfferTlvStreamRef<'a>,
