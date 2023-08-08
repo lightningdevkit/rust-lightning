@@ -37,30 +37,30 @@ PIN_RELEASE_DEPS # pin the release dependencies in our main workspace
 export RUST_BACKTRACE=1
 
 echo -e "\n\nBuilding and testing all workspace crates..."
-cargo build --verbose --color always
 cargo test --verbose --color always
+cargo build --verbose --color always
 
 echo -e "\n\nBuilding and testing Block Sync Clients with features"
 pushd lightning-block-sync
-cargo build --verbose --color always --features rest-client
 cargo test --verbose --color always --features rest-client
-cargo build --verbose --color always --features rpc-client
+cargo build --verbose --color always --features rest-client
 cargo test --verbose --color always --features rpc-client
-cargo build --verbose --color always --features rpc-client,rest-client
+cargo build --verbose --color always --features rpc-client
 cargo test --verbose --color always --features rpc-client,rest-client
-cargo build --verbose --color always --features rpc-client,rest-client,tokio
+cargo build --verbose --color always --features rpc-client,rest-client
 cargo test --verbose --color always --features rpc-client,rest-client,tokio
+cargo build --verbose --color always --features rpc-client,rest-client,tokio
 popd
 
 if [[ $RUSTC_MINOR_VERSION -gt 67 && "$HOST_PLATFORM" != *windows* ]]; then
 	echo -e "\n\nBuilding and testing Transaction Sync Clients with features"
 	pushd lightning-transaction-sync
-	cargo build --verbose --color always --features esplora-blocking
 	cargo test --verbose --color always --features esplora-blocking
-	cargo build --verbose --color always --features esplora-async
+	cargo build --verbose --color always --features esplora-blocking
 	cargo test --verbose --color always --features esplora-async
-	cargo build --verbose --color always --features esplora-async-https
+	cargo build --verbose --color always --features esplora-async
 	cargo test --verbose --color always --features esplora-async-https
+	cargo build --verbose --color always --features esplora-async-https
 	popd
 fi
 
