@@ -421,6 +421,10 @@ pub trait EcdsaChannelSigner: ChannelSigner {
 	fn sign_channel_announcement_with_funding_key(
 		&self, msg: &UnsignedChannelAnnouncement, secp_ctx: &Secp256k1<secp256k1::All>
 	) -> Result<Signature, ()>;
+
+	/// #SPLICING
+	/// Create a signature for a splicing funding transaction, for the input which is the previous funding tx.
+	fn sign_splicing_funding_input(&self, splicing_tx: &Transaction, splice_prev_funding_input_index: u16, prev_funding_value: u64, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<Signature, ()>;
 }
 
 /// A writeable signer.
@@ -945,6 +949,15 @@ impl EcdsaChannelSigner for InMemorySigner {
 		let msghash = hash_to_message!(&Sha256dHash::hash(&msg.encode()[..])[..]);
 		Ok(secp_ctx.sign_ecdsa(&msghash, &self.funding_key))
 	}
+
+	/// #SPLICING
+	fn sign_splicing_funding_input(&self, splicing_tx: &Transaction, splice_prev_funding_input_index: u16, prev_funding_value: u64, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<Signature, ()> {
+		let input = &splicing_tx.input[splice_prev_funding_input_index as usize];
+		let sighash = &sighash::SighashCache::new(splicing_tx).segwit_signature_hash(splice_prev_funding_input_index as usize, &input.script_sig, prev_funding_value, EcdsaSighashType::All).unwrap()[..];
+		let msg = hash_to_message!(sighash);
+		Ok(sign(secp_ctx, &msg, &self.funding_key))
+	}
+
 }
 
 const SERIALIZATION_VERSION: u8 = 1;

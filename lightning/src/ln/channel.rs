@@ -5612,8 +5612,11 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		}
 		*/
 
-		/*
 		// Create our signature on the funding tx
+		let funding_signature = self.holder_signer.sign_splicing_funding_input(&msg.splice_transaction, msg.splice_prev_funding_input_index, self.channel_value_satoshis, &self.secp_ctx)
+			.map_err(|_| ChannelError::Close("Failed to sign the previous funding input in the new splicing funding tx".to_owned()))?;
+
+		/*
 		// TODO
 		let funding_signature = self.holder_signer.sign_counterparty_commitment(commitment_tx, preimages, secp_ctx)
 		// let counterparty_signature = self.holder_signer.sign_counterparty_commitment(&counterparty_initial_commitment_tx, Vec::new(), &self.secp_ctx)
@@ -5703,10 +5706,6 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 
 		self.holder_signer.validate_holder_commitment(&holder_commitment_tx, Vec::new())
 			.map_err(|_| ChannelError::Close("Failed to validate our commitment".to_owned()))?;
-
-		// Create our signature on the funding tx
-		// TODO do it earlier, differently
-		let funding_signature = signature.clone(); // TODO this is only a placeholder
 
 		// Now that we're past error-generating stuff, update our local state:
 
