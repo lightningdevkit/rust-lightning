@@ -114,6 +114,7 @@ fn test_channel_open_simple() {
 	assert_eq!(chanmon_cfgs[0].tx_broadcaster.txn_broadcasted.lock().unwrap().len(), 1);
 	let broadcasted_funding_tx = chanmon_cfgs[0].tx_broadcaster.txn_broadcasted.lock().unwrap()[0].clone();
 	assert_eq!(broadcasted_funding_tx.encode().len(), 55);
+	assert_eq!(broadcasted_funding_tx.txid(), funding_tx.txid());
 	assert_eq!(broadcasted_funding_tx.encode(), funding_tx.encode());
 
 	check_added_monitors!(nodes[0], 1);
@@ -213,6 +214,7 @@ fn test_splice_in_simple() {
 	assert_eq!(chanmon_cfgs[0].tx_broadcaster.txn_broadcasted.lock().unwrap().len(), 1);
 	let broadcasted_funding_tx = chanmon_cfgs[0].tx_broadcaster.txn_broadcasted.lock().unwrap()[0].clone();
 	assert_eq!(broadcasted_funding_tx.encode().len(), 55);
+	assert_eq!(broadcasted_funding_tx.txid(), funding_tx.txid());
 	assert_eq!(broadcasted_funding_tx.encode(), funding_tx.encode());
 
 	check_added_monitors!(nodes[0], 1);
@@ -283,6 +285,7 @@ fn test_splice_in_simple() {
 	assert_eq!(chanmon_cfgs[0].tx_broadcaster.txn_broadcasted.lock().unwrap().len(), 2);
 	let broadcasted_splice_tx = chanmon_cfgs[0].tx_broadcaster.txn_broadcasted.lock().unwrap()[1].clone();
 	assert_eq!(broadcasted_splice_tx.encode().len(), 94+68+65);
+	assert_eq!(broadcasted_splice_tx.txid(), splice_tx.txid());
 	assert_ne!(broadcasted_splice_tx.encode(), splice_tx.encode());
 
 	check_added_monitors!(nodes[0], 1);
@@ -299,6 +302,18 @@ fn test_splice_in_simple() {
 
 	let _res = nodes[0].node.handle_channel_ready(&nodes[1].node.get_our_node_id(), &channel_ready_message2);
 	let _channel_update = get_event_msg!(nodes[0], MessageSendEvent::SendChannelUpdate, nodes[1].node.get_our_node_id());
+
+	// check new channel capacity and other parameters
+	assert_eq!(nodes[0].node.list_channels().len(), 1);
+	{
+		let channel = &nodes[0].node.list_channels()[0];
+		assert!(channel.is_usable);
+		assert!(channel.is_channel_ready);
+		assert_eq!(channel.channel_value_satoshis, post_splice_channel_value);
+		assert_eq!(channel.balance_msat, 120000000);
+		assert_eq!(channel.funding_txo.unwrap().txid, splice_tx.txid());
+		assert_eq!(channel.confirmations.unwrap(), 10);
+	}
 
 	// ... End of Splicing
 
