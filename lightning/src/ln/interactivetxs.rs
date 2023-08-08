@@ -11,9 +11,10 @@ use std::collections::{HashMap, HashSet};
 
 use bitcoin::{TxIn, Sequence, Transaction, TxOut, OutPoint, Witness};
 use bitcoin::blockdata::constants::WITNESS_SCALE_FACTOR;
-use crate::ln::interactivetxs::ChannelMode::Indeterminate;
+use bitcoin::policy::MAX_STANDARD_TX_WEIGHT;
 
-use super::msgs::TxAddInput;
+use crate::ln::interactivetxs::ChannelMode::Indeterminate;
+use crate::ln::msgs;
 
 /// The number of received `tx_add_input` messages during a negotiation at which point the
 /// negotiation MUST be failed.
@@ -26,9 +27,6 @@ const MAX_RECEIVED_TX_ADD_OUTPUT_COUNT: u16 = 4096;
 /// The number of inputs or outputs that the state machine can have, before it MUST fail the
 /// negotiation.
 const MAX_INPUTS_OUTPUTS_COUNT: usize = 252;
-
-/// Maximum weight of bitcoin transaction
-const MAX_STANDARD_TX_WEIGHT: usize = 400_000;
 
 const MAX_MONEY: u64 = 2_100_000_000_000_000;
 
@@ -107,7 +105,7 @@ pub(crate) struct NegotiationAborted(AbortReason);
 impl AcceptingChanges for Negotiating {}
 impl AcceptingChanges for OurTxComplete {}
 
-struct TransactionInputWithPrevOutput {
+struct TxInputWithPrevOutput {
 	input: TxIn,
 	prev_output: TxOut,
 }
@@ -118,7 +116,7 @@ struct NegotiationContext {
 	holder_is_initiator: bool,
 	received_tx_add_input_count: u16,
 	received_tx_add_output_count: u16,
-	inputs: HashMap<u64, TransactionInputWithPrevOutput>,
+	inputs: HashMap<u64, TxInputWithPrevOutput>,
 	prevtx_outpoints: HashSet<OutPoint>,
 	outputs: HashMap<u64, TxOut>,
 	base_tx: Transaction,
@@ -127,13 +125,13 @@ struct NegotiationContext {
 }
 
 impl NegotiationContext {
-	fn initiator_inputs_contributed(&self) -> impl Iterator<Item = &TransactionInputWithPrevOutput> {
+	fn initiator_inputs_contributed(&self) -> impl Iterator<Item = &TxInputWithPrevOutput> {
 		self.inputs.iter()
 			.filter(|(serial_id, _)| serial_id.is_valid_for_initiator())
 			.map(|(_, input_with_prevout)| input_with_prevout)
 	}
 
-	fn non_initiator_inputs_contributed(&self) -> impl Iterator<Item = &TransactionInputWithPrevOutput> {
+	fn non_initiator_inputs_contributed(&self) -> impl Iterator<Item = &TxInputWithPrevOutput> {
 		self.inputs.iter()
 			.filter(|(serial_id, _)| !serial_id.is_valid_for_initiator())
 			.map(|(_, input_with_prevout)| input_with_prevout)
@@ -157,14 +155,13 @@ struct InteractiveTxStateMachine<S> {
 	state: S,
 }
 
+type InteractiveTxStateMachineResult<S> =
+	Result<InteractiveTxStateMachine<S>, InteractiveTxStateMachine<NegotiationAborted>>;
+
 impl InteractiveTxStateMachine<Negotiating> {
 	fn new(
-		channel_id: [u8; 32],
-		feerate_sat_per_kw: u32,
-		require_confirmed_inputs: bool,
-		is_initiator: bool,
-		base_tx: Transaction,
-		did_send_tx_signatures: bool,
+		channel_id: [u8; 32], feerate_sat_per_kw: u32, require_confirmed_inputs: bool,
+		is_initiator: bool, base_tx: Transaction, did_send_tx_signatures: bool,
 	) -> Self {
 		Self {
 			context: NegotiationContext {
@@ -178,23 +175,19 @@ impl InteractiveTxStateMachine<Negotiating> {
 				inputs: HashMap::new(),
 				prevtx_outpoints: HashSet::new(),
 				outputs: HashMap::new(),
-				feerate_sat_per_kw: feerate_sat_per_kw,
+				feerate_sat_per_kw,
 			},
 			state: Negotiating,
 		}
 	}
 }
 
-impl<S> InteractiveTxStateMachine<S>
-	where S: AcceptingChanges {
-	fn abort_negotiation(self, reason: AbortReason) ->
-	Result<InteractiveTxStateMachine<Negotiating>, InteractiveTxStateMachine<NegotiationAborted>> {
-
+impl<S> InteractiveTxStateMachine<S> where S: AcceptingChanges {
+	fn abort_negotiation(self, reason: AbortReason) -> InteractiveTxStateMachineResult<Negotiating> {
 		Err(InteractiveTxStateMachine { context: self.context, state: NegotiationAborted(reason) })
 	}
 
-	fn receive_tx_add_input(mut self, serial_id: SerialId, msg: TxAddInput, confirmed: bool) ->
-	Result<InteractiveTxStateMachine<Negotiating>, InteractiveTxStateMachine<NegotiationAborted>> {
+	fn receive_tx_add_input(mut self, serial_id: SerialId, msg: &msgs::TxAddInput, confirmed: bool) -> InteractiveTxStateMachineResult<Negotiating> {
 		// TODO: clean up this comment
 		// No need to explicitly fail negotiation since PeerManager will disconnect the peer if
 		// `prevtx` is invalid, implicitly ending negotiation.
@@ -260,7 +253,7 @@ impl<S> InteractiveTxStateMachine<S>
 		};
 		if let None = self.context.inputs.insert(
 			serial_id,
-			TransactionInputWithPrevOutput {
+			TxInputWithPrevOutput {
 				input: TxIn {
 					previous_output: OutPoint { txid: transaction.txid(), vout: msg.prevtx_out },
 					sequence: Sequence(msg.sequence),
@@ -278,8 +271,7 @@ impl<S> InteractiveTxStateMachine<S>
 		}
 	}
 
-	fn receive_tx_remove_input(mut self, serial_id: SerialId) ->
-	Result<InteractiveTxStateMachine<Negotiating>, InteractiveTxStateMachine<NegotiationAborted>> {
+	fn receive_tx_remove_input(mut self, serial_id: SerialId) -> InteractiveTxStateMachineResult<Negotiating> {
 		if !self.is_valid_counterparty_serial_id(serial_id) {
 			return self.abort_negotiation(AbortReason::IncorrectSerialIdParity);
 		}
@@ -296,18 +288,12 @@ impl<S> InteractiveTxStateMachine<S>
 		}
 	}
 
-	fn receive_tx_add_output(mut self, serial_id: u64, output: TxOut) ->
-	Result<InteractiveTxStateMachine<Negotiating>, InteractiveTxStateMachine<NegotiationAborted>> {
+	fn receive_tx_add_output(mut self, serial_id: u64, output: TxOut) -> InteractiveTxStateMachineResult<Negotiating> {
 		// The receiving node:
 		//  - MUST fail the negotiation if:
 		//     - the serial_id has the wrong parity
-		if serial_id.is_valid_for_initiator() && self.context.holder_is_initiator {
-			// TODO: New error
-			return self.abort_negotiation(AbortReason::ReceivedTooManyTxAddOutputs);
-		}
-		if !serial_id.is_valid_for_initiator() && !self.context.holder_is_initiator {
-			// TODO: Same error as above
-			return self.abort_negotiation(AbortReason::ReceivedTooManyTxAddOutputs);
+		if !self.is_valid_counterparty_serial_id(serial_id) {
+			return self.abort_negotiation(AbortReason::IncorrectSerialIdParity);
 		}
 
 		self.context.received_tx_add_output_count += 1;
@@ -352,8 +338,7 @@ impl<S> InteractiveTxStateMachine<S>
 		}
 	}
 
-	fn receive_tx_remove_output(mut self, serial_id: SerialId) ->
-		Result<InteractiveTxStateMachine<Negotiating>, InteractiveTxStateMachine<NegotiationAborted>> {
+	fn receive_tx_remove_output(mut self, serial_id: SerialId) -> InteractiveTxStateMachineResult<Negotiating> {
 		if !self.is_valid_counterparty_serial_id(serial_id) {
 			return self.abort_negotiation(AbortReason::IncorrectSerialIdParity);
 		}
@@ -368,7 +353,7 @@ impl<S> InteractiveTxStateMachine<S>
 	fn send_tx_add_input(mut self, serial_id: u64, input: TxIn, prevout: TxOut) -> InteractiveTxStateMachine<Negotiating> {
 		self.context.inputs.insert(
 			serial_id,
-			TransactionInputWithPrevOutput {
+			TxInputWithPrevOutput {
 				input: input,
 				prev_output: prevout
 			}
@@ -488,7 +473,7 @@ impl InteractiveTxStateMachine<TheirTxComplete> {
 }
 
 impl InteractiveTxStateMachine<Negotiating> {
-	fn receive_tx_complete(self) -> Result<InteractiveTxStateMachine<TheirTxComplete>, InteractiveTxStateMachine<NegotiationAborted>> {
+	fn receive_tx_complete(self) -> InteractiveTxStateMachineResult<TheirTxComplete> {
 		match self.is_current_transaction_state_able_to_complete() {
 			Err(e) => Err(InteractiveTxStateMachine { context: self.context, state: NegotiationAborted(e) }),
 			_ => Ok(InteractiveTxStateMachine {
@@ -509,7 +494,7 @@ impl InteractiveTxStateMachine<Negotiating> {
 }
 
 impl InteractiveTxStateMachine<OurTxComplete> {
-	fn receive_tx_complete(self) -> Result<InteractiveTxStateMachine<NegotiationComplete>, InteractiveTxStateMachine<NegotiationAborted>> {
+	fn receive_tx_complete(self) -> InteractiveTxStateMachineResult<NegotiationComplete> {
 		match self.is_current_transaction_state_able_to_complete() {
 			Err(e) => Err(InteractiveTxStateMachine { context: self.context, state: NegotiationAborted(e) }),
 			_ => Ok(InteractiveTxStateMachine {
@@ -552,18 +537,11 @@ pub(crate) struct InteractiveTxConstructor {
 
 impl InteractiveTxConstructor {
 	pub(crate) fn new(
-		channel_id: [u8; 32],
-		require_confirmed_inputs: bool,
-		is_initiator: bool,
-		base_tx: Transaction,
-		did_send_tx_signatures: bool,
+		channel_id: [u8; 32], feerate_sat_per_kw: u32, require_confirmed_inputs: bool,
+		is_initiator: bool, base_tx: Transaction, did_send_tx_signatures: bool,
 	) -> Self {
 		let initial_state_machine = InteractiveTxStateMachine::new(
-			channel_id,
-			4,
-			require_confirmed_inputs,
-			is_initiator,
-			base_tx,
+			channel_id, feerate_sat_per_kw, require_confirmed_inputs, is_initiator, base_tx,
 			did_send_tx_signatures
 		);
 		Self {
@@ -575,7 +553,7 @@ impl InteractiveTxConstructor {
 		self.handle_negotiating_receive(|state_machine| state_machine.abort_negotiation(reason))
 	}
 
-	pub(crate) fn receive_tx_add_input(&mut self, serial_id: SerialId, transaction_input: TxAddInput, confirmed: bool) {
+	pub(crate) fn receive_tx_add_input(&mut self, serial_id: SerialId, transaction_input: &msgs::TxAddInput, confirmed: bool) {
 		self.handle_negotiating_receive(|state_machine| state_machine.receive_tx_add_input(serial_id, transaction_input, confirmed))
 	}
 
@@ -617,7 +595,7 @@ impl InteractiveTxConstructor {
 	}
 
 	pub(crate) fn receive_tx_complete(&mut self) {
-		let mut mode = core::mem::take(&mut self.mode);
+		let mode = core::mem::take(&mut self.mode);
 		self.mode = match mode {
 			ChannelMode::Negotiating(c) => {
 				match c.receive_tx_complete() {
@@ -636,11 +614,13 @@ impl InteractiveTxConstructor {
 	}
 
 	fn handle_negotiating_receive<F>(&mut self, f: F)
-		where F: FnOnce(InteractiveTxStateMachine<Negotiating>) -> Result<InteractiveTxStateMachine<Negotiating>, InteractiveTxStateMachine<NegotiationAborted>> {
+	where
+		F: FnOnce(InteractiveTxStateMachine<Negotiating>) -> InteractiveTxStateMachineResult<Negotiating>
+	{
 		// We use mem::take here because we want to update `self.mode` based on its value and
 		// avoid cloning `ChannelMode`.
 		// By moving the value out of the struct, we can now safely modify it in this scope.
-		let mut mode = core::mem::take(&mut self.mode);
+		let mode = core::mem::take(&mut self.mode);
 		self.mode = if let ChannelMode::Negotiating(constructor) = mode {
 			match f(constructor) {
 				Ok(c) => ChannelMode::Negotiating(c),
@@ -652,11 +632,13 @@ impl InteractiveTxConstructor {
 	}
 
 	fn handle_negotiating_send<F>(&mut self, f: F)
-		where F: FnOnce(InteractiveTxStateMachine<Negotiating>) -> InteractiveTxStateMachine<Negotiating> {
+	where
+		F: FnOnce(InteractiveTxStateMachine<Negotiating>) -> InteractiveTxStateMachine<Negotiating>
+	{
 		// We use mem::take here because we want to update `self.mode` based on its value and
 		// avoid cloning `ChannelMode`.
 		// By moving the value out of the struct, we can now safely modify it in this scope.
-		let mut mode = core::mem::take(&mut self.mode);
+		let mode = core::mem::take(&mut self.mode);
 		self.mode = if let ChannelMode::Negotiating(constructor) = mode {
 			ChannelMode::Negotiating(f(constructor))
 		} else {
@@ -668,8 +650,8 @@ impl InteractiveTxConstructor {
 #[cfg(test)]
 mod tests {
 	use core::str::FromStr;
-	use std::collections::HashMap;
-	use crate::ln::interactivetxs::ChannelMode::{Negotiating, NegotiationAborted};
+	use crate::chain::chaininterface::FEERATE_FLOOR_SATS_PER_KW;
+use crate::ln::interactivetxs::ChannelMode::{Negotiating, NegotiationAborted};
 	use crate::ln::interactivetxs::{AbortReason, ChannelMode, InteractiveTxConstructor, InteractiveTxStateMachine};
 	use crate::ln::msgs::TransactionU16LenLimited;
 	use bitcoin::consensus::encode;
@@ -688,21 +670,8 @@ mod tests {
 			72e3df059d277e776dda4269fa0d2cc8c2ee6ec9a022054e7fae5ca94d47534c86705857c24ceea3ad51c69\
 			dd6051c5850304880fc43a012103cb11a1bacc223d98d91f1946c6752e358a5eb1a1c983b3e6fb15378f453\
 			b76bd00000000").unwrap()[..]).unwrap();
-
-		let mut constructor = InteractiveTxConstructor::new(
-			[0; 32],
-			true,
-			true,
-			tx,
-			false,
-		);
-
-		constructor.receive_tx_add_input(
-			2,
-			get_sample_tx_add_input(),
-			false
-		);
-
+		let mut constructor = InteractiveTxConstructor::new([0; 32], FEERATE_FLOOR_SATS_PER_KW, true, true, tx, false);
+		constructor.receive_tx_add_input(2, &get_sample_tx_add_input(), false);
 		assert!(matches!(constructor.mode, ChannelMode::NegotiationAborted { .. }))
 	}
 
@@ -720,20 +689,13 @@ mod tests {
 			72e3df059d277e776dda4269fa0d2cc8c2ee6ec9a022054e7fae5ca94d47534c86705857c24ceea3ad51c69\
 			dd6051c5850304880fc43a012103cb11a1bacc223d98d91f1946c6752e358a5eb1a1c983b3e6fb15378f453\
 			b76bd00000000").unwrap()[..]).unwrap();
-
 			Self {
-				tx_constructor: InteractiveTxConstructor::new(
-					[0; 32],
-					true,
-					true,
-					tx,
-					false,
-				)
+				tx_constructor: InteractiveTxConstructor::new([0; 32], FEERATE_FLOOR_SATS_PER_KW, true, true, tx, false)
 			}
 		}
 
 		fn handle_add_tx_input(&mut self) {
-			self.tx_constructor.receive_tx_add_input(1234, get_sample_tx_add_input(), true)
+			self.tx_constructor.receive_tx_add_input(1234, &get_sample_tx_add_input(), true)
 		}
 	}
 
