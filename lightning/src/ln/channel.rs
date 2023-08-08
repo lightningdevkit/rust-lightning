@@ -3119,9 +3119,9 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 
 			let mut htlc_updates = Vec::new();
 			mem::swap(&mut htlc_updates, &mut self.context.holding_cell_htlc_updates);
-			let mut update_add_htlcs = Vec::with_capacity(htlc_updates.len());
-			let mut update_fulfill_htlcs = Vec::with_capacity(htlc_updates.len());
-			let mut update_fail_htlcs = Vec::with_capacity(htlc_updates.len());
+			let mut update_add_count = 0;
+			let mut update_fulfill_count = 0;
+			let mut update_fail_count = 0;
 			let mut htlcs_to_fail = Vec::new();
 			for htlc_update in htlc_updates.drain(..) {
 				// Note that this *can* fail, though it should be due to rather-rare conditions on
@@ -3137,7 +3137,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 						match self.send_htlc(amount_msat, *payment_hash, cltv_expiry, source.clone(),
 							onion_routing_packet.clone(), false, skimmed_fee_msat, fee_estimator, logger)
 						{
-							Ok(update_add_msg_option) => update_add_htlcs.push(update_add_msg_option.unwrap()),
+							Ok(_) => update_add_count += 1,
 							Err(e) => {
 								match e {
 									ChannelError::Ignore(ref msg) => {
@@ -3164,11 +3164,11 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 						// not fail - any in between attempts to claim the HTLC will have resulted
 						// in it hitting the holding cell again and we cannot change the state of a
 						// holding cell HTLC from fulfill to anything else.
-						let (update_fulfill_msg_option, mut additional_monitor_update) =
-							if let UpdateFulfillFetch::NewClaim { msg, monitor_update, .. } = self.get_update_fulfill_htlc(htlc_id, *payment_preimage, logger) {
-								(msg, monitor_update)
-							} else { unreachable!() };
-						update_fulfill_htlcs.push(update_fulfill_msg_option.unwrap());
+						let mut additional_monitor_update =
+							if let UpdateFulfillFetch::NewClaim { monitor_update, .. } =
+								self.get_update_fulfill_htlc(htlc_id, *payment_preimage, logger)
+							{ monitor_update } else { unreachable!() };
+						update_fulfill_count += 1;
 						monitor_update.updates.append(&mut additional_monitor_update.updates);
 					},
 					&HTLCUpdateAwaitingACK::FailHTLC { htlc_id, ref err_packet } => {
@@ -3179,7 +3179,8 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 								// not fail - we should never end up in a state where we double-fail
 								// an HTLC or fail-then-claim an HTLC as it indicates we didn't wait
 								// for a full revocation before failing.
-								update_fail_htlcs.push(update_fail_msg_option.unwrap())
+								debug_assert!(update_fail_msg_option.is_some());
+								update_fail_count += 1;
 							},
 							Err(e) => {
 								if let ChannelError::Ignore(_) = e {}
@@ -3191,7 +3192,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 					},
 				}
 			}
-			if update_add_htlcs.is_empty() && update_fulfill_htlcs.is_empty() && update_fail_htlcs.is_empty() && self.context.holding_cell_update_fee.is_none() {
+			if update_add_count == 0 && update_fulfill_count == 0 && update_fail_count == 0 && self.context.holding_cell_update_fee.is_none() {
 				return (None, htlcs_to_fail);
 			}
 			let update_fee = if let Some(feerate) = self.context.holding_cell_update_fee.take() {
@@ -3208,7 +3209,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 
 			log_debug!(logger, "Freeing holding cell in channel {} resulted in {}{} HTLCs added, {} HTLCs fulfilled, and {} HTLCs failed.",
 				log_bytes!(self.context.channel_id()), if update_fee.is_some() { "a fee update, " } else { "" },
-				update_add_htlcs.len(), update_fulfill_htlcs.len(), update_fail_htlcs.len());
+				update_add_count, update_fulfill_count, update_fail_count);
 
 			self.monitor_updating_paused(false, true, false, Vec::new(), Vec::new(), Vec::new());
 			(self.push_ret_blockable_mon_update(monitor_update), htlcs_to_fail)

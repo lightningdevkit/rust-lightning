@@ -8,7 +8,6 @@ pub mod msg_channel_ready;
 pub mod msg_funding_signed;
 pub mod msg_gossip_timestamp_filter;
 pub mod msg_init;
-pub mod msg_onion_hop_data;
 pub mod msg_open_channel;
 pub mod msg_ping;
 pub mod msg_pong;

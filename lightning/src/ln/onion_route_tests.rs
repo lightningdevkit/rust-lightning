@@ -252,7 +252,7 @@ struct BogusOnionHopData {
 	data: Vec<u8>
 }
 impl BogusOnionHopData {
-	fn new(orig: msgs::OnionHopData) -> Self {
+	fn new(orig: msgs::OutboundOnionPayload) -> Self {
 		Self { data: orig.encode() }
 	}
 }
@@ -875,15 +875,15 @@ fn test_always_create_tlv_format_onion_payloads() {
 	let (onion_payloads, _htlc_msat, _htlc_cltv) = onion_utils::build_onion_payloads(
 		&route.paths[0], 40000, RecipientOnionFields::spontaneous_empty(), cur_height, &None).unwrap();
 
-	match onion_payloads[0].format {
-		msgs::OnionHopDataFormat::NonFinalNode {..} => {},
+	match onion_payloads[0] {
+		msgs::OutboundOnionPayload::Forward {..} => {},
 		_ => { panic!(
 			"Should have generated a `msgs::OnionHopDataFormat::NonFinalNode` payload for `hops[0]`,
 			despite that the features signals no support for variable length onions"
 		)}
 	}
-	match onion_payloads[1].format {
-		msgs::OnionHopDataFormat::FinalNode {..} => {},
+	match onion_payloads[1] {
+		msgs::OutboundOnionPayload::Receive {..} => {},
 		_ => {panic!(
 			"Should have generated a `msgs::OnionHopDataFormat::FinalNode` payload for `hops[1]`,
 			despite that the features signals no support for variable length onions"

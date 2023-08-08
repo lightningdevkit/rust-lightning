@@ -341,7 +341,7 @@ impl HTLCSource {
 	}
 }
 
-struct ReceiveError {
+struct InboundOnionErr {
 	err_code: u16,
 	err_data: Vec<u8>,
 	msg: &'static str,
@@ -2631,14 +2631,64 @@ where
 		}
 	}
 
+	fn construct_fwd_pending_htlc_info(
+		&self, msg: &msgs::UpdateAddHTLC, hop_data: msgs::InboundOnionPayload, hop_hmac: [u8; 32],
+		new_packet_bytes: [u8; onion_utils::ONION_DATA_LEN], shared_secret: [u8; 32],
+		next_packet_pubkey_opt: Option<Result<PublicKey, secp256k1::Error>>
+	) -> Result<PendingHTLCInfo, InboundOnionErr> {
+		debug_assert!(next_packet_pubkey_opt.is_some());
+		let outgoing_packet = msgs::OnionPacket {
+			version: 0,
+			public_key: next_packet_pubkey_opt.unwrap_or(Err(secp256k1::Error::InvalidPublicKey)),
+			hop_data: new_packet_bytes,
+			hmac: hop_hmac,
+		};
+
+		let (short_channel_id, amt_to_forward, outgoing_cltv_value) = match hop_data {
+			msgs::InboundOnionPayload::Forward { short_channel_id, amt_to_forward, outgoing_cltv_value } =>
+				(short_channel_id, amt_to_forward, outgoing_cltv_value),
+			msgs::InboundOnionPayload::Receive { .. } =>
+				return Err(InboundOnionErr {
+					msg: "Final Node OnionHopData provided for us as an intermediary node",
+					err_code: 0x4000 | 22,
+					err_data: Vec::new(),
+				}),
+		};
+
+		Ok(PendingHTLCInfo {
+			routing: PendingHTLCRouting::Forward {
+				onion_packet: outgoing_packet,
+				short_channel_id,
+			},
+			payment_hash: msg.payment_hash,
+			incoming_shared_secret: shared_secret,
+			incoming_amt_msat: Some(msg.amount_msat),
+			outgoing_amt_msat: amt_to_forward,
+			outgoing_cltv_value,
+			skimmed_fee_msat: None,
+		})
+	}
+
 	fn construct_recv_pending_htlc_info(
-		&self, hop_data: msgs::OnionHopData, shared_secret: [u8; 32], payment_hash: PaymentHash,
+		&self, hop_data: msgs::InboundOnionPayload, shared_secret: [u8; 32], payment_hash: PaymentHash,
 		amt_msat: u64, cltv_expiry: u32, phantom_shared_secret: Option<[u8; 32]>, allow_underpay: bool,
 		counterparty_skimmed_fee_msat: Option<u64>,
-	) -> Result<PendingHTLCInfo, ReceiveError> {
+	) -> Result<PendingHTLCInfo, InboundOnionErr> {
+		let (payment_data, keysend_preimage, onion_amt_msat, outgoing_cltv_value, payment_metadata) = match hop_data {
+			msgs::InboundOnionPayload::Receive {
+				payment_data, keysend_preimage, amt_msat, outgoing_cltv_value, payment_metadata, ..
+			} =>
+				(payment_data, keysend_preimage, amt_msat, outgoing_cltv_value, payment_metadata),
+			_ =>
+				return Err(InboundOnionErr {
+					err_code: 0x4000|22,
+					err_data: Vec::new(),
+					msg: "Got non final data with an HMAC of 0",
+				}),
+		};
 		// final_incorrect_cltv_expiry
-		if hop_data.outgoing_cltv_value > cltv_expiry {
-			return Err(ReceiveError {
+		if outgoing_cltv_value > cltv_expiry {
+			return Err(InboundOnionErr {
 				msg: "Upstream node set CLTV to less than the CLTV set by the sender",
 				err_code: 18,
 				err_data: cltv_expiry.to_be_bytes().to_vec()
@@ -2652,85 +2702,74 @@ where
 		// payment logic has enough time to fail the HTLC backward before our onchain logic triggers a
 		// channel closure (see HTLC_FAIL_BACK_BUFFER rationale).
 		let current_height: u32 = self.best_block.read().unwrap().height();
-		if (hop_data.outgoing_cltv_value as u64) <= current_height as u64 + HTLC_FAIL_BACK_BUFFER as u64 + 1 {
+		if (outgoing_cltv_value as u64) <= current_height as u64 + HTLC_FAIL_BACK_BUFFER as u64 + 1 {
 			let mut err_data = Vec::with_capacity(12);
 			err_data.extend_from_slice(&amt_msat.to_be_bytes());
 			err_data.extend_from_slice(&current_height.to_be_bytes());
-			return Err(ReceiveError {
+			return Err(InboundOnionErr {
 				err_code: 0x4000 | 15, err_data,
 				msg: "The final CLTV expiry is too soon to handle",
 			});
 		}
-		if (!allow_underpay && hop_data.amt_to_forward > amt_msat) ||
-			(allow_underpay && hop_data.amt_to_forward >
+		if (!allow_underpay && onion_amt_msat > amt_msat) ||
+			(allow_underpay && onion_amt_msat >
 			 amt_msat.saturating_add(counterparty_skimmed_fee_msat.unwrap_or(0)))
 		{
-			return Err(ReceiveError {
+			return Err(InboundOnionErr {
 				err_code: 19,
 				err_data: amt_msat.to_be_bytes().to_vec(),
 				msg: "Upstream node sent less than we were supposed to receive in payment",
 			});
 		}
 
-		let routing = match hop_data.format {
-			msgs::OnionHopDataFormat::NonFinalNode { .. } => {
-				return Err(ReceiveError {
+		let routing = if let Some(payment_preimage) = keysend_preimage {
+			// We need to check that the sender knows the keysend preimage before processing this
+			// payment further. Otherwise, an intermediary routing hop forwarding non-keysend-HTLC X
+			// could discover the final destination of X, by probing the adjacent nodes on the route
+			// with a keysend payment of identical payment hash to X and observing the processing
+			// time discrepancies due to a hash collision with X.
+			let hashed_preimage = PaymentHash(Sha256::hash(&payment_preimage.0).into_inner());
+			if hashed_preimage != payment_hash {
+				return Err(InboundOnionErr {
 					err_code: 0x4000|22,
 					err_data: Vec::new(),
-					msg: "Got non final data with an HMAC of 0",
+					msg: "Payment preimage didn't match payment hash",
 				});
-			},
-			msgs::OnionHopDataFormat::FinalNode { payment_data, keysend_preimage, payment_metadata } => {
-				if let Some(payment_preimage) = keysend_preimage {
-					// We need to check that the sender knows the keysend preimage before processing this
-					// payment further. Otherwise, an intermediary routing hop forwarding non-keysend-HTLC X
-					// could discover the final destination of X, by probing the adjacent nodes on the route
-					// with a keysend payment of identical payment hash to X and observing the processing
-					// time discrepancies due to a hash collision with X.
-					let hashed_preimage = PaymentHash(Sha256::hash(&payment_preimage.0).into_inner());
-					if hashed_preimage != payment_hash {
-						return Err(ReceiveError {
-							err_code: 0x4000|22,
-							err_data: Vec::new(),
-							msg: "Payment preimage didn't match payment hash",
-						});
-					}
-					if !self.default_configuration.accept_mpp_keysend && payment_data.is_some() {
-						return Err(ReceiveError {
-							err_code: 0x4000|22,
-							err_data: Vec::new(),
-							msg: "We don't support MPP keysend payments",
-						});
-					}
-					PendingHTLCRouting::ReceiveKeysend {
-						payment_data,
-						payment_preimage,
-						payment_metadata,
-						incoming_cltv_expiry: hop_data.outgoing_cltv_value,
-					}
-				} else if let Some(data) = payment_data {
-					PendingHTLCRouting::Receive {
-						payment_data: data,
-						payment_metadata,
-						incoming_cltv_expiry: hop_data.outgoing_cltv_value,
-						phantom_shared_secret,
-					}
-				} else {
-					return Err(ReceiveError {
-						err_code: 0x4000|0x2000|3,
-						err_data: Vec::new(),
-						msg: "We require payment_secrets",
-					});
-				}
-			},
+			}
+			if !self.default_configuration.accept_mpp_keysend && payment_data.is_some() {
+				return Err(InboundOnionErr {
+					err_code: 0x4000|22,
+					err_data: Vec::new(),
+					msg: "We don't support MPP keysend payments",
+				});
+			}
+			PendingHTLCRouting::ReceiveKeysend {
+				payment_data,
+				payment_preimage,
+				payment_metadata,
+				incoming_cltv_expiry: outgoing_cltv_value,
+			}
+		} else if let Some(data) = payment_data {
+			PendingHTLCRouting::Receive {
+				payment_data: data,
+				payment_metadata,
+				incoming_cltv_expiry: outgoing_cltv_value,
+				phantom_shared_secret,
+			}
+		} else {
+			return Err(InboundOnionErr {
+				err_code: 0x4000|0x2000|3,
+				err_data: Vec::new(),
+				msg: "We require payment_secrets",
+			});
 		};
 		Ok(PendingHTLCInfo {
 			routing,
 			payment_hash,
 			incoming_shared_secret: shared_secret,
 			incoming_amt_msat: Some(amt_msat),
-			outgoing_amt_msat: hop_data.amt_to_forward,
-			outgoing_cltv_value: hop_data.outgoing_cltv_value,
+			outgoing_amt_msat: onion_amt_msat,
+			outgoing_cltv_value,
 			skimmed_fee_msat: counterparty_skimmed_fee_msat,
 		})
 	}
@@ -2794,9 +2833,8 @@ where
 		};
 		let (outgoing_scid, outgoing_amt_msat, outgoing_cltv_value, next_packet_pk_opt) = match next_hop {
 			onion_utils::Hop::Forward {
-				next_hop_data: msgs::OnionHopData {
-					format: msgs::OnionHopDataFormat::NonFinalNode { short_channel_id }, amt_to_forward,
-					outgoing_cltv_value,
+				next_hop_data: msgs::InboundOnionPayload::Forward {
+					short_channel_id, amt_to_forward, outgoing_cltv_value
 				}, ..
 			} => {
 				let next_pk = onion_utils::next_hop_packet_pubkey(&self.secp_ctx,
@@ -2806,9 +2844,7 @@ where
 			// We'll do receive checks in [`Self::construct_pending_htlc_info`] so we have access to the
 			// inbound channel's state.
 			onion_utils::Hop::Receive { .. } => return Ok((next_hop, shared_secret, None)),
-			onion_utils::Hop::Forward {
-				next_hop_data: msgs::OnionHopData { format: msgs::OnionHopDataFormat::FinalNode { .. }, .. }, ..
-			} => {
+			onion_utils::Hop::Forward { next_hop_data: msgs::InboundOnionPayload::Receive { .. }, .. } => {
 				return_err!("Final Node OnionHopData provided for us as an intermediary node", 0x4000 | 22, &[0; 0]);
 			}
 		};
@@ -2979,37 +3015,15 @@ where
 						// delay) once they've send us a commitment_signed!
 						PendingHTLCStatus::Forward(info)
 					},
-					Err(ReceiveError { err_code, err_data, msg }) => return_err!(msg, err_code, &err_data)
+					Err(InboundOnionErr { err_code, err_data, msg }) => return_err!(msg, err_code, &err_data)
 				}
 			},
 			onion_utils::Hop::Forward { next_hop_data, next_hop_hmac, new_packet_bytes } => {
-				debug_assert!(next_packet_pubkey_opt.is_some());
-				let outgoing_packet = msgs::OnionPacket {
-					version: 0,
-					public_key: next_packet_pubkey_opt.unwrap_or(Err(secp256k1::Error::InvalidPublicKey)),
-					hop_data: new_packet_bytes,
-					hmac: next_hop_hmac.clone(),
-				};
-
-				let short_channel_id = match next_hop_data.format {
-					msgs::OnionHopDataFormat::NonFinalNode { short_channel_id } => short_channel_id,
-					msgs::OnionHopDataFormat::FinalNode { .. } => {
-						return_err!("Final Node OnionHopData provided for us as an intermediary node", 0x4000 | 22, &[0;0]);
-					},
-				};
-
-				PendingHTLCStatus::Forward(PendingHTLCInfo {
-					routing: PendingHTLCRouting::Forward {
-						onion_packet: outgoing_packet,
-						short_channel_id,
-					},
-					payment_hash: msg.payment_hash.clone(),
-					incoming_shared_secret: shared_secret,
-					incoming_amt_msat: Some(msg.amount_msat),
-					outgoing_amt_msat: next_hop_data.amt_to_forward,
-					outgoing_cltv_value: next_hop_data.outgoing_cltv_value,
-					skimmed_fee_msat: None,
-				})
+				match self.construct_fwd_pending_htlc_info(msg, next_hop_data, next_hop_hmac,
+					new_packet_bytes, shared_secret, next_packet_pubkey_opt) {
+					Ok(info) => PendingHTLCStatus::Forward(info),
+					Err(InboundOnionErr { err_code, err_data, msg }) => return_err!(msg, err_code, &err_data)
+				}
 			}
 		}
 	}
@@ -3814,7 +3828,7 @@ where
 															outgoing_cltv_value, Some(phantom_shared_secret), false, None)
 														{
 															Ok(info) => phantom_receives.push((prev_short_channel_id, prev_funding_outpoint, prev_user_channel_id, vec![(info, prev_htlc_id)])),
-															Err(ReceiveError { err_code, err_data, msg }) => failed_payment!(msg, err_code, err_data, Some(phantom_shared_secret))
+															Err(InboundOnionErr { err_code, err_data, msg }) => failed_payment!(msg, err_code, err_data, Some(phantom_shared_secret))
 														}
 													},
 													_ => panic!(),
@@ -10070,20 +10084,18 @@ mod tests {
 		let node = create_network(1, &node_cfg, &node_chanmgr);
 		let sender_intended_amt_msat = 100;
 		let extra_fee_msat = 10;
-		let hop_data = msgs::OnionHopData {
-			amt_to_forward: 100,
+		let hop_data = msgs::InboundOnionPayload::Receive {
+			amt_msat: 100,
 			outgoing_cltv_value: 42,
-			format: msgs::OnionHopDataFormat::FinalNode {
-				keysend_preimage: None,
-				payment_metadata: None,
-				payment_data: Some(msgs::FinalOnionHopData {
-					payment_secret: PaymentSecret([0; 32]), total_msat: sender_intended_amt_msat,
-				}),
-			}
+			payment_metadata: None,
+			keysend_preimage: None,
+			payment_data: Some(msgs::FinalOnionHopData {
+				payment_secret: PaymentSecret([0; 32]), total_msat: sender_intended_amt_msat,
+			}),
 		};
 		// Check that if the amount we received + the penultimate hop extra fee is less than the sender
 		// intended amount, we fail the payment.
-		if let Err(crate::ln::channelmanager::ReceiveError { err_code, .. }) =
+		if let Err(crate::ln::channelmanager::InboundOnionErr { err_code, .. }) =
 			node[0].node.construct_recv_pending_htlc_info(hop_data, [0; 32], PaymentHash([0; 32]),
 				sender_intended_amt_msat - extra_fee_msat - 1, 42, None, true, Some(extra_fee_msat))
 		{
@@ -10091,16 +10103,14 @@ mod tests {
 		} else { panic!(); }
 
 		// If amt_received + extra_fee is equal to the sender intended amount, we're fine.
-		let hop_data = msgs::OnionHopData { // This is the same hop_data as above, OnionHopData doesn't implement Clone
-			amt_to_forward: 100,
+		let hop_data = msgs::InboundOnionPayload::Receive { // This is the same payload as above, InboundOnionPayload doesn't implement Clone
+			amt_msat: 100,
 			outgoing_cltv_value: 42,
-			format: msgs::OnionHopDataFormat::FinalNode {
-				keysend_preimage: None,
-				payment_metadata: None,
-				payment_data: Some(msgs::FinalOnionHopData {
-					payment_secret: PaymentSecret([0; 32]), total_msat: sender_intended_amt_msat,
-				}),
-			}
+			payment_metadata: None,
+			keysend_preimage: None,
+			payment_data: Some(msgs::FinalOnionHopData {
+				payment_secret: PaymentSecret([0; 32]), total_msat: sender_intended_amt_msat,
+			}),
 		};
 		assert!(node[0].node.construct_recv_pending_htlc_info(hop_data, [0; 32], PaymentHash([0; 32]),
 			sender_intended_amt_msat - extra_fee_msat, 42, None, true, Some(extra_fee_msat)).is_ok());
