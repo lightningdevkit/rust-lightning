@@ -135,10 +135,10 @@ impl<'a> Record<'a> {
 	}
 }
 
-/// A trait encapsulating the operations required of a logger
+/// A trait encapsulating the operations required of a logger.
 pub trait Logger {
-	/// Logs the `Record`
-	fn log(&self, record: &Record);
+	/// Logs the [`Record`].
+	fn log(&self, record: Record);
 }
 
 /// Wrapper for logging a [`PublicKey`] in hex format.

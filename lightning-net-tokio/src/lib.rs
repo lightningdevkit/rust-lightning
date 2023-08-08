@@ -571,7 +571,7 @@ mod tests {
 
 	pub struct TestLogger();
 	impl lightning::util::logger::Logger for TestLogger {
-		fn log(&self, record: &lightning::util::logger::Record) {
+		fn log(&self, record: lightning::util::logger::Record) {
 			println!("{:<5} [{} : {}, {}] {}", record.level.to_string(), record.module_path, record.file, record.line, record.args);
 		}
 	}

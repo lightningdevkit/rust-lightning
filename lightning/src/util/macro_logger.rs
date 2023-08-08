@@ -159,7 +159,7 @@ macro_rules! log_spendable {
 #[macro_export]
 macro_rules! log_internal {
 	($logger: expr, $lvl:expr, $($arg:tt)+) => (
-		$logger.log(&$crate::util::logger::Record::new($lvl, format_args!($($arg)+), module_path!(), file!(), line!()))
+		$logger.log($crate::util::logger::Record::new($lvl, format_args!($($arg)+), module_path!(), file!(), line!()))
 	);
 }
 

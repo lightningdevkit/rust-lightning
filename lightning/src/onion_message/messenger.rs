@@ -71,7 +71,7 @@ use crate::prelude::*;
 /// # use std::sync::Arc;
 /// # struct FakeLogger;
 /// # impl Logger for FakeLogger {
-/// #     fn log(&self, record: &Record) { unimplemented!() }
+/// #     fn log(&self, record: Record) { unimplemented!() }
 /// # }
 /// # struct FakeMessageRouter {}
 /// # impl MessageRouter for FakeMessageRouter {
