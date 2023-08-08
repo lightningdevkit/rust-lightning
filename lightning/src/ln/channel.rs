@@ -5728,7 +5728,11 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		}
 		*/
 
-		// TODO update funding TX with signature!!!
+		// Update funding TX with signature from acceptor
+		let mut funding_transaction_with_sigs = self.funding_transaction.as_ref().unwrap().clone();
+		funding_transaction_with_sigs.input[msg.splice_prev_funding_input_index as usize].witness.push(msg.funding_signature.encode());
+		self.funding_transaction = Some(funding_transaction_with_sigs.clone());
+		log_info!(logger, "Updated splice funding transaction with signature from acceptor; txid {}  txlen {}  sig {}", funding_transaction_with_sigs.txid(), funding_transaction_with_sigs.encode().len(), msg.funding_signature);
 
 		let funding_script = self.get_funding_redeemscript();
 

@@ -97,14 +97,18 @@ fn test_channel_open_simple() {
 	let _res = nodes[0].node.handle_accept_channel(&nodes[1].node.get_our_node_id(), &accept_channel_message.clone());
 	// Note: FundingGenerationReady emitted, checked and used below
 	let (temporary_channel_id, funding_tx, _funding_output) = create_funding_transaction(&nodes[0], &nodes[1].node.get_our_node_id(), channel_value_sat, 42);
+	assert_eq!(funding_tx.encode().len(), 55);
+
+	// Funding transation created, provide it
 	let _res = nodes[0].node.funding_transaction_generated(&temporary_channel_id, &nodes[1].node.get_our_node_id(), funding_tx.clone()).unwrap();
 
 	let funding_created_message = get_event_msg!(nodes[0], MessageSendEvent::SendFundingCreated, nodes[1].node.get_our_node_id());
-	let channel_id = OutPoint { txid: funding_created_message.funding_txid, index: funding_created_message.funding_output_index }.to_channel_id();
 	let _res = nodes[1].node.handle_funding_created(&nodes[0].node.get_our_node_id(), &funding_created_message);
 
 	let funding_signed_message = get_event_msg!(nodes[1], MessageSendEvent::SendFundingSigned, nodes[0].node.get_our_node_id());
 	let _res = nodes[0].node.handle_funding_signed(&nodes[1].node.get_our_node_id(), &funding_signed_message);
+	// Take new channel ID
+	let channel_id = funding_signed_message.channel_id;
 
 	// Check that funding transaction has been broadcasted
 	assert_eq!(chanmon_cfgs[0].tx_broadcaster.txn_broadcasted.lock().unwrap().len(), 1);
@@ -192,15 +196,18 @@ fn test_splice_in_simple() {
 	// Note: FundingGenerationReady emitted, checked and used below
 	// Create funding tx
 	let (temporary_channel_id, funding_tx, _funding_output) = create_funding_transaction(&nodes[0], &nodes[1].node.get_our_node_id(), channel_value_sat, 42);
+	assert_eq!(funding_tx.encode().len(), 55);
+
+	// Funding transaction has been created, provide it
 	let _res = nodes[0].node.funding_transaction_generated(&temporary_channel_id, &nodes[1].node.get_our_node_id(), funding_tx.clone()).unwrap();
 
 	let funding_created_message = get_event_msg!(nodes[0], MessageSendEvent::SendFundingCreated, nodes[1].node.get_our_node_id());
-	// TODO: take channel_id from message
-	let channel_id = OutPoint { txid: funding_created_message.funding_txid, index: funding_created_message.funding_output_index }.to_channel_id();
 	let _res = nodes[1].node.handle_funding_created(&nodes[0].node.get_our_node_id(), &funding_created_message);
 
 	let funding_signed_message = get_event_msg!(nodes[1], MessageSendEvent::SendFundingSigned, nodes[0].node.get_our_node_id());
 	let _res = nodes[0].node.handle_funding_signed(&nodes[1].node.get_our_node_id(), &funding_signed_message);
+	// Take new channel ID
+	let channel_id = funding_signed_message.channel_id;
 
 	// Check that funding transaction has been broadcasted
 	assert_eq!(chanmon_cfgs[0].tx_broadcaster.txn_broadcasted.lock().unwrap().len(), 1);
@@ -258,11 +265,12 @@ fn test_splice_in_simple() {
 	let _res = nodes[0].node.handle_splice_ack(&nodes[1].node.get_our_node_id(), &splice_ack_message);
 	// Note: SpliceAcked emitted, checked and used below
 
-	// Create splicing tx
+	// Create splice tx
 	let post_splice_channel_value = channel_value_sat + splice_in_sats;
 	let (splice_tx, _funding_output) = create_splice_in_transaction(&nodes[0], &channel_id, post_splice_channel_value);
+	assert_eq!(splice_tx.encode().len(), 94);
 
-	// Splicing transaction has been created, provide it
+	// Splice transaction has been created, provide it
 	let _res = nodes[0].node.splice_transaction_generated(&channel_id, &nodes[1].node.get_our_node_id(), splice_tx.clone()).unwrap();
 	// Extract the splice_created message from node0 to node1
 	let splice_created_message = get_event_msg!(nodes[0], MessageSendEvent::SendSpliceCreated, nodes[1].node.get_our_node_id());
@@ -274,7 +282,7 @@ fn test_splice_in_simple() {
 	// Check that signed splice funding transaction has been broadcasted
 	assert_eq!(chanmon_cfgs[0].tx_broadcaster.txn_broadcasted.lock().unwrap().len(), 2);
 	let broadcasted_splice_tx = chanmon_cfgs[0].tx_broadcaster.txn_broadcasted.lock().unwrap()[1].clone();
-	assert_eq!(broadcasted_splice_tx.encode().len(), 162);
+	assert_eq!(broadcasted_splice_tx.encode().len(), 94+68+65);
 	assert_ne!(broadcasted_splice_tx.encode(), splice_tx.encode());
 
 	check_added_monitors!(nodes[0], 1);
