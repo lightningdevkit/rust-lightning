@@ -650,6 +650,20 @@ struct HistoricalBucketRangeTracker {
 
 impl HistoricalBucketRangeTracker {
 	fn new() -> Self { Self { buckets: [0; 8] } }
+
+	/// Returns the average of the buckets between the two trackers.
+	pub(crate) fn combine(mut self, other: Self) -> Self {
+		let mut buckets: [u16; 8] = [0; 8];
+		for i in 0..8 {
+			let current = self.buckets[i];
+			let other = other.buckets[i];
+			buckets[i] = (current + other) / 2;
+		}
+
+		self.buckets = buckets;
+		self
+	}
+
 	fn track_datapoint(&mut self, liquidity_offset_msat: u64, capacity_msat: u64) {
 		// We have 8 leaky buckets for min and max liquidity. Each bucket tracks the amount of time
 		// we spend in each bucket as a 16-bit fixed-point number with a 5 bit fractional part.
@@ -787,6 +801,7 @@ impl HistoricalMinMaxBuckets<'_> {
 /// Direction is defined in terms of [`NodeId`] partial ordering, where the source node is the
 /// first node in the ordering of the channel's counterparties. Thus, swapping the two liquidity
 /// offset fields gives the opposite direction.
+#[derive(Clone)]
 struct ChannelLiquidity<T: Time> {
 	/// Lower channel liquidity bound in terms of an offset from zero.
 	min_liquidity_offset_msat: u64,
@@ -799,6 +814,21 @@ struct ChannelLiquidity<T: Time> {
 
 	min_liquidity_offset_history: HistoricalBucketRangeTracker,
 	max_liquidity_offset_history: HistoricalBucketRangeTracker,
+}
+
+impl<T: Time> ChannelLiquidity<T> {
+	pub(crate) fn combine(mut self, other: Self) -> Self {
+		self.min_liquidity_offset_msat = self.min_liquidity_offset_msat.max(other.min_liquidity_offset_msat);
+		self.max_liquidity_offset_msat = self.max_liquidity_offset_msat.min(other.max_liquidity_offset_msat);
+		self.min_liquidity_offset_history.combine(other.min_liquidity_offset_history);
+		self.max_liquidity_offset_history.combine(other.max_liquidity_offset_history);
+
+		if self.last_updated.duration_since(other.last_updated) < Duration::from_secs(0) {
+			self.last_updated = other.last_updated;
+		}
+
+		self
+	}
 }
 
 /// A snapshot of [`ChannelLiquidity`] in one direction assuming a certain channel capacity and
@@ -941,6 +971,27 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, T: Time> ProbabilisticScorerU
 			}
 		}
 		None
+	}
+
+	/// Combines two `ProbabilisticScorerUsingTime` into one.
+	///
+	/// This merges the channel liquidity information of both scorers.
+	pub fn combine(mut self, other: Self) -> Self {
+		let mut channel_liquidities = self.channel_liquidities;
+
+		for (id, item) in other.channel_liquidities {
+			match channel_liquidities.get(&id) {
+				None => { channel_liquidities.insert(id, item); },
+				Some(current) => {
+					let liquidity = current.clone();
+					channel_liquidities.insert(id, liquidity.combine(item));
+				}
+			}
+		}
+
+		self.channel_liquidities = channel_liquidities;
+
+		self
 	}
 }
 
