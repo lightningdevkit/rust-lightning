@@ -264,9 +264,9 @@ ReadableArgs<(SharedSecret, &H, &L)> for Payload<<H as CustomOnionMessageHandler
 }
 
 /// When reading a packet off the wire, we don't know a priori whether the packet is to be forwarded
-/// or received. Thus we read a ControlTlvs rather than reading a ForwardControlTlvs or
-/// ReceiveControlTlvs directly. Also useful on the encoding side to keep forward and receive TLVs
-/// in the same iterator.
+/// or received. Thus we read a `ControlTlvs` rather than reading a [`ForwardTlvs`] or
+/// [`ReceiveTlvs`] directly. Also useful on the encoding side to keep forward and receive TLVs in
+/// the same iterator.
 pub(crate) enum ControlTlvs {
 	/// This onion message is intended to be forwarded.
 	Forward(ForwardTlvs),
