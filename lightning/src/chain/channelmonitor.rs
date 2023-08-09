@@ -36,7 +36,7 @@ use bitcoin::secp256k1;
 use crate::ln::{PaymentHash, PaymentPreimage};
 use crate::ln::msgs::DecodeError;
 use crate::ln::chan_utils;
-use crate::ln::chan_utils::{CounterpartyCommitmentSecrets, HTLCOutputInCommitment, HTLCClaim, ChannelTransactionParameters, HolderCommitmentTransaction};
+use crate::ln::chan_utils::{CommitmentTransaction, CounterpartyCommitmentSecrets, HTLCOutputInCommitment, HTLCClaim, ChannelTransactionParameters, HolderCommitmentTransaction, TxCreationKeys};
 use crate::ln::channelmanager::{HTLCSource, SentHTLCId};
 use crate::chain;
 use crate::chain::{BestBlock, WatchedOutput};
@@ -1376,6 +1376,29 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 		ret
 	}
 
+	/// Gets all of the counterparty commitment transactions provided by the given update. This
+	/// may be empty if the update doesn't include any new counterparty commitments. Returned
+	/// commitment transactions are unsigned.
+	///
+	/// This is provided so that watchtower clients in the persistence pipeline are able to build
+	/// justice transactions for each counterparty commitment upon each update. It's intended to be
+	/// used within an implementation of [`Persist::update_persisted_channel`], which is provided
+	/// with a monitor and an update.
+	///
+	/// It is expected that a watchtower client may use this method to retrieve the latest counterparty
+	/// commitment transaction(s), and then hold the necessary data until a later update in which
+	/// the monitor has been updated with the corresponding revocation data, at which point the
+	/// monitor can sign the justice transaction.
+	///
+	/// This will only return a non-empty list for monitor updates that have been created after
+	/// upgrading to LDK 0.0.117+. Note that no restriction lies on the monitors themselves, which
+	/// may have been created prior to upgrading.
+	///
+	/// [`Persist::update_persisted_channel`]: crate::chain::chainmonitor::Persist::update_persisted_channel
+	pub fn counterparty_commitment_txs_from_update(&self, update: &ChannelMonitorUpdate) -> Vec<CommitmentTransaction> {
+		self.inner.lock().unwrap().counterparty_commitment_txs_from_update(update)
+	}
+
 	pub(crate) fn get_min_seen_secret(&self) -> u64 {
 		self.inner.lock().unwrap().get_min_seen_secret()
 	}
@@ -2549,6 +2572,10 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			}
 		}
 
+		#[cfg(debug_assertions)] {
+			self.counterparty_commitment_txs_from_update(updates);
+		}
+
 		// If the updates succeeded and we were in an already closed channel state, then there's no
 		// need to refuse any updates we expect to receive afer seeing a confirmed commitment.
 		if ret.is_ok() && updates.update_id == CLOSED_CHANNEL_UPDATE_ID && self.latest_update_id == updates.update_id {
@@ -2655,6 +2682,55 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			}
 		}
 		ret
+	}
+
+	fn build_counterparty_commitment_tx(
+		&self, commitment_number: u64, their_per_commitment_point: &PublicKey,
+		to_broadcaster_value: u64, to_countersignatory_value: u64, feerate_per_kw: u32,
+		mut nondust_htlcs: Vec<(HTLCOutputInCommitment, Option<Box<HTLCSource>>)>
+	) -> CommitmentTransaction {
+		let broadcaster_keys = &self.onchain_tx_handler.channel_transaction_parameters
+			.counterparty_parameters.as_ref().unwrap().pubkeys;
+		let countersignatory_keys =
+			&self.onchain_tx_handler.channel_transaction_parameters.holder_pubkeys;
+
+		let broadcaster_funding_key = broadcaster_keys.funding_pubkey;
+		let countersignatory_funding_key = countersignatory_keys.funding_pubkey;
+		let keys = TxCreationKeys::from_channel_static_keys(&their_per_commitment_point,
+			&broadcaster_keys, &countersignatory_keys, &self.onchain_tx_handler.secp_ctx);
+		let channel_parameters =
+			&self.onchain_tx_handler.channel_transaction_parameters.as_counterparty_broadcastable();
+
+		CommitmentTransaction::new_with_auxiliary_htlc_data(commitment_number,
+			to_broadcaster_value, to_countersignatory_value, broadcaster_funding_key,
+			countersignatory_funding_key, keys, feerate_per_kw, &mut nondust_htlcs,
+			channel_parameters)
+	}
+
+	pub(crate) fn counterparty_commitment_txs_from_update(&self, update: &ChannelMonitorUpdate) -> Vec<CommitmentTransaction> {
+		update.updates.iter().filter_map(|update| {
+			match update {
+				&ChannelMonitorUpdateStep::LatestCounterpartyCommitmentTXInfo { commitment_txid,
+					ref htlc_outputs, commitment_number, their_per_commitment_point,
+					feerate_per_kw: Some(feerate_per_kw),
+					to_broadcaster_value_sat: Some(to_broadcaster_value),
+					to_countersignatory_value_sat: Some(to_countersignatory_value) } => {
+
+					let nondust_htlcs = htlc_outputs.iter().filter_map(|(htlc, _)| {
+						htlc.transaction_output_index.map(|_| (htlc.clone(), None))
+					}).collect::<Vec<_>>();
+
+					let commitment_tx = self.build_counterparty_commitment_tx(commitment_number,
+							&their_per_commitment_point, to_broadcaster_value,
+							to_countersignatory_value, feerate_per_kw, nondust_htlcs);
+
+					debug_assert_eq!(commitment_tx.trust().txid(), commitment_txid);
+
+					Some(commitment_tx)
+				},
+				_ => None,
+			}
+		}).collect()
 	}
 
 	/// Can only fail if idx is < get_min_seen_secret
