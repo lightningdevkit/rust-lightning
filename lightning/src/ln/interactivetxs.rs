@@ -12,6 +12,7 @@ use std::collections::{HashMap, HashSet};
 use bitcoin::{TxIn, Sequence, Transaction, TxOut, OutPoint, Witness};
 use bitcoin::blockdata::constants::WITNESS_SCALE_FACTOR;
 use bitcoin::policy::MAX_STANDARD_TX_WEIGHT;
+use crate::ln::channel::TOTAL_BITCOIN_SUPPLY_SATOSHIS;
 
 use crate::ln::interactivetxs::ChannelMode::Indeterminate;
 use crate::ln::msgs;
@@ -27,8 +28,6 @@ const MAX_RECEIVED_TX_ADD_OUTPUT_COUNT: u16 = 4096;
 /// The number of inputs or outputs that the state machine can have, before it MUST fail the
 /// negotiation.
 const MAX_INPUTS_OUTPUTS_COUNT: usize = 252;
-
-const MAX_MONEY: u64 = 2_100_000_000_000_000;
 
 type SerialId = u64;
 trait SerialIdExt {
@@ -314,10 +313,10 @@ impl<S> InteractiveTxStateMachine<S> where S: AcceptingChanges {
 			//		- the sats amount is less than the dust_limit
 			return self.abort_negotiation(AbortReason::ExceededDustLimit);
 		}
-		if output.value > MAX_MONEY {
+		if output.value > TOTAL_BITCOIN_SUPPLY_SATOSHIS {
 			// The receiving node:
 			// - MUST fail the negotiation if:
-			//		- the sats amount is greater than 2,100,000,000,000,000 (MAX_MONEY)
+			//		- the sats amount is greater than 2,100,000,000,000,000 (TOTAL_BITCOIN_SUPPLY_SATOSHIS)
 			return self.abort_negotiation(AbortReason::ExceededMaximumSatsAllowed);
 		}
 
