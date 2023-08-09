@@ -52,7 +52,9 @@ fn test_funding_peer_disconnect() {
 	let events_1 = nodes[0].node.get_and_clear_pending_msg_events();
 	assert!(events_1.is_empty());
 
-	reconnect_nodes(&nodes[0], &nodes[1], (false, true), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
+	let mut reconnect_args = ReconnectArgs::new(&nodes[0], &nodes[1]);
+	reconnect_args.send_channel_ready.1 = true;
+	reconnect_nodes(reconnect_args);
 
 	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id());
 	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id());
@@ -180,7 +182,7 @@ fn test_funding_peer_disconnect() {
 
 	reload_node!(nodes[0], &nodes[0].node.encode(), &[&chan_0_monitor_serialized], persister, new_chain_monitor, nodes_0_deserialized);
 
-	reconnect_nodes(&nodes[0], &nodes[1], (false, false), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
+	reconnect_nodes(ReconnectArgs::new(&nodes[0], &nodes[1]));
 }
 
 #[test]
@@ -334,7 +336,7 @@ fn test_simple_manager_serialize_deserialize() {
 	let chan_0_monitor_serialized = get_monitor!(nodes[0], chan_id).encode();
 	reload_node!(nodes[0], nodes[0].node.encode(), &[&chan_0_monitor_serialized], persister, new_chain_monitor, nodes_0_deserialized);
 
-	reconnect_nodes(&nodes[0], &nodes[1], (false, false), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
+	reconnect_nodes(ReconnectArgs::new(&nodes[0], &nodes[1]));
 
 	fail_payment(&nodes[0], &[&nodes[1]], our_payment_hash);
 	claim_payment(&nodes[0], &[&nodes[1]], our_payment_preimage);
@@ -456,8 +458,8 @@ fn test_manager_serialize_deserialize_inconsistent_monitor() {
 	check_added_monitors!(nodes[0], 1);
 
 	// nodes[1] and nodes[2] have no lost state with nodes[0]...
-	reconnect_nodes(&nodes[0], &nodes[1], (false, false), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
-	reconnect_nodes(&nodes[0], &nodes[2], (false, false), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
+	reconnect_nodes(ReconnectArgs::new(&nodes[0], &nodes[1]));
+	reconnect_nodes(ReconnectArgs::new(&nodes[0], &nodes[2]));
 	//... and we can even still claim the payment!
 	claim_payment(&nodes[2], &[&nodes[0], &nodes[1]], our_payment_preimage);
 
@@ -666,10 +668,12 @@ fn test_forwardable_regen() {
 	let chan_1_monitor_serialized = get_monitor!(nodes[1], chan_id_2).encode();
 	reload_node!(nodes[1], nodes[1].node.encode(), &[&chan_0_monitor_serialized, &chan_1_monitor_serialized], persister, new_chain_monitor, nodes_1_deserialized);
 
-	reconnect_nodes(&nodes[0], &nodes[1], (false, false), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
+	reconnect_nodes(ReconnectArgs::new(&nodes[0], &nodes[1]));
 	// Note that nodes[1] and nodes[2] resend their channel_ready here since they haven't updated
 	// the commitment state.
-	reconnect_nodes(&nodes[1], &nodes[2], (true, true), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
+	let mut reconnect_args = ReconnectArgs::new(&nodes[1], &nodes[2]);
+	reconnect_args.send_channel_ready = (true, true);
+	reconnect_nodes(reconnect_args);
 
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 
@@ -967,7 +971,7 @@ fn do_forwarded_payment_no_manager_persistence(use_cs_commitment: bool, claim_ht
 	check_added_monitors!(nodes[1], 1);
 
 	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id());
-	reconnect_nodes(&nodes[0], &nodes[1], (false, false), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
+	reconnect_nodes(ReconnectArgs::new(&nodes[0], &nodes[1]));
 
 	if use_cs_commitment {
 		// If we confirm a commitment transaction that has the HTLC on-chain, nodes[1] should wait
@@ -1085,7 +1089,7 @@ fn removed_payment_no_manager_persistence() {
 	// now forgotten everywhere. The ChannelManager should have, as a side-effect of reload,
 	// learned that the HTLC is gone from the ChannelMonitor and added it to the to-fail-back set.
 	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id());
-	reconnect_nodes(&nodes[0], &nodes[1], (false, false), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
+	reconnect_nodes(ReconnectArgs::new(&nodes[0], &nodes[1]));
 
 	expect_pending_htlcs_forwardable_and_htlc_handling_failed!(nodes[1], [HTLCDestination::NextHopChannel { node_id: Some(nodes[2].node.get_our_node_id()), channel_id: chan_id_2 }]);
 	check_added_monitors!(nodes[1], 1);

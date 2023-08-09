@@ -15,7 +15,7 @@ use crate::chain::{ChannelMonitorUpdateStatus, Confirm, Listen, Watch};
 use crate::chain::channelmonitor::{ANTI_REORG_DELAY, HTLC_FAIL_BACK_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS};
 use crate::sign::EntropySource;
 use crate::chain::transaction::OutPoint;
-use crate::events::{ClosureReason, Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider, PathFailure, PaymentFailureReason};
+use crate::events::{ClosureReason, Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider, PathFailure, PaymentFailureReason, PaymentPurpose};
 use crate::ln::channel::{ChannelId, EXPIRE_PREV_CONFIG_TICKS};
 use crate::ln::channelmanager::{BREAKDOWN_TIMEOUT, ChannelManager, MPP_TIMEOUT_TICKS, MIN_CLTV_EXPIRY_DELTA, PaymentId, PaymentSendFailure, IDEMPOTENCY_TIMEOUT_TICKS, RecentPaymentDetails, RecipientOnionFields, HTLCForwardInfo, PendingHTLCRouting, PendingAddHTLCInfo};
 use crate::ln::features::Bolt11InvoiceFeatures;
@@ -234,6 +234,71 @@ fn do_mpp_receive_timeout(send_partial_mpp: bool) {
 fn mpp_receive_timeout() {
 	do_mpp_receive_timeout(true);
 	do_mpp_receive_timeout(false);
+}
+
+#[test]
+fn test_keysend_payments() {
+	do_test_keysend_payments(false, false);
+	do_test_keysend_payments(false, true);
+	do_test_keysend_payments(true, false);
+	do_test_keysend_payments(true, true);
+}
+
+fn do_test_keysend_payments(public_node: bool, with_retry: bool) {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	if public_node {
+		create_announced_chan_between_nodes(&nodes, 0, 1);
+	} else {
+		create_chan_between_nodes(&nodes[0], &nodes[1]);
+	}
+	let payer_pubkey = nodes[0].node.get_our_node_id();
+	let payee_pubkey = nodes[1].node.get_our_node_id();
+	let route_params = RouteParameters {
+		payment_params: PaymentParameters::for_keysend(payee_pubkey, 40, false),
+		final_value_msat: 10000,
+	};
+
+	let network_graph = nodes[0].network_graph.clone();
+	let channels = nodes[0].node.list_usable_channels();
+	let first_hops = channels.iter().collect::<Vec<_>>();
+	let first_hops = if public_node { None } else { Some(first_hops.as_slice()) };
+
+	let scorer = test_utils::TestScorer::new();
+	let random_seed_bytes = chanmon_cfgs[1].keys_manager.get_secure_random_bytes();
+	let route = find_route(
+		&payer_pubkey, &route_params, &network_graph, first_hops,
+		nodes[0].logger, &scorer, &(), &random_seed_bytes
+	).unwrap();
+
+	{
+		let test_preimage = PaymentPreimage([42; 32]);
+		if with_retry {
+			nodes[0].node.send_spontaneous_payment_with_retry(Some(test_preimage),
+				RecipientOnionFields::spontaneous_empty(), PaymentId(test_preimage.0),
+				route_params, Retry::Attempts(1)).unwrap()
+		} else {
+			nodes[0].node.send_spontaneous_payment(&route, Some(test_preimage),
+				RecipientOnionFields::spontaneous_empty(), PaymentId(test_preimage.0)).unwrap()
+		};
+	}
+	check_added_monitors!(nodes[0], 1);
+	let send_event = SendEvent::from_node(&nodes[0]);
+	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &send_event.msgs[0]);
+	do_commitment_signed_dance(&nodes[1], &nodes[0], &send_event.commitment_msg, false, false);
+	expect_pending_htlcs_forwardable!(nodes[1]);
+	// Previously, a refactor caused us to stop including the payment preimage in the onion which
+	// is sent as a part of keysend payments. Thus, to be extra careful here, we scope the preimage
+	// above to demonstrate that we have no way to get the preimage at this point except by
+	// extracting it from the onion nodes[1] received.
+	let event = nodes[1].node.get_and_clear_pending_events();
+	assert_eq!(event.len(), 1);
+	if let Event::PaymentClaimable { purpose: PaymentPurpose::SpontaneousPayment(preimage), .. } = event[0] {
+		claim_payment(&nodes[0], &[&nodes[1]], preimage);
+	} else { panic!(); }
 }
 
 #[test]
@@ -490,7 +555,7 @@ fn do_retry_with_no_persist(confirm_before_reload: bool) {
 	// nodes[1] now immediately fails the HTLC as the next-hop channel is disconnected
 	let _ = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 
-	reconnect_nodes(&nodes[1], &nodes[2], (false, false), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
+	reconnect_nodes(ReconnectArgs::new(&nodes[1], &nodes[2]));
 
 	let as_commitment_tx = get_local_commitment_txn!(nodes[0], chan_id)[0].clone();
 	if confirm_before_reload {
@@ -789,7 +854,9 @@ fn do_test_completed_payment_not_retryable_on_reload(use_dust: bool) {
 	nodes[0].node.test_process_background_events();
 	check_added_monitors(&nodes[0], 1);
 
-	reconnect_nodes(&nodes[0], &nodes[1], (true, true), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
+	let mut reconnect_args = ReconnectArgs::new(&nodes[0], &nodes[1]);
+	reconnect_args.send_channel_ready = (true, true);
+	reconnect_nodes(reconnect_args);
 
 	// Now resend the payment, delivering the HTLC and actually claiming it this time. This ensures
 	// the payment is not (spuriously) listed as still pending.
@@ -817,7 +884,7 @@ fn do_test_completed_payment_not_retryable_on_reload(use_dust: bool) {
 	nodes[0].node.test_process_background_events();
 	check_added_monitors(&nodes[0], 1);
 
-	reconnect_nodes(&nodes[0], &nodes[1], (false, false), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
+	reconnect_nodes(ReconnectArgs::new(&nodes[0], &nodes[1]));
 
 	match nodes[0].node.send_payment_with_route(&new_route, payment_hash, RecipientOnionFields::secret_only(payment_secret), payment_id) {
 		Err(PaymentSendFailure::DuplicatePayment) => {},
@@ -1011,7 +1078,7 @@ fn test_fulfill_restart_failure() {
 	reload_node!(nodes[1], &chan_manager_serialized, &[&chan_0_monitor_serialized], persister, new_chain_monitor, nodes_1_deserialized);
 
 	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id());
-	reconnect_nodes(&nodes[0], &nodes[1], (false, false), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
+	reconnect_nodes(ReconnectArgs::new(&nodes[0], &nodes[1]));
 
 	nodes[1].node.fail_htlc_backwards(&payment_hash);
 	expect_pending_htlcs_forwardable_and_htlc_handling_failed!(nodes[1], vec![HTLCDestination::FailedPayment { payment_hash }]);
@@ -3422,9 +3489,11 @@ fn do_test_payment_metadata_consistency(do_reload: bool, do_modify: bool) {
 		reload_node!(nodes[3], config, &nodes[3].node.encode(), &[&mon_bd, &mon_cd],
 			persister, new_chain_monitor, nodes_0_deserialized);
 		nodes[1].node.peer_disconnected(&nodes[3].node.get_our_node_id());
-		reconnect_nodes(&nodes[1], &nodes[3], (false, false), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
+		reconnect_nodes(ReconnectArgs::new(&nodes[1], &nodes[3]));
 	}
-	reconnect_nodes(&nodes[2], &nodes[3], (true, true), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
+	let mut reconnect_args = ReconnectArgs::new(&nodes[2], &nodes[3]);
+	reconnect_args.send_channel_ready = (true, true);
+	reconnect_nodes(reconnect_args);
 
 	// Create a new channel between C and D as A will refuse to retry on the existing one because
 	// it just failed.

@@ -20,6 +20,7 @@ GEN_TEST refund_deser
 GEN_TEST router
 GEN_TEST zbase32
 GEN_TEST indexedmap
+GEN_TEST onion_hop_data
 
 GEN_TEST msg_accept_channel msg_targets::
 GEN_TEST msg_announcement_signatures msg_targets::
@@ -51,7 +52,6 @@ GEN_TEST msg_update_add_htlc msg_targets::
 GEN_TEST msg_error_message msg_targets::
 GEN_TEST msg_channel_update msg_targets::
 
-GEN_TEST msg_onion_hop_data msg_targets::
 GEN_TEST msg_ping msg_targets::
 GEN_TEST msg_pong msg_targets::
 

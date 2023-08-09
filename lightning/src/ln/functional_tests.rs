@@ -27,7 +27,7 @@ use crate::ln::channel::{DISCONNECT_PEER_AWAITING_RESPONSE_TICKS, ChannelError};
 use crate::ln::{chan_utils, onion_utils};
 use crate::ln::chan_utils::{OFFERED_HTLC_SCRIPT_WEIGHT, htlc_success_tx_weight, htlc_timeout_tx_weight, HTLCOutputInCommitment};
 use crate::routing::gossip::{NetworkGraph, NetworkUpdate};
-use crate::routing::router::{Path, PaymentParameters, Route, RouteHop, RouteParameters, find_route, get_route};
+use crate::routing::router::{Path, PaymentParameters, Route, RouteHop, get_route};
 use crate::ln::features::{ChannelFeatures, ChannelTypeFeatures, NodeFeatures};
 use crate::ln::msgs;
 use crate::ln::msgs::{ChannelMessageHandler, RoutingMessageHandler, ErrorAction};
@@ -3586,7 +3586,9 @@ fn test_dup_events_on_peer_disconnect() {
 	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id());
 	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id());
 
-	reconnect_nodes(&nodes[0], &nodes[1], (false, false), (0, 0), (1, 0), (0, 0), (0, 0), (0, 0), (false, false));
+	let mut reconnect_args = ReconnectArgs::new(&nodes[0], &nodes[1]);
+	reconnect_args.pending_htlc_claims.0 = 1;
+	reconnect_nodes(reconnect_args);
 	expect_payment_path_successful!(nodes[0]);
 }
 
@@ -3643,7 +3645,9 @@ fn test_simple_peer_disconnect() {
 
 	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id());
 	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id());
-	reconnect_nodes(&nodes[0], &nodes[1], (true, true), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
+	let mut reconnect_args = ReconnectArgs::new(&nodes[0], &nodes[1]);
+	reconnect_args.send_channel_ready = (true, true);
+	reconnect_nodes(reconnect_args);
 
 	let payment_preimage_1 = route_payment(&nodes[0], &vec!(&nodes[1], &nodes[2])[..], 1000000).0;
 	let payment_hash_2 = route_payment(&nodes[0], &vec!(&nodes[1], &nodes[2])[..], 1000000).1;
@@ -3652,7 +3656,7 @@ fn test_simple_peer_disconnect() {
 
 	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id());
 	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id());
-	reconnect_nodes(&nodes[0], &nodes[1], (false, false), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
+	reconnect_nodes(ReconnectArgs::new(&nodes[0], &nodes[1]));
 
 	let (payment_preimage_3, payment_hash_3, _) = route_payment(&nodes[0], &vec!(&nodes[1], &nodes[2])[..], 1000000);
 	let payment_preimage_4 = route_payment(&nodes[0], &vec!(&nodes[1], &nodes[2])[..], 1000000).0;
@@ -3665,7 +3669,10 @@ fn test_simple_peer_disconnect() {
 	claim_payment_along_route(&nodes[0], &[&[&nodes[1], &nodes[2]]], true, payment_preimage_3);
 	fail_payment_along_route(&nodes[0], &[&[&nodes[1], &nodes[2]]], true, payment_hash_5);
 
-	reconnect_nodes(&nodes[0], &nodes[1], (false, false), (0, 0), (0, 0), (0, 0), (1, 0), (1, 0), (false, false));
+	let mut reconnect_args = ReconnectArgs::new(&nodes[0], &nodes[1]);
+	reconnect_args.pending_cell_htlc_fails.0 = 1;
+	reconnect_args.pending_cell_htlc_claims.0 = 1;
+	reconnect_nodes(reconnect_args);
 	{
 		let events = nodes[0].node.get_and_clear_pending_events();
 		assert_eq!(events.len(), 4);
@@ -3777,19 +3784,29 @@ fn do_test_drop_messages_peer_disconnect(messages_delivered: u8, simulate_broken
 		}
 		// Even if the channel_ready messages get exchanged, as long as nothing further was
 		// received on either side, both sides will need to resend them.
-		reconnect_nodes(&nodes[0], &nodes[1], (true, true), (0, 1), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
+		let mut reconnect_args = ReconnectArgs::new(&nodes[0], &nodes[1]);
+		reconnect_args.send_channel_ready = (true, true);
+		reconnect_args.pending_htlc_adds.1 = 1;
+		reconnect_nodes(reconnect_args);
 	} else if messages_delivered == 3 {
 		// nodes[0] still wants its RAA + commitment_signed
-		reconnect_nodes(&nodes[0], &nodes[1], (false, false), (-1, 0), (0, 0), (0, 0), (0, 0), (0, 0), (true, false));
+		let mut reconnect_args = ReconnectArgs::new(&nodes[0], &nodes[1]);
+		reconnect_args.pending_htlc_adds.0 = -1;
+		reconnect_args.pending_raa.0 = true;
+		reconnect_nodes(reconnect_args);
 	} else if messages_delivered == 4 {
 		// nodes[0] still wants its commitment_signed
-		reconnect_nodes(&nodes[0], &nodes[1], (false, false), (-1, 0), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
+		let mut reconnect_args = ReconnectArgs::new(&nodes[0], &nodes[1]);
+		reconnect_args.pending_htlc_adds.0 = -1;
+		reconnect_nodes(reconnect_args);
 	} else if messages_delivered == 5 {
 		// nodes[1] still wants its final RAA
-		reconnect_nodes(&nodes[0], &nodes[1], (false, false), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (false, true));
+		let mut reconnect_args = ReconnectArgs::new(&nodes[0], &nodes[1]);
+		reconnect_args.pending_raa.1 = true;
+		reconnect_nodes(reconnect_args);
 	} else if messages_delivered == 6 {
 		// Everything was delivered...
-		reconnect_nodes(&nodes[0], &nodes[1], (false, false), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
+		reconnect_nodes(ReconnectArgs::new(&nodes[0], &nodes[1]));
 	}
 
 	let events_1 = nodes[1].node.get_and_clear_pending_events();
@@ -3813,7 +3830,7 @@ fn do_test_drop_messages_peer_disconnect(messages_delivered: u8, simulate_broken
 
 	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id());
 	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id());
-	reconnect_nodes(&nodes[0], &nodes[1], (false, false), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
+	reconnect_nodes(ReconnectArgs::new(&nodes[0], &nodes[1]));
 
 	nodes[1].node.process_pending_htlc_forwards();
 
@@ -3897,7 +3914,9 @@ fn do_test_drop_messages_peer_disconnect(messages_delivered: u8, simulate_broken
 	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id());
 	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id());
 	if messages_delivered < 2 {
-		reconnect_nodes(&nodes[0], &nodes[1], (false, false), (0, 0), (1, 0), (0, 0), (0, 0), (0, 0), (false, false));
+		let mut reconnect_args = ReconnectArgs::new(&nodes[0], &nodes[1]);
+		reconnect_args.pending_htlc_claims.0 = 1;
+		reconnect_nodes(reconnect_args);
 		if messages_delivered < 1 {
 			expect_payment_sent!(nodes[0], payment_preimage_1);
 		} else {
@@ -3905,16 +3924,23 @@ fn do_test_drop_messages_peer_disconnect(messages_delivered: u8, simulate_broken
 		}
 	} else if messages_delivered == 2 {
 		// nodes[0] still wants its RAA + commitment_signed
-		reconnect_nodes(&nodes[0], &nodes[1], (false, false), (0, -1), (0, 0), (0, 0), (0, 0), (0, 0), (false, true));
+		let mut reconnect_args = ReconnectArgs::new(&nodes[0], &nodes[1]);
+		reconnect_args.pending_htlc_adds.1 = -1;
+		reconnect_args.pending_raa.1 = true;
+		reconnect_nodes(reconnect_args);
 	} else if messages_delivered == 3 {
 		// nodes[0] still wants its commitment_signed
-		reconnect_nodes(&nodes[0], &nodes[1], (false, false), (0, -1), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
+		let mut reconnect_args = ReconnectArgs::new(&nodes[0], &nodes[1]);
+		reconnect_args.pending_htlc_adds.1 = -1;
+		reconnect_nodes(reconnect_args);
 	} else if messages_delivered == 4 {
 		// nodes[1] still wants its final RAA
-		reconnect_nodes(&nodes[0], &nodes[1], (false, false), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (true, false));
+		let mut reconnect_args = ReconnectArgs::new(&nodes[0], &nodes[1]);
+		reconnect_args.pending_raa.0 = true;
+		reconnect_nodes(reconnect_args);
 	} else if messages_delivered == 5 {
 		// Everything was delivered...
-		reconnect_nodes(&nodes[0], &nodes[1], (false, false), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
+		reconnect_nodes(ReconnectArgs::new(&nodes[0], &nodes[1]));
 	}
 
 	if messages_delivered == 1 || messages_delivered == 2 {
@@ -3924,7 +3950,7 @@ fn do_test_drop_messages_peer_disconnect(messages_delivered: u8, simulate_broken
 		nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id());
 		nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id());
 	}
-	reconnect_nodes(&nodes[0], &nodes[1], (false, false), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
+	reconnect_nodes(ReconnectArgs::new(&nodes[0], &nodes[1]));
 
 	if messages_delivered > 2 {
 		expect_payment_path_successful!(nodes[0]);
@@ -8042,7 +8068,9 @@ fn test_onion_value_mpp_set_calculation() {
 				RecipientOnionFields::secret_only(our_payment_secret), height + 1, &None).unwrap();
 			// Edit amt_to_forward to simulate the sender having set
 			// the final amount and the routing node taking less fee
-			onion_payloads[1].amt_to_forward = 99_000;
+			if let msgs::OutboundOnionPayload::Receive { ref mut amt_msat, .. } = onion_payloads[1] {
+				*amt_msat = 99_000;
+			} else { panic!() }
 			let new_onion_packet = onion_utils::construct_onion_packet(onion_payloads, onion_keys, [0; 32], &our_payment_hash).unwrap();
 			payment_event.msgs[0].onion_routing_packet = new_onion_packet;
 		}
@@ -9381,73 +9409,6 @@ fn test_inconsistent_mpp_params() {
 
 	do_claim_payment_along_route(&nodes[0], &[&[&nodes[1], &nodes[3]], &[&nodes[2], &nodes[3]]], false, our_payment_preimage);
 	expect_payment_sent(&nodes[0], our_payment_preimage, Some(None), true);
-}
-
-#[test]
-fn test_keysend_payments_to_public_node() {
-	let chanmon_cfgs = create_chanmon_cfgs(2);
-	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
-	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-
-	let _chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 10001);
-	let network_graph = nodes[0].network_graph.clone();
-	let payer_pubkey = nodes[0].node.get_our_node_id();
-	let payee_pubkey = nodes[1].node.get_our_node_id();
-	let route_params = RouteParameters {
-		payment_params: PaymentParameters::for_keysend(payee_pubkey, 40, false),
-		final_value_msat: 10000,
-	};
-	let scorer = test_utils::TestScorer::new();
-	let random_seed_bytes = chanmon_cfgs[1].keys_manager.get_secure_random_bytes();
-	let route = find_route(&payer_pubkey, &route_params, &network_graph, None, nodes[0].logger, &scorer, &(), &random_seed_bytes).unwrap();
-
-	let test_preimage = PaymentPreimage([42; 32]);
-	let payment_hash = nodes[0].node.send_spontaneous_payment(&route, Some(test_preimage),
-		RecipientOnionFields::spontaneous_empty(), PaymentId(test_preimage.0)).unwrap();
-	check_added_monitors!(nodes[0], 1);
-	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
-	assert_eq!(events.len(), 1);
-	let event = events.pop().unwrap();
-	let path = vec![&nodes[1]];
-	pass_along_path(&nodes[0], &path, 10000, payment_hash, None, event, true, Some(test_preimage));
-	claim_payment(&nodes[0], &path, test_preimage);
-}
-
-#[test]
-fn test_keysend_payments_to_private_node() {
-	let chanmon_cfgs = create_chanmon_cfgs(2);
-	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
-	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-
-	let payer_pubkey = nodes[0].node.get_our_node_id();
-	let payee_pubkey = nodes[1].node.get_our_node_id();
-
-	let _chan = create_chan_between_nodes(&nodes[0], &nodes[1]);
-	let route_params = RouteParameters {
-		payment_params: PaymentParameters::for_keysend(payee_pubkey, 40, false),
-		final_value_msat: 10000,
-	};
-	let network_graph = nodes[0].network_graph.clone();
-	let first_hops = nodes[0].node.list_usable_channels();
-	let scorer = test_utils::TestScorer::new();
-	let random_seed_bytes = chanmon_cfgs[1].keys_manager.get_secure_random_bytes();
-	let route = find_route(
-		&payer_pubkey, &route_params, &network_graph, Some(&first_hops.iter().collect::<Vec<_>>()),
-		nodes[0].logger, &scorer, &(), &random_seed_bytes
-	).unwrap();
-
-	let test_preimage = PaymentPreimage([42; 32]);
-	let payment_hash = nodes[0].node.send_spontaneous_payment(&route, Some(test_preimage),
-		RecipientOnionFields::spontaneous_empty(), PaymentId(test_preimage.0)).unwrap();
-	check_added_monitors!(nodes[0], 1);
-	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
-	assert_eq!(events.len(), 1);
-	let event = events.pop().unwrap();
-	let path = vec![&nodes[1]];
-	pass_along_path(&nodes[0], &path, 10000, payment_hash, None, event, true, Some(test_preimage));
-	claim_payment(&nodes[0], &path, test_preimage);
 }
 
 #[test]

@@ -2946,9 +2946,41 @@ macro_rules! handle_chan_reestablish_msgs {
 	}
 }
 
+pub struct ReconnectArgs<'a, 'b, 'c, 'd> {
+	pub node_a: &'a Node<'b, 'c, 'd>,
+	pub node_b: &'a Node<'b, 'c, 'd>,
+	pub send_channel_ready: (bool, bool),
+	pub pending_htlc_adds: (i64, i64),
+	pub pending_htlc_claims: (usize, usize),
+	pub pending_htlc_fails: (usize, usize),
+	pub pending_cell_htlc_claims: (usize, usize),
+	pub pending_cell_htlc_fails: (usize, usize),
+	pub pending_raa: (bool, bool),
+}
+
+impl<'a, 'b, 'c, 'd> ReconnectArgs<'a, 'b, 'c, 'd> {
+	pub fn new(node_a: &'a Node<'b, 'c, 'd>, node_b: &'a Node<'b, 'c, 'd>) -> Self {
+		Self {
+			node_a,
+			node_b,
+			send_channel_ready: (false, false),
+			pending_htlc_adds: (0, 0),
+			pending_htlc_claims: (0, 0),
+			pending_htlc_fails: (0, 0),
+			pending_cell_htlc_claims: (0, 0),
+			pending_cell_htlc_fails: (0, 0),
+			pending_raa: (false, false),
+		}
+	}
+}
+
 /// pending_htlc_adds includes both the holding cell and in-flight update_add_htlcs, whereas
 /// for claims/fails they are separated out.
-pub fn reconnect_nodes<'a, 'b, 'c>(node_a: &Node<'a, 'b, 'c>, node_b: &Node<'a, 'b, 'c>, send_channel_ready: (bool, bool), pending_htlc_adds: (i64, i64), pending_htlc_claims: (usize, usize), pending_htlc_fails: (usize, usize), pending_cell_htlc_claims: (usize, usize), pending_cell_htlc_fails: (usize, usize), pending_raa: (bool, bool))  {
+pub fn reconnect_nodes<'a, 'b, 'c, 'd>(args: ReconnectArgs<'a, 'b, 'c, 'd>) {
+	let ReconnectArgs {
+		node_a, node_b, send_channel_ready, pending_htlc_adds, pending_htlc_claims, pending_htlc_fails,
+		pending_cell_htlc_claims, pending_cell_htlc_fails, pending_raa
+	} = args;
 	node_a.node.peer_connected(&node_b.node.get_our_node_id(), &msgs::Init {
 		features: node_b.node.init_features(), networks: None, remote_network_address: None
 	}, true).unwrap();

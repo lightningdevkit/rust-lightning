@@ -252,7 +252,7 @@ struct BogusOnionHopData {
 	data: Vec<u8>
 }
 impl BogusOnionHopData {
-	fn new(orig: msgs::OnionHopData) -> Self {
+	fn new(orig: msgs::OutboundOnionPayload) -> Self {
 		Self { data: orig.encode() }
 	}
 }
@@ -597,7 +597,7 @@ fn test_onion_failure() {
 		nodes[1].node.get_and_clear_pending_msg_events();
 		nodes[2].node.get_and_clear_pending_msg_events();
 	}, true, Some(UPDATE|20), Some(NetworkUpdate::ChannelUpdateMessage{msg: ChannelUpdate::dummy(short_channel_id)}), Some(short_channel_id));
-	reconnect_nodes(&nodes[1], &nodes[2], (false, false), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
+	reconnect_nodes(ReconnectArgs::new(&nodes[1], &nodes[2]));
 
 	run_onion_failure_test("expiry_too_far", 0, &nodes, &route, &payment_hash, &payment_secret, |msg| {
 		let session_priv = SecretKey::from_slice(&[3; 32]).unwrap();
@@ -875,15 +875,15 @@ fn test_always_create_tlv_format_onion_payloads() {
 	let (onion_payloads, _htlc_msat, _htlc_cltv) = onion_utils::build_onion_payloads(
 		&route.paths[0], 40000, RecipientOnionFields::spontaneous_empty(), cur_height, &None).unwrap();
 
-	match onion_payloads[0].format {
-		msgs::OnionHopDataFormat::NonFinalNode {..} => {},
+	match onion_payloads[0] {
+		msgs::OutboundOnionPayload::Forward {..} => {},
 		_ => { panic!(
 			"Should have generated a `msgs::OnionHopDataFormat::NonFinalNode` payload for `hops[0]`,
 			despite that the features signals no support for variable length onions"
 		)}
 	}
-	match onion_payloads[1].format {
-		msgs::OnionHopDataFormat::FinalNode {..} => {},
+	match onion_payloads[1] {
+		msgs::OutboundOnionPayload::Receive {..} => {},
 		_ => {panic!(
 			"Should have generated a `msgs::OnionHopDataFormat::FinalNode` payload for `hops[1]`,
 			despite that the features signals no support for variable length onions"

@@ -16,14 +16,14 @@
 compile_error!("Fuzz targets need cfg=fuzzing");
 
 extern crate lightning_fuzz;
-use lightning_fuzz::msg_targets::msg_onion_hop_data::*;
+use lightning_fuzz::onion_hop_data::*;
 
 #[cfg(feature = "afl")]
 #[macro_use] extern crate afl;
 #[cfg(feature = "afl")]
 fn main() {
 	fuzz!(|data| {
-		msg_onion_hop_data_run(data.as_ptr(), data.len());
+		onion_hop_data_run(data.as_ptr(), data.len());
 	});
 }
 
@@ -33,7 +33,7 @@ fn main() {
 fn main() {
 	loop {
 		fuzz!(|data| {
-			msg_onion_hop_data_run(data.as_ptr(), data.len());
+			onion_hop_data_run(data.as_ptr(), data.len());
 		});
 	}
 }
@@ -42,7 +42,7 @@ fn main() {
 #[macro_use] extern crate libfuzzer_sys;
 #[cfg(feature = "libfuzzer_fuzz")]
 fuzz_target!(|data: &[u8]| {
-	msg_onion_hop_data_run(data.as_ptr(), data.len());
+	onion_hop_data_run(data.as_ptr(), data.len());
 });
 
 #[cfg(feature = "stdin_fuzz")]
@@ -51,7 +51,7 @@ fn main() {
 
 	let mut data = Vec::with_capacity(8192);
 	std::io::stdin().read_to_end(&mut data).unwrap();
-	msg_onion_hop_data_run(data.as_ptr(), data.len());
+	onion_hop_data_run(data.as_ptr(), data.len());
 }
 
 #[test]
@@ -63,11 +63,11 @@ fn run_test_cases() {
 	use std::sync::{atomic, Arc};
 	{
 		let data: Vec<u8> = vec![0];
-		msg_onion_hop_data_run(data.as_ptr(), data.len());
+		onion_hop_data_run(data.as_ptr(), data.len());
 	}
 	let mut threads = Vec::new();
 	let threads_running = Arc::new(atomic::AtomicUsize::new(0));
-	if let Ok(tests) = fs::read_dir("test_cases/msg_onion_hop_data") {
+	if let Ok(tests) = fs::read_dir("test_cases/onion_hop_data") {
 		for test in tests {
 			let mut data: Vec<u8> = Vec::new();
 			let path = test.unwrap().path();
@@ -82,7 +82,7 @@ fn run_test_cases() {
 
 					let panic_logger = string_logger.clone();
 					let res = if ::std::panic::catch_unwind(move || {
-						msg_onion_hop_data_test(&data, panic_logger);
+						onion_hop_data_test(&data, panic_logger);
 					}).is_err() {
 						Some(string_logger.into_string())
 					} else { None };

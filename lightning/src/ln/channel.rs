@@ -250,38 +250,38 @@ enum HTLCUpdateAwaitingACK {
 }
 
 /// There are a few "states" and then a number of flags which can be applied:
-/// We first move through init with OurInitSent -> TheirInitSent -> FundingCreated -> FundingSent.
-/// TheirChannelReady and OurChannelReady then get set on FundingSent, and when both are set we
-/// move on to ChannelReady.
-/// Note that PeerDisconnected can be set on both ChannelReady and FundingSent.
-/// ChannelReady can then get all remaining flags set on it, until we finish shutdown, then we
-/// move on to ShutdownComplete, at which point most calls into this channel are disallowed.
+/// We first move through init with `OurInitSent` -> `TheirInitSent` -> `FundingCreated` -> `FundingSent`.
+/// `TheirChannelReady` and `OurChannelReady` then get set on `FundingSent`, and when both are set we
+/// move on to `ChannelReady`.
+/// Note that `PeerDisconnected` can be set on both `ChannelReady` and `FundingSent`.
+/// `ChannelReady` can then get all remaining flags set on it, until we finish shutdown, then we
+/// move on to `ShutdownComplete`, at which point most calls into this channel are disallowed.
 enum ChannelState {
 	/// Implies we have (or are prepared to) send our open_channel/accept_channel message
 	OurInitSent = 1 << 0,
-	/// Implies we have received their open_channel/accept_channel message
+	/// Implies we have received their `open_channel`/`accept_channel` message
 	TheirInitSent = 1 << 1,
-	/// We have sent funding_created and are awaiting a funding_signed to advance to FundingSent.
-	/// Note that this is nonsense for an inbound channel as we immediately generate funding_signed
-	/// upon receipt of funding_created, so simply skip this state.
+	/// We have sent `funding_created` and are awaiting a `funding_signed` to advance to `FundingSent`.
+	/// Note that this is nonsense for an inbound channel as we immediately generate `funding_signed`
+	/// upon receipt of `funding_created`, so simply skip this state.
 	FundingCreated = 4,
-	/// Set when we have received/sent funding_created and funding_signed and are thus now waiting
-	/// on the funding transaction to confirm. The ChannelReady flags are set to indicate when we
+	/// Set when we have received/sent `funding_created` and `funding_signed` and are thus now waiting
+	/// on the funding transaction to confirm. The `ChannelReady` flags are set to indicate when we
 	/// and our counterparty consider the funding transaction confirmed.
 	FundingSent = 8,
-	/// Flag which can be set on FundingSent to indicate they sent us a channel_ready message.
-	/// Once both TheirChannelReady and OurChannelReady are set, state moves on to ChannelReady.
+	/// Flag which can be set on `FundingSent` to indicate they sent us a `channel_ready` message.
+	/// Once both `TheirChannelReady` and `OurChannelReady` are set, state moves on to `ChannelReady`.
 	TheirChannelReady = 1 << 4,
-	/// Flag which can be set on FundingSent to indicate we sent them a channel_ready message.
-	/// Once both TheirChannelReady and OurChannelReady are set, state moves on to ChannelReady.
+	/// Flag which can be set on `FundingSent` to indicate we sent them a `channel_ready` message.
+	/// Once both `TheirChannelReady` and `OurChannelReady` are set, state moves on to `ChannelReady`.
 	OurChannelReady = 1 << 5,
 	ChannelReady = 64,
-	/// Flag which is set on ChannelReady and FundingSent indicating remote side is considered
-	/// "disconnected" and no updates are allowed until after we've done a channel_reestablish
+	/// Flag which is set on `ChannelReady` and `FundingSent` indicating remote side is considered
+	/// "disconnected" and no updates are allowed until after we've done a `channel_reestablish`
 	/// dance.
 	PeerDisconnected = 1 << 7,
-	/// Flag which is set on ChannelReady, FundingCreated, and FundingSent indicating the user has
-	/// told us a ChannelMonitor update is pending async persistence somewhere and we should pause
+	/// Flag which is set on `ChannelReady`, FundingCreated, and `FundingSent` indicating the user has
+	/// told us a `ChannelMonitor` update is pending async persistence somewhere and we should pause
 	/// sending any outbound messages until they've managed to finish.
 	MonitorUpdateInProgress = 1 << 8,
 	/// Flag which implies that we have sent a commitment_signed but are awaiting the responding
@@ -289,13 +289,13 @@ enum ChannelState {
 	/// messages as then we will be unable to determine which HTLCs they included in their
 	/// revoke_and_ack implicit ACK, so instead we have to hold them away temporarily to be sent
 	/// later.
-	/// Flag is set on ChannelReady.
+	/// Flag is set on `ChannelReady`.
 	AwaitingRemoteRevoke = 1 << 9,
-	/// Flag which is set on ChannelReady or FundingSent after receiving a shutdown message from
+	/// Flag which is set on `ChannelReady` or `FundingSent` after receiving a shutdown message from
 	/// the remote end. If set, they may not add any new HTLCs to the channel, and we are expected
 	/// to respond with our own shutdown message when possible.
 	RemoteShutdownSent = 1 << 10,
-	/// Flag which is set on ChannelReady or FundingSent after sending a shutdown message. At this
+	/// Flag which is set on `ChannelReady` or `FundingSent` after sending a shutdown message. At this
 	/// point, we may not add any new HTLCs to the channel.
 	LocalShutdownSent = 1 << 11,
 	/// We've successfully negotiated a closing_signed dance. At this point ChannelManager is about
@@ -3189,9 +3189,9 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 
 			let mut htlc_updates = Vec::new();
 			mem::swap(&mut htlc_updates, &mut self.context.holding_cell_htlc_updates);
-			let mut update_add_htlcs = Vec::with_capacity(htlc_updates.len());
-			let mut update_fulfill_htlcs = Vec::with_capacity(htlc_updates.len());
-			let mut update_fail_htlcs = Vec::with_capacity(htlc_updates.len());
+			let mut update_add_count = 0;
+			let mut update_fulfill_count = 0;
+			let mut update_fail_count = 0;
 			let mut htlcs_to_fail = Vec::new();
 			for htlc_update in htlc_updates.drain(..) {
 				// Note that this *can* fail, though it should be due to rather-rare conditions on
@@ -3207,7 +3207,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 						match self.send_htlc(amount_msat, *payment_hash, cltv_expiry, source.clone(),
 							onion_routing_packet.clone(), false, skimmed_fee_msat, fee_estimator, logger)
 						{
-							Ok(update_add_msg_option) => update_add_htlcs.push(update_add_msg_option.unwrap()),
+							Ok(_) => update_add_count += 1,
 							Err(e) => {
 								match e {
 									ChannelError::Ignore(ref msg) => {
@@ -3234,11 +3234,11 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 						// not fail - any in between attempts to claim the HTLC will have resulted
 						// in it hitting the holding cell again and we cannot change the state of a
 						// holding cell HTLC from fulfill to anything else.
-						let (update_fulfill_msg_option, mut additional_monitor_update) =
-							if let UpdateFulfillFetch::NewClaim { msg, monitor_update, .. } = self.get_update_fulfill_htlc(htlc_id, *payment_preimage, logger) {
-								(msg, monitor_update)
-							} else { unreachable!() };
-						update_fulfill_htlcs.push(update_fulfill_msg_option.unwrap());
+						let mut additional_monitor_update =
+							if let UpdateFulfillFetch::NewClaim { monitor_update, .. } =
+								self.get_update_fulfill_htlc(htlc_id, *payment_preimage, logger)
+							{ monitor_update } else { unreachable!() };
+						update_fulfill_count += 1;
 						monitor_update.updates.append(&mut additional_monitor_update.updates);
 					},
 					&HTLCUpdateAwaitingACK::FailHTLC { htlc_id, ref err_packet } => {
@@ -3249,7 +3249,8 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 								// not fail - we should never end up in a state where we double-fail
 								// an HTLC or fail-then-claim an HTLC as it indicates we didn't wait
 								// for a full revocation before failing.
-								update_fail_htlcs.push(update_fail_msg_option.unwrap())
+								debug_assert!(update_fail_msg_option.is_some());
+								update_fail_count += 1;
 							},
 							Err(e) => {
 								if let ChannelError::Ignore(_) = e {}
@@ -3261,7 +3262,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 					},
 				}
 			}
-			if update_add_htlcs.is_empty() && update_fulfill_htlcs.is_empty() && update_fail_htlcs.is_empty() && self.context.holding_cell_update_fee.is_none() {
+			if update_add_count == 0 && update_fulfill_count == 0 && update_fail_count == 0 && self.context.holding_cell_update_fee.is_none() {
 				return (None, htlcs_to_fail);
 			}
 			let update_fee = if let Some(feerate) = self.context.holding_cell_update_fee.take() {
@@ -3278,7 +3279,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 
 			log_debug!(logger, "Freeing holding cell in channel {} resulted in {}{} HTLCs added, {} HTLCs fulfilled, and {} HTLCs failed.",
 				log_bytes!(self.context.channel_id().bytes()[..]), if update_fee.is_some() { "a fee update, " } else { "" },
-				update_add_htlcs.len(), update_fulfill_htlcs.len(), update_fail_htlcs.len());
+				update_add_count, update_fulfill_count, update_fail_count);
 
 			self.monitor_updating_paused(false, true, false, Vec::new(), Vec::new(), Vec::new());
 			(self.push_ret_blockable_mon_update(monitor_update), htlcs_to_fail)
@@ -4939,7 +4940,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 	// something in the handler for the message that prompted this message):
 
 	/// Gets an UnsignedChannelAnnouncement for this channel. The channel must be publicly
-	/// announceable and available for use (have exchanged ChannelReady messages in both
+	/// announceable and available for use (have exchanged [`ChannelReady`] messages in both
 	/// directions). Should be used for both broadcasted announcements and in response to an
 	/// AnnouncementSignatures message from the remote peer.
 	///
@@ -4947,6 +4948,8 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 	/// closing).
 	///
 	/// This will only return ChannelError::Ignore upon failure.
+	///
+	/// [`ChannelReady`]: crate::ln::msgs::ChannelReady
 	fn get_channel_announcement<NS: Deref>(
 		&self, node_signer: &NS, chain_hash: BlockHash, user_config: &UserConfig,
 	) -> Result<msgs::UnsignedChannelAnnouncement, ChannelError> where NS::Target: NodeSigner {

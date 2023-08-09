@@ -576,14 +576,14 @@ pub enum Balance {
 	ClaimableOnChannelClose {
 		/// The amount available to claim, in satoshis, excluding the on-chain fees which will be
 		/// required to do so.
-		claimable_amount_satoshis: u64,
+		amount_satoshis: u64,
 	},
 	/// The channel has been closed, and the given balance is ours but awaiting confirmations until
 	/// we consider it spendable.
 	ClaimableAwaitingConfirmations {
 		/// The amount available to claim, in satoshis, possibly excluding the on-chain fees which
 		/// were spent in broadcasting the transaction.
-		claimable_amount_satoshis: u64,
+		amount_satoshis: u64,
 		/// The height at which an [`Event::SpendableOutputs`] event will be generated for this
 		/// amount.
 		confirmation_height: u32,
@@ -598,7 +598,7 @@ pub enum Balance {
 	ContentiousClaimable {
 		/// The amount available to claim, in satoshis, excluding the on-chain fees which will be
 		/// required to do so.
-		claimable_amount_satoshis: u64,
+		amount_satoshis: u64,
 		/// The height at which the counterparty may be able to claim the balance if we have not
 		/// done so.
 		timeout_height: u32,
@@ -613,7 +613,7 @@ pub enum Balance {
 	MaybeTimeoutClaimableHTLC {
 		/// The amount potentially available to claim, in satoshis, excluding the on-chain fees
 		/// which will be required to do so.
-		claimable_amount_satoshis: u64,
+		amount_satoshis: u64,
 		/// The height at which we will be able to claim the balance if our counterparty has not
 		/// done so.
 		claimable_height: u32,
@@ -626,7 +626,7 @@ pub enum Balance {
 	MaybePreimageClaimableHTLC {
 		/// The amount potentially available to claim, in satoshis, excluding the on-chain fees
 		/// which will be required to do so.
-		claimable_amount_satoshis: u64,
+		amount_satoshis: u64,
 		/// The height at which our counterparty will be able to claim the balance if we have not
 		/// yet received the preimage and claimed it ourselves.
 		expiry_height: u32,
@@ -643,7 +643,7 @@ pub enum Balance {
 		///
 		/// Note that for outputs from HTLC balances this may be excluding some on-chain fees that
 		/// were already spent.
-		claimable_amount_satoshis: u64,
+		amount_satoshis: u64,
 	},
 }
 
@@ -656,27 +656,14 @@ impl Balance {
 	/// On-chain fees required to claim the balance are not included in this amount.
 	pub fn claimable_amount_satoshis(&self) -> u64 {
 		match self {
-			Balance::ClaimableOnChannelClose {
-				claimable_amount_satoshis,
-			} => *claimable_amount_satoshis,
-			Balance::ClaimableAwaitingConfirmations {
-				claimable_amount_satoshis,
-				..
-			} => *claimable_amount_satoshis,
-			Balance::ContentiousClaimable {
-				claimable_amount_satoshis,
-				..
-			} => *claimable_amount_satoshis,
-			Balance::MaybeTimeoutClaimableHTLC {
-				..
-			} => 0,
-			Balance::MaybePreimageClaimableHTLC {
-				..
-			} => 0,
-			Balance::CounterpartyRevokedOutputClaimable {
-				claimable_amount_satoshis,
-				..
-			} => *claimable_amount_satoshis,
+			Balance::ClaimableOnChannelClose { amount_satoshis, .. }|
+			Balance::ClaimableAwaitingConfirmations { amount_satoshis, .. }|
+			Balance::ContentiousClaimable { amount_satoshis, .. }|
+			Balance::CounterpartyRevokedOutputClaimable { amount_satoshis, .. }
+				=> *amount_satoshis,
+			Balance::MaybeTimeoutClaimableHTLC { .. }|
+			Balance::MaybePreimageClaimableHTLC { .. }
+				=> 0,
 		}
 	}
 }
@@ -1672,7 +1659,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		if let Some(conf_thresh) = holder_delayed_output_pending {
 			debug_assert!(holder_commitment);
 			return Some(Balance::ClaimableAwaitingConfirmations {
-				claimable_amount_satoshis: htlc.amount_msat / 1000,
+				amount_satoshis: htlc.amount_msat / 1000,
 				confirmation_height: conf_thresh,
 			});
 		} else if htlc_resolved.is_some() && !htlc_output_spend_pending {
@@ -1710,7 +1697,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				debug_assert!(!htlc.offered || htlc_spend_pending.is_none() || !htlc_spend_pending.unwrap().1,
 					"We don't (currently) generate preimage claims against revoked outputs, where did you get one?!");
 				return Some(Balance::CounterpartyRevokedOutputClaimable {
-					claimable_amount_satoshis: htlc.amount_msat / 1000,
+					amount_satoshis: htlc.amount_msat / 1000,
 				});
 			}
 		} else if htlc.offered == holder_commitment {
@@ -1719,12 +1706,12 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			// and awaiting confirmations on it.
 			if let Some(conf_thresh) = holder_timeout_spend_pending {
 				return Some(Balance::ClaimableAwaitingConfirmations {
-					claimable_amount_satoshis: htlc.amount_msat / 1000,
+					amount_satoshis: htlc.amount_msat / 1000,
 					confirmation_height: conf_thresh,
 				});
 			} else {
 				return Some(Balance::MaybeTimeoutClaimableHTLC {
-					claimable_amount_satoshis: htlc.amount_msat / 1000,
+					amount_satoshis: htlc.amount_msat / 1000,
 					claimable_height: htlc.cltv_expiry,
 					payment_hash: htlc.payment_hash,
 				});
@@ -1738,12 +1725,12 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			debug_assert!(holder_timeout_spend_pending.is_none());
 			if let Some((conf_thresh, true)) = htlc_spend_pending {
 				return Some(Balance::ClaimableAwaitingConfirmations {
-					claimable_amount_satoshis: htlc.amount_msat / 1000,
+					amount_satoshis: htlc.amount_msat / 1000,
 					confirmation_height: conf_thresh,
 				});
 			} else {
 				return Some(Balance::ContentiousClaimable {
-					claimable_amount_satoshis: htlc.amount_msat / 1000,
+					amount_satoshis: htlc.amount_msat / 1000,
 					timeout_height: htlc.cltv_expiry,
 					payment_hash: htlc.payment_hash,
 					payment_preimage: *payment_preimage,
@@ -1751,7 +1738,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			}
 		} else if htlc_resolved.is_none() {
 			return Some(Balance::MaybePreimageClaimableHTLC {
-				claimable_amount_satoshis: htlc.amount_msat / 1000,
+				amount_satoshis: htlc.amount_msat / 1000,
 				expiry_height: htlc.cltv_expiry,
 				payment_hash: htlc.payment_hash,
 			});
@@ -1824,7 +1811,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 						} else { None }
 					}) {
 						res.push(Balance::ClaimableAwaitingConfirmations {
-							claimable_amount_satoshis: value,
+							amount_satoshis: value,
 							confirmation_height: conf_thresh,
 						});
 					} else {
@@ -1847,7 +1834,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 							descriptor: SpendableOutputDescriptor::StaticOutput { output, .. }
 						} = &event.event {
 							res.push(Balance::ClaimableAwaitingConfirmations {
-								claimable_amount_satoshis: output.value,
+								amount_satoshis: output.value,
 								confirmation_height: event.confirmation_threshold(),
 							});
 							if let Some(confirmed_to_self_idx) = confirmed_counterparty_output.map(|(idx, _)| idx) {
@@ -1866,7 +1853,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 							.is_output_spend_pending(&BitcoinOutPoint::new(txid, confirmed_to_self_idx));
 						if output_spendable {
 							res.push(Balance::CounterpartyRevokedOutputClaimable {
-								claimable_amount_satoshis: amt,
+								amount_satoshis: amt,
 							});
 						}
 					} else {
@@ -1879,7 +1866,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 				walk_htlcs!(true, false, us.current_holder_commitment_tx.htlc_outputs.iter().map(|(a, _, _)| a));
 				if let Some(conf_thresh) = pending_commitment_tx_conf_thresh {
 					res.push(Balance::ClaimableAwaitingConfirmations {
-						claimable_amount_satoshis: us.current_holder_commitment_tx.to_self_value_sat,
+						amount_satoshis: us.current_holder_commitment_tx.to_self_value_sat,
 						confirmation_height: conf_thresh,
 					});
 				}
@@ -1889,7 +1876,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 					walk_htlcs!(true, false, prev_commitment.htlc_outputs.iter().map(|(a, _, _)| a));
 					if let Some(conf_thresh) = pending_commitment_tx_conf_thresh {
 						res.push(Balance::ClaimableAwaitingConfirmations {
-							claimable_amount_satoshis: prev_commitment.to_self_value_sat,
+							amount_satoshis: prev_commitment.to_self_value_sat,
 							confirmation_height: conf_thresh,
 						});
 					}
@@ -1902,7 +1889,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 					// neither us nor our counterparty misbehaved. At worst we've under-estimated
 					// the amount we can claim as we'll punish a misbehaving counterparty.
 					res.push(Balance::ClaimableAwaitingConfirmations {
-						claimable_amount_satoshis: us.current_holder_commitment_tx.to_self_value_sat,
+						amount_satoshis: us.current_holder_commitment_tx.to_self_value_sat,
 						confirmation_height: conf_thresh,
 					});
 				}
@@ -1913,7 +1900,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 				if htlc.transaction_output_index.is_none() { continue; }
 				if htlc.offered {
 					res.push(Balance::MaybeTimeoutClaimableHTLC {
-						claimable_amount_satoshis: htlc.amount_msat / 1000,
+						amount_satoshis: htlc.amount_msat / 1000,
 						claimable_height: htlc.cltv_expiry,
 						payment_hash: htlc.payment_hash,
 					});
@@ -1923,14 +1910,14 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 					// As long as the HTLC is still in our latest commitment state, treat
 					// it as potentially claimable, even if it has long-since expired.
 					res.push(Balance::MaybePreimageClaimableHTLC {
-						claimable_amount_satoshis: htlc.amount_msat / 1000,
+						amount_satoshis: htlc.amount_msat / 1000,
 						expiry_height: htlc.cltv_expiry,
 						payment_hash: htlc.payment_hash,
 					});
 				}
 			}
 			res.push(Balance::ClaimableOnChannelClose {
-				claimable_amount_satoshis: us.current_holder_commitment_tx.to_self_value_sat + claimable_inbound_htlc_value_sat,
+				amount_satoshis: us.current_holder_commitment_tx.to_self_value_sat + claimable_inbound_htlc_value_sat,
 			});
 		}
 

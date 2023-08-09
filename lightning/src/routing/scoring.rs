@@ -483,7 +483,7 @@ pub struct ProbabilisticScoringFeeParameters {
 	pub manual_node_penalties: HashMap<NodeId, u64>,
 
 	/// This penalty is applied when `htlc_maximum_msat` is equal to or larger than half of the
-	/// channel's capacity, (ie. htlc_maximum_msat ≥ 0.5 * channel_capacity) which makes us
+	/// channel's capacity, (ie. htlc_maximum_msat >= 0.5 * channel_capacity) which makes us
 	/// prefer nodes with a smaller `htlc_maximum_msat`. We treat such nodes preferentially
 	/// as this makes balance discovery attacks harder to execute, thereby creating an incentive
 	/// to restrict `htlc_maximum_msat` and improve privacy.
@@ -1138,10 +1138,25 @@ impl<L: Deref<Target = u64>, BRT: Deref<Target = HistoricalBucketRangeTracker>, 
 	}
 
 	fn decayed_offset_msat(&self, offset_msat: u64) -> u64 {
-		self.now.duration_since(*self.last_updated).as_secs()
-			.checked_div(self.decay_params.liquidity_offset_half_life.as_secs())
-			.and_then(|decays| offset_msat.checked_shr(decays as u32))
-			.unwrap_or(0)
+		let half_life = self.decay_params.liquidity_offset_half_life.as_secs();
+		if half_life != 0 {
+			// Decay the offset by the appropriate number of half lives. If half of the next half
+			// life has passed, approximate an additional three-quarter life to help smooth out the
+			// decay.
+			let elapsed_time = self.now.duration_since(*self.last_updated).as_secs();
+			let half_decays = elapsed_time / (half_life / 2);
+			let decays = half_decays / 2;
+			let decayed_offset_msat = offset_msat.checked_shr(decays as u32).unwrap_or(0);
+			if half_decays % 2 == 0 {
+				decayed_offset_msat
+			} else {
+				// 11_585 / 16_384 ~= core::f64::consts::FRAC_1_SQRT_2
+				// 16_384 == 2^14
+				(decayed_offset_msat as u128 * 11_585 / 16_384) as u64
+			}
+		} else {
+			0
+		}
 	}
 }
 
@@ -2392,6 +2407,7 @@ mod tests {
 		scorer.payment_path_failed(&payment_path_for_amount(768), 42);
 		scorer.payment_path_failed(&payment_path_for_amount(128), 43);
 
+		// Initial penalties
 		let usage = ChannelUsage { amount_msat: 128, ..usage };
 		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 0);
 		let usage = ChannelUsage { amount_msat: 256, ..usage };
@@ -2401,7 +2417,8 @@ mod tests {
 		let usage = ChannelUsage { amount_msat: 896, ..usage };
 		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), u64::max_value());
 
-		SinceEpoch::advance(Duration::from_secs(9));
+		// No decay
+		SinceEpoch::advance(Duration::from_secs(4));
 		let usage = ChannelUsage { amount_msat: 128, ..usage };
 		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 0);
 		let usage = ChannelUsage { amount_msat: 256, ..usage };
@@ -2411,7 +2428,19 @@ mod tests {
 		let usage = ChannelUsage { amount_msat: 896, ..usage };
 		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), u64::max_value());
 
+		// Half decay (i.e., three-quarter life)
 		SinceEpoch::advance(Duration::from_secs(1));
+		let usage = ChannelUsage { amount_msat: 128, ..usage };
+		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 22);
+		let usage = ChannelUsage { amount_msat: 256, ..usage };
+		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 106);
+		let usage = ChannelUsage { amount_msat: 768, ..usage };
+		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 916);
+		let usage = ChannelUsage { amount_msat: 896, ..usage };
+		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), u64::max_value());
+
+		// One decay (i.e., half life)
+		SinceEpoch::advance(Duration::from_secs(5));
 		let usage = ChannelUsage { amount_msat: 64, ..usage };
 		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 0);
 		let usage = ChannelUsage { amount_msat: 128, ..usage };
