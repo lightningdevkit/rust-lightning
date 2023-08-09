@@ -15,7 +15,7 @@ use crate::chain::{ChannelMonitorUpdateStatus, Confirm, Listen, Watch};
 use crate::chain::channelmonitor::{ANTI_REORG_DELAY, HTLC_FAIL_BACK_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS};
 use crate::sign::EntropySource;
 use crate::chain::transaction::OutPoint;
-use crate::events::{ClosureReason, Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider, PathFailure, PaymentFailureReason};
+use crate::events::{ClosureReason, Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider, PathFailure, PaymentFailureReason, PaymentPurpose};
 use crate::ln::channel::EXPIRE_PREV_CONFIG_TICKS;
 use crate::ln::channelmanager::{BREAKDOWN_TIMEOUT, ChannelManager, MPP_TIMEOUT_TICKS, MIN_CLTV_EXPIRY_DELTA, PaymentId, PaymentSendFailure, IDEMPOTENCY_TIMEOUT_TICKS, RecentPaymentDetails, RecipientOnionFields, HTLCForwardInfo, PendingHTLCRouting, PendingAddHTLCInfo};
 use crate::ln::features::Bolt11InvoiceFeatures;
@@ -274,22 +274,31 @@ fn do_test_keysend_payments(public_node: bool, with_retry: bool) {
 		nodes[0].logger, &scorer, &(), &random_seed_bytes
 	).unwrap();
 
-	let test_preimage = PaymentPreimage([42; 32]);
-	let payment_hash = if with_retry {
-		nodes[0].node.send_spontaneous_payment_with_retry(Some(test_preimage),
-			RecipientOnionFields::spontaneous_empty(), PaymentId(test_preimage.0),
-			route_params, Retry::Attempts(1)).unwrap()
-	} else {
-		nodes[0].node.send_spontaneous_payment(&route, Some(test_preimage),
-			RecipientOnionFields::spontaneous_empty(), PaymentId(test_preimage.0)).unwrap()
-	};
+	{
+		let test_preimage = PaymentPreimage([42; 32]);
+		if with_retry {
+			nodes[0].node.send_spontaneous_payment_with_retry(Some(test_preimage),
+				RecipientOnionFields::spontaneous_empty(), PaymentId(test_preimage.0),
+				route_params, Retry::Attempts(1)).unwrap()
+		} else {
+			nodes[0].node.send_spontaneous_payment(&route, Some(test_preimage),
+				RecipientOnionFields::spontaneous_empty(), PaymentId(test_preimage.0)).unwrap()
+		};
+	}
 	check_added_monitors!(nodes[0], 1);
-	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
-	assert_eq!(events.len(), 1);
-	let event = events.pop().unwrap();
-	let path = vec![&nodes[1]];
-	pass_along_path(&nodes[0], &path, 10000, payment_hash, None, event, true, Some(test_preimage));
-	claim_payment(&nodes[0], &path, test_preimage);
+	let send_event = SendEvent::from_node(&nodes[0]);
+	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &send_event.msgs[0]);
+	do_commitment_signed_dance(&nodes[1], &nodes[0], &send_event.commitment_msg, false, false);
+	expect_pending_htlcs_forwardable!(nodes[1]);
+	// Previously, a refactor caused us to stop including the payment preimage in the onion which
+	// is sent as a part of keysend payments. Thus, to be extra careful here, we scope the preimage
+	// above to demonstrate that we have no way to get the preimage at this point except by
+	// extracting it from the onion nodes[1] received.
+	let event = nodes[1].node.get_and_clear_pending_events();
+	assert_eq!(event.len(), 1);
+	if let Event::PaymentClaimable { purpose: PaymentPurpose::SpontaneousPayment(preimage), .. } = event[0] {
+		claim_payment(&nodes[0], &[&nodes[1]], preimage);
+	} else { panic!(); }
 }
 
 #[test]
