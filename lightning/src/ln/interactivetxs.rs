@@ -52,6 +52,10 @@ pub(crate) enum AbortReason {
 	ExceededNumberOfInputsOrOutputs,
 	InvalidTransactionState,
 	TransactionTooLarge,
+	ExceededDustLimit,
+	InvalidOutputScript,
+	InsufficientFees,
+	OutputsExceedInputs,
 }
 
 //                   Interactive Transaction Construction negotiation
@@ -188,10 +192,11 @@ impl<S> InteractiveTxStateMachine<S> where S: AcceptingChanges {
 	}
 
 	fn receive_tx_add_input(mut self, serial_id: SerialId, msg: &msgs::TxAddInput, confirmed: bool) -> InteractiveTxStateMachineResult<Negotiating> {
-		// TODO: clean up this comment
-		// No need to explicitly fail negotiation since PeerManager will disconnect the peer if
-		// `prevtx` is invalid, implicitly ending negotiation.
-		//   - `prevtx` is not a valid transaction
+		// The interactive-txs spec calls for us to fail negotiation if the `prevtx` we receive is
+		// invalid. However, we would not need to account for this explicit negotiation failure
+		// mode here since `PeerManager` would already disconnect the peer if the `prevtx` is
+		// invalid; implicitly ending the negotiation.
+
 		if !self.is_valid_counterparty_serial_id(serial_id) {
 			// The receiving node:
 			//  - MUST fail the negotiation if:
@@ -248,8 +253,7 @@ impl<S> InteractiveTxStateMachine<S> where S: AcceptingChanges {
 		let prev_out = if let Some(prev_out) = msg.prevtx.0.output.get(msg.prevtx_out as usize) {
 			prev_out.clone()
 		} else {
-			// TODO: New error
-			return self.abort_negotiation(AbortReason::ReceivedTooManyTxAddInputs);
+			return self.abort_negotiation(AbortReason::PrevTxOutInvalid);
 		};
 		if let None = self.context.inputs.insert(
 			serial_id,
@@ -308,8 +312,7 @@ impl<S> InteractiveTxStateMachine<S> where S: AcceptingChanges {
 			// The receiving node:
 			// - MUST fail the negotiation if:
 			//		- the sats amount is less than the dust_limit
-			// TODO: New error
-			return self.abort_negotiation(AbortReason::ExceededMaximumSatsAllowed);
+			return self.abort_negotiation(AbortReason::ExceededDustLimit);
 		}
 		if output.value > MAX_MONEY {
 			// The receiving node:
@@ -324,8 +327,7 @@ impl<S> InteractiveTxStateMachine<S> where S: AcceptingChanges {
 		if !output.script_pubkey.is_v0_p2wpkh() && !output.script_pubkey.is_v0_p2wsh() &&
 			!output.script_pubkey.is_v1_p2tr()
 		{
-			// TODO: New error
-			return self.abort_negotiation(AbortReason::ExceededMaximumSatsAllowed);
+			return self.abort_negotiation(AbortReason::InvalidOutputScript);
 		}
 
 		if let None = self.context.outputs.insert(serial_id, output) {
@@ -402,8 +404,7 @@ impl<S> InteractiveTxStateMachine<S> where S: AcceptingChanges {
 		let total_input_amount: u64 = self.context.inputs.values().map(|p| p.prev_output.value).sum();
 		let total_output_amount = tx_to_validate.output.iter().map(|output| output.value).sum();
 		if total_input_amount < total_output_amount {
-			// TODO: New error
-			return Err(AbortReason::CounterpartyAborted);
+			return Err(AbortReason::OutputsExceedInputs);
 		}
 
 		// - there are more than 252 inputs
@@ -413,7 +414,7 @@ impl<S> InteractiveTxStateMachine<S> where S: AcceptingChanges {
 			return Err(AbortReason::ExceededNumberOfInputsOrOutputs)
 		}
 
-		if tx_to_validate.weight() > MAX_STANDARD_TX_WEIGHT {
+		if tx_to_validate.weight() as u32 > MAX_STANDARD_TX_WEIGHT {
 			return Err(AbortReason::TransactionTooLarge)
 		}
 
@@ -432,8 +433,7 @@ impl<S> InteractiveTxStateMachine<S> where S: AcceptingChanges {
 				self.context.non_initiator_outputs_contributed().count() as u64 * OUTPUT_WEIGHT;
 			let required_non_initiator_contribution_fee = self.context.feerate_sat_per_kw as u64 * 1000 / non_initiator_contribution_weight;
 			if non_initiator_fees_contributed < required_non_initiator_contribution_fee {
-				// TODO: New error
-				return Err(AbortReason::CounterpartyAborted);
+				return Err(AbortReason::InsufficientFees);
 			}
 		} else {
 			// if is the non-initiator:
@@ -447,8 +447,7 @@ impl<S> InteractiveTxStateMachine<S> where S: AcceptingChanges {
 			let tx_common_fields_weight = (4 /* version */ + 4 /* locktime */ + 1 /* input count */ + 1 /* output count */) * WITNESS_SCALE_FACTOR as u64 + 2 /* segwit marker + flag */;
 			let tx_common_fields_fee = self.context.feerate_sat_per_kw as u64 * 1000 / tx_common_fields_weight;
 			if initiator_fees_contributed < tx_common_fields_fee + required_initiator_contribution_fee {
-				// TODO: New error
-				return Err(AbortReason::CounterpartyAborted);
+				return Err(AbortReason::InsufficientFees);
 			}
 		}
 
