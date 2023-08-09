@@ -57,35 +57,14 @@ impl Writeable for ReceiveTlvs {
 pub(super) fn blinded_hops<T: secp256k1::Signing + secp256k1::Verification>(
 	secp_ctx: &Secp256k1<T>, unblinded_path: &[PublicKey], session_priv: &SecretKey
 ) -> Result<Vec<BlindedHop>, secp256k1::Error> {
-	let mut blinded_hops = Vec::with_capacity(unblinded_path.len());
+	let blinded_tlvs = unblinded_path.iter()
+		.skip(1) // The first node's TLVs contains the next node's pubkey
+		.map(|pk| {
+			ControlTlvs::Forward(ForwardTlvs { next_node_id: *pk, next_blinding_override: None })
+		})
+		.chain(core::iter::once(ControlTlvs::Receive(ReceiveTlvs { path_id: None })));
 
-	let mut prev_ss_and_blinded_node_id = None;
-	utils::construct_keys_callback(secp_ctx, unblinded_path.iter(), None, session_priv,
-		|blinded_node_id, _, _, encrypted_payload_ss, unblinded_pk, _| {
-			if let Some((prev_ss, prev_blinded_node_id)) = prev_ss_and_blinded_node_id {
-				if let Some(pk) = unblinded_pk {
-					let payload = ForwardTlvs {
-						next_node_id: pk,
-						next_blinding_override: None,
-					};
-					blinded_hops.push(BlindedHop {
-						blinded_node_id: prev_blinded_node_id,
-						encrypted_payload: utils::encrypt_payload(payload, prev_ss),
-					});
-				} else { debug_assert!(false); }
-			}
-			prev_ss_and_blinded_node_id = Some((encrypted_payload_ss, blinded_node_id));
-		})?;
-
-	if let Some((final_ss, final_blinded_node_id)) = prev_ss_and_blinded_node_id {
-		let final_payload = ReceiveTlvs { path_id: None };
-		blinded_hops.push(BlindedHop {
-			blinded_node_id: final_blinded_node_id,
-			encrypted_payload: utils::encrypt_payload(final_payload, final_ss),
-		});
-	} else { debug_assert!(false) }
-
-	Ok(blinded_hops)
+	utils::construct_blinded_hops(secp_ctx, unblinded_path.iter(), blinded_tlvs, session_priv)
 }
 
 // Advance the blinded onion message path by one hop, so make the second hop into the new

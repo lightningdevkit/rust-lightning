@@ -15,7 +15,7 @@ use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::secp256k1::{self, PublicKey, Secp256k1, SecretKey, Scalar};
 use bitcoin::secp256k1::ecdh::SharedSecret;
 
-use super::BlindedPath;
+use super::{BlindedHop, BlindedPath};
 use crate::ln::msgs::DecodeError;
 use crate::ln::onion_utils;
 use crate::onion_message::Destination;
@@ -105,8 +105,30 @@ where
 	Ok(())
 }
 
+// Panics if `unblinded_tlvs` length is less than `unblinded_pks` length
+pub(super) fn construct_blinded_hops<'a, T, I1, I2>(
+	secp_ctx: &Secp256k1<T>, unblinded_pks: I1, mut unblinded_tlvs: I2, session_priv: &SecretKey
+) -> Result<Vec<BlindedHop>, secp256k1::Error>
+where
+	T: secp256k1::Signing + secp256k1::Verification,
+	I1: ExactSizeIterator<Item=&'a PublicKey>,
+	I2: Iterator,
+	I2::Item: Writeable
+{
+	let mut blinded_hops = Vec::with_capacity(unblinded_pks.len());
+	construct_keys_callback(
+		secp_ctx, unblinded_pks, None, session_priv,
+		|blinded_node_id, _, _, encrypted_payload_rho, _, _| {
+			blinded_hops.push(BlindedHop {
+				blinded_node_id,
+				encrypted_payload: encrypt_payload(unblinded_tlvs.next().unwrap(), encrypted_payload_rho),
+			});
+		})?;
+	Ok(blinded_hops)
+}
+
 /// Encrypt TLV payload to be used as a [`crate::blinded_path::BlindedHop::encrypted_payload`].
-pub(super) fn encrypt_payload<P: Writeable>(payload: P, encrypted_tlvs_ss: [u8; 32]) -> Vec<u8> {
+fn encrypt_payload<P: Writeable>(payload: P, encrypted_tlvs_ss: [u8; 32]) -> Vec<u8> {
 	let mut writer = VecWriter(Vec::new());
 	let write_adapter = ChaChaPolyWriteAdapter::new(encrypted_tlvs_ss, &payload);
 	write_adapter.write(&mut writer).expect("In-memory writes cannot fail");
