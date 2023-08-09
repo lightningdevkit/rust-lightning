@@ -190,6 +190,7 @@ impl<S> InteractiveTxStateMachine<S> where S: AcceptingChanges {
 		Err(InteractiveTxStateMachine { context: self.context, state: NegotiationAborted(reason) })
 	}
 
+	// TODO: change `serial_id` field in `TxAddInput` to be `SerialId` instead of `u64`
 	fn receive_tx_add_input(mut self, serial_id: SerialId, msg: &msgs::TxAddInput, confirmed: bool) -> InteractiveTxStateMachineResult<Negotiating> {
 		// The interactive-txs spec calls for us to fail negotiation if the `prevtx` we receive is
 		// invalid. However, we would not need to account for this explicit negotiation failure
@@ -506,6 +507,7 @@ impl InteractiveTxStateMachine<OurTxComplete> {
 impl InteractiveTxStateMachine<NegotiationComplete> {
 	fn get_psbt(&self) -> Result<Transaction, AbortReason> {
 		// Build transaction from inputs & outputs in `NegotiationContext`.
+		// TODO: Return Psbt type (?)
 		return Ok(Transaction {
 			version: self.context.base_tx.version,
 			lock_time: self.context.base_tx.lock_time,
@@ -533,6 +535,10 @@ pub(crate) struct InteractiveTxConstructor {
 	mode: ChannelMode,
 }
 
+// TODO: `InteractiveTxConstructor` methods should return an `Err` when the state machine itself
+// errors out. There are two scenarios where that may occur: (1) Invalid data; causing negotiation
+// to abort (2) Illegal state transition. Check spec to see if it dictates what needs to happen
+// if a node receives an unexpected message.
 impl InteractiveTxConstructor {
 	pub(crate) fn new(
 		channel_id: [u8; 32], feerate_sat_per_kw: u32, require_confirmed_inputs: bool,
