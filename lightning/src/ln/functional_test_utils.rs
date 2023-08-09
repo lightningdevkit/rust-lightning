@@ -983,7 +983,7 @@ pub fn create_splice_in_transaction<'a, 'b, 'c>(node: &Node<'a, 'b, 'c>, expecte
 	let events = node.node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);
 	match events[0] {
-		Event::SpliceAcked { ref channel_id, ref current_funding_outpoint, pre_channel_value_satoshis: _, ref post_channel_value_satoshis, ref output_script } => {
+		Event::SpliceAcked { ref channel_id, counterparty_node_id: _,  ref current_funding_outpoint, pre_channel_value_satoshis: _, ref post_channel_value_satoshis, ref output_script } => {
 			assert_eq!(*channel_id, *expected_channel_id);
 			assert_eq!(*post_channel_value_satoshis, expected_post_splice_chan_value);
 

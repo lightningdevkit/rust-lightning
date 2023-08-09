@@ -5725,6 +5725,7 @@ where
 		let mut pending_events = self.pending_events.lock().unwrap();
 		pending_events.push(events::Event::SpliceAcked {
 			channel_id: msg.channel_id,
+			counterparty_node_id: *counterparty_node_id,
 			current_funding_outpoint: funding_outpoint,
 			pre_channel_value_satoshis: pre_value,
 			post_channel_value_satoshis: msg.funding_satoshis,

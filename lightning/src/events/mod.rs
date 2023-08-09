@@ -824,6 +824,8 @@ pub enum Event {
 	SpliceAcked {
 		/// The channel_id of the channel where the splice was initiated
 		channel_id: [u8; 32],
+		/// The counterparty's node_id
+		counterparty_node_id: PublicKey,
 		/// The current funding TX outpoint, which must be an input to the new splice TX
 		current_funding_outpoint: OutPoint,
 		/// The pre-splice channel value, in satoshis.
@@ -1051,14 +1053,15 @@ impl Writeable for Event {
 				});
 			},
 			// #SPLICING
-			&Event::SpliceAcked { ref channel_id, ref current_funding_outpoint, ref pre_channel_value_satoshis, ref post_channel_value_satoshis, ref output_script } => {
+			&Event::SpliceAcked { ref channel_id, ref counterparty_node_id, ref current_funding_outpoint, ref pre_channel_value_satoshis, ref post_channel_value_satoshis, ref output_script } => {
 				33u8.write(writer)?; // TODO value
 				write_tlv_fields!(writer, {
 					(0, channel_id, required),
-					(2, current_funding_outpoint, required),
-					(4, pre_channel_value_satoshis, required),
-					(6, post_channel_value_satoshis, required),
-					(8, output_script, required),
+					(2, counterparty_node_id, required),
+					(4, current_funding_outpoint, required),
+					(6, pre_channel_value_satoshis, required),
+					(8, post_channel_value_satoshis, required),
+					(10, output_script, required),
 				});
 			},
 			// Note that, going forward, all new events must only write data inside of
