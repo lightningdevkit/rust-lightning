@@ -612,18 +612,6 @@ pub struct ChannelId {
 }
 
 impl ChannelId {
-	/// Generic constructor; create a new channel ID from the provided data.
-	/// Use a more specific from_* constructor when possible.
-	/// The generic constructor is useful when the channel ID data is known, e.g. when receiving it in a message, and in tests.
-	pub fn from_bytes(data: [u8; 32]) -> Self {
-		Self{data}
-	}
-
-	/// Create a channel ID consisting of all-zeros data (placeholder).
-	pub fn new_zero() -> Self {
-		Self::from_bytes([0; 32])
-	}
-
 	/// Create channel ID based on a funding TX outpoint
 	pub fn from_funding_outpoint(funding_tx_outpoint: &OutPoint) -> Self {
 		Self::from_funding_txid(&funding_tx_outpoint.txid.as_inner(), funding_tx_outpoint.index)
@@ -636,6 +624,24 @@ impl ChannelId {
 		res[30] ^= ((output_index >> 8) & 0xff) as u8;
 		res[31] ^= ((output_index >> 0) & 0xff) as u8;
 		Self::from_bytes(res)
+	}
+
+	/// Create a temporary channel ID randomly, based on an entropy source.
+	pub fn from_entropy_source<ES: Deref>(entropy_source: &ES) -> Self
+	where ES::Target: EntropySource {
+		Self::from_bytes(entropy_source.get_secure_random_bytes())
+	}
+
+	/// Generic constructor; create a new channel ID from the provided data.
+	/// Use a more specific from_* constructor when possible.
+	/// This constructor is useful for tests, and internally, e.g. when the channel ID is being deserialized.
+	pub fn from_bytes(data: [u8; 32]) -> Self {
+		Self{data}
+	}
+
+	/// Create a channel ID consisting of all-zeros data (placeholder).
+	pub fn new_zero() -> Self {
+		Self::from_bytes([0; 32])
 	}
 
 	/// Accessor for the channel ID data
@@ -5650,7 +5656,7 @@ impl<Signer: WriteableEcdsaChannelSigner> OutboundV1Channel<Signer> {
 			Err(_) => return Err(APIError::ChannelUnavailable { err: "Failed to get destination script".to_owned()}),
 		};
 
-		let temporary_channel_id = ChannelId::from_bytes(entropy_source.get_secure_random_bytes());
+		let temporary_channel_id = ChannelId::from_entropy_source(entropy_source);
 
 		Ok(Self {
 			context: ChannelContext {
