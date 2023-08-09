@@ -607,19 +607,22 @@ impl_writeable_tlv_based!(PendingChannelMonitorUpdate, {
 /// This is not exported to bindings users as we just use [u8; 32] directly
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct ChannelId {
+	// The 32-byte data of the ID
 	data: [u8; 32],
 }
 
 impl ChannelId {
-	/// Create a new channel ID from the provided data. Use a more specific from_* constructor when possible.
+	/// Generic constructor; create a new channel ID from the provided data.
+	/// Use a more specific from_* constructor when possible.
+	/// The generic constructor is useful when the channel ID data is known, e.g. when receiving it in a message, and in tests.
 	pub fn from_bytes(data: [u8; 32]) -> Self {
 		Self{data}
 	}
 
-	/// Create a channel ID consisting of all-zeros data
+	/// Create a channel ID consisting of all-zeros data (placeholder).
 	pub fn new_zero() -> Self {
-			Self::from_bytes([0; 32])
-		}
+		Self::from_bytes([0; 32])
+	}
 
 	/// Create channel ID based on a funding TX outpoint
 	pub fn from_funding_outpoint(funding_tx_outpoint: &OutPoint) -> Self {
@@ -640,6 +643,7 @@ impl ChannelId {
 		&self.data
 	}
 
+	/// Serialization helper
 	pub fn serialized_length(&self) -> usize {
 		self.bytes().serialized_length()
 	}
@@ -695,9 +699,9 @@ pub(super) struct ChannelContext<Signer: ChannelSigner> {
 
 	user_id: u128,
 
-	/// The current channel ID. Can be of any variant (temporary, funding TX based, ...).
+	/// The current channel ID.
 	channel_id: ChannelId,
-	/// The temporary channel ID used during channel setup. Value kept even after transitioning to a final channel ID. Of variant ChannelId::Temporary.
+	/// The temporary channel ID used during channel setup. Value kept even after transitioning to a final channel ID.
 	/// Will be `None` for channels created prior to 0.0.115.
 	temporary_channel_id: Option<ChannelId>,
 	channel_state: u32,
@@ -7513,16 +7517,16 @@ mod tests {
 	use bitcoin::blockdata::opcodes;
 	use bitcoin::network::constants::Network;
 	use hex;
-use crate::ln::PaymentHash;
-use crate::ln::channelmanager::{self, HTLCSource, PaymentId};
-use crate::ln::channel::InitFeatures;
-use crate::ln::channel::{Channel, ChannelId, InboundHTLCOutput, OutboundV1Channel, InboundV1Channel, OutboundHTLCOutput, InboundHTLCState, OutboundHTLCState, HTLCCandidate, HTLCInitiator, commit_tx_fee_msat};
-use crate::ln::channel::{MAX_FUNDING_SATOSHIS_NO_WUMBO, TOTAL_BITCOIN_SUPPLY_SATOSHIS, MIN_THEIR_CHAN_RESERVE_SATOSHIS};
-use crate::ln::features::ChannelTypeFeatures;
-use crate::ln::msgs::{ChannelUpdate, DecodeError, UnsignedChannelUpdate, MAX_VALUE_MSAT};
-use crate::ln::script::ShutdownScript;
-use crate::ln::chan_utils;
-use crate::ln::chan_utils::{htlc_success_tx_weight, htlc_timeout_tx_weight};
+	use crate::ln::PaymentHash;
+	use crate::ln::channelmanager::{self, HTLCSource, PaymentId};
+	use crate::ln::channel::InitFeatures;
+	use crate::ln::channel::{Channel, ChannelId, InboundHTLCOutput, OutboundV1Channel, InboundV1Channel, OutboundHTLCOutput, InboundHTLCState, OutboundHTLCState, HTLCCandidate, HTLCInitiator, commit_tx_fee_msat};
+	use crate::ln::channel::{MAX_FUNDING_SATOSHIS_NO_WUMBO, TOTAL_BITCOIN_SUPPLY_SATOSHIS, MIN_THEIR_CHAN_RESERVE_SATOSHIS};
+	use crate::ln::features::ChannelTypeFeatures;
+	use crate::ln::msgs::{ChannelUpdate, DecodeError, UnsignedChannelUpdate, MAX_VALUE_MSAT};
+	use crate::ln::script::ShutdownScript;
+	use crate::ln::chan_utils;
+	use crate::ln::chan_utils::{htlc_success_tx_weight, htlc_timeout_tx_weight};
 	use crate::chain::BestBlock;
 	use crate::chain::chaininterface::{FeeEstimator, LowerBoundedFeeEstimator, ConfirmationTarget};
 	use crate::sign::{ChannelSigner, InMemorySigner, EntropySource, SignerProvider};
@@ -7556,7 +7560,7 @@ use crate::ln::chan_utils::{htlc_success_tx_weight, htlc_timeout_tx_weight};
 	fn test_channel_id_new_from_data() {
 		let data: [u8; 32] = [2; 32];
 		let channel_id = ChannelId::from_bytes([2; 32]);
-		assert_eq!(*channel_id.bytes(), data.clone());
+		assert_eq!(*channel_id.bytes(), data);
 	}
 
 	#[test]
