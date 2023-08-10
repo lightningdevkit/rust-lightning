@@ -10,7 +10,7 @@
 use crate::ln::channel::{ANCHOR_OUTPUT_VALUE_SATOSHI, MIN_CHAN_DUST_LIMIT_SATOSHIS};
 use crate::ln::chan_utils::{HTLCOutputInCommitment, ChannelPublicKeys, HolderCommitmentTransaction, CommitmentTransaction, ChannelTransactionParameters, TrustedCommitmentTransaction, ClosingTransaction};
 use crate::ln::{chan_utils, msgs, PaymentPreimage};
-use crate::sign::{WriteableEcdsaChannelSigner, InMemorySigner, ChannelSigner, EcdsaChannelSigner};
+use crate::sign::{WriteableEcdsaChannelSigner, InMemorySigner, ChannelSigner, EcdsaChannelSigner, SignerError};
 
 use crate::prelude::*;
 use core::cmp;
@@ -56,6 +56,7 @@ pub struct TestChannelSigner {
 	/// Channel state used for policy enforcement
 	pub state: Arc<Mutex<EnforcementState>>,
 	pub disable_revocation_policy_check: bool,
+	available: Arc<Mutex<bool>>,
 }
 
 impl PartialEq for TestChannelSigner {
@@ -71,7 +72,8 @@ impl TestChannelSigner {
 		Self {
 			inner,
 			state,
-			disable_revocation_policy_check: false
+			disable_revocation_policy_check: false,
+			available: Arc::new(Mutex::new(true)),
 		}
 	}
 
@@ -84,7 +86,8 @@ impl TestChannelSigner {
 		Self {
 			inner,
 			state,
-			disable_revocation_policy_check
+			disable_revocation_policy_check,
+			available: Arc::new(Mutex::new(true)),
 		}
 	}
 
@@ -94,14 +97,32 @@ impl TestChannelSigner {
 	pub fn get_enforcement_state(&self) -> MutexGuard<EnforcementState> {
 		self.state.lock().unwrap()
 	}
+
+	/// Marks the signer's availability.
+	///
+	/// When `true`, methods are forwarded to the underlying signer as normal. When `false`, some
+	/// methods will return `SignerError::NotAvailable`. In particular:
+	///
+	/// - `get_per_commitment_point`
+	/// - `release_commitment_secret`
+	#[cfg(test)]
+	pub fn set_available(&self, available: bool) {
+		*self.available.lock().unwrap() = available;
+	}
 }
 
 impl ChannelSigner for TestChannelSigner {
-	fn get_per_commitment_point(&self, idx: u64, secp_ctx: &Secp256k1<secp256k1::All>) -> PublicKey {
+	fn get_per_commitment_point(&self, idx: u64, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<PublicKey, SignerError> {
+		if !*self.available.lock().unwrap() {
+			return Err(SignerError::NotAvailable);
+		}
 		self.inner.get_per_commitment_point(idx, secp_ctx)
 	}
 
-	fn release_commitment_secret(&self, idx: u64) -> [u8; 32] {
+	fn release_commitment_secret(&self, idx: u64) -> Result<[u8; 32], SignerError> {
+		if !*self.available.lock().unwrap() {
+			return Err(SignerError::NotAvailable);
+		}
 		{
 			let mut state = self.state.lock().unwrap();
 			assert!(idx == state.last_holder_revoked_commitment || idx == state.last_holder_revoked_commitment - 1, "can only revoke the current or next unrevoked commitment - trying {}, last revoked {}", idx, state.last_holder_revoked_commitment);

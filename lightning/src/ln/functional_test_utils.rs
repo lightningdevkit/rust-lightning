@@ -29,6 +29,7 @@ use crate::util::test_utils;
 use crate::util::test_utils::{panicking, TestChainMonitor, TestScorer, TestKeysInterface};
 use crate::util::errors::APIError;
 use crate::util::config::{UserConfig, MaxDustHTLCExposure};
+use crate::util::logger::Logger;
 use crate::util::ser::{ReadableArgs, Writeable};
 
 use bitcoin::blockdata::block::{Block, BlockHeader};
@@ -413,6 +414,31 @@ impl<'a, 'b, 'c> Node<'a, 'b, 'c> {
 	}
 	pub fn get_block_header(&self, height: u32) -> BlockHeader {
 		self.blocks.lock().unwrap()[height as usize].0.header
+	}
+	/// Changes the channel signer's availability for the specified peer and channel.
+	///
+	/// When `available` is set to `true`, the channel signer will behave normally. When set to
+	/// `false`, the channel signer will act like an off-line remote signer and will return
+	/// `SignerError::NotAvailable` for several of the signing methods. Currently, only
+	/// `get_per_commitment_point` and `release_commitment_secret` are affected by this setting.
+	#[cfg(test)]
+	pub fn set_channel_signer_available(&self, peer_id: &PublicKey, chan_id: &ChannelId, available: bool) {
+		let per_peer_state = self.node.per_peer_state.read().unwrap();
+		let chan_lock = per_peer_state.get(peer_id).unwrap().lock().unwrap();
+		let signer = (|| {
+			if let Some(local_chan) = chan_lock.channel_by_id.get(chan_id) {
+				return local_chan.get_signer();
+			}
+			if let Some(local_chan) = chan_lock.inbound_v1_channel_by_id.get(chan_id) {
+				return local_chan.context.get_signer();
+			}
+			if let Some(local_chan) = chan_lock.outbound_v1_channel_by_id.get(chan_id) {
+				return local_chan.context.get_signer();
+			}
+			panic!("Couldn't find a channel with id {}", chan_id);
+		})();
+		log_debug!(self.logger, "Setting channel {} as available={}", chan_id, available);
+		signer.as_ecdsa().unwrap().set_available(available);
 	}
 }
 
@@ -2031,12 +2057,13 @@ macro_rules! expect_channel_shutdown_state {
 }
 
 #[cfg(any(test, ldk_bench, feature = "_test_utils"))]
-pub fn expect_channel_pending_event<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, expected_counterparty_node_id: &PublicKey) {
+pub fn expect_channel_pending_event<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, expected_counterparty_node_id: &PublicKey) -> ChannelId {
 	let events = node.node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);
-	match events[0] {
-		crate::events::Event::ChannelPending { ref counterparty_node_id, .. } => {
+	match &events[0] {
+		crate::events::Event::ChannelPending { channel_id, counterparty_node_id, .. } => {
 			assert_eq!(*expected_counterparty_node_id, *counterparty_node_id);
+			*channel_id
 		},
 		_ => panic!("Unexpected event"),
 	}

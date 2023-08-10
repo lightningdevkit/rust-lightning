@@ -2752,9 +2752,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 							},
 							commitment_txid: htlc.commitment_txid,
 							per_commitment_number: htlc.per_commitment_number,
-							per_commitment_point: self.onchain_tx_handler.signer.get_per_commitment_point(
-								htlc.per_commitment_number, &self.onchain_tx_handler.secp_ctx,
-							),
+							per_commitment_point: htlc.per_commitment_point,
 							htlc: htlc.htlc,
 							preimage: htlc.preimage,
 							counterparty_sig: htlc.counterparty_sig,

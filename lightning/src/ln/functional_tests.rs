@@ -714,7 +714,7 @@ fn test_update_fee_that_funder_cannot_afford() {
 		let chan_signer = remote_chan.get_signer();
 		let pubkeys = chan_signer.as_ref().pubkeys();
 		(pubkeys.delayed_payment_basepoint, pubkeys.htlc_basepoint,
-		 chan_signer.as_ref().get_per_commitment_point(INITIAL_COMMITMENT_NUMBER - 1, &secp_ctx),
+		 chan_signer.as_ref().get_per_commitment_point(INITIAL_COMMITMENT_NUMBER - 1, &secp_ctx).unwrap(),
 		 pubkeys.funding_pubkey)
 	};
 
@@ -1421,8 +1421,8 @@ fn test_fee_spike_violation_fails_htlc() {
 
 		let pubkeys = chan_signer.as_ref().pubkeys();
 		(pubkeys.revocation_basepoint, pubkeys.htlc_basepoint,
-		 chan_signer.as_ref().release_commitment_secret(INITIAL_COMMITMENT_NUMBER),
-		 chan_signer.as_ref().get_per_commitment_point(INITIAL_COMMITMENT_NUMBER - 2, &secp_ctx),
+		 chan_signer.as_ref().release_commitment_secret(INITIAL_COMMITMENT_NUMBER).unwrap(),
+		 chan_signer.as_ref().get_per_commitment_point(INITIAL_COMMITMENT_NUMBER - 2, &secp_ctx).unwrap(),
 		 chan_signer.as_ref().pubkeys().funding_pubkey)
 	};
 	let (remote_delayed_payment_basepoint, remote_htlc_basepoint, remote_point, remote_funding) = {
@@ -1432,7 +1432,7 @@ fn test_fee_spike_violation_fails_htlc() {
 		let chan_signer = remote_chan.get_signer();
 		let pubkeys = chan_signer.as_ref().pubkeys();
 		(pubkeys.delayed_payment_basepoint, pubkeys.htlc_basepoint,
-		 chan_signer.as_ref().get_per_commitment_point(INITIAL_COMMITMENT_NUMBER - 1, &secp_ctx),
+		 chan_signer.as_ref().get_per_commitment_point(INITIAL_COMMITMENT_NUMBER - 1, &secp_ctx).unwrap(),
 		 chan_signer.as_ref().pubkeys().funding_pubkey)
 	};
 
@@ -7660,15 +7660,15 @@ fn test_counterparty_raa_skip_no_crash() {
 
 		// Make signer believe we got a counterparty signature, so that it allows the revocation
 		keys.as_ecdsa().unwrap().get_enforcement_state().last_holder_commitment -= 1;
-		per_commitment_secret = keys.as_ref().release_commitment_secret(INITIAL_COMMITMENT_NUMBER);
+		per_commitment_secret = keys.as_ref().release_commitment_secret(INITIAL_COMMITMENT_NUMBER).unwrap();
 
 		// Must revoke without gaps
 		keys.as_ecdsa().unwrap().get_enforcement_state().last_holder_commitment -= 1;
-		keys.as_ref().release_commitment_secret(INITIAL_COMMITMENT_NUMBER - 1);
+		keys.as_ref().release_commitment_secret(INITIAL_COMMITMENT_NUMBER - 1).expect("unable to release commitment secret");
 
 		keys.as_ecdsa().unwrap().get_enforcement_state().last_holder_commitment -= 1;
 		next_per_commitment_point = PublicKey::from_secret_key(&Secp256k1::new(),
-			&SecretKey::from_slice(&keys.as_ref().release_commitment_secret(INITIAL_COMMITMENT_NUMBER - 2)).unwrap());
+			&SecretKey::from_slice(&keys.as_ref().release_commitment_secret(INITIAL_COMMITMENT_NUMBER - 2).unwrap()).unwrap());
 	}
 
 	nodes[1].node.handle_revoke_and_ack(&nodes[0].node.get_our_node_id(),
@@ -8977,6 +8977,193 @@ fn test_duplicate_chan_id() {
 	update_nodes_with_chan_announce(&nodes, 0, 1, &announcement, &as_update, &bs_update);
 
 	send_payment(&nodes[0], &[&nodes[1]], 8000000);
+}
+
+#[test]
+fn test_signer_gpcp_unavailable_for_funding_signed() {
+	// Test that a transient failure of the Signer's get_per_commitment_point can be tolerated during
+	// channel open by specifically having it fail for an inbound channel during the handling of the
+	// funding_signed message.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	// Create an initial channel
+	nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 100000, 10001, 42, None).unwrap();
+	let mut open_chan_msg = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
+	nodes[1].node.handle_open_channel(&nodes[0].node.get_our_node_id(), &open_chan_msg);
+	nodes[0].node.handle_accept_channel(&nodes[1].node.get_our_node_id(), &get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, nodes[0].node.get_our_node_id()));
+
+	// Move the channel through the funding flow...
+	let (temporary_channel_id, tx, _) = create_funding_transaction(&nodes[0], &nodes[1].node.get_our_node_id(), 100000, 42);
+
+	nodes[0].node.funding_transaction_generated(&temporary_channel_id, &nodes[1].node.get_our_node_id(), tx.clone()).unwrap();
+	check_added_monitors(&nodes[0], 0);
+
+	let mut funding_created_msg = get_event_msg!(nodes[0], MessageSendEvent::SendFundingCreated, nodes[1].node.get_our_node_id());
+	nodes[1].node.handle_funding_created(&nodes[0].node.get_our_node_id(), &funding_created_msg);
+	check_added_monitors(&nodes[1], 1);
+	
+	let chan_id = expect_channel_pending_event(&nodes[1], &nodes[0].node.get_our_node_id());
+
+	// Tweak the node[0] channel signer to produce an "unavailable" message before we ask it to handle
+	// the funding_signed message.
+	nodes[0].set_channel_signer_available(&nodes[1].node.get_our_node_id(), &chan_id, false);
+	let funding_signed_msg = get_event_msg!(nodes[1], MessageSendEvent::SendFundingSigned, nodes[0].node.get_our_node_id());
+	nodes[0].node.handle_funding_signed(&nodes[1].node.get_our_node_id(), &funding_signed_msg);
+
+	let events = nodes[0].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 0);
+	check_added_monitors(&nodes[0], 0);
+
+	// Now make it available and verify that we can process the message.
+	nodes[0].set_channel_signer_available(&nodes[1].node.get_our_node_id(), &chan_id, true);
+	nodes[0].node.handle_funding_signed(&nodes[1].node.get_our_node_id(), &funding_signed_msg);
+	check_added_monitors(&nodes[0], 1);
+	
+	expect_channel_pending_event(&nodes[0], &nodes[1].node.get_our_node_id());
+
+	assert_eq!(nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().len(), 1);
+	assert_eq!(nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap()[0], tx);
+
+	let (channel_ready, _) = create_chan_between_nodes_with_value_confirm(&nodes[0], &nodes[1], &tx);
+	let (announcement, as_update, bs_update) = create_chan_between_nodes_with_value_b(&nodes[0], &nodes[1], &channel_ready);
+	update_nodes_with_chan_announce(&nodes, 0, 1, &announcement, &as_update, &bs_update);
+
+	send_payment(&nodes[0], &[&nodes[1]], 8000000);
+}
+
+#[test]
+fn test_signer_gpcp_unavailable_for_funding_created() {
+	// Test that a transient failure of the Signer's get_per_commitment_point can be tolerated during
+	// channel open by specifically having it fail for an outbound channel during generation of the
+	// funding_created message.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	// Create an initial channel
+	nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 100000, 10001, 42, None).unwrap();
+	let mut open_chan_msg = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
+	nodes[1].node.handle_open_channel(&nodes[0].node.get_our_node_id(), &open_chan_msg);
+	nodes[0].node.handle_accept_channel(&nodes[1].node.get_our_node_id(), &get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, nodes[0].node.get_our_node_id()));
+
+	// Move the channel through the funding flow...
+	let (temporary_channel_id, tx, _) = create_funding_transaction(&nodes[0], &nodes[1].node.get_our_node_id(), 100000, 42);
+
+	nodes[0].node.funding_transaction_generated(&temporary_channel_id, &nodes[1].node.get_our_node_id(), tx.clone()).unwrap();
+	check_added_monitors(&nodes[0], 0);
+
+	// Tweak the node[1] channel signer to produce an "unavailable" result before we ask it to handle
+	// the funding_created message.
+	nodes[1].set_channel_signer_available(&nodes[0].node.get_our_node_id(), &temporary_channel_id, false);
+	let mut funding_created_msg = get_event_msg!(nodes[0], MessageSendEvent::SendFundingCreated, nodes[1].node.get_our_node_id());
+	nodes[1].node.handle_funding_created(&nodes[0].node.get_our_node_id(), &funding_created_msg);
+	check_added_monitors(&nodes[1], 0);
+
+	let events = nodes[0].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 0);
+
+	// Now make it available and verify that we can process the message.
+	nodes[1].set_channel_signer_available(&nodes[0].node.get_our_node_id(), &temporary_channel_id, true);
+	nodes[1].node.handle_funding_created(&nodes[0].node.get_our_node_id(), &funding_created_msg);
+	check_added_monitors(&nodes[1], 1);
+	
+	let funding_signed_msg = get_event_msg!(nodes[1], MessageSendEvent::SendFundingSigned, nodes[0].node.get_our_node_id());
+	nodes[0].node.handle_funding_signed(&nodes[1].node.get_our_node_id(), &funding_signed_msg);
+	check_added_monitors(&nodes[0], 1);
+	
+	expect_channel_pending_event(&nodes[0], &nodes[1].node.get_our_node_id());
+	expect_channel_pending_event(&nodes[1], &nodes[0].node.get_our_node_id());
+
+	assert_eq!(nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().len(), 1);
+	assert_eq!(nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap()[0], tx);
+
+	let (channel_ready, _) = create_chan_between_nodes_with_value_confirm(&nodes[0], &nodes[1], &tx);
+	let (announcement, as_update, bs_update) = create_chan_between_nodes_with_value_b(&nodes[0], &nodes[1], &channel_ready);
+	update_nodes_with_chan_announce(&nodes, 0, 1, &announcement, &as_update, &bs_update);
+	send_payment(&nodes[0], &[&nodes[1]], 8000000);
+}
+
+#[test]
+fn test_dest_signer_gpcp_unavailable_for_commitment_signed() {
+	// Test that a transient failure of the Signer's get_per_commitment_point can be tolerated by the
+	// destination node for a payment.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	// Create an initial channel
+	nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 100000, 10001, 42, None).unwrap();
+	let mut open_chan_msg = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
+	nodes[1].node.handle_open_channel(&nodes[0].node.get_our_node_id(), &open_chan_msg);
+	nodes[0].node.handle_accept_channel(&nodes[1].node.get_our_node_id(), &get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, nodes[0].node.get_our_node_id()));
+
+	// Move the channel through the funding flow...
+	let (temporary_channel_id, tx, _) = create_funding_transaction(&nodes[0], &nodes[1].node.get_our_node_id(), 100000, 42);
+
+	nodes[0].node.funding_transaction_generated(&temporary_channel_id, &nodes[1].node.get_our_node_id(), tx.clone()).unwrap();
+	check_added_monitors(&nodes[0], 0);
+
+	let mut funding_created_msg = get_event_msg!(nodes[0], MessageSendEvent::SendFundingCreated, nodes[1].node.get_our_node_id());
+	nodes[1].node.handle_funding_created(&nodes[0].node.get_our_node_id(), &funding_created_msg);
+	check_added_monitors(&nodes[1], 1);
+	
+	let funding_signed_msg = get_event_msg!(nodes[1], MessageSendEvent::SendFundingSigned, nodes[0].node.get_our_node_id());
+	nodes[0].node.handle_funding_signed(&nodes[1].node.get_our_node_id(), &funding_signed_msg);
+	check_added_monitors(&nodes[0], 1);
+	
+	let chan_id = expect_channel_pending_event(&nodes[0], &nodes[1].node.get_our_node_id());
+	expect_channel_pending_event(&nodes[1], &nodes[0].node.get_our_node_id());
+
+	assert_eq!(nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().len(), 1);
+	assert_eq!(nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap()[0], tx);
+
+	let (channel_ready, _) = create_chan_between_nodes_with_value_confirm(&nodes[0], &nodes[1], &tx);
+	let (announcement, as_update, bs_update) = create_chan_between_nodes_with_value_b(&nodes[0], &nodes[1], &channel_ready);
+	update_nodes_with_chan_announce(&nodes, 0, 1, &announcement, &as_update, &bs_update);
+
+	// Send a payment.
+	let src = &nodes[0];
+	let dst = &nodes[1];
+	let (route, our_payment_hash, _our_payment_preimage, our_payment_secret) = get_route_and_payment_hash!(src, dst, 8000000);
+	src.node.send_payment_with_route(&route, our_payment_hash,
+		RecipientOnionFields::secret_only(our_payment_secret), PaymentId(our_payment_hash.0)).unwrap();
+	check_added_monitors!(src, 1);
+
+	// Pass the payment along the route.
+	let payment_event = {
+		let mut events = src.node.get_and_clear_pending_msg_events();
+		assert_eq!(events.len(), 1);
+		SendEvent::from_event(events.remove(0))
+	};
+	assert_eq!(payment_event.node_id, dst.node.get_our_node_id());
+	assert_eq!(payment_event.msgs.len(), 1);
+
+	dst.node.handle_update_add_htlc(&src.node.get_our_node_id(), &payment_event.msgs[0]);
+
+	// Mark dst's signer as unavailable.
+	dst.set_channel_signer_available(&src.node.get_our_node_id(), &chan_id, false);
+	dst.node.handle_commitment_signed(&src.node.get_our_node_id(), &payment_event.commitment_msg);
+	check_added_monitors(src, 0);
+	check_added_monitors(dst, 0);
+
+	{
+		let src_events = src.node.get_and_clear_pending_msg_events();
+		assert_eq!(src_events.len(), 0);
+		let dst_events = dst.node.get_and_clear_pending_msg_events();
+		assert_eq!(dst_events.len(), 0);
+	}
+
+	// Mark dst's signer as available and re-handle commitment_signed. We expect to see both the RAA
+	// and the CS.
+	dst.set_channel_signer_available(&src.node.get_our_node_id(), &chan_id, true);
+	dst.node.handle_commitment_signed(&src.node.get_our_node_id(), &payment_event.commitment_msg);
+	get_revoke_commit_msgs(dst, &src.node.get_our_node_id());
+	check_added_monitors!(dst, 1);
 }
 
 #[test]

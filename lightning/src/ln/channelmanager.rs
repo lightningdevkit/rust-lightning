@@ -5622,6 +5622,12 @@ where
 				Some(inbound_chan) => {
 					match inbound_chan.funding_created(msg, best_block, &self.signer_provider, &self.logger) {
 						Ok(res) => res,
+						Err((inbound_chan, ChannelError::Ignore(_))) => {
+							// If we get an `Ignore` error then something transient went wrong. Put the channel
+							// back into the table and bail.
+							peer_state.inbound_v1_channel_by_id.insert(msg.temporary_channel_id, inbound_chan);
+							return Ok(());
+						},
 						Err((mut inbound_chan, err)) => {
 							// We've already removed this inbound channel from the map in `PeerState`
 							// above so at this point we just need to clean up any lingering entries
