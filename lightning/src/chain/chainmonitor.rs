@@ -966,7 +966,8 @@ mod tests {
 			assert!(err.contains("ChannelMonitor storage failure")));
 		check_added_monitors!(nodes[0], 2); // After the failure we generate a close-channel monitor update
 		check_closed_broadcast!(nodes[0], true);
-		check_closed_event!(nodes[0], 1, ClosureReason::ProcessingError { err: "ChannelMonitor storage failure".to_string() });
+		check_closed_event!(nodes[0], 1, ClosureReason::ProcessingError { err: "ChannelMonitor storage failure".to_string() }, 
+			[nodes[1].node.get_our_node_id()], 100000);
 
 		// However, as the ChainMonitor is still waiting for the original persistence to complete,
 		// it won't yet release the MonitorEvents.
@@ -1013,7 +1014,8 @@ mod tests {
 		// ... however once we get events once, the channel will close, creating a channel-closed
 		// ChannelMonitorUpdate.
 		check_closed_broadcast!(nodes[0], true);
-		check_closed_event!(nodes[0], 1, ClosureReason::ProcessingError { err: "Failed to persist ChannelMonitor update during chain sync".to_string() });
+		check_closed_event!(nodes[0], 1, ClosureReason::ProcessingError { err: "Failed to persist ChannelMonitor update during chain sync".to_string() },
+			[nodes[1].node.get_our_node_id()], 100000);
 		check_added_monitors!(nodes[0], 1);
 	}
 }

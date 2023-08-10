@@ -1418,14 +1418,18 @@ macro_rules! check_closed_broadcast {
 }
 
 /// Check that a channel's closing channel events has been issued
-pub fn check_closed_event(node: &Node, events_count: usize, expected_reason: ClosureReason, is_check_discard_funding: bool) {
+pub fn check_closed_event(node: &Node, events_count: usize, expected_reason: ClosureReason, is_check_discard_funding: bool,
+	expected_counterparty_node_ids: &[PublicKey], expected_channel_capacity: u64) {
 	let events = node.node.get_and_clear_pending_events();
 	assert_eq!(events.len(), events_count, "{:?}", events);
 	let mut issues_discard_funding = false;
-	for event in events {
+	for (idx, event) in events.into_iter().enumerate() {
 		match event {
-			Event::ChannelClosed { ref reason, .. } => {
+			Event::ChannelClosed { ref reason, counterparty_node_id, 
+				channel_capacity_sats, .. } => {
 				assert_eq!(*reason, expected_reason);
+				assert_eq!(counterparty_node_id.unwrap(), expected_counterparty_node_ids[idx]);
+				assert_eq!(channel_capacity_sats.unwrap(), expected_channel_capacity);
 			},
 			Event::DiscardFunding { .. } => {
 				issues_discard_funding = true;
@@ -1441,11 +1445,12 @@ pub fn check_closed_event(node: &Node, events_count: usize, expected_reason: Clo
 /// Don't use this, use the identically-named function instead.
 #[macro_export]
 macro_rules! check_closed_event {
-	($node: expr, $events: expr, $reason: expr) => {
-		check_closed_event!($node, $events, $reason, false);
+	($node: expr, $events: expr, $reason: expr, $counterparty_node_ids: expr, $channel_capacity: expr) => {
+		check_closed_event!($node, $events, $reason, false, $counterparty_node_ids, $channel_capacity);
 	};
-	($node: expr, $events: expr, $reason: expr, $is_check_discard_funding: expr) => {
-		$crate::ln::functional_test_utils::check_closed_event(&$node, $events, $reason, $is_check_discard_funding);
+	($node: expr, $events: expr, $reason: expr, $is_check_discard_funding: expr, $counterparty_node_ids: expr, $channel_capacity: expr) => {
+		$crate::ln::functional_test_utils::check_closed_event(&$node, $events, $reason, 
+			$is_check_discard_funding, &$counterparty_node_ids, $channel_capacity);
 	}
 }
 

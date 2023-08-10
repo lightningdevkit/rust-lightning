@@ -4276,7 +4276,8 @@ mod tests {
 			assert!(err.contains("ChannelMonitor storage failure")));
 		check_added_monitors!(nodes[1], 2); // After the failure we generate a close-channel monitor update
 		check_closed_broadcast!(nodes[1], true);
-		check_closed_event!(nodes[1], 1, ClosureReason::ProcessingError { err: "ChannelMonitor storage failure".to_string() });
+		check_closed_event!(nodes[1], 1, ClosureReason::ProcessingError { err: "ChannelMonitor storage failure".to_string() }, 
+			[nodes[0].node.get_our_node_id()], 100000);
 
 		// Build a new ChannelMonitorUpdate which contains both the failing commitment tx update
 		// and provides the claim preimages for the two pending HTLCs. The first update generates

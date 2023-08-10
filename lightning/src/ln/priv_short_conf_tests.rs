@@ -764,7 +764,7 @@ fn test_0conf_close_no_early_chan_update() {
 
 	nodes[0].node.force_close_all_channels_broadcasting_latest_txn();
 	check_added_monitors!(nodes[0], 1);
-	check_closed_event!(&nodes[0], 1, ClosureReason::HolderForceClosed);
+	check_closed_event!(&nodes[0], 1, ClosureReason::HolderForceClosed, [nodes[1].node.get_our_node_id()], 100000);
 	let _ = get_err_msg(&nodes[0], &nodes[1].node.get_our_node_id());
 }
 
@@ -861,12 +861,12 @@ fn test_0conf_channel_reorg() {
 	// now we force-close the channel here.
 	check_closed_event!(&nodes[0], 1, ClosureReason::ProcessingError {
 		err: "Funding transaction was un-confirmed. Locked at 0 confs, now have 0 confs.".to_owned()
-	});
+	}, [nodes[1].node.get_our_node_id()], 100000);
 	check_closed_broadcast!(nodes[0], true);
 	check_added_monitors(&nodes[0], 1);
 	check_closed_event!(&nodes[1], 1, ClosureReason::ProcessingError {
 		err: "Funding transaction was un-confirmed. Locked at 0 confs, now have 0 confs.".to_owned()
-	});
+	}, [nodes[0].node.get_our_node_id()], 100000);
 	check_closed_broadcast!(nodes[1], true);
 	check_added_monitors(&nodes[1], 1);
 }

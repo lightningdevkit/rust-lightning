@@ -76,7 +76,7 @@ fn do_test_onchain_htlc_reorg(local_commitment: bool, claim: bool) {
 		connect_block(&nodes[2], &create_dummy_block(nodes[2].best_block_hash(), 42, node_1_commitment_txn.clone()));
 		check_added_monitors!(nodes[2], 1);
 		check_closed_broadcast!(nodes[2], true); // We should get a BroadcastChannelUpdate (and *only* a BroadcstChannelUpdate)
-		check_closed_event!(nodes[2], 1, ClosureReason::CommitmentTxConfirmed);
+		check_closed_event!(nodes[2], 1, ClosureReason::CommitmentTxConfirmed, [nodes[1].node.get_our_node_id()], 100000);
 		let node_2_commitment_txn = nodes[2].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
 		assert_eq!(node_2_commitment_txn.len(), 1); // ChannelMonitor: 1 offered HTLC-Claim
 		check_spends!(node_2_commitment_txn[0], node_1_commitment_txn[0]);
@@ -110,7 +110,7 @@ fn do_test_onchain_htlc_reorg(local_commitment: bool, claim: bool) {
 	};
 	check_added_monitors!(nodes[1], 1);
 	check_closed_broadcast!(nodes[1], true); // We should get a BroadcastChannelUpdate (and *only* a BroadcstChannelUpdate)
-	check_closed_event!(nodes[1], 1, ClosureReason::CommitmentTxConfirmed);
+	check_closed_event!(nodes[1], 1, ClosureReason::CommitmentTxConfirmed, [nodes[2].node.get_our_node_id()], 100000);
 	// Connect ANTI_REORG_DELAY - 2 blocks, giving us a confirmation count of ANTI_REORG_DELAY - 1.
 	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 2);
 	check_added_monitors!(nodes[1], 0);
@@ -204,7 +204,7 @@ fn test_counterparty_revoked_reorg() {
 	// on any of the HTLCs, at least until we get six confirmations (which we won't get).
 	mine_transaction(&nodes[1], &revoked_local_txn[0]);
 	check_added_monitors!(nodes[1], 1);
-	check_closed_event!(nodes[1], 1, ClosureReason::CommitmentTxConfirmed);
+	check_closed_event!(nodes[1], 1, ClosureReason::CommitmentTxConfirmed, [nodes[0].node.get_our_node_id()], 1000000);
 	check_closed_broadcast!(nodes[1], true);
 
 	// Connect up to one block before the revoked transaction would be considered final, then do a
@@ -350,10 +350,12 @@ fn do_test_unconf_chan(reload_node: bool, reorg_after_reload: bool, use_funding_
 	if reorg_after_reload || !reload_node {
 		handle_announce_close_broadcast_events(&nodes, 0, 1, true, "Channel closed because of an exception: Funding transaction was un-confirmed. Locked at 6 confs, now have 0 confs.");
 		check_added_monitors!(nodes[1], 1);
-		check_closed_event!(nodes[1], 1, ClosureReason::CounterpartyForceClosed { peer_msg: UntrustedString(format!("Channel closed because of an exception: {}", expected_err)) });
+		check_closed_event!(nodes[1], 1, ClosureReason::CounterpartyForceClosed { peer_msg: UntrustedString(format!("Channel closed because of an exception: {}", expected_err)) }
+			, [nodes[0].node.get_our_node_id()], 100000);
 	}
 
-	check_closed_event!(nodes[0], 1, ClosureReason::ProcessingError { err: expected_err.to_owned() });
+	check_closed_event!(nodes[0], 1, ClosureReason::ProcessingError { err: expected_err.to_owned() },
+		[nodes[1].node.get_our_node_id()], 100000);
 	assert_eq!(nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().len(), 1);
 	nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().clear();
 
@@ -444,7 +446,7 @@ fn test_set_outpoints_partial_claiming() {
 	// Connect blocks on node A commitment transaction
 	mine_transaction(&nodes[0], &remote_txn[0]);
 	check_closed_broadcast!(nodes[0], true);
-	check_closed_event!(nodes[0], 1, ClosureReason::CommitmentTxConfirmed);
+	check_closed_event!(nodes[0], 1, ClosureReason::CommitmentTxConfirmed, [nodes[1].node.get_our_node_id()], 1000000);
 	check_added_monitors!(nodes[0], 1);
 	// Verify node A broadcast tx claiming both HTLCs
 	{
@@ -459,7 +461,7 @@ fn test_set_outpoints_partial_claiming() {
 	// Connect blocks on node B
 	connect_blocks(&nodes[1], TEST_FINAL_CLTV + LATENCY_GRACE_PERIOD_BLOCKS + 1);
 	check_closed_broadcast!(nodes[1], true);
-	check_closed_event!(nodes[1], 1, ClosureReason::CommitmentTxConfirmed);
+	check_closed_event!(nodes[1], 1, ClosureReason::CommitmentTxConfirmed, [nodes[0].node.get_our_node_id()], 1000000);
 	check_added_monitors!(nodes[1], 1);
 	// Verify node B broadcast 2 HTLC-timeout txn
 	let partial_claim_tx = {
@@ -536,11 +538,11 @@ fn do_test_to_remote_after_local_detection(style: ConnectStyle) {
 	assert!(nodes[0].node.list_channels().is_empty());
 	check_closed_broadcast!(nodes[0], true);
 	check_added_monitors!(nodes[0], 1);
-	check_closed_event!(nodes[0], 1, ClosureReason::CommitmentTxConfirmed);
+	check_closed_event!(nodes[0], 1, ClosureReason::CommitmentTxConfirmed, [nodes[1].node.get_our_node_id()], 1000000);
 	assert!(nodes[1].node.list_channels().is_empty());
 	check_closed_broadcast!(nodes[1], true);
 	check_added_monitors!(nodes[1], 1);
-	check_closed_event!(nodes[1], 1, ClosureReason::CommitmentTxConfirmed);
+	check_closed_event!(nodes[1], 1, ClosureReason::CommitmentTxConfirmed, [nodes[0].node.get_our_node_id()], 1000000);
 
 	assert!(nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events().is_empty());
 	assert!(nodes[1].chain_monitor.chain_monitor.get_and_clear_pending_events().is_empty());
