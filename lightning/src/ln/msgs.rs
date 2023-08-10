@@ -43,7 +43,7 @@ use crate::io_extras::read_to_end;
 
 use crate::events::{MessageSendEventsProvider, OnionMessageProvider};
 use crate::util::logger;
-use crate::util::ser::{LengthReadable, Readable, ReadableArgs, Writeable, Writer, WithoutLength, FixedLengthReader, HighZeroBytesDroppedBigSize, Hostname, TransactionU16LenLimited};
+use crate::util::ser::{LengthReadable, Readable, ReadableArgs, Writeable, Writer, WithoutLength, FixedLengthReader, HighZeroBytesDroppedBigSize, Hostname, TransactionU16LenLimited, BigSize};
 
 use crate::ln::{PaymentPreimage, PaymentHash, PaymentSecret};
 
@@ -1441,6 +1441,7 @@ mod fuzzy_internal_msgs {
 			payment_data: Option<FinalOnionHopData>,
 			payment_metadata: Option<Vec<u8>>,
 			keysend_preimage: Option<PaymentPreimage>,
+			custom_tlvs: Vec<(u64, Vec<u8>)>,
 			amt_msat: u64,
 			outgoing_cltv_value: u32,
 		},
@@ -1457,6 +1458,7 @@ mod fuzzy_internal_msgs {
 			payment_data: Option<FinalOnionHopData>,
 			payment_metadata: Option<Vec<u8>>,
 			keysend_preimage: Option<PaymentPreimage>,
+			custom_tlvs: Vec<(u64, Vec<u8>)>,
 			amt_msat: u64,
 			outgoing_cltv_value: u32,
 		},
@@ -1979,15 +1981,23 @@ impl Writeable for OutboundOnionPayload {
 				});
 			},
 			Self::Receive {
-				ref payment_data, ref payment_metadata, ref keysend_preimage, amt_msat, outgoing_cltv_value
+				ref payment_data, ref payment_metadata, ref keysend_preimage, amt_msat,
+				outgoing_cltv_value, ref custom_tlvs,
 			} => {
+				// We need to update [`ln::outbound_payment::RecipientOnionFields::with_custom_tlvs`]
+				// to reject any reserved types in the experimental range if new ones are ever
+				// standardized.
+				let preimage = if let Some(ref preimage) = keysend_preimage {
+					Some((5482373484, preimage.encode()))
+				} else { None };
+				let mut custom_tlvs: Vec<&(u64, Vec<u8>)> = custom_tlvs.iter().chain(preimage.iter()).collect();
+				custom_tlvs.sort_unstable_by_key(|(typ, _)| *typ);
 				_encode_varint_length_prefixed_tlv!(w, {
 					(2, HighZeroBytesDroppedBigSize(*amt_msat), required),
 					(4, HighZeroBytesDroppedBigSize(*outgoing_cltv_value), required),
 					(8, payment_data, option),
-					(16, payment_metadata.as_ref().map(|m| WithoutLength(m)), option),
-					(5482373484, keysend_preimage, option)
-				});
+					(16, payment_metadata.as_ref().map(|m| WithoutLength(m)), option)
+				}, custom_tlvs.iter());
 			},
 		}
 		Ok(())
@@ -2002,7 +2012,11 @@ impl Readable for InboundOnionPayload {
 		let mut payment_data: Option<FinalOnionHopData> = None;
 		let mut payment_metadata: Option<WithoutLength<Vec<u8>>> = None;
 		let mut keysend_preimage: Option<PaymentPreimage> = None;
-		read_tlv_fields!(r, {
+		let mut custom_tlvs = Vec::new();
+
+		let tlv_len = BigSize::read(r)?;
+		let rd = FixedLengthReader::new(r, tlv_len.0);
+		decode_tlv_stream_with_custom_tlv_decode!(rd, {
 			(2, amt, required),
 			(4, cltv_value, required),
 			(6, short_id, option),
@@ -2010,6 +2024,12 @@ impl Readable for InboundOnionPayload {
 			(16, payment_metadata, option),
 			// See https://github.com/lightning/blips/blob/master/blip-0003.md
 			(5482373484, keysend_preimage, option)
+		}, |msg_type: u64, msg_reader: &mut FixedLengthReader<_>| -> Result<bool, DecodeError> {
+			if msg_type < 1 << 16 { return Ok(false) }
+			let mut value = Vec::new();
+			msg_reader.read_to_end(&mut value)?;
+			custom_tlvs.push((msg_type, value));
+			Ok(true)
 		});
 
 		if amt.0 > MAX_VALUE_MSAT { return Err(DecodeError::InvalidValue) }
@@ -2033,6 +2053,7 @@ impl Readable for InboundOnionPayload {
 				keysend_preimage,
 				amt_msat: amt.0,
 				outgoing_cltv_value: cltv_value.0,
+				custom_tlvs,
 			})
 		}
 	}
@@ -3566,6 +3587,7 @@ mod tests {
 			keysend_preimage: None,
 			amt_msat: 0x0badf00d01020304,
 			outgoing_cltv_value: 0xffffffff,
+			custom_tlvs: vec![],
 		};
 		let encoded_value = outbound_msg.encode();
 		let target_value = hex::decode("1002080badf00d010203040404ffffffff").unwrap();
@@ -3590,6 +3612,7 @@ mod tests {
 			keysend_preimage: None,
 			amt_msat: 0x0badf00d01020304,
 			outgoing_cltv_value: 0xffffffff,
+			custom_tlvs: vec![],
 		};
 		let encoded_value = outbound_msg.encode();
 		let target_value = hex::decode("3602080badf00d010203040404ffffffff082442424242424242424242424242424242424242424242424242424242424242421badca1f").unwrap();
@@ -3604,8 +3627,76 @@ mod tests {
 			amt_msat, outgoing_cltv_value,
 			payment_metadata: None,
 			keysend_preimage: None,
+			custom_tlvs,
 		} = inbound_msg  {
 			assert_eq!(payment_secret, expected_payment_secret);
+			assert_eq!(amt_msat, 0x0badf00d01020304);
+			assert_eq!(outgoing_cltv_value, 0xffffffff);
+			assert_eq!(custom_tlvs, vec![]);
+		} else { panic!(); }
+	}
+
+	#[test]
+	fn encoding_final_onion_hop_data_with_bad_custom_tlvs() {
+		// If custom TLVs have type number within the range reserved for protocol, treat them as if
+		// they're unknown
+		let bad_type_range_tlvs = vec![
+			((1 << 16) - 4, vec![42]),
+			((1 << 16) - 2, vec![42; 32]),
+		];
+		let mut msg = msgs::OutboundOnionPayload::Receive {
+			payment_data: None,
+			payment_metadata: None,
+			keysend_preimage: None,
+			custom_tlvs: bad_type_range_tlvs,
+			amt_msat: 0x0badf00d01020304,
+			outgoing_cltv_value: 0xffffffff,
+		};
+		let encoded_value = msg.encode();
+		assert!(msgs::InboundOnionPayload::read(&mut Cursor::new(&encoded_value[..])).is_err());
+		let good_type_range_tlvs = vec![
+			((1 << 16) - 3, vec![42]),
+			((1 << 16) - 1, vec![42; 32]),
+		];
+		if let msgs::OutboundOnionPayload::Receive { ref mut custom_tlvs, .. } = msg {
+			*custom_tlvs = good_type_range_tlvs.clone();
+		}
+		let encoded_value = msg.encode();
+		let inbound_msg = Readable::read(&mut Cursor::new(&encoded_value[..])).unwrap();
+		match inbound_msg {
+			msgs::InboundOnionPayload::Receive { custom_tlvs, .. } => assert!(custom_tlvs.is_empty()),
+			_ => panic!(),
+		}
+	}
+
+	#[test]
+	fn encoding_final_onion_hop_data_with_custom_tlvs() {
+		let expected_custom_tlvs = vec![
+			(5482373483, vec![0x12, 0x34]),
+			(5482373487, vec![0x42u8; 8]),
+		];
+		let msg = msgs::OutboundOnionPayload::Receive {
+			payment_data: None,
+			payment_metadata: None,
+			keysend_preimage: None,
+			custom_tlvs: expected_custom_tlvs.clone(),
+			amt_msat: 0x0badf00d01020304,
+			outgoing_cltv_value: 0xffffffff,
+		};
+		let encoded_value = msg.encode();
+		let target_value = hex::decode("2e02080badf00d010203040404ffffffffff0000000146c6616b021234ff0000000146c6616f084242424242424242").unwrap();
+		assert_eq!(encoded_value, target_value);
+		let inbound_msg: msgs::InboundOnionPayload = Readable::read(&mut Cursor::new(&target_value[..])).unwrap();
+		if let msgs::InboundOnionPayload::Receive {
+			payment_data: None,
+			payment_metadata: None,
+			keysend_preimage: None,
+			custom_tlvs,
+			amt_msat,
+			outgoing_cltv_value,
+			..
+		} = inbound_msg {
+			assert_eq!(custom_tlvs, expected_custom_tlvs);
 			assert_eq!(amt_msat, 0x0badf00d01020304);
 			assert_eq!(outgoing_cltv_value, 0xffffffff);
 		} else { panic!(); }

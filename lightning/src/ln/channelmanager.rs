@@ -110,6 +110,8 @@ pub(super) enum PendingHTLCRouting {
 		payment_metadata: Option<Vec<u8>>,
 		incoming_cltv_expiry: u32, // Used to track when we should expire pending HTLCs that go unclaimed
 		phantom_shared_secret: Option<[u8; 32]>,
+		/// See [`RecipientOnionFields::custom_tlvs`] for more info.
+		custom_tlvs: Vec<(u64, Vec<u8>)>,
 	},
 	ReceiveKeysend {
 		/// This was added in 0.0.116 and will break deserialization on downgrades.
@@ -117,6 +119,8 @@ pub(super) enum PendingHTLCRouting {
 		payment_preimage: PaymentPreimage,
 		payment_metadata: Option<Vec<u8>>,
 		incoming_cltv_expiry: u32, // Used to track when we should expire pending HTLCs that go unclaimed
+		/// See [`RecipientOnionFields::custom_tlvs`] for more info.
+		custom_tlvs: Vec<(u64, Vec<u8>)>,
 	},
 }
 
@@ -355,15 +359,32 @@ struct InboundOnionErr {
 pub enum FailureCode {
 	/// We had a temporary error processing the payment. Useful if no other error codes fit
 	/// and you want to indicate that the payer may want to retry.
-	TemporaryNodeFailure             = 0x2000 | 2,
+	TemporaryNodeFailure,
 	/// We have a required feature which was not in this onion. For example, you may require
 	/// some additional metadata that was not provided with this payment.
-	RequiredNodeFeatureMissing       = 0x4000 | 0x2000 | 3,
+	RequiredNodeFeatureMissing,
 	/// You may wish to use this when a `payment_preimage` is unknown, or the CLTV expiry of
 	/// the HTLC is too close to the current block height for safe handling.
 	/// Using this failure code in [`ChannelManager::fail_htlc_backwards_with_reason`] is
 	/// equivalent to calling [`ChannelManager::fail_htlc_backwards`].
-	IncorrectOrUnknownPaymentDetails = 0x4000 | 15,
+	IncorrectOrUnknownPaymentDetails,
+	/// We failed to process the payload after the onion was decrypted. You may wish to
+	/// use this when receiving custom HTLC TLVs with even type numbers that you don't recognize.
+	///
+	/// If available, the tuple data may include the type number and byte offset in the
+	/// decrypted byte stream where the failure occurred.
+	InvalidOnionPayload(Option<(u64, u16)>),
+}
+
+impl Into<u16> for FailureCode {
+    fn into(self) -> u16 {
+		match self {
+			FailureCode::TemporaryNodeFailure => 0x2000 | 2,
+			FailureCode::RequiredNodeFeatureMissing => 0x4000 | 0x2000 | 3,
+			FailureCode::IncorrectOrUnknownPaymentDetails => 0x4000 | 15,
+			FailureCode::InvalidOnionPayload(_) => 0x4000 | 22,
+		}
+	}
 }
 
 /// Error type returned across the peer_state mutex boundary. When an Err is generated for a
@@ -2674,11 +2695,11 @@ where
 		amt_msat: u64, cltv_expiry: u32, phantom_shared_secret: Option<[u8; 32]>, allow_underpay: bool,
 		counterparty_skimmed_fee_msat: Option<u64>,
 	) -> Result<PendingHTLCInfo, InboundOnionErr> {
-		let (payment_data, keysend_preimage, onion_amt_msat, outgoing_cltv_value, payment_metadata) = match hop_data {
+		let (payment_data, keysend_preimage, custom_tlvs, onion_amt_msat, outgoing_cltv_value, payment_metadata) = match hop_data {
 			msgs::InboundOnionPayload::Receive {
-				payment_data, keysend_preimage, amt_msat, outgoing_cltv_value, payment_metadata, ..
+				payment_data, keysend_preimage, custom_tlvs, amt_msat, outgoing_cltv_value, payment_metadata, ..
 			} =>
-				(payment_data, keysend_preimage, amt_msat, outgoing_cltv_value, payment_metadata),
+				(payment_data, keysend_preimage, custom_tlvs, amt_msat, outgoing_cltv_value, payment_metadata),
 			_ =>
 				return Err(InboundOnionErr {
 					err_code: 0x4000|22,
@@ -2748,6 +2769,7 @@ where
 				payment_preimage,
 				payment_metadata,
 				incoming_cltv_expiry: outgoing_cltv_value,
+				custom_tlvs,
 			}
 		} else if let Some(data) = payment_data {
 			PendingHTLCRouting::Receive {
@@ -2755,6 +2777,7 @@ where
 				payment_metadata,
 				incoming_cltv_expiry: outgoing_cltv_value,
 				phantom_shared_secret,
+				custom_tlvs,
 			}
 		} else {
 			return Err(InboundOnionErr {
@@ -3941,17 +3964,18 @@ where
 								}
 							}) => {
 								let (cltv_expiry, onion_payload, payment_data, phantom_shared_secret, mut onion_fields) = match routing {
-									PendingHTLCRouting::Receive { payment_data, payment_metadata, incoming_cltv_expiry, phantom_shared_secret } => {
+									PendingHTLCRouting::Receive { payment_data, payment_metadata, incoming_cltv_expiry, phantom_shared_secret, custom_tlvs } => {
 										let _legacy_hop_data = Some(payment_data.clone());
-										let onion_fields =
-											RecipientOnionFields { payment_secret: Some(payment_data.payment_secret), payment_metadata };
+										let onion_fields = RecipientOnionFields { payment_secret: Some(payment_data.payment_secret),
+												payment_metadata, custom_tlvs };
 										(incoming_cltv_expiry, OnionPayload::Invoice { _legacy_hop_data },
 											Some(payment_data), phantom_shared_secret, onion_fields)
 									},
-									PendingHTLCRouting::ReceiveKeysend { payment_data, payment_preimage, payment_metadata, incoming_cltv_expiry } => {
+									PendingHTLCRouting::ReceiveKeysend { payment_data, payment_preimage, payment_metadata, incoming_cltv_expiry, custom_tlvs } => {
 										let onion_fields = RecipientOnionFields {
 											payment_secret: payment_data.as_ref().map(|data| data.payment_secret),
-											payment_metadata
+											payment_metadata,
+											custom_tlvs,
 										};
 										(incoming_cltv_expiry, OnionPayload::Spontaneous(payment_preimage),
 											payment_data, None, onion_fields)
@@ -4576,12 +4600,19 @@ where
 	/// Gets error data to form an [`HTLCFailReason`] given a [`FailureCode`] and [`ClaimableHTLC`].
 	fn get_htlc_fail_reason_from_failure_code(&self, failure_code: FailureCode, htlc: &ClaimableHTLC) -> HTLCFailReason {
 		match failure_code {
-			FailureCode::TemporaryNodeFailure => HTLCFailReason::from_failure_code(failure_code as u16),
-			FailureCode::RequiredNodeFeatureMissing => HTLCFailReason::from_failure_code(failure_code as u16),
+			FailureCode::TemporaryNodeFailure => HTLCFailReason::from_failure_code(failure_code.into()),
+			FailureCode::RequiredNodeFeatureMissing => HTLCFailReason::from_failure_code(failure_code.into()),
 			FailureCode::IncorrectOrUnknownPaymentDetails => {
 				let mut htlc_msat_height_data = htlc.value.to_be_bytes().to_vec();
 				htlc_msat_height_data.extend_from_slice(&self.best_block.read().unwrap().height().to_be_bytes());
-				HTLCFailReason::reason(failure_code as u16, htlc_msat_height_data)
+				HTLCFailReason::reason(failure_code.into(), htlc_msat_height_data)
+			},
+			FailureCode::InvalidOnionPayload(data) => {
+				let fail_data = match data {
+					Some((typ, offset)) => [BigSize(typ).encode(), offset.encode()].concat(),
+					None => Vec::new(),
+				};
+				HTLCFailReason::reason(failure_code.into(), fail_data)
 			}
 		}
 	}
@@ -4728,13 +4759,35 @@ where
 	/// event matches your expectation. If you fail to do so and call this method, you may provide
 	/// the sender "proof-of-payment" when they did not fulfill the full expected payment.
 	///
+	/// This function will fail the payment if it has custom TLVs with even type numbers, as we
+	/// will assume they are unknown. If you intend to accept even custom TLVs, you should use
+	/// [`claim_funds_with_known_custom_tlvs`].
+	///
 	/// [`Event::PaymentClaimable`]: crate::events::Event::PaymentClaimable
 	/// [`Event::PaymentClaimable::claim_deadline`]: crate::events::Event::PaymentClaimable::claim_deadline
 	/// [`Event::PaymentClaimed`]: crate::events::Event::PaymentClaimed
 	/// [`process_pending_events`]: EventsProvider::process_pending_events
 	/// [`create_inbound_payment`]: Self::create_inbound_payment
 	/// [`create_inbound_payment_for_hash`]: Self::create_inbound_payment_for_hash
+	/// [`claim_funds_with_known_custom_tlvs`]: Self::claim_funds_with_known_custom_tlvs
 	pub fn claim_funds(&self, payment_preimage: PaymentPreimage) {
+		self.claim_payment_internal(payment_preimage, false);
+	}
+
+	/// This is a variant of [`claim_funds`] that allows accepting a payment with custom TLVs with
+	/// even type numbers.
+	///
+	/// # Note
+	///
+	/// You MUST check you've understood all even TLVs before using this to
+	/// claim, otherwise you may unintentionally agree to some protocol you do not understand.
+	///
+	/// [`claim_funds`]: Self::claim_funds
+	pub fn claim_funds_with_known_custom_tlvs(&self, payment_preimage: PaymentPreimage) {
+		self.claim_payment_internal(payment_preimage, true);
+	}
+
+	fn claim_payment_internal(&self, payment_preimage: PaymentPreimage, custom_tlvs_known: bool) {
 		let payment_hash = PaymentHash(Sha256::hash(&payment_preimage.0).into_inner());
 
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
@@ -4761,6 +4814,23 @@ where
 					log_error!(self.logger, "Got a duplicate pending claimable event on payment hash {}! Please report this bug",
 						log_bytes!(payment_hash.0));
 				}
+
+				if let Some(RecipientOnionFields { ref custom_tlvs, .. }) = payment.onion_fields {
+					if !custom_tlvs_known && custom_tlvs.iter().any(|(typ, _)| typ % 2 == 0) {
+						log_info!(self.logger, "Rejecting payment with payment hash {} as we cannot accept payment with unknown even TLVs: {}",
+							log_bytes!(payment_hash.0), log_iter!(custom_tlvs.iter().map(|(typ, _)| typ).filter(|typ| *typ % 2 == 0)));
+						claimable_payments.pending_claiming_payments.remove(&payment_hash);
+						mem::drop(claimable_payments);
+						for htlc in payment.htlcs {
+							let reason = self.get_htlc_fail_reason_from_failure_code(FailureCode::InvalidOnionPayload(None), &htlc);
+							let source = HTLCSource::PreviousHopData(htlc.prev_hop);
+							let receiver = HTLCDestination::FailedPayment { payment_hash };
+							self.fail_htlc_backwards_internal(&source, &payment_hash, &reason, receiver);
+						}
+						return;
+					}
+				}
+
 				payment.htlcs
 			} else { return; }
 		};
@@ -7638,12 +7708,14 @@ impl_writeable_tlv_based_enum!(PendingHTLCRouting,
 		(1, phantom_shared_secret, option),
 		(2, incoming_cltv_expiry, required),
 		(3, payment_metadata, option),
+		(5, custom_tlvs, optional_vec),
 	},
 	(2, ReceiveKeysend) => {
 		(0, payment_preimage, required),
 		(2, incoming_cltv_expiry, required),
 		(3, payment_metadata, option),
 		(4, payment_data, option), // Added in 0.0.116
+		(5, custom_tlvs, optional_vec),
 	},
 ;);
 
@@ -8750,6 +8822,7 @@ where
 										payment_secret: None, // only used for retries, and we'll never retry on startup
 										payment_metadata: None, // only used for retries, and we'll never retry on startup
 										keysend_preimage: None, // only used for retries, and we'll never retry on startup
+										custom_tlvs: Vec::new(), // only used for retries, and we'll never retry on startup
 										pending_amt_msat: path_amt,
 										pending_fee_msat: Some(path_fee),
 										total_msat: path_amt,
@@ -10092,6 +10165,7 @@ mod tests {
 			payment_data: Some(msgs::FinalOnionHopData {
 				payment_secret: PaymentSecret([0; 32]), total_msat: sender_intended_amt_msat,
 			}),
+			custom_tlvs: Vec::new(),
 		};
 		// Check that if the amount we received + the penultimate hop extra fee is less than the sender
 		// intended amount, we fail the payment.
@@ -10111,6 +10185,7 @@ mod tests {
 			payment_data: Some(msgs::FinalOnionHopData {
 				payment_secret: PaymentSecret([0; 32]), total_msat: sender_intended_amt_msat,
 			}),
+			custom_tlvs: Vec::new(),
 		};
 		assert!(node[0].node.construct_recv_pending_htlc_info(hop_data, [0; 32], PaymentHash([0; 32]),
 			sender_intended_amt_msat - extra_fee_msat, 42, None, true, Some(extra_fee_msat)).is_ok());

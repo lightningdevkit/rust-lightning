@@ -2250,7 +2250,10 @@ pub fn do_claim_payment_along_route_with_extra_penultimate_hop_fees<'a, 'b, 'c>(
 		assert_eq!(path.last().unwrap().node.get_our_node_id(), expected_paths[0].last().unwrap().node.get_our_node_id());
 	}
 	expected_paths[0].last().unwrap().node.claim_funds(our_payment_preimage);
+	pass_claimed_payment_along_route(origin_node, expected_paths, expected_extra_fees, skip_last, our_payment_preimage)
+}
 
+pub fn pass_claimed_payment_along_route<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_paths: &[&[&Node<'a, 'b, 'c>]], expected_extra_fees: &[u32], skip_last: bool, our_payment_preimage: PaymentPreimage) -> u64 {
 	let claim_event = expected_paths[0].last().unwrap().node.get_and_clear_pending_events();
 	assert_eq!(claim_event.len(), 1);
 	match claim_event[0] {
