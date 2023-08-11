@@ -942,6 +942,9 @@ pub struct SpliceCreated {
 	/// It could be also omitted and found by looking for the previous funding tx among the inputs.
 	/// Not needed in final version with tx negotiation, TODO remove
 	pub splice_prev_funding_input_index: u16,
+	/// Redeem script used in the splice transaction, needed for signing
+	/// Not needed in final version with tx negotiation, TODO remove
+	pub splice_tx_redeem_script: Script,
 	/// The signature of the splice initiator (funder) on the post-splice commitment transaction
 	pub signature: Signature,
 	/*
@@ -2262,6 +2265,7 @@ impl_writeable_msg!(SpliceCreated, {
 	funding_output_index,
 	splice_transaction,
 	splice_prev_funding_input_index,
+	splice_tx_redeem_script,
 	signature
 }, {});
 

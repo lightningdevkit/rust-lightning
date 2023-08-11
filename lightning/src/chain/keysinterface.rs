@@ -15,6 +15,7 @@
 use bitcoin::blockdata::transaction::{Transaction, TxOut, TxIn, EcdsaSighashType};
 use bitcoin::blockdata::script::{Script, Builder};
 use bitcoin::blockdata::opcodes;
+use bitcoin::hashes::hex::ToHex;
 use bitcoin::network::constants::Network;
 use bitcoin::util::bip32::{ExtendedPrivKey, ExtendedPubKey, ChildNumber};
 use bitcoin::util::sighash;
@@ -424,7 +425,7 @@ pub trait EcdsaChannelSigner: ChannelSigner {
 
 	/// #SPLICING
 	/// Create a signature for a splicing funding transaction, for the input which is the previous funding tx.
-	fn sign_splicing_funding_input(&self, splicing_tx: &Transaction, splice_prev_funding_input_index: u16, prev_funding_value: u64, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<Signature, ()>;
+	fn sign_splicing_funding_input(&self, splicing_tx: &Transaction, splice_prev_funding_input_index: u16, prev_funding_value: u64, redeem_script: &Script, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<Signature, ()>;
 }
 
 /// A writeable signer.
@@ -951,11 +952,14 @@ impl EcdsaChannelSigner for InMemorySigner {
 	}
 
 	/// #SPLICING
-	fn sign_splicing_funding_input(&self, splicing_tx: &Transaction, splice_prev_funding_input_index: u16, prev_funding_value: u64, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<Signature, ()> {
-		let input = &splicing_tx.input[splice_prev_funding_input_index as usize];
-		let sighash = &sighash::SighashCache::new(splicing_tx).segwit_signature_hash(splice_prev_funding_input_index as usize, &input.script_sig, prev_funding_value, EcdsaSighashType::All).unwrap()[..];
+	/// #SPLICE-SIG
+	fn sign_splicing_funding_input(&self, splicing_tx: &Transaction, splice_prev_funding_input_index: u16, prev_funding_value: u64, redeem_script: &Script, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<Signature, ()> {
+		println!("sign_splicing_funding_input  txlen {}  idx {}  val {}  tx {}", splicing_tx.encode().len(), splice_prev_funding_input_index, prev_funding_value, splicing_tx.encode().to_hex());
+		let sighash = &sighash::SighashCache::new(splicing_tx).segwit_signature_hash(splice_prev_funding_input_index as usize, &redeem_script, prev_funding_value, EcdsaSighashType::All).unwrap()[..];
 		let msg = hash_to_message!(sighash);
-		Ok(sign(secp_ctx, &msg, &self.funding_key))
+		let sig = sign(secp_ctx, &msg, &self.funding_key);
+		println!("sign_splicing_funding_input  hash {}  pubkey {} sig {}", sighash.to_hex(), &self.funding_key.public_key(secp_ctx), sig.serialize_der().to_hex());
+		Ok(sig)
 	}
 
 }

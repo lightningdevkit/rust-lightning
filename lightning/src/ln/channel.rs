@@ -5540,12 +5540,18 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		*/
 
 		// Sign splice funding tx: add signature to the input that is the previous funding tx
-		let funding_input_signature = self.holder_signer.sign_splicing_funding_input(&splice_transaction, splice_prev_funding_input_index, self.channel_value_satoshis, &self.secp_ctx)
+		// #SPLICE-SIG
+		log_info!(logger, "Pubkeys used for redeem script: {} {}", &self.get_holder_pubkeys().funding_pubkey, &self.counterparty_funding_pubkey());
+		let redeem_script = make_funding_redeemscript(&self.get_holder_pubkeys().funding_pubkey, self.counterparty_funding_pubkey());
+		let funding_input_signature = self.holder_signer.sign_splicing_funding_input(&splice_transaction, splice_prev_funding_input_index, self.channel_value_satoshis, &redeem_script, &self.secp_ctx)
 			.map_err(|_| ChannelError::Close("Failed to sign the previous funding input in the new splicing funding tx".to_owned()))?;
 		let mut splice_transaction_with_one_sig = splice_transaction.clone();
+		let mut holder_sig = funding_input_signature.serialize_der().to_vec();
+		holder_sig.push(EcdsaSighashType::All as u8);
 		splice_transaction_with_one_sig.input[splice_prev_funding_input_index as usize].witness.clear();
-		splice_transaction_with_one_sig.input[splice_prev_funding_input_index as usize].witness.push(funding_input_signature.encode());
-		log_info!(logger, "Created signature for funding tx input, index {}  txid {}  value {}  txlen {}  oldtxlen {}  sig {:?}", splice_prev_funding_input_index, splice_transaction_with_one_sig.txid(), self.channel_value_satoshis, splice_transaction_with_one_sig.encode().len(), splice_transaction.encode().len(), funding_input_signature.encode());
+		splice_transaction_with_one_sig.input[splice_prev_funding_input_index as usize].witness.push(Vec::new()); // First is the multisig dummy
+		splice_transaction_with_one_sig.input[splice_prev_funding_input_index as usize].witness.push(holder_sig);
+		log_info!(logger, "Created signature for funding tx input / initiator, index {}  txid {}  value {}  txlen {}  oldtxlen {}  sig {}", splice_prev_funding_input_index, splice_transaction_with_one_sig.txid(), self.channel_value_satoshis, splice_transaction_with_one_sig.encode().len(), splice_transaction.encode().len(), funding_input_signature.serialize_der().to_hex());
 
 		// Commit to the new channel value (capacity). The increase belongs to us (initiator, local).
 		// TODO: what if the the new splicing TX never locks?
@@ -5582,6 +5588,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			funding_output_index: splice_txo.index,
 			splice_transaction: splice_transaction_with_one_sig,
 			splice_prev_funding_input_index,
+			splice_tx_redeem_script: redeem_script,
 			signature,
 			// #[cfg(taproot)]
 			// partial_signature_with_nonce: None,
@@ -5620,9 +5627,10 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		*/
 
 		// Sign splice funding tx: create our signature on the funding tx
-		let funding_signature = self.holder_signer.sign_splicing_funding_input(&msg.splice_transaction, msg.splice_prev_funding_input_index, self.channel_value_satoshis, &self.secp_ctx)
+		// #SPLICE-SIG
+		let funding_signature = self.holder_signer.sign_splicing_funding_input(&msg.splice_transaction, msg.splice_prev_funding_input_index, self.channel_value_satoshis, &msg.splice_tx_redeem_script, &self.secp_ctx)
 			.map_err(|_| ChannelError::Close("Failed to sign the previous funding input in the new splicing funding tx".to_owned()))?;
-		log_info!(logger, "Created signature for funding tx input, input idx {}  txid {}  value {}  sig {:?}", msg.splice_prev_funding_input_index, msg.splice_transaction.txid(), self.channel_value_satoshis, funding_signature.encode());
+		log_info!(logger, "Created signature for funding tx input / acceptor, input idx {}  txid {}  value {}  sig {:?}", msg.splice_prev_funding_input_index, msg.splice_transaction.txid(), self.channel_value_satoshis, funding_signature.serialize_der().to_hex());
 
 		// Commit to the new channel value (capacity). The increase belongs to them.
 		// TODO: what if the the new splicing TX never locks?
@@ -5729,10 +5737,17 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		*/
 
 		// Update funding TX with signature from acceptor
+		// #SPLICE-SIG
 		let mut funding_transaction_with_sigs = self.funding_transaction.as_ref().unwrap().clone();
-		funding_transaction_with_sigs.input[msg.splice_prev_funding_input_index as usize].witness.push(msg.funding_signature.encode());
+		let mut cp_sig = msg.funding_signature.serialize_der().to_vec();
+		cp_sig.push(EcdsaSighashType::All as u8);
+		funding_transaction_with_sigs.input[msg.splice_prev_funding_input_index as usize].witness.push(cp_sig);
+		log_info!(logger, "Pubkeys used for redeem script: {} {}", &self.get_holder_pubkeys().funding_pubkey, &self.counterparty_funding_pubkey());
+		let redeem_script = make_funding_redeemscript(&self.get_holder_pubkeys().funding_pubkey, self.counterparty_funding_pubkey());
+		funding_transaction_with_sigs.input[msg.splice_prev_funding_input_index as usize].witness.push(redeem_script.into_bytes());
+
 		self.funding_transaction = Some(funding_transaction_with_sigs.clone());
-		log_info!(logger, "Updated splice funding transaction with signature from acceptor; txid {}  txlen {}  sig {}", funding_transaction_with_sigs.txid(), funding_transaction_with_sigs.encode().len(), msg.funding_signature);
+		log_info!(logger, "Updated splice funding transaction with signature from acceptor; txid {}  txlen {}  sig {}  tx {}", funding_transaction_with_sigs.txid(), funding_transaction_with_sigs.encode().len(), msg.funding_signature, encode::serialize_hex(&funding_transaction_with_sigs));
 
 		let funding_script = self.get_funding_redeemscript();
 

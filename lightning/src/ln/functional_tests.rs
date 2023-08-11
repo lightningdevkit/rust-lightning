@@ -284,7 +284,7 @@ fn test_splice_in_simple() {
 	// Check that signed splice funding transaction has been broadcasted
 	assert_eq!(chanmon_cfgs[0].tx_broadcaster.txn_broadcasted.lock().unwrap().len(), 2);
 	let broadcasted_splice_tx = chanmon_cfgs[0].tx_broadcaster.txn_broadcasted.lock().unwrap()[1].clone();
-	assert_eq!(broadcasted_splice_tx.encode().len(), 94+68+65);
+	assert_eq!(broadcasted_splice_tx.encode().len(), 314);
 	assert_eq!(broadcasted_splice_tx.txid(), splice_tx.txid());
 	assert_ne!(broadcasted_splice_tx.encode(), splice_tx.encode());
 

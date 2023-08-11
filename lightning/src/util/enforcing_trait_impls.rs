@@ -18,6 +18,7 @@ use crate::sync::{Mutex, Arc};
 #[cfg(test)] use crate::sync::MutexGuard;
 
 use bitcoin::blockdata::transaction::{Transaction, EcdsaSighashType};
+use bitcoin::blockdata::script::Script;
 use bitcoin::util::sighash;
 
 use bitcoin::secp256k1;
@@ -247,8 +248,8 @@ impl EcdsaChannelSigner for EnforcingSigner {
 		self.inner.sign_channel_announcement_with_funding_key(msg, secp_ctx)
 	}
 
-	fn sign_splicing_funding_input(&self, splicing_tx: &Transaction, splice_prev_funding_input_index: u16, prev_funding_value: u64, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<Signature, ()> {
-		self.inner.sign_splicing_funding_input(splicing_tx, splice_prev_funding_input_index, prev_funding_value, secp_ctx)
+	fn sign_splicing_funding_input(&self, splicing_tx: &Transaction, splice_prev_funding_input_index: u16, prev_funding_value: u64, redeem_script: &Script, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<Signature, ()> {
+		self.inner.sign_splicing_funding_input(splicing_tx, splice_prev_funding_input_index, prev_funding_value, redeem_script, secp_ctx)
 	}
 }
 
