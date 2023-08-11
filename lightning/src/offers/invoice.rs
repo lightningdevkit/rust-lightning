@@ -147,8 +147,7 @@ pub const SIGNATURE_TAG: &'static str = concat!("lightning", "invoice", "signatu
 pub struct InvoiceBuilder<'a, S: SigningPubkeyStrategy> {
 	invreq_bytes: &'a Vec<u8>,
 	invoice: InvoiceContents,
-	keys: Option<KeyPair>,
-	signing_pubkey_strategy: core::marker::PhantomData<S>,
+	signing_pubkey_strategy: S,
 }
 
 /// Indicates how [`Bolt12Invoice::signing_pubkey`] was set.
@@ -164,7 +163,7 @@ pub struct ExplicitSigningPubkey {}
 /// [`Bolt12Invoice::signing_pubkey`] was derived.
 ///
 /// This is not exported to bindings users as builder patterns don't map outside of move semantics.
-pub struct DerivedSigningPubkey {}
+pub struct DerivedSigningPubkey(KeyPair);
 
 impl SigningPubkeyStrategy for ExplicitSigningPubkey {}
 impl SigningPubkeyStrategy for DerivedSigningPubkey {}
@@ -183,7 +182,7 @@ impl<'a> InvoiceBuilder<'a, ExplicitSigningPubkey> {
 			),
 		};
 
-		Self::new(&invoice_request.bytes, contents, None)
+		Self::new(&invoice_request.bytes, contents, ExplicitSigningPubkey {})
 	}
 
 	pub(super) fn for_refund(
@@ -198,7 +197,7 @@ impl<'a> InvoiceBuilder<'a, ExplicitSigningPubkey> {
 			),
 		};
 
-		Self::new(&refund.bytes, contents, None)
+		Self::new(&refund.bytes, contents, ExplicitSigningPubkey {})
 	}
 }
 
@@ -216,7 +215,7 @@ impl<'a> InvoiceBuilder<'a, DerivedSigningPubkey> {
 			),
 		};
 
-		Self::new(&invoice_request.bytes, contents, Some(keys))
+		Self::new(&invoice_request.bytes, contents, DerivedSigningPubkey(keys))
 	}
 
 	pub(super) fn for_refund_using_keys(
@@ -232,7 +231,7 @@ impl<'a> InvoiceBuilder<'a, DerivedSigningPubkey> {
 			),
 		};
 
-		Self::new(&refund.bytes, contents, Some(keys))
+		Self::new(&refund.bytes, contents, DerivedSigningPubkey(keys))
 	}
 }
 
@@ -262,18 +261,13 @@ impl<'a, S: SigningPubkeyStrategy> InvoiceBuilder<'a, S> {
 	}
 
 	fn new(
-		invreq_bytes: &'a Vec<u8>, contents: InvoiceContents, keys: Option<KeyPair>
+		invreq_bytes: &'a Vec<u8>, contents: InvoiceContents, signing_pubkey_strategy: S
 	) -> Result<Self, Bolt12SemanticError> {
 		if contents.fields().payment_paths.is_empty() {
 			return Err(Bolt12SemanticError::MissingPaths);
 		}
 
-		Ok(Self {
-			invreq_bytes,
-			invoice: contents,
-			keys,
-			signing_pubkey_strategy: core::marker::PhantomData,
-		})
+		Ok(Self { invreq_bytes, invoice: contents, signing_pubkey_strategy })
 	}
 
 	/// Sets the [`Bolt12Invoice::relative_expiry`] as seconds since [`Bolt12Invoice::created_at`].
@@ -359,10 +353,11 @@ impl<'a> InvoiceBuilder<'a, DerivedSigningPubkey> {
 			}
 		}
 
-		let InvoiceBuilder { invreq_bytes, invoice, keys, .. } = self;
+		let InvoiceBuilder {
+			invreq_bytes, invoice, signing_pubkey_strategy: DerivedSigningPubkey(keys)
+		} = self;
 		let unsigned_invoice = UnsignedBolt12Invoice::new(invreq_bytes, invoice);
 
-		let keys = keys.unwrap();
 		let invoice = unsigned_invoice
 			.sign::<_, Infallible>(
 				|message| Ok(secp_ctx.sign_schnorr_no_aux_rand(message.as_ref().as_digest(), &keys))
