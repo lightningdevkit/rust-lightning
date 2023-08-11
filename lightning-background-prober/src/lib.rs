@@ -1,47 +1,25 @@
 //! Utilities that take care of running lightning networks payment channel probing as server
-#[macro_use] extern crate lightning;
-extern crate lightning_rapid_gossip_sync;
-extern crate lightning_net_tokio;
 
-use bitcoin::{network, Error};
-use bitcoin::util::taproot::NodeInfo;
-use lightning::chain;
-use lightning::chain::chaininterface::{BroadcasterInterface, FeeEstimator};
-use lightning::chain::chainmonitor::{ChainMonitor, Persist};
-use lightning::ln::PaymentHash;
-use lightning::ln::msgs::LightningError;
-use lightning::sign::{EntropySource, NodeSigner, SignerProvider};
+extern crate lightning_rapid_gossip_sync;
+use async_channel::{Sender, Receiver};
+use bitcoin::secp256k1::PublicKey;
 use lightning::events::{Event, PathFailure};
-#[cfg(feature = "std")]
-use lightning::events::{EventHandler, EventsProvider};
-use lightning::ln::channelmanager::{ChannelManager, PaymentId};
-use lightning::ln::peer_handler::APeerManager;
-use lightning::routing::gossip::{NetworkGraph, P2PGossipSync, NodeId, ReadOnlyNetworkGraph};
+use lightning::routing::gossip::{NetworkGraph, P2PGossipSync, NodeId, ReadOnlyNetworkGraph, NodeInfo, ChannelInfo};
 use lightning::routing::utxo::UtxoLookup;
-use lightning::routing::router::{Router, PaymentParameters, DefaultRouter, RouteParameters, InFlightHtlcs, Route};
-use lightning::routing::scoring::{Score, WriteableScore, ProbabilisticScorer};
+use lightning::routing::router::{PaymentParameters, RouteParameters, InFlightHtlcs, Path, build_route_from_hops};
+use lightning::routing::scoring::{ProbabilisticScorer, ProbabilisticScoringFeeParameters, ProbabilisticScoringDecayParameters, Score, WriteableScore};
 use lightning::util::logger::Logger;
-use lightning::util::persist::Persister;
-#[cfg(feature = "std")]
-use lightning::util::wakers::Sleeper;
 use lightning_rapid_gossip_sync::RapidGossipSync;
-use tokio::runtime::Handle;
+use rand::Rng;
 use tokio::sync::Mutex;
-use tokio::sync::mpsc::{Receiver, Sender, self};
 
 use core::ops::Deref;
 use core::time::Duration;
-
+use std::cell::{RefCell, RefMut};
+use std::cmp::min;
 use std::collections::HashMap;
-use std::{path, clone};
-#[cfg(feature = "std")]
 use std::sync::Arc;
-#[cfg(feature = "std")]
-use core::sync::atomic::{AtomicBool, Ordering};
-#[cfg(feature = "std")]
-use std::thread::{self, JoinHandle};
-#[cfg(feature = "std")]
-use std::time::Instant;
+
 
 /// Utilities that take care of running lightning networks payment channel probing as server 
 ///
@@ -166,114 +144,179 @@ fn handle_network_graph_update<L: Deref>(
 	}
 }
 
-//***************************************************************************************************************************** *
+//******************************************************************************************************************************
 
 const NUM_THREADS: u64 = 1;
 const NUM_INFLIGHT_PROBES: u64 = 1;
-const NUM_MPSC_CHANNEL_CAPACITY: u64 = 1;
+const NUM_CHANNEL_CAPACITY: u64 = 1;
 const PROBE_TIMEOUT: Duration = Duration::from_secs(30);
 const PROBE_FREQUENCY: Duration = Duration::from_secs(60);
 const PROBE_FREQUENCY_JITTER: Duration = Duration::from_secs(10);
 
 const FINAL_VALUE_MSAT: u64 = 1000;
-const OUR_NODE_PUBKEY : &bitcoin::secp256k1::PublicKey; // Need to be defined by user (maybe from config file)
+const OUR_NODE_PUBKEY : bitcoin::secp256k1::PublicKey; // Need to be defined by user (maybe from config file)
 
-
-//will only return node with maximum number of channels (has no implementation for state restoration)
-//Final implementation will have NetworkGraph as input, it will be cloned and then pasrsed for sorting nodes with max number of channels
-fn node_selector(network_graph: &ReadOnlyNetworkGraph,) -> NodeId {
-    let mut temp: u64 = 0;
-	let mut node_id: NodeId;
+// Will return a Vec<(NodeId,NodeInfo)> of nodes sorted by Number Of Channels
+fn network_graph_sorted_with_respect_to_num_channels(network_graph: &ReadOnlyNetworkGraph) -> Vec<(NodeId,NodeInfo)> {
 
 	let node_iter = network_graph.nodes().unordered_iter();
-	for i in node_iter{
-		let node_info = Deref::deref(&i.1);
-		let channels = node_info.channels; 
-		let num_channels = channels.len();
-		if temp < num_channels.try_into().unwrap(){
-			temp = num_channels.try_into().unwrap();
-			node_id = *i.0;
-		}
+	let mut state: Vec<(NodeId,NodeInfo)> = Vec::new();
+	
+	for i in node_iter {
+		let channel = Deref::deref(&i.1).channels.len();
+		state.push((*i.0,*i.1));
 	}
-	let node = node_id.clone();
-	return node;
+	state.sort_by(|(node_id_a, node_info_a), (node_id_b, node_info_b)| {
+        node_info_b.channels.len().cmp(&node_info_a.channels.len())
+    });
+
+	return state;
 }
 
-fn node_state_handler() -> Arc<Mutex<HashMap<NodeId, ProbePersister>>> {
-    let map: Arc<Mutex<HashMap<NodeId, ProbePersister>>> = Arc::new(Mutex::new(HashMap::new()));
-    map
+// Will return top_one_percent_nodes of nodes sorted by Number Of Channels
+fn top_one_percent_nodes (network_graph: &ReadOnlyNetworkGraph,sorted_node: Vec<(NodeId,NodeInfo)> ) -> Vec<(NodeId,NodeInfo)> {
+
+	let mut temp: u64 = 0;
+	let mut temp_index: Vec<(NodeId,NodeInfo)> = Vec::new();
+	let one_percent = (sorted_node.len()/100) as i64;
+
+	for i in 0..one_percent {
+		temp_index.push(sorted_node[i as usize]);
+	}
+	return temp_index;
 }
 
-fn channel_state_handler() -> Arc<Mutex<HashMap<NodeId, ChannelPersister>>> {
-    let map: Arc<Mutex<HashMap<NodeId, ChannelPersister>>> = Arc::new(Mutex::new(HashMap::new()));
-    map
-}
-struct NodePersister {
-	node_info: NodeInfo,
-	liquidiy: (u64, u64), // estimated liquidity (lower, higher)
-	value : HashMap<NodeId, Vec<EventPersister>>
+//Random seed generator
+fn generate_random_seed_bytes () -> [u8; 32] {
+    let mut rng = rand::thread_rng();
+    let mut seed_bytes: [u8; 32] = [0; 32];
+    rng.fill(&mut seed_bytes);
+    return seed_bytes;
 }
 
-struct EventPersister {
-	event:Event,
-	value:u64
+//Random final_cltv_expiry_delta generator
+fn random_final_cltv_expiry_delta_generator () -> u32 {
+	let mut rng = rand::thread_rng();
+    let random_number: u32 = rng.gen();
+	return random_number;
 }
 
-struct ChannelPersister {
-	channel_info: u64, //ssid or channel id
-	value : HashMap<u64, Vec<u64>>
+//It will use DefaultRouter to find a path to target_pubkey
+fn initial_path_builder (network_graph: &NetworkGraph<L>, target_pubkey: PublicKey, final_value_mast :u64 ) -> Path {
+
+	let payment_params = PaymentParameters::from_node_id(target_pubkey,random_final_cltv_expiry_delta_generator ());
+	let route_params = RouteParameters{
+		payment_params: payment_params,
+		final_value_msat: final_value_mast};
+	
+	let logger = lightning::util::test_utils::TestLogger::new();
+
+	let params = ProbabilisticScoringFeeParameters::default();
+	let decay_params = ProbabilisticScoringDecayParameters::default();
+	let scorer = ProbabilisticScorer::new(decay_params, &network_graph, &logger);
+	let scorer_param:ScoreParams;
+	
+	let random_seed_bytes: [u8; 32] = generate_random_seed_bytes();
+	
+	let router = lightning::routing::router::DefaultRouter::new(network_graph,logger,random_seed_bytes,scorer,scorer_param);
+	let route = router.find_route(&OUR_NODE_PUBKEY, &route_params, &InFlightHtlcs::new(), None);
+	let path = route.unwrap().paths[0].clone();
+	return path;
+} 
+
+//Will convert Path into Box<[bitcoin::secp256k1::PublicKey]>
+fn path_parser (path: Path) -> Box<[bitcoin::secp256k1::PublicKey]> {
+	let vec_pubkeys = path.hops.into_iter().map(|hop| hop.pubkey).collect::<Vec<bitcoin::secp256k1::PublicKey>>();
+	let publickey: Box<[bitcoin::secp256k1::PublicKey]> = vec_pubkeys.into_boxed_slice();
+
+	return publickey;
+}	
+
+//Will return a path using build_route_from_hops
+fn path_builder_for_probe (hops: Box<[bitcoin::secp256k1::PublicKey]>, network_graph: &NetworkGraph<L>, target_pubkey: PublicKey, final_value_mast :u64) -> Path {
+
+	let payment_params = PaymentParameters::from_node_id(target_pubkey,random_final_cltv_expiry_delta_generator ());
+	let route_params = RouteParameters{
+		payment_params: payment_params,
+		final_value_msat: final_value_mast};
+	
+	let logger = lightning::util::test_utils::TestLogger::new();
+	let random_seed_bytes: [u8; 32] = generate_random_seed_bytes();
+
+	let route = build_route_from_hops(&OUR_NODE_PUBKEY, &hops, &route_params, network_graph, &logger, &random_seed_bytes);
+	
+	return route.unwrap().paths[0].clone();
 }
 
-// will return route parameters for send_probe
-pub fn probe_param( network_graph: &ReadOnlyNetworkGraph) -> Result<Route, LightningError> {
-	// will not call node_selector directly, else it will be handled by some form of data structure (maybe)
-	let target_pubkey = node_selector(network_graph).as_pubkey().unwrap();
-	let param = PaymentParameters::from_node_id(target_pubkey,100);
-	let route_param = RouteParameters{
-		payment_params: param,
-		final_value_msat: FINAL_VALUE_MSAT,};
-	let inflight_htlc = InFlightHtlcs::new();
-	let route  = Router::find_route(&self, OUR_NODE_PUBKEY, &route_param, None, &inflight_htlc);
-	return route;
+//Will return Sorted Vec of channel_capacity in given Path 
+fn sorted_channel_liquidity_in_path(network_graph:ReadOnlyNetworkGraph, path: Path) -> Vec<Option<u64>> {
+
+	let mut vec: Vec<Option<u64>> = Vec::new();
+	let hops = path.hops;
+		for i in hops {
+			let scid = i.short_channel_id;
+			let liquidity = network_graph.channel(scid).unwrap().capacity_sats;
+			vec.push(liquidity);
+		}
+
+		vec.sort_by(|a, b| {
+			match (a, b) {
+				(Some(x), Some(y)) => x.cmp(y),
+				(None, Some(_)) => std::cmp::Ordering::Greater,
+				(Some(_), None) => std::cmp::Ordering::Less,
+				(None, None) => std::cmp::Ordering::Equal,
+			}
+		});
+	
+	return vec;
 }
 
-pub fn send () -> (PaymentHash, PaymentId) {
-	let route = probe_param().unwrap();
-	let path = route.paths[0];
-	let mut probe_return = ChannelManager::send_probe(self, path).unwrap();
-	return probe_return;
+//Will return Sorted Vec of htlc_max in given Path
+fn sorted_htlc_max_in_path (path: Path, channel_info: ChannelInfo) -> Vec<u64> {
+	let mut htlcs_max:Vec<u64> = Vec::new();
+	for i in path.hops {
+		let nodeid = NodeId::from_pubkey(&i.pubkey);
+		let htlc = channel_info.as_directed_to(&nodeid).unwrap().0.htlc_maximum_msat();
+		htlcs_max.push(htlc);
+	}
+	htlcs_max.sort();
+	return htlcs_max;
 }
 
-
-macro_rules! run_body {
-    ($body:block) => {{
-        let mut handles = Vec::new();
-        let mut probe_return_values = Vec::new();
-
-        for _ in 0..NUM_THREADS {
-            let path = $path.clone();
-            let (tx, rx) = tokio::sync::oneshot::channel();
-
-            let handle = tokio::spawn(async move {
-                let probe_return = send_probe(path).await;
-                let _ = tx.send(probe_return);
-                $body
-            });
-            handles.push(handle);
-
-            let probe_return = rx.await.unwrap();
-            probe_return_values.push(probe_return);
-        }
-
-        for handle in handles {
-            handle.await.unwrap();
-        }
-
-        probe_return_values
-    }};
+//Main Probing Persistent Function
+fn value_map () -> Arc<Mutex<HashMap<Path,Vec<(Option<bool>,u64)>>>> {
+	let value_map: Arc<Mutex<HashMap<Path,Vec<(Option<bool>,u64)>>>> = Arc::new(Mutex::new(HashMap::new()));
+	return value_map;
 }
 
-fn event_handler() -> () {
+//Value selector for probing (Uses binary search method)
+fn value_selector (path: Path, channel_info: ChannelInfo, network_graph:ReadOnlyNetworkGraph, mut path_list:HashMap<Path,Vec<(Option<bool>,u64)>>, htlc_list: Vec<u64>, liquidity_list: Vec<Option<u64>>) -> u64 {
+	let temp = path_list.get(&path);
+	match temp {
+		Some(x) => {
+			let len = x.len();
+			if x[len-1].0.unwrap() == true {
+				return 2*(x[len-1].1);
+			}
+			else {
+				return (0.5*(x[len-1].1 as f64)).floor() as u64;
+			}
+		}
+	
+		None => {
+			let v = min(htlc_list[0], liquidity_list[0].unwrap());
+			let mut vec:Vec<(Option<bool>,u64)> = Vec::new();
+			vec.push((None,v));
+			path_list.insert(path, vec);
+			return min(htlc_list[0], liquidity_list[0].unwrap());}
+	}
+}
+
+//Event Handler for probing
+fn event_handler<'a, S: 'static + Deref<Target = SC> + Send + Sync, SC: 'a + WriteableScore<'a>>(
+	scorer: &'a S, event: &Event
+) -> bool {
+	let mut score = scorer.lock();
 	match event {
 		Event::ProbeSuccessful { path, .. } => {
 			score.probe_successful(path);
@@ -282,30 +325,18 @@ fn event_handler() -> () {
 			score.probe_failed(path, *scid);
 		},
 		_ => return false,
+	}
+	true
 }
 
-use tokio::task;
-pub fn channel<Route>(capacity: NUM_MPSC_CHANNEL_CAPACITY) -> (mpsc::Sender<Route>, mpsc::Receiver<Route>)
-where
-    Route: Send + 'static,{
-    let (tx, rx) = mpsc::channel(capacity);
-
-    task::spawn(async move {
-        while let Some(Route) = rx.recv().await {
-			//how to handle return values (need some write type)
-            let x = send();
-			//some persister return value of probe (PaymentHash, PaymentId)
-        }
-    });
-    (tx, rx)
+//async_channel for Path
+fn initial_path_async_channel (size: usize) -> (Sender<Path>, Receiver<Path>) {
+	let (tx, rx) = async_channel::bounded(size);
+	return (tx, rx);
 }
 
-//implementation for sending probe data into the channel 
-pub async fn send_message<Route>(sender: &mpsc::Sender<Route>, message: Route)
-where
-    Route: Send + 'static,
-{
-    if sender.send(message).await.is_err() {
-        //logging error
-    }
+//async_channel for Final Path for send_probe method
+fn final_async_channel (size: usize) -> (Sender<Path>, Receiver<Path>) {
+	let (tx, rx) = async_channel::bounded(size);
+	return (tx, rx);
 }
