@@ -385,224 +385,233 @@ pub(super) fn build_first_hop_failure_packet(shared_secret: &[u8], failure_type:
 /// Returns update, a boolean indicating that the payment itself failed, the short channel id of
 /// the responsible channel, and the error code.
 #[inline]
-pub(super) fn process_onion_failure<T: secp256k1::Signing, L: Deref>(secp_ctx: &Secp256k1<T>, logger: &L, htlc_source: &HTLCSource, mut packet_decrypted: Vec<u8>) -> (Option<NetworkUpdate>, Option<u64>, bool, Option<u16>, Option<Vec<u8>>) where L::Target: Logger {
-	if let &HTLCSource::OutboundRoute { ref path, ref session_priv, ref first_hop_htlc_msat, .. } = htlc_source {
-		let mut res = None;
-		let mut htlc_msat = *first_hop_htlc_msat;
-		let mut error_code_ret = None;
-		let mut error_packet_ret = None;
-		let mut is_from_final_node = false;
+pub(super) fn process_onion_failure<T: secp256k1::Signing, L: Deref>(
+	secp_ctx: &Secp256k1<T>, logger: &L, htlc_source: &HTLCSource, mut packet_decrypted: Vec<u8>
+) -> (Option<NetworkUpdate>, Option<u64>, bool, Option<u16>, Option<Vec<u8>>)
+where L::Target: Logger {
+	let (path, session_priv, first_hop_htlc_msat) = if let &HTLCSource::OutboundRoute {
+		ref path, ref session_priv, ref first_hop_htlc_msat, ..
+	} = htlc_source {
+		(path, session_priv, first_hop_htlc_msat)
+	} else { unreachable!() };
+	let mut res = None;
+	let mut htlc_msat = *first_hop_htlc_msat;
+	let mut error_code_ret = None;
+	let mut error_packet_ret = None;
+	let mut is_from_final_node = false;
 
-		// Handle packed channel/node updates for passing back for the route handler
-		construct_onion_keys_callback(secp_ctx, &path.hops, session_priv, |shared_secret, _, _, route_hop, route_hop_idx| {
-			if res.is_some() { return; }
+	// Handle packed channel/node updates for passing back for the route handler
+	construct_onion_keys_callback(secp_ctx, &path.hops, session_priv, |shared_secret, _, _, route_hop, route_hop_idx| {
+		if res.is_some() { return; }
 
-			let amt_to_forward = htlc_msat - route_hop.fee_msat;
-			htlc_msat = amt_to_forward;
+		let amt_to_forward = htlc_msat - route_hop.fee_msat;
+		htlc_msat = amt_to_forward;
 
-			let ammag = gen_ammag_from_shared_secret(shared_secret.as_ref());
+		let ammag = gen_ammag_from_shared_secret(shared_secret.as_ref());
 
-			let mut decryption_tmp = Vec::with_capacity(packet_decrypted.len());
-			decryption_tmp.resize(packet_decrypted.len(), 0);
-			let mut chacha = ChaCha20::new(&ammag, &[0u8; 8]);
-			chacha.process(&packet_decrypted, &mut decryption_tmp[..]);
-			packet_decrypted = decryption_tmp;
+		let mut decryption_tmp = Vec::with_capacity(packet_decrypted.len());
+		decryption_tmp.resize(packet_decrypted.len(), 0);
+		let mut chacha = ChaCha20::new(&ammag, &[0u8; 8]);
+		chacha.process(&packet_decrypted, &mut decryption_tmp[..]);
+		packet_decrypted = decryption_tmp;
 
-			// The failing hop includes either the inbound channel to the recipient or the outbound
-			// channel from the current hop (i.e., the next hop's inbound channel).
-			is_from_final_node = route_hop_idx + 1 == path.hops.len();
-			let failing_route_hop = if is_from_final_node { route_hop } else { &path.hops[route_hop_idx + 1] };
+		// The failing hop includes either the inbound channel to the recipient or the outbound
+		// channel from the current hop (i.e., the next hop's inbound channel).
+		is_from_final_node = route_hop_idx + 1 == path.hops.len();
+		let failing_route_hop = if is_from_final_node { route_hop } else { &path.hops[route_hop_idx + 1] };
 
-			if let Ok(err_packet) = msgs::DecodedOnionErrorPacket::read(&mut Cursor::new(&packet_decrypted)) {
-				let um = gen_um_from_shared_secret(shared_secret.as_ref());
-				let mut hmac = HmacEngine::<Sha256>::new(&um);
-				hmac.input(&err_packet.encode()[32..]);
+		let err_packet = match msgs::DecodedOnionErrorPacket::read(&mut Cursor::new(&packet_decrypted)) {
+			Ok(p) => p,
+			Err(_) => return
+		};
+		let um = gen_um_from_shared_secret(shared_secret.as_ref());
+		let mut hmac = HmacEngine::<Sha256>::new(&um);
+		hmac.input(&err_packet.encode()[32..]);
 
-				if fixed_time_eq(&Hmac::from_engine(hmac).into_inner(), &err_packet.hmac) {
-					if let Some(error_code_slice) = err_packet.failuremsg.get(0..2) {
-						const BADONION: u16 = 0x8000;
-						const PERM: u16 = 0x4000;
-						const NODE: u16 = 0x2000;
-						const UPDATE: u16 = 0x1000;
+		if !fixed_time_eq(&Hmac::from_engine(hmac).into_inner(), &err_packet.hmac) { return }
+		let error_code_slice = match err_packet.failuremsg.get(0..2) {
+			Some(s) => s,
+			None => {
+				// Useless packet that we can't use but it passed HMAC, so it
+				// definitely came from the peer in question
+				let network_update = Some(NetworkUpdate::NodeFailure {
+					node_id: route_hop.pubkey,
+					is_permanent: true,
+				});
+				let short_channel_id = Some(route_hop.short_channel_id);
+				res = Some((network_update, short_channel_id, !is_from_final_node));
+				return
+			}
+		};
+		const BADONION: u16 = 0x8000;
+		const PERM: u16 = 0x4000;
+		const NODE: u16 = 0x2000;
+		const UPDATE: u16 = 0x1000;
 
-						let error_code = u16::from_be_bytes(error_code_slice.try_into().expect("len is 2"));
-						error_code_ret = Some(error_code);
-						error_packet_ret = Some(err_packet.failuremsg[2..].to_vec());
+		let error_code = u16::from_be_bytes(error_code_slice.try_into().expect("len is 2"));
+		error_code_ret = Some(error_code);
+		error_packet_ret = Some(err_packet.failuremsg[2..].to_vec());
 
-						let (debug_field, debug_field_size) = errors::get_onion_debug_field(error_code);
+		let (debug_field, debug_field_size) = errors::get_onion_debug_field(error_code);
 
-						// indicate that payment parameter has failed and no need to
-						// update Route object
-						let payment_failed = match error_code & 0xff {
-							15|16|17|18|19|23 => true,
-							_ => false,
-						} && is_from_final_node; // PERM bit observed below even if this error is from the intermediate nodes
+		// indicate that payment parameter has failed and no need to
+		// update Route object
+		let payment_failed = match error_code & 0xff {
+			15|16|17|18|19|23 => true,
+			_ => false,
+		} && is_from_final_node; // PERM bit observed below even if this error is from the intermediate nodes
 
-						let mut network_update = None;
-						let mut short_channel_id = None;
+		let mut network_update = None;
+		let mut short_channel_id = None;
 
-						if error_code & BADONION == BADONION {
-							// If the error code has the BADONION bit set, always blame the channel
-							// from the node "originating" the error to its next hop. The
-							// "originator" is ultimately actually claiming that its counterparty
-							// is the one who is failing the HTLC.
-							// If the "originator" here isn't lying we should really mark the
-							// next-hop node as failed entirely, but we can't be confident in that,
-							// as it would allow any node to get us to completely ban one of its
-							// counterparties. Instead, we simply remove the channel in question.
-							network_update = Some(NetworkUpdate::ChannelFailure {
-								short_channel_id: failing_route_hop.short_channel_id,
-								is_permanent: true,
-							});
-						} else if error_code & NODE == NODE {
-							let is_permanent = error_code & PERM == PERM;
-							network_update = Some(NetworkUpdate::NodeFailure { node_id: route_hop.pubkey, is_permanent });
-							short_channel_id = Some(route_hop.short_channel_id);
-						} else if error_code & PERM == PERM {
-							if !payment_failed {
-								network_update = Some(NetworkUpdate::ChannelFailure {
-									short_channel_id: failing_route_hop.short_channel_id,
-									is_permanent: true,
-								});
-								short_channel_id = Some(failing_route_hop.short_channel_id);
-							}
-						} else if error_code & UPDATE == UPDATE {
-							if let Some(update_len_slice) = err_packet.failuremsg.get(debug_field_size+2..debug_field_size+4) {
-								let update_len = u16::from_be_bytes(update_len_slice.try_into().expect("len is 2")) as usize;
-								if let Some(mut update_slice) = err_packet.failuremsg.get(debug_field_size + 4..debug_field_size + 4 + update_len) {
-									// Historically, the BOLTs were unclear if the message type
-									// bytes should be included here or not. The BOLTs have now
-									// been updated to indicate that they *are* included, but many
-									// nodes still send messages without the type bytes, so we
-									// support both here.
-									// TODO: Switch to hard require the type prefix, as the current
-									// permissiveness introduces the (although small) possibility
-									// that we fail to decode legitimate channel updates that
-									// happen to start with ChannelUpdate::TYPE, i.e., [0x01, 0x02].
-									if update_slice.len() > 2 && update_slice[0..2] == msgs::ChannelUpdate::TYPE.to_be_bytes() {
-										update_slice = &update_slice[2..];
-									} else {
-										log_trace!(logger, "Failure provided features a channel update without type prefix. Deprecated, but allowing for now.");
-									}
-									let update_opt = msgs::ChannelUpdate::read(&mut Cursor::new(&update_slice));
-									if update_opt.is_ok() || update_slice.is_empty() {
-										// if channel_update should NOT have caused the failure:
-										// MAY treat the channel_update as invalid.
-										let is_chan_update_invalid = match error_code & 0xff {
-											7 => false,
-											11 => update_opt.is_ok() &&
-												amt_to_forward >
-													update_opt.as_ref().unwrap().contents.htlc_minimum_msat,
-											12 => update_opt.is_ok() && amt_to_forward
-												.checked_mul(update_opt.as_ref().unwrap()
-													.contents.fee_proportional_millionths as u64)
-												.map(|prop_fee| prop_fee / 1_000_000)
-												.and_then(|prop_fee| prop_fee.checked_add(
-													update_opt.as_ref().unwrap().contents.fee_base_msat as u64))
-												.map(|fee_msats| route_hop.fee_msat >= fee_msats)
-												.unwrap_or(false),
-											13 => update_opt.is_ok() &&
-												route_hop.cltv_expiry_delta as u16 >=
-													update_opt.as_ref().unwrap().contents.cltv_expiry_delta,
-											14 => false, // expiry_too_soon; always valid?
-											20 => update_opt.as_ref().unwrap().contents.flags & 2 == 0,
-											_ => false, // unknown error code; take channel_update as valid
-										};
-										if is_chan_update_invalid {
-											// This probably indicates the node which forwarded
-											// to the node in question corrupted something.
-											network_update = Some(NetworkUpdate::ChannelFailure {
-												short_channel_id: route_hop.short_channel_id,
-												is_permanent: true,
-											});
-										} else {
-											if let Ok(chan_update) = update_opt {
-												// Make sure the ChannelUpdate contains the expected
-												// short channel id.
-												if failing_route_hop.short_channel_id == chan_update.contents.short_channel_id {
-													short_channel_id = Some(failing_route_hop.short_channel_id);
-												} else {
-													log_info!(logger, "Node provided a channel_update for which it was not authoritative, ignoring.");
-												}
-												network_update = Some(NetworkUpdate::ChannelUpdateMessage {
-													msg: chan_update,
-												})
-											} else {
-												network_update = Some(NetworkUpdate::ChannelFailure {
-													short_channel_id: route_hop.short_channel_id,
-													is_permanent: false,
-												});
-											}
-										};
-									} else {
-										// If the channel_update had a non-zero length (i.e. was
-										// present) but we couldn't read it, treat it as a total
-										// node failure.
-										log_info!(logger,
-											"Failed to read a channel_update of len {} in an onion",
-											update_slice.len());
-									}
-								}
-							}
-							if network_update.is_none() {
-								// They provided an UPDATE which was obviously bogus, not worth
-								// trying to relay through them anymore.
-								network_update = Some(NetworkUpdate::NodeFailure {
-									node_id: route_hop.pubkey,
-									is_permanent: true,
-								});
-							}
-							if short_channel_id.is_none() {
-								short_channel_id = Some(route_hop.short_channel_id);
-							}
-						} else if payment_failed {
-							// Only blame the hop when a value in the HTLC doesn't match the
-							// corresponding value in the onion.
-							short_channel_id = match error_code & 0xff {
-								18|19 => Some(route_hop.short_channel_id),
-								_ => None,
-							};
-						} else {
-							// We can't understand their error messages and they failed to
-							// forward...they probably can't understand our forwards so its
-							// really not worth trying any further.
-							network_update = Some(NetworkUpdate::NodeFailure {
-								node_id: route_hop.pubkey,
-								is_permanent: true,
-							});
-							short_channel_id = Some(route_hop.short_channel_id);
-						}
-
-						res = Some((network_update, short_channel_id, !(error_code & PERM == PERM && is_from_final_node)));
-
-						let (description, title) = errors::get_onion_error_description(error_code);
-						if debug_field_size > 0 && err_packet.failuremsg.len() >= 4 + debug_field_size {
-							log_info!(logger, "Onion Error[from {}: {}({:#x}) {}({})] {}", route_hop.pubkey, title, error_code, debug_field, log_bytes!(&err_packet.failuremsg[4..4+debug_field_size]), description);
-						}
-						else {
-							log_info!(logger, "Onion Error[from {}: {}({:#x})] {}", route_hop.pubkey, title, error_code, description);
-						}
+		if error_code & BADONION == BADONION {
+			// If the error code has the BADONION bit set, always blame the channel
+			// from the node "originating" the error to its next hop. The
+			// "originator" is ultimately actually claiming that its counterparty
+			// is the one who is failing the HTLC.
+			// If the "originator" here isn't lying we should really mark the
+			// next-hop node as failed entirely, but we can't be confident in that,
+			// as it would allow any node to get us to completely ban one of its
+			// counterparties. Instead, we simply remove the channel in question.
+			network_update = Some(NetworkUpdate::ChannelFailure {
+				short_channel_id: failing_route_hop.short_channel_id,
+				is_permanent: true,
+			});
+		} else if error_code & NODE == NODE {
+			let is_permanent = error_code & PERM == PERM;
+			network_update = Some(NetworkUpdate::NodeFailure { node_id: route_hop.pubkey, is_permanent });
+			short_channel_id = Some(route_hop.short_channel_id);
+		} else if error_code & PERM == PERM {
+			if !payment_failed {
+				network_update = Some(NetworkUpdate::ChannelFailure {
+					short_channel_id: failing_route_hop.short_channel_id,
+					is_permanent: true,
+				});
+				short_channel_id = Some(failing_route_hop.short_channel_id);
+			}
+		} else if error_code & UPDATE == UPDATE {
+			if let Some(update_len_slice) = err_packet.failuremsg.get(debug_field_size+2..debug_field_size+4) {
+				let update_len = u16::from_be_bytes(update_len_slice.try_into().expect("len is 2")) as usize;
+				if let Some(mut update_slice) = err_packet.failuremsg.get(debug_field_size + 4..debug_field_size + 4 + update_len) {
+					// Historically, the BOLTs were unclear if the message type
+					// bytes should be included here or not. The BOLTs have now
+					// been updated to indicate that they *are* included, but many
+					// nodes still send messages without the type bytes, so we
+					// support both here.
+					// TODO: Switch to hard require the type prefix, as the current
+					// permissiveness introduces the (although small) possibility
+					// that we fail to decode legitimate channel updates that
+					// happen to start with ChannelUpdate::TYPE, i.e., [0x01, 0x02].
+					if update_slice.len() > 2 && update_slice[0..2] == msgs::ChannelUpdate::TYPE.to_be_bytes() {
+						update_slice = &update_slice[2..];
 					} else {
-						// Useless packet that we can't use but it passed HMAC, so it
-						// definitely came from the peer in question
-						let network_update = Some(NetworkUpdate::NodeFailure {
-							node_id: route_hop.pubkey,
-							is_permanent: true,
-						});
-						let short_channel_id = Some(route_hop.short_channel_id);
-						res = Some((network_update, short_channel_id, !is_from_final_node));
+						log_trace!(logger, "Failure provided features a channel update without type prefix. Deprecated, but allowing for now.");
+					}
+					let update_opt = msgs::ChannelUpdate::read(&mut Cursor::new(&update_slice));
+					if update_opt.is_ok() || update_slice.is_empty() {
+						// if channel_update should NOT have caused the failure:
+						// MAY treat the channel_update as invalid.
+						let is_chan_update_invalid = match error_code & 0xff {
+							7 => false,
+							11 => update_opt.is_ok() &&
+								amt_to_forward >
+									update_opt.as_ref().unwrap().contents.htlc_minimum_msat,
+							12 => update_opt.is_ok() && amt_to_forward
+								.checked_mul(update_opt.as_ref().unwrap()
+									.contents.fee_proportional_millionths as u64)
+								.map(|prop_fee| prop_fee / 1_000_000)
+								.and_then(|prop_fee| prop_fee.checked_add(
+									update_opt.as_ref().unwrap().contents.fee_base_msat as u64))
+								.map(|fee_msats| route_hop.fee_msat >= fee_msats)
+								.unwrap_or(false),
+							13 => update_opt.is_ok() &&
+								route_hop.cltv_expiry_delta as u16 >=
+									update_opt.as_ref().unwrap().contents.cltv_expiry_delta,
+							14 => false, // expiry_too_soon; always valid?
+							20 => update_opt.as_ref().unwrap().contents.flags & 2 == 0,
+							_ => false, // unknown error code; take channel_update as valid
+						};
+						if is_chan_update_invalid {
+							// This probably indicates the node which forwarded
+							// to the node in question corrupted something.
+							network_update = Some(NetworkUpdate::ChannelFailure {
+								short_channel_id: route_hop.short_channel_id,
+								is_permanent: true,
+							});
+						} else {
+							if let Ok(chan_update) = update_opt {
+								// Make sure the ChannelUpdate contains the expected
+								// short channel id.
+								if failing_route_hop.short_channel_id == chan_update.contents.short_channel_id {
+									short_channel_id = Some(failing_route_hop.short_channel_id);
+								} else {
+									log_info!(logger, "Node provided a channel_update for which it was not authoritative, ignoring.");
+								}
+								network_update = Some(NetworkUpdate::ChannelUpdateMessage {
+									msg: chan_update,
+								})
+							} else {
+								network_update = Some(NetworkUpdate::ChannelFailure {
+									short_channel_id: route_hop.short_channel_id,
+									is_permanent: false,
+								});
+							}
+						};
+					} else {
+						// If the channel_update had a non-zero length (i.e. was
+						// present) but we couldn't read it, treat it as a total
+						// node failure.
+						log_info!(logger,
+							"Failed to read a channel_update of len {} in an onion",
+							update_slice.len());
 					}
 				}
 			}
-		}).expect("Route that we sent via spontaneously grew invalid keys in the middle of it?");
-		if let Some((channel_update, short_channel_id, payment_retryable)) = res {
-			(channel_update, short_channel_id, payment_retryable, error_code_ret, error_packet_ret)
+			if network_update.is_none() {
+				// They provided an UPDATE which was obviously bogus, not worth
+				// trying to relay through them anymore.
+				network_update = Some(NetworkUpdate::NodeFailure {
+					node_id: route_hop.pubkey,
+					is_permanent: true,
+				});
+			}
+			if short_channel_id.is_none() {
+				short_channel_id = Some(route_hop.short_channel_id);
+			}
+		} else if payment_failed {
+			// Only blame the hop when a value in the HTLC doesn't match the
+			// corresponding value in the onion.
+			short_channel_id = match error_code & 0xff {
+				18|19 => Some(route_hop.short_channel_id),
+				_ => None,
+			};
 		} else {
-			// only not set either packet unparseable or hmac does not match with any
-			// payment not retryable only when garbage is from the final node
-			(None, None, !is_from_final_node, None, None)
+			// We can't understand their error messages and they failed to
+			// forward...they probably can't understand our forwards so its
+			// really not worth trying any further.
+			network_update = Some(NetworkUpdate::NodeFailure {
+				node_id: route_hop.pubkey,
+				is_permanent: true,
+			});
+			short_channel_id = Some(route_hop.short_channel_id);
 		}
-	} else { unreachable!(); }
+
+		res = Some((network_update, short_channel_id, !(error_code & PERM == PERM && is_from_final_node)));
+
+		let (description, title) = errors::get_onion_error_description(error_code);
+		if debug_field_size > 0 && err_packet.failuremsg.len() >= 4 + debug_field_size {
+			log_info!(logger, "Onion Error[from {}: {}({:#x}) {}({})] {}", route_hop.pubkey, title, error_code, debug_field, log_bytes!(&err_packet.failuremsg[4..4+debug_field_size]), description);
+		} else {
+			log_info!(logger, "Onion Error[from {}: {}({:#x})] {}", route_hop.pubkey, title, error_code, description);
+		}
+	}).expect("Route that we sent via spontaneously grew invalid keys in the middle of it?");
+	if let Some((channel_update, short_channel_id, payment_retryable)) = res {
+		(channel_update, short_channel_id, payment_retryable, error_code_ret, error_packet_ret)
+	} else {
+		// only not set either packet unparseable or hmac does not match with any
+		// payment not retryable only when garbage is from the final node
+		(None, None, !is_from_final_node, None, None)
+	}
 }
 
 #[derive(Clone)] // See Channel::revoke_and_ack for why, tl;dr: Rust bug
