@@ -415,8 +415,8 @@ where L::Target: Logger {
 		chacha.process(&packet_decrypted, &mut decryption_tmp[..]);
 		packet_decrypted = decryption_tmp;
 
-		// The failing hop includes either the inbound channel to the recipient or the outbound
-		// channel from the current hop (i.e., the next hop's inbound channel).
+		// The failing hop includes either the inbound channel to the recipient or the outbound channel
+		// from the current hop (i.e., the next hop's inbound channel).
 		is_from_final_node = route_hop_idx + 1 == path.hops.len();
 		let failing_route_hop = if is_from_final_node { route_hop } else { &path.hops[route_hop_idx + 1] };
 
@@ -432,8 +432,8 @@ where L::Target: Logger {
 		let error_code_slice = match err_packet.failuremsg.get(0..2) {
 			Some(s) => s,
 			None => {
-				// Useless packet that we can't use but it passed HMAC, so it
-				// definitely came from the peer in question
+				// Useless packet that we can't use but it passed HMAC, so it definitely came from the peer
+				// in question
 				let network_update = Some(NetworkUpdate::NodeFailure {
 					node_id: route_hop.pubkey,
 					is_permanent: true,
@@ -454,8 +454,7 @@ where L::Target: Logger {
 
 		let (debug_field, debug_field_size) = errors::get_onion_debug_field(error_code);
 
-		// indicate that payment parameter has failed and no need to
-		// update Route object
+		// indicate that payment parameter has failed and no need to update Route object
 		let payment_failed = match error_code & 0xff {
 			15|16|17|18|19|23 => true,
 			_ => false,
@@ -465,14 +464,13 @@ where L::Target: Logger {
 		let mut short_channel_id = None;
 
 		if error_code & BADONION == BADONION {
-			// If the error code has the BADONION bit set, always blame the channel
-			// from the node "originating" the error to its next hop. The
-			// "originator" is ultimately actually claiming that its counterparty
-			// is the one who is failing the HTLC.
-			// If the "originator" here isn't lying we should really mark the
-			// next-hop node as failed entirely, but we can't be confident in that,
-			// as it would allow any node to get us to completely ban one of its
-			// counterparties. Instead, we simply remove the channel in question.
+			// If the error code has the BADONION bit set, always blame the channel from the node
+			// "originating" the error to its next hop. The "originator" is ultimately actually claiming
+			// that its counterparty is the one who is failing the HTLC.
+			// If the "originator" here isn't lying we should really mark the next-hop node as failed
+			// entirely, but we can't be confident in that, as it would allow any node to get us to
+			// completely ban one of its counterparties. Instead, we simply remove the channel in
+			// question.
 			network_update = Some(NetworkUpdate::ChannelFailure {
 				short_channel_id: failing_route_hop.short_channel_id,
 				is_permanent: true,
@@ -579,16 +577,15 @@ where L::Target: Logger {
 				short_channel_id = Some(route_hop.short_channel_id);
 			}
 		} else if payment_failed {
-			// Only blame the hop when a value in the HTLC doesn't match the
-			// corresponding value in the onion.
+			// Only blame the hop when a value in the HTLC doesn't match the corresponding value in the
+			// onion.
 			short_channel_id = match error_code & 0xff {
 				18|19 => Some(route_hop.short_channel_id),
 				_ => None,
 			};
 		} else {
-			// We can't understand their error messages and they failed to
-			// forward...they probably can't understand our forwards so its
-			// really not worth trying any further.
+			// We can't understand their error messages and they failed to forward...they probably can't
+			// understand our forwards so it's really not worth trying any further.
 			network_update = Some(NetworkUpdate::NodeFailure {
 				node_id: route_hop.pubkey,
 				is_permanent: true,
