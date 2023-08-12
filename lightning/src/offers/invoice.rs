@@ -370,16 +370,16 @@ impl<'a> InvoiceBuilder<'a, DerivedSigningPubkey> {
 /// A semantically valid [`Bolt12Invoice`] that hasn't been signed.
 pub struct UnsignedBolt12Invoice {
 	bytes: Vec<u8>,
-	invoice: InvoiceContents,
+	contents: InvoiceContents,
 	tagged_hash: TaggedHash,
 }
 
 impl UnsignedBolt12Invoice {
-	fn new(invreq_bytes: &[u8], invoice: InvoiceContents) -> Self {
+	fn new(invreq_bytes: &[u8], contents: InvoiceContents) -> Self {
 		// Use the invoice_request bytes instead of the invoice_request TLV stream as the latter may
 		// have contained unknown TLV records, which are not stored in `InvoiceRequestContents` or
 		// `RefundContents`.
-		let (_, _, _, invoice_tlv_stream) = invoice.as_tlv_stream();
+		let (_, _, _, invoice_tlv_stream) = contents.as_tlv_stream();
 		let invoice_request_bytes = WithoutSignatures(invreq_bytes);
 		let unsigned_tlv_stream = (invoice_request_bytes, invoice_tlv_stream);
 
@@ -388,12 +388,12 @@ impl UnsignedBolt12Invoice {
 
 		let tagged_hash = TaggedHash::new(SIGNATURE_TAG, &bytes);
 
-		Self { bytes, invoice, tagged_hash }
+		Self { bytes, contents, tagged_hash }
 	}
 
 	/// The public key corresponding to the key needed to sign the invoice.
 	pub fn signing_pubkey(&self) -> PublicKey {
-		self.invoice.fields().signing_pubkey
+		self.contents.fields().signing_pubkey
 	}
 
 	/// Signs the invoice using the given function.
@@ -403,7 +403,7 @@ impl UnsignedBolt12Invoice {
 	where
 		F: FnOnce(&Self) -> Result<Signature, E>
 	{
-		let pubkey = self.invoice.fields().signing_pubkey;
+		let pubkey = self.contents.fields().signing_pubkey;
 		let signature = merkle::sign_message(sign, &self, pubkey)?;
 
 		// Append the signature TLV record to the bytes.
@@ -414,7 +414,7 @@ impl UnsignedBolt12Invoice {
 
 		Ok(Bolt12Invoice {
 			bytes: self.bytes,
-			contents: self.invoice,
+			contents: self.contents,
 			signature,
 		})
 	}
@@ -1802,7 +1802,7 @@ mod tests {
 			.sign(payer_sign).unwrap()
 			.respond_with_no_std(payment_paths(), payment_hash(), now()).unwrap()
 			.build().unwrap()
-			.invoice
+			.contents
 			.write(&mut buffer).unwrap();
 
 		match Bolt12Invoice::try_from(buffer) {

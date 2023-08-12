@@ -346,16 +346,16 @@ impl<'a, 'b, P: PayerIdStrategy, T: secp256k1::Signing> InvoiceRequestBuilder<'a
 /// A semantically valid [`InvoiceRequest`] that hasn't been signed.
 pub struct UnsignedInvoiceRequest {
 	bytes: Vec<u8>,
-	invoice_request: InvoiceRequestContents,
+	contents: InvoiceRequestContents,
 	tagged_hash: TaggedHash,
 }
 
 impl UnsignedInvoiceRequest {
-	fn new(offer: &Offer, invoice_request: InvoiceRequestContents) -> Self {
+	fn new(offer: &Offer, contents: InvoiceRequestContents) -> Self {
 		// Use the offer bytes instead of the offer TLV stream as the offer may have contained
 		// unknown TLV records, which are not stored in `OfferContents`.
 		let (payer_tlv_stream, _offer_tlv_stream, invoice_request_tlv_stream) =
-			invoice_request.as_tlv_stream();
+			contents.as_tlv_stream();
 		let offer_bytes = WithoutLength(&offer.bytes);
 		let unsigned_tlv_stream = (payer_tlv_stream, offer_bytes, invoice_request_tlv_stream);
 
@@ -364,7 +364,7 @@ impl UnsignedInvoiceRequest {
 
 		let tagged_hash = TaggedHash::new(SIGNATURE_TAG, &bytes);
 
-		Self { bytes, invoice_request, tagged_hash }
+		Self { bytes, contents, tagged_hash }
 	}
 
 	/// Signs the invoice request using the given function.
@@ -374,7 +374,7 @@ impl UnsignedInvoiceRequest {
 	where
 		F: FnOnce(&Self) -> Result<Signature, E>
 	{
-		let pubkey = self.invoice_request.payer_id;
+		let pubkey = self.contents.payer_id;
 		let signature = merkle::sign_message(sign, &self, pubkey)?;
 
 		// Append the signature TLV record to the bytes.
@@ -385,7 +385,7 @@ impl UnsignedInvoiceRequest {
 
 		Ok(InvoiceRequest {
 			bytes: self.bytes,
-			contents: self.invoice_request,
+			contents: self.contents,
 			signature,
 		})
 	}
@@ -1681,7 +1681,7 @@ mod tests {
 			.build().unwrap();
 		let unsigned_invoice_request = offer.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
 			.build().unwrap();
-		let mut tlv_stream = unsigned_invoice_request.invoice_request.as_tlv_stream();
+		let mut tlv_stream = unsigned_invoice_request.contents.as_tlv_stream();
 		tlv_stream.0.metadata = None;
 
 		let mut buffer = Vec::new();
@@ -1702,7 +1702,7 @@ mod tests {
 			.build().unwrap();
 		let unsigned_invoice_request = offer.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
 			.build().unwrap();
-		let mut tlv_stream = unsigned_invoice_request.invoice_request.as_tlv_stream();
+		let mut tlv_stream = unsigned_invoice_request.contents.as_tlv_stream();
 		tlv_stream.2.payer_id = None;
 
 		let mut buffer = Vec::new();
@@ -1721,7 +1721,7 @@ mod tests {
 			.build().unwrap();
 		let unsigned_invoice_request = offer.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
 			.build().unwrap();
-		let mut tlv_stream = unsigned_invoice_request.invoice_request.as_tlv_stream();
+		let mut tlv_stream = unsigned_invoice_request.contents.as_tlv_stream();
 		tlv_stream.1.node_id = None;
 
 		let mut buffer = Vec::new();
@@ -1743,7 +1743,7 @@ mod tests {
 			.build().unwrap()
 			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
 			.build().unwrap()
-			.invoice_request
+			.contents
 			.write(&mut buffer).unwrap();
 
 		match InvoiceRequest::try_from(buffer) {
