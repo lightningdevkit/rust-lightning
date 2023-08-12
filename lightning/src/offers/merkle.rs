@@ -30,6 +30,7 @@ tlv_stream!(SignatureTlvStream, SignatureTlvStreamRef, SIGNATURE_TYPES, {
 ///
 /// [BIP 340]: https://github.com/bitcoin/bips/blob/master/bip-0340.mediawiki
 /// [BOLT 12]: https://github.com/rustyrussell/lightning-rfc/blob/guilt/offers/12-offer-encoding.md#signature-calculation
+#[derive(Debug, PartialEq)]
 pub struct TaggedHash(Message);
 
 impl TaggedHash {

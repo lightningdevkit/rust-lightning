@@ -344,6 +344,11 @@ impl<'a, 'b, P: PayerIdStrategy, T: secp256k1::Signing> InvoiceRequestBuilder<'a
 }
 
 /// A semantically valid [`InvoiceRequest`] that hasn't been signed.
+///
+/// # Serialization
+///
+/// This is serialized as a TLV stream, which includes TLV records from the originating message. As
+/// such, it may include unknown, odd TLV records.
 pub struct UnsignedInvoiceRequest {
 	bytes: Vec<u8>,
 	contents: InvoiceRequestContents,
@@ -367,7 +372,9 @@ impl UnsignedInvoiceRequest {
 		Self { bytes, contents, tagged_hash }
 	}
 
-	/// Signs the invoice request using the given function.
+	/// Signs the [`TaggedHash`] of the invoice request using the given function.
+	///
+	/// Note: The hash computation may have included unknown, odd TLV records.
 	///
 	/// This is not exported to bindings users as functions are not yet mapped.
 	pub fn sign<F, E>(mut self, sign: F) -> Result<InvoiceRequest, SignError<E>>
@@ -664,6 +671,12 @@ impl InvoiceRequestContentsWithoutPayerId {
 	}
 }
 
+impl Writeable for UnsignedInvoiceRequest {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+		WithoutLength(&self.bytes).write(writer)
+	}
+}
+
 impl Writeable for InvoiceRequest {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		WithoutLength(&self.bytes).write(writer)
@@ -722,6 +735,25 @@ type PartialInvoiceRequestTlvStreamRef<'a> = (
 	OfferTlvStreamRef<'a>,
 	InvoiceRequestTlvStreamRef<'a>,
 );
+
+impl TryFrom<Vec<u8>> for UnsignedInvoiceRequest {
+	type Error = Bolt12ParseError;
+
+	fn try_from(bytes: Vec<u8>) -> Result<Self, Self::Error> {
+		let invoice_request = ParsedMessage::<PartialInvoiceRequestTlvStream>::try_from(bytes)?;
+		let ParsedMessage { bytes, tlv_stream } = invoice_request;
+		let (
+			payer_tlv_stream, offer_tlv_stream, invoice_request_tlv_stream,
+		) = tlv_stream;
+		let contents = InvoiceRequestContents::try_from(
+			(payer_tlv_stream, offer_tlv_stream, invoice_request_tlv_stream)
+		)?;
+
+		let tagged_hash = TaggedHash::new(SIGNATURE_TAG, &bytes);
+
+		Ok(UnsignedInvoiceRequest { bytes, contents, tagged_hash })
+	}
+}
 
 impl TryFrom<Vec<u8>> for InvoiceRequest {
 	type Error = Bolt12ParseError;
@@ -792,7 +824,7 @@ impl TryFrom<PartialInvoiceRequestTlvStream> for InvoiceRequestContents {
 
 #[cfg(test)]
 mod tests {
-	use super::{InvoiceRequest, InvoiceRequestTlvStreamRef, SIGNATURE_TAG};
+	use super::{InvoiceRequest, InvoiceRequestTlvStreamRef, SIGNATURE_TAG, UnsignedInvoiceRequest};
 
 	use bitcoin::blockdata::constants::ChainHash;
 	use bitcoin::network::constants::Network;
@@ -816,12 +848,24 @@ mod tests {
 
 	#[test]
 	fn builds_invoice_request_with_defaults() {
-		let invoice_request = OfferBuilder::new("foo".into(), recipient_pubkey())
+		let unsigned_invoice_request = OfferBuilder::new("foo".into(), recipient_pubkey())
 			.amount_msats(1000)
 			.build().unwrap()
 			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
-			.build().unwrap()
-			.sign(payer_sign).unwrap();
+			.build().unwrap();
+
+		let mut buffer = Vec::new();
+		unsigned_invoice_request.write(&mut buffer).unwrap();
+
+		match UnsignedInvoiceRequest::try_from(buffer) {
+			Err(e) => panic!("error parsing unsigned invoice request: {:?}", e),
+			Ok(parsed) => {
+				assert_eq!(parsed.bytes, unsigned_invoice_request.bytes);
+				assert_eq!(parsed.tagged_hash, unsigned_invoice_request.tagged_hash);
+			},
+		}
+
+		let invoice_request = unsigned_invoice_request.sign(payer_sign).unwrap();
 
 		let mut buffer = Vec::new();
 		invoice_request.write(&mut buffer).unwrap();

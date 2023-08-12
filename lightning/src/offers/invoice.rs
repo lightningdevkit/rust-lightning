@@ -368,6 +368,11 @@ impl<'a> InvoiceBuilder<'a, DerivedSigningPubkey> {
 }
 
 /// A semantically valid [`Bolt12Invoice`] that hasn't been signed.
+///
+/// # Serialization
+///
+/// This is serialized as a TLV stream, which includes TLV records from the originating message. As
+/// such, it may include unknown, odd TLV records.
 pub struct UnsignedBolt12Invoice {
 	bytes: Vec<u8>,
 	contents: InvoiceContents,
@@ -396,7 +401,9 @@ impl UnsignedBolt12Invoice {
 		self.contents.fields().signing_pubkey
 	}
 
-	/// Signs the invoice using the given function.
+	/// Signs the [`TaggedHash`] of the invoice using the given function.
+	///
+	/// Note: The hash computation may have included unknown, odd TLV records.
 	///
 	/// This is not exported to bindings users as functions aren't currently mapped.
 	pub fn sign<F, E>(mut self, sign: F) -> Result<Bolt12Invoice, SignError<E>>
@@ -733,6 +740,12 @@ impl InvoiceFields {
 	}
 }
 
+impl Writeable for UnsignedBolt12Invoice {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+		WithoutLength(&self.bytes).write(writer)
+	}
+}
+
 impl Writeable for Bolt12Invoice {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		WithoutLength(&self.bytes).write(writer)
@@ -742,6 +755,25 @@ impl Writeable for Bolt12Invoice {
 impl Writeable for InvoiceContents {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		self.as_tlv_stream().write(writer)
+	}
+}
+
+impl TryFrom<Vec<u8>> for UnsignedBolt12Invoice {
+	type Error = Bolt12ParseError;
+
+	fn try_from(bytes: Vec<u8>) -> Result<Self, Self::Error> {
+		let invoice = ParsedMessage::<PartialInvoiceTlvStream>::try_from(bytes)?;
+		let ParsedMessage { bytes, tlv_stream } = invoice;
+		let (
+			payer_tlv_stream, offer_tlv_stream, invoice_request_tlv_stream, invoice_tlv_stream,
+		) = tlv_stream;
+		let contents = InvoiceContents::try_from(
+			(payer_tlv_stream, offer_tlv_stream, invoice_request_tlv_stream, invoice_tlv_stream)
+		)?;
+
+		let tagged_hash = TaggedHash::new(SIGNATURE_TAG, &bytes);
+
+		Ok(UnsignedBolt12Invoice { bytes, contents, tagged_hash })
 	}
 }
 
@@ -857,6 +889,17 @@ type PartialInvoiceTlvStreamRef<'a> = (
 	InvoiceTlvStreamRef<'a>,
 );
 
+impl SeekReadable for PartialInvoiceTlvStream {
+	fn read<R: io::Read + io::Seek>(r: &mut R) -> Result<Self, DecodeError> {
+		let payer = SeekReadable::read(r)?;
+		let offer = SeekReadable::read(r)?;
+		let invoice_request = SeekReadable::read(r)?;
+		let invoice = SeekReadable::read(r)?;
+
+		Ok((payer, offer, invoice_request, invoice))
+	}
+}
+
 impl TryFrom<ParsedMessage<FullInvoiceTlvStream>> for Bolt12Invoice {
 	type Error = Bolt12ParseError;
 
@@ -961,7 +1004,7 @@ impl TryFrom<PartialInvoiceTlvStream> for InvoiceContents {
 
 #[cfg(test)]
 mod tests {
-	use super::{Bolt12Invoice, DEFAULT_RELATIVE_EXPIRY, FallbackAddress, FullInvoiceTlvStreamRef, InvoiceTlvStreamRef, SIGNATURE_TAG};
+	use super::{Bolt12Invoice, DEFAULT_RELATIVE_EXPIRY, FallbackAddress, FullInvoiceTlvStreamRef, InvoiceTlvStreamRef, SIGNATURE_TAG, UnsignedBolt12Invoice};
 
 	use bitcoin::blockdata::script::Script;
 	use bitcoin::hashes::Hash;
@@ -1007,15 +1050,27 @@ mod tests {
 		let payment_paths = payment_paths();
 		let payment_hash = payment_hash();
 		let now = now();
-		let invoice = OfferBuilder::new("foo".into(), recipient_pubkey())
+		let unsigned_invoice = OfferBuilder::new("foo".into(), recipient_pubkey())
 			.amount_msats(1000)
 			.build().unwrap()
 			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
 			.build().unwrap()
 			.sign(payer_sign).unwrap()
 			.respond_with_no_std(payment_paths.clone(), payment_hash, now).unwrap()
-			.build().unwrap()
-			.sign(recipient_sign).unwrap();
+			.build().unwrap();
+
+		let mut buffer = Vec::new();
+		unsigned_invoice.write(&mut buffer).unwrap();
+
+		match UnsignedBolt12Invoice::try_from(buffer) {
+			Err(e) => panic!("error parsing unsigned invoice: {:?}", e),
+			Ok(parsed) => {
+				assert_eq!(parsed.bytes, unsigned_invoice.bytes);
+				assert_eq!(parsed.tagged_hash, unsigned_invoice.tagged_hash);
+			},
+		}
+
+		let invoice = unsigned_invoice.sign(recipient_sign).unwrap();
 
 		let mut buffer = Vec::new();
 		invoice.write(&mut buffer).unwrap();
