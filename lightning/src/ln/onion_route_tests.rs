@@ -645,6 +645,30 @@ fn test_onion_failure() {
 		}, || nodes[2].node.fail_htlc_backwards(&payment_hash), false, None,
 		Some(NetworkUpdate::NodeFailure { node_id: route.paths[0].hops[1].pubkey, is_permanent: true }),
 		Some(channels[1].0.contents.short_channel_id));
+	run_onion_failure_test_with_fail_intercept("0-length channel update in UPDATE onion failure", 200, &nodes,
+		&route, &payment_hash, &payment_secret, |_msg| {}, |msg| {
+			let session_priv = SecretKey::from_slice(&[3; 32]).unwrap();
+			let onion_keys = onion_utils::construct_onion_keys(&Secp256k1::new(), &route.paths[0], &session_priv).unwrap();
+			let mut decoded_err_packet = msgs::DecodedOnionErrorPacket {
+				failuremsg: vec![
+					0x10, 0x7, // UPDATE|7
+					0x0, 0x0 // 0-len channel update
+				],
+				pad: vec![0; 255 - 4 /* 4-byte error message */],
+				hmac: [0; 32],
+			};
+			let um = onion_utils::gen_um_from_shared_secret(&onion_keys[1].shared_secret.as_ref());
+			let mut hmac = HmacEngine::<Sha256>::new(&um);
+			hmac.input(&decoded_err_packet.encode()[32..]);
+			decoded_err_packet.hmac = Hmac::from_engine(hmac).into_inner();
+			msg.reason = onion_utils::encrypt_failure_packet(
+				&onion_keys[1].shared_secret.as_ref(), &decoded_err_packet.encode()[..])
+		}, || nodes[2].node.fail_htlc_backwards(&payment_hash), true, Some(0x1000|7),
+		Some(NetworkUpdate::ChannelFailure {
+			short_channel_id: channels[1].0.contents.short_channel_id,
+			is_permanent: false,
+		}),
+		Some(channels[1].0.contents.short_channel_id));
 }
 
 #[test]

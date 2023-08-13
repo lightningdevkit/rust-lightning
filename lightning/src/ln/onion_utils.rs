@@ -579,6 +579,8 @@ where L::Target: Logger {
 									msg: chan_update,
 								})
 							} else {
+								// The node in question intentionally encoded a 0-length channel update. This is
+								// likely due to https://github.com/ElementsProject/lightning/issues/6200.
 								network_update = Some(NetworkUpdate::ChannelFailure {
 									short_channel_id: route_hop.short_channel_id,
 									is_permanent: false,
