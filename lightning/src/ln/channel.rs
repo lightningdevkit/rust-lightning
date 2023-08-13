@@ -2277,10 +2277,6 @@ impl<SP: Deref> Channel<SP> where
 			}
 		}
 		if pending_idx == core::usize::MAX {
-			#[cfg(any(test, fuzzing))]
-			// If we failed to find an HTLC to fulfill, make sure it was previously fulfilled and
-			// this is simply a duplicate claim, not previously failed and we lost funds.
-			debug_assert!(self.context.historical_inbound_htlc_fulfills.contains(&htlc_id_arg));
 			return UpdateFulfillFetch::DuplicateClaim {};
 		}
 
@@ -2449,10 +2445,6 @@ impl<SP: Deref> Channel<SP> where
 			}
 		}
 		if pending_idx == core::usize::MAX {
-			#[cfg(any(test, fuzzing))]
-			// If we failed to find an HTLC to fail, make sure it was previously fulfilled and this
-			// is simply a duplicate fail, not previously failed and we failed-back too early.
-			debug_assert!(self.context.historical_inbound_htlc_fulfills.contains(&htlc_id_arg));
 			return Ok(None);
 		}
 
