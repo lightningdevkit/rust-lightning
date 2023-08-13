@@ -501,106 +501,50 @@ impl Bolt12Invoice {
 	/// This is not exported to bindings users as slices with non-reference types cannot be ABI
 	/// matched in another language.
 	pub fn payment_paths(&self) -> &[(BlindedPayInfo, BlindedPath)] {
-		&self.contents.fields().payment_paths[..]
+		self.contents.payment_paths()
 	}
 
 	/// Duration since the Unix epoch when the invoice was created.
 	pub fn created_at(&self) -> Duration {
-		self.contents.fields().created_at
+		self.contents.created_at()
 	}
 
 	/// Duration since [`Bolt12Invoice::created_at`] when the invoice has expired and therefore
 	/// should no longer be paid.
 	pub fn relative_expiry(&self) -> Duration {
-		self.contents.fields().relative_expiry.unwrap_or(DEFAULT_RELATIVE_EXPIRY)
+		self.contents.relative_expiry()
 	}
 
 	/// Whether the invoice has expired.
 	#[cfg(feature = "std")]
 	pub fn is_expired(&self) -> bool {
-		let absolute_expiry = self.created_at().checked_add(self.relative_expiry());
-		match absolute_expiry {
-			Some(seconds_from_epoch) => match SystemTime::UNIX_EPOCH.elapsed() {
-				Ok(elapsed) => elapsed > seconds_from_epoch,
-				Err(_) => false,
-			},
-			None => false,
-		}
+		self.contents.is_expired()
 	}
 
 	/// SHA256 hash of the payment preimage that will be given in return for paying the invoice.
 	pub fn payment_hash(&self) -> PaymentHash {
-		self.contents.fields().payment_hash
+		self.contents.payment_hash()
 	}
 
 	/// The minimum amount required for a successful payment of the invoice.
 	pub fn amount_msats(&self) -> u64 {
-		self.contents.fields().amount_msats
+		self.contents.amount_msats()
 	}
 
 	/// Fallback addresses for paying the invoice on-chain, in order of most-preferred to
 	/// least-preferred.
 	pub fn fallbacks(&self) -> Vec<Address> {
-		let network = match self.network() {
-			None => return Vec::new(),
-			Some(network) => network,
-		};
-
-		let to_valid_address = |address: &FallbackAddress| {
-			let version = match WitnessVersion::try_from(address.version) {
-				Ok(version) => version,
-				Err(_) => return None,
-			};
-
-			let program = &address.program;
-			if program.len() < 2 || program.len() > 40 {
-				return None;
-			}
-
-			let address = Address {
-				payload: Payload::WitnessProgram {
-					version,
-					program: address.program.clone(),
-				},
-				network,
-			};
-
-			if !address.is_standard() && version == WitnessVersion::V0 {
-				return None;
-			}
-
-			Some(address)
-		};
-
-		self.contents.fields().fallbacks
-			.as_ref()
-			.map(|fallbacks| fallbacks.iter().filter_map(to_valid_address).collect())
-			.unwrap_or_else(Vec::new)
-	}
-
-	fn network(&self) -> Option<Network> {
-		let chain = self.contents.chain();
-		if chain == ChainHash::using_genesis_block(Network::Bitcoin) {
-			Some(Network::Bitcoin)
-		} else if chain == ChainHash::using_genesis_block(Network::Testnet) {
-			Some(Network::Testnet)
-		} else if chain == ChainHash::using_genesis_block(Network::Signet) {
-			Some(Network::Signet)
-		} else if chain == ChainHash::using_genesis_block(Network::Regtest) {
-			Some(Network::Regtest)
-		} else {
-			None
-		}
+		self.contents.fallbacks()
 	}
 
 	/// Features pertaining to paying an invoice.
 	pub fn features(&self) -> &Bolt12InvoiceFeatures {
-		&self.contents.fields().features
+		self.contents.features()
 	}
 
 	/// The public key corresponding to the key used to sign the invoice.
 	pub fn signing_pubkey(&self) -> PublicKey {
-		self.contents.fields().signing_pubkey
+		self.contents.signing_pubkey()
 	}
 
 	/// Signature of the invoice verified using [`Bolt12Invoice::signing_pubkey`].
@@ -657,6 +601,92 @@ impl InvoiceContents {
 			},
 			InvoiceContents::ForRefund { refund, .. } => refund.description(),
 		}
+	}
+
+	fn payment_paths(&self) -> &[(BlindedPayInfo, BlindedPath)] {
+		&self.fields().payment_paths[..]
+	}
+
+	fn created_at(&self) -> Duration {
+		self.fields().created_at
+	}
+
+	fn relative_expiry(&self) -> Duration {
+		self.fields().relative_expiry.unwrap_or(DEFAULT_RELATIVE_EXPIRY)
+	}
+
+	#[cfg(feature = "std")]
+	fn is_expired(&self) -> bool {
+		let absolute_expiry = self.created_at().checked_add(self.relative_expiry());
+		match absolute_expiry {
+			Some(seconds_from_epoch) => match SystemTime::UNIX_EPOCH.elapsed() {
+				Ok(elapsed) => elapsed > seconds_from_epoch,
+				Err(_) => false,
+			},
+			None => false,
+		}
+	}
+
+	fn payment_hash(&self) -> PaymentHash {
+		self.fields().payment_hash
+	}
+
+	fn amount_msats(&self) -> u64 {
+		self.fields().amount_msats
+	}
+
+	fn fallbacks(&self) -> Vec<Address> {
+		let chain = self.chain();
+		let network = if chain == ChainHash::using_genesis_block(Network::Bitcoin) {
+			Network::Bitcoin
+		} else if chain == ChainHash::using_genesis_block(Network::Testnet) {
+			Network::Testnet
+		} else if chain == ChainHash::using_genesis_block(Network::Signet) {
+			Network::Signet
+		} else if chain == ChainHash::using_genesis_block(Network::Regtest) {
+			Network::Regtest
+		} else {
+			return Vec::new()
+		};
+
+		let to_valid_address = |address: &FallbackAddress| {
+			let version = match WitnessVersion::try_from(address.version) {
+				Ok(version) => version,
+				Err(_) => return None,
+			};
+
+			let program = &address.program;
+			if program.len() < 2 || program.len() > 40 {
+				return None;
+			}
+
+			let address = Address {
+				payload: Payload::WitnessProgram {
+					version,
+					program: program.clone(),
+				},
+				network,
+			};
+
+			if !address.is_standard() && version == WitnessVersion::V0 {
+				return None;
+			}
+
+			Some(address)
+		};
+
+		self.fields().fallbacks
+			.as_ref()
+			.map(|fallbacks| fallbacks.iter().filter_map(to_valid_address).collect())
+			.unwrap_or_else(Vec::new)
+	}
+
+	fn features(&self) -> &Bolt12InvoiceFeatures {
+		&self.fields().features
+	}
+
+	fn signing_pubkey(&self) -> PublicKey {
+		self.fields().signing_pubkey
 	}
 
 	fn fields(&self) -> &InvoiceFields {
