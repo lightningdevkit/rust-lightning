@@ -912,6 +912,12 @@ pub(crate) struct ChannelMonitorImpl<Signer: WriteableEcdsaChannelSigner> {
 	/// Ordering of tuple data: (their_per_commitment_point, feerate_per_kw, to_broadcaster_sats,
 	/// to_countersignatory_sats)
 	initial_counterparty_commitment_info: Option<(PublicKey, u32, u64, u64)>,
+
+	/// In-memory only HTLC ids used to track upstream HTLCs that have been failed backwards due to
+	/// a downstream channel force-close remaining unconfirmed by the time the upstream timeout
+	/// expires. This is used to tell us we already generated an event to fail this HTLC back
+	/// during a previous block scan.
+	failed_back_htlc_ids: HashSet<u64>,
 }
 
 /// Transaction outputs to watch for on-chain spends.
@@ -1254,6 +1260,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 			best_block,
 			counterparty_node_id: Some(counterparty_node_id),
 			initial_counterparty_commitment_info: None,
+			failed_back_htlc_ids: HashSet::new(),
 		})
 	}
 
@@ -3537,8 +3544,8 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 						Some(source) => source,
 						None => continue,
 					};
-					let cltv_expiry = match source {
-						HTLCSource::PreviousHopData(HTLCPreviousHopData { cltv_expiry: Some(cltv_expiry), .. }) => *cltv_expiry,
+					let (cltv_expiry, htlc_id) = match source {
+						HTLCSource::PreviousHopData(HTLCPreviousHopData { htlc_id, cltv_expiry: Some(cltv_expiry), .. }) if !self.failed_back_htlc_ids.contains(htlc_id) => (*cltv_expiry, *htlc_id),
 						_ => continue,
 					};
 					if cltv_expiry <= height + TIMEOUT_FAIL_BACK_BUFFER {
@@ -3557,6 +3564,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 								htlc_value_satoshis: Some(htlc.amount_msat / 1000),
 								awaiting_downstream_confirmation: true,
 							}));
+							self.failed_back_htlc_ids.insert(htlc_id);
 						}
 					}
 				}
@@ -4459,6 +4467,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 			best_block,
 			counterparty_node_id,
 			initial_counterparty_commitment_info,
+			failed_back_htlc_ids: HashSet::new(),
 		})))
 	}
 }
