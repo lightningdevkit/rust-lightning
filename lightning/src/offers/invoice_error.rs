@@ -70,7 +70,7 @@ impl Writeable for InvoiceError {
 
 impl Readable for InvoiceError {
 	fn read<R: io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
-		_init_and_read_tlv_fields!(reader, {
+		_init_and_read_len_prefixed_tlv_fields!(reader, {
 			(1, erroneous_field, (option, encoding: (u64, HighZeroBytesDroppedBigSize))),
 			(3, suggested_value, (option, encoding: (Vec<u8>, WithoutLength))),
 			(5, error, (option, encoding: (UntrustedString, WithoutLength))),

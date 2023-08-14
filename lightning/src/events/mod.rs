@@ -821,12 +821,12 @@ pub enum Event {
 		user_channel_id: u128,
 		/// The reason the channel was closed.
 		reason: ClosureReason,
-		/// Counterparty in the closed channel. 
-		/// 
+		/// Counterparty in the closed channel.
+		///
 		/// This field will be `None` for objects serialized prior to LDK 0.0.117.
 		counterparty_node_id: Option<PublicKey>,
-		/// Channel capacity of the closing channel (sats). 
-		/// 
+		/// Channel capacity of the closing channel (sats).
+		///
 		/// This field will be `None` for objects serialized prior to LDK 0.0.117.
 		channel_capacity_sats: Option<u64>,
 	},
@@ -1030,8 +1030,8 @@ impl Writeable for Event {
 					(5, outbound_amount_forwarded_msat, option),
 				});
 			},
-			&Event::ChannelClosed { ref channel_id, ref user_channel_id, ref reason, 
-				ref counterparty_node_id, ref channel_capacity_sats 
+			&Event::ChannelClosed { ref channel_id, ref user_channel_id, ref reason,
+				ref counterparty_node_id, ref channel_capacity_sats
 			} => {
 				9u8.write(writer)?;
 				// `user_channel_id` used to be a single u64 value. In order to remain backwards
@@ -1368,7 +1368,7 @@ impl MaybeReadable for Event {
 			},
 			13u8 => {
 				let f = || {
-					_init_and_read_tlv_fields!(reader, {
+					_init_and_read_len_prefixed_tlv_fields!(reader, {
 						(0, payment_id, required),
 						(2, payment_hash, option),
 						(4, path, required_vec),
@@ -1433,7 +1433,7 @@ impl MaybeReadable for Event {
 			},
 			21u8 => {
 				let f = || {
-					_init_and_read_tlv_fields!(reader, {
+					_init_and_read_len_prefixed_tlv_fields!(reader, {
 						(0, payment_id, required),
 						(2, payment_hash, required),
 						(4, path, required_vec),
@@ -1449,7 +1449,7 @@ impl MaybeReadable for Event {
 			},
 			23u8 => {
 				let f = || {
-					_init_and_read_tlv_fields!(reader, {
+					_init_and_read_len_prefixed_tlv_fields!(reader, {
 						(0, payment_id, required),
 						(2, payment_hash, required),
 						(4, path, required_vec),
