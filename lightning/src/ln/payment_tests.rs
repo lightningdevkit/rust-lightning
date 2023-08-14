@@ -1717,7 +1717,7 @@ fn do_test_intercepted_payment(test: InterceptTest) {
 		let temp_chan_id = nodes[1].node.create_channel(nodes[2].node.get_our_node_id(), 100_000, 0, 42, None).unwrap();
 		let unusable_chan_err = nodes[1].node.forward_intercepted_htlc(intercept_id, &temp_chan_id, nodes[2].node.get_our_node_id(), expected_outbound_amount_msat).unwrap_err();
 		assert_eq!(unusable_chan_err , APIError::ChannelUnavailable {
-			err: format!("Channel with id {} not found for the passed counterparty node_id {}.",
+			err: format!("Channel with id {} for the passed counterparty node_id {} is still opening.",
 				temp_chan_id, nodes[2].node.get_our_node_id()) });
 		assert_eq!(nodes[1].node.get_and_clear_pending_msg_events().len(), 1);
 

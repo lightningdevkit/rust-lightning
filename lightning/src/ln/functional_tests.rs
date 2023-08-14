@@ -181,14 +181,15 @@ fn do_test_counterparty_no_reserve(send_from_initiator: bool) {
 		let counterparty_node = if send_from_initiator { &nodes[0] } else { &nodes[1] };
 		let mut sender_node_per_peer_lock;
 		let mut sender_node_peer_state_lock;
-		if send_from_initiator {
-			let chan = get_inbound_v1_channel_ref!(sender_node, counterparty_node, sender_node_per_peer_lock, sender_node_peer_state_lock, temp_channel_id);
-			chan.context.holder_selected_channel_reserve_satoshis = 0;
-			chan.context.holder_max_htlc_value_in_flight_msat = 100_000_000;
-		} else {
-			let chan = get_outbound_v1_channel_ref!(sender_node, counterparty_node, sender_node_per_peer_lock, sender_node_peer_state_lock, temp_channel_id);
-			chan.context.holder_selected_channel_reserve_satoshis = 0;
-			chan.context.holder_max_htlc_value_in_flight_msat = 100_000_000;
+
+		let channel_phase = get_channel_ref!(sender_node, counterparty_node, sender_node_per_peer_lock, sender_node_peer_state_lock, temp_channel_id);
+		match channel_phase {
+			ChannelPhase::UnfundedInboundV1(_) | ChannelPhase::UnfundedOutboundV1(_) => {
+				let chan_context = channel_phase.context_mut();
+				chan_context.holder_selected_channel_reserve_satoshis = 0;
+				chan_context.holder_max_htlc_value_in_flight_msat = 100_000_000;
+			},
+			ChannelPhase::Funded(_) => assert!(false),
 		}
 	}
 
@@ -8960,9 +8961,13 @@ fn test_duplicate_chan_id() {
 		// another channel in the ChannelManager - an invalid state. Thus, we'd panic later when we
 		// try to create another channel. Instead, we drop the channel entirely here (leaving the
 		// channelmanager in a possibly nonsense state instead).
-		let mut as_chan = a_peer_state.outbound_v1_channel_by_id.remove(&open_chan_2_msg.temporary_channel_id).unwrap();
-		let logger = test_utils::TestLogger::new();
-		as_chan.get_funding_created(tx.clone(), funding_outpoint, &&logger).map_err(|_| ()).unwrap()
+		match a_peer_state.channel_by_id.remove(&open_chan_2_msg.temporary_channel_id).unwrap() {
+			ChannelPhase::UnfundedOutboundV1(chan) => {
+				let logger = test_utils::TestLogger::new();
+				chan.get_funding_created(tx.clone(), funding_outpoint, &&logger).map_err(|_| ()).unwrap()
+			},
+			_ => panic!("Unexpected ChannelPhase variant"),
+		}
 	};
 	check_added_monitors!(nodes[0], 0);
 	nodes[1].node.handle_funding_created(&nodes[0].node.get_our_node_id(), &funding_created);
@@ -9629,8 +9634,12 @@ fn do_test_max_dust_htlc_exposure(dust_outbound_balance: bool, exposure_breach_e
 	if on_holder_tx {
 		let mut node_0_per_peer_lock;
 		let mut node_0_peer_state_lock;
-		let mut chan = get_outbound_v1_channel_ref!(nodes[0], nodes[1], node_0_per_peer_lock, node_0_peer_state_lock, temporary_channel_id);
-		chan.context.holder_dust_limit_satoshis = 546;
+		match get_channel_ref!(nodes[0], nodes[1], node_0_per_peer_lock, node_0_peer_state_lock, temporary_channel_id) {
+			ChannelPhase::UnfundedOutboundV1(chan) => {
+				chan.context.holder_dust_limit_satoshis = 546;
+			},
+			_ => panic!("Unexpected ChannelPhase variant"),
+		}
 	}
 
 	nodes[0].node.funding_transaction_generated(&temporary_channel_id, &nodes[1].node.get_our_node_id(), tx.clone()).unwrap();
@@ -10114,7 +10123,7 @@ fn test_remove_expired_outbound_unfunded_channels() {
 	let check_outbound_channel_existence = |should_exist: bool| {
 		let per_peer_state = nodes[0].node.per_peer_state.read().unwrap();
 		let chan_lock = per_peer_state.get(&nodes[1].node.get_our_node_id()).unwrap().lock().unwrap();
-		assert_eq!(chan_lock.outbound_v1_channel_by_id.contains_key(&temp_channel_id), should_exist);
+		assert_eq!(chan_lock.channel_by_id.contains_key(&temp_channel_id), should_exist);
 	};
 
 	// Channel should exist without any timer ticks.
@@ -10165,7 +10174,7 @@ fn test_remove_expired_inbound_unfunded_channels() {
 	let check_inbound_channel_existence = |should_exist: bool| {
 		let per_peer_state = nodes[1].node.per_peer_state.read().unwrap();
 		let chan_lock = per_peer_state.get(&nodes[0].node.get_our_node_id()).unwrap().lock().unwrap();
-		assert_eq!(chan_lock.inbound_v1_channel_by_id.contains_key(&temp_channel_id), should_exist);
+		assert_eq!(chan_lock.channel_by_id.contains_key(&temp_channel_id), should_exist);
 	};
 
 	// Channel should exist without any timer ticks.
