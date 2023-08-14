@@ -460,29 +460,28 @@ impl InvoiceRequest {
 	///
 	/// [`chain`]: Self::chain
 	pub fn amount_msats(&self) -> Option<u64> {
-		self.contents.inner.amount_msats
+		self.contents.amount_msats()
 	}
 
 	/// Features pertaining to requesting an invoice.
 	pub fn features(&self) -> &InvoiceRequestFeatures {
-		&self.contents.inner.features
+		&self.contents.features()
 	}
 
 	/// The quantity of the offer's item conforming to [`Offer::is_valid_quantity`].
 	pub fn quantity(&self) -> Option<u64> {
-		self.contents.inner.quantity
+		self.contents.quantity()
 	}
 
 	/// A possibly transient pubkey used to sign the invoice request.
 	pub fn payer_id(&self) -> PublicKey {
-		self.contents.payer_id
+		self.contents.payer_id()
 	}
 
 	/// A payer-provided note which will be seen by the recipient and reflected back in the invoice
 	/// response.
 	pub fn payer_note(&self) -> Option<PrintableString> {
-		self.contents.inner.payer_note.as_ref()
-			.map(|payer_note| PrintableString(payer_note.as_str()))
+		self.contents.payer_note()
 	}
 
 	/// Signature of the invoice request using [`payer_id`].
@@ -626,8 +625,25 @@ impl InvoiceRequestContents {
 		self.inner.chain()
 	}
 
+	fn amount_msats(&self) -> Option<u64> {
+		self.inner.amount_msats
+	}
+
+	fn features(&self) -> &InvoiceRequestFeatures {
+		&self.inner.features
+	}
+
+	fn quantity(&self) -> Option<u64> {
+		self.inner.quantity
+	}
+
 	pub(super) fn payer_id(&self) -> PublicKey {
 		self.payer_id
+	}
+
+	fn payer_note(&self) -> Option<PrintableString> {
+		self.inner.payer_note.as_ref()
+			.map(|payer_note| PrintableString(payer_note.as_str()))
 	}
 
 	pub(super) fn as_tlv_stream(&self) -> PartialInvoiceRequestTlvStreamRef {
