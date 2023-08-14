@@ -663,9 +663,9 @@ fn do_retry_with_no_persist(confirm_before_reload: bool) {
 		let mut peer_state = per_peer_state.get(&nodes[2].node.get_our_node_id())
 			.unwrap().lock().unwrap();
 		let mut channel = peer_state.channel_by_id.get_mut(&chan_id_2).unwrap();
-		let mut new_config = channel.context.config();
+		let mut new_config = channel.context().config();
 		new_config.forwarding_fee_base_msat += 100_000;
-		channel.context.update_config(&new_config);
+		channel.context_mut().update_config(&new_config);
 		new_route.paths[0].hops[0].fee_msat += 100_000;
 	}
 
@@ -1469,7 +1469,7 @@ fn test_trivial_inflight_htlc_tracking(){
 		let chan_1_used_liquidity = inflight_htlcs.used_liquidity_msat(
 			&NodeId::from_pubkey(&nodes[0].node.get_our_node_id()) ,
 			&NodeId::from_pubkey(&nodes[1].node.get_our_node_id()),
-			channel_1.context.get_short_channel_id().unwrap()
+			channel_1.context().get_short_channel_id().unwrap()
 		);
 		assert_eq!(chan_1_used_liquidity, None);
 	}
@@ -1481,7 +1481,7 @@ fn test_trivial_inflight_htlc_tracking(){
 		let chan_2_used_liquidity = inflight_htlcs.used_liquidity_msat(
 			&NodeId::from_pubkey(&nodes[1].node.get_our_node_id()) ,
 			&NodeId::from_pubkey(&nodes[2].node.get_our_node_id()),
-			channel_2.context.get_short_channel_id().unwrap()
+			channel_2.context().get_short_channel_id().unwrap()
 		);
 
 		assert_eq!(chan_2_used_liquidity, None);
@@ -1506,7 +1506,7 @@ fn test_trivial_inflight_htlc_tracking(){
 		let chan_1_used_liquidity = inflight_htlcs.used_liquidity_msat(
 			&NodeId::from_pubkey(&nodes[0].node.get_our_node_id()) ,
 			&NodeId::from_pubkey(&nodes[1].node.get_our_node_id()),
-			channel_1.context.get_short_channel_id().unwrap()
+			channel_1.context().get_short_channel_id().unwrap()
 		);
 		// First hop accounts for expected 1000 msat fee
 		assert_eq!(chan_1_used_liquidity, Some(501000));
@@ -1519,7 +1519,7 @@ fn test_trivial_inflight_htlc_tracking(){
 		let chan_2_used_liquidity = inflight_htlcs.used_liquidity_msat(
 			&NodeId::from_pubkey(&nodes[1].node.get_our_node_id()) ,
 			&NodeId::from_pubkey(&nodes[2].node.get_our_node_id()),
-			channel_2.context.get_short_channel_id().unwrap()
+			channel_2.context().get_short_channel_id().unwrap()
 		);
 
 		assert_eq!(chan_2_used_liquidity, Some(500000));
@@ -1545,7 +1545,7 @@ fn test_trivial_inflight_htlc_tracking(){
 		let chan_1_used_liquidity = inflight_htlcs.used_liquidity_msat(
 			&NodeId::from_pubkey(&nodes[0].node.get_our_node_id()) ,
 			&NodeId::from_pubkey(&nodes[1].node.get_our_node_id()),
-			channel_1.context.get_short_channel_id().unwrap()
+			channel_1.context().get_short_channel_id().unwrap()
 		);
 		assert_eq!(chan_1_used_liquidity, None);
 	}
@@ -1557,7 +1557,7 @@ fn test_trivial_inflight_htlc_tracking(){
 		let chan_2_used_liquidity = inflight_htlcs.used_liquidity_msat(
 			&NodeId::from_pubkey(&nodes[1].node.get_our_node_id()) ,
 			&NodeId::from_pubkey(&nodes[2].node.get_our_node_id()),
-			channel_2.context.get_short_channel_id().unwrap()
+			channel_2.context().get_short_channel_id().unwrap()
 		);
 		assert_eq!(chan_2_used_liquidity, None);
 	}
@@ -1598,7 +1598,7 @@ fn test_holding_cell_inflight_htlcs() {
 		let used_liquidity = inflight_htlcs.used_liquidity_msat(
 			&NodeId::from_pubkey(&nodes[0].node.get_our_node_id()) ,
 			&NodeId::from_pubkey(&nodes[1].node.get_our_node_id()),
-			channel.context.get_short_channel_id().unwrap()
+			channel.context().get_short_channel_id().unwrap()
 		);
 
 		assert_eq!(used_liquidity, Some(2000000));
@@ -1691,7 +1691,7 @@ fn do_test_intercepted_payment(test: InterceptTest) {
 	// Check for unknown channel id error.
 	let unknown_chan_id_err = nodes[1].node.forward_intercepted_htlc(intercept_id, &ChannelId::from_bytes([42; 32]), nodes[2].node.get_our_node_id(), expected_outbound_amount_msat).unwrap_err();
 	assert_eq!(unknown_chan_id_err , APIError::ChannelUnavailable  {
-		err: format!("Funded channel with id {} not found for the passed counterparty node_id {}. Channel may still be opening.",
+		err: format!("Channel with id {} not found for the passed counterparty node_id {}.",
 			log_bytes!([42; 32]), nodes[2].node.get_our_node_id()) });
 
 	if test == InterceptTest::Fail {
@@ -1717,8 +1717,8 @@ fn do_test_intercepted_payment(test: InterceptTest) {
 		let temp_chan_id = nodes[1].node.create_channel(nodes[2].node.get_our_node_id(), 100_000, 0, 42, None).unwrap();
 		let unusable_chan_err = nodes[1].node.forward_intercepted_htlc(intercept_id, &temp_chan_id, nodes[2].node.get_our_node_id(), expected_outbound_amount_msat).unwrap_err();
 		assert_eq!(unusable_chan_err , APIError::ChannelUnavailable {
-			err: format!("Funded channel with id {} not found for the passed counterparty node_id {}. Channel may still be opening.",
-				&temp_chan_id, nodes[2].node.get_our_node_id()) });
+			err: format!("Channel with id {} not found for the passed counterparty node_id {}.",
+				temp_chan_id, nodes[2].node.get_our_node_id()) });
 		assert_eq!(nodes[1].node.get_and_clear_pending_msg_events().len(), 1);
 
 		// Open the just-in-time channel so the payment can then be forwarded.
