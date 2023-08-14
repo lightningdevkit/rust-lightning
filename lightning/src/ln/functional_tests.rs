@@ -10036,7 +10036,15 @@ fn test_remove_expired_outbound_unfunded_channels() {
 	nodes[0].node.timer_tick_occurred();
 	check_outbound_channel_existence(false);
 
-	check_closed_event!(nodes[0], 1, ClosureReason::HolderForceClosed, [nodes[1].node.get_our_node_id()], 100000);
+	let msg_events = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(msg_events.len(), 1);
+	match msg_events[0] {
+		MessageSendEvent::HandleError { action: ErrorAction::SendErrorMessage { ref msg }, node_id: _ } => {
+			assert_eq!(msg.data, "Force-closing pending channel due to timeout awaiting establishment handshake");
+		},
+		_ => panic!("Unexpected event"),
+	}
+	check_closed_event(&nodes[0], 1, ClosureReason::HolderForceClosed, false, &[nodes[1].node.get_our_node_id()], 100000);
 }
 
 #[test]
@@ -10079,5 +10087,13 @@ fn test_remove_expired_inbound_unfunded_channels() {
 	nodes[1].node.timer_tick_occurred();
 	check_inbound_channel_existence(false);
 
-	check_closed_event!(nodes[1], 1, ClosureReason::HolderForceClosed, [nodes[0].node.get_our_node_id()], 100000);
+	let msg_events = nodes[1].node.get_and_clear_pending_msg_events();
+	assert_eq!(msg_events.len(), 1);
+	match msg_events[0] {
+		MessageSendEvent::HandleError { action: ErrorAction::SendErrorMessage { ref msg }, node_id: _ } => {
+			assert_eq!(msg.data, "Force-closing pending channel due to timeout awaiting establishment handshake");
+		},
+		_ => panic!("Unexpected event"),
+	}
+	check_closed_event(&nodes[1], 1, ClosureReason::HolderForceClosed, false, &[nodes[0].node.get_our_node_id()], 100000);
 }

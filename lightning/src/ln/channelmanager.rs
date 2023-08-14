@@ -4472,20 +4472,34 @@ where
 						chan_id: &[u8; 32],
 						chan_context: &mut ChannelContext<<SP::Target as SignerProvider>::Signer>,
 						unfunded_chan_context: &mut UnfundedChannelContext,
+						pending_msg_events: &mut Vec<MessageSendEvent>,
 					| {
 						chan_context.maybe_expire_prev_config();
 						if unfunded_chan_context.should_expire_unfunded_channel() {
-							log_error!(self.logger, "Force-closing pending outbound channel {} for not establishing in a timely manner", log_bytes!(&chan_id[..]));
+							log_error!(self.logger,
+								"Force-closing pending channel with ID {} for not establishing in a timely manner",
+								log_bytes!(&chan_id[..]));
 							update_maps_on_chan_removal!(self, &chan_context);
 							self.issue_channel_close_events(&chan_context, ClosureReason::HolderForceClosed);
 							self.finish_force_close_channel(chan_context.force_shutdown(false));
+							pending_msg_events.push(MessageSendEvent::HandleError {
+								node_id: counterparty_node_id,
+								action: msgs::ErrorAction::SendErrorMessage {
+									msg: msgs::ErrorMessage {
+										channel_id: *chan_id,
+										data: "Force-closing pending channel due to timeout awaiting establishment handshake".to_owned(),
+									},
+								},
+							});
 							false
 						} else {
 							true
 						}
 					};
-					peer_state.outbound_v1_channel_by_id.retain(|chan_id, chan| process_unfunded_channel_tick(chan_id, &mut chan.context, &mut chan.unfunded_context));
-					peer_state.inbound_v1_channel_by_id.retain(|chan_id, chan| process_unfunded_channel_tick(chan_id, &mut chan.context, &mut chan.unfunded_context));
+					peer_state.outbound_v1_channel_by_id.retain(|chan_id, chan| process_unfunded_channel_tick(
+						chan_id, &mut chan.context, &mut chan.unfunded_context, pending_msg_events));
+					peer_state.inbound_v1_channel_by_id.retain(|chan_id, chan| process_unfunded_channel_tick(
+						chan_id, &mut chan.context, &mut chan.unfunded_context, pending_msg_events));
 
 					if peer_state.ok_to_remove(true) {
 						pending_peers_awaiting_removal.push(counterparty_node_id);
