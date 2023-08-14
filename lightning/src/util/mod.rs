@@ -21,6 +21,7 @@ pub mod message_signing;
 pub mod invoice;
 pub mod persist;
 pub mod string;
+pub mod time;
 pub mod wakers;
 
 pub(crate) mod atomic_counter;
@@ -35,7 +36,6 @@ pub(crate) mod poly1305;
 pub(crate) mod chacha20poly1305rfc;
 pub(crate) mod transaction_utils;
 pub(crate) mod scid_utils;
-pub(crate) mod time;
 
 pub mod indexed_map;
 

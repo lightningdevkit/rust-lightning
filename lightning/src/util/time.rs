@@ -60,6 +60,7 @@ impl Sub<Duration> for Eternity {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg(not(feature = "no-std"))]
+/// Tracts time monotonically, but may go backwards in time if the system clock is adjusted.
 pub struct MonotonicTime(std::time::Instant);
 
 /// The amount of time to shift `Instant` forward to prevent overflow when subtracting a `Duration`
