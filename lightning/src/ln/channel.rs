@@ -65,8 +65,6 @@ pub struct ChannelValueStat {
 }
 
 pub struct AvailableBalances {
-	/// The amount that would go to us if we close the channel, ignoring any on-chain fees.
-	pub balance_msat: u64,
 	/// Total amount available for our counterparty to send to us.
 	pub inbound_capacity_msat: u64,
 	/// Total amount available for us to send to our counterparty.
@@ -1611,14 +1609,6 @@ impl<Signer: ChannelSigner> ChannelContext<Signer> {
 		let inbound_stats = context.get_inbound_pending_htlc_stats(None);
 		let outbound_stats = context.get_outbound_pending_htlc_stats(None);
 
-		let mut balance_msat = context.value_to_self_msat;
-		for ref htlc in context.pending_inbound_htlcs.iter() {
-			if let InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::Fulfill(_)) = htlc.state {
-				balance_msat += htlc.amount_msat;
-			}
-		}
-		balance_msat -= outbound_stats.pending_htlcs_value_msat;
-
 		let outbound_capacity_msat = context.value_to_self_msat
 				.saturating_sub(outbound_stats.pending_htlcs_value_msat)
 				.saturating_sub(
@@ -1735,7 +1725,6 @@ impl<Signer: ChannelSigner> ChannelContext<Signer> {
 			outbound_capacity_msat,
 			next_outbound_htlc_limit_msat: available_capacity_msat,
 			next_outbound_htlc_minimum_msat,
-			balance_msat,
 		}
 	}
 
