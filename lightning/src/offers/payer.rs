@@ -22,9 +22,9 @@ use crate::prelude::*;
 #[cfg_attr(test, derive(PartialEq))]
 pub(super) struct PayerContents(pub Metadata);
 
-/// TLV record type for [`InvoiceRequest::metadata`] and [`Refund::metadata`].
+/// TLV record type for [`InvoiceRequest::payer_metadata`] and [`Refund::metadata`].
 ///
-/// [`InvoiceRequest::metadata`]: crate::offers::invoice_request::InvoiceRequest::metadata
+/// [`InvoiceRequest::payer_metadata`]: crate::offers::invoice_request::InvoiceRequest::payer_metadata
 /// [`Refund::metadata`]: crate::offers::refund::Refund::metadata
 pub(super) const PAYER_METADATA_TYPE: u64 = 0;
 

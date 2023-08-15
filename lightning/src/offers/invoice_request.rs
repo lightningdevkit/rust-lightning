@@ -441,48 +441,52 @@ pub(super) struct InvoiceRequestContentsWithoutPayerId {
 	payer_note: Option<String>,
 }
 
-impl InvoiceRequest {
+macro_rules! invoice_request_accessors { ($self: ident, $contents: expr) => {
 	/// An unpredictable series of bytes, typically containing information about the derivation of
 	/// [`payer_id`].
 	///
 	/// [`payer_id`]: Self::payer_id
-	pub fn metadata(&self) -> &[u8] {
-		self.contents.metadata()
+	pub fn payer_metadata(&$self) -> &[u8] {
+		$contents.metadata()
 	}
 
 	/// A chain from [`Offer::chains`] that the offer is valid for.
-	pub fn chain(&self) -> ChainHash {
-		self.contents.chain()
+	pub fn chain(&$self) -> ChainHash {
+		$contents.chain()
 	}
 
 	/// The amount to pay in msats (i.e., the minimum lightning-payable unit for [`chain`]), which
 	/// must be greater than or equal to [`Offer::amount`], converted if necessary.
 	///
 	/// [`chain`]: Self::chain
-	pub fn amount_msats(&self) -> Option<u64> {
-		self.contents.amount_msats()
+	pub fn amount_msats(&$self) -> Option<u64> {
+		$contents.amount_msats()
 	}
 
 	/// Features pertaining to requesting an invoice.
-	pub fn features(&self) -> &InvoiceRequestFeatures {
-		&self.contents.features()
+	pub fn invoice_request_features(&$self) -> &InvoiceRequestFeatures {
+		&$contents.features()
 	}
 
 	/// The quantity of the offer's item conforming to [`Offer::is_valid_quantity`].
-	pub fn quantity(&self) -> Option<u64> {
-		self.contents.quantity()
+	pub fn quantity(&$self) -> Option<u64> {
+		$contents.quantity()
 	}
 
 	/// A possibly transient pubkey used to sign the invoice request.
-	pub fn payer_id(&self) -> PublicKey {
-		self.contents.payer_id()
+	pub fn payer_id(&$self) -> PublicKey {
+		$contents.payer_id()
 	}
 
 	/// A payer-provided note which will be seen by the recipient and reflected back in the invoice
 	/// response.
-	pub fn payer_note(&self) -> Option<PrintableString> {
-		self.contents.payer_note()
+	pub fn payer_note(&$self) -> Option<PrintableString> {
+		$contents.payer_note()
 	}
+} }
+
+impl InvoiceRequest {
+	invoice_request_accessors!(self, self.contents);
 
 	/// Signature of the invoice request using [`payer_id`].
 	///
@@ -534,7 +538,7 @@ impl InvoiceRequest {
 		&self, payment_paths: Vec<(BlindedPayInfo, BlindedPath)>, payment_hash: PaymentHash,
 		created_at: core::time::Duration
 	) -> Result<InvoiceBuilder<ExplicitSigningPubkey>, Bolt12SemanticError> {
-		if self.features().requires_unknown_bits() {
+		if self.invoice_request_features().requires_unknown_bits() {
 			return Err(Bolt12SemanticError::UnknownRequiredFeatures);
 		}
 
@@ -577,7 +581,7 @@ impl InvoiceRequest {
 		&self, payment_paths: Vec<(BlindedPayInfo, BlindedPath)>, payment_hash: PaymentHash,
 		created_at: core::time::Duration, expanded_key: &ExpandedKey, secp_ctx: &Secp256k1<T>
 	) -> Result<InvoiceBuilder<DerivedSigningPubkey>, Bolt12SemanticError> {
-		if self.features().requires_unknown_bits() {
+		if self.invoice_request_features().requires_unknown_bits() {
 			return Err(Bolt12SemanticError::UnknownRequiredFeatures);
 		}
 
@@ -887,10 +891,10 @@ mod tests {
 		invoice_request.write(&mut buffer).unwrap();
 
 		assert_eq!(invoice_request.bytes, buffer.as_slice());
-		assert_eq!(invoice_request.metadata(), &[1; 32]);
+		assert_eq!(invoice_request.payer_metadata(), &[1; 32]);
 		assert_eq!(invoice_request.chain(), ChainHash::using_genesis_block(Network::Bitcoin));
 		assert_eq!(invoice_request.amount_msats(), None);
-		assert_eq!(invoice_request.features(), &InvoiceRequestFeatures::empty());
+		assert_eq!(invoice_request.invoice_request_features(), &InvoiceRequestFeatures::empty());
 		assert_eq!(invoice_request.quantity(), None);
 		assert_eq!(invoice_request.payer_id(), payer_pubkey());
 		assert_eq!(invoice_request.payer_note(), None);
@@ -1291,7 +1295,7 @@ mod tests {
 			.build().unwrap()
 			.sign(payer_sign).unwrap();
 		let (_, _, tlv_stream, _) = invoice_request.as_tlv_stream();
-		assert_eq!(invoice_request.features(), &InvoiceRequestFeatures::unknown());
+		assert_eq!(invoice_request.invoice_request_features(), &InvoiceRequestFeatures::unknown());
 		assert_eq!(tlv_stream.features, Some(&InvoiceRequestFeatures::unknown()));
 
 		let invoice_request = OfferBuilder::new("foo".into(), recipient_pubkey())
@@ -1303,7 +1307,7 @@ mod tests {
 			.build().unwrap()
 			.sign(payer_sign).unwrap();
 		let (_, _, tlv_stream, _) = invoice_request.as_tlv_stream();
-		assert_eq!(invoice_request.features(), &InvoiceRequestFeatures::empty());
+		assert_eq!(invoice_request.invoice_request_features(), &InvoiceRequestFeatures::empty());
 		assert_eq!(tlv_stream.features, None);
 	}
 

@@ -455,16 +455,16 @@ impl Offer {
 	/// Similar to [`Offer::request_invoice`] except it:
 	/// - derives the [`InvoiceRequest::payer_id`] such that a different key can be used for each
 	///   request, and
-	/// - sets the [`InvoiceRequest::metadata`] when [`InvoiceRequestBuilder::build`] is called such
-	///   that it can be used by [`Bolt12Invoice::verify`] to determine if the invoice was requested
-	///   using a base [`ExpandedKey`] from which the payer id was derived.
+	/// - sets the [`InvoiceRequest::payer_metadata`] when [`InvoiceRequestBuilder::build`] is
+	///   called such that it can be used by [`Bolt12Invoice::verify`] to determine if the invoice
+	///   was requested using a base [`ExpandedKey`] from which the payer id was derived.
 	///
 	/// Useful to protect the sender's privacy.
 	///
 	/// This is not exported to bindings users as builder patterns don't map outside of move semantics.
 	///
 	/// [`InvoiceRequest::payer_id`]: crate::offers::invoice_request::InvoiceRequest::payer_id
-	/// [`InvoiceRequest::metadata`]: crate::offers::invoice_request::InvoiceRequest::metadata
+	/// [`InvoiceRequest::payer_metadata`]: crate::offers::invoice_request::InvoiceRequest::payer_metadata
 	/// [`Bolt12Invoice::verify`]: crate::offers::invoice::Bolt12Invoice::verify
 	/// [`ExpandedKey`]: crate::ln::inbound_payment::ExpandedKey
 	pub fn request_invoice_deriving_payer_id<'a, 'b, ES: Deref, T: secp256k1::Signing>(
