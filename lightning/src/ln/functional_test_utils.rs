@@ -368,7 +368,7 @@ pub struct NodeCfg<'a> {
 	pub override_init_features: Rc<RefCell<Option<InitFeatures>>>,
 }
 
-type TestChannelManager<'a, 'b, 'c> = ChannelManager<&'b TestChainMonitor<'c>, &'c test_utils::TestBroadcaster, &'b test_utils::TestKeysInterface, &'b test_utils::TestKeysInterface, &'b test_utils::TestKeysInterface, &'c test_utils::TestFeeEstimator, &'b test_utils::TestRouter<'c>, &'c test_utils::TestLogger>;
+type TestChannelManager<'b, 'c> = ChannelManager<&'b TestChainMonitor<'c>, &'c test_utils::TestBroadcaster, &'b test_utils::TestKeysInterface, &'b test_utils::TestKeysInterface, &'b test_utils::TestKeysInterface, &'c test_utils::TestFeeEstimator, &'b test_utils::TestRouter<'c>, &'c test_utils::TestLogger>;
 
 pub struct Node<'a, 'b: 'a, 'c: 'b> {
 	pub chain_source: &'c test_utils::TestChainSource,
@@ -377,7 +377,7 @@ pub struct Node<'a, 'b: 'a, 'c: 'b> {
 	pub router: &'b test_utils::TestRouter<'c>,
 	pub chain_monitor: &'b test_utils::TestChainMonitor<'c>,
 	pub keys_manager: &'b test_utils::TestKeysInterface,
-	pub node: &'a TestChannelManager<'a, 'b, 'c>,
+	pub node: &'a TestChannelManager<'b, 'c>,
 	pub network_graph: &'a NetworkGraph<&'c test_utils::TestLogger>,
 	pub gossip_sync: P2PGossipSync<&'b NetworkGraph<&'c test_utils::TestLogger>, &'c test_utils::TestChainSource, &'c test_utils::TestLogger>,
 	pub node_seed: [u8; 32],
@@ -448,8 +448,8 @@ impl<H: NodeHolder> NodeHolder for &H {
 	fn chain_monitor(&self) -> Option<&test_utils::TestChainMonitor> { (*self).chain_monitor() }
 }
 impl<'a, 'b: 'a, 'c: 'b> NodeHolder for Node<'a, 'b, 'c> {
-	type CM = TestChannelManager<'a, 'b, 'c>;
-	fn node(&self) -> &TestChannelManager<'a, 'b, 'c> { &self.node }
+	type CM = TestChannelManager<'b, 'c>;
+	fn node(&self) -> &TestChannelManager<'b, 'c> { &self.node }
 	fn chain_monitor(&self) -> Option<&test_utils::TestChainMonitor> { Some(self.chain_monitor) }
 }
 
@@ -924,7 +924,7 @@ macro_rules! check_added_monitors {
 	}
 }
 
-pub fn _reload_node<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, default_config: UserConfig, chanman_encoded: &[u8], monitors_encoded: &[&[u8]]) -> ChannelManager<&'b TestChainMonitor<'c>, &'c test_utils::TestBroadcaster, &'b test_utils::TestKeysInterface, &'b test_utils::TestKeysInterface, &'b test_utils::TestKeysInterface, &'c test_utils::TestFeeEstimator, &'b test_utils::TestRouter<'c>, &'c test_utils::TestLogger> {
+pub fn _reload_node<'a, 'b, 'c>(node: &'a Node<'a, 'b, 'c>, default_config: UserConfig, chanman_encoded: &[u8], monitors_encoded: &[&[u8]]) -> TestChannelManager<'b, 'c> {
 	let mut monitors_read = Vec::with_capacity(monitors_encoded.len());
 	for encoded in monitors_encoded {
 		let mut monitor_read = &encoded[..];
@@ -940,7 +940,7 @@ pub fn _reload_node<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, default_config: 
 		for monitor in monitors_read.iter_mut() {
 			assert!(channel_monitors.insert(monitor.get_funding_txo().0, monitor).is_none());
 		}
-		<(BlockHash, ChannelManager<&test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestKeysInterface, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestRouter, &test_utils::TestLogger>)>::read(&mut node_read, ChannelManagerReadArgs {
+		<(BlockHash, TestChannelManager<'b, 'c>)>::read(&mut node_read, ChannelManagerReadArgs {
 			default_config,
 			entropy_source: node.keys_manager,
 			node_signer: node.keys_manager,
