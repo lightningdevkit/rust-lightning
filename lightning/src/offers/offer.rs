@@ -398,14 +398,14 @@ impl Offer {
 
 	/// Features pertaining to the offer.
 	pub fn features(&self) -> &OfferFeatures {
-		&self.contents.features
+		&self.contents.features()
 	}
 
 	/// Duration since the Unix epoch when an invoice should no longer be requested.
 	///
 	/// If `None`, the offer does not expire.
 	pub fn absolute_expiry(&self) -> Option<Duration> {
-		self.contents.absolute_expiry
+		self.contents.absolute_expiry()
 	}
 
 	/// Whether the offer has expired.
@@ -417,13 +417,13 @@ impl Offer {
 	/// The issuer of the offer, possibly beginning with `user@domain` or `domain`. Intended to be
 	/// displayed to the user but with the caveat that it has not been verified in any way.
 	pub fn issuer(&self) -> Option<PrintableString> {
-		self.contents.issuer.as_ref().map(|issuer| PrintableString(issuer.as_str()))
+		self.contents.issuer()
 	}
 
 	/// Paths to the recipient originating from publicly reachable nodes. Blinded paths provide
 	/// recipient privacy by obfuscating its node id.
 	pub fn paths(&self) -> &[BlindedPath] {
-		self.contents.paths.as_ref().map(|paths| paths.as_slice()).unwrap_or(&[])
+		self.contents.paths()
 	}
 
 	/// The quantity of items supported.
@@ -551,8 +551,20 @@ impl OfferContents {
 		self.metadata.as_ref().and_then(|metadata| metadata.as_bytes())
 	}
 
+	pub fn amount(&self) -> Option<&Amount> {
+		self.amount.as_ref()
+	}
+
 	pub fn description(&self) -> PrintableString {
 		PrintableString(&self.description)
+	}
+
+	pub fn features(&self) -> &OfferFeatures {
+		&self.features
+	}
+
+	pub fn absolute_expiry(&self) -> Option<Duration> {
+		self.absolute_expiry
 	}
 
 	#[cfg(feature = "std")]
@@ -566,8 +578,12 @@ impl OfferContents {
 		}
 	}
 
-	pub fn amount(&self) -> Option<&Amount> {
-		self.amount.as_ref()
+	pub fn issuer(&self) -> Option<PrintableString> {
+		self.issuer.as_ref().map(|issuer| PrintableString(issuer.as_str()))
+	}
+
+	pub fn paths(&self) -> &[BlindedPath] {
+		self.paths.as_ref().map(|paths| paths.as_slice()).unwrap_or(&[])
 	}
 
 	pub(super) fn check_amount_msats_for_quantity(
