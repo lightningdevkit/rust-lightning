@@ -368,31 +368,40 @@ pub struct NodeCfg<'a> {
 	pub override_init_features: Rc<RefCell<Option<InitFeatures>>>,
 }
 
-type TestChannelManager<'b, 'c> = ChannelManager<&'b TestChainMonitor<'c>, &'c test_utils::TestBroadcaster, &'b test_utils::TestKeysInterface, &'b test_utils::TestKeysInterface, &'b test_utils::TestKeysInterface, &'c test_utils::TestFeeEstimator, &'b test_utils::TestRouter<'c>, &'c test_utils::TestLogger>;
+type TestChannelManager<'node_cfg, 'chan_mon_cfg> = ChannelManager<
+	&'node_cfg TestChainMonitor<'chan_mon_cfg>,
+	&'chan_mon_cfg test_utils::TestBroadcaster,
+	&'node_cfg test_utils::TestKeysInterface,
+	&'node_cfg test_utils::TestKeysInterface,
+	&'node_cfg test_utils::TestKeysInterface,
+	&'chan_mon_cfg test_utils::TestFeeEstimator,
+	&'node_cfg test_utils::TestRouter<'chan_mon_cfg>,
+	&'chan_mon_cfg test_utils::TestLogger,
+>;
 
-pub struct Node<'a, 'b: 'a, 'c: 'b> {
-	pub chain_source: &'c test_utils::TestChainSource,
-	pub tx_broadcaster: &'c test_utils::TestBroadcaster,
-	pub fee_estimator: &'c test_utils::TestFeeEstimator,
-	pub router: &'b test_utils::TestRouter<'c>,
-	pub chain_monitor: &'b test_utils::TestChainMonitor<'c>,
-	pub keys_manager: &'b test_utils::TestKeysInterface,
-	pub node: &'a TestChannelManager<'b, 'c>,
-	pub network_graph: &'a NetworkGraph<&'c test_utils::TestLogger>,
-	pub gossip_sync: P2PGossipSync<&'b NetworkGraph<&'c test_utils::TestLogger>, &'c test_utils::TestChainSource, &'c test_utils::TestLogger>,
+pub struct Node<'chan_man, 'node_cfg: 'chan_man, 'chan_mon_cfg: 'node_cfg> {
+	pub chain_source: &'chan_mon_cfg test_utils::TestChainSource,
+	pub tx_broadcaster: &'chan_mon_cfg test_utils::TestBroadcaster,
+	pub fee_estimator: &'chan_mon_cfg test_utils::TestFeeEstimator,
+	pub router: &'node_cfg test_utils::TestRouter<'chan_mon_cfg>,
+	pub chain_monitor: &'node_cfg test_utils::TestChainMonitor<'chan_mon_cfg>,
+	pub keys_manager: &'chan_mon_cfg test_utils::TestKeysInterface,
+	pub node: &'chan_man TestChannelManager<'node_cfg, 'chan_mon_cfg>,
+	pub network_graph: &'node_cfg NetworkGraph<&'chan_mon_cfg test_utils::TestLogger>,
+	pub gossip_sync: P2PGossipSync<&'node_cfg NetworkGraph<&'chan_mon_cfg test_utils::TestLogger>, &'chan_mon_cfg test_utils::TestChainSource, &'chan_mon_cfg test_utils::TestLogger>,
 	pub node_seed: [u8; 32],
 	pub network_payment_count: Rc<RefCell<u8>>,
 	pub network_chan_count: Rc<RefCell<u32>>,
-	pub logger: &'c test_utils::TestLogger,
+	pub logger: &'chan_mon_cfg test_utils::TestLogger,
 	pub blocks: Arc<Mutex<Vec<(Block, u32)>>>,
 	pub connect_style: Rc<RefCell<ConnectStyle>>,
 	pub override_init_features: Rc<RefCell<Option<InitFeatures>>>,
 	pub wallet_source: Arc<test_utils::TestWalletSource>,
 	pub bump_tx_handler: BumpTransactionEventHandler<
-		&'c test_utils::TestBroadcaster,
-		Arc<Wallet<Arc<test_utils::TestWalletSource>, &'c test_utils::TestLogger>>,
-		&'b test_utils::TestKeysInterface,
-		&'c test_utils::TestLogger,
+		&'chan_mon_cfg test_utils::TestBroadcaster,
+		Arc<Wallet<Arc<test_utils::TestWalletSource>, &'chan_mon_cfg test_utils::TestLogger>>,
+		&'chan_mon_cfg test_utils::TestKeysInterface,
+		&'chan_mon_cfg test_utils::TestLogger,
 	>,
 }
 impl<'a, 'b, 'c> Node<'a, 'b, 'c> {
