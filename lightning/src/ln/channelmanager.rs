@@ -7350,6 +7350,9 @@ where
 					self.issue_channel_close_events(&chan.context, ClosureReason::DisconnectedPeer);
 					false
 				});
+				// Note that we don't bother generating any events for pre-accept channels -
+				// they're not considered "channels" yet from the PoV of our events interface.
+				peer_state.inbound_channel_request_by_id.clear();
 				pending_msg_events.retain(|msg| {
 					match msg {
 						// V1 Channel Establishment
@@ -7493,6 +7496,9 @@ where
 				if peer_state_mutex_opt.is_none() { return; }
 				let mut peer_state_lock = peer_state_mutex_opt.unwrap().lock().unwrap();
 				let peer_state = &mut *peer_state_lock;
+				// Note that we don't bother generating any events for pre-accept channels -
+				// they're not considered "channels" yet from the PoV of our events interface.
+				peer_state.inbound_channel_request_by_id.clear();
 				peer_state.channel_by_id.keys().cloned()
 					.chain(peer_state.outbound_v1_channel_by_id.keys().cloned())
 					.chain(peer_state.inbound_v1_channel_by_id.keys().cloned()).collect()
