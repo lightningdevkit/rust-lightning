@@ -5332,7 +5332,7 @@ where
 				InboundV1Channel::new(&self.fee_estimator, &self.entropy_source, &self.signer_provider,
 					counterparty_node_id.clone(), &self.channel_type_features(), &peer_state.latest_features,
 					&unaccepted_channel.open_channel_msg, user_channel_id, &self.default_configuration, best_block_height,
-					&self.logger, /*outbound_scid_alias=*/0, accept_0conf).map_err(|e| APIError::ChannelUnavailable { err: e.to_string() })
+					&self.logger, accept_0conf).map_err(|e| APIError::ChannelUnavailable { err: e.to_string() })
 			}
 			_ => Err(APIError::APIMisuseError { err: "No such channel awaiting to be accepted.".to_owned() })
 		}?;
@@ -5495,7 +5495,7 @@ where
 		let user_channel_id = u128::from_be_bytes(random_bytes);
 		let mut channel = match InboundV1Channel::new(&self.fee_estimator, &self.entropy_source, &self.signer_provider,
 			counterparty_node_id.clone(), &self.channel_type_features(), &peer_state.latest_features, msg, user_channel_id,
-			&self.default_configuration, best_block_height, &self.logger, /*outbound_scid_alias=*/0, /*is_0conf=*/false)
+			&self.default_configuration, best_block_height, &self.logger, /*is_0conf=*/false)
 		{
 			Err(e) => {
 				return Err(MsgHandleErrInternal::from_chan_no_close(e, msg.temporary_channel_id));
