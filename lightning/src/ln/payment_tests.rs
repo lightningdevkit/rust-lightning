@@ -514,10 +514,10 @@ fn do_retry_with_no_persist(confirm_before_reload: bool) {
 	// which has separate codepaths for "commitment transaction already confirmed" and not.
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+	let persister;
+	let new_chain_monitor;
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
-	let persister: test_utils::TestPersister;
-	let new_chain_monitor: test_utils::TestChainMonitor;
-	let nodes_0_deserialized: ChannelManager<&test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestKeysInterface, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestRouter, &test_utils::TestLogger>;
+	let nodes_0_deserialized;
 	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 
 	let chan_id = create_announced_chan_between_nodes(&nodes, 0, 1).2;
@@ -714,17 +714,17 @@ fn do_test_completed_payment_not_retryable_on_reload(use_dust: bool) {
 	let mut manually_accept_config = test_default_channel_config();
 	manually_accept_config.manually_accept_inbound_channels = true;
 
-	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, Some(manually_accept_config), None]);
+	let first_persister;
+	let first_new_chain_monitor;
+	let second_persister;
+	let second_new_chain_monitor;
+	let third_persister;
+	let third_new_chain_monitor;
 
-	let first_persister: test_utils::TestPersister;
-	let first_new_chain_monitor: test_utils::TestChainMonitor;
-	let first_nodes_0_deserialized: ChannelManager<&test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestKeysInterface, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestRouter, &test_utils::TestLogger>;
-	let second_persister: test_utils::TestPersister;
-	let second_new_chain_monitor: test_utils::TestChainMonitor;
-	let second_nodes_0_deserialized: ChannelManager<&test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestKeysInterface, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestRouter, &test_utils::TestLogger>;
-	let third_persister: test_utils::TestPersister;
-	let third_new_chain_monitor: test_utils::TestChainMonitor;
-	let third_nodes_0_deserialized: ChannelManager<&test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestKeysInterface, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestRouter, &test_utils::TestLogger>;
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, Some(manually_accept_config), None]);
+	let first_nodes_0_deserialized;
+	let second_nodes_0_deserialized;
+	let third_nodes_0_deserialized;
 
 	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 
@@ -913,10 +913,10 @@ fn do_test_dup_htlc_onchain_fails_on_reload(persist_manager_post_event: bool, co
 	// duplicate HTLC fail/claim (e.g. via a PaymentPathFailed event).
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let persister;
+	let new_chain_monitor;
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
-	let persister: test_utils::TestPersister;
-	let new_chain_monitor: test_utils::TestChainMonitor;
-	let nodes_0_deserialized: ChannelManager<&test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestKeysInterface, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestRouter, &test_utils::TestLogger>;
+	let nodes_0_deserialized;
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let (_, _, chan_id, funding_tx) = create_announced_chan_between_nodes(&nodes, 0, 1);
@@ -1054,10 +1054,10 @@ fn test_fulfill_restart_failure() {
 	// handle it, we should test the logic for it anyway. We do that here.
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let persister;
+	let new_chain_monitor;
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
-	let persister: test_utils::TestPersister;
-	let new_chain_monitor: test_utils::TestChainMonitor;
-	let nodes_1_deserialized: ChannelManager<&test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestKeysInterface, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestRouter, &test_utils::TestLogger>;
+	let nodes_1_deserialized;
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let chan_id = create_announced_chan_between_nodes(&nodes, 0, 1).2;
@@ -1956,10 +1956,10 @@ fn do_automatic_retries(test: AutoRetry) {
 	// below.
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
-	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
-
 	let persister;
 	let new_chain_monitor;
+
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
 	let node_0_deserialized;
 
 	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
@@ -3178,9 +3178,9 @@ fn do_no_missing_sent_on_midpoint_reload(persist_manager_with_payment: bool) {
 	// it was last persisted.
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let (persister_a, persister_b, persister_c);
 	let (chain_monitor_a, chain_monitor_b, chain_monitor_c);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let (nodes_0_deserialized, nodes_0_deserialized_b, nodes_0_deserialized_c);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
@@ -3755,12 +3755,12 @@ fn do_test_payment_metadata_consistency(do_reload: bool, do_modify: bool) {
 	// modified payment metadata, which will in turn result in it being failed by the recipient.
 	let chanmon_cfgs = create_chanmon_cfgs(4);
 	let node_cfgs = create_node_cfgs(4, &chanmon_cfgs);
+	let persister;
+	let new_chain_monitor;
+
 	let mut config = test_default_channel_config();
 	config.channel_handshake_config.max_inbound_htlc_value_in_flight_percent_of_channel = 50;
 	let node_chanmgrs = create_node_chanmgrs(4, &node_cfgs, &[None, Some(config), Some(config), Some(config)]);
-
-	let persister;
-	let new_chain_monitor;
 	let nodes_0_deserialized;
 
 	let mut nodes = create_network(4, &node_cfgs, &node_chanmgrs);
