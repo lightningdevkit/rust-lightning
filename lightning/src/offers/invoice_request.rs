@@ -485,7 +485,13 @@ macro_rules! invoice_request_accessors { ($self: ident, $contents: expr) => {
 	}
 } }
 
+impl UnsignedInvoiceRequest {
+	offer_accessors!(self, self.contents.inner.offer);
+	invoice_request_accessors!(self, self.contents);
+}
+
 impl InvoiceRequest {
+	offer_accessors!(self, self.contents.inner.offer);
 	invoice_request_accessors!(self, self.contents);
 
 	/// Signature of the invoice request using [`payer_id`].
@@ -854,7 +860,7 @@ mod tests {
 	#[cfg(feature = "std")]
 	use core::time::Duration;
 	use crate::sign::KeyMaterial;
-	use crate::ln::features::InvoiceRequestFeatures;
+	use crate::ln::features::{InvoiceRequestFeatures, OfferFeatures};
 	use crate::ln::inbound_payment::ExpandedKey;
 	use crate::ln::msgs::{DecodeError, MAX_VALUE_MSAT};
 	use crate::offers::invoice::{Bolt12Invoice, SIGNATURE_TAG as INVOICE_SIGNATURE_TAG};
@@ -877,6 +883,25 @@ mod tests {
 		let mut buffer = Vec::new();
 		unsigned_invoice_request.write(&mut buffer).unwrap();
 
+		assert_eq!(unsigned_invoice_request.bytes, buffer.as_slice());
+		assert_eq!(unsigned_invoice_request.payer_metadata(), &[1; 32]);
+		assert_eq!(unsigned_invoice_request.chains(), vec![ChainHash::using_genesis_block(Network::Bitcoin)]);
+		assert_eq!(unsigned_invoice_request.metadata(), None);
+		assert_eq!(unsigned_invoice_request.amount(), Some(&Amount::Bitcoin { amount_msats: 1000 }));
+		assert_eq!(unsigned_invoice_request.description(), PrintableString("foo"));
+		assert_eq!(unsigned_invoice_request.offer_features(), &OfferFeatures::empty());
+		assert_eq!(unsigned_invoice_request.absolute_expiry(), None);
+		assert_eq!(unsigned_invoice_request.paths(), &[]);
+		assert_eq!(unsigned_invoice_request.issuer(), None);
+		assert_eq!(unsigned_invoice_request.supported_quantity(), Quantity::One);
+		assert_eq!(unsigned_invoice_request.signing_pubkey(), recipient_pubkey());
+		assert_eq!(unsigned_invoice_request.chain(), ChainHash::using_genesis_block(Network::Bitcoin));
+		assert_eq!(unsigned_invoice_request.amount_msats(), None);
+		assert_eq!(unsigned_invoice_request.invoice_request_features(), &InvoiceRequestFeatures::empty());
+		assert_eq!(unsigned_invoice_request.quantity(), None);
+		assert_eq!(unsigned_invoice_request.payer_id(), payer_pubkey());
+		assert_eq!(unsigned_invoice_request.payer_note(), None);
+
 		match UnsignedInvoiceRequest::try_from(buffer) {
 			Err(e) => panic!("error parsing unsigned invoice request: {:?}", e),
 			Ok(parsed) => {
@@ -892,6 +917,16 @@ mod tests {
 
 		assert_eq!(invoice_request.bytes, buffer.as_slice());
 		assert_eq!(invoice_request.payer_metadata(), &[1; 32]);
+		assert_eq!(invoice_request.chains(), vec![ChainHash::using_genesis_block(Network::Bitcoin)]);
+		assert_eq!(invoice_request.metadata(), None);
+		assert_eq!(invoice_request.amount(), Some(&Amount::Bitcoin { amount_msats: 1000 }));
+		assert_eq!(invoice_request.description(), PrintableString("foo"));
+		assert_eq!(invoice_request.offer_features(), &OfferFeatures::empty());
+		assert_eq!(invoice_request.absolute_expiry(), None);
+		assert_eq!(invoice_request.paths(), &[]);
+		assert_eq!(invoice_request.issuer(), None);
+		assert_eq!(invoice_request.supported_quantity(), Quantity::One);
+		assert_eq!(invoice_request.signing_pubkey(), recipient_pubkey());
 		assert_eq!(invoice_request.chain(), ChainHash::using_genesis_block(Network::Bitcoin));
 		assert_eq!(invoice_request.amount_msats(), None);
 		assert_eq!(invoice_request.invoice_request_features(), &InvoiceRequestFeatures::empty());
