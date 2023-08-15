@@ -744,13 +744,13 @@ fn test_invalid_upfront_shutdown_script() {
 	open_channel.shutdown_scriptpubkey = Some(Builder::new().push_int(0)
 		.push_slice(&[0, 0])
 		.into_script());
-	nodes[0].node.handle_open_channel(&nodes[1].node.get_our_node_id(), &open_channel);
+	nodes[1].node.handle_open_channel(&nodes[0].node.get_our_node_id(), &open_channel);
 
-	let events = nodes[0].node.get_and_clear_pending_msg_events();
+	let events = nodes[1].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 1);
 	match events[0] {
 		MessageSendEvent::HandleError { action: ErrorAction::SendErrorMessage { ref msg }, node_id } => {
-			assert_eq!(node_id, nodes[1].node.get_our_node_id());
+			assert_eq!(node_id, nodes[0].node.get_our_node_id());
 			assert_eq!(msg.data, "Peer is signaling upfront_shutdown but has provided an unacceptable scriptpubkey format: Script(OP_0 OP_PUSHBYTES_2 0000)");
 		},
 		_ => panic!("Unexpected event"),
