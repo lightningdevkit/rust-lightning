@@ -320,7 +320,8 @@ impl<'a, S: SigningPubkeyStrategy> InvoiceBuilder<'a, S> {
 		self
 	}
 
-	/// Sets [`Bolt12Invoice::features`] to indicate MPP may be used. Otherwise, MPP is disallowed.
+	/// Sets [`Bolt12Invoice::invoice_features`] to indicate MPP may be used. Otherwise, MPP is
+	/// disallowed.
 	pub fn allow_mpp(mut self) -> Self {
 		self.invoice.fields_mut().features.set_basic_mpp_optional();
 		self
@@ -394,11 +395,6 @@ impl UnsignedBolt12Invoice {
 		let tagged_hash = TaggedHash::new(SIGNATURE_TAG, &bytes);
 
 		Self { bytes, contents, tagged_hash }
-	}
-
-	/// The public key corresponding to the key needed to sign the invoice.
-	pub fn signing_pubkey(&self) -> PublicKey {
-		self.contents.fields().signing_pubkey
 	}
 
 	/// Signs the [`TaggedHash`] of the invoice using the given function.
@@ -485,11 +481,11 @@ struct InvoiceFields {
 	signing_pubkey: PublicKey,
 }
 
-impl Bolt12Invoice {
+macro_rules! invoice_accessors { ($self: ident, $contents: expr) => {
 	/// A complete description of the purpose of the originating offer or refund. Intended to be
 	/// displayed to the user but with the caveat that it has not been verified in any way.
-	pub fn description(&self) -> PrintableString {
-		self.contents.description()
+	pub fn description(&$self) -> PrintableString {
+		$contents.description()
 	}
 
 	/// Paths to the recipient originating from publicly reachable nodes, including information
@@ -500,52 +496,60 @@ impl Bolt12Invoice {
 	///
 	/// This is not exported to bindings users as slices with non-reference types cannot be ABI
 	/// matched in another language.
-	pub fn payment_paths(&self) -> &[(BlindedPayInfo, BlindedPath)] {
-		self.contents.payment_paths()
+	pub fn payment_paths(&$self) -> &[(BlindedPayInfo, BlindedPath)] {
+		$contents.payment_paths()
 	}
 
 	/// Duration since the Unix epoch when the invoice was created.
-	pub fn created_at(&self) -> Duration {
-		self.contents.created_at()
+	pub fn created_at(&$self) -> Duration {
+		$contents.created_at()
 	}
 
 	/// Duration since [`Bolt12Invoice::created_at`] when the invoice has expired and therefore
 	/// should no longer be paid.
-	pub fn relative_expiry(&self) -> Duration {
-		self.contents.relative_expiry()
+	pub fn relative_expiry(&$self) -> Duration {
+		$contents.relative_expiry()
 	}
 
 	/// Whether the invoice has expired.
 	#[cfg(feature = "std")]
-	pub fn is_expired(&self) -> bool {
-		self.contents.is_expired()
+	pub fn is_expired(&$self) -> bool {
+		$contents.is_expired()
 	}
 
 	/// SHA256 hash of the payment preimage that will be given in return for paying the invoice.
-	pub fn payment_hash(&self) -> PaymentHash {
-		self.contents.payment_hash()
+	pub fn payment_hash(&$self) -> PaymentHash {
+		$contents.payment_hash()
 	}
 
 	/// The minimum amount required for a successful payment of the invoice.
-	pub fn amount_msats(&self) -> u64 {
-		self.contents.amount_msats()
+	pub fn amount_msats(&$self) -> u64 {
+		$contents.amount_msats()
 	}
 
 	/// Fallback addresses for paying the invoice on-chain, in order of most-preferred to
 	/// least-preferred.
-	pub fn fallbacks(&self) -> Vec<Address> {
-		self.contents.fallbacks()
+	pub fn fallbacks(&$self) -> Vec<Address> {
+		$contents.fallbacks()
 	}
 
 	/// Features pertaining to paying an invoice.
-	pub fn features(&self) -> &Bolt12InvoiceFeatures {
-		self.contents.features()
+	pub fn invoice_features(&$self) -> &Bolt12InvoiceFeatures {
+		$contents.features()
 	}
 
 	/// The public key corresponding to the key used to sign the invoice.
-	pub fn signing_pubkey(&self) -> PublicKey {
-		self.contents.signing_pubkey()
+	pub fn signing_pubkey(&$self) -> PublicKey {
+		$contents.signing_pubkey()
 	}
+} }
+
+impl UnsignedBolt12Invoice {
+	invoice_accessors!(self, self.contents);
+}
+
+impl Bolt12Invoice {
+	invoice_accessors!(self, self.contents);
 
 	/// Signature of the invoice verified using [`Bolt12Invoice::signing_pubkey`].
 	pub fn signature(&self) -> Signature {
@@ -1092,6 +1096,19 @@ mod tests {
 		let mut buffer = Vec::new();
 		unsigned_invoice.write(&mut buffer).unwrap();
 
+		assert_eq!(unsigned_invoice.bytes, buffer.as_slice());
+		assert_eq!(unsigned_invoice.description(), PrintableString("foo"));
+		assert_eq!(unsigned_invoice.payment_paths(), payment_paths.as_slice());
+		assert_eq!(unsigned_invoice.created_at(), now);
+		assert_eq!(unsigned_invoice.relative_expiry(), DEFAULT_RELATIVE_EXPIRY);
+		#[cfg(feature = "std")]
+		assert!(!unsigned_invoice.is_expired());
+		assert_eq!(unsigned_invoice.payment_hash(), payment_hash);
+		assert_eq!(unsigned_invoice.amount_msats(), 1000);
+		assert_eq!(unsigned_invoice.fallbacks(), vec![]);
+		assert_eq!(unsigned_invoice.invoice_features(), &Bolt12InvoiceFeatures::empty());
+		assert_eq!(unsigned_invoice.signing_pubkey(), recipient_pubkey());
+
 		match UnsignedBolt12Invoice::try_from(buffer) {
 			Err(e) => panic!("error parsing unsigned invoice: {:?}", e),
 			Ok(parsed) => {
@@ -1115,7 +1132,7 @@ mod tests {
 		assert_eq!(invoice.payment_hash(), payment_hash);
 		assert_eq!(invoice.amount_msats(), 1000);
 		assert_eq!(invoice.fallbacks(), vec![]);
-		assert_eq!(invoice.features(), &Bolt12InvoiceFeatures::empty());
+		assert_eq!(invoice.invoice_features(), &Bolt12InvoiceFeatures::empty());
 		assert_eq!(invoice.signing_pubkey(), recipient_pubkey());
 		assert!(
 			merkle::verify_signature(
@@ -1198,7 +1215,7 @@ mod tests {
 		assert_eq!(invoice.payment_hash(), payment_hash);
 		assert_eq!(invoice.amount_msats(), 1000);
 		assert_eq!(invoice.fallbacks(), vec![]);
-		assert_eq!(invoice.features(), &Bolt12InvoiceFeatures::empty());
+		assert_eq!(invoice.invoice_features(), &Bolt12InvoiceFeatures::empty());
 		assert_eq!(invoice.signing_pubkey(), recipient_pubkey());
 		assert!(
 			merkle::verify_signature(
@@ -1546,7 +1563,7 @@ mod tests {
 			.build().unwrap()
 			.sign(recipient_sign).unwrap();
 		let (_, _, _, tlv_stream, _) = invoice.as_tlv_stream();
-		assert_eq!(invoice.features(), &features);
+		assert_eq!(invoice.invoice_features(), &features);
 		assert_eq!(tlv_stream.features, Some(&features));
 	}
 
@@ -1766,7 +1783,7 @@ mod tests {
 			Ok(invoice) => {
 				let mut features = Bolt12InvoiceFeatures::empty();
 				features.set_basic_mpp_optional();
-				assert_eq!(invoice.features(), &features);
+				assert_eq!(invoice.invoice_features(), &features);
 			},
 			Err(e) => panic!("error parsing invoice: {:?}", e),
 		}
