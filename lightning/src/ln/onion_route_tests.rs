@@ -673,11 +673,11 @@ fn do_test_onion_failure_stale_channel_update(announced_channel: bool) {
 	config.accept_forwards_to_priv_channels = !announced_channel;
 	config.channel_config.max_dust_htlc_exposure = MaxDustHTLCExposure::FeeRateMultiplier(5_000_000 / 253);
 	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 	let persister;
 	let chain_monitor;
-	let channel_manager_1_deserialized;
-	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, Some(config), None]);
+	let channel_manager_1_deserialized;
 	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 
 	let other_channel = create_chan_between_nodes(

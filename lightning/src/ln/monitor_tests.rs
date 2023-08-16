@@ -1638,13 +1638,14 @@ fn test_revoked_counterparty_aggregated_claims() {
 
 fn do_test_restored_packages_retry(check_old_monitor_retries_after_upgrade: bool) {
 	// Tests that we'll retry packages that were previously timelocked after we've restored them.
-	let persister;
-	let new_chain_monitor;
-	let node_deserialized;
-
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let persister;
+	let new_chain_monitor;
+
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let node_deserialized;
+
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	// Open a channel, lock in an HTLC, and immediately broadcast the commitment transaction. This
@@ -1969,19 +1970,15 @@ fn test_anchors_aggregated_revoked_htlc_tx() {
 	// Required to sign a revoked commitment transaction
 	chanmon_cfgs[1].keys_manager.disable_revocation_policy_check = true;
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let bob_persister;
+	let bob_chain_monitor;
+
 	let mut anchors_config = UserConfig::default();
 	anchors_config.channel_handshake_config.announced_channel = true;
 	anchors_config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
 	anchors_config.manually_accept_inbound_channels = true;
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(anchors_config), Some(anchors_config)]);
-
-	let bob_persister: test_utils::TestPersister;
-	let bob_chain_monitor: test_utils::TestChainMonitor;
-	let bob_deserialized: ChannelManager<
-		&test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface,
-		&test_utils::TestKeysInterface, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator,
-		&test_utils::TestRouter, &test_utils::TestLogger,
-	>;
+	let bob_deserialized;
 
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
