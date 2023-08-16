@@ -635,15 +635,15 @@ impl InvoiceRequestContents {
 		self.inner.chain()
 	}
 
-	fn amount_msats(&self) -> Option<u64> {
+	pub(super) fn amount_msats(&self) -> Option<u64> {
 		self.inner.amount_msats
 	}
 
-	fn features(&self) -> &InvoiceRequestFeatures {
+	pub(super) fn features(&self) -> &InvoiceRequestFeatures {
 		&self.inner.features
 	}
 
-	fn quantity(&self) -> Option<u64> {
+	pub(super) fn quantity(&self) -> Option<u64> {
 		self.inner.quantity
 	}
 
@@ -651,7 +651,7 @@ impl InvoiceRequestContents {
 		self.payer_id
 	}
 
-	fn payer_note(&self) -> Option<PrintableString> {
+	pub(super) fn payer_note(&self) -> Option<PrintableString> {
 		self.inner.payer_note.as_ref()
 			.map(|payer_note| PrintableString(payer_note.as_str()))
 	}

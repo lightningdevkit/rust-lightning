@@ -110,12 +110,12 @@ use core::time::Duration;
 use crate::io;
 use crate::blinded_path::BlindedPath;
 use crate::ln::PaymentHash;
-use crate::ln::features::{BlindedHopFeatures, Bolt12InvoiceFeatures};
+use crate::ln::features::{BlindedHopFeatures, Bolt12InvoiceFeatures, InvoiceRequestFeatures, OfferFeatures};
 use crate::ln::inbound_payment::ExpandedKey;
 use crate::ln::msgs::DecodeError;
 use crate::offers::invoice_request::{INVOICE_REQUEST_PAYER_ID_TYPE, INVOICE_REQUEST_TYPES, IV_BYTES as INVOICE_REQUEST_IV_BYTES, InvoiceRequest, InvoiceRequestContents, InvoiceRequestTlvStream, InvoiceRequestTlvStreamRef};
 use crate::offers::merkle::{SignError, SignatureTlvStream, SignatureTlvStreamRef, TaggedHash, TlvStream, WithoutSignatures, self};
-use crate::offers::offer::{Amount, OFFER_TYPES, OfferTlvStream, OfferTlvStreamRef};
+use crate::offers::offer::{Amount, OFFER_TYPES, OfferTlvStream, OfferTlvStreamRef, Quantity};
 use crate::offers::parse::{Bolt12ParseError, Bolt12SemanticError, ParsedMessage};
 use crate::offers::payer::{PAYER_METADATA_TYPE, PayerTlvStream, PayerTlvStreamRef};
 use crate::offers::refund::{IV_BYTES as REFUND_IV_BYTES, Refund, RefundContents};
@@ -482,10 +482,139 @@ struct InvoiceFields {
 }
 
 macro_rules! invoice_accessors { ($self: ident, $contents: expr) => {
-	/// A complete description of the purpose of the originating offer or refund. Intended to be
-	/// displayed to the user but with the caveat that it has not been verified in any way.
+	/// The chains that may be used when paying a requested invoice.
+	///
+	/// From [`Offer::chains`]; `None` if the invoice was created in response to a [`Refund`].
+	///
+	/// [`Offer::chains`]: crate::offers::offer::Offer::chains
+	pub fn offer_chains(&$self) -> Option<Vec<ChainHash>> {
+		$contents.offer_chains()
+	}
+
+	/// The chain that must be used when paying the invoice; selected from [`offer_chains`] if the
+	/// invoice originated from an offer.
+	///
+	/// From [`InvoiceRequest::chain`] or [`Refund::chain`].
+	///
+	/// [`offer_chains`]: Self::offer_chains
+	/// [`InvoiceRequest::chain`]: crate::offers::invoice_request::InvoiceRequest::chain
+	pub fn chain(&$self) -> ChainHash {
+		$contents.chain()
+	}
+
+	/// Opaque bytes set by the originating [`Offer`].
+	///
+	/// From [`Offer::metadata`]; `None` if the invoice was created in response to a [`Refund`] or
+	/// if the [`Offer`] did not set it.
+	///
+	/// [`Offer`]: crate::offers::offer::Offer
+	/// [`Offer::metadata`]: crate::offers::offer::Offer::metadata
+	pub fn metadata(&$self) -> Option<&Vec<u8>> {
+		$contents.metadata()
+	}
+
+	/// The minimum amount required for a successful payment of a single item.
+	///
+	/// From [`Offer::amount`]; `None` if the invoice was created in response to a [`Refund`] or if
+	/// the [`Offer`] did not set it.
+	///
+	/// [`Offer`]: crate::offers::offer::Offer
+	/// [`Offer::amount`]: crate::offers::offer::Offer::amount
+	pub fn amount(&$self) -> Option<&Amount> {
+		$contents.amount()
+	}
+
+	/// Features pertaining to the originating [`Offer`].
+	///
+	/// From [`Offer::offer_features`]; `None` if the invoice was created in response to a
+	/// [`Refund`].
+	///
+	/// [`Offer`]: crate::offers::offer::Offer
+	/// [`Offer::offer_features`]: crate::offers::offer::Offer::offer_features
+	pub fn offer_features(&$self) -> Option<&OfferFeatures> {
+		$contents.offer_features()
+	}
+
+	/// A complete description of the purpose of the originating offer or refund.
+	///
+	/// From [`Offer::description`] or [`Refund::description`].
+	///
+	/// [`Offer::description`]: crate::offers::offer::Offer::description
 	pub fn description(&$self) -> PrintableString {
 		$contents.description()
+	}
+
+	/// Duration since the Unix epoch when an invoice should no longer be requested.
+	///
+	/// From [`Offer::absolute_expiry`] or [`Refund::absolute_expiry`].
+	///
+	/// [`Offer::absolute_expiry`]: crate::offers::offer::Offer::absolute_expiry
+	pub fn absolute_expiry(&$self) -> Option<Duration> {
+		$contents.absolute_expiry()
+	}
+
+	/// The issuer of the offer or refund.
+	///
+	/// From [`Offer::issuer`] or [`Refund::issuer`].
+	///
+	/// [`Offer::issuer`]: crate::offers::offer::Offer::issuer
+	pub fn issuer(&$self) -> Option<PrintableString> {
+		$contents.issuer()
+	}
+
+	/// Paths to the recipient originating from publicly reachable nodes.
+	///
+	/// From [`Offer::paths`] or [`Refund::paths`].
+	///
+	/// [`Offer::paths`]: crate::offers::offer::Offer::paths
+	pub fn message_paths(&$self) -> &[BlindedPath] {
+		$contents.message_paths()
+	}
+
+	/// The quantity of items supported.
+	///
+	/// From [`Offer::supported_quantity`]; `None` if the invoice was created in response to a
+	/// [`Refund`].
+	///
+	/// [`Offer::supported_quantity`]: crate::offers::offer::Offer::supported_quantity
+	pub fn supported_quantity(&$self) -> Option<Quantity> {
+		$contents.supported_quantity()
+	}
+
+	/// An unpredictable series of bytes from the payer.
+	///
+	/// From [`InvoiceRequest::payer_metadata`] or [`Refund::payer_metadata`].
+	pub fn payer_metadata(&$self) -> &[u8] {
+		$contents.payer_metadata()
+	}
+
+	/// Features pertaining to requesting an invoice.
+	///
+	/// From [`InvoiceRequest::invoice_request_features`] or [`Refund::features`].
+	pub fn invoice_request_features(&$self) -> &InvoiceRequestFeatures {
+		&$contents.invoice_request_features()
+	}
+
+	/// The quantity of items requested or refunded for.
+	///
+	/// From [`InvoiceRequest::quantity`] or [`Refund::quantity`].
+	pub fn quantity(&$self) -> Option<u64> {
+		$contents.quantity()
+	}
+
+	/// A possibly transient pubkey used to sign the invoice request or to send an invoice for a
+	/// refund in case there are no [`message_paths`].
+	///
+	/// [`message_paths`]: Self::message_paths
+	pub fn payer_id(&$self) -> PublicKey {
+		$contents.payer_id()
+	}
+
+	/// A payer-provided note reflected back in the invoice.
+	///
+	/// From [`InvoiceRequest::payer_note`] or [`Refund::payer_note`].
+	pub fn payer_note(&$self) -> Option<PrintableString> {
+		$contents.payer_note()
 	}
 
 	/// Paths to the recipient originating from publicly reachable nodes, including information
@@ -591,10 +720,34 @@ impl InvoiceContents {
 		}
 	}
 
+	fn offer_chains(&self) -> Option<Vec<ChainHash>> {
+		match self {
+			InvoiceContents::ForOffer { invoice_request, .. } =>
+				Some(invoice_request.inner.offer.chains()),
+			InvoiceContents::ForRefund { .. } => None,
+		}
+	}
+
 	fn chain(&self) -> ChainHash {
 		match self {
 			InvoiceContents::ForOffer { invoice_request, .. } => invoice_request.chain(),
 			InvoiceContents::ForRefund { refund, .. } => refund.chain(),
+		}
+	}
+
+	fn metadata(&self) -> Option<&Vec<u8>> {
+		match self {
+			InvoiceContents::ForOffer { invoice_request, .. } =>
+				invoice_request.inner.offer.metadata(),
+			InvoiceContents::ForRefund { .. } => None,
+		}
+	}
+
+	fn amount(&self) -> Option<&Amount> {
+		match self {
+			InvoiceContents::ForOffer { invoice_request, .. } =>
+				invoice_request.inner.offer.amount(),
+			InvoiceContents::ForRefund { .. } => None,
 		}
 	}
 
@@ -604,6 +757,86 @@ impl InvoiceContents {
 				invoice_request.inner.offer.description()
 			},
 			InvoiceContents::ForRefund { refund, .. } => refund.description(),
+		}
+	}
+
+	fn offer_features(&self) -> Option<&OfferFeatures> {
+		match self {
+			InvoiceContents::ForOffer { invoice_request, .. } => {
+				Some(invoice_request.inner.offer.features())
+			},
+			InvoiceContents::ForRefund { .. } => None,
+		}
+	}
+
+	fn absolute_expiry(&self) -> Option<Duration> {
+		match self {
+			InvoiceContents::ForOffer { invoice_request, .. } => {
+				invoice_request.inner.offer.absolute_expiry()
+			},
+			InvoiceContents::ForRefund { refund, .. } => refund.absolute_expiry(),
+		}
+	}
+
+	fn issuer(&self) -> Option<PrintableString> {
+		match self {
+			InvoiceContents::ForOffer { invoice_request, .. } => {
+				invoice_request.inner.offer.issuer()
+			},
+			InvoiceContents::ForRefund { refund, .. } => refund.issuer(),
+		}
+	}
+
+	fn message_paths(&self) -> &[BlindedPath] {
+		match self {
+			InvoiceContents::ForOffer { invoice_request, .. } => {
+				invoice_request.inner.offer.paths()
+			},
+			InvoiceContents::ForRefund { refund, .. } => refund.paths(),
+		}
+	}
+
+	fn supported_quantity(&self) -> Option<Quantity> {
+		match self {
+			InvoiceContents::ForOffer { invoice_request, .. } => {
+				Some(invoice_request.inner.offer.supported_quantity())
+			},
+			InvoiceContents::ForRefund { .. } => None,
+		}
+	}
+
+	fn payer_metadata(&self) -> &[u8] {
+		match self {
+			InvoiceContents::ForOffer { invoice_request, .. } => invoice_request.metadata(),
+			InvoiceContents::ForRefund { refund, .. } => refund.metadata(),
+		}
+	}
+
+	fn invoice_request_features(&self) -> &InvoiceRequestFeatures {
+		match self {
+			InvoiceContents::ForOffer { invoice_request, .. } => invoice_request.features(),
+			InvoiceContents::ForRefund { refund, .. } => refund.features(),
+		}
+	}
+
+	fn quantity(&self) -> Option<u64> {
+		match self {
+			InvoiceContents::ForOffer { invoice_request, .. } => invoice_request.quantity(),
+			InvoiceContents::ForRefund { refund, .. } => refund.quantity(),
+		}
+	}
+
+	fn payer_id(&self) -> PublicKey {
+		match self {
+			InvoiceContents::ForOffer { invoice_request, .. } => invoice_request.payer_id(),
+			InvoiceContents::ForRefund { refund, .. } => refund.payer_id(),
+		}
+	}
+
+	fn payer_note(&self) -> Option<PrintableString> {
+		match self {
+			InvoiceContents::ForOffer { invoice_request, .. } => invoice_request.payer_note(),
+			InvoiceContents::ForRefund { refund, .. } => refund.payer_note(),
 		}
 	}
 
@@ -1040,6 +1273,7 @@ impl TryFrom<PartialInvoiceTlvStream> for InvoiceContents {
 mod tests {
 	use super::{Bolt12Invoice, DEFAULT_RELATIVE_EXPIRY, FallbackAddress, FullInvoiceTlvStreamRef, InvoiceTlvStreamRef, SIGNATURE_TAG, UnsignedBolt12Invoice};
 
+	use bitcoin::blockdata::constants::ChainHash;
 	use bitcoin::blockdata::script::Script;
 	use bitcoin::hashes::Hash;
 	use bitcoin::network::constants::Network;
@@ -1050,12 +1284,12 @@ mod tests {
 	use core::time::Duration;
 	use crate::blinded_path::{BlindedHop, BlindedPath};
 	use crate::sign::KeyMaterial;
-	use crate::ln::features::Bolt12InvoiceFeatures;
+	use crate::ln::features::{Bolt12InvoiceFeatures, InvoiceRequestFeatures, OfferFeatures};
 	use crate::ln::inbound_payment::ExpandedKey;
 	use crate::ln::msgs::DecodeError;
 	use crate::offers::invoice_request::InvoiceRequestTlvStreamRef;
 	use crate::offers::merkle::{SignError, SignatureTlvStreamRef, self};
-	use crate::offers::offer::{OfferBuilder, OfferTlvStreamRef, Quantity};
+	use crate::offers::offer::{Amount, OfferBuilder, OfferTlvStreamRef, Quantity};
 	use crate::offers::parse::{Bolt12ParseError, Bolt12SemanticError};
 	use crate::offers::payer::PayerTlvStreamRef;
 	use crate::offers::refund::RefundBuilder;
@@ -1097,7 +1331,23 @@ mod tests {
 		unsigned_invoice.write(&mut buffer).unwrap();
 
 		assert_eq!(unsigned_invoice.bytes, buffer.as_slice());
+		assert_eq!(unsigned_invoice.payer_metadata(), &[1; 32]);
+		assert_eq!(unsigned_invoice.offer_chains(), Some(vec![ChainHash::using_genesis_block(Network::Bitcoin)]));
+		assert_eq!(unsigned_invoice.metadata(), None);
+		assert_eq!(unsigned_invoice.amount(), Some(&Amount::Bitcoin { amount_msats: 1000 }));
 		assert_eq!(unsigned_invoice.description(), PrintableString("foo"));
+		assert_eq!(unsigned_invoice.offer_features(), Some(&OfferFeatures::empty()));
+		assert_eq!(unsigned_invoice.absolute_expiry(), None);
+		assert_eq!(unsigned_invoice.message_paths(), &[]);
+		assert_eq!(unsigned_invoice.issuer(), None);
+		assert_eq!(unsigned_invoice.supported_quantity(), Some(Quantity::One));
+		assert_eq!(unsigned_invoice.signing_pubkey(), recipient_pubkey());
+		assert_eq!(unsigned_invoice.chain(), ChainHash::using_genesis_block(Network::Bitcoin));
+		assert_eq!(unsigned_invoice.amount_msats(), 1000);
+		assert_eq!(unsigned_invoice.invoice_request_features(), &InvoiceRequestFeatures::empty());
+		assert_eq!(unsigned_invoice.quantity(), None);
+		assert_eq!(unsigned_invoice.payer_id(), payer_pubkey());
+		assert_eq!(unsigned_invoice.payer_note(), None);
 		assert_eq!(unsigned_invoice.payment_paths(), payment_paths.as_slice());
 		assert_eq!(unsigned_invoice.created_at(), now);
 		assert_eq!(unsigned_invoice.relative_expiry(), DEFAULT_RELATIVE_EXPIRY);
@@ -1123,7 +1373,23 @@ mod tests {
 		invoice.write(&mut buffer).unwrap();
 
 		assert_eq!(invoice.bytes, buffer.as_slice());
+		assert_eq!(invoice.payer_metadata(), &[1; 32]);
+		assert_eq!(invoice.offer_chains(), Some(vec![ChainHash::using_genesis_block(Network::Bitcoin)]));
+		assert_eq!(invoice.metadata(), None);
+		assert_eq!(invoice.amount(), Some(&Amount::Bitcoin { amount_msats: 1000 }));
 		assert_eq!(invoice.description(), PrintableString("foo"));
+		assert_eq!(invoice.offer_features(), Some(&OfferFeatures::empty()));
+		assert_eq!(invoice.absolute_expiry(), None);
+		assert_eq!(invoice.message_paths(), &[]);
+		assert_eq!(invoice.issuer(), None);
+		assert_eq!(invoice.supported_quantity(), Some(Quantity::One));
+		assert_eq!(invoice.signing_pubkey(), recipient_pubkey());
+		assert_eq!(invoice.chain(), ChainHash::using_genesis_block(Network::Bitcoin));
+		assert_eq!(invoice.amount_msats(), 1000);
+		assert_eq!(invoice.invoice_request_features(), &InvoiceRequestFeatures::empty());
+		assert_eq!(invoice.quantity(), None);
+		assert_eq!(invoice.payer_id(), payer_pubkey());
+		assert_eq!(invoice.payer_note(), None);
 		assert_eq!(invoice.payment_paths(), payment_paths.as_slice());
 		assert_eq!(invoice.created_at(), now);
 		assert_eq!(invoice.relative_expiry(), DEFAULT_RELATIVE_EXPIRY);
@@ -1206,7 +1472,23 @@ mod tests {
 		invoice.write(&mut buffer).unwrap();
 
 		assert_eq!(invoice.bytes, buffer.as_slice());
+		assert_eq!(invoice.payer_metadata(), &[1; 32]);
+		assert_eq!(invoice.offer_chains(), None);
+		assert_eq!(invoice.metadata(), None);
+		assert_eq!(invoice.amount(), None);
 		assert_eq!(invoice.description(), PrintableString("foo"));
+		assert_eq!(invoice.offer_features(), None);
+		assert_eq!(invoice.absolute_expiry(), None);
+		assert_eq!(invoice.message_paths(), &[]);
+		assert_eq!(invoice.issuer(), None);
+		assert_eq!(invoice.supported_quantity(), None);
+		assert_eq!(invoice.signing_pubkey(), recipient_pubkey());
+		assert_eq!(invoice.chain(), ChainHash::using_genesis_block(Network::Bitcoin));
+		assert_eq!(invoice.amount_msats(), 1000);
+		assert_eq!(invoice.invoice_request_features(), &InvoiceRequestFeatures::empty());
+		assert_eq!(invoice.quantity(), None);
+		assert_eq!(invoice.payer_id(), payer_pubkey());
+		assert_eq!(invoice.payer_note(), None);
 		assert_eq!(invoice.payment_paths(), payment_paths.as_slice());
 		assert_eq!(invoice.created_at(), now);
 		assert_eq!(invoice.relative_expiry(), DEFAULT_RELATIVE_EXPIRY);
