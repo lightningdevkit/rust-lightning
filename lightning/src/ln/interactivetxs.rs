@@ -107,6 +107,7 @@ pub(crate) struct NegotiationAborted(AbortReason);
 
 impl AcceptingChanges for Negotiating {}
 impl AcceptingChanges for OurTxComplete {}
+impl AcceptingChanges for TheirTxComplete {}
 
 struct TxInputWithPrevOutput {
 	input: TxIn,
@@ -460,12 +461,13 @@ impl<S> InteractiveTxStateMachine<S> where S: AcceptingChanges {
 }
 
 impl InteractiveTxStateMachine<TheirTxComplete> {
-	fn send_tx_complete(self) -> InteractiveTxStateMachine<NegotiationComplete> {
-		// TODO: Should we validate before transitioning states? If so, do we want to abort negotiation
-		// if our current transaction state is invalid?
-		InteractiveTxStateMachine {
-			context: self.context,
-			state: NegotiationComplete {}
+	fn send_tx_complete(self) -> InteractiveTxStateMachineResult<NegotiationComplete> {
+		match self.is_current_transaction_state_able_to_complete() {
+			Err(e) => Err(InteractiveTxStateMachine { context: self.context, state: NegotiationAborted(e) }),
+			_ => Ok(InteractiveTxStateMachine {
+				context: self.context,
+				state: NegotiationComplete {}
+			})
 		}
 	}
 }
@@ -592,7 +594,12 @@ impl InteractiveTxConstructor {
 		let mut mode = core::mem::take(&mut self.mode);
 		self.mode = match mode {
 			ChannelMode::Negotiating(c) => { ChannelMode::OurTxComplete(c.send_tx_complete()) }
-			ChannelMode::TheirTxComplete(c) => { ChannelMode::NegotiationComplete(c.send_tx_complete()) }
+			ChannelMode::TheirTxComplete(c) => {
+				match c.send_tx_complete() {
+					Ok(c) => ChannelMode::NegotiationComplete(c),
+					Err(c) => ChannelMode::NegotiationAborted(c)
+				}
+			}
 			_ => mode
 		}
 	}
