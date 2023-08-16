@@ -515,9 +515,9 @@ impl RecipientOnionFields {
 		let tlvs = &mut self.custom_tlvs;
 		let further_tlvs = &mut further_htlc_fields.custom_tlvs;
 
-		let even_tlvs: Vec<&(u64, Vec<u8>)> = tlvs.iter().filter(|(typ, _)| *typ % 2 == 0).collect();
-		let further_even_tlvs: Vec<&(u64, Vec<u8>)> = further_tlvs.iter().filter(|(typ, _)| *typ % 2 == 0).collect();
-		if even_tlvs != further_even_tlvs { return Err(()) }
+		let even_tlvs = tlvs.iter().filter(|(typ, _)| *typ % 2 == 0);
+		let further_even_tlvs = further_tlvs.iter().filter(|(typ, _)| *typ % 2 == 0);
+		if even_tlvs.ne(further_even_tlvs) { return Err(()) }
 
 		tlvs.retain(|tlv| further_tlvs.iter().any(|further_tlv| tlv == further_tlv));
 		further_tlvs.retain(|further_tlv| tlvs.iter().any(|tlv| tlv == further_tlv));
