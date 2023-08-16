@@ -16,6 +16,7 @@ use crate::ln::channel::TOTAL_BITCOIN_SUPPLY_SATOSHIS;
 
 use crate::ln::interactivetxs::ChannelMode::Indeterminate;
 use crate::ln::msgs;
+use crate::ln::msgs::SerialId;
 
 /// The number of received `tx_add_input` messages during a negotiation at which point the
 /// negotiation MUST be failed.
@@ -29,7 +30,6 @@ const MAX_RECEIVED_TX_ADD_OUTPUT_COUNT: u16 = 4096;
 /// negotiation.
 const MAX_INPUTS_OUTPUTS_COUNT: usize = 252;
 
-type SerialId = u64;
 trait SerialIdExt {
 	fn is_valid_for_initiator(&self) -> bool;
 }
@@ -119,9 +119,9 @@ struct NegotiationContext {
 	holder_is_initiator: bool,
 	received_tx_add_input_count: u16,
 	received_tx_add_output_count: u16,
-	inputs: HashMap<u64, TxInputWithPrevOutput>,
+	inputs: HashMap<SerialId, TxInputWithPrevOutput>,
 	prevtx_outpoints: HashSet<OutPoint>,
-	outputs: HashMap<u64, TxOut>,
+	outputs: HashMap<SerialId, TxOut>,
 	base_tx: Transaction,
 	did_send_tx_signatures: bool,
 	feerate_sat_per_kw: u32,
@@ -190,14 +190,13 @@ impl<S> InteractiveTxStateMachine<S> where S: AcceptingChanges {
 		Err(InteractiveTxStateMachine { context: self.context, state: NegotiationAborted(reason) })
 	}
 
-	// TODO: change `serial_id` field in `TxAddInput` to be `SerialId` instead of `u64`
-	fn receive_tx_add_input(mut self, serial_id: SerialId, msg: &msgs::TxAddInput, confirmed: bool) -> InteractiveTxStateMachineResult<Negotiating> {
+	fn receive_tx_add_input(mut self, msg: &msgs::TxAddInput, confirmed: bool) -> InteractiveTxStateMachineResult<Negotiating> {
 		// The interactive-txs spec calls for us to fail negotiation if the `prevtx` we receive is
 		// invalid. However, we would not need to account for this explicit negotiation failure
 		// mode here since `PeerManager` would already disconnect the peer if the `prevtx` is
 		// invalid; implicitly ending the negotiation.
 
-		if !self.is_valid_counterparty_serial_id(serial_id) {
+		if !self.is_valid_counterparty_serial_id(msg.serial_id) {
 			// The receiving node:
 			//  - MUST fail the negotiation if:
 			//     - the `serial_id` has the wrong parity
@@ -256,7 +255,7 @@ impl<S> InteractiveTxStateMachine<S> where S: AcceptingChanges {
 			return self.abort_negotiation(AbortReason::PrevTxOutInvalid);
 		};
 		if let None = self.context.inputs.insert(
-			serial_id,
+			msg.serial_id,
 			TxInputWithPrevOutput {
 				input: TxIn {
 					previous_output: OutPoint { txid: transaction.txid(), vout: msg.prevtx_out },
@@ -558,7 +557,7 @@ impl InteractiveTxConstructor {
 	}
 
 	pub(crate) fn receive_tx_add_input(&mut self, serial_id: SerialId, transaction_input: &msgs::TxAddInput, confirmed: bool) {
-		self.handle_negotiating_receive(|state_machine| state_machine.receive_tx_add_input(serial_id, transaction_input, confirmed))
+		self.handle_negotiating_receive(|state_machine| state_machine.receive_tx_add_input(transaction_input, confirmed))
 	}
 
 	pub(crate) fn receive_tx_remove_input(&mut self, serial_id: SerialId) {

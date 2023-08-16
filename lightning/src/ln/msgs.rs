@@ -464,6 +464,8 @@ impl Readable for TransactionU16LenLimited {
 	}
 }
 
+pub type SerialId = u64;
+
 /// A tx_add_input message for adding an input during interactive transaction construction
 ///
 // TODO(dual_funding): Add spec link for `tx_add_input`.
@@ -473,7 +475,7 @@ pub struct TxAddInput {
 	pub channel_id: [u8; 32],
 	/// A randomly chosen unique identifier for this input, which is even for initiators and odd for
 	/// non-initiators.
-	pub serial_id: u64,
+	pub serial_id: SerialId,
 	/// Serialized transaction that contains the output this input spends to verify that it is non
 	/// malleable.
 	pub prevtx: TransactionU16LenLimited,
@@ -492,7 +494,7 @@ pub struct TxAddOutput {
 	pub channel_id: [u8; 32],
 	/// A randomly chosen unique identifier for this output, which is even for initiators and odd for
 	/// non-initiators.
-	pub serial_id: u64,
+	pub serial_id: SerialId,
 	/// The satoshi value of the output
 	pub sats: u64,
 	/// The scriptPubKey for the output
@@ -507,7 +509,7 @@ pub struct TxRemoveInput {
 	/// The channel ID
 	pub channel_id: [u8; 32],
 	/// The serial ID of the input to be removed
-	pub serial_id: u64,
+	pub serial_id: SerialId,
 }
 
 /// A tx_remove_output message for removing an output during interactive transaction construction.
@@ -518,7 +520,7 @@ pub struct TxRemoveOutput {
 	/// The channel ID
 	pub channel_id: [u8; 32],
 	/// The serial ID of the output to be removed
-	pub serial_id: u64,
+	pub serial_id: SerialId,
 }
 
 /// A tx_complete message signalling the conclusion of a peer's transaction contributions during
