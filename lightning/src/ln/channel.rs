@@ -1000,9 +1000,10 @@ impl<Signer: ChannelSigner> ChannelContext<Signer> {
 	}
 
 	/// Only allowed immediately after deserialization if get_outbound_scid_alias returns 0,
-	/// indicating we were written by LDK prior to 0.0.106 which did not set outbound SCID aliases.
+	/// indicating we were written by LDK prior to 0.0.106 which did not set outbound SCID aliases
+	/// or prior to any channel actions during `Channel` initialization.
 	pub fn set_outbound_scid_alias(&mut self, outbound_scid_alias: u64) {
-		assert_eq!(self.outbound_scid_alias, 0);
+		debug_assert_eq!(self.outbound_scid_alias, 0);
 		self.outbound_scid_alias = outbound_scid_alias;
 	}
 
