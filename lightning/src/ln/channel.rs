@@ -3811,6 +3811,17 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		}
 	}
 
+	/// Gets the `Shutdown` message we should send our peer on reconnect, if any.
+	pub fn get_outbound_shutdown(&self) -> Option<msgs::Shutdown> {
+		if self.context.channel_state & (ChannelState::LocalShutdownSent as u32) != 0 {
+			assert!(self.context.shutdown_scriptpubkey.is_some());
+			Some(msgs::Shutdown {
+				channel_id: self.context.channel_id,
+				scriptpubkey: self.get_closing_scriptpubkey(),
+			})
+		} else { None }
+	}
+
 	/// May panic if some calls other than message-handling calls (which will all Err immediately)
 	/// have been called between remove_uncommitted_htlcs_and_mark_paused and this call.
 	///
@@ -3877,13 +3888,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		self.context.channel_state &= !(ChannelState::PeerDisconnected as u32);
 		self.context.sent_message_awaiting_response = None;
 
-		let shutdown_msg = if self.context.channel_state & (ChannelState::LocalShutdownSent as u32) != 0 {
-			assert!(self.context.shutdown_scriptpubkey.is_some());
-			Some(msgs::Shutdown {
-				channel_id: self.context.channel_id,
-				scriptpubkey: self.get_closing_scriptpubkey(),
-			})
-		} else { None };
+		let shutdown_msg = self.get_outbound_shutdown();
 
 		let announcement_sigs = self.get_announcement_sigs(node_signer, genesis_block_hash, user_config, best_block.height(), logger);
 

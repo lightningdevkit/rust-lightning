@@ -7489,6 +7489,36 @@ where
 	fn handle_error(&self, counterparty_node_id: &PublicKey, msg: &msgs::ErrorMessage) {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 
+		match &msg.data as &str {
+			"cannot co-op close channel w/ active htlcs"|
+			"link failed to shutdown" =>
+			{
+				// LND hasn't properly handled shutdown messages ever, and force-closes any time we
+				// send one while HTLCs are still present. The issue is tracked at
+				// https://github.com/lightningnetwork/lnd/issues/6039 and has had multiple patches
+				// to fix it but none so far have managed to land upstream. The issue appears to be
+				// very low priority for the LND team despite being marked "P1".
+				// We're not going to bother handling this in a sensible way, instead simply
+				// repeating the Shutdown message on repeat until morale improves.
+				if msg.channel_id != [0; 32] {
+					let per_peer_state = self.per_peer_state.read().unwrap();
+					let peer_state_mutex_opt = per_peer_state.get(counterparty_node_id);
+					if peer_state_mutex_opt.is_none() { return; }
+					let mut peer_state = peer_state_mutex_opt.unwrap().lock().unwrap();
+					if let Some(chan) = peer_state.channel_by_id.get(&msg.channel_id) {
+						if let Some(msg) = chan.get_outbound_shutdown() {
+							peer_state.pending_msg_events.push(events::MessageSendEvent::SendShutdown {
+								node_id: *counterparty_node_id,
+								msg,
+							});
+						}
+					}
+				}
+				return;
+			}
+			_ => {}
+		}
+
 		if msg.channel_id == [0; 32] {
 			let channel_ids: Vec<[u8; 32]> = {
 				let per_peer_state = self.per_peer_state.read().unwrap();
