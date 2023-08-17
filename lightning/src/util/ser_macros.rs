@@ -231,9 +231,10 @@ macro_rules! _get_varint_length_prefixed_tlv_length {
 #[macro_export]
 macro_rules! _encode_varint_length_prefixed_tlv {
 	($stream: expr, {$(($type: expr, $field: expr, $fieldty: tt)),*}) => { {
-		_encode_varint_length_prefixed_tlv!($stream, {$(($type, $field, $fieldty)),*}, &[])
+		$crate::_encode_varint_length_prefixed_tlv!($stream, {$(($type, $field, $fieldty)),*}, &[])
 	} };
 	($stream: expr, {$(($type: expr, $field: expr, $fieldty: tt)),*}, $extra_tlvs: expr) => { {
+		extern crate alloc;
 		use $crate::util::ser::BigSize;
 		use alloc::vec::Vec;
 		let len = {
@@ -814,8 +815,7 @@ macro_rules! _init_and_read_tlv_fields {
 ///
 /// For example,
 /// ```
-/// # use lightning::{impl_writeable_tlv_based, _encode_varint_length_prefixed_tlv};
-/// # extern crate alloc;
+/// # use lightning::impl_writeable_tlv_based;
 /// struct LightningMessage {
 /// 	tlv_integer: u32,
 /// 	tlv_default_integer: u32,
