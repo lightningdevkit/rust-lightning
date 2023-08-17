@@ -10534,13 +10534,13 @@ pub mod bench {
 		&'a test_utils::TestFeeEstimator, &'a test_utils::TestRouter<'a>,
 		&'a test_utils::TestLogger>;
 
-	struct ANodeHolder<'a, P: Persist<InMemorySigner>> {
-		node: &'a Manager<'a, P>,
+	struct ANodeHolder<'node_cfg, 'chan_mon_cfg: 'node_cfg, P: Persist<InMemorySigner>> {
+		node: &'node_cfg Manager<'chan_mon_cfg, P>,
 	}
-	impl<'a, P: Persist<InMemorySigner>> NodeHolder for ANodeHolder<'a, P> {
-		type CM = Manager<'a, P>;
+	impl<'node_cfg, 'chan_mon_cfg: 'node_cfg, P: Persist<InMemorySigner>> NodeHolder for ANodeHolder<'node_cfg, 'chan_mon_cfg, P> {
+		type CM = Manager<'chan_mon_cfg, P>;
 		#[inline]
-		fn node(&self) -> &Manager<'a, P> { self.node }
+		fn node(&self) -> &Manager<'chan_mon_cfg, P> { self.node }
 		#[inline]
 		fn chain_monitor(&self) -> Option<&test_utils::TestChainMonitor> { None }
 	}
