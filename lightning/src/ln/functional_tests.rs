@@ -7013,7 +7013,7 @@ fn test_user_configurable_csv_delay() {
 	open_channel.to_self_delay = 200;
 	if let Err(error) = InboundV1Channel::new(&LowerBoundedFeeEstimator::new(&test_utils::TestFeeEstimator { sat_per_kw: Mutex::new(253) }),
 		&nodes[0].keys_manager, &nodes[0].keys_manager, nodes[1].node.get_our_node_id(), &nodes[0].node.channel_type_features(), &nodes[1].node.init_features(), &open_channel, 0,
-		&low_our_to_self_config, 0, &nodes[0].logger, 42, /*is_0conf=*/false)
+		&low_our_to_self_config, 0, &nodes[0].logger, /*is_0conf=*/false)
 	{
 		match error {
 			ChannelError::Close(err) => { assert!(regex::Regex::new(r"Configured with an unreasonable our_to_self_delay \(\d+\) putting user funds at risks").unwrap().is_match(err.as_str()));  },
@@ -7045,7 +7045,7 @@ fn test_user_configurable_csv_delay() {
 	open_channel.to_self_delay = 200;
 	if let Err(error) = InboundV1Channel::new(&LowerBoundedFeeEstimator::new(&test_utils::TestFeeEstimator { sat_per_kw: Mutex::new(253) }),
 		&nodes[0].keys_manager, &nodes[0].keys_manager, nodes[1].node.get_our_node_id(), &nodes[0].node.channel_type_features(), &nodes[1].node.init_features(), &open_channel, 0,
-		&high_their_to_self_config, 0, &nodes[0].logger, 42, /*is_0conf=*/false)
+		&high_their_to_self_config, 0, &nodes[0].logger, /*is_0conf=*/false)
 	{
 		match error {
 			ChannelError::Close(err) => { assert!(regex::Regex::new(r"They wanted our payments to be delayed by a needlessly long period\. Upper limit: \d+\. Actual: \d+").unwrap().is_match(err.as_str())); },

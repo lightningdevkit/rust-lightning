@@ -5332,7 +5332,7 @@ where
 				InboundV1Channel::new(&self.fee_estimator, &self.entropy_source, &self.signer_provider,
 					counterparty_node_id.clone(), &self.channel_type_features(), &peer_state.latest_features,
 					&unaccepted_channel.open_channel_msg, user_channel_id, &self.default_configuration, best_block_height,
-					&self.logger, /*outbound_scid_alias=*/0, accept_0conf).map_err(|e| APIError::ChannelUnavailable { err: e.to_string() })
+					&self.logger, accept_0conf).map_err(|e| APIError::ChannelUnavailable { err: e.to_string() })
 			}
 			_ => Err(APIError::APIMisuseError { err: "No such channel awaiting to be accepted.".to_owned() })
 		}?;
@@ -5495,7 +5495,7 @@ where
 		let user_channel_id = u128::from_be_bytes(random_bytes);
 		let mut channel = match InboundV1Channel::new(&self.fee_estimator, &self.entropy_source, &self.signer_provider,
 			counterparty_node_id.clone(), &self.channel_type_features(), &peer_state.latest_features, msg, user_channel_id,
-			&self.default_configuration, best_block_height, &self.logger, /*outbound_scid_alias=*/0, /*is_0conf=*/false)
+			&self.default_configuration, best_block_height, &self.logger, /*is_0conf=*/false)
 		{
 			Err(e) => {
 				return Err(MsgHandleErrInternal::from_chan_no_close(e, msg.temporary_channel_id));
@@ -7350,6 +7350,9 @@ where
 					self.issue_channel_close_events(&chan.context, ClosureReason::DisconnectedPeer);
 					false
 				});
+				// Note that we don't bother generating any events for pre-accept channels -
+				// they're not considered "channels" yet from the PoV of our events interface.
+				peer_state.inbound_channel_request_by_id.clear();
 				pending_msg_events.retain(|msg| {
 					match msg {
 						// V1 Channel Establishment
@@ -7493,6 +7496,9 @@ where
 				if peer_state_mutex_opt.is_none() { return; }
 				let mut peer_state_lock = peer_state_mutex_opt.unwrap().lock().unwrap();
 				let peer_state = &mut *peer_state_lock;
+				// Note that we don't bother generating any events for pre-accept channels -
+				// they're not considered "channels" yet from the PoV of our events interface.
+				peer_state.inbound_channel_request_by_id.clear();
 				peer_state.channel_by_id.keys().cloned()
 					.chain(peer_state.outbound_v1_channel_by_id.keys().cloned())
 					.chain(peer_state.inbound_v1_channel_by_id.keys().cloned()).collect()
