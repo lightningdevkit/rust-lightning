@@ -3451,17 +3451,7 @@ fn do_test_custom_tlvs(spontaneous: bool, even_tlvs: bool, known_tlvs: bool) {
 	let events = nodes[1].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);
 	match events[0] {
-		Event::PaymentClaimable { ref purpose, amount_msat, ref onion_fields, .. } => {
-			match &purpose {
-				PaymentPurpose::InvoicePayment { payment_secret, .. } => {
-					assert_eq!(our_payment_secret, *payment_secret);
-					assert_eq!(Some(*payment_secret), onion_fields.as_ref().unwrap().payment_secret);
-				},
-				PaymentPurpose::SpontaneousPayment(payment_preimage) => {
-					assert_eq!(our_payment_preimage, *payment_preimage);
-				},
-			}
-			assert_eq!(amount_msat, amt_msat);
+		Event::PaymentClaimable { ref onion_fields, .. } => {
 			assert_eq!(onion_fields.clone().unwrap().custom_tlvs().clone(), custom_tlvs);
 		},
 		_ => panic!("Unexpected event"),
@@ -3518,26 +3508,12 @@ fn test_retry_custom_tlvs() {
 	nodes[0].node.send_payment(payment_hash, onion_fields,
 		payment_id, route_params.clone(), Retry::Attempts(1)).unwrap();
 	check_added_monitors!(nodes[0], 1); // one monitor per path
-	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
-	assert_eq!(events.len(), 1);
 
 	// Add the HTLC along the first hop.
-	let fail_path_msgs_1 = remove_first_msg_event_to_node(&nodes[1].node.get_our_node_id(), &mut events);
-	let (update_add, commitment_signed) = match fail_path_msgs_1 {
-		MessageSendEvent::UpdateHTLCs { node_id: _, updates: msgs::CommitmentUpdate {
-			ref update_add_htlcs, ref update_fulfill_htlcs, ref update_fail_htlcs,
-			ref update_fail_malformed_htlcs, ref update_fee, ref commitment_signed }
-		} => {
-			assert_eq!(update_add_htlcs.len(), 1);
-			assert!(update_fail_htlcs.is_empty());
-			assert!(update_fulfill_htlcs.is_empty());
-			assert!(update_fail_malformed_htlcs.is_empty());
-			assert!(update_fee.is_none());
-			(update_add_htlcs[0].clone(), commitment_signed.clone())
-		},
-		_ => panic!("Unexpected event"),
-	};
-	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &update_add);
+	let htlc_updates = get_htlc_update_msgs(&nodes[0], &nodes[1].node.get_our_node_id());
+	let msgs::CommitmentUpdate { update_add_htlcs, commitment_signed, .. } = htlc_updates;
+	assert_eq!(update_add_htlcs.len(), 1);
+	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &update_add_htlcs[0]);
 	commitment_signed_dance!(nodes[1], nodes[0], commitment_signed, false);
 
 	// Attempt to forward the payment and complete the path's failure.
@@ -3547,15 +3523,14 @@ fn test_retry_custom_tlvs() {
 			node_id: Some(nodes[2].node.get_our_node_id()),
 			channel_id: chan_2_id
 		}]);
-	let htlc_updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
-	assert!(htlc_updates.update_add_htlcs.is_empty());
-	assert_eq!(htlc_updates.update_fail_htlcs.len(), 1);
-	assert!(htlc_updates.update_fulfill_htlcs.is_empty());
-	assert!(htlc_updates.update_fail_malformed_htlcs.is_empty());
 	check_added_monitors!(nodes[1], 1);
-	nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(),
-		&htlc_updates.update_fail_htlcs[0]);
-	commitment_signed_dance!(nodes[0], nodes[1], htlc_updates.commitment_signed, false);
+
+	let htlc_updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+	let msgs::CommitmentUpdate { update_fail_htlcs, commitment_signed, .. } = htlc_updates;
+	assert_eq!(update_fail_htlcs.len(), 1);
+	nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &update_fail_htlcs[0]);
+	commitment_signed_dance!(nodes[0], nodes[1], commitment_signed, false);
+
 	let mut events = nodes[0].node.get_and_clear_pending_events();
 	match events[1] {
 		Event::PendingHTLCsForwardable { .. } => {},
@@ -3577,11 +3552,12 @@ fn test_retry_custom_tlvs() {
 	assert_eq!(events.len(), 1);
 	let payment_claimable = pass_along_path(&nodes[0], &[&nodes[1], &nodes[2]], 1_000_000,
 		payment_hash, Some(payment_secret), events.pop().unwrap(), true, None).unwrap();
-	let onion_fields = match payment_claimable {
-		Event::PaymentClaimable { onion_fields, .. } => onion_fields,
+	match payment_claimable {
+		Event::PaymentClaimable { onion_fields, .. } => {
+			assert_eq!(onion_fields.unwrap().custom_tlvs(), &custom_tlvs);
+		},
 		_ => panic!("Unexpected event"),
 	};
-	assert_eq!(onion_fields.unwrap().custom_tlvs(), &custom_tlvs);
 	claim_payment_along_route(&nodes[0], &[&[&nodes[1], &nodes[2]]], false, payment_preimage);
 }
 
@@ -3665,7 +3641,8 @@ fn do_test_custom_tlvs_consistency(first_tlvs: Vec<(u64, Vec<u8>)>, second_tlvs:
 	{
 		let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 		assert_eq!(events.len(), 1);
-		pass_along_path(&nodes[0], &[&nodes[1], &nodes[3]], amt_msat, our_payment_hash, Some(our_payment_secret), events.pop().unwrap(), false, None);
+		pass_along_path(&nodes[0], &[&nodes[1], &nodes[3]], amt_msat, our_payment_hash,
+			Some(our_payment_secret), events.pop().unwrap(), false, None);
 	}
 	assert!(nodes[3].node.get_and_clear_pending_events().is_empty());
 
@@ -3704,26 +3681,16 @@ fn do_test_custom_tlvs_consistency(first_tlvs: Vec<(u64, Vec<u8>)>, second_tlvs:
 	if let Some(expected_tlvs) = expected_receive_tlvs {
 		// Claim and match expected
 		let events = nodes[3].node.get_and_clear_pending_events();
-		println!("events: {:?}", events);
 		assert_eq!(events.len(), 1);
 		match events[0] {
-			Event::PaymentClaimable { ref purpose, amount_msat, ref onion_fields, .. } => {
-				match &purpose {
-					PaymentPurpose::InvoicePayment { payment_secret, .. } => {
-						assert_eq!(our_payment_secret, *payment_secret);
-						assert_eq!(Some(*payment_secret), onion_fields.as_ref().unwrap().payment_secret);
-					},
-					PaymentPurpose::SpontaneousPayment(payment_preimage) => {
-						assert_eq!(our_payment_preimage, *payment_preimage);
-					},
-				}
-				assert_eq!(amount_msat, amt_msat);
+			Event::PaymentClaimable { ref onion_fields, .. } => {
 				assert_eq!(onion_fields.clone().unwrap().custom_tlvs, expected_tlvs);
 			},
 			_ => panic!("Unexpected event"),
 		}
 
-		do_claim_payment_along_route(&nodes[0], &[&[&nodes[1], &nodes[3]], &[&nodes[2], &nodes[3]]], false, our_payment_preimage);
+		do_claim_payment_along_route(&nodes[0], &[&[&nodes[1], &nodes[3]], &[&nodes[2], &nodes[3]]],
+			false, our_payment_preimage);
 		expect_payment_sent(&nodes[0], our_payment_preimage, Some(Some(2000)), true);
 	} else {
 		// Expect fail back
@@ -3735,14 +3702,19 @@ fn do_test_custom_tlvs_consistency(first_tlvs: Vec<(u64, Vec<u8>)>, second_tlvs:
 		nodes[2].node.handle_update_fail_htlc(&nodes[3].node.get_our_node_id(), &fail_updates_1.update_fail_htlcs[0]);
 		commitment_signed_dance!(nodes[2], nodes[3], fail_updates_1.commitment_signed, false);
 
-		expect_pending_htlcs_forwardable_and_htlc_handling_failed!(nodes[2], vec![HTLCDestination::NextHopChannel { node_id: Some(nodes[3].node.get_our_node_id()), channel_id: chan_2_3.2 }]);
+		expect_pending_htlcs_forwardable_and_htlc_handling_failed!(nodes[2], vec![
+			HTLCDestination::NextHopChannel {
+				node_id: Some(nodes[3].node.get_our_node_id()),
+				channel_id: chan_2_3.2
+			}]);
 		check_added_monitors!(nodes[2], 1);
 
 		let fail_updates_2 = get_htlc_update_msgs!(nodes[2], nodes[0].node.get_our_node_id());
 		nodes[0].node.handle_update_fail_htlc(&nodes[2].node.get_our_node_id(), &fail_updates_2.update_fail_htlcs[0]);
 		commitment_signed_dance!(nodes[0], nodes[2], fail_updates_2.commitment_signed, false);
 
-		expect_payment_failed_conditions(&nodes[0], our_payment_hash, true, PaymentFailedConditions::new().mpp_parts_remain());
+		expect_payment_failed_conditions(&nodes[0], our_payment_hash, true,
+			PaymentFailedConditions::new().mpp_parts_remain());
 	}
 }
 

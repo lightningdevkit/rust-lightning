@@ -143,6 +143,9 @@ macro_rules! encode_tlv_stream {
 #[macro_export]
 macro_rules! _encode_tlv_stream {
 	($stream: expr, {$(($type: expr, $field: expr, $fieldty: tt)),* $(,)*}) => { {
+		$crate::_encode_tlv_stream!($stream, { $(($type, $field, $fieldty)),* }, &[])
+	} };
+	($stream: expr, {$(($type: expr, $field: expr, $fieldty: tt)),* $(,)*}, $extra_tlvs: expr) => { {
 		#[allow(unused_imports)]
 		use $crate::{
 			ln::msgs::DecodeError,
@@ -154,6 +157,10 @@ macro_rules! _encode_tlv_stream {
 		$(
 			$crate::_encode_tlv!($stream, $type, $field, $fieldty);
 		)*
+		for tlv in $extra_tlvs {
+			let (typ, value): &(u64, Vec<u8>) = tlv;
+			$crate::_encode_tlv!($stream, *typ, *value, required_vec);
+		}
 
 		#[allow(unused_mut, unused_variables, unused_assignments)]
 		#[cfg(debug_assertions)]
@@ -162,18 +169,8 @@ macro_rules! _encode_tlv_stream {
 			$(
 				$crate::_check_encoded_tlv_order!(last_seen, $type, $fieldty);
 			)*
-		}
-	} };
-	($stream: expr, $tlvs: expr) => { {
-		for tlv in $tlvs {
-			let (typ, value): &&(u64, Vec<u8>) = tlv;
-			$crate::_encode_tlv!($stream, *typ, *value, required_vec);
-		}
-
-		#[cfg(debug_assertions)] {
-			let mut last_seen: Option<u64> = None;
-			for tlv in $tlvs {
-				let (typ, _): &&(u64, Vec<u8>) = tlv;
+			for tlv in $extra_tlvs {
+				let (typ, _): &(u64, Vec<u8>) = tlv;
 				$crate::_check_encoded_tlv_order!(last_seen, *typ, required_vec);
 			}
 		}
@@ -246,14 +243,13 @@ macro_rules! _encode_varint_length_prefixed_tlv {
 				$crate::_get_varint_length_prefixed_tlv_length!(len, $type, $field, $fieldty);
 			)*
 			for tlv in $extra_tlvs {
-				let (typ, value): &&(u64, Vec<u8>) = tlv;
+				let (typ, value): &(u64, Vec<u8>) = tlv;
 				$crate::_get_varint_length_prefixed_tlv_length!(len, *typ, *value, required_vec);
 			}
 			len.0
 		};
 		BigSize(len as u64).write($stream)?;
-		$crate::_encode_tlv_stream!($stream, { $(($type, $field, $fieldty)),* });
-		$crate::_encode_tlv_stream!($stream, $extra_tlvs);
+		$crate::_encode_tlv_stream!($stream, { $(($type, $field, $fieldty)),* }, $extra_tlvs);
 	} };
 }
 

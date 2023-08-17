@@ -1987,10 +1987,8 @@ impl Writeable for OutboundOnionPayload {
 				// We need to update [`ln::outbound_payment::RecipientOnionFields::with_custom_tlvs`]
 				// to reject any reserved types in the experimental range if new ones are ever
 				// standardized.
-				let preimage = if let Some(ref preimage) = keysend_preimage {
-					Some((5482373484, preimage.encode()))
-				} else { None };
-				let mut custom_tlvs: Vec<&(u64, Vec<u8>)> = custom_tlvs.iter().chain(preimage.iter()).collect();
+				let keysend_tlv = keysend_preimage.map(|preimage| (5482373484, preimage.encode()));
+				let mut custom_tlvs: Vec<&(u64, Vec<u8>)> = custom_tlvs.iter().chain(keysend_tlv.iter()).collect();
 				custom_tlvs.sort_unstable_by_key(|(typ, _)| *typ);
 				_encode_varint_length_prefixed_tlv!(w, {
 					(2, HighZeroBytesDroppedBigSize(*amt_msat), required),
