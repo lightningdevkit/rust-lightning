@@ -1787,7 +1787,36 @@ mod bucketed_history {
 			}
 
 			let mut cumulative_success_prob_times_billion = 0;
-			for (min_idx, min_bucket) in self.min_liquidity_offset_history.buckets.iter().enumerate() {
+			// Special-case the 0th min bucket - it generally means we failed a payment, so only
+			// consider the highest (i.e. largest-offset-from-max-capacity) max bucket for all
+			// points against the 0th min bucket. This avoids the case where we fail to route
+			// increasingly lower values over a channel, but treat each failure as a separate
+			// datapoint, many of which may have relatively high maximum-available-liquidity
+			// values, which will result in us thinking we have some nontrivial probability of
+			// routing up to that amount.
+			if self.min_liquidity_offset_history.buckets[0] != 0 {
+				let mut highest_max_bucket_with_points = 0; // The highest max-bucket with any data
+				let mut total_max_points = 0; // Total points in max-buckets to consider
+				for (max_idx, max_bucket) in self.max_liquidity_offset_history.buckets.iter().enumerate() {
+					if *max_bucket >= 32 {
+						highest_max_bucket_with_points = cmp::max(highest_max_bucket_with_points, max_idx);
+					}
+					total_max_points += *max_bucket as u64;
+				}
+				let max_bucket_end_pos = BUCKET_START_POS[32 - highest_max_bucket_with_points] - 1;
+				if payment_pos < max_bucket_end_pos {
+					let bucket_prob_times_billion =
+						(self.min_liquidity_offset_history.buckets[0] as u64) * total_max_points
+							* 1024 * 1024 * 1024 / total_valid_points_tracked;
+					cumulative_success_prob_times_billion += bucket_prob_times_billion *
+						((max_bucket_end_pos - payment_pos) as u64) /
+						// Add an additional one in the divisor as the payment bucket has been
+						// rounded down.
+						(max_bucket_end_pos + 1) as u64;
+				}
+			}
+
+			for (min_idx, min_bucket) in self.min_liquidity_offset_history.buckets.iter().enumerate().skip(1) {
 				let min_bucket_start_pos = BUCKET_START_POS[min_idx];
 				for (max_idx, max_bucket) in self.max_liquidity_offset_history.buckets.iter().enumerate().take(32 - min_idx) {
 					let max_bucket_end_pos = BUCKET_START_POS[32 - max_idx] - 1;
@@ -3054,7 +3083,7 @@ mod tests {
 		// Even after we tell the scorer we definitely have enough available liquidity, it will
 		// still remember that there was some failure in the past, and assign a non-0 penalty.
 		scorer.payment_path_failed(&payment_path_for_amount(1000), 43);
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 198);
+		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 32);
 		// The first points should be decayed just slightly and the last bucket has a new point.
 		assert_eq!(scorer.historical_estimated_channel_liquidity_probabilities(42, &target),
 			Some(([31, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 32, 0, 0, 0, 0, 0],
@@ -3064,12 +3093,12 @@ mod tests {
 		// simply check bounds here.
 		let five_hundred_prob =
 			scorer.historical_estimated_payment_success_probability(42, &target, 500).unwrap();
-		assert!(five_hundred_prob > 0.5);
-		assert!(five_hundred_prob < 0.52);
+		assert!(five_hundred_prob > 0.66);
+		assert!(five_hundred_prob < 0.68);
 		let one_prob =
 			scorer.historical_estimated_payment_success_probability(42, &target, 1).unwrap();
-		assert!(one_prob < 0.95);
-		assert!(one_prob > 0.90);
+		assert!(one_prob < 1.0);
+		assert!(one_prob > 0.95);
 
 		// Advance the time forward 16 half-lives (which the docs claim will ensure all data is
 		// gone), and check that we're back to where we started.
@@ -3089,7 +3118,7 @@ mod tests {
 		scorer.payment_path_failed(&payment_path_for_amount(1), 42);
 		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 2048);
 		usage.inflight_htlc_msat = 0;
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 409);
+		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 866);
 
 		let usage = ChannelUsage {
 			amount_msat: 1,
@@ -3275,9 +3304,7 @@ mod tests {
 		assert_eq!(scorer.historical_estimated_channel_liquidity_probabilities(42, &target),
 			Some(([63, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
 				[32, 31, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])));
-		assert!(scorer.historical_estimated_payment_success_probability(42, &target, amount_msat)
-			.unwrap() > 0.24);
-		assert!(scorer.historical_estimated_payment_success_probability(42, &target, amount_msat)
-			.unwrap() < 0.25);
+		assert_eq!(scorer.historical_estimated_payment_success_probability(42, &target, amount_msat),
+			Some(0.0));
 	}
 }
