@@ -856,7 +856,7 @@ mod tests {
 	use lightning::ln::functional_test_utils::*;
 	use lightning::ln::msgs::{ChannelMessageHandler, Init};
 	use lightning::ln::peer_handler::{PeerManager, MessageHandler, SocketDescriptor, IgnoringMessageHandler};
-	use lightning::routing::gossip::{NetworkGraph, NodeId, P2PGossipSync};
+	use lightning::routing::gossip::{NetworkGraph, NodeId, P2PGossipSync, RoutingFees};
 	use lightning::routing::router::{DefaultRouter, Path, RouteHop};
 	use lightning::routing::scoring::{ChannelUsage, Score};
 	use lightning::util::config::UserConfig;
@@ -1036,7 +1036,7 @@ mod tests {
 	impl Score for TestScorer {
 		type ScoreParams = ();
 		fn channel_penalty_msat(
-			&self, _short_channel_id: u64, _source: &NodeId, _target: &NodeId, _usage: ChannelUsage, _score_params: &Self::ScoreParams
+			&self, _short_channel_id: u64, _source: &NodeId, _target: &NodeId, _usage: ChannelUsage, _score_params: &Self::ScoreParams, _routing_fees: &RoutingFees
 		) -> u64 { unimplemented!(); }
 
 		fn payment_path_failed(&mut self, actual_path: &Path, actual_short_channel_id: u64) {

@@ -16,6 +16,7 @@ use crate::chain::chainmonitor::MonitorUpdateId;
 use crate::chain::channelmonitor;
 use crate::chain::channelmonitor::MonitorEvent;
 use crate::chain::transaction::OutPoint;
+use crate::routing::gossip::RoutingFees;
 use crate::sign;
 use crate::events;
 use crate::events::bump_transaction::{WalletSource, Utxo};
@@ -132,10 +133,10 @@ impl<'a> Router for TestRouter<'a> {
 						// Since the path is reversed, the last element in our iteration is the first
 						// hop.
 						if idx == path.hops.len() - 1 {
-							scorer.channel_penalty_msat(hop.short_channel_id, &NodeId::from_pubkey(payer), &NodeId::from_pubkey(&hop.pubkey), usage, &());
+							scorer.channel_penalty_msat(hop.short_channel_id, &NodeId::from_pubkey(payer), &NodeId::from_pubkey(&hop.pubkey), usage, &(), &RoutingFees { base_msat: 0, proportional_millionths: 0 });
 						} else {
 							let curr_hop_path_idx = path.hops.len() - 1 - idx;
-							scorer.channel_penalty_msat(hop.short_channel_id, &NodeId::from_pubkey(&path.hops[curr_hop_path_idx - 1].pubkey), &NodeId::from_pubkey(&hop.pubkey), usage, &());
+							scorer.channel_penalty_msat(hop.short_channel_id, &NodeId::from_pubkey(&path.hops[curr_hop_path_idx - 1].pubkey), &NodeId::from_pubkey(&hop.pubkey), usage, &(), &RoutingFees { base_msat: 0, proportional_millionths: 0 });
 						}
 					}
 				}
@@ -1032,7 +1033,7 @@ impl crate::util::ser::Writeable for TestScorer {
 impl Score for TestScorer {
 	type ScoreParams = ();
 	fn channel_penalty_msat(
-		&self, short_channel_id: u64, _source: &NodeId, _target: &NodeId, usage: ChannelUsage, _score_params: &Self::ScoreParams
+		&self, short_channel_id: u64, _source: &NodeId, _target: &NodeId, usage: ChannelUsage, _score_params: &Self::ScoreParams, _routing_fees: &RoutingFees
 	) -> u64 {
 		if let Some(scorer_expectations) = self.scorer_expectations.borrow_mut().as_mut() {
 			match scorer_expectations.pop_front() {

@@ -135,7 +135,7 @@ impl<'a, S: Score<ScoreParams = SP>, SP: Sized> Writeable for ScorerAccountingFo
 
 impl<'a, S: Score<ScoreParams = SP>, SP: Sized> Score for ScorerAccountingForInFlightHtlcs<'a, S, SP>  {
 	type ScoreParams = S::ScoreParams;
-	fn channel_penalty_msat(&self, short_channel_id: u64, source: &NodeId, target: &NodeId, usage: ChannelUsage, score_params: &Self::ScoreParams) -> u64 {
+	fn channel_penalty_msat(&self, short_channel_id: u64, source: &NodeId, target: &NodeId, usage: ChannelUsage, score_params: &Self::ScoreParams, routing_fees: &RoutingFees) -> u64 {
 		if let Some(used_liquidity) = self.inflight_htlcs.used_liquidity_msat(
 			source, target, short_channel_id
 		) {
@@ -144,9 +144,9 @@ impl<'a, S: Score<ScoreParams = SP>, SP: Sized> Score for ScorerAccountingForInF
 				..usage
 			};
 
-			self.scorer.channel_penalty_msat(short_channel_id, source, target, usage, score_params)
+			self.scorer.channel_penalty_msat(short_channel_id, source, target, usage, score_params, routing_fees)
 		} else {
-			self.scorer.channel_penalty_msat(short_channel_id, source, target, usage, score_params)
+			self.scorer.channel_penalty_msat(short_channel_id, source, target, usage, score_params, routing_fees)
 		}
 	}
 
@@ -1662,7 +1662,7 @@ where L::Target: Logger {
 		// Returns whether this channel caused an update to `targets`.
 		( $candidate: expr, $src_node_id: expr, $dest_node_id: expr, $next_hops_fee_msat: expr,
 			$next_hops_value_contribution: expr, $next_hops_path_htlc_minimum_msat: expr,
-			$next_hops_path_penalty_msat: expr, $next_hops_cltv_delta: expr, $next_hops_path_length: expr ) => { {
+			$next_hops_path_penalty_msat: expr, $next_hops_cltv_delta: expr, $next_hops_path_length: expr, $routing_fees: expr) => { {
 			// We "return" whether we updated the path at the end, and how much we can route via
 			// this channel, via this:
 			let mut did_add_update_path_to_src_node = None;
@@ -1822,7 +1822,7 @@ where L::Target: Logger {
 							};
 							let channel_penalty_msat = scid_opt.map_or(0,
 								|scid| scorer.channel_penalty_msat(scid, &$src_node_id, &$dest_node_id,
-									channel_usage, score_params));
+									channel_usage, score_params, $routing_fees));
 							let path_penalty_msat = $next_hops_path_penalty_msat
 								.saturating_add(channel_penalty_msat);
 							let new_graph_node = RouteGraphNode {
@@ -1918,7 +1918,7 @@ where L::Target: Logger {
 	macro_rules! add_entries_to_cheapest_to_target_node {
 		( $node: expr, $node_id: expr, $fee_to_target_msat: expr, $next_hops_value_contribution: expr,
 		  $next_hops_path_htlc_minimum_msat: expr, $next_hops_path_penalty_msat: expr,
-		  $next_hops_cltv_delta: expr, $next_hops_path_length: expr ) => {
+		  $next_hops_cltv_delta: expr, $next_hops_path_length: expr, $routing_fees: expr ) => {
 			let skip_node = if let Some(elem) = dist.get_mut(&$node_id) {
 				let was_processed = elem.was_processed;
 				elem.was_processed = true;
@@ -1938,7 +1938,7 @@ where L::Target: Logger {
 						add_entry!(candidate, our_node_id, $node_id, $fee_to_target_msat,
 							$next_hops_value_contribution,
 							$next_hops_path_htlc_minimum_msat, $next_hops_path_penalty_msat,
-							$next_hops_cltv_delta, $next_hops_path_length);
+							$next_hops_cltv_delta, $next_hops_path_length, $routing_fees);
 					}
 				}
 
@@ -1964,7 +1964,7 @@ where L::Target: Logger {
 											$next_hops_value_contribution,
 											$next_hops_path_htlc_minimum_msat,
 											$next_hops_path_penalty_msat,
-											$next_hops_cltv_delta, $next_hops_path_length);
+											$next_hops_cltv_delta, $next_hops_path_length, $routing_fees);
 									}
 								}
 							}
@@ -1990,8 +1990,8 @@ where L::Target: Logger {
 		payee_node_id_opt.map(|payee| first_hop_targets.get(&payee).map(|first_channels| {
 			for details in first_channels {
 				let candidate = CandidateRouteHop::FirstHop { details };
-				let added = add_entry!(candidate, our_node_id, payee, 0, path_value_msat,
-									0, 0u64, 0, 0).is_some();
+				let added = add_entry!(candidate, our_node_id, payee, 0,
+					path_value_msat, 0, 0u64, 0, 0, &candidate.fees()).is_some();
 				log_trace!(logger, "{} direct route to payee via {}",
 						if added { "Added" } else { "Skipped" }, LoggedCandidateHop(&candidate));
 			}
@@ -2006,7 +2006,7 @@ where L::Target: Logger {
 			// If not, targets.pop() will not even let us enter the loop in step 2.
 			None => {},
 			Some(node) => {
-				add_entries_to_cheapest_to_target_node!(node, payee, 0, path_value_msat, 0, 0u64, 0, 0);
+				add_entries_to_cheapest_to_target_node!(node, payee, 0, path_value_msat, 0, 0u64, 0, 0, &RoutingFees { base_msat: 0, proportional_millionths: 0  });
 			},
 		});
 
@@ -2028,7 +2028,7 @@ where L::Target: Logger {
 			} else { CandidateRouteHop::Blinded { hint, hint_idx } };
 			let mut path_contribution_msat = path_value_msat;
 			if let Some(hop_used_msat) = add_entry!(candidate, intro_node_id, maybe_dummy_payee_node_id,
-				0, path_contribution_msat, 0, 0_u64, 0, 0)
+				0, path_contribution_msat, 0, 0_u64, 0, 0, &candidate.fees())
 			{
 				path_contribution_msat = hop_used_msat;
 			} else { continue }
@@ -2038,7 +2038,7 @@ where L::Target: Logger {
 				for details in first_channels {
 					let first_hop_candidate = CandidateRouteHop::FirstHop { details };
 					add_entry!(first_hop_candidate, our_node_id, intro_node_id, 0, path_contribution_msat, 0,
-						0_u64, 0, 0);
+						0_u64, 0, 0, &first_hop_candidate.fees());
 				}
 			}
 		}
@@ -2081,7 +2081,7 @@ where L::Target: Logger {
 					if let Some(hop_used_msat) = add_entry!(candidate, source, target,
 						aggregate_next_hops_fee_msat, aggregate_path_contribution_msat,
 						aggregate_next_hops_path_htlc_minimum_msat, aggregate_next_hops_path_penalty_msat,
-						aggregate_next_hops_cltv_delta, aggregate_next_hops_path_length)
+						aggregate_next_hops_cltv_delta, aggregate_next_hops_path_length, &candidate.fees())
 					{
 						aggregate_path_contribution_msat = hop_used_msat;
 					} else {
@@ -2100,7 +2100,7 @@ where L::Target: Logger {
 						effective_capacity: candidate.effective_capacity(),
 					};
 					let channel_penalty_msat = scorer.channel_penalty_msat(
-						hop.short_channel_id, &source, &target, channel_usage, score_params
+						hop.short_channel_id, &source, &target, channel_usage, score_params, &hop.fees
 					);
 					aggregate_next_hops_path_penalty_msat = aggregate_next_hops_path_penalty_msat
 						.saturating_add(channel_penalty_msat);
@@ -2120,7 +2120,7 @@ where L::Target: Logger {
 							add_entry!(first_hop_candidate, our_node_id, NodeId::from_pubkey(&prev_hop_id),
 								aggregate_next_hops_fee_msat, aggregate_path_contribution_msat,
 								aggregate_next_hops_path_htlc_minimum_msat, aggregate_next_hops_path_penalty_msat,
-								aggregate_next_hops_cltv_delta, aggregate_next_hops_path_length);
+								aggregate_next_hops_cltv_delta, aggregate_next_hops_path_length, &first_hop_candidate.fees());
 						}
 					}
 
@@ -2165,7 +2165,7 @@ where L::Target: Logger {
 									aggregate_next_hops_path_htlc_minimum_msat,
 									aggregate_next_hops_path_penalty_msat,
 									aggregate_next_hops_cltv_delta,
-									aggregate_next_hops_path_length);
+									aggregate_next_hops_path_length, &first_hop_candidate.fees());
 							}
 						}
 					}
@@ -2321,7 +2321,7 @@ where L::Target: Logger {
 				Some(node) => {
 					add_entries_to_cheapest_to_target_node!(node, node_id, lowest_fee_to_node,
 						value_contribution_msat, path_htlc_minimum_msat, path_penalty_msat,
-						total_cltv_delta, path_length_to_node);
+						total_cltv_delta, path_length_to_node, &RoutingFees { base_msat: 0, proportional_millionths: 0 });
 				},
 			}
 		}
@@ -2617,7 +2617,7 @@ fn build_route_from_hops_internal<L: Deref>(
 	impl Score for HopScorer {
 		type ScoreParams = ();
 		fn channel_penalty_msat(&self, _short_channel_id: u64, source: &NodeId, target: &NodeId,
-			_usage: ChannelUsage, _score_params: &Self::ScoreParams) -> u64
+			_usage: ChannelUsage, _score_params: &Self::ScoreParams, _routing_fees: &RoutingFees) -> u64
 		{
 			let mut cur_id = self.our_node_id;
 			for i in 0..self.hop_ids.len() {
@@ -5722,7 +5722,7 @@ mod tests {
 	}
 	impl Score for BadChannelScorer {
 		type ScoreParams = ();
-		fn channel_penalty_msat(&self, short_channel_id: u64, _: &NodeId, _: &NodeId, _: ChannelUsage, _score_params:&Self::ScoreParams) -> u64 {
+		fn channel_penalty_msat(&self, short_channel_id: u64, _: &NodeId, _: &NodeId, _: ChannelUsage, _score_params:&Self::ScoreParams, routing_fees: &RoutingFees) -> u64 {
 			if short_channel_id == self.short_channel_id { u64::max_value() } else { 0 }
 		}
 
@@ -5743,7 +5743,7 @@ mod tests {
 
 	impl Score for BadNodeScorer {
 		type ScoreParams = ();
-		fn channel_penalty_msat(&self, _: u64, _: &NodeId, target: &NodeId, _: ChannelUsage, _score_params:&Self::ScoreParams) -> u64 {
+		fn channel_penalty_msat(&self, _: u64, _: &NodeId, target: &NodeId, _: ChannelUsage, _score_params:&Self::ScoreParams, _: &RoutingFees) -> u64 {
 			if *target == self.node_id { u64::max_value() } else { 0 }
 		}
 
@@ -6213,7 +6213,7 @@ mod tests {
 		};
 		scorer_params.set_manual_penalty(&NodeId::from_pubkey(&nodes[3]), 123);
 		scorer_params.set_manual_penalty(&NodeId::from_pubkey(&nodes[4]), 456);
-		assert_eq!(scorer.channel_penalty_msat(42, &NodeId::from_pubkey(&nodes[3]), &NodeId::from_pubkey(&nodes[4]), usage, &scorer_params), 456);
+		assert_eq!(scorer.channel_penalty_msat(42, &NodeId::from_pubkey(&nodes[3]), &NodeId::from_pubkey(&nodes[4]), usage, &scorer_params, &RoutingFees { base_msat: 0, proportional_millionths: 0 } ), 456);
 
 		// Then check we can get a normal route
 		let payment_params = PaymentParameters::from_node_id(nodes[10], 42);
