@@ -181,6 +181,7 @@ pub(super) enum HTLCForwardInfo {
 pub(crate) struct HTLCPreviousHopData {
 	// Note that this may be an outbound SCID alias for the associated channel.
 	short_channel_id: u64,
+	user_channel_id: Option<u128>,
 	htlc_id: u64,
 	incoming_packet_shared_secret: [u8; 32],
 	phantom_shared_secret: Option<[u8; 32]>,
@@ -219,6 +220,17 @@ struct ClaimableHTLC {
 	total_msat: u64,
 	/// The extra fee our counterparty skimmed off the top of this HTLC.
 	counterparty_skimmed_fee_msat: Option<u64>,
+}
+
+impl From<&ClaimableHTLC> for events::ClaimedHTLC {
+	fn from(val: &ClaimableHTLC) -> Self {
+		events::ClaimedHTLC {
+			channel_id: val.prev_hop.outpoint.to_channel_id(),
+			user_channel_id: val.prev_hop.user_channel_id.unwrap_or(0),
+			cltv_expiry: val.cltv_expiry,
+			value_msat: val.value,
+		}
+	}
 }
 
 /// A payment identifier used to uniquely identify a payment to LDK.
@@ -496,11 +508,15 @@ struct ClaimingPayment {
 	amount_msat: u64,
 	payment_purpose: events::PaymentPurpose,
 	receiver_node_id: PublicKey,
+	htlcs: Vec<events::ClaimedHTLC>,
+	sender_intended_value: Option<u64>,
 }
 impl_writeable_tlv_based!(ClaimingPayment, {
 	(0, amount_msat, required),
 	(2, payment_purpose, required),
 	(4, receiver_node_id, required),
+	(5, htlcs, optional_vec),
+	(7, sender_intended_value, option),
 });
 
 struct ClaimablePayment {
@@ -3785,6 +3801,7 @@ where
 		if let PendingHTLCRouting::Forward { short_channel_id, .. } = payment.forward_info.routing {
 			let htlc_source = HTLCSource::PreviousHopData(HTLCPreviousHopData {
 				short_channel_id: payment.prev_short_channel_id,
+				user_channel_id: Some(payment.prev_user_channel_id),
 				outpoint: payment.prev_funding_outpoint,
 				htlc_id: payment.prev_htlc_id,
 				incoming_packet_shared_secret: payment.forward_info.incoming_shared_secret,
@@ -3832,6 +3849,7 @@ where
 
 												let htlc_source = HTLCSource::PreviousHopData(HTLCPreviousHopData {
 													short_channel_id: prev_short_channel_id,
+													user_channel_id: Some(prev_user_channel_id),
 													outpoint: prev_funding_outpoint,
 													htlc_id: prev_htlc_id,
 													incoming_packet_shared_secret: incoming_shared_secret,
@@ -3936,7 +3954,7 @@ where
 							for forward_info in pending_forwards.drain(..) {
 								match forward_info {
 									HTLCForwardInfo::AddHTLC(PendingAddHTLCInfo {
-										prev_short_channel_id, prev_htlc_id, prev_funding_outpoint, prev_user_channel_id: _,
+										prev_short_channel_id, prev_htlc_id, prev_funding_outpoint, prev_user_channel_id,
 										forward_info: PendingHTLCInfo {
 											incoming_shared_secret, payment_hash, outgoing_amt_msat, outgoing_cltv_value,
 											routing: PendingHTLCRouting::Forward { onion_packet, .. }, skimmed_fee_msat, ..
@@ -3945,6 +3963,7 @@ where
 										log_trace!(self.logger, "Adding HTLC from short id {} with payment_hash {} to channel with short id {} after delay", prev_short_channel_id, log_bytes!(payment_hash.0), short_chan_id);
 										let htlc_source = HTLCSource::PreviousHopData(HTLCPreviousHopData {
 											short_channel_id: prev_short_channel_id,
+											user_channel_id: Some(prev_user_channel_id),
 											outpoint: prev_funding_outpoint,
 											htlc_id: prev_htlc_id,
 											incoming_packet_shared_secret: incoming_shared_secret,
@@ -4026,6 +4045,7 @@ where
 								let claimable_htlc = ClaimableHTLC {
 									prev_hop: HTLCPreviousHopData {
 										short_channel_id: prev_short_channel_id,
+										user_channel_id: Some(prev_user_channel_id),
 										outpoint: prev_funding_outpoint,
 										htlc_id: prev_htlc_id,
 										incoming_packet_shared_secret: incoming_shared_secret,
@@ -4055,6 +4075,7 @@ where
 										);
 										failed_forwards.push((HTLCSource::PreviousHopData(HTLCPreviousHopData {
 												short_channel_id: $htlc.prev_hop.short_channel_id,
+												user_channel_id: $htlc.prev_hop.user_channel_id,
 												outpoint: prev_funding_outpoint,
 												htlc_id: $htlc.prev_hop.htlc_id,
 												incoming_packet_shared_secret: $htlc.prev_hop.incoming_packet_shared_secret,
@@ -4786,7 +4807,7 @@ where
 					&self.pending_events, &self.logger)
 				{ self.push_pending_forwards_ev(); }
 			},
-			HTLCSource::PreviousHopData(HTLCPreviousHopData { ref short_channel_id, ref htlc_id, ref incoming_packet_shared_secret, ref phantom_shared_secret, ref outpoint }) => {
+			HTLCSource::PreviousHopData(HTLCPreviousHopData { ref short_channel_id, ref htlc_id, ref incoming_packet_shared_secret, ref phantom_shared_secret, ref outpoint, .. }) => {
 				log_trace!(self.logger, "Failing HTLC with payment_hash {} backwards from us with {:?}", log_bytes!(payment_hash.0), onion_error);
 				let err_packet = onion_error.get_encrypted_failure_packet(incoming_packet_shared_secret, phantom_shared_secret);
 
@@ -4873,9 +4894,11 @@ where
 					}
 				}
 
+				let htlcs = payment.htlcs.iter().map(events::ClaimedHTLC::from).collect();
+				let sender_intended_value = payment.htlcs.first().map(|htlc| htlc.total_msat);
 				let dup_purpose = claimable_payments.pending_claiming_payments.insert(payment_hash,
 					ClaimingPayment { amount_msat: payment.htlcs.iter().map(|source| source.value).sum(),
-					payment_purpose: payment.purpose, receiver_node_id,
+					payment_purpose: payment.purpose, receiver_node_id, htlcs, sender_intended_value
 				});
 				if dup_purpose.is_some() {
 					debug_assert!(false, "Shouldn't get a duplicate pending claim event ever");
@@ -5139,9 +5162,20 @@ where
 			match action {
 				MonitorUpdateCompletionAction::PaymentClaimed { payment_hash } => {
 					let payment = self.claimable_payments.lock().unwrap().pending_claiming_payments.remove(&payment_hash);
-					if let Some(ClaimingPayment { amount_msat, payment_purpose: purpose, receiver_node_id }) = payment {
+					if let Some(ClaimingPayment {
+						amount_msat,
+						payment_purpose: purpose,
+						receiver_node_id,
+						htlcs,
+						sender_intended_value: sender_intended_total_msat,
+					}) = payment {
 						self.pending_events.lock().unwrap().push_back((events::Event::PaymentClaimed {
-							payment_hash, purpose, amount_msat, receiver_node_id: Some(receiver_node_id),
+							payment_hash,
+							purpose,
+							amount_msat,
+							receiver_node_id: Some(receiver_node_id),
+							htlcs,
+							sender_intended_total_msat,
 						}, None));
 					}
 				},
@@ -6019,6 +6053,7 @@ where
 										log_info!(self.logger, "Failed to forward incoming HTLC: detected duplicate intercepted payment over short channel id {}", scid);
 										let htlc_source = HTLCSource::PreviousHopData(HTLCPreviousHopData {
 											short_channel_id: prev_short_channel_id,
+											user_channel_id: Some(prev_user_channel_id),
 											outpoint: prev_funding_outpoint,
 											htlc_id: prev_htlc_id,
 											incoming_packet_shared_secret: forward_info.incoming_shared_secret,
@@ -7145,6 +7180,7 @@ where
 				if height >= htlc.forward_info.outgoing_cltv_value - HTLC_FAIL_BACK_BUFFER {
 					let prev_hop_data = HTLCSource::PreviousHopData(HTLCPreviousHopData {
 						short_channel_id: htlc.prev_short_channel_id,
+						user_channel_id: Some(htlc.prev_user_channel_id),
 						htlc_id: htlc.prev_htlc_id,
 						incoming_packet_shared_secret: htlc.forward_info.incoming_shared_secret,
 						phantom_shared_secret: None,
@@ -7920,7 +7956,8 @@ impl_writeable_tlv_based!(HTLCPreviousHopData, {
 	(1, phantom_shared_secret, option),
 	(2, outpoint, required),
 	(4, htlc_id, required),
-	(6, incoming_packet_shared_secret, required)
+	(6, incoming_packet_shared_secret, required),
+	(7, user_channel_id, option),
 });
 
 impl Writeable for ClaimableHTLC {
@@ -9174,7 +9211,7 @@ where
 							.expect("Failed to get node_id for phantom node recipient");
 						receiver_node_id = Some(phantom_pubkey)
 					}
-					for claimable_htlc in payment.htlcs {
+					for claimable_htlc in &payment.htlcs {
 						claimable_amt_msat += claimable_htlc.value;
 
 						// Add a holding-cell claim of the payment to the Channel, which should be
@@ -9210,6 +9247,8 @@ where
 						payment_hash,
 						purpose: payment.purpose,
 						amount_msat: claimable_amt_msat,
+						htlcs: payment.htlcs.iter().map(events::ClaimedHTLC::from).collect(),
+						sender_intended_total_msat: payment.htlcs.first().map(|htlc| htlc.total_msat),
 					}, None));
 				}
 			}

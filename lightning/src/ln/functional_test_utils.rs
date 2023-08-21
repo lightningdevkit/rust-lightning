@@ -14,7 +14,7 @@ use crate::chain::{BestBlock, ChannelMonitorUpdateStatus, Confirm, Listen, Watch
 use crate::sign::EntropySource;
 use crate::chain::channelmonitor::ChannelMonitor;
 use crate::chain::transaction::OutPoint;
-use crate::events::{ClosureReason, Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider, PathFailure, PaymentPurpose, PaymentFailureReason};
+use crate::events::{ClaimedHTLC, ClosureReason, Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider, PathFailure, PaymentPurpose, PaymentFailureReason};
 use crate::events::bump_transaction::{BumpTransactionEventHandler, Wallet, WalletSource};
 use crate::ln::{PaymentPreimage, PaymentHash, PaymentSecret};
 use crate::ln::channelmanager::{self, AChannelManager, ChainParameters, ChannelManager, ChannelManagerReadArgs, RAACommitmentOrder, PaymentSendFailure, RecipientOnionFields, PaymentId, MIN_CLTV_EXPIRY_DELTA};
@@ -931,6 +931,21 @@ macro_rules! check_added_monitors {
 	($node: expr, $count: expr) => {
 		$crate::ln::functional_test_utils::check_added_monitors(&$node, $count);
 	}
+}
+
+/// Checks whether the claimed HTLC for the specified path has the correct channel information.
+///
+/// This will panic if the path is empty, if the HTLC's channel ID is not actually a channel that
+/// connects the final two nodes in the path, or if the `user_channel_id` is incorrect.
+pub fn check_claimed_htlc_channel<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, path: &[&Node<'a, 'b, 'c>], htlc: &ClaimedHTLC) {
+	let mut nodes = path.iter().rev();
+	let dest = nodes.next().expect("path should have a destination").node;
+	let prev = nodes.next().unwrap_or(&origin_node).node;
+	let dest_channels = dest.list_channels();
+	let ch = dest_channels.iter().find(|ch| ch.channel_id == htlc.channel_id)
+		.expect("HTLC's channel should be one of destination node's channels");
+	assert_eq!(htlc.user_channel_id, ch.user_channel_id);
+	assert_eq!(ch.counterparty.node_id, prev.get_our_node_id());
 }
 
 pub fn _reload_node<'a, 'b, 'c>(node: &'a Node<'a, 'b, 'c>, default_config: UserConfig, chanman_encoded: &[u8], monitors_encoded: &[&[u8]]) -> TestChannelManager<'b, 'c> {
@@ -2284,11 +2299,34 @@ pub fn pass_claimed_payment_along_route<'a, 'b, 'c>(origin_node: &Node<'a, 'b, '
 	let claim_event = expected_paths[0].last().unwrap().node.get_and_clear_pending_events();
 	assert_eq!(claim_event.len(), 1);
 	match claim_event[0] {
-		Event::PaymentClaimed { purpose: PaymentPurpose::SpontaneousPayment(preimage), .. }|
-		Event::PaymentClaimed { purpose: PaymentPurpose::InvoicePayment { payment_preimage: Some(preimage), ..}, .. } =>
-			assert_eq!(preimage, our_payment_preimage),
-		Event::PaymentClaimed { purpose: PaymentPurpose::InvoicePayment { .. }, payment_hash, .. } =>
-			assert_eq!(&payment_hash.0, &Sha256::hash(&our_payment_preimage.0)[..]),
+		Event::PaymentClaimed {
+			purpose: PaymentPurpose::SpontaneousPayment(preimage),
+			amount_msat,
+			ref htlcs,
+			.. }
+		| Event::PaymentClaimed {
+			purpose: PaymentPurpose::InvoicePayment { payment_preimage: Some(preimage), ..},
+			ref htlcs,
+			amount_msat,
+			..
+		} => {
+			assert_eq!(preimage, our_payment_preimage);
+			assert_eq!(htlcs.len(), expected_paths.len());  // One per path.
+			assert_eq!(htlcs.iter().map(|h| h.value_msat).sum::<u64>(), amount_msat);
+			expected_paths.iter().zip(htlcs).for_each(|(path, htlc)| check_claimed_htlc_channel(origin_node, path, htlc));
+		},
+		Event::PaymentClaimed {
+			purpose: PaymentPurpose::InvoicePayment { .. },
+			payment_hash,
+			amount_msat,
+			ref htlcs,
+			..
+		} => {
+			assert_eq!(&payment_hash.0, &Sha256::hash(&our_payment_preimage.0)[..]);
+			assert_eq!(htlcs.len(), expected_paths.len());  // One per path.
+			assert_eq!(htlcs.iter().map(|h| h.value_msat).sum::<u64>(), amount_msat);
+			expected_paths.iter().zip(htlcs).for_each(|(path, htlc)| check_claimed_htlc_channel(origin_node, path, htlc));
+		}
 		_ => panic!(),
 	}
 

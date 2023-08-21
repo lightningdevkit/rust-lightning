@@ -79,6 +79,37 @@ impl_writeable_tlv_based_enum!(PaymentPurpose,
 	(2, SpontaneousPayment)
 );
 
+/// Information about an HTLC that is part of a payment that can be claimed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ClaimedHTLC {
+	/// The `channel_id` of the channel over which the HTLC was received.
+	pub channel_id: [u8; 32],
+	/// The `user_channel_id` of the channel over which the HTLC was received. This is the value
+	/// passed in to [`ChannelManager::create_channel`] for outbound channels, or to
+	/// [`ChannelManager::accept_inbound_channel`] for inbound channels if
+	/// [`UserConfig::manually_accept_inbound_channels`] config flag is set to true. Otherwise
+	/// `user_channel_id` will be randomized for an inbound channel.
+	///
+	/// This field will be zero for a payment that was serialized prior to LDK version 0.0.117. (This
+	/// should only happen in the case that a payment was claimable prior to LDK version 0.0.117, but
+	/// was not actually claimed until after upgrading.)
+	///
+	/// [`ChannelManager::create_channel`]: crate::ln::channelmanager::ChannelManager::create_channel
+	/// [`ChannelManager::accept_inbound_channel`]: crate::ln::channelmanager::ChannelManager::accept_inbound_channel
+	/// [`UserConfig::manually_accept_inbound_channels`]: crate::util::config::UserConfig::manually_accept_inbound_channels
+	pub user_channel_id: u128,
+	/// The block height at which this HTLC expires.
+	pub cltv_expiry: u32,
+	/// The amount (in msats) of this part of an MPP.
+	pub value_msat: u64,
+}
+impl_writeable_tlv_based!(ClaimedHTLC, {
+	(0, channel_id, required),
+	(2, user_channel_id, required),
+	(4, cltv_expiry, required),
+	(6, value_msat, required),
+});
+
 /// When the payment path failure took place and extra details about it. [`PathFailure::OnPath`] may
 /// contain a [`NetworkUpdate`] that needs to be applied to the [`NetworkGraph`].
 ///
@@ -470,6 +501,12 @@ pub enum Event {
 		/// The purpose of the claimed payment, i.e. whether the payment was for an invoice or a
 		/// spontaneous payment.
 		purpose: PaymentPurpose,
+		/// The HTLCs that comprise the claimed payment. This will be empty for events serialized prior
+		/// to LDK version 0.0.117.
+		htlcs: Vec<ClaimedHTLC>,
+		/// The sender-intended sum total of all the MPP parts. This will be `None` for events
+		/// serialized prior to LDK version 0.0.117.
+		sender_intended_total_msat: Option<u64>,
 	},
 	/// Indicates an outbound payment we made succeeded (i.e. it made it all the way to its target
 	/// and we got back the payment preimage for it).
@@ -1040,13 +1077,15 @@ impl Writeable for Event {
 				// We never write the OpenChannelRequest events as, upon disconnection, peers
 				// drop any channels which have not yet exchanged funding_signed.
 			},
-			&Event::PaymentClaimed { ref payment_hash, ref amount_msat, ref purpose, ref receiver_node_id } => {
+			&Event::PaymentClaimed { ref payment_hash, ref amount_msat, ref purpose, ref receiver_node_id, ref htlcs, ref sender_intended_total_msat } => {
 				19u8.write(writer)?;
 				write_tlv_fields!(writer, {
 					(0, payment_hash, required),
 					(1, receiver_node_id, option),
 					(2, purpose, required),
 					(4, amount_msat, required),
+					(5, *htlcs, optional_vec),
+					(7, sender_intended_total_msat, option),
 				});
 			},
 			&Event::ProbeSuccessful { ref payment_id, ref payment_hash, ref path } => {
@@ -1371,17 +1410,23 @@ impl MaybeReadable for Event {
 					let mut purpose = UpgradableRequired(None);
 					let mut amount_msat = 0;
 					let mut receiver_node_id = None;
+					let mut htlcs: Option<Vec<ClaimedHTLC>> = Some(vec![]);
+					let mut sender_intended_total_msat: Option<u64> = None;
 					read_tlv_fields!(reader, {
 						(0, payment_hash, required),
 						(1, receiver_node_id, option),
 						(2, purpose, upgradable_required),
 						(4, amount_msat, required),
+						(5, htlcs, optional_vec),
+						(7, sender_intended_total_msat, option),
 					});
 					Ok(Some(Event::PaymentClaimed {
 						receiver_node_id,
 						payment_hash,
 						purpose: _init_tlv_based_struct_field!(purpose, upgradable_required),
 						amount_msat,
+						htlcs: htlcs.unwrap_or(vec![]),
+						sender_intended_total_msat,
 					}))
 				};
 				f()
