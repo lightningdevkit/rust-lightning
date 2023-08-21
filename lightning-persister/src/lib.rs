@@ -1,6 +1,6 @@
-//! Utilities that handle persisting Rust-Lightning data to disk via standard filesystem APIs.
-
-// Prefix these with `rustdoc::` when we update our MSRV to be >= 1.52 to remove warnings.
+//! Provides utilities for LDK data persistence and retrieval.
+//
+// TODO: Prefix these with `rustdoc::` when we update our MSRV to be >= 1.52 to remove warnings.
 #![deny(broken_intra_doc_links)]
 #![deny(private_intra_doc_links)]
 
