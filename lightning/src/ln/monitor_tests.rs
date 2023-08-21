@@ -95,7 +95,7 @@ fn chanmon_fail_from_stale_commitment() {
 fn test_spendable_output<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, spendable_tx: &Transaction) {
 	let mut spendable = node.chain_monitor.chain_monitor.get_and_clear_pending_events();
 	assert_eq!(spendable.len(), 1);
-	if let Event::SpendableOutputs { outputs } = spendable.pop().unwrap() {
+	if let Event::SpendableOutputs { outputs, .. } = spendable.pop().unwrap() {
 		assert_eq!(outputs.len(), 1);
 		let spend_tx = node.keys_manager.backing.spend_spendable_outputs(&[&outputs[0]], Vec::new(),
 			Builder::new().push_opcode(opcodes::all::OP_RETURN).into_script(), 253, None, &Secp256k1::new()).unwrap();
@@ -2228,8 +2228,9 @@ fn test_anchors_aggregated_revoked_htlc_tx() {
 	let spendable_output_events = nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events();
 	assert_eq!(spendable_output_events.len(), 2);
 	for (idx, event) in spendable_output_events.iter().enumerate() {
-		if let Event::SpendableOutputs { outputs } = event {
+		if let Event::SpendableOutputs { outputs, channel_id } = event {
 			assert_eq!(outputs.len(), 1);
+			assert!(vec![chan_b.2, chan_a.2].contains(&channel_id.unwrap()));
 			let spend_tx = nodes[0].keys_manager.backing.spend_spendable_outputs(
 				&[&outputs[0]], Vec::new(), Script::new_op_return(&[]), 253, None, &Secp256k1::new(),
 			).unwrap();

@@ -4302,7 +4302,7 @@ macro_rules! check_spendable_outputs {
 			let secp_ctx = Secp256k1::new();
 			for event in events.drain(..) {
 				match event {
-					Event::SpendableOutputs { mut outputs } => {
+					Event::SpendableOutputs { mut outputs, channel_id: _ } => {
 						for outp in outputs.drain(..) {
 							txn.push($keysinterface.backing.spend_spendable_outputs(&[&outp], Vec::new(), Builder::new().push_opcode(opcodes::all::OP_RETURN).into_script(), 253, None, &secp_ctx).unwrap());
 							all_outputs.push(outp);
