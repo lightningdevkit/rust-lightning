@@ -1553,6 +1553,8 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 		let node_id_a = channel_info.node_one.clone();
 		let node_id_b = channel_info.node_two.clone();
 
+		log_gossip!(self.logger, "Adding channel {} between nodes {} and {}", short_channel_id, node_id_a, node_id_b);
+
 		match channels.entry(short_channel_id) {
 			IndexedMapEntry::Occupied(mut entry) => {
 				//TODO: because asking the blockchain if short_channel_id is valid is only optional
@@ -1788,16 +1790,23 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 		let mut scids_to_remove = Vec::new();
 		for (scid, info) in channels.unordered_iter_mut() {
 			if info.one_to_two.is_some() && info.one_to_two.as_ref().unwrap().last_update < min_time_unix {
+				log_gossip!(self.logger, "Removing directional update one_to_two (0) for channel {} due to its timestamp {} being below {}",
+					scid, info.one_to_two.as_ref().unwrap().last_update, min_time_unix);
 				info.one_to_two = None;
 			}
 			if info.two_to_one.is_some() && info.two_to_one.as_ref().unwrap().last_update < min_time_unix {
+				log_gossip!(self.logger, "Removing directional update two_to_one (1) for channel {} due to its timestamp {} being below {}",
+					scid, info.two_to_one.as_ref().unwrap().last_update, min_time_unix);
 				info.two_to_one = None;
 			}
 			if info.one_to_two.is_none() || info.two_to_one.is_none() {
 				// We check the announcement_received_time here to ensure we don't drop
 				// announcements that we just received and are just waiting for our peer to send a
 				// channel_update for.
-				if info.announcement_received_time < min_time_unix as u64 {
+				let announcement_received_timestamp = info.announcement_received_time;
+				if announcement_received_timestamp < min_time_unix as u64 {
+					log_gossip!(self.logger, "Removing channel {} because both directional updates are missing and its announcement timestamp {} being below {}",
+						scid, announcement_received_timestamp, min_time_unix);
 					scids_to_remove.push(*scid);
 				}
 			}
@@ -1877,6 +1886,8 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 				return Err(LightningError{err: "channel_update has a timestamp more than a day in the future".to_owned(), action: ErrorAction::IgnoreAndLog(Level::Gossip)});
 			}
 		}
+
+		log_gossip!(self.logger, "Updating channel {} in direction {} with timestamp {}", msg.short_channel_id, msg.flags & 1, msg.timestamp);
 
 		let mut channels = self.channels.write().unwrap();
 		match channels.get_mut(&msg.short_channel_id) {
