@@ -1373,22 +1373,7 @@ mod test {
 		assert_eq!(other_events.borrow().len(), 1);
 		check_payment_claimable(&other_events.borrow()[0], payment_hash, payment_secret, payment_amt, payment_preimage_opt, invoice.recover_payee_pub_key());
 		do_claim_payment_along_route(&nodes[0], &[&vec!(&nodes[fwd_idx])[..]], false, payment_preimage);
-		let events = nodes[0].node.get_and_clear_pending_events();
-		assert_eq!(events.len(), 2);
-		match events[0] {
-			Event::PaymentSent { payment_preimage: ref ev_preimage, payment_hash: ref ev_hash, ref fee_paid_msat, .. } => {
-				assert_eq!(payment_preimage, *ev_preimage);
-				assert_eq!(payment_hash, *ev_hash);
-				assert_eq!(fee_paid_msat, &Some(0));
-			},
-			_ => panic!("Unexpected event")
-		}
-		match events[1] {
-			Event::PaymentPathSuccessful { payment_hash: hash, .. } => {
-				assert_eq!(hash, Some(payment_hash));
-			},
-			_ => panic!("Unexpected event")
-		}
+		expect_payment_sent(&nodes[0], payment_preimage, None, true, true);
 	}
 
 	#[test]

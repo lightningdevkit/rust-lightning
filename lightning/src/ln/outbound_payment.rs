@@ -1177,7 +1177,7 @@ impl OutboundPayments {
 
 	pub(super) fn claim_htlc<L: Deref>(
 		&self, payment_id: PaymentId, payment_preimage: PaymentPreimage, session_priv: SecretKey,
-		path: Path, from_onchain: bool,
+		path: Path, from_onchain: bool, ev_completion_action: EventCompletionAction,
 		pending_events: &Mutex<VecDeque<(events::Event, Option<EventCompletionAction>)>>,
 		logger: &L,
 	) where L::Target: Logger {
@@ -1194,7 +1194,7 @@ impl OutboundPayments {
 					payment_preimage,
 					payment_hash,
 					fee_paid_msat,
-				}, None));
+				}, Some(ev_completion_action.clone())));
 				payment.get_mut().mark_fulfilled();
 			}
 
@@ -1211,7 +1211,7 @@ impl OutboundPayments {
 						payment_id,
 						payment_hash,
 						path,
-					}, None));
+					}, Some(ev_completion_action)));
 				}
 			}
 		} else {

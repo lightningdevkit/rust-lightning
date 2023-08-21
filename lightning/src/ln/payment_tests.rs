@@ -643,7 +643,7 @@ fn do_retry_with_no_persist(confirm_before_reload: bool) {
 		mine_transaction(&nodes[0], &as_commitment_tx);
 	}
 	mine_transaction(&nodes[0], &bs_htlc_claim_txn[0]);
-	expect_payment_sent!(nodes[0], payment_preimage_1);
+	expect_payment_sent(&nodes[0], payment_preimage_1, None, true, false);
 	connect_blocks(&nodes[0], TEST_FINAL_CLTV*4 + 20);
 	let (first_htlc_timeout_tx, second_htlc_timeout_tx) = {
 		let mut txn = nodes[0].tx_broadcaster.unique_txn_broadcast();
@@ -1005,7 +1005,7 @@ fn do_test_dup_htlc_onchain_fails_on_reload(persist_manager_post_event: bool, co
 	if payment_timeout {
 		expect_payment_failed!(nodes[0], payment_hash, false);
 	} else {
-		expect_payment_sent!(nodes[0], payment_preimage);
+		expect_payment_sent(&nodes[0], payment_preimage, None, true, false);
 	}
 
 	// If we persist the ChannelManager after we get the PaymentSent event, we shouldn't get it
@@ -1022,7 +1022,7 @@ fn do_test_dup_htlc_onchain_fails_on_reload(persist_manager_post_event: bool, co
 	} else if payment_timeout {
 		expect_payment_failed!(nodes[0], payment_hash, false);
 	} else {
-		expect_payment_sent!(nodes[0], payment_preimage);
+		expect_payment_sent(&nodes[0], payment_preimage, None, true, false);
 	}
 
 	// Note that if we re-connect the block which exposed nodes[0] to the payment preimage (but
@@ -1074,7 +1074,7 @@ fn test_fulfill_restart_failure() {
 
 	let htlc_fulfill_updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 	nodes[0].node.handle_update_fulfill_htlc(&nodes[1].node.get_our_node_id(), &htlc_fulfill_updates.update_fulfill_htlcs[0]);
-	expect_payment_sent_without_paths!(nodes[0], payment_preimage);
+	expect_payment_sent(&nodes[0], payment_preimage, None, false, false);
 
 	// Now reload nodes[1]...
 	reload_node!(nodes[1], &chan_manager_serialized, &[&chan_0_monitor_serialized], persister, new_chain_monitor, nodes_1_deserialized);
@@ -1775,6 +1775,7 @@ fn do_test_intercepted_payment(test: InterceptTest) {
 			},
 			_ => panic!("Unexpected event")
 		}
+		check_added_monitors(&nodes[0], 1);
 	} else if test == InterceptTest::Timeout {
 		let mut block = create_dummy_block(nodes[0].best_block_hash(), 42, Vec::new());
 		connect_block(&nodes[0], &block);
@@ -1929,7 +1930,7 @@ fn do_accept_underpaying_htlcs_config(num_mpp_parts: usize) {
 		payment_preimage);
 	// The sender doesn't know that the penultimate hop took an extra fee.
 	expect_payment_sent(&nodes[0], payment_preimage,
-		Some(Some(total_fee_msat - skimmed_fee_msat * num_mpp_parts as u64)), true);
+		Some(Some(total_fee_msat - skimmed_fee_msat * num_mpp_parts as u64)), true, true);
 }
 
 #[derive(PartialEq)]
@@ -2353,6 +2354,7 @@ fn auto_retry_partial_failure() {
 	assert_eq!(bs_claim_update.update_fulfill_htlcs.len(), 1);
 
 	nodes[0].node.handle_update_fulfill_htlc(&nodes[1].node.get_our_node_id(), &bs_claim_update.update_fulfill_htlcs[0]);
+	expect_payment_sent(&nodes[0], payment_preimage, None, false, false);
 	nodes[0].node.handle_commitment_signed(&nodes[1].node.get_our_node_id(), &bs_claim_update.commitment_signed);
 	check_added_monitors!(nodes[0], 1);
 	let (as_third_raa, as_third_cs) = get_revoke_commit_msgs!(nodes[0], nodes[1].node.get_our_node_id());
@@ -2367,6 +2369,7 @@ fn auto_retry_partial_failure() {
 
 	nodes[0].node.handle_revoke_and_ack(&nodes[1].node.get_our_node_id(), &bs_third_raa);
 	check_added_monitors!(nodes[0], 1);
+	expect_payment_path_successful!(nodes[0]);
 
 	nodes[0].node.handle_update_fulfill_htlc(&nodes[1].node.get_our_node_id(), &bs_second_claim_update.update_fulfill_htlcs[0]);
 	nodes[0].node.handle_update_fulfill_htlc(&nodes[1].node.get_our_node_id(), &bs_second_claim_update.update_fulfill_htlcs[1]);
@@ -2383,7 +2386,10 @@ fn auto_retry_partial_failure() {
 
 	nodes[0].node.handle_revoke_and_ack(&nodes[1].node.get_our_node_id(), &bs_second_raa);
 	check_added_monitors!(nodes[0], 1);
-	expect_payment_sent!(nodes[0], payment_preimage);
+	let events = nodes[0].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 2);
+	if let Event::PaymentPathSuccessful { .. } = events[0] {} else { panic!(); }
+	if let Event::PaymentPathSuccessful { .. } = events[1] {} else { panic!(); }
 }
 
 #[test]
@@ -3172,7 +3178,7 @@ fn test_threaded_payment_retries() {
 	}
 }
 
-fn do_no_missing_sent_on_midpoint_reload(persist_manager_with_payment: bool) {
+fn do_no_missing_sent_on_reload(persist_manager_with_payment: bool, at_midpoint: bool) {
 	// Test that if we reload in the middle of an HTLC claim commitment signed dance we'll still
 	// receive the PaymentSent event even if the ChannelManager had no idea about the payment when
 	// it was last persisted.
@@ -3201,10 +3207,20 @@ fn do_no_missing_sent_on_midpoint_reload(persist_manager_with_payment: bool) {
 	check_added_monitors!(nodes[1], 1);
 	expect_payment_claimed!(nodes[1], our_payment_hash, 1_000_000);
 
-	let updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
-	nodes[0].node.handle_update_fulfill_htlc(&nodes[1].node.get_our_node_id(), &updates.update_fulfill_htlcs[0]);
-	nodes[0].node.handle_commitment_signed(&nodes[1].node.get_our_node_id(), &updates.commitment_signed);
-	check_added_monitors!(nodes[0], 1);
+	if at_midpoint {
+		let updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+		nodes[0].node.handle_update_fulfill_htlc(&nodes[1].node.get_our_node_id(), &updates.update_fulfill_htlcs[0]);
+		nodes[0].node.handle_commitment_signed(&nodes[1].node.get_our_node_id(), &updates.commitment_signed);
+		check_added_monitors!(nodes[0], 1);
+	} else {
+		let htlc_fulfill_updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+		nodes[0].node.handle_update_fulfill_htlc(&nodes[1].node.get_our_node_id(), &htlc_fulfill_updates.update_fulfill_htlcs[0]);
+		commitment_signed_dance!(nodes[0], nodes[1], htlc_fulfill_updates.commitment_signed, false);
+		// Ignore the PaymentSent event which is now pending on nodes[0] - if we were to handle it we'd
+		// be expected to ignore the eventual conflicting PaymentFailed, but by not looking at it we
+		// expect to get the PaymentSent again later.
+		check_added_monitors(&nodes[0], 0);
+	}
 
 	// The ChannelMonitor should always be the latest version, as we're required to persist it
 	// during the commitment signed handling.
@@ -3250,8 +3266,14 @@ fn do_no_missing_sent_on_midpoint_reload(persist_manager_with_payment: bool) {
 
 #[test]
 fn no_missing_sent_on_midpoint_reload() {
-	do_no_missing_sent_on_midpoint_reload(false);
-	do_no_missing_sent_on_midpoint_reload(true);
+	do_no_missing_sent_on_reload(false, true);
+	do_no_missing_sent_on_reload(true, true);
+}
+
+#[test]
+fn no_missing_sent_on_reload() {
+	do_no_missing_sent_on_reload(false, false);
+	do_no_missing_sent_on_reload(true, false);
 }
 
 fn do_claim_from_closed_chan(fail_payment: bool) {
@@ -3691,7 +3713,7 @@ fn do_test_custom_tlvs_consistency(first_tlvs: Vec<(u64, Vec<u8>)>, second_tlvs:
 
 		do_claim_payment_along_route(&nodes[0], &[&[&nodes[1], &nodes[3]], &[&nodes[2], &nodes[3]]],
 			false, our_payment_preimage);
-		expect_payment_sent(&nodes[0], our_payment_preimage, Some(Some(2000)), true);
+		expect_payment_sent(&nodes[0], our_payment_preimage, Some(Some(2000)), true, true);
 	} else {
 		// Expect fail back
 		let expected_destinations = vec![HTLCDestination::FailedPayment { payment_hash: our_payment_hash }];

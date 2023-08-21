@@ -345,7 +345,7 @@ fn htlc_fail_async_shutdown() {
 	nodes[1].node.handle_commitment_signed(&nodes[0].node.get_our_node_id(), &updates.commitment_signed);
 	check_added_monitors!(nodes[1], 1);
 	nodes[1].node.handle_shutdown(&nodes[0].node.get_our_node_id(), &node_0_shutdown);
-	commitment_signed_dance!(nodes[1], nodes[0], (), false, true, false);
+	commitment_signed_dance!(nodes[1], nodes[0], (), false, true, false, false);
 
 	let updates_2 = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 	assert!(updates_2.update_add_htlcs.is_empty());

@@ -17,7 +17,7 @@ use crate::chain::transaction::OutPoint;
 use crate::events::{ClosureReason, Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider, PathFailure, PaymentPurpose, PaymentFailureReason};
 use crate::events::bump_transaction::{BumpTransactionEventHandler, Wallet, WalletSource};
 use crate::ln::{PaymentPreimage, PaymentHash, PaymentSecret};
-use crate::ln::channelmanager::{AChannelManager, ChainParameters, ChannelManager, ChannelManagerReadArgs, RAACommitmentOrder, PaymentSendFailure, RecipientOnionFields, PaymentId, MIN_CLTV_EXPIRY_DELTA};
+use crate::ln::channelmanager::{self, AChannelManager, ChainParameters, ChannelManager, ChannelManagerReadArgs, RAACommitmentOrder, PaymentSendFailure, RecipientOnionFields, PaymentId, MIN_CLTV_EXPIRY_DELTA};
 use crate::routing::gossip::{P2PGossipSync, NetworkGraph, NetworkUpdate};
 use crate::routing::router::{self, PaymentParameters, Route};
 use crate::ln::features::InitFeatures;
@@ -1684,8 +1684,8 @@ macro_rules! commitment_signed_dance {
 			bs_revoke_and_ack
 		}
 	};
-	($node_a: expr, $node_b: expr, (), $fail_backwards: expr, true /* skip last step */, false /* no extra message */) => {
-		assert!($crate::ln::functional_test_utils::commitment_signed_dance_through_cp_raa(&$node_a, &$node_b, $fail_backwards).is_none());
+	($node_a: expr, $node_b: expr, (), $fail_backwards: expr, true /* skip last step */, false /* no extra message */, $incl_claim: expr) => {
+		assert!($crate::ln::functional_test_utils::commitment_signed_dance_through_cp_raa(&$node_a, &$node_b, $fail_backwards, $incl_claim).is_none());
 	};
 	($node_a: expr, $node_b: expr, $commitment_signed: expr, $fail_backwards: expr) => {
 		$crate::ln::functional_test_utils::do_commitment_signed_dance(&$node_a, &$node_b, &$commitment_signed, $fail_backwards, false);
@@ -1696,11 +1696,16 @@ macro_rules! commitment_signed_dance {
 /// the initiator's `revoke_and_ack` response. i.e. [`do_main_commitment_signed_dance`] plus the
 /// `revoke_and_ack` response to it.
 ///
+/// An HTLC claim on one channel blocks the RAA channel monitor update for the outbound edge
+/// channel until the inbound edge channel preimage monitor update completes. Thus, when checking
+/// for channel monitor updates, we need to know if an `update_fulfill_htlc` was included in the
+/// the commitment we're exchanging. `includes_claim` provides that information.
+///
 /// Returns any additional message `node_b` generated in addition to the `revoke_and_ack` response.
-pub fn commitment_signed_dance_through_cp_raa(node_a: &Node<'_, '_, '_>, node_b: &Node<'_, '_, '_>, fail_backwards: bool) -> Option<MessageSendEvent> {
+pub fn commitment_signed_dance_through_cp_raa(node_a: &Node<'_, '_, '_>, node_b: &Node<'_, '_, '_>, fail_backwards: bool, includes_claim: bool) -> Option<MessageSendEvent> {
 	let (extra_msg_option, bs_revoke_and_ack) = do_main_commitment_signed_dance(node_a, node_b, fail_backwards);
 	node_a.node.handle_revoke_and_ack(&node_b.node.get_our_node_id(), &bs_revoke_and_ack);
-	check_added_monitors(node_a, 1);
+	check_added_monitors(node_a, if includes_claim { 0 } else { 1 });
 	extra_msg_option
 }
 
@@ -1747,7 +1752,23 @@ pub fn do_commitment_signed_dance(node_a: &Node<'_, '_, '_>, node_b: &Node<'_, '
 	node_a.node.handle_commitment_signed(&node_b.node.get_our_node_id(), commitment_signed);
 	check_added_monitors!(node_a, 1);
 
-	commitment_signed_dance!(node_a, node_b, (), fail_backwards, true, false);
+	// If this commitment signed dance was due to a claim, don't check for an RAA monitor update.
+	let got_claim = node_a.node.pending_events.lock().unwrap().iter().any(|(ev, action)| {
+		let matching_action = if let Some(channelmanager::EventCompletionAction::ReleaseRAAChannelMonitorUpdate
+			{ channel_funding_outpoint, counterparty_node_id }) = action
+		{
+			if channel_funding_outpoint.to_channel_id() == commitment_signed.channel_id {
+				assert_eq!(*counterparty_node_id, node_b.node.get_our_node_id());
+				true
+			} else { false }
+		} else { false };
+		if matching_action {
+			if let Event::PaymentSent { .. } = ev {} else { panic!(); }
+		}
+		matching_action
+	});
+	if fail_backwards { assert!(!got_claim); }
+	commitment_signed_dance!(node_a, node_b, (), fail_backwards, true, false, got_claim);
 
 	if skip_last_step { return; }
 
@@ -1892,7 +1913,7 @@ macro_rules! expect_payment_claimed {
 
 pub fn expect_payment_sent<CM: AChannelManager, H: NodeHolder<CM=CM>>(node: &H,
 	expected_payment_preimage: PaymentPreimage, expected_fee_msat_opt: Option<Option<u64>>,
-	expect_per_path_claims: bool,
+	expect_per_path_claims: bool, expect_post_ev_mon_update: bool,
 ) {
 	let events = node.node().get_and_clear_pending_events();
 	let expected_payment_hash = PaymentHash(
@@ -1901,6 +1922,9 @@ pub fn expect_payment_sent<CM: AChannelManager, H: NodeHolder<CM=CM>>(node: &H,
 		assert!(events.len() > 1);
 	} else {
 		assert_eq!(events.len(), 1);
+	}
+	if expect_post_ev_mon_update {
+		check_added_monitors(node, 1);
 	}
 	let expected_payment_id = match events[0] {
 		Event::PaymentSent { ref payment_id, ref payment_preimage, ref payment_hash, ref fee_paid_msat } => {
@@ -1928,17 +1952,6 @@ pub fn expect_payment_sent<CM: AChannelManager, H: NodeHolder<CM=CM>>(node: &H,
 	}
 }
 
-#[cfg(test)]
-#[macro_export]
-macro_rules! expect_payment_sent_without_paths {
-	($node: expr, $expected_payment_preimage: expr) => {
-		expect_payment_sent!($node, $expected_payment_preimage, None::<u64>, false);
-	};
-	($node: expr, $expected_payment_preimage: expr, $expected_fee_msat_opt: expr) => {
-		expect_payment_sent!($node, $expected_payment_preimage, $expected_fee_msat_opt, false);
-	}
-}
-
 #[macro_export]
 macro_rules! expect_payment_sent {
 	($node: expr, $expected_payment_preimage: expr) => {
@@ -1949,7 +1962,7 @@ macro_rules! expect_payment_sent {
 	};
 	($node: expr, $expected_payment_preimage: expr, $expected_fee_msat_opt: expr, $expect_paths: expr) => {
 		$crate::ln::functional_test_utils::expect_payment_sent(&$node, $expected_payment_preimage,
-			$expected_fee_msat_opt.map(|o| Some(o)), $expect_paths);
+			$expected_fee_msat_opt.map(|o| Some(o)), $expect_paths, true);
 	}
 }
 
