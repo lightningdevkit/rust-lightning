@@ -7512,6 +7512,16 @@ where
 								msg,
 							});
 						}
+						peer_state.pending_msg_events.push(events::MessageSendEvent::HandleError {
+							node_id: *counterparty_node_id,
+							action: msgs::ErrorAction::SendWarningMessage {
+								msg: msgs::WarningMessage {
+									channel_id: msg.channel_id,
+									data: "You appear to be exhibiting LND bug 6039, we'll keep sending you shutdown messages until you handle them correctly".to_owned()
+								},
+								log_level: Level::Trace,
+							}
+						});
 					}
 				}
 				return;

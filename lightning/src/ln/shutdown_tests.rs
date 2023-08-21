@@ -219,7 +219,13 @@ fn test_lnd_bug_6039() {
 	// see if LND will accept our protocol compliance.
 	let err_msg = msgs::ErrorMessage { channel_id: chan.2, data: "link failed to shutdown".to_string() };
 	nodes[0].node.handle_error(&nodes[1].node.get_our_node_id(), &err_msg);
-	let _node_0_repeated_shutdown = get_event_msg!(nodes[0], MessageSendEvent::SendShutdown, nodes[1].node.get_our_node_id());
+	let node_a_responses = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(node_a_responses[0], MessageSendEvent::SendShutdown {
+			node_id: nodes[1].node.get_our_node_id(),
+			msg: node_0_shutdown,
+		});
+	if let MessageSendEvent::HandleError { action: msgs::ErrorAction::SendWarningMessage { .. }, .. }
+		= node_a_responses[1] {} else { panic!(); }
 
 	let node_1_shutdown = get_event_msg!(nodes[1], MessageSendEvent::SendShutdown, nodes[0].node.get_our_node_id());
 

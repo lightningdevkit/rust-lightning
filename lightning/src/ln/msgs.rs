@@ -1144,7 +1144,7 @@ enum EncodingType {
 }
 
 /// Used to put an error message in a [`LightningError`].
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum ErrorAction {
 	/// The peer took some action which made us think they were useless. Disconnect them.
 	DisconnectPeer {
