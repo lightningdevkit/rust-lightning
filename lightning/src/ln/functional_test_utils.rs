@@ -17,7 +17,7 @@ use crate::chain::transaction::OutPoint;
 use crate::events::{ClaimedHTLC, ClosureReason, Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider, PathFailure, PaymentPurpose, PaymentFailureReason};
 use crate::events::bump_transaction::{BumpTransactionEventHandler, Wallet, WalletSource};
 use crate::ln::{ChannelId, PaymentPreimage, PaymentHash, PaymentSecret};
-use crate::ln::channelmanager::{self, AChannelManager, ChainParameters, ChannelManager, ChannelManagerReadArgs, RAACommitmentOrder, PaymentSendFailure, RecipientOnionFields, PaymentId, MIN_CLTV_EXPIRY_DELTA};
+use crate::ln::channelmanager::{AChannelManager, ChainParameters, ChannelManager, ChannelManagerReadArgs, RAACommitmentOrder, PaymentSendFailure, RecipientOnionFields, PaymentId, MIN_CLTV_EXPIRY_DELTA};
 use crate::routing::gossip::{P2PGossipSync, NetworkGraph, NetworkUpdate};
 use crate::routing::router::{self, PaymentParameters, Route, RouteParameters};
 use crate::ln::features::InitFeatures;
@@ -72,6 +72,20 @@ pub fn mine_transaction<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, tx: &Transac
 pub fn mine_transactions<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, txn: &[&Transaction]) {
 	let height = node.best_block_info().1 + 1;
 	confirm_transactions_at(node, txn, height);
+}
+/// Mine a single block containing the given transaction without extra consistency checks which may
+/// impact ChannelManager state.
+pub fn mine_transaction_without_consistency_checks<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, tx: &Transaction) {
+	let height = node.best_block_info().1 + 1;
+	let mut block = Block {
+		header: BlockHeader { version: 0x20000000, prev_blockhash: node.best_block_hash(), merkle_root: TxMerkleNode::all_zeros(), time: height, bits: 42, nonce: 42 },
+		txdata: Vec::new(),
+	};
+	for _ in 0..*node.network_chan_count.borrow() { // Make sure we don't end up with channels at the same short id by offsetting by chan_count
+		block.txdata.push(Transaction { version: 0, lock_time: PackedLockTime::ZERO, input: Vec::new(), output: Vec::new() });
+	}
+	block.txdata.push((*tx).clone());
+	do_connect_block_without_consistency_checks(node, block, false);
 }
 /// Mine the given transaction at the given height, mining blocks as required to build to that
 /// height
@@ -211,16 +225,16 @@ pub fn connect_blocks<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, depth: u32) ->
 	assert!(depth >= 1);
 	for i in 1..depth {
 		let prev_blockhash = block.header.block_hash();
-		do_connect_block(node, block, skip_intermediaries);
+		do_connect_block_with_consistency_checks(node, block, skip_intermediaries);
 		block = create_dummy_block(prev_blockhash, height + i, Vec::new());
 	}
 	let hash = block.header.block_hash();
-	do_connect_block(node, block, false);
+	do_connect_block_with_consistency_checks(node, block, false);
 	hash
 }
 
 pub fn connect_block<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, block: &Block) {
-	do_connect_block(node, block.clone(), false);
+	do_connect_block_with_consistency_checks(node, block.clone(), false);
 }
 
 fn call_claimable_balances<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>) {
@@ -230,8 +244,14 @@ fn call_claimable_balances<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>) {
 	}
 }
 
-fn do_connect_block<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, block: Block, skip_intermediaries: bool) {
+fn do_connect_block_with_consistency_checks<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, block: Block, skip_intermediaries: bool) {
 	call_claimable_balances(node);
+	do_connect_block_without_consistency_checks(node, block, skip_intermediaries);
+	call_claimable_balances(node);
+	node.node.test_process_background_events();
+}
+
+fn do_connect_block_without_consistency_checks<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, block: Block, skip_intermediaries: bool) {
 	let height = node.best_block_info().1 + 1;
 	#[cfg(feature = "std")] {
 		eprintln!("Connecting block using Block Connection Style: {:?}", *node.connect_style.borrow());
@@ -286,8 +306,6 @@ fn do_connect_block<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, block: Block, sk
 			}
 		}
 	}
-	call_claimable_balances(node);
-	node.node.test_process_background_events();
 
 	for tx in &block.txdata {
 		for input in &tx.input {

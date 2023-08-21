@@ -67,7 +67,7 @@ use crate::sync::{Mutex, LockTestExt};
 /// much smaller than a full [`ChannelMonitor`]. However, for large single commitment transaction
 /// updates (e.g. ones during which there are hundreds of HTLCs pending on the commitment
 /// transaction), a single update may reach upwards of 1 MiB in serialized size.
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 #[must_use]
 pub struct ChannelMonitorUpdate {
 	pub(crate) updates: Vec<ChannelMonitorUpdateStep>,
@@ -487,7 +487,7 @@ impl_writeable_tlv_based_enum_upgradable!(OnchainEvent,
 
 );
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum ChannelMonitorUpdateStep {
 	LatestHolderCommitmentTXInfo {
 		commitment_tx: HolderCommitmentTransaction,
