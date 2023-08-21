@@ -7,7 +7,7 @@
 // You may not use this file except in accordance with one or both of these
 // licenses.
 
-//! Convenient utilities for paying Lightning invoices and sending spontaneous payments.
+//! Convenient utilities for paying Lightning invoices.
 
 use crate::Bolt11Invoice;
 
