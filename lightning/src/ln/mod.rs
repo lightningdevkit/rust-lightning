@@ -86,6 +86,13 @@ impl core::fmt::Display for PaymentHash {
 /// This is not exported to bindings users as we just use [u8; 32] directly
 #[derive(Hash, Copy, Clone, PartialEq, Eq, Debug, Ord, PartialOrd)]
 pub struct PaymentPreimage(pub [u8; 32]);
+
+impl core::fmt::Display for PaymentPreimage {
+	fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
+		crate::util::logger::DebugBytes(&self.0).fmt(f)
+	}
+}
+
 /// payment_secret type, use to authenticate sender to the receiver and tie MPP HTLCs together
 ///
 /// This is not exported to bindings users as we just use [u8; 32] directly

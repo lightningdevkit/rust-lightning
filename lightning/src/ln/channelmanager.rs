@@ -252,6 +252,12 @@ impl Readable for PaymentId {
 	}
 }
 
+impl core::fmt::Display for PaymentId {
+	fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
+		crate::util::logger::DebugBytes(&self.0).fmt(f)
+	}
+}
+
 /// An identifier used to uniquely identify an intercepted HTLC to LDK.
 ///
 /// This is not exported to bindings users as we just use [u8; 32] directly
