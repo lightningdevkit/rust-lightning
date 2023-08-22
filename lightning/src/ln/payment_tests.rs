@@ -2544,7 +2544,7 @@ fn retry_multi_path_single_failed_payment() {
 		}, Ok(route.clone()));
 
 	{
-		let scorer = chanmon_cfgs[0].scorer.lock().unwrap();
+		let scorer = chanmon_cfgs[0].scorer.read().unwrap();
 		// The initial send attempt, 2 paths
 		scorer.expect_usage(chans[0].short_channel_id.unwrap(), ChannelUsage { amount_msat: 10_000, inflight_htlc_msat: 0, effective_capacity: EffectiveCapacity::Unknown });
 		scorer.expect_usage(chans[1].short_channel_id.unwrap(), ChannelUsage { amount_msat: 100_000_001, inflight_htlc_msat: 0, effective_capacity: EffectiveCapacity::Unknown });

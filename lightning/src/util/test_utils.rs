@@ -31,7 +31,8 @@ use crate::offers::invoice_request::UnsignedInvoiceRequest;
 use crate::routing::gossip::{EffectiveCapacity, NetworkGraph, NodeId};
 use crate::routing::utxo::{UtxoLookup, UtxoLookupError, UtxoResult};
 use crate::routing::router::{find_route, InFlightHtlcs, Path, Route, RouteParameters, Router, ScorerAccountingForInFlightHtlcs};
-use crate::routing::scoring::{ChannelUsage, Score};
+use crate::routing::scoring::{ChannelUsage, ScoreUpdate, ScoreLookUp};
+use crate::sync::RwLock;
 use crate::util::config::UserConfig;
 use crate::util::enforcing_trait_impls::{EnforcingSigner, EnforcementState};
 use crate::util::logger::{Logger, Level, Record};
@@ -59,7 +60,7 @@ use regex;
 use crate::io;
 use crate::prelude::*;
 use core::cell::RefCell;
-use core::ops::DerefMut;
+use core::ops::Deref;
 use core::time::Duration;
 use crate::sync::{Mutex, Arc};
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -100,11 +101,11 @@ impl chaininterface::FeeEstimator for TestFeeEstimator {
 pub struct TestRouter<'a> {
 	pub network_graph: Arc<NetworkGraph<&'a TestLogger>>,
 	pub next_routes: Mutex<VecDeque<(RouteParameters, Result<Route, LightningError>)>>,
-	pub scorer: &'a Mutex<TestScorer>,
+	pub scorer: &'a RwLock<TestScorer>,
 }
 
 impl<'a> TestRouter<'a> {
-	pub fn new(network_graph: Arc<NetworkGraph<&'a TestLogger>>, scorer: &'a Mutex<TestScorer>) -> Self {
+	pub fn new(network_graph: Arc<NetworkGraph<&'a TestLogger>>, scorer: &'a RwLock<TestScorer>) -> Self {
 		Self { network_graph, next_routes: Mutex::new(VecDeque::new()), scorer }
 	}
 
@@ -122,8 +123,8 @@ impl<'a> Router for TestRouter<'a> {
 		if let Some((find_route_query, find_route_res)) = self.next_routes.lock().unwrap().pop_front() {
 			assert_eq!(find_route_query, *params);
 			if let Ok(ref route) = find_route_res {
-				let mut binding = self.scorer.lock().unwrap();
-				let scorer = ScorerAccountingForInFlightHtlcs::new(binding.deref_mut(), &inflight_htlcs);
+				let scorer = self.scorer.read().unwrap();
+				let scorer = ScorerAccountingForInFlightHtlcs::new(scorer, &inflight_htlcs);
 				for path in &route.paths {
 					let mut aggregate_msat = 0u64;
 					for (idx, hop) in path.hops.iter().rev().enumerate() {
@@ -150,7 +151,7 @@ impl<'a> Router for TestRouter<'a> {
 		let logger = TestLogger::new();
 		find_route(
 			payer, params, &self.network_graph, first_hops, &logger,
-			&ScorerAccountingForInFlightHtlcs::new(self.scorer.lock().unwrap().deref_mut(), &inflight_htlcs), &(),
+			&ScorerAccountingForInFlightHtlcs::new(self.scorer.read().unwrap(), &inflight_htlcs), &(),
 			&[42; 32]
 		)
 	}
@@ -1160,7 +1161,7 @@ impl crate::util::ser::Writeable for TestScorer {
 	fn write<W: crate::util::ser::Writer>(&self, _: &mut W) -> Result<(), crate::io::Error> { unreachable!(); }
 }
 
-impl Score for TestScorer {
+impl ScoreLookUp for TestScorer {
 	type ScoreParams = ();
 	fn channel_penalty_msat(
 		&self, short_channel_id: u64, _source: &NodeId, _target: &NodeId, usage: ChannelUsage, _score_params: &Self::ScoreParams
@@ -1176,7 +1177,9 @@ impl Score for TestScorer {
 		}
 		0
 	}
+}
 
+impl ScoreUpdate for TestScorer {
 	fn payment_path_failed(&mut self, _actual_path: &Path, _actual_short_channel_id: u64) {}
 
 	fn payment_path_successful(&mut self, _actual_path: &Path) {}
