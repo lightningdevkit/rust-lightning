@@ -578,8 +578,9 @@ fn do_test_to_remote_after_local_detection(style: ConnectStyle) {
 
 	let mut node_a_spendable = nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events();
 	assert_eq!(node_a_spendable.len(), 1);
-	if let Event::SpendableOutputs { outputs } = node_a_spendable.pop().unwrap() {
+	if let Event::SpendableOutputs { outputs, channel_id } = node_a_spendable.pop().unwrap() {
 		assert_eq!(outputs.len(), 1);
+		assert_eq!(channel_id, Some(chan_id));
 		let spend_tx = nodes[0].keys_manager.backing.spend_spendable_outputs(&[&outputs[0]], Vec::new(),
 			Builder::new().push_opcode(opcodes::all::OP_RETURN).into_script(), 253, None, &Secp256k1::new()).unwrap();
 		check_spends!(spend_tx, remote_txn_b[0]);
@@ -598,8 +599,9 @@ fn do_test_to_remote_after_local_detection(style: ConnectStyle) {
 
 	let mut node_b_spendable = nodes[1].chain_monitor.chain_monitor.get_and_clear_pending_events();
 	assert_eq!(node_b_spendable.len(), 1);
-	if let Event::SpendableOutputs { outputs } = node_b_spendable.pop().unwrap() {
+	if let Event::SpendableOutputs { outputs, channel_id } = node_b_spendable.pop().unwrap() {
 		assert_eq!(outputs.len(), 1);
+		assert_eq!(channel_id, Some(chan_id));
 		let spend_tx = nodes[1].keys_manager.backing.spend_spendable_outputs(&[&outputs[0]], Vec::new(),
 			Builder::new().push_opcode(opcodes::all::OP_RETURN).into_script(), 253, None, &Secp256k1::new()).unwrap();
 		check_spends!(spend_tx, remote_txn_a[0]);

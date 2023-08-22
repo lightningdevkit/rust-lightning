@@ -3365,7 +3365,8 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				OnchainEvent::MaturingOutput { descriptor } => {
 					log_debug!(logger, "Descriptor {} has got enough confirmations to be passed upstream", log_spendable!(descriptor));
 					self.pending_events.push(Event::SpendableOutputs {
-						outputs: vec![descriptor]
+						outputs: vec![descriptor],
+						channel_id: Some(self.funding_info.0.to_channel_id()),
 					});
 					self.spendable_txids_confirmed.push(entry.txid);
 				},
