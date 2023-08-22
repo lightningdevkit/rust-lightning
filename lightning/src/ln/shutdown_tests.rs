@@ -199,6 +199,61 @@ fn expect_channel_shutdown_state_with_htlc() {
 }
 
 #[test]
+fn test_lnd_bug_6039() {
+	// LND sends a nonsense error message any time it gets a shutdown if there are still HTLCs
+	// pending. We currently swallow that error to work around LND's bug #6039. This test emulates
+	// the LND nonsense and ensures we at least kinda handle it.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let chan = create_announced_chan_between_nodes(&nodes, 0, 1);
+
+	let (payment_preimage, payment_hash, _) = route_payment(&nodes[0], &[&nodes[1]], 100_000);
+
+	nodes[0].node.close_channel(&chan.2, &nodes[1].node.get_our_node_id()).unwrap();
+	let node_0_shutdown = get_event_msg!(nodes[0], MessageSendEvent::SendShutdown, nodes[1].node.get_our_node_id());
+	nodes[1].node.handle_shutdown(&nodes[0].node.get_our_node_id(), &node_0_shutdown);
+
+	// Generate an lnd-like error message and check that we respond by simply screaming louder to
+	// see if LND will accept our protocol compliance.
+	let err_msg = msgs::ErrorMessage { channel_id: chan.2, data: "link failed to shutdown".to_string() };
+	nodes[0].node.handle_error(&nodes[1].node.get_our_node_id(), &err_msg);
+	let node_a_responses = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(node_a_responses[0], MessageSendEvent::SendShutdown {
+			node_id: nodes[1].node.get_our_node_id(),
+			msg: node_0_shutdown,
+		});
+	if let MessageSendEvent::HandleError { action: msgs::ErrorAction::SendWarningMessage { .. }, .. }
+		= node_a_responses[1] {} else { panic!(); }
+
+	let node_1_shutdown = get_event_msg!(nodes[1], MessageSendEvent::SendShutdown, nodes[0].node.get_our_node_id());
+
+	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
+	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+
+	claim_payment(&nodes[0], &[&nodes[1]], payment_preimage);
+
+	// Assume that LND will eventually respond to our Shutdown if we clear all the remaining HTLCs
+	nodes[0].node.handle_shutdown(&nodes[1].node.get_our_node_id(), &node_1_shutdown);
+
+	// ClosingSignNegotion process
+	let node_0_closing_signed = get_event_msg!(nodes[0], MessageSendEvent::SendClosingSigned, nodes[1].node.get_our_node_id());
+	nodes[1].node.handle_closing_signed(&nodes[0].node.get_our_node_id(), &node_0_closing_signed);
+	let node_1_closing_signed = get_event_msg!(nodes[1], MessageSendEvent::SendClosingSigned, nodes[0].node.get_our_node_id());
+	nodes[0].node.handle_closing_signed(&nodes[1].node.get_our_node_id(), &node_1_closing_signed);
+	let (_, node_0_2nd_closing_signed) = get_closing_signed_broadcast!(nodes[0].node, nodes[1].node.get_our_node_id());
+	nodes[1].node.handle_closing_signed(&nodes[0].node.get_our_node_id(), &node_0_2nd_closing_signed.unwrap());
+	let (_, node_1_none) = get_closing_signed_broadcast!(nodes[1].node, nodes[0].node.get_our_node_id());
+	assert!(node_1_none.is_none());
+	check_closed_event!(nodes[0], 1, ClosureReason::CooperativeClosure, [nodes[1].node.get_our_node_id()], 100000);
+	check_closed_event!(nodes[1], 1, ClosureReason::CooperativeClosure, [nodes[0].node.get_our_node_id()], 100000);
+
+	// Shutdown basically removes the channelDetails, testing of shutdowncomplete state unnecessary
+	assert!(nodes[0].node.list_channels().is_empty());
+}
+
+#[test]
 fn expect_channel_shutdown_state_with_force_closure() {
 	// Test sending a shutdown prior to channel_ready after funding generation
 	let chanmon_cfgs = create_chanmon_cfgs(2);

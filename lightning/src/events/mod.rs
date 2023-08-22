@@ -1551,6 +1551,7 @@ impl MaybeReadable for Event {
 /// broadcast to most peers).
 /// These events are handled by PeerManager::process_events if you are using a PeerManager.
 #[derive(Clone, Debug)]
+#[cfg_attr(test, derive(PartialEq))]
 pub enum MessageSendEvent {
 	/// Used to indicate that we've accepted a channel open and should send the accept_channel
 	/// message provided to the given peer.
