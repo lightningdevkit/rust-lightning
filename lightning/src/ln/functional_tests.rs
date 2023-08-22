@@ -10047,8 +10047,9 @@ fn do_test_multi_post_event_actions(do_reload: bool) {
 	// - one from an RAA and one from an inbound commitment_signed.
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+	let (persister, chain_monitor);
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
-	let (persister, chain_monitor, nodes_0_deserialized);
+	let nodes_0_deserialized;
 	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 
 	let chan_id = create_announced_chan_between_nodes(&nodes, 0, 1).2;
