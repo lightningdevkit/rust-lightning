@@ -74,6 +74,13 @@ pub use self::peer_channel_encryptor::LN_MAX_MSG_LEN;
 /// This is not exported to bindings users as we just use [u8; 32] directly
 #[derive(Hash, Copy, Clone, PartialEq, Eq, Debug, Ord, PartialOrd)]
 pub struct PaymentHash(pub [u8; 32]);
+
+impl core::fmt::Display for PaymentHash {
+	fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
+		crate::util::logger::DebugBytes(&self.0).fmt(f)
+	}
+}
+
 /// payment_preimage type, use to route payment between hop
 ///
 /// This is not exported to bindings users as we just use [u8; 32] directly
