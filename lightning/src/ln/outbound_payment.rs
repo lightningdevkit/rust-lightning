@@ -1320,11 +1320,11 @@ impl OutboundPayments {
 		let mut pending_retry_ev = false;
 		let attempts_remaining = if let hash_map::Entry::Occupied(mut payment) = outbounds.entry(*payment_id) {
 			if !payment.get_mut().remove(&session_priv_bytes, Some(&path)) {
-				log_trace!(logger, "Received duplicative fail for HTLC with payment_hash {}", log_bytes!(payment_hash.0));
+				log_trace!(logger, "Received duplicative fail for HTLC with payment_hash {}", &payment_hash);
 				return false
 			}
 			if payment.get().is_fulfilled() {
-				log_trace!(logger, "Received failure of HTLC with payment_hash {} after payment completion", log_bytes!(payment_hash.0));
+				log_trace!(logger, "Received failure of HTLC with payment_hash {} after payment completion", &payment_hash);
 				return false
 			}
 			let mut is_retryable_now = payment.get().is_auto_retryable_now();
@@ -1358,11 +1358,11 @@ impl OutboundPayments {
 			}
 			is_retryable_now
 		} else {
-			log_trace!(logger, "Received duplicative fail for HTLC with payment_hash {}", log_bytes!(payment_hash.0));
+			log_trace!(logger, "Received duplicative fail for HTLC with payment_hash {}", &payment_hash);
 			return false
 		};
 		core::mem::drop(outbounds);
-		log_trace!(logger, "Failing outbound payment HTLC with payment_hash {}", log_bytes!(payment_hash.0));
+		log_trace!(logger, "Failing outbound payment HTLC with payment_hash {}", &payment_hash);
 
 		let path_failure = {
 			if payment_is_probe {

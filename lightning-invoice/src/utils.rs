@@ -191,7 +191,7 @@ where
 	};
 
 	log_trace!(logger, "Creating phantom invoice from {} participating nodes with payment hash {}",
-		phantom_route_hints.len(), log_bytes!(payment_hash.0));
+		phantom_route_hints.len(), &payment_hash);
 
 	let mut invoice = invoice
 		.duration_since_epoch(duration_since_epoch)
@@ -534,7 +534,7 @@ fn _create_invoice_from_channelmanager_and_duration_since_epoch_with_payment_has
 		return Err(SignOrCreationError::CreationError(CreationError::MinFinalCltvExpiryDeltaTooShort));
 	}
 
-	log_trace!(logger, "Creating invoice with payment hash {}", log_bytes!(payment_hash.0));
+	log_trace!(logger, "Creating invoice with payment hash {}", &payment_hash);
 
 	let invoice = match description {
 		Bolt11InvoiceDescription::Direct(description) => {
