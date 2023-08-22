@@ -117,7 +117,7 @@ impl<'a> RefundBuilder<'a, secp256k1::SignOnly> {
 	/// Creates a new builder for a refund using the [`Refund::payer_id`] for the public node id to
 	/// send to if no [`Refund::paths`] are set. Otherwise, it may be a transient pubkey.
 	///
-	/// Additionally, sets the required [`Refund::description`], [`Refund::metadata`], and
+	/// Additionally, sets the required [`Refund::description`], [`Refund::payer_metadata`], and
 	/// [`Refund::amount_msats`].
 	pub fn new(
 		description: String, metadata: Vec<u8>, payer_id: PublicKey, amount_msats: u64
@@ -319,7 +319,7 @@ impl Refund {
 	///
 	/// If `None`, the refund does not expire.
 	pub fn absolute_expiry(&self) -> Option<Duration> {
-		self.contents.absolute_expiry
+		self.contents.absolute_expiry()
 	}
 
 	/// Whether the refund has expired.
@@ -331,43 +331,43 @@ impl Refund {
 	/// The issuer of the refund, possibly beginning with `user@domain` or `domain`. Intended to be
 	/// displayed to the user but with the caveat that it has not been verified in any way.
 	pub fn issuer(&self) -> Option<PrintableString> {
-		self.contents.issuer.as_ref().map(|issuer| PrintableString(issuer.as_str()))
+		self.contents.issuer()
 	}
 
 	/// Paths to the sender originating from publicly reachable nodes. Blinded paths provide sender
 	/// privacy by obfuscating its node id.
 	pub fn paths(&self) -> &[BlindedPath] {
-		self.contents.paths.as_ref().map(|paths| paths.as_slice()).unwrap_or(&[])
+		self.contents.paths()
 	}
 
 	/// An unpredictable series of bytes, typically containing information about the derivation of
 	/// [`payer_id`].
 	///
 	/// [`payer_id`]: Self::payer_id
-	pub fn metadata(&self) -> &[u8] {
+	pub fn payer_metadata(&self) -> &[u8] {
 		self.contents.metadata()
 	}
 
 	/// A chain that the refund is valid for.
 	pub fn chain(&self) -> ChainHash {
-		self.contents.chain.unwrap_or_else(|| self.contents.implied_chain())
+		self.contents.chain()
 	}
 
 	/// The amount to refund in msats (i.e., the minimum lightning-payable unit for [`chain`]).
 	///
 	/// [`chain`]: Self::chain
 	pub fn amount_msats(&self) -> u64 {
-		self.contents.amount_msats
+		self.contents.amount_msats()
 	}
 
 	/// Features pertaining to requesting an invoice.
 	pub fn features(&self) -> &InvoiceRequestFeatures {
-		&self.contents.features
+		&self.contents.features()
 	}
 
 	/// The quantity of an item that refund is for.
 	pub fn quantity(&self) -> Option<u64> {
-		self.contents.quantity
+		self.contents.quantity()
 	}
 
 	/// A public node id to send to in the case where there are no [`paths`]. Otherwise, a possibly
@@ -375,12 +375,12 @@ impl Refund {
 	///
 	/// [`paths`]: Self::paths
 	pub fn payer_id(&self) -> PublicKey {
-		self.contents.payer_id
+		self.contents.payer_id()
 	}
 
 	/// Payer provided note to include in the invoice.
 	pub fn payer_note(&self) -> Option<PrintableString> {
-		self.contents.payer_note.as_ref().map(|payer_note| PrintableString(payer_note.as_str()))
+		self.contents.payer_note()
 	}
 
 	/// Creates an [`InvoiceBuilder`] for the refund with the given required fields and using the
@@ -503,6 +503,10 @@ impl RefundContents {
 		PrintableString(&self.description)
 	}
 
+	pub fn absolute_expiry(&self) -> Option<Duration> {
+		self.absolute_expiry
+	}
+
 	#[cfg(feature = "std")]
 	pub(super) fn is_expired(&self) -> bool {
 		match self.absolute_expiry {
@@ -512,6 +516,14 @@ impl RefundContents {
 			},
 			None => false,
 		}
+	}
+
+	pub fn issuer(&self) -> Option<PrintableString> {
+		self.issuer.as_ref().map(|issuer| PrintableString(issuer.as_str()))
+	}
+
+	pub fn paths(&self) -> &[BlindedPath] {
+		self.paths.as_ref().map(|paths| paths.as_slice()).unwrap_or(&[])
 	}
 
 	pub(super) fn metadata(&self) -> &[u8] {
@@ -526,12 +538,35 @@ impl RefundContents {
 		ChainHash::using_genesis_block(Network::Bitcoin)
 	}
 
-	pub(super) fn derives_keys(&self) -> bool {
-		self.payer.0.derives_keys()
+	pub fn amount_msats(&self) -> u64 {
+		self.amount_msats
 	}
 
-	pub(super) fn payer_id(&self) -> PublicKey {
+	/// Features pertaining to requesting an invoice.
+	pub fn features(&self) -> &InvoiceRequestFeatures {
+		&self.features
+	}
+
+	/// The quantity of an item that refund is for.
+	pub fn quantity(&self) -> Option<u64> {
+		self.quantity
+	}
+
+	/// A public node id to send to in the case where there are no [`paths`]. Otherwise, a possibly
+	/// transient pubkey.
+	///
+	/// [`paths`]: Self::paths
+	pub fn payer_id(&self) -> PublicKey {
 		self.payer_id
+	}
+
+	/// Payer provided note to include in the invoice.
+	pub fn payer_note(&self) -> Option<PrintableString> {
+		self.payer_note.as_ref().map(|payer_note| PrintableString(payer_note.as_str()))
+	}
+
+	pub(super) fn derives_keys(&self) -> bool {
+		self.payer.0.derives_keys()
 	}
 
 	pub(super) fn as_tlv_stream(&self) -> RefundTlvStreamRef {
@@ -745,7 +780,7 @@ mod tests {
 		refund.write(&mut buffer).unwrap();
 
 		assert_eq!(refund.bytes, buffer.as_slice());
-		assert_eq!(refund.metadata(), &[1; 32]);
+		assert_eq!(refund.payer_metadata(), &[1; 32]);
 		assert_eq!(refund.description(), PrintableString("foo"));
 		assert_eq!(refund.absolute_expiry(), None);
 		#[cfg(feature = "std")]
