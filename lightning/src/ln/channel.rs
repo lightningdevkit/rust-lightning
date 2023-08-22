@@ -647,7 +647,7 @@ pub(super) enum ChannelPhase<SP: Deref> where SP::Target: SignerProvider {
 
 impl<'a, SP: Deref> ChannelPhase<SP> where
 	SP::Target: SignerProvider,
-	<SP::Target as SignerProvider>::Signer: ChannelSigner,
+	<SP::Target as SignerProvider>::EcdsaSigner: ChannelSigner,
 {
 	pub fn context(&'a self) -> &'a ChannelContext<SP> {
 		match self {
@@ -725,7 +725,7 @@ pub(super) struct ChannelContext<SP: Deref> where SP::Target: SignerProvider {
 
 	latest_monitor_update_id: u64,
 
-	holder_signer: ChannelSignerType<<SP::Target as SignerProvider>::Signer>,
+	holder_signer: ChannelSignerType<<SP::Target as SignerProvider>::EcdsaSigner>,
 	shutdown_scriptpubkey: Option<ShutdownScript>,
 	destination_script: ScriptBuf,
 
@@ -1095,7 +1095,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 
 	/// Returns the holder signer for this channel.
 	#[cfg(test)]
-	pub fn get_signer(&self) -> &ChannelSignerType<<SP::Target as SignerProvider>::Signer> {
+	pub fn get_signer(&self) -> &ChannelSignerType<<SP::Target as SignerProvider>::EcdsaSigner> {
 		return &self.holder_signer
 	}
 
@@ -2273,7 +2273,7 @@ struct CommitmentTxInfoCached {
 
 impl<SP: Deref> Channel<SP> where
 	SP::Target: SignerProvider,
-	<SP::Target as SignerProvider>::Signer: WriteableEcdsaChannelSigner
+	<SP::Target as SignerProvider>::EcdsaSigner: WriteableEcdsaChannelSigner
 {
 	fn check_remote_fee<F: Deref, L: Deref>(
 		channel_type: &ChannelTypeFeatures, fee_estimator: &LowerBoundedFeeEstimator<F>,
@@ -2669,7 +2669,7 @@ impl<SP: Deref> Channel<SP> where
 	/// If this call is successful, broadcast the funding transaction (and not before!)
 	pub fn funding_signed<L: Deref>(
 		&mut self, msg: &msgs::FundingSigned, best_block: BestBlock, signer_provider: &SP, logger: &L
-	) -> Result<ChannelMonitor<<SP::Target as SignerProvider>::Signer>, ChannelError>
+	) -> Result<ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>, ChannelError>
 	where
 		L::Target: Logger
 	{
@@ -4801,7 +4801,7 @@ impl<SP: Deref> Channel<SP> where
 	}
 
 	#[cfg(test)]
-	pub fn get_signer(&self) -> &ChannelSignerType<<SP::Target as SignerProvider>::Signer> {
+	pub fn get_signer(&self) -> &ChannelSignerType<<SP::Target as SignerProvider>::EcdsaSigner> {
 		&self.context.holder_signer
 	}
 
@@ -6822,7 +6822,7 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 
 	pub fn funding_created<L: Deref>(
 		mut self, msg: &msgs::FundingCreated, best_block: BestBlock, signer_provider: &SP, logger: &L
-	) -> Result<(Channel<SP>, Option<msgs::FundingSigned>, ChannelMonitor<<SP::Target as SignerProvider>::Signer>), (Self, ChannelError)>
+	) -> Result<(Channel<SP>, Option<msgs::FundingSigned>, ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>), (Self, ChannelError)>
 	where
 		L::Target: Logger
 	{
@@ -7862,17 +7862,17 @@ use crate::ln::channelmanager::{self, HTLCSource, PaymentId};
 	}
 
 	impl SignerProvider for Keys {
-		type Signer = InMemorySigner;
+		type EcdsaSigner = InMemorySigner;
 
 		fn generate_channel_keys_id(&self, _inbound: bool, _channel_value_satoshis: u64, _user_channel_id: u128) -> [u8; 32] {
 			self.signer.channel_keys_id()
 		}
 
-		fn derive_channel_signer(&self, _channel_value_satoshis: u64, _channel_keys_id: [u8; 32]) -> Self::Signer {
+		fn derive_channel_signer(&self, _channel_value_satoshis: u64, _channel_keys_id: [u8; 32]) -> Self::EcdsaSigner {
 			self.signer.clone()
 		}
 
-		fn read_chan_signer(&self, _data: &[u8]) -> Result<Self::Signer, DecodeError> { panic!(); }
+		fn read_chan_signer(&self, _data: &[u8]) -> Result<Self::EcdsaSigner, DecodeError> { panic!(); }
 
 		fn get_destination_script(&self, _channel_keys_id: [u8; 32]) -> Result<ScriptBuf, ()> {
 			let secp_ctx = Secp256k1::signing_only();

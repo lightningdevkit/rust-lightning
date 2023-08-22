@@ -230,14 +230,14 @@ impl NodeSigner for KeyProvider {
 }
 
 impl SignerProvider for KeyProvider {
-	type Signer = TestChannelSigner;
+	type EcdsaSigner = TestChannelSigner;
 
 	fn generate_channel_keys_id(&self, _inbound: bool, _channel_value_satoshis: u64, _user_channel_id: u128) -> [u8; 32] {
 		let id = self.rand_bytes_id.fetch_add(1, atomic::Ordering::Relaxed) as u8;
 		[id; 32]
 	}
 
-	fn derive_channel_signer(&self, channel_value_satoshis: u64, channel_keys_id: [u8; 32]) -> Self::Signer {
+	fn derive_channel_signer(&self, channel_value_satoshis: u64, channel_keys_id: [u8; 32]) -> Self::EcdsaSigner {
 		let secp_ctx = Secp256k1::signing_only();
 		let id = channel_keys_id[0];
 		let keys = InMemorySigner::new(
@@ -256,7 +256,7 @@ impl SignerProvider for KeyProvider {
 		TestChannelSigner::new_with_revoked(keys, revoked_commitment, false)
 	}
 
-	fn read_chan_signer(&self, buffer: &[u8]) -> Result<Self::Signer, DecodeError> {
+	fn read_chan_signer(&self, buffer: &[u8]) -> Result<Self::EcdsaSigner, DecodeError> {
 		let mut reader = std::io::Cursor::new(buffer);
 
 		let inner: InMemorySigner = ReadableArgs::read(&mut reader, self)?;

@@ -92,7 +92,7 @@ impl AnchorDescriptor {
 	/// Derives the channel signer required to sign the anchor input.
 	pub fn derive_channel_signer<S: WriteableEcdsaChannelSigner, SP: Deref>(&self, signer_provider: &SP) -> S
 	where
-		SP::Target: SignerProvider<Signer = S>
+		SP::Target: SignerProvider<EcdsaSigner= S>
 	{
 		let mut signer = signer_provider.derive_channel_signer(
 			self.channel_derivation_parameters.value_satoshis,

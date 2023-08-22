@@ -4177,7 +4177,7 @@ where
 const MAX_ALLOC_SIZE: usize = 64*1024;
 
 impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP)>
-		for (BlockHash, ChannelMonitor<SP::Signer>) {
+		for (BlockHash, ChannelMonitor<SP::EcdsaSigner>) {
 	fn read<R: io::Read>(reader: &mut R, args: (&'a ES, &'b SP)) -> Result<Self, DecodeError> {
 		macro_rules! unwrap_obj {
 			($key: expr) => {
@@ -4363,7 +4363,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 				return Err(DecodeError::InvalidValue);
 			}
 		}
-		let onchain_tx_handler: OnchainTxHandler<SP::Signer> = ReadableArgs::read(
+		let onchain_tx_handler: OnchainTxHandler<SP::EcdsaSigner> = ReadableArgs::read(
 			reader, (entropy_source, signer_provider, channel_value_satoshis, channel_keys_id)
 		)?;
 

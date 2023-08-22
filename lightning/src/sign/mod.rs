@@ -534,7 +534,7 @@ impl HTLCDescriptor {
 	/// Derives the channel signer required to sign the HTLC input.
 	pub fn derive_channel_signer<S: WriteableEcdsaChannelSigner, SP: Deref>(&self, signer_provider: &SP) -> S
 	where
-		SP::Target: SignerProvider<Signer = S>
+		SP::Target: SignerProvider<EcdsaSigner= S>
 	{
 		let mut signer = signer_provider.derive_channel_signer(
 			self.channel_derivation_parameters.value_satoshis,
@@ -865,9 +865,9 @@ pub trait NodeSigner {
 /// A trait that can return signer instances for individual channels.
 pub trait SignerProvider {
 	/// A type which implements [`WriteableEcdsaChannelSigner`] which will be returned by [`Self::derive_channel_signer`].
-	type Signer : WriteableEcdsaChannelSigner;
+	type EcdsaSigner: WriteableEcdsaChannelSigner;
 
-	/// Generates a unique `channel_keys_id` that can be used to obtain a [`Self::Signer`] through
+	/// Generates a unique `channel_keys_id` that can be used to obtain a [`Self::EcdsaSigner`] through
 	/// [`SignerProvider::derive_channel_signer`]. The `user_channel_id` is provided to allow
 	/// implementations of [`SignerProvider`] to maintain a mapping between itself and the generated
 	/// `channel_keys_id`.
@@ -881,7 +881,7 @@ pub trait SignerProvider {
 	/// [`SignerProvider::generate_channel_keys_id`]. Otherwise, an existing `Signer` can be
 	/// re-derived from its `channel_keys_id`, which can be obtained through its trait method
 	/// [`ChannelSigner::channel_keys_id`].
-	fn derive_channel_signer(&self, channel_value_satoshis: u64, channel_keys_id: [u8; 32]) -> Self::Signer;
+	fn derive_channel_signer(&self, channel_value_satoshis: u64, channel_keys_id: [u8; 32]) -> Self::EcdsaSigner;
 
 	/// Reads a [`Signer`] for this [`SignerProvider`] from the given input stream.
 	/// This is only called during deserialization of other objects which contain
@@ -893,10 +893,10 @@ pub trait SignerProvider {
 	/// This method is slowly being phased out -- it will only be called when reading objects
 	/// written by LDK versions prior to 0.0.113.
 	///
-	/// [`Signer`]: Self::Signer
+	/// [`Signer`]: Self::EcdsaSigner
 	/// [`ChannelMonitor`]: crate::chain::channelmonitor::ChannelMonitor
 	/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
-	fn read_chan_signer(&self, reader: &[u8]) -> Result<Self::Signer, DecodeError>;
+	fn read_chan_signer(&self, reader: &[u8]) -> Result<Self::EcdsaSigner, DecodeError>;
 
 	/// Get a script pubkey which we send funds to when claiming on-chain contestable outputs.
 	///
@@ -1779,7 +1779,7 @@ impl NodeSigner for KeysManager {
 }
 
 impl SignerProvider for KeysManager {
-	type Signer = InMemorySigner;
+	type EcdsaSigner = InMemorySigner;
 
 	fn generate_channel_keys_id(&self, _inbound: bool, _channel_value_satoshis: u64, user_channel_id: u128) -> [u8; 32] {
 		let child_idx = self.channel_child_index.fetch_add(1, Ordering::AcqRel);
@@ -1797,11 +1797,11 @@ impl SignerProvider for KeysManager {
 		id
 	}
 
-	fn derive_channel_signer(&self, channel_value_satoshis: u64, channel_keys_id: [u8; 32]) -> Self::Signer {
+	fn derive_channel_signer(&self, channel_value_satoshis: u64, channel_keys_id: [u8; 32]) -> Self::EcdsaSigner {
 		self.derive_channel_keys(channel_value_satoshis, &channel_keys_id)
 	}
 
-	fn read_chan_signer(&self, reader: &[u8]) -> Result<Self::Signer, DecodeError> {
+	fn read_chan_signer(&self, reader: &[u8]) -> Result<Self::EcdsaSigner, DecodeError> {
 		InMemorySigner::read(&mut io::Cursor::new(reader), self)
 	}
 
@@ -1898,17 +1898,17 @@ impl NodeSigner for PhantomKeysManager {
 }
 
 impl SignerProvider for PhantomKeysManager {
-	type Signer = InMemorySigner;
+	type EcdsaSigner = InMemorySigner;
 
 	fn generate_channel_keys_id(&self, inbound: bool, channel_value_satoshis: u64, user_channel_id: u128) -> [u8; 32] {
 		self.inner.generate_channel_keys_id(inbound, channel_value_satoshis, user_channel_id)
 	}
 
-	fn derive_channel_signer(&self, channel_value_satoshis: u64, channel_keys_id: [u8; 32]) -> Self::Signer {
+	fn derive_channel_signer(&self, channel_value_satoshis: u64, channel_keys_id: [u8; 32]) -> Self::EcdsaSigner {
 		self.inner.derive_channel_signer(channel_value_satoshis, channel_keys_id)
 	}
 
-	fn read_chan_signer(&self, reader: &[u8]) -> Result<Self::Signer, DecodeError> {
+	fn read_chan_signer(&self, reader: &[u8]) -> Result<Self::EcdsaSigner, DecodeError> {
 		self.inner.read_chan_signer(reader)
 	}
 
