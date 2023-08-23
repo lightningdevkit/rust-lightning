@@ -1356,7 +1356,7 @@ impl Writeable for CommitmentTransaction {
 
 impl Readable for CommitmentTransaction {
 	fn read<R: io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
-		_init_and_read_tlv_fields!(reader, {
+		_init_and_read_len_prefixed_tlv_fields!(reader, {
 			(0, commitment_number, required),
 			(2, to_broadcaster_value_sat, required),
 			(4, to_countersignatory_value_sat, required),

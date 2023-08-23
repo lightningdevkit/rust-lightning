@@ -1151,7 +1151,7 @@ impl Writeable for NodeAnnouncementInfo {
 
 impl Readable for NodeAnnouncementInfo {
 	fn read<R: io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
-		_init_and_read_tlv_fields!(reader, {
+		_init_and_read_len_prefixed_tlv_fields!(reader, {
 			(0, features, required),
 			(2, last_update, required),
 			(4, rgb, required),
@@ -1259,7 +1259,7 @@ impl Readable for NodeInfo {
 		// with zero inbound fees, causing that heuristic to provide little gain. Worse, because it
 		// requires additional complexity and lookups during routing, it ends up being a
 		// performance loss. Thus, we simply ignore the old field here and no longer track it.
-		_init_and_read_tlv_fields!(reader, {
+		_init_and_read_len_prefixed_tlv_fields!(reader, {
 			(0, _lowest_inbound_channel_fees, option),
 			(2, announcement_info_wrap, upgradable_option),
 			(4, channels, required_vec),

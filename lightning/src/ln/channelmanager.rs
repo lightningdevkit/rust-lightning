@@ -7817,7 +7817,7 @@ impl Writeable for ChannelDetails {
 
 impl Readable for ChannelDetails {
 	fn read<R: Read>(reader: &mut R) -> Result<Self, DecodeError> {
-		_init_and_read_tlv_fields!(reader, {
+		_init_and_read_len_prefixed_tlv_fields!(reader, {
 			(1, inbound_scid_alias, option),
 			(2, channel_id, required),
 			(3, channel_type, option),
@@ -8031,7 +8031,7 @@ impl Writeable for ClaimableHTLC {
 
 impl Readable for ClaimableHTLC {
 	fn read<R: Read>(reader: &mut R) -> Result<Self, DecodeError> {
-		_init_and_read_tlv_fields!(reader, {
+		_init_and_read_len_prefixed_tlv_fields!(reader, {
 			(0, prev_hop, required),
 			(1, total_msat, option),
 			(2, value_ser, required),

@@ -12,7 +12,9 @@
 use bitcoin::secp256k1::PublicKey;
 use bitcoin::secp256k1::ecdh::SharedSecret;
 
-use crate::blinded_path::{BlindedPath, ForwardTlvs, ReceiveTlvs};
+use crate::blinded_path::BlindedPath;
+use crate::blinded_path::message::{ForwardTlvs, ReceiveTlvs};
+use crate::blinded_path::utils::Padding;
 use crate::ln::msgs::DecodeError;
 use crate::ln::onion_utils;
 use super::messenger::CustomOnionMessageHandler;
@@ -151,7 +153,8 @@ pub(super) enum ForwardControlTlvs {
 	Blinded(Vec<u8>),
 	/// If we're constructing an onion message hop through an intermediate unblinded node, we'll need
 	/// to construct the intermediate hop's control TLVs in their unblinded state to avoid encoding
-	/// them into an intermediate Vec. See [`crate::blinded_path::ForwardTlvs`] for more info.
+	/// them into an intermediate Vec. See [`crate::blinded_path::message::ForwardTlvs`] for more
+	/// info.
 	Unblinded(ForwardTlvs),
 }
 
@@ -159,7 +162,7 @@ pub(super) enum ForwardControlTlvs {
 pub(super) enum ReceiveControlTlvs {
 	/// See [`ForwardControlTlvs::Blinded`].
 	Blinded(Vec<u8>),
-	/// See [`ForwardControlTlvs::Unblinded`] and [`crate::blinded_path::ReceiveTlvs`].
+	/// See [`ForwardControlTlvs::Unblinded`] and [`crate::blinded_path::message::ReceiveTlvs`].
 	Unblinded(ReceiveTlvs),
 }
 
@@ -261,8 +264,9 @@ ReadableArgs<(SharedSecret, &H, &L)> for Payload<<H as CustomOnionMessageHandler
 }
 
 /// When reading a packet off the wire, we don't know a priori whether the packet is to be forwarded
-/// or received. Thus we read a ControlTlvs rather than reading a ForwardControlTlvs or
-/// ReceiveControlTlvs directly.
+/// or received. Thus we read a `ControlTlvs` rather than reading a [`ForwardTlvs`] or
+/// [`ReceiveTlvs`] directly. Also useful on the encoding side to keep forward and receive TLVs in
+/// the same iterator.
 pub(crate) enum ControlTlvs {
 	/// This onion message is intended to be forwarded.
 	Forward(ForwardTlvs),
@@ -271,19 +275,16 @@ pub(crate) enum ControlTlvs {
 }
 
 impl Readable for ControlTlvs {
-	fn read<R: Read>(mut r: &mut R) -> Result<Self, DecodeError> {
-		let mut _padding: Option<Padding> = None;
-		let mut _short_channel_id: Option<u64> = None;
-		let mut next_node_id: Option<PublicKey> = None;
-		let mut path_id: Option<[u8; 32]> = None;
-		let mut next_blinding_override: Option<PublicKey> = None;
-		decode_tlv_stream!(&mut r, {
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+		_init_and_read_tlv_stream!(r, {
 			(1, _padding, option),
 			(2, _short_channel_id, option),
 			(4, next_node_id, option),
 			(6, path_id, option),
 			(8, next_blinding_override, option),
 		});
+		let _padding: Option<Padding> = _padding;
+		let _short_channel_id: Option<u64> = _short_channel_id;
 
 		let valid_fwd_fmt  = next_node_id.is_some() && path_id.is_none();
 		let valid_recv_fmt = next_node_id.is_none() && next_blinding_override.is_none();
@@ -305,15 +306,11 @@ impl Readable for ControlTlvs {
 	}
 }
 
-/// Reads padding to the end, ignoring what's read.
-pub(crate) struct Padding {}
-impl Readable for Padding {
-	#[inline]
-	fn read<R: Read>(reader: &mut R) -> Result<Self, DecodeError> {
-		loop {
-			let mut buf = [0; 8192];
-			if reader.read(&mut buf[..])? == 0 { break; }
+impl Writeable for ControlTlvs {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		match self {
+			Self::Forward(tlvs) => tlvs.write(w),
+			Self::Receive(tlvs) => tlvs.write(w),
 		}
-		Ok(Self {})
 	}
 }

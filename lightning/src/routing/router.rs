@@ -425,7 +425,7 @@ impl Readable for Route {
 				cmp::min(min_final_cltv_expiry_delta, hops.last().unwrap().cltv_expiry_delta);
 			paths.push(Path { hops, blinded_tail: None });
 		}
-		_init_and_read_tlv_fields!(reader, {
+		_init_and_read_len_prefixed_tlv_fields!(reader, {
 			(1, payment_params, (option: ReadableArgs, min_final_cltv_expiry_delta)),
 			(2, blinded_tails, optional_vec),
 		});
@@ -467,7 +467,7 @@ impl Writeable for RouteParameters {
 
 impl Readable for RouteParameters {
 	fn read<R: io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
-		_init_and_read_tlv_fields!(reader, {
+		_init_and_read_len_prefixed_tlv_fields!(reader, {
 			(0, payment_params, (required: ReadableArgs, 0)),
 			(2, final_value_msat, required),
 			(4, final_cltv_delta, option),
@@ -575,7 +575,7 @@ impl Writeable for PaymentParameters {
 
 impl ReadableArgs<u32> for PaymentParameters {
 	fn read<R: io::Read>(reader: &mut R, default_final_cltv_expiry_delta: u32) -> Result<Self, DecodeError> {
-		_init_and_read_tlv_fields!(reader, {
+		_init_and_read_len_prefixed_tlv_fields!(reader, {
 			(0, payee_pubkey, option),
 			(1, max_total_cltv_expiry_delta, (default_value, DEFAULT_MAX_TOTAL_CLTV_EXPIRY_DELTA)),
 			(2, features, (option: ReadableArgs, payee_pubkey.is_some())),

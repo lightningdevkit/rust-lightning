@@ -791,16 +791,35 @@ macro_rules! _init_tlv_field_var {
 
 /// Equivalent to running [`_init_tlv_field_var`] then [`read_tlv_fields`].
 ///
+/// If any unused values are read, their type MUST be specified or else `rustc` will read them as an
+/// `i64`.
+///
 /// This is exported for use by other exported macros, do not use directly.
 #[doc(hidden)]
 #[macro_export]
-macro_rules! _init_and_read_tlv_fields {
+macro_rules! _init_and_read_len_prefixed_tlv_fields {
 	($reader: ident, {$(($type: expr, $field: ident, $fieldty: tt)),* $(,)*}) => {
 		$(
 			$crate::_init_tlv_field_var!($field, $fieldty);
 		)*
 
 		$crate::read_tlv_fields!($reader, {
+			$(($type, $field, $fieldty)),*
+		});
+	}
+}
+
+/// Equivalent to running [`_init_tlv_field_var`] then [`decode_tlv_stream`].
+///
+/// If any unused values are read, their type MUST be specified or else `rustc` will read them as an
+/// `i64`.
+macro_rules! _init_and_read_tlv_stream {
+	($reader: ident, {$(($type: expr, $field: ident, $fieldty: tt)),* $(,)*}) => {
+		$(
+			$crate::_init_tlv_field_var!($field, $fieldty);
+		)*
+
+		$crate::decode_tlv_stream!($reader, {
 			$(($type, $field, $fieldty)),*
 		});
 	}
@@ -863,7 +882,7 @@ macro_rules! impl_writeable_tlv_based {
 
 		impl $crate::util::ser::Readable for $st {
 			fn read<R: $crate::io::Read>(reader: &mut R) -> Result<Self, $crate::ln::msgs::DecodeError> {
-				$crate::_init_and_read_tlv_fields!(reader, {
+				$crate::_init_and_read_len_prefixed_tlv_fields!(reader, {
 					$(($type, $field, $fieldty)),*
 				});
 				Ok(Self {
@@ -1015,7 +1034,7 @@ macro_rules! impl_writeable_tlv_based_enum {
 						// Because read_tlv_fields creates a labeled loop, we cannot call it twice
 						// in the same function body. Instead, we define a closure and call it.
 						let f = || {
-							$crate::_init_and_read_tlv_fields!(reader, {
+							$crate::_init_and_read_len_prefixed_tlv_fields!(reader, {
 								$(($type, $field, $fieldty)),*
 							});
 							Ok($st::$variant_name {
@@ -1069,7 +1088,7 @@ macro_rules! impl_writeable_tlv_based_enum_upgradable {
 						// Because read_tlv_fields creates a labeled loop, we cannot call it twice
 						// in the same function body. Instead, we define a closure and call it.
 						let f = || {
-							$crate::_init_and_read_tlv_fields!(reader, {
+							$crate::_init_and_read_len_prefixed_tlv_fields!(reader, {
 								$(($type, $field, $fieldty)),*
 							});
 							Ok(Some($st::$variant_name {
