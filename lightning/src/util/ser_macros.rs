@@ -791,6 +791,9 @@ macro_rules! _init_tlv_field_var {
 
 /// Equivalent to running [`_init_tlv_field_var`] then [`read_tlv_fields`].
 ///
+/// If any unused values are read, their type MUST be specified or else `rustc` will read them as an
+/// `i64`.
+///
 /// This is exported for use by other exported macros, do not use directly.
 #[doc(hidden)]
 #[macro_export]
@@ -807,6 +810,9 @@ macro_rules! _init_and_read_len_prefixed_tlv_fields {
 }
 
 /// Equivalent to running [`_init_tlv_field_var`] then [`decode_tlv_stream`].
+///
+/// If any unused values are read, their type MUST be specified or else `rustc` will read them as an
+/// `i64`.
 macro_rules! _init_and_read_tlv_stream {
 	($reader: ident, {$(($type: expr, $field: ident, $fieldty: tt)),* $(,)*}) => {
 		$(
