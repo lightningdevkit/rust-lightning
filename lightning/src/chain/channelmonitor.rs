@@ -31,12 +31,13 @@ use bitcoin::hash_types::{Txid, BlockHash, WPubkeyHash};
 
 use bitcoin::secp256k1::{Secp256k1, ecdsa::Signature};
 use bitcoin::secp256k1::{SecretKey, PublicKey};
-use bitcoin::secp256k1;
+use bitcoin::{secp256k1, EcdsaSighashType};
 
+use crate::ln::channel::INITIAL_COMMITMENT_NUMBER;
 use crate::ln::{PaymentHash, PaymentPreimage};
 use crate::ln::msgs::DecodeError;
 use crate::ln::chan_utils;
-use crate::ln::chan_utils::{CounterpartyCommitmentSecrets, HTLCOutputInCommitment, HTLCClaim, ChannelTransactionParameters, HolderCommitmentTransaction};
+use crate::ln::chan_utils::{CommitmentTransaction, CounterpartyCommitmentSecrets, HTLCOutputInCommitment, HTLCClaim, ChannelTransactionParameters, HolderCommitmentTransaction, TxCreationKeys};
 use crate::ln::channelmanager::{HTLCSource, SentHTLCId};
 use crate::chain;
 use crate::chain::{BestBlock, WatchedOutput};
@@ -502,6 +503,9 @@ pub(crate) enum ChannelMonitorUpdateStep {
 		htlc_outputs: Vec<(HTLCOutputInCommitment, Option<Box<HTLCSource>>)>,
 		commitment_number: u64,
 		their_per_commitment_point: PublicKey,
+		feerate_per_kw: Option<u32>,
+		to_broadcaster_value_sat: Option<u64>,
+		to_countersignatory_value_sat: Option<u64>,
 	},
 	PaymentPreimage {
 		payment_preimage: PaymentPreimage,
@@ -544,8 +548,11 @@ impl_writeable_tlv_based_enum_upgradable!(ChannelMonitorUpdateStep,
 	},
 	(1, LatestCounterpartyCommitmentTXInfo) => {
 		(0, commitment_txid, required),
+		(1, feerate_per_kw, option),
 		(2, commitment_number, required),
+		(3, to_broadcaster_value_sat, option),
 		(4, their_per_commitment_point, required),
+		(5, to_countersignatory_value_sat, option),
 		(6, htlc_outputs, required_vec),
 	},
 	(2, PaymentPreimage) => {
@@ -882,6 +889,14 @@ pub(crate) struct ChannelMonitorImpl<Signer: WriteableEcdsaChannelSigner> {
 
 	/// The node_id of our counterparty
 	counterparty_node_id: Option<PublicKey>,
+
+	/// Initial counterparty commmitment data needed to recreate the commitment tx
+	/// in the persistence pipeline for third-party watchtowers. This will only be present on
+	/// monitors created after 0.0.117.
+	///
+	/// Ordering of tuple data: (their_per_commitment_point, feerate_per_kw, to_broadcaster_sats,
+	/// to_countersignatory_sats)
+	initial_counterparty_commitment_info: Option<(PublicKey, u32, u64, u64)>,
 }
 
 /// Transaction outputs to watch for on-chain spends.
@@ -1072,6 +1087,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Writeable for ChannelMonitorImpl<Signe
 			(11, self.confirmed_commitment_tx_counterparty_output, option),
 			(13, self.spendable_txids_confirmed, required_vec),
 			(15, self.counterparty_fulfilled_htlcs, required),
+			(17, self.initial_counterparty_commitment_info, option),
 		});
 
 		Ok(())
@@ -1222,6 +1238,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 
 			best_block,
 			counterparty_node_id: Some(counterparty_node_id),
+			initial_counterparty_commitment_info: None,
 		})
 	}
 
@@ -1230,11 +1247,31 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 		self.inner.lock().unwrap().provide_secret(idx, secret)
 	}
 
+	/// A variant of `Self::provide_latest_counterparty_commitment_tx` used to provide
+	/// additional information to the monitor to store in order to recreate the initial
+	/// counterparty commitment transaction during persistence (mainly for use in third-party
+	/// watchtowers).
+	///
+	/// This is used to provide the counterparty commitment information directly to the monitor
+	/// before the initial persistence of a new channel.
+	pub(crate) fn provide_initial_counterparty_commitment_tx<L: Deref>(
+		&self, txid: Txid, htlc_outputs: Vec<(HTLCOutputInCommitment, Option<Box<HTLCSource>>)>,
+		commitment_number: u64, their_cur_per_commitment_point: PublicKey, feerate_per_kw: u32,
+		to_broadcaster_value_sat: u64, to_countersignatory_value_sat: u64, logger: &L,
+	)
+	where L::Target: Logger
+	{
+		self.inner.lock().unwrap().provide_initial_counterparty_commitment_tx(txid,
+			htlc_outputs, commitment_number, their_cur_per_commitment_point, feerate_per_kw,
+			to_broadcaster_value_sat, to_countersignatory_value_sat, logger);
+	}
+
 	/// Informs this monitor of the latest counterparty (ie non-broadcastable) commitment transaction.
 	/// The monitor watches for it to be broadcasted and then uses the HTLC information (and
 	/// possibly future revocation/preimage information) to claim outputs where possible.
 	/// We cache also the mapping hash:commitment number to lighten pruning of old preimages by watchtowers.
-	pub(crate) fn provide_latest_counterparty_commitment_tx<L: Deref>(
+	#[cfg(test)]
+	fn provide_latest_counterparty_commitment_tx<L: Deref>(
 		&self,
 		txid: Txid,
 		htlc_outputs: Vec<(HTLCOutputInCommitment, Option<Box<HTLCSource>>)>,
@@ -1368,6 +1405,67 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 		mem::swap(&mut ret, &mut lck.pending_events);
 		ret.append(&mut lck.get_repeated_events());
 		ret
+	}
+
+	/// Gets the counterparty's initial commitment transaction. The returned commitment
+	/// transaction is unsigned. This is intended to be called during the initial persistence of
+	/// the monitor (inside an implementation of [`Persist::persist_new_channel`]), to allow for
+	/// watchtowers in the persistence pipeline to have enough data to form justice transactions.
+	///
+	/// This is similar to [`Self::counterparty_commitment_txs_from_update`], except
+	/// that for the initial commitment transaction, we don't have a corresponding update.
+	///
+	/// This will only return `Some` for channel monitors that have been created after upgrading
+	/// to LDK 0.0.117+.
+	///
+	/// [`Persist::persist_new_channel`]: crate::chain::chainmonitor::Persist::persist_new_channel
+	pub fn initial_counterparty_commitment_tx(&self) -> Option<CommitmentTransaction> {
+		self.inner.lock().unwrap().initial_counterparty_commitment_tx()
+	}
+
+	/// Gets all of the counterparty commitment transactions provided by the given update. This
+	/// may be empty if the update doesn't include any new counterparty commitments. Returned
+	/// commitment transactions are unsigned.
+	///
+	/// This is provided so that watchtower clients in the persistence pipeline are able to build
+	/// justice transactions for each counterparty commitment upon each update. It's intended to be
+	/// used within an implementation of [`Persist::update_persisted_channel`], which is provided
+	/// with a monitor and an update. Once revoked, signing a justice transaction can be done using
+	/// [`Self::sign_to_local_justice_tx`].
+	///
+	/// It is expected that a watchtower client may use this method to retrieve the latest counterparty
+	/// commitment transaction(s), and then hold the necessary data until a later update in which
+	/// the monitor has been updated with the corresponding revocation data, at which point the
+	/// monitor can sign the justice transaction.
+	///
+	/// This will only return a non-empty list for monitor updates that have been created after
+	/// upgrading to LDK 0.0.117+. Note that no restriction lies on the monitors themselves, which
+	/// may have been created prior to upgrading.
+	///
+	/// [`Persist::update_persisted_channel`]: crate::chain::chainmonitor::Persist::update_persisted_channel
+	pub fn counterparty_commitment_txs_from_update(&self, update: &ChannelMonitorUpdate) -> Vec<CommitmentTransaction> {
+		self.inner.lock().unwrap().counterparty_commitment_txs_from_update(update)
+	}
+
+	/// Wrapper around [`EcdsaChannelSigner::sign_justice_revoked_output`] to make
+	/// signing the justice transaction easier for implementors of
+	/// [`chain::chainmonitor::Persist`]. On success this method returns the provided transaction
+	/// signing the input at `input_idx`. This method will only produce a valid signature for
+	/// a transaction spending the `to_local` output of a commitment transaction, i.e. this cannot
+	/// be used for revoked HTLC outputs.
+	///
+	/// `Value` is the value of the output being spent by the input at `input_idx`, committed
+	/// in the BIP 143 signature.
+	///
+	/// This method will only succeed if this monitor has received the revocation secret for the
+	/// provided `commitment_number`. If a commitment number is provided that does not correspond
+	/// to the commitment transaction being revoked, this will return a signed transaction, but
+	/// the signature will not be valid.
+	///
+	/// [`EcdsaChannelSigner::sign_justice_revoked_output`]: crate::sign::EcdsaChannelSigner::sign_justice_revoked_output
+	/// [`Persist`]: crate::chain::chainmonitor::Persist
+	pub fn sign_to_local_justice_tx(&self, justice_tx: Transaction, input_idx: usize, value: u64, commitment_number: u64) -> Result<Transaction, ()> {
+		self.inner.lock().unwrap().sign_to_local_justice_tx(justice_tx, input_idx, value, commitment_number)
 	}
 
 	pub(crate) fn get_min_seen_secret(&self) -> u64 {
@@ -2226,6 +2324,25 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		Ok(())
 	}
 
+	pub(crate) fn provide_initial_counterparty_commitment_tx<L: Deref>(
+		&mut self, txid: Txid, htlc_outputs: Vec<(HTLCOutputInCommitment, Option<Box<HTLCSource>>)>,
+		commitment_number: u64, their_per_commitment_point: PublicKey, feerate_per_kw: u32,
+		to_broadcaster_value: u64, to_countersignatory_value: u64, logger: &L
+	)
+	where L::Target: Logger
+	{
+		self.initial_counterparty_commitment_info = Some((their_per_commitment_point.clone(),
+			feerate_per_kw, to_broadcaster_value, to_countersignatory_value));
+
+		#[cfg(debug_assertions)] {
+			let rebuilt_commitment_tx = self.initial_counterparty_commitment_tx().unwrap();
+			debug_assert_eq!(rebuilt_commitment_tx.trust().txid(), txid);
+		}
+
+		self.provide_latest_counterparty_commitment_tx(txid, htlc_outputs, commitment_number,
+				their_per_commitment_point, logger);
+	}
+
 	pub(crate) fn provide_latest_counterparty_commitment_tx<L: Deref>(&mut self, txid: Txid, htlc_outputs: Vec<(HTLCOutputInCommitment, Option<Box<HTLCSource>>)>, commitment_number: u64, their_per_commitment_point: PublicKey, logger: &L) where L::Target: Logger {
 		// TODO: Encrypt the htlc_outputs data with the single-hash of the commitment transaction
 		// so that a remote monitor doesn't learn anything unless there is a malicious close.
@@ -2471,7 +2588,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 						ret = Err(());
 					}
 				}
-				ChannelMonitorUpdateStep::LatestCounterpartyCommitmentTXInfo { commitment_txid, htlc_outputs, commitment_number, their_per_commitment_point } => {
+				ChannelMonitorUpdateStep::LatestCounterpartyCommitmentTXInfo { commitment_txid, htlc_outputs, commitment_number, their_per_commitment_point, .. } => {
 					log_trace!(logger, "Updating ChannelMonitor with latest counterparty commitment transaction info");
 					self.provide_latest_counterparty_commitment_tx(*commitment_txid, htlc_outputs.clone(), *commitment_number, *their_per_commitment_point, logger)
 				},
@@ -2541,6 +2658,10 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 					}
 				},
 			}
+		}
+
+		#[cfg(debug_assertions)] {
+			self.counterparty_commitment_txs_from_update(updates);
 		}
 
 		// If the updates succeeded and we were in an already closed channel state, then there's no
@@ -2649,6 +2770,91 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			}
 		}
 		ret
+	}
+
+	pub(crate) fn initial_counterparty_commitment_tx(&mut self) -> Option<CommitmentTransaction> {
+		let (their_per_commitment_point, feerate_per_kw, to_broadcaster_value,
+			to_countersignatory_value) = self.initial_counterparty_commitment_info?;
+		let htlc_outputs = vec![];
+
+		let commitment_tx = self.build_counterparty_commitment_tx(INITIAL_COMMITMENT_NUMBER,
+			&their_per_commitment_point, to_broadcaster_value, to_countersignatory_value,
+			feerate_per_kw, htlc_outputs);
+		Some(commitment_tx)
+	}
+
+	fn build_counterparty_commitment_tx(
+		&self, commitment_number: u64, their_per_commitment_point: &PublicKey,
+		to_broadcaster_value: u64, to_countersignatory_value: u64, feerate_per_kw: u32,
+		mut nondust_htlcs: Vec<(HTLCOutputInCommitment, Option<Box<HTLCSource>>)>
+	) -> CommitmentTransaction {
+		let broadcaster_keys = &self.onchain_tx_handler.channel_transaction_parameters
+			.counterparty_parameters.as_ref().unwrap().pubkeys;
+		let countersignatory_keys =
+			&self.onchain_tx_handler.channel_transaction_parameters.holder_pubkeys;
+
+		let broadcaster_funding_key = broadcaster_keys.funding_pubkey;
+		let countersignatory_funding_key = countersignatory_keys.funding_pubkey;
+		let keys = TxCreationKeys::from_channel_static_keys(&their_per_commitment_point,
+			&broadcaster_keys, &countersignatory_keys, &self.onchain_tx_handler.secp_ctx);
+		let channel_parameters =
+			&self.onchain_tx_handler.channel_transaction_parameters.as_counterparty_broadcastable();
+
+		CommitmentTransaction::new_with_auxiliary_htlc_data(commitment_number,
+			to_broadcaster_value, to_countersignatory_value, broadcaster_funding_key,
+			countersignatory_funding_key, keys, feerate_per_kw, &mut nondust_htlcs,
+			channel_parameters)
+	}
+
+	pub(crate) fn counterparty_commitment_txs_from_update(&self, update: &ChannelMonitorUpdate) -> Vec<CommitmentTransaction> {
+		update.updates.iter().filter_map(|update| {
+			match update {
+				&ChannelMonitorUpdateStep::LatestCounterpartyCommitmentTXInfo { commitment_txid,
+					ref htlc_outputs, commitment_number, their_per_commitment_point,
+					feerate_per_kw: Some(feerate_per_kw),
+					to_broadcaster_value_sat: Some(to_broadcaster_value),
+					to_countersignatory_value_sat: Some(to_countersignatory_value) } => {
+
+					let nondust_htlcs = htlc_outputs.iter().filter_map(|(htlc, _)| {
+						htlc.transaction_output_index.map(|_| (htlc.clone(), None))
+					}).collect::<Vec<_>>();
+
+					let commitment_tx = self.build_counterparty_commitment_tx(commitment_number,
+							&their_per_commitment_point, to_broadcaster_value,
+							to_countersignatory_value, feerate_per_kw, nondust_htlcs);
+
+					debug_assert_eq!(commitment_tx.trust().txid(), commitment_txid);
+
+					Some(commitment_tx)
+				},
+				_ => None,
+			}
+		}).collect()
+	}
+
+	pub(crate) fn sign_to_local_justice_tx(
+		&self, mut justice_tx: Transaction, input_idx: usize, value: u64, commitment_number: u64
+	) -> Result<Transaction, ()> {
+		let secret = self.get_secret(commitment_number).ok_or(())?;
+		let per_commitment_key = SecretKey::from_slice(&secret).map_err(|_| ())?;
+		let their_per_commitment_point = PublicKey::from_secret_key(
+			&self.onchain_tx_handler.secp_ctx, &per_commitment_key);
+
+		let revocation_pubkey = chan_utils::derive_public_revocation_key(
+			&self.onchain_tx_handler.secp_ctx, &their_per_commitment_point,
+			&self.holder_revocation_basepoint);
+		let delayed_key = chan_utils::derive_public_key(&self.onchain_tx_handler.secp_ctx,
+			&their_per_commitment_point,
+			&self.counterparty_commitment_params.counterparty_delayed_payment_base_key);
+		let revokeable_redeemscript = chan_utils::get_revokeable_redeemscript(&revocation_pubkey,
+			self.counterparty_commitment_params.on_counterparty_tx_csv, &delayed_key);
+
+		let sig = self.onchain_tx_handler.signer.sign_justice_revoked_output(
+			&justice_tx, input_idx, value, &per_commitment_key, &self.onchain_tx_handler.secp_ctx)?;
+		justice_tx.input[input_idx].witness.push_bitcoin_signature(&sig.serialize_der(), EcdsaSighashType::All);
+		justice_tx.input[input_idx].witness.push(&[1u8]);
+		justice_tx.input[input_idx].witness.push(revokeable_redeemscript.as_bytes());
+		Ok(justice_tx)
 	}
 
 	/// Can only fail if idx is < get_min_seen_secret
@@ -4113,6 +4319,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 		let mut confirmed_commitment_tx_counterparty_output = None;
 		let mut spendable_txids_confirmed = Some(Vec::new());
 		let mut counterparty_fulfilled_htlcs = Some(HashMap::new());
+		let mut initial_counterparty_commitment_info = None;
 		read_tlv_fields!(reader, {
 			(1, funding_spend_confirmed, option),
 			(3, htlcs_resolved_on_chain, optional_vec),
@@ -4122,6 +4329,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 			(11, confirmed_commitment_tx_counterparty_output, option),
 			(13, spendable_txids_confirmed, optional_vec),
 			(15, counterparty_fulfilled_htlcs, option),
+			(17, initial_counterparty_commitment_info, option),
 		});
 
 		Ok((best_block.block_hash(), ChannelMonitor::from_impl(ChannelMonitorImpl {
@@ -4177,6 +4385,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 
 			best_block,
 			counterparty_node_id,
+			initial_counterparty_commitment_info,
 		})))
 	}
 }

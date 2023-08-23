@@ -94,6 +94,17 @@ impl MonitorUpdateId {
 ///    [`ChannelMonitorUpdateStatus::PermanentFailure`], in which case the channel will likely be
 ///    closed without broadcasting the latest state. See
 ///    [`ChannelMonitorUpdateStatus::PermanentFailure`] for more details.
+///
+/// Third-party watchtowers may be built as a part of an implementation of this trait, with the
+/// advantage that you can control whether to resume channel operation depending on if an update
+/// has been persisted to a watchtower. For this, you may find the following methods useful:
+/// [`ChannelMonitor::initial_counterparty_commitment_tx`],
+/// [`ChannelMonitor::counterparty_commitment_txs_from_update`],
+/// [`ChannelMonitor::sign_to_local_justice_tx`], [`TrustedCommitmentTransaction::revokeable_output_index`],
+/// [`TrustedCommitmentTransaction::build_to_local_justice_tx`].
+///
+/// [`TrustedCommitmentTransaction::revokeable_output_index`]: crate::ln::chan_utils::TrustedCommitmentTransaction::revokeable_output_index
+/// [`TrustedCommitmentTransaction::build_to_local_justice_tx`]: crate::ln::chan_utils::TrustedCommitmentTransaction::build_to_local_justice_tx
 pub trait Persist<ChannelSigner: WriteableEcdsaChannelSigner> {
 	/// Persist a new channel's data in response to a [`chain::Watch::watch_channel`] call. This is
 	/// called by [`ChannelManager`] for new channels, or may be called directly, e.g. on startup.
