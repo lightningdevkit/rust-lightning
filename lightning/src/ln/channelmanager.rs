@@ -3210,7 +3210,9 @@ where
 		// The top-level caller should hold the total_consistency_lock read lock.
 		debug_assert!(self.total_consistency_lock.try_write().is_err());
 
-		log_trace!(self.logger, "Attempting to send payment for path with next hop {}", path.hops.first().unwrap().short_channel_id);
+		log_trace!(self.logger,
+			"Attempting to send payment with payment hash {} along path with next hop {}",
+			payment_hash, path.hops.first().unwrap().short_channel_id);
 		let prng_seed = self.entropy_source.get_secure_random_bytes();
 		let session_priv = SecretKey::from_slice(&session_priv_bytes[..]).expect("RNG is busted");
 

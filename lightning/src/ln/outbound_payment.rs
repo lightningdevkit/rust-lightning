@@ -722,6 +722,8 @@ impl OutboundPayments {
 	{
 		#[cfg(feature = "std")] {
 			if has_expired(&route_params) {
+				log_error!(logger, "Payment with id {} and hash {} had expired before we started paying",
+					payment_id, payment_hash);
 				return Err(RetryableSendFailure::PaymentExpired)
 			}
 		}
@@ -730,16 +732,25 @@ impl OutboundPayments {
 			&node_signer.get_node_id(Recipient::Node).unwrap(), &route_params,
 			Some(&first_hops.iter().collect::<Vec<_>>()), inflight_htlcs(),
 			payment_hash, payment_id,
-		).map_err(|_| RetryableSendFailure::RouteNotFound)?;
+		).map_err(|_| {
+			log_error!(logger, "Failed to find route for payment with id {} and hash {}",
+				payment_id, payment_hash);
+			RetryableSendFailure::RouteNotFound
+		})?;
 
 		let onion_session_privs = self.add_new_pending_payment(payment_hash,
 			recipient_onion.clone(), payment_id, keysend_preimage, &route, Some(retry_strategy),
 			Some(route_params.payment_params.clone()), entropy_source, best_block_height)
-			.map_err(|_| RetryableSendFailure::DuplicatePayment)?;
+			.map_err(|_| {
+				log_error!(logger, "Payment with id {} is already pending. New payment had payment hash {}",
+					payment_id, payment_hash);
+				RetryableSendFailure::DuplicatePayment
+			})?;
 
 		let res = self.pay_route_internal(&route, payment_hash, recipient_onion, keysend_preimage, payment_id, None,
 			onion_session_privs, node_signer, best_block_height, &send_payment_along_path);
-		log_info!(logger, "Result sending payment with id {}: {:?}", &payment_id, res);
+		log_info!(logger, "Sending payment with id {} and hash {} returned {:?}",
+			payment_id, payment_hash, res);
 		if let Err(e) = res {
 			self.handle_pay_route_err(e, payment_id, payment_hash, route, route_params, router, first_hops, &inflight_htlcs, entropy_source, node_signer, best_block_height, logger, pending_events, &send_payment_along_path);
 		}
@@ -1188,6 +1199,7 @@ impl OutboundPayments {
 		if let hash_map::Entry::Occupied(mut payment) = outbounds.entry(payment_id) {
 			if !payment.get().is_fulfilled() {
 				let payment_hash = PaymentHash(Sha256::hash(&payment_preimage.0).into_inner());
+				log_info!(logger, "Payment with id {} and hash {} sent!", payment_id, payment_hash);
 				let fee_paid_msat = payment.get().get_pending_fee_msat();
 				pending_events.push_back((events::Event::PaymentSent {
 					payment_id: Some(payment_id),
