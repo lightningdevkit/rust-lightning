@@ -2206,8 +2206,6 @@ impl<SP: Deref> Channel<SP> where
 		}
 		assert_eq!(self.context.channel_state & ChannelState::ShutdownComplete as u32, 0);
 
-		let payment_hash_calc = PaymentHash(Sha256::hash(&payment_preimage_arg.0[..]).into_inner());
-
 		// ChannelManager may generate duplicate claims/fails due to HTLC update events from
 		// on-chain ChannelsMonitors during block rescan. Ideally we'd figure out a way to drop
 		// these, but for now we just have to treat them as normal.
@@ -2216,7 +2214,7 @@ impl<SP: Deref> Channel<SP> where
 		let mut htlc_value_msat = 0;
 		for (idx, htlc) in self.context.pending_inbound_htlcs.iter().enumerate() {
 			if htlc.htlc_id == htlc_id_arg {
-				assert_eq!(htlc.payment_hash, payment_hash_calc);
+				debug_assert_eq!(htlc.payment_hash, PaymentHash(Sha256::hash(&payment_preimage_arg.0[..]).into_inner()));
 				log_debug!(logger, "Claiming inbound HTLC id {} with payment hash {} with preimage {}",
 					htlc.htlc_id, htlc.payment_hash, payment_preimage_arg);
 				match htlc.state {
