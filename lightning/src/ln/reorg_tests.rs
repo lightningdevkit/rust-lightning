@@ -13,7 +13,6 @@ use crate::chain::channelmonitor::{ANTI_REORG_DELAY, LATENCY_GRACE_PERIOD_BLOCKS
 use crate::chain::transaction::OutPoint;
 use crate::chain::Confirm;
 use crate::events::{Event, MessageSendEventsProvider, ClosureReason, HTLCDestination};
-use crate::ln::channelmanager::ChannelManager;
 use crate::ln::msgs::{ChannelMessageHandler, Init};
 use crate::util::test_utils;
 use crate::util::ser::Writeable;

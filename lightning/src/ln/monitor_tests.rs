@@ -16,7 +16,7 @@ use crate::chain::chaininterface::{LowerBoundedFeeEstimator, compute_feerate_sat
 use crate::events::bump_transaction::{BumpTransactionEvent, WalletSource};
 use crate::events::{Event, MessageSendEvent, MessageSendEventsProvider, ClosureReason, HTLCDestination};
 use crate::ln::channel;
-use crate::ln::channelmanager::{BREAKDOWN_TIMEOUT, ChannelManager, PaymentId, RecipientOnionFields};
+use crate::ln::channelmanager::{BREAKDOWN_TIMEOUT, PaymentId, RecipientOnionFields};
 use crate::ln::msgs::ChannelMessageHandler;
 use crate::util::config::UserConfig;
 use crate::util::crypto::sign;

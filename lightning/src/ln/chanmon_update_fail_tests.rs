@@ -19,7 +19,7 @@ use crate::chain::channelmonitor::{ANTI_REORG_DELAY, ChannelMonitor};
 use crate::chain::transaction::OutPoint;
 use crate::chain::{ChannelMonitorUpdateStatus, Listen, Watch};
 use crate::events::{Event, MessageSendEvent, MessageSendEventsProvider, PaymentPurpose, ClosureReason, HTLCDestination};
-use crate::ln::channelmanager::{ChannelManager, RAACommitmentOrder, PaymentSendFailure, PaymentId, RecipientOnionFields};
+use crate::ln::channelmanager::{RAACommitmentOrder, PaymentSendFailure, PaymentId, RecipientOnionFields};
 use crate::ln::channel::AnnouncementSigsState;
 use crate::ln::msgs;
 use crate::ln::msgs::{ChannelMessageHandler, RoutingMessageHandler};

@@ -55,7 +55,7 @@ use crate::ln::msgs::{ChannelMessageHandler, DecodeError, LightningError};
 use crate::ln::outbound_payment;
 use crate::ln::outbound_payment::{OutboundPayments, PaymentAttempts, PendingOutboundPayment, SendAlongPathArgs};
 use crate::ln::wire::Encode;
-use crate::sign::{EntropySource, KeysManager, NodeSigner, Recipient, SignerProvider, ChannelSigner, WriteableEcdsaChannelSigner};
+use crate::sign::{EntropySource, KeysManager, NodeSigner, Recipient, SignerProvider, WriteableEcdsaChannelSigner};
 use crate::util::config::{UserConfig, ChannelConfig, ChannelConfigUpdate};
 use crate::util::wakers::{Future, Notifier};
 use crate::util::scid_utils::fake_scid;
@@ -659,23 +659,23 @@ impl_writeable_tlv_based_enum!(RAAMonitorUpdateBlockingAction,
 
 
 /// State we hold per-peer.
-pub(super) struct PeerState<Signer: ChannelSigner> {
+pub(super) struct PeerState<SP: Deref> where SP::Target: SignerProvider {
 	/// `channel_id` -> `Channel`.
 	///
 	/// Holds all funded channels where the peer is the counterparty.
-	pub(super) channel_by_id: HashMap<[u8; 32], Channel<Signer>>,
+	pub(super) channel_by_id: HashMap<[u8; 32], Channel<SP>>,
 	/// `temporary_channel_id` -> `OutboundV1Channel`.
 	///
 	/// Holds all outbound V1 channels where the peer is the counterparty. Once an outbound channel has
 	/// been assigned a `channel_id`, the entry in this map is removed and one is created in
 	/// `channel_by_id`.
-	pub(super) outbound_v1_channel_by_id: HashMap<[u8; 32], OutboundV1Channel<Signer>>,
+	pub(super) outbound_v1_channel_by_id: HashMap<[u8; 32], OutboundV1Channel<SP>>,
 	/// `temporary_channel_id` -> `InboundV1Channel`.
 	///
 	/// Holds all inbound V1 channels where the peer is the counterparty. Once an inbound channel has
 	/// been assigned a `channel_id`, the entry in this map is removed and one is created in
 	/// `channel_by_id`.
-	pub(super) inbound_v1_channel_by_id: HashMap<[u8; 32], InboundV1Channel<Signer>>,
+	pub(super) inbound_v1_channel_by_id: HashMap<[u8; 32], InboundV1Channel<SP>>,
 	/// `temporary_channel_id` -> `InboundChannelRequest`.
 	///
 	/// When manual channel acceptance is enabled, this holds all unaccepted inbound channels where
@@ -721,7 +721,7 @@ pub(super) struct PeerState<Signer: ChannelSigner> {
 	is_connected: bool,
 }
 
-impl <Signer: ChannelSigner> PeerState<Signer> {
+impl <SP: Deref> PeerState<SP> where SP::Target: SignerProvider {
 	/// Indicates that a peer meets the criteria where we're ok to remove it from our storage.
 	/// If true is passed for `require_disconnected`, the function will return false if we haven't
 	/// disconnected from the node already, ie. `PeerState::is_connected` is set to `true`.
@@ -1146,9 +1146,9 @@ where
 	///
 	/// See `ChannelManager` struct-level documentation for lock order requirements.
 	#[cfg(not(any(test, feature = "_test_utils")))]
-	per_peer_state: FairRwLock<HashMap<PublicKey, Mutex<PeerState<<SP::Target as SignerProvider>::Signer>>>>,
+	per_peer_state: FairRwLock<HashMap<PublicKey, Mutex<PeerState<SP>>>>,
 	#[cfg(any(test, feature = "_test_utils"))]
-	pub(super) per_peer_state: FairRwLock<HashMap<PublicKey, Mutex<PeerState<<SP::Target as SignerProvider>::Signer>>>>,
+	pub(super) per_peer_state: FairRwLock<HashMap<PublicKey, Mutex<PeerState<SP>>>>,
 
 	/// The set of events which we need to give to the user to handle. In some cases an event may
 	/// require some further action after the user handles it (currently only blocking a monitor
@@ -1594,11 +1594,13 @@ impl ChannelDetails {
 		self.short_channel_id.or(self.outbound_scid_alias)
 	}
 
-	fn from_channel_context<Signer: WriteableEcdsaChannelSigner, F: Deref>(
-		context: &ChannelContext<Signer>, best_block_height: u32, latest_features: InitFeatures,
+	fn from_channel_context<SP: Deref, F: Deref>(
+		context: &ChannelContext<SP>, best_block_height: u32, latest_features: InitFeatures,
 		fee_estimator: &LowerBoundedFeeEstimator<F>
 	) -> Self
-	where F::Target: FeeEstimator
+	where
+		SP::Target: SignerProvider,
+		F::Target: FeeEstimator
 	{
 		let balance = context.get_available_balances(fee_estimator);
 		let (to_remote_reserve_satoshis, to_self_reserve_satoshis) =
@@ -2299,7 +2301,7 @@ where
 		Ok(temporary_channel_id)
 	}
 
-	fn list_funded_channels_with_filter<Fn: FnMut(&(&[u8; 32], &Channel<<SP::Target as SignerProvider>::Signer>)) -> bool + Copy>(&self, f: Fn) -> Vec<ChannelDetails> {
+	fn list_funded_channels_with_filter<Fn: FnMut(&(&[u8; 32], &Channel<SP>)) -> bool + Copy>(&self, f: Fn) -> Vec<ChannelDetails> {
 		// Allocate our best estimate of the number of channels we have in the `res`
 		// Vec. Sadly the `short_to_chan_info` map doesn't cover channels without
 		// a scid or a scid alias, and the `id_to_peer` shouldn't be used outside
@@ -2425,7 +2427,7 @@ where
 	}
 
 	/// Helper function that issues the channel close events
-	fn issue_channel_close_events(&self, context: &ChannelContext<<SP::Target as SignerProvider>::Signer>, closure_reason: ClosureReason) {
+	fn issue_channel_close_events(&self, context: &ChannelContext<SP>, closure_reason: ClosureReason) {
 		let mut pending_events_lock = self.pending_events.lock().unwrap();
 		match context.unbroadcasted_funding() {
 			Some(transaction) => {
@@ -3115,7 +3117,7 @@ where
 	///
 	/// [`channel_update`]: msgs::ChannelUpdate
 	/// [`internal_closing_signed`]: Self::internal_closing_signed
-	fn get_channel_update_for_broadcast(&self, chan: &Channel<<SP::Target as SignerProvider>::Signer>) -> Result<msgs::ChannelUpdate, LightningError> {
+	fn get_channel_update_for_broadcast(&self, chan: &Channel<SP>) -> Result<msgs::ChannelUpdate, LightningError> {
 		if !chan.context.should_announce() {
 			return Err(LightningError {
 				err: "Cannot broadcast a channel_update for a private channel".to_owned(),
@@ -3140,7 +3142,7 @@ where
 	///
 	/// [`channel_update`]: msgs::ChannelUpdate
 	/// [`internal_closing_signed`]: Self::internal_closing_signed
-	fn get_channel_update_for_unicast(&self, chan: &Channel<<SP::Target as SignerProvider>::Signer>) -> Result<msgs::ChannelUpdate, LightningError> {
+	fn get_channel_update_for_unicast(&self, chan: &Channel<SP>) -> Result<msgs::ChannelUpdate, LightningError> {
 		log_trace!(self.logger, "Attempting to generate channel update for channel {}", log_bytes!(chan.context.channel_id()));
 		let short_channel_id = match chan.context.get_short_channel_id().or(chan.context.latest_inbound_scid_alias()) {
 			None => return Err(LightningError{err: "Channel not yet established".to_owned(), action: msgs::ErrorAction::IgnoreError}),
@@ -3150,7 +3152,7 @@ where
 		self.get_channel_update_for_onion(short_channel_id, chan)
 	}
 
-	fn get_channel_update_for_onion(&self, short_channel_id: u64, chan: &Channel<<SP::Target as SignerProvider>::Signer>) -> Result<msgs::ChannelUpdate, LightningError> {
+	fn get_channel_update_for_onion(&self, short_channel_id: u64, chan: &Channel<SP>) -> Result<msgs::ChannelUpdate, LightningError> {
 		log_trace!(self.logger, "Generating channel update for channel {}", log_bytes!(chan.context.channel_id()));
 		let were_node_one = self.our_network_pubkey.serialize()[..] < chan.context.get_counterparty_node_id().serialize()[..];
 
@@ -3444,7 +3446,7 @@ where
 
 	/// Handles the generation of a funding transaction, optionally (for tests) with a function
 	/// which checks the correctness of the funding transaction given the associated channel.
-	fn funding_transaction_generated_intern<FundingOutput: Fn(&OutboundV1Channel<<SP::Target as SignerProvider>::Signer>, &Transaction) -> Result<OutPoint, APIError>>(
+	fn funding_transaction_generated_intern<FundingOutput: Fn(&OutboundV1Channel<SP>, &Transaction) -> Result<OutPoint, APIError>>(
 		&self, temporary_channel_id: &[u8; 32], counterparty_node_id: &PublicKey, funding_transaction: Transaction, find_funding_output: FundingOutput
 	) -> Result<(), APIError> {
 		let per_peer_state = self.per_peer_state.read().unwrap();
@@ -4362,7 +4364,7 @@ where
 		let _ = self.process_background_events();
 	}
 
-	fn update_channel_fee(&self, chan_id: &[u8; 32], chan: &mut Channel<<SP::Target as SignerProvider>::Signer>, new_feerate: u32) -> NotifyOption {
+	fn update_channel_fee(&self, chan_id: &[u8; 32], chan: &mut Channel<SP>, new_feerate: u32) -> NotifyOption {
 		if !chan.context.is_outbound() { return NotifyOption::SkipPersist; }
 		// If the feerate has decreased by less than half, don't bother
 		if new_feerate <= chan.context.get_feerate_sat_per_1000_weight() && new_feerate * 2 > chan.context.get_feerate_sat_per_1000_weight() {
@@ -4521,7 +4523,7 @@ where
 
 					let process_unfunded_channel_tick = |
 						chan_id: &[u8; 32],
-						chan_context: &mut ChannelContext<<SP::Target as SignerProvider>::Signer>,
+						chan_context: &mut ChannelContext<SP>,
 						unfunded_chan_context: &mut UnfundedChannelContext,
 						pending_msg_events: &mut Vec<MessageSendEvent>,
 					| {
@@ -4711,7 +4713,7 @@ where
 	///
 	/// This is for failures on the channel on which the HTLC was *received*, not failures
 	/// forwarding
-	fn get_htlc_inbound_temp_fail_err_and_data(&self, desired_err_code: u16, chan: &Channel<<SP::Target as SignerProvider>::Signer>) -> (u16, Vec<u8>) {
+	fn get_htlc_inbound_temp_fail_err_and_data(&self, desired_err_code: u16, chan: &Channel<SP>) -> (u16, Vec<u8>) {
 		// We can't be sure what SCID was used when relaying inbound towards us, so we have to
 		// guess somewhat. If its a public channel, we figure best to just use the real SCID (as
 		// we're not leaking that we have a channel with the counterparty), otherwise we try to use
@@ -4731,7 +4733,7 @@ where
 
 	/// Gets an HTLC onion failure code and error data for an `UPDATE` error, given the error code
 	/// that we want to return and a channel.
-	fn get_htlc_temp_fail_err_and_data(&self, desired_err_code: u16, scid: u64, chan: &Channel<<SP::Target as SignerProvider>::Signer>) -> (u16, Vec<u8>) {
+	fn get_htlc_temp_fail_err_and_data(&self, desired_err_code: u16, scid: u64, chan: &Channel<SP>) -> (u16, Vec<u8>) {
 		debug_assert_eq!(desired_err_code & 0x1000, 0x1000);
 		if let Ok(upd) = self.get_channel_update_for_onion(scid, chan) {
 			let mut enc = VecWriter(Vec::with_capacity(upd.serialized_length() + 6));
@@ -5194,7 +5196,7 @@ where
 	/// Handles a channel reentering a functional state, either due to reconnect or a monitor
 	/// update completion.
 	fn handle_channel_resumption(&self, pending_msg_events: &mut Vec<MessageSendEvent>,
-		channel: &mut Channel<<SP::Target as SignerProvider>::Signer>, raa: Option<msgs::RevokeAndACK>,
+		channel: &mut Channel<SP>, raa: Option<msgs::RevokeAndACK>,
 		commitment_update: Option<msgs::CommitmentUpdate>, order: RAACommitmentOrder,
 		pending_forwards: Vec<(PendingHTLCInfo, u64)>, funding_broadcastable: Option<Transaction>,
 		channel_ready: Option<msgs::ChannelReady>, announcement_sigs: Option<msgs::AnnouncementSignatures>)
@@ -5429,7 +5431,7 @@ where
 	/// The filter is called for each peer and provided with the number of unfunded, inbound, and
 	/// non-0-conf channels we have with the peer.
 	fn peers_without_funded_channels<Filter>(&self, maybe_count_peer: Filter) -> usize
-	where Filter: Fn(&PeerState<<SP::Target as SignerProvider>::Signer>) -> bool {
+	where Filter: Fn(&PeerState<SP>) -> bool {
 		let mut peers_without_funded_channels = 0;
 		let best_block_height = self.best_block.read().unwrap().height();
 		{
@@ -5447,7 +5449,7 @@ where
 	}
 
 	fn unfunded_channel_count(
-		peer: &PeerState<<SP::Target as SignerProvider>::Signer>, best_block_height: u32
+		peer: &PeerState<SP>, best_block_height: u32
 	) -> usize {
 		let mut num_unfunded_channels = 0;
 		for (_, chan) in peer.channel_by_id.iter() {
@@ -5893,7 +5895,7 @@ where
 							chan.get().context.config().accept_underpaying_htlcs, next_packet_pk_opt),
 					Err(e) => PendingHTLCStatus::Fail(e)
 				};
-				let create_pending_htlc_status = |chan: &Channel<<SP::Target as SignerProvider>::Signer>, pending_forward_info: PendingHTLCStatus, error_code: u16| {
+				let create_pending_htlc_status = |chan: &Channel<SP>, pending_forward_info: PendingHTLCStatus, error_code: u16| {
 					// If the update_add is completely bogus, the call will Err and we will close,
 					// but if we've sent a shutdown and they haven't acknowledged it yet, we just
 					// want to reject the new HTLC and fail it backwards instead of forwarding.
@@ -7055,7 +7057,7 @@ where
 	/// Calls a function which handles an on-chain event (blocks dis/connected, transactions
 	/// un/confirmed, etc) on each channel, handling any resulting errors or messages generated by
 	/// the function.
-	fn do_chain_event<FN: Fn(&mut Channel<<SP::Target as SignerProvider>::Signer>) -> Result<(Option<msgs::ChannelReady>, Vec<(HTLCSource, PaymentHash)>, Option<msgs::AnnouncementSignatures>), ClosureReason>>
+	fn do_chain_event<FN: Fn(&mut Channel<SP>) -> Result<(Option<msgs::ChannelReady>, Vec<(HTLCSource, PaymentHash)>, Option<msgs::AnnouncementSignatures>), ClosureReason>>
 			(&self, height_opt: Option<u32>, f: FN) {
 		// Note that we MUST NOT end up calling methods on self.chain_monitor here - we're called
 		// during initialization prior to the chain_monitor being fully configured in some cases.
@@ -8601,13 +8603,13 @@ where
 
 		let channel_count: u64 = Readable::read(reader)?;
 		let mut funding_txo_set = HashSet::with_capacity(cmp::min(channel_count as usize, 128));
-		let mut peer_channels: HashMap<PublicKey, HashMap<[u8; 32], Channel<<SP::Target as SignerProvider>::Signer>>> = HashMap::with_capacity(cmp::min(channel_count as usize, 128));
+		let mut peer_channels: HashMap<PublicKey, HashMap<[u8; 32], Channel<SP>>> = HashMap::with_capacity(cmp::min(channel_count as usize, 128));
 		let mut id_to_peer = HashMap::with_capacity(cmp::min(channel_count as usize, 128));
 		let mut short_to_chan_info = HashMap::with_capacity(cmp::min(channel_count as usize, 128));
 		let mut channel_closures = VecDeque::new();
 		let mut close_background_events = Vec::new();
 		for _ in 0..channel_count {
-			let mut channel: Channel<<SP::Target as SignerProvider>::Signer> = Channel::read(reader, (
+			let mut channel: Channel<SP> = Channel::read(reader, (
 				&args.entropy_source, &args.signer_provider, best_block_height, &provided_channel_type_features(&args.default_config)
 			))?;
 			let funding_txo = channel.context.get_funding_txo().ok_or(DecodeError::InvalidValue)?;
@@ -8752,7 +8754,7 @@ where
 		};
 
 		let peer_count: u64 = Readable::read(reader)?;
-		let mut per_peer_state = HashMap::with_capacity(cmp::min(peer_count as usize, MAX_ALLOC_SIZE/mem::size_of::<(PublicKey, Mutex<PeerState<<SP::Target as SignerProvider>::Signer>>)>()));
+		let mut per_peer_state = HashMap::with_capacity(cmp::min(peer_count as usize, MAX_ALLOC_SIZE/mem::size_of::<(PublicKey, Mutex<PeerState<SP>>)>()));
 		for _ in 0..peer_count {
 			let peer_pubkey = Readable::read(reader)?;
 			let peer_chans = peer_channels.remove(&peer_pubkey).unwrap_or(HashMap::new());
@@ -10574,13 +10576,13 @@ pub mod bench {
 		&'a test_utils::TestFeeEstimator, &'a test_utils::TestRouter<'a>,
 		&'a test_utils::TestLogger>;
 
-	struct ANodeHolder<'a, P: Persist<InMemorySigner>> {
-		node: &'a Manager<'a, P>,
+	struct ANodeHolder<'node_cfg, 'chan_mon_cfg: 'node_cfg, P: Persist<InMemorySigner>> {
+		node: &'node_cfg Manager<'chan_mon_cfg, P>,
 	}
-	impl<'a, P: Persist<InMemorySigner>> NodeHolder for ANodeHolder<'a, P> {
-		type CM = Manager<'a, P>;
+	impl<'node_cfg, 'chan_mon_cfg: 'node_cfg, P: Persist<InMemorySigner>> NodeHolder for ANodeHolder<'node_cfg, 'chan_mon_cfg, P> {
+		type CM = Manager<'chan_mon_cfg, P>;
 		#[inline]
-		fn node(&self) -> &Manager<'a, P> { self.node }
+		fn node(&self) -> &Manager<'chan_mon_cfg, P> { self.node }
 		#[inline]
 		fn chain_monitor(&self) -> Option<&test_utils::TestChainMonitor> { None }
 	}

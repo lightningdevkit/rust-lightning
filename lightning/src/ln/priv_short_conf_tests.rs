@@ -14,7 +14,7 @@
 use crate::chain::ChannelMonitorUpdateStatus;
 use crate::sign::NodeSigner;
 use crate::events::{ClosureReason, Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider};
-use crate::ln::channelmanager::{ChannelManager, MIN_CLTV_EXPIRY_DELTA, PaymentId, RecipientOnionFields};
+use crate::ln::channelmanager::{MIN_CLTV_EXPIRY_DELTA, PaymentId, RecipientOnionFields};
 use crate::routing::gossip::RoutingFees;
 use crate::routing::router::{PaymentParameters, RouteHint, RouteHintHop};
 use crate::ln::features::ChannelTypeFeatures;

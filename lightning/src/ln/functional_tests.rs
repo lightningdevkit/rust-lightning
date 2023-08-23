@@ -17,7 +17,7 @@ use crate::chain::chaininterface::LowerBoundedFeeEstimator;
 use crate::chain::channelmonitor;
 use crate::chain::channelmonitor::{CLTV_CLAIM_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS, ANTI_REORG_DELAY};
 use crate::chain::transaction::OutPoint;
-use crate::sign::{ChannelSigner, EcdsaChannelSigner, EntropySource};
+use crate::sign::{EcdsaChannelSigner, EntropySource};
 use crate::events::{Event, MessageSendEvent, MessageSendEventsProvider, PathFailure, PaymentPurpose, ClosureReason, HTLCDestination, PaymentFailureReason};
 use crate::ln::{PaymentPreimage, PaymentSecret, PaymentHash};
 use crate::ln::channel::{commitment_tx_base_weight, COMMITMENT_TX_WEIGHT_PER_HTLC, CONCURRENT_INBOUND_HTLC_FEE_BUFFER, FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE, MIN_AFFORDABLE_HTLC_COUNT, get_holder_selected_channel_reserve_satoshis, OutboundV1Channel, InboundV1Channel};
@@ -703,7 +703,7 @@ fn test_update_fee_that_funder_cannot_afford() {
 		let chan_lock = per_peer_state.get(&nodes[1].node.get_our_node_id()).unwrap().lock().unwrap();
 		let local_chan = chan_lock.channel_by_id.get(&chan.2).unwrap();
 		let chan_signer = local_chan.get_signer();
-		let pubkeys = chan_signer.pubkeys();
+		let pubkeys = chan_signer.as_ref().pubkeys();
 		(pubkeys.revocation_basepoint, pubkeys.htlc_basepoint,
 		 pubkeys.funding_pubkey)
 	};
@@ -712,9 +712,9 @@ fn test_update_fee_that_funder_cannot_afford() {
 		let chan_lock = per_peer_state.get(&nodes[0].node.get_our_node_id()).unwrap().lock().unwrap();
 		let remote_chan = chan_lock.channel_by_id.get(&chan.2).unwrap();
 		let chan_signer = remote_chan.get_signer();
-		let pubkeys = chan_signer.pubkeys();
+		let pubkeys = chan_signer.as_ref().pubkeys();
 		(pubkeys.delayed_payment_basepoint, pubkeys.htlc_basepoint,
-		 chan_signer.get_per_commitment_point(INITIAL_COMMITMENT_NUMBER - 1, &secp_ctx),
+		 chan_signer.as_ref().get_per_commitment_point(INITIAL_COMMITMENT_NUMBER - 1, &secp_ctx),
 		 pubkeys.funding_pubkey)
 	};
 
@@ -738,7 +738,7 @@ fn test_update_fee_that_funder_cannot_afford() {
 			&mut htlcs,
 			&local_chan.context.channel_transaction_parameters.as_counterparty_broadcastable()
 		);
-		local_chan_signer.sign_counterparty_commitment(&commitment_tx, Vec::new(), &secp_ctx).unwrap()
+		local_chan_signer.as_ecdsa().unwrap().sign_counterparty_commitment(&commitment_tx, Vec::new(), &secp_ctx).unwrap()
 	};
 
 	let commit_signed_msg = msgs::CommitmentSigned {
@@ -1417,23 +1417,23 @@ fn test_fee_spike_violation_fails_htlc() {
 		let local_chan = chan_lock.channel_by_id.get(&chan.2).unwrap();
 		let chan_signer = local_chan.get_signer();
 		// Make the signer believe we validated another commitment, so we can release the secret
-		chan_signer.get_enforcement_state().last_holder_commitment -= 1;
+		chan_signer.as_ecdsa().unwrap().get_enforcement_state().last_holder_commitment -= 1;
 
-		let pubkeys = chan_signer.pubkeys();
+		let pubkeys = chan_signer.as_ref().pubkeys();
 		(pubkeys.revocation_basepoint, pubkeys.htlc_basepoint,
-		 chan_signer.release_commitment_secret(INITIAL_COMMITMENT_NUMBER),
-		 chan_signer.get_per_commitment_point(INITIAL_COMMITMENT_NUMBER - 2, &secp_ctx),
-		 chan_signer.pubkeys().funding_pubkey)
+		 chan_signer.as_ref().release_commitment_secret(INITIAL_COMMITMENT_NUMBER),
+		 chan_signer.as_ref().get_per_commitment_point(INITIAL_COMMITMENT_NUMBER - 2, &secp_ctx),
+		 chan_signer.as_ref().pubkeys().funding_pubkey)
 	};
 	let (remote_delayed_payment_basepoint, remote_htlc_basepoint, remote_point, remote_funding) = {
 		let per_peer_state = nodes[1].node.per_peer_state.read().unwrap();
 		let chan_lock = per_peer_state.get(&nodes[0].node.get_our_node_id()).unwrap().lock().unwrap();
 		let remote_chan = chan_lock.channel_by_id.get(&chan.2).unwrap();
 		let chan_signer = remote_chan.get_signer();
-		let pubkeys = chan_signer.pubkeys();
+		let pubkeys = chan_signer.as_ref().pubkeys();
 		(pubkeys.delayed_payment_basepoint, pubkeys.htlc_basepoint,
-		 chan_signer.get_per_commitment_point(INITIAL_COMMITMENT_NUMBER - 1, &secp_ctx),
-		 chan_signer.pubkeys().funding_pubkey)
+		 chan_signer.as_ref().get_per_commitment_point(INITIAL_COMMITMENT_NUMBER - 1, &secp_ctx),
+		 chan_signer.as_ref().pubkeys().funding_pubkey)
 	};
 
 	// Assemble the set of keys we can use for signatures for our commitment_signed message.
@@ -1469,7 +1469,7 @@ fn test_fee_spike_violation_fails_htlc() {
 			&mut vec![(accepted_htlc_info, ())],
 			&local_chan.context.channel_transaction_parameters.as_counterparty_broadcastable()
 		);
-		local_chan_signer.sign_counterparty_commitment(&commitment_tx, Vec::new(), &secp_ctx).unwrap()
+		local_chan_signer.as_ecdsa().unwrap().sign_counterparty_commitment(&commitment_tx, Vec::new(), &secp_ctx).unwrap()
 	};
 
 	let commit_signed_msg = msgs::CommitmentSigned {
@@ -6110,7 +6110,7 @@ fn test_update_add_htlc_bolt2_receiver_zero_value_msat() {
 	nodes[1].logger.assert_log("lightning::ln::channelmanager".to_string(), "Remote side tried to send a 0-msat HTLC".to_string(), 1);
 	check_closed_broadcast!(nodes[1], true).unwrap();
 	check_added_monitors!(nodes[1], 1);
-	check_closed_event!(nodes[1], 1, ClosureReason::ProcessingError { err: "Remote side tried to send a 0-msat HTLC".to_string() }, 
+	check_closed_event!(nodes[1], 1, ClosureReason::ProcessingError { err: "Remote side tried to send a 0-msat HTLC".to_string() },
 		[nodes[0].node.get_our_node_id()], 100000);
 }
 
@@ -7593,16 +7593,16 @@ fn test_counterparty_raa_skip_no_crash() {
 		const INITIAL_COMMITMENT_NUMBER: u64 = (1 << 48) - 1;
 
 		// Make signer believe we got a counterparty signature, so that it allows the revocation
-		keys.get_enforcement_state().last_holder_commitment -= 1;
-		per_commitment_secret = keys.release_commitment_secret(INITIAL_COMMITMENT_NUMBER);
+		keys.as_ecdsa().unwrap().get_enforcement_state().last_holder_commitment -= 1;
+		per_commitment_secret = keys.as_ref().release_commitment_secret(INITIAL_COMMITMENT_NUMBER);
 
 		// Must revoke without gaps
-		keys.get_enforcement_state().last_holder_commitment -= 1;
-		keys.release_commitment_secret(INITIAL_COMMITMENT_NUMBER - 1);
+		keys.as_ecdsa().unwrap().get_enforcement_state().last_holder_commitment -= 1;
+		keys.as_ref().release_commitment_secret(INITIAL_COMMITMENT_NUMBER - 1);
 
-		keys.get_enforcement_state().last_holder_commitment -= 1;
+		keys.as_ecdsa().unwrap().get_enforcement_state().last_holder_commitment -= 1;
 		next_per_commitment_point = PublicKey::from_secret_key(&Secp256k1::new(),
-			&SecretKey::from_slice(&keys.release_commitment_secret(INITIAL_COMMITMENT_NUMBER - 2)).unwrap());
+			&SecretKey::from_slice(&keys.as_ref().release_commitment_secret(INITIAL_COMMITMENT_NUMBER - 2)).unwrap());
 	}
 
 	nodes[1].node.handle_revoke_and_ack(&nodes[0].node.get_our_node_id(),
@@ -10047,8 +10047,9 @@ fn do_test_multi_post_event_actions(do_reload: bool) {
 	// - one from an RAA and one from an inbound commitment_signed.
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+	let (persister, chain_monitor);
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
-	let (persister, chain_monitor, nodes_0_deserialized);
+	let nodes_0_deserialized;
 	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 
 	let chan_id = create_announced_chan_between_nodes(&nodes, 0, 1).2;
