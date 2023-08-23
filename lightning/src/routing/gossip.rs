@@ -88,12 +88,12 @@ impl NodeId {
 
 impl fmt::Debug for NodeId {
 	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-		write!(f, "NodeId({})", log_bytes!(self.0))
+		write!(f, "NodeId({})", crate::util::logger::DebugBytes(&self.0))
 	}
 }
 impl fmt::Display for NodeId {
 	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-		write!(f, "{}", log_bytes!(self.0))
+		crate::util::logger::DebugBytes(&self.0).fmt(f)
 	}
 }
 
@@ -899,7 +899,7 @@ impl ChannelInfo {
 impl fmt::Display for ChannelInfo {
 	fn fmt(&self, f: &mut fmt::Formatter) -> Result<(), fmt::Error> {
 		write!(f, "features: {}, node_one: {}, one_to_two: {:?}, node_two: {}, two_to_one: {:?}",
-		   log_bytes!(self.features.encode()), log_bytes!(self.node_one.as_slice()), self.one_to_two, log_bytes!(self.node_two.as_slice()), self.two_to_one)?;
+		   log_bytes!(self.features.encode()), &self.node_one, self.one_to_two, &self.node_two, self.two_to_one)?;
 		Ok(())
 	}
 }
@@ -1350,7 +1350,7 @@ impl<L: Deref> fmt::Display for NetworkGraph<L> where L::Target: Logger {
 		}
 		writeln!(f, "[Nodes]")?;
 		for (&node_id, val) in self.nodes.read().unwrap().unordered_iter() {
-			writeln!(f, " {}: {}", log_bytes!(node_id.as_slice()), val)?;
+			writeln!(f, " {}: {}", &node_id, val)?;
 		}
 		Ok(())
 	}
@@ -3428,6 +3428,12 @@ pub(crate) mod tests {
 				.expect("to be able to read an old NodeAnnouncementInfo with addresses");
 		// This serialized info has an address field but no announcement_message, therefore the addresses returned by our function will still be empty
 		assert!(ann_info_with_addresses.addresses().is_empty());
+	}
+
+	#[test]
+	fn test_node_id_display() {
+		let node_id = NodeId([42; 33]);
+		assert_eq!(format!("{}", &node_id), "2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a");
 	}
 }
 

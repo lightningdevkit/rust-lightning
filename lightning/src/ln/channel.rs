@@ -1256,10 +1256,10 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 						feerate_per_kw as u64 * htlc_timeout_tx_weight(self.get_channel_type()) / 1000
 					};
 					if $htlc.amount_msat / 1000 >= broadcaster_dust_limit_satoshis + htlc_tx_fee {
-						log_trace!(logger, "   ...including {} {} HTLC {} (hash {}) with value {}", if $outbound { "outbound" } else { "inbound" }, $state_name, $htlc.htlc_id, log_bytes!($htlc.payment_hash.0), $htlc.amount_msat);
+						log_trace!(logger, "   ...including {} {} HTLC {} (hash {}) with value {}", if $outbound { "outbound" } else { "inbound" }, $state_name, $htlc.htlc_id, &$htlc.payment_hash, $htlc.amount_msat);
 						included_non_dust_htlcs.push((htlc_in_tx, $source));
 					} else {
-						log_trace!(logger, "   ...including {} {} dust HTLC {} (hash {}) with value {} due to dust limit", if $outbound { "outbound" } else { "inbound" }, $state_name, $htlc.htlc_id, log_bytes!($htlc.payment_hash.0), $htlc.amount_msat);
+						log_trace!(logger, "   ...including {} {} dust HTLC {} (hash {}) with value {} due to dust limit", if $outbound { "outbound" } else { "inbound" }, $state_name, $htlc.htlc_id, &$htlc.payment_hash, $htlc.amount_msat);
 						included_dust_htlcs.push((htlc_in_tx, $source));
 					}
 				} else {
@@ -1270,10 +1270,10 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 						feerate_per_kw as u64 * htlc_success_tx_weight(self.get_channel_type()) / 1000
 					};
 					if $htlc.amount_msat / 1000 >= broadcaster_dust_limit_satoshis + htlc_tx_fee {
-						log_trace!(logger, "   ...including {} {} HTLC {} (hash {}) with value {}", if $outbound { "outbound" } else { "inbound" }, $state_name, $htlc.htlc_id, log_bytes!($htlc.payment_hash.0), $htlc.amount_msat);
+						log_trace!(logger, "   ...including {} {} HTLC {} (hash {}) with value {}", if $outbound { "outbound" } else { "inbound" }, $state_name, $htlc.htlc_id, &$htlc.payment_hash, $htlc.amount_msat);
 						included_non_dust_htlcs.push((htlc_in_tx, $source));
 					} else {
-						log_trace!(logger, "   ...including {} {} dust HTLC {} (hash {}) with value {}", if $outbound { "outbound" } else { "inbound" }, $state_name, $htlc.htlc_id, log_bytes!($htlc.payment_hash.0), $htlc.amount_msat);
+						log_trace!(logger, "   ...including {} {} dust HTLC {} (hash {}) with value {}", if $outbound { "outbound" } else { "inbound" }, $state_name, $htlc.htlc_id, &$htlc.payment_hash, $htlc.amount_msat);
 						included_dust_htlcs.push((htlc_in_tx, $source));
 					}
 				}
@@ -1293,7 +1293,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 				add_htlc_output!(htlc, false, None, state_name);
 				remote_htlc_total_msat += htlc.amount_msat;
 			} else {
-				log_trace!(logger, "   ...not including inbound HTLC {} (hash {}) with value {} due to state ({})", htlc.htlc_id, log_bytes!(htlc.payment_hash.0), htlc.amount_msat, state_name);
+				log_trace!(logger, "   ...not including inbound HTLC {} (hash {}) with value {} due to state ({})", htlc.htlc_id, &htlc.payment_hash, htlc.amount_msat, state_name);
 				match &htlc.state {
 					&InboundHTLCState::LocalRemoved(ref reason) => {
 						if generated_by_local {
@@ -1333,7 +1333,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 				add_htlc_output!(htlc, true, Some(&htlc.source), state_name);
 				local_htlc_total_msat += htlc.amount_msat;
 			} else {
-				log_trace!(logger, "   ...not including outbound HTLC {} (hash {}) with value {} due to state ({})", htlc.htlc_id, log_bytes!(htlc.payment_hash.0), htlc.amount_msat, state_name);
+				log_trace!(logger, "   ...not including outbound HTLC {} (hash {}) with value {} due to state ({})", htlc.htlc_id, &htlc.payment_hash, htlc.amount_msat, state_name);
 				match htlc.state {
 					OutboundHTLCState::AwaitingRemoteRevokeToRemove(OutboundHTLCOutcome::Success(_))|OutboundHTLCState::AwaitingRemovedRemoteRevoke(OutboundHTLCOutcome::Success(_)) => {
 						value_to_self_msat_offset -= htlc.amount_msat as i64;
@@ -2222,7 +2222,7 @@ impl<SP: Deref> Channel<SP> where
 					InboundHTLCState::LocalRemoved(ref reason) => {
 						if let &InboundHTLCRemovalReason::Fulfill(_) = reason {
 						} else {
-							log_warn!(logger, "Have preimage and want to fulfill HTLC with payment hash {} we already failed against channel {}", log_bytes!(htlc.payment_hash.0), log_bytes!(self.context.channel_id()));
+							log_warn!(logger, "Have preimage and want to fulfill HTLC with payment hash {} we already failed against channel {}", &htlc.payment_hash, log_bytes!(self.context.channel_id()));
 							debug_assert!(false, "Tried to fulfill an HTLC that was already failed");
 						}
 						return UpdateFulfillFetch::DuplicateClaim {};
@@ -2303,7 +2303,7 @@ impl<SP: Deref> Channel<SP> where
 				debug_assert!(false, "Have an inbound HTLC we tried to claim before it was fully committed to");
 				return UpdateFulfillFetch::NewClaim { monitor_update, htlc_value_msat, msg: None };
 			}
-			log_trace!(logger, "Upgrading HTLC {} to LocalRemoved with a Fulfill in channel {}!", log_bytes!(htlc.payment_hash.0), log_bytes!(self.context.channel_id));
+			log_trace!(logger, "Upgrading HTLC {} to LocalRemoved with a Fulfill in channel {}!", &htlc.payment_hash, log_bytes!(self.context.channel_id));
 			htlc.state = InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::Fulfill(payment_preimage_arg.clone()));
 		}
 
@@ -2985,7 +2985,7 @@ impl<SP: Deref> Channel<SP> where
 			} else { None };
 			if let Some(forward_info) = new_forward {
 				log_trace!(logger, "Updating HTLC {} to AwaitingRemoteRevokeToAnnounce due to commitment_signed in channel {}.",
-					log_bytes!(htlc.payment_hash.0), log_bytes!(self.context.channel_id));
+					&htlc.payment_hash, log_bytes!(self.context.channel_id));
 				htlc.state = InboundHTLCState::AwaitingRemoteRevokeToAnnounce(forward_info);
 				need_commitment = true;
 			}
@@ -2994,7 +2994,7 @@ impl<SP: Deref> Channel<SP> where
 		for htlc in self.context.pending_outbound_htlcs.iter_mut() {
 			if let &mut OutboundHTLCState::RemoteRemoved(ref mut outcome) = &mut htlc.state {
 				log_trace!(logger, "Updating HTLC {} to AwaitingRemoteRevokeToRemove due to commitment_signed in channel {}.",
-					log_bytes!(htlc.payment_hash.0), log_bytes!(self.context.channel_id));
+					&htlc.payment_hash, log_bytes!(self.context.channel_id));
 				// Grab the preimage, if it exists, instead of cloning
 				let mut reason = OutboundHTLCOutcome::Success(None);
 				mem::swap(outcome, &mut reason);
@@ -3122,7 +3122,7 @@ impl<SP: Deref> Channel<SP> where
 								match e {
 									ChannelError::Ignore(ref msg) => {
 										log_info!(logger, "Failed to send HTLC with payment_hash {} due to {} in channel {}",
-											log_bytes!(payment_hash.0), msg, log_bytes!(self.context.channel_id()));
+											&payment_hash, msg, log_bytes!(self.context.channel_id()));
 										// If we fail to send here, then this HTLC should
 										// be failed backwards. Failing to send here
 										// indicates that this HTLC may keep being put back
@@ -3294,7 +3294,7 @@ impl<SP: Deref> Channel<SP> where
 			// We really shouldnt have two passes here, but retain gives a non-mutable ref (Rust bug)
 			pending_inbound_htlcs.retain(|htlc| {
 				if let &InboundHTLCState::LocalRemoved(ref reason) = &htlc.state {
-					log_trace!(logger, " ...removing inbound LocalRemoved {}", log_bytes!(htlc.payment_hash.0));
+					log_trace!(logger, " ...removing inbound LocalRemoved {}", &htlc.payment_hash);
 					if let &InboundHTLCRemovalReason::Fulfill(_) = reason {
 						value_to_self_msat_diff += htlc.amount_msat as i64;
 					}
@@ -3303,7 +3303,7 @@ impl<SP: Deref> Channel<SP> where
 			});
 			pending_outbound_htlcs.retain(|htlc| {
 				if let &OutboundHTLCState::AwaitingRemovedRemoteRevoke(ref outcome) = &htlc.state {
-					log_trace!(logger, " ...removing outbound AwaitingRemovedRemoteRevoke {}", log_bytes!(htlc.payment_hash.0));
+					log_trace!(logger, " ...removing outbound AwaitingRemovedRemoteRevoke {}", &htlc.payment_hash);
 					if let OutboundHTLCOutcome::Failure(reason) = outcome.clone() { // We really want take() here, but, again, non-mut ref :(
 						revoked_htlcs.push((htlc.source.clone(), htlc.payment_hash, reason));
 					} else {
@@ -3325,13 +3325,13 @@ impl<SP: Deref> Channel<SP> where
 					mem::swap(&mut state, &mut htlc.state);
 
 					if let InboundHTLCState::AwaitingRemoteRevokeToAnnounce(forward_info) = state {
-						log_trace!(logger, " ...promoting inbound AwaitingRemoteRevokeToAnnounce {} to AwaitingAnnouncedRemoteRevoke", log_bytes!(htlc.payment_hash.0));
+						log_trace!(logger, " ...promoting inbound AwaitingRemoteRevokeToAnnounce {} to AwaitingAnnouncedRemoteRevoke", &htlc.payment_hash);
 						htlc.state = InboundHTLCState::AwaitingAnnouncedRemoteRevoke(forward_info);
 						require_commitment = true;
 					} else if let InboundHTLCState::AwaitingAnnouncedRemoteRevoke(forward_info) = state {
 						match forward_info {
 							PendingHTLCStatus::Fail(fail_msg) => {
-								log_trace!(logger, " ...promoting inbound AwaitingAnnouncedRemoteRevoke {} to LocalRemoved due to PendingHTLCStatus indicating failure", log_bytes!(htlc.payment_hash.0));
+								log_trace!(logger, " ...promoting inbound AwaitingAnnouncedRemoteRevoke {} to LocalRemoved due to PendingHTLCStatus indicating failure", &htlc.payment_hash);
 								require_commitment = true;
 								match fail_msg {
 									HTLCFailureMsg::Relay(msg) => {
@@ -3345,7 +3345,7 @@ impl<SP: Deref> Channel<SP> where
 								}
 							},
 							PendingHTLCStatus::Forward(forward_info) => {
-								log_trace!(logger, " ...promoting inbound AwaitingAnnouncedRemoteRevoke {} to Committed", log_bytes!(htlc.payment_hash.0));
+								log_trace!(logger, " ...promoting inbound AwaitingAnnouncedRemoteRevoke {} to Committed", &htlc.payment_hash);
 								to_forward_infos.push((forward_info, htlc.htlc_id));
 								htlc.state = InboundHTLCState::Committed;
 							}
@@ -3355,11 +3355,11 @@ impl<SP: Deref> Channel<SP> where
 			}
 			for htlc in pending_outbound_htlcs.iter_mut() {
 				if let OutboundHTLCState::LocalAnnounced(_) = htlc.state {
-					log_trace!(logger, " ...promoting outbound LocalAnnounced {} to Committed", log_bytes!(htlc.payment_hash.0));
+					log_trace!(logger, " ...promoting outbound LocalAnnounced {} to Committed", &htlc.payment_hash);
 					htlc.state = OutboundHTLCState::Committed;
 				}
 				if let &mut OutboundHTLCState::AwaitingRemoteRevokeToRemove(ref mut outcome) = &mut htlc.state {
-					log_trace!(logger, " ...promoting outbound AwaitingRemoteRevokeToRemove {} to AwaitingRemovedRemoteRevoke", log_bytes!(htlc.payment_hash.0));
+					log_trace!(logger, " ...promoting outbound AwaitingRemoteRevokeToRemove {} to AwaitingRemovedRemoteRevoke", &htlc.payment_hash);
 					// Grab the preimage, if it exists, instead of cloning
 					let mut reason = OutboundHTLCOutcome::Success(None);
 					mem::swap(outcome, &mut reason);
@@ -5266,13 +5266,13 @@ impl<SP: Deref> Channel<SP> where
 				Some(InboundHTLCState::AwaitingAnnouncedRemoteRevoke(forward_info.clone()))
 			} else { None };
 			if let Some(state) = new_state {
-				log_trace!(logger, " ...promoting inbound AwaitingRemoteRevokeToAnnounce {} to AwaitingAnnouncedRemoteRevoke", log_bytes!(htlc.payment_hash.0));
+				log_trace!(logger, " ...promoting inbound AwaitingRemoteRevokeToAnnounce {} to AwaitingAnnouncedRemoteRevoke", &htlc.payment_hash);
 				htlc.state = state;
 			}
 		}
 		for htlc in self.context.pending_outbound_htlcs.iter_mut() {
 			if let &mut OutboundHTLCState::AwaitingRemoteRevokeToRemove(ref mut outcome) = &mut htlc.state {
-				log_trace!(logger, " ...promoting outbound AwaitingRemoteRevokeToRemove {} to AwaitingRemovedRemoteRevoke", log_bytes!(htlc.payment_hash.0));
+				log_trace!(logger, " ...promoting outbound AwaitingRemoteRevokeToRemove {} to AwaitingRemovedRemoteRevoke", &htlc.payment_hash);
 				// Grab the preimage, if it exists, instead of cloning
 				let mut reason = OutboundHTLCOutcome::Success(None);
 				mem::swap(outcome, &mut reason);

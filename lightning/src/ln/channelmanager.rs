@@ -252,6 +252,12 @@ impl Readable for PaymentId {
 	}
 }
 
+impl core::fmt::Display for PaymentId {
+	fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
+		crate::util::logger::DebugBytes(&self.0).fmt(f)
+	}
+}
+
 /// An identifier used to uniquely identify an intercepted HTLC to LDK.
 ///
 /// This is not exported to bindings users as we just use [u8; 32] directly
@@ -3962,7 +3968,7 @@ where
 											routing: PendingHTLCRouting::Forward { onion_packet, .. }, skimmed_fee_msat, ..
 										},
 									}) => {
-										log_trace!(self.logger, "Adding HTLC from short id {} with payment_hash {} to channel with short id {} after delay", prev_short_channel_id, log_bytes!(payment_hash.0), short_chan_id);
+										log_trace!(self.logger, "Adding HTLC from short id {} with payment_hash {} to channel with short id {} after delay", prev_short_channel_id, &payment_hash, short_chan_id);
 										let htlc_source = HTLCSource::PreviousHopData(HTLCPreviousHopData {
 											short_channel_id: prev_short_channel_id,
 											user_channel_id: Some(prev_user_channel_id),
@@ -3978,7 +3984,7 @@ where
 											&self.logger)
 										{
 											if let ChannelError::Ignore(msg) = e {
-												log_trace!(self.logger, "Failed to forward HTLC with payment_hash {}: {}", log_bytes!(payment_hash.0), msg);
+												log_trace!(self.logger, "Failed to forward HTLC with payment_hash {}: {}", &payment_hash, msg);
 											} else {
 												panic!("Stated return value requirements in send_htlc() were not met");
 											}
@@ -4118,11 +4124,11 @@ where
 											});
 										if $purpose != claimable_payment.purpose {
 											let log_keysend = |keysend| if keysend { "keysend" } else { "non-keysend" };
-											log_trace!(self.logger, "Failing new {} HTLC with payment_hash {} as we already had an existing {} HTLC with the same payment hash", log_keysend(is_keysend), log_bytes!(payment_hash.0), log_keysend(!is_keysend));
+											log_trace!(self.logger, "Failing new {} HTLC with payment_hash {} as we already had an existing {} HTLC with the same payment hash", log_keysend(is_keysend), &payment_hash, log_keysend(!is_keysend));
 											fail_htlc!(claimable_htlc, payment_hash);
 										}
 										if !self.default_configuration.accept_mpp_keysend && is_keysend && !claimable_payment.htlcs.is_empty() {
-											log_trace!(self.logger, "Failing new keysend HTLC with payment_hash {} as we already had an existing keysend HTLC with the same payment hash and our config states we don't accept MPP keysend", log_bytes!(payment_hash.0));
+											log_trace!(self.logger, "Failing new keysend HTLC with payment_hash {} as we already had an existing keysend HTLC with the same payment hash and our config states we don't accept MPP keysend", &payment_hash);
 											fail_htlc!(claimable_htlc, payment_hash);
 										}
 										if let Some(earlier_fields) = &mut claimable_payment.onion_fields {
@@ -4140,7 +4146,7 @@ where
 											earliest_expiry = cmp::min(earliest_expiry, htlc.cltv_expiry);
 											if htlc.total_msat != claimable_htlc.total_msat {
 												log_trace!(self.logger, "Failing HTLCs with payment_hash {} as the HTLCs had inconsistent total values (eg {} and {})",
-													log_bytes!(payment_hash.0), claimable_htlc.total_msat, htlc.total_msat);
+													&payment_hash, claimable_htlc.total_msat, htlc.total_msat);
 												total_value = msgs::MAX_VALUE_MSAT;
 											}
 											if total_value >= msgs::MAX_VALUE_MSAT { break; }
@@ -4151,7 +4157,7 @@ where
 											fail_htlc!(claimable_htlc, payment_hash);
 										} else if total_value - claimable_htlc.sender_intended_value >= claimable_htlc.total_msat {
 											log_trace!(self.logger, "Failing HTLC with payment_hash {} as payment is already claimable",
-												log_bytes!(payment_hash.0));
+												&payment_hash);
 											fail_htlc!(claimable_htlc, payment_hash);
 										} else if total_value >= claimable_htlc.total_msat {
 											#[allow(unused_assignments)] {
@@ -4205,7 +4211,7 @@ where
 												let (payment_preimage, min_final_cltv_expiry_delta) = match inbound_payment::verify(payment_hash, &payment_data, self.highest_seen_timestamp.load(Ordering::Acquire) as u64, &self.inbound_payment_key, &self.logger) {
 													Ok(result) => result,
 													Err(()) => {
-														log_trace!(self.logger, "Failing new HTLC with payment_hash {} as payment verification failed", log_bytes!(payment_hash.0));
+														log_trace!(self.logger, "Failing new HTLC with payment_hash {} as payment verification failed", &payment_hash);
 														fail_htlc!(claimable_htlc, payment_hash);
 													}
 												};
@@ -4213,7 +4219,7 @@ where
 													let expected_min_expiry_height = (self.current_best_block().height() + min_final_cltv_expiry_delta as u32) as u64;
 													if (cltv_expiry as u64) < expected_min_expiry_height {
 														log_trace!(self.logger, "Failing new HTLC with payment_hash {} as its CLTV expiry was too soon (had {}, earliest expected {})",
-															log_bytes!(payment_hash.0), cltv_expiry, expected_min_expiry_height);
+															&payment_hash, cltv_expiry, expected_min_expiry_height);
 														fail_htlc!(claimable_htlc, payment_hash);
 													}
 												}
@@ -4231,16 +4237,16 @@ where
 									},
 									hash_map::Entry::Occupied(inbound_payment) => {
 										if let OnionPayload::Spontaneous(_) = claimable_htlc.onion_payload {
-											log_trace!(self.logger, "Failing new keysend HTLC with payment_hash {} because we already have an inbound payment with the same payment hash", log_bytes!(payment_hash.0));
+											log_trace!(self.logger, "Failing new keysend HTLC with payment_hash {} because we already have an inbound payment with the same payment hash", &payment_hash);
 											fail_htlc!(claimable_htlc, payment_hash);
 										}
 										let payment_data = payment_data.unwrap();
 										if inbound_payment.get().payment_secret != payment_data.payment_secret {
-											log_trace!(self.logger, "Failing new HTLC with payment_hash {} as it didn't match our expected payment secret.", log_bytes!(payment_hash.0));
+											log_trace!(self.logger, "Failing new HTLC with payment_hash {} as it didn't match our expected payment secret.", &payment_hash);
 											fail_htlc!(claimable_htlc, payment_hash);
 										} else if inbound_payment.get().min_value_msat.is_some() && payment_data.total_msat < inbound_payment.get().min_value_msat.unwrap() {
 											log_trace!(self.logger, "Failing new HTLC with payment_hash {} as it didn't match our minimum value (had {}, needed {}).",
-												log_bytes!(payment_hash.0), payment_data.total_msat, inbound_payment.get().min_value_msat.unwrap());
+												&payment_hash, payment_data.total_msat, inbound_payment.get().min_value_msat.unwrap());
 											fail_htlc!(claimable_htlc, payment_hash);
 										} else {
 											let purpose = events::PaymentPurpose::InvoicePayment {
@@ -4810,7 +4816,7 @@ where
 				{ self.push_pending_forwards_ev(); }
 			},
 			HTLCSource::PreviousHopData(HTLCPreviousHopData { ref short_channel_id, ref htlc_id, ref incoming_packet_shared_secret, ref phantom_shared_secret, ref outpoint, .. }) => {
-				log_trace!(self.logger, "Failing HTLC with payment_hash {} backwards from us with {:?}", log_bytes!(payment_hash.0), onion_error);
+				log_trace!(self.logger, "Failing HTLC with payment_hash {} backwards from us with {:?}", &payment_hash, onion_error);
 				let err_packet = onion_error.get_encrypted_failure_packet(incoming_packet_shared_secret, phantom_shared_secret);
 
 				let mut push_forward_ev = false;
@@ -4905,13 +4911,13 @@ where
 				if dup_purpose.is_some() {
 					debug_assert!(false, "Shouldn't get a duplicate pending claim event ever");
 					log_error!(self.logger, "Got a duplicate pending claimable event on payment hash {}! Please report this bug",
-						log_bytes!(payment_hash.0));
+						&payment_hash);
 				}
 
 				if let Some(RecipientOnionFields { ref custom_tlvs, .. }) = payment.onion_fields {
 					if !custom_tlvs_known && custom_tlvs.iter().any(|(typ, _)| typ % 2 == 0) {
 						log_info!(self.logger, "Rejecting payment with payment hash {} as we cannot accept payment with unknown even TLVs: {}",
-							log_bytes!(payment_hash.0), log_iter!(custom_tlvs.iter().map(|(typ, _)| typ).filter(|typ| *typ % 2 == 0)));
+							&payment_hash, log_iter!(custom_tlvs.iter().map(|(typ, _)| typ).filter(|typ| *typ % 2 == 0)));
 						claimable_payments.pending_claiming_payments.remove(&payment_hash);
 						mem::drop(claimable_payments);
 						for htlc in payment.htlcs {
@@ -6327,10 +6333,10 @@ where
 				match monitor_event {
 					MonitorEvent::HTLCEvent(htlc_update) => {
 						if let Some(preimage) = htlc_update.payment_preimage {
-							log_trace!(self.logger, "Claiming HTLC with preimage {} from our monitor", log_bytes!(preimage.0));
+							log_trace!(self.logger, "Claiming HTLC with preimage {} from our monitor", &preimage);
 							self.claim_funds_internal(htlc_update.source, preimage, htlc_update.htlc_value_satoshis.map(|v| v * 1000), true, funding_outpoint);
 						} else {
-							log_trace!(self.logger, "Failing HTLC with hash {} from our monitor", log_bytes!(htlc_update.payment_hash.0));
+							log_trace!(self.logger, "Failing HTLC with hash {} from our monitor", &htlc_update.payment_hash);
 							let receiver = HTLCDestination::NextHopChannel { node_id: counterparty_node_id, channel_id: funding_outpoint.to_channel_id() };
 							let reason = HTLCFailReason::from_failure_code(0x4000 | 8);
 							self.fail_htlc_backwards_internal(&htlc_update.source, &htlc_update.payment_hash, &reason, receiver);
@@ -8653,7 +8659,7 @@ where
 							// backwards leg of the HTLC will simply be rejected.
 							log_info!(args.logger,
 								"Failing HTLC with hash {} as it is missing in the ChannelMonitor for channel {} but was present in the (stale) ChannelManager",
-								log_bytes!(channel.context.channel_id()), log_bytes!(payment_hash.0));
+								log_bytes!(channel.context.channel_id()), &payment_hash);
 							failed_htlcs.push((channel_htlc_source.clone(), *payment_hash, channel.context.get_counterparty_node_id(), channel.context.channel_id()));
 						}
 					}
@@ -9006,7 +9012,7 @@ where
 								hash_map::Entry::Occupied(mut entry) => {
 									let newly_added = entry.get_mut().insert(session_priv_bytes, &path);
 									log_info!(args.logger, "{} a pending payment path for {} msat for session priv {} on an existing pending payment with payment hash {}",
-										if newly_added { "Added" } else { "Had" }, path_amt, log_bytes!(session_priv_bytes), log_bytes!(htlc.payment_hash.0));
+										if newly_added { "Added" } else { "Had" }, path_amt, log_bytes!(session_priv_bytes), &htlc.payment_hash);
 								},
 								hash_map::Entry::Vacant(entry) => {
 									let path_fee = path.fee_msat();
@@ -9026,7 +9032,7 @@ where
 										starting_block_height: best_block_height,
 									});
 									log_info!(args.logger, "Added a pending payment for {} msat with payment hash {} for path with session priv {}",
-										path_amt, log_bytes!(htlc.payment_hash.0),  log_bytes!(session_priv_bytes));
+										path_amt, &htlc.payment_hash,  log_bytes!(session_priv_bytes));
 								}
 							}
 						}
@@ -9048,7 +9054,7 @@ where
 										if let HTLCForwardInfo::AddHTLC(htlc_info) = forward {
 											if pending_forward_matches_htlc(&htlc_info) {
 												log_info!(args.logger, "Removing pending to-forward HTLC with hash {} as it was forwarded to the closed channel {}",
-													log_bytes!(htlc.payment_hash.0), log_bytes!(monitor.get_funding_txo().0.to_channel_id()));
+													&htlc.payment_hash, log_bytes!(monitor.get_funding_txo().0.to_channel_id()));
 												false
 											} else { true }
 										} else { true }
@@ -9058,7 +9064,7 @@ where
 								pending_intercepted_htlcs.as_mut().unwrap().retain(|intercepted_id, htlc_info| {
 									if pending_forward_matches_htlc(&htlc_info) {
 										log_info!(args.logger, "Removing pending intercepted HTLC with hash {} as it was forwarded to the closed channel {}",
-											log_bytes!(htlc.payment_hash.0), log_bytes!(monitor.get_funding_txo().0.to_channel_id()));
+											&htlc.payment_hash, log_bytes!(monitor.get_funding_txo().0.to_channel_id()));
 										pending_events_read.retain(|(event, _)| {
 											if let Event::HTLCIntercepted { intercept_id: ev_id, .. } = event {
 												intercepted_id != ev_id
@@ -9177,7 +9183,7 @@ where
 									None => match inbound_payment::verify(payment_hash, &hop_data, 0, &expanded_inbound_key, &args.logger) {
 										Ok((payment_preimage, _)) => payment_preimage,
 										Err(()) => {
-											log_error!(args.logger, "Failed to read claimable payment data for HTLC with payment hash {} - was not a pending inbound payment and didn't match our payment key", log_bytes!(payment_hash.0));
+											log_error!(args.logger, "Failed to read claimable payment data for HTLC with payment hash {} - was not a pending inbound payment and didn't match our payment key", &payment_hash);
 											return Err(DecodeError::InvalidValue);
 										}
 									}
@@ -9244,7 +9250,7 @@ where
 		for (_, monitor) in args.channel_monitors.iter() {
 			for (payment_hash, payment_preimage) in monitor.get_stored_preimages() {
 				if let Some(payment) = claimable_payments.remove(&payment_hash) {
-					log_info!(args.logger, "Re-claiming HTLCs with payment hash {} as we've released the preimage to a ChannelMonitor!", log_bytes!(payment_hash.0));
+					log_info!(args.logger, "Re-claiming HTLCs with payment hash {} as we've released the preimage to a ChannelMonitor!", &payment_hash);
 					let mut claimable_amt_msat = 0;
 					let mut receiver_node_id = Some(our_network_pubkey);
 					let phantom_shared_secret = payment.htlcs[0].prev_hop.phantom_shared_secret;
@@ -10543,6 +10549,16 @@ mod tests {
 		assert_eq!(nodes[0].node.list_channels()[0].config.unwrap().forwarding_fee_proportional_millionths, current_fee);
 		let events = nodes[0].node.get_and_clear_pending_msg_events();
 		assert_eq!(events.len(), 0);
+	}
+
+	#[test]
+	fn test_payment_display() {
+		let payment_id = PaymentId([42; 32]);
+		assert_eq!(format!("{}", &payment_id), "2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a");
+		let payment_hash = PaymentHash([42; 32]);
+		assert_eq!(format!("{}", &payment_hash), "2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a");
+		let payment_preimage = PaymentPreimage([42; 32]);
+		assert_eq!(format!("{}", &payment_preimage), "2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a");
 	}
 }
 

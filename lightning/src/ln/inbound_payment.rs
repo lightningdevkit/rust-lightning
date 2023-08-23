@@ -339,7 +339,7 @@ pub(super) fn verify<L: Deref>(payment_hash: PaymentHash, payment_data: &msgs::F
 			hmac.input(&metadata_bytes[..]);
 			hmac.input(&payment_hash.0);
 			if !fixed_time_eq(&iv_bytes, &Hmac::from_engine(hmac).into_inner().split_at_mut(IV_LEN).0) {
-				log_trace!(logger, "Failing HTLC with user-generated payment_hash {}: unexpected payment_secret", log_bytes!(payment_hash.0));
+				log_trace!(logger, "Failing HTLC with user-generated payment_hash {}: unexpected payment_secret", &payment_hash);
 				return Err(())
 			}
 		},
@@ -347,13 +347,13 @@ pub(super) fn verify<L: Deref>(payment_hash: PaymentHash, payment_data: &msgs::F
 			match derive_ldk_payment_preimage(payment_hash, &iv_bytes, &metadata_bytes, keys) {
 				Ok(preimage) => payment_preimage = Some(preimage),
 				Err(bad_preimage_bytes) => {
-					log_trace!(logger, "Failing HTLC with payment_hash {} due to mismatching preimage {}", log_bytes!(payment_hash.0), log_bytes!(bad_preimage_bytes));
+					log_trace!(logger, "Failing HTLC with payment_hash {} due to mismatching preimage {}", &payment_hash, log_bytes!(bad_preimage_bytes));
 					return Err(())
 				}
 			}
 		},
 		Err(unknown_bits) => {
-			log_trace!(logger, "Failing HTLC with payment hash {} due to unknown payment type {}", log_bytes!(payment_hash.0), unknown_bits);
+			log_trace!(logger, "Failing HTLC with payment hash {} due to unknown payment type {}", &payment_hash, unknown_bits);
 			return Err(());
 		}
 	}
@@ -372,12 +372,12 @@ pub(super) fn verify<L: Deref>(payment_hash: PaymentHash, payment_data: &msgs::F
 	let expiry = u64::from_be_bytes(expiry_bytes.try_into().unwrap());
 
 	if payment_data.total_msat < min_amt_msat {
-		log_trace!(logger, "Failing HTLC with payment_hash {} due to total_msat {} being less than the minimum amount of {} msat", log_bytes!(payment_hash.0), payment_data.total_msat, min_amt_msat);
+		log_trace!(logger, "Failing HTLC with payment_hash {} due to total_msat {} being less than the minimum amount of {} msat", &payment_hash, payment_data.total_msat, min_amt_msat);
 		return Err(())
 	}
 
 	if expiry < highest_seen_timestamp {
-		log_trace!(logger, "Failing HTLC with payment_hash {}: expired payment", log_bytes!(payment_hash.0));
+		log_trace!(logger, "Failing HTLC with payment_hash {}: expired payment", &payment_hash);
 		return Err(())
 	}
 
@@ -391,7 +391,7 @@ pub(super) fn get_payment_preimage(payment_hash: PaymentHash, payment_secret: Pa
 		Ok(Method::LdkPaymentHash) | Ok(Method::LdkPaymentHashCustomFinalCltv) => {
 			derive_ldk_payment_preimage(payment_hash, &iv_bytes, &metadata_bytes, keys)
 				.map_err(|bad_preimage_bytes| APIError::APIMisuseError {
-					err: format!("Payment hash {} did not match decoded preimage {}", log_bytes!(payment_hash.0), log_bytes!(bad_preimage_bytes))
+					err: format!("Payment hash {} did not match decoded preimage {}", &payment_hash, log_bytes!(bad_preimage_bytes))
 				})
 		},
 		Ok(Method::UserPaymentHash) | Ok(Method::UserPaymentHashCustomFinalCltv) => Err(APIError::APIMisuseError {
