@@ -739,7 +739,7 @@ impl OutboundPayments {
 
 		let res = self.pay_route_internal(&route, payment_hash, recipient_onion, keysend_preimage, payment_id, None,
 			onion_session_privs, node_signer, best_block_height, &send_payment_along_path);
-		log_info!(logger, "Result sending payment with id {}: {:?}", log_bytes!(payment_id.0), res);
+		log_info!(logger, "Result sending payment with id {}: {:?}", &payment_id, res);
 		if let Err(e) = res {
 			self.handle_pay_route_err(e, payment_id, payment_hash, route, route_params, router, first_hops, &inflight_htlcs, entropy_source, node_signer, best_block_height, logger, pending_events, &send_payment_along_path);
 		}
@@ -762,7 +762,7 @@ impl OutboundPayments {
 	{
 		#[cfg(feature = "std")] {
 			if has_expired(&route_params) {
-				log_error!(logger, "Payment params expired on retry, abandoning payment {}", log_bytes!(payment_id.0));
+				log_error!(logger, "Payment params expired on retry, abandoning payment {}", &payment_id);
 				self.abandon_payment(payment_id, PaymentFailureReason::PaymentExpired, pending_events);
 				return
 			}
@@ -775,7 +775,7 @@ impl OutboundPayments {
 		) {
 			Ok(route) => route,
 			Err(e) => {
-				log_error!(logger, "Failed to find a route on retry, abandoning payment {}: {:#?}", log_bytes!(payment_id.0), e);
+				log_error!(logger, "Failed to find a route on retry, abandoning payment {}: {:#?}", &payment_id, e);
 				self.abandon_payment(payment_id, PaymentFailureReason::RouteNotFound, pending_events);
 				return
 			}
@@ -844,7 +844,7 @@ impl OutboundPayments {
 						},
 					};
 					if !payment.get().is_retryable_now() {
-						log_error!(logger, "Retries exhausted for payment id {}", log_bytes!(payment_id.0));
+						log_error!(logger, "Retries exhausted for payment id {}", &payment_id);
 						abandon_with_entry!(payment, PaymentFailureReason::RetriesExhausted);
 						return
 					}
@@ -855,7 +855,7 @@ impl OutboundPayments {
 					res
 				},
 				hash_map::Entry::Vacant(_) => {
-					log_error!(logger, "Payment with ID {} not found", log_bytes!(payment_id.0));
+					log_error!(logger, "Payment with ID {} not found", &payment_id);
 					return
 				}
 			}
@@ -863,7 +863,7 @@ impl OutboundPayments {
 		let res = self.pay_route_internal(&route, payment_hash, recipient_onion, keysend_preimage,
 			payment_id, Some(total_msat), onion_session_privs, node_signer, best_block_height,
 			&send_payment_along_path);
-		log_info!(logger, "Result retrying payment id {}: {:?}", log_bytes!(payment_id.0), res);
+		log_info!(logger, "Result retrying payment id {}: {:?}", &payment_id, res);
 		if let Err(e) = res {
 			self.handle_pay_route_err(e, payment_id, payment_hash, route, route_params, router, first_hops, inflight_htlcs, entropy_source, node_signer, best_block_height, logger, pending_events, send_payment_along_path);
 		}
@@ -1215,7 +1215,7 @@ impl OutboundPayments {
 				}
 			}
 		} else {
-			log_trace!(logger, "Received duplicative fulfill for HTLC with payment_preimage {}", log_bytes!(payment_preimage.0));
+			log_trace!(logger, "Received duplicative fulfill for HTLC with payment_preimage {}", &payment_preimage);
 		}
 	}
 

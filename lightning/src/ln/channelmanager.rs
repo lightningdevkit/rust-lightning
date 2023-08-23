@@ -6331,10 +6331,10 @@ where
 				match monitor_event {
 					MonitorEvent::HTLCEvent(htlc_update) => {
 						if let Some(preimage) = htlc_update.payment_preimage {
-							log_trace!(self.logger, "Claiming HTLC with preimage {} from our monitor", log_bytes!(preimage.0));
+							log_trace!(self.logger, "Claiming HTLC with preimage {} from our monitor", &preimage);
 							self.claim_funds_internal(htlc_update.source, preimage, htlc_update.htlc_value_satoshis.map(|v| v * 1000), true, funding_outpoint);
 						} else {
-							log_trace!(self.logger, "Failing HTLC with hash {} from our monitor", log_bytes!(htlc_update.payment_hash.0));
+							log_trace!(self.logger, "Failing HTLC with hash {} from our monitor", &htlc_update.payment_hash);
 							let receiver = HTLCDestination::NextHopChannel { node_id: counterparty_node_id, channel_id: funding_outpoint.to_channel_id() };
 							let reason = HTLCFailReason::from_failure_code(0x4000 | 8);
 							self.fail_htlc_backwards_internal(&htlc_update.source, &htlc_update.payment_hash, &reason, receiver);
@@ -10551,8 +10551,12 @@ mod tests {
 
 	#[test]
 	fn test_payment_display() {
+		let payment_id = PaymentId([42; 32]);
+		assert_eq!(format!("{}", &payment_id), "2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a");
 		let payment_hash = PaymentHash([42; 32]);
 		assert_eq!(format!("{}", &payment_hash), "2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a");
+		let payment_preimage = PaymentPreimage([42; 32]);
+		assert_eq!(format!("{}", &payment_preimage), "2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a");
 	}
 }
 
