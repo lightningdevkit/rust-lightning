@@ -7668,7 +7668,7 @@ where
 			if let Ok(persist) = handle_error!(self, self.internal_channel_update(counterparty_node_id, msg), *counterparty_node_id) {
 				persist
 			} else {
-				NotifyOption::SkipPersistNoEvents
+				NotifyOption::DoPersist
 			}
 		});
 	}
