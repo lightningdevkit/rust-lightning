@@ -6446,7 +6446,7 @@ where
 		Ok(NotifyOption::DoPersist)
 	}
 
-	fn internal_channel_reestablish(&self, counterparty_node_id: &PublicKey, msg: &msgs::ChannelReestablish) -> Result<(), MsgHandleErrInternal> {
+	fn internal_channel_reestablish(&self, counterparty_node_id: &PublicKey, msg: &msgs::ChannelReestablish) -> Result<NotifyOption, MsgHandleErrInternal> {
 		let htlc_forwards;
 		let need_lnd_workaround = {
 			let per_peer_state = self.per_peer_state.read().unwrap();
@@ -6502,14 +6502,16 @@ where
 			}
 		};
 
+		let mut persist = NotifyOption::SkipPersistHandleEvents;
 		if let Some(forwards) = htlc_forwards {
 			self.forward_htlcs(&mut [forwards][..]);
+			persist = NotifyOption::DoPersist;
 		}
 
 		if let Some(channel_ready_msg) = need_lnd_workaround {
 			self.internal_channel_ready(counterparty_node_id, &channel_ready_msg)?;
 		}
-		Ok(())
+		Ok(persist)
 	}
 
 	/// Process pending events from the [`chain::Watch`], returning whether any events were processed.
@@ -7674,12 +7676,22 @@ where
 	}
 
 	fn handle_channel_reestablish(&self, counterparty_node_id: &PublicKey, msg: &msgs::ChannelReestablish) {
-		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
-		let _ = handle_error!(self, self.internal_channel_reestablish(counterparty_node_id, msg), *counterparty_node_id);
+		let _persistence_guard = PersistenceNotifierGuard::optionally_notify(self, || {
+			let res = self.internal_channel_reestablish(counterparty_node_id, msg);
+			let persist = match &res {
+				Err(e) if e.closes_channel() => NotifyOption::DoPersist,
+				Err(_) => NotifyOption::SkipPersistHandleEvents,
+				Ok(persist) => *persist,
+			};
+			let _ = handle_error!(self, res, *counterparty_node_id);
+			persist
+		});
 	}
 
 	fn peer_disconnected(&self, counterparty_node_id: &PublicKey) {
-		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
+		let _persistence_guard = PersistenceNotifierGuard::optionally_notify(
+			self, || NotifyOption::SkipPersistHandleEvents);
+
 		let mut failed_channels = Vec::new();
 		let mut per_peer_state = self.per_peer_state.write().unwrap();
 		let remove_peer = {
