@@ -2087,7 +2087,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 							}
 						},
 						MessageSendEvent::BroadcastChannelUpdate { msg } => {
-							log_debug!(self.logger, "Handling BroadcastChannelUpdate event in peer_handler for short channel id {}", msg.contents.short_channel_id);
+							log_debug!(self.logger, "Handling BroadcastChannelUpdate event in peer_handler for contents {:?}", msg.contents);
 							match self.message_handler.route_handler.handle_channel_update(&msg) {
 								Ok(_) | Err(LightningError { action: msgs::ErrorAction::IgnoreDuplicateGossip, .. }) =>
 									self.forward_broadcast_msg(peers, &wire::Message::ChannelUpdate(msg), None),
