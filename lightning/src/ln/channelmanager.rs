@@ -1215,7 +1215,8 @@ pub struct ChainParameters {
 #[must_use]
 enum NotifyOption {
 	DoPersist,
-	SkipPersist,
+	SkipPersistHandleEvents,
+	SkipPersistNoEvents,
 }
 
 /// Whenever we release the `ChannelManager`'s `total_consistency_lock`, from read mode, it is
@@ -1253,8 +1254,13 @@ impl<'a> PersistenceNotifierGuard<'a, fn() -> NotifyOption> { // We don't care w
 				// Pick the "most" action between `persist_check` and the background events
 				// processing and return that.
 				let notify = persist_check();
-				if force_notify == NotifyOption::DoPersist { NotifyOption::DoPersist }
-				else { notify }
+				match (notify, force_notify) {
+					(NotifyOption::DoPersist, _) => NotifyOption::DoPersist,
+					(_, NotifyOption::DoPersist) => NotifyOption::DoPersist,
+					(NotifyOption::SkipPersistHandleEvents, _) => NotifyOption::SkipPersistHandleEvents,
+					(_, NotifyOption::SkipPersistHandleEvents) => NotifyOption::SkipPersistHandleEvents,
+					_ => NotifyOption::SkipPersistNoEvents,
+				}
 			},
 			_read_guard: read_guard,
 		}
@@ -1278,9 +1284,14 @@ impl<'a> PersistenceNotifierGuard<'a, fn() -> NotifyOption> { // We don't care w
 
 impl<'a, F: Fn() -> NotifyOption> Drop for PersistenceNotifierGuard<'a, F> {
 	fn drop(&mut self) {
-		if (self.should_persist)() == NotifyOption::DoPersist {
-			self.needs_persist_flag.store(true, Ordering::Release);
-			self.event_persist_notifier.notify();
+		match (self.should_persist)() {
+			NotifyOption::DoPersist => {
+				self.needs_persist_flag.store(true, Ordering::Release);
+				self.event_persist_notifier.notify()
+			},
+			NotifyOption::SkipPersistHandleEvents =>
+				self.event_persist_notifier.notify(),
+			NotifyOption::SkipPersistNoEvents => {},
 		}
 	}
 }
@@ -2092,7 +2103,7 @@ macro_rules! process_events_body {
 				return;
 			}
 
-			let mut result = NotifyOption::SkipPersist;
+			let mut result;
 
 			{
 				// We'll acquire our total consistency lock so that we can be sure no other
@@ -2101,7 +2112,7 @@ macro_rules! process_events_body {
 
 				// Because `handle_post_event_actions` may send `ChannelMonitorUpdate`s to the user we must
 				// ensure any startup-generated background events are handled first.
-				if $self.process_background_events() == NotifyOption::DoPersist { result = NotifyOption::DoPersist; }
+				result = $self.process_background_events();
 
 				// TODO: This behavior should be documented. It's unintuitive that we query
 				// ChannelMonitors when clearing other events.
@@ -4348,7 +4359,7 @@ where
 		let mut background_events = Vec::new();
 		mem::swap(&mut *self.pending_background_events.lock().unwrap(), &mut background_events);
 		if background_events.is_empty() {
-			return NotifyOption::SkipPersist;
+			return NotifyOption::SkipPersistNoEvents;
 		}
 
 		for event in background_events.drain(..) {
@@ -4417,17 +4428,17 @@ where
 	}
 
 	fn update_channel_fee(&self, chan_id: &ChannelId, chan: &mut Channel<SP>, new_feerate: u32) -> NotifyOption {
-		if !chan.context.is_outbound() { return NotifyOption::SkipPersist; }
+		if !chan.context.is_outbound() { return NotifyOption::SkipPersistNoEvents; }
 		// If the feerate has decreased by less than half, don't bother
 		if new_feerate <= chan.context.get_feerate_sat_per_1000_weight() && new_feerate * 2 > chan.context.get_feerate_sat_per_1000_weight() {
 			log_trace!(self.logger, "Channel {} does not qualify for a feerate change from {} to {}.",
-				&chan_id, chan.context.get_feerate_sat_per_1000_weight(), new_feerate);
-			return NotifyOption::SkipPersist;
+				chan_id, chan.context.get_feerate_sat_per_1000_weight(), new_feerate);
+			return NotifyOption::SkipPersistNoEvents;
 		}
 		if !chan.context.is_live() {
 			log_trace!(self.logger, "Channel {} does not qualify for a feerate change from {} to {} as it cannot currently be updated (probably the peer is disconnected).",
-				&chan_id, chan.context.get_feerate_sat_per_1000_weight(), new_feerate);
-			return NotifyOption::SkipPersist;
+				chan_id, chan.context.get_feerate_sat_per_1000_weight(), new_feerate);
+			return NotifyOption::SkipPersistNoEvents;
 		}
 		log_trace!(self.logger, "Channel {} qualifies for a feerate change from {} to {}.",
 			&chan_id, chan.context.get_feerate_sat_per_1000_weight(), new_feerate);
@@ -4443,7 +4454,7 @@ where
 	/// it wants to detect). Thus, we have a variant exposed here for its benefit.
 	pub fn maybe_update_chan_fees(&self) {
 		PersistenceNotifierGuard::optionally_notify(self, || {
-			let mut should_persist = NotifyOption::SkipPersist;
+			let mut should_persist = NotifyOption::SkipPersistNoEvents;
 
 			let normal_feerate = self.fee_estimator.bounded_sat_per_1000_weight(ConfirmationTarget::Normal);
 			let min_mempool_feerate = self.fee_estimator.bounded_sat_per_1000_weight(ConfirmationTarget::MempoolMinimum);
@@ -4488,7 +4499,7 @@ where
 	/// [`ChannelConfig`]: crate::util::config::ChannelConfig
 	pub fn timer_tick_occurred(&self) {
 		PersistenceNotifierGuard::optionally_notify(self, || {
-			let mut should_persist = NotifyOption::SkipPersist;
+			let mut should_persist = NotifyOption::SkipPersistNoEvents;
 
 			let normal_feerate = self.fee_estimator.bounded_sat_per_1000_weight(ConfirmationTarget::Normal);
 			let min_mempool_feerate = self.fee_estimator.bounded_sat_per_1000_weight(ConfirmationTarget::MempoolMinimum);
@@ -6361,19 +6372,19 @@ where
 		Ok(())
 	}
 
-	/// Returns ShouldPersist if anything changed, otherwise either SkipPersist or an Err.
+	/// Returns DoPersist if anything changed, otherwise either SkipPersistNoEvents or an Err.
 	fn internal_channel_update(&self, counterparty_node_id: &PublicKey, msg: &msgs::ChannelUpdate) -> Result<NotifyOption, MsgHandleErrInternal> {
 		let (chan_counterparty_node_id, chan_id) = match self.short_to_chan_info.read().unwrap().get(&msg.contents.short_channel_id) {
 			Some((cp_id, chan_id)) => (cp_id.clone(), chan_id.clone()),
 			None => {
 				// It's not a local channel
-				return Ok(NotifyOption::SkipPersist)
+				return Ok(NotifyOption::SkipPersistNoEvents)
 			}
 		};
 		let per_peer_state = self.per_peer_state.read().unwrap();
 		let peer_state_mutex_opt = per_peer_state.get(&chan_counterparty_node_id);
 		if peer_state_mutex_opt.is_none() {
-			return Ok(NotifyOption::SkipPersist)
+			return Ok(NotifyOption::SkipPersistNoEvents)
 		}
 		let mut peer_state_lock = peer_state_mutex_opt.unwrap().lock().unwrap();
 		let peer_state = &mut *peer_state_lock;
@@ -6385,14 +6396,14 @@ where
 							// If the announcement is about a channel of ours which is public, some
 							// other peer may simply be forwarding all its gossip to us. Don't provide
 							// a scary-looking error message and return Ok instead.
-							return Ok(NotifyOption::SkipPersist);
+							return Ok(NotifyOption::SkipPersistNoEvents);
 						}
 						return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a channel_update for a channel from the wrong node - it shouldn't know about our private channels!".to_owned(), chan_id));
 					}
 					let were_node_one = self.get_our_node_id().serialize()[..] < chan.context.get_counterparty_node_id().serialize()[..];
 					let msg_from_node_one = msg.contents.flags & 1 == 0;
 					if were_node_one == msg_from_node_one {
-						return Ok(NotifyOption::SkipPersist);
+						return Ok(NotifyOption::SkipPersistNoEvents);
 					} else {
 						log_debug!(self.logger, "Received channel_update for channel {}.", chan_id);
 						try_chan_phase_entry!(self, chan.channel_update(&msg), chan_phase_entry);
@@ -6402,7 +6413,7 @@ where
 						"Got a channel_update for an unfunded channel!".into())), chan_phase_entry);
 				}
 			},
-			hash_map::Entry::Vacant(_) => return Ok(NotifyOption::SkipPersist)
+			hash_map::Entry::Vacant(_) => return Ok(NotifyOption::SkipPersistNoEvents)
 		}
 		Ok(NotifyOption::DoPersist)
 	}
@@ -7021,7 +7032,7 @@ where
 	fn get_and_clear_pending_msg_events(&self) -> Vec<MessageSendEvent> {
 		let events = RefCell::new(Vec::new());
 		PersistenceNotifierGuard::optionally_notify(self, || {
-			let mut result = NotifyOption::SkipPersist;
+			let mut result = NotifyOption::SkipPersistNoEvents;
 
 			// TODO: This behavior should be documented. It's unintuitive that we query
 			// ChannelMonitors when clearing other events.
@@ -7556,7 +7567,7 @@ where
 			if let Ok(persist) = handle_error!(self, self.internal_channel_update(counterparty_node_id, msg), *counterparty_node_id) {
 				persist
 			} else {
-				NotifyOption::SkipPersist
+				NotifyOption::SkipPersistNoEvents
 			}
 		});
 	}
