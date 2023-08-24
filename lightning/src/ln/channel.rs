@@ -2036,11 +2036,6 @@ fn commit_tx_fee_msat(feerate_per_kw: u32, num_htlcs: usize, channel_type_featur
 	(commitment_tx_base_weight(channel_type_features) + num_htlcs as u64 * COMMITMENT_TX_WEIGHT_PER_HTLC) * feerate_per_kw as u64 / 1000 * 1000
 }
 
-// TODO: We should refactor this to be an Inbound/OutboundChannel until initial setup handshaking
-// has been completed, and then turn into a Channel to get compiler-time enforcement of things like
-// calling channel_id() before we're set up or things like get_funding_signed on an
-// inbound channel.
-//
 // Holder designates channel data owned for the benefit of the user client.
 // Counterparty designates channel data owned by the another channel participant entity.
 pub(super) struct Channel<SP: Deref> where SP::Target: SignerProvider {
