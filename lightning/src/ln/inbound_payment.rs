@@ -19,7 +19,7 @@ use crate::ln::{PaymentHash, PaymentPreimage, PaymentSecret};
 use crate::ln::msgs;
 use crate::ln::msgs::MAX_VALUE_MSAT;
 use crate::util::chacha20::ChaCha20;
-use crate::util::crypto::hkdf_extract_expand_4x;
+use crate::util::crypto::hkdf_extract_expand_5x;
 use crate::util::errors::APIError;
 use crate::util::logger::Logger;
 
@@ -50,6 +50,8 @@ pub struct ExpandedKey {
 	user_pmt_hash_key: [u8; 32],
 	/// The base key used to derive signing keys and authenticate messages for BOLT 12 Offers.
 	offers_base_key: [u8; 32],
+	/// The key used to encrypt message metadata for BOLT 12 Offers.
+	offers_encryption_key: [u8; 32],
 }
 
 impl ExpandedKey {
@@ -57,13 +59,19 @@ impl ExpandedKey {
 	///
 	/// It is recommended to cache this value and not regenerate it for each new inbound payment.
 	pub fn new(key_material: &KeyMaterial) -> ExpandedKey {
-		let (metadata_key, ldk_pmt_hash_key, user_pmt_hash_key, offers_base_key) =
-			hkdf_extract_expand_4x(b"LDK Inbound Payment Key Expansion", &key_material.0);
+		let (
+			metadata_key,
+			ldk_pmt_hash_key,
+			user_pmt_hash_key,
+			offers_base_key,
+			offers_encryption_key,
+		) = hkdf_extract_expand_5x(b"LDK Inbound Payment Key Expansion", &key_material.0);
 		Self {
 			metadata_key,
 			ldk_pmt_hash_key,
 			user_pmt_hash_key,
 			offers_base_key,
+			offers_encryption_key,
 		}
 	}
 
