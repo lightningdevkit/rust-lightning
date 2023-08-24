@@ -277,10 +277,9 @@ fn construct_payment_secret(iv_bytes: &[u8; IV_LEN], metadata_bytes: &[u8; METAD
 	let (iv_slice, encrypted_metadata_slice) = payment_secret_bytes.split_at_mut(IV_LEN);
 	iv_slice.copy_from_slice(iv_bytes);
 
-	let chacha_block = ChaCha20::get_single_block(metadata_key, iv_bytes);
-	for i in 0..METADATA_LEN {
-		encrypted_metadata_slice[i] = chacha_block[i] ^ metadata_bytes[i];
-	}
+	ChaCha20::encrypt_single_block(
+		metadata_key, iv_bytes, encrypted_metadata_slice, metadata_bytes
+	);
 	PaymentSecret(payment_secret_bytes)
 }
 
@@ -412,11 +411,10 @@ fn decrypt_metadata(payment_secret: PaymentSecret, keys: &ExpandedKey) -> ([u8; 
 	let (iv_slice, encrypted_metadata_bytes) = payment_secret.0.split_at(IV_LEN);
 	iv_bytes.copy_from_slice(iv_slice);
 
-	let chacha_block = ChaCha20::get_single_block(&keys.metadata_key, &iv_bytes);
 	let mut metadata_bytes: [u8; METADATA_LEN] = [0; METADATA_LEN];
-	for i in 0..METADATA_LEN {
-		metadata_bytes[i] = chacha_block[i] ^ encrypted_metadata_bytes[i];
-	}
+	ChaCha20::encrypt_single_block(
+		&keys.metadata_key, &iv_bytes, &mut metadata_bytes, encrypted_metadata_bytes
+	);
 
 	(iv_bytes, metadata_bytes)
 }
