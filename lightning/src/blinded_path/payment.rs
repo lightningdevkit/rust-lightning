@@ -93,17 +93,27 @@ pub struct PaymentConstraints {
 	pub htlc_minimum_msat: u64,
 }
 
-impl_writeable_tlv_based!(ForwardTlvs, {
-	(2, short_channel_id, required),
-	(10, payment_relay, required),
-	(12, payment_constraints, required),
-	(14, features, required),
-});
+impl Writeable for ForwardTlvs {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		encode_tlv_stream!(w, {
+			(2, self.short_channel_id, required),
+			(10, self.payment_relay, required),
+			(12, self.payment_constraints, required),
+			(14, self.features, required)
+		});
+		Ok(())
+	}
+}
 
-impl_writeable_tlv_based!(ReceiveTlvs, {
-	(12, payment_constraints, required),
-	(65536, payment_secret, required),
-});
+impl Writeable for ReceiveTlvs {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		encode_tlv_stream!(w, {
+			(12, self.payment_constraints, required),
+			(65536, self.payment_secret, required)
+		});
+		Ok(())
+	}
+}
 
 impl<'a> Writeable for BlindedPaymentTlvsRef<'a> {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
