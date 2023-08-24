@@ -1185,7 +1185,7 @@ where
 
 	background_events_processed_since_startup: AtomicBool,
 
-	persistence_notifier: Notifier,
+	event_persist_notifier: Notifier,
 
 	entropy_source: ES,
 	node_signer: NS,
@@ -1228,7 +1228,7 @@ enum NotifyOption {
 /// notify or not based on whether relevant changes have been made, providing a closure to
 /// `optionally_notify` which returns a `NotifyOption`.
 struct PersistenceNotifierGuard<'a, F: Fn() -> NotifyOption> {
-	persistence_notifier: &'a Notifier,
+	event_persist_notifier: &'a Notifier,
 	should_persist: F,
 	// We hold onto this result so the lock doesn't get released immediately.
 	_read_guard: RwLockReadGuard<'a, ()>,
@@ -1240,7 +1240,7 @@ impl<'a> PersistenceNotifierGuard<'a, fn() -> NotifyOption> { // We don't care w
 		let _ = cm.get_cm().process_background_events(); // We always persist
 
 		PersistenceNotifierGuard {
-			persistence_notifier: &cm.get_cm().persistence_notifier,
+			event_persist_notifier: &cm.get_cm().event_persist_notifier,
 			should_persist: || -> NotifyOption { NotifyOption::DoPersist },
 			_read_guard: read_guard,
 		}
@@ -1253,7 +1253,7 @@ impl<'a> PersistenceNotifierGuard<'a, fn() -> NotifyOption> { // We don't care w
 		let read_guard = lock.read().unwrap();
 
 		PersistenceNotifierGuard {
-			persistence_notifier: notifier,
+			event_persist_notifier: notifier,
 			should_persist: persist_check,
 			_read_guard: read_guard,
 		}
@@ -1263,7 +1263,7 @@ impl<'a> PersistenceNotifierGuard<'a, fn() -> NotifyOption> { // We don't care w
 impl<'a, F: Fn() -> NotifyOption> Drop for PersistenceNotifierGuard<'a, F> {
 	fn drop(&mut self) {
 		if (self.should_persist)() == NotifyOption::DoPersist {
-			self.persistence_notifier.notify();
+			self.event_persist_notifier.notify();
 		}
 	}
 }
@@ -2125,7 +2125,7 @@ macro_rules! process_events_body {
 			}
 
 			if result == NotifyOption::DoPersist {
-				$self.persistence_notifier.notify();
+				$self.event_persist_notifier.notify();
 			}
 		}
 	}
@@ -2204,7 +2204,7 @@ where
 			pending_background_events: Mutex::new(Vec::new()),
 			total_consistency_lock: RwLock::new(()),
 			background_events_processed_since_startup: AtomicBool::new(false),
-			persistence_notifier: Notifier::new(),
+			event_persist_notifier: Notifier::new(),
 
 			entropy_source,
 			node_signer,
@@ -4422,7 +4422,7 @@ where
 	/// these a fuzz failure (as they usually indicate a channel force-close, which is exactly what
 	/// it wants to detect). Thus, we have a variant exposed here for its benefit.
 	pub fn maybe_update_chan_fees(&self) {
-		PersistenceNotifierGuard::optionally_notify(&self.total_consistency_lock, &self.persistence_notifier, || {
+		PersistenceNotifierGuard::optionally_notify(&self.total_consistency_lock, &self.event_persist_notifier, || {
 			let mut should_persist = self.process_background_events();
 
 			let normal_feerate = self.fee_estimator.bounded_sat_per_1000_weight(ConfirmationTarget::Normal);
@@ -4467,7 +4467,7 @@ where
 	/// [`ChannelUpdate`]: msgs::ChannelUpdate
 	/// [`ChannelConfig`]: crate::util::config::ChannelConfig
 	pub fn timer_tick_occurred(&self) {
-		PersistenceNotifierGuard::optionally_notify(&self.total_consistency_lock, &self.persistence_notifier, || {
+		PersistenceNotifierGuard::optionally_notify(&self.total_consistency_lock, &self.event_persist_notifier, || {
 			let mut should_persist = self.process_background_events();
 
 			let normal_feerate = self.fee_estimator.bounded_sat_per_1000_weight(ConfirmationTarget::Normal);
@@ -7000,7 +7000,7 @@ where
 	/// the `MessageSendEvent`s to the specific peer they were generated under.
 	fn get_and_clear_pending_msg_events(&self) -> Vec<MessageSendEvent> {
 		let events = RefCell::new(Vec::new());
-		PersistenceNotifierGuard::optionally_notify(&self.total_consistency_lock, &self.persistence_notifier, || {
+		PersistenceNotifierGuard::optionally_notify(&self.total_consistency_lock, &self.event_persist_notifier, || {
 			let mut result = self.process_background_events();
 
 			// TODO: This behavior should be documented. It's unintuitive that we query
@@ -7083,7 +7083,7 @@ where
 
 	fn block_disconnected(&self, header: &BlockHeader, height: u32) {
 		let _persistence_guard = PersistenceNotifierGuard::optionally_notify(&self.total_consistency_lock,
-			&self.persistence_notifier, || -> NotifyOption { NotifyOption::DoPersist });
+			&self.event_persist_notifier, || -> NotifyOption { NotifyOption::DoPersist });
 		let new_height = height - 1;
 		{
 			let mut best_block = self.best_block.write().unwrap();
@@ -7118,7 +7118,7 @@ where
 		log_trace!(self.logger, "{} transactions included in block {} at height {} provided", txdata.len(), block_hash, height);
 
 		let _persistence_guard = PersistenceNotifierGuard::optionally_notify(&self.total_consistency_lock,
-			&self.persistence_notifier, || -> NotifyOption { NotifyOption::DoPersist });
+			&self.event_persist_notifier, || -> NotifyOption { NotifyOption::DoPersist });
 		self.do_chain_event(Some(height), |channel| channel.transactions_confirmed(&block_hash, height, txdata, self.genesis_hash.clone(), &self.node_signer, &self.default_configuration, &self.logger)
 			.map(|(a, b)| (a, Vec::new(), b)));
 
@@ -7138,7 +7138,7 @@ where
 		log_trace!(self.logger, "New best block: {} at height {}", block_hash, height);
 
 		let _persistence_guard = PersistenceNotifierGuard::optionally_notify(&self.total_consistency_lock,
-			&self.persistence_notifier, || -> NotifyOption { NotifyOption::DoPersist });
+			&self.event_persist_notifier, || -> NotifyOption { NotifyOption::DoPersist });
 		*self.best_block.write().unwrap() = BestBlock::new(block_hash, height);
 
 		self.do_chain_event(Some(height), |channel| channel.best_block_updated(height, header.time, self.genesis_hash.clone(), &self.node_signer, &self.default_configuration, &self.logger));
@@ -7182,7 +7182,7 @@ where
 
 	fn transaction_unconfirmed(&self, txid: &Txid) {
 		let _persistence_guard = PersistenceNotifierGuard::optionally_notify(&self.total_consistency_lock,
-			&self.persistence_notifier, || -> NotifyOption { NotifyOption::DoPersist });
+			&self.event_persist_notifier, || -> NotifyOption { NotifyOption::DoPersist });
 		self.do_chain_event(None, |channel| {
 			if let Some(funding_txo) = channel.context.get_funding_txo() {
 				if funding_txo.txid == *txid {
@@ -7370,13 +7370,13 @@ where
 	/// Note that callbacks registered on the [`Future`] MUST NOT call back into this
 	/// [`ChannelManager`] and should instead register actions to be taken later.
 	///
-	pub fn get_persistable_update_future(&self) -> Future {
-		self.persistence_notifier.get_future()
+	pub fn get_event_or_persistence_needed_future(&self) -> Future {
+		self.event_persist_notifier.get_future()
 	}
 
 	#[cfg(any(test, feature = "_test_utils"))]
-	pub fn get_persistence_condvar_value(&self) -> bool {
-		self.persistence_notifier.notify_pending()
+	pub fn get_event_or_persist_condvar_value(&self) -> bool {
+		self.event_persist_notifier.notify_pending()
 	}
 
 	/// Gets the latest best block which was connected either via the [`chain::Listen`] or
@@ -7520,7 +7520,7 @@ where
 	}
 
 	fn handle_channel_update(&self, counterparty_node_id: &PublicKey, msg: &msgs::ChannelUpdate) {
-		PersistenceNotifierGuard::optionally_notify(&self.total_consistency_lock, &self.persistence_notifier, || {
+		PersistenceNotifierGuard::optionally_notify(&self.total_consistency_lock, &self.event_persist_notifier, || {
 			let force_persist = self.process_background_events();
 			if let Ok(persist) = handle_error!(self, self.internal_channel_update(counterparty_node_id, msg), *counterparty_node_id) {
 				if force_persist == NotifyOption::DoPersist { NotifyOption::DoPersist } else { persist }
@@ -9547,7 +9547,7 @@ where
 			pending_background_events: Mutex::new(pending_background_events),
 			total_consistency_lock: RwLock::new(()),
 			background_events_processed_since_startup: AtomicBool::new(false),
-			persistence_notifier: Notifier::new(),
+			event_persist_notifier: Notifier::new(),
 
 			entropy_source: args.entropy_source,
 			node_signer: args.node_signer,
@@ -9609,9 +9609,9 @@ mod tests {
 
 		// All nodes start with a persistable update pending as `create_network` connects each node
 		// with all other nodes to make most tests simpler.
-		assert!(nodes[0].node.get_persistable_update_future().poll_is_complete());
-		assert!(nodes[1].node.get_persistable_update_future().poll_is_complete());
-		assert!(nodes[2].node.get_persistable_update_future().poll_is_complete());
+		assert!(nodes[0].node.get_event_or_persistence_needed_future().poll_is_complete());
+		assert!(nodes[1].node.get_event_or_persistence_needed_future().poll_is_complete());
+		assert!(nodes[2].node.get_event_or_persistence_needed_future().poll_is_complete());
 
 		let mut chan = create_announced_chan_between_nodes(&nodes, 0, 1);
 
@@ -9625,19 +9625,19 @@ mod tests {
 			&nodes[0].node.get_our_node_id()).pop().unwrap();
 
 		// The first two nodes (which opened a channel) should now require fresh persistence
-		assert!(nodes[0].node.get_persistable_update_future().poll_is_complete());
-		assert!(nodes[1].node.get_persistable_update_future().poll_is_complete());
+		assert!(nodes[0].node.get_event_or_persistence_needed_future().poll_is_complete());
+		assert!(nodes[1].node.get_event_or_persistence_needed_future().poll_is_complete());
 		// ... but the last node should not.
-		assert!(!nodes[2].node.get_persistable_update_future().poll_is_complete());
+		assert!(!nodes[2].node.get_event_or_persistence_needed_future().poll_is_complete());
 		// After persisting the first two nodes they should no longer need fresh persistence.
-		assert!(!nodes[0].node.get_persistable_update_future().poll_is_complete());
-		assert!(!nodes[1].node.get_persistable_update_future().poll_is_complete());
+		assert!(!nodes[0].node.get_event_or_persistence_needed_future().poll_is_complete());
+		assert!(!nodes[1].node.get_event_or_persistence_needed_future().poll_is_complete());
 
 		// Node 3, unrelated to the only channel, shouldn't care if it receives a channel_update
 		// about the channel.
 		nodes[2].node.handle_channel_update(&nodes[1].node.get_our_node_id(), &chan.0);
 		nodes[2].node.handle_channel_update(&nodes[1].node.get_our_node_id(), &chan.1);
-		assert!(!nodes[2].node.get_persistable_update_future().poll_is_complete());
+		assert!(!nodes[2].node.get_event_or_persistence_needed_future().poll_is_complete());
 
 		// The nodes which are a party to the channel should also ignore messages from unrelated
 		// parties.
@@ -9645,8 +9645,8 @@ mod tests {
 		nodes[0].node.handle_channel_update(&nodes[2].node.get_our_node_id(), &chan.1);
 		nodes[1].node.handle_channel_update(&nodes[2].node.get_our_node_id(), &chan.0);
 		nodes[1].node.handle_channel_update(&nodes[2].node.get_our_node_id(), &chan.1);
-		assert!(!nodes[0].node.get_persistable_update_future().poll_is_complete());
-		assert!(!nodes[1].node.get_persistable_update_future().poll_is_complete());
+		assert!(!nodes[0].node.get_event_or_persistence_needed_future().poll_is_complete());
+		assert!(!nodes[1].node.get_event_or_persistence_needed_future().poll_is_complete());
 
 		// At this point the channel info given by peers should still be the same.
 		assert_eq!(nodes[0].node.list_channels()[0], node_a_chan_info);
@@ -9663,8 +9663,8 @@ mod tests {
 		// persisted and that its channel info remains the same.
 		nodes[0].node.handle_channel_update(&nodes[1].node.get_our_node_id(), &as_update);
 		nodes[1].node.handle_channel_update(&nodes[0].node.get_our_node_id(), &bs_update);
-		assert!(!nodes[0].node.get_persistable_update_future().poll_is_complete());
-		assert!(!nodes[1].node.get_persistable_update_future().poll_is_complete());
+		assert!(!nodes[0].node.get_event_or_persistence_needed_future().poll_is_complete());
+		assert!(!nodes[1].node.get_event_or_persistence_needed_future().poll_is_complete());
 		assert_eq!(nodes[0].node.list_channels()[0], node_a_chan_info);
 		assert_eq!(nodes[1].node.list_channels()[0], node_b_chan_info);
 
@@ -9672,8 +9672,8 @@ mod tests {
 		// the channel info has updated.
 		nodes[0].node.handle_channel_update(&nodes[1].node.get_our_node_id(), &bs_update);
 		nodes[1].node.handle_channel_update(&nodes[0].node.get_our_node_id(), &as_update);
-		assert!(nodes[0].node.get_persistable_update_future().poll_is_complete());
-		assert!(nodes[1].node.get_persistable_update_future().poll_is_complete());
+		assert!(nodes[0].node.get_event_or_persistence_needed_future().poll_is_complete());
+		assert!(nodes[1].node.get_event_or_persistence_needed_future().poll_is_complete());
 		assert_ne!(nodes[0].node.list_channels()[0], node_a_chan_info);
 		assert_ne!(nodes[1].node.list_channels()[0], node_b_chan_info);
 	}

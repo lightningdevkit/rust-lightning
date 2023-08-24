@@ -655,7 +655,7 @@ where
 		channel_manager, channel_manager.process_pending_events_async(async_event_handler).await,
 		gossip_sync, peer_manager, logger, scorer, should_break, {
 			let fut = Selector {
-				a: channel_manager.get_persistable_update_future(),
+				a: channel_manager.get_event_or_persistence_needed_future(),
 				b: chain_monitor.get_update_future(),
 				c: sleeper(if mobile_interruptable_platform { Duration::from_millis(100) } else { Duration::from_secs(FASTEST_TIMER) }),
 			};
@@ -788,7 +788,7 @@ impl BackgroundProcessor {
 				channel_manager, channel_manager.process_pending_events(&event_handler),
 				gossip_sync, peer_manager, logger, scorer, stop_thread.load(Ordering::Acquire),
 				Sleeper::from_two_futures(
-					channel_manager.get_persistable_update_future(),
+					channel_manager.get_event_or_persistence_needed_future(),
 					chain_monitor.get_update_future()
 				).wait_timeout(Duration::from_millis(100)),
 				|_| Instant::now(), |time: &Instant, dur| time.elapsed().as_secs() > dur, false)
@@ -1326,7 +1326,7 @@ mod tests {
 		check_persisted_data!(nodes[0].node, filepath.clone());
 
 		loop {
-			if !nodes[0].node.get_persistence_condvar_value() { break }
+			if !nodes[0].node.get_event_or_persist_condvar_value() { break }
 		}
 
 		// Force-close the channel.
@@ -1335,7 +1335,7 @@ mod tests {
 		// Check that the force-close updates are persisted.
 		check_persisted_data!(nodes[0].node, filepath.clone());
 		loop {
-			if !nodes[0].node.get_persistence_condvar_value() { break }
+			if !nodes[0].node.get_event_or_persist_condvar_value() { break }
 		}
 
 		// Check network graph is persisted
