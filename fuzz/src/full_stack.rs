@@ -34,7 +34,7 @@ use lightning::chain::chainmonitor;
 use lightning::chain::transaction::OutPoint;
 use lightning::sign::{InMemorySigner, Recipient, KeyMaterial, EntropySource, NodeSigner, SignerProvider};
 use lightning::events::Event;
-use lightning::ln::{PaymentHash, PaymentPreimage, PaymentSecret};
+use lightning::ln::{ChannelId, PaymentHash, PaymentPreimage, PaymentSecret};
 use lightning::ln::channelmanager::{ChainParameters, ChannelDetails, ChannelManager, PaymentId, RecipientOnionFields, Retry};
 use lightning::ln::peer_handler::{MessageHandler,PeerManager,SocketDescriptor,IgnoringMessageHandler};
 use lightning::ln::msgs::{self, DecodeError};
@@ -481,7 +481,7 @@ pub fn do_test(data: &[u8], logger: &Arc<dyn Logger>) {
 	let mut should_forward = false;
 	let mut payments_received: Vec<PaymentHash> = Vec::new();
 	let mut payments_sent = 0;
-	let mut pending_funding_generation: Vec<([u8; 32], PublicKey, u64, Script)> = Vec::new();
+	let mut pending_funding_generation: Vec<(ChannelId, PublicKey, u64, Script)> = Vec::new();
 	let mut pending_funding_signatures = HashMap::new();
 
 	loop {

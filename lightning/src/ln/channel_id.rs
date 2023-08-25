@@ -29,7 +29,7 @@ use core::ops::Deref;
 ///
 /// This is not exported to bindings users as we just use [u8; 32] directly.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct ChannelId (pub [u8; 32]);
+pub struct ChannelId(pub [u8; 32]);
 
 impl ChannelId {
 	/// Create _v1_ channel ID based on a funding TX ID and output index

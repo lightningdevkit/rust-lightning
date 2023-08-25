@@ -20,6 +20,7 @@ use crate::chain::transaction::OutPoint;
 use crate::sign;
 use crate::events;
 use crate::events::bump_transaction::{WalletSource, Utxo};
+use crate::ln::ChannelId;
 use crate::ln::channelmanager;
 use crate::ln::chan_utils::CommitmentTransaction;
 use crate::ln::features::{ChannelFeatures, InitFeatures, NodeFeatures};
@@ -196,14 +197,14 @@ impl SignerProvider for OnlyReadsKeysInterface {
 
 pub struct TestChainMonitor<'a> {
 	pub added_monitors: Mutex<Vec<(OutPoint, channelmonitor::ChannelMonitor<EnforcingSigner>)>>,
-	pub monitor_updates: Mutex<HashMap<[u8; 32], Vec<channelmonitor::ChannelMonitorUpdate>>>,
-	pub latest_monitor_update_id: Mutex<HashMap<[u8; 32], (OutPoint, u64, MonitorUpdateId)>>,
+	pub monitor_updates: Mutex<HashMap<ChannelId, Vec<channelmonitor::ChannelMonitorUpdate>>>,
+	pub latest_monitor_update_id: Mutex<HashMap<ChannelId, (OutPoint, u64, MonitorUpdateId)>>,
 	pub chain_monitor: chainmonitor::ChainMonitor<EnforcingSigner, &'a TestChainSource, &'a chaininterface::BroadcasterInterface, &'a TestFeeEstimator, &'a TestLogger, &'a chainmonitor::Persist<EnforcingSigner>>,
 	pub keys_manager: &'a TestKeysInterface,
 	/// If this is set to Some(), the next update_channel call (not watch_channel) must be a
 	/// ChannelForceClosed event for the given channel_id with should_broadcast set to the given
 	/// boolean.
-	pub expect_channel_force_closed: Mutex<Option<([u8; 32], bool)>>,
+	pub expect_channel_force_closed: Mutex<Option<(ChannelId, bool)>>,
 }
 impl<'a> TestChainMonitor<'a> {
 	pub fn new(chain_source: Option<&'a TestChainSource>, broadcaster: &'a chaininterface::BroadcasterInterface, logger: &'a TestLogger, fee_estimator: &'a TestFeeEstimator, persister: &'a chainmonitor::Persist<EnforcingSigner>, keys_manager: &'a TestKeysInterface) -> Self {
@@ -217,7 +218,7 @@ impl<'a> TestChainMonitor<'a> {
 		}
 	}
 
-	pub fn complete_sole_pending_chan_update(&self, channel_id: &[u8; 32]) {
+	pub fn complete_sole_pending_chan_update(&self, channel_id: &ChannelId) {
 		let (outpoint, _, latest_update) = self.latest_monitor_update_id.lock().unwrap().get(channel_id).unwrap().clone();
 		self.chain_monitor.channel_monitor_updated(outpoint, latest_update).unwrap();
 	}
