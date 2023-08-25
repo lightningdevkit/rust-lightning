@@ -30,5 +30,6 @@ pub mod router;
 pub mod zbase32;
 pub mod onion_hop_data;
 pub mod base32;
+pub mod fromstr_to_netaddress;
 
 pub mod msg_targets;
