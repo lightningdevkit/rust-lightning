@@ -13,7 +13,13 @@ use serde_json;
 use std::convert::From;
 use std::convert::TryFrom;
 use std::convert::TryInto;
+use std::str::FromStr;
 use bitcoin::hashes::Hash;
+
+impl TryInto<serde_json::Value> for JsonResponse {
+	type Error = std::io::Error;
+	fn try_into(self) -> Result<serde_json::Value, std::io::Error> { Ok(self.0) }
+}
 
 /// Conversion from `std::io::Error` into `BlockSourceError`.
 impl From<std::io::Error> for BlockSourceError {
@@ -35,6 +41,17 @@ impl TryInto<Block> for BinaryResponse {
 			Err(_) => return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "invalid block data")),
 			Ok(block) => Ok(block),
 		}
+	}
+}
+
+/// Parses binary data as a block hash.
+impl TryInto<BlockHash> for BinaryResponse {
+	type Error = std::io::Error;
+
+	fn try_into(self) -> std::io::Result<BlockHash> {
+		BlockHash::from_slice(&self.0).map_err(|_|
+			std::io::Error::new(std::io::ErrorKind::InvalidData, "bad block hash length")
+		)
 	}
 }
 
@@ -223,6 +240,46 @@ impl TryInto<Transaction> for JsonResponse {
 				Ok(tx) => Ok(tx),
 			},
 		}
+	}
+}
+
+impl TryInto<BlockHash> for JsonResponse {
+	type Error = std::io::Error;
+
+	fn try_into(self) -> std::io::Result<BlockHash> {
+		match self.0.as_str() {
+			None => Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "expected JSON string")),
+			Some(hex_data) if hex_data.len() != 64 =>
+				Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "invalid hash length")),
+			Some(hex_data) => BlockHash::from_str(hex_data)
+				.map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidData, "invalid hex data")),
+		}
+	}
+}
+
+/// The REST `getutxos` endpoint retuns a whole pile of data we don't care about and one bit we do
+/// - whether the `hit bitmap` field had any entries. Thus we condense the result down into only
+/// that.
+pub(crate) struct GetUtxosResponse {
+	pub(crate) hit_bitmap_nonempty: bool
+}
+
+impl TryInto<GetUtxosResponse> for JsonResponse {
+	type Error = std::io::Error;
+
+	fn try_into(self) -> std::io::Result<GetUtxosResponse> {
+		let bitmap_str =
+			self.0.as_object().ok_or(std::io::Error::new(std::io::ErrorKind::InvalidData, "expected an object"))?
+			.get("bitmap").ok_or(std::io::Error::new(std::io::ErrorKind::InvalidData, "missing bitmap field"))?
+			.as_str().ok_or(std::io::Error::new(std::io::ErrorKind::InvalidData, "bitmap should be an str"))?;
+			let mut hit_bitmap_nonempty = false;
+			for c in bitmap_str.chars() {
+				if c < '0' || c > '9' {
+					return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "invalid byte"));
+				}
+				if c > '0' { hit_bitmap_nonempty = true; }
+			}
+			Ok(GetUtxosResponse { hit_bitmap_nonempty })
 	}
 }
 

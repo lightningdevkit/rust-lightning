@@ -254,7 +254,7 @@ pub struct P2PGossipSync<G: Deref<Target=NetworkGraph<L>>, U: Deref, L: Deref>
 where U::Target: UtxoLookup, L::Target: Logger
 {
 	network_graph: G,
-	utxo_lookup: Option<U>,
+	utxo_lookup: RwLock<Option<U>>,
 	#[cfg(feature = "std")]
 	full_syncs_requested: AtomicUsize,
 	pending_events: Mutex<Vec<MessageSendEvent>>,
@@ -273,7 +273,7 @@ where U::Target: UtxoLookup, L::Target: Logger
 			network_graph,
 			#[cfg(feature = "std")]
 			full_syncs_requested: AtomicUsize::new(0),
-			utxo_lookup,
+			utxo_lookup: RwLock::new(utxo_lookup),
 			pending_events: Mutex::new(vec![]),
 			logger,
 		}
@@ -282,8 +282,8 @@ where U::Target: UtxoLookup, L::Target: Logger
 	/// Adds a provider used to check new announcements. Does not affect
 	/// existing announcements unless they are updated.
 	/// Add, update or remove the provider would replace the current one.
-	pub fn add_utxo_lookup(&mut self, utxo_lookup: Option<U>) {
-		self.utxo_lookup = utxo_lookup;
+	pub fn add_utxo_lookup(&self, utxo_lookup: Option<U>) {
+		*self.utxo_lookup.write().unwrap() = utxo_lookup;
 	}
 
 	/// Gets a reference to the underlying [`NetworkGraph`] which was provided in
@@ -443,7 +443,7 @@ where U::Target: UtxoLookup, L::Target: Logger
 	}
 
 	fn handle_channel_announcement(&self, msg: &msgs::ChannelAnnouncement) -> Result<bool, LightningError> {
-		self.network_graph.update_channel_from_announcement(msg, &self.utxo_lookup)?;
+		self.network_graph.update_channel_from_announcement(msg, &*self.utxo_lookup.read().unwrap())?;
 		Ok(msg.contents.excess_data.len() <= MAX_EXCESS_BYTES_FOR_RELAY)
 	}
 
