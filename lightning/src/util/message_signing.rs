@@ -21,7 +21,7 @@
 //! <https://api.lightning.community/#signmessage>
 
 use crate::prelude::*;
-use crate::util::zbase32;
+use crate::util::base32;
 use bitcoin::hashes::{sha256d, Hash};
 use bitcoin::secp256k1::ecdsa::{RecoverableSignature, RecoveryId};
 use bitcoin::secp256k1::{Error, Message, PublicKey, Secp256k1, SecretKey};
@@ -58,7 +58,7 @@ pub fn sign(msg: &[u8], sk: &SecretKey) -> Result<String, Error> {
     let msg_hash = sha256d::Hash::hash(&[LN_MESSAGE_PREFIX, msg].concat());
 
     let sig = secp_ctx.sign_ecdsa_recoverable(&Message::from_slice(&msg_hash)?, sk);
-    Ok(zbase32::encode(&sigrec_encode(sig)))
+    Ok(base32::Alphabet::ZBase32.encode(&sigrec_encode(sig)))
 }
 
 /// Recovers the PublicKey of the signer of the message given the message and the signature.
@@ -66,7 +66,7 @@ pub fn recover_pk(msg: &[u8], sig: &str) ->  Result<PublicKey, Error> {
     let secp_ctx = Secp256k1::verification_only();
     let msg_hash = sha256d::Hash::hash(&[LN_MESSAGE_PREFIX, msg].concat());
 
-    match zbase32::decode(&sig) {
+    match base32::Alphabet::ZBase32.decode(&sig) {
         Ok(sig_rec) => {
             match sigrec_decode(sig_rec) {
                 Ok(sig) => secp_ctx.recover_ecdsa(&Message::from_slice(&msg_hash)?, &sig),
