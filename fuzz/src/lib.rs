@@ -29,5 +29,6 @@ pub mod refund_deser;
 pub mod router;
 pub mod zbase32;
 pub mod onion_hop_data;
+pub mod base32;
 
 pub mod msg_targets;

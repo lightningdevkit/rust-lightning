@@ -14,6 +14,7 @@ void router_run(const unsigned char* data, size_t data_len);
 void zbase32_run(const unsigned char* data, size_t data_len);
 void indexedmap_run(const unsigned char* data, size_t data_len);
 void onion_hop_data_run(const unsigned char* data, size_t data_len);
+void base32_run(const unsigned char* data, size_t data_len);
 void msg_accept_channel_run(const unsigned char* data, size_t data_len);
 void msg_announcement_signatures_run(const unsigned char* data, size_t data_len);
 void msg_channel_reestablish_run(const unsigned char* data, size_t data_len);
