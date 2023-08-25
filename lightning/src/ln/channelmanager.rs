@@ -10582,7 +10582,7 @@ pub mod bench {
 	use bitcoin::hashes::sha256::Hash as Sha256;
 	use bitcoin::{Block, BlockHeader, PackedLockTime, Transaction, TxMerkleNode, TxOut};
 
-	use crate::sync::{Arc, Mutex};
+	use crate::sync::{Arc, Mutex, RwLock};
 
 	use criterion::Criterion;
 
@@ -10619,7 +10619,7 @@ pub mod bench {
 		let tx_broadcaster = test_utils::TestBroadcaster::new(network);
 		let fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: Mutex::new(253) };
 		let logger_a = test_utils::TestLogger::with_id("node a".to_owned());
-		let scorer = Mutex::new(test_utils::TestScorer::new());
+		let scorer = RwLock::new(test_utils::TestScorer::new());
 		let router = test_utils::TestRouter::new(Arc::new(NetworkGraph::new(network, &logger_a)), &scorer);
 
 		let mut config: UserConfig = Default::default();

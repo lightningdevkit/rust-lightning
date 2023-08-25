@@ -10,7 +10,7 @@
 //! Utilities for scoring payment channels.
 //!
 //! [`ProbabilisticScorer`] may be given to [`find_route`] to score payment channels during path
-//! finding when a custom [`Score`] implementation is not needed.
+//! finding when a custom [`ScoreLookUp`] implementation is not needed.
 //!
 //! # Example
 //!
@@ -65,12 +65,12 @@ use crate::util::time::Time;
 
 use crate::prelude::*;
 use core::{cmp, fmt};
-use core::cell::{RefCell, RefMut};
+use core::cell::{RefCell, RefMut, Ref};
 use core::convert::TryInto;
 use core::ops::{Deref, DerefMut};
 use core::time::Duration;
 use crate::io::{self, Read};
-use crate::sync::{Mutex, MutexGuard};
+use crate::sync::{Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 /// We define Score ever-so-slightly differently based on whether we are being built for C bindings
 /// or not. For users, `LockableScore` must somehow be writeable to disk. For Rust users, this is
@@ -86,8 +86,10 @@ use crate::sync::{Mutex, MutexGuard};
 macro_rules! define_score { ($($supertrait: path)*) => {
 /// An interface used to score payment channels for path finding.
 ///
-///	Scoring is in terms of fees willing to be paid in order to avoid routing through a channel.
-pub trait Score $(: $supertrait)* {
+/// `ScoreLookUp` is used to determine the penalty for a given channel.
+///
+/// Scoring is in terms of fees willing to be paid in order to avoid routing through a channel.
+pub trait ScoreLookUp $(: $supertrait)* {
 	/// A configurable type which should contain various passed-in parameters for configuring the scorer,
 	/// on a per-routefinding-call basis through to the scorer methods,
 	/// which are used to determine the parameters for the suitability of channels for use.
@@ -103,7 +105,10 @@ pub trait Score $(: $supertrait)* {
 	fn channel_penalty_msat(
 		&self, short_channel_id: u64, source: &NodeId, target: &NodeId, usage: ChannelUsage, score_params: &Self::ScoreParams
 	) -> u64;
+}
 
+/// `ScoreUpdate` is used to update the scorer's internal state after a payment attempt.
+pub trait ScoreUpdate $(: $supertrait)* {
 	/// Handles updating channel penalties after failing to route through a channel.
 	fn payment_path_failed(&mut self, path: &Path, short_channel_id: u64);
 
@@ -117,14 +122,16 @@ pub trait Score $(: $supertrait)* {
 	fn probe_successful(&mut self, path: &Path);
 }
 
-impl<S: Score, T: DerefMut<Target=S> $(+ $supertrait)*> Score for T {
-	type ScoreParams = S::ScoreParams;
+impl<SP: Sized, S: ScoreLookUp<ScoreParams = SP>, T: Deref<Target=S> $(+ $supertrait)*> ScoreLookUp for T {
+	type ScoreParams = SP;
 	fn channel_penalty_msat(
 		&self, short_channel_id: u64, source: &NodeId, target: &NodeId, usage: ChannelUsage, score_params: &Self::ScoreParams
 	) -> u64 {
 		self.deref().channel_penalty_msat(short_channel_id, source, target, usage, score_params)
 	}
+}
 
+impl<S: ScoreUpdate, T: DerefMut<Target=S> $(+ $supertrait)*> ScoreUpdate for T {
 	fn payment_path_failed(&mut self, path: &Path, short_channel_id: u64) {
 		self.deref_mut().payment_path_failed(path, short_channel_id)
 	}
@@ -145,26 +152,35 @@ impl<S: Score, T: DerefMut<Target=S> $(+ $supertrait)*> Score for T {
 
 #[cfg(c_bindings)]
 define_score!(Writeable);
+
 #[cfg(not(c_bindings))]
 define_score!();
 
 /// A scorer that is accessed under a lock.
 ///
-/// Needed so that calls to [`Score::channel_penalty_msat`] in [`find_route`] can be made while
-/// having shared ownership of a scorer but without requiring internal locking in [`Score`]
+/// Needed so that calls to [`ScoreLookUp::channel_penalty_msat`] in [`find_route`] can be made while
+/// having shared ownership of a scorer but without requiring internal locking in [`ScoreUpdate`]
 /// implementations. Internal locking would be detrimental to route finding performance and could
-/// result in [`Score::channel_penalty_msat`] returning a different value for the same channel.
+/// result in [`ScoreLookUp::channel_penalty_msat`] returning a different value for the same channel.
 ///
 /// [`find_route`]: crate::routing::router::find_route
 pub trait LockableScore<'a> {
-	/// The [`Score`] type.
-	type Score: 'a + Score;
+	/// The [`ScoreUpdate`] type.
+	type ScoreUpdate: 'a + ScoreUpdate;
+	/// The [`ScoreLookUp`] type.
+	type ScoreLookUp: 'a + ScoreLookUp;
 
-	/// The locked [`Score`] type.
-	type Locked: DerefMut<Target = Self::Score> + Sized;
+	/// The write locked [`ScoreUpdate`] type.
+	type WriteLocked: DerefMut<Target = Self::ScoreUpdate> + Sized;
 
-	/// Returns the locked scorer.
-	fn lock(&'a self) -> Self::Locked;
+	/// The read locked [`ScoreLookUp`] type.
+	type ReadLocked: Deref<Target = Self::ScoreLookUp> + Sized;
+
+	/// Returns read locked scorer.
+	fn read_lock(&'a self) -> Self::ReadLocked;
+
+	/// Returns write locked scorer.
+	fn write_lock(&'a self) -> Self::WriteLocked;
 }
 
 /// Refers to a scorer that is accessible under lock and also writeable to disk
@@ -176,89 +192,138 @@ pub trait WriteableScore<'a>: LockableScore<'a> + Writeable {}
 #[cfg(not(c_bindings))]
 impl<'a, T> WriteableScore<'a> for T where T: LockableScore<'a> + Writeable {}
 #[cfg(not(c_bindings))]
-impl<'a, T: 'a + Score> LockableScore<'a> for Mutex<T> {
-	type Score = T;
-	type Locked = MutexGuard<'a, T>;
+impl<'a, T: 'a + ScoreLookUp + ScoreUpdate> LockableScore<'a> for Mutex<T> {
+	type ScoreUpdate = T;
+	type ScoreLookUp = T;
 
-	fn lock(&'a self) -> Self::Locked {
+	type WriteLocked = MutexGuard<'a, Self::ScoreUpdate>;
+	type ReadLocked = MutexGuard<'a, Self::ScoreLookUp>;
+
+	fn read_lock(&'a self) -> Self::ReadLocked {
+		Mutex::lock(self).unwrap()
+	}
+
+	fn write_lock(&'a self) -> Self::WriteLocked {
 		Mutex::lock(self).unwrap()
 	}
 }
 
 #[cfg(not(c_bindings))]
-impl<'a, T: 'a + Score> LockableScore<'a> for RefCell<T> {
-	type Score = T;
-	type Locked = RefMut<'a, T>;
+impl<'a, T: 'a + ScoreUpdate + ScoreLookUp> LockableScore<'a> for RefCell<T> {
+	type ScoreUpdate = T;
+	type ScoreLookUp = T;
 
-	fn lock(&'a self) -> Self::Locked {
+	type WriteLocked = RefMut<'a, Self::ScoreUpdate>;
+	type ReadLocked = Ref<'a, Self::ScoreLookUp>;
+
+	fn write_lock(&'a self) -> Self::WriteLocked {
 		self.borrow_mut()
+	}
+
+	fn read_lock(&'a self) -> Self::ReadLocked {
+		self.borrow()
+	}
+}
+
+#[cfg(not(c_bindings))]
+impl<'a, SP:Sized,  T: 'a + ScoreUpdate + ScoreLookUp<ScoreParams = SP>> LockableScore<'a> for RwLock<T> {
+	type ScoreUpdate = T;
+	type ScoreLookUp = T;
+
+	type WriteLocked = RwLockWriteGuard<'a, Self::ScoreLookUp>;
+	type ReadLocked = RwLockReadGuard<'a, Self::ScoreUpdate>;
+
+	fn read_lock(&'a self) -> Self::ReadLocked {
+		RwLock::read(self).unwrap()
+	}
+
+	fn write_lock(&'a self) -> Self::WriteLocked {
+		RwLock::write(self).unwrap()
 	}
 }
 
 #[cfg(c_bindings)]
 /// A concrete implementation of [`LockableScore`] which supports multi-threading.
-pub struct MultiThreadedLockableScore<T: Score> {
-	score: Mutex<T>,
+pub struct MultiThreadedLockableScore<T: ScoreLookUp + ScoreUpdate> {
+	score: RwLock<T>,
 }
 
 #[cfg(c_bindings)]
-impl<'a, T: 'a + Score> LockableScore<'a> for MultiThreadedLockableScore<T> {
-	type Score = T;
-	type Locked = MultiThreadedScoreLock<'a, T>;
+impl<'a, SP:Sized, T: 'a + ScoreLookUp<ScoreParams = SP> + ScoreUpdate> LockableScore<'a> for MultiThreadedLockableScore<T> {
+	type ScoreUpdate = T;
+	type ScoreLookUp = T;
+	type WriteLocked = MultiThreadedScoreLockWrite<'a, Self::ScoreUpdate>;
+	type ReadLocked = MultiThreadedScoreLockRead<'a, Self::ScoreLookUp>;
 
-	fn lock(&'a self) -> Self::Locked {
-		MultiThreadedScoreLock(Mutex::lock(&self.score).unwrap())
+	fn read_lock(&'a self) -> Self::ReadLocked {
+		MultiThreadedScoreLockRead(self.score.read().unwrap())
+	}
+
+	fn write_lock(&'a self) -> Self::WriteLocked {
+		MultiThreadedScoreLockWrite(self.score.write().unwrap())
 	}
 }
 
 #[cfg(c_bindings)]
-impl<T: Score> Writeable for MultiThreadedLockableScore<T> {
+impl<T: ScoreUpdate + ScoreLookUp> Writeable for MultiThreadedLockableScore<T> {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
-		self.lock().write(writer)
+		self.score.read().unwrap().write(writer)
 	}
 }
 
 #[cfg(c_bindings)]
-impl<'a, T: 'a + Score> WriteableScore<'a> for MultiThreadedLockableScore<T> {}
+impl<'a, T: 'a + ScoreUpdate + ScoreLookUp> WriteableScore<'a> for MultiThreadedLockableScore<T> {}
 
 #[cfg(c_bindings)]
-impl<T: Score> MultiThreadedLockableScore<T> {
+impl<T: ScoreLookUp + ScoreUpdate> MultiThreadedLockableScore<T> {
 	/// Creates a new [`MultiThreadedLockableScore`] given an underlying [`Score`].
 	pub fn new(score: T) -> Self {
-		MultiThreadedLockableScore { score: Mutex::new(score) }
+		MultiThreadedLockableScore { score: RwLock::new(score) }
 	}
 }
 
 #[cfg(c_bindings)]
 /// A locked `MultiThreadedLockableScore`.
-pub struct MultiThreadedScoreLock<'a, T: Score>(MutexGuard<'a, T>);
+pub struct MultiThreadedScoreLockRead<'a, T: ScoreLookUp>(RwLockReadGuard<'a, T>);
 
 #[cfg(c_bindings)]
-impl<'a, T: 'a + Score> Writeable for MultiThreadedScoreLock<'a, T> {
+/// A locked `MultiThreadedLockableScore`.
+pub struct MultiThreadedScoreLockWrite<'a, T: ScoreUpdate>(RwLockWriteGuard<'a, T>);
+
+#[cfg(c_bindings)]
+impl<'a, T: 'a + ScoreLookUp> Deref for MultiThreadedScoreLockRead<'a, T> {
+	type Target = T;
+
+	fn deref(&self) -> &Self::Target {
+		self.0.deref()
+	}
+}
+
+#[cfg(c_bindings)]
+impl<'a, T: 'a + ScoreUpdate> Writeable for MultiThreadedScoreLockWrite<'a, T> {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		self.0.write(writer)
 	}
 }
 
 #[cfg(c_bindings)]
-impl<'a, T: 'a + Score> DerefMut for MultiThreadedScoreLock<'a, T> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        self.0.deref_mut()
-    }
+impl<'a, T: 'a + ScoreUpdate> Deref for MultiThreadedScoreLockWrite<'a, T> {
+	type Target = T;
+
+	fn deref(&self) -> &Self::Target {
+		self.0.deref()
+	}
 }
 
 #[cfg(c_bindings)]
-impl<'a, T: 'a + Score> Deref for MultiThreadedScoreLock<'a, T> {
-	type Target = T;
-
-    fn deref(&self) -> &Self::Target {
-        self.0.deref()
-    }
+impl<'a, T: 'a + ScoreUpdate> DerefMut for MultiThreadedScoreLockWrite<'a, T> {
+	fn deref_mut(&mut self) -> &mut Self::Target {
+		self.0.deref_mut()
+	}
 }
 
 
-
-/// Proposed use of a channel passed as a parameter to [`Score::channel_penalty_msat`].
+/// Proposed use of a channel passed as a parameter to [`ScoreLookUp::channel_penalty_msat`].
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ChannelUsage {
 	/// The amount to send through the channel, denominated in millisatoshis.
@@ -273,7 +338,7 @@ pub struct ChannelUsage {
 }
 
 #[derive(Clone)]
-/// [`Score`] implementation that uses a fixed penalty.
+/// [`ScoreLookUp`] implementation that uses a fixed penalty.
 pub struct FixedPenaltyScorer {
 	penalty_msat: u64,
 }
@@ -285,12 +350,14 @@ impl FixedPenaltyScorer {
 	}
 }
 
-impl Score for FixedPenaltyScorer {
+impl ScoreLookUp for FixedPenaltyScorer {
 	type ScoreParams = ();
 	fn channel_penalty_msat(&self, _: u64, _: &NodeId, _: &NodeId, _: ChannelUsage, _score_params: &Self::ScoreParams) -> u64 {
 		self.penalty_msat
 	}
+}
 
+impl ScoreUpdate for FixedPenaltyScorer {
 	fn payment_path_failed(&mut self, _path: &Path, _short_channel_id: u64) {}
 
 	fn payment_path_successful(&mut self, _path: &Path) {}
@@ -323,7 +390,7 @@ use crate::util::time::Eternity;
 #[cfg(feature = "no-std")]
 type ConfiguredTime = Eternity;
 
-/// [`Score`] implementation using channel success probability distributions.
+/// [`ScoreLookUp`] implementation using channel success probability distributions.
 ///
 /// Channels are tracked with upper and lower liquidity bounds - when an HTLC fails at a channel,
 /// we learn that the upper-bound on the available liquidity is lower than the amount of the HTLC.
@@ -361,7 +428,7 @@ type ConfiguredTime = Eternity;
 /// [`historical_liquidity_penalty_amount_multiplier_msat`]: ProbabilisticScoringFeeParameters::historical_liquidity_penalty_amount_multiplier_msat
 pub type ProbabilisticScorer<G, L> = ProbabilisticScorerUsingTime::<G, L, ConfiguredTime>;
 
-/// Probabilistic [`Score`] implementation.
+/// Probabilistic [`ScoreLookUp`] implementation.
 ///
 /// This is not exported to bindings users generally all users should use the [`ProbabilisticScorer`] type alias.
 pub struct ProbabilisticScorerUsingTime<G: Deref<Target = NetworkGraph<L>>, L: Deref, T: Time>
@@ -1118,7 +1185,7 @@ impl<L: DerefMut<Target = u64>, BRT: DerefMut<Target = HistoricalBucketRangeTrac
 	}
 }
 
-impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, T: Time> Score for ProbabilisticScorerUsingTime<G, L, T> where L::Target: Logger {
+impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, T: Time> ScoreLookUp for ProbabilisticScorerUsingTime<G, L, T> where L::Target: Logger {
 	type ScoreParams = ProbabilisticScoringFeeParameters;
 	fn channel_penalty_msat(
 		&self, short_channel_id: u64, source: &NodeId, target: &NodeId, usage: ChannelUsage, score_params: &ProbabilisticScoringFeeParameters
@@ -1161,7 +1228,9 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, T: Time> Score for Probabilis
 			.saturating_add(anti_probing_penalty_msat)
 			.saturating_add(base_penalty_msat)
 	}
+}
 
+impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, T: Time> ScoreUpdate for ProbabilisticScorerUsingTime<G, L, T> where L::Target: Logger {
 	fn payment_path_failed(&mut self, path: &Path, short_channel_id: u64) {
 		let amount_msat = path.final_value_msat();
 		log_trace!(self.logger, "Scoring path through to SCID {} as having failed at {} msat", short_channel_id, amount_msat);
@@ -1800,7 +1869,7 @@ mod tests {
 	use crate::ln::msgs::{ChannelAnnouncement, ChannelUpdate, UnsignedChannelAnnouncement, UnsignedChannelUpdate};
 	use crate::routing::gossip::{EffectiveCapacity, NetworkGraph, NodeId};
 	use crate::routing::router::{BlindedTail, Path, RouteHop};
-	use crate::routing::scoring::{ChannelUsage, Score};
+	use crate::routing::scoring::{ChannelUsage, ScoreLookUp, ScoreUpdate};
 	use crate::util::ser::{ReadableArgs, Writeable};
 	use crate::util::test_utils::{self, TestLogger};
 

@@ -1516,7 +1516,7 @@ mod tests {
 	use crate::ln::outbound_payment::{OutboundPayments, Retry, RetryableSendFailure};
 	use crate::routing::gossip::NetworkGraph;
 	use crate::routing::router::{InFlightHtlcs, Path, PaymentParameters, Route, RouteHop, RouteParameters};
-	use crate::sync::{Arc, Mutex};
+	use crate::sync::{Arc, Mutex, RwLock};
 	use crate::util::errors::APIError;
 	use crate::util::test_utils;
 
@@ -1555,7 +1555,7 @@ mod tests {
 		let outbound_payments = OutboundPayments::new();
 		let logger = test_utils::TestLogger::new();
 		let network_graph = Arc::new(NetworkGraph::new(Network::Testnet, &logger));
-		let scorer = Mutex::new(test_utils::TestScorer::new());
+		let scorer = RwLock::new(test_utils::TestScorer::new());
 		let router = test_utils::TestRouter::new(network_graph, &scorer);
 		let secp_ctx = Secp256k1::new();
 		let keys_manager = test_utils::TestKeysInterface::new(&[0; 32], Network::Testnet);
@@ -1602,7 +1602,7 @@ mod tests {
 		let outbound_payments = OutboundPayments::new();
 		let logger = test_utils::TestLogger::new();
 		let network_graph = Arc::new(NetworkGraph::new(Network::Testnet, &logger));
-		let scorer = Mutex::new(test_utils::TestScorer::new());
+		let scorer = RwLock::new(test_utils::TestScorer::new());
 		let router = test_utils::TestRouter::new(network_graph, &scorer);
 		let secp_ctx = Secp256k1::new();
 		let keys_manager = test_utils::TestKeysInterface::new(&[0; 32], Network::Testnet);
@@ -1644,7 +1644,7 @@ mod tests {
 		let outbound_payments = OutboundPayments::new();
 		let logger = test_utils::TestLogger::new();
 		let network_graph = Arc::new(NetworkGraph::new(Network::Testnet, &logger));
-		let scorer = Mutex::new(test_utils::TestScorer::new());
+		let scorer = RwLock::new(test_utils::TestScorer::new());
 		let router = test_utils::TestRouter::new(network_graph, &scorer);
 		let secp_ctx = Secp256k1::new();
 		let keys_manager = test_utils::TestKeysInterface::new(&[0; 32], Network::Testnet);

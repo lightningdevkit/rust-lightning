@@ -34,7 +34,7 @@ use lightning::ln::peer_handler::APeerManager;
 use lightning::routing::gossip::{NetworkGraph, P2PGossipSync};
 use lightning::routing::utxo::UtxoLookup;
 use lightning::routing::router::Router;
-use lightning::routing::scoring::{Score, WriteableScore};
+use lightning::routing::scoring::{ScoreUpdate, WriteableScore};
 use lightning::util::logger::Logger;
 use lightning::util::persist::Persister;
 #[cfg(feature = "std")]
@@ -241,23 +241,27 @@ fn handle_network_graph_update<L: Deref>(
 fn update_scorer<'a, S: 'static + Deref<Target = SC> + Send + Sync, SC: 'a + WriteableScore<'a>>(
 	scorer: &'a S, event: &Event
 ) -> bool {
-	let mut score = scorer.lock();
 	match event {
 		Event::PaymentPathFailed { ref path, short_channel_id: Some(scid), .. } => {
+			let mut score = scorer.write_lock();
 			score.payment_path_failed(path, *scid);
 		},
 		Event::PaymentPathFailed { ref path, payment_failed_permanently: true, .. } => {
 			// Reached if the destination explicitly failed it back. We treat this as a successful probe
 			// because the payment made it all the way to the destination with sufficient liquidity.
+			let mut score = scorer.write_lock();
 			score.probe_successful(path);
 		},
 		Event::PaymentPathSuccessful { path, .. } => {
+			let mut score = scorer.write_lock();
 			score.payment_path_successful(path);
 		},
 		Event::ProbeSuccessful { path, .. } => {
+			let mut score = scorer.write_lock();
 			score.probe_successful(path);
 		},
 		Event::ProbeFailed { path, short_channel_id: Some(scid), .. } => {
+			let mut score = scorer.write_lock();
 			score.probe_failed(path, *scid);
 		},
 		_ => return false,
@@ -858,7 +862,7 @@ mod tests {
 	use lightning::ln::peer_handler::{PeerManager, MessageHandler, SocketDescriptor, IgnoringMessageHandler};
 	use lightning::routing::gossip::{NetworkGraph, NodeId, P2PGossipSync};
 	use lightning::routing::router::{DefaultRouter, Path, RouteHop};
-	use lightning::routing::scoring::{ChannelUsage, Score};
+	use lightning::routing::scoring::{ChannelUsage, ScoreUpdate, ScoreLookUp};
 	use lightning::util::config::UserConfig;
 	use lightning::util::ser::Writeable;
 	use lightning::util::test_utils;
@@ -1033,12 +1037,14 @@ mod tests {
 		fn write<W: lightning::util::ser::Writer>(&self, _: &mut W) -> Result<(), lightning::io::Error> { Ok(()) }
 	}
 
-	impl Score for TestScorer {
+	impl ScoreLookUp for TestScorer {
 		type ScoreParams = ();
 		fn channel_penalty_msat(
 			&self, _short_channel_id: u64, _source: &NodeId, _target: &NodeId, _usage: ChannelUsage, _score_params: &Self::ScoreParams
 		) -> u64 { unimplemented!(); }
+	}
 
+	impl ScoreUpdate for TestScorer {
 		fn payment_path_failed(&mut self, actual_path: &Path, actual_short_channel_id: u64) {
 			if let Some(expectations) = &mut self.event_expectations {
 				match expectations.pop_front().unwrap() {
