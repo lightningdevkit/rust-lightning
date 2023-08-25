@@ -17,7 +17,7 @@ use crate::chain::chaininterface::LowerBoundedFeeEstimator;
 use crate::chain::channelmonitor;
 use crate::chain::channelmonitor::{CLTV_CLAIM_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS, ANTI_REORG_DELAY};
 use crate::chain::transaction::OutPoint;
-use crate::sign::{ChannelSigner, EcdsaChannelSigner, EntropySource, SignerProvider};
+use crate::sign::{EcdsaChannelSigner, EntropySource, SignerProvider};
 use crate::events::{Event, MessageSendEvent, MessageSendEventsProvider, PathFailure, PaymentPurpose, ClosureReason, HTLCDestination, PaymentFailureReason};
 use crate::ln::{PaymentPreimage, PaymentSecret, PaymentHash};
 use crate::ln::channel::{commitment_tx_base_weight, COMMITMENT_TX_WEIGHT_PER_HTLC, CONCURRENT_INBOUND_HTLC_FEE_BUFFER, FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE, MIN_AFFORDABLE_HTLC_COUNT, get_holder_selected_channel_reserve_satoshis, OutboundV1Channel, InboundV1Channel};
@@ -30,7 +30,6 @@ use crate::routing::router::{Path, PaymentParameters, Route, RouteHop, get_route
 use crate::ln::features::{ChannelFeatures, ChannelTypeFeatures, NodeFeatures};
 use crate::ln::msgs;
 use crate::ln::msgs::{ChannelMessageHandler, RoutingMessageHandler, ErrorAction};
-use crate::util::enforcing_trait_impls::EnforcingSigner;
 use crate::util::test_utils::{self, WatchtowerPersister};
 use crate::util::errors::APIError;
 use crate::util::ser::{Writeable, ReadableArgs};
@@ -8350,7 +8349,7 @@ fn test_update_err_monitor_lockdown() {
 	let watchtower = {
 		let new_monitor = {
 			let monitor = nodes[0].chain_monitor.chain_monitor.get_monitor(outpoint).unwrap();
-			let new_monitor = <(BlockHash, channelmonitor::ChannelMonitor<EnforcingSigner>)>::read(
+			let new_monitor = <(BlockHash, channelmonitor::ChannelMonitor<test_utils::TestChannelSigner>)>::read(
 					&mut io::Cursor::new(&monitor.encode()), (nodes[0].keys_manager, nodes[0].keys_manager)).unwrap().1;
 			assert!(new_monitor == *monitor);
 			new_monitor
@@ -8420,7 +8419,7 @@ fn test_concurrent_monitor_claim() {
 	let watchtower_alice = {
 		let new_monitor = {
 			let monitor = nodes[0].chain_monitor.chain_monitor.get_monitor(outpoint).unwrap();
-			let new_monitor = <(BlockHash, channelmonitor::ChannelMonitor<EnforcingSigner>)>::read(
+			let new_monitor = <(BlockHash, channelmonitor::ChannelMonitor<test_utils::TestChannelSigner>)>::read(
 					&mut io::Cursor::new(&monitor.encode()), (nodes[0].keys_manager, nodes[0].keys_manager)).unwrap().1;
 			assert!(new_monitor == *monitor);
 			new_monitor
@@ -8451,7 +8450,7 @@ fn test_concurrent_monitor_claim() {
 	let watchtower_bob = {
 		let new_monitor = {
 			let monitor = nodes[0].chain_monitor.chain_monitor.get_monitor(outpoint).unwrap();
-			let new_monitor = <(BlockHash, channelmonitor::ChannelMonitor<EnforcingSigner>)>::read(
+			let new_monitor = <(BlockHash, channelmonitor::ChannelMonitor<test_utils::TestChannelSigner>)>::read(
 					&mut io::Cursor::new(&monitor.encode()), (nodes[0].keys_manager, nodes[0].keys_manager)).unwrap().1;
 			assert!(new_monitor == *monitor);
 			new_monitor

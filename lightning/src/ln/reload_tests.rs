@@ -18,7 +18,6 @@ use crate::events::{ClosureReason, Event, HTLCDestination, MessageSendEvent, Mes
 use crate::ln::channelmanager::{ChannelManager, ChannelManagerReadArgs, PaymentId, RecipientOnionFields};
 use crate::ln::msgs;
 use crate::ln::msgs::{ChannelMessageHandler, RoutingMessageHandler, ErrorAction};
-use crate::util::enforcing_trait_impls::EnforcingSigner;
 use crate::util::test_utils;
 use crate::util::errors::APIError;
 use crate::util::ser::{Writeable, ReadableArgs};
@@ -399,7 +398,7 @@ fn test_manager_serialize_deserialize_inconsistent_monitor() {
 	let mut node_0_stale_monitors = Vec::new();
 	for serialized in node_0_stale_monitors_serialized.iter() {
 		let mut read = &serialized[..];
-		let (_, monitor) = <(BlockHash, ChannelMonitor<EnforcingSigner>)>::read(&mut read, (keys_manager, keys_manager)).unwrap();
+		let (_, monitor) = <(BlockHash, ChannelMonitor<test_utils::TestChannelSigner>)>::read(&mut read, (keys_manager, keys_manager)).unwrap();
 		assert!(read.is_empty());
 		node_0_stale_monitors.push(monitor);
 	}
@@ -407,7 +406,7 @@ fn test_manager_serialize_deserialize_inconsistent_monitor() {
 	let mut node_0_monitors = Vec::new();
 	for serialized in node_0_monitors_serialized.iter() {
 		let mut read = &serialized[..];
-		let (_, monitor) = <(BlockHash, ChannelMonitor<EnforcingSigner>)>::read(&mut read, (keys_manager, keys_manager)).unwrap();
+		let (_, monitor) = <(BlockHash, ChannelMonitor<test_utils::TestChannelSigner>)>::read(&mut read, (keys_manager, keys_manager)).unwrap();
 		assert!(read.is_empty());
 		node_0_monitors.push(monitor);
 	}

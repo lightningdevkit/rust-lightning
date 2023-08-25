@@ -62,6 +62,7 @@ use core::cell::RefCell;
 use core::ops::DerefMut;
 use core::time::Duration;
 use crate::sync::{Mutex, Arc};
+#[cfg(test)] use crate::sync::MutexGuard;
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use core::mem;
 use bitcoin::bech32::u5;
@@ -195,10 +196,10 @@ impl SignerProvider for OnlyReadsKeysInterface {
 }
 
 pub struct TestChainMonitor<'a> {
-	pub added_monitors: Mutex<Vec<(OutPoint, channelmonitor::ChannelMonitor<EnforcingSigner>)>>,
+	pub added_monitors: Mutex<Vec<(OutPoint, channelmonitor::ChannelMonitor<TestChannelSigner>)>>,
 	pub monitor_updates: Mutex<HashMap<[u8; 32], Vec<channelmonitor::ChannelMonitorUpdate>>>,
 	pub latest_monitor_update_id: Mutex<HashMap<[u8; 32], (OutPoint, u64, MonitorUpdateId)>>,
-	pub chain_monitor: chainmonitor::ChainMonitor<EnforcingSigner, &'a TestChainSource, &'a chaininterface::BroadcasterInterface, &'a TestFeeEstimator, &'a TestLogger, &'a chainmonitor::Persist<EnforcingSigner>>,
+	pub chain_monitor: chainmonitor::ChainMonitor<TestChannelSigner, &'a TestChainSource, &'a chaininterface::BroadcasterInterface, &'a TestFeeEstimator, &'a TestLogger, &'a chainmonitor::Persist<TestChannelSigner>>,
 	pub keys_manager: &'a TestKeysInterface,
 	/// If this is set to Some(), the next update_channel call (not watch_channel) must be a
 	/// ChannelForceClosed event for the given channel_id with should_broadcast set to the given
@@ -206,7 +207,7 @@ pub struct TestChainMonitor<'a> {
 	pub expect_channel_force_closed: Mutex<Option<([u8; 32], bool)>>,
 }
 impl<'a> TestChainMonitor<'a> {
-	pub fn new(chain_source: Option<&'a TestChainSource>, broadcaster: &'a chaininterface::BroadcasterInterface, logger: &'a TestLogger, fee_estimator: &'a TestFeeEstimator, persister: &'a chainmonitor::Persist<EnforcingSigner>, keys_manager: &'a TestKeysInterface) -> Self {
+	pub fn new(chain_source: Option<&'a TestChainSource>, broadcaster: &'a chaininterface::BroadcasterInterface, logger: &'a TestLogger, fee_estimator: &'a TestFeeEstimator, persister: &'a chainmonitor::Persist<TestChannelSigner>, keys_manager: &'a TestKeysInterface) -> Self {
 		Self {
 			added_monitors: Mutex::new(Vec::new()),
 			monitor_updates: Mutex::new(HashMap::new()),
@@ -222,13 +223,13 @@ impl<'a> TestChainMonitor<'a> {
 		self.chain_monitor.channel_monitor_updated(outpoint, latest_update).unwrap();
 	}
 }
-impl<'a> chain::Watch<EnforcingSigner> for TestChainMonitor<'a> {
-	fn watch_channel(&self, funding_txo: OutPoint, monitor: channelmonitor::ChannelMonitor<EnforcingSigner>) -> chain::ChannelMonitorUpdateStatus {
+impl<'a> chain::Watch<TestChannelSigner> for TestChainMonitor<'a> {
+	fn watch_channel(&self, funding_txo: OutPoint, monitor: channelmonitor::ChannelMonitor<TestChannelSigner>) -> chain::ChannelMonitorUpdateStatus {
 		// At every point where we get a monitor update, we should be able to send a useful monitor
 		// to a watchtower and disk...
 		let mut w = TestVecWriter(Vec::new());
 		monitor.write(&mut w).unwrap();
-		let new_monitor = <(BlockHash, channelmonitor::ChannelMonitor<EnforcingSigner>)>::read(
+		let new_monitor = <(BlockHash, channelmonitor::ChannelMonitor<TestChannelSigner>)>::read(
 			&mut io::Cursor::new(&w.0), (self.keys_manager, self.keys_manager)).unwrap().1;
 		assert!(new_monitor == monitor);
 		self.latest_monitor_update_id.lock().unwrap().insert(funding_txo.to_channel_id(),
@@ -262,7 +263,7 @@ impl<'a> chain::Watch<EnforcingSigner> for TestChainMonitor<'a> {
 		let monitor = self.chain_monitor.get_monitor(funding_txo).unwrap();
 		w.0.clear();
 		monitor.write(&mut w).unwrap();
-		let new_monitor = <(BlockHash, channelmonitor::ChannelMonitor<EnforcingSigner>)>::read(
+		let new_monitor = <(BlockHash, channelmonitor::ChannelMonitor<TestChannelSigner>)>::read(
 			&mut io::Cursor::new(&w.0), (self.keys_manager, self.keys_manager)).unwrap().1;
 		assert!(new_monitor == *monitor);
 		self.added_monitors.lock().unwrap().push((funding_txo, new_monitor));
@@ -977,16 +978,16 @@ impl NodeSigner for TestKeysInterface {
 }
 
 impl SignerProvider for TestKeysInterface {
-	type Signer = EnforcingSigner;
+	type Signer = TestChannelSigner;
 
 	fn generate_channel_keys_id(&self, inbound: bool, channel_value_satoshis: u64, user_channel_id: u128) -> [u8; 32] {
 		self.backing.generate_channel_keys_id(inbound, channel_value_satoshis, user_channel_id)
 	}
 
-	fn derive_channel_signer(&self, channel_value_satoshis: u64, channel_keys_id: [u8; 32]) -> EnforcingSigner {
+	fn derive_channel_signer(&self, channel_value_satoshis: u64, channel_keys_id: [u8; 32]) -> TestChannelSigner {
 		let keys = self.backing.derive_channel_signer(channel_value_satoshis, channel_keys_id);
 		let state = self.make_enforcement_state_cell(keys.commitment_seed);
-		EnforcingSigner::new_with_revoked(keys, state, self.disable_revocation_policy_check)
+		TestChannelSigner::new_with_revoked(keys, state, self.disable_revocation_policy_check)
 	}
 
 	fn read_chan_signer(&self, buffer: &[u8]) -> Result<Self::Signer, msgs::DecodeError> {
@@ -995,7 +996,7 @@ impl SignerProvider for TestKeysInterface {
 		let inner: InMemorySigner = ReadableArgs::read(&mut reader, self)?;
 		let state = self.make_enforcement_state_cell(inner.commitment_seed);
 
-		Ok(EnforcingSigner::new_with_revoked(
+		Ok(TestChannelSigner::new_with_revoked(
 			inner,
 			state,
 			self.disable_revocation_policy_check
@@ -1036,10 +1037,10 @@ impl TestKeysInterface {
 		self
 	}
 
-	pub fn derive_channel_keys(&self, channel_value_satoshis: u64, id: &[u8; 32]) -> EnforcingSigner {
+	pub fn derive_channel_keys(&self, channel_value_satoshis: u64, id: &[u8; 32]) -> TestChannelSigner {
 		let keys = self.backing.derive_channel_keys(channel_value_satoshis, id);
 		let state = self.make_enforcement_state_cell(keys.commitment_seed);
-		EnforcingSigner::new_with_revoked(keys, state, self.disable_revocation_policy_check)
+		TestChannelSigner::new_with_revoked(keys, state, self.disable_revocation_policy_check)
 	}
 
 	fn make_enforcement_state_cell(&self, commitment_seed: [u8; 32]) -> Arc<Mutex<EnforcementState>> {
@@ -1052,6 +1053,110 @@ impl TestKeysInterface {
 		Arc::clone(cell)
 	}
 }
+
+pub struct TestChannelSigner {
+	backing: EnforcingSigner,
+}
+
+impl TestChannelSigner {
+	pub fn new_with_revoked(inner: InMemorySigner, state: Arc<Mutex<EnforcementState>>, disable_revocation_policy_check: bool) -> Self {
+		Self {
+			backing: EnforcingSigner::new_with_revoked(inner, state, disable_revocation_policy_check),
+		}
+	}
+
+	#[cfg(test)]
+	pub fn get_enforcement_state(&self) -> MutexGuard<EnforcementState> {
+		self.backing.get_enforcement_state()
+	}
+}
+
+impl PartialEq for TestChannelSigner {
+	fn eq(&self, o: &Self) -> bool {
+		self.backing == o.backing
+	}
+}
+
+impl sign::ChannelSigner for TestChannelSigner {
+	fn get_per_commitment_point(&self, idx: u64, secp_ctx: &Secp256k1<bitcoin::secp256k1::All>) -> PublicKey {
+		self.backing.get_per_commitment_point(idx, secp_ctx)
+	}
+	
+  fn release_commitment_secret(&self, idx: u64) -> [u8; 32] {
+		self.backing.release_commitment_secret(idx)
+	}
+	
+  fn validate_holder_commitment(&self, holder_tx: &crate::ln::chan_utils::HolderCommitmentTransaction, preimages: Vec<crate::ln::PaymentPreimage>) -> Result<(), ()> {
+		self.backing.validate_holder_commitment(holder_tx, preimages)
+	}
+	
+  fn pubkeys(&self) -> &crate::ln::chan_utils::ChannelPublicKeys {
+		self.backing.pubkeys()
+	}
+	
+  fn channel_keys_id(&self) -> [u8; 32] {
+		self.backing.channel_keys_id()
+	}
+	
+  fn provide_channel_parameters(&mut self, channel_parameters: &crate::ln::chan_utils::ChannelTransactionParameters) {
+		self.backing.provide_channel_parameters(channel_parameters)
+	}
+}
+
+impl sign::EcdsaChannelSigner for TestChannelSigner {
+	fn sign_counterparty_commitment(&self, commitment_tx: &crate::ln::chan_utils::CommitmentTransaction, preimages: Vec<crate::ln::PaymentPreimage>, secp_ctx: &Secp256k1<bitcoin::secp256k1::All>) -> Result<(Signature, Vec<Signature>), ()> {
+		self.backing.sign_counterparty_commitment(commitment_tx, preimages, secp_ctx)
+	}
+	
+	fn validate_counterparty_revocation(&self, idx: u64, secret: &SecretKey) -> Result<(), ()> {
+		self.backing.validate_counterparty_revocation(idx, secret)
+	}
+	
+	fn sign_holder_commitment_and_htlcs(&self, commitment_tx: &crate::ln::chan_utils::HolderCommitmentTransaction, secp_ctx: &Secp256k1<bitcoin::secp256k1::All>) -> Result<(Signature, Vec<Signature>), ()> {
+		self.backing.sign_holder_commitment_and_htlcs(commitment_tx, secp_ctx)
+	}
+	
+	#[cfg(any(test,feature = "unsafe_revoked_tx_signing"))]
+	fn unsafe_sign_holder_commitment_and_htlcs(&self, commitment_tx: &crate::ln::chan_utils::HolderCommitmentTransaction, secp_ctx: &Secp256k1<bitcoin::secp256k1::All>) -> Result<(Signature, Vec<Signature>), ()> {
+		self.backing.unsafe_sign_holder_commitment_and_htlcs(commitment_tx, secp_ctx)
+	}
+
+	fn sign_justice_revoked_output(&self, justice_tx: &Transaction, input: usize, amount: u64, per_commitment_key: &SecretKey, secp_ctx: &Secp256k1<bitcoin::secp256k1::All>) -> Result<Signature, ()> {
+		self.backing.sign_justice_revoked_output(justice_tx, input, amount, per_commitment_key, secp_ctx)
+	}
+	
+	fn sign_justice_revoked_htlc(&self, justice_tx: &Transaction, input: usize, amount: u64, per_commitment_key: &SecretKey, htlc: &crate::ln::chan_utils::HTLCOutputInCommitment, secp_ctx: &Secp256k1<bitcoin::secp256k1::All>) -> Result<Signature, ()> {
+		self.backing.sign_justice_revoked_htlc(justice_tx, input, amount, per_commitment_key, htlc, secp_ctx)
+	}
+	
+	fn sign_holder_htlc_transaction(&self, htlc_tx: &Transaction, input: usize, htlc_descriptor: &crate::events::bump_transaction::HTLCDescriptor, secp_ctx: &Secp256k1<bitcoin::secp256k1::All>) -> Result<Signature, ()> {
+		self.backing.sign_holder_htlc_transaction(htlc_tx, input, htlc_descriptor, secp_ctx)
+	}
+	
+	fn sign_counterparty_htlc_transaction(&self, htlc_tx: &Transaction, input: usize, amount: u64, per_commitment_point: &PublicKey, htlc: &crate::ln::chan_utils::HTLCOutputInCommitment, secp_ctx: &Secp256k1<bitcoin::secp256k1::All>) -> Result<Signature, ()> {
+		self.backing.sign_counterparty_htlc_transaction(htlc_tx, input, amount, per_commitment_point, htlc, secp_ctx)
+	}
+	
+	fn sign_closing_transaction(&self, closing_tx: &crate::ln::chan_utils::ClosingTransaction, secp_ctx: &Secp256k1<bitcoin::secp256k1::All>) -> Result<Signature, ()> {
+		self.backing.sign_closing_transaction(closing_tx, secp_ctx)
+	}
+	
+	fn sign_holder_anchor_input(&self, anchor_tx: &Transaction, input: usize, secp_ctx: &Secp256k1<bitcoin::secp256k1::All>) -> Result<Signature, ()>{
+		self.backing.sign_holder_anchor_input(anchor_tx, input, secp_ctx)
+	}
+	
+	fn sign_channel_announcement_with_funding_key(&self, msg: &msgs::UnsignedChannelAnnouncement, secp_ctx: &Secp256k1<bitcoin::secp256k1::All>) -> Result<Signature, ()> {
+		self.backing.sign_channel_announcement_with_funding_key(msg, secp_ctx)
+	}
+}
+
+impl Writeable for TestChannelSigner {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+		self.backing.write(writer)
+	}
+}
+
+impl sign::WriteableEcdsaChannelSigner for TestChannelSigner {}
 
 pub(crate) fn panicking() -> bool {
 	#[cfg(feature = "std")]

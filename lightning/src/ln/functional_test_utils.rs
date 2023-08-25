@@ -23,10 +23,9 @@ use crate::routing::router::{self, PaymentParameters, Route};
 use crate::ln::features::InitFeatures;
 use crate::ln::msgs;
 use crate::ln::msgs::{ChannelMessageHandler,RoutingMessageHandler};
-use crate::util::enforcing_trait_impls::EnforcingSigner;
 use crate::util::scid_utils;
 use crate::util::test_utils;
-use crate::util::test_utils::{panicking, TestChainMonitor, TestScorer, TestKeysInterface};
+use crate::util::test_utils::{panicking, TestChainMonitor, TestScorer, TestKeysInterface, TestChannelSigner};
 use crate::util::errors::APIError;
 use crate::util::config::{UserConfig, MaxDustHTLCExposure};
 use crate::util::ser::{ReadableArgs, Writeable};
@@ -520,7 +519,7 @@ impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
 				for outpoint in self.chain_monitor.chain_monitor.list_monitors() {
 					let mut w = test_utils::TestVecWriter(Vec::new());
 					self.chain_monitor.chain_monitor.get_monitor(outpoint).unwrap().write(&mut w).unwrap();
-					let (_, deserialized_monitor) = <(BlockHash, ChannelMonitor<EnforcingSigner>)>::read(
+					let (_, deserialized_monitor) = <(BlockHash, ChannelMonitor<TestChannelSigner>)>::read(
 						&mut io::Cursor::new(&w.0), (self.keys_manager, self.keys_manager)).unwrap();
 					deserialized_monitors.push(deserialized_monitor);
 				}
@@ -952,7 +951,7 @@ pub fn _reload_node<'a, 'b, 'c>(node: &'a Node<'a, 'b, 'c>, default_config: User
 	let mut monitors_read = Vec::with_capacity(monitors_encoded.len());
 	for encoded in monitors_encoded {
 		let mut monitor_read = &encoded[..];
-		let (_, monitor) = <(BlockHash, ChannelMonitor<EnforcingSigner>)>
+		let (_, monitor) = <(BlockHash, ChannelMonitor<TestChannelSigner>)>
 			::read(&mut monitor_read, (node.keys_manager, node.keys_manager)).unwrap();
 		assert!(monitor_read.is_empty());
 		monitors_read.push(monitor);
@@ -2646,7 +2645,7 @@ pub fn create_node_cfgs<'a>(node_count: usize, chanmon_cfgs: &'a Vec<TestChanMon
 	create_node_cfgs_with_persisters(node_count, chanmon_cfgs, chanmon_cfgs.iter().map(|c| &c.persister).collect())
 }
 
-pub fn create_node_cfgs_with_persisters<'a>(node_count: usize, chanmon_cfgs: &'a Vec<TestChanMonCfg>, persisters: Vec<&'a impl Persist<EnforcingSigner>>) -> Vec<NodeCfg<'a>> {
+pub fn create_node_cfgs_with_persisters<'a>(node_count: usize, chanmon_cfgs: &'a Vec<TestChanMonCfg>, persisters: Vec<&'a impl Persist<TestChannelSigner>>) -> Vec<NodeCfg<'a>> {
 	let mut nodes = Vec::new();
 
 	for i in 0..node_count {
