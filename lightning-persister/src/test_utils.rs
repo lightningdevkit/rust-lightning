@@ -1,9 +1,13 @@
+use crate::fs_store::FilesystemStore;
+use crate::sqlite_store::SqliteStore;
+
 use lightning::util::persist::{KVStore, KVSTORE_NAMESPACE_KEY_MAX_LEN, read_channel_monitors};
 use lightning::ln::functional_test_utils::{connect_block, create_announced_chan_between_nodes,
 	create_chanmon_cfgs, create_dummy_block, create_network, create_node_cfgs, create_node_chanmgrs,
 	send_payment};
+
 use lightning::chain::channelmonitor::CLOSED_CHANNEL_UPDATE_ID;
-use lightning::util::test_utils;
+use lightning::util::test_utils::{self, TestStore};
 use lightning::{check_closed_broadcast, check_closed_event, check_added_monitors};
 use lightning::events::ClosureReason;
 
@@ -11,6 +15,7 @@ use rand::distributions::Alphanumeric;
 use rand::{thread_rng, Rng};
 
 use std::panic::RefUnwindSafe;
+use std::path::PathBuf;
 
 pub fn random_storage_path() -> PathBuf {
 	let mut temp_path = std::env::temp_dir();
@@ -130,4 +135,113 @@ pub(crate) fn do_test_store<K: KVStore>(store_0: &K, store_1: &K) {
 
 	// Make sure everything is persisted as expected after close.
 	check_persisted_data!(CLOSED_CHANNEL_UPDATE_ID);
+}
+
+// A `KVStore` impl for testing purposes that wraps all our `KVStore`s and asserts their synchronicity.
+pub(crate) struct TestSyncStore {
+	test_store: TestStore,
+	fs_store: FilesystemStore,
+	sqlite_store: SqliteStore,
+}
+
+impl TestSyncStore {
+	pub(crate) fn new(dest_dir: PathBuf) -> Self {
+		let fs_store = FilesystemStore::new(dest_dir.clone());
+		let sqlite_store = SqliteStore::new(dest_dir,
+			Some("test_sync_db".to_string()), Some("test_sync_table".to_string())).unwrap();
+		let test_store = TestStore::new(false);
+		Self { fs_store, sqlite_store, test_store }
+	}
+}
+
+impl KVStore for TestSyncStore {
+	fn read(&self, namespace: &str, sub_namespace: &str, key: &str) -> std::io::Result<Vec<u8>> {
+		let fs_res = self.fs_store.read(namespace, sub_namespace, key);
+		let sqlite_res = self.sqlite_store.read(namespace, sub_namespace, key);
+		let test_res = self.test_store.read(namespace, sub_namespace, key);
+
+		match fs_res {
+			Ok(read) => {
+				assert_eq!(read, sqlite_res.unwrap());
+				assert_eq!(read, test_res.unwrap());
+				Ok(read)
+			}
+			Err(e) => {
+				assert!(sqlite_res.is_err());
+				assert_eq!(e.kind(), unsafe { sqlite_res.unwrap_err_unchecked().kind() });
+				assert!(test_res.is_err());
+				assert_eq!(e.kind(), unsafe { test_res.unwrap_err_unchecked().kind() });
+				Err(e)
+			}
+		}
+	}
+
+	fn write(&self, namespace: &str, sub_namespace: &str, key: &str, buf: &[u8]) -> std::io::Result<()> {
+		let fs_res = self.fs_store.write(namespace, sub_namespace, key, buf);
+		let sqlite_res = self.sqlite_store.write(namespace, sub_namespace, key, buf);
+		let test_res = self.test_store.write(namespace, sub_namespace, key, buf);
+
+		assert!(self.list(namespace, sub_namespace).unwrap().contains(&key.to_string()));
+
+		match fs_res {
+			Ok(()) => {
+				assert!(sqlite_res.is_ok());
+				assert!(test_res.is_ok());
+				Ok(())
+			}
+			Err(e) => {
+				assert!(sqlite_res.is_err());
+				assert!(test_res.is_err());
+				Err(e)
+			}
+		}
+	}
+
+	fn remove(&self, namespace: &str, sub_namespace: &str, key: &str, lazy: bool) -> std::io::Result<()> {
+		let fs_res = self.fs_store.remove(namespace, sub_namespace, key, lazy);
+		let sqlite_res = self.sqlite_store.remove(namespace, sub_namespace, key, lazy);
+		let test_res = self.test_store.remove(namespace, sub_namespace, key, lazy);
+
+		assert!(!self.list(namespace, sub_namespace).unwrap().contains(&key.to_string()));
+
+		match fs_res {
+			Ok(()) => {
+				assert!(sqlite_res.is_ok());
+				assert!(test_res.is_ok());
+				Ok(())
+			}
+			Err(e) => {
+				assert!(sqlite_res.is_err());
+				assert!(test_res.is_err());
+				Err(e)
+			}
+		}
+	}
+
+	fn list(&self, namespace: &str, sub_namespace: &str) -> std::io::Result<Vec<String>> {
+		let fs_res = self.fs_store.list(namespace, sub_namespace);
+		let sqlite_res = self.sqlite_store.list(namespace, sub_namespace);
+		let test_res = self.test_store.list(namespace, sub_namespace);
+
+		match fs_res {
+			Ok(mut list) => {
+				list.sort();
+
+				let mut sqlite_list = sqlite_res.unwrap();
+				sqlite_list.sort();
+				assert_eq!(list, sqlite_list);
+
+				let mut test_list = test_res.unwrap();
+				test_list.sort();
+				assert_eq!(list, test_list);
+
+				Ok(list)
+			}
+			Err(e) => {
+				assert!(sqlite_res.is_err());
+				assert!(test_res.is_err());
+				Err(e)
+			}
+		}
+	}
 }
