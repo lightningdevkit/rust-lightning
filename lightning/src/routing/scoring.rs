@@ -1195,13 +1195,15 @@ impl<L: DerefMut<Target = u64>, BRT: DerefMut<Target = HistoricalBucketRangeTrac
 		self.update_history_buckets();
 	}
 
-	fn update_history_buckets(&mut self) {
+	fn decay_history_buckets(&mut self) {
 		let half_lives = self.now.duration_since(*self.last_updated).as_secs()
 			.checked_div(self.decay_params.historical_no_updates_half_life.as_secs())
 			.map(|v| v.try_into().unwrap_or(u32::max_value())).unwrap_or(u32::max_value());
 		self.min_liquidity_offset_history.time_decay_data(half_lives);
 		self.max_liquidity_offset_history.time_decay_data(half_lives);
+	}
 
+	fn update_history_buckets(&mut self) {
 		let min_liquidity_offset_msat = self.decayed_offset_msat(*self.min_liquidity_offset_msat);
 		self.min_liquidity_offset_history.track_datapoint(
 			min_liquidity_offset_msat, self.capacity_msat
@@ -1220,6 +1222,8 @@ impl<L: DerefMut<Target = u64>, BRT: DerefMut<Target = HistoricalBucketRangeTrac
 		} else {
 			self.decayed_offset_msat(*self.max_liquidity_offset_msat)
 		};
+
+		self.decay_history_buckets();
 		*self.last_updated = self.now;
 	}
 
@@ -1231,6 +1235,8 @@ impl<L: DerefMut<Target = u64>, BRT: DerefMut<Target = HistoricalBucketRangeTrac
 		} else {
 			self.decayed_offset_msat(*self.min_liquidity_offset_msat)
 		};
+
+		self.decay_history_buckets();
 		*self.last_updated = self.now;
 	}
 }
@@ -2887,7 +2893,7 @@ mod tests {
 			effective_capacity: EffectiveCapacity::Total { capacity_msat: 1_024, htlc_maximum_msat: 1_024 },
 		};
 		scorer.payment_path_failed(&payment_path_for_amount(1), 42);
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 409);
+		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 2048);
 
 		let usage = ChannelUsage {
 			amount_msat: 1,
