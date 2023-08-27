@@ -1997,7 +1997,7 @@ macro_rules! expect_payment_forwarded {
 				outbound_amount_forwarded_msat: _
 			} => {
 				assert_eq!(fee_earned_msat, $expected_fee);
-				if fee_earned_msat.is_some() {
+				if !$upstream_force_closed {
 					// Is the event prev_channel_id in one of the channels between the two nodes?
 					assert!($node.node.list_channels().iter().any(|x| x.counterparty.node_id == $prev_node.node.get_our_node_id() && x.channel_id == prev_channel_id.unwrap()));
 				}
