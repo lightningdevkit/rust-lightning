@@ -13,6 +13,7 @@ use bitcoin::hash_types::BlockHash;
 
 use lightning::blinded_path::{BlindedHop, BlindedPath};
 use lightning::chain::transaction::OutPoint;
+use lightning::ln::ChannelId;
 use lightning::ln::channelmanager::{self, ChannelDetails, ChannelCounterparty};
 use lightning::ln::features::{BlindedHopFeatures, Bolt12InvoiceFeatures};
 use lightning::ln::msgs;
@@ -210,7 +211,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 						let rnid = node_pks.iter().skip(u16::from_be_bytes(get_slice!(2).try_into().unwrap()) as usize % node_pks.len()).next().unwrap();
 						let capacity = u64::from_be_bytes(get_slice!(8).try_into().unwrap());
 						$first_hops_vec.push(ChannelDetails {
-							channel_id: [0; 32],
+							channel_id: ChannelId::new_zero(),
 							counterparty: ChannelCounterparty {
 								node_id: *rnid,
 								features: channelmanager::provided_init_features(&UserConfig::default()),

@@ -2658,6 +2658,7 @@ mod tests {
 	use crate::routing::test_utils::{add_channel, add_or_update_node, build_graph, build_line_graph, id_to_feature_flags, get_nodes, update_channel};
 	use crate::chain::transaction::OutPoint;
 	use crate::sign::EntropySource;
+	use crate::ln::ChannelId;
 	use crate::ln::features::{BlindedHopFeatures, Bolt12InvoiceFeatures, ChannelFeatures, InitFeatures, NodeFeatures};
 	use crate::ln::msgs::{ErrorAction, LightningError, UnsignedChannelUpdate, MAX_VALUE_MSAT};
 	use crate::ln::channelmanager;
@@ -2690,7 +2691,7 @@ mod tests {
 	fn get_channel_details(short_channel_id: Option<u64>, node_id: PublicKey,
 			features: InitFeatures, outbound_capacity_msat: u64) -> channelmanager::ChannelDetails {
 		channelmanager::ChannelDetails {
-			channel_id: [0; 32],
+			channel_id: ChannelId::new_zero(),
 			counterparty: channelmanager::ChannelCounterparty {
 				features,
 				node_id,
@@ -6847,6 +6848,7 @@ pub(crate) mod bench_utils {
 	use crate::chain::transaction::OutPoint;
 	use crate::routing::scoring::ScoreUpdate;
 	use crate::sign::{EntropySource, KeysManager};
+	use crate::ln::ChannelId;
 	use crate::ln::channelmanager::{self, ChannelCounterparty, ChannelDetails};
 	use crate::ln::features::Bolt11InvoiceFeatures;
 	use crate::routing::gossip::NetworkGraph;
@@ -6900,7 +6902,7 @@ pub(crate) mod bench_utils {
 	#[inline]
 	pub(crate) fn first_hop(node_id: PublicKey) -> ChannelDetails {
 		ChannelDetails {
-			channel_id: [0; 32],
+			channel_id: ChannelId::new_zero(),
 			counterparty: ChannelCounterparty {
 				features: channelmanager::provided_init_features(&UserConfig::default()),
 				node_id,

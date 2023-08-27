@@ -31,6 +31,7 @@ use bitcoin::{secp256k1, Witness};
 use bitcoin::blockdata::script::Script;
 use bitcoin::hash_types::{Txid, BlockHash};
 
+use crate::ln::{ChannelId, PaymentPreimage, PaymentHash, PaymentSecret};
 use crate::ln::features::{ChannelFeatures, ChannelTypeFeatures, InitFeatures, NodeFeatures};
 use crate::ln::onion_utils;
 use crate::onion_message;
@@ -44,8 +45,6 @@ use crate::io_extras::read_to_end;
 use crate::events::{MessageSendEventsProvider, OnionMessageProvider};
 use crate::util::logger;
 use crate::util::ser::{LengthReadable, Readable, ReadableArgs, Writeable, Writer, WithoutLength, FixedLengthReader, HighZeroBytesDroppedBigSize, Hostname, TransactionU16LenLimited, BigSize};
-
-use crate::ln::{PaymentPreimage, PaymentHash, PaymentSecret};
 
 use crate::routing::gossip::{NodeAlias, NodeId};
 
@@ -111,7 +110,7 @@ pub struct ErrorMessage {
 	///
 	/// All-0s indicates a general error unrelated to a specific channel, after which all channels
 	/// with the sending peer should be closed.
-	pub channel_id: [u8; 32],
+	pub channel_id: ChannelId,
 	/// A possibly human-readable error description.
 	///
 	/// The string should be sanitized before it is used (e.g., emitted to logs or printed to
@@ -128,7 +127,7 @@ pub struct WarningMessage {
 	/// The channel ID involved in the warning.
 	///
 	/// All-0s indicates a warning unrelated to a specific channel.
-	pub channel_id: [u8; 32],
+	pub channel_id: ChannelId,
 	/// A possibly human-readable warning description.
 	///
 	/// The string should be sanitized before it is used (e.g. emitted to logs or printed to
@@ -171,7 +170,7 @@ pub struct OpenChannel {
 	/// The genesis hash of the blockchain where the channel is to be opened
 	pub chain_hash: BlockHash,
 	/// A temporary channel ID, until the funding outpoint is announced
-	pub temporary_channel_id: [u8; 32],
+	pub temporary_channel_id: ChannelId,
 	/// The channel value
 	pub funding_satoshis: u64,
 	/// The amount to push to the counterparty as part of the open, in milli-satoshi
@@ -225,7 +224,7 @@ pub struct OpenChannelV2 {
 	/// The genesis hash of the blockchain where the channel is to be opened
 	pub chain_hash: BlockHash,
 	/// A temporary channel ID derived using a zeroed out value for the channel acceptor's revocation basepoint
-	pub temporary_channel_id: [u8; 32],
+	pub temporary_channel_id: ChannelId,
 	/// The feerate for the funding transaction set by the channel initiator
 	pub funding_feerate_sat_per_1000_weight: u32,
 	/// The feerate for the commitment transaction set by the channel initiator
@@ -282,7 +281,7 @@ pub struct OpenChannelV2 {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AcceptChannel {
 	/// A temporary channel ID, until the funding outpoint is announced
-	pub temporary_channel_id: [u8; 32],
+	pub temporary_channel_id: ChannelId,
 	/// The threshold below which outputs on transactions broadcast by sender will be omitted
 	pub dust_limit_satoshis: u64,
 	/// The maximum inbound HTLC value in flight towards sender, in milli-satoshi
@@ -330,7 +329,7 @@ pub struct AcceptChannel {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AcceptChannelV2 {
 	/// The same `temporary_channel_id` received from the initiator's `open_channel2` message.
-	pub temporary_channel_id: [u8; 32],
+	pub temporary_channel_id: ChannelId,
 	/// Part of the channel value contributed by the channel acceptor
 	pub funding_satoshis: u64,
 	/// The threshold below which outputs on transactions broadcast by the channel acceptor will be
@@ -383,7 +382,7 @@ pub struct AcceptChannelV2 {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FundingCreated {
 	/// A temporary channel ID, until the funding is established
-	pub temporary_channel_id: [u8; 32],
+	pub temporary_channel_id: ChannelId,
 	/// The funding transaction ID
 	pub funding_txid: Txid,
 	/// The specific output index funding this channel
@@ -406,7 +405,7 @@ pub struct FundingCreated {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FundingSigned {
 	/// The channel ID
-	pub channel_id: [u8; 32],
+	pub channel_id: ChannelId,
 	/// The signature of the channel acceptor (fundee) on the initial commitment transaction
 	pub signature: Signature,
 	#[cfg(taproot)]
@@ -420,7 +419,7 @@ pub struct FundingSigned {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ChannelReady {
 	/// The channel ID
-	pub channel_id: [u8; 32],
+	pub channel_id: ChannelId,
 	/// The per-commitment point of the second commitment transaction
 	pub next_per_commitment_point: PublicKey,
 	/// If set, provides a `short_channel_id` alias for this channel.
@@ -436,7 +435,7 @@ pub struct ChannelReady {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TxAddInput {
 	/// The channel ID
-	pub channel_id: [u8; 32],
+	pub channel_id: ChannelId,
 	/// A randomly chosen unique identifier for this input, which is even for initiators and odd for
 	/// non-initiators.
 	pub serial_id: u64,
@@ -455,7 +454,7 @@ pub struct TxAddInput {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TxAddOutput {
 	/// The channel ID
-	pub channel_id: [u8; 32],
+	pub channel_id: ChannelId,
 	/// A randomly chosen unique identifier for this output, which is even for initiators and odd for
 	/// non-initiators.
 	pub serial_id: u64,
@@ -471,7 +470,7 @@ pub struct TxAddOutput {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TxRemoveInput {
 	/// The channel ID
-	pub channel_id: [u8; 32],
+	pub channel_id: ChannelId,
 	/// The serial ID of the input to be removed
 	pub serial_id: u64,
 }
@@ -482,7 +481,7 @@ pub struct TxRemoveInput {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TxRemoveOutput {
 	/// The channel ID
-	pub channel_id: [u8; 32],
+	pub channel_id: ChannelId,
 	/// The serial ID of the output to be removed
 	pub serial_id: u64,
 }
@@ -494,7 +493,7 @@ pub struct TxRemoveOutput {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TxComplete {
 	/// The channel ID
-	pub channel_id: [u8; 32],
+	pub channel_id: ChannelId,
 }
 
 /// A tx_signatures message containing the sender's signatures for a transaction constructed with
@@ -504,7 +503,7 @@ pub struct TxComplete {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TxSignatures {
 	/// The channel ID
-	pub channel_id: [u8; 32],
+	pub channel_id: ChannelId,
 	/// The TXID
 	pub tx_hash: Txid,
 	/// The list of witnesses
@@ -518,7 +517,7 @@ pub struct TxSignatures {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TxInitRbf {
 	/// The channel ID
-	pub channel_id: [u8; 32],
+	pub channel_id: ChannelId,
 	/// The locktime of the transaction
 	pub locktime: u32,
 	/// The feerate of the transaction
@@ -535,7 +534,7 @@ pub struct TxInitRbf {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TxAckRbf {
 	/// The channel ID
-	pub channel_id: [u8; 32],
+	pub channel_id: ChannelId,
 	/// The number of satoshis the sender will contribute to or, if negative, remove from
 	/// (e.g. splice-out) the funding output of the transaction
 	pub funding_output_contribution: Option<i64>,
@@ -547,7 +546,7 @@ pub struct TxAckRbf {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TxAbort {
 	/// The channel ID
-	pub channel_id: [u8; 32],
+	pub channel_id: ChannelId,
 	/// Message data
 	pub data: Vec<u8>,
 }
@@ -558,7 +557,7 @@ pub struct TxAbort {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Shutdown {
 	/// The channel ID
-	pub channel_id: [u8; 32],
+	pub channel_id: ChannelId,
 	/// The destination of this peer's funds on closing.
 	///
 	/// Must be in one of these forms: P2PKH, P2SH, P2WPKH, P2WSH, P2TR.
@@ -585,7 +584,7 @@ pub struct ClosingSignedFeeRange {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ClosingSigned {
 	/// The channel ID
-	pub channel_id: [u8; 32],
+	pub channel_id: ChannelId,
 	/// The proposed total fee for the closing transaction
 	pub fee_satoshis: u64,
 	/// A signature on the closing transaction
@@ -601,7 +600,7 @@ pub struct ClosingSigned {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UpdateAddHTLC {
 	/// The channel ID
-	pub channel_id: [u8; 32],
+	pub channel_id: ChannelId,
 	/// The HTLC ID
 	pub htlc_id: u64,
 	/// The HTLC value in milli-satoshi
@@ -634,7 +633,7 @@ pub struct OnionMessage {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UpdateFulfillHTLC {
 	/// The channel ID
-	pub channel_id: [u8; 32],
+	pub channel_id: ChannelId,
 	/// The HTLC ID
 	pub htlc_id: u64,
 	/// The pre-image of the payment hash, allowing HTLC redemption
@@ -647,7 +646,7 @@ pub struct UpdateFulfillHTLC {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UpdateFailHTLC {
 	/// The channel ID
-	pub channel_id: [u8; 32],
+	pub channel_id: ChannelId,
 	/// The HTLC ID
 	pub htlc_id: u64,
 	pub(crate) reason: OnionErrorPacket,
@@ -659,7 +658,7 @@ pub struct UpdateFailHTLC {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UpdateFailMalformedHTLC {
 	/// The channel ID
-	pub channel_id: [u8; 32],
+	pub channel_id: ChannelId,
 	/// The HTLC ID
 	pub htlc_id: u64,
 	pub(crate) sha256_of_onion: [u8; 32],
@@ -673,7 +672,7 @@ pub struct UpdateFailMalformedHTLC {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CommitmentSigned {
 	/// The channel ID
-	pub channel_id: [u8; 32],
+	pub channel_id: ChannelId,
 	/// A signature on the commitment transaction
 	pub signature: Signature,
 	/// Signatures on the HTLC transactions
@@ -689,7 +688,7 @@ pub struct CommitmentSigned {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RevokeAndACK {
 	/// The channel ID
-	pub channel_id: [u8; 32],
+	pub channel_id: ChannelId,
 	/// The secret corresponding to the per-commitment point
 	pub per_commitment_secret: [u8; 32],
 	/// The next sender-broadcast commitment transaction's per-commitment point
@@ -705,7 +704,7 @@ pub struct RevokeAndACK {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UpdateFee {
 	/// The channel ID
-	pub channel_id: [u8; 32],
+	pub channel_id: ChannelId,
 	/// Fee rate per 1000-weight of the transaction
 	pub feerate_per_kw: u32,
 }
@@ -716,7 +715,7 @@ pub struct UpdateFee {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ChannelReestablish {
 	/// The channel ID
-	pub channel_id: [u8; 32],
+	pub channel_id: ChannelId,
 	/// The next commitment number for the sender
 	pub next_local_commitment_number: u64,
 	/// The next commitment number for the recipient
@@ -736,7 +735,7 @@ pub struct ChannelReestablish {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AnnouncementSignatures {
 	/// The channel ID
-	pub channel_id: [u8; 32],
+	pub channel_id: ChannelId,
 	/// The short channel ID
 	pub short_channel_id: u64,
 	/// A signature by the node key
@@ -2476,6 +2475,7 @@ mod tests {
 	use bitcoin::{Transaction, PackedLockTime, TxIn, Script, Sequence, Witness, TxOut};
 	use hex;
 	use crate::ln::{PaymentPreimage, PaymentHash, PaymentSecret};
+	use crate::ln::ChannelId;
 	use crate::ln::features::{ChannelFeatures, ChannelTypeFeatures, InitFeatures, NodeFeatures};
 	use crate::ln::msgs::{self, FinalOnionHopData, OnionErrorPacket};
 	use crate::routing::gossip::{NodeAlias, NodeId};
@@ -2506,7 +2506,7 @@ mod tests {
 		};
 
 		let cr = msgs::ChannelReestablish {
-			channel_id: [4, 0, 0, 0, 0, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 0, 6, 0, 0, 0, 0, 0, 0, 0, 7, 0, 0, 0, 0, 0, 0, 0],
+			channel_id: ChannelId::from_bytes([4, 0, 0, 0, 0, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 0, 6, 0, 0, 0, 0, 0, 0, 0, 7, 0, 0, 0, 0, 0, 0, 0]),
 			next_local_commitment_number: 3,
 			next_remote_commitment_number: 4,
 			your_last_per_commitment_secret: [9;32],
@@ -2535,7 +2535,7 @@ mod tests {
 		};
 
 		let cr = msgs::ChannelReestablish {
-			channel_id: [4, 0, 0, 0, 0, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 0, 6, 0, 0, 0, 0, 0, 0, 0, 7, 0, 0, 0, 0, 0, 0, 0],
+			channel_id: ChannelId::from_bytes([4, 0, 0, 0, 0, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 0, 6, 0, 0, 0, 0, 0, 0, 0, 7, 0, 0, 0, 0, 0, 0, 0]),
 			next_local_commitment_number: 3,
 			next_remote_commitment_number: 4,
 			your_last_per_commitment_secret: [9;32],
@@ -2587,7 +2587,7 @@ mod tests {
 		let sig_1 = get_sig_on!(privkey, secp_ctx, String::from("01010101010101010101010101010101"));
 		let sig_2 = get_sig_on!(privkey, secp_ctx, String::from("02020202020202020202020202020202"));
 		let announcement_signatures = msgs::AnnouncementSignatures {
-			channel_id: [4, 0, 0, 0, 0, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 0, 6, 0, 0, 0, 0, 0, 0, 0, 7, 0, 0, 0, 0, 0, 0, 0],
+			channel_id: ChannelId::from_bytes([4, 0, 0, 0, 0, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 0, 6, 0, 0, 0, 0, 0, 0, 0, 7, 0, 0, 0, 0, 0, 0, 0]),
 			short_channel_id: 2316138423780173,
 			node_signature: sig_1,
 			bitcoin_signature: sig_2,
@@ -2823,7 +2823,7 @@ mod tests {
 		let (_, pubkey_6) = get_keys_from!("0606060606060606060606060606060606060606060606060606060606060606", secp_ctx);
 		let open_channel = msgs::OpenChannel {
 			chain_hash: BlockHash::from_hex("6fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d6190000000000").unwrap(),
-			temporary_channel_id: [2; 32],
+			temporary_channel_id: ChannelId::from_bytes([2; 32]),
 			funding_satoshis: 1311768467284833366,
 			push_msat: 2536655962884945560,
 			dust_limit_satoshis: 3608586615801332854,
@@ -2884,7 +2884,7 @@ mod tests {
 		let (_, pubkey_7) = get_keys_from!("0707070707070707070707070707070707070707070707070707070707070707", secp_ctx);
 		let open_channelv2 = msgs::OpenChannelV2 {
 			chain_hash: BlockHash::from_hex("6fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d6190000000000").unwrap(),
-			temporary_channel_id: [2; 32],
+			temporary_channel_id: ChannelId::from_bytes([2; 32]),
 			funding_feerate_sat_per_1000_weight: 821716,
 			commitment_feerate_sat_per_1000_weight: 821716,
 			funding_satoshis: 1311768467284833366,
@@ -2974,7 +2974,7 @@ mod tests {
 		let (_, pubkey_5) = get_keys_from!("0505050505050505050505050505050505050505050505050505050505050505", secp_ctx);
 		let (_, pubkey_6) = get_keys_from!("0606060606060606060606060606060606060606060606060606060606060606", secp_ctx);
 		let accept_channel = msgs::AcceptChannel {
-			temporary_channel_id: [2; 32],
+			temporary_channel_id: ChannelId::from_bytes([2; 32]),
 			dust_limit_satoshis: 1311768467284833366,
 			max_htlc_value_in_flight_msat: 2536655962884945560,
 			channel_reserve_satoshis: 3608586615801332854,
@@ -3017,7 +3017,7 @@ mod tests {
 		let (_, pubkey_6) = get_keys_from!("0606060606060606060606060606060606060606060606060606060606060606", secp_ctx);
 		let (_, pubkey_7) = get_keys_from!("0707070707070707070707070707070707070707070707070707070707070707", secp_ctx);
 		let accept_channelv2 = msgs::AcceptChannelV2 {
-			temporary_channel_id: [2; 32],
+			temporary_channel_id: ChannelId::from_bytes([2; 32]),
 			funding_satoshis: 1311768467284833366,
 			dust_limit_satoshis: 1311768467284833366,
 			max_htlc_value_in_flight_msat: 2536655962884945560,
@@ -3071,7 +3071,7 @@ mod tests {
 		let (privkey_1, _) = get_keys_from!("0101010101010101010101010101010101010101010101010101010101010101", secp_ctx);
 		let sig_1 = get_sig_on!(privkey_1, secp_ctx, String::from("01010101010101010101010101010101"));
 		let funding_created = msgs::FundingCreated {
-			temporary_channel_id: [2; 32],
+			temporary_channel_id: ChannelId::from_bytes([2; 32]),
 			funding_txid: Txid::from_hex("c2d4449afa8d26140898dd54d3390b057ba2a5afcf03ba29d7dc0d8b9ffe966e").unwrap(),
 			funding_output_index: 255,
 			signature: sig_1,
@@ -3091,7 +3091,7 @@ mod tests {
 		let (privkey_1, _) = get_keys_from!("0101010101010101010101010101010101010101010101010101010101010101", secp_ctx);
 		let sig_1 = get_sig_on!(privkey_1, secp_ctx, String::from("01010101010101010101010101010101"));
 		let funding_signed = msgs::FundingSigned {
-			channel_id: [2; 32],
+			channel_id: ChannelId::from_bytes([2; 32]),
 			signature: sig_1,
 			#[cfg(taproot)]
 			partial_signature_with_nonce: None,
@@ -3106,7 +3106,7 @@ mod tests {
 		let secp_ctx = Secp256k1::new();
 		let (_, pubkey_1,) = get_keys_from!("0101010101010101010101010101010101010101010101010101010101010101", secp_ctx);
 		let channel_ready = msgs::ChannelReady {
-			channel_id: [2; 32],
+			channel_id: ChannelId::from_bytes([2; 32]),
 			next_per_commitment_point: pubkey_1,
 			short_channel_id_alias: None,
 		};
@@ -3118,7 +3118,7 @@ mod tests {
 	#[test]
 	fn encoding_tx_add_input() {
 		let tx_add_input = msgs::TxAddInput {
-			channel_id: [2; 32],
+			channel_id: ChannelId::from_bytes([2; 32]),
 			serial_id: 4886718345,
 			prevtx: TransactionU16LenLimited::new(Transaction {
 				version: 2,
@@ -3153,7 +3153,7 @@ mod tests {
 	#[test]
 	fn encoding_tx_add_output() {
 		let tx_add_output = msgs::TxAddOutput {
-			channel_id: [2; 32],
+			channel_id: ChannelId::from_bytes([2; 32]),
 			serial_id: 4886718345,
 			sats: 4886718345,
 			script: Address::from_str("bc1qxmk834g5marzm227dgqvynd23y2nvt2ztwcw2z").unwrap().script_pubkey(),
@@ -3166,7 +3166,7 @@ mod tests {
 	#[test]
 	fn encoding_tx_remove_input() {
 		let tx_remove_input = msgs::TxRemoveInput {
-			channel_id: [2; 32],
+			channel_id: ChannelId::from_bytes([2; 32]),
 			serial_id: 4886718345,
 		};
 		let encoded_value = tx_remove_input.encode();
@@ -3177,7 +3177,7 @@ mod tests {
 	#[test]
 	fn encoding_tx_remove_output() {
 		let tx_remove_output = msgs::TxRemoveOutput {
-			channel_id: [2; 32],
+			channel_id: ChannelId::from_bytes([2; 32]),
 			serial_id: 4886718345,
 		};
 		let encoded_value = tx_remove_output.encode();
@@ -3188,7 +3188,7 @@ mod tests {
 	#[test]
 	fn encoding_tx_complete() {
 		let tx_complete = msgs::TxComplete {
-			channel_id: [2; 32],
+			channel_id: ChannelId::from_bytes([2; 32]),
 		};
 		let encoded_value = tx_complete.encode();
 		let target_value = hex::decode("0202020202020202020202020202020202020202020202020202020202020202").unwrap();
@@ -3198,7 +3198,7 @@ mod tests {
 	#[test]
 	fn encoding_tx_signatures() {
 		let tx_signatures = msgs::TxSignatures {
-			channel_id: [2; 32],
+			channel_id: ChannelId::from_bytes([2; 32]),
 			tx_hash: Txid::from_hex("c2d4449afa8d26140898dd54d3390b057ba2a5afcf03ba29d7dc0d8b9ffe966e").unwrap(),
 			witnesses: vec![
 				Witness::from_vec(vec![
@@ -3232,7 +3232,7 @@ mod tests {
 
 	fn do_encoding_tx_init_rbf(funding_value_with_hex_target: Option<(i64, &str)>) {
 		let tx_init_rbf = msgs::TxInitRbf {
-			channel_id: [2; 32],
+			channel_id: ChannelId::from_bytes([2; 32]),
 			locktime: 305419896,
 			feerate_sat_per_1000_weight: 20190119,
 			funding_output_contribution: if let Some((value, _)) = funding_value_with_hex_target { Some(value) } else { None },
@@ -3258,7 +3258,7 @@ mod tests {
 
 	fn do_encoding_tx_ack_rbf(funding_value_with_hex_target: Option<(i64, &str)>) {
 		let tx_ack_rbf = msgs::TxAckRbf {
-			channel_id: [2; 32],
+			channel_id: ChannelId::from_bytes([2; 32]),
 			funding_output_contribution: if let Some((value, _)) = funding_value_with_hex_target { Some(value) } else { None },
 		};
 		let encoded_value = tx_ack_rbf.encode();
@@ -3281,7 +3281,7 @@ mod tests {
 	#[test]
 	fn encoding_tx_abort() {
 		let tx_abort = msgs::TxAbort {
-			channel_id: [2; 32],
+			channel_id: ChannelId::from_bytes([2; 32]),
 			data: hex::decode("54686520717569636B2062726F776E20666F78206A756D7073206F76657220746865206C617A7920646F672E").unwrap(),
 		};
 		let encoded_value = tx_abort.encode();
@@ -3294,7 +3294,7 @@ mod tests {
 		let (_, pubkey_1) = get_keys_from!("0101010101010101010101010101010101010101010101010101010101010101", secp_ctx);
 		let script = Builder::new().push_opcode(opcodes::OP_TRUE).into_script();
 		let shutdown = msgs::Shutdown {
-			channel_id: [2; 32],
+			channel_id: ChannelId::from_bytes([2; 32]),
 			scriptpubkey:
 				     if script_type == 1 { Address::p2pkh(&::bitcoin::PublicKey{compressed: true, inner: pubkey_1}, Network::Testnet).script_pubkey() }
 				else if script_type == 2 { Address::p2sh(&script, Network::Testnet).unwrap().script_pubkey() }
@@ -3329,7 +3329,7 @@ mod tests {
 		let (privkey_1, _) = get_keys_from!("0101010101010101010101010101010101010101010101010101010101010101", secp_ctx);
 		let sig_1 = get_sig_on!(privkey_1, secp_ctx, String::from("01010101010101010101010101010101"));
 		let closing_signed = msgs::ClosingSigned {
-			channel_id: [2; 32],
+			channel_id: ChannelId::from_bytes([2; 32]),
 			fee_satoshis: 2316138423780173,
 			signature: sig_1,
 			fee_range: None,
@@ -3340,7 +3340,7 @@ mod tests {
 		assert_eq!(msgs::ClosingSigned::read(&mut Cursor::new(&target_value)).unwrap(), closing_signed);
 
 		let closing_signed_with_range = msgs::ClosingSigned {
-			channel_id: [2; 32],
+			channel_id: ChannelId::from_bytes([2; 32]),
 			fee_satoshis: 2316138423780173,
 			signature: sig_1,
 			fee_range: Some(msgs::ClosingSignedFeeRange {
@@ -3366,7 +3366,7 @@ mod tests {
 			hmac: [2; 32]
 		};
 		let update_add_htlc = msgs::UpdateAddHTLC {
-			channel_id: [2; 32],
+			channel_id: ChannelId::from_bytes([2; 32]),
 			htlc_id: 2316138423780173,
 			amount_msat: 3608586615801332854,
 			payment_hash: PaymentHash([1; 32]),
@@ -3382,7 +3382,7 @@ mod tests {
 	#[test]
 	fn encoding_update_fulfill_htlc() {
 		let update_fulfill_htlc = msgs::UpdateFulfillHTLC {
-			channel_id: [2; 32],
+			channel_id: ChannelId::from_bytes([2; 32]),
 			htlc_id: 2316138423780173,
 			payment_preimage: PaymentPreimage([1; 32]),
 		};
@@ -3397,7 +3397,7 @@ mod tests {
 			data: [1; 32].to_vec(),
 		};
 		let update_fail_htlc = msgs::UpdateFailHTLC {
-			channel_id: [2; 32],
+			channel_id: ChannelId::from_bytes([2; 32]),
 			htlc_id: 2316138423780173,
 			reason
 		};
@@ -3409,7 +3409,7 @@ mod tests {
 	#[test]
 	fn encoding_update_fail_malformed_htlc() {
 		let update_fail_malformed_htlc = msgs::UpdateFailMalformedHTLC {
-			channel_id: [2; 32],
+			channel_id: ChannelId::from_bytes([2; 32]),
 			htlc_id: 2316138423780173,
 			sha256_of_onion: [1; 32],
 			failure_code: 255
@@ -3430,7 +3430,7 @@ mod tests {
 		let sig_3 = get_sig_on!(privkey_3, secp_ctx, String::from("01010101010101010101010101010101"));
 		let sig_4 = get_sig_on!(privkey_4, secp_ctx, String::from("01010101010101010101010101010101"));
 		let commitment_signed = msgs::CommitmentSigned {
-			channel_id: [2; 32],
+			channel_id: ChannelId::from_bytes([2; 32]),
 			signature: sig_1,
 			htlc_signatures: if htlcs { vec![sig_2, sig_3, sig_4] } else { Vec::new() },
 			#[cfg(taproot)]
@@ -3457,7 +3457,7 @@ mod tests {
 		let secp_ctx = Secp256k1::new();
 		let (_, pubkey_1) = get_keys_from!("0101010101010101010101010101010101010101010101010101010101010101", secp_ctx);
 		let raa = msgs::RevokeAndACK {
-			channel_id: [2; 32],
+			channel_id: ChannelId::from_bytes([2; 32]),
 			per_commitment_secret: [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
 			next_per_commitment_point: pubkey_1,
 			#[cfg(taproot)]
@@ -3471,7 +3471,7 @@ mod tests {
 	#[test]
 	fn encoding_update_fee() {
 		let update_fee = msgs::UpdateFee {
-			channel_id: [2; 32],
+			channel_id: ChannelId::from_bytes([2; 32]),
 			feerate_per_kw: 20190119,
 		};
 		let encoded_value = update_fee.encode();
@@ -3518,7 +3518,7 @@ mod tests {
 	#[test]
 	fn encoding_error() {
 		let error = msgs::ErrorMessage {
-			channel_id: [2; 32],
+			channel_id: ChannelId::from_bytes([2; 32]),
 			data: String::from("rust-lightning"),
 		};
 		let encoded_value = error.encode();
@@ -3529,7 +3529,7 @@ mod tests {
 	#[test]
 	fn encoding_warning() {
 		let error = msgs::WarningMessage {
-			channel_id: [2; 32],
+			channel_id: ChannelId::from_bytes([2; 32]),
 			data: String::from("rust-lightning"),
 		};
 		let encoded_value = error.encode();

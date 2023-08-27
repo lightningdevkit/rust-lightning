@@ -16,10 +16,10 @@ use crate::chain::channelmonitor::{ANTI_REORG_DELAY, HTLC_FAIL_BACK_BUFFER, LATE
 use crate::sign::EntropySource;
 use crate::chain::transaction::OutPoint;
 use crate::events::{ClosureReason, Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider, PathFailure, PaymentFailureReason, PaymentPurpose};
-use crate::ln::channel::EXPIRE_PREV_CONFIG_TICKS;
+use crate::ln::channel::{EXPIRE_PREV_CONFIG_TICKS};
 use crate::ln::channelmanager::{BREAKDOWN_TIMEOUT, MPP_TIMEOUT_TICKS, MIN_CLTV_EXPIRY_DELTA, PaymentId, PaymentSendFailure, IDEMPOTENCY_TIMEOUT_TICKS, RecentPaymentDetails, RecipientOnionFields, HTLCForwardInfo, PendingHTLCRouting, PendingAddHTLCInfo};
 use crate::ln::features::Bolt11InvoiceFeatures;
-use crate::ln::{msgs, PaymentSecret, PaymentPreimage};
+use crate::ln::{msgs, ChannelId, PaymentSecret, PaymentPreimage};
 use crate::ln::msgs::ChannelMessageHandler;
 use crate::ln::outbound_payment::Retry;
 use crate::routing::gossip::{EffectiveCapacity, RoutingFees};
@@ -1703,7 +1703,7 @@ fn do_test_intercepted_payment(test: InterceptTest) {
 	};
 
 	// Check for unknown channel id error.
-	let unknown_chan_id_err = nodes[1].node.forward_intercepted_htlc(intercept_id, &[42; 32], nodes[2].node.get_our_node_id(), expected_outbound_amount_msat).unwrap_err();
+	let unknown_chan_id_err = nodes[1].node.forward_intercepted_htlc(intercept_id, &ChannelId::from_bytes([42; 32]), nodes[2].node.get_our_node_id(), expected_outbound_amount_msat).unwrap_err();
 	assert_eq!(unknown_chan_id_err , APIError::ChannelUnavailable  {
 		err: format!("Funded channel with id {} not found for the passed counterparty node_id {}. Channel may still be opening.",
 			log_bytes!([42; 32]), nodes[2].node.get_our_node_id()) });
@@ -1732,7 +1732,7 @@ fn do_test_intercepted_payment(test: InterceptTest) {
 		let unusable_chan_err = nodes[1].node.forward_intercepted_htlc(intercept_id, &temp_chan_id, nodes[2].node.get_our_node_id(), expected_outbound_amount_msat).unwrap_err();
 		assert_eq!(unusable_chan_err , APIError::ChannelUnavailable {
 			err: format!("Funded channel with id {} not found for the passed counterparty node_id {}. Channel may still be opening.",
-				log_bytes!(temp_chan_id), nodes[2].node.get_our_node_id()) });
+				&temp_chan_id, nodes[2].node.get_our_node_id()) });
 		assert_eq!(nodes[1].node.get_and_clear_pending_msg_events().len(), 1);
 
 		// Open the just-in-time channel so the payment can then be forwarded.

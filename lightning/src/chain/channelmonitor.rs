@@ -2642,7 +2642,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 						}
 					} else if !self.holder_tx_signed {
 						log_error!(logger, "WARNING: You have a potentially-unsafe holder commitment transaction available to broadcast");
-						log_error!(logger, "    in channel monitor for channel {}!", log_bytes!(self.funding_info.0.to_channel_id()));
+						log_error!(logger, "    in channel monitor for channel {}!", &self.funding_info.0.to_channel_id());
 						log_error!(logger, "    Read the docs for ChannelMonitor::get_latest_holder_commitment_txn and take manual action!");
 					} else {
 						// If we generated a MonitorEvent::CommitmentTxConfirmed, the ChannelManager
@@ -3389,7 +3389,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				if prevout.txid == self.funding_info.0.txid && prevout.vout == self.funding_info.0.index as u32 {
 					let mut balance_spendable_csv = None;
 					log_info!(logger, "Channel {} closed by funding output spend in txid {}.",
-						log_bytes!(self.funding_info.0.to_channel_id()), txid);
+						&self.funding_info.0.to_channel_id(), txid);
 					self.funding_spend_seen = true;
 					let mut commitment_tx_to_counterparty_output = None;
 					if (tx.input[0].sequence.0 >> 8*3) as u8 == 0x80 && (tx.lock_time.0 >> 8*3) as u8 == 0x20 {
