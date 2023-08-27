@@ -171,19 +171,25 @@ impl_writeable_tlv_based_enum_upgradable!(MonitorEvent,
 );
 
 /// Simple structure sent back by `chain::Watch` when an HTLC from a forward channel is detected on
-/// chain. Used to update the corresponding HTLC in the backward channel. Failing to pass the
-/// preimage claim backward will lead to loss of funds.
+/// chain, or when we failing an HTLC awaiting downstream confirmation to prevent a
+/// backwards channel from going on-chain. Used to update the corresponding HTLC in the backward
+/// channel. Failing to pass the preimage claim backward will lead to loss of funds.
 #[derive(Clone, PartialEq, Eq)]
 pub struct HTLCUpdate {
 	pub(crate) payment_hash: PaymentHash,
 	pub(crate) payment_preimage: Option<PaymentPreimage>,
 	pub(crate) source: HTLCSource,
 	pub(crate) htlc_value_satoshis: Option<u64>,
+	/// If this is an update to fail back the upstream HTLC, this signals whether we're failing
+	/// back this HTLC because we saw a downstream claim on-chain, or if we're close to the
+	/// upstream timeout and want to prevent the channel from going on-chain.
+	pub(crate) awaiting_downstream_confirmation: bool,
 }
 impl_writeable_tlv_based!(HTLCUpdate, {
 	(0, payment_hash, required),
 	(1, htlc_value_satoshis, option),
 	(2, source, required),
+	(3, awaiting_downstream_confirmation, (default_value, false)),
 	(4, payment_preimage, option),
 });
 
@@ -3560,6 +3566,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 						payment_preimage: None,
 						source: source.clone(),
 						htlc_value_satoshis,
+						awaiting_downstream_confirmation: false,
 					}));
 					self.htlcs_resolved_on_chain.push(IrrevocablyResolvedHTLC {
 						commitment_tx_output_idx,
@@ -3937,6 +3944,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 							payment_preimage: Some(payment_preimage),
 							payment_hash,
 							htlc_value_satoshis: Some(amount_msat / 1000),
+							awaiting_downstream_confirmation: false,
 						}));
 					}
 				} else if offered_preimage_claim {
@@ -3960,6 +3968,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 							payment_preimage: Some(payment_preimage),
 							payment_hash,
 							htlc_value_satoshis: Some(amount_msat / 1000),
+							awaiting_downstream_confirmation: false,
 						}));
 					}
 				} else {
