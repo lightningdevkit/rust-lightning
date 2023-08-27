@@ -70,6 +70,7 @@ mod monitor_tests;
 #[cfg(test)]
 #[allow(unused_mut)]
 mod shutdown_tests;
+mod interactivetxs;
 
 pub use self::peer_channel_encryptor::LN_MAX_MSG_LEN;
 

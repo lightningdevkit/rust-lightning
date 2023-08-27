@@ -429,6 +429,47 @@ pub struct ChannelReady {
 	pub short_channel_id_alias: Option<u64>,
 }
 
+/// A wrapper for a `Transaction` which can only be constructed with [`TransactionU16LenLimited::new`]
+/// if the `Transaction`'s consensus-serialized length is <= u16::MAX.
+///
+/// Use [`TransactionU16LenLimited::into_transaction`] to convert into the contained `Transaction`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TransactionU16LenLimited(pub Transaction);
+
+impl TransactionU16LenLimited {
+	/// Constructs a new `TransactionU16LenLimited` from a `Transaction` only if it's consensus-
+	/// serialized length is <= u16::MAX.
+	pub fn new(transaction: Transaction) -> Result<Self, ()> {
+		if transaction.serialized_length() > (u16::MAX as usize) {
+			Err(())
+		} else {
+			Ok(Self(transaction))
+		}
+	}
+
+	/// Consumes this `TransactionU16LenLimited` and returns its contained `Transaction`.
+	pub fn into_transaction(self) -> Transaction {
+		self.0
+	}
+}
+
+impl Writeable for TransactionU16LenLimited {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		(self.0.serialized_length() as u16).write(w)?;
+		self.0.write(w)
+	}
+}
+
+impl Readable for TransactionU16LenLimited {
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+		let len = <u16 as Readable>::read(r)?;
+		let mut tx_reader = FixedLengthReader::new(r, len as u64);
+		Ok(Self(Readable::read(&mut tx_reader)?))
+	}
+}
+
+pub type SerialId = u64;
+
 /// A tx_add_input message for adding an input during interactive transaction construction
 ///
 // TODO(dual_funding): Add spec link for `tx_add_input`.
@@ -438,7 +479,7 @@ pub struct TxAddInput {
 	pub channel_id: ChannelId,
 	/// A randomly chosen unique identifier for this input, which is even for initiators and odd for
 	/// non-initiators.
-	pub serial_id: u64,
+	pub serial_id: SerialId,
 	/// Serialized transaction that contains the output this input spends to verify that it is non
 	/// malleable.
 	pub prevtx: TransactionU16LenLimited,
@@ -457,7 +498,7 @@ pub struct TxAddOutput {
 	pub channel_id: ChannelId,
 	/// A randomly chosen unique identifier for this output, which is even for initiators and odd for
 	/// non-initiators.
-	pub serial_id: u64,
+	pub serial_id: SerialId,
 	/// The satoshi value of the output
 	pub sats: u64,
 	/// The scriptPubKey for the output
@@ -472,7 +513,7 @@ pub struct TxRemoveInput {
 	/// The channel ID
 	pub channel_id: ChannelId,
 	/// The serial ID of the input to be removed
-	pub serial_id: u64,
+	pub serial_id: SerialId,
 }
 
 /// A tx_remove_output message for removing an output during interactive transaction construction.
@@ -483,7 +524,7 @@ pub struct TxRemoveOutput {
 	/// The channel ID
 	pub channel_id: ChannelId,
 	/// The serial ID of the output to be removed
-	pub serial_id: u64,
+	pub serial_id: SerialId,
 }
 
 /// A tx_complete message signalling the conclusion of a peer's transaction contributions during
