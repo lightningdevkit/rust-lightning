@@ -3526,57 +3526,58 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		// blocks. If we haven't seen the preimage for an HTLC by the time the previous hop's
 		// timeout expires, we've lost that HTLC, so we might as well fail it back instead of having our
 		// counterparty force-close the channel.
-		let height = self.best_block.height();
-		macro_rules! fail_soon_to_expire_htlcs {
-			($htlcs: expr) => {{
-				for (htlc, source_opt) in $htlcs {
-					// Only check forwarded HTLCs' previous hops
-					let source = match source_opt {
-						Some(source) => source,
-						None => continue,
-					};
-					let (cltv_expiry, htlc_id) = match source {
-						HTLCSource::PreviousHopData(HTLCPreviousHopData { htlc_id, cltv_expiry: Some(cltv_expiry), .. }) if !self.failed_back_htlc_ids.contains(htlc_id) => (*cltv_expiry, *htlc_id),
-						_ => continue,
-					};
-					if cltv_expiry <= height + LATENCY_GRACE_PERIOD_BLOCKS {
-						let duplicate_event = self.pending_monitor_events.iter().any(
-							|update| if let &MonitorEvent::HTLCEvent(ref upd) = update {
-								upd.source == *source
-							} else { false });
-						if !duplicate_event {
-							log_debug!(logger, "Failing back HTLC {} upstream to preserve the \
-								channel as the forward HTLC hasn't resolved and our backward HTLC \
-								expires soon at {}", log_bytes!(htlc.payment_hash.0), cltv_expiry);
-							self.pending_monitor_events.push(MonitorEvent::HTLCEvent(HTLCUpdate {
-								source: source.clone(),
-								payment_preimage: None,
-								payment_hash: htlc.payment_hash,
-								htlc_value_satoshis: Some(htlc.amount_msat / 1000),
-								awaiting_downstream_confirmation: true,
-							}));
-							self.failed_back_htlc_ids.insert(htlc_id);
-						}
-					}
-				}
-			}}
-		}
-
 		let current_holder_htlcs = self.current_holder_commitment_tx.htlc_outputs.iter()
 			.map(|&(ref a, _, ref b)| (a, b.as_ref()));
-		fail_soon_to_expire_htlcs!(current_holder_htlcs);
 
-		if let Some(ref txid) = self.current_counterparty_commitment_txid {
-			if let Some(ref htlc_outputs) = self.counterparty_claimable_outpoints.get(txid) {
-				fail_soon_to_expire_htlcs!(htlc_outputs.iter().map(|&(ref a, ref b)| (a, (b.as_ref().clone()).map(|boxed| &**boxed))));
-			}
-		};
+		let current_counterparty_htlcs = if let Some(txid) = self.current_counterparty_commitment_txid {
+			if let Some(htlc_outputs) = self.counterparty_claimable_outpoints.get(&txid) {
+				Some(htlc_outputs.iter().map(|&(ref a, ref b)| (a, b.as_ref().map(|boxed| &**boxed))))
+			} else { None }
+		} else { None }.into_iter().flatten();
 
-		if let Some(ref txid) = self.prev_counterparty_commitment_txid {
-			if let Some(ref htlc_outputs) = self.counterparty_claimable_outpoints.get(txid) {
-				fail_soon_to_expire_htlcs!(htlc_outputs.iter().map(|&(ref a, ref b)| (a, (b.as_ref().clone()).map(|boxed| &**boxed))));
+		let prev_counterparty_htlcs = if let Some(txid) = self.prev_counterparty_commitment_txid {
+			if let Some(htlc_outputs) = self.counterparty_claimable_outpoints.get(&txid) {
+				Some(htlc_outputs.iter().map(|&(ref a, ref b)| (a, b.as_ref().map(|boxed| &**boxed))))
+			} else { None }
+		} else { None }.into_iter().flatten();
+
+		let htlcs = current_holder_htlcs
+			.chain(current_counterparty_htlcs)
+			.chain(prev_counterparty_htlcs);
+
+		let height = self.best_block.height();
+		for (htlc, source_opt) in htlcs {
+			// Only check forwarded HTLCs' previous hops
+			let source = match source_opt {
+				Some(source) => source,
+				None => continue,
+			};
+			let (cltv_expiry, htlc_id) = match source {
+				HTLCSource::PreviousHopData(HTLCPreviousHopData {
+					htlc_id, cltv_expiry: Some(cltv_expiry), ..
+				}) if !self.failed_back_htlc_ids.contains(htlc_id) => (*cltv_expiry, *htlc_id),
+				_ => continue,
+			};
+			if cltv_expiry <= height + LATENCY_GRACE_PERIOD_BLOCKS {
+				let duplicate_event = self.pending_monitor_events.iter().any(
+					|update| if let &MonitorEvent::HTLCEvent(ref upd) = update {
+						upd.source == *source
+					} else { false });
+				if !duplicate_event {
+					log_debug!(logger, "Failing back HTLC {} upstream to preserve the \
+						channel as the forward HTLC hasn't resolved and our backward HTLC \
+						expires soon at {}", log_bytes!(htlc.payment_hash.0), cltv_expiry);
+					self.pending_monitor_events.push(MonitorEvent::HTLCEvent(HTLCUpdate {
+						source: source.clone(),
+						payment_preimage: None,
+						payment_hash: htlc.payment_hash,
+						htlc_value_satoshis: Some(htlc.amount_msat / 1000),
+						awaiting_downstream_confirmation: true,
+					}));
+					self.failed_back_htlc_ids.insert(htlc_id);
+				}
 			}
-		};
+		}
 
 		// Find which on-chain events have reached their confirmation threshold.
 		let onchain_events_awaiting_threshold_conf =
