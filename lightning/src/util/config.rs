@@ -485,6 +485,62 @@ pub struct ChannelConfig {
 	/// [`PaymentClaimable::counterparty_skimmed_fee_msat`]: crate::events::Event::PaymentClaimable::counterparty_skimmed_fee_msat
 	//  TODO: link to bLIP when it's merged
 	pub accept_underpaying_htlcs: bool,
+	/// A multiplier on the on-chain fees (assuming the high priority feerate) setting the
+	/// threshold for an HTLC's value for which we will fail the HTLC early to prevent closing a
+	/// channel. This field is denoted in millionths.
+	///
+	/// If we have forwarded an HTLC to a peer and they have not claimed it on or off-chain by the
+	/// time the previous hop's HTLC timeout expires, we can choose to fail back the HTLC to save
+	/// the upstream channel from closing on-chain, or we can risk the channel in hopes of getting
+	/// a last-minute preimage from downstream. The risk may or may not be worth it depending on
+	/// how large the HTLC is relative to how much we will lose in fees if the channel closes.
+	///
+	/// This roughly translates to how much the HTLC value should be proportional to the amount
+	/// we'll pay on chain. So if the value of this flag is 1,500,000, it means we should only risk
+	/// going on-chain if the HTLC value is at least 1.5x the amount we'll pay on chain.
+	///
+	/// Based on this multiplier, we will fail back HTLCs in the described situation if the HTLC's
+	/// value is below the following threshold:
+	/// `high_priority_feerate_per_kw * total_weight * early_fail_multiplier / 1,000,000,000` (we
+	/// divide by 1,000,000,000 because feerate is denoted by kiloweight units, and the multiplier
+	/// is denoted in millionths).
+	///
+	/// Total weight is defined by the situation where we took the risk closing on-chain, and the
+	/// result was in our favor, i.e. we claimed with an HTLC-success transaction. So, we use the
+	/// sum of the weight of the commitment transaction (if we're the funder of the channel) and
+	/// the weight of an HTLC-success transaction, including one extra P2WPKH input and output
+	/// to account for fee-bumping. These weights are calculated as follows:
+	///
+	/// [Commitment transaction weight](https://github.com/lightning/bolts/blob/master/03-transactions.md#expected-weight-of-the-commitment-transaction):
+	///	* (no option_anchors) 500 + 172 * num-htlc-outputs + 224 weight
+	/// * (option_anchors) 900 + 172 * num-htlc-outputs + 224 weight
+	///
+	/// [HTLC-success weight](https://github.com/lightning/bolts/blob/master/03-transactions.md#expected-weight-of-htlc-timeout-and-htlc-success-transactions):
+	/// * HTLC-success weight: 703 (706 with anchors) weight
+	/// * 1 input + witness spending a P2WPKH output: 272 weight
+	/// * 1 P2WPKH output: 31 bytes * 4 = 124 weight
+	/// * Total: 1099 (1102 with anchors) weight
+	///
+	/// Sample calculations:
+	/// * Total weight assuming we're the funder, on a non-anchor channel with 1 HTLC:
+	/// 500 + 172 * 1 + 224 + 1099 = 1995.
+	/// * Feerate: 1 sat/vbyte -> 253 sats/KW (250 sat/KW, although the minimum defaults to 253
+	/// sats/KW for rounding, see [`FeeEstimator`])
+	///   * Cost to claim-onchain: 1995 * 253 / 1000 = 504 sats.
+	///   * Minimum HTLC value required to risk going on-chain:
+	/// 1995 * 253 * 1,500,000 / 1,000 / 1,000,000 = 757 sats.
+	/// * Feerate: 30 sat/vbyte -> 7,500 sat/KW
+	///	  * Cost to claim on-chain: 1995 * 7500 / 1000 = 14,962 sats.
+	///	  * Minimum HTLC value required to risk going on-chain:
+	/// 1995 * 7500 * 1,500,000 / 1,000 / 1,000,000 = 22,443 sats.
+	///
+	/// If you prefer to always let upstream HTLCs resolve on-chain in the event that your
+	/// downstream channel takes too long to confirm on-chain, just set this multiplier to 0.
+	///
+	/// Default value: 1,500,000.
+	///
+	/// [`FeeEstimator`]: crate::chain::chaininterface::FeeEstimator
+	pub early_fail_multiplier: u64,
 }
 
 impl ChannelConfig {
@@ -518,6 +574,7 @@ impl Default for ChannelConfig {
 			max_dust_htlc_exposure: MaxDustHTLCExposure::FeeRateMultiplier(5000),
 			force_close_avoidance_max_fee_satoshis: 1000,
 			accept_underpaying_htlcs: false,
+			early_fail_multiplier: 1_500_000,
 		}
 	}
 }
@@ -534,6 +591,7 @@ impl crate::util::ser::Writeable for ChannelConfig {
 			(2, self.forwarding_fee_base_msat, required),
 			(3, self.max_dust_htlc_exposure, required),
 			(4, self.cltv_expiry_delta, required),
+			(5, self.early_fail_multiplier, required),
 			(6, max_dust_htlc_exposure_msat_fixed_limit, required),
 			// ChannelConfig serialized this field with a required type of 8 prior to the introduction of
 			// LegacyChannelConfig. To make sure that serialization is not compatible with this one, we use
@@ -553,12 +611,14 @@ impl crate::util::ser::Readable for ChannelConfig {
 		let mut max_dust_htlc_exposure_msat = None;
 		let mut max_dust_htlc_exposure_enum = None;
 		let mut force_close_avoidance_max_fee_satoshis = 1000;
+		let mut early_fail_multiplier = 1_500_000;
 		read_tlv_fields!(reader, {
 			(0, forwarding_fee_proportional_millionths, required),
 			(1, accept_underpaying_htlcs, (default_value, false)),
 			(2, forwarding_fee_base_msat, required),
 			(3, max_dust_htlc_exposure_enum, option),
 			(4, cltv_expiry_delta, required),
+			(5, early_fail_multiplier, (default_value, 1_500_000u64)),
 			// Has always been written, but became optionally read in 0.0.116
 			(6, max_dust_htlc_exposure_msat, option),
 			(10, force_close_avoidance_max_fee_satoshis, required),
@@ -573,6 +633,7 @@ impl crate::util::ser::Readable for ChannelConfig {
 			cltv_expiry_delta,
 			max_dust_htlc_exposure: max_dust_htlc_exposure_msat,
 			force_close_avoidance_max_fee_satoshis,
+			early_fail_multiplier,
 		})
 	}
 }
@@ -585,6 +646,7 @@ pub struct ChannelConfigUpdate {
 	pub cltv_expiry_delta: Option<u16>,
 	pub max_dust_htlc_exposure_msat: Option<MaxDustHTLCExposure>,
 	pub force_close_avoidance_max_fee_satoshis: Option<u64>,
+	pub early_fail_multiplier: Option<u64>,
 }
 
 impl Default for ChannelConfigUpdate {
@@ -595,6 +657,7 @@ impl Default for ChannelConfigUpdate {
 			cltv_expiry_delta: None,
 			max_dust_htlc_exposure_msat: None,
 			force_close_avoidance_max_fee_satoshis: None,
+			early_fail_multiplier: None,
 		}
 	}
 }
@@ -607,6 +670,7 @@ impl From<ChannelConfig> for ChannelConfigUpdate {
 			cltv_expiry_delta: Some(config.cltv_expiry_delta),
 			max_dust_htlc_exposure_msat: Some(config.max_dust_htlc_exposure),
 			force_close_avoidance_max_fee_satoshis: Some(config.force_close_avoidance_max_fee_satoshis),
+			early_fail_multiplier: Some(config.early_fail_multiplier),
 		}
 	}
 }
@@ -650,6 +714,7 @@ impl crate::util::ser::Writeable for LegacyChannelConfig {
 			(4, self.announced_channel, required),
 			(5, self.options.max_dust_htlc_exposure, required),
 			(6, self.commit_upfront_shutdown_pubkey, required),
+			(7, self.options.early_fail_multiplier, required),
 			(8, self.options.forwarding_fee_base_msat, required),
 		});
 		Ok(())
@@ -666,6 +731,7 @@ impl crate::util::ser::Readable for LegacyChannelConfig {
 		let mut commit_upfront_shutdown_pubkey = false;
 		let mut forwarding_fee_base_msat = 0;
 		let mut max_dust_htlc_exposure_enum = None;
+		let mut early_fail_multiplier = 1_500_000;
 		read_tlv_fields!(reader, {
 			(0, forwarding_fee_proportional_millionths, required),
 			// Has always been written, but became optionally read in 0.0.116
@@ -674,6 +740,7 @@ impl crate::util::ser::Readable for LegacyChannelConfig {
 			(3, force_close_avoidance_max_fee_satoshis, (default_value, 1000u64)),
 			(4, announced_channel, required),
 			(5, max_dust_htlc_exposure_enum, option),
+			(7, early_fail_multiplier, (default_value, 1_500_000u64)),
 			(6, commit_upfront_shutdown_pubkey, required),
 			(8, forwarding_fee_base_msat, required),
 		});
@@ -689,6 +756,7 @@ impl crate::util::ser::Readable for LegacyChannelConfig {
 				force_close_avoidance_max_fee_satoshis,
 				forwarding_fee_base_msat,
 				accept_underpaying_htlcs: false,
+				early_fail_multiplier,
 			},
 			announced_channel,
 			commit_upfront_shutdown_pubkey,
