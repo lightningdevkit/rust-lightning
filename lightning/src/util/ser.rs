@@ -1392,6 +1392,10 @@ impl TransactionU16LenLimited {
 	pub fn into_transaction(self) -> Transaction {
 		self.0
 	}
+
+	pub fn inner(&self) -> &Transaction {
+		&self.0
+	}
 }
 
 impl Writeable for TransactionU16LenLimited {

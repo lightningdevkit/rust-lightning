@@ -9,7 +9,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use bitcoin::{TxIn, Sequence, Transaction, TxOut, OutPoint, Witness};
+use bitcoin::{TxIn, Sequence, Transaction, TxOut, OutPoint}; // Witness
 use bitcoin::blockdata::constants::WITNESS_SCALE_FACTOR;
 use bitcoin::policy::MAX_STANDARD_TX_WEIGHT;
 use crate::ln::channel::TOTAL_BITCOIN_SUPPLY_SATOSHIS;
@@ -250,7 +250,7 @@ impl<S> InteractiveTxStateMachine<S> where S: AcceptingChanges {
 			return self.abort_negotiation(AbortReason::ReceivedTooManyTxAddInputs);
 		}
 
-		let prev_out = if let Some(prev_out) = msg.prevtx.0.output.get(msg.prevtx_out as usize) {
+		let prev_out = if let Some(prev_out) = msg.prevtx.inner().output.get(msg.prevtx_out as usize) {
 			prev_out.clone()
 		} else {
 			return self.abort_negotiation(AbortReason::PrevTxOutInvalid);
@@ -345,7 +345,7 @@ impl<S> InteractiveTxStateMachine<S> where S: AcceptingChanges {
 			return self.abort_negotiation(AbortReason::IncorrectSerialIdParity);
 		}
 
-		if let Some(output) = self.context.outputs.remove(&serial_id) {
+		if let Some(_output) = self.context.outputs.remove(&serial_id) {
 			Ok(InteractiveTxStateMachine { context: self.context, state: Negotiating {} })
 		} else {
 			self.abort_negotiation(AbortReason::SerialIdUnknown)
@@ -558,7 +558,7 @@ impl InteractiveTxConstructor {
 		self.handle_negotiating_receive(|state_machine| state_machine.abort_negotiation(reason))
 	}
 
-	pub(crate) fn receive_tx_add_input(&mut self, serial_id: SerialId, transaction_input: &msgs::TxAddInput, confirmed: bool) {
+	pub(crate) fn receive_tx_add_input(&mut self, _serial_id: SerialId, transaction_input: &msgs::TxAddInput, confirmed: bool) {
 		self.handle_negotiating_receive(|state_machine| state_machine.receive_tx_add_input(transaction_input, confirmed))
 	}
 
@@ -591,7 +591,7 @@ impl InteractiveTxConstructor {
 	}
 
 	pub(crate) fn send_tx_complete(&mut self) {
-		let mut mode = core::mem::take(&mut self.mode);
+		let mode = core::mem::take(&mut self.mode);
 		self.mode = match mode {
 			ChannelMode::Negotiating(c) => { ChannelMode::OurTxComplete(c.send_tx_complete()) }
 			ChannelMode::TheirTxComplete(c) => {
@@ -661,14 +661,15 @@ impl InteractiveTxConstructor {
 mod tests {
 	use core::str::FromStr;
 	use crate::chain::chaininterface::FEERATE_FLOOR_SATS_PER_KW;
-use crate::ln::interactivetxs::ChannelMode::{Negotiating, NegotiationAborted};
-	use crate::ln::interactivetxs::{AbortReason, ChannelMode, InteractiveTxConstructor, InteractiveTxStateMachine};
-	use crate::ln::msgs::TransactionU16LenLimited;
+	use crate::ln::ChannelId;
+	// use crate::ln::interactivetxs::ChannelMode::{Negotiating, NegotiationAborted};
+	use crate::ln::interactivetxs::{ChannelMode, InteractiveTxConstructor}; // AbortReason, InteractiveTxStateMachine
+	use crate::util::ser::TransactionU16LenLimited;
 	use bitcoin::consensus::encode;
 	use bitcoin::{Address, PackedLockTime, Script, Sequence, Transaction, Txid, TxIn, TxOut, Witness};
 	use bitcoin::hashes::hex::FromHex;
 	use crate::chain::transaction::OutPoint;
-	use crate::ln::interactivetxs::AbortReason::IncorrectSerialIdParity;
+	// use crate::ln::interactivetxs::AbortReason::IncorrectSerialIdParity;
 	use crate::ln::msgs::TxAddInput;
 
 	#[test]
@@ -737,7 +738,7 @@ use crate::ln::interactivetxs::ChannelMode::{Negotiating, NegotiationAborted};
 		).unwrap();
 
 		return TxAddInput {
-			channel_id: [2; 32],
+			channel_id: ChannelId::from_bytes([2; 32]),
 			serial_id: 4886718345,
 			prevtx,
 			prevtx_out: 305419896,
