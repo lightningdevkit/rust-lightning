@@ -12,6 +12,7 @@ use std::collections::{HashMap, HashSet};
 use bitcoin::{TxIn, Sequence, Transaction, TxOut, OutPoint}; // Witness
 use bitcoin::blockdata::constants::WITNESS_SCALE_FACTOR;
 use bitcoin::policy::MAX_STANDARD_TX_WEIGHT;
+use crate::ln::ChannelId;
 use crate::ln::channel::TOTAL_BITCOIN_SUPPLY_SATOSHIS;
 
 use crate::ln::interactivetxs::ChannelMode::Indeterminate;
@@ -115,7 +116,7 @@ struct TxInputWithPrevOutput {
 }
 
 struct NegotiationContext {
-	channel_id: [u8; 32],
+	channel_id: ChannelId,
 	require_confirmed_inputs: bool,
 	holder_is_initiator: bool,
 	received_tx_add_input_count: u16,
@@ -164,7 +165,7 @@ type InteractiveTxStateMachineResult<S> =
 
 impl InteractiveTxStateMachine<Negotiating> {
 	fn new(
-		channel_id: [u8; 32], feerate_sat_per_kw: u32, require_confirmed_inputs: bool,
+		channel_id: ChannelId, feerate_sat_per_kw: u32, require_confirmed_inputs: bool,
 		is_initiator: bool, base_tx: Transaction, did_send_tx_signatures: bool,
 	) -> Self {
 		Self {
@@ -542,7 +543,7 @@ pub(crate) struct InteractiveTxConstructor {
 // if a node receives an unexpected message.
 impl InteractiveTxConstructor {
 	pub(crate) fn new(
-		channel_id: [u8; 32], feerate_sat_per_kw: u32, require_confirmed_inputs: bool,
+		channel_id: ChannelId, feerate_sat_per_kw: u32, require_confirmed_inputs: bool,
 		is_initiator: bool, base_tx: Transaction, did_send_tx_signatures: bool,
 	) -> Self {
 		let initial_state_machine = InteractiveTxStateMachine::new(
@@ -681,7 +682,7 @@ mod tests {
 			72e3df059d277e776dda4269fa0d2cc8c2ee6ec9a022054e7fae5ca94d47534c86705857c24ceea3ad51c69\
 			dd6051c5850304880fc43a012103cb11a1bacc223d98d91f1946c6752e358a5eb1a1c983b3e6fb15378f453\
 			b76bd00000000").unwrap()[..]).unwrap();
-		let mut constructor = InteractiveTxConstructor::new([0; 32], FEERATE_FLOOR_SATS_PER_KW, true, true, tx, false);
+		let mut constructor = InteractiveTxConstructor::new(ChannelId::new_zero(), FEERATE_FLOOR_SATS_PER_KW, true, true, tx, false);
 		constructor.receive_tx_add_input(2, &get_sample_tx_add_input(), false);
 		assert!(matches!(constructor.mode, ChannelMode::NegotiationAborted { .. }))
 	}
@@ -701,7 +702,7 @@ mod tests {
 			dd6051c5850304880fc43a012103cb11a1bacc223d98d91f1946c6752e358a5eb1a1c983b3e6fb15378f453\
 			b76bd00000000").unwrap()[..]).unwrap();
 			Self {
-				tx_constructor: InteractiveTxConstructor::new([0; 32], FEERATE_FLOOR_SATS_PER_KW, true, true, tx, false)
+				tx_constructor: InteractiveTxConstructor::new(ChannelId::new_zero(), FEERATE_FLOOR_SATS_PER_KW, true, true, tx, false)
 			}
 		}
 
