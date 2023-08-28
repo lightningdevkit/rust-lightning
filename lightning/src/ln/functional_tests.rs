@@ -30,7 +30,7 @@ use crate::routing::router::{Path, PaymentParameters, Route, RouteHop, get_route
 use crate::ln::features::{ChannelFeatures, ChannelTypeFeatures, NodeFeatures};
 use crate::ln::msgs;
 use crate::ln::msgs::{ChannelMessageHandler, RoutingMessageHandler, ErrorAction};
-use crate::util::enforcing_trait_impls::EnforcingSigner;
+use crate::util::test_channel_signer::TestChannelSigner;
 use crate::util::test_utils::{self, WatchtowerPersister};
 use crate::util::errors::APIError;
 use crate::util::ser::{Writeable, ReadableArgs};
@@ -696,7 +696,7 @@ fn test_update_fee_that_funder_cannot_afford() {
 
 	const INITIAL_COMMITMENT_NUMBER: u64 = 281474976710654;
 
-	// Get the EnforcingSigner for each channel, which will be used to (1) get the keys
+	// Get the TestChannelSigner for each channel, which will be used to (1) get the keys
 	// needed to sign the new commitment tx and (2) sign the new commitment tx.
 	let (local_revocation_basepoint, local_htlc_basepoint, local_funding) = {
 		let per_peer_state = nodes[0].node.per_peer_state.read().unwrap();
@@ -1409,7 +1409,7 @@ fn test_fee_spike_violation_fails_htlc() {
 
 	const INITIAL_COMMITMENT_NUMBER: u64 = (1 << 48) - 1;
 
-	// Get the EnforcingSigner for each channel, which will be used to (1) get the keys
+	// Get the TestChannelSigner for each channel, which will be used to (1) get the keys
 	// needed to sign the new commitment tx and (2) sign the new commitment tx.
 	let (local_revocation_basepoint, local_htlc_basepoint, local_secret, next_local_point, local_funding) = {
 		let per_peer_state = nodes[0].node.per_peer_state.read().unwrap();
@@ -7639,7 +7639,7 @@ fn test_counterparty_raa_skip_no_crash() {
 	// commitment transaction, we would have happily carried on and provided them the next
 	// commitment transaction based on one RAA forward. This would probably eventually have led to
 	// channel closure, but it would not have resulted in funds loss. Still, our
-	// EnforcingSigner would have panicked as it doesn't like jumps into the future. Here, we
+	// TestChannelSigner would have panicked as it doesn't like jumps into the future. Here, we
 	// check simply that the channel is closed in response to such an RAA, but don't check whether
 	// we decide to punish our counterparty for revoking their funds (as we don't currently
 	// implement that).
@@ -8350,7 +8350,7 @@ fn test_update_err_monitor_lockdown() {
 	let watchtower = {
 		let new_monitor = {
 			let monitor = nodes[0].chain_monitor.chain_monitor.get_monitor(outpoint).unwrap();
-			let new_monitor = <(BlockHash, channelmonitor::ChannelMonitor<EnforcingSigner>)>::read(
+			let new_monitor = <(BlockHash, channelmonitor::ChannelMonitor<TestChannelSigner>)>::read(
 					&mut io::Cursor::new(&monitor.encode()), (nodes[0].keys_manager, nodes[0].keys_manager)).unwrap().1;
 			assert!(new_monitor == *monitor);
 			new_monitor
@@ -8420,7 +8420,7 @@ fn test_concurrent_monitor_claim() {
 	let watchtower_alice = {
 		let new_monitor = {
 			let monitor = nodes[0].chain_monitor.chain_monitor.get_monitor(outpoint).unwrap();
-			let new_monitor = <(BlockHash, channelmonitor::ChannelMonitor<EnforcingSigner>)>::read(
+			let new_monitor = <(BlockHash, channelmonitor::ChannelMonitor<TestChannelSigner>)>::read(
 					&mut io::Cursor::new(&monitor.encode()), (nodes[0].keys_manager, nodes[0].keys_manager)).unwrap().1;
 			assert!(new_monitor == *monitor);
 			new_monitor
@@ -8451,7 +8451,7 @@ fn test_concurrent_monitor_claim() {
 	let watchtower_bob = {
 		let new_monitor = {
 			let monitor = nodes[0].chain_monitor.chain_monitor.get_monitor(outpoint).unwrap();
-			let new_monitor = <(BlockHash, channelmonitor::ChannelMonitor<EnforcingSigner>)>::read(
+			let new_monitor = <(BlockHash, channelmonitor::ChannelMonitor<TestChannelSigner>)>::read(
 					&mut io::Cursor::new(&monitor.encode()), (nodes[0].keys_manager, nodes[0].keys_manager)).unwrap().1;
 			assert!(new_monitor == *monitor);
 			new_monitor

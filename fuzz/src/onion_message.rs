@@ -11,7 +11,7 @@ use lightning::ln::msgs::{self, DecodeError, OnionMessageHandler};
 use lightning::ln::script::ShutdownScript;
 use lightning::offers::invoice::UnsignedBolt12Invoice;
 use lightning::offers::invoice_request::UnsignedInvoiceRequest;
-use lightning::util::enforcing_trait_impls::EnforcingSigner;
+use lightning::util::test_channel_signer::TestChannelSigner;
 use lightning::util::logger::Logger;
 use lightning::util::ser::{Readable, Writeable, Writer};
 use lightning::onion_message::{CustomOnionMessageContents, CustomOnionMessageHandler, Destination, MessageRouter, OffersMessage, OffersMessageHandler, OnionMessagePath, OnionMessenger};
@@ -174,7 +174,7 @@ impl NodeSigner for KeyProvider {
 }
 
 impl SignerProvider for KeyProvider {
-	type Signer = EnforcingSigner;
+	type Signer = TestChannelSigner;
 
 	fn generate_channel_keys_id(&self, _inbound: bool, _channel_value_satoshis: u64, _user_channel_id: u128) -> [u8; 32] { unreachable!() }
 
@@ -182,7 +182,7 @@ impl SignerProvider for KeyProvider {
 		unreachable!()
 	}
 
-	fn read_chan_signer(&self, _data: &[u8]) -> Result<EnforcingSigner, DecodeError> { unreachable!() }
+	fn read_chan_signer(&self, _data: &[u8]) -> Result<TestChannelSigner, DecodeError> { unreachable!() }
 
 	fn get_destination_script(&self) -> Result<Script, ()> { unreachable!() }
 
