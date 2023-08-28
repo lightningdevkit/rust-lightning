@@ -104,6 +104,7 @@ pub(super) enum PendingHTLCRouting {
 		/// The SCID from the onion that we should forward to. This could be a real SCID or a fake one
 		/// generated using `get_fake_scid` from the scid_utils::fake_scid module.
 		short_channel_id: u64, // This should be NonZero<u64> eventually when we bump MSRV
+		incoming_cltv_expiry: Option<u32>,
 	},
 	Receive {
 		payment_data: msgs::FinalOnionHopData,
@@ -122,6 +123,16 @@ pub(super) enum PendingHTLCRouting {
 		/// See [`RecipientOnionFields::custom_tlvs`] for more info.
 		custom_tlvs: Vec<(u64, Vec<u8>)>,
 	},
+}
+
+impl PendingHTLCRouting {
+	fn incoming_cltv_expiry(&self) -> Option<u32> {
+		match self {
+			Self::Forward { incoming_cltv_expiry, .. } => *incoming_cltv_expiry,
+			Self::Receive { incoming_cltv_expiry, .. } => Some(*incoming_cltv_expiry),
+			Self::ReceiveKeysend { incoming_cltv_expiry, .. } => Some(*incoming_cltv_expiry),
+		}
+	}
 }
 
 #[derive(Clone)] // See Channel::revoke_and_ack for why, tl;dr: Rust bug
@@ -2742,6 +2753,7 @@ where
 			routing: PendingHTLCRouting::Forward {
 				onion_packet: outgoing_packet,
 				short_channel_id,
+				incoming_cltv_expiry: Some(msg.cltv_expiry),
 			},
 			payment_hash: msg.payment_hash,
 			incoming_shared_secret: shared_secret,
@@ -3771,8 +3783,9 @@ where
 			})?;
 
 		let routing = match payment.forward_info.routing {
-			PendingHTLCRouting::Forward { onion_packet, .. } => {
-				PendingHTLCRouting::Forward { onion_packet, short_channel_id: next_hop_scid }
+			PendingHTLCRouting::Forward { onion_packet, incoming_cltv_expiry, .. } => {
+				PendingHTLCRouting::Forward { onion_packet, short_channel_id: next_hop_scid,
+					incoming_cltv_expiry }
 			},
 			_ => unreachable!() // Only `PendingHTLCRouting::Forward`s are intercepted
 		};
@@ -3967,7 +3980,8 @@ where
 										prev_short_channel_id, prev_htlc_id, prev_funding_outpoint, prev_user_channel_id,
 										forward_info: PendingHTLCInfo {
 											incoming_shared_secret, payment_hash, outgoing_amt_msat, outgoing_cltv_value,
-											routing: PendingHTLCRouting::Forward { onion_packet, .. }, skimmed_fee_msat, ..
+											routing: PendingHTLCRouting::Forward { onion_packet, .. },
+											skimmed_fee_msat, ..
 										},
 									}) => {
 										log_trace!(self.logger, "Adding HTLC from short id {} with payment_hash {} to channel with short id {} after delay", prev_short_channel_id, &payment_hash, short_chan_id);
@@ -7933,6 +7947,7 @@ impl_writeable_tlv_based!(PhantomRouteHints, {
 impl_writeable_tlv_based_enum!(PendingHTLCRouting,
 	(0, Forward) => {
 		(0, onion_packet, required),
+		(1, incoming_cltv_expiry, option),
 		(2, short_channel_id, required),
 	},
 	(1, Receive) => {
