@@ -2191,7 +2191,7 @@ fn test_anchors_aggregated_revoked_htlc_tx() {
 
 	// Alice should see that Bob is trying to claim to HTLCs, so she should now try to claim them at
 	// the second level instead.
-	let revoked_claims = {
+	let revoked_claim_transactions = {
 		let txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
 		assert_eq!(txn.len(), 2);
 
@@ -2205,10 +2205,14 @@ fn test_anchors_aggregated_revoked_htlc_tx() {
 			check_spends!(revoked_htlc_claim, htlc_tx);
 		}
 
-		txn
+		let mut revoked_claim_transaction_map = HashMap::new();
+		for current_tx in txn.into_iter() {
+			revoked_claim_transaction_map.insert(current_tx.txid(), current_tx);
+		}
+		revoked_claim_transaction_map
 	};
 	for node in &nodes {
-		mine_transactions(node, &revoked_claims.iter().collect::<Vec<_>>());
+		mine_transactions(node, &revoked_claim_transactions.values().collect::<Vec<_>>());
 	}
 
 
@@ -2234,7 +2238,8 @@ fn test_anchors_aggregated_revoked_htlc_tx() {
 			let spend_tx = nodes[0].keys_manager.backing.spend_spendable_outputs(
 				&[&outputs[0]], Vec::new(), Script::new_op_return(&[]), 253, None, &Secp256k1::new(),
 			).unwrap();
-			check_spends!(spend_tx, revoked_claims[idx]);
+
+			check_spends!(spend_tx, revoked_claim_transactions.get(&spend_tx.input[0].previous_output.txid).unwrap());
 		} else {
 			panic!("unexpected event");
 		}
