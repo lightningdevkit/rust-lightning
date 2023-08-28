@@ -1103,6 +1103,7 @@ impl OutboundPayments {
 		F: Fn(SendAlongPathArgs) -> Result<(), APIError>,
 	{
 		let payment_id = PaymentId(entropy_source.get_secure_random_bytes());
+		let payment_secret = PaymentSecret(entropy_source.get_secure_random_bytes());
 
 		let payment_hash = probing_cookie_from_id(&payment_id, probing_cookie_secret);
 
@@ -1114,7 +1115,7 @@ impl OutboundPayments {
 
 		let route = Route { paths: vec![path], route_params: None };
 		let onion_session_privs = self.add_new_pending_payment(payment_hash,
-			RecipientOnionFields::spontaneous_empty(), payment_id, None, &route, None, None,
+			RecipientOnionFields::secret_only(payment_secret), payment_id, None, &route, None, None,
 			entropy_source, best_block_height)?;
 
 		match self.pay_route_internal(&route, payment_hash, RecipientOnionFields::spontaneous_empty(),
