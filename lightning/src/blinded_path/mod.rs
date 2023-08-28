@@ -75,10 +75,9 @@ impl BlindedPath {
 		})
 	}
 
-	/// Create a blinded path for a payment, to be forwarded along `path`. The last node
-	/// in `path` will be the destination node.
+	/// Create a blinded path for a payment, to be forwarded along `intermediate_nodes`.
 	///
-	/// Errors if `path` is empty or a node id in `path` is invalid.
+	/// Errors if a provided node id is invalid.
 	//  TODO: make all payloads the same size with padding + add dummy hops
 	pub fn new_for_payment<ES: EntropySource, T: secp256k1::Signing + secp256k1::Verification>(
 		intermediate_nodes: &[(PublicKey, payment::ForwardTlvs)], payee_node_id: PublicKey,
