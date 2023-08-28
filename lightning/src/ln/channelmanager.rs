@@ -193,13 +193,16 @@ pub(crate) struct HTLCPreviousHopData {
 	// Note that this may be an outbound SCID alias for the associated channel.
 	short_channel_id: u64,
 	user_channel_id: Option<u128>,
-	htlc_id: u64,
+	pub(crate) htlc_id: u64,
 	incoming_packet_shared_secret: [u8; 32],
 	phantom_shared_secret: Option<[u8; 32]>,
 
 	// This field is consumed by `claim_funds_from_hop()` when updating a force-closed backwards
 	// channel with a preimage provided by the forward channel.
 	outpoint: OutPoint,
+	/// Used to preserve our backwards channel by failing back in case an HTLC claim in the forward
+	/// channel remains unconfirmed for too long.
+	pub(crate) cltv_expiry: Option<u32>,
 }
 
 enum OnionPayload {
@@ -3821,7 +3824,7 @@ where
 				err: format!("Payment with intercept id {} not found", log_bytes!(intercept_id.0))
 			})?;
 
-		if let PendingHTLCRouting::Forward { short_channel_id, .. } = payment.forward_info.routing {
+		if let PendingHTLCRouting::Forward { short_channel_id, incoming_cltv_expiry, .. } = payment.forward_info.routing {
 			let htlc_source = HTLCSource::PreviousHopData(HTLCPreviousHopData {
 				short_channel_id: payment.prev_short_channel_id,
 				user_channel_id: Some(payment.prev_user_channel_id),
@@ -3829,6 +3832,7 @@ where
 				htlc_id: payment.prev_htlc_id,
 				incoming_packet_shared_secret: payment.forward_info.incoming_shared_secret,
 				phantom_shared_secret: None,
+				cltv_expiry: incoming_cltv_expiry,
 			});
 
 			let failure_reason = HTLCFailReason::from_failure_code(0x4000 | 10);
@@ -3866,6 +3870,7 @@ where
 											outgoing_cltv_value, ..
 										}
 									}) => {
+										let cltv_expiry = routing.incoming_cltv_expiry();
 										macro_rules! failure_handler {
 											($msg: expr, $err_code: expr, $err_data: expr, $phantom_ss: expr, $next_hop_unknown: expr) => {
 												log_info!(self.logger, "Failed to accept/forward incoming HTLC: {}", $msg);
@@ -3877,6 +3882,7 @@ where
 													htlc_id: prev_htlc_id,
 													incoming_packet_shared_secret: incoming_shared_secret,
 													phantom_shared_secret: $phantom_ss,
+													cltv_expiry,
 												});
 
 												let reason = if $next_hop_unknown {
@@ -3980,7 +3986,7 @@ where
 										prev_short_channel_id, prev_htlc_id, prev_funding_outpoint, prev_user_channel_id,
 										forward_info: PendingHTLCInfo {
 											incoming_shared_secret, payment_hash, outgoing_amt_msat, outgoing_cltv_value,
-											routing: PendingHTLCRouting::Forward { onion_packet, .. },
+											routing: PendingHTLCRouting::Forward { onion_packet, incoming_cltv_expiry, .. },
 											skimmed_fee_msat, ..
 										},
 									}) => {
@@ -3993,6 +3999,7 @@ where
 											incoming_packet_shared_secret: incoming_shared_secret,
 											// Phantom payments are only PendingHTLCRouting::Receive.
 											phantom_shared_secret: None,
+											cltv_expiry: incoming_cltv_expiry,
 										});
 										if let Err(e) = chan.get_mut().queue_add_htlc(outgoing_amt_msat,
 											payment_hash, outgoing_cltv_value, htlc_source.clone(),
@@ -4074,6 +4081,7 @@ where
 										htlc_id: prev_htlc_id,
 										incoming_packet_shared_secret: incoming_shared_secret,
 										phantom_shared_secret,
+										cltv_expiry: Some(cltv_expiry),
 									},
 									// We differentiate the received value from the sender intended value
 									// if possible so that we don't prematurely mark MPP payments complete
@@ -4104,6 +4112,7 @@ where
 												htlc_id: $htlc.prev_hop.htlc_id,
 												incoming_packet_shared_secret: $htlc.prev_hop.incoming_packet_shared_secret,
 												phantom_shared_secret,
+												cltv_expiry: Some(cltv_expiry),
 											}), payment_hash,
 											HTLCFailReason::reason(0x4000 | 15, htlc_msat_height_data),
 											HTLCDestination::FailedPayment { payment_hash: $payment_hash },
@@ -6113,6 +6122,7 @@ where
 											htlc_id: prev_htlc_id,
 											incoming_packet_shared_secret: forward_info.incoming_shared_secret,
 											phantom_shared_secret: None,
+											cltv_expiry: forward_info.routing.incoming_cltv_expiry(),
 										});
 
 										failed_intercept_forwards.push((htlc_source, forward_info.payment_hash,
@@ -7242,6 +7252,7 @@ where
 						incoming_packet_shared_secret: htlc.forward_info.incoming_shared_secret,
 						phantom_shared_secret: None,
 						outpoint: htlc.prev_funding_outpoint,
+						cltv_expiry: htlc.forward_info.routing.incoming_cltv_expiry(),
 					});
 
 					let requested_forward_scid /* intercept scid */ = match htlc.forward_info.routing {
@@ -8053,6 +8064,7 @@ impl_writeable_tlv_based!(HTLCPreviousHopData, {
 	(0, short_channel_id, required),
 	(1, phantom_shared_secret, option),
 	(2, outpoint, required),
+	(3, cltv_expiry, option),
 	(4, htlc_id, required),
 	(6, incoming_packet_shared_secret, required),
 	(7, user_channel_id, option),
