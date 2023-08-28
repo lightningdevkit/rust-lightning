@@ -1296,12 +1296,18 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out) {
 			_ => test_return!(),
 		}
 
-		node_a_ser.0.clear();
-		nodes[0].write(&mut node_a_ser).unwrap();
-		node_b_ser.0.clear();
-		nodes[1].write(&mut node_b_ser).unwrap();
-		node_c_ser.0.clear();
-		nodes[2].write(&mut node_c_ser).unwrap();
+		if nodes[0].get_and_clear_needs_persistence() == true {
+			node_a_ser.0.clear();
+			nodes[0].write(&mut node_a_ser).unwrap();
+		}
+		if nodes[1].get_and_clear_needs_persistence() == true {
+			node_b_ser.0.clear();
+			nodes[1].write(&mut node_b_ser).unwrap();
+		}
+		if nodes[2].get_and_clear_needs_persistence() == true {
+			node_c_ser.0.clear();
+			nodes[2].write(&mut node_c_ser).unwrap();
+		}
 	}
 }
 
