@@ -23,7 +23,7 @@ use crate::ln::channelmanager::{RAACommitmentOrder, PaymentSendFailure, PaymentI
 use crate::ln::channel::AnnouncementSigsState;
 use crate::ln::msgs;
 use crate::ln::msgs::{ChannelMessageHandler, RoutingMessageHandler};
-use crate::util::enforcing_trait_impls::EnforcingSigner;
+use crate::util::test_channel_signer::TestChannelSigner;
 use crate::util::errors::APIError;
 use crate::util::ser::{ReadableArgs, Writeable};
 use crate::util::test_utils::TestBroadcaster;
@@ -111,7 +111,7 @@ fn test_monitor_and_persister_update_fail() {
 	let chain_mon = {
 		let new_monitor = {
 			let monitor = nodes[0].chain_monitor.chain_monitor.get_monitor(outpoint).unwrap();
-			let new_monitor = <(BlockHash, ChannelMonitor<EnforcingSigner>)>::read(
+			let new_monitor = <(BlockHash, ChannelMonitor<TestChannelSigner>)>::read(
 				&mut io::Cursor::new(&monitor.encode()), (nodes[0].keys_manager, nodes[0].keys_manager)).unwrap().1;
 			assert!(new_monitor == *monitor);
 			new_monitor

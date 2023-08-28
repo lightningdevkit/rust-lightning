@@ -56,5 +56,5 @@ pub mod test_utils;
 /// impls of traits that add exra enforcement on the way they're called. Useful for detecting state
 /// machine errors and used in fuzz targets and tests.
 #[cfg(any(test, feature = "_test_utils"))]
-pub mod enforcing_trait_impls;
+pub mod test_channel_signer;
 

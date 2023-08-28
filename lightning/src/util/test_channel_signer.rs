@@ -51,21 +51,21 @@ pub const INITIAL_REVOKED_COMMITMENT_NUMBER: u64 = 1 << 48;
 /// Note that before we do so we should ensure its serialization format has backwards- and
 /// forwards-compatibility prefix/suffixes!
 #[derive(Clone)]
-pub struct EnforcingSigner {
+pub struct TestChannelSigner {
 	pub inner: InMemorySigner,
 	/// Channel state used for policy enforcement
 	pub state: Arc<Mutex<EnforcementState>>,
 	pub disable_revocation_policy_check: bool,
 }
 
-impl PartialEq for EnforcingSigner {
+impl PartialEq for TestChannelSigner {
 	fn eq(&self, o: &Self) -> bool {
 		Arc::ptr_eq(&self.state, &o.state)
 	}
 }
 
-impl EnforcingSigner {
-	/// Construct an EnforcingSigner
+impl TestChannelSigner {
+	/// Construct an TestChannelSigner
 	pub fn new(inner: InMemorySigner) -> Self {
 		let state = Arc::new(Mutex::new(EnforcementState::new()));
 		Self {
@@ -75,7 +75,7 @@ impl EnforcingSigner {
 		}
 	}
 
-	/// Construct an EnforcingSigner with externally managed storage
+	/// Construct an TestChannelSigner with externally managed storage
 	///
 	/// Since there are multiple copies of this struct for each channel, some coordination is needed
 	/// so that all copies are aware of enforcement state.  A pointer to this state is provided
@@ -96,7 +96,7 @@ impl EnforcingSigner {
 	}
 }
 
-impl ChannelSigner for EnforcingSigner {
+impl ChannelSigner for TestChannelSigner {
 	fn get_per_commitment_point(&self, idx: u64, secp_ctx: &Secp256k1<secp256k1::All>) -> PublicKey {
 		self.inner.get_per_commitment_point(idx, secp_ctx)
 	}
@@ -128,7 +128,7 @@ impl ChannelSigner for EnforcingSigner {
 	}
 }
 
-impl EcdsaChannelSigner for EnforcingSigner {
+impl EcdsaChannelSigner for TestChannelSigner {
 	fn sign_counterparty_commitment(&self, commitment_tx: &CommitmentTransaction, preimages: Vec<PaymentPreimage>, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<(Signature, Vec<Signature>), ()> {
 		self.verify_counterparty_commitment_tx(commitment_tx, secp_ctx);
 
@@ -241,11 +241,11 @@ impl EcdsaChannelSigner for EnforcingSigner {
 	}
 }
 
-impl WriteableEcdsaChannelSigner for EnforcingSigner {}
+impl WriteableEcdsaChannelSigner for TestChannelSigner {}
 
-impl Writeable for EnforcingSigner {
+impl Writeable for TestChannelSigner {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), Error> {
-		// EnforcingSigner has two fields - `inner` ([`InMemorySigner`]) and `state`
+		// TestChannelSigner has two fields - `inner` ([`InMemorySigner`]) and `state`
 		// ([`EnforcementState`]). `inner` is serialized here and deserialized by
 		// [`SignerProvider::read_chan_signer`]. `state` is managed by [`SignerProvider`]
 		// and will be serialized as needed by the implementation of that trait.
@@ -254,7 +254,7 @@ impl Writeable for EnforcingSigner {
 	}
 }
 
-impl EnforcingSigner {
+impl TestChannelSigner {
 	fn verify_counterparty_commitment_tx<'a, T: secp256k1::Signing + secp256k1::Verification>(&self, commitment_tx: &'a CommitmentTransaction, secp_ctx: &Secp256k1<T>) -> TrustedCommitmentTransaction<'a> {
 		commitment_tx.verify(&self.inner.get_channel_parameters().as_counterparty_broadcastable(),
 		                     self.inner.counterparty_pubkeys(), self.inner.pubkeys(), secp_ctx)
@@ -268,7 +268,7 @@ impl EnforcingSigner {
 	}
 }
 
-/// The state used by [`EnforcingSigner`] in order to enforce policy checks
+/// The state used by [`TestChannelSigner`] in order to enforce policy checks
 ///
 /// This structure is maintained by KeysInterface since we may have multiple copies of
 /// the signer and they must coordinate their state.
