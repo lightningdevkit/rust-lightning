@@ -77,7 +77,7 @@ use core::time::Duration;
 use core::ops::Deref;
 
 // Re-export this for use in the public API.
-pub use crate::ln::outbound_payment::{PaymentSendFailure, Retry, RetryableSendFailure, RecipientOnionFields};
+pub use crate::ln::outbound_payment::{PaymentSendFailure, ProbeSendFailure, Retry, RetryableSendFailure, RecipientOnionFields};
 use crate::ln::script::ShutdownScript;
 
 // We hold various information about HTLC relay in the HTLC objects in Channel itself:
@@ -3486,6 +3486,94 @@ where
 	#[cfg(test)]
 	pub(crate) fn payment_is_probe(&self, payment_hash: &PaymentHash, payment_id: &PaymentId) -> bool {
 		outbound_payment::payment_is_probe(payment_hash, payment_id, self.probing_cookie_secret)
+	}
+
+	/// Sends payment probes over all paths of a route that would be used to pay the given
+	/// amount to the given `node_id`.
+	///
+	/// See [`ChannelManager::send_preflight_probes`] for more information.
+	pub fn send_spontaneous_preflight_probes(
+		&self, node_id: PublicKey, amount_msat: u64, final_cltv_expiry_delta: u32, 
+		liquidity_limit_multiplier: Option<u64>,
+	) -> Result<Vec<(PaymentHash, PaymentId)>, ProbeSendFailure> {
+		let payment_params =
+			PaymentParameters::from_node_id(node_id, final_cltv_expiry_delta);
+
+		let route_params = RouteParameters { payment_params, final_value_msat: amount_msat };
+
+		self.send_preflight_probes(route_params, liquidity_limit_multiplier)
+	}
+
+	/// Sends payment probes over all paths of a route that would be used to pay a route found
+	/// according to the given [`RouteParameters`].
+	///
+	/// This may be used to send "pre-flight" probes, i.e., to train our scorer before conducting
+	/// the actual payment. Note this is only useful if there likely is sufficient time for the
+	/// probe to settle before sending out the actual payment, e.g., when waiting for user
+	/// confirmation in a wallet UI.
+	///
+	/// Otherwise, there is a chance the probe could take up some liquidity needed to complete the
+	/// actual payment. Users should therefore be cautious and might avoid sending probes if
+	/// liquidity is scarce and/or they don't expect the probe to return before they send the
+	/// payment. To mitigate this issue, channels with available liquidity less than the required
+	/// amount times the given `liquidity_limit_multiplier` won't be used to send pre-flight
+	/// probes. If `None` is given as `liquidity_limit_multiplier`, it defaults to `3`.
+	pub fn send_preflight_probes(
+		&self, route_params: RouteParameters, liquidity_limit_multiplier: Option<u64>,
+	) -> Result<Vec<(PaymentHash, PaymentId)>, ProbeSendFailure> {
+		let liquidity_limit_multiplier = liquidity_limit_multiplier.unwrap_or(3);
+
+		let payer = self.get_our_node_id();
+		let usable_channels = self.list_usable_channels();
+		let first_hops = usable_channels.iter().collect::<Vec<_>>();
+		let inflight_htlcs = self.compute_inflight_htlcs();
+
+		let route = self
+			.router
+			.find_route(&payer, &route_params, Some(&first_hops), inflight_htlcs)
+			.map_err(|e| {
+				log_error!(self.logger, "Failed to find path for payment probe: {:?}", e);
+				ProbeSendFailure::RouteNotFound
+			})?;
+
+		let mut used_liquidity_map = HashMap::with_capacity(first_hops.len());
+
+		let mut res = Vec::new();
+		for path in route.paths {
+			if path.hops.len() < 2 {
+				log_debug!(
+					self.logger,
+					"Skipped sending payment probe over path with less than two hops."
+				);
+				continue;
+			}
+
+			if let Some(first_path_hop) = path.hops.first() {
+				if let Some(first_hop) = first_hops.iter().find(|h| {
+					h.get_outbound_payment_scid() == Some(first_path_hop.short_channel_id)
+				}) {
+					let path_value = path.final_value_msat() + path.fee_msat();
+					let used_liquidity =
+						used_liquidity_map.entry(first_path_hop.short_channel_id).or_insert(0);
+
+					if first_hop.next_outbound_htlc_limit_msat
+						< (*used_liquidity + path_value) * liquidity_limit_multiplier
+					{
+						log_debug!(self.logger, "Skipped sending payment probe to avoid putting channel {} under the liquidity limit.", first_path_hop.short_channel_id);
+						continue;
+					} else {
+						*used_liquidity += path_value;
+					}
+				}
+			}
+
+			res.push(self.send_probe(path).map_err(|e| {
+				log_error!(self.logger, "Failed to send pre-flight probe: {:?}", e);
+				ProbeSendFailure::SendingFailed(e)
+			})?);
+		}
+
+		Ok(res)
 	}
 
 	/// Handles the generation of a funding transaction, optionally (for tests) with a function

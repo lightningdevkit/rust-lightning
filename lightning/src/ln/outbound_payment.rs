@@ -391,7 +391,7 @@ pub enum RetryableSendFailure {
 /// is in, see the description of individual enum states for more.
 ///
 /// [`ChannelManager::send_payment_with_route`]: crate::ln::channelmanager::ChannelManager::send_payment_with_route
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PaymentSendFailure {
 	/// A parameter which was passed to send_payment was invalid, preventing us from attempting to
 	/// send the payment at all.
@@ -463,6 +463,18 @@ pub(super) enum Bolt12PaymentError {
 	UnexpectedInvoice,
 	/// Payment for an invoice with the corresponding [`PaymentId`] was already initiated.
 	DuplicateInvoice,
+}
+
+/// Indicates that we failed to send a payment probe. Further errors may be surfaced later via
+/// [`Event::ProbeFailed`].
+///
+/// [`Event::ProbeFailed`]: crate::events::Event::ProbeFailed
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ProbeSendFailure {
+	/// We were unable to find a route to the destination.
+	RouteNotFound,
+	/// We failed to send the payment probes.
+	SendingFailed(PaymentSendFailure),
 }
 
 /// Information which is provided, encrypted, to the payment recipient when sending HTLCs.
