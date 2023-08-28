@@ -243,15 +243,6 @@ pub const ANTI_REORG_DELAY: u32 = 6;
 /// in a race condition between the user connecting a block (which would fail it) and the user
 /// providing us the preimage (which would claim it).
 pub(crate) const HTLC_FAIL_BACK_BUFFER: u32 = CLTV_CLAIM_BUFFER + LATENCY_GRACE_PERIOD_BLOCKS;
-/// Number of blocks before an inbound HTLC expires at which we fail it backwards.
-///
-/// If we have forwarded an HTLC to a peer and they have not claimed it on or off-chain by the
-/// time the previous hop's HTLC timeout expires, we're probably going to lose the inbound HTLC.
-/// Instead of also losing the channel, we fail the HTLC backwards.
-///
-/// To give us some buffer in case we're slow to process blocks, we fail a few blocks before the
-/// timeout officially expires to ensure we fail back before our counterparty force closes.
-pub(crate) const TIMEOUT_FAIL_BACK_BUFFER: u32 = 3;
 
 // TODO(devrandom) replace this with HolderCommitmentTransaction
 #[derive(Clone, PartialEq, Eq)]
@@ -3531,7 +3522,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			}
 		}
 
-		// Fail back HTLCs on backwards channels if they expire within `TIMEOUT_FAIL_BACK_BUFFER`
+		// Fail back HTLCs on backwards channels if they expire within `LATENCY_GRACE_PERIOD_BLOCKS`
 		// blocks. If we haven't seen the preimage for an HTLC by the time the previous hop's
 		// timeout expires, we've lost that HTLC, so we might as well fail it back instead of having our
 		// counterparty force-close the channel.
@@ -3548,7 +3539,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 						HTLCSource::PreviousHopData(HTLCPreviousHopData { htlc_id, cltv_expiry: Some(cltv_expiry), .. }) if !self.failed_back_htlc_ids.contains(htlc_id) => (*cltv_expiry, *htlc_id),
 						_ => continue,
 					};
-					if cltv_expiry <= height + TIMEOUT_FAIL_BACK_BUFFER {
+					if cltv_expiry <= height + LATENCY_GRACE_PERIOD_BLOCKS {
 						let duplicate_event = self.pending_monitor_events.iter().any(
 							|update| if let &MonitorEvent::HTLCEvent(ref upd) = update {
 								upd.source == *source
