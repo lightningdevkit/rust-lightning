@@ -336,7 +336,7 @@ impl WatchtowerPersister {
 	}
 }
 
-impl<Signer: sign::WriteableEcdsaChannelSigner> chainmonitor::Persist<Signer> for WatchtowerPersister {
+impl<Signer: sign::ecdsa::WriteableEcdsaChannelSigner> chainmonitor::Persist<Signer> for WatchtowerPersister {
 	fn persist_new_channel(&self, funding_txo: OutPoint,
 		data: &channelmonitor::ChannelMonitor<Signer>, id: MonitorUpdateId
 	) -> chain::ChannelMonitorUpdateStatus {
@@ -416,7 +416,7 @@ impl TestPersister {
 		self.update_rets.lock().unwrap().push_back(next_ret);
 	}
 }
-impl<Signer: sign::WriteableEcdsaChannelSigner> chainmonitor::Persist<Signer> for TestPersister {
+impl<Signer: sign::ecdsa::WriteableEcdsaChannelSigner> chainmonitor::Persist<Signer> for TestPersister {
 	fn persist_new_channel(&self, _funding_txo: OutPoint, _data: &channelmonitor::ChannelMonitor<Signer>, _id: MonitorUpdateId) -> chain::ChannelMonitorUpdateStatus {
 		if let Some(update_ret) = self.update_rets.lock().unwrap().pop_front() {
 			return update_ret
