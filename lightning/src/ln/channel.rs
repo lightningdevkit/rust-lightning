@@ -2100,6 +2100,45 @@ impl<SP: Deref> Channel<SP> where
 		Ok(())
 	}
 
+	/// The total fee paid to close the channel and claim an HTLC-success transaction, accounting
+	/// for an added input (spending a P2WPKH) and P2WPKH output for fee bumping.
+	fn cost_to_claim_onchain<L: Deref>(&self, feerate_per_kw: u32, logger: &L) -> u64
+	where L::Target: Logger
+	{
+		let commitment_weight = if self.context.is_outbound() {
+			let keys = self.context.build_holder_transaction_keys(self.context.cur_holder_commitment_transaction_number);
+			let commitment_stats = self.context.build_commitment_transaction(self.context.cur_holder_commitment_transaction_number, &keys, true, true, logger);
+			commitment_stats.total_fee_sat
+		} else { 0 };
+
+		let htlc_weight = htlc_success_tx_weight(self.context.get_channel_type());
+		let p2wpkh_weight = 31 * 4;
+		let input_weight = 272; // Including witness, assuming it spends from a p2wpkh
+
+		let total_weight = commitment_weight + htlc_weight + p2wpkh_weight + input_weight;
+		let total_fee = feerate_per_kw as u64 * total_weight / 1000;
+		total_fee
+	}
+
+	/// Check whether we should risk letting this channel force-close while waiting
+	/// for a downstream HTLC resolution on-chain. See [`ChannelConfig::early_fail_multiplier`]
+	/// for more info.
+	pub(super) fn check_worth_upstream_closing<F: Deref, L: Deref>(
+		&self, htlc_id: u64, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L
+	) -> Option<bool>
+	where F::Target: FeeEstimator, L::Target: Logger
+	{
+		let feerate_per_kw = fee_estimator.bounded_sat_per_1000_weight(ConfirmationTarget::HighPriority);
+		let htlc = self.context.pending_inbound_htlcs.iter().find(|htlc| htlc.htlc_id == htlc_id)?;
+		let total_fee = self.cost_to_claim_onchain(feerate_per_kw, logger);
+		let threshold = total_fee * self.context.config().early_fail_multiplier / 1_000_000;
+		if htlc.amount_msat / 1000 >= threshold {
+			Some(true)
+		} else {
+			Some(false)
+		}
+	}
+
 	#[inline]
 	fn get_closing_scriptpubkey(&self) -> Script {
 		// The shutdown scriptpubkey is set on channel opening when option_upfront_shutdown_script

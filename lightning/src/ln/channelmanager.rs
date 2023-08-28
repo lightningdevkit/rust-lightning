@@ -4791,6 +4791,37 @@ where
 		}
 	}
 
+	/// Check whether we should risk letting an upstream channel force-close while waiting
+	/// for a downstream HTLC resolution on-chain. See [`ChannelConfig::early_fail_multiplier`]
+	/// for more info.
+	fn check_worth_upstream_closing(&self, source: &HTLCSource) -> bool {
+		let (short_channel_id, htlc_id) = match source {
+			HTLCSource::OutboundRoute { .. } => {
+				debug_assert!(false, "This should not be called on outbound HTLCs");
+				return false;
+			},
+			HTLCSource::PreviousHopData(HTLCPreviousHopData { ref short_channel_id, ref htlc_id, .. }) => {
+				(short_channel_id, htlc_id)
+			},
+		};
+		let (counterparty_node_id, channel_id) = match self.short_to_chan_info.read().unwrap().get(short_channel_id) {
+			Some((cp_id, chan_id)) => (cp_id.clone(), chan_id.clone()),
+			None => return false,
+		};
+		let per_peer_state = self.per_peer_state.read().unwrap();
+		let mut peer_state_lock = match per_peer_state.get(&counterparty_node_id) {
+			Some(peer_state_mutex) => peer_state_mutex.lock().unwrap(),
+			None => return false,
+		};
+		let peer_state = &mut *peer_state_lock;
+		let chan = match peer_state.channel_by_id.get(&channel_id) {
+			Some(chan) => chan,
+			None => return false,
+		};
+		chan.check_worth_upstream_closing(
+			*htlc_id, &self.fee_estimator, &self.logger).unwrap_or(false)
+	}
+
 	/// Fails an HTLC backwards to the sender of it to us.
 	/// Note that we do not assume that channels corresponding to failed HTLCs are still available.
 	fn fail_htlc_backwards_internal(&self, source: &HTLCSource, payment_hash: &PaymentHash, onion_error: &HTLCFailReason, destination: HTLCDestination) {
@@ -6338,10 +6369,12 @@ where
 							log_trace!(self.logger, "Claiming HTLC with preimage {} from our monitor", &preimage);
 							self.claim_funds_internal(htlc_update.source, preimage, htlc_update.htlc_value_satoshis.map(|v| v * 1000), true, funding_outpoint);
 						} else {
-							log_trace!(self.logger, "Failing HTLC with hash {} from our monitor", &htlc_update.payment_hash);
-							let receiver = HTLCDestination::NextHopChannel { node_id: counterparty_node_id, channel_id: funding_outpoint.to_channel_id() };
-							let reason = HTLCFailReason::from_failure_code(0x4000 | 8);
-							self.fail_htlc_backwards_internal(&htlc_update.source, &htlc_update.payment_hash, &reason, receiver);
+							if !htlc_update.awaiting_downstream_confirmation || !self.check_worth_upstream_closing(&htlc_update.source) {
+								log_trace!(self.logger, "Failing HTLC with hash {} from our monitor", &htlc_update.payment_hash);
+								let receiver = HTLCDestination::NextHopChannel { node_id: counterparty_node_id, channel_id: funding_outpoint.to_channel_id() };
+								let reason = HTLCFailReason::from_failure_code(0x4000 | 8);
+								self.fail_htlc_backwards_internal(&htlc_update.source, &htlc_update.payment_hash, &reason, receiver);
+							}
 						}
 					},
 					MonitorEvent::CommitmentTxConfirmed(funding_outpoint) |
