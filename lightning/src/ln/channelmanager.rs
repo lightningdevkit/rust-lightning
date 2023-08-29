@@ -470,7 +470,7 @@ impl MsgHandleErrInternal {
 						log_level: Level::Warn,
 					},
 				},
-				ChannelError::Ignore(msg) => LightningError {
+				ChannelError::Ignore(msg) | ChannelError::Retry(msg) => LightningError {
 					err: msg,
 					action: msgs::ErrorAction::IgnoreError,
 				},
@@ -1812,7 +1812,7 @@ macro_rules! convert_chan_err {
 			ChannelError::Warn(msg) => {
 				(false, MsgHandleErrInternal::from_chan_no_close(ChannelError::Warn(msg), $channel_id.clone()))
 			},
-			ChannelError::Ignore(msg) => {
+			ChannelError::Ignore(msg) | ChannelError::Retry(msg) => {
 				(false, MsgHandleErrInternal::from_chan_no_close(ChannelError::Ignore(msg), $channel_id.clone()))
 			},
 			ChannelError::Close(msg) => {
@@ -1828,7 +1828,7 @@ macro_rules! convert_chan_err {
 		match $err {
 			// We should only ever have `ChannelError::Close` when unfunded channels error.
 			// In any case, just close the channel.
-			ChannelError::Warn(msg) | ChannelError::Ignore(msg) | ChannelError::Close(msg) => {
+			ChannelError::Warn(msg) | ChannelError::Ignore(msg) | ChannelError::Retry(msg) | ChannelError::Close(msg) => {
 				log_error!($self.logger, "Closing unfunded channel {} due to an error: {}", &$channel_id, msg);
 				update_maps_on_chan_removal!($self, &$channel_context);
 				let shutdown_res = $channel_context.force_shutdown(false);
@@ -5622,11 +5622,11 @@ where
 				Some(inbound_chan) => {
 					match inbound_chan.funding_created(msg, best_block, &self.signer_provider, &self.logger) {
 						Ok(res) => res,
-						Err((inbound_chan, ChannelError::Ignore(_))) => {
-							// If we get an `Ignore` error then something transient went wrong. Put the channel
+						Err((inbound_chan, err @ ChannelError::Retry(_))) => {
+							// If we get an `Retry` error then something transient went wrong. Put the channel
 							// back into the table and bail.
 							peer_state.inbound_v1_channel_by_id.insert(msg.temporary_channel_id, inbound_chan);
-							return Ok(());
+							return Err(MsgHandleErrInternal::from_chan_no_close(err, msg.temporary_channel_id));
 						},
 						Err((mut inbound_chan, err)) => {
 							// We've already removed this inbound channel from the map in `PeerState`

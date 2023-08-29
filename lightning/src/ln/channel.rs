@@ -362,6 +362,7 @@ pub const MIN_THEIR_CHAN_RESERVE_SATOSHIS: u64 = 1000;
 /// channel_id in ChannelManager.
 pub(super) enum ChannelError {
 	Ignore(String),
+	Retry(String),
 	Warn(String),
 	Close(String),
 }
@@ -370,6 +371,7 @@ impl fmt::Debug for ChannelError {
 	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
 		match self {
 			&ChannelError::Ignore(ref e) => write!(f, "Ignore : {}", e),
+			&ChannelError::Retry(ref e) => write!(f, "Retry : {}", e),
 			&ChannelError::Warn(ref e) => write!(f, "Warn : {}", e),
 			&ChannelError::Close(ref e) => write!(f, "Close : {}", e),
 		}
@@ -380,6 +382,7 @@ impl fmt::Display for ChannelError {
 	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
 		match self {
 			&ChannelError::Ignore(ref e) => write!(f, "{}", e),
+			&ChannelError::Retry(ref e) => write!(f, "{}", e),
 			&ChannelError::Warn(ref e) => write!(f, "{}", e),
 			&ChannelError::Close(ref e) => write!(f, "{}", e),
 		}
@@ -1179,7 +1182,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 				transaction_number, &self.secp_ctx
 			).map_err(|_| {
 				log_warn!(logger, "Channel signer for {} is unavailable; try again later", self.channel_id());
-				ChannelError::Ignore("Channel signer is unavailble; try again later".to_owned())
+				ChannelError::Retry("Channel signer is unavailble; try again later".to_owned())
 			})?;
 		Ok((transaction_number, per_commitment_point))
 	}
