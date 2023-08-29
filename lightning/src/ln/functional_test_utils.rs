@@ -29,6 +29,7 @@ use crate::util::test_utils;
 use crate::util::test_utils::{panicking, TestChainMonitor, TestScorer, TestKeysInterface};
 use crate::util::errors::APIError;
 use crate::util::config::{UserConfig, MaxDustHTLCExposure};
+#[cfg(test)]
 use crate::util::logger::Logger;
 use crate::util::ser::{ReadableArgs, Writeable};
 

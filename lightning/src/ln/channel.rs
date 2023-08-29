@@ -1160,6 +1160,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 	}
 
 	/// Returns the holder signer.
+	#[cfg(test)]
 	pub fn get_signer(&self) -> &ChannelSignerType<<SP::Target as SignerProvider>::Signer>{
 		return &self.holder_signer
 	}

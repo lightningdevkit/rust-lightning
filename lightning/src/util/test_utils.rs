@@ -61,7 +61,6 @@ use regex;
 use crate::io;
 use crate::prelude::*;
 use core::cell::RefCell;
-use core::ops::Deref;
 use core::time::Duration;
 use crate::sync::{Mutex, Arc};
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
