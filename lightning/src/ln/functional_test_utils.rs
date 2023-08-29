@@ -419,9 +419,9 @@ impl<'a, 'b, 'c> Node<'a, 'b, 'c> {
 	/// Changes the channel signer's availability for the specified peer and channel.
 	///
 	/// When `available` is set to `true`, the channel signer will behave normally. When set to
-	/// `false`, the channel signer will act like an off-line remote signer and will return
-	/// `SignerError::NotAvailable` for several of the signing methods. Currently, only
-	/// `get_per_commitment_point` and `release_commitment_secret` are affected by this setting.
+	/// `false`, the channel signer will act like an off-line remote signer and will return `Err` for
+	/// several of the signing methods. Currently, only `get_per_commitment_point` and
+	/// `release_commitment_secret` are affected by this setting.
 	#[cfg(test)]
 	pub fn set_channel_signer_available(&self, peer_id: &PublicKey, chan_id: &ChannelId, available: bool) {
 		let per_peer_state = self.node.per_peer_state.read().unwrap();

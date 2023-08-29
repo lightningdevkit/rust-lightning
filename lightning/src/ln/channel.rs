@@ -35,7 +35,7 @@ use crate::chain::BestBlock;
 use crate::chain::chaininterface::{FeeEstimator, ConfirmationTarget, LowerBoundedFeeEstimator};
 use crate::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateStep, LATENCY_GRACE_PERIOD_BLOCKS, CLOSED_CHANNEL_UPDATE_ID};
 use crate::chain::transaction::{OutPoint, TransactionData};
-use crate::sign::{EcdsaChannelSigner, WriteableEcdsaChannelSigner, EntropySource, ChannelSigner, SignerProvider, NodeSigner, Recipient, SignerError};
+use crate::sign::{EcdsaChannelSigner, WriteableEcdsaChannelSigner, EntropySource, ChannelSigner, SignerProvider, NodeSigner, Recipient};
 use crate::events::ClosureReason;
 use crate::routing::gossip::NodeId;
 use crate::util::ser::{Readable, ReadableArgs, Writeable, Writer, VecWriter};
@@ -1167,11 +1167,8 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 
 	/// Retrieves the next commitment point and its index from the signer.
 	///
-	/// This maps a `SignerError` into an appropriate `ChannelError`.  If the point cannot be
-	/// retrieved because the signer is unavailable, then `ChannelError::Ignore` is
-	/// returned. Otherwise, `ChannelError::Close` is returned.
-	///
-	/// Note that this does _not_ advance the context's state.
+	/// This maps an `Err` into `ChannelError::Ignore`. Note that this does _not_ advance the
+	/// context's state.
 	pub fn get_next_holder_per_commitment_point<L: Deref>(&self, logger: &L) -> Result<(u64, PublicKey), ChannelError>
 		where L::Target: Logger
 	{
@@ -1180,15 +1177,9 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 		let per_commitment_point = 
 			self.holder_signer.as_ref().get_per_commitment_point(
 				transaction_number, &self.secp_ctx
-			).map_err(|e| match e {
-				SignerError::NotAvailable => {
-					log_warn!(logger, "Channel signer for {} is unavailable; try again later", self.channel_id());
-					ChannelError::Ignore("Channel signer is unavailble; try again later".to_owned())
-				},
-				_ => {
-					log_error!(logger, "Channel signer for {} failed permanently; force-closing", self.channel_id());
-					ChannelError::Close("Unable to generate commitment point".to_owned())
-				}
+			).map_err(|_| {
+				log_warn!(logger, "Channel signer for {} is unavailable; try again later", self.channel_id());
+				ChannelError::Ignore("Channel signer is unavailble; try again later".to_owned())
 			})?;
 		Ok((transaction_number, per_commitment_point))
 	}

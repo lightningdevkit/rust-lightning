@@ -10,7 +10,7 @@
 use crate::ln::channel::{ANCHOR_OUTPUT_VALUE_SATOSHI, MIN_CHAN_DUST_LIMIT_SATOSHIS};
 use crate::ln::chan_utils::{HTLCOutputInCommitment, ChannelPublicKeys, HolderCommitmentTransaction, CommitmentTransaction, ChannelTransactionParameters, TrustedCommitmentTransaction, ClosingTransaction};
 use crate::ln::{chan_utils, msgs, PaymentPreimage};
-use crate::sign::{WriteableEcdsaChannelSigner, InMemorySigner, ChannelSigner, EcdsaChannelSigner, SignerError};
+use crate::sign::{WriteableEcdsaChannelSigner, InMemorySigner, ChannelSigner, EcdsaChannelSigner};
 
 use crate::prelude::*;
 use core::cmp;
@@ -101,7 +101,7 @@ impl TestChannelSigner {
 	/// Marks the signer's availability.
 	///
 	/// When `true`, methods are forwarded to the underlying signer as normal. When `false`, some
-	/// methods will return `SignerError::NotAvailable`. In particular:
+	/// methods will return `Err`. In particular:
 	///
 	/// - `get_per_commitment_point`
 	/// - `release_commitment_secret`
@@ -112,16 +112,16 @@ impl TestChannelSigner {
 }
 
 impl ChannelSigner for TestChannelSigner {
-	fn get_per_commitment_point(&self, idx: u64, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<PublicKey, SignerError> {
+	fn get_per_commitment_point(&self, idx: u64, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<PublicKey, ()> {
 		if !*self.available.lock().unwrap() {
-			return Err(SignerError::NotAvailable);
+			return Err(());
 		}
 		self.inner.get_per_commitment_point(idx, secp_ctx)
 	}
 
-	fn release_commitment_secret(&self, idx: u64) -> Result<[u8; 32], SignerError> {
+	fn release_commitment_secret(&self, idx: u64) -> Result<[u8; 32], ()> {
 		if !*self.available.lock().unwrap() {
-			return Err(SignerError::NotAvailable);
+			return Err(());
 		}
 		{
 			let mut state = self.state.lock().unwrap();
