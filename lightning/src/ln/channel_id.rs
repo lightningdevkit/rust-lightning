@@ -21,7 +21,9 @@ use core::fmt;
 use core::ops::Deref;
 
 /// A unique 32-byte identifier for a channel.
-/// Depending on how the ID is generated, several varieties are distinguished (but all are stored as 32 bytes): _v1_ and _temporary_.
+/// Depending on how the ID is generated, several varieties are distinguished
+/// (but all are stored as 32 bytes):
+///   _v1_ and _temporary_.
 /// A _v1_ channel ID is generated based on funding tx outpoint (txid & index).
 /// A _temporary_ ID is generated randomly.
 /// (Later revocation-point-based _v2_ is a possibility.)
