@@ -237,7 +237,12 @@ impl From<&ClaimableHTLC> for events::ClaimedHTLC {
 ///
 /// This is not exported to bindings users as we just use [u8; 32] directly
 #[derive(Hash, Copy, Clone, PartialEq, Eq, Debug)]
-pub struct PaymentId(pub [u8; 32]);
+pub struct PaymentId(pub [u8; Self::LENGTH]);
+
+impl PaymentId {
+	/// Number of bytes in the id.
+	pub const LENGTH: usize = 32;
+}
 
 impl Writeable for PaymentId {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {

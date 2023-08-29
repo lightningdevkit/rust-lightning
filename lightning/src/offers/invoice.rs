@@ -110,6 +110,7 @@ use core::time::Duration;
 use crate::io;
 use crate::blinded_path::BlindedPath;
 use crate::ln::PaymentHash;
+use crate::ln::channelmanager::PaymentId;
 use crate::ln::features::{BlindedHopFeatures, Bolt12InvoiceFeatures, InvoiceRequestFeatures, OfferFeatures};
 use crate::ln::inbound_payment::ExpandedKey;
 use crate::ln::msgs::DecodeError;
@@ -695,10 +696,11 @@ impl Bolt12Invoice {
 		merkle::message_digest(SIGNATURE_TAG, &self.bytes).as_ref().clone()
 	}
 
-	/// Verifies that the invoice was for a request or refund created using the given key.
+	/// Verifies that the invoice was for a request or refund created using the given key. Returns
+	/// the associated [`PaymentId`] to use when sending the payment.
 	pub fn verify<T: secp256k1::Signing>(
 		&self, key: &ExpandedKey, secp_ctx: &Secp256k1<T>
-	) -> bool {
+	) -> Result<PaymentId, ()> {
 		self.contents.verify(TlvStream::new(&self.bytes), key, secp_ctx)
 	}
 
@@ -947,7 +949,7 @@ impl InvoiceContents {
 
 	fn verify<T: secp256k1::Signing>(
 		&self, tlv_stream: TlvStream<'_>, key: &ExpandedKey, secp_ctx: &Secp256k1<T>
-	) -> bool {
+	) -> Result<PaymentId, ()> {
 		let offer_records = tlv_stream.clone().range(OFFER_TYPES);
 		let invreq_records = tlv_stream.range(INVOICE_REQUEST_TYPES).filter(|record| {
 			match record.r#type {
@@ -967,10 +969,7 @@ impl InvoiceContents {
 			},
 		};
 
-		match signer::verify_metadata(metadata, key, iv_bytes, payer_id, tlv_stream, secp_ctx) {
-			Ok(_) => true,
-			Err(()) => false,
-		}
+		signer::verify_payer_metadata(metadata, key, iv_bytes, payer_id, tlv_stream, secp_ctx)
 	}
 
 	fn derives_keys(&self) -> bool {
@@ -1642,36 +1641,31 @@ mod tests {
 			.build().unwrap()
 			.sign(payer_sign).unwrap();
 
-		if let Err(e) = invoice_request
-			.verify_and_respond_using_derived_keys_no_std(
-				payment_paths(), payment_hash(), now(), &expanded_key, &secp_ctx
-			)
-			.unwrap()
+		if let Err(e) = invoice_request.clone()
+			.verify(&expanded_key, &secp_ctx).unwrap()
+			.respond_using_derived_keys_no_std(payment_paths(), payment_hash(), now()).unwrap()
 			.build_and_sign(&secp_ctx)
 		{
 			panic!("error building invoice: {:?}", e);
 		}
 
 		let expanded_key = ExpandedKey::new(&KeyMaterial([41; 32]));
-		match invoice_request.verify_and_respond_using_derived_keys_no_std(
-			payment_paths(), payment_hash(), now(), &expanded_key, &secp_ctx
-		) {
-			Ok(_) => panic!("expected error"),
-			Err(e) => assert_eq!(e, Bolt12SemanticError::InvalidMetadata),
-		}
+		assert!(invoice_request.verify(&expanded_key, &secp_ctx).is_err());
 
 		let desc = "foo".to_string();
 		let offer = OfferBuilder
 			::deriving_signing_pubkey(desc, node_id, &expanded_key, &entropy, &secp_ctx)
 			.amount_msats(1000)
+			// Omit the path so that node_id is used for the signing pubkey instead of deriving
 			.build().unwrap();
 		let invoice_request = offer.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
 			.build().unwrap()
 			.sign(payer_sign).unwrap();
 
-		match invoice_request.verify_and_respond_using_derived_keys_no_std(
-			payment_paths(), payment_hash(), now(), &expanded_key, &secp_ctx
-		) {
+		match invoice_request
+			.verify(&expanded_key, &secp_ctx).unwrap()
+			.respond_using_derived_keys_no_std(payment_paths(), payment_hash(), now())
+		{
 			Ok(_) => panic!("expected error"),
 			Err(e) => assert_eq!(e, Bolt12SemanticError::InvalidMetadata),
 		}

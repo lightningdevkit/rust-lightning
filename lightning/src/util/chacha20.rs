@@ -159,6 +159,30 @@ mod real_chacha {
 			chacha_bytes
 		}
 
+		/// Encrypts `src` into `dest` using a single block from a ChaCha stream. Passing `dest` as
+		/// `src` in a second call will decrypt it.
+		pub fn encrypt_single_block(
+			key: &[u8; 32], nonce: &[u8; 16], dest: &mut [u8], src: &[u8]
+		) {
+			debug_assert_eq!(dest.len(), src.len());
+			debug_assert!(dest.len() <= 32);
+
+			let block = ChaCha20::get_single_block(key, nonce);
+			for i in 0..dest.len() {
+				dest[i] = block[i] ^ src[i];
+			}
+		}
+
+		/// Same as `encrypt_single_block` only operates on a fixed-size input in-place.
+		pub fn encrypt_single_block_in_place(
+			key: &[u8; 32], nonce: &[u8; 16], bytes: &mut [u8; 32]
+		) {
+			let block = ChaCha20::get_single_block(key, nonce);
+			for i in 0..bytes.len() {
+				bytes[i] = block[i] ^ bytes[i];
+			}
+		}
+
 		fn expand(key: &[u8], nonce: &[u8]) -> ChaChaState {
 			let constant = match key.len() {
 				16 => b"expand 16-byte k",
@@ -289,6 +313,17 @@ mod fuzzy_chacha {
 		pub fn get_single_block(_key: &[u8; 32], _nonce: &[u8; 16]) -> [u8; 32] {
 			[0; 32]
 		}
+
+		pub fn encrypt_single_block(
+			_key: &[u8; 32], _nonce: &[u8; 16], dest: &mut [u8], src: &[u8]
+		) {
+			debug_assert_eq!(dest.len(), src.len());
+			debug_assert!(dest.len() <= 32);
+		}
+
+		pub fn encrypt_single_block_in_place(
+			_key: &[u8; 32], _nonce: &[u8; 16], _bytes: &mut [u8; 32]
+		) {}
 
 		pub fn process(&mut self, input: &[u8], output: &mut [u8]) {
 			output.copy_from_slice(input);
@@ -617,5 +652,50 @@ mod test {
 		chacha20.process_in_place(&mut block_bytes);
 
 		assert_eq!(ChaCha20::get_single_block(&key, &nonce_16bytes), block_bytes);
+	}
+
+	#[test]
+	fn encrypt_single_block() {
+		let key = [
+			0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
+			0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
+			0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17,
+			0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f,
+		];
+		let nonce = [
+			0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+			0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
+		];
+		let bytes = [1; 32];
+
+		let mut encrypted_bytes = [0; 32];
+		ChaCha20::encrypt_single_block(&key, &nonce, &mut encrypted_bytes, &bytes);
+
+		let mut decrypted_bytes = [0; 32];
+		ChaCha20::encrypt_single_block(&key, &nonce, &mut decrypted_bytes, &encrypted_bytes);
+
+		assert_eq!(bytes, decrypted_bytes);
+	}
+
+	#[test]
+	fn encrypt_single_block_in_place() {
+		let key = [
+			0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
+			0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
+			0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17,
+			0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f,
+		];
+		let nonce = [
+			0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+			0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
+		];
+		let unencrypted_bytes = [1; 32];
+		let mut bytes = unencrypted_bytes;
+
+		ChaCha20::encrypt_single_block_in_place(&key, &nonce, &mut bytes);
+		assert_ne!(bytes, unencrypted_bytes);
+
+		ChaCha20::encrypt_single_block_in_place(&key, &nonce, &mut bytes);
+		assert_eq!(bytes, unencrypted_bytes);
 	}
 }

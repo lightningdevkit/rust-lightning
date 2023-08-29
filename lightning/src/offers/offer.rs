@@ -77,6 +77,7 @@ use core::time::Duration;
 use crate::sign::EntropySource;
 use crate::io;
 use crate::blinded_path::BlindedPath;
+use crate::ln::channelmanager::PaymentId;
 use crate::ln::features::OfferFeatures;
 use crate::ln::inbound_payment::{ExpandedKey, IV_LEN, Nonce};
 use crate::ln::msgs::MAX_VALUE_MSAT;
@@ -169,7 +170,7 @@ impl<'a, T: secp256k1::Signing> OfferBuilder<'a, DerivedMetadata, T> {
 		secp_ctx: &'a Secp256k1<T>
 	) -> Self where ES::Target: EntropySource {
 		let nonce = Nonce::from_entropy_source(entropy_source);
-		let derivation_material = MetadataMaterial::new(nonce, expanded_key, IV_BYTES);
+		let derivation_material = MetadataMaterial::new(nonce, expanded_key, IV_BYTES, None);
 		let metadata = Metadata::DerivedSigningPubkey(derivation_material);
 		OfferBuilder {
 			offer: OfferContents {
@@ -283,7 +284,7 @@ impl<'a, M: MetadataStrategy, T: secp256k1::Signing> OfferBuilder<'a, M, T> {
 				let mut tlv_stream = self.offer.as_tlv_stream();
 				debug_assert_eq!(tlv_stream.metadata, None);
 				tlv_stream.metadata = None;
-				if metadata.derives_keys() {
+				if metadata.derives_recipient_keys() {
 					tlv_stream.node_id = None;
 				}
 
@@ -454,10 +455,12 @@ impl Offer {
 
 	/// Similar to [`Offer::request_invoice`] except it:
 	/// - derives the [`InvoiceRequest::payer_id`] such that a different key can be used for each
-	///   request, and
-	/// - sets the [`InvoiceRequest::payer_metadata`] when [`InvoiceRequestBuilder::build`] is
-	///   called such that it can be used by [`Bolt12Invoice::verify`] to determine if the invoice
-	///   was requested using a base [`ExpandedKey`] from which the payer id was derived.
+	///   request,
+	/// - sets [`InvoiceRequest::payer_metadata`] when [`InvoiceRequestBuilder::build`] is called
+	///   such that it can be used by [`Bolt12Invoice::verify`] to determine if the invoice was
+	///   requested using a base [`ExpandedKey`] from which the payer id was derived, and
+	/// - includes the [`PaymentId`] encrypted in [`InvoiceRequest::payer_metadata`] so that it can
+	///   be used when sending the payment for the requested invoice.
 	///
 	/// Useful to protect the sender's privacy.
 	///
@@ -468,7 +471,8 @@ impl Offer {
 	/// [`Bolt12Invoice::verify`]: crate::offers::invoice::Bolt12Invoice::verify
 	/// [`ExpandedKey`]: crate::ln::inbound_payment::ExpandedKey
 	pub fn request_invoice_deriving_payer_id<'a, 'b, ES: Deref, T: secp256k1::Signing>(
-		&'a self, expanded_key: &ExpandedKey, entropy_source: ES, secp_ctx: &'b Secp256k1<T>
+		&'a self, expanded_key: &ExpandedKey, entropy_source: ES, secp_ctx: &'b Secp256k1<T>,
+		payment_id: PaymentId
 	) -> Result<InvoiceRequestBuilder<'a, 'b, DerivedPayerId, T>, Bolt12SemanticError>
 	where
 		ES::Target: EntropySource,
@@ -477,7 +481,9 @@ impl Offer {
 			return Err(Bolt12SemanticError::UnknownRequiredFeatures);
 		}
 
-		Ok(InvoiceRequestBuilder::deriving_payer_id(self, expanded_key, entropy_source, secp_ctx))
+		Ok(InvoiceRequestBuilder::deriving_payer_id(
+			self, expanded_key, entropy_source, secp_ctx, payment_id
+		))
 	}
 
 	/// Similar to [`Offer::request_invoice_deriving_payer_id`] except uses `payer_id` for the
@@ -489,7 +495,8 @@ impl Offer {
 	///
 	/// [`InvoiceRequest::payer_id`]: crate::offers::invoice_request::InvoiceRequest::payer_id
 	pub fn request_invoice_deriving_metadata<ES: Deref>(
-		&self, payer_id: PublicKey, expanded_key: &ExpandedKey, entropy_source: ES
+		&self, payer_id: PublicKey, expanded_key: &ExpandedKey, entropy_source: ES,
+		payment_id: PaymentId
 	) -> Result<InvoiceRequestBuilder<ExplicitPayerId, secp256k1::SignOnly>, Bolt12SemanticError>
 	where
 		ES::Target: EntropySource,
@@ -498,7 +505,9 @@ impl Offer {
 			return Err(Bolt12SemanticError::UnknownRequiredFeatures);
 		}
 
-		Ok(InvoiceRequestBuilder::deriving_metadata(self, payer_id, expanded_key, entropy_source))
+		Ok(InvoiceRequestBuilder::deriving_metadata(
+			self, payer_id, expanded_key, entropy_source, payment_id
+		))
 	}
 
 	/// Creates an [`InvoiceRequestBuilder`] for the offer with the given `metadata` and `payer_id`,
@@ -661,11 +670,13 @@ impl OfferContents {
 				let tlv_stream = TlvStream::new(bytes).range(OFFER_TYPES).filter(|record| {
 					match record.r#type {
 						OFFER_METADATA_TYPE => false,
-						OFFER_NODE_ID_TYPE => !self.metadata.as_ref().unwrap().derives_keys(),
+						OFFER_NODE_ID_TYPE => {
+							!self.metadata.as_ref().unwrap().derives_recipient_keys()
+						},
 						_ => true,
 					}
 				});
-				signer::verify_metadata(
+				signer::verify_recipient_metadata(
 					metadata, key, IV_BYTES, self.signing_pubkey(), tlv_stream, secp_ctx
 				)
 			},
