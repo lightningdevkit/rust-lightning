@@ -6729,7 +6729,7 @@ where
 							self.fail_htlc_backwards_internal(&htlc_update.source, &htlc_update.payment_hash, &reason, receiver);
 						}
 					},
-					MonitorEvent::CommitmentTxConfirmed(funding_outpoint) => {
+					MonitorEvent::HolderForceClosed(funding_outpoint) => {
 						let counterparty_node_id_opt = match counterparty_node_id {
 							Some(cp_id) => Some(cp_id),
 							None => {
@@ -6753,7 +6753,7 @@ where
 												msg: update
 											});
 										}
-										self.issue_channel_close_events(&chan.context, ClosureReason::CommitmentTxConfirmed);
+										self.issue_channel_close_events(&chan.context, ClosureReason::HolderForceClosed);
 										pending_msg_events.push(events::MessageSendEvent::HandleError {
 											node_id: chan.context.get_counterparty_node_id(),
 											action: msgs::ErrorAction::SendErrorMessage {

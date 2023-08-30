@@ -134,7 +134,7 @@ pub enum MonitorEvent {
 	HTLCEvent(HTLCUpdate),
 
 	/// A monitor event that the Channel's commitment transaction was confirmed.
-	CommitmentTxConfirmed(OutPoint),
+	HolderForceClosed(OutPoint),
 
 	/// Indicates a [`ChannelMonitor`] update has completed. See
 	/// [`ChannelMonitorUpdateStatus::InProgress`] for more information on how this is used.
@@ -160,7 +160,7 @@ impl_writeable_tlv_based_enum_upgradable!(MonitorEvent,
 	},
 ;
 	(2, HTLCEvent),
-	(4, CommitmentTxConfirmed),
+	(4, HolderForceClosed),
 	// 6 was `UpdateFailed` until LDK 0.0.117
 );
 
@@ -1031,7 +1031,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Writeable for ChannelMonitorImpl<Signe
 
 		writer.write_all(&(self.pending_monitor_events.iter().filter(|ev| match ev {
 			MonitorEvent::HTLCEvent(_) => true,
-			MonitorEvent::CommitmentTxConfirmed(_) => true,
+			MonitorEvent::HolderForceClosed(_) => true,
 			_ => false,
 		}).count() as u64).to_be_bytes())?;
 		for event in self.pending_monitor_events.iter() {
@@ -1040,7 +1040,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Writeable for ChannelMonitorImpl<Signe
 					0u8.write(writer)?;
 					upd.write(writer)?;
 				},
-				MonitorEvent::CommitmentTxConfirmed(_) => 1u8.write(writer)?,
+				MonitorEvent::HolderForceClosed(_) => 1u8.write(writer)?,
 				_ => {}, // Covered in the TLV writes below
 			}
 		}
@@ -2526,7 +2526,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			txs.push(tx);
 		}
 		broadcaster.broadcast_transactions(&txs);
-		self.pending_monitor_events.push(MonitorEvent::CommitmentTxConfirmed(self.funding_info.0));
+		self.pending_monitor_events.push(MonitorEvent::HolderForceClosed(self.funding_info.0));
 	}
 
 	pub fn update_monitor<B: Deref, F: Deref, L: Deref>(&mut self, updates: &ChannelMonitorUpdate, broadcaster: &B, fee_estimator: F, logger: &L) -> Result<(), ()>
@@ -2639,7 +2639,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 						log_error!(logger, "    in channel monitor for channel {}!", &self.funding_info.0.to_channel_id());
 						log_error!(logger, "    Read the docs for ChannelMonitor::get_latest_holder_commitment_txn and take manual action!");
 					} else {
-						// If we generated a MonitorEvent::CommitmentTxConfirmed, the ChannelManager
+						// If we generated a MonitorEvent::HolderForceClosed, the ChannelManager
 						// will still give us a ChannelForceClosed event with !should_broadcast, but we
 						// shouldn't print the scary warning above.
 						log_info!(logger, "Channel off-chain state closed after we broadcasted our latest commitment transaction.");
@@ -3484,7 +3484,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			let funding_outp = HolderFundingOutput::build(self.funding_redeemscript.clone(), self.channel_value_satoshis, self.onchain_tx_handler.channel_type_features().clone());
 			let commitment_package = PackageTemplate::build_package(self.funding_info.0.txid.clone(), self.funding_info.0.index as u32, PackageSolvingData::HolderFundingOutput(funding_outp), self.best_block.height(), self.best_block.height());
 			claimable_outpoints.push(commitment_package);
-			self.pending_monitor_events.push(MonitorEvent::CommitmentTxConfirmed(self.funding_info.0));
+			self.pending_monitor_events.push(MonitorEvent::HolderForceClosed(self.funding_info.0));
 			// Although we aren't signing the transaction directly here, the transaction will be signed
 			// in the claim that is queued to OnchainTxHandler. We set holder_tx_signed here to reject
 			// new channel updates.
@@ -4248,7 +4248,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 		for _ in 0..pending_monitor_events_len {
 			let ev = match <u8 as Readable>::read(reader)? {
 				0 => MonitorEvent::HTLCEvent(Readable::read(reader)?),
-				1 => MonitorEvent::CommitmentTxConfirmed(funding_info.0),
+				1 => MonitorEvent::HolderForceClosed(funding_info.0),
 				_ => return Err(DecodeError::InvalidValue)
 			};
 			pending_monitor_events.as_mut().unwrap().push(ev);
