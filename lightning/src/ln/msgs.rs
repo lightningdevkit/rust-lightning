@@ -468,6 +468,7 @@ pub struct ChannelReady {
 // 	}
 // }
 
+/// Serial ID, 64-bit
 pub type SerialId = u64;
 
 /// A tx_add_input message for adding an input during interactive transaction construction

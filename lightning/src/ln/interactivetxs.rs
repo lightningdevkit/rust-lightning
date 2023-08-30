@@ -670,6 +670,7 @@ impl InteractiveTxConstructor {
 	}
 }
 
+// TODO: put in different test file
 #[cfg(test)]
 mod tests {
 	use core::str::FromStr;
@@ -952,6 +953,7 @@ mod tests {
 	}
 
 	fn get_sample_tx_output() -> TxOut {
+		// TODO: better create from address
 		let secret_key = SecretKey::from_slice(&[2; 32]).unwrap();
 		let secp_ctx = Secp256k1::new();
 		let pubkey = PublicKey::from_secret_key(&secp_ctx, &secret_key);

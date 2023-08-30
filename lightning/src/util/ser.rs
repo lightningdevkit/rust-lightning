@@ -1393,6 +1393,7 @@ impl TransactionU16LenLimited {
 		self.0
 	}
 
+	/// Access inner transaction, as reference
 	pub fn inner(&self) -> &Transaction {
 		&self.0
 	}
