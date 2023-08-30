@@ -150,13 +150,10 @@ pub enum MonitorEvent {
 		/// same [`ChannelMonitor`] have been applied and persisted.
 		monitor_update_id: u64,
 	},
-
-	/// Indicates a [`ChannelMonitor`] update has failed.
-	UpdateFailed(OutPoint),
 }
 impl_writeable_tlv_based_enum_upgradable!(MonitorEvent,
-	// Note that Completed and UpdateFailed are currently never serialized to disk as they are
-	// generated only in ChainMonitor
+	// Note that Completed is currently never serialized to disk as it is generated only in
+	// ChainMonitor.
 	(0, Completed) => {
 		(0, funding_txo, required),
 		(2, monitor_update_id, required),
@@ -164,7 +161,7 @@ impl_writeable_tlv_based_enum_upgradable!(MonitorEvent,
 ;
 	(2, HTLCEvent),
 	(4, CommitmentTxConfirmed),
-	(6, UpdateFailed),
+	// 6 was `UpdateFailed` until LDK 0.0.117
 );
 
 /// Simple structure sent back by `chain::Watch` when an HTLC from a forward channel is detected on

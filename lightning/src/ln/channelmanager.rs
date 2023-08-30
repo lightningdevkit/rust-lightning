@@ -6729,8 +6729,7 @@ where
 							self.fail_htlc_backwards_internal(&htlc_update.source, &htlc_update.payment_hash, &reason, receiver);
 						}
 					},
-					MonitorEvent::CommitmentTxConfirmed(funding_outpoint) |
-					MonitorEvent::UpdateFailed(funding_outpoint) => {
+					MonitorEvent::CommitmentTxConfirmed(funding_outpoint) => {
 						let counterparty_node_id_opt = match counterparty_node_id {
 							Some(cp_id) => Some(cp_id),
 							None => {
@@ -6754,12 +6753,7 @@ where
 												msg: update
 											});
 										}
-										let reason = if let MonitorEvent::UpdateFailed(_) = monitor_event {
-											ClosureReason::ProcessingError { err: "Failed to persist ChannelMonitor update during chain sync".to_string() }
-										} else {
-											ClosureReason::CommitmentTxConfirmed
-										};
-										self.issue_channel_close_events(&chan.context, reason);
+										self.issue_channel_close_events(&chan.context, ClosureReason::CommitmentTxConfirmed);
 										pending_msg_events.push(events::MessageSendEvent::HandleError {
 											node_id: chan.context.get_counterparty_node_id(),
 											action: msgs::ErrorAction::SendErrorMessage {
