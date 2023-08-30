@@ -53,6 +53,9 @@ pub(crate) enum PendingOutboundPayment {
 	AwaitingInvoice {
 		timer_ticks_without_response: u8,
 	},
+	InvoiceReceived {
+		payment_hash: PaymentHash,
+	},
 	Retryable {
 		retry_strategy: Option<Retry>,
 		attempts: PaymentAttempts,
@@ -152,6 +155,7 @@ impl PendingOutboundPayment {
 		match self {
 			PendingOutboundPayment::Legacy { .. } => None,
 			PendingOutboundPayment::AwaitingInvoice { .. } => None,
+			PendingOutboundPayment::InvoiceReceived { payment_hash } => Some(*payment_hash),
 			PendingOutboundPayment::Retryable { payment_hash, .. } => Some(*payment_hash),
 			PendingOutboundPayment::Fulfilled { payment_hash, .. } => *payment_hash,
 			PendingOutboundPayment::Abandoned { payment_hash, .. } => Some(*payment_hash),
@@ -165,10 +169,8 @@ impl PendingOutboundPayment {
 				PendingOutboundPayment::Retryable { session_privs, .. } |
 				PendingOutboundPayment::Fulfilled { session_privs, .. } |
 				PendingOutboundPayment::Abandoned { session_privs, .. } => session_privs,
-			PendingOutboundPayment::AwaitingInvoice { .. } => {
-				debug_assert!(false);
-				return;
-			},
+			PendingOutboundPayment::AwaitingInvoice { .. } |
+				PendingOutboundPayment::InvoiceReceived { .. } => { debug_assert!(false); return; },
 		});
 		let payment_hash = self.payment_hash();
 		*self = PendingOutboundPayment::Fulfilled { session_privs, payment_hash, timer_ticks_without_htlcs: 0 };
@@ -180,6 +182,12 @@ impl PendingOutboundPayment {
 			core::mem::swap(&mut our_session_privs, session_privs);
 			*self = PendingOutboundPayment::Abandoned {
 				session_privs: our_session_privs,
+				payment_hash: *payment_hash,
+				reason: Some(reason)
+			};
+		} else if let PendingOutboundPayment::InvoiceReceived { payment_hash } = self {
+			*self = PendingOutboundPayment::Abandoned {
+				session_privs: HashSet::new(),
 				payment_hash: *payment_hash,
 				reason: Some(reason)
 			};
@@ -195,10 +203,8 @@ impl PendingOutboundPayment {
 				PendingOutboundPayment::Abandoned { session_privs, .. } => {
 					session_privs.remove(session_priv)
 				},
-			PendingOutboundPayment::AwaitingInvoice { .. } => {
-				debug_assert!(false);
-				false
-			},
+			PendingOutboundPayment::AwaitingInvoice { .. } |
+				PendingOutboundPayment::InvoiceReceived { .. } => { debug_assert!(false); false },
 		};
 		if remove_res {
 			if let PendingOutboundPayment::Retryable { ref mut pending_amt_msat, ref mut pending_fee_msat, .. } = self {
@@ -217,11 +223,9 @@ impl PendingOutboundPayment {
 			PendingOutboundPayment::Legacy { session_privs } |
 				PendingOutboundPayment::Retryable { session_privs, .. } => {
 					session_privs.insert(session_priv)
-				}
-			PendingOutboundPayment::AwaitingInvoice { .. } => {
-				debug_assert!(false);
-				false
-			},
+				},
+			PendingOutboundPayment::AwaitingInvoice { .. } |
+				PendingOutboundPayment::InvoiceReceived { .. } => { debug_assert!(false); false },
 			PendingOutboundPayment::Fulfilled { .. } => false,
 			PendingOutboundPayment::Abandoned { .. } => false,
 		};
@@ -245,6 +249,7 @@ impl PendingOutboundPayment {
 					session_privs.len()
 				},
 			PendingOutboundPayment::AwaitingInvoice { .. } => 0,
+			PendingOutboundPayment::InvoiceReceived { .. } => 0,
 		}
 	}
 }
@@ -880,7 +885,9 @@ impl OutboundPayments {
 							log_error!(logger, "Unable to retry payments that were initially sent on LDK versions prior to 0.0.102");
 							return
 						},
-						PendingOutboundPayment::AwaitingInvoice { .. } => {
+						PendingOutboundPayment::AwaitingInvoice { .. } |
+							PendingOutboundPayment::InvoiceReceived { .. } =>
+						{
 							log_error!(logger, "Payment not yet sent");
 							return
 						},
@@ -1572,6 +1579,9 @@ impl_writeable_tlv_based_enum_upgradable!(PendingOutboundPayment,
 	},
 	(5, AwaitingInvoice) => {
 		(0, timer_ticks_without_response, required),
+	},
+	(7, InvoiceReceived) => {
+		(0, payment_hash, required),
 	},
 );
 
