@@ -1,0 +1,5 @@
+## Backwards Compatibility
+
+* The `MonitorUpdatingPersister` can read monitors stored conventionally, such as with the `KVStorePersister` from previous LDK versions. You can use this to migrate _to_ the `MonitorUpdatingPersister`; just "point" `MonitorUpdatingPersister` to existing, fully updated `ChannelMonitors`, and it will read them and work from there. However, downgrading is more complex. Monitors stored with `MonitorUpdatingPersister` have a prepended sentinel value that prevents them from being deserialized by previous `Persist` implementations. This is to ensure that they are not accidentally read and used while pending updates are still stored and not applied, as this could result in penalty transactions. Users who wish to downgrade should perform the following steps:
+  * Make a backup copy of all channel state.
+  * Ensure all updates are applied to the monitors. This may be done by loading all the existing data with the `MonitorUpdatingPersister::read_all_channel_monitors_with_updates` function. You can then write the resulting `ChannelMonitor`s using your previous `Persist` implementation.
