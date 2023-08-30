@@ -7,9 +7,6 @@
 // You may not use this file except in accordance with one or both of these
 // licenses.
 
-use std::collections::{HashMap, HashSet};
-
-use bitcoin::hashes::hex::ToHex;
 use bitcoin::{TxIn, Sequence, Transaction, TxOut, OutPoint}; // Witness
 use bitcoin::blockdata::constants::WITNESS_SCALE_FACTOR;
 use bitcoin::policy::MAX_STANDARD_TX_WEIGHT;
@@ -19,6 +16,8 @@ use crate::ln::channel::TOTAL_BITCOIN_SUPPLY_SATOSHIS;
 use crate::ln::interactivetxs::ChannelMode::Indeterminate;
 use crate::ln::msgs;
 use crate::ln::msgs::SerialId;
+
+use crate::prelude::*;
 
 /// The number of received `tx_add_input` messages during a negotiation at which point the
 /// negotiation MUST be failed.
