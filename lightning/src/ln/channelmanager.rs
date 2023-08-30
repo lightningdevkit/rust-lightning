@@ -663,6 +663,12 @@ impl_writeable_tlv_based_enum!(RAAMonitorUpdateBlockingAction,
 	(0, ForwardedPaymentInboundClaim) => { (0, channel_id, required), (2, htlc_id, required) }
 ;);
 
+pub(super) enum ChannelRetryState {
+	FundingCreated(msgs::FundingCreated),
+	FundingSigned(msgs::FundingSigned),
+	CommitmentSigned(msgs::CommitmentSigned),
+}
+
 
 /// State we hold per-peer.
 pub(super) struct PeerState<SP: Deref> where SP::Target: SignerProvider {
@@ -689,6 +695,8 @@ pub(super) struct PeerState<SP: Deref> where SP::Target: SignerProvider {
 	/// removed, and an InboundV1Channel is created and placed in the `inbound_v1_channel_by_id` table. If
 	/// the channel is rejected, then the entry is simply removed.
 	pub(super) inbound_channel_request_by_id: HashMap<ChannelId, InboundChannelRequest>,
+	/// Messages that we attempted to process but returned `ChannelError::Retry`.
+	pub(super) retry_state_by_id: HashMap<ChannelId, ChannelRetryState>,
 	/// The latest `InitFeatures` we heard from the peer.
 	latest_features: InitFeatures,
 	/// Messages to send to the peer - pushed to in the same lock that they are generated in (except
@@ -5626,6 +5634,7 @@ where
 							// If we get an `Retry` error then something transient went wrong. Put the channel
 							// back into the table and bail.
 							peer_state.inbound_v1_channel_by_id.insert(msg.temporary_channel_id, inbound_chan);
+							peer_state.retry_state_by_id.insert(msg.temporary_channel_id, ChannelRetryState::FundingCreated(msg.clone()));
 							return Err(MsgHandleErrInternal::from_chan_no_close(err, msg.temporary_channel_id));
 						},
 						Err((mut inbound_chan, err)) => {
@@ -5704,8 +5713,13 @@ where
 		let peer_state = &mut *peer_state_lock;
 		match peer_state.channel_by_id.entry(msg.channel_id) {
 			hash_map::Entry::Occupied(mut chan) => {
-				let monitor = try_chan_entry!(self,
-					chan.get_mut().funding_signed(&msg, best_block, &self.signer_provider, &self.logger), chan);
+				let res = chan.get_mut().funding_signed(&msg, best_block, &self.signer_provider, &self.logger);
+				if let Err(ref err) = &res {
+					if let ChannelError::Retry(_) = err {
+						peer_state.retry_state_by_id.insert(msg.channel_id, ChannelRetryState::FundingSigned(msg.clone()));
+					}
+				}
+				let monitor = try_chan_entry!(self, res, chan);
 				let update_res = self.chain_monitor.watch_channel(chan.get().context.get_funding_txo().unwrap(), monitor);
 				let mut res = handle_new_monitor_update!(self, update_res, peer_state_lock, peer_state, per_peer_state, chan, INITIAL_MONITOR);
 				if let Err(MsgHandleErrInternal { ref mut shutdown_finish, .. }) = res {
@@ -6014,7 +6028,13 @@ where
 		match peer_state.channel_by_id.entry(msg.channel_id) {
 			hash_map::Entry::Occupied(mut chan) => {
 				let funding_txo = chan.get().context.get_funding_txo();
-				let monitor_update_opt = try_chan_entry!(self, chan.get_mut().commitment_signed(&msg, &self.logger), chan);
+				let res = chan.get_mut().commitment_signed(&msg, &self.logger);
+				if let Err(ref err) = &res {
+					if let ChannelError::Retry(_) = err {
+						peer_state.retry_state_by_id.insert(msg.channel_id, ChannelRetryState::CommitmentSigned(msg.clone()));
+					}
+				}
+				let monitor_update_opt = try_chan_entry!(self, res, chan);
 				if let Some(monitor_update) = monitor_update_opt {
 					handle_new_monitor_update!(self, funding_txo.unwrap(), monitor_update, peer_state_lock,
 						peer_state, per_peer_state, chan).map(|_| ())
@@ -6836,6 +6856,38 @@ where
 		let mut ev;
 		process_events_body!(self, ev, { handler(ev).await });
 	}
+
+	/// Resumes processing for a channel awaiting a signature.
+	///
+	/// If the `ChannelSigner` for a channel has previously returned an `Err`, then activity on the
+	/// channel will have been suspended pending the required signature becoming available. This
+	/// resumes the channel's operation.
+	pub fn retry_channel(&self, channel_id: &ChannelId, counterparty_node_id: &PublicKey) -> Result<(), APIError> {
+		let retry_state = {
+			let per_peer_state = self.per_peer_state.read().unwrap();
+			let peer_state_mutex = per_peer_state.get(counterparty_node_id)
+				.ok_or(APIError::APIMisuseError {
+					err: format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id)
+				})?;
+
+			let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+			let peer_state = &mut *peer_state_lock;
+			match peer_state.retry_state_by_id.remove(channel_id) {
+				Some(retry_state) => Ok(retry_state),
+				None => Err(APIError::APIMisuseError {
+					err: format!("Can't find a channel matching the passed channel_id {}", channel_id)
+				}),
+			}
+		}?;
+
+		match retry_state {
+			ChannelRetryState::FundingCreated(ref msg) => self.handle_funding_created(counterparty_node_id, msg),
+			ChannelRetryState::FundingSigned(ref msg) => self.handle_funding_signed(counterparty_node_id, msg),
+			ChannelRetryState::CommitmentSigned(ref msg) => self.handle_commitment_signed(counterparty_node_id, msg),
+		};
+
+		Ok(())
+	}
 }
 
 impl<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, L: Deref> MessageSendEventsProvider for ChannelManager<M, T, ES, NS, SP, F, R, L>
@@ -7510,6 +7562,7 @@ where
 						outbound_v1_channel_by_id: HashMap::new(),
 						inbound_v1_channel_by_id: HashMap::new(),
 						inbound_channel_request_by_id: HashMap::new(),
+						retry_state_by_id: HashMap::new(),
 						latest_features: init_msg.features.clone(),
 						pending_msg_events: Vec::new(),
 						in_flight_monitor_updates: BTreeMap::new(),
@@ -8758,6 +8811,7 @@ where
 				outbound_v1_channel_by_id: HashMap::new(),
 				inbound_v1_channel_by_id: HashMap::new(),
 				inbound_channel_request_by_id: HashMap::new(),
+				retry_state_by_id: HashMap::new(),
 				latest_features: InitFeatures::empty(),
 				pending_msg_events: Vec::new(),
 				in_flight_monitor_updates: BTreeMap::new(),

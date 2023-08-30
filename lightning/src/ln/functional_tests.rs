@@ -9019,7 +9019,7 @@ fn test_signer_gpcp_unavailable_for_funding_signed() {
 
 	// Now make it available and verify that we can process the message.
 	nodes[0].set_channel_signer_available(&nodes[1].node.get_our_node_id(), &chan_id, true);
-	nodes[0].node.handle_funding_signed(&nodes[1].node.get_our_node_id(), &funding_signed_msg);
+	nodes[0].node.retry_channel(&chan_id, &nodes[1].node.get_our_node_id()).expect("retry_channel failed");
 	check_added_monitors(&nodes[0], 1);
 	
 	expect_channel_pending_event(&nodes[0], &nodes[1].node.get_our_node_id());
@@ -9068,7 +9068,7 @@ fn test_signer_gpcp_unavailable_for_funding_created() {
 
 	// Now make it available and verify that we can process the message.
 	nodes[1].set_channel_signer_available(&nodes[0].node.get_our_node_id(), &temporary_channel_id, true);
-	nodes[1].node.handle_funding_created(&nodes[0].node.get_our_node_id(), &funding_created_msg);
+	nodes[1].node.retry_channel(&temporary_channel_id, &nodes[0].node.get_our_node_id()).expect("retry_channel failed");
 	check_added_monitors(&nodes[1], 1);
 	
 	let funding_signed_msg = get_event_msg!(nodes[1], MessageSendEvent::SendFundingSigned, nodes[0].node.get_our_node_id());
@@ -9161,7 +9161,7 @@ fn test_dest_signer_gpcp_unavailable_for_commitment_signed() {
 	// Mark dst's signer as available and re-handle commitment_signed. We expect to see both the RAA
 	// and the CS.
 	dst.set_channel_signer_available(&src.node.get_our_node_id(), &chan_id, true);
-	dst.node.handle_commitment_signed(&src.node.get_our_node_id(), &payment_event.commitment_msg);
+	dst.node.retry_channel(&chan_id, &src.node.get_our_node_id()).expect("retry_channel failed");
 	get_revoke_commit_msgs(dst, &src.node.get_our_node_id());
 	check_added_monitors!(dst, 1);
 }
