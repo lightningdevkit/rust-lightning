@@ -9,6 +9,7 @@
 
 use std::collections::{HashMap, HashSet};
 
+use bitcoin::hashes::hex::ToHex;
 use bitcoin::{TxIn, Sequence, Transaction, TxOut, OutPoint}; // Witness
 use bitcoin::blockdata::constants::WITNESS_SCALE_FACTOR;
 use bitcoin::policy::MAX_STANDARD_TX_WEIGHT;
@@ -38,6 +39,7 @@ impl SerialIdExt for SerialId {
 	fn is_valid_for_initiator(&self) -> bool { self % 2 == 0 }
 }
 
+#[derive(Debug)]
 pub(crate) enum AbortReason {
 	CounterpartyAborted,
 	InputsNotConfirmed,
@@ -189,6 +191,7 @@ impl InteractiveTxStateMachine<Negotiating> {
 
 impl<S> InteractiveTxStateMachine<S> where S: AcceptingChanges {
 	fn abort_negotiation(self, reason: AbortReason) -> InteractiveTxStateMachineResult<Negotiating> {
+		// println!("ABORT {:?}", reason); // TODO remove
 		Err(InteractiveTxStateMachine { context: self.context, state: NegotiationAborted(reason) })
 	}
 
@@ -219,6 +222,7 @@ impl<S> InteractiveTxStateMachine<S> where S: AcceptingChanges {
 		let transaction = msg.prevtx.clone().into_transaction();
 
 		if let Some(tx_out) = transaction.output.get(msg.prevtx_out as usize) {
+			// println!("txout {} {}", tx_out.value, tx_out.script_pubkey.to_hex()); // TODO remove
 			if !tx_out.script_pubkey.is_witness_program() {
 				// The receiving node:
 				//  - MUST fail the negotiation if:
@@ -428,8 +432,16 @@ impl<S> InteractiveTxStateMachine<S> where S: AcceptingChanges {
 
 		// - the peer's paid feerate does not meet or exceed the agreed feerate (based on the minimum fee).
 		if self.context.holder_is_initiator {
-			let non_initiator_fees_contributed: u64 = self.context.non_initiator_outputs_contributed().map(|output| output.value).sum::<u64>() -
-				self.context.non_initiator_inputs_contributed().map(|input| input.prev_output.value).sum::<u64>();
+			// TODO
+			// panicked at 'attempt to subtract with overflow'
+			// FEES output_sum / input_sum 88888 12704566
+			// println!("FEES output_sum / input_sum {} {}",
+			// 	self.context.non_initiator_outputs_contributed().map(|output| output.value).sum::<u64>(),
+			// 	self.context.non_initiator_inputs_contributed().map(|input| input.prev_output.value).sum::<u64>(),
+			// );
+			let non_initiator_fees_contributed: u64 =
+				self.context.non_initiator_inputs_contributed().map(|input| input.prev_output.value).sum::<u64>() -
+				self.context.non_initiator_outputs_contributed().map(|output| output.value).sum::<u64>();
 			let non_initiator_contribution_weight = self.context.non_initiator_inputs_contributed().count() as u64 * INPUT_WEIGHT +
 				self.context.non_initiator_outputs_contributed().count() as u64 * OUTPUT_WEIGHT;
 			let required_non_initiator_contribution_fee = self.context.feerate_sat_per_kw as u64 * 1000 / non_initiator_contribution_weight;
@@ -664,14 +676,183 @@ mod tests {
 	use crate::chain::chaininterface::FEERATE_FLOOR_SATS_PER_KW;
 	use crate::ln::ChannelId;
 	// use crate::ln::interactivetxs::ChannelMode::{Negotiating, NegotiationAborted};
-	use crate::ln::interactivetxs::{ChannelMode, InteractiveTxConstructor}; // AbortReason, InteractiveTxStateMachine
+	use crate::ln::interactivetxs::{ChannelMode, InteractiveTxConstructor, InteractiveTxStateMachine, NegotiationAborted}; // AbortReason, InteractiveTxStateMachine
 	use crate::util::ser::TransactionU16LenLimited;
 	use bitcoin::consensus::encode;
 	use bitcoin::{Address, PackedLockTime, Script, Sequence, Transaction, Txid, TxIn, TxOut, Witness};
+	use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
+	use bitcoin::hashes::Hash;
+	use bitcoin::hash_types::WPubkeyHash;
 	use bitcoin::hashes::hex::FromHex;
 	use crate::chain::transaction::OutPoint;
 	// use crate::ln::interactivetxs::AbortReason::IncorrectSerialIdParity;
-	use crate::ln::msgs::TxAddInput;
+	use crate::ln::msgs::{TxAddInput, TxAddOutput};
+
+	#[test]
+	fn test_interact_tx_abort() {
+		let mut dc = DummyChannel::new();
+		assert!(matches!(dc.tx_constructor.mode, ChannelMode::Negotiating(_)));
+
+		dc.tx_constructor.abort_negotation(super::AbortReason::OutputsExceedInputs);
+		assert!(matches!(dc.tx_constructor.mode, ChannelMode::NegotiationAborted(InteractiveTxStateMachine{context: _, state: NegotiationAborted(super::AbortReason::OutputsExceedInputs)})));
+	}
+
+	#[test]
+	fn test_interact_tx_recv_add_input_success() {
+		let mut dc = DummyChannel::new();
+		assert!(matches!(dc.tx_constructor.mode, ChannelMode::Negotiating(_)));
+
+		let msg = get_sample_tx_add_input(4886718345);
+		dc.tx_constructor.receive_tx_add_input(666, &msg, true);
+		assert!(matches!(dc.tx_constructor.mode, ChannelMode::Negotiating(InteractiveTxStateMachine{context: _, state: Negotiating})));
+	}
+
+	#[test]
+	fn test_interact_tx_recv_remove_input_success() {
+		let mut dc = DummyChannel::new();
+		let msg = get_sample_tx_add_input(4886718345);
+		dc.tx_constructor.receive_tx_add_input(666, &msg, true);
+		assert!(matches!(dc.tx_constructor.mode, ChannelMode::Negotiating(_)));
+
+		dc.tx_constructor.receive_tx_remove_input(4886718345);
+		assert!(matches!(dc.tx_constructor.mode, ChannelMode::Negotiating(InteractiveTxStateMachine{context: _, state: Negotiating})));
+	}
+
+	#[test]
+	fn test_interact_tx_recv_add_output_success() {
+		let mut dc = DummyChannel::new();
+		assert!(matches!(dc.tx_constructor.mode, ChannelMode::Negotiating(_)));
+
+		let txout = get_sample_tx_output();
+		dc.tx_constructor.receive_tx_add_output(4886718347, txout);
+		assert!(matches!(dc.tx_constructor.mode, ChannelMode::Negotiating(InteractiveTxStateMachine{context: _, state: Negotiating})));
+	}
+
+	#[test]
+	fn test_interact_tx_recv_remove_output_success() {
+		let mut dc = DummyChannel::new();
+		let txout = get_sample_tx_output();
+		dc.tx_constructor.receive_tx_add_output(4886718345, txout);
+		assert!(matches!(dc.tx_constructor.mode, ChannelMode::Negotiating(_)));
+
+		dc.tx_constructor.receive_tx_remove_output(4886718345);
+		assert!(matches!(dc.tx_constructor.mode, ChannelMode::Negotiating(InteractiveTxStateMachine{context: _, state: Negotiating})));
+	}
+
+	#[test]
+	fn test_interact_tx_send_add_input_success() {
+		let mut dc = DummyChannel::new();
+		assert!(matches!(dc.tx_constructor.mode, ChannelMode::Negotiating(_)));
+
+		dc.tx_constructor.send_tx_add_input(4886718345, get_sample_tx_in(), get_sample_tx_out());
+		assert!(matches!(dc.tx_constructor.mode, ChannelMode::Negotiating(InteractiveTxStateMachine{context: _, state: Negotiating})));
+	}
+
+	#[test]
+	fn test_interact_tx_send_add_output_success() {
+		let mut dc = DummyChannel::new();
+		assert!(matches!(dc.tx_constructor.mode, ChannelMode::Negotiating(_)));
+
+		dc.tx_constructor.send_tx_add_output(4886718345, get_sample_tx_out());
+		assert!(matches!(dc.tx_constructor.mode, ChannelMode::Negotiating(InteractiveTxStateMachine{context: _, state: Negotiating})));
+	}
+
+	#[test]
+	fn test_interact_tx_send_remove_input_success() {
+		let mut dc = DummyChannel::new();
+		dc.tx_constructor.send_tx_add_input(4886718345, get_sample_tx_in(), get_sample_tx_out());
+		assert!(matches!(dc.tx_constructor.mode, ChannelMode::Negotiating(_)));
+
+		dc.tx_constructor.send_tx_remove_input(4886718345);
+		assert!(matches!(dc.tx_constructor.mode, ChannelMode::Negotiating(InteractiveTxStateMachine{context: _, state: Negotiating})));
+	}
+
+	#[test]
+	fn test_interact_tx_send_remove_output_success() {
+		let mut dc = DummyChannel::new();
+		dc.tx_constructor.send_tx_add_output(4886718345, get_sample_tx_out());
+		assert!(matches!(dc.tx_constructor.mode, ChannelMode::Negotiating(_)));
+		
+		dc.tx_constructor.send_tx_remove_output(4886718345);
+		assert!(matches!(dc.tx_constructor.mode, ChannelMode::Negotiating(InteractiveTxStateMachine{context: _, state: Negotiating})));
+	}
+
+	fn test_interact_tx_send_abort_success() {
+		let mut dc = DummyChannel::new();
+		let msg = get_sample_tx_add_input(4886718345);
+		dc.tx_constructor.receive_tx_add_input(666, &msg, true);
+		assert!(matches!(dc.tx_constructor.mode, ChannelMode::Negotiating(_)));
+
+		// TODO
+		// dc.tx_constructor.send_tx_abort();
+	}
+
+	fn test_interact_tx_recv_abort_success() {
+		let mut dc = DummyChannel::new();
+		dc.tx_constructor.send_tx_add_input(4886718345, get_sample_tx_in(), get_sample_tx_out());
+		assert!(matches!(dc.tx_constructor.mode, ChannelMode::Negotiating(_)));
+
+		// TODO
+		// dc.tx_constructor.receive_tx_abort();
+	}
+
+	#[test]
+	fn test_interact_tx_recv_complete_negotiating_success() {
+		let mut dc = DummyChannel::new();
+		let msg = get_sample_tx_add_input(4886718345);
+		dc.tx_constructor.receive_tx_add_input(666, &msg, true);
+		let txout = get_sample_tx_output();
+		dc.tx_constructor.receive_tx_add_output(4886718347, txout);
+		assert!(matches!(dc.tx_constructor.mode, ChannelMode::Negotiating(_)));
+
+		dc.tx_constructor.receive_tx_complete();
+		assert!(matches!(dc.tx_constructor.mode, ChannelMode::TheirTxComplete(InteractiveTxStateMachine{context: _, state: Negotiating})));
+	}
+
+	#[test]
+	fn test_interact_tx_recv_complete_ourcomplete_success() {
+		let mut dc = DummyChannel::new();
+		dc.tx_constructor.send_tx_add_input(4886718345, get_sample_tx_in(), get_sample_tx_out());
+		dc.tx_constructor.send_tx_add_output(4886718347, get_sample_tx_out_2());
+		dc.tx_constructor.send_tx_complete();
+		assert!(matches!(dc.tx_constructor.mode, ChannelMode::OurTxComplete(_)));
+		let msg = get_sample_tx_add_input(4886718349);
+		dc.tx_constructor.receive_tx_add_input(666, &msg, true);
+		let txout = get_sample_tx_output();
+		dc.tx_constructor.receive_tx_add_output(4886718351, txout);
+		assert!(matches!(dc.tx_constructor.mode, ChannelMode::OurTxComplete(_)));
+
+		dc.tx_constructor.receive_tx_complete();
+		assert!(matches!(dc.tx_constructor.mode, ChannelMode::NegotiationComplete(InteractiveTxStateMachine{context: _, state: Negotiating})));
+	}
+
+	#[test]
+	fn test_interact_tx_send_complete_negotiating_success() {
+		let mut dc = DummyChannel::new();
+		dc.tx_constructor.send_tx_add_input(4886718345, get_sample_tx_in(), get_sample_tx_out());
+		dc.tx_constructor.send_tx_add_output(4886718347, get_sample_tx_out_2());
+		assert!(matches!(dc.tx_constructor.mode, ChannelMode::Negotiating(_)));
+
+		dc.tx_constructor.send_tx_complete();
+		assert!(matches!(dc.tx_constructor.mode, ChannelMode::OurTxComplete(InteractiveTxStateMachine{context: _, state: _})));
+	}
+
+	#[test]
+	fn test_interact_tx_send_complete_theircomplete_success() {
+		let mut dc = DummyChannel::new();
+		let msg = get_sample_tx_add_input(4886718345);
+		dc.tx_constructor.receive_tx_add_input(666, &msg, true);
+		let txout = get_sample_tx_output();
+		dc.tx_constructor.receive_tx_add_output(4886718347, txout);
+		dc.tx_constructor.receive_tx_complete();
+		assert!(matches!(dc.tx_constructor.mode, ChannelMode::TheirTxComplete(_)));
+		dc.tx_constructor.send_tx_add_input(4886718349, get_sample_tx_in(), get_sample_tx_out());
+		dc.tx_constructor.send_tx_add_output(4886718351, get_sample_tx_out_2());
+		assert!(matches!(dc.tx_constructor.mode, ChannelMode::TheirTxComplete(_)));
+
+		dc.tx_constructor.send_tx_complete();
+		assert!(matches!(dc.tx_constructor.mode, ChannelMode::NegotiationComplete(InteractiveTxStateMachine{context: _, state: _})));
+	}
 
 	#[test]
 	fn test_invalid_counterparty_serial_id_should_abort_negotiation() {
@@ -683,7 +864,7 @@ mod tests {
 			dd6051c5850304880fc43a012103cb11a1bacc223d98d91f1946c6752e358a5eb1a1c983b3e6fb15378f453\
 			b76bd00000000").unwrap()[..]).unwrap();
 		let mut constructor = InteractiveTxConstructor::new(ChannelId::new_zero(), FEERATE_FLOOR_SATS_PER_KW, true, true, tx, false);
-		constructor.receive_tx_add_input(2, &get_sample_tx_add_input(), false);
+		constructor.receive_tx_add_input(2, &get_sample_tx_add_input(4886718345), false);
 		assert!(matches!(constructor.mode, ChannelMode::NegotiationAborted { .. }))
 	}
 
@@ -706,45 +887,89 @@ mod tests {
 			}
 		}
 
-		fn handle_add_tx_input(&mut self) {
-			self.tx_constructor.receive_tx_add_input(1234, &get_sample_tx_add_input(), true)
-		}
+		// fn handle_add_tx_input(&mut self) {
+		// 	self.tx_constructor.receive_tx_add_input(1234, &get_sample_tx_add_input(4886718345), true)
+		// }
 	}
 
 	// Fixtures
-	fn get_sample_tx_add_input() -> TxAddInput {
+	fn get_sample_channel_id() -> ChannelId {
+		ChannelId::v1_from_funding_txid(&[2; 32], 0)
+	}
+
+	fn get_sample_tx_in_prev_outpoint() -> OutPoint {
+		OutPoint {
+			txid: Txid::from_hex("305bab643ee297b8b6b76b320792c8223d55082122cb606bf89382146ced9c77").unwrap(),
+			index: 2,
+		}
+	}
+
+	fn get_sample_tx_in() -> TxIn {
+		TxIn {
+			previous_output: get_sample_tx_in_prev_outpoint().into_bitcoin_outpoint(),
+			script_sig: Script::new(),
+			sequence: Sequence(0xfffffffd),
+			witness: Witness::from_vec(vec![
+				hex::decode("304402206af85b7dd67450ad12c979302fac49dfacbc6a8620f49c5da2b5721cf9565ca502207002b32fed9ce1bf095f57aeb10c36928ac60b12e723d97d2964a54640ceefa701").unwrap(),
+				hex::decode("0301ab7dc16488303549bfcdd80f6ae5ee4c20bf97ab5410bbd6b1bfa85dcd6944").unwrap()]),
+		}
+	}
+
+	fn get_sample_tx_out() -> TxOut {
+		TxOut {
+			value: 12704566,
+			script_pubkey: Address::from_str("bc1qzlffunw52jav8vwdu5x3jfk6sr8u22rmq3xzw2").unwrap().script_pubkey(),
+		}
+	}
+
+	fn get_sample_tx_out_2() -> TxOut {
+		TxOut {
+			value: 245148,
+			script_pubkey: Address::from_str("bc1qxmk834g5marzm227dgqvynd23y2nvt2ztwcw2z").unwrap().script_pubkey(),
+		}
+	}
+
+	fn get_sample_tx_add_input(serial_id: u64) -> TxAddInput {
 		let prevtx = TransactionU16LenLimited::new(
 			Transaction {
 				version: 2,
 				lock_time: PackedLockTime(0),
-				input: vec![TxIn {
-					previous_output: OutPoint { txid: Txid::from_hex("305bab643ee297b8b6b76b320792c8223d55082122cb606bf89382146ced9c77").unwrap(), index: 2 }.into_bitcoin_outpoint(),
-					script_sig: Script::new(),
-					sequence: Sequence(0xfffffffd),
-					witness: Witness::from_vec(vec![
-						hex::decode("304402206af85b7dd67450ad12c979302fac49dfacbc6a8620f49c5da2b5721cf9565ca502207002b32fed9ce1bf095f57aeb10c36928ac60b12e723d97d2964a54640ceefa701").unwrap(),
-						hex::decode("0301ab7dc16488303549bfcdd80f6ae5ee4c20bf97ab5410bbd6b1bfa85dcd6944").unwrap()]),
-				}],
+				input: vec![get_sample_tx_in()],
 				output: vec![
-					TxOut {
-						value: 12704566,
-						script_pubkey: Address::from_str("bc1qzlffunw52jav8vwdu5x3jfk6sr8u22rmq3xzw2").unwrap().script_pubkey(),
-					},
-					TxOut {
-						value: 245148,
-						script_pubkey: Address::from_str("bc1qxmk834g5marzm227dgqvynd23y2nvt2ztwcw2z").unwrap().script_pubkey(),
-					},
+					get_sample_tx_out(),
+					get_sample_tx_out_2(),
 				],
 			}
 		).unwrap();
 
-		return TxAddInput {
-			channel_id: ChannelId::from_bytes([2; 32]),
-			serial_id: 4886718345,
+		TxAddInput {
+			channel_id: get_sample_channel_id(),
+			serial_id,
 			prevtx,
-			prevtx_out: 305419896,
+			prevtx_out: 0,
 			sequence: 305419896,
-		};
+		}
+	}
+
+	fn get_sample_tx_output() -> TxOut {
+		let secret_key = SecretKey::from_slice(&[2; 32]).unwrap();
+		let secp_ctx = Secp256k1::new();
+		let pubkey = PublicKey::from_secret_key(&secp_ctx, &secret_key);
+		let script_pubkey = Script::new_v0_p2wpkh(&WPubkeyHash::hash(&pubkey.serialize()));
+		TxOut {
+			value: 88888,
+			script_pubkey,
+		}
+	}
+
+	fn get_sample_tx_add_output(serial_id: u64) -> TxAddOutput {
+		let tx_out = get_sample_tx_output();
+		TxAddOutput {
+			channel_id: get_sample_channel_id(),
+			serial_id,
+			sats: tx_out.value,
+			script: tx_out.script_pubkey,
+		}
 	}
 }
 
