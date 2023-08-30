@@ -1683,7 +1683,7 @@ pub enum ChannelShutdownState {
 /// These include payments that have yet to find a successful path, or have unresolved HTLCs.
 #[derive(Debug, PartialEq)]
 pub enum RecentPaymentDetails {
-	/// When an invoice was requested but not yet received, and thus a payment has not been sent.
+	/// When an invoice was requested and thus a payment has not yet been sent.
 	AwaitingInvoice {
 		/// Identifier for the payment to ensure idempotency.
 		payment_id: PaymentId,
@@ -2421,6 +2421,10 @@ where
 		self.pending_outbound_payments.pending_outbound_payments.lock().unwrap().iter()
 			.filter_map(|(payment_id, pending_outbound_payment)| match pending_outbound_payment {
 				PendingOutboundPayment::AwaitingInvoice { .. } => {
+					Some(RecentPaymentDetails::AwaitingInvoice { payment_id: *payment_id })
+				},
+				// InvoiceReceived is an intermediate state and doesn't need to be exposed
+				PendingOutboundPayment::InvoiceReceived { .. } => {
 					Some(RecentPaymentDetails::AwaitingInvoice { payment_id: *payment_id })
 				},
 				PendingOutboundPayment::Retryable { payment_hash, total_msat, .. } => {
@@ -8361,6 +8365,7 @@ where
 					}
 				}
 				PendingOutboundPayment::AwaitingInvoice { .. } => {},
+				PendingOutboundPayment::InvoiceReceived { .. } => {},
 				PendingOutboundPayment::Fulfilled { .. } => {},
 				PendingOutboundPayment::Abandoned { .. } => {},
 			}
