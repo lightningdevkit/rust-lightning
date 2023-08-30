@@ -1,29 +1,72 @@
 //! Utilities that take care of running lightning networks payment channel probing as server
+#![allow(warnings)]
 
 extern crate lightning_rapid_gossip_sync;
 use async_channel::{Sender, Receiver};
+use bitcoin::PublicKey;
 use lightning::events::{Event, PathFailure};
 use lightning::ln::PaymentHash;
 use lightning::ln::channelmanager::{PaymentId, PaymentSendFailure};
+use lightning::ln::functional_test_utils::Node;
+use lightning::util::ser::Writer;
 use lightning::util::test_utils::TestLogger;
-use lightning::routing::gossip::{NetworkGraph, P2PGossipSync, NodeId, ReadOnlyNetworkGraph, NodeInfo, ChannelInfo};
+use lightning::routing::gossip::{NetworkGraph, P2PGossipSync, NodeId, ReadOnlyNetworkGraph, NodeInfo, ChannelInfo, DirectedChannelInfo};
 use lightning::routing::utxo::UtxoLookup;
 use lightning::routing::router::{PaymentParameters, RouteParameters, InFlightHtlcs, Path, build_route_from_hops, DefaultRouter, Router};
-use lightning::routing::scoring::{ProbabilisticScorer, ProbabilisticScoringFeeParameters, ProbabilisticScoringDecayParameters, FixedPenaltyScorer};
+use lightning::routing::scoring::{ProbabilisticScorer, ProbabilisticScoringFeeParameters, ProbabilisticScoringDecayParameters, FixedPenaltyScorer, LockableScore};
 use lightning::util::indexed_map::IndexedMap;
-use lightning::util::logger::Logger;
+use lightning::util::logger::{Logger, self, Record};
 use lightning_rapid_gossip_sync::RapidGossipSync;
 use rand::Rng;
 use tokio::sync::Mutex;
 use core::ops::Deref;
 use core::time::Duration;
 use std::cmp::min;
+use std::fs::File;
+use std::str::FromStr;
 use std::sync::Arc;
-use std::{thread, clone};
-
-
+use std::{thread, clone, fs};
+use chrono::Utc;
+//use std::sync::Mutex;
 /// Utilities for probing lightning networks payment channel
+/******************************************************************************************************************************************************************* */
 
+pub(crate) struct FilesystemLogger {
+	data_dir: String,
+}
+impl FilesystemLogger {
+	pub(crate) fn new(data_dir: String) -> Self {
+		let logs_path = format!("{}/logs", data_dir);
+		fs::create_dir_all(logs_path.clone()).unwrap();
+		Self { data_dir: logs_path }
+	}
+}
+impl Logger for FilesystemLogger {
+	fn log(&self, record: &Record) {
+		let raw_log = record.args.to_string();
+		let log = format!(
+			"{} {:<5} [{}:{}] {}\n",
+			// Note that a "real" lightning node almost certainly does *not* want subsecond
+			// precision for message-receipt information as it makes log entries a target for
+			// deanonymization attacks. For testing, however, its quite useful.
+			Utc::now().format("%Y-%m-%d %H:%M:%S%.3f"),
+			record.level.to_string(),
+			record.module_path,
+			record.line,
+			raw_log
+		);
+		let logs_file_path = format!("{}/logs.txt", self.data_dir.clone());
+		fs::OpenOptions::new()
+			.create(true)
+			.append(true)
+			.open(logs_file_path)
+			.unwrap()
+			.write_all(log.as_bytes())
+			.unwrap();
+	}
+}
+
+/******************************************************************************************************************************************************************** */
 /// Either [`P2PGossipSync`] or [`RapidGossipSync`].
 pub enum GossipSync<
 	P: Deref<Target = P2PGossipSync<G, U, L>>,
@@ -138,31 +181,32 @@ const DEFAULT_FINAL_VALUE_MSAT: u64 = 1000;
 const DEFAULT_PROBE_VALUE_MSAT: u64 = 1000;
 const DEFAULT_PENALTY_MSAT: u64 = 1000;
 
-// Need to be defined by user (maybe from config file
-const OUR_NODE_PUBKEY : bitcoin::secp256k1::PublicKey = bitcoin::secp256k1::PublicKey::from_slice(&[0; 33]).unwrap();
-
 struct NodesToProbe {
 	nodes_to_probe: Vec<(NodeId,NodeInfo)>,
 }
 
 impl NodesToProbe{
 
-	fn new () -> &'static  mut Self {
-		&mut Self {
-			nodes_to_probe: Vec::<(NodeId,NodeInfo)>::new()
+	fn new () -> Self {
+		NodesToProbe{
+			nodes_to_probe: Vec::<(NodeId,NodeInfo)>::new(),
 		 }
 	}
+
+	// Mutable method to add a node and its info
+    fn add_node(&mut self, node_id: &NodeId, node_info: &NodeInfo) {
+        self.nodes_to_probe.push((*node_id, node_info.clone()));
+    }
 
 	// Will return a Vec<(NodeId,NodeInfo)> of nodes sorted by Number Of Channels
 	fn network_graph_sorted_with_respect_to_num_channels(
 		& mut self,
-		network_graph: &ReadOnlyNetworkGraph
+		read_network_graph: &ReadOnlyNetworkGraph<'_>,
 	) -> &mut Self {
 
-		let node_iter = network_graph.nodes().unordered_iter();
+		let node_iter = read_network_graph.nodes().unordered_iter();
 		for i in node_iter {
-			let channel = Deref::deref(&i.1).channels.len();
-			self.nodes_to_probe.push((*i.0, *i.1));
+			self.add_node(i.0, i.1);
 		}
 
 		self.nodes_to_probe.sort_by(|(node_id_a, node_info_a), (node_id_b, node_info_b)| {
@@ -174,12 +218,8 @@ impl NodesToProbe{
 	// Will return top_one_percent_nodes of nodes sorted by Number Of Channels
 	fn top_one_percent_nodes (& mut self) -> &mut Self {
 		let num_element = self.nodes_to_probe.len() as f64;
-		self.nodes_to_probe[0..((0.1*num_element).floor() as usize)];
+		self.nodes_to_probe.get(0..((0.1*num_element).floor() as usize));
 		self
-	}
-
-	fn as_ref (& mut self) -> Self {
-		*self
 	}
 }
 
@@ -215,20 +255,22 @@ fn random_final_cltv_expiry_delta_generator () -> u32 {
 	return random_number;
 }
 //It will use DefaultRouter to find a path to target_pubkey
-async fn initial_path_builder<L: std::ops::Deref> (
-	network_graph: &NetworkGraph<L>,
+async fn initial_path_builder(
+	network_graph: Arc<NetworkGraph<Arc<FilesystemLogger>>>,
 	target_nodeid: NodeId,
 	final_value_mast :u64,
 	probe_value_map : &ProbeValueMap,
-) -> Path where <L as Deref>::Target: Logger {
+	payee_pubkey : bitcoin::secp256k1::PublicKey,
+) -> Path {
 
-	let value_map = probe_value_map.value_map.lock().await;
+	let mut value_map = probe_value_map.value_map.lock().await;
 	let x = value_map.get(&target_nodeid);
 	match x {
 		Some(x) => {
 			let path = x.path[0].clone();
 			return path;
 		}
+
 		None => {
 			value_map.insert(target_nodeid, NodeRating::new(target_nodeid));
 			let target_pubkey = target_nodeid.as_pubkey();
@@ -241,26 +283,24 @@ async fn initial_path_builder<L: std::ops::Deref> (
 					let route_params = RouteParameters{
 						payment_params,
 						final_value_msat: final_value_mast};
-
-					// let logger = TestLogger::new().log(record!());
-					// let params = ProbabilisticScoringFeeParameters::default();
-					// let decay_params = ProbabilisticScoringDecayParameters::default();
-					// let scorer = Arc::new(ProbabilisticScorer::new(decay_params, network_graph, logger.clone()));
 					
-
-					// let scorer = FixedPenaltyScorer::with_penalty(DEFAULT_PENALTY_MSAT);
-					// let random_seed_bytes: [u8; 32] = generate_random_seed_bytes();
-
-					// let router = Arc::new(DefaultRouter::new(
-					// 	network_graph,
-					// 	logger.clone(),
-					// 	random_seed_bytes,
-					// 	scorer,
-					// 	scoring_fee_params.lock().await,
-					// ));
+					let logger = Arc::new(FilesystemLogger::new("".to_string()));
+					let scoring_fee_params = ProbabilisticScoringFeeParameters::default();
+					let decay_params = ProbabilisticScoringDecayParameters::default();
+					let scorer = Arc::new(std::sync::Mutex::new(ProbabilisticScorer::new(decay_params, Arc::clone(&network_graph), Arc::clone(&logger))));
+					
+					let random_seed_bytes: [u8; 32] = generate_random_seed_bytes();
+					
+					let router = Arc::new(DefaultRouter::new(
+						Arc::clone(&network_graph),
+						Arc::clone(&logger),
+						random_seed_bytes.clone(),
+						scorer,
+						scoring_fee_params,
+					));
 
 					let route  = router.find_route(
-						&OUR_NODE_PUBKEY, 
+						&payee_pubkey, 
 						&route_params, 
 						None, 
 						&InFlightHtlcs::new());
@@ -280,6 +320,7 @@ async fn initial_path_builder<L: std::ops::Deref> (
 						Err(_) => panic!("No route found"), //to be handled later
 					}
 				},
+				
 				Err(_) => panic!("Invalid target_pubkey"),
 			}
 		}
@@ -305,7 +346,8 @@ fn path_parser (path: Path) -> Box<[bitcoin::secp256k1::PublicKey]> {
 //liquidity(A) = balance(A) – channel_reserve(A) – pending_HTLCs(A)
 //Will return Sorted Vec of channel_capacity in given Path
 
-// we are halving the channel capacity
+// we are halving the channel capacity to get balance of A and B
+// top nodes will try to directional balance, hence channel capcity is closet to real channel liquidity 
 fn sorted_channel_capacity_in_path(
 	network_graph: &ReadOnlyNetworkGraph, 
 	path: Path
@@ -338,42 +380,29 @@ fn sorted_channel_capacity_in_path(
 }
 
 struct HtlcList {
-	path: Path,
-	max_htlc_list: Vec<(NodeId,u64)>,
-	min_htlc_list: Vec<(NodeId,u64)>,
+    path: Path,
+    max_htlc_list: Vec<(NodeId, u64)>,
 }
 
 impl HtlcList {
-	fn new (path: Path) -> Self {
-		Self {
-			path,
-			max_htlc_list: Vec::new(),
-			min_htlc_list: Vec::new(),
-		}
-	}
+    fn new(path: Path) -> Self {
+        Self {
+            path,
+            max_htlc_list: Vec::new(),
+        }
+    }
 
-	//this code has directionality issues
-	fn sorted_htlc_in_path (
-		& mut self, 
-		path: Path, 
-		channel_info: &ChannelInfo,
-	) -> Self {
-		
-		for i in path.hops {
-			let nodeid = NodeId::from_pubkey(&i.pubkey);
-			let channel_update_info = channel_info.get_directional_info(0).unwrap();
-			let max = channel_update_info.htlc_maximum_msat;
-			let min = channel_update_info.htlc_minimum_msat;
-			
-			self.max_htlc_list.push((nodeid, max));
-			self.min_htlc_list.push((nodeid, min));
-				
-		}
-		self.max_htlc_list.sort_by(|(_, a), (_, b)| a.cmp(b)); // accending ordering of MAX_HTLC
-		self.min_htlc_list.sort_by(|(_, a), (_, b)| b.cmp(a)); // decending sort of MIN_HTLC
+    fn sorted_htlc_in_path(&mut self, channel_info: &ChannelInfo) {
+        self.max_htlc_list.clear(); // Clear the list before adding new values
 
-		return *self;
-	}
+        for i in &self.path.hops {
+            let nodeid = NodeId::from_pubkey(&i.pubkey);
+            let max = channel_info.get_directional_info(0).unwrap().htlc_maximum_msat;
+            self.max_htlc_list.push((nodeid, max));
+        }
+        
+        self.max_htlc_list.sort_by(|(_, a), (_, b)| a.cmp(b)); // ascending ordering of MAX_HTLC
+    }
 }
 
 
@@ -382,90 +411,50 @@ async fn value_selector (
 	path: Path,
 	nodeid: NodeId,
 	probe_value_map: &ProbeValueMap,
-	min_htlc_list: Vec<(NodeId,u64)>,
 	max_htlc_list: Vec<(NodeId,u64)>,
 	capacity_list: Vec<(u64,Option<u64>)>,
 ) -> u64 {
 	let mut value_map = probe_value_map.value_map.lock().await;
 	let temp = value_map.get_mut(&nodeid);
 	match temp {
-		Some(node_rating) => {
+		Some(node_rating) => { 
+			
 			let vec_len = node_rating.probes.len();
-			
-			//probing for Min
+		
 			if vec_len == 0 {
-				let val = min_htlc_list.last().unwrap().1;
-				
-				if let Some(last_probe) = node_rating.probes.last_mut() {
-					last_probe.set_probe_direction(ProbeDirection::Min);
-					last_probe.update_path(path);
-					last_probe.update_value(val);
-				}
-				return val
-			}
-
-			//probing for Max
-			else if vec_len == 1 {
 				let val = min(max_htlc_list[0].1, capacity_list[0].1.unwrap());
-	
+				
+				node_rating.probes.push(ProbePersister::new(nodeid));
 				if let Some(last_probe) = node_rating.probes.last_mut() {
-					last_probe.set_probe_direction(ProbeDirection::Max);
 					last_probe.update_path(path);
 					last_probe.update_value(val);
 				}
 				return val
 			}
+
 			
-			//probing for Min
-			else if vec_len == 2 {
-				let probe_persister = node_rating.probes.get(vec_len-2).unwrap();
-				let probe_status = probe_persister.probe_status.as_ref().unwrap();
+			else if vec_len == 1 {
+				let probe_persister = node_rating.probes.last().unwrap();
+
 				let value = probe_persister.value.unwrap();
+				let probe_status = probe_persister.probe_status.as_ref().unwrap();
 				match probe_status {
+					
 					ProbeStatus::Success => {
-						let val = (0.5*(value as f64).floor()) as u64;
-			
+						let val = 2*value;
+
+						node_rating.probes.push(ProbePersister::new(nodeid));
 						if let Some(last_probe) = node_rating.probes.last_mut() {
-							last_probe.set_probe_direction(ProbeDirection::Min);
 							last_probe.update_path(path);
 							last_probe.update_value(val);
 						}
 						return val
 					}
 					ProbeStatus::Failure => {
-						let val = 2*value;
+						let val = (0.5*((value) as f64)).floor() as u64;
 						
+						node_rating.probes.push(ProbePersister::new(nodeid));
 						if let Some(last_probe) = node_rating.probes.last_mut() {
-							last_probe.set_probe_direction(ProbeDirection::Min);
-							last_probe.update_path(path);
-							last_probe.update_value(val);
-						}
-						return val
-					}
-				}
-			}
-
-			//probing for Max
-			else if vec_len == 3 {
-				let probe_persister = node_rating.probes.get(vec_len-2).unwrap();
-				let probe_status = probe_persister.probe_status.as_ref().unwrap();
-				let value = probe_persister.value.unwrap();
-				match probe_status {
-					ProbeStatus::Success => {
-						let val = 2*value;
-						
-						if let Some(last_probe) = node_rating.probes.last_mut() {
-							last_probe.set_probe_direction(ProbeDirection::Max);
-							last_probe.update_path(path);
-							last_probe.update_value(val);
-						}
-						return val
-					}
-					ProbeStatus::Failure => {
-						let val = (0.5*(value as f64)).floor() as u64;
-
-						if let Some(last_probe) = node_rating.probes.last_mut() {
-							last_probe.set_probe_direction(ProbeDirection::Max);
 							last_probe.update_path(path);
 							last_probe.update_value(val);
 						}
@@ -475,83 +464,38 @@ async fn value_selector (
 			}
 			
 			else {
-				let probe_persister = node_rating.probes.get(vec_len-1);
-				match probe_persister {
-					Some(probe) => {
-						let direction = probe.direction.as_ref().unwrap();
-						match direction {
-							ProbeDirection::Min => {
-								
-								//Probing for Max
-								let probe_to_see = node_rating.probes.get(vec_len-2).unwrap();
-								let value = probe_to_see.value.unwrap();
-								let probe_status = probe_to_see.probe_status.as_ref().unwrap();
-								match probe_status {
-									ProbeStatus::Success => {
-										let val = 2*value;
-									
-										if let Some(last_probe) = node_rating.probes.last_mut() {
-											last_probe.set_probe_direction(ProbeDirection::Max);
-											last_probe.update_path(path);
-											last_probe.update_value(val);
-										}
-										return val
-									}
-									ProbeStatus::Failure => {
-										let val_mid = node_rating.probes.get(vec_len-4).unwrap().value.unwrap();
-										let val = (0.5*((value + val_mid) as f64)).floor() as u64;
-										
-										if let Some(last_probe) = node_rating.probes.last_mut() {
-											last_probe.set_probe_direction(ProbeDirection::Max);
-											last_probe.update_path(path);
-											last_probe.update_value(val);
-										}
-										return val
-									}
-								}
-							}
-							ProbeDirection::Max => {
-								
-								//Probing for Min
-								let probe_to_see = node_rating.probes.get(vec_len-2).unwrap();
-								let value = probe_to_see.value.unwrap();
-								let probe_status = probe_to_see.probe_status.as_ref().unwrap();
-								match probe_status {
-									ProbeStatus::Success => {
-										let val_mid = node_rating.probes.get(vec_len-4).unwrap().value.unwrap();
-										let val = (0.5*((value + val_mid) as f64)).floor() as u64;
-										
-										if let Some(last_probe) = node_rating.probes.last_mut() {
-											last_probe.set_probe_direction(ProbeDirection::Min);
-											last_probe.update_path(path);
-											last_probe.update_value(val);
-										}
-										return val
-									}
-									ProbeStatus::Failure => {
-										let val = 2*value;
-										
-										if let Some(last_probe) = node_rating.probes.last_mut() {
-											last_probe.set_probe_direction(ProbeDirection::Min);
-											last_probe.update_path(path);
-											last_probe.update_value(val);
-										}
-										return val
-									}
-								}
-							},
-						}	
-					},
-					None => {
-						panic!("No probe found");
+				let probe_persister = node_rating.probes.last().unwrap();
+
+				let value = probe_persister.value.unwrap();
+				let probe_status = probe_persister.probe_status.as_ref().unwrap();
+				match probe_status {
+					
+					ProbeStatus::Success => {
+						let val = 2*value;
+
+						node_rating.probes.push(ProbePersister::new(nodeid));
+						if let Some(last_probe) = node_rating.probes.last_mut() {
+							last_probe.update_path(path);
+							last_probe.update_value(val);
+						}
+						return val
+					}
+					ProbeStatus::Failure => {
+						let val_mid = node_rating.probes.get(vec_len-2).unwrap().value.unwrap();
+						let val = (0.5*((value + val_mid) as f64)).floor() as u64;
+						
+						node_rating.probes.push(ProbePersister::new(nodeid));
+						if let Some(last_probe) = node_rating.probes.last_mut() {
+							last_probe.update_path(path);
+							last_probe.update_value(val);
+						}
+						return val
 					}
 				}
-			}
+			} 
 		}
-		None => {
-			panic!("Node not found in probe_value_map");
-		}
-	}
+    	None => panic!("Node rating error")
+	}	
 }
 
 //Will return a path using build_route_from_hops
@@ -559,7 +503,8 @@ fn final_path_builder_for_probe <L: Logger + std::ops::Deref>(
 	hops: Box<[bitcoin::secp256k1::PublicKey]>,
 	network_graph: &NetworkGraph<L>,
 	nodeid: NodeId,
-	final_value_mast :u64
+	final_value_mast :u64,
+	payee_pubkey : bitcoin::secp256k1::PublicKey,
 ) -> Path where <L as Deref>::Target: Logger {
 
 	let target_pubkey = nodeid.as_pubkey().unwrap();
@@ -575,7 +520,7 @@ fn final_path_builder_for_probe <L: Logger + std::ops::Deref>(
 	let random_seed_bytes: [u8; 32] = generate_random_seed_bytes();
 
 	let route = build_route_from_hops(
-		&OUR_NODE_PUBKEY,
+		&payee_pubkey,
 		&hops,
 		&route_params,
 		network_graph,
@@ -663,11 +608,6 @@ impl NodeRating {
 	}
 }
 
-enum ProbeDirection {
-	Min,
-	Max,
-}
-
 enum ProbeStatus {
 	Success,
 	Failure,
@@ -679,7 +619,6 @@ struct ProbePersister{
 	target_nodeid : NodeId,
 	value : Option<u64>,
 	path : Option<Path>,
-	direction : Option<ProbeDirection>,
 	probe_status : Option<ProbeStatus>,  
 	send_probe_return : Option<Result<(PaymentHash, PaymentId), PaymentSendFailure>>,
 }
@@ -691,16 +630,10 @@ impl ProbePersister {
 			target_nodeid,
 			value: None,
 			path: None,
-			direction: None,
 			probe_status: None,
 			send_probe_return: None,
 		}
 	}
-
-	// Method to set the probe direction
-    fn set_probe_direction(&mut self, direction: ProbeDirection) {
-        self.direction = Some(direction);
-    }
 
     // Method to update the path
     fn update_path(&mut self, path: Path) {
@@ -735,7 +668,9 @@ impl ProbePersister {
 async fn start_probing <L : Logger + std::ops::Deref> (
 	network_graph: &NetworkGraph<L>, 
 	read_network_graph: &ReadOnlyNetworkGraph<'_>,
-	channel_info: &ChannelInfo
+	channel_info: &ChannelInfo,
+	graph: Arc<NetworkGraph<Arc<FilesystemLogger>>>,
+	payee_pubkey : bitcoin::secp256k1::PublicKey,
 ) -> () where <L as Deref>::Target: Logger {
 
 	let probe_value_map = ProbeValueMap::new();
@@ -755,13 +690,13 @@ async fn start_probing <L : Logger + std::ops::Deref> (
 	node_selector_looper(r_top_nodes, s_selected_node, &probe_value_map);
 	
 	// making initial paths for selcted nodes
-	initial_path_looper(r_selected_node,s_inital_path,network_graph, &probe_value_map);
+	initial_path_looper::<L>(r_selected_node,s_inital_path,Arc::clone(&graph), &probe_value_map, payee_pubkey);
 
 	//runs value selection on initial paths
 	value_selector_looper::<L>(r_inital_path, s_value, &read_network_graph,channel_info, &probe_value_map);
 
 	//final path builder loop
-	final_path_builder_for_probe_looper(r_value, network_graph, s_final_path);
+	final_path_builder_for_probe_looper(r_value, network_graph, s_final_path,payee_pubkey);
 
 
 	// tokio::spawn(async move {
@@ -778,9 +713,10 @@ async fn network_graph_looper<L: std::ops::Deref> (
 ) -> () where <L as Deref>::Target: Logger {
 	
 	loop {
-		let nodes_to_probe = NodesToProbe::new().network_graph_sorted_with_respect_to_num_channels(network_graph_read).top_one_percent_nodes();
-		let nodes = nodes_to_probe.as_ref();
-		s_top_nodes.send(nodes).await;
+		let mut nodes_to_probe = NodesToProbe::new();
+		nodes_to_probe.network_graph_sorted_with_respect_to_num_channels(network_graph_read).top_one_percent_nodes();
+		
+		s_top_nodes.send(nodes_to_probe).await;
 		thread::sleep(Duration::from_secs(24 * 60 * 60)); //sleep for 24 hours
 	}
 }
@@ -806,17 +742,20 @@ async fn node_selector_looper(
 async fn initial_path_looper<L: std::ops::Deref> (
 	r_selected_node: Receiver<NodeId>, 
 	s_inital_path: Sender<(NodeId,Path)>, 
-	network_graph: &NetworkGraph<L>,
-	probe_value_map : &ProbeValueMap
+	network_graph: Arc<NetworkGraph<Arc<FilesystemLogger>>>,
+	probe_value_map : &ProbeValueMap,
+	payee_pubkey : bitcoin::secp256k1::PublicKey,
 ) -> () where <L as Deref>::Target: Logger {
 	
 	loop {
+		let graph = Arc::new(network_graph.clone());
 		let nodeid = r_selected_node.recv().await.unwrap();
 		let path = initial_path_builder(
-			network_graph, 
+			Arc::clone(&network_graph), 
 			nodeid, 
 			DEFAULT_FINAL_VALUE_MSAT, 
-			probe_value_map).await;
+			probe_value_map,
+			payee_pubkey).await;
 		s_inital_path.send((nodeid,path)).await;
 	}
 }
@@ -835,16 +774,13 @@ async fn value_selector_looper<L: std::ops::Deref> (
 		let (nodeid, path) = r_inital_path.recv().await.unwrap();
 		let capacity_list = sorted_channel_capacity_in_path(read_network_graph, path.clone());
 		
-		let htlc_list = HtlcList::new(path.clone()).sorted_htlc_in_path(path.clone(), channel_info);
-		let min_htlc_list = htlc_list.min_htlc_list;
-		let max_htlc_list = htlc_list.max_htlc_list;
-
+		let mut max_htlc_list = HtlcList::new(path.clone());
+		max_htlc_list.sorted_htlc_in_path(channel_info);
 		let value = value_selector(
 			path.clone(), 
 			nodeid, 
-			probe_value_map, 
-			min_htlc_list, 
-			max_htlc_list, 
+			probe_value_map,
+			max_htlc_list.max_htlc_list, 
 			capacity_list)
 			.await;
 
@@ -858,12 +794,13 @@ async fn final_path_builder_for_probe_looper<L: std::ops::Deref + lightning::uti
 	r_value: Receiver<(NodeId,Path,u64)>,
 	network_graph: &NetworkGraph<L>,
 	s_final_path: Sender<Path>,
+	payee_pubkey : bitcoin::secp256k1::PublicKey,
 ) -> () where <L as Deref>::Target: Logger {
 	
 	loop {
 		let (nodeid, path, value) = r_value.recv().await.unwrap();
 		let path_parse = path_parser(path);
-		let final_path = final_path_builder_for_probe(path_parse, network_graph, nodeid, value);
+		let final_path = final_path_builder_for_probe(path_parse, network_graph, nodeid, value, payee_pubkey);
 
 		s_final_path.send(final_path).await;
 	}

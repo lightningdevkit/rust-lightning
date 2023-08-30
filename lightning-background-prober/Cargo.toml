@@ -27,6 +27,7 @@ lightning-rapid-gossip-sync = { version = "0.0.115", path = "../lightning-rapid-
 tokio = { version = "1", features = ["full"] }
 async-channel = "1.9.0"
 rand = "0.8"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 
 
 [dev-dependencies]
