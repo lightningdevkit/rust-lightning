@@ -179,12 +179,6 @@ struct MonitorHolder<ChannelSigner: WriteableEcdsaChannelSigner> {
 	/// the ChannelManager re-adding the same payment entry, before the same block is replayed,
 	/// resulting in a duplicate PaymentSent event.
 	pending_monitor_updates: Mutex<Vec<MonitorUpdateId>>,
-	/// When the user returns a PermanentFailure error from an update_persisted_channel call during
-	/// block processing, we inform the ChannelManager that the channel should be closed
-	/// asynchronously. In order to ensure no further changes happen before the ChannelManager has
-	/// processed the closure event, we set this to true and return PermanentFailure for any other
-	/// chain::Watch events.
-	channel_perm_failed: AtomicBool,
 	/// The last block height at which no [`UpdateOrigin::ChainSync`] monitor updates were present
 	/// in `pending_monitor_updates`.
 	/// If it's been more than [`LATENCY_GRACE_PERIOD_BLOCKS`] since we started waiting on a chain
@@ -485,9 +479,8 @@ where C::Target: chain::Filter,
 				// `MonitorEvent`s from the monitor back to the `ChannelManager` until they
 				// complete.
 				let monitor_is_pending_updates = monitor_data.has_pending_offchain_updates(&pending_monitor_updates);
-				if monitor_is_pending_updates || monitor_data.channel_perm_failed.load(Ordering::Acquire) {
-					// If there are still monitor updates pending (or an old monitor update
-					// finished after a later one perm-failed), we cannot yet construct an
+				if monitor_is_pending_updates {
+					// If there are still monitor updates pending, we cannot yet construct a
 					// Completed event.
 					return Ok(());
 				}
@@ -695,7 +688,6 @@ where C::Target: chain::Filter,
 		entry.insert(MonitorHolder {
 			monitor,
 			pending_monitor_updates: Mutex::new(pending_monitor_updates),
-			channel_perm_failed: AtomicBool::new(false),
 			last_chain_persist_height: AtomicUsize::new(self.highest_chain_height.load(Ordering::Acquire)),
 		});
 		Ok(persist_res)
@@ -741,8 +733,6 @@ where C::Target: chain::Filter,
 				}
 				if update_res.is_err() {
 					ChannelMonitorUpdateStatus::InProgress
-				} else if monitor_state.channel_perm_failed.load(Ordering::Acquire) {
-					ChannelMonitorUpdateStatus::InProgress
 				} else {
 					persist_res
 				}
@@ -760,17 +750,6 @@ where C::Target: chain::Filter,
 			{
 				log_debug!(self.logger, "A Channel Monitor sync is still in progress, refusing to provide monitor events!");
 			} else {
-				if monitor_state.channel_perm_failed.load(Ordering::Acquire) {
-					// If a `UpdateOrigin::ChainSync` persistence failed with `PermanantFailure`,
-					// we don't really know if the latest `ChannelMonitor` state is on disk or not.
-					// We're supposed to hold monitor updates until the latest state is on disk to
-					// avoid duplicate events, but the user told us persistence is screw-y and may
-					// not complete. We can't hold events forever because we may learn some payment
-					// preimage, so instead we just log and hope the user complied with the
-					// `PermanentFailure` requirements of having at least the local-disk copy
-					// updated.
-					log_info!(self.logger, "A Channel Monitor sync returned PermanentFailure. Returning monitor events but duplicate events may appear after reload!");
-				}
 				if is_pending_monitor_update {
 					log_error!(self.logger, "A ChannelMonitor sync took longer than {} blocks to complete.", LATENCY_GRACE_PERIOD_BLOCKS);
 					log_error!(self.logger, "   To avoid funds-loss, we are allowing monitor updates to be released.");
