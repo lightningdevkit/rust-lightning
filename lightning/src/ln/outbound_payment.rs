@@ -976,7 +976,7 @@ impl OutboundPayments {
 			}))
 		}
 
-		let route = Route { paths: vec![path], payment_params: None };
+		let route = Route { paths: vec![path], route_params: None };
 		let onion_session_privs = self.add_new_pending_payment(payment_hash,
 			RecipientOnionFields::spontaneous_empty(), payment_id, None, &route, None, None,
 			entropy_source, best_block_height)?;
@@ -1145,9 +1145,9 @@ impl OutboundPayments {
 				results,
 				payment_id,
 				failed_paths_retry: if pending_amt_unsent != 0 {
-					if let Some(payment_params) = &route.payment_params {
+					if let Some(payment_params) = route.route_params.as_ref().map(|p| p.payment_params.clone()) {
 						Some(RouteParameters {
-							payment_params: payment_params.clone(),
+							payment_params: payment_params,
 							final_value_msat: pending_amt_unsent,
 						})
 					} else { None }
@@ -1569,7 +1569,7 @@ mod tests {
 		let pending_events = Mutex::new(VecDeque::new());
 		if on_retry {
 			outbound_payments.add_new_pending_payment(PaymentHash([0; 32]), RecipientOnionFields::spontaneous_empty(),
-				PaymentId([0; 32]), None, &Route { paths: vec![], payment_params: None },
+				PaymentId([0; 32]), None, &Route { paths: vec![], route_params: None },
 				Some(Retry::Attempts(1)), Some(expired_route_params.payment_params.clone()),
 				&&keys_manager, 0).unwrap();
 			outbound_payments.retry_payment_internal(
@@ -1613,7 +1613,7 @@ mod tests {
 		let pending_events = Mutex::new(VecDeque::new());
 		if on_retry {
 			outbound_payments.add_new_pending_payment(PaymentHash([0; 32]), RecipientOnionFields::spontaneous_empty(),
-				PaymentId([0; 32]), None, &Route { paths: vec![], payment_params: None },
+				PaymentId([0; 32]), None, &Route { paths: vec![], route_params: None },
 				Some(Retry::Attempts(1)), Some(route_params.payment_params.clone()),
 				&&keys_manager, 0).unwrap();
 			outbound_payments.retry_payment_internal(
@@ -1657,7 +1657,7 @@ mod tests {
 				fee_msat: 0,
 				cltv_expiry_delta: 0,
 			}], blinded_tail: None }],
-			payment_params: Some(payment_params),
+			route_params: Some(route_params.clone()),
 		};
 		router.expect_find_route(route_params.clone(), Ok(route.clone()));
 		let mut route_params_w_failed_scid = route_params.clone();

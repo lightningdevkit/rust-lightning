@@ -1007,7 +1007,7 @@ mod tests {
 						short_channel_id: 0, fee_msat: 0, cltv_expiry_delta: 0 // We fill in the payloads manually instead of generating them from RouteHops.
 					},
 			], blinded_tail: None }],
-			payment_params: None,
+			route_params: None,
 		};
 
 		let onion_keys = super::construct_onion_keys(&secp_ctx, &route.paths[0], &get_test_session_key()).unwrap();

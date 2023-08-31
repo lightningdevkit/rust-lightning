@@ -94,7 +94,7 @@ fn mpp_retry() {
 
 	// Initiate the MPP payment.
 	let payment_id = PaymentId(payment_hash.0);
-	let mut route_params = RouteParameters::from_payment_params_and_value(route.payment_params.clone().unwrap(), amt_msat);
+	let mut route_params = route.route_params.clone().unwrap();
 
 	nodes[0].router.expect_find_route(route_params.clone(), Ok(route.clone()));
 	nodes[0].node.send_payment(payment_hash, RecipientOnionFields::secret_only(payment_secret),
@@ -524,7 +524,7 @@ fn do_retry_with_no_persist(confirm_before_reload: bool) {
 	let amt_msat = 1_000_000;
 	let (route, payment_hash, payment_preimage, payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[2], amt_msat);
 	let (payment_preimage_1, payment_hash_1, _, payment_id_1) = send_along_route(&nodes[0], route.clone(), &[&nodes[1], &nodes[2]], 1_000_000);
-	let route_params = RouteParameters::from_payment_params_and_value(route.payment_params.clone().unwrap(), amt_msat);
+	let route_params = route.route_params.unwrap().clone();
 	nodes[0].node.send_payment(payment_hash, RecipientOnionFields::secret_only(payment_secret),
 		PaymentId(payment_hash.0), route_params, Retry::Attempts(1)).unwrap();
 	check_added_monitors!(nodes[0], 1);
@@ -2211,7 +2211,7 @@ fn auto_retry_partial_failure() {
 				cltv_expiry_delta: 100,
 			}], blinded_tail: None },
 		],
-		payment_params: Some(route_params.payment_params.clone()),
+		route_params: Some(route_params.clone()),
 	};
 	let retry_1_route = Route {
 		paths: vec![
@@ -2232,7 +2232,7 @@ fn auto_retry_partial_failure() {
 				cltv_expiry_delta: 100,
 			}], blinded_tail: None },
 		],
-		payment_params: Some(route_params.payment_params.clone()),
+		route_params: Some(route_params.clone()),
 	};
 	let retry_2_route = Route {
 		paths: vec![
@@ -2245,7 +2245,7 @@ fn auto_retry_partial_failure() {
 				cltv_expiry_delta: 100,
 			}], blinded_tail: None },
 		],
-		payment_params: Some(route_params.payment_params.clone()),
+		route_params: Some(route_params.clone()),
 	};
 	nodes[0].router.expect_find_route(route_params.clone(), Ok(send_route));
 	let mut payment_params = route_params.payment_params.clone();
@@ -2497,13 +2497,13 @@ fn retry_multi_path_single_failed_payment() {
 				cltv_expiry_delta: 100,
 			}], blinded_tail: None },
 		],
-		payment_params: Some(payment_params),
+		route_params: Some(route_params.clone()),
 	};
 	nodes[0].router.expect_find_route(route_params.clone(), Ok(route.clone()));
 	// On retry, split the payment across both channels.
 	route.paths[0].hops[0].fee_msat = 50_000_001;
 	route.paths[1].hops[0].fee_msat = 50_000_000;
-	let mut pay_params = route.payment_params.clone().unwrap();
+	let mut pay_params = route.route_params.clone().unwrap().payment_params;
 	pay_params.previously_failed_channels.push(chans[1].short_channel_id.unwrap());
 	nodes[0].router.expect_find_route(
 		// Note that the second request here requests the amount we originally failed to send,
@@ -2578,7 +2578,9 @@ fn immediate_retry_on_failure() {
 				cltv_expiry_delta: 100,
 			}], blinded_tail: None },
 		],
-		payment_params: Some(PaymentParameters::from_node_id(nodes[1].node.get_our_node_id(), TEST_FINAL_CLTV)),
+		route_params: Some(RouteParameters::from_payment_params_and_value(
+			PaymentParameters::from_node_id(nodes[1].node.get_our_node_id(), TEST_FINAL_CLTV),
+			100_000_001)),
 	};
 	nodes[0].router.expect_find_route(route_params.clone(), Ok(route.clone()));
 	// On retry, split the payment across both channels.
@@ -2684,7 +2686,9 @@ fn no_extra_retries_on_back_to_back_fail() {
 				cltv_expiry_delta: 100,
 			}], blinded_tail: None }
 		],
-		payment_params: Some(PaymentParameters::from_node_id(nodes[2].node.get_our_node_id(), TEST_FINAL_CLTV)),
+		route_params: Some(RouteParameters::from_payment_params_and_value(
+			PaymentParameters::from_node_id(nodes[2].node.get_our_node_id(), TEST_FINAL_CLTV),
+			100_000_000)),
 	};
 	nodes[0].router.expect_find_route(route_params.clone(), Ok(route.clone()));
 	let mut second_payment_params = route_params.payment_params.clone();
@@ -2882,7 +2886,9 @@ fn test_simple_partial_retry() {
 				cltv_expiry_delta: 100,
 			}], blinded_tail: None }
 		],
-		payment_params: Some(PaymentParameters::from_node_id(nodes[2].node.get_our_node_id(), TEST_FINAL_CLTV)),
+		route_params: Some(RouteParameters::from_payment_params_and_value(
+			PaymentParameters::from_node_id(nodes[2].node.get_our_node_id(), TEST_FINAL_CLTV),
+			100_000_000)),
 	};
 	nodes[0].router.expect_find_route(route_params.clone(), Ok(route.clone()));
 	let mut second_payment_params = route_params.payment_params.clone();
@@ -3044,7 +3050,9 @@ fn test_threaded_payment_retries() {
 				cltv_expiry_delta: 100,
 			}], blinded_tail: None }
 		],
-		payment_params: Some(PaymentParameters::from_node_id(nodes[2].node.get_our_node_id(), TEST_FINAL_CLTV)),
+		route_params: Some(RouteParameters::from_payment_params_and_value(
+			PaymentParameters::from_node_id(nodes[2].node.get_our_node_id(), TEST_FINAL_CLTV),
+			amt_msat - amt_msat / 1000)),
 	};
 	nodes[0].router.expect_find_route(route_params.clone(), Ok(route.clone()));
 
@@ -3470,7 +3478,7 @@ fn test_retry_custom_tlvs() {
 
 	// Initiate the payment
 	let payment_id = PaymentId(payment_hash.0);
-	let mut route_params = RouteParameters::from_payment_params_and_value(route.payment_params.clone().unwrap(), amt_msat);
+	let mut route_params = route.route_params.clone().unwrap();
 
 	let custom_tlvs = vec![((1 << 16) + 1, vec![0x42u8; 16])];
 	let onion_fields = RecipientOnionFields::secret_only(payment_secret);
