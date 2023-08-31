@@ -435,6 +435,13 @@ pub struct RouteParameters {
 	pub final_value_msat: u64,
 }
 
+impl RouteParameters {
+	/// Constructs [`RouteParameters`] from the given [`PaymentParameters`] and a payment amount.
+	pub fn from_payment_params_and_value(payment_params: PaymentParameters, final_value_msat: u64) -> Self {
+		Self { payment_params, final_value_msat }
+	}
+}
+
 impl Writeable for RouteParameters {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		write_tlv_fields!(writer, {
