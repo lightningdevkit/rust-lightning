@@ -442,6 +442,7 @@ pub enum PaymentSendFailure {
 }
 
 /// An error when attempting to pay a BOLT 12 invoice.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum Bolt12PaymentError {
 	/// The invoice was not requested.
 	UnexpectedInvoice,
@@ -1682,7 +1683,10 @@ mod tests {
 	use crate::ln::channelmanager::{PaymentId, RecipientOnionFields};
 	use crate::ln::features::{ChannelFeatures, NodeFeatures};
 	use crate::ln::msgs::{ErrorAction, LightningError};
-	use crate::ln::outbound_payment::{INVOICE_REQUEST_TIMEOUT_TICKS, OutboundPayments, Retry, RetryableSendFailure};
+	use crate::ln::outbound_payment::{Bolt12PaymentError, INVOICE_REQUEST_TIMEOUT_TICKS, OutboundPayments, Retry, RetryableSendFailure};
+	use crate::offers::invoice::DEFAULT_RELATIVE_EXPIRY;
+	use crate::offers::offer::OfferBuilder;
+	use crate::offers::test_utils::*;
 	use crate::routing::gossip::NetworkGraph;
 	use crate::routing::router::{InFlightHtlcs, Path, PaymentParameters, Route, RouteHop, RouteParameters};
 	use crate::sync::{Arc, Mutex, RwLock};
@@ -1930,6 +1934,242 @@ mod tests {
 			pending_events.lock().unwrap().pop_front(),
 			Some((Event::InvoiceRequestFailed { payment_id }, None)),
 		);
+		assert!(pending_events.lock().unwrap().is_empty());
+	}
+
+	#[cfg(feature = "std")]
+	#[test]
+	fn fails_sending_payment_for_expired_bolt12_invoice() {
+		let logger = test_utils::TestLogger::new();
+		let network_graph = Arc::new(NetworkGraph::new(Network::Testnet, &logger));
+		let scorer = RwLock::new(test_utils::TestScorer::new());
+		let router = test_utils::TestRouter::new(network_graph, &scorer);
+		let keys_manager = test_utils::TestKeysInterface::new(&[0; 32], Network::Testnet);
+
+		let pending_events = Mutex::new(VecDeque::new());
+		let outbound_payments = OutboundPayments::new();
+		let payment_id = PaymentId([0; 32]);
+
+		assert!(outbound_payments.add_new_awaiting_invoice(payment_id).is_ok());
+		assert!(outbound_payments.has_pending_payments());
+
+		let created_at = now() - DEFAULT_RELATIVE_EXPIRY;
+		let invoice = OfferBuilder::new("foo".into(), recipient_pubkey())
+			.amount_msats(1000)
+			.build().unwrap()
+			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
+			.build().unwrap()
+			.sign(payer_sign).unwrap()
+			.respond_with_no_std(payment_paths(), payment_hash(), created_at).unwrap()
+			.build().unwrap()
+			.sign(recipient_sign).unwrap();
+
+		assert_eq!(
+			outbound_payments.send_payment_for_bolt12_invoice(
+				&invoice, payment_id, &&router, vec![], || InFlightHtlcs::new(), &&keys_manager,
+				&&keys_manager, 0, &&logger, &pending_events, |_| panic!()
+			),
+			Ok(()),
+		);
+		assert!(!outbound_payments.has_pending_payments());
+
+		let payment_hash = invoice.payment_hash();
+		let reason = Some(PaymentFailureReason::PaymentExpired);
+
+		assert!(!pending_events.lock().unwrap().is_empty());
+		assert_eq!(
+			pending_events.lock().unwrap().pop_front(),
+			Some((Event::PaymentFailed { payment_id, payment_hash, reason }, None)),
+		);
+		assert!(pending_events.lock().unwrap().is_empty());
+	}
+
+	#[test]
+	fn fails_finding_route_for_bolt12_invoice() {
+		let logger = test_utils::TestLogger::new();
+		let network_graph = Arc::new(NetworkGraph::new(Network::Testnet, &logger));
+		let scorer = RwLock::new(test_utils::TestScorer::new());
+		let router = test_utils::TestRouter::new(network_graph, &scorer);
+		let keys_manager = test_utils::TestKeysInterface::new(&[0; 32], Network::Testnet);
+
+		let pending_events = Mutex::new(VecDeque::new());
+		let outbound_payments = OutboundPayments::new();
+		let payment_id = PaymentId([0; 32]);
+
+		assert!(outbound_payments.add_new_awaiting_invoice(payment_id).is_ok());
+		assert!(outbound_payments.has_pending_payments());
+
+		let invoice = OfferBuilder::new("foo".into(), recipient_pubkey())
+			.amount_msats(1000)
+			.build().unwrap()
+			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
+			.build().unwrap()
+			.sign(payer_sign).unwrap()
+			.respond_with_no_std(payment_paths(), payment_hash(), now()).unwrap()
+			.build().unwrap()
+			.sign(recipient_sign).unwrap();
+
+		router.expect_find_route(
+			RouteParameters {
+				payment_params: PaymentParameters::from_bolt12_invoice(&invoice),
+				final_value_msat: invoice.amount_msats(),
+			},
+			Err(LightningError { err: String::new(), action: ErrorAction::IgnoreError }),
+		);
+
+		assert_eq!(
+			outbound_payments.send_payment_for_bolt12_invoice(
+				&invoice, payment_id, &&router, vec![], || InFlightHtlcs::new(), &&keys_manager,
+				&&keys_manager, 0, &&logger, &pending_events, |_| panic!()
+			),
+			Ok(()),
+		);
+		assert!(!outbound_payments.has_pending_payments());
+
+		let payment_hash = invoice.payment_hash();
+		let reason = Some(PaymentFailureReason::RouteNotFound);
+
+		assert!(!pending_events.lock().unwrap().is_empty());
+		assert_eq!(
+			pending_events.lock().unwrap().pop_front(),
+			Some((Event::PaymentFailed { payment_id, payment_hash, reason }, None)),
+		);
+		assert!(pending_events.lock().unwrap().is_empty());
+	}
+
+	#[test]
+	fn fails_paying_for_bolt12_invoice() {
+		let logger = test_utils::TestLogger::new();
+		let network_graph = Arc::new(NetworkGraph::new(Network::Testnet, &logger));
+		let scorer = RwLock::new(test_utils::TestScorer::new());
+		let router = test_utils::TestRouter::new(network_graph, &scorer);
+		let keys_manager = test_utils::TestKeysInterface::new(&[0; 32], Network::Testnet);
+
+		let pending_events = Mutex::new(VecDeque::new());
+		let outbound_payments = OutboundPayments::new();
+		let payment_id = PaymentId([0; 32]);
+
+		assert!(outbound_payments.add_new_awaiting_invoice(payment_id).is_ok());
+		assert!(outbound_payments.has_pending_payments());
+
+		let invoice = OfferBuilder::new("foo".into(), recipient_pubkey())
+			.amount_msats(1000)
+			.build().unwrap()
+			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
+			.build().unwrap()
+			.sign(payer_sign).unwrap()
+			.respond_with_no_std(payment_paths(), payment_hash(), now()).unwrap()
+			.build().unwrap()
+			.sign(recipient_sign).unwrap();
+
+		let route_params = RouteParameters {
+			payment_params: PaymentParameters::from_bolt12_invoice(&invoice),
+			final_value_msat: invoice.amount_msats(),
+		};
+		router.expect_find_route(
+			route_params.clone(), Ok(Route { paths: vec![], route_params: Some(route_params) })
+		);
+
+		assert_eq!(
+			outbound_payments.send_payment_for_bolt12_invoice(
+				&invoice, payment_id, &&router, vec![], || InFlightHtlcs::new(), &&keys_manager,
+				&&keys_manager, 0, &&logger, &pending_events, |_| panic!()
+			),
+			Ok(()),
+		);
+		assert!(!outbound_payments.has_pending_payments());
+
+		let payment_hash = invoice.payment_hash();
+		let reason = Some(PaymentFailureReason::UnexpectedError);
+
+		assert!(!pending_events.lock().unwrap().is_empty());
+		assert_eq!(
+			pending_events.lock().unwrap().pop_front(),
+			Some((Event::PaymentFailed { payment_id, payment_hash, reason }, None)),
+		);
+		assert!(pending_events.lock().unwrap().is_empty());
+	}
+
+	#[test]
+	fn sends_payment_for_bolt12_invoice() {
+		let logger = test_utils::TestLogger::new();
+		let network_graph = Arc::new(NetworkGraph::new(Network::Testnet, &logger));
+		let scorer = RwLock::new(test_utils::TestScorer::new());
+		let router = test_utils::TestRouter::new(network_graph, &scorer);
+		let keys_manager = test_utils::TestKeysInterface::new(&[0; 32], Network::Testnet);
+
+		let pending_events = Mutex::new(VecDeque::new());
+		let outbound_payments = OutboundPayments::new();
+		let payment_id = PaymentId([0; 32]);
+
+		let invoice = OfferBuilder::new("foo".into(), recipient_pubkey())
+			.amount_msats(1000)
+			.build().unwrap()
+			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
+			.build().unwrap()
+			.sign(payer_sign).unwrap()
+			.respond_with_no_std(payment_paths(), payment_hash(), now()).unwrap()
+			.build().unwrap()
+			.sign(recipient_sign).unwrap();
+
+		let route_params = RouteParameters {
+			payment_params: PaymentParameters::from_bolt12_invoice(&invoice),
+			final_value_msat: invoice.amount_msats(),
+		};
+		router.expect_find_route(
+			route_params.clone(),
+			Ok(Route {
+				paths: vec![
+					Path {
+						hops: vec![
+							RouteHop {
+								pubkey: recipient_pubkey(),
+								node_features: NodeFeatures::empty(),
+								short_channel_id: 42,
+								channel_features: ChannelFeatures::empty(),
+								fee_msat: invoice.amount_msats(),
+								cltv_expiry_delta: 0,
+							}
+						],
+						blinded_tail: None,
+					}
+				],
+				route_params: Some(route_params),
+			})
+		);
+
+		assert!(!outbound_payments.has_pending_payments());
+		assert_eq!(
+			outbound_payments.send_payment_for_bolt12_invoice(
+				&invoice, payment_id, &&router, vec![], || InFlightHtlcs::new(), &&keys_manager,
+				&&keys_manager, 0, &&logger, &pending_events, |_| panic!()
+			),
+			Err(Bolt12PaymentError::UnexpectedInvoice),
+		);
+		assert!(!outbound_payments.has_pending_payments());
+		assert!(pending_events.lock().unwrap().is_empty());
+
+		assert!(outbound_payments.add_new_awaiting_invoice(payment_id).is_ok());
+		assert!(outbound_payments.has_pending_payments());
+
+		assert_eq!(
+			outbound_payments.send_payment_for_bolt12_invoice(
+				&invoice, payment_id, &&router, vec![], || InFlightHtlcs::new(), &&keys_manager,
+				&&keys_manager, 0, &&logger, &pending_events, |_| Ok(())
+			),
+			Ok(()),
+		);
+		assert!(outbound_payments.has_pending_payments());
+		assert!(pending_events.lock().unwrap().is_empty());
+
+		assert_eq!(
+			outbound_payments.send_payment_for_bolt12_invoice(
+				&invoice, payment_id, &&router, vec![], || InFlightHtlcs::new(), &&keys_manager,
+				&&keys_manager, 0, &&logger, &pending_events, |_| panic!()
+			),
+			Err(Bolt12PaymentError::DuplicateInvoice),
+		);
+		assert!(outbound_payments.has_pending_payments());
 		assert!(pending_events.lock().unwrap().is_empty());
 	}
 }
