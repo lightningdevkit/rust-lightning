@@ -94,10 +94,7 @@ fn mpp_retry() {
 
 	// Initiate the MPP payment.
 	let payment_id = PaymentId(payment_hash.0);
-	let mut route_params = RouteParameters {
-		payment_params: route.payment_params.clone().unwrap(),
-		final_value_msat: amt_msat,
-	};
+	let mut route_params = RouteParameters::from_payment_params_and_value(route.payment_params.clone().unwrap(), amt_msat);
 
 	nodes[0].router.expect_find_route(route_params.clone(), Ok(route.clone()));
 	nodes[0].node.send_payment(payment_hash, RecipientOnionFields::secret_only(payment_secret),
@@ -257,10 +254,8 @@ fn do_test_keysend_payments(public_node: bool, with_retry: bool) {
 	}
 	let payer_pubkey = nodes[0].node.get_our_node_id();
 	let payee_pubkey = nodes[1].node.get_our_node_id();
-	let route_params = RouteParameters {
-		payment_params: PaymentParameters::for_keysend(payee_pubkey, 40, false),
-		final_value_msat: 10000,
-	};
+	let route_params = RouteParameters::from_payment_params_and_value(
+		PaymentParameters::for_keysend(payee_pubkey, 40, false), 10000);
 
 	let network_graph = nodes[0].network_graph.clone();
 	let channels = nodes[0].node.list_usable_channels();
@@ -319,10 +314,8 @@ fn test_mpp_keysend() {
 	let payer_pubkey = nodes[0].node.get_our_node_id();
 	let payee_pubkey = nodes[3].node.get_our_node_id();
 	let recv_value = 15_000_000;
-	let route_params = RouteParameters {
-		payment_params: PaymentParameters::for_keysend(payee_pubkey, 40, true),
-		final_value_msat: recv_value,
-	};
+	let route_params = RouteParameters::from_payment_params_and_value(
+		PaymentParameters::for_keysend(payee_pubkey, 40, true), recv_value);
 	let scorer = test_utils::TestScorer::new();
 	let random_seed_bytes = chanmon_cfgs[0].keys_manager.get_secure_random_bytes();
 	let route = find_route(&payer_pubkey, &route_params, &network_graph, None, nodes[0].logger,
@@ -531,10 +524,7 @@ fn do_retry_with_no_persist(confirm_before_reload: bool) {
 	let amt_msat = 1_000_000;
 	let (route, payment_hash, payment_preimage, payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[2], amt_msat);
 	let (payment_preimage_1, payment_hash_1, _, payment_id_1) = send_along_route(&nodes[0], route.clone(), &[&nodes[1], &nodes[2]], 1_000_000);
-	let route_params = RouteParameters {
-		payment_params: route.payment_params.clone().unwrap(),
-		final_value_msat: amt_msat,
-	};
+	let route_params = RouteParameters::from_payment_params_and_value(route.payment_params.clone().unwrap(), amt_msat);
 	nodes[0].node.send_payment(payment_hash, RecipientOnionFields::secret_only(payment_secret),
 		PaymentId(payment_hash.0), route_params, Retry::Attempts(1)).unwrap();
 	check_added_monitors!(nodes[0], 1);
@@ -1111,10 +1101,11 @@ fn get_ldk_payment_preimage() {
 	let scorer = test_utils::TestScorer::new();
 	let keys_manager = test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
 	let random_seed_bytes = keys_manager.get_secure_random_bytes();
-	let route = get_route(
-		&nodes[0].node.get_our_node_id(), &payment_params, &nodes[0].network_graph.read_only(),
-		Some(&nodes[0].node.list_usable_channels().iter().collect::<Vec<_>>()),
-		amt_msat, nodes[0].logger, &scorer, &(), &random_seed_bytes).unwrap();
+	let route_params = RouteParameters::from_payment_params_and_value(payment_params, amt_msat);
+	let route = get_route( &nodes[0].node.get_our_node_id(), &route_params,
+		&nodes[0].network_graph.read_only(),
+		Some(&nodes[0].node.list_usable_channels().iter().collect::<Vec<_>>()), nodes[0].logger,
+		&scorer, &(), &random_seed_bytes).unwrap();
 	nodes[0].node.send_payment_with_route(&route, payment_hash,
 		RecipientOnionFields::secret_only(payment_secret), PaymentId(payment_hash.0)).unwrap();
 	check_added_monitors!(nodes[0], 1);
@@ -1224,7 +1215,7 @@ fn failed_probe_yields_event() {
 
 	let payment_params = PaymentParameters::from_node_id(nodes[2].node.get_our_node_id(), 42);
 
-	let (route, _, _, _) = get_route_and_payment_hash!(&nodes[0], nodes[2], &payment_params, 9_998_000);
+	let (route, _, _, _) = get_route_and_payment_hash!(&nodes[0], nodes[2], payment_params, 9_998_000);
 
 	let (payment_hash, payment_id) = nodes[0].node.send_probe(route.paths[0].clone()).unwrap();
 
@@ -1273,7 +1264,7 @@ fn onchain_failed_probe_yields_event() {
 	let payment_params = PaymentParameters::from_node_id(nodes[2].node.get_our_node_id(), 42);
 
 	// Send a dust HTLC, which will be treated as if it timed out once the channel hits the chain.
-	let (route, _, _, _) = get_route_and_payment_hash!(&nodes[0], nodes[2], &payment_params, 1_000);
+	let (route, _, _, _) = get_route_and_payment_hash!(&nodes[0], nodes[2], payment_params, 1_000);
 	let (payment_hash, payment_id) = nodes[0].node.send_probe(route.paths[0].clone()).unwrap();
 
 	// node[0] -- update_add_htlcs -> node[1]
@@ -1661,15 +1652,10 @@ fn do_test_intercepted_payment(test: InterceptTest) {
 			}])
 		]).unwrap()
 		.with_bolt11_features(nodes[2].node.invoice_features()).unwrap();
-	let route_params = RouteParameters {
-		payment_params,
-		final_value_msat: amt_msat,
-	};
-	let route = get_route(
-		&nodes[0].node.get_our_node_id(), &route_params.payment_params,
-		&nodes[0].network_graph.read_only(), None, route_params.final_value_msat,
-		nodes[0].logger, &scorer, &(), &random_seed_bytes,
-	).unwrap();
+	let route_params = RouteParameters::from_payment_params_and_value(payment_params, amt_msat,);
+	let route = get_route( &nodes[0].node.get_our_node_id(), &route_params,
+		&nodes[0].network_graph.read_only(), None, nodes[0].logger, &scorer, &(),
+		&random_seed_bytes,).unwrap();
 
 	let (payment_hash, payment_secret) = nodes[2].node.create_inbound_payment(Some(amt_msat), 60 * 60, None).unwrap();
 	nodes[0].node.send_payment_with_route(&route, payment_hash,
@@ -1850,10 +1836,7 @@ fn do_accept_underpaying_htlcs_config(num_mpp_parts: usize) {
 	let payment_params = PaymentParameters::from_node_id(nodes[2].node.get_our_node_id(), TEST_FINAL_CLTV)
 		.with_route_hints(route_hints).unwrap()
 		.with_bolt11_features(nodes[2].node.invoice_features()).unwrap();
-	let route_params = RouteParameters {
-		payment_params,
-		final_value_msat: amt_msat,
-	};
+	let route_params = RouteParameters::from_payment_params_and_value(payment_params, amt_msat);
 	let (payment_hash, payment_secret) = nodes[2].node.create_inbound_payment(Some(amt_msat), 60 * 60, None).unwrap();
 	nodes[0].node.send_payment(payment_hash, RecipientOnionFields::secret_only(payment_secret),
 		PaymentId(payment_hash.0), route_params, Retry::Attempts(0)).unwrap();
@@ -1980,10 +1963,7 @@ fn do_automatic_retries(test: AutoRetry) {
 	let payment_params = PaymentParameters::from_node_id(nodes[2].node.get_our_node_id(), TEST_FINAL_CLTV)
 		.with_expiry_time(payment_expiry_secs as u64)
 		.with_bolt11_features(invoice_features).unwrap();
-	let route_params = RouteParameters {
-		payment_params,
-		final_value_msat: amt_msat,
-	};
+	let route_params = RouteParameters::from_payment_params_and_value(payment_params, amt_msat);
 	let (_, payment_hash, payment_preimage, payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[2], amt_msat);
 
 	macro_rules! pass_failed_attempt_with_retry_along_path {
@@ -2199,10 +2179,7 @@ fn auto_retry_partial_failure() {
 	let payment_params = PaymentParameters::from_node_id(nodes[1].node.get_our_node_id(), TEST_FINAL_CLTV)
 		.with_expiry_time(payment_expiry_secs as u64)
 		.with_bolt11_features(invoice_features).unwrap();
-	let route_params = RouteParameters {
-		payment_params,
-		final_value_msat: amt_msat,
-	};
+	let route_params = RouteParameters::from_payment_params_and_value(payment_params, amt_msat);
 
 	// Ensure the first monitor update (for the initial send path1 over chan_1) succeeds, but the
 	// second (for the initial send path2 over chan_2) fails.
@@ -2273,14 +2250,14 @@ fn auto_retry_partial_failure() {
 	nodes[0].router.expect_find_route(route_params.clone(), Ok(send_route));
 	let mut payment_params = route_params.payment_params.clone();
 	payment_params.previously_failed_channels.push(chan_2_id);
-	nodes[0].router.expect_find_route(RouteParameters {
-			payment_params, final_value_msat: amt_msat / 2,
-		}, Ok(retry_1_route));
+	nodes[0].router.expect_find_route(
+		RouteParameters::from_payment_params_and_value(payment_params, amt_msat / 2),
+		Ok(retry_1_route));
 	let mut payment_params = route_params.payment_params.clone();
 	payment_params.previously_failed_channels.push(chan_3_id);
-	nodes[0].router.expect_find_route(RouteParameters {
-			payment_params, final_value_msat: amt_msat / 4,
-		}, Ok(retry_2_route));
+	nodes[0].router.expect_find_route(
+		RouteParameters::from_payment_params_and_value(payment_params, amt_msat / 4),
+		Ok(retry_2_route));
 
 	// Send a payment that will partially fail on send, then partially fail on retry, then succeed.
 	nodes[0].node.send_payment(payment_hash, RecipientOnionFields::secret_only(payment_secret),
@@ -2416,10 +2393,7 @@ fn auto_retry_zero_attempts_send_error() {
 	let payment_params = PaymentParameters::from_node_id(nodes[1].node.get_our_node_id(), TEST_FINAL_CLTV)
 		.with_expiry_time(payment_expiry_secs as u64)
 		.with_bolt11_features(invoice_features).unwrap();
-	let route_params = RouteParameters {
-		payment_params,
-		final_value_msat: amt_msat,
-	};
+	let route_params = RouteParameters::from_payment_params_and_value(payment_params, amt_msat);
 
 	chanmon_cfgs[0].persister.set_update_ret(ChannelMonitorUpdateStatus::PermanentFailure);
 	nodes[0].node.send_payment(payment_hash, RecipientOnionFields::secret_only(payment_secret),
@@ -2456,10 +2430,7 @@ fn fails_paying_after_rejected_by_payee() {
 	let payment_params = PaymentParameters::from_node_id(nodes[1].node.get_our_node_id(), TEST_FINAL_CLTV)
 		.with_expiry_time(payment_expiry_secs as u64)
 		.with_bolt11_features(invoice_features).unwrap();
-	let route_params = RouteParameters {
-		payment_params,
-		final_value_msat: amt_msat,
-	};
+	let route_params = RouteParameters::from_payment_params_and_value(payment_params, amt_msat);
 
 	nodes[0].node.send_payment(payment_hash, RecipientOnionFields::secret_only(payment_secret),
 		PaymentId(payment_hash.0), route_params, Retry::Attempts(1)).unwrap();
@@ -2503,10 +2474,8 @@ fn retry_multi_path_single_failed_payment() {
 	let payment_params = PaymentParameters::from_node_id(nodes[1].node.get_our_node_id(), TEST_FINAL_CLTV)
 		.with_expiry_time(payment_expiry_secs as u64)
 		.with_bolt11_features(invoice_features).unwrap();
-	let route_params = RouteParameters {
-		payment_params: payment_params.clone(),
-		final_value_msat: amt_msat,
-	};
+	let route_params = RouteParameters::from_payment_params_and_value(
+		payment_params.clone(), amt_msat);
 
 	let chans = nodes[0].node.list_usable_channels();
 	let mut route = Route {
@@ -2536,12 +2505,11 @@ fn retry_multi_path_single_failed_payment() {
 	route.paths[1].hops[0].fee_msat = 50_000_000;
 	let mut pay_params = route.payment_params.clone().unwrap();
 	pay_params.previously_failed_channels.push(chans[1].short_channel_id.unwrap());
-	nodes[0].router.expect_find_route(RouteParameters {
-			payment_params: pay_params,
-			// Note that the second request here requests the amount we originally failed to send,
-			// not the amount remaining on the full payment, which should be changed.
-			final_value_msat: 100_000_001,
-		}, Ok(route.clone()));
+	nodes[0].router.expect_find_route(
+		// Note that the second request here requests the amount we originally failed to send,
+		// not the amount remaining on the full payment, which should be changed.
+		RouteParameters::from_payment_params_and_value(pay_params, 100_000_001),
+		Ok(route.clone()));
 
 	{
 		let scorer = chanmon_cfgs[0].scorer.read().unwrap();
@@ -2596,10 +2564,7 @@ fn immediate_retry_on_failure() {
 	let payment_params = PaymentParameters::from_node_id(nodes[1].node.get_our_node_id(), TEST_FINAL_CLTV)
 		.with_expiry_time(payment_expiry_secs as u64)
 		.with_bolt11_features(invoice_features).unwrap();
-	let route_params = RouteParameters {
-		payment_params,
-		final_value_msat: amt_msat,
-	};
+	let route_params = RouteParameters::from_payment_params_and_value(payment_params, amt_msat);
 
 	let chans = nodes[0].node.list_usable_channels();
 	let mut route = Route {
@@ -2623,9 +2588,9 @@ fn immediate_retry_on_failure() {
 	route.paths[1].hops[0].fee_msat = 50_000_001;
 	let mut pay_params = route_params.payment_params.clone();
 	pay_params.previously_failed_channels.push(chans[0].short_channel_id.unwrap());
-	nodes[0].router.expect_find_route(RouteParameters {
-			payment_params: pay_params, final_value_msat: amt_msat,
-		}, Ok(route.clone()));
+	nodes[0].router.expect_find_route(
+		RouteParameters::from_payment_params_and_value(pay_params, amt_msat),
+		Ok(route.clone()));
 
 	nodes[0].node.send_payment(payment_hash, RecipientOnionFields::secret_only(payment_secret),
 		PaymentId(payment_hash.0), route_params, Retry::Attempts(1)).unwrap();
@@ -2684,10 +2649,7 @@ fn no_extra_retries_on_back_to_back_fail() {
 	let payment_params = PaymentParameters::from_node_id(nodes[1].node.get_our_node_id(), TEST_FINAL_CLTV)
 		.with_expiry_time(payment_expiry_secs as u64)
 		.with_bolt11_features(invoice_features).unwrap();
-	let route_params = RouteParameters {
-		payment_params,
-		final_value_msat: amt_msat,
-	};
+	let route_params = RouteParameters::from_payment_params_and_value(payment_params, amt_msat);
 
 	let mut route = Route {
 		paths: vec![
@@ -2730,10 +2692,9 @@ fn no_extra_retries_on_back_to_back_fail() {
 	// On retry, we'll only return one path
 	route.paths.remove(1);
 	route.paths[0].hops[1].fee_msat = amt_msat;
-	nodes[0].router.expect_find_route(RouteParameters {
-			payment_params: second_payment_params,
-			final_value_msat: amt_msat,
-		}, Ok(route.clone()));
+	nodes[0].router.expect_find_route(
+		RouteParameters::from_payment_params_and_value(second_payment_params, amt_msat),
+		Ok(route.clone()));
 
 	nodes[0].node.send_payment(payment_hash, RecipientOnionFields::secret_only(payment_secret),
 		PaymentId(payment_hash.0), route_params, Retry::Attempts(1)).unwrap();
@@ -2886,10 +2847,7 @@ fn test_simple_partial_retry() {
 	let payment_params = PaymentParameters::from_node_id(nodes[1].node.get_our_node_id(), TEST_FINAL_CLTV)
 		.with_expiry_time(payment_expiry_secs as u64)
 		.with_bolt11_features(invoice_features).unwrap();
-	let route_params = RouteParameters {
-		payment_params,
-		final_value_msat: amt_msat,
-	};
+	let route_params = RouteParameters::from_payment_params_and_value(payment_params, amt_msat);
 
 	let mut route = Route {
 		paths: vec![
@@ -2931,10 +2889,9 @@ fn test_simple_partial_retry() {
 	second_payment_params.previously_failed_channels = vec![chan_2_scid];
 	// On retry, we'll only be asked for one path (or 100k sats)
 	route.paths.remove(0);
-	nodes[0].router.expect_find_route(RouteParameters {
-			payment_params: second_payment_params,
-			final_value_msat: amt_msat / 2,
-		}, Ok(route.clone()));
+	nodes[0].router.expect_find_route(
+		RouteParameters::from_payment_params_and_value(second_payment_params, amt_msat / 2),
+		Ok(route.clone()));
 
 	nodes[0].node.send_payment(payment_hash, RecipientOnionFields::secret_only(payment_secret),
 		PaymentId(payment_hash.0), route_params, Retry::Attempts(1)).unwrap();
@@ -3052,10 +3009,7 @@ fn test_threaded_payment_retries() {
 	let payment_params = PaymentParameters::from_node_id(nodes[1].node.get_our_node_id(), TEST_FINAL_CLTV)
 		.with_expiry_time(payment_expiry_secs as u64)
 		.with_bolt11_features(invoice_features).unwrap();
-	let mut route_params = RouteParameters {
-		payment_params,
-		final_value_msat: amt_msat,
-	};
+	let mut route_params = RouteParameters::from_payment_params_and_value(payment_params, amt_msat);
 
 	let mut route = Route {
 		paths: vec![
@@ -3303,11 +3257,10 @@ fn do_claim_from_closed_chan(fail_payment: bool) {
 	create_announced_chan_between_nodes(&nodes, 2, 3);
 
 	let (payment_preimage, payment_hash, payment_secret) = get_payment_preimage_hash!(nodes[3]);
-	let mut route_params = RouteParameters {
-		payment_params: PaymentParameters::from_node_id(nodes[3].node.get_our_node_id(), TEST_FINAL_CLTV)
+	let mut route_params = RouteParameters::from_payment_params_and_value(
+		PaymentParameters::from_node_id(nodes[3].node.get_our_node_id(), TEST_FINAL_CLTV)
 			.with_bolt11_features(nodes[1].node.invoice_features()).unwrap(),
-		final_value_msat: 10_000_000,
-	};
+		10_000_000);
 	let mut route = nodes[0].router.find_route(&nodes[0].node.get_our_node_id(), &route_params,
 		None, nodes[0].node.compute_inflight_htlcs()).unwrap();
 	// Make sure the route is ordered as the B->D path before C->D
@@ -3517,10 +3470,7 @@ fn test_retry_custom_tlvs() {
 
 	// Initiate the payment
 	let payment_id = PaymentId(payment_hash.0);
-	let mut route_params = RouteParameters {
-		payment_params: route.payment_params.clone().unwrap(),
-		final_value_msat: amt_msat,
-	};
+	let mut route_params = RouteParameters::from_payment_params_and_value(route.payment_params.clone().unwrap(), amt_msat);
 
 	let custom_tlvs = vec![((1 << 16) + 1, vec![0x42u8; 16])];
 	let onion_fields = RecipientOnionFields::secret_only(payment_secret);
@@ -3772,10 +3722,7 @@ fn do_test_payment_metadata_consistency(do_reload: bool, do_modify: bool) {
 
 	let payment_params = PaymentParameters::from_node_id(nodes[3].node.get_our_node_id(), TEST_FINAL_CLTV)
 		.with_bolt11_features(nodes[1].node.invoice_features()).unwrap();
-	let mut route_params = RouteParameters {
-		payment_params,
-		final_value_msat: amt_msat,
-	};
+	let mut route_params = RouteParameters::from_payment_params_and_value(payment_params, amt_msat);
 
 	// Send the MPP payment, delivering the updated commitment state to nodes[1].
 	nodes[0].node.send_payment(payment_hash, RecipientOnionFields {

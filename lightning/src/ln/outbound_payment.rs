@@ -1565,10 +1565,7 @@ mod tests {
 				PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap()),
 				0
 			).with_expiry_time(past_expiry_time);
-		let expired_route_params = RouteParameters {
-			payment_params,
-			final_value_msat: 0,
-		};
+		let expired_route_params = RouteParameters::from_payment_params_and_value(payment_params, 0);
 		let pending_events = Mutex::new(VecDeque::new());
 		if on_retry {
 			outbound_payments.add_new_pending_payment(PaymentHash([0; 32]), RecipientOnionFields::spontaneous_empty(),
@@ -1609,10 +1606,7 @@ mod tests {
 
 		let payment_params = PaymentParameters::from_node_id(
 			PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap()), 0);
-		let route_params = RouteParameters {
-			payment_params,
-			final_value_msat: 0,
-		};
+		let route_params = RouteParameters::from_payment_params_and_value(payment_params, 0);
 		router.expect_find_route(route_params.clone(),
 			Err(LightningError { err: String::new(), action: ErrorAction::IgnoreError }));
 
@@ -1652,10 +1646,7 @@ mod tests {
 		let sender_pk = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 		let receiver_pk = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[43; 32]).unwrap());
 		let payment_params = PaymentParameters::from_node_id(sender_pk, 0);
-		let route_params = RouteParameters {
-			payment_params: payment_params.clone(),
-			final_value_msat: 0,
-		};
+		let route_params = RouteParameters::from_payment_params_and_value(payment_params.clone(), 0);
 		let failed_scid = 42;
 		let route = Route {
 			paths: vec![Path { hops: vec![RouteHop {
