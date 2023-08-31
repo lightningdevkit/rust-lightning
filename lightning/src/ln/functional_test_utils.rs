@@ -3030,7 +3030,11 @@ pub struct ReconnectArgs<'a, 'b, 'c, 'd> {
 	pub node_a: &'a Node<'b, 'c, 'd>,
 	pub node_b: &'a Node<'b, 'c, 'd>,
 	pub send_channel_ready: (bool, bool),
-	pub pending_htlc_adds: (i64, i64),
+	pub pending_responding_commitment_signed: (bool, bool),
+	/// Indicates that the pending responding commitment signed will be a dup for the recipient,
+	/// and no monitor update is expected
+	pub pending_responding_commitment_signed_dup_monitor: (bool, bool),
+	pub pending_htlc_adds: (usize, usize),
 	pub pending_htlc_claims: (usize, usize),
 	pub pending_htlc_fails: (usize, usize),
 	pub pending_cell_htlc_claims: (usize, usize),
@@ -3044,6 +3048,8 @@ impl<'a, 'b, 'c, 'd> ReconnectArgs<'a, 'b, 'c, 'd> {
 			node_a,
 			node_b,
 			send_channel_ready: (false, false),
+			pending_responding_commitment_signed: (false, false),
+			pending_responding_commitment_signed_dup_monitor: (false, false),
 			pending_htlc_adds: (0, 0),
 			pending_htlc_claims: (0, 0),
 			pending_htlc_fails: (0, 0),
@@ -3059,7 +3065,8 @@ impl<'a, 'b, 'c, 'd> ReconnectArgs<'a, 'b, 'c, 'd> {
 pub fn reconnect_nodes<'a, 'b, 'c, 'd>(args: ReconnectArgs<'a, 'b, 'c, 'd>) {
 	let ReconnectArgs {
 		node_a, node_b, send_channel_ready, pending_htlc_adds, pending_htlc_claims, pending_htlc_fails,
-		pending_cell_htlc_claims, pending_cell_htlc_fails, pending_raa
+		pending_cell_htlc_claims, pending_cell_htlc_fails, pending_raa,
+		pending_responding_commitment_signed, pending_responding_commitment_signed_dup_monitor,
 	} = args;
 	node_a.node.peer_connected(&node_b.node.get_our_node_id(), &msgs::Init {
 		features: node_b.node.init_features(), networks: None, remote_network_address: None
@@ -3144,13 +3151,12 @@ pub fn reconnect_nodes<'a, 'b, 'c, 'd>(args: ReconnectArgs<'a, 'b, 'c, 'd>) {
 		} else {
 			assert!(chan_msgs.1.is_none());
 		}
-		if pending_htlc_adds.0 != 0 || pending_htlc_claims.0 != 0 || pending_htlc_fails.0 != 0 || pending_cell_htlc_claims.0 != 0 || pending_cell_htlc_fails.0 != 0 {
+		if pending_htlc_adds.0 != 0 || pending_htlc_claims.0 != 0 || pending_htlc_fails.0 != 0 ||
+			pending_cell_htlc_claims.0 != 0 || pending_cell_htlc_fails.0 != 0 ||
+			pending_responding_commitment_signed.0
+		{
 			let commitment_update = chan_msgs.2.unwrap();
-			if pending_htlc_adds.0 != -1 { // We use -1 to denote a response commitment_signed
-				assert_eq!(commitment_update.update_add_htlcs.len(), pending_htlc_adds.0 as usize);
-			} else {
-				assert!(commitment_update.update_add_htlcs.is_empty());
-			}
+			assert_eq!(commitment_update.update_add_htlcs.len(), pending_htlc_adds.0);
 			assert_eq!(commitment_update.update_fulfill_htlcs.len(), pending_htlc_claims.0 + pending_cell_htlc_claims.0);
 			assert_eq!(commitment_update.update_fail_htlcs.len(), pending_htlc_fails.0 + pending_cell_htlc_fails.0);
 			assert!(commitment_update.update_fail_malformed_htlcs.is_empty());
@@ -3164,7 +3170,7 @@ pub fn reconnect_nodes<'a, 'b, 'c, 'd>(args: ReconnectArgs<'a, 'b, 'c, 'd>) {
 				node_a.node.handle_update_fail_htlc(&node_b.node.get_our_node_id(), &update_fail);
 			}
 
-			if pending_htlc_adds.0 != -1 { // We use -1 to denote a response commitment_signed
+			if !pending_responding_commitment_signed.0 {
 				commitment_signed_dance!(node_a, node_b, commitment_update.commitment_signed, false);
 			} else {
 				node_a.node.handle_commitment_signed(&node_b.node.get_our_node_id(), &commitment_update.commitment_signed);
@@ -3173,7 +3179,7 @@ pub fn reconnect_nodes<'a, 'b, 'c, 'd>(args: ReconnectArgs<'a, 'b, 'c, 'd>) {
 				// No commitment_signed so get_event_msg's assert(len == 1) passes
 				node_b.node.handle_revoke_and_ack(&node_a.node.get_our_node_id(), &as_revoke_and_ack);
 				assert!(node_b.node.get_and_clear_pending_msg_events().is_empty());
-				check_added_monitors!(node_b, 1);
+				check_added_monitors!(node_b, if pending_responding_commitment_signed_dup_monitor.0 { 0 } else { 1 });
 			}
 		} else {
 			assert!(chan_msgs.2.is_none());
@@ -3203,11 +3209,12 @@ pub fn reconnect_nodes<'a, 'b, 'c, 'd>(args: ReconnectArgs<'a, 'b, 'c, 'd>) {
 		} else {
 			assert!(chan_msgs.1.is_none());
 		}
-		if pending_htlc_adds.1 != 0 || pending_htlc_claims.1 != 0 || pending_htlc_fails.1 != 0 || pending_cell_htlc_claims.1 != 0 || pending_cell_htlc_fails.1 != 0 {
+		if pending_htlc_adds.1 != 0 || pending_htlc_claims.1 != 0 || pending_htlc_fails.1 != 0 ||
+			pending_cell_htlc_claims.1 != 0 || pending_cell_htlc_fails.1 != 0 ||
+			pending_responding_commitment_signed.1
+		{
 			let commitment_update = chan_msgs.2.unwrap();
-			if pending_htlc_adds.1 != -1 { // We use -1 to denote a response commitment_signed
-				assert_eq!(commitment_update.update_add_htlcs.len(), pending_htlc_adds.1 as usize);
-			}
+			assert_eq!(commitment_update.update_add_htlcs.len(), pending_htlc_adds.1);
 			assert_eq!(commitment_update.update_fulfill_htlcs.len(), pending_htlc_claims.1 + pending_cell_htlc_claims.1);
 			assert_eq!(commitment_update.update_fail_htlcs.len(), pending_htlc_fails.1 + pending_cell_htlc_fails.1);
 			assert!(commitment_update.update_fail_malformed_htlcs.is_empty());
@@ -3221,7 +3228,7 @@ pub fn reconnect_nodes<'a, 'b, 'c, 'd>(args: ReconnectArgs<'a, 'b, 'c, 'd>) {
 				node_b.node.handle_update_fail_htlc(&node_a.node.get_our_node_id(), &update_fail);
 			}
 
-			if pending_htlc_adds.1 != -1 { // We use -1 to denote a response commitment_signed
+			if !pending_responding_commitment_signed.1 {
 				commitment_signed_dance!(node_b, node_a, commitment_update.commitment_signed, false);
 			} else {
 				node_b.node.handle_commitment_signed(&node_a.node.get_our_node_id(), &commitment_update.commitment_signed);
@@ -3230,7 +3237,7 @@ pub fn reconnect_nodes<'a, 'b, 'c, 'd>(args: ReconnectArgs<'a, 'b, 'c, 'd>) {
 				// No commitment_signed so get_event_msg's assert(len == 1) passes
 				node_a.node.handle_revoke_and_ack(&node_b.node.get_our_node_id(), &bs_revoke_and_ack);
 				assert!(node_a.node.get_and_clear_pending_msg_events().is_empty());
-				check_added_monitors!(node_a, 1);
+				check_added_monitors!(node_a, if pending_responding_commitment_signed_dup_monitor.1 { 0 } else { 1 });
 			}
 		} else {
 			assert!(chan_msgs.2.is_none());

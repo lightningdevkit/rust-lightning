@@ -3880,13 +3880,13 @@ fn do_test_drop_messages_peer_disconnect(messages_delivered: u8, simulate_broken
 	} else if messages_delivered == 3 {
 		// nodes[0] still wants its RAA + commitment_signed
 		let mut reconnect_args = ReconnectArgs::new(&nodes[0], &nodes[1]);
-		reconnect_args.pending_htlc_adds.0 = -1;
+		reconnect_args.pending_responding_commitment_signed.0 = true;
 		reconnect_args.pending_raa.0 = true;
 		reconnect_nodes(reconnect_args);
 	} else if messages_delivered == 4 {
 		// nodes[0] still wants its commitment_signed
 		let mut reconnect_args = ReconnectArgs::new(&nodes[0], &nodes[1]);
-		reconnect_args.pending_htlc_adds.0 = -1;
+		reconnect_args.pending_responding_commitment_signed.0 = true;
 		reconnect_nodes(reconnect_args);
 	} else if messages_delivered == 5 {
 		// nodes[1] still wants its final RAA
@@ -4014,13 +4014,13 @@ fn do_test_drop_messages_peer_disconnect(messages_delivered: u8, simulate_broken
 	} else if messages_delivered == 2 {
 		// nodes[0] still wants its RAA + commitment_signed
 		let mut reconnect_args = ReconnectArgs::new(&nodes[0], &nodes[1]);
-		reconnect_args.pending_htlc_adds.1 = -1;
+		reconnect_args.pending_responding_commitment_signed.1 = true;
 		reconnect_args.pending_raa.1 = true;
 		reconnect_nodes(reconnect_args);
 	} else if messages_delivered == 3 {
 		// nodes[0] still wants its commitment_signed
 		let mut reconnect_args = ReconnectArgs::new(&nodes[0], &nodes[1]);
-		reconnect_args.pending_htlc_adds.1 = -1;
+		reconnect_args.pending_responding_commitment_signed.1 = true;
 		reconnect_nodes(reconnect_args);
 	} else if messages_delivered == 4 {
 		// nodes[1] still wants its final RAA
