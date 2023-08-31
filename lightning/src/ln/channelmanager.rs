@@ -666,6 +666,7 @@ impl_writeable_tlv_based_enum!(RAAMonitorUpdateBlockingAction,
 pub(super) enum ChannelRetryState {
 	FundingCreated(msgs::FundingCreated),
 	FundingSigned(msgs::FundingSigned),
+	ChannelReestablish(msgs::ChannelReestablish),
 	CommitmentSigned(msgs::CommitmentSigned),
 	CompleteAcceptingInboundV1Channel(),
 }
@@ -6357,9 +6358,15 @@ where
 					// disconnect, so Channel's reestablish will never hand us any holding cell
 					// freed HTLCs to fail backwards. If in the future we no longer drop pending
 					// add-HTLCs on disconnect, we may be handed HTLCs to fail backwards here.
-					let responses = try_chan_entry!(self, chan.get_mut().channel_reestablish(
+					let res = chan.get_mut().channel_reestablish(
 						msg, &self.logger, &self.node_signer, self.genesis_hash,
-						&self.default_configuration, &*self.best_block.read().unwrap()), chan);
+						&self.default_configuration, &*self.best_block.read().unwrap());
+					if let Err(ref err) = &res {
+						if let ChannelError::Retry(_) = err {
+							peer_state.retry_state_by_id.insert(msg.channel_id, ChannelRetryState::ChannelReestablish(msg.clone()));
+						}
+					}
+					let responses = try_chan_entry!(self, res, chan);
 					let mut channel_update = None;
 					if let Some(msg) = responses.shutdown_msg {
 						peer_state.pending_msg_events.push(events::MessageSendEvent::SendShutdown {
@@ -6935,6 +6942,7 @@ where
 		match retry_state {
 			ChannelRetryState::FundingCreated(ref msg) => self.handle_funding_created(counterparty_node_id, msg),
 			ChannelRetryState::FundingSigned(ref msg) => self.handle_funding_signed(counterparty_node_id, msg),
+			ChannelRetryState::ChannelReestablish(ref msg) => self.handle_channel_reestablish(counterparty_node_id, msg),
 			ChannelRetryState::CommitmentSigned(ref msg) => self.handle_commitment_signed(counterparty_node_id, msg),
 			ChannelRetryState::CompleteAcceptingInboundV1Channel() => self.retry_accepting_inbound_v1_channel(counterparty_node_id, channel_id),
 		};

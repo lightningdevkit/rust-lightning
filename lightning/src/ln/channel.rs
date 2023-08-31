@@ -1171,14 +1171,12 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 		return &self.holder_signer
 	}
 
-	/// Retrieves the next commitment point and its index from the signer.
+	/// Retrieves a specific commitment point for an index.
 	///
-	/// This maps an `Err` into `ChannelError::Ignore`. Note that this does _not_ advance the
-	/// context's state.
-	pub fn get_next_holder_per_commitment_point<L: Deref>(&self, logger: &L) -> Result<(u64, PublicKey), ChannelError>
+	/// This maps an `Err` into `ChannelError::Retry`.
+	pub fn get_holder_per_commitment_point_for<L: Deref>(&self, transaction_number: u64, logger: &L) -> Result<PublicKey, ChannelError>
 		where L::Target: Logger
 	{
-		let transaction_number = self.cur_holder_commitment_transaction_number - 1;
 		log_trace!(logger, "Retrieving commitment point for {} transaction number {}", self.channel_id(), transaction_number);
 		let per_commitment_point = 
 			self.holder_signer.as_ref().get_per_commitment_point(
@@ -1187,7 +1185,19 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 				log_warn!(logger, "Channel signer for {} is unavailable; try again later", self.channel_id());
 				ChannelError::Retry("Channel signer is unavailble; try again later".to_owned())
 			})?;
-		Ok((transaction_number, per_commitment_point))
+		Ok(per_commitment_point)
+	}
+
+	/// Retrieves the next commitment point and its index from the signer.
+	///
+	/// This maps an `Err` into `ChannelError::Retry`. Note that this does _not_ advance the context's
+	/// state.
+	pub fn get_next_holder_per_commitment_point<L: Deref>(&self, logger: &L) -> Result<(u64, PublicKey), ChannelError>
+		where L::Target: Logger
+	{
+		let transaction_number = self.cur_holder_commitment_transaction_number - 1;
+		log_trace!(logger, "Retrieving commitment point for {} transaction number {}", self.channel_id(), transaction_number);
+		self.get_holder_per_commitment_point_for(transaction_number, logger).map(|point| (transaction_number, point))
 	}
 
 	pub fn has_first_holder_per_commitment_point(&self) -> bool {
@@ -3948,8 +3958,7 @@ impl<SP: Deref> Channel<SP> where
 
 		if msg.next_remote_commitment_number > 0 {
 			let state_index = INITIAL_COMMITMENT_NUMBER - msg.next_remote_commitment_number + 1;
-			let expected_point = self.context.holder_signer.as_ref().get_per_commitment_point(state_index, &self.context.secp_ctx)
-				.map_err(|_| ChannelError::Close(format!("Unable to retrieve per-commitment point for state {state_index}")))?;
+			let expected_point = self.context.get_holder_per_commitment_point_for(state_index, logger)?;
 			let given_secret = SecretKey::from_slice(&msg.your_last_per_commitment_secret)
 				.map_err(|_| ChannelError::Close("Peer sent a garbage channel_reestablish with unparseable secret key".to_owned()))?;
 			if expected_point != PublicKey::from_secret_key(&self.context.secp_ctx, &given_secret) {
