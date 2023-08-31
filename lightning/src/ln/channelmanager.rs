@@ -9653,10 +9653,9 @@ mod tests {
 		let (payment_preimage, payment_hash, _) = route_payment(&nodes[0], &expected_route, 100_000);
 
 		// Next, attempt a keysend payment and make sure it fails.
-		let route_params = RouteParameters {
-			payment_params: PaymentParameters::for_keysend(expected_route.last().unwrap().node.get_our_node_id(), TEST_FINAL_CLTV, false),
-			final_value_msat: 100_000,
-		};
+		let route_params = RouteParameters::from_payment_params_and_value(
+			PaymentParameters::for_keysend(expected_route.last().unwrap().node.get_our_node_id(),
+			TEST_FINAL_CLTV, false), 100_000);
 		let route = find_route(
 			&nodes[0].node.get_our_node_id(), &route_params, &nodes[0].network_graph,
 			None, nodes[0].logger, &scorer, &(), &random_seed_bytes
@@ -9744,10 +9743,10 @@ mod tests {
 		pass_along_path(&nodes[0], &path, 100_000, payment_hash, None, event, true, Some(payment_preimage));
 
 		// Next, attempt a keysend payment and make sure it fails.
-		let route_params = RouteParameters {
-			payment_params: PaymentParameters::for_keysend(expected_route.last().unwrap().node.get_our_node_id(), TEST_FINAL_CLTV, false),
-			final_value_msat: 100_000,
-		};
+		let route_params = RouteParameters::from_payment_params_and_value(
+			PaymentParameters::for_keysend(expected_route.last().unwrap().node.get_our_node_id(), TEST_FINAL_CLTV, false),
+			100_000
+		);
 		let route = find_route(
 			&nodes[0].node.get_our_node_id(), &route_params, &nodes[0].network_graph,
 			None, nodes[0].logger, &scorer, &(), &random_seed_bytes
@@ -9793,10 +9792,8 @@ mod tests {
 		let payee_pubkey = nodes[1].node.get_our_node_id();
 
 		let _chan = create_chan_between_nodes(&nodes[0], &nodes[1]);
-		let route_params = RouteParameters {
-			payment_params: PaymentParameters::for_keysend(payee_pubkey, 40, false),
-			final_value_msat: 10_000,
-		};
+		let route_params = RouteParameters::from_payment_params_and_value(
+			PaymentParameters::for_keysend(payee_pubkey, 40, false), 10_000);
 		let network_graph = nodes[0].network_graph.clone();
 		let first_hops = nodes[0].node.list_usable_channels();
 		let scorer = test_utils::TestScorer::new();
@@ -9840,10 +9837,8 @@ mod tests {
 		let payee_pubkey = nodes[1].node.get_our_node_id();
 
 		let _chan = create_chan_between_nodes(&nodes[0], &nodes[1]);
-		let route_params = RouteParameters {
-			payment_params: PaymentParameters::for_keysend(payee_pubkey, 40, false),
-			final_value_msat: 10_000,
-		};
+		let route_params = RouteParameters::from_payment_params_and_value(
+			PaymentParameters::for_keysend(payee_pubkey, 40, false), 10_000);
 		let network_graph = nodes[0].network_graph.clone();
 		let first_hops = nodes[0].node.list_usable_channels();
 		let scorer = test_utils::TestScorer::new();
@@ -10740,9 +10735,9 @@ pub mod bench {
 				let payment_secret = $node_b.create_inbound_payment_for_hash(payment_hash, None, 7200, None).unwrap();
 
 				$node_a.send_payment(payment_hash, RecipientOnionFields::secret_only(payment_secret),
-					PaymentId(payment_hash.0), RouteParameters {
-						payment_params, final_value_msat: 10_000,
-					}, Retry::Attempts(0)).unwrap();
+					PaymentId(payment_hash.0),
+					RouteParameters::from_payment_params_and_value(payment_params, 10_000),
+					Retry::Attempts(0)).unwrap();
 				let payment_event = SendEvent::from_event($node_a.get_and_clear_pending_msg_events().pop().unwrap());
 				$node_b.handle_update_add_htlc(&$node_a.get_our_node_id(), &payment_event.msgs[0]);
 				$node_b.handle_commitment_signed(&$node_a.get_our_node_id(), &payment_event.commitment_msg);

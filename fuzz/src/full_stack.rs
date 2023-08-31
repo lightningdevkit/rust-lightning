@@ -527,10 +527,8 @@ pub fn do_test(data: &[u8], logger: &Arc<dyn Logger>) {
 			4 => {
 				let final_value_msat = slice_to_be24(get_slice!(3)) as u64;
 				let payment_params = PaymentParameters::from_node_id(get_pubkey!(), 42);
-				let params = RouteParameters {
-					payment_params,
-					final_value_msat,
-				};
+				let params = RouteParameters::from_payment_params_and_value(
+					payment_params, final_value_msat);
 				let mut payment_hash = PaymentHash([0; 32]);
 				payment_hash.0[0..8].copy_from_slice(&be64_to_array(payments_sent));
 				let mut sha = Sha256::engine();
@@ -548,10 +546,8 @@ pub fn do_test(data: &[u8], logger: &Arc<dyn Logger>) {
 			15 => {
 				let final_value_msat = slice_to_be24(get_slice!(3)) as u64;
 				let payment_params = PaymentParameters::from_node_id(get_pubkey!(), 42);
-				let params = RouteParameters {
-					payment_params,
-					final_value_msat,
-				};
+				let params = RouteParameters::from_payment_params_and_value(
+					payment_params, final_value_msat);
 				let mut payment_hash = PaymentHash([0; 32]);
 				payment_hash.0[0..8].copy_from_slice(&be64_to_array(payments_sent));
 				let mut sha = Sha256::engine();
