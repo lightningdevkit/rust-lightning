@@ -1585,7 +1585,7 @@ mod tests {
 	use crate::ln::channelmanager::{PaymentId, RecipientOnionFields};
 	use crate::ln::features::{ChannelFeatures, NodeFeatures};
 	use crate::ln::msgs::{ErrorAction, LightningError};
-	use crate::ln::outbound_payment::{OutboundPayments, Retry, RetryableSendFailure};
+	use crate::ln::outbound_payment::{INVOICE_REQUEST_TIMEOUT_TICKS, OutboundPayments, Retry, RetryableSendFailure};
 	use crate::routing::gossip::NetworkGraph;
 	use crate::routing::router::{InFlightHtlcs, Path, PaymentParameters, Route, RouteHop, RouteParameters};
 	use crate::sync::{Arc, Mutex, RwLock};
@@ -1781,5 +1781,36 @@ mod tests {
 			assert_eq!(short_channel_id, None);
 		} else { panic!("Unexpected event"); }
 		if let Event::PaymentFailed { .. } = events[1].0 { } else { panic!("Unexpected event"); }
+	}
+
+	#[test]
+	fn removes_stale_awaiting_invoice() {
+		let pending_events = Mutex::new(VecDeque::new());
+		let outbound_payments = OutboundPayments::new();
+		let payment_id = PaymentId([0; 32]);
+
+		assert!(!outbound_payments.has_pending_payments());
+		assert!(outbound_payments.add_new_awaiting_invoice(payment_id).is_ok());
+		assert!(outbound_payments.has_pending_payments());
+
+		for _ in 0..INVOICE_REQUEST_TIMEOUT_TICKS {
+			outbound_payments.remove_stale_payments(&pending_events);
+			assert!(outbound_payments.has_pending_payments());
+			assert!(pending_events.lock().unwrap().is_empty());
+		}
+
+		outbound_payments.remove_stale_payments(&pending_events);
+		assert!(!outbound_payments.has_pending_payments());
+		assert!(!pending_events.lock().unwrap().is_empty());
+		assert_eq!(
+			pending_events.lock().unwrap().pop_front(),
+			Some((Event::InvoiceRequestFailed { payment_id }, None)),
+		);
+		assert!(pending_events.lock().unwrap().is_empty());
+
+		assert!(outbound_payments.add_new_awaiting_invoice(payment_id).is_ok());
+		assert!(outbound_payments.has_pending_payments());
+
+		assert!(outbound_payments.add_new_awaiting_invoice(payment_id).is_err());
 	}
 }
