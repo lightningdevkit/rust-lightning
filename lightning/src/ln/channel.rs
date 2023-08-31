@@ -679,7 +679,10 @@ pub(super) struct ChannelContext<SP: Deref> where SP::Target: SignerProvider {
 	// that might be fallible: in particular, if the commitment point must be fetched from a remote
 	// source, we want to ensure it happens at a point where we can actually fail somewhat gracefully;
 	// i.e., force-closing a channel is better than a panic!
-	next_per_commitment_point: PublicKey,
+	//
+	// On initial channel construction, this value may be None, in which case that means that the
+	// first commitment point wasn't ready at the time that the channel needed to be created.
+	next_per_commitment_point: Option<PublicKey>,
 	cur_counterparty_commitment_transaction_number: u64,
 	value_to_self_msat: u64, // Excluding all pending_htlcs, excluding fees
 	pending_inbound_htlcs: Vec<InboundHTLCOutput>,
@@ -1187,6 +1190,10 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 		Ok((transaction_number, per_commitment_point))
 	}
 
+	pub fn has_first_holder_per_commitment_point(&self) -> bool {
+		self.next_per_commitment_point.is_some()
+	}
+
 	/// Tracks the number of ticks elapsed since the previous [`ChannelConfig`] was updated. Once
 	/// [`EXPIRE_PREV_CONFIG_TICKS`] is reached, the previous config is considered expired and will
 	/// no longer be considered when forwarding HTLCs.
@@ -1488,7 +1495,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 		let counterparty_pubkeys = self.get_counterparty_pubkeys();
 
 		TxCreationKeys::derive_new(
-			&self.secp_ctx, &self.next_per_commitment_point, delayed_payment_base, htlc_basepoint,
+			&self.secp_ctx, &self.next_per_commitment_point.expect("channel isn't ready"), delayed_payment_base, htlc_basepoint,
 			&counterparty_pubkeys.revocation_basepoint, &counterparty_pubkeys.htlc_basepoint)
 	}
 
@@ -2592,7 +2599,7 @@ impl<SP: Deref> Channel<SP> where
 		assert_eq!(self.context.channel_state & (ChannelState::MonitorUpdateInProgress as u32), 0); // We have no had any monitor(s) yet to fail update!
 		self.context.channel_state = ChannelState::FundingSent as u32;
 		self.context.cur_holder_commitment_transaction_number = next_holder_commitment_transaction_number;
-		self.context.next_per_commitment_point = next_per_commitment_point;
+		self.context.next_per_commitment_point = Some(next_per_commitment_point);
 		self.context.cur_counterparty_commitment_transaction_number -= 1;
 
 		log_info!(logger, "Received funding_signed from peer for channel {}", &self.context.channel_id());
@@ -3082,7 +3089,7 @@ impl<SP: Deref> Channel<SP> where
 		};
 
 		self.context.cur_holder_commitment_transaction_number = next_holder_commitment_transaction_number;
-		self.context.next_per_commitment_point = next_per_commitment_point;
+		self.context.next_per_commitment_point = Some(next_per_commitment_point);
 		
 		// Note that if we need_commitment & !AwaitingRemoteRevoke we'll call
 		// build_commitment_no_status_check() next which will reset this to RAAFirst.
@@ -3745,7 +3752,7 @@ impl<SP: Deref> Channel<SP> where
 			self.context.monitor_pending_channel_ready = false;
 			Some(msgs::ChannelReady {
 				channel_id: self.context.channel_id(),
-				next_per_commitment_point: self.context.next_per_commitment_point,
+				next_per_commitment_point: self.context.next_per_commitment_point.expect("channel isn't ready"),
 				short_channel_id_alias: Some(self.context.outbound_scid_alias),
 			})
 		} else { None };
@@ -3830,7 +3837,7 @@ impl<SP: Deref> Channel<SP> where
 		msgs::RevokeAndACK {
 			channel_id: self.context.channel_id,
 			per_commitment_secret,
-			next_per_commitment_point: self.context.next_per_commitment_point,
+			next_per_commitment_point: self.context.next_per_commitment_point.expect("channel isn't ready"),
 			#[cfg(taproot)]
 			next_local_nonce: None,
 		}
@@ -4004,7 +4011,7 @@ impl<SP: Deref> Channel<SP> where
 			return Ok(ReestablishResponses {
 				channel_ready: Some(msgs::ChannelReady {
 					channel_id: self.context.channel_id(),
-					next_per_commitment_point: self.context.next_per_commitment_point,
+					next_per_commitment_point: self.context.next_per_commitment_point.expect("channel isn't ready"),
 					short_channel_id_alias: Some(self.context.outbound_scid_alias),
 				}),
 				raa: None, commitment_update: None,
@@ -4042,7 +4049,7 @@ impl<SP: Deref> Channel<SP> where
 			// We should never have to worry about MonitorUpdateInProgress resending ChannelReady
 			Some(msgs::ChannelReady {
 				channel_id: self.context.channel_id(),
-				next_per_commitment_point: self.context.next_per_commitment_point,
+				next_per_commitment_point: self.context.next_per_commitment_point.expect("channel isn't ready"),
 				short_channel_id_alias: Some(self.context.outbound_scid_alias),
 			})
 		} else { None };
@@ -5691,8 +5698,7 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 
 		let temporary_channel_id = ChannelId::temporary_from_entropy_source(entropy_source);
 
-		let next_per_commitment_point = holder_signer.get_per_commitment_point(INITIAL_COMMITMENT_NUMBER, &secp_ctx)
-			.map_err(|_| APIError::ChannelUnavailable { err: "Unable to generate initial commitment point".to_owned()})?;
+		let next_per_commitment_point = holder_signer.get_per_commitment_point(INITIAL_COMMITMENT_NUMBER, &secp_ctx).ok();
 
 		Ok(Self {
 			context: ChannelContext {
@@ -5983,7 +5989,7 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 			payment_point: keys.payment_point,
 			delayed_payment_basepoint: keys.delayed_payment_basepoint,
 			htlc_basepoint: keys.htlc_basepoint,
-			first_per_commitment_point: self.context.next_per_commitment_point,
+			first_per_commitment_point: self.context.next_per_commitment_point.expect("channel isn't ready"),
 			channel_flags: if self.context.config.announced_channel {1} else {0},
 			shutdown_scriptpubkey: Some(match &self.context.shutdown_scriptpubkey {
 				Some(script) => script.clone().into_inner(),
@@ -6332,8 +6338,7 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 		} else {
 			Some(cmp::max(config.channel_handshake_config.minimum_depth, 1))
 		};
-		let next_per_commitment_point = holder_signer.get_per_commitment_point(INITIAL_COMMITMENT_NUMBER, &secp_ctx)
-			.map_err(|_| ChannelError::Close("Unable to generate initial commitment point".to_owned()))?;
+		let next_per_commitment_point = holder_signer.get_per_commitment_point(INITIAL_COMMITMENT_NUMBER, &secp_ctx).ok();
 
 		let chan = Self {
 			context: ChannelContext {
@@ -6469,6 +6474,16 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 		Ok(chan)
 	}
 
+	pub fn set_first_holder_per_commitment_point(&mut self) -> Result<(), ChannelError> {
+		assert!(self.context.next_per_commitment_point.is_none());
+		let transaction_number = self.context.cur_holder_commitment_transaction_number;
+		assert_eq!(transaction_number, INITIAL_COMMITMENT_NUMBER);
+		let point = self.context.holder_signer.as_ref().get_per_commitment_point(transaction_number, &self.context.secp_ctx)
+			.map_err(|_| ChannelError::Retry("Channel signer is unavailable; try again later".to_owned()))?;
+		self.context.next_per_commitment_point = Some(point);
+		Ok(())
+	}
+
 	/// Marks an inbound channel as accepted and generates a [`msgs::AcceptChannel`] message which
 	/// should be sent back to the counterparty node.
 	///
@@ -6509,7 +6524,7 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 			payment_point: keys.payment_point,
 			delayed_payment_basepoint: keys.delayed_payment_basepoint,
 			htlc_basepoint: keys.htlc_basepoint,
-			first_per_commitment_point: self.context.next_per_commitment_point,
+			first_per_commitment_point: self.context.next_per_commitment_point.expect("channel isn't ready"),
 			shutdown_scriptpubkey: Some(match &self.context.shutdown_scriptpubkey {
 				Some(script) => script.clone().into_inner(),
 				None => Builder::new().into_script(),
@@ -6654,7 +6669,7 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 		self.context.channel_id = funding_txo.to_channel_id();
 		self.context.cur_counterparty_commitment_transaction_number -= 1;
 		self.context.cur_holder_commitment_transaction_number = next_holder_commitment_transaction_number;
-		self.context.next_per_commitment_point = next_per_commitment_point;
+		self.context.next_per_commitment_point = Some(next_per_commitment_point);
 
 		// Promote the channel to a full-fledged one now that we have updated the state and have a
 		// `ChannelMonitor`.
@@ -7411,7 +7426,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 		// If we weren't able to load the next_per_commitment_point, ask the signer for it now.
 		let next_per_commitment_point = holder_signer.get_per_commitment_point(
 			cur_holder_commitment_transaction_number, &secp_ctx
-		).map_err(|_| DecodeError::Io(io::ErrorKind::Other))?;
+		).map(|point| Some(point)).map_err(|_| DecodeError::Io(io::ErrorKind::Other))?;
 
 		// `user_id` used to be a single u64 value. In order to remain backwards
 		// compatible with versions prior to 0.0.113, the u128 is serialized as two

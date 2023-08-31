@@ -667,6 +667,7 @@ pub(super) enum ChannelRetryState {
 	FundingCreated(msgs::FundingCreated),
 	FundingSigned(msgs::FundingSigned),
 	CommitmentSigned(msgs::CommitmentSigned),
+	CompleteAcceptingInboundV1Channel(),
 }
 
 
@@ -5431,14 +5432,64 @@ where
 		let outbound_scid_alias = self.create_and_insert_outbound_scid_alias();
 		channel.context.set_outbound_scid_alias(outbound_scid_alias);
 
-		peer_state.pending_msg_events.push(events::MessageSendEvent::SendAcceptChannel {
-			node_id: channel.context.get_counterparty_node_id(),
-			msg: channel.accept_inbound_channel(),
-		});
+		// If the channel context has the first commitment point, then we can immediately complete the
+		// channel acceptance by sending the accept_channel message. Otherwise, we'll need to wait for
+		// the signer to assign us the first commitment point.
+		if channel.context.has_first_holder_per_commitment_point() {
+			peer_state.pending_msg_events.push(events::MessageSendEvent::SendAcceptChannel {
+				node_id: channel.context.get_counterparty_node_id(),
+				msg: channel.accept_inbound_channel(),
+			});
+		} else {
+			log_info!(self.logger, "First per-commitment point is not available for {temporary_channel_id}, scheduling retry.");			
+			peer_state.retry_state_by_id.insert(*temporary_channel_id, ChannelRetryState::CompleteAcceptingInboundV1Channel());
+		}
 
 		peer_state.inbound_v1_channel_by_id.insert(temporary_channel_id.clone(), channel);
-
 		Ok(())
+	}
+
+	/// Performs `f` with the mutable peer state for the specified counterparty node.
+	///
+	/// Returns `None` if no such counterparty node exists; otherwise, returns the result of `f`
+	/// wrapped in `Some`.
+	fn with_mut_peer_state<Out, Fn>(&self, counterparty_node_id: &PublicKey, f: Fn) -> Option<Out>
+		where Fn: FnOnce(&mut PeerState<SP>) -> Out
+	{
+		let per_peer_state = self.per_peer_state.read().unwrap();
+		let peer_state_mutex = per_peer_state.get(counterparty_node_id)?;
+		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+		Some(f(&mut *peer_state_lock))
+	}
+
+	/// Retries an `InboundV1Channel` accept.
+	///
+	/// Attempts to resolve the first per-commitment point, and if successful broadcasts the
+	/// `accept_channel` message to the peer.
+	fn retry_accepting_inbound_v1_channel(&self, counterparty_node_id: &PublicKey, temporary_channel_id: &ChannelId) {
+		log_info!(self.logger, "Retrying accept for channel {temporary_channel_id}");
+		self.with_mut_peer_state(counterparty_node_id, |peer_state: &mut PeerState<SP>| {
+			let channel_opt = peer_state.inbound_v1_channel_by_id.get_mut(temporary_channel_id);
+			if channel_opt.is_none() {
+				log_error!(self.logger, "Cannot find channel with temporary ID {temporary_channel_id} for which to complete accepting");
+				return;
+			}
+
+			log_info!(self.logger, "Found channel with temporary ID {temporary_channel_id}");
+			
+			let channel = channel_opt.unwrap();
+			if channel.set_first_holder_per_commitment_point().is_err() {
+				log_error!(self.logger, "Commitment point for channel with temporary ID {temporary_channel_id} was not available on retry");
+				return;
+			}
+			
+			log_info!(self.logger, "Set first per-commitment point for channel {temporary_channel_id}");
+			
+			peer_state.pending_msg_events.push(events::MessageSendEvent::SendAcceptChannel {
+				node_id: channel.context.get_counterparty_node_id(),
+				msg: channel.accept_inbound_channel(),
+			});
+		});
 	}
 
 	/// Gets the number of peers which match the given filter and do not have any funded, outbound,
@@ -6863,6 +6914,7 @@ where
 	/// channel will have been suspended pending the required signature becoming available. This
 	/// resumes the channel's operation.
 	pub fn retry_channel(&self, channel_id: &ChannelId, counterparty_node_id: &PublicKey) -> Result<(), APIError> {
+		log_info!(self.logger, "Running retry_channel for {channel_id} on {counterparty_node_id}");
 		let retry_state = {
 			let per_peer_state = self.per_peer_state.read().unwrap();
 			let peer_state_mutex = per_peer_state.get(counterparty_node_id)
@@ -6884,6 +6936,7 @@ where
 			ChannelRetryState::FundingCreated(ref msg) => self.handle_funding_created(counterparty_node_id, msg),
 			ChannelRetryState::FundingSigned(ref msg) => self.handle_funding_signed(counterparty_node_id, msg),
 			ChannelRetryState::CommitmentSigned(ref msg) => self.handle_commitment_signed(counterparty_node_id, msg),
+			ChannelRetryState::CompleteAcceptingInboundV1Channel() => self.retry_accepting_inbound_v1_channel(counterparty_node_id, channel_id),
 		};
 
 		Ok(())
