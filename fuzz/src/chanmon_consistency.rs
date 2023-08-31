@@ -376,7 +376,7 @@ fn send_payment(source: &ChanMan, dest: &ChanMan, dest_chan_id: u64, amt: u64, p
 			fee_msat: amt,
 			cltv_expiry_delta: 200,
 		}], blinded_tail: None }],
-		payment_params: None,
+		route_params: None,
 	}, payment_hash, RecipientOnionFields::secret_only(payment_secret), PaymentId(payment_id)) {
 		check_payment_err(err, amt > max_value_sendable || amt < min_value_sendable);
 		false
@@ -409,7 +409,7 @@ fn send_hop_payment(source: &ChanMan, middle: &ChanMan, middle_chan_id: u64, des
 			channel_features: middle.channel_features(),
 			fee_msat: first_hop_fee,
 			cltv_expiry_delta: 100,
-		},RouteHop {
+		}, RouteHop {
 			pubkey: dest.get_our_node_id(),
 			node_features: dest.node_features(),
 			short_channel_id: dest_chan_id,
@@ -417,7 +417,7 @@ fn send_hop_payment(source: &ChanMan, middle: &ChanMan, middle_chan_id: u64, des
 			fee_msat: amt,
 			cltv_expiry_delta: 200,
 		}], blinded_tail: None }],
-		payment_params: None,
+		route_params: None,
 	}, payment_hash, RecipientOnionFields::secret_only(payment_secret), PaymentId(payment_id)) {
 		let sent_amt = amt + first_hop_fee;
 		check_payment_err(err, sent_amt < min_value_sendable || sent_amt > max_value_sendable);

@@ -337,10 +337,12 @@ pub struct Route {
 	/// [`BlindedTail`]s are present, then the pubkey of the last [`RouteHop`] in each path must be
 	/// the same.
 	pub paths: Vec<Path>,
-	/// The `payment_params` parameter passed via [`RouteParameters`] to [`find_route`].
+	/// The `route_params` parameter passed to [`find_route`].
 	///
 	/// This is used by `ChannelManager` to track information which may be required for retries.
-	pub payment_params: Option<PaymentParameters>,
+	///
+	/// Will be `None` for objects serialized with LDK versions prior to 0.0.117.
+	pub route_params: Option<RouteParameters>,
 }
 
 impl Route {
@@ -383,8 +385,11 @@ impl Writeable for Route {
 			}
 		}
 		write_tlv_fields!(writer, {
-			(1, self.payment_params, option),
+			// For compatibility with LDK versions prior to 0.0.117, we take the individual
+			// RouteParameters' fields and reconstruct them on read.
+			(1, self.route_params.as_ref().map(|p| &p.payment_params), option),
 			(2, blinded_tails, optional_vec),
+			(3, self.route_params.as_ref().map(|p| p.final_value_msat), option),
 		});
 		Ok(())
 	}
@@ -411,6 +416,7 @@ impl Readable for Route {
 		_init_and_read_len_prefixed_tlv_fields!(reader, {
 			(1, payment_params, (option: ReadableArgs, min_final_cltv_expiry_delta)),
 			(2, blinded_tails, optional_vec),
+			(3, final_value_msat, option),
 		});
 		let blinded_tails = blinded_tails.unwrap_or(Vec::new());
 		if blinded_tails.len() != 0 {
@@ -419,14 +425,23 @@ impl Readable for Route {
 				path.blinded_tail = blinded_tail_opt;
 			}
 		}
-		Ok(Route { paths, payment_params })
+
+		// If we previously wrote the corresponding fields, reconstruct RouteParameters.
+		let route_params = match (payment_params, final_value_msat) {
+			(Some(payment_params), Some(final_value_msat)) => {
+				Some(RouteParameters { payment_params, final_value_msat })
+			}
+			_ => None,
+		};
+
+		Ok(Route { paths, route_params })
 	}
 }
 
 /// Parameters needed to find a [`Route`].
 ///
 /// Passed to [`find_route`] and [`build_route_from_hops`].
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct RouteParameters {
 	/// The parameters of the failed payment path.
 	pub payment_params: PaymentParameters,
@@ -2489,7 +2504,7 @@ where L::Target: Logger {
 		}
 	}
 
-	let route = Route { paths, payment_params: Some(payment_params.clone()) };
+	let route = Route { paths, route_params: Some(route_params.clone()) };
 	log_info!(logger, "Got route: {}", log_route!(route));
 	Ok(route)
 }
@@ -5953,7 +5968,7 @@ mod tests {
 					short_channel_id: 0, fee_msat: 225, cltv_expiry_delta: 0
 				},
 			], blinded_tail: None }],
-			payment_params: None,
+			route_params: None,
 		};
 
 		assert_eq!(route.get_total_fees(), 250);
@@ -5986,7 +6001,7 @@ mod tests {
 					short_channel_id: 0, fee_msat: 150, cltv_expiry_delta: 0
 				},
 			], blinded_tail: None }],
-			payment_params: None,
+			route_params: None,
 		};
 
 		assert_eq!(route.get_total_fees(), 200);
@@ -5998,7 +6013,7 @@ mod tests {
 		// In an earlier version of `Route::get_total_fees` and `Route::get_total_amount`, they
 		// would both panic if the route was completely empty. We test to ensure they return 0
 		// here, even though its somewhat nonsensical as a route.
-		let route = Route { paths: Vec::new(), payment_params: None };
+		let route = Route { paths: Vec::new(), route_params: None };
 
 		assert_eq!(route.get_total_fees(), 0);
 		assert_eq!(route.get_total_amount(), 0);
@@ -6597,7 +6612,7 @@ mod tests {
 				fee_msat: 100,
 				cltv_expiry_delta: 0,
 			}], blinded_tail: None }],
-			payment_params: None,
+			route_params: None,
 		};
 		let encoded_route = route.encode();
 		let decoded_route: Route = Readable::read(&mut Cursor::new(&encoded_route[..])).unwrap();
@@ -6691,7 +6706,7 @@ mod tests {
 				excess_final_cltv_expiry_delta: 0,
 				final_value_msat: 200,
 			}),
-		}], payment_params: None};
+		}], route_params: None};
 
 		let payment_params = PaymentParameters::from_node_id(ln_test_utils::pubkey(47), 18);
 		let (_, network_graph, _, _, _) = build_line_graph();
