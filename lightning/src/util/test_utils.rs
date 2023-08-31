@@ -62,7 +62,6 @@ use regex;
 use crate::io;
 use crate::prelude::*;
 use core::cell::RefCell;
-use core::ops::Deref;
 use core::time::Duration;
 use crate::sync::{Mutex, Arc};
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -297,6 +296,7 @@ pub(crate) struct WatchtowerPersister {
 }
 
 impl WatchtowerPersister {
+	#[cfg(test)]
 	pub(crate) fn new(destination_script: Script) -> Self {
 		WatchtowerPersister {
 			persister: TestPersister::new(),
@@ -306,6 +306,7 @@ impl WatchtowerPersister {
 		}
 	}
 
+	#[cfg(test)]
 	pub(crate) fn justice_tx(&self, funding_txo: OutPoint, commitment_txid: &Txid)
 	-> Option<Transaction> {
 		self.watchtower_state.lock().unwrap().get(&funding_txo).unwrap().get(commitment_txid).cloned()
