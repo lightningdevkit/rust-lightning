@@ -8256,8 +8256,8 @@ where
 	/// Note that the invoice feature flags can vary depending on if the invoice is a "phantom invoice"
 	/// or not. Thus, this method is not public.
 	#[cfg(any(feature = "_test_utils", test))]
-	pub fn invoice_features(&self) -> Bolt11InvoiceFeatures {
-		provided_invoice_features(&self.default_configuration)
+	pub fn bolt11_invoice_features(&self) -> Bolt11InvoiceFeatures {
+		provided_bolt11_invoice_features(&self.default_configuration)
 	}
 
 	/// Fetches the set of [`ChannelFeatures`] flags which are provided by or required by
@@ -8817,7 +8817,7 @@ pub(crate) fn provided_node_features(config: &UserConfig) -> NodeFeatures {
 /// Note that the invoice feature flags can vary depending on if the invoice is a "phantom invoice"
 /// or not. Thus, this method is not public.
 #[cfg(any(feature = "_test_utils", test))]
-pub(crate) fn provided_invoice_features(config: &UserConfig) -> Bolt11InvoiceFeatures {
+pub(crate) fn provided_bolt11_invoice_features(config: &UserConfig) -> Bolt11InvoiceFeatures {
 	provided_init_features(config).to_context()
 }
 
@@ -11988,7 +11988,7 @@ pub mod bench {
 		macro_rules! send_payment {
 			($node_a: expr, $node_b: expr) => {
 				let payment_params = PaymentParameters::from_node_id($node_b.get_our_node_id(), TEST_FINAL_CLTV)
-					.with_bolt11_features($node_b.invoice_features()).unwrap();
+					.with_bolt11_features($node_b.bolt11_invoice_features()).unwrap();
 				let mut payment_preimage = PaymentPreimage([0; 32]);
 				payment_preimage.0[0..8].copy_from_slice(&payment_count.to_le_bytes());
 				payment_count += 1;

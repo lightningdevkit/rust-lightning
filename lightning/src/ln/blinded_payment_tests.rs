@@ -89,10 +89,9 @@ fn mpp_to_one_hop_blinded_path() {
 	).unwrap();
 
 	let bolt12_features: Bolt12InvoiceFeatures =
-		channelmanager::provided_invoice_features(&UserConfig::default()).to_context();
+		channelmanager::provided_bolt11_invoice_features(&UserConfig::default()).to_context();
 	let route_params = RouteParameters::from_payment_params_and_value(
-		PaymentParameters::blinded(vec![blinded_path])
-			.with_bolt12_features(bolt12_features).unwrap(),
+		PaymentParameters::blinded(vec![blinded_path]).with_bolt12_features(bolt12_features).unwrap(),
 		amt_msat,
 	);
 	nodes[0].node.send_payment(payment_hash, RecipientOnionFields::spontaneous_empty(), PaymentId(payment_hash.0), route_params, Retry::Attempts(0)).unwrap();
