@@ -20,7 +20,7 @@ use crate::chain::transaction::OutPoint;
 use crate::sign::{ChannelSigner, EcdsaChannelSigner, EntropySource, SignerProvider};
 use crate::events::{Event, MessageSendEvent, MessageSendEventsProvider, PathFailure, PaymentPurpose, ClosureReason, HTLCDestination, PaymentFailureReason};
 use crate::ln::{ChannelId, PaymentPreimage, PaymentSecret, PaymentHash};
-use crate::ln::channel::{commitment_tx_base_weight, COMMITMENT_TX_WEIGHT_PER_HTLC, CONCURRENT_INBOUND_HTLC_FEE_BUFFER, FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE, MIN_AFFORDABLE_HTLC_COUNT, get_holder_selected_channel_reserve_satoshis, OutboundV1Channel, InboundV1Channel};
+use crate::ln::channel::{commitment_tx_base_weight, COMMITMENT_TX_WEIGHT_PER_HTLC, CONCURRENT_INBOUND_HTLC_FEE_BUFFER, FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE, MIN_AFFORDABLE_HTLC_COUNT, get_holder_selected_channel_reserve_satoshis, OutboundV1Channel, InboundV1Channel, COINBASE_MATURITY};
 use crate::ln::channelmanager::{self, PaymentId, RAACommitmentOrder, PaymentSendFailure, RecipientOnionFields, BREAKDOWN_TIMEOUT, ENABLE_GOSSIP_TICKS, DISABLE_GOSSIP_TICKS, MIN_CLTV_EXPIRY_DELTA};
 use crate::ln::channel::{DISCONNECT_PEER_AWAITING_RESPONSE_TICKS, ChannelError};
 use crate::ln::{chan_utils, onion_utils};
@@ -9131,6 +9131,66 @@ fn test_invalid_funding_tx() {
 	};
 	check_spends!(spend_tx, tx);
 	mine_transaction(&nodes[1], &spend_tx);
+}
+
+#[test]
+fn test_coinbase_funding_tx() {
+	// Miners are able to fund channels directly from coinbase transactions, however
+	// by consensus rules, outputs of a coinbase transaction are encumbered by a 100
+	// block maturity timelock. To ensure that a (non-0conf) channel like this is enforceable
+	// on-chain, the minimum depth is updated to 100 blocks for coinbase funding transactions.
+	//
+	// Note that 0conf channels with coinbase funding transactions are unaffected and are
+	// immediately operational after opening.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 100000, 10001, 42, None).unwrap();
+	let open_channel = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
+
+	nodes[1].node.handle_open_channel(&nodes[0].node.get_our_node_id(), &open_channel);
+	let accept_channel = get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, nodes[0].node.get_our_node_id());
+
+	nodes[0].node.handle_accept_channel(&nodes[1].node.get_our_node_id(), &accept_channel);
+
+	// Create the coinbase funding transaction.
+	let (temporary_channel_id, tx, _) = create_coinbase_funding_transaction(&nodes[0], &nodes[1].node.get_our_node_id(), 100000, 42);
+
+	nodes[0].node.funding_transaction_generated(&temporary_channel_id, &nodes[1].node.get_our_node_id(), tx.clone()).unwrap();
+	check_added_monitors!(nodes[0], 0);
+	let funding_created = get_event_msg!(nodes[0], MessageSendEvent::SendFundingCreated, nodes[1].node.get_our_node_id());
+
+	nodes[1].node.handle_funding_created(&nodes[0].node.get_our_node_id(), &funding_created);
+	check_added_monitors!(nodes[1], 1);
+	expect_channel_pending_event(&nodes[1], &nodes[0].node.get_our_node_id());
+
+	let funding_signed = get_event_msg!(nodes[1], MessageSendEvent::SendFundingSigned, nodes[0].node.get_our_node_id());
+
+	nodes[0].node.handle_funding_signed(&nodes[1].node.get_our_node_id(), &funding_signed);
+	check_added_monitors!(nodes[0], 1);
+
+	expect_channel_pending_event(&nodes[0], &nodes[1].node.get_our_node_id());
+	assert!(nodes[0].node.get_and_clear_pending_events().is_empty());
+
+	// Starting at height 0, we "confirm" the coinbase at height 1.
+	confirm_transaction_at(&nodes[0], &tx, 1);
+	// We connect 98 more blocks to have 99 confirmations for the coinbase transaction.
+	connect_blocks(&nodes[0], COINBASE_MATURITY - 2);
+	// Check that we have no pending message events (we have not queued a `channel_ready` yet).
+	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
+	// Now connect one more block which results in 100 confirmations of the coinbase transaction.
+	connect_blocks(&nodes[0], 1);
+	// There should now be a `channel_ready` which can be handled.
+	let _ = &nodes[1].node.handle_channel_ready(&nodes[0].node.get_our_node_id(), &get_event_msg!(&nodes[0], MessageSendEvent::SendChannelReady, nodes[1].node.get_our_node_id()));
+
+	confirm_transaction_at(&nodes[1], &tx, 1);
+	connect_blocks(&nodes[1], COINBASE_MATURITY - 2);
+	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+	connect_blocks(&nodes[1], 1);
+	expect_channel_ready_event(&nodes[1], &nodes[0].node.get_our_node_id());
+	create_chan_between_nodes_with_value_confirm_second(&nodes[0], &nodes[1]);
 }
 
 fn do_test_tx_confirmed_skipping_blocks_immediate_broadcast(test_height_before_timelock: bool) {
