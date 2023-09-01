@@ -798,6 +798,35 @@ impl<T: sealed::Context> Features<T> {
 		true
 	}
 
+	/// Sets a required feature bit. Errors if `bit` is outside the feature range as defined
+	/// by [BOLT 9].
+	///
+	/// Note: Required bits are even. If an odd bit is given, then the corresponding even bit will
+	/// be set instead (i.e., `bit - 1`).
+	///
+	/// [BOLT 9]: https://github.com/lightning/bolts/blob/master/09-features.md
+	pub fn set_required_feature_bit(&mut self, bit: usize) -> Result<(), ()> {
+		self.set_feature_bit(bit - (bit % 2))
+	}
+
+	/// Sets an optional feature bit. Errors if `bit` is outside the feature range as defined
+	/// by [BOLT 9].
+	///
+	/// Note: Optional bits are odd. If an even bit is given, then the corresponding odd bit will be
+	/// set instead (i.e., `bit + 1`).
+	///
+	/// [BOLT 9]: https://github.com/lightning/bolts/blob/master/09-features.md
+	pub fn set_optional_feature_bit(&mut self, bit: usize) -> Result<(), ()> {
+		self.set_feature_bit(bit + (1 - (bit % 2)))
+	}
+
+	fn set_feature_bit(&mut self, bit: usize) -> Result<(), ()> {
+		if bit > 255 {
+			return Err(());
+		}
+		self.set_bit(bit, false)
+	}
+
 	/// Sets a required custom feature bit. Errors if `bit` is outside the custom range as defined
 	/// by [bLIP 2] or if it is a known `T` feature.
 	///
@@ -824,10 +853,13 @@ impl<T: sealed::Context> Features<T> {
 		if bit < 256 {
 			return Err(());
 		}
+		self.set_bit(bit, true)
+	}
 
+	fn set_bit(&mut self, bit: usize, custom: bool) -> Result<(), ()> {
 		let byte_offset = bit / 8;
 		let mask = 1 << (bit - 8 * byte_offset);
-		if byte_offset < T::KNOWN_FEATURE_MASK.len() {
+		if byte_offset < T::KNOWN_FEATURE_MASK.len() && custom {
 			if (T::KNOWN_FEATURE_MASK[byte_offset] & mask) != 0 {
 				return Err(());
 			}
@@ -1078,6 +1110,13 @@ mod tests {
 		assert!(!features.requires_basic_mpp());
 		assert!(features.requires_payment_secret());
 		assert!(features.supports_payment_secret());
+
+		// Set flags manually
+		let mut features = NodeFeatures::empty();
+		assert!(features.set_optional_feature_bit(55).is_ok());
+		assert!(features.supports_keysend());
+		assert!(features.set_optional_feature_bit(255).is_ok());
+		assert!(features.set_required_feature_bit(256).is_err());
 	}
 
 	#[test]
