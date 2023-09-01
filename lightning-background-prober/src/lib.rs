@@ -30,6 +30,7 @@ use chrono::Utc;
 //use std::sync::Mutex;
 /// Utilities for probing lightning networks payment channel
 /******************************************************************************************************************************************************************* */
+//Logger
 
 pub(crate) struct FilesystemLogger {
 	data_dir: String,
@@ -173,6 +174,8 @@ fn handle_network_graph_update<L: Deref>(
 		network_graph.handle_network_update(upd);
 	}
 }
+
+//Constants
 //******************************************************************************************************************************
 
 const NUM_THREADS: u64 = 1;
@@ -181,19 +184,137 @@ const DEFAULT_FINAL_VALUE_MSAT: u64 = 1000;
 const DEFAULT_PROBE_VALUE_MSAT: u64 = 1000;
 const DEFAULT_PENALTY_MSAT: u64 = 1000;
 
+//structs for persisting probes
+//**************************************************************************************************************************************************************** */
+
+// The main struct initialization that persist all probes ever sent by server
+// should be initalized at the start of the program
+
+// Define a struct named ProbeValueMap that holds a mapping of NodeId to NodeRating.
+// The mapping is wrapped in an Arc (atomic reference counter) and Mutex (mutual exclusion)
+// to enable concurrent access and modification from multiple threads safely.
+// should be initalized at the start of the program
+struct ProbeValueMap<> {
+	// Holds the mapping of NodeId to NodeRating.
+	value_map: Arc<Mutex<IndexedMap<NodeId, NodeRating>>>,
+}
+
+// Implementation of the ProbeValueMap struct.
+impl ProbeValueMap {
+	// Constructor for creating a new instance of ProbeValueMap
+	fn new () -> Self {
+		Self {
+			// Initialize the value_map field with an Arc-wrapped Mutex-protected IndexedMap.
+			value_map: Arc::new(Mutex::new(IndexedMap::<NodeId,NodeRating>::new())),
+		}
+	}
+}
+
+// Node Rating: Used for each probed node to holds relevant information.
+
+// Initialized by node_selector
+struct NodeRating {
+	node_id : NodeId,
+		// Identifier for the node being rated
+	path : Vec<Path>,
+		// List of paths associated with the node
+	channel_information_coefficient: f64,
+		// Coefficient representing channel information
+		// No current implementation, to be add soon
+	probes: Vec<ProbePersister>,
+		// List of probe persisters related to the node
+}
+
+impl NodeRating {
+	fn new (node_id: NodeId) -> Self {
+		Self {
+			node_id,
+			path: Vec::new(),
+			channel_information_coefficient: 0.0,
+			probes: Vec::new(),
+		}
+	}
+}
+
+// Enumeration representing the status of a probe operation
+enum ProbeStatus {
+	Success, // The probe operation was successful
+	Failure, // The probe operation failed
+}
+
+// Probe Persister: Used for each porbe to hold relevent information.
+
+// Initialized by value_selector
+// updated by final_path_builder_for_probe 
+struct ProbePersister{
+	target_nodeid : NodeId,
+		// Identifier of the targeted node for the probe
+	value : Option<u64>,
+		// Value of probes "FINAL_VALUE_MSAT"
+	path : Option<Path>,
+		// Path taken by probe
+	probe_status : Option<ProbeStatus>, 
+		// Probe status
+	send_probe_return : Option<Result<(PaymentHash, PaymentId), PaymentSendFailure>>,
+		//Return value from 'send_probe'
+}
+
+impl ProbePersister {
+	// Constructor to create a new instance of `ProbePersister` with a target node ID
+	fn new (target_nodeid: NodeId) -> Self {
+		Self {
+			target_nodeid,
+			value: None,
+			path: None,
+			probe_status: None,
+			send_probe_return: None,
+		}
+	}
+
+    // Method to update the path
+	// to be updated by value_selector
+    fn update_path(&mut self, path: Path) {
+        self.path = Some(path);
+    }
+
+	// Method to update the value associated with the probe
+	// to be updated by value_selector
+	fn update_value (&mut self, value: u64) {
+		self.value = Some(value);
+	}
+
+    // Method to update the send probe return
+	// to be updated by send_probe
+    fn update_send_probe_return(&mut self, result: Result<(PaymentHash, PaymentId), PaymentSendFailure>) {
+        self.send_probe_return = Some(result);
+    }
+
+	 // Method to update the probe status
+	 // to be updated by event_handler
+	 fn update_probe_status(&mut self, status: ProbeStatus) {
+        self.probe_status = Some(status);
+    }
+
+}
+
+//end of struct for persisting probes
+//******************************************************************************************************************************************************** */
+ 
+ // Struct for hold date from network_graph
 struct NodesToProbe {
 	nodes_to_probe: Vec<(NodeId,NodeInfo)>,
 }
 
 impl NodesToProbe{
 
+	// Constructor for creating a new instance of NodesToProbe
 	fn new () -> Self {
 		NodesToProbe{
 			nodes_to_probe: Vec::<(NodeId,NodeInfo)>::new(),
 		 }
 	}
 
-	// Mutable method to add a node and its info
+	// Mutable method to add a NodeId and its NodeInfro to the nodes_to_probe field
     fn add_node(&mut self, node_id: &NodeId, node_info: &NodeInfo) {
         self.nodes_to_probe.push((*node_id, node_info.clone()));
     }
@@ -223,6 +344,7 @@ impl NodesToProbe{
 	}
 }
 
+// Iterator for NodesToProbe
 impl Iterator for NodesToProbe {
 	type Item = (NodeId,NodeInfo);
 
@@ -231,6 +353,7 @@ impl Iterator for NodesToProbe {
 	}
 }
 
+// Clone for NodesToProbe
 impl clone::Clone for NodesToProbe {
 	fn clone(&self) -> Self {
 		Self {
@@ -239,6 +362,49 @@ impl clone::Clone for NodesToProbe {
 	}
 }
 
+// Function returns most favorable nodes to probe
+// Will return top_one_percent_nodes of nodes sorted by Number Of Channels per node
+async fn node_selector(
+	top_nodes: NodesToProbe,
+	probe_value_map: &ProbeValueMap,
+) -> Option<NodeId> {
+	let mut value_map = probe_value_map.value_map.lock().await;
+	for i in top_nodes {
+		let node_id = i.0;
+		let node_rating = value_map.get(&node_id);
+
+		match node_rating {
+			Some(x) => {
+				let mut flag = true;
+				for i in &x.probes{
+					let probe_status = &i.probe_status;
+					match probe_status {
+						Some(_x) => {
+							flag = true;
+						},
+
+						None => {
+							flag = false;
+							break;
+						}
+					}
+				}
+				if flag == false {
+					continue;
+				}
+				else {
+					return Some(node_id);
+				}
+			},
+
+			None => {
+				value_map.insert(node_id, NodeRating::new(node_id));
+				return Some(node_id);
+			}
+		}
+	}
+	return None;
+}
 
 //Random seed generator (This has to be replaced by keys_manager::get_secure_random_bytes())
 fn generate_random_seed_bytes () -> [u8; 32] {
@@ -254,6 +420,74 @@ fn random_final_cltv_expiry_delta_generator () -> u32 {
 	let random_number: u32 = rng.gen();
 	return random_number;
 }
+
+
+//capacity = balance(A) + balance(B)
+//liquidity(A) = balance(A) – channel_reserve(A) – pending_HTLCs(A)
+//Will return Sorted Vec of channel_capacity in given Path
+
+// we are halving the channel capacity to get balance of A and B
+// top nodes will try to directional balance, hence channel capcity is closet to real channel liquidity 
+fn sorted_channel_capacity_in_path(
+	network_graph: &ReadOnlyNetworkGraph, 
+	path: Path
+) -> Vec<(u64,Option<u64>)> {
+
+	let mut vec: Vec<(u64,Option<u64>)> = Vec::new();
+	let hops = path.hops;
+		for i in hops {
+			let scid = i.short_channel_id;
+			let capacity_msat = network_graph.channel(scid).unwrap().capacity_sats;
+			match capacity_msat {
+				Some(x) => {
+					let c = (0.5*(x as f64)).floor() as u64;
+					vec.push((scid, Some(c)));
+				}
+				None => vec.push((scid, None)),
+			}
+		}
+
+		vec.sort_by(|a, b| {
+			match (a.1, b.1) {
+				(Some(x), Some(y)) => x.cmp(&y),
+				(None, Some(_)) => std::cmp::Ordering::Greater,
+				(Some(_), None) => std::cmp::Ordering::Less,
+				(None, None) => std::cmp::Ordering::Equal,
+			}
+		});
+
+	return vec;
+}
+
+// Will return Sorted Vec of max_htlc in given Path
+struct HtlcList {
+    path: Path,
+    max_htlc_list: Vec<(NodeId, u64)>,
+}
+
+impl HtlcList {
+
+	// Constructor for creating a new instance of HtlcList
+    fn new(path: Path) -> Self {
+        Self {
+            path,
+            max_htlc_list: Vec::new(),
+        }
+    }
+
+	// Mutable method to add a NodeId and its max_htlc to the max_htlc_list field
+    fn sorted_htlc_in_path(&mut self, channel_info: &ChannelInfo) {
+		
+        for i in &self.path.hops {
+            let nodeid = NodeId::from_pubkey(&i.pubkey);
+            let max = channel_info.get_directional_info(0).unwrap().htlc_maximum_msat;
+            self.max_htlc_list.push((nodeid, max));
+        }
+        
+        self.max_htlc_list.sort_by(|(_, a), (_, b)| a.cmp(b)); // ascending ordering of MAX_HTLC
+    }
+}
+
 //It will use DefaultRouter to find a path to target_pubkey
 async fn initial_path_builder(
 	network_graph: Arc<NetworkGraph<Arc<FilesystemLogger>>>,
@@ -327,85 +561,6 @@ async fn initial_path_builder(
 	}
 }
 
-
-//Will convert Path into Box<[bitcoin::secp256k1::PublicKey]>
-fn path_parser (path: Path) -> Box<[bitcoin::secp256k1::PublicKey]> {
-	let vec_pubkeys = {
-		path.
-		hops.
-		into_iter().
-		map(|hop| hop.pubkey).
-		collect::<Vec<bitcoin::secp256k1::PublicKey>>()
-	};
-	let publickey: Box<[bitcoin::secp256k1::PublicKey]> = vec_pubkeys.into_boxed_slice();
-	return publickey;
-}
-
-
-//capacity = balance(A) + balance(B)
-//liquidity(A) = balance(A) – channel_reserve(A) – pending_HTLCs(A)
-//Will return Sorted Vec of channel_capacity in given Path
-
-// we are halving the channel capacity to get balance of A and B
-// top nodes will try to directional balance, hence channel capcity is closet to real channel liquidity 
-fn sorted_channel_capacity_in_path(
-	network_graph: &ReadOnlyNetworkGraph, 
-	path: Path
-) -> Vec<(u64,Option<u64>)> {
-
-	let mut vec: Vec<(u64,Option<u64>)> = Vec::new();
-	let hops = path.hops;
-		for i in hops {
-			let scid = i.short_channel_id;
-			let capacity_msat = network_graph.channel(scid).unwrap().capacity_sats;
-			match capacity_msat {
-				Some(x) => {
-					let c = (0.5*(x as f64)).floor() as u64;
-					vec.push((scid, Some(c)));
-				}
-				None => vec.push((scid, None)),
-			}
-		}
-
-		vec.sort_by(|a, b| {
-			match (a.1, b.1) {
-				(Some(x), Some(y)) => x.cmp(&y),
-				(None, Some(_)) => std::cmp::Ordering::Greater,
-				(Some(_), None) => std::cmp::Ordering::Less,
-				(None, None) => std::cmp::Ordering::Equal,
-			}
-		});
-
-	return vec;
-}
-
-struct HtlcList {
-    path: Path,
-    max_htlc_list: Vec<(NodeId, u64)>,
-}
-
-impl HtlcList {
-    fn new(path: Path) -> Self {
-        Self {
-            path,
-            max_htlc_list: Vec::new(),
-        }
-    }
-
-    fn sorted_htlc_in_path(&mut self, channel_info: &ChannelInfo) {
-        self.max_htlc_list.clear(); // Clear the list before adding new values
-
-        for i in &self.path.hops {
-            let nodeid = NodeId::from_pubkey(&i.pubkey);
-            let max = channel_info.get_directional_info(0).unwrap().htlc_maximum_msat;
-            self.max_htlc_list.push((nodeid, max));
-        }
-        
-        self.max_htlc_list.sort_by(|(_, a), (_, b)| a.cmp(b)); // ascending ordering of MAX_HTLC
-    }
-}
-
-
 //Value selector for probing (Uses binary search method)
 async fn value_selector (
 	path: Path,
@@ -450,6 +605,7 @@ async fn value_selector (
 						}
 						return val
 					}
+
 					ProbeStatus::Failure => {
 						let val = (0.5*((value) as f64)).floor() as u64;
 						
@@ -480,6 +636,7 @@ async fn value_selector (
 						}
 						return val
 					}
+
 					ProbeStatus::Failure => {
 						let val_mid = node_rating.probes.get(vec_len-2).unwrap().value.unwrap();
 						let val = (0.5*((value + val_mid) as f64)).floor() as u64;
@@ -498,7 +655,20 @@ async fn value_selector (
 	}	
 }
 
-//Will return a path using build_route_from_hops
+//Will convert Path into Box<[bitcoin::secp256k1::PublicKey]> for final_path_builder_for_probe
+fn path_parser (path: Path) -> Box<[bitcoin::secp256k1::PublicKey]> {
+	let vec_pubkeys = {
+		path.
+		hops.
+		into_iter().
+		map(|hop| hop.pubkey).
+		collect::<Vec<bitcoin::secp256k1::PublicKey>>()
+	};
+	let publickey: Box<[bitcoin::secp256k1::PublicKey]> = vec_pubkeys.into_boxed_slice();
+	return publickey;
+}
+
+//Will return a Final path for send_probe()
 fn final_path_builder_for_probe <L: Logger + std::ops::Deref>(
 	hops: Box<[bitcoin::secp256k1::PublicKey]>,
 	network_graph: &NetworkGraph<L>,
@@ -529,138 +699,6 @@ fn final_path_builder_for_probe <L: Logger + std::ops::Deref>(
 
 	return route.unwrap().paths[0].clone();
 }
-
-async fn node_selector(
-	top_nodes: NodesToProbe,
-	probe_value_map: &ProbeValueMap,
-) -> Option<NodeId> {
-	let mut value_map = probe_value_map.value_map.lock().await;
-	for i in top_nodes {
-		let node_id = i.0;
-		let node_rating = value_map.get(&node_id);
-
-		match node_rating {
-			Some(x) => {
-				let mut flag = true;
-				for i in &x.probes{
-					let probe_status = &i.probe_status;
-					match probe_status {
-						Some(_x) => {
-							flag = true;
-						},
-
-						None => {
-							flag = false;
-							break;
-						}
-					}
-				}
-				if flag == false {
-					continue;
-				}
-				else {
-					return Some(node_id);
-				}
-			},
-
-			None => {
-				value_map.insert(node_id, NodeRating::new(node_id));
-				return Some(node_id);
-			}
-		}
-	}
-	return None;
-}
-
-
-//structs for persisting probes
-//**************************************************************************************************************************************************************** */
-
-//should be initalized at the start of the program
-struct ProbeValueMap<> {
-	value_map: Arc<Mutex<IndexedMap<NodeId, NodeRating>>>,
-}
-
-impl ProbeValueMap {
-	fn new () -> Self {
-		Self {
-			value_map: Arc::new(Mutex::new(IndexedMap::<NodeId,NodeRating>::new())),
-		}
-	}
-}
-
-//Initialized by node_selector
-struct NodeRating {
-	node_id : NodeId,
-	path : Vec<Path>,
-	channel_information_coefficient: f64,
-	probes: Vec<ProbePersister>,
-}
-
-impl NodeRating {
-	fn new (node_id: NodeId) -> Self {
-		Self {
-			node_id,
-			path: Vec::new(),
-			channel_information_coefficient: 0.0,
-			probes: Vec::new(),
-		}
-	}
-}
-
-enum ProbeStatus {
-	Success,
-	Failure,
-}
-
-//Initialized by value_selector
-//updated by final_path_builder_for_probe
-struct ProbePersister{
-	target_nodeid : NodeId,
-	value : Option<u64>,
-	path : Option<Path>,
-	probe_status : Option<ProbeStatus>,  
-	send_probe_return : Option<Result<(PaymentHash, PaymentId), PaymentSendFailure>>,
-}
-
-impl ProbePersister {
-	
-	fn new (target_nodeid: NodeId) -> Self {
-		Self {
-			target_nodeid,
-			value: None,
-			path: None,
-			probe_status: None,
-			send_probe_return: None,
-		}
-	}
-
-    // Method to update the path
-    fn update_path(&mut self, path: Path) {
-        self.path = Some(path);
-    }
-
-    // Method to update the send probe return
-	//has to be updated by send_probe
-    fn update_send_probe_return(&mut self, result: Result<(PaymentHash, PaymentId), PaymentSendFailure>) {
-        self.send_probe_return = Some(result);
-    }
-
-	 // Method to update the probe status
-	 //has to be updated by event_handler
-	 fn update_probe_status(&mut self, status: ProbeStatus) {
-        self.probe_status = Some(status);
-    }
-
-	fn update_value (&mut self, value: u64) {
-		self.value = Some(value);
-	}
-
-}
-
-//end of struct for persisting probes
-//****************************************************************************************************************************************************************** */
-
 
 // main core runner for probing
 //******************************************************************************************************************************************************** */
@@ -818,3 +856,7 @@ async fn final_path_builder_for_probe_looper<L: std::ops::Deref + lightning::uti
 // 		//the result should generate the probe_persister 
 // 	}
 // }
+
+//Tests
+//******************************************************************************************************************************************************** */
+
