@@ -1229,7 +1229,7 @@ pub trait ChannelMessageHandler : MessageSendEventsProvider {
 	/// Handle an incoming `channel_ready` message from the given peer.
 	fn handle_channel_ready(&self, their_node_id: &PublicKey, msg: &ChannelReady);
 
-	// Channl close:
+	// Channel close:
 	/// Handle an incoming `shutdown` message from the given peer.
 	fn handle_shutdown(&self, their_node_id: &PublicKey, msg: &Shutdown);
 	/// Handle an incoming `closing_signed` message from the given peer.

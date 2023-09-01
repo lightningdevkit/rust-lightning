@@ -1667,7 +1667,7 @@ pub enum MessageSendEvent {
 		/// The node_id of the node which should receive this message
 		node_id: PublicKey,
 		/// The message which should be sent.
-		msg: msgs::TxAddInput,
+		msg: msgs::TxAbort,
 	},
 	/// Used to indicate that a channel_ready message should be sent to the peer with the given node_id.
 	SendChannelReady {
