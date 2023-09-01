@@ -1183,7 +1183,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 				transaction_number, &self.secp_ctx
 			).map_err(|_| {
 				log_warn!(logger, "Channel signer for {} is unavailable; try again later", self.channel_id());
-				ChannelError::Retry("Channel signer is unavailble; try again later".to_owned())
+				ChannelError::Retry("Channel signer is unavailable; try again later".to_owned())
 			})?;
 		Ok(per_commitment_point)
 	}
