@@ -8244,13 +8244,13 @@ where
 		self.best_block.read().unwrap().clone()
 	}
 
-	/// Fetches the set of [`NodeFeatures`] flags which are provided by or required by
+	/// Fetches the set of [`NodeFeatures`] flags that are provided by or required by
 	/// [`ChannelManager`].
 	pub fn node_features(&self) -> NodeFeatures {
 		provided_node_features(&self.default_configuration)
 	}
 
-	/// Fetches the set of [`Bolt11InvoiceFeatures`] flags which are provided by or required by
+	/// Fetches the set of [`Bolt11InvoiceFeatures`] flags that are provided by or required by
 	/// [`ChannelManager`].
 	///
 	/// Note that the invoice feature flags can vary depending on if the invoice is a "phantom invoice"
@@ -8266,19 +8266,19 @@ where
 		provided_bolt12_invoice_features(&self.default_configuration)
 	}
 
-	/// Fetches the set of [`ChannelFeatures`] flags which are provided by or required by
+	/// Fetches the set of [`ChannelFeatures`] flags that are provided by or required by
 	/// [`ChannelManager`].
 	pub fn channel_features(&self) -> ChannelFeatures {
 		provided_channel_features(&self.default_configuration)
 	}
 
-	/// Fetches the set of [`ChannelTypeFeatures`] flags which are provided by or required by
+	/// Fetches the set of [`ChannelTypeFeatures`] flags that are provided by or required by
 	/// [`ChannelManager`].
 	pub fn channel_type_features(&self) -> ChannelTypeFeatures {
 		provided_channel_type_features(&self.default_configuration)
 	}
 
-	/// Fetches the set of [`InitFeatures`] flags which are provided by or required by
+	/// Fetches the set of [`InitFeatures`] flags that are provided by or required by
 	/// [`ChannelManager`].
 	pub fn init_features(&self) -> InitFeatures {
 		provided_init_features(&self.default_configuration)
@@ -8809,7 +8809,7 @@ where
 	}
 }
 
-/// Fetches the set of [`NodeFeatures`] flags which are provided by or required by
+/// Fetches the set of [`NodeFeatures`] flags that are provided by or required by
 /// [`ChannelManager`].
 pub(crate) fn provided_node_features(config: &UserConfig) -> NodeFeatures {
 	let mut node_features = provided_init_features(config).to_context();
@@ -8817,7 +8817,7 @@ pub(crate) fn provided_node_features(config: &UserConfig) -> NodeFeatures {
 	node_features
 }
 
-/// Fetches the set of [`Bolt11InvoiceFeatures`] flags which are provided by or required by
+/// Fetches the set of [`Bolt11InvoiceFeatures`] flags that are provided by or required by
 /// [`ChannelManager`].
 ///
 /// Note that the invoice feature flags can vary depending on if the invoice is a "phantom invoice"
@@ -8833,19 +8833,19 @@ pub(crate) fn provided_bolt12_invoice_features(config: &UserConfig) -> Bolt12Inv
 	provided_init_features(config).to_context()
 }
 
-/// Fetches the set of [`ChannelFeatures`] flags which are provided by or required by
+/// Fetches the set of [`ChannelFeatures`] flags that are provided by or required by
 /// [`ChannelManager`].
 pub(crate) fn provided_channel_features(config: &UserConfig) -> ChannelFeatures {
 	provided_init_features(config).to_context()
 }
 
-/// Fetches the set of [`ChannelTypeFeatures`] flags which are provided by or required by
+/// Fetches the set of [`ChannelTypeFeatures`] flags that are provided by or required by
 /// [`ChannelManager`].
 pub(crate) fn provided_channel_type_features(config: &UserConfig) -> ChannelTypeFeatures {
 	ChannelTypeFeatures::from_init(&provided_init_features(config))
 }
 
-/// Fetches the set of [`InitFeatures`] flags which are provided by or required by
+/// Fetches the set of [`InitFeatures`] flags that are provided by or required by
 /// [`ChannelManager`].
 pub fn provided_init_features(config: &UserConfig) -> InitFeatures {
 	// Note that if new features are added here which other peers may (eventually) require, we
