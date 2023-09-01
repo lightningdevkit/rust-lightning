@@ -683,6 +683,9 @@ pub(super) struct ChannelContext<SP: Deref> where SP::Target: SignerProvider {
 	// On initial channel construction, this value may be None, in which case that means that the
 	// first commitment point wasn't ready at the time that the channel needed to be created.
 	next_per_commitment_point: Option<PublicKey>,
+	// The secret corresponding to `cur_holder_commitment_transaction_number + 2`, which is the
+	// *previous* state.
+	prev_commitment_secret: Option<[u8; 32]>,
 	cur_counterparty_commitment_transaction_number: u64,
 	value_to_self_msat: u64, // Excluding all pending_htlcs, excluding fees
 	pending_inbound_htlcs: Vec<InboundHTLCOutput>,
@@ -1198,6 +1201,20 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 		let transaction_number = self.cur_holder_commitment_transaction_number - 1;
 		log_trace!(logger, "Retrieving commitment point for {} transaction number {}", self.channel_id(), transaction_number);
 		self.get_holder_per_commitment_point_for(transaction_number, logger).map(|point| (transaction_number, point))
+	}
+
+	/// Retrieves the previous commitment secret from the signer.
+	pub fn get_prev_commitment_secret<L: Deref>(&self, logger: &L) -> Result<[u8; 32], ChannelError>
+		where L::Target: Logger
+	{
+		let transaction_number = self.cur_holder_commitment_transaction_number + 1;
+		assert!(transaction_number <= INITIAL_COMMITMENT_NUMBER);
+		log_trace!(logger, "Requesting commitment secret for {} transaction number {}", self.channel_id(), transaction_number);
+		let secret = self.holder_signer.as_ref().release_commitment_secret(transaction_number).map_err(|_| {
+			log_warn!(logger, "Channel signer for {} is unavailable; try again later", self.channel_id());
+			ChannelError::Retry("Channel signer is unavailable; try again later".to_owned())
+		})?;
+		Ok(secret)
 	}
 
 	pub fn has_first_holder_per_commitment_point(&self) -> bool {
@@ -3041,9 +3058,10 @@ impl<SP: Deref> Channel<SP> where
 		self.context.holder_signer.as_ref().validate_holder_commitment(&holder_commitment_tx, commitment_stats.preimages)
 			.map_err(|_| ChannelError::Close("Failed to validate our commitment".to_owned()))?;
 
-		// Retrieve the next commitment point: if this results in a transient failure we'll unwind here
-		// and rely on retry to complete the commitment_operation.
+		// Retrieve the next commitment point and previous commitment secret: if this results in a
+		// transient failure we'll unwind here and rely on retry to complete the commitment_operation.
 		let (next_holder_commitment_transaction_number, next_per_commitment_point) = self.context.get_next_holder_per_commitment_point(logger)?;
+		let prev_commitment_secret = self.context.get_prev_commitment_secret(logger)?;
 
 		// Update state now that we've passed all the can-fail calls...
 		let mut need_commitment = false;
@@ -3100,6 +3118,7 @@ impl<SP: Deref> Channel<SP> where
 
 		self.context.cur_holder_commitment_transaction_number = next_holder_commitment_transaction_number;
 		self.context.next_per_commitment_point = Some(next_per_commitment_point);
+		self.context.prev_commitment_secret = Some(prev_commitment_secret);
 		
 		// Note that if we need_commitment & !AwaitingRemoteRevoke we'll call
 		// build_commitment_no_status_check() next which will reset this to RAAFirst.
@@ -3841,13 +3860,12 @@ impl<SP: Deref> Channel<SP> where
 	}
 
 	fn get_last_revoke_and_ack(&self) -> msgs::RevokeAndACK {
-		// TODO(waterson): fallible!
-		let per_commitment_secret = self.context.holder_signer.as_ref().release_commitment_secret(self.context.cur_holder_commitment_transaction_number + 2)
-			.expect("release_per_commitment failed");
+		let per_commitment_secret = self.context.prev_commitment_secret.expect("missing prev_commitment_secret");
+		let next_per_commitment_point = self.context.next_per_commitment_point.expect("channel isn't ready");
 		msgs::RevokeAndACK {
 			channel_id: self.context.channel_id,
 			per_commitment_secret,
-			next_per_commitment_point: self.context.next_per_commitment_point.expect("channel isn't ready"),
+			next_per_commitment_point,
 			#[cfg(taproot)]
 			next_local_nonce: None,
 		}
@@ -5738,6 +5756,7 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 
 				cur_holder_commitment_transaction_number: INITIAL_COMMITMENT_NUMBER,
 				next_per_commitment_point,
+				prev_commitment_secret: None,
 				cur_counterparty_commitment_transaction_number: INITIAL_COMMITMENT_NUMBER,
 				value_to_self_msat,
 
@@ -6377,6 +6396,7 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 
 				cur_holder_commitment_transaction_number: INITIAL_COMMITMENT_NUMBER,
 				next_per_commitment_point,
+				prev_commitment_secret: None,
 				cur_counterparty_commitment_transaction_number: INITIAL_COMMITMENT_NUMBER,
 				value_to_self_msat: msg.push_msat,
 
@@ -7073,6 +7093,8 @@ impl<SP: Deref> Writeable for Channel<SP> where SP::Target: SignerProvider {
 			(31, channel_pending_event_emitted, option),
 			(35, pending_outbound_skimmed_fees, optional_vec),
 			(37, holding_cell_skimmed_fees, optional_vec),
+			(39, self.context.next_per_commitment_point, option),
+			(41, self.context.prev_commitment_secret, option),
 		});
 
 		Ok(())
@@ -7355,6 +7377,9 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 
 		let mut pending_outbound_skimmed_fees_opt: Option<Vec<Option<u64>>> = None;
 		let mut holding_cell_skimmed_fees_opt: Option<Vec<Option<u64>>> = None;
+		
+		let mut next_per_commitment_point: Option<PublicKey> = None;
+		let mut prev_commitment_secret: Option<[u8; 32]> = None;
 
 		read_tlv_fields!(reader, {
 			(0, announcement_sigs, option),
@@ -7381,6 +7406,8 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 			(31, channel_pending_event_emitted, option),
 			(35, pending_outbound_skimmed_fees_opt, optional_vec),
 			(37, holding_cell_skimmed_fees_opt, optional_vec),
+			(39, next_per_commitment_point, option),
+			(41, prev_commitment_secret, option),
 		});
 
 		let (channel_keys_id, holder_signer) = if let Some(channel_keys_id) = channel_keys_id {
@@ -7432,11 +7459,27 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 		let mut secp_ctx = Secp256k1::new();
 		secp_ctx.seeded_randomize(&entropy_source.get_secure_random_bytes());
 
-		// If we weren't able to load the next_per_commitment_point, ask the signer for it now.
-		let next_per_commitment_point = holder_signer.get_per_commitment_point(
-			cur_holder_commitment_transaction_number, &secp_ctx
-		).map(|point| Some(point)).map_err(|_| DecodeError::Io(io::ErrorKind::Other))?;
+		// If we weren't able to load the next_per_commitment_point or prev_commitment_secret, ask the
+		// signer for them now: this can happen when restoring a pre-v11x channel that did not have
+		// these serialized.
+		//
+		// N.B. that this can also happen if a post-v11x channel was serialized with an asynchronous
+		// remote signer. Specifically, if the channel was created but had not yet received its first
+		// commitment point, a None value will have been serialized. Given that the channel is so
+		// nascent and isn't fully open or accepted, we'll simply fail here and let the user retry the
+		// open.
+		if next_per_commitment_point.is_none() {
+			next_per_commitment_point = Some(
+				holder_signer.get_per_commitment_point(cur_holder_commitment_transaction_number, &secp_ctx)
+					.map_err(|_| DecodeError::Io(io::ErrorKind::Other))?);
+		}
 
+		if prev_commitment_secret.is_none() && cur_holder_commitment_transaction_number <= INITIAL_COMMITMENT_NUMBER - 2 {
+			prev_commitment_secret = Some(
+				holder_signer.release_commitment_secret(cur_holder_commitment_transaction_number + 2)
+					.map_err(|_| DecodeError::Io(io::ErrorKind::Other))?);
+		}
+		
 		// `user_id` used to be a single u64 value. In order to remain backwards
 		// compatible with versions prior to 0.0.113, the u128 is serialized as two
 		// separate u64 values.
@@ -7490,6 +7533,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 
 				cur_holder_commitment_transaction_number,
 				next_per_commitment_point,
+				prev_commitment_secret,
 				cur_counterparty_commitment_transaction_number,
 				value_to_self_msat,
 

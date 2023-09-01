@@ -183,7 +183,7 @@ impl EcdsaChannelSigner for TestChannelSigner {
 
 		let state = self.state.lock().unwrap();
 		let commitment_number = trusted_tx.commitment_number();
-		if state.last_holder_revoked_commitment - 1 != commitment_number && state.last_holder_revoked_commitment - 2 != commitment_number {
+		if state.last_holder_revoked_commitment != commitment_number && state.last_holder_revoked_commitment - 1 != commitment_number {
 			if !self.disable_revocation_policy_check {
 				panic!("can only sign the next two unrevoked commitment numbers, revoked={} vs requested={} for {}",
 				       state.last_holder_revoked_commitment, commitment_number, self.inner.commitment_seed[0])
