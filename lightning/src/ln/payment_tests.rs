@@ -25,6 +25,7 @@ use crate::ln::outbound_payment::{IDEMPOTENCY_TIMEOUT_TICKS, Retry};
 use crate::routing::gossip::{EffectiveCapacity, RoutingFees};
 use crate::routing::router::{get_route, Path, PaymentParameters, Route, Router, RouteHint, RouteHintHop, RouteHop, RouteParameters, find_route};
 use crate::routing::scoring::ChannelUsage;
+use crate::util::config::UserConfig;
 use crate::util::test_utils;
 use crate::util::errors::APIError;
 use crate::util::ser::Writeable;
@@ -1301,6 +1302,102 @@ fn onchain_failed_probe_yields_event() {
 		}
 	}
 	assert!(found_probe_failed);
+	assert!(!nodes[0].node.has_pending_payments());
+}
+
+#[test]
+fn preflight_probes_yield_event_and_skip() {
+	let chanmon_cfgs = create_chanmon_cfgs(5);
+	let node_cfgs = create_node_cfgs(5, &chanmon_cfgs);
+
+	// We alleviate the HTLC max-in-flight limit, as otherwise we'd always be limited through that.
+	let mut no_htlc_limit_config = test_default_channel_config();
+	no_htlc_limit_config.channel_handshake_config.max_inbound_htlc_value_in_flight_percent_of_channel = 100;
+
+	let user_configs = std::iter::repeat(no_htlc_limit_config).take(5).map(|c| Some(c)).collect::<Vec<Option<UserConfig>>>();
+	let node_chanmgrs = create_node_chanmgrs(5, &node_cfgs, &user_configs);
+	let nodes = create_network(5, &node_cfgs, &node_chanmgrs);
+
+	// Setup channel topology:
+	//                    (30k:0)- N2 -(1M:0)
+	//                   /                  \
+	//  N0 -(100k:0)-> N1                    N4
+	//                   \                  /
+	//                    (70k:0)- N3 -(1M:0)
+	//
+	let first_chan_update = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100_000, 0).0;
+	create_announced_chan_between_nodes_with_value(&nodes, 1, 2, 30_000, 0);
+	create_announced_chan_between_nodes_with_value(&nodes, 1, 3, 70_000, 0);
+	create_announced_chan_between_nodes_with_value(&nodes, 2, 4, 1_000_000, 0);
+	create_announced_chan_between_nodes_with_value(&nodes, 3, 4, 1_000_000, 0);
+
+	let mut invoice_features = Bolt11InvoiceFeatures::empty();
+	invoice_features.set_basic_mpp_optional();
+
+	let mut payment_params = PaymentParameters::from_node_id(nodes[4].node.get_our_node_id(), TEST_FINAL_CLTV)
+		.with_bolt11_features(invoice_features).unwrap();
+
+	let route_params = RouteParameters { payment_params, final_value_msat: 80_000_000 };
+	let res = nodes[0].node.send_preflight_probes(route_params, None).unwrap();
+
+	// We check that only one probe was sent, the other one was skipped due to limited liquidity.
+	assert_eq!(res.len(), 1);
+	let log_msg = format!("Skipped sending payment probe to avoid putting channel {} under the liquidity limit.",
+		first_chan_update.contents.short_channel_id);
+	node_cfgs[0].logger.assert_log_contains("lightning::ln::channelmanager", &log_msg, 1);
+
+	let (payment_hash, payment_id) = res.first().unwrap();
+
+	// node[0] -- update_add_htlcs -> node[1]
+	check_added_monitors!(nodes[0], 1);
+	let probe_event = SendEvent::from_node(&nodes[0]);
+	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &probe_event.msgs[0]);
+	check_added_monitors!(nodes[1], 0);
+	commitment_signed_dance!(nodes[1], nodes[0], probe_event.commitment_msg, false);
+	expect_pending_htlcs_forwardable!(nodes[1]);
+
+	// node[1] -- update_add_htlcs -> node[2]
+	check_added_monitors!(nodes[1], 1);
+	let probe_event = SendEvent::from_node(&nodes[1]);
+	nodes[2].node.handle_update_add_htlc(&nodes[1].node.get_our_node_id(), &probe_event.msgs[0]);
+	check_added_monitors!(nodes[2], 0);
+	commitment_signed_dance!(nodes[2], nodes[1], probe_event.commitment_msg, false);
+	expect_pending_htlcs_forwardable!(nodes[2]);
+
+	// node[2] -- update_add_htlcs -> node[4]
+	check_added_monitors!(nodes[2], 1);
+	let probe_event = SendEvent::from_node(&nodes[2]);
+	nodes[4].node.handle_update_add_htlc(&nodes[2].node.get_our_node_id(), &probe_event.msgs[0]);
+	check_added_monitors!(nodes[4], 0);
+	commitment_signed_dance!(nodes[4], nodes[2], probe_event.commitment_msg, true, true);
+
+	// node[2] <- update_fail_htlcs -- node[4]
+	let updates = get_htlc_update_msgs!(nodes[4], nodes[2].node.get_our_node_id());
+	nodes[2].node.handle_update_fail_htlc(&nodes[4].node.get_our_node_id(), &updates.update_fail_htlcs[0]);
+	check_added_monitors!(nodes[2], 0);
+	commitment_signed_dance!(nodes[2], nodes[4], updates.commitment_signed, true);
+
+	// node[1] <- update_fail_htlcs -- node[2]
+	let updates = get_htlc_update_msgs!(nodes[2], nodes[1].node.get_our_node_id());
+	nodes[1].node.handle_update_fail_htlc(&nodes[2].node.get_our_node_id(), &updates.update_fail_htlcs[0]);
+	check_added_monitors!(nodes[1], 0);
+	commitment_signed_dance!(nodes[1], nodes[2], updates.commitment_signed, true);
+
+	// node[0] <- update_fail_htlcs -- node[1]
+	let updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+	nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &updates.update_fail_htlcs[0]);
+	check_added_monitors!(nodes[0], 0);
+	commitment_signed_dance!(nodes[0], nodes[1], updates.commitment_signed, false);
+
+	let mut events = nodes[0].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1);
+	match events.drain(..).next().unwrap() {
+		crate::events::Event::ProbeSuccessful { payment_id: ev_pid, payment_hash: ev_ph, .. } => {
+			assert_eq!(*payment_id, ev_pid);
+			assert_eq!(*payment_hash, ev_ph);
+		},
+		_ => panic!(),
+	};
 	assert!(!nodes[0].node.has_pending_payments());
 }
 
