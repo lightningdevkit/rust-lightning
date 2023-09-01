@@ -839,12 +839,6 @@ impl OutboundPayments {
 			}
 		}
 
-		const RETRY_OVERFLOW_PERCENTAGE: u64 = 10;
-		let mut onion_session_privs = Vec::with_capacity(route.paths.len());
-		for _ in 0..route.paths.len() {
-			onion_session_privs.push(entropy_source.get_secure_random_bytes());
-		}
-
 		macro_rules! abandon_with_entry {
 			($payment: expr, $reason: expr) => {
 				$payment.get_mut().mark_abandoned($reason);
@@ -860,26 +854,49 @@ impl OutboundPayments {
 				}
 			}
 		}
-		let (total_msat, recipient_onion, keysend_preimage) = {
+		let (total_msat, recipient_onion, keysend_preimage, onion_session_privs) = {
 			let mut outbounds = self.pending_outbound_payments.lock().unwrap();
 			match outbounds.entry(payment_id) {
 				hash_map::Entry::Occupied(mut payment) => {
-					let res = match payment.get() {
+					match payment.get() {
 						PendingOutboundPayment::Retryable {
 							total_msat, keysend_preimage, payment_secret, payment_metadata,
 							custom_tlvs, pending_amt_msat, ..
 						} => {
+							const RETRY_OVERFLOW_PERCENTAGE: u64 = 10;
 							let retry_amt_msat = route.get_total_amount();
 							if retry_amt_msat + *pending_amt_msat > *total_msat * (100 + RETRY_OVERFLOW_PERCENTAGE) / 100 {
 								log_error!(logger, "retry_amt_msat of {} will put pending_amt_msat (currently: {}) more than 10% over total_payment_amt_msat of {}", retry_amt_msat, pending_amt_msat, total_msat);
 								abandon_with_entry!(payment, PaymentFailureReason::UnexpectedError);
 								return
 							}
-							(*total_msat, RecipientOnionFields {
-									payment_secret: *payment_secret,
-									payment_metadata: payment_metadata.clone(),
-									custom_tlvs: custom_tlvs.clone(),
-								}, *keysend_preimage)
+
+							if !payment.get().is_retryable_now() {
+								log_error!(logger, "Retries exhausted for payment id {}", &payment_id);
+								abandon_with_entry!(payment, PaymentFailureReason::RetriesExhausted);
+								return
+							}
+
+							let total_msat = *total_msat;
+							let recipient_onion = RecipientOnionFields {
+								payment_secret: *payment_secret,
+								payment_metadata: payment_metadata.clone(),
+								custom_tlvs: custom_tlvs.clone(),
+							};
+							let keysend_preimage = *keysend_preimage;
+
+							let mut onion_session_privs = Vec::with_capacity(route.paths.len());
+							for _ in 0..route.paths.len() {
+								onion_session_privs.push(entropy_source.get_secure_random_bytes());
+							}
+
+							for (path, session_priv_bytes) in route.paths.iter().zip(onion_session_privs.iter()) {
+								assert!(payment.get_mut().insert(*session_priv_bytes, path));
+							}
+
+							payment.get_mut().increment_attempts();
+
+							(total_msat, recipient_onion, keysend_preimage, onion_session_privs)
 						},
 						PendingOutboundPayment::Legacy { .. } => {
 							log_error!(logger, "Unable to retry payments that were initially sent on LDK versions prior to 0.0.102");
@@ -899,17 +916,7 @@ impl OutboundPayments {
 							log_error!(logger, "Payment already abandoned (with some HTLCs still pending)");
 							return
 						},
-					};
-					if !payment.get().is_retryable_now() {
-						log_error!(logger, "Retries exhausted for payment id {}", &payment_id);
-						abandon_with_entry!(payment, PaymentFailureReason::RetriesExhausted);
-						return
 					}
-					payment.get_mut().increment_attempts();
-					for (path, session_priv_bytes) in route.paths.iter().zip(onion_session_privs.iter()) {
-						assert!(payment.get_mut().insert(*session_priv_bytes, path));
-					}
-					res
 				},
 				hash_map::Entry::Vacant(_) => {
 					log_error!(logger, "Payment with ID {} not found", &payment_id);
