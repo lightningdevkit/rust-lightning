@@ -13,7 +13,6 @@ use crate::blinded_path::payment::{PaymentConstraints, ReceiveTlvs};
 use crate::events::MessageSendEventsProvider;
 use crate::ln::channelmanager;
 use crate::ln::channelmanager::{PaymentId, RecipientOnionFields};
-use crate::ln::features::Bolt12InvoiceFeatures;
 use crate::ln::functional_test_utils::*;
 use crate::ln::outbound_payment::Retry;
 use crate::prelude::*;
@@ -88,8 +87,8 @@ fn mpp_to_one_hop_blinded_path() {
 		nodes[3].node.get_our_node_id(), payee_tlvs, &chanmon_cfgs[3].keys_manager, &secp_ctx
 	).unwrap();
 
-	let bolt12_features: Bolt12InvoiceFeatures =
-		channelmanager::provided_bolt11_invoice_features(&UserConfig::default()).to_context();
+	let bolt12_features =
+		channelmanager::provided_bolt12_invoice_features(&UserConfig::default());
 	let route_params = RouteParameters::from_payment_params_and_value(
 		PaymentParameters::blinded(vec![blinded_path]).with_bolt12_features(bolt12_features).unwrap(),
 		amt_msat,
