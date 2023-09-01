@@ -174,7 +174,7 @@ impl<'a> InvoiceBuilder<'a, ExplicitSigningPubkey> {
 		invoice_request: &'a InvoiceRequest, payment_paths: Vec<(BlindedPayInfo, BlindedPath)>,
 		created_at: Duration, payment_hash: PaymentHash
 	) -> Result<Self, Bolt12SemanticError> {
-		let amount_msats = Self::check_amount_msats(invoice_request)?;
+		let amount_msats = Self::amount_msats(invoice_request)?;
 		let signing_pubkey = invoice_request.contents.inner.offer.signing_pubkey();
 		let contents = InvoiceContents::ForOffer {
 			invoice_request: invoice_request.contents.clone(),
@@ -207,7 +207,7 @@ impl<'a> InvoiceBuilder<'a, DerivedSigningPubkey> {
 		invoice_request: &'a InvoiceRequest, payment_paths: Vec<(BlindedPayInfo, BlindedPath)>,
 		created_at: Duration, payment_hash: PaymentHash, keys: KeyPair
 	) -> Result<Self, Bolt12SemanticError> {
-		let amount_msats = Self::check_amount_msats(invoice_request)?;
+		let amount_msats = Self::amount_msats(invoice_request)?;
 		let signing_pubkey = invoice_request.contents.inner.offer.signing_pubkey();
 		let contents = InvoiceContents::ForOffer {
 			invoice_request: invoice_request.contents.clone(),
@@ -237,7 +237,9 @@ impl<'a> InvoiceBuilder<'a, DerivedSigningPubkey> {
 }
 
 impl<'a, S: SigningPubkeyStrategy> InvoiceBuilder<'a, S> {
-	fn check_amount_msats(invoice_request: &InvoiceRequest) -> Result<u64, Bolt12SemanticError> {
+	pub(crate) fn amount_msats(
+		invoice_request: &InvoiceRequest
+	) -> Result<u64, Bolt12SemanticError> {
 		match invoice_request.amount_msats() {
 			Some(amount_msats) => Ok(amount_msats),
 			None => match invoice_request.contents.inner.offer.amount() {

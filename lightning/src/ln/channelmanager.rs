@@ -55,13 +55,15 @@ use crate::ln::onion_utils::HTLCFailReason;
 use crate::ln::msgs::{ChannelMessageHandler, DecodeError, LightningError};
 #[cfg(test)]
 use crate::ln::outbound_payment;
-use crate::ln::outbound_payment::{OutboundPayments, PaymentAttempts, PendingOutboundPayment, SendAlongPathArgs, StaleExpiration};
+use crate::ln::outbound_payment::{Bolt12PaymentError, OutboundPayments, PaymentAttempts, PendingOutboundPayment, SendAlongPathArgs, StaleExpiration};
 use crate::ln::wire::Encode;
-use crate::offers::invoice::{BlindedPayInfo, DEFAULT_RELATIVE_EXPIRY};
+use crate::offers::invoice::{BlindedPayInfo, Bolt12Invoice, DEFAULT_RELATIVE_EXPIRY, DerivedSigningPubkey, InvoiceBuilder};
+use crate::offers::invoice_error::InvoiceError;
+use crate::offers::merkle::SignError;
 use crate::offers::offer::{DerivedMetadata, Offer, OfferBuilder};
 use crate::offers::parse::Bolt12SemanticError;
 use crate::offers::refund::{Refund, RefundBuilder};
-use crate::onion_message::{Destination, OffersMessage, PendingOnionMessage};
+use crate::onion_message::{Destination, OffersMessage, OffersMessageHandler, PendingOnionMessage};
 use crate::sign::{EntropySource, KeysManager, NodeSigner, Recipient, SignerProvider, WriteableEcdsaChannelSigner};
 use crate::util::config::{UserConfig, ChannelConfig, ChannelConfigUpdate};
 use crate::util::wakers::{Future, Notifier};
@@ -3579,6 +3581,17 @@ where
 		self.pending_outbound_payments.test_set_payment_metadata(payment_id, new_payment_metadata);
 	}
 
+	pub(super) fn send_payment_for_bolt12_invoice(&self, invoice: &Bolt12Invoice, payment_id: PaymentId) -> Result<(), Bolt12PaymentError> {
+		let best_block_height = self.best_block.read().unwrap().height();
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
+		self.pending_outbound_payments
+			.send_payment_for_bolt12_invoice(
+				invoice, payment_id, &self.router, self.list_usable_channels(),
+				|| self.compute_inflight_htlcs(), &self.entropy_source, &self.node_signer,
+				best_block_height, &self.logger, &self.pending_events,
+				|args| self.send_payment_along_path(args)
+			)
+	}
 
 	/// Signals that no further attempts for the given payment should occur. Useful if you have a
 	/// pending outbound payment with retries remaining, but wish to stop retrying the payment before
@@ -8806,6 +8819,127 @@ where
 		let _: Result<(), _> = handle_error!(self, Err(MsgHandleErrInternal::send_err_msg_no_close(
 			"Dual-funded channels not supported".to_owned(),
 			 msg.channel_id.clone())), *counterparty_node_id);
+	}
+}
+
+impl<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, L: Deref>
+OffersMessageHandler for ChannelManager<M, T, ES, NS, SP, F, R, L>
+where
+	M::Target: chain::Watch<<SP::Target as SignerProvider>::Signer>,
+	T::Target: BroadcasterInterface,
+	ES::Target: EntropySource,
+	NS::Target: NodeSigner,
+	SP::Target: SignerProvider,
+	F::Target: FeeEstimator,
+	R::Target: Router,
+	L::Target: Logger,
+{
+	fn handle_message(&self, message: OffersMessage) -> Option<OffersMessage> {
+		let secp_ctx = &self.secp_ctx;
+		let expanded_key = &self.inbound_payment_key;
+
+		match message {
+			OffersMessage::InvoiceRequest(invoice_request) => {
+				let amount_msats = match InvoiceBuilder::<DerivedSigningPubkey>::amount_msats(
+					&invoice_request
+				) {
+					Ok(amount_msats) => Some(amount_msats),
+					Err(error) => return Some(OffersMessage::InvoiceError(error.into())),
+				};
+				let invoice_request = match invoice_request.verify(expanded_key, secp_ctx) {
+					Ok(invoice_request) => invoice_request,
+					Err(()) => {
+						let error = Bolt12SemanticError::InvalidMetadata;
+						return Some(OffersMessage::InvoiceError(error.into()));
+					},
+				};
+				let relative_expiry = DEFAULT_RELATIVE_EXPIRY.as_secs() as u32;
+
+				match self.create_inbound_payment(amount_msats, relative_expiry, None) {
+					Ok((payment_hash, payment_secret)) if invoice_request.keys.is_some() => {
+						let payment_paths = vec![
+							self.create_one_hop_blinded_payment_path(payment_secret),
+						];
+						#[cfg(not(feature = "no-std"))]
+						let builder = invoice_request.respond_using_derived_keys(
+							payment_paths, payment_hash
+						);
+						#[cfg(feature = "no-std")]
+						let created_at = Duration::from_secs(
+							self.highest_seen_timestamp.load(Ordering::Acquire) as u64
+						);
+						#[cfg(feature = "no-std")]
+						let builder = invoice_request.respond_using_derived_keys_no_std(
+							payment_paths, payment_hash, created_at
+						);
+						match builder.and_then(|b| b.allow_mpp().build_and_sign(secp_ctx)) {
+							Ok(invoice) => Some(OffersMessage::Invoice(invoice)),
+							Err(error) => Some(OffersMessage::InvoiceError(error.into())),
+						}
+					},
+					Ok((payment_hash, payment_secret)) => {
+						let payment_paths = vec![
+							self.create_one_hop_blinded_payment_path(payment_secret),
+						];
+						#[cfg(not(feature = "no-std"))]
+						let builder = invoice_request.respond_with(payment_paths, payment_hash);
+						#[cfg(feature = "no-std")]
+						let created_at = Duration::from_secs(
+							self.highest_seen_timestamp.load(Ordering::Acquire) as u64
+						);
+						#[cfg(feature = "no-std")]
+						let builder = invoice_request.respond_with_no_std(
+							payment_paths, payment_hash, created_at
+						);
+						let response = builder.and_then(|builder| builder.allow_mpp().build())
+							.map_err(|e| OffersMessage::InvoiceError(e.into()))
+							.and_then(|invoice|
+								match invoice.sign(|invoice| self.node_signer.sign_bolt12_invoice(invoice)) {
+									Ok(invoice) => Ok(OffersMessage::Invoice(invoice)),
+									Err(SignError::Signing(())) => Err(OffersMessage::InvoiceError(
+											InvoiceError::from_str("Failed signing invoice")
+									)),
+									Err(SignError::Verification(_)) => Err(OffersMessage::InvoiceError(
+											InvoiceError::from_str("Failed invoice signature verification")
+									)),
+								});
+						match response {
+							Ok(invoice) => Some(invoice),
+							Err(error) => Some(error),
+						}
+					},
+					Err(()) => {
+						Some(OffersMessage::InvoiceError(Bolt12SemanticError::InvalidAmount.into()))
+					},
+				}
+			},
+			OffersMessage::Invoice(invoice) => {
+				match invoice.verify(expanded_key, secp_ctx) {
+					Err(()) => {
+						Some(OffersMessage::InvoiceError(InvoiceError::from_str("Unrecognized invoice")))
+					},
+					Ok(_) if invoice.invoice_features().requires_unknown_bits_from(&self.bolt12_invoice_features()) => {
+						Some(OffersMessage::InvoiceError(Bolt12SemanticError::UnknownRequiredFeatures.into()))
+					},
+					Ok(payment_id) => {
+						if let Err(e) = self.send_payment_for_bolt12_invoice(&invoice, payment_id) {
+							log_trace!(self.logger, "Failed paying invoice: {:?}", e);
+							Some(OffersMessage::InvoiceError(InvoiceError::from_str(&format!("{:?}", e))))
+						} else {
+							None
+						}
+					},
+				}
+			},
+			OffersMessage::InvoiceError(invoice_error) => {
+				log_trace!(self.logger, "Received invoice_error: {}", invoice_error);
+				None
+			},
+		}
+	}
+
+	fn release_pending_messages(&self) -> Vec<PendingOnionMessage<OffersMessage>> {
+		core::mem::take(&mut self.pending_offers_messages.lock().unwrap())
 	}
 }
 
