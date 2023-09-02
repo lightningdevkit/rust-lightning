@@ -22,8 +22,8 @@ default = ["std"]
 
 [dependencies]
 bitcoin = { version = "0.29.0", default-features = false }
-lightning = { version = "0.0.116", path = "../lightning", default-features = false }
-lightning-rapid-gossip-sync = { version = "0.0.116", path = "../lightning-rapid-gossip-sync", default-features = false }
+lightning = { version = "0.0.115", path = "../lightning", default-features = false }
+lightning-rapid-gossip-sync = { version = "0.0.115", path = "../lightning-rapid-gossip-sync", default-features = false }
 tokio = { version = "1", features = ["full"] }
 async-channel = "1.9.0"
 rand = "0.8"

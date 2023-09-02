@@ -216,27 +216,30 @@ impl ProbeValueMap {
 struct NodeRating {
 	node_id : NodeId,
 		// Identifier for the node being rated
-	path : Vec<Path>,
+	path : Option<Path>,
 		// List of paths associated with the node
 	channel_information_coefficient: f64,
 		// Coefficient representing channel information
 		// No current implementation, to be add soon
-	probes: Vec<ProbePersister>,
-		// List of probe persisters related to the node
+	last_successful_probe: Option<ProbePersister>,
+	last_probe: Option<ProbePersister>,
 }
 
 impl NodeRating {
 	fn new (node_id: NodeId) -> Self {
 		Self {
 			node_id,
-			path: Vec::new(),
+			path: None,
 			channel_information_coefficient: 0.0,
-			probes: Vec::new(),
+			last_successful_probe: None,
+			last_probe: None,
 		}
 	}
 }
 
 // Enumeration representing the status of a probe operation
+#[derive(PartialEq)]
+#[derive(Clone)]
 enum ProbeStatus {
 	Success, // The probe operation was successful
 	Failure, // The probe operation failed
@@ -246,6 +249,7 @@ enum ProbeStatus {
 
 // Initialized by value_selector
 // updated by final_path_builder_for_probe 
+#[derive(Clone)]
 struct ProbePersister{
 	target_nodeid : NodeId,
 		// Identifier of the targeted node for the probe
@@ -374,26 +378,16 @@ async fn node_selector(
 		let node_rating = value_map.get(&node_id);
 
 		match node_rating {
-			Some(x) => {
-				let mut flag = true;
-				for i in &x.probes{
-					let probe_status = &i.probe_status;
-					match probe_status {
-						Some(_x) => {
-							flag = true;
-						},
+			Some(node_rating) => {
+				let last_probe = &node_rating.last_probe.clone().unwrap().probe_status;
+				let last_successful_probe = &node_rating.last_successful_probe.clone().unwrap().probe_status;
 
-						None => {
-							flag = false;
-							break;
-						}
-					}
-				}
-				if flag == false {
-					continue;
+				let x = *last_probe != None && *last_successful_probe != None;
+				if x {
+					return Some(node_id);
 				}
 				else {
-					return Some(node_id);
+					continue;
 				}
 			},
 
@@ -498,10 +492,10 @@ async fn initial_path_builder(
 ) -> Path {
 
 	let mut value_map = probe_value_map.value_map.lock().await;
-	let x = value_map.get(&target_nodeid);
-	match x {
-		Some(x) => {
-			let path = x.path[0].clone();
+	let node_rating = value_map.get(&target_nodeid);
+	match node_rating {
+		Some(node_rating) => {
+			let path = node_rating.path.clone().unwrap();
 			return path;
 		}
 
@@ -542,13 +536,6 @@ async fn initial_path_builder(
 					match route {
 						Ok(route) => {
 							let path = route.paths[0].clone();
-							
-							let node_rating = value_map.get_mut(&target_nodeid).unwrap();
-							node_rating.probes.push(ProbePersister::new(target_nodeid));
-							
-							if let Some(last_probe) = node_rating.probes.last_mut(){
-								last_probe.update_path(path.clone());
-							}
 							return path;
 						},
 						Err(_) => panic!("No route found"), //to be handled later
@@ -573,83 +560,80 @@ async fn value_selector (
 	let temp = value_map.get_mut(&nodeid);
 	match temp {
 		Some(node_rating) => { 
+
+			let last_probe_status = node_rating.last_probe.clone().unwrap().probe_status;
+			let last_successful_probe_status = node_rating.last_successful_probe.clone().unwrap().probe_status;
 			
-			let vec_len = node_rating.probes.len();
-		
-			if vec_len == 0 {
+
+			if last_probe_status == None && last_successful_probe_status == None {
 				let val = min(max_htlc_list[0].1, capacity_list[0].1.unwrap());
 				
-				node_rating.probes.push(ProbePersister::new(nodeid));
-				if let Some(last_probe) = node_rating.probes.last_mut() {
+				node_rating.last_probe = Some(ProbePersister::new(nodeid));
+				if let Some(mut last_probe) = node_rating.last_probe.clone() {
 					last_probe.update_path(path);
 					last_probe.update_value(val);
 				}
+
 				return val
 			}
 
-			
-			else if vec_len == 1 {
-				let probe_persister = node_rating.probes.last().unwrap();
-
-				let value = probe_persister.value.unwrap();
-				let probe_status = probe_persister.probe_status.as_ref().unwrap();
-				match probe_status {
-					
-					ProbeStatus::Success => {
-						let val = 2*value;
-
-						node_rating.probes.push(ProbePersister::new(nodeid));
-						if let Some(last_probe) = node_rating.probes.last_mut() {
-							last_probe.update_path(path);
-							last_probe.update_value(val);
-						}
-						return val
-					}
-
-					ProbeStatus::Failure => {
-						let val = (0.5*((value) as f64)).floor() as u64;
-						
-						node_rating.probes.push(ProbePersister::new(nodeid));
-						if let Some(last_probe) = node_rating.probes.last_mut() {
-							last_probe.update_path(path);
-							last_probe.update_value(val);
-						}
-						return val
-					}
+			else if last_probe_status == Some(ProbeStatus::Success) && last_successful_probe_status != None {
+				let value = node_rating.last_probe.clone().unwrap().value.unwrap();
+				let val = 2*value;
+				
+				node_rating.last_probe = Some(ProbePersister::new(nodeid));
+				if let Some(mut last_probe) = node_rating.last_probe.clone() {
+					last_probe.update_path(path);
+					last_probe.update_value(val);
 				}
+
+				return val
+			}
+
+			else if last_probe_status == Some(ProbeStatus::Failure) && last_successful_probe_status != None {
+				
+				let last_successful_val = node_rating.last_successful_probe.clone().unwrap().value.unwrap();
+				let value = node_rating.last_probe.clone().unwrap().value.unwrap();
+				let val = (0.5*((value + last_successful_val) as f64)).floor() as u64;
+				
+				node_rating.last_probe = Some(ProbePersister::new(nodeid));
+				if let Some(mut last_probe) = node_rating.last_probe.clone() {
+					last_probe.update_path(path);
+					last_probe.update_value(val);
+				}
+
+				return val
 			}
 			
-			else {
-				let probe_persister = node_rating.probes.last().unwrap();
-
-				let value = probe_persister.value.unwrap();
-				let probe_status = probe_persister.probe_status.as_ref().unwrap();
-				match probe_status {
-					
-					ProbeStatus::Success => {
-						let val = 2*value;
-
-						node_rating.probes.push(ProbePersister::new(nodeid));
-						if let Some(last_probe) = node_rating.probes.last_mut() {
-							last_probe.update_path(path);
-							last_probe.update_value(val);
-						}
-						return val
-					}
-
-					ProbeStatus::Failure => {
-						let val_mid = node_rating.probes.get(vec_len-2).unwrap().value.unwrap();
-						let val = (0.5*((value + val_mid) as f64)).floor() as u64;
-						
-						node_rating.probes.push(ProbePersister::new(nodeid));
-						if let Some(last_probe) = node_rating.probes.last_mut() {
-							last_probe.update_path(path);
-							last_probe.update_value(val);
-						}
-						return val
-					}
+			else if last_probe_status == Some(ProbeStatus::Failure) && last_successful_probe_status == None {
+				let value = node_rating.last_probe.clone().unwrap().value.unwrap();
+				let val = (0.5*((value) as f64)).floor() as u64;
+				
+				node_rating.last_probe = Some(ProbePersister::new(nodeid));
+				if let Some(mut last_probe) = node_rating.last_probe.clone() {
+					last_probe.update_path(path);
+					last_probe.update_value(val);
 				}
-			} 
+
+				return val
+			}
+
+			else if last_probe_status == Some(ProbeStatus::Success) && last_successful_probe_status == None {
+				let value = node_rating.last_probe.clone().unwrap().value.unwrap();
+				let val = 2*value;
+				
+				node_rating.last_probe = Some(ProbePersister::new(nodeid));
+				if let Some(mut last_probe) = node_rating.last_probe.clone() {
+					last_probe.update_path(path);
+					last_probe.update_value(val);
+				}
+
+				return val
+			}
+
+			else {
+				panic!("Node rating error")
+			}
 		}
     	None => panic!("Node rating error")
 	}	
