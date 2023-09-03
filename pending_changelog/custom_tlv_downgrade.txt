@@ -1,0 +1,3 @@
+## Backwards Compatibility
+
+* Since the addition of custom HTLC TLV support in 0.0.117, if you downgrade you may unintentionally accept payments with features you don't understand.

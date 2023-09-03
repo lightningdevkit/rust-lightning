@@ -44,7 +44,9 @@ use lightning::ln::channel::FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE;
 use lightning::ln::msgs::{self, CommitmentUpdate, ChannelMessageHandler, DecodeError, UpdateAddHTLC, Init};
 use lightning::ln::script::ShutdownScript;
 use lightning::ln::functional_test_utils::*;
-use lightning::util::enforcing_trait_impls::{EnforcingSigner, EnforcementState};
+use lightning::offers::invoice::UnsignedBolt12Invoice;
+use lightning::offers::invoice_request::UnsignedInvoiceRequest;
+use lightning::util::test_channel_signer::{TestChannelSigner, EnforcementState};
 use lightning::util::errors::APIError;
 use lightning::util::logger::Logger;
 use lightning::util::config::UserConfig;
@@ -57,6 +59,7 @@ use crate::utils::test_persister::TestPersister;
 use bitcoin::secp256k1::{Message, PublicKey, SecretKey, Scalar, Secp256k1};
 use bitcoin::secp256k1::ecdh::SharedSecret;
 use bitcoin::secp256k1::ecdsa::{RecoverableSignature, Signature};
+use bitcoin::secp256k1::schnorr;
 
 use std::mem;
 use std::cmp::{self, Ordering};
@@ -78,7 +81,7 @@ impl FeeEstimator for FuzzEstimator {
 		// Background feerate which is <= the minimum Normal feerate.
 		match conf_target {
 			ConfirmationTarget::HighPriority => MAX_FEE,
-			ConfirmationTarget::Background => 253,
+			ConfirmationTarget::Background|ConfirmationTarget::MempoolMinimum => 253,
 			ConfirmationTarget::Normal => cmp::min(self.ret_val.load(atomic::Ordering::Acquire), MAX_FEE),
 		}
 	}
@@ -89,7 +92,7 @@ struct FuzzRouter {}
 impl Router for FuzzRouter {
 	fn find_route(
 		&self, _payer: &PublicKey, _params: &RouteParameters, _first_hops: Option<&[&ChannelDetails]>,
-		_inflight_htlcs: &InFlightHtlcs
+		_inflight_htlcs: InFlightHtlcs
 	) -> Result<Route, msgs::LightningError> {
 		Err(msgs::LightningError {
 			err: String::from("Not implemented"),
@@ -115,7 +118,7 @@ struct TestChainMonitor {
 	pub logger: Arc<dyn Logger>,
 	pub keys: Arc<KeyProvider>,
 	pub persister: Arc<TestPersister>,
-	pub chain_monitor: Arc<chainmonitor::ChainMonitor<EnforcingSigner, Arc<dyn chain::Filter>, Arc<TestBroadcaster>, Arc<FuzzEstimator>, Arc<dyn Logger>, Arc<TestPersister>>>,
+	pub chain_monitor: Arc<chainmonitor::ChainMonitor<TestChannelSigner, Arc<dyn chain::Filter>, Arc<TestBroadcaster>, Arc<FuzzEstimator>, Arc<dyn Logger>, Arc<TestPersister>>>,
 	// If we reload a node with an old copy of ChannelMonitors, the ChannelManager deserialization
 	// logic will automatically force-close our channels for us (as we don't have an up-to-date
 	// monitor implying we are not able to punish misbehaving counterparties). Because this test
@@ -136,8 +139,8 @@ impl TestChainMonitor {
 		}
 	}
 }
-impl chain::Watch<EnforcingSigner> for TestChainMonitor {
-	fn watch_channel(&self, funding_txo: OutPoint, monitor: channelmonitor::ChannelMonitor<EnforcingSigner>) -> chain::ChannelMonitorUpdateStatus {
+impl chain::Watch<TestChannelSigner> for TestChainMonitor {
+	fn watch_channel(&self, funding_txo: OutPoint, monitor: channelmonitor::ChannelMonitor<TestChannelSigner>) -> chain::ChannelMonitorUpdateStatus {
 		let mut ser = VecWriter(Vec::new());
 		monitor.write(&mut ser).unwrap();
 		if let Some(_) = self.latest_monitors.lock().unwrap().insert(funding_txo, (monitor.get_latest_update_id(), ser.0)) {
@@ -153,7 +156,7 @@ impl chain::Watch<EnforcingSigner> for TestChainMonitor {
 			hash_map::Entry::Occupied(entry) => entry,
 			hash_map::Entry::Vacant(_) => panic!("Didn't have monitor on update call"),
 		};
-		let deserialized_monitor = <(BlockHash, channelmonitor::ChannelMonitor<EnforcingSigner>)>::
+		let deserialized_monitor = <(BlockHash, channelmonitor::ChannelMonitor<TestChannelSigner>)>::
 			read(&mut Cursor::new(&map_entry.get().1), (&*self.keys, &*self.keys)).unwrap().1;
 		deserialized_monitor.update_monitor(update, &&TestBroadcaster{}, &FuzzEstimator { ret_val: atomic::AtomicU32::new(253) }, &self.logger).unwrap();
 		let mut ser = VecWriter(Vec::new());
@@ -211,6 +214,18 @@ impl NodeSigner for KeyProvider {
 		unreachable!()
 	}
 
+	fn sign_bolt12_invoice_request(
+		&self, _invoice_request: &UnsignedInvoiceRequest
+	) -> Result<schnorr::Signature, ()> {
+		unreachable!()
+	}
+
+	fn sign_bolt12_invoice(
+		&self, _invoice: &UnsignedBolt12Invoice,
+	) -> Result<schnorr::Signature, ()> {
+		unreachable!()
+	}
+
 	fn sign_gossip_message(&self, msg: lightning::ln::msgs::UnsignedGossipMessage) -> Result<Signature, ()> {
 		let msg_hash = Message::from_slice(&Sha256dHash::hash(&msg.encode()[..])[..]).map_err(|_| ())?;
 		let secp_ctx = Secp256k1::signing_only();
@@ -219,7 +234,7 @@ impl NodeSigner for KeyProvider {
 }
 
 impl SignerProvider for KeyProvider {
-	type Signer = EnforcingSigner;
+	type Signer = TestChannelSigner;
 
 	fn generate_channel_keys_id(&self, _inbound: bool, _channel_value_satoshis: u64, _user_channel_id: u128) -> [u8; 32] {
 		let id = self.rand_bytes_id.fetch_add(1, atomic::Ordering::Relaxed) as u8;
@@ -242,7 +257,7 @@ impl SignerProvider for KeyProvider {
 			channel_keys_id,
 		);
 		let revoked_commitment = self.make_enforcement_state_cell(keys.commitment_seed);
-		EnforcingSigner::new_with_revoked(keys, revoked_commitment, false)
+		TestChannelSigner::new_with_revoked(keys, revoked_commitment, false)
 	}
 
 	fn read_chan_signer(&self, buffer: &[u8]) -> Result<Self::Signer, DecodeError> {
@@ -251,7 +266,7 @@ impl SignerProvider for KeyProvider {
 		let inner: InMemorySigner = ReadableArgs::read(&mut reader, self)?;
 		let state = self.make_enforcement_state_cell(inner.commitment_seed);
 
-		Ok(EnforcingSigner {
+		Ok(TestChannelSigner {
 			inner,
 			state,
 			disable_revocation_policy_check: false,
@@ -436,11 +451,12 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out) {
 			config.channel_config.forwarding_fee_proportional_millionths = 0;
 			config.channel_handshake_config.announced_channel = true;
 			let network = Network::Bitcoin;
+			let best_block_timestamp = genesis_block(network).header.time;
 			let params = ChainParameters {
 				network,
 				best_block: BestBlock::from_network(network),
 			};
-			(ChannelManager::new($fee_estimator.clone(), monitor.clone(), broadcast.clone(), &router, Arc::clone(&logger), keys_manager.clone(), keys_manager.clone(), keys_manager.clone(), config, params),
+			(ChannelManager::new($fee_estimator.clone(), monitor.clone(), broadcast.clone(), &router, Arc::clone(&logger), keys_manager.clone(), keys_manager.clone(), keys_manager.clone(), config, params, best_block_timestamp),
 			monitor, keys_manager)
 		} }
 	}
@@ -461,7 +477,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out) {
 			let mut monitors = HashMap::new();
 			let mut old_monitors = $old_monitors.latest_monitors.lock().unwrap();
 			for (outpoint, (update_id, monitor_ser)) in old_monitors.drain() {
-				monitors.insert(outpoint, <(BlockHash, ChannelMonitor<EnforcingSigner>)>::read(&mut Cursor::new(&monitor_ser), (&*$keys_manager, &*$keys_manager)).expect("Failed to read monitor").1);
+				monitors.insert(outpoint, <(BlockHash, ChannelMonitor<TestChannelSigner>)>::read(&mut Cursor::new(&monitor_ser), (&*$keys_manager, &*$keys_manager)).expect("Failed to read monitor").1);
 				chain_monitor.latest_monitors.lock().unwrap().insert(outpoint, (update_id, monitor_ser));
 			}
 			let mut monitor_refs = HashMap::new();

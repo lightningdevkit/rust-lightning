@@ -38,7 +38,7 @@
 //!     * `max_level_trace`
 
 #![cfg_attr(not(any(test, fuzzing, feature = "_test_utils")), deny(missing_docs))]
-#![cfg_attr(not(any(test, fuzzing, feature = "_test_utils")), forbid(unsafe_code))]
+#![cfg_attr(not(any(test, feature = "_test_utils")), forbid(unsafe_code))]
 
 // Prefix these with `rustdoc::` when we update our MSRV to be >= 1.52 to remove warnings.
 #![deny(broken_intra_doc_links)]
@@ -67,7 +67,7 @@ extern crate bitcoin;
 extern crate core;
 
 #[cfg(any(test, feature = "_test_utils"))] extern crate hex;
-#[cfg(any(test, fuzzing, feature = "_test_utils"))] extern crate regex;
+#[cfg(any(test, feature = "_test_utils"))] extern crate regex;
 
 #[cfg(not(feature = "std"))] extern crate core2;
 

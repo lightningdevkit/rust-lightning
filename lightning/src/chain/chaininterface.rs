@@ -14,8 +14,17 @@
 //! disconnections, transaction broadcasting, and feerate information requests.
 
 use core::{cmp, ops::Deref};
+use core::convert::TryInto;
 
 use bitcoin::blockdata::transaction::Transaction;
+
+// TODO: Define typed abstraction over feerates to handle their conversions.
+pub(crate) fn compute_feerate_sat_per_1000_weight(fee_sat: u64, weight: u64) -> u32 {
+	(fee_sat * 1000 / weight).try_into().unwrap_or(u32::max_value())
+}
+pub(crate) const fn fee_for_weight(feerate_sat_per_1000_weight: u32, weight: u64) -> u64 {
+	((feerate_sat_per_1000_weight as u64 * weight) + 1000 - 1) / 1000
+}
 
 /// An interface to send a transaction to the Bitcoin network.
 pub trait BroadcasterInterface {
@@ -35,20 +44,34 @@ pub trait BroadcasterInterface {
 	fn broadcast_transactions(&self, txs: &[&Transaction]);
 }
 
-/// An enum that represents the speed at which we want a transaction to confirm used for feerate
+/// An enum that represents the priority at which we want a transaction to confirm used for feerate
 /// estimation.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 pub enum ConfirmationTarget {
-	/// We are happy with this transaction confirming slowly when feerate drops some.
+	/// We'd like a transaction to confirm in the future, but don't want to commit most of the fees
+	/// required to do so yet. The remaining fees will come via a Child-Pays-For-Parent (CPFP) fee
+	/// bump of the transaction.
+	///
+	/// The feerate returned should be the absolute minimum feerate required to enter most node
+	/// mempools across the network. Note that if you are not able to obtain this feerate estimate,
+	/// you should likely use the furthest-out estimate allowed by your fee estimator.
+	MempoolMinimum,
+	/// We are happy with a transaction confirming slowly, at least within a day or so worth of
+	/// blocks.
 	Background,
-	/// We'd like this transaction to confirm without major delay, but 12-18 blocks is fine.
+	/// We'd like a transaction to confirm without major delayed, i.e., within the next 12-24 blocks.
 	Normal,
-	/// We'd like this transaction to confirm in the next few blocks.
+	/// We'd like a transaction to confirm in the next few blocks.
 	HighPriority,
 }
 
 /// A trait which should be implemented to provide feerate information on a number of time
 /// horizons.
+///
+/// If access to a local mempool is not feasible, feerate estimates should be fetched from a set of
+/// third-parties hosting them. Note that this enables them to affect the propagation of your
+/// pre-signed transactions at any time and therefore endangers the safety of channels funds. It
+/// should be considered carefully as a deployment.
 ///
 /// Note that all of the functions implemented here *must* be reentrant-safe (obviously - they're
 /// called from inside the library in response to chain events, P2P events, or timer events).

@@ -1,4 +1,0 @@
-## Bug Fixes
-
-* Fixed sending large onion messages, which previously would result in an HMAC error on the second
-	hop (#2277).

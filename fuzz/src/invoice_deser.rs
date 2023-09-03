@@ -8,13 +8,13 @@
 // licenses.
 
 use crate::utils::test_logger;
-use lightning::offers::invoice::Invoice;
+use lightning::offers::invoice::Bolt12Invoice;
 use lightning::util::ser::Writeable;
 use std::convert::TryFrom;
 
 #[inline]
 pub fn do_test<Out: test_logger::Output>(data: &[u8], _out: Out) {
-	if let Ok(invoice) = Invoice::try_from(data.to_vec()) {
+	if let Ok(invoice) = Bolt12Invoice::try_from(data.to_vec()) {
 		let mut bytes = Vec::with_capacity(data.len());
 		invoice.write(&mut bytes).unwrap();
 		assert_eq!(data, bytes);

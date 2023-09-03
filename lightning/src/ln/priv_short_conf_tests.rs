@@ -14,14 +14,14 @@
 use crate::chain::ChannelMonitorUpdateStatus;
 use crate::sign::NodeSigner;
 use crate::events::{ClosureReason, Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider};
-use crate::ln::channelmanager::{ChannelManager, MIN_CLTV_EXPIRY_DELTA, PaymentId, RecipientOnionFields};
+use crate::ln::channelmanager::{MIN_CLTV_EXPIRY_DELTA, PaymentId, RecipientOnionFields};
 use crate::routing::gossip::RoutingFees;
 use crate::routing::router::{PaymentParameters, RouteHint, RouteHintHop};
 use crate::ln::features::ChannelTypeFeatures;
 use crate::ln::msgs;
 use crate::ln::msgs::{ChannelMessageHandler, RoutingMessageHandler, ChannelUpdate, ErrorAction};
 use crate::ln::wire::Encode;
-use crate::util::config::UserConfig;
+use crate::util::config::{UserConfig, MaxDustHTLCExposure};
 use crate::util::ser::Writeable;
 use crate::util::test_utils;
 
@@ -42,10 +42,10 @@ fn test_priv_forwarding_rejection() {
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 	let mut no_announce_cfg = test_default_channel_config();
 	no_announce_cfg.accept_forwards_to_priv_channels = false;
+	let persister;
+	let new_chain_monitor;
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, Some(no_announce_cfg), None]);
-	let persister: test_utils::TestPersister;
-	let new_chain_monitor: test_utils::TestChainMonitor;
-	let nodes_1_deserialized: ChannelManager<&test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestKeysInterface, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestRouter, &test_utils::TestLogger>;
+	let nodes_1_deserialized;
 	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 
 	let chan_id_1 = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 500_000_000).2;
@@ -141,10 +141,12 @@ fn do_test_1_conf_open(connect_style: ConnectStyle) {
 	alice_config.channel_handshake_config.minimum_depth = 1;
 	alice_config.channel_handshake_config.announced_channel = true;
 	alice_config.channel_handshake_limits.force_announced_channel_preference = false;
+	alice_config.channel_config.max_dust_htlc_exposure = MaxDustHTLCExposure::FeeRateMultiplier(5_000_000 / 253);
 	let mut bob_config = UserConfig::default();
 	bob_config.channel_handshake_config.minimum_depth = 1;
 	bob_config.channel_handshake_config.announced_channel = true;
 	bob_config.channel_handshake_limits.force_announced_channel_preference = false;
+	bob_config.channel_config.max_dust_htlc_exposure = MaxDustHTLCExposure::FeeRateMultiplier(5_000_000 / 253);
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(alice_config), Some(bob_config)]);
@@ -762,7 +764,7 @@ fn test_0conf_close_no_early_chan_update() {
 
 	nodes[0].node.force_close_all_channels_broadcasting_latest_txn();
 	check_added_monitors!(nodes[0], 1);
-	check_closed_event!(&nodes[0], 1, ClosureReason::HolderForceClosed);
+	check_closed_event!(&nodes[0], 1, ClosureReason::HolderForceClosed, [nodes[1].node.get_our_node_id()], 100000);
 	let _ = get_err_msg(&nodes[0], &nodes[1].node.get_our_node_id());
 }
 
@@ -859,12 +861,12 @@ fn test_0conf_channel_reorg() {
 	// now we force-close the channel here.
 	check_closed_event!(&nodes[0], 1, ClosureReason::ProcessingError {
 		err: "Funding transaction was un-confirmed. Locked at 0 confs, now have 0 confs.".to_owned()
-	});
+	}, [nodes[1].node.get_our_node_id()], 100000);
 	check_closed_broadcast!(nodes[0], true);
 	check_added_monitors(&nodes[0], 1);
 	check_closed_event!(&nodes[1], 1, ClosureReason::ProcessingError {
 		err: "Funding transaction was un-confirmed. Locked at 0 confs, now have 0 confs.".to_owned()
-	});
+	}, [nodes[0].node.get_our_node_id()], 100000);
 	check_closed_broadcast!(nodes[1], true);
 	check_added_monitors(&nodes[1], 1);
 }
@@ -1006,4 +1008,39 @@ fn test_connect_before_funding() {
 
 	connect_blocks(&nodes[0], 1);
 	connect_blocks(&nodes[1], 1);
+}
+
+#[test]
+fn test_0conf_ann_sigs_racing_conf() {
+	// Previously we had a bug where we'd panic when receiving a counterparty's
+	// announcement_signatures message for a 0conf channel pending confirmation on-chain. Here we
+	// check that we just error out, ignore the announcement_signatures message, and proceed
+	// instead.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let mut chan_config = test_default_channel_config();
+	chan_config.manually_accept_inbound_channels = true;
+
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, Some(chan_config)]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	// This is the default but we force it on anyway
+	chan_config.channel_handshake_config.announced_channel = true;
+	let (tx, ..) = open_zero_conf_channel(&nodes[0], &nodes[1], Some(chan_config));
+
+	// We can use the channel immediately, but we can't announce it until we get 6+ confirmations
+	send_payment(&nodes[0], &[&nodes[1]], 100_000);
+
+	let scid = confirm_transaction(&nodes[0], &tx);
+	let as_announcement_sigs = get_event_msg!(nodes[0], MessageSendEvent::SendAnnouncementSignatures, nodes[1].node.get_our_node_id());
+
+	// Handling the announcement_signatures prior to the first confirmation would panic before.
+	nodes[1].node.handle_announcement_signatures(&nodes[0].node.get_our_node_id(), &as_announcement_sigs);
+
+	assert_eq!(confirm_transaction(&nodes[1], &tx), scid);
+	let bs_announcement_sigs = get_event_msg!(nodes[1], MessageSendEvent::SendAnnouncementSignatures, nodes[0].node.get_our_node_id());
+
+	nodes[0].node.handle_announcement_signatures(&nodes[1].node.get_our_node_id(), &bs_announcement_sigs);
+	let as_announcement = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(as_announcement.len(), 1);
 }

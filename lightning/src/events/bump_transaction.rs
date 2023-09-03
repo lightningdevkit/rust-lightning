@@ -7,23 +7,26 @@
 // You may not use this file except in accordance with one or both of these
 // licenses.
 
-//! Utitilies for bumping transactions originating from [`super::Event`]s.
+//! Utilities for bumping transactions originating from [`Event`]s.
+//!
+//! [`Event`]: crate::events::Event
 
-use core::convert::TryInto;
+use alloc::collections::BTreeMap;
 use core::ops::Deref;
 
-use crate::chain::chaininterface::BroadcasterInterface;
+use crate::chain::chaininterface::{BroadcasterInterface, compute_feerate_sat_per_1000_weight, fee_for_weight, FEERATE_FLOOR_SATS_PER_KW};
 use crate::chain::ClaimId;
-use crate::sign::{ChannelSigner, EcdsaChannelSigner, SignerProvider};
 use crate::io_extras::sink;
-use crate::ln::PaymentPreimage;
+use crate::ln::channel::ANCHOR_OUTPUT_VALUE_SATOSHI;
 use crate::ln::chan_utils;
 use crate::ln::chan_utils::{
 	ANCHOR_INPUT_WITNESS_WEIGHT, HTLC_SUCCESS_INPUT_ANCHOR_WITNESS_WEIGHT,
 	HTLC_TIMEOUT_INPUT_ANCHOR_WITNESS_WEIGHT, ChannelTransactionParameters, HTLCOutputInCommitment
 };
-use crate::events::Event;
-use crate::prelude::HashMap;
+use crate::ln::features::ChannelTypeFeatures;
+use crate::ln::PaymentPreimage;
+use crate::prelude::*;
+use crate::sign::{EcdsaChannelSigner, SignerProvider, WriteableEcdsaChannelSigner};
 use crate::sync::Mutex;
 use crate::util::logger::Logger;
 
@@ -40,57 +43,93 @@ const BASE_INPUT_SIZE: u64 = 32 /* txid */ + 4 /* vout */ + 4 /* sequence */;
 
 const BASE_INPUT_WEIGHT: u64 = BASE_INPUT_SIZE * WITNESS_SCALE_FACTOR as u64;
 
-// TODO: Define typed abstraction over feerates to handle their conversions.
-fn compute_feerate_sat_per_1000_weight(fee_sat: u64, weight: u64) -> u32 {
-	(fee_sat * 1000 / weight).try_into().unwrap_or(u32::max_value())
-}
-const fn fee_for_weight(feerate_sat_per_1000_weight: u32, weight: u64) -> u64 {
-	((feerate_sat_per_1000_weight as u64 * weight) + 1000 - 1) / 1000
+/// The parameters required to derive a channel signer via [`SignerProvider`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ChannelDerivationParameters {
+	/// The value in satoshis of the channel we're attempting to spend the anchor output of.
+	pub value_satoshis: u64,
+	/// The unique identifier to re-derive the signer for the associated channel.
+	pub keys_id: [u8; 32],
+	/// The necessary channel parameters that need to be provided to the re-derived signer through
+	/// [`ChannelSigner::provide_channel_parameters`].
+	///
+	/// [`ChannelSigner::provide_channel_parameters`]: crate::sign::ChannelSigner::provide_channel_parameters
+	pub transaction_parameters: ChannelTransactionParameters,
 }
 
 /// A descriptor used to sign for a commitment transaction's anchor output.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AnchorDescriptor {
-	/// A unique identifier used along with `channel_value_satoshis` to re-derive the
-	/// [`InMemorySigner`] required to sign `input`.
-	///
-	/// [`InMemorySigner`]: crate::sign::InMemorySigner
-	pub channel_keys_id: [u8; 32],
-	/// The value in satoshis of the channel we're attempting to spend the anchor output of. This is
-	/// used along with `channel_keys_id` to re-derive the [`InMemorySigner`] required to sign
-	/// `input`.
-	///
-	/// [`InMemorySigner`]: crate::sign::InMemorySigner
-	pub channel_value_satoshis: u64,
+	/// The parameters required to derive the signer for the anchor input.
+	pub channel_derivation_parameters: ChannelDerivationParameters,
 	/// The transaction input's outpoint corresponding to the commitment transaction's anchor
 	/// output.
 	pub outpoint: OutPoint,
 }
 
+impl AnchorDescriptor {
+	/// Returns the UTXO to be spent by the anchor input, which can be obtained via
+	/// [`Self::unsigned_tx_input`].
+	pub fn previous_utxo(&self) -> TxOut {
+		TxOut {
+			script_pubkey: self.witness_script().to_v0_p2wsh(),
+			value: ANCHOR_OUTPUT_VALUE_SATOSHI,
+		}
+	}
+
+	/// Returns the unsigned transaction input spending the anchor output in the commitment
+	/// transaction.
+	pub fn unsigned_tx_input(&self) -> TxIn {
+		TxIn {
+			previous_output: self.outpoint.clone(),
+			script_sig: Script::new(),
+			sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
+			witness: Witness::new(),
+		}
+	}
+
+	/// Returns the witness script of the anchor output in the commitment transaction.
+	pub fn witness_script(&self) -> Script {
+		let channel_params = self.channel_derivation_parameters.transaction_parameters.as_holder_broadcastable();
+		chan_utils::get_anchor_redeemscript(&channel_params.broadcaster_pubkeys().funding_pubkey)
+	}
+
+	/// Returns the fully signed witness required to spend the anchor output in the commitment
+	/// transaction.
+	pub fn tx_input_witness(&self, signature: &Signature) -> Witness {
+		let channel_params = self.channel_derivation_parameters.transaction_parameters.as_holder_broadcastable();
+		chan_utils::build_anchor_input_witness(&channel_params.broadcaster_pubkeys().funding_pubkey, signature)
+	}
+
+	/// Derives the channel signer required to sign the anchor input.
+	pub fn derive_channel_signer<S: WriteableEcdsaChannelSigner, SP: Deref>(&self, signer_provider: &SP) -> S
+	where
+		SP::Target: SignerProvider<Signer = S>
+	{
+		let mut signer = signer_provider.derive_channel_signer(
+			self.channel_derivation_parameters.value_satoshis,
+			self.channel_derivation_parameters.keys_id,
+		);
+		signer.provide_channel_parameters(&self.channel_derivation_parameters.transaction_parameters);
+		signer
+	}
+}
+
 /// A descriptor used to sign for a commitment transaction's HTLC output.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HTLCDescriptor {
-	/// A unique identifier used along with `channel_value_satoshis` to re-derive the
-	/// [`InMemorySigner`] required to sign `input`.
-	///
-	/// [`InMemorySigner`]: crate::sign::InMemorySigner
-	pub channel_keys_id: [u8; 32],
-	/// The value in satoshis of the channel we're attempting to spend the anchor output of. This is
-	/// used along with `channel_keys_id` to re-derive the [`InMemorySigner`] required to sign
-	/// `input`.
-	///
-	/// [`InMemorySigner`]: crate::sign::InMemorySigner
-	pub channel_value_satoshis: u64,
-	/// The necessary channel parameters that need to be provided to the re-derived
-	/// [`InMemorySigner`] through [`ChannelSigner::provide_channel_parameters`].
-	///
-	/// [`InMemorySigner`]: crate::sign::InMemorySigner
-	/// [`ChannelSigner::provide_channel_parameters`]: crate::sign::ChannelSigner::provide_channel_parameters
-	pub channel_parameters: ChannelTransactionParameters,
+	/// The parameters required to derive the signer for the HTLC input.
+	pub channel_derivation_parameters: ChannelDerivationParameters,
 	/// The txid of the commitment transaction in which the HTLC output lives.
 	pub commitment_txid: Txid,
 	/// The number of the commitment transaction in which the HTLC output lives.
 	pub per_commitment_number: u64,
+	/// The key tweak corresponding to the number of the commitment transaction in which the HTLC
+	/// output lives. This tweak is applied to all the basepoints for both parties in the channel to
+	/// arrive at unique keys per commitment.
+	///
+	/// See <https://github.com/lightning/bolts/blob/master/03-transactions.md#keys> for more info.
+	pub per_commitment_point: PublicKey,
 	/// The details of the HTLC as it appears in the commitment transaction.
 	pub htlc: HTLCOutputInCommitment,
 	/// The preimage, if `Some`, to claim the HTLC output with. If `None`, the timeout path must be
@@ -101,50 +140,64 @@ pub struct HTLCDescriptor {
 }
 
 impl HTLCDescriptor {
+	/// Returns the outpoint of the HTLC output in the commitment transaction. This is the outpoint
+	/// being spent by the HTLC input in the HTLC transaction.
+	pub fn outpoint(&self) -> OutPoint {
+		OutPoint {
+			txid: self.commitment_txid,
+			vout: self.htlc.transaction_output_index.unwrap(),
+		}
+	}
+
+	/// Returns the UTXO to be spent by the HTLC input, which can be obtained via
+	/// [`Self::unsigned_tx_input`].
+	pub fn previous_utxo<C: secp256k1::Signing + secp256k1::Verification>(&self, secp: &Secp256k1<C>) -> TxOut {
+		TxOut {
+			script_pubkey: self.witness_script(secp).to_v0_p2wsh(),
+			value: self.htlc.amount_msat / 1000,
+		}
+	}
+
 	/// Returns the unsigned transaction input spending the HTLC output in the commitment
 	/// transaction.
 	pub fn unsigned_tx_input(&self) -> TxIn {
-		chan_utils::build_htlc_input(&self.commitment_txid, &self.htlc, true /* opt_anchors */)
+		chan_utils::build_htlc_input(&self.commitment_txid, &self.htlc, &ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies())
 	}
 
 	/// Returns the delayed output created as a result of spending the HTLC output in the commitment
 	/// transaction.
-	pub fn tx_output<C: secp256k1::Signing + secp256k1::Verification>(
-		&self, per_commitment_point: &PublicKey, secp: &Secp256k1<C>
-	) -> TxOut {
-		let channel_params = self.channel_parameters.as_holder_broadcastable();
+	pub fn tx_output<C: secp256k1::Signing + secp256k1::Verification>(&self, secp: &Secp256k1<C>) -> TxOut {
+		let channel_params = self.channel_derivation_parameters.transaction_parameters.as_holder_broadcastable();
 		let broadcaster_keys = channel_params.broadcaster_pubkeys();
 		let counterparty_keys = channel_params.countersignatory_pubkeys();
 		let broadcaster_delayed_key = chan_utils::derive_public_key(
-			secp, per_commitment_point, &broadcaster_keys.delayed_payment_basepoint
+			secp, &self.per_commitment_point, &broadcaster_keys.delayed_payment_basepoint
 		);
 		let counterparty_revocation_key = chan_utils::derive_public_revocation_key(
-			secp, per_commitment_point, &counterparty_keys.revocation_basepoint
+			secp, &self.per_commitment_point, &counterparty_keys.revocation_basepoint
 		);
 		chan_utils::build_htlc_output(
-			0 /* feerate_per_kw */, channel_params.contest_delay(), &self.htlc, true /* opt_anchors */,
-			false /* use_non_zero_fee_anchors */, &broadcaster_delayed_key, &counterparty_revocation_key
+			0 /* feerate_per_kw */, channel_params.contest_delay(), &self.htlc,
+			&ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies(), &broadcaster_delayed_key, &counterparty_revocation_key
 		)
 	}
 
 	/// Returns the witness script of the HTLC output in the commitment transaction.
-	pub fn witness_script<C: secp256k1::Signing + secp256k1::Verification>(
-		&self, per_commitment_point: &PublicKey, secp: &Secp256k1<C>
-	) -> Script {
-		let channel_params = self.channel_parameters.as_holder_broadcastable();
+	pub fn witness_script<C: secp256k1::Signing + secp256k1::Verification>(&self, secp: &Secp256k1<C>) -> Script {
+		let channel_params = self.channel_derivation_parameters.transaction_parameters.as_holder_broadcastable();
 		let broadcaster_keys = channel_params.broadcaster_pubkeys();
 		let counterparty_keys = channel_params.countersignatory_pubkeys();
 		let broadcaster_htlc_key = chan_utils::derive_public_key(
-			secp, per_commitment_point, &broadcaster_keys.htlc_basepoint
+			secp, &self.per_commitment_point, &broadcaster_keys.htlc_basepoint
 		);
 		let counterparty_htlc_key = chan_utils::derive_public_key(
-			secp, per_commitment_point, &counterparty_keys.htlc_basepoint
+			secp, &self.per_commitment_point, &counterparty_keys.htlc_basepoint
 		);
 		let counterparty_revocation_key = chan_utils::derive_public_revocation_key(
-			secp, per_commitment_point, &counterparty_keys.revocation_basepoint
+			secp, &self.per_commitment_point, &counterparty_keys.revocation_basepoint
 		);
 		chan_utils::get_htlc_redeemscript_with_explicit_keys(
-			&self.htlc, true /* opt_anchors */, &broadcaster_htlc_key, &counterparty_htlc_key,
+			&self.htlc, &ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies(), &broadcaster_htlc_key, &counterparty_htlc_key,
 			&counterparty_revocation_key,
 		)
 	}
@@ -153,8 +206,21 @@ impl HTLCDescriptor {
 	/// transaction.
 	pub fn tx_input_witness(&self, signature: &Signature, witness_script: &Script) -> Witness {
 		chan_utils::build_htlc_input_witness(
-			signature, &self.counterparty_sig, &self.preimage, witness_script, true /* opt_anchors */
+			signature, &self.counterparty_sig, &self.preimage, witness_script, &ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies() /* opt_anchors */
 		)
+	}
+
+	/// Derives the channel signer required to sign the HTLC input.
+	pub fn derive_channel_signer<S: WriteableEcdsaChannelSigner, SP: Deref>(&self, signer_provider: &SP) -> S
+	where
+		SP::Target: SignerProvider<Signer = S>
+	{
+		let mut signer = signer_provider.derive_channel_signer(
+			self.channel_derivation_parameters.value_satoshis,
+			self.channel_derivation_parameters.keys_id,
+		);
+		signer.provide_channel_parameters(&self.channel_derivation_parameters.transaction_parameters);
+		signer
 	}
 }
 
@@ -174,12 +240,11 @@ pub enum BumpTransactionEvent {
 	/// broadcast first, as the child anchor transaction depends on it.
 	///
 	/// The consumer should be able to sign for any of the additional inputs included within the
-	/// child anchor transaction. To sign its anchor input, an [`InMemorySigner`] should be
-	/// re-derived through [`KeysManager::derive_channel_keys`] with the help of
-	/// [`AnchorDescriptor::channel_keys_id`] and [`AnchorDescriptor::channel_value_satoshis`]. The
-	/// anchor input signature can be computed with [`EcdsaChannelSigner::sign_holder_anchor_input`],
-	/// which can then be provided to [`build_anchor_input_witness`] along with the `funding_pubkey`
-	/// to obtain the full witness required to spend.
+	/// child anchor transaction. To sign its anchor input, an [`EcdsaChannelSigner`] should be
+	/// re-derived through [`AnchorDescriptor::derive_channel_signer`]. The anchor input signature
+	/// can be computed with [`EcdsaChannelSigner::sign_holder_anchor_input`], which can then be
+	/// provided to [`build_anchor_input_witness`] along with the `funding_pubkey` to obtain the
+	/// full witness required to spend.
 	///
 	/// It is possible to receive more than one instance of this event if a valid child anchor
 	/// transaction is never broadcast or is but not with a sufficient fee to be mined. Care should
@@ -198,8 +263,7 @@ pub enum BumpTransactionEvent {
 	/// an empty `pending_htlcs`), confirmation of the commitment transaction can be considered to
 	/// be not urgent.
 	///
-	/// [`InMemorySigner`]: crate::sign::InMemorySigner
-	/// [`KeysManager::derive_channel_keys`]: crate::sign::KeysManager::derive_channel_keys
+	/// [`EcdsaChannelSigner`]: crate::sign::EcdsaChannelSigner
 	/// [`EcdsaChannelSigner::sign_holder_anchor_input`]: crate::sign::EcdsaChannelSigner::sign_holder_anchor_input
 	/// [`build_anchor_input_witness`]: crate::ln::chan_utils::build_anchor_input_witness
 	ChannelClose {
@@ -237,11 +301,11 @@ pub enum BumpTransactionEvent {
 	/// broadcast by the consumer of the event.
 	///
 	/// The consumer should be able to sign for any of the non-HTLC inputs added to the resulting
-	/// HTLC transaction. To sign HTLC inputs, an [`InMemorySigner`] should be re-derived through
-	/// [`KeysManager::derive_channel_keys`] with the help of `channel_keys_id` and
-	/// `channel_value_satoshis`. Each HTLC input's signature can be computed with
-	/// [`EcdsaChannelSigner::sign_holder_htlc_transaction`], which can then be provided to
-	/// [`HTLCDescriptor::tx_input_witness`] to obtain the fully signed witness required to spend.
+	/// HTLC transaction. To sign HTLC inputs, an [`EcdsaChannelSigner`] should be re-derived
+	/// through [`HTLCDescriptor::derive_channel_signer`]. Each HTLC input's signature can be
+	/// computed with [`EcdsaChannelSigner::sign_holder_htlc_transaction`], which can then be
+	/// provided to [`HTLCDescriptor::tx_input_witness`] to obtain the fully signed witness required
+	/// to spend.
 	///
 	/// It is possible to receive more than one instance of this event if a valid HTLC transaction
 	/// is never broadcast or is but not with a sufficient fee to be mined. Care should be taken by
@@ -253,8 +317,7 @@ pub enum BumpTransactionEvent {
 	/// longer able to commit external confirmed funds to the HTLC transaction or the fee committed
 	/// to the HTLC transaction is greater in value than the HTLCs being claimed.
 	///
-	/// [`InMemorySigner`]: crate::sign::InMemorySigner
-	/// [`KeysManager::derive_channel_keys`]: crate::sign::KeysManager::derive_channel_keys
+	/// [`EcdsaChannelSigner`]: crate::sign::EcdsaChannelSigner
 	/// [`EcdsaChannelSigner::sign_holder_htlc_transaction`]: crate::sign::EcdsaChannelSigner::sign_holder_htlc_transaction
 	/// [`HTLCDescriptor::tx_input_witness`]: HTLCDescriptor::tx_input_witness
 	HTLCResolution {
@@ -278,9 +341,12 @@ pub enum BumpTransactionEvent {
 /// An input that must be included in a transaction when performing coin selection through
 /// [`CoinSelectionSource::select_confirmed_utxos`]. It is guaranteed to be a SegWit input, so it
 /// must have an empty [`TxIn::script_sig`] when spent.
+#[derive(Clone, Debug, Hash, PartialOrd, Ord, PartialEq, Eq)]
 pub struct Input {
 	/// The unique identifier of the input.
 	pub outpoint: OutPoint,
+	/// The UTXO being spent by the input.
+	pub previous_utxo: TxOut,
 	/// The upper-bound weight consumed by the input's full [`TxIn::script_sig`] and
 	/// [`TxIn::witness`], each with their lengths included, required to satisfy the output's
 	/// script.
@@ -289,7 +355,7 @@ pub struct Input {
 
 /// An unspent transaction output that is available to spend resulting from a successful
 /// [`CoinSelection`] attempt.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Hash, PartialOrd, Ord, PartialEq, Eq)]
 pub struct Utxo {
 	/// The unique identifier of the output.
 	pub outpoint: OutPoint,
@@ -356,15 +422,16 @@ impl Utxo {
 
 /// The result of a successful coin selection attempt for a transaction requiring additional UTXOs
 /// to cover its fees.
+#[derive(Clone, Debug)]
 pub struct CoinSelection {
 	/// The set of UTXOs (with at least 1 confirmation) to spend and use within a transaction
 	/// requiring additional fees.
-	confirmed_utxos: Vec<Utxo>,
+	pub confirmed_utxos: Vec<Utxo>,
 	/// An additional output tracking whether any change remained after coin selection. This output
 	/// should always have a value above dust for its given `script_pubkey`. It should not be
 	/// spent until the transaction it belongs to confirms to ensure mempool descendant limits are
 	/// not met. This implies no other party should be able to spend it except us.
-	change_output: Option<TxOut>,
+	pub change_output: Option<TxOut>,
 }
 
 /// An abstraction over a bitcoin wallet that can perform coin selection over a set of UTXOs and can
@@ -399,12 +466,12 @@ pub trait CoinSelectionSource {
 	/// which UTXOs to double spend is left to the implementation, but it must strive to keep the
 	/// set of other claims being double spent to a minimum.
 	fn select_confirmed_utxos(
-		&self, claim_id: ClaimId, must_spend: &[Input], must_pay_to: &[TxOut],
+		&self, claim_id: ClaimId, must_spend: Vec<Input>, must_pay_to: &[TxOut],
 		target_feerate_sat_per_1000_weight: u32,
 	) -> Result<CoinSelection, ()>;
 	/// Signs and provides the full witness for all inputs within the transaction known to the
 	/// trait (i.e., any provided via [`CoinSelectionSource::select_confirmed_utxos`]).
-	fn sign_tx(&self, tx: &mut Transaction) -> Result<(), ()>;
+	fn sign_tx(&self, tx: Transaction) -> Result<Transaction, ()>;
 }
 
 /// An alternative to [`CoinSelectionSource`] that can be implemented and used along [`Wallet`] to
@@ -418,25 +485,34 @@ pub trait WalletSource {
 	/// Signs and provides the full [`TxIn::script_sig`] and [`TxIn::witness`] for all inputs within
 	/// the transaction known to the wallet (i.e., any provided via
 	/// [`WalletSource::list_confirmed_utxos`]).
-	fn sign_tx(&self, tx: &mut Transaction) -> Result<(), ()>;
+	fn sign_tx(&self, tx: Transaction) -> Result<Transaction, ()>;
 }
 
 /// A wrapper over [`WalletSource`] that implements [`CoinSelection`] by preferring UTXOs that would
 /// avoid conflicting double spends. If not enough UTXOs are available to do so, conflicting double
 /// spends may happen.
-pub struct Wallet<W: Deref> where W::Target: WalletSource {
+pub struct Wallet<W: Deref, L: Deref>
+where
+	W::Target: WalletSource,
+	L::Target: Logger
+{
 	source: W,
+	logger: L,
 	// TODO: Do we care about cleaning this up once the UTXOs have a confirmed spend? We can do so
 	// by checking whether any UTXOs that exist in the map are no longer returned in
 	// `list_confirmed_utxos`.
 	locked_utxos: Mutex<HashMap<OutPoint, ClaimId>>,
 }
 
-impl<W: Deref> Wallet<W> where W::Target: WalletSource {
+impl<W: Deref, L: Deref> Wallet<W, L>
+where
+	W::Target: WalletSource,
+	L::Target: Logger
+{
 	/// Returns a new instance backed by the given [`WalletSource`] that serves as an implementation
 	/// of [`CoinSelectionSource`].
-	pub fn new(source: W) -> Self {
-		Self { source, locked_utxos: Mutex::new(HashMap::new()) }
+	pub fn new(source: W, logger: L) -> Self {
+		Self { source, logger, locked_utxos: Mutex::new(HashMap::new()) }
 	}
 
 	/// Performs coin selection on the set of UTXOs obtained from
@@ -456,6 +532,7 @@ impl<W: Deref> Wallet<W> where W::Target: WalletSource {
 		let mut eligible_utxos = utxos.iter().filter_map(|utxo| {
 			if let Some(utxo_claim_id) = locked_utxos.get(&utxo.outpoint) {
 				if *utxo_claim_id != claim_id && !force_conflicting_utxo_spend {
+					log_trace!(self.logger, "Skipping UTXO {} to prevent conflicting spend", utxo.outpoint);
 					return None;
 				}
 			}
@@ -470,6 +547,7 @@ impl<W: Deref> Wallet<W> where W::Target: WalletSource {
 			if should_spend {
 				Some((utxo, fee_to_spend_utxo))
 			} else {
+				log_trace!(self.logger, "Skipping UTXO {} due to dust proximity after spend", utxo.outpoint);
 				None
 			}
 		}).collect::<Vec<_>>();
@@ -487,6 +565,8 @@ impl<W: Deref> Wallet<W> where W::Target: WalletSource {
 			selected_utxos.push(utxo.clone());
 		}
 		if selected_amount < target_amount_sat + total_fees {
+			log_debug!(self.logger, "Insufficient funds to meet target feerate {} sat/kW",
+				target_feerate_sat_per_1000_weight);
 			return Err(());
 		}
 		for utxo in &selected_utxos {
@@ -503,6 +583,7 @@ impl<W: Deref> Wallet<W> where W::Target: WalletSource {
 		);
 		let change_output_amount = remaining_amount.saturating_sub(change_output_fee);
 		let change_output = if change_output_amount < change_script.dust_value().to_sat() {
+			log_debug!(self.logger, "Coin selection attempt did not yield change output");
 			None
 		} else {
 			Some(TxOut { script_pubkey: change_script, value: change_output_amount })
@@ -515,9 +596,13 @@ impl<W: Deref> Wallet<W> where W::Target: WalletSource {
 	}
 }
 
-impl<W: Deref> CoinSelectionSource for Wallet<W> where W::Target: WalletSource {
+impl<W: Deref, L: Deref> CoinSelectionSource for Wallet<W, L>
+where
+	W::Target: WalletSource,
+	L::Target: Logger
+{
 	fn select_confirmed_utxos(
-		&self, claim_id: ClaimId, must_spend: &[Input], must_pay_to: &[TxOut],
+		&self, claim_id: ClaimId, must_spend: Vec<Input>, must_pay_to: &[TxOut],
 		target_feerate_sat_per_1000_weight: u32,
 	) -> Result<CoinSelection, ()> {
 		let utxos = self.source.list_confirmed_utxos()?;
@@ -533,6 +618,8 @@ impl<W: Deref> CoinSelectionSource for Wallet<W> where W::Target: WalletSource {
 			((BASE_TX_SIZE + total_output_size) * WITNESS_SCALE_FACTOR as u64);
 		let target_amount_sat = must_pay_to.iter().map(|output| output.value).sum();
 		let do_coin_selection = |force_conflicting_utxo_spend: bool, tolerate_high_network_feerates: bool| {
+			log_debug!(self.logger, "Attempting coin selection targeting {} sat/kW (force_conflicting_utxo_spend = {}, tolerate_high_network_feerates = {})",
+				target_feerate_sat_per_1000_weight, force_conflicting_utxo_spend, tolerate_high_network_feerates);
 			self.select_confirmed_utxos_internal(
 				&utxos, claim_id, force_conflicting_utxo_spend, tolerate_high_network_feerates,
 				target_feerate_sat_per_1000_weight, preexisting_tx_weight, target_amount_sat,
@@ -544,7 +631,7 @@ impl<W: Deref> CoinSelectionSource for Wallet<W> where W::Target: WalletSource {
 			.or_else(|_| do_coin_selection(true, true))
 	}
 
-	fn sign_tx(&self, tx: &mut Transaction) -> Result<(), ()> {
+	fn sign_tx(&self, tx: Transaction) -> Result<Transaction, ()> {
 		self.source.sign_tx(tx)
 	}
 }
@@ -552,6 +639,8 @@ impl<W: Deref> CoinSelectionSource for Wallet<W> where W::Target: WalletSource {
 /// A handler for [`Event::BumpTransaction`] events that sources confirmed UTXOs from a
 /// [`CoinSelectionSource`] to fee bump transactions via Child-Pays-For-Parent (CPFP) or
 /// Replace-By-Fee (RBF).
+///
+/// [`Event::BumpTransaction`]: crate::events::Event::BumpTransaction
 pub struct BumpTransactionEventHandler<B: Deref, C: Deref, SP: Deref, L: Deref>
 where
 	B::Target: BroadcasterInterface,
@@ -574,6 +663,8 @@ where
 	L::Target: Logger,
 {
 	/// Returns a new instance capable of handling [`Event::BumpTransaction`] events.
+	///
+	/// [`Event::BumpTransaction`]: crate::events::Event::BumpTransaction
 	pub fn new(broadcaster: B, utxo_source: C, signer_provider: SP, logger: L) -> Self {
 		Self {
 			broadcaster,
@@ -601,40 +692,12 @@ where
 			// match, but we still need to have at least one output in the transaction for it to be
 			// considered standard. We choose to go with an empty OP_RETURN as it is the cheapest
 			// way to include a dummy output.
+			log_debug!(self.logger, "Including dummy OP_RETURN output since an output is needed and a change output was not provided");
 			tx.output.push(TxOut {
 				value: 0,
 				script_pubkey: Script::new_op_return(&[]),
 			});
 		}
-	}
-
-	/// Returns an unsigned transaction spending an anchor output of the commitment transaction, and
-	/// any additional UTXOs sourced, to bump the commitment transaction's fee.
-	fn build_anchor_tx(
-		&self, claim_id: ClaimId, target_feerate_sat_per_1000_weight: u32,
-		commitment_tx: &Transaction, anchor_descriptor: &AnchorDescriptor,
-	) -> Result<Transaction, ()> {
-		let must_spend = vec![Input {
-			outpoint: anchor_descriptor.outpoint,
-			satisfaction_weight: commitment_tx.weight() as u64 + ANCHOR_INPUT_WITNESS_WEIGHT + EMPTY_SCRIPT_SIG_WEIGHT,
-		}];
-		let coin_selection = self.utxo_source.select_confirmed_utxos(
-			claim_id, &must_spend, &[], target_feerate_sat_per_1000_weight,
-		)?;
-
-		let mut tx = Transaction {
-			version: 2,
-			lock_time: PackedLockTime::ZERO, // TODO: Use next best height.
-			input: vec![TxIn {
-				previous_output: anchor_descriptor.outpoint,
-				script_sig: Script::new(),
-				sequence: Sequence::ZERO,
-				witness: Witness::new(),
-			}],
-			output: vec![],
-		};
-		self.process_coin_selection(&mut tx, coin_selection);
-		Ok(tx)
 	}
 
 	/// Handles a [`BumpTransactionEvent::ChannelClose`] event variant by producing a fully-signed
@@ -644,81 +707,68 @@ where
 		&self, claim_id: ClaimId, package_target_feerate_sat_per_1000_weight: u32,
 		commitment_tx: &Transaction, commitment_tx_fee_sat: u64, anchor_descriptor: &AnchorDescriptor,
 	) -> Result<(), ()> {
-		// Compute the feerate the anchor transaction must meet to meet the overall feerate for the
-		// package (commitment + anchor transactions).
+		// Our commitment transaction already has fees allocated to it, so we should take them into
+		// account. We compute its feerate and subtract it from the package target, using the result
+		// as the target feerate for our anchor transaction. Unfortunately, this results in users
+		// overpaying by a small margin since we don't yet know the anchor transaction size, and
+		// avoiding the small overpayment only makes our API even more complex.
 		let commitment_tx_sat_per_1000_weight: u32 = compute_feerate_sat_per_1000_weight(
 			commitment_tx_fee_sat, commitment_tx.weight() as u64,
 		);
-		if commitment_tx_sat_per_1000_weight >= package_target_feerate_sat_per_1000_weight {
-			// If the commitment transaction already has a feerate high enough on its own, broadcast
-			// it as is without a child.
-			self.broadcaster.broadcast_transactions(&[&commitment_tx]);
-			return Ok(());
-		}
-
-		let mut anchor_tx = self.build_anchor_tx(
-			claim_id, package_target_feerate_sat_per_1000_weight, commitment_tx, anchor_descriptor,
-		)?;
-		debug_assert_eq!(anchor_tx.output.len(), 1);
-
-		self.utxo_source.sign_tx(&mut anchor_tx)?;
-		let signer = self.signer_provider.derive_channel_signer(
-			anchor_descriptor.channel_value_satoshis, anchor_descriptor.channel_keys_id,
+		let anchor_target_feerate_sat_per_1000_weight = core::cmp::max(
+			package_target_feerate_sat_per_1000_weight - commitment_tx_sat_per_1000_weight,
+			FEERATE_FLOOR_SATS_PER_KW,
 		);
-		let anchor_sig = signer.sign_holder_anchor_input(&anchor_tx, 0, &self.secp)?;
-		anchor_tx.input[0].witness =
-			chan_utils::build_anchor_input_witness(&signer.pubkeys().funding_pubkey, &anchor_sig);
 
-		self.broadcaster.broadcast_transactions(&[&commitment_tx, &anchor_tx]);
-		Ok(())
-	}
+		log_debug!(self.logger, "Peforming coin selection for anchor transaction targeting {} sat/kW",
+			anchor_target_feerate_sat_per_1000_weight);
+		let must_spend = vec![Input {
+			outpoint: anchor_descriptor.outpoint,
+			previous_utxo: anchor_descriptor.previous_utxo(),
+			satisfaction_weight: commitment_tx.weight() as u64 + ANCHOR_INPUT_WITNESS_WEIGHT + EMPTY_SCRIPT_SIG_WEIGHT,
+		}];
+		let coin_selection = self.utxo_source.select_confirmed_utxos(
+			claim_id, must_spend, &[], anchor_target_feerate_sat_per_1000_weight,
+		)?;
 
-	/// Returns an unsigned, fee-bumped HTLC transaction, along with the set of signers required to
-	/// fulfill the witness for each HTLC input within it.
-	fn build_htlc_tx(
-		&self, claim_id: ClaimId, target_feerate_sat_per_1000_weight: u32,
-		htlc_descriptors: &[HTLCDescriptor], tx_lock_time: PackedLockTime,
-	) -> Result<(Transaction, HashMap<[u8; 32], <SP::Target as SignerProvider>::Signer>), ()> {
-		let mut tx = Transaction {
+		let mut anchor_tx = Transaction {
 			version: 2,
-			lock_time: tx_lock_time,
-			input: vec![],
+			lock_time: PackedLockTime::ZERO, // TODO: Use next best height.
+			input: vec![anchor_descriptor.unsigned_tx_input()],
 			output: vec![],
 		};
-		// Unfortunately, we need to derive the signer for each HTLC ahead of time to obtain its
-		// input.
-		let mut signers = HashMap::new();
-		let mut must_spend = Vec::with_capacity(htlc_descriptors.len());
-		for htlc_descriptor in htlc_descriptors {
-			let signer = signers.entry(htlc_descriptor.channel_keys_id)
-				.or_insert_with(||
-					self.signer_provider.derive_channel_signer(
-						htlc_descriptor.channel_value_satoshis, htlc_descriptor.channel_keys_id,
-					)
-				);
-			let per_commitment_point = signer.get_per_commitment_point(
-				htlc_descriptor.per_commitment_number, &self.secp
-			);
+		#[cfg(debug_assertions)]
+		let total_satisfaction_weight =
+			coin_selection.confirmed_utxos.iter().map(|utxo| utxo.satisfaction_weight).sum::<u64>() +
+				ANCHOR_INPUT_WITNESS_WEIGHT + EMPTY_SCRIPT_SIG_WEIGHT;
 
-			let htlc_input = htlc_descriptor.unsigned_tx_input();
-			must_spend.push(Input {
-				outpoint: htlc_input.previous_output.clone(),
-				satisfaction_weight: EMPTY_SCRIPT_SIG_WEIGHT + if htlc_descriptor.preimage.is_some() {
-					HTLC_SUCCESS_INPUT_ANCHOR_WITNESS_WEIGHT
-				} else {
-					HTLC_TIMEOUT_INPUT_ANCHOR_WITNESS_WEIGHT
-				},
-			});
-			tx.input.push(htlc_input);
-			let htlc_output = htlc_descriptor.tx_output(&per_commitment_point, &self.secp);
-			tx.output.push(htlc_output);
+		self.process_coin_selection(&mut anchor_tx, coin_selection);
+		let anchor_txid = anchor_tx.txid();
+
+		debug_assert_eq!(anchor_tx.output.len(), 1);
+		#[cfg(debug_assertions)]
+		let unsigned_tx_weight = anchor_tx.weight() as u64 - (anchor_tx.input.len() as u64 * EMPTY_SCRIPT_SIG_WEIGHT);
+
+		log_debug!(self.logger, "Signing anchor transaction {}", anchor_txid);
+		anchor_tx = self.utxo_source.sign_tx(anchor_tx)?;
+
+		let signer = anchor_descriptor.derive_channel_signer(&self.signer_provider);
+		let anchor_sig = signer.sign_holder_anchor_input(&anchor_tx, 0, &self.secp)?;
+		anchor_tx.input[0].witness = anchor_descriptor.tx_input_witness(&anchor_sig);
+
+		#[cfg(debug_assertions)] {
+			let signed_tx_weight = anchor_tx.weight() as u64;
+			let expected_signed_tx_weight = unsigned_tx_weight + total_satisfaction_weight;
+			// Our estimate should be within a 1% error margin of the actual weight and we should
+			// never underestimate.
+			assert!(expected_signed_tx_weight >= signed_tx_weight &&
+				expected_signed_tx_weight - (expected_signed_tx_weight / 100) <= signed_tx_weight);
 		}
 
-		let coin_selection = self.utxo_source.select_confirmed_utxos(
-			claim_id, &must_spend, &tx.output, target_feerate_sat_per_1000_weight,
-		)?;
-		self.process_coin_selection(&mut tx, coin_selection);
-		Ok((tx, signers))
+		log_info!(self.logger, "Broadcasting anchor transaction {} to bump channel close with txid {}",
+			anchor_txid, commitment_tx.txid());
+		self.broadcaster.broadcast_transactions(&[&commitment_tx, &anchor_tx]);
+		Ok(())
 	}
 
 	/// Handles a [`BumpTransactionEvent::HTLCResolution`] event variant by producing a
@@ -727,39 +777,81 @@ where
 		&self, claim_id: ClaimId, target_feerate_sat_per_1000_weight: u32,
 		htlc_descriptors: &[HTLCDescriptor], tx_lock_time: PackedLockTime,
 	) -> Result<(), ()> {
-		let (mut htlc_tx, signers) = self.build_htlc_tx(
-			claim_id, target_feerate_sat_per_1000_weight, htlc_descriptors, tx_lock_time,
-		)?;
+		let mut htlc_tx = Transaction {
+			version: 2,
+			lock_time: tx_lock_time,
+			input: vec![],
+			output: vec![],
+		};
+		let mut must_spend = Vec::with_capacity(htlc_descriptors.len());
+		for htlc_descriptor in htlc_descriptors {
+			let htlc_input = htlc_descriptor.unsigned_tx_input();
+			must_spend.push(Input {
+				outpoint: htlc_input.previous_output.clone(),
+				previous_utxo: htlc_descriptor.previous_utxo(&self.secp),
+				satisfaction_weight: EMPTY_SCRIPT_SIG_WEIGHT + if htlc_descriptor.preimage.is_some() {
+					HTLC_SUCCESS_INPUT_ANCHOR_WITNESS_WEIGHT
+				} else {
+					HTLC_TIMEOUT_INPUT_ANCHOR_WITNESS_WEIGHT
+				},
+			});
+			htlc_tx.input.push(htlc_input);
+			let htlc_output = htlc_descriptor.tx_output(&self.secp);
+			htlc_tx.output.push(htlc_output);
+		}
 
-		self.utxo_source.sign_tx(&mut htlc_tx)?;
+		log_debug!(self.logger, "Peforming coin selection for HTLC transaction targeting {} sat/kW",
+			target_feerate_sat_per_1000_weight);
+		#[cfg(debug_assertions)]
+		let must_spend_satisfaction_weight =
+			must_spend.iter().map(|input| input.satisfaction_weight).sum::<u64>();
+		let coin_selection = self.utxo_source.select_confirmed_utxos(
+			claim_id, must_spend, &htlc_tx.output, target_feerate_sat_per_1000_weight,
+		)?;
+		#[cfg(debug_assertions)]
+		let total_satisfaction_weight =
+			coin_selection.confirmed_utxos.iter().map(|utxo| utxo.satisfaction_weight).sum::<u64>() +
+				must_spend_satisfaction_weight;
+		self.process_coin_selection(&mut htlc_tx, coin_selection);
+
+		#[cfg(debug_assertions)]
+		let unsigned_tx_weight = htlc_tx.weight() as u64 - (htlc_tx.input.len() as u64 * EMPTY_SCRIPT_SIG_WEIGHT);
+
+		log_debug!(self.logger, "Signing HTLC transaction {}", htlc_tx.txid());
+		htlc_tx = self.utxo_source.sign_tx(htlc_tx)?;
+
+		let mut signers = BTreeMap::new();
 		for (idx, htlc_descriptor) in htlc_descriptors.iter().enumerate() {
-			let signer = signers.get(&htlc_descriptor.channel_keys_id).unwrap();
-			let htlc_sig = signer.sign_holder_htlc_transaction(
-				&htlc_tx, idx, htlc_descriptor, &self.secp
-			)?;
-			let per_commitment_point = signer.get_per_commitment_point(
-				htlc_descriptor.per_commitment_number, &self.secp
-			);
-			let witness_script = htlc_descriptor.witness_script(&per_commitment_point, &self.secp);
+			let signer = signers.entry(htlc_descriptor.channel_derivation_parameters.keys_id)
+				.or_insert_with(|| htlc_descriptor.derive_channel_signer(&self.signer_provider));
+			let htlc_sig = signer.sign_holder_htlc_transaction(&htlc_tx, idx, htlc_descriptor, &self.secp)?;
+			let witness_script = htlc_descriptor.witness_script(&self.secp);
 			htlc_tx.input[idx].witness = htlc_descriptor.tx_input_witness(&htlc_sig, &witness_script);
 		}
 
+		#[cfg(debug_assertions)] {
+			let signed_tx_weight = htlc_tx.weight() as u64;
+			let expected_signed_tx_weight = unsigned_tx_weight + total_satisfaction_weight;
+			// Our estimate should be within a 1% error margin of the actual weight and we should
+			// never underestimate.
+			assert!(expected_signed_tx_weight >= signed_tx_weight &&
+				expected_signed_tx_weight - (expected_signed_tx_weight / 100) <= signed_tx_weight);
+		}
+
+		log_info!(self.logger, "Broadcasting {}", log_tx!(htlc_tx));
 		self.broadcaster.broadcast_transactions(&[&htlc_tx]);
 		Ok(())
 	}
 
-	/// Handles all variants of [`BumpTransactionEvent`], immediately returning otherwise.
-	pub fn handle_event(&self, event: &Event) {
-		let event = if let Event::BumpTransaction(event) = event {
-			event
-		} else {
-			return;
-		};
+	/// Handles all variants of [`BumpTransactionEvent`].
+	pub fn handle_event(&self, event: &BumpTransactionEvent) {
 		match event {
 			BumpTransactionEvent::ChannelClose {
 				claim_id, package_target_feerate_sat_per_1000_weight, commitment_tx,
-				anchor_descriptor, commitment_tx_fee_satoshis,	..
+				commitment_tx_fee_satoshis, anchor_descriptor, ..
 			} => {
+				log_info!(self.logger, "Handling channel close bump (claim_id = {}, commitment_txid = {})",
+					log_bytes!(claim_id.0), commitment_tx.txid());
 				if let Err(_) = self.handle_channel_close(
 					*claim_id, *package_target_feerate_sat_per_1000_weight, commitment_tx,
 					*commitment_tx_fee_satoshis, anchor_descriptor,
@@ -771,6 +863,8 @@ where
 			BumpTransactionEvent::HTLCResolution {
 				claim_id, target_feerate_sat_per_1000_weight, htlc_descriptors, tx_lock_time,
 			} => {
+				log_info!(self.logger, "Handling HTLC bump (claim_id = {}, htlcs_to_claim = {})",
+					log_bytes!(claim_id.0), log_iter!(htlc_descriptors.iter().map(|d| d.outpoint())));
 				if let Err(_) = self.handle_htlc_resolution(
 					*claim_id, *target_feerate_sat_per_1000_weight, htlc_descriptors, *tx_lock_time,
 				) {

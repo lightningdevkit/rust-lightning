@@ -10,7 +10,7 @@
 //! The [`NetworkGraph`] stores the network gossip and [`P2PGossipSync`] fetches it from peers
 
 use bitcoin::secp256k1::constants::PUBLIC_KEY_SIZE;
-use bitcoin::secp256k1::PublicKey;
+use bitcoin::secp256k1::{PublicKey, Verification};
 use bitcoin::secp256k1::Secp256k1;
 use bitcoin::secp256k1;
 
@@ -23,6 +23,7 @@ use bitcoin::network::constants::Network;
 use bitcoin::blockdata::constants::genesis_block;
 
 use crate::events::{MessageSendEvent, MessageSendEventsProvider};
+use crate::ln::ChannelId;
 use crate::ln::features::{ChannelFeatures, NodeFeatures, InitFeatures};
 use crate::ln::msgs::{DecodeError, ErrorAction, Init, LightningError, RoutingMessageHandler, NetAddress, MAX_VALUE_MSAT};
 use crate::ln::msgs::{ChannelAnnouncement, ChannelUpdate, NodeAnnouncement, GossipTimestampFilter};
@@ -88,12 +89,12 @@ impl NodeId {
 
 impl fmt::Debug for NodeId {
 	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-		write!(f, "NodeId({})", log_bytes!(self.0))
+		write!(f, "NodeId({})", crate::util::logger::DebugBytes(&self.0))
 	}
 }
 impl fmt::Display for NodeId {
 	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-		write!(f, "{}", log_bytes!(self.0))
+		crate::util::logger::DebugBytes(&self.0).fmt(f)
 	}
 }
 
@@ -254,7 +255,7 @@ pub struct P2PGossipSync<G: Deref<Target=NetworkGraph<L>>, U: Deref, L: Deref>
 where U::Target: UtxoLookup, L::Target: Logger
 {
 	network_graph: G,
-	utxo_lookup: Option<U>,
+	utxo_lookup: RwLock<Option<U>>,
 	#[cfg(feature = "std")]
 	full_syncs_requested: AtomicUsize,
 	pending_events: Mutex<Vec<MessageSendEvent>>,
@@ -273,7 +274,7 @@ where U::Target: UtxoLookup, L::Target: Logger
 			network_graph,
 			#[cfg(feature = "std")]
 			full_syncs_requested: AtomicUsize::new(0),
-			utxo_lookup,
+			utxo_lookup: RwLock::new(utxo_lookup),
 			pending_events: Mutex::new(vec![]),
 			logger,
 		}
@@ -282,8 +283,8 @@ where U::Target: UtxoLookup, L::Target: Logger
 	/// Adds a provider used to check new announcements. Does not affect
 	/// existing announcements unless they are updated.
 	/// Add, update or remove the provider would replace the current one.
-	pub fn add_utxo_lookup(&mut self, utxo_lookup: Option<U>) {
-		self.utxo_lookup = utxo_lookup;
+	pub fn add_utxo_lookup(&self, utxo_lookup: Option<U>) {
+		*self.utxo_lookup.write().unwrap() = utxo_lookup;
 	}
 
 	/// Gets a reference to the underlying [`NetworkGraph`] which was provided in
@@ -382,7 +383,7 @@ macro_rules! secp_verify_sig {
 					err: format!("Invalid signature on {} message", $msg_type),
 					action: ErrorAction::SendWarningMessage {
 						msg: msgs::WarningMessage {
-							channel_id: [0; 32],
+							channel_id: ChannelId::new_zero(),
 							data: format!("Invalid signature on {} message", $msg_type),
 						},
 						log_level: Level::Trace,
@@ -400,13 +401,36 @@ macro_rules! get_pubkey_from_node_id {
 				err: format!("Invalid public key on {} message", $msg_type),
 				action: ErrorAction::SendWarningMessage {
 					msg: msgs::WarningMessage {
-						channel_id: [0; 32],
+						channel_id: ChannelId::new_zero(),
 						data: format!("Invalid public key on {} message", $msg_type),
 					},
 					log_level: Level::Trace
 				}
 			})?
 	}
+}
+
+/// Verifies the signature of a [`NodeAnnouncement`].
+///
+/// Returns an error if it is invalid.
+pub fn verify_node_announcement<C: Verification>(msg: &NodeAnnouncement, secp_ctx: &Secp256k1<C>) -> Result<(), LightningError> {
+	let msg_hash = hash_to_message!(&Sha256dHash::hash(&msg.contents.encode()[..])[..]);
+	secp_verify_sig!(secp_ctx, &msg_hash, &msg.signature, &get_pubkey_from_node_id!(msg.contents.node_id, "node_announcement"), "node_announcement");
+
+	Ok(())
+}
+
+/// Verifies all signatures included in a [`ChannelAnnouncement`].
+///
+/// Returns an error if one of the signatures is invalid.
+pub fn verify_channel_announcement<C: Verification>(msg: &ChannelAnnouncement, secp_ctx: &Secp256k1<C>) -> Result<(), LightningError> {
+	let msg_hash = hash_to_message!(&Sha256dHash::hash(&msg.contents.encode()[..])[..]);
+	secp_verify_sig!(secp_ctx, &msg_hash, &msg.node_signature_1, &get_pubkey_from_node_id!(msg.contents.node_id_1, "channel_announcement"), "channel_announcement");
+	secp_verify_sig!(secp_ctx, &msg_hash, &msg.node_signature_2, &get_pubkey_from_node_id!(msg.contents.node_id_2, "channel_announcement"), "channel_announcement");
+	secp_verify_sig!(secp_ctx, &msg_hash, &msg.bitcoin_signature_1, &get_pubkey_from_node_id!(msg.contents.bitcoin_key_1, "channel_announcement"), "channel_announcement");
+	secp_verify_sig!(secp_ctx, &msg_hash, &msg.bitcoin_signature_2, &get_pubkey_from_node_id!(msg.contents.bitcoin_key_2, "channel_announcement"), "channel_announcement");
+
+	Ok(())
 }
 
 impl<G: Deref<Target=NetworkGraph<L>>, U: Deref, L: Deref> RoutingMessageHandler for P2PGossipSync<G, U, L>
@@ -420,7 +444,7 @@ where U::Target: UtxoLookup, L::Target: Logger
 	}
 
 	fn handle_channel_announcement(&self, msg: &msgs::ChannelAnnouncement) -> Result<bool, LightningError> {
-		self.network_graph.update_channel_from_announcement(msg, &self.utxo_lookup)?;
+		self.network_graph.update_channel_from_announcement(msg, &*self.utxo_lookup.read().unwrap())?;
 		Ok(msg.contents.excess_data.len() <= MAX_EXCESS_BYTES_FOR_RELAY)
 	}
 
@@ -876,7 +900,7 @@ impl ChannelInfo {
 impl fmt::Display for ChannelInfo {
 	fn fmt(&self, f: &mut fmt::Formatter) -> Result<(), fmt::Error> {
 		write!(f, "features: {}, node_one: {}, one_to_two: {:?}, node_two: {}, two_to_one: {:?}",
-		   log_bytes!(self.features.encode()), log_bytes!(self.node_one.as_slice()), self.one_to_two, log_bytes!(self.node_two.as_slice()), self.two_to_one)?;
+		   log_bytes!(self.features.encode()), &self.node_one, self.one_to_two, &self.node_two, self.two_to_one)?;
 		Ok(())
 	}
 }
@@ -1120,26 +1144,26 @@ impl Writeable for NodeAnnouncementInfo {
 			(4, self.rgb, required),
 			(6, self.alias, required),
 			(8, self.announcement_message, option),
-			(10, empty_addresses, vec_type), // Versions prior to 0.0.115 require this field
+			(10, empty_addresses, required_vec), // Versions prior to 0.0.115 require this field
 		});
 		Ok(())
 	}
 }
 
 impl Readable for NodeAnnouncementInfo {
-    fn read<R: io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
-		_init_and_read_tlv_fields!(reader, {
+	fn read<R: io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
+		_init_and_read_len_prefixed_tlv_fields!(reader, {
 			(0, features, required),
 			(2, last_update, required),
 			(4, rgb, required),
 			(6, alias, required),
 			(8, announcement_message, option),
-			(10, _addresses, vec_type), // deprecated, not used anymore
+			(10, _addresses, optional_vec), // deprecated, not used anymore
 		});
 		let _: Option<Vec<NetAddress>> = _addresses;
 		Ok(Self { features: features.0.unwrap(), last_update: last_update.0.unwrap(), rgb: rgb.0.unwrap(),
 			alias: alias.0.unwrap(), announcement_message })
-    }
+	}
 }
 
 /// A user-defined name for a node, which may be used when displaying the node in a graph.
@@ -1205,7 +1229,7 @@ impl Writeable for NodeInfo {
 		write_tlv_fields!(writer, {
 			// Note that older versions of LDK wrote the lowest inbound fees here at type 0
 			(2, self.announcement_info, option),
-			(4, self.channels, vec_type),
+			(4, self.channels, required_vec),
 		});
 		Ok(())
 	}
@@ -1236,19 +1260,17 @@ impl Readable for NodeInfo {
 		// with zero inbound fees, causing that heuristic to provide little gain. Worse, because it
 		// requires additional complexity and lookups during routing, it ends up being a
 		// performance loss. Thus, we simply ignore the old field here and no longer track it.
-		let mut _lowest_inbound_channel_fees: Option<RoutingFees> = None;
-		let mut announcement_info_wrap: Option<NodeAnnouncementInfoDeserWrapper> = None;
-		_init_tlv_field_var!(channels, vec_type);
-
-		read_tlv_fields!(reader, {
+		_init_and_read_len_prefixed_tlv_fields!(reader, {
 			(0, _lowest_inbound_channel_fees, option),
 			(2, announcement_info_wrap, upgradable_option),
-			(4, channels, vec_type),
+			(4, channels, required_vec),
 		});
+		let _: Option<RoutingFees> = _lowest_inbound_channel_fees;
+		let announcement_info_wrap: Option<NodeAnnouncementInfoDeserWrapper> = announcement_info_wrap;
 
 		Ok(NodeInfo {
 			announcement_info: announcement_info_wrap.map(|w| w.0),
-			channels: _init_tlv_based_struct_field!(channels, vec_type),
+			channels,
 		})
 	}
 }
@@ -1329,7 +1351,7 @@ impl<L: Deref> fmt::Display for NetworkGraph<L> where L::Target: Logger {
 		}
 		writeln!(f, "[Nodes]")?;
 		for (&node_id, val) in self.nodes.read().unwrap().unordered_iter() {
-			writeln!(f, " {}: {}", log_bytes!(node_id.as_slice()), val)?;
+			writeln!(f, " {}: {}", &node_id, val)?;
 		}
 		Ok(())
 	}
@@ -1403,8 +1425,7 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 	/// RoutingMessageHandler implementation to call it indirectly. This may be useful to accept
 	/// routing messages from a source using a protocol other than the lightning P2P protocol.
 	pub fn update_node_from_announcement(&self, msg: &msgs::NodeAnnouncement) -> Result<(), LightningError> {
-		let msg_hash = hash_to_message!(&Sha256dHash::hash(&msg.contents.encode()[..])[..]);
-		secp_verify_sig!(self.secp_ctx, &msg_hash, &msg.signature, &get_pubkey_from_node_id!(msg.contents.node_id, "node_announcement"), "node_announcement");
+		verify_node_announcement(msg, &self.secp_ctx)?;
 		self.update_node_from_announcement_intern(&msg.contents, Some(&msg))
 	}
 
@@ -1467,11 +1488,7 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 	where
 		U::Target: UtxoLookup,
 	{
-		let msg_hash = hash_to_message!(&Sha256dHash::hash(&msg.contents.encode()[..])[..]);
-		secp_verify_sig!(self.secp_ctx, &msg_hash, &msg.node_signature_1, &get_pubkey_from_node_id!(msg.contents.node_id_1, "channel_announcement"), "channel_announcement");
-		secp_verify_sig!(self.secp_ctx, &msg_hash, &msg.node_signature_2, &get_pubkey_from_node_id!(msg.contents.node_id_2, "channel_announcement"), "channel_announcement");
-		secp_verify_sig!(self.secp_ctx, &msg_hash, &msg.bitcoin_signature_1, &get_pubkey_from_node_id!(msg.contents.bitcoin_key_1, "channel_announcement"), "channel_announcement");
-		secp_verify_sig!(self.secp_ctx, &msg_hash, &msg.bitcoin_signature_2, &get_pubkey_from_node_id!(msg.contents.bitcoin_key_2, "channel_announcement"), "channel_announcement");
+		verify_channel_announcement(msg, &self.secp_ctx)?;
 		self.update_channel_from_unsigned_announcement_intern(&msg.contents, Some(msg), utxo_lookup)
 	}
 
@@ -1536,6 +1553,8 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 
 		let node_id_a = channel_info.node_one.clone();
 		let node_id_b = channel_info.node_two.clone();
+
+		log_gossip!(self.logger, "Adding channel {} between nodes {} and {}", short_channel_id, node_id_a, node_id_b);
 
 		match channels.entry(short_channel_id) {
 			IndexedMapEntry::Occupied(mut entry) => {
@@ -1772,16 +1791,23 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 		let mut scids_to_remove = Vec::new();
 		for (scid, info) in channels.unordered_iter_mut() {
 			if info.one_to_two.is_some() && info.one_to_two.as_ref().unwrap().last_update < min_time_unix {
+				log_gossip!(self.logger, "Removing directional update one_to_two (0) for channel {} due to its timestamp {} being below {}",
+					scid, info.one_to_two.as_ref().unwrap().last_update, min_time_unix);
 				info.one_to_two = None;
 			}
 			if info.two_to_one.is_some() && info.two_to_one.as_ref().unwrap().last_update < min_time_unix {
+				log_gossip!(self.logger, "Removing directional update two_to_one (1) for channel {} due to its timestamp {} being below {}",
+					scid, info.two_to_one.as_ref().unwrap().last_update, min_time_unix);
 				info.two_to_one = None;
 			}
 			if info.one_to_two.is_none() || info.two_to_one.is_none() {
 				// We check the announcement_received_time here to ensure we don't drop
 				// announcements that we just received and are just waiting for our peer to send a
 				// channel_update for.
-				if info.announcement_received_time < min_time_unix as u64 {
+				let announcement_received_timestamp = info.announcement_received_time;
+				if announcement_received_timestamp < min_time_unix as u64 {
+					log_gossip!(self.logger, "Removing channel {} because both directional updates are missing and its announcement timestamp {} being below {}",
+						scid, announcement_received_timestamp, min_time_unix);
 					scids_to_remove.push(*scid);
 				}
 			}
@@ -1861,6 +1887,8 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 				return Err(LightningError{err: "channel_update has a timestamp more than a day in the future".to_owned(), action: ErrorAction::IgnoreAndLog(Level::Gossip)});
 			}
 		}
+
+		log_gossip!(self.logger, "Updating channel {} in direction {} with timestamp {}", msg.short_channel_id, msg.flags & 1, msg.timestamp);
 
 		let mut channels = self.channels.write().unwrap();
 		match channels.get_mut(&msg.short_channel_id) {
@@ -3401,6 +3429,12 @@ pub(crate) mod tests {
 				.expect("to be able to read an old NodeAnnouncementInfo with addresses");
 		// This serialized info has an address field but no announcement_message, therefore the addresses returned by our function will still be empty
 		assert!(ann_info_with_addresses.addresses().is_empty());
+	}
+
+	#[test]
+	fn test_node_id_display() {
+		let node_id = NodeId([42; 33]);
+		assert_eq!(format!("{}", &node_id), "2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a");
 	}
 }
 

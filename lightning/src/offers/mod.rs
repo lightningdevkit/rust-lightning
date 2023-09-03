@@ -12,15 +12,16 @@
 //!
 //! Offers are a flexible protocol for Lightning payments.
 
+#[macro_use]
+pub mod offer;
+
 pub mod invoice;
 pub mod invoice_error;
 pub mod invoice_request;
-mod merkle;
-pub mod offer;
+pub mod merkle;
 pub mod parse;
 mod payer;
 pub mod refund;
-#[allow(unused)]
 pub(crate) mod signer;
 #[cfg(test)]
 mod test_utils;

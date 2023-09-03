@@ -20,18 +20,19 @@ use crate::ln::channelmanager::{HTLCForwardInfo, FailureCode, CLTV_FAR_FAR_AWAY,
 use crate::ln::onion_utils;
 use crate::routing::gossip::{NetworkUpdate, RoutingFees};
 use crate::routing::router::{get_route, PaymentParameters, Route, RouteHint, RouteHintHop};
-use crate::ln::features::{InitFeatures, InvoiceFeatures};
+use crate::ln::features::{InitFeatures, Bolt11InvoiceFeatures};
 use crate::ln::msgs;
 use crate::ln::msgs::{ChannelMessageHandler, ChannelUpdate};
 use crate::ln::wire::Encode;
-use crate::util::ser::{Writeable, Writer};
+use crate::util::ser::{Writeable, Writer, BigSize};
 use crate::util::test_utils;
-use crate::util::config::{UserConfig, ChannelConfig};
+use crate::util::config::{UserConfig, ChannelConfig, MaxDustHTLCExposure};
 use crate::util::errors::APIError;
 
 use bitcoin::hash_types::BlockHash;
 
-use bitcoin::hashes::Hash;
+use bitcoin::hashes::{Hash, HashEngine};
+use bitcoin::hashes::hmac::{Hmac, HmacEngine};
 use bitcoin::hashes::sha256::Hash as Sha256;
 
 use bitcoin::secp256k1;
@@ -57,7 +58,12 @@ fn run_onion_failure_test<F1,F2>(_name: &str, test_case: u8, nodes: &Vec<Node>, 
 // 3: final node fails backward (but tamper onion payloads from node0)
 // 100: trigger error in the intermediate node and tamper returning fail_htlc
 // 200: trigger error in the final node and tamper returning fail_htlc
-fn run_onion_failure_test_with_fail_intercept<F1,F2,F3>(_name: &str, test_case: u8, nodes: &Vec<Node>, route: &Route, payment_hash: &PaymentHash, payment_secret: &PaymentSecret, mut callback_msg: F1, mut callback_fail: F2, mut callback_node: F3, expected_retryable: bool, expected_error_code: Option<u16>, expected_channel_update: Option<NetworkUpdate>, expected_short_channel_id: Option<u64>)
+fn run_onion_failure_test_with_fail_intercept<F1,F2,F3>(
+	_name: &str, test_case: u8, nodes: &Vec<Node>, route: &Route, payment_hash: &PaymentHash,
+	payment_secret: &PaymentSecret, mut callback_msg: F1, mut callback_fail: F2,
+	mut callback_node: F3, expected_retryable: bool, expected_error_code: Option<u16>,
+	expected_channel_update: Option<NetworkUpdate>, expected_short_channel_id: Option<u64>
+)
 	where F1: for <'a> FnMut(&'a mut msgs::UpdateAddHTLC),
 				F2: for <'a> FnMut(&'a mut msgs::UpdateFailHTLC),
 				F3: FnMut(),
@@ -252,7 +258,7 @@ struct BogusOnionHopData {
 	data: Vec<u8>
 }
 impl BogusOnionHopData {
-	fn new(orig: msgs::OnionHopData) -> Self {
+	fn new(orig: msgs::OutboundOnionPayload) -> Self {
 		Self { data: orig.encode() }
 	}
 }
@@ -597,7 +603,7 @@ fn test_onion_failure() {
 		nodes[1].node.get_and_clear_pending_msg_events();
 		nodes[2].node.get_and_clear_pending_msg_events();
 	}, true, Some(UPDATE|20), Some(NetworkUpdate::ChannelUpdateMessage{msg: ChannelUpdate::dummy(short_channel_id)}), Some(short_channel_id));
-	reconnect_nodes(&nodes[1], &nodes[2], (false, false), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
+	reconnect_nodes(ReconnectArgs::new(&nodes[1], &nodes[2]));
 
 	run_onion_failure_test("expiry_too_far", 0, &nodes, &route, &payment_hash, &payment_secret, |msg| {
 		let session_priv = SecretKey::from_slice(&[3; 32]).unwrap();
@@ -620,6 +626,49 @@ fn test_onion_failure() {
 	}, ||{
 		nodes[2].node.fail_htlc_backwards(&payment_hash);
 	}, true, Some(23), None, None);
+
+	run_onion_failure_test_with_fail_intercept("bogus err packet with valid hmac", 200, &nodes,
+		&route, &payment_hash, &payment_secret, |_msg| {}, |msg| {
+			let session_priv = SecretKey::from_slice(&[3; 32]).unwrap();
+			let onion_keys = onion_utils::construct_onion_keys(&Secp256k1::new(), &route.paths[0], &session_priv).unwrap();
+			let mut decoded_err_packet = msgs::DecodedOnionErrorPacket {
+				failuremsg: vec![0],
+				pad: vec![0; 255],
+				hmac: [0; 32],
+			};
+			let um = onion_utils::gen_um_from_shared_secret(&onion_keys[1].shared_secret.as_ref());
+			let mut hmac = HmacEngine::<Sha256>::new(&um);
+			hmac.input(&decoded_err_packet.encode()[32..]);
+			decoded_err_packet.hmac = Hmac::from_engine(hmac).into_inner();
+			msg.reason = onion_utils::encrypt_failure_packet(
+				&onion_keys[1].shared_secret.as_ref(), &decoded_err_packet.encode()[..])
+		}, || nodes[2].node.fail_htlc_backwards(&payment_hash), false, None,
+		Some(NetworkUpdate::NodeFailure { node_id: route.paths[0].hops[1].pubkey, is_permanent: true }),
+		Some(channels[1].0.contents.short_channel_id));
+	run_onion_failure_test_with_fail_intercept("0-length channel update in UPDATE onion failure", 200, &nodes,
+		&route, &payment_hash, &payment_secret, |_msg| {}, |msg| {
+			let session_priv = SecretKey::from_slice(&[3; 32]).unwrap();
+			let onion_keys = onion_utils::construct_onion_keys(&Secp256k1::new(), &route.paths[0], &session_priv).unwrap();
+			let mut decoded_err_packet = msgs::DecodedOnionErrorPacket {
+				failuremsg: vec![
+					0x10, 0x7, // UPDATE|7
+					0x0, 0x0 // 0-len channel update
+				],
+				pad: vec![0; 255 - 4 /* 4-byte error message */],
+				hmac: [0; 32],
+			};
+			let um = onion_utils::gen_um_from_shared_secret(&onion_keys[1].shared_secret.as_ref());
+			let mut hmac = HmacEngine::<Sha256>::new(&um);
+			hmac.input(&decoded_err_packet.encode()[32..]);
+			decoded_err_packet.hmac = Hmac::from_engine(hmac).into_inner();
+			msg.reason = onion_utils::encrypt_failure_packet(
+				&onion_keys[1].shared_secret.as_ref(), &decoded_err_packet.encode()[..])
+		}, || nodes[2].node.fail_htlc_backwards(&payment_hash), true, Some(0x1000|7),
+		Some(NetworkUpdate::ChannelFailure {
+			short_channel_id: channels[1].0.contents.short_channel_id,
+			is_permanent: false,
+		}),
+		Some(channels[1].0.contents.short_channel_id));
 }
 
 #[test]
@@ -671,12 +720,13 @@ fn do_test_onion_failure_stale_channel_update(announced_channel: bool) {
 	config.channel_handshake_config.announced_channel = announced_channel;
 	config.channel_handshake_limits.force_announced_channel_preference = false;
 	config.accept_forwards_to_priv_channels = !announced_channel;
+	config.channel_config.max_dust_htlc_exposure = MaxDustHTLCExposure::FeeRateMultiplier(5_000_000 / 253);
 	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 	let persister;
 	let chain_monitor;
-	let channel_manager_1_deserialized;
-	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, Some(config), None]);
+	let channel_manager_1_deserialized;
 	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 
 	let other_channel = create_chan_between_nodes(
@@ -861,7 +911,7 @@ fn test_always_create_tlv_format_onion_payloads() {
 	create_announced_chan_between_nodes(&nodes, 1, 2);
 
 	let payment_params = PaymentParameters::from_node_id(nodes[2].node.get_our_node_id(), TEST_FINAL_CLTV)
-		.with_bolt11_features(InvoiceFeatures::empty()).unwrap();
+		.with_bolt11_features(Bolt11InvoiceFeatures::empty()).unwrap();
 	let (route, _payment_hash, _payment_preimage, _payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[2], payment_params, 40000);
 
 	let hops = &route.paths[0].hops;
@@ -874,15 +924,15 @@ fn test_always_create_tlv_format_onion_payloads() {
 	let (onion_payloads, _htlc_msat, _htlc_cltv) = onion_utils::build_onion_payloads(
 		&route.paths[0], 40000, RecipientOnionFields::spontaneous_empty(), cur_height, &None).unwrap();
 
-	match onion_payloads[0].format {
-		msgs::OnionHopDataFormat::NonFinalNode {..} => {},
+	match onion_payloads[0] {
+		msgs::OutboundOnionPayload::Forward {..} => {},
 		_ => { panic!(
 			"Should have generated a `msgs::OnionHopDataFormat::NonFinalNode` payload for `hops[0]`,
 			despite that the features signals no support for variable length onions"
 		)}
 	}
-	match onion_payloads[1].format {
-		msgs::OnionHopDataFormat::FinalNode {..} => {},
+	match onion_payloads[1] {
+		msgs::OutboundOnionPayload::Receive {..} => {},
 		_ => {panic!(
 			"Should have generated a `msgs::OnionHopDataFormat::FinalNode` payload for `hops[1]`,
 			despite that the features signals no support for variable length onions"
@@ -941,10 +991,16 @@ fn do_test_fail_htlc_backwards_with_reason(failure_code: FailureCode) {
 			let mut htlc_msat_height_data = (payment_amount as u64).to_be_bytes().to_vec();
 			htlc_msat_height_data.extend_from_slice(&CHAN_CONFIRM_DEPTH.to_be_bytes());
 			htlc_msat_height_data
+		},
+		FailureCode::InvalidOnionPayload(data) => {
+			match data {
+				Some((typ, offset)) => [BigSize(typ).encode(), offset.encode()].concat(),
+				None => Vec::new(),
+			}
 		}
 	};
 
-	let failure_code = failure_code as u16;
+	let failure_code = failure_code.into();
 	let permanent_flag = 0x4000;
 	let permanent_fail = (failure_code & permanent_flag) != 0;
 	expect_payment_failed!(nodes[0], payment_hash, permanent_fail, failure_code, failure_data);
@@ -956,6 +1012,8 @@ fn test_fail_htlc_backwards_with_reason() {
 	do_test_fail_htlc_backwards_with_reason(FailureCode::TemporaryNodeFailure);
 	do_test_fail_htlc_backwards_with_reason(FailureCode::RequiredNodeFeatureMissing);
 	do_test_fail_htlc_backwards_with_reason(FailureCode::IncorrectOrUnknownPaymentDetails);
+	do_test_fail_htlc_backwards_with_reason(FailureCode::InvalidOnionPayload(Some((1 << 16, 42))));
+	do_test_fail_htlc_backwards_with_reason(FailureCode::InvalidOnionPayload(None));
 }
 
 macro_rules! get_phantom_route {
@@ -1371,10 +1429,19 @@ fn test_phantom_failure_too_low_recv_amt() {
 
 #[test]
 fn test_phantom_dust_exposure_failure() {
+	do_test_phantom_dust_exposure_failure(false);
+	do_test_phantom_dust_exposure_failure(true);
+}
+
+fn do_test_phantom_dust_exposure_failure(multiplier_dust_limit: bool) {
 	// Set the max dust exposure to the dust limit.
 	let max_dust_exposure = 546;
 	let mut receiver_config = UserConfig::default();
-	receiver_config.channel_config.max_dust_htlc_exposure_msat = max_dust_exposure;
+	// Default test fee estimator rate is 253, so to set the max dust exposure to the dust limit,
+	// we need to set the multiplier to 2.
+	receiver_config.channel_config.max_dust_htlc_exposure =
+		if multiplier_dust_limit { MaxDustHTLCExposure::FeeRateMultiplier(2) }
+		else { MaxDustHTLCExposure::FixedLimitMsat(max_dust_exposure) };
 	receiver_config.channel_handshake_config.announced_channel = true;
 
 	let chanmon_cfgs = create_chanmon_cfgs(2);

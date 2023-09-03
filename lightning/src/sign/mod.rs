@@ -26,33 +26,37 @@ use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::sha256d::Hash as Sha256dHash;
 use bitcoin::hash_types::WPubkeyHash;
 
-use bitcoin::secp256k1::{SecretKey, PublicKey, Scalar};
-use bitcoin::secp256k1::{Secp256k1, ecdsa::Signature, Signing};
+use bitcoin::secp256k1::{KeyPair, PublicKey, Scalar, Secp256k1, SecretKey, Signing};
 use bitcoin::secp256k1::ecdh::SharedSecret;
-use bitcoin::secp256k1::ecdsa::RecoverableSignature;
+use bitcoin::secp256k1::ecdsa::{RecoverableSignature, Signature};
+use bitcoin::secp256k1::schnorr;
 use bitcoin::{PackedLockTime, secp256k1, Sequence, Witness};
 
 use crate::util::transaction_utils;
 use crate::util::crypto::{hkdf_extract_expand_twice, sign, sign_with_aux_rand};
 use crate::util::ser::{Writeable, Writer, Readable, ReadableArgs};
 use crate::chain::transaction::OutPoint;
-#[cfg(anchors)]
 use crate::events::bump_transaction::HTLCDescriptor;
 use crate::ln::channel::ANCHOR_OUTPUT_VALUE_SATOSHI;
 use crate::ln::{chan_utils, PaymentPreimage};
 use crate::ln::chan_utils::{HTLCOutputInCommitment, make_funding_redeemscript, ChannelPublicKeys, HolderCommitmentTransaction, ChannelTransactionParameters, CommitmentTransaction, ClosingTransaction};
 use crate::ln::msgs::{UnsignedChannelAnnouncement, UnsignedGossipMessage};
 use crate::ln::script::ShutdownScript;
+use crate::offers::invoice::UnsignedBolt12Invoice;
+use crate::offers::invoice_request::UnsignedInvoiceRequest;
 
 use crate::prelude::*;
 use core::convert::TryInto;
 use core::ops::Deref;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use crate::io::{self, Error};
+use crate::ln::features::ChannelTypeFeatures;
 use crate::ln::msgs::{DecodeError, MAX_VALUE_MSAT};
 use crate::util::atomic_counter::AtomicCounter;
 use crate::util::chacha20::ChaCha20;
 use crate::util::invoice::construct_invoice_preimage;
+
+pub(crate) mod type_resolver;
 
 /// Used as initial key material, to be expanded into multiple secret keys (but not to be used
 /// directly). This is used within LDK to encrypt/decrypt inbound payment data.
@@ -488,7 +492,6 @@ pub trait EcdsaChannelSigner: ChannelSigner {
 	fn sign_justice_revoked_htlc(&self, justice_tx: &Transaction, input: usize, amount: u64,
 		per_commitment_key: &SecretKey, htlc: &HTLCOutputInCommitment,
 		secp_ctx: &Secp256k1<secp256k1::All>) -> Result<Signature, ()>;
-	#[cfg(anchors)]
 	/// Computes the signature for a commitment transaction's HTLC output used as an input within
 	/// `htlc_tx`, which spends the commitment transaction at index `input`. The signature returned
 	/// must be be computed using [`EcdsaSighashType::All`]. Note that this should only be used to
@@ -620,6 +623,36 @@ pub trait NodeSigner {
 	///
 	/// Errors if the [`Recipient`] variant is not supported by the implementation.
 	fn sign_invoice(&self, hrp_bytes: &[u8], invoice_data: &[u5], recipient: Recipient) -> Result<RecoverableSignature, ()>;
+
+	/// Signs the [`TaggedHash`] of a BOLT 12 invoice request.
+	///
+	/// May be called by a function passed to [`UnsignedInvoiceRequest::sign`] where
+	/// `invoice_request` is the callee.
+	///
+	/// Implementors may check that the `invoice_request` is expected rather than blindly signing
+	/// the tagged hash. An `Ok` result should sign `invoice_request.tagged_hash().as_digest()` with
+	/// the node's signing key or an ephemeral key to preserve privacy, whichever is associated with
+	/// [`UnsignedInvoiceRequest::payer_id`].
+	///
+	/// [`TaggedHash`]: crate::offers::merkle::TaggedHash
+	fn sign_bolt12_invoice_request(
+		&self, invoice_request: &UnsignedInvoiceRequest
+	) -> Result<schnorr::Signature, ()>;
+
+	/// Signs the [`TaggedHash`] of a BOLT 12 invoice.
+	///
+	/// May be called by a function passed to [`UnsignedBolt12Invoice::sign`] where `invoice` is the
+	/// callee.
+	///
+	/// Implementors may check that the `invoice` is expected rather than blindly signing the tagged
+	/// hash. An `Ok` result should sign `invoice.tagged_hash().as_digest()` with the node's signing
+	/// key or an ephemeral key to preserve privacy, whichever is associated with
+	/// [`UnsignedBolt12Invoice::signing_pubkey`].
+	///
+	/// [`TaggedHash`]: crate::offers::merkle::TaggedHash
+	fn sign_bolt12_invoice(
+		&self, invoice: &UnsignedBolt12Invoice
+	) -> Result<schnorr::Signature, ()>;
 
 	/// Sign a gossip message.
 	///
@@ -834,11 +867,12 @@ impl InMemorySigner {
 	pub fn get_channel_parameters(&self) -> &ChannelTransactionParameters {
 		self.channel_parameters.as_ref().unwrap()
 	}
-	/// Returns whether anchors should be used.
+	/// Returns the channel type features of the channel parameters. Should be helpful for
+	/// determining a channel's category, i. e. legacy/anchors/taproot/etc.
 	///
 	/// Will panic if [`ChannelSigner::provide_channel_parameters`] has not been called before.
-	pub fn opt_anchors(&self) -> bool {
-		self.get_channel_parameters().opt_anchors.is_some()
+	pub fn channel_type_features(&self) -> &ChannelTypeFeatures {
+		&self.get_channel_parameters().channel_type_features
 	}
 	/// Sign the single input of `spend_tx` at index `input_idx`, which spends the output described
 	/// by `descriptor`, returning the witness stack for the input.
@@ -963,9 +997,9 @@ impl EcdsaChannelSigner for InMemorySigner {
 		let mut htlc_sigs = Vec::with_capacity(commitment_tx.htlcs().len());
 		for htlc in commitment_tx.htlcs() {
 			let channel_parameters = self.get_channel_parameters();
-			let htlc_tx = chan_utils::build_htlc_transaction(&commitment_txid, commitment_tx.feerate_per_kw(), self.holder_selected_contest_delay(), htlc, self.opt_anchors(), channel_parameters.opt_non_zero_fee_anchors.is_some(), &keys.broadcaster_delayed_payment_key, &keys.revocation_key);
-			let htlc_redeemscript = chan_utils::get_htlc_redeemscript(&htlc, self.opt_anchors(), &keys);
-			let htlc_sighashtype = if self.opt_anchors() { EcdsaSighashType::SinglePlusAnyoneCanPay } else { EcdsaSighashType::All };
+			let htlc_tx = chan_utils::build_htlc_transaction(&commitment_txid, commitment_tx.feerate_per_kw(), self.holder_selected_contest_delay(), htlc, &channel_parameters.channel_type_features, &keys.broadcaster_delayed_payment_key, &keys.revocation_key);
+			let htlc_redeemscript = chan_utils::get_htlc_redeemscript(&htlc, self.channel_type_features(), &keys);
+			let htlc_sighashtype = if self.channel_type_features().supports_anchors_zero_fee_htlc_tx() { EcdsaSighashType::SinglePlusAnyoneCanPay } else { EcdsaSighashType::All };
 			let htlc_sighash = hash_to_message!(&sighash::SighashCache::new(&htlc_tx).segwit_signature_hash(0, &htlc_redeemscript, htlc.amount_msat / 1000, htlc_sighashtype).unwrap()[..]);
 			let holder_htlc_key = chan_utils::derive_private_key(&secp_ctx, &keys.per_commitment_point, &self.htlc_base_key);
 			htlc_sigs.push(sign(secp_ctx, &htlc_sighash, &holder_htlc_key));
@@ -1019,27 +1053,23 @@ impl EcdsaChannelSigner for InMemorySigner {
 		let witness_script = {
 			let counterparty_htlcpubkey = chan_utils::derive_public_key(&secp_ctx, &per_commitment_point, &self.counterparty_pubkeys().htlc_basepoint);
 			let holder_htlcpubkey = chan_utils::derive_public_key(&secp_ctx, &per_commitment_point, &self.pubkeys().htlc_basepoint);
-			chan_utils::get_htlc_redeemscript_with_explicit_keys(&htlc, self.opt_anchors(), &counterparty_htlcpubkey, &holder_htlcpubkey, &revocation_pubkey)
+			chan_utils::get_htlc_redeemscript_with_explicit_keys(&htlc, self.channel_type_features(), &counterparty_htlcpubkey, &holder_htlcpubkey, &revocation_pubkey)
 		};
 		let mut sighash_parts = sighash::SighashCache::new(justice_tx);
 		let sighash = hash_to_message!(&sighash_parts.segwit_signature_hash(input, &witness_script, amount, EcdsaSighashType::All).unwrap()[..]);
 		return Ok(sign_with_aux_rand(secp_ctx, &sighash, &revocation_key, &self))
 	}
 
-	#[cfg(anchors)]
 	fn sign_holder_htlc_transaction(
 		&self, htlc_tx: &Transaction, input: usize, htlc_descriptor: &HTLCDescriptor,
 		secp_ctx: &Secp256k1<secp256k1::All>
 	) -> Result<Signature, ()> {
-		let per_commitment_point = self.get_per_commitment_point(
-			htlc_descriptor.per_commitment_number, &secp_ctx
-		);
-		let witness_script = htlc_descriptor.witness_script(&per_commitment_point, secp_ctx);
+		let witness_script = htlc_descriptor.witness_script(secp_ctx);
 		let sighash = &sighash::SighashCache::new(&*htlc_tx).segwit_signature_hash(
 			input, &witness_script, htlc_descriptor.htlc.amount_msat / 1000, EcdsaSighashType::All
 		).map_err(|_| ())?;
 		let our_htlc_private_key = chan_utils::derive_private_key(
-			&secp_ctx, &per_commitment_point, &self.htlc_base_key
+			&secp_ctx, &htlc_descriptor.per_commitment_point, &self.htlc_base_key
 		);
 		Ok(sign_with_aux_rand(&secp_ctx, &hash_to_message!(sighash), &our_htlc_private_key, &self))
 	}
@@ -1049,7 +1079,7 @@ impl EcdsaChannelSigner for InMemorySigner {
 		let revocation_pubkey = chan_utils::derive_public_revocation_key(&secp_ctx, &per_commitment_point, &self.pubkeys().revocation_basepoint);
 		let counterparty_htlcpubkey = chan_utils::derive_public_key(&secp_ctx, &per_commitment_point, &self.counterparty_pubkeys().htlc_basepoint);
 		let htlcpubkey = chan_utils::derive_public_key(&secp_ctx, &per_commitment_point, &self.pubkeys().htlc_basepoint);
-		let witness_script = chan_utils::get_htlc_redeemscript_with_explicit_keys(&htlc, self.opt_anchors(), &counterparty_htlcpubkey, &htlcpubkey, &revocation_pubkey);
+		let witness_script = chan_utils::get_htlc_redeemscript_with_explicit_keys(&htlc, self.channel_type_features(), &counterparty_htlcpubkey, &htlcpubkey, &revocation_pubkey);
 		let mut sighash_parts = sighash::SighashCache::new(htlc_tx);
 		let sighash = hash_to_message!(&sighash_parts.segwit_signature_hash(input, &witness_script, amount, EcdsaSighashType::All).unwrap()[..]);
 		Ok(sign_with_aux_rand(secp_ctx, &sighash, &htlc_key, &self))
@@ -1316,7 +1346,7 @@ impl KeysManager {
 	///
 	/// May panic if the [`SpendableOutputDescriptor`]s were not generated by channels which used
 	/// this [`KeysManager`] or one of the [`InMemorySigner`] created by this [`KeysManager`].
-	pub fn sign_spendable_outputs_psbt<C: Signing>(&self, descriptors: &[&SpendableOutputDescriptor], psbt: &mut PartiallySignedTransaction, secp_ctx: &Secp256k1<C>) -> Result<(), ()> {
+	pub fn sign_spendable_outputs_psbt<C: Signing>(&self, descriptors: &[&SpendableOutputDescriptor], mut psbt: PartiallySignedTransaction, secp_ctx: &Secp256k1<C>) -> Result<PartiallySignedTransaction, ()> {
 		let mut keys_cache: Option<(InMemorySigner, [u8; 32])> = None;
 		for outp in descriptors {
 			match outp {
@@ -1378,7 +1408,7 @@ impl KeysManager {
 			}
 		}
 
-		Ok(())
+		Ok(psbt)
 	}
 
 	/// Creates a [`Transaction`] which spends the given descriptors to the given outputs, plus an
@@ -1400,7 +1430,7 @@ impl KeysManager {
 	/// this [`KeysManager`] or one of the [`InMemorySigner`] created by this [`KeysManager`].
 	pub fn spend_spendable_outputs<C: Signing>(&self, descriptors: &[&SpendableOutputDescriptor], outputs: Vec<TxOut>, change_destination_script: Script, feerate_sat_per_1000_weight: u32, locktime: Option<PackedLockTime>, secp_ctx: &Secp256k1<C>) -> Result<Transaction, ()> {
 		let (mut psbt, expected_max_weight) = SpendableOutputDescriptor::create_spendable_outputs_psbt(descriptors, outputs, change_destination_script, feerate_sat_per_1000_weight, locktime)?;
-		self.sign_spendable_outputs_psbt(descriptors, &mut psbt, secp_ctx)?;
+		psbt = self.sign_spendable_outputs_psbt(descriptors, psbt, secp_ctx)?;
 
 		let spend_tx = psbt.extract_tx();
 
@@ -1452,6 +1482,24 @@ impl NodeSigner for KeysManager {
 			Recipient::PhantomNode => Err(())
 		}?;
 		Ok(self.secp_ctx.sign_ecdsa_recoverable(&hash_to_message!(&Sha256::hash(&preimage)), secret))
+	}
+
+	fn sign_bolt12_invoice_request(
+		&self, invoice_request: &UnsignedInvoiceRequest
+	) -> Result<schnorr::Signature, ()> {
+		let message = invoice_request.tagged_hash().as_digest();
+		let keys = KeyPair::from_secret_key(&self.secp_ctx, &self.node_secret);
+		let aux_rand = self.get_secure_random_bytes();
+		Ok(self.secp_ctx.sign_schnorr_with_aux_rand(message, &keys, &aux_rand))
+	}
+
+	fn sign_bolt12_invoice(
+		&self, invoice: &UnsignedBolt12Invoice
+	) -> Result<schnorr::Signature, ()> {
+		let message = invoice.tagged_hash().as_digest();
+		let keys = KeyPair::from_secret_key(&self.secp_ctx, &self.node_secret);
+		let aux_rand = self.get_secure_random_bytes();
+		Ok(self.secp_ctx.sign_schnorr_with_aux_rand(message, &keys, &aux_rand))
 	}
 
 	fn sign_gossip_message(&self, msg: UnsignedGossipMessage) -> Result<Signature, ()> {
@@ -1560,6 +1608,18 @@ impl NodeSigner for PhantomKeysManager {
 			Recipient::PhantomNode => &self.phantom_secret,
 		};
 		Ok(self.inner.secp_ctx.sign_ecdsa_recoverable(&hash_to_message!(&Sha256::hash(&preimage)), secret))
+	}
+
+	fn sign_bolt12_invoice_request(
+		&self, invoice_request: &UnsignedInvoiceRequest
+	) -> Result<schnorr::Signature, ()> {
+		self.inner.sign_bolt12_invoice_request(invoice_request)
+	}
+
+	fn sign_bolt12_invoice(
+		&self, invoice: &UnsignedBolt12Invoice
+	) -> Result<schnorr::Signature, ()> {
+		self.inner.sign_bolt12_invoice(invoice)
 	}
 
 	fn sign_gossip_message(&self, msg: UnsignedGossipMessage) -> Result<Signature, ()> {

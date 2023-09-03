@@ -3,8 +3,8 @@ use core::fmt::{Display, Formatter};
 use bech32::{ToBase32, u5, WriteBase32, Base32Len};
 use crate::prelude::*;
 
-use super::{Invoice, Sha256, TaggedField, ExpiryTime, MinFinalCltvExpiryDelta, Fallback, PayeePubKey, InvoiceSignature, PositiveTimestamp,
-	PrivateRoute, Description, RawTaggedField, Currency, RawHrp, SiPrefix, constants, SignedRawInvoice, RawDataPart};
+use super::{Bolt11Invoice, Sha256, TaggedField, ExpiryTime, MinFinalCltvExpiryDelta, Fallback, PayeePubKey, Bolt11InvoiceSignature, PositiveTimestamp,
+	PrivateRoute, Description, RawTaggedField, Currency, RawHrp, SiPrefix, constants, SignedRawBolt11Invoice, RawDataPart};
 
 /// Converts a stream of bytes written to it to base32. On finalization the according padding will
 /// be applied. That means the results of writing two data blocks with one or two `BytesToBase32`
@@ -106,13 +106,13 @@ fn bytes_size_to_base32_size(byte_size: usize) -> usize {
 	}
 }
 
-impl Display for Invoice {
+impl Display for Bolt11Invoice {
 	fn fmt(&self, f: &mut Formatter) -> Result<(), fmt::Error> {
 		self.signed_invoice.fmt(f)
 	}
 }
 
-impl Display for SignedRawInvoice {
+impl Display for SignedRawBolt11Invoice {
 	fn fmt(&self, f: &mut Formatter) -> Result<(), fmt::Error> {
 		let hrp = self.raw_invoice.hrp.to_string();
 		let mut data  = self.raw_invoice.data.to_base32();
@@ -456,7 +456,7 @@ impl ToBase32 for TaggedField {
 	}
 }
 
-impl ToBase32 for InvoiceSignature {
+impl ToBase32 for Bolt11InvoiceSignature {
 	fn write_base32<W: WriteBase32>(&self, writer: &mut W) -> Result<(), <W as WriteBase32>::Err> {
 		let mut converter = BytesToBase32::new(writer);
 		let (recovery_id, signature) = self.0.serialize_compact();

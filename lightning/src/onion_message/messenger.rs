@@ -15,7 +15,9 @@ use bitcoin::hashes::hmac::{Hmac, HmacEngine};
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::secp256k1::{self, PublicKey, Scalar, Secp256k1, SecretKey};
 
-use crate::blinded_path::{BlindedPath, ForwardTlvs, ReceiveTlvs, utils};
+use crate::blinded_path::BlindedPath;
+use crate::blinded_path::message::{advance_path_by_one, ForwardTlvs, ReceiveTlvs};
+use crate::blinded_path::utils;
 use crate::sign::{EntropySource, KeysManager, NodeSigner, Recipient};
 use crate::events::OnionMessageProvider;
 use crate::ln::features::{InitFeatures, NodeFeatures};
@@ -152,6 +154,17 @@ pub trait MessageRouter {
 	) -> Result<OnionMessagePath, ()>;
 }
 
+/// A [`MessageRouter`] that always fails.
+pub struct DefaultMessageRouter;
+
+impl MessageRouter for DefaultMessageRouter {
+	fn find_path(
+		&self, _sender: PublicKey, _peers: Vec<PublicKey>, _destination: Destination
+	) -> Result<OnionMessagePath, ()> {
+		Err(())
+	}
+}
+
 /// A path for sending an [`msgs::OnionMessage`].
 #[derive(Clone)]
 pub struct OnionMessagePath {
@@ -286,7 +299,7 @@ where
 				let our_node_id = self.node_signer.get_node_id(Recipient::Node)
 					.map_err(|()| SendError::GetNodeIdFailed)?;
 				if blinded_path.introduction_node_id == our_node_id {
-					blinded_path.advance_message_path_by_one(&self.node_signer, &self.secp_ctx)
+					advance_path_by_one(blinded_path, &self.node_signer, &self.secp_ctx)
 						.map_err(|()| SendError::BlindedPathAdvanceFailed)?;
 				}
 			}
@@ -479,7 +492,7 @@ where
 				// unwrapping the onion layers to get to the final payload. Since we don't have the option
 				// of creating blinded paths with dummy hops currently, we should be ok to not handle this
 				// for now.
-				let new_pubkey = match onion_utils::next_hop_packet_pubkey(&self.secp_ctx, msg.onion_routing_packet.public_key, &onion_decode_ss) {
+				let new_pubkey = match onion_utils::next_hop_pubkey(&self.secp_ctx, msg.onion_routing_packet.public_key, &onion_decode_ss) {
 					Ok(pk) => pk,
 					Err(e) => {
 						log_trace!(self.logger, "Failed to compute next hop packet pubkey: {}", e);
@@ -496,21 +509,16 @@ where
 					blinding_point: match next_blinding_override {
 						Some(blinding_point) => blinding_point,
 						None => {
-							let blinding_factor = {
-								let mut sha = Sha256::engine();
-								sha.input(&msg.blinding_point.serialize()[..]);
-								sha.input(control_tlvs_ss.as_ref());
-								Sha256::from_engine(sha).into_inner()
-							};
-							let next_blinding_point = msg.blinding_point;
-							match next_blinding_point.mul_tweak(&self.secp_ctx, &Scalar::from_be_bytes(blinding_factor).unwrap()) {
+							match onion_utils::next_hop_pubkey(
+								&self.secp_ctx, msg.blinding_point, control_tlvs_ss.as_ref()
+							) {
 								Ok(bp) => bp,
 								Err(e) => {
 									log_trace!(self.logger, "Failed to compute next blinding point: {}", e);
 									return
 								}
 							}
-						},
+						}
 					},
 					onion_routing_packet: outgoing_packet,
 				};
@@ -598,11 +606,11 @@ where
 ///
 /// [`SimpleArcChannelManager`]: crate::ln::channelmanager::SimpleArcChannelManager
 /// [`SimpleArcPeerManager`]: crate::ln::peer_handler::SimpleArcPeerManager
-pub type SimpleArcOnionMessenger<L, R> = OnionMessenger<
+pub type SimpleArcOnionMessenger<L> = OnionMessenger<
 	Arc<KeysManager>,
 	Arc<KeysManager>,
 	Arc<L>,
-	Arc<R>,
+	Arc<DefaultMessageRouter>,
 	IgnoringMessageHandler,
 	IgnoringMessageHandler
 >;
@@ -614,11 +622,11 @@ pub type SimpleArcOnionMessenger<L, R> = OnionMessenger<
 ///
 /// [`SimpleRefChannelManager`]: crate::ln::channelmanager::SimpleRefChannelManager
 /// [`SimpleRefPeerManager`]: crate::ln::peer_handler::SimpleRefPeerManager
-pub type SimpleRefOnionMessenger<'a, 'b, 'c, L, R> = OnionMessenger<
+pub type SimpleRefOnionMessenger<'a, 'b, 'c, L> = OnionMessenger<
 	&'a KeysManager,
 	&'a KeysManager,
 	&'b L,
-	&'c R,
+	&'c DefaultMessageRouter,
 	IgnoringMessageHandler,
 	IgnoringMessageHandler
 >;
@@ -642,46 +650,48 @@ fn packet_payloads_and_keys<T: CustomOnionMessageContents, S: secp256k1::Signing
 	let mut blinded_path_idx = 0;
 	let mut prev_control_tlvs_ss = None;
 	let mut final_control_tlvs = None;
-	utils::construct_keys_callback(secp_ctx, unblinded_path, Some(destination), session_priv, |_, onion_packet_ss, ephemeral_pubkey, control_tlvs_ss, unblinded_pk_opt, enc_payload_opt| {
-		if num_unblinded_hops != 0 && unblinded_path_idx < num_unblinded_hops {
-			if let Some(ss) = prev_control_tlvs_ss.take() {
-				payloads.push((Payload::Forward(ForwardControlTlvs::Unblinded(
-					ForwardTlvs {
-						next_node_id: unblinded_pk_opt.unwrap(),
-						next_blinding_override: None,
-					}
-				)), ss));
+	utils::construct_keys_callback(secp_ctx, unblinded_path.iter(), Some(destination), session_priv,
+		|_, onion_packet_ss, ephemeral_pubkey, control_tlvs_ss, unblinded_pk_opt, enc_payload_opt| {
+			if num_unblinded_hops != 0 && unblinded_path_idx < num_unblinded_hops {
+				if let Some(ss) = prev_control_tlvs_ss.take() {
+					payloads.push((Payload::Forward(ForwardControlTlvs::Unblinded(
+						ForwardTlvs {
+							next_node_id: unblinded_pk_opt.unwrap(),
+							next_blinding_override: None,
+						}
+					)), ss));
+				}
+				prev_control_tlvs_ss = Some(control_tlvs_ss);
+				unblinded_path_idx += 1;
+			} else if let Some((intro_node_id, blinding_pt)) = intro_node_id_blinding_pt.take() {
+				if let Some(control_tlvs_ss) = prev_control_tlvs_ss.take() {
+					payloads.push((Payload::Forward(ForwardControlTlvs::Unblinded(ForwardTlvs {
+						next_node_id: intro_node_id,
+						next_blinding_override: Some(blinding_pt),
+					})), control_tlvs_ss));
+				}
 			}
-			prev_control_tlvs_ss = Some(control_tlvs_ss);
-			unblinded_path_idx += 1;
-		} else if let Some((intro_node_id, blinding_pt)) = intro_node_id_blinding_pt.take() {
-			if let Some(control_tlvs_ss) = prev_control_tlvs_ss.take() {
-				payloads.push((Payload::Forward(ForwardControlTlvs::Unblinded(ForwardTlvs {
-					next_node_id: intro_node_id,
-					next_blinding_override: Some(blinding_pt),
-				})), control_tlvs_ss));
+			if blinded_path_idx < num_blinded_hops.saturating_sub(1) && enc_payload_opt.is_some() {
+				payloads.push((Payload::Forward(ForwardControlTlvs::Blinded(enc_payload_opt.unwrap())),
+					control_tlvs_ss));
+				blinded_path_idx += 1;
+			} else if let Some(encrypted_payload) = enc_payload_opt {
+				final_control_tlvs = Some(ReceiveControlTlvs::Blinded(encrypted_payload));
+				prev_control_tlvs_ss = Some(control_tlvs_ss);
 			}
-		}
-		if blinded_path_idx < num_blinded_hops.saturating_sub(1) && enc_payload_opt.is_some() {
-			payloads.push((Payload::Forward(ForwardControlTlvs::Blinded(enc_payload_opt.unwrap())),
-				control_tlvs_ss));
-			blinded_path_idx += 1;
-		} else if let Some(encrypted_payload) = enc_payload_opt {
-			final_control_tlvs = Some(ReceiveControlTlvs::Blinded(encrypted_payload));
-			prev_control_tlvs_ss = Some(control_tlvs_ss);
-		}
 
-		let (rho, mu) = onion_utils::gen_rho_mu_from_shared_secret(onion_packet_ss.as_ref());
-		onion_packet_keys.push(onion_utils::OnionKeys {
-			#[cfg(test)]
-			shared_secret: onion_packet_ss,
-			#[cfg(test)]
-			blinding_factor: [0; 32],
-			ephemeral_pubkey,
-			rho,
-			mu,
-		});
-	})?;
+			let (rho, mu) = onion_utils::gen_rho_mu_from_shared_secret(onion_packet_ss.as_ref());
+			onion_packet_keys.push(onion_utils::OnionKeys {
+				#[cfg(test)]
+				shared_secret: onion_packet_ss,
+				#[cfg(test)]
+				blinding_factor: [0; 32],
+				ephemeral_pubkey,
+				rho,
+				mu,
+			});
+		}
+	)?;
 
 	if let Some(control_tlvs) = final_control_tlvs {
 		payloads.push((Payload::Receive {

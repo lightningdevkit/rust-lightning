@@ -50,11 +50,11 @@ pub(crate) mod crypto;
 pub mod logger;
 pub mod config;
 
-#[cfg(any(test, fuzzing, feature = "_test_utils"))]
+#[cfg(any(test, feature = "_test_utils"))]
 pub mod test_utils;
 
 /// impls of traits that add exra enforcement on the way they're called. Useful for detecting state
 /// machine errors and used in fuzz targets and tests.
-#[cfg(any(test, fuzzing, feature = "_test_utils"))]
-pub mod enforcing_trait_impls;
+#[cfg(any(test, feature = "_test_utils"))]
+pub mod test_channel_signer;
 

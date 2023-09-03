@@ -391,5 +391,7 @@ where
 }
 
 /// A unique identifier to track each pending output claim within a [`ChannelMonitor`].
+///
+/// This is not exported to bindings users as we just use [u8; 32] directly.
 #[derive(Copy, Clone, Debug, Hash, PartialEq, Eq)]
 pub struct ClaimId(pub [u8; 32]);

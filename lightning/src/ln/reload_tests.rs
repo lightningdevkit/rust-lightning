@@ -18,7 +18,7 @@ use crate::events::{ClosureReason, Event, HTLCDestination, MessageSendEvent, Mes
 use crate::ln::channelmanager::{ChannelManager, ChannelManagerReadArgs, PaymentId, RecipientOnionFields};
 use crate::ln::msgs;
 use crate::ln::msgs::{ChannelMessageHandler, RoutingMessageHandler, ErrorAction};
-use crate::util::enforcing_trait_impls::EnforcingSigner;
+use crate::util::test_channel_signer::TestChannelSigner;
 use crate::util::test_utils;
 use crate::util::errors::APIError;
 use crate::util::ser::{Writeable, ReadableArgs};
@@ -38,10 +38,11 @@ fn test_funding_peer_disconnect() {
 	// Test that we can lock in our funding tx while disconnected
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let persister;
+	let new_chain_monitor;
+
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
-	let persister: test_utils::TestPersister;
-	let new_chain_monitor: test_utils::TestChainMonitor;
-	let nodes_0_deserialized: ChannelManager<&test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestKeysInterface, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestRouter, &test_utils::TestLogger>;
+	let nodes_0_deserialized;
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	let tx = create_chan_between_nodes_with_value_init(&nodes[0], &nodes[1], 100000, 10001);
 
@@ -52,7 +53,9 @@ fn test_funding_peer_disconnect() {
 	let events_1 = nodes[0].node.get_and_clear_pending_msg_events();
 	assert!(events_1.is_empty());
 
-	reconnect_nodes(&nodes[0], &nodes[1], (false, true), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
+	let mut reconnect_args = ReconnectArgs::new(&nodes[0], &nodes[1]);
+	reconnect_args.send_channel_ready.1 = true;
+	reconnect_nodes(reconnect_args);
 
 	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id());
 	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id());
@@ -180,17 +183,18 @@ fn test_funding_peer_disconnect() {
 
 	reload_node!(nodes[0], &nodes[0].node.encode(), &[&chan_0_monitor_serialized], persister, new_chain_monitor, nodes_0_deserialized);
 
-	reconnect_nodes(&nodes[0], &nodes[1], (false, false), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
+	reconnect_nodes(ReconnectArgs::new(&nodes[0], &nodes[1]));
 }
 
 #[test]
 fn test_no_txn_manager_serialize_deserialize() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let persister;
+	let new_chain_monitor;
+
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
-	let persister: test_utils::TestPersister;
-	let new_chain_monitor: test_utils::TestChainMonitor;
-	let nodes_0_deserialized: ChannelManager<&test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestKeysInterface, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestRouter, &test_utils::TestLogger>;
+	let nodes_0_deserialized;
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let tx = create_chan_between_nodes_with_value_init(&nodes[0], &nodes[1], 100000, 10001);
@@ -231,10 +235,11 @@ fn test_manager_serialize_deserialize_events() {
 	// This test makes sure the events field in ChannelManager survives de/serialization
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let persister;
+	let new_chain_monitor;
+
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
-	let persister: test_utils::TestPersister;
-	let new_chain_monitor: test_utils::TestChainMonitor;
-	let nodes_0_deserialized: ChannelManager<&test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestKeysInterface, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestRouter, &test_utils::TestLogger>;
+	let nodes_0_deserialized;
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	// Start creating a channel, but stop right before broadcasting the funding transaction
@@ -319,10 +324,11 @@ fn test_manager_serialize_deserialize_events() {
 fn test_simple_manager_serialize_deserialize() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let persister;
+	let new_chain_monitor;
+
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
-	let persister: test_utils::TestPersister;
-	let new_chain_monitor: test_utils::TestChainMonitor;
-	let nodes_0_deserialized: ChannelManager<&test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestKeysInterface, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestRouter, &test_utils::TestLogger>;
+	let nodes_0_deserialized;
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	let chan_id = create_announced_chan_between_nodes(&nodes, 0, 1).2;
 
@@ -334,7 +340,7 @@ fn test_simple_manager_serialize_deserialize() {
 	let chan_0_monitor_serialized = get_monitor!(nodes[0], chan_id).encode();
 	reload_node!(nodes[0], nodes[0].node.encode(), &[&chan_0_monitor_serialized], persister, new_chain_monitor, nodes_0_deserialized);
 
-	reconnect_nodes(&nodes[0], &nodes[1], (false, false), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
+	reconnect_nodes(ReconnectArgs::new(&nodes[0], &nodes[1]));
 
 	fail_payment(&nodes[0], &[&nodes[1]], our_payment_hash);
 	claim_payment(&nodes[0], &[&nodes[1]], our_payment_preimage);
@@ -345,13 +351,15 @@ fn test_manager_serialize_deserialize_inconsistent_monitor() {
 	// Test deserializing a ChannelManager with an out-of-date ChannelMonitor
 	let chanmon_cfgs = create_chanmon_cfgs(4);
 	let node_cfgs = create_node_cfgs(4, &chanmon_cfgs);
+	let logger;
+	let fee_estimator;
+	let persister;
+	let new_chain_monitor;
+
 	let node_chanmgrs = create_node_chanmgrs(4, &node_cfgs, &[None, None, None, None]);
-	let logger: test_utils::TestLogger;
-	let fee_estimator: test_utils::TestFeeEstimator;
-	let persister: test_utils::TestPersister;
-	let new_chain_monitor: test_utils::TestChainMonitor;
-	let nodes_0_deserialized: ChannelManager<&test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestKeysInterface, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestRouter, &test_utils::TestLogger>;
+	let nodes_0_deserialized;
 	let mut nodes = create_network(4, &node_cfgs, &node_chanmgrs);
+
 	let chan_id_1 = create_announced_chan_between_nodes(&nodes, 0, 1).2;
 	let chan_id_2 = create_announced_chan_between_nodes(&nodes, 2, 0).2;
 	let (_, _, channel_id, funding_tx) = create_announced_chan_between_nodes(&nodes, 0, 3);
@@ -384,14 +392,14 @@ fn test_manager_serialize_deserialize_inconsistent_monitor() {
 	fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: Mutex::new(253) };
 	persister = test_utils::TestPersister::new();
 	let keys_manager = &chanmon_cfgs[0].keys_manager;
-	new_chain_monitor = test_utils::TestChainMonitor::new(Some(nodes[0].chain_source), nodes[0].tx_broadcaster.clone(), &logger, &fee_estimator, &persister, keys_manager);
+	new_chain_monitor = test_utils::TestChainMonitor::new(Some(nodes[0].chain_source), nodes[0].tx_broadcaster, &logger, &fee_estimator, &persister, keys_manager);
 	nodes[0].chain_monitor = &new_chain_monitor;
 
 
 	let mut node_0_stale_monitors = Vec::new();
 	for serialized in node_0_stale_monitors_serialized.iter() {
 		let mut read = &serialized[..];
-		let (_, monitor) = <(BlockHash, ChannelMonitor<EnforcingSigner>)>::read(&mut read, (keys_manager, keys_manager)).unwrap();
+		let (_, monitor) = <(BlockHash, ChannelMonitor<TestChannelSigner>)>::read(&mut read, (keys_manager, keys_manager)).unwrap();
 		assert!(read.is_empty());
 		node_0_stale_monitors.push(monitor);
 	}
@@ -399,7 +407,7 @@ fn test_manager_serialize_deserialize_inconsistent_monitor() {
 	let mut node_0_monitors = Vec::new();
 	for serialized in node_0_monitors_serialized.iter() {
 		let mut read = &serialized[..];
-		let (_, monitor) = <(BlockHash, ChannelMonitor<EnforcingSigner>)>::read(&mut read, (keys_manager, keys_manager)).unwrap();
+		let (_, monitor) = <(BlockHash, ChannelMonitor<TestChannelSigner>)>::read(&mut read, (keys_manager, keys_manager)).unwrap();
 		assert!(read.is_empty());
 		node_0_monitors.push(monitor);
 	}
@@ -445,7 +453,7 @@ fn test_manager_serialize_deserialize_inconsistent_monitor() {
 	}
 	nodes[0].node = &nodes_0_deserialized;
 
-	check_closed_event!(nodes[0], 1, ClosureReason::OutdatedChannelManager);
+	check_closed_event!(nodes[0], 1, ClosureReason::OutdatedChannelManager, [nodes[3].node.get_our_node_id()], 100000);
 	{ // Channel close should result in a commitment tx
 		nodes[0].node.timer_tick_occurred();
 		let txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap();
@@ -456,8 +464,8 @@ fn test_manager_serialize_deserialize_inconsistent_monitor() {
 	check_added_monitors!(nodes[0], 1);
 
 	// nodes[1] and nodes[2] have no lost state with nodes[0]...
-	reconnect_nodes(&nodes[0], &nodes[1], (false, false), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
-	reconnect_nodes(&nodes[0], &nodes[2], (false, false), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
+	reconnect_nodes(ReconnectArgs::new(&nodes[0], &nodes[1]));
+	reconnect_nodes(ReconnectArgs::new(&nodes[0], &nodes[2]));
 	//... and we can even still claim the payment!
 	claim_payment(&nodes[2], &[&nodes[0], &nodes[1]], our_payment_preimage);
 
@@ -494,11 +502,13 @@ fn do_test_data_loss_protect(reconnect_panicing: bool) {
 	// We broadcast during Drop because chanmon is out of sync with chanmgr, which would cause a panic
 	// during signing due to revoked tx
 	chanmon_cfgs[0].keys_manager.disable_revocation_policy_check = true;
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let persister;
 	let new_chain_monitor;
-	let nodes_0_deserialized;
-	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes_0_deserialized;
+
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1000000, 1000000);
@@ -546,7 +556,7 @@ fn do_test_data_loss_protect(reconnect_panicing: bool) {
 
 	nodes[0].node.force_close_without_broadcasting_txn(&chan.2, &nodes[1].node.get_our_node_id()).unwrap();
 	check_added_monitors!(nodes[0], 1);
-	check_closed_event!(nodes[0], 1, ClosureReason::HolderForceClosed);
+	check_closed_event!(nodes[0], 1, ClosureReason::HolderForceClosed, [nodes[1].node.get_our_node_id()], 1000000);
 	{
 		let node_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap();
 		assert_eq!(node_txn.len(), 0);
@@ -596,7 +606,8 @@ fn do_test_data_loss_protect(reconnect_panicing: bool) {
 	nodes[1].node.handle_error(&nodes[0].node.get_our_node_id(), &err_msgs_0[0]);
 	assert!(nodes[1].node.list_usable_channels().is_empty());
 	check_added_monitors!(nodes[1], 1);
-	check_closed_event!(nodes[1], 1, ClosureReason::CounterpartyForceClosed { peer_msg: UntrustedString(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", &nodes[1].node.get_our_node_id())) });
+	check_closed_event!(nodes[1], 1, ClosureReason::CounterpartyForceClosed { peer_msg: UntrustedString(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", &nodes[1].node.get_our_node_id())) }
+		, [nodes[0].node.get_our_node_id()], 1000000);
 	check_closed_broadcast!(nodes[1], false);
 }
 
@@ -620,10 +631,10 @@ fn test_forwardable_regen() {
 
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+	let persister;
+	let new_chain_monitor;
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
-	let persister: test_utils::TestPersister;
-	let new_chain_monitor: test_utils::TestChainMonitor;
-	let nodes_1_deserialized: ChannelManager<&test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestKeysInterface, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestRouter, &test_utils::TestLogger>;
+	let nodes_1_deserialized;
 	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 	let chan_id_1 = create_announced_chan_between_nodes(&nodes, 0, 1).2;
 	let chan_id_2 = create_announced_chan_between_nodes(&nodes, 1, 2).2;
@@ -666,10 +677,12 @@ fn test_forwardable_regen() {
 	let chan_1_monitor_serialized = get_monitor!(nodes[1], chan_id_2).encode();
 	reload_node!(nodes[1], nodes[1].node.encode(), &[&chan_0_monitor_serialized, &chan_1_monitor_serialized], persister, new_chain_monitor, nodes_1_deserialized);
 
-	reconnect_nodes(&nodes[0], &nodes[1], (false, false), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
+	reconnect_nodes(ReconnectArgs::new(&nodes[0], &nodes[1]));
 	// Note that nodes[1] and nodes[2] resend their channel_ready here since they haven't updated
 	// the commitment state.
-	reconnect_nodes(&nodes[1], &nodes[2], (true, true), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
+	let mut reconnect_args = ReconnectArgs::new(&nodes[1], &nodes[2]);
+	reconnect_args.send_channel_ready = (true, true);
+	reconnect_nodes(reconnect_args);
 
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 
@@ -705,11 +718,11 @@ fn do_test_partial_claim_before_restart(persist_both_monitors: bool) {
 	// definitely claimed.
 	let chanmon_cfgs = create_chanmon_cfgs(4);
 	let node_cfgs = create_node_cfgs(4, &chanmon_cfgs);
-	let node_chanmgrs = create_node_chanmgrs(4, &node_cfgs, &[None, None, None, None]);
+	let persister;
+	let new_chain_monitor;
 
-	let persister: test_utils::TestPersister;
-	let new_chain_monitor: test_utils::TestChainMonitor;
-	let nodes_3_deserialized: ChannelManager<&test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestKeysInterface, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestRouter, &test_utils::TestLogger>;
+	let node_chanmgrs = create_node_chanmgrs(4, &node_cfgs, &[None, None, None, None]);
+	let nodes_3_deserialized;
 
 	let mut nodes = create_network(4, &node_cfgs, &node_chanmgrs);
 
@@ -869,12 +882,12 @@ fn do_forwarded_payment_no_manager_persistence(use_cs_commitment: bool, claim_ht
 	// This was never an issue, but it may be easy to regress here going forward.
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+	let persister;
+	let new_chain_monitor;
+
 	let mut intercept_forwards_config = test_default_channel_config();
 	intercept_forwards_config.accept_intercept_htlcs = true;
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, Some(intercept_forwards_config), None]);
-
-	let persister;
-	let new_chain_monitor;
 	let nodes_1_deserialized;
 
 	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
@@ -940,7 +953,7 @@ fn do_forwarded_payment_no_manager_persistence(use_cs_commitment: bool, claim_ht
 	assert_eq!(cs_commitment_tx.len(), if claim_htlc { 2 } else { 1 });
 
 	check_added_monitors!(nodes[2], 1);
-	check_closed_event!(nodes[2], 1, ClosureReason::HolderForceClosed);
+	check_closed_event!(nodes[2], 1, ClosureReason::HolderForceClosed, [nodes[1].node.get_our_node_id()], 100000);
 	check_closed_broadcast!(nodes[2], true);
 
 	let chan_0_monitor_serialized = get_monitor!(nodes[1], chan_id_1).encode();
@@ -949,7 +962,7 @@ fn do_forwarded_payment_no_manager_persistence(use_cs_commitment: bool, claim_ht
 
 	// Note that this checks that this is the only event on nodes[1], implying the
 	// `HTLCIntercepted` event has been removed in the `use_intercept` case.
-	check_closed_event!(nodes[1], 1, ClosureReason::OutdatedChannelManager);
+	check_closed_event!(nodes[1], 1, ClosureReason::OutdatedChannelManager, [nodes[2].node.get_our_node_id()], 100000);
 
 	if use_intercept {
 		// Attempt to forward the HTLC back out over nodes[1]' still-open channel, ensuring we get
@@ -967,7 +980,7 @@ fn do_forwarded_payment_no_manager_persistence(use_cs_commitment: bool, claim_ht
 	check_added_monitors!(nodes[1], 1);
 
 	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id());
-	reconnect_nodes(&nodes[0], &nodes[1], (false, false), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
+	reconnect_nodes(ReconnectArgs::new(&nodes[0], &nodes[1]));
 
 	if use_cs_commitment {
 		// If we confirm a commitment transaction that has the HTLC on-chain, nodes[1] should wait
@@ -1039,10 +1052,10 @@ fn removed_payment_no_manager_persistence() {
 	// were left dangling when a channel was force-closed due to a stale ChannelManager.
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
-	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
-
 	let persister;
 	let new_chain_monitor;
+
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
 	let nodes_1_deserialized;
 
 	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
@@ -1085,7 +1098,7 @@ fn removed_payment_no_manager_persistence() {
 	// now forgotten everywhere. The ChannelManager should have, as a side-effect of reload,
 	// learned that the HTLC is gone from the ChannelMonitor and added it to the to-fail-back set.
 	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id());
-	reconnect_nodes(&nodes[0], &nodes[1], (false, false), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
+	reconnect_nodes(ReconnectArgs::new(&nodes[0], &nodes[1]));
 
 	expect_pending_htlcs_forwardable_and_htlc_handling_failed!(nodes[1], [HTLCDestination::NextHopChannel { node_id: Some(nodes[2].node.get_our_node_id()), channel_id: chan_id_2 }]);
 	check_added_monitors!(nodes[1], 1);

@@ -14,8 +14,8 @@ use lightning::blinded_path::BlindedPath;
 use lightning::sign::EntropySource;
 use lightning::ln::PaymentHash;
 use lightning::ln::features::BlindedHopFeatures;
-use lightning::offers::invoice::{BlindedPayInfo, UnsignedInvoice};
-use lightning::offers::parse::SemanticError;
+use lightning::offers::invoice::{BlindedPayInfo, UnsignedBolt12Invoice};
+use lightning::offers::parse::Bolt12SemanticError;
 use lightning::offers::refund::Refund;
 use lightning::util::ser::Writeable;
 
@@ -34,7 +34,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], _out: Out) {
 		if let Ok(invoice) = build_response(&refund, pubkey, &secp_ctx) {
 			invoice
 				.sign::<_, Infallible>(
-					|digest| Ok(secp_ctx.sign_schnorr_no_aux_rand(digest, &keys))
+					|message| Ok(secp_ctx.sign_schnorr_no_aux_rand(message.as_ref().as_digest(), &keys))
 				)
 				.unwrap()
 				.write(&mut buffer)
@@ -58,9 +58,9 @@ fn privkey(byte: u8) -> SecretKey {
 	SecretKey::from_slice(&[byte; 32]).unwrap()
 }
 
-fn build_response<'a, T: secp256k1::Signing + secp256k1::Verification>(
-	refund: &'a Refund, signing_pubkey: PublicKey, secp_ctx: &Secp256k1<T>
-) -> Result<UnsignedInvoice<'a>, SemanticError> {
+fn build_response<T: secp256k1::Signing + secp256k1::Verification>(
+	refund: &Refund, signing_pubkey: PublicKey, secp_ctx: &Secp256k1<T>
+) -> Result<UnsignedBolt12Invoice, Bolt12SemanticError> {
 	let entropy_source = Randomness {};
 	let paths = vec![
 		BlindedPath::new_for_message(&[pubkey(43), pubkey(44), pubkey(42)], &entropy_source, secp_ctx).unwrap(),

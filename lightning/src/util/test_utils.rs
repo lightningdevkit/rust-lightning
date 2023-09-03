@@ -11,6 +11,7 @@ use crate::chain;
 use crate::chain::WatchedOutput;
 use crate::chain::chaininterface;
 use crate::chain::chaininterface::ConfirmationTarget;
+use crate::chain::chaininterface::FEERATE_FLOOR_SATS_PER_KW;
 use crate::chain::chainmonitor;
 use crate::chain::chainmonitor::MonitorUpdateId;
 use crate::chain::channelmonitor;
@@ -18,20 +19,27 @@ use crate::chain::channelmonitor::MonitorEvent;
 use crate::chain::transaction::OutPoint;
 use crate::sign;
 use crate::events;
+use crate::events::bump_transaction::{WalletSource, Utxo};
+use crate::ln::ChannelId;
 use crate::ln::channelmanager;
+use crate::ln::chan_utils::CommitmentTransaction;
 use crate::ln::features::{ChannelFeatures, InitFeatures, NodeFeatures};
 use crate::ln::{msgs, wire};
 use crate::ln::msgs::LightningError;
 use crate::ln::script::ShutdownScript;
+use crate::offers::invoice::UnsignedBolt12Invoice;
+use crate::offers::invoice_request::UnsignedInvoiceRequest;
 use crate::routing::gossip::{EffectiveCapacity, NetworkGraph, NodeId};
 use crate::routing::utxo::{UtxoLookup, UtxoLookupError, UtxoResult};
 use crate::routing::router::{find_route, InFlightHtlcs, Path, Route, RouteParameters, Router, ScorerAccountingForInFlightHtlcs};
-use crate::routing::scoring::{ChannelUsage, Score};
+use crate::routing::scoring::{ChannelUsage, ScoreUpdate, ScoreLookUp};
+use crate::sync::RwLock;
 use crate::util::config::UserConfig;
-use crate::util::enforcing_trait_impls::{EnforcingSigner, EnforcementState};
+use crate::util::test_channel_signer::{TestChannelSigner, EnforcementState};
 use crate::util::logger::{Logger, Level, Record};
 use crate::util::ser::{Readable, ReadableArgs, Writer, Writeable};
 
+use bitcoin::EcdsaSighashType;
 use bitcoin::blockdata::constants::ChainHash;
 use bitcoin::blockdata::constants::genesis_block;
 use bitcoin::blockdata::transaction::{Transaction, TxOut};
@@ -40,16 +48,20 @@ use bitcoin::blockdata::opcodes;
 use bitcoin::blockdata::block::Block;
 use bitcoin::network::constants::Network;
 use bitcoin::hash_types::{BlockHash, Txid};
+use bitcoin::util::sighash::SighashCache;
 
-use bitcoin::secp256k1::{SecretKey, PublicKey, Secp256k1, ecdsa::Signature, Scalar};
+use bitcoin::secp256k1::{PublicKey, Scalar, Secp256k1, SecretKey};
 use bitcoin::secp256k1::ecdh::SharedSecret;
-use bitcoin::secp256k1::ecdsa::RecoverableSignature;
+use bitcoin::secp256k1::ecdsa::{RecoverableSignature, Signature};
+use bitcoin::secp256k1::schnorr;
 
+#[cfg(any(test, feature = "_test_utils"))]
 use regex;
 
 use crate::io;
 use crate::prelude::*;
 use core::cell::RefCell;
+use core::ops::Deref;
 use core::time::Duration;
 use crate::sync::{Mutex, Arc};
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -90,11 +102,11 @@ impl chaininterface::FeeEstimator for TestFeeEstimator {
 pub struct TestRouter<'a> {
 	pub network_graph: Arc<NetworkGraph<&'a TestLogger>>,
 	pub next_routes: Mutex<VecDeque<(RouteParameters, Result<Route, LightningError>)>>,
-	pub scorer: &'a Mutex<TestScorer>,
+	pub scorer: &'a RwLock<TestScorer>,
 }
 
 impl<'a> TestRouter<'a> {
-	pub fn new(network_graph: Arc<NetworkGraph<&'a TestLogger>>, scorer: &'a Mutex<TestScorer>) -> Self {
+	pub fn new(network_graph: Arc<NetworkGraph<&'a TestLogger>>, scorer: &'a RwLock<TestScorer>) -> Self {
 		Self { network_graph, next_routes: Mutex::new(VecDeque::new()), scorer }
 	}
 
@@ -107,13 +119,13 @@ impl<'a> TestRouter<'a> {
 impl<'a> Router for TestRouter<'a> {
 	fn find_route(
 		&self, payer: &PublicKey, params: &RouteParameters, first_hops: Option<&[&channelmanager::ChannelDetails]>,
-		inflight_htlcs: &InFlightHtlcs
+		inflight_htlcs: InFlightHtlcs
 	) -> Result<Route, msgs::LightningError> {
 		if let Some((find_route_query, find_route_res)) = self.next_routes.lock().unwrap().pop_front() {
 			assert_eq!(find_route_query, *params);
 			if let Ok(ref route) = find_route_res {
-				let locked_scorer = self.scorer.lock().unwrap();
-				let scorer = ScorerAccountingForInFlightHtlcs::new(locked_scorer, inflight_htlcs);
+				let scorer = self.scorer.read().unwrap();
+				let scorer = ScorerAccountingForInFlightHtlcs::new(scorer, &inflight_htlcs);
 				for path in &route.paths {
 					let mut aggregate_msat = 0u64;
 					for (idx, hop) in path.hops.iter().rev().enumerate() {
@@ -138,10 +150,9 @@ impl<'a> Router for TestRouter<'a> {
 			return find_route_res;
 		}
 		let logger = TestLogger::new();
-		let scorer = self.scorer.lock().unwrap();
 		find_route(
 			payer, params, &self.network_graph, first_hops, &logger,
-			&ScorerAccountingForInFlightHtlcs::new(scorer, &inflight_htlcs), &(),
+			&ScorerAccountingForInFlightHtlcs::new(self.scorer.read().unwrap(), &inflight_htlcs), &(),
 			&[42; 32]
 		)
 	}
@@ -164,7 +175,7 @@ impl EntropySource for OnlyReadsKeysInterface {
 	fn get_secure_random_bytes(&self) -> [u8; 32] { [0; 32] }}
 
 impl SignerProvider for OnlyReadsKeysInterface {
-	type Signer = EnforcingSigner;
+	type Signer = TestChannelSigner;
 
 	fn generate_channel_keys_id(&self, _inbound: bool, _channel_value_satoshis: u64, _user_channel_id: u128) -> [u8; 32] { unreachable!(); }
 
@@ -174,7 +185,7 @@ impl SignerProvider for OnlyReadsKeysInterface {
 		let inner: InMemorySigner = ReadableArgs::read(&mut reader, self)?;
 		let state = Arc::new(Mutex::new(EnforcementState::new()));
 
-		Ok(EnforcingSigner::new_with_revoked(
+		Ok(TestChannelSigner::new_with_revoked(
 			inner,
 			state,
 			false
@@ -186,18 +197,18 @@ impl SignerProvider for OnlyReadsKeysInterface {
 }
 
 pub struct TestChainMonitor<'a> {
-	pub added_monitors: Mutex<Vec<(OutPoint, channelmonitor::ChannelMonitor<EnforcingSigner>)>>,
-	pub monitor_updates: Mutex<HashMap<[u8; 32], Vec<channelmonitor::ChannelMonitorUpdate>>>,
-	pub latest_monitor_update_id: Mutex<HashMap<[u8; 32], (OutPoint, u64, MonitorUpdateId)>>,
-	pub chain_monitor: chainmonitor::ChainMonitor<EnforcingSigner, &'a TestChainSource, &'a chaininterface::BroadcasterInterface, &'a TestFeeEstimator, &'a TestLogger, &'a chainmonitor::Persist<EnforcingSigner>>,
+	pub added_monitors: Mutex<Vec<(OutPoint, channelmonitor::ChannelMonitor<TestChannelSigner>)>>,
+	pub monitor_updates: Mutex<HashMap<ChannelId, Vec<channelmonitor::ChannelMonitorUpdate>>>,
+	pub latest_monitor_update_id: Mutex<HashMap<ChannelId, (OutPoint, u64, MonitorUpdateId)>>,
+	pub chain_monitor: chainmonitor::ChainMonitor<TestChannelSigner, &'a TestChainSource, &'a chaininterface::BroadcasterInterface, &'a TestFeeEstimator, &'a TestLogger, &'a chainmonitor::Persist<TestChannelSigner>>,
 	pub keys_manager: &'a TestKeysInterface,
 	/// If this is set to Some(), the next update_channel call (not watch_channel) must be a
 	/// ChannelForceClosed event for the given channel_id with should_broadcast set to the given
 	/// boolean.
-	pub expect_channel_force_closed: Mutex<Option<([u8; 32], bool)>>,
+	pub expect_channel_force_closed: Mutex<Option<(ChannelId, bool)>>,
 }
 impl<'a> TestChainMonitor<'a> {
-	pub fn new(chain_source: Option<&'a TestChainSource>, broadcaster: &'a chaininterface::BroadcasterInterface, logger: &'a TestLogger, fee_estimator: &'a TestFeeEstimator, persister: &'a chainmonitor::Persist<EnforcingSigner>, keys_manager: &'a TestKeysInterface) -> Self {
+	pub fn new(chain_source: Option<&'a TestChainSource>, broadcaster: &'a chaininterface::BroadcasterInterface, logger: &'a TestLogger, fee_estimator: &'a TestFeeEstimator, persister: &'a chainmonitor::Persist<TestChannelSigner>, keys_manager: &'a TestKeysInterface) -> Self {
 		Self {
 			added_monitors: Mutex::new(Vec::new()),
 			monitor_updates: Mutex::new(HashMap::new()),
@@ -208,18 +219,18 @@ impl<'a> TestChainMonitor<'a> {
 		}
 	}
 
-	pub fn complete_sole_pending_chan_update(&self, channel_id: &[u8; 32]) {
+	pub fn complete_sole_pending_chan_update(&self, channel_id: &ChannelId) {
 		let (outpoint, _, latest_update) = self.latest_monitor_update_id.lock().unwrap().get(channel_id).unwrap().clone();
 		self.chain_monitor.channel_monitor_updated(outpoint, latest_update).unwrap();
 	}
 }
-impl<'a> chain::Watch<EnforcingSigner> for TestChainMonitor<'a> {
-	fn watch_channel(&self, funding_txo: OutPoint, monitor: channelmonitor::ChannelMonitor<EnforcingSigner>) -> chain::ChannelMonitorUpdateStatus {
+impl<'a> chain::Watch<TestChannelSigner> for TestChainMonitor<'a> {
+	fn watch_channel(&self, funding_txo: OutPoint, monitor: channelmonitor::ChannelMonitor<TestChannelSigner>) -> chain::ChannelMonitorUpdateStatus {
 		// At every point where we get a monitor update, we should be able to send a useful monitor
 		// to a watchtower and disk...
 		let mut w = TestVecWriter(Vec::new());
 		monitor.write(&mut w).unwrap();
-		let new_monitor = <(BlockHash, channelmonitor::ChannelMonitor<EnforcingSigner>)>::read(
+		let new_monitor = <(BlockHash, channelmonitor::ChannelMonitor<TestChannelSigner>)>::read(
 			&mut io::Cursor::new(&w.0), (self.keys_manager, self.keys_manager)).unwrap().1;
 		assert!(new_monitor == monitor);
 		self.latest_monitor_update_id.lock().unwrap().insert(funding_txo.to_channel_id(),
@@ -253,7 +264,7 @@ impl<'a> chain::Watch<EnforcingSigner> for TestChainMonitor<'a> {
 		let monitor = self.chain_monitor.get_monitor(funding_txo).unwrap();
 		w.0.clear();
 		monitor.write(&mut w).unwrap();
-		let new_monitor = <(BlockHash, channelmonitor::ChannelMonitor<EnforcingSigner>)>::read(
+		let new_monitor = <(BlockHash, channelmonitor::ChannelMonitor<TestChannelSigner>)>::read(
 			&mut io::Cursor::new(&w.0), (self.keys_manager, self.keys_manager)).unwrap().1;
 		assert!(new_monitor == *monitor);
 		self.added_monitors.lock().unwrap().push((funding_txo, new_monitor));
@@ -262,6 +273,108 @@ impl<'a> chain::Watch<EnforcingSigner> for TestChainMonitor<'a> {
 
 	fn release_pending_monitor_events(&self) -> Vec<(OutPoint, Vec<MonitorEvent>, Option<PublicKey>)> {
 		return self.chain_monitor.release_pending_monitor_events();
+	}
+}
+
+struct JusticeTxData {
+	justice_tx: Transaction,
+	value: u64,
+	commitment_number: u64,
+}
+
+pub(crate) struct WatchtowerPersister {
+	persister: TestPersister,
+	/// Upon a new commitment_signed, we'll get a
+	/// ChannelMonitorUpdateStep::LatestCounterpartyCommitmentTxInfo. We'll store the justice tx
+	/// amount, and commitment number so we can build the justice tx after our counterparty
+	/// revokes it.
+	unsigned_justice_tx_data: Mutex<HashMap<OutPoint, VecDeque<JusticeTxData>>>,
+	/// After receiving a revoke_and_ack for a commitment number, we'll form and store the justice
+	/// tx which would be used to provide a watchtower with the data it needs.
+	watchtower_state: Mutex<HashMap<OutPoint, HashMap<Txid, Transaction>>>,
+	destination_script: Script,
+}
+
+impl WatchtowerPersister {
+	pub(crate) fn new(destination_script: Script) -> Self {
+		WatchtowerPersister {
+			persister: TestPersister::new(),
+			unsigned_justice_tx_data: Mutex::new(HashMap::new()),
+			watchtower_state: Mutex::new(HashMap::new()),
+			destination_script,
+		}
+	}
+
+	pub(crate) fn justice_tx(&self, funding_txo: OutPoint, commitment_txid: &Txid)
+	-> Option<Transaction> {
+		self.watchtower_state.lock().unwrap().get(&funding_txo).unwrap().get(commitment_txid).cloned()
+	}
+
+	fn form_justice_data_from_commitment(&self, counterparty_commitment_tx: &CommitmentTransaction)
+	-> Option<JusticeTxData> {
+		let trusted_tx = counterparty_commitment_tx.trust();
+		let output_idx = trusted_tx.revokeable_output_index()?;
+		let built_tx = trusted_tx.built_transaction();
+		let value = built_tx.transaction.output[output_idx as usize].value;
+		let justice_tx = trusted_tx.build_to_local_justice_tx(
+			FEERATE_FLOOR_SATS_PER_KW as u64, self.destination_script.clone()).ok()?;
+		let commitment_number = counterparty_commitment_tx.commitment_number();
+		Some(JusticeTxData { justice_tx, value, commitment_number })
+	}
+}
+
+impl<Signer: sign::WriteableEcdsaChannelSigner> chainmonitor::Persist<Signer> for WatchtowerPersister {
+	fn persist_new_channel(&self, funding_txo: OutPoint,
+		data: &channelmonitor::ChannelMonitor<Signer>, id: MonitorUpdateId
+	) -> chain::ChannelMonitorUpdateStatus {
+		let res = self.persister.persist_new_channel(funding_txo, data, id);
+
+		assert!(self.unsigned_justice_tx_data.lock().unwrap()
+			.insert(funding_txo, VecDeque::new()).is_none());
+		assert!(self.watchtower_state.lock().unwrap()
+			.insert(funding_txo, HashMap::new()).is_none());
+
+		let initial_counterparty_commitment_tx = data.initial_counterparty_commitment_tx()
+			.expect("First and only call expects Some");
+		if let Some(justice_data)
+			= self.form_justice_data_from_commitment(&initial_counterparty_commitment_tx) {
+			self.unsigned_justice_tx_data.lock().unwrap()
+				.get_mut(&funding_txo).unwrap()
+				.push_back(justice_data);
+		}
+		res
+	}
+
+	fn update_persisted_channel(
+		&self, funding_txo: OutPoint, update: Option<&channelmonitor::ChannelMonitorUpdate>,
+		data: &channelmonitor::ChannelMonitor<Signer>, update_id: MonitorUpdateId
+	) -> chain::ChannelMonitorUpdateStatus {
+		let res = self.persister.update_persisted_channel(funding_txo, update, data, update_id);
+
+		if let Some(update) = update {
+			let commitment_txs = data.counterparty_commitment_txs_from_update(update);
+			let justice_datas = commitment_txs.into_iter()
+				.filter_map(|commitment_tx| self.form_justice_data_from_commitment(&commitment_tx));
+			let mut channels_justice_txs = self.unsigned_justice_tx_data.lock().unwrap();
+			let channel_state = channels_justice_txs.get_mut(&funding_txo).unwrap();
+			channel_state.extend(justice_datas);
+
+			while let Some(JusticeTxData { justice_tx, value, commitment_number }) = channel_state.front() {
+				let input_idx = 0;
+				let commitment_txid = justice_tx.input[input_idx].previous_output.txid;
+				match data.sign_to_local_justice_tx(justice_tx.clone(), input_idx, *value, *commitment_number) {
+					Ok(signed_justice_tx) => {
+						let dup = self.watchtower_state.lock().unwrap()
+							.get_mut(&funding_txo).unwrap()
+							.insert(commitment_txid, signed_justice_tx);
+						assert!(dup.is_none());
+						channel_state.pop_front();
+					},
+					Err(_) => break,
+				}
+			}
+		}
+		res
 	}
 }
 
@@ -738,6 +851,7 @@ impl TestLogger {
 	/// 1. belong to the specified module and
 	/// 2. match the given regex pattern.
 	/// Assert that the number of occurrences equals the given `count`
+	#[cfg(any(test, feature = "_test_utils"))]
 	pub fn assert_log_regex(&self, module: &str, pattern: regex::Regex, count: usize) {
 		let log_entries = self.lines.lock().unwrap();
 		let l: usize = log_entries.iter().filter(|&(&(ref m, ref l), _c)| {
@@ -795,6 +909,18 @@ impl NodeSigner for TestNodeSigner {
 		unreachable!()
 	}
 
+	fn sign_bolt12_invoice_request(
+		&self, _invoice_request: &UnsignedInvoiceRequest
+	) -> Result<schnorr::Signature, ()> {
+		unreachable!()
+	}
+
+	fn sign_bolt12_invoice(
+		&self, _invoice: &UnsignedBolt12Invoice,
+	) -> Result<schnorr::Signature, ()> {
+		unreachable!()
+	}
+
 	fn sign_gossip_message(&self, _msg: msgs::UnsignedGossipMessage) -> Result<Signature, ()> {
 		unreachable!()
 	}
@@ -835,22 +961,34 @@ impl NodeSigner for TestKeysInterface {
 		self.backing.sign_invoice(hrp_bytes, invoice_data, recipient)
 	}
 
+	fn sign_bolt12_invoice_request(
+		&self, invoice_request: &UnsignedInvoiceRequest
+	) -> Result<schnorr::Signature, ()> {
+		self.backing.sign_bolt12_invoice_request(invoice_request)
+	}
+
+	fn sign_bolt12_invoice(
+		&self, invoice: &UnsignedBolt12Invoice,
+	) -> Result<schnorr::Signature, ()> {
+		self.backing.sign_bolt12_invoice(invoice)
+	}
+
 	fn sign_gossip_message(&self, msg: msgs::UnsignedGossipMessage) -> Result<Signature, ()> {
 		self.backing.sign_gossip_message(msg)
 	}
 }
 
 impl SignerProvider for TestKeysInterface {
-	type Signer = EnforcingSigner;
+	type Signer = TestChannelSigner;
 
 	fn generate_channel_keys_id(&self, inbound: bool, channel_value_satoshis: u64, user_channel_id: u128) -> [u8; 32] {
 		self.backing.generate_channel_keys_id(inbound, channel_value_satoshis, user_channel_id)
 	}
 
-	fn derive_channel_signer(&self, channel_value_satoshis: u64, channel_keys_id: [u8; 32]) -> EnforcingSigner {
+	fn derive_channel_signer(&self, channel_value_satoshis: u64, channel_keys_id: [u8; 32]) -> TestChannelSigner {
 		let keys = self.backing.derive_channel_signer(channel_value_satoshis, channel_keys_id);
 		let state = self.make_enforcement_state_cell(keys.commitment_seed);
-		EnforcingSigner::new_with_revoked(keys, state, self.disable_revocation_policy_check)
+		TestChannelSigner::new_with_revoked(keys, state, self.disable_revocation_policy_check)
 	}
 
 	fn read_chan_signer(&self, buffer: &[u8]) -> Result<Self::Signer, msgs::DecodeError> {
@@ -859,7 +997,7 @@ impl SignerProvider for TestKeysInterface {
 		let inner: InMemorySigner = ReadableArgs::read(&mut reader, self)?;
 		let state = self.make_enforcement_state_cell(inner.commitment_seed);
 
-		Ok(EnforcingSigner::new_with_revoked(
+		Ok(TestChannelSigner::new_with_revoked(
 			inner,
 			state,
 			self.disable_revocation_policy_check
@@ -900,10 +1038,10 @@ impl TestKeysInterface {
 		self
 	}
 
-	pub fn derive_channel_keys(&self, channel_value_satoshis: u64, id: &[u8; 32]) -> EnforcingSigner {
+	pub fn derive_channel_keys(&self, channel_value_satoshis: u64, id: &[u8; 32]) -> TestChannelSigner {
 		let keys = self.backing.derive_channel_keys(channel_value_satoshis, id);
 		let state = self.make_enforcement_state_cell(keys.commitment_seed);
-		EnforcingSigner::new_with_revoked(keys, state, self.disable_revocation_policy_check)
+		TestChannelSigner::new_with_revoked(keys, state, self.disable_revocation_policy_check)
 	}
 
 	fn make_enforcement_state_cell(&self, commitment_seed: [u8; 32]) -> Arc<Mutex<EnforcementState>> {
@@ -1024,7 +1162,7 @@ impl crate::util::ser::Writeable for TestScorer {
 	fn write<W: crate::util::ser::Writer>(&self, _: &mut W) -> Result<(), crate::io::Error> { unreachable!(); }
 }
 
-impl Score for TestScorer {
+impl ScoreLookUp for TestScorer {
 	type ScoreParams = ();
 	fn channel_penalty_msat(
 		&self, short_channel_id: u64, _source: &NodeId, _target: &NodeId, usage: ChannelUsage, _score_params: &Self::ScoreParams
@@ -1040,7 +1178,9 @@ impl Score for TestScorer {
 		}
 		0
 	}
+}
 
+impl ScoreUpdate for TestScorer {
 	fn payment_path_failed(&mut self, _actual_path: &Path, _actual_short_channel_id: u64) {}
 
 	fn payment_path_successful(&mut self, _actual_path: &Path) {}
@@ -1063,5 +1203,67 @@ impl Drop for TestScorer {
 				panic!("Unsatisfied scorer expectations: {:?}", scorer_expectations)
 			}
 		}
+	}
+}
+
+pub struct TestWalletSource {
+	secret_key: SecretKey,
+	utxos: RefCell<Vec<Utxo>>,
+	secp: Secp256k1<bitcoin::secp256k1::All>,
+}
+
+impl TestWalletSource {
+	pub fn new(secret_key: SecretKey) -> Self {
+		Self {
+			secret_key,
+			utxos: RefCell::new(Vec::new()),
+			secp: Secp256k1::new(),
+		}
+	}
+
+	pub fn add_utxo(&self, outpoint: bitcoin::OutPoint, value: u64) -> TxOut {
+		let public_key = bitcoin::PublicKey::new(self.secret_key.public_key(&self.secp));
+		let utxo = Utxo::new_p2pkh(outpoint, value, &public_key.pubkey_hash());
+		self.utxos.borrow_mut().push(utxo.clone());
+		utxo.output
+	}
+
+	pub fn add_custom_utxo(&self, utxo: Utxo) -> TxOut {
+		let output = utxo.output.clone();
+		self.utxos.borrow_mut().push(utxo);
+		output
+	}
+
+	pub fn remove_utxo(&self, outpoint: bitcoin::OutPoint) {
+		self.utxos.borrow_mut().retain(|utxo| utxo.outpoint != outpoint);
+	}
+}
+
+impl WalletSource for TestWalletSource {
+	fn list_confirmed_utxos(&self) -> Result<Vec<Utxo>, ()> {
+		Ok(self.utxos.borrow().clone())
+	}
+
+	fn get_change_script(&self) -> Result<Script, ()> {
+		let public_key = bitcoin::PublicKey::new(self.secret_key.public_key(&self.secp));
+		Ok(Script::new_p2pkh(&public_key.pubkey_hash()))
+	}
+
+	fn sign_tx(&self, mut tx: Transaction) -> Result<Transaction, ()> {
+		let utxos = self.utxos.borrow();
+		for i in 0..tx.input.len() {
+			if let Some(utxo) = utxos.iter().find(|utxo| utxo.outpoint == tx.input[i].previous_output) {
+				let sighash = SighashCache::new(&tx)
+					.legacy_signature_hash(i, &utxo.output.script_pubkey, EcdsaSighashType::All as u32)
+					.map_err(|_| ())?;
+				let sig = self.secp.sign_ecdsa(&sighash.as_hash().into(), &self.secret_key);
+				let bitcoin_sig = bitcoin::EcdsaSig { sig, hash_ty: EcdsaSighashType::All }.to_vec();
+				tx.input[i].script_sig = Builder::new()
+					.push_slice(&bitcoin_sig)
+					.push_slice(&self.secret_key.public_key(&self.secp).serialize())
+					.into_script();
+			}
+		}
+		Ok(tx)
 	}
 }

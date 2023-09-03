@@ -15,19 +15,27 @@ use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::secp256k1::{self, PublicKey, Secp256k1, SecretKey, Scalar};
 use bitcoin::secp256k1::ecdh::SharedSecret;
 
-use super::BlindedPath;
+use super::{BlindedHop, BlindedPath};
+use crate::ln::msgs::DecodeError;
 use crate::ln::onion_utils;
 use crate::onion_message::Destination;
+use crate::util::chacha20poly1305rfc::ChaChaPolyWriteAdapter;
+use crate::util::ser::{Readable, VecWriter, Writeable};
 
+use crate::io;
 use crate::prelude::*;
 
 // TODO: DRY with onion_utils::construct_onion_keys_callback
 #[inline]
-pub(crate) fn construct_keys_callback<T: secp256k1::Signing + secp256k1::Verification,
-	FType: FnMut(PublicKey, SharedSecret, PublicKey, [u8; 32], Option<PublicKey>, Option<Vec<u8>>)>(
-	secp_ctx: &Secp256k1<T>, unblinded_path: &[PublicKey], destination: Option<Destination>,
-	session_priv: &SecretKey, mut callback: FType
-) -> Result<(), secp256k1::Error> {
+pub(crate) fn construct_keys_callback<'a, T, I, F>(
+	secp_ctx: &Secp256k1<T>, unblinded_path: I, destination: Option<Destination>,
+	session_priv: &SecretKey, mut callback: F
+) -> Result<(), secp256k1::Error>
+where
+	T: secp256k1::Signing + secp256k1::Verification,
+	I: Iterator<Item=&'a PublicKey>,
+	F: FnMut(PublicKey, SharedSecret, PublicKey, [u8; 32], Option<PublicKey>, Option<Vec<u8>>),
+{
 	let mut msg_blinding_point_priv = session_priv.clone();
 	let mut msg_blinding_point = PublicKey::from_secret_key(secp_ctx, &msg_blinding_point_priv);
 	let mut onion_packet_pubkey_priv = msg_blinding_point_priv.clone();
@@ -95,4 +103,49 @@ pub(crate) fn construct_keys_callback<T: secp256k1::Signing + secp256k1::Verific
 		}
 	}
 	Ok(())
+}
+
+// Panics if `unblinded_tlvs` length is less than `unblinded_pks` length
+pub(super) fn construct_blinded_hops<'a, T, I1, I2>(
+	secp_ctx: &Secp256k1<T>, unblinded_pks: I1, mut unblinded_tlvs: I2, session_priv: &SecretKey
+) -> Result<Vec<BlindedHop>, secp256k1::Error>
+where
+	T: secp256k1::Signing + secp256k1::Verification,
+	I1: Iterator<Item=&'a PublicKey>,
+	I2: Iterator,
+	I2::Item: Writeable
+{
+	let mut blinded_hops = Vec::with_capacity(unblinded_pks.size_hint().0);
+	construct_keys_callback(
+		secp_ctx, unblinded_pks, None, session_priv,
+		|blinded_node_id, _, _, encrypted_payload_rho, _, _| {
+			blinded_hops.push(BlindedHop {
+				blinded_node_id,
+				encrypted_payload: encrypt_payload(unblinded_tlvs.next().unwrap(), encrypted_payload_rho),
+			});
+		})?;
+	Ok(blinded_hops)
+}
+
+/// Encrypt TLV payload to be used as a [`crate::blinded_path::BlindedHop::encrypted_payload`].
+fn encrypt_payload<P: Writeable>(payload: P, encrypted_tlvs_rho: [u8; 32]) -> Vec<u8> {
+	let mut writer = VecWriter(Vec::new());
+	let write_adapter = ChaChaPolyWriteAdapter::new(encrypted_tlvs_rho, &payload);
+	write_adapter.write(&mut writer).expect("In-memory writes cannot fail");
+	writer.0
+}
+
+/// Blinded path encrypted payloads may be padded to ensure they are equal length.
+///
+/// Reads padding to the end, ignoring what's read.
+pub(crate) struct Padding {}
+impl Readable for Padding {
+	#[inline]
+	fn read<R: io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
+		loop {
+			let mut buf = [0; 8192];
+			if reader.read(&mut buf[..])? == 0 { break; }
+		}
+		Ok(Self {})
+	}
 }

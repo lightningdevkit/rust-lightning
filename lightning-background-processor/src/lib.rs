@@ -34,7 +34,7 @@ use lightning::ln::peer_handler::APeerManager;
 use lightning::routing::gossip::{NetworkGraph, P2PGossipSync};
 use lightning::routing::utxo::UtxoLookup;
 use lightning::routing::router::Router;
-use lightning::routing::scoring::{Score, WriteableScore};
+use lightning::routing::scoring::{ScoreUpdate, WriteableScore};
 use lightning::util::logger::Logger;
 use lightning::util::persist::Persister;
 #[cfg(feature = "std")]
@@ -241,23 +241,27 @@ fn handle_network_graph_update<L: Deref>(
 fn update_scorer<'a, S: 'static + Deref<Target = SC> + Send + Sync, SC: 'a + WriteableScore<'a>>(
 	scorer: &'a S, event: &Event
 ) -> bool {
-	let mut score = scorer.lock();
 	match event {
 		Event::PaymentPathFailed { ref path, short_channel_id: Some(scid), .. } => {
+			let mut score = scorer.write_lock();
 			score.payment_path_failed(path, *scid);
 		},
 		Event::PaymentPathFailed { ref path, payment_failed_permanently: true, .. } => {
 			// Reached if the destination explicitly failed it back. We treat this as a successful probe
 			// because the payment made it all the way to the destination with sufficient liquidity.
+			let mut score = scorer.write_lock();
 			score.probe_successful(path);
 		},
 		Event::PaymentPathSuccessful { path, .. } => {
+			let mut score = scorer.write_lock();
 			score.payment_path_successful(path);
 		},
 		Event::ProbeSuccessful { path, .. } => {
+			let mut score = scorer.write_lock();
 			score.probe_successful(path);
 		},
 		Event::ProbeFailed { path, short_channel_id: Some(scid), .. } => {
+			let mut score = scorer.write_lock();
 			score.probe_failed(path, *scid);
 		},
 		_ => return false,
@@ -519,9 +523,8 @@ use core::task;
 /// # type MyUtxoLookup = dyn lightning::routing::utxo::UtxoLookup + Send + Sync;
 /// # type MyFilter = dyn lightning::chain::Filter + Send + Sync;
 /// # type MyLogger = dyn lightning::util::logger::Logger + Send + Sync;
-/// # type MyMessageRouter = dyn lightning::onion_message::MessageRouter + Send + Sync;
 /// # type MyChainMonitor = lightning::chain::chainmonitor::ChainMonitor<lightning::sign::InMemorySigner, Arc<MyFilter>, Arc<MyBroadcaster>, Arc<MyFeeEstimator>, Arc<MyLogger>, Arc<MyPersister>>;
-/// # type MyPeerManager = lightning::ln::peer_handler::SimpleArcPeerManager<MySocketDescriptor, MyChainMonitor, MyBroadcaster, MyFeeEstimator, MyUtxoLookup, MyLogger, MyMessageRouter>;
+/// # type MyPeerManager = lightning::ln::peer_handler::SimpleArcPeerManager<MySocketDescriptor, MyChainMonitor, MyBroadcaster, MyFeeEstimator, MyUtxoLookup, MyLogger>;
 /// # type MyNetworkGraph = lightning::routing::gossip::NetworkGraph<Arc<MyLogger>>;
 /// # type MyGossipSync = lightning::routing::gossip::P2PGossipSync<Arc<MyNetworkGraph>, Arc<MyUtxoLookup>, Arc<MyLogger>>;
 /// # type MyChannelManager = lightning::ln::channelmanager::SimpleArcChannelManager<MyChainMonitor, MyBroadcaster, MyFeeEstimator, MyLogger>;
@@ -859,7 +862,7 @@ mod tests {
 	use lightning::ln::peer_handler::{PeerManager, MessageHandler, SocketDescriptor, IgnoringMessageHandler};
 	use lightning::routing::gossip::{NetworkGraph, NodeId, P2PGossipSync};
 	use lightning::routing::router::{DefaultRouter, Path, RouteHop};
-	use lightning::routing::scoring::{ChannelUsage, Score};
+	use lightning::routing::scoring::{ChannelUsage, ScoreUpdate, ScoreLookUp};
 	use lightning::util::config::UserConfig;
 	use lightning::util::ser::Writeable;
 	use lightning::util::test_utils;
@@ -886,7 +889,22 @@ mod tests {
 		fn disconnect_socket(&mut self) {}
 	}
 
-	type ChannelManager = channelmanager::ChannelManager<Arc<ChainMonitor>, Arc<test_utils::TestBroadcaster>, Arc<KeysManager>, Arc<KeysManager>, Arc<KeysManager>, Arc<test_utils::TestFeeEstimator>, Arc<DefaultRouter<Arc<NetworkGraph<Arc<test_utils::TestLogger>>>, Arc<test_utils::TestLogger>, Arc<Mutex<TestScorer>>, (), TestScorer>>, Arc<test_utils::TestLogger>>;
+	type ChannelManager =
+		channelmanager::ChannelManager<
+			Arc<ChainMonitor>,
+			Arc<test_utils::TestBroadcaster>,
+			Arc<KeysManager>,
+			Arc<KeysManager>,
+			Arc<KeysManager>,
+			Arc<test_utils::TestFeeEstimator>,
+			Arc<DefaultRouter<
+				Arc<NetworkGraph<Arc<test_utils::TestLogger>>>,
+				Arc<test_utils::TestLogger>,
+				Arc<Mutex<TestScorer>>,
+				(),
+				TestScorer>
+			>,
+			Arc<test_utils::TestLogger>>;
 
 	type ChainMonitor = chainmonitor::ChainMonitor<InMemorySigner, Arc<test_utils::TestChainSource>, Arc<test_utils::TestBroadcaster>, Arc<test_utils::TestFeeEstimator>, Arc<test_utils::TestLogger>, Arc<FilesystemPersister>>;
 
@@ -1019,12 +1037,14 @@ mod tests {
 		fn write<W: lightning::util::ser::Writer>(&self, _: &mut W) -> Result<(), lightning::io::Error> { Ok(()) }
 	}
 
-	impl Score for TestScorer {
+	impl ScoreLookUp for TestScorer {
 		type ScoreParams = ();
 		fn channel_penalty_msat(
 			&self, _short_channel_id: u64, _source: &NodeId, _target: &NodeId, _usage: ChannelUsage, _score_params: &Self::ScoreParams
 		) -> u64 { unimplemented!(); }
+	}
 
+	impl ScoreUpdate for TestScorer {
 		fn payment_path_failed(&mut self, actual_path: &Path, actual_short_channel_id: u64) {
 			if let Some(expectations) = &mut self.event_expectations {
 				match expectations.pop_front().unwrap() {
@@ -1143,7 +1163,7 @@ mod tests {
 			let chain_monitor = Arc::new(chainmonitor::ChainMonitor::new(Some(chain_source.clone()), tx_broadcaster.clone(), logger.clone(), fee_estimator.clone(), persister.clone()));
 			let best_block = BestBlock::from_network(network);
 			let params = ChainParameters { network, best_block };
-			let manager = Arc::new(ChannelManager::new(fee_estimator.clone(), chain_monitor.clone(), tx_broadcaster.clone(), router.clone(), logger.clone(), keys_manager.clone(), keys_manager.clone(), keys_manager.clone(), UserConfig::default(), params));
+			let manager = Arc::new(ChannelManager::new(fee_estimator.clone(), chain_monitor.clone(), tx_broadcaster.clone(), router.clone(), logger.clone(), keys_manager.clone(), keys_manager.clone(), keys_manager.clone(), UserConfig::default(), params, genesis_block.header.time));
 			let p2p_gossip_sync = Arc::new(P2PGossipSync::new(network_graph.clone(), Some(chain_source.clone()), logger.clone()));
 			let rapid_gossip_sync = Arc::new(RapidGossipSync::new(network_graph.clone(), logger.clone()));
 			let msg_handler = MessageHandler {
