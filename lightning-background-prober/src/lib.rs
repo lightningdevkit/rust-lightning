@@ -216,24 +216,45 @@ impl ProbeValueMap {
 struct NodeRating {
 	node_id : NodeId,
 		// Identifier for the node being rated
+
 	path : Option<Path>,
 		// List of paths associated with the node
-	channel_information_coefficient: f64,
+
+	channel_information_coefficient: Option<f64>,
 		// Coefficient representing channel information
 		// No current implementation, to be add soon
+
 	last_successful_probe: Option<ProbePersister>,
+		// Holds the last successful probe information
+		// need to be updated by Event Handler
+	
 	last_probe: Option<ProbePersister>,
+		// Holds the last probe information
 }
 
 impl NodeRating {
+
+	// Constructor to create a new instance of `NodeRating` with a node ID
 	fn new (node_id: NodeId) -> Self {
 		Self {
 			node_id,
 			path: None,
-			channel_information_coefficient: 0.0,
+			channel_information_coefficient: None,
 			last_successful_probe: None,
 			last_probe: None,
 		}
+	}
+
+	fn update_path(&mut self, path: Path) {
+		self.path = Some(path);
+	}
+
+	fn update_last_successful_probe(&mut self, probe_persister: ProbePersister) {
+		self.last_successful_probe = Some(probe_persister);
+	}
+
+	fn update_last_probe(&mut self, probe_persister: ProbePersister) {
+		self.last_probe = Some(probe_persister);
 	}
 }
 
@@ -250,25 +271,31 @@ enum ProbeStatus {
 // Initialized by value_selector
 // updated by final_path_builder_for_probe 
 #[derive(Clone)]
+#[derive(PartialEq)]
 struct ProbePersister{
+	// Identifier of the targeted node for the probe
 	target_nodeid : NodeId,
-		// Identifier of the targeted node for the probe
-	value : Option<u64>,
-		// Value of probes "FINAL_VALUE_MSAT"
+	
+	// Value of probes "FINAL_VALUE_MSAT"
+	value : u64,
+	
+	// Path taken by probe
 	path : Option<Path>,
-		// Path taken by probe
+	
+	// Probe status
 	probe_status : Option<ProbeStatus>, 
-		// Probe status
-	send_probe_return : Option<Result<(PaymentHash, PaymentId), PaymentSendFailure>>,
-		//Return value from 'send_probe'
+
+	// Return value from 'send_probe'	
+	send_probe_return :Option<(PaymentHash, PaymentId)>,
 }
 
 impl ProbePersister {
+
 	// Constructor to create a new instance of `ProbePersister` with a target node ID
-	fn new (target_nodeid: NodeId) -> Self {
+	fn new (target_nodeid: NodeId, value: u64) -> Self {
 		Self {
 			target_nodeid,
-			value: None,
+			value,
 			path: None,
 			probe_status: None,
 			send_probe_return: None,
@@ -281,16 +308,16 @@ impl ProbePersister {
         self.path = Some(path);
     }
 
-	// Method to update the value associated with the probe
-	// to be updated by value_selector
-	fn update_value (&mut self, value: u64) {
-		self.value = Some(value);
-	}
+	// // Method to update the value associated with the probe
+	// // to be updated by value_selector
+	// fn update_value (&mut self, value: u64) {
+	// 	self.value = Some(value);
+	// }
 
     // Method to update the send probe return
 	// to be updated by send_probe
-    fn update_send_probe_return(&mut self, result: Result<(PaymentHash, PaymentId), PaymentSendFailure>) {
-        self.send_probe_return = Some(result);
+    fn update_send_probe_return(&mut self, payment_hash: PaymentHash, payment_id:PaymentId) {
+        self.send_probe_return = Some((payment_hash, payment_id));
     }
 
 	 // Method to update the probe status
@@ -304,7 +331,6 @@ impl ProbePersister {
 //end of struct for persisting probes
 //******************************************************************************************************************************************************** */
  
- // Struct for hold date from network_graph
 struct NodesToProbe {
 	nodes_to_probe: Vec<(NodeId,NodeInfo)>,
 }
@@ -367,7 +393,7 @@ impl clone::Clone for NodesToProbe {
 }
 
 // Function returns most favorable nodes to probe
-// Will return top_one_percent_nodes of nodes sorted by Number Of Channels per node
+// Will return top_one_percent_nodes of nodes sorted by `Number Of Channels` per node
 async fn node_selector(
 	top_nodes: NodesToProbe,
 	probe_value_map: &ProbeValueMap,
@@ -431,24 +457,23 @@ fn sorted_channel_capacity_in_path(
 	let hops = path.hops;
 		for i in hops {
 			let scid = i.short_channel_id;
-			let capacity_msat = network_graph.channel(scid).unwrap().capacity_sats;
-			match capacity_msat {
-				Some(x) => {
-					let c = (0.5*(x as f64)).floor() as u64;
-					vec.push((scid, Some(c)));
+			//let capacity_msat = network_graph.channel(scid).unwrap().capacity_sats;
+			let channel_info = network_graph.channel(scid);
+			match channel_info {
+				Some(channel_info) => {
+					let capacity_msat = channel_info.capacity_sats;
+					match capacity_msat {
+						Some(x) => {
+							let c = (0.5*(x as f64)).floor() as u64;
+							vec.push((scid, Some(c)));
+						}
+						None => continue,
+					}
 				}
-				None => vec.push((scid, None)),
+				None => continue,
 			}
 		}
-
-		vec.sort_by(|a, b| {
-			match (a.1, b.1) {
-				(Some(x), Some(y)) => x.cmp(&y),
-				(None, Some(_)) => std::cmp::Ordering::Greater,
-				(Some(_), None) => std::cmp::Ordering::Less,
-				(None, None) => std::cmp::Ordering::Equal,
-			}
-		});
+		vec.sort_by(|(_, a), (_, b)| a.cmp(b)); // ascending ordering for channel_capcity in path
 
 	return vec;
 }
@@ -474,10 +499,16 @@ impl HtlcList {
 		
         for i in &self.path.hops {
             let nodeid = NodeId::from_pubkey(&i.pubkey);
-            let max = channel_info.get_directional_info(0).unwrap().htlc_maximum_msat;
-            self.max_htlc_list.push((nodeid, max));
+            let channel_update_info = channel_info.get_directional_info(0);
+			match channel_update_info {
+				Some(channel_update_info) => {
+					let max_htlc = channel_update_info.htlc_maximum_msat;
+					self.max_htlc_list.push((nodeid, max_htlc));
+				}
+
+				None => continue,
+			}
         }
-        
         self.max_htlc_list.sort_by(|(_, a), (_, b)| a.cmp(b)); // ascending ordering of MAX_HTLC
     }
 }
@@ -531,7 +562,7 @@ async fn initial_path_builder(
 						&payee_pubkey, 
 						&route_params, 
 						None, 
-						&InFlightHtlcs::new());
+						InFlightHtlcs::new());
 					
 					match route {
 						Ok(route) => {
@@ -549,93 +580,126 @@ async fn initial_path_builder(
 }
 
 //Value selector for probing (Uses binary search method)
+	// It works on following principle's 
+	// 1. If last probe was success -> value = 2 * last_probe 
+	// 2. If last probe was fail and last_successful_probe has `Some(x)` -> value = 0.5*(last_succesful_probe + last_probe)
+	// 3. If last probe was fail and last_successful_probe has `None` -> value = 0.5*(last_probe)
 async fn value_selector (
 	path: Path,
-	nodeid: NodeId,
+	target_nodeid: NodeId,
 	probe_value_map: &ProbeValueMap,
 	max_htlc_list: Vec<(NodeId,u64)>,
 	capacity_list: Vec<(u64,Option<u64>)>,
 ) -> u64 {
 	let mut value_map = probe_value_map.value_map.lock().await;
-	let temp = value_map.get_mut(&nodeid);
-	match temp {
+	let node_rating = value_map.get_mut(&target_nodeid);
+	match node_rating {
 		Some(node_rating) => { 
-
-			let last_probe_status = node_rating.last_probe.clone().unwrap().probe_status;
-			let last_successful_probe_status = node_rating.last_successful_probe.clone().unwrap().probe_status;
 			
+			let last_probe = node_rating.last_probe.clone();
+			let last_successful_probe_status = node_rating.last_successful_probe.clone();
+			// Case 1: probe_value_map.last_probe == None, probe_value_map.last_successful_probe == None
+			match last_probe {
+				Some(last_probe) => {
+					
+					let last_probe_status = last_probe.probe_status.clone();
 
-			if last_probe_status == None && last_successful_probe_status == None {
-				let val = min(max_htlc_list[0].1, capacity_list[0].1.unwrap());
-				
-				node_rating.last_probe = Some(ProbePersister::new(nodeid));
-				if let Some(mut last_probe) = node_rating.last_probe.clone() {
-					last_probe.update_path(path);
-					last_probe.update_value(val);
+					// Case 2: probe_value_map.last_probe == Some(ProbeStatus::Success), probe_value_map.last_successful_probe != None
+					if last_probe_status == Some(ProbeStatus::Success) && last_successful_probe_status != None {
+						let value = node_rating.last_probe.clone().unwrap().value;
+						let val = 2*value;
+						
+						node_rating.last_probe = Some(ProbePersister::new(target_nodeid, val));
+						if let Some(mut last_probe) = node_rating.last_probe.clone() {
+							last_probe.update_path(path);
+							//last_probe.update_value(val);
+						}
+
+						return val // to be changed to val
+					}
+
+					// Case 3: probe_value_map.last_probe == Some(ProbeStatus::Failure), probe_value_map.last_successful_probe != None
+					else if last_probe_status == Some(ProbeStatus::Failure) && last_successful_probe_status != None {
+						let last_successful_val = node_rating.last_successful_probe.clone().unwrap().value;
+						let value = node_rating.last_probe.clone().unwrap().value;
+						let val = (0.5*((value + last_successful_val) as f64)).floor() as u64;
+						
+						node_rating.last_probe = Some(ProbePersister::new(target_nodeid, val));
+						if let Some(mut last_probe) = node_rating.last_probe.clone() {
+							last_probe.update_path(path);
+							//last_probe.update_value(val);
+						}
+
+						return val // to be changed to val
+					}
+					
+					// Case 4: probe_value_map.last_probe == Some(ProbeStatus::Failure), probe_value_map.last_successful_probe == None
+					else if last_probe_status == Some(ProbeStatus::Failure) && last_successful_probe_status == None {
+						let value = node_rating.last_probe.clone().unwrap().value;
+						let val = (0.5*((value) as f64)).floor() as u64;
+						
+						node_rating.last_probe = Some(ProbePersister::new(target_nodeid, val));
+						if let Some(mut last_probe) = node_rating.last_probe.clone() {
+							last_probe.update_path(path);
+							//last_probe.update_value(val);
+						}
+
+						return val //to be changed to val
+					}
+
+					else {
+						panic!("Error in value_selector logic") // to be changed later
+					}
 				}
 
-				return val
-			}
+				None => {
+					let a = max_htlc_list[0].1;
+					let c = capacity_list.is_empty();
+					
+					if let c = capacity_list.is_empty() {
+						let val = max_htlc_list[0].1;
+		
+						node_rating.last_probe = Some(ProbePersister::new(target_nodeid, val));
+						if let Some(mut last_probe) = node_rating.last_probe.clone() {
+						 	last_probe.update_path(path);
+							//last_probe.update_value(val);
+						}
 
-			else if last_probe_status == Some(ProbeStatus::Success) && last_successful_probe_status != None {
-				let value = node_rating.last_probe.clone().unwrap().value.unwrap();
-				let val = 2*value;
-				
-				node_rating.last_probe = Some(ProbePersister::new(nodeid));
-				if let Some(mut last_probe) = node_rating.last_probe.clone() {
-					last_probe.update_path(path);
-					last_probe.update_value(val);
+						return val
+					}
+
+					else {
+						let b = capacity_list[0].1;
+						match b {
+							Some(b) => {
+								let val = min(max_htlc_list[0].1, capacity_list[0].1.unwrap());
+						
+								node_rating.last_probe = Some(ProbePersister::new(target_nodeid, val));
+								if let Some(mut last_probe) = node_rating.last_probe.clone() {
+									last_probe.update_path(path);
+									//last_probe.update_value(val);
+								}
+		
+								return val
+							}
+
+							None => {
+								let val = max_htlc_list[0].1;
+		
+								node_rating.last_probe = Some(ProbePersister::new(target_nodeid, val));
+								if let Some(mut last_probe) = node_rating.last_probe.clone() {
+									last_probe.update_path(path);
+									//last_probe.update_value(val);
+								}
+	
+								return val
+							}
+						}
+					}
 				}
-
-				return val
-			}
-
-			else if last_probe_status == Some(ProbeStatus::Failure) && last_successful_probe_status != None {
-				
-				let last_successful_val = node_rating.last_successful_probe.clone().unwrap().value.unwrap();
-				let value = node_rating.last_probe.clone().unwrap().value.unwrap();
-				let val = (0.5*((value + last_successful_val) as f64)).floor() as u64;
-				
-				node_rating.last_probe = Some(ProbePersister::new(nodeid));
-				if let Some(mut last_probe) = node_rating.last_probe.clone() {
-					last_probe.update_path(path);
-					last_probe.update_value(val);
-				}
-
-				return val
-			}
-			
-			else if last_probe_status == Some(ProbeStatus::Failure) && last_successful_probe_status == None {
-				let value = node_rating.last_probe.clone().unwrap().value.unwrap();
-				let val = (0.5*((value) as f64)).floor() as u64;
-				
-				node_rating.last_probe = Some(ProbePersister::new(nodeid));
-				if let Some(mut last_probe) = node_rating.last_probe.clone() {
-					last_probe.update_path(path);
-					last_probe.update_value(val);
-				}
-
-				return val
-			}
-
-			else if last_probe_status == Some(ProbeStatus::Success) && last_successful_probe_status == None {
-				let value = node_rating.last_probe.clone().unwrap().value.unwrap();
-				let val = 2*value;
-				
-				node_rating.last_probe = Some(ProbePersister::new(nodeid));
-				if let Some(mut last_probe) = node_rating.last_probe.clone() {
-					last_probe.update_path(path);
-					last_probe.update_value(val);
-				}
-
-				return val
-			}
-
-			else {
-				panic!("Node rating error")
 			}
 		}
-    	None => panic!("Node rating error")
+    	None => panic!("NodeRating not found in probe_value_map") // to be changed later // Panic! ("NodeRating not found in probe_value_map")
 	}	
 }
 
@@ -844,3 +908,388 @@ async fn final_path_builder_for_probe_looper<L: std::ops::Deref + lightning::uti
 //Tests
 //******************************************************************************************************************************************************** */
 
+#[cfg(test)]
+mod tests {
+		use super::*;
+		
+		extern crate lightning;
+		// use lightning::{ChannelLiquidity, HistoricalBucketRangeTracker, ProbabilisticScoringFeeParameters, ProbabilisticScoringDecayParameters, ProbabilisticScorerUsingTime, util};
+		use lightning::blinded_path::{BlindedHop, BlindedPath};
+		use lightning::ln::features::Features;
+use lightning::util;
+		use lightning::util::config::UserConfig;
+
+		use lightning::ln::channelmanager;
+		use lightning::ln::msgs::{ChannelAnnouncement, ChannelUpdate, UnsignedChannelAnnouncement, UnsignedChannelUpdate};
+		use	lightning::routing::gossip::{EffectiveCapacity, NetworkGraph, NodeId};
+		use lightning::routing::router::{BlindedTail, Path, RouteHop};
+		// use lightning::routing::scoring::{ChannelUsage, Score};
+		use lightning::util::ser::{ReadableArgs, Writeable};
+		use lightning::util::test_utils::{self, TestLogger};
+		
+
+		// use crate::lightning::routing::gossip::{NetworkGraph, NodeAlias, P2PGossipSync};
+		// use crate::ln::features::{ChannelFeatures, NodeFeatures};
+		// use crate::ln::msgs::{UnsignedChannelAnnouncement, ChannelAnnouncement, RoutingMessageHandler,
+		// 	NodeAnnouncement, UnsignedNodeAnnouncement, ChannelUpdate, UnsignedChannelUpdate, MAX_VALUE_MSAT};
+		// use crate::util::test_utils;
+		//use crate::util::ser::Writeable;
+		
+
+		use bitcoin::blockdata::constants::genesis_block;
+		use bitcoin::hashes::Hash;
+		use bitcoin::hashes::sha256d::Hash as Sha256dHash;
+		use bitcoin::network::constants::Network;
+		use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
+		use tokio::runtime;
+		use core::time::Duration;
+		use std::io;
+
+		fn source_privkey() -> SecretKey {
+			SecretKey::from_slice(&[42; 32]).unwrap()
+		}
+	
+		fn target_privkey() -> SecretKey {
+			SecretKey::from_slice(&[43; 32]).unwrap()
+		}
+		
+		fn source_pubkey() -> PublicKey {
+			let secp_ctx = Secp256k1::new();
+			PublicKey::from_secret_key(&secp_ctx, &source_privkey())
+		}
+	
+		fn target_pubkey() -> PublicKey {
+			let secp_ctx = Secp256k1::new();
+			PublicKey::from_secret_key(&secp_ctx, &target_privkey())
+		}
+	
+		fn source_node_id() -> NodeId {
+			NodeId::from_pubkey(&source_pubkey())
+		}
+	
+		fn target_node_id() -> NodeId {
+			NodeId::from_pubkey(&target_pubkey())
+		}
+	
+		fn sender_privkey() -> SecretKey {
+			SecretKey::from_slice(&[41; 32]).unwrap()
+		}
+	
+		fn recipient_privkey() -> SecretKey {
+			SecretKey::from_slice(&[45; 32]).unwrap()
+		}
+	
+		fn sender_pubkey() -> PublicKey {
+			let secp_ctx = Secp256k1::new();
+			PublicKey::from_secret_key(&secp_ctx, &sender_privkey())
+		}
+	
+		fn recipient_pubkey() -> PublicKey {
+			let secp_ctx = Secp256k1::new();
+			PublicKey::from_secret_key(&secp_ctx, &recipient_privkey())
+		}
+	
+		fn sender_node_id() -> NodeId {
+			NodeId::from_pubkey(&sender_pubkey())
+		}
+	
+		fn recipient_node_id() -> NodeId {
+			NodeId::from_pubkey(&recipient_pubkey())
+		}
+	
+		fn network_graph(logger: &TestLogger) -> NetworkGraph<&TestLogger> {
+			let mut network_graph = NetworkGraph::new(Network::Testnet, logger);
+			add_channel(&mut network_graph, 42, source_privkey(), target_privkey());
+			add_channel(&mut network_graph, 43, target_privkey(), recipient_privkey());
+	
+			network_graph
+		}
+		macro_rules! hash_to_message {
+			($slice: expr) => {
+				{
+					#[cfg(not(fuzzing))]
+					{
+						::bitcoin::secp256k1::Message::from_slice($slice).unwrap()
+					}
+					#[cfg(fuzzing)]
+					{
+						match ::bitcoin::secp256k1::Message::from_slice($slice) {
+							Ok(msg) => msg,
+							Err(_) => ::bitcoin::secp256k1::Message::from_slice(&[1; 32]).unwrap()
+						}
+					}
+				}
+			}
+		}
+
+		fn add_channel(
+			network_graph: &mut NetworkGraph<&TestLogger>, short_channel_id: u64, node_1_key: SecretKey,
+			node_2_key: SecretKey
+		) {
+			let genesis_hash = genesis_block(Network::Testnet).header.block_hash();
+			let node_1_secret = &SecretKey::from_slice(&[39; 32]).unwrap();
+			let node_2_secret = &SecretKey::from_slice(&[40; 32]).unwrap();
+			let secp_ctx = Secp256k1::new();
+			let unsigned_announcement = UnsignedChannelAnnouncement {
+				features: Features::empty(),
+				chain_hash: genesis_hash,
+				short_channel_id,
+				node_id_1: NodeId::from_pubkey(&PublicKey::from_secret_key(&secp_ctx, &node_1_key)),
+				node_id_2: NodeId::from_pubkey(&PublicKey::from_secret_key(&secp_ctx, &node_2_key)),
+				bitcoin_key_1: NodeId::from_pubkey(&PublicKey::from_secret_key(&secp_ctx, &node_1_secret)),
+				bitcoin_key_2: NodeId::from_pubkey(&PublicKey::from_secret_key(&secp_ctx, &node_2_secret)),
+				excess_data: Vec::new(),
+			};
+			let msghash = hash_to_message!(&Sha256dHash::hash(&unsigned_announcement.encode()[..])[..]);
+			let signed_announcement = ChannelAnnouncement {
+				node_signature_1: secp_ctx.sign_ecdsa(&msghash, &node_1_key),
+				node_signature_2: secp_ctx.sign_ecdsa(&msghash, &node_2_key),
+				bitcoin_signature_1: secp_ctx.sign_ecdsa(&msghash, &node_1_secret),
+				bitcoin_signature_2: secp_ctx.sign_ecdsa(&msghash, &node_2_secret),
+				contents: unsigned_announcement,
+			};
+			let chain_source: Option<&util::test_utils::TestChainSource> = None;
+			network_graph.update_channel_from_announcement(
+				&signed_announcement, &chain_source).unwrap();
+			update_channel(network_graph, short_channel_id, node_1_key, 0, 1_000);
+			update_channel(network_graph, short_channel_id, node_2_key, 1, 0);
+		}
+	
+		fn update_channel(
+			network_graph: &mut NetworkGraph<&TestLogger>, short_channel_id: u64, node_key: SecretKey,
+			flags: u8, htlc_maximum_msat: u64
+		) {
+			let genesis_hash = genesis_block(Network::Testnet).header.block_hash();
+			let secp_ctx = Secp256k1::new();
+			let unsigned_update = UnsignedChannelUpdate {
+				chain_hash: genesis_hash,
+				short_channel_id,
+				timestamp: 100,
+				flags,
+				cltv_expiry_delta: 18,
+				htlc_minimum_msat: 0,
+				htlc_maximum_msat,
+				fee_base_msat: 1,
+				fee_proportional_millionths: 0,
+				excess_data: Vec::new(),
+			};
+			let msghash = hash_to_message!(&Sha256dHash::hash(&unsigned_update.encode()[..])[..]);
+			let signed_update = ChannelUpdate {
+				signature: secp_ctx.sign_ecdsa(&msghash, &node_key),
+				contents: unsigned_update,
+			};
+			network_graph.update_channel(&signed_update).unwrap();
+		}
+	
+		fn path_hop(pubkey: PublicKey, short_channel_id: u64, fee_msat: u64) -> RouteHop {
+			let config = UserConfig::default();
+			RouteHop {
+				pubkey,
+				node_features: Features::empty(),
+				short_channel_id,
+				channel_features: Features::empty(),
+				fee_msat,
+				cltv_expiry_delta: 18,
+			}
+		}
+	
+		fn payment_path_for_amount(amount_msat: u64) -> Path {
+			Path {
+				hops: vec![
+					path_hop(source_pubkey(), 41, 1),
+					path_hop(target_pubkey(), 42, 2),
+					path_hop(recipient_pubkey(), 43, amount_msat),
+				], blinded_tail: None,
+			}
+		}
+
+		// As value selector has variour cases depending on last probe status and last successful probe status, following tests will assert all the cases
+		
+		// Case 1: probe_value_map.last_probe == None
+		#[tokio::test(flavor = "multi_thread")]
+		async fn value_selector_test_case_1() {
+			let logger = TestLogger::new();
+			let network_graph = network_graph(&logger);
+			let read_network_graph = network_graph.read_only();
+			let probe_value_map = ProbeValueMap::new();
+			{
+				let mut value_map = probe_value_map.value_map.lock().await;
+				value_map.insert(target_node_id(), NodeRating::new(target_node_id()));
+			};
+
+			// let payee_pubkey = recipient_pubkey();
+			let path = payment_path_for_amount(1000);
+			let target_nodeid = target_node_id();
+			let capacity_list = sorted_channel_capacity_in_path(&read_network_graph, path.clone());
+			
+			let mut max_htlc_list = Vec::<(NodeId, u64)>::new();
+			let recipient_pubkey = recipient_node_id();
+			let target_pubkey = target_node_id();
+
+			max_htlc_list.push((recipient_pubkey, 200));
+			max_htlc_list.push((target_pubkey, 201));
+
+			let value = value_selector(
+				path.clone(), 
+				target_nodeid, 
+				&probe_value_map,
+				max_htlc_list, 
+				capacity_list).await;
+			
+			assert_eq!(value, 200);
+		}
+		
+		
+		#[tokio::test]
+		// Case 2: probe_value_map.last_probe == Some(ProbeStatus::Success), probe_value_map.last_successful_probe != None
+		async fn value_selector_test_case_2() {
+			let logger = TestLogger::new();
+			let network_graph = network_graph(&logger);
+			let read_network_graph = network_graph.read_only();
+			let probe_value_map = ProbeValueMap::new();
+			let target_pubkey = target_node_id();
+			{
+				let mut value_map = probe_value_map.value_map.lock().await;
+				value_map.insert(target_node_id(), NodeRating::new(target_pubkey.clone()));
+			}
+			
+			{
+				let mut value_map = probe_value_map.value_map.lock().await;
+				let node_rating = value_map.get_mut(&target_node_id()).unwrap();
+				node_rating.update_last_probe(ProbePersister::new(target_pubkey.clone(),1000));
+
+				let mut last_probe_persister = node_rating.last_probe.as_mut().unwrap();
+				last_probe_persister.update_probe_status(ProbeStatus::Success);
+
+			}
+
+			{
+				let mut value_map = probe_value_map.value_map.lock().await;
+				let node_rating = value_map.get_mut(&target_node_id()).unwrap();
+				node_rating.update_last_successful_probe(ProbePersister::new(target_pubkey.clone(),1000));
+
+				let mut last_successful_probe_persister = node_rating.last_successful_probe.as_mut().unwrap();
+				last_successful_probe_persister.update_probe_status(ProbeStatus::Success);
+			}
+
+			// let payee_pubkey = recipient_pubkey();
+			let path = payment_path_for_amount(1000);
+			let target_nodeid = target_node_id();
+			let capacity_list = sorted_channel_capacity_in_path(&read_network_graph, path.clone());
+			
+			let mut max_htlc_list = Vec::<(NodeId, u64)>::new();
+			let recipient_pubkey = recipient_node_id();
+			//let target_pubkey = target_node_id();
+
+			max_htlc_list.push((recipient_pubkey, 200));
+			max_htlc_list.push((target_pubkey, 201));
+
+			let value = value_selector(
+				path.clone(), 
+				target_nodeid, 
+				&probe_value_map,
+				max_htlc_list, 
+				capacity_list).await;
+			
+			assert_eq!(value, 2000);
+		}
+
+		#[tokio::test]
+		// Case 3: probe_value_map.last_probe == Some(ProbeStatus::Failure), probe_value_map.last_successful_probe != None
+		async fn value_selector_test_case_3() {
+			let logger = TestLogger::new();
+			let network_graph = network_graph(&logger);
+			let read_network_graph = network_graph.read_only();
+			let probe_value_map = ProbeValueMap::new();
+			let target_pubkey = target_node_id();
+			{
+				let mut value_map = probe_value_map.value_map.lock().await;
+				value_map.insert(target_node_id(), NodeRating::new(target_pubkey.clone()));
+			}
+			
+			{
+				let mut value_map = probe_value_map.value_map.lock().await;
+				let node_rating = value_map.get_mut(&target_node_id()).unwrap();
+				node_rating.update_last_probe(ProbePersister::new(target_pubkey.clone(),1000));
+
+				let mut last_probe_persister = node_rating.last_probe.as_mut().unwrap();
+				last_probe_persister.update_probe_status(ProbeStatus::Failure);
+
+			}
+
+			{
+				let mut value_map = probe_value_map.value_map.lock().await;
+				let node_rating = value_map.get_mut(&target_node_id()).unwrap();
+				node_rating.update_last_successful_probe(ProbePersister::new(target_pubkey.clone(),500));
+
+				let mut last_successful_probe_persister = node_rating.last_successful_probe.as_mut().unwrap();
+				last_successful_probe_persister.update_probe_status(ProbeStatus::Success);
+			}
+
+			// let payee_pubkey = recipient_pubkey();
+			let path = payment_path_for_amount(1000);
+			let target_nodeid = target_node_id();
+			let capacity_list = sorted_channel_capacity_in_path(&read_network_graph, path.clone());
+			
+			let mut max_htlc_list = Vec::<(NodeId, u64)>::new();
+			let recipient_pubkey = recipient_node_id();
+			//let target_pubkey = target_node_id();
+
+			max_htlc_list.push((recipient_pubkey, 200));
+			max_htlc_list.push((target_pubkey, 201));
+
+			let value = value_selector(
+				path.clone(), 
+				target_nodeid, 
+				&probe_value_map,
+				max_htlc_list, 
+				capacity_list).await;
+			
+			assert_eq!(value, 750);
+		}
+
+		#[tokio::test]
+		// Case 4: probe_value_map.last_probe == Some(ProbeStatus::Failure), probe_value_map.last_successful_probe == None
+		async fn value_selector_test_case_4() {
+			let logger = TestLogger::new();
+			let network_graph = network_graph(&logger);
+			let read_network_graph = network_graph.read_only();
+			let probe_value_map = ProbeValueMap::new();
+			let target_pubkey = target_node_id();
+			{
+				let mut value_map = probe_value_map.value_map.lock().await;
+				value_map.insert(target_node_id(), NodeRating::new(target_pubkey.clone()));
+			}
+			
+			{
+				let mut value_map = probe_value_map.value_map.lock().await;
+				let node_rating = value_map.get_mut(&target_node_id()).unwrap();
+				node_rating.update_last_probe(ProbePersister::new(target_pubkey.clone(),1000));
+
+				let mut last_probe_persister = node_rating.last_probe.as_mut().unwrap();
+				last_probe_persister.update_probe_status(ProbeStatus::Failure);
+
+			}
+
+			// let payee_pubkey = recipient_pubkey();
+			let path = payment_path_for_amount(1000);
+			let target_nodeid = target_node_id();
+			let capacity_list = sorted_channel_capacity_in_path(&read_network_graph, path.clone());
+			
+			let mut max_htlc_list = Vec::<(NodeId, u64)>::new();
+			let recipient_pubkey = recipient_node_id();
+			//let target_pubkey = target_node_id();
+
+			max_htlc_list.push((recipient_pubkey, 200));
+			max_htlc_list.push((target_pubkey, 201));
+
+			let value = value_selector(
+				path.clone(), 
+				target_nodeid, 
+				&probe_value_map,
+				max_htlc_list, 
+				capacity_list).await;
+			
+			assert_eq!(value, 500);
+		}
+}

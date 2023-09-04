@@ -1,6 +1,6 @@
 [package]
 name = "lightning-background-prober"
-version = "0.0.115"
+version = "0.0.116"
 edition = "2018"
 
 authors = ["Harsh Mahajan <007harshmahajan@gmail.com>"]
@@ -15,15 +15,13 @@ all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
-futures = [ ]
-std = ["lightning/std", "lightning-rapid-gossip-sync/std"]
-
 default = ["std"]
+std = ["lightning/std", "lightning-rapid-gossip-sync/std"]
 
 [dependencies]
 bitcoin = { version = "0.29.0", default-features = false }
-lightning = { version = "0.0.115", path = "../lightning", default-features = false }
-lightning-rapid-gossip-sync = { version = "0.0.115", path = "../lightning-rapid-gossip-sync", default-features = false }
+lightning = { version = "0.0.116", path = "../lightning", default-features = false }
+lightning-rapid-gossip-sync = { version = "0.0.116", path = "../lightning-rapid-gossip-sync", default-features = false }
 tokio = { version = "1", features = ["full"] }
 async-channel = "1.9.0"
 rand = "0.8"
@@ -32,6 +30,6 @@ chrono = { version = "0.4", default-features = false, features = ["clock"] }
 
 [dev-dependencies]
 tokio = { version = "1.14", features = [ "macros", "rt", "rt-multi-thread", "sync", "time" ] }
-lightning = { version = "0.0.115", path = "../lightning", features = ["_test_utils"] }
-lightning-invoice = { version = "0.23.0", path = "../lightning-invoice" }
-lightning-persister = { version = "0.0.115", path = "../lightning-persister" }
+lightning = { version = "0.0.116", path = "../lightning", features = ["_test_utils"] }
+lightning-invoice = { version = "0.24.0", path = "../lightning-invoice" }
+lightning-persister = { version = "0.0.116", path = "../lightning-persister" }
