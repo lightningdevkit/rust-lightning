@@ -101,7 +101,7 @@ pub struct Init {
 	/// message. A node can decide to use that information to discover a potential update to its
 	/// public IPv4 address (NAT) and use that for a [`NodeAnnouncement`] update message containing
 	/// the new address.
-	pub remote_network_address: Option<NetAddress>,
+	pub remote_network_address: Option<SocketAddress>,
 }
 
 /// An [`error`] message to be sent to or received from a peer.
@@ -749,16 +749,16 @@ pub struct AnnouncementSignatures {
 
 /// An address which can be used to connect to a remote peer.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum NetAddress {
-	/// An IPv4 address/port on which the peer is listening.
-	IPv4 {
+pub enum SocketAddress {
+	/// An IPv4 address and port on which the peer is listening.
+	TcpIpV4 {
 		/// The 4-byte IPv4 address
 		addr: [u8; 4],
 		/// The port on which the node is listening
 		port: u16,
 	},
-	/// An IPv6 address/port on which the peer is listening.
-	IPv6 {
+	/// An IPv6 address and port on which the peer is listening.
+	TcpIpV6 {
 		/// The 16-byte IPv6 address
 		addr: [u8; 16],
 		/// The port on which the node is listening
@@ -791,28 +791,28 @@ pub enum NetAddress {
 		port: u16,
 	},
 }
-impl NetAddress {
+impl SocketAddress {
 	/// Gets the ID of this address type. Addresses in [`NodeAnnouncement`] messages should be sorted
 	/// by this.
 	pub(crate) fn get_id(&self) -> u8 {
 		match self {
-			&NetAddress::IPv4 {..} => { 1 },
-			&NetAddress::IPv6 {..} => { 2 },
-			&NetAddress::OnionV2(_) => { 3 },
-			&NetAddress::OnionV3 {..} => { 4 },
-			&NetAddress::Hostname {..} => { 5 },
+			&SocketAddress::TcpIpV4 {..} => { 1 },
+			&SocketAddress::TcpIpV6 {..} => { 2 },
+			&SocketAddress::OnionV2(_) => { 3 },
+			&SocketAddress::OnionV3 {..} => { 4 },
+			&SocketAddress::Hostname {..} => { 5 },
 		}
 	}
 
 	/// Strict byte-length of address descriptor, 1-byte type not recorded
 	fn len(&self) -> u16 {
 		match self {
-			&NetAddress::IPv4 { .. } => { 6 },
-			&NetAddress::IPv6 { .. } => { 18 },
-			&NetAddress::OnionV2(_) => { 12 },
-			&NetAddress::OnionV3 { .. } => { 37 },
+			&SocketAddress::TcpIpV4 { .. } => { 6 },
+			&SocketAddress::TcpIpV6 { .. } => { 18 },
+			&SocketAddress::OnionV2(_) => { 12 },
+			&SocketAddress::OnionV3 { .. } => { 37 },
 			// Consists of 1-byte hostname length, hostname bytes, and 2-byte port.
-			&NetAddress::Hostname { ref hostname, .. } => { u16::from(hostname.len()) + 3 },
+			&SocketAddress::Hostname { ref hostname, .. } => { u16::from(hostname.len()) + 3 },
 		}
 	}
 
@@ -822,31 +822,31 @@ impl NetAddress {
 	pub(crate) const MAX_LEN: u16 = 258;
 }
 
-impl Writeable for NetAddress {
+impl Writeable for SocketAddress {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		match self {
-			&NetAddress::IPv4 { ref addr, ref port } => {
+			&SocketAddress::TcpIpV4 { ref addr, ref port } => {
 				1u8.write(writer)?;
 				addr.write(writer)?;
 				port.write(writer)?;
 			},
-			&NetAddress::IPv6 { ref addr, ref port } => {
+			&SocketAddress::TcpIpV6 { ref addr, ref port } => {
 				2u8.write(writer)?;
 				addr.write(writer)?;
 				port.write(writer)?;
 			},
-			&NetAddress::OnionV2(bytes) => {
+			&SocketAddress::OnionV2(bytes) => {
 				3u8.write(writer)?;
 				bytes.write(writer)?;
 			},
-			&NetAddress::OnionV3 { ref ed25519_pubkey, ref checksum, ref version, ref port } => {
+			&SocketAddress::OnionV3 { ref ed25519_pubkey, ref checksum, ref version, ref port } => {
 				4u8.write(writer)?;
 				ed25519_pubkey.write(writer)?;
 				checksum.write(writer)?;
 				version.write(writer)?;
 				port.write(writer)?;
 			},
-			&NetAddress::Hostname { ref hostname, ref port } => {
+			&SocketAddress::Hostname { ref hostname, ref port } => {
 				5u8.write(writer)?;
 				hostname.write(writer)?;
 				port.write(writer)?;
@@ -856,25 +856,25 @@ impl Writeable for NetAddress {
 	}
 }
 
-impl Readable for Result<NetAddress, u8> {
-	fn read<R: Read>(reader: &mut R) -> Result<Result<NetAddress, u8>, DecodeError> {
+impl Readable for Result<SocketAddress, u8> {
+	fn read<R: Read>(reader: &mut R) -> Result<Result<SocketAddress, u8>, DecodeError> {
 		let byte = <u8 as Readable>::read(reader)?;
 		match byte {
 			1 => {
-				Ok(Ok(NetAddress::IPv4 {
+				Ok(Ok(SocketAddress::TcpIpV4 {
 					addr: Readable::read(reader)?,
 					port: Readable::read(reader)?,
 				}))
 			},
 			2 => {
-				Ok(Ok(NetAddress::IPv6 {
+				Ok(Ok(SocketAddress::TcpIpV6 {
 					addr: Readable::read(reader)?,
 					port: Readable::read(reader)?,
 				}))
 			},
-			3 => Ok(Ok(NetAddress::OnionV2(Readable::read(reader)?))),
+			3 => Ok(Ok(SocketAddress::OnionV2(Readable::read(reader)?))),
 			4 => {
-				Ok(Ok(NetAddress::OnionV3 {
+				Ok(Ok(SocketAddress::OnionV3 {
 					ed25519_pubkey: Readable::read(reader)?,
 					checksum: Readable::read(reader)?,
 					version: Readable::read(reader)?,
@@ -882,7 +882,7 @@ impl Readable for Result<NetAddress, u8> {
 				}))
 			},
 			5 => {
-				Ok(Ok(NetAddress::Hostname {
+				Ok(Ok(SocketAddress::Hostname {
 					hostname: Readable::read(reader)?,
 					port: Readable::read(reader)?,
 				}))
@@ -892,8 +892,8 @@ impl Readable for Result<NetAddress, u8> {
 	}
 }
 
-impl Readable for NetAddress {
-	fn read<R: Read>(reader: &mut R) -> Result<NetAddress, DecodeError> {
+impl Readable for SocketAddress {
+	fn read<R: Read>(reader: &mut R) -> Result<SocketAddress, DecodeError> {
 		match Readable::read(reader) {
 			Ok(Ok(res)) => Ok(res),
 			Ok(Err(_)) => Err(DecodeError::UnknownVersion),
@@ -902,9 +902,9 @@ impl Readable for NetAddress {
 	}
 }
 
-/// [`NetAddress`] error variants
+/// [`SocketAddress`] error variants
 #[derive(Debug, Eq, PartialEq, Clone)]
-pub enum NetAddressParseError {
+pub enum SocketAddressParseError {
 	/// Socket address (IPv4/IPv6) parsing error
 	SocketAddrParse,
 	/// Invalid input format
@@ -915,34 +915,34 @@ pub enum NetAddressParseError {
 	InvalidOnionV3,
 }
 
-impl fmt::Display for NetAddressParseError {
+impl fmt::Display for SocketAddressParseError {
 	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
 		match self {
-			NetAddressParseError::SocketAddrParse => write!(f, "Socket address (IPv4/IPv6) parsing error"),
-			NetAddressParseError::InvalidInput => write!(f, "Invalid input format. \
+			SocketAddressParseError::SocketAddrParse => write!(f, "Socket address (IPv4/IPv6) parsing error"),
+			SocketAddressParseError::InvalidInput => write!(f, "Invalid input format. \
 				Expected: \"<ipv4>:<port>\", \"[<ipv6>]:<port>\", \"<onion address>.onion:<port>\" or \"<hostname>:<port>\""),
-			NetAddressParseError::InvalidPort => write!(f, "Invalid port"),
-			NetAddressParseError::InvalidOnionV3 => write!(f, "Invalid onion v3 address"),
+			SocketAddressParseError::InvalidPort => write!(f, "Invalid port"),
+			SocketAddressParseError::InvalidOnionV3 => write!(f, "Invalid onion v3 address"),
 		}
 	}
 }
 
 #[cfg(feature = "std")]
-impl From<std::net::SocketAddrV4> for NetAddress {
+impl From<std::net::SocketAddrV4> for SocketAddress {
 		fn from(addr: std::net::SocketAddrV4) -> Self {
-			NetAddress::IPv4 { addr: addr.ip().octets(), port: addr.port() }
+			SocketAddress::TcpIpV4 { addr: addr.ip().octets(), port: addr.port() }
 		}
 }
 
 #[cfg(feature = "std")]
-impl From<std::net::SocketAddrV6> for NetAddress {
+impl From<std::net::SocketAddrV6> for SocketAddress {
 		fn from(addr: std::net::SocketAddrV6) -> Self {
-			NetAddress::IPv6 { addr: addr.ip().octets(), port: addr.port() }
+			SocketAddress::TcpIpV6 { addr: addr.ip().octets(), port: addr.port() }
 		}
 }
 
 #[cfg(feature = "std")]
-impl From<std::net::SocketAddr> for NetAddress {
+impl From<std::net::SocketAddr> for SocketAddress {
 		fn from(addr: std::net::SocketAddr) -> Self {
 			match addr {
 				std::net::SocketAddr::V4(addr) => addr.into(),
@@ -951,15 +951,15 @@ impl From<std::net::SocketAddr> for NetAddress {
 		}
 }
 
-fn parse_onion_address(host: &str, port: u16) -> Result<NetAddress, NetAddressParseError> {
+fn parse_onion_address(host: &str, port: u16) -> Result<SocketAddress, SocketAddressParseError> {
 	if host.ends_with(".onion") {
 		let domain = &host[..host.len() - ".onion".len()];
 		if domain.len() != 56 {
-			return Err(NetAddressParseError::InvalidOnionV3);
+			return Err(SocketAddressParseError::InvalidOnionV3);
 		}
-		let onion =  base32::Alphabet::RFC4648 { padding: false }.decode(&domain).map_err(|_| NetAddressParseError::InvalidOnionV3)?;
+		let onion =  base32::Alphabet::RFC4648 { padding: false }.decode(&domain).map_err(|_| SocketAddressParseError::InvalidOnionV3)?;
 		if onion.len() != 35 {
-			return Err(NetAddressParseError::InvalidOnionV3);
+			return Err(SocketAddressParseError::InvalidOnionV3);
 		}
 		let version = onion[0];
 		let first_checksum_flag = onion[1];
@@ -967,16 +967,16 @@ fn parse_onion_address(host: &str, port: u16) -> Result<NetAddress, NetAddressPa
 		let mut ed25519_pubkey = [0; 32];
 		ed25519_pubkey.copy_from_slice(&onion[3..35]);
 		let checksum = u16::from_be_bytes([first_checksum_flag, second_checksum_flag]);
-		return Ok(NetAddress::OnionV3 { ed25519_pubkey, checksum, version, port });
+		return Ok(SocketAddress::OnionV3 { ed25519_pubkey, checksum, version, port });
 
 	} else {
-		return Err(NetAddressParseError::InvalidInput);
+		return Err(SocketAddressParseError::InvalidInput);
 	}
 }
 
 #[cfg(feature = "std")]
-impl FromStr for NetAddress {
-	type Err = NetAddressParseError;
+impl FromStr for SocketAddress {
+	type Err = SocketAddressParseError;
 
 	fn from_str(s: &str) -> Result<Self, Self::Err> {
 		match std::net::SocketAddr::from_str(s) {
@@ -984,17 +984,17 @@ impl FromStr for NetAddress {
 			Err(_) => {
 				let trimmed_input = match s.rfind(":") {
 					Some(pos) => pos,
-					None => return Err(NetAddressParseError::InvalidInput),
+					None => return Err(SocketAddressParseError::InvalidInput),
 				};
 				let host = &s[..trimmed_input];
-				let port: u16 = s[trimmed_input + 1..].parse().map_err(|_| NetAddressParseError::InvalidPort)?;
+				let port: u16 = s[trimmed_input + 1..].parse().map_err(|_| SocketAddressParseError::InvalidPort)?;
 				if host.ends_with(".onion") {
 					return parse_onion_address(host, port);
 				};
 				if let Ok(hostname) = Hostname::try_from(s[..trimmed_input].to_string()) {
-					return Ok(NetAddress::Hostname { hostname, port });
+					return Ok(SocketAddress::Hostname { hostname, port });
 				};
-				return Err(NetAddressParseError::SocketAddrParse)
+				return Err(SocketAddressParseError::SocketAddrParse)
 			},
 		}
 	}
@@ -1039,7 +1039,7 @@ pub struct UnsignedNodeAnnouncement {
 	/// This should be sanitized before use. There is no guarantee of uniqueness.
 	pub alias: NodeAlias,
 	/// List of addresses on which this node is reachable
-	pub addresses: Vec<NetAddress>,
+	pub addresses: Vec<SocketAddress>,
 	pub(crate) excess_address_data: Vec<u8>,
 	pub(crate) excess_data: Vec<u8>,
 }
@@ -1874,7 +1874,7 @@ impl Readable for Init {
 	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
 		let global_features: InitFeatures = Readable::read(r)?;
 		let features: InitFeatures = Readable::read(r)?;
-		let mut remote_network_address: Option<NetAddress> = None;
+		let mut remote_network_address: Option<SocketAddress> = None;
 		let mut networks: Option<WithoutLength<Vec<ChainHash>>> = None;
 		decode_tlv_stream!(r, {
 			(1, networks, option),
@@ -2373,7 +2373,7 @@ impl Readable for UnsignedNodeAnnouncement {
 		let alias: NodeAlias = Readable::read(r)?;
 
 		let addr_len: u16 = Readable::read(r)?;
-		let mut addresses: Vec<NetAddress> = Vec::new();
+		let mut addresses: Vec<SocketAddress> = Vec::new();
 		let mut addr_readpos = 0;
 		let mut excess = false;
 		let mut excess_byte = 0;
@@ -2580,7 +2580,7 @@ mod tests {
 	use crate::ln::ChannelId;
 	use crate::ln::features::{ChannelFeatures, ChannelTypeFeatures, InitFeatures, NodeFeatures};
 	use crate::ln::msgs::{self, FinalOnionHopData, OnionErrorPacket};
-	use crate::ln::msgs::NetAddress;
+	use crate::ln::msgs::SocketAddress;
 	use crate::routing::gossip::{NodeAlias, NodeId};
 	use crate::util::ser::{Writeable, Readable, Hostname, TransactionU16LenLimited};
 
@@ -2601,7 +2601,7 @@ mod tests {
 
 	#[cfg(feature = "std")]
 	use std::net::{Ipv4Addr, Ipv6Addr};
-	use crate::ln::msgs::NetAddressParseError;
+	use crate::ln::msgs::SocketAddressParseError;
 
 	#[test]
 	fn encoding_channel_reestablish() {
@@ -2768,24 +2768,24 @@ mod tests {
 		};
 		let mut addresses = Vec::new();
 		if ipv4 {
-			addresses.push(NetAddress::IPv4 {
+			addresses.push(SocketAddress::TcpIpV4 {
 				addr: [255, 254, 253, 252],
 				port: 9735
 			});
 		}
 		if ipv6 {
-			addresses.push(NetAddress::IPv6 {
+			addresses.push(SocketAddress::TcpIpV6 {
 				addr: [255, 254, 253, 252, 251, 250, 249, 248, 247, 246, 245, 244, 243, 242, 241, 240],
 				port: 9735
 			});
 		}
 		if onionv2 {
-			addresses.push(NetAddress::OnionV2(
+			addresses.push(msgs::SocketAddress::OnionV2(
 				[255, 254, 253, 252, 251, 250, 249, 248, 247, 246, 38, 7]
 			));
 		}
 		if onionv3 {
-			addresses.push(NetAddress::OnionV3 {
+			addresses.push(msgs::SocketAddress::OnionV3 {
 				ed25519_pubkey:	[255, 254, 253, 252, 251, 250, 249, 248, 247, 246, 245, 244, 243, 242, 241, 240, 239, 238, 237, 236, 235, 234, 233, 232, 231, 230, 229, 228, 227, 226, 225, 224],
 				checksum: 32,
 				version: 16,
@@ -2793,7 +2793,7 @@ mod tests {
 			});
 		}
 		if hostname {
-			addresses.push(NetAddress::Hostname {
+			addresses.push(SocketAddress::Hostname {
 				hostname: Hostname::try_from(String::from("host")).unwrap(),
 				port: 9735,
 			});
@@ -3609,7 +3609,7 @@ mod tests {
 		}.encode(), hex::decode("00000000014001010101010101010101010101010101010101010101010101010101010101010202020202020202020202020202020202020202020202020202020202020202").unwrap());
 		let init_msg = msgs::Init { features: InitFeatures::from_le_bytes(vec![]),
 			networks: Some(vec![mainnet_hash]),
-			remote_network_address: Some(NetAddress::IPv4 {
+			remote_network_address: Some(SocketAddress::TcpIpV4 {
 				addr: [127, 0, 0, 1],
 				port: 1000,
 			}),
@@ -3977,44 +3977,44 @@ mod tests {
 
 	#[test]
 	#[cfg(feature = "std")]
-	fn test_net_address_from_str() {
-		assert_eq!(NetAddress::IPv4 {
+	fn test_socket_address_from_str() {
+		assert_eq!(SocketAddress::TcpIpV4 {
 			addr: Ipv4Addr::new(127, 0, 0, 1).octets(),
 			port: 1234,
-		}, NetAddress::from_str("127.0.0.1:1234").unwrap());
+		}, SocketAddress::from_str("127.0.0.1:1234").unwrap());
 
-		assert_eq!(NetAddress::IPv6 {
+		assert_eq!(SocketAddress::TcpIpV6 {
 			addr: Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1).octets(),
 			port: 1234,
-		}, NetAddress::from_str("[0:0:0:0:0:0:0:1]:1234").unwrap());
+		}, SocketAddress::from_str("[0:0:0:0:0:0:0:1]:1234").unwrap());
 		assert_eq!(
-			NetAddress::Hostname {
+			SocketAddress::Hostname {
 				hostname: Hostname::try_from("lightning-node.mydomain.com".to_string()).unwrap(),
 				port: 1234,
-			}, NetAddress::from_str("lightning-node.mydomain.com:1234").unwrap());
+			}, SocketAddress::from_str("lightning-node.mydomain.com:1234").unwrap());
 		assert_eq!(
-			NetAddress::Hostname {
+			SocketAddress::Hostname {
 				hostname: Hostname::try_from("example.com".to_string()).unwrap(),
 				port: 1234,
-			}, NetAddress::from_str("example.com:1234").unwrap());
-		assert_eq!(NetAddress::OnionV3 {
+			}, SocketAddress::from_str("example.com:1234").unwrap());
+		assert_eq!(SocketAddress::OnionV3 {
 			ed25519_pubkey: [37, 24, 75, 5, 25, 73, 117, 194, 139, 102, 182, 107, 4, 105, 247, 246, 85,
 			111, 177, 172, 49, 137, 167, 155, 64, 221, 163, 47, 31, 33, 71, 3],
 			checksum: 48326,
 			version: 121,
 			port: 1234
-		}, NetAddress::from_str("pg6mmjiyjmcrsslvykfwnntlaru7p5svn6y2ymmju6nubxndf4pscryd.onion:1234").unwrap());
-		assert_eq!(Err(NetAddressParseError::InvalidOnionV3), NetAddress::from_str("pg6mmjiyjmcrsslvykfwnntlaru7p5svn6.onion:1234"));
-		assert_eq!(Err(NetAddressParseError::InvalidInput), NetAddress::from_str("127.0.0.1@1234"));
-		assert_eq!(Err(NetAddressParseError::InvalidInput), "".parse::<NetAddress>());
-		assert!(NetAddress::from_str("pg6mmjiyjmcrsslvykfwnntlaru7p5svn6y2ymmju6nubxndf4pscryd.onion.onion:9735:94").is_err());
-		assert!(NetAddress::from_str("wrong$%#.com:1234").is_err());
-		assert_eq!(Err(NetAddressParseError::InvalidPort), NetAddress::from_str("example.com:wrong"));
-		assert!("localhost".parse::<NetAddress>().is_err());
-		assert!("localhost:invalid-port".parse::<NetAddress>().is_err());
-		assert!( "invalid-onion-v3-hostname.onion:8080".parse::<NetAddress>().is_err());
-		assert!("b32.example.onion:invalid-port".parse::<NetAddress>().is_err());
-		assert!("invalid-address".parse::<NetAddress>().is_err());
-		assert!(NetAddress::from_str("pg6mmjiyjmcrsslvykfwnntlaru7p5svn6y2ymmju6nubxndf4pscryd.onion.onion:1234").is_err());
+		}, SocketAddress::from_str("pg6mmjiyjmcrsslvykfwnntlaru7p5svn6y2ymmju6nubxndf4pscryd.onion:1234").unwrap());
+		assert_eq!(Err(SocketAddressParseError::InvalidOnionV3), SocketAddress::from_str("pg6mmjiyjmcrsslvykfwnntlaru7p5svn6.onion:1234"));
+		assert_eq!(Err(SocketAddressParseError::InvalidInput), SocketAddress::from_str("127.0.0.1@1234"));
+		assert_eq!(Err(SocketAddressParseError::InvalidInput), "".parse::<SocketAddress>());
+		assert!(SocketAddress::from_str("pg6mmjiyjmcrsslvykfwnntlaru7p5svn6y2ymmju6nubxndf4pscryd.onion.onion:9735:94").is_err());
+		assert!(SocketAddress::from_str("wrong$%#.com:1234").is_err());
+		assert_eq!(Err(SocketAddressParseError::InvalidPort), SocketAddress::from_str("example.com:wrong"));
+		assert!("localhost".parse::<SocketAddress>().is_err());
+		assert!("localhost:invalid-port".parse::<SocketAddress>().is_err());
+		assert!( "invalid-onion-v3-hostname.onion:8080".parse::<SocketAddress>().is_err());
+		assert!("b32.example.onion:invalid-port".parse::<SocketAddress>().is_err());
+		assert!("invalid-address".parse::<SocketAddress>().is_err());
+		assert!(SocketAddress::from_str("pg6mmjiyjmcrsslvykfwnntlaru7p5svn6y2ymmju6nubxndf4pscryd.onion.onion:1234").is_err());
 	}
 }
