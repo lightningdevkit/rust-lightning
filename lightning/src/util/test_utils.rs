@@ -542,6 +542,15 @@ impl msgs::ChannelMessageHandler for TestChannelMessageHandler {
 	fn handle_closing_signed(&self, _their_node_id: &PublicKey, msg: &msgs::ClosingSigned) {
 		self.received_msg(wire::Message::ClosingSigned(msg.clone()));
 	}
+	fn handle_splice(&self, _their_node_id: &PublicKey, msg: &msgs::Splice) {
+		self.received_msg(wire::Message::Splice(msg.clone()));
+	}
+	fn handle_splice_ack(&self, _their_node_id: &PublicKey, msg: &msgs::SpliceAck) {
+		self.received_msg(wire::Message::SpliceAck(msg.clone()));
+	}
+	fn handle_splice_locked(&self, _their_node_id: &PublicKey, msg: &msgs::SpliceLocked) {
+		self.received_msg(wire::Message::SpliceLocked(msg.clone()));
+	}
 	fn handle_update_add_htlc(&self, _their_node_id: &PublicKey, msg: &msgs::UpdateAddHTLC) {
 		self.received_msg(wire::Message::UpdateAddHTLC(msg.clone()));
 	}

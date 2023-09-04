@@ -1276,11 +1276,19 @@ pub trait ChannelMessageHandler : MessageSendEventsProvider {
 	/// Handle an incoming `channel_ready` message from the given peer.
 	fn handle_channel_ready(&self, their_node_id: &PublicKey, msg: &ChannelReady);
 
-	// Channl close:
+	// Channel close:
 	/// Handle an incoming `shutdown` message from the given peer.
 	fn handle_shutdown(&self, their_node_id: &PublicKey, msg: &Shutdown);
 	/// Handle an incoming `closing_signed` message from the given peer.
 	fn handle_closing_signed(&self, their_node_id: &PublicKey, msg: &ClosingSigned);
+
+	// Splicing
+	/// Handle an incoming `splice` message from the given peer.
+	fn handle_splice(&self, their_node_id: &PublicKey, msg: &Splice);
+	/// Handle an incoming `splice_ack` message from the given peer.
+	fn handle_splice_ack(&self, their_node_id: &PublicKey, msg: &SpliceAck);
+	/// Handle an incoming `splice_locked` message from the given peer.
+	fn handle_splice_locked(&self, their_node_id: &PublicKey, msg: &SpliceLocked);
 
 	// Interactive channel construction
 	/// Handle an incoming `tx_add_input message` from the given peer.
@@ -1659,6 +1667,26 @@ impl_writeable_msg!(AcceptChannelV2, {
 	(1, channel_type, option),
 	(2, require_confirmed_inputs, option),
 });
+
+impl_writeable_msg!(Splice, {
+	channel_id,
+	chain_hash,
+	relative_satoshis,
+	funding_feerate_perkw,
+	locktime,
+	funding_pubkey,
+}, {});
+
+impl_writeable_msg!(SpliceAck, {
+	channel_id,
+	chain_hash,
+	relative_satoshis,
+	funding_pubkey,
+}, {});
+
+impl_writeable_msg!(SpliceLocked, {
+	channel_id,
+}, {});
 
 impl_writeable_msg!(TxAddInput, {
 	channel_id,
@@ -3160,6 +3188,45 @@ mod tests {
 		let encoded_value = channel_ready.encode();
 		let target_value = hex::decode("0202020202020202020202020202020202020202020202020202020202020202031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f").unwrap();
 		assert_eq!(encoded_value, target_value);
+	}
+
+	#[test]
+	fn encoding_splice() {
+		let secp_ctx = Secp256k1::new();
+		let (_, pubkey_1,) = get_keys_from!("0101010101010101010101010101010101010101010101010101010101010101", secp_ctx);
+		let splice = msgs::Splice {
+			chain_hash: BlockHash::from_hex("6fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d6190000000000").unwrap(),
+			channel_id: ChannelId::from_bytes([2; 32]),
+			relative_satoshis: 123456,
+			funding_feerate_perkw: 2000,
+			locktime: 0,
+			funding_pubkey: pubkey_1,
+		};
+		let encoded_value = splice.encode();
+		assert_eq!(hex::encode(encoded_value), "0202020202020202020202020202020202020202020202020202020202020202000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f000000000001e240000007d000000000031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f");
+	}
+
+	#[test]
+	fn encoding_splice_ack() {
+		let secp_ctx = Secp256k1::new();
+		let (_, pubkey_1,) = get_keys_from!("0101010101010101010101010101010101010101010101010101010101010101", secp_ctx);
+		let splice = msgs::SpliceAck {
+			chain_hash: BlockHash::from_hex("6fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d6190000000000").unwrap(),
+			channel_id: ChannelId::from_bytes([2; 32]),
+			relative_satoshis: 123456,
+			funding_pubkey: pubkey_1,
+		};
+		let encoded_value = splice.encode();
+		assert_eq!(hex::encode(encoded_value), "0202020202020202020202020202020202020202020202020202020202020202000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f000000000001e240031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f");
+	}
+
+	#[test]
+	fn encoding_splice_locked() {
+		let splice = msgs::SpliceLocked {
+			channel_id: ChannelId::from_bytes([2; 32]),
+		};
+		let encoded_value = splice.encode();
+		assert_eq!(hex::encode(encoded_value), "0202020202020202020202020202020202020202020202020202020202020202");
 	}
 
 	#[test]

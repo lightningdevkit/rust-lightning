@@ -59,6 +59,9 @@ pub(crate) enum Message<T> where T: core::fmt::Debug + Type + TestEq {
 	AcceptChannelV2(msgs::AcceptChannelV2),
 	FundingCreated(msgs::FundingCreated),
 	FundingSigned(msgs::FundingSigned),
+	Splice(msgs::Splice),
+	SpliceAck(msgs::SpliceAck),
+	SpliceLocked(msgs::SpliceLocked),
 	TxAddInput(msgs::TxAddInput),
 	TxAddOutput(msgs::TxAddOutput),
 	TxRemoveInput(msgs::TxRemoveInput),
@@ -110,6 +113,9 @@ impl<T> Writeable for Message<T> where T: core::fmt::Debug + Type + TestEq {
 			&Message::AcceptChannelV2(ref msg) => msg.write(writer),
 			&Message::FundingCreated(ref msg) => msg.write(writer),
 			&Message::FundingSigned(ref msg) => msg.write(writer),
+			&Message::Splice(ref msg) => msg.write(writer),
+			&Message::SpliceAck(ref msg) => msg.write(writer),
+			&Message::SpliceLocked(ref msg) => msg.write(writer),
 			&Message::TxAddInput(ref msg) => msg.write(writer),
 			&Message::TxAddOutput(ref msg) => msg.write(writer),
 			&Message::TxRemoveInput(ref msg) => msg.write(writer),
@@ -161,6 +167,9 @@ impl<T> Type for Message<T> where T: core::fmt::Debug + Type + TestEq {
 			&Message::AcceptChannelV2(ref msg) => msg.type_id(),
 			&Message::FundingCreated(ref msg) => msg.type_id(),
 			&Message::FundingSigned(ref msg) => msg.type_id(),
+			&Message::Splice(ref msg) => msg.type_id(),
+			&Message::SpliceAck(ref msg) => msg.type_id(),
+			&Message::SpliceLocked(ref msg) => msg.type_id(),
 			&Message::TxAddInput(ref msg) => msg.type_id(),
 			&Message::TxAddOutput(ref msg) => msg.type_id(),
 			&Message::TxRemoveInput(ref msg) => msg.type_id(),
@@ -257,6 +266,15 @@ fn do_read<R: io::Read, T, H: core::ops::Deref>(buffer: &mut R, message_type: u1
 		},
 		msgs::FundingSigned::TYPE => {
 			Ok(Message::FundingSigned(Readable::read(buffer)?))
+		},
+		msgs::Splice::TYPE => {
+			Ok(Message::Splice(Readable::read(buffer)?))
+		},
+		msgs::SpliceAck::TYPE => {
+			Ok(Message::SpliceAck(Readable::read(buffer)?))
+		},
+		msgs::SpliceLocked::TYPE => {
+			Ok(Message::SpliceLocked(Readable::read(buffer)?))
 		},
 		msgs::TxAddInput::TYPE => {
 			Ok(Message::TxAddInput(Readable::read(buffer)?))
@@ -462,6 +480,19 @@ impl Encode for msgs::OpenChannelV2 {
 
 impl Encode for msgs::AcceptChannelV2 {
 	const TYPE: u16 = 65;
+}
+
+impl Encode for msgs::Splice {
+	// TODO(splicing) Double check with spec; spec contains 74, which is probably wrong as it is used by tx_Abort; CLN uses 75
+	const TYPE: u16 = 75;
+}
+
+impl Encode for msgs::SpliceAck {
+	const TYPE: u16 = 76;
+}
+
+impl Encode for msgs::SpliceLocked {
+	const TYPE: u16 = 77;
 }
 
 impl Encode for msgs::TxAddInput {

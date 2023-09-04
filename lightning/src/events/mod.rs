@@ -1606,6 +1606,27 @@ pub enum MessageSendEvent {
 		/// The message which should be sent.
 		msg: msgs::FundingSigned,
 	},
+	/// Used to indicate that a splice message should be sent to the peer with the given node id.
+	SendSplice {
+		/// The node_id of the node which should receive this message
+		node_id: PublicKey,
+		/// The message which should be sent.
+		msg: msgs::Splice,
+	},
+	/// Used to indicate that a splice_ack message should be sent to the peer with the given node id.
+	SendSpliceAck {
+		/// The node_id of the node which should receive this message
+		node_id: PublicKey,
+		/// The message which should be sent.
+		msg: msgs::SpliceAck,
+	},
+	/// Used to indicate that a splice_locked message should be sent to the peer with the given node id.
+	SendSpliceLocked {
+		/// The node_id of the node which should receive this message
+		node_id: PublicKey,
+		/// The message which should be sent.
+		msg: msgs::SpliceLocked,
+	},
 	/// Used to indicate that a tx_add_input message should be sent to the peer with the given node_id.
 	SendTxAddInput {
 		/// The node_id of the node which should receive this message

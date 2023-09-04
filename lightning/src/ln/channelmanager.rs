@@ -7326,6 +7326,24 @@ where
 		let _ = handle_error!(self, self.internal_channel_ready(counterparty_node_id, msg), *counterparty_node_id);
 	}
 
+	fn handle_splice(&self, counterparty_node_id: &PublicKey, msg: &msgs::Splice) {
+		let _: Result<(), _> = handle_error!(self, Err(MsgHandleErrInternal::send_err_msg_no_close(
+			"Splicing not supported".to_owned(),
+			 msg.channel_id.clone())), *counterparty_node_id);
+	}
+
+	fn handle_splice_ack(&self, counterparty_node_id: &PublicKey, msg: &msgs::SpliceAck) {
+		let _: Result<(), _> = handle_error!(self, Err(MsgHandleErrInternal::send_err_msg_no_close(
+			"Splicing not supported (splice_ack)".to_owned(),
+			 msg.channel_id.clone())), *counterparty_node_id);
+	}
+
+	fn handle_splice_locked(&self, counterparty_node_id: &PublicKey, msg: &msgs::SpliceLocked) {
+		let _: Result<(), _> = handle_error!(self, Err(MsgHandleErrInternal::send_err_msg_no_close(
+			"Splicing not supported (splice_locked)".to_owned(),
+			 msg.channel_id.clone())), *counterparty_node_id);
+	}
+
 	fn handle_shutdown(&self, counterparty_node_id: &PublicKey, msg: &msgs::Shutdown) {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 		let _ = handle_error!(self, self.internal_shutdown(counterparty_node_id, msg), *counterparty_node_id);
@@ -7438,6 +7456,10 @@ where
 						// Common Channel Establishment
 						&events::MessageSendEvent::SendChannelReady { .. } => false,
 						&events::MessageSendEvent::SendAnnouncementSignatures { .. } => false,
+						// Splicing
+						&events::MessageSendEvent::SendSplice { .. } => false,
+						&events::MessageSendEvent::SendSpliceAck { .. } => false,
+						&events::MessageSendEvent::SendSpliceLocked { .. } => false,
 						// Interactive Transaction Construction
 						&events::MessageSendEvent::SendTxAddInput { .. } => false,
 						&events::MessageSendEvent::SendTxAddOutput { .. } => false,
