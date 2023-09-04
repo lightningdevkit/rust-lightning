@@ -341,6 +341,11 @@ pub trait Filter {
 	fn register_output(&self, output: WatchedOutput);
 }
 
+impl Filter for () {
+	fn register_tx(&self, _txid: &Txid, _script_pubkey: &Script) {}
+	fn register_output(&self, _output: WatchedOutput) {}
+}
+
 /// A transaction output watched by a [`ChannelMonitor`] for spends on-chain.
 ///
 /// Used to convey to a [`Filter`] such an output with a given spending condition. Any transaction
