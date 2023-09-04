@@ -931,6 +931,7 @@ pub struct TestLogger {
 	level: Level,
 	pub(crate) id: String,
 	pub lines: Mutex<HashMap<(String, String), usize>>,
+	pub context: Mutex<HashMap<(String, Option<PublicKey>, Option<ChannelId>), usize>>,
 }
 
 impl TestLogger {
@@ -941,7 +942,8 @@ impl TestLogger {
 		TestLogger {
 			level: Level::Trace,
 			id,
-			lines: Mutex::new(HashMap::new())
+			lines: Mutex::new(HashMap::new()),
+			context: Mutex::new(HashMap::new()),
 		}
 	}
 	pub fn enable(&mut self, level: Level) {
@@ -976,11 +978,23 @@ impl TestLogger {
 		}).map(|(_, c) | { c }).sum();
 		assert_eq!(l, count)
 	}
+
+	pub fn assert_log_context_contains(
+		&self, module: &str, peer_id: Option<PublicKey>, channel_id: Option<ChannelId>, count: usize
+	) {
+		let context_entries = self.context.lock().unwrap();
+		let l: usize = context_entries.iter()
+			.filter(|&(&(ref m, ref p, ref c), _)| m == module && *p == peer_id && *c == channel_id)
+			.map(|(_, c) | c)
+			.sum();
+		assert_eq!(l, count)
+	}
 }
 
 impl Logger for TestLogger {
 	fn log(&self, record: Record) {
 		*self.lines.lock().unwrap().entry((record.module_path.to_string(), format!("{}", record.args))).or_insert(0) += 1;
+		*self.context.lock().unwrap().entry((record.module_path.to_string(), record.peer_id, record.channel_id)).or_insert(0) += 1;
 		if record.level >= self.level {
 			#[cfg(all(not(ldk_bench), feature = "std"))] {
 				let pfx = format!("{} {} [{}:{}]", self.id, record.level.to_string(), record.module_path, record.line);
