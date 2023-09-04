@@ -215,11 +215,19 @@ impl PendingOutboundPayment {
 				PendingOutboundPayment::InvoiceReceived { .. } => { debug_assert!(false); false },
 		};
 		if remove_res {
-			if let PendingOutboundPayment::Retryable { ref mut pending_amt_msat, ref mut pending_fee_msat, .. } = self {
-				let path = path.expect("Fulfilling a payment should always come with a path");
+			if let PendingOutboundPayment::Retryable {
+				ref mut pending_amt_msat, ref mut pending_fee_msat,
+				ref mut remaining_max_total_routing_fee_msat, ..
+			} = self {
+				let path = path.expect("Removing a failed payment should always come with a path");
 				*pending_amt_msat -= path.final_value_msat();
+				let path_fee_msat = path.fee_msat();
 				if let Some(fee_msat) = pending_fee_msat.as_mut() {
-					*fee_msat -= path.fee_msat();
+					*fee_msat -= path_fee_msat;
+				}
+
+				if let Some(max_total_routing_fee_msat) = remaining_max_total_routing_fee_msat.as_mut() {
+					*max_total_routing_fee_msat = max_total_routing_fee_msat.saturating_add(path_fee_msat);
 				}
 			}
 		}
@@ -238,11 +246,19 @@ impl PendingOutboundPayment {
 			PendingOutboundPayment::Abandoned { .. } => false,
 		};
 		if insert_res {
-			if let PendingOutboundPayment::Retryable { ref mut pending_amt_msat, ref mut pending_fee_msat, .. } = self {
-				*pending_amt_msat += path.final_value_msat();
-				if let Some(fee_msat) = pending_fee_msat.as_mut() {
-					*fee_msat += path.fee_msat();
-				}
+			if let PendingOutboundPayment::Retryable {
+				ref mut pending_amt_msat, ref mut pending_fee_msat,
+				ref mut remaining_max_total_routing_fee_msat, .. 
+			} = self {
+					*pending_amt_msat += path.final_value_msat();
+					let path_fee_msat = path.fee_msat();
+					if let Some(fee_msat) = pending_fee_msat.as_mut() {
+						*fee_msat += path_fee_msat;
+					}
+
+					if let Some(max_total_routing_fee_msat) = remaining_max_total_routing_fee_msat.as_mut() {
+						*max_total_routing_fee_msat = max_total_routing_fee_msat.saturating_sub(path_fee_msat);
+					}
 			}
 		}
 		insert_res
@@ -1573,7 +1589,7 @@ impl OutboundPayments {
 				is_retryable_now = false;
 			}
 			if payment.get().remaining_parts() == 0 {
-				if let PendingOutboundPayment::Abandoned { payment_hash, reason, .. }= payment.get() {
+				if let PendingOutboundPayment::Abandoned { payment_hash, reason, .. } = payment.get() {
 					if !payment_is_probe {
 						full_failure_ev = Some(events::Event::PaymentFailed {
 							payment_id: *payment_id,
