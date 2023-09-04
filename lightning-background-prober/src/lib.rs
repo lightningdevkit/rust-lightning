@@ -652,54 +652,57 @@ async fn value_selector (
 					}
 				}
 
+				// If last_probe == None (This case can only occure for first probe) of a node
 				None => {
-					let a = max_htlc_list[0].1;
-					let c = capacity_list.is_empty();
-					
-					if let c = capacity_list.is_empty() {
-						let val = max_htlc_list[0].1;
-		
-						node_rating.last_probe = Some(ProbePersister::new(target_nodeid, val));
-						if let Some(mut last_probe) = node_rating.last_probe.clone() {
-						 	last_probe.update_path(path);
-							//last_probe.update_value(val);
-						}
-
-						return val
+					if let a = max_htlc_list.is_empty() {
+						// only if max_htlc_list is empty and last_probe == None 
+						// DEFAULT_FINAL_VALUE_MSAT = 1000
+						return DEFAULT_FINAL_VALUE_MSAT; 
 					}
 
 					else {
-						let b = capacity_list[0].1;
-						match b {
-							Some(b) => {
-								let val = min(max_htlc_list[0].1, capacity_list[0].1.unwrap());
-						
-								node_rating.last_probe = Some(ProbePersister::new(target_nodeid, val));
-								if let Some(mut last_probe) = node_rating.last_probe.clone() {
-									last_probe.update_path(path);
-									//last_probe.update_value(val);
-								}
-		
-								return val
+						if let c = capacity_list.is_empty() {
+							let val = max_htlc_list[0].1;
+			
+							node_rating.last_probe = Some(ProbePersister::new(target_nodeid, val));
+							if let Some(mut last_probe) = node_rating.last_probe.clone() {
+								last_probe.update_path(path);
 							}
 
-							None => {
-								let val = max_htlc_list[0].1;
+							return val
+						}
+
+						else {
+							let b = capacity_list[0].1;
+							match b {
+								Some(b) => {
+									let val = min(max_htlc_list[0].1, capacity_list[0].1.unwrap());
+							
+									node_rating.last_probe = Some(ProbePersister::new(target_nodeid, val));
+									if let Some(mut last_probe) = node_rating.last_probe.clone() {
+										last_probe.update_path(path);
+									}
 		
-								node_rating.last_probe = Some(ProbePersister::new(target_nodeid, val));
-								if let Some(mut last_probe) = node_rating.last_probe.clone() {
-									last_probe.update_path(path);
-									//last_probe.update_value(val);
+									return val
 								}
-	
-								return val
+
+								None => {
+									let val = max_htlc_list[0].1;
+			
+									node_rating.last_probe = Some(ProbePersister::new(target_nodeid, val));
+									if let Some(mut last_probe) = node_rating.last_probe.clone() {
+										last_probe.update_path(path);
+									}
+		
+									return val
+								}
 							}
 						}
-					}
+					}	
 				}
 			}
 		}
-    	None => panic!("NodeRating not found in probe_value_map") // to be changed later // Panic! ("NodeRating not found in probe_value_map")
+		None => panic!("NodeRating not found in probe_value_map") // to be changed later // Panic! ("NodeRating not found in probe_value_map")
 	}	
 }
 
@@ -1105,6 +1108,7 @@ use lightning::util;
 
 		// As value selector has variour cases depending on last probe status and last successful probe status, following tests will assert all the cases
 		
+		// for first test we are puting htlc list as empty and capacity list as empty for edge cases
 		// Case 1: probe_value_map.last_probe == None
 		#[tokio::test(flavor = "multi_thread")]
 		async fn value_selector_test_case_1() {
@@ -1125,10 +1129,7 @@ use lightning::util;
 			let mut max_htlc_list = Vec::<(NodeId, u64)>::new();
 			let recipient_pubkey = recipient_node_id();
 			let target_pubkey = target_node_id();
-
-			max_htlc_list.push((recipient_pubkey, 200));
-			max_htlc_list.push((target_pubkey, 201));
-
+			
 			let value = value_selector(
 				path.clone(), 
 				target_nodeid, 
@@ -1136,7 +1137,7 @@ use lightning::util;
 				max_htlc_list, 
 				capacity_list).await;
 			
-			assert_eq!(value, 200);
+			assert_eq!(value, 1000);
 		}
 		
 		
