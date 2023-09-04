@@ -22,6 +22,7 @@ pub mod invoice;
 pub mod persist;
 pub mod string;
 pub mod wakers;
+pub mod watchtower;
 
 pub(crate) mod atomic_counter;
 pub(crate) mod byte_utils;

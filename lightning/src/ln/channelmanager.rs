@@ -8404,47 +8404,6 @@ where
 	}
 }
 
-impl Writeable for VecDeque<(Event, Option<EventCompletionAction>)> {
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
-		(self.len() as u64).write(w)?;
-		for (event, action) in self.iter() {
-			event.write(w)?;
-			action.write(w)?;
-			#[cfg(debug_assertions)] {
-				// Events are MaybeReadable, in some cases indicating that they shouldn't actually
-				// be persisted and are regenerated on restart. However, if such an event has a
-				// post-event-handling action we'll write nothing for the event and would have to
-				// either forget the action or fail on deserialization (which we do below). Thus,
-				// check that the event is sane here.
-				let event_encoded = event.encode();
-				let event_read: Option<Event> =
-					MaybeReadable::read(&mut &event_encoded[..]).unwrap();
-				if action.is_some() { assert!(event_read.is_some()); }
-			}
-		}
-		Ok(())
-	}
-}
-impl Readable for VecDeque<(Event, Option<EventCompletionAction>)> {
-	fn read<R: Read>(reader: &mut R) -> Result<Self, DecodeError> {
-		let len: u64 = Readable::read(reader)?;
-		const MAX_ALLOC_SIZE: u64 = 1024 * 16;
-		let mut events: Self = VecDeque::with_capacity(cmp::min(
-			MAX_ALLOC_SIZE/mem::size_of::<(events::Event, Option<EventCompletionAction>)>() as u64,
-			len) as usize);
-		for _ in 0..len {
-			let ev_opt = MaybeReadable::read(reader)?;
-			let action = Readable::read(reader)?;
-			if let Some(ev) = ev_opt {
-				events.push_back((ev, action));
-			} else if action.is_some() {
-				return Err(DecodeError::InvalidValue);
-			}
-		}
-		Ok(events)
-	}
-}
-
 impl_writeable_tlv_based_enum!(ChannelShutdownState,
 	(0, NotShuttingDown) => {},
 	(2, ShutdownInitiated) => {},
