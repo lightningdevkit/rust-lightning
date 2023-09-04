@@ -14,7 +14,7 @@ use lightning::ln::channelmanager::{PhantomRouteHints, MIN_CLTV_EXPIRY_DELTA};
 use lightning::ln::inbound_payment::{create, create_from_hash, ExpandedKey};
 use lightning::routing::gossip::RoutingFees;
 use lightning::routing::router::{RouteHint, RouteHintHop, Router};
-use lightning::util::logger::Logger;
+use lightning::util::logger::{Logger, Record};
 use secp256k1::PublicKey;
 use core::ops::Deref;
 use core::time::Duration;
@@ -626,6 +626,7 @@ where
 
 	log_trace!(logger, "Considering {} channels for invoice route hints", channels.len());
 	for channel in channels.into_iter().filter(|chan| chan.is_channel_ready) {
+		let logger = WithChannelDetails::from(logger, &channel);
 		if channel.get_inbound_payment_scid().is_none() || channel.counterparty.forwarding_info.is_none() {
 			log_trace!(logger, "Ignoring channel {} for invoice route hints", &channel.channel_id);
 			continue;
@@ -710,6 +711,7 @@ where
 		.into_iter()
 		.map(|(_, channel)| channel)
 		.filter(|channel| {
+			let logger = WithChannelDetails::from(logger, &channel);
 			let has_enough_capacity = channel.inbound_capacity_msat >= min_inbound_capacity;
 			let include_channel = if has_pub_unconf_chan {
 				// If we have a public channel, but it doesn't have enough confirmations to (yet)
@@ -788,6 +790,28 @@ fn prefer_current_channel(min_inbound_capacity_msat: Option<u64>, current_channe
 	}
 
 	current_channel > candidate_channel
+}
+
+/// Adds relevant context to a [`Record`] before passing it to the wrapped [`Logger`].
+struct WithChannelDetails<'a, 'b, L: Deref> where L::Target: Logger {
+	/// The logger to delegate to after adding context to the record.
+	logger: &'a L,
+	/// The [`ChannelDetails`] for adding relevant context to the logged record.
+	details: &'b ChannelDetails
+}
+
+impl<'a, 'b, L: Deref> Logger for WithChannelDetails<'a, 'b, L> where L::Target: Logger {
+	fn log(&self, mut record: Record) {
+		record.peer_id = Some(self.details.counterparty.node_id);
+		record.channel_id = Some(self.details.channel_id);
+		self.logger.log(record)
+	}
+}
+
+impl<'a, 'b, L: Deref> WithChannelDetails<'a, 'b, L> where L::Target: Logger {
+	fn from(logger: &'a L, details: &'b ChannelDetails) -> Self {
+		Self { logger, details }
+	}
 }
 
 #[cfg(test)]
