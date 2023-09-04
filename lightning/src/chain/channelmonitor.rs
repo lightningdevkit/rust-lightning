@@ -34,7 +34,7 @@ use bitcoin::secp256k1;
 use bitcoin::sighash::EcdsaSighashType;
 
 use crate::ln::channel::INITIAL_COMMITMENT_NUMBER;
-use crate::ln::{PaymentHash, PaymentPreimage};
+use crate::ln::{PaymentHash, PaymentPreimage, ChannelId};
 use crate::ln::msgs::DecodeError;
 use crate::ln::channel_keys::{DelayedPaymentKey, DelayedPaymentBasepoint, HtlcBasepoint, HtlcKey, RevocationKey, RevocationBasepoint};
 use crate::ln::chan_utils::{self,CommitmentTransaction, CounterpartyCommitmentSecrets, HTLCOutputInCommitment, HTLCClaim, ChannelTransactionParameters, HolderCommitmentTransaction, TxCreationKeys};
@@ -47,7 +47,7 @@ use crate::sign::{ChannelDerivationParameters, HTLCDescriptor, SpendableOutputDe
 use crate::chain::onchaintx::{ClaimEvent, OnchainTxHandler};
 use crate::chain::package::{CounterpartyOfferedHTLCOutput, CounterpartyReceivedHTLCOutput, HolderFundingOutput, HolderHTLCOutput, PackageSolvingData, PackageTemplate, RevokedOutput, RevokedHTLCOutput};
 use crate::chain::Filter;
-use crate::util::logger::Logger;
+use crate::util::logger::{Logger, Record};
 use crate::util::ser::{Readable, ReadableArgs, RequiredWrapper, MaybeReadable, UpgradableRequired, Writer, Writeable, U48};
 use crate::util::byte_utils;
 use crate::events::{Event, EventHandler};
@@ -1124,6 +1124,30 @@ macro_rules! _process_events_body {
 	}
 }
 pub(super) use _process_events_body as process_events_body;
+
+pub(crate) struct WithChannelMonitor<'a, L: Deref> where L::Target: Logger {
+	logger: &'a L,
+	peer_id: Option<PublicKey>,
+	channel_id: Option<ChannelId>,
+}
+
+impl<'a, L: Deref> Logger for WithChannelMonitor<'a, L> where L::Target: Logger {
+	fn log(&self, mut record: Record) {
+		record.peer_id = self.peer_id;
+		record.channel_id = self.channel_id;
+		self.logger.log(record)
+	}
+}
+
+impl<'a, 'b, L: Deref> WithChannelMonitor<'a, L> where L::Target: Logger {
+	pub(crate) fn from<S: WriteableEcdsaChannelSigner>(logger: &'a L, monitor: &'b ChannelMonitor<S>) -> Self {
+		WithChannelMonitor {
+			logger,
+			peer_id: monitor.get_counterparty_node_id(),
+			channel_id: Some(monitor.get_funding_txo().0.to_channel_id()),
+		}
+	}
+}
 
 impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 	/// For lockorder enforcement purposes, we need to have a single site which constructs the
@@ -4501,7 +4525,7 @@ mod tests {
 	use super::ChannelMonitorUpdateStep;
 	use crate::{check_added_monitors, check_spends, get_local_commitment_txn, get_monitor, get_route_and_payment_hash, unwrap_send_err};
 	use crate::chain::{BestBlock, Confirm};
-	use crate::chain::channelmonitor::ChannelMonitor;
+	use crate::chain::channelmonitor::{ChannelMonitor, WithChannelMonitor};
 	use crate::chain::package::{weight_offered_htlc, weight_received_htlc, weight_revoked_offered_htlc, weight_revoked_received_htlc, WEIGHT_REVOKED_OUTPUT};
 	use crate::chain::transaction::OutPoint;
 	use crate::sign::InMemorySigner;
@@ -4514,6 +4538,7 @@ mod tests {
 	use crate::util::errors::APIError;
 	use crate::util::test_utils::{TestLogger, TestBroadcaster, TestFeeEstimator};
 	use crate::util::ser::{ReadableArgs, Writeable};
+	use crate::util::logger::Logger;
 	use crate::sync::{Arc, Mutex};
 	use crate::io;
 	use crate::ln::features::ChannelTypeFeatures;
@@ -4703,6 +4728,7 @@ mod tests {
 
 		let mut htlcs = preimages_slice_to_htlcs!(preimages[0..10]);
 		let dummy_commitment_tx = HolderCommitmentTransaction::dummy(&mut htlcs);
+
 		monitor.provide_latest_holder_commitment_tx(dummy_commitment_tx.clone(),
 			htlcs.into_iter().map(|(htlc, _)| (htlc, Some(dummy_sig), None)).collect()).unwrap();
 		monitor.provide_latest_counterparty_commitment_tx(Txid::from_byte_array(Sha256::hash(b"1").to_byte_array()),
@@ -4900,5 +4926,62 @@ mod tests {
 		}
 	}
 
+	#[test]
+	fn test_with_channel_monitor_impl_logger() {
+		let secp_ctx = Secp256k1::new();
+		let logger = Arc::new(TestLogger::new());
+
+		let dummy_key = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
+
+		let keys = InMemorySigner::new(
+			&secp_ctx,
+			SecretKey::from_slice(&[41; 32]).unwrap(),
+			SecretKey::from_slice(&[41; 32]).unwrap(),
+			SecretKey::from_slice(&[41; 32]).unwrap(),
+			SecretKey::from_slice(&[41; 32]).unwrap(),
+			SecretKey::from_slice(&[41; 32]).unwrap(),
+			[41; 32],
+			0,
+			[0; 32],
+			[0; 32],
+		);
+
+		let counterparty_pubkeys = ChannelPublicKeys {
+			funding_pubkey: PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[44; 32]).unwrap()),
+			revocation_basepoint: RevocationBasepoint::from(PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[45; 32]).unwrap())),
+			payment_point: PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[46; 32]).unwrap()),
+			delayed_payment_basepoint: DelayedPaymentBasepoint::from(PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[47; 32]).unwrap())),
+			htlc_basepoint: HtlcBasepoint::from(PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[48; 32]).unwrap())),
+		};
+		let funding_outpoint = OutPoint { txid: Txid::all_zeros(), index: u16::max_value() };
+		let channel_parameters = ChannelTransactionParameters {
+			holder_pubkeys: keys.holder_channel_pubkeys.clone(),
+			holder_selected_contest_delay: 66,
+			is_outbound_from_holder: true,
+			counterparty_parameters: Some(CounterpartyChannelTransactionParameters {
+				pubkeys: counterparty_pubkeys,
+				selected_contest_delay: 67,
+			}),
+			funding_outpoint: Some(funding_outpoint),
+			channel_type_features: ChannelTypeFeatures::only_static_remote_key()
+		};
+		let shutdown_pubkey = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
+		let best_block = BestBlock::from_network(Network::Testnet);
+		let monitor = ChannelMonitor::new(Secp256k1::new(), keys,
+			Some(ShutdownScript::new_p2wpkh_from_pubkey(shutdown_pubkey).into_inner()), 0, &ScriptBuf::new(),
+			(OutPoint { txid: Txid::from_slice(&[43; 32]).unwrap(), index: 0 }, ScriptBuf::new()),
+			&channel_parameters, ScriptBuf::new(), 46, 0, HolderCommitmentTransaction::dummy(&mut Vec::new()),
+			best_block, dummy_key);
+
+		let chan_id = monitor.inner.lock().unwrap().funding_info.0.to_channel_id().clone();
+		let context_logger = WithChannelMonitor::from(&logger, &monitor);
+		log_error!(context_logger, "This is an error");
+		log_warn!(context_logger, "This is an error");
+		log_debug!(context_logger, "This is an error");
+		log_trace!(context_logger, "This is an error");
+		log_gossip!(context_logger, "This is an error");
+		log_info!(context_logger, "This is an error");
+		logger.assert_log_context_contains("lightning::chain::channelmonitor::tests", Some(dummy_key), Some(chan_id), 6);
+	}
 	// Further testing is done in the ChannelManager integration tests.
 }
