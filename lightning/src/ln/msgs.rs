@@ -429,6 +429,53 @@ pub struct ChannelReady {
 	pub short_channel_id_alias: Option<u64>,
 }
 
+/// A splice message to be sent by or received from the splice initiator.
+/// TODO(splicing): Is using 'splice initiator' role OK?
+/// TODO(splicing): Can the channel acceptor later be the splice initiator?
+///
+// TODO(splicing): Add spec link for `splice`; still in draft, using from https://github.com/lightning/bolts/pull/863
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Splice {
+	/// The channel ID where splicing is intended
+	pub channel_id: ChannelId,
+	/// The genesis hash of the blockchain where the channel is intended to be spliced
+	pub chain_hash: BlockHash,
+	/// The intended change in channel capacity: the amount to be added (positive value)
+	/// or removed (negative value) by the sender (splice initiator) by splicing into/from the channel.
+	pub relative_satoshis: i64,
+	/// The feerate for the new funding transaction, set by the splice initiator
+	pub funding_feerate_perkw: u32,
+	/// The locktime for the new funding transaction
+	pub locktime: u32,
+	/// The key of the sender (splice initiator) controlling the new funding transaction
+	pub funding_pubkey: PublicKey,
+}
+
+/// A splice_ack message to be received by or sent to the splice initiator.
+///
+// TODO(splicing): Add spec link for `splice_ack`; still in draft, using from https://github.com/lightning/bolts/pull/863
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SpliceAck {
+	/// The channel ID where splicing is intended
+	pub channel_id: ChannelId,
+	/// The genesis hash of the blockchain where the channel is intended to be spliced
+	pub chain_hash: BlockHash,
+	/// The intended change in channel capacity: the amount to be added (positive value)
+	/// or removed (negative value) by the sender (splice acceptor) by splicing into/from the channel.
+	pub relative_satoshis: i64,
+	/// The key of the sender (splice acceptor) controlling the new funding transaction
+	pub funding_pubkey: PublicKey,
+}
+
+/// A splice_locked message to be sent to or received from a peer.
+///
+// TODO(splicing): Add spec link for `splice_locked`; still in draft, using from https://github.com/lightning/bolts/pull/863
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SpliceLocked {
+	/// The channel ID
+	pub channel_id: ChannelId,
+}
+
 /// A tx_add_input message for adding an input during interactive transaction construction
 ///
 // TODO(dual_funding): Add spec link for `tx_add_input`.
