@@ -669,6 +669,7 @@ pub(super) enum ChannelRetryState {
 	ChannelReestablish(msgs::ChannelReestablish),
 	CommitmentSigned(msgs::CommitmentSigned),
 	CompleteAcceptingInboundV1Channel(),
+	CompleteCreatingOutboundV1Channel(),
 }
 
 
@@ -2296,9 +2297,18 @@ where
 				},
 			}
 		};
-		let res = channel.get_open_channel(self.genesis_hash.clone());
 
 		let temporary_channel_id = channel.context.channel_id();
+		if channel.context.has_first_holder_per_commitment_point() {
+			peer_state.pending_msg_events.push(events::MessageSendEvent::SendOpenChannel {
+				node_id: their_network_key,
+				msg: channel.get_open_channel(self.genesis_hash.clone()),
+			});
+		} else {
+			log_info!(self.logger, "First per-commitment point is not available for {temporary_channel_id}, scheduling retry.");
+			peer_state.retry_state_by_id.insert(temporary_channel_id.clone(), ChannelRetryState::CompleteCreatingOutboundV1Channel());
+		}
+		
 		match peer_state.outbound_v1_channel_by_id.entry(temporary_channel_id) {
 			hash_map::Entry::Occupied(_) => {
 				if cfg!(fuzzing) {
@@ -2310,11 +2320,33 @@ where
 			hash_map::Entry::Vacant(entry) => { entry.insert(channel); }
 		}
 
-		peer_state.pending_msg_events.push(events::MessageSendEvent::SendOpenChannel {
-			node_id: their_network_key,
-			msg: res,
-		});
 		Ok(temporary_channel_id)
+	}
+
+	fn complete_creating_outbound_v1_channel(&self, counterparty_node_id: &PublicKey, temporary_channel_id: &ChannelId) {
+		log_info!(self.logger, "Retrying create for channel {temporary_channel_id}");
+		self.with_mut_peer_state(counterparty_node_id, |peer_state: &mut PeerState<SP>| {
+			let channel_opt = peer_state.outbound_v1_channel_by_id.get_mut(temporary_channel_id);
+			if channel_opt.is_none() {
+				log_error!(self.logger, "Cannot find outbound channel with temporary ID {temporary_channel_id} for which to complete creation");
+				return;
+			}
+
+			log_info!(self.logger, "Found outbound channel with temporary ID {temporary_channel_id}");
+
+			let channel = channel_opt.unwrap();
+			if channel.set_first_holder_per_commitment_point().is_err() {
+				log_error!(self.logger, "Commitment point for outbound channel with temporary ID {temporary_channel_id} was not available on retry");
+				return;
+			}
+
+			log_info!(self.logger, "Set first per-commitment point for outbound channel {temporary_channel_id}");
+
+			peer_state.pending_msg_events.push(events::MessageSendEvent::SendOpenChannel {
+				node_id: *counterparty_node_id,
+				msg: channel.get_open_channel(self.genesis_hash.clone()),
+			});
+		});
 	}
 
 	fn list_funded_channels_with_filter<Fn: FnMut(&(&ChannelId, &Channel<SP>)) -> bool + Copy>(&self, f: Fn) -> Vec<ChannelDetails> {
@@ -6945,6 +6977,7 @@ where
 			ChannelRetryState::ChannelReestablish(ref msg) => self.handle_channel_reestablish(counterparty_node_id, msg),
 			ChannelRetryState::CommitmentSigned(ref msg) => self.handle_commitment_signed(counterparty_node_id, msg),
 			ChannelRetryState::CompleteAcceptingInboundV1Channel() => self.retry_accepting_inbound_v1_channel(counterparty_node_id, channel_id),
+			ChannelRetryState::CompleteCreatingOutboundV1Channel() => self.complete_creating_outbound_v1_channel(counterparty_node_id, channel_id),
 		};
 
 		Ok(())

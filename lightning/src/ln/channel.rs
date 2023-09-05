@@ -5857,6 +5857,17 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 		})
 	}
 
+	/// Sets the first holder per-commitment point by retrieving it from the signer.
+	pub fn set_first_holder_per_commitment_point(&mut self) -> Result<(), ChannelError> {
+		assert!(self.context.next_per_commitment_point.is_none());
+		let transaction_number = self.context.cur_holder_commitment_transaction_number;
+		assert_eq!(transaction_number, INITIAL_COMMITMENT_NUMBER);
+		let point = self.context.holder_signer.as_ref().get_per_commitment_point(transaction_number, &self.context.secp_ctx)
+			.map_err(|_| ChannelError::Retry("Channel signer is unavailable; try again later".to_owned()))?;
+		self.context.next_per_commitment_point = Some(point);
+		Ok(())
+	}
+
 	/// If an Err is returned, it is a ChannelError::Close (for get_funding_created)
 	fn get_funding_created_signature<L: Deref>(&mut self, logger: &L) -> Result<Signature, ChannelError> where L::Target: Logger {
 		let counterparty_keys = self.context.build_remote_transaction_keys();
