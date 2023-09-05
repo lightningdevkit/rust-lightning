@@ -7227,6 +7227,66 @@ where
 		has_update
 	}
 
+	/// When a call to a [`ChannelSigner`] method returns an error, this indicates that the signer
+	/// is (temporarily) unavailable, and the operation should be retried later.
+	///
+	/// This method allows for that retry - either checking for any signer-pending messages to be
+	/// attempted in every channel, or in the specifically provided channel.
+	///
+	/// [`ChannelSigner`]: crate::sign::ChannelSigner
+	#[cfg(test)] // This is only implemented for one signer method, and should be private until we
+	             // actually finish implementing it fully.
+	pub fn signer_unblocked(&self, channel_opt: Option<(PublicKey, ChannelId)>) {
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
+
+		let unblock_chan = |phase: &mut ChannelPhase<SP>, pending_msg_events: &mut Vec<MessageSendEvent>| {
+			let node_id = phase.context().get_counterparty_node_id();
+			if let ChannelPhase::Funded(chan) = phase {
+				let msgs = chan.signer_maybe_unblocked(&self.logger);
+				if let Some(updates) = msgs.commitment_update {
+					pending_msg_events.push(events::MessageSendEvent::UpdateHTLCs {
+						node_id,
+						updates,
+					});
+				}
+				if let Some(msg) = msgs.funding_signed {
+					pending_msg_events.push(events::MessageSendEvent::SendFundingSigned {
+						node_id,
+						msg,
+					});
+				}
+				if let Some(msg) = msgs.funding_created {
+					pending_msg_events.push(events::MessageSendEvent::SendFundingCreated {
+						node_id,
+						msg,
+					});
+				}
+				if let Some(msg) = msgs.channel_ready {
+					send_channel_ready!(self, pending_msg_events, chan, msg);
+				}
+			}
+		};
+
+		let per_peer_state = self.per_peer_state.read().unwrap();
+		if let Some((counterparty_node_id, channel_id)) = channel_opt {
+			if let Some(peer_state_mutex) = per_peer_state.get(&counterparty_node_id) {
+				let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+				let peer_state = &mut *peer_state_lock;
+				if let Some(chan) = peer_state.channel_by_id.get_mut(&channel_id) {
+					unblock_chan(chan, &mut peer_state.pending_msg_events);
+				}
+			}
+		} else {
+			for (_cp_id, peer_state_mutex) in per_peer_state.iter() {
+				let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+				let peer_state = &mut *peer_state_lock;
+				for (_, chan) in peer_state.channel_by_id.iter_mut() {
+					unblock_chan(chan, &mut peer_state.pending_msg_events);
+				}
+			}
+		}
+	}
+
 	/// Check whether any channels have finished removing all pending updates after a shutdown
 	/// exchange and can now send a closing_signed.
 	/// Returns whether any closing_signed messages were generated.

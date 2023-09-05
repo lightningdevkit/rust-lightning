@@ -533,6 +533,15 @@ pub(super) struct MonitorRestoreUpdates {
 	pub announcement_sigs: Option<msgs::AnnouncementSignatures>,
 }
 
+/// The return value of `signer_maybe_unblocked`
+#[allow(unused)]
+pub(super) struct SignerResumeUpdates {
+	pub commitment_update: Option<msgs::CommitmentUpdate>,
+	pub funding_signed: Option<msgs::FundingSigned>,
+	pub funding_created: Option<msgs::FundingCreated>,
+	pub channel_ready: Option<msgs::ChannelReady>,
+}
+
 /// The return value of `channel_reestablish`
 pub(super) struct ReestablishResponses {
 	pub channel_ready: Option<msgs::ChannelReady>,
@@ -3910,6 +3919,31 @@ impl<SP: Deref> Channel<SP> where
 			}
 		}
 		Ok(())
+	}
+
+	/// Indicates that the signer may have some signatures for us, so we should retry if we're
+	/// blocked.
+	#[allow(unused)]
+	pub fn signer_maybe_unblocked<L: Deref>(&mut self, logger: &L) -> SignerResumeUpdates where L::Target: Logger {
+		let commitment_update = if self.context.signer_pending_commitment_update {
+			self.get_last_commitment_update_for_send(logger).ok()
+		} else { None };
+		let funding_signed = None;
+		let channel_ready = None;
+		let funding_created = None;
+
+		log_trace!(logger, "Signer unblocked with {} commitment_update, {} funding_signed, {} funding_created, and {} channel_ready",
+			if commitment_update.is_some() { "a" } else { "no" },
+			if funding_signed.is_some() { "a" } else { "no" },
+			if funding_created.is_some() { "a" } else { "no" },
+			if channel_ready.is_some() { "a" } else { "no" });
+
+		SignerResumeUpdates {
+			commitment_update,
+			funding_signed,
+			funding_created,
+			channel_ready,
+		}
 	}
 
 	fn get_last_revoke_and_ack(&self) -> msgs::RevokeAndACK {
