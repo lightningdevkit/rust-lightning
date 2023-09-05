@@ -53,9 +53,11 @@ pub(crate) enum PendingOutboundPayment {
 	},
 	AwaitingInvoice {
 		timer_ticks_without_response: u8,
+		retry_strategy: Retry,
 	},
 	InvoiceReceived {
 		payment_hash: PaymentHash,
+		retry_strategy: Retry,
 	},
 	Retryable {
 		retry_strategy: Option<Retry>,
@@ -156,7 +158,7 @@ impl PendingOutboundPayment {
 		match self {
 			PendingOutboundPayment::Legacy { .. } => None,
 			PendingOutboundPayment::AwaitingInvoice { .. } => None,
-			PendingOutboundPayment::InvoiceReceived { payment_hash } => Some(*payment_hash),
+			PendingOutboundPayment::InvoiceReceived { payment_hash, .. } => Some(*payment_hash),
 			PendingOutboundPayment::Retryable { payment_hash, .. } => Some(*payment_hash),
 			PendingOutboundPayment::Fulfilled { payment_hash, .. } => *payment_hash,
 			PendingOutboundPayment::Abandoned { payment_hash, .. } => Some(*payment_hash),
@@ -186,7 +188,7 @@ impl PendingOutboundPayment {
 				payment_hash: *payment_hash,
 				reason: Some(reason)
 			};
-		} else if let PendingOutboundPayment::InvoiceReceived { payment_hash } = self {
+		} else if let PendingOutboundPayment::InvoiceReceived { payment_hash, .. } = self {
 			*self = PendingOutboundPayment::Abandoned {
 				session_privs: HashSet::new(),
 				payment_hash: *payment_hash,
@@ -271,6 +273,19 @@ pub enum Retry {
 	/// [`PaymentParameters::expiry_time`]: crate::routing::router::PaymentParameters::expiry_time
 	Timeout(core::time::Duration),
 }
+
+#[cfg(feature = "no-std")]
+impl_writeable_tlv_based_enum!(Retry,
+	;
+	(0, Attempts)
+);
+
+#[cfg(not(feature = "no-std"))]
+impl_writeable_tlv_based_enum!(Retry,
+	;
+	(0, Attempts),
+	(2, Timeout)
+);
 
 impl Retry {
 	pub(crate) fn is_retryable_now(&self, attempts: &PaymentAttempts) -> bool {
@@ -587,8 +602,6 @@ pub(super) struct SendAlongPathArgs<'a> {
 	pub session_priv_bytes: [u8; 32],
 }
 
-const BOLT_12_INVOICE_RETRY_STRATEGY: Retry = Retry::Attempts(3);
-
 pub(super) struct OutboundPayments {
 	pub(super) pending_outbound_payments: Mutex<HashMap<PaymentId, PendingOutboundPayment>>,
 	pub(super) retry_lock: Mutex<()>,
@@ -707,10 +720,15 @@ impl OutboundPayments {
 	{
 		let payment_hash = invoice.payment_hash();
 		match self.pending_outbound_payments.lock().unwrap().entry(payment_id) {
-			hash_map::Entry::Occupied(entry) if entry.get().is_awaiting_invoice() => {
-				*entry.into_mut() = PendingOutboundPayment::InvoiceReceived { payment_hash };
+			hash_map::Entry::Occupied(entry) => match entry.get() {
+				PendingOutboundPayment::AwaitingInvoice { retry_strategy, .. } => {
+					*entry.into_mut() = PendingOutboundPayment::InvoiceReceived {
+						payment_hash,
+						retry_strategy: *retry_strategy,
+					};
+				},
+				_ => return Err(Bolt12PaymentError::DuplicateInvoice),
 			},
-			hash_map::Entry::Occupied(_) => return Err(Bolt12PaymentError::DuplicateInvoice),
 			hash_map::Entry::Vacant(_) => return Err(Bolt12PaymentError::UnexpectedInvoice),
 		};
 
@@ -957,14 +975,14 @@ impl OutboundPayments {
 							log_error!(logger, "Payment not yet sent");
 							return
 						},
-						PendingOutboundPayment::InvoiceReceived { payment_hash } => {
+						PendingOutboundPayment::InvoiceReceived { payment_hash, retry_strategy } => {
 							let total_amount = route_params.final_value_msat;
 							let recipient_onion = RecipientOnionFields {
 								payment_secret: None,
 								payment_metadata: None,
 								custom_tlvs: vec![],
 							};
-							let retry_strategy = Some(BOLT_12_INVOICE_RETRY_STRATEGY);
+							let retry_strategy = Some(*retry_strategy);
 							let payment_params = Some(route_params.payment_params.clone());
 							let (retryable_payment, onion_session_privs) = self.create_pending_payment(
 								*payment_hash, recipient_onion.clone(), None, &route,
@@ -1186,13 +1204,16 @@ impl OutboundPayments {
 	}
 
 	#[allow(unused)]
-	pub(super) fn add_new_awaiting_invoice(&self, payment_id: PaymentId) -> Result<(), ()> {
+	pub(super) fn add_new_awaiting_invoice(
+		&self, payment_id: PaymentId, retry_strategy: Retry
+	) -> Result<(), ()> {
 		let mut pending_outbounds = self.pending_outbound_payments.lock().unwrap();
 		match pending_outbounds.entry(payment_id) {
 			hash_map::Entry::Occupied(_) => Err(()),
 			hash_map::Entry::Vacant(entry) => {
 				entry.insert(PendingOutboundPayment::AwaitingInvoice {
 					timer_ticks_without_response: 0,
+					retry_strategy,
 				});
 
 				Ok(())
@@ -1667,9 +1688,11 @@ impl_writeable_tlv_based_enum_upgradable!(PendingOutboundPayment,
 	},
 	(5, AwaitingInvoice) => {
 		(0, timer_ticks_without_response, required),
+		(2, retry_strategy, required),
 	},
 	(7, InvoiceReceived) => {
 		(0, payment_hash, required),
+		(2, retry_strategy, required),
 	},
 );
 
@@ -1891,7 +1914,7 @@ mod tests {
 		let payment_id = PaymentId([0; 32]);
 
 		assert!(!outbound_payments.has_pending_payments());
-		assert!(outbound_payments.add_new_awaiting_invoice(payment_id).is_ok());
+		assert!(outbound_payments.add_new_awaiting_invoice(payment_id, Retry::Attempts(0)).is_ok());
 		assert!(outbound_payments.has_pending_payments());
 
 		for _ in 0..INVOICE_REQUEST_TIMEOUT_TICKS {
@@ -1909,10 +1932,10 @@ mod tests {
 		);
 		assert!(pending_events.lock().unwrap().is_empty());
 
-		assert!(outbound_payments.add_new_awaiting_invoice(payment_id).is_ok());
+		assert!(outbound_payments.add_new_awaiting_invoice(payment_id, Retry::Attempts(0)).is_ok());
 		assert!(outbound_payments.has_pending_payments());
 
-		assert!(outbound_payments.add_new_awaiting_invoice(payment_id).is_err());
+		assert!(outbound_payments.add_new_awaiting_invoice(payment_id, Retry::Attempts(0)).is_err());
 	}
 
 	#[test]
@@ -1922,7 +1945,7 @@ mod tests {
 		let payment_id = PaymentId([0; 32]);
 
 		assert!(!outbound_payments.has_pending_payments());
-		assert!(outbound_payments.add_new_awaiting_invoice(payment_id).is_ok());
+		assert!(outbound_payments.add_new_awaiting_invoice(payment_id, Retry::Attempts(0)).is_ok());
 		assert!(outbound_payments.has_pending_payments());
 
 		outbound_payments.abandon_payment(
@@ -1950,7 +1973,7 @@ mod tests {
 		let outbound_payments = OutboundPayments::new();
 		let payment_id = PaymentId([0; 32]);
 
-		assert!(outbound_payments.add_new_awaiting_invoice(payment_id).is_ok());
+		assert!(outbound_payments.add_new_awaiting_invoice(payment_id, Retry::Attempts(0)).is_ok());
 		assert!(outbound_payments.has_pending_payments());
 
 		let created_at = now() - DEFAULT_RELATIVE_EXPIRY;
@@ -1996,7 +2019,7 @@ mod tests {
 		let outbound_payments = OutboundPayments::new();
 		let payment_id = PaymentId([0; 32]);
 
-		assert!(outbound_payments.add_new_awaiting_invoice(payment_id).is_ok());
+		assert!(outbound_payments.add_new_awaiting_invoice(payment_id, Retry::Attempts(0)).is_ok());
 		assert!(outbound_payments.has_pending_payments());
 
 		let invoice = OfferBuilder::new("foo".into(), recipient_pubkey())
@@ -2049,7 +2072,7 @@ mod tests {
 		let outbound_payments = OutboundPayments::new();
 		let payment_id = PaymentId([0; 32]);
 
-		assert!(outbound_payments.add_new_awaiting_invoice(payment_id).is_ok());
+		assert!(outbound_payments.add_new_awaiting_invoice(payment_id, Retry::Attempts(0)).is_ok());
 		assert!(outbound_payments.has_pending_payments());
 
 		let invoice = OfferBuilder::new("foo".into(), recipient_pubkey())
@@ -2149,7 +2172,7 @@ mod tests {
 		assert!(!outbound_payments.has_pending_payments());
 		assert!(pending_events.lock().unwrap().is_empty());
 
-		assert!(outbound_payments.add_new_awaiting_invoice(payment_id).is_ok());
+		assert!(outbound_payments.add_new_awaiting_invoice(payment_id, Retry::Attempts(0)).is_ok());
 		assert!(outbound_payments.has_pending_payments());
 
 		assert_eq!(
