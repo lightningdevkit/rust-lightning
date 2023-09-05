@@ -263,7 +263,7 @@ pub enum Retry {
 	/// Each attempt may be multiple HTLCs along multiple paths if the router decides to split up a
 	/// retry, and may retry multiple failed HTLCs at once if they failed around the same time and
 	/// were retried along a route from a single call to [`Router::find_route_with_id`].
-	Attempts(usize),
+	Attempts(u32),
 	#[cfg(not(feature = "no-std"))]
 	/// Time elapsed before abandoning retries for a payment. At least one attempt at payment is made;
 	/// see [`PaymentParameters::expiry_time`] to avoid any attempt at payment after a specific time.
@@ -305,7 +305,7 @@ pub(crate) type PaymentAttempts = PaymentAttemptsUsingTime<ConfiguredTime>;
 pub(crate) struct PaymentAttemptsUsingTime<T: Time> {
 	/// This count will be incremented only after the result of the attempt is known. When it's 0,
 	/// it means the result of the first attempt is not known yet.
-	pub(crate) count: usize,
+	pub(crate) count: u32,
 	/// This field is only used when retry is `Retry::Timeout` which is only build with feature std
 	#[cfg(not(feature = "no-std"))]
 	first_attempted_at: T,
