@@ -3468,7 +3468,7 @@ where
 
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 		let peer_state = &mut *peer_state_lock;
-		let (chan, msg) = match peer_state.outbound_v1_channel_by_id.remove(&temporary_channel_id) {
+		let (chan, msg_opt) = match peer_state.outbound_v1_channel_by_id.remove(&temporary_channel_id) {
 			Some(chan) => {
 				let funding_txo = find_funding_output(&chan, &funding_transaction)?;
 
@@ -3502,10 +3502,12 @@ where
 			},
 		};
 
-		peer_state.pending_msg_events.push(events::MessageSendEvent::SendFundingCreated {
-			node_id: chan.context.get_counterparty_node_id(),
-			msg,
-		});
+		if let Some(msg) = msg_opt {
+			peer_state.pending_msg_events.push(events::MessageSendEvent::SendFundingCreated {
+				node_id: chan.context.get_counterparty_node_id(),
+				msg,
+			});
+		}
 		match peer_state.channel_by_id.entry(chan.context.channel_id()) {
 			hash_map::Entry::Occupied(_) => {
 				panic!("Generated duplicate funding txid?");
