@@ -594,6 +594,9 @@ pub(crate) const DISCONNECT_PEER_AWAITING_RESPONSE_TICKS: usize = 2;
 /// exceeding this age limit will be force-closed and purged from memory.
 pub(crate) const UNFUNDED_CHANNEL_AGE_LIMIT_TICKS: usize = 60;
 
+/// Number of blocks needed for an output from a coinbase transaction to be spendable.
+pub(crate) const COINBASE_MATURITY: u32 = 100;
+
 struct PendingChannelMonitorUpdate {
 	update: ChannelMonitorUpdate,
 }
@@ -4734,12 +4737,14 @@ impl<SP: Deref> Channel<SP> where
 							return Err(ClosureReason::ProcessingError { err: err_reason.to_owned() });
 						} else {
 							if self.context.is_outbound() {
-								for input in tx.input.iter() {
-									if input.witness.is_empty() {
-										// We generated a malleable funding transaction, implying we've
-										// just exposed ourselves to funds loss to our counterparty.
-										#[cfg(not(fuzzing))]
-										panic!("Client called ChannelManager::funding_transaction_generated with bogus transaction!");
+								if !tx.is_coin_base() {
+									for input in tx.input.iter() {
+										if input.witness.is_empty() {
+											// We generated a malleable funding transaction, implying we've
+											// just exposed ourselves to funds loss to our counterparty.
+											#[cfg(not(fuzzing))]
+											panic!("Client called ChannelManager::funding_transaction_generated with bogus transaction!");
+										}
 									}
 								}
 							}
@@ -4749,6 +4754,13 @@ impl<SP: Deref> Channel<SP> where
 								Ok(scid) => Some(scid),
 								Err(_) => panic!("Block was bogus - either height was > 16 million, had > 16 million transactions, or had > 65k outputs"),
 							}
+						}
+						// If this is a coinbase transaction and not a 0-conf channel
+						// we should update our min_depth to 100 to handle coinbase maturity
+						if tx.is_coin_base() &&
+							self.context.minimum_depth.unwrap_or(0) > 0 &&
+							self.context.minimum_depth.unwrap_or(0) < COINBASE_MATURITY {
+							self.context.minimum_depth = Some(COINBASE_MATURITY);
 						}
 					}
 					// If we allow 1-conf funding, we may need to check for channel_ready here and
@@ -5821,6 +5833,15 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 
 		self.context.channel_state = ChannelState::FundingCreated as u32;
 		self.context.channel_id = funding_txo.to_channel_id();
+
+		// If the funding transaction is a coinbase transaction, we need to set the minimum depth to 100.
+		// We can skip this if it is a zero-conf channel.
+		if funding_transaction.is_coin_base() &&
+			self.context.minimum_depth.unwrap_or(0) > 0 &&
+			self.context.minimum_depth.unwrap_or(0) < COINBASE_MATURITY {
+			self.context.minimum_depth = Some(COINBASE_MATURITY);
+		}
+
 		self.context.funding_transaction = Some(funding_transaction);
 
 		let channel = Channel {
