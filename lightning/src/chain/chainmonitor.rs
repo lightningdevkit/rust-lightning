@@ -772,7 +772,7 @@ where C::Target: chain::Filter,
 					monitor_state.last_chain_persist_height.load(Ordering::Acquire) + LATENCY_GRACE_PERIOD_BLOCKS as usize
 						> self.highest_chain_height.load(Ordering::Acquire)
 			{
-				log_info!(self.logger, "A Channel Monitor sync is still in progress, refusing to provide monitor events!");
+				log_debug!(self.logger, "A Channel Monitor sync is still in progress, refusing to provide monitor events!");
 			} else {
 				if monitor_state.channel_perm_failed.load(Ordering::Acquire) {
 					// If a `UpdateOrigin::ChainSync` persistence failed with `PermanantFailure`,
