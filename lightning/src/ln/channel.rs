@@ -42,7 +42,7 @@ use crate::sign::{EntropySource, ChannelSigner, SignerProvider, NodeSigner, Reci
 use crate::events::ClosureReason;
 use crate::routing::gossip::NodeId;
 use crate::util::ser::{Readable, ReadableArgs, Writeable, Writer};
-use crate::util::logger::{Logger, WithContext};
+use crate::util::logger::{Logger, Record, WithContext};
 use crate::util::errors::APIError;
 use crate::util::config::{UserConfig, ChannelConfig, LegacyChannelConfig, ChannelHandshakeConfig, ChannelHandshakeLimits, MaxDustHTLCExposure};
 use crate::util::scid_utils::scid_from_parts;
@@ -410,6 +410,33 @@ impl fmt::Display for ChannelError {
 			&ChannelError::Ignore(ref e) => write!(f, "{}", e),
 			&ChannelError::Warn(ref e) => write!(f, "{}", e),
 			&ChannelError::Close(ref e) => write!(f, "{}", e),
+		}
+	}
+}
+
+pub(super) struct WithChannelContext<'a, L: Deref> where L::Target: Logger {
+	pub logger: &'a L,
+	pub peer_id: Option<PublicKey>,
+	pub channel_id: Option<ChannelId>,
+}
+
+impl<'a, L: Deref> Logger for WithChannelContext<'a, L> where L::Target: Logger {
+	fn log(&self, mut record: Record) {
+		record.peer_id = self.peer_id;
+		record.channel_id = self.channel_id;
+		self.logger.log(record)
+	}
+}
+
+impl<'a, 'b, L: Deref> WithChannelContext<'a, L>
+where L::Target: Logger {
+	pub(super) fn from<S: Deref>(logger: &'a L, context: &'b ChannelContext<S>) -> Self
+	where S::Target: SignerProvider
+	{
+		WithChannelContext {
+			logger,
+			peer_id: Some(context.counterparty_node_id),
+			channel_id: Some(context.channel_id),
 		}
 	}
 }
