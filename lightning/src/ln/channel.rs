@@ -2021,6 +2021,36 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 			next_local_nonce: None,
 		})
 	}
+
+	/// Only allowed after [`Self::channel_transaction_parameters`] is set.
+	fn get_funding_signed_msg<L: Deref>(&mut self, logger: &L) -> (CommitmentTransaction, Option<msgs::FundingSigned>) where L::Target: Logger {
+		let counterparty_keys = self.build_remote_transaction_keys();
+		let counterparty_initial_commitment_tx = self.build_commitment_transaction(self.cur_counterparty_commitment_transaction_number + 1, &counterparty_keys, false, false, logger).tx;
+
+		let counterparty_trusted_tx = counterparty_initial_commitment_tx.trust();
+		let counterparty_initial_bitcoin_tx = counterparty_trusted_tx.built_transaction();
+		log_trace!(logger, "Initial counterparty tx for channel {} is: txid {} tx {}",
+			&self.channel_id(), counterparty_initial_bitcoin_tx.txid, encode::serialize_hex(&counterparty_initial_bitcoin_tx.transaction));
+
+		match &self.holder_signer {
+			// TODO (arik): move match into calling method for Taproot
+			ChannelSignerType::Ecdsa(ecdsa) => {
+				let funding_signed = ecdsa.sign_counterparty_commitment(&counterparty_initial_commitment_tx, Vec::new(), &self.secp_ctx)
+					.map(|(signature, _)| msgs::FundingSigned {
+						channel_id: self.channel_id(),
+						signature,
+						#[cfg(taproot)]
+						partial_signature_with_nonce: None,
+					})
+					.ok();
+				self.signer_pending_funding = funding_signed.is_none();
+
+				// We sign "counterparty" commitment transaction, allowing them to broadcast the tx if they wish.
+				(counterparty_initial_commitment_tx, funding_signed)
+			}
+		}
+	}
+
 }
 
 // Internal utility functions for channels
@@ -3830,7 +3860,9 @@ impl<SP: Deref> Channel<SP> where
 		let commitment_update = if self.context.signer_pending_commitment_update {
 			None
 		} else { None };
-		let funding_signed = None;
+		let funding_signed = if self.context.signer_pending_funding && !self.context.is_outbound() {
+			self.context.get_funding_signed_msg(logger).1
+		} else { None };
 		let funding_created = if self.context.signer_pending_funding && self.context.is_outbound() {
 			self.context.get_funding_created_msg(logger)
 		} else { None };
@@ -6547,41 +6579,22 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 		self.generate_accept_channel_message()
 	}
 
-	fn funding_created_signature<L: Deref>(&mut self, sig: &Signature, logger: &L) -> Result<(CommitmentTransaction, CommitmentTransaction, Option<Signature>), ChannelError> where L::Target: Logger {
+	fn check_funding_created_signature<L: Deref>(&mut self, sig: &Signature, logger: &L) -> Result<CommitmentTransaction, ChannelError> where L::Target: Logger {
 		let funding_script = self.context.get_funding_redeemscript();
 
 		let keys = self.context.build_holder_transaction_keys(self.context.cur_holder_commitment_transaction_number);
 		let initial_commitment_tx = self.context.build_commitment_transaction(self.context.cur_holder_commitment_transaction_number, &keys, true, false, logger).tx;
-		{
-			let trusted_tx = initial_commitment_tx.trust();
-			let initial_commitment_bitcoin_tx = trusted_tx.built_transaction();
-			let sighash = initial_commitment_bitcoin_tx.get_sighash_all(&funding_script, self.context.channel_value_satoshis);
-			// They sign the holder commitment transaction...
-			log_trace!(logger, "Checking funding_created tx signature {} by key {} against tx {} (sighash {}) with redeemscript {} for channel {}.",
-				log_bytes!(sig.serialize_compact()[..]), log_bytes!(self.context.counterparty_funding_pubkey().serialize()),
-				encode::serialize_hex(&initial_commitment_bitcoin_tx.transaction), log_bytes!(sighash[..]),
-				encode::serialize_hex(&funding_script), &self.context.channel_id());
-			secp_check!(self.context.secp_ctx.verify_ecdsa(&sighash, &sig, self.context.counterparty_funding_pubkey()), "Invalid funding_created signature from peer".to_owned());
-		}
+		let trusted_tx = initial_commitment_tx.trust();
+		let initial_commitment_bitcoin_tx = trusted_tx.built_transaction();
+		let sighash = initial_commitment_bitcoin_tx.get_sighash_all(&funding_script, self.context.channel_value_satoshis);
+		// They sign the holder commitment transaction...
+		log_trace!(logger, "Checking funding_created tx signature {} by key {} against tx {} (sighash {}) with redeemscript {} for channel {}.",
+			log_bytes!(sig.serialize_compact()[..]), log_bytes!(self.context.counterparty_funding_pubkey().serialize()),
+			encode::serialize_hex(&initial_commitment_bitcoin_tx.transaction), log_bytes!(sighash[..]),
+			encode::serialize_hex(&funding_script), &self.context.channel_id());
+		secp_check!(self.context.secp_ctx.verify_ecdsa(&sighash, &sig, self.context.counterparty_funding_pubkey()), "Invalid funding_created signature from peer".to_owned());
 
-		let counterparty_keys = self.context.build_remote_transaction_keys();
-		let counterparty_initial_commitment_tx = self.context.build_commitment_transaction(self.context.cur_counterparty_commitment_transaction_number, &counterparty_keys, false, false, logger).tx;
-
-		let counterparty_trusted_tx = counterparty_initial_commitment_tx.trust();
-		let counterparty_initial_bitcoin_tx = counterparty_trusted_tx.built_transaction();
-		log_trace!(logger, "Initial counterparty tx for channel {} is: txid {} tx {}",
-			&self.context.channel_id(), counterparty_initial_bitcoin_tx.txid, encode::serialize_hex(&counterparty_initial_bitcoin_tx.transaction));
-
-		match &self.context.holder_signer {
-			// TODO (arik): move match into calling method for Taproot
-			ChannelSignerType::Ecdsa(ecdsa) => {
-				let counterparty_signature = ecdsa.sign_counterparty_commitment(&counterparty_initial_commitment_tx, Vec::new(), &self.context.secp_ctx)
-					.map(|(sig, _)| sig).ok();
-
-				// We sign "counterparty" commitment transaction, allowing them to broadcast the tx if they wish.
-				Ok((counterparty_initial_commitment_tx, initial_commitment_tx, counterparty_signature))
-			}
-		}
+		Ok(initial_commitment_tx)
 	}
 
 	pub fn funding_created<L: Deref>(
@@ -6608,10 +6621,10 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 		let funding_txo = OutPoint { txid: msg.funding_txid, index: msg.funding_output_index };
 		self.context.channel_transaction_parameters.funding_outpoint = Some(funding_txo);
 		// This is an externally observable change before we finish all our checks.  In particular
-		// funding_created_signature may fail.
+		// check_funding_created_signature may fail.
 		self.context.holder_signer.as_mut().provide_channel_parameters(&self.context.channel_transaction_parameters);
 
-		let (counterparty_initial_commitment_tx, initial_commitment_tx, sig_opt) = match self.funding_created_signature(&msg.signature, logger) {
+		let initial_commitment_tx = match self.check_funding_created_signature(&msg.signature, logger) {
 			Ok(res) => res,
 			Err(ChannelError::Close(e)) => {
 				self.context.channel_transaction_parameters.funding_outpoint = None;
@@ -6620,7 +6633,7 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 			Err(e) => {
 				// The only error we know how to handle is ChannelError::Close, so we fall over here
 				// to make sure we don't continue with an inconsistent state.
-				panic!("unexpected error type from funding_created_signature {:?}", e);
+				panic!("unexpected error type from check_funding_created_signature {:?}", e);
 			}
 		};
 
@@ -6635,6 +6648,13 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 		if let Err(_) = self.context.holder_signer.as_ref().validate_holder_commitment(&holder_commitment_tx, Vec::new()) {
 			return Err((self, ChannelError::Close("Failed to validate our commitment".to_owned())));
 		}
+
+		self.context.channel_state = ChannelState::FundingSent as u32;
+		self.context.channel_id = funding_txo.to_channel_id();
+		self.context.cur_counterparty_commitment_transaction_number -= 1;
+		self.context.cur_holder_commitment_transaction_number -= 1;
+
+		let (counterparty_initial_commitment_tx, funding_signed) = self.context.get_funding_signed_msg(logger);
 
 		// Now that we're past error-generating stuff, update our local state:
 
@@ -6654,15 +6674,10 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 
 		channel_monitor.provide_initial_counterparty_commitment_tx(
 			counterparty_initial_commitment_tx.trust().txid(), Vec::new(),
-			self.context.cur_counterparty_commitment_transaction_number,
+			self.context.cur_counterparty_commitment_transaction_number + 1,
 			self.context.counterparty_cur_commitment_point.unwrap(), self.context.feerate_per_kw,
 			counterparty_initial_commitment_tx.to_broadcaster_value_sat(),
 			counterparty_initial_commitment_tx.to_countersignatory_value_sat(), logger);
-
-		self.context.channel_state = ChannelState::FundingSent as u32;
-		self.context.channel_id = funding_txo.to_channel_id();
-		self.context.cur_counterparty_commitment_transaction_number -= 1;
-		self.context.cur_holder_commitment_transaction_number -= 1;
 
 		log_info!(logger, "Generated funding_signed for peer for channel {}", &self.context.channel_id());
 
@@ -6674,18 +6689,6 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 		let channel_id = channel.context.channel_id.clone();
 		let need_channel_ready = channel.check_get_channel_ready(0).is_some();
 		channel.monitor_updating_paused(false, false, need_channel_ready, Vec::new(), Vec::new(), Vec::new());
-
-		let funding_signed = if let Some(signature) = sig_opt {
-			Some(msgs::FundingSigned {
-				channel_id,
-				signature,
-				#[cfg(taproot)]
-				partial_signature_with_nonce: None,
-			})
-		} else {
-			channel.context.signer_pending_funding = true;
-			None
-		};
 
 		Ok((channel, funding_signed, channel_monitor))
 	}
