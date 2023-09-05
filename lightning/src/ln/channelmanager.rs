@@ -5626,7 +5626,7 @@ where
 
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 		let peer_state = &mut *peer_state_lock;
-		let (chan, funding_msg, monitor) =
+		let (chan, funding_msg_opt, monitor) =
 			match peer_state.inbound_v1_channel_by_id.remove(&msg.temporary_channel_id) {
 				Some(inbound_chan) => {
 					match inbound_chan.funding_created(msg, best_block, &self.signer_provider, &self.logger) {
@@ -5646,16 +5646,19 @@ where
 				None => return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.temporary_channel_id))
 			};
 
-		match peer_state.channel_by_id.entry(funding_msg.channel_id) {
+		match peer_state.channel_by_id.entry(chan.context.channel_id()) {
 			hash_map::Entry::Occupied(_) => {
-				Err(MsgHandleErrInternal::send_err_msg_no_close("Already had channel with the new channel_id".to_owned(), funding_msg.channel_id))
+				Err(MsgHandleErrInternal::send_err_msg_no_close(
+					"Already had channel with the new channel_id".to_owned(),
+					chan.context.channel_id()
+				))
 			},
 			hash_map::Entry::Vacant(e) => {
 				match self.id_to_peer.lock().unwrap().entry(chan.context.channel_id()) {
 					hash_map::Entry::Occupied(_) => {
 						return Err(MsgHandleErrInternal::send_err_msg_no_close(
 							"The funding_created message had the same funding_txid as an existing channel - funding is not possible".to_owned(),
-							funding_msg.channel_id))
+							chan.context.channel_id()))
 					},
 					hash_map::Entry::Vacant(i_e) => {
 						i_e.insert(chan.context.get_counterparty_node_id());
@@ -5666,11 +5669,13 @@ where
 				// hasn't persisted to disk yet - we can't lose money on a transaction that we haven't
 				// accepted payment from yet. We do, however, need to wait to send our channel_ready
 				// until we have persisted our monitor.
-				let new_channel_id = funding_msg.channel_id;
-				peer_state.pending_msg_events.push(events::MessageSendEvent::SendFundingSigned {
-					node_id: counterparty_node_id.clone(),
-					msg: funding_msg,
-				});
+				let new_channel_id = chan.context.channel_id();
+				if let Some(msg) = funding_msg_opt {
+					peer_state.pending_msg_events.push(events::MessageSendEvent::SendFundingSigned {
+						node_id: counterparty_node_id.clone(),
+						msg,
+					});
+				}
 
 				let monitor_res = self.chain_monitor.watch_channel(monitor.get_funding_txo().0, monitor);
 
