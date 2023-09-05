@@ -515,6 +515,13 @@ pub(super) struct MonitorRestoreUpdates {
 	pub announcement_sigs: Option<msgs::AnnouncementSignatures>,
 }
 
+/// The return value of `signer_maybe_unblocked`
+pub(super) struct SignerResumeUpdates {
+	pub commitment_update: Option<msgs::CommitmentUpdate>,
+	pub funding_signed: Option<msgs::FundingSigned>,
+	pub funding_created: Option<msgs::FundingCreated>,
+}
+
 /// The return value of `channel_reestablish`
 pub(super) struct ReestablishResponses {
 	pub channel_ready: Option<msgs::ChannelReady>,
@@ -3790,6 +3797,21 @@ impl<SP: Deref> Channel<SP> where
 			}
 		}
 		Ok(())
+	}
+
+	/// Indicates that the signer may have some signatures for us, so we should retry if we're
+	/// blocked.
+	pub fn signer_maybe_unblocked<L: Deref>(&mut self, logger: &L) -> SignerResumeUpdates where L::Target: Logger {
+		let commitment_update = if self.context.signer_pending_commitment_update {
+			None
+		} else { None };
+		let funding_signed = None;
+		let funding_created = None;
+		SignerResumeUpdates {
+			commitment_update,
+			funding_signed,
+			funding_created,
+		}
 	}
 
 	fn get_last_revoke_and_ack(&self) -> msgs::RevokeAndACK {
