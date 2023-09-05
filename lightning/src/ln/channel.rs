@@ -1996,6 +1996,31 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 		self.update_time_counter += 1;
 		(monitor_update, dropped_outbound_htlcs)
 	}
+
+	/// Only allowed after [`Self::channel_transaction_parameters`] is set.
+	fn get_funding_created_msg<L: Deref>(&mut self, logger: &L) -> Option<msgs::FundingCreated> where L::Target: Logger {
+		let counterparty_keys = self.build_remote_transaction_keys();
+		let counterparty_initial_commitment_tx = self.build_commitment_transaction(self.cur_counterparty_commitment_transaction_number, &counterparty_keys, false, false, logger).tx;
+		let signature = match &self.holder_signer {
+			// TODO (taproot|arik): move match into calling method for Taproot
+			ChannelSignerType::Ecdsa(ecdsa) => {
+				ecdsa.sign_counterparty_commitment(&counterparty_initial_commitment_tx, Vec::new(), &self.secp_ctx)
+					.map(|(sig, _)| sig).ok()?
+			}
+		};
+
+		self.signer_pending_funding = false;
+		Some(msgs::FundingCreated {
+			temporary_channel_id: self.temporary_channel_id.unwrap(),
+			funding_txid: self.channel_transaction_parameters.funding_outpoint.as_ref().unwrap().txid,
+			funding_output_index: self.channel_transaction_parameters.funding_outpoint.as_ref().unwrap().index,
+			signature,
+			#[cfg(taproot)]
+			partial_signature_with_nonce: None,
+			#[cfg(taproot)]
+			next_local_nonce: None,
+		})
+	}
 }
 
 // Internal utility functions for channels
@@ -3806,7 +3831,9 @@ impl<SP: Deref> Channel<SP> where
 			None
 		} else { None };
 		let funding_signed = None;
-		let funding_created = None;
+		let funding_created = if self.context.signer_pending_funding && self.context.is_outbound() {
+			self.context.get_funding_created_msg(logger)
+		} else { None };
 		SignerResumeUpdates {
 			commitment_update,
 			funding_signed,
@@ -5829,18 +5856,6 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 		})
 	}
 
-	fn get_funding_created_signature<L: Deref>(&mut self, logger: &L) -> Result<Signature, ()> where L::Target: Logger {
-		let counterparty_keys = self.context.build_remote_transaction_keys();
-		let counterparty_initial_commitment_tx = self.context.build_commitment_transaction(self.context.cur_counterparty_commitment_transaction_number, &counterparty_keys, false, false, logger).tx;
-		match &self.context.holder_signer {
-			// TODO (taproot|arik): move match into calling method for Taproot
-			ChannelSignerType::Ecdsa(ecdsa) => {
-				ecdsa.sign_counterparty_commitment(&counterparty_initial_commitment_tx, Vec::new(), &self.context.secp_ctx)
-					.map(|(sig, _)| sig)
-			}
-		}
-	}
-
 	/// Updates channel state with knowledge of the funding transaction's txid/index, and generates
 	/// a funding_created message for the remote peer.
 	/// Panics if called at some time other than immediately after initial handshake, if called twice,
@@ -5882,21 +5897,10 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 
 		self.context.funding_transaction = Some(funding_transaction);
 
-		let funding_created = if let Ok(signature) = self.get_funding_created_signature(logger) {
-			Some(msgs::FundingCreated {
-				temporary_channel_id,
-				funding_txid: funding_txo.txid,
-				funding_output_index: funding_txo.index,
-				signature,
-				#[cfg(taproot)]
-				partial_signature_with_nonce: None,
-				#[cfg(taproot)]
-				next_local_nonce: None,
-			})
-		} else {
+		let funding_created = self.context.get_funding_created_msg(logger);
+		if funding_created.is_none() {
 			self.context.signer_pending_funding = true;
-			None
-		};
+		}
 
 		let channel = Channel {
 			context: self.context,
