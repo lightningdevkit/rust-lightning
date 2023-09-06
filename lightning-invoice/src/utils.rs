@@ -869,10 +869,8 @@ mod test {
 				invoice.min_final_cltv_expiry_delta() as u32)
 			.with_bolt11_features(invoice.features().unwrap().clone()).unwrap()
 			.with_route_hints(invoice.route_hints()).unwrap();
-		let route_params = RouteParameters {
-			payment_params,
-			final_value_msat: invoice.amount_milli_satoshis().unwrap(),
-		};
+		let route_params = RouteParameters::from_payment_params_and_value(
+			payment_params, invoice.amount_milli_satoshis().unwrap());
 		let payment_event = {
 			let mut payment_hash = PaymentHash([0; 32]);
 			payment_hash.0.copy_from_slice(&invoice.payment_hash().as_ref()[0..32]);
@@ -1326,10 +1324,8 @@ mod test {
 				invoice.min_final_cltv_expiry_delta() as u32)
 			.with_bolt11_features(invoice.features().unwrap().clone()).unwrap()
 			.with_route_hints(invoice.route_hints()).unwrap();
-		let params = RouteParameters {
-			payment_params,
-			final_value_msat: invoice.amount_milli_satoshis().unwrap(),
-		};
+		let params = RouteParameters::from_payment_params_and_value(
+			payment_params, invoice.amount_milli_satoshis().unwrap());
 		let (payment_event, fwd_idx) = {
 			let mut payment_hash = PaymentHash([0; 32]);
 			payment_hash.0.copy_from_slice(&invoice.payment_hash().as_ref()[0..32]);

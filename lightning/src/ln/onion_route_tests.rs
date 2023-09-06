@@ -19,7 +19,7 @@ use crate::ln::channel::EXPIRE_PREV_CONFIG_TICKS;
 use crate::ln::channelmanager::{HTLCForwardInfo, FailureCode, CLTV_FAR_FAR_AWAY, DISABLE_GOSSIP_TICKS, MIN_CLTV_EXPIRY_DELTA, PendingAddHTLCInfo, PendingHTLCInfo, PendingHTLCRouting, PaymentId, RecipientOnionFields};
 use crate::ln::onion_utils;
 use crate::routing::gossip::{NetworkUpdate, RoutingFees};
-use crate::routing::router::{get_route, PaymentParameters, Route, RouteHint, RouteHintHop};
+use crate::routing::router::{get_route, PaymentParameters, Route, RouteParameters, RouteHint, RouteHintHop};
 use crate::ln::features::{InitFeatures, Bolt11InvoiceFeatures};
 use crate::ln::msgs;
 use crate::ln::msgs::{ChannelMessageHandler, ChannelUpdate};
@@ -1048,10 +1048,11 @@ macro_rules! get_phantom_route {
 		])]).unwrap();
 		let scorer = test_utils::TestScorer::new();
 		let network_graph = $nodes[0].network_graph.read_only();
+		let route_params = RouteParameters::from_payment_params_and_value(payment_params, $amt);
 		(get_route(
-			&$nodes[0].node.get_our_node_id(), &payment_params, &network_graph,
+			&$nodes[0].node.get_our_node_id(), &route_params, &network_graph,
 			Some(&$nodes[0].node.list_usable_channels().iter().collect::<Vec<_>>()),
-			$amt, $nodes[0].logger, &scorer, &(), &[0u8; 32]
+			$nodes[0].logger, &scorer, &(), &[0u8; 32]
 		).unwrap(), phantom_route_hint.phantom_scid)
 	}
 }}

@@ -26,7 +26,7 @@ use crate::ln::channel::{DISCONNECT_PEER_AWAITING_RESPONSE_TICKS, ChannelError};
 use crate::ln::{chan_utils, onion_utils};
 use crate::ln::chan_utils::{OFFERED_HTLC_SCRIPT_WEIGHT, htlc_success_tx_weight, htlc_timeout_tx_weight, HTLCOutputInCommitment};
 use crate::routing::gossip::{NetworkGraph, NetworkUpdate};
-use crate::routing::router::{Path, PaymentParameters, Route, RouteHop, get_route};
+use crate::routing::router::{Path, PaymentParameters, Route, RouteHop, get_route, RouteParameters};
 use crate::ln::features::{ChannelFeatures, ChannelTypeFeatures, NodeFeatures};
 use crate::ln::msgs;
 use crate::ln::msgs::{ChannelMessageHandler, RoutingMessageHandler, ErrorAction};
@@ -1049,7 +1049,9 @@ fn fake_network_test() {
 	});
 	hops[1].fee_msat = chan_4.1.contents.fee_base_msat as u64 + chan_4.1.contents.fee_proportional_millionths as u64 * hops[2].fee_msat as u64 / 1000000;
 	hops[0].fee_msat = chan_3.0.contents.fee_base_msat as u64 + chan_3.0.contents.fee_proportional_millionths as u64 * hops[1].fee_msat as u64 / 1000000;
-	let payment_preimage_1 = send_along_route(&nodes[1], Route { paths: vec![Path { hops, blinded_tail: None }], payment_params: None }, &vec!(&nodes[2], &nodes[3], &nodes[1])[..], 1000000).0;
+	let payment_preimage_1 = send_along_route(&nodes[1],
+		Route { paths: vec![Path { hops, blinded_tail: None }], route_params: None },
+			&vec!(&nodes[2], &nodes[3], &nodes[1])[..], 1000000).0;
 
 	let mut hops = Vec::with_capacity(3);
 	hops.push(RouteHop {
@@ -1078,7 +1080,9 @@ fn fake_network_test() {
 	});
 	hops[1].fee_msat = chan_2.1.contents.fee_base_msat as u64 + chan_2.1.contents.fee_proportional_millionths as u64 * hops[2].fee_msat as u64 / 1000000;
 	hops[0].fee_msat = chan_3.1.contents.fee_base_msat as u64 + chan_3.1.contents.fee_proportional_millionths as u64 * hops[1].fee_msat as u64 / 1000000;
-	let payment_hash_2 = send_along_route(&nodes[1], Route { paths: vec![Path { hops, blinded_tail: None }], payment_params: None }, &vec!(&nodes[3], &nodes[2], &nodes[1])[..], 1000000).1;
+	let payment_hash_2 = send_along_route(&nodes[1],
+		Route { paths: vec![Path { hops, blinded_tail: None }], route_params: None },
+			&vec!(&nodes[3], &nodes[2], &nodes[1])[..], 1000000).1;
 
 	// Claim the rebalances...
 	fail_payment(&nodes[1], &vec!(&nodes[3], &nodes[2], &nodes[1])[..], payment_hash_2);
@@ -7137,8 +7141,11 @@ fn test_check_htlc_underpaying() {
 
 	let scorer = test_utils::TestScorer::new();
 	let random_seed_bytes = chanmon_cfgs[1].keys_manager.get_secure_random_bytes();
-	let payment_params = PaymentParameters::from_node_id(nodes[1].node.get_our_node_id(), TEST_FINAL_CLTV).with_bolt11_features(nodes[1].node.invoice_features()).unwrap();
-	let route = get_route(&nodes[0].node.get_our_node_id(), &payment_params, &nodes[0].network_graph.read_only(), None, 10_000, nodes[0].logger, &scorer, &(), &random_seed_bytes).unwrap();
+	let payment_params = PaymentParameters::from_node_id(nodes[1].node.get_our_node_id(),
+		TEST_FINAL_CLTV).with_bolt11_features(nodes[1].node.invoice_features()).unwrap();
+	let route_params = RouteParameters::from_payment_params_and_value(payment_params, 10_000);
+	let route = get_route(&nodes[0].node.get_our_node_id(), &route_params, &nodes[0].network_graph.read_only(),
+		None, nodes[0].logger, &scorer, &(), &random_seed_bytes).unwrap();
 	let (_, our_payment_hash, _) = get_payment_preimage_hash!(nodes[0]);
 	let our_payment_secret = nodes[1].node.create_inbound_payment_for_hash(our_payment_hash, Some(100_000), 7200, None).unwrap();
 	nodes[0].node.send_payment_with_route(&route, our_payment_hash,
@@ -7394,12 +7401,14 @@ fn test_bump_penalty_txn_on_revoked_htlcs() {
 	let payment_params = PaymentParameters::from_node_id(nodes[1].node.get_our_node_id(), 50).with_bolt11_features(nodes[1].node.invoice_features()).unwrap();
 	let scorer = test_utils::TestScorer::new();
 	let random_seed_bytes = chanmon_cfgs[1].keys_manager.get_secure_random_bytes();
-	let route = get_route(&nodes[0].node.get_our_node_id(), &payment_params, &nodes[0].network_graph.read_only(), None,
-		3_000_000, nodes[0].logger, &scorer, &(), &random_seed_bytes).unwrap();
+	let route_params = RouteParameters::from_payment_params_and_value(payment_params, 3_000_000);
+	let route = get_route(&nodes[0].node.get_our_node_id(), &route_params, &nodes[0].network_graph.read_only(), None,
+		nodes[0].logger, &scorer, &(), &random_seed_bytes).unwrap();
 	let payment_preimage = send_along_route(&nodes[0], route, &[&nodes[1]], 3_000_000).0;
 	let payment_params = PaymentParameters::from_node_id(nodes[0].node.get_our_node_id(), 50).with_bolt11_features(nodes[0].node.invoice_features()).unwrap();
-	let route = get_route(&nodes[1].node.get_our_node_id(), &payment_params, &nodes[1].network_graph.read_only(), None,
-		3_000_000, nodes[0].logger, &scorer, &(), &random_seed_bytes).unwrap();
+	let route_params = RouteParameters::from_payment_params_and_value(payment_params, 3_000_000);
+	let route = get_route(&nodes[1].node.get_our_node_id(), &route_params, &nodes[1].network_graph.read_only(), None,
+		nodes[0].logger, &scorer, &(), &random_seed_bytes).unwrap();
 	send_along_route(&nodes[1], route, &[&nodes[0]], 3_000_000);
 
 	let revoked_local_txn = get_local_commitment_txn!(nodes[1], chan.2);
