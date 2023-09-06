@@ -8638,11 +8638,11 @@ where
 					log_error!(args.logger, "A ChannelManager is stale compared to the current ChannelMonitor!");
 					log_error!(args.logger, " The channel will be force-closed and the latest commitment transaction from the ChannelMonitor broadcast.");
 					if channel.context.get_latest_monitor_update_id() < monitor.get_latest_update_id() {
-						log_error!(args.logger, " The ChannelMonitor for channel {} is at update_id {} and the ChannelManager is at update_id {}.",
+						log_error!(args.logger, " The ChannelMonitor for channel {} is at update_id {} but the ChannelManager is at update_id {}.",
 							&channel.context.channel_id(), monitor.get_latest_update_id(), channel.context.get_latest_monitor_update_id());
 					}
 					if channel.get_cur_holder_commitment_transaction_number() > monitor.get_cur_holder_commitment_number() {
-						log_error!(args.logger, " The ChannelMonitor for channel {} is at holder commitment number {} and the ChannelManager is at holder commitment {}.",
+						log_error!(args.logger, " The ChannelMonitor for channel {} is at holder commitment number {} but the ChannelManager is at holder commitment number {}.",
 							&channel.context.channel_id(), monitor.get_cur_holder_commitment_number(), channel.get_cur_holder_commitment_transaction_number());
 					}
 					if channel.get_revoked_counterparty_commitment_transaction_number() > monitor.get_min_seen_secret() {
@@ -8650,7 +8650,7 @@ where
 							&channel.context.channel_id(), monitor.get_min_seen_secret(), channel.get_revoked_counterparty_commitment_transaction_number());
 					}
 					if channel.get_cur_counterparty_commitment_transaction_number() > monitor.get_cur_counterparty_commitment_number() {
-						log_error!(args.logger, " The ChannelMonitor for channel {} is at counterparty commitment transaction number {} but the ChannelManager is at counterparty commtiment transaction number {}.",
+						log_error!(args.logger, " The ChannelMonitor for channel {} is at counterparty commitment transaction number {} but the ChannelManager is at counterparty commitment transaction number {}.",
 							&channel.context.channel_id(), monitor.get_cur_counterparty_commitment_number(), channel.get_cur_counterparty_commitment_transaction_number());
 					}
 					let (monitor_update, mut new_failed_htlcs) = channel.context.force_shutdown(true);
