@@ -22,7 +22,6 @@ use crate::events;
 use crate::events::bump_transaction::{WalletSource, Utxo};
 use crate::ln::ChannelId;
 use crate::ln::channelmanager;
-use crate::ln::chan_utils::CommitmentTransaction;
 use crate::ln::features::{ChannelFeatures, InitFeatures, NodeFeatures};
 use crate::ln::{msgs, wire};
 use crate::ln::msgs::LightningError;
@@ -38,6 +37,7 @@ use crate::util::config::UserConfig;
 use crate::util::test_channel_signer::{TestChannelSigner, EnforcementState};
 use crate::util::logger::{Logger, Level, Record};
 use crate::util::ser::{Readable, ReadableArgs, Writer, Writeable};
+use crate::util::watchtower::JusticeTxTracker;
 
 use bitcoin::EcdsaSighashType;
 use bitcoin::blockdata::constants::ChainHash;
@@ -61,7 +61,6 @@ use regex;
 use crate::io;
 use crate::prelude::*;
 use core::cell::RefCell;
-use core::ops::Deref;
 use core::time::Duration;
 use crate::sync::{Mutex, Arc};
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -276,50 +275,30 @@ impl<'a> chain::Watch<TestChannelSigner> for TestChainMonitor<'a> {
 	}
 }
 
-struct JusticeTxData {
-	justice_tx: Transaction,
-	value: u64,
-	commitment_number: u64,
-}
-
 pub(crate) struct WatchtowerPersister {
 	persister: TestPersister,
 	/// Upon a new commitment_signed, we'll get a
-	/// ChannelMonitorUpdateStep::LatestCounterpartyCommitmentTxInfo. We'll store the justice tx
-	/// amount, and commitment number so we can build the justice tx after our counterparty
-	/// revokes it.
-	unsigned_justice_tx_data: Mutex<HashMap<OutPoint, VecDeque<JusticeTxData>>>,
+	/// `ChannelMonitorUpdateStep::LatestCounterpartyCommitmentTxInfo`. We'll use our utility
+	/// object `JusticeTxTracker` to build and sign the justice tx.
+	justice_tx_tracker: RefCell<JusticeTxTracker>,
 	/// After receiving a revoke_and_ack for a commitment number, we'll form and store the justice
 	/// tx which would be used to provide a watchtower with the data it needs.
-	watchtower_state: Mutex<HashMap<OutPoint, HashMap<Txid, Transaction>>>,
-	destination_script: Script,
+	signed_justice_txs: RefCell<HashMap<OutPoint, HashMap<Txid, Transaction>>>,
 }
 
 impl WatchtowerPersister {
 	pub(crate) fn new(destination_script: Script) -> Self {
 		WatchtowerPersister {
 			persister: TestPersister::new(),
-			unsigned_justice_tx_data: Mutex::new(HashMap::new()),
-			watchtower_state: Mutex::new(HashMap::new()),
-			destination_script,
+			justice_tx_tracker: RefCell::new(JusticeTxTracker::new(vec![FEERATE_FLOOR_SATS_PER_KW],
+				destination_script)),
+			signed_justice_txs: RefCell::new(HashMap::new()),
 		}
 	}
 
 	pub(crate) fn justice_tx(&self, funding_txo: OutPoint, commitment_txid: &Txid)
 	-> Option<Transaction> {
-		self.watchtower_state.lock().unwrap().get(&funding_txo).unwrap().get(commitment_txid).cloned()
-	}
-
-	fn form_justice_data_from_commitment(&self, counterparty_commitment_tx: &CommitmentTransaction)
-	-> Option<JusticeTxData> {
-		let trusted_tx = counterparty_commitment_tx.trust();
-		let output_idx = trusted_tx.revokeable_output_index()?;
-		let built_tx = trusted_tx.built_transaction();
-		let value = built_tx.transaction.output[output_idx as usize].value;
-		let justice_tx = trusted_tx.build_to_local_justice_tx(
-			FEERATE_FLOOR_SATS_PER_KW as u64, self.destination_script.clone()).ok()?;
-		let commitment_number = counterparty_commitment_tx.commitment_number();
-		Some(JusticeTxData { justice_tx, value, commitment_number })
+		self.signed_justice_txs.borrow().get(&funding_txo).unwrap().get(commitment_txid).cloned()
 	}
 }
 
@@ -328,20 +307,8 @@ impl<Signer: sign::WriteableEcdsaChannelSigner> chainmonitor::Persist<Signer> fo
 		data: &channelmonitor::ChannelMonitor<Signer>, id: MonitorUpdateId
 	) -> chain::ChannelMonitorUpdateStatus {
 		let res = self.persister.persist_new_channel(funding_txo, data, id);
-
-		assert!(self.unsigned_justice_tx_data.lock().unwrap()
-			.insert(funding_txo, VecDeque::new()).is_none());
-		assert!(self.watchtower_state.lock().unwrap()
-			.insert(funding_txo, HashMap::new()).is_none());
-
-		let initial_counterparty_commitment_tx = data.initial_counterparty_commitment_tx()
-			.expect("First and only call expects Some");
-		if let Some(justice_data)
-			= self.form_justice_data_from_commitment(&initial_counterparty_commitment_tx) {
-			self.unsigned_justice_tx_data.lock().unwrap()
-				.get_mut(&funding_txo).unwrap()
-				.push_back(justice_data);
-		}
+		self.justice_tx_tracker.borrow_mut().add_new_channel(funding_txo, data);
+		assert!(self.signed_justice_txs.borrow_mut().insert(funding_txo, HashMap::new()).is_none());
 		res
 	}
 
@@ -350,29 +317,15 @@ impl<Signer: sign::WriteableEcdsaChannelSigner> chainmonitor::Persist<Signer> fo
 		data: &channelmonitor::ChannelMonitor<Signer>, update_id: MonitorUpdateId
 	) -> chain::ChannelMonitorUpdateStatus {
 		let res = self.persister.update_persisted_channel(funding_txo, update, data, update_id);
-
-		if let Some(update) = update {
-			let commitment_txs = data.counterparty_commitment_txs_from_update(update);
-			let justice_datas = commitment_txs.into_iter()
-				.filter_map(|commitment_tx| self.form_justice_data_from_commitment(&commitment_tx));
-			let mut channels_justice_txs = self.unsigned_justice_tx_data.lock().unwrap();
-			let channel_state = channels_justice_txs.get_mut(&funding_txo).unwrap();
-			channel_state.extend(justice_datas);
-
-			while let Some(JusticeTxData { justice_tx, value, commitment_number }) = channel_state.front() {
-				let input_idx = 0;
-				let commitment_txid = justice_tx.input[input_idx].previous_output.txid;
-				match data.sign_to_local_justice_tx(justice_tx.clone(), input_idx, *value, *commitment_number) {
-					Ok(signed_justice_tx) => {
-						let dup = self.watchtower_state.lock().unwrap()
-							.get_mut(&funding_txo).unwrap()
-							.insert(commitment_txid, signed_justice_tx);
-						assert!(dup.is_none());
-						channel_state.pop_front();
-					},
-					Err(_) => break,
-				}
-			}
+		let signed_justice_txs = match update {
+			Some(update) =>
+				self.justice_tx_tracker.borrow_mut().process_update(funding_txo, data, update),
+			None => vec![],
+		};
+		for tx in signed_justice_txs {
+			let commitment_txid = tx.input[0].previous_output.txid;
+			self.signed_justice_txs.borrow_mut()
+				.get_mut(&funding_txo).unwrap().insert(commitment_txid, tx);
 		}
 		res
 	}

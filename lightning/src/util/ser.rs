@@ -13,12 +13,14 @@
 //! [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
 //! [`ChannelMonitor`]: crate::chain::channelmonitor::ChannelMonitor
 
+use crate::events::Event;
+use crate::ln::channelmanager::EventCompletionAction;
 use crate::prelude::*;
 use crate::io::{self, Read, Seek, Write};
 use crate::io_extras::{copy, sink};
 use core::hash::Hash;
 use crate::sync::Mutex;
-use core::cmp;
+use core::{cmp, mem};
 use core::convert::TryFrom;
 use core::ops::Deref;
 
@@ -45,6 +47,7 @@ use crate::ln::{PaymentPreimage, PaymentHash, PaymentSecret};
 
 use crate::util::byte_utils::{be48_to_array, slice_to_be48};
 use crate::util::string::UntrustedString;
+use crate::util::watchtower::UnsignedJusticeData;
 
 /// serialization buffer size
 pub const MAX_BUF_SIZE: usize = 64 * 1024;
@@ -785,6 +788,75 @@ where T: Readable + Eq + Hash
 	}
 }
 
+// VecDeques
+impl Writeable for VecDeque<UnsignedJusticeData> {
+	#[inline]
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		CollectionLength(self.len() as u64).write(w)?;
+		for elem in self.iter() {
+			elem.write(w)?;
+		}
+		Ok(())
+	}
+}
+
+impl Readable for VecDeque<UnsignedJusticeData> {
+	#[inline]
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+		let len: CollectionLength = Readable::read(r)?;
+		let mut ret = VecDeque::with_capacity(cmp::min(
+			len.0 as usize, MAX_BUF_SIZE / core::mem::size_of::<UnsignedJusticeData>()));
+		for _ in 0..len.0 {
+			if let Some(val) = MaybeReadable::read(r)? {
+				ret.push_back(val);
+			}
+		}
+		Ok(ret)
+	}
+}
+
+impl Writeable for VecDeque<(Event, Option<EventCompletionAction>)> {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		(self.len() as u64).write(w)?;
+		for (event, action) in self.iter() {
+			event.write(w)?;
+			action.write(w)?;
+			#[cfg(debug_assertions)] {
+				// Events are MaybeReadable, in some cases indicating that they shouldn't actually
+				// be persisted and are regenerated on restart. However, if such an event has a
+				// post-event-handling action we'll write nothing for the event and would have to
+				// either forget the action or fail on deserialization (which we do below). Thus,
+				// check that the event is sane here.
+				let event_encoded = event.encode();
+				let event_read: Option<Event> =
+					MaybeReadable::read(&mut &event_encoded[..]).unwrap();
+				if action.is_some() { assert!(event_read.is_some()); }
+			}
+		}
+		Ok(())
+	}
+}
+
+impl Readable for VecDeque<(Event, Option<EventCompletionAction>)> {
+	fn read<R: Read>(reader: &mut R) -> Result<Self, DecodeError> {
+		let len: u64 = Readable::read(reader)?;
+		const MAX_ALLOC_SIZE: u64 = 1024 * 16;
+		let mut events: Self = VecDeque::with_capacity(cmp::min(
+			MAX_ALLOC_SIZE/mem::size_of::<(Event, Option<EventCompletionAction>)>() as u64,
+			len) as usize);
+		for _ in 0..len {
+			let ev_opt = MaybeReadable::read(reader)?;
+			let action = Readable::read(reader)?;
+			if let Some(ev) = ev_opt {
+				events.push_back((ev, action));
+			} else if action.is_some() {
+				return Err(DecodeError::InvalidValue);
+			}
+		}
+		Ok(events)
+	}
+}
+
 // Vectors
 macro_rules! impl_writeable_for_vec {
 	($ty: ty $(, $name: ident)*) => {
@@ -848,6 +920,7 @@ impl Readable for Vec<u8> {
 	}
 }
 
+impl_for_vec!(u32);
 impl_for_vec!(ecdsa::Signature);
 impl_for_vec!(crate::chain::channelmonitor::ChannelMonitorUpdate);
 impl_for_vec!(crate::ln::channelmanager::MonitorUpdateCompletionAction);
