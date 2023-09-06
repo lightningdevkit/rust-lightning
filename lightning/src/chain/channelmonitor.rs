@@ -4168,11 +4168,11 @@ where
 	L::Target: Logger,
 {
 	fn filtered_block_connected(&self, header: &Header, txdata: &TransactionData, height: u32) {
-		self.0.block_connected(header, txdata, height, &*self.1, &*self.2, &*self.3);
+		self.0.block_connected(header, txdata, height, &*self.1, &*self.2, &WithChannelMonitor::from(&self.3, &self.0));
 	}
 
 	fn block_disconnected(&self, header: &Header, height: u32) {
-		self.0.block_disconnected(header, height, &*self.1, &*self.2, &*self.3);
+		self.0.block_disconnected(header, height, &*self.1, &*self.2, &WithChannelMonitor::from(&self.3, &self.0));
 	}
 }
 
@@ -4184,15 +4184,15 @@ where
 	L::Target: Logger,
 {
 	fn transactions_confirmed(&self, header: &Header, txdata: &TransactionData, height: u32) {
-		self.0.transactions_confirmed(header, txdata, height, &*self.1, &*self.2, &*self.3);
+		self.0.transactions_confirmed(header, txdata, height, &*self.1, &*self.2, &WithChannelMonitor::from(&self.3, &self.0));
 	}
 
 	fn transaction_unconfirmed(&self, txid: &Txid) {
-		self.0.transaction_unconfirmed(txid, &*self.1, &*self.2, &*self.3);
+		self.0.transaction_unconfirmed(txid, &*self.1, &*self.2, &WithChannelMonitor::from(&self.3, &self.0));
 	}
 
 	fn best_block_updated(&self, header: &Header, height: u32) {
-		self.0.best_block_updated(header, height, &*self.1, &*self.2, &*self.3);
+		self.0.best_block_updated(header, height, &*self.1, &*self.2, &WithChannelMonitor::from(&self.3, &self.0));
 	}
 
 	fn get_relevant_txids(&self) -> Vec<(Txid, u32, Option<BlockHash>)> {
