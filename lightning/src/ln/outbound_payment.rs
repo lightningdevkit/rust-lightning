@@ -711,7 +711,7 @@ impl OutboundPayments {
 			}
 			core::mem::drop(outbounds);
 			if let Some((payment_hash, payment_id, route_params)) = retry_id_route_params {
-				self.retry_payment_internal(payment_hash, payment_id, route_params, router, first_hops(), &inflight_htlcs, entropy_source, node_signer, best_block_height, logger, pending_events, &send_payment_along_path)
+				self.find_route_and_send_payment(payment_hash, payment_id, route_params, router, first_hops(), &inflight_htlcs, entropy_source, node_signer, best_block_height, logger, pending_events, &send_payment_along_path)
 			} else { break }
 		}
 
@@ -797,7 +797,7 @@ impl OutboundPayments {
 		Ok(())
 	}
 
-	fn retry_payment_internal<R: Deref, NS: Deref, ES: Deref, IH, SP, L: Deref>(
+	fn find_route_and_send_payment<R: Deref, NS: Deref, ES: Deref, IH, SP, L: Deref>(
 		&self, payment_hash: PaymentHash, payment_id: PaymentId, route_params: RouteParameters,
 		router: &R, first_hops: Vec<ChannelDetails>, inflight_htlcs: &IH, entropy_source: &ES,
 		node_signer: &NS, best_block_height: u32, logger: &L,
@@ -950,14 +950,14 @@ impl OutboundPayments {
 		match err {
 			PaymentSendFailure::AllFailedResendSafe(errs) => {
 				Self::push_path_failed_evs_and_scids(payment_id, payment_hash, &mut route_params, route.paths, errs.into_iter().map(|e| Err(e)), logger, pending_events);
-				self.retry_payment_internal(payment_hash, payment_id, route_params, router, first_hops, inflight_htlcs, entropy_source, node_signer, best_block_height, logger, pending_events, send_payment_along_path);
+				self.find_route_and_send_payment(payment_hash, payment_id, route_params, router, first_hops, inflight_htlcs, entropy_source, node_signer, best_block_height, logger, pending_events, send_payment_along_path);
 			},
 			PaymentSendFailure::PartialFailure { failed_paths_retry: Some(mut retry), results, .. } => {
 				Self::push_path_failed_evs_and_scids(payment_id, payment_hash, &mut retry, route.paths, results.into_iter(), logger, pending_events);
 				// Some paths were sent, even if we failed to send the full MPP value our recipient may
 				// misbehave and claim the funds, at which point we have to consider the payment sent, so
 				// return `Ok()` here, ignoring any retry errors.
-				self.retry_payment_internal(payment_hash, payment_id, retry, router, first_hops, inflight_htlcs, entropy_source, node_signer, best_block_height, logger, pending_events, send_payment_along_path);
+				self.find_route_and_send_payment(payment_hash, payment_id, retry, router, first_hops, inflight_htlcs, entropy_source, node_signer, best_block_height, logger, pending_events, send_payment_along_path);
 			},
 			PaymentSendFailure::PartialFailure { failed_paths_retry: None, .. } => {
 				// This may happen if we send a payment and some paths fail, but only due to a temporary
@@ -1661,7 +1661,7 @@ mod tests {
 				PaymentId([0; 32]), None, &Route { paths: vec![], route_params: None },
 				Some(Retry::Attempts(1)), Some(expired_route_params.payment_params.clone()),
 				&&keys_manager, 0).unwrap();
-			outbound_payments.retry_payment_internal(
+			outbound_payments.find_route_and_send_payment(
 				PaymentHash([0; 32]), PaymentId([0; 32]), expired_route_params, &&router, vec![],
 				&|| InFlightHtlcs::new(), &&keys_manager, &&keys_manager, 0, &&logger, &pending_events,
 				&|_| Ok(()));
@@ -1705,7 +1705,7 @@ mod tests {
 				PaymentId([0; 32]), None, &Route { paths: vec![], route_params: None },
 				Some(Retry::Attempts(1)), Some(route_params.payment_params.clone()),
 				&&keys_manager, 0).unwrap();
-			outbound_payments.retry_payment_internal(
+			outbound_payments.find_route_and_send_payment(
 				PaymentHash([0; 32]), PaymentId([0; 32]), route_params, &&router, vec![],
 				&|| InFlightHtlcs::new(), &&keys_manager, &&keys_manager, 0, &&logger, &pending_events,
 				&|_| Ok(()));
