@@ -20,33 +20,33 @@ use crate::ln::features::BlindedHopFeatures;
 use crate::offers::invoice::BlindedPayInfo;
 use crate::offers::merkle::TaggedHash;
 
-pub(super) fn payer_keys() -> KeyPair {
+pub(crate) fn payer_keys() -> KeyPair {
 	let secp_ctx = Secp256k1::new();
 	KeyPair::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap())
 }
 
-pub(super) fn payer_sign<T: AsRef<TaggedHash>>(message: &T) -> Result<Signature, Infallible> {
+pub(crate) fn payer_sign<T: AsRef<TaggedHash>>(message: &T) -> Result<Signature, Infallible> {
 	let secp_ctx = Secp256k1::new();
 	let keys = KeyPair::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 	Ok(secp_ctx.sign_schnorr_no_aux_rand(message.as_ref().as_digest(), &keys))
 }
 
-pub(super) fn payer_pubkey() -> PublicKey {
+pub(crate) fn payer_pubkey() -> PublicKey {
 	payer_keys().public_key()
 }
 
-pub(super) fn recipient_keys() -> KeyPair {
+pub(crate) fn recipient_keys() -> KeyPair {
 	let secp_ctx = Secp256k1::new();
 	KeyPair::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[43; 32]).unwrap())
 }
 
-pub(super) fn recipient_sign<T: AsRef<TaggedHash>>(message: &T) -> Result<Signature, Infallible> {
+pub(crate) fn recipient_sign<T: AsRef<TaggedHash>>(message: &T) -> Result<Signature, Infallible> {
 	let secp_ctx = Secp256k1::new();
 	let keys = KeyPair::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[43; 32]).unwrap());
 	Ok(secp_ctx.sign_schnorr_no_aux_rand(message.as_ref().as_digest(), &keys))
 }
 
-pub(super) fn recipient_pubkey() -> PublicKey {
+pub(crate) fn recipient_pubkey() -> PublicKey {
 	recipient_keys().public_key()
 }
 
@@ -59,7 +59,7 @@ pub(super) fn privkey(byte: u8) -> SecretKey {
 	SecretKey::from_slice(&[byte; 32]).unwrap()
 }
 
-pub(super) fn payment_paths() -> Vec<(BlindedPayInfo, BlindedPath)> {
+pub(crate) fn payment_paths() -> Vec<(BlindedPayInfo, BlindedPath)> {
 	let paths = vec![
 		BlindedPath {
 			introduction_node_id: pubkey(40),
@@ -101,17 +101,17 @@ pub(super) fn payment_paths() -> Vec<(BlindedPayInfo, BlindedPath)> {
 	payinfo.into_iter().zip(paths.into_iter()).collect()
 }
 
-pub(super) fn payment_hash() -> PaymentHash {
+pub(crate) fn payment_hash() -> PaymentHash {
 	PaymentHash([42; 32])
 }
 
-pub(super) fn now() -> Duration {
+pub(crate) fn now() -> Duration {
 	std::time::SystemTime::now()
 		.duration_since(std::time::SystemTime::UNIX_EPOCH)
 		.expect("SystemTime::now() should come after SystemTime::UNIX_EPOCH")
 }
 
-pub(super) struct FixedEntropy;
+pub(crate) struct FixedEntropy;
 
 impl EntropySource for FixedEntropy {
 	fn get_secure_random_bytes(&self) -> [u8; 32] {

@@ -129,7 +129,7 @@ use crate::prelude::*;
 #[cfg(feature = "std")]
 use std::time::SystemTime;
 
-const DEFAULT_RELATIVE_EXPIRY: Duration = Duration::from_secs(7200);
+pub(crate) const DEFAULT_RELATIVE_EXPIRY: Duration = Duration::from_secs(7200);
 
 /// Tag for the hash function used when signing a [`Bolt12Invoice`]'s merkle root.
 pub const SIGNATURE_TAG: &'static str = concat!("lightning", "invoice", "signature");
