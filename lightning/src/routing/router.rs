@@ -359,8 +359,12 @@ impl Route {
 		overpaid_value_msat + self.paths.iter().map(|path| path.fee_msat()).sum::<u64>()
 	}
 
-	/// Returns the total amount paid on this [`Route`], excluding the fees. Might be more than
-	/// requested if we had to reach htlc_minimum_msat.
+	/// Returns the total amount paid on this [`Route`], excluding the fees.
+	///
+	/// Might be more than requested as part of the given [`RouteParameters::final_value_msat`] if
+	/// we had to reach the [`htlc_minimum_msat`] limits.
+	///
+	/// [`htlc_minimum_msat`]: https://github.com/lightning/bolts/blob/master/07-routing-gossip.md#the-channel_update-message
 	pub fn get_total_amount(&self) -> u64 {
 		self.paths.iter().map(|path| path.final_value_msat()).sum()
 	}
