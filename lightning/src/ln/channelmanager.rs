@@ -1341,11 +1341,6 @@ const CHECK_CLTV_EXPIRY_SANITY_2: u32 = MIN_CLTV_EXPIRY_DELTA as u32 - LATENCY_G
 /// The number of ticks of [`ChannelManager::timer_tick_occurred`] until expiry of incomplete MPPs
 pub(crate) const MPP_TIMEOUT_TICKS: u8 = 3;
 
-/// The number of ticks of [`ChannelManager::timer_tick_occurred`] until we time-out the
-/// idempotency of payments by [`PaymentId`]. See
-/// [`OutboundPayments::remove_stale_payments`].
-pub(crate) const IDEMPOTENCY_TIMEOUT_TICKS: u8 = 7;
-
 /// The number of ticks of [`ChannelManager::timer_tick_occurred`] where a peer is disconnected
 /// until we mark the channel disabled and gossip the update.
 pub(crate) const DISABLE_GOSSIP_TICKS: u8 = 10;

@@ -16,7 +16,7 @@ use bitcoin::secp256k1::{self, Secp256k1, SecretKey};
 use crate::sign::{EntropySource, NodeSigner, Recipient};
 use crate::events::{self, PaymentFailureReason};
 use crate::ln::{PaymentHash, PaymentPreimage, PaymentSecret};
-use crate::ln::channelmanager::{ChannelDetails, EventCompletionAction, HTLCSource, IDEMPOTENCY_TIMEOUT_TICKS, PaymentId};
+use crate::ln::channelmanager::{ChannelDetails, EventCompletionAction, HTLCSource, PaymentId};
 use crate::ln::onion_utils::{DecodedOnionFailure, HTLCFailReason};
 use crate::routing::router::{InFlightHtlcs, Path, PaymentParameters, Route, RouteParameters, Router};
 use crate::util::errors::APIError;
@@ -31,6 +31,12 @@ use core::ops::Deref;
 
 use crate::prelude::*;
 use crate::sync::Mutex;
+
+/// The number of ticks of [`ChannelManager::timer_tick_occurred`] until we time-out the idempotency
+/// of payments by [`PaymentId`]. See [`OutboundPayments::remove_stale_payments`].
+///
+/// [`ChannelManager::timer_tick_occurred`]: crate::ln::channelmanager::ChannelManager::timer_tick_occurred
+pub(crate) const IDEMPOTENCY_TIMEOUT_TICKS: u8 = 7;
 
 /// The number of ticks of [`ChannelManager::timer_tick_occurred`] until an invoice request without
 /// a response is timed out.
