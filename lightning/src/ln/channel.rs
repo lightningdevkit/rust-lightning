@@ -1077,6 +1077,12 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 		self.outbound_scid_alias
 	}
 
+	/// Returns the holder signer for this channel.
+	#[cfg(test)]
+	pub fn get_signer(&self) -> &ChannelSignerType<<SP::Target as SignerProvider>::Signer> {
+		return &self.holder_signer
+	}
+
 	/// Only allowed immediately after deserialization if get_outbound_scid_alias returns 0,
 	/// indicating we were written by LDK prior to 0.0.106 which did not set outbound SCID aliases
 	/// or prior to any channel actions during `Channel` initialization.
@@ -2165,7 +2171,6 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 			}
 		}
 	}
-
 }
 
 // Internal utility functions for channels

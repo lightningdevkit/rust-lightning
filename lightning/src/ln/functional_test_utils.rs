@@ -30,6 +30,8 @@ use crate::util::test_utils::{panicking, TestChainMonitor, TestScorer, TestKeysI
 use crate::util::errors::APIError;
 use crate::util::config::{UserConfig, MaxDustHTLCExposure};
 use crate::util::ser::{ReadableArgs, Writeable};
+#[cfg(test)]
+use crate::util::logger::Logger;
 
 use bitcoin::blockdata::block::{Block, BlockHeader};
 use bitcoin::blockdata::transaction::{Transaction, TxOut};
@@ -435,6 +437,25 @@ impl<'a, 'b, 'c> Node<'a, 'b, 'c> {
 	}
 	pub fn get_block_header(&self, height: u32) -> BlockHeader {
 		self.blocks.lock().unwrap()[height as usize].0.header
+	}
+	/// Changes the channel signer's availability for the specified peer and channel.
+	///
+	/// When `available` is set to `true`, the channel signer will behave normally. When set to
+	/// `false`, the channel signer will act like an off-line remote signer and will return `Err` for
+	/// several of the signing methods. Currently, only `get_per_commitment_point` and
+	/// `release_commitment_secret` are affected by this setting.
+	#[cfg(test)]
+	pub fn set_channel_signer_available(&self, peer_id: &PublicKey, chan_id: &ChannelId, available: bool) {
+		let per_peer_state = self.node.per_peer_state.read().unwrap();
+		let chan_lock = per_peer_state.get(peer_id).unwrap().lock().unwrap();
+		let signer = (|| {
+			match chan_lock.channel_by_id.get(chan_id) {
+				Some(phase) => phase.context().get_signer(),
+				None => panic!("Couldn't find a channel with id {}", chan_id),
+			}
+		})();
+		log_debug!(self.logger, "Setting channel signer for {} as available={}", chan_id, available);
+		signer.as_ecdsa().unwrap().set_available(available);
 	}
 }
 
@@ -924,7 +945,8 @@ macro_rules! unwrap_send_err {
 pub fn check_added_monitors<CM: AChannelManager, H: NodeHolder<CM=CM>>(node: &H, count: usize) {
 	if let Some(chain_monitor) = node.chain_monitor() {
 		let mut added_monitors = chain_monitor.added_monitors.lock().unwrap();
-		assert_eq!(added_monitors.len(), count);
+		let n = added_monitors.len();
+		assert_eq!(n, count, "expected {} monitors to be added, not {}", count, n);
 		added_monitors.clear();
 	}
 }
@@ -2119,12 +2141,13 @@ macro_rules! expect_channel_shutdown_state {
 }
 
 #[cfg(any(test, ldk_bench, feature = "_test_utils"))]
-pub fn expect_channel_pending_event<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, expected_counterparty_node_id: &PublicKey) {
+pub fn expect_channel_pending_event<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, expected_counterparty_node_id: &PublicKey) -> ChannelId {
 	let events = node.node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);
-	match events[0] {
-		crate::events::Event::ChannelPending { ref counterparty_node_id, .. } => {
+	match &events[0] {
+		crate::events::Event::ChannelPending { channel_id, counterparty_node_id, .. } => {
 			assert_eq!(*expected_counterparty_node_id, *counterparty_node_id);
+			*channel_id
 		},
 		_ => panic!("Unexpected event"),
 	}
@@ -3175,24 +3198,28 @@ pub fn reconnect_nodes<'a, 'b, 'c, 'd>(args: ReconnectArgs<'a, 'b, 'c, 'd>) {
 		// If a expects a channel_ready, it better not think it has received a revoke_and_ack
 		// from b
 		for reestablish in reestablish_1.iter() {
-			assert_eq!(reestablish.next_remote_commitment_number, 0);
+			let n = reestablish.next_remote_commitment_number;
+			assert_eq!(n, 0, "expected a->b next_remote_commitment_number to be 0, got {}", n);
 		}
 	}
 	if send_channel_ready.1 {
 		// If b expects a channel_ready, it better not think it has received a revoke_and_ack
 		// from a
 		for reestablish in reestablish_2.iter() {
-			assert_eq!(reestablish.next_remote_commitment_number, 0);
+			let n = reestablish.next_remote_commitment_number;
+			assert_eq!(n, 0, "expected b->a next_remote_commitment_number to be 0, got {}", n);
 		}
 	}
 	if send_channel_ready.0 || send_channel_ready.1 {
 		// If we expect any channel_ready's, both sides better have set
 		// next_holder_commitment_number to 1
 		for reestablish in reestablish_1.iter() {
-			assert_eq!(reestablish.next_local_commitment_number, 1);
+			let n = reestablish.next_local_commitment_number;
+			assert_eq!(n, 1, "expected a->b next_local_commitment_number to be 1, got {}", n);
 		}
 		for reestablish in reestablish_2.iter() {
-			assert_eq!(reestablish.next_local_commitment_number, 1);
+			let n = reestablish.next_local_commitment_number;
+			assert_eq!(n, 1, "expected b->a next_local_commitment_number to be 1, got {}", n);
 		}
 	}
 
