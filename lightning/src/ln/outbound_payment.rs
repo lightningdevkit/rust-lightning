@@ -1813,4 +1813,26 @@ mod tests {
 
 		assert!(outbound_payments.add_new_awaiting_invoice(payment_id).is_err());
 	}
+
+	#[test]
+	fn removes_abandoned_awaiting_invoice() {
+		let pending_events = Mutex::new(VecDeque::new());
+		let outbound_payments = OutboundPayments::new();
+		let payment_id = PaymentId([0; 32]);
+
+		assert!(!outbound_payments.has_pending_payments());
+		assert!(outbound_payments.add_new_awaiting_invoice(payment_id).is_ok());
+		assert!(outbound_payments.has_pending_payments());
+
+		outbound_payments.abandon_payment(
+			payment_id, PaymentFailureReason::UserAbandoned, &pending_events
+		);
+		assert!(!outbound_payments.has_pending_payments());
+		assert!(!pending_events.lock().unwrap().is_empty());
+		assert_eq!(
+			pending_events.lock().unwrap().pop_front(),
+			Some((Event::InvoiceRequestFailed { payment_id }, None)),
+		);
+		assert!(pending_events.lock().unwrap().is_empty());
+	}
 }
