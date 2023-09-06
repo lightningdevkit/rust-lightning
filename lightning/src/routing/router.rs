@@ -348,10 +348,15 @@ pub struct Route {
 impl Route {
 	/// Returns the total amount of fees paid on this [`Route`].
 	///
-	/// This doesn't include any extra payment made to the recipient, which can happen in excess of
-	/// the amount passed to [`find_route`]'s `route_params.final_value_msat`.
+	/// For objects serialized with LDK 0.0.117 and after, this includes any extra payment made to
+	/// the recipient, which can happen in excess of the amount passed to [`find_route`] via
+	/// [`RouteParameters::final_value_msat`], if we had to reach the [`htlc_minimum_msat`] limits.
+	///
+	/// [`htlc_minimum_msat`]: https://github.com/lightning/bolts/blob/master/07-routing-gossip.md#the-channel_update-message
 	pub fn get_total_fees(&self) -> u64 {
-		self.paths.iter().map(|path| path.fee_msat()).sum()
+		let overpaid_value_msat = self.route_params.as_ref()
+			.map_or(0, |p| self.get_total_amount().saturating_sub(p.final_value_msat));
+		overpaid_value_msat + self.paths.iter().map(|path| path.fee_msat()).sum::<u64>()
 	}
 
 	/// Returns the total amount paid on this [`Route`], excluding the fees. Might be more than
