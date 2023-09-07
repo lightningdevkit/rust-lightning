@@ -500,9 +500,16 @@ use core::task;
 /// For example, in order to process background events in a [Tokio](https://tokio.rs/) task, you
 /// could setup `process_events_async` like this:
 /// ```
-/// # struct MyPersister {}
-/// # impl lightning::util::persist::KVStorePersister for MyPersister {
-/// #     fn persist<W: lightning::util::ser::Writeable>(&self, key: &str, object: &W) -> lightning::io::Result<()> { Ok(()) }
+/// # use lightning::io;
+/// # use std::sync::{Arc, Mutex};
+/// # use std::sync::atomic::{AtomicBool, Ordering};
+/// # use lightning_background_processor::{process_events_async, GossipSync};
+/// # struct MyStore {}
+/// # impl lightning::util::persist::KVStore for MyStore {
+/// #     fn read(&self, namespace: &str, sub_namespace: &str, key: &str) -> io::Result<Vec<u8>> { Ok(Vec::new()) }
+/// #     fn write(&self, namespace: &str, sub_namespace: &str, key: &str, buf: &[u8]) -> io::Result<()> { Ok(()) }
+/// #     fn remove(&self, namespace: &str, sub_namespace: &str, key: &str, lazy: bool) -> io::Result<()> { Ok(()) }
+/// #     fn list(&self, namespace: &str, sub_namespace: &str) -> io::Result<Vec<String>> { Ok(Vec::new()) }
 /// # }
 /// # struct MyEventHandler {}
 /// # impl MyEventHandler {
@@ -514,23 +521,20 @@ use core::task;
 /// #     fn send_data(&mut self, _data: &[u8], _resume_read: bool) -> usize { 0 }
 /// #     fn disconnect_socket(&mut self) {}
 /// # }
-/// # use std::sync::{Arc, Mutex};
-/// # use std::sync::atomic::{AtomicBool, Ordering};
-/// # use lightning_background_processor::{process_events_async, GossipSync};
 /// # type MyBroadcaster = dyn lightning::chain::chaininterface::BroadcasterInterface + Send + Sync;
 /// # type MyFeeEstimator = dyn lightning::chain::chaininterface::FeeEstimator + Send + Sync;
 /// # type MyNodeSigner = dyn lightning::sign::NodeSigner + Send + Sync;
 /// # type MyUtxoLookup = dyn lightning::routing::utxo::UtxoLookup + Send + Sync;
 /// # type MyFilter = dyn lightning::chain::Filter + Send + Sync;
 /// # type MyLogger = dyn lightning::util::logger::Logger + Send + Sync;
-/// # type MyChainMonitor = lightning::chain::chainmonitor::ChainMonitor<lightning::sign::InMemorySigner, Arc<MyFilter>, Arc<MyBroadcaster>, Arc<MyFeeEstimator>, Arc<MyLogger>, Arc<MyPersister>>;
+/// # type MyChainMonitor = lightning::chain::chainmonitor::ChainMonitor<lightning::sign::InMemorySigner, Arc<MyFilter>, Arc<MyBroadcaster>, Arc<MyFeeEstimator>, Arc<MyLogger>, Arc<MyStore>>;
 /// # type MyPeerManager = lightning::ln::peer_handler::SimpleArcPeerManager<MySocketDescriptor, MyChainMonitor, MyBroadcaster, MyFeeEstimator, MyUtxoLookup, MyLogger>;
 /// # type MyNetworkGraph = lightning::routing::gossip::NetworkGraph<Arc<MyLogger>>;
 /// # type MyGossipSync = lightning::routing::gossip::P2PGossipSync<Arc<MyNetworkGraph>, Arc<MyUtxoLookup>, Arc<MyLogger>>;
 /// # type MyChannelManager = lightning::ln::channelmanager::SimpleArcChannelManager<MyChainMonitor, MyBroadcaster, MyFeeEstimator, MyLogger>;
 /// # type MyScorer = Mutex<lightning::routing::scoring::ProbabilisticScorer<Arc<MyNetworkGraph>, Arc<MyLogger>>>;
 ///
-/// # async fn setup_background_processing(my_persister: Arc<MyPersister>, my_event_handler: Arc<MyEventHandler>, my_chain_monitor: Arc<MyChainMonitor>, my_channel_manager: Arc<MyChannelManager>, my_gossip_sync: Arc<MyGossipSync>, my_logger: Arc<MyLogger>, my_scorer: Arc<MyScorer>, my_peer_manager: Arc<MyPeerManager>) {
+/// # async fn setup_background_processing(my_persister: Arc<MyStore>, my_event_handler: Arc<MyEventHandler>, my_chain_monitor: Arc<MyChainMonitor>, my_channel_manager: Arc<MyChannelManager>, my_gossip_sync: Arc<MyGossipSync>, my_logger: Arc<MyLogger>, my_scorer: Arc<MyScorer>, my_peer_manager: Arc<MyPeerManager>) {
 ///	let background_persister = Arc::clone(&my_persister);
 ///	let background_event_handler = Arc::clone(&my_event_handler);
 ///	let background_chain_mon = Arc::clone(&my_chain_monitor);
@@ -866,8 +870,8 @@ mod tests {
 	use lightning::util::config::UserConfig;
 	use lightning::util::ser::Writeable;
 	use lightning::util::test_utils;
-	use lightning::util::persist::KVStorePersister;
-	use lightning_persister::FilesystemPersister;
+	use lightning::util::persist::{KVStore, CHANNEL_MANAGER_PERSISTENCE_NAMESPACE, CHANNEL_MANAGER_PERSISTENCE_SUB_NAMESPACE, CHANNEL_MANAGER_PERSISTENCE_KEY, NETWORK_GRAPH_PERSISTENCE_NAMESPACE, NETWORK_GRAPH_PERSISTENCE_SUB_NAMESPACE, NETWORK_GRAPH_PERSISTENCE_KEY, SCORER_PERSISTENCE_NAMESPACE, SCORER_PERSISTENCE_SUB_NAMESPACE, SCORER_PERSISTENCE_KEY};
+	use lightning_persister::fs_store::FilesystemStore;
 	use std::collections::VecDeque;
 	use std::{fs, env};
 	use std::path::PathBuf;
@@ -906,7 +910,7 @@ mod tests {
 			>,
 			Arc<test_utils::TestLogger>>;
 
-	type ChainMonitor = chainmonitor::ChainMonitor<InMemorySigner, Arc<test_utils::TestChainSource>, Arc<test_utils::TestBroadcaster>, Arc<test_utils::TestFeeEstimator>, Arc<test_utils::TestLogger>, Arc<FilesystemPersister>>;
+	type ChainMonitor = chainmonitor::ChainMonitor<InMemorySigner, Arc<test_utils::TestChainSource>, Arc<test_utils::TestBroadcaster>, Arc<test_utils::TestFeeEstimator>, Arc<test_utils::TestLogger>, Arc<FilesystemStore>>;
 
 	type PGS = Arc<P2PGossipSync<Arc<NetworkGraph<Arc<test_utils::TestLogger>>>, Arc<test_utils::TestChainSource>, Arc<test_utils::TestLogger>>>;
 	type RGS = Arc<RapidGossipSync<Arc<NetworkGraph<Arc<test_utils::TestLogger>>>, Arc<test_utils::TestLogger>>>;
@@ -917,7 +921,7 @@ mod tests {
 		rapid_gossip_sync: RGS,
 		peer_manager: Arc<PeerManager<TestDescriptor, Arc<test_utils::TestChannelMessageHandler>, Arc<test_utils::TestRoutingMessageHandler>, IgnoringMessageHandler, Arc<test_utils::TestLogger>, IgnoringMessageHandler, Arc<KeysManager>>>,
 		chain_monitor: Arc<ChainMonitor>,
-		persister: Arc<FilesystemPersister>,
+		kv_store: Arc<FilesystemStore>,
 		tx_broadcaster: Arc<test_utils::TestBroadcaster>,
 		network_graph: Arc<NetworkGraph<Arc<test_utils::TestLogger>>>,
 		logger: Arc<test_utils::TestLogger>,
@@ -941,9 +945,9 @@ mod tests {
 
 	impl Drop for Node {
 		fn drop(&mut self) {
-			let data_dir = self.persister.get_data_dir();
+			let data_dir = self.kv_store.get_data_dir();
 			match fs::remove_dir_all(data_dir.clone()) {
-				Err(e) => println!("Failed to remove test persister directory {}: {}", data_dir, e),
+				Err(e) => println!("Failed to remove test store directory {}: {}", data_dir.display(), e),
 				_ => {}
 			}
 		}
@@ -954,13 +958,13 @@ mod tests {
 		graph_persistence_notifier: Option<SyncSender<()>>,
 		manager_error: Option<(std::io::ErrorKind, &'static str)>,
 		scorer_error: Option<(std::io::ErrorKind, &'static str)>,
-		filesystem_persister: FilesystemPersister,
+		kv_store: FilesystemStore,
 	}
 
 	impl Persister {
-		fn new(data_dir: String) -> Self {
-			let filesystem_persister = FilesystemPersister::new(data_dir);
-			Self { graph_error: None, graph_persistence_notifier: None, manager_error: None, scorer_error: None, filesystem_persister }
+		fn new(data_dir: PathBuf) -> Self {
+			let kv_store = FilesystemStore::new(data_dir);
+			Self { graph_error: None, graph_persistence_notifier: None, manager_error: None, scorer_error: None, kv_store }
 		}
 
 		fn with_graph_error(self, error: std::io::ErrorKind, message: &'static str) -> Self {
@@ -980,15 +984,25 @@ mod tests {
 		}
 	}
 
-	impl KVStorePersister for Persister {
-		fn persist<W: Writeable>(&self, key: &str, object: &W) -> std::io::Result<()> {
-			if key == "manager" {
+	impl KVStore for Persister {
+		fn read(&self, namespace: &str, sub_namespace: &str, key: &str) -> lightning::io::Result<Vec<u8>> {
+			self.kv_store.read(namespace, sub_namespace, key)
+		}
+
+		fn write(&self, namespace: &str, sub_namespace: &str, key: &str, buf: &[u8]) -> lightning::io::Result<()> {
+			if namespace == CHANNEL_MANAGER_PERSISTENCE_NAMESPACE &&
+				sub_namespace == CHANNEL_MANAGER_PERSISTENCE_SUB_NAMESPACE &&
+				key == CHANNEL_MANAGER_PERSISTENCE_KEY
+			{
 				if let Some((error, message)) = self.manager_error {
 					return Err(std::io::Error::new(error, message))
 				}
 			}
 
-			if key == "network_graph" {
+			if namespace == NETWORK_GRAPH_PERSISTENCE_NAMESPACE &&
+				sub_namespace == NETWORK_GRAPH_PERSISTENCE_SUB_NAMESPACE &&
+				key == NETWORK_GRAPH_PERSISTENCE_KEY
+			{
 				if let Some(sender) = &self.graph_persistence_notifier {
 					match sender.send(()) {
 						Ok(()) => {},
@@ -1001,13 +1015,24 @@ mod tests {
 				}
 			}
 
-			if key == "scorer" {
+			if namespace == SCORER_PERSISTENCE_NAMESPACE &&
+				sub_namespace == SCORER_PERSISTENCE_SUB_NAMESPACE &&
+				key == SCORER_PERSISTENCE_KEY
+			{
 				if let Some((error, message)) = self.scorer_error {
 					return Err(std::io::Error::new(error, message))
 				}
 			}
 
-			self.filesystem_persister.persist(key, object)
+			self.kv_store.write(namespace, sub_namespace, key, buf)
+		}
+
+		fn remove(&self, namespace: &str, sub_namespace: &str, key: &str, lazy: bool) -> lightning::io::Result<()> {
+			self.kv_store.remove(namespace, sub_namespace, key, lazy)
+		}
+
+		fn list(&self, namespace: &str, sub_namespace: &str) -> lightning::io::Result<Vec<String>> {
+			self.kv_store.list(namespace, sub_namespace)
 		}
 	}
 
@@ -1157,10 +1182,10 @@ mod tests {
 			let seed = [i as u8; 32];
 			let router = Arc::new(DefaultRouter::new(network_graph.clone(), logger.clone(), seed, scorer.clone(), ()));
 			let chain_source = Arc::new(test_utils::TestChainSource::new(Network::Bitcoin));
-			let persister = Arc::new(FilesystemPersister::new(format!("{}_persister_{}", &persist_dir, i)));
+			let kv_store = Arc::new(FilesystemStore::new(format!("{}_persister_{}", &persist_dir, i).into()));
 			let now = Duration::from_secs(genesis_block.header.time as u64);
 			let keys_manager = Arc::new(KeysManager::new(&seed, now.as_secs(), now.subsec_nanos()));
-			let chain_monitor = Arc::new(chainmonitor::ChainMonitor::new(Some(chain_source.clone()), tx_broadcaster.clone(), logger.clone(), fee_estimator.clone(), persister.clone()));
+			let chain_monitor = Arc::new(chainmonitor::ChainMonitor::new(Some(chain_source.clone()), tx_broadcaster.clone(), logger.clone(), fee_estimator.clone(), kv_store.clone()));
 			let best_block = BestBlock::from_network(network);
 			let params = ChainParameters { network, best_block };
 			let manager = Arc::new(ChannelManager::new(fee_estimator.clone(), chain_monitor.clone(), tx_broadcaster.clone(), router.clone(), logger.clone(), keys_manager.clone(), keys_manager.clone(), keys_manager.clone(), UserConfig::default(), params, genesis_block.header.time));
@@ -1172,7 +1197,7 @@ mod tests {
 				onion_message_handler: IgnoringMessageHandler{}, custom_message_handler: IgnoringMessageHandler{}
 			};
 			let peer_manager = Arc::new(PeerManager::new(msg_handler, 0, &seed, logger.clone(), keys_manager.clone()));
-			let node = Node { node: manager, p2p_gossip_sync, rapid_gossip_sync, peer_manager, chain_monitor, persister, tx_broadcaster, network_graph, logger, best_block, scorer };
+			let node = Node { node: manager, p2p_gossip_sync, rapid_gossip_sync, peer_manager, chain_monitor, kv_store, tx_broadcaster, network_graph, logger, best_block, scorer };
 			nodes.push(node);
 		}
 
@@ -1267,7 +1292,7 @@ mod tests {
 		let tx = open_channel!(nodes[0], nodes[1], 100000);
 
 		// Initiate the background processors to watch each node.
-		let data_dir = nodes[0].persister.get_data_dir();
+		let data_dir = nodes[0].kv_store.get_data_dir();
 		let persister = Arc::new(Persister::new(data_dir));
 		let event_handler = |_: _| {};
 		let bg_processor = BackgroundProcessor::start(persister, event_handler, nodes[0].chain_monitor.clone(), nodes[0].node.clone(), nodes[0].p2p_gossip_sync(), nodes[0].peer_manager.clone(), nodes[0].logger.clone(), Some(nodes[0].scorer.clone()));
@@ -1332,7 +1357,7 @@ mod tests {
 		// `ChainMonitor::rebroadcast_pending_claims` is called every `REBROADCAST_TIMER`, and
 		// `PeerManager::timer_tick_occurred` every `PING_TIMER`.
 		let (_, nodes) = create_nodes(1, "test_timer_tick_called");
-		let data_dir = nodes[0].persister.get_data_dir();
+		let data_dir = nodes[0].kv_store.get_data_dir();
 		let persister = Arc::new(Persister::new(data_dir));
 		let event_handler = |_: _| {};
 		let bg_processor = BackgroundProcessor::start(persister, event_handler, nodes[0].chain_monitor.clone(), nodes[0].node.clone(), nodes[0].no_gossip_sync(), nodes[0].peer_manager.clone(), nodes[0].logger.clone(), Some(nodes[0].scorer.clone()));
@@ -1359,7 +1384,7 @@ mod tests {
 		let (_, nodes) = create_nodes(2, "test_persist_error");
 		open_channel!(nodes[0], nodes[1], 100000);
 
-		let data_dir = nodes[0].persister.get_data_dir();
+		let data_dir = nodes[0].kv_store.get_data_dir();
 		let persister = Arc::new(Persister::new(data_dir).with_manager_error(std::io::ErrorKind::Other, "test"));
 		let event_handler = |_: _| {};
 		let bg_processor = BackgroundProcessor::start(persister, event_handler, nodes[0].chain_monitor.clone(), nodes[0].node.clone(), nodes[0].no_gossip_sync(), nodes[0].peer_manager.clone(), nodes[0].logger.clone(), Some(nodes[0].scorer.clone()));
@@ -1379,7 +1404,7 @@ mod tests {
 		let (_, nodes) = create_nodes(2, "test_persist_error_sync");
 		open_channel!(nodes[0], nodes[1], 100000);
 
-		let data_dir = nodes[0].persister.get_data_dir();
+		let data_dir = nodes[0].kv_store.get_data_dir();
 		let persister = Arc::new(Persister::new(data_dir).with_manager_error(std::io::ErrorKind::Other, "test"));
 
 		let bp_future = super::process_events_async(
@@ -1405,7 +1430,7 @@ mod tests {
 	fn test_network_graph_persist_error() {
 		// Test that if we encounter an error during network graph persistence, an error gets returned.
 		let (_, nodes) = create_nodes(2, "test_persist_network_graph_error");
-		let data_dir = nodes[0].persister.get_data_dir();
+		let data_dir = nodes[0].kv_store.get_data_dir();
 		let persister = Arc::new(Persister::new(data_dir).with_graph_error(std::io::ErrorKind::Other, "test"));
 		let event_handler = |_: _| {};
 		let bg_processor = BackgroundProcessor::start(persister, event_handler, nodes[0].chain_monitor.clone(), nodes[0].node.clone(), nodes[0].p2p_gossip_sync(), nodes[0].peer_manager.clone(), nodes[0].logger.clone(), Some(nodes[0].scorer.clone()));
@@ -1423,7 +1448,7 @@ mod tests {
 	fn test_scorer_persist_error() {
 		// Test that if we encounter an error during scorer persistence, an error gets returned.
 		let (_, nodes) = create_nodes(2, "test_persist_scorer_error");
-		let data_dir = nodes[0].persister.get_data_dir();
+		let data_dir = nodes[0].kv_store.get_data_dir();
 		let persister = Arc::new(Persister::new(data_dir).with_scorer_error(std::io::ErrorKind::Other, "test"));
 		let event_handler = |_: _| {};
 		let bg_processor = BackgroundProcessor::start(persister, event_handler, nodes[0].chain_monitor.clone(), nodes[0].node.clone(), nodes[0].no_gossip_sync(), nodes[0].peer_manager.clone(),  nodes[0].logger.clone(), Some(nodes[0].scorer.clone()));
@@ -1441,7 +1466,7 @@ mod tests {
 	fn test_background_event_handling() {
 		let (_, mut nodes) = create_nodes(2, "test_background_event_handling");
 		let channel_value = 100000;
-		let data_dir = nodes[0].persister.get_data_dir();
+		let data_dir = nodes[0].kv_store.get_data_dir();
 		let persister = Arc::new(Persister::new(data_dir.clone()));
 
 		// Set up a background event handler for FundingGenerationReady events.
@@ -1514,7 +1539,7 @@ mod tests {
 	#[test]
 	fn test_scorer_persistence() {
 		let (_, nodes) = create_nodes(2, "test_scorer_persistence");
-		let data_dir = nodes[0].persister.get_data_dir();
+		let data_dir = nodes[0].kv_store.get_data_dir();
 		let persister = Arc::new(Persister::new(data_dir));
 		let event_handler = |_: _| {};
 		let bg_processor = BackgroundProcessor::start(persister, event_handler, nodes[0].chain_monitor.clone(), nodes[0].node.clone(), nodes[0].no_gossip_sync(), nodes[0].peer_manager.clone(), nodes[0].logger.clone(), Some(nodes[0].scorer.clone()));
@@ -1586,7 +1611,7 @@ mod tests {
 		let (sender, receiver) = std::sync::mpsc::sync_channel(1);
 
 		let (_, nodes) = create_nodes(2, "test_not_pruning_network_graph_until_graph_sync_completion");
-		let data_dir = nodes[0].persister.get_data_dir();
+		let data_dir = nodes[0].kv_store.get_data_dir();
 		let persister = Arc::new(Persister::new(data_dir).with_graph_persistence_notifier(sender));
 
 		let event_handler = |_: _| {};
@@ -1605,7 +1630,7 @@ mod tests {
 		let (sender, receiver) = std::sync::mpsc::sync_channel(1);
 
 		let (_, nodes) = create_nodes(2, "test_not_pruning_network_graph_until_graph_sync_completion_async");
-		let data_dir = nodes[0].persister.get_data_dir();
+		let data_dir = nodes[0].kv_store.get_data_dir();
 		let persister = Arc::new(Persister::new(data_dir).with_graph_persistence_notifier(sender));
 
 		let (exit_sender, exit_receiver) = tokio::sync::watch::channel(());
@@ -1745,7 +1770,7 @@ mod tests {
 		};
 
 		let (_, nodes) = create_nodes(1, "test_payment_path_scoring");
-		let data_dir = nodes[0].persister.get_data_dir();
+		let data_dir = nodes[0].kv_store.get_data_dir();
 		let persister = Arc::new(Persister::new(data_dir));
 		let bg_processor = BackgroundProcessor::start(persister, event_handler, nodes[0].chain_monitor.clone(), nodes[0].node.clone(), nodes[0].no_gossip_sync(), nodes[0].peer_manager.clone(), nodes[0].logger.clone(), Some(nodes[0].scorer.clone()));
 
@@ -1778,7 +1803,7 @@ mod tests {
 		};
 
 		let (_, nodes) = create_nodes(1, "test_payment_path_scoring_async");
-		let data_dir = nodes[0].persister.get_data_dir();
+		let data_dir = nodes[0].kv_store.get_data_dir();
 		let persister = Arc::new(Persister::new(data_dir));
 
 		let (exit_sender, exit_receiver) = tokio::sync::watch::channel(());
