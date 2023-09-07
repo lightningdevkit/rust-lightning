@@ -59,15 +59,15 @@ impl Sub<Duration> for Eternity {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[cfg(not(feature = "no-std"))]
+#[cfg(all(not(feature = "no-std"), not(target_arch = "wasm32")))]
 pub struct MonotonicTime(std::time::Instant);
 
 /// The amount of time to shift `Instant` forward to prevent overflow when subtracting a `Duration`
 /// from `Instant::now` on some operating systems (e.g., iOS representing `Instance` as `u64`).
-#[cfg(not(feature = "no-std"))]
+#[cfg(all(not(feature = "no-std"), not(target_arch = "wasm32")))]
 const SHIFT: Duration = Duration::from_secs(10 * 365 * 24 * 60 * 60); // 10 years.
 
-#[cfg(not(feature = "no-std"))]
+#[cfg(all(not(feature = "no-std"), not(target_arch = "wasm32")))]
 impl Time for MonotonicTime {
 	fn now() -> Self {
 		let instant = std::time::Instant::now().checked_add(SHIFT).expect("Overflow on MonotonicTime instantiation");
@@ -93,7 +93,7 @@ impl Time for MonotonicTime {
 	}
 }
 
-#[cfg(not(feature = "no-std"))]
+#[cfg(all(not(feature = "no-std"), not(target_arch = "wasm32")))]
 impl Sub<Duration> for MonotonicTime {
 	type Output = Self;
 

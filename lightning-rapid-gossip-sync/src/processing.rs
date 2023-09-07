@@ -17,7 +17,7 @@ use lightning::io;
 use crate::error::GraphSyncError;
 use crate::RapidGossipSync;
 
-#[cfg(all(feature = "std", not(test)))]
+#[cfg(all(feature = "std", not(target_arch = "wasm32"), not(test)))]
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[cfg(not(feature = "std"))]
@@ -38,7 +38,7 @@ const MAX_INITIAL_NODE_ID_VECTOR_CAPACITY: u32 = 50_000;
 const STALE_RGS_UPDATE_AGE_LIMIT_SECS: u64 = 60 * 60 * 24 * 14;
 
 impl<NG: Deref<Target=NetworkGraph<L>>, L: Deref> RapidGossipSync<NG, L> where L::Target: Logger {
-	#[cfg(feature = "std")]
+	#[cfg(all(feature = "std", not(target_arch = "wasm32")))]
 	pub(crate) fn update_network_graph_from_byte_stream<R: io::Read>(
 		&self,
 		read_cursor: &mut R,

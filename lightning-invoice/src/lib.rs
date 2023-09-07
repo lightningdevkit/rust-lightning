@@ -43,7 +43,7 @@ extern crate core;
 #[cfg(feature = "serde")]
 extern crate serde;
 
-#[cfg(feature = "std")]
+#[cfg(all(feature = "std", not(target_arch = "wasm32")))]
 use std::time::SystemTime;
 
 use bech32::u5;
@@ -693,7 +693,7 @@ impl<D: tb::Bool, T: tb::Bool, C: tb::Bool, S: tb::Bool, M: tb::Bool> InvoiceBui
 
 impl<D: tb::Bool, H: tb::Bool, C: tb::Bool, S: tb::Bool, M: tb::Bool> InvoiceBuilder<D, H, tb::False, C, S, M> {
 	/// Sets the timestamp to a specific [`SystemTime`].
-	#[cfg(feature = "std")]
+	#[cfg(all(feature = "std", not(target_arch = "wasm32")))]
 	pub fn timestamp(mut self, time: SystemTime) -> InvoiceBuilder<D, H, tb::True, C, S, M> {
 		match PositiveTimestamp::from_system_time(time) {
 			Ok(t) => self.timestamp = Some(t),
@@ -715,7 +715,7 @@ impl<D: tb::Bool, H: tb::Bool, C: tb::Bool, S: tb::Bool, M: tb::Bool> InvoiceBui
 	}
 
 	/// Sets the timestamp to the current system time.
-	#[cfg(feature = "std")]
+	#[cfg(all(feature = "std", not(target_arch = "wasm32")))]
 	pub fn current_timestamp(mut self) -> InvoiceBuilder<D, H, tb::True, C, S, M> {
 		let now = PositiveTimestamp::from_system_time(SystemTime::now());
 		self.timestamp = Some(now.expect("for the foreseeable future this shouldn't happen"));
@@ -1101,7 +1101,7 @@ impl PositiveTimestamp {
 	/// Note that the subsecond part is dropped as it is not representable in BOLT 11 invoices.
 	///
 	/// Otherwise, returns a [`CreationError::TimestampOutOfBounds`].
-	#[cfg(feature = "std")]
+	#[cfg(all(feature = "std", not(target_arch = "wasm32")))]
 	pub fn from_system_time(time: SystemTime) -> Result<Self, CreationError> {
 		time.duration_since(SystemTime::UNIX_EPOCH)
 			.map(Self::from_duration_since_epoch)
@@ -1129,13 +1129,13 @@ impl PositiveTimestamp {
 	}
 
 	/// Returns the [`SystemTime`] representing the stored time
-	#[cfg(feature = "std")]
+	#[cfg(all(feature = "std", not(target_arch = "wasm32")))]
 	pub fn as_time(&self) -> SystemTime {
 		SystemTime::UNIX_EPOCH + self.0
 	}
 }
 
-#[cfg(feature = "std")]
+#[cfg(all(feature = "std", not(target_arch = "wasm32")))]
 impl From<PositiveTimestamp> for SystemTime {
 	fn from(val: PositiveTimestamp) -> Self {
 		SystemTime::UNIX_EPOCH + val.0
@@ -1285,7 +1285,7 @@ impl Bolt11Invoice {
 	}
 
 	/// Returns the `Bolt11Invoice`'s timestamp (should equal its creation time)
-	#[cfg(feature = "std")]
+	#[cfg(all(feature = "std", not(target_arch = "wasm32")))]
 	pub fn timestamp(&self) -> SystemTime {
 		self.signed_invoice.raw_invoice().data.timestamp.as_time()
 	}
@@ -1359,13 +1359,13 @@ impl Bolt11Invoice {
 	}
 
 	/// Returns whether the invoice has expired.
-	#[cfg(feature = "std")]
+	#[cfg(all(feature = "std", not(target_arch = "wasm32")))]
 	pub fn is_expired(&self) -> bool {
 		Self::is_expired_from_epoch(&self.timestamp(), self.expiry_time())
 	}
 
 	/// Returns whether the expiry time from the given epoch has passed.
-	#[cfg(feature = "std")]
+	#[cfg(all(feature = "std", not(target_arch = "wasm32")))]
 	pub(crate) fn is_expired_from_epoch(epoch: &SystemTime, expiry_time: Duration) -> bool {
 		match epoch.elapsed() {
 			Ok(elapsed) => elapsed > expiry_time,
@@ -1374,7 +1374,7 @@ impl Bolt11Invoice {
 	}
 
 	/// Returns the Duration remaining until the invoice expires.
-	#[cfg(feature = "std")]
+	#[cfg(all(feature = "std", not(target_arch = "wasm32")))]
 	pub fn duration_until_expiry(&self) -> Duration {
 		SystemTime::now().duration_since(SystemTime::UNIX_EPOCH)
 			.map(|now| self.expiration_remaining_from_epoch(now))

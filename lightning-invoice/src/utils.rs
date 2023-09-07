@@ -313,7 +313,6 @@ fn rotate_through_iterators<T, I: Iterator<Item = T>>(mut vecs: Vec<I>) -> impl 
 	})
 }
 
-#[cfg(feature = "std")]
 /// Utility to construct an invoice. Generally, unless you want to do something like a custom
 /// cltv_expiry, this is what you should be using to create an invoice. The reason being, this
 /// method stores the invoice's payment secret and preimage in `ChannelManager`, so (a) the user
@@ -329,6 +328,7 @@ fn rotate_through_iterators<T, I: Iterator<Item = T>>(mut vecs: Vec<I>) -> impl 
 /// confirmations during routing.
 ///
 /// [`MIN_FINAL_CLTV_EXPIRY_DETLA`]: lightning::ln::channelmanager::MIN_FINAL_CLTV_EXPIRY_DELTA
+#[cfg(all(feature = "std", not(target_arch = "wasm32")))]
 pub fn create_invoice_from_channelmanager<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, L: Deref>(
 	channelmanager: &ChannelManager<M, T, ES, NS, SP, F, R, L>, node_signer: NS, logger: L,
 	network: Currency, amt_msat: Option<u64>, description: String, invoice_expiry_delta_secs: u32,
@@ -353,7 +353,6 @@ where
 	)
 }
 
-#[cfg(feature = "std")]
 /// Utility to construct an invoice. Generally, unless you want to do something like a custom
 /// cltv_expiry, this is what you should be using to create an invoice. The reason being, this
 /// method stores the invoice's payment secret and preimage in `ChannelManager`, so (a) the user
@@ -370,6 +369,7 @@ where
 /// confirmations during routing.
 ///
 /// [`MIN_FINAL_CLTV_EXPIRY_DETLA`]: lightning::ln::channelmanager::MIN_FINAL_CLTV_EXPIRY_DELTA
+#[cfg(all(feature = "std", not(target_arch = "wasm32")))]
 pub fn create_invoice_from_channelmanager_with_description_hash<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, L: Deref>(
 	channelmanager: &ChannelManager<M, T, ES, NS, SP, F, R, L>, node_signer: NS, logger: L,
 	network: Currency, amt_msat: Option<u64>, description_hash: Sha256,

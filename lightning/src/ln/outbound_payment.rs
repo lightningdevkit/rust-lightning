@@ -266,7 +266,7 @@ pub enum Retry {
 	/// retry, and may retry multiple failed HTLCs at once if they failed around the same time and
 	/// were retried along a route from a single call to [`Router::find_route_with_id`].
 	Attempts(u32),
-	#[cfg(not(feature = "no-std"))]
+	#[cfg(all(not(feature = "no-std"), not(target_arch = "wasm32")))]
 	/// Time elapsed before abandoning retries for a payment. At least one attempt at payment is made;
 	/// see [`PaymentParameters::expiry_time`] to avoid any attempt at payment after a specific time.
 	///
@@ -293,17 +293,17 @@ impl Retry {
 			(Retry::Attempts(max_retry_count), PaymentAttempts { count, .. }) => {
 				max_retry_count > count
 			},
-			#[cfg(all(not(feature = "no-std"), not(test)))]
+			#[cfg(all(not(feature = "no-std"), not(target_arch = "wasm32"), not(test)))]
 			(Retry::Timeout(max_duration), PaymentAttempts { first_attempted_at, .. }) =>
 				*max_duration >= crate::util::time::MonotonicTime::now().duration_since(*first_attempted_at),
-			#[cfg(all(not(feature = "no-std"), test))]
+			#[cfg(all(not(feature = "no-std"), not(target_arch = "wasm32"), test))]
 			(Retry::Timeout(max_duration), PaymentAttempts { first_attempted_at, .. }) =>
 				*max_duration >= SinceEpoch::now().duration_since(*first_attempted_at),
 		}
 	}
 }
 
-#[cfg(feature = "std")]
+#[cfg(all(feature = "std", not(target_arch = "wasm32")))]
 pub(super) fn has_expired(route_params: &RouteParameters) -> bool {
 	if let Some(expiry_time) = route_params.payment_params.expiry_time {
 		if let Ok(elapsed) = std::time::SystemTime::UNIX_EPOCH.elapsed() {
@@ -322,16 +322,16 @@ pub(crate) struct PaymentAttemptsUsingTime<T: Time> {
 	/// it means the result of the first attempt is not known yet.
 	pub(crate) count: u32,
 	/// This field is only used when retry is `Retry::Timeout` which is only build with feature std
-	#[cfg(not(feature = "no-std"))]
+	#[cfg(not(any(feature = "no-std", target_arch="wasm32")))]
 	first_attempted_at: T,
-	#[cfg(feature = "no-std")]
+	#[cfg(any(feature = "no-std", target_arch="wasm32"))]
 	phantom: core::marker::PhantomData<T>,
 
 }
 
-#[cfg(not(any(feature = "no-std", test)))]
+#[cfg(not(any(feature = "no-std", target_arch="wasm32", test)))]
 type ConfiguredTime = crate::util::time::MonotonicTime;
-#[cfg(feature = "no-std")]
+#[cfg(any(feature = "no-std", target_arch="wasm32"))]
 type ConfiguredTime = crate::util::time::Eternity;
 #[cfg(all(not(feature = "no-std"), test))]
 type ConfiguredTime = SinceEpoch;
@@ -340,9 +340,9 @@ impl<T: Time> PaymentAttemptsUsingTime<T> {
 	pub(crate) fn new() -> Self {
 		PaymentAttemptsUsingTime {
 			count: 0,
-			#[cfg(not(feature = "no-std"))]
+			#[cfg(not(any(feature = "no-std", target_arch="wasm32")))]
 			first_attempted_at: T::now(),
-			#[cfg(feature = "no-std")]
+			#[cfg(any(feature = "no-std", target_arch="wasm32"))]
 			phantom: core::marker::PhantomData,
 		}
 	}
@@ -350,9 +350,9 @@ impl<T: Time> PaymentAttemptsUsingTime<T> {
 
 impl<T: Time> Display for PaymentAttemptsUsingTime<T> {
 	fn fmt(&self, f: &mut Formatter) -> Result<(), fmt::Error> {
-		#[cfg(feature = "no-std")]
+		#[cfg(any(feature = "no-std", target_arch="wasm32"))]
 		return write!(f, "attempts: {}", self.count);
-		#[cfg(not(feature = "no-std"))]
+		#[cfg(not(any(feature = "no-std", target_arch="wasm32")))]
 		return write!(
 			f,
 			"attempts: {}, duration: {}s",
@@ -829,7 +829,7 @@ impl OutboundPayments {
 		IH: Fn() -> InFlightHtlcs,
 		SP: Fn(SendAlongPathArgs) -> Result<(), APIError>,
 	{
-		#[cfg(feature = "std")] {
+		#[cfg(all(feature = "std", not(target_arch = "wasm32")))] {
 			if has_expired(&route_params) {
 				log_error!(logger, "Payment with id {} and hash {} had expired before we started paying",
 					payment_id, payment_hash);
@@ -880,7 +880,7 @@ impl OutboundPayments {
 		IH: Fn() -> InFlightHtlcs,
 		SP: Fn(SendAlongPathArgs) -> Result<(), APIError>,
 	{
-		#[cfg(feature = "std")] {
+		#[cfg(all(feature = "std", not(target_arch = "wasm32")))] {
 			if has_expired(&route_params) {
 				log_error!(logger, "Payment params expired on retry, abandoning payment {}", &payment_id);
 				self.abandon_payment(payment_id, PaymentFailureReason::PaymentExpired, pending_events);

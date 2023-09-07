@@ -97,7 +97,7 @@ use crate::util::string::PrintableString;
 
 use crate::prelude::*;
 
-#[cfg(feature = "std")]
+#[cfg(all(feature = "std", not(target_arch = "wasm32")))]
 use std::time::SystemTime;
 
 pub(super) const IV_BYTES: &[u8; IV_LEN] = b"LDK Refund ~~~~~";
@@ -328,7 +328,7 @@ impl Refund {
 	}
 
 	/// Whether the refund has expired.
-	#[cfg(feature = "std")]
+	#[cfg(all(feature = "std", not(target_arch = "wasm32")))]
 	pub fn is_expired(&self) -> bool {
 		self.contents.is_expired()
 	}
@@ -397,7 +397,7 @@ impl Refund {
 	/// This is not exported to bindings users as builder patterns don't map outside of move semantics.
 	///
 	/// [`Duration`]: core::time::Duration
-	#[cfg(feature = "std")]
+	#[cfg(all(feature = "std", not(target_arch = "wasm32")))]
 	pub fn respond_with(
 		&self, payment_paths: Vec<(BlindedPayInfo, BlindedPath)>, payment_hash: PaymentHash,
 		signing_pubkey: PublicKey,
@@ -450,7 +450,7 @@ impl Refund {
 	/// This is not exported to bindings users as builder patterns don't map outside of move semantics.
 	///
 	/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
-	#[cfg(feature = "std")]
+	#[cfg(all(feature = "std", not(target_arch = "wasm32")))]
 	pub fn respond_using_derived_keys<ES: Deref>(
 		&self, payment_paths: Vec<(BlindedPayInfo, BlindedPath)>, payment_hash: PaymentHash,
 		expanded_key: &ExpandedKey, entropy_source: ES
@@ -512,7 +512,7 @@ impl RefundContents {
 		self.absolute_expiry
 	}
 
-	#[cfg(feature = "std")]
+	#[cfg(all(feature = "std", not(target_arch = "wasm32")))]
 	pub(super) fn is_expired(&self) -> bool {
 		match self.absolute_expiry {
 			Some(seconds_from_epoch) => match SystemTime::UNIX_EPOCH.elapsed() {
@@ -789,7 +789,7 @@ mod tests {
 		assert_eq!(refund.payer_metadata(), &[1; 32]);
 		assert_eq!(refund.description(), PrintableString("foo"));
 		assert_eq!(refund.absolute_expiry(), None);
-		#[cfg(feature = "std")]
+		#[cfg(all(feature = "std", not(target_arch = "wasm32")))]
 		assert!(!refund.is_expired());
 		assert_eq!(refund.paths(), &[]);
 		assert_eq!(refund.issuer(), None);
@@ -970,7 +970,7 @@ mod tests {
 			.build()
 			.unwrap();
 		let (_, tlv_stream, _) = refund.as_tlv_stream();
-		#[cfg(feature = "std")]
+		#[cfg(all(feature = "std", not(target_arch = "wasm32")))]
 		assert!(!refund.is_expired());
 		assert_eq!(refund.absolute_expiry(), Some(future_expiry));
 		assert_eq!(tlv_stream.absolute_expiry, Some(future_expiry.as_secs()));
@@ -981,7 +981,7 @@ mod tests {
 			.build()
 			.unwrap();
 		let (_, tlv_stream, _) = refund.as_tlv_stream();
-		#[cfg(feature = "std")]
+		#[cfg(all(feature = "std", not(target_arch = "wasm32")))]
 		assert!(refund.is_expired());
 		assert_eq!(refund.absolute_expiry(), Some(past_expiry));
 		assert_eq!(tlv_stream.absolute_expiry, Some(past_expiry.as_secs()));
@@ -1239,7 +1239,7 @@ mod tests {
 		match refund.to_string().parse::<Refund>() {
 			Ok(refund) => {
 				assert_eq!(refund.absolute_expiry(), Some(past_expiry));
-				#[cfg(feature = "std")]
+				#[cfg(all(feature = "std", not(target_arch = "wasm32")))]
 				assert!(refund.is_expired());
 				assert_eq!(refund.paths(), &paths[..]);
 				assert_eq!(refund.issuer(), Some(PrintableString("bar")));

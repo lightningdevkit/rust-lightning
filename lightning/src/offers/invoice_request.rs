@@ -225,7 +225,7 @@ impl<'a, 'b, P: PayerIdStrategy, T: secp256k1::Signing> InvoiceRequestBuilder<'a
 		(UnsignedInvoiceRequest, Option<KeyPair>, Option<&'b Secp256k1<T>>),
 		Bolt12SemanticError
 	> {
-		#[cfg(feature = "std")] {
+		#[cfg(all(feature = "std", not(target_arch = "wasm32")))] {
 			if self.offer.is_expired() {
 				return Err(Bolt12SemanticError::AlreadyExpired);
 			}
@@ -538,7 +538,7 @@ impl InvoiceRequest {
 	/// This is not exported to bindings users as builder patterns don't map outside of move semantics.
 	///
 	/// [`Duration`]: core::time::Duration
-	#[cfg(feature = "std")]
+	#[cfg(all(feature = "std", not(target_arch = "wasm32")))]
 	pub fn respond_with(
 		&self, payment_paths: Vec<(BlindedPayInfo, BlindedPath)>, payment_hash: PaymentHash
 	) -> Result<InvoiceBuilder<ExplicitSigningPubkey>, Bolt12SemanticError> {
@@ -623,7 +623,7 @@ impl VerifiedInvoiceRequest {
 	/// This is not exported to bindings users as builder patterns don't map outside of move semantics.
 	///
 	/// [`Duration`]: core::time::Duration
-	#[cfg(feature = "std")]
+	#[cfg(all(feature = "std", not(target_arch = "wasm32")))]
 	pub fn respond_with(
 		&self, payment_paths: Vec<(BlindedPayInfo, BlindedPath)>, payment_hash: PaymentHash
 	) -> Result<InvoiceBuilder<ExplicitSigningPubkey>, Bolt12SemanticError> {
@@ -651,7 +651,7 @@ impl VerifiedInvoiceRequest {
 	/// This is not exported to bindings users as builder patterns don't map outside of move semantics.
 	///
 	/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
-	#[cfg(feature = "std")]
+	#[cfg(all(feature = "std", not(target_arch = "wasm32")))]
 	pub fn respond_using_derived_keys(
 		&self, payment_paths: Vec<(BlindedPayInfo, BlindedPath)>, payment_hash: PaymentHash
 	) -> Result<InvoiceBuilder<DerivedSigningPubkey>, Bolt12SemanticError> {

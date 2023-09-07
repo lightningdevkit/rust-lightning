@@ -383,12 +383,10 @@ impl ReadableArgs<u64> for FixedPenaltyScorer {
 	}
 }
 
-#[cfg(not(feature = "no-std"))]
+#[cfg(not(any(feature = "no-std", target_arch="wasm32")))]
 type ConfiguredTime = crate::util::time::MonotonicTime;
-#[cfg(feature = "no-std")]
-use crate::util::time::Eternity;
-#[cfg(feature = "no-std")]
-type ConfiguredTime = Eternity;
+#[cfg(any(feature = "no-std", target_arch="wasm32"))]
+type ConfiguredTime = crate::util::time::Eternity;
 
 /// [`ScoreLookUp`] implementation using channel success probability distributions.
 ///

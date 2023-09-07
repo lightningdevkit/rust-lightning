@@ -70,7 +70,7 @@ use core::mem;
 use bitcoin::bech32::u5;
 use crate::sign::{InMemorySigner, Recipient, EntropySource, NodeSigner, SignerProvider};
 
-#[cfg(feature = "std")]
+#[cfg(all(feature = "std", not(target_arch = "wasm32")))]
 use std::time::{SystemTime, UNIX_EPOCH};
 use bitcoin::Sequence;
 
@@ -840,7 +840,7 @@ impl msgs::RoutingMessageHandler for TestRoutingMessageHandler {
 
 		#[allow(unused_mut, unused_assignments)]
 		let mut gossip_start_time = 0;
-		#[cfg(feature = "std")]
+		#[cfg(all(feature = "std", not(target_arch = "wasm32")))]
 		{
 			gossip_start_time = SystemTime::now().duration_since(UNIX_EPOCH).expect("Time must be > 1970").as_secs();
 			if self.request_full_sync.load(Ordering::Acquire) {

@@ -115,7 +115,7 @@ impl<NG: Deref<Target=NetworkGraph<L>>, L: Deref> RapidGossipSync<NG, L> where L
 	///
 	/// `sync_path`: Path to the file where the gossip update data is located
 	///
-	#[cfg(feature = "std")]
+	#[cfg(all(feature = "std", not(target_arch = "wasm32")))]
 	pub fn sync_network_graph_with_file_path(
 		&self,
 		sync_path: &str,
@@ -128,7 +128,7 @@ impl<NG: Deref<Target=NetworkGraph<L>>, L: Deref> RapidGossipSync<NG, L> where L
 	/// Returns the last sync timestamp to be used the next time rapid sync data is queried.
 	///
 	/// `update_data`: `&[u8]` binary stream that comprises the update data
-	#[cfg(feature = "std")]
+	#[cfg(all(feature = "std", not(target_arch = "wasm32")))]
 	pub fn update_network_graph(&self, update_data: &[u8]) -> Result<u32, GraphSyncError> {
 		let mut read_cursor = io::Cursor::new(update_data);
 		self.update_network_graph_from_byte_stream(&mut read_cursor)
