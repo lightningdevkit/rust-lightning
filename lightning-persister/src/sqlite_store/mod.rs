@@ -11,6 +11,8 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
+mod migrations;
+
 /// The default database file name.
 pub const DEFAULT_SQLITE_DB_FILE_NAME: &str = "ldk_data.sqlite";
 
@@ -54,13 +56,26 @@ impl SqliteStore {
 			io::Error::new(io::ErrorKind::Other, msg)
 		})?;
 
-		connection.pragma(Some(rusqlite::DatabaseName::Main),
+		let sql = format!("SELECT user_version FROM pragma_user_version");
+		let version_res: u16 = connection.query_row(&sql, [], |row| row.get(0)).unwrap();
+
+		if version_res == 0 {
+			// New database, set our SCHEMA_USER_VERSION and continue
+			connection.pragma(Some(rusqlite::DatabaseName::Main),
 			"user_version", SCHEMA_USER_VERSION, |_| {
 				Ok(())
 			}).map_err(|e| {
 				let msg = format!("Failed to set PRAGMA user_version: {}", e);
 				io::Error::new(io::ErrorKind::Other, msg)
 			})?;
+		} else if version_res < SCHEMA_USER_VERSION {
+			migrations::migrate_schema(&connection, &kv_table_name, version_res,
+				SCHEMA_USER_VERSION)?;
+		} else if version_res > SCHEMA_USER_VERSION {
+			let msg = format!("Failed to open database: incompatible schema version {}. Expected: {}",
+			version_res, SCHEMA_USER_VERSION);
+			return Err(io::Error::new(io::ErrorKind::Other, msg));
+		}
 
 		let sql = format!(
 			"CREATE TABLE IF NOT EXISTS {} (
