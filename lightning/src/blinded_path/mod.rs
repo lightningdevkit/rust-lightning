@@ -76,8 +76,7 @@ impl BlindedPath {
 		})
 	}
 
-	/// Create a blinded path for a payment, to be forwarded along `intermediate_nodes`, where each
-	/// node is composed of `(node_id, tlvs, htlc_maximum_msat)`.
+	/// Create a blinded path for a payment, to be forwarded along `intermediate_nodes`.
 	///
 	/// Errors if:
 	/// * a provided node id is invalid
@@ -87,7 +86,7 @@ impl BlindedPath {
 	/// [`ForwardTlvs`]: crate::blinded_path::payment::ForwardTlvs
 	//  TODO: make all payloads the same size with padding + add dummy hops
 	pub fn new_for_payment<ES: EntropySource, T: secp256k1::Signing + secp256k1::Verification>(
-		intermediate_nodes: &[(PublicKey, payment::ForwardTlvs, u64)], payee_node_id: PublicKey,
+		intermediate_nodes: &[payment::ForwardNode], payee_node_id: PublicKey,
 		payee_tlvs: payment::ReceiveTlvs, htlc_maximum_msat: u64, entropy_source: &ES,
 		secp_ctx: &Secp256k1<T>
 	) -> Result<(BlindedPayInfo, Self), ()> {
@@ -96,7 +95,7 @@ impl BlindedPath {
 
 		let blinded_payinfo = payment::compute_payinfo(intermediate_nodes, &payee_tlvs, htlc_maximum_msat)?;
 		Ok((blinded_payinfo, BlindedPath {
-			introduction_node_id: intermediate_nodes.first().map_or(payee_node_id, |n| n.0),
+			introduction_node_id: intermediate_nodes.first().map_or(payee_node_id, |n| n.node_id),
 			blinding_point: PublicKey::from_secret_key(secp_ctx, &blinding_secret),
 			blinded_hops: payment::blinded_hops(
 				secp_ctx, intermediate_nodes, payee_node_id, payee_tlvs, &blinding_secret
