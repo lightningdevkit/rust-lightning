@@ -1684,6 +1684,10 @@ mod bucketed_history {
 		buckets: [u16; 32],
 	}
 
+	/// Buckets are stored in fixed point numbers with a 5 bit fractional part. Thus, the value
+	/// "one" is 32, or this constant.
+	pub const BUCKET_FIXED_POINT_ONE: u16 = 32;
+
 	impl HistoricalBucketRangeTracker {
 		pub(super) fn new() -> Self { Self { buckets: [0; 32] } }
 		pub(super) fn track_datapoint(&mut self, liquidity_offset_msat: u64, capacity_msat: u64) {
@@ -1714,7 +1718,7 @@ mod bucketed_history {
 					*e = ((*e as u32) * 2047 / 2048) as u16;
 				}
 				let bucket = pos_to_bucket(pos);
-				self.buckets[bucket] = self.buckets[bucket].saturating_add(32);
+				self.buckets[bucket] = self.buckets[bucket].saturating_add(BUCKET_FIXED_POINT_ONE);
 			}
 		}
 		/// Decay all buckets by the given number of half-lives. Used to more aggressively remove old
@@ -1768,7 +1772,8 @@ mod bucketed_history {
 
 			// If the total valid points is smaller than 1.0 (i.e. 32 in our fixed-point scheme),
 			// treat it as if we were fully decayed.
-			if total_valid_points_tracked.checked_shr(required_decays).unwrap_or(0) < 32*32 {
+			const FULLY_DECAYED: u16 = BUCKET_FIXED_POINT_ONE * BUCKET_FIXED_POINT_ONE;
+			if total_valid_points_tracked.checked_shr(required_decays).unwrap_or(0) < FULLY_DECAYED.into() {
 				return None;
 			}
 
@@ -1806,7 +1811,7 @@ mod bucketed_history {
 				let mut highest_max_bucket_with_points = 0; // The highest max-bucket with any data
 				let mut total_max_points = 0; // Total points in max-buckets to consider
 				for (max_idx, max_bucket) in self.max_liquidity_offset_history.buckets.iter().enumerate() {
-					if *max_bucket >= 32 {
+					if *max_bucket >= BUCKET_FIXED_POINT_ONE {
 						highest_max_bucket_with_points = cmp::max(highest_max_bucket_with_points, max_idx);
 					}
 					total_max_points += *max_bucket as u64;
