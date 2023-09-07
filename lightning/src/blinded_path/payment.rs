@@ -17,6 +17,7 @@ use crate::util::ser::{Readable, Writeable, Writer};
 use core::convert::TryFrom;
 
 /// Data to construct a [`BlindedHop`] for forwarding a payment.
+#[derive(Clone, Debug)]
 pub struct ForwardTlvs {
 	/// The short channel id this payment should be forwarded out over.
 	pub short_channel_id: u64,
@@ -33,6 +34,7 @@ pub struct ForwardTlvs {
 
 /// Data to construct a [`BlindedHop`] for receiving a payment. This payload is custom to LDK and
 /// may not be valid if received by another lightning implementation.
+#[derive(Clone, Debug)]
 pub struct ReceiveTlvs {
 	/// Used to authenticate the sender of a payment to the receiver and tie MPP HTLCs together.
 	pub payment_secret: PaymentSecret,
@@ -59,6 +61,7 @@ enum BlindedPaymentTlvsRef<'a> {
 /// Parameters for relaying over a given [`BlindedHop`].
 ///
 /// [`BlindedHop`]: crate::blinded_path::BlindedHop
+#[derive(Clone, Debug)]
 pub struct PaymentRelay {
 	/// Number of blocks subtracted from an incoming HTLC's `cltv_expiry` for this [`BlindedHop`].
 	///
@@ -78,6 +81,7 @@ pub struct PaymentRelay {
 /// Constraints for relaying over a given [`BlindedHop`].
 ///
 /// [`BlindedHop`]: crate::blinded_path::BlindedHop
+#[derive(Clone, Debug)]
 pub struct PaymentConstraints {
 	/// The maximum total CLTV delta that is acceptable when relaying a payment over this
 	/// [`BlindedHop`].
