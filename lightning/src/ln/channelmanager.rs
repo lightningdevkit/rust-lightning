@@ -656,7 +656,6 @@ pub(crate) enum RAAMonitorUpdateBlockingAction {
 }
 
 impl RAAMonitorUpdateBlockingAction {
-	#[allow(unused)]
 	fn from_prev_hop_data(prev_hop: &HTLCPreviousHopData) -> Self {
 		Self::ForwardedPaymentInboundClaim {
 			channel_id: prev_hop.outpoint.to_channel_id(),
@@ -5175,11 +5174,17 @@ where
 		self.pending_outbound_payments.finalize_claims(sources, &self.pending_events);
 	}
 
-	fn claim_funds_internal(&self, source: HTLCSource, payment_preimage: PaymentPreimage, forwarded_htlc_value_msat: Option<u64>, from_onchain: bool, next_channel_outpoint: OutPoint) {
+	fn claim_funds_internal(&self, source: HTLCSource, payment_preimage: PaymentPreimage,
+		forwarded_htlc_value_msat: Option<u64>, from_onchain: bool,
+		next_channel_counterparty_node_id: Option<PublicKey>, next_channel_outpoint: OutPoint
+	) {
 		match source {
 			HTLCSource::OutboundRoute { session_priv, payment_id, path, .. } => {
 				debug_assert!(self.background_events_processed_since_startup.load(Ordering::Acquire),
 					"We don't support claim_htlc claims during startup - monitors may not be available yet");
+				if let Some(pubkey) = next_channel_counterparty_node_id {
+					debug_assert_eq!(pubkey, path.hops[0].pubkey);
+				}
 				let ev_completion_action = EventCompletionAction::ReleaseRAAChannelMonitorUpdate {
 					channel_funding_outpoint: next_channel_outpoint,
 					counterparty_node_id: path.hops[0].pubkey,
@@ -5190,6 +5195,7 @@ where
 			},
 			HTLCSource::PreviousHopData(hop_data) => {
 				let prev_outpoint = hop_data.outpoint;
+				let completed_blocker = RAAMonitorUpdateBlockingAction::from_prev_hop_data(&hop_data);
 				let res = self.claim_funds_from_hop(hop_data, payment_preimage,
 					|htlc_claim_value_msat| {
 						if let Some(forwarded_htlc_value) = forwarded_htlc_value_msat {
@@ -5205,7 +5211,17 @@ where
 									next_channel_id: Some(next_channel_outpoint.to_channel_id()),
 									outbound_amount_forwarded_msat: forwarded_htlc_value_msat,
 								},
-								downstream_counterparty_and_funding_outpoint: None,
+								downstream_counterparty_and_funding_outpoint:
+									if let Some(node_id) = next_channel_counterparty_node_id {
+										Some((node_id, next_channel_outpoint, completed_blocker))
+									} else {
+										// We can only get `None` here if we are processing a
+										// `ChannelMonitor`-originated event, in which case we
+										// don't care about ensuring we wake the downstream
+										// channel's monitor updating - the channel is already
+										// closed.
+										None
+									},
 							})
 						} else { None }
 					});
@@ -6044,6 +6060,17 @@ where
 				hash_map::Entry::Occupied(mut chan_phase_entry) => {
 					if let ChannelPhase::Funded(chan) = chan_phase_entry.get_mut() {
 						let res = try_chan_phase_entry!(self, chan.update_fulfill_htlc(&msg), chan_phase_entry);
+						if let HTLCSource::PreviousHopData(prev_hop) = &res.0 {
+							peer_state.actions_blocking_raa_monitor_updates.entry(msg.channel_id)
+								.or_insert_with(Vec::new)
+								.push(RAAMonitorUpdateBlockingAction::from_prev_hop_data(&prev_hop));
+						}
+						// Note that we do not need to push an `actions_blocking_raa_monitor_updates`
+						// entry here, even though we *do* need to block the next RAA monitor update.
+						// We do this instead in the `claim_funds_internal` by attaching a
+						// `ReleaseRAAChannelMonitorUpdate` action to the event generated when the
+						// outbound HTLC is claimed. This is guaranteed to all complete before we
+						// process the RAA as messages are processed from single peers serially.
 						funding_txo = chan.context.get_funding_txo().expect("We won't accept a fulfill until funded");
 						res
 					} else {
@@ -6054,7 +6081,7 @@ where
 				hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id))
 			}
 		};
-		self.claim_funds_internal(htlc_source, msg.payment_preimage.clone(), Some(forwarded_htlc_value), false, funding_txo);
+		self.claim_funds_internal(htlc_source, msg.payment_preimage.clone(), Some(forwarded_htlc_value), false, Some(*counterparty_node_id), funding_txo);
 		Ok(())
 	}
 
@@ -6254,6 +6281,23 @@ where
 				counterparty_node_id,
 			})
 		})
+	}
+
+	#[cfg(any(test, feature = "_test_utils"))]
+	pub(crate) fn test_raa_monitor_updates_held(&self,
+		counterparty_node_id: PublicKey, channel_id: ChannelId
+	) -> bool {
+		let per_peer_state = self.per_peer_state.read().unwrap();
+		if let Some(peer_state_mtx) = per_peer_state.get(&counterparty_node_id) {
+			let mut peer_state_lck = peer_state_mtx.lock().unwrap();
+			let peer_state = &mut *peer_state_lck;
+
+			if let Some(chan) = peer_state.channel_by_id.get(&channel_id) {
+				return self.raa_monitor_updates_held(&peer_state.actions_blocking_raa_monitor_updates,
+					chan.context().get_funding_txo().unwrap(), counterparty_node_id);
+			}
+		}
+		false
 	}
 
 	fn internal_revoke_and_ack(&self, counterparty_node_id: &PublicKey, msg: &msgs::RevokeAndACK) -> Result<(), MsgHandleErrInternal> {
@@ -6477,8 +6521,8 @@ where
 				match monitor_event {
 					MonitorEvent::HTLCEvent(htlc_update) => {
 						if let Some(preimage) = htlc_update.payment_preimage {
-							log_trace!(self.logger, "Claiming HTLC with preimage {} from our monitor", &preimage);
-							self.claim_funds_internal(htlc_update.source, preimage, htlc_update.htlc_value_satoshis.map(|v| v * 1000), true, funding_outpoint);
+							log_trace!(self.logger, "Claiming HTLC with preimage {} from our monitor", preimage);
+							self.claim_funds_internal(htlc_update.source, preimage, htlc_update.htlc_value_satoshis.map(|v| v * 1000), true, counterparty_node_id, funding_outpoint);
 						} else {
 							log_trace!(self.logger, "Failing HTLC with hash {} from our monitor", &htlc_update.payment_hash);
 							let receiver = HTLCDestination::NextHopChannel { node_id: counterparty_node_id, channel_id: funding_outpoint.to_channel_id() };
@@ -9298,6 +9342,7 @@ where
 									// downstream chan is closed (because we don't have a
 									// channel_id -> peer map entry).
 									counterparty_opt.is_none(),
+									counterparty_opt.cloned().or(monitor.get_counterparty_node_id()),
 									monitor.get_funding_txo().0))
 							} else { None }
 						} else {
@@ -9576,12 +9621,12 @@ where
 			channel_manager.fail_htlc_backwards_internal(&source, &payment_hash, &reason, receiver);
 		}
 
-		for (source, preimage, downstream_value, downstream_closed, downstream_funding) in pending_claims_to_replay {
+		for (source, preimage, downstream_value, downstream_closed, downstream_node_id, downstream_funding) in pending_claims_to_replay {
 			// We use `downstream_closed` in place of `from_onchain` here just as a guess - we
 			// don't remember in the `ChannelMonitor` where we got a preimage from, but if the
 			// channel is closed we just assume that it probably came from an on-chain claim.
 			channel_manager.claim_funds_internal(source, preimage, Some(downstream_value),
-				downstream_closed, downstream_funding);
+				downstream_closed, downstream_node_id, downstream_funding);
 		}
 
 		//TODO: Broadcast channel update for closed channels, but only after we've made a

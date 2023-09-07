@@ -1772,20 +1772,7 @@ pub fn do_commitment_signed_dance(node_a: &Node<'_, '_, '_>, node_b: &Node<'_, '
 	check_added_monitors!(node_a, 1);
 
 	// If this commitment signed dance was due to a claim, don't check for an RAA monitor update.
-	let got_claim = node_a.node.pending_events.lock().unwrap().iter().any(|(ev, action)| {
-		let matching_action = if let Some(channelmanager::EventCompletionAction::ReleaseRAAChannelMonitorUpdate
-			{ channel_funding_outpoint, counterparty_node_id }) = action
-		{
-			if channel_funding_outpoint.to_channel_id() == commitment_signed.channel_id {
-				assert_eq!(*counterparty_node_id, node_b.node.get_our_node_id());
-				true
-			} else { false }
-		} else { false };
-		if matching_action {
-			if let Event::PaymentSent { .. } = ev {} else { panic!(); }
-		}
-		matching_action
-	});
+	let got_claim = node_a.node.test_raa_monitor_updates_held(node_b.node.get_our_node_id(), commitment_signed.channel_id);
 	if fail_backwards { assert!(!got_claim); }
 	commitment_signed_dance!(node_a, node_b, (), fail_backwards, true, false, got_claim);
 
