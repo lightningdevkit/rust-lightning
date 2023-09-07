@@ -37,14 +37,17 @@ use crate::ln::onion_utils;
 use crate::onion_message;
 
 use crate::prelude::*;
+use core::convert::TryFrom;
 use core::fmt;
 use core::fmt::Debug;
+use core::str::FromStr;
 use crate::io::{self, Read};
 use crate::io_extras::read_to_end;
 
 use crate::events::{MessageSendEventsProvider, OnionMessageProvider};
 use crate::util::logger;
 use crate::util::ser::{LengthReadable, Readable, ReadableArgs, Writeable, Writer, WithoutLength, FixedLengthReader, HighZeroBytesDroppedBigSize, Hostname, TransactionU16LenLimited, BigSize};
+use crate::util::base32;
 
 use crate::routing::gossip::{NodeAlias, NodeId};
 
@@ -895,6 +898,104 @@ impl Readable for NetAddress {
 			Ok(Ok(res)) => Ok(res),
 			Ok(Err(_)) => Err(DecodeError::UnknownVersion),
 			Err(e) => Err(e),
+		}
+	}
+}
+
+/// [`NetAddress`] error variants
+#[derive(Debug, Eq, PartialEq, Clone)]
+pub enum NetAddressParseError {
+	/// Socket address (IPv4/IPv6) parsing error
+	SocketAddrParse,
+	/// Invalid input format
+	InvalidInput,
+	/// Invalid port
+	InvalidPort,
+	/// Invalid onion v3 address
+	InvalidOnionV3,
+}
+
+impl fmt::Display for NetAddressParseError {
+	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+		match self {
+			NetAddressParseError::SocketAddrParse => write!(f, "Socket address (IPv4/IPv6) parsing error"),
+			NetAddressParseError::InvalidInput => write!(f, "Invalid input format. \
+				Expected: \"<ipv4>:<port>\", \"[<ipv6>]:<port>\", \"<onion address>.onion:<port>\" or \"<hostname>:<port>\""),
+			NetAddressParseError::InvalidPort => write!(f, "Invalid port"),
+			NetAddressParseError::InvalidOnionV3 => write!(f, "Invalid onion v3 address"),
+		}
+	}
+}
+
+#[cfg(feature = "std")]
+impl From<std::net::SocketAddrV4> for NetAddress {
+		fn from(addr: std::net::SocketAddrV4) -> Self {
+			NetAddress::IPv4 { addr: addr.ip().octets(), port: addr.port() }
+		}
+}
+
+#[cfg(feature = "std")]
+impl From<std::net::SocketAddrV6> for NetAddress {
+		fn from(addr: std::net::SocketAddrV6) -> Self {
+			NetAddress::IPv6 { addr: addr.ip().octets(), port: addr.port() }
+		}
+}
+
+#[cfg(feature = "std")]
+impl From<std::net::SocketAddr> for NetAddress {
+		fn from(addr: std::net::SocketAddr) -> Self {
+			match addr {
+				std::net::SocketAddr::V4(addr) => addr.into(),
+				std::net::SocketAddr::V6(addr) => addr.into(),
+			}
+		}
+}
+
+fn parse_onion_address(host: &str, port: u16) -> Result<NetAddress, NetAddressParseError> {
+	if host.ends_with(".onion") {
+		let domain = &host[..host.len() - ".onion".len()];
+		if domain.len() != 56 {
+			return Err(NetAddressParseError::InvalidOnionV3);
+		}
+		let onion =  base32::Alphabet::RFC4648 { padding: false }.decode(&domain).map_err(|_| NetAddressParseError::InvalidOnionV3)?;
+		if onion.len() != 35 {
+			return Err(NetAddressParseError::InvalidOnionV3);
+		}
+		let version = onion[0];
+		let first_checksum_flag = onion[1];
+		let second_checksum_flag = onion[2];
+		let mut ed25519_pubkey = [0; 32];
+		ed25519_pubkey.copy_from_slice(&onion[3..35]);
+		let checksum = u16::from_be_bytes([first_checksum_flag, second_checksum_flag]);
+		return Ok(NetAddress::OnionV3 { ed25519_pubkey, checksum, version, port });
+
+	} else {
+		return Err(NetAddressParseError::InvalidInput);
+	}
+}
+
+#[cfg(feature = "std")]
+impl FromStr for NetAddress {
+	type Err = NetAddressParseError;
+
+	fn from_str(s: &str) -> Result<Self, Self::Err> {
+		match std::net::SocketAddr::from_str(s) {
+			Ok(addr) => Ok(addr.into()),
+			Err(_) => {
+				let trimmed_input = match s.rfind(":") {
+					Some(pos) => pos,
+					None => return Err(NetAddressParseError::InvalidInput),
+				};
+				let host = &s[..trimmed_input];
+				let port: u16 = s[trimmed_input + 1..].parse().map_err(|_| NetAddressParseError::InvalidPort)?;
+				if host.ends_with(".onion") {
+					return parse_onion_address(host, port);
+				};
+				if let Ok(hostname) = Hostname::try_from(s[..trimmed_input].to_string()) {
+					return Ok(NetAddress::Hostname { hostname, port });
+				};
+				return Err(NetAddressParseError::SocketAddrParse)
+			},
 		}
 	}
 }
@@ -2471,6 +2572,7 @@ impl_writeable_msg!(GossipTimestampFilter, {
 
 #[cfg(test)]
 mod tests {
+	use std::convert::TryFrom;
 	use bitcoin::blockdata::constants::ChainHash;
 	use bitcoin::{Transaction, PackedLockTime, TxIn, Script, Sequence, Witness, TxOut};
 	use hex;
@@ -2478,6 +2580,7 @@ mod tests {
 	use crate::ln::ChannelId;
 	use crate::ln::features::{ChannelFeatures, ChannelTypeFeatures, InitFeatures, NodeFeatures};
 	use crate::ln::msgs::{self, FinalOnionHopData, OnionErrorPacket};
+	use crate::ln::msgs::NetAddress;
 	use crate::routing::gossip::{NodeAlias, NodeId};
 	use crate::util::ser::{Writeable, Readable, Hostname, TransactionU16LenLimited};
 
@@ -2493,10 +2596,12 @@ mod tests {
 
 	use crate::io::{self, Cursor};
 	use crate::prelude::*;
-	use core::convert::TryFrom;
 	use core::str::FromStr;
-
 	use crate::chain::transaction::OutPoint;
+
+	#[cfg(feature = "std")]
+	use std::net::{Ipv4Addr, Ipv6Addr};
+	use crate::ln::msgs::NetAddressParseError;
 
 	#[test]
 	fn encoding_channel_reestablish() {
@@ -2663,24 +2768,24 @@ mod tests {
 		};
 		let mut addresses = Vec::new();
 		if ipv4 {
-			addresses.push(msgs::NetAddress::IPv4 {
+			addresses.push(NetAddress::IPv4 {
 				addr: [255, 254, 253, 252],
 				port: 9735
 			});
 		}
 		if ipv6 {
-			addresses.push(msgs::NetAddress::IPv6 {
+			addresses.push(NetAddress::IPv6 {
 				addr: [255, 254, 253, 252, 251, 250, 249, 248, 247, 246, 245, 244, 243, 242, 241, 240],
 				port: 9735
 			});
 		}
 		if onionv2 {
-			addresses.push(msgs::NetAddress::OnionV2(
+			addresses.push(NetAddress::OnionV2(
 				[255, 254, 253, 252, 251, 250, 249, 248, 247, 246, 38, 7]
 			));
 		}
 		if onionv3 {
-			addresses.push(msgs::NetAddress::OnionV3 {
+			addresses.push(NetAddress::OnionV3 {
 				ed25519_pubkey:	[255, 254, 253, 252, 251, 250, 249, 248, 247, 246, 245, 244, 243, 242, 241, 240, 239, 238, 237, 236, 235, 234, 233, 232, 231, 230, 229, 228, 227, 226, 225, 224],
 				checksum: 32,
 				version: 16,
@@ -2688,7 +2793,7 @@ mod tests {
 			});
 		}
 		if hostname {
-			addresses.push(msgs::NetAddress::Hostname {
+			addresses.push(NetAddress::Hostname {
 				hostname: Hostname::try_from(String::from("host")).unwrap(),
 				port: 9735,
 			});
@@ -3296,10 +3401,10 @@ mod tests {
 		let shutdown = msgs::Shutdown {
 			channel_id: ChannelId::from_bytes([2; 32]),
 			scriptpubkey:
-				     if script_type == 1 { Address::p2pkh(&::bitcoin::PublicKey{compressed: true, inner: pubkey_1}, Network::Testnet).script_pubkey() }
+				if script_type == 1 { Address::p2pkh(&::bitcoin::PublicKey{compressed: true, inner: pubkey_1}, Network::Testnet).script_pubkey() }
 				else if script_type == 2 { Address::p2sh(&script, Network::Testnet).unwrap().script_pubkey() }
 				else if script_type == 3 { Address::p2wpkh(&::bitcoin::PublicKey{compressed: true, inner: pubkey_1}, Network::Testnet).unwrap().script_pubkey() }
-				else                     { Address::p2wsh(&script, Network::Testnet).script_pubkey() },
+				else { Address::p2wsh(&script, Network::Testnet).script_pubkey() },
 		};
 		let encoded_value = shutdown.encode();
 		let mut target_value = hex::decode("0202020202020202020202020202020202020202020202020202020202020202").unwrap();
@@ -3504,7 +3609,7 @@ mod tests {
 		}.encode(), hex::decode("00000000014001010101010101010101010101010101010101010101010101010101010101010202020202020202020202020202020202020202020202020202020202020202").unwrap());
 		let init_msg = msgs::Init { features: InitFeatures::from_le_bytes(vec![]),
 			networks: Some(vec![mainnet_hash]),
-			remote_network_address: Some(msgs::NetAddress::IPv4 {
+			remote_network_address: Some(NetAddress::IPv4 {
 				addr: [127, 0, 0, 1],
 				port: 1000,
 			}),
@@ -3868,5 +3973,48 @@ mod tests {
 			});
 		}
 		Ok(encoded_payload)
+	}
+
+	#[test]
+	#[cfg(feature = "std")]
+	fn test_net_address_from_str() {
+		assert_eq!(NetAddress::IPv4 {
+			addr: Ipv4Addr::new(127, 0, 0, 1).octets(),
+			port: 1234,
+		}, NetAddress::from_str("127.0.0.1:1234").unwrap());
+
+		assert_eq!(NetAddress::IPv6 {
+			addr: Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1).octets(),
+			port: 1234,
+		}, NetAddress::from_str("[0:0:0:0:0:0:0:1]:1234").unwrap());
+		assert_eq!(
+			NetAddress::Hostname {
+				hostname: Hostname::try_from("lightning-node.mydomain.com".to_string()).unwrap(),
+				port: 1234,
+			}, NetAddress::from_str("lightning-node.mydomain.com:1234").unwrap());
+		assert_eq!(
+			NetAddress::Hostname {
+				hostname: Hostname::try_from("example.com".to_string()).unwrap(),
+				port: 1234,
+			}, NetAddress::from_str("example.com:1234").unwrap());
+		assert_eq!(NetAddress::OnionV3 {
+			ed25519_pubkey: [37, 24, 75, 5, 25, 73, 117, 194, 139, 102, 182, 107, 4, 105, 247, 246, 85,
+			111, 177, 172, 49, 137, 167, 155, 64, 221, 163, 47, 31, 33, 71, 3],
+			checksum: 48326,
+			version: 121,
+			port: 1234
+		}, NetAddress::from_str("pg6mmjiyjmcrsslvykfwnntlaru7p5svn6y2ymmju6nubxndf4pscryd.onion:1234").unwrap());
+		assert_eq!(Err(NetAddressParseError::InvalidOnionV3), NetAddress::from_str("pg6mmjiyjmcrsslvykfwnntlaru7p5svn6.onion:1234"));
+		assert_eq!(Err(NetAddressParseError::InvalidInput), NetAddress::from_str("127.0.0.1@1234"));
+		assert_eq!(Err(NetAddressParseError::InvalidInput), "".parse::<NetAddress>());
+		assert!(NetAddress::from_str("pg6mmjiyjmcrsslvykfwnntlaru7p5svn6y2ymmju6nubxndf4pscryd.onion.onion:9735:94").is_err());
+		assert!(NetAddress::from_str("wrong$%#.com:1234").is_err());
+		assert_eq!(Err(NetAddressParseError::InvalidPort), NetAddress::from_str("example.com:wrong"));
+		assert!("localhost".parse::<NetAddress>().is_err());
+		assert!("localhost:invalid-port".parse::<NetAddress>().is_err());
+		assert!( "invalid-onion-v3-hostname.onion:8080".parse::<NetAddress>().is_err());
+		assert!("b32.example.onion:invalid-port".parse::<NetAddress>().is_err());
+		assert!("invalid-address".parse::<NetAddress>().is_err());
+		assert!(NetAddress::from_str("pg6mmjiyjmcrsslvykfwnntlaru7p5svn6y2ymmju6nubxndf4pscryd.onion.onion:1234").is_err());
 	}
 }
