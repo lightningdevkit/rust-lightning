@@ -64,17 +64,11 @@ enum BlindedPaymentTlvsRef<'a> {
 #[derive(Clone, Debug)]
 pub struct PaymentRelay {
 	/// Number of blocks subtracted from an incoming HTLC's `cltv_expiry` for this [`BlindedHop`].
-	///
-	///[`BlindedHop`]: crate::blinded_path::BlindedHop
 	pub cltv_expiry_delta: u16,
 	/// Liquidity fee charged (in millionths of the amount transferred) for relaying a payment over
 	/// this [`BlindedHop`], (i.e., 10,000 is 1%).
-	///
-	///[`BlindedHop`]: crate::blinded_path::BlindedHop
 	pub fee_proportional_millionths: u32,
 	/// Base fee charged (in millisatoshi) for relaying a payment over this [`BlindedHop`].
-	///
-	///[`BlindedHop`]: crate::blinded_path::BlindedHop
 	pub fee_base_msat: u32,
 }
 
@@ -85,8 +79,6 @@ pub struct PaymentRelay {
 pub struct PaymentConstraints {
 	/// The maximum total CLTV delta that is acceptable when relaying a payment over this
 	/// [`BlindedHop`].
-	///
-	///[`BlindedHop`]: crate::blinded_path::BlindedHop
 	pub max_cltv_expiry: u32,
 	/// The minimum value, in msat, that may be accepted by the node corresponding to this
 	/// [`BlindedHop`].
