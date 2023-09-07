@@ -19,25 +19,25 @@ use core::convert::TryFrom;
 /// Data to construct a [`BlindedHop`] for forwarding a payment.
 pub struct ForwardTlvs {
 	/// The short channel id this payment should be forwarded out over.
-	short_channel_id: u64,
+	pub short_channel_id: u64,
 	/// Payment parameters for relaying over [`Self::short_channel_id`].
-	payment_relay: PaymentRelay,
+	pub payment_relay: PaymentRelay,
 	/// Payment constraints for relaying over [`Self::short_channel_id`].
-	payment_constraints: PaymentConstraints,
+	pub payment_constraints: PaymentConstraints,
 	/// Supported and required features when relaying a payment onion containing this object's
 	/// corresponding [`BlindedHop::encrypted_payload`].
 	///
 	/// [`BlindedHop::encrypted_payload`]: crate::blinded_path::BlindedHop::encrypted_payload
-	features: BlindedHopFeatures,
+	pub features: BlindedHopFeatures,
 }
 
 /// Data to construct a [`BlindedHop`] for receiving a payment. This payload is custom to LDK and
 /// may not be valid if received by another lightning implementation.
 pub struct ReceiveTlvs {
 	/// Used to authenticate the sender of a payment to the receiver and tie MPP HTLCs together.
-	payment_secret: PaymentSecret,
+	pub payment_secret: PaymentSecret,
 	/// Constraints for the receiver of this payment.
-	payment_constraints: PaymentConstraints,
+	pub payment_constraints: PaymentConstraints,
 }
 
 /// Data to construct a [`BlindedHop`] for sending a payment over.
