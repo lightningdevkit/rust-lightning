@@ -315,7 +315,7 @@ macro_rules! define_run_body {
 			// see `await_start`'s use below.
 			let mut await_start = None;
 			if $check_slow_await { await_start = Some($get_timer(1)); }
-			let updates_available = $await;
+			$await;
 			let await_slow = if $check_slow_await { $timer_elapsed(&mut await_start.unwrap(), 1) } else { false };
 
 			// Exit the loop if the background processor was requested to stop.
@@ -324,7 +324,7 @@ macro_rules! define_run_body {
 				break;
 			}
 
-			if updates_available {
+			if $channel_manager.get_and_clear_needs_persistence() {
 				log_trace!($logger, "Persisting ChannelManager...");
 				$persister.persist_manager(&*$channel_manager)?;
 				log_trace!($logger, "Done persisting ChannelManager.");
@@ -660,11 +660,9 @@ where
 				c: sleeper(if mobile_interruptable_platform { Duration::from_millis(100) } else { Duration::from_secs(FASTEST_TIMER) }),
 			};
 			match fut.await {
-				SelectorOutput::A => true,
-				SelectorOutput::B => false,
+				SelectorOutput::A|SelectorOutput::B => {},
 				SelectorOutput::C(exit) => {
 					should_break = exit;
-					false
 				}
 			}
 		}, |t| sleeper(Duration::from_secs(t)),
@@ -787,10 +785,10 @@ impl BackgroundProcessor {
 			define_run_body!(persister, chain_monitor, chain_monitor.process_pending_events(&event_handler),
 				channel_manager, channel_manager.process_pending_events(&event_handler),
 				gossip_sync, peer_manager, logger, scorer, stop_thread.load(Ordering::Acquire),
-				Sleeper::from_two_futures(
+				{ Sleeper::from_two_futures(
 					channel_manager.get_event_or_persistence_needed_future(),
 					chain_monitor.get_update_future()
-				).wait_timeout(Duration::from_millis(100)),
+				).wait_timeout(Duration::from_millis(100)); },
 				|_| Instant::now(), |time: &Instant, dur| time.elapsed().as_secs() > dur, false)
 		});
 		Self { stop_thread: stop_thread_clone, thread_handle: Some(handle) }

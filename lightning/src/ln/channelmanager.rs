@@ -1186,6 +1186,7 @@ where
 	background_events_processed_since_startup: AtomicBool,
 
 	event_persist_notifier: Notifier,
+	needs_persist_flag: AtomicBool,
 
 	entropy_source: ES,
 	node_signer: NS,
@@ -1229,6 +1230,7 @@ enum NotifyOption {
 /// `optionally_notify` which returns a `NotifyOption`.
 struct PersistenceNotifierGuard<'a, F: Fn() -> NotifyOption> {
 	event_persist_notifier: &'a Notifier,
+	needs_persist_flag: &'a AtomicBool,
 	should_persist: F,
 	// We hold onto this result so the lock doesn't get released immediately.
 	_read_guard: RwLockReadGuard<'a, ()>,
@@ -1246,6 +1248,7 @@ impl<'a> PersistenceNotifierGuard<'a, fn() -> NotifyOption> { // We don't care w
 
 		PersistenceNotifierGuard {
 			event_persist_notifier: &cm.get_cm().event_persist_notifier,
+			needs_persist_flag: &cm.get_cm().needs_persist_flag,
 			should_persist: move || {
 				// Pick the "most" action between `persist_check` and the background events
 				// processing and return that.
@@ -1266,6 +1269,7 @@ impl<'a> PersistenceNotifierGuard<'a, fn() -> NotifyOption> { // We don't care w
 
 		PersistenceNotifierGuard {
 			event_persist_notifier: &cm.get_cm().event_persist_notifier,
+			needs_persist_flag: &cm.get_cm().needs_persist_flag,
 			should_persist: persist_check,
 			_read_guard: read_guard,
 		}
@@ -1275,6 +1279,7 @@ impl<'a> PersistenceNotifierGuard<'a, fn() -> NotifyOption> { // We don't care w
 impl<'a, F: Fn() -> NotifyOption> Drop for PersistenceNotifierGuard<'a, F> {
 	fn drop(&mut self) {
 		if (self.should_persist)() == NotifyOption::DoPersist {
+			self.needs_persist_flag.store(true, Ordering::Release);
 			self.event_persist_notifier.notify();
 		}
 	}
@@ -2137,6 +2142,7 @@ macro_rules! process_events_body {
 			}
 
 			if result == NotifyOption::DoPersist {
+				$self.needs_persist_flag.store(true, Ordering::Release);
 				$self.event_persist_notifier.notify();
 			}
 		}
@@ -2216,7 +2222,9 @@ where
 			pending_background_events: Mutex::new(Vec::new()),
 			total_consistency_lock: RwLock::new(()),
 			background_events_processed_since_startup: AtomicBool::new(false),
+
 			event_persist_notifier: Notifier::new(),
+			needs_persist_flag: AtomicBool::new(false),
 
 			entropy_source,
 			node_signer,
@@ -7381,13 +7389,21 @@ where
 		}
 	}
 
-	/// Gets a [`Future`] that completes when this [`ChannelManager`] needs to be persisted.
+	/// Gets a [`Future`] that completes when this [`ChannelManager`] may need to be persisted or
+	/// may have events that need processing.
+	///
+	/// In order to check if this [`ChannelManager`] needs persisting, call
+	/// [`Self::get_and_clear_needs_persistence`].
 	///
 	/// Note that callbacks registered on the [`Future`] MUST NOT call back into this
 	/// [`ChannelManager`] and should instead register actions to be taken later.
-	///
 	pub fn get_event_or_persistence_needed_future(&self) -> Future {
 		self.event_persist_notifier.get_future()
+	}
+
+	/// Returns true if this [`ChannelManager`] needs to be persisted.
+	pub fn get_and_clear_needs_persistence(&self) -> bool {
+		self.needs_persist_flag.swap(false, Ordering::AcqRel)
 	}
 
 	#[cfg(any(test, feature = "_test_utils"))]
@@ -9562,7 +9578,9 @@ where
 			pending_background_events: Mutex::new(pending_background_events),
 			total_consistency_lock: RwLock::new(()),
 			background_events_processed_since_startup: AtomicBool::new(false),
+
 			event_persist_notifier: Notifier::new(),
+			needs_persist_flag: AtomicBool::new(false),
 
 			entropy_source: args.entropy_source,
 			node_signer: args.node_signer,
