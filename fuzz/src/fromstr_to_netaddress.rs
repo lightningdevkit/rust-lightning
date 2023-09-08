@@ -7,7 +7,7 @@
 // You may not use this file except in accordance with one or both of these
 // licenses.
 
-use lightning::ln::msgs::NetAddress;
+use lightning::ln::msgs::SocketAddress;
 use core::str::FromStr;
 
 use crate::utils::test_logger;
@@ -15,7 +15,7 @@ use crate::utils::test_logger;
 #[inline]
 pub fn do_test(data: &[u8]) {
 	if let Ok(s) = std::str::from_utf8(data) {
-		let _ = NetAddress::from_str(s);
+		let _ = SocketAddress::from_str(s);
 	}
 
 }

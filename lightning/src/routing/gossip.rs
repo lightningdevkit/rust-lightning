@@ -25,7 +25,7 @@ use bitcoin::blockdata::constants::genesis_block;
 use crate::events::{MessageSendEvent, MessageSendEventsProvider};
 use crate::ln::ChannelId;
 use crate::ln::features::{ChannelFeatures, NodeFeatures, InitFeatures};
-use crate::ln::msgs::{DecodeError, ErrorAction, Init, LightningError, RoutingMessageHandler, NetAddress, MAX_VALUE_MSAT};
+use crate::ln::msgs::{DecodeError, ErrorAction, Init, LightningError, RoutingMessageHandler, SocketAddress, MAX_VALUE_MSAT};
 use crate::ln::msgs::{ChannelAnnouncement, ChannelUpdate, NodeAnnouncement, GossipTimestampFilter};
 use crate::ln::msgs::{QueryChannelRange, ReplyChannelRange, QueryShortChannelIds, ReplyShortChannelIdsEnd};
 use crate::ln::msgs;
@@ -1128,7 +1128,7 @@ pub struct NodeAnnouncementInfo {
 
 impl NodeAnnouncementInfo {
 	/// Internet-level addresses via which one can connect to the node
-	pub fn addresses(&self) -> &[NetAddress] {
+	pub fn addresses(&self) -> &[SocketAddress] {
 		self.announcement_message.as_ref()
 			.map(|msg| msg.contents.addresses.as_slice())
 			.unwrap_or_default()
@@ -1137,7 +1137,7 @@ impl NodeAnnouncementInfo {
 
 impl Writeable for NodeAnnouncementInfo {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
-		let empty_addresses = Vec::<NetAddress>::new();
+		let empty_addresses = Vec::<SocketAddress>::new();
 		write_tlv_fields!(writer, {
 			(0, self.features, required),
 			(2, self.last_update, required),
@@ -1160,7 +1160,7 @@ impl Readable for NodeAnnouncementInfo {
 			(8, announcement_message, option),
 			(10, _addresses, optional_vec), // deprecated, not used anymore
 		});
-		let _: Option<Vec<NetAddress>> = _addresses;
+		let _: Option<Vec<SocketAddress>> = _addresses;
 		Ok(Self { features: features.0.unwrap(), last_update: last_update.0.unwrap(), rgb: rgb.0.unwrap(),
 			alias: alias.0.unwrap(), announcement_message })
 	}
@@ -1236,7 +1236,7 @@ impl Writeable for NodeInfo {
 }
 
 // A wrapper allowing for the optional deserialization of `NodeAnnouncementInfo`. Utilizing this is
-// necessary to maintain compatibility with previous serializations of `NetAddress` that have an
+// necessary to maintain compatibility with previous serializations of `SocketAddress` that have an
 // invalid hostname set. We ignore and eat all errors until we are either able to read a
 // `NodeAnnouncementInfo` or hit a `ShortRead`, i.e., read the TLV field to the end.
 struct NodeAnnouncementInfoDeserWrapper(NodeAnnouncementInfo);
@@ -2039,7 +2039,7 @@ impl ReadOnlyNetworkGraph<'_> {
 	/// Get network addresses by node id.
 	/// Returns None if the requested node is completely unknown,
 	/// or if node announcement for the node was never received.
-	pub fn get_addresses(&self, pubkey: &PublicKey) -> Option<Vec<NetAddress>> {
+	pub fn get_addresses(&self, pubkey: &PublicKey) -> Option<Vec<SocketAddress>> {
 		self.nodes.get(&NodeId::from_pubkey(&pubkey))
 			.and_then(|node| node.announcement_info.as_ref().map(|ann| ann.addresses().to_vec()))
 	}
