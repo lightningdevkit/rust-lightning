@@ -26,7 +26,7 @@ macro_rules! call {
 }
 
 #[cfg(target_os = "windows")]
-fn path_to_windows_str<T: AsRef<OsStr>>(path: T) -> Vec<u16> {
+fn path_to_windows_str<T: AsRef<OsStr>>(path: &T) -> Vec<u16> {
 	path.as_ref().encode_wide().chain(Some(0)).collect()
 }
 
@@ -164,8 +164,8 @@ impl KVStore for FilesystemStore {
 				let res = if dest_file_path.exists() {
 					call!(unsafe {
 						windows_sys::Win32::Storage::FileSystem::ReplaceFileW(
-							path_to_windows_str(dest_file_path.clone()).as_ptr(),
-							path_to_windows_str(tmp_file_path).as_ptr(),
+							path_to_windows_str(&dest_file_path).as_ptr(),
+							path_to_windows_str(&tmp_file_path).as_ptr(),
 							std::ptr::null(),
 							windows_sys::Win32::Storage::FileSystem::REPLACEFILE_IGNORE_MERGE_ERRORS,
 							std::ptr::null_mut() as *const core::ffi::c_void,
@@ -175,8 +175,8 @@ impl KVStore for FilesystemStore {
 				} else {
 					call!(unsafe {
 						windows_sys::Win32::Storage::FileSystem::MoveFileExW(
-							path_to_windows_str(tmp_file_path).as_ptr(),
-							path_to_windows_str(dest_file_path.clone()).as_ptr(),
+							path_to_windows_str(&tmp_file_path).as_ptr(),
+							path_to_windows_str(&dest_file_path).as_ptr(),
 							windows_sys::Win32::Storage::FileSystem::MOVEFILE_WRITE_THROUGH
 							| windows_sys::Win32::Storage::FileSystem::MOVEFILE_REPLACE_EXISTING,
 							)
@@ -263,8 +263,8 @@ impl KVStore for FilesystemStore {
 
 					call!(unsafe {
 						windows_sys::Win32::Storage::FileSystem::MoveFileExW(
-							path_to_windows_str(dest_file_path).as_ptr(),
-							path_to_windows_str(trash_file_path.clone()).as_ptr(),
+							path_to_windows_str(&dest_file_path).as_ptr(),
+							path_to_windows_str(&trash_file_path).as_ptr(),
 							windows_sys::Win32::Storage::FileSystem::MOVEFILE_WRITE_THROUGH
 							| windows_sys::Win32::Storage::FileSystem::MOVEFILE_REPLACE_EXISTING,
 							)
