@@ -82,8 +82,8 @@ impl MonitorUpdateId {
 ///  * If persistence (including any relevant `fsync()` calls) happens immediately, the
 ///    implementation should return [`ChannelMonitorUpdateStatus::Completed`], indicating normal
 ///    channel operation should continue.
-///  * If persistence happens asynchronously, implementations should first ensure the
-///    [`ChannelMonitor`] or [`ChannelMonitorUpdate`] are written durably to disk, and then return
+///
+///  * If persistence happens asynchronously, implementations can return
 ///    [`ChannelMonitorUpdateStatus::InProgress`] while the update continues in the background.
 ///    Once the update completes, [`ChainMonitor::channel_monitor_updated`] should be called with
 ///    the corresponding [`MonitorUpdateId`].

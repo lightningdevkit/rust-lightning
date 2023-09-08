@@ -176,6 +176,18 @@ pub trait Confirm {
 }
 
 /// An enum representing the status of a channel monitor update persistence.
+///
+/// Note that there is no error variant - any failure to persist a [`ChannelMonitor`] should be
+/// retried indefinitely, the node shut down (as if we cannot update stored data we can't do much
+/// of anything useful).
+///
+/// Note that channels should generally *not* be force-closed after a persistence failure.
+/// Force-closing with the latest [`ChannelMonitorUpdate`] applied may result in a transaction
+/// being broadcast which can only be spent by the latest [`ChannelMonitor`]! Thus, if the
+/// latest [`ChannelMonitor`] is not durably persisted anywhere and exists only in memory, naively
+/// calling [`ChannelManager::force_close_broadcasting_latest_txn`] *may result in loss of funds*!
+///
+/// [`ChannelManager::force_close_broadcasting_latest_txn`]: crate::ln::channelmanager::ChannelManager::force_close_broadcasting_latest_txn
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ChannelMonitorUpdateStatus {
 	/// The update has been durably persisted and all copies of the relevant [`ChannelMonitor`]
@@ -184,13 +196,13 @@ pub enum ChannelMonitorUpdateStatus {
 	/// This includes performing any `fsync()` calls required to ensure the update is guaranteed to
 	/// be available on restart even if the application crashes.
 	Completed,
-	/// Used to indicate a temporary failure (eg connection to a watchtower or remote backup of
-	/// our state failed, but is expected to succeed at some point in the future).
+	/// Indicates that the update will happen asynchronously in the background or that a transient
+	/// failure occurred which is being retried in the background and will eventually complete.
 	///
-	/// Such a failure will "freeze" a channel, preventing us from revoking old states or
-	/// submitting new commitment transactions to the counterparty. Once the update(s) which failed
-	/// have been successfully applied, a [`MonitorEvent::Completed`] can be used to restore the
-	/// channel to an operational state.
+	/// This will "freeze" a channel, preventing us from revoking old states or submitting a new
+	/// commitment transaction to the counterparty. Once the update(s) which are `InProgress` have
+	/// been completed, a [`MonitorEvent::Completed`] can be used to restore the channel to an
+	/// operational state.
 	///
 	/// Even when a channel has been "frozen", updates to the [`ChannelMonitor`] can continue to
 	/// occur (e.g. if an inbound HTLC which we forwarded was claimed upstream, resulting in us
@@ -204,6 +216,10 @@ pub enum ChannelMonitorUpdateStatus {
 	/// remote location (with local copies persisted immediately), it is anticipated that all
 	/// updates will return [`InProgress`] until the remote copies could be updated.
 	///
+	/// Note that while fully asynchronous persistence of [`ChannelMonitor`] data is generally
+	/// reliable, this feature is considered beta, and a handful of edge-cases remain. Until the
+	/// remaining cases are fixed, in rare cases, *using this feature may lead to funds loss*.
+	///
 	/// [`InProgress`]: ChannelMonitorUpdateStatus::InProgress
 	InProgress,
 }
@@ -212,18 +228,12 @@ pub enum ChannelMonitorUpdateStatus {
 /// blocks are connected and disconnected.
 ///
 /// Each channel is associated with a [`ChannelMonitor`]. Implementations of this trait are
-/// responsible for maintaining a set of monitors such that they can be updated accordingly as
-/// channel state changes and HTLCs are resolved. See method documentation for specific
-/// requirements.
+/// responsible for maintaining a set of monitors such that they can be updated as channel state
+/// changes. On each update, *all copies* of a [`ChannelMonitor`] must be updated and the update
+/// persisted to disk to ensure that the latest [`ChannelMonitor`] state can be reloaded if the
+/// application crashes.
 ///
-/// Implementations **must** ensure that updates are successfully applied and persisted upon method
-/// completion. If an update will not succeed, then it must immediately shut down.
-///
-/// If an implementation maintains multiple instances of a channel's monitor (e.g., by storing
-/// backup copies), then it must ensure that updates are applied across all instances. Otherwise, it
-/// could result in a revoked transaction being broadcast, allowing the counterparty to claim all
-/// funds in the channel. See [`ChannelMonitorUpdateStatus`] for more details about how to handle
-/// multiple instances.
+/// See method documentation and [`ChannelMonitorUpdateStatus`] for specific requirements.
 pub trait Watch<ChannelSigner: WriteableEcdsaChannelSigner> {
 	/// Watches a channel identified by `funding_txo` using `monitor`.
 	///
