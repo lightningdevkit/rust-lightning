@@ -712,15 +712,29 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, T: Time> ProbabilisticScorerU
 
 						log_debug!(self.logger, core::concat!(
 							"Liquidity from {} to {} via {} is in the range ({}, {}).\n",
-							"\tHistorical min liquidity octile relative probabilities: {} {} {} {} {} {} {} {}\n",
-							"\tHistorical max liquidity octile relative probabilities: {} {} {} {} {} {} {} {}"),
+							"\tHistorical min liquidity bucket relative probabilities:\n",
+							"\t\t{} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {}\n",
+							"\tHistorical max liquidity bucket relative probabilities:\n",
+							"\t\t{} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {}"),
 							source, target, scid, dir_liq.min_liquidity_msat(), dir_liq.max_liquidity_msat(),
-							min_buckets[0], min_buckets[1], min_buckets[2], min_buckets[3],
-							min_buckets[4], min_buckets[5], min_buckets[6], min_buckets[7],
+							min_buckets[ 0], min_buckets[ 1], min_buckets[ 2], min_buckets[ 3],
+							min_buckets[ 4], min_buckets[ 5], min_buckets[ 6], min_buckets[ 7],
+							min_buckets[ 8], min_buckets[ 9], min_buckets[10], min_buckets[11],
+							min_buckets[12], min_buckets[13], min_buckets[14], min_buckets[15],
+							min_buckets[16], min_buckets[17], min_buckets[18], min_buckets[19],
+							min_buckets[20], min_buckets[21], min_buckets[22], min_buckets[23],
+							min_buckets[24], min_buckets[25], min_buckets[26], min_buckets[27],
+							min_buckets[28], min_buckets[29], min_buckets[30], min_buckets[31],
 							// Note that the liquidity buckets are an offset from the edge, so we
 							// inverse the max order to get the probabilities from zero.
-							max_buckets[7], max_buckets[6], max_buckets[5], max_buckets[4],
-							max_buckets[3], max_buckets[2], max_buckets[1], max_buckets[0]);
+							max_buckets[31], max_buckets[30], max_buckets[29], max_buckets[28],
+							max_buckets[27], max_buckets[26], max_buckets[25], max_buckets[24],
+							max_buckets[23], max_buckets[22], max_buckets[21], max_buckets[20],
+							max_buckets[19], max_buckets[18], max_buckets[17], max_buckets[16],
+							max_buckets[15], max_buckets[14], max_buckets[13], max_buckets[12],
+							max_buckets[11], max_buckets[10], max_buckets[ 9], max_buckets[ 8],
+							max_buckets[ 7], max_buckets[ 6], max_buckets[ 5], max_buckets[ 4],
+							max_buckets[ 3], max_buckets[ 2], max_buckets[ 1], max_buckets[ 0]);
 					} else {
 						log_debug!(self.logger, "No amount known for SCID {} from {:?} to {:?}", scid, source, target);
 					}
@@ -754,29 +768,31 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, T: Time> ProbabilisticScorerU
 	/// Query the historical estimated minimum and maximum liquidity available for sending a
 	/// payment over the channel with `scid` towards the given `target` node.
 	///
-	/// Returns two sets of 8 buckets. The first set describes the octiles for lower-bound
-	/// liquidity estimates, the second set describes the octiles for upper-bound liquidity
-	/// estimates. Each bucket describes the relative frequency at which we've seen a liquidity
-	/// bound in the octile relative to the channel's total capacity, on an arbitrary scale.
-	/// Because the values are slowly decayed, more recent data points are weighted more heavily
-	/// than older datapoints.
+	/// Returns two sets of 32 buckets. The first set describes the lower-bound liquidity history,
+	/// the second set describes the upper-bound liquidity history. Each bucket describes the
+	/// relative frequency at which we've seen a liquidity bound in the bucket's range relative to
+	/// the channel's total capacity, on an arbitrary scale. Because the values are slowly decayed,
+	/// more recent data points are weighted more heavily than older datapoints.
 	///
-	/// When scoring, the estimated probability that an upper-/lower-bound lies in a given octile
-	/// relative to the channel's total capacity is calculated by dividing that bucket's value with
-	/// the total of all buckets for the given bound.
+	/// Note that the range of each bucket varies by its location to provide more granular results
+	/// at the edges of a channel's capacity, where it is more likely to sit.
 	///
-	/// For example, a value of `[0, 0, 0, 0, 0, 0, 32]` indicates that we believe the probability
-	/// of a bound being in the top octile to be 100%, and have never (recently) seen it in any
-	/// other octiles. A value of `[31, 0, 0, 0, 0, 0, 0, 32]` indicates we've seen the bound being
-	/// both in the top and bottom octile, and roughly with similar (recent) frequency.
+	/// When scoring, the estimated probability that an upper-/lower-bound lies in a given bucket
+	/// is calculated by dividing that bucket's value with the total value of all buckets.
+	///
+	/// For example, using a lower bucket count for illustrative purposes, a value of
+	/// `[0, 0, 0, ..., 0, 32]` indicates that we believe the probability of a bound being very
+	/// close to the channel's capacity to be 100%, and have never (recently) seen it in any other
+	/// bucket. A value of `[31, 0, 0, ..., 0, 0, 32]` indicates we've seen the bound being both
+	/// in the top and bottom bucket, and roughly with similar (recent) frequency.
 	///
 	/// Because the datapoints are decayed slowly over time, values will eventually return to
-	/// `Some(([0; 8], [0; 8]))`.
+	/// `Some(([0; 32], [0; 32]))`.
 	///
 	/// In order to fetch a single success probability from the buckets provided here, as used in
 	/// the scoring model, see [`Self::historical_estimated_payment_success_probability`].
 	pub fn historical_estimated_channel_liquidity_probabilities(&self, scid: u64, target: &NodeId)
-	-> Option<([u16; 8], [u16; 8])> {
+	-> Option<([u16; 32], [u16; 32])> {
 		let graph = self.network_graph.read_only();
 
 		if let Some(chan) = graph.channels().get(&scid) {
@@ -1549,17 +1565,121 @@ mod approx {
 mod bucketed_history {
 	use super::*;
 
-	/// Tracks the historical state of a distribution as a weighted average of how much time was spent
-	/// in each of 8 buckets.
-	#[derive(Clone, Copy)]
-	pub(super) struct HistoricalBucketRangeTracker {
+	// Because liquidity is often skewed heavily in one direction, we store historical state
+	// distribution in buckets of different size. For backwards compatibility, buckets of size 1/8th
+	// must fit evenly into the buckets here.
+	//
+	// The smallest bucket is 2^-14th of the channel, for each of our 32 buckets here we define the
+	// width of the bucket in 2^14'ths of the channel. This increases exponentially until we reach
+	// a full 16th of the channel's capacity, which is reapeated a few times for backwards
+	// compatibility. The four middle buckets represent full octiles of the channel's capacity.
+	//
+	// For a 1 BTC channel, this let's us differentiate between failures in the bottom 6k sats, or
+	// between the 12,000th sat and 24,000th sat, while only needing to store and operate on 32
+	// buckets in total.
+
+	const BUCKET_START_POS: [u16; 33] = [
+		0, 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 3072, 4096, 6144, 8192, 10240, 12288,
+		13312, 14336, 15360, 15872, 16128, 16256, 16320, 16352, 16368, 16376, 16380, 16382, 16383, 16384,
+	];
+
+	const LEGACY_TO_BUCKET_RANGE: [(u8, u8); 8] = [
+		(0, 12), (12, 14), (14, 15), (15, 16), (16, 17), (17, 18), (18, 20), (20, 32)
+	];
+
+	const POSITION_TICKS: u16 = 1 << 14;
+
+	fn pos_to_bucket(pos: u16) -> usize {
+		for bucket in 0..32 {
+			if pos < BUCKET_START_POS[bucket + 1] {
+				return bucket;
+			}
+		}
+		debug_assert!(false);
+		return 32;
+	}
+
+	#[cfg(test)]
+	#[test]
+	fn check_bucket_maps() {
+		const BUCKET_WIDTH_IN_16384S: [u16; 32] = [
+			1, 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 1024, 1024, 2048, 2048,
+			2048, 2048, 1024, 1024, 1024, 512, 256, 128, 64, 32, 16, 8, 4, 2, 1, 1];
+
+		let mut min_size_iter = 0;
+		let mut legacy_bucket_iter = 0;
+		for (bucket, width) in BUCKET_WIDTH_IN_16384S.iter().enumerate() {
+			assert_eq!(BUCKET_START_POS[bucket], min_size_iter);
+			for i in 0..*width {
+				assert_eq!(pos_to_bucket(min_size_iter + i) as usize, bucket);
+			}
+			min_size_iter += *width;
+			if min_size_iter % (POSITION_TICKS / 8) == 0 {
+				assert_eq!(LEGACY_TO_BUCKET_RANGE[legacy_bucket_iter].1 as usize, bucket + 1);
+				if legacy_bucket_iter + 1 < 8 {
+					assert_eq!(LEGACY_TO_BUCKET_RANGE[legacy_bucket_iter + 1].0 as usize, bucket + 1);
+				}
+				legacy_bucket_iter += 1;
+			}
+		}
+		assert_eq!(BUCKET_START_POS[32], POSITION_TICKS);
+		assert_eq!(min_size_iter, POSITION_TICKS);
+	}
+
+	#[inline]
+	fn amount_to_pos(amount_msat: u64, capacity_msat: u64) -> u16 {
+		let pos = if amount_msat < u64::max_value() / (POSITION_TICKS as u64) {
+			(amount_msat * (POSITION_TICKS as u64) / capacity_msat.saturating_add(1))
+				.try_into().unwrap_or(POSITION_TICKS)
+		} else {
+			// Only use 128-bit arithmetic when multiplication will overflow to avoid 128-bit
+			// division. This branch should only be hit in fuzz testing since the amount would
+			// need to be over 2.88 million BTC in practice.
+			((amount_msat as u128) * (POSITION_TICKS as u128)
+					/ (capacity_msat as u128).saturating_add(1))
+				.try_into().unwrap_or(POSITION_TICKS)
+		};
+		// If we are running in a client that doesn't validate gossip, its possible for a channel's
+		// capacity to change due to a `channel_update` message which, if received while a payment
+		// is in-flight, could cause this to fail. Thus, we only assert in test.
+		#[cfg(test)]
+		debug_assert!(pos < POSITION_TICKS);
+		pos
+	}
+
+	/// Prior to LDK 0.0.117 we used eight buckets which were split evenly across the either
+	/// octiles. This was changed to use 32 buckets for accuracy reasons in 0.0.117, however we
+	/// support reading the legacy values here for backwards compatibility.
+	pub(super) struct LegacyHistoricalBucketRangeTracker {
 		buckets: [u16; 8],
 	}
 
+	impl LegacyHistoricalBucketRangeTracker {
+		pub(crate) fn into_current(&self) -> HistoricalBucketRangeTracker {
+			let mut buckets = [0; 32];
+			for (idx, legacy_bucket) in self.buckets.iter().enumerate() {
+				let mut new_val = *legacy_bucket;
+				let (start, end) = LEGACY_TO_BUCKET_RANGE[idx];
+				new_val /= (end - start) as u16;
+				for i in start..end {
+					buckets[i as usize] = new_val;
+				}
+			}
+			HistoricalBucketRangeTracker { buckets }
+		}
+	}
+
+	/// Tracks the historical state of a distribution as a weighted average of how much time was spent
+	/// in each of 32 buckets.
+	#[derive(Clone, Copy)]
+	pub(super) struct HistoricalBucketRangeTracker {
+		buckets: [u16; 32],
+	}
+
 	impl HistoricalBucketRangeTracker {
-		pub(super) fn new() -> Self { Self { buckets: [0; 8] } }
+		pub(super) fn new() -> Self { Self { buckets: [0; 32] } }
 		pub(super) fn track_datapoint(&mut self, liquidity_offset_msat: u64, capacity_msat: u64) {
-			// We have 8 leaky buckets for min and max liquidity. Each bucket tracks the amount of time
+			// We have 32 leaky buckets for min and max liquidity. Each bucket tracks the amount of time
 			// we spend in each bucket as a 16-bit fixed-point number with a 5 bit fractional part.
 			//
 			// Each time we update our liquidity estimate, we add 32 (1.0 in our fixed-point system) to
@@ -1580,21 +1700,18 @@ mod bucketed_history {
 			// The constants were picked experimentally, selecting a decay amount that restricts us
 			// from overflowing buckets without having to cap them manually.
 
-			// Ensure the bucket index is in the range [0, 7], even if the liquidity offset is zero or
-			// the channel's capacity, though the second should generally never happen.
-			debug_assert!(liquidity_offset_msat <= capacity_msat);
-			let bucket_idx: u8 = (liquidity_offset_msat * 8 / capacity_msat.saturating_add(1))
-				.try_into().unwrap_or(32); // 32 is bogus for 8 buckets, and will be ignored
-			debug_assert!(bucket_idx < 8);
-			if bucket_idx < 8 {
+			let pos: u16 = amount_to_pos(liquidity_offset_msat, capacity_msat);
+			if pos < POSITION_TICKS {
 				for e in self.buckets.iter_mut() {
 					*e = ((*e as u32) * 2047 / 2048) as u16;
 				}
-				self.buckets[bucket_idx as usize] = self.buckets[bucket_idx as usize].saturating_add(32);
+				let bucket = pos_to_bucket(pos);
+				self.buckets[bucket] = self.buckets[bucket].saturating_add(32);
 			}
 		}
 		/// Decay all buckets by the given number of half-lives. Used to more aggressively remove old
 		/// datapoints as we receive newer information.
+		#[inline]
 		pub(super) fn time_decay_data(&mut self, half_lives: u32) {
 			for e in self.buckets.iter_mut() {
 				*e = e.checked_shr(half_lives).unwrap_or(0);
@@ -1603,6 +1720,7 @@ mod bucketed_history {
 	}
 
 	impl_writeable_tlv_based!(HistoricalBucketRangeTracker, { (0, buckets, required) });
+	impl_writeable_tlv_based!(LegacyHistoricalBucketRangeTracker, { (0, buckets, required) });
 
 	/// A set of buckets representing the history of where we've seen the minimum- and maximum-
 	/// liquidity bounds for a given channel.
@@ -1618,7 +1736,7 @@ mod bucketed_history {
 	impl<D: Deref<Target = HistoricalBucketRangeTracker>> HistoricalMinMaxBuckets<D> {
 		#[inline]
 		pub(super) fn get_decayed_buckets<T: Time>(&self, now: T, last_updated: T, half_life: Duration)
-		-> ([u16; 8], [u16; 8], u32) {
+		-> ([u16; 32], [u16; 32], u32) {
 			let required_decays = now.duration_since(last_updated).as_secs()
 				.checked_div(half_life.as_secs())
 				.map_or(u32::max_value(), |decays| cmp::min(decays, u32::max_value() as u64) as u32);
@@ -1633,40 +1751,17 @@ mod bucketed_history {
 		pub(super) fn calculate_success_probability_times_billion<T: Time>(
 			&self, now: T, last_updated: T, half_life: Duration, amount_msat: u64, capacity_msat: u64)
 		-> Option<u64> {
-			// If historical penalties are enabled, calculate the penalty by walking the set of
-			// historical liquidity bucket (min, max) combinations (where min_idx < max_idx) and, for
-			// each, calculate the probability of success given our payment amount, then total the
-			// weighted average probability of success.
-			//
-			// We use a sliding scale to decide which point within a given bucket will be compared to
-			// the amount being sent - for lower-bounds, the amount being sent is compared to the lower
-			// edge of the first bucket (i.e. zero), but compared to the upper 7/8ths of the last
-			// bucket (i.e. 9 times the index, or 63), with each bucket in between increasing the
-			// comparison point by 1/64th. For upper-bounds, the same applies, however with an offset
-			// of 1/64th (i.e. starting at one and ending at 64). This avoids failing to assign
-			// penalties to channels at the edges.
-			//
-			// If we used the bottom edge of buckets, we'd end up never assigning any penalty at all to
-			// such a channel when sending less than ~0.19% of the channel's capacity (e.g. ~200k sats
-			// for a 1 BTC channel!).
-			//
-			// If we used the middle of each bucket we'd never assign any penalty at all when sending
-			// less than 1/16th of a channel's capacity, or 1/8th if we used the top of the bucket.
+			// If historical penalties are enabled, we try to calculate a probability of success
+			// given our historical distribution of min- and max-liquidity bounds in a channel.
+			// To do so, we walk the set of historical liquidity bucket (min, max) combinations
+			// (where min_idx < max_idx, as having a minimum above our maximum is an invalid
+			// state). For each pair, we calculate the probability as if the bucket's corresponding
+			// min- and max- liquidity bounds were our current liquidity bounds and then multiply
+			// that probability by the weight of the selected buckets.
 			let mut total_valid_points_tracked = 0;
 
-			let payment_amt_64th_bucket: u8 = if amount_msat < u64::max_value() / 64 {
-				(amount_msat * 64 / capacity_msat.saturating_add(1))
-					.try_into().unwrap_or(65)
-			} else {
-				// Only use 128-bit arithmetic when multiplication will overflow to avoid 128-bit
-				// division. This branch should only be hit in fuzz testing since the amount would
-				// need to be over 2.88 million BTC in practice.
-				((amount_msat as u128) * 64 / (capacity_msat as u128).saturating_add(1))
-					.try_into().unwrap_or(65)
-			};
-			#[cfg(not(fuzzing))]
-			debug_assert!(payment_amt_64th_bucket <= 64);
-			if payment_amt_64th_bucket >= 64 { return None; }
+			let payment_pos = amount_to_pos(amount_msat, capacity_msat);
+			if payment_pos >= POSITION_TICKS { return None; }
 
 			// Check if all our buckets are zero, once decayed and treat it as if we had no data. We
 			// don't actually use the decayed buckets, though, as that would lose precision.
@@ -1677,7 +1772,7 @@ mod bucketed_history {
 			}
 
 			for (min_idx, min_bucket) in self.min_liquidity_offset_history.buckets.iter().enumerate() {
-				for max_bucket in self.max_liquidity_offset_history.buckets.iter().take(8 - min_idx) {
+				for max_bucket in self.max_liquidity_offset_history.buckets.iter().take(32 - min_idx) {
 					total_valid_points_tracked += (*min_bucket as u64) * (*max_bucket as u64);
 				}
 			}
@@ -1689,19 +1784,24 @@ mod bucketed_history {
 
 			let mut cumulative_success_prob_times_billion = 0;
 			for (min_idx, min_bucket) in self.min_liquidity_offset_history.buckets.iter().enumerate() {
-				for (max_idx, max_bucket) in self.max_liquidity_offset_history.buckets.iter().enumerate().take(8 - min_idx) {
-					let bucket_prob_times_million = (*min_bucket as u64) * (*max_bucket as u64)
-						* 1024 * 1024 / total_valid_points_tracked;
-					let min_64th_bucket = min_idx as u8 * 9;
-					let max_64th_bucket = (7 - max_idx as u8) * 9 + 1;
-					if payment_amt_64th_bucket > max_64th_bucket {
-						// Success probability 0, the payment amount is above the max liquidity
-					} else if payment_amt_64th_bucket <= min_64th_bucket {
-						cumulative_success_prob_times_billion += bucket_prob_times_million * 1024;
+				let min_bucket_start_pos = BUCKET_START_POS[min_idx];
+				for (max_idx, max_bucket) in self.max_liquidity_offset_history.buckets.iter().enumerate().take(32 - min_idx) {
+					let max_bucket_end_pos = BUCKET_START_POS[32 - max_idx] - 1;
+					// Note that this multiply can only barely not overflow - two 16 bit ints plus
+					// 30 bits is 62 bits.
+					let bucket_prob_times_billion = (*min_bucket as u64) * (*max_bucket as u64)
+						* 1024 * 1024 * 1024 / total_valid_points_tracked;
+					if payment_pos >= max_bucket_end_pos {
+						// Success probability 0, the payment amount may be above the max liquidity
+						break;
+					} else if payment_pos < min_bucket_start_pos {
+						cumulative_success_prob_times_billion += bucket_prob_times_billion;
 					} else {
-						cumulative_success_prob_times_billion += bucket_prob_times_million *
-							((max_64th_bucket - payment_amt_64th_bucket) as u64) * 1024 /
-							((max_64th_bucket - min_64th_bucket) as u64);
+						cumulative_success_prob_times_billion += bucket_prob_times_billion *
+							((max_bucket_end_pos - payment_pos) as u64) /
+							// Add an additional one in the divisor as the payment bucket has been
+							// rounded down.
+							((max_bucket_end_pos - min_bucket_start_pos + 1) as u64);
 					}
 				}
 			}
@@ -1710,7 +1810,7 @@ mod bucketed_history {
 		}
 	}
 }
-use bucketed_history::{HistoricalBucketRangeTracker, HistoricalMinMaxBuckets};
+use bucketed_history::{LegacyHistoricalBucketRangeTracker, HistoricalBucketRangeTracker, HistoricalMinMaxBuckets};
 
 impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, T: Time> Writeable for ProbabilisticScorerUsingTime<G, L, T> where L::Target: Logger {
 	#[inline]
@@ -1748,10 +1848,12 @@ impl<T: Time> Writeable for ChannelLiquidity<T> {
 		let duration_since_epoch = T::duration_since_epoch() - self.last_updated.elapsed();
 		write_tlv_fields!(w, {
 			(0, self.min_liquidity_offset_msat, required),
-			(1, Some(self.min_liquidity_offset_history), option),
+			// 1 was the min_liquidity_offset_history in octile form
 			(2, self.max_liquidity_offset_msat, required),
-			(3, Some(self.max_liquidity_offset_history), option),
+			// 3 was the max_liquidity_offset_history in octile form
 			(4, duration_since_epoch, required),
+			(5, Some(self.min_liquidity_offset_history), option),
+			(7, Some(self.max_liquidity_offset_history), option),
 		});
 		Ok(())
 	}
@@ -1762,15 +1864,19 @@ impl<T: Time> Readable for ChannelLiquidity<T> {
 	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
 		let mut min_liquidity_offset_msat = 0;
 		let mut max_liquidity_offset_msat = 0;
-		let mut min_liquidity_offset_history = Some(HistoricalBucketRangeTracker::new());
-		let mut max_liquidity_offset_history = Some(HistoricalBucketRangeTracker::new());
+		let mut legacy_min_liq_offset_history: Option<LegacyHistoricalBucketRangeTracker> = None;
+		let mut legacy_max_liq_offset_history: Option<LegacyHistoricalBucketRangeTracker> = None;
+		let mut min_liquidity_offset_history: Option<HistoricalBucketRangeTracker> = None;
+		let mut max_liquidity_offset_history: Option<HistoricalBucketRangeTracker> = None;
 		let mut duration_since_epoch = Duration::from_secs(0);
 		read_tlv_fields!(r, {
 			(0, min_liquidity_offset_msat, required),
-			(1, min_liquidity_offset_history, option),
+			(1, legacy_min_liq_offset_history, option),
 			(2, max_liquidity_offset_msat, required),
-			(3, max_liquidity_offset_history, option),
+			(3, legacy_max_liq_offset_history, option),
 			(4, duration_since_epoch, required),
+			(5, min_liquidity_offset_history, option),
+			(7, max_liquidity_offset_history, option),
 		});
 		// On rust prior to 1.60 `Instant::duration_since` will panic if time goes backwards.
 		// We write `last_updated` as wallclock time even though its ultimately an `Instant` (which
@@ -1784,6 +1890,20 @@ impl<T: Time> Readable for ChannelLiquidity<T> {
 		let last_updated = if wall_clock_now > duration_since_epoch {
 			now - (wall_clock_now - duration_since_epoch)
 		} else { now };
+		if min_liquidity_offset_history.is_none() {
+			if let Some(legacy_buckets) = legacy_min_liq_offset_history {
+				min_liquidity_offset_history = Some(legacy_buckets.into_current());
+			} else {
+				min_liquidity_offset_history = Some(HistoricalBucketRangeTracker::new());
+			}
+		}
+		if max_liquidity_offset_history.is_none() {
+			if let Some(legacy_buckets) = legacy_max_liq_offset_history {
+				max_liquidity_offset_history = Some(legacy_buckets.into_current());
+			} else {
+				max_liquidity_offset_history = Some(HistoricalBucketRangeTracker::new());
+			}
+		}
 		Ok(Self {
 			min_liquidity_offset_msat,
 			max_liquidity_offset_msat,
@@ -1912,20 +2032,20 @@ mod tests {
 		let chain_source: Option<&crate::util::test_utils::TestChainSource> = None;
 		network_graph.update_channel_from_announcement(
 			&signed_announcement, &chain_source).unwrap();
-		update_channel(network_graph, short_channel_id, node_1_key, 0, 1_000);
-		update_channel(network_graph, short_channel_id, node_2_key, 1, 0);
+		update_channel(network_graph, short_channel_id, node_1_key, 0, 1_000, 100);
+		update_channel(network_graph, short_channel_id, node_2_key, 1, 0, 100);
 	}
 
 	fn update_channel(
 		network_graph: &mut NetworkGraph<&TestLogger>, short_channel_id: u64, node_key: SecretKey,
-		flags: u8, htlc_maximum_msat: u64
+		flags: u8, htlc_maximum_msat: u64, timestamp: u32,
 	) {
 		let genesis_hash = genesis_block(Network::Testnet).header.block_hash();
 		let secp_ctx = Secp256k1::new();
 		let unsigned_update = UnsignedChannelUpdate {
 			chain_hash: genesis_hash,
 			short_channel_id,
-			timestamp: 100,
+			timestamp,
 			flags,
 			cltv_expiry_delta: 18,
 			htlc_minimum_msat: 0,
@@ -2901,6 +3021,12 @@ mod tests {
 			inflight_htlc_msat: 0,
 			effective_capacity: EffectiveCapacity::Total { capacity_msat: 1_024, htlc_maximum_msat: 1_024 },
 		};
+		let usage_1 = ChannelUsage {
+			amount_msat: 1,
+			inflight_htlc_msat: 0,
+			effective_capacity: EffectiveCapacity::Total { capacity_msat: 1_024, htlc_maximum_msat: 1_024 },
+		};
+
 		// With no historical data the normal liquidity penalty calculation is used.
 		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 47);
 		assert_eq!(scorer.historical_estimated_channel_liquidity_probabilities(42, &target),
@@ -2910,12 +3036,14 @@ mod tests {
 
 		scorer.payment_path_failed(&payment_path_for_amount(1), 42);
 		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 2048);
-		// The "it failed" increment is 32, where the probability should lie fully in the first
-		// octile.
+		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage_1, &params), 128);
+		// The "it failed" increment is 32, where the probability should lie several buckets into
+		// the first octile.
 		assert_eq!(scorer.historical_estimated_channel_liquidity_probabilities(42, &target),
-			Some(([32, 0, 0, 0, 0, 0, 0, 0], [32, 0, 0, 0, 0, 0, 0, 0])));
-		assert_eq!(scorer.historical_estimated_payment_success_probability(42, &target, 1),
-			Some(1.0));
+			Some(([32, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+				[0, 0, 0, 0, 0, 0, 32, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])));
+		assert!(scorer.historical_estimated_payment_success_probability(42, &target, 1)
+			.unwrap() > 0.35);
 		assert_eq!(scorer.historical_estimated_payment_success_probability(42, &target, 500),
 			Some(0.0));
 
@@ -2923,9 +3051,10 @@ mod tests {
 		// still remember that there was some failure in the past, and assign a non-0 penalty.
 		scorer.payment_path_failed(&payment_path_for_amount(1000), 43);
 		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 198);
-		// The first octile should be decayed just slightly and the last octile has a new point.
+		// The first points should be decayed just slightly and the last bucket has a new point.
 		assert_eq!(scorer.historical_estimated_channel_liquidity_probabilities(42, &target),
-			Some(([31, 0, 0, 0, 0, 0, 0, 32], [31, 0, 0, 0, 0, 0, 0, 32])));
+			Some(([31, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 32, 0, 0, 0, 0, 0],
+				[0, 0, 0, 0, 0, 0, 31, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 32])));
 
 		// The exact success probability is a bit complicated and involves integer rounding, so we
 		// simply check bounds here.
@@ -2935,8 +3064,8 @@ mod tests {
 		assert!(five_hundred_prob < 0.52);
 		let one_prob =
 			scorer.historical_estimated_payment_success_probability(42, &target, 1).unwrap();
-		assert!(one_prob < 1.0);
-		assert!(one_prob > 0.99);
+		assert!(one_prob < 0.95);
+		assert!(one_prob > 0.90);
 
 		// Advance the time forward 16 half-lives (which the docs claim will ensure all data is
 		// gone), and check that we're back to where we started.
@@ -2945,7 +3074,7 @@ mod tests {
 		// Once fully decayed we still have data, but its all-0s. In the future we may remove the
 		// data entirely instead.
 		assert_eq!(scorer.historical_estimated_channel_liquidity_probabilities(42, &target),
-			Some(([0; 8], [0; 8])));
+			Some(([0; 32], [0; 32])));
 		assert_eq!(scorer.historical_estimated_payment_success_probability(42, &target, 1), None);
 
 		let mut usage = ChannelUsage {
@@ -3071,5 +3200,80 @@ mod tests {
 			.as_directed(&source, &target, 0, 1_000, decay_params);
 		assert_eq!(liquidity.min_liquidity_msat(), 256);
 		assert_eq!(liquidity.max_liquidity_msat(), 768);
+	}
+
+	#[test]
+	fn realistic_historical_failures() {
+		// The motivation for the unequal sized buckets came largely from attempting to pay 10k
+		// sats over a one bitcoin channel. This tests that case explicitly, ensuring that we score
+		// properly.
+		let logger = TestLogger::new();
+		let mut network_graph = network_graph(&logger);
+		let params = ProbabilisticScoringFeeParameters {
+			historical_liquidity_penalty_multiplier_msat: 1024,
+			historical_liquidity_penalty_amount_multiplier_msat: 1024,
+			..ProbabilisticScoringFeeParameters::zero_penalty()
+		};
+		let decay_params = ProbabilisticScoringDecayParameters {
+			liquidity_offset_half_life: Duration::from_secs(60 * 60),
+			historical_no_updates_half_life: Duration::from_secs(10),
+			..ProbabilisticScoringDecayParameters::default()
+		};
+
+		let capacity_msat = 100_000_000_000;
+		update_channel(&mut network_graph, 42, source_privkey(), 0, capacity_msat, 200);
+		update_channel(&mut network_graph, 42, target_privkey(), 1, capacity_msat, 200);
+
+		let mut scorer = ProbabilisticScorer::new(decay_params, &network_graph, &logger);
+		let source = source_node_id();
+		let target = target_node_id();
+
+		let mut amount_msat = 10_000_000;
+		let usage = ChannelUsage {
+			amount_msat,
+			inflight_htlc_msat: 0,
+			effective_capacity: EffectiveCapacity::Total { capacity_msat, htlc_maximum_msat: capacity_msat },
+		};
+		// With no historical data the normal liquidity penalty calculation is used, which in this
+		// case is diminuitively low.
+		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 0);
+		assert_eq!(scorer.historical_estimated_channel_liquidity_probabilities(42, &target),
+			None);
+		assert_eq!(scorer.historical_estimated_payment_success_probability(42, &target, 42),
+			None);
+
+		// Fail to pay once, and then check the buckets and penalty.
+		scorer.payment_path_failed(&payment_path_for_amount(amount_msat), 42);
+		// The penalty should be the maximum penalty, as the payment we're scoring is now in the
+		// same bucket which is the only maximum datapoint.
+		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params),
+			2048 + 2048 * amount_msat / super::AMOUNT_PENALTY_DIVISOR);
+		// The "it failed" increment is 32, which we should apply to the first upper-bound (between
+		// 6k sats and 12k sats).
+		assert_eq!(scorer.historical_estimated_channel_liquidity_probabilities(42, &target),
+			Some(([32, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+				[0, 32, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])));
+		// The success probability estimate itself should be zero.
+		assert_eq!(scorer.historical_estimated_payment_success_probability(42, &target, amount_msat),
+			Some(0.0));
+
+		// Now test again with the amount in the bottom bucket.
+		amount_msat /= 2;
+		// The new amount is entirely within the only minimum bucket with score, so the probability
+		// we assign is 1/2.
+		assert_eq!(scorer.historical_estimated_payment_success_probability(42, &target, amount_msat),
+			Some(0.5));
+
+		// ...but once we see a failure, we consider the payment to be substantially less likely,
+		// even though not a probability of zero as we still look at the second max bucket which
+		// now shows 31.
+		scorer.payment_path_failed(&payment_path_for_amount(amount_msat), 42);
+		assert_eq!(scorer.historical_estimated_channel_liquidity_probabilities(42, &target),
+			Some(([63, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+				[32, 31, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])));
+		assert!(scorer.historical_estimated_payment_success_probability(42, &target, amount_msat)
+			.unwrap() > 0.24);
+		assert!(scorer.historical_estimated_payment_success_probability(42, &target, amount_msat)
+			.unwrap() < 0.25);
 	}
 }
