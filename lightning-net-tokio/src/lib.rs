@@ -216,7 +216,27 @@ impl Connection {
 					match reader.try_read(&mut buf) {
 						Ok(0) => break Disconnect::PeerDisconnected,
 						Ok(len) => {
-							let read_res = peer_manager.as_ref().read_event(&mut our_descriptor, &buf[0..len]);
+							// Handle the event on a dedicated thread.
+							let peer_manager = peer_manager.clone();
+							let mut our_descriptor = our_descriptor.clone();
+							let join = tokio::task::spawn_blocking(move || {
+								peer_manager.as_ref().read_event(&mut our_descriptor, &buf[0..len])
+							});
+
+							// Busy-wait until it finishes so other processing can happen in parallel. This works
+							// around a bug on OS/X where Tokio doesn't ever wake up any other workers.
+							#[cfg(target_os = "macos")]
+							while !join.is_finished() {
+								tokio::task::yield_now().await;
+							}
+
+							// Check to see if we panicked.
+							let join_res = join.await;
+							if join_res.is_err() {
+								break Disconnect::CloseConnection;
+							}
+							
+							let read_res = join_res.unwrap();
 							let mut us_lock = us.lock().unwrap();
 							match read_res {
 								Ok(pause_read) => {
