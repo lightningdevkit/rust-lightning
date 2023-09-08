@@ -553,61 +553,50 @@ impl Readable for bool {
 	}
 }
 
-// u8 arrays
 macro_rules! impl_array {
-	( $size:expr ) => (
-		impl Writeable for [u8; $size]
-		{
+	($size:expr, $ty: ty) => (
+		impl Writeable for [$ty; $size] {
 			#[inline]
 			fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
-				w.write_all(self)
+				let mut out = [0; $size * core::mem::size_of::<$ty>()];
+				for (idx, v) in self.iter().enumerate() {
+					let startpos = idx * core::mem::size_of::<$ty>();
+					out[startpos..startpos + core::mem::size_of::<$ty>()].copy_from_slice(&v.to_be_bytes());
+				}
+				w.write_all(&out)
 			}
 		}
 
-		impl Readable for [u8; $size]
-		{
+		impl Readable for [$ty; $size] {
 			#[inline]
 			fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
-				let mut buf = [0u8; $size];
+				let mut buf = [0u8; $size * core::mem::size_of::<$ty>()];
 				r.read_exact(&mut buf)?;
-				Ok(buf)
+				let mut res = [0; $size];
+				for (idx, v) in res.iter_mut().enumerate() {
+					let startpos = idx * core::mem::size_of::<$ty>();
+					let mut arr = [0; core::mem::size_of::<$ty>()];
+					arr.copy_from_slice(&buf[startpos..startpos + core::mem::size_of::<$ty>()]);
+					*v = <$ty>::from_be_bytes(arr);
+				}
+				Ok(res)
 			}
 		}
 	);
 }
 
-impl_array!(3); // for rgb, ISO 4712 code
-impl_array!(4); // for IPv4
-impl_array!(12); // for OnionV2
-impl_array!(16); // for IPv6
-impl_array!(32); // for channel id & hmac
-impl_array!(PUBLIC_KEY_SIZE); // for PublicKey
-impl_array!(64); // for ecdsa::Signature and schnorr::Signature
-impl_array!(66); // for MuSig2 nonces
-impl_array!(1300); // for OnionPacket.hop_data
+impl_array!(3, u8); // for rgb, ISO 4712 code
+impl_array!(4, u8); // for IPv4
+impl_array!(12, u8); // for OnionV2
+impl_array!(16, u8); // for IPv6
+impl_array!(32, u8); // for channel id & hmac
+impl_array!(PUBLIC_KEY_SIZE, u8); // for PublicKey
+impl_array!(64, u8); // for ecdsa::Signature and schnorr::Signature
+impl_array!(66, u8); // for MuSig2 nonces
+impl_array!(1300, u8); // for OnionPacket.hop_data
 
-impl Writeable for [u16; 8] {
-	#[inline]
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
-		for v in self.iter() {
-			w.write_all(&v.to_be_bytes())?
-		}
-		Ok(())
-	}
-}
-
-impl Readable for [u16; 8] {
-	#[inline]
-	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
-		let mut buf = [0u8; 16];
-		r.read_exact(&mut buf)?;
-		let mut res = [0u16; 8];
-		for (idx, v) in res.iter_mut().enumerate() {
-			*v = (buf[idx*2] as u16) << 8 | (buf[idx*2 + 1] as u16)
-		}
-		Ok(res)
-	}
-}
+impl_array!(8, u16);
+impl_array!(32, u16);
 
 /// A type for variable-length values within TLV record where the length is encoded as part of the record.
 /// Used to prevent encoding the length twice.
