@@ -24,4 +24,4 @@ mod payer;
 pub mod refund;
 pub(crate) mod signer;
 #[cfg(test)]
-mod test_utils;
+pub(crate) mod test_utils;
