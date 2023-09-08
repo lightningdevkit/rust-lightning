@@ -4081,6 +4081,73 @@ fn test_channel_ready_without_best_block_updated() {
 }
 
 #[test]
+fn test_channel_monitor_skipping_block_when_channel_manager_is_leading() {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	// Let channel_manager get ahead of chain_monitor by 1 block.
+	// This is to emulate race-condition where newly added channel_monitor skips processing 1 block,
+	// in case where client calls block_connect on channel_manager first and then on chain_monitor.
+	let height_1 = nodes[0].best_block_info().1 + 1;
+	let mut block_1 = create_dummy_block(nodes[0].best_block_hash(), height_1, Vec::new());
+
+	nodes[0].blocks.lock().unwrap().push((block_1.clone(), height_1));
+	nodes[0].node.block_connected(&block_1, height_1);
+
+	// Create channel, and it gets added to chain_monitor in funding_created.
+	let funding_tx = create_chan_between_nodes_with_value_init(&nodes[0], &nodes[1], 1_000_000, 0);
+
+	// Now, newly added channel_monitor in chain_monitor hasn't processed block_1,
+	// but it's best_block is block_1, since that was populated by channel_manager, and channel_manager
+	// was running ahead of chain_monitor at the time of funding_created.
+	// Later on, subsequent blocks are connected to both channel_manager and chain_monitor.
+	// Hence, this channel's channel_monitor skipped block_1, directly tries to process subsequent blocks.
+	confirm_transaction_at(&nodes[0], &funding_tx, nodes[0].best_block_info().1 + 1);
+	connect_blocks(&nodes[0], CHAN_CONFIRM_DEPTH);
+
+	// Ensure nodes[0] generates a channel_ready after the transactions_confirmed
+	let as_channel_ready = get_event_msg!(nodes[0], MessageSendEvent::SendChannelReady, nodes[1].node.get_our_node_id());
+	nodes[1].node.handle_channel_ready(&nodes[0].node.get_our_node_id(), &as_channel_ready);
+}
+
+#[test]
+fn test_channel_monitor_skipping_block_when_channel_manager_is_lagging() {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	// Let chain_monitor get ahead of channel_manager by 1 block.
+	// This is to emulate race-condition where newly added channel_monitor skips processing 1 block,
+	// in case where client calls block_connect on chain_monitor first and then on channel_manager.
+	let height_1 = nodes[0].best_block_info().1 + 1;
+	let mut block_1 = create_dummy_block(nodes[0].best_block_hash(), height_1, Vec::new());
+
+	nodes[0].blocks.lock().unwrap().push((block_1.clone(), height_1));
+	nodes[0].chain_monitor.chain_monitor.block_connected(&block_1, height_1);
+
+	// Create channel, and it gets added to chain_monitor in funding_created.
+	let funding_tx = create_chan_between_nodes_with_value_init(&nodes[0], &nodes[1], 1_000_000, 0);
+
+	// channel_manager can't really skip block_1, it should get it eventually.
+	nodes[0].node.block_connected(&block_1, height_1);
+
+	// Now, newly added channel_monitor in chain_monitor hasn't processed block_1, it's best_block is
+	// the block before block_1, since that was populated by channel_manager, and channel_manager was
+	// running behind at the time of funding_created.
+	// Later on, subsequent blocks are connected to both channel_manager and chain_monitor.
+	// Hence, this channel's channel_monitor skipped block_1, directly tries to process subsequent blocks.
+	confirm_transaction_at(&nodes[0], &funding_tx, nodes[0].best_block_info().1 + 1);
+	connect_blocks(&nodes[0], CHAN_CONFIRM_DEPTH);
+
+	// Ensure nodes[0] generates a channel_ready after the transactions_confirmed
+	let as_channel_ready = get_event_msg!(nodes[0], MessageSendEvent::SendChannelReady, nodes[1].node.get_our_node_id());
+	nodes[1].node.handle_channel_ready(&nodes[0].node.get_our_node_id(), &as_channel_ready);
+}
+
+#[test]
 fn test_drop_messages_peer_disconnect_dual_htlc() {
 	// Test that we can handle reconnecting when both sides of a channel have pending
 	// commitment_updates when we disconnect.
