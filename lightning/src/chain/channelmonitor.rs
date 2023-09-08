@@ -38,7 +38,7 @@ use crate::ln::{PaymentHash, PaymentPreimage};
 use crate::ln::msgs::DecodeError;
 use crate::ln::chan_utils;
 use crate::ln::chan_utils::{CommitmentTransaction, CounterpartyCommitmentSecrets, HTLCOutputInCommitment, HTLCClaim, ChannelTransactionParameters, HolderCommitmentTransaction, TxCreationKeys};
-use crate::ln::channelmanager::{HTLCSource, SentHTLCId};
+use crate::ln::channelmanager::{HTLCSource, SentHTLCId, HTLCPreviousHopData};
 use crate::chain;
 use crate::chain::{BestBlock, WatchedOutput};
 use crate::chain::chaininterface::{BroadcasterInterface, FeeEstimator, LowerBoundedFeeEstimator};
@@ -171,19 +171,25 @@ impl_writeable_tlv_based_enum_upgradable!(MonitorEvent,
 );
 
 /// Simple structure sent back by `chain::Watch` when an HTLC from a forward channel is detected on
-/// chain. Used to update the corresponding HTLC in the backward channel. Failing to pass the
-/// preimage claim backward will lead to loss of funds.
+/// chain, or when we failing an HTLC awaiting downstream confirmation to prevent a
+/// backwards channel from going on-chain. Used to update the corresponding HTLC in the backward
+/// channel. Failing to pass the preimage claim backward will lead to loss of funds.
 #[derive(Clone, PartialEq, Eq)]
 pub struct HTLCUpdate {
 	pub(crate) payment_hash: PaymentHash,
 	pub(crate) payment_preimage: Option<PaymentPreimage>,
 	pub(crate) source: HTLCSource,
 	pub(crate) htlc_value_satoshis: Option<u64>,
+	/// If this is an update to fail back the upstream HTLC, this signals whether we're failing
+	/// back this HTLC because we saw a downstream claim on-chain, or if we're close to the
+	/// upstream timeout and want to prevent the channel from going on-chain.
+	pub(crate) awaiting_downstream_confirmation: bool,
 }
 impl_writeable_tlv_based!(HTLCUpdate, {
 	(0, payment_hash, required),
 	(1, htlc_value_satoshis, option),
 	(2, source, required),
+	(3, awaiting_downstream_confirmation, (default_value, false)),
 	(4, payment_preimage, option),
 });
 
@@ -897,6 +903,12 @@ pub(crate) struct ChannelMonitorImpl<Signer: WriteableEcdsaChannelSigner> {
 	/// Ordering of tuple data: (their_per_commitment_point, feerate_per_kw, to_broadcaster_sats,
 	/// to_countersignatory_sats)
 	initial_counterparty_commitment_info: Option<(PublicKey, u32, u64, u64)>,
+
+	/// In-memory only HTLC ids used to track upstream HTLCs that have been failed backwards due to
+	/// a downstream channel force-close remaining unconfirmed by the time the upstream timeout
+	/// expires. This is used to tell us we already generated an event to fail this HTLC back
+	/// during a previous block scan.
+	failed_back_htlc_ids: HashSet<u64>,
 }
 
 /// Transaction outputs to watch for on-chain spends.
@@ -1239,6 +1251,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 			best_block,
 			counterparty_node_id: Some(counterparty_node_id),
 			initial_counterparty_commitment_info: None,
+			failed_back_htlc_ids: HashSet::new(),
 		})
 	}
 
@@ -3560,6 +3573,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 						payment_preimage: None,
 						source: source.clone(),
 						htlc_value_satoshis,
+						awaiting_downstream_confirmation: false,
 					}));
 					self.htlcs_resolved_on_chain.push(IrrevocablyResolvedHTLC {
 						commitment_tx_output_idx,
@@ -3588,6 +3602,63 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 					self.funding_spend_confirmed = Some(entry.txid);
 					self.confirmed_commitment_tx_counterparty_output = commitment_tx_to_counterparty_output;
 				},
+			}
+		}
+
+		// Fail back HTLCs on backwards channels if they expire within `LATENCY_GRACE_PERIOD_BLOCKS`
+		// blocks. If we haven't seen the preimage for an HTLC by the time the previous hop's
+		// timeout expires, we've lost that HTLC, so we might as well fail it back instead of having our
+		// counterparty force-close the channel.
+		let current_holder_htlcs = self.current_holder_commitment_tx.htlc_outputs.iter()
+			.map(|&(ref a, _, ref b)| (a, b.as_ref()));
+
+		let current_counterparty_htlcs = if let Some(txid) = self.current_counterparty_commitment_txid {
+			if let Some(htlc_outputs) = self.counterparty_claimable_outpoints.get(&txid) {
+				Some(htlc_outputs.iter().map(|&(ref a, ref b)| (a, b.as_ref().map(|boxed| &**boxed))))
+			} else { None }
+		} else { None }.into_iter().flatten();
+
+		let prev_counterparty_htlcs = if let Some(txid) = self.prev_counterparty_commitment_txid {
+			if let Some(htlc_outputs) = self.counterparty_claimable_outpoints.get(&txid) {
+				Some(htlc_outputs.iter().map(|&(ref a, ref b)| (a, b.as_ref().map(|boxed| &**boxed))))
+			} else { None }
+		} else { None }.into_iter().flatten();
+
+		let htlcs = current_holder_htlcs
+			.chain(current_counterparty_htlcs)
+			.chain(prev_counterparty_htlcs);
+
+		let height = self.best_block.height();
+		for (htlc, source_opt) in htlcs {
+			// Only check forwarded HTLCs' previous hops
+			let source = match source_opt {
+				Some(source) => source,
+				None => continue,
+			};
+			let (cltv_expiry, htlc_id) = match source {
+				HTLCSource::PreviousHopData(HTLCPreviousHopData {
+					htlc_id, cltv_expiry: Some(cltv_expiry), ..
+				}) if !self.failed_back_htlc_ids.contains(htlc_id) => (*cltv_expiry, *htlc_id),
+				_ => continue,
+			};
+			if cltv_expiry <= height + LATENCY_GRACE_PERIOD_BLOCKS {
+				let duplicate_event = self.pending_monitor_events.iter().any(
+					|update| if let &MonitorEvent::HTLCEvent(ref upd) = update {
+						upd.source == *source
+					} else { false });
+				if !duplicate_event {
+					log_debug!(logger, "Failing back HTLC {} upstream to preserve the \
+						channel as the forward HTLC hasn't resolved and our backward HTLC \
+						expires soon at {}", log_bytes!(htlc.payment_hash.0), cltv_expiry);
+					self.pending_monitor_events.push(MonitorEvent::HTLCEvent(HTLCUpdate {
+						source: source.clone(),
+						payment_preimage: None,
+						payment_hash: htlc.payment_hash,
+						htlc_value_satoshis: Some(htlc.amount_msat / 1000),
+						awaiting_downstream_confirmation: true,
+					}));
+					self.failed_back_htlc_ids.insert(htlc_id);
+				}
 			}
 		}
 
@@ -3937,6 +4008,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 							payment_preimage: Some(payment_preimage),
 							payment_hash,
 							htlc_value_satoshis: Some(amount_msat / 1000),
+							awaiting_downstream_confirmation: false,
 						}));
 					}
 				} else if offered_preimage_claim {
@@ -3960,6 +4032,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 							payment_preimage: Some(payment_preimage),
 							payment_hash,
 							htlc_value_satoshis: Some(amount_msat / 1000),
+							awaiting_downstream_confirmation: false,
 						}));
 					}
 				} else {
@@ -4386,6 +4459,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 			best_block,
 			counterparty_node_id,
 			initial_counterparty_commitment_info,
+			failed_back_htlc_ids: HashSet::new(),
 		})))
 	}
 }
