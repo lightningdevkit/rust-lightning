@@ -605,6 +605,35 @@ impl_writeable_tlv_based!(PendingChannelMonitorUpdate, {
 	(0, update, required),
 });
 
+/// The `ChannelPhase` enum describes the current phase in life of a lightning channel with each of
+/// its variants containing an appropriate channel struct.
+pub(super) enum ChannelPhase<SP: Deref> where SP::Target: SignerProvider {
+	UnfundedOutboundV1(OutboundV1Channel<SP>),
+	UnfundedInboundV1(InboundV1Channel<SP>),
+	Funded(Channel<SP>),
+}
+
+impl<'a, SP: Deref> ChannelPhase<SP> where
+	SP::Target: SignerProvider,
+	<SP::Target as SignerProvider>::Signer: ChannelSigner,
+{
+	pub fn context(&'a self) -> &'a ChannelContext<SP> {
+		match self {
+			ChannelPhase::Funded(chan) => &chan.context,
+			ChannelPhase::UnfundedOutboundV1(chan) => &chan.context,
+			ChannelPhase::UnfundedInboundV1(chan) => &chan.context,
+		}
+	}
+
+	pub fn context_mut(&'a mut self) -> &'a mut ChannelContext<SP> {
+		match self {
+			ChannelPhase::Funded(ref mut chan) => &mut chan.context,
+			ChannelPhase::UnfundedOutboundV1(ref mut chan) => &mut chan.context,
+			ChannelPhase::UnfundedInboundV1(ref mut chan) => &mut chan.context,
+		}
+	}
+}
+
 /// Contains all state common to unfunded inbound/outbound channels.
 pub(super) struct UnfundedChannelContext {
 	/// A counter tracking how many ticks have elapsed since this unfunded channel was
@@ -2036,11 +2065,6 @@ fn commit_tx_fee_msat(feerate_per_kw: u32, num_htlcs: usize, channel_type_featur
 	(commitment_tx_base_weight(channel_type_features) + num_htlcs as u64 * COMMITMENT_TX_WEIGHT_PER_HTLC) * feerate_per_kw as u64 / 1000 * 1000
 }
 
-// TODO: We should refactor this to be an Inbound/OutboundChannel until initial setup handshaking
-// has been completed, and then turn into a Channel to get compiler-time enforcement of things like
-// calling channel_id() before we're set up or things like get_funding_signed on an
-// inbound channel.
-//
 // Holder designates channel data owned for the benefit of the user client.
 // Counterparty designates channel data owned by the another channel participant entity.
 pub(super) struct Channel<SP: Deref> where SP::Target: SignerProvider {

@@ -20,7 +20,7 @@ use crate::chain::transaction::OutPoint;
 use crate::chain::{ChannelMonitorUpdateStatus, Listen, Watch};
 use crate::events::{Event, MessageSendEvent, MessageSendEventsProvider, PaymentPurpose, ClosureReason, HTLCDestination};
 use crate::ln::channelmanager::{RAACommitmentOrder, PaymentSendFailure, PaymentId, RecipientOnionFields};
-use crate::ln::channel::AnnouncementSigsState;
+use crate::ln::channel::{AnnouncementSigsState, ChannelPhase};
 use crate::ln::msgs;
 use crate::ln::msgs::{ChannelMessageHandler, RoutingMessageHandler};
 use crate::util::test_channel_signer::TestChannelSigner;
@@ -136,15 +136,18 @@ fn test_monitor_and_persister_update_fail() {
 	{
 		let mut node_0_per_peer_lock;
 		let mut node_0_peer_state_lock;
-		let mut channel = get_channel_ref!(nodes[0], nodes[1], node_0_per_peer_lock, node_0_peer_state_lock, chan.2);
-		if let Ok(Some(update)) = channel.commitment_signed(&updates.commitment_signed, &node_cfgs[0].logger) {
-			// Check that even though the persister is returning a InProgress,
-			// because the update is bogus, ultimately the error that's returned
-			// should be a PermanentFailure.
-			if let ChannelMonitorUpdateStatus::PermanentFailure = chain_mon.chain_monitor.update_channel(outpoint, &update) {} else { panic!("Expected monitor error to be permanent"); }
-			logger.assert_log_regex("lightning::chain::chainmonitor", regex::Regex::new("Persistence of ChannelMonitorUpdate for channel [0-9a-f]* in progress").unwrap(), 1);
-			assert_eq!(nodes[0].chain_monitor.update_channel(outpoint, &update), ChannelMonitorUpdateStatus::Completed);
-		} else { assert!(false); }
+		if let ChannelPhase::Funded(ref mut channel) = get_channel_ref!(nodes[0], nodes[1], node_0_per_peer_lock, node_0_peer_state_lock, chan.2) {
+			if let Ok(Some(update)) = channel.commitment_signed(&updates.commitment_signed, &node_cfgs[0].logger) {
+				// Check that even though the persister is returning a InProgress,
+				// because the update is bogus, ultimately the error that's returned
+				// should be a PermanentFailure.
+				if let ChannelMonitorUpdateStatus::PermanentFailure = chain_mon.chain_monitor.update_channel(outpoint, &update) {} else { panic!("Expected monitor error to be permanent"); }
+				logger.assert_log_regex("lightning::chain::chainmonitor", regex::Regex::new("Persistence of ChannelMonitorUpdate for channel [0-9a-f]* in progress").unwrap(), 1);
+				assert_eq!(nodes[0].chain_monitor.update_channel(outpoint, &update), ChannelMonitorUpdateStatus::Completed);
+			} else { assert!(false); }
+		} else {
+			assert!(false);
+		}
 	}
 
 	check_added_monitors!(nodes[0], 1);
@@ -1460,12 +1463,12 @@ fn monitor_failed_no_reestablish_response() {
 	{
 		let mut node_0_per_peer_lock;
 		let mut node_0_peer_state_lock;
-		get_channel_ref!(nodes[0], nodes[1], node_0_per_peer_lock, node_0_peer_state_lock, channel_id).context.announcement_sigs_state = AnnouncementSigsState::PeerReceived;
+		get_channel_ref!(nodes[0], nodes[1], node_0_per_peer_lock, node_0_peer_state_lock, channel_id).context_mut().announcement_sigs_state = AnnouncementSigsState::PeerReceived;
 	}
 	{
 		let mut node_1_per_peer_lock;
 		let mut node_1_peer_state_lock;
-		get_channel_ref!(nodes[1], nodes[0], node_1_per_peer_lock, node_1_peer_state_lock, channel_id).context.announcement_sigs_state = AnnouncementSigsState::PeerReceived;
+		get_channel_ref!(nodes[1], nodes[0], node_1_per_peer_lock, node_1_peer_state_lock, channel_id).context_mut().announcement_sigs_state = AnnouncementSigsState::PeerReceived;
 	}
 
 	// Route the payment and deliver the initial commitment_signed (with a monitor update failure
