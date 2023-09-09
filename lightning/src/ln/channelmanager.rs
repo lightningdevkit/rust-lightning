@@ -6992,6 +6992,12 @@ where
 			let timestamp = self.highest_seen_timestamp.load(Ordering::Acquire);
 			self.do_chain_event(Some(last_best_block_height), |channel| channel.best_block_updated(last_best_block_height, timestamp as u32, self.genesis_hash.clone(), &self.node_signer, &self.default_configuration, &self.logger));
 		}
+		// log each confirmed tansaction's Txid.
+		for tx in txdata.iter() {
+			let (index, transaction) = tx;
+			let txid = transaction.txid();
+			log_trace!(self.logger, "Transaction id {} confirmed in block {}", txid, block_hash);
+		}
 	}
 
 	fn best_block_updated(&self, header: &BlockHeader, height: u32) {
@@ -7326,7 +7332,6 @@ where
 	fn handle_channel_ready(&self, counterparty_node_id: &PublicKey, msg: &msgs::ChannelReady) {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 		let _ = handle_error!(self, self.internal_channel_ready(counterparty_node_id, msg), *counterparty_node_id);
-		log_trace!(self.logger, "connected txids Channel_id {}", msg.channel_id);
 	}
 
 	fn handle_shutdown(&self, counterparty_node_id: &PublicKey, msg: &msgs::Shutdown) {
