@@ -22,14 +22,14 @@ pub mod invoice;
 pub mod persist;
 pub mod string;
 pub mod wakers;
+#[cfg(fuzzing)]
+pub mod base32;
+#[cfg(not(fuzzing))]
+pub(crate) mod base32;
 
 pub(crate) mod atomic_counter;
 pub(crate) mod byte_utils;
 pub(crate) mod chacha20;
-#[cfg(fuzzing)]
-pub mod zbase32;
-#[cfg(not(fuzzing))]
-pub(crate) mod zbase32;
 #[cfg(not(fuzzing))]
 pub(crate) mod poly1305;
 pub(crate) mod chacha20poly1305rfc;

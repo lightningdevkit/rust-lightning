@@ -38,6 +38,7 @@ use crate::util::config::UserConfig;
 use crate::util::test_channel_signer::{TestChannelSigner, EnforcementState};
 use crate::util::logger::{Logger, Level, Record};
 use crate::util::ser::{Readable, ReadableArgs, Writer, Writeable};
+use crate::util::persist::KVStore;
 
 use bitcoin::EcdsaSighashType;
 use bitcoin::blockdata::constants::ChainHash;
@@ -422,6 +423,97 @@ impl<Signer: sign::WriteableEcdsaChannelSigner> chainmonitor::Persist<Signer> fo
 			self.offchain_monitor_updates.lock().unwrap().entry(funding_txo).or_insert(HashSet::new()).insert(update_id);
 		}
 		ret
+	}
+}
+
+pub(crate) struct TestStore {
+	persisted_bytes: Mutex<HashMap<String, HashMap<String, Vec<u8>>>>,
+	read_only: bool,
+}
+
+impl TestStore {
+	pub fn new(read_only: bool) -> Self {
+		let persisted_bytes = Mutex::new(HashMap::new());
+		Self { persisted_bytes, read_only }
+	}
+}
+
+impl KVStore for TestStore {
+	fn read(&self, namespace: &str, sub_namespace: &str, key: &str) -> io::Result<Vec<u8>> {
+		let persisted_lock = self.persisted_bytes.lock().unwrap();
+		let prefixed = if sub_namespace.is_empty() {
+			namespace.to_string()
+		} else {
+			format!("{}/{}", namespace, sub_namespace)
+		};
+
+		if let Some(outer_ref) = persisted_lock.get(&prefixed) {
+			if let Some(inner_ref) = outer_ref.get(key) {
+				let bytes = inner_ref.clone();
+				Ok(bytes)
+			} else {
+				Err(io::Error::new(io::ErrorKind::NotFound, "Key not found"))
+			}
+		} else {
+			Err(io::Error::new(io::ErrorKind::NotFound, "Namespace not found"))
+		}
+	}
+
+	fn write(&self, namespace: &str, sub_namespace: &str, key: &str, buf: &[u8]) -> io::Result<()> {
+		if self.read_only {
+			return Err(io::Error::new(
+				io::ErrorKind::PermissionDenied,
+				"Cannot modify read-only store",
+			));
+		}
+		let mut persisted_lock = self.persisted_bytes.lock().unwrap();
+
+		let prefixed = if sub_namespace.is_empty() {
+			namespace.to_string()
+		} else {
+			format!("{}/{}", namespace, sub_namespace)
+		};
+		let outer_e = persisted_lock.entry(prefixed).or_insert(HashMap::new());
+		let mut bytes = Vec::new();
+		bytes.write_all(buf)?;
+		outer_e.insert(key.to_string(), bytes);
+		Ok(())
+	}
+
+	fn remove(&self, namespace: &str, sub_namespace: &str, key: &str, _lazy: bool) -> io::Result<()> {
+		if self.read_only {
+			return Err(io::Error::new(
+				io::ErrorKind::PermissionDenied,
+				"Cannot modify read-only store",
+			));
+		}
+
+		let mut persisted_lock = self.persisted_bytes.lock().unwrap();
+
+		let prefixed = if sub_namespace.is_empty() {
+			namespace.to_string()
+		} else {
+			format!("{}/{}", namespace, sub_namespace)
+		};
+		if let Some(outer_ref) = persisted_lock.get_mut(&prefixed) {
+				outer_ref.remove(&key.to_string());
+		}
+
+		Ok(())
+	}
+
+	fn list(&self, namespace: &str, sub_namespace: &str) -> io::Result<Vec<String>> {
+		let mut persisted_lock = self.persisted_bytes.lock().unwrap();
+
+		let prefixed = if sub_namespace.is_empty() {
+			namespace.to_string()
+		} else {
+			format!("{}/{}", namespace, sub_namespace)
+		};
+		match persisted_lock.entry(prefixed) {
+			hash_map::Entry::Occupied(e) => Ok(e.get().keys().cloned().collect()),
+			hash_map::Entry::Vacant(_) => Ok(Vec::new()),
+		}
 	}
 }
 

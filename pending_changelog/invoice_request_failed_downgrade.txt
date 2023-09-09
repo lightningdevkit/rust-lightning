@@ -1,0 +1,3 @@
+## Backwards Compatibility
+
+* If an `Event::InvoiceRequestFailed` was generated for a BOLT 12 payment (#2371), downgrading will result in the payment silently failing if the event had not been processed yet.
