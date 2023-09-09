@@ -39,7 +39,7 @@ use tokio::io::AsyncWrite;
 use lightning::ln::peer_handler;
 use lightning::ln::peer_handler::SocketDescriptor as LnSocketTrait;
 use lightning::ln::peer_handler::APeerManager;
-use lightning::ln::msgs::NetAddress;
+use lightning::ln::msgs::SocketAddress;
 
 use std::ops::Deref;
 use std::task::{self, Poll};
@@ -274,13 +274,13 @@ impl Connection {
 	}
 }
 
-fn get_addr_from_stream(stream: &StdTcpStream) -> Option<NetAddress> {
+fn get_addr_from_stream(stream: &StdTcpStream) -> Option<SocketAddress> {
 	match stream.peer_addr() {
-		Ok(SocketAddr::V4(sockaddr)) => Some(NetAddress::IPv4 {
+		Ok(SocketAddr::V4(sockaddr)) => Some(SocketAddress::TcpIpV4 {
 			addr: sockaddr.ip().octets(),
 			port: sockaddr.port(),
 		}),
-		Ok(SocketAddr::V6(sockaddr)) => Some(NetAddress::IPv6 {
+		Ok(SocketAddr::V6(sockaddr)) => Some(SocketAddress::TcpIpV6 {
 			addr: sockaddr.ip().octets(),
 			port: sockaddr.port(),
 		}),

@@ -7,28 +7,25 @@
 // You may not use this file except in accordance with one or both of these
 // licenses.
 
-use lightning::util::base32;
+use lightning::ln::msgs::SocketAddress;
+use core::str::FromStr;
 
 use crate::utils::test_logger;
 
 #[inline]
 pub fn do_test(data: &[u8]) {
-	let res = base32::Alphabet::ZBase32.encode(data);
-	assert_eq!(&base32::Alphabet::ZBase32.decode(&res).unwrap()[..], data);
-
 	if let Ok(s) = std::str::from_utf8(data) {
-		let res = base32::Alphabet::ZBase32.decode(s);
-		if let Ok(decoded) = res {
-			assert_eq!(&base32::Alphabet::ZBase32.encode(&decoded), &s.to_ascii_lowercase());
-		}
+		let _ = SocketAddress::from_str(s);
 	}
+
 }
 
-pub fn zbase32_test<Out: test_logger::Output>(data: &[u8], _out: Out) {
+pub fn fromstr_to_netaddress_test<Out: test_logger::Output>(data: &[u8], _out: Out) {
 	do_test(data);
 }
 
 #[no_mangle]
-pub extern "C" fn zbase32_run(data: *const u8, datalen: usize) {
+pub extern "C" fn fromstr_to_netaddress_run(data: *const u8, datalen: usize) {
 	do_test(unsafe { std::slice::from_raw_parts(data, datalen) });
 }
+

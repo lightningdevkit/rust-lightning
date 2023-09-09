@@ -508,6 +508,14 @@ pub enum Event {
 		/// serialized prior to LDK version 0.0.117.
 		sender_intended_total_msat: Option<u64>,
 	},
+	/// Indicates a request for an invoice failed to yield a response in a reasonable amount of time
+	/// or was explicitly abandoned by [`ChannelManager::abandon_payment`].
+	///
+	/// [`ChannelManager::abandon_payment`]: crate::ln::channelmanager::ChannelManager::abandon_payment
+	InvoiceRequestFailed {
+		/// The `payment_id` to have been associated with payment for the requested invoice.
+		payment_id: PaymentId,
+	},
 	/// Indicates an outbound payment we made succeeded (i.e. it made it all the way to its target
 	/// and we got back the payment preimage for it).
 	///
@@ -1148,6 +1156,12 @@ impl Writeable for Event {
 					(8, funding_txo, required),
 				});
 			},
+			&Event::InvoiceRequestFailed { ref payment_id } => {
+				33u8.write(writer)?;
+				write_tlv_fields!(writer, {
+					(0, payment_id, required),
+				})
+			},
 			// Note that, going forward, all new events must only write data inside of
 			// `write_tlv_fields`. Versions 0.0.101+ will ignore odd-numbered events that write
 			// data via `write_tlv_fields`.
@@ -1531,6 +1545,17 @@ impl MaybeReadable for Event {
 						former_temporary_channel_id,
 						counterparty_node_id: counterparty_node_id.0.unwrap(),
 						funding_txo: funding_txo.0.unwrap()
+					}))
+				};
+				f()
+			},
+			33u8 => {
+				let f = || {
+					_init_and_read_len_prefixed_tlv_fields!(reader, {
+						(0, payment_id, required),
+					});
+					Ok(Some(Event::InvoiceRequestFailed {
+						payment_id: payment_id.0.unwrap(),
 					}))
 				};
 				f()
