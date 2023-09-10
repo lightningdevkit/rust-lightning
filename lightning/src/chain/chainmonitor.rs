@@ -654,12 +654,6 @@ where C::Target: chain::Filter,
 	    L::Target: Logger,
 	    P::Target: Persist<ChannelSigner>,
 {
-	/// Adds the monitor that watches the channel referred to by the given outpoint.
-	///
-	/// Calls back to [`chain::Filter`] with the funding transaction and outputs to watch.
-	///
-	/// Note that we persist the given `ChannelMonitor` while holding the `ChainMonitor`
-	/// monitors lock.
 	fn watch_channel(&self, funding_outpoint: OutPoint, monitor: ChannelMonitor<ChannelSigner>) -> Result<ChannelMonitorUpdateStatus, ()> {
 		let mut monitors = self.monitors.write().unwrap();
 		let entry = match monitors.entry(funding_outpoint) {
@@ -693,8 +687,6 @@ where C::Target: chain::Filter,
 		Ok(persist_res)
 	}
 
-	/// Note that we persist the given `ChannelMonitor` update while holding the
-	/// `ChainMonitor` monitors lock.
 	fn update_channel(&self, funding_txo: OutPoint, update: &ChannelMonitorUpdate) -> ChannelMonitorUpdateStatus {
 		// Update the monitor that watches the channel referred to by the given outpoint.
 		let monitors = self.monitors.read().unwrap();
