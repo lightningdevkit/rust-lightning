@@ -31,11 +31,12 @@ use bitcoin::{secp256k1, Witness};
 use bitcoin::blockdata::script::Script;
 use bitcoin::hash_types::{Txid, BlockHash};
 
+use crate::blinded_path::payment::ReceiveTlvs;
 use crate::ln::{ChannelId, PaymentPreimage, PaymentHash, PaymentSecret};
 use crate::ln::features::{ChannelFeatures, ChannelTypeFeatures, InitFeatures, NodeFeatures};
 use crate::ln::onion_utils;
 use crate::onion_message;
-use crate::sign::NodeSigner;
+use crate::sign::{NodeSigner, Recipient};
 
 use crate::prelude::*;
 use core::convert::TryFrom;
@@ -43,12 +44,13 @@ use core::fmt;
 use core::fmt::Debug;
 use core::ops::Deref;
 use core::str::FromStr;
-use crate::io::{self, Read};
+use crate::io::{self, Cursor, Read};
 use crate::io_extras::read_to_end;
 
 use crate::events::{MessageSendEventsProvider, OnionMessageProvider};
+use crate::util::chacha20poly1305rfc::ChaChaPolyReadAdapter;
 use crate::util::logger;
-use crate::util::ser::{LengthReadable, Readable, ReadableArgs, Writeable, Writer, WithoutLength, FixedLengthReader, HighZeroBytesDroppedBigSize, Hostname, TransactionU16LenLimited, BigSize};
+use crate::util::ser::{LengthReadable, LengthReadableArgs, Readable, ReadableArgs, Writeable, Writer, WithoutLength, FixedLengthReader, HighZeroBytesDroppedBigSize, Hostname, TransactionU16LenLimited, BigSize};
 use crate::util::base32;
 
 use crate::routing::gossip::{NodeAlias, NodeId};
@@ -1520,6 +1522,7 @@ pub trait OnionMessageHandler : OnionMessageProvider {
 
 mod fuzzy_internal_msgs {
 	use bitcoin::secp256k1::PublicKey;
+	use crate::blinded_path::payment::PaymentConstraints;
 	use crate::prelude::*;
 	use crate::ln::{PaymentPreimage, PaymentSecret};
 
@@ -1548,6 +1551,14 @@ mod fuzzy_internal_msgs {
 			amt_msat: u64,
 			outgoing_cltv_value: u32,
 		},
+		BlindedReceive {
+			amt_msat: u64,
+			total_msat: u64,
+			outgoing_cltv_value: u32,
+			payment_secret: PaymentSecret,
+			payment_constraints: PaymentConstraints,
+			intro_node_blinding_point: PublicKey,
+		}
 	}
 
 	pub(crate) enum OutboundOnionPayload {
@@ -2136,22 +2147,28 @@ impl Writeable for OutboundOnionPayload {
 
 impl<NS: Deref> ReadableArgs<&NS> for InboundOnionPayload where NS::Target: NodeSigner {
 	fn read<R: Read>(r: &mut R, node_signer: &NS) -> Result<Self, DecodeError> {
-		let mut amt = HighZeroBytesDroppedBigSize(0u64);
-		let mut cltv_value = HighZeroBytesDroppedBigSize(0u32);
+		let mut amt = None;
+		let mut cltv_value = None;
 		let mut short_id: Option<u64> = None;
 		let mut payment_data: Option<FinalOnionHopData> = None;
+		let mut encrypted_tlvs_opt: Option<WithoutLength<Vec<u8>>> = None;
+		let mut intro_node_blinding_point = None;
 		let mut payment_metadata: Option<WithoutLength<Vec<u8>>> = None;
+		let mut total_msat = None;
 		let mut keysend_preimage: Option<PaymentPreimage> = None;
 		let mut custom_tlvs = Vec::new();
 
 		let tlv_len = BigSize::read(r)?;
 		let rd = FixedLengthReader::new(r, tlv_len.0);
 		decode_tlv_stream_with_custom_tlv_decode!(rd, {
-			(2, amt, required),
-			(4, cltv_value, required),
+			(2, amt, (option, encoding: (u64, HighZeroBytesDroppedBigSize))),
+			(4, cltv_value, (option, encoding: (u32, HighZeroBytesDroppedBigSize))),
 			(6, short_id, option),
 			(8, payment_data, option),
+			(10, encrypted_tlvs_opt, option),
+			(12, intro_node_blinding_point, option),
 			(16, payment_metadata, option),
+			(18, total_msat, (option, encoding: (u64, HighZeroBytesDroppedBigSize))),
 			// See https://github.com/lightning/blips/blob/master/blip-0003.md
 			(5482373484, keysend_preimage, option)
 		}, |msg_type: u64, msg_reader: &mut FixedLengthReader<_>| -> Result<bool, DecodeError> {
@@ -2162,16 +2179,44 @@ impl<NS: Deref> ReadableArgs<&NS> for InboundOnionPayload where NS::Target: Node
 			Ok(true)
 		});
 
-		if amt.0 > MAX_VALUE_MSAT { return Err(DecodeError::InvalidValue) }
-		if let Some(short_channel_id) = short_id {
-			if payment_data.is_some() { return Err(DecodeError::InvalidValue) }
-			if payment_metadata.is_some() { return Err(DecodeError::InvalidValue); }
+		if amt.unwrap_or(0) > MAX_VALUE_MSAT { return Err(DecodeError::InvalidValue) }
+
+		if let Some(blinding_point) = intro_node_blinding_point {
+			if short_id.is_some() || payment_data.is_some() || payment_metadata.is_some() {
+				return Err(DecodeError::InvalidValue)
+			}
+			let enc_tlvs = encrypted_tlvs_opt.ok_or(DecodeError::InvalidValue)?.0;
+			let enc_tlvs_ss = node_signer.ecdh(Recipient::Node, &blinding_point, None)
+				.map_err(|_| DecodeError::InvalidValue)?;
+			let rho = onion_utils::gen_rho_from_shared_secret(&enc_tlvs_ss.secret_bytes());
+			let mut s = Cursor::new(&enc_tlvs);
+			let mut reader = FixedLengthReader::new(&mut s, enc_tlvs.len() as u64);
+			match ChaChaPolyReadAdapter::read(&mut reader, rho)? {
+				ChaChaPolyReadAdapter { readable: ReceiveTlvs { payment_secret, payment_constraints }} => {
+					if total_msat.unwrap_or(0) > MAX_VALUE_MSAT { return Err(DecodeError::InvalidValue) }
+					Ok(Self::BlindedReceive {
+						amt_msat: amt.ok_or(DecodeError::InvalidValue)?,
+						total_msat: total_msat.ok_or(DecodeError::InvalidValue)?,
+						outgoing_cltv_value: cltv_value.ok_or(DecodeError::InvalidValue)?,
+						payment_secret,
+						payment_constraints,
+						intro_node_blinding_point: blinding_point,
+					})
+				},
+			}
+		} else if let Some(short_channel_id) = short_id {
+			if payment_data.is_some() || payment_metadata.is_some() || encrypted_tlvs_opt.is_some() ||
+				total_msat.is_some()
+			{ return Err(DecodeError::InvalidValue) }
 			Ok(Self::Forward {
 				short_channel_id,
-				amt_to_forward: amt.0,
-				outgoing_cltv_value: cltv_value.0,
+				amt_to_forward: amt.ok_or(DecodeError::InvalidValue)?,
+				outgoing_cltv_value: cltv_value.ok_or(DecodeError::InvalidValue)?,
 			})
 		} else {
+			if encrypted_tlvs_opt.is_some() || total_msat.is_some() {
+				return Err(DecodeError::InvalidValue)
+			}
 			if let Some(data) = &payment_data {
 				if data.total_msat > MAX_VALUE_MSAT {
 					return Err(DecodeError::InvalidValue);
@@ -2181,8 +2226,8 @@ impl<NS: Deref> ReadableArgs<&NS> for InboundOnionPayload where NS::Target: Node
 				payment_data,
 				payment_metadata: payment_metadata.map(|w| w.0),
 				keysend_preimage,
-				amt_msat: amt.0,
-				outgoing_cltv_value: cltv_value.0,
+				amt_msat: amt.ok_or(DecodeError::InvalidValue)?,
+				outgoing_cltv_value: cltv_value.ok_or(DecodeError::InvalidValue)?,
 				custom_tlvs,
 			})
 		}

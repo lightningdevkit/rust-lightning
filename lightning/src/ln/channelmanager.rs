@@ -2738,7 +2738,7 @@ where
 		let (short_channel_id, amt_to_forward, outgoing_cltv_value) = match hop_data {
 			msgs::InboundOnionPayload::Forward { short_channel_id, amt_to_forward, outgoing_cltv_value } =>
 				(short_channel_id, amt_to_forward, outgoing_cltv_value),
-			msgs::InboundOnionPayload::Receive { .. } =>
+			msgs::InboundOnionPayload::Receive { .. } | msgs::InboundOnionPayload::BlindedReceive { .. } =>
 				return Err(InboundOnionErr {
 					msg: "Final Node OnionHopData provided for us as an intermediary node",
 					err_code: 0x4000 | 22,
@@ -2770,12 +2770,19 @@ where
 				payment_data, keysend_preimage, custom_tlvs, amt_msat, outgoing_cltv_value, payment_metadata, ..
 			} =>
 				(payment_data, keysend_preimage, custom_tlvs, amt_msat, outgoing_cltv_value, payment_metadata),
-			_ =>
+			msgs::InboundOnionPayload::BlindedReceive {
+				amt_msat, total_msat, outgoing_cltv_value, payment_secret, ..
+			} => {
+				let payment_data = msgs::FinalOnionHopData { payment_secret, total_msat };
+				(Some(payment_data), None, Vec::new(), amt_msat, outgoing_cltv_value, None)
+			}
+			msgs::InboundOnionPayload::Forward { .. } => {
 				return Err(InboundOnionErr {
 					err_code: 0x4000|22,
 					err_data: Vec::new(),
 					msg: "Got non final data with an HMAC of 0",
-				}),
+				})
+			},
 		};
 		// final_incorrect_cltv_expiry
 		if outgoing_cltv_value > cltv_expiry {
@@ -2940,7 +2947,9 @@ where
 			// We'll do receive checks in [`Self::construct_pending_htlc_info`] so we have access to the
 			// inbound channel's state.
 			onion_utils::Hop::Receive { .. } => return Ok((next_hop, shared_secret, None)),
-			onion_utils::Hop::Forward { next_hop_data: msgs::InboundOnionPayload::Receive { .. }, .. } => {
+			onion_utils::Hop::Forward { next_hop_data: msgs::InboundOnionPayload::Receive { .. }, .. } |
+				onion_utils::Hop::Forward { next_hop_data: msgs::InboundOnionPayload::BlindedReceive { .. }, .. } =>
+			{
 				return_err!("Final Node OnionHopData provided for us as an intermediary node", 0x4000 | 22, &[0; 0]);
 			}
 		};
