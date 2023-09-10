@@ -78,7 +78,7 @@ impl MonitorUpdateId {
 /// `Persist` defines behavior for persisting channel monitors: this could mean
 /// writing once to disk, and/or uploading to one or more backup services.
 ///
-/// Each method can return three possible values:
+/// Each method can return two possible values:
 ///  * If persistence (including any relevant `fsync()` calls) happens immediately, the
 ///    implementation should return [`ChannelMonitorUpdateStatus::Completed`], indicating normal
 ///    channel operation should continue.
@@ -91,10 +91,9 @@ impl MonitorUpdateId {
 ///    Note that unlike the direct [`chain::Watch`] interface,
 ///    [`ChainMonitor::channel_monitor_updated`] must be called once for *each* update which occurs.
 ///
-///  * If persistence fails for some reason, implementations should return
-///    [`ChannelMonitorUpdateStatus::PermanentFailure`], in which case the channel will likely be
-///    closed without broadcasting the latest state. See
-///    [`ChannelMonitorUpdateStatus::PermanentFailure`] for more details.
+///    If persistence fails for some reason, implementations should still return
+///    [`ChannelMonitorUpdateStatus::InProgress`] and attempt to shut down or otherwise resolve the
+///    situation ASAP.
 ///
 /// Third-party watchtowers may be built as a part of an implementation of this trait, with the
 /// advantage that you can control whether to resume channel operation depending on if an update
@@ -335,11 +334,6 @@ where C::Target: chain::Filter,
 			match self.persister.update_persisted_channel(*funding_outpoint, None, monitor, update_id) {
 				ChannelMonitorUpdateStatus::Completed =>
 					log_trace!(self.logger, "Finished syncing Channel Monitor for channel {}", log_funding_info!(monitor)),
-				ChannelMonitorUpdateStatus::PermanentFailure => {
-					monitor_state.channel_perm_failed.store(true, Ordering::Release);
-					self.pending_monitor_events.lock().unwrap().push((*funding_outpoint, vec![MonitorEvent::UpdateFailed(*funding_outpoint)], monitor.get_counterparty_node_id()));
-					self.event_notifier.notify();
-				}
 				ChannelMonitorUpdateStatus::InProgress => {
 					log_debug!(self.logger, "Channel Monitor sync for channel {} in progress, holding events until completion!", log_funding_info!(monitor));
 					pending_monitor_updates.push(update_id);
@@ -673,12 +667,12 @@ where C::Target: chain::Filter,
 	///
 	/// Note that we persist the given `ChannelMonitor` while holding the `ChainMonitor`
 	/// monitors lock.
-	fn watch_channel(&self, funding_outpoint: OutPoint, monitor: ChannelMonitor<ChannelSigner>) -> ChannelMonitorUpdateStatus {
+	fn watch_channel(&self, funding_outpoint: OutPoint, monitor: ChannelMonitor<ChannelSigner>) -> Result<ChannelMonitorUpdateStatus, ()> {
 		let mut monitors = self.monitors.write().unwrap();
 		let entry = match monitors.entry(funding_outpoint) {
 			hash_map::Entry::Occupied(_) => {
 				log_error!(self.logger, "Failed to add new channel data: channel monitor for given outpoint is already present");
-				return ChannelMonitorUpdateStatus::PermanentFailure
+				return Err(());
 			},
 			hash_map::Entry::Vacant(e) => e,
 		};
@@ -690,10 +684,6 @@ where C::Target: chain::Filter,
 			ChannelMonitorUpdateStatus::InProgress => {
 				log_info!(self.logger, "Persistence of new ChannelMonitor for channel {} in progress", log_funding_info!(monitor));
 				pending_monitor_updates.push(update_id);
-			},
-			ChannelMonitorUpdateStatus::PermanentFailure => {
-				log_error!(self.logger, "Persistence of new ChannelMonitor for channel {} failed", log_funding_info!(monitor));
-				return persist_res;
 			},
 			ChannelMonitorUpdateStatus::Completed => {
 				log_info!(self.logger, "Persistence of new ChannelMonitor for channel {} completed", log_funding_info!(monitor));
@@ -708,7 +698,7 @@ where C::Target: chain::Filter,
 			channel_perm_failed: AtomicBool::new(false),
 			last_chain_persist_height: AtomicUsize::new(self.highest_chain_height.load(Ordering::Acquire)),
 		});
-		persist_res
+		Ok(persist_res)
 	}
 
 	/// Note that we persist the given `ChannelMonitor` update while holding the
@@ -723,10 +713,10 @@ where C::Target: chain::Filter,
 				// We should never ever trigger this from within ChannelManager. Technically a
 				// user could use this object with some proxying in between which makes this
 				// possible, but in tests and fuzzing, this should be a panic.
-				#[cfg(any(test, fuzzing))]
+				#[cfg(debug_assertions)]
 				panic!("ChannelManager generated a channel update for a channel that was not yet registered!");
-				#[cfg(not(any(test, fuzzing)))]
-				ChannelMonitorUpdateStatus::PermanentFailure
+				#[cfg(not(debug_assertions))]
+				ChannelMonitorUpdateStatus::InProgress
 			},
 			Some(monitor_state) => {
 				let monitor = &monitor_state.monitor;
@@ -745,18 +735,14 @@ where C::Target: chain::Filter,
 						pending_monitor_updates.push(update_id);
 						log_debug!(self.logger, "Persistence of ChannelMonitorUpdate for channel {} in progress", log_funding_info!(monitor));
 					},
-					ChannelMonitorUpdateStatus::PermanentFailure => {
-						monitor_state.channel_perm_failed.store(true, Ordering::Release);
-						log_error!(self.logger, "Persistence of ChannelMonitorUpdate for channel {} failed", log_funding_info!(monitor));
-					},
 					ChannelMonitorUpdateStatus::Completed => {
 						log_debug!(self.logger, "Persistence of ChannelMonitorUpdate for channel {} completed", log_funding_info!(monitor));
 					},
 				}
 				if update_res.is_err() {
-					ChannelMonitorUpdateStatus::PermanentFailure
+					ChannelMonitorUpdateStatus::InProgress
 				} else if monitor_state.channel_perm_failed.load(Ordering::Acquire) {
-					ChannelMonitorUpdateStatus::PermanentFailure
+					ChannelMonitorUpdateStatus::InProgress
 				} else {
 					persist_res
 				}
@@ -831,12 +817,12 @@ impl<ChannelSigner: WriteableEcdsaChannelSigner, C: Deref, T: Deref, F: Deref, L
 
 #[cfg(test)]
 mod tests {
-	use crate::{check_added_monitors, check_closed_broadcast, check_closed_event};
+	use crate::check_added_monitors;
 	use crate::{expect_payment_claimed, expect_payment_path_successful, get_event_msg};
 	use crate::{get_htlc_update_msgs, get_local_commitment_txn, get_revoke_commit_msgs, get_route_and_payment_hash, unwrap_send_err};
 	use crate::chain::{ChannelMonitorUpdateStatus, Confirm, Watch};
 	use crate::chain::channelmonitor::LATENCY_GRACE_PERIOD_BLOCKS;
-	use crate::events::{Event, ClosureReason, MessageSendEvent, MessageSendEventsProvider};
+	use crate::events::{Event, MessageSendEvent, MessageSendEventsProvider};
 	use crate::ln::channelmanager::{PaymentSendFailure, PaymentId, RecipientOnionFields};
 	use crate::ln::functional_test_utils::*;
 	use crate::ln::msgs::ChannelMessageHandler;
@@ -988,12 +974,8 @@ mod tests {
 		chanmon_cfgs[0].persister.set_update_ret(ChannelMonitorUpdateStatus::Completed);
 		unwrap_send_err!(nodes[0].node.send_payment_with_route(&route, second_payment_hash,
 				RecipientOnionFields::secret_only(second_payment_secret), PaymentId(second_payment_hash.0)
-			), true, APIError::ChannelUnavailable { ref err },
-			assert!(err.contains("ChannelMonitor storage failure")));
-		check_added_monitors!(nodes[0], 2); // After the failure we generate a close-channel monitor update
-		check_closed_broadcast!(nodes[0], true);
-		check_closed_event!(nodes[0], 1, ClosureReason::ProcessingError { err: "ChannelMonitor storage failure".to_string() },
-			[nodes[1].node.get_our_node_id()], 100000);
+			), false, APIError::MonitorUpdateInProgress, {});
+		check_added_monitors!(nodes[0], 1);
 
 		// However, as the ChainMonitor is still waiting for the original persistence to complete,
 		// it won't yet release the MonitorEvents.
@@ -1019,29 +1001,5 @@ mod tests {
 	fn chainsync_pauses_events() {
 		do_chainsync_pauses_events(false);
 		do_chainsync_pauses_events(true);
-	}
-
-	#[test]
-	fn update_during_chainsync_fails_channel() {
-		let chanmon_cfgs = create_chanmon_cfgs(2);
-		let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
-		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-		create_announced_chan_between_nodes(&nodes, 0, 1);
-
-		chanmon_cfgs[0].persister.chain_sync_monitor_persistences.lock().unwrap().clear();
-		chanmon_cfgs[0].persister.set_update_ret(ChannelMonitorUpdateStatus::PermanentFailure);
-
-		connect_blocks(&nodes[0], 1);
-		// Before processing events, the ChannelManager will still think the Channel is open and
-		// there won't be any ChannelMonitorUpdates
-		assert_eq!(nodes[0].node.list_channels().len(), 1);
-		check_added_monitors!(nodes[0], 0);
-		// ... however once we get events once, the channel will close, creating a channel-closed
-		// ChannelMonitorUpdate.
-		check_closed_broadcast!(nodes[0], true);
-		check_closed_event!(nodes[0], 1, ClosureReason::ProcessingError { err: "Failed to persist ChannelMonitor update during chain sync".to_string() },
-			[nodes[1].node.get_our_node_id()], 100000);
-		check_added_monitors!(nodes[0], 1);
 	}
 }

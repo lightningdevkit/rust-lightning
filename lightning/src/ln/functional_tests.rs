@@ -2419,7 +2419,7 @@ fn channel_monitor_network_test() {
 	assert_eq!(nodes[4].node.list_channels().len(), 0);
 
 	assert_eq!(nodes[3].chain_monitor.chain_monitor.watch_channel(OutPoint { txid: chan_3.3.txid(), index: 0 }, chan_3_mon),
-		ChannelMonitorUpdateStatus::Completed);
+		Ok(ChannelMonitorUpdateStatus::Completed));
 	check_closed_event!(nodes[3], 1, ClosureReason::CommitmentTxConfirmed, [nodes[4].node.get_our_node_id()], 100000);
 	check_closed_event!(nodes[4], 1, ClosureReason::CommitmentTxConfirmed, [nodes[3].node.get_our_node_id()], 100000);
 }
@@ -8453,7 +8453,7 @@ fn test_update_err_monitor_lockdown() {
 			new_monitor
 		};
 		let watchtower = test_utils::TestChainMonitor::new(Some(&chain_source), &chanmon_cfgs[0].tx_broadcaster, &logger, &chanmon_cfgs[0].fee_estimator, &persister, &node_cfgs[0].keys_manager);
-		assert_eq!(watchtower.watch_channel(outpoint, new_monitor), ChannelMonitorUpdateStatus::Completed);
+		assert_eq!(watchtower.watch_channel(outpoint, new_monitor), Ok(ChannelMonitorUpdateStatus::Completed));
 		watchtower
 	};
 	let block = create_dummy_block(BlockHash::all_zeros(), 42, Vec::new());
@@ -8475,7 +8475,7 @@ fn test_update_err_monitor_lockdown() {
 		let mut node_0_peer_state_lock;
 		if let ChannelPhase::Funded(ref mut channel) = get_channel_ref!(nodes[0], nodes[1], node_0_per_peer_lock, node_0_peer_state_lock, chan_1.2) {
 			if let Ok(Some(update)) = channel.commitment_signed(&updates.commitment_signed, &node_cfgs[0].logger) {
-				assert_eq!(watchtower.chain_monitor.update_channel(outpoint, &update), ChannelMonitorUpdateStatus::PermanentFailure);
+				assert_eq!(watchtower.chain_monitor.update_channel(outpoint, &update), ChannelMonitorUpdateStatus::InProgress);
 				assert_eq!(nodes[0].chain_monitor.update_channel(outpoint, &update), ChannelMonitorUpdateStatus::Completed);
 			} else { assert!(false); }
 		} else {
@@ -8526,7 +8526,7 @@ fn test_concurrent_monitor_claim() {
 			new_monitor
 		};
 		let watchtower = test_utils::TestChainMonitor::new(Some(&chain_source), &alice_broadcaster, &logger, &chanmon_cfgs[0].fee_estimator, &persister, &node_cfgs[0].keys_manager);
-		assert_eq!(watchtower.watch_channel(outpoint, new_monitor), ChannelMonitorUpdateStatus::Completed);
+		assert_eq!(watchtower.watch_channel(outpoint, new_monitor), Ok(ChannelMonitorUpdateStatus::Completed));
 		watchtower
 	};
 	let block = create_dummy_block(BlockHash::all_zeros(), 42, Vec::new());
@@ -8557,7 +8557,7 @@ fn test_concurrent_monitor_claim() {
 			new_monitor
 		};
 		let watchtower = test_utils::TestChainMonitor::new(Some(&chain_source), &bob_broadcaster, &logger, &chanmon_cfgs[0].fee_estimator, &persister, &node_cfgs[0].keys_manager);
-		assert_eq!(watchtower.watch_channel(outpoint, new_monitor), ChannelMonitorUpdateStatus::Completed);
+		assert_eq!(watchtower.watch_channel(outpoint, new_monitor), Ok(ChannelMonitorUpdateStatus::Completed));
 		watchtower
 	};
 	watchtower_bob.chain_monitor.block_connected(&create_dummy_block(BlockHash::all_zeros(), 42, Vec::new()), HTLC_TIMEOUT_BROADCAST - 1);
@@ -8577,7 +8577,7 @@ fn test_concurrent_monitor_claim() {
 		if let ChannelPhase::Funded(ref mut channel) = get_channel_ref!(nodes[0], nodes[1], node_0_per_peer_lock, node_0_peer_state_lock, chan_1.2) {
 			if let Ok(Some(update)) = channel.commitment_signed(&updates.commitment_signed, &node_cfgs[0].logger) {
 				// Watchtower Alice should already have seen the block and reject the update
-				assert_eq!(watchtower_alice.chain_monitor.update_channel(outpoint, &update), ChannelMonitorUpdateStatus::PermanentFailure);
+				assert_eq!(watchtower_alice.chain_monitor.update_channel(outpoint, &update), ChannelMonitorUpdateStatus::InProgress);
 				assert_eq!(watchtower_bob.chain_monitor.update_channel(outpoint, &update), ChannelMonitorUpdateStatus::Completed);
 				assert_eq!(nodes[0].chain_monitor.update_channel(outpoint, &update), ChannelMonitorUpdateStatus::Completed);
 			} else { assert!(false); }

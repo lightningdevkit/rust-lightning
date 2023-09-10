@@ -578,7 +578,7 @@ impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
 			let chain_source = test_utils::TestChainSource::new(Network::Testnet);
 			let chain_monitor = test_utils::TestChainMonitor::new(Some(&chain_source), &broadcaster, &self.logger, &feeest, &persister, &self.keys_manager);
 			for deserialized_monitor in deserialized_monitors.drain(..) {
-				if chain_monitor.watch_channel(deserialized_monitor.get_funding_txo().0, deserialized_monitor) != ChannelMonitorUpdateStatus::Completed {
+				if chain_monitor.watch_channel(deserialized_monitor.get_funding_txo().0, deserialized_monitor) != Ok(ChannelMonitorUpdateStatus::Completed) {
 					panic!();
 				}
 			}
@@ -977,7 +977,7 @@ pub fn _reload_node<'a, 'b, 'c>(node: &'a Node<'a, 'b, 'c>, default_config: User
 
 	for monitor in monitors_read.drain(..) {
 		assert_eq!(node.chain_monitor.watch_channel(monitor.get_funding_txo().0, monitor),
-			ChannelMonitorUpdateStatus::Completed);
+			Ok(ChannelMonitorUpdateStatus::Completed));
 		check_added_monitors!(node, 1);
 	}
 

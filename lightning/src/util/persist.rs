@@ -174,8 +174,8 @@ impl<'a, A: KVStore, M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Der
 impl<ChannelSigner: WriteableEcdsaChannelSigner, K: KVStore> Persist<ChannelSigner> for K {
 	// TODO: We really need a way for the persister to inform the user that its time to crash/shut
 	// down once these start returning failure.
-	// A PermanentFailure implies we should probably just shut down the node since we're
-	// force-closing channels without even broadcasting!
+	// An InProgress result implies we should probably just shut down the node since we're not
+	// retrying persistence!
 
 	fn persist_new_channel(&self, funding_txo: OutPoint, monitor: &ChannelMonitor<ChannelSigner>, _update_id: MonitorUpdateId) -> chain::ChannelMonitorUpdateStatus {
 		let key = format!("{}_{}", funding_txo.txid.to_hex(), funding_txo.index);
@@ -185,7 +185,7 @@ impl<ChannelSigner: WriteableEcdsaChannelSigner, K: KVStore> Persist<ChannelSign
 			&key, &monitor.encode())
 		{
 			Ok(()) => chain::ChannelMonitorUpdateStatus::Completed,
-			Err(_) => chain::ChannelMonitorUpdateStatus::PermanentFailure,
+			Err(_) => chain::ChannelMonitorUpdateStatus::InProgress
 		}
 	}
 
@@ -197,7 +197,7 @@ impl<ChannelSigner: WriteableEcdsaChannelSigner, K: KVStore> Persist<ChannelSign
 			&key, &monitor.encode())
 		{
 			Ok(()) => chain::ChannelMonitorUpdateStatus::Completed,
-			Err(_) => chain::ChannelMonitorUpdateStatus::PermanentFailure,
+			Err(_) => chain::ChannelMonitorUpdateStatus::InProgress
 		}
 	}
 }

@@ -2051,17 +2051,6 @@ macro_rules! handle_new_monitor_update {
 					&$chan.context.channel_id());
 				Ok(false)
 			},
-			ChannelMonitorUpdateStatus::PermanentFailure => {
-				log_error!($self.logger, "Closing channel {} due to monitor update ChannelMonitorUpdateStatus::PermanentFailure",
-					&$chan.context.channel_id());
-				update_maps_on_chan_removal!($self, &$chan.context);
-				let res = Err(MsgHandleErrInternal::from_finish_shutdown(
-					"ChannelMonitor storage failure".to_owned(), $chan.context.channel_id(),
-					$chan.context.get_user_id(), $chan.context.force_shutdown(false),
-					$self.get_channel_update_for_broadcast(&$chan).ok(), $chan.context.get_value_satoshis()));
-				$remove;
-				res
-			},
 			ChannelMonitorUpdateStatus::Completed => {
 				$completed;
 				Ok(true)
@@ -5919,47 +5908,55 @@ where
 				Err(MsgHandleErrInternal::send_err_msg_no_close("Already had channel with the new channel_id".to_owned(), funding_msg.channel_id))
 			},
 			hash_map::Entry::Vacant(e) => {
-				match self.id_to_peer.lock().unwrap().entry(chan.context.channel_id()) {
+				let mut id_to_peer_lock = self.id_to_peer.lock().unwrap();
+				match id_to_peer_lock.entry(chan.context.channel_id()) {
 					hash_map::Entry::Occupied(_) => {
 						return Err(MsgHandleErrInternal::send_err_msg_no_close(
 							"The funding_created message had the same funding_txid as an existing channel - funding is not possible".to_owned(),
 							funding_msg.channel_id))
 					},
 					hash_map::Entry::Vacant(i_e) => {
-						i_e.insert(chan.context.get_counterparty_node_id());
+						let monitor_res = self.chain_monitor.watch_channel(monitor.get_funding_txo().0, monitor);
+						if let Ok(persist_state) = monitor_res {
+							i_e.insert(chan.context.get_counterparty_node_id());
+							mem::drop(id_to_peer_lock);
+
+							// There's no problem signing a counterparty's funding transaction if our monitor
+							// hasn't persisted to disk yet - we can't lose money on a transaction that we haven't
+							// accepted payment from yet. We do, however, need to wait to send our channel_ready
+							// until we have persisted our monitor.
+							let new_channel_id = funding_msg.channel_id;
+							peer_state.pending_msg_events.push(events::MessageSendEvent::SendFundingSigned {
+								node_id: counterparty_node_id.clone(),
+								msg: funding_msg,
+							});
+
+							if let ChannelPhase::Funded(chan) = e.insert(ChannelPhase::Funded(chan)) {
+								let mut res = handle_new_monitor_update!(self, persist_state, peer_state_lock, peer_state,
+									per_peer_state, chan, MANUALLY_REMOVING_INITIAL_MONITOR,
+									{ peer_state.channel_by_id.remove(&new_channel_id) });
+
+								// Note that we reply with the new channel_id in error messages if we gave up on the
+								// channel, not the temporary_channel_id. This is compatible with ourselves, but the
+								// spec is somewhat ambiguous here. Not a huge deal since we'll send error messages for
+								// any messages referencing a previously-closed channel anyway.
+								// We do not propagate the monitor update to the user as it would be for a monitor
+								// that we didn't manage to store (and that we don't care about - we don't respond
+								// with the funding_signed so the channel can never go on chain).
+								if let Err(MsgHandleErrInternal { shutdown_finish: Some((res, _)), .. }) = &mut res {
+									res.0 = None;
+								}
+								res.map(|_| ())
+							} else {
+								unreachable!("This must be a funded channel as we just inserted it.");
+							}
+						} else {
+							log_error!(self.logger, "Persisting initial ChannelMonitor failed, implying the funding outpoint was duplicated");
+							return Err(MsgHandleErrInternal::send_err_msg_no_close(
+								"The funding_created message had the same funding_txid as an existing channel - funding is not possible".to_owned(),
+								funding_msg.channel_id));
+						}
 					}
-				}
-
-				// There's no problem signing a counterparty's funding transaction if our monitor
-				// hasn't persisted to disk yet - we can't lose money on a transaction that we haven't
-				// accepted payment from yet. We do, however, need to wait to send our channel_ready
-				// until we have persisted our monitor.
-				let new_channel_id = funding_msg.channel_id;
-				peer_state.pending_msg_events.push(events::MessageSendEvent::SendFundingSigned {
-					node_id: counterparty_node_id.clone(),
-					msg: funding_msg,
-				});
-
-				let monitor_res = self.chain_monitor.watch_channel(monitor.get_funding_txo().0, monitor);
-
-				if let ChannelPhase::Funded(chan) = e.insert(ChannelPhase::Funded(chan)) {
-					let mut res = handle_new_monitor_update!(self, monitor_res, peer_state_lock, peer_state,
-						per_peer_state, chan, MANUALLY_REMOVING_INITIAL_MONITOR,
-						{ peer_state.channel_by_id.remove(&new_channel_id) });
-
-					// Note that we reply with the new channel_id in error messages if we gave up on the
-					// channel, not the temporary_channel_id. This is compatible with ourselves, but the
-					// spec is somewhat ambiguous here. Not a huge deal since we'll send error messages for
-					// any messages referencing a previously-closed channel anyway.
-					// We do not propagate the monitor update to the user as it would be for a monitor
-					// that we didn't manage to store (and that we don't care about - we don't respond
-					// with the funding_signed so the channel can never go on chain).
-					if let Err(MsgHandleErrInternal { shutdown_finish: Some((res, _)), .. }) = &mut res {
-						res.0 = None;
-					}
-					res.map(|_| ())
-				} else {
-					unreachable!("This must be a funded channel as we just inserted it.");
 				}
 			}
 		}
@@ -5982,17 +5979,20 @@ where
 					ChannelPhase::Funded(ref mut chan) => {
 						let monitor = try_chan_phase_entry!(self,
 							chan.funding_signed(&msg, best_block, &self.signer_provider, &self.logger), chan_phase_entry);
-						let update_res = self.chain_monitor.watch_channel(chan.context.get_funding_txo().unwrap(), monitor);
-						let mut res = handle_new_monitor_update!(self, update_res, peer_state_lock, peer_state, per_peer_state, chan_phase_entry, INITIAL_MONITOR);
-						if let Err(MsgHandleErrInternal { ref mut shutdown_finish, .. }) = res {
-							// We weren't able to watch the channel to begin with, so no updates should be made on
-							// it. Previously, full_stack_target found an (unreachable) panic when the
-							// monitor update contained within `shutdown_finish` was applied.
-							if let Some((ref mut shutdown_finish, _)) = shutdown_finish {
-								shutdown_finish.0.take();
+						if let Ok(persist_status) = self.chain_monitor.watch_channel(chan.context.get_funding_txo().unwrap(), monitor) {
+							let mut res = handle_new_monitor_update!(self, persist_status, peer_state_lock, peer_state, per_peer_state, chan_phase_entry, INITIAL_MONITOR);
+							if let Err(MsgHandleErrInternal { ref mut shutdown_finish, .. }) = res {
+								// We weren't able to watch the channel to begin with, so no updates should be made on
+								// it. Previously, full_stack_target found an (unreachable) panic when the
+								// monitor update contained within `shutdown_finish` was applied.
+								if let Some((ref mut shutdown_finish, _)) = shutdown_finish {
+									shutdown_finish.0.take();
+								}
 							}
+							res.map(|_| ())
+						} else {
+							try_chan_phase_entry!(self, Err(ChannelError::Close("Channel funding outpoint was a duplicate".to_owned())), chan_phase_entry)
 						}
-						res.map(|_| ())
 					},
 					_ => {
 						return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel".to_owned(), msg.channel_id));
