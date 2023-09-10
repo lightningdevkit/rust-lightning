@@ -43,9 +43,8 @@ fn do_one_hop_blinded_path(success: bool) {
 		},
 	};
 	let mut secp_ctx = Secp256k1::new();
-	let blinded_path = BlindedPath::new_for_payment(
-		&[], nodes[1].node.get_our_node_id(), payee_tlvs, chan_upd.htlc_maximum_msat,
-		&chanmon_cfgs[1].keys_manager, &secp_ctx
+	let blinded_path = BlindedPath::one_hop_for_payment(
+		nodes[1].node.get_our_node_id(), payee_tlvs, &chanmon_cfgs[1].keys_manager, &secp_ctx
 	).unwrap();
 
 	let route_params = RouteParameters {
@@ -85,9 +84,8 @@ fn mpp_to_one_hop_blinded_path() {
 			htlc_minimum_msat: chan_upd_1_3.htlc_minimum_msat,
 		},
 	};
-	let blinded_path = BlindedPath::new_for_payment(
-		&[], nodes[3].node.get_our_node_id(), payee_tlvs, u64::max_value(),
-		&chanmon_cfgs[3].keys_manager, &secp_ctx
+	let blinded_path = BlindedPath::one_hop_for_payment(
+		nodes[3].node.get_our_node_id(), payee_tlvs, &chanmon_cfgs[3].keys_manager, &secp_ctx
 	).unwrap();
 
 	let bolt12_features: Bolt12InvoiceFeatures =
