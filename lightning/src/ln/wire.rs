@@ -374,7 +374,7 @@ impl Encode for msgs::ClosingSigned {
 
 // #SPLICING
 impl Encode for msgs::Splice {
-	const TYPE: u16 = 74;
+	const TYPE: u16 = 75;
 }
 
 // #SPLICING
