@@ -35,11 +35,13 @@ use crate::ln::{ChannelId, PaymentPreimage, PaymentHash, PaymentSecret};
 use crate::ln::features::{ChannelFeatures, ChannelTypeFeatures, InitFeatures, NodeFeatures};
 use crate::ln::onion_utils;
 use crate::onion_message;
+use crate::sign::NodeSigner;
 
 use crate::prelude::*;
 use core::convert::TryFrom;
 use core::fmt;
 use core::fmt::Debug;
+use core::ops::Deref;
 use core::str::FromStr;
 use crate::io::{self, Read};
 use crate::io_extras::read_to_end;
@@ -2132,8 +2134,8 @@ impl Writeable for OutboundOnionPayload {
 	}
 }
 
-impl Readable for InboundOnionPayload {
-	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+impl<NS: Deref> ReadableArgs<&NS> for InboundOnionPayload where NS::Target: NodeSigner {
+	fn read<R: Read>(r: &mut R, node_signer: &NS) -> Result<Self, DecodeError> {
 		let mut amt = HighZeroBytesDroppedBigSize(0u64);
 		let mut cltv_value = HighZeroBytesDroppedBigSize(0u32);
 		let mut short_id: Option<u64> = None;
@@ -2184,14 +2186,6 @@ impl Readable for InboundOnionPayload {
 				custom_tlvs,
 			})
 		}
-	}
-}
-
-// ReadableArgs because we need onion_utils::decode_next_hop to accommodate payment packets and
-// onion message packets.
-impl ReadableArgs<()> for InboundOnionPayload {
-	fn read<R: Read>(r: &mut R, _arg: ()) -> Result<Self, DecodeError> {
-		<Self as Readable>::read(r)
 	}
 }
 
@@ -2612,7 +2606,8 @@ mod tests {
 	use crate::ln::msgs::{self, FinalOnionHopData, OnionErrorPacket};
 	use crate::ln::msgs::SocketAddress;
 	use crate::routing::gossip::{NodeAlias, NodeId};
-	use crate::util::ser::{Writeable, Readable, Hostname, TransactionU16LenLimited};
+	use crate::util::ser::{Writeable, Readable, ReadableArgs, Hostname, TransactionU16LenLimited};
+	use crate::util::test_utils;
 
 	use bitcoin::hashes::hex::FromHex;
 	use bitcoin::util::address::Address;
@@ -3704,8 +3699,11 @@ mod tests {
 		let target_value = hex::decode("1a02080badf00d010203040404ffffffff0608deadbeef1bad1dea").unwrap();
 		assert_eq!(encoded_value, target_value);
 
-		let inbound_msg = Readable::read(&mut Cursor::new(&target_value[..])).unwrap();
-		if let msgs::InboundOnionPayload::Forward { short_channel_id, amt_to_forward, outgoing_cltv_value } = inbound_msg {
+		let node_signer = test_utils::TestKeysInterface::new(&[42; 32], Network::Testnet);
+		let inbound_msg = ReadableArgs::read(&mut Cursor::new(&target_value[..]), &&node_signer).unwrap();
+		if let msgs::InboundOnionPayload::Forward {
+			short_channel_id, amt_to_forward, outgoing_cltv_value
+		} = inbound_msg {
 			assert_eq!(short_channel_id, 0xdeadbeef1bad1dea);
 			assert_eq!(amt_to_forward, 0x0badf00d01020304);
 			assert_eq!(outgoing_cltv_value, 0xffffffff);
@@ -3726,8 +3724,11 @@ mod tests {
 		let target_value = hex::decode("1002080badf00d010203040404ffffffff").unwrap();
 		assert_eq!(encoded_value, target_value);
 
-		let inbound_msg = Readable::read(&mut Cursor::new(&target_value[..])).unwrap();
-		if let msgs::InboundOnionPayload::Receive { payment_data: None, amt_msat, outgoing_cltv_value, .. } = inbound_msg {
+		let node_signer = test_utils::TestKeysInterface::new(&[42; 32], Network::Testnet);
+		let inbound_msg = ReadableArgs::read(&mut Cursor::new(&target_value[..]), &&node_signer).unwrap();
+		if let msgs::InboundOnionPayload::Receive {
+			payment_data: None, amt_msat, outgoing_cltv_value, ..
+		} = inbound_msg {
 			assert_eq!(amt_msat, 0x0badf00d01020304);
 			assert_eq!(outgoing_cltv_value, 0xffffffff);
 		} else { panic!(); }
@@ -3751,7 +3752,8 @@ mod tests {
 		let target_value = hex::decode("3602080badf00d010203040404ffffffff082442424242424242424242424242424242424242424242424242424242424242421badca1f").unwrap();
 		assert_eq!(encoded_value, target_value);
 
-		let inbound_msg = Readable::read(&mut Cursor::new(&target_value[..])).unwrap();
+		let node_signer = test_utils::TestKeysInterface::new(&[42; 32], Network::Testnet);
+		let inbound_msg = ReadableArgs::read(&mut Cursor::new(&target_value[..]), &&node_signer).unwrap();
 		if let msgs::InboundOnionPayload::Receive {
 			payment_data: Some(FinalOnionHopData {
 				payment_secret,
@@ -3786,7 +3788,8 @@ mod tests {
 			outgoing_cltv_value: 0xffffffff,
 		};
 		let encoded_value = msg.encode();
-		assert!(msgs::InboundOnionPayload::read(&mut Cursor::new(&encoded_value[..])).is_err());
+		let node_signer = test_utils::TestKeysInterface::new(&[42; 32], Network::Testnet);
+		assert!(msgs::InboundOnionPayload::read(&mut Cursor::new(&encoded_value[..]), &&node_signer).is_err());
 		let good_type_range_tlvs = vec![
 			((1 << 16) - 3, vec![42]),
 			((1 << 16) - 1, vec![42; 32]),
@@ -3795,7 +3798,7 @@ mod tests {
 			*custom_tlvs = good_type_range_tlvs.clone();
 		}
 		let encoded_value = msg.encode();
-		let inbound_msg = Readable::read(&mut Cursor::new(&encoded_value[..])).unwrap();
+		let inbound_msg = ReadableArgs::read(&mut Cursor::new(&encoded_value[..]), &&node_signer).unwrap();
 		match inbound_msg {
 			msgs::InboundOnionPayload::Receive { custom_tlvs, .. } => assert!(custom_tlvs.is_empty()),
 			_ => panic!(),
@@ -3819,7 +3822,8 @@ mod tests {
 		let encoded_value = msg.encode();
 		let target_value = hex::decode("2e02080badf00d010203040404ffffffffff0000000146c6616b021234ff0000000146c6616f084242424242424242").unwrap();
 		assert_eq!(encoded_value, target_value);
-		let inbound_msg: msgs::InboundOnionPayload = Readable::read(&mut Cursor::new(&target_value[..])).unwrap();
+		let node_signer = test_utils::TestKeysInterface::new(&[42; 32], Network::Testnet);
+		let inbound_msg: msgs::InboundOnionPayload = ReadableArgs::read(&mut Cursor::new(&target_value[..]), &&node_signer).unwrap();
 		if let msgs::InboundOnionPayload::Receive {
 			payment_data: None,
 			payment_metadata: None,
@@ -3982,7 +3986,10 @@ mod tests {
 		// payload length to be encoded over multiple bytes rather than a single u8.
 		let big_payload = encode_big_payload().unwrap();
 		let mut rd = Cursor::new(&big_payload[..]);
-		<msgs::InboundOnionPayload as Readable>::read(&mut rd).unwrap();
+
+		let node_signer = test_utils::TestKeysInterface::new(&[42; 32], Network::Testnet);
+		<msgs::InboundOnionPayload as ReadableArgs<&&test_utils::TestKeysInterface>>
+			::read(&mut rd, &&node_signer).unwrap();
 	}
 	// see above test, needs to be a separate method for use of the serialization macros.
 	fn encode_big_payload() -> Result<Vec<u8>, io::Error> {

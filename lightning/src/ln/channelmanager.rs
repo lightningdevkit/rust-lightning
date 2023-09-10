@@ -2915,7 +2915,10 @@ where
 			}
 		}
 
-		let next_hop = match onion_utils::decode_next_payment_hop(shared_secret, &msg.onion_routing_packet.hop_data[..], msg.onion_routing_packet.hmac, msg.payment_hash) {
+		let next_hop = match onion_utils::decode_next_payment_hop(
+			shared_secret, &msg.onion_routing_packet.hop_data[..], msg.onion_routing_packet.hmac,
+			msg.payment_hash, &self.node_signer
+		) {
 			Ok(res) => res,
 			Err(onion_utils::OnionDecodeErr::Malformed { err_msg, err_code }) => {
 				return_malformed_err!(err_msg, err_code);
@@ -3924,7 +3927,10 @@ where
 											let phantom_pubkey_res = self.node_signer.get_node_id(Recipient::PhantomNode);
 											if phantom_pubkey_res.is_ok() && fake_scid::is_valid_phantom(&self.fake_scid_rand_bytes, short_chan_id, &self.genesis_hash) {
 												let phantom_shared_secret = self.node_signer.ecdh(Recipient::PhantomNode, &onion_packet.public_key.unwrap(), None).unwrap().secret_bytes();
-												let next_hop = match onion_utils::decode_next_payment_hop(phantom_shared_secret, &onion_packet.hop_data, onion_packet.hmac, payment_hash) {
+												let next_hop = match onion_utils::decode_next_payment_hop(
+													phantom_shared_secret, &onion_packet.hop_data, onion_packet.hmac,
+													payment_hash, &self.node_signer
+												) {
 													Ok(res) => res,
 													Err(onion_utils::OnionDecodeErr::Malformed { err_msg, err_code }) => {
 														let sha256_of_onion = Sha256::hash(&onion_packet.hop_data).into_inner();
