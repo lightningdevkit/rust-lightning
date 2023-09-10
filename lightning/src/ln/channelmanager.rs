@@ -2051,11 +2051,11 @@ macro_rules! handle_new_monitor_update {
 			ChannelMonitorUpdateStatus::InProgress => {
 				log_debug!($self.logger, "ChannelMonitor update for {} in flight, holding messages until the update completes.",
 					&$chan.context.channel_id());
-				Ok(false)
+				false
 			},
 			ChannelMonitorUpdateStatus::Completed => {
 				$completed;
-				Ok(true)
+				true
 			},
 		}
 	} };
@@ -2070,14 +2070,9 @@ macro_rules! handle_new_monitor_update {
 				$per_peer_state_lock, chan, MANUALLY_REMOVING_INITIAL_MONITOR, { $chan_entry.remove() })
 		} else {
 			// We're not supposed to handle monitor updates for unfunded channels (they have no monitors to
-			// update).
-			debug_assert!(false);
-			let channel_id = *$chan_entry.key();
-			let (_, err) = convert_chan_phase_err!($self, ChannelError::Close(
-				"Cannot update monitor for unfunded channels as they don't have monitors yet".into()),
-				$chan_entry.get_mut(), &channel_id);
-			$chan_entry.remove();
-			Err(err)
+			// update). Throwing away a monitor update could be dangerous, so we assert even in
+			// release builds.
+			panic!("Initial Monitors should not exist for non-funded channels");
 		}
 	};
 	($self: ident, $funding_txo: expr, $update: expr, $peer_state_lock: expr, $peer_state: expr, $per_peer_state_lock: expr, $chan: expr, MANUALLY_REMOVING, $remove: expr) => { {
@@ -2107,14 +2102,9 @@ macro_rules! handle_new_monitor_update {
 				$per_peer_state_lock, chan, MANUALLY_REMOVING, { $chan_entry.remove() })
 		} else {
 			// We're not supposed to handle monitor updates for unfunded channels (they have no monitors to
-			// update).
-			debug_assert!(false);
-			let channel_id = *$chan_entry.key();
-			let (_, err) = convert_chan_phase_err!($self, ChannelError::Close(
-				"Cannot update monitor for unfunded channels as they don't have monitors yet".into()),
-				$chan_entry.get_mut(), &channel_id);
-			$chan_entry.remove();
-			Err(err)
+			// update). Throwing away a monitor update could be dangerous, so we assert even in
+			// release builds.
+			panic!("Monitor updates should not exist for non-funded channels");
 		}
 	}
 }
@@ -2529,7 +2519,7 @@ where
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 
 		let mut failed_htlcs: Vec<(HTLCSource, PaymentHash)>;
-		let result: Result<(), _> = loop {
+		loop {
 			{
 				let per_peer_state = self.per_peer_state.read().unwrap();
 
@@ -2558,8 +2548,9 @@ where
 
 							// Update the monitor with the shutdown script if necessary.
 							if let Some(monitor_update) = monitor_update_opt.take() {
-								break handle_new_monitor_update!(self, funding_txo_opt.unwrap(), monitor_update,
-									peer_state_lock, peer_state, per_peer_state, chan_phase_entry).map(|_| ());
+								handle_new_monitor_update!(self, funding_txo_opt.unwrap(), monitor_update,
+									peer_state_lock, peer_state, per_peer_state, chan_phase_entry);
+								break;
 							}
 
 							if chan.is_shutdown() {
@@ -2572,7 +2563,7 @@ where
 									self.issue_channel_close_events(&chan.context, ClosureReason::HolderForceClosed);
 								}
 							}
-							break Ok(());
+							break;
 						}
 					},
 					hash_map::Entry::Vacant(_) => (),
@@ -2591,7 +2582,6 @@ where
 			self.fail_htlc_backwards_internal(&htlc_source.0, &htlc_source.1, &reason, receiver);
 		}
 
-		let _ = handle_error!(self, result, *counterparty_node_id);
 		Ok(())
 	}
 
@@ -3334,8 +3324,7 @@ where
 						match break_chan_phase_entry!(self, send_res, chan_phase_entry) {
 							Some(monitor_update) => {
 								match handle_new_monitor_update!(self, funding_txo, monitor_update, peer_state_lock, peer_state, per_peer_state, chan_phase_entry) {
-									Err(e) => break Err(e),
-									Ok(false) => {
+									false => {
 										// Note that MonitorUpdateInProgress here indicates (per function
 										// docs) that we will resend the commitment update once monitor
 										// updating completes. Therefore, we must return an error
@@ -3344,7 +3333,7 @@ where
 										// MonitorUpdateInProgress, below.
 										return Err(APIError::MonitorUpdateInProgress);
 									},
-									Ok(true) => {},
+									true => {},
 								}
 							},
 							None => {},
@@ -4526,7 +4515,7 @@ where
 				},
 				BackgroundEvent::MonitorUpdateRegeneratedOnStartup { counterparty_node_id, funding_txo, update } => {
 					let mut updated_chan = false;
-					let res = {
+					{
 						let per_peer_state = self.per_peer_state.read().unwrap();
 						if let Some(peer_state_mutex) = per_peer_state.get(&counterparty_node_id) {
 							let mut peer_state_lock = peer_state_mutex.lock().unwrap();
@@ -4535,24 +4524,16 @@ where
 								hash_map::Entry::Occupied(mut chan_phase) => {
 									updated_chan = true;
 									handle_new_monitor_update!(self, funding_txo, update.clone(),
-										peer_state_lock, peer_state, per_peer_state, chan_phase).map(|_| ())
+										peer_state_lock, peer_state, per_peer_state, chan_phase);
 								},
-								hash_map::Entry::Vacant(_) => Ok(()),
+								hash_map::Entry::Vacant(_) => {},
 							}
-						} else { Ok(()) }
-					};
+						}
+					}
 					if !updated_chan {
 						// TODO: Track this as in-flight even though the channel is closed.
 						let _ = self.chain_monitor.update_channel(funding_txo, &update);
 					}
-					// TODO: If this channel has since closed, we're likely providing a payment
-					// preimage update, which we must ensure is durable! We currently don't,
-					// however, ensure that.
-					if res.is_err() {
-						log_error!(self.logger,
-							"Failed to provide ChannelMonitorUpdate to closed channel! This likely lost us a payment preimage!");
-					}
-					let _ = handle_error!(self, res, counterparty_node_id);
 				},
 				BackgroundEvent::MonitorUpdatesComplete { counterparty_node_id, channel_id } => {
 					let per_peer_state = self.per_peer_state.read().unwrap();
@@ -5275,15 +5256,8 @@ where
 								peer_state.monitor_update_blocked_actions.entry(chan_id).or_insert(Vec::new()).push(action);
 							}
 							if !during_init {
-								let res = handle_new_monitor_update!(self, prev_hop.outpoint, monitor_update, peer_state_lock,
+								handle_new_monitor_update!(self, prev_hop.outpoint, monitor_update, peer_state_lock,
 									peer_state, per_peer_state, chan_phase_entry);
-								if let Err(e) = res {
-									// TODO: This is a *critical* error - we probably updated the outbound edge
-									// of the HTLC's monitor with a preimage. We should retry this monitor
-									// update over and over again until morale improves.
-									log_error!(self.logger, "Failed to update channel monitor with preimage {:?}", payment_preimage);
-									return Err((counterparty_node_id, e));
-								}
 							} else {
 								// If we're running during init we cannot update a monitor directly -
 								// they probably haven't actually been loaded yet. Instead, push the
@@ -5934,24 +5908,13 @@ where
 							});
 
 							if let ChannelPhase::Funded(chan) = e.insert(ChannelPhase::Funded(chan)) {
-								let mut res = handle_new_monitor_update!(self, persist_state, peer_state_lock, peer_state,
+								handle_new_monitor_update!(self, persist_state, peer_state_lock, peer_state,
 									per_peer_state, chan, MANUALLY_REMOVING_INITIAL_MONITOR,
 									{ peer_state.channel_by_id.remove(&new_channel_id) });
-
-								// Note that we reply with the new channel_id in error messages if we gave up on the
-								// channel, not the temporary_channel_id. This is compatible with ourselves, but the
-								// spec is somewhat ambiguous here. Not a huge deal since we'll send error messages for
-								// any messages referencing a previously-closed channel anyway.
-								// We do not propagate the monitor update to the user as it would be for a monitor
-								// that we didn't manage to store (and that we don't care about - we don't respond
-								// with the funding_signed so the channel can never go on chain).
-								if let Err(MsgHandleErrInternal { shutdown_finish: Some((res, _)), .. }) = &mut res {
-									res.0 = None;
-								}
-								res.map(|_| ())
 							} else {
 								unreachable!("This must be a funded channel as we just inserted it.");
 							}
+							Ok(())
 						} else {
 							log_error!(self.logger, "Persisting initial ChannelMonitor failed, implying the funding outpoint was duplicated");
 							return Err(MsgHandleErrInternal::send_err_msg_no_close(
@@ -5982,16 +5945,8 @@ where
 						let monitor = try_chan_phase_entry!(self,
 							chan.funding_signed(&msg, best_block, &self.signer_provider, &self.logger), chan_phase_entry);
 						if let Ok(persist_status) = self.chain_monitor.watch_channel(chan.context.get_funding_txo().unwrap(), monitor) {
-							let mut res = handle_new_monitor_update!(self, persist_status, peer_state_lock, peer_state, per_peer_state, chan_phase_entry, INITIAL_MONITOR);
-							if let Err(MsgHandleErrInternal { ref mut shutdown_finish, .. }) = res {
-								// We weren't able to watch the channel to begin with, so no updates should be made on
-								// it. Previously, full_stack_target found an (unreachable) panic when the
-								// monitor update contained within `shutdown_finish` was applied.
-								if let Some((ref mut shutdown_finish, _)) = shutdown_finish {
-									shutdown_finish.0.take();
-								}
-							}
-							res.map(|_| ())
+							handle_new_monitor_update!(self, persist_status, peer_state_lock, peer_state, per_peer_state, chan_phase_entry, INITIAL_MONITOR);
+							Ok(())
 						} else {
 							try_chan_phase_entry!(self, Err(ChannelError::Close("Channel funding outpoint was a duplicate".to_owned())), chan_phase_entry)
 						}
@@ -6096,8 +6051,8 @@ where
 						}
 						// Update the monitor with the shutdown script if necessary.
 						if let Some(monitor_update) = monitor_update_opt {
-							break handle_new_monitor_update!(self, funding_txo_opt.unwrap(), monitor_update,
-								peer_state_lock, peer_state, per_peer_state, chan_phase_entry).map(|_| ());
+							handle_new_monitor_update!(self, funding_txo_opt.unwrap(), monitor_update,
+								peer_state_lock, peer_state, per_peer_state, chan_phase_entry);
 						}
 						break Ok(());
 					},
@@ -6350,8 +6305,9 @@ where
 					let monitor_update_opt = try_chan_phase_entry!(self, chan.commitment_signed(&msg, &self.logger), chan_phase_entry);
 					if let Some(monitor_update) = monitor_update_opt {
 						handle_new_monitor_update!(self, funding_txo.unwrap(), monitor_update, peer_state_lock,
-							peer_state, per_peer_state, chan_phase_entry).map(|_| ())
-					} else { Ok(()) }
+							peer_state, per_peer_state, chan_phase_entry);
+					}
+					Ok(())
 				} else {
 					return try_chan_phase_entry!(self, Err(ChannelError::Close(
 						"Got a commitment_signed message for an unfunded channel!".into())), chan_phase_entry);
@@ -6519,13 +6475,13 @@ where
 						} else { false };
 						let (htlcs_to_fail, monitor_update_opt) = try_chan_phase_entry!(self,
 							chan.revoke_and_ack(&msg, &self.fee_estimator, &self.logger, mon_update_blocked), chan_phase_entry);
-						let res = if let Some(monitor_update) = monitor_update_opt {
+						if let Some(monitor_update) = monitor_update_opt {
 							let funding_txo = funding_txo_opt
 								.expect("Funding outpoint must have been set for RAA handling to succeed");
 							handle_new_monitor_update!(self, funding_txo, monitor_update,
-								peer_state_lock, peer_state, per_peer_state, chan_phase_entry).map(|_| ())
-						} else { Ok(()) };
-						(htlcs_to_fail, res)
+								peer_state_lock, peer_state, per_peer_state, chan_phase_entry);
+						}
+						(htlcs_to_fail, Ok(()))
 					} else {
 						return try_chan_phase_entry!(self, Err(ChannelError::Close(
 							"Got a revoke_and_ack message for an unfunded channel!".into())), chan_phase_entry);
@@ -6796,7 +6752,6 @@ where
 	fn check_free_holding_cells(&self) -> bool {
 		let mut has_monitor_update = false;
 		let mut failed_htlcs = Vec::new();
-		let mut handle_errors = Vec::new();
 
 		// Walk our list of channels and find any that need to update. Note that when we do find an
 		// update, if it includes actions that must be taken afterwards, we have to drop the
@@ -6822,12 +6777,9 @@ where
 							has_monitor_update = true;
 
 							let channel_id: ChannelId = *channel_id;
-							let res = handle_new_monitor_update!(self, funding_txo.unwrap(), monitor_update,
+							handle_new_monitor_update!(self, funding_txo.unwrap(), monitor_update,
 								peer_state_lock, peer_state, per_peer_state, chan, MANUALLY_REMOVING,
 								peer_state.channel_by_id.remove(&channel_id));
-							if res.is_err() {
-								handle_errors.push((counterparty_node_id, res));
-							}
 							continue 'peer_loop;
 						}
 					}
@@ -6837,13 +6789,9 @@ where
 			break 'peer_loop;
 		}
 
-		let has_update = has_monitor_update || !failed_htlcs.is_empty() || !handle_errors.is_empty();
+		let has_update = has_monitor_update || !failed_htlcs.is_empty();
 		for (failures, channel_id, counterparty_node_id) in failed_htlcs.drain(..) {
 			self.fail_holding_cell_htlcs(failures, channel_id, &counterparty_node_id);
-		}
-
-		for (counterparty_node_id, err) in handle_errors.drain(..) {
-			let _ = handle_error!(self, err, counterparty_node_id);
 		}
 
 		has_update
@@ -7172,11 +7120,8 @@ where
 						if let Some((monitor_update, further_update_exists)) = chan.unblock_next_blocked_monitor_update() {
 							log_debug!(self.logger, "Unlocking monitor updating for channel {} and updating monitor",
 								channel_funding_outpoint.to_channel_id());
-							if let Err(e) = handle_new_monitor_update!(self, channel_funding_outpoint, monitor_update,
-								peer_state_lck, peer_state, per_peer_state, chan_phase_entry)
-							{
-								errors.push((e, counterparty_node_id));
-							}
+							handle_new_monitor_update!(self, channel_funding_outpoint, monitor_update,
+								peer_state_lck, peer_state, per_peer_state, chan_phase_entry);
 							if further_update_exists {
 								// If there are more `ChannelMonitorUpdate`s to process, restart at the
 								// top of the loop.
