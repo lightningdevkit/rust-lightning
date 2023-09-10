@@ -2042,10 +2042,7 @@ macro_rules! handle_monitor_update_completion {
 }
 
 macro_rules! handle_new_monitor_update {
-	($self: ident, $update_res: expr, $peer_state_lock: expr, $peer_state: expr, $per_peer_state_lock: expr, $chan: expr, _internal, $remove: expr, $completed: expr) => { {
-		// update_maps_on_chan_removal needs to be able to take id_to_peer, so make sure we can in
-		// any case so that it won't deadlock.
-		debug_assert_ne!($self.id_to_peer.held_by_thread(), LockHeldState::HeldByThread);
+	($self: ident, $update_res: expr, $chan: expr, _internal, $completed: expr) => { {
 		debug_assert!($self.background_events_processed_since_startup.load(Ordering::Acquire));
 		match $update_res {
 			ChannelMonitorUpdateStatus::InProgress => {
@@ -2059,23 +2056,11 @@ macro_rules! handle_new_monitor_update {
 			},
 		}
 	} };
-	($self: ident, $update_res: expr, $peer_state_lock: expr, $peer_state: expr, $per_peer_state_lock: expr, $chan: expr, MANUALLY_REMOVING_INITIAL_MONITOR, $remove: expr) => {
-		handle_new_monitor_update!($self, $update_res, $peer_state_lock, $peer_state,
-			$per_peer_state_lock, $chan, _internal, $remove,
+	($self: ident, $update_res: expr, $peer_state_lock: expr, $peer_state: expr, $per_peer_state_lock: expr, $chan: expr, INITIAL_MONITOR) => {
+		handle_new_monitor_update!($self, $update_res, $chan, _internal,
 			handle_monitor_update_completion!($self, $peer_state_lock, $peer_state, $per_peer_state_lock, $chan))
 	};
-	($self: ident, $update_res: expr, $peer_state_lock: expr, $peer_state: expr, $per_peer_state_lock: expr, $chan_entry: expr, INITIAL_MONITOR) => {
-		if let ChannelPhase::Funded(chan) = $chan_entry.get_mut() {
-			handle_new_monitor_update!($self, $update_res, $peer_state_lock, $peer_state,
-				$per_peer_state_lock, chan, MANUALLY_REMOVING_INITIAL_MONITOR, { $chan_entry.remove() })
-		} else {
-			// We're not supposed to handle monitor updates for unfunded channels (they have no monitors to
-			// update). Throwing away a monitor update could be dangerous, so we assert even in
-			// release builds.
-			panic!("Initial Monitors should not exist for non-funded channels");
-		}
-	};
-	($self: ident, $funding_txo: expr, $update: expr, $peer_state_lock: expr, $peer_state: expr, $per_peer_state_lock: expr, $chan: expr, MANUALLY_REMOVING, $remove: expr) => { {
+	($self: ident, $funding_txo: expr, $update: expr, $peer_state_lock: expr, $peer_state: expr, $per_peer_state_lock: expr, $chan: expr) => { {
 		let in_flight_updates = $peer_state.in_flight_monitor_updates.entry($funding_txo)
 			.or_insert_with(Vec::new);
 		// During startup, we push monitor updates as background events through to here in
@@ -2087,8 +2072,7 @@ macro_rules! handle_new_monitor_update {
 				in_flight_updates.len() - 1
 			});
 		let update_res = $self.chain_monitor.update_channel($funding_txo, &in_flight_updates[idx]);
-		handle_new_monitor_update!($self, update_res, $peer_state_lock, $peer_state,
-			$per_peer_state_lock, $chan, _internal, $remove,
+		handle_new_monitor_update!($self, update_res, $chan, _internal,
 			{
 				let _ = in_flight_updates.remove(idx);
 				if in_flight_updates.is_empty() && $chan.blocked_monitor_updates_pending() == 0 {
@@ -2096,17 +2080,6 @@ macro_rules! handle_new_monitor_update {
 				}
 			})
 	} };
-	($self: ident, $funding_txo: expr, $update: expr, $peer_state_lock: expr, $peer_state: expr, $per_peer_state_lock: expr, $chan_entry: expr) => {
-		if let ChannelPhase::Funded(chan) = $chan_entry.get_mut() {
-			handle_new_monitor_update!($self, $funding_txo, $update, $peer_state_lock, $peer_state,
-				$per_peer_state_lock, chan, MANUALLY_REMOVING, { $chan_entry.remove() })
-		} else {
-			// We're not supposed to handle monitor updates for unfunded channels (they have no monitors to
-			// update). Throwing away a monitor update could be dangerous, so we assert even in
-			// release builds.
-			panic!("Monitor updates should not exist for non-funded channels");
-		}
-	}
 }
 
 macro_rules! process_events_body {
@@ -2551,7 +2524,7 @@ where
 						// Update the monitor with the shutdown script if necessary.
 						if let Some(monitor_update) = monitor_update_opt.take() {
 							handle_new_monitor_update!(self, funding_txo_opt.unwrap(), monitor_update,
-								peer_state_lock, peer_state, per_peer_state, chan_phase_entry);
+								peer_state_lock, peer_state, per_peer_state, chan);
 							break;
 						}
 
@@ -3325,7 +3298,7 @@ where
 							}, onion_packet, None, &self.fee_estimator, &self.logger);
 						match break_chan_phase_entry!(self, send_res, chan_phase_entry) {
 							Some(monitor_update) => {
-								match handle_new_monitor_update!(self, funding_txo, monitor_update, peer_state_lock, peer_state, per_peer_state, chan_phase_entry) {
+								match handle_new_monitor_update!(self, funding_txo, monitor_update, peer_state_lock, peer_state, per_peer_state, chan) {
 									false => {
 										// Note that MonitorUpdateInProgress here indicates (per function
 										// docs) that we will resend the commitment update once monitor
@@ -4524,9 +4497,13 @@ where
 							let peer_state = &mut *peer_state_lock;
 							match peer_state.channel_by_id.entry(funding_txo.to_channel_id()) {
 								hash_map::Entry::Occupied(mut chan_phase) => {
-									updated_chan = true;
-									handle_new_monitor_update!(self, funding_txo, update.clone(),
-										peer_state_lock, peer_state, per_peer_state, chan_phase);
+									if let ChannelPhase::Funded(chan) = chan_phase.get_mut() {
+										updated_chan = true;
+										handle_new_monitor_update!(self, funding_txo, update.clone(),
+											peer_state_lock, peer_state, per_peer_state, chan);
+									} else {
+										debug_assert!(false, "We shouldn't have an update for a non-funded channel");
+									}
 								},
 								hash_map::Entry::Vacant(_) => {},
 							}
@@ -5259,7 +5236,7 @@ where
 							}
 							if !during_init {
 								handle_new_monitor_update!(self, prev_hop.outpoint, monitor_update, peer_state_lock,
-									peer_state, per_peer_state, chan_phase_entry);
+									peer_state, per_peer_state, chan);
 							} else {
 								// If we're running during init we cannot update a monitor directly -
 								// they probably haven't actually been loaded yet. Instead, push the
@@ -5903,7 +5880,6 @@ where
 							// hasn't persisted to disk yet - we can't lose money on a transaction that we haven't
 							// accepted payment from yet. We do, however, need to wait to send our channel_ready
 							// until we have persisted our monitor.
-							let new_channel_id = funding_msg.channel_id;
 							peer_state.pending_msg_events.push(events::MessageSendEvent::SendFundingSigned {
 								node_id: counterparty_node_id.clone(),
 								msg: funding_msg,
@@ -5911,8 +5887,7 @@ where
 
 							if let ChannelPhase::Funded(chan) = e.insert(ChannelPhase::Funded(chan)) {
 								handle_new_monitor_update!(self, persist_state, peer_state_lock, peer_state,
-									per_peer_state, chan, MANUALLY_REMOVING_INITIAL_MONITOR,
-									{ peer_state.channel_by_id.remove(&new_channel_id) });
+									per_peer_state, chan, INITIAL_MONITOR);
 							} else {
 								unreachable!("This must be a funded channel as we just inserted it.");
 							}
@@ -5947,7 +5922,7 @@ where
 						let monitor = try_chan_phase_entry!(self,
 							chan.funding_signed(&msg, best_block, &self.signer_provider, &self.logger), chan_phase_entry);
 						if let Ok(persist_status) = self.chain_monitor.watch_channel(chan.context.get_funding_txo().unwrap(), monitor) {
-							handle_new_monitor_update!(self, persist_status, peer_state_lock, peer_state, per_peer_state, chan_phase_entry, INITIAL_MONITOR);
+							handle_new_monitor_update!(self, persist_status, peer_state_lock, peer_state, per_peer_state, chan, INITIAL_MONITOR);
 							Ok(())
 						} else {
 							try_chan_phase_entry!(self, Err(ChannelError::Close("Channel funding outpoint was a duplicate".to_owned())), chan_phase_entry)
@@ -6054,7 +6029,7 @@ where
 						// Update the monitor with the shutdown script if necessary.
 						if let Some(monitor_update) = monitor_update_opt {
 							handle_new_monitor_update!(self, funding_txo_opt.unwrap(), monitor_update,
-								peer_state_lock, peer_state, per_peer_state, chan_phase_entry);
+								peer_state_lock, peer_state, per_peer_state, chan);
 						}
 					},
 					ChannelPhase::UnfundedInboundV1(_) | ChannelPhase::UnfundedOutboundV1(_) => {
@@ -6306,7 +6281,7 @@ where
 					let monitor_update_opt = try_chan_phase_entry!(self, chan.commitment_signed(&msg, &self.logger), chan_phase_entry);
 					if let Some(monitor_update) = monitor_update_opt {
 						handle_new_monitor_update!(self, funding_txo.unwrap(), monitor_update, peer_state_lock,
-							peer_state, per_peer_state, chan_phase_entry);
+							peer_state, per_peer_state, chan);
 					}
 					Ok(())
 				} else {
@@ -6480,7 +6455,7 @@ where
 							let funding_txo = funding_txo_opt
 								.expect("Funding outpoint must have been set for RAA handling to succeed");
 							handle_new_monitor_update!(self, funding_txo, monitor_update,
-								peer_state_lock, peer_state, per_peer_state, chan_phase_entry);
+								peer_state_lock, peer_state, per_peer_state, chan);
 						}
 						htlcs_to_fail
 					} else {
@@ -6777,10 +6752,8 @@ where
 						if let Some(monitor_update) = monitor_opt {
 							has_monitor_update = true;
 
-							let channel_id: ChannelId = *channel_id;
 							handle_new_monitor_update!(self, funding_txo.unwrap(), monitor_update,
-								peer_state_lock, peer_state, per_peer_state, chan, MANUALLY_REMOVING,
-								peer_state.channel_by_id.remove(&channel_id));
+								peer_state_lock, peer_state, per_peer_state, chan);
 							continue 'peer_loop;
 						}
 					}
@@ -7089,7 +7062,6 @@ where
 	/// operation. It will double-check that nothing *else* is also blocking the same channel from
 	/// making progress and then let any blocked [`ChannelMonitorUpdate`]s fly.
 	fn handle_monitor_update_release(&self, counterparty_node_id: PublicKey, channel_funding_outpoint: OutPoint, mut completed_blocker: Option<RAAMonitorUpdateBlockingAction>) {
-		let mut errors = Vec::new();
 		loop {
 			let per_peer_state = self.per_peer_state.read().unwrap();
 			if let Some(peer_state_mtx) = per_peer_state.get(&counterparty_node_id) {
@@ -7122,7 +7094,7 @@ where
 							log_debug!(self.logger, "Unlocking monitor updating for channel {} and updating monitor",
 								channel_funding_outpoint.to_channel_id());
 							handle_new_monitor_update!(self, channel_funding_outpoint, monitor_update,
-								peer_state_lck, peer_state, per_peer_state, chan_phase_entry);
+								peer_state_lck, peer_state, per_peer_state, chan);
 							if further_update_exists {
 								// If there are more `ChannelMonitorUpdate`s to process, restart at the
 								// top of the loop.
@@ -7140,10 +7112,6 @@ where
 					log_pubkey!(counterparty_node_id));
 			}
 			break;
-		}
-		for (err, counterparty_node_id) in errors {
-			let res = Err::<(), _>(err);
-			let _ = handle_error!(self, res, counterparty_node_id);
 		}
 	}
 
