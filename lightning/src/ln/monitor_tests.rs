@@ -269,12 +269,12 @@ fn do_test_claim_value_force_close(prev_commitment_tx: bool) {
 	assert_eq!(funding_outpoint.to_channel_id(), chan_id);
 
 	// This HTLC is immediately claimed, giving node B the preimage
-	let (payment_preimage, payment_hash, _) = route_payment(&nodes[0], &[&nodes[1]], 3_000_000);
+	let (payment_preimage, payment_hash, ..) = route_payment(&nodes[0], &[&nodes[1]], 3_000_000);
 	// This HTLC is allowed to time out, letting A claim it. However, in order to test claimable
 	// balances more fully we also give B the preimage for this HTLC.
-	let (timeout_payment_preimage, timeout_payment_hash, _) = route_payment(&nodes[0], &[&nodes[1]], 4_000_000);
+	let (timeout_payment_preimage, timeout_payment_hash, ..) = route_payment(&nodes[0], &[&nodes[1]], 4_000_000);
 	// This HTLC will be dust, and not be claimable at all:
-	let (dust_payment_preimage, dust_payment_hash, _) = route_payment(&nodes[0], &[&nodes[1]], 3_000);
+	let (dust_payment_preimage, dust_payment_hash, ..) = route_payment(&nodes[0], &[&nodes[1]], 3_000);
 
 	let htlc_cltv_timeout = nodes[0].best_block_info().1 + TEST_FINAL_CLTV + 1; // Note ChannelManager adds one to CLTV timeouts for safety
 
@@ -1871,7 +1871,7 @@ fn test_yield_anchors_events() {
 		&nodes, 0, 1, 1_000_000, 500_000_000
 	).2;
 	route_payment(&nodes[0], &[&nodes[1]], 1_000_000);
-	let (payment_preimage, payment_hash, _) = route_payment(&nodes[1], &[&nodes[0]], 1_000_000);
+	let (payment_preimage, payment_hash, ..) = route_payment(&nodes[1], &[&nodes[0]], 1_000_000);
 
 	assert!(nodes[0].node.get_and_clear_pending_events().is_empty());
 

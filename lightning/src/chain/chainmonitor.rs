@@ -854,8 +854,8 @@ mod tests {
 		create_announced_chan_between_nodes(&nodes, 0, 1);
 
 		// Route two payments to be claimed at the same time.
-		let (payment_preimage_1, payment_hash_1, _) = route_payment(&nodes[0], &[&nodes[1]], 1_000_000);
-		let (payment_preimage_2, payment_hash_2, _) = route_payment(&nodes[0], &[&nodes[1]], 1_000_000);
+		let (payment_preimage_1, payment_hash_1, ..) = route_payment(&nodes[0], &[&nodes[1]], 1_000_000);
+		let (payment_preimage_2, payment_hash_2, ..) = route_payment(&nodes[0], &[&nodes[1]], 1_000_000);
 
 		chanmon_cfgs[1].persister.offchain_monitor_updates.lock().unwrap().clear();
 		chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
@@ -962,7 +962,7 @@ mod tests {
 		let (route, second_payment_hash, _, second_payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[1], 100_000);
 
 		// First route a payment that we will claim on chain and give the recipient the preimage.
-		let (payment_preimage, payment_hash, _) = route_payment(&nodes[0], &[&nodes[1]], 1_000_000);
+		let (payment_preimage, payment_hash, ..) = route_payment(&nodes[0], &[&nodes[1]], 1_000_000);
 		nodes[1].node.claim_funds(payment_preimage);
 		expect_payment_claimed!(nodes[1], payment_hash, 1_000_000);
 		nodes[1].node.get_and_clear_pending_msg_events();

@@ -122,7 +122,7 @@ fn expect_channel_shutdown_state_with_htlc() {
 	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1);
 	let _chan_2 = create_announced_chan_between_nodes(&nodes, 1, 2);
 
-	let (payment_preimage_0, payment_hash_0, _) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 100_000);
+	let (payment_preimage_0, payment_hash_0, ..) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 100_000);
 
 	expect_channel_shutdown_state!(nodes[0], chan_1.2, ChannelShutdownState::NotShuttingDown);
 	expect_channel_shutdown_state!(nodes[1], chan_1.2, ChannelShutdownState::NotShuttingDown);
@@ -209,7 +209,7 @@ fn test_lnd_bug_6039() {
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	let chan = create_announced_chan_between_nodes(&nodes, 0, 1);
 
-	let (payment_preimage, payment_hash, _) = route_payment(&nodes[0], &[&nodes[1]], 100_000);
+	let (payment_preimage, payment_hash, ..) = route_payment(&nodes[0], &[&nodes[1]], 100_000);
 
 	nodes[0].node.close_channel(&chan.2, &nodes[1].node.get_our_node_id()).unwrap();
 	let node_0_shutdown = get_event_msg!(nodes[0], MessageSendEvent::SendShutdown, nodes[1].node.get_our_node_id());
@@ -299,7 +299,7 @@ fn updates_shutdown_wait() {
 	let keys_manager = test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
 	let random_seed_bytes = keys_manager.get_secure_random_bytes();
 
-	let (payment_preimage_0, payment_hash_0, _) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 100_000);
+	let (payment_preimage_0, payment_hash_0, ..) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 100_000);
 
 	nodes[0].node.close_channel(&chan_1.2, &nodes[1].node.get_our_node_id()).unwrap();
 	let node_0_shutdown = get_event_msg!(nodes[0], MessageSendEvent::SendShutdown, nodes[1].node.get_our_node_id());
@@ -460,7 +460,7 @@ fn do_test_shutdown_rebroadcast(recv_count: u8) {
 	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1);
 	let chan_2 = create_announced_chan_between_nodes(&nodes, 1, 2);
 
-	let (payment_preimage, payment_hash, _) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 100_000);
+	let (payment_preimage, payment_hash, ..) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 100_000);
 
 	nodes[1].node.close_channel(&chan_1.2, &nodes[0].node.get_our_node_id()).unwrap();
 	let node_1_shutdown = get_event_msg!(nodes[1], MessageSendEvent::SendShutdown, nodes[0].node.get_our_node_id());

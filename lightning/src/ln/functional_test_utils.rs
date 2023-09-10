@@ -2467,7 +2467,7 @@ pub fn claim_payment<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_route:
 
 pub const TEST_FINAL_CLTV: u32 = 70;
 
-pub fn route_payment<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_route: &[&Node<'a, 'b, 'c>], recv_value: u64) -> (PaymentPreimage, PaymentHash, PaymentSecret) {
+pub fn route_payment<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_route: &[&Node<'a, 'b, 'c>], recv_value: u64) -> (PaymentPreimage, PaymentHash, PaymentSecret, PaymentId) {
 	let payment_params = PaymentParameters::from_node_id(expected_route.last().unwrap().node.get_our_node_id(), TEST_FINAL_CLTV)
 		.with_bolt11_features(expected_route.last().unwrap().node.invoice_features()).unwrap();
 	let route_params = RouteParameters::from_payment_params_and_value(payment_params, recv_value);
@@ -2479,7 +2479,7 @@ pub fn route_payment<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_route:
 	}
 
 	let res = send_along_route(origin_node, route, expected_route, recv_value);
-	(res.0, res.1, res.2)
+	(res.0, res.1, res.2, res.3)
 }
 
 pub fn route_over_limit<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_route: &[&Node<'a, 'b, 'c>], recv_value: u64)  {
@@ -2506,7 +2506,7 @@ pub fn route_over_limit<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_rou
 		assert!(err.contains("Cannot send value that would put us over the max HTLC value in flight our peer will accept")));
 }
 
-pub fn send_payment<'a, 'b, 'c>(origin: &Node<'a, 'b, 'c>, expected_route: &[&Node<'a, 'b, 'c>], recv_value: u64) -> (PaymentPreimage, PaymentHash, PaymentSecret) {
+pub fn send_payment<'a, 'b, 'c>(origin: &Node<'a, 'b, 'c>, expected_route: &[&Node<'a, 'b, 'c>], recv_value: u64) -> (PaymentPreimage, PaymentHash, PaymentSecret, PaymentId) {
 	let res = route_payment(&origin, expected_route, recv_value);
 	claim_payment(&origin, expected_route, res.0);
 	res

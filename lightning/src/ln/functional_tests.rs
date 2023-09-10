@@ -1244,7 +1244,7 @@ fn duplicate_htlc_test() {
 	create_announced_chan_between_nodes(&nodes, 3, 4);
 	create_announced_chan_between_nodes(&nodes, 3, 5);
 
-	let (payment_preimage, payment_hash, _) = route_payment(&nodes[0], &vec!(&nodes[3], &nodes[4])[..], 1000000);
+	let (payment_preimage, payment_hash, ..) = route_payment(&nodes[0], &vec!(&nodes[3], &nodes[4])[..], 1000000);
 
 	*nodes[0].network_payment_count.borrow_mut() -= 1;
 	assert_eq!(route_payment(&nodes[1], &vec!(&nodes[3])[..], 1000000).0, payment_preimage);
@@ -1272,7 +1272,7 @@ fn test_duplicate_htlc_different_direction_onchain() {
 	// balancing
 	send_payment(&nodes[0], &vec!(&nodes[1])[..], 8000000);
 
-	let (payment_preimage, payment_hash, _) = route_payment(&nodes[0], &vec!(&nodes[1])[..], 900_000);
+	let (payment_preimage, payment_hash, ..) = route_payment(&nodes[0], &vec!(&nodes[1])[..], 900_000);
 
 	let (route, _, _, _) = get_route_and_payment_hash!(nodes[1], nodes[0], 800_000);
 	let node_a_payment_secret = nodes[0].node.create_inbound_payment_for_hash(payment_hash, None, 7200, None).unwrap();
@@ -1552,7 +1552,7 @@ fn test_chan_reserve_violation_outbound_htlc_inbound_chan() {
 	let (route, our_payment_hash, _, our_payment_secret) = get_route_and_payment_hash!(nodes[1], nodes[0], 1_000_000);
 	// Sending exactly enough to hit the reserve amount should be accepted
 	for _ in 0..MIN_AFFORDABLE_HTLC_COUNT {
-		let (_, _, _) = route_payment(&nodes[1], &[&nodes[0]], 1_000_000);
+		route_payment(&nodes[1], &[&nodes[0]], 1_000_000);
 	}
 
 	// However one more HTLC should be significantly over the reserve amount and fail.
@@ -1582,7 +1582,7 @@ fn test_chan_reserve_violation_inbound_htlc_outbound_channel() {
 
 	// Send four HTLCs to cover the initial push_msat buffer we're required to include
 	for _ in 0..MIN_AFFORDABLE_HTLC_COUNT {
-		let (_, _, _) = route_payment(&nodes[1], &[&nodes[0]], 1_000_000);
+		route_payment(&nodes[1], &[&nodes[0]], 1_000_000);
 	}
 
 	let (mut route, payment_hash, _, payment_secret) =
@@ -1643,11 +1643,11 @@ fn test_chan_reserve_dust_inbound_htlcs_outbound_chan() {
 	// In the previous code, routing this dust payment would cause nodes[0] to perceive a channel
 	// reserve violation even though it's a dust HTLC and therefore shouldn't count towards the
 	// commitment transaction fee.
-	let (_, _, _) = route_payment(&nodes[1], &[&nodes[0]], dust_amt);
+	route_payment(&nodes[1], &[&nodes[0]], dust_amt);
 
 	// Send four HTLCs to cover the initial push_msat buffer we're required to include
 	for _ in 0..MIN_AFFORDABLE_HTLC_COUNT {
-		let (_, _, _) = route_payment(&nodes[1], &[&nodes[0]], 1_000_000);
+		route_payment(&nodes[1], &[&nodes[0]], 1_000_000);
 	}
 
 	// One more than the dust amt should fail, however.
@@ -1708,22 +1708,22 @@ fn test_chan_reserve_dust_inbound_htlcs_inbound_chan() {
 
 	let payment_amt = 46000; // Dust amount
 	// In the previous code, these first four payments would succeed.
-	let (_, _, _) = route_payment(&nodes[0], &[&nodes[1]], payment_amt);
-	let (_, _, _) = route_payment(&nodes[0], &[&nodes[1]], payment_amt);
-	let (_, _, _) = route_payment(&nodes[0], &[&nodes[1]], payment_amt);
-	let (_, _, _) = route_payment(&nodes[0], &[&nodes[1]], payment_amt);
+	route_payment(&nodes[0], &[&nodes[1]], payment_amt);
+	route_payment(&nodes[0], &[&nodes[1]], payment_amt);
+	route_payment(&nodes[0], &[&nodes[1]], payment_amt);
+	route_payment(&nodes[0], &[&nodes[1]], payment_amt);
 
 	// Then these next 5 would be interpreted by nodes[1] as violating the fee spike buffer.
-	let (_, _, _) = route_payment(&nodes[0], &[&nodes[1]], payment_amt);
-	let (_, _, _) = route_payment(&nodes[0], &[&nodes[1]], payment_amt);
-	let (_, _, _) = route_payment(&nodes[0], &[&nodes[1]], payment_amt);
-	let (_, _, _) = route_payment(&nodes[0], &[&nodes[1]], payment_amt);
-	let (_, _, _) = route_payment(&nodes[0], &[&nodes[1]], payment_amt);
+	route_payment(&nodes[0], &[&nodes[1]], payment_amt);
+	route_payment(&nodes[0], &[&nodes[1]], payment_amt);
+	route_payment(&nodes[0], &[&nodes[1]], payment_amt);
+	route_payment(&nodes[0], &[&nodes[1]], payment_amt);
+	route_payment(&nodes[0], &[&nodes[1]], payment_amt);
 
 	// And this last payment previously resulted in nodes[1] closing on its inbound-channel
 	// counterparty, because it counted all the previous dust HTLCs against nodes[0]'s commitment
 	// transaction fee and therefore perceived this next payment as a channel reserve violation.
-	let (_, _, _) = route_payment(&nodes[0], &[&nodes[1]], payment_amt);
+	route_payment(&nodes[0], &[&nodes[1]], payment_amt);
 }
 
 #[test]
@@ -2109,8 +2109,8 @@ fn channel_reserve_in_flight_removes() {
 	let b_chan_values = get_channel_value_stat!(nodes[1], nodes[0], chan_1.2);
 	// Route the first two HTLCs.
 	let payment_value_1 = b_chan_values.channel_reserve_msat - b_chan_values.value_to_self_msat - 10000;
-	let (payment_preimage_1, payment_hash_1, _) = route_payment(&nodes[0], &[&nodes[1]], payment_value_1);
-	let (payment_preimage_2, payment_hash_2, _) = route_payment(&nodes[0], &[&nodes[1]], 20_000);
+	let (payment_preimage_1, payment_hash_1, ..) = route_payment(&nodes[0], &[&nodes[1]], payment_value_1);
+	let (payment_preimage_2, payment_hash_2, ..) = route_payment(&nodes[0], &[&nodes[1]], 20_000);
 
 	// Start routing the third HTLC (this is just used to get everyone in the right state).
 	let (route, payment_hash_3, payment_preimage_3, payment_secret_3) = get_route_and_payment_hash!(nodes[0], nodes[1], 100000);
@@ -2277,7 +2277,7 @@ fn channel_monitor_network_test() {
 	check_closed_event!(nodes[1], 1, ClosureReason::HolderForceClosed, [nodes[0].node.get_our_node_id()], 100000);
 
 	// One pending HTLC is discarded by the force-close:
-	let (payment_preimage_1, payment_hash_1, _) = route_payment(&nodes[1], &[&nodes[2], &nodes[3]], 3_000_000);
+	let (payment_preimage_1, payment_hash_1, ..) = route_payment(&nodes[1], &[&nodes[2], &nodes[3]], 3_000_000);
 
 	// Simple case of one pending HTLC to HTLC-Timeout (note that the HTLC-Timeout is not
 	// broadcasted until we reach the timelock time).
@@ -2348,7 +2348,7 @@ fn channel_monitor_network_test() {
 	let chan_3_mon = nodes[3].chain_monitor.chain_monitor.remove_monitor(&OutPoint { txid: chan_3.3.txid(), index: 0 });
 
 	// One pending HTLC to time out:
-	let (payment_preimage_2, payment_hash_2, _) = route_payment(&nodes[3], &[&nodes[4]], 3_000_000);
+	let (payment_preimage_2, payment_hash_2, ..) = route_payment(&nodes[3], &[&nodes[4]], 3_000_000);
 	// CLTV expires at TEST_FINAL_CLTV + 1 (current height) + 1 (added in send_payment for
 	// buffer space).
 
@@ -2653,7 +2653,7 @@ fn claim_htlc_outputs_shared_tx() {
 	send_payment(&nodes[0], &[&nodes[1]], 8_000_000);
 	// node[0] is gonna to revoke an old state thus node[1] should be able to claim both offered/received HTLC outputs on top of commitment tx
 	let payment_preimage_1 = route_payment(&nodes[0], &[&nodes[1]], 3_000_000).0;
-	let (_payment_preimage_2, payment_hash_2, _) = route_payment(&nodes[1], &[&nodes[0]], 3_000_000);
+	let (_payment_preimage_2, payment_hash_2, ..) = route_payment(&nodes[1], &[&nodes[0]], 3_000_000);
 
 	// Get the will-be-revoked local txn from node[0]
 	let revoked_local_txn = get_local_commitment_txn!(nodes[0], chan_1.2);
@@ -2720,7 +2720,7 @@ fn claim_htlc_outputs_single_tx() {
 	// node[0] is gonna to revoke an old state thus node[1] should be able to claim both offered/received HTLC outputs on top of commitment tx, but this
 	// time as two different claim transactions as we're gonna to timeout htlc with given a high current height
 	let payment_preimage_1 = route_payment(&nodes[0], &[&nodes[1]], 3_000_000).0;
-	let (_payment_preimage_2, payment_hash_2, _payment_secret_2) = route_payment(&nodes[1], &[&nodes[0]], 3_000_000);
+	let (_payment_preimage_2, payment_hash_2, ..) = route_payment(&nodes[1], &[&nodes[0]], 3_000_000);
 
 	// Get the will-be-revoked local txn from node[0]
 	let revoked_local_txn = get_local_commitment_txn!(nodes[0], chan_1.2);
@@ -2823,8 +2823,8 @@ fn test_htlc_on_chain_success() {
 	send_payment(&nodes[0], &vec!(&nodes[1], &nodes[2])[..], 8000000);
 	send_payment(&nodes[0], &vec!(&nodes[1], &nodes[2])[..], 8000000);
 
-	let (our_payment_preimage, payment_hash_1, _payment_secret) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 3_000_000);
-	let (our_payment_preimage_2, payment_hash_2, _payment_secret_2) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 3_000_000);
+	let (our_payment_preimage, payment_hash_1, ..) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 3_000_000);
+	let (our_payment_preimage_2, payment_hash_2, ..) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 3_000_000);
 
 	// Broadcast legit commitment tx from C on B's chain
 	// Broadcast HTLC Success transaction by C on received output from C's commitment tx on B's chain
@@ -3045,7 +3045,7 @@ fn do_test_htlc_on_chain_timeout(connect_style: ConnectStyle) {
 	send_payment(&nodes[0], &vec!(&nodes[1], &nodes[2])[..], 8000000);
 	send_payment(&nodes[0], &vec!(&nodes[1], &nodes[2])[..], 8000000);
 
-	let (_payment_preimage, payment_hash, _payment_secret) = route_payment(&nodes[0], &vec!(&nodes[1], &nodes[2]), 3000000);
+	let (_payment_preimage, payment_hash, ..) = route_payment(&nodes[0], &vec!(&nodes[1], &nodes[2]), 3000000);
 
 	// Broadcast legit commitment tx from C on B's chain
 	let commitment_tx = get_local_commitment_txn!(nodes[2], chan_2.2);
@@ -3150,13 +3150,13 @@ fn test_simple_commitment_revoked_fail_backward() {
 	create_announced_chan_between_nodes(&nodes, 0, 1);
 	let chan_2 = create_announced_chan_between_nodes(&nodes, 1, 2);
 
-	let (payment_preimage, _payment_hash, _payment_secret) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 3000000);
+	let (payment_preimage, _payment_hash, ..) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 3000000);
 	// Get the will-be-revoked local txn from nodes[2]
 	let revoked_local_txn = get_local_commitment_txn!(nodes[2], chan_2.2);
 	// Revoke the old state
 	claim_payment(&nodes[0], &[&nodes[1], &nodes[2]], payment_preimage);
 
-	let (_, payment_hash, _) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 3000000);
+	let (_, payment_hash, ..) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 3000000);
 
 	mine_transaction(&nodes[1], &revoked_local_txn[0]);
 	check_closed_event!(nodes[1], 1, ClosureReason::CommitmentTxConfirmed, [nodes[2].node.get_our_node_id()], 100000);
@@ -3209,7 +3209,7 @@ fn do_test_commitment_revoked_fail_backward_exhaustive(deliver_bs_raa: bool, use
 	create_announced_chan_between_nodes(&nodes, 0, 1);
 	let chan_2 = create_announced_chan_between_nodes(&nodes, 1, 2);
 
-	let (payment_preimage, _payment_hash, _payment_secret) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], if no_to_remote { 10_000 } else { 3_000_000 });
+	let (payment_preimage, _payment_hash, ..) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], if no_to_remote { 10_000 } else { 3_000_000 });
 	// Get the will-be-revoked local txn from nodes[2]
 	let revoked_local_txn = get_local_commitment_txn!(nodes[2], chan_2.2);
 	assert_eq!(revoked_local_txn[0].output.len(), if no_to_remote { 1 } else { 2 });
@@ -3223,9 +3223,9 @@ fn do_test_commitment_revoked_fail_backward_exhaustive(deliver_bs_raa: bool, use
 			.unwrap().lock().unwrap().channel_by_id.get(&chan_2.2).unwrap().context().holder_dust_limit_satoshis * 1000
 	} else { 3000000 };
 
-	let (_, first_payment_hash, _) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], value);
-	let (_, second_payment_hash, _) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], value);
-	let (_, third_payment_hash, _) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], value);
+	let (_, first_payment_hash, ..) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], value);
+	let (_, second_payment_hash, ..) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], value);
+	let (_, third_payment_hash, ..) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], value);
 
 	nodes[2].node.fail_htlc_backwards(&first_payment_hash);
 	expect_pending_htlcs_forwardable_and_htlc_handling_failed!(nodes[2], vec![HTLCDestination::FailedPayment { payment_hash: first_payment_hash }]);
@@ -3660,7 +3660,7 @@ fn test_dup_events_on_peer_disconnect() {
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	create_announced_chan_between_nodes(&nodes, 0, 1);
 
-	let (payment_preimage, payment_hash, _) = route_payment(&nodes[0], &[&nodes[1]], 1_000_000);
+	let (payment_preimage, payment_hash, ..) = route_payment(&nodes[0], &[&nodes[1]], 1_000_000);
 
 	nodes[1].node.claim_funds(payment_preimage);
 	expect_payment_claimed!(nodes[1], payment_hash, 1_000_000);
@@ -3746,7 +3746,7 @@ fn test_simple_peer_disconnect() {
 	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id());
 	reconnect_nodes(ReconnectArgs::new(&nodes[0], &nodes[1]));
 
-	let (payment_preimage_3, payment_hash_3, _) = route_payment(&nodes[0], &vec!(&nodes[1], &nodes[2])[..], 1000000);
+	let (payment_preimage_3, payment_hash_3, ..) = route_payment(&nodes[0], &vec!(&nodes[1], &nodes[2])[..], 1000000);
 	let payment_preimage_4 = route_payment(&nodes[0], &vec!(&nodes[1], &nodes[2])[..], 1000000).0;
 	let payment_hash_5 = route_payment(&nodes[0], &vec!(&nodes[1], &nodes[2])[..], 1000000).1;
 	let payment_hash_6 = route_payment(&nodes[0], &vec!(&nodes[1], &nodes[2])[..], 1000000).1;
@@ -4103,7 +4103,7 @@ fn test_drop_messages_peer_disconnect_dual_htlc() {
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	create_announced_chan_between_nodes(&nodes, 0, 1);
 
-	let (payment_preimage_1, payment_hash_1, _) = route_payment(&nodes[0], &[&nodes[1]], 1_000_000);
+	let (payment_preimage_1, payment_hash_1, ..) = route_payment(&nodes[0], &[&nodes[1]], 1_000_000);
 
 	// Now try to send a second payment which will fail to send
 	let (route, payment_hash_2, payment_preimage_2, payment_secret_2) = get_route_and_payment_hash!(nodes[0], nodes[1], 1000000);
@@ -4507,7 +4507,7 @@ fn test_static_spendable_outputs_preimage_tx() {
 	// Create some initial channels
 	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1);
 
-	let (payment_preimage, payment_hash, _) = route_payment(&nodes[0], &[&nodes[1]], 3_000_000);
+	let (payment_preimage, payment_hash, ..) = route_payment(&nodes[0], &[&nodes[1]], 3_000_000);
 
 	let commitment_tx = get_local_commitment_txn!(nodes[0], chan_1.2);
 	assert_eq!(commitment_tx[0].input.len(), 1);
@@ -4557,7 +4557,7 @@ fn test_static_spendable_outputs_timeout_tx() {
 	// Rebalance the network a bit by relaying one payment through all the channels ...
 	send_payment(&nodes[0], &vec!(&nodes[1])[..], 8000000);
 
-	let (_, our_payment_hash, _) = route_payment(&nodes[1], &vec!(&nodes[0])[..], 3_000_000);
+	let (_, our_payment_hash, ..) = route_payment(&nodes[1], &vec!(&nodes[0])[..], 3_000_000);
 
 	let commitment_tx = get_local_commitment_txn!(nodes[0], chan_1.2);
 	assert_eq!(commitment_tx[0].input.len(), 1);
@@ -4797,7 +4797,7 @@ fn test_onchain_to_onchain_claim() {
 	send_payment(&nodes[0], &vec!(&nodes[1], &nodes[2])[..], 8000000);
 	send_payment(&nodes[0], &vec!(&nodes[1], &nodes[2])[..], 8000000);
 
-	let (payment_preimage, payment_hash, _payment_secret) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 3_000_000);
+	let (payment_preimage, payment_hash, ..) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 3_000_000);
 	let commitment_tx = get_local_commitment_txn!(nodes[2], chan_2.2);
 	check_spends!(commitment_tx[0], chan_2.3);
 	nodes[2].node.claim_funds(payment_preimage);
@@ -4910,7 +4910,7 @@ fn test_duplicate_payment_hash_one_failure_one_success() {
 	connect_blocks(&nodes[2], node_max_height - nodes[2].best_block_info().1);
 	connect_blocks(&nodes[3], node_max_height - nodes[3].best_block_info().1);
 
-	let (our_payment_preimage, duplicate_payment_hash, _) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 900_000);
+	let (our_payment_preimage, duplicate_payment_hash, ..) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 900_000);
 
 	let payment_secret = nodes[3].node.create_inbound_payment_for_hash(duplicate_payment_hash, None, 7200, None).unwrap();
 	// We reduce the final CLTV here by a somewhat arbitrary constant to keep it under the one-byte
@@ -5040,7 +5040,7 @@ fn test_dynamic_spendable_outputs_local_htlc_success_tx() {
 	// Create some initial channels
 	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1);
 
-	let (payment_preimage, payment_hash, _) = route_payment(&nodes[0], &[&nodes[1]], 9_000_000);
+	let (payment_preimage, payment_hash, ..) = route_payment(&nodes[0], &[&nodes[1]], 9_000_000);
 	let local_txn = get_local_commitment_txn!(nodes[1], chan_1.2);
 	assert_eq!(local_txn.len(), 1);
 	assert_eq!(local_txn[0].input.len(), 1);
@@ -5120,18 +5120,18 @@ fn do_test_fail_backwards_unrevoked_remote_announce(deliver_last_raa: bool, anno
 	let ds_dust_limit = nodes[3].node.per_peer_state.read().unwrap().get(&nodes[2].node.get_our_node_id())
 		.unwrap().lock().unwrap().channel_by_id.get(&chan_2_3.2).unwrap().context().holder_dust_limit_satoshis;
 	// 0th HTLC:
-	let (_, payment_hash_1, _) = route_payment(&nodes[0], &[&nodes[2], &nodes[3], &nodes[4]], ds_dust_limit*1000); // not added < dust limit + HTLC tx fee
+	let (_, payment_hash_1, ..) = route_payment(&nodes[0], &[&nodes[2], &nodes[3], &nodes[4]], ds_dust_limit*1000); // not added < dust limit + HTLC tx fee
 	// 1st HTLC:
-	let (_, payment_hash_2, _) = route_payment(&nodes[0], &[&nodes[2], &nodes[3], &nodes[4]], ds_dust_limit*1000); // not added < dust limit + HTLC tx fee
+	let (_, payment_hash_2, ..) = route_payment(&nodes[0], &[&nodes[2], &nodes[3], &nodes[4]], ds_dust_limit*1000); // not added < dust limit + HTLC tx fee
 	let (route, _, _, _) = get_route_and_payment_hash!(nodes[1], nodes[5], ds_dust_limit*1000);
 	// 2nd HTLC:
 	send_along_route_with_secret(&nodes[1], route.clone(), &[&[&nodes[2], &nodes[3], &nodes[5]]], ds_dust_limit*1000, payment_hash_1, nodes[5].node.create_inbound_payment_for_hash(payment_hash_1, None, 7200, None).unwrap()); // not added < dust limit + HTLC tx fee
 	// 3rd HTLC:
 	send_along_route_with_secret(&nodes[1], route, &[&[&nodes[2], &nodes[3], &nodes[5]]], ds_dust_limit*1000, payment_hash_2, nodes[5].node.create_inbound_payment_for_hash(payment_hash_2, None, 7200, None).unwrap()); // not added < dust limit + HTLC tx fee
 	// 4th HTLC:
-	let (_, payment_hash_3, _) = route_payment(&nodes[0], &[&nodes[2], &nodes[3], &nodes[4]], 1000000);
+	let (_, payment_hash_3, ..) = route_payment(&nodes[0], &[&nodes[2], &nodes[3], &nodes[4]], 1000000);
 	// 5th HTLC:
-	let (_, payment_hash_4, _) = route_payment(&nodes[0], &[&nodes[2], &nodes[3], &nodes[4]], 1000000);
+	let (_, payment_hash_4, ..) = route_payment(&nodes[0], &[&nodes[2], &nodes[3], &nodes[4]], 1000000);
 	let (route, _, _, _) = get_route_and_payment_hash!(nodes[1], nodes[5], 1000000);
 	// 6th HTLC:
 	send_along_route_with_secret(&nodes[1], route.clone(), &[&[&nodes[2], &nodes[3], &nodes[5]]], 1000000, payment_hash_3, nodes[5].node.create_inbound_payment_for_hash(payment_hash_3, None, 7200, None).unwrap());
@@ -5139,13 +5139,13 @@ fn do_test_fail_backwards_unrevoked_remote_announce(deliver_last_raa: bool, anno
 	send_along_route_with_secret(&nodes[1], route, &[&[&nodes[2], &nodes[3], &nodes[5]]], 1000000, payment_hash_4, nodes[5].node.create_inbound_payment_for_hash(payment_hash_4, None, 7200, None).unwrap());
 
 	// 8th HTLC:
-	let (_, payment_hash_5, _) = route_payment(&nodes[0], &[&nodes[2], &nodes[3], &nodes[4]], 1000000);
+	let (_, payment_hash_5, ..) = route_payment(&nodes[0], &[&nodes[2], &nodes[3], &nodes[4]], 1000000);
 	// 9th HTLC:
 	let (route, _, _, _) = get_route_and_payment_hash!(nodes[1], nodes[5], ds_dust_limit*1000);
 	send_along_route_with_secret(&nodes[1], route, &[&[&nodes[2], &nodes[3], &nodes[5]]], ds_dust_limit*1000, payment_hash_5, nodes[5].node.create_inbound_payment_for_hash(payment_hash_5, None, 7200, None).unwrap()); // not added < dust limit + HTLC tx fee
 
 	// 10th HTLC:
-	let (_, payment_hash_6, _) = route_payment(&nodes[0], &[&nodes[2], &nodes[3], &nodes[4]], ds_dust_limit*1000); // not added < dust limit + HTLC tx fee
+	let (_, payment_hash_6, ..) = route_payment(&nodes[0], &[&nodes[2], &nodes[3], &nodes[4]], ds_dust_limit*1000); // not added < dust limit + HTLC tx fee
 	// 11th HTLC:
 	let (route, _, _, _) = get_route_and_payment_hash!(nodes[1], nodes[5], 1000000);
 	send_along_route_with_secret(&nodes[1], route, &[&[&nodes[2], &nodes[3], &nodes[5]]], 1000000, payment_hash_6, nodes[5].node.create_inbound_payment_for_hash(payment_hash_6, None, 7200, None).unwrap());
@@ -5399,7 +5399,7 @@ fn test_dynamic_spendable_outputs_local_htlc_timeout_tx() {
 	// Create some initial channels
 	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1);
 
-	let (_, our_payment_hash, _) = route_payment(&nodes[0], &vec!(&nodes[1])[..], 9000000);
+	let (_, our_payment_hash, ..) = route_payment(&nodes[0], &vec!(&nodes[1])[..], 9000000);
 	let local_txn = get_local_commitment_txn!(nodes[0], chan_1.2);
 	assert_eq!(local_txn[0].input.len(), 1);
 	check_spends!(local_txn[0], chan_1.3);
@@ -5474,7 +5474,7 @@ fn test_key_derivation_params() {
 	connect_blocks(&nodes[1], node_max_height - nodes[1].best_block_info().1);
 	connect_blocks(&nodes[2], node_max_height - nodes[2].best_block_info().1);
 
-	let (_, our_payment_hash, _) = route_payment(&nodes[0], &vec!(&nodes[1])[..], 9000000);
+	let (_, our_payment_hash, ..) = route_payment(&nodes[0], &vec!(&nodes[1])[..], 9000000);
 	let local_txn_0 = get_local_commitment_txn!(nodes[0], chan_0.2);
 	let local_txn_1 = get_local_commitment_txn!(nodes[0], chan_1.2);
 	assert_eq!(local_txn_1[0].input.len(), 1);
@@ -5560,7 +5560,7 @@ fn do_htlc_claim_local_commitment_only(use_dust: bool) {
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	let chan = create_announced_chan_between_nodes(&nodes, 0, 1);
 
-	let (payment_preimage, payment_hash, _) = route_payment(&nodes[0], &[&nodes[1]], if use_dust { 50000 } else { 3_000_000 });
+	let (payment_preimage, payment_hash, ..) = route_payment(&nodes[0], &[&nodes[1]], if use_dust { 50000 } else { 3_000_000 });
 
 	// Claim the payment, but don't deliver A's commitment_signed, resulting in the HTLC only being
 	// present in B's local commitment transaction, but none of A's commitment transactions.
@@ -5633,7 +5633,7 @@ fn do_htlc_claim_previous_remote_commitment_only(use_dust: bool, check_revoke_no
 	// Also optionally test that we *don't* fail the channel in case the commitment transaction was
 	// actually revoked.
 	let htlc_value = if use_dust { 50000 } else { 3000000 };
-	let (_, our_payment_hash, _) = route_payment(&nodes[0], &[&nodes[1]], htlc_value);
+	let (_, our_payment_hash, ..) = route_payment(&nodes[0], &[&nodes[1]], htlc_value);
 	nodes[1].node.fail_htlc_backwards(&our_payment_hash);
 	expect_pending_htlcs_forwardable_and_htlc_handling_failed!(nodes[1], vec![HTLCDestination::FailedPayment { payment_hash: our_payment_hash }]);
 	check_added_monitors!(nodes[1], 1);
@@ -6605,7 +6605,7 @@ fn test_update_fulfill_htlc_bolt2_incorrect_htlc_id() {
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	create_announced_chan_between_nodes(&nodes, 0, 1);
 
-	let (our_payment_preimage, our_payment_hash, _) = route_payment(&nodes[0], &[&nodes[1]], 100_000);
+	let (our_payment_preimage, our_payment_hash, ..) = route_payment(&nodes[0], &[&nodes[1]], 100_000);
 
 	nodes[1].node.claim_funds(our_payment_preimage);
 	check_added_monitors!(nodes[1], 1);
@@ -6648,7 +6648,7 @@ fn test_update_fulfill_htlc_bolt2_wrong_preimage() {
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	create_announced_chan_between_nodes(&nodes, 0, 1);
 
-	let (our_payment_preimage, our_payment_hash, _) = route_payment(&nodes[0], &[&nodes[1]], 100_000);
+	let (our_payment_preimage, our_payment_hash, ..) = route_payment(&nodes[0], &[&nodes[1]], 100_000);
 
 	nodes[1].node.claim_funds(our_payment_preimage);
 	check_added_monitors!(nodes[1], 1);
@@ -6907,8 +6907,8 @@ fn do_test_failure_delay_dust_htlc_local_commitment(announce_latest: bool) {
 		.unwrap().lock().unwrap().channel_by_id.get(&chan.2).unwrap().context().holder_dust_limit_satoshis;
 
 	// We route 2 dust-HTLCs between A and B
-	let (_, payment_hash_1, _) = route_payment(&nodes[0], &[&nodes[1]], bs_dust_limit*1000);
-	let (_, payment_hash_2, _) = route_payment(&nodes[0], &[&nodes[1]], bs_dust_limit*1000);
+	let (_, payment_hash_1, ..) = route_payment(&nodes[0], &[&nodes[1]], bs_dust_limit*1000);
+	let (_, payment_hash_2, ..) = route_payment(&nodes[0], &[&nodes[1]], bs_dust_limit*1000);
 	route_payment(&nodes[0], &[&nodes[1]], 1000000);
 
 	// Cache one local commitment tx as previous
@@ -6999,15 +6999,15 @@ fn do_test_sweep_outbound_htlc_failure_update(revoked: bool, local: bool) {
 	let bs_dust_limit = nodes[1].node.per_peer_state.read().unwrap().get(&nodes[0].node.get_our_node_id())
 		.unwrap().lock().unwrap().channel_by_id.get(&chan.2).unwrap().context().holder_dust_limit_satoshis;
 
-	let (_payment_preimage_1, dust_hash, _payment_secret_1) = route_payment(&nodes[0], &[&nodes[1]], bs_dust_limit*1000);
-	let (_payment_preimage_2, non_dust_hash, _payment_secret_2) = route_payment(&nodes[0], &[&nodes[1]], 1000000);
+	let (_payment_preimage_1, dust_hash, ..) = route_payment(&nodes[0], &[&nodes[1]], bs_dust_limit*1000);
+	let (_payment_preimage_2, non_dust_hash, ..) = route_payment(&nodes[0], &[&nodes[1]], 1000000);
 
 	let as_commitment_tx = get_local_commitment_txn!(nodes[0], chan.2);
 	let bs_commitment_tx = get_local_commitment_txn!(nodes[1], chan.2);
 
 	// We revoked bs_commitment_tx
 	if revoked {
-		let (payment_preimage_3, _, _) = route_payment(&nodes[0], &[&nodes[1]], 1000000);
+		let (payment_preimage_3, ..) = route_payment(&nodes[0], &[&nodes[1]], 1000000);
 		claim_payment(&nodes[0], &vec!(&nodes[1])[..], payment_preimage_3);
 	}
 
@@ -7567,7 +7567,7 @@ fn test_bump_penalty_txn_on_remote_commitment() {
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1000000, 59000000);
-	let (payment_preimage, payment_hash, _) = route_payment(&nodes[0], &[&nodes[1]], 3_000_000);
+	let (payment_preimage, payment_hash, ..) = route_payment(&nodes[0], &[&nodes[1]], 3_000_000);
 	route_payment(&nodes[1], &vec!(&nodes[0])[..], 3000000).0;
 
 	// Remote commitment txn with 4 outputs : to_local, to_remote, 1 outgoing HTLC, 1 incoming HTLC
@@ -7721,8 +7721,8 @@ fn test_bump_txn_sanitize_tracking_maps() {
 
 	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1000000, 59000000);
 	// Lock HTLC in both directions
-	let (payment_preimage_1, _, _) = route_payment(&nodes[0], &vec!(&nodes[1])[..], 9_000_000);
-	let (_, payment_hash_2, _) = route_payment(&nodes[1], &vec!(&nodes[0])[..], 9_000_000);
+	let (payment_preimage_1, ..) = route_payment(&nodes[0], &vec!(&nodes[1])[..], 9_000_000);
+	let (_, payment_hash_2, ..) = route_payment(&nodes[1], &vec!(&nodes[0])[..], 9_000_000);
 
 	let revoked_local_txn = get_local_commitment_txn!(nodes[1], chan.2);
 	assert_eq!(revoked_local_txn[0].input.len(), 1);
@@ -8365,7 +8365,7 @@ fn test_update_err_monitor_lockdown() {
 	send_payment(&nodes[0], &vec!(&nodes[1])[..], 10_000_000);
 
 	// Route a HTLC from node 0 to node 1 (but don't settle)
-	let (preimage, payment_hash, _) = route_payment(&nodes[0], &[&nodes[1]], 9_000_000);
+	let (preimage, payment_hash, ..) = route_payment(&nodes[0], &[&nodes[1]], 9_000_000);
 
 	// Copy ChainMonitor to simulate a watchtower and update block height of node 0 until its ChannelMonitor timeout HTLC onchain
 	let chain_source = test_utils::TestChainSource::new(Network::Testnet);
@@ -8601,7 +8601,7 @@ fn test_htlc_no_detection() {
 	let chan_1 = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 10001);
 
 	send_payment(&nodes[0], &vec!(&nodes[1])[..], 1_000_000);
-	let (_, our_payment_hash, _) = route_payment(&nodes[0], &vec!(&nodes[1])[..], 2_000_000);
+	let (_, our_payment_hash, ..) = route_payment(&nodes[0], &vec!(&nodes[1])[..], 2_000_000);
 	let local_txn = get_local_commitment_txn!(nodes[0], chan_1.2);
 	assert_eq!(local_txn[0].input.len(), 1);
 	assert_eq!(local_txn[0].output.len(), 3);
@@ -8657,7 +8657,7 @@ fn do_test_onchain_htlc_settlement_after_close(broadcast_alice: bool, go_onchain
 
 	// Steps (1) and (2):
 	// Send an HTLC Alice --> Bob --> Carol, but Carol doesn't settle the HTLC back.
-	let (payment_preimage, payment_hash, _payment_secret) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 3_000_000);
+	let (payment_preimage, payment_hash, ..) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 3_000_000);
 
 	// Check that Alice's commitment transaction now contains an output for this HTLC.
 	let alice_txn = get_local_commitment_txn!(nodes[0], chan_ab.2);
@@ -9252,7 +9252,7 @@ fn do_test_tx_confirmed_skipping_blocks_immediate_broadcast(test_height_before_t
 
 	create_announced_chan_between_nodes(&nodes, 0, 1);
 	let (chan_announce, _, channel_id, _) = create_announced_chan_between_nodes(&nodes, 1, 2);
-	let (_, payment_hash, _) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 1_000_000);
+	let (_, payment_hash, ..) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 1_000_000);
 	nodes[1].node.peer_disconnected(&nodes[2].node.get_our_node_id());
 	nodes[2].node.peer_disconnected(&nodes[1].node.get_our_node_id());
 
@@ -10222,8 +10222,8 @@ fn do_test_multi_post_event_actions(do_reload: bool) {
 	send_payment(&nodes[0], &[&nodes[1]], 1_000_000);
 	send_payment(&nodes[0], &[&nodes[2]], 1_000_000);
 
-	let (our_payment_preimage, our_payment_hash, _) = route_payment(&nodes[0], &[&nodes[1]], 1_000_000);
-	let (payment_preimage_2, payment_hash_2, _) = route_payment(&nodes[0], &[&nodes[2]], 1_000_000);
+	let (our_payment_preimage, our_payment_hash, ..) = route_payment(&nodes[0], &[&nodes[1]], 1_000_000);
+	let (payment_preimage_2, payment_hash_2, ..) = route_payment(&nodes[0], &[&nodes[2]], 1_000_000);
 
 	nodes[1].node.claim_funds(our_payment_preimage);
 	check_added_monitors!(nodes[1], 1);
