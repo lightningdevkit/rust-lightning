@@ -197,7 +197,7 @@ fn pass_along_path(path: &Vec<MessengerNode>) {
 }
 
 #[test]
-fn one_hop() {
+fn one_unblinded_hop() {
 	let nodes = create_nodes(2);
 	let test_msg = TestCustomMessage::Response;
 
@@ -221,6 +221,22 @@ fn two_unblinded_hops() {
 	};
 	nodes[0].messenger.send_onion_message(path, test_msg, None).unwrap();
 	nodes[2].custom_message_handler.expect_message(TestCustomMessage::Response);
+	pass_along_path(&nodes);
+}
+
+#[test]
+fn one_blinded_hop() {
+	let nodes = create_nodes(2);
+	let test_msg = TestCustomMessage::Response;
+
+	let secp_ctx = Secp256k1::new();
+	let blinded_path = BlindedPath::new_for_message(&[nodes[1].get_node_pk()], &*nodes[1].keys_manager, &secp_ctx).unwrap();
+	let path = OnionMessagePath {
+		intermediate_nodes: vec![],
+		destination: Destination::BlindedPath(blinded_path),
+	};
+	nodes[0].messenger.send_onion_message(path, test_msg, None).unwrap();
+	nodes[1].custom_message_handler.expect_message(TestCustomMessage::Response);
 	pass_along_path(&nodes);
 }
 
@@ -319,17 +335,6 @@ fn invalid_blinded_path_error() {
 		destination: Destination::BlindedPath(blinded_path),
 	};
 	let err = nodes[0].messenger.send_onion_message(path, test_msg.clone(), None).unwrap_err();
-	assert_eq!(err, SendError::TooFewBlindedHops);
-
-	// 1 hop
-	let mut blinded_path = BlindedPath::new_for_message(&[nodes[1].get_node_pk(), nodes[2].get_node_pk()], &*nodes[2].keys_manager, &secp_ctx).unwrap();
-	blinded_path.blinded_hops.remove(0);
-	assert_eq!(blinded_path.blinded_hops.len(), 1);
-	let path = OnionMessagePath {
-		intermediate_nodes: vec![],
-		destination: Destination::BlindedPath(blinded_path),
-	};
-	let err = nodes[0].messenger.send_onion_message(path, test_msg, None).unwrap_err();
 	assert_eq!(err, SendError::TooFewBlindedHops);
 }
 

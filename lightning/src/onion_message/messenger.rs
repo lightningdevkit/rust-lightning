@@ -225,8 +225,8 @@ pub enum SendError {
 	/// Because implementations such as Eclair will drop onion messages where the message packet
 	/// exceeds 32834 bytes, we refuse to send messages where the packet exceeds this size.
 	TooBigPacket,
-	/// The provided [`Destination`] was an invalid [`BlindedPath`], due to having fewer than two
-	/// blinded hops.
+	/// The provided [`Destination`] was an invalid [`BlindedPath`] due to not having any blinded
+	/// hops.
 	TooFewBlindedHops,
 	/// Our next-hop peer was offline or does not support onion message forwarding.
 	InvalidFirstHop,
@@ -299,7 +299,7 @@ where
 {
 	let OnionMessagePath { intermediate_nodes, mut destination } = path;
 	if let Destination::BlindedPath(BlindedPath { ref blinded_hops, .. }) = destination {
-		if blinded_hops.len() < 2 {
+		if blinded_hops.is_empty() {
 			return Err(SendError::TooFewBlindedHops);
 		}
 	}
