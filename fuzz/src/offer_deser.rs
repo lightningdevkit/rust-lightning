@@ -12,7 +12,7 @@ use crate::utils::test_logger;
 use core::convert::{Infallible, TryFrom};
 use lightning::offers::invoice_request::UnsignedInvoiceRequest;
 use lightning::offers::offer::{Amount, Offer, Quantity};
-use lightning::offers::parse::SemanticError;
+use lightning::offers::parse::Bolt12SemanticError;
 use lightning::util::ser::Writeable;
 
 #[inline]
@@ -30,7 +30,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], _out: Out) {
 		if let Ok(invoice_request) = build_response(&offer, pubkey) {
 			invoice_request
 				.sign::<_, Infallible>(
-					|digest| Ok(secp_ctx.sign_schnorr_no_aux_rand(digest, &keys))
+					|message| Ok(secp_ctx.sign_schnorr_no_aux_rand(message.as_ref().as_digest(), &keys))
 				)
 				.unwrap()
 				.write(&mut buffer)
@@ -39,15 +39,15 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], _out: Out) {
 	}
 }
 
-fn build_response<'a>(
-	offer: &'a Offer, pubkey: PublicKey
-) -> Result<UnsignedInvoiceRequest<'a>, SemanticError> {
+fn build_response(
+	offer: &Offer, pubkey: PublicKey
+) -> Result<UnsignedInvoiceRequest, Bolt12SemanticError> {
 	let mut builder = offer.request_invoice(vec![42; 64], pubkey)?;
 
 	builder = match offer.amount() {
 		None => builder.amount_msats(1000).unwrap(),
 		Some(Amount::Bitcoin { amount_msats }) => builder.amount_msats(amount_msats + 1)?,
-		Some(Amount::Currency { .. }) => return Err(SemanticError::UnsupportedCurrency),
+		Some(Amount::Currency { .. }) => return Err(Bolt12SemanticError::UnsupportedCurrency),
 	};
 
 	builder = match offer.supported_quantity() {

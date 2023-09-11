@@ -17,7 +17,7 @@ use bitcoin::network::constants::Network;
 use bitcoin::secp256k1::PublicKey;
 
 use crate::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, MonitorEvent};
-use crate::chain::keysinterface::WriteableEcdsaChannelSigner;
+use crate::sign::WriteableEcdsaChannelSigner;
 use crate::chain::transaction::{OutPoint, TransactionData};
 
 use crate::prelude::*;
@@ -26,7 +26,6 @@ pub mod chaininterface;
 pub mod chainmonitor;
 pub mod channelmonitor;
 pub mod transaction;
-pub mod keysinterface;
 pub(crate) mod onchaintx;
 pub(crate) mod package;
 
@@ -390,3 +389,9 @@ where
 		self.1.block_disconnected(header, height);
 	}
 }
+
+/// A unique identifier to track each pending output claim within a [`ChannelMonitor`].
+///
+/// This is not exported to bindings users as we just use [u8; 32] directly.
+#[derive(Copy, Clone, Debug, Hash, PartialEq, Eq)]
+pub struct ClaimId(pub [u8; 32]);

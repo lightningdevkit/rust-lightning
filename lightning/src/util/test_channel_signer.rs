@@ -10,7 +10,7 @@
 use crate::ln::channel::{ANCHOR_OUTPUT_VALUE_SATOSHI, MIN_CHAN_DUST_LIMIT_SATOSHIS};
 use crate::ln::chan_utils::{HTLCOutputInCommitment, ChannelPublicKeys, HolderCommitmentTransaction, CommitmentTransaction, ChannelTransactionParameters, TrustedCommitmentTransaction, ClosingTransaction};
 use crate::ln::{chan_utils, msgs, PaymentPreimage};
-use crate::chain::keysinterface::{WriteableEcdsaChannelSigner, InMemorySigner, ChannelSigner, EcdsaChannelSigner};
+use crate::sign::{WriteableEcdsaChannelSigner, InMemorySigner, ChannelSigner, EcdsaChannelSigner};
 
 use crate::prelude::*;
 use core::cmp;
@@ -24,10 +24,10 @@ use bitcoin::util::sighash;
 use bitcoin::secp256k1;
 use bitcoin::secp256k1::{SecretKey, PublicKey};
 use bitcoin::secp256k1::{Secp256k1, ecdsa::Signature};
-#[cfg(anchors)]
 use crate::events::bump_transaction::HTLCDescriptor;
 use crate::util::ser::{Writeable, Writer};
 use crate::io::Error;
+use crate::ln::features::ChannelTypeFeatures;
 
 /// Initial value for revoked commitment downward counter
 pub const INITIAL_REVOKED_COMMITMENT_NUMBER: u64 = 1 << 48;
@@ -52,21 +52,21 @@ pub const INITIAL_REVOKED_COMMITMENT_NUMBER: u64 = 1 << 48;
 /// Note that before we do so we should ensure its serialization format has backwards- and
 /// forwards-compatibility prefix/suffixes!
 #[derive(Clone)]
-pub struct EnforcingSigner {
+pub struct TestChannelSigner {
 	pub inner: InMemorySigner,
 	/// Channel state used for policy enforcement
 	pub state: Arc<Mutex<EnforcementState>>,
 	pub disable_revocation_policy_check: bool,
 }
 
-impl PartialEq for EnforcingSigner {
+impl PartialEq for TestChannelSigner {
 	fn eq(&self, o: &Self) -> bool {
 		Arc::ptr_eq(&self.state, &o.state)
 	}
 }
 
-impl EnforcingSigner {
-	/// Construct an EnforcingSigner
+impl TestChannelSigner {
+	/// Construct an TestChannelSigner
 	pub fn new(inner: InMemorySigner) -> Self {
 		let state = Arc::new(Mutex::new(EnforcementState::new()));
 		Self {
@@ -76,7 +76,7 @@ impl EnforcingSigner {
 		}
 	}
 
-	/// Construct an EnforcingSigner with externally managed storage
+	/// Construct an TestChannelSigner with externally managed storage
 	///
 	/// Since there are multiple copies of this struct for each channel, some coordination is needed
 	/// so that all copies are aware of enforcement state.  A pointer to this state is provided
@@ -89,7 +89,7 @@ impl EnforcingSigner {
 		}
 	}
 
-	pub fn opt_anchors(&self) -> bool { self.inner.opt_anchors() }
+	pub fn channel_type_features(&self) -> &ChannelTypeFeatures { self.inner.channel_type_features() }
 
 	#[cfg(test)]
 	pub fn get_enforcement_state(&self) -> MutexGuard<EnforcementState> {
@@ -97,7 +97,7 @@ impl EnforcingSigner {
 	}
 }
 
-impl ChannelSigner for EnforcingSigner {
+impl ChannelSigner for TestChannelSigner {
 	fn get_per_commitment_point(&self, idx: u64, secp_ctx: &Secp256k1<secp256k1::All>) -> PublicKey {
 		self.inner.get_per_commitment_point(idx, secp_ctx)
 	}
@@ -134,7 +134,7 @@ impl ChannelSigner for EnforcingSigner {
 	}
 }
 
-impl EcdsaChannelSigner for EnforcingSigner {
+impl EcdsaChannelSigner for TestChannelSigner {
 	fn sign_counterparty_commitment(&self, commitment_tx: &CommitmentTransaction, preimages: Vec<PaymentPreimage>, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<(Signature, Vec<Signature>), ()> {
 		self.verify_counterparty_commitment_tx(commitment_tx, secp_ctx);
 
@@ -178,11 +178,11 @@ impl EcdsaChannelSigner for EnforcingSigner {
 		for (this_htlc, sig) in trusted_tx.htlcs().iter().zip(&commitment_tx.counterparty_htlc_sigs) {
 			assert!(this_htlc.transaction_output_index.is_some());
 			let keys = trusted_tx.keys();
-			let htlc_tx = chan_utils::build_htlc_transaction(&commitment_txid, trusted_tx.feerate_per_kw(), holder_csv, &this_htlc, self.opt_anchors(), false, &keys.broadcaster_delayed_payment_key, &keys.revocation_key);
+			let htlc_tx = chan_utils::build_htlc_transaction(&commitment_txid, trusted_tx.feerate_per_kw(), holder_csv, &this_htlc, self.channel_type_features(), &keys.broadcaster_delayed_payment_key, &keys.revocation_key);
 
-			let htlc_redeemscript = chan_utils::get_htlc_redeemscript(&this_htlc, self.opt_anchors(), &keys);
+			let htlc_redeemscript = chan_utils::get_htlc_redeemscript(&this_htlc, self.channel_type_features(), &keys);
 
-			let sighash_type = if self.opt_anchors() {
+			let sighash_type = if self.channel_type_features().supports_anchors_zero_fee_htlc_tx() {
 				EcdsaSighashType::SinglePlusAnyoneCanPay
 			} else {
 				EcdsaSighashType::All
@@ -211,14 +211,12 @@ impl EcdsaChannelSigner for EnforcingSigner {
 		Ok(self.inner.sign_justice_revoked_htlc(justice_tx, input, amount, per_commitment_key, htlc, secp_ctx).unwrap())
 	}
 
-	#[cfg(anchors)]
 	fn sign_holder_htlc_transaction(
 		&self, htlc_tx: &Transaction, input: usize, htlc_descriptor: &HTLCDescriptor,
 		secp_ctx: &Secp256k1<secp256k1::All>
 	) -> Result<Signature, ()> {
-		let per_commitment_point = self.get_per_commitment_point(htlc_descriptor.per_commitment_number, secp_ctx);
 		assert_eq!(htlc_tx.input[input], htlc_descriptor.unsigned_tx_input());
-		assert_eq!(htlc_tx.output[input], htlc_descriptor.tx_output(&per_commitment_point, secp_ctx));
+		assert_eq!(htlc_tx.output[input], htlc_descriptor.tx_output(secp_ctx));
 		Ok(self.inner.sign_holder_htlc_transaction(htlc_tx, input, htlc_descriptor, secp_ctx).unwrap())
 	}
 
@@ -253,11 +251,11 @@ impl EcdsaChannelSigner for EnforcingSigner {
 	}
 }
 
-impl WriteableEcdsaChannelSigner for EnforcingSigner {}
+impl WriteableEcdsaChannelSigner for TestChannelSigner {}
 
-impl Writeable for EnforcingSigner {
+impl Writeable for TestChannelSigner {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), Error> {
-		// EnforcingSigner has two fields - `inner` ([`InMemorySigner`]) and `state`
+		// TestChannelSigner has two fields - `inner` ([`InMemorySigner`]) and `state`
 		// ([`EnforcementState`]). `inner` is serialized here and deserialized by
 		// [`SignerProvider::read_chan_signer`]. `state` is managed by [`SignerProvider`]
 		// and will be serialized as needed by the implementation of that trait.
@@ -266,7 +264,7 @@ impl Writeable for EnforcingSigner {
 	}
 }
 
-impl EnforcingSigner {
+impl TestChannelSigner {
 	fn verify_counterparty_commitment_tx<'a, T: secp256k1::Signing + secp256k1::Verification>(&self, commitment_tx: &'a CommitmentTransaction, secp_ctx: &Secp256k1<T>) -> TrustedCommitmentTransaction<'a> {
 		commitment_tx.verify(&self.inner.get_channel_parameters().as_counterparty_broadcastable(),
 		                     self.inner.counterparty_pubkeys(), self.inner.pubkeys(), secp_ctx)
@@ -280,7 +278,7 @@ impl EnforcingSigner {
 	}
 }
 
-/// The state used by [`EnforcingSigner`] in order to enforce policy checks
+/// The state used by [`TestChannelSigner`] in order to enforce policy checks
 ///
 /// This structure is maintained by KeysInterface since we may have multiple copies of
 /// the signer and they must coordinate their state.

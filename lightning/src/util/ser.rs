@@ -29,20 +29,22 @@ use bitcoin::secp256k1::constants::{PUBLIC_KEY_SIZE, SECRET_KEY_SIZE, COMPACT_SI
 use bitcoin::secp256k1::ecdsa;
 use bitcoin::secp256k1::schnorr;
 use bitcoin::blockdata::constants::ChainHash;
-use bitcoin::blockdata::script::Script;
+use bitcoin::blockdata::script::{self, Script};
 use bitcoin::blockdata::transaction::{OutPoint, Transaction, TxOut};
-use bitcoin::consensus;
+use bitcoin::{consensus, Witness};
 use bitcoin::consensus::Encodable;
 use bitcoin::hashes::sha256d::Hash as Sha256dHash;
 use bitcoin::hash_types::{Txid, BlockHash};
 use core::marker::Sized;
 use core::time::Duration;
+use crate::chain::ClaimId;
 use crate::ln::msgs::DecodeError;
 #[cfg(taproot)]
 use crate::ln::msgs::PartialSignatureWithNonce;
 use crate::ln::{PaymentPreimage, PaymentHash, PaymentSecret};
 
 use crate::util::byte_utils::{be48_to_array, slice_to_be48};
+use crate::util::string::UntrustedString;
 
 /// serialization buffer size
 pub const MAX_BUF_SIZE: usize = 64 * 1024;
@@ -356,6 +358,7 @@ impl Readable for U48 {
 /// encoded in several different ways, which we must check for at deserialization-time. Thus, if
 /// you're looking for an example of a variable-length integer to use for your own project, move
 /// along, this is a rather poor design.
+#[derive(Clone, Copy, Debug, Hash, PartialOrd, Ord, PartialEq, Eq)]
 pub struct BigSize(pub u64);
 impl Writeable for BigSize {
 	#[inline]
@@ -512,6 +515,10 @@ impl_writeable_primitive!(u128, 16);
 impl_writeable_primitive!(u64, 8);
 impl_writeable_primitive!(u32, 4);
 impl_writeable_primitive!(u16, 2);
+impl_writeable_primitive!(i64, 8);
+impl_writeable_primitive!(i32, 4);
+impl_writeable_primitive!(i16, 2);
+impl_writeable_primitive!(i8, 1);
 
 impl Writeable for u8 {
 	#[inline]
@@ -625,6 +632,21 @@ impl<'a> From<&'a String> for WithoutLength<&'a String> {
 	fn from(s: &'a String) -> Self { Self(s) }
 }
 
+
+impl Writeable for WithoutLength<&UntrustedString> {
+	#[inline]
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		WithoutLength(&self.0.0).write(w)
+	}
+}
+impl Readable for WithoutLength<UntrustedString> {
+	#[inline]
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+		let s: WithoutLength<String> = Readable::read(r)?;
+		Ok(Self(UntrustedString(s.0)))
+	}
+}
+
 impl<'a, T: Writeable> Writeable for WithoutLength<&'a Vec<T>> {
 	#[inline]
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
@@ -655,6 +677,21 @@ impl<T: MaybeReadable> Readable for WithoutLength<Vec<T>> {
 }
 impl<'a, T> From<&'a Vec<T>> for WithoutLength<&'a Vec<T>> {
 	fn from(v: &'a Vec<T>) -> Self { Self(v) }
+}
+
+impl Writeable for WithoutLength<&Script> {
+	#[inline]
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+		writer.write_all(self.0.as_bytes())
+	}
+}
+
+impl Readable for WithoutLength<Script> {
+	#[inline]
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+		let v: WithoutLength<Vec<u8>> = Readable::read(r)?;
+		Ok(WithoutLength(script::Builder::from(v.0).into_script()))
+	}
 }
 
 #[derive(Debug)]
@@ -812,10 +849,45 @@ impl Readable for Vec<u8> {
 }
 
 impl_for_vec!(ecdsa::Signature);
+impl_for_vec!(crate::chain::channelmonitor::ChannelMonitorUpdate);
 impl_for_vec!(crate::ln::channelmanager::MonitorUpdateCompletionAction);
 impl_for_vec!((A, B), A, B);
 impl_writeable_for_vec!(&crate::routing::router::BlindedTail);
 impl_readable_for_vec!(crate::routing::router::BlindedTail);
+
+impl Writeable for Vec<Witness> {
+	#[inline]
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		(self.len() as u16).write(w)?;
+		for witness in self {
+			(witness.serialized_len() as u16).write(w)?;
+			witness.write(w)?;
+		}
+		Ok(())
+	}
+}
+
+impl Readable for Vec<Witness> {
+	#[inline]
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+		let num_witnesses = <u16 as Readable>::read(r)? as usize;
+		let mut witnesses = Vec::with_capacity(num_witnesses);
+		for _ in 0..num_witnesses {
+			// Even though the length of each witness can be inferred in its consensus-encoded form,
+			// the spec includes a length prefix so that implementations don't have to deserialize
+			//  each initially. We do that here anyway as in general we'll need to be able to make
+			// assertions on some properties of the witnesses when receiving a message providing a list
+			// of witnesses. We'll just do a sanity check for the lengths and error if there is a mismatch.
+			let witness_len = <u16 as Readable>::read(r)? as usize;
+			let witness = <Witness as Readable>::read(r)?;
+			if witness.serialized_len() != witness_len {
+				return Err(DecodeError::BadLengthDescriptor);
+			}
+			witnesses.push(witness);
+		}
+		Ok(witnesses)
+	}
+}
 
 impl Writeable for Script {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
@@ -1120,6 +1192,7 @@ macro_rules! impl_consensus_ser {
 }
 impl_consensus_ser!(Transaction);
 impl_consensus_ser!(TxOut);
+impl_consensus_ser!(Witness);
 
 impl<T: Readable> Readable for Mutex<T> {
 	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
@@ -1279,6 +1352,7 @@ impl Readable for Hostname {
 	}
 }
 
+/// This is not exported to bindings users as `Duration`s are simply mapped as ints.
 impl Writeable for Duration {
 	#[inline]
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
@@ -1286,12 +1360,69 @@ impl Writeable for Duration {
 		self.subsec_nanos().write(w)
 	}
 }
+/// This is not exported to bindings users as `Duration`s are simply mapped as ints.
 impl Readable for Duration {
 	#[inline]
 	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
 		let secs = Readable::read(r)?;
 		let nanos = Readable::read(r)?;
 		Ok(Duration::new(secs, nanos))
+	}
+}
+
+/// A wrapper for a `Transaction` which can only be constructed with [`TransactionU16LenLimited::new`]
+/// if the `Transaction`'s consensus-serialized length is <= u16::MAX.
+///
+/// Use [`TransactionU16LenLimited::into_transaction`] to convert into the contained `Transaction`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TransactionU16LenLimited(Transaction);
+
+impl TransactionU16LenLimited {
+	/// Constructs a new `TransactionU16LenLimited` from a `Transaction` only if it's consensus-
+	/// serialized length is <= u16::MAX.
+	pub fn new(transaction: Transaction) -> Result<Self, ()> {
+		if transaction.serialized_length() > (u16::MAX as usize) {
+			Err(())
+		} else {
+			Ok(Self(transaction))
+		}
+	}
+
+	/// Consumes this `TransactionU16LenLimited` and returns its contained `Transaction`.
+	pub fn into_transaction(self) -> Transaction {
+		self.0
+	}
+}
+
+impl Writeable for TransactionU16LenLimited {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		(self.0.serialized_length() as u16).write(w)?;
+		self.0.write(w)
+	}
+}
+
+impl Readable for TransactionU16LenLimited {
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+		let len = <u16 as Readable>::read(r)?;
+		let mut tx_reader = FixedLengthReader::new(r, len as u64);
+		let tx: Transaction = Readable::read(&mut tx_reader)?;
+		if tx_reader.bytes_remain() {
+			Err(DecodeError::BadLengthDescriptor)
+		} else {
+			Ok(Self(tx))
+		}
+	}
+}
+
+impl Writeable for ClaimId {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+		self.0.write(writer)
+	}
+}
+
+impl Readable for ClaimId {
+	fn read<R: io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
+		Ok(Self(Readable::read(reader)?))
 	}
 }
 

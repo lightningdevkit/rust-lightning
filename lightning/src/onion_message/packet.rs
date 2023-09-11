@@ -12,11 +12,15 @@
 use bitcoin::secp256k1::PublicKey;
 use bitcoin::secp256k1::ecdh::SharedSecret;
 
-use crate::blinded_path::{BlindedPath, ForwardTlvs, ReceiveTlvs};
+use crate::blinded_path::BlindedPath;
+use crate::blinded_path::message::{ForwardTlvs, ReceiveTlvs};
+use crate::blinded_path::utils::Padding;
 use crate::ln::msgs::DecodeError;
 use crate::ln::onion_utils;
 use super::messenger::CustomOnionMessageHandler;
+use super::offers::OffersMessage;
 use crate::util::chacha20poly1305rfc::{ChaChaPolyReadAdapter, ChaChaPolyWriteAdapter};
+use crate::util::logger::Logger;
 use crate::util::ser::{BigSize, FixedLengthReader, LengthRead, LengthReadable, LengthReadableArgs, Readable, ReadableArgs, Writeable, Writer};
 
 use core::cmp;
@@ -108,10 +112,8 @@ pub(super) enum Payload<T: CustomOnionMessageContents> {
 /// The contents of an onion message. In the context of offers, this would be the invoice, invoice
 /// request, or invoice error.
 pub enum OnionMessageContents<T: CustomOnionMessageContents> {
-	// Coming soon:
-	// Invoice,
-	// InvoiceRequest,
-	// InvoiceError,
+	/// A message related to BOLT 12 Offers.
+	Offers(OffersMessage),
 	/// A custom onion message specified by the user.
 	Custom(T),
 }
@@ -122,6 +124,7 @@ impl<T: CustomOnionMessageContents> OnionMessageContents<T> {
 	/// This is not exported to bindings users as methods on non-cloneable enums are not currently exportable
 	pub fn tlv_type(&self) -> u64 {
 		match self {
+			&OnionMessageContents::Offers(ref msg) => msg.tlv_type(),
 			&OnionMessageContents::Custom(ref msg) => msg.tlv_type(),
 		}
 	}
@@ -131,6 +134,7 @@ impl<T: CustomOnionMessageContents> OnionMessageContents<T> {
 impl<T: CustomOnionMessageContents> Writeable for OnionMessageContents<T> {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
 		match self {
+			OnionMessageContents::Offers(msg) => Ok(msg.write(w)?),
 			OnionMessageContents::Custom(msg) => Ok(msg.write(w)?),
 		}
 	}
@@ -149,7 +153,8 @@ pub(super) enum ForwardControlTlvs {
 	Blinded(Vec<u8>),
 	/// If we're constructing an onion message hop through an intermediate unblinded node, we'll need
 	/// to construct the intermediate hop's control TLVs in their unblinded state to avoid encoding
-	/// them into an intermediate Vec. See [`crate::blinded_path::ForwardTlvs`] for more info.
+	/// them into an intermediate Vec. See [`crate::blinded_path::message::ForwardTlvs`] for more
+	/// info.
 	Unblinded(ForwardTlvs),
 }
 
@@ -157,7 +162,7 @@ pub(super) enum ForwardControlTlvs {
 pub(super) enum ReceiveControlTlvs {
 	/// See [`ForwardControlTlvs::Blinded`].
 	Blinded(Vec<u8>),
-	/// See [`ForwardControlTlvs::Unblinded`] and [`crate::blinded_path::ReceiveTlvs`].
+	/// See [`ForwardControlTlvs::Unblinded`] and [`crate::blinded_path::message::ReceiveTlvs`].
 	Unblinded(ReceiveTlvs),
 }
 
@@ -167,7 +172,7 @@ impl<T: CustomOnionMessageContents> Writeable for (Payload<T>, [u8; 32]) {
 		match &self.0 {
 			Payload::Forward(ForwardControlTlvs::Blinded(encrypted_bytes)) => {
 				_encode_varint_length_prefixed_tlv!(w, {
-					(4, *encrypted_bytes, vec_type)
+					(4, *encrypted_bytes, required_vec)
 				})
 			},
 			Payload::Receive {
@@ -175,7 +180,7 @@ impl<T: CustomOnionMessageContents> Writeable for (Payload<T>, [u8; 32]) {
 			} => {
 				_encode_varint_length_prefixed_tlv!(w, {
 					(2, reply_path, option),
-					(4, *encrypted_bytes, vec_type),
+					(4, *encrypted_bytes, required_vec),
 					(message.tlv_type(), message, required)
 				})
 			},
@@ -201,9 +206,10 @@ impl<T: CustomOnionMessageContents> Writeable for (Payload<T>, [u8; 32]) {
 }
 
 // Uses the provided secret to simultaneously decode and decrypt the control TLVs and data TLV.
-impl<H: CustomOnionMessageHandler> ReadableArgs<(SharedSecret, &H)> for Payload<<H as CustomOnionMessageHandler>::CustomMessage> {
-	fn read<R: Read>(r: &mut R, args: (SharedSecret, &H)) -> Result<Self, DecodeError> {
-		let (encrypted_tlvs_ss, handler) = args;
+impl<H: CustomOnionMessageHandler + ?Sized, L: Logger + ?Sized>
+ReadableArgs<(SharedSecret, &H, &L)> for Payload<<H as CustomOnionMessageHandler>::CustomMessage> {
+	fn read<R: Read>(r: &mut R, args: (SharedSecret, &H, &L)) -> Result<Self, DecodeError> {
+		let (encrypted_tlvs_ss, handler, logger) = args;
 
 		let v: BigSize = Readable::read(r)?;
 		let mut rd = FixedLengthReader::new(r, v.0);
@@ -221,13 +227,19 @@ impl<H: CustomOnionMessageHandler> ReadableArgs<(SharedSecret, &H)> for Payload<
 			if message_type.is_some() { return Err(DecodeError::InvalidValue) }
 
 			message_type = Some(msg_type);
-			match handler.read_custom_message(msg_type, msg_reader) {
-				Ok(Some(msg)) => {
-					message = Some(msg);
+			match msg_type {
+				tlv_type if OffersMessage::is_known_type(tlv_type) => {
+					let msg = OffersMessage::read(msg_reader, (tlv_type, logger))?;
+					message = Some(OnionMessageContents::Offers(msg));
 					Ok(true)
 				},
-				Ok(None) => Ok(false),
-				Err(e) => Err(e),
+				_ => match handler.read_custom_message(msg_type, msg_reader)? {
+					Some(msg) => {
+						message = Some(OnionMessageContents::Custom(msg));
+						Ok(true)
+					},
+					None => Ok(false),
+				},
 			}
 		});
 		rd.eat_remaining().map_err(|_| DecodeError::ShortRead)?;
@@ -241,20 +253,20 @@ impl<H: CustomOnionMessageHandler> ReadableArgs<(SharedSecret, &H)> for Payload<
 				Ok(Payload::Forward(ForwardControlTlvs::Unblinded(tlvs)))
 			},
 			Some(ChaChaPolyReadAdapter { readable: ControlTlvs::Receive(tlvs)}) => {
-				if message.is_none() { return Err(DecodeError::InvalidValue) }
 				Ok(Payload::Receive {
 					control_tlvs: ReceiveControlTlvs::Unblinded(tlvs),
 					reply_path,
-					message: OnionMessageContents::Custom(message.unwrap()),
+					message: message.ok_or(DecodeError::InvalidValue)?,
 				})
-			}
+			},
 		}
 	}
 }
 
 /// When reading a packet off the wire, we don't know a priori whether the packet is to be forwarded
-/// or received. Thus we read a ControlTlvs rather than reading a ForwardControlTlvs or
-/// ReceiveControlTlvs directly.
+/// or received. Thus we read a `ControlTlvs` rather than reading a [`ForwardTlvs`] or
+/// [`ReceiveTlvs`] directly. Also useful on the encoding side to keep forward and receive TLVs in
+/// the same iterator.
 pub(crate) enum ControlTlvs {
 	/// This onion message is intended to be forwarded.
 	Forward(ForwardTlvs),
@@ -263,19 +275,16 @@ pub(crate) enum ControlTlvs {
 }
 
 impl Readable for ControlTlvs {
-	fn read<R: Read>(mut r: &mut R) -> Result<Self, DecodeError> {
-		let mut _padding: Option<Padding> = None;
-		let mut _short_channel_id: Option<u64> = None;
-		let mut next_node_id: Option<PublicKey> = None;
-		let mut path_id: Option<[u8; 32]> = None;
-		let mut next_blinding_override: Option<PublicKey> = None;
-		decode_tlv_stream!(&mut r, {
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+		_init_and_read_tlv_stream!(r, {
 			(1, _padding, option),
 			(2, _short_channel_id, option),
 			(4, next_node_id, option),
 			(6, path_id, option),
 			(8, next_blinding_override, option),
 		});
+		let _padding: Option<Padding> = _padding;
+		let _short_channel_id: Option<u64> = _short_channel_id;
 
 		let valid_fwd_fmt  = next_node_id.is_some() && path_id.is_none();
 		let valid_recv_fmt = next_node_id.is_none() && next_blinding_override.is_none();
@@ -297,15 +306,11 @@ impl Readable for ControlTlvs {
 	}
 }
 
-/// Reads padding to the end, ignoring what's read.
-pub(crate) struct Padding {}
-impl Readable for Padding {
-	#[inline]
-	fn read<R: Read>(reader: &mut R) -> Result<Self, DecodeError> {
-		loop {
-			let mut buf = [0; 8192];
-			if reader.read(&mut buf[..])? == 0 { break; }
+impl Writeable for ControlTlvs {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		match self {
+			Self::Forward(tlvs) => tlvs.write(w),
+			Self::Receive(tlvs) => tlvs.write(w),
 		}
-		Ok(Self {})
 	}
 }

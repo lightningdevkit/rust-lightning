@@ -18,8 +18,6 @@
 //! send-side handling is correct, other peers. We consider it a failure if any action results in a
 //! channel being force-closed.
 
-use bitcoin::TxMerkleNode;
-use bitcoin::blockdata::block::BlockHeader;
 use bitcoin::blockdata::constants::genesis_block;
 use bitcoin::blockdata::transaction::{Transaction, TxOut};
 use bitcoin::blockdata::script::{Builder, Script};
@@ -37,7 +35,7 @@ use lightning::chain::{BestBlock, ChannelMonitorUpdateStatus, chainmonitor, chan
 use lightning::chain::channelmonitor::{ChannelMonitor, MonitorEvent};
 use lightning::chain::transaction::OutPoint;
 use lightning::chain::chaininterface::{BroadcasterInterface, ConfirmationTarget, FeeEstimator};
-use lightning::chain::keysinterface::{KeyMaterial, InMemorySigner, Recipient, EntropySource, NodeSigner, SignerProvider};
+use lightning::sign::{KeyMaterial, InMemorySigner, Recipient, EntropySource, NodeSigner, SignerProvider};
 use lightning::events;
 use lightning::events::MessageSendEventsProvider;
 use lightning::ln::{PaymentHash, PaymentPreimage, PaymentSecret};
@@ -45,7 +43,10 @@ use lightning::ln::channelmanager::{ChainParameters, ChannelDetails, ChannelMana
 use lightning::ln::channel::FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE;
 use lightning::ln::msgs::{self, CommitmentUpdate, ChannelMessageHandler, DecodeError, UpdateAddHTLC, Init};
 use lightning::ln::script::ShutdownScript;
-use lightning::util::enforcing_trait_impls::{EnforcingSigner, EnforcementState};
+use lightning::ln::functional_test_utils::*;
+use lightning::offers::invoice::UnsignedBolt12Invoice;
+use lightning::offers::invoice_request::UnsignedInvoiceRequest;
+use lightning::util::test_channel_signer::{TestChannelSigner, EnforcementState};
 use lightning::util::errors::APIError;
 use lightning::util::logger::Logger;
 use lightning::util::config::UserConfig;
@@ -58,6 +59,7 @@ use crate::utils::test_persister::TestPersister;
 use bitcoin::secp256k1::{Message, PublicKey, SecretKey, Scalar, Secp256k1};
 use bitcoin::secp256k1::ecdh::SharedSecret;
 use bitcoin::secp256k1::ecdsa::{RecoverableSignature, Signature};
+use bitcoin::secp256k1::schnorr;
 
 use std::mem;
 use std::cmp::{self, Ordering};
@@ -79,7 +81,7 @@ impl FeeEstimator for FuzzEstimator {
 		// Background feerate which is <= the minimum Normal feerate.
 		match conf_target {
 			ConfirmationTarget::HighPriority => MAX_FEE,
-			ConfirmationTarget::Background => 253,
+			ConfirmationTarget::Background|ConfirmationTarget::MempoolMinimum => 253,
 			ConfirmationTarget::Normal => cmp::min(self.ret_val.load(atomic::Ordering::Acquire), MAX_FEE),
 		}
 	}
@@ -90,7 +92,7 @@ struct FuzzRouter {}
 impl Router for FuzzRouter {
 	fn find_route(
 		&self, _payer: &PublicKey, _params: &RouteParameters, _first_hops: Option<&[&ChannelDetails]>,
-		_inflight_htlcs: &InFlightHtlcs
+		_inflight_htlcs: InFlightHtlcs
 	) -> Result<Route, msgs::LightningError> {
 		Err(msgs::LightningError {
 			err: String::from("Not implemented"),
@@ -101,7 +103,7 @@ impl Router for FuzzRouter {
 
 pub struct TestBroadcaster {}
 impl BroadcasterInterface for TestBroadcaster {
-	fn broadcast_transaction(&self, _tx: &Transaction) { }
+	fn broadcast_transactions(&self, _txs: &[&Transaction]) { }
 }
 
 pub struct VecWriter(pub Vec<u8>);
@@ -116,7 +118,7 @@ struct TestChainMonitor {
 	pub logger: Arc<dyn Logger>,
 	pub keys: Arc<KeyProvider>,
 	pub persister: Arc<TestPersister>,
-	pub chain_monitor: Arc<chainmonitor::ChainMonitor<EnforcingSigner, Arc<dyn chain::Filter>, Arc<TestBroadcaster>, Arc<FuzzEstimator>, Arc<dyn Logger>, Arc<TestPersister>>>,
+	pub chain_monitor: Arc<chainmonitor::ChainMonitor<TestChannelSigner, Arc<dyn chain::Filter>, Arc<TestBroadcaster>, Arc<FuzzEstimator>, Arc<dyn Logger>, Arc<TestPersister>>>,
 	// If we reload a node with an old copy of ChannelMonitors, the ChannelManager deserialization
 	// logic will automatically force-close our channels for us (as we don't have an up-to-date
 	// monitor implying we are not able to punish misbehaving counterparties). Because this test
@@ -137,8 +139,8 @@ impl TestChainMonitor {
 		}
 	}
 }
-impl chain::Watch<EnforcingSigner> for TestChainMonitor {
-	fn watch_channel(&self, funding_txo: OutPoint, monitor: channelmonitor::ChannelMonitor<EnforcingSigner>) -> chain::ChannelMonitorUpdateStatus {
+impl chain::Watch<TestChannelSigner> for TestChainMonitor {
+	fn watch_channel(&self, funding_txo: OutPoint, monitor: channelmonitor::ChannelMonitor<TestChannelSigner>) -> chain::ChannelMonitorUpdateStatus {
 		let mut ser = VecWriter(Vec::new());
 		monitor.write(&mut ser).unwrap();
 		if let Some(_) = self.latest_monitors.lock().unwrap().insert(funding_txo, (monitor.get_latest_update_id(), ser.0)) {
@@ -154,7 +156,7 @@ impl chain::Watch<EnforcingSigner> for TestChainMonitor {
 			hash_map::Entry::Occupied(entry) => entry,
 			hash_map::Entry::Vacant(_) => panic!("Didn't have monitor on update call"),
 		};
-		let deserialized_monitor = <(BlockHash, channelmonitor::ChannelMonitor<EnforcingSigner>)>::
+		let deserialized_monitor = <(BlockHash, channelmonitor::ChannelMonitor<TestChannelSigner>)>::
 			read(&mut Cursor::new(&map_entry.get().1), (&*self.keys, &*self.keys)).unwrap().1;
 		deserialized_monitor.update_monitor(update, &&TestBroadcaster{}, &FuzzEstimator { ret_val: atomic::AtomicU32::new(253) }, &self.logger).unwrap();
 		let mut ser = VecWriter(Vec::new());
@@ -212,6 +214,18 @@ impl NodeSigner for KeyProvider {
 		unreachable!()
 	}
 
+	fn sign_bolt12_invoice_request(
+		&self, _invoice_request: &UnsignedInvoiceRequest
+	) -> Result<schnorr::Signature, ()> {
+		unreachable!()
+	}
+
+	fn sign_bolt12_invoice(
+		&self, _invoice: &UnsignedBolt12Invoice,
+	) -> Result<schnorr::Signature, ()> {
+		unreachable!()
+	}
+
 	fn sign_gossip_message(&self, msg: lightning::ln::msgs::UnsignedGossipMessage) -> Result<Signature, ()> {
 		let msg_hash = Message::from_slice(&Sha256dHash::hash(&msg.encode()[..])[..]).map_err(|_| ())?;
 		let secp_ctx = Secp256k1::signing_only();
@@ -220,7 +234,7 @@ impl NodeSigner for KeyProvider {
 }
 
 impl SignerProvider for KeyProvider {
-	type Signer = EnforcingSigner;
+	type Signer = TestChannelSigner;
 
 	fn generate_channel_keys_id(&self, _inbound: bool, _channel_value_satoshis: u64, _user_channel_id: u128) -> [u8; 32] {
 		let id = self.rand_bytes_id.fetch_add(1, atomic::Ordering::Relaxed) as u8;
@@ -243,7 +257,7 @@ impl SignerProvider for KeyProvider {
 			channel_keys_id,
 		);
 		let revoked_commitment = self.make_enforcement_state_cell(keys.commitment_seed);
-		EnforcingSigner::new_with_revoked(keys, revoked_commitment, false)
+		TestChannelSigner::new_with_revoked(keys, revoked_commitment, false)
 	}
 
 	fn read_chan_signer(&self, buffer: &[u8]) -> Result<Self::Signer, DecodeError> {
@@ -252,25 +266,25 @@ impl SignerProvider for KeyProvider {
 		let inner: InMemorySigner = ReadableArgs::read(&mut reader, self)?;
 		let state = self.make_enforcement_state_cell(inner.commitment_seed);
 
-		Ok(EnforcingSigner {
+		Ok(TestChannelSigner {
 			inner,
 			state,
 			disable_revocation_policy_check: false,
 		})
 	}
 
-	fn get_destination_script(&self) -> Script {
+	fn get_destination_script(&self) -> Result<Script, ()> {
 		let secp_ctx = Secp256k1::signing_only();
 		let channel_monitor_claim_key = SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, self.node_secret[31]]).unwrap();
 		let our_channel_monitor_claim_key_hash = WPubkeyHash::hash(&PublicKey::from_secret_key(&secp_ctx, &channel_monitor_claim_key).serialize());
-		Builder::new().push_opcode(opcodes::all::OP_PUSHBYTES_0).push_slice(&our_channel_monitor_claim_key_hash[..]).into_script()
+		Ok(Builder::new().push_opcode(opcodes::all::OP_PUSHBYTES_0).push_slice(&our_channel_monitor_claim_key_hash[..]).into_script())
 	}
 
-	fn get_shutdown_scriptpubkey(&self) -> ShutdownScript {
+	fn get_shutdown_scriptpubkey(&self) -> Result<ShutdownScript, ()> {
 		let secp_ctx = Secp256k1::signing_only();
 		let secret_key = SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, self.node_secret[31]]).unwrap();
 		let pubkey_hash = WPubkeyHash::hash(&PublicKey::from_secret_key(&secp_ctx, &secret_key).serialize());
-		ShutdownScript::new_p2wpkh(&pubkey_hash)
+		Ok(ShutdownScript::new_p2wpkh(&pubkey_hash))
 	}
 }
 
@@ -286,7 +300,7 @@ impl KeyProvider {
 }
 
 #[inline]
-fn check_api_err(api_err: APIError) {
+fn check_api_err(api_err: APIError, sendable_bounds_violated: bool) {
 	match api_err {
 		APIError::APIMisuseError { .. } => panic!("We can't misuse the API"),
 		APIError::FeeRateTooHigh { .. } => panic!("We can't send too much fee?"),
@@ -297,15 +311,11 @@ fn check_api_err(api_err: APIError) {
 			// is probably just stale and you should add new messages here.
 			match err.as_str() {
 				"Peer for first hop currently disconnected" => {},
-				_ if err.starts_with("Cannot push more than their max accepted HTLCs ") => {},
-				_ if err.starts_with("Cannot send value that would put us over the max HTLC value in flight our peer will accept ") => {},
-				_ if err.starts_with("Cannot send value that would put our balance under counterparty-announced channel reserve value") => {},
-				_ if err.starts_with("Cannot send value that would put counterparty balance under holder-announced channel reserve value") => {},
-				_ if err.starts_with("Cannot send value that would overdraw remaining funds.") => {},
-				_ if err.starts_with("Cannot send value that would not leave enough to pay for fees.") => {},
-				_ if err.starts_with("Cannot send value that would put our exposure to dust HTLCs at") => {},
+				_ if err.starts_with("Cannot send less than our next-HTLC minimum - ") => {},
+				_ if err.starts_with("Cannot send more than our next-HTLC maximum - ") => {},
 				_ => panic!("{}", err),
 			}
+			assert!(sendable_bounds_violated);
 		},
 		APIError::MonitorUpdateInProgress => {
 			// We can (obviously) temp-fail a monitor update
@@ -314,17 +324,17 @@ fn check_api_err(api_err: APIError) {
 	}
 }
 #[inline]
-fn check_payment_err(send_err: PaymentSendFailure) {
+fn check_payment_err(send_err: PaymentSendFailure, sendable_bounds_violated: bool) {
 	match send_err {
-		PaymentSendFailure::ParameterError(api_err) => check_api_err(api_err),
+		PaymentSendFailure::ParameterError(api_err) => check_api_err(api_err, sendable_bounds_violated),
 		PaymentSendFailure::PathParameterError(per_path_results) => {
-			for res in per_path_results { if let Err(api_err) = res { check_api_err(api_err); } }
+			for res in per_path_results { if let Err(api_err) = res { check_api_err(api_err, sendable_bounds_violated); } }
 		},
 		PaymentSendFailure::AllFailedResendSafe(per_path_results) => {
-			for api_err in per_path_results { check_api_err(api_err); }
+			for api_err in per_path_results { check_api_err(api_err, sendable_bounds_violated); }
 		},
 		PaymentSendFailure::PartialFailure { results, .. } => {
-			for res in results { if let Err(api_err) = res { check_api_err(api_err); } }
+			for res in results { if let Err(api_err) = res { check_api_err(api_err, sendable_bounds_violated); } }
 		},
 		PaymentSendFailure::DuplicatePayment => panic!(),
 	}
@@ -352,6 +362,11 @@ fn send_payment(source: &ChanMan, dest: &ChanMan, dest_chan_id: u64, amt: u64, p
 	let mut payment_id = [0; 32];
 	payment_id[0..8].copy_from_slice(&payment_idx.to_ne_bytes());
 	*payment_idx += 1;
+	let (min_value_sendable, max_value_sendable) = source.list_usable_channels()
+		.iter().find(|chan| chan.short_channel_id == Some(dest_chan_id))
+		.map(|chan|
+			(chan.next_outbound_htlc_minimum_msat, chan.next_outbound_htlc_limit_msat))
+		.unwrap_or((0, 0));
 	if let Err(err) = source.send_payment_with_route(&Route {
 		paths: vec![Path { hops: vec![RouteHop {
 			pubkey: dest.get_our_node_id(),
@@ -361,11 +376,17 @@ fn send_payment(source: &ChanMan, dest: &ChanMan, dest_chan_id: u64, amt: u64, p
 			fee_msat: amt,
 			cltv_expiry_delta: 200,
 		}], blinded_tail: None }],
-		payment_params: None,
+		route_params: None,
 	}, payment_hash, RecipientOnionFields::secret_only(payment_secret), PaymentId(payment_id)) {
-		check_payment_err(err);
+		check_payment_err(err, amt > max_value_sendable || amt < min_value_sendable);
 		false
-	} else { true }
+	} else {
+		// Note that while the max is a strict upper-bound, we can occasionally send substantially
+		// below the minimum, with some gap which is unusable immediately below the minimum. Thus,
+		// we don't check against min_value_sendable here.
+		assert!(amt <= max_value_sendable);
+		true
+	}
 }
 #[inline]
 fn send_hop_payment(source: &ChanMan, middle: &ChanMan, middle_chan_id: u64, dest: &ChanMan, dest_chan_id: u64, amt: u64, payment_id: &mut u8, payment_idx: &mut u64) -> bool {
@@ -374,15 +395,21 @@ fn send_hop_payment(source: &ChanMan, middle: &ChanMan, middle_chan_id: u64, des
 	let mut payment_id = [0; 32];
 	payment_id[0..8].copy_from_slice(&payment_idx.to_ne_bytes());
 	*payment_idx += 1;
+	let (min_value_sendable, max_value_sendable) = source.list_usable_channels()
+		.iter().find(|chan| chan.short_channel_id == Some(middle_chan_id))
+		.map(|chan|
+			(chan.next_outbound_htlc_minimum_msat, chan.next_outbound_htlc_limit_msat))
+		.unwrap_or((0, 0));
+	let first_hop_fee = 50_000;
 	if let Err(err) = source.send_payment_with_route(&Route {
 		paths: vec![Path { hops: vec![RouteHop {
 			pubkey: middle.get_our_node_id(),
 			node_features: middle.node_features(),
 			short_channel_id: middle_chan_id,
 			channel_features: middle.channel_features(),
-			fee_msat: 50000,
+			fee_msat: first_hop_fee,
 			cltv_expiry_delta: 100,
-		},RouteHop {
+		}, RouteHop {
 			pubkey: dest.get_our_node_id(),
 			node_features: dest.node_features(),
 			short_channel_id: dest_chan_id,
@@ -390,11 +417,18 @@ fn send_hop_payment(source: &ChanMan, middle: &ChanMan, middle_chan_id: u64, des
 			fee_msat: amt,
 			cltv_expiry_delta: 200,
 		}], blinded_tail: None }],
-		payment_params: None,
+		route_params: None,
 	}, payment_hash, RecipientOnionFields::secret_only(payment_secret), PaymentId(payment_id)) {
-		check_payment_err(err);
+		let sent_amt = amt + first_hop_fee;
+		check_payment_err(err, sent_amt < min_value_sendable || sent_amt > max_value_sendable);
 		false
-	} else { true }
+	} else {
+		// Note that while the max is a strict upper-bound, we can occasionally send substantially
+		// below the minimum, with some gap which is unusable immediately below the minimum. Thus,
+		// we don't check against min_value_sendable here.
+		assert!(amt + first_hop_fee <= max_value_sendable);
+		true
+	}
 }
 
 #[inline]
@@ -417,11 +451,12 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out) {
 			config.channel_config.forwarding_fee_proportional_millionths = 0;
 			config.channel_handshake_config.announced_channel = true;
 			let network = Network::Bitcoin;
+			let best_block_timestamp = genesis_block(network).header.time;
 			let params = ChainParameters {
 				network,
 				best_block: BestBlock::from_network(network),
 			};
-			(ChannelManager::new($fee_estimator.clone(), monitor.clone(), broadcast.clone(), &router, Arc::clone(&logger), keys_manager.clone(), keys_manager.clone(), keys_manager.clone(), config, params),
+			(ChannelManager::new($fee_estimator.clone(), monitor.clone(), broadcast.clone(), &router, Arc::clone(&logger), keys_manager.clone(), keys_manager.clone(), keys_manager.clone(), config, params, best_block_timestamp),
 			monitor, keys_manager)
 		} }
 	}
@@ -442,7 +477,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out) {
 			let mut monitors = HashMap::new();
 			let mut old_monitors = $old_monitors.latest_monitors.lock().unwrap();
 			for (outpoint, (update_id, monitor_ser)) in old_monitors.drain() {
-				monitors.insert(outpoint, <(BlockHash, ChannelMonitor<EnforcingSigner>)>::read(&mut Cursor::new(&monitor_ser), (&*$keys_manager, &*$keys_manager)).expect("Failed to read monitor").1);
+				monitors.insert(outpoint, <(BlockHash, ChannelMonitor<TestChannelSigner>)>::read(&mut Cursor::new(&monitor_ser), (&*$keys_manager, &*$keys_manager)).expect("Failed to read monitor").1);
 				chain_monitor.latest_monitors.lock().unwrap().insert(outpoint, (update_id, monitor_ser));
 			}
 			let mut monitor_refs = HashMap::new();
@@ -475,8 +510,12 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out) {
 	let mut channel_txn = Vec::new();
 	macro_rules! make_channel {
 		($source: expr, $dest: expr, $chan_id: expr) => { {
-			$source.peer_connected(&$dest.get_our_node_id(), &Init { features: $dest.init_features(), remote_network_address: None }, true).unwrap();
-			$dest.peer_connected(&$source.get_our_node_id(), &Init { features: $source.init_features(), remote_network_address: None }, false).unwrap();
+			$source.peer_connected(&$dest.get_our_node_id(), &Init {
+				features: $dest.init_features(), networks: None, remote_network_address: None
+			}, true).unwrap();
+			$dest.peer_connected(&$source.get_our_node_id(), &Init {
+				features: $source.init_features(), networks: None, remote_network_address: None
+			}, false).unwrap();
 
 			$source.create_channel($dest.get_our_node_id(), 100_000, 42, 0, None).unwrap();
 			let open_channel = {
@@ -547,11 +586,11 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out) {
 	macro_rules! confirm_txn {
 		($node: expr) => { {
 			let chain_hash = genesis_block(Network::Bitcoin).block_hash();
-			let mut header = BlockHeader { version: 0x20000000, prev_blockhash: chain_hash, merkle_root: TxMerkleNode::all_zeros(), time: 42, bits: 42, nonce: 42 };
+			let mut header = create_dummy_header(chain_hash, 42);
 			let txdata: Vec<_> = channel_txn.iter().enumerate().map(|(i, tx)| (i + 1, tx)).collect();
 			$node.transactions_confirmed(&header, &txdata, 1);
 			for _ in 2..100 {
-				header = BlockHeader { version: 0x20000000, prev_blockhash: header.block_hash(), merkle_root: TxMerkleNode::all_zeros(), time: 42, bits: 42, nonce: 42 };
+				header = create_dummy_header(header.block_hash(), 42);
 			}
 			$node.best_block_updated(&header, 99);
 		} }
@@ -1007,15 +1046,23 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out) {
 			},
 			0x0e => {
 				if chan_a_disconnected {
-					nodes[0].peer_connected(&nodes[1].get_our_node_id(), &Init { features: nodes[1].init_features(), remote_network_address: None }, true).unwrap();
-					nodes[1].peer_connected(&nodes[0].get_our_node_id(), &Init { features: nodes[0].init_features(), remote_network_address: None }, false).unwrap();
+					nodes[0].peer_connected(&nodes[1].get_our_node_id(), &Init {
+						features: nodes[1].init_features(), networks: None, remote_network_address: None
+					}, true).unwrap();
+					nodes[1].peer_connected(&nodes[0].get_our_node_id(), &Init {
+						features: nodes[0].init_features(), networks: None, remote_network_address: None
+					}, false).unwrap();
 					chan_a_disconnected = false;
 				}
 			},
 			0x0f => {
 				if chan_b_disconnected {
-					nodes[1].peer_connected(&nodes[2].get_our_node_id(), &Init { features: nodes[2].init_features(), remote_network_address: None }, true).unwrap();
-					nodes[2].peer_connected(&nodes[1].get_our_node_id(), &Init { features: nodes[1].init_features(), remote_network_address: None }, false).unwrap();
+					nodes[1].peer_connected(&nodes[2].get_our_node_id(), &Init {
+						features: nodes[2].init_features(), networks: None, remote_network_address: None
+					}, true).unwrap();
+					nodes[2].peer_connected(&nodes[1].get_our_node_id(), &Init {
+						features: nodes[1].init_features(), networks: None, remote_network_address: None
+					}, false).unwrap();
 					chan_b_disconnected = false;
 				}
 			},
@@ -1210,13 +1257,21 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out) {
 
 				// Next, make sure peers are all connected to each other
 				if chan_a_disconnected {
-					nodes[0].peer_connected(&nodes[1].get_our_node_id(), &Init { features: nodes[1].init_features(), remote_network_address: None }, true).unwrap();
-					nodes[1].peer_connected(&nodes[0].get_our_node_id(), &Init { features: nodes[0].init_features(), remote_network_address: None }, false).unwrap();
+					nodes[0].peer_connected(&nodes[1].get_our_node_id(), &Init {
+						features: nodes[1].init_features(), networks: None, remote_network_address: None
+					}, true).unwrap();
+					nodes[1].peer_connected(&nodes[0].get_our_node_id(), &Init {
+						features: nodes[0].init_features(), networks: None, remote_network_address: None
+					}, false).unwrap();
 					chan_a_disconnected = false;
 				}
 				if chan_b_disconnected {
-					nodes[1].peer_connected(&nodes[2].get_our_node_id(), &Init { features: nodes[2].init_features(), remote_network_address: None }, true).unwrap();
-					nodes[2].peer_connected(&nodes[1].get_our_node_id(), &Init { features: nodes[1].init_features(), remote_network_address: None }, false).unwrap();
+					nodes[1].peer_connected(&nodes[2].get_our_node_id(), &Init {
+						features: nodes[2].init_features(), networks: None, remote_network_address: None
+					}, true).unwrap();
+					nodes[2].peer_connected(&nodes[1].get_our_node_id(), &Init {
+						features: nodes[1].init_features(), networks: None, remote_network_address: None
+					}, false).unwrap();
 					chan_b_disconnected = false;
 				}
 

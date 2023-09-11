@@ -13,20 +13,16 @@ use crate::chain::channelmonitor::{ANTI_REORG_DELAY, LATENCY_GRACE_PERIOD_BLOCKS
 use crate::chain::transaction::OutPoint;
 use crate::chain::Confirm;
 use crate::events::{Event, MessageSendEventsProvider, ClosureReason, HTLCDestination};
-use crate::ln::channelmanager::ChannelManager;
 use crate::ln::msgs::{ChannelMessageHandler, Init};
 use crate::util::test_utils;
 use crate::util::ser::Writeable;
 use crate::util::string::UntrustedString;
 
-use bitcoin::blockdata::block::{Block, BlockHeader};
 use bitcoin::blockdata::script::Builder;
 use bitcoin::blockdata::opcodes;
 use bitcoin::secp256k1::Secp256k1;
 
 use crate::prelude::*;
-use bitcoin::hashes::Hash;
-use bitcoin::TxMerkleNode;
 
 use crate::ln::functional_test_utils::*;
 
@@ -67,7 +63,6 @@ fn do_test_onchain_htlc_reorg(local_commitment: bool, claim: bool) {
 	check_added_monitors!(nodes[2], 1);
 	get_htlc_update_msgs!(nodes[2], nodes[1].node.get_our_node_id());
 
-	let mut header = BlockHeader { version: 0x2000_0000, prev_blockhash: nodes[2].best_block_hash(), merkle_root: TxMerkleNode::all_zeros(), time: 42, bits: 42, nonce: 42 };
 	let claim_txn = if local_commitment {
 		// Broadcast node 1 commitment txn to broadcast the HTLC-Timeout
 		let node_1_commitment_txn = get_local_commitment_txn!(nodes[1], chan_2.2);
@@ -77,10 +72,10 @@ fn do_test_onchain_htlc_reorg(local_commitment: bool, claim: bool) {
 		check_spends!(node_1_commitment_txn[1], node_1_commitment_txn[0]);
 
 		// Give node 2 node 1's transactions and get its response (claiming the HTLC instead).
-		connect_block(&nodes[2], &Block { header, txdata: node_1_commitment_txn.clone() });
+		connect_block(&nodes[2], &create_dummy_block(nodes[2].best_block_hash(), 42, node_1_commitment_txn.clone()));
 		check_added_monitors!(nodes[2], 1);
 		check_closed_broadcast!(nodes[2], true); // We should get a BroadcastChannelUpdate (and *only* a BroadcstChannelUpdate)
-		check_closed_event!(nodes[2], 1, ClosureReason::CommitmentTxConfirmed);
+		check_closed_event!(nodes[2], 1, ClosureReason::CommitmentTxConfirmed, [nodes[1].node.get_our_node_id()], 100000);
 		let node_2_commitment_txn = nodes[2].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
 		assert_eq!(node_2_commitment_txn.len(), 1); // ChannelMonitor: 1 offered HTLC-Claim
 		check_spends!(node_2_commitment_txn[0], node_1_commitment_txn[0]);
@@ -88,8 +83,7 @@ fn do_test_onchain_htlc_reorg(local_commitment: bool, claim: bool) {
 		// Make sure node 1's height is the same as the !local_commitment case
 		connect_blocks(&nodes[1], 1);
 		// Confirm node 1's commitment txn (and HTLC-Timeout) on node 1
-		header.prev_blockhash = nodes[1].best_block_hash();
-		connect_block(&nodes[1], &Block { header, txdata: node_1_commitment_txn.clone() });
+		connect_block(&nodes[1], &create_dummy_block(nodes[1].best_block_hash(), 42, node_1_commitment_txn.clone()));
 
 		// ...but return node 1's commitment tx in case claim is set and we're preparing to reorg
 		vec![node_1_commitment_txn[0].clone(), node_2_commitment_txn[0].clone()]
@@ -115,7 +109,7 @@ fn do_test_onchain_htlc_reorg(local_commitment: bool, claim: bool) {
 	};
 	check_added_monitors!(nodes[1], 1);
 	check_closed_broadcast!(nodes[1], true); // We should get a BroadcastChannelUpdate (and *only* a BroadcstChannelUpdate)
-	check_closed_event!(nodes[1], 1, ClosureReason::CommitmentTxConfirmed);
+	check_closed_event!(nodes[1], 1, ClosureReason::CommitmentTxConfirmed, [nodes[2].node.get_our_node_id()], 100000);
 	// Connect ANTI_REORG_DELAY - 2 blocks, giving us a confirmation count of ANTI_REORG_DELAY - 1.
 	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 2);
 	check_added_monitors!(nodes[1], 0);
@@ -125,11 +119,7 @@ fn do_test_onchain_htlc_reorg(local_commitment: bool, claim: bool) {
 		// Disconnect Node 1's HTLC-Timeout which was connected above
 		disconnect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
 
-		let block = Block {
-			header: BlockHeader { version: 0x20000000, prev_blockhash: nodes[1].best_block_hash(), merkle_root: TxMerkleNode::all_zeros(), time: 42, bits: 42, nonce: 42 },
-			txdata: claim_txn,
-		};
-		connect_block(&nodes[1], &block);
+		connect_block(&nodes[1], &create_dummy_block(nodes[1].best_block_hash(), 42, claim_txn));
 
 		// ChannelManager only polls chain::Watch::release_pending_monitor_events when we
 		// probe it for events, so we probe non-message events here (which should just be the
@@ -137,11 +127,7 @@ fn do_test_onchain_htlc_reorg(local_commitment: bool, claim: bool) {
 		expect_payment_forwarded!(nodes[1], nodes[0], nodes[2], Some(1000), true, true);
 	} else {
 		// Confirm the timeout tx and check that we fail the HTLC backwards
-		let block = Block {
-			header: BlockHeader { version: 0x20000000, prev_blockhash: nodes[1].best_block_hash(), merkle_root: TxMerkleNode::all_zeros(), time: 42, bits: 42, nonce: 42 },
-			txdata: vec![],
-		};
-		connect_block(&nodes[1], &block);
+		connect_block(&nodes[1], &create_dummy_block(nodes[1].best_block_hash(), 42, Vec::new()));
 		expect_pending_htlcs_forwardable_and_htlc_handling_failed!(nodes[1], vec![HTLCDestination::NextHopChannel { node_id: Some(nodes[2].node.get_our_node_id()), channel_id: chan_2.2 }]);
 	}
 
@@ -217,7 +203,7 @@ fn test_counterparty_revoked_reorg() {
 	// on any of the HTLCs, at least until we get six confirmations (which we won't get).
 	mine_transaction(&nodes[1], &revoked_local_txn[0]);
 	check_added_monitors!(nodes[1], 1);
-	check_closed_event!(nodes[1], 1, ClosureReason::CommitmentTxConfirmed);
+	check_closed_event!(nodes[1], 1, ClosureReason::CommitmentTxConfirmed, [nodes[0].node.get_our_node_id()], 1000000);
 	check_closed_broadcast!(nodes[1], true);
 
 	// Connect up to one block before the revoked transaction would be considered final, then do a
@@ -243,7 +229,7 @@ fn test_counterparty_revoked_reorg() {
 
 	// Connect the HTLC claim transaction for HTLC 3
 	mine_transaction(&nodes[1], &unrevoked_local_txn[2]);
-	expect_payment_sent!(nodes[1], payment_preimage_3);
+	expect_payment_sent(&nodes[1], payment_preimage_3, None, true, false);
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 
 	// Connect blocks to confirm the unrevoked commitment transaction
@@ -257,10 +243,12 @@ fn do_test_unconf_chan(reload_node: bool, reorg_after_reload: bool, use_funding_
 	// around freeing background events which store monitor updates during block_[dis]connected.
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let persister;
+	let new_chain_monitor;
+
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
-	let persister: test_utils::TestPersister;
-	let new_chain_monitor: test_utils::TestChainMonitor;
-	let nodes_0_deserialized: ChannelManager<&test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestKeysInterface, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestRouter, &test_utils::TestLogger>;
+	let nodes_0_deserialized;
+
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	*nodes[0].connect_style.borrow_mut() = connect_style;
 
@@ -302,8 +290,6 @@ fn do_test_unconf_chan(reload_node: bool, reorg_after_reload: bool, use_funding_
 		let relevant_txids = nodes[0].node.get_relevant_txids();
 		assert_eq!(relevant_txids.len(), 0);
 
-		handle_announce_close_broadcast_events(&nodes, 0, 1, true, "Channel closed because of an exception: Funding transaction was un-confirmed. Locked at 6 confs, now have 0 confs.");
-		check_added_monitors!(nodes[1], 1);
 		{
 			let per_peer_state = nodes[0].node.per_peer_state.read().unwrap();
 			let peer_state = per_peer_state.get(&nodes[1].node.get_our_node_id()).unwrap().lock().unwrap();
@@ -349,8 +335,6 @@ fn do_test_unconf_chan(reload_node: bool, reorg_after_reload: bool, use_funding_
 		let relevant_txids = nodes[0].node.get_relevant_txids();
 		assert_eq!(relevant_txids.len(), 0);
 
-		handle_announce_close_broadcast_events(&nodes, 0, 1, true, "Channel closed because of an exception: Funding transaction was un-confirmed. Locked at 6 confs, now have 0 confs.");
-		check_added_monitors!(nodes[1], 1);
 		{
 			let per_peer_state = nodes[0].node.per_peer_state.read().unwrap();
 			let peer_state = per_peer_state.get(&nodes[1].node.get_our_node_id()).unwrap().lock().unwrap();
@@ -364,8 +348,15 @@ fn do_test_unconf_chan(reload_node: bool, reorg_after_reload: bool, use_funding_
 	nodes[0].node.test_process_background_events(); // Required to free the pending background monitor update
 	check_added_monitors!(nodes[0], 1);
 	let expected_err = "Funding transaction was un-confirmed. Locked at 6 confs, now have 0 confs.";
-	check_closed_event!(nodes[1], 1, ClosureReason::CounterpartyForceClosed { peer_msg: UntrustedString(format!("Channel closed because of an exception: {}", expected_err)) });
-	check_closed_event!(nodes[0], 1, ClosureReason::ProcessingError { err: expected_err.to_owned() });
+	if reorg_after_reload || !reload_node {
+		handle_announce_close_broadcast_events(&nodes, 0, 1, true, "Channel closed because of an exception: Funding transaction was un-confirmed. Locked at 6 confs, now have 0 confs.");
+		check_added_monitors!(nodes[1], 1);
+		check_closed_event!(nodes[1], 1, ClosureReason::CounterpartyForceClosed { peer_msg: UntrustedString(format!("Channel closed because of an exception: {}", expected_err)) }
+			, [nodes[0].node.get_our_node_id()], 100000);
+	}
+
+	check_closed_event!(nodes[0], 1, ClosureReason::ProcessingError { err: expected_err.to_owned() },
+		[nodes[1].node.get_our_node_id()], 100000);
 	assert_eq!(nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().len(), 1);
 	nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().clear();
 
@@ -374,7 +365,9 @@ fn do_test_unconf_chan(reload_node: bool, reorg_after_reload: bool, use_funding_
 		// If we dropped the channel before reloading the node, nodes[1] was also dropped from
 		// nodes[0] storage, and hence not connected again on startup. We therefore need to
 		// reconnect to the node before attempting to create a new channel.
-		nodes[0].node.peer_connected(&nodes[1].node.get_our_node_id(), &Init { features: nodes[1].node.init_features(), remote_network_address: None }, true).unwrap();
+		nodes[0].node.peer_connected(&nodes[1].node.get_our_node_id(), &Init {
+			features: nodes[1].node.init_features(), networks: None, remote_network_address: None
+		}, true).unwrap();
 	}
 	create_announced_chan_between_nodes(&nodes, 0, 1);
 	send_payment(&nodes[0], &[&nodes[1]], 8000000);
@@ -454,7 +447,7 @@ fn test_set_outpoints_partial_claiming() {
 	// Connect blocks on node A commitment transaction
 	mine_transaction(&nodes[0], &remote_txn[0]);
 	check_closed_broadcast!(nodes[0], true);
-	check_closed_event!(nodes[0], 1, ClosureReason::CommitmentTxConfirmed);
+	check_closed_event!(nodes[0], 1, ClosureReason::CommitmentTxConfirmed, [nodes[1].node.get_our_node_id()], 1000000);
 	check_added_monitors!(nodes[0], 1);
 	// Verify node A broadcast tx claiming both HTLCs
 	{
@@ -469,7 +462,7 @@ fn test_set_outpoints_partial_claiming() {
 	// Connect blocks on node B
 	connect_blocks(&nodes[1], TEST_FINAL_CLTV + LATENCY_GRACE_PERIOD_BLOCKS + 1);
 	check_closed_broadcast!(nodes[1], true);
-	check_closed_event!(nodes[1], 1, ClosureReason::CommitmentTxConfirmed);
+	check_closed_event!(nodes[1], 1, ClosureReason::CommitmentTxConfirmed, [nodes[0].node.get_our_node_id()], 1000000);
 	check_added_monitors!(nodes[1], 1);
 	// Verify node B broadcast 2 HTLC-timeout txn
 	let partial_claim_tx = {
@@ -546,11 +539,11 @@ fn do_test_to_remote_after_local_detection(style: ConnectStyle) {
 	assert!(nodes[0].node.list_channels().is_empty());
 	check_closed_broadcast!(nodes[0], true);
 	check_added_monitors!(nodes[0], 1);
-	check_closed_event!(nodes[0], 1, ClosureReason::CommitmentTxConfirmed);
+	check_closed_event!(nodes[0], 1, ClosureReason::CommitmentTxConfirmed, [nodes[1].node.get_our_node_id()], 1000000);
 	assert!(nodes[1].node.list_channels().is_empty());
 	check_closed_broadcast!(nodes[1], true);
 	check_added_monitors!(nodes[1], 1);
-	check_closed_event!(nodes[1], 1, ClosureReason::CommitmentTxConfirmed);
+	check_closed_event!(nodes[1], 1, ClosureReason::CommitmentTxConfirmed, [nodes[0].node.get_our_node_id()], 1000000);
 
 	assert!(nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events().is_empty());
 	assert!(nodes[1].chain_monitor.chain_monitor.get_and_clear_pending_events().is_empty());
@@ -584,10 +577,11 @@ fn do_test_to_remote_after_local_detection(style: ConnectStyle) {
 
 	let mut node_a_spendable = nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events();
 	assert_eq!(node_a_spendable.len(), 1);
-	if let Event::SpendableOutputs { outputs } = node_a_spendable.pop().unwrap() {
+	if let Event::SpendableOutputs { outputs, channel_id } = node_a_spendable.pop().unwrap() {
 		assert_eq!(outputs.len(), 1);
+		assert_eq!(channel_id, Some(chan_id));
 		let spend_tx = nodes[0].keys_manager.backing.spend_spendable_outputs(&[&outputs[0]], Vec::new(),
-			Builder::new().push_opcode(opcodes::all::OP_RETURN).into_script(), 253, &Secp256k1::new()).unwrap();
+			Builder::new().push_opcode(opcodes::all::OP_RETURN).into_script(), 253, None, &Secp256k1::new()).unwrap();
 		check_spends!(spend_tx, remote_txn_b[0]);
 	}
 
@@ -604,10 +598,11 @@ fn do_test_to_remote_after_local_detection(style: ConnectStyle) {
 
 	let mut node_b_spendable = nodes[1].chain_monitor.chain_monitor.get_and_clear_pending_events();
 	assert_eq!(node_b_spendable.len(), 1);
-	if let Event::SpendableOutputs { outputs } = node_b_spendable.pop().unwrap() {
+	if let Event::SpendableOutputs { outputs, channel_id } = node_b_spendable.pop().unwrap() {
 		assert_eq!(outputs.len(), 1);
+		assert_eq!(channel_id, Some(chan_id));
 		let spend_tx = nodes[1].keys_manager.backing.spend_spendable_outputs(&[&outputs[0]], Vec::new(),
-			Builder::new().push_opcode(opcodes::all::OP_RETURN).into_script(), 253, &Secp256k1::new()).unwrap();
+			Builder::new().push_opcode(opcodes::all::OP_RETURN).into_script(), 253, None, &Secp256k1::new()).unwrap();
 		check_spends!(spend_tx, remote_txn_a[0]);
 	}
 }

@@ -13,8 +13,6 @@
 //! or payments to send/ways to handle events generated.
 //! This test has been very useful, though due to its complexity good starting inputs are critical.
 
-use bitcoin::TxMerkleNode;
-use bitcoin::blockdata::block::BlockHeader;
 use bitcoin::blockdata::constants::genesis_block;
 use bitcoin::blockdata::transaction::{Transaction, TxOut};
 use bitcoin::blockdata::script::{Builder, Script};
@@ -34,21 +32,24 @@ use lightning::chain::{BestBlock, ChannelMonitorUpdateStatus, Confirm, Listen};
 use lightning::chain::chaininterface::{BroadcasterInterface, ConfirmationTarget, FeeEstimator};
 use lightning::chain::chainmonitor;
 use lightning::chain::transaction::OutPoint;
-use lightning::chain::keysinterface::{InMemorySigner, Recipient, KeyMaterial, EntropySource, NodeSigner, SignerProvider};
+use lightning::sign::{InMemorySigner, Recipient, KeyMaterial, EntropySource, NodeSigner, SignerProvider};
 use lightning::events::Event;
-use lightning::ln::{PaymentHash, PaymentPreimage, PaymentSecret};
+use lightning::ln::{ChannelId, PaymentHash, PaymentPreimage, PaymentSecret};
 use lightning::ln::channelmanager::{ChainParameters, ChannelDetails, ChannelManager, PaymentId, RecipientOnionFields, Retry};
 use lightning::ln::peer_handler::{MessageHandler,PeerManager,SocketDescriptor,IgnoringMessageHandler};
 use lightning::ln::msgs::{self, DecodeError};
 use lightning::ln::script::ShutdownScript;
+use lightning::ln::functional_test_utils::*;
+use lightning::offers::invoice::UnsignedBolt12Invoice;
+use lightning::offers::invoice_request::UnsignedInvoiceRequest;
 use lightning::routing::gossip::{P2PGossipSync, NetworkGraph};
 use lightning::routing::utxo::UtxoLookup;
 use lightning::routing::router::{InFlightHtlcs, PaymentParameters, Route, RouteParameters, Router};
-use lightning::util::config::UserConfig;
+use lightning::util::config::{UserConfig, MaxDustHTLCExposure};
 use lightning::util::errors::APIError;
-use lightning::util::enforcing_trait_impls::{EnforcingSigner, EnforcementState};
+use lightning::util::test_channel_signer::{TestChannelSigner, EnforcementState};
 use lightning::util::logger::Logger;
-use lightning::util::ser::{Readable, ReadableArgs, Writeable};
+use lightning::util::ser::{ReadableArgs, Writeable};
 
 use crate::utils::test_logger;
 use crate::utils::test_persister::TestPersister;
@@ -56,6 +57,7 @@ use crate::utils::test_persister::TestPersister;
 use bitcoin::secp256k1::{Message, PublicKey, SecretKey, Scalar, Secp256k1};
 use bitcoin::secp256k1::ecdh::SharedSecret;
 use bitcoin::secp256k1::ecdsa::{RecoverableSignature, Signature};
+use bitcoin::secp256k1::schnorr;
 
 use std::cell::RefCell;
 use hashbrown::{HashMap, hash_map};
@@ -132,7 +134,7 @@ struct FuzzRouter {}
 impl Router for FuzzRouter {
 	fn find_route(
 		&self, _payer: &PublicKey, _params: &RouteParameters, _first_hops: Option<&[&ChannelDetails]>,
-		_inflight_htlcs: &InFlightHtlcs
+		_inflight_htlcs: InFlightHtlcs
 	) -> Result<Route, msgs::LightningError> {
 		Err(msgs::LightningError {
 			err: String::from("Not implemented"),
@@ -145,8 +147,9 @@ struct TestBroadcaster {
 	txn_broadcasted: Mutex<Vec<Transaction>>,
 }
 impl BroadcasterInterface for TestBroadcaster {
-	fn broadcast_transaction(&self, tx: &Transaction) {
-		self.txn_broadcasted.lock().unwrap().push(tx.clone());
+	fn broadcast_transactions(&self, txs: &[&Transaction]) {
+		let owned_txs: Vec<Transaction> = txs.iter().map(|tx| (*tx).clone()).collect();
+		self.txn_broadcasted.lock().unwrap().extend(owned_txs);
 	}
 }
 
@@ -177,13 +180,13 @@ impl<'a> std::hash::Hash for Peer<'a> {
 }
 
 type ChannelMan<'a> = ChannelManager<
-	Arc<chainmonitor::ChainMonitor<EnforcingSigner, Arc<dyn chain::Filter>, Arc<TestBroadcaster>, Arc<FuzzEstimator>, Arc<dyn Logger>, Arc<TestPersister>>>,
+	Arc<chainmonitor::ChainMonitor<TestChannelSigner, Arc<dyn chain::Filter>, Arc<TestBroadcaster>, Arc<FuzzEstimator>, Arc<dyn Logger>, Arc<TestPersister>>>,
 	Arc<TestBroadcaster>, Arc<KeyProvider>, Arc<KeyProvider>, Arc<KeyProvider>, Arc<FuzzEstimator>, &'a FuzzRouter, Arc<dyn Logger>>;
 type PeerMan<'a> = PeerManager<Peer<'a>, Arc<ChannelMan<'a>>, Arc<P2PGossipSync<Arc<NetworkGraph<Arc<dyn Logger>>>, Arc<dyn UtxoLookup>, Arc<dyn Logger>>>, IgnoringMessageHandler, Arc<dyn Logger>, IgnoringMessageHandler, Arc<KeyProvider>>;
 
 struct MoneyLossDetector<'a> {
 	manager: Arc<ChannelMan<'a>>,
-	monitor: Arc<chainmonitor::ChainMonitor<EnforcingSigner, Arc<dyn chain::Filter>, Arc<TestBroadcaster>, Arc<FuzzEstimator>, Arc<dyn Logger>, Arc<TestPersister>>>,
+	monitor: Arc<chainmonitor::ChainMonitor<TestChannelSigner, Arc<dyn chain::Filter>, Arc<TestBroadcaster>, Arc<FuzzEstimator>, Arc<dyn Logger>, Arc<TestPersister>>>,
 	handler: PeerMan<'a>,
 
 	peers: &'a RefCell<[bool; 256]>,
@@ -197,7 +200,7 @@ struct MoneyLossDetector<'a> {
 impl<'a> MoneyLossDetector<'a> {
 	pub fn new(peers: &'a RefCell<[bool; 256]>,
 	           manager: Arc<ChannelMan<'a>>,
-	           monitor: Arc<chainmonitor::ChainMonitor<EnforcingSigner, Arc<dyn chain::Filter>, Arc<TestBroadcaster>, Arc<FuzzEstimator>, Arc<dyn Logger>, Arc<TestPersister>>>,
+	           monitor: Arc<chainmonitor::ChainMonitor<TestChannelSigner, Arc<dyn chain::Filter>, Arc<TestBroadcaster>, Arc<FuzzEstimator>, Arc<dyn Logger>, Arc<TestPersister>>>,
 	           handler: PeerMan<'a>) -> Self {
 		MoneyLossDetector {
 			manager,
@@ -228,7 +231,7 @@ impl<'a> MoneyLossDetector<'a> {
 		}
 
 		self.blocks_connected += 1;
-		let header = BlockHeader { version: 0x20000000, prev_blockhash: self.header_hashes[self.height].0, merkle_root: TxMerkleNode::all_zeros(), time: self.blocks_connected, bits: 42, nonce: 42 };
+		let header = create_dummy_header(self.header_hashes[self.height].0, self.blocks_connected);
 		self.height += 1;
 		self.manager.transactions_confirmed(&header, &txdata, self.height as u32);
 		self.manager.best_block_updated(&header, self.height as u32);
@@ -245,7 +248,7 @@ impl<'a> MoneyLossDetector<'a> {
 
 	fn disconnect_block(&mut self) {
 		if self.height > 0 && (self.max_height < 6 || self.height >= self.max_height - 6) {
-			let header = BlockHeader { version: 0x20000000, prev_blockhash: self.header_hashes[self.height - 1].0, merkle_root: TxMerkleNode::all_zeros(), time: self.header_hashes[self.height].1, bits: 42, nonce: 42 };
+			let header = create_dummy_header(self.header_hashes[self.height - 1].0, self.header_hashes[self.height].1);
 			self.manager.block_disconnected(&header, self.height as u32);
 			self.monitor.block_disconnected(&header, self.height as u32);
 			self.height -= 1;
@@ -316,6 +319,18 @@ impl NodeSigner for KeyProvider {
 		unreachable!()
 	}
 
+	fn sign_bolt12_invoice_request(
+		&self, _invoice_request: &UnsignedInvoiceRequest
+	) -> Result<schnorr::Signature, ()> {
+		unreachable!()
+	}
+
+	fn sign_bolt12_invoice(
+		&self, _invoice: &UnsignedBolt12Invoice,
+	) -> Result<schnorr::Signature, ()> {
+		unreachable!()
+	}
+
 	fn sign_gossip_message(&self, msg: lightning::ln::msgs::UnsignedGossipMessage) -> Result<Signature, ()> {
 		let msg_hash = Message::from_slice(&Sha256dHash::hash(&msg.encode()[..])[..]).map_err(|_| ())?;
 		let secp_ctx = Secp256k1::signing_only();
@@ -324,7 +339,7 @@ impl NodeSigner for KeyProvider {
 }
 
 impl SignerProvider for KeyProvider {
-	type Signer = EnforcingSigner;
+	type Signer = TestChannelSigner;
 
 	fn generate_channel_keys_id(&self, inbound: bool, _channel_value_satoshis: u64, _user_channel_id: u128) -> [u8; 32] {
 		let ctr = self.counter.fetch_add(1, Ordering::Relaxed) as u8;
@@ -336,7 +351,7 @@ impl SignerProvider for KeyProvider {
 		let secp_ctx = Secp256k1::signing_only();
 		let ctr = channel_keys_id[0];
 		let (inbound, state) = self.signer_state.borrow().get(&ctr).unwrap().clone();
-		EnforcingSigner::new_with_revoked(if inbound {
+		TestChannelSigner::new_with_revoked(if inbound {
 			InMemorySigner::new(
 				&secp_ctx,
 				SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, ctr]).unwrap(),
@@ -365,29 +380,29 @@ impl SignerProvider for KeyProvider {
 		}, state, false)
 	}
 
-	fn read_chan_signer(&self, mut data: &[u8]) -> Result<EnforcingSigner, DecodeError> {
+	fn read_chan_signer(&self, mut data: &[u8]) -> Result<TestChannelSigner, DecodeError> {
 		let inner: InMemorySigner = ReadableArgs::read(&mut data, self)?;
 		let state = Arc::new(Mutex::new(EnforcementState::new()));
 
-		Ok(EnforcingSigner::new_with_revoked(
+		Ok(TestChannelSigner::new_with_revoked(
 			inner,
 			state,
 			false
 		))
 	}
 
-	fn get_destination_script(&self) -> Script {
+	fn get_destination_script(&self) -> Result<Script, ()> {
 		let secp_ctx = Secp256k1::signing_only();
 		let channel_monitor_claim_key = SecretKey::from_slice(&hex::decode("0fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff").unwrap()[..]).unwrap();
 		let our_channel_monitor_claim_key_hash = WPubkeyHash::hash(&PublicKey::from_secret_key(&secp_ctx, &channel_monitor_claim_key).serialize());
-		Builder::new().push_opcode(opcodes::all::OP_PUSHBYTES_0).push_slice(&our_channel_monitor_claim_key_hash[..]).into_script()
+		Ok(Builder::new().push_opcode(opcodes::all::OP_PUSHBYTES_0).push_slice(&our_channel_monitor_claim_key_hash[..]).into_script())
 	}
 
-	fn get_shutdown_scriptpubkey(&self) -> ShutdownScript {
+	fn get_shutdown_scriptpubkey(&self) -> Result<ShutdownScript, ()> {
 		let secp_ctx = Secp256k1::signing_only();
 		let secret_key = SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]).unwrap();
 		let pubkey_hash = WPubkeyHash::hash(&PublicKey::from_secret_key(&secp_ctx, &secret_key).serialize());
-		ShutdownScript::new_p2wpkh(&pubkey_hash)
+		Ok(ShutdownScript::new_p2wpkh(&pubkey_hash))
 	}
 }
 
@@ -439,13 +454,15 @@ pub fn do_test(data: &[u8], logger: &Arc<dyn Logger>) {
 	});
 	let mut config = UserConfig::default();
 	config.channel_config.forwarding_fee_proportional_millionths =  slice_to_be32(get_slice!(4));
+	config.channel_config.max_dust_htlc_exposure = MaxDustHTLCExposure::FeeRateMultiplier(5_000_000 / 253);
 	config.channel_handshake_config.announced_channel = get_slice!(1)[0] != 0;
 	let network = Network::Bitcoin;
+	let best_block_timestamp = genesis_block(network).header.time;
 	let params = ChainParameters {
 		network,
 		best_block: BestBlock::from_network(network),
 	};
-	let channelmanager = Arc::new(ChannelManager::new(fee_est.clone(), monitor.clone(), broadcast.clone(), &router, Arc::clone(&logger), keys_manager.clone(), keys_manager.clone(), keys_manager.clone(), config, params));
+	let channelmanager = Arc::new(ChannelManager::new(fee_est.clone(), monitor.clone(), broadcast.clone(), &router, Arc::clone(&logger), keys_manager.clone(), keys_manager.clone(), keys_manager.clone(), config, params, best_block_timestamp));
 	// Adding new calls to `EntropySource::get_secure_random_bytes` during startup can change all the
 	// keys subsequently generated in this test. Rather than regenerating all the messages manually,
 	// it's easier to just increment the counter here so the keys don't change.
@@ -458,12 +475,13 @@ pub fn do_test(data: &[u8], logger: &Arc<dyn Logger>) {
 		chan_handler: channelmanager.clone(),
 		route_handler: gossip_sync.clone(),
 		onion_message_handler: IgnoringMessageHandler {},
-	}, 0, &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 15, 0], Arc::clone(&logger), IgnoringMessageHandler{}, keys_manager.clone()));
+		custom_message_handler: IgnoringMessageHandler {},
+	}, 0, &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 15, 0], Arc::clone(&logger), keys_manager.clone()));
 
 	let mut should_forward = false;
 	let mut payments_received: Vec<PaymentHash> = Vec::new();
 	let mut payments_sent = 0;
-	let mut pending_funding_generation: Vec<([u8; 32], PublicKey, u64, Script)> = Vec::new();
+	let mut pending_funding_generation: Vec<(ChannelId, PublicKey, u64, Script)> = Vec::new();
 	let mut pending_funding_signatures = HashMap::new();
 
 	loop {
@@ -509,10 +527,8 @@ pub fn do_test(data: &[u8], logger: &Arc<dyn Logger>) {
 			4 => {
 				let final_value_msat = slice_to_be24(get_slice!(3)) as u64;
 				let payment_params = PaymentParameters::from_node_id(get_pubkey!(), 42);
-				let params = RouteParameters {
-					payment_params,
-					final_value_msat,
-				};
+				let params = RouteParameters::from_payment_params_and_value(
+					payment_params, final_value_msat);
 				let mut payment_hash = PaymentHash([0; 32]);
 				payment_hash.0[0..8].copy_from_slice(&be64_to_array(payments_sent));
 				let mut sha = Sha256::engine();
@@ -530,10 +546,8 @@ pub fn do_test(data: &[u8], logger: &Arc<dyn Logger>) {
 			15 => {
 				let final_value_msat = slice_to_be24(get_slice!(3)) as u64;
 				let payment_params = PaymentParameters::from_node_id(get_pubkey!(), 42);
-				let params = RouteParameters {
-					payment_params,
-					final_value_msat,
-				};
+				let params = RouteParameters::from_payment_params_and_value(
+					payment_params, final_value_msat);
 				let mut payment_hash = PaymentHash([0; 32]);
 				payment_hash.0[0..8].copy_from_slice(&be64_to_array(payments_sent));
 				let mut sha = Sha256::engine();
@@ -751,16 +765,16 @@ mod tests {
 		// 00 030000000000000000000000000000000000000000000000000000000000000002 03000000000000000000000000000000 - noise act two (0||pubkey||mac)
 		//
 		// 030012 - inbound read from peer id 0 of len 18
-		// 000a 03000000000000000000000000000000 - message header indicating message length 10
-		// 03001a - inbound read from peer id 0 of len 26
-		// 0010 00022000 00022000 03000000000000000000000000000000 - init message (type 16) with static_remotekey (0x2000) and mac
+		// 0010 03000000000000000000000000000000 - message header indicating message length 16
+		// 030020 - inbound read from peer id 0 of len 32
+		// 0010 00021aaa 0008aaaaaaaaaaaa9aaa 03000000000000000000000000000000 - init message (type 16) with static_remotekey required and other bits optional and mac
 		//
 		// 030012 - inbound read from peer id 0 of len 18
-		// 0141 03000000000000000000000000000000 - message header indicating message length 321
+		// 0147 03000000000000000000000000000000 - message header indicating message length 327
 		// 0300fe - inbound read from peer id 0 of len 254
 		// 0020 7500000000000000000000000000000000000000000000000000000000000000 ff4f00f805273c1b203bb5ebf8436bfde57b3be8c2f5e95d9491dbb181909679 000000000000c350 0000000000000000 0000000000000162 ffffffffffffffff 0000000000000222 0000000000000000 000000fd 0006 01e3 030000000000000000000000000000000000000000000000000000000000000001 030000000000000000000000000000000000000000000000000000000000000002 030000000000000000000000000000000000000000000000000000000000000003 030000000000000000000000000000000000000000000000000000000000000004 - beginning of open_channel message
-		// 030053 - inbound read from peer id 0 of len 83
-		// 030000000000000000000000000000000000000000000000000000000000000005 020900000000000000000000000000000000000000000000000000000000000000 01 03000000000000000000000000000000 - rest of open_channel and mac
+		// 030059 - inbound read from peer id 0 of len 89
+		// 030000000000000000000000000000000000000000000000000000000000000005 020900000000000000000000000000000000000000000000000000000000000000 01 0000 01021000 03000000000000000000000000000000 - rest of open_channel and mac
 		//
 		// 00fd00fd - Two feerate requests (all returning min feerate, which our open_channel also uses) (gonna be ingested by FuzzEstimator)
 		// - client should now respond with accept_channel (CHECK 1: type 33 to peer 03000000)
@@ -799,21 +813,23 @@ mod tests {
 		// 000302000000000000000000000000000000000000000000000000000000000000000300000000000000000000000000000003000000000000000000000000000000 - inbound noise act 3
 		//
 		// 030112 - inbound read from peer id 1 of len 18
-		// 000a 01000000000000000000000000000000 - message header indicating message length 10
-		// 03011a - inbound read from peer id 1 of len 26
-		// 0010 00022000 00022000 01000000000000000000000000000000 - init message (type 16) with static_remotekey (0x2000) and mac
+		// 0010 01000000000000000000000000000000 - message header indicating message length 16
+		// 030120 - inbound read from peer id 1 of len 32
+		// 0010 00021aaa 0008aaaaaaaaaaaa9aaa 01000000000000000000000000000000 - init message (type 16) with static_remotekey required and other bits optional and mac
 		//
 		// 05 01 030200000000000000000000000000000000000000000000000000000000000000 00c350 0003e8 - create outbound channel to peer 1 for 50k sat
 		// 00fd - One feerate requests (all returning min feerate) (gonna be ingested by FuzzEstimator)
 		//
 		// 030112 - inbound read from peer id 1 of len 18
-		// 0110 01000000000000000000000000000000 - message header indicating message length 272
+		// 0112 01000000000000000000000000000000 - message header indicating message length 274
 		// 0301ff - inbound read from peer id 1 of len 255
 		// 0021 0000000000000000000000000000000000000000000000000000000000000e05 0000000000000162 00000000004c4b40 00000000000003e8 00000000000003e8 00000002 03f0 0005 030000000000000000000000000000000000000000000000000000000000000100 030000000000000000000000000000000000000000000000000000000000000200 030000000000000000000000000000000000000000000000000000000000000300 030000000000000000000000000000000000000000000000000000000000000400 030000000000000000000000000000000000000000000000000000000000000500 02660000000000000000000000000000 - beginning of accept_channel
-		// 030121 - inbound read from peer id 1 of len 33
-		// 0000000000000000000000000000000000 01000000000000000000000000000000 - rest of accept_channel and mac
+		// 030123 - inbound read from peer id 1 of len 35
+		// 0000000000000000000000000000000000 0000 01000000000000000000000000000000 - rest of accept_channel and mac
 		//
 		// 0a - create the funding transaction (client should send funding_created now)
+		//
+		// 00fd00fd - Two feerate requests (calculating max dust exposure) (all returning min feerate) (gonna be ingested by FuzzEstimator)
 		//
 		// 030112 - inbound read from peer id 1 of len 18
 		// 0062 01000000000000000000000000000000 - message header indicating message length 98
@@ -843,6 +859,8 @@ mod tests {
 		// 0300c1 - inbound read from peer id 0 of len 193
 		// ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff ab00000000000000000000000000000000000000000000000000000000000000 03000000000000000000000000000000 - end of update_add_htlc from 0 to 1 via client and mac
 		//
+		// 00fd - One feerate request (calculating max dust exposure) (all returning min feerate) (gonna be ingested by FuzzEstimator)
+		//
 		// 030012 - inbound read from peer id 0 of len 18
 		// 0064 03000000000000000000000000000000 - message header indicating message length 100
 		// 030074 - inbound read from peer id 0 of len 116
@@ -856,6 +874,8 @@ mod tests {
 		//
 		// 07 - process the now-pending HTLC forward
 		// - client now sends id 1 update_add_htlc and commitment_signed (CHECK 7: UpdateHTLCs event for node 03020000 with 1 HTLCs for channel 3f000000)
+		//
+		// 00fd00fd - Two feerate requests (calculating max dust exposure) (all returning min feerate) (gonna be ingested by FuzzEstimator)
 		//
 		// - we respond with commitment_signed then revoke_and_ack (a weird, but valid, order)
 		// 030112 - inbound read from peer id 1 of len 18
@@ -900,6 +920,8 @@ mod tests {
 		// 0300c1 - inbound read from peer id 0 of len 193
 		// ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff ab00000000000000000000000000000000000000000000000000000000000000 03000000000000000000000000000000 - end of update_add_htlc from 0 to 1 via client and mac
 		//
+		// 00fd - One feerate request (calculating max dust exposure) (all returning min feerate) (gonna be ingested by FuzzEstimator)
+		//
 		// - now respond to the update_fulfill_htlc+commitment_signed messages the client sent to peer 0
 		// 030012 - inbound read from peer id 0 of len 18
 		// 0063 03000000000000000000000000000000 - message header indicating message length 99
@@ -920,6 +942,8 @@ mod tests {
 		// 07 - process the now-pending HTLC forward
 		// - client now sends id 1 update_add_htlc and commitment_signed (CHECK 7 duplicate)
 		// - we respond with revoke_and_ack, then commitment_signed, then update_fail_htlc
+		//
+		// 00fd00fd - Two feerate requests (calculating max dust exposure) (all returning min feerate) (gonna be ingested by FuzzEstimator)
 		//
 		// 030112 - inbound read from peer id 1 of len 18
 		// 0064 01000000000000000000000000000000 - message header indicating message length 100
@@ -976,6 +1000,8 @@ mod tests {
 		// 0300c1 - inbound read from peer id 0 of len 193
 		// ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff 5300000000000000000000000000000000000000000000000000000000000000 03000000000000000000000000000000 - end of update_add_htlc from 0 to 1 via client and mac
 		//
+		// 00fd - One feerate request (calculating max dust exposure) (all returning min feerate) (gonna be ingested by FuzzEstimator)
+		//
 		// 030012 - inbound read from peer id 0 of len 18
 		// 00a4 03000000000000000000000000000000 - message header indicating message length 164
 		// 0300b4 - inbound read from peer id 0 of len 180
@@ -989,6 +1015,8 @@ mod tests {
 		//
 		// 07 - process the now-pending HTLC forward
 		// - client now sends id 1 update_add_htlc and commitment_signed (CHECK 7 duplicate)
+		//
+		// 00fd00fd - Two feerate requests (calculating max dust exposure) (all returning min feerate) (gonna be ingested by FuzzEstimator)
 		//
 		// 0c007d - connect a block with one transaction of len 125
 		// 02000000013a000000000000000000000000000000000000000000000000000000000000000000000000000000800258020000000000002200204b0000000000000000000000000000000000000000000000000000000000000014c0000000000000160014280000000000000000000000000000000000000005000020 - the commitment transaction for channel 3f00000000000000000000000000000000000000000000000000000000000000
@@ -1005,7 +1033,7 @@ mod tests {
 		// - client now fails the HTLC backwards as it was unable to extract the payment preimage (CHECK 9 duplicate and CHECK 10)
 
 		let logger = Arc::new(TrackingLogger { lines: Mutex::new(HashMap::new()) });
-		super::do_test(&::hex::decode("01000000000000000000000000000000000000000000000000000000000000000000000001000300000000000000000000000000000000000000000000000000000000000000020300320003000000000000000000000000000000000000000000000000000000000000000203000000000000000000000000000000030012000a0300000000000000000000000000000003001a00100002200000022000030000000000000000000000000000000300120141030000000000000000000000000000000300fe00207500000000000000000000000000000000000000000000000000000000000000ff4f00f805273c1b203bb5ebf8436bfde57b3be8c2f5e95d9491dbb181909679000000000000c35000000000000000000000000000000162ffffffffffffffff00000000000002220000000000000000000000fd000601e3030000000000000000000000000000000000000000000000000000000000000001030000000000000000000000000000000000000000000000000000000000000002030000000000000000000000000000000000000000000000000000000000000003030000000000000000000000000000000000000000000000000000000000000004030053030000000000000000000000000000000000000000000000000000000000000005020900000000000000000000000000000000000000000000000000000000000000010300000000000000000000000000000000fd00fd0300120084030000000000000000000000000000000300940022ff4f00f805273c1b203bb5ebf8436bfde57b3be8c2f5e95d9491dbb1819096793d00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000210100000000000000000000000000000000000000000000000000000000000000030000000000000000000000000000000c005e020000000100000000000000000000000000000000000000000000000000000000000000000000000000ffffffff0150c3000000000000220020ae00000000000000000000000000000000000000000000000000000000000000000000000c00000c00000c00000c00000c00000c00000c00000c00000c00000c00000c00000c000003001200430300000000000000000000000000000003005300243d0000000000000000000000000000000000000000000000000000000000000002080000000000000000000000000000000000000000000000000000000000000003000000000000000000000000000000010301320003000000000000000000000000000000000000000000000000000000000000000703000000000000000000000000000000030142000302000000000000000000000000000000000000000000000000000000000000000300000000000000000000000000000003000000000000000000000000000000030112000a0100000000000000000000000000000003011a0010000220000002200001000000000000000000000000000000050103020000000000000000000000000000000000000000000000000000000000000000c3500003e800fd0301120110010000000000000000000000000000000301ff00210000000000000000000000000000000000000000000000000000000000000e05000000000000016200000000004c4b4000000000000003e800000000000003e80000000203f00005030000000000000000000000000000000000000000000000000000000000000100030000000000000000000000000000000000000000000000000000000000000200030000000000000000000000000000000000000000000000000000000000000300030000000000000000000000000000000000000000000000000000000000000400030000000000000000000000000000000000000000000000000000000000000500026600000000000000000000000000000301210000000000000000000000000000000000010000000000000000000000000000000a03011200620100000000000000000000000000000003017200233a00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000007c0001000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000b03011200430100000000000000000000000000000003015300243a000000000000000000000000000000000000000000000000000000000000000267000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000003001205ac030000000000000000000000000000000300ff00803d0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000003e80ff00000000000000000000000000000000000000000000000000000000000000000003f00003000000000000000000000000000000000000000000000000000000000000055511020203e80401a0060800000e00000100000a00000000000000000000000000000000000000000000000000000000000000ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff0300ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff0300ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff0300ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff0300ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff0300c1ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffab000000000000000000000000000000000000000000000000000000000000000300000000000000000000000000000003001200640300000000000000000000000000000003007400843d000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000030010000000000000000000000000000000000000000000000000000000000000000000300000000000000000000000000000003001200630300000000000000000000000000000003007300853d000000000000000000000000000000000000000000000000000000000000000900000000000000000000000000000000000000000000000000000000000000020b00000000000000000000000000000000000000000000000000000000000000030000000000000000000000000000000703011200640100000000000000000000000000000003017400843a00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000006a000100000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000003011200630100000000000000000000000000000003017300853a00000000000000000000000000000000000000000000000000000000000000660000000000000000000000000000000000000000000000000000000000000002640000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000030112004a0100000000000000000000000000000003015a00823a000000000000000000000000000000000000000000000000000000000000000000000000000000ff008888888888888888888888888888888888888888888888888888888888880100000000000000000000000000000003011200640100000000000000000000000000000003017400843a000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000010000100000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000003011200630100000000000000000000000000000003017300853a0000000000000000000000000000000000000000000000000000000000000067000000000000000000000000000000000000000000000000000000000000000265000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000003001205ac030000000000000000000000000000000300ff00803d0000000000000000000000000000000000000000000000000000000000000000000000000000010000000000003e80ff00000000000000000000000000000000000000000000000000000000000000000003f00003000000000000000000000000000000000000000000000000000000000000055511020203e80401a0060800000e00000100000a00000000000000000000000000000000000000000000000000000000000000ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff0300ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff0300ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff0300ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff0300ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff0300c1ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffab000000000000000000000000000000000000000000000000000000000000000300000000000000000000000000000003001200630300000000000000000000000000000003007300853d000000000000000000000000000000000000000000000000000000000000000800000000000000000000000000000000000000000000000000000000000000020a000000000000000000000000000000000000000000000000000000000000000300000000000000000000000000000003001200640300000000000000000000000000000003007400843d0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000c3010000000000000000000000000000000000000000000000000000000000000000000300000000000000000000000000000003001200630300000000000000000000000000000003007300853d000000000000000000000000000000000000000000000000000000000000000b00000000000000000000000000000000000000000000000000000000000000020d00000000000000000000000000000000000000000000000000000000000000030000000000000000000000000000000703011200640100000000000000000000000000000003017400843a000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000039000100000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000003011200630100000000000000000000000000000003017300853a00000000000000000000000000000000000000000000000000000000000000640000000000000000000000000000000000000000000000000000000000000002700000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000030112002c0100000000000000000000000000000003013c00833a00000000000000000000000000000000000000000000000000000000000000000000000000000100000100000000000000000000000000000003011200640100000000000000000000000000000003017400843a000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000039000100000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000003011200630100000000000000000000000000000003017300853a000000000000000000000000000000000000000000000000000000000000006500000000000000000000000000000000000000000000000000000000000000027100000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000703001200630300000000000000000000000000000003007300853d000000000000000000000000000000000000000000000000000000000000000a00000000000000000000000000000000000000000000000000000000000000020c000000000000000000000000000000000000000000000000000000000000000300000000000000000000000000000003001200640300000000000000000000000000000003007400843d000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000032010000000000000000000000000000000000000000000000000000000000000000000300000000000000000000000000000003001205ac030000000000000000000000000000000300ff00803d00000000000000000000000000000000000000000000000000000000000000000000000000000200000000000b0838ff00000000000000000000000000000000000000000000000000000000000000000003f0000300000000000000000000000000000000000000000000000000000000000005551202030927c00401a0060800000e00000100000a00000000000000000000000000000000000000000000000000000000000000ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff0300ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff0300ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff0300ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff0300ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff0300c1ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff53000000000000000000000000000000000000000000000000000000000000000300000000000000000000000000000003001200a4030000000000000000000000000000000300b400843d00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000007501000000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000000000000000000000000000000000006705000000000000000000000000000000000000000000000000000000000000060300000000000000000000000000000003001200630300000000000000000000000000000003007300853d000000000000000000000000000000000000000000000000000000000000000d00000000000000000000000000000000000000000000000000000000000000020f0000000000000000000000000000000000000000000000000000000000000003000000000000000000000000000000070c007d02000000013a000000000000000000000000000000000000000000000000000000000000000000000000000000800258020000000000002200204b0000000000000000000000000000000000000000000000000000000000000014c00000000000001600142800000000000000000000000000000000000000050000200c005e0200000001730000000000000000000000000000000000000000000000000000000000000000000000000000000001a701000000000000220020b200000000000000000000000000000000000000000000000000000000000000000000000c00000c00000c00000c00000c000007").unwrap(), &(Arc::clone(&logger) as Arc<dyn Logger>));
+		super::do_test(&::hex::decode("01000000000000000000000000000000000000000000000000000000000000000000000001000300000000000000000000000000000000000000000000000000000000000000020300320003000000000000000000000000000000000000000000000000000000000000000203000000000000000000000000000000030012001003000000000000000000000000000000030020001000021aaa0008aaaaaaaaaaaa9aaa030000000000000000000000000000000300120147030000000000000000000000000000000300fe00207500000000000000000000000000000000000000000000000000000000000000ff4f00f805273c1b203bb5ebf8436bfde57b3be8c2f5e95d9491dbb181909679000000000000c35000000000000000000000000000000162ffffffffffffffff00000000000002220000000000000000000000fd000601e3030000000000000000000000000000000000000000000000000000000000000001030000000000000000000000000000000000000000000000000000000000000002030000000000000000000000000000000000000000000000000000000000000003030000000000000000000000000000000000000000000000000000000000000004030059030000000000000000000000000000000000000000000000000000000000000005020900000000000000000000000000000000000000000000000000000000000000010000010210000300000000000000000000000000000000fd00fd0300120084030000000000000000000000000000000300940022ff4f00f805273c1b203bb5ebf8436bfde57b3be8c2f5e95d9491dbb1819096793d00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000210100000000000000000000000000000000000000000000000000000000000000030000000000000000000000000000000c005e020000000100000000000000000000000000000000000000000000000000000000000000000000000000ffffffff0150c3000000000000220020ae00000000000000000000000000000000000000000000000000000000000000000000000c00000c00000c00000c00000c00000c00000c00000c00000c00000c00000c00000c000003001200430300000000000000000000000000000003005300243d0000000000000000000000000000000000000000000000000000000000000002080000000000000000000000000000000000000000000000000000000000000003000000000000000000000000000000010301320003000000000000000000000000000000000000000000000000000000000000000703000000000000000000000000000000030142000302000000000000000000000000000000000000000000000000000000000000000300000000000000000000000000000003000000000000000000000000000000030112001001000000000000000000000000000000030120001000021aaa0008aaaaaaaaaaaa9aaa01000000000000000000000000000000050103020000000000000000000000000000000000000000000000000000000000000000c3500003e800fd0301120112010000000000000000000000000000000301ff00210000000000000000000000000000000000000000000000000000000000000e05000000000000016200000000004c4b4000000000000003e800000000000003e80000000203f000050300000000000000000000000000000000000000000000000000000000000001000300000000000000000000000000000000000000000000000000000000000002000300000000000000000000000000000000000000000000000000000000000003000300000000000000000000000000000000000000000000000000000000000004000300000000000000000000000000000000000000000000000000000000000005000266000000000000000000000000000003012300000000000000000000000000000000000000010000000000000000000000000000000a00fd00fd03011200620100000000000000000000000000000003017200233a00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000007c0001000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000b03011200430100000000000000000000000000000003015300243a000000000000000000000000000000000000000000000000000000000000000267000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000003001205ac030000000000000000000000000000000300ff00803d0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000003e80ff00000000000000000000000000000000000000000000000000000000000000000003f00003000000000000000000000000000000000000000000000000000000000000055511020203e80401a0060800000e00000100000a00000000000000000000000000000000000000000000000000000000000000ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff0300ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff0300ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff0300ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff0300ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff0300c1ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffab000000000000000000000000000000000000000000000000000000000000000300000000000000000000000000000000fd03001200640300000000000000000000000000000003007400843d000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000030010000000000000000000000000000000000000000000000000000000000000000000300000000000000000000000000000003001200630300000000000000000000000000000003007300853d000000000000000000000000000000000000000000000000000000000000000900000000000000000000000000000000000000000000000000000000000000020b00000000000000000000000000000000000000000000000000000000000000030000000000000000000000000000000700fd00fd03011200640100000000000000000000000000000003017400843a00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000006a000100000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000003011200630100000000000000000000000000000003017300853a00000000000000000000000000000000000000000000000000000000000000660000000000000000000000000000000000000000000000000000000000000002640000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000030112004a0100000000000000000000000000000003015a00823a000000000000000000000000000000000000000000000000000000000000000000000000000000ff008888888888888888888888888888888888888888888888888888888888880100000000000000000000000000000003011200640100000000000000000000000000000003017400843a000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000010000100000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000003011200630100000000000000000000000000000003017300853a0000000000000000000000000000000000000000000000000000000000000067000000000000000000000000000000000000000000000000000000000000000265000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000003001205ac030000000000000000000000000000000300ff00803d0000000000000000000000000000000000000000000000000000000000000000000000000000010000000000003e80ff00000000000000000000000000000000000000000000000000000000000000000003f00003000000000000000000000000000000000000000000000000000000000000055511020203e80401a0060800000e00000100000a00000000000000000000000000000000000000000000000000000000000000ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff0300ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff0300ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff0300ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff0300ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff0300c1ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffab000000000000000000000000000000000000000000000000000000000000000300000000000000000000000000000000fd03001200630300000000000000000000000000000003007300853d000000000000000000000000000000000000000000000000000000000000000800000000000000000000000000000000000000000000000000000000000000020a000000000000000000000000000000000000000000000000000000000000000300000000000000000000000000000003001200640300000000000000000000000000000003007400843d0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000c3010000000000000000000000000000000000000000000000000000000000000000000300000000000000000000000000000003001200630300000000000000000000000000000003007300853d000000000000000000000000000000000000000000000000000000000000000b00000000000000000000000000000000000000000000000000000000000000020d00000000000000000000000000000000000000000000000000000000000000030000000000000000000000000000000700fd00fd03011200640100000000000000000000000000000003017400843a000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000039000100000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000003011200630100000000000000000000000000000003017300853a00000000000000000000000000000000000000000000000000000000000000640000000000000000000000000000000000000000000000000000000000000002700000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000030112002c0100000000000000000000000000000003013c00833a00000000000000000000000000000000000000000000000000000000000000000000000000000100000100000000000000000000000000000003011200640100000000000000000000000000000003017400843a000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000039000100000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000003011200630100000000000000000000000000000003017300853a000000000000000000000000000000000000000000000000000000000000006500000000000000000000000000000000000000000000000000000000000000027100000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000703001200630300000000000000000000000000000003007300853d000000000000000000000000000000000000000000000000000000000000000a00000000000000000000000000000000000000000000000000000000000000020c000000000000000000000000000000000000000000000000000000000000000300000000000000000000000000000003001200640300000000000000000000000000000003007400843d000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000032010000000000000000000000000000000000000000000000000000000000000000000300000000000000000000000000000003001205ac030000000000000000000000000000000300ff00803d00000000000000000000000000000000000000000000000000000000000000000000000000000200000000000b0838ff00000000000000000000000000000000000000000000000000000000000000000003f0000300000000000000000000000000000000000000000000000000000000000005551202030927c00401a0060800000e00000100000a00000000000000000000000000000000000000000000000000000000000000ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff0300ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff0300ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff0300ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff0300ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff0300c1ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff53000000000000000000000000000000000000000000000000000000000000000300000000000000000000000000000000fd03001200a4030000000000000000000000000000000300b400843d00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000007501000000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000000000000000000000000000000000006705000000000000000000000000000000000000000000000000000000000000060300000000000000000000000000000003001200630300000000000000000000000000000003007300853d000000000000000000000000000000000000000000000000000000000000000d00000000000000000000000000000000000000000000000000000000000000020f00000000000000000000000000000000000000000000000000000000000000030000000000000000000000000000000700fd00fd0c007d02000000013a000000000000000000000000000000000000000000000000000000000000000000000000000000800258020000000000002200204b0000000000000000000000000000000000000000000000000000000000000014c00000000000001600142800000000000000000000000000000000000000050000200c005e0200000001730000000000000000000000000000000000000000000000000000000000000000000000000000000001a701000000000000220020b200000000000000000000000000000000000000000000000000000000000000000000000c00000c00000c00000c00000c000007").unwrap(), &(Arc::clone(&logger) as Arc<dyn Logger>));
 
 		let log_entries = logger.lines.lock().unwrap();
 		assert_eq!(log_entries.get(&("lightning::ln::peer_handler".to_string(), "Handling SendAcceptChannel event in peer_handler for node 030000000000000000000000000000000000000000000000000000000000000002 for channel ff4f00f805273c1b203bb5ebf8436bfde57b3be8c2f5e95d9491dbb181909679".to_string())), Some(&1)); // 1

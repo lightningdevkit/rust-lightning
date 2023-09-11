@@ -14,12 +14,12 @@ use crate::msg_targets::utils::VecWriter;
 use crate::utils::test_logger;
 
 #[inline]
-pub fn msg_onion_hop_data_test<Out: test_logger::Output>(data: &[u8], _out: Out) {
-	test_msg_simple!(lightning::ln::msgs::OnionHopData, data);
+pub fn msg_accept_channel_v2_test<Out: test_logger::Output>(data: &[u8], _out: Out) {
+	test_msg_simple!(lightning::ln::msgs::AcceptChannelV2, data);
 }
 
 #[no_mangle]
-pub extern "C" fn msg_onion_hop_data_run(data: *const u8, datalen: usize) {
+pub extern "C" fn msg_accept_channel_v2_run(data: *const u8, datalen: usize) {
 	let data = unsafe { std::slice::from_raw_parts(data, datalen) };
-	test_msg_simple!(lightning::ln::msgs::OnionHopData, data);
+	test_msg_simple!(lightning::ln::msgs::AcceptChannelV2, data);
 }

@@ -38,7 +38,7 @@
 //!     * `max_level_trace`
 
 #![cfg_attr(not(any(test, fuzzing, feature = "_test_utils")), deny(missing_docs))]
-#![cfg_attr(not(any(test, fuzzing, feature = "_test_utils")), forbid(unsafe_code))]
+#![cfg_attr(not(any(test, feature = "_test_utils")), forbid(unsafe_code))]
 
 // Prefix these with `rustdoc::` when we update our MSRV to be >= 1.52 to remove warnings.
 #![deny(broken_intra_doc_links)]
@@ -54,9 +54,6 @@
 
 #![cfg_attr(all(not(feature = "std"), not(test)), no_std)]
 
-#![cfg_attr(all(any(test, feature = "_test_utils"), feature = "_bench_unstable"), feature(test))]
-#[cfg(all(any(test, feature = "_test_utils"), feature = "_bench_unstable"))] extern crate test;
-
 #[cfg(not(any(feature = "std", feature = "no-std")))]
 compile_error!("at least one of the `std` or `no-std` features must be enabled");
 
@@ -70,9 +67,11 @@ extern crate bitcoin;
 extern crate core;
 
 #[cfg(any(test, feature = "_test_utils"))] extern crate hex;
-#[cfg(any(test, fuzzing, feature = "_test_utils"))] extern crate regex;
+#[cfg(any(test, feature = "_test_utils"))] extern crate regex;
 
 #[cfg(not(feature = "std"))] extern crate core2;
+
+#[cfg(ldk_bench)] extern crate criterion;
 
 #[macro_use]
 pub mod util;
@@ -80,6 +79,7 @@ pub mod chain;
 pub mod ln;
 pub mod offers;
 pub mod routing;
+pub mod sign;
 pub mod onion_message;
 pub mod blinded_path;
 pub mod events;
@@ -176,7 +176,7 @@ mod prelude {
 	pub use alloc::string::ToString;
 }
 
-#[cfg(all(not(feature = "_bench_unstable"), feature = "backtrace", feature = "std", test))]
+#[cfg(all(not(ldk_bench), feature = "backtrace", feature = "std", test))]
 extern crate backtrace;
 
 mod sync;

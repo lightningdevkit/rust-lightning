@@ -31,7 +31,7 @@ use crate::chain::{ChannelMonitorUpdateStatus, Filter, WatchedOutput};
 use crate::chain::chaininterface::{BroadcasterInterface, FeeEstimator};
 use crate::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, Balance, MonitorEvent, TransactionOutputs, LATENCY_GRACE_PERIOD_BLOCKS};
 use crate::chain::transaction::{OutPoint, TransactionData};
-use crate::chain::keysinterface::WriteableEcdsaChannelSigner;
+use crate::sign::WriteableEcdsaChannelSigner;
 use crate::events;
 use crate::events::{Event, EventHandler};
 use crate::util::atomic_counter::AtomicCounter;
@@ -42,6 +42,7 @@ use crate::ln::channelmanager::ChannelDetails;
 
 use crate::prelude::*;
 use crate::sync::{RwLock, RwLockReadGuard, Mutex, MutexGuard};
+use core::iter::FromIterator;
 use core::ops::Deref;
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use bitcoin::secp256k1::PublicKey;
@@ -94,6 +95,17 @@ impl MonitorUpdateId {
 ///    [`ChannelMonitorUpdateStatus::PermanentFailure`], in which case the channel will likely be
 ///    closed without broadcasting the latest state. See
 ///    [`ChannelMonitorUpdateStatus::PermanentFailure`] for more details.
+///
+/// Third-party watchtowers may be built as a part of an implementation of this trait, with the
+/// advantage that you can control whether to resume channel operation depending on if an update
+/// has been persisted to a watchtower. For this, you may find the following methods useful:
+/// [`ChannelMonitor::initial_counterparty_commitment_tx`],
+/// [`ChannelMonitor::counterparty_commitment_txs_from_update`],
+/// [`ChannelMonitor::sign_to_local_justice_tx`], [`TrustedCommitmentTransaction::revokeable_output_index`],
+/// [`TrustedCommitmentTransaction::build_to_local_justice_tx`].
+///
+/// [`TrustedCommitmentTransaction::revokeable_output_index`]: crate::ln::chan_utils::TrustedCommitmentTransaction::revokeable_output_index
+/// [`TrustedCommitmentTransaction::build_to_local_justice_tx`]: crate::ln::chan_utils::TrustedCommitmentTransaction::build_to_local_justice_tx
 pub trait Persist<ChannelSigner: WriteableEcdsaChannelSigner> {
 	/// Persist a new channel's data in response to a [`chain::Watch::watch_channel`] call. This is
 	/// called by [`ChannelManager`] for new channels, or may be called directly, e.g. on startup.
@@ -274,7 +286,22 @@ where C::Target: chain::Filter,
 	where
 		FN: Fn(&ChannelMonitor<ChannelSigner>, &TransactionData) -> Vec<TransactionOutputs>
 	{
+		let funding_outpoints: HashSet<OutPoint> = HashSet::from_iter(self.monitors.read().unwrap().keys().cloned());
+		for funding_outpoint in funding_outpoints.iter() {
+			let monitor_lock = self.monitors.read().unwrap();
+			if let Some(monitor_state) = monitor_lock.get(funding_outpoint) {
+				self.update_monitor_with_chain_data(header, best_height, txdata, &process, funding_outpoint, &monitor_state);
+			}
+		}
+
+		// do some followup cleanup if any funding outpoints were added in between iterations
 		let monitor_states = self.monitors.write().unwrap();
+		for (funding_outpoint, monitor_state) in monitor_states.iter() {
+			if !funding_outpoints.contains(funding_outpoint) {
+				self.update_monitor_with_chain_data(header, best_height, txdata, &process, funding_outpoint, &monitor_state);
+			}
+		}
+
 		if let Some(height) = best_height {
 			// If the best block height is being updated, update highest_chain_height under the
 			// monitors write lock.
@@ -284,55 +311,55 @@ where C::Target: chain::Filter,
 				self.highest_chain_height.store(new_height, Ordering::Release);
 			}
 		}
+	}
 
-		for (funding_outpoint, monitor_state) in monitor_states.iter() {
-			let monitor = &monitor_state.monitor;
-			let mut txn_outputs;
-			{
-				txn_outputs = process(monitor, txdata);
-				let update_id = MonitorUpdateId {
-					contents: UpdateOrigin::ChainSync(self.sync_persistence_id.get_increment()),
-				};
-				let mut pending_monitor_updates = monitor_state.pending_monitor_updates.lock().unwrap();
-				if let Some(height) = best_height {
-					if !monitor_state.has_pending_chainsync_updates(&pending_monitor_updates) {
-						// If there are not ChainSync persists awaiting completion, go ahead and
-						// set last_chain_persist_height here - we wouldn't want the first
-						// InProgress to always immediately be considered "overly delayed".
-						monitor_state.last_chain_persist_height.store(height as usize, Ordering::Release);
-					}
-				}
-
-				log_trace!(self.logger, "Syncing Channel Monitor for channel {}", log_funding_info!(monitor));
-				match self.persister.update_persisted_channel(*funding_outpoint, None, monitor, update_id) {
-					ChannelMonitorUpdateStatus::Completed =>
-						log_trace!(self.logger, "Finished syncing Channel Monitor for channel {}", log_funding_info!(monitor)),
-					ChannelMonitorUpdateStatus::PermanentFailure => {
-						monitor_state.channel_perm_failed.store(true, Ordering::Release);
-						self.pending_monitor_events.lock().unwrap().push((*funding_outpoint, vec![MonitorEvent::UpdateFailed(*funding_outpoint)], monitor.get_counterparty_node_id()));
-						self.event_notifier.notify();
-					},
-					ChannelMonitorUpdateStatus::InProgress => {
-						log_debug!(self.logger, "Channel Monitor sync for channel {} in progress, holding events until completion!", log_funding_info!(monitor));
-						pending_monitor_updates.push(update_id);
-					},
+	fn update_monitor_with_chain_data<FN>(&self, header: &BlockHeader, best_height: Option<u32>, txdata: &TransactionData, process: FN, funding_outpoint: &OutPoint, monitor_state: &MonitorHolder<ChannelSigner>) where FN: Fn(&ChannelMonitor<ChannelSigner>, &TransactionData) -> Vec<TransactionOutputs> {
+		let monitor = &monitor_state.monitor;
+		let mut txn_outputs;
+		{
+			txn_outputs = process(monitor, txdata);
+			let update_id = MonitorUpdateId {
+				contents: UpdateOrigin::ChainSync(self.sync_persistence_id.get_increment()),
+			};
+			let mut pending_monitor_updates = monitor_state.pending_monitor_updates.lock().unwrap();
+			if let Some(height) = best_height {
+				if !monitor_state.has_pending_chainsync_updates(&pending_monitor_updates) {
+					// If there are not ChainSync persists awaiting completion, go ahead and
+					// set last_chain_persist_height here - we wouldn't want the first
+					// InProgress to always immediately be considered "overly delayed".
+					monitor_state.last_chain_persist_height.store(height as usize, Ordering::Release);
 				}
 			}
 
-			// Register any new outputs with the chain source for filtering, storing any dependent
-			// transactions from within the block that previously had not been included in txdata.
-			if let Some(ref chain_source) = self.chain_source {
-				let block_hash = header.block_hash();
-				for (txid, mut outputs) in txn_outputs.drain(..) {
-					for (idx, output) in outputs.drain(..) {
-						// Register any new outputs with the chain source for filtering
-						let output = WatchedOutput {
-							block_hash: Some(block_hash),
-							outpoint: OutPoint { txid, index: idx as u16 },
-							script_pubkey: output.script_pubkey,
-						};
-						chain_source.register_output(output)
-					}
+			log_trace!(self.logger, "Syncing Channel Monitor for channel {}", log_funding_info!(monitor));
+			match self.persister.update_persisted_channel(*funding_outpoint, None, monitor, update_id) {
+				ChannelMonitorUpdateStatus::Completed =>
+					log_trace!(self.logger, "Finished syncing Channel Monitor for channel {}", log_funding_info!(monitor)),
+				ChannelMonitorUpdateStatus::PermanentFailure => {
+					monitor_state.channel_perm_failed.store(true, Ordering::Release);
+					self.pending_monitor_events.lock().unwrap().push((*funding_outpoint, vec![MonitorEvent::UpdateFailed(*funding_outpoint)], monitor.get_counterparty_node_id()));
+					self.event_notifier.notify();
+				}
+				ChannelMonitorUpdateStatus::InProgress => {
+					log_debug!(self.logger, "Channel Monitor sync for channel {} in progress, holding events until completion!", log_funding_info!(monitor));
+					pending_monitor_updates.push(update_id);
+				}
+			}
+		}
+
+		// Register any new outputs with the chain source for filtering, storing any dependent
+		// transactions from within the block that previously had not been included in txdata.
+		if let Some(ref chain_source) = self.chain_source {
+			let block_hash = header.block_hash();
+			for (txid, mut outputs) in txn_outputs.drain(..) {
+				for (idx, output) in outputs.drain(..) {
+					// Register any new outputs with the chain source for filtering
+					let output = WatchedOutput {
+						block_hash: Some(block_hash),
+						outpoint: OutPoint { txid, index: idx as u16 },
+						script_pubkey: output.script_pubkey,
+					};
+					chain_source.register_output(output)
 				}
 			}
 		}
@@ -364,8 +391,7 @@ where C::Target: chain::Filter,
 	/// claims which are awaiting confirmation.
 	///
 	/// Includes the balances from each [`ChannelMonitor`] *except* those included in
-	/// `ignored_channels`, allowing you to filter out balances from channels which are still open
-	/// (and whose balance should likely be pulled from the [`ChannelDetails`]).
+	/// `ignored_channels`.
 	///
 	/// See [`ChannelMonitor::get_claimable_balances`] for more details on the exact criteria for
 	/// inclusion in the return value.
@@ -502,7 +528,7 @@ where C::Target: chain::Filter,
 		self.event_notifier.notify();
 	}
 
-	#[cfg(any(test, fuzzing, feature = "_test_utils"))]
+	#[cfg(any(test, feature = "_test_utils"))]
 	pub fn get_and_clear_pending_events(&self) -> Vec<events::Event> {
 		use crate::events::EventsProvider;
 		let events = core::cell::RefCell::new(Vec::new());
@@ -520,12 +546,13 @@ where C::Target: chain::Filter,
 	pub async fn process_pending_events_async<Future: core::future::Future, H: Fn(Event) -> Future>(
 		&self, handler: H
 	) {
-		let mut pending_events = Vec::new();
-		for monitor_state in self.monitors.read().unwrap().values() {
-			pending_events.append(&mut monitor_state.monitor.get_and_clear_pending_events());
-		}
-		for event in pending_events {
-			handler(event).await;
+		// Sadly we can't hold the monitors read lock through an async call. Thus we have to do a
+		// crazy dance to process a monitor's events then only remove them once we've done so.
+		let mons_to_process = self.monitors.read().unwrap().keys().cloned().collect::<Vec<_>>();
+		for funding_txo in mons_to_process {
+			let mut ev;
+			super::channelmonitor::process_events_body!(
+				self.monitors.read().unwrap().get(&funding_txo).map(|m| &m.monitor), ev, handler(ev).await);
 		}
 	}
 
@@ -745,7 +772,7 @@ where C::Target: chain::Filter,
 					monitor_state.last_chain_persist_height.load(Ordering::Acquire) + LATENCY_GRACE_PERIOD_BLOCKS as usize
 						> self.highest_chain_height.load(Ordering::Acquire)
 			{
-				log_info!(self.logger, "A Channel Monitor sync is still in progress, refusing to provide monitor events!");
+				log_debug!(self.logger, "A Channel Monitor sync is still in progress, refusing to provide monitor events!");
 			} else {
 				if monitor_state.channel_perm_failed.load(Ordering::Acquire) {
 					// If a `UpdateOrigin::ChainSync` persistence failed with `PermanantFailure`,
@@ -782,30 +809,13 @@ impl<ChannelSigner: WriteableEcdsaChannelSigner, C: Deref, T: Deref, F: Deref, L
 	      L::Target: Logger,
 	      P::Target: Persist<ChannelSigner>,
 {
-	#[cfg(not(anchors))]
-	/// Processes [`SpendableOutputs`] events produced from each [`ChannelMonitor`] upon maturity.
-	///
-	/// An [`EventHandler`] may safely call back to the provider, though this shouldn't be needed in
-	/// order to handle these events.
-	///
-	/// [`SpendableOutputs`]: events::Event::SpendableOutputs
-	fn process_pending_events<H: Deref>(&self, handler: H) where H::Target: EventHandler {
-		let mut pending_events = Vec::new();
-		for monitor_state in self.monitors.read().unwrap().values() {
-			pending_events.append(&mut monitor_state.monitor.get_and_clear_pending_events());
-		}
-		for event in pending_events {
-			handler.handle_event(event);
-		}
-	}
-	#[cfg(anchors)]
 	/// Processes [`SpendableOutputs`] events produced from each [`ChannelMonitor`] upon maturity.
 	///
 	/// For channels featuring anchor outputs, this method will also process [`BumpTransaction`]
 	/// events produced from each [`ChannelMonitor`] while there is a balance to claim onchain
 	/// within each channel. As the confirmation of a commitment transaction may be critical to the
-	/// safety of funds, this method must be invoked frequently, ideally once for every chain tip
-	/// update (block connected or disconnected).
+	/// safety of funds, we recommend invoking this every 30 seconds, or lower if running in an
+	/// environment with spotty connections, like on mobile.
 	///
 	/// An [`EventHandler`] may safely call back to the provider, though this shouldn't be needed in
 	/// order to handle these events.
@@ -813,22 +823,16 @@ impl<ChannelSigner: WriteableEcdsaChannelSigner, C: Deref, T: Deref, F: Deref, L
 	/// [`SpendableOutputs`]: events::Event::SpendableOutputs
 	/// [`BumpTransaction`]: events::Event::BumpTransaction
 	fn process_pending_events<H: Deref>(&self, handler: H) where H::Target: EventHandler {
-		let mut pending_events = Vec::new();
 		for monitor_state in self.monitors.read().unwrap().values() {
-			pending_events.append(&mut monitor_state.monitor.get_and_clear_pending_events());
-		}
-		for event in pending_events {
-			handler.handle_event(event);
+			monitor_state.monitor.process_pending_events(&handler);
 		}
 	}
 }
 
 #[cfg(test)]
 mod tests {
-	use bitcoin::{BlockHeader, TxMerkleNode};
-	use bitcoin::hashes::Hash;
 	use crate::{check_added_monitors, check_closed_broadcast, check_closed_event};
-	use crate::{expect_payment_sent, expect_payment_claimed, expect_payment_sent_without_paths, expect_payment_path_successful, get_event_msg};
+	use crate::{expect_payment_claimed, expect_payment_path_successful, get_event_msg};
 	use crate::{get_htlc_update_msgs, get_local_commitment_txn, get_revoke_commit_msgs, get_route_and_payment_hash, unwrap_send_err};
 	use crate::chain::{ChannelMonitorUpdateStatus, Confirm, Watch};
 	use crate::chain::channelmonitor::LATENCY_GRACE_PERIOD_BLOCKS;
@@ -911,7 +915,7 @@ mod tests {
 
 		let updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 		nodes[0].node.handle_update_fulfill_htlc(&nodes[1].node.get_our_node_id(), &updates.update_fulfill_htlcs[0]);
-		expect_payment_sent_without_paths!(nodes[0], payment_preimage_1);
+		expect_payment_sent(&nodes[0], payment_preimage_1, None, false, false);
 		nodes[0].node.handle_commitment_signed(&nodes[1].node.get_our_node_id(), &updates.commitment_signed);
 		check_added_monitors!(nodes[0], 1);
 		let (as_first_raa, as_first_update) = get_revoke_commit_msgs!(nodes[0], nodes[1].node.get_our_node_id());
@@ -924,7 +928,7 @@ mod tests {
 		let bs_first_raa = get_event_msg!(nodes[1], MessageSendEvent::SendRevokeAndACK, nodes[0].node.get_our_node_id());
 
 		nodes[0].node.handle_update_fulfill_htlc(&nodes[1].node.get_our_node_id(), &bs_second_updates.update_fulfill_htlcs[0]);
-		expect_payment_sent_without_paths!(nodes[0], payment_preimage_2);
+		expect_payment_sent(&nodes[0], payment_preimage_2, None, false, false);
 		nodes[0].node.handle_commitment_signed(&nodes[1].node.get_our_node_id(), &bs_second_updates.commitment_signed);
 		check_added_monitors!(nodes[0], 1);
 		nodes[0].node.handle_revoke_and_ack(&nodes[1].node.get_our_node_id(), &bs_first_raa);
@@ -972,10 +976,7 @@ mod tests {
 
 		// Connect B's commitment transaction, but only to the ChainMonitor/ChannelMonitor. The
 		// channel is now closed, but the ChannelManager doesn't know that yet.
-		let new_header = BlockHeader {
-			version: 2, time: 0, bits: 0, nonce: 0,
-			prev_blockhash: nodes[0].best_block_info().0,
-			merkle_root: TxMerkleNode::all_zeros() };
+		let new_header = create_dummy_header(nodes[0].best_block_info().0, 0);
 		nodes[0].chain_monitor.chain_monitor.transactions_confirmed(&new_header,
 			&[(0, &remote_txn[0]), (1, &remote_txn[1])], nodes[0].best_block_info().1 + 1);
 		assert!(nodes[0].chain_monitor.release_pending_monitor_events().is_empty());
@@ -991,7 +992,8 @@ mod tests {
 			assert!(err.contains("ChannelMonitor storage failure")));
 		check_added_monitors!(nodes[0], 2); // After the failure we generate a close-channel monitor update
 		check_closed_broadcast!(nodes[0], true);
-		check_closed_event!(nodes[0], 1, ClosureReason::ProcessingError { err: "ChannelMonitor storage failure".to_string() });
+		check_closed_event!(nodes[0], 1, ClosureReason::ProcessingError { err: "ChannelMonitor storage failure".to_string() },
+			[nodes[1].node.get_our_node_id()], 100000);
 
 		// However, as the ChainMonitor is still waiting for the original persistence to complete,
 		// it won't yet release the MonitorEvents.
@@ -999,10 +1001,7 @@ mod tests {
 
 		if block_timeout {
 			// After three blocks, pending MontiorEvents should be released either way.
-			let latest_header = BlockHeader {
-				version: 2, time: 0, bits: 0, nonce: 0,
-				prev_blockhash: nodes[0].best_block_info().0,
-				merkle_root: TxMerkleNode::all_zeros() };
+			let latest_header = create_dummy_header(nodes[0].best_block_info().0, 0);
 			nodes[0].chain_monitor.chain_monitor.best_block_updated(&latest_header, nodes[0].best_block_info().1 + LATENCY_GRACE_PERIOD_BLOCKS);
 		} else {
 			let persistences = chanmon_cfgs[0].persister.chain_sync_monitor_persistences.lock().unwrap().clone();
@@ -1013,7 +1012,7 @@ mod tests {
 			}
 		}
 
-		expect_payment_sent!(nodes[0], payment_preimage);
+		expect_payment_sent(&nodes[0], payment_preimage, None, true, false);
 	}
 
 	#[test]
@@ -1041,7 +1040,8 @@ mod tests {
 		// ... however once we get events once, the channel will close, creating a channel-closed
 		// ChannelMonitorUpdate.
 		check_closed_broadcast!(nodes[0], true);
-		check_closed_event!(nodes[0], 1, ClosureReason::ProcessingError { err: "Failed to persist ChannelMonitor update during chain sync".to_string() });
+		check_closed_event!(nodes[0], 1, ClosureReason::ProcessingError { err: "Failed to persist ChannelMonitor update during chain sync".to_string() },
+			[nodes[1].node.get_our_node_id()], 100000);
 		check_added_monitors!(nodes[0], 1);
 	}
 }

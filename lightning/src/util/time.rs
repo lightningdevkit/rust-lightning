@@ -58,10 +58,20 @@ impl Sub<Duration> for Eternity {
 	}
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg(not(feature = "no-std"))]
-impl Time for std::time::Instant {
+pub struct MonotonicTime(std::time::Instant);
+
+/// The amount of time to shift `Instant` forward to prevent overflow when subtracting a `Duration`
+/// from `Instant::now` on some operating systems (e.g., iOS representing `Instance` as `u64`).
+#[cfg(not(feature = "no-std"))]
+const SHIFT: Duration = Duration::from_secs(10 * 365 * 24 * 60 * 60); // 10 years.
+
+#[cfg(not(feature = "no-std"))]
+impl Time for MonotonicTime {
 	fn now() -> Self {
-		std::time::Instant::now()
+		let instant = std::time::Instant::now().checked_add(SHIFT).expect("Overflow on MonotonicTime instantiation");
+		Self(instant)
 	}
 
 	fn duration_since(&self, earlier: Self) -> Duration {
@@ -70,15 +80,26 @@ impl Time for std::time::Instant {
 		// clocks" that go backwards in practice (likely relatively ancient kernels/etc). Thus, we
 		// manually check for time going backwards here and return a duration of zero in that case.
 		let now = Self::now();
-		if now > earlier { now - earlier } else { Duration::from_secs(0) }
+		if now.0 > earlier.0 { now.0 - earlier.0 } else { Duration::from_secs(0) }
 	}
 
 	fn duration_since_epoch() -> Duration {
 		use std::time::SystemTime;
 		SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap()
 	}
+
 	fn elapsed(&self) -> Duration {
-		std::time::Instant::elapsed(self)
+		Self::now().0 - self.0
+	}
+}
+
+#[cfg(not(feature = "no-std"))]
+impl Sub<Duration> for MonotonicTime {
+	type Output = Self;
+
+	fn sub(self, other: Duration) -> Self {
+		let instant = self.0.checked_sub(other).expect("MonotonicTime is not supposed to go backward futher than 10 years");
+		Self(instant)
 	}
 }
 
@@ -153,5 +174,16 @@ pub mod tests {
 
 		assert_eq!(now.elapsed(), Duration::from_secs(0));
 		assert_eq!(later - elapsed, now);
+	}
+
+	#[test]
+	#[cfg(not(feature = "no-std"))]
+	fn monotonic_time_subtracts() {
+		let now = super::MonotonicTime::now();
+		assert!(now.elapsed() < Duration::from_secs(10));
+
+		let ten_years = Duration::from_secs(10 * 365 * 24 * 60 * 60);
+		let past = now - ten_years;
+		assert!(past.elapsed() >= ten_years);
 	}
 }

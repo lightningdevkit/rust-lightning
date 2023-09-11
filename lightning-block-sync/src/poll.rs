@@ -136,8 +136,11 @@ impl ValidatedBlockHeader {
 
 		if let Network::Bitcoin = network {
 			if self.height % 2016 == 0 {
-				let previous_work = previous_header.header.work();
-				if work > (previous_work << 2) || work < (previous_work >> 2) {
+				let target = self.header.target();
+				let previous_target = previous_header.header.target();
+				let min_target = previous_target >> 2;
+				let max_target = previous_target << 2;
+				if target > max_target || target < min_target {
 					return Err(BlockSourceError::persistent("invalid difficulty transition"))
 				}
 			} else if self.header.bits != previous_header.header.bits {

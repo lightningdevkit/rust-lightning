@@ -5,6 +5,7 @@ compile_error!("We need at least 32-bit pointers for atomic counter (and to have
 
 use core::sync::atomic::{AtomicUsize, Ordering};
 
+#[derive(Debug)]
 pub(crate) struct AtomicCounter {
 	// Usize needs to be at least 32 bits to avoid overflowing both low and high. If usize is 64
 	// bits we will never realistically count into high:

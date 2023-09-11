@@ -31,34 +31,95 @@
 
 use bitcoin::secp256k1::PublicKey;
 
-use tokio::net::TcpStream;
+use tokio::net::{tcp, TcpStream};
 use tokio::{io, time};
 use tokio::sync::mpsc;
-use tokio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::io::AsyncWrite;
 
-use lightning::chain::keysinterface::NodeSigner;
 use lightning::ln::peer_handler;
 use lightning::ln::peer_handler::SocketDescriptor as LnSocketTrait;
-use lightning::ln::peer_handler::CustomMessageHandler;
-use lightning::ln::msgs::{ChannelMessageHandler, NetAddress, OnionMessageHandler, RoutingMessageHandler};
-use lightning::util::logger::Logger;
+use lightning::ln::peer_handler::APeerManager;
+use lightning::ln::msgs::SocketAddress;
 
 use std::ops::Deref;
-use std::task;
+use std::task::{self, Poll};
+use std::future::Future;
 use std::net::SocketAddr;
 use std::net::TcpStream as StdTcpStream;
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
+use std::pin::Pin;
 use std::hash::Hash;
 
 static ID_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+// We only need to select over multiple futures in one place, and taking on the full `tokio/macros`
+// dependency tree in order to do so (which has broken our MSRV before) is excessive. Instead, we
+// define a trivial two- and three- select macro with the specific types we need and just use that.
+
+pub(crate) enum SelectorOutput {
+	A(Option<()>), B(Option<()>), C(tokio::io::Result<()>),
+}
+
+pub(crate) struct TwoSelector<
+	A: Future<Output=Option<()>> + Unpin, B: Future<Output=Option<()>> + Unpin
+> {
+	pub a: A,
+	pub b: B,
+}
+
+impl<
+	A: Future<Output=Option<()>> + Unpin, B: Future<Output=Option<()>> + Unpin
+> Future for TwoSelector<A, B> {
+	type Output = SelectorOutput;
+	fn poll(mut self: Pin<&mut Self>, ctx: &mut task::Context<'_>) -> Poll<SelectorOutput> {
+		match Pin::new(&mut self.a).poll(ctx) {
+			Poll::Ready(res) => { return Poll::Ready(SelectorOutput::A(res)); },
+			Poll::Pending => {},
+		}
+		match Pin::new(&mut self.b).poll(ctx) {
+			Poll::Ready(res) => { return Poll::Ready(SelectorOutput::B(res)); },
+			Poll::Pending => {},
+		}
+		Poll::Pending
+	}
+}
+
+pub(crate) struct ThreeSelector<
+	A: Future<Output=Option<()>> + Unpin, B: Future<Output=Option<()>> + Unpin, C: Future<Output=tokio::io::Result<()>> + Unpin
+> {
+	pub a: A,
+	pub b: B,
+	pub c: C,
+}
+
+impl<
+	A: Future<Output=Option<()>> + Unpin, B: Future<Output=Option<()>> + Unpin, C: Future<Output=tokio::io::Result<()>> + Unpin
+> Future for ThreeSelector<A, B, C> {
+	type Output = SelectorOutput;
+	fn poll(mut self: Pin<&mut Self>, ctx: &mut task::Context<'_>) -> Poll<SelectorOutput> {
+		match Pin::new(&mut self.a).poll(ctx) {
+			Poll::Ready(res) => { return Poll::Ready(SelectorOutput::A(res)); },
+			Poll::Pending => {},
+		}
+		match Pin::new(&mut self.b).poll(ctx) {
+			Poll::Ready(res) => { return Poll::Ready(SelectorOutput::B(res)); },
+			Poll::Pending => {},
+		}
+		match Pin::new(&mut self.c).poll(ctx) {
+			Poll::Ready(res) => { return Poll::Ready(SelectorOutput::C(res)); },
+			Poll::Pending => {},
+		}
+		Poll::Pending
+	}
+}
 
 /// Connection contains all our internal state for a connection - we hold a reference to the
 /// Connection object (in an Arc<Mutex<>>) in each SocketDescriptor we create as well as in the
 /// read future (which is returned by schedule_read).
 struct Connection {
-	writer: Option<io::WriteHalf<TcpStream>>,
+	writer: Option<Arc<TcpStream>>,
 	// Because our PeerManager is templated by user-provided types, and we can't (as far as I can
 	// tell) have a const RawWakerVTable built out of templated functions, we need some indirection
 	// between being woken up with write-ready and calling PeerManager::write_buffer_space_avail.
@@ -80,53 +141,25 @@ struct Connection {
 	id: u64,
 }
 impl Connection {
-	async fn poll_event_process<PM, CMH, RMH, OMH, L, UMH, NS>(
+	async fn poll_event_process<PM: Deref + 'static + Send + Sync>(
 		peer_manager: PM,
 		mut event_receiver: mpsc::Receiver<()>,
-	) where
-			PM: Deref<Target = peer_handler::PeerManager<SocketDescriptor, CMH, RMH, OMH, L, UMH, NS>> + 'static + Send + Sync,
-			CMH: Deref + 'static + Send + Sync,
-			RMH: Deref + 'static + Send + Sync,
-			OMH: Deref + 'static + Send + Sync,
-			L: Deref + 'static + Send + Sync,
-			UMH: Deref + 'static + Send + Sync,
-			NS: Deref + 'static + Send + Sync,
-			CMH::Target: ChannelMessageHandler + Send + Sync,
-			RMH::Target: RoutingMessageHandler + Send + Sync,
-			OMH::Target: OnionMessageHandler + Send + Sync,
-			L::Target: Logger + Send + Sync,
-			UMH::Target: CustomMessageHandler + Send + Sync,
-			NS::Target: NodeSigner + Send + Sync,
-	{
+	) where PM::Target: APeerManager<Descriptor = SocketDescriptor> {
 		loop {
 			if event_receiver.recv().await.is_none() {
 				return;
 			}
-			peer_manager.process_events();
+			peer_manager.as_ref().process_events();
 		}
 	}
 
-	async fn schedule_read<PM, CMH, RMH, OMH, L, UMH, NS>(
+	async fn schedule_read<PM: Deref + 'static + Send + Sync + Clone>(
 		peer_manager: PM,
 		us: Arc<Mutex<Self>>,
-		mut reader: io::ReadHalf<TcpStream>,
+		reader: Arc<TcpStream>,
 		mut read_wake_receiver: mpsc::Receiver<()>,
 		mut write_avail_receiver: mpsc::Receiver<()>,
-	) where
-			PM: Deref<Target = peer_handler::PeerManager<SocketDescriptor, CMH, RMH, OMH, L, UMH, NS>> + 'static + Send + Sync + Clone,
-			CMH: Deref + 'static + Send + Sync,
-			RMH: Deref + 'static + Send + Sync,
-			OMH: Deref + 'static + Send + Sync,
-			L: Deref + 'static + Send + Sync,
-			UMH: Deref + 'static + Send + Sync,
-			NS: Deref + 'static + Send + Sync,
-			CMH::Target: ChannelMessageHandler + 'static + Send + Sync,
-			RMH::Target: RoutingMessageHandler + 'static + Send + Sync,
-			OMH::Target: OnionMessageHandler + 'static + Send + Sync,
-			L::Target: Logger + 'static + Send + Sync,
-			UMH::Target: CustomMessageHandler + 'static + Send + Sync,
-			NS::Target: NodeSigner + 'static + Send + Sync,
-		{
+	) where PM::Target: APeerManager<Descriptor = SocketDescriptor> {
 		// Create a waker to wake up poll_event_process, above
 		let (event_waker, event_receiver) = mpsc::channel(1);
 		tokio::spawn(Self::poll_event_process(peer_manager.clone(), event_receiver));
@@ -157,29 +190,49 @@ impl Connection {
 				}
 				us_lock.read_paused
 			};
-			tokio::select! {
-				v = write_avail_receiver.recv() => {
+			// TODO: Drop the Box'ing of the futures once Rust has pin-on-stack support.
+			let select_result = if read_paused {
+				TwoSelector {
+					a: Box::pin(write_avail_receiver.recv()),
+					b: Box::pin(read_wake_receiver.recv()),
+				}.await
+			} else {
+				ThreeSelector {
+					a: Box::pin(write_avail_receiver.recv()),
+					b: Box::pin(read_wake_receiver.recv()),
+					c: Box::pin(reader.readable()),
+				}.await
+			};
+			match select_result {
+				SelectorOutput::A(v) => {
 					assert!(v.is_some()); // We can't have dropped the sending end, its in the us Arc!
-					if peer_manager.write_buffer_space_avail(&mut our_descriptor).is_err() {
+					if peer_manager.as_ref().write_buffer_space_avail(&mut our_descriptor).is_err() {
 						break Disconnect::CloseConnection;
 					}
 				},
-				_ = read_wake_receiver.recv() => {},
-				read = reader.read(&mut buf), if !read_paused => match read {
-					Ok(0) => break Disconnect::PeerDisconnected,
-					Ok(len) => {
-						let read_res = peer_manager.read_event(&mut our_descriptor, &buf[0..len]);
-						let mut us_lock = us.lock().unwrap();
-						match read_res {
-							Ok(pause_read) => {
-								if pause_read {
-									us_lock.read_paused = true;
-								}
-							},
-							Err(_) => break Disconnect::CloseConnection,
-						}
-					},
-					Err(_) => break Disconnect::PeerDisconnected,
+				SelectorOutput::B(_) => {},
+				SelectorOutput::C(res) => {
+					if res.is_err() { break Disconnect::PeerDisconnected; }
+					match reader.try_read(&mut buf) {
+						Ok(0) => break Disconnect::PeerDisconnected,
+						Ok(len) => {
+							let read_res = peer_manager.as_ref().read_event(&mut our_descriptor, &buf[0..len]);
+							let mut us_lock = us.lock().unwrap();
+							match read_res {
+								Ok(pause_read) => {
+									if pause_read {
+										us_lock.read_paused = true;
+									}
+								},
+								Err(_) => break Disconnect::CloseConnection,
+							}
+						},
+						Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+							// readable() is allowed to spuriously wake, so we have to handle
+							// WouldBlock here.
+						},
+						Err(e) => break Disconnect::PeerDisconnected,
+					}
 				},
 			}
 			let _ = event_waker.try_send(());
@@ -191,18 +244,14 @@ impl Connection {
 			// here.
 			let _ = tokio::task::yield_now().await;
 		};
-		let writer_option = us.lock().unwrap().writer.take();
-		if let Some(mut writer) = writer_option {
-			// If the socket is already closed, shutdown() will fail, so just ignore it.
-			let _ = writer.shutdown().await;
-		}
+		us.lock().unwrap().writer.take();
 		if let Disconnect::PeerDisconnected = disconnect_type {
-			peer_manager.socket_disconnected(&our_descriptor);
-			peer_manager.process_events();
+			peer_manager.as_ref().socket_disconnected(&our_descriptor);
+			peer_manager.as_ref().process_events();
 		}
 	}
 
-	fn new(stream: StdTcpStream) -> (io::ReadHalf<TcpStream>, mpsc::Receiver<()>, mpsc::Receiver<()>, Arc<Mutex<Self>>) {
+	fn new(stream: StdTcpStream) -> (Arc<TcpStream>, mpsc::Receiver<()>, mpsc::Receiver<()>, Arc<Mutex<Self>>) {
 		// We only ever need a channel of depth 1 here: if we returned a non-full write to the
 		// PeerManager, we will eventually get notified that there is room in the socket to write
 		// new bytes, which will generate an event. That event will be popped off the queue before
@@ -214,24 +263,24 @@ impl Connection {
 		// false.
 		let (read_waker, read_receiver) = mpsc::channel(1);
 		stream.set_nonblocking(true).unwrap();
-		let (reader, writer) = io::split(TcpStream::from_std(stream).unwrap());
+		let tokio_stream = Arc::new(TcpStream::from_std(stream).unwrap());
 
-		(reader, write_receiver, read_receiver,
+		(Arc::clone(&tokio_stream), write_receiver, read_receiver,
 		Arc::new(Mutex::new(Self {
-			writer: Some(writer), write_avail, read_waker, read_paused: false,
+			writer: Some(tokio_stream), write_avail, read_waker, read_paused: false,
 			rl_requested_disconnect: false,
 			id: ID_COUNTER.fetch_add(1, Ordering::AcqRel)
 		})))
 	}
 }
 
-fn get_addr_from_stream(stream: &StdTcpStream) -> Option<NetAddress> {
+fn get_addr_from_stream(stream: &StdTcpStream) -> Option<SocketAddress> {
 	match stream.peer_addr() {
-		Ok(SocketAddr::V4(sockaddr)) => Some(NetAddress::IPv4 {
+		Ok(SocketAddr::V4(sockaddr)) => Some(SocketAddress::TcpIpV4 {
 			addr: sockaddr.ip().octets(),
 			port: sockaddr.port(),
 		}),
-		Ok(SocketAddr::V6(sockaddr)) => Some(NetAddress::IPv6 {
+		Ok(SocketAddr::V6(sockaddr)) => Some(SocketAddress::TcpIpV6 {
 			addr: sockaddr.ip().octets(),
 			port: sockaddr.port(),
 		}),
@@ -245,30 +294,17 @@ fn get_addr_from_stream(stream: &StdTcpStream) -> Option<NetAddress> {
 /// The returned future will complete when the peer is disconnected and associated handling
 /// futures are freed, though, because all processing futures are spawned with tokio::spawn, you do
 /// not need to poll the provided future in order to make progress.
-pub fn setup_inbound<PM, CMH, RMH, OMH, L, UMH, NS>(
+pub fn setup_inbound<PM: Deref + 'static + Send + Sync + Clone>(
 	peer_manager: PM,
 	stream: StdTcpStream,
-) -> impl std::future::Future<Output=()> where
-		PM: Deref<Target = peer_handler::PeerManager<SocketDescriptor, CMH, RMH, OMH, L, UMH, NS>> + 'static + Send + Sync + Clone,
-		CMH: Deref + 'static + Send + Sync,
-		RMH: Deref + 'static + Send + Sync,
-		OMH: Deref + 'static + Send + Sync,
-		L: Deref + 'static + Send + Sync,
-		UMH: Deref + 'static + Send + Sync,
-		NS: Deref + 'static + Send + Sync,
-		CMH::Target: ChannelMessageHandler + Send + Sync,
-		RMH::Target: RoutingMessageHandler + Send + Sync,
-		OMH::Target: OnionMessageHandler + Send + Sync,
-		L::Target: Logger + Send + Sync,
-		UMH::Target: CustomMessageHandler + Send + Sync,
-		NS::Target: NodeSigner + Send + Sync,
-{
+) -> impl std::future::Future<Output=()>
+where PM::Target: APeerManager<Descriptor = SocketDescriptor> {
 	let remote_addr = get_addr_from_stream(&stream);
 	let (reader, write_receiver, read_receiver, us) = Connection::new(stream);
 	#[cfg(test)]
 	let last_us = Arc::clone(&us);
 
-	let handle_opt = if peer_manager.new_inbound_connection(SocketDescriptor::new(us.clone()), remote_addr).is_ok() {
+	let handle_opt = if peer_manager.as_ref().new_inbound_connection(SocketDescriptor::new(us.clone()), remote_addr).is_ok() {
 		Some(tokio::spawn(Connection::schedule_read(peer_manager, us, reader, read_receiver, write_receiver)))
 	} else {
 		// Note that we will skip socket_disconnected here, in accordance with the PeerManager
@@ -300,30 +336,17 @@ pub fn setup_inbound<PM, CMH, RMH, OMH, L, UMH, NS>(
 /// The returned future will complete when the peer is disconnected and associated handling
 /// futures are freed, though, because all processing futures are spawned with tokio::spawn, you do
 /// not need to poll the provided future in order to make progress.
-pub fn setup_outbound<PM, CMH, RMH, OMH, L, UMH, NS>(
+pub fn setup_outbound<PM: Deref + 'static + Send + Sync + Clone>(
 	peer_manager: PM,
 	their_node_id: PublicKey,
 	stream: StdTcpStream,
-) -> impl std::future::Future<Output=()> where
-		PM: Deref<Target = peer_handler::PeerManager<SocketDescriptor, CMH, RMH, OMH, L, UMH, NS>> + 'static + Send + Sync + Clone,
-		CMH: Deref + 'static + Send + Sync,
-		RMH: Deref + 'static + Send + Sync,
-		OMH: Deref + 'static + Send + Sync,
-		L: Deref + 'static + Send + Sync,
-		UMH: Deref + 'static + Send + Sync,
-		NS: Deref + 'static + Send + Sync,
-		CMH::Target: ChannelMessageHandler + Send + Sync,
-		RMH::Target: RoutingMessageHandler + Send + Sync,
-		OMH::Target: OnionMessageHandler + Send + Sync,
-		L::Target: Logger + Send + Sync,
-		UMH::Target: CustomMessageHandler + Send + Sync,
-		NS::Target: NodeSigner + Send + Sync,
-{
+) -> impl std::future::Future<Output=()>
+where PM::Target: APeerManager<Descriptor = SocketDescriptor> {
 	let remote_addr = get_addr_from_stream(&stream);
 	let (reader, mut write_receiver, read_receiver, us) = Connection::new(stream);
 	#[cfg(test)]
 	let last_us = Arc::clone(&us);
-	let handle_opt = if let Ok(initial_send) = peer_manager.new_outbound_connection(their_node_id, SocketDescriptor::new(us.clone()), remote_addr) {
+	let handle_opt = if let Ok(initial_send) = peer_manager.as_ref().new_outbound_connection(their_node_id, SocketDescriptor::new(us.clone()), remote_addr) {
 		Some(tokio::spawn(async move {
 			// We should essentially always have enough room in a TCP socket buffer to send the
 			// initial 10s of bytes. However, tokio running in single-threaded mode will always
@@ -342,7 +365,7 @@ pub fn setup_outbound<PM, CMH, RMH, OMH, L, UMH, NS>(
 						},
 						_ => {
 							eprintln!("Failed to write first full message to socket!");
-							peer_manager.socket_disconnected(&SocketDescriptor::new(Arc::clone(&us)));
+							peer_manager.as_ref().socket_disconnected(&SocketDescriptor::new(Arc::clone(&us)));
 							break Err(());
 						}
 					}
@@ -385,25 +408,12 @@ pub fn setup_outbound<PM, CMH, RMH, OMH, L, UMH, NS>(
 /// disconnected and associated handling futures are freed, though, because all processing in said
 /// futures are spawned with tokio::spawn, you do not need to poll the second future in order to
 /// make progress.
-pub async fn connect_outbound<PM, CMH, RMH, OMH, L, UMH, NS>(
+pub async fn connect_outbound<PM: Deref + 'static + Send + Sync + Clone>(
 	peer_manager: PM,
 	their_node_id: PublicKey,
 	addr: SocketAddr,
-) -> Option<impl std::future::Future<Output=()>> where
-		PM: Deref<Target = peer_handler::PeerManager<SocketDescriptor, CMH, RMH, OMH, L, UMH, NS>> + 'static + Send + Sync + Clone,
-		CMH: Deref + 'static + Send + Sync,
-		RMH: Deref + 'static + Send + Sync,
-		OMH: Deref + 'static + Send + Sync,
-		L: Deref + 'static + Send + Sync,
-		UMH: Deref + 'static + Send + Sync,
-		NS: Deref + 'static + Send + Sync,
-		CMH::Target: ChannelMessageHandler + Send + Sync,
-		RMH::Target: RoutingMessageHandler + Send + Sync,
-		OMH::Target: OnionMessageHandler + Send + Sync,
-		L::Target: Logger + Send + Sync,
-		UMH::Target: CustomMessageHandler + Send + Sync,
-		NS::Target: NodeSigner + Send + Sync,
-{
+) -> Option<impl std::future::Future<Output=()>>
+where PM::Target: APeerManager<Descriptor = SocketDescriptor> {
 	if let Ok(Ok(stream)) = time::timeout(Duration::from_secs(10), async { TcpStream::connect(&addr).await.map(|s| s.into_std().unwrap()) }).await {
 		Some(setup_outbound(peer_manager, their_node_id, stream))
 	} else { None }
@@ -453,9 +463,9 @@ impl SocketDescriptor {
 }
 impl peer_handler::SocketDescriptor for SocketDescriptor {
 	fn send_data(&mut self, data: &[u8], resume_read: bool) -> usize {
-		// To send data, we take a lock on our Connection to access the WriteHalf of the TcpStream,
-		// writing to it if there's room in the kernel buffer, or otherwise create a new Waker with
-		// a SocketDescriptor in it which can wake up the write_avail Sender, waking up the
+		// To send data, we take a lock on our Connection to access the TcpStream, writing to it if
+		// there's room in the kernel buffer, or otherwise create a new Waker with a
+		// SocketDescriptor in it which can wake up the write_avail Sender, waking up the
 		// processing future which will call write_buffer_space_avail and we'll end up back here.
 		let mut us = self.conn.lock().unwrap();
 		if us.writer.is_none() {
@@ -475,24 +485,18 @@ impl peer_handler::SocketDescriptor for SocketDescriptor {
 		let mut ctx = task::Context::from_waker(&waker);
 		let mut written_len = 0;
 		loop {
-			match std::pin::Pin::new(us.writer.as_mut().unwrap()).poll_write(&mut ctx, &data[written_len..]) {
-				task::Poll::Ready(Ok(res)) => {
-					// The tokio docs *seem* to indicate this can't happen, and I certainly don't
-					// know how to handle it if it does (cause it should be a Poll::Pending
-					// instead):
-					assert_ne!(res, 0);
-					written_len += res;
-					if written_len == data.len() { return written_len; }
+			match us.writer.as_ref().unwrap().poll_write_ready(&mut ctx) {
+				task::Poll::Ready(Ok(())) => {
+					match us.writer.as_ref().unwrap().try_write(&data[written_len..]) {
+						Ok(res) => {
+							debug_assert_ne!(res, 0);
+							written_len += res;
+							if written_len == data.len() { return written_len; }
+						},
+						Err(e) => return written_len,
+					}
 				},
-				task::Poll::Ready(Err(e)) => {
-					// The tokio docs *seem* to indicate this can't happen, and I certainly don't
-					// know how to handle it if it does (cause it should be a Poll::Pending
-					// instead):
-					assert_ne!(e.kind(), io::ErrorKind::WouldBlock);
-					// Probably we've already been closed, just return what we have and let the
-					// read thread handle closing logic.
-					return written_len;
-				},
+				task::Poll::Ready(Err(e)) => return written_len,
 				task::Poll::Pending => {
 					// We're queued up for a write event now, but we need to make sure we also
 					// pause read given we're now waiting on the remote end to ACK (and in
@@ -543,6 +547,8 @@ mod tests {
 	use lightning::routing::gossip::NodeId;
 	use lightning::events::*;
 	use lightning::util::test_utils::TestNodeSigner;
+	use bitcoin::Network;
+	use bitcoin::blockdata::constants::ChainHash;
 	use bitcoin::secp256k1::{Secp256k1, SecretKey, PublicKey};
 
 	use tokio::sync::mpsc;
@@ -598,6 +604,17 @@ mod tests {
 		fn handle_update_fee(&self, _their_node_id: &PublicKey, _msg: &UpdateFee) {}
 		fn handle_announcement_signatures(&self, _their_node_id: &PublicKey, _msg: &AnnouncementSignatures) {}
 		fn handle_channel_update(&self, _their_node_id: &PublicKey, _msg: &ChannelUpdate) {}
+		fn handle_open_channel_v2(&self, _their_node_id: &PublicKey, _msg: &OpenChannelV2) {}
+		fn handle_accept_channel_v2(&self, _their_node_id: &PublicKey, _msg: &AcceptChannelV2) {}
+		fn handle_tx_add_input(&self, _their_node_id: &PublicKey, _msg: &TxAddInput) {}
+		fn handle_tx_add_output(&self, _their_node_id: &PublicKey, _msg: &TxAddOutput) {}
+		fn handle_tx_remove_input(&self, _their_node_id: &PublicKey, _msg: &TxRemoveInput) {}
+		fn handle_tx_remove_output(&self, _their_node_id: &PublicKey, _msg: &TxRemoveOutput) {}
+		fn handle_tx_complete(&self, _their_node_id: &PublicKey, _msg: &TxComplete) {}
+		fn handle_tx_signatures(&self, _their_node_id: &PublicKey, _msg: &TxSignatures) {}
+		fn handle_tx_init_rbf(&self, _their_node_id: &PublicKey, _msg: &TxInitRbf) {}
+		fn handle_tx_ack_rbf(&self, _their_node_id: &PublicKey, _msg: &TxAckRbf) {}
+		fn handle_tx_abort(&self, _their_node_id: &PublicKey, _msg: &TxAbort) {}
 		// #SPLICING
 		fn handle_splice(&self, _their_node_id: &PublicKey, _msg: &Splice) {}
 		fn handle_splice_ack(&self, _their_node_id: &PublicKey, _msg: &SpliceAck) {}
@@ -619,6 +636,9 @@ mod tests {
 		fn handle_error(&self, _their_node_id: &PublicKey, _msg: &ErrorMessage) {}
 		fn provided_node_features(&self) -> NodeFeatures { NodeFeatures::empty() }
 		fn provided_init_features(&self, _their_node_id: &PublicKey) -> InitFeatures { InitFeatures::empty() }
+		fn get_genesis_hashes(&self) -> Option<Vec<ChainHash>> {
+			Some(vec![ChainHash::using_genesis_block(Network::Testnet)])
+		}
 	}
 	impl MessageSendEventsProvider for MsgHandler {
 		fn get_and_clear_pending_msg_events(&self) -> Vec<MessageSendEvent> {
@@ -664,7 +684,8 @@ mod tests {
 			chan_handler: Arc::clone(&a_handler),
 			route_handler: Arc::clone(&a_handler),
 			onion_message_handler: Arc::new(lightning::ln::peer_handler::IgnoringMessageHandler{}),
-		}, 0, &[1; 32], Arc::new(TestLogger()), Arc::new(lightning::ln::peer_handler::IgnoringMessageHandler{}), Arc::new(TestNodeSigner::new(a_key))));
+			custom_message_handler: Arc::new(lightning::ln::peer_handler::IgnoringMessageHandler{}),
+		}, 0, &[1; 32], Arc::new(TestLogger()), Arc::new(TestNodeSigner::new(a_key))));
 
 		let (b_connected_sender, mut b_connected) = mpsc::channel(1);
 		let (b_disconnected_sender, mut b_disconnected) = mpsc::channel(1);
@@ -679,7 +700,8 @@ mod tests {
 			chan_handler: Arc::clone(&b_handler),
 			route_handler: Arc::clone(&b_handler),
 			onion_message_handler: Arc::new(lightning::ln::peer_handler::IgnoringMessageHandler{}),
-		}, 0, &[2; 32], Arc::new(TestLogger()), Arc::new(lightning::ln::peer_handler::IgnoringMessageHandler{}), Arc::new(TestNodeSigner::new(b_key))));
+			custom_message_handler: Arc::new(lightning::ln::peer_handler::IgnoringMessageHandler{}),
+		}, 0, &[2; 32], Arc::new(TestLogger()), Arc::new(TestNodeSigner::new(b_key))));
 
 		// We bind on localhost, hoping the environment is properly configured with a local
 		// address. This may not always be the case in containers and the like, so if this test is
@@ -732,7 +754,8 @@ mod tests {
 			chan_handler: Arc::new(lightning::ln::peer_handler::ErroringMessageHandler::new()),
 			onion_message_handler: Arc::new(lightning::ln::peer_handler::IgnoringMessageHandler{}),
 			route_handler: Arc::new(lightning::ln::peer_handler::IgnoringMessageHandler{}),
-		}, 0, &[1; 32], Arc::new(TestLogger()), Arc::new(lightning::ln::peer_handler::IgnoringMessageHandler{}), Arc::new(TestNodeSigner::new(a_key))));
+			custom_message_handler: Arc::new(lightning::ln::peer_handler::IgnoringMessageHandler{}),
+		}, 0, &[1; 32], Arc::new(TestLogger()), Arc::new(TestNodeSigner::new(a_key))));
 
 		// Make two connections, one for an inbound and one for an outbound connection
 		let conn_a = {

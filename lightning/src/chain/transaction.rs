@@ -9,7 +9,9 @@
 
 //! Types describing on-chain transactions.
 
+use crate::ln::ChannelId;
 use bitcoin::hash_types::Txid;
+use bitcoin::hashes::Hash;
 use bitcoin::blockdata::transaction::OutPoint as BitcoinOutPoint;
 use bitcoin::blockdata::transaction::Transaction;
 
@@ -57,12 +59,8 @@ pub struct OutPoint {
 
 impl OutPoint {
 	/// Convert an `OutPoint` to a lightning channel id.
-	pub fn to_channel_id(&self) -> [u8; 32] {
-		let mut res = [0; 32];
-		res[..].copy_from_slice(&self.txid[..]);
-		res[30] ^= ((self.index >> 8) & 0xff) as u8;
-		res[31] ^= ((self.index >> 0) & 0xff) as u8;
-		res
+	pub fn to_channel_id(&self) -> ChannelId {
+		ChannelId::v1_from_funding_txid(&self.txid.as_inner(), self.index)
 	}
 
 	/// Converts this OutPoint into the OutPoint field as used by rust-bitcoin
@@ -94,10 +92,10 @@ mod tests {
 		assert_eq!(&OutPoint {
 			txid: tx.txid(),
 			index: 0
-		}.to_channel_id(), &hex::decode("3e88dd7165faf7be58b3c5bb2c9c452aebef682807ea57080f62e6f6e113c25e").unwrap()[..]);
+		}.to_channel_id().0[..], &hex::decode("3e88dd7165faf7be58b3c5bb2c9c452aebef682807ea57080f62e6f6e113c25e").unwrap()[..]);
 		assert_eq!(&OutPoint {
 			txid: tx.txid(),
 			index: 1
-		}.to_channel_id(), &hex::decode("3e88dd7165faf7be58b3c5bb2c9c452aebef682807ea57080f62e6f6e113c25f").unwrap()[..]);
+		}.to_channel_id().0[..], &hex::decode("3e88dd7165faf7be58b3c5bb2c9c452aebef682807ea57080f62e6f6e113c25f").unwrap()[..]);
 	}
 }

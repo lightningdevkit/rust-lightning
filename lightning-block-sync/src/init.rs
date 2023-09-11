@@ -47,8 +47,8 @@ BlockSourceResult<ValidatedBlockHeader> where B::Target: BlockSource {
 /// use lightning::chain::channelmonitor::ChannelMonitor;
 /// use lightning::chain::chaininterface::BroadcasterInterface;
 /// use lightning::chain::chaininterface::FeeEstimator;
-/// use lightning::chain::keysinterface;
-/// use lightning::chain::keysinterface::{EntropySource, NodeSigner, SignerProvider};
+/// use lightning::sign;
+/// use lightning::sign::{EntropySource, NodeSigner, SignerProvider};
 /// use lightning::ln::channelmanager::{ChannelManager, ChannelManagerReadArgs};
 /// use lightning::routing::router::Router;
 /// use lightning::util::config::UserConfig;

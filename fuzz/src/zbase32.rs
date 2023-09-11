@@ -7,18 +7,19 @@
 // You may not use this file except in accordance with one or both of these
 // licenses.
 
-use lightning::util::zbase32;
+use lightning::util::base32;
 
 use crate::utils::test_logger;
 
 #[inline]
 pub fn do_test(data: &[u8]) {
-	let res = zbase32::encode(data);
-	assert_eq!(&zbase32::decode(&res).unwrap()[..], data);
+	let res = base32::Alphabet::ZBase32.encode(data);
+	assert_eq!(&base32::Alphabet::ZBase32.decode(&res).unwrap()[..], data);
 
 	if let Ok(s) = std::str::from_utf8(data) {
-		if let Ok(decoded) = zbase32::decode(s) {
-			assert_eq!(&zbase32::encode(&decoded), &s.to_ascii_lowercase());
+		let res = base32::Alphabet::ZBase32.decode(s);
+		if let Ok(decoded) = res {
+			assert_eq!(&base32::Alphabet::ZBase32.encode(&decoded), &s.to_ascii_lowercase());
 		}
 	}
 }

@@ -24,7 +24,7 @@
 //!
 //! use bitcoin::secp256k1::{KeyPair, PublicKey, Secp256k1, SecretKey};
 //! use lightning::offers::offer::{Offer, OfferBuilder, Quantity};
-//! use lightning::offers::parse::ParseError;
+//! use lightning::offers::parse::Bolt12ParseError;
 //! use lightning::util::ser::{Readable, Writeable};
 //!
 //! # use lightning::blinded_path::BlindedPath;
@@ -35,7 +35,7 @@
 //! # fn create_another_blinded_path() -> BlindedPath { unimplemented!() }
 //! #
 //! # #[cfg(feature = "std")]
-//! # fn build() -> Result<(), ParseError> {
+//! # fn build() -> Result<(), Bolt12ParseError> {
 //! let secp_ctx = Secp256k1::new();
 //! let keys = KeyPair::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 //! let pubkey = PublicKey::from(keys);
@@ -74,15 +74,16 @@ use core::num::NonZeroU64;
 use core::ops::Deref;
 use core::str::FromStr;
 use core::time::Duration;
-use crate::chain::keysinterface::EntropySource;
+use crate::sign::EntropySource;
 use crate::io;
 use crate::blinded_path::BlindedPath;
+use crate::ln::channelmanager::PaymentId;
 use crate::ln::features::OfferFeatures;
 use crate::ln::inbound_payment::{ExpandedKey, IV_LEN, Nonce};
 use crate::ln::msgs::MAX_VALUE_MSAT;
 use crate::offers::invoice_request::{DerivedPayerId, ExplicitPayerId, InvoiceRequestBuilder};
 use crate::offers::merkle::TlvStream;
-use crate::offers::parse::{Bech32Encode, ParseError, ParsedMessage, SemanticError};
+use crate::offers::parse::{Bech32Encode, Bolt12ParseError, Bolt12SemanticError, ParsedMessage};
 use crate::offers::signer::{Metadata, MetadataMaterial, self};
 use crate::util::ser::{HighZeroBytesDroppedBigSize, WithoutLength, Writeable, Writer};
 use crate::util::string::PrintableString;
@@ -98,6 +99,8 @@ pub(super) const IV_BYTES: &[u8; IV_LEN] = b"LDK Offer ~~~~~~";
 ///
 /// See [module-level documentation] for usage.
 ///
+/// This is not exported to bindings users as builder patterns don't map outside of move semantics.
+///
 /// [module-level documentation]: self
 pub struct OfferBuilder<'a, M: MetadataStrategy, T: secp256k1::Signing> {
 	offer: OfferContents,
@@ -106,12 +109,18 @@ pub struct OfferBuilder<'a, M: MetadataStrategy, T: secp256k1::Signing> {
 }
 
 /// Indicates how [`Offer::metadata`] may be set.
+///
+/// This is not exported to bindings users as builder patterns don't map outside of move semantics.
 pub trait MetadataStrategy {}
 
 /// [`Offer::metadata`] may be explicitly set or left empty.
+///
+/// This is not exported to bindings users as builder patterns don't map outside of move semantics.
 pub struct ExplicitMetadata {}
 
 /// [`Offer::metadata`] will be derived.
+///
+/// This is not exported to bindings users as builder patterns don't map outside of move semantics.
 pub struct DerivedMetadata {}
 
 impl MetadataStrategy for ExplicitMetadata {}
@@ -138,7 +147,7 @@ impl<'a> OfferBuilder<'a, ExplicitMetadata, secp256k1::SignOnly> {
 	/// Sets the [`Offer::metadata`] to the given bytes.
 	///
 	/// Successive calls to this method will override the previous setting.
-	pub fn metadata(mut self, metadata: Vec<u8>) -> Result<Self, SemanticError> {
+	pub fn metadata(mut self, metadata: Vec<u8>) -> Result<Self, Bolt12SemanticError> {
 		self.offer.metadata = Some(Metadata::Bytes(metadata));
 		Ok(self)
 	}
@@ -161,7 +170,7 @@ impl<'a, T: secp256k1::Signing> OfferBuilder<'a, DerivedMetadata, T> {
 		secp_ctx: &'a Secp256k1<T>
 	) -> Self where ES::Target: EntropySource {
 		let nonce = Nonce::from_entropy_source(entropy_source);
-		let derivation_material = MetadataMaterial::new(nonce, expanded_key, IV_BYTES);
+		let derivation_material = MetadataMaterial::new(nonce, expanded_key, IV_BYTES, None);
 		let metadata = Metadata::DerivedSigningPubkey(derivation_material);
 		OfferBuilder {
 			offer: OfferContents {
@@ -244,14 +253,14 @@ impl<'a, M: MetadataStrategy, T: secp256k1::Signing> OfferBuilder<'a, M, T> {
 	}
 
 	/// Builds an [`Offer`] from the builder's settings.
-	pub fn build(mut self) -> Result<Offer, SemanticError> {
+	pub fn build(mut self) -> Result<Offer, Bolt12SemanticError> {
 		match self.offer.amount {
 			Some(Amount::Bitcoin { amount_msats }) => {
 				if amount_msats > MAX_VALUE_MSAT {
-					return Err(SemanticError::InvalidAmount);
+					return Err(Bolt12SemanticError::InvalidAmount);
 				}
 			},
-			Some(Amount::Currency { .. }) => return Err(SemanticError::UnsupportedCurrency),
+			Some(Amount::Currency { .. }) => return Err(Bolt12SemanticError::UnsupportedCurrency),
 			None => {},
 		}
 
@@ -275,7 +284,7 @@ impl<'a, M: MetadataStrategy, T: secp256k1::Signing> OfferBuilder<'a, M, T> {
 				let mut tlv_stream = self.offer.as_tlv_stream();
 				debug_assert_eq!(tlv_stream.metadata, None);
 				tlv_stream.metadata = None;
-				if metadata.derives_keys() {
+				if metadata.derives_recipient_keys() {
 					tlv_stream.node_id = None;
 				}
 
@@ -311,8 +320,8 @@ impl<'a, M: MetadataStrategy, T: secp256k1::Signing> OfferBuilder<'a, M, T> {
 /// An `Offer` is a potentially long-lived proposal for payment of a good or service.
 ///
 /// An offer is a precursor to an [`InvoiceRequest`]. A merchant publishes an offer from which a
-/// customer may request an [`Invoice`] for a specific quantity and using an amount sufficient to
-/// cover that quantity (i.e., at least `quantity * amount`). See [`Offer::amount`].
+/// customer may request an [`Bolt12Invoice`] for a specific quantity and using an amount sufficient
+/// to cover that quantity (i.e., at least `quantity * amount`). See [`Offer::amount`].
 ///
 /// Offers may be denominated in currency other than bitcoin but are ultimately paid using the
 /// latter.
@@ -320,7 +329,7 @@ impl<'a, M: MetadataStrategy, T: secp256k1::Signing> OfferBuilder<'a, M, T> {
 /// Through the use of [`BlindedPath`]s, offers provide recipient privacy.
 ///
 /// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
-/// [`Invoice`]: crate::offers::invoice::Invoice
+/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
 #[derive(Clone, Debug)]
 #[cfg_attr(test, derive(PartialEq))]
 pub struct Offer {
@@ -330,10 +339,11 @@ pub struct Offer {
 	pub(super) contents: OfferContents,
 }
 
-/// The contents of an [`Offer`], which may be shared with an [`InvoiceRequest`] or an [`Invoice`].
+/// The contents of an [`Offer`], which may be shared with an [`InvoiceRequest`] or a
+/// [`Bolt12Invoice`].
 ///
 /// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
-/// [`Invoice`]: crate::offers::invoice::Invoice
+/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
 #[derive(Clone, Debug)]
 #[cfg_attr(test, derive(PartialEq))]
 pub(super) struct OfferContents {
@@ -349,16 +359,72 @@ pub(super) struct OfferContents {
 	signing_pubkey: PublicKey,
 }
 
-impl Offer {
+macro_rules! offer_accessors { ($self: ident, $contents: expr) => {
 	// TODO: Return a slice once ChainHash has constants.
 	// - https://github.com/rust-bitcoin/rust-bitcoin/pull/1283
 	// - https://github.com/rust-bitcoin/rust-bitcoin/pull/1286
 	/// The chains that may be used when paying a requested invoice (e.g., bitcoin mainnet).
 	/// Payments must be denominated in units of the minimal lightning-payable unit (e.g., msats)
 	/// for the selected chain.
-	pub fn chains(&self) -> Vec<ChainHash> {
-		self.contents.chains()
+	pub fn chains(&$self) -> Vec<$crate::bitcoin::blockdata::constants::ChainHash> {
+		$contents.chains()
 	}
+
+	// TODO: Link to corresponding method in `InvoiceRequest`.
+	/// Opaque bytes set by the originator. Useful for authentication and validating fields since it
+	/// is reflected in `invoice_request` messages along with all the other fields from the `offer`.
+	pub fn metadata(&$self) -> Option<&Vec<u8>> {
+		$contents.metadata()
+	}
+
+	/// The minimum amount required for a successful payment of a single item.
+	pub fn amount(&$self) -> Option<&$crate::offers::offer::Amount> {
+		$contents.amount()
+	}
+
+	/// A complete description of the purpose of the payment. Intended to be displayed to the user
+	/// but with the caveat that it has not been verified in any way.
+	pub fn description(&$self) -> $crate::util::string::PrintableString {
+		$contents.description()
+	}
+
+	/// Features pertaining to the offer.
+	pub fn offer_features(&$self) -> &$crate::ln::features::OfferFeatures {
+		&$contents.features()
+	}
+
+	/// Duration since the Unix epoch when an invoice should no longer be requested.
+	///
+	/// If `None`, the offer does not expire.
+	pub fn absolute_expiry(&$self) -> Option<core::time::Duration> {
+		$contents.absolute_expiry()
+	}
+
+	/// The issuer of the offer, possibly beginning with `user@domain` or `domain`. Intended to be
+	/// displayed to the user but with the caveat that it has not been verified in any way.
+	pub fn issuer(&$self) -> Option<$crate::util::string::PrintableString> {
+		$contents.issuer()
+	}
+
+	/// Paths to the recipient originating from publicly reachable nodes. Blinded paths provide
+	/// recipient privacy by obfuscating its node id.
+	pub fn paths(&$self) -> &[$crate::blinded_path::BlindedPath] {
+		$contents.paths()
+	}
+
+	/// The quantity of items supported.
+	pub fn supported_quantity(&$self) -> $crate::offers::offer::Quantity {
+		$contents.supported_quantity()
+	}
+
+	/// The public key used by the recipient to sign invoices.
+	pub fn signing_pubkey(&$self) -> $crate::bitcoin::secp256k1::PublicKey {
+		$contents.signing_pubkey()
+	}
+} }
+
+impl Offer {
+	offer_accessors!(self, self.contents);
 
 	pub(super) fn implied_chain(&self) -> ChainHash {
 		self.contents.implied_chain()
@@ -369,57 +435,10 @@ impl Offer {
 		self.contents.supports_chain(chain)
 	}
 
-	// TODO: Link to corresponding method in `InvoiceRequest`.
-	/// Opaque bytes set by the originator. Useful for authentication and validating fields since it
-	/// is reflected in `invoice_request` messages along with all the other fields from the `offer`.
-	pub fn metadata(&self) -> Option<&Vec<u8>> {
-		self.contents.metadata()
-	}
-
-	/// The minimum amount required for a successful payment of a single item.
-	pub fn amount(&self) -> Option<&Amount> {
-		self.contents.amount()
-	}
-
-	/// A complete description of the purpose of the payment. Intended to be displayed to the user
-	/// but with the caveat that it has not been verified in any way.
-	pub fn description(&self) -> PrintableString {
-		self.contents.description()
-	}
-
-	/// Features pertaining to the offer.
-	pub fn features(&self) -> &OfferFeatures {
-		&self.contents.features
-	}
-
-	/// Duration since the Unix epoch when an invoice should no longer be requested.
-	///
-	/// If `None`, the offer does not expire.
-	pub fn absolute_expiry(&self) -> Option<Duration> {
-		self.contents.absolute_expiry
-	}
-
 	/// Whether the offer has expired.
 	#[cfg(feature = "std")]
 	pub fn is_expired(&self) -> bool {
 		self.contents.is_expired()
-	}
-
-	/// The issuer of the offer, possibly beginning with `user@domain` or `domain`. Intended to be
-	/// displayed to the user but with the caveat that it has not been verified in any way.
-	pub fn issuer(&self) -> Option<PrintableString> {
-		self.contents.issuer.as_ref().map(|issuer| PrintableString(issuer.as_str()))
-	}
-
-	/// Paths to the recipient originating from publicly reachable nodes. Blinded paths provide
-	/// recipient privacy by obfuscating its node id.
-	pub fn paths(&self) -> &[BlindedPath] {
-		self.contents.paths.as_ref().map(|paths| paths.as_slice()).unwrap_or(&[])
-	}
-
-	/// The quantity of items supported.
-	pub fn supported_quantity(&self) -> Quantity {
-		self.contents.supported_quantity()
 	}
 
 	/// Returns whether the given quantity is valid for the offer.
@@ -434,35 +453,37 @@ impl Offer {
 		self.contents.expects_quantity()
 	}
 
-	/// The public key used by the recipient to sign invoices.
-	pub fn signing_pubkey(&self) -> PublicKey {
-		self.contents.signing_pubkey()
-	}
-
 	/// Similar to [`Offer::request_invoice`] except it:
 	/// - derives the [`InvoiceRequest::payer_id`] such that a different key can be used for each
-	///   request, and
-	/// - sets the [`InvoiceRequest::metadata`] when [`InvoiceRequestBuilder::build`] is called such
-	///   that it can be used by [`Invoice::verify`] to determine if the invoice was requested using
-	///   a base [`ExpandedKey`] from which the payer id was derived.
+	///   request,
+	/// - sets [`InvoiceRequest::payer_metadata`] when [`InvoiceRequestBuilder::build`] is called
+	///   such that it can be used by [`Bolt12Invoice::verify`] to determine if the invoice was
+	///   requested using a base [`ExpandedKey`] from which the payer id was derived, and
+	/// - includes the [`PaymentId`] encrypted in [`InvoiceRequest::payer_metadata`] so that it can
+	///   be used when sending the payment for the requested invoice.
 	///
 	/// Useful to protect the sender's privacy.
 	///
+	/// This is not exported to bindings users as builder patterns don't map outside of move semantics.
+	///
 	/// [`InvoiceRequest::payer_id`]: crate::offers::invoice_request::InvoiceRequest::payer_id
-	/// [`InvoiceRequest::metadata`]: crate::offers::invoice_request::InvoiceRequest::metadata
-	/// [`Invoice::verify`]: crate::offers::invoice::Invoice::verify
+	/// [`InvoiceRequest::payer_metadata`]: crate::offers::invoice_request::InvoiceRequest::payer_metadata
+	/// [`Bolt12Invoice::verify`]: crate::offers::invoice::Bolt12Invoice::verify
 	/// [`ExpandedKey`]: crate::ln::inbound_payment::ExpandedKey
 	pub fn request_invoice_deriving_payer_id<'a, 'b, ES: Deref, T: secp256k1::Signing>(
-		&'a self, expanded_key: &ExpandedKey, entropy_source: ES, secp_ctx: &'b Secp256k1<T>
-	) -> Result<InvoiceRequestBuilder<'a, 'b, DerivedPayerId, T>, SemanticError>
+		&'a self, expanded_key: &ExpandedKey, entropy_source: ES, secp_ctx: &'b Secp256k1<T>,
+		payment_id: PaymentId
+	) -> Result<InvoiceRequestBuilder<'a, 'b, DerivedPayerId, T>, Bolt12SemanticError>
 	where
 		ES::Target: EntropySource,
 	{
-		if self.features().requires_unknown_bits() {
-			return Err(SemanticError::UnknownRequiredFeatures);
+		if self.offer_features().requires_unknown_bits() {
+			return Err(Bolt12SemanticError::UnknownRequiredFeatures);
 		}
 
-		Ok(InvoiceRequestBuilder::deriving_payer_id(self, expanded_key, entropy_source, secp_ctx))
+		Ok(InvoiceRequestBuilder::deriving_payer_id(
+			self, expanded_key, entropy_source, secp_ctx, payment_id
+		))
 	}
 
 	/// Similar to [`Offer::request_invoice_deriving_payer_id`] except uses `payer_id` for the
@@ -470,22 +491,27 @@ impl Offer {
 	///
 	/// Useful for recurring payments using the same `payer_id` with different invoices.
 	///
+	/// This is not exported to bindings users as builder patterns don't map outside of move semantics.
+	///
 	/// [`InvoiceRequest::payer_id`]: crate::offers::invoice_request::InvoiceRequest::payer_id
 	pub fn request_invoice_deriving_metadata<ES: Deref>(
-		&self, payer_id: PublicKey, expanded_key: &ExpandedKey, entropy_source: ES
-	) -> Result<InvoiceRequestBuilder<ExplicitPayerId, secp256k1::SignOnly>, SemanticError>
+		&self, payer_id: PublicKey, expanded_key: &ExpandedKey, entropy_source: ES,
+		payment_id: PaymentId
+	) -> Result<InvoiceRequestBuilder<ExplicitPayerId, secp256k1::SignOnly>, Bolt12SemanticError>
 	where
 		ES::Target: EntropySource,
 	{
-		if self.features().requires_unknown_bits() {
-			return Err(SemanticError::UnknownRequiredFeatures);
+		if self.offer_features().requires_unknown_bits() {
+			return Err(Bolt12SemanticError::UnknownRequiredFeatures);
 		}
 
-		Ok(InvoiceRequestBuilder::deriving_metadata(self, payer_id, expanded_key, entropy_source))
+		Ok(InvoiceRequestBuilder::deriving_metadata(
+			self, payer_id, expanded_key, entropy_source, payment_id
+		))
 	}
 
 	/// Creates an [`InvoiceRequestBuilder`] for the offer with the given `metadata` and `payer_id`,
-	/// which will be reflected in the `Invoice` response.
+	/// which will be reflected in the `Bolt12Invoice` response.
 	///
 	/// The `metadata` is useful for including information about the derivation of `payer_id` such
 	/// that invoice response handling can be stateless. Also serves as payer-provided entropy while
@@ -496,12 +522,14 @@ impl Offer {
 	///
 	/// Errors if the offer contains unknown required features.
 	///
+	/// This is not exported to bindings users as builder patterns don't map outside of move semantics.
+	///
 	/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
 	pub fn request_invoice(
 		&self, metadata: Vec<u8>, payer_id: PublicKey
-	) -> Result<InvoiceRequestBuilder<ExplicitPayerId, secp256k1::SignOnly>, SemanticError> {
-		if self.features().requires_unknown_bits() {
-			return Err(SemanticError::UnknownRequiredFeatures);
+	) -> Result<InvoiceRequestBuilder<ExplicitPayerId, secp256k1::SignOnly>, Bolt12SemanticError> {
+		if self.offer_features().requires_unknown_bits() {
+			return Err(Bolt12SemanticError::UnknownRequiredFeatures);
 		}
 
 		Ok(InvoiceRequestBuilder::new(self, metadata, payer_id))
@@ -536,8 +564,20 @@ impl OfferContents {
 		self.metadata.as_ref().and_then(|metadata| metadata.as_bytes())
 	}
 
+	pub fn amount(&self) -> Option<&Amount> {
+		self.amount.as_ref()
+	}
+
 	pub fn description(&self) -> PrintableString {
 		PrintableString(&self.description)
+	}
+
+	pub fn features(&self) -> &OfferFeatures {
+		&self.features
+	}
+
+	pub fn absolute_expiry(&self) -> Option<Duration> {
+		self.absolute_expiry
 	}
 
 	#[cfg(feature = "std")]
@@ -551,30 +591,34 @@ impl OfferContents {
 		}
 	}
 
-	pub fn amount(&self) -> Option<&Amount> {
-		self.amount.as_ref()
+	pub fn issuer(&self) -> Option<PrintableString> {
+		self.issuer.as_ref().map(|issuer| PrintableString(issuer.as_str()))
+	}
+
+	pub fn paths(&self) -> &[BlindedPath] {
+		self.paths.as_ref().map(|paths| paths.as_slice()).unwrap_or(&[])
 	}
 
 	pub(super) fn check_amount_msats_for_quantity(
 		&self, amount_msats: Option<u64>, quantity: Option<u64>
-	) -> Result<(), SemanticError> {
+	) -> Result<(), Bolt12SemanticError> {
 		let offer_amount_msats = match self.amount {
 			None => 0,
 			Some(Amount::Bitcoin { amount_msats }) => amount_msats,
-			Some(Amount::Currency { .. }) => return Err(SemanticError::UnsupportedCurrency),
+			Some(Amount::Currency { .. }) => return Err(Bolt12SemanticError::UnsupportedCurrency),
 		};
 
 		if !self.expects_quantity() || quantity.is_some() {
 			let expected_amount_msats = offer_amount_msats.checked_mul(quantity.unwrap_or(1))
-				.ok_or(SemanticError::InvalidAmount)?;
+				.ok_or(Bolt12SemanticError::InvalidAmount)?;
 			let amount_msats = amount_msats.unwrap_or(expected_amount_msats);
 
 			if amount_msats < expected_amount_msats {
-				return Err(SemanticError::InsufficientAmount);
+				return Err(Bolt12SemanticError::InsufficientAmount);
 			}
 
 			if amount_msats > MAX_VALUE_MSAT {
-				return Err(SemanticError::InvalidAmount);
+				return Err(Bolt12SemanticError::InvalidAmount);
 			}
 		}
 
@@ -585,13 +629,13 @@ impl OfferContents {
 		self.supported_quantity
 	}
 
-	pub(super) fn check_quantity(&self, quantity: Option<u64>) -> Result<(), SemanticError> {
+	pub(super) fn check_quantity(&self, quantity: Option<u64>) -> Result<(), Bolt12SemanticError> {
 		let expects_quantity = self.expects_quantity();
 		match quantity {
-			None if expects_quantity => Err(SemanticError::MissingQuantity),
-			Some(_) if !expects_quantity => Err(SemanticError::UnexpectedQuantity),
+			None if expects_quantity => Err(Bolt12SemanticError::MissingQuantity),
+			Some(_) if !expects_quantity => Err(Bolt12SemanticError::UnexpectedQuantity),
 			Some(quantity) if !self.is_valid_quantity(quantity) => {
-				Err(SemanticError::InvalidQuantity)
+				Err(Bolt12SemanticError::InvalidQuantity)
 			},
 			_ => Ok(()),
 		}
@@ -626,11 +670,13 @@ impl OfferContents {
 				let tlv_stream = TlvStream::new(bytes).range(OFFER_TYPES).filter(|record| {
 					match record.r#type {
 						OFFER_METADATA_TYPE => false,
-						OFFER_NODE_ID_TYPE => !self.metadata.as_ref().unwrap().derives_keys(),
+						OFFER_NODE_ID_TYPE => {
+							!self.metadata.as_ref().unwrap().derives_recipient_keys()
+						},
 						_ => true,
 					}
 				});
-				signer::verify_metadata(
+				signer::verify_recipient_metadata(
 					metadata, key, IV_BYTES, self.signing_pubkey(), tlv_stream, secp_ctx
 				)
 			},
@@ -753,7 +799,7 @@ impl Bech32Encode for Offer {
 }
 
 impl FromStr for Offer {
-	type Err = ParseError;
+	type Err = Bolt12ParseError;
 
 	fn from_str(s: &str) -> Result<Self, <Self as FromStr>::Err> {
 		Self::from_bech32_str(s)
@@ -761,7 +807,7 @@ impl FromStr for Offer {
 }
 
 impl TryFrom<Vec<u8>> for Offer {
-	type Error = ParseError;
+	type Error = Bolt12ParseError;
 
 	fn try_from(bytes: Vec<u8>) -> Result<Self, Self::Error> {
 		let offer = ParsedMessage::<OfferTlvStream>::try_from(bytes)?;
@@ -772,7 +818,7 @@ impl TryFrom<Vec<u8>> for Offer {
 }
 
 impl TryFrom<OfferTlvStream> for OfferContents {
-	type Error = SemanticError;
+	type Error = Bolt12SemanticError;
 
 	fn try_from(tlv_stream: OfferTlvStream) -> Result<Self, Self::Error> {
 		let OfferTlvStream {
@@ -785,15 +831,15 @@ impl TryFrom<OfferTlvStream> for OfferContents {
 		let amount = match (currency, amount) {
 			(None, None) => None,
 			(None, Some(amount_msats)) if amount_msats > MAX_VALUE_MSAT => {
-				return Err(SemanticError::InvalidAmount);
+				return Err(Bolt12SemanticError::InvalidAmount);
 			},
 			(None, Some(amount_msats)) => Some(Amount::Bitcoin { amount_msats }),
-			(Some(_), None) => return Err(SemanticError::MissingAmount),
+			(Some(_), None) => return Err(Bolt12SemanticError::MissingAmount),
 			(Some(iso4217_code), Some(amount)) => Some(Amount::Currency { iso4217_code, amount }),
 		};
 
 		let description = match description {
-			None => return Err(SemanticError::MissingDescription),
+			None => return Err(Bolt12SemanticError::MissingDescription),
 			Some(description) => description,
 		};
 
@@ -809,7 +855,7 @@ impl TryFrom<OfferTlvStream> for OfferContents {
 		};
 
 		let signing_pubkey = match node_id {
-			None => return Err(SemanticError::MissingSigningPubkey),
+			None => return Err(Bolt12SemanticError::MissingSigningPubkey),
 			Some(node_id) => node_id,
 		};
 
@@ -837,11 +883,11 @@ mod tests {
 	use core::num::NonZeroU64;
 	use core::time::Duration;
 	use crate::blinded_path::{BlindedHop, BlindedPath};
-	use crate::chain::keysinterface::KeyMaterial;
+	use crate::sign::KeyMaterial;
 	use crate::ln::features::OfferFeatures;
 	use crate::ln::inbound_payment::ExpandedKey;
 	use crate::ln::msgs::{DecodeError, MAX_VALUE_MSAT};
-	use crate::offers::parse::{ParseError, SemanticError};
+	use crate::offers::parse::{Bolt12ParseError, Bolt12SemanticError};
 	use crate::offers::test_utils::*;
 	use crate::util::ser::{BigSize, Writeable};
 	use crate::util::string::PrintableString;
@@ -859,7 +905,7 @@ mod tests {
 		assert_eq!(offer.metadata(), None);
 		assert_eq!(offer.amount(), None);
 		assert_eq!(offer.description(), PrintableString("foo"));
-		assert_eq!(offer.features(), &OfferFeatures::empty());
+		assert_eq!(offer.offer_features(), &OfferFeatures::empty());
 		assert_eq!(offer.absolute_expiry(), None);
 		#[cfg(feature = "std")]
 		assert!(!offer.is_expired());
@@ -1075,7 +1121,7 @@ mod tests {
 		assert_eq!(tlv_stream.currency, Some(b"USD"));
 		match builder.build() {
 			Ok(_) => panic!("expected error"),
-			Err(e) => assert_eq!(e, SemanticError::UnsupportedCurrency),
+			Err(e) => assert_eq!(e, Bolt12SemanticError::UnsupportedCurrency),
 		}
 
 		let offer = OfferBuilder::new("foo".into(), pubkey(42))
@@ -1090,7 +1136,7 @@ mod tests {
 		let invalid_amount = Amount::Bitcoin { amount_msats: MAX_VALUE_MSAT + 1 };
 		match OfferBuilder::new("foo".into(), pubkey(42)).amount(invalid_amount).build() {
 			Ok(_) => panic!("expected error"),
-			Err(e) => assert_eq!(e, SemanticError::InvalidAmount),
+			Err(e) => assert_eq!(e, Bolt12SemanticError::InvalidAmount),
 		}
 	}
 
@@ -1100,7 +1146,7 @@ mod tests {
 			.features_unchecked(OfferFeatures::unknown())
 			.build()
 			.unwrap();
-		assert_eq!(offer.features(), &OfferFeatures::unknown());
+		assert_eq!(offer.offer_features(), &OfferFeatures::unknown());
 		assert_eq!(offer.as_tlv_stream().features, Some(&OfferFeatures::unknown()));
 
 		let offer = OfferBuilder::new("foo".into(), pubkey(42))
@@ -1108,7 +1154,7 @@ mod tests {
 			.features_unchecked(OfferFeatures::empty())
 			.build()
 			.unwrap();
-		assert_eq!(offer.features(), &OfferFeatures::empty());
+		assert_eq!(offer.offer_features(), &OfferFeatures::empty());
 		assert_eq!(offer.as_tlv_stream().features, None);
 	}
 
@@ -1244,7 +1290,7 @@ mod tests {
 			.request_invoice(vec![1; 32], pubkey(43))
 		{
 			Ok(_) => panic!("expected error"),
-			Err(e) => assert_eq!(e, SemanticError::UnknownRequiredFeatures),
+			Err(e) => assert_eq!(e, Bolt12SemanticError::UnknownRequiredFeatures),
 		}
 	}
 
@@ -1290,7 +1336,7 @@ mod tests {
 
 		match Offer::try_from(encoded_offer) {
 			Ok(_) => panic!("expected error"),
-			Err(e) => assert_eq!(e, ParseError::InvalidSemantics(SemanticError::MissingAmount)),
+			Err(e) => assert_eq!(e, Bolt12ParseError::InvalidSemantics(Bolt12SemanticError::MissingAmount)),
 		}
 
 		let mut tlv_stream = offer.as_tlv_stream();
@@ -1302,7 +1348,7 @@ mod tests {
 
 		match Offer::try_from(encoded_offer) {
 			Ok(_) => panic!("expected error"),
-			Err(e) => assert_eq!(e, ParseError::InvalidSemantics(SemanticError::InvalidAmount)),
+			Err(e) => assert_eq!(e, Bolt12ParseError::InvalidSemantics(Bolt12SemanticError::InvalidAmount)),
 		}
 	}
 
@@ -1322,7 +1368,7 @@ mod tests {
 		match Offer::try_from(encoded_offer) {
 			Ok(_) => panic!("expected error"),
 			Err(e) => {
-				assert_eq!(e, ParseError::InvalidSemantics(SemanticError::MissingDescription));
+				assert_eq!(e, Bolt12ParseError::InvalidSemantics(Bolt12SemanticError::MissingDescription));
 			},
 		}
 	}
@@ -1412,7 +1458,7 @@ mod tests {
 		match Offer::try_from(encoded_offer) {
 			Ok(_) => panic!("expected error"),
 			Err(e) => {
-				assert_eq!(e, ParseError::InvalidSemantics(SemanticError::MissingSigningPubkey));
+				assert_eq!(e, Bolt12ParseError::InvalidSemantics(Bolt12SemanticError::MissingSigningPubkey));
 			},
 		}
 	}
@@ -1429,41 +1475,34 @@ mod tests {
 
 		match Offer::try_from(encoded_offer) {
 			Ok(_) => panic!("expected error"),
-			Err(e) => assert_eq!(e, ParseError::Decode(DecodeError::InvalidValue)),
+			Err(e) => assert_eq!(e, Bolt12ParseError::Decode(DecodeError::InvalidValue)),
 		}
 	}
 }
 
 #[cfg(test)]
 mod bech32_tests {
-	use super::{Offer, ParseError};
+	use super::{Bolt12ParseError, Offer};
 	use bitcoin::bech32;
 	use crate::ln::msgs::DecodeError;
 
-	// TODO: Remove once test vectors are updated.
-	#[ignore]
 	#[test]
 	fn encodes_offer_as_bech32_without_checksum() {
-		let encoded_offer = "lno1qcp4256ypqpq86q2pucnq42ngssx2an9wfujqerp0y2pqun4wd68jtn00fkxzcnn9ehhyec6qgqsz83qfwdpl28qqmc78ymlvhmxcsywdk5wrjnj36jryg488qwlrnzyjczlqsp9nyu4phcg6dqhlhzgxagfu7zh3d9re0sqp9ts2yfugvnnm9gxkcnnnkdpa084a6t520h5zhkxsdnghvpukvd43lastpwuh73k29qsy";
+		let encoded_offer = "lno1pqps7sjqpgtyzm3qv4uxzmtsd3jjqer9wd3hy6tsw35k7msjzfpy7nz5yqcnygrfdej82um5wf5k2uckyypwa3eyt44h6txtxquqh7lz5djge4afgfjn7k4rgrkuag0jsd5xvxg";
 		let offer = dbg!(encoded_offer.parse::<Offer>().unwrap());
 		let reencoded_offer = offer.to_string();
 		dbg!(reencoded_offer.parse::<Offer>().unwrap());
 		assert_eq!(reencoded_offer, encoded_offer);
 	}
 
-	// TODO: Remove once test vectors are updated.
-	#[ignore]
 	#[test]
 	fn parses_bech32_encoded_offers() {
 		let offers = [
 			// BOLT 12 test vectors
-			"lno1qcp4256ypqpq86q2pucnq42ngssx2an9wfujqerp0y2pqun4wd68jtn00fkxzcnn9ehhyec6qgqsz83qfwdpl28qqmc78ymlvhmxcsywdk5wrjnj36jryg488qwlrnzyjczlqsp9nyu4phcg6dqhlhzgxagfu7zh3d9re0sqp9ts2yfugvnnm9gxkcnnnkdpa084a6t520h5zhkxsdnghvpukvd43lastpwuh73k29qsy",
-			"l+no1qcp4256ypqpq86q2pucnq42ngssx2an9wfujqerp0y2pqun4wd68jtn00fkxzcnn9ehhyec6qgqsz83qfwdpl28qqmc78ymlvhmxcsywdk5wrjnj36jryg488qwlrnzyjczlqsp9nyu4phcg6dqhlhzgxagfu7zh3d9re0sqp9ts2yfugvnnm9gxkcnnnkdpa084a6t520h5zhkxsdnghvpukvd43lastpwuh73k29qsy",
-			"l+no1qcp4256ypqpq86q2pucnq42ngssx2an9wfujqerp0y2pqun4wd68jtn00fkxzcnn9ehhyec6qgqsz83qfwdpl28qqmc78ymlvhmxcsywdk5wrjnj36jryg488qwlrnzyjczlqsp9nyu4phcg6dqhlhzgxagfu7zh3d9re0sqp9ts2yfugvnnm9gxkcnnnkdpa084a6t520h5zhkxsdnghvpukvd43lastpwuh73k29qsy",
-			"lno1qcp4256ypqpq+86q2pucnq42ngssx2an9wfujqerp0y2pqun4wd68jtn0+0fkxzcnn9ehhyec6qgqsz83qfwdpl28qqmc78ymlvhmxcsywdk5wrjnj36jryg488qwlrnzyjczlqsp9nyu4phcg6dqhlhzgxagfu7zh3d9re0+sqp9ts2yfugvnnm9gxkcnnnkdpa084a6t520h5zhkxsdnghvpukvd43lastpwuh73k29qs+y",
-			"lno1qcp4256ypqpq+ 86q2pucnq42ngssx2an9wfujqerp0y2pqun4wd68jtn0+  0fkxzcnn9ehhyec6qgqsz83qfwdpl28qqmc78ymlvhmxcsywdk5wrjnj36jryg488qwlrnzyjczlqsp9nyu4phcg6dqhlhzgxagfu7zh3d9re0+\nsqp9ts2yfugvnnm9gxkcnnnkdpa084a6t520h5zhkxsdnghvpukvd43l+\r\nastpwuh73k29qs+\r  y",
-			// Two blinded paths
-			"lno1qcp4256ypqpq86q2pucnq42ngssx2an9wfujqerp0yg06qg2qdd7t628sgykwj5kuc837qmlv9m9gr7sq8ap6erfgacv26nhp8zzcqgzhdvttlk22pw8fmwqqrvzst792mj35ypylj886ljkcmug03wg6heqqsqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq6muh550qsfva9fdes0ruph7ctk2s8aqq06r4jxj3msc448wzwy9sqs9w6ckhlv55zuwnkuqqxc9qhu24h9rggzflyw04l9d3hcslzu340jqpqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq2pqun4wd68jtn00fkxzcnn9ehhyec6qgqsz83qfwdpl28qqmc78ymlvhmxcsywdk5wrjnj36jryg488qwlrnzyjczlqsp9nyu4phcg6dqhlhzgxagfu7zh3d9re0sqp9ts2yfugvnnm9gxkcnnnkdpa084a6t520h5zhkxsdnghvpukvd43lastpwuh73k29qsy",
+			"lno1pqps7sjqpgtyzm3qv4uxzmtsd3jjqer9wd3hy6tsw35k7msjzfpy7nz5yqcnygrfdej82um5wf5k2uckyypwa3eyt44h6txtxquqh7lz5djge4afgfjn7k4rgrkuag0jsd5xvxg",
+			"l+no1pqps7sjqpgtyzm3qv4uxzmtsd3jjqer9wd3hy6tsw35k7msjzfpy7nz5yqcnygrfdej82um5wf5k2uckyypwa3eyt44h6txtxquqh7lz5djge4afgfjn7k4rgrkuag0jsd5xvxg",
+			"lno1pqps7sjqpgt+yzm3qv4uxzmtsd3jjqer9wd3hy6tsw3+5k7msjzfpy7nz5yqcn+ygrfdej82um5wf5k2uckyypwa3eyt44h6txtxquqh7lz5djge4afgfjn7k4rgrkuag0jsd+5xvxg",
+			"lno1pqps7sjqpgt+ yzm3qv4uxzmtsd3jjqer9wd3hy6tsw3+  5k7msjzfpy7nz5yqcn+\nygrfdej82um5wf5k2uckyypwa3eyt44h6txtxquqh7lz5djge4afgfjn7k4rgrkuag0jsd+\r\n 5xvxg",
 		];
 		for encoded_offer in &offers {
 			if let Err(e) = encoded_offer.parse::<Offer>() {
@@ -1476,16 +1515,16 @@ mod bech32_tests {
 	fn fails_parsing_bech32_encoded_offers_with_invalid_continuations() {
 		let offers = [
 			// BOLT 12 test vectors
-			"lno1qcp4256ypqpq86q2pucnq42ngssx2an9wfujqerp0y2pqun4wd68jtn00fkxzcnn9ehhyec6qgqsz83qfwdpl28qqmc78ymlvhmxcsywdk5wrjnj36jryg488qwlrnzyjczlqsp9nyu4phcg6dqhlhzgxagfu7zh3d9re0sqp9ts2yfugvnnm9gxkcnnnkdpa084a6t520h5zhkxsdnghvpukvd43lastpwuh73k29qsy+",
-			"lno1qcp4256ypqpq86q2pucnq42ngssx2an9wfujqerp0y2pqun4wd68jtn00fkxzcnn9ehhyec6qgqsz83qfwdpl28qqmc78ymlvhmxcsywdk5wrjnj36jryg488qwlrnzyjczlqsp9nyu4phcg6dqhlhzgxagfu7zh3d9re0sqp9ts2yfugvnnm9gxkcnnnkdpa084a6t520h5zhkxsdnghvpukvd43lastpwuh73k29qsy+ ",
-			"+lno1qcp4256ypqpq86q2pucnq42ngssx2an9wfujqerp0y2pqun4wd68jtn00fkxzcnn9ehhyec6qgqsz83qfwdpl28qqmc78ymlvhmxcsywdk5wrjnj36jryg488qwlrnzyjczlqsp9nyu4phcg6dqhlhzgxagfu7zh3d9re0sqp9ts2yfugvnnm9gxkcnnnkdpa084a6t520h5zhkxsdnghvpukvd43lastpwuh73k29qsy",
-			"+ lno1qcp4256ypqpq86q2pucnq42ngssx2an9wfujqerp0y2pqun4wd68jtn00fkxzcnn9ehhyec6qgqsz83qfwdpl28qqmc78ymlvhmxcsywdk5wrjnj36jryg488qwlrnzyjczlqsp9nyu4phcg6dqhlhzgxagfu7zh3d9re0sqp9ts2yfugvnnm9gxkcnnnkdpa084a6t520h5zhkxsdnghvpukvd43lastpwuh73k29qsy",
-			"ln++o1qcp4256ypqpq86q2pucnq42ngssx2an9wfujqerp0y2pqun4wd68jtn00fkxzcnn9ehhyec6qgqsz83qfwdpl28qqmc78ymlvhmxcsywdk5wrjnj36jryg488qwlrnzyjczlqsp9nyu4phcg6dqhlhzgxagfu7zh3d9re0sqp9ts2yfugvnnm9gxkcnnnkdpa084a6t520h5zhkxsdnghvpukvd43lastpwuh73k29qsy",
+			"lno1pqps7sjqpgtyzm3qv4uxzmtsd3jjqer9wd3hy6tsw35k7msjzfpy7nz5yqcnygrfdej82um5wf5k2uckyypwa3eyt44h6txtxquqh7lz5djge4afgfjn7k4rgrkuag0jsd5xvxg+",
+			"lno1pqps7sjqpgtyzm3qv4uxzmtsd3jjqer9wd3hy6tsw35k7msjzfpy7nz5yqcnygrfdej82um5wf5k2uckyypwa3eyt44h6txtxquqh7lz5djge4afgfjn7k4rgrkuag0jsd5xvxg+ ",
+			"+lno1pqps7sjqpgtyzm3qv4uxzmtsd3jjqer9wd3hy6tsw35k7msjzfpy7nz5yqcnygrfdej82um5wf5k2uckyypwa3eyt44h6txtxquqh7lz5djge4afgfjn7k4rgrkuag0jsd5xvxg",
+			"+ lno1pqps7sjqpgtyzm3qv4uxzmtsd3jjqer9wd3hy6tsw35k7msjzfpy7nz5yqcnygrfdej82um5wf5k2uckyypwa3eyt44h6txtxquqh7lz5djge4afgfjn7k4rgrkuag0jsd5xvxg",
+			"ln++o1pqps7sjqpgtyzm3qv4uxzmtsd3jjqer9wd3hy6tsw35k7msjzfpy7nz5yqcnygrfdej82um5wf5k2uckyypwa3eyt44h6txtxquqh7lz5djge4afgfjn7k4rgrkuag0jsd5xvxg",
 		];
 		for encoded_offer in &offers {
 			match encoded_offer.parse::<Offer>() {
 				Ok(_) => panic!("Valid offer: {}", encoded_offer),
-				Err(e) => assert_eq!(e, ParseError::InvalidContinuation),
+				Err(e) => assert_eq!(e, Bolt12ParseError::InvalidContinuation),
 			}
 		}
 
@@ -1493,28 +1532,28 @@ mod bech32_tests {
 
 	#[test]
 	fn fails_parsing_bech32_encoded_offer_with_invalid_hrp() {
-		let encoded_offer = "lni1qcp4256ypqpq86q2pucnq42ngssx2an9wfujqerp0y2pqun4wd68jtn00fkxzcnn9ehhyec6qgqsz83qfwdpl28qqmc78ymlvhmxcsywdk5wrjnj36jryg488qwlrnzyjczlqsp9nyu4phcg6dqhlhzgxagfu7zh3d9re0sqp9ts2yfugvnnm9gxkcnnnkdpa084a6t520h5zhkxsdnghvpukvd43lastpwuh73k29qsy";
+		let encoded_offer = "lni1pqps7sjqpgtyzm3qv4uxzmtsd3jjqer9wd3hy6tsw35k7msjzfpy7nz5yqcnygrfdej82um5wf5k2uckyypwa3eyt44h6txtxquqh7lz5djge4afgfjn7k4rgrkuag0jsd5xvxg";
 		match encoded_offer.parse::<Offer>() {
 			Ok(_) => panic!("Valid offer: {}", encoded_offer),
-			Err(e) => assert_eq!(e, ParseError::InvalidBech32Hrp),
+			Err(e) => assert_eq!(e, Bolt12ParseError::InvalidBech32Hrp),
 		}
 	}
 
 	#[test]
 	fn fails_parsing_bech32_encoded_offer_with_invalid_bech32_data() {
-		let encoded_offer = "lno1qcp4256ypqpq86q2pucnq42ngssx2an9wfujqerp0y2pqun4wd68jtn00fkxzcnn9ehhyec6qgqsz83qfwdpl28qqmc78ymlvhmxcsywdk5wrjnj36jryg488qwlrnzyjczlqsp9nyu4phcg6dqhlhzgxagfu7zh3d9re0sqp9ts2yfugvnnm9gxkcnnnkdpa084a6t520h5zhkxsdnghvpukvd43lastpwuh73k29qso";
+		let encoded_offer = "lno1pqps7sjqpgtyzm3qv4uxzmtsd3jjqer9wd3hy6tsw35k7msjzfpy7nz5yqcnygrfdej82um5wf5k2uckyypwa3eyt44h6txtxquqh7lz5djge4afgfjn7k4rgrkuag0jsd5xvxo";
 		match encoded_offer.parse::<Offer>() {
 			Ok(_) => panic!("Valid offer: {}", encoded_offer),
-			Err(e) => assert_eq!(e, ParseError::Bech32(bech32::Error::InvalidChar('o'))),
+			Err(e) => assert_eq!(e, Bolt12ParseError::Bech32(bech32::Error::InvalidChar('o'))),
 		}
 	}
 
 	#[test]
 	fn fails_parsing_bech32_encoded_offer_with_invalid_tlv_data() {
-		let encoded_offer = "lno1qcp4256ypqpq86q2pucnq42ngssx2an9wfujqerp0y2pqun4wd68jtn00fkxzcnn9ehhyec6qgqsz83qfwdpl28qqmc78ymlvhmxcsywdk5wrjnj36jryg488qwlrnzyjczlqsp9nyu4phcg6dqhlhzgxagfu7zh3d9re0sqp9ts2yfugvnnm9gxkcnnnkdpa084a6t520h5zhkxsdnghvpukvd43lastpwuh73k29qsyqqqqq";
+		let encoded_offer = "lno1pqps7sjqpgtyzm3qv4uxzmtsd3jjqer9wd3hy6tsw35k7msjzfpy7nz5yqcnygrfdej82um5wf5k2uckyypwa3eyt44h6txtxquqh7lz5djge4afgfjn7k4rgrkuag0jsd5xvxgqqqqq";
 		match encoded_offer.parse::<Offer>() {
 			Ok(_) => panic!("Valid offer: {}", encoded_offer),
-			Err(e) => assert_eq!(e, ParseError::Decode(DecodeError::InvalidValue)),
+			Err(e) => assert_eq!(e, Bolt12ParseError::Decode(DecodeError::InvalidValue)),
 		}
 	}
 }

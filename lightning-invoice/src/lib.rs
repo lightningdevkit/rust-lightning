@@ -18,11 +18,11 @@
 //! invoices and functions to create, encode and decode these. If you just want to use the standard
 //! en-/decoding functionality this should get you started:
 //!
-//!   * For parsing use `str::parse::<Invoice>(&self)` (see [`Invoice::from_str`])
+//!   * For parsing use `str::parse::<Bolt11Invoice>(&self)` (see [`Bolt11Invoice::from_str`])
 //!   * For constructing invoices use the [`InvoiceBuilder`]
 //!   * For serializing invoices use the [`Display`]/[`ToString`] traits
 //!
-//! [`Invoice::from_str`]: crate::Invoice#impl-FromStr
+//! [`Bolt11Invoice::from_str`]: crate::Bolt11Invoice#impl-FromStr
 
 #[cfg(not(any(feature = "std", feature = "no-std")))]
 compile_error!("at least one of the `std` or `no-std` features must be enabled");
@@ -51,7 +51,7 @@ use bitcoin::{Address, Network, PubkeyHash, ScriptHash};
 use bitcoin::util::address::{Payload, WitnessVersion};
 use bitcoin_hashes::{Hash, sha256};
 use lightning::ln::PaymentSecret;
-use lightning::ln::features::InvoiceFeatures;
+use lightning::ln::features::Bolt11InvoiceFeatures;
 #[cfg(any(doc, test))]
 use lightning::routing::gossip::RoutingFees;
 use lightning::routing::router::RouteHint;
@@ -61,6 +61,7 @@ use secp256k1::PublicKey;
 use secp256k1::{Message, Secp256k1};
 use secp256k1::ecdsa::RecoverableSignature;
 
+use core::cmp::Ordering;
 use core::fmt::{Display, Formatter, self};
 use core::iter::FilterMap;
 use core::num::ParseIntError;
@@ -105,7 +106,7 @@ mod sync;
 /// reasons, but should generally result in an "invalid BOLT11 invoice" message for the user.
 #[allow(missing_docs)]
 #[derive(PartialEq, Eq, Debug, Clone)]
-pub enum ParseError {
+pub enum Bolt11ParseError {
 	Bech32Error(bech32::Error),
 	ParseAmountError(ParseIntError),
 	MalformedSignature(secp256k1::Error),
@@ -135,10 +136,10 @@ pub enum ParseError {
 #[derive(PartialEq, Eq, Debug, Clone)]
 pub enum ParseOrSemanticError {
 	/// The invoice couldn't be decoded
-	ParseError(ParseError),
+	ParseError(Bolt11ParseError),
 
 	/// The invoice could be decoded but violates the BOLT11 standard
-	SemanticError(crate::SemanticError),
+	SemanticError(crate::Bolt11SemanticError),
 }
 
 /// The number of bits used to represent timestamps as defined in BOLT 11.
@@ -163,8 +164,8 @@ pub const DEFAULT_EXPIRY_TIME: u64 = 3600;
 /// [`MIN_FINAL_CLTV_EXPIRY_DELTA`]: lightning::ln::channelmanager::MIN_FINAL_CLTV_EXPIRY_DELTA
 pub const DEFAULT_MIN_FINAL_CLTV_EXPIRY_DELTA: u64 = 18;
 
-/// Builder for [`Invoice`]s. It's the most convenient and advised way to use this library. It ensures
-/// that only a semantically and syntactically correct Invoice can be built using it.
+/// Builder for [`Bolt11Invoice`]s. It's the most convenient and advised way to use this library. It
+/// ensures that only a semantically and syntactically correct invoice can be built using it.
 ///
 /// ```
 /// extern crate secp256k1;
@@ -242,15 +243,15 @@ pub struct InvoiceBuilder<D: tb::Bool, H: tb::Bool, T: tb::Bool, C: tb::Bool, S:
 
 /// Represents a syntactically and semantically correct lightning BOLT11 invoice.
 ///
-/// There are three ways to construct an `Invoice`:
+/// There are three ways to construct a `Bolt11Invoice`:
 ///  1. using [`InvoiceBuilder`]
-///  2. using [`Invoice::from_signed`]
-///  3. using `str::parse::<Invoice>(&str)` (see [`Invoice::from_str`])
+///  2. using [`Bolt11Invoice::from_signed`]
+///  3. using `str::parse::<Bolt11Invoice>(&str)` (see [`Bolt11Invoice::from_str`])
 ///
-/// [`Invoice::from_str`]: crate::Invoice#impl-FromStr
-#[derive(Eq, PartialEq, Debug, Clone, Hash)]
-pub struct Invoice {
-	signed_invoice: SignedRawInvoice,
+/// [`Bolt11Invoice::from_str`]: crate::Bolt11Invoice#impl-FromStr
+#[derive(Eq, PartialEq, Debug, Clone, Hash, Ord, PartialOrd)]
+pub struct Bolt11Invoice {
+	signed_invoice: SignedRawBolt11Invoice,
 }
 
 /// Represents the description of an invoice which has to be either a directly included string or
@@ -258,8 +259,8 @@ pub struct Invoice {
 ///
 /// This is not exported to bindings users as we don't have a good way to map the reference lifetimes making this
 /// practically impossible to use safely in languages like C.
-#[derive(Eq, PartialEq, Debug, Clone)]
-pub enum InvoiceDescription<'f> {
+#[derive(Eq, PartialEq, Debug, Clone, Ord, PartialOrd)]
+pub enum Bolt11InvoiceDescription<'f> {
 	/// Reference to the directly supplied description in the invoice
 	Direct(&'f Description),
 
@@ -267,36 +268,36 @@ pub enum InvoiceDescription<'f> {
 	Hash(&'f Sha256),
 }
 
-/// Represents a signed [`RawInvoice`] with cached hash. The signature is not checked and may be
+/// Represents a signed [`RawBolt11Invoice`] with cached hash. The signature is not checked and may be
 /// invalid.
 ///
 /// # Invariants
-/// The hash has to be either from the deserialized invoice or from the serialized [`RawInvoice`].
-#[derive(Eq, PartialEq, Debug, Clone, Hash)]
-pub struct SignedRawInvoice {
-	/// The rawInvoice that the signature belongs to
-	raw_invoice: RawInvoice,
+/// The hash has to be either from the deserialized invoice or from the serialized [`RawBolt11Invoice`].
+#[derive(Eq, PartialEq, Debug, Clone, Hash, Ord, PartialOrd)]
+pub struct SignedRawBolt11Invoice {
+	/// The raw invoice that the signature belongs to
+	raw_invoice: RawBolt11Invoice,
 
-	/// Hash of the [`RawInvoice`] that will be used to check the signature.
+	/// Hash of the [`RawBolt11Invoice`] that will be used to check the signature.
 	///
-	/// * if the `SignedRawInvoice` was deserialized the hash is of from the original encoded form,
+	/// * if the `SignedRawBolt11Invoice` was deserialized the hash is of from the original encoded form,
 	/// since it's not guaranteed that encoding it again will lead to the same result since integers
 	/// could have been encoded with leading zeroes etc.
-	/// * if the `SignedRawInvoice` was constructed manually the hash will be the calculated hash
-	/// from the [`RawInvoice`]
+	/// * if the `SignedRawBolt11Invoice` was constructed manually the hash will be the calculated hash
+	/// from the [`RawBolt11Invoice`]
 	hash: [u8; 32],
 
 	/// signature of the payment request
-	signature: InvoiceSignature,
+	signature: Bolt11InvoiceSignature,
 }
 
-/// Represents an syntactically correct [`Invoice`] for a payment on the lightning network,
+/// Represents an syntactically correct [`Bolt11Invoice`] for a payment on the lightning network,
 /// but without the signature information.
 /// Decoding and encoding should not lead to information loss but may lead to different hashes.
 ///
-/// For methods without docs see the corresponding methods in [`Invoice`].
-#[derive(Eq, PartialEq, Debug, Clone, Hash)]
-pub struct RawInvoice {
+/// For methods without docs see the corresponding methods in [`Bolt11Invoice`].
+#[derive(Eq, PartialEq, Debug, Clone, Hash, Ord, PartialOrd)]
+pub struct RawBolt11Invoice {
 	/// human readable part
 	pub hrp: RawHrp,
 
@@ -304,10 +305,10 @@ pub struct RawInvoice {
 	pub data: RawDataPart,
 }
 
-/// Data of the [`RawInvoice`] that is encoded in the human readable part.
+/// Data of the [`RawBolt11Invoice`] that is encoded in the human readable part.
 ///
 /// This is not exported to bindings users as we don't yet support `Option<Enum>`
-#[derive(Eq, PartialEq, Debug, Clone, Hash)]
+#[derive(Eq, PartialEq, Debug, Clone, Hash, Ord, PartialOrd)]
 pub struct RawHrp {
 	/// The currency deferred from the 3rd and 4th character of the bech32 transaction
 	pub currency: Currency,
@@ -319,8 +320,8 @@ pub struct RawHrp {
 	pub si_prefix: Option<SiPrefix>,
 }
 
-/// Data of the [`RawInvoice`] that is encoded in the data part
-#[derive(Eq, PartialEq, Debug, Clone, Hash)]
+/// Data of the [`RawBolt11Invoice`] that is encoded in the data part
+#[derive(Eq, PartialEq, Debug, Clone, Hash, Ord, PartialOrd)]
 pub struct RawDataPart {
 	/// generation time of the invoice
 	pub timestamp: PositiveTimestamp,
@@ -335,11 +336,11 @@ pub struct RawDataPart {
 ///
 /// The Unix timestamp representing the stored time has to be positive and no greater than
 /// [`MAX_TIMESTAMP`].
-#[derive(Eq, PartialEq, Debug, Clone, Hash)]
+#[derive(Eq, PartialEq, Debug, Clone, Hash, Ord, PartialOrd)]
 pub struct PositiveTimestamp(Duration);
 
 /// SI prefixes for the human readable part
-#[derive(Eq, PartialEq, Debug, Clone, Copy, Hash)]
+#[derive(Eq, PartialEq, Debug, Clone, Copy, Hash, Ord, PartialOrd)]
 pub enum SiPrefix {
 	/// 10^-3
 	Milli,
@@ -376,7 +377,7 @@ impl SiPrefix {
 }
 
 /// Enum representing the crypto currencies (or networks) supported by this library
-#[derive(Clone, Debug, Hash, Eq, PartialEq)]
+#[derive(Clone, Debug, Hash, Eq, PartialEq, Ord, PartialOrd)]
 pub enum Currency {
 	/// Bitcoin mainnet
 	Bitcoin,
@@ -420,7 +421,7 @@ impl From<Currency> for Network {
 /// Tagged field which may have an unknown tag
 ///
 /// This is not exported to bindings users as we don't currently support TaggedField
-#[derive(Clone, Debug, Hash, Eq, PartialEq)]
+#[derive(Clone, Debug, Hash, Eq, PartialEq, Ord, PartialOrd)]
 pub enum RawTaggedField {
 	/// Parsed tagged field with known tag
 	KnownSemantics(TaggedField),
@@ -435,7 +436,7 @@ pub enum RawTaggedField {
 /// This is not exported to bindings users as we don't yet support enum variants with the same name the struct contained
 /// in the variant.
 #[allow(missing_docs)]
-#[derive(Clone, Debug, Hash, Eq, PartialEq)]
+#[derive(Clone, Debug, Hash, Eq, PartialEq, Ord, PartialOrd)]
 pub enum TaggedField {
 	PaymentHash(Sha256),
 	Description(Description),
@@ -447,37 +448,46 @@ pub enum TaggedField {
 	PrivateRoute(PrivateRoute),
 	PaymentSecret(PaymentSecret),
 	PaymentMetadata(Vec<u8>),
-	Features(InvoiceFeatures),
+	Features(Bolt11InvoiceFeatures),
 }
 
 /// SHA-256 hash
-#[derive(Clone, Debug, Hash, Eq, PartialEq)]
+#[derive(Clone, Debug, Hash, Eq, PartialEq, Ord, PartialOrd)]
 pub struct Sha256(/// This is not exported to bindings users as the native hash types are not currently mapped
 	pub sha256::Hash);
+
+impl Sha256 {
+	/// Constructs a new [`Sha256`] from the given bytes, which are assumed to be the output of a
+	/// single sha256 hash.
+	#[cfg(c_bindings)]
+	pub fn from_bytes(bytes: &[u8; 32]) -> Self {
+		Self(sha256::Hash::from_slice(bytes).expect("from_slice only fails if len is not 32"))
+	}
+}
 
 /// Description string
 ///
 /// # Invariants
 /// The description can be at most 639 __bytes__ long
-#[derive(Clone, Debug, Hash, Eq, PartialEq)]
+#[derive(Clone, Debug, Hash, Eq, PartialEq, Ord, PartialOrd)]
 pub struct Description(String);
 
 /// Payee public key
-#[derive(Clone, Debug, Hash, Eq, PartialEq)]
+#[derive(Clone, Debug, Hash, Eq, PartialEq, Ord, PartialOrd)]
 pub struct PayeePubKey(pub PublicKey);
 
 /// Positive duration that defines when (relatively to the timestamp) in the future the invoice
 /// expires
-#[derive(Clone, Debug, Hash, Eq, PartialEq)]
+#[derive(Clone, Debug, Hash, Eq, PartialEq, Ord, PartialOrd)]
 pub struct ExpiryTime(Duration);
 
 /// `min_final_cltv_expiry_delta` to use for the last HTLC in the route
-#[derive(Clone, Debug, Hash, Eq, PartialEq)]
+#[derive(Clone, Debug, Hash, Eq, PartialEq, Ord, PartialOrd)]
 pub struct MinFinalCltvExpiryDelta(pub u64);
 
 /// Fallback address in case no LN payment is possible
 #[allow(missing_docs)]
-#[derive(Clone, Debug, Hash, Eq, PartialEq)]
+#[derive(Clone, Debug, Hash, Eq, PartialEq, Ord, PartialOrd)]
 pub enum Fallback {
 	SegWitProgram {
 		version: WitnessVersion,
@@ -489,14 +499,26 @@ pub enum Fallback {
 
 /// Recoverable signature
 #[derive(Clone, Debug, Hash, Eq, PartialEq)]
-pub struct InvoiceSignature(pub RecoverableSignature);
+pub struct Bolt11InvoiceSignature(pub RecoverableSignature);
+
+impl PartialOrd for Bolt11InvoiceSignature {
+	fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+		self.0.serialize_compact().1.partial_cmp(&other.0.serialize_compact().1)
+	}
+}
+
+impl Ord for Bolt11InvoiceSignature {
+	fn cmp(&self, other: &Self) -> Ordering {
+		self.0.serialize_compact().1.cmp(&other.0.serialize_compact().1)
+	}
+}
 
 /// Private routing information
 ///
 /// # Invariants
 /// The encoded route has to be <1024 5bit characters long (<=639 bytes or <=12 hops)
 ///
-#[derive(Clone, Debug, Hash, Eq, PartialEq)]
+#[derive(Clone, Debug, Hash, Eq, PartialEq, Ord, PartialOrd)]
 pub struct PrivateRoute(RouteHint);
 
 /// Tag constants as specified in BOLT11
@@ -599,9 +621,9 @@ impl<D: tb::Bool, H: tb::Bool, T: tb::Bool, C: tb::Bool, S: tb::Bool, M: tb::Boo
 }
 
 impl<D: tb::Bool, H: tb::Bool, C: tb::Bool, S: tb::Bool, M: tb::Bool> InvoiceBuilder<D, H, tb::True, C, S, M> {
-	/// Builds a [`RawInvoice`] if no [`CreationError`] occurred while construction any of the
+	/// Builds a [`RawBolt11Invoice`] if no [`CreationError`] occurred while construction any of the
 	/// fields.
-	pub fn build_raw(self) -> Result<RawInvoice, CreationError> {
+	pub fn build_raw(self) -> Result<RawBolt11Invoice, CreationError> {
 
 		// If an error occurred at any time before, return it now
 		if let Some(e) = self.error {
@@ -625,7 +647,7 @@ impl<D: tb::Bool, H: tb::Bool, C: tb::Bool, S: tb::Bool, M: tb::Bool> InvoiceBui
 			tagged_fields,
 		};
 
-		Ok(RawInvoice {
+		Ok(RawBolt11Invoice {
 			hrp,
 			data,
 		})
@@ -649,12 +671,12 @@ impl<H: tb::Bool, T: tb::Bool, C: tb::Bool, S: tb::Bool, M: tb::Bool> InvoiceBui
 	}
 
 	/// Set the description or description hash. This function is only available if no description (hash) was set.
-	pub fn invoice_description(self, description: InvoiceDescription) -> InvoiceBuilder<tb::True, H, T, C, S, M> {
+	pub fn invoice_description(self, description: Bolt11InvoiceDescription) -> InvoiceBuilder<tb::True, H, T, C, S, M> {
 		match description {
-			InvoiceDescription::Direct(desc) => {
+			Bolt11InvoiceDescription::Direct(desc) => {
 				self.description(desc.clone().into_inner())
 			}
-			InvoiceDescription::Hash(hash) => {
+			Bolt11InvoiceDescription::Hash(hash) => {
 				self.description_hash(hash.0)
 			}
 		}
@@ -722,7 +744,7 @@ impl<D: tb::Bool, H: tb::Bool, T: tb::Bool, C: tb::Bool, M: tb::Bool> InvoiceBui
 		}
 		self.tagged_fields.push(TaggedField::PaymentSecret(payment_secret));
 		if !found_features {
-			let mut features = InvoiceFeatures::empty();
+			let mut features = Bolt11InvoiceFeatures::empty();
 			features.set_variable_length_onion_required();
 			features.set_payment_secret_required();
 			self.tagged_fields.push(TaggedField::Features(features));
@@ -748,7 +770,7 @@ impl<D: tb::Bool, H: tb::Bool, T: tb::Bool, C: tb::Bool, S: tb::Bool> InvoiceBui
 			}
 		}
 		if !found_features {
-			let mut features = InvoiceFeatures::empty();
+			let mut features = Bolt11InvoiceFeatures::empty();
 			features.set_payment_metadata_optional();
 			self.tagged_fields.push(TaggedField::Features(features));
 		}
@@ -785,7 +807,7 @@ impl<M: tb::Bool> InvoiceBuilder<tb::True, tb::True, tb::True, tb::True, tb::Tru
 	/// Builds and signs an invoice using the supplied `sign_function`. This function MAY NOT fail
 	/// and MUST produce a recoverable signature valid for the given hash and if applicable also for
 	/// the included payee public key.
-	pub fn build_signed<F>(self, sign_function: F) -> Result<Invoice, CreationError>
+	pub fn build_signed<F>(self, sign_function: F) -> Result<Bolt11Invoice, CreationError>
 		where F: FnOnce(&Message) -> RecoverableSignature
 	{
 		let invoice = self.try_build_signed::<_, ()>(|hash| {
@@ -802,7 +824,7 @@ impl<M: tb::Bool> InvoiceBuilder<tb::True, tb::True, tb::True, tb::True, tb::Tru
 	/// Builds and signs an invoice using the supplied `sign_function`. This function MAY fail with
 	/// an error of type `E` and MUST produce a recoverable signature valid for the given hash and
 	/// if applicable also for the included payee public key.
-	pub fn try_build_signed<F, E>(self, sign_function: F) -> Result<Invoice, SignOrCreationError<E>>
+	pub fn try_build_signed<F, E>(self, sign_function: F) -> Result<Bolt11Invoice, SignOrCreationError<E>>
 		where F: FnOnce(&Message) -> Result<RecoverableSignature, E>
 	{
 		let raw = match self.build_raw() {
@@ -815,7 +837,7 @@ impl<M: tb::Bool> InvoiceBuilder<tb::True, tb::True, tb::True, tb::True, tb::Tru
 			Err(e) => return Err(SignOrCreationError::SignError(e)),
 		};
 
-		let invoice = Invoice {
+		let invoice = Bolt11Invoice {
 			signed_invoice: signed,
 		};
 
@@ -828,27 +850,27 @@ impl<M: tb::Bool> InvoiceBuilder<tb::True, tb::True, tb::True, tb::True, tb::Tru
 }
 
 
-impl SignedRawInvoice {
-	/// Disassembles the `SignedRawInvoice` into its three parts:
+impl SignedRawBolt11Invoice {
+	/// Disassembles the `SignedRawBolt11Invoice` into its three parts:
 	///  1. raw invoice
 	///  2. hash of the raw invoice
 	///  3. signature
-	pub fn into_parts(self) -> (RawInvoice, [u8; 32], InvoiceSignature) {
+	pub fn into_parts(self) -> (RawBolt11Invoice, [u8; 32], Bolt11InvoiceSignature) {
 		(self.raw_invoice, self.hash, self.signature)
 	}
 
-	/// The [`RawInvoice`] which was signed.
-	pub fn raw_invoice(&self) -> &RawInvoice {
+	/// The [`RawBolt11Invoice`] which was signed.
+	pub fn raw_invoice(&self) -> &RawBolt11Invoice {
 		&self.raw_invoice
 	}
 
-	/// The hash of the [`RawInvoice`] that was signed.
+	/// The hash of the [`RawBolt11Invoice`] that was signed.
 	pub fn signable_hash(&self) -> &[u8; 32] {
 		&self.hash
 	}
 
 	/// Signature for the invoice.
-	pub fn signature(&self) -> &InvoiceSignature {
+	pub fn signature(&self) -> &Bolt11InvoiceSignature {
 		&self.signature
 	}
 
@@ -946,7 +968,7 @@ macro_rules! find_all_extract {
 }
 
 #[allow(missing_docs)]
-impl RawInvoice {
+impl RawBolt11Invoice {
 	/// Hash the HRP as bytes and signatureless data part.
 	fn hash_from_parts(hrp_bytes: &[u8], data_without_signature: &[u5]) -> [u8; 32] {
 		let preimage = construct_invoice_preimage(hrp_bytes, data_without_signature);
@@ -955,23 +977,23 @@ impl RawInvoice {
 		hash
 	}
 
-	/// Calculate the hash of the encoded `RawInvoice` which should be signed.
+	/// Calculate the hash of the encoded `RawBolt11Invoice` which should be signed.
 	pub fn signable_hash(&self) -> [u8; 32] {
 		use bech32::ToBase32;
 
-		RawInvoice::hash_from_parts(
+		RawBolt11Invoice::hash_from_parts(
 			self.hrp.to_string().as_bytes(),
 			&self.data.to_base32()
 		)
 	}
 
 	/// Signs the invoice using the supplied `sign_method`. This function MAY fail with an error of
-	/// type `E`. Since the signature of a [`SignedRawInvoice`] is not required to be valid there
+	/// type `E`. Since the signature of a [`SignedRawBolt11Invoice`] is not required to be valid there
 	/// are no constraints regarding the validity of the produced signature.
 	///
 	/// This is not exported to bindings users as we don't currently support passing function pointers into methods
 	/// explicitly.
-	pub fn sign<F, E>(self, sign_method: F) -> Result<SignedRawInvoice, E>
+	pub fn sign<F, E>(self, sign_method: F) -> Result<SignedRawBolt11Invoice, E>
 		where F: FnOnce(&Message) -> Result<RecoverableSignature, E>
 	{
 		let raw_hash = self.signable_hash();
@@ -979,10 +1001,10 @@ impl RawInvoice {
 			.expect("Hash is 32 bytes long, same as MESSAGE_SIZE");
 		let signature = sign_method(&hash)?;
 
-		Ok(SignedRawInvoice {
+		Ok(SignedRawBolt11Invoice {
 			raw_invoice: self,
 			hash: raw_hash,
-			signature: InvoiceSignature(signature),
+			signature: Bolt11InvoiceSignature(signature),
 		})
 	}
 
@@ -1037,7 +1059,7 @@ impl RawInvoice {
 		find_extract!(self.known_tagged_fields(), TaggedField::PaymentMetadata(ref x), x)
 	}
 
-	pub fn features(&self) -> Option<&InvoiceFeatures> {
+	pub fn features(&self) -> Option<&Bolt11InvoiceFeatures> {
 		find_extract!(self.known_tagged_fields(), TaggedField::Features(ref x), x)
 	}
 
@@ -1120,28 +1142,28 @@ impl From<PositiveTimestamp> for SystemTime {
 	}
 }
 
-impl Invoice {
-	/// The hash of the [`RawInvoice`] that was signed.
+impl Bolt11Invoice {
+	/// The hash of the [`RawBolt11Invoice`] that was signed.
 	pub fn signable_hash(&self) -> [u8; 32] {
 		self.signed_invoice.hash
 	}
 
-	/// Transform the `Invoice` into it's unchecked version
-	pub fn into_signed_raw(self) -> SignedRawInvoice {
+	/// Transform the `Bolt11Invoice` into its unchecked version.
+	pub fn into_signed_raw(self) -> SignedRawBolt11Invoice {
 		self.signed_invoice
 	}
 
 	/// Check that all mandatory fields are present
-	fn check_field_counts(&self) -> Result<(), SemanticError> {
+	fn check_field_counts(&self) -> Result<(), Bolt11SemanticError> {
 		// "A writer MUST include exactly one p field […]."
 		let payment_hash_cnt = self.tagged_fields().filter(|&tf| match *tf {
 			TaggedField::PaymentHash(_) => true,
 			_ => false,
 		}).count();
 		if payment_hash_cnt < 1 {
-			return Err(SemanticError::NoPaymentHash);
+			return Err(Bolt11SemanticError::NoPaymentHash);
 		} else if payment_hash_cnt > 1 {
-			return Err(SemanticError::MultiplePaymentHashes);
+			return Err(Bolt11SemanticError::MultiplePaymentHashes);
 		}
 
 		// "A writer MUST include either exactly one d or exactly one h field."
@@ -1150,9 +1172,9 @@ impl Invoice {
 			_ => false,
 		}).count();
 		if  description_cnt < 1 {
-			return Err(SemanticError::NoDescription);
+			return Err(Bolt11SemanticError::NoDescription);
 		} else if description_cnt > 1 {
-			return  Err(SemanticError::MultipleDescriptions);
+			return  Err(Bolt11SemanticError::MultipleDescriptions);
 		}
 
 		self.check_payment_secret()?;
@@ -1161,33 +1183,33 @@ impl Invoice {
 	}
 
 	/// Checks that there is exactly one payment secret field
-	fn check_payment_secret(&self) -> Result<(), SemanticError> {
+	fn check_payment_secret(&self) -> Result<(), Bolt11SemanticError> {
 		// "A writer MUST include exactly one `s` field."
 		let payment_secret_count = self.tagged_fields().filter(|&tf| match *tf {
 			TaggedField::PaymentSecret(_) => true,
 			_ => false,
 		}).count();
 		if payment_secret_count < 1 {
-			return Err(SemanticError::NoPaymentSecret);
+			return Err(Bolt11SemanticError::NoPaymentSecret);
 		} else if payment_secret_count > 1 {
-			return Err(SemanticError::MultiplePaymentSecrets);
+			return Err(Bolt11SemanticError::MultiplePaymentSecrets);
 		}
 
 		Ok(())
 	}
 
 	/// Check that amount is a whole number of millisatoshis
-	fn check_amount(&self) -> Result<(), SemanticError> {
+	fn check_amount(&self) -> Result<(), Bolt11SemanticError> {
 		if let Some(amount_pico_btc) = self.amount_pico_btc() {
 			if amount_pico_btc % 10 != 0 {
-				return Err(SemanticError::ImpreciseAmount);
+				return Err(Bolt11SemanticError::ImpreciseAmount);
 			}
 		}
 		Ok(())
 	}
 
 	/// Check that feature bits are set as required
-	fn check_feature_bits(&self) -> Result<(), SemanticError> {
+	fn check_feature_bits(&self) -> Result<(), Bolt11SemanticError> {
 		self.check_payment_secret()?;
 
 		// "A writer MUST set an s field if and only if the payment_secret feature is set."
@@ -1198,12 +1220,12 @@ impl Invoice {
 			_ => false,
 		});
 		match features {
-			None => Err(SemanticError::InvalidFeatures),
+			None => Err(Bolt11SemanticError::InvalidFeatures),
 			Some(TaggedField::Features(features)) => {
 				if features.requires_unknown_bits() {
-					Err(SemanticError::InvalidFeatures)
+					Err(Bolt11SemanticError::InvalidFeatures)
 				} else if !features.supports_payment_secret() {
-					Err(SemanticError::InvalidFeatures)
+					Err(Bolt11SemanticError::InvalidFeatures)
 				} else {
 					Ok(())
 				}
@@ -1213,24 +1235,24 @@ impl Invoice {
 	}
 
 	/// Check that the invoice is signed correctly and that key recovery works
-	pub fn check_signature(&self) -> Result<(), SemanticError> {
+	pub fn check_signature(&self) -> Result<(), Bolt11SemanticError> {
 		match self.signed_invoice.recover_payee_pub_key() {
 			Err(secp256k1::Error::InvalidRecoveryId) =>
-				return Err(SemanticError::InvalidRecoveryId),
+				return Err(Bolt11SemanticError::InvalidRecoveryId),
 			Err(secp256k1::Error::InvalidSignature) =>
-				return Err(SemanticError::InvalidSignature),
+				return Err(Bolt11SemanticError::InvalidSignature),
 			Err(e) => panic!("no other error may occur, got {:?}", e),
 			Ok(_) => {},
 		}
 
 		if !self.signed_invoice.check_signature() {
-			return Err(SemanticError::InvalidSignature);
+			return Err(Bolt11SemanticError::InvalidSignature);
 		}
 
 		Ok(())
 	}
 
-	/// Constructs an `Invoice` from a [`SignedRawInvoice`] by checking all its invariants.
+	/// Constructs a `Bolt11Invoice` from a [`SignedRawBolt11Invoice`] by checking all its invariants.
 	/// ```
 	/// use lightning_invoice::*;
 	///
@@ -1246,12 +1268,12 @@ impl Invoice {
 	/// 8s0gyuxjjgux34w75dnc6xp2l35j7es3jd4ugt3lu0xzre26yg5m7ke54n2d5sym4xcmxtl8238xxvw5h5h5\
 	/// j5r6drg6k6zcqj0fcwg";
 	///
-	/// let signed = invoice.parse::<SignedRawInvoice>().unwrap();
+	/// let signed = invoice.parse::<SignedRawBolt11Invoice>().unwrap();
 	///
-	/// assert!(Invoice::from_signed(signed).is_ok());
+	/// assert!(Bolt11Invoice::from_signed(signed).is_ok());
 	/// ```
-	pub fn from_signed(signed_invoice: SignedRawInvoice) -> Result<Self, SemanticError> {
-		let invoice = Invoice {
+	pub fn from_signed(signed_invoice: SignedRawBolt11Invoice) -> Result<Self, Bolt11SemanticError> {
+		let invoice = Bolt11Invoice {
 			signed_invoice,
 		};
 		invoice.check_field_counts()?;
@@ -1262,18 +1284,18 @@ impl Invoice {
 		Ok(invoice)
 	}
 
-	/// Returns the `Invoice`'s timestamp (should equal its creation time)
+	/// Returns the `Bolt11Invoice`'s timestamp (should equal its creation time)
 	#[cfg(feature = "std")]
 	pub fn timestamp(&self) -> SystemTime {
 		self.signed_invoice.raw_invoice().data.timestamp.as_time()
 	}
 
-	/// Returns the `Invoice`'s timestamp as a duration since the Unix epoch
+	/// Returns the `Bolt11Invoice`'s timestamp as a duration since the Unix epoch
 	pub fn duration_since_epoch(&self) -> Duration {
 		self.signed_invoice.raw_invoice().data.timestamp.0
 	}
 
-	/// Returns an iterator over all tagged fields of this Invoice.
+	/// Returns an iterator over all tagged fields of this `Bolt11Invoice`.
 	///
 	/// This is not exported to bindings users as there is not yet a manual mapping for a FilterMap
 	pub fn tagged_fields(&self)
@@ -1288,12 +1310,12 @@ impl Invoice {
 
 	/// Return the description or a hash of it for longer ones
 	///
-	/// This is not exported to bindings users because we don't yet export InvoiceDescription
-	pub fn description(&self) -> InvoiceDescription {
+	/// This is not exported to bindings users because we don't yet export Bolt11InvoiceDescription
+	pub fn description(&self) -> Bolt11InvoiceDescription {
 		if let Some(direct) = self.signed_invoice.description() {
-			return InvoiceDescription::Direct(direct);
+			return Bolt11InvoiceDescription::Direct(direct);
 		} else if let Some(hash) = self.signed_invoice.description_hash() {
-			return InvoiceDescription::Hash(hash);
+			return Bolt11InvoiceDescription::Hash(hash);
 		}
 		unreachable!("ensured by constructor");
 	}
@@ -1314,7 +1336,7 @@ impl Invoice {
 	}
 
 	/// Get the invoice features if they were included in the invoice
-	pub fn features(&self) -> Option<&InvoiceFeatures> {
+	pub fn features(&self) -> Option<&Bolt11InvoiceFeatures> {
 		self.signed_invoice.features()
 	}
 
@@ -1569,7 +1591,7 @@ impl Deref for PrivateRoute {
 	}
 }
 
-impl Deref for InvoiceSignature {
+impl Deref for Bolt11InvoiceSignature {
 	type Target = RecoverableSignature;
 
 	fn deref(&self) -> &RecoverableSignature {
@@ -1577,15 +1599,15 @@ impl Deref for InvoiceSignature {
 	}
 }
 
-impl Deref for SignedRawInvoice {
-	type Target = RawInvoice;
+impl Deref for SignedRawBolt11Invoice {
+	type Target = RawBolt11Invoice;
 
-	fn deref(&self) -> &RawInvoice {
+	fn deref(&self) -> &RawBolt11Invoice {
 		&self.raw_invoice
 	}
 }
 
-/// Errors that may occur when constructing a new [`RawInvoice`] or [`Invoice`]
+/// Errors that may occur when constructing a new [`RawBolt11Invoice`] or [`Bolt11Invoice`]
 #[derive(Eq, PartialEq, Debug, Clone)]
 pub enum CreationError {
 	/// The supplied description string was longer than 639 __bytes__ (see [`Description::new`])
@@ -1629,10 +1651,10 @@ impl Display for CreationError {
 #[cfg(feature = "std")]
 impl std::error::Error for CreationError { }
 
-/// Errors that may occur when converting a [`RawInvoice`] to an [`Invoice`]. They relate to the
-/// requirements sections in BOLT #11
+/// Errors that may occur when converting a [`RawBolt11Invoice`] to a [`Bolt11Invoice`]. They relate to
+/// the requirements sections in BOLT #11
 #[derive(Eq, PartialEq, Debug, Clone)]
-pub enum SemanticError {
+pub enum Bolt11SemanticError {
 	/// The invoice is missing the mandatory payment hash
 	NoPaymentHash,
 
@@ -1665,25 +1687,25 @@ pub enum SemanticError {
 	ImpreciseAmount,
 }
 
-impl Display for SemanticError {
+impl Display for Bolt11SemanticError {
 	fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
 		match self {
-			SemanticError::NoPaymentHash => f.write_str("The invoice is missing the mandatory payment hash"),
-			SemanticError::MultiplePaymentHashes => f.write_str("The invoice has multiple payment hashes which isn't allowed"),
-			SemanticError::NoDescription => f.write_str("No description or description hash are part of the invoice"),
-			SemanticError::MultipleDescriptions => f.write_str("The invoice contains multiple descriptions and/or description hashes which isn't allowed"),
-			SemanticError::NoPaymentSecret => f.write_str("The invoice is missing the mandatory payment secret"),
-			SemanticError::MultiplePaymentSecrets => f.write_str("The invoice contains multiple payment secrets"),
-			SemanticError::InvalidFeatures => f.write_str("The invoice's features are invalid"),
-			SemanticError::InvalidRecoveryId => f.write_str("The recovery id doesn't fit the signature/pub key"),
-			SemanticError::InvalidSignature => f.write_str("The invoice's signature is invalid"),
-			SemanticError::ImpreciseAmount => f.write_str("The invoice's amount was not a whole number of millisatoshis"),
+			Bolt11SemanticError::NoPaymentHash => f.write_str("The invoice is missing the mandatory payment hash"),
+			Bolt11SemanticError::MultiplePaymentHashes => f.write_str("The invoice has multiple payment hashes which isn't allowed"),
+			Bolt11SemanticError::NoDescription => f.write_str("No description or description hash are part of the invoice"),
+			Bolt11SemanticError::MultipleDescriptions => f.write_str("The invoice contains multiple descriptions and/or description hashes which isn't allowed"),
+			Bolt11SemanticError::NoPaymentSecret => f.write_str("The invoice is missing the mandatory payment secret"),
+			Bolt11SemanticError::MultiplePaymentSecrets => f.write_str("The invoice contains multiple payment secrets"),
+			Bolt11SemanticError::InvalidFeatures => f.write_str("The invoice's features are invalid"),
+			Bolt11SemanticError::InvalidRecoveryId => f.write_str("The recovery id doesn't fit the signature/pub key"),
+			Bolt11SemanticError::InvalidSignature => f.write_str("The invoice's signature is invalid"),
+			Bolt11SemanticError::ImpreciseAmount => f.write_str("The invoice's amount was not a whole number of millisatoshis"),
 		}
 	}
 }
 
 #[cfg(feature = "std")]
-impl std::error::Error for SemanticError { }
+impl std::error::Error for Bolt11SemanticError { }
 
 /// When signing using a fallible method either an user-supplied `SignError` or a [`CreationError`]
 /// may occur.
@@ -1706,17 +1728,17 @@ impl<S> Display for SignOrCreationError<S> {
 }
 
 #[cfg(feature = "serde")]
-impl Serialize for Invoice {
+impl Serialize for Bolt11Invoice {
 	fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error> where S: Serializer {
 		serializer.serialize_str(self.to_string().as_str())
 	}
 }
 #[cfg(feature = "serde")]
-impl<'de> Deserialize<'de> for Invoice {
-	fn deserialize<D>(deserializer: D) -> Result<Invoice, D::Error> where D: Deserializer<'de> {
+impl<'de> Deserialize<'de> for Bolt11Invoice {
+	fn deserialize<D>(deserializer: D) -> Result<Bolt11Invoice, D::Error> where D: Deserializer<'de> {
 		let bolt11 = String::deserialize(deserializer)?
-			.parse::<Invoice>()
-			.map_err(|e| D::Error::custom(alloc::format!("{:?}", e)))?;
+			.parse::<Bolt11Invoice>()
+			.map_err(|e| D::Error::custom(format_args!("{:?}", e)))?;
 
 		Ok(bolt11)
 	}
@@ -1738,10 +1760,10 @@ mod test {
 
 	#[test]
 	fn test_calc_invoice_hash() {
-		use crate::{RawInvoice, RawHrp, RawDataPart, Currency, PositiveTimestamp};
+		use crate::{RawBolt11Invoice, RawHrp, RawDataPart, Currency, PositiveTimestamp};
 		use crate::TaggedField::*;
 
-		let invoice = RawInvoice {
+		let invoice = RawBolt11Invoice {
 			hrp: RawHrp {
 				currency: Currency::Bitcoin,
 				raw_amount: None,
@@ -1775,11 +1797,11 @@ mod test {
 		use secp256k1::Secp256k1;
 		use secp256k1::ecdsa::{RecoveryId, RecoverableSignature};
 		use secp256k1::{SecretKey, PublicKey};
-		use crate::{SignedRawInvoice, InvoiceSignature, RawInvoice, RawHrp, RawDataPart, Currency, Sha256,
+		use crate::{SignedRawBolt11Invoice, Bolt11InvoiceSignature, RawBolt11Invoice, RawHrp, RawDataPart, Currency, Sha256,
 			 PositiveTimestamp};
 
-		let invoice = SignedRawInvoice {
-			raw_invoice: RawInvoice {
+		let invoice = SignedRawBolt11Invoice {
+			raw_invoice: RawBolt11Invoice {
 				hrp: RawHrp {
 					currency: Currency::Bitcoin,
 					raw_amount: None,
@@ -1804,7 +1826,7 @@ mod test {
 				0x7b, 0x1d, 0x85, 0x8d, 0xb1, 0xd1, 0xf7, 0xab, 0x71, 0x37, 0xdc, 0xb7,
 				0x83, 0x5d, 0xb2, 0xec, 0xd5, 0x18, 0xe1, 0xc9
 			],
-			signature: InvoiceSignature(RecoverableSignature::from_compact(
+			signature: Bolt11InvoiceSignature(RecoverableSignature::from_compact(
 				& [
 					0x38u8, 0xec, 0x68, 0x91, 0x34, 0x5e, 0x20, 0x41, 0x45, 0xbe, 0x8a,
 					0x3a, 0x99, 0xde, 0x38, 0xe9, 0x8a, 0x39, 0xd6, 0xa5, 0x69, 0x43,
@@ -1841,15 +1863,15 @@ mod test {
 	#[test]
 	fn test_check_feature_bits() {
 		use crate::TaggedField::*;
-		use lightning::ln::features::InvoiceFeatures;
+		use lightning::ln::features::Bolt11InvoiceFeatures;
 		use secp256k1::Secp256k1;
 		use secp256k1::SecretKey;
-		use crate::{RawInvoice, RawHrp, RawDataPart, Currency, Sha256, PositiveTimestamp, Invoice,
-			 SemanticError};
+		use crate::{Bolt11Invoice, RawBolt11Invoice, RawHrp, RawDataPart, Currency, Sha256, PositiveTimestamp, 
+			 Bolt11SemanticError};
 
 		let private_key = SecretKey::from_slice(&[42; 32]).unwrap();
 		let payment_secret = lightning::ln::PaymentSecret([21; 32]);
-		let invoice_template = RawInvoice {
+		let invoice_template = RawBolt11Invoice {
 			hrp: RawHrp {
 				currency: Currency::Bitcoin,
 				raw_amount: None,
@@ -1876,18 +1898,18 @@ mod test {
 			invoice.data.tagged_fields.push(PaymentSecret(payment_secret).into());
 			invoice.sign::<_, ()>(|hash| Ok(Secp256k1::new().sign_ecdsa_recoverable(hash, &private_key)))
 		}.unwrap();
-		assert_eq!(Invoice::from_signed(invoice), Err(SemanticError::InvalidFeatures));
+		assert_eq!(Bolt11Invoice::from_signed(invoice), Err(Bolt11SemanticError::InvalidFeatures));
 
 		// Missing feature bits
 		let invoice = {
 			let mut invoice = invoice_template.clone();
 			invoice.data.tagged_fields.push(PaymentSecret(payment_secret).into());
-			invoice.data.tagged_fields.push(Features(InvoiceFeatures::empty()).into());
+			invoice.data.tagged_fields.push(Features(Bolt11InvoiceFeatures::empty()).into());
 			invoice.sign::<_, ()>(|hash| Ok(Secp256k1::new().sign_ecdsa_recoverable(hash, &private_key)))
 		}.unwrap();
-		assert_eq!(Invoice::from_signed(invoice), Err(SemanticError::InvalidFeatures));
+		assert_eq!(Bolt11Invoice::from_signed(invoice), Err(Bolt11SemanticError::InvalidFeatures));
 
-		let mut payment_secret_features = InvoiceFeatures::empty();
+		let mut payment_secret_features = Bolt11InvoiceFeatures::empty();
 		payment_secret_features.set_payment_secret_required();
 
 		// Including payment secret and feature bits
@@ -1897,22 +1919,22 @@ mod test {
 			invoice.data.tagged_fields.push(Features(payment_secret_features.clone()).into());
 			invoice.sign::<_, ()>(|hash| Ok(Secp256k1::new().sign_ecdsa_recoverable(hash, &private_key)))
 		}.unwrap();
-		assert!(Invoice::from_signed(invoice).is_ok());
+		assert!(Bolt11Invoice::from_signed(invoice).is_ok());
 
 		// No payment secret or features
 		let invoice = {
 			let invoice = invoice_template.clone();
 			invoice.sign::<_, ()>(|hash| Ok(Secp256k1::new().sign_ecdsa_recoverable(hash, &private_key)))
 		}.unwrap();
-		assert_eq!(Invoice::from_signed(invoice), Err(SemanticError::NoPaymentSecret));
+		assert_eq!(Bolt11Invoice::from_signed(invoice), Err(Bolt11SemanticError::NoPaymentSecret));
 
 		// No payment secret or feature bits
 		let invoice = {
 			let mut invoice = invoice_template.clone();
-			invoice.data.tagged_fields.push(Features(InvoiceFeatures::empty()).into());
+			invoice.data.tagged_fields.push(Features(Bolt11InvoiceFeatures::empty()).into());
 			invoice.sign::<_, ()>(|hash| Ok(Secp256k1::new().sign_ecdsa_recoverable(hash, &private_key)))
 		}.unwrap();
-		assert_eq!(Invoice::from_signed(invoice), Err(SemanticError::NoPaymentSecret));
+		assert_eq!(Bolt11Invoice::from_signed(invoice), Err(Bolt11SemanticError::NoPaymentSecret));
 
 		// Missing payment secret
 		let invoice = {
@@ -1920,7 +1942,7 @@ mod test {
 			invoice.data.tagged_fields.push(Features(payment_secret_features).into());
 			invoice.sign::<_, ()>(|hash| Ok(Secp256k1::new().sign_ecdsa_recoverable(hash, &private_key)))
 		}.unwrap();
-		assert_eq!(Invoice::from_signed(invoice), Err(SemanticError::NoPaymentSecret));
+		assert_eq!(Bolt11Invoice::from_signed(invoice), Err(Bolt11SemanticError::NoPaymentSecret));
 
 		// Multiple payment secrets
 		let invoice = {
@@ -1929,7 +1951,7 @@ mod test {
 			invoice.data.tagged_fields.push(PaymentSecret(payment_secret).into());
 			invoice.sign::<_, ()>(|hash| Ok(Secp256k1::new().sign_ecdsa_recoverable(hash, &private_key)))
 		}.unwrap();
-		assert_eq!(Invoice::from_signed(invoice), Err(SemanticError::MultiplePaymentSecrets));
+		assert_eq!(Bolt11Invoice::from_signed(invoice), Err(Bolt11SemanticError::MultiplePaymentSecrets));
 	}
 
 	#[test]
@@ -2120,12 +2142,12 @@ mod test {
 		assert_eq!(invoice.private_routes(), vec![&PrivateRoute(route_1), &PrivateRoute(route_2)]);
 		assert_eq!(
 			invoice.description(),
-			InvoiceDescription::Hash(&Sha256(sha256::Hash::from_slice(&[3;32][..]).unwrap()))
+			Bolt11InvoiceDescription::Hash(&Sha256(sha256::Hash::from_slice(&[3;32][..]).unwrap()))
 		);
 		assert_eq!(invoice.payment_hash(), &sha256::Hash::from_slice(&[21;32][..]).unwrap());
 		assert_eq!(invoice.payment_secret(), &PaymentSecret([42; 32]));
 
-		let mut expected_features = InvoiceFeatures::empty();
+		let mut expected_features = Bolt11InvoiceFeatures::empty();
 		expected_features.set_variable_length_onion_required();
 		expected_features.set_payment_secret_required();
 		expected_features.set_basic_mpp_optional();
@@ -2154,7 +2176,7 @@ mod test {
 				Ok(secp_ctx.sign_ecdsa_recoverable(hash, &privkey))
 			})
 			.unwrap();
-		let invoice = Invoice::from_signed(signed_invoice).unwrap();
+		let invoice = Bolt11Invoice::from_signed(signed_invoice).unwrap();
 
 		assert_eq!(invoice.min_final_cltv_expiry_delta(), DEFAULT_MIN_FINAL_CLTV_EXPIRY_DELTA);
 		assert_eq!(invoice.expiry_time(), Duration::from_secs(DEFAULT_EXPIRY_TIME));
@@ -2180,7 +2202,7 @@ mod test {
 				Ok(secp_ctx.sign_ecdsa_recoverable(hash, &privkey))
 			})
 			.unwrap();
-		let invoice = Invoice::from_signed(signed_invoice).unwrap();
+		let invoice = Bolt11Invoice::from_signed(signed_invoice).unwrap();
 
 		assert!(invoice.would_expire(Duration::from_secs(1234567 + DEFAULT_EXPIRY_TIME + 1)));
 	}
@@ -2199,9 +2221,9 @@ mod test {
 			p62g49p7569ev48cmulecsxe59lvaw3wlxm7r982zxa9zzj7z5l0cqqxusqqyqqqqlgqqqqqzsqygarl9fh3\
 			8s0gyuxjjgux34w75dnc6xp2l35j7es3jd4ugt3lu0xzre26yg5m7ke54n2d5sym4xcmxtl8238xxvw5h5h5\
 			j5r6drg6k6zcqj0fcwg";
-		let invoice = invoice_str.parse::<super::Invoice>().unwrap();
+		let invoice = invoice_str.parse::<super::Bolt11Invoice>().unwrap();
 		let serialized_invoice = serde_json::to_string(&invoice).unwrap();
-		let deserialized_invoice: super::Invoice = serde_json::from_str(serialized_invoice.as_str()).unwrap();
+		let deserialized_invoice: super::Bolt11Invoice = serde_json::from_str(serialized_invoice.as_str()).unwrap();
 		assert_eq!(invoice, deserialized_invoice);
 		assert_eq!(invoice_str, deserialized_invoice.to_string().as_str());
 		assert_eq!(invoice_str, serialized_invoice.as_str().trim_matches('\"'));

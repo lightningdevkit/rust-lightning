@@ -37,11 +37,9 @@ jobs:
       - name: Checkout source code
         uses: actions/checkout@v3
       - name: Install Rust ${{ matrix.toolchain }} toolchain
-        uses: actions-rs/toolchain@v1
-        with:
-          toolchain: ${{ matrix.toolchain }}
-          override: true
-          profile: minimal
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile=minimal --default-toolchain ${{ matrix.toolchain }}
+          rustup override set ${{ matrix.toolchain }}
       - name: Install no-std-check dependencies for ARM Embedded
         if: "matrix.platform == 'ubuntu-latest'"
         run: |
@@ -101,11 +99,9 @@ jobs:
       - name: Checkout source code
         uses: actions/checkout@v3
       - name: Install Rust ${{ env.TOOLCHAIN }} toolchain
-        uses: actions-rs/toolchain@v1
-        with:
-          toolchain: ${{ env.TOOLCHAIN }}
-          override: true
-          profile: minimal
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile=minimal --default-toolchain ${{ env.TOOLCHAIN }}
+          rustup override set ${{ env.TOOLCHAIN }}
       - name: Cache routing graph snapshot
         id: cache-graph
         uses: actions/cache@v3
@@ -141,23 +137,26 @@ jobs:
           cd ..
       - name: Run benchmarks on Rust ${{ matrix.toolchain }}
         run: |
-          RUSTC_BOOTSTRAP=1 cargo bench --features _bench_unstable
+          cd bench
+          RUSTFLAGS="--cfg=ldk_bench --cfg=require_route_graph_test" cargo bench
+      - name: Run benchmarks with hashbrown on Rust ${{ matrix.toolchain }}
+        run: |
+          cd bench
+          RUSTFLAGS="--cfg=ldk_bench --cfg=require_route_graph_test" cargo bench --features hashbrown
 
   check_commits:
     runs-on: ubuntu-latest
     env:
-      TOOLCHAIN: 1.57.0
+      TOOLCHAIN: stable
     steps:
       - name: Checkout source code
         uses: actions/checkout@v3
         with:
           fetch-depth: 0
       - name: Install Rust ${{ env.TOOLCHAIN }} toolchain
-        uses: actions-rs/toolchain@v1
-        with:
-          toolchain: ${{ env.TOOLCHAIN }}
-          override: true
-          profile: minimal
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile=minimal --default-toolchain ${{ env.TOOLCHAIN }}
+          rustup override set ${{ env.TOOLCHAIN }}
       - name: Fetch full tree and rebase on upstream
         run: |
           git remote add upstream https://github.com/lightningdevkit/rust-lightning
@@ -178,18 +177,15 @@ jobs:
         with:
           fetch-depth: 0
       - name: Install Rust ${{ env.TOOLCHAIN }} toolchain
-        uses: actions-rs/toolchain@v1
-        with:
-          toolchain: ${{ env.TOOLCHAIN }}
-          override: true
-          profile: minimal
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile=minimal --default-toolchain ${{ env.TOOLCHAIN }}
+          rustup override set ${{ env.TOOLCHAIN }}
       - name: Run cargo check for release build.
         run: |
           cargo check --release
           cargo check --no-default-features --features=no-std --release
           cargo check --no-default-features --features=futures --release
           cargo doc --release
-          RUSTDOCFLAGS="--cfg=anchors" cargo doc --release
       - name: Run cargo check for Taproot build.
         run: |
           cargo check --release
@@ -197,22 +193,20 @@ jobs:
           cargo check --no-default-features --features=futures --release
           cargo doc --release
         env:
-          RUSTFLAGS: '--cfg=anchors --cfg=taproot'
-          RUSTDOCFLAGS: '--cfg=anchors --cfg=taproot'
+          RUSTFLAGS: '--cfg=taproot'
+          RUSTDOCFLAGS: '--cfg=taproot'
 
   fuzz:
     runs-on: ubuntu-latest
     env:
-      TOOLCHAIN: stable
+      TOOLCHAIN: 1.58
     steps:
       - name: Checkout source code
         uses: actions/checkout@v3
-      - name: Install Rust 1.58 toolchain
-        uses: actions-rs/toolchain@v1
-        with:
-          toolchain: 1.58
-          override: true
-          profile: minimal
+      - name: Install Rust ${{ env.TOOLCHAIN }} toolchain
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile=minimal --default-toolchain ${{ env.TOOLCHAIN }}
+          rustup override set ${{ env.TOOLCHAIN }}
       - name: Install dependencies for honggfuzz
         run: |
           sudo apt-get update
@@ -232,11 +226,9 @@ jobs:
       - name: Checkout source code
         uses: actions/checkout@v3
       - name: Install Rust ${{ env.TOOLCHAIN }} toolchain
-        uses: actions-rs/toolchain@v1
-        with:
-          toolchain: ${{ env.TOOLCHAIN }}
-          override: true
-          profile: minimal
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile=minimal --default-toolchain ${{ env.TOOLCHAIN }}
+          rustup override set ${{ env.TOOLCHAIN }}
       - name: Install clippy
         run: |
           rustup component add clippy

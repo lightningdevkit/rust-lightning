@@ -54,9 +54,20 @@ pub(crate) enum Message<T> where T: core::fmt::Debug + Type + TestEq {
 	Ping(msgs::Ping),
 	Pong(msgs::Pong),
 	OpenChannel(msgs::OpenChannel),
+	OpenChannelV2(msgs::OpenChannelV2),
 	AcceptChannel(msgs::AcceptChannel),
+	AcceptChannelV2(msgs::AcceptChannelV2),
 	FundingCreated(msgs::FundingCreated),
 	FundingSigned(msgs::FundingSigned),
+	TxAddInput(msgs::TxAddInput),
+	TxAddOutput(msgs::TxAddOutput),
+	TxRemoveInput(msgs::TxRemoveInput),
+	TxRemoveOutput(msgs::TxRemoveOutput),
+	TxComplete(msgs::TxComplete),
+	TxSignatures(msgs::TxSignatures),
+	TxInitRbf(msgs::TxInitRbf),
+	TxAckRbf(msgs::TxAckRbf),
+	TxAbort(msgs::TxAbort),
 	ChannelReady(msgs::ChannelReady),
 	Shutdown(msgs::Shutdown),
 	ClosingSigned(msgs::ClosingSigned),
@@ -90,9 +101,63 @@ pub(crate) enum Message<T> where T: core::fmt::Debug + Type + TestEq {
 	Custom(T),
 }
 
-impl<T> Message<T> where T: core::fmt::Debug + Type + TestEq {
+impl<T> Writeable for Message<T> where T: core::fmt::Debug + Type + TestEq {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+		match self {
+			&Message::Init(ref msg) => msg.write(writer),
+			&Message::Error(ref msg) => msg.write(writer),
+			&Message::Warning(ref msg) => msg.write(writer),
+			&Message::Ping(ref msg) => msg.write(writer),
+			&Message::Pong(ref msg) => msg.write(writer),
+			&Message::OpenChannel(ref msg) => msg.write(writer),
+			&Message::OpenChannelV2(ref msg) => msg.write(writer),
+			&Message::AcceptChannel(ref msg) => msg.write(writer),
+			&Message::AcceptChannelV2(ref msg) => msg.write(writer),
+			&Message::FundingCreated(ref msg) => msg.write(writer),
+			&Message::FundingSigned(ref msg) => msg.write(writer),
+			&Message::TxAddInput(ref msg) => msg.write(writer),
+			&Message::TxAddOutput(ref msg) => msg.write(writer),
+			&Message::TxRemoveInput(ref msg) => msg.write(writer),
+			&Message::TxRemoveOutput(ref msg) => msg.write(writer),
+			&Message::TxComplete(ref msg) => msg.write(writer),
+			&Message::TxSignatures(ref msg) => msg.write(writer),
+			&Message::TxInitRbf(ref msg) => msg.write(writer),
+			&Message::TxAckRbf(ref msg) => msg.write(writer),
+			&Message::TxAbort(ref msg) => msg.write(writer),
+			&Message::ChannelReady(ref msg) => msg.write(writer),
+			&Message::Shutdown(ref msg) => msg.write(writer),
+			&Message::ClosingSigned(ref msg) => msg.write(writer),
+			&Message::OnionMessage(ref msg) => msg.write(writer),
+			&Message::UpdateAddHTLC(ref msg) => msg.write(writer),
+			&Message::UpdateFulfillHTLC(ref msg) => msg.write(writer),
+			&Message::UpdateFailHTLC(ref msg) => msg.write(writer),
+			&Message::UpdateFailMalformedHTLC(ref msg) => msg.write(writer),
+			&Message::CommitmentSigned(ref msg) => msg.write(writer),
+			&Message::RevokeAndACK(ref msg) => msg.write(writer),
+			&Message::Splice(ref msg) => msg.write(writer),
+			&Message::SpliceAck(ref msg) => msg.write(writer),
+			&Message::SpliceCreated(ref msg) => msg.write(writer),
+			&Message::SpliceSigned(ref msg) => msg.write(writer),
+			&Message::UpdateFee(ref msg) => msg.write(writer),
+			&Message::ChannelReestablish(ref msg) => msg.write(writer),
+			&Message::AnnouncementSignatures(ref msg) => msg.write(writer),
+			&Message::ChannelAnnouncement(ref msg) => msg.write(writer),
+			&Message::NodeAnnouncement(ref msg) => msg.write(writer),
+			&Message::ChannelUpdate(ref msg) => msg.write(writer),
+			&Message::QueryShortChannelIds(ref msg) => msg.write(writer),
+			&Message::ReplyShortChannelIdsEnd(ref msg) => msg.write(writer),
+			&Message::QueryChannelRange(ref msg) => msg.write(writer),
+			&Message::ReplyChannelRange(ref msg) => msg.write(writer),
+			&Message::GossipTimestampFilter(ref msg) => msg.write(writer),
+			&Message::Unknown(_) => { Ok(()) },
+			&Message::Custom(ref msg) => msg.write(writer),
+		}
+	}
+}
+
+impl<T> Type for Message<T> where T: core::fmt::Debug + Type + TestEq {
 	/// Returns the type that was used to decode the message payload.
-	pub fn type_id(&self) -> u16 {
+	fn type_id(&self) -> u16 {
 		match self {
 			&Message::Init(ref msg) => msg.type_id(),
 			&Message::Error(ref msg) => msg.type_id(),
@@ -100,9 +165,20 @@ impl<T> Message<T> where T: core::fmt::Debug + Type + TestEq {
 			&Message::Ping(ref msg) => msg.type_id(),
 			&Message::Pong(ref msg) => msg.type_id(),
 			&Message::OpenChannel(ref msg) => msg.type_id(),
+			&Message::OpenChannelV2(ref msg) => msg.type_id(),
 			&Message::AcceptChannel(ref msg) => msg.type_id(),
+			&Message::AcceptChannelV2(ref msg) => msg.type_id(),
 			&Message::FundingCreated(ref msg) => msg.type_id(),
 			&Message::FundingSigned(ref msg) => msg.type_id(),
+			&Message::TxAddInput(ref msg) => msg.type_id(),
+			&Message::TxAddOutput(ref msg) => msg.type_id(),
+			&Message::TxRemoveInput(ref msg) => msg.type_id(),
+			&Message::TxRemoveOutput(ref msg) => msg.type_id(),
+			&Message::TxComplete(ref msg) => msg.type_id(),
+			&Message::TxSignatures(ref msg) => msg.type_id(),
+			&Message::TxInitRbf(ref msg) => msg.type_id(),
+			&Message::TxAckRbf(ref msg) => msg.type_id(),
+			&Message::TxAbort(ref msg) => msg.type_id(),
 			&Message::ChannelReady(ref msg) => msg.type_id(),
 			&Message::Shutdown(ref msg) => msg.type_id(),
 			&Message::ClosingSigned(ref msg) => msg.type_id(),
@@ -133,7 +209,9 @@ impl<T> Message<T> where T: core::fmt::Debug + Type + TestEq {
 			&Message::Custom(ref msg) => msg.type_id(),
 		}
 	}
+}
 
+impl<T> Message<T> where T: core::fmt::Debug + Type + TestEq {
 	/// Returns whether the message's type is even, indicating both endpoints must support it.
 	pub fn is_even(&self) -> bool {
 		(self.type_id() & 1) == 0
@@ -145,7 +223,7 @@ impl<T> Message<T> where T: core::fmt::Debug + Type + TestEq {
 ///
 /// # Errors
 ///
-/// Returns an error if the message payload code not be decoded as the specified type.
+/// Returns an error if the message payload could not be decoded as the specified type.
 pub(crate) fn read<R: io::Read, T, H: core::ops::Deref>(buffer: &mut R, custom_reader: H)
 -> Result<Message<T>, (msgs::DecodeError, Option<u16>)> where
 	T: core::fmt::Debug + Type + Writeable,
@@ -179,14 +257,47 @@ fn do_read<R: io::Read, T, H: core::ops::Deref>(buffer: &mut R, message_type: u1
 		msgs::OpenChannel::TYPE => {
 			Ok(Message::OpenChannel(Readable::read(buffer)?))
 		},
+		msgs::OpenChannelV2::TYPE => {
+			Ok(Message::OpenChannelV2(Readable::read(buffer)?))
+		},
 		msgs::AcceptChannel::TYPE => {
 			Ok(Message::AcceptChannel(Readable::read(buffer)?))
+		},
+		msgs::AcceptChannelV2::TYPE => {
+			Ok(Message::AcceptChannelV2(Readable::read(buffer)?))
 		},
 		msgs::FundingCreated::TYPE => {
 			Ok(Message::FundingCreated(Readable::read(buffer)?))
 		},
 		msgs::FundingSigned::TYPE => {
 			Ok(Message::FundingSigned(Readable::read(buffer)?))
+		},
+		msgs::TxAddInput::TYPE => {
+			Ok(Message::TxAddInput(Readable::read(buffer)?))
+		},
+		msgs::TxAddOutput::TYPE => {
+			Ok(Message::TxAddOutput(Readable::read(buffer)?))
+		},
+		msgs::TxRemoveInput::TYPE => {
+			Ok(Message::TxRemoveInput(Readable::read(buffer)?))
+		},
+		msgs::TxRemoveOutput::TYPE => {
+			Ok(Message::TxRemoveOutput(Readable::read(buffer)?))
+		},
+		msgs::TxComplete::TYPE => {
+			Ok(Message::TxComplete(Readable::read(buffer)?))
+		},
+		msgs::TxSignatures::TYPE => {
+			Ok(Message::TxSignatures(Readable::read(buffer)?))
+		},
+		msgs::TxInitRbf::TYPE => {
+			Ok(Message::TxInitRbf(Readable::read(buffer)?))
+		},
+		msgs::TxAckRbf::TYPE => {
+			Ok(Message::TxAckRbf(Readable::read(buffer)?))
+		},
+		msgs::TxAbort::TYPE => {
+			Ok(Message::TxAbort(Readable::read(buffer)?))
 		},
 		msgs::ChannelReady::TYPE => {
 			Ok(Message::ChannelReady(Readable::read(buffer)?))
@@ -370,6 +481,50 @@ impl Encode for msgs::Shutdown {
 
 impl Encode for msgs::ClosingSigned {
 	const TYPE: u16 = 39;
+}
+
+impl Encode for msgs::OpenChannelV2 {
+	const TYPE: u16 = 64;
+}
+
+impl Encode for msgs::AcceptChannelV2 {
+	const TYPE: u16 = 65;
+}
+
+impl Encode for msgs::TxAddInput {
+	const TYPE: u16 = 66;
+}
+
+impl Encode for msgs::TxAddOutput {
+	const TYPE: u16 = 67;
+}
+
+impl Encode for msgs::TxRemoveInput {
+	const TYPE: u16 = 68;
+}
+
+impl Encode for msgs::TxRemoveOutput {
+	const TYPE: u16 = 69;
+}
+
+impl Encode for msgs::TxComplete {
+	const TYPE: u16 = 70;
+}
+
+impl Encode for msgs::TxSignatures {
+	const TYPE: u16 = 71;
+}
+
+impl Encode for msgs::TxInitRbf {
+	const TYPE: u16 = 72;
+}
+
+impl Encode for msgs::TxAckRbf {
+	const TYPE: u16 = 73;
+}
+
+impl Encode for msgs::TxAbort {
+	const TYPE: u16 = 74;
 }
 
 // #SPLICING

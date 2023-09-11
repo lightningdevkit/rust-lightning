@@ -1,0 +1,1 @@
+* In several APIs, `channel_id` parameters have been changed from type `[u8; 32]` to newly introduced `ChannelId` type, from `ln` namespace (`lightning::ln::ChannelId`) (PR #2485)

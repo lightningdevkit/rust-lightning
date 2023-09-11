@@ -14,12 +14,12 @@ use bitcoin::hashes::{Hash, HashEngine};
 use bitcoin::hashes::cmp::fixed_time_eq;
 use bitcoin::hashes::hmac::{Hmac, HmacEngine};
 use bitcoin::hashes::sha256::Hash as Sha256;
-use crate::chain::keysinterface::{KeyMaterial, EntropySource};
+use crate::sign::{KeyMaterial, EntropySource};
 use crate::ln::{PaymentHash, PaymentPreimage, PaymentSecret};
 use crate::ln::msgs;
 use crate::ln::msgs::MAX_VALUE_MSAT;
 use crate::util::chacha20::ChaCha20;
-use crate::util::crypto::hkdf_extract_expand_4x;
+use crate::util::crypto::hkdf_extract_expand_5x;
 use crate::util::errors::APIError;
 use crate::util::logger::Logger;
 
@@ -37,7 +37,7 @@ const METHOD_TYPE_OFFSET: usize = 5;
 /// A set of keys that were HKDF-expanded from an initial call to
 /// [`NodeSigner::get_inbound_payment_key_material`].
 ///
-/// [`NodeSigner::get_inbound_payment_key_material`]: crate::chain::keysinterface::NodeSigner::get_inbound_payment_key_material
+/// [`NodeSigner::get_inbound_payment_key_material`]: crate::sign::NodeSigner::get_inbound_payment_key_material
 pub struct ExpandedKey {
 	/// The key used to encrypt the bytes containing the payment metadata (i.e. the amount and
 	/// expiry, included for payment verification on decryption).
@@ -50,6 +50,8 @@ pub struct ExpandedKey {
 	user_pmt_hash_key: [u8; 32],
 	/// The base key used to derive signing keys and authenticate messages for BOLT 12 Offers.
 	offers_base_key: [u8; 32],
+	/// The key used to encrypt message metadata for BOLT 12 Offers.
+	offers_encryption_key: [u8; 32],
 }
 
 impl ExpandedKey {
@@ -57,20 +59,25 @@ impl ExpandedKey {
 	///
 	/// It is recommended to cache this value and not regenerate it for each new inbound payment.
 	pub fn new(key_material: &KeyMaterial) -> ExpandedKey {
-		let (metadata_key, ldk_pmt_hash_key, user_pmt_hash_key, offers_base_key) =
-			hkdf_extract_expand_4x(b"LDK Inbound Payment Key Expansion", &key_material.0);
+		let (
+			metadata_key,
+			ldk_pmt_hash_key,
+			user_pmt_hash_key,
+			offers_base_key,
+			offers_encryption_key,
+		) = hkdf_extract_expand_5x(b"LDK Inbound Payment Key Expansion", &key_material.0);
 		Self {
 			metadata_key,
 			ldk_pmt_hash_key,
 			user_pmt_hash_key,
 			offers_base_key,
+			offers_encryption_key,
 		}
 	}
 
 	/// Returns an [`HmacEngine`] used to construct [`Offer::metadata`].
 	///
 	/// [`Offer::metadata`]: crate::offers::offer::Offer::metadata
-	#[allow(unused)]
 	pub(crate) fn hmac_for_offer(
 		&self, nonce: Nonce, iv_bytes: &[u8; IV_LEN]
 	) -> HmacEngine<Sha256> {
@@ -78,6 +85,13 @@ impl ExpandedKey {
 		hmac.input(iv_bytes);
 		hmac.input(&nonce.0);
 		hmac
+	}
+
+	/// Encrypts or decrypts the given `bytes`. Used for data included in an offer message's
+	/// metadata (e.g., payment id).
+	pub(crate) fn crypt_for_offer(&self, mut bytes: [u8; 32], nonce: Nonce) -> [u8; 32] {
+		ChaCha20::encrypt_single_block_in_place(&self.offers_encryption_key, &nonce.0, &mut bytes);
+		bytes
 	}
 }
 
@@ -88,7 +102,6 @@ impl ExpandedKey {
 ///
 /// [`Offer::metadata`]: crate::offers::offer::Offer::metadata
 /// [`Offer::signing_pubkey`]: crate::offers::offer::Offer::signing_pubkey
-#[allow(unused)]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Nonce(pub(crate) [u8; Self::LENGTH]);
 
@@ -166,8 +179,8 @@ fn min_final_cltv_expiry_delta_from_metadata(bytes: [u8; METADATA_LEN]) -> u16 {
 /// Note that if `min_final_cltv_expiry_delta` is set to some value, then the payment will not be receivable
 /// on versions of LDK prior to 0.0.114.
 ///
-/// [phantom node payments]: crate::chain::keysinterface::PhantomKeysManager
-/// [`NodeSigner::get_inbound_payment_key_material`]: crate::chain::keysinterface::NodeSigner::get_inbound_payment_key_material
+/// [phantom node payments]: crate::sign::PhantomKeysManager
+/// [`NodeSigner::get_inbound_payment_key_material`]: crate::sign::NodeSigner::get_inbound_payment_key_material
 pub fn create<ES: Deref>(keys: &ExpandedKey, min_value_msat: Option<u64>,
 	invoice_expiry_delta_secs: u32, entropy_source: &ES, current_time: u64,
 	min_final_cltv_expiry_delta: Option<u16>) -> Result<(PaymentHash, PaymentSecret), ()>
@@ -202,7 +215,7 @@ pub fn create<ES: Deref>(keys: &ExpandedKey, min_value_msat: Option<u64>,
 /// Note that if `min_final_cltv_expiry_delta` is set to some value, then the payment will not be receivable
 /// on versions of LDK prior to 0.0.114.
 ///
-/// [phantom node payments]: crate::chain::keysinterface::PhantomKeysManager
+/// [phantom node payments]: crate::sign::PhantomKeysManager
 pub fn create_from_hash(keys: &ExpandedKey, min_value_msat: Option<u64>, payment_hash: PaymentHash,
 	invoice_expiry_delta_secs: u32, current_time: u64, min_final_cltv_expiry_delta: Option<u16>) -> Result<PaymentSecret, ()> {
 	let metadata_bytes = construct_metadata_bytes(min_value_msat, if min_final_cltv_expiry_delta.is_some() {
@@ -271,10 +284,9 @@ fn construct_payment_secret(iv_bytes: &[u8; IV_LEN], metadata_bytes: &[u8; METAD
 	let (iv_slice, encrypted_metadata_slice) = payment_secret_bytes.split_at_mut(IV_LEN);
 	iv_slice.copy_from_slice(iv_bytes);
 
-	let chacha_block = ChaCha20::get_single_block(metadata_key, iv_bytes);
-	for i in 0..METADATA_LEN {
-		encrypted_metadata_slice[i] = chacha_block[i] ^ metadata_bytes[i];
-	}
+	ChaCha20::encrypt_single_block(
+		metadata_key, iv_bytes, encrypted_metadata_slice, metadata_bytes
+	);
 	PaymentSecret(payment_secret_bytes)
 }
 
@@ -311,7 +323,7 @@ fn construct_payment_secret(iv_bytes: &[u8; IV_LEN], metadata_bytes: &[u8; METAD
 ///
 /// See [`ExpandedKey`] docs for more info on the individual keys used.
 ///
-/// [`NodeSigner::get_inbound_payment_key_material`]: crate::chain::keysinterface::NodeSigner::get_inbound_payment_key_material
+/// [`NodeSigner::get_inbound_payment_key_material`]: crate::sign::NodeSigner::get_inbound_payment_key_material
 /// [`create_inbound_payment`]: crate::ln::channelmanager::ChannelManager::create_inbound_payment
 /// [`create_inbound_payment_for_hash`]: crate::ln::channelmanager::ChannelManager::create_inbound_payment_for_hash
 pub(super) fn verify<L: Deref>(payment_hash: PaymentHash, payment_data: &msgs::FinalOnionHopData,
@@ -339,7 +351,7 @@ pub(super) fn verify<L: Deref>(payment_hash: PaymentHash, payment_data: &msgs::F
 			hmac.input(&metadata_bytes[..]);
 			hmac.input(&payment_hash.0);
 			if !fixed_time_eq(&iv_bytes, &Hmac::from_engine(hmac).into_inner().split_at_mut(IV_LEN).0) {
-				log_trace!(logger, "Failing HTLC with user-generated payment_hash {}: unexpected payment_secret", log_bytes!(payment_hash.0));
+				log_trace!(logger, "Failing HTLC with user-generated payment_hash {}: unexpected payment_secret", &payment_hash);
 				return Err(())
 			}
 		},
@@ -347,13 +359,13 @@ pub(super) fn verify<L: Deref>(payment_hash: PaymentHash, payment_data: &msgs::F
 			match derive_ldk_payment_preimage(payment_hash, &iv_bytes, &metadata_bytes, keys) {
 				Ok(preimage) => payment_preimage = Some(preimage),
 				Err(bad_preimage_bytes) => {
-					log_trace!(logger, "Failing HTLC with payment_hash {} due to mismatching preimage {}", log_bytes!(payment_hash.0), log_bytes!(bad_preimage_bytes));
+					log_trace!(logger, "Failing HTLC with payment_hash {} due to mismatching preimage {}", &payment_hash, log_bytes!(bad_preimage_bytes));
 					return Err(())
 				}
 			}
 		},
 		Err(unknown_bits) => {
-			log_trace!(logger, "Failing HTLC with payment hash {} due to unknown payment type {}", log_bytes!(payment_hash.0), unknown_bits);
+			log_trace!(logger, "Failing HTLC with payment hash {} due to unknown payment type {}", &payment_hash, unknown_bits);
 			return Err(());
 		}
 	}
@@ -372,12 +384,12 @@ pub(super) fn verify<L: Deref>(payment_hash: PaymentHash, payment_data: &msgs::F
 	let expiry = u64::from_be_bytes(expiry_bytes.try_into().unwrap());
 
 	if payment_data.total_msat < min_amt_msat {
-		log_trace!(logger, "Failing HTLC with payment_hash {} due to total_msat {} being less than the minimum amount of {} msat", log_bytes!(payment_hash.0), payment_data.total_msat, min_amt_msat);
+		log_trace!(logger, "Failing HTLC with payment_hash {} due to total_msat {} being less than the minimum amount of {} msat", &payment_hash, payment_data.total_msat, min_amt_msat);
 		return Err(())
 	}
 
 	if expiry < highest_seen_timestamp {
-		log_trace!(logger, "Failing HTLC with payment_hash {}: expired payment", log_bytes!(payment_hash.0));
+		log_trace!(logger, "Failing HTLC with payment_hash {}: expired payment", &payment_hash);
 		return Err(())
 	}
 
@@ -391,7 +403,7 @@ pub(super) fn get_payment_preimage(payment_hash: PaymentHash, payment_secret: Pa
 		Ok(Method::LdkPaymentHash) | Ok(Method::LdkPaymentHashCustomFinalCltv) => {
 			derive_ldk_payment_preimage(payment_hash, &iv_bytes, &metadata_bytes, keys)
 				.map_err(|bad_preimage_bytes| APIError::APIMisuseError {
-					err: format!("Payment hash {} did not match decoded preimage {}", log_bytes!(payment_hash.0), log_bytes!(bad_preimage_bytes))
+					err: format!("Payment hash {} did not match decoded preimage {}", &payment_hash, log_bytes!(bad_preimage_bytes))
 				})
 		},
 		Ok(Method::UserPaymentHash) | Ok(Method::UserPaymentHashCustomFinalCltv) => Err(APIError::APIMisuseError {
@@ -406,11 +418,10 @@ fn decrypt_metadata(payment_secret: PaymentSecret, keys: &ExpandedKey) -> ([u8; 
 	let (iv_slice, encrypted_metadata_bytes) = payment_secret.0.split_at(IV_LEN);
 	iv_bytes.copy_from_slice(iv_slice);
 
-	let chacha_block = ChaCha20::get_single_block(&keys.metadata_key, &iv_bytes);
 	let mut metadata_bytes: [u8; METADATA_LEN] = [0; METADATA_LEN];
-	for i in 0..METADATA_LEN {
-		metadata_bytes[i] = chacha_block[i] ^ encrypted_metadata_bytes[i];
-	}
+	ChaCha20::encrypt_single_block(
+		&keys.metadata_key, &iv_bytes, &mut metadata_bytes, encrypted_metadata_bytes
+	);
 
 	(iv_bytes, metadata_bytes)
 }

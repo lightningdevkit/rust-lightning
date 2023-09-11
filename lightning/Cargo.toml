@@ -1,6 +1,6 @@
 [package]
 name = "lightning"
-version = "0.0.115"
+version = "0.0.116"
 authors = ["Matt Corallo"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/lightningdevkit/rust-lightning/"
@@ -28,7 +28,6 @@ max_level_trace = []
 # Allow signing of local transactions that may have been revoked or will be revoked, for functional testing (e.g. justice tx handling).
 # This is unsafe to use in production because it may result in the counterparty publishing taking our funds.
 unsafe_revoked_tx_signing = []
-_bench_unstable = []
 # Override signing to not include randomness when generating signatures for test vectors.
 _test_vectors = []
 
@@ -53,12 +52,15 @@ core2 = { version = "0.3.0", optional = true, default-features = false }
 [dev-dependencies]
 hex = "0.4"
 regex = "1.5.6"
-lightning-invoice = { version = "0.23.0", path = "../lightning-invoice" }
+# lightning-invoice = { version = "0.24.0", path = "../lightning-invoice" }
 
 [dev-dependencies.bitcoin]
 version = "0.29.0"
 default-features = false
 features = ["bitcoinconsensus", "secp-recovery"]
+
+[target.'cfg(ldk_bench)'.dependencies]
+criterion = { version = "0.4", optional = true, default-features = false }
 
 [target.'cfg(taproot)'.dependencies]
 musig2 = { git = "https://github.com/arik-so/rust-musig2", rev = "27797d7" }

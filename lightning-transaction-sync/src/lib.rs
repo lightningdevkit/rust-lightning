@@ -13,7 +13,8 @@
 //!
 //! ## Version Compatibility
 //!
-//! Currently this crate is compatible with nodes that were created with LDK version 0.0.113 and above.
+//! Currently this crate is compatible with LDK version 0.0.114 and above using channels which were
+//! created on LDK version 0.0.113 and above.
 //!
 //! ## Usage Example:
 //!

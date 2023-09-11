@@ -3,7 +3,10 @@
 
 use crate::{BlockData, BlockHeaderData, BlockSource, AsyncBlockSourceResult};
 use crate::http::{BinaryResponse, HttpEndpoint, HttpClient, JsonResponse};
+use crate::gossip::UtxoSource;
+use crate::convert::GetUtxosResponse;
 
+use bitcoin::OutPoint;
 use bitcoin::hash_types::BlockHash;
 use bitcoin::hashes::hex::ToHex;
 
@@ -60,11 +63,30 @@ impl BlockSource for RestClient {
 	}
 }
 
+impl UtxoSource for RestClient {
+	fn get_block_hash_by_height<'a>(&'a self, block_height: u32) -> AsyncBlockSourceResult<'a, BlockHash> {
+		Box::pin(async move {
+			let resource_path = format!("blockhashbyheight/{}.bin", block_height);
+			Ok(self.request_resource::<BinaryResponse, _>(&resource_path).await?)
+		})
+	}
+
+	fn is_output_unspent<'a>(&'a self, outpoint: OutPoint) -> AsyncBlockSourceResult<'a, bool> {
+		Box::pin(async move {
+			let resource_path = format!("getutxos/{}-{}.json", outpoint.txid.to_hex(), outpoint.vout);
+			let utxo_result =
+				self.request_resource::<JsonResponse, GetUtxosResponse>(&resource_path).await?;
+			Ok(utxo_result.hit_bitmap_nonempty)
+		})
+	}
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;
 	use crate::http::BinaryResponse;
 	use crate::http::client_tests::{HttpServer, MessageBody};
+	use bitcoin::hashes::Hash;
 
 	/// Parses binary data as a string-encoded `u32`.
 	impl TryInto<u32> for BinaryResponse {
@@ -112,5 +134,33 @@ mod tests {
 			Err(e) => panic!("Unexpected error: {:?}", e),
 			Ok(n) => assert_eq!(n, 42),
 		}
+	}
+
+	#[tokio::test]
+	async fn parses_negative_getutxos() {
+		let server = HttpServer::responding_with_ok(MessageBody::Content(
+			// A real response contains a few more fields, but we actually only look at the
+			// "bitmap" field, so this should suffice for testing
+			"{\"chainHeight\": 1, \"bitmap\":\"0\",\"utxos\":[]}"
+		));
+		let client = RestClient::new(server.endpoint()).unwrap();
+
+		let outpoint = OutPoint::new(bitcoin::Txid::from_inner([0; 32]), 0);
+		let unspent_output = client.is_output_unspent(outpoint).await.unwrap();
+		assert_eq!(unspent_output, false);
+	}
+
+	#[tokio::test]
+	async fn parses_positive_getutxos() {
+		let server = HttpServer::responding_with_ok(MessageBody::Content(
+			// A real response contains lots more data, but we actually only look at the "bitmap"
+			// field, so this should suffice for testing
+			"{\"chainHeight\": 1, \"bitmap\":\"1\",\"utxos\":[]}"
+		));
+		let client = RestClient::new(server.endpoint()).unwrap();
+
+		let outpoint = OutPoint::new(bitcoin::Txid::from_inner([0; 32]), 0);
+		let unspent_output = client.is_output_unspent(outpoint).await.unwrap();
+		assert_eq!(unspent_output, true);
 	}
 }

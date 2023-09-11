@@ -12,7 +12,6 @@
 //! There are a bunch of these as their handling is relatively error-prone so they are split out
 //! here. See also the chanmon_fail_consistency fuzz test.
 
-use bitcoin::blockdata::block::{Block, BlockHeader};
 use bitcoin::blockdata::constants::genesis_block;
 use bitcoin::hash_types::BlockHash;
 use bitcoin::network::constants::Network;
@@ -20,11 +19,11 @@ use crate::chain::channelmonitor::{ANTI_REORG_DELAY, ChannelMonitor};
 use crate::chain::transaction::OutPoint;
 use crate::chain::{ChannelMonitorUpdateStatus, Listen, Watch};
 use crate::events::{Event, MessageSendEvent, MessageSendEventsProvider, PaymentPurpose, ClosureReason, HTLCDestination};
-use crate::ln::channelmanager::{ChannelManager, RAACommitmentOrder, PaymentSendFailure, PaymentId, RecipientOnionFields};
-use crate::ln::channel::AnnouncementSigsState;
+use crate::ln::channelmanager::{RAACommitmentOrder, PaymentSendFailure, PaymentId, RecipientOnionFields};
+use crate::ln::channel::{AnnouncementSigsState, ChannelPhase};
 use crate::ln::msgs;
 use crate::ln::msgs::{ChannelMessageHandler, RoutingMessageHandler};
-use crate::util::enforcing_trait_impls::EnforcingSigner;
+use crate::util::test_channel_signer::TestChannelSigner;
 use crate::util::errors::APIError;
 use crate::util::ser::{ReadableArgs, Writeable};
 use crate::util::test_utils::TestBroadcaster;
@@ -35,7 +34,6 @@ use crate::util::test_utils;
 
 use crate::io;
 use bitcoin::hashes::Hash;
-use bitcoin::TxMerkleNode;
 use crate::prelude::*;
 use crate::sync::{Arc, Mutex};
 
@@ -72,7 +70,8 @@ fn test_simple_monitor_permanent_update_fail() {
 	// PaymentPathFailed event
 
 	assert_eq!(nodes[0].node.list_channels().len(), 0);
-	check_closed_event!(nodes[0], 1, ClosureReason::ProcessingError { err: "ChannelMonitor storage failure".to_string() });
+	check_closed_event!(nodes[0], 1, ClosureReason::ProcessingError { err: "ChannelMonitor storage failure".to_string() },
+		[nodes[1].node.get_our_node_id()], 100000);
 }
 
 #[test]
@@ -112,7 +111,7 @@ fn test_monitor_and_persister_update_fail() {
 	let chain_mon = {
 		let new_monitor = {
 			let monitor = nodes[0].chain_monitor.chain_monitor.get_monitor(outpoint).unwrap();
-			let new_monitor = <(BlockHash, ChannelMonitor<EnforcingSigner>)>::read(
+			let new_monitor = <(BlockHash, ChannelMonitor<TestChannelSigner>)>::read(
 				&mut io::Cursor::new(&monitor.encode()), (nodes[0].keys_manager, nodes[0].keys_manager)).unwrap().1;
 			assert!(new_monitor == *monitor);
 			new_monitor
@@ -121,15 +120,7 @@ fn test_monitor_and_persister_update_fail() {
 		assert_eq!(chain_mon.watch_channel(outpoint, new_monitor), ChannelMonitorUpdateStatus::Completed);
 		chain_mon
 	};
-	let header = BlockHeader {
-		version: 0x20000000,
-		prev_blockhash: BlockHash::all_zeros(),
-		merkle_root: TxMerkleNode::all_zeros(),
-		time: 42,
-		bits: 42,
-		nonce: 42
-	};
-	chain_mon.chain_monitor.block_connected(&Block { header, txdata: vec![] }, 200);
+	chain_mon.chain_monitor.block_connected(&create_dummy_block(BlockHash::all_zeros(), 42, Vec::new()), 200);
 
 	// Set the persister's return value to be a InProgress.
 	persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
@@ -145,15 +136,18 @@ fn test_monitor_and_persister_update_fail() {
 	{
 		let mut node_0_per_peer_lock;
 		let mut node_0_peer_state_lock;
-		let mut channel = get_channel_ref!(nodes[0], nodes[1], node_0_per_peer_lock, node_0_peer_state_lock, chan.2);
-		if let Ok(update) = channel.commitment_signed(&updates.commitment_signed, &node_cfgs[0].logger) {
-			// Check that even though the persister is returning a InProgress,
-			// because the update is bogus, ultimately the error that's returned
-			// should be a PermanentFailure.
-			if let ChannelMonitorUpdateStatus::PermanentFailure = chain_mon.chain_monitor.update_channel(outpoint, &update) {} else { panic!("Expected monitor error to be permanent"); }
-			logger.assert_log_regex("lightning::chain::chainmonitor", regex::Regex::new("Persistence of ChannelMonitorUpdate for channel [0-9a-f]* in progress").unwrap(), 1);
-			assert_eq!(nodes[0].chain_monitor.update_channel(outpoint, &update), ChannelMonitorUpdateStatus::Completed);
-		} else { assert!(false); }
+		if let ChannelPhase::Funded(ref mut channel) = get_channel_ref!(nodes[0], nodes[1], node_0_per_peer_lock, node_0_peer_state_lock, chan.2) {
+			if let Ok(Some(update)) = channel.commitment_signed(&updates.commitment_signed, &node_cfgs[0].logger) {
+				// Check that even though the persister is returning a InProgress,
+				// because the update is bogus, ultimately the error that's returned
+				// should be a PermanentFailure.
+				if let ChannelMonitorUpdateStatus::PermanentFailure = chain_mon.chain_monitor.update_channel(outpoint, &update) {} else { panic!("Expected monitor error to be permanent"); }
+				logger.assert_log_regex("lightning::chain::chainmonitor", regex::Regex::new("Persistence of ChannelMonitorUpdate for channel [0-9a-f]* in progress").unwrap(), 1);
+				assert_eq!(nodes[0].chain_monitor.update_channel(outpoint, &update), ChannelMonitorUpdateStatus::Completed);
+			} else { assert!(false); }
+		} else {
+			assert!(false);
+		}
 	}
 
 	check_added_monitors!(nodes[0], 1);
@@ -188,7 +182,9 @@ fn do_test_simple_monitor_temporary_update_fail(disconnect: bool) {
 	if disconnect {
 		nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id());
 		nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id());
-		reconnect_nodes(&nodes[0], &nodes[1], (true, true), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
+		let mut reconnect_args = ReconnectArgs::new(&nodes[0], &nodes[1]);
+		reconnect_args.send_channel_ready = (true, true);
+		reconnect_nodes(reconnect_args);
 	}
 
 	chanmon_cfgs[0].persister.set_update_ret(ChannelMonitorUpdateStatus::Completed);
@@ -243,7 +239,7 @@ fn do_test_simple_monitor_temporary_update_fail(disconnect: bool) {
 	if disconnect {
 		nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id());
 		nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id());
-		reconnect_nodes(&nodes[0], &nodes[1], (false, false), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
+		reconnect_nodes(ReconnectArgs::new(&nodes[0], &nodes[1]));
 	}
 
 	// ...and make sure we can force-close a frozen channel
@@ -255,7 +251,7 @@ fn do_test_simple_monitor_temporary_update_fail(disconnect: bool) {
 	// PaymentPathFailed event
 
 	assert_eq!(nodes[0].node.list_channels().len(), 0);
-	check_closed_event!(nodes[0], 1, ClosureReason::HolderForceClosed);
+	check_closed_event!(nodes[0], 1, ClosureReason::HolderForceClosed, [nodes[1].node.get_our_node_id()], 100000);
 }
 
 #[test]
@@ -360,10 +356,14 @@ fn do_test_monitor_temporary_update_fail(disconnect_count: usize) {
 		nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id());
 		nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id());
 
-		nodes[0].node.peer_connected(&nodes[1].node.get_our_node_id(), &msgs::Init { features: nodes[1].node.init_features(), remote_network_address: None }, true).unwrap();
+		nodes[0].node.peer_connected(&nodes[1].node.get_our_node_id(), &msgs::Init {
+			features: nodes[1].node.init_features(), networks: None, remote_network_address: None
+		}, true).unwrap();
 		let reestablish_1 = get_chan_reestablish_msgs!(nodes[0], nodes[1]);
 		assert_eq!(reestablish_1.len(), 1);
-		nodes[1].node.peer_connected(&nodes[0].node.get_our_node_id(), &msgs::Init { features: nodes[0].node.init_features(), remote_network_address: None }, false).unwrap();
+		nodes[1].node.peer_connected(&nodes[0].node.get_our_node_id(), &msgs::Init {
+			features: nodes[0].node.init_features(), networks: None, remote_network_address: None
+		}, false).unwrap();
 		let reestablish_2 = get_chan_reestablish_msgs!(nodes[1], nodes[0]);
 		assert_eq!(reestablish_2.len(), 1);
 
@@ -382,10 +382,14 @@ fn do_test_monitor_temporary_update_fail(disconnect_count: usize) {
 		assert!(nodes[0].node.get_and_clear_pending_events().is_empty());
 		assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 
-		nodes[0].node.peer_connected(&nodes[1].node.get_our_node_id(), &msgs::Init { features: nodes[1].node.init_features(), remote_network_address: None }, true).unwrap();
+		nodes[0].node.peer_connected(&nodes[1].node.get_our_node_id(), &msgs::Init {
+			features: nodes[1].node.init_features(), networks: None, remote_network_address: None
+		}, true).unwrap();
 		let reestablish_1 = get_chan_reestablish_msgs!(nodes[0], nodes[1]);
 		assert_eq!(reestablish_1.len(), 1);
-		nodes[1].node.peer_connected(&nodes[0].node.get_our_node_id(), &msgs::Init { features: nodes[0].node.init_features(), remote_network_address: None }, false).unwrap();
+		nodes[1].node.peer_connected(&nodes[0].node.get_our_node_id(), &msgs::Init {
+			features: nodes[0].node.init_features(), networks: None, remote_network_address: None
+		}, false).unwrap();
 		let reestablish_2 = get_chan_reestablish_msgs!(nodes[1], nodes[0]);
 		assert_eq!(reestablish_2.len(), 1);
 
@@ -1146,8 +1150,12 @@ fn test_monitor_update_fail_reestablish() {
 	commitment_signed_dance!(nodes[1], nodes[2], updates.commitment_signed, false);
 
 	chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
-	nodes[0].node.peer_connected(&nodes[1].node.get_our_node_id(), &msgs::Init { features: nodes[1].node.init_features(), remote_network_address: None }, true).unwrap();
-	nodes[1].node.peer_connected(&nodes[0].node.get_our_node_id(), &msgs::Init { features: nodes[0].node.init_features(), remote_network_address: None }, false).unwrap();
+	nodes[0].node.peer_connected(&nodes[1].node.get_our_node_id(), &msgs::Init {
+		features: nodes[1].node.init_features(), networks: None, remote_network_address: None
+	}, true).unwrap();
+	nodes[1].node.peer_connected(&nodes[0].node.get_our_node_id(), &msgs::Init {
+		features: nodes[0].node.init_features(), networks: None, remote_network_address: None
+	}, false).unwrap();
 
 	let as_reestablish = get_chan_reestablish_msgs!(nodes[0], nodes[1]).pop().unwrap();
 	let bs_reestablish = get_chan_reestablish_msgs!(nodes[1], nodes[0]).pop().unwrap();
@@ -1165,8 +1173,12 @@ fn test_monitor_update_fail_reestablish() {
 	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id());
 	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id());
 
-	nodes[0].node.peer_connected(&nodes[1].node.get_our_node_id(), &msgs::Init { features: nodes[1].node.init_features(), remote_network_address: None }, true).unwrap();
-	nodes[1].node.peer_connected(&nodes[0].node.get_our_node_id(), &msgs::Init { features: nodes[0].node.init_features(), remote_network_address: None }, false).unwrap();
+	nodes[0].node.peer_connected(&nodes[1].node.get_our_node_id(), &msgs::Init {
+		features: nodes[1].node.init_features(), networks: None, remote_network_address: None
+	}, true).unwrap();
+	nodes[1].node.peer_connected(&nodes[0].node.get_our_node_id(), &msgs::Init {
+		features: nodes[0].node.init_features(), networks: None, remote_network_address: None
+	}, false).unwrap();
 
 	assert_eq!(get_chan_reestablish_msgs!(nodes[0], nodes[1]).pop().unwrap(), as_reestablish);
 	assert_eq!(get_chan_reestablish_msgs!(nodes[1], nodes[0]).pop().unwrap(), bs_reestablish);
@@ -1341,8 +1353,12 @@ fn claim_while_disconnected_monitor_update_fail() {
 	check_added_monitors!(nodes[1], 1);
 	expect_payment_claimed!(nodes[1], payment_hash_1, 1_000_000);
 
-	nodes[0].node.peer_connected(&nodes[1].node.get_our_node_id(), &msgs::Init { features: nodes[1].node.init_features(), remote_network_address: None }, true).unwrap();
-	nodes[1].node.peer_connected(&nodes[0].node.get_our_node_id(), &msgs::Init { features: nodes[0].node.init_features(), remote_network_address: None }, false).unwrap();
+	nodes[0].node.peer_connected(&nodes[1].node.get_our_node_id(), &msgs::Init {
+		features: nodes[1].node.init_features(), networks: None, remote_network_address: None
+	}, true).unwrap();
+	nodes[1].node.peer_connected(&nodes[0].node.get_our_node_id(), &msgs::Init {
+		features: nodes[0].node.init_features(), networks: None, remote_network_address: None
+	}, false).unwrap();
 
 	let as_reconnect = get_chan_reestablish_msgs!(nodes[0], nodes[1]).pop().unwrap();
 	let bs_reconnect = get_chan_reestablish_msgs!(nodes[1], nodes[0]).pop().unwrap();
@@ -1390,6 +1406,7 @@ fn claim_while_disconnected_monitor_update_fail() {
 		MessageSendEvent::UpdateHTLCs { ref node_id, ref updates } => {
 			assert_eq!(*node_id, nodes[0].node.get_our_node_id());
 			nodes[0].node.handle_update_fulfill_htlc(&nodes[1].node.get_our_node_id(), &updates.update_fulfill_htlcs[0]);
+			expect_payment_sent(&nodes[0], payment_preimage_1, None, false, false);
 			nodes[0].node.handle_commitment_signed(&nodes[1].node.get_our_node_id(), &updates.commitment_signed);
 			check_added_monitors!(nodes[0], 1);
 
@@ -1427,7 +1444,7 @@ fn claim_while_disconnected_monitor_update_fail() {
 
 	nodes[0].node.handle_revoke_and_ack(&nodes[1].node.get_our_node_id(), &bs_raa);
 	check_added_monitors!(nodes[0], 1);
-	expect_payment_sent!(nodes[0], payment_preimage_1);
+	expect_payment_path_successful!(nodes[0]);
 
 	claim_payment(&nodes[0], &[&nodes[1]], payment_preimage_2);
 }
@@ -1446,12 +1463,12 @@ fn monitor_failed_no_reestablish_response() {
 	{
 		let mut node_0_per_peer_lock;
 		let mut node_0_peer_state_lock;
-		get_channel_ref!(nodes[0], nodes[1], node_0_per_peer_lock, node_0_peer_state_lock, channel_id).announcement_sigs_state = AnnouncementSigsState::PeerReceived;
+		get_channel_ref!(nodes[0], nodes[1], node_0_per_peer_lock, node_0_peer_state_lock, channel_id).context_mut().announcement_sigs_state = AnnouncementSigsState::PeerReceived;
 	}
 	{
 		let mut node_1_per_peer_lock;
 		let mut node_1_peer_state_lock;
-		get_channel_ref!(nodes[1], nodes[0], node_1_per_peer_lock, node_1_peer_state_lock, channel_id).announcement_sigs_state = AnnouncementSigsState::PeerReceived;
+		get_channel_ref!(nodes[1], nodes[0], node_1_per_peer_lock, node_1_peer_state_lock, channel_id).context_mut().announcement_sigs_state = AnnouncementSigsState::PeerReceived;
 	}
 
 	// Route the payment and deliver the initial commitment_signed (with a monitor update failure
@@ -1477,8 +1494,12 @@ fn monitor_failed_no_reestablish_response() {
 	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id());
 	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id());
 
-	nodes[0].node.peer_connected(&nodes[1].node.get_our_node_id(), &msgs::Init { features: nodes[1].node.init_features(), remote_network_address: None }, true).unwrap();
-	nodes[1].node.peer_connected(&nodes[0].node.get_our_node_id(), &msgs::Init { features: nodes[0].node.init_features(), remote_network_address: None }, false).unwrap();
+	nodes[0].node.peer_connected(&nodes[1].node.get_our_node_id(), &msgs::Init {
+		features: nodes[1].node.init_features(), networks: None, remote_network_address: None
+	}, true).unwrap();
+	nodes[1].node.peer_connected(&nodes[0].node.get_our_node_id(), &msgs::Init {
+		features: nodes[0].node.init_features(), networks: None, remote_network_address: None
+	}, false).unwrap();
 
 	let as_reconnect = get_chan_reestablish_msgs!(nodes[0], nodes[1]).pop().unwrap();
 	let bs_reconnect = get_chan_reestablish_msgs!(nodes[1], nodes[0]).pop().unwrap();
@@ -1911,7 +1932,9 @@ fn do_during_funding_monitor_fail(confirm_a_first: bool, restore_b_before_conf: 
 	// Make sure nodes[1] isn't stupid enough to re-send the ChannelReady on reconnect
 	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id());
 	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id());
-	reconnect_nodes(&nodes[0], &nodes[1], (false, confirm_a_first), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
+	let mut reconnect_args = ReconnectArgs::new(&nodes[0], &nodes[1]);
+	reconnect_args.send_channel_ready.1 = confirm_a_first;
+	reconnect_nodes(reconnect_args);
 
 	// But we want to re-emit ChannelPending
 	expect_channel_pending_event(&nodes[1], &nodes[0].node.get_our_node_id());
@@ -1969,8 +1992,8 @@ fn do_during_funding_monitor_fail(confirm_a_first: bool, restore_b_before_conf: 
 
 	send_payment(&nodes[0], &[&nodes[1]], 8000000);
 	close_channel(&nodes[0], &nodes[1], &channel_id, funding_tx, true);
-	check_closed_event!(nodes[0], 1, ClosureReason::CooperativeClosure);
-	check_closed_event!(nodes[1], 1, ClosureReason::CooperativeClosure);
+	check_closed_event!(nodes[0], 1, ClosureReason::CooperativeClosure, [nodes[1].node.get_our_node_id()], 100000);
+	check_closed_event!(nodes[1], 1, ClosureReason::CooperativeClosure, [nodes[0].node.get_our_node_id()], 100000);
 }
 
 #[test]
@@ -2086,9 +2109,13 @@ fn test_pending_update_fee_ack_on_reconnect() {
 	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id());
 	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id());
 
-	nodes[0].node.peer_connected(&nodes[1].node.get_our_node_id(), &msgs::Init { features: nodes[1].node.init_features(), remote_network_address: None }, true).unwrap();
+	nodes[0].node.peer_connected(&nodes[1].node.get_our_node_id(), &msgs::Init {
+		features: nodes[1].node.init_features(), networks: None, remote_network_address: None
+	}, true).unwrap();
 	let as_connect_msg = get_chan_reestablish_msgs!(nodes[0], nodes[1]).pop().unwrap();
-	nodes[1].node.peer_connected(&nodes[0].node.get_our_node_id(), &msgs::Init { features: nodes[0].node.init_features(), remote_network_address: None }, false).unwrap();
+	nodes[1].node.peer_connected(&nodes[0].node.get_our_node_id(), &msgs::Init {
+		features: nodes[0].node.init_features(), networks: None, remote_network_address: None
+	}, false).unwrap();
 	let bs_connect_msg = get_chan_reestablish_msgs!(nodes[1], nodes[0]).pop().unwrap();
 
 	nodes[1].node.handle_channel_reestablish(&nodes[0].node.get_our_node_id(), &as_connect_msg);
@@ -2166,14 +2193,14 @@ fn test_fail_htlc_on_broadcast_after_claim() {
 	expect_payment_forwarded!(nodes[1], nodes[0], nodes[2], Some(1000), false, false);
 
 	mine_transaction(&nodes[1], &bs_txn[0]);
-	check_closed_event!(nodes[1], 1, ClosureReason::CommitmentTxConfirmed);
+	check_closed_event!(nodes[1], 1, ClosureReason::CommitmentTxConfirmed, [nodes[2].node.get_our_node_id()], 100000);
 	check_closed_broadcast!(nodes[1], true);
 	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
 	check_added_monitors!(nodes[1], 1);
 	expect_pending_htlcs_forwardable_and_htlc_handling_failed!(nodes[1], vec![HTLCDestination::NextHopChannel { node_id: Some(nodes[2].node.get_our_node_id()), channel_id: chan_id_2 }]);
 
 	nodes[0].node.handle_update_fulfill_htlc(&nodes[1].node.get_our_node_id(), &bs_updates.update_fulfill_htlcs[0]);
-	expect_payment_sent_without_paths!(nodes[0], payment_preimage);
+	expect_payment_sent(&nodes[0], payment_preimage, None, false, false);
 	commitment_signed_dance!(nodes[0], nodes[1], bs_updates.commitment_signed, true, true);
 	expect_payment_path_successful!(nodes[0]);
 }
@@ -2214,9 +2241,13 @@ fn do_update_fee_resend_test(deliver_update: bool, parallel_updates: bool) {
 	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id());
 	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id());
 
-	nodes[0].node.peer_connected(&nodes[1].node.get_our_node_id(), &msgs::Init { features: nodes[1].node.init_features(), remote_network_address: None }, true).unwrap();
+	nodes[0].node.peer_connected(&nodes[1].node.get_our_node_id(), &msgs::Init {
+		features: nodes[1].node.init_features(), networks: None, remote_network_address: None
+	}, true).unwrap();
 	let as_connect_msg = get_chan_reestablish_msgs!(nodes[0], nodes[1]).pop().unwrap();
-	nodes[1].node.peer_connected(&nodes[0].node.get_our_node_id(), &msgs::Init { features: nodes[0].node.init_features(), remote_network_address: None }, false).unwrap();
+	nodes[1].node.peer_connected(&nodes[0].node.get_our_node_id(), &msgs::Init {
+		features: nodes[0].node.init_features(), networks: None, remote_network_address: None
+	}, false).unwrap();
 	let bs_connect_msg = get_chan_reestablish_msgs!(nodes[1], nodes[0]).pop().unwrap();
 
 	nodes[1].node.handle_channel_reestablish(&nodes[0].node.get_our_node_id(), &as_connect_msg);
@@ -2282,10 +2313,10 @@ fn do_channel_holding_cell_serialize(disconnect: bool, reload_a: bool) {
 	// which failed in such a case).
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let persister;
+	let new_chain_monitor;
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
-	let persister: test_utils::TestPersister;
-	let new_chain_monitor: test_utils::TestChainMonitor;
-	let nodes_0_deserialized: ChannelManager<&test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestKeysInterface, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestRouter, &test_utils::TestLogger>;
+	let nodes_0_deserialized;
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let chan_id = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 15_000_000, 7_000_000_000).2;
@@ -2324,6 +2355,7 @@ fn do_channel_holding_cell_serialize(disconnect: bool, reload_a: bool) {
 		RecipientOnionFields::secret_only(payment_secret_2), PaymentId(payment_hash_2.0)).unwrap();
 	check_added_monitors!(nodes[0], 0);
 
+	let chan_0_monitor_serialized = get_monitor!(nodes[0], chan_id).encode();
 	chanmon_cfgs[0].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
 	chanmon_cfgs[0].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
 	nodes[0].node.claim_funds(payment_preimage_0);
@@ -2343,18 +2375,23 @@ fn do_channel_holding_cell_serialize(disconnect: bool, reload_a: bool) {
 		// disconnect the peers. Note that the fuzzer originally found this issue because
 		// deserializing a ChannelManager in this state causes an assertion failure.
 		if reload_a {
-			let chan_0_monitor_serialized = get_monitor!(nodes[0], chan_id).encode();
 			reload_node!(nodes[0], &nodes[0].node.encode(), &[&chan_0_monitor_serialized], persister, new_chain_monitor, nodes_0_deserialized);
+			persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
+			persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
 		} else {
 			nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id());
 		}
 		nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id());
 
 		// Now reconnect the two
-		nodes[0].node.peer_connected(&nodes[1].node.get_our_node_id(), &msgs::Init { features: nodes[1].node.init_features(), remote_network_address: None }, true).unwrap();
+		nodes[0].node.peer_connected(&nodes[1].node.get_our_node_id(), &msgs::Init {
+			features: nodes[1].node.init_features(), networks: None, remote_network_address: None
+		}, true).unwrap();
 		let reestablish_1 = get_chan_reestablish_msgs!(nodes[0], nodes[1]);
 		assert_eq!(reestablish_1.len(), 1);
-		nodes[1].node.peer_connected(&nodes[0].node.get_our_node_id(), &msgs::Init { features: nodes[0].node.init_features(), remote_network_address: None }, false).unwrap();
+		nodes[1].node.peer_connected(&nodes[0].node.get_our_node_id(), &msgs::Init {
+			features: nodes[0].node.init_features(), networks: None, remote_network_address: None
+		}, false).unwrap();
 		let reestablish_2 = get_chan_reestablish_msgs!(nodes[1], nodes[0]);
 		assert_eq!(reestablish_2.len(), 1);
 
@@ -2380,9 +2417,14 @@ fn do_channel_holding_cell_serialize(disconnect: bool, reload_a: bool) {
 			assert_eq!(pending_cs.commitment_signed, cs);
 		} else { panic!(); }
 
-		// There should be no monitor updates as we are still pending awaiting a failed one.
-		check_added_monitors!(nodes[0], 0);
-		check_added_monitors!(nodes[1], 0);
+		if reload_a {
+			// The two pending monitor updates were replayed (but are still pending).
+			check_added_monitors(&nodes[0], 2);
+		} else {
+			// There should be no monitor updates as we are still pending awaiting a failed one.
+			check_added_monitors(&nodes[0], 0);
+		}
+		check_added_monitors(&nodes[1], 0);
 	}
 
 	// If we finish updating the monitor, we should free the holding cell right away (this did
@@ -2411,7 +2453,7 @@ fn do_channel_holding_cell_serialize(disconnect: bool, reload_a: bool) {
 			assert!(updates.update_fee.is_none());
 			assert_eq!(updates.update_fulfill_htlcs.len(), 1);
 			nodes[1].node.handle_update_fulfill_htlc(&nodes[0].node.get_our_node_id(), &updates.update_fulfill_htlcs[0]);
-			expect_payment_sent_without_paths!(nodes[1], payment_preimage_0);
+			expect_payment_sent(&nodes[1], payment_preimage_0, None, false, false);
 			assert_eq!(updates.update_add_htlcs.len(), 1);
 			nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &updates.update_add_htlcs[0]);
 			updates.commitment_signed
@@ -2428,7 +2470,7 @@ fn do_channel_holding_cell_serialize(disconnect: bool, reload_a: bool) {
 	expect_payment_claimable!(nodes[1], payment_hash_1, payment_secret_1, 100000);
 	check_added_monitors!(nodes[1], 1);
 
-	commitment_signed_dance!(nodes[1], nodes[0], (), false, true, false);
+	commitment_signed_dance!(nodes[1], nodes[0], (), false, true, false, false);
 
 	let events = nodes[1].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 2);
@@ -2529,7 +2571,7 @@ fn do_test_reconnect_dup_htlc_claims(htlc_status: HTLCStatusAtDupClaim, second_f
 		bs_updates = Some(get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id()));
 		assert_eq!(bs_updates.as_ref().unwrap().update_fulfill_htlcs.len(), 1);
 		nodes[0].node.handle_update_fulfill_htlc(&nodes[1].node.get_our_node_id(), &bs_updates.as_ref().unwrap().update_fulfill_htlcs[0]);
-		expect_payment_sent_without_paths!(nodes[0], payment_preimage);
+		expect_payment_sent(&nodes[0], payment_preimage, None, false, false);
 		if htlc_status == HTLCStatusAtDupClaim::Cleared {
 			commitment_signed_dance!(nodes[0], nodes[1], &bs_updates.as_ref().unwrap().commitment_signed, false);
 			expect_payment_path_successful!(nodes[0]);
@@ -2542,10 +2584,14 @@ fn do_test_reconnect_dup_htlc_claims(htlc_status: HTLCStatusAtDupClaim, second_f
 	nodes[2].node.peer_disconnected(&nodes[1].node.get_our_node_id());
 
 	if second_fails {
-		reconnect_nodes(&nodes[1], &nodes[2], (false, false), (0, 0), (0, 0), (1, 0), (0, 0), (0, 0), (false, false));
+		let mut reconnect_args = ReconnectArgs::new(&nodes[1], &nodes[2]);
+		reconnect_args.pending_htlc_fails.0 = 1;
+		reconnect_nodes(reconnect_args);
 		expect_pending_htlcs_forwardable_and_htlc_handling_failed!(nodes[1], vec![HTLCDestination::NextHopChannel { node_id: Some(nodes[2].node.get_our_node_id()), channel_id: chan_id_2 }]);
 	} else {
-		reconnect_nodes(&nodes[1], &nodes[2], (false, false), (0, 0), (1, 0), (0, 0), (0, 0), (0, 0), (false, false));
+		let mut reconnect_args = ReconnectArgs::new(&nodes[1], &nodes[2]);
+		reconnect_args.pending_htlc_claims.0 = 1;
+		reconnect_nodes(reconnect_args);
 	}
 
 	if htlc_status == HTLCStatusAtDupClaim::HoldingCell {
@@ -2556,7 +2602,7 @@ fn do_test_reconnect_dup_htlc_claims(htlc_status: HTLCStatusAtDupClaim, second_f
 		bs_updates = Some(get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id()));
 		assert_eq!(bs_updates.as_ref().unwrap().update_fulfill_htlcs.len(), 1);
 		nodes[0].node.handle_update_fulfill_htlc(&nodes[1].node.get_our_node_id(), &bs_updates.as_ref().unwrap().update_fulfill_htlcs[0]);
-		expect_payment_sent_without_paths!(nodes[0], payment_preimage);
+		expect_payment_sent(&nodes[0], payment_preimage, None, false, false);
 	}
 	if htlc_status != HTLCStatusAtDupClaim::Cleared {
 		commitment_signed_dance!(nodes[0], nodes[1], &bs_updates.as_ref().unwrap().commitment_signed, false);
@@ -2625,8 +2671,8 @@ fn test_temporary_error_during_shutdown() {
 	assert_eq!(txn_a, txn_b);
 	assert_eq!(txn_a.len(), 1);
 	check_spends!(txn_a[0], funding_tx);
-	check_closed_event!(nodes[1], 1, ClosureReason::CooperativeClosure);
-	check_closed_event!(nodes[0], 1, ClosureReason::CooperativeClosure);
+	check_closed_event!(nodes[1], 1, ClosureReason::CooperativeClosure, [nodes[0].node.get_our_node_id()], 100000);
+	check_closed_event!(nodes[0], 1, ClosureReason::CooperativeClosure, [nodes[1].node.get_our_node_id()], 100000);
 }
 
 #[test]
@@ -2655,7 +2701,8 @@ fn test_permanent_error_during_sending_shutdown() {
 	if let MessageSendEvent::HandleError { .. } =  msg_events[2] {} else { panic!(); }
 
 	check_added_monitors!(nodes[0], 2);
-	check_closed_event!(nodes[0], 1, ClosureReason::ProcessingError { err: "ChannelMonitor storage failure".to_string() });
+	check_closed_event!(nodes[0], 1, ClosureReason::ProcessingError { err: "ChannelMonitor storage failure".to_string() },
+		[nodes[1].node.get_our_node_id()], 100000);
 }
 
 #[test]
@@ -2686,7 +2733,8 @@ fn test_permanent_error_during_handling_shutdown() {
 	if let MessageSendEvent::HandleError { .. } =  msg_events[2] {} else { panic!(); }
 
 	check_added_monitors!(nodes[1], 2);
-	check_closed_event!(nodes[1], 1, ClosureReason::ProcessingError { err: "ChannelMonitor storage failure".to_string() });
+	check_closed_event!(nodes[1], 1, ClosureReason::ProcessingError { err: "ChannelMonitor storage failure".to_string() },
+		[nodes[0].node.get_our_node_id()], 100000);
 }
 
 #[test]
@@ -2753,7 +2801,7 @@ fn double_temp_error() {
 	assert_eq!(node_id, nodes[0].node.get_our_node_id());
 	nodes[0].node.handle_update_fulfill_htlc(&nodes[1].node.get_our_node_id(), &update_fulfill_1);
 	check_added_monitors!(nodes[0], 0);
-	expect_payment_sent_without_paths!(nodes[0], payment_preimage_1);
+	expect_payment_sent(&nodes[0], payment_preimage_1, None, false, false);
 	nodes[0].node.handle_commitment_signed(&nodes[1].node.get_our_node_id(), &commitment_signed_b1);
 	check_added_monitors!(nodes[0], 1);
 	nodes[0].node.process_pending_htlc_forwards();
@@ -2807,15 +2855,16 @@ fn do_test_outbound_reload_without_init_mon(use_0conf: bool) {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 
-	let persister: test_utils::TestPersister;
-	let new_chain_monitor: test_utils::TestChainMonitor;
-	let nodes_0_deserialized: ChannelManager<&test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestKeysInterface, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestRouter, &test_utils::TestLogger>;
+	let persister;
+	let new_chain_monitor;
 
 	let mut chan_config = test_default_channel_config();
 	chan_config.manually_accept_inbound_channels = true;
 	chan_config.channel_handshake_limits.trust_own_funding_0conf = true;
 
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(chan_config), Some(chan_config)]);
+	let nodes_0_deserialized;
+
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 100000, 10001, 43, None).unwrap();
@@ -2880,7 +2929,7 @@ fn do_test_outbound_reload_without_init_mon(use_0conf: bool) {
 	nodes[0].chain_source.watched_outputs.lock().unwrap().clear();
 
 	reload_node!(nodes[0], &nodes[0].node.encode(), &[], persister, new_chain_monitor, nodes_0_deserialized);
-	check_closed_event!(nodes[0], 1, ClosureReason::DisconnectedPeer);
+	check_closed_event!(nodes[0], 1, ClosureReason::DisconnectedPeer, [nodes[1].node.get_our_node_id()], 100000);
 	assert!(nodes[0].node.list_channels().is_empty());
 }
 
@@ -2897,15 +2946,16 @@ fn do_test_inbound_reload_without_init_mon(use_0conf: bool, lock_commitment: boo
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 
-	let persister: test_utils::TestPersister;
-	let new_chain_monitor: test_utils::TestChainMonitor;
-	let nodes_1_deserialized: ChannelManager<&test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestKeysInterface, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestRouter, &test_utils::TestLogger>;
+	let persister;
+	let new_chain_monitor;
 
 	let mut chan_config = test_default_channel_config();
 	chan_config.manually_accept_inbound_channels = true;
 	chan_config.channel_handshake_limits.trust_own_funding_0conf = true;
 
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(chan_config), Some(chan_config)]);
+	let nodes_1_deserialized;
+
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 100000, 10001, 43, None).unwrap();
@@ -2967,7 +3017,7 @@ fn do_test_inbound_reload_without_init_mon(use_0conf: bool, lock_commitment: boo
 
 	reload_node!(nodes[1], &nodes[1].node.encode(), &[], persister, new_chain_monitor, nodes_1_deserialized);
 
-	check_closed_event!(nodes[1], 1, ClosureReason::DisconnectedPeer);
+	check_closed_event!(nodes[1], 1, ClosureReason::DisconnectedPeer, [nodes[0].node.get_our_node_id()], 100000);
 	assert!(nodes[1].node.list_channels().is_empty());
 }
 
@@ -2977,4 +3027,68 @@ fn test_inbound_reload_without_init_mon() {
 	do_test_inbound_reload_without_init_mon(true, false);
 	do_test_inbound_reload_without_init_mon(false, true);
 	do_test_inbound_reload_without_init_mon(false, false);
+}
+
+#[test]
+fn test_blocked_chan_preimage_release() {
+	// Test that even if a channel's `ChannelMonitorUpdate` flow is blocked waiting on an event to
+	// be handled HTLC preimage `ChannelMonitorUpdate`s will still go out.
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
+	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+
+	create_announced_chan_between_nodes(&nodes, 0, 1).2;
+	create_announced_chan_between_nodes(&nodes, 1, 2).2;
+
+	send_payment(&nodes[0], &[&nodes[1], &nodes[2]], 5_000_000);
+
+	// Tee up two payments in opposite directions across nodes[1], one it sent to generate a
+	// PaymentSent event and one it forwards.
+	let (payment_preimage_1, payment_hash_1, _) = route_payment(&nodes[1], &[&nodes[2]], 1_000_000);
+	let (payment_preimage_2, payment_hash_2, _) = route_payment(&nodes[2], &[&nodes[1], &nodes[0]], 1_000_000);
+
+	// Claim the first payment to get a `PaymentSent` event (but don't handle it yet).
+	nodes[2].node.claim_funds(payment_preimage_1);
+	check_added_monitors(&nodes[2], 1);
+	expect_payment_claimed!(nodes[2], payment_hash_1, 1_000_000);
+
+	let cs_htlc_fulfill_updates = get_htlc_update_msgs!(nodes[2], nodes[1].node.get_our_node_id());
+	nodes[1].node.handle_update_fulfill_htlc(&nodes[2].node.get_our_node_id(), &cs_htlc_fulfill_updates.update_fulfill_htlcs[0]);
+	do_commitment_signed_dance(&nodes[1], &nodes[2], &cs_htlc_fulfill_updates.commitment_signed, false, false);
+	check_added_monitors(&nodes[1], 0);
+
+	// Now claim the second payment on nodes[0], which will ultimately result in nodes[1] trying to
+	// claim an HTLC on its channel with nodes[2], but that channel is blocked on the above
+	// `PaymentSent` event.
+	nodes[0].node.claim_funds(payment_preimage_2);
+	check_added_monitors(&nodes[0], 1);
+	expect_payment_claimed!(nodes[0], payment_hash_2, 1_000_000);
+
+	let as_htlc_fulfill_updates = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
+	nodes[1].node.handle_update_fulfill_htlc(&nodes[0].node.get_our_node_id(), &as_htlc_fulfill_updates.update_fulfill_htlcs[0]);
+	check_added_monitors(&nodes[1], 1); // We generate only a preimage monitor update
+	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+
+	// Finish the CS dance between nodes[0] and nodes[1].
+	do_commitment_signed_dance(&nodes[1], &nodes[0], &as_htlc_fulfill_updates.commitment_signed, false, false);
+	check_added_monitors(&nodes[1], 0);
+
+	let events = nodes[1].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 3);
+	if let Event::PaymentSent { .. } = events[0] {} else { panic!(); }
+	if let Event::PaymentPathSuccessful { .. } = events[2] {} else { panic!(); }
+	if let Event::PaymentForwarded { .. } = events[1] {} else { panic!(); }
+
+	// The event processing should release the last RAA update.
+	check_added_monitors(&nodes[1], 1);
+
+	// When we fetch the next update the message getter will generate the next update for nodes[2],
+	// generating a further monitor update.
+	let bs_htlc_fulfill_updates = get_htlc_update_msgs!(nodes[1], nodes[2].node.get_our_node_id());
+	check_added_monitors(&nodes[1], 1);
+
+	nodes[2].node.handle_update_fulfill_htlc(&nodes[1].node.get_our_node_id(), &bs_htlc_fulfill_updates.update_fulfill_htlcs[0]);
+	do_commitment_signed_dance(&nodes[2], &nodes[1], &bs_htlc_fulfill_updates.commitment_signed, false, false);
+	expect_payment_sent(&nodes[2], payment_preimage_2, None, true, true);
 }
