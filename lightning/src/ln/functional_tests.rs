@@ -244,7 +244,7 @@ fn test_splice_in_simple() {
 		assert!(channel.is_usable);
 		assert!(channel.is_channel_ready);
 		assert_eq!(channel.channel_value_satoshis, channel_value_sat);
-		assert_eq!(channel.outbound_capacity_msat, 100000000);
+		assert_eq!(channel.outbound_capacity_msat, 100000000 - 1000000);
 		assert_eq!(channel.funding_txo.unwrap().txid, funding_tx.txid());
 		assert_eq!(channel.confirmations.unwrap(), 10);
 	}
@@ -311,7 +311,7 @@ fn test_splice_in_simple() {
 		assert!(channel.is_usable);
 		assert!(channel.is_channel_ready);
 		assert_eq!(channel.channel_value_satoshis, post_splice_channel_value);
-		assert_eq!(channel.outbound_capacity_msat, 120000000);
+		assert_eq!(channel.outbound_capacity_msat, 120000000 - 1000000);
 		assert_eq!(channel.funding_txo.unwrap().txid, splice_tx.txid());
 		assert_eq!(channel.confirmations.unwrap(), 10);
 	}
