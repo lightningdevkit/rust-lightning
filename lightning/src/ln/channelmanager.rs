@@ -3539,7 +3539,29 @@ where
 		let mut used_liquidity_map = HashMap::with_capacity(first_hops.len());
 
 		let mut res = Vec::new();
-		for path in route.paths {
+
+		for mut path in route.paths {
+			// If the last hop is probably an unannounced channel we refrain from probing all the
+			// way through to the end and instead probe up to the second-to-last channel.
+			while let Some(last_path_hop) = path.hops.last() {
+				if last_path_hop.maybe_announced_channel {
+					// We found a potentially announced last hop.
+					break;
+				} else {
+					// Drop the last hop, as it's likely unannounced.
+					log_debug!(
+						self.logger,
+						"Avoided sending payment probe all the way to last hop {} as it is likely unannounced.",
+						last_path_hop.short_channel_id
+					);
+					let final_value_msat = path.final_value_msat();
+					path.hops.pop();
+					if let Some(new_last) = path.hops.last_mut() {
+						new_last.fee_msat += final_value_msat;
+					}
+				}
+			}
+
 			if path.hops.len() < 2 {
 				log_debug!(
 					self.logger,
