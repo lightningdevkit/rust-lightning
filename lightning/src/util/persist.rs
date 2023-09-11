@@ -216,6 +216,12 @@ where
 	for stored_key in kv_store.list(
 		CHANNEL_MONITOR_PERSISTENCE_NAMESPACE, CHANNEL_MONITOR_PERSISTENCE_SUB_NAMESPACE)?
 	{
+		if stored_key.len() < 66 {
+			return Err(io::Error::new(
+				io::ErrorKind::InvalidData,
+				"Stored key has invalid length"));
+		}
+
 		let txid = Txid::from_hex(stored_key.split_at(64).0).map_err(|_| {
 			io::Error::new(io::ErrorKind::InvalidData, "Invalid tx ID in stored key")
 		})?;
