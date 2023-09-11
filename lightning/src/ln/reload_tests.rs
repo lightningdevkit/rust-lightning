@@ -332,8 +332,8 @@ fn test_simple_manager_serialize_deserialize() {
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	let chan_id = create_announced_chan_between_nodes(&nodes, 0, 1).2;
 
-	let (our_payment_preimage, _, _) = route_payment(&nodes[0], &[&nodes[1]], 1000000);
-	let (_, our_payment_hash, _) = route_payment(&nodes[0], &[&nodes[1]], 1000000);
+	let (our_payment_preimage, ..) = route_payment(&nodes[0], &[&nodes[1]], 1000000);
+	let (_, our_payment_hash, ..) = route_payment(&nodes[0], &[&nodes[1]], 1000000);
 
 	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id());
 
@@ -371,7 +371,7 @@ fn test_manager_serialize_deserialize_inconsistent_monitor() {
 		node_0_stale_monitors_serialized.push(writer.0);
 	}
 
-	let (our_payment_preimage, _, _) = route_payment(&nodes[2], &[&nodes[0], &nodes[1]], 1000000);
+	let (our_payment_preimage, ..) = route_payment(&nodes[2], &[&nodes[0], &nodes[1]], 1000000);
 
 	// Serialize the ChannelManager here, but the monitor we keep up-to-date
 	let nodes_0_serialized = nodes[0].node.encode();
@@ -1063,7 +1063,7 @@ fn removed_payment_no_manager_persistence() {
 	let chan_id_1 = create_announced_chan_between_nodes(&nodes, 0, 1).2;
 	let chan_id_2 = create_announced_chan_between_nodes(&nodes, 1, 2).2;
 
-	let (_, payment_hash, _) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 1_000_000);
+	let (_, payment_hash, ..) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 1_000_000);
 
 	let node_encoded = nodes[1].node.encode();
 

@@ -913,7 +913,7 @@ fn do_test_dup_htlc_onchain_fails_on_reload(persist_manager_post_event: bool, co
 
 	// Route a payment, but force-close the channel before the HTLC fulfill message arrives at
 	// nodes[0].
-	let (payment_preimage, payment_hash, _) = route_payment(&nodes[0], &[&nodes[1]], 10_000_000);
+	let (payment_preimage, payment_hash, ..) = route_payment(&nodes[0], &[&nodes[1]], 10_000_000);
 	nodes[0].node.force_close_broadcasting_latest_txn(&nodes[0].node.list_channels()[0].channel_id, &nodes[1].node.get_our_node_id()).unwrap();
 	check_closed_broadcast!(nodes[0], true);
 	check_added_monitors!(nodes[0], 1);
@@ -1051,7 +1051,7 @@ fn test_fulfill_restart_failure() {
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let chan_id = create_announced_chan_between_nodes(&nodes, 0, 1).2;
-	let (payment_preimage, payment_hash, _) = route_payment(&nodes[0], &[&nodes[1]], 100_000);
+	let (payment_preimage, payment_hash, ..) = route_payment(&nodes[0], &[&nodes[1]], 100_000);
 
 	// The simplest way to get a failure after a fulfill is to reload nodes[1] from a state
 	// pre-fulfill, which we do by serializing it here.
@@ -1459,7 +1459,7 @@ fn test_trivial_inflight_htlc_tracking(){
 	let (_, _, chan_2_id, _) = create_announced_chan_between_nodes(&nodes, 1, 2);
 
 	// Send and claim the payment. Inflight HTLCs should be empty.
-	let payment_hash = send_payment(&nodes[0], &[&nodes[1], &nodes[2]], 500000).1;
+	let (_, payment_hash, _, payment_id) = send_payment(&nodes[0], &[&nodes[1], &nodes[2]], 500000);
 	let inflight_htlcs = node_chanmgrs[0].compute_inflight_htlcs();
 	{
 		let mut node_0_per_peer_lock;
@@ -1488,7 +1488,7 @@ fn test_trivial_inflight_htlc_tracking(){
 	}
 	let pending_payments = nodes[0].node.list_recent_payments();
 	assert_eq!(pending_payments.len(), 1);
-	assert_eq!(pending_payments[0], RecentPaymentDetails::Fulfilled { payment_hash: Some(payment_hash) });
+	assert_eq!(pending_payments[0], RecentPaymentDetails::Fulfilled { payment_hash: Some(payment_hash), payment_id });
 
 	// Remove fulfilled payment
 	for _ in 0..=IDEMPOTENCY_TIMEOUT_TICKS {
@@ -1496,7 +1496,7 @@ fn test_trivial_inflight_htlc_tracking(){
 	}
 
 	// Send the payment, but do not claim it. Our inflight HTLCs should contain the pending payment.
-	let (payment_preimage, payment_hash,  _) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 500000);
+	let (payment_preimage, payment_hash,  _, payment_id) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 500000);
 	let inflight_htlcs = node_chanmgrs[0].compute_inflight_htlcs();
 	{
 		let mut node_0_per_peer_lock;
@@ -1526,7 +1526,7 @@ fn test_trivial_inflight_htlc_tracking(){
 	}
 	let pending_payments = nodes[0].node.list_recent_payments();
 	assert_eq!(pending_payments.len(), 1);
-	assert_eq!(pending_payments[0], RecentPaymentDetails::Pending { payment_hash, total_msat: 500000 });
+	assert_eq!(pending_payments[0], RecentPaymentDetails::Pending { payment_id, payment_hash, total_msat: 500000 });
 
 	// Now, let's claim the payment. This should result in the used liquidity to return `None`.
 	claim_payment(&nodes[0], &[&nodes[1], &nodes[2]], payment_preimage);
@@ -3159,7 +3159,7 @@ fn do_no_missing_sent_on_reload(persist_manager_with_payment: bool, at_midpoint:
 		nodes_0_serialized = nodes[0].node.encode();
 	}
 
-	let (our_payment_preimage, our_payment_hash, _) = route_payment(&nodes[0], &[&nodes[1]], 1_000_000);
+	let (our_payment_preimage, our_payment_hash, ..) = route_payment(&nodes[0], &[&nodes[1]], 1_000_000);
 
 	if persist_manager_with_payment {
 		nodes_0_serialized = nodes[0].node.encode();

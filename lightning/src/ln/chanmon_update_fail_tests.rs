@@ -92,7 +92,7 @@ fn test_monitor_and_persister_update_fail() {
 	send_payment(&nodes[0], &vec!(&nodes[1])[..], 10_000_000);
 
 	// Route an HTLC from node 0 to node 1 (but don't settle)
-	let (preimage, payment_hash, _) = route_payment(&nodes[0], &[&nodes[1]], 9_000_000);
+	let (preimage, payment_hash, ..) = route_payment(&nodes[0], &[&nodes[1]], 9_000_000);
 
 	// Make a copy of the ChainMonitor so we can capture the error it returns on a
 	// bogus update. Note that if instead we updated the nodes[0]'s ChainMonitor
@@ -286,7 +286,7 @@ fn do_test_monitor_temporary_update_fail(disconnect_count: usize) {
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	let channel_id = create_announced_chan_between_nodes(&nodes, 0, 1).2;
 
-	let (payment_preimage_1, payment_hash_1, _) = route_payment(&nodes[0], &[&nodes[1]], 1_000_000);
+	let (payment_preimage_1, payment_hash_1, ..) = route_payment(&nodes[0], &[&nodes[1]], 1_000_000);
 
 	// Now try to send a second payment which will fail to send
 	let (route, payment_hash_2, payment_preimage_2, payment_secret_2) = get_route_and_payment_hash!(nodes[0], nodes[1], 1000000);
@@ -858,7 +858,7 @@ fn do_test_monitor_update_fail_raa(test_ignore_second_cs: bool) {
 	send_payment(&nodes[0], &[&nodes[1], &nodes[2]], 5000000);
 
 	// Route a first payment that we'll fail backwards
-	let (_, payment_hash_1, _) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 1000000);
+	let (_, payment_hash_1, ..) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 1000000);
 
 	// Fail the payment backwards, failing the monitor update on nodes[1]'s receipt of the RAA
 	nodes[2].node.fail_htlc_backwards(&payment_hash_1);
@@ -1128,7 +1128,7 @@ fn test_monitor_update_fail_reestablish() {
 	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1);
 	create_announced_chan_between_nodes(&nodes, 1, 2);
 
-	let (payment_preimage, payment_hash, _) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 1_000_000);
+	let (payment_preimage, payment_hash, ..) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 1_000_000);
 
 	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id());
 	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id());
@@ -1344,7 +1344,7 @@ fn claim_while_disconnected_monitor_update_fail() {
 	let channel_id = create_announced_chan_between_nodes(&nodes, 0, 1).2;
 
 	// Forward a payment for B to claim
-	let (payment_preimage_1, payment_hash_1, _) = route_payment(&nodes[0], &[&nodes[1]], 1_000_000);
+	let (payment_preimage_1, payment_hash_1, ..) = route_payment(&nodes[0], &[&nodes[1]], 1_000_000);
 
 	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id());
 	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id());
@@ -1644,7 +1644,7 @@ fn test_monitor_update_fail_claim() {
 	// Rebalance a bit so that we can send backwards from 3 to 2.
 	send_payment(&nodes[0], &[&nodes[1], &nodes[2]], 5000000);
 
-	let (payment_preimage_1, payment_hash_1, _) = route_payment(&nodes[0], &[&nodes[1]], 1_000_000);
+	let (payment_preimage_1, payment_hash_1, ..) = route_payment(&nodes[0], &[&nodes[1]], 1_000_000);
 
 	chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
 	nodes[1].node.claim_funds(payment_preimage_1);
@@ -1763,7 +1763,7 @@ fn test_monitor_update_on_pending_forwards() {
 	// Rebalance a bit so that we can send backwards from 3 to 1.
 	send_payment(&nodes[0], &[&nodes[1], &nodes[2]], 5000000);
 
-	let (_, payment_hash_1, _) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 1000000);
+	let (_, payment_hash_1, ..) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 1000000);
 	nodes[2].node.fail_htlc_backwards(&payment_hash_1);
 	expect_pending_htlcs_forwardable_and_htlc_handling_failed!(nodes[2], vec![HTLCDestination::FailedPayment { payment_hash: payment_hash_1 }]);
 	check_added_monitors!(nodes[2], 1);
@@ -1835,7 +1835,7 @@ fn monitor_update_claim_fail_no_response() {
 	let channel_id = create_announced_chan_between_nodes(&nodes, 0, 1).2;
 
 	// Forward a payment for B to claim
-	let (payment_preimage_1, payment_hash_1, _) = route_payment(&nodes[0], &[&nodes[1]], 1_000_000);
+	let (payment_preimage_1, payment_hash_1, ..) = route_payment(&nodes[0], &[&nodes[1]], 1_000_000);
 
 	// Now start forwarding a second payment, skipping the last RAA so B is in AwaitingRAA
 	let (route, payment_hash_2, payment_preimage_2, payment_secret_2) = get_route_and_payment_hash!(nodes[0], nodes[1], 1000000);
@@ -2177,7 +2177,7 @@ fn test_fail_htlc_on_broadcast_after_claim() {
 	create_announced_chan_between_nodes(&nodes, 0, 1);
 	let chan_id_2 = create_announced_chan_between_nodes(&nodes, 1, 2).2;
 
-	let (payment_preimage, payment_hash, _) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 2000);
+	let (payment_preimage, payment_hash, ..) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 2000);
 
 	let bs_txn = get_local_commitment_txn!(nodes[2], chan_id_2);
 	assert_eq!(bs_txn.len(), 1);
@@ -2343,7 +2343,7 @@ fn do_channel_holding_cell_serialize(disconnect: bool, reload_a: bool) {
 	//
 	// Note that because, at the end, MonitorUpdateInProgress is still set, the HTLC generated in
 	// (c) will not be freed from the holding cell.
-	let (payment_preimage_0, payment_hash_0, _) = route_payment(&nodes[1], &[&nodes[0]], 100_000);
+	let (payment_preimage_0, payment_hash_0, ..) = route_payment(&nodes[1], &[&nodes[0]], 100_000);
 
 	nodes[0].node.send_payment_with_route(&route, payment_hash_1,
 		RecipientOnionFields::secret_only(payment_secret_1), PaymentId(payment_hash_1.0)).unwrap();
@@ -2517,7 +2517,7 @@ fn do_test_reconnect_dup_htlc_claims(htlc_status: HTLCStatusAtDupClaim, second_f
 	create_announced_chan_between_nodes(&nodes, 0, 1);
 	let chan_id_2 = create_announced_chan_between_nodes(&nodes, 1, 2).2;
 
-	let (payment_preimage, payment_hash, _) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 100_000);
+	let (payment_preimage, payment_hash, ..) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 100_000);
 
 	let mut as_raa = None;
 	if htlc_status == HTLCStatusAtDupClaim::HoldingCell {
@@ -2747,8 +2747,8 @@ fn double_temp_error() {
 
 	let (_, _, channel_id, _) = create_announced_chan_between_nodes(&nodes, 0, 1);
 
-	let (payment_preimage_1, payment_hash_1, _) = route_payment(&nodes[0], &[&nodes[1]], 1_000_000);
-	let (payment_preimage_2, payment_hash_2, _) = route_payment(&nodes[0], &[&nodes[1]], 1_000_000);
+	let (payment_preimage_1, payment_hash_1, ..) = route_payment(&nodes[0], &[&nodes[1]], 1_000_000);
+	let (payment_preimage_2, payment_hash_2, ..) = route_payment(&nodes[0], &[&nodes[1]], 1_000_000);
 
 	chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
 	// `claim_funds` results in a ChannelMonitorUpdate.
@@ -3045,8 +3045,8 @@ fn test_blocked_chan_preimage_release() {
 
 	// Tee up two payments in opposite directions across nodes[1], one it sent to generate a
 	// PaymentSent event and one it forwards.
-	let (payment_preimage_1, payment_hash_1, _) = route_payment(&nodes[1], &[&nodes[2]], 1_000_000);
-	let (payment_preimage_2, payment_hash_2, _) = route_payment(&nodes[2], &[&nodes[1], &nodes[0]], 1_000_000);
+	let (payment_preimage_1, payment_hash_1, ..) = route_payment(&nodes[1], &[&nodes[2]], 1_000_000);
+	let (payment_preimage_2, payment_hash_2, ..) = route_payment(&nodes[2], &[&nodes[1], &nodes[0]], 1_000_000);
 
 	// Claim the first payment to get a `PaymentSent` event (but don't handle it yet).
 	nodes[2].node.claim_funds(payment_preimage_1);

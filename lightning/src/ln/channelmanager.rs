@@ -233,7 +233,8 @@ impl From<&ClaimableHTLC> for events::ClaimedHTLC {
 	}
 }
 
-/// A payment identifier used to uniquely identify a payment to LDK.
+/// A user-provided identifier in [`ChannelManager::send_payment`] used to uniquely identify
+/// a payment and ensure idempotency in LDK.
 ///
 /// This is not exported to bindings users as we just use [u8; 32] directly
 #[derive(Hash, Copy, Clone, PartialEq, Eq, Debug)]
@@ -1669,11 +1670,15 @@ pub enum ChannelShutdownState {
 pub enum RecentPaymentDetails {
 	/// When an invoice was requested and thus a payment has not yet been sent.
 	AwaitingInvoice {
-		/// Identifier for the payment to ensure idempotency.
+		/// A user-provided identifier in [`ChannelManager::send_payment`] used to uniquely identify
+		/// a payment and ensure idempotency in LDK.
 		payment_id: PaymentId,
 	},
 	/// When a payment is still being sent and awaiting successful delivery.
 	Pending {
+		/// A user-provided identifier in [`ChannelManager::send_payment`] used to uniquely identify
+		/// a payment and ensure idempotency in LDK.
+		payment_id: PaymentId,
 		/// Hash of the payment that is currently being sent but has yet to be fulfilled or
 		/// abandoned.
 		payment_hash: PaymentHash,
@@ -1685,6 +1690,9 @@ pub enum RecentPaymentDetails {
 	/// been resolved. Upon receiving [`Event::PaymentSent`], we delay for a few minutes before the
 	/// payment is removed from tracking.
 	Fulfilled {
+		/// A user-provided identifier in [`ChannelManager::send_payment`] used to uniquely identify
+		/// a payment and ensure idempotency in LDK.
+		payment_id: PaymentId,
 		/// Hash of the payment that was claimed. `None` for serializations of [`ChannelManager`]
 		/// made before LDK version 0.0.104.
 		payment_hash: Option<PaymentHash>,
@@ -1693,6 +1701,9 @@ pub enum RecentPaymentDetails {
 	/// abandoned via [`ChannelManager::abandon_payment`], it is marked as abandoned until all
 	/// pending HTLCs for this payment resolve and an [`Event::PaymentFailed`] is generated.
 	Abandoned {
+		/// A user-provided identifier in [`ChannelManager::send_payment`] used to uniquely identify
+		/// a payment and ensure idempotency in LDK.
+		payment_id: PaymentId,
 		/// Hash of the payment that we have given up trying to send.
 		payment_hash: PaymentHash,
 	},
@@ -2429,15 +2440,16 @@ where
 				},
 				PendingOutboundPayment::Retryable { payment_hash, total_msat, .. } => {
 					Some(RecentPaymentDetails::Pending {
+						payment_id: *payment_id,
 						payment_hash: *payment_hash,
 						total_msat: *total_msat,
 					})
 				},
 				PendingOutboundPayment::Abandoned { payment_hash, .. } => {
-					Some(RecentPaymentDetails::Abandoned { payment_hash: *payment_hash })
+					Some(RecentPaymentDetails::Abandoned { payment_id: *payment_id, payment_hash: *payment_hash })
 				},
 				PendingOutboundPayment::Fulfilled { payment_hash, .. } => {
-					Some(RecentPaymentDetails::Fulfilled { payment_hash: *payment_hash })
+					Some(RecentPaymentDetails::Fulfilled { payment_id: *payment_id, payment_hash: *payment_hash })
 				},
 				PendingOutboundPayment::Legacy { .. } => None
 			})
@@ -9824,7 +9836,7 @@ mod tests {
 
 		// To start (1), send a regular payment but don't claim it.
 		let expected_route = [&nodes[1]];
-		let (payment_preimage, payment_hash, _) = route_payment(&nodes[0], &expected_route, 100_000);
+		let (payment_preimage, payment_hash, ..) = route_payment(&nodes[0], &expected_route, 100_000);
 
 		// Next, attempt a keysend payment and make sure it fails.
 		let route_params = RouteParameters::from_payment_params_and_value(
