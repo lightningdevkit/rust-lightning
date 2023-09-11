@@ -1249,11 +1249,12 @@ impl<'a> PersistenceNotifierGuard<'a, fn() -> NotifyOption> { // We don't care w
 
 	/// Note that if any [`ChannelMonitorUpdate`]s are possibly generated,
 	/// [`ChannelManager::process_background_events`] MUST be called first.
-	fn optionally_notify<F: Fn() -> NotifyOption>(lock: &'a RwLock<()>, notifier: &'a Notifier, persist_check: F) -> PersistenceNotifierGuard<'a, F> {
-		let read_guard = lock.read().unwrap();
+	fn optionally_notify<F: Fn() -> NotifyOption, C: AChannelManager>(cm: &'a C, persist_check: F)
+	-> PersistenceNotifierGuard<'a, F> {
+		let read_guard = cm.get_cm().total_consistency_lock.read().unwrap();
 
 		PersistenceNotifierGuard {
-			event_persist_notifier: notifier,
+			event_persist_notifier: &cm.get_cm().event_persist_notifier,
 			should_persist: persist_check,
 			_read_guard: read_guard,
 		}
@@ -4422,7 +4423,7 @@ where
 	/// these a fuzz failure (as they usually indicate a channel force-close, which is exactly what
 	/// it wants to detect). Thus, we have a variant exposed here for its benefit.
 	pub fn maybe_update_chan_fees(&self) {
-		PersistenceNotifierGuard::optionally_notify(&self.total_consistency_lock, &self.event_persist_notifier, || {
+		PersistenceNotifierGuard::optionally_notify(self, || {
 			let mut should_persist = self.process_background_events();
 
 			let normal_feerate = self.fee_estimator.bounded_sat_per_1000_weight(ConfirmationTarget::Normal);
@@ -4467,7 +4468,7 @@ where
 	/// [`ChannelUpdate`]: msgs::ChannelUpdate
 	/// [`ChannelConfig`]: crate::util::config::ChannelConfig
 	pub fn timer_tick_occurred(&self) {
-		PersistenceNotifierGuard::optionally_notify(&self.total_consistency_lock, &self.event_persist_notifier, || {
+		PersistenceNotifierGuard::optionally_notify(self, || {
 			let mut should_persist = self.process_background_events();
 
 			let normal_feerate = self.fee_estimator.bounded_sat_per_1000_weight(ConfirmationTarget::Normal);
@@ -7000,7 +7001,7 @@ where
 	/// the `MessageSendEvent`s to the specific peer they were generated under.
 	fn get_and_clear_pending_msg_events(&self) -> Vec<MessageSendEvent> {
 		let events = RefCell::new(Vec::new());
-		PersistenceNotifierGuard::optionally_notify(&self.total_consistency_lock, &self.event_persist_notifier, || {
+		PersistenceNotifierGuard::optionally_notify(self, || {
 			let mut result = self.process_background_events();
 
 			// TODO: This behavior should be documented. It's unintuitive that we query
@@ -7082,8 +7083,8 @@ where
 	}
 
 	fn block_disconnected(&self, header: &BlockHeader, height: u32) {
-		let _persistence_guard = PersistenceNotifierGuard::optionally_notify(&self.total_consistency_lock,
-			&self.event_persist_notifier, || -> NotifyOption { NotifyOption::DoPersist });
+		let _persistence_guard = PersistenceNotifierGuard::optionally_notify(self,
+			|| -> NotifyOption { NotifyOption::DoPersist });
 		let new_height = height - 1;
 		{
 			let mut best_block = self.best_block.write().unwrap();
@@ -7117,8 +7118,8 @@ where
 		let block_hash = header.block_hash();
 		log_trace!(self.logger, "{} transactions included in block {} at height {} provided", txdata.len(), block_hash, height);
 
-		let _persistence_guard = PersistenceNotifierGuard::optionally_notify(&self.total_consistency_lock,
-			&self.event_persist_notifier, || -> NotifyOption { NotifyOption::DoPersist });
+		let _persistence_guard = PersistenceNotifierGuard::optionally_notify(self,
+			|| -> NotifyOption { NotifyOption::DoPersist });
 		self.do_chain_event(Some(height), |channel| channel.transactions_confirmed(&block_hash, height, txdata, self.genesis_hash.clone(), &self.node_signer, &self.default_configuration, &self.logger)
 			.map(|(a, b)| (a, Vec::new(), b)));
 
@@ -7137,8 +7138,8 @@ where
 		let block_hash = header.block_hash();
 		log_trace!(self.logger, "New best block: {} at height {}", block_hash, height);
 
-		let _persistence_guard = PersistenceNotifierGuard::optionally_notify(&self.total_consistency_lock,
-			&self.event_persist_notifier, || -> NotifyOption { NotifyOption::DoPersist });
+		let _persistence_guard = PersistenceNotifierGuard::optionally_notify(self,
+			|| -> NotifyOption { NotifyOption::DoPersist });
 		*self.best_block.write().unwrap() = BestBlock::new(block_hash, height);
 
 		self.do_chain_event(Some(height), |channel| channel.best_block_updated(height, header.time, self.genesis_hash.clone(), &self.node_signer, &self.default_configuration, &self.logger));
@@ -7181,8 +7182,8 @@ where
 	}
 
 	fn transaction_unconfirmed(&self, txid: &Txid) {
-		let _persistence_guard = PersistenceNotifierGuard::optionally_notify(&self.total_consistency_lock,
-			&self.event_persist_notifier, || -> NotifyOption { NotifyOption::DoPersist });
+		let _persistence_guard = PersistenceNotifierGuard::optionally_notify(self,
+			|| -> NotifyOption { NotifyOption::DoPersist });
 		self.do_chain_event(None, |channel| {
 			if let Some(funding_txo) = channel.context.get_funding_txo() {
 				if funding_txo.txid == *txid {
@@ -7520,7 +7521,7 @@ where
 	}
 
 	fn handle_channel_update(&self, counterparty_node_id: &PublicKey, msg: &msgs::ChannelUpdate) {
-		PersistenceNotifierGuard::optionally_notify(&self.total_consistency_lock, &self.event_persist_notifier, || {
+		PersistenceNotifierGuard::optionally_notify(self, || {
 			let force_persist = self.process_background_events();
 			if let Ok(persist) = handle_error!(self, self.internal_channel_update(counterparty_node_id, msg), *counterparty_node_id) {
 				if force_persist == NotifyOption::DoPersist { NotifyOption::DoPersist } else { persist }
