@@ -2083,7 +2083,7 @@ where L::Target: Logger {
 				// in the regular network graph.
 				first_hop_targets.get(&intro_node_id).is_some() ||
 				network_nodes.get(&intro_node_id).is_some();
-			if !have_intro_node_in_graph { continue }
+			if !have_intro_node_in_graph || our_node_id == intro_node_id { continue }
 			let candidate = if hint.1.blinded_hops.len() == 1 {
 				CandidateRouteHop::OneHopBlinded { hint, hint_idx }
 			} else { CandidateRouteHop::Blinded { hint, hint_idx } };
@@ -7169,6 +7169,115 @@ mod tests {
 			&Default::default(), &random_seed_bytes).unwrap();
 		assert_eq!(route.get_total_fees(), blinded_payinfo.fee_base_msat as u64);
 		assert_eq!(route.get_total_amount(), amt_msat);
+	}
+
+	#[test]
+	fn we_are_intro_node_candidate_hops() {
+		// This previously led to a panic in the router because we'd generate a Path with only a
+		// BlindedTail and 0 unblinded hops, due to the only candidate hops being blinded route hints
+		// where the origin node is the intro node. We now fully disallow considering candidate hops
+		// where the origin node is the intro node.
+		let (secp_ctx, network_graph, _, _, logger) = build_graph();
+		let (_, our_id, _, nodes) = get_nodes(&secp_ctx);
+		let scorer = ln_test_utils::TestScorer::new();
+		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
+		let random_seed_bytes = keys_manager.get_secure_random_bytes();
+		let config = UserConfig::default();
+
+		// Values are taken from the fuzz input that uncovered this panic.
+		let amt_msat = 21_7020_5185_1423_0019;
+
+		let blinded_path = BlindedPath {
+			introduction_node_id: our_id,
+			blinding_point: ln_test_utils::pubkey(42),
+			blinded_hops: vec![
+				BlindedHop { blinded_node_id: ln_test_utils::pubkey(42 as u8), encrypted_payload: Vec::new() },
+				BlindedHop { blinded_node_id: ln_test_utils::pubkey(42 as u8), encrypted_payload: Vec::new() }
+			],
+		};
+		let blinded_payinfo = BlindedPayInfo {
+			fee_base_msat: 5052_9027,
+			fee_proportional_millionths: 0,
+			htlc_minimum_msat: 21_7020_5185_1423_0019,
+			htlc_maximum_msat: 1844_6744_0737_0955_1615,
+			cltv_expiry_delta: 0,
+			features: BlindedHopFeatures::empty(),
+		};
+		let mut blinded_hints = vec![
+			(blinded_payinfo.clone(), blinded_path.clone()),
+			(blinded_payinfo.clone(), blinded_path.clone()),
+		];
+		blinded_hints[1].1.introduction_node_id = nodes[6];
+
+		let bolt12_features: Bolt12InvoiceFeatures = channelmanager::provided_invoice_features(&config).to_context();
+		let payment_params = PaymentParameters::blinded(blinded_hints.clone())
+			.with_bolt12_features(bolt12_features.clone()).unwrap();
+
+		let netgraph = network_graph.read_only();
+		let route_params = RouteParameters::from_payment_params_and_value(
+			payment_params, amt_msat);
+		if let Err(LightningError { err, .. }) = get_route(
+			&our_id, &route_params, &netgraph, None, Arc::clone(&logger), &scorer, &(), &random_seed_bytes
+		) {
+			assert_eq!(err, "Failed to find a path to the given destination");
+		} else { panic!() }
+	}
+
+	#[test]
+	fn we_are_intro_node_bp_in_final_path_fee_calc() {
+		// This previously led to a debug panic in the router because we'd find an invalid Path with
+		// 0 unblinded hops and a blinded tail, leading to the generation of a final
+		// PaymentPathHop::fee_msat that included both the blinded path fees and the final value of
+		// the payment, when it was intended to only include the final value of the payment.
+		let (secp_ctx, network_graph, _, _, logger) = build_graph();
+		let (_, our_id, _, nodes) = get_nodes(&secp_ctx);
+		let scorer = ln_test_utils::TestScorer::new();
+		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
+		let random_seed_bytes = keys_manager.get_secure_random_bytes();
+		let config = UserConfig::default();
+
+		// Values are taken from the fuzz input that uncovered this panic.
+		let amt_msat = 21_7020_5185_1423_0019;
+
+		let blinded_path = BlindedPath {
+			introduction_node_id: our_id,
+			blinding_point: ln_test_utils::pubkey(42),
+			blinded_hops: vec![
+				BlindedHop { blinded_node_id: ln_test_utils::pubkey(42 as u8), encrypted_payload: Vec::new() },
+				BlindedHop { blinded_node_id: ln_test_utils::pubkey(42 as u8), encrypted_payload: Vec::new() }
+			],
+		};
+		let blinded_payinfo = BlindedPayInfo {
+			fee_base_msat: 10_4425_1395,
+			fee_proportional_millionths: 0,
+			htlc_minimum_msat: 21_7301_9934_9094_0931,
+			htlc_maximum_msat: 1844_6744_0737_0955_1615,
+			cltv_expiry_delta: 0,
+			features: BlindedHopFeatures::empty(),
+		};
+		let mut blinded_hints = vec![
+			(blinded_payinfo.clone(), blinded_path.clone()),
+			(blinded_payinfo.clone(), blinded_path.clone()),
+			(blinded_payinfo.clone(), blinded_path.clone()),
+		];
+		blinded_hints[1].0.fee_base_msat = 5052_9027;
+		blinded_hints[1].0.htlc_minimum_msat = 21_7020_5185_1423_0019;
+		blinded_hints[1].0.htlc_maximum_msat = 1844_6744_0737_0955_1615;
+
+		blinded_hints[2].1.introduction_node_id = nodes[6];
+
+		let bolt12_features: Bolt12InvoiceFeatures = channelmanager::provided_invoice_features(&config).to_context();
+		let payment_params = PaymentParameters::blinded(blinded_hints.clone())
+			.with_bolt12_features(bolt12_features.clone()).unwrap();
+
+		let netgraph = network_graph.read_only();
+		let route_params = RouteParameters::from_payment_params_and_value(
+			payment_params, amt_msat);
+		if let Err(LightningError { err, .. }) = get_route(
+			&our_id, &route_params, &netgraph, None, Arc::clone(&logger), &scorer, &(), &random_seed_bytes
+		) {
+			assert_eq!(err, "Failed to find a path to the given destination");
+		} else { panic!() }
 	}
 }
 
