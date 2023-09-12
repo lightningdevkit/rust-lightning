@@ -166,7 +166,7 @@ fn derive_public_key<T: secp256k1::Signing>(secp_ctx: &Secp256k1<T>, per_commitm
 
 /// Master key used in conjunction with per_commitment_point to generate [htlcpubkey](https://github.com/lightning/bolts/blob/master/03-transactions.md#key-derivation) for the latest state of a channel.
 /// A watcher can be given a [RevocationBasepoint] to generate per commitment [RevocationKey] to create justice transactions.
-#[derive(PartialEq, Eq, Clone, Copy, Debug, Hash)]
+#[derive(PartialEq, PartialOrd, Eq, Clone, Copy, Debug, Hash)]
 pub struct RevocationBasepoint(pub PublicKey);
 basepoint_impl!(RevocationBasepoint);
 key_read_write!(RevocationBasepoint);
