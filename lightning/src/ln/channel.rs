@@ -2874,6 +2874,20 @@ pub(crate) fn commit_tx_fee_msat(feerate_per_kw: u32, num_htlcs: usize, channel_
 	(commitment_tx_base_weight(channel_type_features) + num_htlcs as u64 * COMMITMENT_TX_WEIGHT_PER_HTLC) * feerate_per_kw as u64 / 1000 * 1000
 }
 
+/// Context for dual-funded channels.
+#[cfg(dual_funding)]
+pub(super) struct DualFundingChannelContext {
+	/// The amount in satoshis we will be contributing to the channel.
+	pub our_funding_satoshis: u64,
+	/// The amount in satoshis our counterparty will be contributing to the channel.
+	pub their_funding_satoshis: u64,
+	/// The funding transaction locktime suggested by the initiator. If set by us, it is always set
+	/// to the current block height to align incentives against fee-sniping.
+	pub funding_tx_locktime: u32,
+	/// The feerate set by the initiator to be used for the funding transaction.
+	pub funding_feerate_sat_per_1000_weight: u32,
+}
+
 // Holder designates channel data owned for the benefit of the user client.
 // Counterparty designates channel data owned by the another channel participant entity.
 pub(super) struct Channel<SP: Deref> where SP::Target: SignerProvider {
