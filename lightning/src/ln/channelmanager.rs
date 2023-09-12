@@ -6843,7 +6843,7 @@ where
 									node_id: counterparty_node_id.clone(),
 									msg: splice_signed_msg,
 								});
-								println!("internal_splice_created channel_id new {} old {} should be same", new_channel_id, msg.channel_id);
+								log_debug!(&self.logger, "internal_splice_created channel_id new {} old {} should be same", new_channel_id, msg.channel_id);
 
 								let monitor_res = self.chain_monitor.watch_channel(monitor.get_funding_txo().0, monitor);
 
