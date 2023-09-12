@@ -35,9 +35,21 @@ use crate::io;
 use crate::sync::{Arc, Mutex};
 use crate::prelude::*;
 
-/// A sender, receiver and forwarder of onion messages. In upcoming releases, this object will be
-/// used to retrieve invoices and fulfill invoice requests from [offers]. Currently, only sending
-/// and receiving custom onion messages is supported.
+/// A sender, receiver and forwarder of [`OnionMessage`]s.
+///
+/// # Handling Messages
+///
+/// `OnionMessenger` implements [`OnionMessageHandler`], making it responsible for either forwarding
+/// messages to peers or delegating to the appropriate handler for the message type. Currently, the
+/// available handlers are:
+/// * [`OffersMessageHandler`], for responding to [`InvoiceRequest`]s and paying [`Bolt12Invoice`]s
+/// * [`CustomOnionMessageHandler`], for handling user-defined message types
+///
+/// # Sending Messages
+///
+/// [`OnionMessage`]s are sent initially using [`OnionMessenger::send_onion_message`]. When handling
+/// a message, the matched handler may return a response message which `OnionMessenger` will send
+/// on its behalf.
 ///
 /// # Example
 ///
@@ -121,8 +133,9 @@ use crate::prelude::*;
 /// onion_messenger.send_onion_message(path, message, reply_path);
 /// ```
 ///
-/// [offers]: <https://github.com/lightning/bolts/pull/798>
-/// [`OnionMessenger`]: crate::onion_message::OnionMessenger
+/// [`OnionMessage`]: crate::ln::msgs::OnionMessage
+/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
+/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
 pub struct OnionMessenger<ES: Deref, NS: Deref, L: Deref, MR: Deref, OMH: Deref, CMH: Deref>
 where
 	ES::Target: EntropySource,
