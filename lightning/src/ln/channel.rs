@@ -1848,7 +1848,10 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 		current_chain_height: u32,
 		outbound_scid_alias: u64,
 		temporary_channel_id: Option<ChannelId>,
-		channel_type: ChannelTypeFeatures,
+		holder_selected_channel_reserve_satoshis: u64,
+		channel_keys_id: [u8; 32],
+		holder_signer: <SP::Target as SignerProvider>::EcdsaSigner,
+		pubkeys: ChannelPublicKeys,
 	) -> Result<ChannelContext<SP>, APIError>
 		where
 			ES::Target: EntropySource,
@@ -1859,9 +1862,6 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 		let channel_value_satoshis = funding_satoshis;
 
 		let holder_selected_contest_delay = config.channel_handshake_config.our_to_self_delay;
-		let channel_keys_id = signer_provider.generate_channel_keys_id(false, channel_value_satoshis, user_id);
-		let holder_signer = signer_provider.derive_channel_signer(channel_value_satoshis, channel_keys_id);
-		let pubkeys = holder_signer.pubkeys().clone();
 
 		if !their_features.supports_wumbo() && channel_value_satoshis > MAX_FUNDING_SATOSHIS_NO_WUMBO {
 			return Err(APIError::APIMisuseError{err: format!("funding_value must not exceed {}, it was {}", MAX_FUNDING_SATOSHIS_NO_WUMBO, channel_value_satoshis)});
@@ -1876,13 +1876,8 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 		if holder_selected_contest_delay < BREAKDOWN_TIMEOUT {
 			return Err(APIError::APIMisuseError {err: format!("Configured with an unreasonable our_to_self_delay ({}) putting user funds at risks", holder_selected_contest_delay)});
 		}
-		let holder_selected_channel_reserve_satoshis = get_holder_selected_channel_reserve_satoshis(channel_value_satoshis, config);
-		if holder_selected_channel_reserve_satoshis < MIN_CHAN_DUST_LIMIT_SATOSHIS {
-			// Protocol level safety check in place, although it should never happen because
-			// of `MIN_THEIR_CHAN_RESERVE_SATOSHIS`
-			return Err(APIError::APIMisuseError { err: format!("Holder selected channel  reserve below implemention limit dust_limit_satoshis {}", holder_selected_channel_reserve_satoshis) });
-		}
 
+		let channel_type = get_initial_channel_type(&config, their_features);
 		debug_assert!(channel_type.is_subset(&channelmanager::provided_channel_type_features(&config)));
 
 		let (commitment_conf_target, anchor_outputs_value_msat)  = if channel_type.supports_anchors_zero_fee_htlc_tx() {
@@ -1939,6 +1934,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 			channel_state: ChannelState::NegotiatingFunding(NegotiatingFundingFlags::OUR_INIT_SENT),
 			announcement_sigs_state: AnnouncementSigsState::NotSent,
 			secp_ctx,
+			// We'll add our counterparty's `funding_satoshis` when we receive `accept_channel2`.
 			channel_value_satoshis,
 
 			latest_monitor_update_id: 0,
@@ -1972,6 +1968,8 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 			signer_pending_commitment_update: false,
 			signer_pending_funding: false,
 
+			// We'll add our counterparty's `funding_satoshis` to these max commitment output assertions
+			// when we receive `accept_channel2`.
 			#[cfg(debug_assertions)]
 			holder_max_commitment_tx_output: Mutex::new((channel_value_satoshis * 1000 - push_msat, push_msat)),
 			#[cfg(debug_assertions)]
@@ -1992,6 +1990,8 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 			counterparty_dust_limit_satoshis: 0,
 			holder_dust_limit_satoshis: MIN_CHAN_DUST_LIMIT_SATOSHIS,
 			counterparty_max_htlc_value_in_flight_msat: 0,
+			// We'll adjust this to include our counterparty's `funding_satoshis` when we
+			// receive `accept_channel2`.
 			holder_max_htlc_value_in_flight_msat: get_holder_max_htlc_value_in_flight_msat(channel_value_satoshis, &config.channel_handshake_config),
 			counterparty_selected_channel_reserve_satoshis: None, // Filled in in accept_channel
 			holder_selected_channel_reserve_satoshis,
@@ -3415,6 +3415,7 @@ pub(crate) fn get_legacy_default_holder_selected_channel_reserve_satoshis(channe
 ///
 /// This is used both for outbound and inbound channels and has lower bound
 /// of `dust_limit_satoshis`.
+#[cfg(dual_funding)]
 fn get_v2_channel_reserve_satoshis(channel_value_satoshis: u64, dust_limit_satoshis: u64) -> u64 {
 	// Fixed at 1% of channel value by spec.
 	let (q, _) = channel_value_satoshis.overflowing_div(100);
@@ -7165,7 +7166,17 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 	where ES::Target: EntropySource,
 	      F::Target: FeeEstimator
 	{
-		let channel_type = Self::get_initial_channel_type(&config, their_features);
+		let holder_selected_channel_reserve_satoshis = get_holder_selected_channel_reserve_satoshis(channel_value_satoshis, config);
+		if holder_selected_channel_reserve_satoshis < MIN_CHAN_DUST_LIMIT_SATOSHIS {
+			// Protocol level safety check in place, although it should never happen because
+			// of `MIN_THEIR_CHAN_RESERVE_SATOSHIS`
+			return Err(APIError::APIMisuseError { err: format!("Holder selected channel reserve below \
+				implemention limit dust_limit_satoshis {}", holder_selected_channel_reserve_satoshis) });
+		}
+
+		let channel_keys_id = signer_provider.generate_channel_keys_id(false, channel_value_satoshis, user_id);
+		let holder_signer = signer_provider.derive_channel_signer(channel_value_satoshis, channel_keys_id);
+		let pubkeys = holder_signer.pubkeys().clone();
 
 		let chan = Self {
 			context: ChannelContext::new_for_outbound_channel(
@@ -7181,7 +7192,10 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 				current_chain_height,
 				outbound_scid_alias,
 				temporary_channel_id,
-				channel_type,
+				holder_selected_channel_reserve_satoshis,
+				channel_keys_id,
+				holder_signer,
+				pubkeys,
 			)?,
 			unfunded_context: UnfundedChannelContext { unfunded_channel_age_ticks: 0 }
 		};
@@ -7277,29 +7291,6 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 		}
 
 		Ok(funding_created)
-	}
-
-	fn get_initial_channel_type(config: &UserConfig, their_features: &InitFeatures) -> ChannelTypeFeatures {
-		// The default channel type (ie the first one we try) depends on whether the channel is
-		// public - if it is, we just go with `only_static_remotekey` as it's the only option
-		// available. If it's private, we first try `scid_privacy` as it provides better privacy
-		// with no other changes, and fall back to `only_static_remotekey`.
-		let mut ret = ChannelTypeFeatures::only_static_remote_key();
-		if !config.channel_handshake_config.announced_channel &&
-			config.channel_handshake_config.negotiate_scid_privacy &&
-			their_features.supports_scid_privacy() {
-			ret.set_scid_privacy_required();
-		}
-
-		// Optionally, if the user would like to negotiate the `anchors_zero_fee_htlc_tx` option, we
-		// set it now. If they don't understand it, we'll fall back to our default of
-		// `only_static_remotekey`.
-		if config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx &&
-			their_features.supports_anchors_zero_fee_htlc_tx() {
-			ret.set_anchors_zero_fee_htlc_tx_required();
-		}
-
-		ret
 	}
 
 	/// If we receive an error message, it may only be a rejection of the channel type we tried,
@@ -7913,6 +7904,117 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 	}
 }
 
+// A not-yet-funded outbound (from holder) channel using V2 channel establishment.
+#[cfg(dual_funding)]
+pub(super) struct OutboundV2Channel<SP: Deref> where SP::Target: SignerProvider {
+	pub context: ChannelContext<SP>,
+	pub unfunded_context: UnfundedChannelContext,
+	#[cfg(dual_funding)]
+	pub dual_funding_context: DualFundingChannelContext,
+}
+
+#[cfg(dual_funding)]
+impl<SP: Deref> OutboundV2Channel<SP> where SP::Target: SignerProvider {
+	pub fn new<ES: Deref, F: Deref>(
+		fee_estimator: &LowerBoundedFeeEstimator<F>, entropy_source: &ES, signer_provider: &SP,
+		counterparty_node_id: PublicKey, their_features: &InitFeatures, funding_satoshis: u64,
+		user_id: u128, config: &UserConfig, current_chain_height: u32, outbound_scid_alias: u64,
+		funding_confirmation_target: ConfirmationTarget,
+	) -> Result<OutboundV2Channel<SP>, APIError>
+	where ES::Target: EntropySource,
+	      F::Target: FeeEstimator,
+	{
+		let channel_keys_id = signer_provider.generate_channel_keys_id(false, funding_satoshis, user_id);
+		let holder_signer = signer_provider.derive_channel_signer(funding_satoshis, channel_keys_id);
+		let pubkeys = holder_signer.pubkeys().clone();
+
+		let temporary_channel_id = Some(ChannelId::temporary_v2_from_revocation_basepoint(&pubkeys.revocation_basepoint));
+
+		let holder_selected_channel_reserve_satoshis = get_v2_channel_reserve_satoshis(
+			funding_satoshis, MIN_CHAN_DUST_LIMIT_SATOSHIS);
+
+		let funding_feerate_sat_per_1000_weight = fee_estimator.bounded_sat_per_1000_weight(funding_confirmation_target);
+		let funding_tx_locktime = current_chain_height;
+
+		let chan = Self {
+			context: ChannelContext::new_for_outbound_channel(
+				fee_estimator,
+				entropy_source,
+				signer_provider,
+				counterparty_node_id,
+				their_features,
+				funding_satoshis,
+				0,
+				user_id,
+				config,
+				current_chain_height,
+				outbound_scid_alias,
+				temporary_channel_id,
+				holder_selected_channel_reserve_satoshis,
+				channel_keys_id,
+				holder_signer,
+				pubkeys,
+			)?,
+			unfunded_context: UnfundedChannelContext { unfunded_channel_age_ticks: 0 },
+			dual_funding_context: DualFundingChannelContext {
+				our_funding_satoshis: funding_satoshis,
+				their_funding_satoshis: 0,
+				funding_tx_locktime,
+				funding_feerate_sat_per_1000_weight,
+			}
+		};
+		Ok(chan)
+	}
+
+	pub fn get_open_channel_v2(&self, chain_hash: ChainHash) -> msgs::OpenChannelV2 {
+		if self.context.have_received_message() {
+			debug_assert!(false, "Cannot generate an open_channel2 after we've moved forward");
+		}
+
+		if self.context.cur_holder_commitment_transaction_number != INITIAL_COMMITMENT_NUMBER {
+			debug_assert!(false, "Tried to send an open_channel2 for a channel that has already advanced");
+		}
+
+		let first_per_commitment_point = self.context.holder_signer.as_ref()
+			.get_per_commitment_point(self.context.cur_holder_commitment_transaction_number,
+				&self.context.secp_ctx);
+		let second_per_commitment_point = self.context.holder_signer.as_ref()
+			.get_per_commitment_point(self.context.cur_holder_commitment_transaction_number - 1,
+				&self.context.secp_ctx);
+		let keys = self.context.get_holder_pubkeys();
+
+		msgs::OpenChannelV2 {
+			common_fields: msgs::CommonOpenChannelFields {
+				chain_hash,
+				temporary_channel_id: self.context.temporary_channel_id.unwrap(),
+				funding_satoshis: self.context.channel_value_satoshis,
+				dust_limit_satoshis: self.context.holder_dust_limit_satoshis,
+				max_htlc_value_in_flight_msat: self.context.holder_max_htlc_value_in_flight_msat,
+				htlc_minimum_msat: self.context.holder_htlc_minimum_msat,
+				commitment_feerate_sat_per_1000_weight: self.context.feerate_per_kw,
+				to_self_delay: self.context.get_holder_selected_contest_delay(),
+				max_accepted_htlcs: self.context.holder_max_accepted_htlcs,
+				funding_pubkey: keys.funding_pubkey,
+				revocation_basepoint: keys.revocation_basepoint.to_public_key(),
+				payment_basepoint: keys.payment_point,
+				delayed_payment_basepoint: keys.delayed_payment_basepoint.to_public_key(),
+				htlc_basepoint: keys.htlc_basepoint.to_public_key(),
+				first_per_commitment_point,
+				channel_flags: if self.context.config.announced_channel {1} else {0},
+				shutdown_scriptpubkey: Some(match &self.context.shutdown_scriptpubkey {
+					Some(script) => script.clone().into_inner(),
+					None => Builder::new().into_script(),
+				}),
+				channel_type: Some(self.context.channel_type.clone()),
+			},
+			funding_feerate_sat_per_1000_weight: self.context.feerate_per_kw,
+			second_per_commitment_point,
+			locktime: self.dual_funding_context.funding_tx_locktime,
+			require_confirmed_inputs: None,
+		}
+	}
+}
+
 // A not-yet-funded inbound (from counterparty) channel using V2 channel establishment.
 #[cfg(dual_funding)]
 pub(super) struct InboundV2Channel<SP: Deref> where SP::Target: SignerProvider {
@@ -8065,6 +8167,31 @@ impl<SP: Deref> InboundV2Channel<SP> where SP::Target: SignerProvider {
 	pub fn get_accept_channel_v2_message(&self) -> msgs::AcceptChannelV2 {
 		self.generate_accept_channel_v2_message()
 	}
+}
+
+// Unfunded channel utilities
+
+fn get_initial_channel_type(config: &UserConfig, their_features: &InitFeatures) -> ChannelTypeFeatures {
+	// The default channel type (ie the first one we try) depends on whether the channel is
+	// public - if it is, we just go with `only_static_remotekey` as it's the only option
+	// available. If it's private, we first try `scid_privacy` as it provides better privacy
+	// with no other changes, and fall back to `only_static_remotekey`.
+	let mut ret = ChannelTypeFeatures::only_static_remote_key();
+	if !config.channel_handshake_config.announced_channel &&
+		config.channel_handshake_config.negotiate_scid_privacy &&
+		their_features.supports_scid_privacy() {
+		ret.set_scid_privacy_required();
+	}
+
+	// Optionally, if the user would like to negotiate the `anchors_zero_fee_htlc_tx` option, we
+	// set it now. If they don't understand it, we'll fall back to our default of
+	// `only_static_remotekey`.
+	if config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx &&
+		their_features.supports_anchors_zero_fee_htlc_tx() {
+		ret.set_anchors_zero_fee_htlc_tx_required();
+	}
+
+	ret
 }
 
 const SERIALIZATION_VERSION: u8 = 3;
