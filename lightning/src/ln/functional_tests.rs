@@ -144,7 +144,7 @@ fn test_channel_open_simple() {
 		assert!(channel.is_usable);
 		assert!(channel.is_channel_ready);
 		assert_eq!(channel.channel_value_satoshis, channel_value_sat);
-		assert_eq!(channel.outbound_capacity_msat, 100000000);
+		assert_eq!(channel.outbound_capacity_msat, 100000000 - 1000000);
 		assert_eq!(channel.funding_txo.unwrap().txid, funding_tx.txid());
 		assert_eq!(channel.confirmations.unwrap(), 10);
 	}
