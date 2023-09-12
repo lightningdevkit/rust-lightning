@@ -268,7 +268,7 @@ pub enum PeeledOnion<CM: CustomOnionMessageContents> {
 }
 
 /// Create an onion message with contents `message` to the destination of `path`.
-/// Returns (introduction_node_id, onion_msg)
+/// Returns (first_node_id, onion_msg)
 pub fn create_onion_message<ES: Deref, NS: Deref, T: CustomOnionMessageContents>(
 	entropy_source: &ES, node_signer: &NS, secp_ctx: &Secp256k1<secp256k1::All>,
 	path: OnionMessagePath, message: OnionMessageContents<T>, reply_path: Option<BlindedPath>,
@@ -301,8 +301,8 @@ where
 
 	let blinding_secret_bytes = entropy_source.get_secure_random_bytes();
 	let blinding_secret = SecretKey::from_slice(&blinding_secret_bytes[..]).expect("RNG is busted");
-	let (introduction_node_id, blinding_point) = if intermediate_nodes.len() != 0 {
-		(intermediate_nodes[0], PublicKey::from_secret_key(&secp_ctx, &blinding_secret))
+	let (first_node_id, blinding_point) = if let Some(first_node_id) = intermediate_nodes.first() {
+		(*first_node_id, PublicKey::from_secret_key(&secp_ctx, &blinding_secret))
 	} else {
 		match destination {
 			Destination::Node(pk) => (pk, PublicKey::from_secret_key(&secp_ctx, &blinding_secret)),
@@ -318,7 +318,7 @@ where
 	let onion_routing_packet = construct_onion_message_packet(
 		packet_payloads, packet_keys, prng_seed).map_err(|()| SendError::TooBigPacket)?;
 
-	Ok((introduction_node_id, msgs::OnionMessage {
+	Ok((first_node_id, msgs::OnionMessage {
 		blinding_point,
 		onion_routing_packet
 	}))
@@ -456,14 +456,14 @@ where
 		&self, path: OnionMessagePath, message: OnionMessageContents<T>,
 		reply_path: Option<BlindedPath>
 	) -> Result<(), SendError> {
-		let (introduction_node_id, onion_msg) = create_onion_message(
+		let (first_node_id, onion_msg) = create_onion_message(
 			&self.entropy_source, &self.node_signer, &self.secp_ctx,
 			path, message, reply_path
 		)?;
 
 		let mut pending_per_peer_msgs = self.pending_messages.lock().unwrap();
-		if outbound_buffer_full(&introduction_node_id, &pending_per_peer_msgs) { return Err(SendError::BufferFull) }
-		match pending_per_peer_msgs.entry(introduction_node_id) {
+		if outbound_buffer_full(&first_node_id, &pending_per_peer_msgs) { return Err(SendError::BufferFull) }
+		match pending_per_peer_msgs.entry(first_node_id) {
 			hash_map::Entry::Vacant(_) => Err(SendError::InvalidFirstHop),
 			hash_map::Entry::Occupied(mut e) => {
 				e.get_mut().push_back(onion_msg);
