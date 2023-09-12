@@ -6247,7 +6247,7 @@ where
 		// If we're doing manual acceptance checks on the channel, then defer creation until we're sure we want to accept.
 		if self.default_configuration.manually_accept_inbound_channels {
 			let channel_type = channel::channel_type_from_open_channel(
-					&msg, &peer_state.latest_features, &self.channel_type_features()
+					&msg.common_fields, &peer_state.latest_features, &self.channel_type_features()
 				).map_err(|e|
 					MsgHandleErrInternal::from_chan_no_close(e, msg.common_fields.temporary_channel_id)
 				)?;

@@ -3191,6 +3191,19 @@ pub(crate) fn get_legacy_default_holder_selected_channel_reserve_satoshis(channe
 	cmp::min(channel_value_satoshis, cmp::max(q, 1000))
 }
 
+/// Returns a minimum channel reserve value each party needs to maintain, fixed in the spec to a
+/// default of 1% of the total channel value.
+///
+/// Guaranteed to return a value no larger than channel_value_satoshis
+///
+/// This is used both for outbound and inbound channels and has lower bound
+/// of `dust_limit_satoshis`.
+fn get_v2_channel_reserve_satoshis(channel_value_satoshis: u64, dust_limit_satoshis: u64) -> u64 {
+	// Fixed at 1% of channel value by spec.
+	let (q, _) = channel_value_satoshis.overflowing_div(100);
+	cmp::min(channel_value_satoshis, cmp::max(q, dust_limit_satoshis))
+}
+
 // Get the fee cost in SATS of a commitment tx with a given number of HTLC outputs.
 // Note that num_htlcs should not include dust HTLCs.
 #[inline]
@@ -3224,6 +3237,8 @@ pub(super) struct DualFundingChannelContext {
 // Counterparty designates channel data owned by the another channel participant entity.
 pub(super) struct Channel<SP: Deref> where SP::Target: SignerProvider {
 	pub context: ChannelContext<SP>,
+	#[cfg(dual_funding)]
+	pub dual_funding_channel_context: Option<DualFundingChannelContext>,
 }
 
 #[cfg(any(test, fuzzing))]
@@ -7554,7 +7569,11 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 
 		log_info!(logger, "Received funding_signed from peer for channel {}", &self.context.channel_id());
 
-		let mut channel = Channel { context: self.context };
+		let mut channel = Channel {
+			context: self.context,
+			#[cfg(dual_funding)]
+			dual_funding_channel_context: None,
+		};
 
 		let need_channel_ready = channel.check_get_channel_ready(0).is_some();
 		channel.monitor_updating_paused(false, false, need_channel_ready, Vec::new(), Vec::new(), Vec::new());
@@ -7579,12 +7598,12 @@ pub(super) struct InboundV1Channel<SP: Deref> where SP::Target: SignerProvider {
 }
 
 /// Fetches the [`ChannelTypeFeatures`] that will be used for a channel built from a given
-/// [`msgs::OpenChannel`].
+/// [`msgs::CommonOpenChannelFields`].
 pub(super) fn channel_type_from_open_channel(
-	msg: &msgs::OpenChannel, their_features: &InitFeatures,
+	common_fields: &msgs::CommonOpenChannelFields, their_features: &InitFeatures,
 	our_supported_features: &ChannelTypeFeatures
 ) -> Result<ChannelTypeFeatures, ChannelError> {
-	if let Some(channel_type) = &msg.common_fields.channel_type {
+	if let Some(channel_type) = &common_fields.channel_type {
 		if channel_type.supports_any_optional_bits() {
 			return Err(ChannelError::Close("Channel Type field contained optional bits - this is not allowed".to_owned()));
 		}
@@ -7599,7 +7618,7 @@ pub(super) fn channel_type_from_open_channel(
 		if !channel_type.is_subset(our_supported_features) {
 			return Err(ChannelError::Close("Channel Type contains unsupported features".to_owned()));
 		}
-		let announced_channel = if (msg.common_fields.channel_flags & 1) == 1 { true } else { false };
+		let announced_channel = if (common_fields.channel_flags & 1) == 1 { true } else { false };
 		if channel_type.requires_scid_privacy() && announced_channel {
 			return Err(ChannelError::Close("SCID Alias/Privacy Channel Type cannot be set on a public channel".to_owned()));
 		}
@@ -7630,7 +7649,7 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 
 		// First check the channel type is known, failing before we do anything else if we don't
 		// support this channel type.
-		let channel_type = channel_type_from_open_channel(msg, their_features, our_supported_features)?;
+		let channel_type = channel_type_from_open_channel(&msg.common_fields, their_features, our_supported_features)?;
 
 		let holder_selected_channel_reserve_satoshis = get_holder_selected_channel_reserve_satoshis(msg.common_fields.funding_satoshis, config);
 		let counterparty_pubkeys = ChannelPublicKeys {
@@ -7842,11 +7861,167 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 		// `ChannelMonitor`.
 		let mut channel = Channel {
 			context: self.context,
+			#[cfg(dual_funding)]
+			dual_funding_channel_context: None,
 		};
 		let need_channel_ready = channel.check_get_channel_ready(0).is_some();
 		channel.monitor_updating_paused(false, false, need_channel_ready, Vec::new(), Vec::new(), Vec::new());
 
 		Ok((channel, funding_signed, channel_monitor))
+	}
+}
+
+// A not-yet-funded inbound (from counterparty) channel using V2 channel establishment.
+#[cfg(dual_funding)]
+pub(super) struct InboundV2Channel<SP: Deref> where SP::Target: SignerProvider {
+	pub context: ChannelContext<SP>,
+	pub unfunded_context: UnfundedChannelContext,
+	pub dual_funding_context: DualFundingChannelContext,
+}
+
+#[cfg(dual_funding)]
+impl<SP: Deref> InboundV2Channel<SP> where SP::Target: SignerProvider {
+	/// Creates a new dual-funded channel from a remote side's request for one.
+	/// Assumes chain_hash has already been checked and corresponds with what we expect!
+	pub fn new<ES: Deref, F: Deref, L: Deref>(
+		fee_estimator: &LowerBoundedFeeEstimator<F>, entropy_source: &ES, signer_provider: &SP,
+		counterparty_node_id: PublicKey, our_supported_features: &ChannelTypeFeatures,
+		their_features: &InitFeatures, msg: &msgs::OpenChannelV2, funding_satoshis: u64, user_id: u128,
+		config: &UserConfig, current_chain_height: u32, logger: &L,
+	) -> Result<InboundV2Channel<SP>, ChannelError>
+		where ES::Target: EntropySource,
+			  F::Target: FeeEstimator,
+			  L::Target: Logger,
+	{
+		let channel_value_satoshis = funding_satoshis.saturating_add(msg.common_fields.funding_satoshis);
+		let counterparty_selected_channel_reserve_satoshis = get_v2_channel_reserve_satoshis(
+			channel_value_satoshis, msg.common_fields.dust_limit_satoshis);
+		let holder_selected_channel_reserve_satoshis = get_v2_channel_reserve_satoshis(
+			channel_value_satoshis, MIN_CHAN_DUST_LIMIT_SATOSHIS);
+
+		// First check the channel type is known, failing before we do anything else if we don't
+		// support this channel type.
+		if msg.common_fields.channel_type.is_none() {
+			return Err(ChannelError::Close(format!("Rejecting V2 channel {} missing channel_type",
+				msg.common_fields.temporary_channel_id)))
+		}
+		let channel_type = channel_type_from_open_channel(&msg.common_fields, their_features, our_supported_features)?;
+
+		let counterparty_pubkeys = ChannelPublicKeys {
+			funding_pubkey: msg.common_fields.funding_pubkey,
+			revocation_basepoint: RevocationBasepoint(msg.common_fields.revocation_basepoint),
+			payment_point: msg.common_fields.payment_basepoint,
+			delayed_payment_basepoint: DelayedPaymentBasepoint(msg.common_fields.delayed_payment_basepoint),
+			htlc_basepoint: HtlcBasepoint(msg.common_fields.htlc_basepoint)
+		};
+
+		let mut context = ChannelContext::new_for_inbound_channel(
+			fee_estimator,
+			entropy_source,
+			signer_provider,
+			counterparty_node_id,
+			their_features,
+			user_id,
+			config,
+			current_chain_height,
+			logger,
+			false,
+
+			funding_satoshis,
+
+			counterparty_pubkeys,
+			channel_type,
+			holder_selected_channel_reserve_satoshis,
+			counterparty_selected_channel_reserve_satoshis,
+			0 /* push_msat not used in dual-funding */,
+			msg.common_fields.clone(),
+		)?;
+		let channel_id = ChannelId::v2_from_revocation_basepoints(
+			&context.get_holder_pubkeys().revocation_basepoint,
+			&context.get_counterparty_pubkeys().revocation_basepoint);
+		context.channel_id = channel_id;
+
+		let chan = Self {
+			context,
+			unfunded_context: UnfundedChannelContext { unfunded_channel_age_ticks: 0 },
+			dual_funding_context: DualFundingChannelContext {
+				our_funding_satoshis: funding_satoshis,
+				their_funding_satoshis: msg.common_fields.funding_satoshis,
+				funding_tx_locktime: msg.locktime,
+				funding_feerate_sat_per_1000_weight: msg.funding_feerate_sat_per_1000_weight,
+			}
+		};
+
+		Ok(chan)
+	}
+
+	/// Marks an inbound channel as accepted and generates a [`msgs::AcceptChannelV2`] message which
+	/// should be sent back to the counterparty node.
+	///
+	/// [`msgs::AcceptChannelV2`]: crate::ln::msgs::AcceptChannelV2
+	pub fn accept_inbound_dual_funded_channel(&mut self) -> msgs::AcceptChannelV2 {
+		if self.context.is_outbound() {
+			debug_assert!(false, "Tried to send accept_channel for an outbound channel?");
+		}
+		if !matches!(
+			self.context.channel_state, ChannelState::NegotiatingFunding(flags)
+			if flags == (NegotiatingFundingFlags::OUR_INIT_SENT | NegotiatingFundingFlags::THEIR_INIT_SENT)
+		) {
+			debug_assert!(false, "Tried to send accept_channel2 after channel had moved forward");
+		}
+		if self.context.cur_holder_commitment_transaction_number != INITIAL_COMMITMENT_NUMBER {
+			debug_assert!(false, "Tried to send an accept_channel2 for a channel that has already advanced");
+		}
+
+		self.generate_accept_channel_v2_message()
+	}
+
+	/// This function is used to explicitly generate a [`msgs::AcceptChannel`] message for an
+	/// inbound channel. If the intention is to accept an inbound channel, use
+	/// [`InboundV1Channel::accept_inbound_channel`] instead.
+	///
+	/// [`msgs::AcceptChannelV2`]: crate::ln::msgs::AcceptChannelV2
+	fn generate_accept_channel_v2_message(&self) -> msgs::AcceptChannelV2 {
+		let first_per_commitment_point = self.context.holder_signer.as_ref().get_per_commitment_point(
+			self.context.cur_holder_commitment_transaction_number, &self.context.secp_ctx);
+		let second_per_commitment_point = self.context.holder_signer.as_ref().get_per_commitment_point(
+			self.context.cur_holder_commitment_transaction_number - 1, &self.context.secp_ctx);
+		let keys = self.context.get_holder_pubkeys();
+
+		msgs::AcceptChannelV2 {
+			common_fields: msgs::CommonAcceptChannelFields {
+				temporary_channel_id: self.context.temporary_channel_id.unwrap(),
+				dust_limit_satoshis: self.context.holder_dust_limit_satoshis,
+				max_htlc_value_in_flight_msat: self.context.holder_max_htlc_value_in_flight_msat,
+				htlc_minimum_msat: self.context.holder_htlc_minimum_msat,
+				minimum_depth: self.context.minimum_depth.unwrap(),
+				to_self_delay: self.context.get_holder_selected_contest_delay(),
+				max_accepted_htlcs: self.context.holder_max_accepted_htlcs,
+				funding_pubkey: keys.funding_pubkey,
+				revocation_basepoint: keys.revocation_basepoint.to_public_key(),
+				payment_basepoint: keys.payment_point,
+				delayed_payment_basepoint: keys.delayed_payment_basepoint.to_public_key(),
+				htlc_basepoint: keys.htlc_basepoint.to_public_key(),
+				first_per_commitment_point,
+				shutdown_scriptpubkey: Some(match &self.context.shutdown_scriptpubkey {
+					Some(script) => script.clone().into_inner(),
+					None => Builder::new().into_script(),
+				}),
+				channel_type: Some(self.context.channel_type.clone()),
+			},
+			funding_satoshis: self.dual_funding_context.our_funding_satoshis,
+			second_per_commitment_point,
+			require_confirmed_inputs: None,
+		}
+	}
+
+	/// Enables the possibility for tests to extract a [`msgs::AcceptChannelV2`] message for an
+	/// inbound channel without accepting it.
+	///
+	/// [`msgs::AcceptChannelV2`]: crate::ln::msgs::AcceptChannelV2
+	#[cfg(test)]
+	pub fn get_accept_channel_v2_message(&self) -> msgs::AcceptChannelV2 {
+		self.generate_accept_channel_v2_message()
 	}
 }
 
@@ -8793,7 +8968,9 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 				local_initiated_shutdown,
 
 				blocked_monitor_updates: blocked_monitor_updates.unwrap(),
-			}
+			},
+			#[cfg(dual_funding)]
+			dual_funding_channel_context: None,
 		})
 	}
 }
