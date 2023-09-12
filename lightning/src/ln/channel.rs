@@ -5945,10 +5945,12 @@ impl<SP: Deref> Channel<SP> where
 			splice_prev_funding_input_index,
 			splice_tx_redeem_script: redeem_script,
 			signature,
-			// #[cfg(taproot)]
-			// partial_signature_with_nonce: None,
-			// #[cfg(taproot)]
-			// next_local_nonce: None,
+			/*
+			#[cfg(taproot)]
+			partial_signature_with_nonce: None,
+			#[cfg(taproot)]
+			next_local_nonce: None,
+			*/
 		})
 	}
 
@@ -6078,8 +6080,10 @@ impl<SP: Deref> Channel<SP> where
 			funding_signature,
 			splice_prev_funding_input_index: msg.splice_prev_funding_input_index,
 			signature,
+			/*
 			#[cfg(taproot)]
 			partial_signature_with_nonce: None,
+			*/
 		}, channel_monitor))
 	}
 }
