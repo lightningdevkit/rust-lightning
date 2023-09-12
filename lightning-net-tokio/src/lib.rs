@@ -31,10 +31,9 @@
 
 use bitcoin::secp256k1::PublicKey;
 
-use tokio::net::{tcp, TcpStream};
-use tokio::{io, time};
+use tokio::net::TcpStream;
+use tokio::time;
 use tokio::sync::mpsc;
-use tokio::io::AsyncWrite;
 
 use lightning::ln::peer_handler;
 use lightning::ln::peer_handler::SocketDescriptor as LnSocketTrait;
@@ -231,7 +230,7 @@ impl Connection {
 							// readable() is allowed to spuriously wake, so we have to handle
 							// WouldBlock here.
 						},
-						Err(e) => break Disconnect::PeerDisconnected,
+						Err(_) => break Disconnect::PeerDisconnected,
 					}
 				},
 			}
@@ -493,10 +492,10 @@ impl peer_handler::SocketDescriptor for SocketDescriptor {
 							written_len += res;
 							if written_len == data.len() { return written_len; }
 						},
-						Err(e) => return written_len,
+						Err(_) => return written_len,
 					}
 				},
-				task::Poll::Ready(Err(e)) => return written_len,
+				task::Poll::Ready(Err(_)) => return written_len,
 				task::Poll::Pending => {
 					// We're queued up for a write event now, but we need to make sure we also
 					// pause read given we're now waiting on the remote end to ACK (and in
