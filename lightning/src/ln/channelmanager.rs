@@ -835,33 +835,46 @@ pub type SimpleRefChannelManager<'a, 'b, 'c, 'd, 'e, 'f, 'g, 'h, M, T, F, L> =
 		&'g L
 	>;
 
-macro_rules! define_test_pub_trait { ($vis: vis) => {
-/// A trivial trait which describes any [`ChannelManager`] used in testing.
-$vis trait AChannelManager {
+/// A trivial trait which describes any [`ChannelManager`].
+pub trait AChannelManager {
+	/// A type implementing [`chain::Watch`].
 	type Watch: chain::Watch<Self::Signer> + ?Sized;
+	/// A type that may be dereferenced to [`Self::Watch`].
 	type M: Deref<Target = Self::Watch>;
+	/// A type implementing [`BroadcasterInterface`].
 	type Broadcaster: BroadcasterInterface + ?Sized;
+	/// A type that may be dereferenced to [`Self::Broadcaster`].
 	type T: Deref<Target = Self::Broadcaster>;
+	/// A type implementing [`EntropySource`].
 	type EntropySource: EntropySource + ?Sized;
+	/// A type that may be dereferenced to [`Self::EntropySource`].
 	type ES: Deref<Target = Self::EntropySource>;
+	/// A type implementing [`NodeSigner`].
 	type NodeSigner: NodeSigner + ?Sized;
+	/// A type that may be dereferenced to [`Self::NodeSigner`].
 	type NS: Deref<Target = Self::NodeSigner>;
+	/// A type implementing [`WriteableEcdsaChannelSigner`].
 	type Signer: WriteableEcdsaChannelSigner + Sized;
+	/// A type implementing [`SignerProvider`] for [`Self::Signer`].
 	type SignerProvider: SignerProvider<Signer = Self::Signer> + ?Sized;
+	/// A type that may be dereferenced to [`Self::SignerProvider`].
 	type SP: Deref<Target = Self::SignerProvider>;
+	/// A type implementing [`FeeEstimator`].
 	type FeeEstimator: FeeEstimator + ?Sized;
+	/// A type that may be dereferenced to [`Self::FeeEstimator`].
 	type F: Deref<Target = Self::FeeEstimator>;
+	/// A type implementing [`Router`].
 	type Router: Router + ?Sized;
+	/// A type that may be dereferenced to [`Self::Router`].
 	type R: Deref<Target = Self::Router>;
+	/// A type implementing [`Logger`].
 	type Logger: Logger + ?Sized;
+	/// A type that may be dereferenced to [`Self::Logger`].
 	type L: Deref<Target = Self::Logger>;
+	/// Returns a reference to the actual [`ChannelManager`] object.
 	fn get_cm(&self) -> &ChannelManager<Self::M, Self::T, Self::ES, Self::NS, Self::SP, Self::F, Self::R, Self::L>;
 }
-} }
-#[cfg(any(test, feature = "_test_utils"))]
-define_test_pub_trait!(pub);
-#[cfg(not(any(test, feature = "_test_utils")))]
-define_test_pub_trait!(pub(crate));
+
 impl<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, L: Deref> AChannelManager
 for ChannelManager<M, T, ES, NS, SP, F, R, L>
 where
