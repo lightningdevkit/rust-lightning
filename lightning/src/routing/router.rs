@@ -250,10 +250,20 @@ pub struct RouteHop {
 	///
 	/// [`BlindedPath`]: crate::blinded_path::BlindedPath
 	pub cltv_expiry_delta: u32,
+	/// Indicates whether this hop is possibly announced in the public network graph.
+	///
+	/// Will be `true` if there is a possibility that the channel is publicly known, i.e., if we
+	/// either know for sure it's announced in the public graph, or if any public channels exist
+	/// for which the given `short_channel_id` could be an alias for. Will be `false` if we believe
+	/// the channel to be unannounced.
+	///
+	/// Will be `true` for objects serialized with LDK version 0.0.116 and before.
+	pub maybe_announced_channel: bool,
 }
 
 impl_writeable_tlv_based!(RouteHop, {
 	(0, pubkey, required),
+	(1, maybe_announced_channel, (default_value, true)),
 	(2, node_features, required),
 	(4, short_channel_id, required),
 	(6, channel_features, required),
@@ -2472,9 +2482,27 @@ where L::Target: Logger {
 	let mut paths = Vec::new();
 	for payment_path in selected_route {
 		let mut hops = Vec::with_capacity(payment_path.hops.len());
+		let mut prev_hop_node_id = our_node_id;
 		for (hop, node_features) in payment_path.hops.iter()
 			.filter(|(h, _)| h.candidate.short_channel_id().is_some())
 		{
+			let maybe_announced_channel = if let CandidateRouteHop::PublicHop { .. } = hop.candidate {
+				// If we sourced the hop from the graph we're sure the target node is announced.
+				true
+			} else if let CandidateRouteHop::FirstHop { details } = hop.candidate {
+				// If this is a first hop we also know if it's announced.
+				details.is_public
+			} else {
+				// If we sourced it any other way, we double-check the network graph to see if
+				// there are announced channels between the endpoints. If so, the hop might be
+				// referring to any of the announced channels, as its `short_channel_id` might be
+				// an alias, in which case we don't take any chances here.
+				network_graph.node(&hop.node_id).map_or(false, |hop_node|
+					hop_node.channels.iter().any(|scid| network_graph.channel(*scid)
+							.map_or(false, |c| c.as_directed_from(&prev_hop_node_id).is_some()))
+				)
+			};
+
 			hops.push(RouteHop {
 				pubkey: PublicKey::from_slice(hop.node_id.as_slice()).map_err(|_| LightningError{err: format!("Public key {:?} is invalid", &hop.node_id), action: ErrorAction::IgnoreAndLog(Level::Trace)})?,
 				node_features: node_features.clone(),
@@ -2482,7 +2510,10 @@ where L::Target: Logger {
 				channel_features: hop.candidate.features(),
 				fee_msat: hop.fee_msat,
 				cltv_expiry_delta: hop.candidate.cltv_expiry_delta(),
+				maybe_announced_channel,
 			});
+
+			prev_hop_node_id = hop.node_id;
 		}
 		let mut final_cltv_delta = final_cltv_expiry_delta;
 		let blinded_tail = payment_path.hops.last().and_then(|(h, _)| {
@@ -5964,17 +5995,17 @@ mod tests {
 				RouteHop {
 					pubkey: PublicKey::from_slice(&hex::decode("02eec7245d6b7d2ccb30380bfbe2a3648cd7a942653f5aa340edcea1f283686619").unwrap()[..]).unwrap(),
 					channel_features: ChannelFeatures::empty(), node_features: NodeFeatures::empty(),
-					short_channel_id: 0, fee_msat: 100, cltv_expiry_delta: 0
+					short_channel_id: 0, fee_msat: 100, cltv_expiry_delta: 0, maybe_announced_channel: true,
 				},
 				RouteHop {
 					pubkey: PublicKey::from_slice(&hex::decode("0324653eac434488002cc06bbfb7f10fe18991e35f9fe4302dbea6d2353dc0ab1c").unwrap()[..]).unwrap(),
 					channel_features: ChannelFeatures::empty(), node_features: NodeFeatures::empty(),
-					short_channel_id: 0, fee_msat: 150, cltv_expiry_delta: 0
+					short_channel_id: 0, fee_msat: 150, cltv_expiry_delta: 0, maybe_announced_channel: true,
 				},
 				RouteHop {
 					pubkey: PublicKey::from_slice(&hex::decode("027f31ebc5462c1fdce1b737ecff52d37d75dea43ce11c74d25aa297165faa2007").unwrap()[..]).unwrap(),
 					channel_features: ChannelFeatures::empty(), node_features: NodeFeatures::empty(),
-					short_channel_id: 0, fee_msat: 225, cltv_expiry_delta: 0
+					short_channel_id: 0, fee_msat: 225, cltv_expiry_delta: 0, maybe_announced_channel: true,
 				},
 			], blinded_tail: None }],
 			route_params: None,
@@ -5991,23 +6022,23 @@ mod tests {
 				RouteHop {
 					pubkey: PublicKey::from_slice(&hex::decode("02eec7245d6b7d2ccb30380bfbe2a3648cd7a942653f5aa340edcea1f283686619").unwrap()[..]).unwrap(),
 					channel_features: ChannelFeatures::empty(), node_features: NodeFeatures::empty(),
-					short_channel_id: 0, fee_msat: 100, cltv_expiry_delta: 0
+					short_channel_id: 0, fee_msat: 100, cltv_expiry_delta: 0, maybe_announced_channel: true,
 				},
 				RouteHop {
 					pubkey: PublicKey::from_slice(&hex::decode("0324653eac434488002cc06bbfb7f10fe18991e35f9fe4302dbea6d2353dc0ab1c").unwrap()[..]).unwrap(),
 					channel_features: ChannelFeatures::empty(), node_features: NodeFeatures::empty(),
-					short_channel_id: 0, fee_msat: 150, cltv_expiry_delta: 0
+					short_channel_id: 0, fee_msat: 150, cltv_expiry_delta: 0, maybe_announced_channel: true,
 				},
 			], blinded_tail: None }, Path { hops: vec![
 				RouteHop {
 					pubkey: PublicKey::from_slice(&hex::decode("02eec7245d6b7d2ccb30380bfbe2a3648cd7a942653f5aa340edcea1f283686619").unwrap()[..]).unwrap(),
 					channel_features: ChannelFeatures::empty(), node_features: NodeFeatures::empty(),
-					short_channel_id: 0, fee_msat: 100, cltv_expiry_delta: 0
+					short_channel_id: 0, fee_msat: 100, cltv_expiry_delta: 0, maybe_announced_channel: true,
 				},
 				RouteHop {
 					pubkey: PublicKey::from_slice(&hex::decode("0324653eac434488002cc06bbfb7f10fe18991e35f9fe4302dbea6d2353dc0ab1c").unwrap()[..]).unwrap(),
 					channel_features: ChannelFeatures::empty(), node_features: NodeFeatures::empty(),
-					short_channel_id: 0, fee_msat: 150, cltv_expiry_delta: 0
+					short_channel_id: 0, fee_msat: 150, cltv_expiry_delta: 0, maybe_announced_channel: true,
 				},
 			], blinded_tail: None }],
 			route_params: None,
@@ -6606,6 +6637,7 @@ mod tests {
 				channel_features: ChannelFeatures::empty(),
 				fee_msat: 100,
 				cltv_expiry_delta: 0,
+				maybe_announced_channel: true,
 			}],
 			blinded_tail: Some(BlindedTail {
 				hops: blinded_path_1.blinded_hops,
@@ -6620,6 +6652,7 @@ mod tests {
 				channel_features: ChannelFeatures::empty(),
 				fee_msat: 100,
 				cltv_expiry_delta: 0,
+				maybe_announced_channel: true,
 			}], blinded_tail: None }],
 			route_params: None,
 		};
@@ -6659,6 +6692,7 @@ mod tests {
 				channel_features: ChannelFeatures::empty(),
 				fee_msat: 100,
 				cltv_expiry_delta: 0,
+				maybe_announced_channel: false,
 			},
 			RouteHop {
 				pubkey: blinded_path.introduction_node_id,
@@ -6667,6 +6701,7 @@ mod tests {
 				channel_features: ChannelFeatures::empty(),
 				fee_msat: 1,
 				cltv_expiry_delta: 0,
+				maybe_announced_channel: false,
 			}],
 			blinded_tail: Some(BlindedTail {
 				hops: blinded_path.blinded_hops,
@@ -6699,6 +6734,7 @@ mod tests {
 				channel_features: ChannelFeatures::empty(),
 				fee_msat: 100,
 				cltv_expiry_delta: 0,
+				maybe_announced_channel: false,
 			},
 			RouteHop {
 				pubkey: blinded_path.introduction_node_id,
@@ -6707,6 +6743,7 @@ mod tests {
 				channel_features: ChannelFeatures::empty(),
 				fee_msat: 1,
 				cltv_expiry_delta: 0,
+				maybe_announced_channel: false,
 			}
 			],
 			blinded_tail: Some(BlindedTail {
