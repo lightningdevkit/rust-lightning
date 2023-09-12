@@ -19,7 +19,7 @@ use bitcoin::blockdata::constants::ChainHash;
 use bitcoin::secp256k1::{self, Secp256k1, SecretKey, PublicKey};
 
 use crate::sign::{KeysManager, NodeSigner, Recipient};
-use crate::events::{MessageSendEvent, MessageSendEventsProvider, OnionMessageProvider};
+use crate::events::{MessageSendEvent, MessageSendEventsProvider};
 use crate::ln::ChannelId;
 use crate::ln::features::{InitFeatures, NodeFeatures};
 use crate::ln::msgs;
@@ -107,11 +107,9 @@ impl RoutingMessageHandler for IgnoringMessageHandler {
 	}
 	fn processing_queue_high(&self) -> bool { false }
 }
-impl OnionMessageProvider for IgnoringMessageHandler {
-	fn next_onion_message_for_peer(&self, _peer_node_id: PublicKey) -> Option<msgs::OnionMessage> { None }
-}
 impl OnionMessageHandler for IgnoringMessageHandler {
 	fn handle_onion_message(&self, _their_node_id: &PublicKey, _msg: &msgs::OnionMessage) {}
+	fn next_onion_message_for_peer(&self, _peer_node_id: PublicKey) -> Option<msgs::OnionMessage> { None }
 	fn peer_connected(&self, _their_node_id: &PublicKey, _init: &msgs::Init, _inbound: bool) -> Result<(), ()> { Ok(()) }
 	fn peer_disconnected(&self, _their_node_id: &PublicKey) {}
 	fn provided_node_features(&self) -> NodeFeatures { NodeFeatures::empty() }

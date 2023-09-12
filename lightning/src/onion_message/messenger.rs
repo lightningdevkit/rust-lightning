@@ -19,7 +19,6 @@ use crate::blinded_path::BlindedPath;
 use crate::blinded_path::message::{advance_path_by_one, ForwardTlvs, ReceiveTlvs};
 use crate::blinded_path::utils;
 use crate::sign::{EntropySource, KeysManager, NodeSigner, Recipient};
-use crate::events::OnionMessageProvider;
 use crate::ln::features::{InitFeatures, NodeFeatures};
 use crate::ln::msgs::{self, OnionMessageHandler};
 use crate::ln::onion_utils;
@@ -645,18 +644,7 @@ where
 		features.set_onion_messages_optional();
 		features
 	}
-}
 
-impl<ES: Deref, NS: Deref, L: Deref, MR: Deref, OMH: Deref, CMH: Deref> OnionMessageProvider
-for OnionMessenger<ES, NS, L, MR, OMH, CMH>
-where
-	ES::Target: EntropySource,
-	NS::Target: NodeSigner,
-	L::Target: Logger,
-	MR::Target: MessageRouter,
-	OMH::Target: OffersMessageHandler,
-	CMH::Target: CustomOnionMessageHandler,
-{
 	fn next_onion_message_for_peer(&self, peer_node_id: PublicKey) -> Option<msgs::OnionMessage> {
 		let mut pending_msgs = self.pending_messages.lock().unwrap();
 		if let Some(msgs) = pending_msgs.get_mut(&peer_node_id) {
