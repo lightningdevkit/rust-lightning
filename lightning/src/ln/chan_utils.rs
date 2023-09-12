@@ -450,7 +450,7 @@ pub fn derive_public_revocation_key<T: secp256k1::Verification>(secp_ctx: &Secp2
 /// channel basepoints via the new function, or they were obtained via
 /// CommitmentTransaction.trust().keys() because we trusted the source of the
 /// pre-calculated keys.
-#[derive(PartialEq, Eq, Clone)]
+#[derive(PartialEq, Eq, Clone, Debug)]
 pub struct TxCreationKeys {
 	/// The broadcaster's per-commitment public key which was used to derive the other keys.
 	pub per_commitment_point: PublicKey,
@@ -1028,7 +1028,7 @@ impl<'a> DirectedChannelTransactionParameters<'a> {
 /// Information needed to build and sign a holder's commitment transaction.
 ///
 /// The transaction is only signed once we are ready to broadcast.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct HolderCommitmentTransaction {
 	inner: CommitmentTransaction,
 	/// Our counterparty's signature for the transaction
@@ -1134,7 +1134,7 @@ impl HolderCommitmentTransaction {
 }
 
 /// A pre-built Bitcoin commitment transaction and its txid.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct BuiltCommitmentTransaction {
 	/// The commitment transaction
 	pub transaction: Transaction,
@@ -1305,7 +1305,7 @@ impl<'a> TrustedClosingTransaction<'a> {
 ///
 /// This class can be used inside a signer implementation to generate a signature given the relevant
 /// secret key.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct CommitmentTransaction {
 	commitment_number: u64,
 	to_broadcaster_value_sat: u64,

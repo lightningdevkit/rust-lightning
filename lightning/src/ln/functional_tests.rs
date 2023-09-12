@@ -17,7 +17,7 @@ use crate::chain::chaininterface::LowerBoundedFeeEstimator;
 use crate::chain::channelmonitor;
 use crate::chain::channelmonitor::{CLTV_CLAIM_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS, ANTI_REORG_DELAY};
 use crate::chain::transaction::OutPoint;
-use crate::sign::{ChannelSigner, EcdsaChannelSigner, EntropySource, SignerProvider};
+use crate::sign::{EcdsaChannelSigner, EntropySource, SignerProvider};
 use crate::events::{Event, MessageSendEvent, MessageSendEventsProvider, PathFailure, PaymentPurpose, ClosureReason, HTLCDestination, PaymentFailureReason};
 use crate::ln::{ChannelId, PaymentPreimage, PaymentSecret, PaymentHash};
 use crate::ln::channel::{commitment_tx_base_weight, COMMITMENT_TX_WEIGHT_PER_HTLC, CONCURRENT_INBOUND_HTLC_FEE_BUFFER, FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE, MIN_AFFORDABLE_HTLC_COUNT, get_holder_selected_channel_reserve_satoshis, OutboundV1Channel, InboundV1Channel, COINBASE_MATURITY, ChannelPhase};
@@ -3880,13 +3880,13 @@ fn do_test_drop_messages_peer_disconnect(messages_delivered: u8, simulate_broken
 	} else if messages_delivered == 3 {
 		// nodes[0] still wants its RAA + commitment_signed
 		let mut reconnect_args = ReconnectArgs::new(&nodes[0], &nodes[1]);
-		reconnect_args.pending_htlc_adds.0 = -1;
+		reconnect_args.pending_responding_commitment_signed.0 = true;
 		reconnect_args.pending_raa.0 = true;
 		reconnect_nodes(reconnect_args);
 	} else if messages_delivered == 4 {
 		// nodes[0] still wants its commitment_signed
 		let mut reconnect_args = ReconnectArgs::new(&nodes[0], &nodes[1]);
-		reconnect_args.pending_htlc_adds.0 = -1;
+		reconnect_args.pending_responding_commitment_signed.0 = true;
 		reconnect_nodes(reconnect_args);
 	} else if messages_delivered == 5 {
 		// nodes[1] still wants its final RAA
@@ -4014,13 +4014,13 @@ fn do_test_drop_messages_peer_disconnect(messages_delivered: u8, simulate_broken
 	} else if messages_delivered == 2 {
 		// nodes[0] still wants its RAA + commitment_signed
 		let mut reconnect_args = ReconnectArgs::new(&nodes[0], &nodes[1]);
-		reconnect_args.pending_htlc_adds.1 = -1;
+		reconnect_args.pending_responding_commitment_signed.1 = true;
 		reconnect_args.pending_raa.1 = true;
 		reconnect_nodes(reconnect_args);
 	} else if messages_delivered == 3 {
 		// nodes[0] still wants its commitment_signed
 		let mut reconnect_args = ReconnectArgs::new(&nodes[0], &nodes[1]);
-		reconnect_args.pending_htlc_adds.1 = -1;
+		reconnect_args.pending_responding_commitment_signed.1 = true;
 		reconnect_nodes(reconnect_args);
 	} else if messages_delivered == 4 {
 		// nodes[1] still wants its final RAA
@@ -8777,7 +8777,8 @@ fn do_test_onchain_htlc_settlement_after_close(broadcast_alice: bool, go_onchain
 	assert_eq!(carol_updates.update_fulfill_htlcs.len(), 1);
 
 	nodes[1].node.handle_update_fulfill_htlc(&nodes[2].node.get_our_node_id(), &carol_updates.update_fulfill_htlcs[0]);
-	expect_payment_forwarded!(nodes[1], nodes[0], nodes[2], if go_onchain_before_fulfill || force_closing_node == 1 { None } else { Some(1000) }, false, false);
+	let went_onchain = go_onchain_before_fulfill || force_closing_node == 1;
+	expect_payment_forwarded!(nodes[1], nodes[0], nodes[2], if went_onchain { None } else { Some(1000) }, went_onchain, false);
 	// If Alice broadcasted but Bob doesn't know yet, here he prepares to tell her about the preimage.
 	if !go_onchain_before_fulfill && broadcast_alice {
 		let events = nodes[1].node.get_and_clear_pending_msg_events();
