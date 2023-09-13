@@ -677,6 +677,7 @@ struct ClaimablePayment {
 	purpose: events::PaymentPurpose,
 	onion_fields: Option<RecipientOnionFields>,
 	htlcs: Vec<ClaimableHTLC>,
+	amount_msat: Option<u64>,
 }
 
 /// Information about claimable or being-claimed payments
@@ -695,6 +696,17 @@ struct ClaimablePayments {
 	/// are waiting on a [`ChannelMonitorUpdate`] to complete in order to be surfaced to the user
 	/// as an [`events::Event::PaymentClaimed`].
 	pending_claiming_payments: HashMap<PaymentHash, ClaimingPayment>,
+}
+
+/// Information about self claimable payments.
+struct ClaimableSelfPayments {
+	claimable_payments: HashMap<PaymentHash, ClaimableSelfPayment>
+}
+
+struct ClaimableSelfPayment {
+	purpose: events::PaymentPurpose,
+	amount_msat: u64,
+	payment_id: PaymentId,
 }
 
 /// Events which we process internally but cannot be processed immediately at the generation site
@@ -1266,6 +1278,12 @@ where
 	///
 	/// See `ChannelManager` struct-level documentation for lock order requirements.
 	claimable_payments: Mutex<ClaimablePayments>,
+
+	/// The set of self payments which are claimable. See [`ClaimableSelfPayments`] 
+	/// individual field docs for more info.
+	///
+	/// See `ChannelManager` struct-level documentation for lock order requirements.
+	claimable_self_payments: Mutex<ClaimableSelfPayments>,
 
 	/// The set of outbound SCID aliases across all our channels, including unconfirmed channels
 	/// and some closed channels which reached a usable state prior to being closed. This is used
@@ -2468,6 +2486,7 @@ where
 			pending_outbound_payments: OutboundPayments::new(),
 			forward_htlcs: Mutex::new(new_hash_map()),
 			claimable_payments: Mutex::new(ClaimablePayments { claimable_payments: new_hash_map(), pending_claiming_payments: new_hash_map() }),
+			claimable_self_payments: Mutex::new(ClaimableSelfPayments { claimable_payments: new_hash_map() }),
 			pending_intercepted_htlcs: Mutex::new(new_hash_map()),
 			outpoint_to_peer: Mutex::new(new_hash_map()),
 			short_to_chan_info: FairRwLock::new(new_hash_map()),
@@ -3549,11 +3568,38 @@ where
 	pub fn send_payment(&self, payment_hash: PaymentHash, recipient_onion: RecipientOnionFields, payment_id: PaymentId, route_params: RouteParameters, retry_strategy: Retry) -> Result<(), RetryableSendFailure> {
 		let best_block_height = self.best_block.read().unwrap().height;
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
+		let mut preimage: Option<PaymentPreimage> = None;
+		let mut payment_secret = PaymentSecret([0; 32]);
+		let mut is_self_pay = false;
+		if let Some(secret) = recipient_onion.payment_secret {
+			payment_secret = secret;
+			if let Payee::Clear{ node_id, .. } = route_params.payment_params.payee {
+				let is_phantom_payee = match self.node_signer.get_node_id(Recipient::PhantomNode) {
+					Ok(phantom_node_id) => node_id == phantom_node_id,
+					Err(_) => false,
+				};
+				if node_id == self.get_our_node_id() || is_phantom_payee {
+					let payment_data = msgs::FinalOnionHopData{ payment_secret, total_msat: route_params.final_value_msat };
+					preimage = inbound_payment::verify(payment_hash, &payment_data, self.highest_seen_timestamp.load(Ordering::Acquire) as u64, &self.inbound_payment_key, &self.logger).map_err(|_| RetryableSendFailure::RecipientRejected)?.0;
+					is_self_pay = true;
+				}
+			}
+		}
 		self.pending_outbound_payments
-			.send_payment(payment_hash, recipient_onion, payment_id, retry_strategy, route_params,
+			.send_payment(payment_hash, recipient_onion.clone(), payment_id, retry_strategy, route_params.clone(),
 				&self.router, self.list_usable_channels(), || self.compute_inflight_htlcs(),
 				&self.entropy_source, &self.node_signer, best_block_height, &self.logger,
-				&self.pending_events, |args| self.send_payment_along_path(args))
+				&self.pending_events, |args| self.send_payment_along_path(args))?;
+
+		if is_self_pay {
+			let mut claimable_self_payments = self.claimable_self_payments.lock().unwrap();
+			let purpose = events::PaymentPurpose::InvoicePayment { payment_preimage: preimage, payment_secret };
+			claimable_self_payments.claimable_payments.insert(payment_hash, ClaimableSelfPayment{ purpose: purpose.clone(), amount_msat: route_params.final_value_msat, payment_id });
+			let mut pending_events = self.pending_events.lock().unwrap();
+			pending_events.push_back((events::Event::PaymentClaimable { receiver_node_id: Some(self.get_our_node_id()), payment_hash, onion_fields: Some(recipient_onion), amount_msat: route_params.final_value_msat, counterparty_skimmed_fee_msat: 0, purpose, via_channel_id: None, via_user_channel_id: None, claim_deadline: None }, None));
+		}
+
+		Ok(())
 	}
 
 	#[cfg(test)]
@@ -4602,7 +4648,7 @@ where
 											.or_insert_with(|| {
 												committed_to_claimable = true;
 												ClaimablePayment {
-													purpose: $purpose.clone(), htlcs: Vec::new(), onion_fields: None,
+													purpose: $purpose.clone(), htlcs: Vec::new(), onion_fields: None, amount_msat: None,
 												}
 											});
 										if $purpose != claimable_payment.purpose {
@@ -5446,10 +5492,32 @@ where
 
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 
+		// This handles fulfilling and claiming of Self payment.
+		{
+			let mut claimable_self_payments = self.claimable_self_payments.lock().unwrap();
+			if let Some(payment) = claimable_self_payments.claimable_payments.remove(&payment_hash) {
+				let mut pending_outbounds_lock = self.pending_outbound_payments.pending_outbound_payments.lock().unwrap();
+				let out_payment = pending_outbounds_lock.get_mut(&payment.payment_id).unwrap();
+				out_payment.mark_fulfilled();
+				let mut pending_events_lock = self.pending_events.lock().unwrap();
+				pending_events_lock.push_back((Event::PaymentSent { payment_id: Some(payment.payment_id), payment_preimage,
+											payment_hash, fee_paid_msat: None }, None));
+				pending_events_lock.push_back((Event::PaymentClaimed { receiver_node_id: None, payment_hash,
+					amount_msat: payment.amount_msat, purpose: payment.purpose, htlcs: vec![], sender_intended_total_msat: None }, None));
+				return;
+			}
+		}
+
 		let mut sources = {
 			let mut claimable_payments = self.claimable_payments.lock().unwrap();
 			if let Some(payment) = claimable_payments.claimable_payments.remove(&payment_hash) {
 				let mut receiver_node_id = self.our_network_pubkey;
+				if payment.htlcs.is_empty() {
+					let mut pending_events_lock = self.pending_events.lock().unwrap();
+					pending_events_lock.push_back((Event::PaymentClaimed { receiver_node_id: Some(receiver_node_id), payment_hash,
+							amount_msat: payment.amount_msat.unwrap(), purpose: payment.purpose, htlcs: vec![], sender_intended_total_msat: None }, None));
+					return;				
+				}
 				for htlc in payment.htlcs.iter() {
 					if htlc.prev_hop.phantom_shared_secret.is_some() {
 						let phantom_pubkey = self.node_signer.get_node_id(Recipient::PhantomNode)
@@ -10111,6 +10179,7 @@ where
 
 		let pending_inbound_payments = self.pending_inbound_payments.lock().unwrap();
 		let claimable_payments = self.claimable_payments.lock().unwrap();
+		let claimable_self_payments = self.claimable_self_payments.lock().unwrap();
 		let pending_outbound_payments = self.pending_outbound_payments.pending_outbound_payments.lock().unwrap();
 
 		let mut htlc_purposes: Vec<&events::PaymentPurpose> = Vec::new();
@@ -10124,6 +10193,14 @@ where
 			}
 			htlc_purposes.push(&payment.purpose);
 			htlc_onion_fields.push(&payment.onion_fields);
+		}
+
+		(claimable_self_payments.claimable_payments.len() as u64).write(writer)?;
+		for (payment_hash, payment) in claimable_self_payments.claimable_payments.iter() {
+			payment_hash.write(writer)?;
+			payment.purpose.write(writer)?;
+			payment.amount_msat.write(writer)?;
+			payment.payment_id.write(writer)?;
 		}
 
 		let mut monitor_update_blocked_actions_per_peer = None;
@@ -10639,6 +10716,21 @@ where
 			claimable_htlcs_list.push((payment_hash, previous_hops));
 		}
 
+		let claimable_self_payment_count: u64 = Readable::read(reader)?;
+		let mut claimable_self_payments = hash_map_with_capacity(claimable_self_payment_count as usize);
+		for _ in 0..claimable_self_payment_count {
+			//read each payment details and add an entry to the map of claimable payments.
+			let payment_hash = Readable::read(reader)?;
+			let purpose = Readable::read(reader)?;
+			let amount_msat = Readable::read(reader)?;
+			let payment_id = Readable::read(reader)?;
+			claimable_self_payments.insert(payment_hash, ClaimableSelfPayment {
+				purpose,
+				amount_msat,
+				payment_id,
+			});
+		}
+
 		let peer_state_from_chans = |channel_by_id| {
 			PeerState {
 				channel_by_id,
@@ -11064,14 +11156,14 @@ where
 					purposes.into_iter().zip(onion_fields.into_iter().zip(claimable_htlcs_list.into_iter()))
 				{
 					let existing_payment = claimable_payments.insert(payment_hash, ClaimablePayment {
-						purpose, htlcs, onion_fields: onion,
+						purpose, htlcs, onion_fields: onion, amount_msat: None,
 					});
 					if existing_payment.is_some() { return Err(DecodeError::InvalidValue); }
 				}
 			} else {
 				for (purpose, (payment_hash, htlcs)) in purposes.into_iter().zip(claimable_htlcs_list.into_iter()) {
 					let existing_payment = claimable_payments.insert(payment_hash, ClaimablePayment {
-						purpose, htlcs, onion_fields: None,
+						purpose, htlcs, onion_fields: None, amount_msat: None,
 					});
 					if existing_payment.is_some() { return Err(DecodeError::InvalidValue); }
 				}
@@ -11105,7 +11197,7 @@ where
 						events::PaymentPurpose::SpontaneousPayment(*payment_preimage),
 				};
 				claimable_payments.insert(payment_hash, ClaimablePayment {
-					purpose, htlcs, onion_fields: None,
+					purpose, htlcs, onion_fields: None, amount_msat: None,
 				});
 			}
 		}
@@ -11272,6 +11364,7 @@ where
 
 			forward_htlcs: Mutex::new(forward_htlcs),
 			claimable_payments: Mutex::new(ClaimablePayments { claimable_payments, pending_claiming_payments: pending_claiming_payments.unwrap() }),
+			claimable_self_payments: Mutex::new(ClaimableSelfPayments { claimable_payments: claimable_self_payments }),
 			outbound_scid_aliases: Mutex::new(outbound_scid_aliases),
 			outpoint_to_peer: Mutex::new(outpoint_to_peer),
 			short_to_chan_info: FairRwLock::new(short_to_chan_info),
