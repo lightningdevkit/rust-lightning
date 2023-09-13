@@ -45,6 +45,9 @@ pub mod wire;
 
 #[cfg(test)]
 #[allow(unused_mut)]
+mod blinded_payment_tests;
+#[cfg(test)]
+#[allow(unused_mut)]
 mod functional_tests;
 #[cfg(test)]
 #[allow(unused_mut)]

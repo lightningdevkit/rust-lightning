@@ -12,7 +12,8 @@ use crate::ln::channelmanager::{HTLCSource, RecipientOnionFields};
 use crate::ln::msgs;
 use crate::ln::wire::Encode;
 use crate::routing::gossip::NetworkUpdate;
-use crate::routing::router::{Path, RouteHop};
+use crate::routing::router::{BlindedTail, Path, RouteHop};
+use crate::sign::NodeSigner;
 use crate::util::chacha20::{ChaCha20, ChaChaReader};
 use crate::util::errors::{self, APIError};
 use crate::util::ser::{Readable, ReadableArgs, Writeable, Writer, LengthCalculatingWriter};
@@ -169,7 +170,9 @@ pub(super) fn build_onion_payloads(path: &Path, total_msat: u64, mut recipient_o
 	let mut cur_value_msat = 0u64;
 	let mut cur_cltv = starting_htlc_offset;
 	let mut last_short_channel_id = 0;
-	let mut res: Vec<msgs::OutboundOnionPayload> = Vec::with_capacity(path.hops.len());
+	let mut res: Vec<msgs::OutboundOnionPayload> = Vec::with_capacity(
+		path.hops.len() + path.blinded_tail.as_ref().map_or(0, |t| t.hops.len())
+	);
 
 	for (idx, hop) in path.hops.iter().rev().enumerate() {
 		// First hop gets special values so that it can check, on receipt, that everything is
@@ -177,27 +180,51 @@ pub(super) fn build_onion_payloads(path: &Path, total_msat: u64, mut recipient_o
 		// the intended recipient).
 		let value_msat = if cur_value_msat == 0 { hop.fee_msat } else { cur_value_msat };
 		let cltv = if cur_cltv == starting_htlc_offset { hop.cltv_expiry_delta + starting_htlc_offset } else { cur_cltv };
-		res.insert(0, if idx == 0 {
-			msgs::OutboundOnionPayload::Receive {
-				payment_data: if let Some(secret) = recipient_onion.payment_secret.take() {
-					Some(msgs::FinalOnionHopData {
-						payment_secret: secret,
-						total_msat,
-					})
-				} else { None },
-				payment_metadata: recipient_onion.payment_metadata.take(),
-				keysend_preimage: *keysend_preimage,
-				custom_tlvs: recipient_onion.custom_tlvs.clone(),
-				amt_msat: value_msat,
-				outgoing_cltv_value: cltv,
+		if idx == 0 {
+			if let Some(BlindedTail {
+				blinding_point, hops, final_value_msat, excess_final_cltv_expiry_delta, ..
+			}) = &path.blinded_tail {
+				let mut blinding_point = Some(*blinding_point);
+				for (i, blinded_hop) in hops.iter().enumerate() {
+					if i == hops.len() - 1 {
+						cur_value_msat += final_value_msat;
+						cur_cltv += excess_final_cltv_expiry_delta;
+						res.push(msgs::OutboundOnionPayload::BlindedReceive {
+							amt_msat: *final_value_msat,
+							total_msat,
+							outgoing_cltv_value: cltv,
+							encrypted_tlvs: blinded_hop.encrypted_payload.clone(),
+							intro_node_blinding_point: blinding_point.take(),
+						});
+					} else {
+						res.push(msgs::OutboundOnionPayload::BlindedForward {
+							encrypted_tlvs: blinded_hop.encrypted_payload.clone(),
+							intro_node_blinding_point: blinding_point.take(),
+						});
+					}
+				}
+			} else {
+				res.push(msgs::OutboundOnionPayload::Receive {
+					payment_data: if let Some(secret) = recipient_onion.payment_secret.take() {
+						Some(msgs::FinalOnionHopData {
+							payment_secret: secret,
+							total_msat,
+						})
+					} else { None },
+					payment_metadata: recipient_onion.payment_metadata.take(),
+					keysend_preimage: *keysend_preimage,
+					custom_tlvs: recipient_onion.custom_tlvs.clone(),
+					amt_msat: value_msat,
+					outgoing_cltv_value: cltv,
+				});
 			}
 		} else {
-			msgs::OutboundOnionPayload::Forward {
+			res.insert(0, msgs::OutboundOnionPayload::Forward {
 				short_channel_id: last_short_channel_id,
 				amt_to_forward: value_msat,
 				outgoing_cltv_value: cltv,
-			}
-		});
+			});
+		}
 		cur_value_msat += hop.fee_msat;
 		if cur_value_msat >= 21000000 * 100000000 * 1000 {
 			return Err(APIError::InvalidRoute{err: "Channel fees overflowed?".to_owned()});
@@ -859,8 +886,11 @@ pub(crate) enum OnionDecodeErr {
 	},
 }
 
-pub(crate) fn decode_next_payment_hop(shared_secret: [u8; 32], hop_data: &[u8], hmac_bytes: [u8; 32], payment_hash: PaymentHash) -> Result<Hop, OnionDecodeErr> {
-	match decode_next_hop(shared_secret, hop_data, hmac_bytes, Some(payment_hash), ()) {
+pub(crate) fn decode_next_payment_hop<NS: Deref>(
+	shared_secret: [u8; 32], hop_data: &[u8], hmac_bytes: [u8; 32], payment_hash: PaymentHash,
+	node_signer: &NS,
+) -> Result<Hop, OnionDecodeErr> where NS::Target: NodeSigner {
+	match decode_next_hop(shared_secret, hop_data, hmac_bytes, Some(payment_hash), node_signer) {
 		Ok((next_hop_data, None)) => Ok(Hop::Receive(next_hop_data)),
 		Ok((next_hop_data, Some((next_hop_hmac, FixedSizeOnionPacket(new_packet_bytes))))) => {
 			Ok(Hop::Forward {

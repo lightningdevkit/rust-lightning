@@ -1234,7 +1234,9 @@ impl OutboundPayments {
 		if route.paths.len() < 1 {
 			return Err(PaymentSendFailure::ParameterError(APIError::InvalidRoute{err: "There must be at least one path to send over".to_owned()}));
 		}
-		if recipient_onion.payment_secret.is_none() && route.paths.len() > 1 {
+		if recipient_onion.payment_secret.is_none() && route.paths.len() > 1
+			&& !route.paths.iter().any(|p| p.blinded_tail.is_some())
+		{
 			return Err(PaymentSendFailure::ParameterError(APIError::APIMisuseError{err: "Payment secret is required for multi-path payments".to_owned()}));
 		}
 		let mut total_value = 0;
@@ -1243,10 +1245,6 @@ impl OutboundPayments {
 		'path_check: for path in route.paths.iter() {
 			if path.hops.len() < 1 || path.hops.len() > 20 {
 				path_errs.push(Err(APIError::InvalidRoute{err: "Path didn't go anywhere/had bogus size".to_owned()}));
-				continue 'path_check;
-			}
-			if path.blinded_tail.is_some() {
-				path_errs.push(Err(APIError::InvalidRoute{err: "Sending to blinded paths isn't supported yet".to_owned()}));
 				continue 'path_check;
 			}
 			let dest_hop_idx = if path.blinded_tail.is_some() && path.blinded_tail.as_ref().unwrap().hops.len() > 1 {
