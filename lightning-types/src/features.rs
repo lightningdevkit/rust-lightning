@@ -49,6 +49,8 @@
 //!     (see [BOLT-4](https://github.com/lightning/bolts/blob/master/04-onion-routing.md#route-blinding) for more information).
 //! - `ShutdownAnySegwit` - requires/supports that future segwit versions are allowed in `shutdown`
 //!     (see [BOLT-2](https://github.com/lightning/bolts/blob/master/02-peer-protocol.md) for more information).
+//! - `DualFund` - requires/supports V2 channel establishment
+//!     (see [BOLT-2](https://github.com/lightning/bolts/blob/master/02-peer-protocol.md#channel-establishment-v2) for more information).
 //! - `OnionMessages` - requires/supports forwarding onion messages
 //!     (see [BOLT-7](https://github.com/lightning/bolts/pull/759/files) for more information).
 //     TODO: update link
@@ -146,7 +148,7 @@ mod sealed {
 			// Byte 2
 			BasicMPP | Wumbo | AnchorsNonzeroFeeHtlcTx | AnchorsZeroFeeHtlcTx,
 			// Byte 3
-			RouteBlinding | ShutdownAnySegwit | Taproot,
+			RouteBlinding | ShutdownAnySegwit | DualFund | Taproot,
 			// Byte 4
 			OnionMessages,
 			// Byte 5
@@ -167,7 +169,7 @@ mod sealed {
 			// Byte 2
 			BasicMPP | Wumbo | AnchorsNonzeroFeeHtlcTx | AnchorsZeroFeeHtlcTx,
 			// Byte 3
-			RouteBlinding | ShutdownAnySegwit | Taproot,
+			RouteBlinding | ShutdownAnySegwit | DualFund | Taproot,
 			// Byte 4
 			OnionMessages,
 			// Byte 5
@@ -501,6 +503,16 @@ mod sealed {
 		set_shutdown_any_segwit_required,
 		supports_shutdown_anysegwit,
 		requires_shutdown_anysegwit
+	);
+	define_feature!(
+		29,
+		DualFund,
+		[InitContext, NodeContext],
+		"Feature flags for `option_dual_fund`.",
+		set_dual_fund_optional,
+		set_dual_fund_required,
+		supports_dual_fund,
+		requires_dual_fund
 	);
 	define_feature!(
 		31,
