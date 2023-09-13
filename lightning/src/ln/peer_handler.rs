@@ -293,6 +293,7 @@ impl ChannelMessageHandler for ErroringMessageHandler {
 		features.set_basic_mpp_optional();
 		features.set_wumbo_optional();
 		features.set_shutdown_any_segwit_optional();
+		features.set_dual_fund_optional();
 		features.set_channel_type_optional();
 		features.set_scid_privacy_optional();
 		features.set_zero_conf_optional();

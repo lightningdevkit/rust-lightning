@@ -43,6 +43,9 @@
 //!     (see [BOLT-2](https://github.com/lightning/bolts/blob/master/02-peer-protocol.md#the-open_channel-message) for more information).
 //! - `ShutdownAnySegwit` - requires/supports that future segwit versions are allowed in `shutdown`
 //!     (see [BOLT-2](https://github.com/lightning/bolts/blob/master/02-peer-protocol.md) for more information).
+//! - `DualFund` - requires/supports V2 channel establishment
+//!     (see [BOLT-2](https://github.com/lightning/bolts/pull/851/files) for more information).
+//     TODO: update link
 //! - `OnionMessages` - requires/supports forwarding onion messages
 //!     (see [BOLT-7](https://github.com/lightning/bolts/pull/759/files) for more information).
 //     TODO: update link
@@ -143,7 +146,7 @@ mod sealed {
 		// Byte 2
 		BasicMPP | Wumbo | AnchorsNonzeroFeeHtlcTx | AnchorsZeroFeeHtlcTx,
 		// Byte 3
-		ShutdownAnySegwit | Taproot,
+		ShutdownAnySegwit | DualFund | Taproot,
 		// Byte 4
 		OnionMessages,
 		// Byte 5
@@ -159,7 +162,7 @@ mod sealed {
 		// Byte 2
 		BasicMPP | Wumbo | AnchorsNonzeroFeeHtlcTx | AnchorsZeroFeeHtlcTx,
 		// Byte 3
-		ShutdownAnySegwit | Taproot,
+		ShutdownAnySegwit | DualFund | Taproot,
 		// Byte 4
 		OnionMessages,
 		// Byte 5
@@ -394,6 +397,9 @@ mod sealed {
 	define_feature!(27, ShutdownAnySegwit, [InitContext, NodeContext],
 		"Feature flags for `opt_shutdown_anysegwit`.", set_shutdown_any_segwit_optional,
 		set_shutdown_any_segwit_required, supports_shutdown_anysegwit, requires_shutdown_anysegwit);
+	define_feature!(29, DualFund, [InitContext, NodeContext],
+		"Feature flags for `option_dual_fund`.", set_dual_fund_optional, set_dual_fund_required,
+		supports_dual_fund, requires_dual_fund);
 	define_feature!(31, Taproot, [InitContext, NodeContext, ChannelTypeContext],
 		"Feature flags for `option_taproot`.", set_taproot_optional,
 		set_taproot_required, supports_taproot, requires_taproot);
