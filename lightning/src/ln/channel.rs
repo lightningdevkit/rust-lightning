@@ -2081,14 +2081,14 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 	}
 
 	/// #SPLICING
-	/// Update channel capacity (value) during a splicing process
-	pub fn commit_pending_splicing_channel_value<L: Deref>(&mut self, belongs_to_local: bool, logger: &L) -> Result<(), ChannelError>
+	/// Commit to the pending splice (update channel capacity (value))
+	pub fn commit_pending_splice<L: Deref>(&mut self, belongs_to_local: bool, logger: &L) -> Result<(), ChannelError>
 	where L::Target: Logger {
 		if let Some(pending_splice) = self.pending_splice {
-			let old_value = self.channel_value_satoshis;
+			let old_value_debug = self.channel_value_satoshis;
 			let _ = self.update_channel_value(pending_splice.post_channel_value, belongs_to_local, logger)?;
 			self.pending_splice = None;
-			log_trace!(logger, "Changed channel value, channel_id {}  old {}  new {}", self.channel_id, old_value, self.channel_value_satoshis);
+			log_trace!(logger, "Changed channel value, channel_id {}  old {}  new {}", self.channel_id, old_value_debug, self.channel_value_satoshis);
 			Ok(())
 		} else {
 			Err(ChannelError::Warn("Internal error: No pending splice found".to_owned()))
@@ -5909,7 +5909,7 @@ impl<SP: Deref> Channel<SP> where
 
 		// Commit to the new channel value (capacity). The increase belongs to us (initiator, local).
 		// TODO: what if the the new splicing TX never locks?
-		let _ = self.context.commit_pending_splicing_channel_value(true, logger)?;
+		let _ = self.context.commit_pending_splice(true, logger)?;
 
 		// Save splice TX (in temp field?)
 		// TODO Do we need to store this in a separate (splice-specific) field, so that old funding is also available?
@@ -5996,10 +5996,7 @@ impl<SP: Deref> Channel<SP> where
 
 		// Commit to the new channel value (capacity). The increase belongs to them.
 		// TODO: what if the the new splicing TX never locks?
-		match self.context.commit_pending_splicing_channel_value(false, logger) {
-			Err(e) => return Err(e),
-			Ok(_) => {},
-		}
+		let _ = self.context.commit_pending_splice(false, logger)?;
 
 		// Save splice TX (in temp field?)
 		// TODO Do we need to store this in a separate (splice-specific) field, so that old funding is also available?
