@@ -1604,8 +1604,14 @@ mod bucketed_history {
 
 	impl_writeable_tlv_based!(HistoricalBucketRangeTracker, { (0, buckets, required) });
 
+	/// A set of buckets representing the history of where we've seen the minimum- and maximum-
+	/// liquidity bounds for a given channel.
 	pub(super) struct HistoricalMinMaxBuckets<D: Deref<Target = HistoricalBucketRangeTracker>> {
+		/// Buckets tracking where and how often we've seen the minimum liquidity bound for a
+		/// channel.
 		pub(super) min_liquidity_offset_history: D,
+		/// Buckets tracking where and how often we've seen the maximum liquidity bound for a
+		/// channel.
 		pub(super) max_liquidity_offset_history: D,
 	}
 
