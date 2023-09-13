@@ -29,6 +29,7 @@ use super::packet::{BIG_PACKET_HOP_DATA_LEN, ForwardControlTlvs, Packet, Payload
 use crate::util::logger::Logger;
 use crate::util::ser::Writeable;
 
+use core::fmt;
 use core::ops::Deref;
 use crate::io;
 use crate::sync::{Arc, Mutex};
@@ -469,52 +470,31 @@ where
 		}
 	}
 
-	fn respond_with_onion_message<T: CustomOnionMessageContents>(
-		&self, response: OnionMessageContents<T>, path_id: Option<[u8; 32]>,
-		reply_path: Option<BlindedPath>
+	fn find_path_and_enqueue_onion_message<T: CustomOnionMessageContents>(
+		&self, contents: OnionMessageContents<T>, destination: Destination,
+		log_suffix: fmt::Arguments
 	) {
 		let sender = match self.node_signer.get_node_id(Recipient::Node) {
 			Ok(node_id) => node_id,
 			Err(_) => {
-				log_warn!(
-					self.logger, "Unable to retrieve node id when responding to onion message with \
-					path_id {:02x?}", path_id
-				);
+				log_warn!(self.logger, "Unable to retrieve node id {}", log_suffix);
 				return;
 			}
 		};
 
 		let peers = self.pending_messages.lock().unwrap().keys().copied().collect();
-
-		let destination = match reply_path {
-			Some(reply_path) => Destination::BlindedPath(reply_path),
-			None => {
-				log_trace!(
-					self.logger, "Missing reply path when responding to onion message with path_id \
-					{:02x?}", path_id
-				);
-				return;
-			},
-		};
-
 		let path = match self.message_router.find_path(sender, peers, destination) {
 			Ok(path) => path,
 			Err(()) => {
-				log_trace!(
-					self.logger, "Failed to find path when responding to onion message with \
-					path_id {:02x?}", path_id
-				);
+				log_trace!(self.logger, "Failed to find path {}", log_suffix);
 				return;
 			},
 		};
 
-		log_trace!(self.logger, "Responding to onion message with path_id {:02x?}", path_id);
+		log_trace!(self.logger, "Sending onion message {}", log_suffix);
 
-		if let Err(e) = self.send_onion_message(path, response, None) {
-			log_trace!(
-				self.logger, "Failed responding to onion message with path_id {:02x?}: {:?}",
-				path_id, e
-			);
+		if let Err(e) = self.send_onion_message(path, contents, None) {
+			log_trace!(self.logger, "Failed sending onion message {}: {:?}", log_suffix, e);
 			return;
 		}
 	}
@@ -587,7 +567,22 @@ where
 					},
 				};
 				if let Some(response) = response {
-					self.respond_with_onion_message(response, path_id, reply_path);
+					match reply_path {
+						Some(reply_path) => {
+							self.find_path_and_enqueue_onion_message(
+								response, Destination::BlindedPath(reply_path), format_args!(
+									"when responding to onion message with path_id {:02x?}", path_id
+								)
+							);
+						},
+						None => {
+							log_trace!(
+								self.logger,
+								"Missing reply path when responding to onion message with path_id {:02x?}",
+								path_id
+							);
+						},
+					}
 				}
 			},
 			Ok(PeeledOnion::Forward(next_node_id, onion_message)) => {
