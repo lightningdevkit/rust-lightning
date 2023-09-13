@@ -979,10 +979,6 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 		return ChannelShutdownState::NotShuttingDown;
 	}
 
-	/// Returns true if we're ready to commence the closing_signed negotiation phase. This is true
-	/// after both sides have exchanged a `shutdown` message and all HTLCs have been drained. At
-	/// this point if we're the funder we should send the initial closing_signed, and in any case
-	/// shutdown should complete within a reasonable timeframe.
 	fn closing_negotiation_ready(&self) -> bool {
 		self.pending_inbound_htlcs.is_empty() &&
 		self.pending_outbound_htlcs.is_empty() &&
@@ -2059,7 +2055,6 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 	/// #SPLICING
 	/// Update channel capacity to a new value
 	/// It is assumed that the increase is coming to A's side
-	/// TODO move to ChannelContext
 	fn update_channel_value<L: Deref>(&mut self, new_value_sats: u64, belongs_to_local: bool, logger: &L) -> Result<(), ChannelError> where L::Target: Logger {
 		let old_value = self.channel_value_satoshis;
 		let old_to_self = self.value_to_self_msat;
@@ -5032,7 +5027,6 @@ impl<SP: Deref> Channel<SP> where
 	/// #SPLICING
 	/// Handles a splice_signed message from the remote end.
 	/// If this call is successful, broadcast the funding transaction (and not before!)
-	/// TODO move to ChannelContext
 	pub fn splice_signed<L: Deref>(
 		&mut self, msg: &msgs::SpliceSigned, best_block: BestBlock, signer_provider: &SP, logger: &L
 	) -> Result<ChannelMonitor<<SP::Target as SignerProvider>::Signer>, ChannelError>
@@ -5376,7 +5370,6 @@ impl<SP: Deref> Channel<SP> where
 
 	/// #SPLICING Inspiration from get_open_channel()
 	/// Get the splice message that can be sent during splice initiation
-	/// TODO move to ChannelContext
 	pub fn get_splice(&self, chain_hash: BlockHash,
 		// TODO; should this be a param, or stored in the channel?
 		post_splice_funding_satoshis: u64, funding_feerate_perkw: u32, locktime: u32
@@ -5412,7 +5405,7 @@ impl<SP: Deref> Channel<SP> where
 	}
 
 	/// #SPLICING
-	/// Get the splice_ack message that can be sent in response splice initiation
+	/// Get the splice_ack message that can be sent in response to splice initiation
 	/// TODO move to ChannelContext
 	pub fn get_splice_ack(&self, chain_hash: BlockHash,
 		// TODO; should this be a param, or stored in the channel?
@@ -5933,10 +5926,6 @@ impl<SP: Deref> Channel<SP> where
 		self.context.funding_transaction = Some(splice_transaction_with_one_sig.clone());
 		log_info!(logger, "Stored splice funding tx, txid {}  len {}", splice_transaction_with_one_sig.txid(), splice_transaction_with_one_sig.encode().len());
 
-		// let channel = Channel {
-		// 	context: self.context,
-		// };
-
 		Ok(msgs::SpliceCreated {
 			channel_id: self.context.channel_id,
 			splice_txid: splice_txo.txid,
@@ -6068,10 +6057,6 @@ impl<SP: Deref> Channel<SP> where
 
 		log_info!(logger, "Generated funding_signed for peer for channel {}", self.context.channel_id());
 
-		// let channel_id = self.context.channel_id();
-		// let mut channel = Channel {
-			// context: self,
-		// };
 		let need_channel_ready = self.check_get_channel_ready(0).is_some();
 		self.monitor_updating_paused(false, false, need_channel_ready, Vec::new(), Vec::new(), Vec::new());
 
@@ -6297,7 +6282,7 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 	}
 
 	/// If an Err is returned, it is a ChannelError::Close (for get_funding_created)
-	/// #SPLICING: Impl. moved to OutboundV1Channel
+	/// #SPLICING: Impl. moved to ChannelContext
 	fn get_funding_created_signature<L: Deref>(&mut self, logger: &L) -> Result<Signature, ChannelError> where L::Target: Logger {
 		self.context.get_funding_created_signature(logger)
 	}

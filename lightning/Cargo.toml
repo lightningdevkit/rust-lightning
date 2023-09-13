@@ -52,7 +52,6 @@ core2 = { version = "0.3.0", optional = true, default-features = false }
 [dev-dependencies]
 hex = "0.4"
 regex = "1.5.6"
-# lightning-invoice = { version = "0.24.0", path = "../lightning-invoice" }
 
 [dev-dependencies.bitcoin]
 version = "0.29.0"
