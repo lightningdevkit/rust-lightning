@@ -656,6 +656,13 @@ impl UnfundedChannelContext {
 	}
 }
 
+/// Info about a pending splice
+#[derive(Default, Copy, Clone)]
+pub(super) struct PendingSpliceInfo {
+	/// The post-splice channel value
+	pub post_channel_value: u64,
+}
+
 /// Contains everything about the channel including state, and various flags.
 pub(super) struct ChannelContext<SP: Deref> where SP::Target: SignerProvider {
 	config: LegacyChannelConfig,
@@ -692,8 +699,9 @@ pub(super) struct ChannelContext<SP: Deref> where SP::Target: SignerProvider {
 	channel_value_satoshis: u64,
 
 	/// #SPLICING
-	/// During an in-progress splicing, the post-splice channel value
-	pub(crate) pending_splicing_channel_value: u64,
+	/// Info about an in-progress, pending splice (if any)
+	/// TODO: later support >1 outstanding splice (a map?)
+	pub(crate) pending_splice: Option<PendingSpliceInfo>,
 
 	latest_monitor_update_id: u64,
 
@@ -2076,11 +2084,15 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 	/// Update channel capacity (value) during a splicing process
 	pub fn commit_pending_splicing_channel_value<L: Deref>(&mut self, belongs_to_local: bool, logger: &L) -> Result<(), ChannelError>
 	where L::Target: Logger {
-		let old_value = self.channel_value_satoshis;
-		let _ = self.update_channel_value(self.pending_splicing_channel_value, belongs_to_local, logger)?;
-		self.pending_splicing_channel_value = 0;
-		log_trace!(logger, "Changed channel value, channel_id {}  old {}  new {}", self.channel_id, old_value, self.channel_value_satoshis);
-		Ok(())
+		if let Some(pending_splice) = self.pending_splice {
+			let old_value = self.channel_value_satoshis;
+			let _ = self.update_channel_value(pending_splice.post_channel_value, belongs_to_local, logger)?;
+			self.pending_splice = None;
+			log_trace!(logger, "Changed channel value, channel_id {}  old {}  new {}", self.channel_id, old_value, self.channel_value_satoshis);
+			Ok(())
+		} else {
+			Err(ChannelError::Warn("Internal error: No pending splice found".to_owned()))
+		}
 	}
 
 	/// If an Err is returned, it is a ChannelError::Close (for get_funding_created)
@@ -6172,7 +6184,7 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 				announcement_sigs_state: AnnouncementSigsState::NotSent,
 				secp_ctx,
 				channel_value_satoshis,
-				pending_splicing_channel_value: 0,
+				pending_splice: None,
 
 				latest_monitor_update_id: 0,
 
@@ -6921,7 +6933,7 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 
 				blocked_monitor_updates: Vec::new(),
 
-				pending_splicing_channel_value: 0,
+				pending_splice: None,
 			},
 			unfunded_context: UnfundedChannelContext { unfunded_channel_age_ticks: 0 }
 		};
@@ -7971,7 +7983,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 				blocked_monitor_updates: blocked_monitor_updates.unwrap(),
 
 				// pending_monitor_updates: Vec::new(),
-				pending_splicing_channel_value: 0,
+				pending_splice: None,
 			}
 		})
 	}

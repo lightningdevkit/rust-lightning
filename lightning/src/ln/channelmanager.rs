@@ -40,7 +40,7 @@ use crate::events::{Event, EventHandler, EventsProvider, MessageSendEvent, Messa
 // Since this struct is returned in `list_channels` methods, expose it here in case users want to
 // construct one themselves.
 use crate::ln::{inbound_payment, ChannelId, PaymentHash, PaymentPreimage, PaymentSecret};
-use crate::ln::channel::{Channel, ChannelPhase, ChannelContext, ChannelError, ChannelUpdateStatus, ShutdownResult, UnfundedChannelContext, UpdateFulfillCommitFetch, OutboundV1Channel, InboundV1Channel};
+use crate::ln::channel::{Channel, ChannelPhase, ChannelContext, ChannelError, ChannelUpdateStatus, ShutdownResult, UnfundedChannelContext, UpdateFulfillCommitFetch, OutboundV1Channel, InboundV1Channel, PendingSpliceInfo};
 use crate::ln::features::{ChannelFeatures, ChannelTypeFeatures, InitFeatures, NodeFeatures};
 #[cfg(any(feature = "_test_utils", test))]
 use crate::ln::features::Bolt11InvoiceFeatures;
@@ -2352,7 +2352,8 @@ where
 						return Err(APIError::APIMisuseError { err: format!("Post-splicing channel value must be at least 1000 satoshis. It was {}", post_splice_funding_satoshis) });
 					}
 					// Store post-splicing channel value (pending)
-					chan.context.pending_splicing_channel_value = post_splice_funding_satoshis;
+					// TODO check if pending_splice is already set
+					chan.context.pending_splice = Some(PendingSpliceInfo{ post_channel_value: post_splice_funding_satoshis });
 		
 					let res = chan.get_splice(self.genesis_hash.clone(), post_splice_funding_satoshis, funding_feerate_perkw, locktime);
 
@@ -3894,7 +3895,7 @@ where
 				}
 				if input_index.is_none() {
 					return Err(APIError::APIMisuseError {
-						err: format!("No input matched the address and value in the SpliceAcked event {}", chan.context.pending_splicing_channel_value)
+						err: format!("No input matched the address and value in the SpliceAcked event {}", chan.context.pending_splice.unwrap_or(PendingSpliceInfo::default()).post_channel_value)
 					});
 				}
 				Ok(input_index.unwrap())
@@ -3903,23 +3904,25 @@ where
 				let mut output_index = None;
 				let expected_spk = chan.context.get_funding_redeemscript().to_v0_p2wsh();
 				for (idx, outp) in tx.output.iter().enumerate() {
-					if outp.script_pubkey == expected_spk && outp.value == chan.context.pending_splicing_channel_value {
-						if output_index.is_some() {
-							return Err(APIError::APIMisuseError {
-								err: "Multiple outputs matched the expected script and value".to_owned()
-							});
+					if let Some(pending_info) = chan.context.pending_splice {
+						if outp.script_pubkey == expected_spk && outp.value == pending_info.post_channel_value {
+							if output_index.is_some() {
+								return Err(APIError::APIMisuseError {
+									err: "Multiple outputs matched the expected script and value".to_owned()
+								});
+							}
+							if idx > u16::max_value() as usize {
+								return Err(APIError::APIMisuseError {
+									err: "Transaction had more than 2^16 outputs, which is not supported".to_owned()
+								});
+							}
+							output_index = Some(idx as u16);
 						}
-						if idx > u16::max_value() as usize {
-							return Err(APIError::APIMisuseError {
-								err: "Transaction had more than 2^16 outputs, which is not supported".to_owned()
-							});
-						}
-						output_index = Some(idx as u16);
 					}
 				}
 				if output_index.is_none() {
 					return Err(APIError::APIMisuseError {
-						err: format!("No output matched the script_pubkey and value in the SpliceAcked event {}", chan.context.pending_splicing_channel_value)
+						err: format!("No output matched the script_pubkey and value in the SpliceAcked event {}", chan.context.pending_splice.unwrap_or(PendingSpliceInfo::default()).post_channel_value)
 					});
 				}
 				Ok(OutPoint { txid: tx.txid(), index: output_index.unwrap() })
@@ -6722,7 +6725,8 @@ where
 			hash_map::Entry::Occupied(mut chan_entry) => {
 				if let ChannelPhase::Funded(chan) = chan_entry.get_mut() {
 					// Store post-splicing channel value (pending)
-					chan.context.pending_splicing_channel_value = msg.funding_satoshis;
+					// TODO check if there is a pending already
+					chan.context.pending_splice = Some(PendingSpliceInfo{ post_channel_value: msg.funding_satoshis });
 
 					let msg = chan.get_splice_ack(self.genesis_hash.clone(), msg.funding_satoshis);
 					peer_state.pending_msg_events.push(events::MessageSendEvent::SendSpliceAck {
