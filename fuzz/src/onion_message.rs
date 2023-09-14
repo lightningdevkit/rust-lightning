@@ -14,7 +14,7 @@ use lightning::offers::invoice_request::UnsignedInvoiceRequest;
 use lightning::util::test_channel_signer::TestChannelSigner;
 use lightning::util::logger::Logger;
 use lightning::util::ser::{Readable, Writeable, Writer};
-use lightning::onion_message::{CustomOnionMessageHandler, Destination, MessageRouter, OffersMessage, OffersMessageHandler, OnionMessageContents, OnionMessagePath, OnionMessenger};
+use lightning::onion_message::{CustomOnionMessageHandler, Destination, MessageRouter, OffersMessage, OffersMessageHandler, OnionMessageContents, OnionMessagePath, OnionMessenger, PendingOnionMessage};
 
 use crate::utils::test_logger;
 
@@ -107,6 +107,9 @@ impl CustomOnionMessageHandler for TestCustomMessageHandler {
 		let mut buf = Vec::new();
 		buffer.read_to_end(&mut buf)?;
 		return Ok(Some(TestCustomMessage {}))
+	}
+	fn release_pending_custom_messages(&self) -> Vec<PendingOnionMessage<Self::CustomMessage>> {
+		vec![]
 	}
 }
 

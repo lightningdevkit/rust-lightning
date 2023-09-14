@@ -153,6 +153,21 @@ where
 	custom_handler: CMH,
 }
 
+/// An [`OnionMessage`] for [`OnionMessenger`] to send.
+///
+/// These are obtained when released from [`OnionMessenger`]'s handlers after which they are
+/// enqueued for sending.
+pub struct PendingOnionMessage<T: OnionMessageContents> {
+	/// The message contents to send in an [`OnionMessage`].
+	pub contents: T,
+
+	/// The destination of the message.
+	pub destination: Destination,
+
+	/// A reply path to include in the [`OnionMessage`] for a response.
+	pub reply_path: Option<BlindedPath>,
+}
+
 /// A trait defining behavior for routing an [`OnionMessage`].
 pub trait MessageRouter {
 	/// Returns a route for sending an [`OnionMessage`] to the given [`Destination`].
@@ -246,11 +261,19 @@ pub trait CustomOnionMessageHandler {
 	type CustomMessage: OnionMessageContents;
 
 	/// Called with the custom message that was received, returning a response to send, if any.
+	///
+	/// The returned [`Self::CustomMessage`], if any, is enqueued to be sent by [`OnionMessenger`].
 	fn handle_custom_message(&self, msg: Self::CustomMessage) -> Option<Self::CustomMessage>;
 
 	/// Read a custom message of type `message_type` from `buffer`, returning `Ok(None)` if the
 	/// message type is unknown.
 	fn read_custom_message<R: io::Read>(&self, message_type: u64, buffer: &mut R) -> Result<Option<Self::CustomMessage>, msgs::DecodeError>;
+
+	/// Releases any [`Self::CustomMessage`]s that need to be sent.
+	///
+	/// Typically, this is used for messages initiating a message flow rather than in response to
+	/// another message. The latter should use the return value of [`Self::handle_custom_message`].
+	fn release_pending_custom_messages(&self) -> Vec<PendingOnionMessage<Self::CustomMessage>>;
 }
 
 /// A processed incoming onion message, containing either a Forward (another onion message)
@@ -475,7 +498,7 @@ where
 			match reply_path {
 				Some(reply_path) => {
 					self.find_path_and_enqueue_onion_message(
-						response, Destination::BlindedPath(reply_path), log_suffix
+						response, Destination::BlindedPath(reply_path), None, log_suffix
 					);
 				},
 				None => {
@@ -486,7 +509,8 @@ where
 	}
 
 	fn find_path_and_enqueue_onion_message<T: OnionMessageContents>(
-		&self, contents: T, destination: Destination, log_suffix: fmt::Arguments
+		&self, contents: T, destination: Destination, reply_path: Option<BlindedPath>,
+		log_suffix: fmt::Arguments
 	) {
 		let sender = match self.node_signer.get_node_id(Recipient::Node) {
 			Ok(node_id) => node_id,
@@ -507,7 +531,7 @@ where
 
 		log_trace!(self.logger, "Sending onion message {}", log_suffix);
 
-		if let Err(e) = self.send_onion_message(path, contents, None) {
+		if let Err(e) = self.send_onion_message(path, contents, reply_path) {
 			log_trace!(self.logger, "Failed sending onion message {}: {:?}", log_suffix, e);
 			return;
 		}
@@ -644,7 +668,26 @@ where
 		features
 	}
 
+	// Before returning any messages to send for the peer, this method will see if any messages were
+	// enqueued in the handler by users, find a path to the corresponding blinded path's introduction
+	// node, and then enqueue the message for sending to the first peer in the full path.
 	fn next_onion_message_for_peer(&self, peer_node_id: PublicKey) -> Option<OnionMessage> {
+		// Enqueue any initiating `OffersMessage`s to send.
+		for message in self.offers_handler.release_pending_messages() {
+			let PendingOnionMessage { contents, destination, reply_path } = message;
+			self.find_path_and_enqueue_onion_message(
+				contents, destination, reply_path, format_args!("when sending OffersMessage")
+			);
+		}
+
+		// Enqueue any initiating `CustomMessage`s to send.
+		for message in self.custom_handler.release_pending_custom_messages() {
+			let PendingOnionMessage { contents, destination, reply_path } = message;
+			self.find_path_and_enqueue_onion_message(
+				contents, destination, reply_path, format_args!("when sending CustomMessage")
+			);
+		}
+
 		let mut pending_msgs = self.pending_messages.lock().unwrap();
 		if let Some(msgs) = pending_msgs.get_mut(&peer_node_id) {
 			return msgs.pop_front()

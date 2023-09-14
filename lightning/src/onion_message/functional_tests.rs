@@ -15,7 +15,7 @@ use crate::ln::msgs::{self, DecodeError, OnionMessageHandler};
 use crate::sign::{NodeSigner, Recipient};
 use crate::util::ser::{FixedLengthReader, LengthReadable, Writeable, Writer};
 use crate::util::test_utils;
-use super::{CustomOnionMessageHandler, Destination, MessageRouter, OffersMessage, OffersMessageHandler, OnionMessageContents, OnionMessagePath, OnionMessenger, SendError};
+use super::{CustomOnionMessageHandler, Destination, MessageRouter, OffersMessage, OffersMessageHandler, OnionMessageContents, OnionMessagePath, OnionMessenger, PendingOnionMessage, SendError};
 
 use bitcoin::network::constants::Network;
 use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
@@ -147,6 +147,9 @@ impl CustomOnionMessageHandler for TestCustomMessageHandler {
 			},
 			_ => Ok(None),
 		}
+	}
+	fn release_pending_custom_messages(&self) -> Vec<PendingOnionMessage<Self::CustomMessage>> {
+		vec![]
 	}
 }
 
