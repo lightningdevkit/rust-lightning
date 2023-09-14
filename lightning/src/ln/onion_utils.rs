@@ -474,7 +474,9 @@ pub(super) fn process_onion_failure<T: secp256k1::Signing, L: Deref>(
 				// Got an error from within a blinded route.
 				error_code_ret = Some(BADONION | PERM | 24); // invalid_onion_blinding
 				error_packet_ret = Some(vec![0; 32]);
-				is_from_final_node = false;
+				res = Some(FailureLearnings {
+					network_update: None, short_channel_id: None, payment_failed_permanently: false
+				});
 				return
 			},
 		};
