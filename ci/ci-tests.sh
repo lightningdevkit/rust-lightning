@@ -123,6 +123,10 @@ if [[ $RUSTC_MINOR_VERSION -gt 67 ]]; then
 	# lightning-transaction-sync's MSRV is 1.67
 	cargo check --verbose --color always --features lightning-transaction-sync
 else
+	# The memchr crate switched to an MSRV of 1.60 starting with v2.6.0
+	# This is currently only a release dependency via core2, which we intend to work with
+	# rust-bitcoin to remove soon.
+	[ "$RUSTC_MINOR_VERSION" -lt 60 ] && cargo update -p memchr --precise "2.5.0" --verbose
 	cargo check --verbose --color always
 fi
 popd
