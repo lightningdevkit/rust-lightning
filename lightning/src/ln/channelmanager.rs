@@ -2045,6 +2045,11 @@ macro_rules! handle_new_monitor_update {
 	($self: ident, $update_res: expr, $chan: expr, _internal, $completed: expr) => { {
 		debug_assert!($self.background_events_processed_since_startup.load(Ordering::Acquire));
 		match $update_res {
+			ChannelMonitorUpdateStatus::UnrecoverableError => {
+				let err_str = "ChannelMonitor[Update] persistence failed unrecoverably. This indicates we cannot continue normal operation and must shut down.";
+				log_error!($self.logger, "{}", err_str);
+				panic!("{}", err_str);
+			},
 			ChannelMonitorUpdateStatus::InProgress => {
 				log_debug!($self.logger, "ChannelMonitor update for {} in flight, holding messages until the update completes.",
 					&$chan.context.channel_id());

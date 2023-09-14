@@ -177,9 +177,14 @@ pub trait Confirm {
 
 /// An enum representing the status of a channel monitor update persistence.
 ///
-/// Note that there is no error variant - any failure to persist a [`ChannelMonitor`] should be
-/// retried indefinitely, the node shut down (as if we cannot update stored data we can't do much
-/// of anything useful).
+/// These are generally used as the return value for an implementation of [`Persist`] which is used
+/// as the storage layer for a [`ChainMonitor`]. See the docs on [`Persist`] for a high-level
+/// explanation of how to handle different cases.
+///
+/// While `UnrecoverableError` is provided as a failure variant, it is not truly "handled" on the
+/// calling side, and generally results in an immediate panic. For those who prefer to avoid
+/// panics, `InProgress` can be used and you can retry the update operation in the background or
+/// shut down cleanly.
 ///
 /// Note that channels should generally *not* be force-closed after a persistence failure.
 /// Force-closing with the latest [`ChannelMonitorUpdate`] applied may result in a transaction
@@ -187,6 +192,8 @@ pub trait Confirm {
 /// latest [`ChannelMonitor`] is not durably persisted anywhere and exists only in memory, naively
 /// calling [`ChannelManager::force_close_broadcasting_latest_txn`] *may result in loss of funds*!
 ///
+/// [`Persist`]: chainmonitor::Persist
+/// [`ChainMonitor`]: chainmonitor::ChainMonitor
 /// [`ChannelManager::force_close_broadcasting_latest_txn`]: crate::ln::channelmanager::ChannelManager::force_close_broadcasting_latest_txn
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ChannelMonitorUpdateStatus {
@@ -212,8 +219,8 @@ pub enum ChannelMonitorUpdateStatus {
 	/// until a [`MonitorEvent::Completed`] is provided, even if you return no error on a later
 	/// monitor update for the same channel.
 	///
-	/// For deployments where a copy of ChannelMonitors and other local state are backed up in a
-	/// remote location (with local copies persisted immediately), it is anticipated that all
+	/// For deployments where a copy of [`ChannelMonitor`]s and other local state are backed up in
+	/// a remote location (with local copies persisted immediately), it is anticipated that all
 	/// updates will return [`InProgress`] until the remote copies could be updated.
 	///
 	/// Note that while fully asynchronous persistence of [`ChannelMonitor`] data is generally
@@ -222,6 +229,18 @@ pub enum ChannelMonitorUpdateStatus {
 	///
 	/// [`InProgress`]: ChannelMonitorUpdateStatus::InProgress
 	InProgress,
+	/// Indicates that an update has failed and will not complete at any point in the future.
+	///
+	/// Currently returning this variant will cause LDK to immediately panic to encourage immediate
+	/// shutdown. In the future this may be updated to disconnect peers and refuse to continue
+	/// normal operation without a panic.
+	///
+	/// Applications which wish to perform an orderly shutdown after failure should consider
+	/// returning [`InProgress`] instead and simply shut down without ever marking the update
+	/// complete.
+	///
+	/// [`InProgress`]: ChannelMonitorUpdateStatus::InProgress
+	UnrecoverableError,
 }
 
 /// The `Watch` trait defines behavior for watching on-chain activity pertaining to channels as
@@ -261,8 +280,10 @@ pub trait Watch<ChannelSigner: WriteableEcdsaChannelSigner> {
 	/// on-chain or the [`ChannelMonitor`] having decided to do so and broadcasted a transaction),
 	/// and the [`ChannelManager`] state will be updated once it sees the funding spend on-chain.
 	///
-	/// If persistence fails, this should return [`ChannelMonitorUpdateStatus::InProgress`] and
-	/// the node should shut down immediately.
+	/// In general, persistence failures should be retried after returning
+	/// [`ChannelMonitorUpdateStatus::InProgress`] and eventually complete. If a failure truly
+	/// cannot be retried, the node should shut down immediately after returning
+	/// [`ChannelMonitorUpdateStatus::UnrecoverableError`], see its documentation for more info.
 	///
 	/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
 	fn update_channel(&self, funding_txo: OutPoint, update: &ChannelMonitorUpdate) -> ChannelMonitorUpdateStatus;

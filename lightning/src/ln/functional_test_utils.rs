@@ -422,6 +422,10 @@ pub struct Node<'chan_man, 'node_cfg: 'chan_man, 'chan_mon_cfg: 'node_cfg> {
 		&'chan_mon_cfg test_utils::TestLogger,
 	>,
 }
+#[cfg(feature = "std")]
+impl<'a, 'b, 'c> std::panic::UnwindSafe for Node<'a, 'b, 'c> {}
+#[cfg(feature = "std")]
+impl<'a, 'b, 'c> std::panic::RefUnwindSafe for Node<'a, 'b, 'c> {}
 impl<'a, 'b, 'c> Node<'a, 'b, 'c> {
 	pub fn best_block_hash(&self) -> BlockHash {
 		self.blocks.lock().unwrap().last().unwrap().0.block_hash()

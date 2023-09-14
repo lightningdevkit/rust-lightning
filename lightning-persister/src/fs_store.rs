@@ -470,7 +470,7 @@ mod tests {
 			index: 0
 		};
 		match store.persist_new_channel(test_txo, &added_monitors[0].1, update_id.2) {
-			ChannelMonitorUpdateStatus::InProgress => {},
+			ChannelMonitorUpdateStatus::UnrecoverableError => {},
 			_ => panic!("unexpected result from persisting new channel")
 		}
 
@@ -507,7 +507,7 @@ mod tests {
 			index: 0
 		};
 		match store.persist_new_channel(test_txo, &added_monitors[0].1, update_id.2) {
-			ChannelMonitorUpdateStatus::InProgress => {},
+			ChannelMonitorUpdateStatus::UnrecoverableError => {},
 			_ => panic!("unexpected result from persisting new channel")
 		}
 
