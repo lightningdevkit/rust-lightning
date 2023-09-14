@@ -139,7 +139,7 @@ impl<'a, SP: Sized, Sc: 'a + ScoreLookUp<ScoreParams = SP>, S: Deref<Target = Sc
 			source, target, short_channel_id
 		) {
 			let usage = ChannelUsage {
-				inflight_htlc_msat: usage.inflight_htlc_msat + used_liquidity,
+				inflight_htlc_msat: usage.inflight_htlc_msat.saturating_add(used_liquidity),
 				..usage
 			};
 
