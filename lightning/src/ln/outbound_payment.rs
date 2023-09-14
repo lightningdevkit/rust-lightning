@@ -1484,10 +1484,11 @@ impl OutboundPayments {
 	) -> bool where L::Target: Logger {
 		#[cfg(test)]
 		let DecodedOnionFailure {
-			network_update, short_channel_id, payment_retryable, onion_error_code, onion_error_data
+			network_update, short_channel_id, payment_failed_permanently, onion_error_code,
+			onion_error_data
 		} = onion_error.decode_onion_failure(secp_ctx, logger, &source);
 		#[cfg(not(test))]
-		let DecodedOnionFailure { network_update, short_channel_id, payment_retryable } =
+		let DecodedOnionFailure { network_update, short_channel_id, payment_failed_permanently } =
 			onion_error.decode_onion_failure(secp_ctx, logger, &source);
 
 		let payment_is_probe = payment_is_probe(payment_hash, &payment_id, probing_cookie_secret);
@@ -1528,8 +1529,8 @@ impl OutboundPayments {
 				payment.get_mut().insert_previously_failed_scid(scid);
 			}
 
-			if payment_is_probe || !is_retryable_now || !payment_retryable {
-				let reason = if !payment_retryable {
+			if payment_is_probe || !is_retryable_now || payment_failed_permanently {
+				let reason = if payment_failed_permanently {
 					PaymentFailureReason::RecipientRejected
 				} else {
 					PaymentFailureReason::RetriesExhausted
@@ -1559,7 +1560,7 @@ impl OutboundPayments {
 
 		let path_failure = {
 			if payment_is_probe {
-				if !payment_retryable {
+				if payment_failed_permanently {
 					events::Event::ProbeSuccessful {
 						payment_id: *payment_id,
 						payment_hash: payment_hash.clone(),
@@ -1583,7 +1584,7 @@ impl OutboundPayments {
 				events::Event::PaymentPathFailed {
 					payment_id: Some(*payment_id),
 					payment_hash: payment_hash.clone(),
-					payment_failed_permanently: !payment_retryable,
+					payment_failed_permanently,
 					failure: events::PathFailure::OnPath { network_update },
 					path: path.clone(),
 					short_channel_id,

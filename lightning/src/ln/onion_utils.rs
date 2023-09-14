@@ -426,7 +426,7 @@ pub(super) fn build_first_hop_failure_packet(shared_secret: &[u8], failure_type:
 pub(crate) struct DecodedOnionFailure {
 	pub(crate) network_update: Option<NetworkUpdate>,
 	pub(crate) short_channel_id: Option<u64>,
-	pub(crate) payment_retryable: bool,
+	pub(crate) payment_failed_permanently: bool,
 	#[cfg(test)]
 	pub(crate) onion_error_code: Option<u16>,
 	#[cfg(test)]
@@ -684,7 +684,7 @@ pub(super) fn process_onion_failure<T: secp256k1::Signing, L: Deref>(
 		network_update, short_channel_id, payment_failed_permanently
 	}) = res {
 		DecodedOnionFailure {
-			network_update, short_channel_id, payment_retryable: !payment_failed_permanently,
+			network_update, short_channel_id, payment_failed_permanently,
 			#[cfg(test)]
 			onion_error_code: error_code_ret,
 			#[cfg(test)]
@@ -694,7 +694,7 @@ pub(super) fn process_onion_failure<T: secp256k1::Signing, L: Deref>(
 		// only not set either packet unparseable or hmac does not match with any
 		// payment not retryable only when garbage is from the final node
 		DecodedOnionFailure {
-			network_update: None, short_channel_id: None, payment_retryable: !is_from_final_node,
+			network_update: None, short_channel_id: None, payment_failed_permanently: is_from_final_node,
 			#[cfg(test)]
 			onion_error_code: None,
 			#[cfg(test)]
@@ -838,7 +838,7 @@ impl HTLCFailReason {
 				if let &HTLCSource::OutboundRoute { ref path, .. } = htlc_source {
 					DecodedOnionFailure {
 						network_update: None,
-						payment_retryable: true,
+						payment_failed_permanently: false,
 						short_channel_id: Some(path.hops[0].short_channel_id),
 						#[cfg(test)]
 						onion_error_code: Some(*failure_code),
