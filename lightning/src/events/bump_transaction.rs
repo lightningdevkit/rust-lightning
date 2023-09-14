@@ -57,6 +57,12 @@ pub struct ChannelDerivationParameters {
 	pub transaction_parameters: ChannelTransactionParameters,
 }
 
+impl_writeable_tlv_based!(ChannelDerivationParameters, {
+    (0, value_satoshis, required),
+    (2, keys_id, required),
+    (4, transaction_parameters, required),
+});
+
 /// A descriptor used to sign for a commitment transaction's anchor output.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AnchorDescriptor {
@@ -138,6 +144,16 @@ pub struct HTLCDescriptor {
 	/// The counterparty's signature required to spend the HTLC output.
 	pub counterparty_sig: Signature
 }
+
+impl_writeable_tlv_based!(HTLCDescriptor, {
+    (0, channel_derivation_parameters, required),
+    (2, commitment_txid, required),
+    (4, per_commitment_number, required),
+    (6, per_commitment_point, required),
+    (8, htlc, required),
+    (10, preimage, option),
+    (12, counterparty_sig, required),
+});
 
 impl HTLCDescriptor {
 	/// Returns the outpoint of the HTLC output in the commitment transaction. This is the outpoint
