@@ -2231,7 +2231,7 @@ fn test_anchors_aggregated_revoked_htlc_tx() {
 	assert!(nodes[1].chain_monitor.chain_monitor.get_and_clear_pending_events().is_empty());
 	let spendable_output_events = nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events();
 	assert_eq!(spendable_output_events.len(), 2);
-	for (idx, event) in spendable_output_events.iter().enumerate() {
+	for event in spendable_output_events.iter() {
 		if let Event::SpendableOutputs { outputs, channel_id } = event {
 			assert_eq!(outputs.len(), 1);
 			assert!(vec![chan_b.2, chan_a.2].contains(&channel_id.unwrap()));

@@ -427,7 +427,7 @@ impl<Signer: sign::WriteableEcdsaChannelSigner> chainmonitor::Persist<Signer> fo
 	}
 }
 
-pub(crate) struct TestStore {
+pub struct TestStore {
 	persisted_bytes: Mutex<HashMap<String, HashMap<String, Vec<u8>>>>,
 	read_only: bool,
 }

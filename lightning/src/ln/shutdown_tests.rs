@@ -11,7 +11,7 @@
 
 use crate::sign::{EntropySource, SignerProvider};
 use crate::chain::transaction::OutPoint;
-use crate::events::{Event, MessageSendEvent, MessageSendEventsProvider, ClosureReason};
+use crate::events::{MessageSendEvent, MessageSendEventsProvider, ClosureReason};
 use crate::ln::channelmanager::{self, PaymentSendFailure, PaymentId, RecipientOnionFields, ChannelShutdownState, ChannelDetails};
 use crate::routing::router::{PaymentParameters, get_route, RouteParameters};
 use crate::ln::msgs;
