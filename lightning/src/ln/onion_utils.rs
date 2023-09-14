@@ -507,7 +507,7 @@ pub(super) fn process_onion_failure<T: secp256k1::Signing, L: Deref>(
 					is_permanent: true,
 				});
 				let short_channel_id = Some(route_hop.short_channel_id);
-				res = Some((network_update, short_channel_id, !is_from_final_node));
+				res = Some((network_update, short_channel_id, is_from_final_node));
 				return
 			}
 		};
@@ -659,7 +659,7 @@ pub(super) fn process_onion_failure<T: secp256k1::Signing, L: Deref>(
 			short_channel_id = Some(route_hop.short_channel_id);
 		}
 
-		res = Some((network_update, short_channel_id, !(error_code & PERM == PERM && is_from_final_node)));
+		res = Some((network_update, short_channel_id, error_code & PERM == PERM && is_from_final_node));
 
 		let (description, title) = errors::get_onion_error_description(error_code);
 		if debug_field_size > 0 && err_packet.failuremsg.len() >= 4 + debug_field_size {
@@ -668,9 +668,9 @@ pub(super) fn process_onion_failure<T: secp256k1::Signing, L: Deref>(
 			log_info!(logger, "Onion Error[from {}: {}({:#x})] {}", route_hop.pubkey, title, error_code, description);
 		}
 	}).expect("Route that we sent via spontaneously grew invalid keys in the middle of it?");
-	if let Some((network_update, short_channel_id, payment_retryable)) = res {
+	if let Some((network_update, short_channel_id, payment_failed_permanently)) = res {
 		DecodedOnionFailure {
-			network_update, short_channel_id, payment_retryable,
+			network_update, short_channel_id, payment_retryable: !payment_failed_permanently,
 			#[cfg(test)]
 			onion_error_code: error_code_ret,
 			#[cfg(test)]
