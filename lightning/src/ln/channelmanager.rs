@@ -56,10 +56,10 @@ use crate::ln::msgs::{ChannelMessageHandler, DecodeError, LightningError};
 use crate::ln::outbound_payment;
 use crate::ln::outbound_payment::{OutboundPayments, PaymentAttempts, PendingOutboundPayment, SendAlongPathArgs, StaleExpiration};
 use crate::ln::wire::Encode;
-use crate::offers::offer::{DerivedMetadata, OfferBuilder};
+use crate::offers::offer::{DerivedMetadata, Offer, OfferBuilder};
 use crate::offers::parse::Bolt12SemanticError;
 use crate::offers::refund::RefundBuilder;
-use crate::onion_message::{OffersMessage, PendingOnionMessage};
+use crate::onion_message::{Destination, OffersMessage, PendingOnionMessage};
 use crate::sign::{EntropySource, KeysManager, NodeSigner, Recipient, SignerProvider, WriteableEcdsaChannelSigner};
 use crate::util::config::{UserConfig, ChannelConfig, ChannelConfigUpdate};
 use crate::util::wakers::{Future, Notifier};
@@ -7357,6 +7357,92 @@ where
 			.map_err(|_| Bolt12SemanticError::DuplicatePaymentId)?;
 
 		Ok(builder)
+	}
+
+	/// Pays for an [`Offer`] using the given parameters by creating an [`InvoiceRequest`] and
+	/// enqueuing it to be sent via an onion message. [`ChannelManager`] will pay the actual
+	/// [`Bolt12Invoice`] once it is received.
+	///
+	/// Uses [`InvoiceRequestBuilder`] such that the [`InvoiceRequest`] it builds is recognized by
+	/// the [`ChannelManager`] when handling a [`Bolt12Invoice`] message in response to the request.
+	/// The optional parameters are used in the builder, if `Some`:
+	/// - `quantity` for [`InvoiceRequest::quantity`] which must be set if
+	///   [`Offer::expects_quantity`] is `true`.
+	/// - `amount_msats` if overpaying what is required for the given `quantity` is desired, and
+	/// - `payer_note` for [`InvoiceRequest::payer_note`].
+	///
+	/// The provided `payment_id` is used to ensure that only one invoice is paid for the request
+	/// when received. See [Avoiding Duplicate Payments] for other requirements once the payment has
+	/// been sent. To revoke the request, use [`ChannelManager::abandon_payment`] prior to receiving
+	/// the invoice.
+	///
+	/// Errors if a duplicate `payment_id` is provided given the caveats in the aforementioned link.
+	///
+	/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
+	/// [`InvoiceRequest::quantity`]: crate::offers::invoice_request::InvoiceRequest::quantity
+	/// [`InvoiceRequest::payer_note`]: crate::offers::invoice_request::InvoiceRequest::payer_note
+	/// [`InvoiceRequestBuilder`]: crate::offers::invoice_request::InvoiceRequestBuilder
+	/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
+	/// [Avoiding Duplicate Payments]: #avoiding-duplicate-payments
+	pub fn pay_for_offer(
+		&self, offer: &Offer, quantity: Option<u64>, amount_msats: Option<u64>,
+		payer_note: Option<String>, payment_id: PaymentId, retry_strategy: Retry,
+		max_total_routing_fee_msat: Option<u64>
+	) -> Result<(), Bolt12SemanticError> {
+		let expanded_key = &self.inbound_payment_key;
+		let entropy = &*self.entropy_source;
+		let secp_ctx = &self.secp_ctx;
+
+		let builder = offer
+			.request_invoice_deriving_payer_id(expanded_key, entropy, secp_ctx, payment_id)?
+			.chain_hash(self.chain_hash)?;
+		let builder = match quantity {
+			None => builder,
+			Some(quantity) => builder.quantity(quantity)?,
+		};
+		let builder = match amount_msats {
+			None => builder,
+			Some(amount_msats) => builder.amount_msats(amount_msats)?,
+		};
+		let builder = match payer_note {
+			None => builder,
+			Some(payer_note) => builder.payer_note(payer_note),
+		};
+
+		let invoice_request = builder.build_and_sign()?;
+		let reply_path = self.create_one_hop_blinded_path();
+
+		let expiration = StaleExpiration::TimerTicks(1);
+		self.pending_outbound_payments
+			.add_new_awaiting_invoice(
+				payment_id, expiration, retry_strategy, max_total_routing_fee_msat
+			)
+			.map_err(|_| Bolt12SemanticError::DuplicatePaymentId)?;
+
+		let mut pending_offers_messages = self.pending_offers_messages.lock().unwrap();
+		if offer.paths().is_empty() {
+			let message = PendingOnionMessage {
+				contents: OffersMessage::InvoiceRequest(invoice_request),
+				destination: Destination::Node(offer.signing_pubkey()),
+				reply_path: Some(reply_path),
+			};
+			pending_offers_messages.push(message);
+		} else {
+			// Send as many invoice requests as there are paths in the offer (with an upper bound).
+			// Using only one path could result in a failure if the path no longer exists. But only
+			// one invoice for a given payment id will be paid, even if more than one is received.
+			const REQUEST_LIMIT: usize = 10;
+			for path in offer.paths().into_iter().take(REQUEST_LIMIT) {
+				let message = PendingOnionMessage {
+					contents: OffersMessage::InvoiceRequest(invoice_request.clone()),
+					destination: Destination::BlindedPath(path.clone()),
+					reply_path: Some(reply_path.clone()),
+				};
+				pending_offers_messages.push(message);
+			}
+		}
+
+		Ok(())
 	}
 
 	/// Gets a payment secret and payment hash for use in an invoice given to a third party wishing
