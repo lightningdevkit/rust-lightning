@@ -1166,13 +1166,48 @@ where
 	serial_id
 }
 
-pub(crate) enum HandleTxCompleteValue {
+pub(super) enum HandleTxCompleteValue {
 	SendTxMessage(InteractiveTxMessageSend),
 	SendTxComplete(InteractiveTxMessageSend, ConstructedTransaction),
 	NegotiationComplete(ConstructedTransaction),
 }
 
+impl HandleTxCompleteValue {
+	pub fn into_msg_send_event_or_tx(
+		self, counterparty_node_id: PublicKey,
+	) -> (Option<MessageSendEvent>, Option<ConstructedTransaction>) {
+		match self {
+			HandleTxCompleteValue::SendTxMessage(msg) => {
+				(Some(msg.into_msg_send_event(counterparty_node_id)), None)
+			},
+			HandleTxCompleteValue::SendTxComplete(msg, tx) => {
+				(Some(msg.into_msg_send_event(counterparty_node_id)), Some(tx))
+			},
+			HandleTxCompleteValue::NegotiationComplete(tx) => (None, Some(tx)),
+		}
+	}
+}
+
 pub(super) struct HandleTxCompleteResult(pub Result<HandleTxCompleteValue, msgs::TxAbort>);
+
+impl HandleTxCompleteResult {
+	pub fn into_msg_send_event_or_tx(
+		self, counterparty_node_id: PublicKey,
+	) -> (Option<MessageSendEvent>, Option<ConstructedTransaction>) {
+		match self.0 {
+			Ok(interactive_tx_msg_send) => {
+				interactive_tx_msg_send.into_msg_send_event_or_tx(counterparty_node_id)
+			},
+			Err(tx_abort_msg) => (
+				Some(MessageSendEvent::SendTxAbort {
+					node_id: counterparty_node_id,
+					msg: tx_abort_msg,
+				}),
+				None,
+			),
+		}
+	}
+}
 
 pub(super) struct InteractiveTxConstructorArgs<'a, ES: Deref>
 where
