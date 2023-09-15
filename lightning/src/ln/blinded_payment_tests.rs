@@ -120,12 +120,15 @@ enum ForwardCheckFail {
 	InboundOnionCheck,
 	// The forwarding node's payload is encoded as a receive, i.e. the next hop HMAC is [0; 32].
 	ForwardPayloadEncodedAsReceive,
+	// Fail a check on the outbound channel. In this case, our next-hop peer is offline.
+	OutboundChannelCheck,
 }
 
 #[test]
 fn forward_checks_failure() {
 	do_forward_checks_failure(ForwardCheckFail::InboundOnionCheck);
 	do_forward_checks_failure(ForwardCheckFail::ForwardPayloadEncodedAsReceive);
+	do_forward_checks_failure(ForwardCheckFail::OutboundChannelCheck);
 }
 
 fn do_forward_checks_failure(check: ForwardCheckFail) {
@@ -199,6 +202,10 @@ fn do_forward_checks_failure(check: ForwardCheckFail) {
 			// (i.e. next_hop_hmac == [0; 32])
 			onion_payloads.pop();
 			update_add.onion_routing_packet = onion_utils::construct_onion_packet(onion_payloads, onion_keys, [0; 32], &payment_hash).unwrap();
+		},
+		ForwardCheckFail::OutboundChannelCheck => {
+			// The intro node will see that the next-hop peer is disconnected and fail the HTLC backwards.
+			nodes[1].node.peer_disconnected(&nodes[2].node.get_our_node_id());
 		},
 	}
 	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &payment_event.msgs[0]);

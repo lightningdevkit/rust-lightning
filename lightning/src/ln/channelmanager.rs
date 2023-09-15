@@ -53,7 +53,7 @@ use crate::routing::scoring::{ProbabilisticScorer, ProbabilisticScoringFeeParame
 use crate::ln::onion_payment::{check_incoming_htlc_cltv, create_recv_pending_htlc_info, create_fwd_pending_htlc_info, decode_incoming_update_add_htlc_onion, InboundOnionErr, NextPacketDetails};
 use crate::ln::msgs;
 use crate::ln::onion_utils;
-use crate::ln::onion_utils::HTLCFailReason;
+use crate::ln::onion_utils::{HTLCFailReason, INVALID_ONION_BLINDING};
 use crate::ln::msgs::{ChannelMessageHandler, DecodeError, LightningError};
 #[cfg(test)]
 use crate::ln::outbound_payment;
@@ -2977,14 +2977,24 @@ where
 			msg, &self.node_signer, &self.logger, &self.secp_ctx
 		)?;
 
+		let is_blinded = match next_hop {
+			onion_utils::Hop::Forward {
+				next_hop_data: msgs::InboundOnionPayload::BlindedForward { .. }, ..
+			} => true,
+			_ => false, // TODO: update this when we support receiving to multi-hop blinded paths
+		};
+
 		macro_rules! return_err {
 			($msg: expr, $err_code: expr, $data: expr) => {
 				{
 					log_info!(self.logger, "Failed to accept/forward incoming HTLC: {}", $msg);
+					let (err_code, err_data) = if is_blinded {
+						(INVALID_ONION_BLINDING, &[0; 32][..])
+					} else { ($err_code, $data) };
 					return Err(HTLCFailureMsg::Relay(msgs::UpdateFailHTLC {
 						channel_id: msg.channel_id,
 						htlc_id: msg.htlc_id,
-						reason: HTLCFailReason::reason($err_code, $data.to_vec())
+						reason: HTLCFailReason::reason(err_code, err_data.to_vec())
 							.get_encrypted_failure_packet(&shared_secret, &None),
 					}));
 				}
