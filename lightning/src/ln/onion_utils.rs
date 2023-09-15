@@ -641,8 +641,9 @@ pub(super) fn process_onion_failure<T: secp256k1::Signing, L: Deref>(
 							} else {
 								// The node in question intentionally encoded a 0-length channel update. This is
 								// likely due to https://github.com/ElementsProject/lightning/issues/6200.
+								short_channel_id = Some(failing_route_hop.short_channel_id);
 								network_update = Some(NetworkUpdate::ChannelFailure {
-									short_channel_id: route_hop.short_channel_id,
+									short_channel_id: failing_route_hop.short_channel_id,
 									is_permanent: false,
 								});
 							}
