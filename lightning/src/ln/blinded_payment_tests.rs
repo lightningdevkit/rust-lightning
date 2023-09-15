@@ -7,7 +7,7 @@
 // You may not use this file except in accordance with one or both of these
 // licenses.
 
-use bitcoin::secp256k1::Secp256k1;
+use bitcoin::secp256k1::{Secp256k1, SecretKey};
 use crate::blinded_path::BlindedPath;
 use crate::blinded_path::payment::{ForwardNode, ForwardTlvs, PaymentConstraints, PaymentRelay, ReceiveTlvs};
 use crate::events::MessageSendEventsProvider;
@@ -16,6 +16,7 @@ use crate::ln::channelmanager::{PaymentId, RecipientOnionFields};
 use crate::ln::features::BlindedHopFeatures;
 use crate::ln::functional_test_utils::*;
 use crate::ln::msgs::ChannelMessageHandler;
+use crate::ln::onion_utils;
 use crate::ln::onion_utils::INVALID_ONION_BLINDING;
 use crate::ln::outbound_payment::Retry;
 use crate::prelude::*;
@@ -113,14 +114,29 @@ fn mpp_to_one_hop_blinded_path() {
 	claim_payment_along_route(&nodes[0], expected_route, false, payment_preimage);
 }
 
+enum ForwardCheckFail {
+	// Fail a check on the inbound onion payload. In this case, we underflow when calculating the
+	// outgoing cltv_expiry.
+	InboundOnionCheck,
+	// The forwarding node's payload is encoded as a receive, i.e. the next hop HMAC is [0; 32].
+	ForwardPayloadEncodedAsReceive,
+}
+
 #[test]
 fn forward_checks_failure() {
+	do_forward_checks_failure(ForwardCheckFail::InboundOnionCheck);
+	do_forward_checks_failure(ForwardCheckFail::ForwardPayloadEncodedAsReceive);
+}
+
+fn do_forward_checks_failure(check: ForwardCheckFail) {
 	// Ensure we'll fail backwards properly if a forwarding check fails on initial update_add
 	// receipt.
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
-	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+	// We need the session priv to construct a bogus onion packet later.
+	*nodes[0].keys_manager.override_random_bytes.lock().unwrap() = Some([3; 32]);
 	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0);
 	let chan_upd_1_2 = create_announced_chan_between_nodes_with_value(&nodes, 1, 2, 1_000_000, 0).0.contents;
 
@@ -158,6 +174,8 @@ fn forward_checks_failure() {
 
 	let route_params = RouteParameters::from_payment_params_and_value(
 		PaymentParameters::blinded(vec![blinded_path]), amt_msat);
+	let route = get_route(&nodes[0], &route_params).unwrap();
+	node_cfgs[0].router.expect_find_route(route_params.clone(), Ok(route.clone()));
 	nodes[0].node.send_payment(payment_hash, RecipientOnionFields::spontaneous_empty(), PaymentId(payment_hash.0), route_params, Retry::Attempts(0)).unwrap();
 	check_added_monitors(&nodes[0], 1);
 
@@ -167,7 +185,22 @@ fn forward_checks_failure() {
 	let mut payment_event = SendEvent::from_event(ev);
 
 	let mut update_add = &mut payment_event.msgs[0];
-	update_add.cltv_expiry = 10; // causes outbound CLTV expiry to underflow
+	match check {
+		ForwardCheckFail::InboundOnionCheck => {
+			update_add.cltv_expiry = 10; // causes outbound CLTV expiry to underflow
+		},
+		ForwardCheckFail::ForwardPayloadEncodedAsReceive => {
+			let session_priv = SecretKey::from_slice(&[3; 32]).unwrap();
+			let onion_keys = onion_utils::construct_onion_keys(&Secp256k1::new(), &route.paths[0], &session_priv).unwrap();
+			let cur_height = nodes[0].best_block_info().1;
+			let (mut onion_payloads, ..) = onion_utils::build_onion_payloads(
+				&route.paths[0], amt_msat, RecipientOnionFields::spontaneous_empty(), cur_height, &None).unwrap();
+			// Remove the receive payload so the blinded forward payload is encoded as a final payload
+			// (i.e. next_hop_hmac == [0; 32])
+			onion_payloads.pop();
+			update_add.onion_routing_packet = onion_utils::construct_onion_packet(onion_payloads, onion_keys, [0; 32], &payment_hash).unwrap();
+		},
+	}
 	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &payment_event.msgs[0]);
 	check_added_monitors!(nodes[1], 0);
 	do_commitment_signed_dance(&nodes[1], &nodes[0], &payment_event.commitment_msg, true, true);
