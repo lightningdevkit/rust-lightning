@@ -7,11 +7,10 @@
 // You may not use this file except in accordance with one or both of these
 // licenses.
 
-use bitcoin::blockdata::constants::ChainHash;
+use bitcoin::blockdata::constants::{ChainHash, WITNESS_SCALE_FACTOR};
 use bitcoin::blockdata::script::{Script, ScriptBuf, Builder};
 use bitcoin::blockdata::transaction::Transaction;
-use bitcoin::sighash;
-use bitcoin::sighash::EcdsaSighashType;
+use bitcoin::sighash::{self, EcdsaSighashType};
 use bitcoin::consensus::encode;
 
 use bitcoin::hashes::Hash;
@@ -22,11 +21,13 @@ use bitcoin::hash_types::{Txid, BlockHash};
 use bitcoin::secp256k1::constants::PUBLIC_KEY_SIZE;
 use bitcoin::secp256k1::{PublicKey,SecretKey};
 use bitcoin::secp256k1::{Secp256k1,ecdsa::Signature};
-use bitcoin::secp256k1;
+use bitcoin::{secp256k1, TxIn, TxOut, VarInt};
+#[cfg(dual_funding)]
+use bitcoin::locktime::absolute::LockTime;
 
 use crate::ln::{ChannelId, PaymentPreimage, PaymentHash};
 use crate::ln::features::{ChannelTypeFeatures, InitFeatures};
-use crate::ln::interactivetxs::InteractiveTxConstructor;
+use crate::ln::interactivetxs::{AbortReason, InteractiveTxConstructor, InteractiveTxMessageSend};
 use crate::ln::msgs;
 use crate::ln::msgs::DecodeError;
 use crate::ln::script::{self, ShutdownScript};
@@ -35,7 +36,7 @@ use crate::ln::chan_utils::{CounterpartyCommitmentSecrets, TxCreationKeys, HTLCO
 use crate::ln::chan_utils;
 use crate::ln::onion_utils::HTLCFailReason;
 use crate::chain::BestBlock;
-use crate::chain::chaininterface::{FeeEstimator, ConfirmationTarget, LowerBoundedFeeEstimator};
+use crate::chain::chaininterface::{FeeEstimator, ConfirmationTarget, LowerBoundedFeeEstimator, fee_for_weight};
 use crate::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateStep, LATENCY_GRACE_PERIOD_BLOCKS, CLOSED_CHANNEL_UPDATE_ID};
 use crate::chain::transaction::{OutPoint, TransactionData};
 use crate::sign::ecdsa::{EcdsaChannelSigner, WriteableEcdsaChannelSigner};
@@ -3051,6 +3052,150 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 			_ => todo!()
 		}
 	}
+
+	// Interactive transaction construction
+
+	#[cfg(dual_funding)]
+	pub fn begin_interactive_funding_tx_construction<ES: Deref>(
+		&mut self, dual_funding_context: &DualFundingChannelContext, signer_provider: &SP,
+		entropy_source: &ES, is_initiator: bool, funding_inputs: Vec<(TxIn, Transaction)>,
+	) -> Result<Option<InteractiveTxMessageSend>, APIError>
+	where ES::Target: EntropySource
+	{
+		// Check that vouts exist for each TxIn in provided transactions.
+		for (idx, input) in funding_inputs.iter().enumerate() {
+			if input.1.output.get(input.0.previous_output.vout as usize).is_none() {
+				return Err(APIError::APIMisuseError {
+					err: format!("Transaction with txid {} does not have an output with vout of {} corresponding to TxIn at funding_inputs[{}]",
+						input.1.txid(), input.0.previous_output.vout, idx) });
+			}
+		}
+		let total_input_satoshis: u64 = funding_inputs.iter().map(|input| input.1.output[input.0.previous_output.vout as usize].value).sum();
+		if total_input_satoshis < dual_funding_context.our_funding_satoshis {
+			return Err(APIError::APIMisuseError {
+				err: format!("Total value of funding inputs must be at least funding amount. It was {} sats",
+					total_input_satoshis) });
+		}
+
+		let mut funding_outputs = Vec::new();
+		if is_initiator {
+			funding_outputs.push(TxOut {
+				value: self.get_value_satoshis(),
+				script_pubkey: self.get_funding_redeemscript().to_v0_p2wsh(),
+			});
+		}
+
+		maybe_add_funding_change_output(signer_provider, is_initiator, dual_funding_context.our_funding_satoshis,
+			&funding_inputs, &mut funding_outputs, dual_funding_context.funding_feerate_sat_per_1000_weight,
+			total_input_satoshis, self.holder_dust_limit_satoshis, self.channel_keys_id).map_err(
+				|_| APIError::APIMisuseError { err: "Could not create change output".to_string() })?;
+
+		let (tx_constructor, msg) = InteractiveTxConstructor::new(
+			entropy_source, self.channel_id(), dual_funding_context.funding_feerate_sat_per_1000_weight,
+			is_initiator, dual_funding_context.funding_tx_locktime, funding_inputs,
+			funding_outputs,
+		);
+		self.interactive_tx_constructor = Some(tx_constructor);
+
+		Ok(msg)
+	}
+
+	fn get_tx_abort_msg_from_abort_reason(&self, reason: AbortReason) -> msgs::TxAbort {
+		let msg = match reason {
+			AbortReason::InvalidStateTransition => "State transition was invalid",
+			AbortReason::UnexpectedCounterpartyMessage => "Unexpected message",
+			AbortReason::ReceivedTooManyTxAddInputs => "Too many `tx_add_input`s received",
+			AbortReason::ReceivedTooManyTxAddOutputs => "Too many `tx_add_output`s received",
+			AbortReason::IncorrectInputSequenceValue => "Input has a sequence value greater than 0xFFFFFFFD",
+			AbortReason::IncorrectSerialIdParity => "Parity for `serial_id` was incorrect",
+			AbortReason::SerialIdUnknown => "The `serial_id` is unknown",
+			AbortReason::DuplicateSerialId => "The `serial_id` already exists",
+			AbortReason::PrevTxOutInvalid => "Invalid previous transaction output",
+			AbortReason::ExceededMaximumSatsAllowed => "Output amount exceeded total bitcoin supply",
+			AbortReason::ExceededNumberOfInputsOrOutputs => "Too many inputs or outputs",
+			AbortReason::TransactionTooLarge => "Transaction weight is too large",
+			AbortReason::BelowDustLimit => "Output amount is below the dust limit",
+			AbortReason::InvalidOutputScript => "The output script is non-standard",
+			AbortReason::InsufficientFees => "Insufficient fees paid",
+		}.to_string();
+
+		msgs::TxAbort {
+			channel_id: self.channel_id(),
+			data: msg.into_bytes(),
+		}
+	}
+
+	pub fn tx_add_input(&mut self, msg: &msgs::TxAddInput) -> Result<InteractiveTxMessageSend, msgs::TxAbort> {
+		match self.interactive_tx_constructor {
+			Some(ref mut tx_constructor) => tx_constructor.handle_tx_add_input(msg).map_err(
+				|reason| self.get_tx_abort_msg_from_abort_reason(reason)),
+			None => Err(msgs::TxAbort {
+				channel_id: self.channel_id(),
+				data: "We do not have an interactive transaction negotiation in progress".to_string().into_bytes()
+			}),
+		}
+	}
+
+	pub fn tx_add_output(&mut self, msg: &msgs::TxAddOutput)-> Result<InteractiveTxMessageSend, msgs::TxAbort> {
+		match self.interactive_tx_constructor {
+			Some(ref mut tx_constructor) => tx_constructor.handle_tx_add_output(msg).map_err(
+				|reason| self.get_tx_abort_msg_from_abort_reason(reason)),
+			None => Err(msgs::TxAbort {
+				channel_id: self.channel_id(),
+				data: "We do not have an interactive transaction negotiation in progress".to_string().into_bytes()
+			}),
+		}
+	}
+
+	pub fn tx_remove_input(&mut self, msg: &msgs::TxRemoveInput)-> Result<InteractiveTxMessageSend, msgs::TxAbort> {
+		match self.interactive_tx_constructor {
+			Some(ref mut tx_constructor) => tx_constructor.handle_tx_remove_input(msg).map_err(
+				|reason| self.get_tx_abort_msg_from_abort_reason(reason)),
+			None => Err(msgs::TxAbort {
+				channel_id: self.channel_id(),
+				data: "We do not have an interactive transaction negotiation in progress".to_string().into_bytes()
+			}),
+		}
+	}
+
+	pub fn tx_remove_output(&mut self, msg: &msgs::TxRemoveOutput)-> Result<InteractiveTxMessageSend, msgs::TxAbort> {
+		match self.interactive_tx_constructor {
+			Some(ref mut tx_constructor) => tx_constructor.handle_tx_remove_output(msg).map_err(
+				|reason| self.get_tx_abort_msg_from_abort_reason(reason)),
+			None => Err(msgs::TxAbort {
+				channel_id: self.channel_id(),
+				data: "We do not have an interactive transaction negotiation in progress".to_string().into_bytes()
+			}),
+		}
+	}
+
+	pub fn tx_complete(&mut self, msg: &msgs::TxComplete)
+	-> Result<(Option<InteractiveTxMessageSend>, Option<Transaction>), msgs::TxAbort> {
+		match self.interactive_tx_constructor {
+			Some(ref mut tx_constructor) => tx_constructor.handle_tx_complete(msg).map_err(
+				|reason| self.get_tx_abort_msg_from_abort_reason(reason)),
+			None => Err(msgs::TxAbort {
+				channel_id: self.channel_id(),
+				data: "We do not have an interactive transaction negotiation in progress".to_string().into_bytes()
+			}),
+		}
+	}
+
+	pub fn tx_signatures(&self, msg: &msgs::TxSignatures)-> Result<InteractiveTxMessageSend, ChannelError> {
+		todo!();
+	}
+
+	pub fn tx_init_rbf(&self, msg: &msgs::TxInitRbf)-> Result<InteractiveTxMessageSend, ChannelError> {
+		todo!();
+	}
+
+	pub fn tx_ack_rbf(&self, msg: &msgs::TxAckRbf)-> Result<InteractiveTxMessageSend, ChannelError> {
+		todo!();
+	}
+
+	pub fn tx_abort(&self, msg: &msgs::TxAbort)-> Result<InteractiveTxMessageSend, ChannelError> {
+		todo!();
+	}
 }
 
 // Internal utility functions for channels
@@ -3124,6 +3269,68 @@ pub(crate) fn commit_tx_fee_msat(feerate_per_kw: u32, num_htlcs: usize, channel_
 	(commitment_tx_base_weight(channel_type_features) + num_htlcs as u64 * COMMITMENT_TX_WEIGHT_PER_HTLC) * feerate_per_kw as u64 / 1000 * 1000
 }
 
+fn maybe_add_funding_change_output<SP: Deref>(signer_provider: &SP, is_initiator: bool,
+	our_funding_satoshis: u64, funding_inputs: &Vec<(TxIn, Transaction)>,
+	funding_outputs: &mut Vec<TxOut>, funding_feerate_sat_per_1000_weight: u32,
+	total_input_satoshis: u64, holder_dust_limit_satoshis: u64, channel_keys_id: [u8; 32], 
+) -> Result<Option<TxOut>, ChannelError> where
+	SP::Target: SignerProvider,
+{
+	let our_funding_inputs_weight = funding_inputs.iter().fold(0u64, |weight, (txin, _) | {
+		// TODO(dual_funding): Use TxIn::segwit_weight when we upgrade rust-bitcoin to 0.30.x.
+		let script_sig_size = txin.script_sig.len();
+		// previous_output (36) +        script_sig varint len         + script_sig push + sequence
+		let legacy_weight = (36 + VarInt(script_sig_size as u64).len() + script_sig_size + 4) * WITNESS_SCALE_FACTOR;
+		let input_weight = legacy_weight.saturating_add(txin.witness.serialized_len());
+		weight.saturating_add(input_weight as u64)
+	});
+	// TODO(dual_funding): Just use TxOut::weight when we upgrade rust-bitcoin to 0.30.x.
+	let calculate_output_weight = |txout: &TxOut| {
+		let script_len = txout.script_pubkey.len();
+		//                  value (8) +     script varint len           + script push
+        (8 + VarInt(script_len as u64).len() + script_len) * WITNESS_SCALE_FACTOR
+	};
+	let our_funding_outputs_weight = funding_outputs.iter().fold(0u64, |weight, txout | {
+		weight.saturating_add(calculate_output_weight(&txout) as u64)
+	});
+	let our_contributed_weight = our_funding_outputs_weight.saturating_add(our_funding_outputs_weight);
+	let mut fees_sats = fee_for_weight(funding_feerate_sat_per_1000_weight, our_contributed_weight);
+
+	// If we are the initiator, we must pay for weight of all common fields in the funding transaction.
+	if is_initiator {
+		let common_weight =
+			4 /* version */ +
+			2 /* segwit marker and flag */ +
+			1 /* input count (limited to 252 inputs by interactive tx construction spec)*/ +
+			1 /* output count (limited to 252 outputs by interactive tx construction spec)*/ +
+			4 /* locktime */;
+		let common_fees = fee_for_weight(funding_feerate_sat_per_1000_weight, common_weight);
+		fees_sats = fees_sats.saturating_add(common_fees);
+	}
+
+	let remaining_value = total_input_satoshis
+		.saturating_sub(our_funding_satoshis)
+		.saturating_sub(fees_sats);
+
+	if remaining_value < holder_dust_limit_satoshis {
+		Ok(None)
+	} else {
+		let change_script = signer_provider.get_destination_script(channel_keys_id).map_err(
+			|_| ChannelError::Close("Failed to get change script as new destination script".to_owned())
+		)?;
+		let mut change_output = TxOut {
+			value: remaining_value,
+			script_pubkey: change_script,
+		};
+		let change_output_weight = calculate_output_weight(&change_output);
+
+		let change_output_fee = fee_for_weight(funding_feerate_sat_per_1000_weight, change_output_weight as u64);
+		change_output.value = remaining_value.saturating_sub(change_output_fee);
+		funding_outputs.push(change_output.clone());
+		Ok(Some(change_output))
+	}
+}
+
 /// Context for dual-funded channels.
 #[cfg(dual_funding)]
 pub(super) struct DualFundingChannelContext {
@@ -3133,7 +3340,7 @@ pub(super) struct DualFundingChannelContext {
 	pub their_funding_satoshis: u64,
 	/// The funding transaction locktime suggested by the initiator. If set by us, it is always set
 	/// to the current block height to align incentives against fee-sniping.
-	pub funding_tx_locktime: u32,
+	pub funding_tx_locktime: LockTime,
 	/// The feerate set by the initiator to be used for the funding transaction.
 	pub funding_feerate_sat_per_1000_weight: u32,
 }
@@ -7453,7 +7660,11 @@ impl<SP: Deref> OutboundV2Channel<SP> where SP::Target: SignerProvider {
 			funding_satoshis, MIN_CHAN_DUST_LIMIT_SATOSHIS);
 
 		let funding_feerate_sat_per_1000_weight = fee_estimator.bounded_sat_per_1000_weight(funding_confirmation_target);
-		let funding_tx_locktime = current_chain_height;
+		let funding_tx_locktime = LockTime::from_height(current_chain_height)
+			.map_err(|_| APIError::APIMisuseError {
+				err: format!(
+					"Provided current chain height of {} doesn't make sense for a height-based timelock for the funding transaction",
+					current_chain_height) })?;
 
 		let chan = Self {
 			context: ChannelContext::new_for_outbound_channel(
@@ -7526,9 +7737,18 @@ impl<SP: Deref> OutboundV2Channel<SP> where SP::Target: SignerProvider {
 				None => Builder::new().into_script(),
 			}),
 			channel_type: Some(self.context.channel_type.clone()),
-			locktime: self.dual_funding_context.funding_tx_locktime,
+			locktime: self.dual_funding_context.funding_tx_locktime.to_consensus_u32(),
 			require_confirmed_inputs: None,
 		}
+	}
+
+	pub fn begin_interactive_funding_tx_construction<ES: Deref>(&mut self, signer_provider: &SP,
+		entropy_source: &ES, funding_inputs: Vec<(TxIn, Transaction)>
+	) -> Result<Option<InteractiveTxMessageSend>, APIError>
+	where ES::Target: EntropySource
+	{
+		self.context.begin_interactive_funding_tx_construction(&self.dual_funding_context,
+			signer_provider, entropy_source, true /* is_initiator */, funding_inputs)
 	}
 }
 
@@ -7612,7 +7832,7 @@ impl<SP: Deref> InboundV2Channel<SP> where SP::Target: SignerProvider {
 			dual_funding_context: DualFundingChannelContext {
 				our_funding_satoshis: funding_satoshis,
 				their_funding_satoshis: msg.funding_satoshis,
-				funding_tx_locktime: msg.locktime,
+				funding_tx_locktime: LockTime::from_consensus(msg.locktime),
 				funding_feerate_sat_per_1000_weight: msg.funding_feerate_sat_per_1000_weight,
 			}
 		};
@@ -7682,6 +7902,15 @@ impl<SP: Deref> InboundV2Channel<SP> where SP::Target: SignerProvider {
 	#[cfg(test)]
 	pub fn get_accept_channel_v2_message(&self) -> msgs::AcceptChannelV2 {
 		self.generate_accept_channel_v2_message()
+	}
+
+	pub fn begin_interactive_funding_tx_construction<ES: Deref>(&mut self, signer_provider: &SP,
+		entropy_source: &ES, funding_inputs: Vec<(TxIn, Transaction)>
+	) -> Result<Option<InteractiveTxMessageSend>, APIError>
+	where ES::Target: EntropySource
+	{
+		self.context.begin_interactive_funding_tx_construction(&self.dual_funding_context,
+			signer_provider, entropy_source, false /* is_initiator */, funding_inputs)
 	}
 }
 
