@@ -1114,6 +1114,65 @@ pub enum Event {
 		/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
 		channel_type: ChannelTypeFeatures,
 	},
+	/// Indicates a request to open a new dual-funded channel by a peer.
+	///
+	/// To accept the request without contributing funds, call [`ChannelManager::accept_inbound_channel`].
+	/// To accept the request and contribute funds, call [`ChannelManager::accept_inbound_channel_with_contribution`].
+	/// To reject the request, call [`ChannelManager::force_close_without_broadcasting_txn`].
+	///
+	/// The event is always triggered when a new open channel request is received for a dual-funded
+	/// channel, regardless of the value of the [`UserConfig::manually_accept_inbound_channels`]
+	/// config flag. This is so that funding inputs can be manually provided to contribute to the
+	/// overall channel capacity on the acceptor side.
+	///
+	/// [`ChannelManager::accept_inbound_channel`]: crate::ln::channelmanager::ChannelManager::accept_inbound_channel
+	/// [`ChannelManager::accept_inbound_channel_with_contribution`]: crate::ln::channelmanager::ChannelManager::accept_inbound_channel_with_contribution
+	/// [`ChannelManager::force_close_without_broadcasting_txn`]: crate::ln::channelmanager::ChannelManager::force_close_without_broadcasting_txn
+	/// [`UserConfig::manually_accept_inbound_channels`]: crate::util::config::UserConfig::manually_accept_inbound_channels
+	#[cfg(dual_funding)]
+	OpenChannelV2Request {
+		/// The temporary channel ID of the channel requested to be opened.
+		///
+		/// When responding to the request, the `temporary_channel_id` should be passed
+		/// back to the ChannelManager through [`ChannelManager::accept_inbound_channel`] or
+		/// [`ChannelManager::accept_inbound_channel_with_contribution`] to accept, or through
+		/// [`ChannelManager::force_close_without_broadcasting_txn`] to reject.
+		///
+		/// [`ChannelManager::accept_inbound_channel`]: crate::ln::channelmanager::ChannelManager::accept_inbound_channel
+		/// [`ChannelManager::accept_inbound_channel_with_contribution`]: crate::ln::channelmanager::ChannelManager::accept_inbound_channel_with_contribution
+		/// [`ChannelManager::force_close_without_broadcasting_txn`]: crate::ln::channelmanager::ChannelManager::force_close_without_broadcasting_txn
+		temporary_channel_id: ChannelId,
+		/// The node_id of the counterparty requesting to open the channel.
+		///
+		/// When responding to the request, the `counterparty_node_id` should be passed
+		/// back to the ChannelManager through [`ChannelManager::accept_inbound_channel`] or
+		/// [`ChannelManager::accept_inbound_channel_with_contribution`] to accept, or through
+		/// [`ChannelManager::force_close_without_broadcasting_txn`] to reject the request.
+		///
+		/// [`ChannelManager::accept_inbound_channel`]: crate::ln::channelmanager::ChannelManager::accept_inbound_channel
+		/// [`ChannelManager::accept_inbound_channel_with_contribution`]: crate::ln::channelmanager::ChannelManager::accept_inbound_channel_with_contribution
+		/// [`ChannelManager::force_close_without_broadcasting_txn`]: crate::ln::channelmanager::ChannelManager::force_close_without_broadcasting_txn
+		counterparty_node_id: PublicKey,
+		/// The counterparty's contribution to the channel value in satoshis.
+		counterparty_funding_satoshis: u64,
+		/// The features that this channel will operate with. If you reject the channel, a
+		/// well-behaved counterparty may automatically re-attempt the channel with a new set of
+		/// feature flags.
+		///
+		/// Note that if [`ChannelTypeFeatures::supports_scid_privacy`] returns true on this type,
+		/// the resulting [`ChannelManager`] will not be readable by versions of LDK prior to
+		/// 0.0.106.
+		///
+		/// Furthermore, note that if [`ChannelTypeFeatures::supports_zero_conf`] returns true on this type,
+		/// the resulting [`ChannelManager`] will not be readable by versions of LDK prior to
+		/// 0.0.107.
+		///
+		/// NOTE: Zero-conf dual-funded channels are not currently accepted.
+		// TODO(dual_funding): Support zero-conf channels.
+		///
+		/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
+		channel_type: ChannelTypeFeatures,
+	},
 	/// Indicates that the HTLC was accepted, but could not be processed when or after attempting to
 	/// forward it.
 	///
@@ -1403,6 +1462,13 @@ impl Writeable for Event {
 			&Event::ConnectionNeeded { .. } => {
 				35u8.write(writer)?;
 				// Never write ConnectionNeeded events as buffered onion messages aren't serialized.
+			},
+			#[cfg(dual_funding)]
+			&Event::OpenChannelV2Request { .. } => {
+				37u8.write(writer)?;
+				// We never write the OpenChannelV2Request events as, upon disconnection, peers
+				// drop any channels which have not yet completed any interactive funding transaction
+				// construction.
 			},
 			// Note that, going forward, all new events must only write data inside of
 			// `write_tlv_fields`. Versions 0.0.101+ will ignore odd-numbered events that write
