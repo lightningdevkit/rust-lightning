@@ -30,7 +30,10 @@ PIN_RELEASE_DEPS # pin the release dependencies in our main workspace
 [ "$RUSTC_MINOR_VERSION" -lt 56 ] && cargo update -p quote --precise "1.0.30" --verbose
 
 # The syn crate depends on too-new proc-macro2 starting with v2.0.33, i.e., has MSRV of 1.56
-[ "$RUSTC_MINOR_VERSION" -lt 56 ] && cargo update -p syn:2.0.33 --precise "2.0.32" --verbose
+if [ "$RUSTC_MINOR_VERSION" -lt 56 ]; then
+	SYN_2_DEP=$(grep -o '"syn 2.*' Cargo.lock | tr -d '",' | tr ' ' ':')
+	cargo update -p "$SYN_2_DEP" --precise "2.0.32" --verbose
+fi
 
 # The proc-macro2 crate switched to Rust edition 2021 starting with v1.0.66, i.e., has MSRV of 1.56
 [ "$RUSTC_MINOR_VERSION" -lt 56 ] && cargo update -p proc-macro2 --precise "1.0.65" --verbose
