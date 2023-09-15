@@ -31,6 +31,7 @@ use bitcoin::secp256k1::Secp256k1;
 use bitcoin::{LockTime, secp256k1, Sequence};
 
 use crate::blinded_path::BlindedPath;
+use crate::blinded_path::payment::{PaymentConstraints, ReceiveTlvs};
 use crate::chain;
 use crate::chain::{Confirm, ChannelMonitorUpdateStatus, Watch, BestBlock};
 use crate::chain::chaininterface::{BroadcasterInterface, ConfirmationTarget, FeeEstimator, LowerBoundedFeeEstimator};
@@ -56,9 +57,10 @@ use crate::ln::msgs::{ChannelMessageHandler, DecodeError, LightningError};
 use crate::ln::outbound_payment;
 use crate::ln::outbound_payment::{OutboundPayments, PaymentAttempts, PendingOutboundPayment, SendAlongPathArgs, StaleExpiration};
 use crate::ln::wire::Encode;
+use crate::offers::invoice::{BlindedPayInfo, DEFAULT_RELATIVE_EXPIRY};
 use crate::offers::offer::{DerivedMetadata, Offer, OfferBuilder};
 use crate::offers::parse::Bolt12SemanticError;
-use crate::offers::refund::RefundBuilder;
+use crate::offers::refund::{Refund, RefundBuilder};
 use crate::onion_message::{Destination, OffersMessage, PendingOnionMessage};
 use crate::sign::{EntropySource, KeysManager, NodeSigner, Recipient, SignerProvider, WriteableEcdsaChannelSigner};
 use crate::util::config::{UserConfig, ChannelConfig, ChannelConfigUpdate};
@@ -7445,6 +7447,67 @@ where
 		Ok(())
 	}
 
+	/// Creates a [`Bolt12Invoice`] for a [`Refund`] and enqueues it to be sent via an onion
+	/// message.
+	///
+	/// The resulting invoice uses a [`PaymentHash`] recognized by the [`ChannelManager`] and a
+	/// [`BlindedPath`] containing the [`PaymentSecret`] needed to reconstruct the corresponding
+	/// [`PaymentPreimage`].
+	///
+	/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
+	pub fn request_refund_payment(&self, refund: &Refund) -> Result<(), Bolt12SemanticError> {
+		let expanded_key = &self.inbound_payment_key;
+		let entropy = &*self.entropy_source;
+		let secp_ctx = &self.secp_ctx;
+
+		let amount_msats = refund.amount_msats();
+		let relative_expiry = DEFAULT_RELATIVE_EXPIRY.as_secs() as u32;
+
+		match self.create_inbound_payment(Some(amount_msats), relative_expiry, None) {
+			Ok((payment_hash, payment_secret)) => {
+				let payment_paths = vec![
+					self.create_one_hop_blinded_payment_path(payment_secret),
+				];
+				#[cfg(not(feature = "no-std"))]
+				let builder = refund.respond_using_derived_keys(
+					payment_paths, payment_hash, expanded_key, entropy
+				)?;
+				#[cfg(feature = "no-std")]
+				let created_at = Duration::from_secs(
+					self.highest_seen_timestamp.load(Ordering::Acquire) as u64
+				);
+				#[cfg(feature = "no-std")]
+				let builder = refund.respond_using_derived_keys_no_std(
+					payment_paths, payment_hash, created_at, expanded_key, entropy
+				)?;
+				let invoice = builder.allow_mpp().build_and_sign(secp_ctx)?;
+				let reply_path = self.create_one_hop_blinded_path();
+
+				let mut pending_offers_messages = self.pending_offers_messages.lock().unwrap();
+				if refund.paths().is_empty() {
+					let message = PendingOnionMessage {
+						contents: OffersMessage::Invoice(invoice),
+						destination: Destination::Node(refund.payer_id()),
+						reply_path: Some(reply_path),
+					};
+					pending_offers_messages.push(message);
+				} else {
+					for path in refund.paths() {
+						let message = PendingOnionMessage {
+							contents: OffersMessage::Invoice(invoice.clone()),
+							destination: Destination::BlindedPath(path.clone()),
+							reply_path: Some(reply_path.clone()),
+						};
+						pending_offers_messages.push(message);
+					}
+				}
+
+				Ok(())
+			},
+			Err(()) => Err(Bolt12SemanticError::InvalidAmount),
+		}
+	}
+
 	/// Gets a payment secret and payment hash for use in an invoice given to a third party wishing
 	/// to pay us.
 	///
@@ -7551,6 +7614,29 @@ where
 		let entropy_source = self.entropy_source.deref();
 		let secp_ctx = &self.secp_ctx;
 		BlindedPath::one_hop_for_message(self.get_our_node_id(), entropy_source, secp_ctx).unwrap()
+	}
+
+	/// Creates a one-hop blinded path with [`ChannelManager::get_our_node_id`] as the introduction
+	/// node.
+	fn create_one_hop_blinded_payment_path(
+		&self, payment_secret: PaymentSecret
+	) -> (BlindedPayInfo, BlindedPath) {
+		let entropy_source = self.entropy_source.deref();
+		let secp_ctx = &self.secp_ctx;
+
+		let payee_node_id = self.get_our_node_id();
+		let max_cltv_expiry = self.best_block.read().unwrap().height() + LATENCY_GRACE_PERIOD_BLOCKS;
+		let payee_tlvs = ReceiveTlvs {
+			payment_secret,
+			payment_constraints: PaymentConstraints {
+				max_cltv_expiry,
+				htlc_minimum_msat: 1,
+			},
+		};
+		// TODO: Err for overflow?
+		BlindedPath::one_hop_for_payment(
+			payee_node_id, payee_tlvs, entropy_source, secp_ctx
+		).unwrap()
 	}
 
 	/// Gets a fake short channel id for use in receiving [phantom node payments]. These fake scids
