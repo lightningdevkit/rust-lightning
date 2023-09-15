@@ -976,14 +976,23 @@ impl PackageTemplate {
 	) -> u32 where F::Target: FeeEstimator {
 		let feerate_estimate = fee_estimator.bounded_sat_per_1000_weight(conf_target);
 		if self.feerate_previous != 0 {
-			// If old feerate inferior to actual one given back by Fee Estimator, use it to compute new fee...
+			// Use the new fee estimate if it's higher than the one previously used.
 			if feerate_estimate as u64 > self.feerate_previous {
 				feerate_estimate
 			} else if !force_feerate_bump {
 				self.feerate_previous.try_into().unwrap_or(u32::max_value())
 			} else {
-				// ...else just increase the previous feerate by 25% (because that's a nice number)
-				(self.feerate_previous + (self.feerate_previous / 4)).try_into().unwrap_or(u32::max_value())
+				// Our fee estimate has decreased, but our transaction remains unconfirmed after
+				// using our previous fee estimate. This may point to an unreliable fee estimator,
+				// so we choose to bump our previous feerate by 25%, making sure we don't use a
+				// lower feerate or overpay by a large margin by limiting it to 5x the new fee
+				// estimate.
+				let previous_feerate = self.feerate_previous.try_into().unwrap_or(u32::max_value());
+				let mut new_feerate = previous_feerate.saturating_add(previous_feerate / 4);
+				if new_feerate > feerate_estimate * 5 {
+					new_feerate = cmp::max(feerate_estimate * 5, previous_feerate);
+				}
+				new_feerate
 			}
 		} else {
 			feerate_estimate
