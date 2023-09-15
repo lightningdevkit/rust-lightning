@@ -1123,8 +1123,8 @@ impl<ChannelSigner: WriteableEcdsaChannelSigner> OnchainTxHandler<ChannelSigner>
 		ret
 	}
 
-	pub(crate) fn get_unsigned_holder_commitment_tx(&self) -> Transaction {
-		self.holder_commitment.trust().built_transaction().transaction.clone()
+	pub(crate) fn get_unsigned_holder_commitment_tx(&self) -> &Transaction {
+		&self.holder_commitment.trust().built_transaction().transaction
 	}
 
 	//TODO: getting lastest holder transactions should be infallible and result in us "force-closing the channel", but we may
