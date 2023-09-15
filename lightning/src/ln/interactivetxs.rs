@@ -15,6 +15,7 @@ use bitcoin::amount::Amount;
 use bitcoin::blockdata::constants::WITNESS_SCALE_FACTOR;
 use bitcoin::consensus::Encodable;
 use bitcoin::policy::MAX_STANDARD_TX_WEIGHT;
+use bitcoin::secp256k1::PublicKey;
 use bitcoin::transaction::Version;
 use bitcoin::{
 	absolute::LockTime as AbsoluteLockTime, OutPoint, ScriptBuf, Sequence, Transaction, TxIn,
@@ -23,6 +24,7 @@ use bitcoin::{
 
 use crate::chain::chaininterface::fee_for_weight;
 use crate::events::bump_transaction::{BASE_INPUT_WEIGHT, EMPTY_SCRIPT_SIG_WEIGHT};
+use crate::events::MessageSendEvent;
 use crate::ln::channel::TOTAL_BITCOIN_SUPPLY_SATOSHIS;
 use crate::ln::msgs;
 use crate::ln::msgs::SerialId;
@@ -44,7 +46,7 @@ const MAX_INPUTS_OUTPUTS_COUNT: usize = 252;
 
 /// The total weight of the common fields whose fee is paid by the initiator of the interactive
 /// transaction construction protocol.
-const TX_COMMON_FIELDS_WEIGHT: u64 = (4 /* version */ + 4 /* locktime */ + 1 /* input count */ +
+pub(crate) const TX_COMMON_FIELDS_WEIGHT: u64 = (4 /* version */ + 4 /* locktime */ + 1 /* input count */ +
 	1 /* output count */) * WITNESS_SCALE_FACTOR as u64 + 2 /* segwit marker + flag */;
 
 // BOLT 3 - Lower bounds for input weights
@@ -99,6 +101,39 @@ pub(crate) enum AbortReason {
 	InsufficientFees,
 	OutputsValueExceedsInputsValue,
 	InvalidTx,
+}
+
+impl AbortReason {
+	pub fn into_tx_abort_msg(self, channel_id: ChannelId) -> msgs::TxAbort {
+		let msg = match self {
+			AbortReason::InvalidStateTransition => "State transition was invalid",
+			AbortReason::UnexpectedCounterpartyMessage => "Unexpected message",
+			AbortReason::ReceivedTooManyTxAddInputs => "Too many `tx_add_input`s received",
+			AbortReason::ReceivedTooManyTxAddOutputs => "Too many `tx_add_output`s received",
+			AbortReason::IncorrectInputSequenceValue => {
+				"Input has a sequence value greater than 0xFFFFFFFD"
+			},
+			AbortReason::IncorrectSerialIdParity => "Parity for `serial_id` was incorrect",
+			AbortReason::SerialIdUnknown => "The `serial_id` is unknown",
+			AbortReason::DuplicateSerialId => "The `serial_id` already exists",
+			AbortReason::PrevTxOutInvalid => "Invalid previous transaction output",
+			AbortReason::ExceededMaximumSatsAllowed => {
+				"Output amount exceeded total bitcoin supply"
+			},
+			AbortReason::ExceededNumberOfInputsOrOutputs => "Too many inputs or outputs",
+			AbortReason::TransactionTooLarge => "Transaction weight is too large",
+			AbortReason::BelowDustLimit => "Output amount is below the dust limit",
+			AbortReason::InvalidOutputScript => "The output script is non-standard",
+			AbortReason::InsufficientFees => "Insufficient fees paid",
+			AbortReason::OutputsValueExceedsInputsValue => {
+				"Total value of outputs exceeds total value of inputs"
+			},
+			AbortReason::InvalidTx => "The transaction is invalid",
+		}
+		.to_string();
+
+		msgs::TxAbort { channel_id, data: msg.into_bytes() }
+	}
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -844,6 +879,39 @@ pub(crate) enum InteractiveTxMessageSend {
 	TxComplete(msgs::TxComplete),
 }
 
+impl InteractiveTxMessageSend {
+	pub fn into_msg_send_event(self, counterparty_node_id: &PublicKey) -> MessageSendEvent {
+		match self {
+			InteractiveTxMessageSend::TxAddInput(msg) => {
+				MessageSendEvent::SendTxAddInput { node_id: *counterparty_node_id, msg }
+			},
+			InteractiveTxMessageSend::TxAddOutput(msg) => {
+				MessageSendEvent::SendTxAddOutput { node_id: *counterparty_node_id, msg }
+			},
+			InteractiveTxMessageSend::TxComplete(msg) => {
+				MessageSendEvent::SendTxComplete { node_id: *counterparty_node_id, msg }
+			},
+		}
+	}
+}
+
+pub(super) struct InteractiveTxMessageSendResult(
+	pub Result<InteractiveTxMessageSend, msgs::TxAbort>,
+);
+
+impl InteractiveTxMessageSendResult {
+	pub fn into_msg_send_event(self, counterparty_node_id: &PublicKey) -> MessageSendEvent {
+		match self.0 {
+			Ok(interactive_tx_msg_send) => {
+				interactive_tx_msg_send.into_msg_send_event(counterparty_node_id)
+			},
+			Err(tx_abort_msg) => {
+				MessageSendEvent::SendTxAbort { node_id: *counterparty_node_id, msg: tx_abort_msg }
+			},
+		}
+	}
+}
+
 // This macro executes a state machine transition based on a provided action.
 macro_rules! do_state_transition {
 	($self: ident, $transition: ident, $msg: expr) => {{
@@ -874,6 +942,32 @@ pub(crate) enum HandleTxCompleteValue {
 	SendTxMessage(InteractiveTxMessageSend),
 	SendTxComplete(InteractiveTxMessageSend, ConstructedTransaction),
 	NegotiationComplete(ConstructedTransaction),
+}
+
+pub(super) struct HandleTxCompleteResult(pub Result<HandleTxCompleteValue, msgs::TxAbort>);
+
+impl HandleTxCompleteResult {
+	pub fn into_msg_send_event(
+		self, counterparty_node_id: &PublicKey,
+	) -> (Option<MessageSendEvent>, Option<ConstructedTransaction>) {
+		match self.0 {
+			Ok(tx_complete_res) => {
+				let (tx_msg_opt, tx_opt) = match tx_complete_res {
+					HandleTxCompleteValue::SendTxMessage(msg) => (Some(msg), None),
+					HandleTxCompleteValue::SendTxComplete(msg, tx) => (Some(msg), Some(tx)),
+					HandleTxCompleteValue::NegotiationComplete(tx) => (None, Some(tx)),
+				};
+				(tx_msg_opt.map(|tx_msg| tx_msg.into_msg_send_event(counterparty_node_id)), tx_opt)
+			},
+			Err(tx_abort_msg) => (
+				Some(MessageSendEvent::SendTxAbort {
+					node_id: *counterparty_node_id,
+					msg: tx_abort_msg,
+				}),
+				None,
+			),
+		}
+	}
 }
 
 impl InteractiveTxConstructor {

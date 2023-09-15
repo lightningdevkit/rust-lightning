@@ -11,8 +11,7 @@ use bitcoin::amount::Amount;
 use bitcoin::blockdata::constants::ChainHash;
 use bitcoin::blockdata::script::{Script, ScriptBuf, Builder};
 use bitcoin::blockdata::transaction::Transaction;
-use bitcoin::sighash;
-use bitcoin::sighash::EcdsaSighashType;
+use bitcoin::sighash::{self, EcdsaSighashType};
 use bitcoin::consensus::encode;
 
 use bitcoin::hashes::Hash;
@@ -24,11 +23,15 @@ use bitcoin::secp256k1::constants::PUBLIC_KEY_SIZE;
 use bitcoin::secp256k1::{PublicKey,SecretKey};
 use bitcoin::secp256k1::{Secp256k1,ecdsa::Signature};
 use bitcoin::secp256k1;
+#[cfg(any(dual_funding, splicing))]
+use bitcoin::{TxIn, TxOut};
+#[cfg(any(dual_funding, splicing))]
+use bitcoin::locktime::absolute::LockTime;
 
 use crate::ln::types::{ChannelId, PaymentPreimage, PaymentHash};
 use crate::ln::features::{ChannelTypeFeatures, InitFeatures};
 #[cfg(any(dual_funding, splicing))]
-use crate::ln::interactivetxs::InteractiveTxConstructor;
+use crate::ln::interactivetxs::{estimate_input_weight, get_output_weight, HandleTxCompleteResult, InteractiveTxConstructor, InteractiveTxMessageSend, InteractiveTxMessageSendResult, TX_COMMON_FIELDS_WEIGHT};
 use crate::ln::msgs;
 use crate::ln::msgs::DecodeError;
 use crate::ln::script::{self, ShutdownScript};
@@ -39,6 +42,8 @@ use crate::ln::chan_utils;
 use crate::ln::onion_utils::HTLCFailReason;
 use crate::chain::BestBlock;
 use crate::chain::chaininterface::{FeeEstimator, ConfirmationTarget, LowerBoundedFeeEstimator};
+#[cfg(any(dual_funding, splicing))]
+use crate::chain::chaininterface::fee_for_weight;
 use crate::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateStep, LATENCY_GRACE_PERIOD_BLOCKS, CLOSED_CHANNEL_UPDATE_ID};
 use crate::chain::transaction::{OutPoint, TransactionData};
 use crate::sign::ecdsa::EcdsaChannelSigner;
@@ -46,6 +51,8 @@ use crate::sign::{EntropySource, ChannelSigner, SignerProvider, NodeSigner, Reci
 use crate::events::ClosureReason;
 use crate::routing::gossip::NodeId;
 use crate::util::ser::{Readable, ReadableArgs, Writeable, Writer};
+#[cfg(any(dual_funding, splicing))]
+use crate::util::ser::TransactionU16LenLimited;
 use crate::util::logger::{Logger, Record, WithContext};
 use crate::util::errors::APIError;
 use crate::util::config::{UserConfig, ChannelConfig, LegacyChannelConfig, ChannelHandshakeConfig, ChannelHandshakeLimits, MaxDustHTLCExposure};
@@ -1437,6 +1444,144 @@ pub(super) struct ChannelContext<SP: Deref> where SP::Target: SignerProvider {
 	/// If we can't release a [`ChannelMonitorUpdate`] until some external action completes, we
 	/// store it here and only release it to the `ChannelManager` once it asks for it.
 	blocked_monitor_updates: Vec<PendingChannelMonitorUpdate>,
+}
+
+#[cfg(any(dual_funding, splicing))]
+pub(super) trait InteractivelyFunded<SP: Deref> where SP::Target: SignerProvider {
+	fn context(&self) -> &ChannelContext<SP>;
+
+	fn context_mut(&mut self) -> &mut ChannelContext<SP>;
+
+	fn interactive_tx_constructor_mut(&mut self) -> &mut Option<InteractiveTxConstructor>;
+
+	fn dual_funding_context_mut(&mut self) -> &mut DualFundingChannelContext;
+
+	fn set_interactive_tx_constructor(&mut self, interactive_tx_constructor: InteractiveTxConstructor);
+
+	fn is_initiator(&self) -> bool;
+
+	fn begin_interactive_funding_tx_construction<ES: Deref>(
+		&mut self, entropy_source: &ES,
+	) -> Result<Option<InteractiveTxMessageSend>, APIError>
+	where ES::Target: EntropySource
+	{
+		let mut funding_outputs = Vec::new();
+		if self.is_initiator() {
+			funding_outputs.push(TxOut {
+				value: Amount::from_sat(self.context().get_value_satoshis()),
+				script_pubkey: self.context().get_funding_redeemscript().to_p2wsh(),
+			});
+		}
+
+		let (tx_constructor, msg) = InteractiveTxConstructor::new(
+			entropy_source, self.context().channel_id(),
+			self.dual_funding_context_mut().funding_feerate_sat_per_1000_weight, self.is_initiator(),
+			self.dual_funding_context_mut().funding_tx_locktime,
+			self.dual_funding_context_mut().our_funding_inputs.clone(), funding_outputs
+		);
+		self.set_interactive_tx_constructor(tx_constructor);
+
+		Ok(msg)
+	}
+
+	fn tx_add_input(&mut self, msg: &msgs::TxAddInput) -> InteractiveTxMessageSendResult {
+		InteractiveTxMessageSendResult(match self.interactive_tx_constructor_mut() {
+			Some(ref mut tx_constructor) => tx_constructor.handle_tx_add_input(msg).map_err(
+				|reason| reason.into_tx_abort_msg(self.context_mut().channel_id())),
+			None => Err(msgs::TxAbort {
+				channel_id: self.context_mut().channel_id(),
+				data: "We do not have an interactive transaction negotiation in progress".to_string().into_bytes()
+			}),
+		})
+	}
+
+	fn tx_add_output(&mut self, msg: &msgs::TxAddOutput)-> InteractiveTxMessageSendResult {
+		InteractiveTxMessageSendResult(match self.interactive_tx_constructor_mut() {
+			Some(ref mut tx_constructor) => tx_constructor.handle_tx_add_output(msg).map_err(
+				|reason| reason.into_tx_abort_msg(self.context_mut().channel_id())),
+			None => Err(msgs::TxAbort {
+				channel_id: self.context_mut().channel_id(),
+				data: "We do not have an interactive transaction negotiation in progress".to_string().into_bytes()
+			}),
+		})
+	}
+
+	fn tx_remove_input(&mut self, msg: &msgs::TxRemoveInput)-> InteractiveTxMessageSendResult {
+		InteractiveTxMessageSendResult(match self.interactive_tx_constructor_mut() {
+			Some(ref mut tx_constructor) => tx_constructor.handle_tx_remove_input(msg).map_err(
+				|reason| reason.into_tx_abort_msg(self.context_mut().channel_id())),
+			None => Err(msgs::TxAbort {
+				channel_id: self.context_mut().channel_id(),
+				data: "We do not have an interactive transaction negotiation in progress".to_string().into_bytes()
+			}),
+		})
+	}
+
+	fn tx_remove_output(&mut self, msg: &msgs::TxRemoveOutput)-> InteractiveTxMessageSendResult {
+		InteractiveTxMessageSendResult(match self.interactive_tx_constructor_mut() {
+			Some(ref mut tx_constructor) => tx_constructor.handle_tx_remove_output(msg).map_err(
+				|reason| reason.into_tx_abort_msg(self.context_mut().channel_id())),
+			None => Err(msgs::TxAbort {
+				channel_id: self.context_mut().channel_id(),
+				data: "We do not have an interactive transaction negotiation in progress".to_string().into_bytes()
+			}),
+		})
+	}
+
+	fn tx_complete(&mut self, msg: &msgs::TxComplete) -> HandleTxCompleteResult {
+		HandleTxCompleteResult(match self.interactive_tx_constructor_mut() {
+			Some(ref mut tx_constructor) => tx_constructor.handle_tx_complete(msg).map_err(
+				|reason| reason.into_tx_abort_msg(self.context_mut().channel_id())),
+			None => Err(msgs::TxAbort {
+				channel_id: self.context_mut().channel_id(),
+				data: "We do not have an interactive transaction negotiation in progress".to_string().into_bytes()
+			}),
+		})
+	}
+}
+
+#[cfg(any(dual_funding, splicing))]
+impl<SP: Deref> InteractivelyFunded<SP> for OutboundV2Channel<SP> where SP::Target: SignerProvider {
+	fn context(&self) -> &ChannelContext<SP> {
+		&self.context
+	}
+	fn context_mut(&mut self) -> &mut ChannelContext<SP> {
+		&mut self.context
+	}
+	fn dual_funding_context_mut(&mut self) -> &mut DualFundingChannelContext {
+		&mut self.dual_funding_context
+	}
+	fn interactive_tx_constructor_mut(&mut self) -> &mut Option<InteractiveTxConstructor> {
+		&mut self.interactive_tx_constructor
+	}
+	fn set_interactive_tx_constructor(&mut self, interactive_tx_constructor: InteractiveTxConstructor) {
+		self.interactive_tx_constructor = Some(interactive_tx_constructor);
+	}
+	fn is_initiator(&self) -> bool {
+		true
+	}
+}
+
+#[cfg(any(dual_funding, splicing))]
+impl<SP: Deref> InteractivelyFunded<SP> for InboundV2Channel<SP> where SP::Target: SignerProvider {
+	fn context(&self) -> &ChannelContext<SP> {
+		&self.context
+	}
+	fn context_mut(&mut self) -> &mut ChannelContext<SP> {
+		&mut self.context
+	}
+	fn dual_funding_context_mut(&mut self) -> &mut DualFundingChannelContext {
+		&mut self.dual_funding_context
+	}
+	fn interactive_tx_constructor_mut(&mut self) -> &mut Option<InteractiveTxConstructor> {
+		&mut self.interactive_tx_constructor
+	}
+	fn set_interactive_tx_constructor(&mut self, interactive_tx_constructor: InteractiveTxConstructor) {
+		self.interactive_tx_constructor = Some(interactive_tx_constructor);
+	}
+	fn is_initiator(&self) -> bool {
+		false
+	}
 }
 
 impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
@@ -3531,6 +3676,28 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 		self.channel_transaction_parameters.channel_type_features = self.channel_type.clone();
 		Ok(())
 	}
+
+	// Interactive transaction construction
+
+	#[cfg(any(dual_funding, splicing))]
+	pub fn tx_signatures(&self, msg: &msgs::TxSignatures)-> Result<InteractiveTxMessageSend, ChannelError> {
+		todo!();
+	}
+
+	#[cfg(any(dual_funding, splicing))]
+	pub fn tx_init_rbf(&self, msg: &msgs::TxInitRbf)-> Result<InteractiveTxMessageSend, ChannelError> {
+		todo!();
+	}
+
+	#[cfg(any(dual_funding, splicing))]
+	pub fn tx_ack_rbf(&self, msg: &msgs::TxAckRbf)-> Result<InteractiveTxMessageSend, ChannelError> {
+		todo!();
+	}
+
+	#[cfg(any(dual_funding, splicing))]
+	pub fn tx_abort(&self, msg: &msgs::TxAbort)-> Result<InteractiveTxMessageSend, ChannelError> {
+		todo!();
+	}
 }
 
 // Internal utility functions for channels
@@ -3615,6 +3782,43 @@ pub(crate) fn per_outbound_htlc_counterparty_commit_tx_fee_msat(feerate_per_kw: 
 	}
 }
 
+#[cfg(any(dual_funding, splicing))]
+pub(super) fn calculate_our_funding_satoshis(
+	is_initiator: bool, funding_inputs: &[(TxIn, TransactionU16LenLimited)],
+	funding_outputs: &[TxOut], funding_feerate_sat_per_1000_weight: u32,
+	holder_dust_limit_satoshis: u64,
+) -> Result<u64, APIError> {
+	let mut total_input_satoshis = 0u64;
+	let mut our_contributed_weight = 0u64;
+
+	for (idx, input) in funding_inputs.iter().enumerate() {
+		if let Some(output) = input.1.as_transaction().output.get(input.0.previous_output.vout as usize) {
+			total_input_satoshis = total_input_satoshis.saturating_add(output.value.to_sat());
+			our_contributed_weight = our_contributed_weight.saturating_add(estimate_input_weight(output).to_wu());
+		} else {
+			return Err(APIError::APIMisuseError {
+				err: format!("Transaction with txid {} does not have an output with vout of {} corresponding to TxIn at funding_inputs[{}]",
+					input.1.as_transaction().txid(), input.0.previous_output.vout, idx) });
+		}
+	}
+	our_contributed_weight = our_contributed_weight.saturating_add(funding_outputs.iter().fold(0u64, |weight, txout| {
+		weight.saturating_add(get_output_weight(&txout.script_pubkey).to_wu())
+	}));
+
+	// If we are the initiator, we must pay for weight of all common fields in the funding transaction.
+	if is_initiator {
+		our_contributed_weight = our_contributed_weight.saturating_add(TX_COMMON_FIELDS_WEIGHT);
+	}
+
+	let funding_satoshis = total_input_satoshis
+		.saturating_sub(fee_for_weight(funding_feerate_sat_per_1000_weight, our_contributed_weight));
+	if funding_satoshis < holder_dust_limit_satoshis {
+		Ok(0)
+	} else {
+		Ok(funding_satoshis)
+	}
+}
+
 /// Context for dual-funded channels.
 #[cfg(any(dual_funding, splicing))]
 pub(super) struct DualFundingChannelContext {
@@ -3624,9 +3828,15 @@ pub(super) struct DualFundingChannelContext {
 	pub their_funding_satoshis: u64,
 	/// The funding transaction locktime suggested by the initiator. If set by us, it is always set
 	/// to the current block height to align incentives against fee-sniping.
-	pub funding_tx_locktime: u32,
+	pub funding_tx_locktime: LockTime,
 	/// The feerate set by the initiator to be used for the funding transaction.
 	pub funding_feerate_sat_per_1000_weight: u32,
+	/// The funding inputs we will be contributing to the channel.
+	///
+	/// Note that the `our_funding_satoshis` field is equal to the total value of `our_funding_inputs`
+	/// minus any fees paid for our contributed weight. This means that change will never be generated
+	/// and the maximum value possible will go towards funding the channel.
+	pub our_funding_inputs: Vec<(TxIn, TransactionU16LenLimited)>,
 }
 
 // Holder designates channel data owned for the benefit of the user client.
@@ -8057,8 +8267,8 @@ impl<SP: Deref> OutboundV2Channel<SP> where SP::Target: SignerProvider {
 	pub fn new<ES: Deref, F: Deref>(
 		fee_estimator: &LowerBoundedFeeEstimator<F>, entropy_source: &ES, signer_provider: &SP,
 		counterparty_node_id: PublicKey, their_features: &InitFeatures, funding_satoshis: u64,
-		user_id: u128, config: &UserConfig, current_chain_height: u32, outbound_scid_alias: u64,
-		funding_confirmation_target: ConfirmationTarget,
+		funding_inputs: Vec<(TxIn, TransactionU16LenLimited)>, user_id: u128, config: &UserConfig,
+		current_chain_height: u32, outbound_scid_alias: u64, funding_confirmation_target: ConfirmationTarget,
 	) -> Result<OutboundV2Channel<SP>, APIError>
 	where ES::Target: EntropySource,
 	      F::Target: FeeEstimator,
@@ -8073,7 +8283,11 @@ impl<SP: Deref> OutboundV2Channel<SP> where SP::Target: SignerProvider {
 			funding_satoshis, MIN_CHAN_DUST_LIMIT_SATOSHIS);
 
 		let funding_feerate_sat_per_1000_weight = fee_estimator.bounded_sat_per_1000_weight(funding_confirmation_target);
-		let funding_tx_locktime = current_chain_height;
+		let funding_tx_locktime = LockTime::from_height(current_chain_height)
+			.map_err(|_| APIError::APIMisuseError {
+				err: format!(
+					"Provided current chain height of {} doesn't make sense for a height-based timelock for the funding transaction",
+					current_chain_height) })?;
 
 		let chan = Self {
 			context: ChannelContext::new_for_outbound_channel(
@@ -8100,6 +8314,7 @@ impl<SP: Deref> OutboundV2Channel<SP> where SP::Target: SignerProvider {
 				their_funding_satoshis: 0,
 				funding_tx_locktime,
 				funding_feerate_sat_per_1000_weight,
+				our_funding_inputs: funding_inputs,
 			},
 			#[cfg(any(dual_funding, splicing))]
 			interactive_tx_constructor: None,
@@ -8163,7 +8378,7 @@ impl<SP: Deref> OutboundV2Channel<SP> where SP::Target: SignerProvider {
 			},
 			funding_feerate_sat_per_1000_weight: self.context.feerate_per_kw,
 			second_per_commitment_point,
-			locktime: self.dual_funding_context.funding_tx_locktime,
+			locktime: self.dual_funding_context.funding_tx_locktime.to_consensus_u32(),
 			require_confirmed_inputs: None,
 		}
 	}
@@ -8186,13 +8401,22 @@ impl<SP: Deref> InboundV2Channel<SP> where SP::Target: SignerProvider {
 	pub fn new<ES: Deref, F: Deref, L: Deref>(
 		fee_estimator: &LowerBoundedFeeEstimator<F>, entropy_source: &ES, signer_provider: &SP,
 		counterparty_node_id: PublicKey, our_supported_features: &ChannelTypeFeatures,
-		their_features: &InitFeatures, msg: &msgs::OpenChannelV2, funding_satoshis: u64, user_id: u128,
-		config: &UserConfig, current_chain_height: u32, logger: &L,
+		their_features: &InitFeatures, msg: &msgs::OpenChannelV2,
+		funding_inputs: Vec<(TxIn, TransactionU16LenLimited)>, user_id: u128, config: &UserConfig,
+		current_chain_height: u32, logger: &L,
 	) -> Result<InboundV2Channel<SP>, ChannelError>
 		where ES::Target: EntropySource,
 			  F::Target: FeeEstimator,
 			  L::Target: Logger,
 	{
+		let funding_satoshis = calculate_our_funding_satoshis(
+			false, &funding_inputs, &[], msg.funding_feerate_sat_per_1000_weight,
+			msg.common_fields.dust_limit_satoshis
+		).map_err(|_| ChannelError::Close(
+			(
+				"Failed to accept channel".to_string(),
+				ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) },
+			)))?;
 		let channel_value_satoshis = funding_satoshis.saturating_add(msg.common_fields.funding_satoshis);
 		let counterparty_selected_channel_reserve_satoshis = get_v2_channel_reserve_satoshis(
 			channel_value_satoshis, msg.common_fields.dust_limit_satoshis);
@@ -8247,8 +8471,9 @@ impl<SP: Deref> InboundV2Channel<SP> where SP::Target: SignerProvider {
 			dual_funding_context: DualFundingChannelContext {
 				our_funding_satoshis: funding_satoshis,
 				their_funding_satoshis: msg.common_fields.funding_satoshis,
-				funding_tx_locktime: msg.locktime,
+				funding_tx_locktime: LockTime::from_consensus(msg.locktime),
 				funding_feerate_sat_per_1000_weight: msg.funding_feerate_sat_per_1000_weight,
+				our_funding_inputs: funding_inputs,
 			},
 			interactive_tx_constructor: None,
 		};
