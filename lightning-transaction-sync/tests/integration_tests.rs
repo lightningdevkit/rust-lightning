@@ -321,20 +321,3 @@ async fn test_esplora_syncs() {
 		_ => panic!("Unexpected event"),
 	}
 }
-
-#[tokio::test]
-#[cfg(any(feature = "esplora-async-https", feature = "esplora-blocking"))]
-async fn test_esplora_connects_to_public_server() {
-	let mut logger = TestLogger {};
-	let esplora_url = "https://blockstream.info/api".to_string();
-	let tx_sync = EsploraSyncClient::new(esplora_url, &mut logger);
-	let confirmable = TestConfirmable::new();
-
-	// Check we connect and pick up on new best blocks
-	assert_eq!(confirmable.best_block.lock().unwrap().1, 0);
-	#[cfg(feature = "esplora-async-https")]
-	tx_sync.sync(vec![&confirmable]).await.unwrap();
-	#[cfg(feature = "esplora-blocking")]
-	tx_sync.sync(vec![&confirmable]).unwrap();
-	assert_ne!(confirmable.best_block.lock().unwrap().1, 0);
-}
