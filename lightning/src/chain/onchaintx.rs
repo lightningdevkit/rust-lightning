@@ -1123,6 +1123,10 @@ impl<ChannelSigner: WriteableEcdsaChannelSigner> OnchainTxHandler<ChannelSigner>
 		ret
 	}
 
+	pub(crate) fn get_unsigned_holder_commitment_tx(&self) -> Transaction {
+		self.holder_commitment.trust().built_transaction().transaction.clone()
+	}
+
 	//TODO: getting lastest holder transactions should be infallible and result in us "force-closing the channel", but we may
 	// have empty holder commitment transaction if a ChannelMonitor is asked to force-close just after OutboundV1Channel::get_funding_created,
 	// before providing a initial commitment transaction. For outbound channel, init ChannelMonitor at Channel::funding_signed, there is nothing

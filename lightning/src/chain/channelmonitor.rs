@@ -3491,7 +3491,9 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			let commitment_package = PackageTemplate::build_package(self.funding_info.0.txid.clone(), self.funding_info.0.index as u32, PackageSolvingData::HolderFundingOutput(funding_outp), self.best_block.height(), self.best_block.height());
 			claimable_outpoints.push(commitment_package);
 			self.pending_monitor_events.push(MonitorEvent::CommitmentTxConfirmed(self.funding_info.0));
-			let commitment_tx = self.onchain_tx_handler.get_fully_signed_holder_tx(&self.funding_redeemscript);
+			// Although we aren't signing the transaction directly here, the transaction will be signed
+			// in the claim that is queued to OnchainTxHandler. We set holder_tx_signed here to reject
+			// new channel updates.
 			self.holder_tx_signed = true;
 			// We can't broadcast our HTLC transactions while the commitment transaction is
 			// unconfirmed. We'll delay doing so until we detect the confirmed commitment in
@@ -3501,7 +3503,8 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				// assuming it gets confirmed in the next block. Sadly, we have code which considers
 				// "not yet confirmed" things as discardable, so we cannot do that here.
 				let (mut new_outpoints, _) = self.get_broadcasted_holder_claims(&self.current_holder_commitment_tx, self.best_block.height());
-				let new_outputs = self.get_broadcasted_holder_watch_outputs(&self.current_holder_commitment_tx, &commitment_tx);
+				let unsigned_commitment_tx = self.onchain_tx_handler.get_unsigned_holder_commitment_tx();
+				let new_outputs = self.get_broadcasted_holder_watch_outputs(&self.current_holder_commitment_tx, &unsigned_commitment_tx);
 				if !new_outputs.is_empty() {
 					watch_outputs.push((self.current_holder_commitment_tx.txid.clone(), new_outputs));
 				}
