@@ -15,11 +15,13 @@ use bitcoin::amount::Amount;
 use bitcoin::consensus::Encodable;
 use bitcoin::constants::WITNESS_SCALE_FACTOR;
 use bitcoin::policy::MAX_STANDARD_TX_WEIGHT;
+use bitcoin::secp256k1::PublicKey;
 use bitcoin::transaction::Version;
 use bitcoin::{OutPoint, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Weight};
 
 use crate::chain::chaininterface::fee_for_weight;
 use crate::events::bump_transaction::{BASE_INPUT_WEIGHT, EMPTY_SCRIPT_SIG_WEIGHT};
+use crate::events::MessageSendEvent;
 use crate::ln::channel::TOTAL_BITCOIN_SUPPLY_SATOSHIS;
 use crate::ln::msgs;
 use crate::ln::msgs::SerialId;
@@ -27,6 +29,7 @@ use crate::ln::types::ChannelId;
 use crate::sign::{EntropySource, P2TR_KEY_PATH_WITNESS_WEIGHT, P2WPKH_WITNESS_WEIGHT};
 use crate::util::ser::TransactionU16LenLimited;
 
+use core::fmt::Display;
 use core::ops::Deref;
 
 /// The number of received `tx_add_input` messages during a negotiation at which point the
@@ -43,7 +46,7 @@ const MAX_INPUTS_OUTPUTS_COUNT: usize = 252;
 
 /// The total weight of the common fields whose fee is paid by the initiator of the interactive
 /// transaction construction protocol.
-const TX_COMMON_FIELDS_WEIGHT: u64 = (4 /* version */ + 4 /* locktime */ + 1 /* input count */ +
+pub(crate) const TX_COMMON_FIELDS_WEIGHT: u64 = (4 /* version */ + 4 /* locktime */ + 1 /* input count */ +
 	1 /* output count */) * WITNESS_SCALE_FACTOR as u64 + 2 /* segwit marker + flag */;
 
 // BOLT 3 - Lower bounds for input weights
@@ -106,6 +109,47 @@ pub(crate) enum AbortReason {
 	/// if funding output is provided by the peer this is an interop error,
 	/// if provided by the same node than internal input consistency error.
 	InvalidLowFundingOutputValue,
+}
+
+impl AbortReason {
+	pub fn into_tx_abort_msg(self, channel_id: ChannelId) -> msgs::TxAbort {
+		msgs::TxAbort { channel_id, data: self.to_string().into_bytes() }
+	}
+}
+
+impl Display for AbortReason {
+	fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+		f.write_str(match self {
+			AbortReason::InvalidStateTransition => "State transition was invalid",
+			AbortReason::UnexpectedCounterpartyMessage => "Unexpected message",
+			AbortReason::ReceivedTooManyTxAddInputs => "Too many `tx_add_input`s received",
+			AbortReason::ReceivedTooManyTxAddOutputs => "Too many `tx_add_output`s received",
+			AbortReason::IncorrectInputSequenceValue => {
+				"Input has a sequence value greater than 0xFFFFFFFD"
+			},
+			AbortReason::IncorrectSerialIdParity => "Parity for `serial_id` was incorrect",
+			AbortReason::SerialIdUnknown => "The `serial_id` is unknown",
+			AbortReason::DuplicateSerialId => "The `serial_id` already exists",
+			AbortReason::PrevTxOutInvalid => "Invalid previous transaction output",
+			AbortReason::ExceededMaximumSatsAllowed => {
+				"Output amount exceeded total bitcoin supply"
+			},
+			AbortReason::ExceededNumberOfInputsOrOutputs => "Too many inputs or outputs",
+			AbortReason::TransactionTooLarge => "Transaction weight is too large",
+			AbortReason::BelowDustLimit => "Output amount is below the dust limit",
+			AbortReason::InvalidOutputScript => "The output script is non-standard",
+			AbortReason::InsufficientFees => "Insufficient fees paid",
+			AbortReason::OutputsValueExceedsInputsValue => {
+				"Total value of outputs exceeds total value of inputs"
+			},
+			AbortReason::InvalidTx => "The transaction is invalid",
+			AbortReason::MissingFundingOutput => "No shared funding output found",
+			AbortReason::DuplicateFundingOutput => "More than one funding output found",
+			AbortReason::InvalidLowFundingOutputValue => {
+				"Local part of funding output value is greater than the funding output value"
+			},
+		})
+	}
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -905,7 +949,7 @@ pub struct SharedOwnedOutput {
 }
 
 impl SharedOwnedOutput {
-	fn new(tx_out: TxOut, local_owned: u64) -> SharedOwnedOutput {
+	pub fn new(tx_out: TxOut, local_owned: u64) -> SharedOwnedOutput {
 		debug_assert!(
 			local_owned <= tx_out.value.to_sat(),
 			"SharedOwnedOutput: Inconsistent local_owned value {}, larger than output value {}",
@@ -1048,8 +1092,9 @@ impl InteractiveTxInput {
 	}
 }
 
-pub(crate) struct InteractiveTxConstructor {
+pub(super) struct InteractiveTxConstructor {
 	state_machine: StateMachine,
+	initiator_first_message: Option<InteractiveTxMessageSend>,
 	channel_id: ChannelId,
 	inputs_to_contribute: Vec<(SerialId, TxIn, TransactionU16LenLimited)>,
 	outputs_to_contribute: Vec<(SerialId, OutputOwned)>,
@@ -1060,6 +1105,39 @@ pub(crate) enum InteractiveTxMessageSend {
 	TxAddInput(msgs::TxAddInput),
 	TxAddOutput(msgs::TxAddOutput),
 	TxComplete(msgs::TxComplete),
+}
+
+impl InteractiveTxMessageSend {
+	pub fn into_msg_send_event(self, counterparty_node_id: PublicKey) -> MessageSendEvent {
+		match self {
+			InteractiveTxMessageSend::TxAddInput(msg) => {
+				MessageSendEvent::SendTxAddInput { node_id: counterparty_node_id, msg }
+			},
+			InteractiveTxMessageSend::TxAddOutput(msg) => {
+				MessageSendEvent::SendTxAddOutput { node_id: counterparty_node_id, msg }
+			},
+			InteractiveTxMessageSend::TxComplete(msg) => {
+				MessageSendEvent::SendTxComplete { node_id: counterparty_node_id, msg }
+			},
+		}
+	}
+}
+
+pub(super) struct InteractiveTxMessageSendResult(
+	pub Result<InteractiveTxMessageSend, msgs::TxAbort>,
+);
+
+impl InteractiveTxMessageSendResult {
+	pub fn into_msg_send_event(self, counterparty_node_id: PublicKey) -> MessageSendEvent {
+		match self.0 {
+			Ok(interactive_tx_msg_send) => {
+				interactive_tx_msg_send.into_msg_send_event(counterparty_node_id)
+			},
+			Err(tx_abort_msg) => {
+				MessageSendEvent::SendTxAbort { node_id: counterparty_node_id, msg: tx_abort_msg }
+			},
+		}
+	}
 }
 
 // This macro executes a state machine transition based on a provided action.
@@ -1094,6 +1172,46 @@ pub(crate) enum HandleTxCompleteValue {
 	NegotiationComplete(ConstructedTransaction),
 }
 
+pub(super) struct HandleTxCompleteResult(pub Result<HandleTxCompleteValue, msgs::TxAbort>);
+
+impl HandleTxCompleteResult {
+	pub fn into_msg_send_event(
+		self, counterparty_node_id: PublicKey,
+	) -> (Option<MessageSendEvent>, Option<ConstructedTransaction>) {
+		match self.0 {
+			Ok(tx_complete_res) => {
+				let (tx_msg_opt, tx_opt) = match tx_complete_res {
+					HandleTxCompleteValue::SendTxMessage(msg) => (Some(msg), None),
+					HandleTxCompleteValue::SendTxComplete(msg, tx) => (Some(msg), Some(tx)),
+					HandleTxCompleteValue::NegotiationComplete(tx) => (None, Some(tx)),
+				};
+				(tx_msg_opt.map(|tx_msg| tx_msg.into_msg_send_event(counterparty_node_id)), tx_opt)
+			},
+			Err(tx_abort_msg) => (
+				Some(MessageSendEvent::SendTxAbort {
+					node_id: counterparty_node_id,
+					msg: tx_abort_msg,
+				}),
+				None,
+			),
+		}
+	}
+}
+
+pub(super) struct InteractiveTxConstructorArgs<'a, ES: Deref>
+where
+	ES::Target: EntropySource,
+{
+	pub entropy_source: &'a ES,
+	pub channel_id: ChannelId,
+	pub feerate_sat_per_kw: u32,
+	pub is_initiator: bool,
+	pub funding_tx_locktime: AbsoluteLockTime,
+	pub inputs_to_contribute: Vec<(TxIn, TransactionU16LenLimited)>,
+	pub outputs_to_contribute: Vec<OutputOwned>,
+	pub expected_remote_shared_funding_output: Option<(ScriptBuf, u64)>,
+}
+
 impl InteractiveTxConstructor {
 	/// Instantiates a new `InteractiveTxConstructor`.
 	///
@@ -1103,20 +1221,24 @@ impl InteractiveTxConstructor {
 	/// and its (local) contribution from the shared output:
 	///   0 when the whole value belongs to the remote node, or
 	///   positive if owned also by local.
-	/// Note: The local value cannot be larger that the actual shared output.
+	/// Note: The local value cannot be larger than the actual shared output.
 	///
-	/// A tuple is returned containing the newly instantiate `InteractiveTxConstructor` and optionally
-	/// an initial wrapped `Tx_` message which the holder needs to send to the counterparty.
-	pub fn new<ES: Deref>(
-		entropy_source: &ES, channel_id: ChannelId, feerate_sat_per_kw: u32, is_initiator: bool,
-		funding_tx_locktime: AbsoluteLockTime,
-		inputs_to_contribute: Vec<(TxIn, TransactionU16LenLimited)>,
-		outputs_to_contribute: Vec<OutputOwned>,
-		expected_remote_shared_funding_output: Option<(ScriptBuf, u64)>,
-	) -> Result<(Self, Option<InteractiveTxMessageSend>), AbortReason>
+	/// If the holder is the initiator, they need to send the first message which is a `TxAddInput`
+	/// message.
+	pub fn new<ES: Deref>(args: InteractiveTxConstructorArgs<ES>) -> Result<Self, AbortReason>
 	where
 		ES::Target: EntropySource,
 	{
+		let InteractiveTxConstructorArgs {
+			entropy_source,
+			channel_id,
+			feerate_sat_per_kw,
+			is_initiator,
+			funding_tx_locktime,
+			inputs_to_contribute,
+			outputs_to_contribute,
+			expected_remote_shared_funding_output,
+		} = args;
 		// Sanity check: There can be at most one shared output, local-added or remote-added
 		let mut expected_shared_funding_output: Option<(ScriptBuf, u64)> = None;
 		for output in &outputs_to_contribute {
@@ -1175,26 +1297,25 @@ impl InteractiveTxConstructor {
 				.collect();
 			// In the same manner and for the same rationale as the inputs above, we'll shuffle the outputs.
 			outputs_to_contribute.sort_unstable_by_key(|(serial_id, _)| *serial_id);
-			let mut constructor =
-				Self { state_machine, channel_id, inputs_to_contribute, outputs_to_contribute };
-			let message_send = if is_initiator {
-				match constructor.maybe_send_message() {
-					Ok(msg_send) => Some(msg_send),
-					Err(_) => {
-						debug_assert!(
-							false,
-							"We should always be able to start our state machine successfully"
-						);
-						None
-					},
-				}
-			} else {
-				None
+			let mut constructor = Self {
+				state_machine,
+				initiator_first_message: None,
+				channel_id,
+				inputs_to_contribute,
+				outputs_to_contribute,
 			};
-			Ok((constructor, message_send))
+			// We'll store the first message for the initiator.
+			if is_initiator {
+				constructor.initiator_first_message = Some(constructor.maybe_send_message()?);
+			}
+			Ok(constructor)
 		} else {
 			Err(AbortReason::MissingFundingOutput)
 		}
+	}
+
+	pub fn take_initiator_first_message(&mut self) -> Option<InteractiveTxMessageSend> {
+		self.initiator_first_message.take()
 	}
 
 	fn maybe_send_message(&mut self) -> Result<InteractiveTxMessageSend, AbortReason> {
@@ -1295,8 +1416,8 @@ mod tests {
 	use crate::ln::channel::TOTAL_BITCOIN_SUPPLY_SATOSHIS;
 	use crate::ln::interactivetxs::{
 		generate_holder_serial_id, AbortReason, HandleTxCompleteValue, InteractiveTxConstructor,
-		InteractiveTxMessageSend, MAX_INPUTS_OUTPUTS_COUNT, MAX_RECEIVED_TX_ADD_INPUT_COUNT,
-		MAX_RECEIVED_TX_ADD_OUTPUT_COUNT,
+		InteractiveTxConstructorArgs, InteractiveTxMessageSend, MAX_INPUTS_OUTPUTS_COUNT,
+		MAX_RECEIVED_TX_ADD_INPUT_COUNT, MAX_RECEIVED_TX_ADD_OUTPUT_COUNT,
 	};
 	use crate::ln::types::ChannelId;
 	use crate::sign::EntropySource;
@@ -1395,7 +1516,7 @@ mod tests {
 		ES::Target: EntropySource,
 	{
 		let channel_id = ChannelId(entropy_source.get_secure_random_bytes());
-		let tx_locktime = AbsoluteLockTime::from_height(1337).unwrap();
+		let funding_tx_locktime = AbsoluteLockTime::from_height(1337).unwrap();
 
 		// funding output sanity check
 		let shared_outputs_by_a: Vec<_> =
@@ -1448,16 +1569,16 @@ mod tests {
 			}
 		}
 
-		let (mut constructor_a, first_message_a) = match InteractiveTxConstructor::new(
+		let mut constructor_a = match InteractiveTxConstructor::new(InteractiveTxConstructorArgs {
 			entropy_source,
 			channel_id,
-			TEST_FEERATE_SATS_PER_KW,
-			true,
-			tx_locktime,
-			session.inputs_a,
-			session.outputs_a.to_vec(),
-			session.a_expected_remote_shared_output,
-		) {
+			feerate_sat_per_kw: TEST_FEERATE_SATS_PER_KW,
+			is_initiator: true,
+			funding_tx_locktime,
+			inputs_to_contribute: session.inputs_a,
+			outputs_to_contribute: session.outputs_a.to_vec(),
+			expected_remote_shared_funding_output: session.a_expected_remote_shared_output,
+		}) {
 			Ok(r) => r,
 			Err(abort_reason) => {
 				assert_eq!(
@@ -1469,16 +1590,16 @@ mod tests {
 				return;
 			},
 		};
-		let (mut constructor_b, first_message_b) = match InteractiveTxConstructor::new(
+		let mut constructor_b = match InteractiveTxConstructor::new(InteractiveTxConstructorArgs {
 			entropy_source,
 			channel_id,
-			TEST_FEERATE_SATS_PER_KW,
-			false,
-			tx_locktime,
-			session.inputs_b,
-			session.outputs_b.to_vec(),
-			session.b_expected_remote_shared_output,
-		) {
+			feerate_sat_per_kw: TEST_FEERATE_SATS_PER_KW,
+			is_initiator: false,
+			funding_tx_locktime,
+			inputs_to_contribute: session.inputs_b,
+			outputs_to_contribute: session.outputs_b.to_vec(),
+			expected_remote_shared_funding_output: session.b_expected_remote_shared_output,
+		}) {
 			Ok(r) => r,
 			Err(abort_reason) => {
 				assert_eq!(
@@ -1514,8 +1635,7 @@ mod tests {
 				}
 			};
 
-		assert!(first_message_b.is_none());
-		let mut message_send_a = first_message_a;
+		let mut message_send_a = constructor_a.take_initiator_first_message();
 		let mut message_send_b = None;
 		let mut final_tx_a = None;
 		let mut final_tx_b = None;
