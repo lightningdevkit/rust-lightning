@@ -2315,8 +2315,9 @@ where L::Target: Logger {
 					// Decrease the available liquidity of a hop in the middle of the path.
 					let victim_candidate = &payment_path.hops[(payment_path.hops.len()) / 2].0.candidate;
 					let exhausted = u64::max_value();
-					log_trace!(logger, "Disabling route candidate {} for future path building iterations to
-						avoid duplicates.", LoggedCandidateHop(victim_candidate));
+					log_trace!(logger,
+						"Disabling route candidate {} for future path building iterations to avoid duplicates.",
+						LoggedCandidateHop(victim_candidate));
 					*used_liquidities.entry(victim_candidate.id(false)).or_default() = exhausted;
 					*used_liquidities.entry(victim_candidate.id(true)).or_default() = exhausted;
 				}
