@@ -7009,12 +7009,6 @@ where
 			let timestamp = self.highest_seen_timestamp.load(Ordering::Acquire);
 			self.do_chain_event(Some(last_best_block_height), |channel| channel.best_block_updated(last_best_block_height, timestamp as u32, self.genesis_hash.clone(), &self.node_signer, &self.default_configuration, &self.logger));
 		}
-		// log each confirmed tansaction's Txid.
-		for tx in txdata.iter() {
-			let (index, transaction) = tx;
-			let txid = transaction.txid();
-			log_trace!(self.logger, "Transaction id {} confirmed in block {}", txid, block_hash);
-		}
 	}
 
 	fn best_block_updated(&self, header: &BlockHeader, height: u32) {

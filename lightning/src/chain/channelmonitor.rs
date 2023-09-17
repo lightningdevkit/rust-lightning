@@ -3390,6 +3390,8 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 					let mut balance_spendable_csv = None;
 					log_info!(logger, "Channel {} closed by funding output spend in txid {}.",
 						&self.funding_info.0.to_channel_id(), txid);
+				    // logging only that spends funding output
+					log_trace!(logger, "Transaction id {} confirmed in block {}", txid , block_hash);
 					self.funding_spend_seen = true;
 					let mut commitment_tx_to_counterparty_output = None;
 					if (tx.input[0].sequence.0 >> 8*3) as u8 == 0x80 && (tx.lock_time.0 >> 8*3) as u8 == 0x20 {
@@ -3438,6 +3440,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 						if let Some(new_outputs) = new_outputs_option {
 							watch_outputs.push(new_outputs);
 						}
+						log_trace!(logger, "Transaction id {} confirmed in block {}", commitment_txid , block_hash);
 						// Since there may be multiple HTLCs for this channel (all spending the
 						// same commitment tx) being claimed by the counterparty within the same
 						// transaction, and `check_spend_counterparty_htlc` already checks all the
