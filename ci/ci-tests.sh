@@ -41,8 +41,6 @@ fi
 # The memchr crate switched to an MSRV of 1.60 starting with v2.6.0
 [ "$RUSTC_MINOR_VERSION" -lt 60 ] && cargo update -p memchr --precise "2.5.0" --verbose
 
-[ "$LDK_COVERAGE_BUILD" != "" ] && export RUSTFLAGS="-C link-dead-code"
-
 export RUST_BACKTRACE=1
 
 echo -e "\n\nBuilding and testing all workspace crates..."
