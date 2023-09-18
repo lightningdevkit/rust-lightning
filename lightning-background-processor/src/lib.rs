@@ -1683,6 +1683,7 @@ mod tests {
 				channel_features: ChannelFeatures::empty(),
 				fee_msat: 0,
 				cltv_expiry_delta: MIN_CLTV_EXPIRY_DELTA as u32,
+				maybe_announced_channel: true,
 			}], blinded_tail: None };
 
 			$nodes[0].scorer.lock().unwrap().expect(TestResult::PaymentFailure { path: path.clone(), short_channel_id: scored_scid });

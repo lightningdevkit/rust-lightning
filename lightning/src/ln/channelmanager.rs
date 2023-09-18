@@ -77,7 +77,7 @@ use core::time::Duration;
 use core::ops::Deref;
 
 // Re-export this for use in the public API.
-pub use crate::ln::outbound_payment::{PaymentSendFailure, Retry, RetryableSendFailure, RecipientOnionFields};
+pub use crate::ln::outbound_payment::{PaymentSendFailure, ProbeSendFailure, Retry, RetryableSendFailure, RecipientOnionFields};
 use crate::ln::script::ShutdownScript;
 
 // We hold various information about HTLC relay in the HTLC objects in Channel itself:
@@ -839,33 +839,46 @@ pub type SimpleRefChannelManager<'a, 'b, 'c, 'd, 'e, 'f, 'g, 'h, M, T, F, L> =
 		&'g L
 	>;
 
-macro_rules! define_test_pub_trait { ($vis: vis) => {
-/// A trivial trait which describes any [`ChannelManager`] used in testing.
-$vis trait AChannelManager {
+/// A trivial trait which describes any [`ChannelManager`].
+pub trait AChannelManager {
+	/// A type implementing [`chain::Watch`].
 	type Watch: chain::Watch<Self::Signer> + ?Sized;
+	/// A type that may be dereferenced to [`Self::Watch`].
 	type M: Deref<Target = Self::Watch>;
+	/// A type implementing [`BroadcasterInterface`].
 	type Broadcaster: BroadcasterInterface + ?Sized;
+	/// A type that may be dereferenced to [`Self::Broadcaster`].
 	type T: Deref<Target = Self::Broadcaster>;
+	/// A type implementing [`EntropySource`].
 	type EntropySource: EntropySource + ?Sized;
+	/// A type that may be dereferenced to [`Self::EntropySource`].
 	type ES: Deref<Target = Self::EntropySource>;
+	/// A type implementing [`NodeSigner`].
 	type NodeSigner: NodeSigner + ?Sized;
+	/// A type that may be dereferenced to [`Self::NodeSigner`].
 	type NS: Deref<Target = Self::NodeSigner>;
+	/// A type implementing [`WriteableEcdsaChannelSigner`].
 	type Signer: WriteableEcdsaChannelSigner + Sized;
+	/// A type implementing [`SignerProvider`] for [`Self::Signer`].
 	type SignerProvider: SignerProvider<Signer = Self::Signer> + ?Sized;
+	/// A type that may be dereferenced to [`Self::SignerProvider`].
 	type SP: Deref<Target = Self::SignerProvider>;
+	/// A type implementing [`FeeEstimator`].
 	type FeeEstimator: FeeEstimator + ?Sized;
+	/// A type that may be dereferenced to [`Self::FeeEstimator`].
 	type F: Deref<Target = Self::FeeEstimator>;
+	/// A type implementing [`Router`].
 	type Router: Router + ?Sized;
+	/// A type that may be dereferenced to [`Self::Router`].
 	type R: Deref<Target = Self::Router>;
+	/// A type implementing [`Logger`].
 	type Logger: Logger + ?Sized;
+	/// A type that may be dereferenced to [`Self::Logger`].
 	type L: Deref<Target = Self::Logger>;
+	/// Returns a reference to the actual [`ChannelManager`] object.
 	fn get_cm(&self) -> &ChannelManager<Self::M, Self::T, Self::ES, Self::NS, Self::SP, Self::F, Self::R, Self::L>;
 }
-} }
-#[cfg(any(test, feature = "_test_utils"))]
-define_test_pub_trait!(pub);
-#[cfg(not(any(test, feature = "_test_utils")))]
-define_test_pub_trait!(pub(crate));
+
 impl<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, L: Deref> AChannelManager
 for ChannelManager<M, T, ES, NS, SP, F, R, L>
 where
@@ -3544,6 +3557,116 @@ where
 	#[cfg(test)]
 	pub(crate) fn payment_is_probe(&self, payment_hash: &PaymentHash, payment_id: &PaymentId) -> bool {
 		outbound_payment::payment_is_probe(payment_hash, payment_id, self.probing_cookie_secret)
+	}
+
+	/// Sends payment probes over all paths of a route that would be used to pay the given
+	/// amount to the given `node_id`.
+	///
+	/// See [`ChannelManager::send_preflight_probes`] for more information.
+	pub fn send_spontaneous_preflight_probes(
+		&self, node_id: PublicKey, amount_msat: u64, final_cltv_expiry_delta: u32, 
+		liquidity_limit_multiplier: Option<u64>,
+	) -> Result<Vec<(PaymentHash, PaymentId)>, ProbeSendFailure> {
+		let payment_params =
+			PaymentParameters::from_node_id(node_id, final_cltv_expiry_delta);
+
+		let route_params = RouteParameters { payment_params, final_value_msat: amount_msat };
+
+		self.send_preflight_probes(route_params, liquidity_limit_multiplier)
+	}
+
+	/// Sends payment probes over all paths of a route that would be used to pay a route found
+	/// according to the given [`RouteParameters`].
+	///
+	/// This may be used to send "pre-flight" probes, i.e., to train our scorer before conducting
+	/// the actual payment. Note this is only useful if there likely is sufficient time for the
+	/// probe to settle before sending out the actual payment, e.g., when waiting for user
+	/// confirmation in a wallet UI.
+	///
+	/// Otherwise, there is a chance the probe could take up some liquidity needed to complete the
+	/// actual payment. Users should therefore be cautious and might avoid sending probes if
+	/// liquidity is scarce and/or they don't expect the probe to return before they send the
+	/// payment. To mitigate this issue, channels with available liquidity less than the required
+	/// amount times the given `liquidity_limit_multiplier` won't be used to send pre-flight
+	/// probes. If `None` is given as `liquidity_limit_multiplier`, it defaults to `3`.
+	pub fn send_preflight_probes(
+		&self, route_params: RouteParameters, liquidity_limit_multiplier: Option<u64>,
+	) -> Result<Vec<(PaymentHash, PaymentId)>, ProbeSendFailure> {
+		let liquidity_limit_multiplier = liquidity_limit_multiplier.unwrap_or(3);
+
+		let payer = self.get_our_node_id();
+		let usable_channels = self.list_usable_channels();
+		let first_hops = usable_channels.iter().collect::<Vec<_>>();
+		let inflight_htlcs = self.compute_inflight_htlcs();
+
+		let route = self
+			.router
+			.find_route(&payer, &route_params, Some(&first_hops), inflight_htlcs)
+			.map_err(|e| {
+				log_error!(self.logger, "Failed to find path for payment probe: {:?}", e);
+				ProbeSendFailure::RouteNotFound
+			})?;
+
+		let mut used_liquidity_map = HashMap::with_capacity(first_hops.len());
+
+		let mut res = Vec::new();
+
+		for mut path in route.paths {
+			// If the last hop is probably an unannounced channel we refrain from probing all the
+			// way through to the end and instead probe up to the second-to-last channel.
+			while let Some(last_path_hop) = path.hops.last() {
+				if last_path_hop.maybe_announced_channel {
+					// We found a potentially announced last hop.
+					break;
+				} else {
+					// Drop the last hop, as it's likely unannounced.
+					log_debug!(
+						self.logger,
+						"Avoided sending payment probe all the way to last hop {} as it is likely unannounced.",
+						last_path_hop.short_channel_id
+					);
+					let final_value_msat = path.final_value_msat();
+					path.hops.pop();
+					if let Some(new_last) = path.hops.last_mut() {
+						new_last.fee_msat += final_value_msat;
+					}
+				}
+			}
+
+			if path.hops.len() < 2 {
+				log_debug!(
+					self.logger,
+					"Skipped sending payment probe over path with less than two hops."
+				);
+				continue;
+			}
+
+			if let Some(first_path_hop) = path.hops.first() {
+				if let Some(first_hop) = first_hops.iter().find(|h| {
+					h.get_outbound_payment_scid() == Some(first_path_hop.short_channel_id)
+				}) {
+					let path_value = path.final_value_msat() + path.fee_msat();
+					let used_liquidity =
+						used_liquidity_map.entry(first_path_hop.short_channel_id).or_insert(0);
+
+					if first_hop.next_outbound_htlc_limit_msat
+						< (*used_liquidity + path_value) * liquidity_limit_multiplier
+					{
+						log_debug!(self.logger, "Skipped sending payment probe to avoid putting channel {} under the liquidity limit.", first_path_hop.short_channel_id);
+						continue;
+					} else {
+						*used_liquidity += path_value;
+					}
+				}
+			}
+
+			res.push(self.send_probe(path).map_err(|e| {
+				log_error!(self.logger, "Failed to send pre-flight probe: {:?}", e);
+				ProbeSendFailure::SendingFailed(e)
+			})?);
+		}
+
+		Ok(res)
 	}
 
 	/// Handles the generation of a funding transaction, optionally (for tests) with a function

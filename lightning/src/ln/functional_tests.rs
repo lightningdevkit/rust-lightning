@@ -1036,7 +1036,8 @@ fn fake_network_test() {
 		short_channel_id: chan_2.0.contents.short_channel_id,
 		channel_features: ChannelFeatures::empty(),
 		fee_msat: 0,
-		cltv_expiry_delta: chan_3.0.contents.cltv_expiry_delta as u32
+		cltv_expiry_delta: chan_3.0.contents.cltv_expiry_delta as u32,
+		maybe_announced_channel: true,
 	});
 	hops.push(RouteHop {
 		pubkey: nodes[3].node.get_our_node_id(),
@@ -1044,7 +1045,8 @@ fn fake_network_test() {
 		short_channel_id: chan_3.0.contents.short_channel_id,
 		channel_features: ChannelFeatures::empty(),
 		fee_msat: 0,
-		cltv_expiry_delta: chan_4.1.contents.cltv_expiry_delta as u32
+		cltv_expiry_delta: chan_4.1.contents.cltv_expiry_delta as u32,
+		maybe_announced_channel: true,
 	});
 	hops.push(RouteHop {
 		pubkey: nodes[1].node.get_our_node_id(),
@@ -1053,6 +1055,7 @@ fn fake_network_test() {
 		channel_features: nodes[1].node.channel_features(),
 		fee_msat: 1000000,
 		cltv_expiry_delta: TEST_FINAL_CLTV,
+		maybe_announced_channel: true,
 	});
 	hops[1].fee_msat = chan_4.1.contents.fee_base_msat as u64 + chan_4.1.contents.fee_proportional_millionths as u64 * hops[2].fee_msat as u64 / 1000000;
 	hops[0].fee_msat = chan_3.0.contents.fee_base_msat as u64 + chan_3.0.contents.fee_proportional_millionths as u64 * hops[1].fee_msat as u64 / 1000000;
@@ -1067,7 +1070,8 @@ fn fake_network_test() {
 		short_channel_id: chan_4.0.contents.short_channel_id,
 		channel_features: ChannelFeatures::empty(),
 		fee_msat: 0,
-		cltv_expiry_delta: chan_3.1.contents.cltv_expiry_delta as u32
+		cltv_expiry_delta: chan_3.1.contents.cltv_expiry_delta as u32,
+		maybe_announced_channel: true,
 	});
 	hops.push(RouteHop {
 		pubkey: nodes[2].node.get_our_node_id(),
@@ -1075,7 +1079,8 @@ fn fake_network_test() {
 		short_channel_id: chan_3.0.contents.short_channel_id,
 		channel_features: ChannelFeatures::empty(),
 		fee_msat: 0,
-		cltv_expiry_delta: chan_2.1.contents.cltv_expiry_delta as u32
+		cltv_expiry_delta: chan_2.1.contents.cltv_expiry_delta as u32,
+		maybe_announced_channel: true,
 	});
 	hops.push(RouteHop {
 		pubkey: nodes[1].node.get_our_node_id(),
@@ -1084,6 +1089,7 @@ fn fake_network_test() {
 		channel_features: nodes[1].node.channel_features(),
 		fee_msat: 1000000,
 		cltv_expiry_delta: TEST_FINAL_CLTV,
+		maybe_announced_channel: true,
 	});
 	hops[1].fee_msat = chan_2.1.contents.fee_base_msat as u64 + chan_2.1.contents.fee_proportional_millionths as u64 * hops[2].fee_msat as u64 / 1000000;
 	hops[0].fee_msat = chan_3.1.contents.fee_base_msat as u64 + chan_3.1.contents.fee_proportional_millionths as u64 * hops[1].fee_msat as u64 / 1000000;

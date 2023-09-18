@@ -2186,6 +2186,7 @@ mod tests {
 			channel_features: channelmanager::provided_channel_features(&config),
 			fee_msat,
 			cltv_expiry_delta: 18,
+			maybe_announced_channel: true,
 		}
 	}
 

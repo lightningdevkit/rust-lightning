@@ -391,7 +391,7 @@ pub enum RetryableSendFailure {
 /// is in, see the description of individual enum states for more.
 ///
 /// [`ChannelManager::send_payment_with_route`]: crate::ln::channelmanager::ChannelManager::send_payment_with_route
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PaymentSendFailure {
 	/// A parameter which was passed to send_payment was invalid, preventing us from attempting to
 	/// send the payment at all.
@@ -463,6 +463,18 @@ pub(super) enum Bolt12PaymentError {
 	UnexpectedInvoice,
 	/// Payment for an invoice with the corresponding [`PaymentId`] was already initiated.
 	DuplicateInvoice,
+}
+
+/// Indicates that we failed to send a payment probe. Further errors may be surfaced later via
+/// [`Event::ProbeFailed`].
+///
+/// [`Event::ProbeFailed`]: crate::events::Event::ProbeFailed
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ProbeSendFailure {
+	/// We were unable to find a route to the destination.
+	RouteNotFound,
+	/// We failed to send the payment probes.
+	SendingFailed(PaymentSendFailure),
 }
 
 /// Information which is provided, encrypted, to the payment recipient when sending HTLCs.
@@ -1103,6 +1115,7 @@ impl OutboundPayments {
 		F: Fn(SendAlongPathArgs) -> Result<(), APIError>,
 	{
 		let payment_id = PaymentId(entropy_source.get_secure_random_bytes());
+		let payment_secret = PaymentSecret(entropy_source.get_secure_random_bytes());
 
 		let payment_hash = probing_cookie_from_id(&payment_id, probing_cookie_secret);
 
@@ -1114,7 +1127,7 @@ impl OutboundPayments {
 
 		let route = Route { paths: vec![path], route_params: None };
 		let onion_session_privs = self.add_new_pending_payment(payment_hash,
-			RecipientOnionFields::spontaneous_empty(), payment_id, None, &route, None, None,
+			RecipientOnionFields::secret_only(payment_secret), payment_id, None, &route, None, None,
 			entropy_source, best_block_height)?;
 
 		match self.pay_route_internal(&route, payment_hash, RecipientOnionFields::spontaneous_empty(),
@@ -1850,6 +1863,7 @@ mod tests {
 				channel_features: ChannelFeatures::empty(),
 				fee_msat: 0,
 				cltv_expiry_delta: 0,
+				maybe_announced_channel: true,
 			}], blinded_tail: None }],
 			route_params: Some(route_params.clone()),
 		};
@@ -2150,6 +2164,7 @@ mod tests {
 								channel_features: ChannelFeatures::empty(),
 								fee_msat: invoice.amount_msats(),
 								cltv_expiry_delta: 0,
+								maybe_announced_channel: true,
 							}
 						],
 						blinded_tail: None,
