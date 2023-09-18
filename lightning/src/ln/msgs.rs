@@ -445,14 +445,9 @@ pub struct Splice {
 	pub channel_id: ChannelId,
 	/// The genesis hash of the blockchain where the channel is intended to be spliced
 	pub chain_hash: BlockHash,
-	/*
 	/// The intended change in channel capacity: the amount to be added (positive value)
 	/// or removed (negative value) by the sender (splice initiator) by splicing into/from the channel.
 	pub relative_satoshis: i64,
-	*/
-	/// The post-slice channel value
-	/// TODO: Switch to relative_satoshis
-	pub funding_satoshis: u64,
 	/// The feerate for the new funding transaction, set by the splice initiator
 	pub funding_feerate_perkw: u32,
 	/// The locktime for the new funding transaction
@@ -471,14 +466,9 @@ pub struct SpliceAck {
 	pub channel_id: ChannelId,
 	/// The genesis hash of the blockchain where the channel is intended to be spliced
 	pub chain_hash: BlockHash,
-	/*
 	/// The intended change in channel capacity: the amount to be added (positive value)
 	/// or removed (negative value) by the sender (splice acceptor) by splicing into/from the channel.
 	pub relative_satoshis: i64,
-	*/
-	/// The post-splice channel value
-	/// TODO: Switch to relative_satoshis
-	pub funding_satoshis: u64,
 	/// The key of the sender (splice acceptor) controlling the new funding transaction
 	pub funding_pubkey: PublicKey,
 }
@@ -1846,9 +1836,7 @@ impl_writeable_msg!(AcceptChannelV2, {
 impl_writeable_msg!(Splice, {
 	channel_id,
 	chain_hash,
-	// relative_satoshis,
-	// TODO switch to relative_satoshis
-	funding_satoshis,
+	relative_satoshis,
 	funding_feerate_perkw,
 	locktime,
 	funding_pubkey,
@@ -1858,9 +1846,7 @@ impl_writeable_msg!(Splice, {
 impl_writeable_msg!(SpliceAck, {
 	channel_id,
 	chain_hash,
-	// relative_satoshis,
-	// TODO switch to relative_satoshis
-	funding_satoshis,
+	relative_satoshis,
 	funding_pubkey,
 }, {});
 
@@ -3403,13 +3389,13 @@ mod tests {
 		let splice = msgs::Splice {
 			chain_hash: BlockHash::from_hex("6fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d6190000000000").unwrap(),
 			channel_id: ChannelId::from_bytes([2; 32]),
-			funding_satoshis: 123456,
+			relative_satoshis: -123456,
 			funding_feerate_perkw: 2000,
 			locktime: 0,
 			funding_pubkey: pubkey_1,
 		};
 		let encoded_value = splice.encode();
-		assert_eq!(hex::encode(encoded_value), "0202020202020202020202020202020202020202020202020202020202020202000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f000000000001e240000007d000000000031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f");
+		assert_eq!(hex::encode(encoded_value), "0202020202020202020202020202020202020202020202020202020202020202000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26ffffffffffffe1dc0000007d000000000031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f");
 	}
 
 	#[test]
@@ -3419,11 +3405,11 @@ mod tests {
 		let splice = msgs::SpliceAck {
 			chain_hash: BlockHash::from_hex("6fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d6190000000000").unwrap(),
 			channel_id: ChannelId::from_bytes([2; 32]),
-			funding_satoshis: 123456,
+			relative_satoshis: -123456,
 			funding_pubkey: pubkey_1,
 		};
 		let encoded_value = splice.encode();
-		assert_eq!(hex::encode(encoded_value), "0202020202020202020202020202020202020202020202020202020202020202000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f000000000001e240031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f");
+		assert_eq!(hex::encode(encoded_value), "0202020202020202020202020202020202020202020202020202020202020202000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26ffffffffffffe1dc0031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f");
 	}
 
 	#[test]

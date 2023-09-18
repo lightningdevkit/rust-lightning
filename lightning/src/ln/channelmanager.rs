@@ -2322,7 +2322,7 @@ where
 	/// Initiate a splice, to change the channel capacity
 	/// TODO funding_feerate_perkw
 	/// TODO locktime
-	pub fn splice_channel(&self, channel_id: &ChannelId, their_network_key: &PublicKey, value_delta_sats: i64, funding_feerate_perkw: u32, locktime: u32) -> Result<(), APIError> {
+	pub fn splice_channel(&self, channel_id: &ChannelId, their_network_key: &PublicKey, relative_satoshis: i64, funding_feerate_perkw: u32, locktime: u32) -> Result<(), APIError> {
 		// TODO handle code duplication with create_channel
 
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
@@ -2342,10 +2342,10 @@ where
 			hash_map::Entry::Occupied(mut chan_phase_entry) => {
 				if let ChannelPhase::Funded(chan) = chan_phase_entry.get_mut() {
 					let current_value_sats = chan.context.get_value_satoshis();
-					if value_delta_sats < 0 && -value_delta_sats > (current_value_sats as i64) {
-						return Err(APIError::APIMisuseError { err: format!("Post-splicing channel value cannot be negative. It was {} - {}", current_value_sats, -value_delta_sats) });
+					if relative_satoshis < 0 && -relative_satoshis > (current_value_sats as i64) {
+						return Err(APIError::APIMisuseError { err: format!("Post-splicing channel value cannot be negative. It was {} - {}", current_value_sats, -relative_satoshis) });
 					}
-					let post_splice_funding_satoshis: u64 = (current_value_sats as i64 + value_delta_sats) as u64;
+					let post_splice_funding_satoshis: u64 = (current_value_sats as i64 + relative_satoshis) as u64;
 
 					// TODO handle code duplication with create_channel
 					if post_splice_funding_satoshis < 1000 {
@@ -2353,13 +2353,13 @@ where
 					}
 					// Store post-splicing channel value (pending)
 					// TODO check if pending_splice is already set
-					chan.context.pending_splice = Some(PendingSpliceInfo{ post_channel_value: post_splice_funding_satoshis });
+					chan.context.pending_splice = Some(PendingSpliceInfo::new(relative_satoshis, current_value_sats));
 		
-					let res = chan.get_splice(self.genesis_hash.clone(), post_splice_funding_satoshis, funding_feerate_perkw, locktime);
+					let msg = chan.get_splice(self.genesis_hash.clone(), relative_satoshis, funding_feerate_perkw, locktime);
 
 					peer_state.pending_msg_events.push(events::MessageSendEvent::SendSplice {
 						node_id: *their_network_key,
-						msg: res,
+						msg,
 					});
 				} else {
 					return Err(APIError::ChannelUnavailable{err: format!("Channel with id {} is not funded", channel_id) });
@@ -3895,7 +3895,7 @@ where
 				}
 				if input_index.is_none() {
 					return Err(APIError::APIMisuseError {
-						err: format!("No input matched the address and value in the SpliceAcked event {}", chan.context.pending_splice.unwrap_or(PendingSpliceInfo::default()).post_channel_value)
+						err: format!("No input matched the address and value in the SpliceAcked event {}", chan.context.pending_splice.unwrap_or(PendingSpliceInfo::default()).relative_satoshis)
 					});
 				}
 				Ok(input_index.unwrap())
@@ -3922,7 +3922,7 @@ where
 				}
 				if output_index.is_none() {
 					return Err(APIError::APIMisuseError {
-						err: format!("No output matched the script_pubkey and value in the SpliceAcked event {}", chan.context.pending_splice.unwrap_or(PendingSpliceInfo::default()).post_channel_value)
+						err: format!("No output matched the script_pubkey and value in the SpliceAcked event {}", chan.context.pending_splice.unwrap_or(PendingSpliceInfo::default()).relative_satoshis)
 					});
 				}
 				Ok(OutPoint { txid: tx.txid(), index: output_index.unwrap() })
@@ -6726,9 +6726,9 @@ where
 				if let ChannelPhase::Funded(chan) = chan_entry.get_mut() {
 					// Store post-splicing channel value (pending)
 					// TODO check if there is a pending already
-					chan.context.pending_splice = Some(PendingSpliceInfo{ post_channel_value: msg.funding_satoshis });
+					chan.context.pending_splice = Some(PendingSpliceInfo::new(msg.relative_satoshis, chan.context.get_value_satoshis()));
 
-					let msg = chan.get_splice_ack(self.genesis_hash.clone(), msg.funding_satoshis);
+					let msg = chan.get_splice_ack(self.genesis_hash.clone(), msg.relative_satoshis);
 					peer_state.pending_msg_events.push(events::MessageSendEvent::SendSpliceAck {
 						node_id: *counterparty_node_id,
 						msg,
@@ -6787,7 +6787,7 @@ where
 			counterparty_node_id: *counterparty_node_id,
 			current_funding_outpoint: funding_outpoint,
 			pre_channel_value_satoshis: pre_value,
-			post_channel_value_satoshis: msg.funding_satoshis,
+			post_channel_value_satoshis: (pre_value as i64 + msg.relative_satoshis) as u64,  // TODO handle underflow
 			output_script,
 		}, None));
 		Ok(())

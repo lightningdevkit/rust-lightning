@@ -659,10 +659,22 @@ impl UnfundedChannelContext {
 /// Info about a pending splice
 #[derive(Default, Copy, Clone)]
 pub(super) struct PendingSpliceInfo {
-	/// The post-splice channel value
+	/// The relative splice value (change in capacity value relative to current value)
+	pub relative_satoshis: i64,
+	/// The post splice value (current + relative)
 	pub post_channel_value: u64,
 }
 
+impl PendingSpliceInfo {
+	pub fn new(relative_satoshis: i64, current_value: u64) -> Self {
+		// TODO check for underflow
+		let post_channel_value = (current_value as i64 + relative_satoshis) as u64;
+		Self {
+			relative_satoshis,
+			post_channel_value,
+		}
+	}
+}
 /// Contains everything about the channel including state, and various flags.
 pub(super) struct ChannelContext<SP: Deref> where SP::Target: SignerProvider {
 	config: LegacyChannelConfig,
@@ -5384,7 +5396,7 @@ impl<SP: Deref> Channel<SP> where
 	/// Get the splice message that can be sent during splice initiation
 	pub fn get_splice(&self, chain_hash: BlockHash,
 		// TODO; should this be a param, or stored in the channel?
-		post_splice_funding_satoshis: u64, funding_feerate_perkw: u32, locktime: u32
+		relative_satoshis: i64, funding_feerate_perkw: u32, locktime: u32
 	) -> msgs::Splice {
 		if !self.context.is_outbound() {
 			panic!("Tried to initiate a splice on an inbound channel?");
@@ -5409,7 +5421,7 @@ impl<SP: Deref> Channel<SP> where
 		msgs::Splice {
 			chain_hash,
 			channel_id: self.context.channel_id,
-			funding_satoshis: post_splice_funding_satoshis,
+			relative_satoshis,
 			funding_feerate_perkw,
 			locktime,
 			funding_pubkey: keys.funding_pubkey,
@@ -5421,7 +5433,7 @@ impl<SP: Deref> Channel<SP> where
 	/// TODO move to ChannelContext
 	pub fn get_splice_ack(&self, chain_hash: BlockHash,
 		// TODO; should this be a param, or stored in the channel?
-		post_splice_funding_satoshis: u64
+		relative_satoshis: i64
 	) -> msgs::SpliceAck {
 		if self.context.is_outbound() {
 			panic!("Tried to accept a splice on an outound channel?");
@@ -5435,7 +5447,7 @@ impl<SP: Deref> Channel<SP> where
 		msgs::SpliceAck {
 			chain_hash,
 			channel_id: self.context.channel_id,
-			funding_satoshis: post_splice_funding_satoshis,
+			relative_satoshis,
 			funding_pubkey: keys.funding_pubkey,
 		}
 	}
