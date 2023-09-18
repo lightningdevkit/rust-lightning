@@ -59,6 +59,12 @@ pub(crate) enum Message<T> where T: core::fmt::Debug + Type + TestEq {
 	AcceptChannelV2(msgs::AcceptChannelV2),
 	FundingCreated(msgs::FundingCreated),
 	FundingSigned(msgs::FundingSigned),
+	// #SPLICING
+	Splice(msgs::Splice),
+	SpliceAck(msgs::SpliceAck),
+	SpliceLocked(msgs::SpliceLocked),
+	SpliceCreated(msgs::SpliceCreated),
+	SpliceSigned(msgs::SpliceSigned),
 	TxAddInput(msgs::TxAddInput),
 	TxAddOutput(msgs::TxAddOutput),
 	TxRemoveInput(msgs::TxRemoveInput),
@@ -89,11 +95,6 @@ pub(crate) enum Message<T> where T: core::fmt::Debug + Type + TestEq {
 	QueryChannelRange(msgs::QueryChannelRange),
 	ReplyChannelRange(msgs::ReplyChannelRange),
 	GossipTimestampFilter(msgs::GossipTimestampFilter),
-	// #SPLICING
-	Splice(msgs::Splice),
-	SpliceAck(msgs::SpliceAck),
-	SpliceCreated(msgs::SpliceCreated),
-	SpliceSigned(msgs::SpliceSigned),
 	/// A message that could not be decoded because its type is unknown.
 	Unknown(u16),
 	/// A message that was produced by a [`CustomMessageReader`] and is to be handled by a
@@ -115,6 +116,11 @@ impl<T> Writeable for Message<T> where T: core::fmt::Debug + Type + TestEq {
 			&Message::AcceptChannelV2(ref msg) => msg.write(writer),
 			&Message::FundingCreated(ref msg) => msg.write(writer),
 			&Message::FundingSigned(ref msg) => msg.write(writer),
+			&Message::Splice(ref msg) => msg.write(writer),
+			&Message::SpliceAck(ref msg) => msg.write(writer),
+			&Message::SpliceLocked(ref msg) => msg.write(writer),
+			&Message::SpliceCreated(ref msg) => msg.write(writer),
+			&Message::SpliceSigned(ref msg) => msg.write(writer),
 			&Message::TxAddInput(ref msg) => msg.write(writer),
 			&Message::TxAddOutput(ref msg) => msg.write(writer),
 			&Message::TxRemoveInput(ref msg) => msg.write(writer),
@@ -134,10 +140,6 @@ impl<T> Writeable for Message<T> where T: core::fmt::Debug + Type + TestEq {
 			&Message::UpdateFailMalformedHTLC(ref msg) => msg.write(writer),
 			&Message::CommitmentSigned(ref msg) => msg.write(writer),
 			&Message::RevokeAndACK(ref msg) => msg.write(writer),
-			&Message::Splice(ref msg) => msg.write(writer),
-			&Message::SpliceAck(ref msg) => msg.write(writer),
-			&Message::SpliceCreated(ref msg) => msg.write(writer),
-			&Message::SpliceSigned(ref msg) => msg.write(writer),
 			&Message::UpdateFee(ref msg) => msg.write(writer),
 			&Message::ChannelReestablish(ref msg) => msg.write(writer),
 			&Message::AnnouncementSignatures(ref msg) => msg.write(writer),
@@ -170,6 +172,12 @@ impl<T> Type for Message<T> where T: core::fmt::Debug + Type + TestEq {
 			&Message::AcceptChannelV2(ref msg) => msg.type_id(),
 			&Message::FundingCreated(ref msg) => msg.type_id(),
 			&Message::FundingSigned(ref msg) => msg.type_id(),
+			// #SPLICING
+			&Message::Splice(ref msg) => msg.type_id(),
+			&Message::SpliceAck(ref msg) => msg.type_id(),
+			&Message::SpliceLocked(ref msg) => msg.type_id(),
+			&Message::SpliceCreated(ref msg) => msg.type_id(),
+			&Message::SpliceSigned(ref msg) => msg.type_id(),
 			&Message::TxAddInput(ref msg) => msg.type_id(),
 			&Message::TxAddOutput(ref msg) => msg.type_id(),
 			&Message::TxRemoveInput(ref msg) => msg.type_id(),
@@ -200,11 +208,6 @@ impl<T> Type for Message<T> where T: core::fmt::Debug + Type + TestEq {
 			&Message::QueryChannelRange(ref msg) => msg.type_id(),
 			&Message::ReplyChannelRange(ref msg) => msg.type_id(),
 			&Message::GossipTimestampFilter(ref msg) => msg.type_id(),
-			// #SPLICING
-			&Message::Splice(ref msg) => msg.type_id(),
-			&Message::SpliceAck(ref msg) => msg.type_id(),
-			&Message::SpliceCreated(ref msg) => msg.type_id(),
-			&Message::SpliceSigned(ref msg) => msg.type_id(),
 			&Message::Unknown(type_id) => type_id,
 			&Message::Custom(ref msg) => msg.type_id(),
 		}
@@ -271,6 +274,22 @@ fn do_read<R: io::Read, T, H: core::ops::Deref>(buffer: &mut R, message_type: u1
 		},
 		msgs::FundingSigned::TYPE => {
 			Ok(Message::FundingSigned(Readable::read(buffer)?))
+		},
+		// #SPLICING
+		msgs::Splice::TYPE => {
+			Ok(Message::Splice(Readable::read(buffer)?))
+		},
+		msgs::SpliceAck::TYPE => {
+			Ok(Message::SpliceAck(Readable::read(buffer)?))
+		},
+		msgs::SpliceLocked::TYPE => {
+			Ok(Message::SpliceLocked(Readable::read(buffer)?))
+		},
+		msgs::SpliceCreated::TYPE => {
+			Ok(Message::SpliceCreated(Readable::read(buffer)?))
+		},
+		msgs::SpliceSigned::TYPE => {
+			Ok(Message::SpliceSigned(Readable::read(buffer)?))
 		},
 		msgs::TxAddInput::TYPE => {
 			Ok(Message::TxAddInput(Readable::read(buffer)?))
@@ -361,19 +380,6 @@ fn do_read<R: io::Read, T, H: core::ops::Deref>(buffer: &mut R, message_type: u1
 		}
 		msgs::GossipTimestampFilter::TYPE => {
 			Ok(Message::GossipTimestampFilter(Readable::read(buffer)?))
-		},
-		// #SPLICING
-		msgs::Splice::TYPE => {
-			Ok(Message::Splice(Readable::read(buffer)?))
-		},
-		msgs::SpliceAck::TYPE => {
-			Ok(Message::SpliceAck(Readable::read(buffer)?))
-		},
-		msgs::SpliceCreated::TYPE => {
-			Ok(Message::SpliceCreated(Readable::read(buffer)?))
-		},
-		msgs::SpliceSigned::TYPE => {
-			Ok(Message::SpliceSigned(Readable::read(buffer)?))
 		},
 		_ => {
 			if let Some(custom) = custom_reader.read(message_type, buffer)? {
@@ -491,6 +497,34 @@ impl Encode for msgs::AcceptChannelV2 {
 	const TYPE: u16 = 65;
 }
 
+// #SPLICING
+impl Encode for msgs::Splice {
+	// TODO(splicing) Double check with spec; spec contains 74, which is probably wrong as it is used by tx_Abort; CLN uses 75
+	const TYPE: u16 = 75;
+}
+
+// #SPLICING
+impl Encode for msgs::SpliceAck {
+	const TYPE: u16 = 76;
+}
+
+// #SPLICING
+impl Encode for msgs::SpliceLocked {
+	const TYPE: u16 = 77;
+}
+
+// #SPLICING
+impl Encode for msgs::SpliceCreated {
+	// TODO: Made-up value!
+	const TYPE: u16 = 78;
+}
+
+// #SPLICING
+impl Encode for msgs::SpliceSigned {
+	// TODO: Made-up value!
+	const TYPE: u16 = 80;
+}
+
 impl Encode for msgs::TxAddInput {
 	const TYPE: u16 = 66;
 }
@@ -526,33 +560,6 @@ impl Encode for msgs::TxAckRbf {
 impl Encode for msgs::TxAbort {
 	const TYPE: u16 = 74;
 }
-
-// #SPLICING
-impl Encode for msgs::Splice {
-	const TYPE: u16 = 75;
-}
-
-// #SPLICING
-impl Encode for msgs::SpliceAck {
-	const TYPE: u16 = 76;
-}
-
-// #SPLICING
-impl Encode for msgs::SpliceCreated {
-	// TODO: Made-up value!
-	const TYPE: u16 = 78;
-}
-
-// #SPLICING
-impl Encode for msgs::SpliceSigned {
-	// TODO: Made-up value!
-	const TYPE: u16 = 80;
-}
-
-// #SPLICING
-// impl Encode for msgs::SpliceLocked {
-// 	const TYPE: u16 = 77;
-// }
 
 impl Encode for msgs::OnionMessage {
 	const TYPE: u16 = 513;

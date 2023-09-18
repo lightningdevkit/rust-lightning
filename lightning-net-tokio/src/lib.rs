@@ -606,6 +606,12 @@ mod tests {
 		fn handle_channel_update(&self, _their_node_id: &PublicKey, _msg: &ChannelUpdate) {}
 		fn handle_open_channel_v2(&self, _their_node_id: &PublicKey, _msg: &OpenChannelV2) {}
 		fn handle_accept_channel_v2(&self, _their_node_id: &PublicKey, _msg: &AcceptChannelV2) {}
+		// #SPLICING
+		fn handle_splice(&self, _their_node_id: &PublicKey, _msg: &Splice) {}
+		fn handle_splice_ack(&self, _their_node_id: &PublicKey, _msg: &SpliceAck) {}
+		fn handle_splice_locked(&self, _their_node_id: &PublicKey, _msg: &SpliceLocked) {}
+		fn handle_splice_created(&self, _their_node_id: &PublicKey, _msg: &SpliceCreated) {}
+		fn handle_splice_signed(&self, _their_node_id: &PublicKey, _msg: &SpliceSigned) {}
 		fn handle_tx_add_input(&self, _their_node_id: &PublicKey, _msg: &TxAddInput) {}
 		fn handle_tx_add_output(&self, _their_node_id: &PublicKey, _msg: &TxAddOutput) {}
 		fn handle_tx_remove_input(&self, _their_node_id: &PublicKey, _msg: &TxRemoveInput) {}
@@ -615,11 +621,6 @@ mod tests {
 		fn handle_tx_init_rbf(&self, _their_node_id: &PublicKey, _msg: &TxInitRbf) {}
 		fn handle_tx_ack_rbf(&self, _their_node_id: &PublicKey, _msg: &TxAckRbf) {}
 		fn handle_tx_abort(&self, _their_node_id: &PublicKey, _msg: &TxAbort) {}
-		// #SPLICING
-		fn handle_splice(&self, _their_node_id: &PublicKey, _msg: &Splice) {}
-		fn handle_splice_ack(&self, _their_node_id: &PublicKey, _msg: &SpliceAck) {}
-		fn handle_splice_created(&self, _their_node_id: &PublicKey, _msg: &SpliceCreated) {}
-		fn handle_splice_signed(&self, _their_node_id: &PublicKey, _msg: &SpliceSigned) {}
 		fn peer_disconnected(&self, their_node_id: &PublicKey) {
 			if *their_node_id == self.expected_pubkey {
 				self.disconnected_flag.store(true, Ordering::SeqCst);

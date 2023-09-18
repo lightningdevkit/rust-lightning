@@ -767,6 +767,22 @@ pub fn remove_first_msg_event_to_node(msg_node_id: &PublicKey, msg_events: &mut 
 		MessageSendEvent::SendOpenChannelV2 { node_id, .. } => {
 			node_id == msg_node_id
 		},
+		// #SPLICING
+		MessageSendEvent::SendSplice { node_id, .. } => {
+			node_id == msg_node_id
+		},
+		MessageSendEvent::SendSpliceAck { node_id, .. } => {
+			node_id == msg_node_id
+		},
+		MessageSendEvent::SendSpliceLocked { node_id, .. } => {
+			node_id == msg_node_id
+		},
+		MessageSendEvent::SendSpliceCreated { node_id, .. } => {
+			node_id == msg_node_id
+		},
+		MessageSendEvent::SendSpliceSigned { node_id, .. } => {
+			node_id == msg_node_id
+		},
 		MessageSendEvent::SendTxAddInput { node_id, .. } => {
 			node_id == msg_node_id
 		},
@@ -792,19 +808,6 @@ pub fn remove_first_msg_event_to_node(msg_node_id: &PublicKey, msg_events: &mut 
 			node_id == msg_node_id
 		},
 		MessageSendEvent::SendTxAbort { node_id, .. } => {
-			node_id == msg_node_id
-		},
-		// #SPLICING
-		MessageSendEvent::SendSplice { node_id, .. } => {
-			node_id == msg_node_id
-		},
-		MessageSendEvent::SendSpliceAck { node_id, .. } => {
-			node_id == msg_node_id
-		},
-		MessageSendEvent::SendSpliceCreated { node_id, .. } => {
-			node_id == msg_node_id
-		},
-		MessageSendEvent::SendSpliceSigned { node_id, .. } => {
 			node_id == msg_node_id
 		},
 	}});

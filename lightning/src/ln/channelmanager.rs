@@ -7959,6 +7959,36 @@ where
 		let _ = handle_error!(self, self.internal_channel_ready(counterparty_node_id, msg), *counterparty_node_id);
 	}
 
+	// #SPLICING
+	fn handle_splice(&self, counterparty_node_id: &PublicKey, msg: &msgs::Splice) {
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
+		let _ = handle_error!(self, self.internal_splice(counterparty_node_id, msg), *counterparty_node_id);
+	}
+
+	// #SPLICING
+	fn handle_splice_ack(&self, counterparty_node_id: &PublicKey, msg: &msgs::SpliceAck) {
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
+		let _ = handle_error!(self, self.internal_splice_ack(counterparty_node_id, msg), *counterparty_node_id);
+	}
+
+	fn handle_splice_locked(&self, counterparty_node_id: &PublicKey, msg: &msgs::SpliceLocked) {
+		let _: Result<(), _> = handle_error!(self, Err(MsgHandleErrInternal::send_err_msg_no_close(
+			"Splicing not supported (splice_locked)".to_owned(),
+			 msg.channel_id.clone())), *counterparty_node_id);
+	}
+
+	// #SPLICING
+	fn handle_splice_created(&self, counterparty_node_id: &PublicKey, msg: &msgs::SpliceCreated) {
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
+		let _ = handle_error!(self, self.internal_splice_created(counterparty_node_id, msg), *counterparty_node_id);
+	}
+
+	// #SPLICING
+	fn handle_splice_signed(&self, counterparty_node_id: &PublicKey, msg: &msgs::SpliceSigned) {
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
+		let _ = handle_error!(self, self.internal_splice_signed(counterparty_node_id, msg), *counterparty_node_id);
+	}
+	
 	fn handle_shutdown(&self, counterparty_node_id: &PublicKey, msg: &msgs::Shutdown) {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 		let _ = handle_error!(self, self.internal_shutdown(counterparty_node_id, msg), *counterparty_node_id);
@@ -8025,30 +8055,6 @@ where
 		let _ = handle_error!(self, self.internal_channel_reestablish(counterparty_node_id, msg), *counterparty_node_id);
 	}
 
-	// #SPLICING
-	fn handle_splice(&self, counterparty_node_id: &PublicKey, msg: &msgs::Splice) {
-		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
-		let _ = handle_error!(self, self.internal_splice(counterparty_node_id, msg), *counterparty_node_id);
-	}
-
-	// #SPLICING
-	fn handle_splice_ack(&self, counterparty_node_id: &PublicKey, msg: &msgs::SpliceAck) {
-		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
-		let _ = handle_error!(self, self.internal_splice_ack(counterparty_node_id, msg), *counterparty_node_id);
-	}
-
-	// #SPLICING
-	fn handle_splice_created(&self, counterparty_node_id: &PublicKey, msg: &msgs::SpliceCreated) {
-		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
-		let _ = handle_error!(self, self.internal_splice_created(counterparty_node_id, msg), *counterparty_node_id);
-	}
-
-	// #SPLICING
-	fn handle_splice_signed(&self, counterparty_node_id: &PublicKey, msg: &msgs::SpliceSigned) {
-		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
-		let _ = handle_error!(self, self.internal_splice_signed(counterparty_node_id, msg), *counterparty_node_id);
-	}
-
 	fn peer_disconnected(&self, counterparty_node_id: &PublicKey) {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 		let mut failed_channels = Vec::new();
@@ -8099,6 +8105,12 @@ where
 						// Common Channel Establishment
 						&events::MessageSendEvent::SendChannelReady { .. } => false,
 						&events::MessageSendEvent::SendAnnouncementSignatures { .. } => false,
+						// Splicing
+						&events::MessageSendEvent::SendSplice { .. } => false,
+						&events::MessageSendEvent::SendSpliceAck { .. } => false,
+						&events::MessageSendEvent::SendSpliceLocked { .. } => false,
+						&events::MessageSendEvent::SendSpliceCreated { .. } => false,
+						&events::MessageSendEvent::SendSpliceSigned { .. } => false,
 						// Interactive Transaction Construction
 						&events::MessageSendEvent::SendTxAddInput { .. } => false,
 						&events::MessageSendEvent::SendTxAddOutput { .. } => false,
@@ -8126,10 +8138,6 @@ where
 						&events::MessageSendEvent::SendShortIdsQuery { .. } => false,
 						&events::MessageSendEvent::SendReplyChannelRange { .. } => false,
 						&events::MessageSendEvent::SendGossipTimestampFilter { .. } => false,
-						&events::MessageSendEvent::SendSplice { .. } => false,
-						&events::MessageSendEvent::SendSpliceAck { .. } => false,
-						&events::MessageSendEvent::SendSpliceCreated { .. } => false,
-						&events::MessageSendEvent::SendSpliceSigned { .. } => false,
 					}
 				});
 				debug_assert!(peer_state.is_connected, "A disconnected peer cannot disconnect");

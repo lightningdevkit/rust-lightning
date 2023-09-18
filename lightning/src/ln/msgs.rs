@@ -433,6 +433,120 @@ pub struct ChannelReady {
 	pub short_channel_id_alias: Option<u64>,
 }
 
+/// #SPLICING Inspired by OpenChannel, Shutdown
+/// A splice message to be sent by or received from the splice initiator.
+/// TODO(splicing): Is using 'splice initiator' role OK?
+/// TODO(splicing): Can the channel acceptor later be the splice initiator?
+///
+// TODO(splicing): Add spec link for `splice`; still in draft, using from https://github.com/lightning/bolts/pull/863
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Splice {
+	/// The channel ID where splicing is intended
+	pub channel_id: ChannelId,
+	/// The genesis hash of the blockchain where the channel is intended to be spliced
+	pub chain_hash: BlockHash,
+	/*
+	/// The intended change in channel capacity: the amount to be added (positive value)
+	/// or removed (negative value) by the sender (splice initiator) by splicing into/from the channel.
+	pub relative_satoshis: i64,
+	*/
+	/// The post-slice channel value
+	/// TODO: Switch to relative_satoshis
+	pub funding_satoshis: u64,
+	/// The feerate for the new funding transaction, set by the splice initiator
+	pub funding_feerate_perkw: u32,
+	/// The locktime for the new funding transaction
+	pub locktime: u32,
+	/// The key of the sender (splice initiator) controlling the new funding transaction
+	pub funding_pubkey: PublicKey,
+}
+
+/// #SPLICING
+/// A splice_ack message to be received by or sent to the splice initiator.
+///
+// TODO(splicing): Add spec link for `splice_ack`; still in draft, using from https://github.com/lightning/bolts/pull/863
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SpliceAck {
+	/// The channel ID where splicing is intended
+	pub channel_id: ChannelId,
+	/// The genesis hash of the blockchain where the channel is intended to be spliced
+	pub chain_hash: BlockHash,
+	/*
+	/// The intended change in channel capacity: the amount to be added (positive value)
+	/// or removed (negative value) by the sender (splice acceptor) by splicing into/from the channel.
+	pub relative_satoshis: i64,
+	*/
+	/// The post-splice channel value
+	/// TODO: Switch to relative_satoshis
+	pub funding_satoshis: u64,
+	/// The key of the sender (splice acceptor) controlling the new funding transaction
+	pub funding_pubkey: PublicKey,
+}
+
+/// A splice_locked message to be sent to or received from a peer.
+///
+// TODO(splicing): Add spec link for `splice_locked`; still in draft, using from https://github.com/lightning/bolts/pull/863
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SpliceLocked {
+	/// The channel ID
+	pub channel_id: ChannelId,
+}
+
+/// #SPLICING
+/// A [`splice_created`] message to be sent to or received from a peer.
+/// Contains details of the splicing transaction
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SpliceCreated {
+	/// The channel ID
+	pub channel_id: ChannelId,
+	/// The splicing transaction ID (not yet signed nor broadcast)
+	pub splice_txid: Txid,
+	/// The specific output index funding this channel
+	pub funding_output_index: u16,
+	/// The complete splice funding transaction, used for signing by the other party. Not needed in final version with tx negotiation, TODO remove
+	pub splice_transaction: Transaction,
+	/// The input index in the splice transaction that is the previous funding transaction, used by the other party for signing.
+	/// It could be also omitted and found by looking for the previous funding tx among the inputs.
+	/// Not needed in final version with tx negotiation, TODO remove
+	pub splice_prev_funding_input_index: u16,
+	/// Redeem script used in the splice transaction, needed for signing
+	/// Not needed in final version with tx negotiation, TODO remove
+	pub splice_tx_redeem_script: Script,
+	/// The signature of the splice initiator (funder) on the post-splice commitment transaction
+	pub signature: Signature,
+	/*
+	#[cfg(taproot)]
+	/// The partial signature of the channel initiator (funder)
+	pub partial_signature_with_nonce: Option<PartialSignatureWithNonce>,
+	#[cfg(taproot)]
+	/// Next nonce the channel acceptor should use to finalize the funding output signature
+	pub next_local_nonce: Option<musig2::types::PublicNonce>
+	*/
+}
+
+/// #SPLICING
+/// A [`splicing_signed`] message to be sent to or received from a peer. Naming is confusing, it is the commitment transaction that is signed here.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SpliceSigned {
+	/// The channel ID
+	pub channel_id: ChannelId,
+	/// The signature of the splice acceptor (fundee) on the splicing transaction.
+	/// This should be the result of transaction negotiation, and not needed here, it is needed only in the prototype, TODO remove it later.
+	/// Not to be confused with the `signature` field.
+	pub funding_signature: Signature,
+	/// The input index in the splice transaction that is the previous funding transaction, for which signature is provided.
+	/// It could be also omitted and found by looking for the previous funding tx among the inputs.
+	/// Not needed in final version with tx negotiation, TODO remove
+	pub splice_prev_funding_input_index: u16,
+	/// The signature of the splice acceptor (fundee) on the post-splice commitment transaction
+	pub signature: Signature,
+	/*
+	#[cfg(taproot)]
+	/// The partial signature of the channel acceptor (fundee)
+	pub partial_signature_with_nonce: Option<PartialSignatureWithNonce>,
+	*/
+}
+
 /// A tx_add_input message for adding an input during interactive transaction construction
 ///
 // TODO(dual_funding): Add spec link for `tx_add_input`.
@@ -1236,97 +1350,6 @@ pub struct GossipTimestampFilter {
 	pub timestamp_range: u32,
 }
 
-/// #SPLICING Inspired by OpenChannel, Shutdown
-/// A [`splice`] message to be sent to or received from a peer.
-///
-/// [`splice`]: TODO spec in progress, see PR https://github.com/lightning/bolts/pull/863/files#diff-ed04ca2c673fd6aabde69389511fa9ee60cb44d6b2ef6c88b549ffaa753d6afeR510
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Splice {
-	/// The genesis hash of the blockchain where the channel is to be opened
-	pub chain_hash: BlockHash,
-	/// The channel ID
-	pub channel_id: ChannelId,
-	/// The post-slice channel value
-	pub funding_satoshis: u64,
-	/// The feerate per 1000-weight of sender generated transactions
-	pub funding_feerate_perkw: u32,
-	/// TODO doc ?
-	pub locktime: u32,
-	/// The sender's key controlling the funding transaction
-	pub funding_pubkey: PublicKey,
-}
-
-/// #SPLICING
-/// A [`splice_ack`] message to be sent to or received from a peer.
-///
-/// [`splice_ack`]: TODO spec in progress, see PR https://github.com/lightning/bolts/pull/863/files#diff-ed04ca2c673fd6aabde69389511fa9ee60cb44d6b2ef6c88b549ffaa753d6afeR510
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SpliceAck {
-	/// The genesis hash of the blockchain where the channel is to be opened
-	pub chain_hash: BlockHash,
-	/// The channel ID
-	pub channel_id: ChannelId,
-	/// The post-splice channel value
-	pub funding_satoshis: u64,
-	/// The acceptors's key controlling the funding transaction
-	pub funding_pubkey: PublicKey,
-}
-
-/// #SPLICING
-/// A [`splice_created`] message to be sent to or received from a peer.
-/// Contains details of the splicing transaction
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SpliceCreated {
-	/// The channel ID
-	pub channel_id: ChannelId,
-	/// The splicing transaction ID (not yet signed nor broadcast)
-	pub splice_txid: Txid,
-	/// The specific output index funding this channel
-	pub funding_output_index: u16,
-	/// The complete splice funding transaction, used for signing by the other party. Not needed in final version with tx negotiation, TODO remove
-	pub splice_transaction: Transaction,
-	/// The input index in the splice transaction that is the previous funding transaction, used by the other party for signing.
-	/// It could be also omitted and found by looking for the previous funding tx among the inputs.
-	/// Not needed in final version with tx negotiation, TODO remove
-	pub splice_prev_funding_input_index: u16,
-	/// Redeem script used in the splice transaction, needed for signing
-	/// Not needed in final version with tx negotiation, TODO remove
-	pub splice_tx_redeem_script: Script,
-	/// The signature of the splice initiator (funder) on the post-splice commitment transaction
-	pub signature: Signature,
-	/*
-	#[cfg(taproot)]
-	/// The partial signature of the channel initiator (funder)
-	pub partial_signature_with_nonce: Option<PartialSignatureWithNonce>,
-	#[cfg(taproot)]
-	/// Next nonce the channel acceptor should use to finalize the funding output signature
-	pub next_local_nonce: Option<musig2::types::PublicNonce>
-	*/
-}
-
-/// #SPLICING
-/// A [`splicing_signed`] message to be sent to or received from a peer. Naming is confusing, it is the commitment transaction that is signed here.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SpliceSigned {
-	/// The channel ID
-	pub channel_id: ChannelId,
-	/// The signature of the splice acceptor (fundee) on the splicing transaction.
-	/// This should be the result of transaction negotiation, and not needed here, it is needed only in the prototype, TODO remove it later.
-	/// Not to be confused with the `signature` field.
-	pub funding_signature: Signature,
-	/// The input index in the splice transaction that is the previous funding transaction, for which signature is provided.
-	/// It could be also omitted and found by looking for the previous funding tx among the inputs.
-	/// Not needed in final version with tx negotiation, TODO remove
-	pub splice_prev_funding_input_index: u16,
-	/// The signature of the splice acceptor (fundee) on the post-splice commitment transaction
-	pub signature: Signature,
-	/*
-	#[cfg(taproot)]
-	/// The partial signature of the channel acceptor (fundee)
-	pub partial_signature_with_nonce: Option<PartialSignatureWithNonce>,
-	*/
-}
-
 /// Encoding type for data compression of collections in gossip queries.
 ///
 /// We do not support `encoding_type=1` zlib serialization [defined in BOLT
@@ -1428,6 +1451,19 @@ pub trait ChannelMessageHandler : MessageSendEventsProvider {
 	/// Handle an incoming `closing_signed` message from the given peer.
 	fn handle_closing_signed(&self, their_node_id: &PublicKey, msg: &ClosingSigned);
 
+	// Splicing
+	// #SPLICING
+	/// Handle an incoming `splice` message from the given peer.
+	fn handle_splice(&self, their_node_id: &PublicKey, msg: &Splice);
+	/// Handle an incoming `splice_ack` message from the given peer.
+	fn handle_splice_ack(&self, their_node_id: &PublicKey, msg: &SpliceAck);
+	/// Handle an incoming `splice_locked` message from the given peer.
+	fn handle_splice_locked(&self, their_node_id: &PublicKey, msg: &SpliceLocked);
+	/// Handle an incoming `splice_created` message from the given peer.
+	fn handle_splice_created(&self, their_node_id: &PublicKey, msg: &SpliceCreated);
+	/// Handle an incoming `splice_signed` message from the given peer.
+	fn handle_splice_signed(&self, their_node_id: &PublicKey, msg: &SpliceSigned);
+
 	// Interactive channel construction
 	/// Handle an incoming `tx_add_input message` from the given peer.
 	fn handle_tx_add_input(&self, their_node_id: &PublicKey, msg: &TxAddInput);
@@ -1468,16 +1504,6 @@ pub trait ChannelMessageHandler : MessageSendEventsProvider {
 	// Channel-to-announce:
 	/// Handle an incoming `announcement_signatures` message from the given peer.
 	fn handle_announcement_signatures(&self, their_node_id: &PublicKey, msg: &AnnouncementSignatures);
-
-	// #SPLICING
-	/// Handle an incoming `splice` message from the given peer.
-	fn handle_splice(&self, counterparty_node_id: &PublicKey, msg: &Splice);
-	/// Handle an incoming `splice_ack` message from the given peer.
-	fn handle_splice_ack(&self, counterparty_node_id: &PublicKey, msg: &SpliceAck);
-	/// Handle an incoming `splice_created` message from the given peer.
-	fn handle_splice_created(&self, their_node_id: &PublicKey, msg: &SpliceCreated);
-	/// Handle an incoming `splice_signed` message from the given peer.
-	fn handle_splice_signed(&self, their_node_id: &PublicKey, msg: &SpliceSigned);
 
 	// Connection loss/reestablish:
 	/// Indicates a connection to the peer failed/an existing connection was lost.
@@ -1815,6 +1841,53 @@ impl_writeable_msg!(AcceptChannelV2, {
 	(1, channel_type, option),
 	(2, require_confirmed_inputs, option),
 });
+
+// #SPLICING Inspired by OpenChannel
+impl_writeable_msg!(Splice, {
+	channel_id,
+	chain_hash,
+	// relative_satoshis,
+	// TODO switch to relative_satoshis
+	funding_satoshis,
+	funding_feerate_perkw,
+	locktime,
+	funding_pubkey,
+}, {});
+
+// #SPLICING
+impl_writeable_msg!(SpliceAck, {
+	channel_id,
+	chain_hash,
+	// relative_satoshis,
+	// TODO switch to relative_satoshis
+	funding_satoshis,
+	funding_pubkey,
+}, {});
+
+impl_writeable_msg!(SpliceLocked, {
+	channel_id,
+}, {});
+
+// #SPLICING
+// #[cfg(not(taproot))]
+impl_writeable_msg!(SpliceCreated, {
+	channel_id,
+	splice_txid,
+	funding_output_index,
+	splice_transaction,
+	splice_prev_funding_input_index,
+	splice_tx_redeem_script,
+	signature
+}, {});
+
+// #SPLICING
+// #[cfg(not(taproot))]
+impl_writeable_msg!(SpliceSigned, {
+	channel_id,
+	funding_signature,
+	splice_prev_funding_input_index,
+	signature
+}, {});
 
 impl_writeable_msg!(TxAddInput, {
 	channel_id,
@@ -2672,45 +2745,6 @@ impl_writeable_msg!(GossipTimestampFilter, {
 	timestamp_range,
 }, {});
 
-// #SPLICING Inspired by OpenChannel
-impl_writeable_msg!(Splice, {
-	chain_hash,
-	channel_id,
-	funding_satoshis,
-	funding_feerate_perkw,
-	locktime,
-	funding_pubkey,
-}, {});
-
-// #SPLICING
-impl_writeable_msg!(SpliceAck, {
-	chain_hash,
-	channel_id,
-	funding_satoshis,
-	funding_pubkey,
-}, {});
-
-// #SPLICING
-// #[cfg(not(taproot))]
-impl_writeable_msg!(SpliceCreated, {
-	channel_id,
-	splice_txid,
-	funding_output_index,
-	splice_transaction,
-	splice_prev_funding_input_index,
-	splice_tx_redeem_script,
-	signature
-}, {});
-
-// #SPLICING
-// #[cfg(not(taproot))]
-impl_writeable_msg!(SpliceSigned, {
-	channel_id,
-	funding_signature,
-	splice_prev_funding_input_index,
-	signature
-}, {});
-
 #[cfg(test)]
 mod tests {
 	use std::convert::TryFrom;
@@ -3359,6 +3393,46 @@ mod tests {
 		let encoded_value = channel_ready.encode();
 		let target_value = hex::decode("0202020202020202020202020202020202020202020202020202020202020202031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f").unwrap();
 		assert_eq!(encoded_value, target_value);
+	}
+
+	/// #SPLICING
+	#[test]
+	fn encoding_splice() {
+		let secp_ctx = Secp256k1::new();
+		let (_, pubkey_1,) = get_keys_from!("0101010101010101010101010101010101010101010101010101010101010101", secp_ctx);
+		let splice = msgs::Splice {
+			chain_hash: BlockHash::from_hex("6fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d6190000000000").unwrap(),
+			channel_id: ChannelId::from_bytes([2; 32]),
+			funding_satoshis: 123456,
+			funding_feerate_perkw: 2000,
+			locktime: 0,
+			funding_pubkey: pubkey_1,
+		};
+		let encoded_value = splice.encode();
+		assert_eq!(hex::encode(encoded_value), "0202020202020202020202020202020202020202020202020202020202020202000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f000000000001e240000007d000000000031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f");
+	}
+
+	#[test]
+	fn encoding_splice_ack() {
+		let secp_ctx = Secp256k1::new();
+		let (_, pubkey_1,) = get_keys_from!("0101010101010101010101010101010101010101010101010101010101010101", secp_ctx);
+		let splice = msgs::SpliceAck {
+			chain_hash: BlockHash::from_hex("6fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d6190000000000").unwrap(),
+			channel_id: ChannelId::from_bytes([2; 32]),
+			funding_satoshis: 123456,
+			funding_pubkey: pubkey_1,
+		};
+		let encoded_value = splice.encode();
+		assert_eq!(hex::encode(encoded_value), "0202020202020202020202020202020202020202020202020202020202020202000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f000000000001e240031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f");
+	}
+
+	#[test]
+	fn encoding_splice_locked() {
+		let splice = msgs::SpliceLocked {
+			channel_id: ChannelId::from_bytes([2; 32]),
+		};
+		let encoded_value = splice.encode();
+		assert_eq!(hex::encode(encoded_value), "0202020202020202020202020202020202020202020202020202020202020202");
 	}
 
 	#[test]
