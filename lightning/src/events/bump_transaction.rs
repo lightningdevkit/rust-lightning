@@ -14,7 +14,7 @@
 use alloc::collections::BTreeMap;
 use core::ops::Deref;
 
-use crate::chain::chaininterface::{BroadcasterInterface, compute_feerate_sat_per_1000_weight, fee_for_weight, FEERATE_FLOOR_SATS_PER_KW};
+use crate::chain::chaininterface::{BroadcasterInterface, fee_for_weight};
 use crate::chain::ClaimId;
 use crate::io_extras::sink;
 use crate::ln::channel::ANCHOR_OUTPUT_VALUE_SATOSHI;
@@ -542,7 +542,7 @@ where
 	fn select_confirmed_utxos_internal(
 		&self, utxos: &[Utxo], claim_id: ClaimId, force_conflicting_utxo_spend: bool,
 		tolerate_high_network_feerates: bool, target_feerate_sat_per_1000_weight: u32,
-		preexisting_tx_weight: u64, target_amount_sat: u64,
+		preexisting_tx_weight: u64, input_amount_sat: u64, target_amount_sat: u64,
 	) -> Result<CoinSelection, ()> {
 		let mut locked_utxos = self.locked_utxos.lock().unwrap();
 		let mut eligible_utxos = utxos.iter().filter_map(|utxo| {
@@ -569,7 +569,7 @@ where
 		}).collect::<Vec<_>>();
 		eligible_utxos.sort_unstable_by_key(|(utxo, _)| utxo.output.value);
 
-		let mut selected_amount = 0;
+		let mut selected_amount = input_amount_sat;
 		let mut total_fees = fee_for_weight(target_feerate_sat_per_1000_weight, preexisting_tx_weight);
 		let mut selected_utxos = Vec::new();
 		for (utxo, fee_to_spend_utxo) in eligible_utxos {
@@ -632,13 +632,14 @@ where
 
 		let preexisting_tx_weight = 2 /* segwit marker & flag */ + total_input_weight +
 			((BASE_TX_SIZE + total_output_size) * WITNESS_SCALE_FACTOR as u64);
+		let input_amount_sat: u64 = must_spend.iter().map(|input| input.previous_utxo.value).sum();
 		let target_amount_sat = must_pay_to.iter().map(|output| output.value).sum();
 		let do_coin_selection = |force_conflicting_utxo_spend: bool, tolerate_high_network_feerates: bool| {
 			log_debug!(self.logger, "Attempting coin selection targeting {} sat/kW (force_conflicting_utxo_spend = {}, tolerate_high_network_feerates = {})",
 				target_feerate_sat_per_1000_weight, force_conflicting_utxo_spend, tolerate_high_network_feerates);
 			self.select_confirmed_utxos_internal(
 				&utxos, claim_id, force_conflicting_utxo_spend, tolerate_high_network_feerates,
-				target_feerate_sat_per_1000_weight, preexisting_tx_weight, target_amount_sat,
+				target_feerate_sat_per_1000_weight, preexisting_tx_weight, input_amount_sat, target_amount_sat,
 			)
 		};
 		do_coin_selection(false, false)
@@ -724,27 +725,20 @@ where
 		commitment_tx: &Transaction, commitment_tx_fee_sat: u64, anchor_descriptor: &AnchorDescriptor,
 	) -> Result<(), ()> {
 		// Our commitment transaction already has fees allocated to it, so we should take them into
-		// account. We compute its feerate and subtract it from the package target, using the result
-		// as the target feerate for our anchor transaction. Unfortunately, this results in users
-		// overpaying by a small margin since we don't yet know the anchor transaction size, and
-		// avoiding the small overpayment only makes our API even more complex.
-		let commitment_tx_sat_per_1000_weight: u32 = compute_feerate_sat_per_1000_weight(
-			commitment_tx_fee_sat, commitment_tx.weight() as u64,
-		);
-		let anchor_target_feerate_sat_per_1000_weight = core::cmp::max(
-			package_target_feerate_sat_per_1000_weight - commitment_tx_sat_per_1000_weight,
-			FEERATE_FLOOR_SATS_PER_KW,
-		);
-
-		log_debug!(self.logger, "Peforming coin selection for anchor transaction targeting {} sat/kW",
-			anchor_target_feerate_sat_per_1000_weight);
+		// account. We do so by pretending the commitment tranasction's fee and weight are part of
+		// the anchor input.
+		let mut anchor_utxo = anchor_descriptor.previous_utxo();
+		anchor_utxo.value += commitment_tx_fee_sat;
 		let must_spend = vec![Input {
 			outpoint: anchor_descriptor.outpoint,
-			previous_utxo: anchor_descriptor.previous_utxo(),
+			previous_utxo: anchor_utxo,
 			satisfaction_weight: commitment_tx.weight() as u64 + ANCHOR_INPUT_WITNESS_WEIGHT + EMPTY_SCRIPT_SIG_WEIGHT,
 		}];
+
+		log_debug!(self.logger, "Peforming coin selection for commitment package (commitment and anchor transaction) targeting {} sat/kW",
+			package_target_feerate_sat_per_1000_weight);
 		let coin_selection = self.utxo_source.select_confirmed_utxos(
-			claim_id, must_spend, &[], anchor_target_feerate_sat_per_1000_weight,
+			claim_id, must_spend, &[], package_target_feerate_sat_per_1000_weight,
 		)?;
 
 		let mut anchor_tx = Transaction {
