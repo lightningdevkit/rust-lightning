@@ -110,38 +110,37 @@ pub(super) enum Payload<T: CustomOnionMessageContents> {
 	Receive {
 		control_tlvs: ReceiveControlTlvs,
 		reply_path: Option<BlindedPath>,
-		message: OnionMessageContents<T>,
+		message: ParsedOnionMessageContents<T>,
 	}
 }
 
+/// The contents of an onion message as read from the wire.
 #[derive(Debug)]
-/// The contents of an onion message. In the context of offers, this would be the invoice, invoice
-/// request, or invoice error.
-pub enum OnionMessageContents<T: CustomOnionMessageContents> {
+pub enum ParsedOnionMessageContents<T: CustomOnionMessageContents> {
 	/// A message related to BOLT 12 Offers.
 	Offers(OffersMessage),
 	/// A custom onion message specified by the user.
 	Custom(T),
 }
 
-impl<T: CustomOnionMessageContents> OnionMessageContents<T> {
+impl<T: CustomOnionMessageContents> ParsedOnionMessageContents<T> {
 	/// Returns the type that was used to decode the message payload.
 	///
 	/// This is not exported to bindings users as methods on non-cloneable enums are not currently exportable
 	pub fn tlv_type(&self) -> u64 {
 		match self {
-			&OnionMessageContents::Offers(ref msg) => msg.tlv_type(),
-			&OnionMessageContents::Custom(ref msg) => msg.tlv_type(),
+			&ParsedOnionMessageContents::Offers(ref msg) => msg.tlv_type(),
+			&ParsedOnionMessageContents::Custom(ref msg) => msg.tlv_type(),
 		}
 	}
 }
 
 /// This is not exported to bindings users as methods on non-cloneable enums are not currently exportable
-impl<T: CustomOnionMessageContents> Writeable for OnionMessageContents<T> {
+impl<T: CustomOnionMessageContents> Writeable for ParsedOnionMessageContents<T> {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
 		match self {
-			OnionMessageContents::Offers(msg) => Ok(msg.write(w)?),
-			OnionMessageContents::Custom(msg) => Ok(msg.write(w)?),
+			ParsedOnionMessageContents::Offers(msg) => Ok(msg.write(w)?),
+			ParsedOnionMessageContents::Custom(msg) => Ok(msg.write(w)?),
 		}
 	}
 }
@@ -236,12 +235,12 @@ ReadableArgs<(SharedSecret, &H, &L)> for Payload<<H as CustomOnionMessageHandler
 			match msg_type {
 				tlv_type if OffersMessage::is_known_type(tlv_type) => {
 					let msg = OffersMessage::read(msg_reader, (tlv_type, logger))?;
-					message = Some(OnionMessageContents::Offers(msg));
+					message = Some(ParsedOnionMessageContents::Offers(msg));
 					Ok(true)
 				},
 				_ => match handler.read_custom_message(msg_type, msg_reader)? {
 					Some(msg) => {
-						message = Some(OnionMessageContents::Custom(msg));
+						message = Some(ParsedOnionMessageContents::Custom(msg));
 						Ok(true)
 					},
 					None => Ok(false),
