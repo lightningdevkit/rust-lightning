@@ -51,8 +51,6 @@ use bitcoin::{Address, Network, PubkeyHash, ScriptHash};
 use bitcoin::util::address::{Payload, WitnessVersion};
 use bitcoin_hashes::{Hash, sha256};
 use lightning::ln::features::Bolt11InvoiceFeatures;
-#[cfg(any(doc, test))]
-use lightning::routing::gossip::RoutingFees;
 use lightning::util::invoice::construct_invoice_preimage;
 
 use secp256k1::PublicKey;
@@ -74,7 +72,9 @@ use serde::{Deserialize, Deserializer,Serialize, Serializer, de::Error};
 #[doc(no_inline)]
 pub use lightning::ln::PaymentSecret;
 #[doc(no_inline)]
-pub use lightning::routing::router::RouteHint;
+pub use lightning::routing::router::{RouteHint, RouteHintHop};
+#[doc(no_inline)]
+pub use lightning::routing::gossip::RoutingFees;
 
 mod de;
 mod ser;
