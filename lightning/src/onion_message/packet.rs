@@ -103,31 +103,33 @@ impl LengthReadable for Packet {
 /// Onion message payloads contain "control" TLVs and "data" TLVs. Control TLVs are used to route
 /// the onion message from hop to hop and for path verification, whereas data TLVs contain the onion
 /// message content itself, such as an invoice request.
-pub(super) enum Payload<T: CustomOnionMessageContents> {
+pub(super) enum Payload<T: OnionMessageContents> {
 	/// This payload is for an intermediate hop.
 	Forward(ForwardControlTlvs),
 	/// This payload is for the final hop.
 	Receive {
 		control_tlvs: ReceiveControlTlvs,
 		reply_path: Option<BlindedPath>,
-		message: ParsedOnionMessageContents<T>,
+		message: T,
 	}
 }
 
-/// The contents of an onion message as read from the wire.
+/// The contents of an [`OnionMessage`] as read from the wire.
+///
+/// [`OnionMessage`]: crate::ln::msgs::OnionMessage
 #[derive(Debug)]
-pub enum ParsedOnionMessageContents<T: CustomOnionMessageContents> {
+pub enum ParsedOnionMessageContents<T: OnionMessageContents> {
 	/// A message related to BOLT 12 Offers.
 	Offers(OffersMessage),
 	/// A custom onion message specified by the user.
 	Custom(T),
 }
 
-impl<T: CustomOnionMessageContents> ParsedOnionMessageContents<T> {
+impl<T: OnionMessageContents> OnionMessageContents for ParsedOnionMessageContents<T> {
 	/// Returns the type that was used to decode the message payload.
 	///
 	/// This is not exported to bindings users as methods on non-cloneable enums are not currently exportable
-	pub fn tlv_type(&self) -> u64 {
+	fn tlv_type(&self) -> u64 {
 		match self {
 			&ParsedOnionMessageContents::Offers(ref msg) => msg.tlv_type(),
 			&ParsedOnionMessageContents::Custom(ref msg) => msg.tlv_type(),
@@ -136,7 +138,7 @@ impl<T: CustomOnionMessageContents> ParsedOnionMessageContents<T> {
 }
 
 /// This is not exported to bindings users as methods on non-cloneable enums are not currently exportable
-impl<T: CustomOnionMessageContents> Writeable for ParsedOnionMessageContents<T> {
+impl<T: OnionMessageContents> Writeable for ParsedOnionMessageContents<T> {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
 		match self {
 			ParsedOnionMessageContents::Offers(msg) => Ok(msg.write(w)?),
@@ -145,8 +147,8 @@ impl<T: CustomOnionMessageContents> Writeable for ParsedOnionMessageContents<T> 
 	}
 }
 
-/// The contents of a custom onion message.
-pub trait CustomOnionMessageContents: Writeable {
+/// The contents of an onion message.
+pub trait OnionMessageContents: Writeable {
 	/// Returns the TLV type identifying the message contents. MUST be >= 64.
 	fn tlv_type(&self) -> u64;
 }
@@ -172,7 +174,7 @@ pub(super) enum ReceiveControlTlvs {
 }
 
 // Uses the provided secret to simultaneously encode and encrypt the unblinded control TLVs.
-impl<T: CustomOnionMessageContents> Writeable for (Payload<T>, [u8; 32]) {
+impl<T: OnionMessageContents> Writeable for (Payload<T>, [u8; 32]) {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
 		match &self.0 {
 			Payload::Forward(ForwardControlTlvs::Blinded(encrypted_bytes)) => {
@@ -211,8 +213,8 @@ impl<T: CustomOnionMessageContents> Writeable for (Payload<T>, [u8; 32]) {
 }
 
 // Uses the provided secret to simultaneously decode and decrypt the control TLVs and data TLV.
-impl<H: CustomOnionMessageHandler + ?Sized, L: Logger + ?Sized>
-ReadableArgs<(SharedSecret, &H, &L)> for Payload<<H as CustomOnionMessageHandler>::CustomMessage> {
+impl<H: CustomOnionMessageHandler + ?Sized, L: Logger + ?Sized> ReadableArgs<(SharedSecret, &H, &L)>
+for Payload<ParsedOnionMessageContents<<H as CustomOnionMessageHandler>::CustomMessage>> {
 	fn read<R: Read>(r: &mut R, args: (SharedSecret, &H, &L)) -> Result<Self, DecodeError> {
 		let (encrypted_tlvs_ss, handler, logger) = args;
 

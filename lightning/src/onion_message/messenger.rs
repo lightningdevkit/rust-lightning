@@ -23,7 +23,8 @@ use crate::ln::features::{InitFeatures, NodeFeatures};
 use crate::ln::msgs::{self, OnionMessage, OnionMessageHandler};
 use crate::ln::onion_utils;
 use crate::ln::peer_handler::IgnoringMessageHandler;
-pub use super::packet::{CustomOnionMessageContents, ParsedOnionMessageContents};
+pub use super::packet::OnionMessageContents;
+use super::packet::ParsedOnionMessageContents;
 use super::offers::OffersMessageHandler;
 use super::packet::{BIG_PACKET_HOP_DATA_LEN, ForwardControlTlvs, Packet, Payload, ReceiveControlTlvs, SMALL_PACKET_HOP_DATA_LEN};
 use crate::util::logger::Logger;
@@ -60,7 +61,7 @@ use crate::prelude::*;
 /// # use lightning::blinded_path::BlindedPath;
 /// # use lightning::sign::KeysManager;
 /// # use lightning::ln::peer_handler::IgnoringMessageHandler;
-/// # use lightning::onion_message::{CustomOnionMessageContents, Destination, MessageRouter, ParsedOnionMessageContents, OnionMessagePath, OnionMessenger};
+/// # use lightning::onion_message::{OnionMessageContents, Destination, MessageRouter, OnionMessagePath, OnionMessenger};
 /// # use lightning::util::logger::{Logger, Record};
 /// # use lightning::util::ser::{Writeable, Writer};
 /// # use lightning::io;
@@ -101,7 +102,7 @@ use crate::prelude::*;
 /// 		// Write your custom onion message to `w`
 /// 	}
 /// }
-/// impl CustomOnionMessageContents for YourCustomMessage {
+/// impl OnionMessageContents for YourCustomMessage {
 /// 	fn tlv_type(&self) -> u64 {
 /// 		# let your_custom_message_type = 42;
 /// 		your_custom_message_type
@@ -113,8 +114,7 @@ use crate::prelude::*;
 /// 	destination: Destination::Node(destination_node_id),
 /// };
 /// let reply_path = None;
-/// # let your_custom_message = YourCustomMessage {};
-/// let message = ParsedOnionMessageContents::Custom(your_custom_message);
+/// # let message = YourCustomMessage {};
 /// onion_messenger.send_onion_message(path, message, reply_path);
 ///
 /// // Create a blinded path to yourself, for someone to send an onion message to.
@@ -128,8 +128,7 @@ use crate::prelude::*;
 /// 	destination: Destination::BlindedPath(blinded_path),
 /// };
 /// let reply_path = None;
-/// # let your_custom_message = YourCustomMessage {};
-/// let message = ParsedOnionMessageContents::Custom(your_custom_message);
+/// # let message = YourCustomMessage {};
 /// onion_messenger.send_onion_message(path, message, reply_path);
 /// ```
 ///
@@ -244,7 +243,7 @@ pub enum SendError {
 pub trait CustomOnionMessageHandler {
 	/// The message known to the handler. To support multiple message types, you may want to make this
 	/// an enum with a variant for each supported message.
-	type CustomMessage: CustomOnionMessageContents;
+	type CustomMessage: OnionMessageContents;
 
 	/// Called with the custom message that was received, returning a response to send, if any.
 	fn handle_custom_message(&self, msg: Self::CustomMessage) -> Option<Self::CustomMessage>;
@@ -256,21 +255,20 @@ pub trait CustomOnionMessageHandler {
 
 /// A processed incoming onion message, containing either a Forward (another onion message)
 /// or a Receive payload with decrypted contents.
-pub enum PeeledOnion<CM: CustomOnionMessageContents> {
+pub enum PeeledOnion<T: OnionMessageContents> {
 	/// Forwarded onion, with the next node id and a new onion
 	Forward(PublicKey, OnionMessage),
 	/// Received onion message, with decrypted contents, path_id, and reply path
-	Receive(ParsedOnionMessageContents<CM>, Option<[u8; 32]>, Option<BlindedPath>)
+	Receive(ParsedOnionMessageContents<T>, Option<[u8; 32]>, Option<BlindedPath>)
 }
 
 /// Creates an [`OnionMessage`] with the given `contents` for sending to the destination of
 /// `path`.
 ///
 /// Returns both the node id of the peer to send the message to and the message itself.
-pub fn create_onion_message<ES: Deref, NS: Deref, T: CustomOnionMessageContents>(
+pub fn create_onion_message<ES: Deref, NS: Deref, T: OnionMessageContents>(
 	entropy_source: &ES, node_signer: &NS, secp_ctx: &Secp256k1<secp256k1::All>,
-	path: OnionMessagePath, contents: ParsedOnionMessageContents<T>,
-	reply_path: Option<BlindedPath>,
+	path: OnionMessagePath, contents: T, reply_path: Option<BlindedPath>,
 ) -> Result<(PublicKey, OnionMessage), SendError>
 where
 	ES::Target: EntropySource,
@@ -361,7 +359,7 @@ where
 		onion_decode_ss, &msg.onion_routing_packet.hop_data[..], msg.onion_routing_packet.hmac,
 		(control_tlvs_ss, custom_handler.deref(), logger.deref())
 	) {
-		Ok((Payload::Receive::<<<CMH as Deref>::Target as CustomOnionMessageHandler>::CustomMessage> {
+		Ok((Payload::Receive::<ParsedOnionMessageContents<<<CMH as Deref>::Target as CustomOnionMessageHandler>::CustomMessage>> {
 			message, control_tlvs: ReceiveControlTlvs::Unblinded(ReceiveTlvs { path_id }), reply_path,
 		}, None)) => {
 			Ok(PeeledOnion::Receive(message, path_id, reply_path))
@@ -452,9 +450,8 @@ where
 	/// `path`.
 	///
 	/// See [`OnionMessenger`] for example usage.
-	pub fn send_onion_message<T: CustomOnionMessageContents>(
-		&self, path: OnionMessagePath, contents: ParsedOnionMessageContents<T>,
-		reply_path: Option<BlindedPath>
+	pub fn send_onion_message<T: OnionMessageContents>(
+		&self, path: OnionMessagePath, contents: T, reply_path: Option<BlindedPath>
 	) -> Result<(), SendError> {
 		let (first_node_id, onion_msg) = create_onion_message(
 			&self.entropy_source, &self.node_signer, &self.secp_ctx, path, contents, reply_path
@@ -471,9 +468,25 @@ where
 		}
 	}
 
-	fn find_path_and_enqueue_onion_message<T: CustomOnionMessageContents>(
-		&self, contents: ParsedOnionMessageContents<T>, destination: Destination,
-		log_suffix: fmt::Arguments
+	fn handle_onion_message_response<T: OnionMessageContents>(
+		&self, response: Option<T>, reply_path: Option<BlindedPath>, log_suffix: fmt::Arguments
+	) {
+		if let Some(response) = response {
+			match reply_path {
+				Some(reply_path) => {
+					self.find_path_and_enqueue_onion_message(
+						response, Destination::BlindedPath(reply_path), log_suffix
+					);
+				},
+				None => {
+					log_trace!(self.logger, "Missing reply path {}", log_suffix);
+				},
+			}
+		}
+	}
+
+	fn find_path_and_enqueue_onion_message<T: OnionMessageContents>(
+		&self, contents: T, destination: Destination, log_suffix: fmt::Arguments
 	) {
 		let sender = match self.node_signer.get_node_id(Recipient::Node) {
 			Ok(node_id) => node_id,
@@ -557,33 +570,26 @@ where
 				log_trace!(self.logger,
 					"Received an onion message with path_id {:02x?} and {} reply_path",
 						path_id, if reply_path.is_some() { "a" } else { "no" });
-				let response = match message {
+
+				match message {
 					ParsedOnionMessageContents::Offers(msg) => {
-						self.offers_handler.handle_message(msg)
-							.map(|msg| ParsedOnionMessageContents::Offers(msg))
+						let response = self.offers_handler.handle_message(msg);
+						self.handle_onion_message_response(
+							response, reply_path, format_args!(
+								"when responding to Offers onion message with path_id {:02x?}",
+								path_id
+							)
+						);
 					},
 					ParsedOnionMessageContents::Custom(msg) => {
-						self.custom_handler.handle_custom_message(msg)
-							.map(|msg| ParsedOnionMessageContents::Custom(msg))
-					},
-				};
-				if let Some(response) = response {
-					match reply_path {
-						Some(reply_path) => {
-							self.find_path_and_enqueue_onion_message(
-								response, Destination::BlindedPath(reply_path), format_args!(
-									"when responding to onion message with path_id {:02x?}", path_id
-								)
-							);
-						},
-						None => {
-							log_trace!(
-								self.logger,
-								"Missing reply path when responding to onion message with path_id {:02x?}",
+						let response = self.custom_handler.handle_custom_message(msg);
+						self.handle_onion_message_response(
+							response, reply_path, format_args!(
+								"when responding to Custom onion message with path_id {:02x?}",
 								path_id
-							);
-						},
-					}
+							)
+						);
+					},
 				}
 			},
 			Ok(PeeledOnion::Forward(next_node_id, onion_message)) => {
@@ -683,9 +689,9 @@ pub type SimpleRefOnionMessenger<'a, 'b, 'c, L> = OnionMessenger<
 
 /// Construct onion packet payloads and keys for sending an onion message along the given
 /// `unblinded_path` to the given `destination`.
-fn packet_payloads_and_keys<T: CustomOnionMessageContents, S: secp256k1::Signing + secp256k1::Verification>(
-	secp_ctx: &Secp256k1<S>, unblinded_path: &[PublicKey], destination: Destination,
-	message: ParsedOnionMessageContents<T>, mut reply_path: Option<BlindedPath>, session_priv: &SecretKey
+fn packet_payloads_and_keys<T: OnionMessageContents, S: secp256k1::Signing + secp256k1::Verification>(
+	secp_ctx: &Secp256k1<S>, unblinded_path: &[PublicKey], destination: Destination, message: T,
+	mut reply_path: Option<BlindedPath>, session_priv: &SecretKey
 ) -> Result<(Vec<(Payload<T>, [u8; 32])>, Vec<onion_utils::OnionKeys>), secp256k1::Error> {
 	let num_hops = unblinded_path.len() + destination.num_hops();
 	let mut payloads = Vec::with_capacity(num_hops);
@@ -761,7 +767,7 @@ fn packet_payloads_and_keys<T: CustomOnionMessageContents, S: secp256k1::Signing
 }
 
 /// Errors if the serialized payload size exceeds onion_message::BIG_PACKET_HOP_DATA_LEN
-fn construct_onion_message_packet<T: CustomOnionMessageContents>(payloads: Vec<(Payload<T>, [u8; 32])>, onion_keys: Vec<onion_utils::OnionKeys>, prng_seed: [u8; 32]) -> Result<Packet, ()> {
+fn construct_onion_message_packet<T: OnionMessageContents>(payloads: Vec<(Payload<T>, [u8; 32])>, onion_keys: Vec<onion_utils::OnionKeys>, prng_seed: [u8; 32]) -> Result<Packet, ()> {
 	// Spec rationale:
 	// "`len` allows larger messages to be sent than the standard 1300 bytes allowed for an HTLC
 	// onion, but this should be used sparingly as it is reduces anonymity set, hence the

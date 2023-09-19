@@ -29,7 +29,7 @@ use crate::util::ser::{VecWriter, Writeable, Writer};
 use crate::ln::peer_channel_encryptor::{PeerChannelEncryptor,NextNoiseStep};
 use crate::ln::wire;
 use crate::ln::wire::{Encode, Type};
-use crate::onion_message::{CustomOnionMessageContents, CustomOnionMessageHandler, OffersMessage, OffersMessageHandler, SimpleArcOnionMessenger, SimpleRefOnionMessenger};
+use crate::onion_message::{CustomOnionMessageHandler, OffersMessage, OffersMessageHandler, OnionMessageContents, SimpleArcOnionMessenger, SimpleRefOnionMessenger};
 use crate::routing::gossip::{NetworkGraph, P2PGossipSync, NodeId, NodeAlias};
 use crate::util::atomic_counter::AtomicCounter;
 use crate::util::logger::Logger;
@@ -131,7 +131,7 @@ impl CustomOnionMessageHandler for IgnoringMessageHandler {
 	}
 }
 
-impl CustomOnionMessageContents for Infallible {
+impl OnionMessageContents for Infallible {
 	fn tlv_type(&self) -> u64 { unreachable!(); }
 }
 
