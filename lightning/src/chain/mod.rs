@@ -25,6 +25,7 @@ use crate::prelude::*;
 pub mod chaininterface;
 pub mod chainmonitor;
 pub mod channelmonitor;
+pub mod signature; 
 pub mod transaction;
 pub(crate) mod onchaintx;
 pub(crate) mod package;
