@@ -663,15 +663,18 @@ pub(super) struct PendingSpliceInfo {
 	pub relative_satoshis: i64,
 	/// The post splice value (current + relative)
 	pub post_channel_value: u64,
+	/// Whether we are the initiator or not
+	pub is_outgoing: bool,
 }
 
 impl PendingSpliceInfo {
-	pub fn new(relative_satoshis: i64, current_value: u64) -> Self {
+	pub fn new(relative_satoshis: i64, current_value: u64, is_outgoing: bool) -> Self {
 		// TODO check for underflow
 		let post_channel_value = (current_value as i64 + relative_satoshis) as u64;
 		Self {
 			relative_satoshis,
 			post_channel_value,
+			is_outgoing,
 		}
 	}
 }
@@ -2092,15 +2095,40 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 		Ok(())
 	}
 
+	/*
 	/// #SPLICING
-	/// Commit to the pending splice (update channel capacity (value))
-	pub fn commit_pending_splice<L: Deref>(&mut self, belongs_to_local: bool, logger: &L) -> Result<(), ChannelError>
+	fn get_pending_splice_or_default_mut(&mut self) -> &mut PendingSpliceInfo {
+		if self.pending_splice.is_none() {
+			self.pending_splice = Some(PendingSpliceInfo::default());
+		}
+		self.pending_splice.as_mut().unwrap()
+	}
+	*/
+
+	/// #SPLICING
+	/// Commit channel to the pending splice: once it completes, channel will be the new spliced,
+	/// from this point there is no going back to the old one, in case of error channel will error.
+	/// Update channel capacity, funding txid, etc.
+	pub fn commit_pending_splice<L: Deref>(&mut self, splice_txo: OutPoint, logger: &L) -> Result<(), ChannelError>
 	where L::Target: Logger {
 		if let Some(pending_splice) = self.pending_splice {
+			self.channel_state = match pending_splice.is_outgoing {
+				true => ChannelState::OurInitSent,
+				false => ChannelState::TheirInitSent,
+			} as u32;
+			self.funding_transaction = None; // will be set later
+			self.channel_transaction_parameters.funding_outpoint = Some(splice_txo);
+			// Also mark that it is not confirmed
+			self.funding_tx_confirmation_height = 0;
+			self.funding_tx_confirmed_in = None;
+
 			let old_value_debug = self.channel_value_satoshis;
-			let _ = self.update_channel_value(pending_splice.post_channel_value, belongs_to_local, logger)?;
+			let _ = self.update_channel_value(pending_splice.post_channel_value, pending_splice.is_outgoing, logger)?;
+
 			self.pending_splice = None;
-			log_trace!(logger, "Changed channel value, channel_id {}  old {}  new {}", self.channel_id, old_value_debug, self.channel_value_satoshis);
+
+			log_trace!(logger, "Committed channel to the splice, channel_id {}  capacity old {}  new {}  new funding txid {}",
+				self.channel_id, old_value_debug, self.channel_value_satoshis, splice_txo.txid);
 			Ok(())
 		} else {
 			Err(ChannelError::Warn("Internal error: No pending splice found".to_owned()))
@@ -5920,13 +5948,8 @@ impl<SP: Deref> Channel<SP> where
 		log_info!(logger, "Created signature for funding tx input / initiator, index {}  txid {}  value {}  txlen {}  oldtxlen {}  sig {}", splice_prev_funding_input_index, splice_transaction_with_one_sig.txid(), self.context.channel_value_satoshis, splice_transaction_with_one_sig.encode().len(), splice_transaction.encode().len(), funding_input_signature.serialize_der().to_hex());
 
 		// Commit to the new channel value (capacity). The increase belongs to us (initiator, local).
-		// TODO: what if the the new splicing TX never locks?
-		let _ = self.context.commit_pending_splice(true, logger)?;
+		let _ = self.context.commit_pending_splice(splice_txo, logger)?;
 
-		// Save splice TX (in temp field?)
-		// TODO Do we need to store this in a separate (splice-specific) field, so that old funding is also available?
-		// self.pending_splice_transaction_parameters = self.channel_transaction_parameters;
-		self.context.channel_transaction_parameters.funding_outpoint = Some(splice_txo);
 		// Set tx parameters, for commitment signing
 		match &mut self.context.holder_signer {
 			ChannelSignerType::Ecdsa(ecdsa) => ecdsa.reprovide_channel_parameters(&self.context.channel_transaction_parameters, self.context.channel_value_satoshis),
@@ -6007,14 +6030,9 @@ impl<SP: Deref> Channel<SP> where
 		log_info!(logger, "Created signature for funding tx input / acceptor, input idx {}  txid {}  value {}  sig {:?}", msg.splice_prev_funding_input_index, msg.splice_transaction.txid(), self.context.channel_value_satoshis, funding_signature.serialize_der().to_hex());
 
 		// Commit to the new channel value (capacity). The increase belongs to them.
-		// TODO: what if the the new splicing TX never locks?
-		let _ = self.context.commit_pending_splice(false, logger)?;
+		let splice_txo = OutPoint { txid: msg.splice_txid, index: msg.funding_output_index };
+		let _ = self.context.commit_pending_splice(splice_txo, logger)?;
 
-		// Save splice TX (in temp field?)
-		// TODO Do we need to store this in a separate (splice-specific) field, so that old funding is also available?
-		// self.context.pending_splice_transaction_parameters = self.context.channel_transaction_parameters;
-		let splicing_txo = OutPoint { txid: msg.splice_txid, index: msg.funding_output_index };
-		self.context.channel_transaction_parameters.funding_outpoint = Some(splicing_txo);
 		// This is an externally observable change before we finish all our checks.  In particular
 		// funding_created_signature may fail.
 		match &mut self.context.holder_signer {
@@ -6061,7 +6079,7 @@ impl<SP: Deref> Channel<SP> where
 		monitor_signer.provide_channel_parameters(&self.context.channel_transaction_parameters);
 		let channel_monitor = ChannelMonitor::new(self.context.secp_ctx.clone(), monitor_signer,
 												shutdown_script, self.context.get_holder_selected_contest_delay(),
-												&self.context.destination_script, (splicing_txo, funding_txo_script.clone()),
+												&self.context.destination_script, (splice_txo, funding_txo_script.clone()),
 												&self.context.channel_transaction_parameters,
 												funding_redeemscript.clone(), self.context.channel_value_satoshis,
 												obscure_factor,
@@ -6071,7 +6089,7 @@ impl<SP: Deref> Channel<SP> where
 
 		self.context.channel_state = ChannelState::FundingSent as u32;
 		// Note: channel_id is not changed
-		// self.channel_id = splicing_txo.to_channel_id();
+		// self.channel_id = splice_txo.to_channel_id();
 		// TODO: Check if we reset transation number counters or not
 		// self.cur_counterparty_commitment_transaction_number -= 1;
 		// self.cur_holder_commitment_transaction_number -= 1;

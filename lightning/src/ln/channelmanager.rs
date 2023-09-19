@@ -2353,7 +2353,7 @@ where
 					}
 					// Store post-splicing channel value (pending)
 					// TODO check if pending_splice is already set
-					chan.context.pending_splice = Some(PendingSpliceInfo::new(relative_satoshis, current_value_sats));
+					chan.context.pending_splice = Some(PendingSpliceInfo::new(relative_satoshis, current_value_sats, true));
 		
 					let msg = chan.get_splice(self.genesis_hash.clone(), relative_satoshis, funding_feerate_perkw, locktime);
 
@@ -3895,7 +3895,7 @@ where
 				}
 				if input_index.is_none() {
 					return Err(APIError::APIMisuseError {
-						err: format!("No input matched the address and value in the SpliceAcked event {}", chan.context.pending_splice.unwrap_or(PendingSpliceInfo::default()).relative_satoshis)
+						err: format!("No input matched the address and value in the SpliceAcked event {}", chan.context.pending_splice.unwrap_or_default().relative_satoshis)
 					});
 				}
 				Ok(input_index.unwrap())
@@ -3922,7 +3922,7 @@ where
 				}
 				if output_index.is_none() {
 					return Err(APIError::APIMisuseError {
-						err: format!("No output matched the script_pubkey and value in the SpliceAcked event {}", chan.context.pending_splice.unwrap_or(PendingSpliceInfo::default()).relative_satoshis)
+						err: format!("No output matched the script_pubkey and value in the SpliceAcked event {}", chan.context.pending_splice.unwrap_or_default().relative_satoshis)
 					});
 				}
 				Ok(OutPoint { txid: tx.txid(), index: output_index.unwrap() })
@@ -6726,7 +6726,7 @@ where
 				if let ChannelPhase::Funded(chan) = chan_entry.get_mut() {
 					// Store post-splicing channel value (pending)
 					// TODO check if there is a pending already
-					chan.context.pending_splice = Some(PendingSpliceInfo::new(msg.relative_satoshis, chan.context.get_value_satoshis()));
+					chan.context.pending_splice = Some(PendingSpliceInfo::new(msg.relative_satoshis, chan.context.get_value_satoshis(), false));
 
 					let msg = chan.get_splice_ack(self.genesis_hash.clone(), msg.relative_satoshis);
 					peer_state.pending_msg_events.push(events::MessageSendEvent::SendSpliceAck {
