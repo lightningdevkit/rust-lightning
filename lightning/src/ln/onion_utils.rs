@@ -444,7 +444,14 @@ pub(super) fn process_onion_failure<T: secp256k1::Signing, L: Deref>(
 	} = htlc_source {
 		(path, session_priv, first_hop_htlc_msat)
 	} else { unreachable!() };
-	let mut res = None;
+
+	// Learnings from the HTLC failure to inform future payment retries and scoring.
+	struct FailureLearnings {
+		network_update: Option<NetworkUpdate>,
+		short_channel_id: Option<u64>,
+		payment_failed_permanently: bool,
+	}
+	let mut res: Option<FailureLearnings> = None;
 	let mut htlc_msat = *first_hop_htlc_msat;
 	let mut error_code_ret = None;
 	let mut error_packet_ret = None;
@@ -507,7 +514,9 @@ pub(super) fn process_onion_failure<T: secp256k1::Signing, L: Deref>(
 					is_permanent: true,
 				});
 				let short_channel_id = Some(route_hop.short_channel_id);
-				res = Some((network_update, short_channel_id, is_from_final_node));
+				res = Some(FailureLearnings {
+					network_update, short_channel_id, payment_failed_permanently: is_from_final_node
+				});
 				return
 			}
 		};
@@ -659,7 +668,10 @@ pub(super) fn process_onion_failure<T: secp256k1::Signing, L: Deref>(
 			short_channel_id = Some(route_hop.short_channel_id);
 		}
 
-		res = Some((network_update, short_channel_id, error_code & PERM == PERM && is_from_final_node));
+		res = Some(FailureLearnings {
+			network_update, short_channel_id,
+			payment_failed_permanently: error_code & PERM == PERM && is_from_final_node
+		});
 
 		let (description, title) = errors::get_onion_error_description(error_code);
 		if debug_field_size > 0 && err_packet.failuremsg.len() >= 4 + debug_field_size {
@@ -668,7 +680,9 @@ pub(super) fn process_onion_failure<T: secp256k1::Signing, L: Deref>(
 			log_info!(logger, "Onion Error[from {}: {}({:#x})] {}", route_hop.pubkey, title, error_code, description);
 		}
 	}).expect("Route that we sent via spontaneously grew invalid keys in the middle of it?");
-	if let Some((network_update, short_channel_id, payment_failed_permanently)) = res {
+	if let Some(FailureLearnings {
+		network_update, short_channel_id, payment_failed_permanently
+	}) = res {
 		DecodedOnionFailure {
 			network_update, short_channel_id, payment_retryable: !payment_failed_permanently,
 			#[cfg(test)]
