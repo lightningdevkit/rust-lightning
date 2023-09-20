@@ -2325,8 +2325,9 @@ where L::Target: Logger {
 					// Decrease the available liquidity of a hop in the middle of the path.
 					let victim_candidate = &payment_path.hops[(payment_path.hops.len()) / 2].0.candidate;
 					let exhausted = u64::max_value();
-					log_trace!(logger, "Disabling route candidate {} for future path building iterations to
-						avoid duplicates.", LoggedCandidateHop(victim_candidate));
+					log_trace!(logger,
+						"Disabling route candidate {} for future path building iterations to avoid duplicates.",
+						LoggedCandidateHop(victim_candidate));
 					*used_liquidities.entry(victim_candidate.id(false)).or_default() = exhausted;
 					*used_liquidities.entry(victim_candidate.id(true)).or_default() = exhausted;
 				}
@@ -7359,6 +7360,42 @@ pub mod benches {
 		generate_routes(bench, &network_graph, scorer, &params,
 			channelmanager::provided_invoice_features(&UserConfig::default()), 100_000_000,
 			"generate_large_mpp_routes_with_probabilistic_scorer");
+	}
+
+	pub fn generate_routes_with_nonlinear_probabilistic_scorer(bench: &mut Criterion) {
+		let logger = TestLogger::new();
+		let network_graph = bench_utils::read_network_graph(&logger).unwrap();
+		let mut params = ProbabilisticScoringFeeParameters::default();
+		params.linear_success_probability = false;
+		let scorer = ProbabilisticScorer::new(
+			ProbabilisticScoringDecayParameters::default(), &network_graph, &logger);
+		generate_routes(bench, &network_graph, scorer, &params,
+			channelmanager::provided_invoice_features(&UserConfig::default()), 0,
+			"generate_routes_with_nonlinear_probabilistic_scorer");
+	}
+
+	pub fn generate_mpp_routes_with_nonlinear_probabilistic_scorer(bench: &mut Criterion) {
+		let logger = TestLogger::new();
+		let network_graph = bench_utils::read_network_graph(&logger).unwrap();
+		let mut params = ProbabilisticScoringFeeParameters::default();
+		params.linear_success_probability = false;
+		let scorer = ProbabilisticScorer::new(
+			ProbabilisticScoringDecayParameters::default(), &network_graph, &logger);
+		generate_routes(bench, &network_graph, scorer, &params,
+			channelmanager::provided_invoice_features(&UserConfig::default()), 0,
+			"generate_mpp_routes_with_nonlinear_probabilistic_scorer");
+	}
+
+	pub fn generate_large_mpp_routes_with_nonlinear_probabilistic_scorer(bench: &mut Criterion) {
+		let logger = TestLogger::new();
+		let network_graph = bench_utils::read_network_graph(&logger).unwrap();
+		let mut params = ProbabilisticScoringFeeParameters::default();
+		params.linear_success_probability = false;
+		let scorer = ProbabilisticScorer::new(
+			ProbabilisticScoringDecayParameters::default(), &network_graph, &logger);
+		generate_routes(bench, &network_graph, scorer, &params,
+			channelmanager::provided_invoice_features(&UserConfig::default()), 100_000_000,
+			"generate_large_mpp_routes_with_nonlinear_probabilistic_scorer");
 	}
 
 	fn generate_routes<S: ScoreLookUp + ScoreUpdate>(
