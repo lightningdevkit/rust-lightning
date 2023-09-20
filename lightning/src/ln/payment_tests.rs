@@ -83,7 +83,11 @@ fn mpp_retry() {
 	send_payment(&nodes[3], &vec!(&nodes[2])[..], 1_500_000);
 
 	let amt_msat = 1_000_000;
-	let (mut route, payment_hash, payment_preimage, payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[3], amt_msat);
+	let max_total_routing_fee_msat = 50_000;
+	let payment_params = PaymentParameters::from_node_id(nodes[3].node.get_our_node_id(), TEST_FINAL_CLTV)
+		.with_bolt11_features(nodes[3].node.invoice_features()).unwrap();
+	let (mut route, payment_hash, payment_preimage, payment_secret) = get_route_and_payment_hash!(
+		nodes[0], nodes[3], payment_params, amt_msat, Some(max_total_routing_fee_msat));
 	let path = route.paths[0].clone();
 	route.paths.push(path);
 	route.paths[0].hops[0].pubkey = nodes[1].node.get_our_node_id();
@@ -150,6 +154,9 @@ fn mpp_retry() {
 	route.paths.remove(0);
 	route_params.final_value_msat = 1_000_000;
 	route_params.payment_params.previously_failed_channels.push(chan_4_update.contents.short_channel_id);
+	// Check the remaining max total routing fee for the second attempt is 50_000 - 1_000 msat fee
+	// used by the first path
+	route_params.max_total_routing_fee_msat = Some(max_total_routing_fee_msat - 1_000);
 	nodes[0].router.expect_find_route(route_params, Ok(route));
 	nodes[0].node.process_pending_htlc_forwards();
 	check_added_monitors!(nodes[0], 1);
