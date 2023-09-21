@@ -894,6 +894,7 @@ mod tests {
 		fn disconnect_socket(&mut self) {}
 	}
 
+	#[cfg(not(c_bindings))]
 	type ChannelManager =
 		channelmanager::ChannelManager<
 			Arc<ChainMonitor>,
@@ -905,9 +906,22 @@ mod tests {
 			Arc<DefaultRouter<
 				Arc<NetworkGraph<Arc<test_utils::TestLogger>>>,
 				Arc<test_utils::TestLogger>,
-				Arc<Mutex<TestScorer>>,
-				(),
-				TestScorer>
+				Arc<Mutex<TestScorer>>>
+			>,
+			Arc<test_utils::TestLogger>>;
+	#[cfg(c_bindings)]
+	type ChannelManager =
+		channelmanager::ChannelManager<
+			Arc<ChainMonitor>,
+			Arc<test_utils::TestBroadcaster>,
+			Arc<KeysManager>,
+			Arc<KeysManager>,
+			Arc<KeysManager>,
+			Arc<test_utils::TestFeeEstimator>,
+			Arc<DefaultRouter<
+				Arc<NetworkGraph<Arc<test_utils::TestLogger>>>,
+				Arc<test_utils::TestLogger>,
+				Arc<Mutex<TestScorer>>>
 			>,
 			Arc<test_utils::TestLogger>>;
 
@@ -1064,9 +1078,10 @@ mod tests {
 	}
 
 	impl ScoreLookUp for TestScorer {
+		#[cfg(not(c_bindings))]
 		type ScoreParams = ();
 		fn channel_penalty_msat(
-			&self, _short_channel_id: u64, _source: &NodeId, _target: &NodeId, _usage: ChannelUsage, _score_params: &Self::ScoreParams
+			&self, _short_channel_id: u64, _source: &NodeId, _target: &NodeId, _usage: ChannelUsage, _score_params: &lightning::routing::scoring::ProbabilisticScoringFeeParameters
 		) -> u64 { unimplemented!(); }
 	}
 

@@ -1267,9 +1267,10 @@ impl crate::util::ser::Writeable for TestScorer {
 }
 
 impl ScoreLookUp for TestScorer {
+	#[cfg(not(c_bindings))]
 	type ScoreParams = ();
 	fn channel_penalty_msat(
-		&self, short_channel_id: u64, _source: &NodeId, _target: &NodeId, usage: ChannelUsage, _score_params: &Self::ScoreParams
+		&self, short_channel_id: u64, _source: &NodeId, _target: &NodeId, usage: ChannelUsage, _score_params: &crate::routing::scoring::ProbabilisticScoringFeeParameters
 	) -> u64 {
 		if let Some(scorer_expectations) = self.scorer_expectations.borrow_mut().as_mut() {
 			match scorer_expectations.pop_front() {

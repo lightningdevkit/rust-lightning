@@ -90,9 +90,13 @@ macro_rules! define_score { ($($supertrait: path)*) => {
 ///
 /// Scoring is in terms of fees willing to be paid in order to avoid routing through a channel.
 pub trait ScoreLookUp {
+	#[cfg(not(c_bindings))]
 	/// A configurable type which should contain various passed-in parameters for configuring the scorer,
 	/// on a per-routefinding-call basis through to the scorer methods,
 	/// which are used to determine the parameters for the suitability of channels for use.
+	///
+	/// Note that due to limitations in many other languages' generics features, language bindings
+	/// use [`ProbabilisticScoringFeeParameters`] for the parameters on all scorers.
 	type ScoreParams;
 	/// Returns the fee in msats willing to be paid to avoid routing `send_amt_msat` through the
 	/// given channel in the direction from `source` to `target`.
@@ -103,7 +107,7 @@ pub trait ScoreLookUp {
 	/// [`u64::max_value`] is given to indicate sufficient capacity for the invoice's full amount.
 	/// Thus, implementations should be overflow-safe.
 	fn channel_penalty_msat(
-		&self, short_channel_id: u64, source: &NodeId, target: &NodeId, usage: ChannelUsage, score_params: &Self::ScoreParams
+		&self, short_channel_id: u64, source: &NodeId, target: &NodeId, usage: ChannelUsage, score_params: &ProbabilisticScoringFeeParameters
 	) -> u64;
 }
 
@@ -135,9 +139,10 @@ impl<T: ScoreLookUp + ScoreUpdate $(+ $supertrait)*> Score for T {}
 
 #[cfg(not(c_bindings))]
 impl<S: ScoreLookUp, T: Deref<Target=S>> ScoreLookUp for T {
+	#[cfg(not(c_bindings))]
 	type ScoreParams = S::ScoreParams;
 	fn channel_penalty_msat(
-		&self, short_channel_id: u64, source: &NodeId, target: &NodeId, usage: ChannelUsage, score_params: &Self::ScoreParams
+		&self, short_channel_id: u64, source: &NodeId, target: &NodeId, usage: ChannelUsage, score_params: &ProbabilisticScoringFeeParameters
 	) -> u64 {
 		self.deref().channel_penalty_msat(short_channel_id, source, target, usage, score_params)
 	}
@@ -314,9 +319,10 @@ impl<'a, T: 'a + Score> Deref for MultiThreadedScoreLockRead<'a, T> {
 
 #[cfg(c_bindings)]
 impl<'a, T: Score> ScoreLookUp for MultiThreadedScoreLockRead<'a, T> {
+	#[cfg(not(c_bindings))]
 	type ScoreParams = T::ScoreParams;
 	fn channel_penalty_msat(&self, short_channel_id: u64, source: &NodeId,
-		target: &NodeId, usage: ChannelUsage, score_params: &Self::ScoreParams
+		target: &NodeId, usage: ChannelUsage, score_params: &ProbabilisticScoringFeeParameters
 	) -> u64 {
 		self.0.channel_penalty_msat(short_channel_id, source, target, usage, score_params)
 	}
@@ -393,8 +399,9 @@ impl FixedPenaltyScorer {
 }
 
 impl ScoreLookUp for FixedPenaltyScorer {
+	#[cfg(not(c_bindings))]
 	type ScoreParams = ();
-	fn channel_penalty_msat(&self, _: u64, _: &NodeId, _: &NodeId, _: ChannelUsage, _score_params: &Self::ScoreParams) -> u64 {
+	fn channel_penalty_msat(&self, _: u64, _: &NodeId, _: &NodeId, _: ChannelUsage, _score_params: &ProbabilisticScoringFeeParameters) -> u64 {
 		self.penalty_msat
 	}
 }
@@ -1374,6 +1381,7 @@ impl<L: DerefMut<Target = u64>, BRT: DerefMut<Target = HistoricalBucketRangeTrac
 }
 
 impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, T: Time> ScoreLookUp for ProbabilisticScorerUsingTime<G, L, T> where L::Target: Logger {
+	#[cfg(not(c_bindings))]
 	type ScoreParams = ProbabilisticScoringFeeParameters;
 	fn channel_penalty_msat(
 		&self, short_channel_id: u64, source: &NodeId, target: &NodeId, usage: ChannelUsage, score_params: &ProbabilisticScoringFeeParameters
