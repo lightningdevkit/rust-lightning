@@ -448,7 +448,7 @@ fn test_manager_serialize_deserialize_inconsistent_monitor() {
 
 	for monitor in node_0_monitors.drain(..) {
 		assert_eq!(nodes[0].chain_monitor.watch_channel(monitor.get_funding_txo().0, monitor),
-			ChannelMonitorUpdateStatus::Completed);
+			Ok(ChannelMonitorUpdateStatus::Completed));
 		check_added_monitors!(nodes[0], 1);
 	}
 	nodes[0].node = &nodes_0_deserialized;

@@ -134,7 +134,7 @@ pub enum MonitorEvent {
 	HTLCEvent(HTLCUpdate),
 
 	/// A monitor event that the Channel's commitment transaction was confirmed.
-	CommitmentTxConfirmed(OutPoint),
+	HolderForceClosed(OutPoint),
 
 	/// Indicates a [`ChannelMonitor`] update has completed. See
 	/// [`ChannelMonitorUpdateStatus::InProgress`] for more information on how this is used.
@@ -150,24 +150,18 @@ pub enum MonitorEvent {
 		/// same [`ChannelMonitor`] have been applied and persisted.
 		monitor_update_id: u64,
 	},
-
-	/// Indicates a [`ChannelMonitor`] update has failed. See
-	/// [`ChannelMonitorUpdateStatus::PermanentFailure`] for more information on how this is used.
-	///
-	/// [`ChannelMonitorUpdateStatus::PermanentFailure`]: super::ChannelMonitorUpdateStatus::PermanentFailure
-	UpdateFailed(OutPoint),
 }
 impl_writeable_tlv_based_enum_upgradable!(MonitorEvent,
-	// Note that Completed and UpdateFailed are currently never serialized to disk as they are
-	// generated only in ChainMonitor
+	// Note that Completed is currently never serialized to disk as it is generated only in
+	// ChainMonitor.
 	(0, Completed) => {
 		(0, funding_txo, required),
 		(2, monitor_update_id, required),
 	},
 ;
 	(2, HTLCEvent),
-	(4, CommitmentTxConfirmed),
-	(6, UpdateFailed),
+	(4, HolderForceClosed),
+	// 6 was `UpdateFailed` until LDK 0.0.117
 );
 
 /// Simple structure sent back by `chain::Watch` when an HTLC from a forward channel is detected on
@@ -1037,7 +1031,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Writeable for ChannelMonitorImpl<Signe
 
 		writer.write_all(&(self.pending_monitor_events.iter().filter(|ev| match ev {
 			MonitorEvent::HTLCEvent(_) => true,
-			MonitorEvent::CommitmentTxConfirmed(_) => true,
+			MonitorEvent::HolderForceClosed(_) => true,
 			_ => false,
 		}).count() as u64).to_be_bytes())?;
 		for event in self.pending_monitor_events.iter() {
@@ -1046,7 +1040,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Writeable for ChannelMonitorImpl<Signe
 					0u8.write(writer)?;
 					upd.write(writer)?;
 				},
-				MonitorEvent::CommitmentTxConfirmed(_) => 1u8.write(writer)?,
+				MonitorEvent::HolderForceClosed(_) => 1u8.write(writer)?,
 				_ => {}, // Covered in the TLV writes below
 			}
 		}
@@ -1488,21 +1482,20 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 		self.inner.lock().unwrap().counterparty_node_id
 	}
 
-	/// Used by ChannelManager deserialization to broadcast the latest holder state if its copy of
-	/// the Channel was out-of-date.
+	/// Used by [`ChannelManager`] deserialization to broadcast the latest holder state if its copy
+	/// of the channel state was out-of-date.
 	///
 	/// You may also use this to broadcast the latest local commitment transaction, either because
-	/// a monitor update failed with [`ChannelMonitorUpdateStatus::PermanentFailure`] or because we've
-	/// fallen behind (i.e. we've received proof that our counterparty side knows a revocation
-	/// secret we gave them that they shouldn't know).
+	/// a monitor update failed or because we've fallen behind (i.e. we've received proof that our
+	/// counterparty side knows a revocation secret we gave them that they shouldn't know).
 	///
 	/// Broadcasting these transactions in the second case is UNSAFE, as they allow counterparty
 	/// side to punish you. Nevertheless you may want to broadcast them if counterparty doesn't
 	/// close channel with their commitment transaction after a substantial amount of time. Best
 	/// may be to contact the other node operator out-of-band to coordinate other options available
-	/// to you. In any-case, the choice is up to you.
+	/// to you.
 	///
-	/// [`ChannelMonitorUpdateStatus::PermanentFailure`]: super::ChannelMonitorUpdateStatus::PermanentFailure
+	/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
 	pub fn get_latest_holder_commitment_txn<L: Deref>(&self, logger: &L) -> Vec<Transaction>
 	where L::Target: Logger {
 		self.inner.lock().unwrap().get_latest_holder_commitment_txn(logger)
@@ -2533,7 +2526,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			txs.push(tx);
 		}
 		broadcaster.broadcast_transactions(&txs);
-		self.pending_monitor_events.push(MonitorEvent::CommitmentTxConfirmed(self.funding_info.0));
+		self.pending_monitor_events.push(MonitorEvent::HolderForceClosed(self.funding_info.0));
 	}
 
 	pub fn update_monitor<B: Deref, F: Deref, L: Deref>(&mut self, updates: &ChannelMonitorUpdate, broadcaster: &B, fee_estimator: F, logger: &L) -> Result<(), ()>
@@ -2599,6 +2592,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				ChannelMonitorUpdateStep::CommitmentSecret { idx, secret } => {
 					log_trace!(logger, "Updating ChannelMonitor with commitment secret");
 					if let Err(e) = self.provide_secret(*idx, *secret) {
+						debug_assert!(false, "Latest counterparty commitment secret was invalid");
 						log_error!(logger, "Providing latest counterparty commitment secret failed/was refused:");
 						log_error!(logger, "    {}", e);
 						ret = Err(());
@@ -2645,7 +2639,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 						log_error!(logger, "    in channel monitor for channel {}!", &self.funding_info.0.to_channel_id());
 						log_error!(logger, "    Read the docs for ChannelMonitor::get_latest_holder_commitment_txn and take manual action!");
 					} else {
-						// If we generated a MonitorEvent::CommitmentTxConfirmed, the ChannelManager
+						// If we generated a MonitorEvent::HolderForceClosed, the ChannelManager
 						// will still give us a ChannelForceClosed event with !should_broadcast, but we
 						// shouldn't print the scary warning above.
 						log_info!(logger, "Channel off-chain state closed after we broadcasted our latest commitment transaction.");
@@ -3490,7 +3484,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			let funding_outp = HolderFundingOutput::build(self.funding_redeemscript.clone(), self.channel_value_satoshis, self.onchain_tx_handler.channel_type_features().clone());
 			let commitment_package = PackageTemplate::build_package(self.funding_info.0.txid.clone(), self.funding_info.0.index as u32, PackageSolvingData::HolderFundingOutput(funding_outp), self.best_block.height(), self.best_block.height());
 			claimable_outpoints.push(commitment_package);
-			self.pending_monitor_events.push(MonitorEvent::CommitmentTxConfirmed(self.funding_info.0));
+			self.pending_monitor_events.push(MonitorEvent::HolderForceClosed(self.funding_info.0));
 			// Although we aren't signing the transaction directly here, the transaction will be signed
 			// in the claim that is queued to OnchainTxHandler. We set holder_tx_signed here to reject
 			// new channel updates.
@@ -4254,7 +4248,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 		for _ in 0..pending_monitor_events_len {
 			let ev = match <u8 as Readable>::read(reader)? {
 				0 => MonitorEvent::HTLCEvent(Readable::read(reader)?),
-				1 => MonitorEvent::CommitmentTxConfirmed(funding_info.0),
+				1 => MonitorEvent::HolderForceClosed(funding_info.0),
 				_ => return Err(DecodeError::InvalidValue)
 			};
 			pending_monitor_events.as_mut().unwrap().push(ev);
@@ -4413,13 +4407,12 @@ mod tests {
 	use crate::chain::chaininterface::LowerBoundedFeeEstimator;
 
 	use super::ChannelMonitorUpdateStep;
-	use crate::{check_added_monitors, check_closed_broadcast, check_closed_event, check_spends, get_local_commitment_txn, get_monitor, get_route_and_payment_hash, unwrap_send_err};
+	use crate::{check_added_monitors, check_spends, get_local_commitment_txn, get_monitor, get_route_and_payment_hash, unwrap_send_err};
 	use crate::chain::{BestBlock, Confirm};
 	use crate::chain::channelmonitor::ChannelMonitor;
 	use crate::chain::package::{weight_offered_htlc, weight_received_htlc, weight_revoked_offered_htlc, weight_revoked_received_htlc, WEIGHT_REVOKED_OUTPUT};
 	use crate::chain::transaction::OutPoint;
 	use crate::sign::InMemorySigner;
-	use crate::events::ClosureReason;
 	use crate::ln::{PaymentPreimage, PaymentHash};
 	use crate::ln::chan_utils;
 	use crate::ln::chan_utils::{HTLCOutputInCommitment, ChannelPublicKeys, ChannelTransactionParameters, HolderCommitmentTransaction, CounterpartyChannelTransactionParameters};
@@ -4485,18 +4478,14 @@ mod tests {
 		let (route, payment_hash, _, payment_secret) = get_route_and_payment_hash!(nodes[1], nodes[0], 100_000);
 		unwrap_send_err!(nodes[1].node.send_payment_with_route(&route, payment_hash,
 				RecipientOnionFields::secret_only(payment_secret), PaymentId(payment_hash.0)
-			), true, APIError::ChannelUnavailable { ref err },
-			assert!(err.contains("ChannelMonitor storage failure")));
-		check_added_monitors!(nodes[1], 2); // After the failure we generate a close-channel monitor update
-		check_closed_broadcast!(nodes[1], true);
-		check_closed_event!(nodes[1], 1, ClosureReason::ProcessingError { err: "ChannelMonitor storage failure".to_string() }, 
-			[nodes[0].node.get_our_node_id()], 100000);
+			), false, APIError::MonitorUpdateInProgress, {});
+		check_added_monitors!(nodes[1], 1);
 
 		// Build a new ChannelMonitorUpdate which contains both the failing commitment tx update
 		// and provides the claim preimages for the two pending HTLCs. The first update generates
 		// an error, but the point of this test is to ensure the later updates are still applied.
 		let monitor_updates = nodes[1].chain_monitor.monitor_updates.lock().unwrap();
-		let mut replay_update = monitor_updates.get(&channel.2).unwrap().iter().rev().skip(1).next().unwrap().clone();
+		let mut replay_update = monitor_updates.get(&channel.2).unwrap().iter().rev().next().unwrap().clone();
 		assert_eq!(replay_update.updates.len(), 1);
 		if let ChannelMonitorUpdateStep::LatestCounterpartyCommitmentTXInfo { .. } = replay_update.updates[0] {
 		} else { panic!(); }

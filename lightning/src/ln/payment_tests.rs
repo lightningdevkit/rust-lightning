@@ -2258,12 +2258,14 @@ fn auto_retry_partial_failure() {
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
+	// Open three channels, the first has plenty of liquidity, the second and third have ~no
+	// available liquidity, causing any outbound payments routed over it to fail immediately.
 	let chan_1_id = create_announced_chan_between_nodes(&nodes, 0, 1).0.contents.short_channel_id;
-	let chan_2_id = create_announced_chan_between_nodes(&nodes, 0, 1).0.contents.short_channel_id;
-	let chan_3_id = create_announced_chan_between_nodes(&nodes, 0, 1).0.contents.short_channel_id;
+	let chan_2_id = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 989_000_000).0.contents.short_channel_id;
+	let chan_3_id = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 989_000_000).0.contents.short_channel_id;
 
 	// Marshall data to send the payment
-	let amt_msat = 20_000;
+	let amt_msat = 10_000_000;
 	let (_, payment_hash, payment_preimage, payment_secret) = get_route_and_payment_hash!(&nodes[0], nodes[1], amt_msat);
 	#[cfg(feature = "std")]
 	let payment_expiry_secs = SystemTime::UNIX_EPOCH.elapsed().unwrap().as_secs() + 60 * 60;
@@ -2277,16 +2279,6 @@ fn auto_retry_partial_failure() {
 		.with_expiry_time(payment_expiry_secs as u64)
 		.with_bolt11_features(invoice_features).unwrap();
 	let route_params = RouteParameters::from_payment_params_and_value(payment_params, amt_msat);
-
-	// Ensure the first monitor update (for the initial send path1 over chan_1) succeeds, but the
-	// second (for the initial send path2 over chan_2) fails.
-	chanmon_cfgs[0].persister.set_update_ret(ChannelMonitorUpdateStatus::Completed);
-	chanmon_cfgs[0].persister.set_update_ret(ChannelMonitorUpdateStatus::PermanentFailure);
-	// Ensure third monitor update (for the retry1's path1 over chan_1) succeeds, but the fourth (for
-	// the retry1's path2 over chan_3) fails, and monitor updates succeed after that.
-	chanmon_cfgs[0].persister.set_update_ret(ChannelMonitorUpdateStatus::Completed);
-	chanmon_cfgs[0].persister.set_update_ret(ChannelMonitorUpdateStatus::PermanentFailure);
-	chanmon_cfgs[0].persister.set_update_ret(ChannelMonitorUpdateStatus::Completed);
 
 	// Configure the initial send, retry1 and retry2's paths.
 	let send_route = Route {
@@ -2364,32 +2356,23 @@ fn auto_retry_partial_failure() {
 	// Send a payment that will partially fail on send, then partially fail on retry, then succeed.
 	nodes[0].node.send_payment(payment_hash, RecipientOnionFields::secret_only(payment_secret),
 		PaymentId(payment_hash.0), route_params, Retry::Attempts(3)).unwrap();
-	let closed_chan_events = nodes[0].node.get_and_clear_pending_events();
-	assert_eq!(closed_chan_events.len(), 4);
-	match closed_chan_events[0] {
-		Event::ChannelClosed { .. } => {},
-		_ => panic!("Unexpected event"),
-	}
-	match closed_chan_events[1] {
+	let payment_failed_events = nodes[0].node.get_and_clear_pending_events();
+	assert_eq!(payment_failed_events.len(), 2);
+	match payment_failed_events[0] {
 		Event::PaymentPathFailed { .. } => {},
 		_ => panic!("Unexpected event"),
 	}
-	match closed_chan_events[2] {
-		Event::ChannelClosed { .. } => {},
-		_ => panic!("Unexpected event"),
-	}
-	match closed_chan_events[3] {
+	match payment_failed_events[1] {
 		Event::PaymentPathFailed { .. } => {},
 		_ => panic!("Unexpected event"),
 	}
 
 	// Pass the first part of the payment along the path.
-	check_added_monitors!(nodes[0], 5); // three outbound channel updates succeeded, two permanently failed
+	check_added_monitors!(nodes[0], 1); // only one HTLC actually made it out
 	let mut msg_events = nodes[0].node.get_and_clear_pending_msg_events();
 
-	// First message is the first update_add, remaining messages are broadcasting channel updates and
-	// errors for the permfailed channels
-	assert_eq!(msg_events.len(), 5);
+	// Only one HTLC/channel update actually made it out
+	assert_eq!(msg_events.len(), 1);
 	let mut payment_event = SendEvent::from_event(msg_events.remove(0));
 
 	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &payment_event.msgs[0]);
@@ -2478,12 +2461,13 @@ fn auto_retry_zero_attempts_send_error() {
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
-	create_announced_chan_between_nodes(&nodes, 0, 1).0.contents.short_channel_id;
-	create_announced_chan_between_nodes(&nodes, 0, 1).0.contents.short_channel_id;
+	// Open a single channel that does not have sufficient liquidity for the payment we want to
+	// send.
+	let chan_id  = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 989_000_000).0.contents.short_channel_id;
 
 	// Marshall data to send the payment
-	let amt_msat = 20_000;
-	let (_, payment_hash, _, payment_secret) = get_route_and_payment_hash!(&nodes[0], nodes[1], amt_msat);
+	let amt_msat = 10_000_000;
+	let (_, payment_hash, payment_secret) = get_payment_preimage_hash(&nodes[1], Some(amt_msat), None);
 	#[cfg(feature = "std")]
 	let payment_expiry_secs = SystemTime::UNIX_EPOCH.elapsed().unwrap().as_secs() + 60 * 60;
 	#[cfg(not(feature = "std"))]
@@ -2497,16 +2481,31 @@ fn auto_retry_zero_attempts_send_error() {
 		.with_bolt11_features(invoice_features).unwrap();
 	let route_params = RouteParameters::from_payment_params_and_value(payment_params, amt_msat);
 
-	chanmon_cfgs[0].persister.set_update_ret(ChannelMonitorUpdateStatus::PermanentFailure);
+	// Override the route search to return a route, rather than failing at the route-finding step.
+	let send_route = Route {
+		paths: vec![
+			Path { hops: vec![RouteHop {
+				pubkey: nodes[1].node.get_our_node_id(),
+				node_features: nodes[1].node.node_features(),
+				short_channel_id: chan_id,
+				channel_features: nodes[1].node.channel_features(),
+				fee_msat: amt_msat,
+				cltv_expiry_delta: 100,
+				maybe_announced_channel: true,
+			}], blinded_tail: None },
+		],
+		route_params: Some(route_params.clone()),
+	};
+	nodes[0].router.expect_find_route(route_params.clone(), Ok(send_route));
+
 	nodes[0].node.send_payment(payment_hash, RecipientOnionFields::secret_only(payment_secret),
 		PaymentId(payment_hash.0), route_params, Retry::Attempts(0)).unwrap();
-	assert_eq!(nodes[0].node.get_and_clear_pending_msg_events().len(), 2); // channel close messages
+	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 	let events = nodes[0].node.get_and_clear_pending_events();
-	assert_eq!(events.len(), 3);
-	if let Event::ChannelClosed { .. } = events[0] { } else { panic!(); }
-	if let Event::PaymentPathFailed { .. } = events[1] { } else { panic!(); }
-	if let Event::PaymentFailed { .. } = events[2] { } else { panic!(); }
-	check_added_monitors!(nodes[0], 2);
+	assert_eq!(events.len(), 2);
+	if let Event::PaymentPathFailed { .. } = events[0] { } else { panic!(); }
+	if let Event::PaymentFailed { .. } = events[1] { } else { panic!(); }
+	check_added_monitors!(nodes[0], 0);
 }
 
 #[test]

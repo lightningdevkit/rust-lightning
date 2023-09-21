@@ -44,7 +44,7 @@ use crate::prelude::*;
 use crate::sync::{RwLock, RwLockReadGuard, Mutex, MutexGuard};
 use core::iter::FromIterator;
 use core::ops::Deref;
-use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicUsize, Ordering};
 use bitcoin::secp256k1::PublicKey;
 
 #[derive(Clone, Copy, Hash, PartialEq, Eq)]
@@ -78,27 +78,48 @@ impl MonitorUpdateId {
 /// `Persist` defines behavior for persisting channel monitors: this could mean
 /// writing once to disk, and/or uploading to one or more backup services.
 ///
-/// Each method can return three possible values:
-///  * If persistence (including any relevant `fsync()` calls) happens immediately, the
-///    implementation should return [`ChannelMonitorUpdateStatus::Completed`], indicating normal
-///    channel operation should continue.
-///  * If persistence happens asynchronously, implementations should first ensure the
-///    [`ChannelMonitor`] or [`ChannelMonitorUpdate`] are written durably to disk, and then return
-///    [`ChannelMonitorUpdateStatus::InProgress`] while the update continues in the background.
-///    Once the update completes, [`ChainMonitor::channel_monitor_updated`] should be called with
-///    the corresponding [`MonitorUpdateId`].
+/// Persistence can happen in one of two ways - synchronously completing before the trait method
+/// calls return or asynchronously in the background.
 ///
-///    Note that unlike the direct [`chain::Watch`] interface,
-///    [`ChainMonitor::channel_monitor_updated`] must be called once for *each* update which occurs.
+/// # For those implementing synchronous persistence
 ///
-///  * If persistence fails for some reason, implementations should return
-///    [`ChannelMonitorUpdateStatus::PermanentFailure`], in which case the channel will likely be
-///    closed without broadcasting the latest state. See
-///    [`ChannelMonitorUpdateStatus::PermanentFailure`] for more details.
+///  * If persistence completes fully (including any relevant `fsync()` calls), the implementation
+///    should return [`ChannelMonitorUpdateStatus::Completed`], indicating normal channel operation
+///    should continue.
 ///
-/// Third-party watchtowers may be built as a part of an implementation of this trait, with the
-/// advantage that you can control whether to resume channel operation depending on if an update
-/// has been persisted to a watchtower. For this, you may find the following methods useful:
+///  * If persistence fails for some reason, implementations should consider returning
+///    [`ChannelMonitorUpdateStatus::InProgress`] and retry all pending persistence operations in
+///    the background with [`ChainMonitor::list_pending_monitor_updates`] and
+///    [`ChainMonitor::get_monitor`].
+///
+///    Once a full [`ChannelMonitor`] has been persisted, all pending updates for that channel can
+///    be marked as complete via [`ChainMonitor::channel_monitor_updated`].
+///
+///    If at some point no further progress can be made towards persisting the pending updates, the
+///    node should simply shut down.
+///
+///  * If the persistence has failed and cannot be retried further (e.g. because of some timeout),
+///    [`ChannelMonitorUpdateStatus::UnrecoverableError`] can be used, though this will result in
+///    an immediate panic and future operations in LDK generally failing.
+///
+/// # For those implementing asynchronous persistence
+///
+///  All calls should generally spawn a background task and immediately return
+///  [`ChannelMonitorUpdateStatus::InProgress`]. Once the update completes,
+///  [`ChainMonitor::channel_monitor_updated`] should be called with the corresponding
+///  [`MonitorUpdateId`].
+///
+///  Note that unlike the direct [`chain::Watch`] interface,
+///  [`ChainMonitor::channel_monitor_updated`] must be called once for *each* update which occurs.
+///
+///  If at some point no further progress can be made towards persisting a pending update, the node
+///  should simply shut down.
+///
+/// # Using remote watchtowers
+///
+/// Watchtowers may be updated as a part of an implementation of this trait, utilizing the async
+/// update process described above while the watchtower is being updated. The following methods are
+/// provided for bulding transactions for a watchtower:
 /// [`ChannelMonitor::initial_counterparty_commitment_tx`],
 /// [`ChannelMonitor::counterparty_commitment_txs_from_update`],
 /// [`ChannelMonitor::sign_to_local_justice_tx`], [`TrustedCommitmentTransaction::revokeable_output_index`],
@@ -180,12 +201,6 @@ struct MonitorHolder<ChannelSigner: WriteableEcdsaChannelSigner> {
 	/// the ChannelManager re-adding the same payment entry, before the same block is replayed,
 	/// resulting in a duplicate PaymentSent event.
 	pending_monitor_updates: Mutex<Vec<MonitorUpdateId>>,
-	/// When the user returns a PermanentFailure error from an update_persisted_channel call during
-	/// block processing, we inform the ChannelManager that the channel should be closed
-	/// asynchronously. In order to ensure no further changes happen before the ChannelManager has
-	/// processed the closure event, we set this to true and return PermanentFailure for any other
-	/// chain::Watch events.
-	channel_perm_failed: AtomicBool,
 	/// The last block height at which no [`UpdateOrigin::ChainSync`] monitor updates were present
 	/// in `pending_monitor_updates`.
 	/// If it's been more than [`LATENCY_GRACE_PERIOD_BLOCKS`] since we started waiting on a chain
@@ -286,11 +301,20 @@ where C::Target: chain::Filter,
 	where
 		FN: Fn(&ChannelMonitor<ChannelSigner>, &TransactionData) -> Vec<TransactionOutputs>
 	{
+		let err_str = "ChannelMonitor[Update] persistence failed unrecoverably. This indicates we cannot continue normal operation and must shut down.";
 		let funding_outpoints: HashSet<OutPoint> = HashSet::from_iter(self.monitors.read().unwrap().keys().cloned());
 		for funding_outpoint in funding_outpoints.iter() {
 			let monitor_lock = self.monitors.read().unwrap();
 			if let Some(monitor_state) = monitor_lock.get(funding_outpoint) {
-				self.update_monitor_with_chain_data(header, best_height, txdata, &process, funding_outpoint, &monitor_state);
+				if self.update_monitor_with_chain_data(header, best_height, txdata, &process, funding_outpoint, &monitor_state).is_err() {
+					// Take the monitors lock for writing so that we poison it and any future
+					// operations going forward fail immediately.
+					core::mem::drop(monitor_state);
+					core::mem::drop(monitor_lock);
+					let _poison = self.monitors.write().unwrap();
+					log_error!(self.logger, "{}", err_str);
+					panic!("{}", err_str);
+				}
 			}
 		}
 
@@ -298,7 +322,10 @@ where C::Target: chain::Filter,
 		let monitor_states = self.monitors.write().unwrap();
 		for (funding_outpoint, monitor_state) in monitor_states.iter() {
 			if !funding_outpoints.contains(funding_outpoint) {
-				self.update_monitor_with_chain_data(header, best_height, txdata, &process, funding_outpoint, &monitor_state);
+				if self.update_monitor_with_chain_data(header, best_height, txdata, &process, funding_outpoint, &monitor_state).is_err() {
+					log_error!(self.logger, "{}", err_str);
+					panic!("{}", err_str);
+				}
 			}
 		}
 
@@ -313,7 +340,10 @@ where C::Target: chain::Filter,
 		}
 	}
 
-	fn update_monitor_with_chain_data<FN>(&self, header: &BlockHeader, best_height: Option<u32>, txdata: &TransactionData, process: FN, funding_outpoint: &OutPoint, monitor_state: &MonitorHolder<ChannelSigner>) where FN: Fn(&ChannelMonitor<ChannelSigner>, &TransactionData) -> Vec<TransactionOutputs> {
+	fn update_monitor_with_chain_data<FN>(
+		&self, header: &BlockHeader, best_height: Option<u32>, txdata: &TransactionData,
+		process: FN, funding_outpoint: &OutPoint, monitor_state: &MonitorHolder<ChannelSigner>
+	) -> Result<(), ()> where FN: Fn(&ChannelMonitor<ChannelSigner>, &TransactionData) -> Vec<TransactionOutputs> {
 		let monitor = &monitor_state.monitor;
 		let mut txn_outputs;
 		{
@@ -335,15 +365,13 @@ where C::Target: chain::Filter,
 			match self.persister.update_persisted_channel(*funding_outpoint, None, monitor, update_id) {
 				ChannelMonitorUpdateStatus::Completed =>
 					log_trace!(self.logger, "Finished syncing Channel Monitor for channel {}", log_funding_info!(monitor)),
-				ChannelMonitorUpdateStatus::PermanentFailure => {
-					monitor_state.channel_perm_failed.store(true, Ordering::Release);
-					self.pending_monitor_events.lock().unwrap().push((*funding_outpoint, vec![MonitorEvent::UpdateFailed(*funding_outpoint)], monitor.get_counterparty_node_id()));
-					self.event_notifier.notify();
-				}
 				ChannelMonitorUpdateStatus::InProgress => {
 					log_debug!(self.logger, "Channel Monitor sync for channel {} in progress, holding events until completion!", log_funding_info!(monitor));
 					pending_monitor_updates.push(update_id);
-				}
+				},
+				ChannelMonitorUpdateStatus::UnrecoverableError => {
+					return Err(());
+				},
 			}
 		}
 
@@ -363,6 +391,7 @@ where C::Target: chain::Filter,
 				}
 			}
 		}
+		Ok(())
 	}
 
 	/// Creates a new `ChainMonitor` used to watch on-chain activity pertaining to channels.
@@ -491,9 +520,8 @@ where C::Target: chain::Filter,
 				// `MonitorEvent`s from the monitor back to the `ChannelManager` until they
 				// complete.
 				let monitor_is_pending_updates = monitor_data.has_pending_offchain_updates(&pending_monitor_updates);
-				if monitor_is_pending_updates || monitor_data.channel_perm_failed.load(Ordering::Acquire) {
-					// If there are still monitor updates pending (or an old monitor update
-					// finished after a later one perm-failed), we cannot yet construct an
+				if monitor_is_pending_updates {
+					// If there are still monitor updates pending, we cannot yet construct a
 					// Completed event.
 					return Ok(());
 				}
@@ -667,18 +695,12 @@ where C::Target: chain::Filter,
 	    L::Target: Logger,
 	    P::Target: Persist<ChannelSigner>,
 {
-	/// Adds the monitor that watches the channel referred to by the given outpoint.
-	///
-	/// Calls back to [`chain::Filter`] with the funding transaction and outputs to watch.
-	///
-	/// Note that we persist the given `ChannelMonitor` while holding the `ChainMonitor`
-	/// monitors lock.
-	fn watch_channel(&self, funding_outpoint: OutPoint, monitor: ChannelMonitor<ChannelSigner>) -> ChannelMonitorUpdateStatus {
+	fn watch_channel(&self, funding_outpoint: OutPoint, monitor: ChannelMonitor<ChannelSigner>) -> Result<ChannelMonitorUpdateStatus, ()> {
 		let mut monitors = self.monitors.write().unwrap();
 		let entry = match monitors.entry(funding_outpoint) {
 			hash_map::Entry::Occupied(_) => {
 				log_error!(self.logger, "Failed to add new channel data: channel monitor for given outpoint is already present");
-				return ChannelMonitorUpdateStatus::PermanentFailure
+				return Err(());
 			},
 			hash_map::Entry::Vacant(e) => e,
 		};
@@ -691,13 +713,14 @@ where C::Target: chain::Filter,
 				log_info!(self.logger, "Persistence of new ChannelMonitor for channel {} in progress", log_funding_info!(monitor));
 				pending_monitor_updates.push(update_id);
 			},
-			ChannelMonitorUpdateStatus::PermanentFailure => {
-				log_error!(self.logger, "Persistence of new ChannelMonitor for channel {} failed", log_funding_info!(monitor));
-				return persist_res;
-			},
 			ChannelMonitorUpdateStatus::Completed => {
 				log_info!(self.logger, "Persistence of new ChannelMonitor for channel {} completed", log_funding_info!(monitor));
-			}
+			},
+			ChannelMonitorUpdateStatus::UnrecoverableError => {
+				let err_str = "ChannelMonitor[Update] persistence failed unrecoverably. This indicates we cannot continue normal operation and must shut down.";
+				log_error!(self.logger, "{}", err_str);
+				panic!("{}", err_str);
+			},
 		}
 		if let Some(ref chain_source) = self.chain_source {
 			monitor.load_outputs_to_watch(chain_source);
@@ -705,28 +728,25 @@ where C::Target: chain::Filter,
 		entry.insert(MonitorHolder {
 			monitor,
 			pending_monitor_updates: Mutex::new(pending_monitor_updates),
-			channel_perm_failed: AtomicBool::new(false),
 			last_chain_persist_height: AtomicUsize::new(self.highest_chain_height.load(Ordering::Acquire)),
 		});
-		persist_res
+		Ok(persist_res)
 	}
 
-	/// Note that we persist the given `ChannelMonitor` update while holding the
-	/// `ChainMonitor` monitors lock.
 	fn update_channel(&self, funding_txo: OutPoint, update: &ChannelMonitorUpdate) -> ChannelMonitorUpdateStatus {
 		// Update the monitor that watches the channel referred to by the given outpoint.
 		let monitors = self.monitors.read().unwrap();
-		match monitors.get(&funding_txo) {
+		let ret = match monitors.get(&funding_txo) {
 			None => {
 				log_error!(self.logger, "Failed to update channel monitor: no such monitor registered");
 
 				// We should never ever trigger this from within ChannelManager. Technically a
 				// user could use this object with some proxying in between which makes this
 				// possible, but in tests and fuzzing, this should be a panic.
-				#[cfg(any(test, fuzzing))]
+				#[cfg(debug_assertions)]
 				panic!("ChannelManager generated a channel update for a channel that was not yet registered!");
-				#[cfg(not(any(test, fuzzing)))]
-				ChannelMonitorUpdateStatus::PermanentFailure
+				#[cfg(not(debug_assertions))]
+				ChannelMonitorUpdateStatus::InProgress
 			},
 			Some(monitor_state) => {
 				let monitor = &monitor_state.monitor;
@@ -745,23 +765,28 @@ where C::Target: chain::Filter,
 						pending_monitor_updates.push(update_id);
 						log_debug!(self.logger, "Persistence of ChannelMonitorUpdate for channel {} in progress", log_funding_info!(monitor));
 					},
-					ChannelMonitorUpdateStatus::PermanentFailure => {
-						monitor_state.channel_perm_failed.store(true, Ordering::Release);
-						log_error!(self.logger, "Persistence of ChannelMonitorUpdate for channel {} failed", log_funding_info!(monitor));
-					},
 					ChannelMonitorUpdateStatus::Completed => {
 						log_debug!(self.logger, "Persistence of ChannelMonitorUpdate for channel {} completed", log_funding_info!(monitor));
 					},
+					ChannelMonitorUpdateStatus::UnrecoverableError => { /* we'll panic in a moment */ },
 				}
 				if update_res.is_err() {
-					ChannelMonitorUpdateStatus::PermanentFailure
-				} else if monitor_state.channel_perm_failed.load(Ordering::Acquire) {
-					ChannelMonitorUpdateStatus::PermanentFailure
+					ChannelMonitorUpdateStatus::InProgress
 				} else {
 					persist_res
 				}
 			}
+		};
+		if let ChannelMonitorUpdateStatus::UnrecoverableError = ret {
+			// Take the monitors lock for writing so that we poison it and any future
+			// operations going forward fail immediately.
+			core::mem::drop(monitors);
+			let _poison = self.monitors.write().unwrap();
+			let err_str = "ChannelMonitor[Update] persistence failed unrecoverably. This indicates we cannot continue normal operation and must shut down.";
+			log_error!(self.logger, "{}", err_str);
+			panic!("{}", err_str);
 		}
+		ret
 	}
 
 	fn release_pending_monitor_events(&self) -> Vec<(OutPoint, Vec<MonitorEvent>, Option<PublicKey>)> {
@@ -774,17 +799,6 @@ where C::Target: chain::Filter,
 			{
 				log_debug!(self.logger, "A Channel Monitor sync is still in progress, refusing to provide monitor events!");
 			} else {
-				if monitor_state.channel_perm_failed.load(Ordering::Acquire) {
-					// If a `UpdateOrigin::ChainSync` persistence failed with `PermanantFailure`,
-					// we don't really know if the latest `ChannelMonitor` state is on disk or not.
-					// We're supposed to hold monitor updates until the latest state is on disk to
-					// avoid duplicate events, but the user told us persistence is screw-y and may
-					// not complete. We can't hold events forever because we may learn some payment
-					// preimage, so instead we just log and hope the user complied with the
-					// `PermanentFailure` requirements of having at least the local-disk copy
-					// updated.
-					log_info!(self.logger, "A Channel Monitor sync returned PermanentFailure. Returning monitor events but duplicate events may appear after reload!");
-				}
 				if is_pending_monitor_update {
 					log_error!(self.logger, "A ChannelMonitor sync took longer than {} blocks to complete.", LATENCY_GRACE_PERIOD_BLOCKS);
 					log_error!(self.logger, "   To avoid funds-loss, we are allowing monitor updates to be released.");
@@ -831,12 +845,12 @@ impl<ChannelSigner: WriteableEcdsaChannelSigner, C: Deref, T: Deref, F: Deref, L
 
 #[cfg(test)]
 mod tests {
-	use crate::{check_added_monitors, check_closed_broadcast, check_closed_event};
+	use crate::check_added_monitors;
 	use crate::{expect_payment_claimed, expect_payment_path_successful, get_event_msg};
 	use crate::{get_htlc_update_msgs, get_local_commitment_txn, get_revoke_commit_msgs, get_route_and_payment_hash, unwrap_send_err};
 	use crate::chain::{ChannelMonitorUpdateStatus, Confirm, Watch};
 	use crate::chain::channelmonitor::LATENCY_GRACE_PERIOD_BLOCKS;
-	use crate::events::{Event, ClosureReason, MessageSendEvent, MessageSendEventsProvider};
+	use crate::events::{Event, MessageSendEvent, MessageSendEventsProvider};
 	use crate::ln::channelmanager::{PaymentSendFailure, PaymentId, RecipientOnionFields};
 	use crate::ln::functional_test_utils::*;
 	use crate::ln::msgs::ChannelMessageHandler;
@@ -988,12 +1002,8 @@ mod tests {
 		chanmon_cfgs[0].persister.set_update_ret(ChannelMonitorUpdateStatus::Completed);
 		unwrap_send_err!(nodes[0].node.send_payment_with_route(&route, second_payment_hash,
 				RecipientOnionFields::secret_only(second_payment_secret), PaymentId(second_payment_hash.0)
-			), true, APIError::ChannelUnavailable { ref err },
-			assert!(err.contains("ChannelMonitor storage failure")));
-		check_added_monitors!(nodes[0], 2); // After the failure we generate a close-channel monitor update
-		check_closed_broadcast!(nodes[0], true);
-		check_closed_event!(nodes[0], 1, ClosureReason::ProcessingError { err: "ChannelMonitor storage failure".to_string() },
-			[nodes[1].node.get_our_node_id()], 100000);
+			), false, APIError::MonitorUpdateInProgress, {});
+		check_added_monitors!(nodes[0], 1);
 
 		// However, as the ChainMonitor is still waiting for the original persistence to complete,
 		// it won't yet release the MonitorEvents.
@@ -1022,7 +1032,8 @@ mod tests {
 	}
 
 	#[test]
-	fn update_during_chainsync_fails_channel() {
+	#[cfg(feature = "std")]
+	fn update_during_chainsync_poisons_channel() {
 		let chanmon_cfgs = create_chanmon_cfgs(2);
 		let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
@@ -1030,18 +1041,15 @@ mod tests {
 		create_announced_chan_between_nodes(&nodes, 0, 1);
 
 		chanmon_cfgs[0].persister.chain_sync_monitor_persistences.lock().unwrap().clear();
-		chanmon_cfgs[0].persister.set_update_ret(ChannelMonitorUpdateStatus::PermanentFailure);
+		chanmon_cfgs[0].persister.set_update_ret(ChannelMonitorUpdateStatus::UnrecoverableError);
 
-		connect_blocks(&nodes[0], 1);
-		// Before processing events, the ChannelManager will still think the Channel is open and
-		// there won't be any ChannelMonitorUpdates
-		assert_eq!(nodes[0].node.list_channels().len(), 1);
-		check_added_monitors!(nodes[0], 0);
-		// ... however once we get events once, the channel will close, creating a channel-closed
-		// ChannelMonitorUpdate.
-		check_closed_broadcast!(nodes[0], true);
-		check_closed_event!(nodes[0], 1, ClosureReason::ProcessingError { err: "Failed to persist ChannelMonitor update during chain sync".to_string() },
-			[nodes[1].node.get_our_node_id()], 100000);
-		check_added_monitors!(nodes[0], 1);
+		assert!(std::panic::catch_unwind(|| {
+			// Returning an UnrecoverableError should always panic immediately
+			connect_blocks(&nodes[0], 1);
+		}).is_err());
+		assert!(std::panic::catch_unwind(|| {
+			// ...and also poison our locks causing later use to panic as well
+			core::mem::drop(nodes);
+		}).is_err());
 	}
 }

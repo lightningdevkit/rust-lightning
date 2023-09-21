@@ -176,6 +176,25 @@ pub trait Confirm {
 }
 
 /// An enum representing the status of a channel monitor update persistence.
+///
+/// These are generally used as the return value for an implementation of [`Persist`] which is used
+/// as the storage layer for a [`ChainMonitor`]. See the docs on [`Persist`] for a high-level
+/// explanation of how to handle different cases.
+///
+/// While `UnrecoverableError` is provided as a failure variant, it is not truly "handled" on the
+/// calling side, and generally results in an immediate panic. For those who prefer to avoid
+/// panics, `InProgress` can be used and you can retry the update operation in the background or
+/// shut down cleanly.
+///
+/// Note that channels should generally *not* be force-closed after a persistence failure.
+/// Force-closing with the latest [`ChannelMonitorUpdate`] applied may result in a transaction
+/// being broadcast which can only be spent by the latest [`ChannelMonitor`]! Thus, if the
+/// latest [`ChannelMonitor`] is not durably persisted anywhere and exists only in memory, naively
+/// calling [`ChannelManager::force_close_broadcasting_latest_txn`] *may result in loss of funds*!
+///
+/// [`Persist`]: chainmonitor::Persist
+/// [`ChainMonitor`]: chainmonitor::ChainMonitor
+/// [`ChannelManager::force_close_broadcasting_latest_txn`]: crate::ln::channelmanager::ChannelManager::force_close_broadcasting_latest_txn
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ChannelMonitorUpdateStatus {
 	/// The update has been durably persisted and all copies of the relevant [`ChannelMonitor`]
@@ -184,17 +203,13 @@ pub enum ChannelMonitorUpdateStatus {
 	/// This includes performing any `fsync()` calls required to ensure the update is guaranteed to
 	/// be available on restart even if the application crashes.
 	Completed,
-	/// Used to indicate a temporary failure (eg connection to a watchtower or remote backup of
-	/// our state failed, but is expected to succeed at some point in the future).
+	/// Indicates that the update will happen asynchronously in the background or that a transient
+	/// failure occurred which is being retried in the background and will eventually complete.
 	///
-	/// Such a failure will "freeze" a channel, preventing us from revoking old states or
-	/// submitting new commitment transactions to the counterparty. Once the update(s) which failed
-	/// have been successfully applied, a [`MonitorEvent::Completed`] can be used to restore the
-	/// channel to an operational state.
-	///
-	/// Note that a given [`ChannelManager`] will *never* re-generate a [`ChannelMonitorUpdate`].
-	/// If you return this error you must ensure that it is written to disk safely before writing
-	/// the latest [`ChannelManager`] state, or you should return [`PermanentFailure`] instead.
+	/// This will "freeze" a channel, preventing us from revoking old states or submitting a new
+	/// commitment transaction to the counterparty. Once the update(s) which are `InProgress` have
+	/// been completed, a [`MonitorEvent::Completed`] can be used to restore the channel to an
+	/// operational state.
 	///
 	/// Even when a channel has been "frozen", updates to the [`ChannelMonitor`] can continue to
 	/// occur (e.g. if an inbound HTLC which we forwarded was claimed upstream, resulting in us
@@ -204,74 +219,40 @@ pub enum ChannelMonitorUpdateStatus {
 	/// until a [`MonitorEvent::Completed`] is provided, even if you return no error on a later
 	/// monitor update for the same channel.
 	///
-	/// For deployments where a copy of ChannelMonitors and other local state are backed up in a
-	/// remote location (with local copies persisted immediately), it is anticipated that all
+	/// For deployments where a copy of [`ChannelMonitor`]s and other local state are backed up in
+	/// a remote location (with local copies persisted immediately), it is anticipated that all
 	/// updates will return [`InProgress`] until the remote copies could be updated.
 	///
-	/// [`PermanentFailure`]: ChannelMonitorUpdateStatus::PermanentFailure
+	/// Note that while fully asynchronous persistence of [`ChannelMonitor`] data is generally
+	/// reliable, this feature is considered beta, and a handful of edge-cases remain. Until the
+	/// remaining cases are fixed, in rare cases, *using this feature may lead to funds loss*.
+	///
 	/// [`InProgress`]: ChannelMonitorUpdateStatus::InProgress
-	/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
 	InProgress,
-	/// Used to indicate no further channel monitor updates will be allowed (likely a disk failure
-	/// or a remote copy of this [`ChannelMonitor`] is no longer reachable and thus not updatable).
+	/// Indicates that an update has failed and will not complete at any point in the future.
 	///
-	/// When this is returned, [`ChannelManager`] will force-close the channel but *not* broadcast
-	/// our current commitment transaction. This avoids a dangerous case where a local disk failure
-	/// (e.g. the Linux-default remounting of the disk as read-only) causes [`PermanentFailure`]s
-	/// for all monitor updates. If we were to broadcast our latest commitment transaction and then
-	/// restart, we could end up reading a previous [`ChannelMonitor`] and [`ChannelManager`],
-	/// revoking our now-broadcasted state before seeing it confirm and losing all our funds.
+	/// Currently returning this variant will cause LDK to immediately panic to encourage immediate
+	/// shutdown. In the future this may be updated to disconnect peers and refuse to continue
+	/// normal operation without a panic.
 	///
-	/// Note that this is somewhat of a tradeoff - if the disk is really gone and we may have lost
-	/// the data permanently, we really should broadcast immediately. If the data can be recovered
-	/// with manual intervention, we'd rather close the channel, rejecting future updates to it,
-	/// and broadcast the latest state only if we have HTLCs to claim which are timing out (which
-	/// we do as long as blocks are connected).
+	/// Applications which wish to perform an orderly shutdown after failure should consider
+	/// returning [`InProgress`] instead and simply shut down without ever marking the update
+	/// complete.
 	///
-	/// In order to broadcast the latest local commitment transaction, you'll need to call
-	/// [`ChannelMonitor::get_latest_holder_commitment_txn`] and broadcast the resulting
-	/// transactions once you've safely ensured no further channel updates can be generated by your
-	/// [`ChannelManager`].
-	///
-	/// Note that at least one final [`ChannelMonitorUpdate`] may still be provided, which must
-	/// still be processed by a running [`ChannelMonitor`]. This final update will mark the
-	/// [`ChannelMonitor`] as finalized, ensuring no further updates (e.g. revocation of the latest
-	/// commitment transaction) are allowed.
-	///
-	/// Note that even if you return a [`PermanentFailure`] due to unavailability of secondary
-	/// [`ChannelMonitor`] copies, you should still make an attempt to store the update where
-	/// possible to ensure you can claim HTLC outputs on the latest commitment transaction
-	/// broadcasted later.
-	///
-	/// In case of distributed watchtowers deployment, the new version must be written to disk, as
-	/// state may have been stored but rejected due to a block forcing a commitment broadcast. This
-	/// storage is used to claim outputs of rejected state confirmed onchain by another watchtower,
-	/// lagging behind on block processing.
-	///
-	/// [`PermanentFailure`]: ChannelMonitorUpdateStatus::PermanentFailure
-	/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
-	PermanentFailure,
+	/// [`InProgress`]: ChannelMonitorUpdateStatus::InProgress
+	UnrecoverableError,
 }
 
 /// The `Watch` trait defines behavior for watching on-chain activity pertaining to channels as
 /// blocks are connected and disconnected.
 ///
 /// Each channel is associated with a [`ChannelMonitor`]. Implementations of this trait are
-/// responsible for maintaining a set of monitors such that they can be updated accordingly as
-/// channel state changes and HTLCs are resolved. See method documentation for specific
-/// requirements.
+/// responsible for maintaining a set of monitors such that they can be updated as channel state
+/// changes. On each update, *all copies* of a [`ChannelMonitor`] must be updated and the update
+/// persisted to disk to ensure that the latest [`ChannelMonitor`] state can be reloaded if the
+/// application crashes.
 ///
-/// Implementations **must** ensure that updates are successfully applied and persisted upon method
-/// completion. If an update fails with a [`PermanentFailure`], then it must immediately shut down
-/// without taking any further action such as persisting the current state.
-///
-/// If an implementation maintains multiple instances of a channel's monitor (e.g., by storing
-/// backup copies), then it must ensure that updates are applied across all instances. Otherwise, it
-/// could result in a revoked transaction being broadcast, allowing the counterparty to claim all
-/// funds in the channel. See [`ChannelMonitorUpdateStatus`] for more details about how to handle
-/// multiple instances.
-///
-/// [`PermanentFailure`]: ChannelMonitorUpdateStatus::PermanentFailure
+/// See method documentation and [`ChannelMonitorUpdateStatus`] for specific requirements.
 pub trait Watch<ChannelSigner: WriteableEcdsaChannelSigner> {
 	/// Watches a channel identified by `funding_txo` using `monitor`.
 	///
@@ -279,20 +260,32 @@ pub trait Watch<ChannelSigner: WriteableEcdsaChannelSigner> {
 	/// with any spends of outputs returned by [`get_outputs_to_watch`]. In practice, this means
 	/// calling [`block_connected`] and [`block_disconnected`] on the monitor.
 	///
-	/// Note: this interface MUST error with [`ChannelMonitorUpdateStatus::PermanentFailure`] if
-	/// the given `funding_txo` has previously been registered via `watch_channel`.
+	/// A return of `Err(())` indicates that the channel should immediately be force-closed without
+	/// broadcasting the funding transaction.
+	///
+	/// If the given `funding_txo` has previously been registered via `watch_channel`, `Err(())`
+	/// must be returned.
 	///
 	/// [`get_outputs_to_watch`]: channelmonitor::ChannelMonitor::get_outputs_to_watch
 	/// [`block_connected`]: channelmonitor::ChannelMonitor::block_connected
 	/// [`block_disconnected`]: channelmonitor::ChannelMonitor::block_disconnected
-	fn watch_channel(&self, funding_txo: OutPoint, monitor: ChannelMonitor<ChannelSigner>) -> ChannelMonitorUpdateStatus;
+	fn watch_channel(&self, funding_txo: OutPoint, monitor: ChannelMonitor<ChannelSigner>) -> Result<ChannelMonitorUpdateStatus, ()>;
 
 	/// Updates a channel identified by `funding_txo` by applying `update` to its monitor.
 	///
-	/// Implementations must call [`update_monitor`] with the given update. See
-	/// [`ChannelMonitorUpdateStatus`] for invariants around returning an error.
+	/// Implementations must call [`ChannelMonitor::update_monitor`] with the given update. This
+	/// may fail (returning an `Err(())`), in which case this should return
+	/// [`ChannelMonitorUpdateStatus::InProgress`] (and the update should never complete). This
+	/// generally implies the channel has been closed (either by the funding outpoint being spent
+	/// on-chain or the [`ChannelMonitor`] having decided to do so and broadcasted a transaction),
+	/// and the [`ChannelManager`] state will be updated once it sees the funding spend on-chain.
 	///
-	/// [`update_monitor`]: channelmonitor::ChannelMonitor::update_monitor
+	/// In general, persistence failures should be retried after returning
+	/// [`ChannelMonitorUpdateStatus::InProgress`] and eventually complete. If a failure truly
+	/// cannot be retried, the node should shut down immediately after returning
+	/// [`ChannelMonitorUpdateStatus::UnrecoverableError`], see its documentation for more info.
+	///
+	/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
 	fn update_channel(&self, funding_txo: OutPoint, update: &ChannelMonitorUpdate) -> ChannelMonitorUpdateStatus;
 
 	/// Returns any monitor events since the last call. Subsequent calls must only return new

@@ -436,7 +436,7 @@ mod tests {
 	}
 
 	// Test that if the store's path to channel data is read-only, writing a
-	// monitor to it results in the store returning a PermanentFailure.
+	// monitor to it results in the store returning an InProgress.
 	// Windows ignores the read-only flag for folders, so this test is Unix-only.
 	#[cfg(not(target_os = "windows"))]
 	#[test]
@@ -470,7 +470,7 @@ mod tests {
 			index: 0
 		};
 		match store.persist_new_channel(test_txo, &added_monitors[0].1, update_id.2) {
-			ChannelMonitorUpdateStatus::PermanentFailure => {},
+			ChannelMonitorUpdateStatus::UnrecoverableError => {},
 			_ => panic!("unexpected result from persisting new channel")
 		}
 
@@ -507,7 +507,7 @@ mod tests {
 			index: 0
 		};
 		match store.persist_new_channel(test_txo, &added_monitors[0].1, update_id.2) {
-			ChannelMonitorUpdateStatus::PermanentFailure => {},
+			ChannelMonitorUpdateStatus::UnrecoverableError => {},
 			_ => panic!("unexpected result from persisting new channel")
 		}
 

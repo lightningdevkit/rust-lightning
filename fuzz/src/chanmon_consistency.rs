@@ -138,7 +138,7 @@ impl TestChainMonitor {
 	}
 }
 impl chain::Watch<TestChannelSigner> for TestChainMonitor {
-	fn watch_channel(&self, funding_txo: OutPoint, monitor: channelmonitor::ChannelMonitor<TestChannelSigner>) -> chain::ChannelMonitorUpdateStatus {
+	fn watch_channel(&self, funding_txo: OutPoint, monitor: channelmonitor::ChannelMonitor<TestChannelSigner>) -> Result<chain::ChannelMonitorUpdateStatus, ()> {
 		let mut ser = VecWriter(Vec::new());
 		monitor.write(&mut ser).unwrap();
 		if let Some(_) = self.latest_monitors.lock().unwrap().insert(funding_txo, (monitor.get_latest_update_id(), ser.0)) {
@@ -500,7 +500,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out) {
 			let res = (<(BlockHash, ChanMan)>::read(&mut Cursor::new(&$ser.0), read_args).expect("Failed to read manager").1, chain_monitor.clone());
 			for (funding_txo, mon) in monitors.drain() {
 				assert_eq!(chain_monitor.chain_monitor.watch_channel(funding_txo, mon),
-					ChannelMonitorUpdateStatus::Completed);
+					Ok(ChannelMonitorUpdateStatus::Completed));
 			}
 			res
 		} }

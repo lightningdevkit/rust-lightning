@@ -38,43 +38,6 @@ use crate::prelude::*;
 use crate::sync::{Arc, Mutex};
 
 #[test]
-fn test_simple_monitor_permanent_update_fail() {
-	// Test that we handle a simple permanent monitor update failure
-	let chanmon_cfgs = create_chanmon_cfgs(2);
-	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
-	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-	create_announced_chan_between_nodes(&nodes, 0, 1);
-
-	let (route, payment_hash_1, _, payment_secret_1) = get_route_and_payment_hash!(&nodes[0], nodes[1], 1000000);
-	chanmon_cfgs[0].persister.set_update_ret(ChannelMonitorUpdateStatus::PermanentFailure);
-	unwrap_send_err!(nodes[0].node.send_payment_with_route(&route, payment_hash_1,
-			RecipientOnionFields::secret_only(payment_secret_1), PaymentId(payment_hash_1.0)
-		), true, APIError::ChannelUnavailable {..}, {});
-	check_added_monitors!(nodes[0], 2);
-
-	let events_1 = nodes[0].node.get_and_clear_pending_msg_events();
-	assert_eq!(events_1.len(), 2);
-	match events_1[0] {
-		MessageSendEvent::BroadcastChannelUpdate { .. } => {},
-		_ => panic!("Unexpected event"),
-	};
-	match events_1[1] {
-		MessageSendEvent::HandleError { node_id, .. } => assert_eq!(node_id, nodes[1].node.get_our_node_id()),
-		_ => panic!("Unexpected event"),
-	};
-
-	assert!(nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().is_empty());
-
-	// TODO: Once we hit the chain with the failure transaction we should check that we get a
-	// PaymentPathFailed event
-
-	assert_eq!(nodes[0].node.list_channels().len(), 0);
-	check_closed_event!(nodes[0], 1, ClosureReason::ProcessingError { err: "ChannelMonitor storage failure".to_string() },
-		[nodes[1].node.get_our_node_id()], 100000);
-}
-
-#[test]
 fn test_monitor_and_persister_update_fail() {
 	// Test that if both updating the `ChannelMonitor` and persisting the updated
 	// `ChannelMonitor` fail, then the failure from updating the `ChannelMonitor`
@@ -117,13 +80,10 @@ fn test_monitor_and_persister_update_fail() {
 			new_monitor
 		};
 		let chain_mon = test_utils::TestChainMonitor::new(Some(&chain_source), &tx_broadcaster, &logger, &chanmon_cfgs[0].fee_estimator, &persister, &node_cfgs[0].keys_manager);
-		assert_eq!(chain_mon.watch_channel(outpoint, new_monitor), ChannelMonitorUpdateStatus::Completed);
+		assert_eq!(chain_mon.watch_channel(outpoint, new_monitor), Ok(ChannelMonitorUpdateStatus::Completed));
 		chain_mon
 	};
 	chain_mon.chain_monitor.block_connected(&create_dummy_block(BlockHash::all_zeros(), 42, Vec::new()), 200);
-
-	// Set the persister's return value to be a InProgress.
-	persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
 
 	// Try to update ChannelMonitor
 	nodes[1].node.claim_funds(preimage);
@@ -133,17 +93,21 @@ fn test_monitor_and_persister_update_fail() {
 	let updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 	assert_eq!(updates.update_fulfill_htlcs.len(), 1);
 	nodes[0].node.handle_update_fulfill_htlc(&nodes[1].node.get_our_node_id(), &updates.update_fulfill_htlcs[0]);
+
 	{
 		let mut node_0_per_peer_lock;
 		let mut node_0_peer_state_lock;
 		if let ChannelPhase::Funded(ref mut channel) = get_channel_ref!(nodes[0], nodes[1], node_0_per_peer_lock, node_0_peer_state_lock, chan.2) {
 			if let Ok(Some(update)) = channel.commitment_signed(&updates.commitment_signed, &node_cfgs[0].logger) {
-				// Check that even though the persister is returning a InProgress,
-				// because the update is bogus, ultimately the error that's returned
-				// should be a PermanentFailure.
-				if let ChannelMonitorUpdateStatus::PermanentFailure = chain_mon.chain_monitor.update_channel(outpoint, &update) {} else { panic!("Expected monitor error to be permanent"); }
-				logger.assert_log_regex("lightning::chain::chainmonitor", regex::Regex::new("Persistence of ChannelMonitorUpdate for channel [0-9a-f]* in progress").unwrap(), 1);
-				assert_eq!(nodes[0].chain_monitor.update_channel(outpoint, &update), ChannelMonitorUpdateStatus::Completed);
+				// Check that the persister returns InProgress (and will never actually complete)
+				// as the monitor update errors.
+				if let ChannelMonitorUpdateStatus::InProgress = chain_mon.chain_monitor.update_channel(outpoint, &update) {} else { panic!("Expected monitor paused"); }
+				logger.assert_log_regex("lightning::chain::chainmonitor", regex::Regex::new("Failed to update ChannelMonitor for channel [0-9a-f]*.").unwrap(), 1);
+
+				// Apply the monitor update to the original ChainMonitor, ensuring the
+				// ChannelManager and ChannelMonitor aren't out of sync.
+				assert_eq!(nodes[0].chain_monitor.update_channel(outpoint, &update),
+					ChannelMonitorUpdateStatus::Completed);
 			} else { assert!(false); }
 		} else {
 			assert!(false);
@@ -151,8 +115,7 @@ fn test_monitor_and_persister_update_fail() {
 	}
 
 	check_added_monitors!(nodes[0], 1);
-	let events = nodes[0].node.get_and_clear_pending_events();
-	assert_eq!(events.len(), 1);
+	expect_payment_sent(&nodes[0], preimage, None, false, false);
 }
 
 fn do_test_simple_monitor_temporary_update_fail(disconnect: bool) {
@@ -2673,68 +2636,6 @@ fn test_temporary_error_during_shutdown() {
 	check_spends!(txn_a[0], funding_tx);
 	check_closed_event!(nodes[1], 1, ClosureReason::CooperativeClosure, [nodes[0].node.get_our_node_id()], 100000);
 	check_closed_event!(nodes[0], 1, ClosureReason::CooperativeClosure, [nodes[1].node.get_our_node_id()], 100000);
-}
-
-#[test]
-fn test_permanent_error_during_sending_shutdown() {
-	// Test that permanent failures when updating the monitor's shutdown script result in a force
-	// close when initiating a cooperative close.
-	let mut config = test_default_channel_config();
-	config.channel_handshake_config.commit_upfront_shutdown_pubkey = false;
-
-	let chanmon_cfgs = create_chanmon_cfgs(2);
-	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(config), None]);
-	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-
-	let channel_id = create_announced_chan_between_nodes(&nodes, 0, 1).2;
-	chanmon_cfgs[0].persister.set_update_ret(ChannelMonitorUpdateStatus::PermanentFailure);
-
-	assert!(nodes[0].node.close_channel(&channel_id, &nodes[1].node.get_our_node_id()).is_ok());
-
-	// We always send the `shutdown` response when initiating a shutdown, even if we immediately
-	// close the channel thereafter.
-	let msg_events = nodes[0].node.get_and_clear_pending_msg_events();
-	assert_eq!(msg_events.len(), 3);
-	if let MessageSendEvent::SendShutdown { .. } = msg_events[0] {} else { panic!(); }
-	if let MessageSendEvent::BroadcastChannelUpdate { .. } = msg_events[1] {} else { panic!(); }
-	if let MessageSendEvent::HandleError { .. } =  msg_events[2] {} else { panic!(); }
-
-	check_added_monitors!(nodes[0], 2);
-	check_closed_event!(nodes[0], 1, ClosureReason::ProcessingError { err: "ChannelMonitor storage failure".to_string() },
-		[nodes[1].node.get_our_node_id()], 100000);
-}
-
-#[test]
-fn test_permanent_error_during_handling_shutdown() {
-	// Test that permanent failures when updating the monitor's shutdown script result in a force
-	// close when handling a cooperative close.
-	let mut config = test_default_channel_config();
-	config.channel_handshake_config.commit_upfront_shutdown_pubkey = false;
-
-	let chanmon_cfgs = create_chanmon_cfgs(2);
-	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, Some(config)]);
-	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-
-	let channel_id = create_announced_chan_between_nodes(&nodes, 0, 1).2;
-	chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::PermanentFailure);
-
-	assert!(nodes[0].node.close_channel(&channel_id, &nodes[1].node.get_our_node_id()).is_ok());
-	let shutdown = get_event_msg!(nodes[0], MessageSendEvent::SendShutdown, nodes[1].node.get_our_node_id());
-	nodes[1].node.handle_shutdown(&nodes[0].node.get_our_node_id(), &shutdown);
-
-	// We always send the `shutdown` response when receiving a shutdown, even if we immediately
-	// close the channel thereafter.
-	let msg_events = nodes[1].node.get_and_clear_pending_msg_events();
-	assert_eq!(msg_events.len(), 3);
-	if let MessageSendEvent::SendShutdown { .. } = msg_events[0] {} else { panic!(); }
-	if let MessageSendEvent::BroadcastChannelUpdate { .. } = msg_events[1] {} else { panic!(); }
-	if let MessageSendEvent::HandleError { .. } =  msg_events[2] {} else { panic!(); }
-
-	check_added_monitors!(nodes[1], 2);
-	check_closed_event!(nodes[1], 1, ClosureReason::ProcessingError { err: "ChannelMonitor storage failure".to_string() },
-		[nodes[0].node.get_our_node_id()], 100000);
 }
 
 #[test]
