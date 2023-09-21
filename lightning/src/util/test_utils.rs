@@ -140,10 +140,10 @@ impl<'a> Router for TestRouter<'a> {
 						// Since the path is reversed, the last element in our iteration is the first
 						// hop.
 						if idx == path.hops.len() - 1 {
-							scorer.channel_penalty_msat(hop.short_channel_id, &NodeId::from_pubkey(payer), &NodeId::from_pubkey(&hop.pubkey), usage, &());
+							scorer.channel_penalty_msat(hop.short_channel_id, &NodeId::from_pubkey(payer), &NodeId::from_pubkey(&hop.pubkey), usage, &Default::default());
 						} else {
 							let curr_hop_path_idx = path.hops.len() - 1 - idx;
-							scorer.channel_penalty_msat(hop.short_channel_id, &NodeId::from_pubkey(&path.hops[curr_hop_path_idx - 1].pubkey), &NodeId::from_pubkey(&hop.pubkey), usage, &());
+							scorer.channel_penalty_msat(hop.short_channel_id, &NodeId::from_pubkey(&path.hops[curr_hop_path_idx - 1].pubkey), &NodeId::from_pubkey(&hop.pubkey), usage, &Default::default());
 						}
 					}
 				}
@@ -153,7 +153,7 @@ impl<'a> Router for TestRouter<'a> {
 		let logger = TestLogger::new();
 		find_route(
 			payer, params, &self.network_graph, first_hops, &logger,
-			&ScorerAccountingForInFlightHtlcs::new(self.scorer.read().unwrap(), &inflight_htlcs), &(),
+			&ScorerAccountingForInFlightHtlcs::new(self.scorer.read().unwrap(), &inflight_htlcs), &Default::default(),
 			&[42; 32]
 		)
 	}
