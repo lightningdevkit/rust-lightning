@@ -1052,7 +1052,7 @@ macro_rules! get_phantom_route {
 		(get_route(
 			&$nodes[0].node.get_our_node_id(), &route_params, &network_graph,
 			Some(&$nodes[0].node.list_usable_channels().iter().collect::<Vec<_>>()),
-			$nodes[0].logger, &scorer, &(), &[0u8; 32]
+			$nodes[0].logger, &scorer, &Default::default(), &[0u8; 32]
 		).unwrap(), phantom_route_hint.phantom_scid)
 	}
 }}
