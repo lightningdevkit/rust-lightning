@@ -1858,7 +1858,7 @@ pub fn get_route(send_node: &Node, route_params: &RouteParameters) -> Result<Rou
 	router::get_route(
 		&send_node.node.get_our_node_id(), route_params, &send_node.network_graph.read_only(),
 		Some(&send_node.node.list_usable_channels().iter().collect::<Vec<_>>()),
-		send_node.logger, &scorer, &(), &random_seed_bytes
+		send_node.logger, &scorer, &Default::default(), &random_seed_bytes
 	)
 }
 
@@ -2510,7 +2510,7 @@ pub fn route_over_limit<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_rou
 	let keys_manager = test_utils::TestKeysInterface::new(&seed, Network::Testnet);
 	let random_seed_bytes = keys_manager.get_secure_random_bytes();
 	let route = router::get_route(&origin_node.node.get_our_node_id(), &route_params, &network_graph,
-		None, origin_node.logger, &scorer, &(), &random_seed_bytes).unwrap();
+		None, origin_node.logger, &scorer, &Default::default(), &random_seed_bytes).unwrap();
 	assert_eq!(route.paths.len(), 1);
 	assert_eq!(route.paths[0].hops.len(), expected_route.len());
 	for (node, hop) in expected_route.iter().zip(route.paths[0].hops.iter()) {

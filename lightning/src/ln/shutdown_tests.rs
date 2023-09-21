@@ -315,12 +315,12 @@ fn updates_shutdown_wait() {
 	let payment_params_1 = PaymentParameters::from_node_id(nodes[1].node.get_our_node_id(), TEST_FINAL_CLTV).with_bolt11_features(nodes[1].node.invoice_features()).unwrap();
 	let route_params = RouteParameters::from_payment_params_and_value(payment_params_1, 100_000);
 	let route_1 = get_route(&nodes[0].node.get_our_node_id(), &route_params,
-		&nodes[0].network_graph.read_only(), None, &logger, &scorer, &(), &random_seed_bytes).unwrap();
+		&nodes[0].network_graph.read_only(), None, &logger, &scorer, &Default::default(), &random_seed_bytes).unwrap();
 	let payment_params_2 = PaymentParameters::from_node_id(nodes[0].node.get_our_node_id(),
 		TEST_FINAL_CLTV).with_bolt11_features(nodes[0].node.invoice_features()).unwrap();
 	let route_params = RouteParameters::from_payment_params_and_value(payment_params_2, 100_000);
 	let route_2 = get_route(&nodes[1].node.get_our_node_id(), &route_params,
-		&nodes[1].network_graph.read_only(), None, &logger, &scorer, &(), &random_seed_bytes).unwrap();
+		&nodes[1].network_graph.read_only(), None, &logger, &scorer, &Default::default(), &random_seed_bytes).unwrap();
 	unwrap_send_err!(nodes[0].node.send_payment_with_route(&route_1, payment_hash,
 			RecipientOnionFields::secret_only(payment_secret), PaymentId(payment_hash.0)
 		), true, APIError::ChannelUnavailable {..}, {});
