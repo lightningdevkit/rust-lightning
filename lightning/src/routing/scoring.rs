@@ -122,8 +122,8 @@ pub trait ScoreUpdate $(: $supertrait)* {
 	fn probe_successful(&mut self, path: &Path);
 }
 
-impl<SP: Sized, S: ScoreLookUp<ScoreParams = SP>, T: Deref<Target=S> $(+ $supertrait)*> ScoreLookUp for T {
-	type ScoreParams = SP;
+impl<S: ScoreLookUp, T: Deref<Target=S> $(+ $supertrait)*> ScoreLookUp for T {
+	type ScoreParams = S::ScoreParams;
 	fn channel_penalty_msat(
 		&self, short_channel_id: u64, source: &NodeId, target: &NodeId, usage: ChannelUsage, score_params: &Self::ScoreParams
 	) -> u64 {
@@ -226,7 +226,7 @@ impl<'a, T: 'a + ScoreUpdate + ScoreLookUp> LockableScore<'a> for RefCell<T> {
 }
 
 #[cfg(not(c_bindings))]
-impl<'a, SP:Sized,  T: 'a + ScoreUpdate + ScoreLookUp<ScoreParams = SP>> LockableScore<'a> for RwLock<T> {
+impl<'a,  T: 'a + ScoreUpdate + ScoreLookUp> LockableScore<'a> for RwLock<T> {
 	type ScoreUpdate = T;
 	type ScoreLookUp = T;
 
@@ -249,7 +249,7 @@ pub struct MultiThreadedLockableScore<T: ScoreLookUp + ScoreUpdate> {
 }
 
 #[cfg(c_bindings)]
-impl<'a, SP:Sized, T: 'a + ScoreLookUp<ScoreParams = SP> + ScoreUpdate> LockableScore<'a> for MultiThreadedLockableScore<T> {
+impl<'a, T: 'a + ScoreLookUp + ScoreUpdate> LockableScore<'a> for MultiThreadedLockableScore<T> {
 	type ScoreUpdate = T;
 	type ScoreLookUp = T;
 	type WriteLocked = MultiThreadedScoreLockWrite<'a, Self::ScoreUpdate>;

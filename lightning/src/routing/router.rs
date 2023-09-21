@@ -112,12 +112,12 @@ pub trait Router {
 /// [`find_route`].
 ///
 /// [`ScoreLookUp`]: crate::routing::scoring::ScoreLookUp
-pub struct ScorerAccountingForInFlightHtlcs<'a, SP: Sized, Sc: 'a + ScoreLookUp<ScoreParams = SP>, S: Deref<Target = Sc>> {
+pub struct ScorerAccountingForInFlightHtlcs<'a, S: Deref> where S::Target: ScoreLookUp {
 	scorer: S,
 	// Maps a channel's short channel id and its direction to the liquidity used up.
 	inflight_htlcs: &'a InFlightHtlcs,
 }
-impl<'a, SP: Sized, Sc: ScoreLookUp<ScoreParams = SP>, S: Deref<Target = Sc>> ScorerAccountingForInFlightHtlcs<'a, SP, Sc, S> {
+impl<'a, S: Deref> ScorerAccountingForInFlightHtlcs<'a, S> where S::Target: ScoreLookUp {
 	/// Initialize a new `ScorerAccountingForInFlightHtlcs`.
 	pub fn new(scorer: S, inflight_htlcs: &'a InFlightHtlcs) -> Self {
 		ScorerAccountingForInFlightHtlcs {
@@ -128,12 +128,12 @@ impl<'a, SP: Sized, Sc: ScoreLookUp<ScoreParams = SP>, S: Deref<Target = Sc>> Sc
 }
 
 #[cfg(c_bindings)]
-impl<'a, SP: Sized, Sc: ScoreLookUp<ScoreParams = SP>, S: Deref<Target = Sc>> Writeable for ScorerAccountingForInFlightHtlcs<'a, SP, Sc, S> {
+impl<'a, S: Deref> Writeable for ScorerAccountingForInFlightHtlcs<'a, S> where S::Target: ScoreLookUp {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> { self.scorer.write(writer) }
 }
 
-impl<'a, SP: Sized, Sc: 'a + ScoreLookUp<ScoreParams = SP>, S: Deref<Target = Sc>> ScoreLookUp for ScorerAccountingForInFlightHtlcs<'a, SP, Sc, S> {
-	type ScoreParams = Sc::ScoreParams;
+impl<'a, S: Deref> ScoreLookUp for ScorerAccountingForInFlightHtlcs<'a, S> where S::Target: ScoreLookUp {
+	type ScoreParams = <S::Target as ScoreLookUp>::ScoreParams;
 	fn channel_penalty_msat(&self, short_channel_id: u64, source: &NodeId, target: &NodeId, usage: ChannelUsage, score_params: &Self::ScoreParams) -> u64 {
 		if let Some(used_liquidity) = self.inflight_htlcs.used_liquidity_msat(
 			source, target, short_channel_id
