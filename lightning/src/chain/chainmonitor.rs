@@ -98,7 +98,7 @@ impl MonitorUpdateId {
 ///    If at some point no further progress can be made towards persisting the pending updates, the
 ///    node should simply shut down.
 ///
-///  * If the persistence has failed and cannot be retried further (e.g. because of some timeout),
+///  * If the persistence has failed and cannot be retried further (e.g. because of an outage),
 ///    [`ChannelMonitorUpdateStatus::UnrecoverableError`] can be used, though this will result in
 ///    an immediate panic and future operations in LDK generally failing.
 ///
