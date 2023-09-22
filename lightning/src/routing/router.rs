@@ -2167,6 +2167,15 @@ where L::Target: Logger {
 				for (idx, (hop, prev_hop_id)) in hop_iter.zip(prev_hop_iter).enumerate() {
 					let source = NodeId::from_pubkey(&hop.src_node_id);
 					let target = NodeId::from_pubkey(&prev_hop_id);
+
+					if let Some(first_channels) = first_hop_targets.get(&target) {
+						if first_channels.iter().any(|d| d.outbound_scid_alias == Some(hop.short_channel_id)) {
+							log_trace!(logger, "Ignoring route hint with SCID {} (and any previous) due to it being a direct channel of ours.",
+								hop.short_channel_id);
+							break;
+						}
+					}
+
 					let candidate = network_channels
 						.get(&hop.short_channel_id)
 						.and_then(|channel| channel.as_directed_to(&target))
@@ -2210,12 +2219,12 @@ where L::Target: Logger {
 						.saturating_add(1);
 
 					// Searching for a direct channel between last checked hop and first_hop_targets
-					if let Some(first_channels) = first_hop_targets.get_mut(&NodeId::from_pubkey(&prev_hop_id)) {
+					if let Some(first_channels) = first_hop_targets.get_mut(&target) {
 						sort_first_hop_channels(first_channels, &used_liquidities,
 							recommended_value_msat, our_node_pubkey);
 						for details in first_channels {
 							let first_hop_candidate = CandidateRouteHop::FirstHop { details };
-							add_entry!(first_hop_candidate, our_node_id, NodeId::from_pubkey(&prev_hop_id),
+							add_entry!(first_hop_candidate, our_node_id, target,
 								aggregate_next_hops_fee_msat, aggregate_path_contribution_msat,
 								aggregate_next_hops_path_htlc_minimum_msat, aggregate_next_hops_path_penalty_msat,
 								aggregate_next_hops_cltv_delta, aggregate_next_hops_path_length);
