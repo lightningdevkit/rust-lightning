@@ -1718,6 +1718,8 @@ where L::Target: Logger {
 	let mut num_ignored_cltv_delta_limit = 0;
 	let mut num_ignored_previously_failed = 0;
 	let mut num_ignored_total_fee_limit = 0;
+	let mut num_ignored_avoid_overpayment = 0;
+	let mut num_ignored_htlc_minimum_msat_limit = 0;
 
 	macro_rules! add_entry {
 		// Adds entry which goes from $src_node_id to $dest_node_id over the $candidate hop.
@@ -1826,6 +1828,12 @@ where L::Target: Logger {
 						}
 						num_ignored_previously_failed += 1;
 					} else if may_overpay_to_meet_path_minimum_msat {
+						if should_log_candidate {
+							log_trace!(logger,
+								"Ignoring {} to avoid overpaying to meet htlc_minimum_msat limit.",
+								LoggedCandidateHop(&$candidate));
+						}
+						num_ignored_avoid_overpayment += 1;
 						hit_minimum_limit = true;
 					} else if over_path_minimum_msat {
 						// Note that low contribution here (limited by available_liquidity_msat)
@@ -1976,6 +1984,13 @@ where L::Target: Logger {
 								}
 							}
 						}
+					} else {
+						if should_log_candidate {
+							log_trace!(logger,
+								"Ignoring {} due to its htlc_minimum_msat limit.",
+								LoggedCandidateHop(&$candidate));
+						}
+						num_ignored_htlc_minimum_msat_limit += 1;
 					}
 				}
 			}
@@ -2443,15 +2458,22 @@ where L::Target: Logger {
 				log_trace!(logger, "Collected exactly our payment amount on the first pass, without hitting an htlc_minimum_msat limit, exiting.");
 				break 'paths_collection;
 			}
-			log_trace!(logger, "Collected our payment amount on the first pass, but running again to collect extra paths with a potentially higher limit.");
+			log_trace!(logger, "Collected our payment amount on the first pass, but running again to collect extra paths with a potentially higher value to meet htlc_minimum_msat limit.");
 			path_value_msat = recommended_value_msat;
 		}
 	}
 
 	let num_ignored_total = num_ignored_value_contribution + num_ignored_path_length_limit +
-		num_ignored_cltv_delta_limit + num_ignored_previously_failed + num_ignored_total_fee_limit;
+		num_ignored_cltv_delta_limit + num_ignored_previously_failed +
+		num_ignored_avoid_overpayment + num_ignored_htlc_minimum_msat_limit +
+		num_ignored_total_fee_limit;
 	if num_ignored_total > 0 {
-		log_trace!(logger, "Ignored {} candidate hops due to insufficient value contribution, {} due to path length limit, {} due to CLTV delta limit, {} due to previous payment failure, {} due to maximum total fee limit. Total: {} ignored candidates.", num_ignored_value_contribution, num_ignored_path_length_limit, num_ignored_cltv_delta_limit, num_ignored_previously_failed, num_ignored_total_fee_limit, num_ignored_total);
+		log_trace!(logger,
+			"Ignored {} candidate hops due to insufficient value contribution, {} due to path length limit, {} due to CLTV delta limit, {} due to previous payment failure, {} due to htlc_minimum_msat limit, {} to avoid overpaying, {} due to maximum total fee limit. Total: {} ignored candidates.",
+			num_ignored_value_contribution, num_ignored_path_length_limit,
+			num_ignored_cltv_delta_limit, num_ignored_previously_failed,
+			num_ignored_htlc_minimum_msat_limit, num_ignored_avoid_overpayment,
+			num_ignored_total_fee_limit, num_ignored_total);
 	}
 
 	// Step (5).
