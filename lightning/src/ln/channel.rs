@@ -4808,6 +4808,7 @@ impl<SP: Deref> Channel<SP> where
 		NS::Target: NodeSigner,
 		L::Target: Logger
 	{
+		let mut msgs = (None, None);
 		if let Some(funding_txo) = self.context.get_funding_txo() {
 			for &(index_in_block, tx) in txdata.iter() {
 				// Check if the transaction is the expected funding transaction, and if it is,
@@ -4863,7 +4864,7 @@ impl<SP: Deref> Channel<SP> where
 					if let Some(channel_ready) = self.check_get_channel_ready(height) {
 						log_info!(logger, "Sending a channel_ready to our peer for channel {}", &self.context.channel_id);
 						let announcement_sigs = self.get_announcement_sigs(node_signer, genesis_block_hash, user_config, height, logger);
-						return Ok((Some(channel_ready), announcement_sigs));
+						msgs = (Some(channel_ready), announcement_sigs);
 					}
 				}
 				for inp in tx.input.iter() {
@@ -4874,7 +4875,7 @@ impl<SP: Deref> Channel<SP> where
 				}
 			}
 		}
-		Ok((None, None))
+		Ok(msgs)
 	}
 
 	/// When a new block is connected, we check the height of the block against outbound holding

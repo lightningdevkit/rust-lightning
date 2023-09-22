@@ -10625,3 +10625,60 @@ fn test_batch_funding_close_after_funding_signed() {
 	// Ensure the channels don't exist anymore.
 	assert!(nodes[0].node.list_channels().is_empty());
 }
+
+fn do_test_funding_and_commitment_tx_confirm_same_block(confirm_remote_commitment: bool) {
+	// Tests that a node will forget the channel (when it only requires 1 confirmation) if the
+	// funding and commitment transaction confirm in the same block.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let mut min_depth_1_block_cfg = test_default_channel_config();
+	min_depth_1_block_cfg.channel_handshake_config.minimum_depth = 1;
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(min_depth_1_block_cfg), Some(min_depth_1_block_cfg)]);
+	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let funding_tx = create_chan_between_nodes_with_value_init(&nodes[0], &nodes[1], 1_000_000, 0);
+	let chan_id = chain::transaction::OutPoint { txid: funding_tx.txid(), index: 0 }.to_channel_id();
+
+	assert_eq!(nodes[0].node.list_channels().len(), 1);
+	assert_eq!(nodes[1].node.list_channels().len(), 1);
+
+	let (closing_node, other_node) = if confirm_remote_commitment {
+		(&nodes[1], &nodes[0])
+	} else {
+		(&nodes[0], &nodes[1])
+	};
+
+	closing_node.node.force_close_broadcasting_latest_txn(&chan_id, &other_node.node.get_our_node_id()).unwrap();
+	let mut msg_events = closing_node.node.get_and_clear_pending_msg_events();
+	assert_eq!(msg_events.len(), 1);
+	match msg_events.pop().unwrap() {
+		MessageSendEvent::HandleError { action: msgs::ErrorAction::SendErrorMessage { .. }, .. } => {},
+		_ => panic!("Unexpected event"),
+	}
+	check_added_monitors(closing_node, 1);
+	check_closed_event(closing_node, 1, ClosureReason::HolderForceClosed, false, &[other_node.node.get_our_node_id()], 1_000_000);
+
+	let commitment_tx = {
+		let mut txn = closing_node.tx_broadcaster.txn_broadcast();
+		assert_eq!(txn.len(), 1);
+		let commitment_tx = txn.pop().unwrap();
+		check_spends!(commitment_tx, funding_tx);
+		commitment_tx
+	};
+
+	mine_transactions(&nodes[0], &[&funding_tx, &commitment_tx]);
+	mine_transactions(&nodes[1], &[&funding_tx, &commitment_tx]);
+
+	check_closed_broadcast(other_node, 1, true);
+	check_added_monitors(other_node, 1);
+	check_closed_event(other_node, 1, ClosureReason::CommitmentTxConfirmed, false, &[closing_node.node.get_our_node_id()], 1_000_000);
+
+	assert!(nodes[0].node.list_channels().is_empty());
+	assert!(nodes[1].node.list_channels().is_empty());
+}
+
+#[test]
+fn test_funding_and_commitment_tx_confirm_same_block() {
+	do_test_funding_and_commitment_tx_confirm_same_block(false);
+	do_test_funding_and_commitment_tx_confirm_same_block(true);
+}
