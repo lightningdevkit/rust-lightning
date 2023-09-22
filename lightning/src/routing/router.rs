@@ -2142,14 +2142,15 @@ where L::Target: Logger {
 		for route in payment_params.payee.unblinded_route_hints().iter()
 			.filter(|route| !route.0.is_empty())
 		{
-			let first_hop_in_route = &(route.0)[0];
-			let have_hop_src_in_graph =
-				// Only add the hops in this route to our candidate set if either
-				// we have a direct channel to the first hop or the first hop is
-				// in the regular network graph.
-				first_hop_targets.get(&NodeId::from_pubkey(&first_hop_in_route.src_node_id)).is_some() ||
-				network_nodes.get(&NodeId::from_pubkey(&first_hop_in_route.src_node_id)).is_some();
-			if have_hop_src_in_graph {
+			let first_hop_src_id = NodeId::from_pubkey(&route.0.first().unwrap().src_node_id);
+			let first_hop_src_is_reachable =
+				// Only add the hops in this route to our candidate set if either we are part of
+				// the first hop, we have a direct channel to the first hop, or the first hop is in
+				// the regular network graph.
+				our_node_id == first_hop_src_id ||
+				first_hop_targets.get(&first_hop_src_id).is_some() ||
+				network_nodes.get(&first_hop_src_id).is_some();
+			if first_hop_src_is_reachable {
 				// We start building the path from reverse, i.e., from payee
 				// to the first RouteHintHop in the path.
 				let hop_iter = route.0.iter().rev();
