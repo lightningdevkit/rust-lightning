@@ -1710,13 +1710,13 @@ where L::Target: Logger {
 		// Adds entry which goes from $src_node_id to $dest_node_id over the $candidate hop.
 		// $next_hops_fee_msat represents the fees paid for using all the channels *after* this one,
 		// since that value has to be transferred over this channel.
-		// Returns whether this channel caused an update to `targets`.
+		// Returns the contribution amount of $candidate if the channel caused an update to `targets`.
 		( $candidate: expr, $src_node_id: expr, $dest_node_id: expr, $next_hops_fee_msat: expr,
 			$next_hops_value_contribution: expr, $next_hops_path_htlc_minimum_msat: expr,
 			$next_hops_path_penalty_msat: expr, $next_hops_cltv_delta: expr, $next_hops_path_length: expr ) => { {
 			// We "return" whether we updated the path at the end, and how much we can route via
 			// this channel, via this:
-			let mut did_add_update_path_to_src_node = None;
+			let mut hop_contribution_amt_msat = None;
 			// Channels to self should not be used. This is more of belt-and-suspenders, because in
 			// practice these cases should be caught earlier:
 			// - for regular channels at channel announcement (TODO)
@@ -1930,7 +1930,7 @@ where L::Target: Logger {
 									{
 										old_entry.value_contribution_msat = value_contribution_msat;
 									}
-									did_add_update_path_to_src_node = Some(value_contribution_msat);
+									hop_contribution_amt_msat = Some(value_contribution_msat);
 								} else if old_entry.was_processed && new_cost < old_cost {
 									#[cfg(all(not(ldk_bench), any(test, fuzzing)))]
 									{
@@ -1965,7 +1965,7 @@ where L::Target: Logger {
 					}
 				}
 			}
-			did_add_update_path_to_src_node
+			hop_contribution_amt_msat
 		} }
 	}
 
