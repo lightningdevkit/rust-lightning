@@ -89,7 +89,7 @@ macro_rules! define_score { ($($supertrait: path)*) => {
 /// `ScoreLookUp` is used to determine the penalty for a given channel.
 ///
 /// Scoring is in terms of fees willing to be paid in order to avoid routing through a channel.
-pub trait ScoreLookUp $(: $supertrait)* {
+pub trait ScoreLookUp {
 	/// A configurable type which should contain various passed-in parameters for configuring the scorer,
 	/// on a per-routefinding-call basis through to the scorer methods,
 	/// which are used to determine the parameters for the suitability of channels for use.
@@ -108,7 +108,7 @@ pub trait ScoreLookUp $(: $supertrait)* {
 }
 
 /// `ScoreUpdate` is used to update the scorer's internal state after a payment attempt.
-pub trait ScoreUpdate $(: $supertrait)* {
+pub trait ScoreUpdate {
 	/// Handles updating channel penalties after failing to route through a channel.
 	fn payment_path_failed(&mut self, path: &Path, short_channel_id: u64);
 
@@ -122,7 +122,18 @@ pub trait ScoreUpdate $(: $supertrait)* {
 	fn probe_successful(&mut self, path: &Path);
 }
 
-impl<S: ScoreLookUp, T: Deref<Target=S> $(+ $supertrait)*> ScoreLookUp for T {
+/// A trait which can both lookup and update routing channel penalty scores.
+///
+/// This is used in places where both bounds are required and implemented for all types which
+/// implement [`ScoreLookUp`] and [`ScoreUpdate`].
+///
+/// Bindings users may need to manually implement this for their custom scoring implementations.
+pub trait Score : ScoreLookUp + ScoreUpdate $(+ $supertrait)* {}
+
+#[cfg(not(c_bindings))]
+impl<T: ScoreLookUp + ScoreUpdate $(+ $supertrait)*> Score for T {}
+
+impl<S: ScoreLookUp, T: Deref<Target=S>> ScoreLookUp for T {
 	type ScoreParams = S::ScoreParams;
 	fn channel_penalty_msat(
 		&self, short_channel_id: u64, source: &NodeId, target: &NodeId, usage: ChannelUsage, score_params: &Self::ScoreParams
@@ -131,7 +142,7 @@ impl<S: ScoreLookUp, T: Deref<Target=S> $(+ $supertrait)*> ScoreLookUp for T {
 	}
 }
 
-impl<S: ScoreUpdate, T: DerefMut<Target=S> $(+ $supertrait)*> ScoreUpdate for T {
+impl<S: ScoreUpdate, T: DerefMut<Target=S>> ScoreUpdate for T {
 	fn payment_path_failed(&mut self, path: &Path, short_channel_id: u64) {
 		self.deref_mut().payment_path_failed(path, short_channel_id)
 	}
@@ -192,7 +203,7 @@ pub trait WriteableScore<'a>: LockableScore<'a> + Writeable {}
 #[cfg(not(c_bindings))]
 impl<'a, T> WriteableScore<'a> for T where T: LockableScore<'a> + Writeable {}
 #[cfg(not(c_bindings))]
-impl<'a, T: 'a + ScoreLookUp + ScoreUpdate> LockableScore<'a> for Mutex<T> {
+impl<'a, T: Score + 'a> LockableScore<'a> for Mutex<T> {
 	type ScoreUpdate = T;
 	type ScoreLookUp = T;
 
@@ -209,7 +220,7 @@ impl<'a, T: 'a + ScoreLookUp + ScoreUpdate> LockableScore<'a> for Mutex<T> {
 }
 
 #[cfg(not(c_bindings))]
-impl<'a, T: 'a + ScoreUpdate + ScoreLookUp> LockableScore<'a> for RefCell<T> {
+impl<'a, T: Score + 'a> LockableScore<'a> for RefCell<T> {
 	type ScoreUpdate = T;
 	type ScoreLookUp = T;
 
@@ -226,7 +237,7 @@ impl<'a, T: 'a + ScoreUpdate + ScoreLookUp> LockableScore<'a> for RefCell<T> {
 }
 
 #[cfg(not(c_bindings))]
-impl<'a,  T: 'a + ScoreUpdate + ScoreLookUp> LockableScore<'a> for RwLock<T> {
+impl<'a, T: Score + 'a> LockableScore<'a> for RwLock<T> {
 	type ScoreUpdate = T;
 	type ScoreLookUp = T;
 
@@ -244,12 +255,12 @@ impl<'a,  T: 'a + ScoreUpdate + ScoreLookUp> LockableScore<'a> for RwLock<T> {
 
 #[cfg(c_bindings)]
 /// A concrete implementation of [`LockableScore`] which supports multi-threading.
-pub struct MultiThreadedLockableScore<T: ScoreLookUp + ScoreUpdate> {
+pub struct MultiThreadedLockableScore<T: Score> {
 	score: RwLock<T>,
 }
 
 #[cfg(c_bindings)]
-impl<'a, T: 'a + ScoreLookUp + ScoreUpdate> LockableScore<'a> for MultiThreadedLockableScore<T> {
+impl<'a, T: Score + 'a> LockableScore<'a> for MultiThreadedLockableScore<T> {
 	type ScoreUpdate = T;
 	type ScoreLookUp = T;
 	type WriteLocked = MultiThreadedScoreLockWrite<'a, Self::ScoreUpdate>;
@@ -265,17 +276,17 @@ impl<'a, T: 'a + ScoreLookUp + ScoreUpdate> LockableScore<'a> for MultiThreadedL
 }
 
 #[cfg(c_bindings)]
-impl<T: ScoreUpdate + ScoreLookUp> Writeable for MultiThreadedLockableScore<T> {
+impl<T: Score> Writeable for MultiThreadedLockableScore<T> {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		self.score.read().unwrap().write(writer)
 	}
 }
 
 #[cfg(c_bindings)]
-impl<'a, T: 'a + ScoreUpdate + ScoreLookUp> WriteableScore<'a> for MultiThreadedLockableScore<T> {}
+impl<'a, T: Score + 'a> WriteableScore<'a> for MultiThreadedLockableScore<T> {}
 
 #[cfg(c_bindings)]
-impl<T: ScoreLookUp + ScoreUpdate> MultiThreadedLockableScore<T> {
+impl<T: Score> MultiThreadedLockableScore<T> {
 	/// Creates a new [`MultiThreadedLockableScore`] given an underlying [`Score`].
 	pub fn new(score: T) -> Self {
 		MultiThreadedLockableScore { score: RwLock::new(score) }
@@ -284,14 +295,14 @@ impl<T: ScoreLookUp + ScoreUpdate> MultiThreadedLockableScore<T> {
 
 #[cfg(c_bindings)]
 /// A locked `MultiThreadedLockableScore`.
-pub struct MultiThreadedScoreLockRead<'a, T: ScoreLookUp>(RwLockReadGuard<'a, T>);
+pub struct MultiThreadedScoreLockRead<'a, T: Score>(RwLockReadGuard<'a, T>);
 
 #[cfg(c_bindings)]
 /// A locked `MultiThreadedLockableScore`.
-pub struct MultiThreadedScoreLockWrite<'a, T: ScoreUpdate>(RwLockWriteGuard<'a, T>);
+pub struct MultiThreadedScoreLockWrite<'a, T: Score>(RwLockWriteGuard<'a, T>);
 
 #[cfg(c_bindings)]
-impl<'a, T: 'a + ScoreLookUp> Deref for MultiThreadedScoreLockRead<'a, T> {
+impl<'a, T: 'a + Score> Deref for MultiThreadedScoreLockRead<'a, T> {
 	type Target = T;
 
 	fn deref(&self) -> &Self::Target {
@@ -300,14 +311,14 @@ impl<'a, T: 'a + ScoreLookUp> Deref for MultiThreadedScoreLockRead<'a, T> {
 }
 
 #[cfg(c_bindings)]
-impl<'a, T: 'a + ScoreUpdate> Writeable for MultiThreadedScoreLockWrite<'a, T> {
+impl<'a, T: Score> Writeable for MultiThreadedScoreLockWrite<'a, T> {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		self.0.write(writer)
 	}
 }
 
 #[cfg(c_bindings)]
-impl<'a, T: 'a + ScoreUpdate> Deref for MultiThreadedScoreLockWrite<'a, T> {
+impl<'a, T: 'a + Score> Deref for MultiThreadedScoreLockWrite<'a, T> {
 	type Target = T;
 
 	fn deref(&self) -> &Self::Target {
@@ -316,7 +327,7 @@ impl<'a, T: 'a + ScoreUpdate> Deref for MultiThreadedScoreLockWrite<'a, T> {
 }
 
 #[cfg(c_bindings)]
-impl<'a, T: 'a + ScoreUpdate> DerefMut for MultiThreadedScoreLockWrite<'a, T> {
+impl<'a, T: 'a + Score> DerefMut for MultiThreadedScoreLockWrite<'a, T> {
 	fn deref_mut(&mut self) -> &mut Self::Target {
 		self.0.deref_mut()
 	}
@@ -1416,6 +1427,10 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, T: Time> ScoreUpdate for Prob
 		self.payment_path_failed(path, u64::max_value())
 	}
 }
+
+#[cfg(c_bindings)]
+impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, T: Time> Score for ProbabilisticScorerUsingTime<G, L, T>
+where L::Target: Logger {}
 
 mod approx {
 	const BITS: u32 = 64;

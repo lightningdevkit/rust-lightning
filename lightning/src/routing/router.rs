@@ -127,11 +127,6 @@ impl<'a, S: Deref> ScorerAccountingForInFlightHtlcs<'a, S> where S::Target: Scor
 	}
 }
 
-#[cfg(c_bindings)]
-impl<'a, S: Deref> Writeable for ScorerAccountingForInFlightHtlcs<'a, S> where S::Target: ScoreLookUp {
-	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> { self.scorer.write(writer) }
-}
-
 impl<'a, S: Deref> ScoreLookUp for ScorerAccountingForInFlightHtlcs<'a, S> where S::Target: ScoreLookUp {
 	type ScoreParams = <S::Target as ScoreLookUp>::ScoreParams;
 	fn channel_penalty_msat(&self, short_channel_id: u64, source: &NodeId, target: &NodeId, usage: ChannelUsage, score_params: &Self::ScoreParams) -> u64 {
