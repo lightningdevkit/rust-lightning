@@ -1739,8 +1739,12 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 					htlc_spend_pending = Some((event.confirmation_threshold(), preimage.is_some()));
 				},
 				OnchainEvent::MaturingOutput {
-					descriptor: SpendableOutputDescriptor::DelayedPaymentOutput(ref descriptor) }
-				if descriptor.outpoint.index as u32 == htlc_commitment_tx_output_idx => {
+					descriptor: SpendableOutputDescriptor::DelayedPaymentOutput(_) }
+				if event.transaction.as_ref().map(|tx| tx.input.iter()
+					.any(|inp| Some(inp.previous_output.txid) == confirmed_txid &&
+						inp.previous_output.vout == htlc_commitment_tx_output_idx))
+					.unwrap_or(false)
+				=> {
 					debug_assert!(holder_delayed_output_pending.is_none());
 					holder_delayed_output_pending = Some(event.confirmation_threshold());
 				},
@@ -1852,8 +1856,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 	/// confirmations on the claim transaction.
 	///
 	/// Note that for `ChannelMonitors` which track a channel which went on-chain with versions of
-	/// LDK prior to 0.0.111, balances may not be fully captured if our counterparty broadcasted
-	/// a revoked state.
+	/// LDK prior to 0.0.111, not all or excess balances may be included.
 	///
 	/// See [`Balance`] for additional details on the types of claimable balances which
 	/// may be returned here and their meanings.
