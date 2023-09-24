@@ -1748,6 +1748,12 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 					debug_assert!(holder_delayed_output_pending.is_none());
 					holder_delayed_output_pending = Some(event.confirmation_threshold());
 				},
+				OnchainEvent::MaturingOutput {
+					descriptor: SpendableOutputDescriptor::DelayedPaymentOutput(ref descriptor) }
+				if descriptor.outpoint.into_bitcoin_outpoint() == htlc_output_to_spend => {
+					debug_assert!(holder_delayed_output_pending.is_none());
+					holder_delayed_output_pending = Some(event.confirmation_threshold());
+				},
 				_ => {},
 			}
 		}
