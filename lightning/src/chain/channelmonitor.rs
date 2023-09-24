@@ -1685,6 +1685,38 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		let mut holder_timeout_spend_pending = None;
 		let mut htlc_spend_pending = None;
 		let mut holder_delayed_output_pending = None;
+
+		let htlc_resolved = self.htlcs_resolved_on_chain.iter()
+			.find(|v| if v.commitment_tx_output_idx == Some(htlc_commitment_tx_output_idx) {
+				debug_assert!(htlc_spend_txid_opt.is_none());
+				htlc_spend_txid_opt = v.resolving_txid.as_ref();
+				debug_assert!(htlc_spend_tx_opt.is_none());
+				htlc_spend_tx_opt = v.resolving_tx.as_ref();
+				true
+			} else { false });
+
+		let htlc_commitment_outpoint = BitcoinOutPoint::new(confirmed_txid.unwrap(), htlc_commitment_tx_output_idx);
+		let htlc_output_to_spend =
+			if let Some(txid) = htlc_spend_txid_opt {
+				// Because HTLC transactions either only have 1 input and 1 output (pre-anchors) or
+				// are signed with SIGHASH_SINGLE|ANYONECANPAY under BIP-0143 (post-anchors), we can
+				// locate the correct output by ensuring its adjacent input spends the HTLC output
+				// in the commitment.
+				if let Some(ref tx) = htlc_spend_tx_opt {
+					let htlc_input_idx_opt = tx.input.iter().enumerate()
+						.find(|(_, input)| input.previous_output == htlc_commitment_outpoint)
+						.map(|(idx, _)| idx as u32);
+					debug_assert!(htlc_input_idx_opt.is_some());
+					BitcoinOutPoint::new(*txid, htlc_input_idx_opt.unwrap_or(0))
+				} else {
+					debug_assert!(!self.onchain_tx_handler.channel_type_features().supports_anchors_zero_fee_htlc_tx());
+					BitcoinOutPoint::new(*txid, 0)
+				}
+			} else {
+				htlc_commitment_outpoint
+			};
+		let htlc_output_spend_pending = self.onchain_tx_handler.is_output_spend_pending(&htlc_output_to_spend);
+
 		for event in self.onchain_events_awaiting_threshold_conf.iter() {
 			match event.event {
 				OnchainEvent::HTLCUpdate { commitment_tx_output_idx, htlc_value_satoshis, .. }
@@ -1715,37 +1747,8 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				_ => {},
 			}
 		}
-		let htlc_resolved = self.htlcs_resolved_on_chain.iter()
-			.find(|v| if v.commitment_tx_output_idx == Some(htlc_commitment_tx_output_idx) {
-				debug_assert!(htlc_spend_txid_opt.is_none());
-				htlc_spend_txid_opt = v.resolving_txid.as_ref();
-				debug_assert!(htlc_spend_tx_opt.is_none());
-				htlc_spend_tx_opt = v.resolving_tx.as_ref();
-				true
-			} else { false });
-		debug_assert!(holder_timeout_spend_pending.is_some() as u8 + htlc_spend_pending.is_some() as u8 + htlc_resolved.is_some() as u8 <= 1);
 
-		let htlc_commitment_outpoint = BitcoinOutPoint::new(confirmed_txid.unwrap(), htlc_commitment_tx_output_idx);
-		let htlc_output_to_spend =
-			if let Some(txid) = htlc_spend_txid_opt {
-				// Because HTLC transactions either only have 1 input and 1 output (pre-anchors) or
-				// are signed with SIGHASH_SINGLE|ANYONECANPAY under BIP-0143 (post-anchors), we can
-				// locate the correct output by ensuring its adjacent input spends the HTLC output
-				// in the commitment.
-				if let Some(ref tx) = htlc_spend_tx_opt {
-					let htlc_input_idx_opt = tx.input.iter().enumerate()
-						.find(|(_, input)| input.previous_output == htlc_commitment_outpoint)
-						.map(|(idx, _)| idx as u32);
-					debug_assert!(htlc_input_idx_opt.is_some());
-					BitcoinOutPoint::new(*txid, htlc_input_idx_opt.unwrap_or(0))
-				} else {
-					debug_assert!(!self.onchain_tx_handler.channel_type_features().supports_anchors_zero_fee_htlc_tx());
-					BitcoinOutPoint::new(*txid, 0)
-				}
-			} else {
-				htlc_commitment_outpoint
-			};
-		let htlc_output_spend_pending = self.onchain_tx_handler.is_output_spend_pending(&htlc_output_to_spend);
+		debug_assert!(holder_timeout_spend_pending.is_some() as u8 + htlc_spend_pending.is_some() as u8 + htlc_resolved.is_some() as u8 <= 1);
 
 		if let Some(conf_thresh) = holder_delayed_output_pending {
 			debug_assert!(holder_commitment);
