@@ -1751,7 +1751,19 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				},
 				OnchainEvent::MaturingOutput {
 					descriptor: SpendableOutputDescriptor::DelayedPaymentOutput(ref descriptor) }
-				if descriptor.outpoint.index as u32 == htlc_commitment_tx_output_idx => {
+				if event.transaction.as_ref().map(|tx| tx.input.iter().enumerate()
+					.any(|(input_idx, inp)|
+						 Some(inp.previous_output.txid) == confirmed_txid &&
+							inp.previous_output.vout == htlc_commitment_tx_output_idx &&
+								// A maturing output for an HTLC claim will always be at the same
+								// index as the HTLC input. This is true pre-anchors, as there's
+								// only 1 input and 1 output. This is also true post-anchors,
+								// because we have a SIGHASH_SINGLE|ANYONECANPAY signature from our
+								// channel counterparty.
+								descriptor.outpoint.index as usize == input_idx
+					))
+					.unwrap_or(false)
+				=> {
 					debug_assert!(holder_delayed_output_pending.is_none());
 					holder_delayed_output_pending = Some(event.confirmation_threshold());
 				},
@@ -1892,8 +1904,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 	/// confirmations on the claim transaction.
 	///
 	/// Note that for `ChannelMonitors` which track a channel which went on-chain with versions of
-	/// LDK prior to 0.0.111, balances may not be fully captured if our counterparty broadcasted
-	/// a revoked state.
+	/// LDK prior to 0.0.111, not all or excess balances may be included.
 	///
 	/// See [`Balance`] for additional details on the types of claimable balances which
 	/// may be returned here and their meanings.
