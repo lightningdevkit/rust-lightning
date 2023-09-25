@@ -47,7 +47,7 @@ use core::ops::Deref;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use bitcoin::secp256k1::PublicKey;
 
-#[derive(Clone, Copy, Hash, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
 /// A specific update's ID stored in a `MonitorUpdateId`, separated out to make the contents
 /// entirely opaque.
 enum UpdateOrigin {
@@ -61,7 +61,7 @@ enum UpdateOrigin {
 }
 
 /// An opaque identifier describing a specific [`Persist`] method call.
-#[derive(Clone, Copy, Hash, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
 pub struct MonitorUpdateId {
 	contents: UpdateOrigin,
 }
