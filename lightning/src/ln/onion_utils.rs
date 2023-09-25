@@ -426,7 +426,7 @@ pub(super) fn build_first_hop_failure_packet(shared_secret: &[u8], failure_type:
 pub(crate) struct DecodedOnionFailure {
 	pub(crate) network_update: Option<NetworkUpdate>,
 	pub(crate) short_channel_id: Option<u64>,
-	pub(crate) payment_retryable: bool,
+	pub(crate) payment_failed_permanently: bool,
 	#[cfg(test)]
 	pub(crate) onion_error_code: Option<u16>,
 	#[cfg(test)]
@@ -444,7 +444,14 @@ pub(super) fn process_onion_failure<T: secp256k1::Signing, L: Deref>(
 	} = htlc_source {
 		(path, session_priv, first_hop_htlc_msat)
 	} else { unreachable!() };
-	let mut res = None;
+
+	// Learnings from the HTLC failure to inform future payment retries and scoring.
+	struct FailureLearnings {
+		network_update: Option<NetworkUpdate>,
+		short_channel_id: Option<u64>,
+		payment_failed_permanently: bool,
+	}
+	let mut res: Option<FailureLearnings> = None;
 	let mut htlc_msat = *first_hop_htlc_msat;
 	let mut error_code_ret = None;
 	let mut error_packet_ret = None;
@@ -467,9 +474,31 @@ pub(super) fn process_onion_failure<T: secp256k1::Signing, L: Deref>(
 				// Got an error from within a blinded route.
 				error_code_ret = Some(BADONION | PERM | 24); // invalid_onion_blinding
 				error_packet_ret = Some(vec![0; 32]);
-				is_from_final_node = false;
+				res = Some(FailureLearnings {
+					network_update: None, short_channel_id: None, payment_failed_permanently: false
+				});
 				return
 			},
+		};
+
+		// The failing hop includes either the inbound channel to the recipient or the outbound channel
+		// from the current hop (i.e., the next hop's inbound channel).
+		let num_blinded_hops = path.blinded_tail.as_ref().map_or(0, |bt| bt.hops.len());
+		// For 1-hop blinded paths, the final `path.hops` entry is the recipient.
+		is_from_final_node = route_hop_idx + 1 == path.hops.len() && num_blinded_hops <= 1;
+		let failing_route_hop = if is_from_final_node { route_hop } else {
+			match path.hops.get(route_hop_idx + 1) {
+				Some(hop) => hop,
+				None => {
+					// The failing hop is within a multi-hop blinded path.
+					error_code_ret = Some(BADONION | PERM | 24); // invalid_onion_blinding
+					error_packet_ret = Some(vec![0; 32]);
+					res = Some(FailureLearnings {
+						network_update: None, short_channel_id: None, payment_failed_permanently: false
+					});
+					return
+				}
+			}
 		};
 
 		let amt_to_forward = htlc_msat - route_hop.fee_msat;
@@ -482,11 +511,6 @@ pub(super) fn process_onion_failure<T: secp256k1::Signing, L: Deref>(
 		let mut chacha = ChaCha20::new(&ammag, &[0u8; 8]);
 		chacha.process(&packet_decrypted, &mut decryption_tmp[..]);
 		packet_decrypted = decryption_tmp;
-
-		// The failing hop includes either the inbound channel to the recipient or the outbound channel
-		// from the current hop (i.e., the next hop's inbound channel).
-		is_from_final_node = route_hop_idx + 1 == path.hops.len();
-		let failing_route_hop = if is_from_final_node { route_hop } else { &path.hops[route_hop_idx + 1] };
 
 		let err_packet = match msgs::DecodedOnionErrorPacket::read(&mut Cursor::new(&packet_decrypted)) {
 			Ok(p) => p,
@@ -507,7 +531,9 @@ pub(super) fn process_onion_failure<T: secp256k1::Signing, L: Deref>(
 					is_permanent: true,
 				});
 				let short_channel_id = Some(route_hop.short_channel_id);
-				res = Some((network_update, short_channel_id, !is_from_final_node));
+				res = Some(FailureLearnings {
+					network_update, short_channel_id, payment_failed_permanently: is_from_final_node
+				});
 				return
 			}
 		};
@@ -615,8 +641,9 @@ pub(super) fn process_onion_failure<T: secp256k1::Signing, L: Deref>(
 							} else {
 								// The node in question intentionally encoded a 0-length channel update. This is
 								// likely due to https://github.com/ElementsProject/lightning/issues/6200.
+								short_channel_id = Some(failing_route_hop.short_channel_id);
 								network_update = Some(NetworkUpdate::ChannelFailure {
-									short_channel_id: route_hop.short_channel_id,
+									short_channel_id: failing_route_hop.short_channel_id,
 									is_permanent: false,
 								});
 							}
@@ -659,7 +686,10 @@ pub(super) fn process_onion_failure<T: secp256k1::Signing, L: Deref>(
 			short_channel_id = Some(route_hop.short_channel_id);
 		}
 
-		res = Some((network_update, short_channel_id, !(error_code & PERM == PERM && is_from_final_node)));
+		res = Some(FailureLearnings {
+			network_update, short_channel_id,
+			payment_failed_permanently: error_code & PERM == PERM && is_from_final_node
+		});
 
 		let (description, title) = errors::get_onion_error_description(error_code);
 		if debug_field_size > 0 && err_packet.failuremsg.len() >= 4 + debug_field_size {
@@ -668,9 +698,11 @@ pub(super) fn process_onion_failure<T: secp256k1::Signing, L: Deref>(
 			log_info!(logger, "Onion Error[from {}: {}({:#x})] {}", route_hop.pubkey, title, error_code, description);
 		}
 	}).expect("Route that we sent via spontaneously grew invalid keys in the middle of it?");
-	if let Some((network_update, short_channel_id, payment_retryable)) = res {
+	if let Some(FailureLearnings {
+		network_update, short_channel_id, payment_failed_permanently
+	}) = res {
 		DecodedOnionFailure {
-			network_update, short_channel_id, payment_retryable,
+			network_update, short_channel_id, payment_failed_permanently,
 			#[cfg(test)]
 			onion_error_code: error_code_ret,
 			#[cfg(test)]
@@ -680,7 +712,7 @@ pub(super) fn process_onion_failure<T: secp256k1::Signing, L: Deref>(
 		// only not set either packet unparseable or hmac does not match with any
 		// payment not retryable only when garbage is from the final node
 		DecodedOnionFailure {
-			network_update: None, short_channel_id: None, payment_retryable: !is_from_final_node,
+			network_update: None, short_channel_id: None, payment_failed_permanently: is_from_final_node,
 			#[cfg(test)]
 			onion_error_code: None,
 			#[cfg(test)]
@@ -824,7 +856,7 @@ impl HTLCFailReason {
 				if let &HTLCSource::OutboundRoute { ref path, .. } = htlc_source {
 					DecodedOnionFailure {
 						network_update: None,
-						payment_retryable: true,
+						payment_failed_permanently: false,
 						short_channel_id: Some(path.hops[0].short_channel_id),
 						#[cfg(test)]
 						onion_error_code: Some(*failure_code),
