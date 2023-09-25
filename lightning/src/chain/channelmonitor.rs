@@ -22,12 +22,11 @@
 
 use bitcoin::blockdata::block::BlockHeader;
 use bitcoin::blockdata::transaction::{OutPoint as BitcoinOutPoint, TxOut, Transaction};
-use bitcoin::blockdata::script::{Script, Builder};
-use bitcoin::blockdata::opcodes;
+use bitcoin::blockdata::script::Script;
 
 use bitcoin::hashes::Hash;
 use bitcoin::hashes::sha256::Hash as Sha256;
-use bitcoin::hash_types::{Txid, BlockHash, WPubkeyHash};
+use bitcoin::hash_types::{Txid, BlockHash};
 
 use bitcoin::secp256k1::{Secp256k1, ecdsa::Signature};
 use bitcoin::secp256k1::{SecretKey, PublicKey};
@@ -1141,8 +1140,9 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 	                  best_block: BestBlock, counterparty_node_id: PublicKey) -> ChannelMonitor<Signer> {
 
 		assert!(commitment_transaction_number_obscure_factor <= (1 << 48));
-		let payment_key_hash = WPubkeyHash::hash(&keys.pubkeys().payment_point.serialize());
-		let counterparty_payment_script = Builder::new().push_opcode(opcodes::all::OP_PUSHBYTES_0).push_slice(&payment_key_hash[..]).into_script();
+		let counterparty_payment_script = chan_utils::get_counterparty_payment_script(
+			&channel_parameters.channel_type_features, &keys.pubkeys().payment_point
+		);
 
 		let counterparty_channel_parameters = channel_parameters.counterparty_parameters.as_ref().unwrap();
 		let counterparty_delayed_payment_base_key = counterparty_channel_parameters.pubkeys.delayed_payment_basepoint;
@@ -2263,6 +2263,7 @@ macro_rules! fail_unbroadcast_htlcs {
 
 #[cfg(test)]
 pub fn deliberately_bogus_accepted_htlc_witness_program() -> Vec<u8> {
+	use bitcoin::blockdata::opcodes;
 	let mut ret = [opcodes::all::OP_NOP.to_u8(); 136];
 	ret[131] = opcodes::all::OP_DROP.to_u8();
 	ret[132] = opcodes::all::OP_DROP.to_u8();

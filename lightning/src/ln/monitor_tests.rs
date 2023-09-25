@@ -2287,8 +2287,8 @@ fn test_anchors_aggregated_revoked_htlc_tx() {
 
 	assert!(nodes[1].chain_monitor.chain_monitor.get_and_clear_pending_events().is_empty());
 	let spendable_output_events = nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events();
-	assert_eq!(spendable_output_events.len(), 2);
-	for event in spendable_output_events.iter() {
+	assert_eq!(spendable_output_events.len(), 4);
+	for event in spendable_output_events {
 		if let Event::SpendableOutputs { outputs, channel_id } = event {
 			assert_eq!(outputs.len(), 1);
 			assert!(vec![chan_b.2, chan_a.2].contains(&channel_id.unwrap()));
@@ -2296,7 +2296,11 @@ fn test_anchors_aggregated_revoked_htlc_tx() {
 				&[&outputs[0]], Vec::new(), Script::new_op_return(&[]), 253, None, &Secp256k1::new(),
 			).unwrap();
 
-			check_spends!(spend_tx, revoked_claim_transactions.get(&spend_tx.input[0].previous_output.txid).unwrap());
+			if let SpendableOutputDescriptor::StaticPaymentOutput(_) = &outputs[0] {
+				check_spends!(spend_tx, &revoked_commitment_a, &revoked_commitment_b);
+			} else {
+				check_spends!(spend_tx, revoked_claim_transactions.get(&spend_tx.input[0].previous_output.txid).unwrap());
+			}
 		} else {
 			panic!("unexpected event");
 		}
