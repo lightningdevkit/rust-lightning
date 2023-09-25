@@ -631,7 +631,8 @@ pub struct UpdateAddHTLC {
 pub struct OnionMessage {
 	/// Used in decrypting the onion packet's payload.
 	pub blinding_point: PublicKey,
-	pub(crate) onion_routing_packet: onion_message::Packet,
+	/// The full onion packet including hop data, pubkey, and hmac
+	pub onion_routing_packet: onion_message::Packet,
 }
 
 /// An [`update_fulfill_htlc`] message to be sent to or received from a peer.

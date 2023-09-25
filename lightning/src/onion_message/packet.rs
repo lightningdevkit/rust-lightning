@@ -32,16 +32,22 @@ use crate::prelude::*;
 pub(super) const SMALL_PACKET_HOP_DATA_LEN: usize = 1300;
 pub(super) const BIG_PACKET_HOP_DATA_LEN: usize = 32768;
 
+/// Packet of hop data for next peer
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct Packet {
-	pub(super) version: u8,
-	pub(super) public_key: PublicKey,
+pub struct Packet {
+	/// Bolt 04 version number
+	pub version: u8,
+	/// A random sepc256k1 point, used to build the ECDH shared secret to decrypt hop_data
+	pub public_key: PublicKey,
+	/// Encrypted payload for the next hop
+	//
 	// Unlike the onion packets used for payments, onion message packets can have payloads greater
 	// than 1300 bytes.
 	// TODO: if 1300 ends up being the most common size, optimize this to be:
 	// enum { ThirteenHundred([u8; 1300]), VarLen(Vec<u8>) }
-	pub(super) hop_data: Vec<u8>,
-	pub(super) hmac: [u8; 32],
+	pub hop_data: Vec<u8>,
+	/// HMAC to verify the integrity of hop_data
+	pub hmac: [u8; 32],
 }
 
 impl onion_utils::Packet for Packet {
