@@ -551,6 +551,32 @@ impl PackageSolvingData {
 			_ => { mem::discriminant(self) == mem::discriminant(&input) }
 		}
 	}
+	fn as_tx_input(&self, previous_output: BitcoinOutPoint) -> TxIn {
+		let sequence = match self {
+			PackageSolvingData::RevokedOutput(_) => Sequence::ENABLE_RBF_NO_LOCKTIME,
+			PackageSolvingData::RevokedHTLCOutput(_) => Sequence::ENABLE_RBF_NO_LOCKTIME,
+			PackageSolvingData::CounterpartyOfferedHTLCOutput(outp) => if outp.channel_type_features.supports_anchors_zero_fee_htlc_tx() {
+				Sequence::from_consensus(1)
+			} else {
+				Sequence::ENABLE_RBF_NO_LOCKTIME
+			},
+			PackageSolvingData::CounterpartyReceivedHTLCOutput(outp) => if outp.channel_type_features.supports_anchors_zero_fee_htlc_tx() {
+				Sequence::from_consensus(1)
+			} else {
+				Sequence::ENABLE_RBF_NO_LOCKTIME
+			},
+			_ => {
+				debug_assert!(false, "This should not be reachable by 'untractable' or 'malleable with external funding' packages");
+				Sequence::ENABLE_RBF_NO_LOCKTIME
+			},
+		};
+		TxIn {
+			previous_output,
+			script_sig: Script::new(),
+			sequence,
+			witness: Witness::new(),
+		}
+	}
 	fn finalize_input<Signer: WriteableEcdsaChannelSigner>(&self, bumped_tx: &mut Transaction, i: usize, onchain_handler: &mut OnchainTxHandler<Signer>) -> bool {
 		match self {
 			PackageSolvingData::RevokedOutput(ref outp) => {
@@ -895,13 +921,8 @@ impl PackageTemplate {
 				value,
 			}],
 		};
-		for (outpoint, _) in self.inputs.iter() {
-			bumped_tx.input.push(TxIn {
-				previous_output: *outpoint,
-				script_sig: Script::new(),
-				sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
-				witness: Witness::new(),
-			});
+		for (outpoint, outp) in self.inputs.iter() {
+			bumped_tx.input.push(outp.as_tx_input(*outpoint));
 		}
 		for (i, (outpoint, out)) in self.inputs.iter().enumerate() {
 			log_debug!(logger, "Adding claiming input for outpoint {}:{}", outpoint.txid, outpoint.vout);
