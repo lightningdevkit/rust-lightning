@@ -616,6 +616,8 @@ pub struct TxSignatures {
 	pub tx_hash: Txid,
 	/// The list of witnesses
 	pub witnesses: Vec<Witness>,
+	/// Optional signature for shared funding outpoint input (signed by both parties)
+	pub tlvs: Option<Signature>,
 }
 
 /// A tx_init_rbf message which initiates a replacement of the transaction after it's been
@@ -1908,7 +1910,9 @@ impl_writeable_msg!(TxSignatures, {
 	channel_id,
 	tx_hash,
 	witnesses,
-}, {});
+}, {
+	(0, tlvs, option),
+});
 
 impl_writeable_msg!(TxInitRbf, {
 	channel_id,
@@ -2754,6 +2758,7 @@ mod tests {
 
 	use bitcoin::secp256k1::{PublicKey,SecretKey};
 	use bitcoin::secp256k1::{Secp256k1, Message};
+	use bitcoin::secp256k1::ecdsa::Signature;
 
 	use crate::io::{self, Cursor};
 	use crate::prelude::*;
@@ -3503,6 +3508,10 @@ mod tests {
 
 	#[test]
 	fn encoding_tx_signatures() {
+		let secp_ctx = Secp256k1::new();
+		let (privkey_1, _) = get_keys_from!("0101010101010101010101010101010101010101010101010101010101010101", secp_ctx);
+		let sig_1 = get_sig_on!(privkey_1, secp_ctx, String::from("01010101010101010101010101010101"));
+
 		let tx_signatures = msgs::TxSignatures {
 			channel_id: ChannelId::from_bytes([2; 32]),
 			tx_hash: Txid::from_hex("c2d4449afa8d26140898dd54d3390b057ba2a5afcf03ba29d7dc0d8b9ffe966e").unwrap(),
@@ -3514,6 +3523,7 @@ mod tests {
 					hex::decode("3045022100ee00dbf4a862463e837d7c08509de814d620e4d9830fa84818713e0fa358f145022021c3c7060c4d53fe84fd165d60208451108a778c13b92ca4c6bad439236126cc01").unwrap(),
 					hex::decode("028fbbf0b16f5ba5bcb5dd37cd4047ce6f726a21c06682f9ec2f52b057de1dbdb5").unwrap()]),
 			],
+			tlvs: Some(sig_1),
 		};
 		let encoded_value = tx_signatures.encode();
 		let mut target_value = hex::decode("0202020202020202020202020202020202020202020202020202020202020202").unwrap(); // channel_id
@@ -3533,7 +3543,9 @@ mod tests {
 		target_value.append(&mut hex::decode("3045022100ee00dbf4a862463e837d7c08509de814d620e4d9830fa84818713e0fa358f145022021c3c7060c4d53fe84fd165d60208451108a778c13b92ca4c6bad439236126cc01").unwrap());
 		target_value.append(&mut hex::decode("21").unwrap()); // len of witness element data (VarInt)
 		target_value.append(&mut hex::decode("028fbbf0b16f5ba5bcb5dd37cd4047ce6f726a21c06682f9ec2f52b057de1dbdb5").unwrap());
-		assert_eq!(encoded_value, target_value);
+		target_value.append(&mut hex::decode("0040").unwrap()); // type and len (64)
+		target_value.append(&mut hex::decode("d977cb9b53d93a6ff64bb5f1e158b4094b66e798fb12911168a3ccdf80a83096340a6a95da0ae8d9f776528eecdbb747eb6b545495a4319ed5378e35b21e073a").unwrap());
+		assert_eq!(hex::encode(encoded_value), hex::encode(target_value));
 	}
 
 	fn do_encoding_tx_init_rbf(funding_value_with_hex_target: Option<(i64, &str)>) {
