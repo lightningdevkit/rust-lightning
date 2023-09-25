@@ -254,6 +254,28 @@ fn test_lnd_bug_6039() {
 }
 
 #[test]
+fn shutdown_on_unfunded_channel() {
+	// Test receiving a shutdown prior to funding generation
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 1_000_000, 100_000, 0, None).unwrap();
+	let open_chan = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
+
+	// P2WSH
+	let script = Builder::new().push_int(0)
+		.push_slice(&[0; 20])
+		.into_script();
+
+	nodes[0].node.handle_shutdown(&nodes[1].node.get_our_node_id(), &msgs::Shutdown {
+		channel_id: open_chan.temporary_channel_id, scriptpubkey: script,
+	});
+	check_closed_event!(nodes[0], 1, ClosureReason::CounterpartyCoopClosedUnfundedChannel, [nodes[1].node.get_our_node_id()], 1_000_000);
+}
+
+#[test]
 fn expect_channel_shutdown_state_with_force_closure() {
 	// Test sending a shutdown prior to channel_ready after funding generation
 	let chanmon_cfgs = create_chanmon_cfgs(2);
