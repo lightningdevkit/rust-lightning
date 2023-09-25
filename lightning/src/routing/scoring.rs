@@ -133,6 +133,7 @@ pub trait Score : ScoreLookUp + ScoreUpdate $(+ $supertrait)* {}
 #[cfg(not(c_bindings))]
 impl<T: ScoreLookUp + ScoreUpdate $(+ $supertrait)*> Score for T {}
 
+#[cfg(not(c_bindings))]
 impl<S: ScoreLookUp, T: Deref<Target=S>> ScoreLookUp for T {
 	type ScoreParams = S::ScoreParams;
 	fn channel_penalty_msat(
@@ -142,6 +143,7 @@ impl<S: ScoreLookUp, T: Deref<Target=S>> ScoreLookUp for T {
 	}
 }
 
+#[cfg(not(c_bindings))]
 impl<S: ScoreUpdate, T: DerefMut<Target=S>> ScoreUpdate for T {
 	fn payment_path_failed(&mut self, path: &Path, short_channel_id: u64) {
 		self.deref_mut().payment_path_failed(path, short_channel_id)
@@ -311,6 +313,16 @@ impl<'a, T: 'a + Score> Deref for MultiThreadedScoreLockRead<'a, T> {
 }
 
 #[cfg(c_bindings)]
+impl<'a, T: Score> ScoreLookUp for MultiThreadedScoreLockRead<'a, T> {
+	type ScoreParams = T::ScoreParams;
+	fn channel_penalty_msat(&self, short_channel_id: u64, source: &NodeId,
+		target: &NodeId, usage: ChannelUsage, score_params: &Self::ScoreParams
+	) -> u64 {
+		self.0.channel_penalty_msat(short_channel_id, source, target, usage, score_params)
+	}
+}
+
+#[cfg(c_bindings)]
 impl<'a, T: Score> Writeable for MultiThreadedScoreLockWrite<'a, T> {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		self.0.write(writer)
@@ -330,6 +342,25 @@ impl<'a, T: 'a + Score> Deref for MultiThreadedScoreLockWrite<'a, T> {
 impl<'a, T: 'a + Score> DerefMut for MultiThreadedScoreLockWrite<'a, T> {
 	fn deref_mut(&mut self) -> &mut Self::Target {
 		self.0.deref_mut()
+	}
+}
+
+#[cfg(c_bindings)]
+impl<'a, T: Score> ScoreUpdate for MultiThreadedScoreLockWrite<'a, T> {
+	fn payment_path_failed(&mut self, path: &Path, short_channel_id: u64) {
+		self.0.payment_path_failed(path, short_channel_id)
+	}
+
+	fn payment_path_successful(&mut self, path: &Path) {
+		self.0.payment_path_successful(path)
+	}
+
+	fn probe_failed(&mut self, path: &Path, short_channel_id: u64) {
+		self.0.probe_failed(path, short_channel_id)
+	}
+
+	fn probe_successful(&mut self, path: &Path) {
+		self.0.probe_successful(path)
 	}
 }
 
