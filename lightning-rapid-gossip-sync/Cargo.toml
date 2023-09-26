@@ -1,6 +1,6 @@
 [package]
 name = "lightning-rapid-gossip-sync"
-version = "0.0.117-alpha1"
+version = "0.0.117-alpha2"
 authors = ["Arik Sosman <git@arik.io>"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/lightningdevkit/rust-lightning"
@@ -15,11 +15,11 @@ no-std = ["lightning/no-std"]
 std = ["lightning/std"]
 
 [dependencies]
-lightning = { version = "0.0.117-alpha1", path = "../lightning", default-features = false }
+lightning = { version = "0.0.117-alpha2", path = "../lightning", default-features = false }
 bitcoin = { version = "0.29.0", default-features = false }
 
 [target.'cfg(ldk_bench)'.dependencies]
 criterion = { version = "0.4", optional = true, default-features = false }
 
 [dev-dependencies]
-lightning = { version = "0.0.117-alpha1", path = "../lightning", features = ["_test_utils"] }
+lightning = { version = "0.0.117-alpha2", path = "../lightning", features = ["_test_utils"] }
