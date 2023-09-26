@@ -15,7 +15,7 @@ use crate::sign::EntropySource;
 use crate::chain::channelmonitor::ChannelMonitor;
 use crate::chain::transaction::OutPoint;
 use crate::events::{ClaimedHTLC, ClosureReason, Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider, PathFailure, PaymentPurpose, PaymentFailureReason};
-use crate::events::bump_transaction::{BumpTransactionEventHandler, Wallet, WalletSource};
+use crate::events::bump_transaction::{BumpTransactionEvent, BumpTransactionEventHandler, Wallet, WalletSource};
 use crate::ln::{ChannelId, PaymentPreimage, PaymentHash, PaymentSecret};
 use crate::ln::channelmanager::{AChannelManager, ChainParameters, ChannelManager, ChannelManagerReadArgs, RAACommitmentOrder, PaymentSendFailure, RecipientOnionFields, PaymentId, MIN_CLTV_EXPIRY_DELTA};
 use crate::routing::gossip::{P2PGossipSync, NetworkGraph, NetworkUpdate};
@@ -1501,6 +1501,21 @@ macro_rules! check_closed_event {
 	($node: expr, $events: expr, $reason: expr, $is_check_discard_funding: expr, $counterparty_node_ids: expr, $channel_capacity: expr) => {
 		$crate::ln::functional_test_utils::check_closed_event(&$node, $events, $reason,
 			$is_check_discard_funding, &$counterparty_node_ids, $channel_capacity);
+	}
+}
+
+pub fn handle_bump_htlc_event(node: &Node, count: usize) {
+	let events = node.chain_monitor.chain_monitor.get_and_clear_pending_events();
+	assert_eq!(events.len(), count);
+	for event in events {
+		match event {
+			Event::BumpTransaction(bump_event) => {
+				if let BumpTransactionEvent::HTLCResolution { .. } = &bump_event {}
+				else { panic!(); }
+				node.bump_tx_handler.handle_event(&bump_event);
+			},
+			_ => panic!(),
+		}
 	}
 }
 
