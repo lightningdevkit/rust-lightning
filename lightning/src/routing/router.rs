@@ -341,7 +341,7 @@ impl Path {
 
 /// A route directs a payment from the sender (us) to the recipient. If the recipient supports MPP,
 /// it can take multiple paths. Each path is composed of one or more hops through the network.
-#[derive(Clone, Hash, PartialEq, Eq)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct Route {
 	/// The list of [`Path`]s taken for a single (potentially-)multi-part payment. If no
 	/// [`BlindedTail`]s are present, then the pubkey of the last [`RouteHop`] in each path must be
@@ -377,6 +377,12 @@ impl Route {
 	/// [`htlc_minimum_msat`]: https://github.com/lightning/bolts/blob/master/07-routing-gossip.md#the-channel_update-message
 	pub fn get_total_amount(&self) -> u64 {
 		self.paths.iter().map(|path| path.final_value_msat()).sum()
+	}
+}
+
+impl fmt::Display for Route {
+	fn fmt(&self, f: &mut fmt::Formatter) -> Result<(), fmt::Error> {
+		log_route!(self).fmt(f)
 	}
 }
 
