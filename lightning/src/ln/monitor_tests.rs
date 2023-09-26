@@ -1365,14 +1365,38 @@ fn test_revoked_counterparty_commitment_balances() {
 	do_test_revoked_counterparty_commitment_balances(true, false);
 }
 
-#[test]
-fn test_revoked_counterparty_htlc_tx_balances() {
+fn do_test_revoked_counterparty_htlc_tx_balances(anchors: bool) {
 	// Tests `get_claimable_balances` for revocation spends of HTLC transactions.
 	let mut chanmon_cfgs = create_chanmon_cfgs(2);
 	chanmon_cfgs[1].keys_manager.disable_revocation_policy_check = true;
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let mut user_config = test_default_channel_config();
+	if anchors {
+		user_config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
+		user_config.manually_accept_inbound_channels = true;
+	}
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(user_config), Some(user_config)]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let coinbase_tx = Transaction {
+		version: 2,
+		lock_time: PackedLockTime::ZERO,
+		input: vec![TxIn { ..Default::default() }],
+		output: vec![
+			TxOut {
+				value: Amount::ONE_BTC.to_sat(),
+				script_pubkey: nodes[0].wallet_source.get_change_script().unwrap(),
+			},
+			TxOut {
+				value: Amount::ONE_BTC.to_sat(),
+				script_pubkey: nodes[1].wallet_source.get_change_script().unwrap(),
+			},
+		],
+	};
+	if anchors {
+		nodes[0].wallet_source.add_utxo(bitcoin::OutPoint { txid: coinbase_tx.txid(), vout: 0 }, coinbase_tx.output[0].value);
+		nodes[1].wallet_source.add_utxo(bitcoin::OutPoint { txid: coinbase_tx.txid(), vout: 1 }, coinbase_tx.output[1].value);
+	}
 
 	// Create some initial channels
 	let (_, _, chan_id, funding_tx) =
@@ -1385,9 +1409,15 @@ fn test_revoked_counterparty_htlc_tx_balances() {
 	let revoked_local_txn = get_local_commitment_txn!(nodes[1], chan_id);
 	assert_eq!(revoked_local_txn[0].input.len(), 1);
 	assert_eq!(revoked_local_txn[0].input[0].previous_output.txid, funding_tx.txid());
+	if anchors {
+		assert_eq!(revoked_local_txn[0].output[4].value, 10000); // to_self output
+	} else {
+		assert_eq!(revoked_local_txn[0].output[2].value, 10000); // to_self output
+	}
 
-	// The to-be-revoked commitment tx should have two HTLCs and an output for both sides
-	assert_eq!(revoked_local_txn[0].output.len(), 4);
+	// The to-be-revoked commitment tx should have two HTLCs, an output for each side, and an
+	// anchor output for each side if enabled.
+	assert_eq!(revoked_local_txn[0].output.len(), if anchors { 6 } else { 4 });
 
 	claim_payment(&nodes[0], &[&nodes[1]], payment_preimage);
 
@@ -1399,16 +1429,25 @@ fn test_revoked_counterparty_htlc_tx_balances() {
 	check_closed_broadcast!(nodes[1], true);
 	check_added_monitors!(nodes[1], 1);
 	check_closed_event!(nodes[1], 1, ClosureReason::CommitmentTxConfirmed, [nodes[0].node.get_our_node_id()], 1000000);
+	if anchors {
+		handle_bump_htlc_event(&nodes[1], 1);
+	}
 	let revoked_htlc_success = {
 		let mut txn = nodes[1].tx_broadcaster.txn_broadcast();
 		assert_eq!(txn.len(), 1);
-		assert_eq!(txn[0].input.len(), 1);
-		assert_eq!(txn[0].input[0].witness.last().unwrap().len(), ACCEPTED_HTLC_SCRIPT_WEIGHT);
-		check_spends!(txn[0], revoked_local_txn[0]);
+		assert_eq!(txn[0].input.len(), if anchors { 2 } else { 1 });
+		assert_eq!(txn[0].input[0].previous_output.vout, if anchors { 3 } else { 1 });
+		assert_eq!(txn[0].input[0].witness.last().unwrap().len(),
+			if anchors { ACCEPTED_HTLC_SCRIPT_WEIGHT_ANCHORS } else { ACCEPTED_HTLC_SCRIPT_WEIGHT });
+		check_spends!(txn[0], revoked_local_txn[0], coinbase_tx);
 		txn.pop().unwrap()
 	};
+	let revoked_htlc_success_fee = chan_feerate * revoked_htlc_success.weight() as u64 / 1000;
 
 	connect_blocks(&nodes[1], TEST_FINAL_CLTV);
+	if anchors {
+		handle_bump_htlc_event(&nodes[1], 2);
+	}
 	let revoked_htlc_timeout = {
 		let mut txn = nodes[1].tx_broadcaster.unique_txn_broadcast();
 		assert_eq!(txn.len(), 2);
@@ -1418,7 +1457,7 @@ fn test_revoked_counterparty_htlc_tx_balances() {
 			txn.remove(0)
 		}
 	};
-	check_spends!(revoked_htlc_timeout, revoked_local_txn[0]);
+	check_spends!(revoked_htlc_timeout, revoked_local_txn[0], coinbase_tx);
 	assert_ne!(revoked_htlc_success.input[0].previous_output, revoked_htlc_timeout.input[0].previous_output);
 	assert_eq!(revoked_htlc_success.lock_time.0, 0);
 	assert_ne!(revoked_htlc_timeout.lock_time.0, 0);
@@ -1430,17 +1469,37 @@ fn test_revoked_counterparty_htlc_tx_balances() {
 	check_closed_event!(nodes[0], 1, ClosureReason::CommitmentTxConfirmed, [nodes[1].node.get_our_node_id()], 1000000);
 	let to_remote_conf_height = nodes[0].best_block_info().1 + ANTI_REORG_DELAY - 1;
 
-	let as_commitment_claim_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
-	assert_eq!(as_commitment_claim_txn.len(), 1);
-	check_spends!(as_commitment_claim_txn[0], revoked_local_txn[0]);
+	let revoked_to_self_claim = {
+		let mut as_commitment_claim_txn = nodes[0].tx_broadcaster.txn_broadcast();
+		assert_eq!(as_commitment_claim_txn.len(), if anchors { 2 } else { 1 });
+		if anchors {
+			assert_eq!(as_commitment_claim_txn[0].input.len(), 1);
+			assert_eq!(as_commitment_claim_txn[0].input[0].previous_output.vout, 4); // Separate to_remote claim
+			check_spends!(as_commitment_claim_txn[0], revoked_local_txn[0]);
+			assert_eq!(as_commitment_claim_txn[1].input.len(), 2);
+			assert_eq!(as_commitment_claim_txn[1].input[0].previous_output.vout, 2);
+			assert_eq!(as_commitment_claim_txn[1].input[1].previous_output.vout, 3);
+			check_spends!(as_commitment_claim_txn[1], revoked_local_txn[0]);
+			Some(as_commitment_claim_txn.remove(0))
+		} else {
+			assert_eq!(as_commitment_claim_txn[0].input.len(), 3);
+			assert_eq!(as_commitment_claim_txn[0].input[0].previous_output.vout, 2);
+			assert_eq!(as_commitment_claim_txn[0].input[1].previous_output.vout, 0);
+			assert_eq!(as_commitment_claim_txn[0].input[2].previous_output.vout, 1);
+			check_spends!(as_commitment_claim_txn[0], revoked_local_txn[0]);
+			None
+		}
+	};
 
 	// The next two checks have the same balance set for A - even though we confirm a revoked HTLC
 	// transaction our balance tracking doesn't use the on-chain value so the
 	// `CounterpartyRevokedOutputClaimable` entry doesn't change.
+	let commitment_tx_fee = chan_feerate *
+		(channel::commitment_tx_base_weight(&channel_type_features) + 2 * channel::COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000;
+	let anchor_outputs_value = if anchors { channel::ANCHOR_OUTPUT_VALUE_SATOSHI * 2 } else { 0 };
 	let as_balances = sorted_vec(vec![Balance::ClaimableAwaitingConfirmations {
 			// to_remote output in B's revoked commitment
-			amount_satoshis: 1_000_000 - 11_000 - 3_000 - chan_feerate *
-				(channel::commitment_tx_base_weight(&channel_type_features) + 2 * channel::COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000,
+			amount_satoshis: 1_000_000 - 11_000 - 3_000 - commitment_tx_fee - anchor_outputs_value,
 			confirmation_height: to_remote_conf_height,
 		}, Balance::CounterpartyRevokedOutputClaimable {
 			// to_self output in B's revoked commitment
@@ -1456,22 +1515,36 @@ fn test_revoked_counterparty_htlc_tx_balances() {
 	mine_transaction(&nodes[0], &revoked_htlc_success);
 	let as_htlc_claim_tx = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
 	assert_eq!(as_htlc_claim_tx.len(), 2);
+	assert_eq!(as_htlc_claim_tx[0].input.len(), 1);
 	check_spends!(as_htlc_claim_tx[0], revoked_htlc_success);
-	check_spends!(as_htlc_claim_tx[1], revoked_local_txn[0]); // A has to generate a new claim for the remaining revoked
-	                                                          // outputs (which no longer includes the spent HTLC output)
+	// A has to generate a new claim for the remaining revoked outputs (which no longer includes the
+	// spent HTLC output)
+	assert_eq!(as_htlc_claim_tx[1].input.len(), if anchors { 1 } else { 2 });
+	assert_eq!(as_htlc_claim_tx[1].input[0].previous_output.vout, 2);
+	if !anchors {
+		assert_eq!(as_htlc_claim_tx[1].input[1].previous_output.vout, 0);
+	}
+	check_spends!(as_htlc_claim_tx[1], revoked_local_txn[0]);
 
 	assert_eq!(as_balances,
 		sorted_vec(nodes[0].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances()));
 
 	assert_eq!(as_htlc_claim_tx[0].output.len(), 1);
-	fuzzy_assert_eq(as_htlc_claim_tx[0].output[0].value,
-		3_000 - chan_feerate * (revoked_htlc_success.weight() + as_htlc_claim_tx[0].weight()) as u64 / 1000);
+	let as_revoked_htlc_success_claim_fee = chan_feerate * as_htlc_claim_tx[0].weight() as u64 / 1000;
+	if anchors {
+		// With anchors, B can pay for revoked_htlc_success's fee with additional inputs, rather
+		// than with the HTLC itself.
+		fuzzy_assert_eq(as_htlc_claim_tx[0].output[0].value,
+			3_000 - as_revoked_htlc_success_claim_fee);
+	} else {
+		fuzzy_assert_eq(as_htlc_claim_tx[0].output[0].value,
+			3_000 - revoked_htlc_success_fee - as_revoked_htlc_success_claim_fee);
+	}
 
 	mine_transaction(&nodes[0], &as_htlc_claim_tx[0]);
 	assert_eq!(sorted_vec(vec![Balance::ClaimableAwaitingConfirmations {
 			// to_remote output in B's revoked commitment
-			amount_satoshis: 1_000_000 - 11_000 - 3_000 - chan_feerate *
-				(channel::commitment_tx_base_weight(&channel_type_features) + 2 * channel::COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000,
+			amount_satoshis: 1_000_000 - 11_000 - 3_000 - commitment_tx_fee - anchor_outputs_value,
 			confirmation_height: to_remote_conf_height,
 		}, Balance::CounterpartyRevokedOutputClaimable {
 			// to_self output in B's revoked commitment
@@ -1525,11 +1598,24 @@ fn test_revoked_counterparty_htlc_tx_balances() {
 	}
 
 	mine_transaction(&nodes[0], &revoked_htlc_timeout);
-	let as_second_htlc_claim_tx = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
-	assert_eq!(as_second_htlc_claim_tx.len(), 2);
-
-	check_spends!(as_second_htlc_claim_tx[0], revoked_htlc_timeout);
-	check_spends!(as_second_htlc_claim_tx[1], revoked_local_txn[0]);
+	let (revoked_htlc_timeout_claim, revoked_to_self_claim) = {
+		let mut as_second_htlc_claim_tx = nodes[0].tx_broadcaster.txn_broadcast();
+		assert_eq!(as_second_htlc_claim_tx.len(), if anchors { 1 } else { 2 });
+		if anchors {
+			assert_eq!(as_second_htlc_claim_tx[0].input.len(), 1);
+			assert_eq!(as_second_htlc_claim_tx[0].input[0].previous_output.vout, 0);
+			check_spends!(as_second_htlc_claim_tx[0], revoked_htlc_timeout);
+			(as_second_htlc_claim_tx.remove(0), revoked_to_self_claim.unwrap())
+		} else {
+			assert_eq!(as_second_htlc_claim_tx[0].input.len(), 1);
+			assert_eq!(as_second_htlc_claim_tx[0].input[0].previous_output.vout, 0);
+			check_spends!(as_second_htlc_claim_tx[0], revoked_htlc_timeout);
+			assert_eq!(as_second_htlc_claim_tx[1].input.len(), 1);
+			assert_eq!(as_second_htlc_claim_tx[1].input[0].previous_output.vout, 2);
+			check_spends!(as_second_htlc_claim_tx[1], revoked_local_txn[0]);
+			(as_second_htlc_claim_tx.remove(0), as_second_htlc_claim_tx.remove(0))
+		}
+	};
 
 	// Connect blocks to finalize the HTLC resolution with the HTLC-Timeout transaction. In a
 	// previous iteration of the revoked balance handling this would result in us "forgetting" that
@@ -1543,31 +1629,31 @@ fn test_revoked_counterparty_htlc_tx_balances() {
 		}]),
 		sorted_vec(nodes[0].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances()));
 
-	mine_transaction(&nodes[0], &as_second_htlc_claim_tx[0]);
+	mine_transaction(&nodes[0], &revoked_htlc_timeout_claim);
 	assert_eq!(sorted_vec(vec![Balance::CounterpartyRevokedOutputClaimable {
 			// to_self output in B's revoked commitment
 			amount_satoshis: 10_000,
 		}, Balance::ClaimableAwaitingConfirmations {
-			amount_satoshis: as_second_htlc_claim_tx[0].output[0].value,
+			amount_satoshis: revoked_htlc_timeout_claim.output[0].value,
 			confirmation_height: nodes[0].best_block_info().1 + ANTI_REORG_DELAY - 1,
 		}]),
 		sorted_vec(nodes[0].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances()));
 
-	mine_transaction(&nodes[0], &as_second_htlc_claim_tx[1]);
+	mine_transaction(&nodes[0], &revoked_to_self_claim);
 	assert_eq!(sorted_vec(vec![Balance::ClaimableAwaitingConfirmations {
 			// to_self output in B's revoked commitment
-			amount_satoshis: as_second_htlc_claim_tx[1].output[0].value,
+			amount_satoshis: revoked_to_self_claim.output[0].value,
 			confirmation_height: nodes[0].best_block_info().1 + ANTI_REORG_DELAY - 1,
 		}, Balance::ClaimableAwaitingConfirmations {
-			amount_satoshis: as_second_htlc_claim_tx[0].output[0].value,
+			amount_satoshis: revoked_htlc_timeout_claim.output[0].value,
 			confirmation_height: nodes[0].best_block_info().1 + ANTI_REORG_DELAY - 2,
 		}]),
 		sorted_vec(nodes[0].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances()));
 
 	connect_blocks(&nodes[0], ANTI_REORG_DELAY - 2);
-	test_spendable_output(&nodes[0], &as_second_htlc_claim_tx[0], false);
+	test_spendable_output(&nodes[0], &revoked_htlc_timeout_claim, false);
 	connect_blocks(&nodes[0], 1);
-	test_spendable_output(&nodes[0], &as_second_htlc_claim_tx[1], false);
+	test_spendable_output(&nodes[0], &revoked_to_self_claim, false);
 
 	assert_eq!(nodes[0].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances(), Vec::new());
 
@@ -1578,6 +1664,12 @@ fn test_revoked_counterparty_htlc_tx_balances() {
 	connect_blocks(&nodes[0], 6);
 	assert!(nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events().is_empty());
 	assert!(nodes[0].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances().is_empty());
+}
+
+#[test]
+fn test_revoked_counterparty_htlc_tx_balances() {
+	do_test_revoked_counterparty_htlc_tx_balances(false);
+	do_test_revoked_counterparty_htlc_tx_balances(true);
 }
 
 #[test]
