@@ -3543,7 +3543,7 @@ where
 		let payment_params =
 			PaymentParameters::from_node_id(node_id, final_cltv_expiry_delta);
 
-		let route_params = RouteParameters { payment_params, final_value_msat: amount_msat };
+		let route_params = RouteParameters::from_payment_params_and_value(payment_params, amount_msat);
 
 		self.send_preflight_probes(route_params, liquidity_limit_multiplier)
 	}
@@ -9496,6 +9496,7 @@ where
 										pending_fee_msat: Some(path_fee),
 										total_msat: path_amt,
 										starting_block_height: best_block_height,
+										remaining_max_total_routing_fee_msat: None, // only used for retries, and we'll never retry on startup
 									});
 									log_info!(args.logger, "Added a pending payment for {} msat with payment hash {} for path with session priv {}",
 										path_amt, &htlc.payment_hash,  log_bytes!(session_priv_bytes));

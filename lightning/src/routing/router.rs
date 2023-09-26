@@ -409,6 +409,7 @@ impl Writeable for Route {
 			(1, self.route_params.as_ref().map(|p| &p.payment_params), option),
 			(2, blinded_tails, optional_vec),
 			(3, self.route_params.as_ref().map(|p| p.final_value_msat), option),
+			(5, self.route_params.as_ref().map(|p| p.max_total_routing_fee_msat), option),
 		});
 		Ok(())
 	}
@@ -436,6 +437,7 @@ impl Readable for Route {
 			(1, payment_params, (option: ReadableArgs, min_final_cltv_expiry_delta)),
 			(2, blinded_tails, optional_vec),
 			(3, final_value_msat, option),
+			(5, max_total_routing_fee_msat, option)
 		});
 		let blinded_tails = blinded_tails.unwrap_or(Vec::new());
 		if blinded_tails.len() != 0 {
@@ -448,7 +450,7 @@ impl Readable for Route {
 		// If we previously wrote the corresponding fields, reconstruct RouteParameters.
 		let route_params = match (payment_params, final_value_msat) {
 			(Some(payment_params), Some(final_value_msat)) => {
-				Some(RouteParameters { payment_params, final_value_msat })
+				Some(RouteParameters { payment_params, final_value_msat, max_total_routing_fee_msat })
 			}
 			_ => None,
 		};
@@ -467,12 +469,20 @@ pub struct RouteParameters {
 
 	/// The amount in msats sent on the failed payment path.
 	pub final_value_msat: u64,
+
+	/// The maximum total fees, in millisatoshi, that may accrue during route finding.
+	///
+	/// This limit also applies to the total fees that may arise while retrying failed payment
+	/// paths.
+	///
+	/// Default value: `None`
+	pub max_total_routing_fee_msat: Option<u64>,
 }
 
 impl RouteParameters {
 	/// Constructs [`RouteParameters`] from the given [`PaymentParameters`] and a payment amount.
 	pub fn from_payment_params_and_value(payment_params: PaymentParameters, final_value_msat: u64) -> Self {
-		Self { payment_params, final_value_msat }
+		Self { payment_params, final_value_msat, max_total_routing_fee_msat: None }
 	}
 }
 
@@ -480,6 +490,7 @@ impl Writeable for RouteParameters {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		write_tlv_fields!(writer, {
 			(0, self.payment_params, required),
+			(1, self.max_total_routing_fee_msat, option),
 			(2, self.final_value_msat, required),
 			// LDK versions prior to 0.0.114 had the `final_cltv_expiry_delta` parameter in
 			// `RouteParameters` directly. For compatibility, we write it here.
@@ -493,6 +504,7 @@ impl Readable for RouteParameters {
 	fn read<R: io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
 		_init_and_read_len_prefixed_tlv_fields!(reader, {
 			(0, payment_params, (required: ReadableArgs, 0)),
+			(1, max_total_routing_fee_msat, option),
 			(2, final_value_msat, required),
 			(4, final_cltv_delta, option),
 		});
@@ -505,6 +517,7 @@ impl Readable for RouteParameters {
 		Ok(Self {
 			payment_params,
 			final_value_msat: final_value_msat.0.unwrap(),
+			max_total_routing_fee_msat,
 		})
 	}
 }
@@ -1680,6 +1693,7 @@ where L::Target: Logger {
 	let mut num_ignored_path_length_limit = 0;
 	let mut num_ignored_cltv_delta_limit = 0;
 	let mut num_ignored_previously_failed = 0;
+	let mut num_ignored_total_fee_limit = 0;
 
 	macro_rules! add_entry {
 		// Adds entry which goes from $src_node_id to $dest_node_id over the $candidate hop.
@@ -1841,89 +1855,98 @@ where L::Target: Logger {
 								total_fee_msat = total_fee_msat.saturating_add(hop_use_fee_msat);
 							}
 
-							let channel_usage = ChannelUsage {
-								amount_msat: amount_to_transfer_over_msat,
-								inflight_htlc_msat: used_liquidity_msat,
-								effective_capacity,
-							};
-							let channel_penalty_msat = scid_opt.map_or(0,
-								|scid| scorer.channel_penalty_msat(scid, &$src_node_id, &$dest_node_id,
-									channel_usage, score_params));
-							let path_penalty_msat = $next_hops_path_penalty_msat
-								.saturating_add(channel_penalty_msat);
-							let new_graph_node = RouteGraphNode {
-								node_id: $src_node_id,
-								lowest_fee_to_node: total_fee_msat,
-								total_cltv_delta: hop_total_cltv_delta,
-								value_contribution_msat,
-								path_htlc_minimum_msat,
-								path_penalty_msat,
-								path_length_to_node,
-							};
-
-							// Update the way of reaching $src_node_id with the given short_channel_id (from $dest_node_id),
-							// if this way is cheaper than the already known
-							// (considering the cost to "reach" this channel from the route destination,
-							// the cost of using this channel,
-							// and the cost of routing to the source node of this channel).
-							// Also, consider that htlc_minimum_msat_difference, because we might end up
-							// paying it. Consider the following exploit:
-							// we use 2 paths to transfer 1.5 BTC. One of them is 0-fee normal 1 BTC path,
-							// and for the other one we picked a 1sat-fee path with htlc_minimum_msat of
-							// 1 BTC. Now, since the latter is more expensive, we gonna try to cut it
-							// by 0.5 BTC, but then match htlc_minimum_msat by paying a fee of 0.5 BTC
-							// to this channel.
-							// Ideally the scoring could be smarter (e.g. 0.5*htlc_minimum_msat here),
-							// but it may require additional tracking - we don't want to double-count
-							// the fees included in $next_hops_path_htlc_minimum_msat, but also
-							// can't use something that may decrease on future hops.
-							let old_cost = cmp::max(old_entry.total_fee_msat, old_entry.path_htlc_minimum_msat)
-								.saturating_add(old_entry.path_penalty_msat);
-							let new_cost = cmp::max(total_fee_msat, path_htlc_minimum_msat)
-								.saturating_add(path_penalty_msat);
-
-							if !old_entry.was_processed && new_cost < old_cost {
-								targets.push(new_graph_node);
-								old_entry.next_hops_fee_msat = $next_hops_fee_msat;
-								old_entry.hop_use_fee_msat = hop_use_fee_msat;
-								old_entry.total_fee_msat = total_fee_msat;
-								old_entry.node_id = $dest_node_id.clone();
-								old_entry.candidate = $candidate.clone();
-								old_entry.fee_msat = 0; // This value will be later filled with hop_use_fee_msat of the following channel
-								old_entry.path_htlc_minimum_msat = path_htlc_minimum_msat;
-								old_entry.path_penalty_msat = path_penalty_msat;
-								#[cfg(all(not(ldk_bench), any(test, fuzzing)))]
-								{
-									old_entry.value_contribution_msat = value_contribution_msat;
+							// Ignore hops if augmenting the current path to them would put us over `max_total_routing_fee_msat`
+							let max_total_routing_fee_msat = route_params.max_total_routing_fee_msat.unwrap_or(u64::max_value());
+							if total_fee_msat > max_total_routing_fee_msat {
+								if should_log_candidate {
+									log_trace!(logger, "Ignoring {} due to exceeding max total routing fee limit.", LoggedCandidateHop(&$candidate));
 								}
-								did_add_update_path_to_src_node = Some(value_contribution_msat);
-							} else if old_entry.was_processed && new_cost < old_cost {
-								#[cfg(all(not(ldk_bench), any(test, fuzzing)))]
-								{
-									// If we're skipping processing a node which was previously
-									// processed even though we found another path to it with a
-									// cheaper fee, check that it was because the second path we
-									// found (which we are processing now) has a lower value
-									// contribution due to an HTLC minimum limit.
-									//
-									// e.g. take a graph with two paths from node 1 to node 2, one
-									// through channel A, and one through channel B. Channel A and
-									// B are both in the to-process heap, with their scores set by
-									// a higher htlc_minimum than fee.
-									// Channel A is processed first, and the channels onwards from
-									// node 1 are added to the to-process heap. Thereafter, we pop
-									// Channel B off of the heap, note that it has a much more
-									// restrictive htlc_maximum_msat, and recalculate the fees for
-									// all of node 1's channels using the new, reduced, amount.
-									//
-									// This would be bogus - we'd be selecting a higher-fee path
-									// with a lower htlc_maximum_msat instead of the one we'd
-									// already decided to use.
-									debug_assert!(path_htlc_minimum_msat < old_entry.path_htlc_minimum_msat);
-									debug_assert!(
-										value_contribution_msat + path_penalty_msat <
-										old_entry.value_contribution_msat + old_entry.path_penalty_msat
-									);
+								num_ignored_total_fee_limit += 1;
+							} else {
+								let channel_usage = ChannelUsage {
+									amount_msat: amount_to_transfer_over_msat,
+									inflight_htlc_msat: used_liquidity_msat,
+									effective_capacity,
+								};
+								let channel_penalty_msat = scid_opt.map_or(0,
+									|scid| scorer.channel_penalty_msat(scid, &$src_node_id, &$dest_node_id,
+										channel_usage, score_params));
+								let path_penalty_msat = $next_hops_path_penalty_msat
+									.saturating_add(channel_penalty_msat);
+								let new_graph_node = RouteGraphNode {
+									node_id: $src_node_id,
+									lowest_fee_to_node: total_fee_msat,
+									total_cltv_delta: hop_total_cltv_delta,
+									value_contribution_msat,
+									path_htlc_minimum_msat,
+									path_penalty_msat,
+									path_length_to_node,
+								};
+
+								// Update the way of reaching $src_node_id with the given short_channel_id (from $dest_node_id),
+								// if this way is cheaper than the already known
+								// (considering the cost to "reach" this channel from the route destination,
+								// the cost of using this channel,
+								// and the cost of routing to the source node of this channel).
+								// Also, consider that htlc_minimum_msat_difference, because we might end up
+								// paying it. Consider the following exploit:
+								// we use 2 paths to transfer 1.5 BTC. One of them is 0-fee normal 1 BTC path,
+								// and for the other one we picked a 1sat-fee path with htlc_minimum_msat of
+								// 1 BTC. Now, since the latter is more expensive, we gonna try to cut it
+								// by 0.5 BTC, but then match htlc_minimum_msat by paying a fee of 0.5 BTC
+								// to this channel.
+								// Ideally the scoring could be smarter (e.g. 0.5*htlc_minimum_msat here),
+								// but it may require additional tracking - we don't want to double-count
+								// the fees included in $next_hops_path_htlc_minimum_msat, but also
+								// can't use something that may decrease on future hops.
+								let old_cost = cmp::max(old_entry.total_fee_msat, old_entry.path_htlc_minimum_msat)
+									.saturating_add(old_entry.path_penalty_msat);
+								let new_cost = cmp::max(total_fee_msat, path_htlc_minimum_msat)
+									.saturating_add(path_penalty_msat);
+
+								if !old_entry.was_processed && new_cost < old_cost {
+									targets.push(new_graph_node);
+									old_entry.next_hops_fee_msat = $next_hops_fee_msat;
+									old_entry.hop_use_fee_msat = hop_use_fee_msat;
+									old_entry.total_fee_msat = total_fee_msat;
+									old_entry.node_id = $dest_node_id.clone();
+									old_entry.candidate = $candidate.clone();
+									old_entry.fee_msat = 0; // This value will be later filled with hop_use_fee_msat of the following channel
+									old_entry.path_htlc_minimum_msat = path_htlc_minimum_msat;
+									old_entry.path_penalty_msat = path_penalty_msat;
+									#[cfg(all(not(ldk_bench), any(test, fuzzing)))]
+									{
+										old_entry.value_contribution_msat = value_contribution_msat;
+									}
+									did_add_update_path_to_src_node = Some(value_contribution_msat);
+								} else if old_entry.was_processed && new_cost < old_cost {
+									#[cfg(all(not(ldk_bench), any(test, fuzzing)))]
+									{
+										// If we're skipping processing a node which was previously
+										// processed even though we found another path to it with a
+										// cheaper fee, check that it was because the second path we
+										// found (which we are processing now) has a lower value
+										// contribution due to an HTLC minimum limit.
+										//
+										// e.g. take a graph with two paths from node 1 to node 2, one
+										// through channel A, and one through channel B. Channel A and
+										// B are both in the to-process heap, with their scores set by
+										// a higher htlc_minimum than fee.
+										// Channel A is processed first, and the channels onwards from
+										// node 1 are added to the to-process heap. Thereafter, we pop
+										// Channel B off of the heap, note that it has a much more
+										// restrictive htlc_maximum_msat, and recalculate the fees for
+										// all of node 1's channels using the new, reduced, amount.
+										//
+										// This would be bogus - we'd be selecting a higher-fee path
+										// with a lower htlc_maximum_msat instead of the one we'd
+										// already decided to use.
+										debug_assert!(path_htlc_minimum_msat < old_entry.path_htlc_minimum_msat);
+										debug_assert!(
+											value_contribution_msat + path_penalty_msat <
+											old_entry.value_contribution_msat + old_entry.path_penalty_msat
+										);
+									}
 								}
 							}
 						}
@@ -2395,9 +2418,9 @@ where L::Target: Logger {
 	}
 
 	let num_ignored_total = num_ignored_value_contribution + num_ignored_path_length_limit +
-		num_ignored_cltv_delta_limit + num_ignored_previously_failed;
+		num_ignored_cltv_delta_limit + num_ignored_previously_failed + num_ignored_total_fee_limit;
 	if num_ignored_total > 0 {
-		log_trace!(logger, "Ignored {} candidate hops due to insufficient value contribution, {} due to path length limit, {} due to CLTV delta limit, {} due to previous payment failure. Total: {} ignored candidates.", num_ignored_value_contribution, num_ignored_path_length_limit, num_ignored_cltv_delta_limit, num_ignored_previously_failed, num_ignored_total);
+		log_trace!(logger, "Ignored {} candidate hops due to insufficient value contribution, {} due to path length limit, {} due to CLTV delta limit, {} due to previous payment failure, {} due to maximum total fee limit. Total: {} ignored candidates.", num_ignored_value_contribution, num_ignored_path_length_limit, num_ignored_cltv_delta_limit, num_ignored_previously_failed, num_ignored_total_fee_limit, num_ignored_total);
 	}
 
 	// Step (5).
@@ -2538,6 +2561,14 @@ where L::Target: Logger {
 	}
 	// Make sure we would never create a route with more paths than we allow.
 	debug_assert!(paths.len() <= payment_params.max_path_count.into());
+
+	// Make sure we would never create a route whose total fees exceed max_total_routing_fee_msat.
+	if let Some(max_total_routing_fee_msat) = route_params.max_total_routing_fee_msat {
+		if paths.iter().map(|p| p.fee_msat()).sum::<u64>() > max_total_routing_fee_msat {
+			return Err(LightningError{err: format!("Failed to find route that adheres to the maximum total fee limit of {}msat",
+				max_total_routing_fee_msat), action: ErrorAction::IgnoreError});
+		}
+	}
 
 	if let Some(node_features) = payment_params.payee.node_features() {
 		for path in paths.iter_mut() {
@@ -5240,8 +5271,20 @@ mod tests {
 		}
 
 		{
+			// Attempt to route while setting max_total_routing_fee_msat to 149_999 results in a failure.
+			let route_params = RouteParameters { payment_params: payment_params.clone(), final_value_msat: 200_000,
+				max_total_routing_fee_msat: Some(149_999) };
+			if let Err(LightningError{err, action: ErrorAction::IgnoreError}) = get_route(
+				&our_id, &route_params, &network_graph.read_only(), None, Arc::clone(&logger),
+				&scorer, &(), &random_seed_bytes) {
+					assert_eq!(err, "Failed to find a sufficient route to the given destination");
+			} else { panic!(); }
+		}
+
+		{
 			// Now, attempt to route 200 sats (exact amount we can route).
-			let route_params = RouteParameters::from_payment_params_and_value(payment_params, 200_000);
+			let route_params = RouteParameters { payment_params: payment_params.clone(), final_value_msat: 200_000,
+				max_total_routing_fee_msat: Some(150_000) };
 			let route = get_route(&our_id, &route_params, &network_graph.read_only(), None,
 				Arc::clone(&logger), &scorer, &Default::default(), &random_seed_bytes).unwrap();
 			assert_eq!(route.paths.len(), 2);

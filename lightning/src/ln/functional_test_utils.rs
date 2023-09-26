@@ -1882,7 +1882,11 @@ macro_rules! get_route_and_payment_hash {
 		$crate::get_route_and_payment_hash!($send_node, $recv_node, payment_params, $recv_value)
 	}};
 	($send_node: expr, $recv_node: expr, $payment_params: expr, $recv_value: expr) => {{
-		let route_params = $crate::routing::router::RouteParameters::from_payment_params_and_value($payment_params, $recv_value);
+		$crate::get_route_and_payment_hash!($send_node, $recv_node, $payment_params, $recv_value, None)
+	}};
+	($send_node: expr, $recv_node: expr, $payment_params: expr, $recv_value: expr, $max_total_routing_fee_msat: expr) => {{
+		let mut route_params = $crate::routing::router::RouteParameters::from_payment_params_and_value($payment_params, $recv_value);
+		route_params.max_total_routing_fee_msat = $max_total_routing_fee_msat;
 		let (payment_preimage, payment_hash, payment_secret) =
 			$crate::ln::functional_test_utils::get_payment_preimage_hash(&$recv_node, Some($recv_value), None);
 		let route = $crate::ln::functional_test_utils::get_route(&$send_node, &route_params);
