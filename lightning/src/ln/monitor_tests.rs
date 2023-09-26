@@ -1100,7 +1100,7 @@ fn sorted_vec_with_additions<T: Ord + Clone>(v_orig: &Vec<T>, extra_ts: &[&T]) -
 	v
 }
 
-fn do_test_revoked_counterparty_commitment_balances(confirm_htlc_spend_first: bool) {
+fn do_test_revoked_counterparty_commitment_balances(anchors: bool, confirm_htlc_spend_first: bool) {
 	// Tests `get_claimable_balances` for revoked counterparty commitment transactions.
 	let mut chanmon_cfgs = create_chanmon_cfgs(2);
 	// We broadcast a second-to-latest commitment transaction, without providing the revocation
@@ -1109,7 +1109,12 @@ fn do_test_revoked_counterparty_commitment_balances(confirm_htlc_spend_first: bo
 	// transaction which, from the point of view of our keys_manager, is revoked.
 	chanmon_cfgs[1].keys_manager.disable_revocation_policy_check = true;
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let mut user_config = test_default_channel_config();
+	if anchors {
+		user_config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
+		user_config.manually_accept_inbound_channels = true;
+	}
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(user_config), Some(user_config)]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let (_, _, chan_id, funding_tx) =
@@ -1219,15 +1224,22 @@ fn do_test_revoked_counterparty_commitment_balances(confirm_htlc_spend_first: bo
 
 	// The following constants were determined experimentally
 	const BS_TO_SELF_CLAIM_EXP_WEIGHT: usize = 483;
-	const OUTBOUND_HTLC_CLAIM_EXP_WEIGHT: usize = 571;
-	const INBOUND_HTLC_CLAIM_EXP_WEIGHT: usize = 578;
+	let outbound_htlc_claim_exp_weight: usize = if anchors { 574 } else { 571 };
+	let inbound_htlc_claim_exp_weight: usize = if anchors { 582 } else { 578 };
 
 	// Check that the weight is close to the expected weight. Note that signature sizes vary
 	// somewhat so it may not always be exact.
-	fuzzy_assert_eq(claim_txn[0].weight(), OUTBOUND_HTLC_CLAIM_EXP_WEIGHT);
-	fuzzy_assert_eq(claim_txn[1].weight(), INBOUND_HTLC_CLAIM_EXP_WEIGHT);
-	fuzzy_assert_eq(claim_txn[2].weight(), INBOUND_HTLC_CLAIM_EXP_WEIGHT);
+	fuzzy_assert_eq(claim_txn[0].weight(), outbound_htlc_claim_exp_weight);
+	fuzzy_assert_eq(claim_txn[1].weight(), inbound_htlc_claim_exp_weight);
+	fuzzy_assert_eq(claim_txn[2].weight(), inbound_htlc_claim_exp_weight);
 	fuzzy_assert_eq(claim_txn[3].weight(), BS_TO_SELF_CLAIM_EXP_WEIGHT);
+
+	let commitment_tx_fee = chan_feerate *
+		(channel::commitment_tx_base_weight(&channel_type_features) + 3 * channel::COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000;
+	let anchor_outputs_value = if anchors { channel::ANCHOR_OUTPUT_VALUE_SATOSHI * 2 } else { 0 };
+	let inbound_htlc_claim_fee = chan_feerate * inbound_htlc_claim_exp_weight as u64 / 1000;
+	let outbound_htlc_claim_fee = chan_feerate * outbound_htlc_claim_exp_weight as u64 / 1000;
+	let to_self_claim_fee = chan_feerate * claim_txn[3].weight() as u64 / 1000;
 
 	// The expected balance for the next three checks, with the largest-HTLC and to_self output
 	// claim balances separated out.
@@ -1242,8 +1254,7 @@ fn do_test_revoked_counterparty_commitment_balances(confirm_htlc_spend_first: bo
 		}];
 
 	let to_self_unclaimed_balance = Balance::CounterpartyRevokedOutputClaimable {
-		amount_satoshis: 1_000_000 - 100_000 - 3_000 - chan_feerate *
-			(channel::commitment_tx_base_weight(&channel_type_features) + 3 * channel::COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000,
+		amount_satoshis: 1_000_000 - 100_000 - 3_000 - commitment_tx_fee - anchor_outputs_value,
 	};
 	let to_self_claimed_avail_height;
 	let largest_htlc_unclaimed_balance = Balance::CounterpartyRevokedOutputClaimable {
@@ -1268,13 +1279,11 @@ fn do_test_revoked_counterparty_commitment_balances(confirm_htlc_spend_first: bo
 	}
 
 	let largest_htlc_claimed_balance = Balance::ClaimableAwaitingConfirmations {
-		amount_satoshis: 5_000 - chan_feerate * INBOUND_HTLC_CLAIM_EXP_WEIGHT as u64 / 1000,
+		amount_satoshis: 5_000 - inbound_htlc_claim_fee,
 		confirmation_height: largest_htlc_claimed_avail_height,
 	};
 	let to_self_claimed_balance = Balance::ClaimableAwaitingConfirmations {
-		amount_satoshis: 1_000_000 - 100_000 - 3_000 - chan_feerate *
-			(channel::commitment_tx_base_weight(&channel_type_features) + 3 * channel::COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000
-			- chan_feerate * claim_txn[3].weight() as u64 / 1000,
+		amount_satoshis: 1_000_000 - 100_000 - 3_000 - commitment_tx_fee - anchor_outputs_value - to_self_claim_fee,
 		confirmation_height: to_self_claimed_avail_height,
 	};
 
@@ -1304,18 +1313,16 @@ fn do_test_revoked_counterparty_commitment_balances(confirm_htlc_spend_first: bo
 			amount_satoshis: 100_000 - 5_000 - 4_000 - 3,
 			confirmation_height: nodes[1].best_block_info().1 + 1,
 		}, Balance::ClaimableAwaitingConfirmations {
-			amount_satoshis: 1_000_000 - 100_000 - 3_000 - chan_feerate *
-				(channel::commitment_tx_base_weight(&channel_type_features) + 3 * channel::COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000
-				- chan_feerate * claim_txn[3].weight() as u64 / 1000,
+			amount_satoshis: 1_000_000 - 100_000 - 3_000 - commitment_tx_fee - anchor_outputs_value - to_self_claim_fee,
 			confirmation_height: to_self_claimed_avail_height,
 		}, Balance::ClaimableAwaitingConfirmations {
-			amount_satoshis: 3_000 - chan_feerate * OUTBOUND_HTLC_CLAIM_EXP_WEIGHT as u64 / 1000,
+			amount_satoshis: 3_000 - outbound_htlc_claim_fee,
 			confirmation_height: nodes[1].best_block_info().1 + 4,
 		}, Balance::ClaimableAwaitingConfirmations {
-			amount_satoshis: 4_000 - chan_feerate * INBOUND_HTLC_CLAIM_EXP_WEIGHT as u64 / 1000,
+			amount_satoshis: 4_000 - inbound_htlc_claim_fee,
 			confirmation_height: nodes[1].best_block_info().1 + 5,
 		}, Balance::ClaimableAwaitingConfirmations {
-			amount_satoshis: 5_000 - chan_feerate * INBOUND_HTLC_CLAIM_EXP_WEIGHT as u64 / 1000,
+			amount_satoshis: 5_000 - inbound_htlc_claim_fee,
 			confirmation_height: largest_htlc_claimed_avail_height,
 		}]),
 		sorted_vec(nodes[1].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances()));
@@ -1352,8 +1359,10 @@ fn do_test_revoked_counterparty_commitment_balances(confirm_htlc_spend_first: bo
 
 #[test]
 fn test_revoked_counterparty_commitment_balances() {
-	do_test_revoked_counterparty_commitment_balances(true);
-	do_test_revoked_counterparty_commitment_balances(false);
+	do_test_revoked_counterparty_commitment_balances(false, true);
+	do_test_revoked_counterparty_commitment_balances(false, false);
+	do_test_revoked_counterparty_commitment_balances(true, true);
+	do_test_revoked_counterparty_commitment_balances(true, false);
 }
 
 #[test]
