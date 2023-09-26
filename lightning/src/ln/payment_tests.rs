@@ -3135,7 +3135,9 @@ fn test_threaded_payment_retries() {
 	let payment_params = PaymentParameters::from_node_id(nodes[1].node.get_our_node_id(), TEST_FINAL_CLTV)
 		.with_expiry_time(payment_expiry_secs as u64)
 		.with_bolt11_features(invoice_features).unwrap();
-	let mut route_params = RouteParameters::from_payment_params_and_value(payment_params, amt_msat);
+	let mut route_params = RouteParameters {
+		payment_params, final_value_msat: amt_msat, max_total_routing_fee_msat: Some(500_000),
+	};
 
 	let mut route = Route {
 		paths: vec![
@@ -3174,9 +3176,11 @@ fn test_threaded_payment_retries() {
 				maybe_announced_channel: true,
 			}], blinded_tail: None }
 		],
-		route_params: Some(RouteParameters::from_payment_params_and_value(
-			PaymentParameters::from_node_id(nodes[2].node.get_our_node_id(), TEST_FINAL_CLTV),
-			amt_msat - amt_msat / 1000)),
+		route_params: Some(RouteParameters {
+			payment_params: PaymentParameters::from_node_id(nodes[1].node.get_our_node_id(), TEST_FINAL_CLTV),
+			final_value_msat: amt_msat - amt_msat / 1000,
+			max_total_routing_fee_msat: Some(500_000),
+		}),
 	};
 	nodes[0].router.expect_find_route(route_params.clone(), Ok(route.clone()));
 
@@ -3234,6 +3238,7 @@ fn test_threaded_payment_retries() {
 		let mut new_route_params = route_params.clone();
 		previously_failed_channels.push(route.paths[0].hops[1].short_channel_id);
 		new_route_params.payment_params.previously_failed_channels = previously_failed_channels.clone();
+		new_route_params.max_total_routing_fee_msat.as_mut().map(|m| *m -= 100_000);
 		route.paths[0].hops[1].short_channel_id += 1;
 		nodes[0].router.expect_find_route(new_route_params, Ok(route.clone()));
 
