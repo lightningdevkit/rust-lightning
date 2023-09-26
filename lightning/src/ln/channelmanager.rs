@@ -2626,8 +2626,13 @@ where
 		self.close_channel_internal(channel_id, counterparty_node_id, target_feerate_sats_per_1000_weight, shutdown_script)
 	}
 
-	#[inline]
 	fn finish_force_close_channel(&self, shutdown_res: ShutdownResult) {
+		debug_assert_ne!(self.per_peer_state.held_by_thread(), LockHeldState::HeldByThread);
+		#[cfg(debug_assertions)]
+		for (_, peer) in self.per_peer_state.read().unwrap().iter() {
+			debug_assert_ne!(peer.held_by_thread(), LockHeldState::HeldByThread);
+		}
+
 		let (monitor_update_option, mut failed_htlcs) = shutdown_res;
 		log_debug!(self.logger, "Finishing force-closure of channel with {} HTLCs to fail", failed_htlcs.len());
 		for htlc_source in failed_htlcs.drain(..) {
@@ -2653,8 +2658,7 @@ where
 		let peer_state_mutex = per_peer_state.get(peer_node_id)
 			.ok_or_else(|| APIError::ChannelUnavailable { err: format!("Can't find a peer matching the passed counterparty node_id {}", peer_node_id) })?;
 		let (update_opt, counterparty_node_id) = {
-			let mut peer_state_lock = peer_state_mutex.lock().unwrap();
-			let peer_state = &mut *peer_state_lock;
+			let mut peer_state = peer_state_mutex.lock().unwrap();
 			let closure_reason = if let Some(peer_msg) = peer_msg {
 				ClosureReason::CounterpartyForceClosed { peer_msg: UntrustedString(peer_msg.to_string()) }
 			} else {
@@ -2664,6 +2668,8 @@ where
 				log_error!(self.logger, "Force-closing channel {}", channel_id);
 				self.issue_channel_close_events(&chan_phase_entry.get().context(), closure_reason);
 				let mut chan_phase = remove_channel_phase!(self, chan_phase_entry);
+				mem::drop(peer_state);
+				mem::drop(per_peer_state);
 				match chan_phase {
 					ChannelPhase::Funded(mut chan) => {
 						self.finish_force_close_channel(chan.context.force_shutdown(broadcast));
@@ -2686,10 +2692,17 @@ where
 			}
 		};
 		if let Some(update) = update_opt {
-			let mut peer_state = peer_state_mutex.lock().unwrap();
-			peer_state.pending_msg_events.push(events::MessageSendEvent::BroadcastChannelUpdate {
-				msg: update
-			});
+			// Try to send the `BroadcastChannelUpdate` to the peer we just force-closed on, but if
+			// not try to broadcast it via whatever peer we have.
+			let per_peer_state = self.per_peer_state.read().unwrap();
+			let a_peer_state_opt = per_peer_state.get(peer_node_id)
+				.ok_or(per_peer_state.values().next());
+			if let Ok(a_peer_state_mutex) = a_peer_state_opt {
+				let mut a_peer_state = a_peer_state_mutex.lock().unwrap();
+				a_peer_state.pending_msg_events.push(events::MessageSendEvent::BroadcastChannelUpdate {
+					msg: update
+				});
+			}
 		}
 
 		Ok(counterparty_node_id)
@@ -4627,8 +4640,9 @@ where
 			let mut handle_errors: Vec<(Result<(), _>, _)> = Vec::new();
 			let mut timed_out_mpp_htlcs = Vec::new();
 			let mut pending_peers_awaiting_removal = Vec::new();
+			let mut shutdown_channels = Vec::new();
 
-			let process_unfunded_channel_tick = |
+			let mut process_unfunded_channel_tick = |
 				chan_id: &ChannelId,
 				context: &mut ChannelContext<SP>,
 				unfunded_context: &mut UnfundedChannelContext,
@@ -4641,7 +4655,7 @@ where
 						"Force-closing pending channel with ID {} for not establishing in a timely manner", chan_id);
 					update_maps_on_chan_removal!(self, &context);
 					self.issue_channel_close_events(&context, ClosureReason::HolderForceClosed);
-					self.finish_force_close_channel(context.force_shutdown(false));
+					shutdown_channels.push(context.force_shutdown(false));
 					pending_msg_events.push(MessageSendEvent::HandleError {
 						node_id: counterparty_node_id,
 						action: msgs::ErrorAction::SendErrorMessage {
@@ -4834,6 +4848,10 @@ where
 				let _ = handle_error!(self, err, counterparty_node_id);
 			}
 
+			for shutdown_res in shutdown_channels {
+				self.finish_force_close_channel(shutdown_res);
+			}
+
 			self.pending_outbound_payments.remove_stale_payments(&self.pending_events);
 
 			// Technically we don't need to do this here, but if we have holding cell entries in a
@@ -4990,6 +5008,7 @@ where
 		// This ensures that future code doesn't introduce a lock-order requirement for
 		// `forward_htlcs` to be locked after the `per_peer_state` peer locks, which calling
 		// this function with any `per_peer_state` peer lock acquired would.
+		#[cfg(debug_assertions)]
 		for (_, peer) in self.per_peer_state.read().unwrap().iter() {
 			debug_assert_ne!(peer.held_by_thread(), LockHeldState::HeldByThread);
 		}
@@ -5997,7 +6016,8 @@ where
 	}
 
 	fn internal_shutdown(&self, counterparty_node_id: &PublicKey, msg: &msgs::Shutdown) -> Result<(), MsgHandleErrInternal> {
-		let mut dropped_htlcs: Vec<(HTLCSource, PaymentHash)>;
+		let mut dropped_htlcs: Vec<(HTLCSource, PaymentHash)> = Vec::new();
+		let mut finish_shutdown = None;
 		{
 			let per_peer_state = self.per_peer_state.read().unwrap();
 			let peer_state_mutex = per_peer_state.get(counterparty_node_id)
@@ -6042,8 +6062,7 @@ where
 						log_error!(self.logger, "Immediately closing unfunded channel {} as peer asked to cooperatively shut it down (which is unnecessary)", &msg.channel_id);
 						self.issue_channel_close_events(&context, ClosureReason::CounterpartyCoopClosedUnfundedChannel);
 						let mut chan = remove_channel_phase!(self, chan_phase_entry);
-						self.finish_force_close_channel(chan.context_mut().force_shutdown(false));
-						return Ok(());
+						finish_shutdown = Some(chan.context_mut().force_shutdown(false));
 					},
 				}
 			} else {
@@ -6054,6 +6073,9 @@ where
 			let receiver = HTLCDestination::NextHopChannel { node_id: Some(counterparty_node_id.clone()), channel_id: msg.channel_id };
 			let reason = HTLCFailReason::from_failure_code(0x4000 | 8);
 			self.fail_htlc_backwards_internal(&htlc_source.0, &htlc_source.1, &reason, receiver);
+		}
+		if let Some(shutdown_res) = finish_shutdown {
+			self.finish_force_close_channel(shutdown_res);
 		}
 
 		Ok(())
