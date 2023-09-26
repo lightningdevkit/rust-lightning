@@ -2497,6 +2497,7 @@ where
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 
 		let mut failed_htlcs: Vec<(HTLCSource, PaymentHash)>;
+		let mut shutdown_result = None;
 		loop {
 			let per_peer_state = self.per_peer_state.read().unwrap();
 
@@ -2541,6 +2542,7 @@ where
 									});
 								}
 								self.issue_channel_close_events(&chan.context, ClosureReason::HolderForceClosed);
+								shutdown_result = Some((None, Vec::new()));
 							}
 						}
 						break;
@@ -2560,6 +2562,10 @@ where
 			let reason = HTLCFailReason::from_failure_code(0x4000 | 8);
 			let receiver = HTLCDestination::NextHopChannel { node_id: Some(*counterparty_node_id), channel_id: *channel_id };
 			self.fail_htlc_backwards_internal(&htlc_source.0, &htlc_source.1, &reason, receiver);
+		}
+
+		if let Some(shutdown_result) = shutdown_result {
+			self.finish_force_close_channel(shutdown_result);
 		}
 
 		Ok(())
@@ -3537,7 +3543,7 @@ where
 	///
 	/// See [`ChannelManager::send_preflight_probes`] for more information.
 	pub fn send_spontaneous_preflight_probes(
-		&self, node_id: PublicKey, amount_msat: u64, final_cltv_expiry_delta: u32, 
+		&self, node_id: PublicKey, amount_msat: u64, final_cltv_expiry_delta: u32,
 		liquidity_limit_multiplier: Option<u64>,
 	) -> Result<Vec<(PaymentHash, PaymentId)>, ProbeSendFailure> {
 		let payment_params =
@@ -6082,6 +6088,7 @@ where
 	}
 
 	fn internal_closing_signed(&self, counterparty_node_id: &PublicKey, msg: &msgs::ClosingSigned) -> Result<(), MsgHandleErrInternal> {
+		let mut shutdown_result = None;
 		let per_peer_state = self.per_peer_state.read().unwrap();
 		let peer_state_mutex = per_peer_state.get(counterparty_node_id)
 			.ok_or_else(|| {
@@ -6130,6 +6137,12 @@ where
 				});
 			}
 			self.issue_channel_close_events(&chan.context, ClosureReason::CooperativeClosure);
+			shutdown_result = Some((None, Vec::new()));
+		}
+		mem::drop(peer_state_mutex);
+		mem::drop(per_peer_state);
+		if let Some(shutdown_result) = shutdown_result {
+			self.finish_force_close_channel(shutdown_result);
 		}
 		Ok(())
 	}
@@ -6804,6 +6817,7 @@ where
 	fn maybe_generate_initial_closing_signed(&self) -> bool {
 		let mut handle_errors: Vec<(PublicKey, Result<(), _>)> = Vec::new();
 		let mut has_update = false;
+		let mut shutdown_result = None;
 		{
 			let per_peer_state = self.per_peer_state.read().unwrap();
 
@@ -6836,6 +6850,7 @@ where
 										log_info!(self.logger, "Broadcasting {}", log_tx!(tx));
 										self.tx_broadcaster.broadcast_transactions(&[&tx]);
 										update_maps_on_chan_removal!(self, &chan.context);
+										shutdown_result = Some((None, Vec::new()));
 										false
 									} else { true }
 								},
@@ -6855,6 +6870,10 @@ where
 
 		for (counterparty_node_id, err) in handle_errors.drain(..) {
 			let _ = handle_error!(self, err, counterparty_node_id);
+		}
+
+		if let Some(shutdown_result) = shutdown_result {
+			self.finish_force_close_channel(shutdown_result);
 		}
 
 		has_update
@@ -7853,6 +7872,7 @@ where
 					// Clean up for removal.
 					update_maps_on_chan_removal!(self, &context);
 					self.issue_channel_close_events(&context, ClosureReason::DisconnectedPeer);
+					failed_channels.push((None, Vec::new()));
 					false
 				});
 				// Note that we don't bother generating any events for pre-accept channels -
