@@ -1788,7 +1788,7 @@ macro_rules! handle_error {
 				let mut msg_events = Vec::with_capacity(2);
 
 				if let Some((shutdown_res, update_option)) = shutdown_finish {
-					$self.finish_force_close_channel(shutdown_res);
+					$self.finish_close_channel(shutdown_res);
 					if let Some(update) = update_option {
 						msg_events.push(events::MessageSendEvent::BroadcastChannelUpdate {
 							msg: update
@@ -2565,7 +2565,7 @@ where
 		}
 
 		if let Some(shutdown_result) = shutdown_result {
-			self.finish_force_close_channel(shutdown_result);
+			self.finish_close_channel(shutdown_result);
 		}
 
 		Ok(())
@@ -2632,7 +2632,7 @@ where
 		self.close_channel_internal(channel_id, counterparty_node_id, target_feerate_sats_per_1000_weight, shutdown_script)
 	}
 
-	fn finish_force_close_channel(&self, shutdown_res: ShutdownResult) {
+	fn finish_close_channel(&self, shutdown_res: ShutdownResult) {
 		debug_assert_ne!(self.per_peer_state.held_by_thread(), LockHeldState::HeldByThread);
 		#[cfg(debug_assertions)]
 		for (_, peer) in self.per_peer_state.read().unwrap().iter() {
@@ -2678,11 +2678,11 @@ where
 				mem::drop(per_peer_state);
 				match chan_phase {
 					ChannelPhase::Funded(mut chan) => {
-						self.finish_force_close_channel(chan.context.force_shutdown(broadcast));
+						self.finish_close_channel(chan.context.force_shutdown(broadcast));
 						(self.get_channel_update_for_broadcast(&chan).ok(), chan.context.get_counterparty_node_id())
 					},
 					ChannelPhase::UnfundedOutboundV1(_) | ChannelPhase::UnfundedInboundV1(_) => {
-						self.finish_force_close_channel(chan_phase.context_mut().force_shutdown(false));
+						self.finish_close_channel(chan_phase.context_mut().force_shutdown(false));
 						// Unfunded channel has no update
 						(None, chan_phase.context().get_counterparty_node_id())
 					},
@@ -4855,7 +4855,7 @@ where
 			}
 
 			for shutdown_res in shutdown_channels {
-				self.finish_force_close_channel(shutdown_res);
+				self.finish_close_channel(shutdown_res);
 			}
 
 			self.pending_outbound_payments.remove_stale_payments(&self.pending_events);
@@ -6081,7 +6081,7 @@ where
 			self.fail_htlc_backwards_internal(&htlc_source.0, &htlc_source.1, &reason, receiver);
 		}
 		if let Some(shutdown_res) = finish_shutdown {
-			self.finish_force_close_channel(shutdown_res);
+			self.finish_close_channel(shutdown_res);
 		}
 
 		Ok(())
@@ -6142,7 +6142,7 @@ where
 		mem::drop(peer_state_mutex);
 		mem::drop(per_peer_state);
 		if let Some(shutdown_result) = shutdown_result {
-			self.finish_force_close_channel(shutdown_result);
+			self.finish_close_channel(shutdown_result);
 		}
 		Ok(())
 	}
@@ -6747,7 +6747,7 @@ where
 		}
 
 		for failure in failed_channels.drain(..) {
-			self.finish_force_close_channel(failure);
+			self.finish_close_channel(failure);
 		}
 
 		has_pending_monitor_events
@@ -6873,7 +6873,7 @@ where
 		}
 
 		if let Some(shutdown_result) = shutdown_result {
-			self.finish_force_close_channel(shutdown_result);
+			self.finish_close_channel(shutdown_result);
 		}
 
 		has_update
@@ -6901,7 +6901,7 @@ where
 						counterparty_node_id, funding_txo, update
 					});
 			}
-			self.finish_force_close_channel(failure);
+			self.finish_close_channel(failure);
 		}
 	}
 
@@ -7931,7 +7931,7 @@ where
 		mem::drop(per_peer_state);
 
 		for failure in failed_channels.drain(..) {
-			self.finish_force_close_channel(failure);
+			self.finish_close_channel(failure);
 		}
 	}
 
