@@ -15,7 +15,7 @@ use crate::chain;
 use crate::chain::{ChannelMonitorUpdateStatus, Confirm, Listen, Watch};
 use crate::chain::chaininterface::LowerBoundedFeeEstimator;
 use crate::chain::channelmonitor;
-use crate::chain::channelmonitor::{CLTV_CLAIM_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS, ANTI_REORG_DELAY};
+use crate::chain::channelmonitor::{CLOSED_CHANNEL_UPDATE_ID, CLTV_CLAIM_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS, ANTI_REORG_DELAY};
 use crate::chain::transaction::OutPoint;
 use crate::sign::{EcdsaChannelSigner, EntropySource, SignerProvider};
 use crate::events::{Event, MessageSendEvent, MessageSendEventsProvider, PathFailure, PaymentPurpose, ClosureReason, HTLCDestination, PaymentFailureReason};
@@ -3721,7 +3721,7 @@ fn test_peer_disconnected_before_funding_broadcasted() {
 	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id());
 	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id());
 
-	check_closed_event!(&nodes[0], 1, ClosureReason::DisconnectedPeer, false
+	check_closed_event!(&nodes[0], 2, ClosureReason::DisconnectedPeer, true
 		, [nodes[1].node.get_our_node_id()], 1000000);
 	check_closed_event!(&nodes[1], 1, ClosureReason::DisconnectedPeer, false
 		, [nodes[0].node.get_our_node_id()], 1000000);
@@ -9038,7 +9038,7 @@ fn test_duplicate_chan_id() {
 		match a_peer_state.channel_by_id.remove(&open_chan_2_msg.temporary_channel_id).unwrap() {
 			ChannelPhase::UnfundedOutboundV1(chan) => {
 				let logger = test_utils::TestLogger::new();
-				chan.get_funding_created(tx.clone(), funding_outpoint, &&logger).map_err(|_| ()).unwrap()
+				chan.get_funding_created(tx.clone(), funding_outpoint, false, &&logger).map_err(|_| ()).unwrap()
 			},
 			_ => panic!("Unexpected ChannelPhase variant"),
 		}
@@ -9900,9 +9900,46 @@ fn test_non_final_funding_tx() {
 		},
 		_ => panic!()
 	}
+	let events = nodes[0].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1);
+	match events[0] {
+		Event::ChannelClosed { channel_id, .. } => {
+			assert_eq!(channel_id, temp_channel_id);
+		},
+		_ => panic!("Unexpected event"),
+	}
+}
 
-	// However, transaction should be accepted if it's in a +1 headroom from best block.
-	tx.lock_time = PackedLockTime(tx.lock_time.0 - 1);
+#[test]
+fn test_non_final_funding_tx_within_headroom() {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let temp_channel_id = nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 100_000, 0, 42, None).unwrap();
+	let open_channel_message = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
+	nodes[1].node.handle_open_channel(&nodes[0].node.get_our_node_id(), &open_channel_message);
+	let accept_channel_message = get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, nodes[0].node.get_our_node_id());
+	nodes[0].node.handle_accept_channel(&nodes[1].node.get_our_node_id(), &accept_channel_message);
+
+	let best_height = nodes[0].node.best_block.read().unwrap().height();
+
+	let chan_id = *nodes[0].network_chan_count.borrow();
+	let events = nodes[0].node.get_and_clear_pending_events();
+	let input = TxIn { previous_output: BitcoinOutPoint::null(), script_sig: bitcoin::Script::new(), sequence: Sequence(1), witness: Witness::from_vec(vec!(vec!(1))) };
+	assert_eq!(events.len(), 1);
+	let mut tx = match events[0] {
+		Event::FundingGenerationReady { ref channel_value_satoshis, ref output_script, .. } => {
+			// Timelock the transaction within a +1 headroom from the best block.
+			Transaction { version: chan_id as i32, lock_time: PackedLockTime(best_height + 1), input: vec![input], output: vec![TxOut {
+				value: *channel_value_satoshis, script_pubkey: output_script.clone(),
+			}]}
+		},
+		_ => panic!("Unexpected event"),
+	};
+
+	// Transaction should be accepted if it's in a +1 headroom from best block.
 	assert!(nodes[0].node.funding_transaction_generated(&temp_channel_id, &nodes[1].node.get_our_node_id(), tx.clone()).is_ok());
 	get_event_msg!(nodes[0], MessageSendEvent::SendFundingCreated, nodes[1].node.get_our_node_id());
 }
@@ -10360,4 +10397,231 @@ fn do_test_multi_post_event_actions(do_reload: bool) {
 fn test_multi_post_event_actions() {
 	do_test_multi_post_event_actions(true);
 	do_test_multi_post_event_actions(false);
+}
+
+#[test]
+fn test_batch_channel_open() {
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
+	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+
+	// Initiate channel opening and create the batch channel funding transaction.
+	let (tx, funding_created_msgs) = create_batch_channel_funding(&nodes[0], &[
+		(&nodes[1], 100_000, 0, 42, None),
+		(&nodes[2], 200_000, 0, 43, None),
+	]);
+
+	// Go through the funding_created and funding_signed flow with node 1.
+	nodes[1].node.handle_funding_created(&nodes[0].node.get_our_node_id(), &funding_created_msgs[0]);
+	check_added_monitors(&nodes[1], 1);
+	expect_channel_pending_event(&nodes[1], &nodes[0].node.get_our_node_id());
+
+	let funding_signed_msg = get_event_msg!(nodes[1], MessageSendEvent::SendFundingSigned, nodes[0].node.get_our_node_id());
+	nodes[0].node.handle_funding_signed(&nodes[1].node.get_our_node_id(), &funding_signed_msg);
+	check_added_monitors(&nodes[0], 1);
+
+	// The transaction should not have been broadcast before all channels are ready.
+	assert_eq!(nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().len(), 0);
+
+	// Go through the funding_created and funding_signed flow with node 2.
+	nodes[2].node.handle_funding_created(&nodes[0].node.get_our_node_id(), &funding_created_msgs[1]);
+	check_added_monitors(&nodes[2], 1);
+	expect_channel_pending_event(&nodes[2], &nodes[0].node.get_our_node_id());
+
+	let funding_signed_msg = get_event_msg!(nodes[2], MessageSendEvent::SendFundingSigned, nodes[0].node.get_our_node_id());
+	chanmon_cfgs[0].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
+	nodes[0].node.handle_funding_signed(&nodes[2].node.get_our_node_id(), &funding_signed_msg);
+	check_added_monitors(&nodes[0], 1);
+
+	// The transaction should not have been broadcast before persisting all monitors has been
+	// completed.
+	assert_eq!(nodes[0].tx_broadcaster.txn_broadcast().len(), 0);
+	assert_eq!(nodes[0].node.get_and_clear_pending_events().len(), 0);
+
+	// Complete the persistence of the monitor.
+	nodes[0].chain_monitor.complete_sole_pending_chan_update(
+		&OutPoint { txid: tx.txid(), index: 1 }.to_channel_id()
+	);
+	let events = nodes[0].node.get_and_clear_pending_events();
+
+	// The transaction should only have been broadcast now.
+	let broadcasted_txs = nodes[0].tx_broadcaster.txn_broadcast();
+	assert_eq!(broadcasted_txs.len(), 1);
+	assert_eq!(broadcasted_txs[0], tx);
+
+	assert_eq!(events.len(), 2);
+	assert!(events.iter().any(|e| matches!(
+		*e,
+		crate::events::Event::ChannelPending {
+			ref counterparty_node_id,
+			..
+		} if counterparty_node_id == &nodes[1].node.get_our_node_id(),
+	)));
+	assert!(events.iter().any(|e| matches!(
+		*e,
+		crate::events::Event::ChannelPending {
+			ref counterparty_node_id,
+			..
+		} if counterparty_node_id == &nodes[2].node.get_our_node_id(),
+	)));
+}
+
+#[test]
+fn test_disconnect_in_funding_batch() {
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
+	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+
+	// Initiate channel opening and create the batch channel funding transaction.
+	let (tx, funding_created_msgs) = create_batch_channel_funding(&nodes[0], &[
+		(&nodes[1], 100_000, 0, 42, None),
+		(&nodes[2], 200_000, 0, 43, None),
+	]);
+
+	// Go through the funding_created and funding_signed flow with node 1.
+	nodes[1].node.handle_funding_created(&nodes[0].node.get_our_node_id(), &funding_created_msgs[0]);
+	check_added_monitors(&nodes[1], 1);
+	expect_channel_pending_event(&nodes[1], &nodes[0].node.get_our_node_id());
+
+	let funding_signed_msg = get_event_msg!(nodes[1], MessageSendEvent::SendFundingSigned, nodes[0].node.get_our_node_id());
+	nodes[0].node.handle_funding_signed(&nodes[1].node.get_our_node_id(), &funding_signed_msg);
+	check_added_monitors(&nodes[0], 1);
+
+	// The transaction should not have been broadcast before all channels are ready.
+	assert_eq!(nodes[0].tx_broadcaster.txn_broadcast().len(), 0);
+
+	// The remaining peer in the batch disconnects.
+	nodes[0].node.peer_disconnected(&nodes[2].node.get_our_node_id());
+
+	// The channels in the batch will close immediately.
+	let channel_id_1 = OutPoint { txid: tx.txid(), index: 0 }.to_channel_id();
+	let channel_id_2 = OutPoint { txid: tx.txid(), index: 1 }.to_channel_id();
+	let events = nodes[0].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 4);
+	assert!(events.iter().any(|e| matches!(
+		e,
+		Event::ChannelClosed {
+			channel_id,
+			..
+		} if channel_id == &channel_id_1
+	)));
+	assert!(events.iter().any(|e| matches!(
+		e,
+		Event::ChannelClosed {
+			channel_id,
+			..
+		} if channel_id == &channel_id_2
+	)));
+	assert_eq!(events.iter().filter(|e| matches!(
+		e,
+		Event::DiscardFunding { .. },
+	)).count(), 2);
+
+	// The monitor should become closed.
+	check_added_monitors(&nodes[0], 1);
+	{
+		let mut monitor_updates = nodes[0].chain_monitor.monitor_updates.lock().unwrap();
+		let monitor_updates_1 = monitor_updates.get(&channel_id_1).unwrap();
+		assert_eq!(monitor_updates_1.len(), 1);
+		assert_eq!(monitor_updates_1[0].update_id, CLOSED_CHANNEL_UPDATE_ID);
+	}
+
+	// The funding transaction should not have been broadcast, and therefore, we don't need
+	// to broadcast a force-close transaction for the closed monitor.
+	assert_eq!(nodes[0].tx_broadcaster.txn_broadcast().len(), 0);
+
+	// Ensure the channels don't exist anymore.
+	assert!(nodes[0].node.list_channels().is_empty());
+}
+
+#[test]
+fn test_batch_funding_close_after_funding_signed() {
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
+	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+
+	// Initiate channel opening and create the batch channel funding transaction.
+	let (tx, funding_created_msgs) = create_batch_channel_funding(&nodes[0], &[
+		(&nodes[1], 100_000, 0, 42, None),
+		(&nodes[2], 200_000, 0, 43, None),
+	]);
+
+	// Go through the funding_created and funding_signed flow with node 1.
+	nodes[1].node.handle_funding_created(&nodes[0].node.get_our_node_id(), &funding_created_msgs[0]);
+	check_added_monitors(&nodes[1], 1);
+	expect_channel_pending_event(&nodes[1], &nodes[0].node.get_our_node_id());
+
+	let funding_signed_msg = get_event_msg!(nodes[1], MessageSendEvent::SendFundingSigned, nodes[0].node.get_our_node_id());
+	nodes[0].node.handle_funding_signed(&nodes[1].node.get_our_node_id(), &funding_signed_msg);
+	check_added_monitors(&nodes[0], 1);
+
+	// Go through the funding_created and funding_signed flow with node 2.
+	nodes[2].node.handle_funding_created(&nodes[0].node.get_our_node_id(), &funding_created_msgs[1]);
+	check_added_monitors(&nodes[2], 1);
+	expect_channel_pending_event(&nodes[2], &nodes[0].node.get_our_node_id());
+
+	let funding_signed_msg = get_event_msg!(nodes[2], MessageSendEvent::SendFundingSigned, nodes[0].node.get_our_node_id());
+	chanmon_cfgs[0].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
+	nodes[0].node.handle_funding_signed(&nodes[2].node.get_our_node_id(), &funding_signed_msg);
+	check_added_monitors(&nodes[0], 1);
+
+	// The transaction should not have been broadcast before all channels are ready.
+	assert_eq!(nodes[0].tx_broadcaster.txn_broadcast().len(), 0);
+
+	// Force-close the channel for which we've completed the initial monitor.
+	let channel_id_1 = OutPoint { txid: tx.txid(), index: 0 }.to_channel_id();
+	let channel_id_2 = OutPoint { txid: tx.txid(), index: 1 }.to_channel_id();
+	nodes[0].node.force_close_broadcasting_latest_txn(&channel_id_1, &nodes[1].node.get_our_node_id()).unwrap();
+	check_added_monitors(&nodes[0], 2);
+	{
+		let mut monitor_updates = nodes[0].chain_monitor.monitor_updates.lock().unwrap();
+		let monitor_updates_1 = monitor_updates.get(&channel_id_1).unwrap();
+		assert_eq!(monitor_updates_1.len(), 1);
+		assert_eq!(monitor_updates_1[0].update_id, CLOSED_CHANNEL_UPDATE_ID);
+		let monitor_updates_2 = monitor_updates.get(&channel_id_2).unwrap();
+		assert_eq!(monitor_updates_2.len(), 1);
+		assert_eq!(monitor_updates_2[0].update_id, CLOSED_CHANNEL_UPDATE_ID);
+	}
+	let msg_events = nodes[0].node.get_and_clear_pending_msg_events();
+	match msg_events[0] {
+		MessageSendEvent::HandleError { .. } => (),
+		_ => panic!("Unexpected message."),
+	}
+
+	// We broadcast the commitment transaction as part of the force-close.
+	{
+		let broadcasted_txs = nodes[0].tx_broadcaster.txn_broadcast();
+		assert_eq!(broadcasted_txs.len(), 1);
+		assert!(broadcasted_txs[0].txid() != tx.txid());
+		assert_eq!(broadcasted_txs[0].input.len(), 1);
+		assert_eq!(broadcasted_txs[0].input[0].previous_output.txid, tx.txid());
+	}
+
+	// All channels in the batch should close immediately.
+	let events = nodes[0].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 4);
+	assert!(events.iter().any(|e| matches!(
+		e,
+		Event::ChannelClosed {
+			channel_id,
+			..
+		} if channel_id == &channel_id_1
+	)));
+	assert!(events.iter().any(|e| matches!(
+		e,
+		Event::ChannelClosed {
+			channel_id,
+			..
+		} if channel_id == &channel_id_2
+	)));
+	assert_eq!(events.iter().filter(|e| matches!(
+		e,
+		Event::DiscardFunding { .. },
+	)).count(), 2);
+
+	// Ensure the channels don't exist anymore.
+	assert!(nodes[0].node.list_channels().is_empty());
 }

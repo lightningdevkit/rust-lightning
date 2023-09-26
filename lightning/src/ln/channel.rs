@@ -300,9 +300,24 @@ enum ChannelState {
 	/// We've successfully negotiated a closing_signed dance. At this point ChannelManager is about
 	/// to drop us, but we store this anyway.
 	ShutdownComplete = 4096,
+	/// Flag which is set on `FundingSent` to indicate this channel is funded in a batch and the
+	/// broadcasting of the funding transaction is being held until all channels in the batch
+	/// have received funding_signed and have their monitors persisted.
+	WaitingForBatch = 1 << 13,
 }
-const BOTH_SIDES_SHUTDOWN_MASK: u32 = ChannelState::LocalShutdownSent as u32 | ChannelState::RemoteShutdownSent as u32;
-const MULTI_STATE_FLAGS: u32 = BOTH_SIDES_SHUTDOWN_MASK | ChannelState::PeerDisconnected as u32 | ChannelState::MonitorUpdateInProgress as u32;
+const BOTH_SIDES_SHUTDOWN_MASK: u32 =
+	ChannelState::LocalShutdownSent as u32 |
+	ChannelState::RemoteShutdownSent as u32;
+const MULTI_STATE_FLAGS: u32 =
+	BOTH_SIDES_SHUTDOWN_MASK |
+	ChannelState::PeerDisconnected as u32 |
+	ChannelState::MonitorUpdateInProgress as u32;
+const STATE_FLAGS: u32 =
+	MULTI_STATE_FLAGS |
+	ChannelState::TheirChannelReady as u32 |
+	ChannelState::OurChannelReady as u32 |
+	ChannelState::AwaitingRemoteRevoke as u32 |
+	ChannelState::WaitingForBatch as u32;
 
 pub const INITIAL_COMMITMENT_NUMBER: u64 = (1 << 48) - 1;
 
@@ -527,12 +542,15 @@ pub(super) struct ReestablishResponses {
 
 /// The return type of `force_shutdown`
 ///
-/// Contains a (counterparty_node_id, funding_txo, [`ChannelMonitorUpdate`]) tuple
-/// followed by a list of HTLCs to fail back in the form of the (source, payment hash, and this
-/// channel's counterparty_node_id and channel_id).
+/// Contains a tuple with the following:
+/// - An optional (counterparty_node_id, funding_txo, [`ChannelMonitorUpdate`]) tuple
+/// - A list of HTLCs to fail back in the form of the (source, payment hash, and this channel's
+/// counterparty_node_id and channel_id).
+/// - An optional transaction id identifying a corresponding batch funding transaction.
 pub(crate) type ShutdownResult = (
 	Option<(PublicKey, OutPoint, ChannelMonitorUpdate)>,
-	Vec<(HTLCSource, PaymentHash, PublicKey, ChannelId)>
+	Vec<(HTLCSource, PaymentHash, PublicKey, ChannelId)>,
+	Option<Txid>
 );
 
 /// If the majority of the channels funds are to the fundee and the initiator holds only just
@@ -821,6 +839,7 @@ pub(super) struct ChannelContext<SP: Deref> where SP::Target: SignerProvider {
 
 	pub(crate) channel_transaction_parameters: ChannelTransactionParameters,
 	funding_transaction: Option<Transaction>,
+	is_batch_funding: Option<()>,
 
 	counterparty_cur_commitment_point: Option<PublicKey>,
 	counterparty_prev_commitment_point: Option<PublicKey>,
@@ -945,7 +964,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 
 	/// Returns true if we've ever received a message from the remote end for this Channel
 	pub fn have_received_message(&self) -> bool {
-		self.channel_state > (ChannelState::OurInitSent as u32)
+		self.channel_state & !STATE_FLAGS > (ChannelState::OurInitSent as u32)
 	}
 
 	/// Returns true if this channel is fully established and not known to be closing.
@@ -1161,7 +1180,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 
 	// Checks whether we should emit a `ChannelPending` event.
 	pub(crate) fn should_emit_channel_pending_event(&mut self) -> bool {
-		self.is_funding_initiated() && !self.channel_pending_event_emitted
+		self.is_funding_broadcast() && !self.channel_pending_event_emitted
 	}
 
 	// Returns whether we already emitted a `ChannelPending` event.
@@ -1220,9 +1239,11 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 		did_channel_update
 	}
 
-	/// Returns true if funding_created was sent/received.
-	pub fn is_funding_initiated(&self) -> bool {
-		self.channel_state >= ChannelState::FundingSent as u32
+	/// Returns true if funding_signed was sent/received and the
+	/// funding transaction has been broadcast if necessary.
+	pub fn is_funding_broadcast(&self) -> bool {
+		self.channel_state & !STATE_FLAGS >= ChannelState::FundingSent as u32 &&
+			self.channel_state & ChannelState::WaitingForBatch as u32 == 0
 	}
 
 	/// Transaction nomenclature is somewhat confusing here as there are many different cases - a
@@ -1952,13 +1973,39 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 		res
 	}
 
-	/// Returns transaction if there is pending funding transaction that is yet to broadcast
-	pub fn unbroadcasted_funding(&self) -> Option<Transaction> {
-		if self.channel_state & (ChannelState::FundingCreated as u32) != 0 {
-			self.funding_transaction.clone()
+	fn if_unbroadcasted_funding<F, O>(&self, f: F) -> Option<O>
+		where F: Fn() -> Option<O> {
+		if self.channel_state & ChannelState::FundingCreated as u32 != 0 ||
+		   self.channel_state & ChannelState::WaitingForBatch as u32 != 0 {
+			f()
 		} else {
 			None
 		}
+	}
+
+	/// Returns the transaction if there is a pending funding transaction that is yet to be
+	/// broadcast.
+	pub fn unbroadcasted_funding(&self) -> Option<Transaction> {
+		self.if_unbroadcasted_funding(|| self.funding_transaction.clone())
+	}
+
+	/// Returns the transaction ID if there is a pending funding transaction that is yet to be
+	/// broadcast.
+	pub fn unbroadcasted_funding_txid(&self) -> Option<Txid> {
+		self.if_unbroadcasted_funding(||
+			self.channel_transaction_parameters.funding_outpoint.map(|txo| txo.txid)
+		)
+	}
+
+	/// Returns whether the channel is funded in a batch.
+	pub fn is_batch_funding(&self) -> bool {
+		self.is_batch_funding.is_some()
+	}
+
+	/// Returns the transaction ID if there is a pending batch funding transaction that is yet to be
+	/// broadcast.
+	pub fn unbroadcasted_batch_funding_txid(&self) -> Option<Txid> {
+		self.unbroadcasted_funding_txid().filter(|_| self.is_batch_funding())
 	}
 
 	/// Gets the latest commitment transaction and any dependent transactions for relay (forcing
@@ -2001,10 +2048,11 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 				}))
 			} else { None }
 		} else { None };
+		let unbroadcasted_batch_funding_txid = self.unbroadcasted_batch_funding_txid();
 
 		self.channel_state = ChannelState::ShutdownComplete as u32;
 		self.update_time_counter += 1;
-		(monitor_update, dropped_outbound_htlcs)
+		(monitor_update, dropped_outbound_htlcs, unbroadcasted_batch_funding_txid)
 	}
 }
 
@@ -2574,7 +2622,11 @@ impl<SP: Deref> Channel<SP> where
 			counterparty_initial_commitment_tx.to_countersignatory_value_sat(), logger);
 
 		assert_eq!(self.context.channel_state & (ChannelState::MonitorUpdateInProgress as u32), 0); // We have no had any monitor(s) yet to fail update!
-		self.context.channel_state = ChannelState::FundingSent as u32;
+		if self.context.is_batch_funding() {
+			self.context.channel_state = ChannelState::FundingSent as u32 | ChannelState::WaitingForBatch as u32;
+		} else {
+			self.context.channel_state = ChannelState::FundingSent as u32;
+		}
 		self.context.cur_holder_commitment_transaction_number -= 1;
 		self.context.cur_counterparty_commitment_transaction_number -= 1;
 
@@ -2583,6 +2635,15 @@ impl<SP: Deref> Channel<SP> where
 		let need_channel_ready = self.check_get_channel_ready(0).is_some();
 		self.monitor_updating_paused(false, false, need_channel_ready, Vec::new(), Vec::new(), Vec::new());
 		Ok(channel_monitor)
+	}
+
+	/// Updates the state of the channel to indicate that all channels in the batch have received
+	/// funding_signed and persisted their monitors.
+	/// The funding transaction is consequently allowed to be broadcast, and the channel can be
+	/// treated as a non-batch channel going forward.
+	pub fn set_batch_ready(&mut self) {
+		self.context.is_batch_funding = None;
+		self.context.channel_state &= !(ChannelState::WaitingForBatch as u32);
 	}
 
 	/// Handles a channel_ready message from our peer. If we've already sent our channel_ready
@@ -2612,7 +2673,13 @@ impl<SP: Deref> Channel<SP> where
 
 		let non_shutdown_state = self.context.channel_state & (!MULTI_STATE_FLAGS);
 
-		if non_shutdown_state == ChannelState::FundingSent as u32 {
+		// Our channel_ready shouldn't have been sent if we are waiting for other channels in the
+		// batch, but we can receive channel_ready messages.
+		debug_assert!(
+			non_shutdown_state & ChannelState::OurChannelReady as u32 == 0 ||
+			non_shutdown_state & ChannelState::WaitingForBatch as u32 == 0
+		);
+		if non_shutdown_state & !(ChannelState::WaitingForBatch as u32) == ChannelState::FundingSent as u32 {
 			self.context.channel_state |= ChannelState::TheirChannelReady as u32;
 		} else if non_shutdown_state == (ChannelState::FundingSent as u32 | ChannelState::OurChannelReady as u32) {
 			self.context.channel_state = ChannelState::ChannelReady as u32 | (self.context.channel_state & MULTI_STATE_FLAGS);
@@ -3111,7 +3178,7 @@ impl<SP: Deref> Channel<SP> where
 	) -> (Option<ChannelMonitorUpdate>, Vec<(HTLCSource, PaymentHash)>)
 	where F::Target: FeeEstimator, L::Target: Logger
 	{
-		if self.context.channel_state >= ChannelState::ChannelReady as u32 &&
+		if self.context.channel_state & !STATE_FLAGS >= ChannelState::ChannelReady as u32 &&
 		   (self.context.channel_state & (ChannelState::AwaitingRemoteRevoke as u32 | ChannelState::PeerDisconnected as u32 | ChannelState::MonitorUpdateInProgress as u32)) == 0 {
 			self.free_holding_cell_htlcs(fee_estimator, logger)
 		} else { (None, Vec::new()) }
@@ -3585,17 +3652,17 @@ impl<SP: Deref> Channel<SP> where
 	/// resent.
 	/// No further message handling calls may be made until a channel_reestablish dance has
 	/// completed.
-	pub fn remove_uncommitted_htlcs_and_mark_paused<L: Deref>(&mut self, logger: &L)  where L::Target: Logger {
+	/// May return `Err(())`, which implies [`ChannelContext::force_shutdown`] should be called immediately.
+	pub fn remove_uncommitted_htlcs_and_mark_paused<L: Deref>(&mut self, logger: &L) -> Result<(), ()> where L::Target: Logger {
 		assert_eq!(self.context.channel_state & ChannelState::ShutdownComplete as u32, 0);
-		if self.context.channel_state < ChannelState::FundingSent as u32 {
-			self.context.channel_state = ChannelState::ShutdownComplete as u32;
-			return;
+		if self.context.channel_state & !STATE_FLAGS < ChannelState::FundingSent as u32 {
+			return Err(());
 		}
 
 		if self.context.channel_state & (ChannelState::PeerDisconnected as u32) == (ChannelState::PeerDisconnected as u32) {
 			// While the below code should be idempotent, it's simpler to just return early, as
 			// redundant disconnect events can fire, though they should be rare.
-			return;
+			return Ok(());
 		}
 
 		if self.context.announcement_sigs_state == AnnouncementSigsState::MessageSent || self.context.announcement_sigs_state == AnnouncementSigsState::Committed {
@@ -3656,6 +3723,7 @@ impl<SP: Deref> Channel<SP> where
 
 		self.context.channel_state |= ChannelState::PeerDisconnected as u32;
 		log_trace!(logger, "Peer disconnection resulted in {} remote-announced HTLC drops on channel {}", inbound_drop_count, &self.context.channel_id());
+		Ok(())
 	}
 
 	/// Indicates that a ChannelMonitor update is in progress and has not yet been fully persisted.
@@ -3701,12 +3769,12 @@ impl<SP: Deref> Channel<SP> where
 		// (re-)broadcast the funding transaction as we may have declined to broadcast it when we
 		// first received the funding_signed.
 		let mut funding_broadcastable =
-			if self.context.is_outbound() && self.context.channel_state & !MULTI_STATE_FLAGS >= ChannelState::FundingSent as u32 {
+			if self.context.is_outbound() && self.context.channel_state & !STATE_FLAGS >= ChannelState::FundingSent as u32 && self.context.channel_state & ChannelState::WaitingForBatch as u32 == 0 {
 				self.context.funding_transaction.take()
 			} else { None };
 		// That said, if the funding transaction is already confirmed (ie we're active with a
 		// minimum_depth over 0) don't bother re-broadcasting the confirmed funding tx.
-		if self.context.channel_state & !MULTI_STATE_FLAGS >= ChannelState::ChannelReady as u32 && self.context.minimum_depth != Some(0) {
+		if self.context.channel_state & !STATE_FLAGS >= ChannelState::ChannelReady as u32 && self.context.minimum_depth != Some(0) {
 			funding_broadcastable = None;
 		}
 
@@ -4209,7 +4277,7 @@ impl<SP: Deref> Channel<SP> where
 		if self.context.channel_state & (ChannelState::PeerDisconnected as u32) == ChannelState::PeerDisconnected as u32 {
 			return Err(ChannelError::Close("Peer sent shutdown when we needed a channel_reestablish".to_owned()));
 		}
-		if self.context.channel_state < ChannelState::FundingSent as u32 {
+		if self.context.channel_state & !STATE_FLAGS < ChannelState::FundingSent as u32 {
 			// Spec says we should fail the connection, not the channel, but that's nonsense, there
 			// are plenty of reasons you may want to fail a channel pre-funding, and spec says you
 			// can do that via error message without getting a connection fail anyway...
@@ -4603,7 +4671,7 @@ impl<SP: Deref> Channel<SP> where
 	pub fn is_awaiting_initial_mon_persist(&self) -> bool {
 		if !self.is_awaiting_monitor_update() { return false; }
 		if self.context.channel_state &
-			!(ChannelState::TheirChannelReady as u32 | ChannelState::PeerDisconnected as u32 | ChannelState::MonitorUpdateInProgress as u32)
+			!(ChannelState::TheirChannelReady as u32 | ChannelState::PeerDisconnected as u32 | ChannelState::MonitorUpdateInProgress as u32 | ChannelState::WaitingForBatch as u32)
 				== ChannelState::FundingSent as u32 {
 			// If we're not a 0conf channel, we'll be waiting on a monitor update with only
 			// FundingSent set, though our peer could have sent their channel_ready.
@@ -4634,7 +4702,7 @@ impl<SP: Deref> Channel<SP> where
 
 	/// Returns true if our channel_ready has been sent
 	pub fn is_our_channel_ready(&self) -> bool {
-		(self.context.channel_state & ChannelState::OurChannelReady as u32) != 0 || self.context.channel_state >= ChannelState::ChannelReady as u32
+		(self.context.channel_state & ChannelState::OurChannelReady as u32) != 0 || self.context.channel_state & !STATE_FLAGS >= ChannelState::ChannelReady as u32
 	}
 
 	/// Returns true if our peer has either initiated or agreed to shut down the channel.
@@ -4683,6 +4751,8 @@ impl<SP: Deref> Channel<SP> where
 			return None;
 		}
 
+		// Note that we don't include ChannelState::WaitingForBatch as we don't want to send
+		// channel_ready until the entire batch is ready.
 		let non_shutdown_state = self.context.channel_state & (!MULTI_STATE_FLAGS);
 		let need_commitment_update = if non_shutdown_state == ChannelState::FundingSent as u32 {
 			self.context.channel_state |= ChannelState::OurChannelReady as u32;
@@ -4695,7 +4765,7 @@ impl<SP: Deref> Channel<SP> where
 			// We got a reorg but not enough to trigger a force close, just ignore.
 			false
 		} else {
-			if self.context.funding_tx_confirmation_height != 0 && self.context.channel_state < ChannelState::ChannelReady as u32 {
+			if self.context.funding_tx_confirmation_height != 0 && self.context.channel_state & !STATE_FLAGS < ChannelState::ChannelReady as u32 {
 				// We should never see a funding transaction on-chain until we've received
 				// funding_signed (if we're an outbound channel), or seen funding_generated (if we're
 				// an inbound channel - before that we have no known funding TXID). The fuzzer,
@@ -4865,7 +4935,7 @@ impl<SP: Deref> Channel<SP> where
 		}
 
 		let non_shutdown_state = self.context.channel_state & (!MULTI_STATE_FLAGS);
-		if non_shutdown_state >= ChannelState::ChannelReady as u32 ||
+		if non_shutdown_state & !STATE_FLAGS >= ChannelState::ChannelReady as u32 ||
 		   (non_shutdown_state & ChannelState::OurChannelReady as u32) == ChannelState::OurChannelReady as u32 {
 			let mut funding_tx_confirmations = height as i64 - self.context.funding_tx_confirmation_height as i64 + 1;
 			if self.context.funding_tx_confirmation_height == 0 {
@@ -4893,7 +4963,7 @@ impl<SP: Deref> Channel<SP> where
 				height >= self.context.channel_creation_height + FUNDING_CONF_DEADLINE_BLOCKS {
 			log_info!(logger, "Closing channel {} due to funding timeout", &self.context.channel_id);
 			// If funding_tx_confirmed_in is unset, the channel must not be active
-			assert!(non_shutdown_state <= ChannelState::ChannelReady as u32);
+			assert!(non_shutdown_state & !STATE_FLAGS <= ChannelState::ChannelReady as u32);
 			assert_eq!(non_shutdown_state & ChannelState::OurChannelReady as u32, 0);
 			return Err(ClosureReason::FundingTimedOut);
 		}
@@ -5513,7 +5583,7 @@ impl<SP: Deref> Channel<SP> where
 		// If we haven't funded the channel yet, we don't need to bother ensuring the shutdown
 		// script is set, we just force-close and call it a day.
 		let mut chan_closed = false;
-		if self.context.channel_state < ChannelState::FundingSent as u32 {
+		if self.context.channel_state & !STATE_FLAGS < ChannelState::FundingSent as u32 {
 			chan_closed = true;
 		}
 
@@ -5542,7 +5612,7 @@ impl<SP: Deref> Channel<SP> where
 
 		// From here on out, we may not fail!
 		self.context.target_closing_feerate_sats_per_kw = target_feerate_sats_per_kw;
-		if self.context.channel_state < ChannelState::FundingSent as u32 {
+		if self.context.channel_state & !STATE_FLAGS < ChannelState::FundingSent as u32 {
 			self.context.channel_state = ChannelState::ShutdownComplete as u32;
 		} else {
 			self.context.channel_state |= ChannelState::LocalShutdownSent as u32;
@@ -5765,6 +5835,7 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 					channel_type_features: channel_type.clone()
 				},
 				funding_transaction: None,
+				is_batch_funding: None,
 
 				counterparty_cur_commitment_point: None,
 				counterparty_prev_commitment_point: None,
@@ -5825,7 +5896,7 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 	/// Note that channel_id changes during this call!
 	/// Do NOT broadcast the funding transaction until after a successful funding_signed call!
 	/// If an Err is returned, it is a ChannelError::Close.
-	pub fn get_funding_created<L: Deref>(mut self, funding_transaction: Transaction, funding_txo: OutPoint, logger: &L)
+	pub fn get_funding_created<L: Deref>(mut self, funding_transaction: Transaction, funding_txo: OutPoint, is_batch_funding: bool, logger: &L)
 	-> Result<(Channel<SP>, msgs::FundingCreated), (Self, ChannelError)> where L::Target: Logger {
 		if !self.context.is_outbound() {
 			panic!("Tried to create outbound funding_created message on an inbound channel!");
@@ -5867,6 +5938,7 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 		}
 
 		self.context.funding_transaction = Some(funding_transaction);
+		self.context.is_batch_funding = Some(()).filter(|_| is_batch_funding);
 
 		let channel = Channel {
 			context: self.context,
@@ -6416,6 +6488,7 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 					channel_type_features: channel_type.clone()
 				},
 				funding_transaction: None,
+				is_batch_funding: None,
 
 				counterparty_cur_commitment_point: Some(msg.first_per_commitment_point),
 				counterparty_prev_commitment_point: None,
@@ -7031,6 +7104,7 @@ impl<SP: Deref> Writeable for Channel<SP> where SP::Target: SignerProvider {
 			(31, channel_pending_event_emitted, option),
 			(35, pending_outbound_skimmed_fees, optional_vec),
 			(37, holding_cell_skimmed_fees, optional_vec),
+			(38, self.context.is_batch_funding, option),
 		});
 
 		Ok(())
@@ -7253,7 +7327,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 		};
 
 		let mut channel_parameters: ChannelTransactionParameters = Readable::read(reader)?;
-		let funding_transaction = Readable::read(reader)?;
+		let funding_transaction: Option<Transaction> = Readable::read(reader)?;
 
 		let counterparty_cur_commitment_point = Readable::read(reader)?;
 
@@ -7314,6 +7388,8 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 		let mut pending_outbound_skimmed_fees_opt: Option<Vec<Option<u64>>> = None;
 		let mut holding_cell_skimmed_fees_opt: Option<Vec<Option<u64>>> = None;
 
+		let mut is_batch_funding: Option<()> = None;
+
 		read_tlv_fields!(reader, {
 			(0, announcement_sigs, option),
 			(1, minimum_depth, option),
@@ -7339,6 +7415,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 			(31, channel_pending_event_emitted, option),
 			(35, pending_outbound_skimmed_fees_opt, optional_vec),
 			(37, holding_cell_skimmed_fees_opt, optional_vec),
+			(38, is_batch_funding, option),
 		});
 
 		let (channel_keys_id, holder_signer) = if let Some(channel_keys_id) = channel_keys_id {
@@ -7346,7 +7423,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 			// If we've gotten to the funding stage of the channel, populate the signer with its
 			// required channel parameters.
 			let non_shutdown_state = channel_state & (!MULTI_STATE_FLAGS);
-			if non_shutdown_state >= (ChannelState::FundingCreated as u32) {
+			if non_shutdown_state & !STATE_FLAGS >= (ChannelState::FundingCreated as u32) {
 				holder_signer.provide_channel_parameters(&channel_parameters);
 			}
 			(channel_keys_id, holder_signer)
@@ -7496,6 +7573,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 
 				channel_transaction_parameters: channel_parameters,
 				funding_transaction,
+				is_batch_funding,
 
 				counterparty_cur_commitment_point,
 				counterparty_prev_commitment_point,
@@ -7549,7 +7627,7 @@ mod tests {
 	use crate::ln::PaymentHash;
 	use crate::ln::channelmanager::{self, HTLCSource, PaymentId};
 	use crate::ln::channel::InitFeatures;
-	use crate::ln::channel::{Channel, InboundHTLCOutput, OutboundV1Channel, InboundV1Channel, OutboundHTLCOutput, InboundHTLCState, OutboundHTLCState, HTLCCandidate, HTLCInitiator, commit_tx_fee_msat};
+	use crate::ln::channel::{Channel, ChannelState, InboundHTLCOutput, OutboundV1Channel, InboundV1Channel, OutboundHTLCOutput, InboundHTLCState, OutboundHTLCState, HTLCCandidate, HTLCInitiator, commit_tx_fee_msat};
 	use crate::ln::channel::{MAX_FUNDING_SATOSHIS_NO_WUMBO, TOTAL_BITCOIN_SUPPLY_SATOSHIS, MIN_THEIR_CHAN_RESERVE_SATOSHIS};
 	use crate::ln::features::ChannelTypeFeatures;
 	use crate::ln::msgs::{ChannelUpdate, DecodeError, UnsignedChannelUpdate, MAX_VALUE_MSAT};
@@ -7728,7 +7806,7 @@ mod tests {
 			value: 10000000, script_pubkey: output_script.clone(),
 		}]};
 		let funding_outpoint = OutPoint{ txid: tx.txid(), index: 0 };
-		let (mut node_a_chan, funding_created_msg) = node_a_chan.get_funding_created(tx.clone(), funding_outpoint, &&logger).map_err(|_| ()).unwrap();
+		let (mut node_a_chan, funding_created_msg) = node_a_chan.get_funding_created(tx.clone(), funding_outpoint, false, &&logger).map_err(|_| ()).unwrap();
 		let (_, funding_signed_msg, _) = node_b_chan.funding_created(&funding_created_msg, best_block, &&keys_provider, &&logger).map_err(|_| ()).unwrap();
 
 		// Node B --> Node A: funding signed
@@ -7855,7 +7933,7 @@ mod tests {
 			value: 10000000, script_pubkey: output_script.clone(),
 		}]};
 		let funding_outpoint = OutPoint{ txid: tx.txid(), index: 0 };
-		let (mut node_a_chan, funding_created_msg) = node_a_chan.get_funding_created(tx.clone(), funding_outpoint, &&logger).map_err(|_| ()).unwrap();
+		let (mut node_a_chan, funding_created_msg) = node_a_chan.get_funding_created(tx.clone(), funding_outpoint, false, &&logger).map_err(|_| ()).unwrap();
 		let (mut node_b_chan, funding_signed_msg, _) = node_b_chan.funding_created(&funding_created_msg, best_block, &&keys_provider, &&logger).map_err(|_| ()).unwrap();
 
 		// Node B --> Node A: funding signed
@@ -7863,7 +7941,7 @@ mod tests {
 
 		// Now disconnect the two nodes and check that the commitment point in
 		// Node B's channel_reestablish message is sane.
-		node_b_chan.remove_uncommitted_htlcs_and_mark_paused(&&logger);
+		assert!(node_b_chan.remove_uncommitted_htlcs_and_mark_paused(&&logger).is_ok());
 		let msg = node_b_chan.get_channel_reestablish(&&logger);
 		assert_eq!(msg.next_local_commitment_number, 1); // now called next_commitment_number
 		assert_eq!(msg.next_remote_commitment_number, 0); // now called next_revocation_number
@@ -7871,7 +7949,7 @@ mod tests {
 
 		// Check that the commitment point in Node A's channel_reestablish message
 		// is sane.
-		node_a_chan.remove_uncommitted_htlcs_and_mark_paused(&&logger);
+		assert!(node_a_chan.remove_uncommitted_htlcs_and_mark_paused(&&logger).is_ok());
 		let msg = node_a_chan.get_channel_reestablish(&&logger);
 		assert_eq!(msg.next_local_commitment_number, 1); // now called next_commitment_number
 		assert_eq!(msg.next_remote_commitment_number, 0); // now called next_revocation_number
@@ -8043,7 +8121,7 @@ mod tests {
 			value: 10000000, script_pubkey: output_script.clone(),
 		}]};
 		let funding_outpoint = OutPoint{ txid: tx.txid(), index: 0 };
-		let (mut node_a_chan, funding_created_msg) = node_a_chan.get_funding_created(tx.clone(), funding_outpoint, &&logger).map_err(|_| ()).unwrap();
+		let (mut node_a_chan, funding_created_msg) = node_a_chan.get_funding_created(tx.clone(), funding_outpoint, false, &&logger).map_err(|_| ()).unwrap();
 		let (_, funding_signed_msg, _) = node_b_chan.funding_created(&funding_created_msg, best_block, &&keys_provider, &&logger).map_err(|_| ()).unwrap();
 
 		// Node B --> Node A: funding signed
@@ -9022,5 +9100,147 @@ mod tests {
 			&accept_channel_msg, &config.channel_handshake_limits, &simple_anchors_init
 		);
 		assert!(res.is_err());
+	}
+
+	#[test]
+	fn test_waiting_for_batch() {
+		let feeest = LowerBoundedFeeEstimator::new(&TestFeeEstimator{fee_est: 15000});
+		let logger = test_utils::TestLogger::new();
+		let secp_ctx = Secp256k1::new();
+		let seed = [42; 32];
+		let network = Network::Testnet;
+		let best_block = BestBlock::from_network(network);
+		let chain_hash = genesis_block(network).header.block_hash();
+		let keys_provider = test_utils::TestKeysInterface::new(&seed, network);
+
+		let mut config = UserConfig::default();
+		// Set trust_own_funding_0conf while ensuring we don't send channel_ready for a
+		// channel in a batch before all channels are ready.
+		config.channel_handshake_limits.trust_own_funding_0conf = true;
+
+		// Create a channel from node a to node b that will be part of batch funding.
+		let node_b_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
+		let mut node_a_chan = OutboundV1Channel::<&TestKeysInterface>::new(
+			&feeest,
+			&&keys_provider,
+			&&keys_provider,
+			node_b_node_id,
+			&channelmanager::provided_init_features(&config),
+			10000000,
+			100000,
+			42,
+			&config,
+			0,
+			42,
+		).unwrap();
+
+		let open_channel_msg = node_a_chan.get_open_channel(genesis_block(network).header.block_hash());
+		let node_b_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[7; 32]).unwrap());
+		let mut node_b_chan = InboundV1Channel::<&TestKeysInterface>::new(
+			&feeest,
+			&&keys_provider,
+			&&keys_provider,
+			node_b_node_id,
+			&channelmanager::provided_channel_type_features(&config),
+			&channelmanager::provided_init_features(&config),
+			&open_channel_msg,
+			7,
+			&config,
+			0,
+			&&logger,
+			true,  // Allow node b to send a 0conf channel_ready.
+		).unwrap();
+
+		let accept_channel_msg = node_b_chan.accept_inbound_channel();
+		node_a_chan.accept_channel(
+			&accept_channel_msg,
+			&config.channel_handshake_limits,
+			&channelmanager::provided_init_features(&config),
+		).unwrap();
+
+		// Fund the channel with a batch funding transaction.
+		let output_script = node_a_chan.context.get_funding_redeemscript();
+		let tx = Transaction {
+			version: 1,
+			lock_time: PackedLockTime::ZERO,
+			input: Vec::new(),
+			output: vec![
+				TxOut {
+					value: 10000000, script_pubkey: output_script.clone(),
+				},
+				TxOut {
+					value: 10000000, script_pubkey: Builder::new().into_script(),
+				},
+			]};
+		let funding_outpoint = OutPoint{ txid: tx.txid(), index: 0 };
+		let (mut node_a_chan, funding_created_msg) = node_a_chan.get_funding_created(
+			tx.clone(),
+			funding_outpoint,
+			true,
+			&&logger,
+		).map_err(|_| ()).unwrap();
+		let (mut node_b_chan, funding_signed_msg, _) = node_b_chan.funding_created(
+			&funding_created_msg,
+			best_block,
+			&&keys_provider,
+			&&logger,
+		).map_err(|_| ()).unwrap();
+		let node_b_updates = node_b_chan.monitor_updating_restored(
+			&&logger,
+			&&keys_provider,
+			chain_hash,
+			&config,
+			0,
+		);
+
+		// Receive funding_signed, but the channel will be configured to hold sending channel_ready and
+		// broadcasting the funding transaction until the batch is ready.
+		let _ = node_a_chan.funding_signed(
+			&funding_signed_msg,
+			best_block,
+			&&keys_provider,
+			&&logger,
+		).unwrap();
+		let node_a_updates = node_a_chan.monitor_updating_restored(
+			&&logger,
+			&&keys_provider,
+			chain_hash,
+			&config,
+			0,
+		);
+		// Our channel_ready shouldn't be sent yet, even with trust_own_funding_0conf set,
+		// as the funding transaction depends on all channels in the batch becoming ready.
+		assert!(node_a_updates.channel_ready.is_none());
+		assert!(node_a_updates.funding_broadcastable.is_none());
+		assert_eq!(
+			node_a_chan.context.channel_state,
+			ChannelState::FundingSent as u32 |
+			ChannelState::WaitingForBatch as u32,
+		);
+
+		// It is possible to receive a 0conf channel_ready from the remote node.
+		node_a_chan.channel_ready(
+			&node_b_updates.channel_ready.unwrap(),
+			&&keys_provider,
+			chain_hash,
+			&config,
+			&best_block,
+			&&logger,
+		).unwrap();
+		assert_eq!(
+			node_a_chan.context.channel_state,
+			ChannelState::FundingSent as u32 |
+			ChannelState::WaitingForBatch as u32 |
+			ChannelState::TheirChannelReady as u32,
+		);
+
+		// Clear the ChannelState::WaitingForBatch only when called by ChannelManager.
+		node_a_chan.set_batch_ready();
+		assert_eq!(
+			node_a_chan.context.channel_state,
+			ChannelState::FundingSent as u32 |
+			ChannelState::TheirChannelReady as u32,
+		);
+		assert!(node_a_chan.check_get_channel_ready(0).is_some());
 	}
 }

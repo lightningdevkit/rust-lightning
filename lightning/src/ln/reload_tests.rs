@@ -11,7 +11,7 @@
 
 use crate::chain::{ChannelMonitorUpdateStatus, Watch};
 use crate::chain::chaininterface::LowerBoundedFeeEstimator;
-use crate::chain::channelmonitor::ChannelMonitor;
+use crate::chain::channelmonitor::{CLOSED_CHANNEL_UPDATE_ID, ChannelMonitor};
 use crate::sign::EntropySource;
 use crate::chain::transaction::OutPoint;
 use crate::events::{ClosureReason, Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider};
@@ -25,6 +25,7 @@ use crate::util::ser::{Writeable, ReadableArgs};
 use crate::util::config::UserConfig;
 use crate::util::string::UntrustedString;
 
+use bitcoin::{PackedLockTime, Transaction, TxOut};
 use bitcoin::hash_types::BlockHash;
 
 use crate::prelude::*;
@@ -1113,4 +1114,66 @@ fn removed_payment_no_manager_persistence() {
 	}
 
 	expect_payment_failed!(nodes[0], payment_hash, false);
+}
+
+#[test]
+fn test_reload_partial_funding_batch() {
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+	let new_persister;
+	let new_chain_monitor;
+
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
+	let new_channel_manager;
+	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+
+	// Initiate channel opening and create the batch channel funding transaction.
+	let (tx, funding_created_msgs) = create_batch_channel_funding(&nodes[0], &[
+		(&nodes[1], 100_000, 0, 42, None),
+		(&nodes[2], 200_000, 0, 43, None),
+	]);
+
+	// Go through the funding_created and funding_signed flow with node 1.
+	nodes[1].node.handle_funding_created(&nodes[0].node.get_our_node_id(), &funding_created_msgs[0]);
+	check_added_monitors(&nodes[1], 1);
+	expect_channel_pending_event(&nodes[1], &nodes[0].node.get_our_node_id());
+
+	// The monitor is persisted when receiving funding_signed.
+	let funding_signed_msg = get_event_msg!(nodes[1], MessageSendEvent::SendFundingSigned, nodes[0].node.get_our_node_id());
+	nodes[0].node.handle_funding_signed(&nodes[1].node.get_our_node_id(), &funding_signed_msg);
+	check_added_monitors(&nodes[0], 1);
+
+	// The transaction should not have been broadcast before all channels are ready.
+	assert_eq!(nodes[0].tx_broadcaster.txn_broadcast().len(), 0);
+
+	// Reload the node while a subset of the channels in the funding batch have persisted monitors.
+	let channel_id_1 = OutPoint { txid: tx.txid(), index: 0 }.to_channel_id();
+	let node_encoded = nodes[0].node.encode();
+	let channel_monitor_1_serialized = get_monitor!(nodes[0], channel_id_1).encode();
+	reload_node!(nodes[0], node_encoded, &[&channel_monitor_1_serialized], new_persister, new_chain_monitor, new_channel_manager);
+
+	// Process monitor events.
+	assert!(nodes[0].node.get_and_clear_pending_events().is_empty());
+
+	// The monitor should become closed.
+	check_added_monitors(&nodes[0], 1);
+	{
+		let mut monitor_updates = nodes[0].chain_monitor.monitor_updates.lock().unwrap();
+		let monitor_updates_1 = monitor_updates.get(&channel_id_1).unwrap();
+		assert_eq!(monitor_updates_1.len(), 1);
+		assert_eq!(monitor_updates_1[0].update_id, CLOSED_CHANNEL_UPDATE_ID);
+	}
+
+	// The funding transaction should not have been broadcast, but we broadcast the force-close
+	// transaction as part of closing the monitor.
+	{
+		let broadcasted_txs = nodes[0].tx_broadcaster.txn_broadcast();
+		assert_eq!(broadcasted_txs.len(), 1);
+		assert!(broadcasted_txs[0].txid() != tx.txid());
+		assert_eq!(broadcasted_txs[0].input.len(), 1);
+		assert_eq!(broadcasted_txs[0].input[0].previous_output.txid, tx.txid());
+	}
+
+	// Ensure the channels don't exist anymore.
+	assert!(nodes[0].node.list_channels().is_empty());
 }
