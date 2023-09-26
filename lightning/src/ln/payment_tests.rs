@@ -166,6 +166,142 @@ fn mpp_retry() {
 	claim_payment_along_route(&nodes[0], &[&[&nodes[1], &nodes[3]], &[&nodes[2], &nodes[3]]], false, payment_preimage);
 }
 
+#[test]
+fn mpp_retry_overpay() {
+	// We create an MPP scenario with two paths in which we need to overpay to reach
+	// htlc_minimum_msat. We then fail the overpaid path and check that on retry our
+	// max_total_routing_fee_msat only accounts for the path's fees, but not for the fees overpaid
+	// in the first attempt.
+	let chanmon_cfgs = create_chanmon_cfgs(4);
+	let node_cfgs = create_node_cfgs(4, &chanmon_cfgs);
+	let mut user_config = test_default_channel_config();
+	user_config.channel_handshake_config.max_inbound_htlc_value_in_flight_percent_of_channel = 100;
+	let mut limited_config_1 = user_config.clone();
+	limited_config_1.channel_handshake_config.our_htlc_minimum_msat = 35_000_000;
+	let mut limited_config_2 = user_config.clone();
+	limited_config_2.channel_handshake_config.our_htlc_minimum_msat = 34_500_000;
+	let node_chanmgrs = create_node_chanmgrs(4, &node_cfgs,
+		&[Some(user_config), Some(limited_config_1), Some(limited_config_2), Some(user_config)]);
+	let nodes = create_network(4, &node_cfgs, &node_chanmgrs);
+
+	let (chan_1_update, _, _, _) = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 40_000, 0);
+	let (chan_2_update, _, _, _) = create_announced_chan_between_nodes_with_value(&nodes, 0, 2, 40_000, 0);
+	let (_chan_3_update, _, _, _) = create_announced_chan_between_nodes_with_value(&nodes, 1, 3, 40_000, 0);
+	let (chan_4_update, _, chan_4_id, _) = create_announced_chan_between_nodes_with_value(&nodes, 3, 2, 40_000, 0);
+
+	let amt_msat = 70_000_000;
+	let max_total_routing_fee_msat = Some(1_000_000);
+
+	let payment_params = PaymentParameters::from_node_id(nodes[3].node.get_our_node_id(), TEST_FINAL_CLTV)
+		.with_bolt11_features(nodes[3].node.invoice_features()).unwrap();
+	let (mut route, payment_hash, payment_preimage, payment_secret) = get_route_and_payment_hash!(
+		nodes[0], nodes[3], payment_params, amt_msat, max_total_routing_fee_msat);
+
+	// Check we overpay on the second path which we're about to fail.
+	assert_eq!(chan_1_update.contents.fee_proportional_millionths, 0);
+	let overpaid_amount_1 = route.paths[0].fee_msat() as u32 - chan_1_update.contents.fee_base_msat;
+	assert_eq!(overpaid_amount_1, 0);
+
+	assert_eq!(chan_2_update.contents.fee_proportional_millionths, 0);
+	let overpaid_amount_2 = route.paths[1].fee_msat() as u32 - chan_2_update.contents.fee_base_msat;
+
+	let total_overpaid_amount = overpaid_amount_1 + overpaid_amount_2;
+
+	// Initiate the payment.
+	let payment_id = PaymentId(payment_hash.0);
+	let mut route_params = route.route_params.clone().unwrap();
+
+	nodes[0].router.expect_find_route(route_params.clone(), Ok(route.clone()));
+	nodes[0].node.send_payment(payment_hash, RecipientOnionFields::secret_only(payment_secret),
+		payment_id, route_params.clone(), Retry::Attempts(1)).unwrap();
+	check_added_monitors!(nodes[0], 2); // one monitor per path
+	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 2);
+
+	// Pass half of the payment along the success path.
+	let success_path_msgs = remove_first_msg_event_to_node(&nodes[1].node.get_our_node_id(), &mut events);
+	pass_along_path(&nodes[0], &[&nodes[1], &nodes[3]], amt_msat, payment_hash,
+		Some(payment_secret), success_path_msgs, false, None);
+
+	// Add the HTLC along the first hop.
+	let fail_path_msgs_1 = remove_first_msg_event_to_node(&nodes[2].node.get_our_node_id(), &mut events);
+	let (update_add, commitment_signed) = match fail_path_msgs_1 {
+		MessageSendEvent::UpdateHTLCs {
+			node_id: _,
+			updates: msgs::CommitmentUpdate {
+					ref update_add_htlcs, ref update_fulfill_htlcs, ref update_fail_htlcs,
+					ref update_fail_malformed_htlcs, ref update_fee, ref commitment_signed
+			}
+		} => {
+			assert_eq!(update_add_htlcs.len(), 1);
+			assert!(update_fail_htlcs.is_empty());
+			assert!(update_fulfill_htlcs.is_empty());
+			assert!(update_fail_malformed_htlcs.is_empty());
+			assert!(update_fee.is_none());
+			(update_add_htlcs[0].clone(), commitment_signed.clone())
+		},
+		_ => panic!("Unexpected event"),
+	};
+	nodes[2].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &update_add);
+	commitment_signed_dance!(nodes[2], nodes[0], commitment_signed, false);
+
+	// Attempt to forward the payment and complete the 2nd path's failure.
+	expect_pending_htlcs_forwardable!(&nodes[2]);
+	expect_pending_htlcs_forwardable_and_htlc_handling_failed!(&nodes[2],
+		vec![HTLCDestination::NextHopChannel {
+			node_id: Some(nodes[3].node.get_our_node_id()), channel_id: chan_4_id
+		}]
+	);
+	let htlc_updates = get_htlc_update_msgs!(nodes[2], nodes[0].node.get_our_node_id());
+	assert!(htlc_updates.update_add_htlcs.is_empty());
+	assert_eq!(htlc_updates.update_fail_htlcs.len(), 1);
+	assert!(htlc_updates.update_fulfill_htlcs.is_empty());
+	assert!(htlc_updates.update_fail_malformed_htlcs.is_empty());
+	check_added_monitors!(nodes[2], 1);
+	nodes[0].node.handle_update_fail_htlc(&nodes[2].node.get_our_node_id(),
+		&htlc_updates.update_fail_htlcs[0]);
+	commitment_signed_dance!(nodes[0], nodes[2], htlc_updates.commitment_signed, false);
+	let mut events = nodes[0].node.get_and_clear_pending_events();
+	match events[1] {
+		Event::PendingHTLCsForwardable { .. } => {},
+		_ => panic!("Unexpected event")
+	}
+	events.remove(1);
+	expect_payment_failed_conditions_event(events, payment_hash, false,
+		PaymentFailedConditions::new().mpp_parts_remain());
+
+	// Rebalance the channel so the second half of the payment can succeed.
+	send_payment(&nodes[3], &vec!(&nodes[2])[..], 38_000_000);
+
+	// Retry the second half of the payment and make sure it succeeds.
+	let first_path_value = route.paths[0].final_value_msat();
+	assert_eq!(first_path_value, 36_000_000);
+
+	route.paths.remove(0);
+	route_params.final_value_msat -= first_path_value;
+	route_params.payment_params.previously_failed_channels.push(chan_4_update.contents.short_channel_id);
+
+	// Check the remaining max total routing fee for the second attempt accounts only for 1_000 msat
+	// base fee, but not for overpaid value of the first try.
+	route_params.max_total_routing_fee_msat.as_mut().map(|m| *m -= 1000);
+	nodes[0].router.expect_find_route(route_params, Ok(route));
+	nodes[0].node.process_pending_htlc_forwards();
+
+	check_added_monitors!(nodes[0], 1);
+	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 1);
+	pass_along_path(&nodes[0], &[&nodes[2], &nodes[3]], amt_msat, payment_hash,
+		Some(payment_secret), events.pop().unwrap(), true, None);
+
+	// Can't use claim_payment_along_route as it doesn't support overpayment, so we break out the
+	// individual steps here.
+	let extra_fees = vec![0, total_overpaid_amount];
+	let expected_total_fee_msat = do_claim_payment_along_route_with_extra_penultimate_hop_fees(
+		&nodes[0], &[&[&nodes[1], &nodes[3]], &[&nodes[2], &nodes[3]]], &extra_fees[..], false,
+		payment_preimage);
+	expect_payment_sent!(&nodes[0], payment_preimage, Some(expected_total_fee_msat));
+}
+
 fn do_mpp_receive_timeout(send_partial_mpp: bool) {
 	let chanmon_cfgs = create_chanmon_cfgs(4);
 	let node_cfgs = create_node_cfgs(4, &chanmon_cfgs);
