@@ -2084,11 +2084,6 @@ mod tests {
 		let outbound_payments = OutboundPayments::new();
 		let payment_id = PaymentId([0; 32]);
 
-		assert!(
-			outbound_payments.add_new_awaiting_invoice(payment_id, Retry::Attempts(0), None).is_ok()
-		);
-		assert!(outbound_payments.has_pending_payments());
-
 		let invoice = OfferBuilder::new("foo".into(), recipient_pubkey())
 			.amount_msats(1000)
 			.build().unwrap()
@@ -2098,6 +2093,12 @@ mod tests {
 			.respond_with_no_std(payment_paths(), payment_hash(), now()).unwrap()
 			.build().unwrap()
 			.sign(recipient_sign).unwrap();
+
+		assert!(outbound_payments.add_new_awaiting_invoice(
+				payment_id, Retry::Attempts(0), Some(invoice.amount_msats() / 100 + 50_000))
+			.is_ok()
+		);
+		assert!(outbound_payments.has_pending_payments());
 
 		router.expect_find_route(
 			RouteParameters::from_payment_params_and_value(
@@ -2139,11 +2140,6 @@ mod tests {
 		let outbound_payments = OutboundPayments::new();
 		let payment_id = PaymentId([0; 32]);
 
-		assert!(
-			outbound_payments.add_new_awaiting_invoice(payment_id, Retry::Attempts(0), None).is_ok()
-		);
-		assert!(outbound_payments.has_pending_payments());
-
 		let invoice = OfferBuilder::new("foo".into(), recipient_pubkey())
 			.amount_msats(1000)
 			.build().unwrap()
@@ -2153,6 +2149,12 @@ mod tests {
 			.respond_with_no_std(payment_paths(), payment_hash(), now()).unwrap()
 			.build().unwrap()
 			.sign(recipient_sign).unwrap();
+
+		assert!(outbound_payments.add_new_awaiting_invoice(
+				payment_id, Retry::Attempts(0), Some(invoice.amount_msats() / 100 + 50_000))
+			.is_ok()
+		);
+		assert!(outbound_payments.has_pending_payments());
 
 		let route_params = RouteParameters::from_payment_params_and_value(
 			PaymentParameters::from_bolt12_invoice(&invoice),
