@@ -2102,9 +2102,10 @@ where L::Target: Logger {
 						Some(fee) => fee,
 						None => continue
 					};
+					let path_min = candidate.htlc_minimum_msat().saturating_add(
+						compute_fees_saturating(candidate.htlc_minimum_msat(), candidate.fees()));
 					add_entry!(first_hop_candidate, our_node_id, intro_node_id, blinded_path_fee,
-						path_contribution_msat, candidate.htlc_minimum_msat(), 0_u64,
-						candidate.cltv_expiry_delta(),
+						path_contribution_msat, path_min, 0_u64, candidate.cltv_expiry_delta(),
 						candidate.blinded_path().map_or(1, |bp| bp.blinded_hops.len() as u8));
 				}
 			}
@@ -7286,6 +7287,10 @@ mod tests {
 
 	#[test]
 	fn min_htlc_overpay_violates_max_htlc() {
+		do_min_htlc_overpay_violates_max_htlc(true);
+		do_min_htlc_overpay_violates_max_htlc(false);
+	}
+	fn do_min_htlc_overpay_violates_max_htlc(blinded_payee: bool) {
 		// Test that if overpaying to meet a later hop's min_htlc and causes us to violate an earlier
 		// hop's max_htlc, we don't consider that candidate hop valid. Previously we would add this hop
 		// to `targets` and build an invalid path with it, and subsquently hit a debug panic asserting
@@ -7309,7 +7314,27 @@ mod tests {
 
 		let base_fee = 1_6778_3453;
 		let htlc_min = 2_5165_8240;
-		let payment_params =  {
+		let payment_params = if blinded_payee {
+			let blinded_path = BlindedPath {
+				introduction_node_id: nodes[0],
+				blinding_point: ln_test_utils::pubkey(42),
+				blinded_hops: vec![
+					BlindedHop { blinded_node_id: ln_test_utils::pubkey(42 as u8), encrypted_payload: Vec::new() },
+					BlindedHop { blinded_node_id: ln_test_utils::pubkey(42 as u8), encrypted_payload: Vec::new() }
+				],
+			};
+			let blinded_payinfo = BlindedPayInfo {
+				fee_base_msat: base_fee,
+				fee_proportional_millionths: 0,
+				htlc_minimum_msat: htlc_min,
+				htlc_maximum_msat: htlc_min * 1000,
+				cltv_expiry_delta: 0,
+				features: BlindedHopFeatures::empty(),
+			};
+			let bolt12_features: Bolt12InvoiceFeatures = channelmanager::provided_invoice_features(&config).to_context();
+			PaymentParameters::blinded(vec![(blinded_payinfo, blinded_path)])
+				.with_bolt12_features(bolt12_features.clone()).unwrap()
+		} else {
 			let route_hint = RouteHint(vec![RouteHintHop {
 				src_node_id: nodes[0],
 				short_channel_id: 42,
@@ -7340,6 +7365,11 @@ mod tests {
 
 	#[test]
 	fn previously_used_liquidity_violates_max_htlc() {
+		do_previously_used_liquidity_violates_max_htlc(true);
+		do_previously_used_liquidity_violates_max_htlc(false);
+
+	}
+	fn do_previously_used_liquidity_violates_max_htlc(blinded_payee: bool) {
 		// Test that if a candidate first_hop<>route_hint_src_node channel does not have enough
 		// contribution amount to cover the next hop's min_htlc plus fees, we will not consider that
 		// candidate. In this case, the candidate does not have enough due to a previous path taking up
@@ -7364,7 +7394,30 @@ mod tests {
 
 		let base_fees = [0, 425_9840, 0, 0];
 		let htlc_mins = [1_4392, 19_7401, 1027, 6_5535];
-		let payment_params = {
+		let payment_params = if blinded_payee {
+			let blinded_path = BlindedPath {
+				introduction_node_id: nodes[0],
+				blinding_point: ln_test_utils::pubkey(42),
+				blinded_hops: vec![
+					BlindedHop { blinded_node_id: ln_test_utils::pubkey(42 as u8), encrypted_payload: Vec::new() },
+					BlindedHop { blinded_node_id: ln_test_utils::pubkey(42 as u8), encrypted_payload: Vec::new() }
+				],
+			};
+			let mut blinded_hints = Vec::new();
+			for (base_fee, htlc_min) in base_fees.iter().zip(htlc_mins.iter()) {
+				blinded_hints.push((BlindedPayInfo {
+					fee_base_msat: *base_fee,
+					fee_proportional_millionths: 0,
+					htlc_minimum_msat: *htlc_min,
+					htlc_maximum_msat: htlc_min * 100,
+					cltv_expiry_delta: 10,
+					features: BlindedHopFeatures::empty(),
+				}, blinded_path.clone()));
+			}
+			let bolt12_features: Bolt12InvoiceFeatures = channelmanager::provided_invoice_features(&config).to_context();
+			PaymentParameters::blinded(blinded_hints.clone())
+				.with_bolt12_features(bolt12_features.clone()).unwrap()
+		} else {
 			let mut route_hints = Vec::new();
 			for (idx, (base_fee, htlc_min)) in base_fees.iter().zip(htlc_mins.iter()).enumerate() {
 				route_hints.push(RouteHint(vec![RouteHintHop {
