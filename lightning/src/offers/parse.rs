@@ -218,10 +218,8 @@ impl From<secp256k1::Error> for Bolt12ParseError {
 }
 
 #[cfg(test)]
-mod tests {
+mod bolt12_tests {
 	use super::Bolt12ParseError;
-	use bitcoin::bech32;
-	use crate::ln::msgs::DecodeError;
 	use crate::offers::offer::Offer;
 
 	#[test]
@@ -236,10 +234,16 @@ mod tests {
 	#[test]
 	fn parses_bech32_encoded_offers() {
 		let offers = [
-			// BOLT 12 test vectors
+			// A complete string is valid
 			"lno1pqps7sjqpgtyzm3qv4uxzmtsd3jjqer9wd3hy6tsw35k7msjzfpy7nz5yqcnygrfdej82um5wf5k2uckyypwa3eyt44h6txtxquqh7lz5djge4afgfjn7k4rgrkuag0jsd5xvxg",
+
+			// + can join anywhere
 			"l+no1pqps7sjqpgtyzm3qv4uxzmtsd3jjqer9wd3hy6tsw35k7msjzfpy7nz5yqcnygrfdej82um5wf5k2uckyypwa3eyt44h6txtxquqh7lz5djge4afgfjn7k4rgrkuag0jsd5xvxg",
+
+			// Multiple + can join
 			"lno1pqps7sjqpgt+yzm3qv4uxzmtsd3jjqer9wd3hy6tsw3+5k7msjzfpy7nz5yqcn+ygrfdej82um5wf5k2uckyypwa3eyt44h6txtxquqh7lz5djge4afgfjn7k4rgrkuag0jsd+5xvxg",
+
+			// + can be followed by whitespace
 			"lno1pqps7sjqpgt+ yzm3qv4uxzmtsd3jjqer9wd3hy6tsw3+  5k7msjzfpy7nz5yqcn+\nygrfdej82um5wf5k2uckyypwa3eyt44h6txtxquqh7lz5djge4afgfjn7k4rgrkuag0jsd+\r\n 5xvxg",
 		];
 		for encoded_offer in &offers {
@@ -252,7 +256,7 @@ mod tests {
 	#[test]
 	fn fails_parsing_bech32_encoded_offers_with_invalid_continuations() {
 		let offers = [
-			// BOLT 12 test vectors
+			// + must be surrounded by bech32 characters
 			"lno1pqps7sjqpgtyzm3qv4uxzmtsd3jjqer9wd3hy6tsw35k7msjzfpy7nz5yqcnygrfdej82um5wf5k2uckyypwa3eyt44h6txtxquqh7lz5djge4afgfjn7k4rgrkuag0jsd5xvxg+",
 			"lno1pqps7sjqpgtyzm3qv4uxzmtsd3jjqer9wd3hy6tsw35k7msjzfpy7nz5yqcnygrfdej82um5wf5k2uckyypwa3eyt44h6txtxquqh7lz5djge4afgfjn7k4rgrkuag0jsd5xvxg+ ",
 			"+lno1pqps7sjqpgtyzm3qv4uxzmtsd3jjqer9wd3hy6tsw35k7msjzfpy7nz5yqcnygrfdej82um5wf5k2uckyypwa3eyt44h6txtxquqh7lz5djge4afgfjn7k4rgrkuag0jsd5xvxg",
@@ -266,6 +270,14 @@ mod tests {
 			}
 		}
 	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::Bolt12ParseError;
+	use bitcoin::bech32;
+	use crate::ln::msgs::DecodeError;
+	use crate::offers::offer::Offer;
 
 	#[test]
 	fn fails_parsing_bech32_encoded_offer_with_invalid_hrp() {
