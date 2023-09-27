@@ -76,6 +76,19 @@ impl BlindedPath {
 		})
 	}
 
+	/// Create a one-hop blinded path for a payment.
+	pub fn one_hop_for_payment<ES: EntropySource, T: secp256k1::Signing + secp256k1::Verification>(
+		payee_node_id: PublicKey, payee_tlvs: payment::ReceiveTlvs, entropy_source: &ES,
+		secp_ctx: &Secp256k1<T>
+	) -> Result<(BlindedPayInfo, Self), ()> {
+		// This value is not considered in pathfinding for 1-hop blinded paths, because it's intended to
+		// be in relation to a specific channel.
+		let htlc_maximum_msat = u64::max_value();
+		Self::new_for_payment(
+			&[], payee_node_id, payee_tlvs, htlc_maximum_msat, entropy_source, secp_ctx
+		)
+	}
+
 	/// Create a blinded path for a payment, to be forwarded along `intermediate_nodes`.
 	///
 	/// Errors if:
@@ -85,7 +98,7 @@ impl BlindedPath {
 	///
 	/// [`ForwardTlvs`]: crate::blinded_path::payment::ForwardTlvs
 	//  TODO: make all payloads the same size with padding + add dummy hops
-	pub fn new_for_payment<ES: EntropySource, T: secp256k1::Signing + secp256k1::Verification>(
+	pub(crate) fn new_for_payment<ES: EntropySource, T: secp256k1::Signing + secp256k1::Verification>(
 		intermediate_nodes: &[payment::ForwardNode], payee_node_id: PublicKey,
 		payee_tlvs: payment::ReceiveTlvs, htlc_maximum_msat: u64, entropy_source: &ES,
 		secp_ctx: &Secp256k1<T>

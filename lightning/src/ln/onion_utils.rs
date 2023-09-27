@@ -12,7 +12,8 @@ use crate::ln::channelmanager::{HTLCSource, RecipientOnionFields};
 use crate::ln::msgs;
 use crate::ln::wire::Encode;
 use crate::routing::gossip::NetworkUpdate;
-use crate::routing::router::{Path, RouteHop};
+use crate::routing::router::{BlindedTail, Path, RouteHop};
+use crate::sign::NodeSigner;
 use crate::util::chacha20::{ChaCha20, ChaChaReader};
 use crate::util::errors::{self, APIError};
 use crate::util::ser::{Readable, ReadableArgs, Writeable, Writer, LengthCalculatingWriter};
@@ -169,7 +170,9 @@ pub(super) fn build_onion_payloads(path: &Path, total_msat: u64, mut recipient_o
 	let mut cur_value_msat = 0u64;
 	let mut cur_cltv = starting_htlc_offset;
 	let mut last_short_channel_id = 0;
-	let mut res: Vec<msgs::OutboundOnionPayload> = Vec::with_capacity(path.hops.len());
+	let mut res: Vec<msgs::OutboundOnionPayload> = Vec::with_capacity(
+		path.hops.len() + path.blinded_tail.as_ref().map_or(0, |t| t.hops.len())
+	);
 
 	for (idx, hop) in path.hops.iter().rev().enumerate() {
 		// First hop gets special values so that it can check, on receipt, that everything is
@@ -177,27 +180,51 @@ pub(super) fn build_onion_payloads(path: &Path, total_msat: u64, mut recipient_o
 		// the intended recipient).
 		let value_msat = if cur_value_msat == 0 { hop.fee_msat } else { cur_value_msat };
 		let cltv = if cur_cltv == starting_htlc_offset { hop.cltv_expiry_delta + starting_htlc_offset } else { cur_cltv };
-		res.insert(0, if idx == 0 {
-			msgs::OutboundOnionPayload::Receive {
-				payment_data: if let Some(secret) = recipient_onion.payment_secret.take() {
-					Some(msgs::FinalOnionHopData {
-						payment_secret: secret,
-						total_msat,
-					})
-				} else { None },
-				payment_metadata: recipient_onion.payment_metadata.take(),
-				keysend_preimage: *keysend_preimage,
-				custom_tlvs: recipient_onion.custom_tlvs.clone(),
-				amt_msat: value_msat,
-				outgoing_cltv_value: cltv,
+		if idx == 0 {
+			if let Some(BlindedTail {
+				blinding_point, hops, final_value_msat, excess_final_cltv_expiry_delta, ..
+			}) = &path.blinded_tail {
+				let mut blinding_point = Some(*blinding_point);
+				for (i, blinded_hop) in hops.iter().enumerate() {
+					if i == hops.len() - 1 {
+						cur_value_msat += final_value_msat;
+						cur_cltv += excess_final_cltv_expiry_delta;
+						res.push(msgs::OutboundOnionPayload::BlindedReceive {
+							amt_msat: *final_value_msat,
+							total_msat,
+							outgoing_cltv_value: cltv,
+							encrypted_tlvs: blinded_hop.encrypted_payload.clone(),
+							intro_node_blinding_point: blinding_point.take(),
+						});
+					} else {
+						res.push(msgs::OutboundOnionPayload::BlindedForward {
+							encrypted_tlvs: blinded_hop.encrypted_payload.clone(),
+							intro_node_blinding_point: blinding_point.take(),
+						});
+					}
+				}
+			} else {
+				res.push(msgs::OutboundOnionPayload::Receive {
+					payment_data: if let Some(secret) = recipient_onion.payment_secret.take() {
+						Some(msgs::FinalOnionHopData {
+							payment_secret: secret,
+							total_msat,
+						})
+					} else { None },
+					payment_metadata: recipient_onion.payment_metadata.take(),
+					keysend_preimage: *keysend_preimage,
+					custom_tlvs: recipient_onion.custom_tlvs.clone(),
+					amt_msat: value_msat,
+					outgoing_cltv_value: cltv,
+				});
 			}
 		} else {
-			msgs::OutboundOnionPayload::Forward {
+			res.insert(0, msgs::OutboundOnionPayload::Forward {
 				short_channel_id: last_short_channel_id,
 				amt_to_forward: value_msat,
 				outgoing_cltv_value: cltv,
-			}
-		});
+			});
+		}
 		cur_value_msat += hop.fee_msat;
 		if cur_value_msat >= 21000000 * 100000000 * 1000 {
 			return Err(APIError::InvalidRoute{err: "Channel fees overflowed?".to_owned()});
@@ -399,7 +426,7 @@ pub(super) fn build_first_hop_failure_packet(shared_secret: &[u8], failure_type:
 pub(crate) struct DecodedOnionFailure {
 	pub(crate) network_update: Option<NetworkUpdate>,
 	pub(crate) short_channel_id: Option<u64>,
-	pub(crate) payment_retryable: bool,
+	pub(crate) payment_failed_permanently: bool,
 	#[cfg(test)]
 	pub(crate) onion_error_code: Option<u16>,
 	#[cfg(test)]
@@ -417,7 +444,14 @@ pub(super) fn process_onion_failure<T: secp256k1::Signing, L: Deref>(
 	} = htlc_source {
 		(path, session_priv, first_hop_htlc_msat)
 	} else { unreachable!() };
-	let mut res = None;
+
+	// Learnings from the HTLC failure to inform future payment retries and scoring.
+	struct FailureLearnings {
+		network_update: Option<NetworkUpdate>,
+		short_channel_id: Option<u64>,
+		payment_failed_permanently: bool,
+	}
+	let mut res: Option<FailureLearnings> = None;
 	let mut htlc_msat = *first_hop_htlc_msat;
 	let mut error_code_ret = None;
 	let mut error_packet_ret = None;
@@ -440,9 +474,31 @@ pub(super) fn process_onion_failure<T: secp256k1::Signing, L: Deref>(
 				// Got an error from within a blinded route.
 				error_code_ret = Some(BADONION | PERM | 24); // invalid_onion_blinding
 				error_packet_ret = Some(vec![0; 32]);
-				is_from_final_node = false;
+				res = Some(FailureLearnings {
+					network_update: None, short_channel_id: None, payment_failed_permanently: false
+				});
 				return
 			},
+		};
+
+		// The failing hop includes either the inbound channel to the recipient or the outbound channel
+		// from the current hop (i.e., the next hop's inbound channel).
+		let num_blinded_hops = path.blinded_tail.as_ref().map_or(0, |bt| bt.hops.len());
+		// For 1-hop blinded paths, the final `path.hops` entry is the recipient.
+		is_from_final_node = route_hop_idx + 1 == path.hops.len() && num_blinded_hops <= 1;
+		let failing_route_hop = if is_from_final_node { route_hop } else {
+			match path.hops.get(route_hop_idx + 1) {
+				Some(hop) => hop,
+				None => {
+					// The failing hop is within a multi-hop blinded path.
+					error_code_ret = Some(BADONION | PERM | 24); // invalid_onion_blinding
+					error_packet_ret = Some(vec![0; 32]);
+					res = Some(FailureLearnings {
+						network_update: None, short_channel_id: None, payment_failed_permanently: false
+					});
+					return
+				}
+			}
 		};
 
 		let amt_to_forward = htlc_msat - route_hop.fee_msat;
@@ -455,11 +511,6 @@ pub(super) fn process_onion_failure<T: secp256k1::Signing, L: Deref>(
 		let mut chacha = ChaCha20::new(&ammag, &[0u8; 8]);
 		chacha.process(&packet_decrypted, &mut decryption_tmp[..]);
 		packet_decrypted = decryption_tmp;
-
-		// The failing hop includes either the inbound channel to the recipient or the outbound channel
-		// from the current hop (i.e., the next hop's inbound channel).
-		is_from_final_node = route_hop_idx + 1 == path.hops.len();
-		let failing_route_hop = if is_from_final_node { route_hop } else { &path.hops[route_hop_idx + 1] };
 
 		let err_packet = match msgs::DecodedOnionErrorPacket::read(&mut Cursor::new(&packet_decrypted)) {
 			Ok(p) => p,
@@ -480,7 +531,9 @@ pub(super) fn process_onion_failure<T: secp256k1::Signing, L: Deref>(
 					is_permanent: true,
 				});
 				let short_channel_id = Some(route_hop.short_channel_id);
-				res = Some((network_update, short_channel_id, !is_from_final_node));
+				res = Some(FailureLearnings {
+					network_update, short_channel_id, payment_failed_permanently: is_from_final_node
+				});
 				return
 			}
 		};
@@ -588,8 +641,9 @@ pub(super) fn process_onion_failure<T: secp256k1::Signing, L: Deref>(
 							} else {
 								// The node in question intentionally encoded a 0-length channel update. This is
 								// likely due to https://github.com/ElementsProject/lightning/issues/6200.
+								short_channel_id = Some(failing_route_hop.short_channel_id);
 								network_update = Some(NetworkUpdate::ChannelFailure {
-									short_channel_id: route_hop.short_channel_id,
+									short_channel_id: failing_route_hop.short_channel_id,
 									is_permanent: false,
 								});
 							}
@@ -632,7 +686,10 @@ pub(super) fn process_onion_failure<T: secp256k1::Signing, L: Deref>(
 			short_channel_id = Some(route_hop.short_channel_id);
 		}
 
-		res = Some((network_update, short_channel_id, !(error_code & PERM == PERM && is_from_final_node)));
+		res = Some(FailureLearnings {
+			network_update, short_channel_id,
+			payment_failed_permanently: error_code & PERM == PERM && is_from_final_node
+		});
 
 		let (description, title) = errors::get_onion_error_description(error_code);
 		if debug_field_size > 0 && err_packet.failuremsg.len() >= 4 + debug_field_size {
@@ -641,9 +698,11 @@ pub(super) fn process_onion_failure<T: secp256k1::Signing, L: Deref>(
 			log_info!(logger, "Onion Error[from {}: {}({:#x})] {}", route_hop.pubkey, title, error_code, description);
 		}
 	}).expect("Route that we sent via spontaneously grew invalid keys in the middle of it?");
-	if let Some((network_update, short_channel_id, payment_retryable)) = res {
+	if let Some(FailureLearnings {
+		network_update, short_channel_id, payment_failed_permanently
+	}) = res {
 		DecodedOnionFailure {
-			network_update, short_channel_id, payment_retryable,
+			network_update, short_channel_id, payment_failed_permanently,
 			#[cfg(test)]
 			onion_error_code: error_code_ret,
 			#[cfg(test)]
@@ -653,7 +712,7 @@ pub(super) fn process_onion_failure<T: secp256k1::Signing, L: Deref>(
 		// only not set either packet unparseable or hmac does not match with any
 		// payment not retryable only when garbage is from the final node
 		DecodedOnionFailure {
-			network_update: None, short_channel_id: None, payment_retryable: !is_from_final_node,
+			network_update: None, short_channel_id: None, payment_failed_permanently: is_from_final_node,
 			#[cfg(test)]
 			onion_error_code: None,
 			#[cfg(test)]
@@ -797,7 +856,7 @@ impl HTLCFailReason {
 				if let &HTLCSource::OutboundRoute { ref path, .. } = htlc_source {
 					DecodedOnionFailure {
 						network_update: None,
-						payment_retryable: true,
+						payment_failed_permanently: false,
 						short_channel_id: Some(path.hops[0].short_channel_id),
 						#[cfg(test)]
 						onion_error_code: Some(*failure_code),
@@ -859,8 +918,11 @@ pub(crate) enum OnionDecodeErr {
 	},
 }
 
-pub(crate) fn decode_next_payment_hop(shared_secret: [u8; 32], hop_data: &[u8], hmac_bytes: [u8; 32], payment_hash: PaymentHash) -> Result<Hop, OnionDecodeErr> {
-	match decode_next_hop(shared_secret, hop_data, hmac_bytes, Some(payment_hash), ()) {
+pub(crate) fn decode_next_payment_hop<NS: Deref>(
+	shared_secret: [u8; 32], hop_data: &[u8], hmac_bytes: [u8; 32], payment_hash: PaymentHash,
+	node_signer: &NS,
+) -> Result<Hop, OnionDecodeErr> where NS::Target: NodeSigner {
+	match decode_next_hop(shared_secret, hop_data, hmac_bytes, Some(payment_hash), node_signer) {
 		Ok((next_hop_data, None)) => Ok(Hop::Receive(next_hop_data)),
 		Ok((next_hop_data, Some((next_hop_hmac, FixedSizeOnionPacket(new_packet_bytes))))) => {
 			Ok(Hop::Forward {
@@ -984,27 +1046,27 @@ mod tests {
 					RouteHop {
 						pubkey: PublicKey::from_slice(&hex::decode("02eec7245d6b7d2ccb30380bfbe2a3648cd7a942653f5aa340edcea1f283686619").unwrap()[..]).unwrap(),
 						channel_features: ChannelFeatures::empty(), node_features: NodeFeatures::empty(),
-						short_channel_id: 0, fee_msat: 0, cltv_expiry_delta: 0 // We fill in the payloads manually instead of generating them from RouteHops.
+						short_channel_id: 0, fee_msat: 0, cltv_expiry_delta: 0, maybe_announced_channel: true, // We fill in the payloads manually instead of generating them from RouteHops.
 					},
 					RouteHop {
 						pubkey: PublicKey::from_slice(&hex::decode("0324653eac434488002cc06bbfb7f10fe18991e35f9fe4302dbea6d2353dc0ab1c").unwrap()[..]).unwrap(),
 						channel_features: ChannelFeatures::empty(), node_features: NodeFeatures::empty(),
-						short_channel_id: 0, fee_msat: 0, cltv_expiry_delta: 0 // We fill in the payloads manually instead of generating them from RouteHops.
+						short_channel_id: 0, fee_msat: 0, cltv_expiry_delta: 0, maybe_announced_channel: true, // We fill in the payloads manually instead of generating them from RouteHops.
 					},
 					RouteHop {
 						pubkey: PublicKey::from_slice(&hex::decode("027f31ebc5462c1fdce1b737ecff52d37d75dea43ce11c74d25aa297165faa2007").unwrap()[..]).unwrap(),
 						channel_features: ChannelFeatures::empty(), node_features: NodeFeatures::empty(),
-						short_channel_id: 0, fee_msat: 0, cltv_expiry_delta: 0 // We fill in the payloads manually instead of generating them from RouteHops.
+						short_channel_id: 0, fee_msat: 0, cltv_expiry_delta: 0, maybe_announced_channel: true, // We fill in the payloads manually instead of generating them from RouteHops.
 					},
 					RouteHop {
 						pubkey: PublicKey::from_slice(&hex::decode("032c0b7cf95324a07d05398b240174dc0c2be444d96b159aa6c7f7b1e668680991").unwrap()[..]).unwrap(),
 						channel_features: ChannelFeatures::empty(), node_features: NodeFeatures::empty(),
-						short_channel_id: 0, fee_msat: 0, cltv_expiry_delta: 0 // We fill in the payloads manually instead of generating them from RouteHops.
+						short_channel_id: 0, fee_msat: 0, cltv_expiry_delta: 0, maybe_announced_channel: true, // We fill in the payloads manually instead of generating them from RouteHops.
 					},
 					RouteHop {
 						pubkey: PublicKey::from_slice(&hex::decode("02edabbd16b41c8371b92ef2f04c1185b4f03b6dcd52ba9b78d9d7c89c8f221145").unwrap()[..]).unwrap(),
 						channel_features: ChannelFeatures::empty(), node_features: NodeFeatures::empty(),
-						short_channel_id: 0, fee_msat: 0, cltv_expiry_delta: 0 // We fill in the payloads manually instead of generating them from RouteHops.
+						short_channel_id: 0, fee_msat: 0, cltv_expiry_delta: 0, maybe_announced_channel: true, // We fill in the payloads manually instead of generating them from RouteHops.
 					},
 			], blinded_tail: None }],
 			route_params: None,

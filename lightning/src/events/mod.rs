@@ -199,6 +199,9 @@ pub enum ClosureReason {
 	/// The counterparty requested a cooperative close of a channel that had not been funded yet.
 	/// The channel has been immediately closed.
 	CounterpartyCoopClosedUnfundedChannel,
+	/// Another channel in the same funding batch closed before the funding transaction
+	/// was ready to be broadcast.
+	FundingBatchClosure,
 }
 
 impl core::fmt::Display for ClosureReason {
@@ -219,6 +222,7 @@ impl core::fmt::Display for ClosureReason {
 			ClosureReason::DisconnectedPeer => f.write_str("the peer disconnected prior to the channel being funded"),
 			ClosureReason::OutdatedChannelManager => f.write_str("the ChannelManager read from disk was stale compared to ChannelMonitor(s)"),
 			ClosureReason::CounterpartyCoopClosedUnfundedChannel => f.write_str("the peer requested the unfunded channel be closed"),
+			ClosureReason::FundingBatchClosure => f.write_str("another channel in the same funding batch closed"),
 		}
 	}
 }
@@ -233,6 +237,7 @@ impl_writeable_tlv_based_enum_upgradable!(ClosureReason,
 	(10, DisconnectedPeer) => {},
 	(12, OutdatedChannelManager) => {},
 	(13, CounterpartyCoopClosedUnfundedChannel) => {},
+	(15, FundingBatchClosure) => {}
 );
 
 /// Intended destination of a failed HTLC as indicated in [`Event::HTLCHandlingFailed`].
@@ -844,6 +849,8 @@ pub enum Event {
 	},
 	/// Used to indicate to the user that they can abandon the funding transaction and recycle the
 	/// inputs for another purpose.
+	///
+	/// This event is not guaranteed to be generated for channels that are closed due to a restart.
 	DiscardFunding {
 		/// The channel_id of the channel which has been closed.
 		channel_id: ChannelId,

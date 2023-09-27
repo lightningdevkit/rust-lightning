@@ -450,7 +450,7 @@ pub fn derive_public_revocation_key<T: secp256k1::Verification>(secp_ctx: &Secp2
 /// channel basepoints via the new function, or they were obtained via
 /// CommitmentTransaction.trust().keys() because we trusted the source of the
 /// pre-calculated keys.
-#[derive(PartialEq, Eq, Clone)]
+#[derive(PartialEq, Eq, Clone, Debug)]
 pub struct TxCreationKeys {
 	/// The broadcaster's per-commitment public key which was used to derive the other keys.
 	pub per_commitment_point: PublicKey,
@@ -982,7 +982,7 @@ pub struct DirectedChannelTransactionParameters<'a> {
 
 impl<'a> DirectedChannelTransactionParameters<'a> {
 	/// Get the channel pubkeys for the broadcaster
-	pub fn broadcaster_pubkeys(&self) -> &ChannelPublicKeys {
+	pub fn broadcaster_pubkeys(&self) -> &'a ChannelPublicKeys {
 		if self.holder_is_broadcaster {
 			&self.inner.holder_pubkeys
 		} else {
@@ -991,7 +991,7 @@ impl<'a> DirectedChannelTransactionParameters<'a> {
 	}
 
 	/// Get the channel pubkeys for the countersignatory
-	pub fn countersignatory_pubkeys(&self) -> &ChannelPublicKeys {
+	pub fn countersignatory_pubkeys(&self) -> &'a ChannelPublicKeys {
 		if self.holder_is_broadcaster {
 			&self.inner.counterparty_parameters.as_ref().unwrap().pubkeys
 		} else {
@@ -1020,7 +1020,7 @@ impl<'a> DirectedChannelTransactionParameters<'a> {
 	}
 
 	/// Whether to use anchors for this channel
-	pub fn channel_type_features(&self) -> &ChannelTypeFeatures {
+	pub fn channel_type_features(&self) -> &'a ChannelTypeFeatures {
 		&self.inner.channel_type_features
 	}
 }
@@ -1028,7 +1028,7 @@ impl<'a> DirectedChannelTransactionParameters<'a> {
 /// Information needed to build and sign a holder's commitment transaction.
 ///
 /// The transaction is only signed once we are ready to broadcast.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct HolderCommitmentTransaction {
 	inner: CommitmentTransaction,
 	/// Our counterparty's signature for the transaction
@@ -1134,7 +1134,7 @@ impl HolderCommitmentTransaction {
 }
 
 /// A pre-built Bitcoin commitment transaction and its txid.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct BuiltCommitmentTransaction {
 	/// The commitment transaction
 	pub transaction: Transaction,
@@ -1279,7 +1279,7 @@ impl<'a> Deref for TrustedClosingTransaction<'a> {
 
 impl<'a> TrustedClosingTransaction<'a> {
 	/// The pre-built Bitcoin commitment transaction
-	pub fn built_transaction(&self) -> &Transaction {
+	pub fn built_transaction(&self) -> &'a Transaction {
 		&self.inner.built
 	}
 
@@ -1305,7 +1305,7 @@ impl<'a> TrustedClosingTransaction<'a> {
 ///
 /// This class can be used inside a signer implementation to generate a signature given the relevant
 /// secret key.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct CommitmentTransaction {
 	commitment_number: u64,
 	to_broadcaster_value_sat: u64,
@@ -1668,17 +1668,17 @@ impl<'a> TrustedCommitmentTransaction<'a> {
 	}
 
 	/// The pre-built Bitcoin commitment transaction
-	pub fn built_transaction(&self) -> &BuiltCommitmentTransaction {
+	pub fn built_transaction(&self) -> &'a BuiltCommitmentTransaction {
 		&self.inner.built
 	}
 
 	/// The pre-calculated transaction creation public keys.
-	pub fn keys(&self) -> &TxCreationKeys {
+	pub fn keys(&self) -> &'a TxCreationKeys {
 		&self.inner.keys
 	}
 
 	/// Should anchors be used.
-	pub fn channel_type_features(&self) -> &ChannelTypeFeatures {
+	pub fn channel_type_features(&self) -> &'a ChannelTypeFeatures {
 		&self.inner.channel_type_features
 	}
 

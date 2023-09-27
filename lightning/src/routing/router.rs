@@ -250,10 +250,20 @@ pub struct RouteHop {
 	///
 	/// [`BlindedPath`]: crate::blinded_path::BlindedPath
 	pub cltv_expiry_delta: u32,
+	/// Indicates whether this hop is possibly announced in the public network graph.
+	///
+	/// Will be `true` if there is a possibility that the channel is publicly known, i.e., if we
+	/// either know for sure it's announced in the public graph, or if any public channels exist
+	/// for which the given `short_channel_id` could be an alias for. Will be `false` if we believe
+	/// the channel to be unannounced.
+	///
+	/// Will be `true` for objects serialized with LDK version 0.0.116 and before.
+	pub maybe_announced_channel: bool,
 }
 
 impl_writeable_tlv_based!(RouteHop, {
 	(0, pubkey, required),
+	(1, maybe_announced_channel, (default_value, true)),
 	(2, node_features, required),
 	(4, short_channel_id, required),
 	(6, channel_features, required),
@@ -331,7 +341,7 @@ impl Path {
 
 /// A route directs a payment from the sender (us) to the recipient. If the recipient supports MPP,
 /// it can take multiple paths. Each path is composed of one or more hops through the network.
-#[derive(Clone, Hash, PartialEq, Eq)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct Route {
 	/// The list of [`Path`]s taken for a single (potentially-)multi-part payment. If no
 	/// [`BlindedTail`]s are present, then the pubkey of the last [`RouteHop`] in each path must be
@@ -370,6 +380,12 @@ impl Route {
 	}
 }
 
+impl fmt::Display for Route {
+	fn fmt(&self, f: &mut fmt::Formatter) -> Result<(), fmt::Error> {
+		log_route!(self).fmt(f)
+	}
+}
+
 const SERIALIZATION_VERSION: u8 = 1;
 const MIN_SERIALIZATION_VERSION: u8 = 1;
 
@@ -399,6 +415,7 @@ impl Writeable for Route {
 			(1, self.route_params.as_ref().map(|p| &p.payment_params), option),
 			(2, blinded_tails, optional_vec),
 			(3, self.route_params.as_ref().map(|p| p.final_value_msat), option),
+			(5, self.route_params.as_ref().map(|p| p.max_total_routing_fee_msat), option),
 		});
 		Ok(())
 	}
@@ -426,6 +443,7 @@ impl Readable for Route {
 			(1, payment_params, (option: ReadableArgs, min_final_cltv_expiry_delta)),
 			(2, blinded_tails, optional_vec),
 			(3, final_value_msat, option),
+			(5, max_total_routing_fee_msat, option)
 		});
 		let blinded_tails = blinded_tails.unwrap_or(Vec::new());
 		if blinded_tails.len() != 0 {
@@ -438,7 +456,7 @@ impl Readable for Route {
 		// If we previously wrote the corresponding fields, reconstruct RouteParameters.
 		let route_params = match (payment_params, final_value_msat) {
 			(Some(payment_params), Some(final_value_msat)) => {
-				Some(RouteParameters { payment_params, final_value_msat })
+				Some(RouteParameters { payment_params, final_value_msat, max_total_routing_fee_msat })
 			}
 			_ => None,
 		};
@@ -457,12 +475,22 @@ pub struct RouteParameters {
 
 	/// The amount in msats sent on the failed payment path.
 	pub final_value_msat: u64,
+
+	/// The maximum total fees, in millisatoshi, that may accrue during route finding.
+	///
+	/// This limit also applies to the total fees that may arise while retrying failed payment
+	/// paths.
+	///
+	/// Note that values below a few sats may result in some paths being spuriously ignored.
+	pub max_total_routing_fee_msat: Option<u64>,
 }
 
 impl RouteParameters {
 	/// Constructs [`RouteParameters`] from the given [`PaymentParameters`] and a payment amount.
+	///
+	/// [`Self::max_total_routing_fee_msat`] defaults to 1% of the payment amount + 50 sats
 	pub fn from_payment_params_and_value(payment_params: PaymentParameters, final_value_msat: u64) -> Self {
-		Self { payment_params, final_value_msat }
+		Self { payment_params, final_value_msat, max_total_routing_fee_msat: Some(final_value_msat / 100 + 50_000) }
 	}
 }
 
@@ -470,6 +498,7 @@ impl Writeable for RouteParameters {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		write_tlv_fields!(writer, {
 			(0, self.payment_params, required),
+			(1, self.max_total_routing_fee_msat, option),
 			(2, self.final_value_msat, required),
 			// LDK versions prior to 0.0.114 had the `final_cltv_expiry_delta` parameter in
 			// `RouteParameters` directly. For compatibility, we write it here.
@@ -483,6 +512,7 @@ impl Readable for RouteParameters {
 	fn read<R: io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
 		_init_and_read_len_prefixed_tlv_fields!(reader, {
 			(0, payment_params, (required: ReadableArgs, 0)),
+			(1, max_total_routing_fee_msat, option),
 			(2, final_value_msat, required),
 			(4, final_cltv_delta, option),
 		});
@@ -495,6 +525,7 @@ impl Readable for RouteParameters {
 		Ok(Self {
 			payment_params,
 			final_value_msat: final_value_msat.0.unwrap(),
+			max_total_routing_fee_msat,
 		})
 	}
 }
@@ -1670,6 +1701,7 @@ where L::Target: Logger {
 	let mut num_ignored_path_length_limit = 0;
 	let mut num_ignored_cltv_delta_limit = 0;
 	let mut num_ignored_previously_failed = 0;
+	let mut num_ignored_total_fee_limit = 0;
 
 	macro_rules! add_entry {
 		// Adds entry which goes from $src_node_id to $dest_node_id over the $candidate hop.
@@ -1831,89 +1863,98 @@ where L::Target: Logger {
 								total_fee_msat = total_fee_msat.saturating_add(hop_use_fee_msat);
 							}
 
-							let channel_usage = ChannelUsage {
-								amount_msat: amount_to_transfer_over_msat,
-								inflight_htlc_msat: used_liquidity_msat,
-								effective_capacity,
-							};
-							let channel_penalty_msat = scid_opt.map_or(0,
-								|scid| scorer.channel_penalty_msat(scid, &$src_node_id, &$dest_node_id,
-									channel_usage, score_params));
-							let path_penalty_msat = $next_hops_path_penalty_msat
-								.saturating_add(channel_penalty_msat);
-							let new_graph_node = RouteGraphNode {
-								node_id: $src_node_id,
-								lowest_fee_to_node: total_fee_msat,
-								total_cltv_delta: hop_total_cltv_delta,
-								value_contribution_msat,
-								path_htlc_minimum_msat,
-								path_penalty_msat,
-								path_length_to_node,
-							};
-
-							// Update the way of reaching $src_node_id with the given short_channel_id (from $dest_node_id),
-							// if this way is cheaper than the already known
-							// (considering the cost to "reach" this channel from the route destination,
-							// the cost of using this channel,
-							// and the cost of routing to the source node of this channel).
-							// Also, consider that htlc_minimum_msat_difference, because we might end up
-							// paying it. Consider the following exploit:
-							// we use 2 paths to transfer 1.5 BTC. One of them is 0-fee normal 1 BTC path,
-							// and for the other one we picked a 1sat-fee path with htlc_minimum_msat of
-							// 1 BTC. Now, since the latter is more expensive, we gonna try to cut it
-							// by 0.5 BTC, but then match htlc_minimum_msat by paying a fee of 0.5 BTC
-							// to this channel.
-							// Ideally the scoring could be smarter (e.g. 0.5*htlc_minimum_msat here),
-							// but it may require additional tracking - we don't want to double-count
-							// the fees included in $next_hops_path_htlc_minimum_msat, but also
-							// can't use something that may decrease on future hops.
-							let old_cost = cmp::max(old_entry.total_fee_msat, old_entry.path_htlc_minimum_msat)
-								.saturating_add(old_entry.path_penalty_msat);
-							let new_cost = cmp::max(total_fee_msat, path_htlc_minimum_msat)
-								.saturating_add(path_penalty_msat);
-
-							if !old_entry.was_processed && new_cost < old_cost {
-								targets.push(new_graph_node);
-								old_entry.next_hops_fee_msat = $next_hops_fee_msat;
-								old_entry.hop_use_fee_msat = hop_use_fee_msat;
-								old_entry.total_fee_msat = total_fee_msat;
-								old_entry.node_id = $dest_node_id.clone();
-								old_entry.candidate = $candidate.clone();
-								old_entry.fee_msat = 0; // This value will be later filled with hop_use_fee_msat of the following channel
-								old_entry.path_htlc_minimum_msat = path_htlc_minimum_msat;
-								old_entry.path_penalty_msat = path_penalty_msat;
-								#[cfg(all(not(ldk_bench), any(test, fuzzing)))]
-								{
-									old_entry.value_contribution_msat = value_contribution_msat;
+							// Ignore hops if augmenting the current path to them would put us over `max_total_routing_fee_msat`
+							let max_total_routing_fee_msat = route_params.max_total_routing_fee_msat.unwrap_or(u64::max_value());
+							if total_fee_msat > max_total_routing_fee_msat {
+								if should_log_candidate {
+									log_trace!(logger, "Ignoring {} due to exceeding max total routing fee limit.", LoggedCandidateHop(&$candidate));
 								}
-								did_add_update_path_to_src_node = Some(value_contribution_msat);
-							} else if old_entry.was_processed && new_cost < old_cost {
-								#[cfg(all(not(ldk_bench), any(test, fuzzing)))]
-								{
-									// If we're skipping processing a node which was previously
-									// processed even though we found another path to it with a
-									// cheaper fee, check that it was because the second path we
-									// found (which we are processing now) has a lower value
-									// contribution due to an HTLC minimum limit.
-									//
-									// e.g. take a graph with two paths from node 1 to node 2, one
-									// through channel A, and one through channel B. Channel A and
-									// B are both in the to-process heap, with their scores set by
-									// a higher htlc_minimum than fee.
-									// Channel A is processed first, and the channels onwards from
-									// node 1 are added to the to-process heap. Thereafter, we pop
-									// Channel B off of the heap, note that it has a much more
-									// restrictive htlc_maximum_msat, and recalculate the fees for
-									// all of node 1's channels using the new, reduced, amount.
-									//
-									// This would be bogus - we'd be selecting a higher-fee path
-									// with a lower htlc_maximum_msat instead of the one we'd
-									// already decided to use.
-									debug_assert!(path_htlc_minimum_msat < old_entry.path_htlc_minimum_msat);
-									debug_assert!(
-										value_contribution_msat + path_penalty_msat <
-										old_entry.value_contribution_msat + old_entry.path_penalty_msat
-									);
+								num_ignored_total_fee_limit += 1;
+							} else {
+								let channel_usage = ChannelUsage {
+									amount_msat: amount_to_transfer_over_msat,
+									inflight_htlc_msat: used_liquidity_msat,
+									effective_capacity,
+								};
+								let channel_penalty_msat = scid_opt.map_or(0,
+									|scid| scorer.channel_penalty_msat(scid, &$src_node_id, &$dest_node_id,
+										channel_usage, score_params));
+								let path_penalty_msat = $next_hops_path_penalty_msat
+									.saturating_add(channel_penalty_msat);
+								let new_graph_node = RouteGraphNode {
+									node_id: $src_node_id,
+									lowest_fee_to_node: total_fee_msat,
+									total_cltv_delta: hop_total_cltv_delta,
+									value_contribution_msat,
+									path_htlc_minimum_msat,
+									path_penalty_msat,
+									path_length_to_node,
+								};
+
+								// Update the way of reaching $src_node_id with the given short_channel_id (from $dest_node_id),
+								// if this way is cheaper than the already known
+								// (considering the cost to "reach" this channel from the route destination,
+								// the cost of using this channel,
+								// and the cost of routing to the source node of this channel).
+								// Also, consider that htlc_minimum_msat_difference, because we might end up
+								// paying it. Consider the following exploit:
+								// we use 2 paths to transfer 1.5 BTC. One of them is 0-fee normal 1 BTC path,
+								// and for the other one we picked a 1sat-fee path with htlc_minimum_msat of
+								// 1 BTC. Now, since the latter is more expensive, we gonna try to cut it
+								// by 0.5 BTC, but then match htlc_minimum_msat by paying a fee of 0.5 BTC
+								// to this channel.
+								// Ideally the scoring could be smarter (e.g. 0.5*htlc_minimum_msat here),
+								// but it may require additional tracking - we don't want to double-count
+								// the fees included in $next_hops_path_htlc_minimum_msat, but also
+								// can't use something that may decrease on future hops.
+								let old_cost = cmp::max(old_entry.total_fee_msat, old_entry.path_htlc_minimum_msat)
+									.saturating_add(old_entry.path_penalty_msat);
+								let new_cost = cmp::max(total_fee_msat, path_htlc_minimum_msat)
+									.saturating_add(path_penalty_msat);
+
+								if !old_entry.was_processed && new_cost < old_cost {
+									targets.push(new_graph_node);
+									old_entry.next_hops_fee_msat = $next_hops_fee_msat;
+									old_entry.hop_use_fee_msat = hop_use_fee_msat;
+									old_entry.total_fee_msat = total_fee_msat;
+									old_entry.node_id = $dest_node_id.clone();
+									old_entry.candidate = $candidate.clone();
+									old_entry.fee_msat = 0; // This value will be later filled with hop_use_fee_msat of the following channel
+									old_entry.path_htlc_minimum_msat = path_htlc_minimum_msat;
+									old_entry.path_penalty_msat = path_penalty_msat;
+									#[cfg(all(not(ldk_bench), any(test, fuzzing)))]
+									{
+										old_entry.value_contribution_msat = value_contribution_msat;
+									}
+									did_add_update_path_to_src_node = Some(value_contribution_msat);
+								} else if old_entry.was_processed && new_cost < old_cost {
+									#[cfg(all(not(ldk_bench), any(test, fuzzing)))]
+									{
+										// If we're skipping processing a node which was previously
+										// processed even though we found another path to it with a
+										// cheaper fee, check that it was because the second path we
+										// found (which we are processing now) has a lower value
+										// contribution due to an HTLC minimum limit.
+										//
+										// e.g. take a graph with two paths from node 1 to node 2, one
+										// through channel A, and one through channel B. Channel A and
+										// B are both in the to-process heap, with their scores set by
+										// a higher htlc_minimum than fee.
+										// Channel A is processed first, and the channels onwards from
+										// node 1 are added to the to-process heap. Thereafter, we pop
+										// Channel B off of the heap, note that it has a much more
+										// restrictive htlc_maximum_msat, and recalculate the fees for
+										// all of node 1's channels using the new, reduced, amount.
+										//
+										// This would be bogus - we'd be selecting a higher-fee path
+										// with a lower htlc_maximum_msat instead of the one we'd
+										// already decided to use.
+										debug_assert!(path_htlc_minimum_msat < old_entry.path_htlc_minimum_msat);
+										debug_assert!(
+											value_contribution_msat + path_penalty_msat <
+											old_entry.value_contribution_msat + old_entry.path_penalty_msat
+										);
+									}
 								}
 							}
 						}
@@ -2315,8 +2356,9 @@ where L::Target: Logger {
 					// Decrease the available liquidity of a hop in the middle of the path.
 					let victim_candidate = &payment_path.hops[(payment_path.hops.len()) / 2].0.candidate;
 					let exhausted = u64::max_value();
-					log_trace!(logger, "Disabling route candidate {} for future path building iterations to
-						avoid duplicates.", LoggedCandidateHop(victim_candidate));
+					log_trace!(logger,
+						"Disabling route candidate {} for future path building iterations to avoid duplicates.",
+						LoggedCandidateHop(victim_candidate));
 					*used_liquidities.entry(victim_candidate.id(false)).or_default() = exhausted;
 					*used_liquidities.entry(victim_candidate.id(true)).or_default() = exhausted;
 				}
@@ -2384,9 +2426,9 @@ where L::Target: Logger {
 	}
 
 	let num_ignored_total = num_ignored_value_contribution + num_ignored_path_length_limit +
-		num_ignored_cltv_delta_limit + num_ignored_previously_failed;
+		num_ignored_cltv_delta_limit + num_ignored_previously_failed + num_ignored_total_fee_limit;
 	if num_ignored_total > 0 {
-		log_trace!(logger, "Ignored {} candidate hops due to insufficient value contribution, {} due to path length limit, {} due to CLTV delta limit, {} due to previous payment failure. Total: {} ignored candidates.", num_ignored_value_contribution, num_ignored_path_length_limit, num_ignored_cltv_delta_limit, num_ignored_previously_failed, num_ignored_total);
+		log_trace!(logger, "Ignored {} candidate hops due to insufficient value contribution, {} due to path length limit, {} due to CLTV delta limit, {} due to previous payment failure, {} due to maximum total fee limit. Total: {} ignored candidates.", num_ignored_value_contribution, num_ignored_path_length_limit, num_ignored_cltv_delta_limit, num_ignored_previously_failed, num_ignored_total_fee_limit, num_ignored_total);
 	}
 
 	// Step (5).
@@ -2472,9 +2514,27 @@ where L::Target: Logger {
 	let mut paths = Vec::new();
 	for payment_path in selected_route {
 		let mut hops = Vec::with_capacity(payment_path.hops.len());
+		let mut prev_hop_node_id = our_node_id;
 		for (hop, node_features) in payment_path.hops.iter()
 			.filter(|(h, _)| h.candidate.short_channel_id().is_some())
 		{
+			let maybe_announced_channel = if let CandidateRouteHop::PublicHop { .. } = hop.candidate {
+				// If we sourced the hop from the graph we're sure the target node is announced.
+				true
+			} else if let CandidateRouteHop::FirstHop { details } = hop.candidate {
+				// If this is a first hop we also know if it's announced.
+				details.is_public
+			} else {
+				// If we sourced it any other way, we double-check the network graph to see if
+				// there are announced channels between the endpoints. If so, the hop might be
+				// referring to any of the announced channels, as its `short_channel_id` might be
+				// an alias, in which case we don't take any chances here.
+				network_graph.node(&hop.node_id).map_or(false, |hop_node|
+					hop_node.channels.iter().any(|scid| network_graph.channel(*scid)
+							.map_or(false, |c| c.as_directed_from(&prev_hop_node_id).is_some()))
+				)
+			};
+
 			hops.push(RouteHop {
 				pubkey: PublicKey::from_slice(hop.node_id.as_slice()).map_err(|_| LightningError{err: format!("Public key {:?} is invalid", &hop.node_id), action: ErrorAction::IgnoreAndLog(Level::Trace)})?,
 				node_features: node_features.clone(),
@@ -2482,7 +2542,10 @@ where L::Target: Logger {
 				channel_features: hop.candidate.features(),
 				fee_msat: hop.fee_msat,
 				cltv_expiry_delta: hop.candidate.cltv_expiry_delta(),
+				maybe_announced_channel,
 			});
+
+			prev_hop_node_id = hop.node_id;
 		}
 		let mut final_cltv_delta = final_cltv_expiry_delta;
 		let blinded_tail = payment_path.hops.last().and_then(|(h, _)| {
@@ -2506,6 +2569,14 @@ where L::Target: Logger {
 	}
 	// Make sure we would never create a route with more paths than we allow.
 	debug_assert!(paths.len() <= payment_params.max_path_count.into());
+
+	// Make sure we would never create a route whose total fees exceed max_total_routing_fee_msat.
+	if let Some(max_total_routing_fee_msat) = route_params.max_total_routing_fee_msat {
+		if paths.iter().map(|p| p.fee_msat()).sum::<u64>() > max_total_routing_fee_msat {
+			return Err(LightningError{err: format!("Failed to find route that adheres to the maximum total fee limit of {}msat",
+				max_total_routing_fee_msat), action: ErrorAction::IgnoreError});
+		}
+	}
 
 	if let Some(node_features) = payment_params.payee.node_features() {
 		for path in paths.iter_mut() {
@@ -2673,7 +2744,7 @@ fn build_route_from_hops_internal<L: Deref>(
 
 	let scorer = HopScorer { our_node_id, hop_ids };
 
-	get_route(our_node_pubkey, route_params, network_graph, None, logger, &scorer, &(), random_seed_bytes)
+	get_route(our_node_pubkey, route_params, network_graph, None, logger, &scorer, &Default::default(), random_seed_bytes)
 }
 
 #[cfg(test)]
@@ -2769,14 +2840,14 @@ mod tests {
 		let route_params = RouteParameters::from_payment_params_and_value(
 			payment_params.clone(), 0);
 		if let Err(LightningError{err, action: ErrorAction::IgnoreError}) = get_route(&our_id,
-			&route_params, &network_graph.read_only(), None, Arc::clone(&logger), &scorer, &(),
-			&random_seed_bytes) {
+			&route_params, &network_graph.read_only(), None, Arc::clone(&logger), &scorer,
+			&Default::default(), &random_seed_bytes) {
 				assert_eq!(err, "Cannot send a payment of 0 msat");
 		} else { panic!(); }
 
 		let route_params = RouteParameters::from_payment_params_and_value(payment_params, 100);
 		let route = get_route(&our_id, &route_params, &network_graph.read_only(), None,
-			Arc::clone(&logger), &scorer, &(), &random_seed_bytes).unwrap();
+			Arc::clone(&logger), &scorer, &Default::default(), &random_seed_bytes).unwrap();
 		assert_eq!(route.paths[0].hops.len(), 2);
 
 		assert_eq!(route.paths[0].hops[0].pubkey, nodes[1]);
@@ -2810,12 +2881,12 @@ mod tests {
 		let route_params = RouteParameters::from_payment_params_and_value(payment_params, 100);
 		if let Err(LightningError{err, action: ErrorAction::IgnoreError}) = get_route(&our_id,
 			&route_params, &network_graph.read_only(), Some(&our_chans.iter().collect::<Vec<_>>()),
-			Arc::clone(&logger), &scorer, &(), &random_seed_bytes) {
+			Arc::clone(&logger), &scorer, &Default::default(), &random_seed_bytes) {
 				assert_eq!(err, "First hop cannot have our_node_pubkey as a destination.");
 		} else { panic!(); }
  
 		let route = get_route(&our_id, &route_params, &network_graph.read_only(), None,
-			Arc::clone(&logger), &scorer, &(), &random_seed_bytes).unwrap();
+			Arc::clone(&logger), &scorer, &Default::default(), &random_seed_bytes).unwrap();
 		assert_eq!(route.paths[0].hops.len(), 2);
 	}
 
@@ -2926,8 +2997,8 @@ mod tests {
 		let route_params = RouteParameters::from_payment_params_and_value(
 			payment_params, 199_999_999);
 		if let Err(LightningError{err, action: ErrorAction::IgnoreError}) = get_route(&our_id,
-			&route_params, &network_graph.read_only(), None, Arc::clone(&logger), &scorer, &(),
-			&random_seed_bytes) {
+			&route_params, &network_graph.read_only(), None, Arc::clone(&logger), &scorer,
+			&Default::default(), &random_seed_bytes) {
 				assert_eq!(err, "Failed to find a path to the given destination");
 		} else { panic!(); }
 
@@ -2947,7 +3018,7 @@ mod tests {
 
 		// A payment above the minimum should pass
 		let route = get_route(&our_id, &route_params, &network_graph.read_only(), None,
-			Arc::clone(&logger), &scorer, &(), &random_seed_bytes).unwrap();
+			Arc::clone(&logger), &scorer, &Default::default(), &random_seed_bytes).unwrap();
 		assert_eq!(route.paths[0].hops.len(), 2);
 	}
 
@@ -3029,10 +3100,11 @@ mod tests {
 			excess_data: Vec::new()
 		});
 
-		let route_params = RouteParameters::from_payment_params_and_value(
+		let mut route_params = RouteParameters::from_payment_params_and_value(
 			payment_params.clone(), 60_000);
+		route_params.max_total_routing_fee_msat = Some(15_000);
 		let route = get_route(&our_id, &route_params, &network_graph.read_only(), None,
-			Arc::clone(&logger), &scorer, &(), &random_seed_bytes).unwrap();
+			Arc::clone(&logger), &scorer, &Default::default(), &random_seed_bytes).unwrap();
 		// Overpay fees to hit htlc_minimum_msat.
 		let overpaid_fees = route.paths[0].hops[0].fee_msat + route.paths[1].hops[0].fee_msat;
 		// TODO: this could be better balanced to overpay 10k and not 15k.
@@ -3078,7 +3150,7 @@ mod tests {
 		});
 
 		let route = get_route(&our_id, &route_params, &network_graph.read_only(), None,
-			Arc::clone(&logger), &scorer, &(), &random_seed_bytes).unwrap();
+			Arc::clone(&logger), &scorer, &Default::default(), &random_seed_bytes).unwrap();
 		// Fine to overpay for htlc_minimum_msat if it allows us to save fee.
 		assert_eq!(route.paths.len(), 1);
 		assert_eq!(route.paths[0].hops[0].short_channel_id, 12);
@@ -3087,7 +3159,7 @@ mod tests {
 
 		let route_params = RouteParameters::from_payment_params_and_value(payment_params, 50_000);
 		let route = get_route(&our_id, &route_params, &network_graph.read_only(), None,
-			Arc::clone(&logger), &scorer, &(), &random_seed_bytes).unwrap();
+			Arc::clone(&logger), &scorer, &Default::default(), &random_seed_bytes).unwrap();
 		// Not fine to overpay for htlc_minimum_msat if it requires paying more than fee on
 		// the other channel.
 		assert_eq!(route.paths.len(), 1);
@@ -3134,8 +3206,8 @@ mod tests {
 		// If all the channels require some features we don't understand, route should fail
 		let route_params = RouteParameters::from_payment_params_and_value(payment_params, 100);
 		if let Err(LightningError{err, action: ErrorAction::IgnoreError}) = get_route(&our_id,
-			&route_params, &network_graph.read_only(), None, Arc::clone(&logger), &scorer, &(),
-			&random_seed_bytes) {
+			&route_params, &network_graph.read_only(), None, Arc::clone(&logger), &scorer,
+			&Default::default(), &random_seed_bytes) {
 				assert_eq!(err, "Failed to find a path to the given destination");
 		} else { panic!(); }
 
@@ -3143,8 +3215,8 @@ mod tests {
 		let our_chans = vec![get_channel_details(Some(42), nodes[7].clone(),
 			InitFeatures::from_le_bytes(vec![0b11]), 250_000_000)];
 		let route = get_route(&our_id, &route_params, &network_graph.read_only(),
-			Some(&our_chans.iter().collect::<Vec<_>>()), Arc::clone(&logger), &scorer, &(),
-			&random_seed_bytes).unwrap();
+			Some(&our_chans.iter().collect::<Vec<_>>()), Arc::clone(&logger), &scorer,
+			&Default::default(), &random_seed_bytes).unwrap();
 		assert_eq!(route.paths[0].hops.len(), 2);
 
 		assert_eq!(route.paths[0].hops[0].pubkey, nodes[7]);
@@ -3181,8 +3253,8 @@ mod tests {
 		// If all nodes require some features we don't understand, route should fail
 		let route_params = RouteParameters::from_payment_params_and_value(payment_params, 100);
 		if let Err(LightningError{err, action: ErrorAction::IgnoreError}) = get_route(&our_id,
-			&route_params, &network_graph.read_only(), None, Arc::clone(&logger), &scorer, &(),
-			&random_seed_bytes) {
+			&route_params, &network_graph.read_only(), None, Arc::clone(&logger), &scorer,
+			&Default::default(), &random_seed_bytes) {
 				assert_eq!(err, "Failed to find a path to the given destination");
 		} else { panic!(); }
 
@@ -3190,8 +3262,8 @@ mod tests {
 		let our_chans = vec![get_channel_details(Some(42), nodes[7].clone(),
 			InitFeatures::from_le_bytes(vec![0b11]), 250_000_000)];
 		let route = get_route(&our_id, &route_params, &network_graph.read_only(),
-			Some(&our_chans.iter().collect::<Vec<_>>()), Arc::clone(&logger), &scorer, &(),
-			&random_seed_bytes).unwrap();
+			Some(&our_chans.iter().collect::<Vec<_>>()), Arc::clone(&logger), &scorer,
+			&Default::default(), &random_seed_bytes).unwrap();
 		assert_eq!(route.paths[0].hops.len(), 2);
 
 		assert_eq!(route.paths[0].hops[0].pubkey, nodes[7]);
@@ -3225,7 +3297,7 @@ mod tests {
 		let payment_params = PaymentParameters::from_node_id(nodes[0], 42);
 		let route_params = RouteParameters::from_payment_params_and_value(payment_params, 100);
 		let route = get_route(&our_id, &route_params, &network_graph.read_only(), None,
-			Arc::clone(&logger), &scorer, &(), &random_seed_bytes).unwrap();
+			Arc::clone(&logger), &scorer, &Default::default(), &random_seed_bytes).unwrap();
 		assert_eq!(route.paths[0].hops.len(), 3);
 
 		assert_eq!(route.paths[0].hops[0].pubkey, nodes[1]);
@@ -3255,8 +3327,8 @@ mod tests {
 		let our_chans = vec![get_channel_details(Some(42), nodes[7].clone(),
 			InitFeatures::from_le_bytes(vec![0b11]), 250_000_000)];
 		let route = get_route(&our_id, &route_params, &network_graph.read_only(),
-			Some(&our_chans.iter().collect::<Vec<_>>()), Arc::clone(&logger), &scorer, &(),
-			&random_seed_bytes).unwrap();
+			Some(&our_chans.iter().collect::<Vec<_>>()), Arc::clone(&logger), &scorer,
+			&Default::default(), &random_seed_bytes).unwrap();
 		assert_eq!(route.paths[0].hops.len(), 2);
 
 		assert_eq!(route.paths[0].hops[0].pubkey, nodes[7]);
@@ -3382,8 +3454,8 @@ mod tests {
 				.with_route_hints(invalid_last_hops).unwrap();
 			let route_params = RouteParameters::from_payment_params_and_value(payment_params, 100);
 			if let Err(LightningError{err, action: ErrorAction::IgnoreError}) = get_route(&our_id,
-				&route_params, &network_graph.read_only(), None, Arc::clone(&logger), &scorer, &(),
-				&random_seed_bytes) {
+				&route_params, &network_graph.read_only(), None, Arc::clone(&logger), &scorer,
+				&Default::default(), &random_seed_bytes) {
 					assert_eq!(err, "Route hint cannot have the payee as the source.");
 			} else { panic!(); }
 		}
@@ -3392,7 +3464,7 @@ mod tests {
 			.with_route_hints(last_hops_multi_private_channels(&nodes)).unwrap();
 		let route_params = RouteParameters::from_payment_params_and_value(payment_params, 100);
 		let route = get_route(&our_id, &route_params, &network_graph.read_only(), None,
-			Arc::clone(&logger), &scorer, &(), &random_seed_bytes).unwrap();
+			Arc::clone(&logger), &scorer, &Default::default(), &random_seed_bytes).unwrap();
 		assert_eq!(route.paths[0].hops.len(), 5);
 
 		assert_eq!(route.paths[0].hops[0].pubkey, nodes[1]);
@@ -3469,7 +3541,7 @@ mod tests {
 		// Test handling of an empty RouteHint passed in Invoice.
 		let route_params = RouteParameters::from_payment_params_and_value(payment_params, 100);
 		let route = get_route(&our_id, &route_params, &network_graph.read_only(), None,
-			Arc::clone(&logger), &scorer, &(), &random_seed_bytes).unwrap();
+			Arc::clone(&logger), &scorer, &Default::default(), &random_seed_bytes).unwrap();
 		assert_eq!(route.paths[0].hops.len(), 5);
 
 		assert_eq!(route.paths[0].hops[0].pubkey, nodes[1]);
@@ -3577,7 +3649,7 @@ mod tests {
 
 		let route_params = RouteParameters::from_payment_params_and_value(payment_params, 100);
 		let route = get_route(&our_id, &route_params, &network_graph.read_only(), None,
-			Arc::clone(&logger), &scorer, &(), &random_seed_bytes).unwrap();
+			Arc::clone(&logger), &scorer, &Default::default(), &random_seed_bytes).unwrap();
 		assert_eq!(route.paths[0].hops.len(), 4);
 
 		assert_eq!(route.paths[0].hops[0].pubkey, nodes[1]);
@@ -3651,7 +3723,7 @@ mod tests {
 
 		let route_params = RouteParameters::from_payment_params_and_value(payment_params, 100);
 		let route = get_route(&our_id, &route_params, &network_graph.read_only(), None,
-			Arc::clone(&logger), &scorer, &(), &[42u8; 32]).unwrap();
+			Arc::clone(&logger), &scorer, &Default::default(), &[42u8; 32]).unwrap();
 		assert_eq!(route.paths[0].hops.len(), 4);
 
 		assert_eq!(route.paths[0].hops[0].pubkey, nodes[1]);
@@ -3735,7 +3807,7 @@ mod tests {
 
 		let route_params = RouteParameters::from_payment_params_and_value(payment_params, 100);
 		let route = get_route(&our_id, &route_params, &network_graph.read_only(), None,
-			Arc::clone(&logger), &scorer, &(), &random_seed_bytes).unwrap();
+			Arc::clone(&logger), &scorer, &Default::default(), &random_seed_bytes).unwrap();
 		assert_eq!(route.paths[0].hops.len(), 5);
 
 		assert_eq!(route.paths[0].hops[0].pubkey, nodes[1]);
@@ -3791,8 +3863,8 @@ mod tests {
 			.with_route_hints(last_hops.clone()).unwrap();
 		let route_params = RouteParameters::from_payment_params_and_value(payment_params, 100);
 		let route = get_route(&our_id, &route_params, &network_graph.read_only(),
-			Some(&our_chans.iter().collect::<Vec<_>>()), Arc::clone(&logger), &scorer, &(),
-			&random_seed_bytes).unwrap();
+			Some(&our_chans.iter().collect::<Vec<_>>()), Arc::clone(&logger), &scorer,
+			&Default::default(), &random_seed_bytes).unwrap();
 		assert_eq!(route.paths[0].hops.len(), 2);
 
 		assert_eq!(route.paths[0].hops[0].pubkey, nodes[3]);
@@ -3817,7 +3889,7 @@ mod tests {
 		let route_params = RouteParameters::from_payment_params_and_value(
 			payment_params.clone(), 100);
 		let route = get_route(&our_id, &route_params, &network_graph.read_only(), None,
-			Arc::clone(&logger), &scorer, &(), &random_seed_bytes).unwrap();
+			Arc::clone(&logger), &scorer, &Default::default(), &random_seed_bytes).unwrap();
 		assert_eq!(route.paths[0].hops.len(), 4);
 
 		assert_eq!(route.paths[0].hops[0].pubkey, nodes[1]);
@@ -3853,7 +3925,7 @@ mod tests {
 		// ...but still use 8 for larger payments as 6 has a variable feerate
 		let route_params = RouteParameters::from_payment_params_and_value(payment_params, 2000);
 		let route = get_route(&our_id, &route_params, &network_graph.read_only(), None,
-			Arc::clone(&logger), &scorer, &(), &random_seed_bytes).unwrap();
+			Arc::clone(&logger), &scorer, &Default::default(), &random_seed_bytes).unwrap();
 		assert_eq!(route.paths[0].hops.len(), 5);
 
 		assert_eq!(route.paths[0].hops[0].pubkey, nodes[1]);
@@ -3920,7 +3992,7 @@ mod tests {
 		let network_graph = NetworkGraph::new(Network::Testnet, &logger);
 		let route_params = RouteParameters::from_payment_params_and_value(payment_params, route_val);
 		let route = get_route(&source_node_id, &route_params, &network_graph.read_only(),
-				Some(&our_chans.iter().collect::<Vec<_>>()), &logger, &scorer, &(),
+				Some(&our_chans.iter().collect::<Vec<_>>()), &logger, &scorer, &Default::default(),
 				&random_seed_bytes);
 		route
 	}
@@ -4046,7 +4118,7 @@ mod tests {
 				payment_params.clone(), 250_000_001);
 			if let Err(LightningError{err, action: ErrorAction::IgnoreError}) = get_route(
 					&our_id, &route_params, &network_graph.read_only(), None,
-					Arc::clone(&logger), &scorer, &(), &random_seed_bytes) {
+					Arc::clone(&logger), &scorer, &Default::default(), &random_seed_bytes) {
 						assert_eq!(err, "Failed to find a sufficient route to the given destination");
 			} else { panic!(); }
 		}
@@ -4056,7 +4128,7 @@ mod tests {
 			let route_params = RouteParameters::from_payment_params_and_value(
 				payment_params.clone(), 250_000_000);
 			let route = get_route(&our_id, &route_params, &network_graph.read_only(), None,
-				Arc::clone(&logger), &scorer, &(),&random_seed_bytes).unwrap();
+				Arc::clone(&logger), &scorer, &Default::default(), &random_seed_bytes).unwrap();
 			assert_eq!(route.paths.len(), 1);
 			let path = route.paths.last().unwrap();
 			assert_eq!(path.hops.len(), 2);
@@ -4089,7 +4161,7 @@ mod tests {
 			if let Err(LightningError{err, action: ErrorAction::IgnoreError}) = get_route(
 					&our_id, &route_params, &network_graph.read_only(),
 					Some(&our_chans.iter().collect::<Vec<_>>()), Arc::clone(&logger), &scorer,
-					&(), &random_seed_bytes) {
+					&Default::default(), &random_seed_bytes) {
 						assert_eq!(err, "Failed to find a sufficient route to the given destination");
 			} else { panic!(); }
 		}
@@ -4099,8 +4171,8 @@ mod tests {
 			let route_params = RouteParameters::from_payment_params_and_value(
 				payment_params.clone(), 200_000_000);
 			let route = get_route(&our_id, &route_params, &network_graph.read_only(),
-				Some(&our_chans.iter().collect::<Vec<_>>()), Arc::clone(&logger), &scorer, &(),
-				&random_seed_bytes).unwrap();
+				Some(&our_chans.iter().collect::<Vec<_>>()), Arc::clone(&logger), &scorer,
+				&Default::default(), &random_seed_bytes).unwrap();
 			assert_eq!(route.paths.len(), 1);
 			let path = route.paths.last().unwrap();
 			assert_eq!(path.hops.len(), 2);
@@ -4143,7 +4215,7 @@ mod tests {
 				payment_params.clone(), 15_001);
 			if let Err(LightningError{err, action: ErrorAction::IgnoreError}) = get_route(
 					&our_id, &route_params, &network_graph.read_only(), None, Arc::clone(&logger),
-					&scorer, &(), &random_seed_bytes) {
+					&scorer, &Default::default(), &random_seed_bytes) {
 						assert_eq!(err, "Failed to find a sufficient route to the given destination");
 			} else { panic!(); }
 		}
@@ -4153,7 +4225,7 @@ mod tests {
 			let route_params = RouteParameters::from_payment_params_and_value(
 				payment_params.clone(), 15_000);
 			let route = get_route(&our_id, &route_params, &network_graph.read_only(), None,
-				Arc::clone(&logger), &scorer, &(), &random_seed_bytes).unwrap();
+				Arc::clone(&logger), &scorer, &Default::default(), &random_seed_bytes).unwrap();
 			assert_eq!(route.paths.len(), 1);
 			let path = route.paths.last().unwrap();
 			assert_eq!(path.hops.len(), 2);
@@ -4220,7 +4292,7 @@ mod tests {
 				payment_params.clone(), 15_001);
 			if let Err(LightningError{err, action: ErrorAction::IgnoreError}) = get_route(
 					&our_id, &route_params, &network_graph.read_only(), None, Arc::clone(&logger),
-					&scorer, &(), &random_seed_bytes) {
+					&scorer, &Default::default(), &random_seed_bytes) {
 						assert_eq!(err, "Failed to find a sufficient route to the given destination");
 			} else { panic!(); }
 		}
@@ -4230,7 +4302,7 @@ mod tests {
 			let route_params = RouteParameters::from_payment_params_and_value(
 				payment_params.clone(), 15_000);
 			let route = get_route(&our_id, &route_params, &network_graph.read_only(), None,
-				Arc::clone(&logger), &scorer, &(), &random_seed_bytes).unwrap();
+				Arc::clone(&logger), &scorer, &Default::default(), &random_seed_bytes).unwrap();
 			assert_eq!(route.paths.len(), 1);
 			let path = route.paths.last().unwrap();
 			assert_eq!(path.hops.len(), 2);
@@ -4258,7 +4330,7 @@ mod tests {
 				payment_params.clone(), 10_001);
 			if let Err(LightningError{err, action: ErrorAction::IgnoreError}) = get_route(
 					&our_id, &route_params, &network_graph.read_only(), None, Arc::clone(&logger),
-					&scorer, &(), &random_seed_bytes) {
+					&scorer, &Default::default(), &random_seed_bytes) {
 						assert_eq!(err, "Failed to find a sufficient route to the given destination");
 			} else { panic!(); }
 		}
@@ -4268,7 +4340,7 @@ mod tests {
 			let route_params = RouteParameters::from_payment_params_and_value(
 				payment_params.clone(), 10_000);
 			let route = get_route(&our_id, &route_params, &network_graph.read_only(), None,
-				Arc::clone(&logger), &scorer, &(), &random_seed_bytes).unwrap();
+				Arc::clone(&logger), &scorer, &Default::default(), &random_seed_bytes).unwrap();
 			assert_eq!(route.paths.len(), 1);
 			let path = route.paths.last().unwrap();
 			assert_eq!(path.hops.len(), 2);
@@ -4376,7 +4448,7 @@ mod tests {
 				payment_params.clone(), 60_000);
 			if let Err(LightningError{err, action: ErrorAction::IgnoreError}) = get_route(
 					&our_id, &route_params, &network_graph.read_only(), None, Arc::clone(&logger),
-					&scorer, &(), &random_seed_bytes) {
+					&scorer, &Default::default(), &random_seed_bytes) {
 						assert_eq!(err, "Failed to find a sufficient route to the given destination");
 			} else { panic!(); }
 		}
@@ -4386,7 +4458,7 @@ mod tests {
 			let route_params = RouteParameters::from_payment_params_and_value(
 				payment_params.clone(), 49_000);
 			let route = get_route(&our_id, &route_params, &network_graph.read_only(), None,
-				Arc::clone(&logger), &scorer, &(), &random_seed_bytes).unwrap();
+				Arc::clone(&logger), &scorer, &Default::default(), &random_seed_bytes).unwrap();
 			assert_eq!(route.paths.len(), 1);
 			let mut total_amount_paid_msat = 0;
 			for path in &route.paths {
@@ -4402,7 +4474,7 @@ mod tests {
 			let route_params = RouteParameters::from_payment_params_and_value(
 				payment_params, 50_000);
 			let route = get_route(&our_id, &route_params, &network_graph.read_only(), None,
-				Arc::clone(&logger), &scorer, &(), &random_seed_bytes).unwrap();
+				Arc::clone(&logger), &scorer, &Default::default(), &random_seed_bytes).unwrap();
 			assert_eq!(route.paths.len(), 1);
 			let mut total_amount_paid_msat = 0;
 			for path in &route.paths {
@@ -4453,7 +4525,7 @@ mod tests {
 			let route_params = RouteParameters::from_payment_params_and_value(
 				payment_params, 50_000);
 			let route = get_route(&our_id, &route_params, &network_graph.read_only(), None,
-				Arc::clone(&logger), &scorer, &(), &random_seed_bytes).unwrap();
+				Arc::clone(&logger), &scorer, &Default::default(), &random_seed_bytes).unwrap();
 			assert_eq!(route.paths.len(), 1);
 			let mut total_amount_paid_msat = 0;
 			for path in &route.paths {
@@ -4622,7 +4694,7 @@ mod tests {
 				payment_params.clone(), 300_000);
 			if let Err(LightningError{err, action: ErrorAction::IgnoreError}) = get_route(
 				&our_id, &route_params, &network_graph.read_only(), None,
-				Arc::clone(&logger), &scorer, &(), &random_seed_bytes) {
+				Arc::clone(&logger), &scorer, &Default::default(), &random_seed_bytes) {
 					assert_eq!(err, "Failed to find a sufficient route to the given destination");
 			} else { panic!(); }
 		}
@@ -4634,7 +4706,7 @@ mod tests {
 				zero_payment_params, 100);
 			if let Err(LightningError{err, action: ErrorAction::IgnoreError}) = get_route(
 				&our_id, &route_params, &network_graph.read_only(), None,
-				Arc::clone(&logger), &scorer, &(), &random_seed_bytes) {
+				Arc::clone(&logger), &scorer, &Default::default(), &random_seed_bytes) {
 					assert_eq!(err, "Can't find a route with no paths allowed.");
 			} else { panic!(); }
 		}
@@ -4648,7 +4720,7 @@ mod tests {
 				fail_payment_params, 250_000);
 			if let Err(LightningError{err, action: ErrorAction::IgnoreError}) = get_route(
 				&our_id, &route_params, &network_graph.read_only(), None,
-				Arc::clone(&logger), &scorer, &(), &random_seed_bytes) {
+				Arc::clone(&logger), &scorer, &Default::default(), &random_seed_bytes) {
 					assert_eq!(err, "Failed to find a sufficient route to the given destination");
 			} else { panic!(); }
 		}
@@ -4659,7 +4731,7 @@ mod tests {
 			let route_params = RouteParameters::from_payment_params_and_value(
 				payment_params.clone(), 250_000);
 			let route = get_route(&our_id, &route_params, &network_graph.read_only(), None,
-				Arc::clone(&logger), &scorer, &(), &random_seed_bytes).unwrap();
+				Arc::clone(&logger), &scorer, &Default::default(), &random_seed_bytes).unwrap();
 			assert_eq!(route.paths.len(), 3);
 			let mut total_amount_paid_msat = 0;
 			for path in &route.paths {
@@ -4679,7 +4751,7 @@ mod tests {
 			let route_params = RouteParameters::from_payment_params_and_value(
 				payment_params.clone(), 290_000);
 			let route = get_route(&our_id, &route_params, &network_graph.read_only(), None,
-				Arc::clone(&logger), &scorer, &(), &random_seed_bytes).unwrap();
+				Arc::clone(&logger), &scorer, &Default::default(), &random_seed_bytes).unwrap();
 			assert_eq!(route.paths.len(), 3);
 			let mut total_amount_paid_msat = 0;
 			for path in &route.paths {
@@ -4853,7 +4925,7 @@ mod tests {
 				payment_params.clone(), 350_000);
 			if let Err(LightningError{err, action: ErrorAction::IgnoreError}) = get_route(
 					&our_id, &route_params, &network_graph.read_only(), None, Arc::clone(&logger),
-					&scorer, &(), &random_seed_bytes) {
+					&scorer, &Default::default(), &random_seed_bytes) {
 						assert_eq!(err, "Failed to find a sufficient route to the given destination");
 			} else { panic!(); }
 		}
@@ -4864,7 +4936,7 @@ mod tests {
 			let route_params = RouteParameters::from_payment_params_and_value(
 				payment_params, 300_000);
 			let route = get_route(&our_id, &route_params, &network_graph.read_only(), None,
-				Arc::clone(&logger), &scorer, &(), &random_seed_bytes).unwrap();
+				Arc::clone(&logger), &scorer, &Default::default(), &random_seed_bytes).unwrap();
 			assert_eq!(route.paths.len(), 3);
 
 			let mut total_amount_paid_msat = 0;
@@ -5028,7 +5100,7 @@ mod tests {
 			let route_params = RouteParameters::from_payment_params_and_value(
 				payment_params, 180_000);
 			let route = get_route(&our_id, &route_params, &network_graph.read_only(), None,
-				Arc::clone(&logger), &scorer, &(), &random_seed_bytes).unwrap();
+				Arc::clone(&logger), &scorer, &Default::default(), &random_seed_bytes).unwrap();
 			assert_eq!(route.paths.len(), 2);
 
 			let mut total_value_transferred_msat = 0;
@@ -5202,16 +5274,28 @@ mod tests {
 				payment_params.clone(), 210_000);
 			if let Err(LightningError{err, action: ErrorAction::IgnoreError}) = get_route(
 					&our_id, &route_params, &network_graph.read_only(), None, Arc::clone(&logger),
-					&scorer, &(), &random_seed_bytes) {
+					&scorer, &Default::default(), &random_seed_bytes) {
 						assert_eq!(err, "Failed to find a sufficient route to the given destination");
 			} else { panic!(); }
 		}
 
 		{
+			// Attempt to route while setting max_total_routing_fee_msat to 149_999 results in a failure.
+			let route_params = RouteParameters { payment_params: payment_params.clone(), final_value_msat: 200_000,
+				max_total_routing_fee_msat: Some(149_999) };
+			if let Err(LightningError{err, action: ErrorAction::IgnoreError}) = get_route(
+				&our_id, &route_params, &network_graph.read_only(), None, Arc::clone(&logger),
+				&scorer, &(), &random_seed_bytes) {
+					assert_eq!(err, "Failed to find a sufficient route to the given destination");
+			} else { panic!(); }
+		}
+
+		{
 			// Now, attempt to route 200 sats (exact amount we can route).
-			let route_params = RouteParameters::from_payment_params_and_value(payment_params, 200_000);
+			let route_params = RouteParameters { payment_params: payment_params.clone(), final_value_msat: 200_000,
+				max_total_routing_fee_msat: Some(150_000) };
 			let route = get_route(&our_id, &route_params, &network_graph.read_only(), None,
-				Arc::clone(&logger), &scorer, &(), &random_seed_bytes).unwrap();
+				Arc::clone(&logger), &scorer, &Default::default(), &random_seed_bytes).unwrap();
 			assert_eq!(route.paths.len(), 2);
 
 			let mut total_amount_paid_msat = 0;
@@ -5314,7 +5398,7 @@ mod tests {
 		let route_params = RouteParameters::from_payment_params_and_value(
 			payment_params, 100_000);
 		let mut route = get_route(&our_id, &route_params, &network_graph.read_only(), None,
-			Arc::clone(&logger), &scorer, &(), &random_seed_bytes).unwrap();
+			Arc::clone(&logger), &scorer, &Default::default(), &random_seed_bytes).unwrap();
 		assert_eq!(route.paths.len(), 2);
 		route.paths.sort_by_key(|path| path.hops[0].short_channel_id);
 		// Paths are manually ordered ordered by SCID, so:
@@ -5436,7 +5520,7 @@ mod tests {
 				payment_params.clone(), 150_000);
 			if let Err(LightningError{err, action: ErrorAction::IgnoreError}) = get_route(
 					&our_id, &route_params, &network_graph.read_only(), None, Arc::clone(&logger),
-					&scorer, &(), &random_seed_bytes) {
+					&scorer, &Default::default(), &random_seed_bytes) {
 						assert_eq!(err, "Failed to find a sufficient route to the given destination");
 			} else { panic!(); }
 		}
@@ -5447,7 +5531,7 @@ mod tests {
 			let route_params = RouteParameters::from_payment_params_and_value(
 				payment_params.clone(), 125_000);
 			let route = get_route(&our_id, &route_params, &network_graph.read_only(), None,
-				Arc::clone(&logger), &scorer, &(), &random_seed_bytes).unwrap();
+				Arc::clone(&logger), &scorer, &Default::default(), &random_seed_bytes).unwrap();
 			assert_eq!(route.paths.len(), 3);
 			let mut total_amount_paid_msat = 0;
 			for path in &route.paths {
@@ -5463,7 +5547,7 @@ mod tests {
 			let route_params = RouteParameters::from_payment_params_and_value(
 				payment_params, 90_000);
 			let route = get_route(&our_id, &route_params, &network_graph.read_only(), None,
-				Arc::clone(&logger), &scorer, &(), &random_seed_bytes).unwrap();
+				Arc::clone(&logger), &scorer, &Default::default(), &random_seed_bytes).unwrap();
 			assert_eq!(route.paths.len(), 2);
 			let mut total_amount_paid_msat = 0;
 			for path in &route.paths {
@@ -5605,7 +5689,7 @@ mod tests {
 			let route_params = RouteParameters::from_payment_params_and_value(
 				payment_params, 10_000);
 			let route = get_route(&our_id, &route_params, &network.read_only(), None,
-				Arc::clone(&logger), &scorer, &(), &random_seed_bytes).unwrap();
+				Arc::clone(&logger), &scorer, &Default::default(), &random_seed_bytes).unwrap();
 			assert_eq!(route.paths.len(), 1);
 			assert_eq!(route.paths[0].hops.len(), 3);
 
@@ -5676,10 +5760,11 @@ mod tests {
 		{
 			// Now, attempt to route 90 sats, which is exactly 90 sats at the last hop, plus the
 			// 200% fee charged channel 13 in the 1-to-2 direction.
-			let route_params = RouteParameters::from_payment_params_and_value(
+			let mut route_params = RouteParameters::from_payment_params_and_value(
 				payment_params, 90_000);
+			route_params.max_total_routing_fee_msat = Some(90_000*2);
 			let route = get_route(&our_id, &route_params, &network_graph.read_only(), None,
-				Arc::clone(&logger), &scorer, &(), &random_seed_bytes).unwrap();
+				Arc::clone(&logger), &scorer, &Default::default(), &random_seed_bytes).unwrap();
 			assert_eq!(route.paths.len(), 1);
 			assert_eq!(route.paths[0].hops.len(), 2);
 
@@ -5745,10 +5830,11 @@ mod tests {
 			// Now, attempt to route 90 sats, hitting the htlc_minimum on channel 4, but
 			// overshooting the htlc_maximum on channel 2. Thus, we should pick the (absurdly
 			// expensive) channels 12-13 path.
-			let route_params = RouteParameters::from_payment_params_and_value(
+			let mut route_params = RouteParameters::from_payment_params_and_value(
 				payment_params, 90_000);
+			route_params.max_total_routing_fee_msat = Some(90_000*2);
 			let route = get_route(&our_id, &route_params, &network_graph.read_only(), None,
-				Arc::clone(&logger), &scorer, &(), &random_seed_bytes).unwrap();
+				Arc::clone(&logger), &scorer, &Default::default(), &random_seed_bytes).unwrap();
 			assert_eq!(route.paths.len(), 1);
 			assert_eq!(route.paths[0].hops.len(), 2);
 
@@ -5792,7 +5878,7 @@ mod tests {
 			let route = get_route(&our_id, &route_params, &network_graph.read_only(), Some(&[
 				&get_channel_details(Some(3), nodes[0], channelmanager::provided_init_features(&config), 200_000),
 				&get_channel_details(Some(2), nodes[0], channelmanager::provided_init_features(&config), 10_000),
-			]), Arc::clone(&logger), &scorer, &(), &random_seed_bytes).unwrap();
+			]), Arc::clone(&logger), &scorer, &Default::default(), &random_seed_bytes).unwrap();
 			assert_eq!(route.paths.len(), 1);
 			assert_eq!(route.paths[0].hops.len(), 1);
 
@@ -5806,7 +5892,7 @@ mod tests {
 			let route = get_route(&our_id, &route_params, &network_graph.read_only(), Some(&[
 				&get_channel_details(Some(3), nodes[0], channelmanager::provided_init_features(&config), 50_000),
 				&get_channel_details(Some(2), nodes[0], channelmanager::provided_init_features(&config), 50_000),
-			]), Arc::clone(&logger), &scorer, &(), &random_seed_bytes).unwrap();
+			]), Arc::clone(&logger), &scorer, &Default::default(), &random_seed_bytes).unwrap();
 			assert_eq!(route.paths.len(), 2);
 			assert_eq!(route.paths[0].hops.len(), 1);
 			assert_eq!(route.paths[1].hops.len(), 1);
@@ -5840,7 +5926,7 @@ mod tests {
 				&get_channel_details(Some(8), nodes[0], channelmanager::provided_init_features(&config), 50_000),
 				&get_channel_details(Some(9), nodes[0], channelmanager::provided_init_features(&config), 50_000),
 				&get_channel_details(Some(4), nodes[0], channelmanager::provided_init_features(&config), 1_000_000),
-			]), Arc::clone(&logger), &scorer, &(), &random_seed_bytes).unwrap();
+			]), Arc::clone(&logger), &scorer, &Default::default(), &random_seed_bytes).unwrap();
 			assert_eq!(route.paths.len(), 1);
 			assert_eq!(route.paths[0].hops.len(), 1);
 
@@ -5863,7 +5949,7 @@ mod tests {
 		let route_params = RouteParameters::from_payment_params_and_value(
 			payment_params.clone(), 100);
 		let route = get_route( &our_id, &route_params, &network_graph.read_only(), None,
-			Arc::clone(&logger), &scorer, &(), &random_seed_bytes).unwrap();
+			Arc::clone(&logger), &scorer, &Default::default(), &random_seed_bytes).unwrap();
 		let path = route.paths[0].hops.iter().map(|hop| hop.short_channel_id).collect::<Vec<_>>();
 
 		assert_eq!(route.get_total_fees(), 100);
@@ -5876,7 +5962,7 @@ mod tests {
 		let route_params = RouteParameters::from_payment_params_and_value(
 			payment_params, 100);
 		let route = get_route( &our_id, &route_params, &network_graph.read_only(), None,
-			Arc::clone(&logger), &scorer, &(), &random_seed_bytes).unwrap();
+			Arc::clone(&logger), &scorer, &Default::default(), &random_seed_bytes).unwrap();
 		let path = route.paths[0].hops.iter().map(|hop| hop.short_channel_id).collect::<Vec<_>>();
 
 		assert_eq!(route.get_total_fees(), 300);
@@ -5929,7 +6015,7 @@ mod tests {
 		let route_params = RouteParameters::from_payment_params_and_value(
 			payment_params, 100);
 		let route = get_route( &our_id, &route_params, &network_graph, None, Arc::clone(&logger),
-			&scorer, &(), &random_seed_bytes).unwrap();
+			&scorer, &Default::default(), &random_seed_bytes).unwrap();
 		let path = route.paths[0].hops.iter().map(|hop| hop.short_channel_id).collect::<Vec<_>>();
 
 		assert_eq!(route.get_total_fees(), 100);
@@ -5939,7 +6025,7 @@ mod tests {
 		// A different path to nodes[6] exists if channel 6 cannot be routed over.
 		let scorer = BadChannelScorer { short_channel_id: 6 };
 		let route = get_route( &our_id, &route_params, &network_graph, None, Arc::clone(&logger),
-			&scorer, &(), &random_seed_bytes).unwrap();
+			&scorer, &Default::default(), &random_seed_bytes).unwrap();
 		let path = route.paths[0].hops.iter().map(|hop| hop.short_channel_id).collect::<Vec<_>>();
 
 		assert_eq!(route.get_total_fees(), 300);
@@ -5949,7 +6035,7 @@ mod tests {
 		// A path to nodes[6] does not exist if nodes[2] cannot be routed through.
 		let scorer = BadNodeScorer { node_id: NodeId::from_pubkey(&nodes[2]) };
 		match get_route( &our_id, &route_params, &network_graph, None, Arc::clone(&logger),
-			&scorer, &(), &random_seed_bytes) {
+			&scorer, &Default::default(), &random_seed_bytes) {
 				Err(LightningError { err, .. } ) => {
 					assert_eq!(err, "Failed to find a path to the given destination");
 				},
@@ -5964,17 +6050,17 @@ mod tests {
 				RouteHop {
 					pubkey: PublicKey::from_slice(&hex::decode("02eec7245d6b7d2ccb30380bfbe2a3648cd7a942653f5aa340edcea1f283686619").unwrap()[..]).unwrap(),
 					channel_features: ChannelFeatures::empty(), node_features: NodeFeatures::empty(),
-					short_channel_id: 0, fee_msat: 100, cltv_expiry_delta: 0
+					short_channel_id: 0, fee_msat: 100, cltv_expiry_delta: 0, maybe_announced_channel: true,
 				},
 				RouteHop {
 					pubkey: PublicKey::from_slice(&hex::decode("0324653eac434488002cc06bbfb7f10fe18991e35f9fe4302dbea6d2353dc0ab1c").unwrap()[..]).unwrap(),
 					channel_features: ChannelFeatures::empty(), node_features: NodeFeatures::empty(),
-					short_channel_id: 0, fee_msat: 150, cltv_expiry_delta: 0
+					short_channel_id: 0, fee_msat: 150, cltv_expiry_delta: 0, maybe_announced_channel: true,
 				},
 				RouteHop {
 					pubkey: PublicKey::from_slice(&hex::decode("027f31ebc5462c1fdce1b737ecff52d37d75dea43ce11c74d25aa297165faa2007").unwrap()[..]).unwrap(),
 					channel_features: ChannelFeatures::empty(), node_features: NodeFeatures::empty(),
-					short_channel_id: 0, fee_msat: 225, cltv_expiry_delta: 0
+					short_channel_id: 0, fee_msat: 225, cltv_expiry_delta: 0, maybe_announced_channel: true,
 				},
 			], blinded_tail: None }],
 			route_params: None,
@@ -5991,23 +6077,23 @@ mod tests {
 				RouteHop {
 					pubkey: PublicKey::from_slice(&hex::decode("02eec7245d6b7d2ccb30380bfbe2a3648cd7a942653f5aa340edcea1f283686619").unwrap()[..]).unwrap(),
 					channel_features: ChannelFeatures::empty(), node_features: NodeFeatures::empty(),
-					short_channel_id: 0, fee_msat: 100, cltv_expiry_delta: 0
+					short_channel_id: 0, fee_msat: 100, cltv_expiry_delta: 0, maybe_announced_channel: true,
 				},
 				RouteHop {
 					pubkey: PublicKey::from_slice(&hex::decode("0324653eac434488002cc06bbfb7f10fe18991e35f9fe4302dbea6d2353dc0ab1c").unwrap()[..]).unwrap(),
 					channel_features: ChannelFeatures::empty(), node_features: NodeFeatures::empty(),
-					short_channel_id: 0, fee_msat: 150, cltv_expiry_delta: 0
+					short_channel_id: 0, fee_msat: 150, cltv_expiry_delta: 0, maybe_announced_channel: true,
 				},
 			], blinded_tail: None }, Path { hops: vec![
 				RouteHop {
 					pubkey: PublicKey::from_slice(&hex::decode("02eec7245d6b7d2ccb30380bfbe2a3648cd7a942653f5aa340edcea1f283686619").unwrap()[..]).unwrap(),
 					channel_features: ChannelFeatures::empty(), node_features: NodeFeatures::empty(),
-					short_channel_id: 0, fee_msat: 100, cltv_expiry_delta: 0
+					short_channel_id: 0, fee_msat: 100, cltv_expiry_delta: 0, maybe_announced_channel: true,
 				},
 				RouteHop {
 					pubkey: PublicKey::from_slice(&hex::decode("0324653eac434488002cc06bbfb7f10fe18991e35f9fe4302dbea6d2353dc0ab1c").unwrap()[..]).unwrap(),
 					channel_features: ChannelFeatures::empty(), node_features: NodeFeatures::empty(),
-					short_channel_id: 0, fee_msat: 150, cltv_expiry_delta: 0
+					short_channel_id: 0, fee_msat: 150, cltv_expiry_delta: 0, maybe_announced_channel: true,
 				},
 			], blinded_tail: None }],
 			route_params: None,
@@ -6045,7 +6131,7 @@ mod tests {
 		let route_params = RouteParameters::from_payment_params_and_value(
 			feasible_payment_params, 100);
 		let route = get_route(&our_id, &route_params, &network_graph, None, Arc::clone(&logger),
-			&scorer, &(), &random_seed_bytes).unwrap();
+			&scorer, &Default::default(), &random_seed_bytes).unwrap();
 		let path = route.paths[0].hops.iter().map(|hop| hop.short_channel_id).collect::<Vec<_>>();
 		assert_ne!(path.len(), 0);
 
@@ -6056,7 +6142,7 @@ mod tests {
 		let route_params = RouteParameters::from_payment_params_and_value(
 			fail_payment_params, 100);
 		match get_route(&our_id, &route_params, &network_graph, None, Arc::clone(&logger), &scorer,
-			&(), &random_seed_bytes)
+			&Default::default(), &random_seed_bytes)
 		{
 			Err(LightningError { err, .. } ) => {
 				assert_eq!(err, "Failed to find a path to the given destination");
@@ -6084,12 +6170,12 @@ mod tests {
 		let route_params = RouteParameters::from_payment_params_and_value(
 			payment_params.clone(), 100);
 		assert!(get_route(&our_id, &route_params, &network_graph, None, Arc::clone(&logger),
-			&scorer, &(), &random_seed_bytes).is_ok());
+			&scorer, &Default::default(), &random_seed_bytes).is_ok());
 		loop {
 			let route_params = RouteParameters::from_payment_params_and_value(
 				payment_params.clone(), 100);
 			if let Ok(route) = get_route(&our_id, &route_params, &network_graph, None,
-				Arc::clone(&logger), &scorer, &(), &random_seed_bytes)
+				Arc::clone(&logger), &scorer, &Default::default(), &random_seed_bytes)
 			{
 				for chan in route.paths[0].hops.iter() {
 					assert!(!payment_params.previously_failed_channels.contains(&chan.short_channel_id));
@@ -6116,7 +6202,7 @@ mod tests {
 		let route_params = RouteParameters::from_payment_params_and_value(
 			feasible_payment_params, 100);
 		let route = get_route(&our_id, &route_params, &network_graph, None, Arc::clone(&logger),
-			&scorer, &(), &random_seed_bytes).unwrap();
+			&scorer, &Default::default(), &random_seed_bytes).unwrap();
 		let path = route.paths[0].hops.iter().map(|hop| hop.short_channel_id).collect::<Vec<_>>();
 		assert!(path.len() == MAX_PATH_LENGTH_ESTIMATE.into());
 
@@ -6125,7 +6211,7 @@ mod tests {
 		let route_params = RouteParameters::from_payment_params_and_value(
 			fail_payment_params, 100);
 		match get_route(&our_id, &route_params, &network_graph, None, Arc::clone(&logger), &scorer,
-			&(), &random_seed_bytes)
+			&Default::default(), &random_seed_bytes)
 		{
 			Err(LightningError { err, .. } ) => {
 				assert_eq!(err, "Failed to find a path to the given destination");
@@ -6147,7 +6233,7 @@ mod tests {
 		let route_params = RouteParameters::from_payment_params_and_value(
 			payment_params.clone(), 100);
 		let route = get_route(&our_id, &route_params, &network_graph.read_only(), None,
-			Arc::clone(&logger), &scorer, &(), &random_seed_bytes).unwrap();
+			Arc::clone(&logger), &scorer, &Default::default(), &random_seed_bytes).unwrap();
 		assert_eq!(route.paths.len(), 1);
 
 		let cltv_expiry_deltas_before = route.paths[0].hops.iter().map(|h| h.cltv_expiry_delta).collect::<Vec<u32>>();
@@ -6184,7 +6270,7 @@ mod tests {
 		let route_params = RouteParameters::from_payment_params_and_value(
 			payment_params.clone(), 100);
 		let mut route = get_route(&our_id, &route_params, &network_graph, None,
-			Arc::clone(&logger), &scorer, &(), &random_seed_bytes).unwrap();
+			Arc::clone(&logger), &scorer, &Default::default(), &random_seed_bytes).unwrap();
 		add_random_cltv_offset(&mut route, &payment_params, &network_graph, &random_seed_bytes);
 
 		let mut path_plausibility = vec![];
@@ -6451,10 +6537,11 @@ mod tests {
 
 		// Make sure we'll error if our route hints don't have enough liquidity according to their
 		// htlc_maximum_msat.
-		let route_params = RouteParameters::from_payment_params_and_value(
+		let mut route_params = RouteParameters::from_payment_params_and_value(
 			payment_params, max_htlc_msat + 1);
+		route_params.max_total_routing_fee_msat = None;
 		if let Err(LightningError{err, action: ErrorAction::IgnoreError}) = get_route(&our_id,
-			&route_params, &netgraph, None, Arc::clone(&logger), &scorer, &(),
+			&route_params, &netgraph, None, Arc::clone(&logger), &scorer, &Default::default(),
 			&random_seed_bytes)
 		{
 			assert_eq!(err, "Failed to find a sufficient route to the given destination");
@@ -6466,10 +6553,11 @@ mod tests {
 		let payment_params = PaymentParameters::from_node_id(dest_node_id, 42)
 			.with_route_hints(vec![route_hint_1, route_hint_2]).unwrap()
 			.with_bolt11_features(channelmanager::provided_invoice_features(&config)).unwrap();
-		let route_params = RouteParameters::from_payment_params_and_value(
+		let mut route_params = RouteParameters::from_payment_params_and_value(
 			payment_params, max_htlc_msat + 1);
+		route_params.max_total_routing_fee_msat = Some(max_htlc_msat * 2);
 		let route = get_route(&our_id, &route_params, &netgraph, None, Arc::clone(&logger),
-			&scorer, &(), &random_seed_bytes).unwrap();
+			&scorer, &Default::default(), &random_seed_bytes).unwrap();
 		assert_eq!(route.paths.len(), 2);
 		assert!(route.paths[0].hops.last().unwrap().fee_msat <= max_htlc_msat);
 		assert!(route.paths[1].hops.last().unwrap().fee_msat <= max_htlc_msat);
@@ -6525,8 +6613,8 @@ mod tests {
 		let route_params = RouteParameters::from_payment_params_and_value(
 			payment_params, amt_msat);
 		let route = get_route(&our_node_id, &route_params, &network_graph.read_only(),
-			Some(&first_hop.iter().collect::<Vec<_>>()), Arc::clone(&logger), &scorer, &(),
-			&random_seed_bytes).unwrap();
+			Some(&first_hop.iter().collect::<Vec<_>>()), Arc::clone(&logger), &scorer,
+			&Default::default(), &random_seed_bytes).unwrap();
 		assert_eq!(route.paths.len(), 2);
 		assert!(route.paths[0].hops.last().unwrap().fee_msat <= max_htlc_msat);
 		assert!(route.paths[1].hops.last().unwrap().fee_msat <= max_htlc_msat);
@@ -6539,8 +6627,8 @@ mod tests {
 			get_channel_details(Some(43), intermed_node_id, InitFeatures::from_le_bytes(vec![0b11]), amt_msat - 10),
 		];
 		let route = get_route(&our_node_id, &route_params, &network_graph.read_only(),
-			Some(&first_hops.iter().collect::<Vec<_>>()), Arc::clone(&logger), &scorer, &(),
-			&random_seed_bytes).unwrap();
+			Some(&first_hops.iter().collect::<Vec<_>>()), Arc::clone(&logger), &scorer,
+			&Default::default(), &random_seed_bytes).unwrap();
 		assert_eq!(route.paths.len(), 2);
 		assert!(route.paths[0].hops.last().unwrap().fee_msat <= max_htlc_msat);
 		assert!(route.paths[1].hops.last().unwrap().fee_msat <= max_htlc_msat);
@@ -6571,8 +6659,8 @@ mod tests {
 		let route_params = RouteParameters::from_payment_params_and_value(
 			payment_params, amt_msat);
 		let route = get_route(&our_node_id, &route_params, &network_graph.read_only(),
-			Some(&first_hops.iter().collect::<Vec<_>>()), Arc::clone(&logger), &scorer, &(),
-			&random_seed_bytes).unwrap();
+			Some(&first_hops.iter().collect::<Vec<_>>()), Arc::clone(&logger), &scorer,
+			&Default::default(), &random_seed_bytes).unwrap();
 		assert_eq!(route.paths.len(), 2);
 		assert!(route.paths[0].hops.last().unwrap().fee_msat <= max_htlc_msat);
 		assert!(route.paths[1].hops.last().unwrap().fee_msat <= max_htlc_msat);
@@ -6606,6 +6694,7 @@ mod tests {
 				channel_features: ChannelFeatures::empty(),
 				fee_msat: 100,
 				cltv_expiry_delta: 0,
+				maybe_announced_channel: true,
 			}],
 			blinded_tail: Some(BlindedTail {
 				hops: blinded_path_1.blinded_hops,
@@ -6620,6 +6709,7 @@ mod tests {
 				channel_features: ChannelFeatures::empty(),
 				fee_msat: 100,
 				cltv_expiry_delta: 0,
+				maybe_announced_channel: true,
 			}], blinded_tail: None }],
 			route_params: None,
 		};
@@ -6659,6 +6749,7 @@ mod tests {
 				channel_features: ChannelFeatures::empty(),
 				fee_msat: 100,
 				cltv_expiry_delta: 0,
+				maybe_announced_channel: false,
 			},
 			RouteHop {
 				pubkey: blinded_path.introduction_node_id,
@@ -6667,6 +6758,7 @@ mod tests {
 				channel_features: ChannelFeatures::empty(),
 				fee_msat: 1,
 				cltv_expiry_delta: 0,
+				maybe_announced_channel: false,
 			}],
 			blinded_tail: Some(BlindedTail {
 				hops: blinded_path.blinded_hops,
@@ -6699,6 +6791,7 @@ mod tests {
 				channel_features: ChannelFeatures::empty(),
 				fee_msat: 100,
 				cltv_expiry_delta: 0,
+				maybe_announced_channel: false,
 			},
 			RouteHop {
 				pubkey: blinded_path.introduction_node_id,
@@ -6707,6 +6800,7 @@ mod tests {
 				channel_features: ChannelFeatures::empty(),
 				fee_msat: 1,
 				cltv_expiry_delta: 0,
+				maybe_announced_channel: false,
 			}
 			],
 			blinded_tail: Some(BlindedTail {
@@ -6764,7 +6858,7 @@ mod tests {
 		let route_params = RouteParameters::from_payment_params_and_value(
 			payment_params, 1001);
 		let route = get_route(&our_id, &route_params, &network_graph, None, Arc::clone(&logger),
-			&scorer, &(), &random_seed_bytes).unwrap();
+			&scorer, &Default::default(), &random_seed_bytes).unwrap();
 		assert_eq!(route.paths.len(), 1);
 		assert_eq!(route.paths[0].hops.len(), 2);
 
@@ -6819,7 +6913,7 @@ mod tests {
 			(blinded_payinfo.clone(), invalid_blinded_path_2)]);
 		let route_params = RouteParameters::from_payment_params_and_value(payment_params, 1001);
 		match get_route(&our_id, &route_params, &network_graph, None, Arc::clone(&logger),
-			&scorer, &(), &random_seed_bytes)
+			&scorer, &Default::default(), &random_seed_bytes)
 		{
 			Err(LightningError { err, .. }) => {
 				assert_eq!(err, "1-hop blinded paths must all have matching introduction node ids");
@@ -6831,7 +6925,7 @@ mod tests {
 		let payment_params = PaymentParameters::blinded(vec![(blinded_payinfo.clone(), invalid_blinded_path.clone())]);
 		let route_params = RouteParameters::from_payment_params_and_value(payment_params, 1001);
 		match get_route(&our_id, &route_params, &network_graph, None, Arc::clone(&logger), &scorer,
-			&(), &random_seed_bytes)
+			&Default::default(), &random_seed_bytes)
 		{
 			Err(LightningError { err, .. }) => {
 				assert_eq!(err, "Cannot generate a route to blinded paths if we are the introduction node to all of them");
@@ -6844,7 +6938,7 @@ mod tests {
 		let payment_params = PaymentParameters::blinded(vec![(blinded_payinfo, invalid_blinded_path)]);
 		let route_params = RouteParameters::from_payment_params_and_value(payment_params, 1001);
 		match get_route(&our_id, &route_params, &network_graph, None, Arc::clone(&logger), &scorer,
-			&(), &random_seed_bytes)
+			&Default::default(), &random_seed_bytes)
 		{
 			Err(LightningError { err, .. }) => {
 				assert_eq!(err, "0-hop blinded path provided");
@@ -6896,9 +6990,10 @@ mod tests {
 		let payment_params = PaymentParameters::blinded(blinded_hints.clone())
 			.with_bolt12_features(bolt12_features.clone()).unwrap();
 
-		let route_params = RouteParameters::from_payment_params_and_value(payment_params, 100_000);
+		let mut route_params = RouteParameters::from_payment_params_and_value(payment_params, 100_000);
+		route_params.max_total_routing_fee_msat = Some(100_000);
 		let route = get_route(&our_id, &route_params, &network_graph, None, Arc::clone(&logger),
-			&scorer, &(), &random_seed_bytes).unwrap();
+			&scorer, &Default::default(), &random_seed_bytes).unwrap();
 		assert_eq!(route.paths.len(), 2);
 		let mut total_amount_paid_msat = 0;
 		for path in route.paths.into_iter() {
@@ -6987,8 +7082,8 @@ mod tests {
 		let route_params = RouteParameters::from_payment_params_and_value(
 			payment_params.clone(), amt_msat);
 		if let Err(LightningError { err, .. }) = get_route(&nodes[0], &route_params, &netgraph,
-			Some(&first_hops.iter().collect::<Vec<_>>()), Arc::clone(&logger), &scorer, &(),
-			&random_seed_bytes) {
+			Some(&first_hops.iter().collect::<Vec<_>>()), Arc::clone(&logger), &scorer,
+			&Default::default(), &random_seed_bytes) {
 				assert_eq!(err, "Failed to find a path to the given destination");
 		} else { panic!("Expected error") }
 
@@ -6997,8 +7092,8 @@ mod tests {
 		let route_params = RouteParameters::from_payment_params_and_value(
 			payment_params, amt_minus_blinded_path_fee);
 		let route = get_route(&nodes[0], &route_params, &netgraph,
-			Some(&first_hops.iter().collect::<Vec<_>>()), Arc::clone(&logger), &scorer, &(),
-			&random_seed_bytes).unwrap();
+			Some(&first_hops.iter().collect::<Vec<_>>()), Arc::clone(&logger), &scorer,
+			&Default::default(), &random_seed_bytes).unwrap();
 		assert_eq!(route.get_total_fees(), blinded_payinfo.fee_base_msat as u64);
 		assert_eq!(route.get_total_amount(), amt_minus_blinded_path_fee);
 	}
@@ -7066,8 +7161,8 @@ mod tests {
 		let route_params = RouteParameters::from_payment_params_and_value(
 			payment_params, amt_msat);
 		let route = get_route(&nodes[0], &route_params, &netgraph,
-			Some(&first_hops.iter().collect::<Vec<_>>()), Arc::clone(&logger), &scorer, &(),
-			&random_seed_bytes).unwrap();
+			Some(&first_hops.iter().collect::<Vec<_>>()), Arc::clone(&logger), &scorer,
+			&Default::default(), &random_seed_bytes).unwrap();
 		assert_eq!(route.get_total_fees(), blinded_payinfo.fee_base_msat as u64);
 		assert_eq!(route.get_total_amount(), amt_msat);
 	}
@@ -7282,15 +7377,15 @@ pub mod benches {
 		let logger = TestLogger::new();
 		let network_graph = bench_utils::read_network_graph(&logger).unwrap();
 		let scorer = FixedPenaltyScorer::with_penalty(0);
-		generate_routes(bench, &network_graph, scorer, &(), Bolt11InvoiceFeatures::empty(), 0,
-			"generate_routes_with_zero_penalty_scorer");
+		generate_routes(bench, &network_graph, scorer, &Default::default(),
+			Bolt11InvoiceFeatures::empty(), 0, "generate_routes_with_zero_penalty_scorer");
 	}
 
 	pub fn generate_mpp_routes_with_zero_penalty_scorer(bench: &mut Criterion) {
 		let logger = TestLogger::new();
 		let network_graph = bench_utils::read_network_graph(&logger).unwrap();
 		let scorer = FixedPenaltyScorer::with_penalty(0);
-		generate_routes(bench, &network_graph, scorer, &(),
+		generate_routes(bench, &network_graph, scorer, &Default::default(),
 			channelmanager::provided_invoice_features(&UserConfig::default()), 0,
 			"generate_mpp_routes_with_zero_penalty_scorer");
 	}
@@ -7322,6 +7417,42 @@ pub mod benches {
 		generate_routes(bench, &network_graph, scorer, &params,
 			channelmanager::provided_invoice_features(&UserConfig::default()), 100_000_000,
 			"generate_large_mpp_routes_with_probabilistic_scorer");
+	}
+
+	pub fn generate_routes_with_nonlinear_probabilistic_scorer(bench: &mut Criterion) {
+		let logger = TestLogger::new();
+		let network_graph = bench_utils::read_network_graph(&logger).unwrap();
+		let mut params = ProbabilisticScoringFeeParameters::default();
+		params.linear_success_probability = false;
+		let scorer = ProbabilisticScorer::new(
+			ProbabilisticScoringDecayParameters::default(), &network_graph, &logger);
+		generate_routes(bench, &network_graph, scorer, &params,
+			channelmanager::provided_invoice_features(&UserConfig::default()), 0,
+			"generate_routes_with_nonlinear_probabilistic_scorer");
+	}
+
+	pub fn generate_mpp_routes_with_nonlinear_probabilistic_scorer(bench: &mut Criterion) {
+		let logger = TestLogger::new();
+		let network_graph = bench_utils::read_network_graph(&logger).unwrap();
+		let mut params = ProbabilisticScoringFeeParameters::default();
+		params.linear_success_probability = false;
+		let scorer = ProbabilisticScorer::new(
+			ProbabilisticScoringDecayParameters::default(), &network_graph, &logger);
+		generate_routes(bench, &network_graph, scorer, &params,
+			channelmanager::provided_invoice_features(&UserConfig::default()), 0,
+			"generate_mpp_routes_with_nonlinear_probabilistic_scorer");
+	}
+
+	pub fn generate_large_mpp_routes_with_nonlinear_probabilistic_scorer(bench: &mut Criterion) {
+		let logger = TestLogger::new();
+		let network_graph = bench_utils::read_network_graph(&logger).unwrap();
+		let mut params = ProbabilisticScoringFeeParameters::default();
+		params.linear_success_probability = false;
+		let scorer = ProbabilisticScorer::new(
+			ProbabilisticScoringDecayParameters::default(), &network_graph, &logger);
+		generate_routes(bench, &network_graph, scorer, &params,
+			channelmanager::provided_invoice_features(&UserConfig::default()), 100_000_000,
+			"generate_large_mpp_routes_with_nonlinear_probabilistic_scorer");
 	}
 
 	fn generate_routes<S: ScoreLookUp + ScoreUpdate>(

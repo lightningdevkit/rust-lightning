@@ -1,0 +1,4 @@
+## Backwards Compatibility
+
+* Creating a blinded path to receive a payment over and then downgrading to a version of LDK prior
+	to 0.0.117 may result in failure to receive the payment (#2413).

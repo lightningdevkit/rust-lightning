@@ -283,6 +283,36 @@ where
 		&self, path: OnionMessagePath, message: OnionMessageContents<T>,
 		reply_path: Option<BlindedPath>
 	) -> Result<(), SendError> {
+		let (introduction_node_id, onion_msg) = Self::create_onion_message(
+			&self.entropy_source, 
+			&self.node_signer, 
+			&self.secp_ctx, 
+			path, 
+			message, 
+			reply_path
+		)?;
+
+		let mut pending_per_peer_msgs = self.pending_messages.lock().unwrap();
+		if outbound_buffer_full(&introduction_node_id, &pending_per_peer_msgs) { return Err(SendError::BufferFull) }
+		match pending_per_peer_msgs.entry(introduction_node_id) {
+			hash_map::Entry::Vacant(_) => Err(SendError::InvalidFirstHop),
+			hash_map::Entry::Occupied(mut e) => {
+				e.get_mut().push_back(onion_msg);
+				Ok(())
+			}
+		}
+	}
+
+	/// Create an onion message with contents `message` to the destination of `path`.
+	/// Returns (introduction_node_id, onion_msg)
+	pub fn create_onion_message<T: CustomOnionMessageContents>(
+		entropy_source: &ES, 
+		node_signer: &NS,
+		secp_ctx: &Secp256k1<secp256k1::All>,
+		path: OnionMessagePath, 
+		message: OnionMessageContents<T>,
+		reply_path: Option<BlindedPath>, 
+	) -> Result<(PublicKey, msgs::OnionMessage), SendError> {
 		let OnionMessagePath { intermediate_nodes, mut destination } = path;
 		if let Destination::BlindedPath(BlindedPath { ref blinded_hops, .. }) = destination {
 			if blinded_hops.len() < 2 {
@@ -296,43 +326,38 @@ where
 		// advance the blinded path by 1 hop so the second hop is the new introduction node.
 		if intermediate_nodes.len() == 0 {
 			if let Destination::BlindedPath(ref mut blinded_path) = destination {
-				let our_node_id = self.node_signer.get_node_id(Recipient::Node)
+				let our_node_id = node_signer.get_node_id(Recipient::Node)
 					.map_err(|()| SendError::GetNodeIdFailed)?;
 				if blinded_path.introduction_node_id == our_node_id {
-					advance_path_by_one(blinded_path, &self.node_signer, &self.secp_ctx)
+					advance_path_by_one(blinded_path, node_signer, &secp_ctx)
 						.map_err(|()| SendError::BlindedPathAdvanceFailed)?;
 				}
 			}
 		}
 
-		let blinding_secret_bytes = self.entropy_source.get_secure_random_bytes();
+		let blinding_secret_bytes = entropy_source.get_secure_random_bytes();
 		let blinding_secret = SecretKey::from_slice(&blinding_secret_bytes[..]).expect("RNG is busted");
 		let (introduction_node_id, blinding_point) = if intermediate_nodes.len() != 0 {
-			(intermediate_nodes[0], PublicKey::from_secret_key(&self.secp_ctx, &blinding_secret))
+			(intermediate_nodes[0], PublicKey::from_secret_key(&secp_ctx, &blinding_secret))
 		} else {
 			match destination {
-				Destination::Node(pk) => (pk, PublicKey::from_secret_key(&self.secp_ctx, &blinding_secret)),
+				Destination::Node(pk) => (pk, PublicKey::from_secret_key(&secp_ctx, &blinding_secret)),
 				Destination::BlindedPath(BlindedPath { introduction_node_id, blinding_point, .. }) =>
 					(introduction_node_id, blinding_point),
 			}
 		};
 		let (packet_payloads, packet_keys) = packet_payloads_and_keys(
-			&self.secp_ctx, &intermediate_nodes, destination, message, reply_path, &blinding_secret)
+			&secp_ctx, &intermediate_nodes, destination, message, reply_path, &blinding_secret)
 			.map_err(|e| SendError::Secp256k1(e))?;
 
-		let prng_seed = self.entropy_source.get_secure_random_bytes();
+		let prng_seed = entropy_source.get_secure_random_bytes();
 		let onion_routing_packet = construct_onion_message_packet(
 			packet_payloads, packet_keys, prng_seed).map_err(|()| SendError::TooBigPacket)?;
 
-		let mut pending_per_peer_msgs = self.pending_messages.lock().unwrap();
-		if outbound_buffer_full(&introduction_node_id, &pending_per_peer_msgs) { return Err(SendError::BufferFull) }
-		match pending_per_peer_msgs.entry(introduction_node_id) {
-			hash_map::Entry::Vacant(_) => Err(SendError::InvalidFirstHop),
-			hash_map::Entry::Occupied(mut e) => {
-				e.get_mut().push_back(msgs::OnionMessage { blinding_point, onion_routing_packet });
-				Ok(())
-			}
-		}
+		Ok((introduction_node_id, msgs::OnionMessage {
+			blinding_point,
+			onion_routing_packet
+		}))
 	}
 
 	fn respond_with_onion_message<T: CustomOnionMessageContents>(

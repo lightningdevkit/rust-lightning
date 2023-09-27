@@ -22,7 +22,6 @@ jobs:
         include:
           - toolchain: stable
             platform: ubuntu-latest
-            coverage: true
           # 1.48.0 is the MSRV for all crates except lightning-transaction-sync and Win/Mac
           - toolchain: 1.48.0
             platform: ubuntu-latest
@@ -50,46 +49,31 @@ jobs:
         run: |
           sudo apt-get -y install shellcheck
           shellcheck ci/ci-tests.sh
-      - name: Run CI script with coverage generation
-        if: matrix.coverage
-        shell: bash # Default on Winblows is powershell
-        run: LDK_COVERAGE_BUILD=true ./ci/ci-tests.sh
       - name: Run CI script
-        if: "!matrix.coverage"
         shell: bash # Default on Winblows is powershell
         run: ./ci/ci-tests.sh
-      - name: Install deps for kcov
-        if: matrix.coverage
-        run: |
-          sudo apt-get update
-          sudo apt-get -y install binutils-dev libcurl4-openssl-dev zlib1g-dev libdw-dev libiberty-dev
-      - name: Install kcov
-        if: matrix.coverage
-        run: |
-          wget https://github.com/SimonKagstrom/kcov/archive/master.tar.gz
-          tar xzf master.tar.gz
-          cd kcov-master && mkdir build && cd build
-          cmake ..
-          make
-          make install DESTDIR=../../kcov-build
-          cd ../.. && rm -rf kcov-master master.tar.gz
-      - name: Generate coverage report
-        if: matrix.coverage
-        run: |
-          for file in target/debug/deps/lightning*; do
-            [ -x "${file}" ] || continue;
-            mkdir -p "target/cov/$(basename $file)";
-            ./kcov-build/usr/local/bin/kcov --exclude-pattern=/.cargo,/usr/lib --verify "target/cov/$(basename $file)" "$file";
-          done
-      - name: Upload coverage
-        if: matrix.coverage
-        uses: codecov/codecov-action@v3
+
+  coverage:
+    strategy:
+      fail-fast: false
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v3
         with:
+          fetch-depth: 0
+      - name: Install Rust stable toolchain
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile=minimal
+      - name: Run tests with coverage generation
+        run: |
+          cargo install cargo-llvm-cov
+          export RUSTFLAGS="-Clink-dead-code -Coverflow-checks=off"
+          cargo llvm-cov --features rest-client,rpc-client,tokio,futures,serde --codecov --hide-instantiations --output-path=target/codecov.json
           # Could you use this to fake the coverage report for your PR? Sure.
           # Will anyone be impressed by your amazing coverage? No
           # Maybe if codecov wasn't broken we wouldn't need to do this...
-          token: f421b687-4dc2-4387-ac3d-dc3b2528af57
-          fail_ci_if_error: true
+          bash <(curl -s https://codecov.io/bash) -f target/codecov.json -t "f421b687-4dc2-4387-ac3d-dc3b2528af57"
 
   benchmark:
     runs-on: ubuntu-latest

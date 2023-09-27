@@ -125,7 +125,6 @@ struct TestChainMonitor {
 	// "fails" if we ever force-close a channel, we avoid doing so, always saving the latest
 	// fully-serialized monitor state here, as well as the corresponding update_id.
 	pub latest_monitors: Mutex<HashMap<OutPoint, (u64, Vec<u8>)>>,
-	pub should_update_manager: atomic::AtomicBool,
 }
 impl TestChainMonitor {
 	pub fn new(broadcaster: Arc<TestBroadcaster>, logger: Arc<dyn Logger>, feeest: Arc<FuzzEstimator>, persister: Arc<TestPersister>, keys: Arc<KeyProvider>) -> Self {
@@ -135,18 +134,16 @@ impl TestChainMonitor {
 			keys,
 			persister,
 			latest_monitors: Mutex::new(HashMap::new()),
-			should_update_manager: atomic::AtomicBool::new(false),
 		}
 	}
 }
 impl chain::Watch<TestChannelSigner> for TestChainMonitor {
-	fn watch_channel(&self, funding_txo: OutPoint, monitor: channelmonitor::ChannelMonitor<TestChannelSigner>) -> chain::ChannelMonitorUpdateStatus {
+	fn watch_channel(&self, funding_txo: OutPoint, monitor: channelmonitor::ChannelMonitor<TestChannelSigner>) -> Result<chain::ChannelMonitorUpdateStatus, ()> {
 		let mut ser = VecWriter(Vec::new());
 		monitor.write(&mut ser).unwrap();
 		if let Some(_) = self.latest_monitors.lock().unwrap().insert(funding_txo, (monitor.get_latest_update_id(), ser.0)) {
 			panic!("Already had monitor pre-watch_channel");
 		}
-		self.should_update_manager.store(true, atomic::Ordering::Relaxed);
 		self.chain_monitor.watch_channel(funding_txo, monitor)
 	}
 
@@ -162,7 +159,6 @@ impl chain::Watch<TestChannelSigner> for TestChainMonitor {
 		let mut ser = VecWriter(Vec::new());
 		deserialized_monitor.write(&mut ser).unwrap();
 		map_entry.insert((update.update_id, ser.0));
-		self.should_update_manager.store(true, atomic::Ordering::Relaxed);
 		self.chain_monitor.update_channel(funding_txo, update)
 	}
 
@@ -375,6 +371,7 @@ fn send_payment(source: &ChanMan, dest: &ChanMan, dest_chan_id: u64, amt: u64, p
 			channel_features: dest.channel_features(),
 			fee_msat: amt,
 			cltv_expiry_delta: 200,
+			maybe_announced_channel: true,
 		}], blinded_tail: None }],
 		route_params: None,
 	}, payment_hash, RecipientOnionFields::secret_only(payment_secret), PaymentId(payment_id)) {
@@ -409,6 +406,7 @@ fn send_hop_payment(source: &ChanMan, middle: &ChanMan, middle_chan_id: u64, des
 			channel_features: middle.channel_features(),
 			fee_msat: first_hop_fee,
 			cltv_expiry_delta: 100,
+			maybe_announced_channel: true,
 		}, RouteHop {
 			pubkey: dest.get_our_node_id(),
 			node_features: dest.node_features(),
@@ -416,6 +414,7 @@ fn send_hop_payment(source: &ChanMan, middle: &ChanMan, middle_chan_id: u64, des
 			channel_features: dest.channel_features(),
 			fee_msat: amt,
 			cltv_expiry_delta: 200,
+			maybe_announced_channel: true,
 		}], blinded_tail: None }],
 		route_params: None,
 	}, payment_hash, RecipientOnionFields::secret_only(payment_secret), PaymentId(payment_id)) {
@@ -501,7 +500,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out) {
 			let res = (<(BlockHash, ChanMan)>::read(&mut Cursor::new(&$ser.0), read_args).expect("Failed to read manager").1, chain_monitor.clone());
 			for (funding_txo, mon) in monitors.drain() {
 				assert_eq!(chain_monitor.chain_monitor.watch_channel(funding_txo, mon),
-					ChannelMonitorUpdateStatus::Completed);
+					Ok(ChannelMonitorUpdateStatus::Completed));
 			}
 			res
 		} }
@@ -1101,11 +1100,9 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out) {
 				if !chan_a_disconnected {
 					nodes[1].peer_disconnected(&nodes[0].get_our_node_id());
 					chan_a_disconnected = true;
-					drain_msg_events_on_disconnect!(0);
-				}
-				if monitor_a.should_update_manager.load(atomic::Ordering::Relaxed) {
-					node_a_ser.0.clear();
-					nodes[0].write(&mut node_a_ser).unwrap();
+					push_excess_b_events!(nodes[1].get_and_clear_pending_msg_events().drain(..), Some(0));
+					ab_events.clear();
+					ba_events.clear();
 				}
 				let (new_node_a, new_monitor_a) = reload_node!(node_a_ser, 0, monitor_a, keys_manager_a, fee_est_a);
 				nodes[0] = new_node_a;
@@ -1134,11 +1131,9 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out) {
 				if !chan_b_disconnected {
 					nodes[1].peer_disconnected(&nodes[2].get_our_node_id());
 					chan_b_disconnected = true;
-					drain_msg_events_on_disconnect!(2);
-				}
-				if monitor_c.should_update_manager.load(atomic::Ordering::Relaxed) {
-					node_c_ser.0.clear();
-					nodes[2].write(&mut node_c_ser).unwrap();
+					push_excess_b_events!(nodes[1].get_and_clear_pending_msg_events().drain(..), Some(2));
+					bc_events.clear();
+					cb_events.clear();
 				}
 				let (new_node_c, new_monitor_c) = reload_node!(node_c_ser, 2, monitor_c, keys_manager_c, fee_est_c);
 				nodes[2] = new_node_c;
@@ -1304,15 +1299,18 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out) {
 			_ => test_return!(),
 		}
 
-		node_a_ser.0.clear();
-		nodes[0].write(&mut node_a_ser).unwrap();
-		monitor_a.should_update_manager.store(false, atomic::Ordering::Relaxed);
-		node_b_ser.0.clear();
-		nodes[1].write(&mut node_b_ser).unwrap();
-		monitor_b.should_update_manager.store(false, atomic::Ordering::Relaxed);
-		node_c_ser.0.clear();
-		nodes[2].write(&mut node_c_ser).unwrap();
-		monitor_c.should_update_manager.store(false, atomic::Ordering::Relaxed);
+		if nodes[0].get_and_clear_needs_persistence() == true {
+			node_a_ser.0.clear();
+			nodes[0].write(&mut node_a_ser).unwrap();
+		}
+		if nodes[1].get_and_clear_needs_persistence() == true {
+			node_b_ser.0.clear();
+			nodes[1].write(&mut node_b_ser).unwrap();
+		}
+		if nodes[2].get_and_clear_needs_persistence() == true {
+			node_c_ser.0.clear();
+			nodes[2].write(&mut node_c_ser).unwrap();
+		}
 	}
 }
 

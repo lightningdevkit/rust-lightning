@@ -62,7 +62,6 @@ use regex;
 use crate::io;
 use crate::prelude::*;
 use core::cell::RefCell;
-use core::ops::Deref;
 use core::time::Duration;
 use crate::sync::{Mutex, Arc};
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -226,7 +225,7 @@ impl<'a> TestChainMonitor<'a> {
 	}
 }
 impl<'a> chain::Watch<TestChannelSigner> for TestChainMonitor<'a> {
-	fn watch_channel(&self, funding_txo: OutPoint, monitor: channelmonitor::ChannelMonitor<TestChannelSigner>) -> chain::ChannelMonitorUpdateStatus {
+	fn watch_channel(&self, funding_txo: OutPoint, monitor: channelmonitor::ChannelMonitor<TestChannelSigner>) -> Result<chain::ChannelMonitorUpdateStatus, ()> {
 		// At every point where we get a monitor update, we should be able to send a useful monitor
 		// to a watchtower and disk...
 		let mut w = TestVecWriter(Vec::new());
@@ -297,6 +296,7 @@ pub(crate) struct WatchtowerPersister {
 }
 
 impl WatchtowerPersister {
+	#[cfg(test)]
 	pub(crate) fn new(destination_script: Script) -> Self {
 		WatchtowerPersister {
 			persister: TestPersister::new(),
@@ -306,6 +306,7 @@ impl WatchtowerPersister {
 		}
 	}
 
+	#[cfg(test)]
 	pub(crate) fn justice_tx(&self, funding_txo: OutPoint, commitment_txid: &Txid)
 	-> Option<Transaction> {
 		self.watchtower_state.lock().unwrap().get(&funding_txo).unwrap().get(commitment_txid).cloned()
@@ -426,7 +427,7 @@ impl<Signer: sign::WriteableEcdsaChannelSigner> chainmonitor::Persist<Signer> fo
 	}
 }
 
-pub(crate) struct TestStore {
+pub struct TestStore {
 	persisted_bytes: Mutex<HashMap<String, HashMap<String, Vec<u8>>>>,
 	read_only: bool,
 }

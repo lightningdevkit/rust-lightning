@@ -13,7 +13,6 @@
 #[macro_use]
 pub mod functional_test_utils;
 
-pub mod channel_id;
 pub mod channelmanager;
 pub mod inbound_payment;
 pub mod msgs;
@@ -21,6 +20,7 @@ pub mod peer_handler;
 pub mod chan_utils;
 pub mod features;
 pub mod script;
+mod channel_id;
 
 #[cfg(fuzzing)]
 pub mod peer_channel_encryptor;
@@ -33,7 +33,7 @@ pub mod channel;
 pub(crate) mod channel;
 
 // Re-export ChannelId
-pub use self::channel_id::ChannelId;
+pub use channel_id::ChannelId;
 
 pub(crate) mod onion_utils;
 mod outbound_payment;
@@ -43,6 +43,9 @@ pub mod wire;
 // without the node parameter being mut. This is incorrect, and thus newer rustcs will complain
 // about an unnecessary mut. Thus, we silence the unused_mut warning in two test modules below.
 
+#[cfg(test)]
+#[allow(unused_mut)]
+mod blinded_payment_tests;
 #[cfg(test)]
 #[allow(unused_mut)]
 mod functional_tests;

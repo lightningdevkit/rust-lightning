@@ -29,41 +29,45 @@ PIN_RELEASE_DEPS # pin the release dependencies in our main workspace
 # The quote crate switched to Rust edition 2021 starting with v1.0.31, i.e., has MSRV of 1.56
 [ "$RUSTC_MINOR_VERSION" -lt 56 ] && cargo update -p quote --precise "1.0.30" --verbose
 
+# The syn crate depends on too-new proc-macro2 starting with v2.0.33, i.e., has MSRV of 1.56
+if [ "$RUSTC_MINOR_VERSION" -lt 56 ]; then
+	SYN_2_DEP=$(grep -o '"syn 2.*' Cargo.lock | tr -d '",' | tr ' ' ':')
+	cargo update -p "$SYN_2_DEP" --precise "2.0.32" --verbose
+fi
+
 # The proc-macro2 crate switched to Rust edition 2021 starting with v1.0.66, i.e., has MSRV of 1.56
 [ "$RUSTC_MINOR_VERSION" -lt 56 ] && cargo update -p proc-macro2 --precise "1.0.65" --verbose
 
 # The memchr crate switched to an MSRV of 1.60 starting with v2.6.0
 [ "$RUSTC_MINOR_VERSION" -lt 60 ] && cargo update -p memchr --precise "2.5.0" --verbose
 
-[ "$LDK_COVERAGE_BUILD" != "" ] && export RUSTFLAGS="-C link-dead-code"
-
 export RUST_BACKTRACE=1
 
 echo -e "\n\nBuilding and testing all workspace crates..."
 cargo test --verbose --color always
-cargo build --verbose --color always
+cargo check --verbose --color always
 
 echo -e "\n\nBuilding and testing Block Sync Clients with features"
 pushd lightning-block-sync
 cargo test --verbose --color always --features rest-client
-cargo build --verbose --color always --features rest-client
+cargo check --verbose --color always --features rest-client
 cargo test --verbose --color always --features rpc-client
-cargo build --verbose --color always --features rpc-client
+cargo check --verbose --color always --features rpc-client
 cargo test --verbose --color always --features rpc-client,rest-client
-cargo build --verbose --color always --features rpc-client,rest-client
+cargo check --verbose --color always --features rpc-client,rest-client
 cargo test --verbose --color always --features rpc-client,rest-client,tokio
-cargo build --verbose --color always --features rpc-client,rest-client,tokio
+cargo check --verbose --color always --features rpc-client,rest-client,tokio
 popd
 
 if [[ $RUSTC_MINOR_VERSION -gt 67 && "$HOST_PLATFORM" != *windows* ]]; then
 	echo -e "\n\nBuilding and testing Transaction Sync Clients with features"
 	pushd lightning-transaction-sync
 	cargo test --verbose --color always --features esplora-blocking
-	cargo build --verbose --color always --features esplora-blocking
+	cargo check --verbose --color always --features esplora-blocking
 	cargo test --verbose --color always --features esplora-async
-	cargo build --verbose --color always --features esplora-async
+	cargo check --verbose --color always --features esplora-async
 	cargo test --verbose --color always --features esplora-async-https
-	cargo build --verbose --color always --features esplora-async-https
+	cargo check --verbose --color always --features esplora-async-https
 	popd
 fi
 
@@ -89,7 +93,7 @@ fi
 echo -e "\n\nBuilding with all Log-Limiting features"
 pushd lightning
 grep '^max_level_' Cargo.toml | awk '{ print $1 }'| while read -r FEATURE; do
-	cargo build --verbose --color always --features "$FEATURE"
+	cargo check --verbose --color always --features "$FEATURE"
 done
 popd
 
@@ -120,6 +124,10 @@ if [[ $RUSTC_MINOR_VERSION -gt 67 ]]; then
 	# lightning-transaction-sync's MSRV is 1.67
 	cargo check --verbose --color always --features lightning-transaction-sync
 else
+	# The memchr crate switched to an MSRV of 1.60 starting with v2.6.0
+	# This is currently only a release dependency via core2, which we intend to work with
+	# rust-bitcoin to remove soon.
+	[ "$RUSTC_MINOR_VERSION" -lt 60 ] && cargo update -p memchr --precise "2.5.0" --verbose
 	cargo check --verbose --color always
 fi
 popd

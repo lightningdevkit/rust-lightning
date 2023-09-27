@@ -69,7 +69,7 @@ pub struct KeyMaterial(pub [u8; 32]);
 /// Information about a spendable output to a P2WSH script.
 ///
 /// See [`SpendableOutputDescriptor::DelayedPaymentOutput`] for more details on how to spend this.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct DelayedPaymentOutputDescriptor {
 	/// The outpoint which is spendable.
 	pub outpoint: OutPoint,
@@ -111,7 +111,7 @@ impl_writeable_tlv_based!(DelayedPaymentOutputDescriptor, {
 /// Information about a spendable output to our "payment key".
 ///
 /// See [`SpendableOutputDescriptor::StaticPaymentOutput`] for more details on how to spend this.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct StaticPaymentOutputDescriptor {
 	/// The outpoint which is spendable.
 	pub outpoint: OutPoint,
@@ -147,7 +147,7 @@ impl_writeable_tlv_based!(StaticPaymentOutputDescriptor, {
 /// at that `txid`/`index`, and any keys or other information required to sign.
 ///
 /// [`SpendableOutputs`]: crate::events::Event::SpendableOutputs
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub enum SpendableOutputDescriptor {
 	/// An output to a script which was provided via [`SignerProvider`] directly, either from
 	/// [`get_destination_script`] or [`get_shutdown_scriptpubkey`], thus you should already

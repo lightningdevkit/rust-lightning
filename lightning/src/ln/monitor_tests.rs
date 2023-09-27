@@ -269,12 +269,12 @@ fn do_test_claim_value_force_close(prev_commitment_tx: bool) {
 	assert_eq!(funding_outpoint.to_channel_id(), chan_id);
 
 	// This HTLC is immediately claimed, giving node B the preimage
-	let (payment_preimage, payment_hash, _) = route_payment(&nodes[0], &[&nodes[1]], 3_000_000);
+	let (payment_preimage, payment_hash, ..) = route_payment(&nodes[0], &[&nodes[1]], 3_000_000);
 	// This HTLC is allowed to time out, letting A claim it. However, in order to test claimable
 	// balances more fully we also give B the preimage for this HTLC.
-	let (timeout_payment_preimage, timeout_payment_hash, _) = route_payment(&nodes[0], &[&nodes[1]], 4_000_000);
+	let (timeout_payment_preimage, timeout_payment_hash, ..) = route_payment(&nodes[0], &[&nodes[1]], 4_000_000);
 	// This HTLC will be dust, and not be claimable at all:
-	let (dust_payment_preimage, dust_payment_hash, _) = route_payment(&nodes[0], &[&nodes[1]], 3_000);
+	let (dust_payment_preimage, dust_payment_hash, ..) = route_payment(&nodes[0], &[&nodes[1]], 3_000);
 
 	let htlc_cltv_timeout = nodes[0].best_block_info().1 + TEST_FINAL_CLTV + 1; // Note ChannelManager adds one to CLTV timeouts for safety
 
@@ -1046,14 +1046,14 @@ fn do_test_revoked_counterparty_commitment_balances(confirm_htlc_spend_first: bo
 	assert!(failed_payments.is_empty());
 	if let Event::PendingHTLCsForwardable { .. } = events[0] {} else { panic!(); }
 	match &events[1] {
-		Event::ChannelClosed { reason: ClosureReason::CommitmentTxConfirmed, .. } => {},
+		Event::ChannelClosed { reason: ClosureReason::HolderForceClosed, .. } => {},
 		_ => panic!(),
 	}
 
 	connect_blocks(&nodes[1], htlc_cltv_timeout + 1 - 10);
 	check_closed_broadcast!(nodes[1], true);
 	check_added_monitors!(nodes[1], 1);
-	check_closed_event!(nodes[1], 1, ClosureReason::CommitmentTxConfirmed, [nodes[0].node.get_our_node_id()], 1000000);
+	check_closed_event!(nodes[1], 1, ClosureReason::HolderForceClosed, [nodes[0].node.get_our_node_id()], 1000000);
 
 	// Prior to channel closure, B considers the preimage HTLC as its own, and otherwise only
 	// lists the two on-chain timeout-able HTLCs as claimable balances.
@@ -1871,7 +1871,7 @@ fn test_yield_anchors_events() {
 		&nodes, 0, 1, 1_000_000, 500_000_000
 	).2;
 	route_payment(&nodes[0], &[&nodes[1]], 1_000_000);
-	let (payment_preimage, payment_hash, _) = route_payment(&nodes[1], &[&nodes[0]], 1_000_000);
+	let (payment_preimage, payment_hash, ..) = route_payment(&nodes[1], &[&nodes[0]], 1_000_000);
 
 	assert!(nodes[0].node.get_and_clear_pending_events().is_empty());
 
@@ -2231,7 +2231,7 @@ fn test_anchors_aggregated_revoked_htlc_tx() {
 	assert!(nodes[1].chain_monitor.chain_monitor.get_and_clear_pending_events().is_empty());
 	let spendable_output_events = nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events();
 	assert_eq!(spendable_output_events.len(), 2);
-	for (idx, event) in spendable_output_events.iter().enumerate() {
+	for event in spendable_output_events.iter() {
 		if let Event::SpendableOutputs { outputs, channel_id } = event {
 			assert_eq!(outputs.len(), 1);
 			assert!(vec![chan_b.2, chan_a.2].contains(&channel_id.unwrap()));

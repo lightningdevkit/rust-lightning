@@ -7,9 +7,9 @@
 // You may not use this file except in accordance with one or both of these
 // licenses.
 
-//! Convenient utilities for paying Lightning invoices and sending spontaneous payments.
+//! Convenient utilities for paying Lightning invoices.
 
-use crate::Bolt11Invoice;
+use crate::{Bolt11Invoice, Vec};
 
 use bitcoin_hashes::Hash;
 
@@ -17,7 +17,7 @@ use lightning::chain;
 use lightning::chain::chaininterface::{BroadcasterInterface, FeeEstimator};
 use lightning::sign::{NodeSigner, SignerProvider, EntropySource};
 use lightning::ln::PaymentHash;
-use lightning::ln::channelmanager::{ChannelManager, PaymentId, Retry, RetryableSendFailure, RecipientOnionFields};
+use lightning::ln::channelmanager::{AChannelManager, ChannelManager, PaymentId, Retry, RetryableSendFailure, RecipientOnionFields, ProbeSendFailure};
 use lightning::routing::router::{PaymentParameters, RouteParameters, Router};
 use lightning::util::logger::Logger;
 
@@ -32,22 +32,12 @@ use core::time::Duration;
 /// with the same [`PaymentHash`] is never sent.
 ///
 /// If you wish to use a different payment idempotency token, see [`pay_invoice_with_id`].
-pub fn pay_invoice<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, L: Deref>(
-	invoice: &Bolt11Invoice, retry_strategy: Retry,
-	channelmanager: &ChannelManager<M, T, ES, NS, SP, F, R, L>
+pub fn pay_invoice<C: AChannelManager>(
+	invoice: &Bolt11Invoice, retry_strategy: Retry, channelmanager: &C
 ) -> Result<PaymentId, PaymentError>
-where
-		M::Target: chain::Watch<<SP::Target as SignerProvider>::Signer>,
-		T::Target: BroadcasterInterface,
-		ES::Target: EntropySource,
-		NS::Target: NodeSigner,
-		SP::Target: SignerProvider,
-		F::Target: FeeEstimator,
-		R::Target: Router,
-		L::Target: Logger,
 {
 	let payment_id = PaymentId(invoice.payment_hash().into_inner());
-	pay_invoice_with_id(invoice, payment_id, retry_strategy, channelmanager)
+	pay_invoice_with_id(invoice, payment_id, retry_strategy, channelmanager.get_cm())
 		.map(|()| payment_id)
 }
 
@@ -61,22 +51,12 @@ where
 /// [`PaymentHash`] has never been paid before.
 ///
 /// See [`pay_invoice`] for a variant which uses the [`PaymentHash`] for the idempotency token.
-pub fn pay_invoice_with_id<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, L: Deref>(
-	invoice: &Bolt11Invoice, payment_id: PaymentId, retry_strategy: Retry,
-	channelmanager: &ChannelManager<M, T, ES, NS, SP, F, R, L>
+pub fn pay_invoice_with_id<C: AChannelManager>(
+	invoice: &Bolt11Invoice, payment_id: PaymentId, retry_strategy: Retry, channelmanager: &C
 ) -> Result<(), PaymentError>
-where
-		M::Target: chain::Watch<<SP::Target as SignerProvider>::Signer>,
-		T::Target: BroadcasterInterface,
-		ES::Target: EntropySource,
-		NS::Target: NodeSigner,
-		SP::Target: SignerProvider,
-		F::Target: FeeEstimator,
-		R::Target: Router,
-		L::Target: Logger,
 {
 	let amt_msat = invoice.amount_milli_satoshis().ok_or(PaymentError::Invoice("amount missing"))?;
-	pay_invoice_using_amount(invoice, amt_msat, payment_id, retry_strategy, channelmanager)
+	pay_invoice_using_amount(invoice, amt_msat, payment_id, retry_strategy, channelmanager.get_cm())
 }
 
 /// Pays the given zero-value [`Bolt11Invoice`] using the given amount, retrying if needed based on
@@ -88,19 +68,9 @@ where
 ///
 /// If you wish to use a different payment idempotency token, see
 /// [`pay_zero_value_invoice_with_id`].
-pub fn pay_zero_value_invoice<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, L: Deref>(
-	invoice: &Bolt11Invoice, amount_msats: u64, retry_strategy: Retry,
-	channelmanager: &ChannelManager<M, T, ES, NS, SP, F, R, L>
+pub fn pay_zero_value_invoice<C: AChannelManager>(
+	invoice: &Bolt11Invoice, amount_msats: u64, retry_strategy: Retry, channelmanager: &C
 ) -> Result<PaymentId, PaymentError>
-where
-		M::Target: chain::Watch<<SP::Target as SignerProvider>::Signer>,
-		T::Target: BroadcasterInterface,
-		ES::Target: EntropySource,
-		NS::Target: NodeSigner,
-		SP::Target: SignerProvider,
-		F::Target: FeeEstimator,
-		R::Target: Router,
-		L::Target: Logger,
 {
 	let payment_id = PaymentId(invoice.payment_hash().into_inner());
 	pay_zero_value_invoice_with_id(invoice, amount_msats, payment_id, retry_strategy,
@@ -119,25 +89,16 @@ where
 ///
 /// See [`pay_zero_value_invoice`] for a variant which uses the [`PaymentHash`] for the
 /// idempotency token.
-pub fn pay_zero_value_invoice_with_id<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, L: Deref>(
+pub fn pay_zero_value_invoice_with_id<C: AChannelManager>(
 	invoice: &Bolt11Invoice, amount_msats: u64, payment_id: PaymentId, retry_strategy: Retry,
-	channelmanager: &ChannelManager<M, T, ES, NS, SP, F, R, L>
+	channelmanager: &C
 ) -> Result<(), PaymentError>
-where
-		M::Target: chain::Watch<<SP::Target as SignerProvider>::Signer>,
-		T::Target: BroadcasterInterface,
-		ES::Target: EntropySource,
-		NS::Target: NodeSigner,
-		SP::Target: SignerProvider,
-		F::Target: FeeEstimator,
-		R::Target: Router,
-		L::Target: Logger,
 {
 	if invoice.amount_milli_satoshis().is_some() {
 		Err(PaymentError::Invoice("amount unexpected"))
 	} else {
 		pay_invoice_using_amount(invoice, amount_msats, payment_id, retry_strategy,
-			channelmanager)
+			channelmanager.get_cm())
 	}
 }
 
@@ -155,12 +116,69 @@ fn pay_invoice_using_amount<P: Deref>(
 	if let Some(features) = invoice.features() {
 		payment_params = payment_params.with_bolt11_features(features.clone()).unwrap();
 	}
-	let route_params = RouteParameters {
-		payment_params,
-		final_value_msat: amount_msats,
-	};
+	let route_params = RouteParameters::from_payment_params_and_value(payment_params, amount_msats);
 
 	payer.send_payment(payment_hash, recipient_onion, payment_id, route_params, retry_strategy)
+}
+
+/// Sends payment probes over all paths of a route that would be used to pay the given invoice.
+///
+/// See [`ChannelManager::send_preflight_probes`] for more information.
+pub fn preflight_probe_invoice<C: AChannelManager>(
+	invoice: &Bolt11Invoice, channelmanager: &C, liquidity_limit_multiplier: Option<u64>,
+) -> Result<Vec<(PaymentHash, PaymentId)>, ProbingError>
+{
+	let amount_msat = if let Some(invoice_amount_msat) = invoice.amount_milli_satoshis() {
+		invoice_amount_msat
+	} else {
+		return Err(ProbingError::Invoice("Failed to send probe as no amount was given in the invoice."));
+	};
+
+	let mut payment_params = PaymentParameters::from_node_id(
+		invoice.recover_payee_pub_key(),
+		invoice.min_final_cltv_expiry_delta() as u32,
+	)
+	.with_expiry_time(expiry_time_from_unix_epoch(invoice).as_secs())
+	.with_route_hints(invoice.route_hints())
+	.unwrap();
+
+	if let Some(features) = invoice.features() {
+		payment_params = payment_params.with_bolt11_features(features.clone()).unwrap();
+	}
+	let route_params = RouteParameters::from_payment_params_and_value(payment_params, amount_msat);
+
+	channelmanager.get_cm().send_preflight_probes(route_params, liquidity_limit_multiplier)
+		.map_err(ProbingError::Sending)
+}
+
+/// Sends payment probes over all paths of a route that would be used to pay the given zero-value
+/// invoice using the given amount.
+///
+/// See [`ChannelManager::send_preflight_probes`] for more information.
+pub fn preflight_probe_zero_value_invoice<C: AChannelManager>(
+	invoice: &Bolt11Invoice, amount_msat: u64, channelmanager: &C,
+	liquidity_limit_multiplier: Option<u64>,
+) -> Result<Vec<(PaymentHash, PaymentId)>, ProbingError>
+{
+	if invoice.amount_milli_satoshis().is_some() {
+		return Err(ProbingError::Invoice("amount unexpected"));
+	}
+
+	let mut payment_params = PaymentParameters::from_node_id(
+		invoice.recover_payee_pub_key(),
+		invoice.min_final_cltv_expiry_delta() as u32,
+	)
+	.with_expiry_time(expiry_time_from_unix_epoch(invoice).as_secs())
+	.with_route_hints(invoice.route_hints())
+	.unwrap();
+
+	if let Some(features) = invoice.features() {
+		payment_params = payment_params.with_bolt11_features(features.clone()).unwrap();
+	}
+	let route_params = RouteParameters::from_payment_params_and_value(payment_params, amount_msat);
+
+	channelmanager.get_cm().send_preflight_probes(route_params, liquidity_limit_multiplier)
+		.map_err(ProbingError::Sending)
 }
 
 fn expiry_time_from_unix_epoch(invoice: &Bolt11Invoice) -> Duration {
@@ -174,6 +192,15 @@ pub enum PaymentError {
 	Invoice(&'static str),
 	/// An error occurring when sending a payment.
 	Sending(RetryableSendFailure),
+}
+
+/// An error that may occur when sending a payment probe.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ProbingError {
+	/// An error resulting from the provided [`Bolt11Invoice`].
+	Invoice(&'static str),
+	/// An error occurring when sending a payment probe.
+	Sending(ProbeSendFailure),
 }
 
 /// A trait defining behavior of a [`Bolt11Invoice`] payer.
