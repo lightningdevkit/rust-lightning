@@ -2736,9 +2736,7 @@ fn retry_multi_path_single_failed_payment() {
 	let mut pay_params = route.route_params.clone().unwrap().payment_params;
 	pay_params.previously_failed_channels.push(chans[1].short_channel_id.unwrap());
 
-	// Note that the second request here requests the amount we originally failed to send,
-	// not the amount remaining on the full payment, which should be changed.
-	let mut retry_params = RouteParameters::from_payment_params_and_value(pay_params, 100_000_001);
+	let mut retry_params = RouteParameters::from_payment_params_and_value(pay_params, 100_000_000);
 	retry_params.max_total_routing_fee_msat = None;
 	route.route_params.as_mut().unwrap().final_value_msat = 100_000_000;
 	nodes[0].router.expect_find_route(retry_params, Ok(route.clone()));
