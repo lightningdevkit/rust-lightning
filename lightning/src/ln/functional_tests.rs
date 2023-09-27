@@ -8653,7 +8653,7 @@ fn test_pre_lockin_no_chan_closed_update() {
 	nodes[0].node.handle_error(&nodes[1].node.get_our_node_id(), &msgs::ErrorMessage { channel_id, data: "Hi".to_owned() });
 	assert!(nodes[0].chain_monitor.added_monitors.lock().unwrap().is_empty());
 	check_closed_event!(nodes[0], 2, ClosureReason::CounterpartyForceClosed { peer_msg: UntrustedString("Hi".to_string()) }, true,
-		[nodes[1].node.get_our_node_id(); 2], 100000);
+		[nodes[1].node.get_our_node_id()], 100000);
 }
 
 #[test]
@@ -10498,26 +10498,18 @@ fn test_disconnect_in_funding_batch() {
 	// The channels in the batch will close immediately.
 	let channel_id_1 = OutPoint { txid: tx.txid(), index: 0 }.to_channel_id();
 	let channel_id_2 = OutPoint { txid: tx.txid(), index: 1 }.to_channel_id();
-	let events = nodes[0].node.get_and_clear_pending_events();
-	assert_eq!(events.len(), 4);
-	assert!(events.iter().any(|e| matches!(
-		e,
-		Event::ChannelClosed {
-			channel_id,
-			..
-		} if channel_id == &channel_id_1
-	)));
-	assert!(events.iter().any(|e| matches!(
-		e,
-		Event::ChannelClosed {
-			channel_id,
-			..
-		} if channel_id == &channel_id_2
-	)));
-	assert_eq!(events.iter().filter(|e| matches!(
-		e,
-		Event::DiscardFunding { .. },
-	)).count(), 2);
+	check_closed_events(&nodes[0], &[
+		ExpectedCloseEvent {
+			channel_id: Some(channel_id_1),
+			discard_funding: true,
+			..Default::default()
+		},
+		ExpectedCloseEvent {
+			channel_id: Some(channel_id_2),
+			discard_funding: true,
+			..Default::default()
+		},
+	]);
 
 	// The monitor should become closed.
 	check_added_monitors(&nodes[0], 1);
@@ -10601,26 +10593,18 @@ fn test_batch_funding_close_after_funding_signed() {
 	}
 
 	// All channels in the batch should close immediately.
-	let events = nodes[0].node.get_and_clear_pending_events();
-	assert_eq!(events.len(), 4);
-	assert!(events.iter().any(|e| matches!(
-		e,
-		Event::ChannelClosed {
-			channel_id,
-			..
-		} if channel_id == &channel_id_1
-	)));
-	assert!(events.iter().any(|e| matches!(
-		e,
-		Event::ChannelClosed {
-			channel_id,
-			..
-		} if channel_id == &channel_id_2
-	)));
-	assert_eq!(events.iter().filter(|e| matches!(
-		e,
-		Event::DiscardFunding { .. },
-	)).count(), 2);
+	check_closed_events(&nodes[0], &[
+		ExpectedCloseEvent {
+			channel_id: Some(channel_id_1),
+			discard_funding: true,
+			..Default::default()
+		},
+		ExpectedCloseEvent {
+			channel_id: Some(channel_id_2),
+			discard_funding: true,
+			..Default::default()
+		},
+	]);
 
 	// Ensure the channels don't exist anymore.
 	assert!(nodes[0].node.list_channels().is_empty());
