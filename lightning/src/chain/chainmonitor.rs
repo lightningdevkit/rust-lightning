@@ -700,7 +700,7 @@ where C::Target: chain::Filter,
 			}
 		}
 		if let Some(ref chain_source) = self.chain_source {
-			monitor.load_outputs_to_watch(chain_source);
+			monitor.load_outputs_to_watch(chain_source, &self.logger);
 		}
 		entry.insert(MonitorHolder {
 			monitor,

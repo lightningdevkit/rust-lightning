@@ -1349,7 +1349,15 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 	/// Loads the funding txo and outputs to watch into the given `chain::Filter` by repeatedly
 	/// calling `chain::Filter::register_output` and `chain::Filter::register_tx` until all outputs
 	/// have been registered.
-	pub fn load_outputs_to_watch<F: Deref>(&self, filter: &F) where F::Target: chain::Filter {
+	pub fn load_outputs_to_watch<F: Deref , L: Deref>(
+		&self, 
+		filter: &F,
+		logger: &L,
+	) 
+	where 
+		F::Target: chain::Filter,
+		L::Target: Logger,
+	{
 		let lock = self.inner.lock().unwrap();
 		filter.register_tx(&lock.get_funding_txo().0.txid, &lock.get_funding_txo().1);
 		for (txid, outputs) in lock.get_outputs_to_watch().iter() {
@@ -1360,6 +1368,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 					outpoint: OutPoint { txid: *txid, index: *index as u16 },
 					script_pubkey: script_pubkey.clone(),
 				});
+				log_trace!(logger, "Adding txid {} to the filter", txid);
 			}
 		}
 	}
@@ -3312,9 +3321,11 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 
 		if height > self.best_block.height() {
 			self.best_block = BestBlock::new(block_hash, height);
+			log_trace!(logger, "New best_block of height {} has been found and updated", height);
 			self.block_confirmed(height, block_hash, vec![], vec![], vec![], &broadcaster, &fee_estimator, &logger)
 		} else if block_hash != self.best_block.block_hash() {
 			self.best_block = BestBlock::new(block_hash, height);
+			log_trace!(logger, "New best_block of block hash {} has been found and updated", block_hash);
 			self.onchain_events_awaiting_threshold_conf.retain(|ref entry| entry.height <= height);
 			self.onchain_tx_handler.block_disconnected(height + 1, broadcaster, fee_estimator, logger);
 			Vec::new()
@@ -3351,7 +3362,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		let mut claimable_outpoints = Vec::new();
 		'tx_iter: for tx in &txn_matched {
 			let txid = tx.txid();
-		    log_trace!(logger, "Transaction id {} confirmed in block {}", txid , block_hash);
+			log_trace!(logger, "Transaction id {} confirmed in block {}", txid , block_hash);
 			// If a transaction has already been confirmed, ensure we don't bother processing it duplicatively.
 			if Some(txid) == self.funding_spend_confirmed {
 				log_debug!(logger, "Skipping redundant processing of funding-spend tx {} as it was previously confirmed", txid);
