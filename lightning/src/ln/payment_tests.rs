@@ -114,19 +114,9 @@ fn mpp_retry() {
 
 	// Add the HTLC along the first hop.
 	let fail_path_msgs_1 = remove_first_msg_event_to_node(&nodes[2].node.get_our_node_id(), &mut events);
-	let (update_add, commitment_signed) = match fail_path_msgs_1 {
-		MessageSendEvent::UpdateHTLCs { node_id: _, updates: msgs::CommitmentUpdate { ref update_add_htlcs, ref update_fulfill_htlcs, ref update_fail_htlcs, ref update_fail_malformed_htlcs, ref update_fee, ref commitment_signed } } => {
-			assert_eq!(update_add_htlcs.len(), 1);
-			assert!(update_fail_htlcs.is_empty());
-			assert!(update_fulfill_htlcs.is_empty());
-			assert!(update_fail_malformed_htlcs.is_empty());
-			assert!(update_fee.is_none());
-			(update_add_htlcs[0].clone(), commitment_signed.clone())
-		},
-		_ => panic!("Unexpected event"),
-	};
-	nodes[2].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &update_add);
-	commitment_signed_dance!(nodes[2], nodes[0], commitment_signed, false);
+	let send_event = SendEvent::from_event(fail_path_msgs_1);
+	nodes[2].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &send_event.msgs[0]);
+	commitment_signed_dance!(nodes[2], nodes[0], &send_event.commitment_msg, false);
 
 	// Attempt to forward the payment and complete the 2nd path's failure.
 	expect_pending_htlcs_forwardable!(&nodes[2]);
@@ -225,25 +215,9 @@ fn mpp_retry_overpay() {
 
 	// Add the HTLC along the first hop.
 	let fail_path_msgs_1 = remove_first_msg_event_to_node(&nodes[2].node.get_our_node_id(), &mut events);
-	let (update_add, commitment_signed) = match fail_path_msgs_1 {
-		MessageSendEvent::UpdateHTLCs {
-			node_id: _,
-			updates: msgs::CommitmentUpdate {
-					ref update_add_htlcs, ref update_fulfill_htlcs, ref update_fail_htlcs,
-					ref update_fail_malformed_htlcs, ref update_fee, ref commitment_signed
-			}
-		} => {
-			assert_eq!(update_add_htlcs.len(), 1);
-			assert!(update_fail_htlcs.is_empty());
-			assert!(update_fulfill_htlcs.is_empty());
-			assert!(update_fail_malformed_htlcs.is_empty());
-			assert!(update_fee.is_none());
-			(update_add_htlcs[0].clone(), commitment_signed.clone())
-		},
-		_ => panic!("Unexpected event"),
-	};
-	nodes[2].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &update_add);
-	commitment_signed_dance!(nodes[2], nodes[0], commitment_signed, false);
+	let send_event = SendEvent::from_event(fail_path_msgs_1);
+	nodes[2].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &send_event.msgs[0]);
+	commitment_signed_dance!(nodes[2], nodes[0], &send_event.commitment_msg, false);
 
 	// Attempt to forward the payment and complete the 2nd path's failure.
 	expect_pending_htlcs_forwardable!(&nodes[2]);
