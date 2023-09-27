@@ -341,7 +341,7 @@ impl Path {
 
 /// A route directs a payment from the sender (us) to the recipient. If the recipient supports MPP,
 /// it can take multiple paths. Each path is composed of one or more hops through the network.
-#[derive(Clone, Hash, PartialEq, Eq)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct Route {
 	/// The list of [`Path`]s taken for a single (potentially-)multi-part payment. If no
 	/// [`BlindedTail`]s are present, then the pubkey of the last [`RouteHop`] in each path must be
@@ -377,6 +377,12 @@ impl Route {
 	/// [`htlc_minimum_msat`]: https://github.com/lightning/bolts/blob/master/07-routing-gossip.md#the-channel_update-message
 	pub fn get_total_amount(&self) -> u64 {
 		self.paths.iter().map(|path| path.final_value_msat()).sum()
+	}
+}
+
+impl fmt::Display for Route {
+	fn fmt(&self, f: &mut fmt::Formatter) -> Result<(), fmt::Error> {
+		log_route!(self).fmt(f)
 	}
 }
 
@@ -475,14 +481,16 @@ pub struct RouteParameters {
 	/// This limit also applies to the total fees that may arise while retrying failed payment
 	/// paths.
 	///
-	/// Default value: `None`
+	/// Note that values below a few sats may result in some paths being spuriously ignored.
 	pub max_total_routing_fee_msat: Option<u64>,
 }
 
 impl RouteParameters {
 	/// Constructs [`RouteParameters`] from the given [`PaymentParameters`] and a payment amount.
+	///
+	/// [`Self::max_total_routing_fee_msat`] defaults to 1% of the payment amount + 50 sats
 	pub fn from_payment_params_and_value(payment_params: PaymentParameters, final_value_msat: u64) -> Self {
-		Self { payment_params, final_value_msat, max_total_routing_fee_msat: None }
+		Self { payment_params, final_value_msat, max_total_routing_fee_msat: Some(final_value_msat / 100 + 50_000) }
 	}
 }
 
@@ -3092,8 +3100,9 @@ mod tests {
 			excess_data: Vec::new()
 		});
 
-		let route_params = RouteParameters::from_payment_params_and_value(
+		let mut route_params = RouteParameters::from_payment_params_and_value(
 			payment_params.clone(), 60_000);
+		route_params.max_total_routing_fee_msat = Some(15_000);
 		let route = get_route(&our_id, &route_params, &network_graph.read_only(), None,
 			Arc::clone(&logger), &scorer, &Default::default(), &random_seed_bytes).unwrap();
 		// Overpay fees to hit htlc_minimum_msat.
@@ -5751,8 +5760,9 @@ mod tests {
 		{
 			// Now, attempt to route 90 sats, which is exactly 90 sats at the last hop, plus the
 			// 200% fee charged channel 13 in the 1-to-2 direction.
-			let route_params = RouteParameters::from_payment_params_and_value(
+			let mut route_params = RouteParameters::from_payment_params_and_value(
 				payment_params, 90_000);
+			route_params.max_total_routing_fee_msat = Some(90_000*2);
 			let route = get_route(&our_id, &route_params, &network_graph.read_only(), None,
 				Arc::clone(&logger), &scorer, &Default::default(), &random_seed_bytes).unwrap();
 			assert_eq!(route.paths.len(), 1);
@@ -5820,8 +5830,9 @@ mod tests {
 			// Now, attempt to route 90 sats, hitting the htlc_minimum on channel 4, but
 			// overshooting the htlc_maximum on channel 2. Thus, we should pick the (absurdly
 			// expensive) channels 12-13 path.
-			let route_params = RouteParameters::from_payment_params_and_value(
+			let mut route_params = RouteParameters::from_payment_params_and_value(
 				payment_params, 90_000);
+			route_params.max_total_routing_fee_msat = Some(90_000*2);
 			let route = get_route(&our_id, &route_params, &network_graph.read_only(), None,
 				Arc::clone(&logger), &scorer, &Default::default(), &random_seed_bytes).unwrap();
 			assert_eq!(route.paths.len(), 1);
@@ -6526,8 +6537,9 @@ mod tests {
 
 		// Make sure we'll error if our route hints don't have enough liquidity according to their
 		// htlc_maximum_msat.
-		let route_params = RouteParameters::from_payment_params_and_value(
+		let mut route_params = RouteParameters::from_payment_params_and_value(
 			payment_params, max_htlc_msat + 1);
+		route_params.max_total_routing_fee_msat = None;
 		if let Err(LightningError{err, action: ErrorAction::IgnoreError}) = get_route(&our_id,
 			&route_params, &netgraph, None, Arc::clone(&logger), &scorer, &Default::default(),
 			&random_seed_bytes)
@@ -6541,8 +6553,9 @@ mod tests {
 		let payment_params = PaymentParameters::from_node_id(dest_node_id, 42)
 			.with_route_hints(vec![route_hint_1, route_hint_2]).unwrap()
 			.with_bolt11_features(channelmanager::provided_invoice_features(&config)).unwrap();
-		let route_params = RouteParameters::from_payment_params_and_value(
+		let mut route_params = RouteParameters::from_payment_params_and_value(
 			payment_params, max_htlc_msat + 1);
+		route_params.max_total_routing_fee_msat = Some(max_htlc_msat * 2);
 		let route = get_route(&our_id, &route_params, &netgraph, None, Arc::clone(&logger),
 			&scorer, &Default::default(), &random_seed_bytes).unwrap();
 		assert_eq!(route.paths.len(), 2);
@@ -6977,7 +6990,8 @@ mod tests {
 		let payment_params = PaymentParameters::blinded(blinded_hints.clone())
 			.with_bolt12_features(bolt12_features.clone()).unwrap();
 
-		let route_params = RouteParameters::from_payment_params_and_value(payment_params, 100_000);
+		let mut route_params = RouteParameters::from_payment_params_and_value(payment_params, 100_000);
+		route_params.max_total_routing_fee_msat = Some(100_000);
 		let route = get_route(&our_id, &route_params, &network_graph, None, Arc::clone(&logger),
 			&scorer, &Default::default(), &random_seed_bytes).unwrap();
 		assert_eq!(route.paths.len(), 2);
