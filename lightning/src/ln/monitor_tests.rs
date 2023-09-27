@@ -153,15 +153,19 @@ fn revoked_output_htlc_resolution_timing() {
 	expect_payment_failed!(nodes[1], payment_hash_1, false);
 }
 
-#[test]
-fn chanmon_claim_value_coop_close() {
+fn do_chanmon_claim_value_coop_close(anchors: bool) {
 	// Tests `get_claimable_balances` returns the correct values across a simple cooperative claim.
 	// Specifically, this tests that the channel non-HTLC balances show up in
 	// `get_claimable_balances` until the cooperative claims have confirmed and generated a
 	// `SpendableOutputs` event, and no longer.
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let mut user_config = test_default_channel_config();
+	if anchors {
+		user_config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
+		user_config.manually_accept_inbound_channels = true;
+	}
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(user_config), Some(user_config)]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let (_, _, chan_id, funding_tx) =
@@ -172,8 +176,10 @@ fn chanmon_claim_value_coop_close() {
 	let chan_feerate = get_feerate!(nodes[0], nodes[1], chan_id) as u64;
 	let channel_type_features = get_channel_type_features!(nodes[0], nodes[1], chan_id);
 
+	let commitment_tx_fee = chan_feerate * channel::commitment_tx_base_weight(&channel_type_features) / 1000;
+	let anchor_outputs_value = if anchors { channel::ANCHOR_OUTPUT_VALUE_SATOSHI * 2 } else { 0 };
 	assert_eq!(vec![Balance::ClaimableOnChannelClose {
-			amount_satoshis: 1_000_000 - 1_000 - chan_feerate * channel::commitment_tx_base_weight(&channel_type_features) / 1000
+			amount_satoshis: 1_000_000 - 1_000 - commitment_tx_fee - anchor_outputs_value
 		}],
 		nodes[0].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances());
 	assert_eq!(vec![Balance::ClaimableOnChannelClose { amount_satoshis: 1_000, }],
@@ -208,7 +214,7 @@ fn chanmon_claim_value_coop_close() {
 	assert!(nodes[1].chain_monitor.chain_monitor.get_and_clear_pending_events().is_empty());
 
 	assert_eq!(vec![Balance::ClaimableAwaitingConfirmations {
-			amount_satoshis: 1_000_000 - 1_000 - chan_feerate * channel::commitment_tx_base_weight(&channel_type_features) / 1000,
+			amount_satoshis: 1_000_000 - 1_000 - commitment_tx_fee - anchor_outputs_value,
 			confirmation_height: nodes[0].best_block_info().1 + ANTI_REORG_DELAY - 1,
 		}],
 		nodes[0].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances());
@@ -248,6 +254,12 @@ fn chanmon_claim_value_coop_close() {
 
 	check_closed_event!(nodes[0], 1, ClosureReason::CooperativeClosure, [nodes[1].node.get_our_node_id()], 1000000);
 	check_closed_event!(nodes[1], 1, ClosureReason::CooperativeClosure, [nodes[0].node.get_our_node_id()], 1000000);
+}
+
+#[test]
+fn chanmon_claim_value_coop_close() {
+	do_chanmon_claim_value_coop_close(false);
+	do_chanmon_claim_value_coop_close(true);
 }
 
 fn sorted_vec<T: Ord>(mut v: Vec<T>) -> Vec<T> {
