@@ -767,7 +767,7 @@ where C::Target: chain::Filter,
 			Some(monitor_state) => {
 				let monitor = &monitor_state.monitor;
 				log_trace!(self.logger, "Updating ChannelMonitor for channel {}", log_funding_info!(monitor));
-				let update_res = monitor.update_monitor(update, &self.broadcaster, &*self.fee_estimator, &self.logger);
+				let update_res = monitor.update_monitor(update, &self.broadcaster, &self.fee_estimator, &self.logger);
 
 				let update_id = MonitorUpdateId::from_monitor_update(update);
 				let mut pending_monitor_updates = monitor_state.pending_monitor_updates.lock().unwrap();

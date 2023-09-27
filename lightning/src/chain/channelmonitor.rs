@@ -1311,7 +1311,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 		&self,
 		updates: &ChannelMonitorUpdate,
 		broadcaster: &B,
-		fee_estimator: F,
+		fee_estimator: &F,
 		logger: &L,
 	) -> Result<(), ()>
 	where
@@ -2615,7 +2615,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		self.pending_monitor_events.push(MonitorEvent::HolderForceClosed(self.funding_info.0));
 	}
 
-	pub fn update_monitor<B: Deref, F: Deref, L: Deref>(&mut self, updates: &ChannelMonitorUpdate, broadcaster: &B, fee_estimator: F, logger: &L) -> Result<(), ()>
+	pub fn update_monitor<B: Deref, F: Deref, L: Deref>(&mut self, updates: &ChannelMonitorUpdate, broadcaster: &B, fee_estimator: &F, logger: &L) -> Result<(), ()>
 	where B::Target: BroadcasterInterface,
 		F::Target: FeeEstimator,
 		L::Target: Logger,
@@ -2655,7 +2655,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			panic!("Attempted to apply ChannelMonitorUpdates out of order, check the update_id before passing an update to update_monitor!");
 		}
 		let mut ret = Ok(());
-		let bounded_fee_estimator = LowerBoundedFeeEstimator::new(&*fee_estimator);
+		let bounded_fee_estimator = LowerBoundedFeeEstimator::new(&**fee_estimator);
 		for update in updates.updates.iter() {
 			match update {
 				ChannelMonitorUpdateStep::LatestHolderCommitmentTXInfo { commitment_tx, htlc_outputs, claimed_htlcs, nondust_htlc_sources } => {
@@ -4581,7 +4581,7 @@ mod tests {
 
 		let broadcaster = TestBroadcaster::with_blocks(Arc::clone(&nodes[1].blocks));
 		assert!(
-			pre_update_monitor.update_monitor(&replay_update, &&broadcaster, &chanmon_cfgs[1].fee_estimator, &nodes[1].logger)
+			pre_update_monitor.update_monitor(&replay_update, &&broadcaster, &&chanmon_cfgs[1].fee_estimator, &nodes[1].logger)
 			.is_err());
 		// Even though we error'd on the first update, we should still have generated an HTLC claim
 		// transaction

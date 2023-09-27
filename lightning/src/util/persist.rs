@@ -397,11 +397,7 @@ where
 	pub fn new(
 		kv_store: K, logger: L, maximum_pending_updates: u64, entropy_source: ES,
 		signer_provider: SP,
-	) -> Self
-	where
-		ES::Target: EntropySource + Sized,
-		SP::Target: SignerProvider + Sized,
-	{
+	) -> Self {
 		MonitorUpdatingPersister {
 			kv_store,
 			logger,
@@ -416,12 +412,10 @@ where
 	/// It is extremely important that your [`KVStore::read`] implementation uses the
 	/// [`io::ErrorKind::NotFound`] variant correctly. For more information, please see the
 	/// documentation for [`MonitorUpdatingPersister`].
-	pub fn read_all_channel_monitors_with_updates<B: Deref, F: Deref + Clone>(
-		&self, broadcaster: B, fee_estimator: F,
+	pub fn read_all_channel_monitors_with_updates<B: Deref, F: Deref>(
+		&self, broadcaster: &B, fee_estimator: &F,
 	) -> Result<Vec<(BlockHash, ChannelMonitor<<SP::Target as SignerProvider>::Signer>)>, io::Error>
 	where
-		ES::Target: EntropySource + Sized,
-		SP::Target: SignerProvider + Sized,
 		B::Target: BroadcasterInterface,
 		F::Target: FeeEstimator,
 	{
@@ -432,8 +426,8 @@ where
 		let mut res = Vec::with_capacity(monitor_list.len());
 		for monitor_key in monitor_list {
 			res.push(self.read_channel_monitor_with_updates(
-				&broadcaster,
-				fee_estimator.clone(),
+				broadcaster,
+				fee_estimator,
 				monitor_key,
 			)?)
 		}
@@ -457,12 +451,10 @@ where
 	/// 
 	/// Loading a large number of monitors will be faster if done in parallel. You can use this
 	/// function to accomplish this. Take care to limit the number of parallel readers.
-	pub fn read_channel_monitor_with_updates<B: Deref, F: Deref + Clone>(
-		&self, broadcaster: &B, fee_estimator: F, monitor_key: String,
+	pub fn read_channel_monitor_with_updates<B: Deref, F: Deref>(
+		&self, broadcaster: &B, fee_estimator: &F, monitor_key: String,
 	) -> Result<(BlockHash, ChannelMonitor<<SP::Target as SignerProvider>::Signer>), io::Error>
 	where
-		ES::Target: EntropySource + Sized,
-		SP::Target: SignerProvider + Sized,
 		B::Target: BroadcasterInterface,
 		F::Target: FeeEstimator,
 	{
@@ -484,7 +476,7 @@ where
 				Err(err) => return Err(err),
 			};
 
-			monitor.update_monitor(&update, broadcaster, fee_estimator.clone(), &self.logger)
+			monitor.update_monitor(&update, broadcaster, fee_estimator, &self.logger)
 				.map_err(|e| {
 					log_error!(
 						self.logger,
@@ -949,17 +941,17 @@ mod tests {
 		// Check that the persisted channel data is empty before any channels are
 		// open.
 		let mut persisted_chan_data_0 = persister_0.read_all_channel_monitors_with_updates(
-			broadcaster_0, &chanmon_cfgs[0].fee_estimator).unwrap();
+			&broadcaster_0, &&chanmon_cfgs[0].fee_estimator).unwrap();
 		assert_eq!(persisted_chan_data_0.len(), 0);
 		let mut persisted_chan_data_1 = persister_1.read_all_channel_monitors_with_updates(
-			broadcaster_1, &chanmon_cfgs[1].fee_estimator).unwrap();
+			&broadcaster_1, &&chanmon_cfgs[1].fee_estimator).unwrap();
 		assert_eq!(persisted_chan_data_1.len(), 0);
 
 		// Helper to make sure the channel is on the expected update ID.
 		macro_rules! check_persisted_data {
 			($expected_update_id: expr) => {
 				persisted_chan_data_0 = persister_0.read_all_channel_monitors_with_updates(
-					broadcaster_0, &chanmon_cfgs[0].fee_estimator).unwrap();
+					&broadcaster_0, &&chanmon_cfgs[0].fee_estimator).unwrap();
 				// check that we stored only one monitor
 				assert_eq!(persisted_chan_data_0.len(), 1);
 				for (_, mon) in persisted_chan_data_0.iter() {
@@ -978,7 +970,7 @@ mod tests {
 					}
 				}
 				persisted_chan_data_1 = persister_1.read_all_channel_monitors_with_updates(
-					broadcaster_1, &chanmon_cfgs[1].fee_estimator).unwrap();
+					&broadcaster_1, &&chanmon_cfgs[1].fee_estimator).unwrap();
 				assert_eq!(persisted_chan_data_1.len(), 1);
 				for (_, mon) in persisted_chan_data_1.iter() {
 					assert_eq!(mon.get_latest_update_id(), $expected_update_id);
@@ -1043,7 +1035,7 @@ mod tests {
 		check_persisted_data!(CLOSED_CHANNEL_UPDATE_ID);
 
 		// Make sure the expected number of stale updates is present.
-		let persisted_chan_data = persister_0.read_all_channel_monitors_with_updates(broadcaster_0, &chanmon_cfgs[0].fee_estimator).unwrap();
+		let persisted_chan_data = persister_0.read_all_channel_monitors_with_updates(&broadcaster_0, &&chanmon_cfgs[0].fee_estimator).unwrap();
 		let (_, monitor) = &persisted_chan_data[0];
 		let monitor_name = MonitorName::from(monitor.get_funding_txo().0);
 		// The channel should have 0 updates, as it wrote a full monitor and consolidated.
@@ -1151,7 +1143,7 @@ mod tests {
 
 		// Check that the persisted channel data is empty before any channels are
 		// open.
-		let persisted_chan_data = persister_0.read_all_channel_monitors_with_updates(broadcaster_0, &chanmon_cfgs[0].fee_estimator).unwrap();
+		let persisted_chan_data = persister_0.read_all_channel_monitors_with_updates(&broadcaster_0, &&chanmon_cfgs[0].fee_estimator).unwrap();
 		assert_eq!(persisted_chan_data.len(), 0);
 
 		// Create some initial channel
@@ -1162,7 +1154,7 @@ mod tests {
 		send_payment(&nodes[1], &vec![&nodes[0]][..], 4_000_000);
 
 		// Get the monitor and make a fake stale update at update_id=1 (lowest height of an update possible)
-		let persisted_chan_data = persister_0.read_all_channel_monitors_with_updates(broadcaster_0, &chanmon_cfgs[0].fee_estimator).unwrap();
+		let persisted_chan_data = persister_0.read_all_channel_monitors_with_updates(&broadcaster_0, &&chanmon_cfgs[0].fee_estimator).unwrap();
 		let (_, monitor) = &persisted_chan_data[0];
 		let monitor_name = MonitorName::from(monitor.get_funding_txo().0);
 		persister_0
