@@ -9,7 +9,7 @@
 
 //! Further functional tests which test blockchain reorganizations.
 
-use crate::sign::EcdsaChannelSigner;
+use crate::sign::{EcdsaChannelSigner, SpendableOutputDescriptor};
 use crate::chain::channelmonitor::{ANTI_REORG_DELAY, LATENCY_GRACE_PERIOD_BLOCKS, Balance};
 use crate::chain::transaction::OutPoint;
 use crate::chain::chaininterface::{LowerBoundedFeeEstimator, compute_feerate_sat_per_1000_weight};
@@ -21,6 +21,7 @@ use crate::ln::msgs::ChannelMessageHandler;
 use crate::util::config::UserConfig;
 use crate::util::crypto::sign;
 use crate::util::ser::Writeable;
+use crate::util::scid_utils::block_from_scid;
 use crate::util::test_utils;
 
 use bitcoin::blockdata::transaction::EcdsaSighashType;
@@ -92,14 +93,15 @@ fn chanmon_fail_from_stale_commitment() {
 	expect_payment_failed_with_update!(nodes[0], payment_hash, false, update_a.contents.short_channel_id, true);
 }
 
-fn test_spendable_output<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, spendable_tx: &Transaction) {
+fn test_spendable_output<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, spendable_tx: &Transaction) -> SpendableOutputDescriptor {
 	let mut spendable = node.chain_monitor.chain_monitor.get_and_clear_pending_events();
 	assert_eq!(spendable.len(), 1);
-	if let Event::SpendableOutputs { outputs, .. } = spendable.pop().unwrap() {
+	if let Event::SpendableOutputs { mut outputs, .. } = spendable.pop().unwrap() {
 		assert_eq!(outputs.len(), 1);
 		let spend_tx = node.keys_manager.backing.spend_spendable_outputs(&[&outputs[0]], Vec::new(),
 			Builder::new().push_opcode(opcodes::all::OP_RETURN).into_script(), 253, None, &Secp256k1::new()).unwrap();
 		check_spends!(spend_tx, spendable_tx);
+		outputs.pop().unwrap()
 	} else { panic!(); }
 }
 
@@ -196,8 +198,8 @@ fn chanmon_claim_value_coop_close() {
 	assert_eq!(shutdown_tx, nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0));
 	assert_eq!(shutdown_tx.len(), 1);
 
-	mine_transaction(&nodes[0], &shutdown_tx[0]);
-	mine_transaction(&nodes[1], &shutdown_tx[0]);
+	let shutdown_tx_conf_height_a = block_from_scid(&mine_transaction(&nodes[0], &shutdown_tx[0]));
+	let shutdown_tx_conf_height_b = block_from_scid(&mine_transaction(&nodes[1], &shutdown_tx[0]));
 
 	assert!(nodes[0].node.list_channels().is_empty());
 	assert!(nodes[1].node.list_channels().is_empty());
@@ -216,16 +218,35 @@ fn chanmon_claim_value_coop_close() {
 		}],
 		nodes[1].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances());
 
-	connect_blocks(&nodes[0], ANTI_REORG_DELAY - 1);
-	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
+	connect_blocks(&nodes[0], ANTI_REORG_DELAY - 2);
+	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 2);
+
+	assert!(get_monitor!(nodes[0], chan_id)
+		.get_spendable_output(&shutdown_tx[0], shutdown_tx_conf_height_a).is_none());
+	assert!(get_monitor!(nodes[1], chan_id)
+		.get_spendable_output(&shutdown_tx[0], shutdown_tx_conf_height_b).is_none());
+
+	connect_blocks(&nodes[0], 1);
+	connect_blocks(&nodes[1], 1);
 
 	assert_eq!(Vec::<Balance>::new(),
 		nodes[0].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances());
 	assert_eq!(Vec::<Balance>::new(),
 		nodes[1].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances());
 
-	test_spendable_output(&nodes[0], &shutdown_tx[0]);
-	test_spendable_output(&nodes[1], &shutdown_tx[0]);
+	let spendable_output_a = test_spendable_output(&nodes[0], &shutdown_tx[0]);
+	assert_eq!(
+		get_monitor!(nodes[0], chan_id)
+			.get_spendable_output(&shutdown_tx[0], shutdown_tx_conf_height_a).unwrap(),
+		spendable_output_a
+	);
+
+	let spendable_output_b = test_spendable_output(&nodes[1], &shutdown_tx[0]);
+	assert_eq!(
+		get_monitor!(nodes[1], chan_id)
+			.get_spendable_output(&shutdown_tx[0], shutdown_tx_conf_height_b).unwrap(),
+		spendable_output_b
+	);
 
 	check_closed_event!(nodes[0], 1, ClosureReason::CooperativeClosure, [nodes[1].node.get_our_node_id()], 1000000);
 	check_closed_event!(nodes[1], 1, ClosureReason::CooperativeClosure, [nodes[0].node.get_our_node_id()], 1000000);
