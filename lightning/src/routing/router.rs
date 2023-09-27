@@ -1713,13 +1713,13 @@ where L::Target: Logger {
 		LoggedPayeePubkey(payment_params.payee.node_id()), our_node_pubkey, final_value_msat);
 
 	// Remember how many candidates we ignored to allow for some logging afterwards.
-	let mut num_ignored_value_contribution = 0;
-	let mut num_ignored_path_length_limit = 0;
-	let mut num_ignored_cltv_delta_limit = 0;
-	let mut num_ignored_previously_failed = 0;
-	let mut num_ignored_total_fee_limit = 0;
-	let mut num_ignored_avoid_overpayment = 0;
-	let mut num_ignored_htlc_minimum_msat_limit = 0;
+	let mut num_ignored_value_contribution: u32 = 0;
+	let mut num_ignored_path_length_limit: u32 = 0;
+	let mut num_ignored_cltv_delta_limit: u32 = 0;
+	let mut num_ignored_previously_failed: u32 = 0;
+	let mut num_ignored_total_fee_limit: u32 = 0;
+	let mut num_ignored_avoid_overpayment: u32 = 0;
+	let mut num_ignored_htlc_minimum_msat_limit: u32 = 0;
 
 	macro_rules! add_entry {
 		// Adds entry which goes from $src_node_id to $dest_node_id over the $candidate hop.
