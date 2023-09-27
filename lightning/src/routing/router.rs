@@ -1265,7 +1265,11 @@ impl<'a> PaymentPath<'a> {
 	// Note that this function is not aware of the available_liquidity limit, and thus does not
 	// support increasing the value being transferred beyond what was selected during the initial
 	// routing passes.
-	fn update_value_and_recompute_fees(&mut self, value_msat: u64) {
+	//
+	// Returns the amount that this path contributes to the total payment value, which may be greater
+	// than `value_msat` if we had to overpay to meet the final node's `htlc_minimum_msat`.
+	fn update_value_and_recompute_fees(&mut self, value_msat: u64) -> u64 {
+		let mut extra_contribution_msat = 0;
 		let mut total_fee_paid_msat = 0 as u64;
 		for i in (0..self.hops.len()).rev() {
 			let last_hop = i == self.hops.len() - 1;
@@ -1280,6 +1284,7 @@ impl<'a> PaymentPath<'a> {
 
 			let cur_hop = &mut self.hops.get_mut(i).unwrap().0;
 			cur_hop.next_hops_fee_msat = total_fee_paid_msat;
+			cur_hop.path_penalty_msat += extra_contribution_msat;
 			// Overpay in fees if we can't save these funds due to htlc_minimum_msat.
 			// We try to account for htlc_minimum_msat in scoring (add_entry!), so that nodes don't
 			// set it too high just to maliciously take more fees by exploiting this
@@ -1295,8 +1300,15 @@ impl<'a> PaymentPath<'a> {
 				// Also, this can't be exploited more heavily than *announce a free path and fail
 				// all payments*.
 				cur_hop_transferred_amount_msat += extra_fees_msat;
-				total_fee_paid_msat += extra_fees_msat;
-				cur_hop_fees_msat += extra_fees_msat;
+
+				// We remember and return the extra fees on the final hop to allow accounting for
+				// them in the path's value contribution.
+				if last_hop {
+					extra_contribution_msat = extra_fees_msat;
+				} else {
+					total_fee_paid_msat += extra_fees_msat;
+					cur_hop_fees_msat += extra_fees_msat;
+				}
 			}
 
 			if last_hop {
@@ -1324,6 +1336,7 @@ impl<'a> PaymentPath<'a> {
 				}
 			}
 		}
+		value_msat + extra_contribution_msat
 	}
 }
 
@@ -2330,8 +2343,8 @@ where L::Target: Logger {
 				// recompute the fees again, so that if that's the case, we match the currently
 				// underpaid htlc_minimum_msat with fees.
 				debug_assert_eq!(payment_path.get_value_msat(), value_contribution_msat);
-				value_contribution_msat = cmp::min(value_contribution_msat, final_value_msat);
-				payment_path.update_value_and_recompute_fees(value_contribution_msat);
+				let desired_value_contribution = cmp::min(value_contribution_msat, final_value_msat);
+				value_contribution_msat = payment_path.update_value_and_recompute_fees(desired_value_contribution);
 
 				// Since a path allows to transfer as much value as
 				// the smallest channel it has ("bottleneck"), we should recompute
@@ -7520,6 +7533,67 @@ mod tests {
 		) {
 			assert_eq!(err, "Failed to find a path to the given destination");
 		} else { panic!() }
+	}
+
+	#[test]
+	fn path_contribution_includes_min_htlc_overpay() {
+		// Previously, the fuzzer hit a debug panic because we wouldn't include the amount overpaid to
+		// meet a last hop's min_htlc in the total collected paths value. We now include this value and
+		// also penalize hops along the overpaying path to ensure that it gets deprioritized in path
+		// selection, both tested here.
+		let secp_ctx = Secp256k1::new();
+		let logger = Arc::new(ln_test_utils::TestLogger::new());
+		let network_graph = Arc::new(NetworkGraph::new(Network::Testnet, Arc::clone(&logger)));
+		let scorer = ProbabilisticScorer::new(ProbabilisticScoringDecayParameters::default(), network_graph.clone(), logger.clone());
+		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
+		let random_seed_bytes = keys_manager.get_secure_random_bytes();
+		let config = UserConfig::default();
+
+		// Values are taken from the fuzz input that uncovered this panic.
+		let amt_msat = 562_0000;
+		let (_, our_id, _, nodes) = get_nodes(&secp_ctx);
+		let first_hops = vec![
+			get_channel_details(
+				Some(83), nodes[0], channelmanager::provided_init_features(&config), 2199_0000,
+			),
+		];
+
+		let htlc_mins = [49_0000, 1125_0000];
+		let payment_params = {
+			let blinded_path = BlindedPath {
+				introduction_node_id: nodes[0],
+				blinding_point: ln_test_utils::pubkey(42),
+				blinded_hops: vec![
+					BlindedHop { blinded_node_id: ln_test_utils::pubkey(42 as u8), encrypted_payload: Vec::new() },
+					BlindedHop { blinded_node_id: ln_test_utils::pubkey(42 as u8), encrypted_payload: Vec::new() }
+				],
+			};
+			let mut blinded_hints = Vec::new();
+			for htlc_min in htlc_mins.iter() {
+				blinded_hints.push((BlindedPayInfo {
+					fee_base_msat: 0,
+					fee_proportional_millionths: 0,
+					htlc_minimum_msat: *htlc_min,
+					htlc_maximum_msat: *htlc_min * 100,
+					cltv_expiry_delta: 10,
+					features: BlindedHopFeatures::empty(),
+				}, blinded_path.clone()));
+			}
+			let bolt12_features: Bolt12InvoiceFeatures = channelmanager::provided_invoice_features(&config).to_context();
+			PaymentParameters::blinded(blinded_hints.clone())
+				.with_bolt12_features(bolt12_features.clone()).unwrap()
+		};
+
+		let netgraph = network_graph.read_only();
+		let route_params = RouteParameters::from_payment_params_and_value(
+			payment_params, amt_msat);
+		let route = get_route(
+			&our_id, &route_params, &netgraph, Some(&first_hops.iter().collect::<Vec<_>>()),
+			Arc::clone(&logger), &scorer, &ProbabilisticScoringFeeParameters::default(),
+			&random_seed_bytes
+		).unwrap();
+		assert_eq!(route.paths.len(), 1);
+		assert_eq!(route.get_total_amount(), amt_msat);
 	}
 }
 
