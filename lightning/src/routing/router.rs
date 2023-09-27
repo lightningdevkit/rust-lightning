@@ -2204,11 +2204,15 @@ where L::Target: Logger {
 						.map_or(None, |inc| inc.checked_add(aggregate_next_hops_fee_msat));
 					aggregate_next_hops_fee_msat = if let Some(val) = hops_fee { val } else { break; };
 
-					let hop_htlc_minimum_msat = candidate.htlc_minimum_msat();
-					let hop_htlc_minimum_msat_inc = if let Some(val) = compute_fees(aggregate_next_hops_path_htlc_minimum_msat, hop.fees) { val } else { break; };
-					let hops_path_htlc_minimum = aggregate_next_hops_path_htlc_minimum_msat
-						.checked_add(hop_htlc_minimum_msat_inc);
-					aggregate_next_hops_path_htlc_minimum_msat = if let Some(val) = hops_path_htlc_minimum { cmp::max(hop_htlc_minimum_msat, val) } else { break; };
+					// The next channel will need to relay this channel's min_htlc *plus* the fees taken by
+					// this route hint's source node to forward said min over this channel.
+					aggregate_next_hops_path_htlc_minimum_msat = {
+						let curr_htlc_min = cmp::max(
+							candidate.htlc_minimum_msat(), aggregate_next_hops_path_htlc_minimum_msat
+						);
+						let curr_htlc_min_fee = if let Some(val) = compute_fees(curr_htlc_min, hop.fees) { val } else { break };
+						if let Some(min) = curr_htlc_min.checked_add(curr_htlc_min_fee) { min } else { break }
+					};
 
 					if idx == route.0.len() - 1 {
 						// The last hop in this iterator is the first hop in
@@ -7278,6 +7282,118 @@ mod tests {
 		) {
 			assert_eq!(err, "Failed to find a path to the given destination");
 		} else { panic!() }
+	}
+
+	#[test]
+	fn min_htlc_overpay_violates_max_htlc() {
+		// Test that if overpaying to meet a later hop's min_htlc and causes us to violate an earlier
+		// hop's max_htlc, we don't consider that candidate hop valid. Previously we would add this hop
+		// to `targets` and build an invalid path with it, and subsquently hit a debug panic asserting
+		// that the used liquidity for a hop was less than its available liquidity limit.
+		let secp_ctx = Secp256k1::new();
+		let logger = Arc::new(ln_test_utils::TestLogger::new());
+		let network_graph = Arc::new(NetworkGraph::new(Network::Testnet, Arc::clone(&logger)));
+		let scorer = ln_test_utils::TestScorer::new();
+		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
+		let random_seed_bytes = keys_manager.get_secure_random_bytes();
+		let config = UserConfig::default();
+
+		// Values are taken from the fuzz input that uncovered this panic.
+		let amt_msat = 7_4009_8048;
+		let (_, our_id, _, nodes) = get_nodes(&secp_ctx);
+		let first_hop_outbound_capacity = 2_7345_2000;
+		let first_hops = vec![get_channel_details(
+			Some(200), nodes[0], channelmanager::provided_init_features(&config),
+			first_hop_outbound_capacity
+		)];
+
+		let base_fee = 1_6778_3453;
+		let htlc_min = 2_5165_8240;
+		let payment_params =  {
+			let route_hint = RouteHint(vec![RouteHintHop {
+				src_node_id: nodes[0],
+				short_channel_id: 42,
+				fees: RoutingFees {
+					base_msat: base_fee,
+					proportional_millionths: 0,
+				},
+				cltv_expiry_delta: 10,
+				htlc_minimum_msat: Some(htlc_min),
+				htlc_maximum_msat: None,
+			}]);
+
+			PaymentParameters::from_node_id(nodes[1], 42)
+				.with_route_hints(vec![route_hint]).unwrap()
+				.with_bolt11_features(channelmanager::provided_invoice_features(&config)).unwrap()
+		};
+
+		let netgraph = network_graph.read_only();
+		let route_params = RouteParameters::from_payment_params_and_value(
+			payment_params, amt_msat);
+		if let Err(LightningError { err, .. }) = get_route(
+			&our_id, &route_params, &netgraph, Some(&first_hops.iter().collect::<Vec<_>>()),
+			Arc::clone(&logger), &scorer, &(), &random_seed_bytes
+		) {
+			assert_eq!(err, "Failed to find a path to the given destination");
+		} else { panic!() }
+	}
+
+	#[test]
+	fn previously_used_liquidity_violates_max_htlc() {
+		// Test that if a candidate first_hop<>route_hint_src_node channel does not have enough
+		// contribution amount to cover the next hop's min_htlc plus fees, we will not consider that
+		// candidate. In this case, the candidate does not have enough due to a previous path taking up
+		// some of its liquidity. Previously we would construct an invalid path and hit a debug panic
+		// asserting that the used liquidity for a hop was less than its available liquidity limit.
+		let secp_ctx = Secp256k1::new();
+		let logger = Arc::new(ln_test_utils::TestLogger::new());
+		let network_graph = Arc::new(NetworkGraph::new(Network::Testnet, Arc::clone(&logger)));
+		let scorer = ln_test_utils::TestScorer::new();
+		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
+		let random_seed_bytes = keys_manager.get_secure_random_bytes();
+		let config = UserConfig::default();
+
+		// Values are taken from the fuzz input that uncovered this panic.
+		let amt_msat = 52_4288;
+		let (_, our_id, _, nodes) = get_nodes(&secp_ctx);
+		let first_hops = vec![get_channel_details(
+			Some(161), nodes[0], channelmanager::provided_init_features(&config), 486_4000
+		), get_channel_details(
+			Some(122), nodes[0], channelmanager::provided_init_features(&config), 179_5000
+		)];
+
+		let base_fees = [0, 425_9840, 0, 0];
+		let htlc_mins = [1_4392, 19_7401, 1027, 6_5535];
+		let payment_params = {
+			let mut route_hints = Vec::new();
+			for (idx, (base_fee, htlc_min)) in base_fees.iter().zip(htlc_mins.iter()).enumerate() {
+				route_hints.push(RouteHint(vec![RouteHintHop {
+					src_node_id: nodes[0],
+					short_channel_id: 42 + idx as u64,
+					fees: RoutingFees {
+						base_msat: *base_fee,
+						proportional_millionths: 0,
+					},
+					cltv_expiry_delta: 10,
+					htlc_minimum_msat: Some(*htlc_min),
+					htlc_maximum_msat: Some(htlc_min * 100),
+				}]));
+			}
+			PaymentParameters::from_node_id(nodes[1], 42)
+				.with_route_hints(route_hints).unwrap()
+				.with_bolt11_features(channelmanager::provided_invoice_features(&config)).unwrap()
+		};
+
+		let netgraph = network_graph.read_only();
+		let route_params = RouteParameters::from_payment_params_and_value(
+			payment_params, amt_msat);
+
+		let route = get_route(
+			&our_id, &route_params, &netgraph, Some(&first_hops.iter().collect::<Vec<_>>()),
+			Arc::clone(&logger), &scorer, &(), &random_seed_bytes
+		).unwrap();
+		assert_eq!(route.paths.len(), 1);
+		assert_eq!(route.get_total_amount(), amt_msat);
 	}
 }
 
