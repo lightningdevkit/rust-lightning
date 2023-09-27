@@ -2710,7 +2710,7 @@ where
 		}
 
 		let (monitor_update_option, mut failed_htlcs, unbroadcasted_batch_funding_txid) = shutdown_res;
-		log_debug!(self.logger, "Finishing force-closure of channel with {} HTLCs to fail", failed_htlcs.len());
+		log_debug!(self.logger, "Finishing closure of channel with {} HTLCs to fail", failed_htlcs.len());
 		for htlc_source in failed_htlcs.drain(..) {
 			let (source, payment_hash, counterparty_node_id, channel_id) = htlc_source;
 			let reason = HTLCFailReason::from_failure_code(0x4000 | 8);
@@ -3849,7 +3849,7 @@ where
 	/// Return values are identical to [`Self::funding_transaction_generated`], respective to
 	/// each individual channel and transaction output.
 	///
-	/// Do NOT broadcast the funding transaction yourself. This batch funding transcaction
+	/// Do NOT broadcast the funding transaction yourself. This batch funding transaction
 	/// will only be broadcast when we have safely received and persisted the counterparty's
 	/// signature for each channel.
 	///
@@ -3903,7 +3903,7 @@ where
 				btree_map::Entry::Vacant(vacant) => Some(vacant.insert(Vec::new())),
 			}
 		});
-		for &(temporary_channel_id, counterparty_node_id) in temporary_channels.iter() {
+		for &(temporary_channel_id, counterparty_node_id) in temporary_channels {
 			result = result.and_then(|_| self.funding_transaction_generated_intern(
 				temporary_channel_id,
 				counterparty_node_id,
