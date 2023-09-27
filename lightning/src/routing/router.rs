@@ -1819,10 +1819,11 @@ where L::Target: Logger {
 						// might violate htlc_minimum_msat on the hops which are next along the
 						// payment path (upstream to the payee). To avoid that, we recompute
 						// path fees knowing the final path contribution after constructing it.
-						let path_htlc_minimum_msat = cmp::max(
-							compute_fees_saturating($next_hops_path_htlc_minimum_msat, $candidate.fees())
-								.saturating_add($next_hops_path_htlc_minimum_msat),
-							$candidate.htlc_minimum_msat());
+						let curr_min = cmp::max(
+							$next_hops_path_htlc_minimum_msat, $candidate.htlc_minimum_msat()
+						);
+						let path_htlc_minimum_msat = compute_fees_saturating(curr_min, $candidate.fees())
+							.saturating_add(curr_min);
 						let hm_entry = dist.entry($src_node_id);
 						let old_entry = hm_entry.or_insert_with(|| {
 							// If there was previously no known way to access the source node
@@ -7447,6 +7448,78 @@ mod tests {
 		).unwrap();
 		assert_eq!(route.paths.len(), 1);
 		assert_eq!(route.get_total_amount(), amt_msat);
+	}
+
+	#[test]
+	fn candidate_path_min() {
+		// Test that if a candidate first_hop<>network_node channel does not have enough contribution
+		// amount to cover the next channel's min htlc plus fees, we will not consider that candidate.
+		// Previously, we were storing RouteGraphNodes with a path_min that did not include fees, and
+		// would add a connecting first_hop node that did not have enough contribution amount, leading
+		// to a debug panic upon invalid path construction.
+		let secp_ctx = Secp256k1::new();
+		let logger = Arc::new(ln_test_utils::TestLogger::new());
+		let network_graph = Arc::new(NetworkGraph::new(Network::Testnet, Arc::clone(&logger)));
+		let gossip_sync = P2PGossipSync::new(network_graph.clone(), None, logger.clone());
+		let scorer = ProbabilisticScorer::new(ProbabilisticScoringDecayParameters::default(), network_graph.clone(), logger.clone());
+		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
+		let random_seed_bytes = keys_manager.get_secure_random_bytes();
+		let config = UserConfig::default();
+
+		// Values are taken from the fuzz input that uncovered this panic.
+		let amt_msat = 7_4009_8048;
+		let (_, our_id, privkeys, nodes) = get_nodes(&secp_ctx);
+		let first_hops = vec![get_channel_details(
+			Some(200), nodes[0], channelmanager::provided_init_features(&config), 2_7345_2000
+		)];
+
+		add_channel(&gossip_sync, &secp_ctx, &privkeys[0], &privkeys[6], ChannelFeatures::from_le_bytes(id_to_feature_flags(6)), 6);
+		update_channel(&gossip_sync, &secp_ctx, &privkeys[0], UnsignedChannelUpdate {
+			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			short_channel_id: 6,
+			timestamp: 1,
+			flags: 0,
+			cltv_expiry_delta: (6 << 4) | 0,
+			htlc_minimum_msat: 0,
+			htlc_maximum_msat: MAX_VALUE_MSAT,
+			fee_base_msat: 0,
+			fee_proportional_millionths: 0,
+			excess_data: Vec::new()
+		});
+		add_or_update_node(&gossip_sync, &secp_ctx, &privkeys[0], NodeFeatures::from_le_bytes(id_to_feature_flags(1)), 0);
+
+		let htlc_min = 2_5165_8240;
+		let blinded_hints = vec![
+			(BlindedPayInfo {
+				fee_base_msat: 1_6778_3453,
+				fee_proportional_millionths: 0,
+				htlc_minimum_msat: htlc_min,
+				htlc_maximum_msat: htlc_min * 100,
+				cltv_expiry_delta: 10,
+				features: BlindedHopFeatures::empty(),
+			}, BlindedPath {
+				introduction_node_id: nodes[0],
+				blinding_point: ln_test_utils::pubkey(42),
+				blinded_hops: vec![
+					BlindedHop { blinded_node_id: ln_test_utils::pubkey(42 as u8), encrypted_payload: Vec::new() },
+					BlindedHop { blinded_node_id: ln_test_utils::pubkey(42 as u8), encrypted_payload: Vec::new() }
+				],
+			})
+		];
+		let bolt12_features: Bolt12InvoiceFeatures = channelmanager::provided_invoice_features(&config).to_context();
+		let payment_params = PaymentParameters::blinded(blinded_hints.clone())
+			.with_bolt12_features(bolt12_features.clone()).unwrap();
+		let route_params = RouteParameters::from_payment_params_and_value(
+			payment_params, amt_msat);
+		let netgraph = network_graph.read_only();
+
+		if let Err(LightningError { err, .. }) = get_route(
+			&our_id, &route_params, &netgraph, Some(&first_hops.iter().collect::<Vec<_>>()),
+			Arc::clone(&logger), &scorer, &ProbabilisticScoringFeeParameters::default(),
+			&random_seed_bytes
+		) {
+			assert_eq!(err, "Failed to find a path to the given destination");
+		} else { panic!() }
 	}
 }
 
