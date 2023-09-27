@@ -16,7 +16,7 @@ use bitcoin::{BlockHash, Txid};
 
 use crate::{io, log_error};
 use crate::alloc::string::ToString;
-use crate::prelude::{Vec, String};
+use crate::prelude::*;
 
 use crate::chain;
 use crate::chain::chaininterface::{BroadcasterInterface, FeeEstimator};
@@ -98,11 +98,11 @@ pub trait KVStore {
 	/// `namespace` and `sub_namespace`.
 	///
 	/// [`ErrorKind::NotFound`]: io::ErrorKind::NotFound
-	fn read(&self, namespace: &str, sub_namespace: &str, key: &str) -> io::Result<Vec<u8>>;
+	fn read(&self, namespace: &str, sub_namespace: &str, key: &str) -> Result<Vec<u8>, io::Error>;
 	/// Persists the given data under the given `key`.
 	///
 	/// Will create the given `namespace` and `sub_namespace` if not already present in the store.
-	fn write(&self, namespace: &str, sub_namespace: &str, key: &str, buf: &[u8]) -> io::Result<()>;
+	fn write(&self, namespace: &str, sub_namespace: &str, key: &str, buf: &[u8]) -> Result<(), io::Error>;
 	/// Removes any data that had previously been persisted under the given `key`.
 	///
 	/// If the `lazy` flag is set to `true`, the backend implementation might choose to lazily
@@ -117,12 +117,12 @@ pub trait KVStore {
 	///
 	/// Returns successfully if no data will be stored for the given `namespace`, `sub_namespace`, and
 	/// `key`, independently of whether it was present before its invokation or not.
-	fn remove(&self, namespace: &str, sub_namespace: &str, key: &str, lazy: bool) -> io::Result<()>;
+	fn remove(&self, namespace: &str, sub_namespace: &str, key: &str, lazy: bool) -> Result<(), io::Error>;
 	/// Returns a list of keys that are stored under the given `sub_namespace` in `namespace`.
 	///
 	/// Returns the keys in arbitrary order, so users requiring a particular order need to sort the
 	/// returned keys. Returns an empty list if `namespace` or `sub_namespace` is unknown.
-	fn list(&self, namespace: &str, sub_namespace: &str) -> io::Result<Vec<String>>;
+	fn list(&self, namespace: &str, sub_namespace: &str) -> Result<Vec<String>, io::Error>;
 }
 
 /// Trait that handles persisting a [`ChannelManager`], [`NetworkGraph`], and [`WriteableScore`] to disk.
