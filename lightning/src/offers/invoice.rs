@@ -561,7 +561,9 @@ macro_rules! unsigned_invoice_sign_method { ($self: ident, $self_type: ty $(, $s
 	/// Signs the [`TaggedHash`] of the invoice using the given function.
 	///
 	/// Note: The hash computation may have included unknown, odd TLV records.
-	pub fn sign<F: SignBolt12InvoiceFn>(
+	///
+	/// This is not exported to bindings users as functions aren't currently mapped.
+	pub(crate) fn sign<F: SignBolt12InvoiceFn>(
 		$($self_mut)* $self: $self_type, sign: F
 	) -> Result<Bolt12Invoice, SignError> {
 		let pubkey = $self.contents.fields().signing_pubkey;
