@@ -16,7 +16,7 @@ use bitcoin::{BlockHash, Txid};
 
 use crate::{io, log_error};
 use crate::alloc::string::ToString;
-use crate::prelude::{Vec, String};
+use crate::prelude::*;
 
 use crate::chain;
 use crate::chain::chaininterface::{BroadcasterInterface, FeeEstimator};
@@ -37,31 +37,31 @@ pub const KVSTORE_NAMESPACE_KEY_ALPHABET: &str = "abcdefghijklmnopqrstuvwxyzABCD
 /// The maximum number of characters namespaces and keys may have.
 pub const KVSTORE_NAMESPACE_KEY_MAX_LEN: usize = 120;
 
-/// The namespace under which the [`ChannelManager`] will be persisted.
-pub const CHANNEL_MANAGER_PERSISTENCE_NAMESPACE: &str = "";
-/// The sub-namespace under which the [`ChannelManager`] will be persisted.
-pub const CHANNEL_MANAGER_PERSISTENCE_SUB_NAMESPACE: &str = "";
+/// The primary namespace under which the [`ChannelManager`] will be persisted.
+pub const CHANNEL_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE: &str = "";
+/// The secondary namespace under which the [`ChannelManager`] will be persisted.
+pub const CHANNEL_MANAGER_PERSISTENCE_SECONDARY_NAMESPACE: &str = "";
 /// The key under which the [`ChannelManager`] will be persisted.
 pub const CHANNEL_MANAGER_PERSISTENCE_KEY: &str = "manager";
 
-/// The namespace under which [`ChannelMonitor`]s will be persisted.
-pub const CHANNEL_MONITOR_PERSISTENCE_NAMESPACE: &str = "monitors";
-/// The sub-namespace under which [`ChannelMonitor`]s will be persisted.
-pub const CHANNEL_MONITOR_PERSISTENCE_SUB_NAMESPACE: &str = "";
-/// The namespace under which [`ChannelMonitorUpdate`]s will be persisted.
-pub const CHANNEL_MONITOR_UPDATE_PERSISTENCE_NAMESPACE: &str = "monitor_updates";
+/// The primary namespace under which [`ChannelMonitor`]s will be persisted.
+pub const CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE: &str = "monitors";
+/// The secondary namespace under which [`ChannelMonitor`]s will be persisted.
+pub const CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE: &str = "";
+/// The primary namespace under which [`ChannelMonitorUpdate`]s will be persisted.
+pub const CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE: &str = "monitor_updates";
 
-/// The namespace under which the [`NetworkGraph`] will be persisted.
-pub const NETWORK_GRAPH_PERSISTENCE_NAMESPACE: &str = "";
-/// The sub-namespace under which the [`NetworkGraph`] will be persisted.
-pub const NETWORK_GRAPH_PERSISTENCE_SUB_NAMESPACE: &str = "";
+/// The primary namespace under which the [`NetworkGraph`] will be persisted.
+pub const NETWORK_GRAPH_PERSISTENCE_PRIMARY_NAMESPACE: &str = "";
+/// The secondary namespace under which the [`NetworkGraph`] will be persisted.
+pub const NETWORK_GRAPH_PERSISTENCE_SECONDARY_NAMESPACE: &str = "";
 /// The key under which the [`NetworkGraph`] will be persisted.
 pub const NETWORK_GRAPH_PERSISTENCE_KEY: &str = "network_graph";
 
-/// The namespace under which the [`WriteableScore`] will be persisted.
-pub const SCORER_PERSISTENCE_NAMESPACE: &str = "";
-/// The sub-namespace under which the [`WriteableScore`] will be persisted.
-pub const SCORER_PERSISTENCE_SUB_NAMESPACE: &str = "";
+/// The primary namespace under which the [`WriteableScore`] will be persisted.
+pub const SCORER_PERSISTENCE_PRIMARY_NAMESPACE: &str = "";
+/// The secondary namespace under which the [`WriteableScore`] will be persisted.
+pub const SCORER_PERSISTENCE_SECONDARY_NAMESPACE: &str = "";
 /// The key under which the [`WriteableScore`] will be persisted.
 pub const SCORER_PERSISTENCE_KEY: &str = "scorer";
 
@@ -74,35 +74,38 @@ pub const MONITOR_UPDATING_PERSISTER_PREPEND_SENTINEL: &[u8] = &[0xFF; 2];
 /// Provides an interface that allows storage and retrieval of persisted values that are associated
 /// with given keys.
 ///
-/// In order to avoid collisions the key space is segmented based on the given `namespace`s and
-/// `sub_namespace`s. Implementations of this trait are free to handle them in different ways, as
-/// long as per-namespace key uniqueness is asserted.
+/// In order to avoid collisions the key space is segmented based on the given `primary_namespace`s
+/// and `secondary_namespace`s. Implementations of this trait are free to handle them in different
+/// ways, as long as per-namespace key uniqueness is asserted.
 ///
 /// Keys and namespaces are required to be valid ASCII strings in the range of
 /// [`KVSTORE_NAMESPACE_KEY_ALPHABET`] and no longer than [`KVSTORE_NAMESPACE_KEY_MAX_LEN`]. Empty
-/// namespaces and sub-namespaces (`""`) are assumed to be a valid, however, if `namespace` is
-/// empty, `sub_namespace` is required to be empty, too. This means that concerns should always be
-/// separated by namespace first, before sub-namespaces are used. While the number of namespaces
-/// will be relatively small and is determined at compile time, there may be many sub-namespaces
-/// per namespace. Note that per-namespace uniqueness needs to also hold for keys *and*
-/// namespaces/sub-namespaces in any given namespace/sub-namespace, i.e., conflicts between keys
-/// and equally named namespaces/sub-namespaces must be avoided.
+/// primary namespaces and secondary namespaces (`""`) are assumed to be a valid, however, if
+/// `primary_namespace` is empty, `secondary_namespace` is required to be empty, too. This means
+/// that concerns should always be separated by primary namespace first, before secondary
+/// namespaces are used. While the number of primary namespaces will be relatively small and is
+/// determined at compile time, there may be many secondary namespaces per primary namespace. Note
+/// that per-namespace uniqueness needs to also hold for keys *and* namespaces in any given
+/// namespace, i.e., conflicts between keys and equally named
+/// primary namespaces/secondary namespaces must be avoided.
 ///
 /// **Note:** Users migrating custom persistence backends from the pre-v0.0.117 `KVStorePersister`
-/// interface can use a concatenation of `[{namespace}/[{sub_namespace}/]]{key}` to recover a `key` compatible with the
-/// data model previously assumed by `KVStorePersister::persist`.
+/// interface can use a concatenation of `[{primary_namespace}/[{secondary_namespace}/]]{key}` to
+/// recover a `key` compatible with the data model previously assumed by `KVStorePersister::persist`.
 pub trait KVStore {
-	/// Returns the data stored for the given `namespace`, `sub_namespace`, and `key`.
+	/// Returns the data stored for the given `primary_namespace`, `secondary_namespace`, and
+	/// `key`.
 	///
 	/// Returns an [`ErrorKind::NotFound`] if the given `key` could not be found in the given
-	/// `namespace` and `sub_namespace`.
+	/// `primary_namespace` and `secondary_namespace`.
 	///
 	/// [`ErrorKind::NotFound`]: io::ErrorKind::NotFound
-	fn read(&self, namespace: &str, sub_namespace: &str, key: &str) -> io::Result<Vec<u8>>;
+	fn read(&self, primary_namespace: &str, secondary_namespace: &str, key: &str) -> Result<Vec<u8>, io::Error>;
 	/// Persists the given data under the given `key`.
 	///
-	/// Will create the given `namespace` and `sub_namespace` if not already present in the store.
-	fn write(&self, namespace: &str, sub_namespace: &str, key: &str, buf: &[u8]) -> io::Result<()>;
+	/// Will create the given `primary_namespace` and `secondary_namespace` if not already present
+	/// in the store.
+	fn write(&self, primary_namespace: &str, secondary_namespace: &str, key: &str, buf: &[u8]) -> Result<(), io::Error>;
 	/// Removes any data that had previously been persisted under the given `key`.
 	///
 	/// If the `lazy` flag is set to `true`, the backend implementation might choose to lazily
@@ -115,14 +118,16 @@ pub trait KVStore {
 	/// potentially get lost on crash after the method returns. Therefore, this flag should only be
 	/// set for `remove` operations that can be safely replayed at a later time.
 	///
-	/// Returns successfully if no data will be stored for the given `namespace`, `sub_namespace`, and
-	/// `key`, independently of whether it was present before its invokation or not.
-	fn remove(&self, namespace: &str, sub_namespace: &str, key: &str, lazy: bool) -> io::Result<()>;
-	/// Returns a list of keys that are stored under the given `sub_namespace` in `namespace`.
+	/// Returns successfully if no data will be stored for the given `primary_namespace`,
+	/// `secondary_namespace`, and `key`, independently of whether it was present before its
+	/// invokation or not.
+	fn remove(&self, primary_namespace: &str, secondary_namespace: &str, key: &str, lazy: bool) -> Result<(), io::Error>;
+	/// Returns a list of keys that are stored under the given `secondary_namespace` in
+	/// `primary_namespace`.
 	///
 	/// Returns the keys in arbitrary order, so users requiring a particular order need to sort the
-	/// returned keys. Returns an empty list if `namespace` or `sub_namespace` is unknown.
-	fn list(&self, namespace: &str, sub_namespace: &str) -> io::Result<Vec<String>>;
+	/// returned keys. Returns an empty list if `primary_namespace` or `secondary_namespace` is unknown.
+	fn list(&self, primary_namespace: &str, secondary_namespace: &str) -> Result<Vec<String>, io::Error>;
 }
 
 /// Trait that handles persisting a [`ChannelManager`], [`NetworkGraph`], and [`WriteableScore`] to disk.
@@ -159,26 +164,26 @@ impl<'a, A: KVStore, M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Der
 {
 	/// Persist the given [`ChannelManager`] to disk, returning an error if persistence failed.
 	fn persist_manager(&self, channel_manager: &ChannelManager<M, T, ES, NS, SP, F, R, L>) -> Result<(), io::Error> {
-		self.write(CHANNEL_MANAGER_PERSISTENCE_NAMESPACE,
-				   CHANNEL_MANAGER_PERSISTENCE_SUB_NAMESPACE,
-				   CHANNEL_MANAGER_PERSISTENCE_KEY,
-				   &channel_manager.encode())
+		self.write(CHANNEL_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
+			CHANNEL_MANAGER_PERSISTENCE_SECONDARY_NAMESPACE,
+			CHANNEL_MANAGER_PERSISTENCE_KEY,
+			&channel_manager.encode())
 	}
 
 	/// Persist the given [`NetworkGraph`] to disk, returning an error if persistence failed.
 	fn persist_graph(&self, network_graph: &NetworkGraph<L>) -> Result<(), io::Error> {
-		self.write(NETWORK_GRAPH_PERSISTENCE_NAMESPACE,
-				   NETWORK_GRAPH_PERSISTENCE_SUB_NAMESPACE,
-				   NETWORK_GRAPH_PERSISTENCE_KEY,
-				   &network_graph.encode())
+		self.write(NETWORK_GRAPH_PERSISTENCE_PRIMARY_NAMESPACE,
+			NETWORK_GRAPH_PERSISTENCE_SECONDARY_NAMESPACE,
+			NETWORK_GRAPH_PERSISTENCE_KEY,
+			&network_graph.encode())
 	}
 
 	/// Persist the given [`WriteableScore`] to disk, returning an error if persistence failed.
 	fn persist_scorer(&self, scorer: &S) -> Result<(), io::Error> {
-		self.write(SCORER_PERSISTENCE_NAMESPACE,
-				   SCORER_PERSISTENCE_SUB_NAMESPACE,
-				   SCORER_PERSISTENCE_KEY,
-				   &scorer.encode())
+		self.write(SCORER_PERSISTENCE_PRIMARY_NAMESPACE,
+			SCORER_PERSISTENCE_SECONDARY_NAMESPACE,
+			SCORER_PERSISTENCE_KEY,
+			&scorer.encode())
 	}
 }
 
@@ -191,8 +196,8 @@ impl<ChannelSigner: WriteableEcdsaChannelSigner, K: KVStore> Persist<ChannelSign
 	fn persist_new_channel(&self, funding_txo: OutPoint, monitor: &ChannelMonitor<ChannelSigner>, _update_id: MonitorUpdateId) -> chain::ChannelMonitorUpdateStatus {
 		let key = format!("{}_{}", funding_txo.txid.to_hex(), funding_txo.index);
 		match self.write(
-			CHANNEL_MONITOR_PERSISTENCE_NAMESPACE,
-			CHANNEL_MONITOR_PERSISTENCE_SUB_NAMESPACE,
+			CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
+			CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
 			&key, &monitor.encode())
 		{
 			Ok(()) => chain::ChannelMonitorUpdateStatus::Completed,
@@ -203,8 +208,8 @@ impl<ChannelSigner: WriteableEcdsaChannelSigner, K: KVStore> Persist<ChannelSign
 	fn update_persisted_channel(&self, funding_txo: OutPoint, _update: Option<&ChannelMonitorUpdate>, monitor: &ChannelMonitor<ChannelSigner>, _update_id: MonitorUpdateId) -> chain::ChannelMonitorUpdateStatus {
 		let key = format!("{}_{}", funding_txo.txid.to_hex(), funding_txo.index);
 		match self.write(
-			CHANNEL_MONITOR_PERSISTENCE_NAMESPACE,
-			CHANNEL_MONITOR_PERSISTENCE_SUB_NAMESPACE,
+			CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
+			CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
 			&key, &monitor.encode())
 		{
 			Ok(()) => chain::ChannelMonitorUpdateStatus::Completed,
@@ -225,7 +230,7 @@ where
 	let mut res = Vec::new();
 
 	for stored_key in kv_store.list(
-		CHANNEL_MONITOR_PERSISTENCE_NAMESPACE, CHANNEL_MONITOR_PERSISTENCE_SUB_NAMESPACE)?
+		CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE, CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE)?
 	{
 		if stored_key.len() < 66 {
 			return Err(io::Error::new(
@@ -243,7 +248,7 @@ where
 
 		match <(BlockHash, ChannelMonitor<<SP::Target as SignerProvider>::Signer>)>::read(
 			&mut io::Cursor::new(
-				kv_store.read(CHANNEL_MONITOR_PERSISTENCE_NAMESPACE, CHANNEL_MONITOR_PERSISTENCE_SUB_NAMESPACE, &stored_key)?),
+				kv_store.read(CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE, CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE, &stored_key)?),
 			(&*entropy_source, &*signer_provider),
 		) {
 			Ok((block_hash, channel_monitor)) => {
@@ -294,15 +299,15 @@ where
 ///   - [`Persist::persist_new_channel`], which persists whole [`ChannelMonitor`]s.
 ///   - [`Persist::update_persisted_channel`], which persists only a [`ChannelMonitorUpdate`]
 ///
-/// Whole [`ChannelMonitor`]s are stored in the [`CHANNEL_MONITOR_PERSISTENCE_NAMESPACE`], using the
-/// familiar encoding of an [`OutPoint`] (for example, `[SOME-64-CHAR-HEX-STRING]_1`).
+/// Whole [`ChannelMonitor`]s are stored in the [`CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE`],
+/// using the familiar encoding of an [`OutPoint`] (for example, `[SOME-64-CHAR-HEX-STRING]_1`).
 ///
-/// Each [`ChannelMonitorUpdate`] is stored in a dynamic sub-namespace, as follows:
+/// Each [`ChannelMonitorUpdate`] is stored in a dynamic secondary namespace, as follows:
 ///
-///   - namespace: [`CHANNEL_MONITOR_UPDATE_PERSISTENCE_NAMESPACE`]
-///   - sub-namespace: [the monitor's encoded outpoint name]
+///   - primary namespace: [`CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE`]
+///   - secondary namespace: [the monitor's encoded outpoint name]
 ///
-/// Under that sub-namespace, each update is stored with a number string, like `21`, which
+/// Under that secondary namespace, each update is stored with a number string, like `21`, which
 /// represents its `update_id` value.
 ///
 /// For example, consider this channel, named for its transaction ID and index, or [`OutPoint`]:
@@ -312,14 +317,14 @@ where
 ///
 /// Full channel monitors would be stored at a single key:
 ///
-/// `[CHANNEL_MONITOR_PERSISTENCE_NAMESPACE]/deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef_1`
+/// `[CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE]/deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef_1`
 ///
-/// Updates would be stored as follows (with `/` delimiting namespace/sub-namespace/key):
+/// Updates would be stored as follows (with `/` delimiting primary_namespace/secondary_namespace/key):
 ///
 /// ```text
-/// [CHANNEL_MONITOR_UPDATE_PERSISTENCE_NAMESPACE]/deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef_1/1
-/// [CHANNEL_MONITOR_UPDATE_PERSISTENCE_NAMESPACE]/deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef_1/2
-/// [CHANNEL_MONITOR_UPDATE_PERSISTENCE_NAMESPACE]/deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef_1/3
+/// [CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE]/deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef_1/1
+/// [CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE]/deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef_1/2
+/// [CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE]/deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef_1/3
 /// ```
 /// ... and so on.
 ///
@@ -421,8 +426,8 @@ where
 		F::Target: FeeEstimator,
 	{
 		let monitor_list = self.kv_store.list(
-			CHANNEL_MONITOR_PERSISTENCE_NAMESPACE,
-			CHANNEL_MONITOR_PERSISTENCE_SUB_NAMESPACE,
+			CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
+			CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
 		)?;
 		let mut res = Vec::with_capacity(monitor_list.len());
 		for monitor_key in monitor_list {
@@ -500,8 +505,8 @@ where
 	) -> Result<(BlockHash, ChannelMonitor<<SP::Target as SignerProvider>::Signer>), io::Error> {
 		let outpoint: OutPoint = monitor_name.try_into()?;
 		let mut monitor_cursor = io::Cursor::new(self.kv_store.read(
-			CHANNEL_MONITOR_PERSISTENCE_NAMESPACE,
-			CHANNEL_MONITOR_PERSISTENCE_SUB_NAMESPACE,
+			CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
+			CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
 			monitor_name.as_str(),
 		)?);
 		// Discard the sentinel bytes if found.
@@ -546,7 +551,7 @@ where
 		&self, monitor_name: &MonitorName, update_name: &UpdateName,
 	) -> Result<ChannelMonitorUpdate, io::Error> {
 		let update_bytes = self.kv_store.read(
-			CHANNEL_MONITOR_UPDATE_PERSISTENCE_NAMESPACE,
+			CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE,
 			monitor_name.as_str(),
 			update_name.as_str(),
 		)?;
@@ -554,7 +559,7 @@ where
 			log_error!(
 				self.logger,
 				"Failed to read ChannelMonitorUpdate {}/{}/{}, reason: {}",
-				CHANNEL_MONITOR_UPDATE_PERSISTENCE_NAMESPACE,
+				CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE,
 				monitor_name.as_str(),
 				update_name.as_str(),
 				e,
@@ -571,21 +576,21 @@ where
 	/// be passed to [`KVStore::remove`].
 	pub fn cleanup_stale_updates(&self, lazy: bool) -> Result<(), io::Error> {
 		let monitor_keys = self.kv_store.list(
-			CHANNEL_MONITOR_PERSISTENCE_NAMESPACE,
-			CHANNEL_MONITOR_PERSISTENCE_SUB_NAMESPACE,
+			CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
+			CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
 		)?;
 		for monitor_key in monitor_keys {
 			let monitor_name = MonitorName::new(monitor_key)?;
 			let (_, current_monitor) = self.read_monitor(&monitor_name)?;
 			let updates = self
 				.kv_store
-				.list(CHANNEL_MONITOR_UPDATE_PERSISTENCE_NAMESPACE, monitor_name.as_str())?;
+				.list(CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE, monitor_name.as_str())?;
 			for update in updates {
 				let update_name = UpdateName::new(update)?;
 				// if the update_id is lower than the stored monitor, delete
 				if update_name.0 <= current_monitor.get_latest_update_id() {
 					self.kv_store.remove(
-						CHANNEL_MONITOR_UPDATE_PERSISTENCE_NAMESPACE,
+						CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE,
 						monitor_name.as_str(),
 						update_name.as_str(),
 						lazy,
@@ -638,8 +643,8 @@ where
 		monitor_bytes.extend_from_slice(MONITOR_UPDATING_PERSISTER_PREPEND_SENTINEL);
 		monitor.write(&mut monitor_bytes).unwrap();
 		match self.kv_store.write(
-			CHANNEL_MONITOR_PERSISTENCE_NAMESPACE,
-			CHANNEL_MONITOR_PERSISTENCE_SUB_NAMESPACE,
+			CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
+			CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
 			monitor_name.as_str(),
 			&monitor_bytes,
 		) {
@@ -683,7 +688,7 @@ where
 							// stale updates, so do nothing.
 						}
 						if let Err(e) = self.kv_store.remove(
-							CHANNEL_MONITOR_UPDATE_PERSISTENCE_NAMESPACE,
+							CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE,
 							monitor_name.as_str(),
 							update_name.as_str(),
 							true,
@@ -703,8 +708,8 @@ where
 				log_error!(
 					self.logger,
 					"error writing channel monitor {}/{}/{} reason: {}",
-					CHANNEL_MONITOR_PERSISTENCE_NAMESPACE,
-					CHANNEL_MONITOR_PERSISTENCE_SUB_NAMESPACE,
+					CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
+					CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
 					monitor_name.as_str(),
 					e
 				);
@@ -735,7 +740,7 @@ where
 				let monitor_name = MonitorName::from(funding_txo);
 				let update_name = UpdateName::from(update.update_id);
 				match self.kv_store.write(
-					CHANNEL_MONITOR_UPDATE_PERSISTENCE_NAMESPACE,
+					CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE,
 					monitor_name.as_str(),
 					update_name.as_str(),
 					&update.encode(),
@@ -745,7 +750,7 @@ where
 						log_error!(
 							self.logger,
 							"error writing channel monitor update {}/{}/{} reason: {}",
-							CHANNEL_MONITOR_UPDATE_PERSISTENCE_NAMESPACE,
+							CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE,
 							monitor_name.as_str(),
 							update_name.as_str(),
 							e
@@ -965,7 +970,7 @@ mod tests {
 					let (_, cm_0) = persister_0.read_monitor(&monitor_name).unwrap();
 					if cm_0.get_latest_update_id() == $expected_update_id {
 						assert_eq!(
-							persister_0.kv_store.list(CHANNEL_MONITOR_UPDATE_PERSISTENCE_NAMESPACE,
+							persister_0.kv_store.list(CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE,
 								monitor_name.as_str()).unwrap().len(),
 							0,
 							"updates stored when they shouldn't be in persister 0"
@@ -981,7 +986,7 @@ mod tests {
 					let (_, cm_1) = persister_1.read_monitor(&monitor_name).unwrap();
 					if cm_1.get_latest_update_id() == $expected_update_id {
 						assert_eq!(
-							persister_1.kv_store.list(CHANNEL_MONITOR_UPDATE_PERSISTENCE_NAMESPACE,
+							persister_1.kv_store.list(CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE,
 								monitor_name.as_str()).unwrap().len(),
 							0,
 							"updates stored when they shouldn't be in persister 1"
@@ -1042,8 +1047,8 @@ mod tests {
 		let (_, monitor) = &persisted_chan_data[0];
 		let monitor_name = MonitorName::from(monitor.get_funding_txo().0);
 		// The channel should have 0 updates, as it wrote a full monitor and consolidated.
-		assert_eq!(persister_0.kv_store.list(CHANNEL_MONITOR_UPDATE_PERSISTENCE_NAMESPACE, monitor_name.as_str()).unwrap().len(), 0);
-		assert_eq!(persister_1.kv_store.list(CHANNEL_MONITOR_UPDATE_PERSISTENCE_NAMESPACE, monitor_name.as_str()).unwrap().len(), 0);
+		assert_eq!(persister_0.kv_store.list(CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE, monitor_name.as_str()).unwrap().len(), 0);
+		assert_eq!(persister_1.kv_store.list(CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE, monitor_name.as_str()).unwrap().len(), 0);
 	}
 
 	// Test that if the `MonitorUpdatingPersister`'s can't actually write, trying to persist a
@@ -1162,7 +1167,7 @@ mod tests {
 		let monitor_name = MonitorName::from(monitor.get_funding_txo().0);
 		persister_0
 			.kv_store
-			.write(CHANNEL_MONITOR_UPDATE_PERSISTENCE_NAMESPACE, monitor_name.as_str(), UpdateName::from(1).as_str(), &[0u8; 1])
+			.write(CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE, monitor_name.as_str(), UpdateName::from(1).as_str(), &[0u8; 1])
 			.unwrap();
 
 		// Do the stale update cleanup
@@ -1171,7 +1176,7 @@ mod tests {
 		// Confirm the stale update is unreadable/gone
 		assert!(persister_0
 			.kv_store
-			.read(CHANNEL_MONITOR_UPDATE_PERSISTENCE_NAMESPACE, monitor_name.as_str(), UpdateName::from(1).as_str())
+			.read(CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE, monitor_name.as_str(), UpdateName::from(1).as_str())
 			.is_err());
 
 		// Force close.
@@ -1183,7 +1188,7 @@ mod tests {
 		// Write an update near u64::MAX
 		persister_0
 			.kv_store
-			.write(CHANNEL_MONITOR_UPDATE_PERSISTENCE_NAMESPACE, monitor_name.as_str(), UpdateName::from(u64::MAX - 1).as_str(), &[0u8; 1])
+			.write(CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE, monitor_name.as_str(), UpdateName::from(u64::MAX - 1).as_str(), &[0u8; 1])
 			.unwrap();
 
 		// Do the stale update cleanup
@@ -1192,7 +1197,7 @@ mod tests {
 		// Confirm the stale update is unreadable/gone
 		assert!(persister_0
 			.kv_store
-			.read(CHANNEL_MONITOR_UPDATE_PERSISTENCE_NAMESPACE, monitor_name.as_str(), UpdateName::from(u64::MAX - 1).as_str())
+			.read(CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE, monitor_name.as_str(), UpdateName::from(u64::MAX - 1).as_str())
 			.is_err());
 	}
 }
