@@ -868,7 +868,10 @@ mod tests {
 	use lightning::util::config::UserConfig;
 	use lightning::util::ser::Writeable;
 	use lightning::util::test_utils;
-	use lightning::util::persist::{KVStore, CHANNEL_MANAGER_PERSISTENCE_NAMESPACE, CHANNEL_MANAGER_PERSISTENCE_SUB_NAMESPACE, CHANNEL_MANAGER_PERSISTENCE_KEY, NETWORK_GRAPH_PERSISTENCE_NAMESPACE, NETWORK_GRAPH_PERSISTENCE_SUB_NAMESPACE, NETWORK_GRAPH_PERSISTENCE_KEY, SCORER_PERSISTENCE_NAMESPACE, SCORER_PERSISTENCE_SUB_NAMESPACE, SCORER_PERSISTENCE_KEY};
+	use lightning::util::persist::{KVStore,
+		CHANNEL_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE, CHANNEL_MANAGER_PERSISTENCE_SECONDARY_NAMESPACE, CHANNEL_MANAGER_PERSISTENCE_KEY,
+		NETWORK_GRAPH_PERSISTENCE_PRIMARY_NAMESPACE, NETWORK_GRAPH_PERSISTENCE_SECONDARY_NAMESPACE, NETWORK_GRAPH_PERSISTENCE_KEY,
+		SCORER_PERSISTENCE_PRIMARY_NAMESPACE, SCORER_PERSISTENCE_SECONDARY_NAMESPACE, SCORER_PERSISTENCE_KEY};
 	use lightning_persister::fs_store::FilesystemStore;
 	use std::collections::VecDeque;
 	use std::{fs, env};
@@ -988,8 +991,8 @@ mod tests {
 		}
 
 		fn write(&self, namespace: &str, sub_namespace: &str, key: &str, buf: &[u8]) -> lightning::io::Result<()> {
-			if namespace == CHANNEL_MANAGER_PERSISTENCE_NAMESPACE &&
-				sub_namespace == CHANNEL_MANAGER_PERSISTENCE_SUB_NAMESPACE &&
+			if namespace == CHANNEL_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE &&
+				sub_namespace == CHANNEL_MANAGER_PERSISTENCE_SECONDARY_NAMESPACE &&
 				key == CHANNEL_MANAGER_PERSISTENCE_KEY
 			{
 				if let Some((error, message)) = self.manager_error {
@@ -997,8 +1000,8 @@ mod tests {
 				}
 			}
 
-			if namespace == NETWORK_GRAPH_PERSISTENCE_NAMESPACE &&
-				sub_namespace == NETWORK_GRAPH_PERSISTENCE_SUB_NAMESPACE &&
+			if namespace == NETWORK_GRAPH_PERSISTENCE_PRIMARY_NAMESPACE &&
+				sub_namespace == NETWORK_GRAPH_PERSISTENCE_SECONDARY_NAMESPACE &&
 				key == NETWORK_GRAPH_PERSISTENCE_KEY
 			{
 				if let Some(sender) = &self.graph_persistence_notifier {
@@ -1013,8 +1016,8 @@ mod tests {
 				}
 			}
 
-			if namespace == SCORER_PERSISTENCE_NAMESPACE &&
-				sub_namespace == SCORER_PERSISTENCE_SUB_NAMESPACE &&
+			if namespace == SCORER_PERSISTENCE_PRIMARY_NAMESPACE &&
+				sub_namespace == SCORER_PERSISTENCE_SECONDARY_NAMESPACE &&
 				key == SCORER_PERSISTENCE_KEY
 			{
 				if let Some((error, message)) = self.scorer_error {
