@@ -440,12 +440,12 @@ impl TestStore {
 }
 
 impl KVStore for TestStore {
-	fn read(&self, namespace: &str, sub_namespace: &str, key: &str) -> io::Result<Vec<u8>> {
+	fn read(&self, primary_namespace: &str, secondary_namespace: &str, key: &str) -> io::Result<Vec<u8>> {
 		let persisted_lock = self.persisted_bytes.lock().unwrap();
-		let prefixed = if sub_namespace.is_empty() {
-			namespace.to_string()
+		let prefixed = if secondary_namespace.is_empty() {
+			primary_namespace.to_string()
 		} else {
-			format!("{}/{}", namespace, sub_namespace)
+			format!("{}/{}", primary_namespace, secondary_namespace)
 		};
 
 		if let Some(outer_ref) = persisted_lock.get(&prefixed) {
@@ -460,7 +460,7 @@ impl KVStore for TestStore {
 		}
 	}
 
-	fn write(&self, namespace: &str, sub_namespace: &str, key: &str, buf: &[u8]) -> io::Result<()> {
+	fn write(&self, primary_namespace: &str, secondary_namespace: &str, key: &str, buf: &[u8]) -> io::Result<()> {
 		if self.read_only {
 			return Err(io::Error::new(
 				io::ErrorKind::PermissionDenied,
@@ -469,10 +469,10 @@ impl KVStore for TestStore {
 		}
 		let mut persisted_lock = self.persisted_bytes.lock().unwrap();
 
-		let prefixed = if sub_namespace.is_empty() {
-			namespace.to_string()
+		let prefixed = if secondary_namespace.is_empty() {
+			primary_namespace.to_string()
 		} else {
-			format!("{}/{}", namespace, sub_namespace)
+			format!("{}/{}", primary_namespace, secondary_namespace)
 		};
 		let outer_e = persisted_lock.entry(prefixed).or_insert(HashMap::new());
 		let mut bytes = Vec::new();
@@ -481,7 +481,7 @@ impl KVStore for TestStore {
 		Ok(())
 	}
 
-	fn remove(&self, namespace: &str, sub_namespace: &str, key: &str, _lazy: bool) -> io::Result<()> {
+	fn remove(&self, primary_namespace: &str, secondary_namespace: &str, key: &str, _lazy: bool) -> io::Result<()> {
 		if self.read_only {
 			return Err(io::Error::new(
 				io::ErrorKind::PermissionDenied,
@@ -491,10 +491,10 @@ impl KVStore for TestStore {
 
 		let mut persisted_lock = self.persisted_bytes.lock().unwrap();
 
-		let prefixed = if sub_namespace.is_empty() {
-			namespace.to_string()
+		let prefixed = if secondary_namespace.is_empty() {
+			primary_namespace.to_string()
 		} else {
-			format!("{}/{}", namespace, sub_namespace)
+			format!("{}/{}", primary_namespace, secondary_namespace)
 		};
 		if let Some(outer_ref) = persisted_lock.get_mut(&prefixed) {
 				outer_ref.remove(&key.to_string());
@@ -503,13 +503,13 @@ impl KVStore for TestStore {
 		Ok(())
 	}
 
-	fn list(&self, namespace: &str, sub_namespace: &str) -> io::Result<Vec<String>> {
+	fn list(&self, primary_namespace: &str, secondary_namespace: &str) -> io::Result<Vec<String>> {
 		let mut persisted_lock = self.persisted_bytes.lock().unwrap();
 
-		let prefixed = if sub_namespace.is_empty() {
-			namespace.to_string()
+		let prefixed = if secondary_namespace.is_empty() {
+			primary_namespace.to_string()
 		} else {
-			format!("{}/{}", namespace, sub_namespace)
+			format!("{}/{}", primary_namespace, secondary_namespace)
 		};
 		match persisted_lock.entry(prefixed) {
 			hash_map::Entry::Occupied(e) => Ok(e.get().keys().cloned().collect()),

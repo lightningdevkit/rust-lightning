@@ -506,10 +506,10 @@ use core::task;
 /// # use lightning_background_processor::{process_events_async, GossipSync};
 /// # struct MyStore {}
 /// # impl lightning::util::persist::KVStore for MyStore {
-/// #     fn read(&self, namespace: &str, sub_namespace: &str, key: &str) -> io::Result<Vec<u8>> { Ok(Vec::new()) }
-/// #     fn write(&self, namespace: &str, sub_namespace: &str, key: &str, buf: &[u8]) -> io::Result<()> { Ok(()) }
-/// #     fn remove(&self, namespace: &str, sub_namespace: &str, key: &str, lazy: bool) -> io::Result<()> { Ok(()) }
-/// #     fn list(&self, namespace: &str, sub_namespace: &str) -> io::Result<Vec<String>> { Ok(Vec::new()) }
+/// #     fn read(&self, primary_namespace: &str, secondary_namespace: &str, key: &str) -> io::Result<Vec<u8>> { Ok(Vec::new()) }
+/// #     fn write(&self, primary_namespace: &str, secondary_namespace: &str, key: &str, buf: &[u8]) -> io::Result<()> { Ok(()) }
+/// #     fn remove(&self, primary_namespace: &str, secondary_namespace: &str, key: &str, lazy: bool) -> io::Result<()> { Ok(()) }
+/// #     fn list(&self, primary_namespace: &str, secondary_namespace: &str) -> io::Result<Vec<String>> { Ok(Vec::new()) }
 /// # }
 /// # struct MyEventHandler {}
 /// # impl MyEventHandler {
@@ -986,13 +986,13 @@ mod tests {
 	}
 
 	impl KVStore for Persister {
-		fn read(&self, namespace: &str, sub_namespace: &str, key: &str) -> lightning::io::Result<Vec<u8>> {
-			self.kv_store.read(namespace, sub_namespace, key)
+		fn read(&self, primary_namespace: &str, secondary_namespace: &str, key: &str) -> lightning::io::Result<Vec<u8>> {
+			self.kv_store.read(primary_namespace, secondary_namespace, key)
 		}
 
-		fn write(&self, namespace: &str, sub_namespace: &str, key: &str, buf: &[u8]) -> lightning::io::Result<()> {
-			if namespace == CHANNEL_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE &&
-				sub_namespace == CHANNEL_MANAGER_PERSISTENCE_SECONDARY_NAMESPACE &&
+		fn write(&self, primary_namespace: &str, secondary_namespace: &str, key: &str, buf: &[u8]) -> lightning::io::Result<()> {
+			if primary_namespace == CHANNEL_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE &&
+				secondary_namespace == CHANNEL_MANAGER_PERSISTENCE_SECONDARY_NAMESPACE &&
 				key == CHANNEL_MANAGER_PERSISTENCE_KEY
 			{
 				if let Some((error, message)) = self.manager_error {
@@ -1000,8 +1000,8 @@ mod tests {
 				}
 			}
 
-			if namespace == NETWORK_GRAPH_PERSISTENCE_PRIMARY_NAMESPACE &&
-				sub_namespace == NETWORK_GRAPH_PERSISTENCE_SECONDARY_NAMESPACE &&
+			if primary_namespace == NETWORK_GRAPH_PERSISTENCE_PRIMARY_NAMESPACE &&
+				secondary_namespace == NETWORK_GRAPH_PERSISTENCE_SECONDARY_NAMESPACE &&
 				key == NETWORK_GRAPH_PERSISTENCE_KEY
 			{
 				if let Some(sender) = &self.graph_persistence_notifier {
@@ -1016,8 +1016,8 @@ mod tests {
 				}
 			}
 
-			if namespace == SCORER_PERSISTENCE_PRIMARY_NAMESPACE &&
-				sub_namespace == SCORER_PERSISTENCE_SECONDARY_NAMESPACE &&
+			if primary_namespace == SCORER_PERSISTENCE_PRIMARY_NAMESPACE &&
+				secondary_namespace == SCORER_PERSISTENCE_SECONDARY_NAMESPACE &&
 				key == SCORER_PERSISTENCE_KEY
 			{
 				if let Some((error, message)) = self.scorer_error {
@@ -1025,15 +1025,15 @@ mod tests {
 				}
 			}
 
-			self.kv_store.write(namespace, sub_namespace, key, buf)
+			self.kv_store.write(primary_namespace, secondary_namespace, key, buf)
 		}
 
-		fn remove(&self, namespace: &str, sub_namespace: &str, key: &str, lazy: bool) -> lightning::io::Result<()> {
-			self.kv_store.remove(namespace, sub_namespace, key, lazy)
+		fn remove(&self, primary_namespace: &str, secondary_namespace: &str, key: &str, lazy: bool) -> lightning::io::Result<()> {
+			self.kv_store.remove(primary_namespace, secondary_namespace, key, lazy)
 		}
 
-		fn list(&self, namespace: &str, sub_namespace: &str) -> lightning::io::Result<Vec<String>> {
-			self.kv_store.list(namespace, sub_namespace)
+		fn list(&self, primary_namespace: &str, secondary_namespace: &str) -> lightning::io::Result<Vec<String>> {
+			self.kv_store.list(primary_namespace, secondary_namespace)
 		}
 	}
 
