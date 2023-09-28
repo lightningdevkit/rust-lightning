@@ -402,11 +402,13 @@ fn do_test_claim_value_force_close(anchors: bool, prev_commitment_tx: bool) {
 		amount_satoshis: 3_000,
 		claimable_height: htlc_cltv_timeout,
 		payment_hash,
+		outbound_payment: true,
 	};
 	let sent_htlc_timeout_balance = Balance::MaybeTimeoutClaimableHTLC {
 		amount_satoshis: 4_000,
 		claimable_height: htlc_cltv_timeout,
 		payment_hash: timeout_payment_hash,
+		outbound_payment: true,
 	};
 	let received_htlc_balance = Balance::MaybePreimageClaimableHTLC {
 		amount_satoshis: 3_000,
@@ -803,11 +805,13 @@ fn do_test_balances_on_local_commitment_htlcs(anchors: bool) {
 		amount_satoshis: 10_000,
 		claimable_height: htlc_cltv_timeout,
 		payment_hash,
+		outbound_payment: true,
 	};
 	let htlc_balance_unknown_preimage = Balance::MaybeTimeoutClaimableHTLC {
 		amount_satoshis: 20_000,
 		claimable_height: htlc_cltv_timeout,
 		payment_hash: payment_hash_2,
+		outbound_payment: true,
 	};
 
 	let commitment_tx_fee = chan_feerate *
@@ -950,6 +954,7 @@ fn test_no_preimage_inbound_htlc_balances() {
 		amount_satoshis: 10_000,
 		claimable_height: htlc_cltv_timeout,
 		payment_hash: to_b_failed_payment_hash,
+		outbound_payment: true,
 	};
 	let a_received_htlc_balance = Balance::MaybePreimageClaimableHTLC {
 		amount_satoshis: 20_000,
@@ -965,6 +970,7 @@ fn test_no_preimage_inbound_htlc_balances() {
 		amount_satoshis: 20_000,
 		claimable_height: htlc_cltv_timeout,
 		payment_hash: to_a_failed_payment_hash,
+		outbound_payment: true,
 	};
 
 	// Both A and B will have an HTLC that's claimable on timeout and one that's claimable if they
@@ -1261,14 +1267,17 @@ fn do_test_revoked_counterparty_commitment_balances(anchors: bool, confirm_htlc_
 			amount_satoshis: 2_000,
 			claimable_height: missing_htlc_cltv_timeout,
 			payment_hash: missing_htlc_payment_hash,
+			outbound_payment: true,
 		}, Balance::MaybeTimeoutClaimableHTLC {
 			amount_satoshis: 4_000,
 			claimable_height: htlc_cltv_timeout,
 			payment_hash: timeout_payment_hash,
+			outbound_payment: true,
 		}, Balance::MaybeTimeoutClaimableHTLC {
 			amount_satoshis: 5_000,
 			claimable_height: live_htlc_cltv_timeout,
 			payment_hash: live_payment_hash,
+			outbound_payment: true,
 		}]),
 		sorted_vec(nodes[1].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances()));
 
@@ -1811,10 +1820,12 @@ fn do_test_revoked_counterparty_aggregated_claims(anchors: bool) {
 			amount_satoshis: 4_000,
 			claimable_height: htlc_cltv_timeout,
 			payment_hash: revoked_payment_hash,
+			outbound_payment: true,
 		}, Balance::MaybeTimeoutClaimableHTLC {
 			amount_satoshis: 3_000,
 			claimable_height: htlc_cltv_timeout,
 			payment_hash: claimed_payment_hash,
+			outbound_payment: true,
 		}]),
 		sorted_vec(nodes[1].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances()));
 
