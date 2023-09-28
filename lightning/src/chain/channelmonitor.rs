@@ -1696,6 +1696,16 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 			Vec::new()
 		}
 	}
+
+	#[cfg(test)]
+	pub fn get_counterparty_payment_script(&self) -> Script{
+		self.inner.lock().unwrap().counterparty_payment_script.clone()
+	}
+
+	#[cfg(test)]
+	pub fn set_counterparty_payment_script(&self, script: Script) {
+		self.inner.lock().unwrap().counterparty_payment_script = script;
+	}
 }
 
 impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
@@ -4146,7 +4156,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 			1 => { None },
 			_ => return Err(DecodeError::InvalidValue),
 		};
-		let counterparty_payment_script = Readable::read(reader)?;
+		let mut counterparty_payment_script: Script = Readable::read(reader)?;
 		let shutdown_script = {
 			let script = <Script as Readable>::read(reader)?;
 			if script.is_empty() { None } else { Some(script) }
@@ -4346,6 +4356,17 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 			(15, counterparty_fulfilled_htlcs, option),
 			(17, initial_counterparty_commitment_info, option),
 		});
+
+		// Monitors for anchor outputs channels opened in v0.0.116 suffered from a bug in which the
+		// wrong `counterparty_payment_script` was being tracked. Fix it now on deserialization to
+		// give them a chance to recognize the spendable output.
+		if onchain_tx_handler.channel_type_features().supports_anchors_zero_fee_htlc_tx() &&
+			counterparty_payment_script.is_v0_p2wpkh()
+		{
+			let payment_point = onchain_tx_handler.channel_transaction_parameters.holder_pubkeys.payment_point;
+			counterparty_payment_script =
+				chan_utils::get_to_countersignatory_with_anchors_redeemscript(&payment_point).to_v0_p2wsh();
+		}
 
 		Ok((best_block.block_hash(), ChannelMonitor::from_impl(ChannelMonitorImpl {
 			latest_update_id,
