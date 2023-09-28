@@ -543,18 +543,17 @@ pub(super) struct ReestablishResponses {
 	pub shutdown_msg: Option<msgs::Shutdown>,
 }
 
-/// The return type of `force_shutdown`
-///
-/// Contains a tuple with the following:
-/// - An optional (counterparty_node_id, funding_txo, [`ChannelMonitorUpdate`]) tuple
-/// - A list of HTLCs to fail back in the form of the (source, payment hash, and this channel's
-/// counterparty_node_id and channel_id).
-/// - An optional transaction id identifying a corresponding batch funding transaction.
-pub(crate) type ShutdownResult = (
-	Option<(PublicKey, OutPoint, ChannelMonitorUpdate)>,
-	Vec<(HTLCSource, PaymentHash, PublicKey, ChannelId)>,
-	Option<Txid>
-);
+/// The result of a shutdown that should be handled.
+#[must_use]
+pub(crate) struct ShutdownResult {
+	/// A channel monitor update to apply.
+	pub(crate) monitor_update: Option<(PublicKey, OutPoint, ChannelMonitorUpdate)>,
+	/// A list of dropped outbound HTLCs that can safely be failed backwards immediately.
+	pub(crate) dropped_outbound_htlcs: Vec<(HTLCSource, PaymentHash, PublicKey, ChannelId)>,
+	/// An unbroadcasted batch funding transaction id. The closure of this channel should be
+	/// propagated to the remainder of the batch.
+	pub(crate) unbroadcasted_batch_funding_txid: Option<Txid>,
+}
 
 /// If the majority of the channels funds are to the fundee and the initiator holds only just
 /// enough funds to cover their reserve value, channels are at risk of getting "stuck". Because the
@@ -2064,7 +2063,11 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 
 		self.channel_state = ChannelState::ShutdownComplete as u32;
 		self.update_time_counter += 1;
-		(monitor_update, dropped_outbound_htlcs, unbroadcasted_batch_funding_txid)
+		ShutdownResult {
+			monitor_update,
+			dropped_outbound_htlcs,
+			unbroadcasted_batch_funding_txid,
+		}
 	}
 }
 
@@ -4219,18 +4222,18 @@ impl<SP: Deref> Channel<SP> where
 
 	pub fn maybe_propose_closing_signed<F: Deref, L: Deref>(
 		&mut self, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L)
-		-> Result<(Option<msgs::ClosingSigned>, Option<Transaction>), ChannelError>
+		-> Result<(Option<msgs::ClosingSigned>, Option<Transaction>, Option<ShutdownResult>), ChannelError>
 		where F::Target: FeeEstimator, L::Target: Logger
 	{
 		if self.context.last_sent_closing_fee.is_some() || !self.closing_negotiation_ready() {
-			return Ok((None, None));
+			return Ok((None, None, None));
 		}
 
 		if !self.context.is_outbound() {
 			if let Some(msg) = &self.context.pending_counterparty_closing_signed.take() {
 				return self.closing_signed(fee_estimator, &msg);
 			}
-			return Ok((None, None));
+			return Ok((None, None, None));
 		}
 
 		let (our_min_fee, our_max_fee) = self.calculate_closing_fee_limits(fee_estimator);
@@ -4255,7 +4258,7 @@ impl<SP: Deref> Channel<SP> where
 						min_fee_satoshis: our_min_fee,
 						max_fee_satoshis: our_max_fee,
 					}),
-				}), None))
+				}), None, None))
 			}
 		}
 	}
@@ -4404,7 +4407,7 @@ impl<SP: Deref> Channel<SP> where
 
 	pub fn closing_signed<F: Deref>(
 		&mut self, fee_estimator: &LowerBoundedFeeEstimator<F>, msg: &msgs::ClosingSigned)
-		-> Result<(Option<msgs::ClosingSigned>, Option<Transaction>), ChannelError>
+		-> Result<(Option<msgs::ClosingSigned>, Option<Transaction>, Option<ShutdownResult>), ChannelError>
 		where F::Target: FeeEstimator
 	{
 		if self.context.channel_state & BOTH_SIDES_SHUTDOWN_MASK != BOTH_SIDES_SHUTDOWN_MASK {
@@ -4426,7 +4429,7 @@ impl<SP: Deref> Channel<SP> where
 
 		if self.context.channel_state & ChannelState::MonitorUpdateInProgress as u32 != 0 {
 			self.context.pending_counterparty_closing_signed = Some(msg.clone());
-			return Ok((None, None));
+			return Ok((None, None, None));
 		}
 
 		let funding_redeemscript = self.context.get_funding_redeemscript();
@@ -4456,10 +4459,15 @@ impl<SP: Deref> Channel<SP> where
 		assert!(self.context.shutdown_scriptpubkey.is_some());
 		if let Some((last_fee, sig)) = self.context.last_sent_closing_fee {
 			if last_fee == msg.fee_satoshis {
+				let shutdown_result = ShutdownResult {
+					monitor_update: None,
+					dropped_outbound_htlcs: Vec::new(),
+					unbroadcasted_batch_funding_txid: self.context.unbroadcasted_batch_funding_txid(),
+				};
 				let tx = self.build_signed_closing_transaction(&mut closing_tx, &msg.signature, &sig);
 				self.context.channel_state = ChannelState::ShutdownComplete as u32;
 				self.context.update_time_counter += 1;
-				return Ok((None, Some(tx)));
+				return Ok((None, Some(tx), Some(shutdown_result)));
 			}
 		}
 
@@ -4478,13 +4486,19 @@ impl<SP: Deref> Channel<SP> where
 						let sig = ecdsa
 							.sign_closing_transaction(&closing_tx, &self.context.secp_ctx)
 							.map_err(|_| ChannelError::Close("External signer refused to sign closing transaction".to_owned()))?;
-
-						let signed_tx = if $new_fee == msg.fee_satoshis {
+						let (signed_tx, shutdown_result) = if $new_fee == msg.fee_satoshis {
+							let shutdown_result = ShutdownResult {
+								monitor_update: None,
+								dropped_outbound_htlcs: Vec::new(),
+								unbroadcasted_batch_funding_txid: self.context.unbroadcasted_batch_funding_txid(),
+							};
 							self.context.channel_state = ChannelState::ShutdownComplete as u32;
 							self.context.update_time_counter += 1;
 							let tx = self.build_signed_closing_transaction(&closing_tx, &msg.signature, &sig);
-							Some(tx)
-						} else { None };
+							(Some(tx), Some(shutdown_result))
+						} else {
+							(None, None)
+						};
 
 						self.context.last_sent_closing_fee = Some((used_fee, sig.clone()));
 						Ok((Some(msgs::ClosingSigned {
@@ -4495,7 +4509,7 @@ impl<SP: Deref> Channel<SP> where
 								min_fee_satoshis: our_min_fee,
 								max_fee_satoshis: our_max_fee,
 							}),
-						}), signed_tx))
+						}), signed_tx, shutdown_result))
 					}
 				}
 			}
@@ -5573,7 +5587,7 @@ impl<SP: Deref> Channel<SP> where
 	/// [`ChannelMonitorUpdate`] will be returned).
 	pub fn get_shutdown(&mut self, signer_provider: &SP, their_features: &InitFeatures,
 		target_feerate_sats_per_kw: Option<u32>, override_shutdown_script: Option<ShutdownScript>)
-	-> Result<(msgs::Shutdown, Option<ChannelMonitorUpdate>, Vec<(HTLCSource, PaymentHash)>), APIError>
+	-> Result<(msgs::Shutdown, Option<ChannelMonitorUpdate>, Vec<(HTLCSource, PaymentHash)>, Option<ShutdownResult>), APIError>
 	{
 		for htlc in self.context.pending_outbound_htlcs.iter() {
 			if let OutboundHTLCState::LocalAnnounced(_) = htlc.state {
@@ -5628,11 +5642,18 @@ impl<SP: Deref> Channel<SP> where
 
 		// From here on out, we may not fail!
 		self.context.target_closing_feerate_sats_per_kw = target_feerate_sats_per_kw;
-		if self.context.channel_state & !STATE_FLAGS < ChannelState::FundingSent as u32 {
+		let shutdown_result = if self.context.channel_state & !STATE_FLAGS < ChannelState::FundingSent as u32 {
+			let shutdown_result = ShutdownResult {
+				monitor_update: None,
+				dropped_outbound_htlcs: Vec::new(),
+				unbroadcasted_batch_funding_txid: self.context.unbroadcasted_batch_funding_txid(),
+			};
 			self.context.channel_state = ChannelState::ShutdownComplete as u32;
+			Some(shutdown_result)
 		} else {
 			self.context.channel_state |= ChannelState::LocalShutdownSent as u32;
-		}
+			None
+		};
 		self.context.update_time_counter += 1;
 
 		let monitor_update = if update_shutdown_script {
@@ -5668,7 +5689,7 @@ impl<SP: Deref> Channel<SP> where
 		debug_assert!(!self.is_shutdown() || monitor_update.is_none(),
 			"we can't both complete shutdown and return a monitor update");
 
-		Ok((shutdown, monitor_update, dropped_outbound_htlcs))
+		Ok((shutdown, monitor_update, dropped_outbound_htlcs, shutdown_result))
 	}
 
 	pub fn inflight_htlc_sources(&self) -> impl Iterator<Item=(&HTLCSource, &PaymentHash)> {

@@ -452,7 +452,7 @@ impl MsgHandleErrInternal {
 	#[inline]
 	fn from_finish_shutdown(err: String, channel_id: ChannelId, user_channel_id: u128, shutdown_res: ShutdownResult, channel_update: Option<msgs::ChannelUpdate>, channel_capacity: u64) -> Self {
 		let err_msg = msgs::ErrorMessage { channel_id, data: err.clone() };
-		let action = if let (Some(_), ..) = &shutdown_res {
+		let action = if shutdown_res.monitor_update.is_some() {
 			// We have a closing `ChannelMonitorUpdate`, which means the channel was funded and we
 			// should disconnect our peer such that we force them to broadcast their latest
 			// commitment upon reconnecting.
@@ -2564,7 +2564,7 @@ where
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 
 		let mut failed_htlcs: Vec<(HTLCSource, PaymentHash)>;
-		let mut shutdown_result = None;
+		let shutdown_result;
 		loop {
 			let per_peer_state = self.per_peer_state.read().unwrap();
 
@@ -2579,10 +2579,11 @@ where
 					if let ChannelPhase::Funded(chan) = chan_phase_entry.get_mut() {
 						let funding_txo_opt = chan.context.get_funding_txo();
 						let their_features = &peer_state.latest_features;
-						let unbroadcasted_batch_funding_txid = chan.context.unbroadcasted_batch_funding_txid();
-						let (shutdown_msg, mut monitor_update_opt, htlcs) =
+						let (shutdown_msg, mut monitor_update_opt, htlcs, local_shutdown_result) =
 							chan.get_shutdown(&self.signer_provider, their_features, target_feerate_sats_per_1000_weight, override_shutdown_script)?;
 						failed_htlcs = htlcs;
+						shutdown_result = local_shutdown_result;
+						debug_assert_eq!(shutdown_result.is_some(), chan.is_shutdown());
 
 						// We can send the `shutdown` message before updating the `ChannelMonitor`
 						// here as we don't need the monitor update to complete until we send a
@@ -2610,7 +2611,6 @@ where
 									});
 								}
 								self.issue_channel_close_events(&chan.context, ClosureReason::HolderForceClosed);
-								shutdown_result = Some((None, Vec::new(), unbroadcasted_batch_funding_txid));
 							}
 						}
 						break;
@@ -2702,22 +2702,21 @@ where
 		self.close_channel_internal(channel_id, counterparty_node_id, target_feerate_sats_per_1000_weight, shutdown_script)
 	}
 
-	fn finish_close_channel(&self, shutdown_res: ShutdownResult) {
+	fn finish_close_channel(&self, mut shutdown_res: ShutdownResult) {
 		debug_assert_ne!(self.per_peer_state.held_by_thread(), LockHeldState::HeldByThread);
 		#[cfg(debug_assertions)]
 		for (_, peer) in self.per_peer_state.read().unwrap().iter() {
 			debug_assert_ne!(peer.held_by_thread(), LockHeldState::HeldByThread);
 		}
 
-		let (monitor_update_option, mut failed_htlcs, unbroadcasted_batch_funding_txid) = shutdown_res;
-		log_debug!(self.logger, "Finishing closure of channel with {} HTLCs to fail", failed_htlcs.len());
-		for htlc_source in failed_htlcs.drain(..) {
+		log_debug!(self.logger, "Finishing closure of channel with {} HTLCs to fail", shutdown_res.dropped_outbound_htlcs.len());
+		for htlc_source in shutdown_res.dropped_outbound_htlcs.drain(..) {
 			let (source, payment_hash, counterparty_node_id, channel_id) = htlc_source;
 			let reason = HTLCFailReason::from_failure_code(0x4000 | 8);
 			let receiver = HTLCDestination::NextHopChannel { node_id: Some(counterparty_node_id), channel_id };
 			self.fail_htlc_backwards_internal(&source, &payment_hash, &reason, receiver);
 		}
-		if let Some((_, funding_txo, monitor_update)) = monitor_update_option {
+		if let Some((_, funding_txo, monitor_update)) = shutdown_res.monitor_update {
 			// There isn't anything we can do if we get an update failure - we're already
 			// force-closing. The monitor update on the required in-memory copy should broadcast
 			// the latest local state, which is the best we can do anyway. Thus, it is safe to
@@ -2725,7 +2724,7 @@ where
 			let _ = self.chain_monitor.update_channel(funding_txo, &monitor_update);
 		}
 		let mut shutdown_results = Vec::new();
-		if let Some(txid) = unbroadcasted_batch_funding_txid {
+		if let Some(txid) = shutdown_res.unbroadcasted_batch_funding_txid {
 			let mut funding_batch_states = self.funding_batch_states.lock().unwrap();
 			let affected_channels = funding_batch_states.remove(&txid).into_iter().flatten();
 			let per_peer_state = self.per_peer_state.read().unwrap();
@@ -6268,22 +6267,20 @@ where
 	}
 
 	fn internal_closing_signed(&self, counterparty_node_id: &PublicKey, msg: &msgs::ClosingSigned) -> Result<(), MsgHandleErrInternal> {
-		let mut shutdown_result = None;
-		let unbroadcasted_batch_funding_txid;
 		let per_peer_state = self.per_peer_state.read().unwrap();
 		let peer_state_mutex = per_peer_state.get(counterparty_node_id)
 			.ok_or_else(|| {
 				debug_assert!(false);
 				MsgHandleErrInternal::send_err_msg_no_close(format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id), msg.channel_id)
 			})?;
-		let (tx, chan_option) = {
+		let (tx, chan_option, shutdown_result) = {
 			let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 			let peer_state = &mut *peer_state_lock;
 			match peer_state.channel_by_id.entry(msg.channel_id.clone()) {
 				hash_map::Entry::Occupied(mut chan_phase_entry) => {
 					if let ChannelPhase::Funded(chan) = chan_phase_entry.get_mut() {
-						unbroadcasted_batch_funding_txid = chan.context.unbroadcasted_batch_funding_txid();
-						let (closing_signed, tx) = try_chan_phase_entry!(self, chan.closing_signed(&self.fee_estimator, &msg), chan_phase_entry);
+						let (closing_signed, tx, shutdown_result) = try_chan_phase_entry!(self, chan.closing_signed(&self.fee_estimator, &msg), chan_phase_entry);
+						debug_assert_eq!(shutdown_result.is_some(), chan.is_shutdown());
 						if let Some(msg) = closing_signed {
 							peer_state.pending_msg_events.push(events::MessageSendEvent::SendClosingSigned {
 								node_id: counterparty_node_id.clone(),
@@ -6296,8 +6293,8 @@ where
 							// also implies there are no pending HTLCs left on the channel, so we can
 							// fully delete it from tracking (the channel monitor is still around to
 							// watch for old state broadcasts)!
-							(tx, Some(remove_channel_phase!(self, chan_phase_entry)))
-						} else { (tx, None) }
+							(tx, Some(remove_channel_phase!(self, chan_phase_entry)), shutdown_result)
+						} else { (tx, None, shutdown_result) }
 					} else {
 						return try_chan_phase_entry!(self, Err(ChannelError::Close(
 							"Got a closing_signed message for an unfunded channel!".into())), chan_phase_entry);
@@ -6319,7 +6316,6 @@ where
 				});
 			}
 			self.issue_channel_close_events(&chan.context, ClosureReason::CooperativeClosure);
-			shutdown_result = Some((None, Vec::new(), unbroadcasted_batch_funding_txid));
 		}
 		mem::drop(per_peer_state);
 		if let Some(shutdown_result) = shutdown_result {
@@ -7049,14 +7045,17 @@ where
 				peer_state.channel_by_id.retain(|channel_id, phase| {
 					match phase {
 						ChannelPhase::Funded(chan) => {
-							let unbroadcasted_batch_funding_txid = chan.context.unbroadcasted_batch_funding_txid();
 							match chan.maybe_propose_closing_signed(&self.fee_estimator, &self.logger) {
-								Ok((msg_opt, tx_opt)) => {
+								Ok((msg_opt, tx_opt, shutdown_result_opt)) => {
 									if let Some(msg) = msg_opt {
 										has_update = true;
 										pending_msg_events.push(events::MessageSendEvent::SendClosingSigned {
 											node_id: chan.context.get_counterparty_node_id(), msg,
 										});
+									}
+									debug_assert_eq!(shutdown_result_opt.is_some(), chan.is_shutdown());
+									if let Some(shutdown_result) = shutdown_result_opt {
+										shutdown_results.push(shutdown_result);
 									}
 									if let Some(tx) = tx_opt {
 										// We're done with this channel. We got a closing_signed and sent back
@@ -7072,7 +7071,6 @@ where
 										log_info!(self.logger, "Broadcasting {}", log_tx!(tx));
 										self.tx_broadcaster.broadcast_transactions(&[&tx]);
 										update_maps_on_chan_removal!(self, &chan.context);
-										shutdown_results.push((None, Vec::new(), unbroadcasted_batch_funding_txid));
 										false
 									} else { true }
 								},
@@ -7113,7 +7111,7 @@ where
 			// Channel::force_shutdown tries to make us do) as we may still be in initialization,
 			// so we track the update internally and handle it when the user next calls
 			// timer_tick_occurred, guaranteeing we're running normally.
-			if let Some((counterparty_node_id, funding_txo, update)) = failure.0.take() {
+			if let Some((counterparty_node_id, funding_txo, update)) = failure.monitor_update.take() {
 				assert_eq!(update.updates.len(), 1);
 				if let ChannelMonitorUpdateStep::ChannelForceClosed { should_broadcast } = update.updates[0] {
 					assert!(should_broadcast);
@@ -9405,16 +9403,16 @@ where
 						log_error!(args.logger, " The ChannelMonitor for channel {} is at counterparty commitment transaction number {} but the ChannelManager is at counterparty commitment transaction number {}.",
 							&channel.context.channel_id(), monitor.get_cur_counterparty_commitment_number(), channel.get_cur_counterparty_commitment_transaction_number());
 					}
-					let (monitor_update, mut new_failed_htlcs, batch_funding_txid) = channel.context.force_shutdown(true);
-					if batch_funding_txid.is_some() {
+					let mut shutdown_result = channel.context.force_shutdown(true);
+					if shutdown_result.unbroadcasted_batch_funding_txid.is_some() {
 						return Err(DecodeError::InvalidValue);
 					}
-					if let Some((counterparty_node_id, funding_txo, update)) = monitor_update {
+					if let Some((counterparty_node_id, funding_txo, update)) = shutdown_result.monitor_update {
 						close_background_events.push(BackgroundEvent::MonitorUpdateRegeneratedOnStartup {
 							counterparty_node_id, funding_txo, update
 						});
 					}
-					failed_htlcs.append(&mut new_failed_htlcs);
+					failed_htlcs.append(&mut shutdown_result.dropped_outbound_htlcs);
 					channel_closures.push_back((events::Event::ChannelClosed {
 						channel_id: channel.context.channel_id(),
 						user_channel_id: channel.context.get_user_id(),
