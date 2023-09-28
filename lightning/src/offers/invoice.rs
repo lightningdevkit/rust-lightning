@@ -16,7 +16,7 @@
 //! The payment recipient must include a [`PaymentHash`], so as to reveal the preimage upon payment
 //! receipt, and one or more [`BlindedPaymentPath`]s for the payer to use when sending the payment.
 //!
-//! ```
+//! ```ignore
 //! extern crate bitcoin;
 //! extern crate lightning;
 //!
@@ -280,8 +280,7 @@ macro_rules! invoice_explicit_signing_pubkey_builder_methods {
 			Self::new(&refund.bytes, contents, ExplicitSigningPubkey {})
 		}
 
-		/// Builds an unsigned [`Bolt12Invoice`] after checking for valid semantics. It can be signed by
-		/// [`UnsignedBolt12Invoice::sign`].
+		/// Builds an unsigned [`Bolt12Invoice`] after checking for valid semantics.
 		pub fn build($self: $self_type) -> Result<UnsignedBolt12Invoice, Bolt12SemanticError> {
 			#[cfg(feature = "std")]
 			{
@@ -671,7 +670,9 @@ macro_rules! unsigned_invoice_sign_method { ($self: ident, $self_type: ty $(, $s
 	/// Signs the [`TaggedHash`] of the invoice using the given function.
 	///
 	/// Note: The hash computation may have included unknown, odd TLV records.
-	pub fn sign<F: SignBolt12InvoiceFn>(
+	///
+	/// This is not exported to bindings users as functions aren't currently mapped.
+	pub(crate) fn sign<F: SignBolt12InvoiceFn>(
 		$($self_mut)* $self: $self_type, sign: F
 	) -> Result<Bolt12Invoice, SignError> {
 		let pubkey = $self.contents.fields().signing_pubkey;
