@@ -410,7 +410,7 @@ impl UnsignedBolt12Invoice {
 	/// Note: The hash computation may have included unknown, odd TLV records.
 	///
 	/// This is not exported to bindings users as functions aren't currently mapped.
-	pub fn sign<F, E>(mut self, sign: F) -> Result<Bolt12Invoice, SignError<E>>
+	pub(crate) fn sign<F, E>(mut self, sign: F) -> Result<Bolt12Invoice, SignError<E>>
 	where
 		F: FnOnce(&Self) -> Result<Signature, E>
 	{
