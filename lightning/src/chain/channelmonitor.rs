@@ -620,6 +620,10 @@ pub enum Balance {
 		claimable_height: u32,
 		/// The payment hash whose preimage our counterparty needs to claim this HTLC.
 		payment_hash: PaymentHash,
+		/// Whether this HTLC represents a payment which was sent outbound from us. Otherwise it
+		/// represents an HTLC which was forwarded (and should, thus, have a corresponding inbound
+		/// edge on another channel).
+		outbound_payment: bool,
 	},
 	/// HTLCs which we received from our counterparty which are claimable with a preimage which we
 	/// do not currently have. This will only be claimable if we receive the preimage from the node
@@ -662,9 +666,9 @@ impl Balance {
 			Balance::ContentiousClaimable { amount_satoshis, .. }|
 			Balance::CounterpartyRevokedOutputClaimable { amount_satoshis, .. }
 				=> *amount_satoshis,
-			Balance::MaybeTimeoutClaimableHTLC { .. }|
-			Balance::MaybePreimageClaimableHTLC { .. }
-				=> 0,
+			Balance::MaybeTimeoutClaimableHTLC { amount_satoshis, outbound_payment, .. }
+				=> if *outbound_payment { 0 } else { *amount_satoshis },
+			Balance::MaybePreimageClaimableHTLC { .. } => 0,
 		}
 	}
 }
@@ -1719,9 +1723,10 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 	/// Helper for get_claimable_balances which does the work for an individual HTLC, generating up
 	/// to one `Balance` for the HTLC.
-	fn get_htlc_balance(&self, htlc: &HTLCOutputInCommitment, holder_commitment: bool,
-		counterparty_revoked_commitment: bool, confirmed_txid: Option<Txid>)
-	-> Option<Balance> {
+	fn get_htlc_balance(&self, htlc: &HTLCOutputInCommitment, source: Option<&HTLCSource>,
+		holder_commitment: bool, counterparty_revoked_commitment: bool,
+		confirmed_txid: Option<Txid>
+	) -> Option<Balance> {
 		let htlc_commitment_tx_output_idx =
 			if let Some(v) = htlc.transaction_output_index { v } else { return None; };
 
@@ -1858,10 +1863,19 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 					confirmation_height: conf_thresh,
 				});
 			} else {
+				let outbound_payment = match source {
+					None => {
+						debug_assert!(false, "Outbound HTLCs should have a source");
+						true
+					},
+					Some(&HTLCSource::PreviousHopData(_)) => false,
+					Some(&HTLCSource::OutboundRoute { .. }) => true,
+				};
 				return Some(Balance::MaybeTimeoutClaimableHTLC {
 					amount_satoshis: htlc.amount_msat / 1000,
 					claimable_height: htlc.cltv_expiry,
 					payment_hash: htlc.payment_hash,
+					outbound_payment,
 				});
 			}
 		} else if let Some(payment_preimage) = self.payment_preimages.get(&htlc.payment_hash) {
@@ -1934,10 +1948,12 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 
 		macro_rules! walk_htlcs {
 			($holder_commitment: expr, $counterparty_revoked_commitment: expr, $htlc_iter: expr) => {
-				for htlc in $htlc_iter {
+				for (htlc, source) in $htlc_iter {
 					if htlc.transaction_output_index.is_some() {
 
-						if let Some(bal) = us.get_htlc_balance(htlc, $holder_commitment, $counterparty_revoked_commitment, confirmed_txid) {
+						if let Some(bal) = us.get_htlc_balance(
+							htlc, source, $holder_commitment, $counterparty_revoked_commitment, confirmed_txid
+						) {
 							res.push(bal);
 						}
 					}
@@ -1968,9 +1984,9 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 					}
 				}
 				if Some(txid) == us.current_counterparty_commitment_txid || Some(txid) == us.prev_counterparty_commitment_txid {
-					walk_htlcs!(false, false, counterparty_tx_htlcs.iter().map(|(a, _)| a));
+					walk_htlcs!(false, false, counterparty_tx_htlcs.iter().map(|(a, b)| (a, b.as_ref().map(|b| &**b))));
 				} else {
-					walk_htlcs!(false, true, counterparty_tx_htlcs.iter().map(|(a, _)| a));
+					walk_htlcs!(false, true, counterparty_tx_htlcs.iter().map(|(a, b)| (a, b.as_ref().map(|b| &**b))));
 					// The counterparty broadcasted a revoked state!
 					// Look for any StaticOutputs first, generating claimable balances for those.
 					// If any match the confirmed counterparty revoked to_self output, skip
@@ -2010,7 +2026,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 				}
 				found_commitment_tx = true;
 			} else if txid == us.current_holder_commitment_tx.txid {
-				walk_htlcs!(true, false, us.current_holder_commitment_tx.htlc_outputs.iter().map(|(a, _, _)| a));
+				walk_htlcs!(true, false, us.current_holder_commitment_tx.htlc_outputs.iter().map(|(a, _, c)| (a, c.as_ref())));
 				if let Some(conf_thresh) = pending_commitment_tx_conf_thresh {
 					res.push(Balance::ClaimableAwaitingConfirmations {
 						amount_satoshis: us.current_holder_commitment_tx.to_self_value_sat,
@@ -2020,7 +2036,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 				found_commitment_tx = true;
 			} else if let Some(prev_commitment) = &us.prev_holder_signed_commitment_tx {
 				if txid == prev_commitment.txid {
-					walk_htlcs!(true, false, prev_commitment.htlc_outputs.iter().map(|(a, _, _)| a));
+					walk_htlcs!(true, false, prev_commitment.htlc_outputs.iter().map(|(a, _, c)| (a, c.as_ref())));
 					if let Some(conf_thresh) = pending_commitment_tx_conf_thresh {
 						res.push(Balance::ClaimableAwaitingConfirmations {
 							amount_satoshis: prev_commitment.to_self_value_sat,
@@ -2043,13 +2059,22 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 			}
 		} else {
 			let mut claimable_inbound_htlc_value_sat = 0;
-			for (htlc, _, _) in us.current_holder_commitment_tx.htlc_outputs.iter() {
+			for (htlc, _, source) in us.current_holder_commitment_tx.htlc_outputs.iter() {
 				if htlc.transaction_output_index.is_none() { continue; }
 				if htlc.offered {
+					let outbound_payment = match source {
+						None => {
+							debug_assert!(false, "Outbound HTLCs should have a source");
+							true
+						},
+						Some(HTLCSource::PreviousHopData(_)) => false,
+						Some(HTLCSource::OutboundRoute { .. }) => true,
+					};
 					res.push(Balance::MaybeTimeoutClaimableHTLC {
 						amount_satoshis: htlc.amount_msat / 1000,
 						claimable_height: htlc.cltv_expiry,
 						payment_hash: htlc.payment_hash,
+						outbound_payment,
 					});
 				} else if us.payment_preimages.get(&htlc.payment_hash).is_some() {
 					claimable_inbound_htlc_value_sat += htlc.amount_msat / 1000;
