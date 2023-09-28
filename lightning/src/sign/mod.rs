@@ -134,6 +134,22 @@ pub struct StaticPaymentOutputDescriptor {
 	pub channel_transaction_parameters: Option<ChannelTransactionParameters>,
 }
 impl StaticPaymentOutputDescriptor {
+	/// Returns the `witness_script` of the spendable output.
+	///
+	/// Note that this will only return `Some` for [`StaticPaymentOutputDescriptor`]s that
+	/// originated from an anchor outputs channel, as they take the form of a P2WSH script.
+	pub fn witness_script(&self) -> Option<Script> {
+		self.channel_transaction_parameters.as_ref()
+			.and_then(|channel_params|
+				 if channel_params.channel_type_features.supports_anchors_zero_fee_htlc_tx() {
+					let payment_point = channel_params.holder_pubkeys.payment_point;
+					Some(chan_utils::get_to_countersignatory_with_anchors_redeemscript(&payment_point))
+				 } else {
+					 None
+				 }
+			)
+	}
+
 	/// The maximum length a well-formed witness spending one of these should have.
 	/// Note: If you have the grind_signatures feature enabled, this will be at least 1 byte
 	/// shorter.
