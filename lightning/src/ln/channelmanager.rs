@@ -6756,7 +6756,7 @@ where
 					if were_node_one == msg_from_node_one {
 						return Ok(NotifyOption::SkipPersistNoEvents);
 					} else {
-						log_debug!(self.logger, "Received channel_update for channel {}.", chan_id);
+						log_debug!(self.logger, "Received channel_update {:?} for channel {}.", msg, chan_id);
 						try_chan_phase_entry!(self, chan.channel_update(&msg), chan_phase_entry);
 					}
 				} else {
