@@ -107,6 +107,12 @@ impl_writeable_tlv_based!(DelayedPaymentOutputDescriptor, {
 	(12, channel_value_satoshis, required),
 });
 
+pub(crate) const P2WPKH_WITNESS_WEIGHT: u64 = 1 /* num stack items */ +
+	1 /* sig length */ +
+	73 /* sig including sighash flag */ +
+	1 /* pubkey length */ +
+	33 /* pubkey */;
+
 /// Information about a spendable output to our "payment key".
 ///
 /// See [`SpendableOutputDescriptor::StaticPaymentOutput`] for more details on how to spend this.
@@ -141,9 +147,7 @@ impl StaticPaymentOutputDescriptor {
 			1 /* num witness items */ + 1 /* sig push */ + 73 /* sig including sighash flag */ +
 				1 /* witness script push */ + witness_script_weight
 		} else {
-			// Calculated as 1 byte legnth + 73 byte signature, 1 byte empty vec push, 1 byte length plus
-			// redeemscript push length.
-			1 + 73 + 34
+			P2WPKH_WITNESS_WEIGHT as usize
 		}
 	}
 }
