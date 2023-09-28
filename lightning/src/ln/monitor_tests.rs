@@ -1867,22 +1867,34 @@ fn test_yield_anchors_events() {
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(anchors_config), Some(anchors_config)]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
-	let chan_id = create_announced_chan_between_nodes_with_value(
+	let (_, _, chan_id, funding_tx) = create_announced_chan_between_nodes_with_value(
 		&nodes, 0, 1, 1_000_000, 500_000_000
-	).2;
-	route_payment(&nodes[0], &[&nodes[1]], 1_000_000);
-	let (payment_preimage, payment_hash, ..) = route_payment(&nodes[1], &[&nodes[0]], 1_000_000);
+	);
+	let (payment_preimage_1, payment_hash_1, ..) = route_payment(&nodes[0], &[&nodes[1]], 1_000_000);
+	let (payment_preimage_2, payment_hash_2, ..) = route_payment(&nodes[1], &[&nodes[0]], 2_000_000);
 
 	assert!(nodes[0].node.get_and_clear_pending_events().is_empty());
+	assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
 
 	*nodes[0].fee_estimator.sat_per_kw.lock().unwrap() *= 2;
+
 	connect_blocks(&nodes[0], TEST_FINAL_CLTV + LATENCY_GRACE_PERIOD_BLOCKS + 1);
-	check_closed_broadcast!(&nodes[0], true);
-	assert!(nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().is_empty());
+	assert!(nodes[0].tx_broadcaster.txn_broadcast().is_empty());
+
+	connect_blocks(&nodes[1], TEST_FINAL_CLTV + LATENCY_GRACE_PERIOD_BLOCKS + 1);
+	{
+		let txn = nodes[1].tx_broadcaster.txn_broadcast();
+		assert_eq!(txn.len(), 1);
+		check_spends!(txn[0], funding_tx);
+	}
 
 	get_monitor!(nodes[0], chan_id).provide_payment_preimage(
-		&payment_hash, &payment_preimage, &node_cfgs[0].tx_broadcaster,
+		&payment_hash_2, &payment_preimage_2, &node_cfgs[0].tx_broadcaster,
 		&LowerBoundedFeeEstimator::new(node_cfgs[0].fee_estimator), &nodes[0].logger
+	);
+	get_monitor!(nodes[1], chan_id).provide_payment_preimage(
+		&payment_hash_1, &payment_preimage_1, &node_cfgs[0].tx_broadcaster,
+		&LowerBoundedFeeEstimator::new(node_cfgs[1].fee_estimator), &nodes[1].logger
 	);
 
 	let mut holder_events = nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events();
@@ -1904,27 +1916,50 @@ fn test_yield_anchors_events() {
 			assert_eq!(txn.len(), 2);
 			let anchor_tx = txn.pop().unwrap();
 			let commitment_tx = txn.pop().unwrap();
+			check_spends!(commitment_tx, funding_tx);
 			check_spends!(anchor_tx, coinbase_tx, commitment_tx);
 			(commitment_tx, anchor_tx)
 		},
 		_ => panic!("Unexpected event"),
 	};
 
+	assert_eq!(commitment_tx.output[2].value, 1_000); // HTLC A -> B
+	assert_eq!(commitment_tx.output[3].value, 2_000); // HTLC B -> A
+
 	mine_transactions(&nodes[0], &[&commitment_tx, &anchor_tx]);
 	check_added_monitors!(nodes[0], 1);
+	mine_transactions(&nodes[1], &[&commitment_tx, &anchor_tx]);
+	check_added_monitors!(nodes[1], 1);
+
+	{
+		let mut txn = nodes[1].tx_broadcaster.unique_txn_broadcast();
+		assert_eq!(txn.len(), if nodes[1].connect_style.borrow().updates_best_block_first() { 3 } else { 2 });
+
+		let htlc_preimage_tx = txn.pop().unwrap();
+		assert_eq!(htlc_preimage_tx.input.len(), 1);
+		assert_eq!(htlc_preimage_tx.input[0].previous_output.vout, 3);
+		check_spends!(htlc_preimage_tx, commitment_tx);
+
+		let htlc_timeout_tx = txn.pop().unwrap();
+		assert_eq!(htlc_timeout_tx.input.len(), 1);
+		assert_eq!(htlc_timeout_tx.input[0].previous_output.vout, 2);
+		check_spends!(htlc_timeout_tx, commitment_tx);
+
+		if let Some(commitment_tx) = txn.pop() {
+			check_spends!(commitment_tx, funding_tx);
+		}
+	}
 
 	let mut holder_events = nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events();
 	// Certain block `ConnectStyle`s cause an extra `ChannelClose` event to be emitted since the
 	// best block is updated before the confirmed transactions are notified.
-	match *nodes[0].connect_style.borrow() {
-		ConnectStyle::BestBlockFirst|ConnectStyle::BestBlockFirstReorgsOnlyTip|ConnectStyle::BestBlockFirstSkippingBlocks => {
-			assert_eq!(holder_events.len(), 3);
-			if let Event::BumpTransaction(BumpTransactionEvent::ChannelClose { .. }) = holder_events.remove(0) {}
-			else { panic!("unexpected event"); }
-
-		},
-		_ => assert_eq!(holder_events.len(), 2),
-	};
+	if nodes[0].connect_style.borrow().updates_best_block_first() {
+		assert_eq!(holder_events.len(), 3);
+		if let Event::BumpTransaction(BumpTransactionEvent::ChannelClose { .. }) = holder_events.remove(0) {}
+		else { panic!("unexpected event"); }
+	} else {
+		assert_eq!(holder_events.len(), 2);
+	}
 	let mut htlc_txs = Vec::with_capacity(2);
 	for event in holder_events {
 		match event {
@@ -1958,6 +1993,9 @@ fn test_yield_anchors_events() {
 
 	// Clear the remaining events as they're not relevant to what we're testing.
 	nodes[0].node.get_and_clear_pending_events();
+	nodes[1].node.get_and_clear_pending_events();
+	nodes[0].node.get_and_clear_pending_msg_events();
+	nodes[1].node.get_and_clear_pending_msg_events();
 }
 
 #[test]
