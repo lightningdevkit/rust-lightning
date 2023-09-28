@@ -89,7 +89,7 @@ impl NodeId {
 	}
 
 	/// Get the public key as an array from this NodeId
-	pub fn as_array(&self) -> &[u8; PUBLIC_KEY_SIZE] {
+	pub fn as_array(&self) -> &[u8; 33] {
 		&self.0
 	}
 
