@@ -124,6 +124,7 @@ impl<'a> Router for TestRouter<'a> {
 		if let Some((find_route_query, find_route_res)) = self.next_routes.lock().unwrap().pop_front() {
 			assert_eq!(find_route_query, *params);
 			if let Ok(ref route) = find_route_res {
+				assert_eq!(route.route_params.as_ref().unwrap().final_value_msat, find_route_query.final_value_msat);
 				let scorer = self.scorer.read().unwrap();
 				let scorer = ScorerAccountingForInFlightHtlcs::new(scorer, &inflight_htlcs);
 				for path in &route.paths {

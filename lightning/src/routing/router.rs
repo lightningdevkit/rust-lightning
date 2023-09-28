@@ -139,7 +139,7 @@ impl<'a, SP: Sized, Sc: 'a + ScoreLookUp<ScoreParams = SP>, S: Deref<Target = Sc
 			source, target, short_channel_id
 		) {
 			let usage = ChannelUsage {
-				inflight_htlc_msat: usage.inflight_htlc_msat + used_liquidity,
+				inflight_htlc_msat: usage.inflight_htlc_msat.saturating_add(used_liquidity),
 				..usage
 			};
 
@@ -1713,11 +1713,13 @@ where L::Target: Logger {
 		LoggedPayeePubkey(payment_params.payee.node_id()), our_node_pubkey, final_value_msat);
 
 	// Remember how many candidates we ignored to allow for some logging afterwards.
-	let mut num_ignored_value_contribution = 0;
-	let mut num_ignored_path_length_limit = 0;
-	let mut num_ignored_cltv_delta_limit = 0;
-	let mut num_ignored_previously_failed = 0;
-	let mut num_ignored_total_fee_limit = 0;
+	let mut num_ignored_value_contribution: u32 = 0;
+	let mut num_ignored_path_length_limit: u32 = 0;
+	let mut num_ignored_cltv_delta_limit: u32 = 0;
+	let mut num_ignored_previously_failed: u32 = 0;
+	let mut num_ignored_total_fee_limit: u32 = 0;
+	let mut num_ignored_avoid_overpayment: u32 = 0;
+	let mut num_ignored_htlc_minimum_msat_limit: u32 = 0;
 
 	macro_rules! add_entry {
 		// Adds entry which goes from $src_node_id to $dest_node_id over the $candidate hop.
@@ -1826,6 +1828,12 @@ where L::Target: Logger {
 						}
 						num_ignored_previously_failed += 1;
 					} else if may_overpay_to_meet_path_minimum_msat {
+						if should_log_candidate {
+							log_trace!(logger,
+								"Ignoring {} to avoid overpaying to meet htlc_minimum_msat limit.",
+								LoggedCandidateHop(&$candidate));
+						}
+						num_ignored_avoid_overpayment += 1;
 						hit_minimum_limit = true;
 					} else if over_path_minimum_msat {
 						// Note that low contribution here (limited by available_liquidity_msat)
@@ -1976,6 +1984,13 @@ where L::Target: Logger {
 								}
 							}
 						}
+					} else {
+						if should_log_candidate {
+							log_trace!(logger,
+								"Ignoring {} due to its htlc_minimum_msat limit.",
+								LoggedCandidateHop(&$candidate));
+						}
+						num_ignored_htlc_minimum_msat_limit += 1;
 					}
 				}
 			}
@@ -2127,14 +2142,15 @@ where L::Target: Logger {
 		for route in payment_params.payee.unblinded_route_hints().iter()
 			.filter(|route| !route.0.is_empty())
 		{
-			let first_hop_in_route = &(route.0)[0];
-			let have_hop_src_in_graph =
-				// Only add the hops in this route to our candidate set if either
-				// we have a direct channel to the first hop or the first hop is
-				// in the regular network graph.
-				first_hop_targets.get(&NodeId::from_pubkey(&first_hop_in_route.src_node_id)).is_some() ||
-				network_nodes.get(&NodeId::from_pubkey(&first_hop_in_route.src_node_id)).is_some();
-			if have_hop_src_in_graph {
+			let first_hop_src_id = NodeId::from_pubkey(&route.0.first().unwrap().src_node_id);
+			let first_hop_src_is_reachable =
+				// Only add the hops in this route to our candidate set if either we are part of
+				// the first hop, we have a direct channel to the first hop, or the first hop is in
+				// the regular network graph.
+				our_node_id == first_hop_src_id ||
+				first_hop_targets.get(&first_hop_src_id).is_some() ||
+				network_nodes.get(&first_hop_src_id).is_some();
+			if first_hop_src_is_reachable {
 				// We start building the path from reverse, i.e., from payee
 				// to the first RouteHintHop in the path.
 				let hop_iter = route.0.iter().rev();
@@ -2151,6 +2167,15 @@ where L::Target: Logger {
 				for (idx, (hop, prev_hop_id)) in hop_iter.zip(prev_hop_iter).enumerate() {
 					let source = NodeId::from_pubkey(&hop.src_node_id);
 					let target = NodeId::from_pubkey(&prev_hop_id);
+
+					if let Some(first_channels) = first_hop_targets.get(&target) {
+						if first_channels.iter().any(|d| d.outbound_scid_alias == Some(hop.short_channel_id)) {
+							log_trace!(logger, "Ignoring route hint with SCID {} (and any previous) due to it being a direct channel of ours.",
+								hop.short_channel_id);
+							break;
+						}
+					}
+
 					let candidate = network_channels
 						.get(&hop.short_channel_id)
 						.and_then(|channel| channel.as_directed_to(&target))
@@ -2194,12 +2219,12 @@ where L::Target: Logger {
 						.saturating_add(1);
 
 					// Searching for a direct channel between last checked hop and first_hop_targets
-					if let Some(first_channels) = first_hop_targets.get_mut(&NodeId::from_pubkey(&prev_hop_id)) {
+					if let Some(first_channels) = first_hop_targets.get_mut(&target) {
 						sort_first_hop_channels(first_channels, &used_liquidities,
 							recommended_value_msat, our_node_pubkey);
 						for details in first_channels {
 							let first_hop_candidate = CandidateRouteHop::FirstHop { details };
-							add_entry!(first_hop_candidate, our_node_id, NodeId::from_pubkey(&prev_hop_id),
+							add_entry!(first_hop_candidate, our_node_id, target,
 								aggregate_next_hops_fee_msat, aggregate_path_contribution_msat,
 								aggregate_next_hops_path_htlc_minimum_msat, aggregate_next_hops_path_penalty_msat,
 								aggregate_next_hops_cltv_delta, aggregate_next_hops_path_length);
@@ -2443,15 +2468,22 @@ where L::Target: Logger {
 				log_trace!(logger, "Collected exactly our payment amount on the first pass, without hitting an htlc_minimum_msat limit, exiting.");
 				break 'paths_collection;
 			}
-			log_trace!(logger, "Collected our payment amount on the first pass, but running again to collect extra paths with a potentially higher limit.");
+			log_trace!(logger, "Collected our payment amount on the first pass, but running again to collect extra paths with a potentially higher value to meet htlc_minimum_msat limit.");
 			path_value_msat = recommended_value_msat;
 		}
 	}
 
 	let num_ignored_total = num_ignored_value_contribution + num_ignored_path_length_limit +
-		num_ignored_cltv_delta_limit + num_ignored_previously_failed + num_ignored_total_fee_limit;
+		num_ignored_cltv_delta_limit + num_ignored_previously_failed +
+		num_ignored_avoid_overpayment + num_ignored_htlc_minimum_msat_limit +
+		num_ignored_total_fee_limit;
 	if num_ignored_total > 0 {
-		log_trace!(logger, "Ignored {} candidate hops due to insufficient value contribution, {} due to path length limit, {} due to CLTV delta limit, {} due to previous payment failure, {} due to maximum total fee limit. Total: {} ignored candidates.", num_ignored_value_contribution, num_ignored_path_length_limit, num_ignored_cltv_delta_limit, num_ignored_previously_failed, num_ignored_total_fee_limit, num_ignored_total);
+		log_trace!(logger,
+			"Ignored {} candidate hops due to insufficient value contribution, {} due to path length limit, {} due to CLTV delta limit, {} due to previous payment failure, {} due to htlc_minimum_msat limit, {} to avoid overpaying, {} due to maximum total fee limit. Total: {} ignored candidates.",
+			num_ignored_value_contribution, num_ignored_path_length_limit,
+			num_ignored_cltv_delta_limit, num_ignored_previously_failed,
+			num_ignored_htlc_minimum_msat_limit, num_ignored_avoid_overpayment,
+			num_ignored_total_fee_limit, num_ignored_total);
 	}
 
 	// Step (5).

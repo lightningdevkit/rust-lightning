@@ -875,7 +875,7 @@ impl OutboundPayments {
 			}
 		}
 
-		let route = router.find_route_with_id(
+		let mut route = router.find_route_with_id(
 			&node_signer.get_node_id(Recipient::Node).unwrap(), &route_params,
 			Some(&first_hops.iter().collect::<Vec<_>>()), inflight_htlcs(),
 			payment_hash, payment_id,
@@ -884,6 +884,14 @@ impl OutboundPayments {
 				payment_id, payment_hash);
 			RetryableSendFailure::RouteNotFound
 		})?;
+
+		if let Some(route_route_params) = route.route_params.as_mut() {
+			if route_route_params.final_value_msat != route_params.final_value_msat {
+				debug_assert!(false,
+					"Routers are expected to return a route which includes the requested final_value_msat");
+				route_route_params.final_value_msat = route_params.final_value_msat;
+			}
+		}
 
 		let onion_session_privs = self.add_new_pending_payment(payment_hash,
 			recipient_onion.clone(), payment_id, keysend_preimage, &route, Some(retry_strategy),
@@ -926,7 +934,7 @@ impl OutboundPayments {
 			}
 		}
 
-		let route = match router.find_route_with_id(
+		let mut route = match router.find_route_with_id(
 			&node_signer.get_node_id(Recipient::Node).unwrap(), &route_params,
 			Some(&first_hops.iter().collect::<Vec<_>>()), inflight_htlcs(),
 			payment_hash, payment_id,
@@ -938,6 +946,15 @@ impl OutboundPayments {
 				return
 			}
 		};
+
+		if let Some(route_route_params) = route.route_params.as_mut() {
+			if route_route_params.final_value_msat != route_params.final_value_msat {
+				debug_assert!(false,
+					"Routers are expected to return a route which includes the requested final_value_msat");
+				route_route_params.final_value_msat = route_params.final_value_msat;
+			}
+		}
+
 		for path in route.paths.iter() {
 			if path.hops.len() == 0 {
 				log_error!(logger, "Unusable path in route (path.hops.len() must be at least 1");
@@ -1337,12 +1354,14 @@ impl OutboundPayments {
 		}
 		let mut has_ok = false;
 		let mut has_err = false;
-		let mut pending_amt_unsent = 0;
+		let mut has_unsent = false;
 		let mut total_ok_fees_msat = 0;
+		let mut total_ok_amt_sent_msat = 0;
 		for (res, path) in results.iter().zip(route.paths.iter()) {
 			if res.is_ok() {
 				has_ok = true;
 				total_ok_fees_msat += path.fee_msat();
+				total_ok_amt_sent_msat += path.final_value_msat();
 			}
 			if res.is_err() { has_err = true; }
 			if let &Err(APIError::MonitorUpdateInProgress) = res {
@@ -1351,23 +1370,27 @@ impl OutboundPayments {
 				has_err = true;
 				has_ok = true;
 				total_ok_fees_msat += path.fee_msat();
+				total_ok_amt_sent_msat += path.final_value_msat();
 			} else if res.is_err() {
-				pending_amt_unsent += path.final_value_msat();
+				has_unsent = true;
 			}
 		}
 		if has_err && has_ok {
 			Err(PaymentSendFailure::PartialFailure {
 				results,
 				payment_id,
-				failed_paths_retry: if pending_amt_unsent != 0 {
+				failed_paths_retry: if has_unsent {
 					if let Some(route_params) = &route.route_params {
 						let mut route_params = route_params.clone();
 						// We calculate the leftover fee budget we're allowed to spend by
 						// subtracting the used fee from the total fee budget.
 						route_params.max_total_routing_fee_msat = route_params
 							.max_total_routing_fee_msat.map(|m| m.saturating_sub(total_ok_fees_msat));
-						route_params.final_value_msat = pending_amt_unsent;
 
+						// We calculate the remaining target amount by subtracting the succeded
+						// path values.
+						route_params.final_value_msat = route_params.final_value_msat
+							.saturating_sub(total_ok_amt_sent_msat);
 						Some(route_params)
 					} else { None }
 				} else { None },
