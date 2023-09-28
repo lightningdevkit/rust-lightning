@@ -132,7 +132,7 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, ES: Deref, S: Deref> Router f
 			})
 			.map(|forward_node| {
 				BlindedPath::new_for_payment(
-					&[forward_node], recipient, tlvs.clone(), u64::MAX, &*self.entropy_source, secp_ctx
+					vec![forward_node], recipient, tlvs.clone(), u64::MAX, &*self.entropy_source, secp_ctx
 				)
 			})
 			.take(MAX_PAYMENT_PATHS)
