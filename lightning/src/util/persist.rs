@@ -74,35 +74,36 @@ pub const MONITOR_UPDATING_PERSISTER_PREPEND_SENTINEL: &[u8] = &[0xFF; 2];
 /// Provides an interface that allows storage and retrieval of persisted values that are associated
 /// with given keys.
 ///
-/// In order to avoid collisions the key space is segmented based on the given `namespace`s and
-/// `sub_namespace`s. Implementations of this trait are free to handle them in different ways, as
-/// long as per-namespace key uniqueness is asserted.
+/// In order to avoid collisions the key space is segmented based on the given `primary_namespace`s
+/// and `sub_namespace`s. Implementations of this trait are free to handle them in different ways,
+/// as long as per-namespace key uniqueness is asserted.
 ///
 /// Keys and namespaces are required to be valid ASCII strings in the range of
 /// [`KVSTORE_NAMESPACE_KEY_ALPHABET`] and no longer than [`KVSTORE_NAMESPACE_KEY_MAX_LEN`]. Empty
-/// namespaces and sub-namespaces (`""`) are assumed to be a valid, however, if `namespace` is
-/// empty, `sub_namespace` is required to be empty, too. This means that concerns should always be
-/// separated by namespace first, before sub-namespaces are used. While the number of namespaces
-/// will be relatively small and is determined at compile time, there may be many sub-namespaces
-/// per namespace. Note that per-namespace uniqueness needs to also hold for keys *and*
-/// namespaces/sub-namespaces in any given namespace/sub-namespace, i.e., conflicts between keys
-/// and equally named namespaces/sub-namespaces must be avoided.
+/// primary namespaces and sub-namespaces (`""`) are assumed to be a valid, however, if
+/// `primary_namespace` is empty, `sub_namespace` is required to be empty, too. This means that
+/// concerns should always be separated by primary namespace first, before sub-namespaces are used.
+/// While the number of primary namespaces will be relatively small and is determined at compile
+/// time, there may be many sub-namespaces per primary namespace. Note that per-namespace
+/// uniqueness needs to also hold for keys *and* namespaces in any given namespace, i.e., conflicts
+/// between keys and equally named primary-namespaces/sub-namespaces must be avoided.
 ///
 /// **Note:** Users migrating custom persistence backends from the pre-v0.0.117 `KVStorePersister`
-/// interface can use a concatenation of `[{namespace}/[{sub_namespace}/]]{key}` to recover a `key` compatible with the
-/// data model previously assumed by `KVStorePersister::persist`.
+/// interface can use a concatenation of `[{primary_namespace}/[{sub_namespace}/]]{key}` to recover
+/// a `key` compatible with the data model previously assumed by `KVStorePersister::persist`.
 pub trait KVStore {
-	/// Returns the data stored for the given `namespace`, `sub_namespace`, and `key`.
+	/// Returns the data stored for the given `primary_namespace`, `sub_namespace`, and `key`.
 	///
 	/// Returns an [`ErrorKind::NotFound`] if the given `key` could not be found in the given
-	/// `namespace` and `sub_namespace`.
+	/// `primary_namespace` and `sub_namespace`.
 	///
 	/// [`ErrorKind::NotFound`]: io::ErrorKind::NotFound
-	fn read(&self, namespace: &str, sub_namespace: &str, key: &str) -> Result<Vec<u8>, io::Error>;
+	fn read(&self, primary_namespace: &str, sub_namespace: &str, key: &str) -> Result<Vec<u8>, io::Error>;
 	/// Persists the given data under the given `key`.
 	///
-	/// Will create the given `namespace` and `sub_namespace` if not already present in the store.
-	fn write(&self, namespace: &str, sub_namespace: &str, key: &str, buf: &[u8]) -> Result<(), io::Error>;
+	/// Will create the given `primary_namespace` and `sub_namespace` if not already present in the
+	/// store.
+	fn write(&self, primary_namespace: &str, sub_namespace: &str, key: &str, buf: &[u8]) -> Result<(), io::Error>;
 	/// Removes any data that had previously been persisted under the given `key`.
 	///
 	/// If the `lazy` flag is set to `true`, the backend implementation might choose to lazily
@@ -115,14 +116,16 @@ pub trait KVStore {
 	/// potentially get lost on crash after the method returns. Therefore, this flag should only be
 	/// set for `remove` operations that can be safely replayed at a later time.
 	///
-	/// Returns successfully if no data will be stored for the given `namespace`, `sub_namespace`, and
-	/// `key`, independently of whether it was present before its invokation or not.
-	fn remove(&self, namespace: &str, sub_namespace: &str, key: &str, lazy: bool) -> Result<(), io::Error>;
-	/// Returns a list of keys that are stored under the given `sub_namespace` in `namespace`.
+	/// Returns successfully if no data will be stored for the given `primary_namespace`,
+	/// `sub_namespace`, and `key`, independently of whether it was present before its invokation
+	/// or not.
+	fn remove(&self, primary_namespace: &str, sub_namespace: &str, key: &str, lazy: bool) -> Result<(), io::Error>;
+	/// Returns a list of keys that are stored under the given `sub_namespace` in
+	/// `primary_namespace`.
 	///
 	/// Returns the keys in arbitrary order, so users requiring a particular order need to sort the
-	/// returned keys. Returns an empty list if `namespace` or `sub_namespace` is unknown.
-	fn list(&self, namespace: &str, sub_namespace: &str) -> Result<Vec<String>, io::Error>;
+	/// returned keys. Returns an empty list if `primary_namespace` or `sub_namespace` is unknown.
+	fn list(&self, primary_namespace: &str, sub_namespace: &str) -> Result<Vec<String>, io::Error>;
 }
 
 /// Trait that handles persisting a [`ChannelManager`], [`NetworkGraph`], and [`WriteableScore`] to disk.
@@ -299,7 +302,7 @@ where
 ///
 /// Each [`ChannelMonitorUpdate`] is stored in a dynamic sub-namespace, as follows:
 ///
-///   - namespace: [`CHANNEL_MONITOR_UPDATE_PERSISTENCE_NAMESPACE`]
+///   - primary-namespace: [`CHANNEL_MONITOR_UPDATE_PERSISTENCE_NAMESPACE`]
 ///   - sub-namespace: [the monitor's encoded outpoint name]
 ///
 /// Under that sub-namespace, each update is stored with a number string, like `21`, which
@@ -314,7 +317,7 @@ where
 ///
 /// `[CHANNEL_MONITOR_PERSISTENCE_NAMESPACE]/deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef_1`
 ///
-/// Updates would be stored as follows (with `/` delimiting namespace/sub-namespace/key):
+/// Updates would be stored as follows (with `/` delimiting primary-namespace/sub-namespace/key):
 ///
 /// ```text
 /// [CHANNEL_MONITOR_UPDATE_PERSISTENCE_NAMESPACE]/deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef_1/1
