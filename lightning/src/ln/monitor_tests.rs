@@ -93,15 +93,15 @@ fn chanmon_fail_from_stale_commitment() {
 	expect_payment_failed_with_update!(nodes[0], payment_hash, false, update_a.contents.short_channel_id, true);
 }
 
-fn test_spendable_output<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, spendable_tx: &Transaction) -> SpendableOutputDescriptor {
+fn test_spendable_output<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, spendable_tx: &Transaction) -> Vec<SpendableOutputDescriptor> {
 	let mut spendable = node.chain_monitor.chain_monitor.get_and_clear_pending_events();
 	assert_eq!(spendable.len(), 1);
-	if let Event::SpendableOutputs { mut outputs, .. } = spendable.pop().unwrap() {
+	if let Event::SpendableOutputs { outputs, .. } = spendable.pop().unwrap() {
 		assert_eq!(outputs.len(), 1);
 		let spend_tx = node.keys_manager.backing.spend_spendable_outputs(&[&outputs[0]], Vec::new(),
 			Builder::new().push_opcode(opcodes::all::OP_RETURN).into_script(), 253, None, &Secp256k1::new()).unwrap();
 		check_spends!(spend_tx, spendable_tx);
-		outputs.pop().unwrap()
+		outputs
 	} else { panic!(); }
 }
 
@@ -222,9 +222,9 @@ fn chanmon_claim_value_coop_close() {
 	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 2);
 
 	assert!(get_monitor!(nodes[0], chan_id)
-		.get_spendable_output(&shutdown_tx[0], shutdown_tx_conf_height_a).is_none());
+		.get_spendable_outputs(&shutdown_tx[0], shutdown_tx_conf_height_a).is_empty());
 	assert!(get_monitor!(nodes[1], chan_id)
-		.get_spendable_output(&shutdown_tx[0], shutdown_tx_conf_height_b).is_none());
+		.get_spendable_outputs(&shutdown_tx[0], shutdown_tx_conf_height_b).is_empty());
 
 	connect_blocks(&nodes[0], 1);
 	connect_blocks(&nodes[1], 1);
@@ -234,18 +234,16 @@ fn chanmon_claim_value_coop_close() {
 	assert_eq!(Vec::<Balance>::new(),
 		nodes[1].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances());
 
-	let spendable_output_a = test_spendable_output(&nodes[0], &shutdown_tx[0]);
+	let spendable_outputs_a = test_spendable_output(&nodes[0], &shutdown_tx[0]);
 	assert_eq!(
-		get_monitor!(nodes[0], chan_id)
-			.get_spendable_output(&shutdown_tx[0], shutdown_tx_conf_height_a).unwrap(),
-		spendable_output_a
+		get_monitor!(nodes[0], chan_id).get_spendable_outputs(&shutdown_tx[0], shutdown_tx_conf_height_a),
+		spendable_outputs_a
 	);
 
-	let spendable_output_b = test_spendable_output(&nodes[1], &shutdown_tx[0]);
+	let spendable_outputs_b = test_spendable_output(&nodes[1], &shutdown_tx[0]);
 	assert_eq!(
-		get_monitor!(nodes[1], chan_id)
-			.get_spendable_output(&shutdown_tx[0], shutdown_tx_conf_height_b).unwrap(),
-		spendable_output_b
+		get_monitor!(nodes[1], chan_id).get_spendable_outputs(&shutdown_tx[0], shutdown_tx_conf_height_b),
+		spendable_outputs_b
 	);
 
 	check_closed_event!(nodes[0], 1, ClosureReason::CooperativeClosure, [nodes[1].node.get_our_node_id()], 1000000);
