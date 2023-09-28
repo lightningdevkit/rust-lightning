@@ -43,6 +43,7 @@ use crate::chain;
 use crate::chain::{BestBlock, WatchedOutput};
 use crate::chain::chaininterface::{BroadcasterInterface, FeeEstimator, LowerBoundedFeeEstimator};
 use crate::chain::transaction::{OutPoint, TransactionData};
+use crate::sign::errors::SigningError;
 use crate::sign::{SpendableOutputDescriptor, StaticPaymentOutputDescriptor, DelayedPaymentOutputDescriptor, WriteableEcdsaChannelSigner, SignerProvider, EntropySource};
 use crate::chain::onchaintx::{ClaimEvent, OnchainTxHandler};
 use crate::chain::package::{CounterpartyOfferedHTLCOutput, CounterpartyReceivedHTLCOutput, HolderFundingOutput, HolderHTLCOutput, PackageSolvingData, PackageTemplate, RevokedOutput, RevokedHTLCOutput};
@@ -1482,21 +1483,16 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 		self.inner.lock().unwrap().counterparty_node_id
 	}
 
-	/// Used by [`ChannelManager`] deserialization to broadcast the latest holder state if its copy
-	/// of the channel state was out-of-date.
-	///
-	/// You may also use this to broadcast the latest local commitment transaction, either because
+	/// You may use this to broadcast the latest local commitment transaction, either because
 	/// a monitor update failed or because we've fallen behind (i.e. we've received proof that our
 	/// counterparty side knows a revocation secret we gave them that they shouldn't know).
 	///
-	/// Broadcasting these transactions in the second case is UNSAFE, as they allow counterparty
+	/// Broadcasting these transactions in this manner is UNSAFE, as they allow counterparty
 	/// side to punish you. Nevertheless you may want to broadcast them if counterparty doesn't
 	/// close channel with their commitment transaction after a substantial amount of time. Best
 	/// may be to contact the other node operator out-of-band to coordinate other options available
 	/// to you.
-	///
-	/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
-	pub fn get_latest_holder_commitment_txn<L: Deref>(&self, logger: &L) -> Vec<Transaction>
+	pub fn get_latest_holder_commitment_txn<L: Deref>(&self, logger: &L) -> Result<Vec<Transaction>, SigningError>
 	where L::Target: Logger {
 		self.inner.lock().unwrap().get_latest_holder_commitment_txn(logger)
 	}
@@ -1505,7 +1501,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 	/// to bypass HolderCommitmentTransaction state update lockdown after signature and generate
 	/// revoked commitment transaction.
 	#[cfg(any(test, feature = "unsafe_revoked_tx_signing"))]
-	pub fn unsafe_get_latest_holder_commitment_txn<L: Deref>(&self, logger: &L) -> Vec<Transaction>
+	pub fn unsafe_get_latest_holder_commitment_txn<L: Deref>(&self, logger: &L) -> Result<Vec<Transaction>, SigningError>
 	where L::Target: Logger {
 		self.inner.lock().unwrap().unsafe_get_latest_holder_commitment_txn(logger)
 	}
@@ -2515,18 +2511,53 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		}
 	}
 
-	pub(crate) fn broadcast_latest_holder_commitment_txn<B: Deref, L: Deref>(&mut self, broadcaster: &B, logger: &L)
-		where B::Target: BroadcasterInterface,
-					L::Target: Logger,
-	{
-		let commit_txs = self.get_latest_holder_commitment_txn(logger);
-		let mut txs = vec![];
-		for tx in commit_txs.iter() {
-			log_info!(logger, "Broadcasting local {}", log_tx!(tx));
-			txs.push(tx);
-		}
-		broadcaster.broadcast_transactions(&txs);
+	fn generate_claimable_outpoints_and_watch_outputs(&mut self) -> (Vec<PackageTemplate>, Vec<TransactionOutputs>) {
+		let funding_outp = HolderFundingOutput::build(
+			self.funding_redeemscript.clone(),
+			self.channel_value_satoshis,
+			self.onchain_tx_handler.channel_type_features().clone()
+		);
+		let commitment_package = PackageTemplate::build_package(
+			self.funding_info.0.txid.clone(), self.funding_info.0.index as u32,
+			PackageSolvingData::HolderFundingOutput(funding_outp),
+			self.best_block.height(), self.best_block.height()
+		);
+		let mut claimable_outpoints = vec![commitment_package];
 		self.pending_monitor_events.push(MonitorEvent::HolderForceClosed(self.funding_info.0));
+		// Although we aren't signing the transaction directly here, the transaction will be signed
+		// in the claim that is queued to OnchainTxHandler. We set holder_tx_signed here to reject
+		// new channel updates.
+		self.holder_tx_signed = true;
+		let mut watch_outputs = Vec::new();
+		// We can't broadcast our HTLC transactions while the commitment transaction is
+		// unconfirmed. We'll delay doing so until we detect the confirmed commitment in
+		// `transactions_confirmed`.
+		if !self.onchain_tx_handler.channel_type_features().supports_anchors_zero_fee_htlc_tx() {
+			// Because we're broadcasting a commitment transaction, we should construct the package
+			// assuming it gets confirmed in the next block. Sadly, we have code which considers
+			// "not yet confirmed" things as discardable, so we cannot do that here.
+			let (mut new_outpoints, _) = self.get_broadcasted_holder_claims(
+				&self.current_holder_commitment_tx, self.best_block.height()
+			);
+			let unsigned_commitment_tx = self.onchain_tx_handler.get_unsigned_holder_commitment_tx();
+			let new_outputs = self.get_broadcasted_holder_watch_outputs(
+				&self.current_holder_commitment_tx, &unsigned_commitment_tx
+			);
+			if !new_outputs.is_empty() {
+				watch_outputs.push((self.current_holder_commitment_tx.txid.clone(), new_outputs));
+			}
+			claimable_outpoints.append(&mut new_outpoints);
+		}
+		(claimable_outpoints, watch_outputs)
+	}
+
+	pub(crate) fn queue_latest_holder_commitment_txn_for_broadcast<B: Deref, F: Deref, L: Deref>(&mut self, broadcaster: &B, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L)
+		where B::Target: BroadcasterInterface,
+			F::Target: FeeEstimator,
+			L::Target: Logger,
+	{
+		let (claimable_outpoints, _) = self.generate_claimable_outpoints_and_watch_outputs();
+		self.onchain_tx_handler.update_claims_view_from_requests(claimable_outpoints, self.best_block.height(), self.best_block.height(), broadcaster, fee_estimator, logger);
 	}
 
 	pub fn update_monitor<B: Deref, F: Deref, L: Deref>(&mut self, updates: &ChannelMonitorUpdate, broadcaster: &B, fee_estimator: F, logger: &L) -> Result<(), ()>
@@ -2614,26 +2645,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 							log_trace!(logger, "Avoiding commitment broadcast, already detected confirmed spend onchain");
 							continue;
 						}
-						self.broadcast_latest_holder_commitment_txn(broadcaster, logger);
-						// If the channel supports anchor outputs, we'll need to emit an external
-						// event to be consumed such that a child transaction is broadcast with a
-						// high enough feerate for the parent commitment transaction to confirm.
-						if self.onchain_tx_handler.channel_type_features().supports_anchors_zero_fee_htlc_tx() {
-							let funding_output = HolderFundingOutput::build(
-								self.funding_redeemscript.clone(), self.channel_value_satoshis,
-								self.onchain_tx_handler.channel_type_features().clone(),
-							);
-							let best_block_height = self.best_block.height();
-							let commitment_package = PackageTemplate::build_package(
-								self.funding_info.0.txid.clone(), self.funding_info.0.index as u32,
-								PackageSolvingData::HolderFundingOutput(funding_output),
-								best_block_height, best_block_height
-							);
-							self.onchain_tx_handler.update_claims_view_from_requests(
-								vec![commitment_package], best_block_height, best_block_height,
-								broadcaster, &bounded_fee_estimator, logger,
-							);
-						}
+						self.queue_latest_holder_commitment_txn_for_broadcast(broadcaster, &bounded_fee_estimator, logger);
 					} else if !self.holder_tx_signed {
 						log_error!(logger, "WARNING: You have a potentially-unsafe holder commitment transaction available to broadcast");
 						log_error!(logger, "    in channel monitor for channel {}!", &self.funding_info.0.to_channel_id());
@@ -3211,16 +3223,16 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		}
 	}
 
-	pub fn get_latest_holder_commitment_txn<L: Deref>(&mut self, logger: &L) -> Vec<Transaction> where L::Target: Logger {
+	pub fn get_latest_holder_commitment_txn<L: Deref>(&mut self, logger: &L) -> Result<Vec<Transaction>, SigningError> where L::Target: Logger {
 		log_debug!(logger, "Getting signed latest holder commitment transaction!");
 		self.holder_tx_signed = true;
-		let commitment_tx = self.onchain_tx_handler.get_fully_signed_holder_tx(&self.funding_redeemscript);
+		let commitment_tx = self.onchain_tx_handler.get_fully_signed_holder_tx(&self.funding_redeemscript)?;
 		let txid = commitment_tx.txid();
 		let mut holder_transactions = vec![commitment_tx];
 		// When anchor outputs are present, the HTLC transactions are only valid once the commitment
 		// transaction confirms.
 		if self.onchain_tx_handler.channel_type_features().supports_anchors_zero_fee_htlc_tx() {
-			return holder_transactions;
+			return Ok(holder_transactions);
 		}
 		for htlc in self.current_holder_commitment_tx.htlc_outputs.iter() {
 			if let Some(vout) = htlc.0.transaction_output_index {
@@ -3245,12 +3257,12 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		}
 		// We throw away the generated waiting_first_conf data as we aren't (yet) confirmed and we don't actually know what the caller wants to do.
 		// The data will be re-generated and tracked in check_spend_holder_transaction if we get a confirmation.
-		holder_transactions
+		Ok(holder_transactions)
 	}
 
 	#[cfg(any(test,feature = "unsafe_revoked_tx_signing"))]
 	/// Note that this includes possibly-locktimed-in-the-future transactions!
-	fn unsafe_get_latest_holder_commitment_txn<L: Deref>(&mut self, logger: &L) -> Vec<Transaction> where L::Target: Logger {
+	fn unsafe_get_latest_holder_commitment_txn<L: Deref>(&mut self, logger: &L) -> Result<Vec<Transaction>, SigningError> where L::Target: Logger {
 		log_debug!(logger, "Getting signed copy of latest holder commitment transaction!");
 		let commitment_tx = self.onchain_tx_handler.get_fully_signed_copy_holder_tx(&self.funding_redeemscript);
 		let txid = commitment_tx.txid();
@@ -3258,7 +3270,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		// When anchor outputs are present, the HTLC transactions are only final once the commitment
 		// transaction confirms due to the CSV 1 encumberance.
 		if self.onchain_tx_handler.channel_type_features().supports_anchors_zero_fee_htlc_tx() {
-			return holder_transactions;
+			return Ok(holder_transactions);
 		}
 		for htlc in self.current_holder_commitment_tx.htlc_outputs.iter() {
 			if let Some(vout) = htlc.0.transaction_output_index {
@@ -3274,7 +3286,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				}
 			}
 		}
-		holder_transactions
+		Ok(holder_transactions)
 	}
 
 	pub fn block_connected<B: Deref, F: Deref, L: Deref>(&mut self, header: &BlockHeader, txdata: &TransactionData, height: u32, broadcaster: B, fee_estimator: F, logger: L) -> Vec<TransactionOutputs>

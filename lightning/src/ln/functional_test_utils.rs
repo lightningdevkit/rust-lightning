@@ -885,7 +885,7 @@ macro_rules! get_monitor {
 macro_rules! get_local_commitment_txn {
 	($node: expr, $channel_id: expr) => {
 		{
-			$crate::get_monitor!($node, $channel_id).unsafe_get_latest_holder_commitment_txn(&$node.logger)
+			$crate::get_monitor!($node, $channel_id).unsafe_get_latest_holder_commitment_txn(&$node.logger).unwrap()
 		}
 	}
 }

@@ -30,6 +30,7 @@ use crate::ln::chan_utils::{self, ChannelTransactionParameters, HTLCOutputInComm
 use crate::chain::ClaimId;
 use crate::chain::chaininterface::{ConfirmationTarget, FeeEstimator, BroadcasterInterface, LowerBoundedFeeEstimator};
 use crate::chain::channelmonitor::{ANTI_REORG_DELAY, CLTV_SHARED_CLAIM_BUFFER};
+use crate::sign::errors::SigningError;
 use crate::sign::WriteableEcdsaChannelSigner;
 use crate::chain::package::{PackageSolvingData, PackageTemplate};
 use crate::util::logger::Logger;
@@ -1131,10 +1132,12 @@ impl<ChannelSigner: WriteableEcdsaChannelSigner> OnchainTxHandler<ChannelSigner>
 	// have empty holder commitment transaction if a ChannelMonitor is asked to force-close just after OutboundV1Channel::get_funding_created,
 	// before providing a initial commitment transaction. For outbound channel, init ChannelMonitor at Channel::funding_signed, there is nothing
 	// to monitor before.
-	pub(crate) fn get_fully_signed_holder_tx(&mut self, funding_redeemscript: &Script) -> Transaction {
-		let (sig, htlc_sigs) = self.signer.sign_holder_commitment_and_htlcs(&self.holder_commitment, &self.secp_ctx).expect("signing holder commitment");
+	pub(crate) fn get_fully_signed_holder_tx(&mut self, funding_redeemscript: &Script) -> Result<Transaction, SigningError> {
+		let (sig, htlc_sigs) = self.signer.sign_holder_commitment_and_htlcs(
+			&self.holder_commitment, &self.secp_ctx
+		)?;
 		self.holder_htlc_sigs = Some(Self::extract_holder_sigs(&self.holder_commitment, htlc_sigs));
-		self.holder_commitment.add_holder_sig(funding_redeemscript, sig)
+		Ok(self.holder_commitment.add_holder_sig(funding_redeemscript, sig))
 	}
 
 	#[cfg(any(test, feature="unsafe_revoked_tx_signing"))]

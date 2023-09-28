@@ -27,6 +27,7 @@ use crate::events::bump_transaction::HTLCDescriptor;
 use crate::util::ser::{Writeable, Writer};
 use crate::io::Error;
 use crate::ln::features::ChannelTypeFeatures;
+use crate::sign::errors::SigningError;
 
 /// Initial value for revoked commitment downward counter
 pub const INITIAL_REVOKED_COMMITMENT_NUMBER: u64 = 1 << 48;
@@ -155,7 +156,7 @@ impl EcdsaChannelSigner for TestChannelSigner {
 		Ok(())
 	}
 
-	fn sign_holder_commitment_and_htlcs(&self, commitment_tx: &HolderCommitmentTransaction, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<(Signature, Vec<Signature>), ()> {
+	fn sign_holder_commitment_and_htlcs(&self, commitment_tx: &HolderCommitmentTransaction, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<(Signature, Vec<Signature>), SigningError> {
 		let trusted_tx = self.verify_holder_commitment_tx(commitment_tx, secp_ctx);
 		let commitment_txid = trusted_tx.txid();
 		let holder_csv = self.inner.counterparty_selected_contest_delay();
@@ -193,7 +194,7 @@ impl EcdsaChannelSigner for TestChannelSigner {
 	}
 
 	#[cfg(any(test,feature = "unsafe_revoked_tx_signing"))]
-	fn unsafe_sign_holder_commitment_and_htlcs(&self, commitment_tx: &HolderCommitmentTransaction, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<(Signature, Vec<Signature>), ()> {
+	fn unsafe_sign_holder_commitment_and_htlcs(&self, commitment_tx: &HolderCommitmentTransaction, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<(Signature, Vec<Signature>), SigningError> {
 		Ok(self.inner.unsafe_sign_holder_commitment_and_htlcs(commitment_tx, secp_ctx).unwrap())
 	}
 

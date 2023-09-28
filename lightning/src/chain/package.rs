@@ -25,6 +25,7 @@ use crate::ln::chan_utils::{TxCreationKeys, HTLCOutputInCommitment};
 use crate::ln::chan_utils;
 use crate::ln::msgs::DecodeError;
 use crate::chain::chaininterface::{FeeEstimator, ConfirmationTarget, MIN_RELAY_FEE_SAT_PER_1000_WEIGHT};
+use crate::sign::errors::SigningError;
 use crate::sign::WriteableEcdsaChannelSigner;
 use crate::chain::onchaintx::{ExternalHTLCClaim, OnchainTxHandler};
 use crate::util::logger::Logger;
@@ -613,7 +614,19 @@ impl PackageSolvingData {
 				return onchain_handler.get_fully_signed_htlc_tx(outpoint, &outp.preimage);
 			}
 			PackageSolvingData::HolderFundingOutput(ref outp) => {
-				return Some(onchain_handler.get_fully_signed_holder_tx(&outp.funding_redeemscript));
+				match onchain_handler.get_fully_signed_holder_tx(&outp.funding_redeemscript) {
+					Ok(tx) => {
+						return Some(tx);
+					},
+					Err(e) => match e{
+						SigningError::NotAvailable => {
+							return None;
+						},
+						SigningError::PermanentFailure => {
+							panic!("Failed to sign holder transaction!");
+						},
+					},
+				}
 			}
 			_ => { panic!("API Error!"); }
 		}

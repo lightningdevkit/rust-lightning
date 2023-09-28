@@ -56,6 +56,8 @@ use crate::util::atomic_counter::AtomicCounter;
 use crate::util::chacha20::ChaCha20;
 use crate::util::invoice::construct_invoice_preimage;
 
+pub mod errors;
+
 pub(crate) mod type_resolver;
 
 /// Used as initial key material, to be expanded into multiple secret keys (but not to be used
@@ -446,14 +448,14 @@ pub trait EcdsaChannelSigner: ChannelSigner {
 	/// [`ChannelMonitor`]: crate::chain::channelmonitor::ChannelMonitor
 	// TODO: Document the things someone using this interface should enforce before signing.
 	fn sign_holder_commitment_and_htlcs(&self, commitment_tx: &HolderCommitmentTransaction,
-		secp_ctx: &Secp256k1<secp256k1::All>) -> Result<(Signature, Vec<Signature>), ()>;
+		secp_ctx: &Secp256k1<secp256k1::All>) -> Result<(Signature, Vec<Signature>), errors::SigningError>;
 	/// Same as [`sign_holder_commitment_and_htlcs`], but exists only for tests to get access to
 	/// holder commitment transactions which will be broadcasted later, after the channel has moved
 	/// on to a newer state. Thus, needs its own method as [`sign_holder_commitment_and_htlcs`] may
 	/// enforce that we only ever get called once.
 	#[cfg(any(test,feature = "unsafe_revoked_tx_signing"))]
 	fn unsafe_sign_holder_commitment_and_htlcs(&self, commitment_tx: &HolderCommitmentTransaction,
-		secp_ctx: &Secp256k1<secp256k1::All>) -> Result<(Signature, Vec<Signature>), ()>;
+		secp_ctx: &Secp256k1<secp256k1::All>) -> Result<(Signature, Vec<Signature>), errors::SigningError>;
 	/// Create a signature for the given input in a transaction spending an HTLC transaction output
 	/// or a commitment transaction `to_local` output when our counterparty broadcasts an old state.
 	///
@@ -1012,24 +1014,26 @@ impl EcdsaChannelSigner for InMemorySigner {
 		Ok(())
 	}
 
-	fn sign_holder_commitment_and_htlcs(&self, commitment_tx: &HolderCommitmentTransaction, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<(Signature, Vec<Signature>), ()> {
+	fn sign_holder_commitment_and_htlcs(&self, commitment_tx: &HolderCommitmentTransaction, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<(Signature, Vec<Signature>), errors::SigningError> {
 		let funding_pubkey = PublicKey::from_secret_key(secp_ctx, &self.funding_key);
 		let funding_redeemscript = make_funding_redeemscript(&funding_pubkey, &self.counterparty_pubkeys().funding_pubkey);
 		let trusted_tx = commitment_tx.trust();
 		let sig = trusted_tx.built_transaction().sign_holder_commitment(&self.funding_key, &funding_redeemscript, self.channel_value_satoshis, &self, secp_ctx);
 		let channel_parameters = self.get_channel_parameters();
-		let htlc_sigs = trusted_tx.get_htlc_sigs(&self.htlc_base_key, &channel_parameters.as_holder_broadcastable(), &self, secp_ctx)?;
+		let htlc_sigs = trusted_tx.get_htlc_sigs(&self.htlc_base_key, &channel_parameters.as_holder_broadcastable(), &self, secp_ctx)
+		.map_err(|_| errors::SigningError::PermanentFailure)?;
 		Ok((sig, htlc_sigs))
 	}
 
 	#[cfg(any(test,feature = "unsafe_revoked_tx_signing"))]
-	fn unsafe_sign_holder_commitment_and_htlcs(&self, commitment_tx: &HolderCommitmentTransaction, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<(Signature, Vec<Signature>), ()> {
+	fn unsafe_sign_holder_commitment_and_htlcs(&self, commitment_tx: &HolderCommitmentTransaction, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<(Signature, Vec<Signature>), errors::SigningError> {
 		let funding_pubkey = PublicKey::from_secret_key(secp_ctx, &self.funding_key);
 		let funding_redeemscript = make_funding_redeemscript(&funding_pubkey, &self.counterparty_pubkeys().funding_pubkey);
 		let trusted_tx = commitment_tx.trust();
 		let sig = trusted_tx.built_transaction().sign_holder_commitment(&self.funding_key, &funding_redeemscript, self.channel_value_satoshis, &self, secp_ctx);
 		let channel_parameters = self.get_channel_parameters();
-		let htlc_sigs = trusted_tx.get_htlc_sigs(&self.htlc_base_key, &channel_parameters.as_holder_broadcastable(), &self, secp_ctx)?;
+		let htlc_sigs = trusted_tx.get_htlc_sigs(&self.htlc_base_key, &channel_parameters.as_holder_broadcastable(), &self, secp_ctx)
+		.map_err(|_| errors::SigningError::PermanentFailure)?;
 		Ok((sig, htlc_sigs))
 	}
 
