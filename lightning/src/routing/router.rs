@@ -1622,9 +1622,13 @@ where L::Target: Logger {
 			|info| info.features.supports_basic_mpp()))
 	} else { false };
 
-	log_trace!(logger, "Searching for a route from payer {} to {} {} MPP and {} first hops {}overriding the network graph", our_node_pubkey,
-		LoggedPayeePubkey(payment_params.payee.node_id()), if allow_mpp { "with" } else { "without" },
-		first_hops.map(|hops| hops.len()).unwrap_or(0), if first_hops.is_some() { "" } else { "not " });
+	let max_total_routing_fee_msat = route_params.max_total_routing_fee_msat.unwrap_or(u64::max_value());
+
+	log_trace!(logger, "Searching for a route from payer {} to {} {} MPP and {} first hops {}overriding the network graph with a fee limit of {} msat",
+		our_node_pubkey, LoggedPayeePubkey(payment_params.payee.node_id()),
+		if allow_mpp { "with" } else { "without" },
+		first_hops.map(|hops| hops.len()).unwrap_or(0), if first_hops.is_some() { "" } else { "not " },
+		max_total_routing_fee_msat);
 
 	// Step (1).
 	// Prepare the data we'll use for payee-to-payer search by
@@ -1890,7 +1894,6 @@ where L::Target: Logger {
 							}
 
 							// Ignore hops if augmenting the current path to them would put us over `max_total_routing_fee_msat`
-							let max_total_routing_fee_msat = route_params.max_total_routing_fee_msat.unwrap_or(u64::max_value());
 							if total_fee_msat > max_total_routing_fee_msat {
 								if should_log_candidate {
 									log_trace!(logger, "Ignoring {} due to exceeding max total routing fee limit.", LoggedCandidateHop(&$candidate));
