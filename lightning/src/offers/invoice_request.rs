@@ -395,7 +395,7 @@ impl UnsignedInvoiceRequest {
 	/// Note: The hash computation may have included unknown, odd TLV records.
 	///
 	/// This is not exported to bindings users as functions are not yet mapped.
-	pub fn sign<F, E>(mut self, sign: F) -> Result<InvoiceRequest, SignError<E>>
+	pub(crate) fn sign<F, E>(mut self, sign: F) -> Result<InvoiceRequest, SignError<E>>
 	where
 		F: FnOnce(&Self) -> Result<Signature, E>
 	{
