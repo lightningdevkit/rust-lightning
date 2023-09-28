@@ -5538,9 +5538,6 @@ impl<SP: Deref> Channel<SP> where
 	}
 
 	pub fn channel_update(&mut self, msg: &msgs::ChannelUpdate) -> Result<(), ChannelError> {
-		if msg.contents.htlc_minimum_msat >= self.context.channel_value_satoshis * 1000 {
-			return Err(ChannelError::Close("Minimum htlc value is greater than channel value".to_string()));
-		}
 		self.context.counterparty_forwarding_info = Some(CounterpartyForwardingInfo {
 			fee_base_msat: msg.contents.fee_base_msat,
 			fee_proportional_millionths: msg.contents.fee_proportional_millionths,
