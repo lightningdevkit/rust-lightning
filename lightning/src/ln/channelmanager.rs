@@ -6598,7 +6598,7 @@ where
 	/// [`APIMisuseError`]: APIError::APIMisuseError
 	#[rustfmt::skip]
 	pub fn update_partial_channel_config(
-		&self, counterparty_node_id: &PublicKey, channel_ids: &[ChannelId], config_update: &ChannelConfigUpdate,
+		&self, counterparty_node_id: &PublicKey, channel_ids: Vec<ChannelId>, config_update: &ChannelConfigUpdate,
 	) -> Result<(), APIError> {
 		if config_update.cltv_expiry_delta.map(|delta| delta < MIN_CLTV_EXPIRY_DELTA).unwrap_or(false) {
 			return Err(APIError::APIMisuseError {
@@ -6613,14 +6613,14 @@ where
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 		let peer_state = &mut *peer_state_lock;
 
-		for channel_id in channel_ids {
+		for channel_id in channel_ids.iter() {
 			if !peer_state.has_channel(channel_id) {
 				return Err(APIError::ChannelUnavailable {
 					err: format!("Channel with id {} not found for the passed counterparty node_id {}", channel_id, counterparty_node_id),
 				});
 			};
 		}
-		for channel_id in channel_ids {
+		for channel_id in channel_ids.iter() {
 			if let Some(channel) = peer_state.channel_by_id.get_mut(channel_id) {
 				let mut config = channel.context().config();
 				config.apply(config_update);
@@ -6677,7 +6677,7 @@ where
 	/// [`ChannelUnavailable`]: APIError::ChannelUnavailable
 	/// [`APIMisuseError`]: APIError::APIMisuseError
 	pub fn update_channel_config(
-		&self, counterparty_node_id: &PublicKey, channel_ids: &[ChannelId], config: &ChannelConfig,
+		&self, counterparty_node_id: &PublicKey, channel_ids: Vec<ChannelId>, config: &ChannelConfig,
 	) -> Result<(), APIError> {
 		self.update_partial_channel_config(counterparty_node_id, channel_ids, &(*config).into())
 	}
@@ -19034,7 +19034,7 @@ mod tests {
 
 		check_unkown_peer_error(nodes[0].node.forward_intercepted_htlc(intercept_id, &channel_id, unkown_public_key, 1_000_000), unkown_public_key);
 
-		check_unkown_peer_error(nodes[0].node.update_channel_config(&unkown_public_key, &[channel_id], &ChannelConfig::default()), unkown_public_key);
+		check_unkown_peer_error(nodes[0].node.update_channel_config(&unkown_public_key, vec![channel_id], &ChannelConfig::default()), unkown_public_key);
 	}
 
 	#[test]
@@ -19064,7 +19064,7 @@ mod tests {
 
 		check_channel_unavailable_error(nodes[0].node.forward_intercepted_htlc(InterceptId([0; 32]), &channel_id, counterparty_node_id, 1_000_000), channel_id, counterparty_node_id);
 
-		check_channel_unavailable_error(nodes[0].node.update_channel_config(&counterparty_node_id, &[channel_id], &ChannelConfig::default()), channel_id, counterparty_node_id);
+		check_channel_unavailable_error(nodes[0].node.update_channel_config(&counterparty_node_id, vec![channel_id], &ChannelConfig::default()), channel_id, counterparty_node_id);
 	}
 
 	#[test]
@@ -19279,12 +19279,12 @@ mod tests {
 		let _ = create_announced_chan_between_nodes(&nodes, 0, 1);
 		let channel = &nodes[0].node.list_channels()[0];
 
-		nodes[0].node.update_channel_config(&channel.counterparty.node_id, &[channel.channel_id], &user_config.channel_config).unwrap();
+		nodes[0].node.update_channel_config(&channel.counterparty.node_id, vec![channel.channel_id], &user_config.channel_config).unwrap();
 		let events = nodes[0].node.get_and_clear_pending_msg_events();
 		assert_eq!(events.len(), 0);
 
 		user_config.channel_config.forwarding_fee_base_msat += 10;
-		nodes[0].node.update_channel_config(&channel.counterparty.node_id, &[channel.channel_id], &user_config.channel_config).unwrap();
+		nodes[0].node.update_channel_config(&channel.counterparty.node_id, vec![channel.channel_id], &user_config.channel_config).unwrap();
 		assert_eq!(nodes[0].node.list_channels()[0].config.unwrap().forwarding_fee_base_msat, user_config.channel_config.forwarding_fee_base_msat);
 		let events = nodes[0].node.get_and_clear_pending_msg_events();
 		assert_eq!(events.len(), 1);
@@ -19293,12 +19293,12 @@ mod tests {
 			_ => panic!("expected BroadcastChannelUpdate event"),
 		}
 
-		nodes[0].node.update_partial_channel_config(&channel.counterparty.node_id, &[channel.channel_id], &ChannelConfigUpdate::default()).unwrap();
+		nodes[0].node.update_partial_channel_config(&channel.counterparty.node_id, vec![channel.channel_id], &ChannelConfigUpdate::default()).unwrap();
 		let events = nodes[0].node.get_and_clear_pending_msg_events();
 		assert_eq!(events.len(), 0);
 
 		let new_cltv_expiry_delta = user_config.channel_config.cltv_expiry_delta + 6;
-		nodes[0].node.update_partial_channel_config(&channel.counterparty.node_id, &[channel.channel_id], &ChannelConfigUpdate {
+		nodes[0].node.update_partial_channel_config(&channel.counterparty.node_id, vec![channel.channel_id], &ChannelConfigUpdate {
 			cltv_expiry_delta: Some(new_cltv_expiry_delta),
 			..Default::default()
 		}).unwrap();
@@ -19311,7 +19311,7 @@ mod tests {
 		}
 
 		let new_fee = user_config.channel_config.forwarding_fee_proportional_millionths + 100;
-		nodes[0].node.update_partial_channel_config(&channel.counterparty.node_id, &[channel.channel_id], &ChannelConfigUpdate {
+		nodes[0].node.update_partial_channel_config(&channel.counterparty.node_id, vec![channel.channel_id], &ChannelConfigUpdate {
 			forwarding_fee_proportional_millionths: Some(new_fee),
 			accept_underpaying_htlcs: Some(true),
 			..Default::default()
@@ -19333,7 +19333,7 @@ mod tests {
 		let new_fee = current_fee + 100;
 		assert!(
 			matches!(
-				nodes[0].node.update_partial_channel_config(&channel.counterparty.node_id, &[channel.channel_id, bad_channel_id], &ChannelConfigUpdate {
+				nodes[0].node.update_partial_channel_config(&channel.counterparty.node_id, vec![channel.channel_id, bad_channel_id], &ChannelConfigUpdate {
 					forwarding_fee_proportional_millionths: Some(new_fee),
 					..Default::default()
 				}),

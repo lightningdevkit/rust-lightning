@@ -191,7 +191,7 @@ where
 			})
 			.map(|forward_node| {
 				BlindedPaymentPath::new(
-					&[forward_node], recipient, tlvs.clone(), u64::MAX, MIN_FINAL_CLTV_EXPIRY_DELTA,
+					vec![forward_node], recipient, tlvs.clone(), u64::MAX, MIN_FINAL_CLTV_EXPIRY_DELTA,
 					&*self.entropy_source, secp_ctx
 				)
 			})
@@ -203,7 +203,7 @@ where
 			_ => {
 				if network_graph.nodes().contains_key(&NodeId::from_pubkey(&recipient)) {
 					BlindedPaymentPath::new(
-						&[], recipient, tlvs, u64::MAX, MIN_FINAL_CLTV_EXPIRY_DELTA, &*self.entropy_source,
+						Vec::new(), recipient, tlvs, u64::MAX, MIN_FINAL_CLTV_EXPIRY_DELTA, &*self.entropy_source,
 						secp_ctx
 					).map(|path| vec![path])
 				} else {

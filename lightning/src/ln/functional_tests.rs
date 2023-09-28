@@ -9197,7 +9197,7 @@ fn do_test_nondust_htlc_fees_dust_exposure_delta(features: ChannelTypeFeatures) 
 		)),
 		..ChannelConfigUpdate::default()
 	};
-	nodes[1].node.update_partial_channel_config(&node_a_id, &[chan_id], &config).unwrap();
+	nodes[1].node.update_partial_channel_config(&node_a_id, vec![chan_id], &config).unwrap();
 
 	// Check a successful payment
 	send_payment(&nodes[0], &[&nodes[1]], NON_DUST_HTLC_MSAT);
@@ -9231,7 +9231,7 @@ fn do_test_nondust_htlc_fees_dust_exposure_delta(features: ChannelTypeFeatures) 
 		)),
 		..ChannelConfigUpdate::default()
 	};
-	nodes[1].node.update_partial_channel_config(&node_a_id, &[chan_id], &update).unwrap();
+	nodes[1].node.update_partial_channel_config(&node_a_id, vec![chan_id], &update).unwrap();
 
 	// Send an additional non-dust htlc from 1 to 0 using the pre-calculated route above, and check the immediate complaint
 	let onion = RecipientOnionFields::secret_only(payment_secret_1_0);
@@ -9265,7 +9265,7 @@ fn do_test_nondust_htlc_fees_dust_exposure_delta(features: ChannelTypeFeatures) 
 		)),
 		..ChannelConfigUpdate::default()
 	};
-	nodes[1].node.update_partial_channel_config(&node_a_id, &[chan_id], &update).unwrap();
+	nodes[1].node.update_partial_channel_config(&node_a_id, vec![chan_id], &update).unwrap();
 
 	// Check a successful payment
 	send_payment(&nodes[1], &[&nodes[0]], NON_DUST_HTLC_MSAT);

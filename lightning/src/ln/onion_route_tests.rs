@@ -1654,7 +1654,7 @@ fn do_test_onion_failure_stale_channel_update(announce_for_forwarding: bool) {
 	 -> Option<msgs::ChannelUpdate> {
 		nodes[1]
 			.node
-			.update_channel_config(channel_to_update_counterparty, &[channel_to_update.0], config)
+			.update_channel_config(channel_to_update_counterparty, vec![channel_to_update.0], config)
 			.unwrap();
 		let events = nodes[1].node.get_and_clear_pending_msg_events();
 		assert_eq!(events.len(), expect_new_update as usize);
@@ -1714,7 +1714,7 @@ fn do_test_onion_failure_stale_channel_update(announce_for_forwarding: bool) {
 	invalid_config.cltv_expiry_delta = 0;
 	match nodes[1].node.update_channel_config(
 		channel_to_update_counterparty,
-		&[channel_to_update.0],
+		vec![channel_to_update.0],
 		&invalid_config,
 	) {
 		Err(APIError::APIMisuseError { .. }) => {},

@@ -226,7 +226,7 @@ fn one_hop_blinded_path_with_custom_tlv() {
 	let payee_tlvs = payee_tlvs.authenticate(nonce, &expanded_key);
 	let mut secp_ctx = Secp256k1::new();
 	let blinded_path = BlindedPaymentPath::new(
-		&[],
+		vec![],
 		nodes[2].node.get_our_node_id(),
 		payee_tlvs,
 		u64::MAX,
