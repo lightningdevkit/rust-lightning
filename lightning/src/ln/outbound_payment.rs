@@ -875,7 +875,7 @@ impl OutboundPayments {
 			}
 		}
 
-		let route = router.find_route_with_id(
+		let mut route = router.find_route_with_id(
 			&node_signer.get_node_id(Recipient::Node).unwrap(), &route_params,
 			Some(&first_hops.iter().collect::<Vec<_>>()), inflight_htlcs(),
 			payment_hash, payment_id,
@@ -884,6 +884,14 @@ impl OutboundPayments {
 				payment_id, payment_hash);
 			RetryableSendFailure::RouteNotFound
 		})?;
+
+		if let Some(route_route_params) = route.route_params.as_mut() {
+			if route_route_params.final_value_msat != route_params.final_value_msat {
+				debug_assert!(false,
+					"Routers are expected to return a route which includes the requested final_value_msat");
+				route_route_params.final_value_msat = route_params.final_value_msat;
+			}
+		}
 
 		let onion_session_privs = self.add_new_pending_payment(payment_hash,
 			recipient_onion.clone(), payment_id, keysend_preimage, &route, Some(retry_strategy),
@@ -926,7 +934,7 @@ impl OutboundPayments {
 			}
 		}
 
-		let route = match router.find_route_with_id(
+		let mut route = match router.find_route_with_id(
 			&node_signer.get_node_id(Recipient::Node).unwrap(), &route_params,
 			Some(&first_hops.iter().collect::<Vec<_>>()), inflight_htlcs(),
 			payment_hash, payment_id,
@@ -938,6 +946,15 @@ impl OutboundPayments {
 				return
 			}
 		};
+
+		if let Some(route_route_params) = route.route_params.as_mut() {
+			if route_route_params.final_value_msat != route_params.final_value_msat {
+				debug_assert!(false,
+					"Routers are expected to return a route which includes the requested final_value_msat");
+				route_route_params.final_value_msat = route_params.final_value_msat;
+			}
+		}
+
 		for path in route.paths.iter() {
 			if path.hops.len() == 0 {
 				log_error!(logger, "Unusable path in route (path.hops.len() must be at least 1");
