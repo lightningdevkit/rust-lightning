@@ -6757,7 +6757,12 @@ where
 						return Ok(NotifyOption::SkipPersistNoEvents);
 					} else {
 						log_debug!(self.logger, "Received channel_update {:?} for channel {}.", msg, chan_id);
-						try_chan_phase_entry!(self, chan.channel_update(&msg), chan_phase_entry);
+						let did_change = try_chan_phase_entry!(self, chan.channel_update(&msg), chan_phase_entry);
+						// If nothing changed after applying their update, we don't need to bother
+						// persisting.
+						if !did_change {
+							return Ok(NotifyOption::SkipPersistNoEvents);
+						}
 					}
 				} else {
 					return try_chan_phase_entry!(self, Err(ChannelError::Close(
