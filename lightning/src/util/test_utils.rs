@@ -13,7 +13,7 @@ use crate::chain::chaininterface;
 use crate::chain::chaininterface::ConfirmationTarget;
 use crate::chain::chaininterface::FEERATE_FLOOR_SATS_PER_KW;
 use crate::chain::chainmonitor;
-use crate::chain::chainmonitor::MonitorUpdateId;
+use crate::chain::chainmonitor::{MonitorUpdateId, UpdateOrigin};
 use crate::chain::channelmonitor;
 use crate::chain::channelmonitor::MonitorEvent;
 use crate::chain::transaction::OutPoint;
@@ -428,7 +428,8 @@ impl<Signer: sign::WriteableEcdsaChannelSigner> chainmonitor::Persist<Signer> fo
 		if let Some(update_ret) = self.update_rets.lock().unwrap().pop_front() {
 			ret = update_ret;
 		}
-		if update.is_none() {
+		let is_chain_sync = if let UpdateOrigin::ChainSync(_) = update_id.contents { true } else { false };
+		if is_chain_sync {
 			self.chain_sync_monitor_persistences.lock().unwrap().entry(funding_txo).or_insert(HashSet::new()).insert(update_id);
 		} else {
 			self.offchain_monitor_updates.lock().unwrap().entry(funding_txo).or_insert(HashSet::new()).insert(update_id);
