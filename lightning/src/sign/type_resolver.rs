@@ -24,6 +24,7 @@ impl<ECS: EcdsaChannelSigner> ChannelSignerType<ECS>{
 		}
 	}
 
+	#[allow(unused)]
 	pub(crate) fn as_mut_ecdsa(&mut self) -> Option<&mut ECS> {
 		match self {
 			ChannelSignerType::Ecdsa(ecs) => Some(ecs)

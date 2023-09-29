@@ -1502,6 +1502,9 @@ impl OutboundPayments {
 		&self, pending_events: &Mutex<VecDeque<(events::Event, Option<EventCompletionAction>)>>)
 	{
 		let mut pending_outbound_payments = self.pending_outbound_payments.lock().unwrap();
+		#[cfg(not(invreqfailed))]
+		let pending_events = pending_events.lock().unwrap();
+		#[cfg(invreqfailed)]
 		let mut pending_events = pending_events.lock().unwrap();
 		pending_outbound_payments.retain(|payment_id, payment| {
 			// If an outbound payment was completed, and no pending HTLCs remain, we should remove it
@@ -1540,6 +1543,7 @@ impl OutboundPayments {
 				if *timer_ticks_without_response <= INVOICE_REQUEST_TIMEOUT_TICKS {
 					true
 				} else {
+					#[cfg(invreqfailed)]
 					pending_events.push_back(
 						(events::Event::InvoiceRequestFailed { payment_id: *payment_id }, None)
 					);
@@ -1692,6 +1696,7 @@ impl OutboundPayments {
 					payment.remove();
 				}
 			} else if let PendingOutboundPayment::AwaitingInvoice { .. } = payment.get() {
+				#[cfg(invreqfailed)]
 				pending_events.lock().unwrap().push_back((events::Event::InvoiceRequestFailed {
 					payment_id,
 				}, None));
@@ -1782,7 +1787,9 @@ mod tests {
 	use crate::ln::channelmanager::{PaymentId, RecipientOnionFields};
 	use crate::ln::features::{ChannelFeatures, NodeFeatures};
 	use crate::ln::msgs::{ErrorAction, LightningError};
-	use crate::ln::outbound_payment::{Bolt12PaymentError, INVOICE_REQUEST_TIMEOUT_TICKS, OutboundPayments, Retry, RetryableSendFailure};
+	use crate::ln::outbound_payment::{Bolt12PaymentError, OutboundPayments, Retry, RetryableSendFailure};
+	#[cfg(invreqfailed)]
+	use crate::ln::outbound_payment::INVOICE_REQUEST_TIMEOUT_TICKS;
 	use crate::offers::invoice::DEFAULT_RELATIVE_EXPIRY;
 	use crate::offers::offer::OfferBuilder;
 	use crate::offers::test_utils::*;
@@ -1985,6 +1992,7 @@ mod tests {
 	}
 
 	#[test]
+	#[cfg(invreqfailed)]
 	fn removes_stale_awaiting_invoice() {
 		let pending_events = Mutex::new(VecDeque::new());
 		let outbound_payments = OutboundPayments::new();
@@ -2023,6 +2031,7 @@ mod tests {
 	}
 
 	#[test]
+	#[cfg(invreqfailed)]
 	fn removes_abandoned_awaiting_invoice() {
 		let pending_events = Mutex::new(VecDeque::new());
 		let outbound_payments = OutboundPayments::new();

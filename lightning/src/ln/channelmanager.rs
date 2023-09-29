@@ -3549,19 +3549,10 @@ where
 	/// wait until you receive either a [`Event::PaymentFailed`] or [`Event::PaymentSent`] event to
 	/// determine the ultimate status of a payment.
 	///
-	/// # Requested Invoices
-	///
-	/// In the case of paying a [`Bolt12Invoice`], abandoning the payment prior to receiving the
-	/// invoice will result in an [`Event::InvoiceRequestFailed`] and prevent any attempts at paying
-	/// it once received. The other events may only be generated once the invoice has been received.
-	///
 	/// # Restart Behavior
 	///
 	/// If an [`Event::PaymentFailed`] is generated and we restart without first persisting the
-	/// [`ChannelManager`], another [`Event::PaymentFailed`] may be generated; likewise for
-	/// [`Event::InvoiceRequestFailed`].
-	///
-	/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
+	/// [`ChannelManager`], another [`Event::PaymentFailed`] may be generated.
 	pub fn abandon_payment(&self, payment_id: PaymentId) {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 		self.pending_outbound_payments.abandon_payment(payment_id, PaymentFailureReason::UserAbandoned, &self.pending_events);
@@ -3902,7 +3893,7 @@ where
 				btree_map::Entry::Vacant(vacant) => Some(vacant.insert(Vec::new())),
 			}
 		});
-		for (channel_idx, &(temporary_channel_id, counterparty_node_id)) in temporary_channels.iter().enumerate() {
+		for &(temporary_channel_id, counterparty_node_id) in temporary_channels.iter() {
 			result = result.and_then(|_| self.funding_transaction_generated_intern(
 				temporary_channel_id,
 				counterparty_node_id,
