@@ -764,14 +764,20 @@ where C::Target: chain::Filter,
 				let monitor = &monitor_state.monitor;
 				log_trace!(self.logger, "Updating ChannelMonitor for channel {}", log_funding_info!(monitor));
 				let update_res = monitor.update_monitor(update, &self.broadcaster, &*self.fee_estimator, &self.logger);
-				if update_res.is_err() {
-					log_error!(self.logger, "Failed to update ChannelMonitor for channel {}.", log_funding_info!(monitor));
-				}
-				// Even if updating the monitor returns an error, the monitor's state will
-				// still be changed. So, persist the updated monitor despite the error.
+
 				let update_id = MonitorUpdateId::from_monitor_update(update);
 				let mut pending_monitor_updates = monitor_state.pending_monitor_updates.lock().unwrap();
-				let persist_res = self.persister.update_persisted_channel(funding_txo, Some(update), monitor, update_id);
+				let persist_res = if update_res.is_err() {
+					// Even if updating the monitor returns an error, the monitor's state will
+					// still be changed. Therefore, we should persist the updated monitor despite the error.
+					// We don't want to persist a `monitor_update` which results in a failure to apply later
+					// while reading `channel_monitor` with updates from storage. Instead, we should persist
+					// the entire `channel_monitor` here.
+					log_warn!(self.logger, "Failed to update ChannelMonitor for channel {}. Going ahead and persisting the entire ChannelMonitor", log_funding_info!(monitor));
+					self.persister.update_persisted_channel(funding_txo, None, monitor, update_id)
+				} else {
+					self.persister.update_persisted_channel(funding_txo, Some(update), monitor, update_id)
+				};
 				match persist_res {
 					ChannelMonitorUpdateStatus::InProgress => {
 						pending_monitor_updates.push(update_id);
