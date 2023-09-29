@@ -1672,6 +1672,8 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 
 	/// Returns the descriptors for relevant outputs (i.e., those that we can spend) within the
 	/// transaction if they exist and the transaction has at least [`ANTI_REORG_DELAY`]
+	/// confirmations. For [`SpendableOutputDescriptor::DelayedPaymentOutput`] descriptors to be
+	/// returned, the transaction must have at least `max(ANTI_REORG_DELAY, to_self_delay)`
 	/// confirmations.
 	///
 	/// Descriptors returned by this method are primarily exposed via [`Event::SpendableOutputs`]
@@ -1689,11 +1691,16 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 	pub fn get_spendable_outputs(&self, tx: &Transaction, confirmation_height: u32) -> Vec<SpendableOutputDescriptor> {
 		let inner = self.inner.lock().unwrap();
 		let current_height = inner.best_block.height;
-		if current_height.saturating_sub(ANTI_REORG_DELAY) + 1 >= confirmation_height {
-			inner.get_spendable_outputs(tx)
-		} else {
-			Vec::new()
-		}
+		let mut spendable_outputs = inner.get_spendable_outputs(tx);
+		spendable_outputs.retain(|descriptor| {
+			let mut conf_threshold = current_height.saturating_sub(ANTI_REORG_DELAY) + 1;
+			if let SpendableOutputDescriptor::DelayedPaymentOutput(descriptor) = descriptor {
+				conf_threshold = cmp::min(conf_threshold,
+					current_height.saturating_sub(descriptor.to_self_delay as u32) + 1);
+			}
+			conf_threshold >= confirmation_height
+		});
+		spendable_outputs
 	}
 }
 
