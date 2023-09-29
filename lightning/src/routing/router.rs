@@ -7841,6 +7841,57 @@ mod tests {
 		assert_eq!(route.paths[0].hops[1].short_channel_id, 45);
 		assert_eq!(route.get_total_fees(), 123);
 	}
+
+	#[test]
+	fn allow_us_being_first_hint() {
+		// Check that we consider a route hint even if we are the src of the first hop.
+		let secp_ctx = Secp256k1::new();
+		let logger = Arc::new(ln_test_utils::TestLogger::new());
+		let network_graph = Arc::new(NetworkGraph::new(Network::Testnet, Arc::clone(&logger)));
+		let scorer = ln_test_utils::TestScorer::new();
+		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
+		let random_seed_bytes = keys_manager.get_secure_random_bytes();
+		let config = UserConfig::default();
+
+		let (_, our_node_id, _, nodes) = get_nodes(&secp_ctx);
+
+		let amt_msat = 1_000_000;
+		let dest_node_id = nodes[1];
+
+		let first_hop = get_channel_details(Some(1), nodes[0], channelmanager::provided_init_features(&config), 10_000_000);
+		let first_hops = vec![first_hop];
+
+		let route_hint = RouteHint(vec![RouteHintHop {
+			src_node_id: our_node_id,
+			short_channel_id: 44,
+			fees: RoutingFees {
+				base_msat: 123,
+				proportional_millionths: 0,
+			},
+			cltv_expiry_delta: 10,
+			htlc_minimum_msat: None,
+			htlc_maximum_msat: None,
+		}]);
+
+		let payment_params = PaymentParameters::from_node_id(dest_node_id, 42)
+			.with_route_hints(vec![route_hint]).unwrap()
+			.with_bolt11_features(channelmanager::provided_invoice_features(&config)).unwrap();
+
+		let route_params = RouteParameters::from_payment_params_and_value(
+			payment_params, amt_msat);
+
+
+		let route = get_route(&our_node_id, &route_params, &network_graph.read_only(),
+			Some(&first_hops.iter().collect::<Vec<_>>()), Arc::clone(&logger), &scorer,
+			&Default::default(), &random_seed_bytes).unwrap();
+
+		assert_eq!(route.paths.len(), 1);
+		assert_eq!(route.get_total_amount(), amt_msat);
+		assert_eq!(route.get_total_fees(), 0);
+		assert_eq!(route.paths[0].hops.len(), 1);
+
+		assert_eq!(route.paths[0].hops[0].short_channel_id, 44);
+	}
 }
 
 #[cfg(all(any(test, ldk_bench), not(feature = "no-std")))]
