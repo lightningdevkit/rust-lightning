@@ -98,7 +98,7 @@ impl MonitorUpdateId {
 ///    If at some point no further progress can be made towards persisting the pending updates, the
 ///    node should simply shut down.
 ///
-///  * If the persistence has failed and cannot be retried further (e.g. because of some timeout),
+///  * If the persistence has failed and cannot be retried further (e.g. because of an outage),
 ///    [`ChannelMonitorUpdateStatus::UnrecoverableError`] can be used, though this will result in
 ///    an immediate panic and future operations in LDK generally failing.
 ///
@@ -113,7 +113,10 @@ impl MonitorUpdateId {
 ///  [`ChainMonitor::channel_monitor_updated`] must be called once for *each* update which occurs.
 ///
 ///  If at some point no further progress can be made towards persisting a pending update, the node
-///  should simply shut down.
+///  should simply shut down. Until then, the background task should either loop indefinitely, or
+///  persistence should be regularly retried with [`ChainMonitor::list_pending_monitor_updates`]
+///  and [`ChainMonitor::get_monitor`] (note that if a full monitor is persisted all pending
+///  monitor updates may be marked completed).
 ///
 /// # Using remote watchtowers
 ///

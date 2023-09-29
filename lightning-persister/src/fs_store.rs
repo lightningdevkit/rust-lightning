@@ -436,7 +436,7 @@ mod tests {
 	}
 
 	// Test that if the store's path to channel data is read-only, writing a
-	// monitor to it results in the store returning an InProgress.
+	// monitor to it results in the store returning an UnrecoverableError.
 	// Windows ignores the read-only flag for folders, so this test is Unix-only.
 	#[cfg(not(target_os = "windows"))]
 	#[test]
@@ -458,7 +458,7 @@ mod tests {
 		let update_id = update_map.get(&added_monitors[0].0.to_channel_id()).unwrap();
 
 		// Set the store's directory to read-only, which should result in
-		// returning a permanent failure when we then attempt to persist a
+		// returning an unrecoverable failure when we then attempt to persist a
 		// channel update.
 		let path = &store.get_data_dir();
 		let mut perms = fs::metadata(path).unwrap().permissions();

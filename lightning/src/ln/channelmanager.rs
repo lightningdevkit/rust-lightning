@@ -3471,9 +3471,8 @@ where
 	/// In general, a path may raise:
 	///  * [`APIError::InvalidRoute`] when an invalid route or forwarding parameter (cltv_delta, fee,
 	///    node public key) is specified.
-	///  * [`APIError::ChannelUnavailable`] if the next-hop channel is not available for updates
-	///    (including due to previous monitor update failure or new permanent monitor update
-	///    failure).
+	///  * [`APIError::ChannelUnavailable`] if the next-hop channel is not available as it has been
+	///    closed, doesn't exist, or the peer is currently disconnected.
 	///  * [`APIError::MonitorUpdateInProgress`] if a new monitor update failure prevented sending the
 	///    relevant updates.
 	///
