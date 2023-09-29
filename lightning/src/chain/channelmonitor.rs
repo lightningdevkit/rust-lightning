@@ -1672,6 +1672,8 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 
 	/// Returns the descriptors for relevant outputs (i.e., those that we can spend) within the
 	/// transaction if they exist and the transaction has at least [`ANTI_REORG_DELAY`]
+	/// confirmations. For [`SpendableOutputDescriptor::DelayedPaymentOutput`] descriptors to be
+	/// returned, the transaction must have at least `max(ANTI_REORG_DELAY, to_self_delay)`
 	/// confirmations.
 	///
 	/// Descriptors returned by this method are primarily exposed via [`Event::SpendableOutputs`]
@@ -1680,8 +1682,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 	/// missed/unhandled descriptors. For the purpose of gathering historical records, if the
 	/// channel close has fully resolved (i.e., [`ChannelMonitor::get_claimable_balances`] returns
 	/// an empty set), you can retrieve all spendable outputs by providing all descendant spending
-	/// transactions starting from the channel's funding or closing transaction that have at least
-	/// [`ANTI_REORG_DELAY`] confirmations.
+	/// transactions starting from the channel's funding transaction and going down three levels.
 	///
 	/// `tx` is a transaction we'll scan the outputs of. Any transaction can be provided. If any
 	/// outputs which can be spent by us are found, at least one descriptor is returned.
@@ -1690,11 +1691,16 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 	pub fn get_spendable_outputs(&self, tx: &Transaction, confirmation_height: u32) -> Vec<SpendableOutputDescriptor> {
 		let inner = self.inner.lock().unwrap();
 		let current_height = inner.best_block.height;
-		if current_height.saturating_sub(ANTI_REORG_DELAY) + 1 >= confirmation_height {
-			inner.get_spendable_outputs(tx)
-		} else {
-			Vec::new()
-		}
+		let mut spendable_outputs = inner.get_spendable_outputs(tx);
+		spendable_outputs.retain(|descriptor| {
+			let mut conf_threshold = current_height.saturating_sub(ANTI_REORG_DELAY) + 1;
+			if let SpendableOutputDescriptor::DelayedPaymentOutput(descriptor) = descriptor {
+				conf_threshold = cmp::min(conf_threshold,
+					current_height.saturating_sub(descriptor.to_self_delay as u32) + 1);
+			}
+			conf_threshold >= confirmation_height
+		});
+		spendable_outputs
 	}
 }
 

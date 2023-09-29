@@ -637,7 +637,7 @@ fn test_balances_on_local_commitment_htlcs() {
 	// First confirm the commitment transaction on nodes[0], which should leave us with three
 	// claimable balances.
 	let node_a_commitment_claimable = nodes[0].best_block_info().1 + BREAKDOWN_TIMEOUT as u32;
-	mine_transaction(&nodes[0], &as_txn[0]);
+	let commitment_tx_conf_height_a = block_from_scid(&mine_transaction(&nodes[0], &as_txn[0]));
 	check_added_monitors!(nodes[0], 1);
 	check_closed_broadcast!(nodes[0], true);
 	check_closed_event!(nodes[0], 1, ClosureReason::CommitmentTxConfirmed, [nodes[1].node.get_our_node_id()], 1000000);
@@ -729,13 +729,20 @@ fn test_balances_on_local_commitment_htlcs() {
 
 	// Connect blocks until the commitment transaction's CSV expires, providing us the relevant
 	// `SpendableOutputs` event and removing the claimable balance entry.
-	connect_blocks(&nodes[0], node_a_commitment_claimable - nodes[0].best_block_info().1);
+	connect_blocks(&nodes[0], node_a_commitment_claimable - nodes[0].best_block_info().1 - 1);
+	assert!(get_monitor!(nodes[0], chan_id)
+		.get_spendable_outputs(&as_txn[0], commitment_tx_conf_height_a).is_empty());
+	connect_blocks(&nodes[0], 1);
 	assert_eq!(vec![Balance::ClaimableAwaitingConfirmations {
 			amount_satoshis: 10_000,
 			confirmation_height: node_a_htlc_claimable,
 		}],
 		nodes[0].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances());
-	test_spendable_output(&nodes[0], &as_txn[0]);
+	let to_self_spendable_output = test_spendable_output(&nodes[0], &as_txn[0]);
+	assert_eq!(
+		get_monitor!(nodes[0], chan_id).get_spendable_outputs(&as_txn[0], commitment_tx_conf_height_a),
+		to_self_spendable_output
+	);
 
 	// Connect blocks until the HTLC-Timeout's CSV expires, providing us the relevant
 	// `SpendableOutputs` event and removing the claimable balance entry.
