@@ -37,7 +37,6 @@ use bitcoin::PublicKey as BitcoinPublicKey;
 use crate::io;
 use crate::prelude::*;
 use core::cmp;
-use crate::ln::chan_utils;
 use crate::util::transaction_utils::sort_outputs;
 use crate::ln::channel::{INITIAL_COMMITMENT_NUMBER, ANCHOR_OUTPUT_VALUE_SATOSHI};
 use core::ops::Deref;
@@ -843,7 +842,7 @@ pub fn get_anchor_redeemscript(funding_pubkey: &PublicKey) -> Script {
 
 /// Locates the output with an anchor script paying to `funding_pubkey` within `commitment_tx`.
 pub(crate) fn get_anchor_output<'a>(commitment_tx: &'a Transaction, funding_pubkey: &PublicKey) -> Option<(u32, &'a TxOut)> {
-	let anchor_script = chan_utils::get_anchor_redeemscript(funding_pubkey).to_v0_p2wsh();
+	let anchor_script = get_anchor_redeemscript(funding_pubkey).to_v0_p2wsh();
 	commitment_tx.output.iter().enumerate()
 		.find(|(_, txout)| txout.script_pubkey == anchor_script)
 		.map(|(idx, txout)| (idx as u32, txout))
@@ -851,7 +850,7 @@ pub(crate) fn get_anchor_output<'a>(commitment_tx: &'a Transaction, funding_pubk
 
 /// Returns the witness required to satisfy and spend an anchor input.
 pub fn build_anchor_input_witness(funding_key: &PublicKey, funding_sig: &Signature) -> Witness {
-	let anchor_redeem_script = chan_utils::get_anchor_redeemscript(funding_key);
+	let anchor_redeem_script = get_anchor_redeemscript(funding_key);
 	let mut ret = Witness::new();
 	ret.push_bitcoin_signature(&funding_sig.serialize_der(), EcdsaSighashType::All);
 	ret.push(anchor_redeem_script.as_bytes());
@@ -1533,7 +1532,7 @@ impl CommitmentTransaction {
 
 		let mut htlcs = Vec::with_capacity(htlcs_with_aux.len());
 		for (htlc, _) in htlcs_with_aux {
-			let script = chan_utils::get_htlc_redeemscript(&htlc, &channel_parameters.channel_type_features(), &keys);
+			let script = get_htlc_redeemscript(&htlc, &channel_parameters.channel_type_features(), &keys);
 			let txout = TxOut {
 				script_pubkey: script.to_v0_p2wsh(),
 				value: htlc.amount_msat / 1000,
@@ -1756,7 +1755,7 @@ impl<'a> TrustedCommitmentTransaction<'a> {
 			&self.inner.htlcs[htlc_index], &self.channel_type_features, &keys.broadcaster_htlc_key,
 			&keys.countersignatory_htlc_key, &keys.revocation_key
 		);
-		chan_utils::build_htlc_input_witness(
+		build_htlc_input_witness(
 			signature, counterparty_signature, preimage, &htlc_redeemscript, &self.channel_type_features,
 		)
 	}
