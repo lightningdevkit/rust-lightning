@@ -622,6 +622,13 @@ pub enum Balance {
 		/// The amount available to claim, in satoshis, excluding the on-chain fees which will be
 		/// required to do so.
 		amount_satoshis: u64,
+		/// The transaction fee we pay for the closing commitment transaction. This amount is not
+		/// included in the [`Balance::ClaimableOnChannelClose::amount_satoshis`] value.
+		///
+		/// Note that if this channel is inbound (and thus our counterparty pays the commitment
+		/// transaction fee) this value will be zero. For [`ChannelMonitor`]s created prior to LDK
+		/// 0.0.124, the channel is always treated as outbound (and thus this value is never zero).
+		transaction_fee_satoshis: u64,
 	},
 	/// The channel has been closed, and the given balance is ours but awaiting confirmations until
 	/// we consider it spendable.
@@ -912,6 +919,10 @@ pub(crate) struct ChannelMonitorImpl<Signer: EcdsaChannelSigner> {
 	// of block connection between ChannelMonitors and the ChannelManager.
 	funding_spend_seen: bool,
 
+	/// True if the commitment transaction fee is paid by us.
+	/// Added in 0.0.124.
+	holder_pays_commitment_tx_fee: Option<bool>,
+
 	/// Set to `Some` of the confirmed transaction spending the funding input of the channel after
 	/// reaching `ANTI_REORG_DELAY` confirmations.
 	funding_spend_confirmed: Option<Txid>,
@@ -1160,6 +1171,7 @@ impl<Signer: EcdsaChannelSigner> Writeable for ChannelMonitorImpl<Signer> {
 			(17, self.initial_counterparty_commitment_info, option),
 			(19, self.channel_id, required),
 			(21, self.balances_empty_height, option),
+			(23, self.holder_pays_commitment_tx_fee, option),
 		});
 
 		Ok(())
@@ -1261,7 +1273,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 
 	pub(crate) fn new(secp_ctx: Secp256k1<secp256k1::All>, keys: Signer, shutdown_script: Option<ScriptBuf>,
 	                  on_counterparty_tx_csv: u16, destination_script: &Script, funding_info: (OutPoint, ScriptBuf),
-	                  channel_parameters: &ChannelTransactionParameters,
+	                  channel_parameters: &ChannelTransactionParameters, holder_pays_commitment_tx_fee: bool,
 	                  funding_redeemscript: ScriptBuf, channel_value_satoshis: u64,
 	                  commitment_transaction_number_obscure_factor: u64,
 	                  initial_holder_commitment_tx: HolderCommitmentTransaction,
@@ -1353,6 +1365,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 
 			onchain_tx_handler,
 
+			holder_pays_commitment_tx_fee: Some(holder_pays_commitment_tx_fee),
 			lockdown_from_offchain: false,
 			holder_tx_signed: false,
 			funding_spend_seen: false,
@@ -2306,8 +2319,11 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 			}
 		} else {
 			let mut claimable_inbound_htlc_value_sat = 0;
+			let mut nondust_htlc_count = 0;
 			for (htlc, _, source) in us.current_holder_commitment_tx.htlc_outputs.iter() {
-				if htlc.transaction_output_index.is_none() { continue; }
+				if htlc.transaction_output_index.is_some() {
+					nondust_htlc_count += 1;
+				} else { continue; }
 				if htlc.offered {
 					let outbound_payment = match source {
 						None => {
@@ -2337,6 +2353,11 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 			}
 			res.push(Balance::ClaimableOnChannelClose {
 				amount_satoshis: us.current_holder_commitment_tx.to_self_value_sat + claimable_inbound_htlc_value_sat,
+				transaction_fee_satoshis: if us.holder_pays_commitment_tx_fee.unwrap_or(true) {
+					chan_utils::commit_tx_fee_sat(
+						us.current_holder_commitment_tx.feerate_per_kw, nondust_htlc_count,
+						us.onchain_tx_handler.channel_type_features())
+				} else { 0 },
 			});
 		}
 
@@ -4743,6 +4764,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 		let mut initial_counterparty_commitment_info = None;
 		let mut balances_empty_height = None;
 		let mut channel_id = None;
+		let mut holder_pays_commitment_tx_fee = None;
 		read_tlv_fields!(reader, {
 			(1, funding_spend_confirmed, option),
 			(3, htlcs_resolved_on_chain, optional_vec),
@@ -4755,6 +4777,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 			(17, initial_counterparty_commitment_info, option),
 			(19, channel_id, option),
 			(21, balances_empty_height, option),
+			(23, holder_pays_commitment_tx_fee, option),
 		});
 
 		// `HolderForceClosedWithInfo` replaced `HolderForceClosed` in v0.0.122. If we have both
@@ -4824,6 +4847,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 
 			lockdown_from_offchain,
 			holder_tx_signed,
+			holder_pays_commitment_tx_fee,
 			funding_spend_seen: funding_spend_seen.unwrap(),
 			funding_spend_confirmed,
 			confirmed_commitment_tx_counterparty_output,
@@ -5063,7 +5087,7 @@ mod tests {
 		let monitor = ChannelMonitor::new(Secp256k1::new(), keys,
 			Some(ShutdownScript::new_p2wpkh_from_pubkey(shutdown_pubkey).into_inner()), 0, &ScriptBuf::new(),
 			(OutPoint { txid: Txid::from_slice(&[43; 32]).unwrap(), index: 0 }, ScriptBuf::new()),
-			&channel_parameters, ScriptBuf::new(), 46, 0, HolderCommitmentTransaction::dummy(&mut Vec::new()),
+			&channel_parameters, true, ScriptBuf::new(), 46, 0, HolderCommitmentTransaction::dummy(&mut Vec::new()),
 			best_block, dummy_key, channel_id);
 
 		let mut htlcs = preimages_slice_to_htlcs!(preimages[0..10]);
@@ -5311,7 +5335,7 @@ mod tests {
 		let monitor = ChannelMonitor::new(Secp256k1::new(), keys,
 			Some(ShutdownScript::new_p2wpkh_from_pubkey(shutdown_pubkey).into_inner()), 0, &ScriptBuf::new(),
 			(OutPoint { txid: Txid::from_slice(&[43; 32]).unwrap(), index: 0 }, ScriptBuf::new()),
-			&channel_parameters, ScriptBuf::new(), 46, 0, HolderCommitmentTransaction::dummy(&mut Vec::new()),
+			&channel_parameters, true, ScriptBuf::new(), 46, 0, HolderCommitmentTransaction::dummy(&mut Vec::new()),
 			best_block, dummy_key, channel_id);
 
 		let chan_id = monitor.inner.lock().unwrap().channel_id();
