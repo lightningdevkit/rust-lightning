@@ -2294,8 +2294,8 @@ fn test_anchors_aggregated_revoked_htlc_tx() {
 
 	assert!(nodes[1].chain_monitor.chain_monitor.get_and_clear_pending_events().is_empty());
 	let spendable_output_events = nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events();
-	assert_eq!(spendable_output_events.len(), 2);
-	for event in spendable_output_events.iter() {
+	assert_eq!(spendable_output_events.len(), 4);
+	for event in spendable_output_events {
 		if let Event::SpendableOutputs { outputs, channel_id } = event {
 			assert_eq!(outputs.len(), 1);
 			assert!(vec![chan_b.2, chan_a.2].contains(&channel_id.unwrap()));
@@ -2303,7 +2303,11 @@ fn test_anchors_aggregated_revoked_htlc_tx() {
 				&[&outputs[0]], Vec::new(), Script::new_op_return(&[]), 253, None, &Secp256k1::new(),
 			).unwrap();
 
-			check_spends!(spend_tx, revoked_claim_transactions.get(&spend_tx.input[0].previous_output.txid).unwrap());
+			if let SpendableOutputDescriptor::StaticPaymentOutput(_) = &outputs[0] {
+				check_spends!(spend_tx, &revoked_commitment_a, &revoked_commitment_b);
+			} else {
+				check_spends!(spend_tx, revoked_claim_transactions.get(&spend_tx.input[0].previous_output.txid).unwrap());
+			}
 		} else {
 			panic!("unexpected event");
 		}
@@ -2320,4 +2324,91 @@ fn test_anchors_aggregated_revoked_htlc_tx() {
 	// The 6 claimable balances correspond to his `to_self` outputs and the 2 HTLC outputs in each
 	// revoked commitment which Bob has the preimage for.
 	assert_eq!(nodes[1].chain_monitor.chain_monitor.get_claimable_balances(&[]).len(), 6);
+}
+
+fn do_test_anchors_monitor_fixes_counterparty_payment_script_on_reload(confirm_commitment_before_reload: bool) {
+	// Tests that we'll fix a ChannelMonitor's `counterparty_payment_script` for an anchor outputs
+	// channel upon deserialization.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let persister;
+	let chain_monitor;
+	let mut user_config = test_default_channel_config();
+	user_config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
+	user_config.manually_accept_inbound_channels = true;
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(user_config), Some(user_config)]);
+	let node_deserialized;
+	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let (_, _, chan_id, funding_tx) = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100_000, 50_000_000);
+
+	// Set the monitor's `counterparty_payment_script` to a dummy P2WPKH script.
+	let secp = Secp256k1::new();
+	let privkey = bitcoin::PrivateKey::from_slice(&[1; 32], bitcoin::Network::Testnet).unwrap();
+	let pubkey = bitcoin::PublicKey::from_private_key(&secp, &privkey);
+	let p2wpkh_script = Script::new_v0_p2wpkh(&pubkey.wpubkey_hash().unwrap());
+	get_monitor!(nodes[1], chan_id).set_counterparty_payment_script(p2wpkh_script.clone());
+	assert_eq!(get_monitor!(nodes[1], chan_id).get_counterparty_payment_script(), p2wpkh_script);
+
+	// Confirm the counterparty's commitment and reload the monitor (either before or after) such
+	// that we arrive at the correct `counterparty_payment_script` after the reload.
+	nodes[0].node.force_close_broadcasting_latest_txn(&chan_id, &nodes[1].node.get_our_node_id()).unwrap();
+	check_added_monitors(&nodes[0], 1);
+	check_closed_broadcast(&nodes[0], 1, true);
+	check_closed_event!(&nodes[0], 1, ClosureReason::HolderForceClosed, false,
+		 [nodes[1].node.get_our_node_id()], 100000);
+
+	let commitment_tx = {
+		let mut txn = nodes[0].tx_broadcaster.unique_txn_broadcast();
+		assert_eq!(txn.len(), 1);
+		assert_eq!(txn[0].output.len(), 4);
+		check_spends!(txn[0], funding_tx);
+		txn.pop().unwrap()
+	};
+
+	mine_transaction(&nodes[0], &commitment_tx);
+	let commitment_tx_conf_height = if confirm_commitment_before_reload {
+		// We should expect our round trip serialization check to fail as we're writing the monitor
+		// with the incorrect P2WPKH script but reading it with the correct P2WSH script.
+		*nodes[1].chain_monitor.expect_monitor_round_trip_fail.lock().unwrap() = Some(chan_id);
+		let commitment_tx_conf_height = block_from_scid(&mine_transaction(&nodes[1], &commitment_tx));
+		let serialized_monitor = get_monitor!(nodes[1], chan_id).encode();
+		reload_node!(nodes[1], user_config, &nodes[1].node.encode(), &[&serialized_monitor], persister, chain_monitor, node_deserialized);
+		commitment_tx_conf_height
+	} else {
+		let serialized_monitor = get_monitor!(nodes[1], chan_id).encode();
+		reload_node!(nodes[1], user_config, &nodes[1].node.encode(), &[&serialized_monitor], persister, chain_monitor, node_deserialized);
+		let commitment_tx_conf_height = block_from_scid(&mine_transaction(&nodes[1], &commitment_tx));
+		check_added_monitors(&nodes[1], 1);
+		check_closed_broadcast(&nodes[1], 1, true);
+		commitment_tx_conf_height
+	};
+	check_closed_event!(&nodes[1], 1, ClosureReason::CommitmentTxConfirmed, false,
+		 [nodes[0].node.get_our_node_id()], 100000);
+	assert!(get_monitor!(nodes[1], chan_id).get_counterparty_payment_script().is_v0_p2wsh());
+
+	connect_blocks(&nodes[0], ANTI_REORG_DELAY - 1);
+	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
+
+	if confirm_commitment_before_reload {
+		// If we saw the commitment before our `counterparty_payment_script` was fixed, we'll never
+		// get the spendable output event for the `to_remote` output, so we'll need to get it
+		// manually via `get_spendable_outputs`.
+		check_added_monitors(&nodes[1], 1);
+		let outputs = get_monitor!(nodes[1], chan_id).get_spendable_outputs(&commitment_tx, commitment_tx_conf_height);
+		assert_eq!(outputs.len(), 1);
+		let spend_tx = nodes[1].keys_manager.backing.spend_spendable_outputs(
+			&[&outputs[0]], Vec::new(), Builder::new().push_opcode(opcodes::all::OP_RETURN).into_script(),
+			253, None, &secp
+		).unwrap();
+		check_spends!(spend_tx, &commitment_tx);
+	} else {
+		test_spendable_output(&nodes[1], &commitment_tx);
+	}
+}
+
+#[test]
+fn test_anchors_monitor_fixes_counterparty_payment_script_on_reload() {
+	do_test_anchors_monitor_fixes_counterparty_payment_script_on_reload(false);
+	do_test_anchors_monitor_fixes_counterparty_payment_script_on_reload(true);
 }

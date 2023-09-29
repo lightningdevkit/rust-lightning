@@ -207,6 +207,9 @@ pub struct TestChainMonitor<'a> {
 	/// ChannelForceClosed event for the given channel_id with should_broadcast set to the given
 	/// boolean.
 	pub expect_channel_force_closed: Mutex<Option<(ChannelId, bool)>>,
+	/// If this is set to Some(), the next round trip serialization check will not hold after an
+	/// update_channel call (not watch_channel) for the given channel_id.
+	pub expect_monitor_round_trip_fail: Mutex<Option<ChannelId>>,
 }
 impl<'a> TestChainMonitor<'a> {
 	pub fn new(chain_source: Option<&'a TestChainSource>, broadcaster: &'a chaininterface::BroadcasterInterface, logger: &'a TestLogger, fee_estimator: &'a TestFeeEstimator, persister: &'a chainmonitor::Persist<TestChannelSigner>, keys_manager: &'a TestKeysInterface) -> Self {
@@ -217,6 +220,7 @@ impl<'a> TestChainMonitor<'a> {
 			chain_monitor: chainmonitor::ChainMonitor::new(chain_source, broadcaster, logger, fee_estimator, persister),
 			keys_manager,
 			expect_channel_force_closed: Mutex::new(None),
+			expect_monitor_round_trip_fail: Mutex::new(None),
 		}
 	}
 
@@ -267,7 +271,12 @@ impl<'a> chain::Watch<TestChannelSigner> for TestChainMonitor<'a> {
 		monitor.write(&mut w).unwrap();
 		let new_monitor = <(BlockHash, channelmonitor::ChannelMonitor<TestChannelSigner>)>::read(
 			&mut io::Cursor::new(&w.0), (self.keys_manager, self.keys_manager)).unwrap().1;
-		assert!(new_monitor == *monitor);
+		if let Some(chan_id) = self.expect_monitor_round_trip_fail.lock().unwrap().take() {
+			assert_eq!(chan_id, funding_txo.to_channel_id());
+			assert!(new_monitor != *monitor);
+		} else {
+			assert!(new_monitor == *monitor);
+		}
 		self.added_monitors.lock().unwrap().push((funding_txo, new_monitor));
 		update_res
 	}

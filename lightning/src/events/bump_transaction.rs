@@ -26,7 +26,7 @@ use crate::ln::chan_utils::{
 use crate::ln::features::ChannelTypeFeatures;
 use crate::ln::PaymentPreimage;
 use crate::prelude::*;
-use crate::sign::{EcdsaChannelSigner, SignerProvider, WriteableEcdsaChannelSigner};
+use crate::sign::{EcdsaChannelSigner, SignerProvider, WriteableEcdsaChannelSigner, P2WPKH_WITNESS_WEIGHT};
 use crate::sync::Mutex;
 use crate::util::logger::Logger;
 
@@ -384,12 +384,6 @@ pub struct Utxo {
 }
 
 impl Utxo {
-	const P2WPKH_WITNESS_WEIGHT: u64 = 1 /* num stack items */ +
-		1 /* sig length */ +
-		73 /* sig including sighash flag */ +
-		1 /* pubkey length */ +
-		33 /* pubkey */;
-
 	/// Returns a `Utxo` with the `satisfaction_weight` estimate for a legacy P2PKH output.
 	pub fn new_p2pkh(outpoint: OutPoint, value: u64, pubkey_hash: &PubkeyHash) -> Self {
 		let script_sig_size = 1 /* script_sig length */ +
@@ -419,7 +413,7 @@ impl Utxo {
 				value,
 				script_pubkey: Script::new_p2sh(&Script::new_v0_p2wpkh(pubkey_hash).script_hash()),
 			},
-			satisfaction_weight: script_sig_size * WITNESS_SCALE_FACTOR as u64 + Self::P2WPKH_WITNESS_WEIGHT,
+			satisfaction_weight: script_sig_size * WITNESS_SCALE_FACTOR as u64 + P2WPKH_WITNESS_WEIGHT,
 		}
 	}
 
@@ -431,7 +425,7 @@ impl Utxo {
 				value,
 				script_pubkey: Script::new_v0_p2wpkh(pubkey_hash),
 			},
-			satisfaction_weight: EMPTY_SCRIPT_SIG_WEIGHT + Self::P2WPKH_WITNESS_WEIGHT,
+			satisfaction_weight: EMPTY_SCRIPT_SIG_WEIGHT + P2WPKH_WITNESS_WEIGHT,
 		}
 	}
 }

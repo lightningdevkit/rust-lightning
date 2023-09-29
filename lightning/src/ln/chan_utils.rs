@@ -19,7 +19,7 @@ use bitcoin::util::address::Payload;
 use bitcoin::hashes::{Hash, HashEngine};
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::ripemd160::Hash as Ripemd160;
-use bitcoin::hash_types::{Txid, PubkeyHash};
+use bitcoin::hash_types::{Txid, PubkeyHash, WPubkeyHash};
 
 use crate::chain::chaininterface::fee_for_weight;
 use crate::chain::package::WEIGHT_REVOKED_OUTPUT;
@@ -475,7 +475,7 @@ impl_writeable_tlv_based!(TxCreationKeys, {
 });
 
 /// One counterparty's public keys which do not change over the life of a channel.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct ChannelPublicKeys {
 	/// The public key which is used to sign all commitment transactions, as it appears in the
 	/// on-chain channel lock-in 2-of-2 multisig output.
@@ -554,6 +554,16 @@ pub fn get_revokeable_redeemscript(revocation_key: &PublicKey, contest_delay: u1
 	              .into_script();
 	debug_assert!(res.len() <= REVOKEABLE_REDEEMSCRIPT_MAX_LENGTH);
 	res
+}
+
+/// Returns the script for the counterparty's output on a holder's commitment transaction based on
+/// the channel type.
+pub fn get_counterparty_payment_script(channel_type_features: &ChannelTypeFeatures, payment_key: &PublicKey) -> Script {
+	if channel_type_features.supports_anchors_zero_fee_htlc_tx() {
+		get_to_countersignatory_with_anchors_redeemscript(payment_key).to_v0_p2wsh()
+	} else {
+		Script::new_v0_p2wpkh(&WPubkeyHash::hash(&payment_key.serialize()))
+	}
 }
 
 /// Information about an HTLC as it appears in a commitment transaction
@@ -853,7 +863,7 @@ pub fn build_anchor_input_witness(funding_key: &PublicKey, funding_sig: &Signatu
 ///
 /// Normally, this is converted to the broadcaster/countersignatory-organized DirectedChannelTransactionParameters
 /// before use, via the as_holder_broadcastable and as_counterparty_broadcastable functions.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct ChannelTransactionParameters {
 	/// Holder public keys
 	pub holder_pubkeys: ChannelPublicKeys,
@@ -873,7 +883,7 @@ pub struct ChannelTransactionParameters {
 }
 
 /// Late-bound per-channel counterparty data used to build transactions.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct CounterpartyChannelTransactionParameters {
 	/// Counter-party public keys
 	pub pubkeys: ChannelPublicKeys,
