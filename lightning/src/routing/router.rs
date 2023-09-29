@@ -1622,9 +1622,13 @@ where L::Target: Logger {
 			|info| info.features.supports_basic_mpp()))
 	} else { false };
 
-	log_trace!(logger, "Searching for a route from payer {} to {} {} MPP and {} first hops {}overriding the network graph", our_node_pubkey,
-		LoggedPayeePubkey(payment_params.payee.node_id()), if allow_mpp { "with" } else { "without" },
-		first_hops.map(|hops| hops.len()).unwrap_or(0), if first_hops.is_some() { "" } else { "not " });
+	let max_total_routing_fee_msat = route_params.max_total_routing_fee_msat.unwrap_or(u64::max_value());
+
+	log_trace!(logger, "Searching for a route from payer {} to {} {} MPP and {} first hops {}overriding the network graph with a fee limit of {} msat",
+		our_node_pubkey, LoggedPayeePubkey(payment_params.payee.node_id()),
+		if allow_mpp { "with" } else { "without" },
+		first_hops.map(|hops| hops.len()).unwrap_or(0), if first_hops.is_some() { "" } else { "not " },
+		max_total_routing_fee_msat);
 
 	// Step (1).
 	// Prepare the data we'll use for payee-to-payer search by
@@ -1788,9 +1792,9 @@ where L::Target: Logger {
 					#[allow(unused_comparisons)] // $next_hops_path_htlc_minimum_msat is 0 in some calls so rustc complains
 					let may_overpay_to_meet_path_minimum_msat =
 						((amount_to_transfer_over_msat < $candidate.htlc_minimum_msat() &&
-						  recommended_value_msat > $candidate.htlc_minimum_msat()) ||
+						  recommended_value_msat >= $candidate.htlc_minimum_msat()) ||
 						 (amount_to_transfer_over_msat < $next_hops_path_htlc_minimum_msat &&
-						  recommended_value_msat > $next_hops_path_htlc_minimum_msat));
+						  recommended_value_msat >= $next_hops_path_htlc_minimum_msat));
 
 					let payment_failed_on_this_channel = scid_opt.map_or(false,
 						|scid| payment_params.previously_failed_channels.contains(&scid));
@@ -1890,7 +1894,6 @@ where L::Target: Logger {
 							}
 
 							// Ignore hops if augmenting the current path to them would put us over `max_total_routing_fee_msat`
-							let max_total_routing_fee_msat = route_params.max_total_routing_fee_msat.unwrap_or(u64::max_value());
 							if total_fee_msat > max_total_routing_fee_msat {
 								if should_log_candidate {
 									log_trace!(logger, "Ignoring {} due to exceeding max total routing fee limit.", LoggedCandidateHop(&$candidate));
@@ -2454,6 +2457,9 @@ where L::Target: Logger {
 		// because we deterministically terminated the search due to low liquidity.
 		if !found_new_path && channel_saturation_pow_half != 0 {
 			channel_saturation_pow_half = 0;
+		} else if !found_new_path && hit_minimum_limit && already_collected_value_msat < final_value_msat && path_value_msat != recommended_value_msat {
+			log_trace!(logger, "Failed to collect enough value, but running again to collect extra paths with a potentially higher limit.");
+			path_value_msat = recommended_value_msat;
 		} else if already_collected_value_msat >= recommended_value_msat || !found_new_path {
 			log_trace!(logger, "Have now collected {} msat (seeking {} msat) in paths. Last path loop {} a new path.",
 				already_collected_value_msat, recommended_value_msat, if found_new_path { "found" } else { "did not find" });
@@ -2625,14 +2631,6 @@ where L::Target: Logger {
 	// Make sure we would never create a route with more paths than we allow.
 	debug_assert!(paths.len() <= payment_params.max_path_count.into());
 
-	// Make sure we would never create a route whose total fees exceed max_total_routing_fee_msat.
-	if let Some(max_total_routing_fee_msat) = route_params.max_total_routing_fee_msat {
-		if paths.iter().map(|p| p.fee_msat()).sum::<u64>() > max_total_routing_fee_msat {
-			return Err(LightningError{err: format!("Failed to find route that adheres to the maximum total fee limit of {}msat",
-				max_total_routing_fee_msat), action: ErrorAction::IgnoreError});
-		}
-	}
-
 	if let Some(node_features) = payment_params.payee.node_features() {
 		for path in paths.iter_mut() {
 			path.hops.last_mut().unwrap().node_features = node_features.clone();
@@ -2640,6 +2638,15 @@ where L::Target: Logger {
 	}
 
 	let route = Route { paths, route_params: Some(route_params.clone()) };
+
+	// Make sure we would never create a route whose total fees exceed max_total_routing_fee_msat.
+	if let Some(max_total_routing_fee_msat) = route_params.max_total_routing_fee_msat {
+		if route.get_total_fees() > max_total_routing_fee_msat {
+			return Err(LightningError{err: format!("Failed to find route that adheres to the maximum total fee limit of {}msat",
+				max_total_routing_fee_msat), action: ErrorAction::IgnoreError});
+		}
+	}
+
 	log_info!(logger, "Got route: {}", log_route!(route));
 	Ok(route)
 }
@@ -3221,6 +3228,67 @@ mod tests {
 		assert_eq!(route.paths[0].hops[0].short_channel_id, 2);
 		let fees = route.paths[0].hops[0].fee_msat;
 		assert_eq!(fees, 5_000);
+	}
+
+	#[test]
+	fn htlc_minimum_recipient_overpay_test() {
+		let (secp_ctx, network_graph, gossip_sync, _, logger) = build_graph();
+		let (_, our_id, privkeys, nodes) = get_nodes(&secp_ctx);
+		let config = UserConfig::default();
+		let payment_params = PaymentParameters::from_node_id(nodes[2], 42).with_bolt11_features(channelmanager::provided_invoice_features(&config)).unwrap();
+		let scorer = ln_test_utils::TestScorer::new();
+		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
+		let random_seed_bytes = keys_manager.get_secure_random_bytes();
+
+		// Route to node2 over a single path which requires overpaying the recipient themselves.
+
+		// First disable all paths except the us -> node1 -> node2 path
+		update_channel(&gossip_sync, &secp_ctx, &privkeys[2], UnsignedChannelUpdate {
+			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			short_channel_id: 13,
+			timestamp: 2,
+			flags: 3,
+			cltv_expiry_delta: 0,
+			htlc_minimum_msat: 0,
+			htlc_maximum_msat: 0,
+			fee_base_msat: 0,
+			fee_proportional_millionths: 0,
+			excess_data: Vec::new()
+		});
+
+		// Set channel 4 to free but with a high htlc_minimum_msat
+		update_channel(&gossip_sync, &secp_ctx, &privkeys[1], UnsignedChannelUpdate {
+			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			short_channel_id: 4,
+			timestamp: 2,
+			flags: 0,
+			cltv_expiry_delta: 0,
+			htlc_minimum_msat: 15_000,
+			htlc_maximum_msat: MAX_VALUE_MSAT,
+			fee_base_msat: 0,
+			fee_proportional_millionths: 0,
+			excess_data: Vec::new()
+		});
+
+		// Now check that we'll fail to find a path if we fail to find a path if the htlc_minimum
+		// is overrun. Note that the fees are actually calculated on 3*payment amount as that's
+		// what we try to find a route for, so this test only just happens to work out to exactly
+		// the fee limit.
+		let mut route_params = RouteParameters::from_payment_params_and_value(
+			payment_params.clone(), 5_000);
+		route_params.max_total_routing_fee_msat = Some(9_999);
+		if let Err(LightningError{err, action: ErrorAction::IgnoreError}) = get_route(&our_id,
+			&route_params, &network_graph.read_only(), None, Arc::clone(&logger), &scorer,
+			&Default::default(), &random_seed_bytes) {
+				assert_eq!(err, "Failed to find route that adheres to the maximum total fee limit of 9999msat");
+		} else { panic!(); }
+
+		let mut route_params = RouteParameters::from_payment_params_and_value(
+			payment_params.clone(), 5_000);
+		route_params.max_total_routing_fee_msat = Some(10_000);
+		let route = get_route(&our_id, &route_params, &network_graph.read_only(), None,
+			Arc::clone(&logger), &scorer, &Default::default(), &random_seed_bytes).unwrap();
+		assert_eq!(route.get_total_fees(), 10_000);
 	}
 
 	#[test]
