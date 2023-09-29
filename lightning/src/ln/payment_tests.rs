@@ -147,6 +147,7 @@ fn mpp_retry() {
 	// Check the remaining max total routing fee for the second attempt is 50_000 - 1_000 msat fee
 	// used by the first path
 	route_params.max_total_routing_fee_msat = Some(max_total_routing_fee_msat - 1_000);
+	route.route_params = Some(route_params.clone());
 	nodes[0].router.expect_find_route(route_params, Ok(route));
 	nodes[0].node.process_pending_htlc_forwards();
 	check_added_monitors!(nodes[0], 1);
@@ -253,12 +254,12 @@ fn mpp_retry_overpay() {
 
 	route.paths.remove(0);
 	route_params.final_value_msat -= first_path_value;
-	route.route_params.as_mut().map(|p| p.final_value_msat -= first_path_value);
 	route_params.payment_params.previously_failed_channels.push(chan_4_update.contents.short_channel_id);
-
 	// Check the remaining max total routing fee for the second attempt accounts only for 1_000 msat
 	// base fee, but not for overpaid value of the first try.
 	route_params.max_total_routing_fee_msat.as_mut().map(|m| *m -= 1000);
+
+	route.route_params = Some(route_params.clone());
 	nodes[0].router.expect_find_route(route_params, Ok(route));
 	nodes[0].node.process_pending_htlc_forwards();
 
@@ -2738,7 +2739,7 @@ fn retry_multi_path_single_failed_payment() {
 
 	let mut retry_params = RouteParameters::from_payment_params_and_value(pay_params, 100_000_000);
 	retry_params.max_total_routing_fee_msat = None;
-	route.route_params.as_mut().unwrap().final_value_msat = 100_000_000;
+	route.route_params = Some(retry_params.clone());
 	nodes[0].router.expect_find_route(retry_params, Ok(route.clone()));
 
 	{
@@ -2809,9 +2810,7 @@ fn immediate_retry_on_failure() {
 				maybe_announced_channel: true,
 			}], blinded_tail: None },
 		],
-		route_params: Some(RouteParameters::from_payment_params_and_value(
-			PaymentParameters::from_node_id(nodes[1].node.get_our_node_id(), TEST_FINAL_CLTV),
-			100_000_001)),
+		route_params: Some(route_params.clone()),
 	};
 	nodes[0].router.expect_find_route(route_params.clone(), Ok(route.clone()));
 	// On retry, split the payment across both channels.
@@ -2821,9 +2820,9 @@ fn immediate_retry_on_failure() {
 	route.paths[1].hops[0].fee_msat = 50_000_001;
 	let mut pay_params = route_params.payment_params.clone();
 	pay_params.previously_failed_channels.push(chans[0].short_channel_id.unwrap());
-	nodes[0].router.expect_find_route(
-		RouteParameters::from_payment_params_and_value(pay_params, amt_msat),
-		Ok(route.clone()));
+	let retry_params = RouteParameters::from_payment_params_and_value(pay_params, amt_msat);
+	route.route_params = Some(retry_params.clone());
+	nodes[0].router.expect_find_route(retry_params, Ok(route.clone()));
 
 	nodes[0].node.send_payment(payment_hash, RecipientOnionFields::secret_only(payment_secret),
 		PaymentId(payment_hash.0), route_params, Retry::Attempts(1)).unwrap();
@@ -2933,6 +2932,7 @@ fn no_extra_retries_on_back_to_back_fail() {
 	route.paths[0].hops[1].fee_msat = amt_msat;
 	let mut retry_params = RouteParameters::from_payment_params_and_value(second_payment_params, amt_msat);
 	retry_params.max_total_routing_fee_msat = None;
+	route.route_params = Some(retry_params.clone());
 	nodes[0].router.expect_find_route(retry_params, Ok(route.clone()));
 
 	nodes[0].node.send_payment(payment_hash, RecipientOnionFields::secret_only(payment_secret),
@@ -3137,7 +3137,7 @@ fn test_simple_partial_retry() {
 	route.paths.remove(0);
 	let mut retry_params = RouteParameters::from_payment_params_and_value(second_payment_params, amt_msat / 2);
 	retry_params.max_total_routing_fee_msat = None;
-	route.route_params.as_mut().unwrap().final_value_msat = amt_msat / 2;
+	route.route_params = Some(retry_params.clone());
 	nodes[0].router.expect_find_route(retry_params, Ok(route.clone()));
 
 	nodes[0].node.send_payment(payment_hash, RecipientOnionFields::secret_only(payment_secret),
@@ -3316,7 +3316,7 @@ fn test_threaded_payment_retries() {
 
 	// from here on out, the retry `RouteParameters` amount will be amt/1000
 	route_params.final_value_msat /= 1000;
-	route.route_params.as_mut().unwrap().final_value_msat /= 1000;
+	route.route_params = Some(route_params.clone());
 	route.paths.pop();
 
 	let end_time = Instant::now() + Duration::from_secs(1);
@@ -3358,6 +3358,7 @@ fn test_threaded_payment_retries() {
 		new_route_params.payment_params.previously_failed_channels = previously_failed_channels.clone();
 		new_route_params.max_total_routing_fee_msat.as_mut().map(|m| *m -= 100_000);
 		route.paths[0].hops[1].short_channel_id += 1;
+		route.route_params = Some(new_route_params.clone());
 		nodes[0].router.expect_find_route(new_route_params, Ok(route.clone()));
 
 		let bs_fail_updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
@@ -3720,7 +3721,7 @@ fn test_retry_custom_tlvs() {
 	send_payment(&nodes[2], &vec!(&nodes[1])[..], 1_500_000);
 
 	let amt_msat = 1_000_000;
-	let (route, payment_hash, payment_preimage, payment_secret) =
+	let (mut route, payment_hash, payment_preimage, payment_secret) =
 		get_route_and_payment_hash!(nodes[0], nodes[2], amt_msat);
 
 	// Initiate the payment
@@ -3772,6 +3773,7 @@ fn test_retry_custom_tlvs() {
 
 	// Retry the payment and make sure it succeeds
 	route_params.payment_params.previously_failed_channels.push(chan_2_update.contents.short_channel_id);
+	route.route_params = Some(route_params.clone());
 	nodes[0].router.expect_find_route(route_params, Ok(route));
 	nodes[0].node.process_pending_htlc_forwards();
 	check_added_monitors!(nodes[0], 1);
