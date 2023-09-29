@@ -7695,6 +7695,152 @@ mod tests {
 		assert_eq!(route.paths.len(), 1);
 		assert_eq!(route.get_total_amount(), amt_msat);
 	}
+
+	#[test]
+	fn first_hop_preferred_over_hint() {
+		// Check that if we have a first hop to a peer we'd always prefer that over a route hint
+		// they gave us, but we'd still consider all subsequent hints if they are more attractive.
+		let secp_ctx = Secp256k1::new();
+		let logger = Arc::new(ln_test_utils::TestLogger::new());
+		let network_graph = Arc::new(NetworkGraph::new(Network::Testnet, Arc::clone(&logger)));
+		let gossip_sync = P2PGossipSync::new(Arc::clone(&network_graph), None, Arc::clone(&logger));
+		let scorer = ln_test_utils::TestScorer::new();
+		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
+		let random_seed_bytes = keys_manager.get_secure_random_bytes();
+		let config = UserConfig::default();
+
+		let amt_msat = 1_000_000;
+		let (our_privkey, our_node_id, privkeys, nodes) = get_nodes(&secp_ctx);
+
+		add_channel(&gossip_sync, &secp_ctx, &our_privkey, &privkeys[0],
+			ChannelFeatures::from_le_bytes(id_to_feature_flags(1)), 1);
+		update_channel(&gossip_sync, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
+			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			short_channel_id: 1,
+			timestamp: 1,
+			flags: 0,
+			cltv_expiry_delta: 42,
+			htlc_minimum_msat: 1_000,
+			htlc_maximum_msat: 10_000_000,
+			fee_base_msat: 800,
+			fee_proportional_millionths: 0,
+			excess_data: Vec::new()
+		});
+		update_channel(&gossip_sync, &secp_ctx, &privkeys[0], UnsignedChannelUpdate {
+			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			short_channel_id: 1,
+			timestamp: 1,
+			flags: 1,
+			cltv_expiry_delta: 42,
+			htlc_minimum_msat: 1_000,
+			htlc_maximum_msat: 10_000_000,
+			fee_base_msat: 800,
+			fee_proportional_millionths: 0,
+			excess_data: Vec::new()
+		});
+
+		add_channel(&gossip_sync, &secp_ctx, &privkeys[0], &privkeys[1],
+			ChannelFeatures::from_le_bytes(id_to_feature_flags(1)), 2);
+		update_channel(&gossip_sync, &secp_ctx, &privkeys[0], UnsignedChannelUpdate {
+			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			short_channel_id: 2,
+			timestamp: 2,
+			flags: 0,
+			cltv_expiry_delta: 42,
+			htlc_minimum_msat: 1_000,
+			htlc_maximum_msat: 10_000_000,
+			fee_base_msat: 800,
+			fee_proportional_millionths: 0,
+			excess_data: Vec::new()
+		});
+		update_channel(&gossip_sync, &secp_ctx, &privkeys[1], UnsignedChannelUpdate {
+			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			short_channel_id: 2,
+			timestamp: 2,
+			flags: 1,
+			cltv_expiry_delta: 42,
+			htlc_minimum_msat: 1_000,
+			htlc_maximum_msat: 10_000_000,
+			fee_base_msat: 800,
+			fee_proportional_millionths: 0,
+			excess_data: Vec::new()
+		});
+
+		let dest_node_id = nodes[2];
+
+		let route_hint = RouteHint(vec![RouteHintHop {
+			src_node_id: our_node_id,
+			short_channel_id: 44,
+			fees: RoutingFees {
+				base_msat: 234,
+				proportional_millionths: 0,
+			},
+			cltv_expiry_delta: 10,
+			htlc_minimum_msat: None,
+			htlc_maximum_msat: Some(5_000_000),
+		},
+		RouteHintHop {
+			src_node_id: nodes[0],
+			short_channel_id: 45,
+			fees: RoutingFees {
+				base_msat: 123,
+				proportional_millionths: 0,
+			},
+			cltv_expiry_delta: 10,
+			htlc_minimum_msat: None,
+			htlc_maximum_msat: None,
+		}]);
+
+		let payment_params = PaymentParameters::from_node_id(dest_node_id, 42)
+			.with_route_hints(vec![route_hint]).unwrap()
+			.with_bolt11_features(channelmanager::provided_invoice_features(&config)).unwrap();
+		let route_params = RouteParameters::from_payment_params_and_value(
+			payment_params, amt_msat);
+
+		// First create an insufficient first hop for channel with SCID 1 and check we'd use the
+		// route hint.
+		let first_hop = get_channel_details(Some(1), nodes[0],
+			channelmanager::provided_init_features(&config), 999_999);
+		let first_hops = vec![first_hop];
+
+		let route = get_route(&our_node_id, &route_params.clone(), &network_graph.read_only(),
+			Some(&first_hops.iter().collect::<Vec<_>>()), Arc::clone(&logger), &scorer,
+			&Default::default(), &random_seed_bytes).unwrap();
+		assert_eq!(route.paths.len(), 1);
+		assert_eq!(route.get_total_amount(), amt_msat);
+		assert_eq!(route.paths[0].hops.len(), 2);
+		assert_eq!(route.paths[0].hops[0].short_channel_id, 44);
+		assert_eq!(route.paths[0].hops[1].short_channel_id, 45);
+		assert_eq!(route.get_total_fees(), 123);
+
+		// Now check we would trust our first hop info, i.e., fail if we detect the route hint is
+		// for a first hop channel.
+		let mut first_hop = get_channel_details(Some(1), nodes[0], channelmanager::provided_init_features(&config), 999_999);
+		first_hop.outbound_scid_alias = Some(44);
+		let first_hops = vec![first_hop];
+
+		let route_res = get_route(&our_node_id, &route_params.clone(), &network_graph.read_only(),
+			Some(&first_hops.iter().collect::<Vec<_>>()), Arc::clone(&logger), &scorer,
+			&Default::default(), &random_seed_bytes);
+		assert!(route_res.is_err());
+
+		// Finally check we'd use the first hop if has sufficient outbound capacity. But we'd stil
+		// use the cheaper second hop of the route hint.
+		let mut first_hop = get_channel_details(Some(1), nodes[0],
+			channelmanager::provided_init_features(&config), 10_000_000);
+		first_hop.outbound_scid_alias = Some(44);
+		let first_hops = vec![first_hop];
+
+		let route = get_route(&our_node_id, &route_params.clone(), &network_graph.read_only(),
+			Some(&first_hops.iter().collect::<Vec<_>>()), Arc::clone(&logger), &scorer,
+			&Default::default(), &random_seed_bytes).unwrap();
+		assert_eq!(route.paths.len(), 1);
+		assert_eq!(route.get_total_amount(), amt_msat);
+		assert_eq!(route.paths[0].hops.len(), 2);
+		assert_eq!(route.paths[0].hops[0].short_channel_id, 1);
+		assert_eq!(route.paths[0].hops[1].short_channel_id, 45);
+		assert_eq!(route.get_total_fees(), 123);
+	}
 }
 
 #[cfg(all(any(test, ldk_bench), not(feature = "no-std")))]
