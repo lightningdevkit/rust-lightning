@@ -1,1 +1,0 @@
-* The `AvailableBalances::balance_msat` field has been removed in favor of `ChannelMonitor::get_claimable_balances`. `ChannelDetails` serialized with versions of LDK >= 0.0.117 will have their `balance_msat` field set to `next_outbound_htlc_limit_msat` when read by versions of LDK prior to 0.0.117 (#2476).
