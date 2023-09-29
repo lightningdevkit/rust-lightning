@@ -16,6 +16,7 @@ use rand::{thread_rng, Rng};
 
 use std::panic::RefUnwindSafe;
 use std::path::PathBuf;
+use std::sync::RwLock;
 
 pub fn random_storage_path() -> PathBuf {
 	let mut temp_path = std::env::temp_dir();
@@ -139,6 +140,7 @@ pub(crate) fn do_test_store<K: KVStore>(store_0: &K, store_1: &K) {
 
 // A `KVStore` impl for testing purposes that wraps all our `KVStore`s and asserts their synchronicity.
 pub(crate) struct TestSyncStore {
+	serializer: RwLock<()>,
 	test_store: TestStore,
 	fs_store: FilesystemStore,
 	sqlite_store: SqliteStore,
@@ -146,82 +148,28 @@ pub(crate) struct TestSyncStore {
 
 impl TestSyncStore {
 	pub(crate) fn new(dest_dir: PathBuf) -> Self {
-		let fs_store = FilesystemStore::new(dest_dir.clone());
-		let sqlite_store = SqliteStore::new(dest_dir,
-			Some("test_sync_db".to_string()), Some("test_sync_table".to_string())).unwrap();
+		let serializer = RwLock::new(());
+		let mut fs_dir = dest_dir.clone();
+		fs_dir.push("fs_store");
+		let fs_store = FilesystemStore::new(fs_dir);
+		let mut sql_dir = dest_dir.clone();
+		sql_dir.push("sqlite_store");
+		let sqlite_store = SqliteStore::new(
+			sql_dir,
+			Some("test_sync_db".to_string()),
+			Some("test_sync_table".to_string()),
+		)
+		.unwrap();
 		let test_store = TestStore::new(false);
-		Self { fs_store, sqlite_store, test_store }
-	}
-}
-
-impl KVStore for TestSyncStore {
-	fn read(&self, namespace: &str, sub_namespace: &str, key: &str) -> std::io::Result<Vec<u8>> {
-		let fs_res = self.fs_store.read(namespace, sub_namespace, key);
-		let sqlite_res = self.sqlite_store.read(namespace, sub_namespace, key);
-		let test_res = self.test_store.read(namespace, sub_namespace, key);
-
-		match fs_res {
-			Ok(read) => {
-				assert_eq!(read, sqlite_res.unwrap());
-				assert_eq!(read, test_res.unwrap());
-				Ok(read)
-			}
-			Err(e) => {
-				assert!(sqlite_res.is_err());
-				assert_eq!(e.kind(), unsafe { sqlite_res.unwrap_err_unchecked().kind() });
-				assert!(test_res.is_err());
-				assert_eq!(e.kind(), unsafe { test_res.unwrap_err_unchecked().kind() });
-				Err(e)
-			}
-		}
+		Self { serializer, fs_store, sqlite_store, test_store }
 	}
 
-	fn write(&self, namespace: &str, sub_namespace: &str, key: &str, buf: &[u8]) -> std::io::Result<()> {
-		let fs_res = self.fs_store.write(namespace, sub_namespace, key, buf);
-		let sqlite_res = self.sqlite_store.write(namespace, sub_namespace, key, buf);
-		let test_res = self.test_store.write(namespace, sub_namespace, key, buf);
-
-		assert!(self.list(namespace, sub_namespace).unwrap().contains(&key.to_string()));
-
-		match fs_res {
-			Ok(()) => {
-				assert!(sqlite_res.is_ok());
-				assert!(test_res.is_ok());
-				Ok(())
-			}
-			Err(e) => {
-				assert!(sqlite_res.is_err());
-				assert!(test_res.is_err());
-				Err(e)
-			}
-		}
-	}
-
-	fn remove(&self, namespace: &str, sub_namespace: &str, key: &str, lazy: bool) -> std::io::Result<()> {
-		let fs_res = self.fs_store.remove(namespace, sub_namespace, key, lazy);
-		let sqlite_res = self.sqlite_store.remove(namespace, sub_namespace, key, lazy);
-		let test_res = self.test_store.remove(namespace, sub_namespace, key, lazy);
-
-		assert!(!self.list(namespace, sub_namespace).unwrap().contains(&key.to_string()));
-
-		match fs_res {
-			Ok(()) => {
-				assert!(sqlite_res.is_ok());
-				assert!(test_res.is_ok());
-				Ok(())
-			}
-			Err(e) => {
-				assert!(sqlite_res.is_err());
-				assert!(test_res.is_err());
-				Err(e)
-			}
-		}
-	}
-
-	fn list(&self, namespace: &str, sub_namespace: &str) -> std::io::Result<Vec<String>> {
-		let fs_res = self.fs_store.list(namespace, sub_namespace);
-		let sqlite_res = self.sqlite_store.list(namespace, sub_namespace);
-		let test_res = self.test_store.list(namespace, sub_namespace);
+	fn do_list(
+		&self, primary_namespace: &str, secondary_namespace: &str,
+	) -> std::io::Result<Vec<String>> {
+		let fs_res = self.fs_store.list(primary_namespace, secondary_namespace);
+		let sqlite_res = self.sqlite_store.list(primary_namespace, secondary_namespace);
+		let test_res = self.test_store.list(primary_namespace, secondary_namespace);
 
 		match fs_res {
 			Ok(mut list) => {
@@ -243,5 +191,94 @@ impl KVStore for TestSyncStore {
 				Err(e)
 			}
 		}
+	}
+}
+
+impl KVStore for TestSyncStore {
+	fn read(
+		&self, primary_namespace: &str, secondary_namespace: &str, key: &str,
+	) -> std::io::Result<Vec<u8>> {
+		let _guard = self.serializer.read().unwrap();
+
+		let fs_res = self.fs_store.read(primary_namespace, secondary_namespace, key);
+		let sqlite_res = self.sqlite_store.read(primary_namespace, secondary_namespace, key);
+		let test_res = self.test_store.read(primary_namespace, secondary_namespace, key);
+
+		match fs_res {
+			Ok(read) => {
+				assert_eq!(read, sqlite_res.unwrap());
+				assert_eq!(read, test_res.unwrap());
+				Ok(read)
+			}
+			Err(e) => {
+				assert!(sqlite_res.is_err());
+				assert_eq!(e.kind(), unsafe { sqlite_res.unwrap_err_unchecked().kind() });
+				assert!(test_res.is_err());
+				assert_eq!(e.kind(), unsafe { test_res.unwrap_err_unchecked().kind() });
+				Err(e)
+			}
+		}
+	}
+
+	fn write(
+		&self, primary_namespace: &str, secondary_namespace: &str, key: &str, buf: &[u8],
+	) -> std::io::Result<()> {
+		let _guard = self.serializer.write().unwrap();
+		let fs_res = self.fs_store.write(primary_namespace, secondary_namespace, key, buf);
+		let sqlite_res = self.sqlite_store.write(primary_namespace, secondary_namespace, key, buf);
+		let test_res = self.test_store.write(primary_namespace, secondary_namespace, key, buf);
+
+		assert!(self
+			.do_list(primary_namespace, secondary_namespace)
+			.unwrap()
+			.contains(&key.to_string()));
+
+		match fs_res {
+			Ok(()) => {
+				assert!(sqlite_res.is_ok());
+				assert!(test_res.is_ok());
+				Ok(())
+			}
+			Err(e) => {
+				assert!(sqlite_res.is_err());
+				assert!(test_res.is_err());
+				Err(e)
+			}
+		}
+	}
+
+	fn remove(
+		&self, primary_namespace: &str, secondary_namespace: &str, key: &str, lazy: bool,
+	) -> std::io::Result<()> {
+		let _guard = self.serializer.write().unwrap();
+		let fs_res = self.fs_store.remove(primary_namespace, secondary_namespace, key, lazy);
+		let sqlite_res =
+			self.sqlite_store.remove(primary_namespace, secondary_namespace, key, lazy);
+		let test_res = self.test_store.remove(primary_namespace, secondary_namespace, key, lazy);
+
+		assert!(!self
+			.do_list(primary_namespace, secondary_namespace)
+			.unwrap()
+			.contains(&key.to_string()));
+
+		match fs_res {
+			Ok(()) => {
+				assert!(sqlite_res.is_ok());
+				assert!(test_res.is_ok());
+				Ok(())
+			}
+			Err(e) => {
+				assert!(sqlite_res.is_err());
+				assert!(test_res.is_err());
+				Err(e)
+			}
+		}
+	}
+
+	fn list(
+		&self, primary_namespace: &str, secondary_namespace: &str,
+	) -> std::io::Result<Vec<String>> {
+		let _guard = self.serializer.read().unwrap();
+		self.do_list(primary_namespace, secondary_namespace)
 	}
 }
