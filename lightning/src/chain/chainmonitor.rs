@@ -164,8 +164,8 @@ pub trait Persist<ChannelSigner: WriteableEcdsaChannelSigner> {
 	/// updated monitor itself to disk/backups. See the [`Persist`] trait documentation for more
 	/// details.
 	///
-	/// During blockchain synchronization operations, this may be called with no
-	/// [`ChannelMonitorUpdate`], in which case the full [`ChannelMonitor`] needs to be persisted.
+	/// During blockchain synchronization operations, and in some rare cases, this may be called with
+	/// no [`ChannelMonitorUpdate`], in which case the full [`ChannelMonitor`] needs to be persisted.
 	/// Note that after the full [`ChannelMonitor`] is persisted any previous
 	/// [`ChannelMonitorUpdate`]s which were persisted should be discarded - they can no longer be
 	/// applied to the persisted [`ChannelMonitor`] as they were already applied.
