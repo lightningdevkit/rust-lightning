@@ -1,1 +1,0 @@
-* The `NetAddress` has been moved to `SocketAddress`. The fieds `IPv4` and `IPv6` are also rename to `TcpIpV4` and `TcpIpV6` (#2358).
