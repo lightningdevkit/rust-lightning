@@ -25,7 +25,6 @@ use crate::util::ser::{Writeable, ReadableArgs};
 use crate::util::config::UserConfig;
 use crate::util::string::UntrustedString;
 
-use bitcoin::{PackedLockTime, Transaction, TxOut};
 use bitcoin::hash_types::BlockHash;
 
 use crate::prelude::*;
