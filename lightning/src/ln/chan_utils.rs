@@ -171,6 +171,37 @@ impl HTLCClaim {
 	}
 }
 
+#[cfg(not(test))]
+const COMMITMENT_TX_WEIGHT_PER_HTLC: u64 = 172;
+#[cfg(test)]
+pub const COMMITMENT_TX_WEIGHT_PER_HTLC: u64 = 172;
+
+pub(crate) fn commitment_tx_base_weight(channel_type_features: &ChannelTypeFeatures) -> u64 {
+	const COMMITMENT_TX_BASE_WEIGHT: u64 = 724;
+	const COMMITMENT_TX_BASE_ANCHOR_WEIGHT: u64 = 1124;
+	if channel_type_features.supports_anchors_zero_fee_htlc_tx() { COMMITMENT_TX_BASE_ANCHOR_WEIGHT } else { COMMITMENT_TX_BASE_WEIGHT }
+}
+
+/// Get the fee cost of a commitment tx with a given number of HTLC outputs.
+/// Note that num_htlcs should not include dust HTLCs.
+pub(crate) fn commit_tx_fee_sat(feerate_per_kw: u32, num_htlcs: usize, channel_type_features: &ChannelTypeFeatures) -> u64 {
+	feerate_per_kw as u64 *
+		(commitment_tx_base_weight(channel_type_features) +
+			num_htlcs as u64 * COMMITMENT_TX_WEIGHT_PER_HTLC)
+		/ 1000
+}
+
+pub(crate) fn per_outbound_htlc_counterparty_commit_tx_fee_msat(feerate_per_kw: u32, channel_type_features: &ChannelTypeFeatures) -> u64 {
+	// Note that we need to divide before multiplying to round properly,
+	// since the lowest denomination of bitcoin on-chain is the satoshi.
+	let commitment_tx_fee = COMMITMENT_TX_WEIGHT_PER_HTLC * feerate_per_kw as u64 / 1000 * 1000;
+	if channel_type_features.supports_anchors_zero_fee_htlc_tx() {
+		commitment_tx_fee + htlc_success_tx_weight(channel_type_features) * feerate_per_kw as u64 / 1000
+	} else {
+		commitment_tx_fee
+	}
+}
+
 // Various functions for key derivation and transaction creation for use within channels. Primarily
 // used in Channel and ChannelMonitor.
 
