@@ -2222,7 +2222,7 @@ fn test_yield_anchors_events() {
 		&LowerBoundedFeeEstimator::new(node_cfgs[0].fee_estimator), &nodes[0].logger
 	);
 	get_monitor!(nodes[1], chan_id).provide_payment_preimage(
-		&payment_hash_1, &payment_preimage_1, &node_cfgs[0].tx_broadcaster,
+		&payment_hash_1, &payment_preimage_1, &node_cfgs[1].tx_broadcaster,
 		&LowerBoundedFeeEstimator::new(node_cfgs[1].fee_estimator), &nodes[1].logger
 	);
 
