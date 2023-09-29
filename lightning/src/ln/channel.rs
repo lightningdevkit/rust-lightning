@@ -5537,14 +5537,20 @@ impl<SP: Deref> Channel<SP> where
 		}
 	}
 
-	pub fn channel_update(&mut self, msg: &msgs::ChannelUpdate) -> Result<(), ChannelError> {
-		self.context.counterparty_forwarding_info = Some(CounterpartyForwardingInfo {
+	/// Applies the `ChannelUpdate` and returns a boolean indicating whether a change actually
+	/// happened.
+	pub fn channel_update(&mut self, msg: &msgs::ChannelUpdate) -> Result<bool, ChannelError> {
+		let new_forwarding_info = Some(CounterpartyForwardingInfo {
 			fee_base_msat: msg.contents.fee_base_msat,
 			fee_proportional_millionths: msg.contents.fee_proportional_millionths,
 			cltv_expiry_delta: msg.contents.cltv_expiry_delta
 		});
+		let did_change = self.context.counterparty_forwarding_info != new_forwarding_info;
+		if did_change {
+			self.context.counterparty_forwarding_info = new_forwarding_info;
+		}
 
-		Ok(())
+		Ok(did_change)
 	}
 
 	/// Begins the shutdown process, getting a message for the remote peer and returning all
@@ -8140,7 +8146,7 @@ mod tests {
 			},
 			signature: Signature::from(unsafe { FFISignature::new() })
 		};
-		node_a_chan.channel_update(&update).unwrap();
+		assert!(node_a_chan.channel_update(&update).unwrap());
 
 		// The counterparty can send an update with a higher minimum HTLC, but that shouldn't
 		// change our official htlc_minimum_msat.
@@ -8153,6 +8159,8 @@ mod tests {
 			},
 			None => panic!("expected counterparty forwarding info to be Some")
 		}
+
+		assert!(!node_a_chan.channel_update(&update).unwrap());
 	}
 
 	#[cfg(feature = "_test_vectors")]
