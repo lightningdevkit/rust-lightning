@@ -1680,8 +1680,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 	/// missed/unhandled descriptors. For the purpose of gathering historical records, if the
 	/// channel close has fully resolved (i.e., [`ChannelMonitor::get_claimable_balances`] returns
 	/// an empty set), you can retrieve all spendable outputs by providing all descendant spending
-	/// transactions starting from the channel's funding or closing transaction that have at least
-	/// [`ANTI_REORG_DELAY`] confirmations.
+	/// transactions starting from the channel's funding transaction and going down three levels.
 	///
 	/// `tx` is a transaction we'll scan the outputs of. Any transaction can be provided. If any
 	/// outputs which can be spent by us are found, at least one descriptor is returned.
