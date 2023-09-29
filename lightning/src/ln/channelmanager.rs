@@ -6984,8 +6984,7 @@ where
 	fn maybe_generate_initial_closing_signed(&self) -> bool {
 		let mut handle_errors: Vec<(PublicKey, Result<(), _>)> = Vec::new();
 		let mut has_update = false;
-		let mut shutdown_result = None;
-		let mut unbroadcasted_batch_funding_txid = None;
+		let mut shutdown_results = Vec::new();
 		{
 			let per_peer_state = self.per_peer_state.read().unwrap();
 
@@ -6996,7 +6995,7 @@ where
 				peer_state.channel_by_id.retain(|channel_id, phase| {
 					match phase {
 						ChannelPhase::Funded(chan) => {
-							unbroadcasted_batch_funding_txid = chan.context.unbroadcasted_batch_funding_txid();
+							let unbroadcasted_batch_funding_txid = chan.context.unbroadcasted_batch_funding_txid();
 							match chan.maybe_propose_closing_signed(&self.fee_estimator, &self.logger) {
 								Ok((msg_opt, tx_opt)) => {
 									if let Some(msg) = msg_opt {
@@ -7019,7 +7018,7 @@ where
 										log_info!(self.logger, "Broadcasting {}", log_tx!(tx));
 										self.tx_broadcaster.broadcast_transactions(&[&tx]);
 										update_maps_on_chan_removal!(self, &chan.context);
-										shutdown_result = Some((None, Vec::new(), unbroadcasted_batch_funding_txid));
+										shutdown_results.push((None, Vec::new(), unbroadcasted_batch_funding_txid));
 										false
 									} else { true }
 								},
@@ -7041,7 +7040,7 @@ where
 			let _ = handle_error!(self, err, counterparty_node_id);
 		}
 
-		if let Some(shutdown_result) = shutdown_result {
+		for shutdown_result in shutdown_results.drain(..) {
 			self.finish_close_channel(shutdown_result);
 		}
 
