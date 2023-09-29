@@ -12,6 +12,9 @@
 
 pub mod fs_store;
 
+#[cfg(any(test, feature = "sqlite"))]
+pub mod sqlite_store;
+
 mod utils;
 
 #[cfg(test)]

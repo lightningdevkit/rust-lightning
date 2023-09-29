@@ -19,6 +19,7 @@ criterion_group!(benches,
 	lightning::sign::benches::bench_get_secure_random_bytes,
 	lightning::ln::channelmanager::bench::bench_sends,
 	lightning_persister::fs_store::bench::bench_sends,
+	lightning_persister::sqlite_store::bench::bench_sends,
 	lightning_rapid_gossip_sync::bench::bench_reading_full_graph_from_file,
 	lightning::routing::gossip::benches::read_network_graph,
 	lightning::routing::gossip::benches::write_network_graph);
