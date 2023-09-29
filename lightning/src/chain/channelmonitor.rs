@@ -2503,6 +2503,18 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 	{
 		self.payment_preimages.insert(payment_hash.clone(), payment_preimage.clone());
 
+		let confirmed_spend_txid = self.funding_spend_confirmed.or_else(|| {
+			self.onchain_events_awaiting_threshold_conf.iter().find_map(|event| match event.event {
+				OnchainEvent::FundingSpendConfirmation { .. } => Some(event.txid),
+				_ => None,
+			})
+		});
+		let confirmed_spend_txid = if let Some(txid) = confirmed_spend_txid {
+			txid
+		} else {
+			return;
+		};
+
 		// If the channel is force closed, try to claim the output from this preimage.
 		// First check if a counterparty commitment transaction has been broadcasted:
 		macro_rules! claim_htlcs {
@@ -2512,14 +2524,24 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			}
 		}
 		if let Some(txid) = self.current_counterparty_commitment_txid {
-			if let Some(commitment_number) = self.counterparty_commitment_txn_on_chain.get(&txid) {
-				claim_htlcs!(*commitment_number, txid);
+			if txid == confirmed_spend_txid {
+				if let Some(commitment_number) = self.counterparty_commitment_txn_on_chain.get(&txid) {
+					claim_htlcs!(*commitment_number, txid);
+				} else {
+					debug_assert!(false);
+					log_error!(logger, "Detected counterparty commitment tx on-chain without tracking commitment number");
+				}
 				return;
 			}
 		}
 		if let Some(txid) = self.prev_counterparty_commitment_txid {
-			if let Some(commitment_number) = self.counterparty_commitment_txn_on_chain.get(&txid) {
-				claim_htlcs!(*commitment_number, txid);
+			if txid == confirmed_spend_txid {
+				if let Some(commitment_number) = self.counterparty_commitment_txn_on_chain.get(&txid) {
+					claim_htlcs!(*commitment_number, txid);
+				} else {
+					debug_assert!(false);
+					log_error!(logger, "Detected counterparty commitment tx on-chain without tracking commitment number");
+				}
 				return;
 			}
 		}
@@ -2530,13 +2552,22 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		// *we* sign a holder commitment transaction, not when e.g. a watchtower broadcasts one of our
 		// holder commitment transactions.
 		if self.broadcasted_holder_revokable_script.is_some() {
-			// Assume that the broadcasted commitment transaction confirmed in the current best
-			// block. Even if not, its a reasonable metric for the bump criteria on the HTLC
-			// transactions.
-			let (claim_reqs, _) = self.get_broadcasted_holder_claims(&self.current_holder_commitment_tx, self.best_block.height());
-			self.onchain_tx_handler.update_claims_view_from_requests(claim_reqs, self.best_block.height(), self.best_block.height(), broadcaster, fee_estimator, logger);
-			if let Some(ref tx) = self.prev_holder_signed_commitment_tx {
-				let (claim_reqs, _) = self.get_broadcasted_holder_claims(&tx, self.best_block.height());
+			let holder_commitment_tx = if self.current_holder_commitment_tx.txid == confirmed_spend_txid {
+				Some(&self.current_holder_commitment_tx)
+			} else if let Some(prev_holder_commitment_tx) = &self.prev_holder_signed_commitment_tx {
+				if prev_holder_commitment_tx.txid == confirmed_spend_txid {
+					Some(prev_holder_commitment_tx)
+				} else {
+					None
+				}
+			} else {
+				None
+			};
+			if let Some(holder_commitment_tx) = holder_commitment_tx {
+				// Assume that the broadcasted commitment transaction confirmed in the current best
+				// block. Even if not, its a reasonable metric for the bump criteria on the HTLC
+				// transactions.
+				let (claim_reqs, _) = self.get_broadcasted_holder_claims(&holder_commitment_tx, self.best_block.height());
 				self.onchain_tx_handler.update_claims_view_from_requests(claim_reqs, self.best_block.height(), self.best_block.height(), broadcaster, fee_estimator, logger);
 			}
 		}
