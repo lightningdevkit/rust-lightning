@@ -7861,7 +7861,7 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 		let channel_monitor = ChannelMonitor::new(self.context.secp_ctx.clone(), monitor_signer,
 		                                          shutdown_script, self.context.get_holder_selected_contest_delay(),
 		                                          &self.context.destination_script, (funding_txo, funding_txo_script),
-		                                          &self.context.channel_transaction_parameters,
+		                                          &self.context.channel_transaction_parameters, self.context.is_outbound(),
 		                                          funding_redeemscript.clone(), self.context.channel_value_satoshis,
 		                                          obscure_factor,
 		                                          holder_commitment_tx, best_block, self.context.counterparty_node_id, self.context.channel_id());
@@ -8173,7 +8173,7 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 		let channel_monitor = ChannelMonitor::new(self.context.secp_ctx.clone(), monitor_signer,
 		                                          shutdown_script, self.context.get_holder_selected_contest_delay(),
 		                                          &self.context.destination_script, (funding_txo, funding_txo_script.clone()),
-		                                          &self.context.channel_transaction_parameters,
+		                                          &self.context.channel_transaction_parameters, self.context.is_outbound(),
 		                                          funding_redeemscript.clone(), self.context.channel_value_satoshis,
 		                                          obscure_factor,
 		                                          holder_commitment_tx, best_block, self.context.counterparty_node_id, self.context.channel_id());
