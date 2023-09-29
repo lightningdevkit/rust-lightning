@@ -1,9 +1,9 @@
 //! Objects related to [`SqliteStore`] live here.
 use crate::utils::check_namespace_key_validity;
 
+use lightning::io;
 use lightning::util::persist::KVStore;
 use lightning::util::string::PrintableString;
-use lightning::io;
 
 use rusqlite::{named_params, Connection};
 
@@ -38,21 +38,26 @@ impl SqliteStore {
 	/// given `db_file_name` (or the default to [`DEFAULT_SQLITE_DB_FILE_NAME`] if set to `None`).
 	///
 	/// Similarly, the given `kv_table_name` will be used or default to [`DEFAULT_KV_TABLE_NAME`].
-	pub fn new(data_dir: PathBuf, db_file_name: Option<String>, kv_table_name: Option<String>) -> io::Result<Self> {
+	pub fn new(
+		data_dir: PathBuf, db_file_name: Option<String>, kv_table_name: Option<String>,
+	) -> io::Result<Self> {
 		let db_file_name = db_file_name.unwrap_or(DEFAULT_SQLITE_DB_FILE_NAME.to_string());
 		let kv_table_name = kv_table_name.unwrap_or(DEFAULT_KV_TABLE_NAME.to_string());
 
 		fs::create_dir_all(data_dir.clone()).map_err(|e| {
-			let msg = format!("Failed to create database destination directory {}: {}",
-				data_dir.display(), e);
+			let msg = format!(
+				"Failed to create database destination directory {}: {}",
+				data_dir.display(),
+				e
+			);
 			io::Error::new(io::ErrorKind::Other, msg)
 		})?;
 		let mut db_file_path = data_dir.clone();
 		db_file_path.push(db_file_name);
 
-		let connection = Connection::open(db_file_path.clone()).map_err(|e| {
-			let msg = format!("Failed to open/create database file {}: {}",
-				db_file_path.display(), e);
+		let mut connection = Connection::open(db_file_path.clone()).map_err(|e| {
+			let msg =
+				format!("Failed to open/create database file {}: {}", db_file_path.display(), e);
 			io::Error::new(io::ErrorKind::Other, msg)
 		})?;
 
@@ -61,28 +66,38 @@ impl SqliteStore {
 
 		if version_res == 0 {
 			// New database, set our SCHEMA_USER_VERSION and continue
-			connection.pragma(Some(rusqlite::DatabaseName::Main),
-			"user_version", SCHEMA_USER_VERSION, |_| {
-				Ok(())
-			}).map_err(|e| {
-				let msg = format!("Failed to set PRAGMA user_version: {}", e);
-				io::Error::new(io::ErrorKind::Other, msg)
-			})?;
+			connection
+				.pragma(
+					Some(rusqlite::DatabaseName::Main),
+					"user_version",
+					SCHEMA_USER_VERSION,
+					|_| Ok(()),
+				)
+				.map_err(|e| {
+					let msg = format!("Failed to set PRAGMA user_version: {}", e);
+					io::Error::new(io::ErrorKind::Other, msg)
+				})?;
 		} else if version_res < SCHEMA_USER_VERSION {
-			migrations::migrate_schema(&connection, &kv_table_name, version_res,
-				SCHEMA_USER_VERSION)?;
+			migrations::migrate_schema(
+				&mut connection,
+				&kv_table_name,
+				version_res,
+				SCHEMA_USER_VERSION,
+			)?;
 		} else if version_res > SCHEMA_USER_VERSION {
-			let msg = format!("Failed to open database: incompatible schema version {}. Expected: {}",
-			version_res, SCHEMA_USER_VERSION);
+			let msg = format!(
+				"Failed to open database: incompatible schema version {}. Expected: {}",
+				version_res, SCHEMA_USER_VERSION
+			);
 			return Err(io::Error::new(io::ErrorKind::Other, msg));
 		}
 
 		let sql = format!(
 			"CREATE TABLE IF NOT EXISTS {} (
-			namespace TEXT NOT NULL,
-			sub_namespace TEXT DEFAULT \"\" NOT NULL,
+			primary_namespace TEXT NOT NULL,
+			secondary_namespace TEXT DEFAULT \"\" NOT NULL,
 			key TEXT NOT NULL CHECK (key <> ''),
-			value BLOB, PRIMARY KEY ( namespace, sub_namespace, key )
+			value BLOB, PRIMARY KEY ( primary_namespace, secondary_namespace, key )
 			);",
 			kv_table_name
 		);
@@ -103,12 +118,14 @@ impl SqliteStore {
 }
 
 impl KVStore for SqliteStore {
-	fn read(&self, namespace: &str, sub_namespace: &str, key: &str) -> std::io::Result<Vec<u8>> {
-		check_namespace_key_validity(namespace, sub_namespace, Some(key), "read")?;
+	fn read(
+		&self, primary_namespace: &str, secondary_namespace: &str, key: &str,
+	) -> std::io::Result<Vec<u8>> {
+		check_namespace_key_validity(primary_namespace, secondary_namespace, Some(key), "read")?;
 
 		let locked_conn = self.connection.lock().unwrap();
 		let sql =
-			format!("SELECT value FROM {} WHERE namespace=:namespace AND sub_namespace=:sub_namespace AND key=:key;",
+			format!("SELECT value FROM {} WHERE primary_namespace=:primary_namespace AND secondary_namespace=:secondary_namespace AND key=:key;",
 			self.kv_table_name);
 
 		let mut stmt = locked_conn.prepare_cached(&sql).map_err(|e| {
@@ -119,36 +136,45 @@ impl KVStore for SqliteStore {
 		let res = stmt
 			.query_row(
 				named_params! {
-					":namespace": namespace,
-					":sub_namespace": sub_namespace,
+					":primary_namespace": primary_namespace,
+					":secondary_namespace": secondary_namespace,
 					":key": key,
 				},
 				|row| row.get(0),
 			)
 			.map_err(|e| match e {
 				rusqlite::Error::QueryReturnedNoRows => {
-					let msg =
-						format!("Failed to read as key could not be found: {}/{}/{}",
-						PrintableString(namespace), PrintableString(sub_namespace), PrintableString(key));
+					let msg = format!(
+						"Failed to read as key could not be found: {}/{}/{}",
+						PrintableString(primary_namespace),
+						PrintableString(secondary_namespace),
+						PrintableString(key)
+					);
 					std::io::Error::new(std::io::ErrorKind::NotFound, msg)
 				}
 				e => {
-					let msg = format!("Failed to read from key {}/{}/{}: {}",
-						PrintableString(namespace), PrintableString(sub_namespace),
-						PrintableString(key), e);
+					let msg = format!(
+						"Failed to read from key {}/{}/{}: {}",
+						PrintableString(primary_namespace),
+						PrintableString(secondary_namespace),
+						PrintableString(key),
+						e
+					);
 					std::io::Error::new(std::io::ErrorKind::Other, msg)
 				}
 			})?;
 		Ok(res)
 	}
 
-	fn write(&self, namespace: &str, sub_namespace: &str, key: &str, buf: &[u8]) -> std::io::Result<()> {
-		check_namespace_key_validity(namespace, sub_namespace, Some(key), "write")?;
+	fn write(
+		&self, primary_namespace: &str, secondary_namespace: &str, key: &str, buf: &[u8],
+	) -> std::io::Result<()> {
+		check_namespace_key_validity(primary_namespace, secondary_namespace, Some(key), "write")?;
 
 		let locked_conn = self.connection.lock().unwrap();
 
 		let sql = format!(
-			"INSERT OR REPLACE INTO {} (namespace, sub_namespace, key, value) VALUES (:namespace, :sub_namespace, :key, :value);",
+			"INSERT OR REPLACE INTO {} (primary_namespace, secondary_namespace, key, value) VALUES (:primary_namespace, :secondary_namespace, :key, :value);",
 			self.kv_table_name
 		);
 
@@ -157,57 +183,68 @@ impl KVStore for SqliteStore {
 			std::io::Error::new(std::io::ErrorKind::Other, msg)
 		})?;
 
-		stmt.execute(
-			named_params! {
-				":namespace": namespace,
-				":sub_namespace": sub_namespace,
-				":key": key,
-				":value": buf,
-			},
-			)
-			.map(|_| ())
-			.map_err(|e| {
-				let msg = format!("Failed to write to key {}/{}/{}: {}",
-					PrintableString(namespace), PrintableString(sub_namespace),
-					PrintableString(key), e);
-				std::io::Error::new(std::io::ErrorKind::Other, msg)
-			})
+		stmt.execute(named_params! {
+			":primary_namespace": primary_namespace,
+			":secondary_namespace": secondary_namespace,
+			":key": key,
+			":value": buf,
+		})
+		.map(|_| ())
+		.map_err(|e| {
+			let msg = format!(
+				"Failed to write to key {}/{}/{}: {}",
+				PrintableString(primary_namespace),
+				PrintableString(secondary_namespace),
+				PrintableString(key),
+				e
+			);
+			std::io::Error::new(std::io::ErrorKind::Other, msg)
+		})
 	}
 
-	fn remove(&self, namespace: &str, sub_namespace: &str, key: &str, _lazy: bool) -> std::io::Result<()> {
-		check_namespace_key_validity(namespace, sub_namespace, Some(key), "remove")?;
+	fn remove(
+		&self, primary_namespace: &str, secondary_namespace: &str, key: &str, _lazy: bool,
+	) -> std::io::Result<()> {
+		check_namespace_key_validity(primary_namespace, secondary_namespace, Some(key), "remove")?;
 
 		let locked_conn = self.connection.lock().unwrap();
 
-		let sql = format!("DELETE FROM {} WHERE namespace=:namespace AND sub_namespace=:sub_namespace AND key=:key;", self.kv_table_name);
+		let sql = format!("DELETE FROM {} WHERE primary_namespace=:primary_namespace AND secondary_namespace=:secondary_namespace AND key=:key;", self.kv_table_name);
 
 		let mut stmt = locked_conn.prepare_cached(&sql).map_err(|e| {
 			let msg = format!("Failed to prepare statement: {}", e);
 			std::io::Error::new(std::io::ErrorKind::Other, msg)
 		})?;
 
-		stmt.execute(
-			named_params! {
-				":namespace": namespace,
-				":sub_namespace": sub_namespace,
-				":key": key,
-			},
-			)
-			.map_err(|e| {
-				let msg = format!("Failed to delete key {}/{}/{}: {}",
-					PrintableString(namespace), PrintableString(sub_namespace),
-					PrintableString(key), e);
-				std::io::Error::new(std::io::ErrorKind::Other, msg)
-			})?;
+		stmt.execute(named_params! {
+			":primary_namespace": primary_namespace,
+			":secondary_namespace": secondary_namespace,
+			":key": key,
+		})
+		.map_err(|e| {
+			let msg = format!(
+				"Failed to delete key {}/{}/{}: {}",
+				PrintableString(primary_namespace),
+				PrintableString(secondary_namespace),
+				PrintableString(key),
+				e
+			);
+			std::io::Error::new(std::io::ErrorKind::Other, msg)
+		})?;
 		Ok(())
 	}
 
-	fn list(&self, namespace: &str, sub_namespace: &str) -> std::io::Result<Vec<String>> {
-		check_namespace_key_validity(namespace, sub_namespace, None, "list")?;
+	fn list(
+		&self, primary_namespace: &str, secondary_namespace: &str,
+	) -> std::io::Result<Vec<String>> {
+		check_namespace_key_validity(primary_namespace, secondary_namespace, None, "list")?;
 
 		let locked_conn = self.connection.lock().unwrap();
 
-		let sql = format!("SELECT key FROM {} WHERE namespace=:namespace AND sub_namespace=:sub_namespace", self.kv_table_name);
+		let sql = format!(
+			"SELECT key FROM {} WHERE primary_namespace=:primary_namespace AND secondary_namespace=:secondary_namespace",
+			self.kv_table_name
+		);
 		let mut stmt = locked_conn.prepare_cached(&sql).map_err(|e| {
 			let msg = format!("Failed to prepare statement: {}", e);
 			std::io::Error::new(std::io::ErrorKind::Other, msg)
@@ -218,9 +255,11 @@ impl KVStore for SqliteStore {
 		let rows_iter = stmt
 			.query_map(
 				named_params! {
-					":namespace": namespace,
-					":sub_namespace": sub_namespace,
-			}, |row| row.get(0))
+						":primary_namespace": primary_namespace,
+						":secondary_namespace": secondary_namespace,
+				},
+				|row| row.get(0),
+			)
 			.map_err(|e| {
 				let msg = format!("Failed to retrieve queried rows: {}", e);
 				std::io::Error::new(std::io::ErrorKind::Other, msg)
@@ -240,7 +279,7 @@ impl KVStore for SqliteStore {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use crate::test_utils::{do_read_write_remove_list_persist,do_test_store};
+	use crate::test_utils::{do_read_write_remove_list_persist, do_test_store, random_storage_path};
 
 	impl Drop for SqliteStore {
 		fn drop(&mut self) {
@@ -253,18 +292,33 @@ mod tests {
 
 	#[test]
 	fn read_write_remove_list_persist() {
-		let mut temp_path = std::env::temp_dir();
+		let mut temp_path = random_storage_path();
 		temp_path.push("read_write_remove_list_persist");
-		let store = SqliteStore::new(temp_path, Some("test_db".to_string()), Some("test_table".to_string())).unwrap();
+		let store = SqliteStore::new(
+			temp_path,
+			Some("test_db".to_string()),
+			Some("test_table".to_string()),
+		)
+		.unwrap();
 		do_read_write_remove_list_persist(&store);
 	}
 
 	#[test]
 	fn test_sqlite_store() {
-		let mut temp_path = std::env::temp_dir();
+		let mut temp_path = random_storage_path();
 		temp_path.push("test_sqlite_store");
-		let store_0 = SqliteStore::new(temp_path.clone(), Some("test_db_0".to_string()), Some("test_table".to_string())).unwrap();
-		let store_1 = SqliteStore::new(temp_path, Some("test_db_1".to_string()), Some("test_table".to_string())).unwrap();
+		let store_0 = SqliteStore::new(
+			temp_path.clone(),
+			Some("test_db_0".to_string()),
+			Some("test_table".to_string()),
+		)
+		.unwrap();
+		let store_1 = SqliteStore::new(
+			temp_path,
+			Some("test_db_1".to_string()),
+			Some("test_table".to_string()),
+		)
+		.unwrap();
 		do_test_store(&store_0, &store_1)
 	}
 }
@@ -279,6 +333,10 @@ pub mod bench {
 		let store_a = super::SqliteStore::new("bench_sqlite_store_a".into(), None, None).unwrap();
 		let store_b = super::SqliteStore::new("bench_sqlite_store_b".into(), None, None).unwrap();
 		lightning::ln::channelmanager::bench::bench_two_sends(
-			bench, "bench_sqlite_persisted_sends", store_a, store_b);
+			bench,
+			"bench_sqlite_persisted_sends",
+			store_a,
+			store_b,
+		);
 	}
 }

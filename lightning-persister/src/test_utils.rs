@@ -7,7 +7,18 @@ use lightning::util::test_utils;
 use lightning::{check_closed_broadcast, check_closed_event, check_added_monitors};
 use lightning::events::ClosureReason;
 
+use rand::distributions::Alphanumeric;
+use rand::{thread_rng, Rng};
+
 use std::panic::RefUnwindSafe;
+
+pub fn random_storage_path() -> PathBuf {
+	let mut temp_path = std::env::temp_dir();
+	let mut rng = thread_rng();
+	let rand_dir: String = (0..7).map(|_| rng.sample(Alphanumeric) as char).collect();
+	temp_path.push(rand_dir);
+	temp_path
+}
 
 pub(crate) fn do_read_write_remove_list_persist<K: KVStore + RefUnwindSafe>(kv_store: &K) {
 	let data = [42u8; 32];

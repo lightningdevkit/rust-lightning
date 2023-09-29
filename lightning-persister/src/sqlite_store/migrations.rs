@@ -2,25 +2,64 @@ use rusqlite::Connection;
 
 use lightning::io;
 
-pub(super) fn migrate_schema(connection: &Connection, kv_table_name: &str, from_version: u16, to_version: u16) -> io::Result<()> {
+pub(super) fn migrate_schema(
+	connection: &mut Connection, kv_table_name: &str, from_version: u16, to_version: u16,
+) -> io::Result<()> {
 	assert!(from_version < to_version);
 	if from_version == 1 && to_version == 2 {
+		let tx = connection.transaction().map_err(|e| {
+			let msg = format!(
+				"Failed to migrate table {} from user_version {} to {}: {}",
+				kv_table_name, from_version, to_version, e
+			);
+			io::Error::new(io::ErrorKind::Other, msg)
+		})?;
+
+		// Rename 'namespace' column to 'primary_namespace'
 		let sql = format!(
 			"ALTER TABLE {}
-				ADD sub_namespace TEXT DEFAULT \"\" NOT NULL;",
-				kv_table_name);
-		connection .execute(&sql, []).map_err(|e| {
-				let msg = format!("Failed to migrate table {} from user_version {} to {}: {}",
-				kv_table_name, from_version, to_version, e);
+				RENAME COLUMN namespace TO primary_namespace;",
+			kv_table_name
+		);
+
+		tx.execute(&sql, []).map_err(|e| {
+			let msg = format!(
+				"Failed to migrate table {} from user_version {} to {}: {}",
+				kv_table_name, from_version, to_version, e
+			);
+			io::Error::new(io::ErrorKind::Other, msg)
+		})?;
+
+		// Add new 'secondary_namespace' column
+		let sql = format!(
+			"ALTER TABLE {}
+				ADD secondary_namespace TEXT DEFAULT \"\" NOT NULL;",
+			kv_table_name
+		);
+
+		tx.execute(&sql, []).map_err(|e| {
+			let msg = format!(
+				"Failed to migrate table {} from user_version {} to {}: {}",
+				kv_table_name, from_version, to_version, e
+			);
+			io::Error::new(io::ErrorKind::Other, msg)
+		})?;
+
+		// Update user_version
+		tx.pragma(Some(rusqlite::DatabaseName::Main), "user_version", to_version, |_| Ok(()))
+			.map_err(|e| {
+				let msg = format!(
+					"Failed to upgrade user_version from {} to {}: {}",
+					from_version, to_version, e
+				);
 				io::Error::new(io::ErrorKind::Other, msg)
 			})?;
 
-		connection.pragma(Some(rusqlite::DatabaseName::Main),
-			"user_version", to_version, |_| {
-				Ok(())
-		}).map_err(|e| {
-			let msg = format!("Failed to upgrade user_version from {} to {}: {}",
-				from_version, to_version, e);
+		tx.commit().map_err(|e| {
+			let msg = format!(
+				"Failed to migrate table {} from user_version {} to {}: {}",
+				kv_table_name, from_version, to_version, e
+			);
 			io::Error::new(io::ErrorKind::Other, msg)
 		})?;
 	}
@@ -30,7 +69,7 @@ pub(super) fn migrate_schema(connection: &Connection, kv_table_name: &str, from_
 #[cfg(test)]
 mod tests {
 	use crate::sqlite_store::SqliteStore;
-	use crate::test_utils::do_read_write_remove_list_persist;
+	use crate::test_utils::{do_read_write_remove_list_persist, random_storage_path};
 
 	use lightning::util::persist::KVStore;
 
@@ -42,7 +81,7 @@ mod tests {
 	fn rwrl_post_schema_1_migration() {
 		let old_schema_version = 1;
 
-		let mut temp_path = std::env::temp_dir();
+		let mut temp_path = random_storage_path();
 		temp_path.push("rwrl_post_schema_1_migration");
 
 		let db_file_name = "test_db".to_string();
@@ -61,9 +100,13 @@ mod tests {
 			let connection = Connection::open(db_file_path.clone()).unwrap();
 
 			connection
-				.pragma(Some(rusqlite::DatabaseName::Main), "user_version", old_schema_version, |_| {
-					Ok(())
-				}).unwrap();
+				.pragma(
+					Some(rusqlite::DatabaseName::Main),
+					"user_version",
+					old_schema_version,
+					|_| Ok(()),
+				)
+				.unwrap();
 
 			let sql = format!(
 				"CREATE TABLE IF NOT EXISTS {} (
@@ -71,8 +114,8 @@ mod tests {
 					key TEXT NOT NULL CHECK (key <> ''),
 					value BLOB, PRIMARY KEY ( namespace, key )
 					);",
-					kv_table_name
-					);
+				kv_table_name
+			);
 
 			connection.execute(&sql, []).unwrap();
 
@@ -83,16 +126,18 @@ mod tests {
 				);
 			let mut stmt = connection.prepare_cached(&sql).unwrap();
 
-			stmt.execute(
-				named_params! {
-					":namespace": test_namespace,
-					":key": test_key,
-					":value": test_data,
-				}).unwrap();
+			stmt.execute(named_params! {
+				":namespace": test_namespace,
+				":key": test_key,
+				":value": test_data,
+			})
+			.unwrap();
 
 			// We read the just written data back to assert it happened.
-			let sql = format!("SELECT value FROM {} WHERE namespace=:namespace AND key=:key;",
-				kv_table_name);
+			let sql = format!(
+				"SELECT value FROM {} WHERE namespace=:namespace AND key=:key;",
+				kv_table_name
+			);
 			let mut stmt = connection.prepare_cached(&sql).unwrap();
 
 			let res: Vec<u8> = stmt
@@ -102,7 +147,8 @@ mod tests {
 						":key": test_key,
 					},
 					|row| row.get(0),
-					).unwrap();
+				)
+				.unwrap();
 
 			assert_eq!(res, test_data);
 		}

@@ -32,3 +32,4 @@ criterion = { version = "0.4", optional = true, default-features = false }
 lightning = { version = "0.0.117-alpha2", path = "../lightning", features = ["_test_utils"] }
 bitcoin = { version = "0.29.0", default-features = false }
 rusqlite = { version = "0.28.0", default-features = false, features = ["bundled"]}
+rand = "0.8.5"
