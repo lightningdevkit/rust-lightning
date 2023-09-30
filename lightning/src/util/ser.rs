@@ -17,7 +17,7 @@ use crate::prelude::*;
 use crate::io::{self, Read, Seek, Write};
 use crate::io_extras::{copy, sink};
 use core::hash::Hash;
-use crate::sync::Mutex;
+use crate::sync::{Mutex, RwLock};
 use core::cmp;
 use core::convert::TryFrom;
 use core::ops::Deref;
@@ -1192,6 +1192,18 @@ impl<T: Readable> Readable for Mutex<T> {
 impl<T: Writeable> Writeable for Mutex<T> {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
 		self.lock().unwrap().write(w)
+	}
+}
+
+impl<T: Readable> Readable for RwLock<T> {
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+		let t: T = Readable::read(r)?;
+		Ok(RwLock::new(t))
+	}
+}
+impl<T: Writeable> Writeable for RwLock<T> {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		self.read().unwrap().write(w)
 	}
 }
 
