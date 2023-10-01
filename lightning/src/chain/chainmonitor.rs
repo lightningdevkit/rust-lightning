@@ -324,7 +324,6 @@ where C::Target: chain::Filter,
 				if self.update_monitor_with_chain_data(header, best_height, txdata, &process, funding_outpoint, &monitor_state).is_err() {
 					// Take the monitors lock for writing so that we poison it and any future
 					// operations going forward fail immediately.
-					core::mem::drop(monitor_state);
 					core::mem::drop(monitor_lock);
 					let _poison = self.monitors.write().unwrap();
 					log_error!(self.logger, "{}", err_str);
