@@ -947,14 +947,20 @@ impl InMemorySigner {
 		if spend_tx.input[input_idx].previous_output != descriptor.outpoint.into_bitcoin_outpoint() { return Err(()); }
 
 		let remotepubkey = bitcoin::PublicKey::new(self.pubkeys().payment_point);
-		let witness_script = if self.channel_type_features().supports_anchors_zero_fee_htlc_tx() {
+		// We cannot always assume that `channel_parameters` is set, so can't just call
+		// `self.channel_parameters()` or anything that relies on it
+		let supports_anchors_zero_fee_htlc_tx = self.channel_parameters.as_ref()
+			.map(|params| params.channel_type_features.supports_anchors_zero_fee_htlc_tx())
+			.unwrap_or(false);
+
+		let witness_script = if supports_anchors_zero_fee_htlc_tx {
 			chan_utils::get_to_countersignatory_with_anchors_redeemscript(&remotepubkey.inner)
 		} else {
 			Script::new_p2pkh(&remotepubkey.pubkey_hash())
 		};
 		let sighash = hash_to_message!(&sighash::SighashCache::new(spend_tx).segwit_signature_hash(input_idx, &witness_script, descriptor.output.value, EcdsaSighashType::All).unwrap()[..]);
 		let remotesig = sign_with_aux_rand(secp_ctx, &sighash, &self.payment_key, &self);
-		let payment_script = if self.channel_type_features().supports_anchors_zero_fee_htlc_tx() {
+		let payment_script = if supports_anchors_zero_fee_htlc_tx {
 			witness_script.to_v0_p2wsh()
 		} else {
 			Script::new_v0_p2wpkh(&remotepubkey.wpubkey_hash().unwrap())
@@ -965,7 +971,7 @@ impl InMemorySigner {
 		let mut witness = Vec::with_capacity(2);
 		witness.push(remotesig.serialize_der().to_vec());
 		witness[0].push(EcdsaSighashType::All as u8);
-		if self.channel_type_features().supports_anchors_zero_fee_htlc_tx() {
+		if supports_anchors_zero_fee_htlc_tx {
 			witness.push(witness_script.to_bytes());
 		} else {
 			witness.push(remotepubkey.to_bytes());
