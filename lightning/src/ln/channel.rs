@@ -5173,13 +5173,14 @@ impl<SP: Deref> Channel<SP> where
 		// Update funding TX with signatures (ours and the one from acceptor)
 		// #SPLICE-SIG
 		// the redeem script
-		log_info!(logger, "Pubkeys used for redeem script: {} {}", &self.context.get_holder_pubkeys().funding_pubkey, &self.context.counterparty_funding_pubkey());
+		let sig_order_ours_first = self.context.get_holder_pubkeys().funding_pubkey.serialize() < self.context.counterparty_funding_pubkey().serialize();
+		log_info!(logger, "Pubkeys used for redeem script: {} {} {}", &self.context.get_holder_pubkeys().funding_pubkey, &self.context.counterparty_funding_pubkey(), sig_order_ours_first);
 		let redeem_script = self.context.get_funding_redeemscript();
 		let mut funding_transaction_with_sigs = self.context.funding_transaction.as_ref().unwrap().clone();
 		// our sig
 		let holder_signature = match &self.context.holder_signer {
 			ChannelSignerType::Ecdsa(ecdsa) => {
-				ecdsa.sign_splicing_funding_input(&funding_transaction_with_sigs, msg.splice_prev_funding_input_index, self.context.channel_value_satoshis, &redeem_script, &self.context.secp_ctx)
+				ecdsa.sign_splicing_funding_input(&funding_transaction_with_sigs, msg.splice_prev_funding_input_index, msg.splice_prev_funding_input_value, &redeem_script, &self.context.secp_ctx)
 					.map_err(|_| ChannelError::Close("Failed to sign the previous funding input in the new splicing funding tx".to_owned()))?
 			}
 		};
@@ -5191,13 +5192,18 @@ impl<SP: Deref> Channel<SP> where
 		// prepare witness stack
 		funding_transaction_with_sigs.input[msg.splice_prev_funding_input_index as usize].witness.clear();
 		funding_transaction_with_sigs.input[msg.splice_prev_funding_input_index as usize].witness.push(Vec::new()); // First is the multisig dummy
-		funding_transaction_with_sigs.input[msg.splice_prev_funding_input_index as usize].witness.push(holder_sig);
-		funding_transaction_with_sigs.input[msg.splice_prev_funding_input_index as usize].witness.push(cp_sig);
+		if sig_order_ours_first {
+			funding_transaction_with_sigs.input[msg.splice_prev_funding_input_index as usize].witness.push(holder_sig);
+			funding_transaction_with_sigs.input[msg.splice_prev_funding_input_index as usize].witness.push(cp_sig);
+		} else {
+			funding_transaction_with_sigs.input[msg.splice_prev_funding_input_index as usize].witness.push(cp_sig);
+			funding_transaction_with_sigs.input[msg.splice_prev_funding_input_index as usize].witness.push(holder_sig);
+		}
 		funding_transaction_with_sigs.input[msg.splice_prev_funding_input_index as usize].witness.push(redeem_script.clone().into_bytes());
 
-		log_info!(logger, "Updated splice funding transaction with signatures, our and from acceptor; txid {}  txlen {}  sigs {} {}  tx {}",
+		log_info!(logger, "Updated splice funding transaction with signatures, our and from acceptor; txid {}  txlen {}  sigs {} {} {}  tx {}",
 			funding_transaction_with_sigs.txid(), funding_transaction_with_sigs.encode().len(),
-			holder_signature, msg.funding_signature, 
+			holder_signature, msg.funding_signature, sig_order_ours_first, 
 			encode::serialize_hex(&funding_transaction_with_sigs)
 		);
 		self.context.funding_transaction = Some(funding_transaction_with_sigs.clone());
@@ -5999,7 +6005,7 @@ impl<SP: Deref> Channel<SP> where
 	/// Note that channel_id is not changed.
 	/// Do NOT broadcast the splicing transaction until after a successful splicing_signed call!
 	/// Based on get_funding_created()
-	pub fn get_splice_created<L: Deref>(&mut self, splice_transaction: Transaction, splice_txo: OutPoint, splice_prev_funding_input_index: u16, logger: &L) -> Result<msgs::SpliceCreated, ChannelError> where L::Target: Logger {
+	pub fn get_splice_created<L: Deref>(&mut self, splice_transaction: Transaction, splice_txo: OutPoint, splice_prev_funding_input_index: u16, splice_prev_funding_input_value: u64, logger: &L) -> Result<msgs::SpliceCreated, ChannelError> where L::Target: Logger {
 		if !self.context.is_outbound() {
 			panic!("Tried to create outbound splice_created message on an inbound channel!");
 		}
@@ -6052,6 +6058,7 @@ impl<SP: Deref> Channel<SP> where
 			funding_output_index: splice_txo.index,
 			splice_transaction,
 			splice_prev_funding_input_index,
+			splice_prev_funding_input_value,
 			splice_tx_redeem_script: redeem_script,
 			signature,
 			/*
@@ -6097,7 +6104,7 @@ impl<SP: Deref> Channel<SP> where
 		// #SPLICE-SIG
 		let funding_signature = match &mut self.context.holder_signer {
 			ChannelSignerType::Ecdsa(ecdsa) => {
-				ecdsa.sign_splicing_funding_input(&msg.splice_transaction, msg.splice_prev_funding_input_index, self.context.channel_value_satoshis, &msg.splice_tx_redeem_script, &self.context.secp_ctx)
+				ecdsa.sign_splicing_funding_input(&msg.splice_transaction, msg.splice_prev_funding_input_index, msg.splice_prev_funding_input_value, &msg.splice_tx_redeem_script, &self.context.secp_ctx)
 					.map_err(|_| ChannelError::Close("Failed to sign the previous funding input in the new splicing funding tx".to_owned()))?
 			}
 		};
@@ -6176,6 +6183,7 @@ impl<SP: Deref> Channel<SP> where
 			channel_id: self.context.channel_id(),
 			funding_signature,
 			splice_prev_funding_input_index: msg.splice_prev_funding_input_index,
+			splice_prev_funding_input_value: msg.splice_prev_funding_input_value,
 			signature,
 			/*
 			#[cfg(taproot)]

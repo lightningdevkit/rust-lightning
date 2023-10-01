@@ -552,7 +552,7 @@ pub trait EcdsaChannelSigner: ChannelSigner {
 
 	/// #SPLICING
 	/// Create a signature for a splicing funding transaction, for the input which is the previous funding tx.
-	fn sign_splicing_funding_input(&self, splicing_tx: &Transaction, splice_prev_funding_input_index: u16, prev_funding_value: u64, redeem_script: &Script, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<Signature, ()>;
+	fn sign_splicing_funding_input(&self, splicing_tx: &Transaction, splice_prev_funding_input_index: u16, splice_prev_funding_input_value: u64, redeem_script: &Script, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<Signature, ()>;
 }
 
 /// A writeable signer.
@@ -1129,12 +1129,12 @@ impl EcdsaChannelSigner for InMemorySigner {
 
 	/// #SPLICING
 	/// #SPLICE-SIG
-	fn sign_splicing_funding_input(&self, splicing_tx: &Transaction, splice_prev_funding_input_index: u16, prev_funding_value: u64, redeem_script: &Script, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<Signature, ()> {
+	fn sign_splicing_funding_input(&self, splicing_tx: &Transaction, splice_prev_funding_input_index: u16, splice_prev_funding_input_value: u64, redeem_script: &Script, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<Signature, ()> {
 		// println!("sign_splicing_funding_input  txlen {}  idx {}  val {}  tx {}", splicing_tx.encode().len(), splice_prev_funding_input_index, prev_funding_value, splicing_tx.encode().to_hex());
-		let sighash = &sighash::SighashCache::new(splicing_tx).segwit_signature_hash(splice_prev_funding_input_index as usize, &redeem_script, prev_funding_value, EcdsaSighashType::All).unwrap()[..];
+		let sighash = &sighash::SighashCache::new(splicing_tx).segwit_signature_hash(splice_prev_funding_input_index as usize, &redeem_script, splice_prev_funding_input_value, EcdsaSighashType::All).unwrap()[..];
 		let msg = hash_to_message!(sighash);
 		let sig = sign(secp_ctx, &msg, &self.funding_key);
-		// println!("sign_splicing_funding_input  hash {}  pubkey {} sig {}", sighash.to_hex(), &self.funding_key.public_key(secp_ctx), sig.serialize_der().to_hex());
+		// println!("sign_splicing_funding_input  hash {}  msg{}  pubkey {} sig {}  val {}", sighash.to_hex(), msg.to_hex(), &self.funding_key.public_key(secp_ctx), sig.serialize_der().to_hex(), splice_prev_funding_input_value);
 		Ok(sig)
 	}
 

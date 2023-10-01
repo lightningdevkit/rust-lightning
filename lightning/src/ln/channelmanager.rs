@@ -3881,7 +3881,7 @@ where
 				let funding_txo = find_funding_output(&chan, &splice_transaction)?;
 				log_trace!(self.logger, "... prev_funding_txinp {}  fund_tx_outpoint {} {}", prev_funding_txinp,  log_bytes!(funding_txo.txid), funding_txo.index);
 
-				let funding_res = chan.get_splice_created(splice_transaction, funding_txo, prev_funding_txinp, &self.logger)
+				let funding_res = chan.get_splice_created(splice_transaction, funding_txo, prev_funding_txinp, chan.context.get_value_satoshis(), &self.logger)
 					.map_err(|e| if let ChannelError::Close(msg) = e {
 						MsgHandleErrInternal::from_finish_shutdown(msg, chan.context.channel_id(), chan.context.get_user_id(), chan.context.force_shutdown(true), None, chan.context.get_value_satoshis())
 					} else { unreachable!(); });

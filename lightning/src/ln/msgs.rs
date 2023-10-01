@@ -503,6 +503,8 @@ pub struct SpliceCreated {
 	/// It could be also omitted and found by looking for the previous funding tx among the inputs.
 	/// Not needed in final version with tx negotiation, TODO remove
 	pub splice_prev_funding_input_index: u16,
+	/// The value of the previous funding transaction, the previous channel capacity
+	pub splice_prev_funding_input_value: u64,
 	/// Redeem script used in the splice transaction, needed for signing
 	/// Not needed in final version with tx negotiation, TODO remove
 	pub splice_tx_redeem_script: Script,
@@ -532,6 +534,8 @@ pub struct SpliceSigned {
 	/// It could be also omitted and found by looking for the previous funding tx among the inputs.
 	/// Not needed in final version with tx negotiation, TODO remove
 	pub splice_prev_funding_input_index: u16,
+	/// The value of the previous funding transaction, the previous channel capacity
+	pub splice_prev_funding_input_value: u64,
 	/// The signature of the splice acceptor (fundee) on the post-splice commitment transaction
 	pub signature: Signature,
 	/*
@@ -1890,6 +1894,7 @@ impl_writeable_msg!(SpliceCreated, {
 	funding_output_index,
 	splice_transaction,
 	splice_prev_funding_input_index,
+	splice_prev_funding_input_value,
 	splice_tx_redeem_script,
 	signature
 }, {});
@@ -1900,6 +1905,7 @@ impl_writeable_msg!(SpliceSigned, {
 	channel_id,
 	funding_signature,
 	splice_prev_funding_input_index,
+	splice_prev_funding_input_value,
 	signature
 }, {});
 

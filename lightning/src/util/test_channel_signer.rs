@@ -246,8 +246,8 @@ impl EcdsaChannelSigner for TestChannelSigner {
 		self.inner.sign_channel_announcement_with_funding_key(msg, secp_ctx)
 	}
 
-	fn sign_splicing_funding_input(&self, splicing_tx: &Transaction, splice_prev_funding_input_index: u16, prev_funding_value: u64, redeem_script: &Script, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<Signature, ()> {
-		self.inner.sign_splicing_funding_input(splicing_tx, splice_prev_funding_input_index, prev_funding_value, redeem_script, secp_ctx)
+	fn sign_splicing_funding_input(&self, splicing_tx: &Transaction, splice_prev_funding_input_index: u16, splice_prev_funding_input_value: u64, redeem_script: &Script, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<Signature, ()> {
+		self.inner.sign_splicing_funding_input(splicing_tx, splice_prev_funding_input_index, splice_prev_funding_input_value, redeem_script, secp_ctx)
 	}
 }
 
