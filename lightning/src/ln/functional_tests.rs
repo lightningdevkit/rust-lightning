@@ -181,66 +181,74 @@ fn test_splice_in_simple() {
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, Some(cfg)]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
+	// Initiator and Acceptor node indices. Order matters, we want the case when initiator pubkey is larger.
+	let i = 1;
+	let a = 0;
+
+	// Although this condition depends on the test data only. we verify it here to make sure we test the case
+	// when the initiator pubkey is the 'larger', as this is the more error prone case (e.g. signature order)
+	assert!(nodes[i].node.get_our_node_id() > nodes[a].node.get_our_node_id());
+
 	// Instantiate channel parameters where we push the maximum msats given our funding satoshis
 	let channel_value_sat = 100000; // same as funding satoshis
 	let push_msat = 0;
 
 	// Have node0 initiate a channel to node1 with aforementioned parameters
-	let _res = nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), channel_value_sat, push_msat, 42, None).unwrap();
+	let _res = nodes[i].node.create_channel(nodes[a].node.get_our_node_id(), channel_value_sat, push_msat, 42, None).unwrap();
 
 	// Extract the channel open message from node0 to node1
-	let open_channel_message = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
+	let open_channel_message = get_event_msg!(nodes[i], MessageSendEvent::SendOpenChannel, nodes[a].node.get_our_node_id());
 
-	let _res = nodes[1].node.handle_open_channel(&nodes[0].node.get_our_node_id(), &open_channel_message.clone());
+	let _res = nodes[a].node.handle_open_channel(&nodes[i].node.get_our_node_id(), &open_channel_message.clone());
 	// Extract the accept channel message from node1 to node0
-	let accept_channel_message = get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, nodes[0].node.get_our_node_id());
-	let _res = nodes[0].node.handle_accept_channel(&nodes[1].node.get_our_node_id(), &accept_channel_message.clone());
+	let accept_channel_message = get_event_msg!(nodes[a], MessageSendEvent::SendAcceptChannel, nodes[i].node.get_our_node_id());
+	let _res = nodes[i].node.handle_accept_channel(&nodes[a].node.get_our_node_id(), &accept_channel_message.clone());
 	// Note: FundingGenerationReady emitted, checked and used below
 	// Create funding tx
-	let (temporary_channel_id, funding_tx, _funding_output) = create_funding_transaction(&nodes[0], &nodes[1].node.get_our_node_id(), channel_value_sat, 42);
+	let (temporary_channel_id, funding_tx, _funding_output) = create_funding_transaction(&nodes[i], &nodes[a].node.get_our_node_id(), channel_value_sat, 42);
 	assert_eq!(funding_tx.encode().len(), 55);
 
 	// Funding transaction has been created, provide it
-	let _res = nodes[0].node.funding_transaction_generated(&temporary_channel_id, &nodes[1].node.get_our_node_id(), funding_tx.clone()).unwrap();
+	let _res = nodes[i].node.funding_transaction_generated(&temporary_channel_id, &nodes[a].node.get_our_node_id(), funding_tx.clone()).unwrap();
 
-	let funding_created_message = get_event_msg!(nodes[0], MessageSendEvent::SendFundingCreated, nodes[1].node.get_our_node_id());
-	let _res = nodes[1].node.handle_funding_created(&nodes[0].node.get_our_node_id(), &funding_created_message);
+	let funding_created_message = get_event_msg!(nodes[i], MessageSendEvent::SendFundingCreated, nodes[a].node.get_our_node_id());
+	let _res = nodes[a].node.handle_funding_created(&nodes[i].node.get_our_node_id(), &funding_created_message);
 
-	let funding_signed_message = get_event_msg!(nodes[1], MessageSendEvent::SendFundingSigned, nodes[0].node.get_our_node_id());
-	let _res = nodes[0].node.handle_funding_signed(&nodes[1].node.get_our_node_id(), &funding_signed_message);
+	let funding_signed_message = get_event_msg!(nodes[a], MessageSendEvent::SendFundingSigned, nodes[i].node.get_our_node_id());
+	let _res = nodes[i].node.handle_funding_signed(&nodes[a].node.get_our_node_id(), &funding_signed_message);
 	// Take new channel ID
 	let channel_id = funding_signed_message.channel_id;
 
 	// Check that funding transaction has been broadcasted
-	assert_eq!(chanmon_cfgs[0].tx_broadcaster.txn_broadcasted.lock().unwrap().len(), 1);
-	let broadcasted_funding_tx = chanmon_cfgs[0].tx_broadcaster.txn_broadcasted.lock().unwrap()[0].clone();
+	assert_eq!(chanmon_cfgs[i].tx_broadcaster.txn_broadcasted.lock().unwrap().len(), 1);
+	let broadcasted_funding_tx = chanmon_cfgs[i].tx_broadcaster.txn_broadcasted.lock().unwrap()[0].clone();
 	assert_eq!(broadcasted_funding_tx.encode().len(), 55);
 	assert_eq!(broadcasted_funding_tx.txid(), funding_tx.txid());
 	assert_eq!(broadcasted_funding_tx.encode(), funding_tx.encode());
 
-	check_added_monitors!(nodes[0], 1);
-	let _ev = get_event!(nodes[0], Event::ChannelPending);
-	check_added_monitors!(nodes[1], 1);
-	let _ev = get_event!(nodes[1], Event::ChannelPending);
+	check_added_monitors!(nodes[i], 1);
+	let _ev = get_event!(nodes[i], Event::ChannelPending);
+	check_added_monitors!(nodes[a], 1);
+	let _ev = get_event!(nodes[a], Event::ChannelPending);
 
-	confirm_transaction(&nodes[0], &broadcasted_funding_tx);
-	let channel_ready_message = get_event_msg!(nodes[0], MessageSendEvent::SendChannelReady, nodes[1].node.get_our_node_id());
+	confirm_transaction(&nodes[i], &broadcasted_funding_tx);
+	let channel_ready_message = get_event_msg!(nodes[i], MessageSendEvent::SendChannelReady, nodes[a].node.get_our_node_id());
 
-	confirm_transaction(&nodes[1], &broadcasted_funding_tx);
-	let channel_ready_message2 = get_event_msg!(nodes[1], MessageSendEvent::SendChannelReady, nodes[0].node.get_our_node_id());
+	confirm_transaction(&nodes[a], &broadcasted_funding_tx);
+	let channel_ready_message2 = get_event_msg!(nodes[a], MessageSendEvent::SendChannelReady, nodes[i].node.get_our_node_id());
 
-	let _res = nodes[1].node.handle_channel_ready(&nodes[0].node.get_our_node_id(), &channel_ready_message);
-	let _ev = get_event!(nodes[1], Event::ChannelReady);
-	let _announcement_signatures = get_event_msg!(nodes[1], MessageSendEvent::SendAnnouncementSignatures, nodes[0].node.get_our_node_id());
+	let _res = nodes[a].node.handle_channel_ready(&nodes[i].node.get_our_node_id(), &channel_ready_message);
+	let _ev = get_event!(nodes[a], Event::ChannelReady);
+	let _announcement_signatures = get_event_msg!(nodes[a], MessageSendEvent::SendAnnouncementSignatures, nodes[i].node.get_our_node_id());
 
-	let _res = nodes[0].node.handle_channel_ready(&nodes[1].node.get_our_node_id(), &channel_ready_message2);
-	let _ev = get_event!(nodes[0], Event::ChannelReady);
-	let _announcement_signatures = get_event_msg!(nodes[0], MessageSendEvent::SendAnnouncementSignatures, nodes[1].node.get_our_node_id());
+	let _res = nodes[i].node.handle_channel_ready(&nodes[a].node.get_our_node_id(), &channel_ready_message2);
+	let _ev = get_event!(nodes[i], Event::ChannelReady);
+	let _announcement_signatures = get_event_msg!(nodes[i], MessageSendEvent::SendAnnouncementSignatures, nodes[a].node.get_our_node_id());
 
 	// check channel capacity and other parameters
-	assert_eq!(nodes[0].node.list_channels().len(), 1);
+	assert_eq!(nodes[i].node.list_channels().len(), 1);
 	{
-		let channel = &nodes[0].node.list_channels()[0];
+		let channel = &nodes[i].node.list_channels()[0];
 		assert!(channel.is_usable);
 		assert!(channel.is_channel_ready);
 		assert_eq!(channel.channel_value_satoshis, channel_value_sat);
@@ -257,57 +265,57 @@ fn test_splice_in_simple() {
 	let locktime = 0; // TODO
 
 	// Initiate splice-in (on node0)
-	let _res = nodes[0].node.splice_channel(&channel_id, &nodes[1].node.get_our_node_id(), splice_in_sats as i64, funding_feerate_perkw, locktime).unwrap();
+	let _res = nodes[i].node.splice_channel(&channel_id, &nodes[a].node.get_our_node_id(), splice_in_sats as i64, funding_feerate_perkw, locktime).unwrap();
 	// Extract the splice message from node0 to node1
-	let splice_message = get_event_msg!(nodes[0], MessageSendEvent::SendSplice, nodes[1].node.get_our_node_id());
+	let splice_message = get_event_msg!(nodes[i], MessageSendEvent::SendSplice, nodes[a].node.get_our_node_id());
 
-	let _res = nodes[1].node.handle_splice(&nodes[0].node.get_our_node_id(), &splice_message);
+	let _res = nodes[a].node.handle_splice(&nodes[i].node.get_our_node_id(), &splice_message);
 	// Extract the splice_ack message from node1 to node0
-	let splice_ack_message = get_event_msg!(nodes[1], MessageSendEvent::SendSpliceAck, nodes[0].node.get_our_node_id());
+	let splice_ack_message = get_event_msg!(nodes[a], MessageSendEvent::SendSpliceAck, nodes[i].node.get_our_node_id());
 
-	let _res = nodes[0].node.handle_splice_ack(&nodes[1].node.get_our_node_id(), &splice_ack_message);
+	let _res = nodes[i].node.handle_splice_ack(&nodes[a].node.get_our_node_id(), &splice_ack_message);
 	// Note: SpliceAcked emitted, checked and used below
 
 	// Create splice tx
 	let post_splice_channel_value = channel_value_sat + splice_in_sats;
-	let (splice_tx, _funding_output) = create_splice_in_transaction(&nodes[0], &channel_id, post_splice_channel_value);
+	let (splice_tx, _funding_output) = create_splice_in_transaction(&nodes[i], &channel_id, post_splice_channel_value);
 	assert_eq!(splice_tx.encode().len(), 94);
 
 	// Splice transaction has been created, provide it
-	let _res = nodes[0].node.splice_transaction_generated(&channel_id, &nodes[1].node.get_our_node_id(), splice_tx.clone()).unwrap();
+	let _res = nodes[i].node.splice_transaction_generated(&channel_id, &nodes[a].node.get_our_node_id(), splice_tx.clone()).unwrap();
 	// Extract the splice_created message from node0 to node1
-	let splice_created_message = get_event_msg!(nodes[0], MessageSendEvent::SendSpliceCreated, nodes[1].node.get_our_node_id());
-	let _res = nodes[1].node.handle_splice_created(&nodes[0].node.get_our_node_id(), &splice_created_message);
+	let splice_created_message = get_event_msg!(nodes[i], MessageSendEvent::SendSpliceCreated, nodes[a].node.get_our_node_id());
+	let _res = nodes[a].node.handle_splice_created(&nodes[i].node.get_our_node_id(), &splice_created_message);
 
-	let splice_signed_message = get_event_msg!(nodes[1], MessageSendEvent::SendSpliceSigned, nodes[0].node.get_our_node_id());
-	let _res = nodes[0].node.handle_splice_signed(&nodes[1].node.get_our_node_id(), &splice_signed_message);
+	let splice_signed_message = get_event_msg!(nodes[a], MessageSendEvent::SendSpliceSigned, nodes[i].node.get_our_node_id());
+	let _res = nodes[i].node.handle_splice_signed(&nodes[a].node.get_our_node_id(), &splice_signed_message);
 
 	// Check that signed splice funding transaction has been broadcasted
-	assert_eq!(chanmon_cfgs[0].tx_broadcaster.txn_broadcasted.lock().unwrap().len(), 2);
-	let broadcasted_splice_tx = chanmon_cfgs[0].tx_broadcaster.txn_broadcasted.lock().unwrap()[1].clone();
+	assert_eq!(chanmon_cfgs[i].tx_broadcaster.txn_broadcasted.lock().unwrap().len(), 2);
+	let broadcasted_splice_tx = chanmon_cfgs[i].tx_broadcaster.txn_broadcasted.lock().unwrap()[1].clone();
 	assert!(broadcasted_splice_tx.encode().len() >= 314 && broadcasted_splice_tx.encode().len() <= 315);
 	assert_eq!(broadcasted_splice_tx.txid(), splice_tx.txid());
 	assert_ne!(broadcasted_splice_tx.encode(), splice_tx.encode());
 
-	check_added_monitors!(nodes[0], 1);
-	check_added_monitors!(nodes[1], 1);
+	check_added_monitors!(nodes[i], 1);
+	check_added_monitors!(nodes[a], 1);
 
-	confirm_transaction(&nodes[0], &broadcasted_splice_tx);
-	let channel_ready_message = get_event_msg!(nodes[0], MessageSendEvent::SendChannelReady, nodes[1].node.get_our_node_id());
+	confirm_transaction(&nodes[i], &broadcasted_splice_tx);
+	let channel_ready_message = get_event_msg!(nodes[i], MessageSendEvent::SendChannelReady, nodes[a].node.get_our_node_id());
 
-	confirm_transaction(&nodes[1], &broadcasted_splice_tx);
-	let channel_ready_message2 = get_event_msg!(nodes[1], MessageSendEvent::SendChannelReady, nodes[0].node.get_our_node_id());
+	confirm_transaction(&nodes[a], &broadcasted_splice_tx);
+	let channel_ready_message2 = get_event_msg!(nodes[a], MessageSendEvent::SendChannelReady, nodes[i].node.get_our_node_id());
 
-	let _res = nodes[1].node.handle_channel_ready(&nodes[0].node.get_our_node_id(), &channel_ready_message);
-	let _channel_update = get_event_msg!(nodes[1], MessageSendEvent::SendChannelUpdate, nodes[0].node.get_our_node_id());
+	let _res = nodes[a].node.handle_channel_ready(&nodes[i].node.get_our_node_id(), &channel_ready_message);
+	let _channel_update = get_event_msg!(nodes[a], MessageSendEvent::SendChannelUpdate, nodes[i].node.get_our_node_id());
 
-	let _res = nodes[0].node.handle_channel_ready(&nodes[1].node.get_our_node_id(), &channel_ready_message2);
-	let _channel_update = get_event_msg!(nodes[0], MessageSendEvent::SendChannelUpdate, nodes[1].node.get_our_node_id());
+	let _res = nodes[i].node.handle_channel_ready(&nodes[a].node.get_our_node_id(), &channel_ready_message2);
+	let _channel_update = get_event_msg!(nodes[i], MessageSendEvent::SendChannelUpdate, nodes[a].node.get_our_node_id());
 
 	// check new channel capacity and other parameters
-	assert_eq!(nodes[0].node.list_channels().len(), 1);
+	assert_eq!(nodes[i].node.list_channels().len(), 1);
 	{
-		let channel = &nodes[0].node.list_channels()[0];
+		let channel = &nodes[i].node.list_channels()[0];
 		assert!(channel.is_usable);
 		assert!(channel.is_channel_ready);
 		assert_eq!(channel.channel_value_satoshis, post_splice_channel_value);
@@ -319,12 +327,12 @@ fn test_splice_in_simple() {
 	// ... End of Splicing
 
 	// close channel
-	nodes[0].node.close_channel(&channel_id, &nodes[1].node.get_our_node_id()).unwrap();
-	let node0_shutdown_message = get_event_msg!(nodes[0], MessageSendEvent::SendShutdown, nodes[1].node.get_our_node_id());
-	nodes[1].node.handle_shutdown(&nodes[0].node.get_our_node_id(), &node0_shutdown_message);
-	let nodes_1_shutdown = get_event_msg!(nodes[1], MessageSendEvent::SendShutdown, nodes[0].node.get_our_node_id());
-	nodes[0].node.handle_shutdown(&nodes[1].node.get_our_node_id(), &nodes_1_shutdown);
-	let _ = get_event_msg!(nodes[0], MessageSendEvent::SendClosingSigned, nodes[1].node.get_our_node_id());
+	nodes[i].node.close_channel(&channel_id, &nodes[a].node.get_our_node_id()).unwrap();
+	let node0_shutdown_message = get_event_msg!(nodes[i], MessageSendEvent::SendShutdown, nodes[a].node.get_our_node_id());
+	nodes[a].node.handle_shutdown(&nodes[i].node.get_our_node_id(), &node0_shutdown_message);
+	let nodes_1_shutdown = get_event_msg!(nodes[a], MessageSendEvent::SendShutdown, nodes[i].node.get_our_node_id());
+	nodes[i].node.handle_shutdown(&nodes[a].node.get_our_node_id(), &nodes_1_shutdown);
+	let _ = get_event_msg!(nodes[i], MessageSendEvent::SendClosingSigned, nodes[a].node.get_our_node_id());
 }
 
 #[test]
