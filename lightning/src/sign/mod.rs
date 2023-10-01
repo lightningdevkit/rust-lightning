@@ -797,7 +797,7 @@ pub struct InMemorySigner {
 	/// Counterparty public keys and counterparty/holder `selected_contest_delay`, populated on channel acceptance.
 	channel_parameters: Option<ChannelTransactionParameters>,
 	/// The total value of this channel.
-	channel_value_satoshis: u64,
+	pub channel_value_satoshis: u64,
 	/// Key derivation parameters.
 	channel_keys_id: [u8; 32],
 	/// Seed from which all randomness produced is derived from.
