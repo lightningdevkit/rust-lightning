@@ -5170,20 +5170,37 @@ impl<SP: Deref> Channel<SP> where
 		}
 		*/
 
-		// Update funding TX with signature from acceptor
+		// Update funding TX with signatures (ours and the one from acceptor)
 		// #SPLICE-SIG
+		// the redeem script
+		log_info!(logger, "Pubkeys used for redeem script: {} {}", &self.context.get_holder_pubkeys().funding_pubkey, &self.context.counterparty_funding_pubkey());
+		let redeem_script = self.context.get_funding_redeemscript();
 		let mut funding_transaction_with_sigs = self.context.funding_transaction.as_ref().unwrap().clone();
+		// our sig
+		let holder_signature = match &self.context.holder_signer {
+			ChannelSignerType::Ecdsa(ecdsa) => {
+				ecdsa.sign_splicing_funding_input(&funding_transaction_with_sigs, msg.splice_prev_funding_input_index, self.context.channel_value_satoshis, &redeem_script, &self.context.secp_ctx)
+					.map_err(|_| ChannelError::Close("Failed to sign the previous funding input in the new splicing funding tx".to_owned()))?
+			}
+		};
+		let mut holder_sig = holder_signature.serialize_der().to_vec();
+		holder_sig.push(EcdsaSighashType::All as u8);
+		// sig from counterparty
 		let mut cp_sig = msg.funding_signature.serialize_der().to_vec();
 		cp_sig.push(EcdsaSighashType::All as u8);
+		// prepare witness stack
+		funding_transaction_with_sigs.input[msg.splice_prev_funding_input_index as usize].witness.clear();
+		funding_transaction_with_sigs.input[msg.splice_prev_funding_input_index as usize].witness.push(Vec::new()); // First is the multisig dummy
+		funding_transaction_with_sigs.input[msg.splice_prev_funding_input_index as usize].witness.push(holder_sig);
 		funding_transaction_with_sigs.input[msg.splice_prev_funding_input_index as usize].witness.push(cp_sig);
-		log_info!(logger, "Pubkeys used for redeem script: {} {}", &self.context.get_holder_pubkeys().funding_pubkey, &self.context.counterparty_funding_pubkey());
-		let redeem_script = make_funding_redeemscript(&self.context.get_holder_pubkeys().funding_pubkey, self.context.counterparty_funding_pubkey());
-		funding_transaction_with_sigs.input[msg.splice_prev_funding_input_index as usize].witness.push(redeem_script.into_bytes());
+		funding_transaction_with_sigs.input[msg.splice_prev_funding_input_index as usize].witness.push(redeem_script.clone().into_bytes());
 
+		log_info!(logger, "Updated splice funding transaction with signatures, our and from acceptor; txid {}  txlen {}  sigs {} {}  tx {}",
+			funding_transaction_with_sigs.txid(), funding_transaction_with_sigs.encode().len(),
+			holder_signature, msg.funding_signature, 
+			encode::serialize_hex(&funding_transaction_with_sigs)
+		);
 		self.context.funding_transaction = Some(funding_transaction_with_sigs.clone());
-		log_info!(logger, "Updated splice funding transaction with signature from acceptor; txid {}  txlen {}  sig {}  tx {}", funding_transaction_with_sigs.txid(), funding_transaction_with_sigs.encode().len(), msg.funding_signature, encode::serialize_hex(&funding_transaction_with_sigs));
-
-		let funding_script = self.context.get_funding_redeemscript();
 
 		let counterparty_keys = self.context.build_remote_transaction_keys();
 		let counterparty_initial_commitment_tx = self.context.build_commitment_transaction(self.context.cur_counterparty_commitment_transaction_number, &counterparty_keys, false, false, logger).tx;
@@ -5198,7 +5215,7 @@ impl<SP: Deref> Channel<SP> where
 		{
 			let trusted_tx = initial_commitment_tx.trust();
 			let initial_commitment_bitcoin_tx = trusted_tx.built_transaction();
-			let sighash = initial_commitment_bitcoin_tx.get_sighash_all(&funding_script, self.context.channel_value_satoshis);
+			let sighash = initial_commitment_bitcoin_tx.get_sighash_all(&redeem_script, self.context.channel_value_satoshis);
 			// They sign our commitment transaction, allowing us to broadcast the tx if we wish.
 			if let Err(_) = self.context.secp_ctx.verify_ecdsa(&sighash, &msg.signature, &self.context.get_counterparty_pubkeys().funding_pubkey) {
 				return Err(ChannelError::Close("Invalid splicing_signed signature from peer".to_owned()));
@@ -6003,20 +6020,6 @@ impl<SP: Deref> Channel<SP> where
 		log_info!(logger, "Pubkeys used for redeem script: {} {}", &self.context.get_holder_pubkeys().funding_pubkey, &self.context.counterparty_funding_pubkey());
 		let redeem_script = make_funding_redeemscript(&self.context.get_holder_pubkeys().funding_pubkey, self.context.counterparty_funding_pubkey());
 
-		let funding_input_signature = match &self.context.holder_signer {
-			ChannelSignerType::Ecdsa(ecdsa) => {
-				ecdsa.sign_splicing_funding_input(&splice_transaction, splice_prev_funding_input_index, self.context.channel_value_satoshis, &redeem_script, &self.context.secp_ctx)
-					.map_err(|_| ChannelError::Close("Failed to sign the previous funding input in the new splicing funding tx".to_owned()))?
-			}
-		};
-		let mut splice_transaction_with_one_sig = splice_transaction.clone();
-		let mut holder_sig = funding_input_signature.serialize_der().to_vec();
-		holder_sig.push(EcdsaSighashType::All as u8);
-		splice_transaction_with_one_sig.input[splice_prev_funding_input_index as usize].witness.clear();
-		splice_transaction_with_one_sig.input[splice_prev_funding_input_index as usize].witness.push(Vec::new()); // First is the multisig dummy
-		splice_transaction_with_one_sig.input[splice_prev_funding_input_index as usize].witness.push(holder_sig);
-		log_info!(logger, "Created signature for funding tx input / initiator, index {}  txid {}  value {}  txlen {}  oldtxlen {}  sig {}", splice_prev_funding_input_index, splice_transaction_with_one_sig.txid(), self.context.channel_value_satoshis, splice_transaction_with_one_sig.encode().len(), splice_transaction.encode().len(), funding_input_signature.serialize_der().to_hex());
-
 		// Commit to the new channel value (capacity). The increase belongs to us (initiator, local).
 		let _ = self.context.commit_pending_splice(splice_txo, logger)?;
 
@@ -6040,14 +6043,14 @@ impl<SP: Deref> Channel<SP> where
 		// Now that we're past error-generating stuff, update our local state:
 		self.context.channel_state = ChannelState::FundingCreated as u32; // TODO not needed. Or maybe new states are needed?
 		// self.channel_id = funding_txo.to_channel_id(); // TODO not needed, remove
-		self.context.funding_transaction = Some(splice_transaction_with_one_sig.clone());
-		log_info!(logger, "Stored splice funding tx, txid {}  len {}", splice_transaction_with_one_sig.txid(), splice_transaction_with_one_sig.encode().len());
+		self.context.funding_transaction = Some(splice_transaction.clone());
+		log_info!(logger, "Stored splice funding tx, txid {}  len {}", splice_transaction.txid(), splice_transaction.encode().len());
 
 		Ok(msgs::SpliceCreated {
 			channel_id: self.context.channel_id,
 			splice_txid: splice_txo.txid,
 			funding_output_index: splice_txo.index,
-			splice_transaction: splice_transaction_with_one_sig,
+			splice_transaction,
 			splice_prev_funding_input_index,
 			splice_tx_redeem_script: redeem_script,
 			signature,

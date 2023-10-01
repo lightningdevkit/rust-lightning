@@ -15,7 +15,6 @@
 use bitcoin::blockdata::transaction::{Transaction, TxOut, TxIn, EcdsaSighashType};
 use bitcoin::blockdata::script::{Script, Builder};
 use bitcoin::blockdata::opcodes;
-// use bitcoin::hashes::hex::ToHex;
 use bitcoin::network::constants::Network;
 use bitcoin::psbt::PartiallySignedTransaction;
 use bitcoin::util::bip32::{ExtendedPrivKey, ExtendedPubKey, ChildNumber};

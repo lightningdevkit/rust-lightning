@@ -2829,7 +2829,6 @@ mod tests {
 
 	use bitcoin::secp256k1::{PublicKey,SecretKey};
 	use bitcoin::secp256k1::{Secp256k1, Message};
-	use bitcoin::secp256k1::ecdsa::Signature;
 
 	use crate::io::{self, Cursor};
 	use crate::prelude::*;
