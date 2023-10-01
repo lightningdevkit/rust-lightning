@@ -38,16 +38,18 @@ use crate::util::string::UntrustedString;
 use crate::util::config::{ChannelHandshakeConfig, UserConfig, MaxDustHTLCExposure};
 
 // WIP payment use lightning_invoice::{Currency, utils};
-use bitcoin::hash_types::BlockHash;
+use bitcoin::hash_types::{BlockHash, Txid};
 use bitcoin::blockdata::script::{Builder, Script};
 use bitcoin::blockdata::opcodes;
 use bitcoin::blockdata::constants::genesis_block;
 use bitcoin::network::constants::Network;
 use bitcoin::{PackedLockTime, Sequence, Transaction, TxIn, TxOut, Witness};
 use bitcoin::OutPoint as BitcoinOutPoint;
+use bitcoin::hashes::hex::ToHex;
 
-use bitcoin::secp256k1::Secp256k1;
-use bitcoin::secp256k1::{PublicKey,SecretKey};
+use bitcoin::secp256k1::{Message, PublicKey, Secp256k1, SecretKey};
+use bitcoin::secp256k1::ecdsa::Signature;
+use bitcoin::util::sighash::{EcdsaSighashType, SighashCache};
 
 use regex;
 
@@ -63,6 +65,34 @@ use crate::ln::functional_test_utils::*;
 use crate::ln::chan_utils::CommitmentTransaction;
 
 use super::channel::UNFUNDED_CHANNEL_AGE_LIMIT_TICKS;
+
+// Return the two pubkeys from the script
+fn verify_multisig_redeem_script(script: &Vec<u8>) -> (Vec<u8>, Vec<u8>) {
+	let expected_len = 71;
+	assert_eq!(script.len(), expected_len);
+	assert_eq!(script[0], 0x52); // 2
+	assert_eq!(script[1], 0x21); // pubkey len
+	let key1 = script[2..2+33].to_vec();
+	assert_eq!(script[1+1+ 33], 0x21); // pubkey len
+	let key2 = script[36..36+33].to_vec();
+	println!("{} {}", hex::encode(&key1), hex::encode(&key2));
+	assert_eq!(script[1+1+33+1+33], 0x52); // 2
+	assert_eq!(script[1+1+33+1+33+1], 0xae); // OP_CHECKMULTISIG
+	if key1 > key2 {
+		panic!("The two pubkeys should in lexigraphical order! {} {}", hex::encode(&key1), hex::encode(&key2));
+	}
+	(key1, key2)
+}
+
+// Get the funding key of a node towards another node
+fn get_funding_key(node: &Node, counterparty_node: &Node, channel_id: &ChannelId) -> PublicKey {
+	let per_peer_state = node.node.per_peer_state.read().unwrap();
+	let chan_lock = per_peer_state.get(&counterparty_node.node.get_our_node_id()).unwrap().lock().unwrap();
+	let local_chan = chan_lock.channel_by_id.get(&channel_id).map(
+		|phase| if let ChannelPhase::Funded(chan) = phase { Some(chan) } else { None }
+	).flatten().unwrap();
+	local_chan.get_signer().as_ref().pubkeys().funding_pubkey
+}
 
 /// Simple open channel flow
 #[test]
@@ -117,6 +147,7 @@ fn test_channel_open_simple() {
 	assert_eq!(broadcasted_funding_tx.encode().len(), 55);
 	assert_eq!(broadcasted_funding_tx.txid(), funding_tx.txid());
 	assert_eq!(broadcasted_funding_tx.encode(), funding_tx.encode());
+	// TODO check for multisig output, script
 
 	check_added_monitors!(nodes[0], 1);
 	let _ev = get_event!(nodes[0], Event::ChannelPending);
@@ -163,6 +194,63 @@ fn test_channel_open_simple() {
 	let _ = get_event_msg!(nodes[0], MessageSendEvent::SendClosingSigned, nodes[1].node.get_our_node_id());
 }
 
+fn verify_signature(msg: &Vec<u8>, sig: &Vec<u8>, pubkey: &Vec<u8>) -> Result<(), String> {
+	let m = Message::from_slice(&msg).unwrap();
+	let s = Signature::from_der(&sig).unwrap();
+	let pk = PublicKey::from_slice(&pubkey).unwrap();
+	let ctx = Secp256k1::new();
+	match ctx.verify_ecdsa(&m, &s, &pk) {
+		Ok(_) => Ok(()),
+		Err(e) => Err(format!("Signature verification failed! err {}  msg {}  sig {}  pk {}", e, hex::encode(&msg), hex::encode(&sig), hex::encode(&pubkey))),
+	}
+}
+
+/// #SPLICING Do checks on the splice funding tx
+fn verify_splice_funding_tx(splice_tx: &Transaction, prev_funding_txid: &Txid, prev_funding_value: u64) {
+	// check that the previous funding tx is an input
+	let mut prev_fund_input_idx: Option<usize> = None;
+	for idx in 0..splice_tx.input.len() {
+		if splice_tx.input[idx].previous_output.txid == *prev_funding_txid {
+			prev_fund_input_idx = Some(idx);
+		}
+	}
+	if prev_fund_input_idx.is_none() {
+		panic!("Splice tx should contain the pervious funding tx as input! {} {}", prev_funding_txid, splice_tx.encode().to_hex());
+	}
+	let prev_fund_input = &splice_tx.input[prev_fund_input_idx.unwrap()];
+	let witness = &prev_fund_input.witness.to_vec();
+	let witness_count = witness.len();
+	let expected_witness_count = 4;
+	if witness_count != expected_witness_count {
+		println!("Prev fund tx inp {:?}", prev_fund_input);
+		panic!("Prev funding tx input should have {} witness elements! {}", expected_witness_count, witness_count);
+	}
+	if witness[0].len() != 0 {
+		panic!("First multisig witness should be empty! {}", witness[0].len());
+	}
+	// check witness 1&2, signatures
+	let wit1_sig = &witness[1];
+	let wit2_sig = &witness[2];
+	if wit1_sig.len() < 70 || wit1_sig.len() > 72 || wit2_sig.len() < 70 || wit2_sig.len() > 72 {
+		panic!("Witness entries 2&3 should signatures! {} {}", hex::encode(wit1_sig), hex::encode(wit2_sig));
+	}
+	if wit1_sig[wit1_sig.len()-1] != 1 || wit2_sig[wit2_sig.len()-1] != 1 {
+		panic!("Witness entries 2&3 should be signatures with SIGHASHALL! {} {}", hex::encode(wit1_sig), hex::encode(wit2_sig));
+	}
+	let (script_key1, script_key2) = verify_multisig_redeem_script(&witness[3]);
+	let redeemscript = Script::from(witness[3].to_vec());
+	// check signatures, sigs are in same order as keys
+	let sighash = &SighashCache::new(splice_tx).segwit_signature_hash(prev_fund_input_idx.unwrap(), &redeemscript, prev_funding_value, EcdsaSighashType::All).unwrap()[..].to_vec();
+	let sig1 = wit1_sig[0..(wit1_sig.len()-1)].to_vec();
+	let sig2 = wit2_sig[0..(wit2_sig.len()-1)].to_vec();
+	if let Err(e1) = verify_signature(sighash, &sig1, &script_key1) {
+		panic!("Sig 1 check fails {}", e1);
+	}
+	if let Err(e2) = verify_signature(sighash, &sig2, &script_key2) {
+		panic!("Sig 2 check fails {}", e2);
+	}
+}
+
 /// #SPLICING Builds on test_channel_open_simple()
 /// Splicing test, simple splice-in flow. Starts with opening a channel first.
 #[test]
@@ -182,12 +270,12 @@ fn test_splice_in_simple() {
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	// Initiator and Acceptor node indices. Order matters, we want the case when initiator pubkey is larger.
-	let i = 1;
-	let a = 0;
+	let i = 0;
+	let a = 1;
 
+	// TODO check signer keys, not node IDs
 	// Although this condition depends on the test data only. we verify it here to make sure we test the case
 	// when the initiator pubkey is the 'larger', as this is the more error prone case (e.g. signature order)
-	assert!(nodes[i].node.get_our_node_id() > nodes[a].node.get_our_node_id());
 
 	// Instantiate channel parameters where we push the maximum msats given our funding satoshis
 	let channel_value_sat = 100000; // same as funding satoshis
@@ -225,6 +313,7 @@ fn test_splice_in_simple() {
 	assert_eq!(broadcasted_funding_tx.encode().len(), 55);
 	assert_eq!(broadcasted_funding_tx.txid(), funding_tx.txid());
 	assert_eq!(broadcasted_funding_tx.encode(), funding_tx.encode());
+	// TODO check for multisig output, script
 
 	check_added_monitors!(nodes[i], 1);
 	let _ev = get_event!(nodes[i], Event::ChannelPending);
@@ -247,8 +336,8 @@ fn test_splice_in_simple() {
 
 	// check channel capacity and other parameters
 	assert_eq!(nodes[i].node.list_channels().len(), 1);
+	let channel = &nodes[i].node.list_channels()[0];
 	{
-		let channel = &nodes[i].node.list_channels()[0];
 		assert!(channel.is_usable);
 		assert!(channel.is_channel_ready);
 		assert_eq!(channel.channel_value_satoshis, channel_value_sat);
@@ -258,6 +347,13 @@ fn test_splice_in_simple() {
 	}
 
 	// Start of Splicing ...
+
+	let initiator_funding_key = get_funding_key(&nodes[i], &nodes[a], &channel.channel_id);
+	let acceptor_funding_key = get_funding_key(&nodes[a], &nodes[i], &channel.channel_id);
+	// Although this condition only depends on the test nodes used (and their order),
+	// we verify it here to make sure we test the case when the initiator funding pubkey is the 'larger',
+	// as this is the more error prone case (e.g. signature order)
+	assert!(initiator_funding_key > acceptor_funding_key);
 
 	// Amount being added to the channel through the splice-in
 	let splice_in_sats: u64 = 20000;
@@ -296,6 +392,7 @@ fn test_splice_in_simple() {
 	assert!(broadcasted_splice_tx.encode().len() >= 314 && broadcasted_splice_tx.encode().len() <= 315);
 	assert_eq!(broadcasted_splice_tx.txid(), splice_tx.txid());
 	assert_ne!(broadcasted_splice_tx.encode(), splice_tx.encode());
+	verify_splice_funding_tx(&broadcasted_splice_tx, &broadcasted_funding_tx.txid(), channel_value_sat);
 
 	check_added_monitors!(nodes[i], 1);
 	check_added_monitors!(nodes[a], 1);
