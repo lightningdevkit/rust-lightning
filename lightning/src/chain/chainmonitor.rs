@@ -402,7 +402,8 @@ where C::Target: chain::Filter,
 						outpoint: OutPoint { txid, index: idx as u16 },
 						script_pubkey: output.script_pubkey,
 					};
-					chain_source.register_output(output)
+					log_trace!(logger, "Adding monitoring for spends of outpoint {} to the filter", output.outpoint);
+					chain_source.register_output(output);
 				}
 			}
 		}
@@ -741,7 +742,7 @@ where C::Target: chain::Filter,
 			},
 		}
 		if let Some(ref chain_source) = self.chain_source {
-			monitor.load_outputs_to_watch(chain_source);
+			monitor.load_outputs_to_watch(chain_source , &self.logger);
 		}
 		entry.insert(MonitorHolder {
 			monitor,
