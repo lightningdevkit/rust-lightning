@@ -7,14 +7,16 @@
 // You may not use this file except in accordance with one or both of these
 // licenses.
 
-use bitcoin::secp256k1::{Secp256k1, SecretKey};
+use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
 use crate::blinded_path::BlindedPath;
 use crate::blinded_path::payment::{ForwardNode, ForwardTlvs, PaymentConstraints, PaymentRelay, ReceiveTlvs};
 use crate::events::MessageSendEventsProvider;
+use crate::ln::PaymentSecret;
 use crate::ln::channelmanager;
 use crate::ln::channelmanager::{PaymentId, RecipientOnionFields};
 use crate::ln::features::BlindedHopFeatures;
 use crate::ln::functional_test_utils::*;
+use crate::ln::msgs;
 use crate::ln::msgs::ChannelMessageHandler;
 use crate::ln::onion_utils;
 use crate::ln::onion_utils::INVALID_ONION_BLINDING;
@@ -22,6 +24,49 @@ use crate::ln::outbound_payment::Retry;
 use crate::prelude::*;
 use crate::routing::router::{PaymentParameters, RouteParameters};
 use crate::util::config::UserConfig;
+use crate::util::test_utils;
+
+pub fn get_blinded_route_parameters(
+	amt_msat: u64, payment_secret: PaymentSecret, node_ids: Vec<PublicKey>,
+	channel_upds: &[&msgs::UnsignedChannelUpdate], keys_manager: &test_utils::TestKeysInterface
+) -> RouteParameters {
+	let mut intermediate_nodes = Vec::new();
+	for (node_id, chan_upd) in node_ids.iter().zip(channel_upds) {
+		intermediate_nodes.push(ForwardNode {
+			node_id: *node_id,
+			tlvs: ForwardTlvs {
+				short_channel_id: chan_upd.short_channel_id,
+				payment_relay: PaymentRelay {
+					cltv_expiry_delta: chan_upd.cltv_expiry_delta,
+					fee_proportional_millionths: chan_upd.fee_proportional_millionths,
+					fee_base_msat: chan_upd.fee_base_msat,
+				},
+				payment_constraints: PaymentConstraints {
+					max_cltv_expiry: u32::max_value(),
+					htlc_minimum_msat: chan_upd.htlc_minimum_msat,
+				},
+				features: BlindedHopFeatures::empty(),
+			},
+			htlc_maximum_msat: chan_upd.htlc_maximum_msat,
+		});
+	}
+	let payee_tlvs = ReceiveTlvs {
+		payment_secret,
+		payment_constraints: PaymentConstraints {
+			max_cltv_expiry: u32::max_value(),
+			htlc_minimum_msat: channel_upds.last().unwrap().htlc_minimum_msat,
+		},
+	};
+	let mut secp_ctx = Secp256k1::new();
+	let blinded_path = BlindedPath::new_for_payment(
+		&intermediate_nodes[..], *node_ids.last().unwrap(), payee_tlvs,
+		channel_upds.last().unwrap().htlc_maximum_msat, keys_manager, &secp_ctx
+	).unwrap();
+
+	RouteParameters::from_payment_params_and_value(
+		PaymentParameters::blinded(vec![blinded_path]), amt_msat
+	)
+}
 
 #[test]
 fn one_hop_blinded_path() {
@@ -145,38 +190,10 @@ fn do_forward_checks_failure(check: ForwardCheckFail) {
 
 	let amt_msat = 5000;
 	let (_, payment_hash, payment_secret) = get_payment_preimage_hash(&nodes[2], Some(amt_msat), None);
-	let intermediate_nodes = vec![ForwardNode {
-		node_id: nodes[1].node.get_our_node_id(),
-		tlvs: ForwardTlvs {
-			short_channel_id: chan_upd_1_2.short_channel_id,
-			payment_relay: PaymentRelay {
-				cltv_expiry_delta: chan_upd_1_2.cltv_expiry_delta,
-				fee_proportional_millionths: chan_upd_1_2.fee_proportional_millionths,
-				fee_base_msat: chan_upd_1_2.fee_base_msat,
-			},
-			payment_constraints: PaymentConstraints {
-				max_cltv_expiry: u32::max_value(),
-				htlc_minimum_msat: chan_upd_1_2.htlc_minimum_msat,
-			},
-			features: BlindedHopFeatures::empty(),
-		},
-		htlc_maximum_msat: chan_upd_1_2.htlc_maximum_msat,
-	}];
-	let payee_tlvs = ReceiveTlvs {
-		payment_secret,
-		payment_constraints: PaymentConstraints {
-			max_cltv_expiry: u32::max_value(),
-			htlc_minimum_msat: chan_upd_1_2.htlc_minimum_msat,
-		},
-	};
-	let mut secp_ctx = Secp256k1::new();
-	let blinded_path = BlindedPath::new_for_payment(
-		&intermediate_nodes[..], nodes[2].node.get_our_node_id(), payee_tlvs,
-		chan_upd_1_2.htlc_maximum_msat, &chanmon_cfgs[2].keys_manager, &secp_ctx
-	).unwrap();
+	let route_params = get_blinded_route_parameters(amt_msat, payment_secret,
+		nodes.iter().skip(1).map(|n| n.node.get_our_node_id()).collect(), &[&chan_upd_1_2],
+		&chanmon_cfgs[2].keys_manager);
 
-	let route_params = RouteParameters::from_payment_params_and_value(
-		PaymentParameters::blinded(vec![blinded_path]), amt_msat);
 	let route = get_route(&nodes[0], &route_params).unwrap();
 	node_cfgs[0].router.expect_find_route(route_params.clone(), Ok(route.clone()));
 	nodes[0].node.send_payment(payment_hash, RecipientOnionFields::spontaneous_empty(), PaymentId(payment_hash.0), route_params, Retry::Attempts(0)).unwrap();
