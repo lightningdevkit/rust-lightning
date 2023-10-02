@@ -2940,7 +2940,7 @@ where
 		// payment logic has enough time to fail the HTLC backward before our onchain logic triggers a
 		// channel closure (see HTLC_FAIL_BACK_BUFFER rationale).
 		let current_height: u32 = self.best_block.read().unwrap().height();
-		if (outgoing_cltv_value as u64) <= current_height as u64 + HTLC_FAIL_BACK_BUFFER as u64 + 1 {
+		if cltv_expiry <= current_height + HTLC_FAIL_BACK_BUFFER + 1 {
 			let mut err_data = Vec::with_capacity(12);
 			err_data.extend_from_slice(&amt_msat.to_be_bytes());
 			err_data.extend_from_slice(&current_height.to_be_bytes());
@@ -11094,6 +11094,30 @@ mod tests {
 		};
 		assert!(node[0].node.construct_recv_pending_htlc_info(hop_data, [0; 32], PaymentHash([0; 32]),
 			sender_intended_amt_msat - extra_fee_msat, 42, None, true, Some(extra_fee_msat)).is_ok());
+	}
+
+	#[test]
+	fn test_final_incorrect_cltv(){
+		let chanmon_cfg = create_chanmon_cfgs(1);
+		let node_cfg = create_node_cfgs(1, &chanmon_cfg);
+		let node_chanmgr = create_node_chanmgrs(1, &node_cfg, &[None]);
+		let node = create_network(1, &node_cfg, &node_chanmgr);
+
+		let result = node[0].node.construct_recv_pending_htlc_info(msgs::InboundOnionPayload::Receive {
+			amt_msat: 100,
+			outgoing_cltv_value: 22,
+			payment_metadata: None,
+			keysend_preimage: None,
+			payment_data: Some(msgs::FinalOnionHopData {
+				payment_secret: PaymentSecret([0; 32]), total_msat: 100,
+			}),
+			custom_tlvs: Vec::new(),
+		}, [0; 32], PaymentHash([0; 32]), 100, 23, None, true, None);
+
+		// Should not return an error as this condition:
+		// https://github.com/lightning/bolts/blob/4dcc377209509b13cf89a4b91fde7d478f5b46d8/04-onion-routing.md?plain=1#L334
+		// is not satisfied.
+		assert!(result.is_ok());
 	}
 
 	#[test]
