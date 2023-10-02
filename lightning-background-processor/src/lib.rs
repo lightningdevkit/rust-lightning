@@ -294,6 +294,7 @@ macro_rules! define_run_body {
 		let mut last_scorer_persist_call = $get_timer(SCORER_PERSIST_TIMER);
 		let mut last_rebroadcast_call = $get_timer(REBROADCAST_TIMER);
 		let mut have_pruned = false;
+		let mut have_decayed_scorer = false;
 
 		loop {
 			$process_channel_manager_events;
@@ -401,9 +402,24 @@ macro_rules! define_run_body {
 				last_prune_call = $get_timer(prune_timer);
 			}
 
+			if !have_decayed_scorer {
+				if let Some(ref scorer) = $scorer {
+					if let Some(duration_since_epoch) = $time_fetch() {
+						log_trace!($logger, "Calling time_passed on scorer at startup");
+						scorer.write_lock().time_passed(duration_since_epoch);
+					}
+				}
+				have_decayed_scorer = true;
+			}
+
 			if $timer_elapsed(&mut last_scorer_persist_call, SCORER_PERSIST_TIMER) {
 				if let Some(ref scorer) = $scorer {
-					log_trace!($logger, "Persisting scorer");
+					if let Some(duration_since_epoch) = $time_fetch() {
+						log_trace!($logger, "Calling time_passed and persisting scorer");
+						scorer.write_lock().time_passed(duration_since_epoch);
+					} else {
+						log_trace!($logger, "Persisting scorer");
+					}
 					if let Err(e) = $persister.persist_scorer(&scorer) {
 						log_error!($logger, "Error: Failed to persist scorer, check your disk and permissions {}", e)
 					}
@@ -1208,6 +1224,7 @@ mod tests {
 				}
 			}
 		}
+		fn time_passed(&mut self, _: Duration) {}
 	}
 
 	#[cfg(c_bindings)]
@@ -1616,7 +1633,7 @@ mod tests {
 
 		loop {
 			let log_entries = nodes[0].logger.lines.lock().unwrap();
-			let expected_log = "Persisting scorer".to_string();
+			let expected_log = "Calling time_passed and persisting scorer".to_string();
 			if log_entries.get(&("lightning_background_processor", expected_log)).is_some() {
 				break
 			}

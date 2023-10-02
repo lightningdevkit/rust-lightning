@@ -1357,6 +1357,8 @@ impl ScoreUpdate for TestScorer {
 	fn probe_failed(&mut self, _actual_path: &Path, _: u64, _duration_since_epoch: Duration) {}
 
 	fn probe_successful(&mut self, _actual_path: &Path, _duration_since_epoch: Duration) {}
+
+	fn time_passed(&mut self, _duration_since_epoch: Duration) {}
 }
 
 impl Drop for TestScorer {

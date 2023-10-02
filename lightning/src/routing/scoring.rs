@@ -120,6 +120,12 @@ pub trait ScoreUpdate {
 
 	/// Handles updating channel penalties after a probe over the given path succeeded.
 	fn probe_successful(&mut self, path: &Path, duration_since_epoch: Duration);
+
+	/// Scorers may wish to reduce their certainty of channel liquidity information over time.
+	/// Thus, this method is provided to allow scorers to observe the passage of time - the holder
+	/// of this object should call this method regularly (generally via the
+	/// `lightning-background-processor` crate).
+	fn time_passed(&mut self, duration_since_epoch: Duration);
 }
 
 /// A trait which can both lookup and update routing channel penalty scores.
@@ -159,6 +165,10 @@ impl<S: ScoreUpdate, T: DerefMut<Target=S>> ScoreUpdate for T {
 
 	fn probe_successful(&mut self, path: &Path, duration_since_epoch: Duration) {
 		self.deref_mut().probe_successful(path, duration_since_epoch)
+	}
+
+	fn time_passed(&mut self, duration_since_epoch: Duration) {
+		self.deref_mut().time_passed(duration_since_epoch)
 	}
 }
 } }
@@ -361,6 +371,10 @@ impl<'a, T: Score> ScoreUpdate for MultiThreadedScoreLockWrite<'a, T> {
 	fn probe_successful(&mut self, path: &Path, duration_since_epoch: Duration) {
 		self.0.probe_successful(path, duration_since_epoch)
 	}
+
+	fn time_passed(&mut self, duration_since_epoch: Duration) {
+		self.0.time_passed(duration_since_epoch)
+	}
 }
 
 
@@ -406,6 +420,8 @@ impl ScoreUpdate for FixedPenaltyScorer {
 	fn probe_failed(&mut self, _path: &Path, _short_channel_id: u64, _duration_since_epoch: Duration) {}
 
 	fn probe_successful(&mut self, _path: &Path, _duration_since_epoch: Duration) {}
+
+	fn time_passed(&mut self, _duration_since_epoch: Duration) {}
 }
 
 impl Writeable for FixedPenaltyScorer {
@@ -1463,6 +1479,8 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, T: Time> ScoreUpdate for Prob
 	fn probe_successful(&mut self, path: &Path, duration_since_epoch: Duration) {
 		self.payment_path_failed(path, u64::max_value(), duration_since_epoch)
 	}
+
+	fn time_passed(&mut self, _duration_since_epoch: Duration) {}
 }
 
 #[cfg(c_bindings)]
