@@ -110,16 +110,16 @@ pub trait ScoreLookUp {
 /// `ScoreUpdate` is used to update the scorer's internal state after a payment attempt.
 pub trait ScoreUpdate {
 	/// Handles updating channel penalties after failing to route through a channel.
-	fn payment_path_failed(&mut self, path: &Path, short_channel_id: u64);
+	fn payment_path_failed(&mut self, path: &Path, short_channel_id: u64, duration_since_epoch: Duration);
 
 	/// Handles updating channel penalties after successfully routing along a path.
-	fn payment_path_successful(&mut self, path: &Path);
+	fn payment_path_successful(&mut self, path: &Path, duration_since_epoch: Duration);
 
 	/// Handles updating channel penalties after a probe over the given path failed.
-	fn probe_failed(&mut self, path: &Path, short_channel_id: u64);
+	fn probe_failed(&mut self, path: &Path, short_channel_id: u64, duration_since_epoch: Duration);
 
 	/// Handles updating channel penalties after a probe over the given path succeeded.
-	fn probe_successful(&mut self, path: &Path);
+	fn probe_successful(&mut self, path: &Path, duration_since_epoch: Duration);
 }
 
 /// A trait which can both lookup and update routing channel penalty scores.
@@ -145,20 +145,20 @@ impl<S: ScoreLookUp, T: Deref<Target=S>> ScoreLookUp for T {
 
 #[cfg(not(c_bindings))]
 impl<S: ScoreUpdate, T: DerefMut<Target=S>> ScoreUpdate for T {
-	fn payment_path_failed(&mut self, path: &Path, short_channel_id: u64) {
-		self.deref_mut().payment_path_failed(path, short_channel_id)
+	fn payment_path_failed(&mut self, path: &Path, short_channel_id: u64, duration_since_epoch: Duration) {
+		self.deref_mut().payment_path_failed(path, short_channel_id, duration_since_epoch)
 	}
 
-	fn payment_path_successful(&mut self, path: &Path) {
-		self.deref_mut().payment_path_successful(path)
+	fn payment_path_successful(&mut self, path: &Path, duration_since_epoch: Duration) {
+		self.deref_mut().payment_path_successful(path, duration_since_epoch)
 	}
 
-	fn probe_failed(&mut self, path: &Path, short_channel_id: u64) {
-		self.deref_mut().probe_failed(path, short_channel_id)
+	fn probe_failed(&mut self, path: &Path, short_channel_id: u64, duration_since_epoch: Duration) {
+		self.deref_mut().probe_failed(path, short_channel_id, duration_since_epoch)
 	}
 
-	fn probe_successful(&mut self, path: &Path) {
-		self.deref_mut().probe_successful(path)
+	fn probe_successful(&mut self, path: &Path, duration_since_epoch: Duration) {
+		self.deref_mut().probe_successful(path, duration_since_epoch)
 	}
 }
 } }
@@ -346,20 +346,20 @@ impl<'a, T: 'a + Score> DerefMut for MultiThreadedScoreLockWrite<'a, T> {
 
 #[cfg(c_bindings)]
 impl<'a, T: Score> ScoreUpdate for MultiThreadedScoreLockWrite<'a, T> {
-	fn payment_path_failed(&mut self, path: &Path, short_channel_id: u64) {
-		self.0.payment_path_failed(path, short_channel_id)
+	fn payment_path_failed(&mut self, path: &Path, short_channel_id: u64, duration_since_epoch: Duration) {
+		self.0.payment_path_failed(path, short_channel_id, duration_since_epoch)
 	}
 
-	fn payment_path_successful(&mut self, path: &Path) {
-		self.0.payment_path_successful(path)
+	fn payment_path_successful(&mut self, path: &Path, duration_since_epoch: Duration) {
+		self.0.payment_path_successful(path, duration_since_epoch)
 	}
 
-	fn probe_failed(&mut self, path: &Path, short_channel_id: u64) {
-		self.0.probe_failed(path, short_channel_id)
+	fn probe_failed(&mut self, path: &Path, short_channel_id: u64, duration_since_epoch: Duration) {
+		self.0.probe_failed(path, short_channel_id, duration_since_epoch)
 	}
 
-	fn probe_successful(&mut self, path: &Path) {
-		self.0.probe_successful(path)
+	fn probe_successful(&mut self, path: &Path, duration_since_epoch: Duration) {
+		self.0.probe_successful(path, duration_since_epoch)
 	}
 }
 
@@ -399,13 +399,13 @@ impl ScoreLookUp for FixedPenaltyScorer {
 }
 
 impl ScoreUpdate for FixedPenaltyScorer {
-	fn payment_path_failed(&mut self, _path: &Path, _short_channel_id: u64) {}
+	fn payment_path_failed(&mut self, _path: &Path, _short_channel_id: u64, _duration_since_epoch: Duration) {}
 
-	fn payment_path_successful(&mut self, _path: &Path) {}
+	fn payment_path_successful(&mut self, _path: &Path, _duration_since_epoch: Duration) {}
 
-	fn probe_failed(&mut self, _path: &Path, _short_channel_id: u64) {}
+	fn probe_failed(&mut self, _path: &Path, _short_channel_id: u64, _duration_since_epoch: Duration) {}
 
-	fn probe_successful(&mut self, _path: &Path) {}
+	fn probe_successful(&mut self, _path: &Path, _duration_since_epoch: Duration) {}
 }
 
 impl Writeable for FixedPenaltyScorer {
@@ -1391,7 +1391,7 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, T: Time> ScoreLookUp for Prob
 }
 
 impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, T: Time> ScoreUpdate for ProbabilisticScorerUsingTime<G, L, T> where L::Target: Logger {
-	fn payment_path_failed(&mut self, path: &Path, short_channel_id: u64) {
+	fn payment_path_failed(&mut self, path: &Path, short_channel_id: u64, _duration_since_epoch: Duration) {
 		let amount_msat = path.final_value_msat();
 		log_trace!(self.logger, "Scoring path through to SCID {} as having failed at {} msat", short_channel_id, amount_msat);
 		let network_graph = self.network_graph.read_only();
@@ -1430,7 +1430,7 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, T: Time> ScoreUpdate for Prob
 		}
 	}
 
-	fn payment_path_successful(&mut self, path: &Path) {
+	fn payment_path_successful(&mut self, path: &Path, _duration_since_epoch: Duration) {
 		let amount_msat = path.final_value_msat();
 		log_trace!(self.logger, "Scoring path through SCID {} as having succeeded at {} msat.",
 			path.hops.split_last().map(|(hop, _)| hop.short_channel_id).unwrap_or(0), amount_msat);
@@ -1456,12 +1456,12 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, T: Time> ScoreUpdate for Prob
 		}
 	}
 
-	fn probe_failed(&mut self, path: &Path, short_channel_id: u64) {
-		self.payment_path_failed(path, short_channel_id)
+	fn probe_failed(&mut self, path: &Path, short_channel_id: u64, duration_since_epoch: Duration) {
+		self.payment_path_failed(path, short_channel_id, duration_since_epoch)
 	}
 
-	fn probe_successful(&mut self, path: &Path) {
-		self.payment_path_failed(path, u64::max_value())
+	fn probe_successful(&mut self, path: &Path, duration_since_epoch: Duration) {
+		self.payment_path_failed(path, u64::max_value(), duration_since_epoch)
 	}
 }
 
@@ -2661,10 +2661,10 @@ mod tests {
 
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 301);
 
-		scorer.payment_path_failed(&failed_path, 41);
+		scorer.payment_path_failed(&failed_path, 41, Duration::ZERO);
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 301);
 
-		scorer.payment_path_successful(&successful_path);
+		scorer.payment_path_successful(&successful_path, Duration::ZERO);
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 301);
 	}
 
@@ -2697,7 +2697,7 @@ mod tests {
 		let usage = ChannelUsage { amount_msat: 750, ..usage };
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 602);
 
-		scorer.payment_path_failed(&path, 43);
+		scorer.payment_path_failed(&path, 43, Duration::ZERO);
 
 		let usage = ChannelUsage { amount_msat: 250, ..usage };
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 0);
@@ -2737,7 +2737,7 @@ mod tests {
 		let usage = ChannelUsage { amount_msat: 750, ..usage };
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 602);
 
-		scorer.payment_path_failed(&path, 42);
+		scorer.payment_path_failed(&path, 42, Duration::ZERO);
 
 		let usage = ChannelUsage { amount_msat: 250, ..usage };
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 300);
@@ -2814,7 +2814,7 @@ mod tests {
 		};
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 128);
 
-		scorer.payment_path_failed(&Path { hops: path, blinded_tail: None }, 43);
+		scorer.payment_path_failed(&Path { hops: path, blinded_tail: None }, 43, Duration::ZERO);
 
 		let channel = network_graph.read_only().channel(42).unwrap().to_owned();
 		let (info, _) = channel.as_directed_from(&node_a).unwrap();
@@ -2877,7 +2877,7 @@ mod tests {
 		assert_eq!(scorer.channel_penalty_msat(&candidate_42, usage, &params), 128);
 		assert_eq!(scorer.channel_penalty_msat(&candidate_43, usage, &params), 128);
 
-		scorer.payment_path_successful(&payment_path_for_amount(500));
+		scorer.payment_path_successful(&payment_path_for_amount(500), Duration::ZERO);
 
 		assert_eq!(scorer.channel_penalty_msat(&candidate_41, usage, &params), 128);
 		assert_eq!(scorer.channel_penalty_msat(&candidate_42, usage, &params), 300);
@@ -2915,8 +2915,8 @@ mod tests {
 		let usage = ChannelUsage { amount_msat: 1_023, ..usage };
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 2_000);
 
-		scorer.payment_path_failed(&payment_path_for_amount(768), 42);
-		scorer.payment_path_failed(&payment_path_for_amount(128), 43);
+		scorer.payment_path_failed(&payment_path_for_amount(768), 42, Duration::ZERO);
+		scorer.payment_path_failed(&payment_path_for_amount(128), 43, Duration::ZERO);
 
 		// Initial penalties
 		let usage = ChannelUsage { amount_msat: 128, ..usage };
@@ -3013,7 +3013,7 @@ mod tests {
 		};
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 125);
 
-		scorer.payment_path_failed(&payment_path_for_amount(512), 42);
+		scorer.payment_path_failed(&payment_path_for_amount(512), 42, Duration::ZERO);
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 281);
 
 		// An unchecked right shift 64 bits or more in DirectedChannelLiquidity::decayed_offset_msat
@@ -3054,8 +3054,8 @@ mod tests {
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 300);
 
 		// More knowledge gives higher confidence (256, 768), meaning a lower penalty.
-		scorer.payment_path_failed(&payment_path_for_amount(768), 42);
-		scorer.payment_path_failed(&payment_path_for_amount(256), 43);
+		scorer.payment_path_failed(&payment_path_for_amount(768), 42, Duration::ZERO);
+		scorer.payment_path_failed(&payment_path_for_amount(256), 43, Duration::ZERO);
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 281);
 
 		// Decaying knowledge gives less confidence (128, 896), meaning a higher penalty.
@@ -3064,12 +3064,12 @@ mod tests {
 
 		// Reducing the upper bound gives more confidence (128, 832) that the payment amount (512)
 		// is closer to the upper bound, meaning a higher penalty.
-		scorer.payment_path_successful(&payment_path_for_amount(64));
+		scorer.payment_path_successful(&payment_path_for_amount(64), Duration::from_secs(10));
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 331);
 
 		// Increasing the lower bound gives more confidence (256, 832) that the payment amount (512)
 		// is closer to the lower bound, meaning a lower penalty.
-		scorer.payment_path_failed(&payment_path_for_amount(256), 43);
+		scorer.payment_path_failed(&payment_path_for_amount(256), 43, Duration::from_secs(10));
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 245);
 
 		// Further decaying affects the lower bound more than the upper bound (128, 928).
@@ -3098,7 +3098,7 @@ mod tests {
 			effective_capacity: EffectiveCapacity::Total { capacity_msat: 1_000, htlc_maximum_msat: 1_000 },
 		};
 
-		scorer.payment_path_failed(&payment_path_for_amount(500), 42);
+		scorer.payment_path_failed(&payment_path_for_amount(500), 42, Duration::ZERO);
 		let channel = network_graph.read_only().channel(42).unwrap().to_owned();
 		let (info, _) = channel.as_directed_from(&source).unwrap();
 		let candidate = CandidateRouteHop::PublicHop {
@@ -3110,7 +3110,7 @@ mod tests {
 		SinceEpoch::advance(Duration::from_secs(10));
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 473);
 
-		scorer.payment_path_failed(&payment_path_for_amount(250), 43);
+		scorer.payment_path_failed(&payment_path_for_amount(250), 43, Duration::from_secs(10));
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 300);
 
 		let mut serialized_scorer = Vec::new();
@@ -3143,7 +3143,7 @@ mod tests {
 			effective_capacity: EffectiveCapacity::Total { capacity_msat: 1_000, htlc_maximum_msat: 1_000 },
 		};
 
-		scorer.payment_path_failed(&payment_path_for_amount(500), 42);
+		scorer.payment_path_failed(&payment_path_for_amount(500), 42, Duration::ZERO);
 		let channel = network_graph.read_only().channel(42).unwrap().to_owned();
 		let (info, _) = channel.as_directed_from(&source).unwrap();
 		let candidate = CandidateRouteHop::PublicHop {
@@ -3162,7 +3162,7 @@ mod tests {
 			<ProbabilisticScorer>::read(&mut serialized_scorer, (decay_params, &network_graph, &logger)).unwrap();
 		assert_eq!(deserialized_scorer.channel_penalty_msat(&candidate, usage, &params), 473);
 
-		scorer.payment_path_failed(&payment_path_for_amount(250), 43);
+		scorer.payment_path_failed(&payment_path_for_amount(250), 43, Duration::from_secs(10));
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 300);
 
 		SinceEpoch::advance(Duration::from_secs(10));
@@ -3437,7 +3437,7 @@ mod tests {
 		assert_eq!(scorer.historical_estimated_payment_success_probability(42, &target, 42, &params),
 		None);
 
-		scorer.payment_path_failed(&payment_path_for_amount(1), 42);
+		scorer.payment_path_failed(&payment_path_for_amount(1), 42, Duration::ZERO);
 		{
 			let network_graph = network_graph.read_only();
 			let channel = network_graph.channel(42).unwrap();
@@ -3462,7 +3462,7 @@ mod tests {
 
 		// Even after we tell the scorer we definitely have enough available liquidity, it will
 		// still remember that there was some failure in the past, and assign a non-0 penalty.
-		scorer.payment_path_failed(&payment_path_for_amount(1000), 43);
+		scorer.payment_path_failed(&payment_path_for_amount(1000), 43, Duration::ZERO);
 		{
 			let network_graph = network_graph.read_only();
 			let channel = network_graph.channel(42).unwrap();
@@ -3515,7 +3515,7 @@ mod tests {
 			inflight_htlc_msat: 1024,
 			effective_capacity: EffectiveCapacity::Total { capacity_msat: 1_024, htlc_maximum_msat: 1_024 },
 		};
-		scorer.payment_path_failed(&payment_path_for_amount(1), 42);
+		scorer.payment_path_failed(&payment_path_for_amount(1), 42, Duration::from_secs(10 * 16));
 		{
 			let network_graph = network_graph.read_only();
 			let channel = network_graph.channel(42).unwrap();
@@ -3547,7 +3547,7 @@ mod tests {
 			path_hop(source_pubkey(), 42, 1),
 			path_hop(sender_pubkey(), 41, 0),
 		];
-		scorer.payment_path_failed(&Path { hops: path, blinded_tail: None }, 42);
+		scorer.payment_path_failed(&Path { hops: path, blinded_tail: None }, 42, Duration::from_secs(10 * (16 + 60 * 60)));
 	}
 
 	#[test]
@@ -3646,9 +3646,9 @@ mod tests {
 		// final value is taken into account.
 		assert!(scorer.channel_liquidities.get(&42).is_none());
 
-		scorer.payment_path_failed(&path, 42);
+		scorer.payment_path_failed(&path, 42, Duration::ZERO);
 		path.blinded_tail.as_mut().unwrap().final_value_msat = 256;
-		scorer.payment_path_failed(&path, 43);
+		scorer.payment_path_failed(&path, 43, Duration::ZERO);
 
 		let liquidity = scorer.channel_liquidities.get(&42).unwrap()
 			.as_directed(&source, &target, 1_000, decay_params);
@@ -3702,7 +3702,7 @@ mod tests {
 			None);
 
 		// Fail to pay once, and then check the buckets and penalty.
-		scorer.payment_path_failed(&payment_path_for_amount(amount_msat), 42);
+		scorer.payment_path_failed(&payment_path_for_amount(amount_msat), 42, Duration::ZERO);
 		// The penalty should be the maximum penalty, as the payment we're scoring is now in the
 		// same bucket which is the only maximum datapoint.
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params),
@@ -3726,7 +3726,7 @@ mod tests {
 		// ...but once we see a failure, we consider the payment to be substantially less likely,
 		// even though not a probability of zero as we still look at the second max bucket which
 		// now shows 31.
-		scorer.payment_path_failed(&payment_path_for_amount(amount_msat), 42);
+		scorer.payment_path_failed(&payment_path_for_amount(amount_msat), 42, Duration::ZERO);
 		assert_eq!(scorer.historical_estimated_channel_liquidity_probabilities(42, &target),
 			Some(([63, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
 				[32, 31, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])));

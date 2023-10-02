@@ -8160,6 +8160,7 @@ mod tests {
 pub(crate) mod bench_utils {
 	use super::*;
 	use std::fs::File;
+	use std::time::Duration;
 
 	use bitcoin::hashes::Hash;
 	use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
@@ -8308,10 +8309,10 @@ pub(crate) mod bench_utils {
 						if let Ok(route) = route_res {
 							for path in route.paths {
 								if seed & 0x80 == 0 {
-									scorer.payment_path_successful(&path);
+									scorer.payment_path_successful(&path, Duration::ZERO);
 								} else {
 									let short_channel_id = path.hops[path.hops.len() / 2].short_channel_id;
-									scorer.payment_path_failed(&path, short_channel_id);
+									scorer.payment_path_failed(&path, short_channel_id, Duration::ZERO);
 								}
 								seed = seed.overflowing_mul(6364136223846793005).0.overflowing_add(1).0;
 							}
