@@ -493,7 +493,6 @@ where L::Target: Logger {
 	decay_params: ProbabilisticScoringDecayParameters,
 	network_graph: G,
 	logger: L,
-	// TODO: Remove entries of closed channels.
 	channel_liquidities: HashMap<u64, ChannelLiquidity<T>>,
 }
 
@@ -1073,6 +1072,16 @@ impl<T: Time> ChannelLiquidity<T> {
 			decay_params: decay_params,
 		}
 	}
+
+	fn decayed_offset(&self, offset: u64, decay_params: ProbabilisticScoringDecayParameters) -> u64 {
+		let half_life = decay_params.liquidity_offset_half_life.as_secs_f64();
+		if half_life != 0.0 {
+			let elapsed_time = T::now().duration_since(self.last_updated).as_secs_f64();
+			((offset as f64) * powf64(0.5, elapsed_time / half_life)) as u64
+		} else {
+			0
+		}
+	}
 }
 
 /// Bounds `-log10` to avoid excessive liquidity penalties for payments with low success
@@ -1490,7 +1499,32 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, T: Time> ScoreUpdate for Prob
 		self.payment_path_failed(path, u64::max_value(), duration_since_epoch)
 	}
 
-	fn time_passed(&mut self, _duration_since_epoch: Duration) {}
+	fn time_passed(&mut self, _duration_since_epoch: Duration) {
+		let decay_params = self.decay_params;
+		self.channel_liquidities.retain(|_scid, liquidity| {
+			liquidity.min_liquidity_offset_msat = liquidity.decayed_offset(liquidity.min_liquidity_offset_msat, decay_params);
+			liquidity.max_liquidity_offset_msat = liquidity.decayed_offset(liquidity.max_liquidity_offset_msat, decay_params);
+			liquidity.last_updated = T::now();
+			let elapsed_time =
+				T::now().duration_since(liquidity.offset_history_last_updated);
+			if elapsed_time > decay_params.historical_no_updates_half_life {
+				let half_life = decay_params.historical_no_updates_half_life.as_secs_f64();
+				if half_life != 0.0 {
+					let divisor = powf64(2048.0, elapsed_time.as_secs_f64() / half_life) as u64;
+					for bucket in liquidity.min_liquidity_offset_history.buckets.iter_mut() {
+						*bucket = ((*bucket as u64) * 1024 / divisor) as u16;
+					}
+					for bucket in liquidity.max_liquidity_offset_history.buckets.iter_mut() {
+						*bucket = ((*bucket as u64) * 1024 / divisor) as u16;
+					}
+					liquidity.offset_history_last_updated = T::now();
+				}
+			}
+			liquidity.min_liquidity_offset_msat != 0 || liquidity.max_liquidity_offset_msat != 0 ||
+				liquidity.min_liquidity_offset_history.buckets != [0; 32] ||
+				liquidity.max_liquidity_offset_history.buckets != [0; 32]
+		});
+	}
 }
 
 #[cfg(c_bindings)]
@@ -1928,7 +1962,7 @@ mod bucketed_history {
 	/// in each of 32 buckets.
 	#[derive(Clone, Copy)]
 	pub(super) struct HistoricalBucketRangeTracker {
-		buckets: [u16; 32],
+		pub(super) buckets: [u16; 32],
 	}
 
 	/// Buckets are stored in fixed point numbers with a 5 bit fractional part. Thus, the value
