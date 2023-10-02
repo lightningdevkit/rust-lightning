@@ -85,6 +85,18 @@ impl MonitorUpdateId {
 	pub(crate) fn from_new_monitor<ChannelSigner: WriteableEcdsaChannelSigner>(monitor: &ChannelMonitor<ChannelSigner>) -> Self {
 		Self { contents: UpdateOrigin::OffChain(monitor.get_latest_update_id()) }
 	}
+
+	/// Creates a new `MonitorUpdateId` for an OffChain update.
+	/// This should only be used for testing.
+	pub fn new_offchain(id: u64) -> Self {
+		Self { contents: UpdateOrigin::OffChain(id) }
+	}
+
+	/// Creates a new `MonitorUpdateId` for a ChainSync update.
+	/// This should only be used for testing.
+	pub fn new_chain_sync(id: u64) -> Self {
+		Self { contents: UpdateOrigin::ChainSync(id) }
+	}
 }
 
 /// `Persist` defines behavior for persisting channel monitors: this could mean
