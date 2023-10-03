@@ -894,6 +894,7 @@ impl InMemorySigner {
 	/// Returns the counterparty's pubkeys.
 	///
 	/// Will return `None` if [`ChannelSigner::provide_channel_parameters`] has not been called.
+	/// In general, this is safe to `unwrap` only in [`ChannelSigner`] implementation.
 	pub fn counterparty_pubkeys(&self) -> Option<&ChannelPublicKeys> {
 		self.get_channel_parameters()
 			.and_then(|params| params.counterparty_parameters.as_ref().map(|params| &params.pubkeys))
@@ -904,6 +905,7 @@ impl InMemorySigner {
 	/// broadcast a transaction.
 	///
 	/// Will return `None` if [`ChannelSigner::provide_channel_parameters`] has not been called.
+	/// In general, this is safe to `unwrap` only in [`ChannelSigner`] implementation.
 	pub fn counterparty_selected_contest_delay(&self) -> Option<u16> {
 		self.get_channel_parameters()
 			.and_then(|params| params.counterparty_parameters.as_ref().map(|params| params.selected_contest_delay))
@@ -914,6 +916,7 @@ impl InMemorySigner {
 	/// if they broadcast a transaction.
 	///
 	/// Will return `None` if [`ChannelSigner::provide_channel_parameters`] has not been called.
+	/// In general, this is safe to `unwrap` only in [`ChannelSigner`] implementation.
 	pub fn holder_selected_contest_delay(&self) -> Option<u16> {
 		self.get_channel_parameters().map(|params| params.holder_selected_contest_delay)
 	}
@@ -921,6 +924,7 @@ impl InMemorySigner {
 	/// Returns whether the holder is the initiator.
 	///
 	/// Will return `None` if [`ChannelSigner::provide_channel_parameters`] has not been called.
+	/// In general, this is safe to `unwrap` only in [`ChannelSigner`] implementation.
 	pub fn is_outbound(&self) -> Option<bool> {
 		self.get_channel_parameters().map(|params| params.is_outbound_from_holder)
 	}
@@ -928,6 +932,7 @@ impl InMemorySigner {
 	/// Funding outpoint
 	///
 	/// Will return `None` if [`ChannelSigner::provide_channel_parameters`] has not been called.
+	/// In general, this is safe to `unwrap` only in [`ChannelSigner`] implementation.
 	pub fn funding_outpoint(&self) -> Option<&OutPoint> {
 		self.get_channel_parameters().map(|params| params.funding_outpoint.as_ref()).flatten()
 	}
@@ -936,6 +941,7 @@ impl InMemorySigner {
 	/// building transactions.
 	///
 	/// Will return `None` if [`ChannelSigner::provide_channel_parameters`] has not been called.
+	/// In general, this is safe to `unwrap` only in [`ChannelSigner`] implementation.
 	pub fn get_channel_parameters(&self) -> Option<&ChannelTransactionParameters> {
 		self.channel_parameters.as_ref()
 	}
@@ -944,6 +950,7 @@ impl InMemorySigner {
 	/// determining a channel's category, i. e. legacy/anchors/taproot/etc.
 	///
 	/// Will return `None` if [`ChannelSigner::provide_channel_parameters`] has not been called.
+	/// In general, this is safe to `unwrap` only in [`ChannelSigner`] implementation.
 	pub fn channel_type_features(&self) -> Option<&ChannelTypeFeatures> {
 		self.get_channel_parameters().map(|params| &params.channel_type_features)
 	}
