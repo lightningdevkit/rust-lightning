@@ -66,6 +66,8 @@ pub struct ChannelValueStat {
 }
 
 pub struct AvailableBalances {
+	/// The amount that would go to us if we close the channel, ignoring any on-chain fees.
+	pub balance_msat: u64,
 	/// Total amount available for our counterparty to send to us.
 	pub inbound_capacity_msat: u64,
 	/// Total amount available for us to send to our counterparty.
@@ -1685,6 +1687,14 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 		let inbound_stats = context.get_inbound_pending_htlc_stats(None);
 		let outbound_stats = context.get_outbound_pending_htlc_stats(None);
 
+		let mut balance_msat = context.value_to_self_msat;
+		for ref htlc in context.pending_inbound_htlcs.iter() {
+			if let InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::Fulfill(_)) = htlc.state {
+				balance_msat += htlc.amount_msat;
+			}
+		}
+		balance_msat -= outbound_stats.pending_htlcs_value_msat;
+
 		let outbound_capacity_msat = context.value_to_self_msat
 				.saturating_sub(outbound_stats.pending_htlcs_value_msat)
 				.saturating_sub(
@@ -1801,6 +1811,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 			outbound_capacity_msat,
 			next_outbound_htlc_limit_msat: available_capacity_msat,
 			next_outbound_htlc_minimum_msat,
+			balance_msat,
 		}
 	}
 
@@ -4950,6 +4961,7 @@ impl<SP: Deref> Channel<SP> where
 		NS::Target: NodeSigner,
 		L::Target: Logger
 	{
+		let mut msgs = (None, None);
 		if let Some(funding_txo) = self.context.get_funding_txo() {
 			for &(index_in_block, tx) in txdata.iter() {
 				// Check if the transaction is the expected funding transaction, and if it is,
@@ -5005,7 +5017,7 @@ impl<SP: Deref> Channel<SP> where
 					if let Some(channel_ready) = self.check_get_channel_ready(height) {
 						log_info!(logger, "Sending a channel_ready to our peer for channel {}", &self.context.channel_id);
 						let announcement_sigs = self.get_announcement_sigs(node_signer, genesis_block_hash, user_config, height, logger);
-						return Ok((Some(channel_ready), announcement_sigs));
+						msgs = (Some(channel_ready), announcement_sigs);
 					}
 				}
 				for inp in tx.input.iter() {
@@ -5016,7 +5028,7 @@ impl<SP: Deref> Channel<SP> where
 				}
 			}
 		}
-		Ok((None, None))
+		Ok(msgs)
 	}
 
 	/// When a new block is connected, we check the height of the block against outbound holding
@@ -5867,17 +5879,20 @@ impl<SP: Deref> Channel<SP> where
 		}
 	}
 
-	pub fn channel_update(&mut self, msg: &msgs::ChannelUpdate) -> Result<(), ChannelError> {
-		if msg.contents.htlc_minimum_msat >= self.context.channel_value_satoshis * 1000 {
-			return Err(ChannelError::Close("Minimum htlc value is greater than channel value".to_string()));
-		}
-		self.context.counterparty_forwarding_info = Some(CounterpartyForwardingInfo {
+	/// Applies the `ChannelUpdate` and returns a boolean indicating whether a change actually
+	/// happened.
+	pub fn channel_update(&mut self, msg: &msgs::ChannelUpdate) -> Result<bool, ChannelError> {
+		let new_forwarding_info = Some(CounterpartyForwardingInfo {
 			fee_base_msat: msg.contents.fee_base_msat,
 			fee_proportional_millionths: msg.contents.fee_proportional_millionths,
 			cltv_expiry_delta: msg.contents.cltv_expiry_delta
 		});
+		let did_change = self.context.counterparty_forwarding_info != new_forwarding_info;
+		if did_change {
+			self.context.counterparty_forwarding_info = new_forwarding_info;
+		}
 
-		Ok(())
+		Ok(did_change)
 	}
 
 	/// Begins the shutdown process, getting a message for the remote peer and returning all
@@ -8633,7 +8648,7 @@ mod tests {
 			},
 			signature: Signature::from(unsafe { FFISignature::new() })
 		};
-		node_a_chan.channel_update(&update).unwrap();
+		assert!(node_a_chan.channel_update(&update).unwrap());
 
 		// The counterparty can send an update with a higher minimum HTLC, but that shouldn't
 		// change our official htlc_minimum_msat.
@@ -8646,6 +8661,8 @@ mod tests {
 			},
 			None => panic!("expected counterparty forwarding info to be Some")
 		}
+
+		assert!(!node_a_chan.channel_update(&update).unwrap());
 	}
 
 	#[cfg(feature = "_test_vectors")]

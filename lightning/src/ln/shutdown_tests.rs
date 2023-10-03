@@ -264,7 +264,7 @@ fn shutdown_on_unfunded_channel() {
 	nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 1_000_000, 100_000, 0, None).unwrap();
 	let open_chan = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
 
-	// P2WSH
+	// Create a dummy P2WPKH script
 	let script = Builder::new().push_int(0)
 		.push_slice(&[0; 20])
 		.into_script();

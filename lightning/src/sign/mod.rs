@@ -107,6 +107,12 @@ impl_writeable_tlv_based!(DelayedPaymentOutputDescriptor, {
 	(12, channel_value_satoshis, required),
 });
 
+pub(crate) const P2WPKH_WITNESS_WEIGHT: u64 = 1 /* num stack items */ +
+	1 /* sig length */ +
+	73 /* sig including sighash flag */ +
+	1 /* pubkey length */ +
+	33 /* pubkey */;
+
 /// Information about a spendable output to our "payment key".
 ///
 /// See [`SpendableOutputDescriptor::StaticPaymentOutput`] for more details on how to spend this.
@@ -121,20 +127,52 @@ pub struct StaticPaymentOutputDescriptor {
 	pub channel_keys_id: [u8; 32],
 	/// The value of the channel which this transactions spends.
 	pub channel_value_satoshis: u64,
+	/// The necessary channel parameters that need to be provided to the re-derived signer through
+	/// [`ChannelSigner::provide_channel_parameters`].
+	///
+	/// Added as optional, but always `Some` if the descriptor was produced in v0.0.117 or later.
+	pub channel_transaction_parameters: Option<ChannelTransactionParameters>,
 }
 impl StaticPaymentOutputDescriptor {
+	/// Returns the `witness_script` of the spendable output.
+	///
+	/// Note that this will only return `Some` for [`StaticPaymentOutputDescriptor`]s that
+	/// originated from an anchor outputs channel, as they take the form of a P2WSH script.
+	pub fn witness_script(&self) -> Option<Script> {
+		self.channel_transaction_parameters.as_ref()
+			.and_then(|channel_params|
+				 if channel_params.channel_type_features.supports_anchors_zero_fee_htlc_tx() {
+					let payment_point = channel_params.holder_pubkeys.payment_point;
+					Some(chan_utils::get_to_countersignatory_with_anchors_redeemscript(&payment_point))
+				 } else {
+					 None
+				 }
+			)
+	}
+
 	/// The maximum length a well-formed witness spending one of these should have.
 	/// Note: If you have the grind_signatures feature enabled, this will be at least 1 byte
 	/// shorter.
-	// Calculated as 1 byte legnth + 73 byte signature, 1 byte empty vec push, 1 byte length plus
-	// redeemscript push length.
-	pub const MAX_WITNESS_LENGTH: usize = 1 + 73 + 34;
+	pub fn max_witness_length(&self) -> usize {
+		if self.channel_transaction_parameters.as_ref()
+			.map(|channel_params| channel_params.channel_type_features.supports_anchors_zero_fee_htlc_tx())
+			.unwrap_or(false)
+		{
+			let witness_script_weight = 1 /* pubkey push */ + 33 /* pubkey */ +
+				1 /* OP_CHECKSIGVERIFY */ + 1 /* OP_1 */ + 1 /* OP_CHECKSEQUENCEVERIFY */;
+			1 /* num witness items */ + 1 /* sig push */ + 73 /* sig including sighash flag */ +
+				1 /* witness script push */ + witness_script_weight
+		} else {
+			P2WPKH_WITNESS_WEIGHT as usize
+		}
+	}
 }
 impl_writeable_tlv_based!(StaticPaymentOutputDescriptor, {
 	(0, outpoint, required),
 	(2, output, required),
 	(4, channel_keys_id, required),
 	(6, channel_value_satoshis, required),
+	(7, channel_transaction_parameters, option),
 });
 
 /// Describes the necessary information to spend a spendable output.
@@ -201,15 +239,23 @@ pub enum SpendableOutputDescriptor {
 	/// [`DelayedPaymentOutputDescriptor::to_self_delay`] contained here to
 	/// [`chan_utils::get_revokeable_redeemscript`].
 	DelayedPaymentOutput(DelayedPaymentOutputDescriptor),
-	/// An output to a P2WPKH, spendable exclusively by our payment key (i.e., the private key
-	/// which corresponds to the `payment_point` in [`ChannelSigner::pubkeys`]). The witness
-	/// in the spending input is, thus, simply:
+	/// An output spendable exclusively by our payment key (i.e., the private key that corresponds
+	/// to the `payment_point` in [`ChannelSigner::pubkeys`]). The output type depends on the
+	/// channel type negotiated.
+	///
+	/// On an anchor outputs channel, the witness in the spending input is:
+	/// ```bitcoin
+	/// <BIP 143 signature> <witness script>
+	/// ```
+	///
+	/// Otherwise, it is:
 	/// ```bitcoin
 	/// <BIP 143 signature> <payment key>
 	/// ```
 	///
 	/// These are generally the result of our counterparty having broadcast the current state,
-	/// allowing us to claim the non-HTLC-encumbered outputs immediately.
+	/// allowing us to claim the non-HTLC-encumbered outputs immediately, or after one confirmation
+	/// in the case of anchor outputs channels.
 	StaticPaymentOutput(StaticPaymentOutputDescriptor),
 }
 
@@ -280,13 +326,22 @@ impl SpendableOutputDescriptor {
 			match outp {
 				SpendableOutputDescriptor::StaticPaymentOutput(descriptor) => {
 					if !output_set.insert(descriptor.outpoint) { return Err(()); }
+					let sequence =
+						if descriptor.channel_transaction_parameters.as_ref()
+							.map(|channel_params| channel_params.channel_type_features.supports_anchors_zero_fee_htlc_tx())
+							.unwrap_or(false)
+						{
+							Sequence::from_consensus(1)
+						} else {
+							Sequence::ZERO
+						};
 					input.push(TxIn {
 						previous_output: descriptor.outpoint.into_bitcoin_outpoint(),
 						script_sig: Script::new(),
-						sequence: Sequence::ZERO,
+						sequence,
 						witness: Witness::new(),
 					});
-					witness_weight += StaticPaymentOutputDescriptor::MAX_WITNESS_LENGTH;
+					witness_weight += descriptor.max_witness_length();
 					#[cfg(feature = "grind_signatures")]
 					{ witness_weight -= 1; } // Guarantees a low R signature
 					input_value += descriptor.output.value;
@@ -899,18 +954,30 @@ impl InMemorySigner {
 		if !spend_tx.input[input_idx].script_sig.is_empty() { return Err(()); }
 		if spend_tx.input[input_idx].previous_output != descriptor.outpoint.into_bitcoin_outpoint() { return Err(()); }
 
-		let remotepubkey = self.pubkeys().payment_point;
-		let witness_script = bitcoin::Address::p2pkh(&::bitcoin::PublicKey{compressed: true, inner: remotepubkey}, Network::Testnet).script_pubkey();
+		let remotepubkey = bitcoin::PublicKey::new(self.pubkeys().payment_point);
+		let witness_script = if self.channel_type_features().supports_anchors_zero_fee_htlc_tx() {
+			chan_utils::get_to_countersignatory_with_anchors_redeemscript(&remotepubkey.inner)
+		} else {
+			Script::new_p2pkh(&remotepubkey.pubkey_hash())
+		};
 		let sighash = hash_to_message!(&sighash::SighashCache::new(spend_tx).segwit_signature_hash(input_idx, &witness_script, descriptor.output.value, EcdsaSighashType::All).unwrap()[..]);
 		let remotesig = sign_with_aux_rand(secp_ctx, &sighash, &self.payment_key, &self);
-		let payment_script = bitcoin::Address::p2wpkh(&::bitcoin::PublicKey{compressed: true, inner: remotepubkey}, Network::Bitcoin).unwrap().script_pubkey();
+		let payment_script = if self.channel_type_features().supports_anchors_zero_fee_htlc_tx() {
+			witness_script.to_v0_p2wsh()
+		} else {
+			Script::new_v0_p2wpkh(&remotepubkey.wpubkey_hash().unwrap())
+		};
 
 		if payment_script != descriptor.output.script_pubkey { return Err(()); }
 
 		let mut witness = Vec::with_capacity(2);
 		witness.push(remotesig.serialize_der().to_vec());
 		witness[0].push(EcdsaSighashType::All as u8);
-		witness.push(remotepubkey.serialize().to_vec());
+		if self.channel_type_features().supports_anchors_zero_fee_htlc_tx() {
+			witness.push(witness_script.to_bytes());
+		} else {
+			witness.push(remotepubkey.to_bytes());
+		}
 		Ok(witness)
 	}
 
@@ -1384,9 +1451,11 @@ impl KeysManager {
 				SpendableOutputDescriptor::StaticPaymentOutput(descriptor) => {
 					let input_idx = psbt.unsigned_tx.input.iter().position(|i| i.previous_output == descriptor.outpoint.into_bitcoin_outpoint()).ok_or(())?;
 					if keys_cache.is_none() || keys_cache.as_ref().unwrap().1 != descriptor.channel_keys_id {
-						keys_cache = Some((
-							self.derive_channel_keys(descriptor.channel_value_satoshis, &descriptor.channel_keys_id),
-							descriptor.channel_keys_id));
+						let mut signer = self.derive_channel_keys(descriptor.channel_value_satoshis, &descriptor.channel_keys_id);
+						if let Some(channel_params) = descriptor.channel_transaction_parameters.as_ref() {
+							signer.provide_channel_parameters(channel_params);
+						}
+						keys_cache = Some((signer, descriptor.channel_keys_id));
 					}
 					let witness = Witness::from_vec(keys_cache.as_ref().unwrap().0.sign_counterparty_payment_input(&psbt.unsigned_tx, input_idx, &descriptor, &secp_ctx)?);
 					psbt.inputs[input_idx].final_script_witness = Some(witness);

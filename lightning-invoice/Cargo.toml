@@ -1,7 +1,7 @@
 [package]
 name = "lightning-invoice"
 description = "Data structures to parse and serialize BOLT11 lightning invoices"
-version = "0.25.0-alpha2"
+version = "0.25.0-rc1"
 authors = ["Sebastian Geisler <sgeisler@wh2.tu-dresden.de>"]
 documentation = "https://docs.rs/lightning-invoice/"
 license = "MIT OR Apache-2.0"
@@ -21,7 +21,7 @@ std = ["bitcoin_hashes/std", "num-traits/std", "lightning/std", "bech32/std"]
 
 [dependencies]
 bech32 = { version = "0.9.0", default-features = false }
-lightning = { version = "0.0.117-alpha2", path = "../lightning", default-features = false }
+lightning = { version = "0.0.117-rc1", path = "../lightning", default-features = false }
 secp256k1 = { version = "0.24.0", default-features = false, features = ["recovery", "alloc"] }
 num-traits = { version = "0.2.8", default-features = false }
 bitcoin_hashes = { version = "0.11", default-features = false }
@@ -30,6 +30,6 @@ serde = { version = "1.0.118", optional = true }
 bitcoin = { version = "0.29.0", default-features = false }
 
 [dev-dependencies]
-lightning = { version = "0.0.117-alpha2", path = "../lightning", default-features = false, features = ["_test_utils"] }
+lightning = { version = "0.0.117-rc1", path = "../lightning", default-features = false, features = ["_test_utils"] }
 hex = "0.4"
 serde_json = { version = "1"}

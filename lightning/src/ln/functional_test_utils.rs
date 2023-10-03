@@ -15,7 +15,7 @@ use crate::sign::EntropySource;
 use crate::chain::channelmonitor::ChannelMonitor;
 use crate::chain::transaction::OutPoint;
 use crate::events::{ClaimedHTLC, ClosureReason, Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider, PathFailure, PaymentPurpose, PaymentFailureReason};
-use crate::events::bump_transaction::{BumpTransactionEventHandler, Wallet, WalletSource};
+use crate::events::bump_transaction::{BumpTransactionEvent, BumpTransactionEventHandler, Wallet, WalletSource};
 use crate::ln::{ChannelId, PaymentPreimage, PaymentHash, PaymentSecret};
 use crate::ln::channelmanager::{AChannelManager, ChainParameters, ChannelManager, ChannelManagerReadArgs, RAACommitmentOrder, PaymentSendFailure, RecipientOnionFields, PaymentId, MIN_CLTV_EXPIRY_DELTA};
 use crate::routing::gossip::{P2PGossipSync, NetworkGraph, NetworkUpdate};
@@ -1549,6 +1549,21 @@ macro_rules! check_closed_event {
 	}
 }
 
+pub fn handle_bump_htlc_event(node: &Node, count: usize) {
+	let events = node.chain_monitor.chain_monitor.get_and_clear_pending_events();
+	assert_eq!(events.len(), count);
+	for event in events {
+		match event {
+			Event::BumpTransaction(bump_event) => {
+				if let BumpTransactionEvent::HTLCResolution { .. } = &bump_event {}
+				else { panic!(); }
+				node.bump_tx_handler.handle_event(&bump_event);
+			},
+			_ => panic!(),
+		}
+	}
+}
+
 pub fn close_channel<'a, 'b, 'c>(outbound_node: &Node<'a, 'b, 'c>, inbound_node: &Node<'a, 'b, 'c>, channel_id: &ChannelId, funding_tx: Transaction, close_inbound_first: bool) -> (msgs::ChannelUpdate, msgs::ChannelUpdate, Transaction) {
 	let (node_a, broadcaster_a, struct_a) = if close_inbound_first { (&inbound_node.node, &inbound_node.tx_broadcaster, inbound_node) } else { (&outbound_node.node, &outbound_node.tx_broadcaster, outbound_node) };
 	let (node_b, broadcaster_b, struct_b) = if close_inbound_first { (&outbound_node.node, &outbound_node.tx_broadcaster, outbound_node) } else { (&inbound_node.node, &inbound_node.tx_broadcaster, inbound_node) };
@@ -2825,7 +2840,8 @@ pub fn create_network<'a, 'b: 'a, 'c: 'b>(node_count: usize, cfgs: &'b Vec<NodeC
 }
 
 // Note that the following only works for CLTV values up to 128
-pub const ACCEPTED_HTLC_SCRIPT_WEIGHT: usize = 137; //Here we have a diff due to HTLC CLTV expiry being < 2^15 in test
+pub const ACCEPTED_HTLC_SCRIPT_WEIGHT: usize = 137; // Here we have a diff due to HTLC CLTV expiry being < 2^15 in test
+pub const ACCEPTED_HTLC_SCRIPT_WEIGHT_ANCHORS: usize = 140; // Here we have a diff due to HTLC CLTV expiry being < 2^15 in test
 
 #[derive(PartialEq)]
 pub enum HTLCType { NONE, TIMEOUT, SUCCESS }

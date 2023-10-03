@@ -1448,12 +1448,6 @@ pub struct ChannelCounterparty {
 }
 
 /// Details of a channel, as returned by [`ChannelManager::list_channels`] and [`ChannelManager::list_usable_channels`]
-///
-/// Balances of a channel are available through [`ChainMonitor::get_claimable_balances`] and
-/// [`ChannelMonitor::get_claimable_balances`], calculated with respect to the corresponding on-chain
-/// transactions.
-///
-/// [`ChainMonitor::get_claimable_balances`]: crate::chain::chainmonitor::ChainMonitor::get_claimable_balances
 #[derive(Clone, Debug, PartialEq)]
 pub struct ChannelDetails {
 	/// The channel's ID (prior to funding transaction generation, this is a random 32 bytes,
@@ -1535,10 +1529,23 @@ pub struct ChannelDetails {
 	///
 	/// This value will be `None` for objects serialized with LDK versions prior to 0.0.115.
 	pub feerate_sat_per_1000_weight: Option<u32>,
+	/// Our total balance.  This is the amount we would get if we close the channel.
+	/// This value is not exact. Due to various in-flight changes and feerate changes, exactly this
+	/// amount is not likely to be recoverable on close.
+	///
+	/// This does not include any pending HTLCs which are not yet fully resolved (and, thus, whose
+	/// balance is not available for inclusion in new outbound HTLCs). This further does not include
+	/// any pending outgoing HTLCs which are awaiting some other resolution to be sent.
+	/// This does not consider any on-chain fees.
+	///
+	/// See also [`ChannelDetails::outbound_capacity_msat`]
+	pub balance_msat: u64,
 	/// The available outbound capacity for sending HTLCs to the remote peer. This does not include
 	/// any pending HTLCs which are not yet fully resolved (and, thus, whose balance is not
 	/// available for inclusion in new outbound HTLCs). This further does not include any pending
 	/// outgoing HTLCs which are awaiting some other resolution to be sent.
+	///
+	/// See also [`ChannelDetails::balance_msat`]
 	///
 	/// This value is not exact. Due to various in-flight changes, feerate changes, and our
 	/// conflict-avoidance policy, exactly this amount is not likely to be spendable. However, we
@@ -1549,8 +1556,8 @@ pub struct ChannelDetails {
 	/// the current state and per-HTLC limit(s). This is intended for use when routing, allowing us
 	/// to use a limit as close as possible to the HTLC limit we can currently send.
 	///
-	/// See also [`ChannelDetails::next_outbound_htlc_minimum_msat`] and
-	/// [`ChannelDetails::outbound_capacity_msat`].
+	/// See also [`ChannelDetails::next_outbound_htlc_minimum_msat`],
+	/// [`ChannelDetails::balance_msat`], and [`ChannelDetails::outbound_capacity_msat`].
 	pub next_outbound_htlc_limit_msat: u64,
 	/// The minimum value for sending a single HTLC to the remote peer. This is the equivalent of
 	/// [`ChannelDetails::next_outbound_htlc_limit_msat`] but represents a lower-bound, rather than
@@ -1680,6 +1687,7 @@ impl ChannelDetails {
 			channel_value_satoshis: context.get_value_satoshis(),
 			feerate_sat_per_1000_weight: Some(context.get_feerate_sat_per_1000_weight()),
 			unspendable_punishment_reserve: to_self_reserve_satoshis,
+			balance_msat: balance.balance_msat,
 			inbound_capacity_msat: balance.inbound_capacity_msat,
 			outbound_capacity_msat: balance.outbound_capacity_msat,
 			next_outbound_htlc_limit_msat: balance.next_outbound_htlc_limit_msat,
@@ -3524,9 +3532,8 @@ where
 	/// In general, a path may raise:
 	///  * [`APIError::InvalidRoute`] when an invalid route or forwarding parameter (cltv_delta, fee,
 	///    node public key) is specified.
-	///  * [`APIError::ChannelUnavailable`] if the next-hop channel is not available for updates
-	///    (including due to previous monitor update failure or new permanent monitor update
-	///    failure).
+	///  * [`APIError::ChannelUnavailable`] if the next-hop channel is not available as it has been
+	///    closed, doesn't exist, or the peer is currently disconnected.
 	///  * [`APIError::MonitorUpdateInProgress`] if a new monitor update failure prevented sending the
 	///    relevant updates.
 	///
@@ -3595,19 +3602,10 @@ where
 	/// wait until you receive either a [`Event::PaymentFailed`] or [`Event::PaymentSent`] event to
 	/// determine the ultimate status of a payment.
 	///
-	/// # Requested Invoices
-	///
-	/// In the case of paying a [`Bolt12Invoice`], abandoning the payment prior to receiving the
-	/// invoice will result in an [`Event::InvoiceRequestFailed`] and prevent any attempts at paying
-	/// it once received. The other events may only be generated once the invoice has been received.
-	///
 	/// # Restart Behavior
 	///
 	/// If an [`Event::PaymentFailed`] is generated and we restart without first persisting the
-	/// [`ChannelManager`], another [`Event::PaymentFailed`] may be generated; likewise for
-	/// [`Event::InvoiceRequestFailed`].
-	///
-	/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
+	/// [`ChannelManager`], another [`Event::PaymentFailed`] may be generated.
 	pub fn abandon_payment(&self, payment_id: PaymentId) {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 		self.pending_outbound_payments.abandon_payment(payment_id, PaymentFailureReason::UserAbandoned, &self.pending_events);
@@ -4028,7 +4026,7 @@ where
 				btree_map::Entry::Vacant(vacant) => Some(vacant.insert(Vec::new())),
 			}
 		});
-		for (channel_idx, &(temporary_channel_id, counterparty_node_id)) in temporary_channels.iter().enumerate() {
+		for &(temporary_channel_id, counterparty_node_id) in temporary_channels.iter() {
 			result = result.and_then(|_| self.funding_transaction_generated_intern(
 				temporary_channel_id,
 				counterparty_node_id,
@@ -6976,8 +6974,13 @@ where
 					if were_node_one == msg_from_node_one {
 						return Ok(NotifyOption::SkipPersistNoEvents);
 					} else {
-						log_debug!(self.logger, "Received channel_update for channel {}.", chan_id);
-						try_chan_phase_entry!(self, chan.channel_update(&msg), chan_phase_entry);
+						log_debug!(self.logger, "Received channel_update {:?} for channel {}.", msg, chan_id);
+						let did_change = try_chan_phase_entry!(self, chan.channel_update(&msg), chan_phase_entry);
+						// If nothing changed after applying their update, we don't need to bother
+						// persisting.
+						if !did_change {
+							return Ok(NotifyOption::SkipPersistNoEvents);
+						}
 					}
 				} else {
 					return try_chan_phase_entry!(self, Err(ChannelError::Close(
@@ -7423,8 +7426,7 @@ where
 	fn maybe_generate_initial_closing_signed(&self) -> bool {
 		let mut handle_errors: Vec<(PublicKey, Result<(), _>)> = Vec::new();
 		let mut has_update = false;
-		let mut shutdown_result = None;
-		let mut unbroadcasted_batch_funding_txid = None;
+		let mut shutdown_results = Vec::new();
 		{
 			let per_peer_state = self.per_peer_state.read().unwrap();
 
@@ -7435,7 +7437,7 @@ where
 				peer_state.channel_by_id.retain(|channel_id, phase| {
 					match phase {
 						ChannelPhase::Funded(chan) => {
-							unbroadcasted_batch_funding_txid = chan.context.unbroadcasted_batch_funding_txid();
+							let unbroadcasted_batch_funding_txid = chan.context.unbroadcasted_batch_funding_txid();
 							match chan.maybe_propose_closing_signed(&self.fee_estimator, &self.logger) {
 								Ok((msg_opt, tx_opt)) => {
 									if let Some(msg) = msg_opt {
@@ -7458,7 +7460,7 @@ where
 										log_info!(self.logger, "Broadcasting {}", log_tx!(tx));
 										self.tx_broadcaster.broadcast_transactions(&[&tx]);
 										update_maps_on_chan_removal!(self, &chan.context);
-										shutdown_result = Some((None, Vec::new(), unbroadcasted_batch_funding_txid));
+										shutdown_results.push((None, Vec::new(), unbroadcasted_batch_funding_txid));
 										false
 									} else { true }
 								},
@@ -7480,7 +7482,7 @@ where
 			let _ = handle_error!(self, err, counterparty_node_id);
 		}
 
-		if let Some(shutdown_result) = shutdown_result {
+		for shutdown_result in shutdown_results.drain(..) {
 			self.finish_close_channel(shutdown_result);
 		}
 
@@ -8902,7 +8904,7 @@ impl Writeable for ChannelDetails {
 			(10, self.channel_value_satoshis, required),
 			(12, self.unspendable_punishment_reserve, option),
 			(14, user_channel_id_low, required),
-			(16, self.next_outbound_htlc_limit_msat, required),  // Forwards compatibility for removed balance_msat field.
+			(16, self.balance_msat, required),
 			(18, self.outbound_capacity_msat, required),
 			(19, self.next_outbound_htlc_limit_msat, required),
 			(20, self.inbound_capacity_msat, required),
@@ -8938,7 +8940,7 @@ impl Readable for ChannelDetails {
 			(10, channel_value_satoshis, required),
 			(12, unspendable_punishment_reserve, option),
 			(14, user_channel_id_low, required),
-			(16, _balance_msat, option),  // Backwards compatibility for removed balance_msat field.
+			(16, balance_msat, required),
 			(18, outbound_capacity_msat, required),
 			// Note that by the time we get past the required read above, outbound_capacity_msat will be
 			// filled in, so we can safely unwrap it here.
@@ -8964,8 +8966,6 @@ impl Readable for ChannelDetails {
 		let user_channel_id = user_channel_id_low as u128 +
 			((user_channel_id_high_opt.unwrap_or(0 as u64) as u128) << 64);
 
-		let _balance_msat: Option<u64> = _balance_msat;
-
 		Ok(Self {
 			inbound_scid_alias,
 			channel_id: channel_id.0.unwrap(),
@@ -8978,6 +8978,7 @@ impl Readable for ChannelDetails {
 			channel_value_satoshis: channel_value_satoshis.0.unwrap(),
 			unspendable_punishment_reserve,
 			user_channel_id,
+			balance_msat: balance_msat.0.unwrap(),
 			outbound_capacity_msat: outbound_capacity_msat.0.unwrap(),
 			next_outbound_htlc_limit_msat: next_outbound_htlc_limit_msat.0.unwrap(),
 			next_outbound_htlc_minimum_msat: next_outbound_htlc_minimum_msat.0.unwrap(),

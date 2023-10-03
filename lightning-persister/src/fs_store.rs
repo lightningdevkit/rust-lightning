@@ -67,7 +67,7 @@ impl FilesystemStore {
 		}
 	}
 
-	fn get_dest_dir_path(&self, namespace: &str, sub_namespace: &str) -> std::io::Result<PathBuf> {
+	fn get_dest_dir_path(&self, primary_namespace: &str, secondary_namespace: &str) -> std::io::Result<PathBuf> {
 		let mut dest_dir_path = {
 			#[cfg(target_os = "windows")]
 			{
@@ -81,9 +81,9 @@ impl FilesystemStore {
 			}
 		};
 
-		dest_dir_path.push(namespace);
-		if !sub_namespace.is_empty() {
-			dest_dir_path.push(sub_namespace);
+		dest_dir_path.push(primary_namespace);
+		if !secondary_namespace.is_empty() {
+			dest_dir_path.push(secondary_namespace);
 		}
 
 		Ok(dest_dir_path)
@@ -91,10 +91,10 @@ impl FilesystemStore {
 }
 
 impl KVStore for FilesystemStore {
-	fn read(&self, namespace: &str, sub_namespace: &str, key: &str) -> std::io::Result<Vec<u8>> {
-		check_namespace_key_validity(namespace, sub_namespace, Some(key), "read")?;
+	fn read(&self, primary_namespace: &str, secondary_namespace: &str, key: &str) -> std::io::Result<Vec<u8>> {
+		check_namespace_key_validity(primary_namespace, secondary_namespace, Some(key), "read")?;
 
-		let mut dest_file_path = self.get_dest_dir_path(namespace, sub_namespace)?;
+		let mut dest_file_path = self.get_dest_dir_path(primary_namespace, secondary_namespace)?;
 		dest_file_path.push(key);
 
 		let mut buf = Vec::new();
@@ -114,10 +114,10 @@ impl KVStore for FilesystemStore {
 		Ok(buf)
 	}
 
-	fn write(&self, namespace: &str, sub_namespace: &str, key: &str, buf: &[u8]) -> std::io::Result<()> {
-		check_namespace_key_validity(namespace, sub_namespace, Some(key), "write")?;
+	fn write(&self, primary_namespace: &str, secondary_namespace: &str, key: &str, buf: &[u8]) -> std::io::Result<()> {
+		check_namespace_key_validity(primary_namespace, secondary_namespace, Some(key), "write")?;
 
-		let mut dest_file_path = self.get_dest_dir_path(namespace, sub_namespace)?;
+		let mut dest_file_path = self.get_dest_dir_path(primary_namespace, secondary_namespace)?;
 		dest_file_path.push(key);
 
 		let parent_directory = dest_file_path
@@ -201,10 +201,10 @@ impl KVStore for FilesystemStore {
 		res
 	}
 
-	fn remove(&self, namespace: &str, sub_namespace: &str, key: &str, lazy: bool) -> std::io::Result<()> {
-		check_namespace_key_validity(namespace, sub_namespace, Some(key), "remove")?;
+	fn remove(&self, primary_namespace: &str, secondary_namespace: &str, key: &str, lazy: bool) -> std::io::Result<()> {
+		check_namespace_key_validity(primary_namespace, secondary_namespace, Some(key), "remove")?;
 
-		let mut dest_file_path = self.get_dest_dir_path(namespace, sub_namespace)?;
+		let mut dest_file_path = self.get_dest_dir_path(primary_namespace, secondary_namespace)?;
 		dest_file_path.push(key);
 
 		if !dest_file_path.is_file() {
@@ -290,10 +290,10 @@ impl KVStore for FilesystemStore {
 		Ok(())
 	}
 
-	fn list(&self, namespace: &str, sub_namespace: &str) -> std::io::Result<Vec<String>> {
-		check_namespace_key_validity(namespace, sub_namespace, None, "list")?;
+	fn list(&self, primary_namespace: &str, secondary_namespace: &str) -> std::io::Result<Vec<String>> {
+		check_namespace_key_validity(primary_namespace, secondary_namespace, None, "list")?;
 
-		let prefixed_dest = self.get_dest_dir_path(namespace, sub_namespace)?;
+		let prefixed_dest = self.get_dest_dir_path(primary_namespace, secondary_namespace)?;
 		let mut keys = Vec::new();
 
 		if !Path::new(&prefixed_dest).exists() {
@@ -320,7 +320,7 @@ impl KVStore for FilesystemStore {
 
 			let metadata = p.metadata()?;
 
-			// We allow the presence of directories in the empty namespace and just skip them.
+			// We allow the presence of directories in the empty primary namespace and just skip them.
 			if metadata.is_dir() {
 				continue;
 			}
@@ -328,9 +328,9 @@ impl KVStore for FilesystemStore {
 			// If we otherwise don't find a file at the given path something went wrong.
 			if !metadata.is_file() {
 				debug_assert!(false, "Failed to list keys of {}/{}: file couldn't be accessed.",
-					PrintableString(namespace), PrintableString(sub_namespace));
+					PrintableString(primary_namespace), PrintableString(secondary_namespace));
 				let msg = format!("Failed to list keys of {}/{}: file couldn't be accessed.",
-					PrintableString(namespace), PrintableString(sub_namespace));
+					PrintableString(primary_namespace), PrintableString(secondary_namespace));
 				return Err(std::io::Error::new(std::io::ErrorKind::Other, msg));
 			}
 
@@ -342,17 +342,17 @@ impl KVStore for FilesystemStore {
 						}
 					} else {
 						debug_assert!(false, "Failed to list keys of {}/{}: file path is not valid UTF-8",
-							PrintableString(namespace), PrintableString(sub_namespace));
+							PrintableString(primary_namespace), PrintableString(secondary_namespace));
 						let msg = format!("Failed to list keys of {}/{}: file path is not valid UTF-8",
-							PrintableString(namespace), PrintableString(sub_namespace));
+							PrintableString(primary_namespace), PrintableString(secondary_namespace));
 						return Err(std::io::Error::new(std::io::ErrorKind::Other, msg));
 					}
 				}
 				Err(e) => {
 					debug_assert!(false, "Failed to list keys of {}/{}: {}",
-						PrintableString(namespace), PrintableString(sub_namespace), e);
+						PrintableString(primary_namespace), PrintableString(secondary_namespace), e);
 					let msg = format!("Failed to list keys of {}/{}: {}",
-						PrintableString(namespace), PrintableString(sub_namespace), e);
+						PrintableString(primary_namespace), PrintableString(secondary_namespace), e);
 					return Err(std::io::Error::new(std::io::ErrorKind::Other, msg));
 				}
 			}
@@ -436,7 +436,7 @@ mod tests {
 	}
 
 	// Test that if the store's path to channel data is read-only, writing a
-	// monitor to it results in the store returning an InProgress.
+	// monitor to it results in the store returning an UnrecoverableError.
 	// Windows ignores the read-only flag for folders, so this test is Unix-only.
 	#[cfg(not(target_os = "windows"))]
 	#[test]
@@ -458,7 +458,7 @@ mod tests {
 		let update_id = update_map.get(&added_monitors[0].0.to_channel_id()).unwrap();
 
 		// Set the store's directory to read-only, which should result in
-		// returning a permanent failure when we then attempt to persist a
+		// returning an unrecoverable failure when we then attempt to persist a
 		// channel update.
 		let path = &store.get_data_dir();
 		let mut perms = fs::metadata(path).unwrap().permissions();

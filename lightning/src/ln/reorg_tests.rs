@@ -9,10 +9,11 @@
 
 //! Further functional tests which test blockchain reorganizations.
 
+use crate::chain::chaininterface::LowerBoundedFeeEstimator;
 use crate::chain::channelmonitor::{ANTI_REORG_DELAY, LATENCY_GRACE_PERIOD_BLOCKS};
 use crate::chain::transaction::OutPoint;
 use crate::chain::Confirm;
-use crate::events::{Event, MessageSendEventsProvider, ClosureReason, HTLCDestination};
+use crate::events::{Event, MessageSendEventsProvider, ClosureReason, HTLCDestination, MessageSendEvent};
 use crate::ln::msgs::{ChannelMessageHandler, Init};
 use crate::util::test_utils;
 use crate::util::ser::Writeable;
@@ -616,4 +617,140 @@ fn test_to_remote_after_local_detection() {
 	do_test_to_remote_after_local_detection(ConnectStyle::TransactionsFirstSkippingBlocks);
 	do_test_to_remote_after_local_detection(ConnectStyle::TransactionsFirstReorgsOnlyTip);
 	do_test_to_remote_after_local_detection(ConnectStyle::FullBlockViaListen);
+}
+
+#[test]
+fn test_htlc_preimage_claim_holder_commitment_after_counterparty_commitment_reorg() {
+	// We detect a counterparty commitment confirm onchain, followed by a reorg and a confirmation
+	// of a holder commitment. Then, if we learn of the preimage for an HTLC in both commitments,
+	// test that we only claim the currently confirmed commitment.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let (_, _, chan_id, funding_tx) = create_announced_chan_between_nodes(&nodes, 0, 1);
+
+	// Route an HTLC which we will claim onchain with the preimage.
+	let (payment_preimage, payment_hash, ..) = route_payment(&nodes[0], &[&nodes[1]], 1_000_000);
+
+	// Force close with the latest counterparty commitment, confirm it, and reorg it with the latest
+	// holder commitment.
+	nodes[0].node.force_close_broadcasting_latest_txn(&chan_id, &nodes[1].node.get_our_node_id()).unwrap();
+	check_closed_broadcast(&nodes[0], 1, true);
+	check_added_monitors(&nodes[0], 1);
+	check_closed_event(&nodes[0], 1, ClosureReason::HolderForceClosed, false, &[nodes[1].node.get_our_node_id()], 100000);
+
+	nodes[1].node.force_close_broadcasting_latest_txn(&chan_id, &nodes[0].node.get_our_node_id()).unwrap();
+	check_closed_broadcast(&nodes[1], 1, true);
+	check_added_monitors(&nodes[1], 1);
+	check_closed_event(&nodes[1], 1, ClosureReason::HolderForceClosed, false, &[nodes[0].node.get_our_node_id()], 100000);
+
+	let mut txn = nodes[0].tx_broadcaster.txn_broadcast();
+	assert_eq!(txn.len(), 1);
+	let commitment_tx_a = txn.pop().unwrap();
+	check_spends!(commitment_tx_a, funding_tx);
+
+	let mut txn = nodes[1].tx_broadcaster.txn_broadcast();
+	assert_eq!(txn.len(), 1);
+	let commitment_tx_b = txn.pop().unwrap();
+	check_spends!(commitment_tx_b, funding_tx);
+
+	mine_transaction(&nodes[0], &commitment_tx_a);
+	mine_transaction(&nodes[1], &commitment_tx_a);
+
+	disconnect_blocks(&nodes[0], 1);
+	disconnect_blocks(&nodes[1], 1);
+
+	mine_transaction(&nodes[0], &commitment_tx_b);
+	mine_transaction(&nodes[1], &commitment_tx_b);
+
+	// Provide the preimage now, such that we only claim from the holder commitment (since it's
+	// currently confirmed) and not the counterparty's.
+	get_monitor!(nodes[1], chan_id).provide_payment_preimage(
+		&payment_hash, &payment_preimage, &nodes[1].tx_broadcaster,
+		&LowerBoundedFeeEstimator(nodes[1].fee_estimator), &nodes[1].logger
+	);
+
+	let mut txn = nodes[1].tx_broadcaster.txn_broadcast();
+	assert_eq!(txn.len(), 1);
+	let htlc_success_tx = txn.pop().unwrap();
+	check_spends!(htlc_success_tx, commitment_tx_b);
+}
+
+#[test]
+fn test_htlc_preimage_claim_prev_counterparty_commitment_after_current_counterparty_commitment_reorg() {
+	// We detect a counterparty commitment confirm onchain, followed by a reorg and a
+	// confirmation of the previous (still unrevoked) counterparty commitment. Then, if we learn
+	// of the preimage for an HTLC in both commitments, test that we only claim the currently
+	// confirmed commitment.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let (_, _, chan_id, funding_tx) = create_announced_chan_between_nodes(&nodes, 0, 1);
+
+	// Route an HTLC which we will claim onchain with the preimage.
+	let (payment_preimage, payment_hash, ..) = route_payment(&nodes[0], &[&nodes[1]], 1_000_000);
+
+	// Obtain the current commitment, which will become the previous after a fee update.
+	let prev_commitment_a = &get_local_commitment_txn!(nodes[0], chan_id)[0];
+
+	*nodes[0].fee_estimator.sat_per_kw.lock().unwrap() *= 4;
+	nodes[0].node.timer_tick_occurred();
+	check_added_monitors(&nodes[0], 1);
+	let mut msg_events = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(msg_events.len(), 1);
+	let (update_fee, commit_sig) = if let MessageSendEvent::UpdateHTLCs { node_id, mut updates } = msg_events.pop().unwrap() {
+		assert_eq!(node_id, nodes[1].node.get_our_node_id());
+		(updates.update_fee.take().unwrap(), updates.commitment_signed)
+	} else {
+		panic!("Unexpected message send event");
+	};
+
+	// Handle the fee update on the other side, but don't send the last RAA such that the previous
+	// commitment is still valid (unrevoked).
+	nodes[1].node().handle_update_fee(&nodes[0].node.get_our_node_id(), &update_fee);
+	let _last_revoke_and_ack = commitment_signed_dance!(nodes[1], nodes[0], commit_sig, false, true, false, true);
+
+	// Force close with the latest commitment, confirm it, and reorg it with the previous commitment.
+	nodes[0].node.force_close_broadcasting_latest_txn(&chan_id, &nodes[1].node.get_our_node_id()).unwrap();
+	check_closed_broadcast(&nodes[0], 1, true);
+	check_added_monitors(&nodes[0], 1);
+	check_closed_event(&nodes[0], 1, ClosureReason::HolderForceClosed, false, &[nodes[1].node.get_our_node_id()], 100000);
+
+	let mut txn = nodes[0].tx_broadcaster.txn_broadcast();
+	assert_eq!(txn.len(), 1);
+	let current_commitment_a = txn.pop().unwrap();
+	assert_ne!(current_commitment_a.txid(), prev_commitment_a.txid());
+	check_spends!(current_commitment_a, funding_tx);
+
+	mine_transaction(&nodes[0], &current_commitment_a);
+	mine_transaction(&nodes[1], &current_commitment_a);
+
+	check_closed_broadcast(&nodes[1], 1, true);
+	check_added_monitors(&nodes[1], 1);
+	check_closed_event(&nodes[1], 1, ClosureReason::CommitmentTxConfirmed, false, &[nodes[0].node.get_our_node_id()], 100000);
+
+	disconnect_blocks(&nodes[0], 1);
+	disconnect_blocks(&nodes[1], 1);
+
+	mine_transaction(&nodes[0], &prev_commitment_a);
+	mine_transaction(&nodes[1], &prev_commitment_a);
+
+	// Provide the preimage now, such that we only claim from the previous commitment (since it's
+	// currently confirmed) and not the latest.
+	get_monitor!(nodes[1], chan_id).provide_payment_preimage(
+		&payment_hash, &payment_preimage, &nodes[1].tx_broadcaster,
+		&LowerBoundedFeeEstimator(nodes[1].fee_estimator), &nodes[1].logger
+	);
+
+	let mut txn = nodes[1].tx_broadcaster.txn_broadcast();
+	assert_eq!(txn.len(), 1);
+	let htlc_preimage_tx = txn.pop().unwrap();
+	check_spends!(htlc_preimage_tx, prev_commitment_a);
+	// Make sure it was indeed a preimage claim and not a revocation claim since the previous
+	// commitment (still unrevoked) is the currently confirmed closing transaction.
+	assert_eq!(htlc_preimage_tx.input[0].witness.second_to_last().unwrap(), &payment_preimage.0[..]);
 }

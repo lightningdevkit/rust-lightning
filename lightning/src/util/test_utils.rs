@@ -13,7 +13,7 @@ use crate::chain::chaininterface;
 use crate::chain::chaininterface::ConfirmationTarget;
 use crate::chain::chaininterface::FEERATE_FLOOR_SATS_PER_KW;
 use crate::chain::chainmonitor;
-use crate::chain::chainmonitor::MonitorUpdateId;
+use crate::chain::chainmonitor::{MonitorUpdateId, UpdateOrigin};
 use crate::chain::channelmonitor;
 use crate::chain::channelmonitor::MonitorEvent;
 use crate::chain::transaction::OutPoint;
@@ -124,6 +124,7 @@ impl<'a> Router for TestRouter<'a> {
 		if let Some((find_route_query, find_route_res)) = self.next_routes.lock().unwrap().pop_front() {
 			assert_eq!(find_route_query, *params);
 			if let Ok(ref route) = find_route_res {
+				assert_eq!(route.route_params.as_ref().unwrap().final_value_msat, find_route_query.final_value_msat);
 				let scorer = self.scorer.read().unwrap();
 				let scorer = ScorerAccountingForInFlightHtlcs::new(scorer, &inflight_htlcs);
 				for path in &route.paths {
@@ -206,6 +207,9 @@ pub struct TestChainMonitor<'a> {
 	/// ChannelForceClosed event for the given channel_id with should_broadcast set to the given
 	/// boolean.
 	pub expect_channel_force_closed: Mutex<Option<(ChannelId, bool)>>,
+	/// If this is set to Some(), the next round trip serialization check will not hold after an
+	/// update_channel call (not watch_channel) for the given channel_id.
+	pub expect_monitor_round_trip_fail: Mutex<Option<ChannelId>>,
 }
 impl<'a> TestChainMonitor<'a> {
 	pub fn new(chain_source: Option<&'a TestChainSource>, broadcaster: &'a chaininterface::BroadcasterInterface, logger: &'a TestLogger, fee_estimator: &'a TestFeeEstimator, persister: &'a chainmonitor::Persist<TestChannelSigner>, keys_manager: &'a TestKeysInterface) -> Self {
@@ -216,6 +220,7 @@ impl<'a> TestChainMonitor<'a> {
 			chain_monitor: chainmonitor::ChainMonitor::new(chain_source, broadcaster, logger, fee_estimator, persister),
 			keys_manager,
 			expect_channel_force_closed: Mutex::new(None),
+			expect_monitor_round_trip_fail: Mutex::new(None),
 		}
 	}
 
@@ -266,7 +271,12 @@ impl<'a> chain::Watch<TestChannelSigner> for TestChainMonitor<'a> {
 		monitor.write(&mut w).unwrap();
 		let new_monitor = <(BlockHash, channelmonitor::ChannelMonitor<TestChannelSigner>)>::read(
 			&mut io::Cursor::new(&w.0), (self.keys_manager, self.keys_manager)).unwrap().1;
-		assert!(new_monitor == *monitor);
+		if let Some(chan_id) = self.expect_monitor_round_trip_fail.lock().unwrap().take() {
+			assert_eq!(chan_id, funding_txo.to_channel_id());
+			assert!(new_monitor != *monitor);
+		} else {
+			assert!(new_monitor == *monitor);
+		}
 		self.added_monitors.lock().unwrap().push((funding_txo, new_monitor));
 		update_res
 	}
@@ -418,7 +428,8 @@ impl<Signer: sign::WriteableEcdsaChannelSigner> chainmonitor::Persist<Signer> fo
 		if let Some(update_ret) = self.update_rets.lock().unwrap().pop_front() {
 			ret = update_ret;
 		}
-		if update.is_none() {
+		let is_chain_sync = if let UpdateOrigin::ChainSync(_) = update_id.contents { true } else { false };
+		if is_chain_sync {
 			self.chain_sync_monitor_persistences.lock().unwrap().entry(funding_txo).or_insert(HashSet::new()).insert(update_id);
 		} else {
 			self.offchain_monitor_updates.lock().unwrap().entry(funding_txo).or_insert(HashSet::new()).insert(update_id);
@@ -440,12 +451,12 @@ impl TestStore {
 }
 
 impl KVStore for TestStore {
-	fn read(&self, namespace: &str, sub_namespace: &str, key: &str) -> io::Result<Vec<u8>> {
+	fn read(&self, primary_namespace: &str, secondary_namespace: &str, key: &str) -> io::Result<Vec<u8>> {
 		let persisted_lock = self.persisted_bytes.lock().unwrap();
-		let prefixed = if sub_namespace.is_empty() {
-			namespace.to_string()
+		let prefixed = if secondary_namespace.is_empty() {
+			primary_namespace.to_string()
 		} else {
-			format!("{}/{}", namespace, sub_namespace)
+			format!("{}/{}", primary_namespace, secondary_namespace)
 		};
 
 		if let Some(outer_ref) = persisted_lock.get(&prefixed) {
@@ -460,7 +471,7 @@ impl KVStore for TestStore {
 		}
 	}
 
-	fn write(&self, namespace: &str, sub_namespace: &str, key: &str, buf: &[u8]) -> io::Result<()> {
+	fn write(&self, primary_namespace: &str, secondary_namespace: &str, key: &str, buf: &[u8]) -> io::Result<()> {
 		if self.read_only {
 			return Err(io::Error::new(
 				io::ErrorKind::PermissionDenied,
@@ -469,10 +480,10 @@ impl KVStore for TestStore {
 		}
 		let mut persisted_lock = self.persisted_bytes.lock().unwrap();
 
-		let prefixed = if sub_namespace.is_empty() {
-			namespace.to_string()
+		let prefixed = if secondary_namespace.is_empty() {
+			primary_namespace.to_string()
 		} else {
-			format!("{}/{}", namespace, sub_namespace)
+			format!("{}/{}", primary_namespace, secondary_namespace)
 		};
 		let outer_e = persisted_lock.entry(prefixed).or_insert(HashMap::new());
 		let mut bytes = Vec::new();
@@ -481,7 +492,7 @@ impl KVStore for TestStore {
 		Ok(())
 	}
 
-	fn remove(&self, namespace: &str, sub_namespace: &str, key: &str, _lazy: bool) -> io::Result<()> {
+	fn remove(&self, primary_namespace: &str, secondary_namespace: &str, key: &str, _lazy: bool) -> io::Result<()> {
 		if self.read_only {
 			return Err(io::Error::new(
 				io::ErrorKind::PermissionDenied,
@@ -491,10 +502,10 @@ impl KVStore for TestStore {
 
 		let mut persisted_lock = self.persisted_bytes.lock().unwrap();
 
-		let prefixed = if sub_namespace.is_empty() {
-			namespace.to_string()
+		let prefixed = if secondary_namespace.is_empty() {
+			primary_namespace.to_string()
 		} else {
-			format!("{}/{}", namespace, sub_namespace)
+			format!("{}/{}", primary_namespace, secondary_namespace)
 		};
 		if let Some(outer_ref) = persisted_lock.get_mut(&prefixed) {
 				outer_ref.remove(&key.to_string());
@@ -503,13 +514,13 @@ impl KVStore for TestStore {
 		Ok(())
 	}
 
-	fn list(&self, namespace: &str, sub_namespace: &str) -> io::Result<Vec<String>> {
+	fn list(&self, primary_namespace: &str, secondary_namespace: &str) -> io::Result<Vec<String>> {
 		let mut persisted_lock = self.persisted_bytes.lock().unwrap();
 
-		let prefixed = if sub_namespace.is_empty() {
-			namespace.to_string()
+		let prefixed = if secondary_namespace.is_empty() {
+			primary_namespace.to_string()
 		} else {
-			format!("{}/{}", namespace, sub_namespace)
+			format!("{}/{}", primary_namespace, secondary_namespace)
 		};
 		match persisted_lock.entry(prefixed) {
 			hash_map::Entry::Occupied(e) => Ok(e.get().keys().cloned().collect()),
