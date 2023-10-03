@@ -594,8 +594,24 @@ impl RecipientOnionFields {
 	/// Note that if this field is non-empty, it will contain strictly increasing TLVs, each
 	/// represented by a `(u64, Vec<u8>)` for its type number and serialized value respectively.
 	/// This is validated when setting this field using [`Self::with_custom_tlvs`].
+	#[cfg(not(c_bindings))]
 	pub fn custom_tlvs(&self) -> &Vec<(u64, Vec<u8>)> {
 		&self.custom_tlvs
+	}
+
+	/// Gets the custom TLVs that will be sent or have been received.
+	///
+	/// Custom TLVs allow sending extra application-specific data with a payment. They provide
+	/// additional flexibility on top of payment metadata, as while other implementations may
+	/// require `payment_metadata` to reflect metadata provided in an invoice, custom TLVs
+	/// do not have this restriction.
+	///
+	/// Note that if this field is non-empty, it will contain strictly increasing TLVs, each
+	/// represented by a `(u64, Vec<u8>)` for its type number and serialized value respectively.
+	/// This is validated when setting this field using [`Self::with_custom_tlvs`].
+	#[cfg(c_bindings)]
+	pub fn custom_tlvs(&self) -> Vec<(u64, Vec<u8>)> {
+		self.custom_tlvs.clone()
 	}
 
 	/// When we have received some HTLC(s) towards an MPP payment, as we receive further HTLC(s) we

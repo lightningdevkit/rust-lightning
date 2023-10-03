@@ -9,7 +9,8 @@
 
 //! Convenient utilities for paying Lightning invoices.
 
-use crate::{Bolt11Invoice, Vec};
+use crate::Bolt11Invoice;
+use crate::prelude::*;
 
 use bitcoin_hashes::Hash;
 

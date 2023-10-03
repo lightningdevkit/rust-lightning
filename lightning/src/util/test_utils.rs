@@ -140,10 +140,10 @@ impl<'a> Router for TestRouter<'a> {
 						// Since the path is reversed, the last element in our iteration is the first
 						// hop.
 						if idx == path.hops.len() - 1 {
-							scorer.channel_penalty_msat(hop.short_channel_id, &NodeId::from_pubkey(payer), &NodeId::from_pubkey(&hop.pubkey), usage, &());
+							scorer.channel_penalty_msat(hop.short_channel_id, &NodeId::from_pubkey(payer), &NodeId::from_pubkey(&hop.pubkey), usage, &Default::default());
 						} else {
 							let curr_hop_path_idx = path.hops.len() - 1 - idx;
-							scorer.channel_penalty_msat(hop.short_channel_id, &NodeId::from_pubkey(&path.hops[curr_hop_path_idx - 1].pubkey), &NodeId::from_pubkey(&hop.pubkey), usage, &());
+							scorer.channel_penalty_msat(hop.short_channel_id, &NodeId::from_pubkey(&path.hops[curr_hop_path_idx - 1].pubkey), &NodeId::from_pubkey(&hop.pubkey), usage, &Default::default());
 						}
 					}
 				}
@@ -153,7 +153,7 @@ impl<'a> Router for TestRouter<'a> {
 		let logger = TestLogger::new();
 		find_route(
 			payer, params, &self.network_graph, first_hops, &logger,
-			&ScorerAccountingForInFlightHtlcs::new(self.scorer.read().unwrap(), &inflight_htlcs), &(),
+			&ScorerAccountingForInFlightHtlcs::new(self.scorer.read().unwrap(), &inflight_htlcs), &Default::default(),
 			&[42; 32]
 		)
 	}
@@ -423,7 +423,7 @@ impl<Signer: sign::WriteableEcdsaChannelSigner> chainmonitor::Persist<Signer> fo
 		chain::ChannelMonitorUpdateStatus::Completed
 	}
 
-	fn update_persisted_channel(&self, funding_txo: OutPoint, update: Option<&channelmonitor::ChannelMonitorUpdate>, _data: &channelmonitor::ChannelMonitor<Signer>, update_id: MonitorUpdateId) -> chain::ChannelMonitorUpdateStatus {
+	fn update_persisted_channel(&self, funding_txo: OutPoint, _update: Option<&channelmonitor::ChannelMonitorUpdate>, _data: &channelmonitor::ChannelMonitor<Signer>, update_id: MonitorUpdateId) -> chain::ChannelMonitorUpdateStatus {
 		let mut ret = chain::ChannelMonitorUpdateStatus::Completed;
 		if let Some(update_ret) = self.update_rets.lock().unwrap().pop_front() {
 			ret = update_ret;

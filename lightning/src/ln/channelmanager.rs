@@ -840,6 +840,9 @@ pub type SimpleRefChannelManager<'a, 'b, 'c, 'd, 'e, 'f, 'g, 'h, M, T, F, L> =
 	>;
 
 /// A trivial trait which describes any [`ChannelManager`].
+///
+/// This is not exported to bindings users as general cover traits aren't useful in other
+/// languages.
 pub trait AChannelManager {
 	/// A type implementing [`chain::Watch`].
 	type Watch: chain::Watch<Self::Signer> + ?Sized;

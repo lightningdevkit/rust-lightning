@@ -3781,7 +3781,7 @@ fn test_retry_custom_tlvs() {
 		payment_hash, Some(payment_secret), events.pop().unwrap(), true, None).unwrap();
 	match payment_claimable {
 		Event::PaymentClaimable { onion_fields, .. } => {
-			assert_eq!(onion_fields.unwrap().custom_tlvs(), &custom_tlvs);
+			assert_eq!(&onion_fields.unwrap().custom_tlvs()[..], &custom_tlvs[..]);
 		},
 		_ => panic!("Unexpected event"),
 	};
