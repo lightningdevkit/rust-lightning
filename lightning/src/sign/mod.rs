@@ -896,42 +896,68 @@ impl InMemorySigner {
 
 	/// Returns the counterparty's pubkeys.
 	///
-	/// Will panic if [`ChannelSigner::provide_channel_parameters`] has not been called before.
-	pub fn counterparty_pubkeys(&self) -> &ChannelPublicKeys { &self.get_channel_parameters().counterparty_parameters.as_ref().unwrap().pubkeys }
+	/// Will return `None` if [`ChannelSigner::provide_channel_parameters`] has not been called.
+	/// In general, this is safe to `unwrap` only in [`ChannelSigner`] implementation.
+	pub fn counterparty_pubkeys(&self) -> Option<&ChannelPublicKeys> {
+		self.get_channel_parameters()
+			.and_then(|params| params.counterparty_parameters.as_ref().map(|params| &params.pubkeys))
+	}
+
 	/// Returns the `contest_delay` value specified by our counterparty and applied on holder-broadcastable
 	/// transactions, i.e., the amount of time that we have to wait to recover our funds if we
 	/// broadcast a transaction.
 	///
-	/// Will panic if [`ChannelSigner::provide_channel_parameters`] has not been called before.
-	pub fn counterparty_selected_contest_delay(&self) -> u16 { self.get_channel_parameters().counterparty_parameters.as_ref().unwrap().selected_contest_delay }
+	/// Will return `None` if [`ChannelSigner::provide_channel_parameters`] has not been called.
+	/// In general, this is safe to `unwrap` only in [`ChannelSigner`] implementation.
+	pub fn counterparty_selected_contest_delay(&self) -> Option<u16> {
+		self.get_channel_parameters()
+			.and_then(|params| params.counterparty_parameters.as_ref().map(|params| params.selected_contest_delay))
+	}
+
 	/// Returns the `contest_delay` value specified by us and applied on transactions broadcastable
 	/// by our counterparty, i.e., the amount of time that they have to wait to recover their funds
 	/// if they broadcast a transaction.
 	///
-	/// Will panic if [`ChannelSigner::provide_channel_parameters`] has not been called before.
-	pub fn holder_selected_contest_delay(&self) -> u16 { self.get_channel_parameters().holder_selected_contest_delay }
+	/// Will return `None` if [`ChannelSigner::provide_channel_parameters`] has not been called.
+	/// In general, this is safe to `unwrap` only in [`ChannelSigner`] implementation.
+	pub fn holder_selected_contest_delay(&self) -> Option<u16> {
+		self.get_channel_parameters().map(|params| params.holder_selected_contest_delay)
+	}
+
 	/// Returns whether the holder is the initiator.
 	///
-	/// Will panic if [`ChannelSigner::provide_channel_parameters`] has not been called before.
-	pub fn is_outbound(&self) -> bool { self.get_channel_parameters().is_outbound_from_holder }
+	/// Will return `None` if [`ChannelSigner::provide_channel_parameters`] has not been called.
+	/// In general, this is safe to `unwrap` only in [`ChannelSigner`] implementation.
+	pub fn is_outbound(&self) -> Option<bool> {
+		self.get_channel_parameters().map(|params| params.is_outbound_from_holder)
+	}
+
 	/// Funding outpoint
 	///
-	/// Will panic if [`ChannelSigner::provide_channel_parameters`] has not been called before.
-	pub fn funding_outpoint(&self) -> &OutPoint { self.get_channel_parameters().funding_outpoint.as_ref().unwrap() }
+	/// Will return `None` if [`ChannelSigner::provide_channel_parameters`] has not been called.
+	/// In general, this is safe to `unwrap` only in [`ChannelSigner`] implementation.
+	pub fn funding_outpoint(&self) -> Option<&OutPoint> {
+		self.get_channel_parameters().map(|params| params.funding_outpoint.as_ref()).flatten()
+	}
+
 	/// Returns a [`ChannelTransactionParameters`] for this channel, to be used when verifying or
 	/// building transactions.
 	///
-	/// Will panic if [`ChannelSigner::provide_channel_parameters`] has not been called before.
-	pub fn get_channel_parameters(&self) -> &ChannelTransactionParameters {
-		self.channel_parameters.as_ref().unwrap()
+	/// Will return `None` if [`ChannelSigner::provide_channel_parameters`] has not been called.
+	/// In general, this is safe to `unwrap` only in [`ChannelSigner`] implementation.
+	pub fn get_channel_parameters(&self) -> Option<&ChannelTransactionParameters> {
+		self.channel_parameters.as_ref()
 	}
+
 	/// Returns the channel type features of the channel parameters. Should be helpful for
 	/// determining a channel's category, i. e. legacy/anchors/taproot/etc.
 	///
-	/// Will panic if [`ChannelSigner::provide_channel_parameters`] has not been called before.
-	pub fn channel_type_features(&self) -> &ChannelTypeFeatures {
-		&self.get_channel_parameters().channel_type_features
+	/// Will return `None` if [`ChannelSigner::provide_channel_parameters`] has not been called.
+	/// In general, this is safe to `unwrap` only in [`ChannelSigner`] implementation.
+	pub fn channel_type_features(&self) -> Option<&ChannelTypeFeatures> {
+		self.get_channel_parameters().map(|params| &params.channel_type_features)
 	}
+
 	/// Sign the single input of `spend_tx` at index `input_idx`, which spends the output described
 	/// by `descriptor`, returning the witness stack for the input.
 	///
@@ -950,14 +976,20 @@ impl InMemorySigner {
 		if spend_tx.input[input_idx].previous_output != descriptor.outpoint.into_bitcoin_outpoint() { return Err(()); }
 
 		let remotepubkey = bitcoin::PublicKey::new(self.pubkeys().payment_point);
-		let witness_script = if self.channel_type_features().supports_anchors_zero_fee_htlc_tx() {
+		// We cannot always assume that `channel_parameters` is set, so can't just call
+		// `self.channel_parameters()` or anything that relies on it
+		let supports_anchors_zero_fee_htlc_tx = self.channel_type_features()
+			.map(|features| features.supports_anchors_zero_fee_htlc_tx())
+			.unwrap_or(false);
+
+		let witness_script = if supports_anchors_zero_fee_htlc_tx {
 			chan_utils::get_to_countersignatory_with_anchors_redeemscript(&remotepubkey.inner)
 		} else {
 			Script::new_p2pkh(&remotepubkey.pubkey_hash())
 		};
 		let sighash = hash_to_message!(&sighash::SighashCache::new(spend_tx).segwit_signature_hash(input_idx, &witness_script, descriptor.output.value, EcdsaSighashType::All).unwrap()[..]);
 		let remotesig = sign_with_aux_rand(secp_ctx, &sighash, &self.payment_key, &self);
-		let payment_script = if self.channel_type_features().supports_anchors_zero_fee_htlc_tx() {
+		let payment_script = if supports_anchors_zero_fee_htlc_tx {
 			witness_script.to_v0_p2wsh()
 		} else {
 			Script::new_v0_p2wpkh(&remotepubkey.wpubkey_hash().unwrap())
@@ -968,7 +1000,7 @@ impl InMemorySigner {
 		let mut witness = Vec::with_capacity(2);
 		witness.push(remotesig.serialize_der().to_vec());
 		witness[0].push(EcdsaSighashType::All as u8);
-		if self.channel_type_features().supports_anchors_zero_fee_htlc_tx() {
+		if supports_anchors_zero_fee_htlc_tx {
 			witness.push(witness_script.to_bytes());
 		} else {
 			witness.push(remotepubkey.to_bytes());
@@ -1052,13 +1084,16 @@ impl ChannelSigner for InMemorySigner {
 	}
 }
 
+const MISSING_PARAMS_ERR: &'static str = "ChannelSigner::provide_channel_parameters must be called before signing operations";
+
 impl EcdsaChannelSigner for InMemorySigner {
 	fn sign_counterparty_commitment(&self, commitment_tx: &CommitmentTransaction, _preimages: Vec<PaymentPreimage>, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<(Signature, Vec<Signature>), ()> {
 		let trusted_tx = commitment_tx.trust();
 		let keys = trusted_tx.keys();
 
 		let funding_pubkey = PublicKey::from_secret_key(secp_ctx, &self.funding_key);
-		let channel_funding_redeemscript = make_funding_redeemscript(&funding_pubkey, &self.counterparty_pubkeys().funding_pubkey);
+		let counterparty_keys = self.counterparty_pubkeys().expect(MISSING_PARAMS_ERR);
+		let channel_funding_redeemscript = make_funding_redeemscript(&funding_pubkey, &counterparty_keys.funding_pubkey);
 
 		let built_tx = trusted_tx.built_transaction();
 		let commitment_sig = built_tx.sign_counterparty_commitment(&self.funding_key, &channel_funding_redeemscript, self.channel_value_satoshis, secp_ctx);
@@ -1066,10 +1101,13 @@ impl EcdsaChannelSigner for InMemorySigner {
 
 		let mut htlc_sigs = Vec::with_capacity(commitment_tx.htlcs().len());
 		for htlc in commitment_tx.htlcs() {
-			let channel_parameters = self.get_channel_parameters();
-			let htlc_tx = chan_utils::build_htlc_transaction(&commitment_txid, commitment_tx.feerate_per_kw(), self.holder_selected_contest_delay(), htlc, &channel_parameters.channel_type_features, &keys.broadcaster_delayed_payment_key, &keys.revocation_key);
-			let htlc_redeemscript = chan_utils::get_htlc_redeemscript(&htlc, self.channel_type_features(), &keys);
-			let htlc_sighashtype = if self.channel_type_features().supports_anchors_zero_fee_htlc_tx() { EcdsaSighashType::SinglePlusAnyoneCanPay } else { EcdsaSighashType::All };
+			let channel_parameters = self.get_channel_parameters().expect(MISSING_PARAMS_ERR);
+			let holder_selected_contest_delay =
+				self.holder_selected_contest_delay().expect(MISSING_PARAMS_ERR);
+			let chan_type = &channel_parameters.channel_type_features;
+			let htlc_tx = chan_utils::build_htlc_transaction(&commitment_txid, commitment_tx.feerate_per_kw(), holder_selected_contest_delay, htlc, chan_type, &keys.broadcaster_delayed_payment_key, &keys.revocation_key);
+			let htlc_redeemscript = chan_utils::get_htlc_redeemscript(&htlc, chan_type, &keys);
+			let htlc_sighashtype = if chan_type.supports_anchors_zero_fee_htlc_tx() { EcdsaSighashType::SinglePlusAnyoneCanPay } else { EcdsaSighashType::All };
 			let htlc_sighash = hash_to_message!(&sighash::SighashCache::new(&htlc_tx).segwit_signature_hash(0, &htlc_redeemscript, htlc.amount_msat / 1000, htlc_sighashtype).unwrap()[..]);
 			let holder_htlc_key = chan_utils::derive_private_key(&secp_ctx, &keys.per_commitment_point, &self.htlc_base_key);
 			htlc_sigs.push(sign(secp_ctx, &htlc_sighash, &holder_htlc_key));
@@ -1084,10 +1122,11 @@ impl EcdsaChannelSigner for InMemorySigner {
 
 	fn sign_holder_commitment_and_htlcs(&self, commitment_tx: &HolderCommitmentTransaction, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<(Signature, Vec<Signature>), ()> {
 		let funding_pubkey = PublicKey::from_secret_key(secp_ctx, &self.funding_key);
-		let funding_redeemscript = make_funding_redeemscript(&funding_pubkey, &self.counterparty_pubkeys().funding_pubkey);
+		let counterparty_keys = self.counterparty_pubkeys().expect(MISSING_PARAMS_ERR);
+		let funding_redeemscript = make_funding_redeemscript(&funding_pubkey, &counterparty_keys.funding_pubkey);
 		let trusted_tx = commitment_tx.trust();
 		let sig = trusted_tx.built_transaction().sign_holder_commitment(&self.funding_key, &funding_redeemscript, self.channel_value_satoshis, &self, secp_ctx);
-		let channel_parameters = self.get_channel_parameters();
+		let channel_parameters = self.get_channel_parameters().expect(MISSING_PARAMS_ERR);
 		let htlc_sigs = trusted_tx.get_htlc_sigs(&self.htlc_base_key, &channel_parameters.as_holder_broadcastable(), &self, secp_ctx)?;
 		Ok((sig, htlc_sigs))
 	}
@@ -1095,10 +1134,11 @@ impl EcdsaChannelSigner for InMemorySigner {
 	#[cfg(any(test,feature = "unsafe_revoked_tx_signing"))]
 	fn unsafe_sign_holder_commitment_and_htlcs(&self, commitment_tx: &HolderCommitmentTransaction, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<(Signature, Vec<Signature>), ()> {
 		let funding_pubkey = PublicKey::from_secret_key(secp_ctx, &self.funding_key);
-		let funding_redeemscript = make_funding_redeemscript(&funding_pubkey, &self.counterparty_pubkeys().funding_pubkey);
+		let counterparty_keys = self.counterparty_pubkeys().expect(MISSING_PARAMS_ERR);
+		let funding_redeemscript = make_funding_redeemscript(&funding_pubkey, &counterparty_keys.funding_pubkey);
 		let trusted_tx = commitment_tx.trust();
 		let sig = trusted_tx.built_transaction().sign_holder_commitment(&self.funding_key, &funding_redeemscript, self.channel_value_satoshis, &self, secp_ctx);
-		let channel_parameters = self.get_channel_parameters();
+		let channel_parameters = self.get_channel_parameters().expect(MISSING_PARAMS_ERR);
 		let htlc_sigs = trusted_tx.get_htlc_sigs(&self.htlc_base_key, &channel_parameters.as_holder_broadcastable(), &self, secp_ctx)?;
 		Ok((sig, htlc_sigs))
 	}
@@ -1108,8 +1148,11 @@ impl EcdsaChannelSigner for InMemorySigner {
 		let per_commitment_point = PublicKey::from_secret_key(secp_ctx, &per_commitment_key);
 		let revocation_pubkey = chan_utils::derive_public_revocation_key(&secp_ctx, &per_commitment_point, &self.pubkeys().revocation_basepoint);
 		let witness_script = {
-			let counterparty_delayedpubkey = chan_utils::derive_public_key(&secp_ctx, &per_commitment_point, &self.counterparty_pubkeys().delayed_payment_basepoint);
-			chan_utils::get_revokeable_redeemscript(&revocation_pubkey, self.holder_selected_contest_delay(), &counterparty_delayedpubkey)
+			let counterparty_keys = self.counterparty_pubkeys().expect(MISSING_PARAMS_ERR);
+			let holder_selected_contest_delay =
+				self.holder_selected_contest_delay().expect(MISSING_PARAMS_ERR);
+			let counterparty_delayedpubkey = chan_utils::derive_public_key(&secp_ctx, &per_commitment_point, &counterparty_keys.delayed_payment_basepoint);
+			chan_utils::get_revokeable_redeemscript(&revocation_pubkey, holder_selected_contest_delay, &counterparty_delayedpubkey)
 		};
 		let mut sighash_parts = sighash::SighashCache::new(justice_tx);
 		let sighash = hash_to_message!(&sighash_parts.segwit_signature_hash(input, &witness_script, amount, EcdsaSighashType::All).unwrap()[..]);
@@ -1121,9 +1164,11 @@ impl EcdsaChannelSigner for InMemorySigner {
 		let per_commitment_point = PublicKey::from_secret_key(secp_ctx, &per_commitment_key);
 		let revocation_pubkey = chan_utils::derive_public_revocation_key(&secp_ctx, &per_commitment_point, &self.pubkeys().revocation_basepoint);
 		let witness_script = {
-			let counterparty_htlcpubkey = chan_utils::derive_public_key(&secp_ctx, &per_commitment_point, &self.counterparty_pubkeys().htlc_basepoint);
+			let counterparty_keys = self.counterparty_pubkeys().expect(MISSING_PARAMS_ERR);
+			let counterparty_htlcpubkey = chan_utils::derive_public_key(&secp_ctx, &per_commitment_point, &counterparty_keys.htlc_basepoint);
 			let holder_htlcpubkey = chan_utils::derive_public_key(&secp_ctx, &per_commitment_point, &self.pubkeys().htlc_basepoint);
-			chan_utils::get_htlc_redeemscript_with_explicit_keys(&htlc, self.channel_type_features(), &counterparty_htlcpubkey, &holder_htlcpubkey, &revocation_pubkey)
+			let chan_type = self.channel_type_features().expect(MISSING_PARAMS_ERR);
+			chan_utils::get_htlc_redeemscript_with_explicit_keys(&htlc, chan_type, &counterparty_htlcpubkey, &holder_htlcpubkey, &revocation_pubkey)
 		};
 		let mut sighash_parts = sighash::SighashCache::new(justice_tx);
 		let sighash = hash_to_message!(&sighash_parts.segwit_signature_hash(input, &witness_script, amount, EcdsaSighashType::All).unwrap()[..]);
@@ -1147,9 +1192,11 @@ impl EcdsaChannelSigner for InMemorySigner {
 	fn sign_counterparty_htlc_transaction(&self, htlc_tx: &Transaction, input: usize, amount: u64, per_commitment_point: &PublicKey, htlc: &HTLCOutputInCommitment, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<Signature, ()> {
 		let htlc_key = chan_utils::derive_private_key(&secp_ctx, &per_commitment_point, &self.htlc_base_key);
 		let revocation_pubkey = chan_utils::derive_public_revocation_key(&secp_ctx, &per_commitment_point, &self.pubkeys().revocation_basepoint);
-		let counterparty_htlcpubkey = chan_utils::derive_public_key(&secp_ctx, &per_commitment_point, &self.counterparty_pubkeys().htlc_basepoint);
+		let counterparty_keys = self.counterparty_pubkeys().expect(MISSING_PARAMS_ERR);
+		let counterparty_htlcpubkey = chan_utils::derive_public_key(&secp_ctx, &per_commitment_point, &counterparty_keys.htlc_basepoint);
 		let htlcpubkey = chan_utils::derive_public_key(&secp_ctx, &per_commitment_point, &self.pubkeys().htlc_basepoint);
-		let witness_script = chan_utils::get_htlc_redeemscript_with_explicit_keys(&htlc, self.channel_type_features(), &counterparty_htlcpubkey, &htlcpubkey, &revocation_pubkey);
+		let chan_type = self.channel_type_features().expect(MISSING_PARAMS_ERR);
+		let witness_script = chan_utils::get_htlc_redeemscript_with_explicit_keys(&htlc, chan_type, &counterparty_htlcpubkey, &htlcpubkey, &revocation_pubkey);
 		let mut sighash_parts = sighash::SighashCache::new(htlc_tx);
 		let sighash = hash_to_message!(&sighash_parts.segwit_signature_hash(input, &witness_script, amount, EcdsaSighashType::All).unwrap()[..]);
 		Ok(sign_with_aux_rand(secp_ctx, &sighash, &htlc_key, &self))
@@ -1157,7 +1204,8 @@ impl EcdsaChannelSigner for InMemorySigner {
 
 	fn sign_closing_transaction(&self, closing_tx: &ClosingTransaction, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<Signature, ()> {
 		let funding_pubkey = PublicKey::from_secret_key(secp_ctx, &self.funding_key);
-		let channel_funding_redeemscript = make_funding_redeemscript(&funding_pubkey, &self.counterparty_pubkeys().funding_pubkey);
+		let counterparty_funding_key = &self.counterparty_pubkeys().expect(MISSING_PARAMS_ERR).funding_pubkey;
+		let channel_funding_redeemscript = make_funding_redeemscript(&funding_pubkey, counterparty_funding_key);
 		Ok(closing_tx.trust().sign(&self.funding_key, &channel_funding_redeemscript, self.channel_value_satoshis, secp_ctx))
 	}
 
