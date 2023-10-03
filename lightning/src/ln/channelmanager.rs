@@ -6441,8 +6441,12 @@ where
 						// but if we've sent a shutdown and they haven't acknowledged it yet, we just
 						// want to reject the new HTLC and fail it backwards instead of forwarding.
 						match pending_forward_info {
-							PendingHTLCStatus::Forward(PendingHTLCInfo { ref incoming_shared_secret, .. }) => {
-								let reason = if (error_code & 0x1000) != 0 {
+							PendingHTLCStatus::Forward(PendingHTLCInfo {
+								ref incoming_shared_secret, ref routing, ..
+							}) => {
+								let reason = if routing.blinded_failure().is_some() {
+									HTLCFailReason::reason(INVALID_ONION_BLINDING, vec![0; 32])
+								} else if (error_code & 0x1000) != 0 {
 									let (real_code, error_data) = self.get_htlc_inbound_temp_fail_err_and_data(error_code, chan);
 									HTLCFailReason::reason(real_code, error_data)
 								} else {
