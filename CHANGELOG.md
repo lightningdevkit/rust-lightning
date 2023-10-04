@@ -1,4 +1,4 @@
-# 0.0.117 - XXX - "Everything but the Twelve Sinks"
+# 0.0.117 - Oct 3, 2023 - "Everything but the Twelve Sinks"
 
 ## API Updates
  * `ProbabilisticScorer`'s internal models have been substantially improved,
@@ -142,8 +142,36 @@ channel(s) from counterparties which are miners.
    until they've reached 100 confirmations, this could have resulted in
    accepting HTLC(s) which are not enforcible on-chain (#1924).
 
-up to date as of 620244dc2ec3153a61e009b80a8c59cf41514482
-XXX: add diff statas
+In total, this release features 121 files changed, 20477 insertions, 8184
+deletions in 381 commits from 27 authors, in alphabetical order:
+ * Alec Chen
+ * Allan Douglas R. de Oliveira
+ * Antonio Yang
+ * Arik Sosman
+ * Chris Waterson
+ * David Caseria
+ * DhananjayPurohit
+ * Dom Zippilli
+ * Duncan Dean
+ * Elias Rohrer
+ * Erik De Smedt
+ * Evan Feenstra
+ * Gabor Szabo
+ * Gursharan Singh
+ * Jeffrey Czyz
+ * Joseph Goulden
+ * Lalitmohansharma1
+ * Matt Corallo
+ * Rachel Malonson
+ * Sergi Delgado Segura
+ * Valentine Wallace
+ * Vladimir Fomene
+ * Willem Van Lint
+ * Wilmer Paulino
+ * benthecarman
+ * jbesraa
+ * optout
+
 
 # 0.0.116 - Jul 21, 2023 - "Anchoring the Roadmap"
 
