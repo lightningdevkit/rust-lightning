@@ -30,7 +30,7 @@ Objective, Restrictions:
 - Only a single pending splicing is supported
 - The channel ID is not changed during splicing (which is incorrect)
 
-Up-to-date with main branch as of commit 448b191f (Sept 7, originally branched off commit v0.0.115).
+Up-to-date with main branch as of v0.0.117 (Oct 4, commit 9de51f0; originally branched off v0.0.115).
 
 See also `ldk-sample` https://github.com/catenocrypt/ldk-sample/tree/splicing-hapa2
 
