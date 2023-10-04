@@ -78,10 +78,10 @@ use lightning::io;
 use lightning::routing::gossip::NetworkGraph;
 use lightning::util::logger::Logger;
 
-pub use crate::error::GraphSyncError;
+use crate::error::GraphSyncError;
 
 /// Error types that these functions can return
-mod error;
+pub mod error;
 
 /// Core functionality of this crate
 mod processing;

@@ -24,7 +24,7 @@ use crate::ln::features::{InitFeatures, NodeFeatures};
 use crate::ln::msgs::{self, OnionMessageHandler};
 use crate::ln::onion_utils;
 use crate::ln::peer_handler::IgnoringMessageHandler;
-pub use super::packet::{CustomOnionMessageContents, OnionMessageContents};
+pub(crate) use super::packet::{CustomOnionMessageContents, OnionMessageContents};
 use super::offers::OffersMessageHandler;
 use super::packet::{BIG_PACKET_HOP_DATA_LEN, ForwardControlTlvs, Packet, Payload, ReceiveControlTlvs, SMALL_PACKET_HOP_DATA_LEN};
 use crate::util::logger::Logger;
@@ -48,7 +48,8 @@ use crate::prelude::*;
 /// # use lightning::blinded_path::BlindedPath;
 /// # use lightning::sign::KeysManager;
 /// # use lightning::ln::peer_handler::IgnoringMessageHandler;
-/// # use lightning::onion_message::{CustomOnionMessageContents, Destination, MessageRouter, OnionMessageContents, OnionMessagePath, OnionMessenger};
+/// # use lightning::onion_message::messenger::{Destination, MessageRouter, OnionMessenger, OnionMessagePath};
+/// # use lightning::onion_message::packet::{CustomOnionMessageContents, OnionMessageContents};
 /// # use lightning::util::logger::{Logger, Record};
 /// # use lightning::util::ser::{Writeable, Writer};
 /// # use lightning::io;
@@ -82,6 +83,7 @@ use crate::prelude::*;
 ///     &custom_message_handler
 /// );
 ///
+/// # #[derive(Clone)]
 /// # struct YourCustomMessage {}
 /// impl Writeable for YourCustomMessage {
 /// 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {

@@ -36,7 +36,7 @@ pub(crate) mod channel;
 pub use channel_id::ChannelId;
 
 pub(crate) mod onion_utils;
-mod outbound_payment;
+pub mod outbound_payment;
 pub mod wire;
 
 // Older rustc (which we support) refuses to let us call the get_payment_preimage_hash!() macro
