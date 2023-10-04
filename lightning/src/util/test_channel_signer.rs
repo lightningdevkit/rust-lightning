@@ -89,7 +89,7 @@ impl TestChannelSigner {
 		}
 	}
 
-	pub fn channel_type_features(&self) -> &ChannelTypeFeatures { self.inner.channel_type_features() }
+	pub fn channel_type_features(&self) -> &ChannelTypeFeatures { self.inner.channel_type_features().unwrap() }
 
 	#[cfg(test)]
 	pub fn get_enforcement_state(&self) -> MutexGuard<EnforcementState> {
@@ -164,7 +164,7 @@ impl EcdsaChannelSigner for TestChannelSigner {
 	fn sign_holder_commitment_and_htlcs(&self, commitment_tx: &HolderCommitmentTransaction, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<(Signature, Vec<Signature>), ()> {
 		let trusted_tx = self.verify_holder_commitment_tx(commitment_tx, secp_ctx);
 		let commitment_txid = trusted_tx.txid();
-		let holder_csv = self.inner.counterparty_selected_contest_delay();
+		let holder_csv = self.inner.counterparty_selected_contest_delay().unwrap();
 
 		let state = self.state.lock().unwrap();
 		let commitment_number = trusted_tx.commitment_number();
@@ -225,7 +225,7 @@ impl EcdsaChannelSigner for TestChannelSigner {
 	}
 
 	fn sign_closing_transaction(&self, closing_tx: &ClosingTransaction, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<Signature, ()> {
-		closing_tx.verify(self.inner.funding_outpoint().into_bitcoin_outpoint())
+		closing_tx.verify(self.inner.funding_outpoint().unwrap().into_bitcoin_outpoint())
 			.expect("derived different closing transaction");
 		Ok(self.inner.sign_closing_transaction(closing_tx, secp_ctx).unwrap())
 	}
@@ -266,15 +266,17 @@ impl Writeable for TestChannelSigner {
 
 impl TestChannelSigner {
 	fn verify_counterparty_commitment_tx<'a, T: secp256k1::Signing + secp256k1::Verification>(&self, commitment_tx: &'a CommitmentTransaction, secp_ctx: &Secp256k1<T>) -> TrustedCommitmentTransaction<'a> {
-		commitment_tx.verify(&self.inner.get_channel_parameters().as_counterparty_broadcastable(),
-		                     self.inner.counterparty_pubkeys(), self.inner.pubkeys(), secp_ctx)
-			.expect("derived different per-tx keys or built transaction")
+		commitment_tx.verify(
+			&self.inner.get_channel_parameters().unwrap().as_counterparty_broadcastable(),
+			self.inner.counterparty_pubkeys().unwrap(), self.inner.pubkeys(), secp_ctx
+		).expect("derived different per-tx keys or built transaction")
 	}
 
 	fn verify_holder_commitment_tx<'a, T: secp256k1::Signing + secp256k1::Verification>(&self, commitment_tx: &'a CommitmentTransaction, secp_ctx: &Secp256k1<T>) -> TrustedCommitmentTransaction<'a> {
-		commitment_tx.verify(&self.inner.get_channel_parameters().as_holder_broadcastable(),
-		                     self.inner.pubkeys(), self.inner.counterparty_pubkeys(), secp_ctx)
-			.expect("derived different per-tx keys or built transaction")
+		commitment_tx.verify(
+			&self.inner.get_channel_parameters().unwrap().as_holder_broadcastable(),
+			self.inner.pubkeys(), self.inner.counterparty_pubkeys().unwrap(), secp_ctx
+		).expect("derived different per-tx keys or built transaction")
 	}
 }
 

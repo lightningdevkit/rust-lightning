@@ -366,7 +366,7 @@ macro_rules! offer_accessors { ($self: ident, $contents: expr) => {
 	/// The chains that may be used when paying a requested invoice (e.g., bitcoin mainnet).
 	/// Payments must be denominated in units of the minimal lightning-payable unit (e.g., msats)
 	/// for the selected chain.
-	pub fn chains(&$self) -> Vec<$crate::bitcoin::blockdata::constants::ChainHash> {
+	pub fn chains(&$self) -> Vec<bitcoin::blockdata::constants::ChainHash> {
 		$contents.chains()
 	}
 
@@ -418,7 +418,7 @@ macro_rules! offer_accessors { ($self: ident, $contents: expr) => {
 	}
 
 	/// The public key used by the recipient to sign invoices.
-	pub fn signing_pubkey(&$self) -> $crate::bitcoin::secp256k1::PublicKey {
+	pub fn signing_pubkey(&$self) -> bitcoin::secp256k1::PublicKey {
 		$contents.signing_pubkey()
 	}
 } }

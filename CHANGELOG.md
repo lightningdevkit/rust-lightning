@@ -1,3 +1,178 @@
+# 0.0.117 - Oct 3, 2023 - "Everything but the Twelve Sinks"
+
+## API Updates
+ * `ProbabilisticScorer`'s internal models have been substantially improved,
+   including better decaying (#1789), a more granular historical channel
+   liquidity tracker (#2176) and a now-default option to make our estimate for a
+   channel's current liquidity nonlinear in the channel's capacity (#2547). In
+   total, these changes should result in improved payment success rates at the
+   cost of slightly worse routefinding performance.
+ * Support for custom TLVs for recipients of HTLCs has been added (#2308).
+ * Support for generating transactions for third-party watchtowers has been
+   added to `ChannelMonitor/Update`s (#2337).
+ * `KVStorePersister` has been replaced with a more generic and featureful
+   `KVStore` interface (#2472).
+ * A new `MonitorUpdatingPersister` is provided which wraps a `KVStore` and
+   implements `Persist` by writing differential updates rather than full
+   `ChannelMonitor`s (#2359).
+ * Batch funding of outbound channels is now supported using the new
+   `ChannelManager::batch_funding_transaction_generated` method (#2486).
+ * `ChannelManager::send_preflight_probes` has been added to probe a payment's
+   potential paths while a user is providing approval for a payment (#2534).
+ * Fully asynchronous `ChannelMonitor` updating is available as an alpha
+   preview. There remain a few known but incredibly rare race conditions which
+   may lead to loss of funds (#2112, #2169, #2562).
+ * `ChannelMonitorUpdateStatus::PermanentFailure` has been removed in favor of a
+   new `ChannelMonitorUpdateStatus::UnrecoverableError`. The new variant panics
+   on use, rather than force-closing a channel in an unsafe manner, which the
+   previous variant did (#2562). Rather than panicking with the new variant,
+   users may wish to use the new asynchronous `ChannelMonitor` updating using
+   `ChannelMonitorUpdateStatus::InProgress`.
+ * `RouteParameters::max_total_routing_fee_msat` was added to limit the fees
+   paid when routing, defaulting to 1% + 50sats when using the new
+   `from_payment_params_and_value` constructor (#2417, #2603, #2604).
+ * Implementations of `UtxoSource` are now provided in `lightning-block-sync`.
+   Those running with a full node should use this to validate gossip (#2248).
+ * `LockableScore` now supports read locking for parallel routefinding (#2197).
+ * `ChannelMonitor::get_spendable_outputs` was added to allow for re-generation
+   of `SpendableOutputDescriptor`s for a channel after they were provided via
+   `Event::SpendableOutputs` (#2609, #2624).
+ * `[u8; 32]` has been replaced with a `ChannelId` newtype for chan ids (#2485).
+ * `NetAddress` was renamed `SocketAddress` (#2549) and `FromStr` impl'd (#2134)
+ * For `no-std` users, `parse_onion_address` was added which creates a
+   `NetAddress` from a "...onion" string and port (#2134, #2633).
+ * HTLC information is now provided in `Event::PaymentClaimed::htlcs` (#2478).
+ * The success probability used in historical penalties when scoring is now
+   available via `historical_estimated_payment_success_probability` (#2466).
+ * `RecentPaymentDetails::*::payment_id` has been added (#2567).
+ * `Route` now contains a `RouteParameters` rather than a `PaymentParameters`,
+   tracking the original arguments passed to routefinding (#2555).
+ * `Balance::*::claimable_amount_satoshis` was renamed `amount_satoshis` (#2460)
+ * `*Features::set_*_feature_bit` have been added for non-custom flags (#2522).
+ * `channel_id` was added to `SpendableOutputs` events (#2511).
+ * `counterparty_node_id` and `channel_capacity_sats` were added to
+   `ChannelClosed` events (#2387).
+ * `ChannelMonitor` now implements `Clone` for `Clone`able signers (#2448).
+ * `create_onion_message` was added to build an onion message (#2583, #2595).
+ * `HTLCDescriptor` now implements `Writeable`/`Readable` (#2571).
+ * `SpendableOutputDescriptor` now implements `Hash` (#2602).
+ * `MonitorUpdateId` now implements `Debug` (#2594).
+ * `Payment{Hash,Id,Preimage}` now implement `Display` (#2492).
+ * `NodeSigner::sign_bolt12_invoice{,request}` were added for future use (#2432)
+
+## Backwards Compatibility
+ * Users migrating to the new `KVStore` can use a concatentation of
+   `[{primary_namespace}/[{secondary_namespace}/]]{key}` to build a key
+   compatible with the previous `KVStorePersister` interface (#2472).
+ * Downgrading after receipt of a payment with custom HTLC TLVs may result in
+   unintentionally accepting payments with TLVs you do not understand (#2308).
+ * `Route` objects (including pending payments) written by LDK versions prior
+   to 0.0.117 won't be retryable after being deserialized by LDK 0.0.117 or
+   above (#2555).
+ * Users of the `MonitorUpdatingPersister` can upgrade seamlessly from the
+   default `KVStore` `Persist` implementation, however the stored
+   `ChannelMonitor`s are deliberately unreadable by the default `Persist`. This
+   ensures the correct downgrade procedure is followed, which is: (#2359)
+   * First, make a backup copy of all channel state,
+   * then ensure all `ChannelMonitorUpdate`s stored are fully applied to the
+     relevant `ChannelMonitor`,
+   * finally, write each full `ChannelMonitor` using your new `Persist` impl.
+
+## Bug Fixes
+ * Anchor channels which were closed by a counterparty broadcasting its
+   commitment transaction (i.e. force-closing) would previously not generate a
+   `SpendableOutputs` event for our `to_remote` (i.e. non-HTLC-encumbered)
+   balance. Those with such balances available should fetch the missing
+   `SpendableOutputDescriptor`s using the new
+   `ChannelMonitor::get_spendable_outputs` method (#2605).
+ * Anchor channels may result in spurious or missing `Balance` entries for HTLC
+   balances (#2610).
+ * `ChannelManager::send_spontaneous_payment_with_retry` spuriously did not
+   provide the recipient with enough information to claim the payment, leading
+   to all spontaneous payments failing (#2475).
+   `send_spontaneous_payment_with_route` was unaffected.
+ * The `keysend` feature on node announcements was spuriously un-set in 0.0.112
+   and has been re-enabled (#2465).
+ * Fixed several races which could lead to deadlock when force-closing a channel
+   (#2597). These races have not been seen in production.
+ * The `ChannelManager` is persisted substantially less when it has not changed,
+   leading to substantially less I/O traffic for it (#2521, #2617).
+ * Passing new block data to `ChainMonitor` no longer results in all other
+   monitor operations being blocked until it completes (#2528).
+ * When retrying payments, any excess amount sent to the recipient in order to
+   meet an `htlc_minimum` constraint on the path is now no longer included in
+   the amount we send in the retry (#2575).
+ * Several edge cases in route-finding around HTLC minimums were fixed which
+   could have caused invalid routes or panics when built with debug assertions
+   (#2570, #2575).
+ * Several edge cases in route-finding around HTLC minimums and route hints
+   were fixed which would spuriously result in no route found (#2575, #2604).
+ * The `user_channel_id` passed to `SignerProvider::generate_channel_keys_id`
+   for inbound channels is now correctly using the one passed to
+   `ChannelManager::accept_inbound_channel` rather than a default value (#2428).
+ * Users of `impl_writeable_tlv_based!` no longer have use requirements (#2506).
+ * No longer force-close channels when counterparties send a `channel_update`
+   with a bogus `htlc_minimum_msat`, which LND users can manually build (#2611).
+
+## Node Compatibility
+ * LDK now ignores `error` messages generated by LND in response to a
+   `shutdown` message, avoiding force-closes due to LND bug 6039. This may
+   lead to non-trivial bandwidth usage with LND peers exhibiting this bug
+   during the cooperative shutdown process (#2507).
+
+## Security
+0.0.117 fixes several loss-of-funds vulnerabilities in anchor output channels,
+support for which was added in 0.0.116, in reorg handling, and when accepting
+channel(s) from counterparties which are miners.
+ * When a counterparty broadcasts their latest commitment transaction for a
+   channel with anchor outputs, we'd previously fail to build claiming
+   transactions against any HTLC outputs in that transaction. This could lead
+   to loss of funds if the counterparty is able to eventually claim the HTLC
+   after a timeout (#2606).
+ * Anchor channels HTLC claims on-chain previously spent the entire value of any
+   HTLCs as fee, which has now been fixed (#2587).
+ * If a channel is closed via an on-chain commitment transaction confirmation
+   with a pending outbound HTLC in the commitment transaction, followed by a
+   reorg which replaces the confirmed commitment transaction with a different
+   (but non-revoked) commitment transaction, all before we learn the payment
+   preimage for this HTLC, we may previously have not generated a proper
+   claiming transaction for the HTLC's value (#2623).
+ * 0.0.117 now correctly handles channels for which our counterparty funded the
+   channel with a coinbase transaction. As such transactions are not spendable
+   until they've reached 100 confirmations, this could have resulted in
+   accepting HTLC(s) which are not enforcible on-chain (#1924).
+
+In total, this release features 121 files changed, 20477 insertions, 8184
+deletions in 381 commits from 27 authors, in alphabetical order:
+ * Alec Chen
+ * Allan Douglas R. de Oliveira
+ * Antonio Yang
+ * Arik Sosman
+ * Chris Waterson
+ * David Caseria
+ * DhananjayPurohit
+ * Dom Zippilli
+ * Duncan Dean
+ * Elias Rohrer
+ * Erik De Smedt
+ * Evan Feenstra
+ * Gabor Szabo
+ * Gursharan Singh
+ * Jeffrey Czyz
+ * Joseph Goulden
+ * Lalitmohansharma1
+ * Matt Corallo
+ * Rachel Malonson
+ * Sergi Delgado Segura
+ * Valentine Wallace
+ * Vladimir Fomene
+ * Willem Van Lint
+ * Wilmer Paulino
+ * benthecarman
+ * jbesraa
+ * optout
+
+
 # 0.0.116 - Jul 21, 2023 - "Anchoring the Roadmap"
 
 ## API Updates

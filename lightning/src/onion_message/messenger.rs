@@ -246,6 +246,64 @@ pub trait CustomOnionMessageHandler {
 	fn read_custom_message<R: io::Read>(&self, message_type: u64, buffer: &mut R) -> Result<Option<Self::CustomMessage>, msgs::DecodeError>;
 }
 
+
+/// Create an onion message with contents `message` to the destination of `path`.
+/// Returns (introduction_node_id, onion_msg)
+pub fn create_onion_message<ES: Deref, NS: Deref, T: CustomOnionMessageContents>(
+	entropy_source: &ES, node_signer: &NS, secp_ctx: &Secp256k1<secp256k1::All>,
+	path: OnionMessagePath, message: OnionMessageContents<T>, reply_path: Option<BlindedPath>,
+) -> Result<(PublicKey, msgs::OnionMessage), SendError>
+where
+	ES::Target: EntropySource,
+	NS::Target: NodeSigner,
+{
+	let OnionMessagePath { intermediate_nodes, mut destination } = path;
+	if let Destination::BlindedPath(BlindedPath { ref blinded_hops, .. }) = destination {
+		if blinded_hops.len() < 2 {
+			return Err(SendError::TooFewBlindedHops);
+		}
+	}
+
+	if message.tlv_type() < 64 { return Err(SendError::InvalidMessage) }
+
+	// If we are sending straight to a blinded path and we are the introduction node, we need to
+	// advance the blinded path by 1 hop so the second hop is the new introduction node.
+	if intermediate_nodes.len() == 0 {
+		if let Destination::BlindedPath(ref mut blinded_path) = destination {
+			let our_node_id = node_signer.get_node_id(Recipient::Node)
+				.map_err(|()| SendError::GetNodeIdFailed)?;
+			if blinded_path.introduction_node_id == our_node_id {
+				advance_path_by_one(blinded_path, node_signer, &secp_ctx)
+					.map_err(|()| SendError::BlindedPathAdvanceFailed)?;
+			}
+		}
+	}
+
+	let blinding_secret_bytes = entropy_source.get_secure_random_bytes();
+	let blinding_secret = SecretKey::from_slice(&blinding_secret_bytes[..]).expect("RNG is busted");
+	let (introduction_node_id, blinding_point) = if intermediate_nodes.len() != 0 {
+		(intermediate_nodes[0], PublicKey::from_secret_key(&secp_ctx, &blinding_secret))
+	} else {
+		match destination {
+			Destination::Node(pk) => (pk, PublicKey::from_secret_key(&secp_ctx, &blinding_secret)),
+			Destination::BlindedPath(BlindedPath { introduction_node_id, blinding_point, .. }) =>
+				(introduction_node_id, blinding_point),
+		}
+	};
+	let (packet_payloads, packet_keys) = packet_payloads_and_keys(
+		&secp_ctx, &intermediate_nodes, destination, message, reply_path, &blinding_secret)
+		.map_err(|e| SendError::Secp256k1(e))?;
+
+	let prng_seed = entropy_source.get_secure_random_bytes();
+	let onion_routing_packet = construct_onion_message_packet(
+		packet_payloads, packet_keys, prng_seed).map_err(|()| SendError::TooBigPacket)?;
+
+	Ok((introduction_node_id, msgs::OnionMessage {
+		blinding_point,
+		onion_routing_packet
+	}))
+}
+
 impl<ES: Deref, NS: Deref, L: Deref, MR: Deref, OMH: Deref, CMH: Deref>
 OnionMessenger<ES, NS, L, MR, OMH, CMH>
 where
@@ -283,13 +341,9 @@ where
 		&self, path: OnionMessagePath, message: OnionMessageContents<T>,
 		reply_path: Option<BlindedPath>
 	) -> Result<(), SendError> {
-		let (introduction_node_id, onion_msg) = Self::create_onion_message(
-			&self.entropy_source, 
-			&self.node_signer, 
-			&self.secp_ctx, 
-			path, 
-			message, 
-			reply_path
+		let (introduction_node_id, onion_msg) = create_onion_message(
+			&self.entropy_source, &self.node_signer, &self.secp_ctx,
+			path, message, reply_path
 		)?;
 
 		let mut pending_per_peer_msgs = self.pending_messages.lock().unwrap();
@@ -301,63 +355,6 @@ where
 				Ok(())
 			}
 		}
-	}
-
-	/// Create an onion message with contents `message` to the destination of `path`.
-	/// Returns (introduction_node_id, onion_msg)
-	pub fn create_onion_message<T: CustomOnionMessageContents>(
-		entropy_source: &ES, 
-		node_signer: &NS,
-		secp_ctx: &Secp256k1<secp256k1::All>,
-		path: OnionMessagePath, 
-		message: OnionMessageContents<T>,
-		reply_path: Option<BlindedPath>, 
-	) -> Result<(PublicKey, msgs::OnionMessage), SendError> {
-		let OnionMessagePath { intermediate_nodes, mut destination } = path;
-		if let Destination::BlindedPath(BlindedPath { ref blinded_hops, .. }) = destination {
-			if blinded_hops.len() < 2 {
-				return Err(SendError::TooFewBlindedHops);
-			}
-		}
-
-		if message.tlv_type() < 64 { return Err(SendError::InvalidMessage) }
-
-		// If we are sending straight to a blinded path and we are the introduction node, we need to
-		// advance the blinded path by 1 hop so the second hop is the new introduction node.
-		if intermediate_nodes.len() == 0 {
-			if let Destination::BlindedPath(ref mut blinded_path) = destination {
-				let our_node_id = node_signer.get_node_id(Recipient::Node)
-					.map_err(|()| SendError::GetNodeIdFailed)?;
-				if blinded_path.introduction_node_id == our_node_id {
-					advance_path_by_one(blinded_path, node_signer, &secp_ctx)
-						.map_err(|()| SendError::BlindedPathAdvanceFailed)?;
-				}
-			}
-		}
-
-		let blinding_secret_bytes = entropy_source.get_secure_random_bytes();
-		let blinding_secret = SecretKey::from_slice(&blinding_secret_bytes[..]).expect("RNG is busted");
-		let (introduction_node_id, blinding_point) = if intermediate_nodes.len() != 0 {
-			(intermediate_nodes[0], PublicKey::from_secret_key(&secp_ctx, &blinding_secret))
-		} else {
-			match destination {
-				Destination::Node(pk) => (pk, PublicKey::from_secret_key(&secp_ctx, &blinding_secret)),
-				Destination::BlindedPath(BlindedPath { introduction_node_id, blinding_point, .. }) =>
-					(introduction_node_id, blinding_point),
-			}
-		};
-		let (packet_payloads, packet_keys) = packet_payloads_and_keys(
-			&secp_ctx, &intermediate_nodes, destination, message, reply_path, &blinding_secret)
-			.map_err(|e| SendError::Secp256k1(e))?;
-
-		let prng_seed = entropy_source.get_secure_random_bytes();
-		let onion_routing_packet = construct_onion_message_packet(
-			packet_payloads, packet_keys, prng_seed).map_err(|()| SendError::TooBigPacket)?;
-
-		Ok((introduction_node_id, msgs::OnionMessage {
-			blinding_point,
-			onion_routing_packet
-		}))
 	}
 
 	fn respond_with_onion_message<T: CustomOnionMessageContents>(
