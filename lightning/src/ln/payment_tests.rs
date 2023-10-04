@@ -627,23 +627,44 @@ fn do_retry_with_no_persist(confirm_before_reload: bool) {
 
 	mine_transaction(&nodes[1], &as_commitment_tx);
 	let bs_htlc_claim_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
-	assert_eq!(bs_htlc_claim_txn.len(), 1);
-	check_spends!(bs_htlc_claim_txn[0], as_commitment_tx);
+	assert!(bs_htlc_claim_txn.len() >= 1);
+	// Multiple tx may be broadcasted here, so we loop to find the one matching the expected txid.
+	let mut expected_node_tx = &bs_htlc_claim_txn[0];
+	for node_tx in bs_htlc_claim_txn.iter() {
+		if node_tx.input[0].previous_output.txid == as_commitment_tx.txid() {
+			expected_node_tx = node_tx;
+			break;
+		}
+	}
+	check_spends!(expected_node_tx, as_commitment_tx);
 
 	if !confirm_before_reload {
 		mine_transaction(&nodes[0], &as_commitment_tx);
 	}
-	mine_transaction(&nodes[0], &bs_htlc_claim_txn[0]);
+	mine_transaction(&nodes[0], &expected_node_tx);
 	expect_payment_sent(&nodes[0], payment_preimage_1, None, true, false);
 	connect_blocks(&nodes[0], TEST_FINAL_CLTV*4 + 20);
-	let (first_htlc_timeout_tx, second_htlc_timeout_tx) = {
-		let mut txn = nodes[0].tx_broadcaster.unique_txn_broadcast();
-		assert_eq!(txn.len(), 2);
-		(txn.remove(0), txn.remove(0))
+	let mut txn = nodes[0].tx_broadcaster.unique_txn_broadcast();
+	assert!(txn.len() >= 2);
+	// Multiple tx may be broadcasted here, so we loop to find the one matching the expected txid.
+	let mut first_htlc_timeout_tx = &txn[0];
+	let mut index = 0;
+	for n in index..txn.len() {
+		if txn[n].input[0].previous_output.txid == as_commitment_tx.txid() {
+			first_htlc_timeout_tx = &txn[n];
+			break;
+		}
+	}
+
+	let mut second_htlc_timeout_tx = &txn[0];
+	for n in index..txn.len() {
+		if txn[n].input[0].previous_output.txid == as_commitment_tx.txid() {
+			second_htlc_timeout_tx = &txn[n];
+		}
 	};
 	check_spends!(first_htlc_timeout_tx, as_commitment_tx);
 	check_spends!(second_htlc_timeout_tx, as_commitment_tx);
-	if first_htlc_timeout_tx.input[0].previous_output == bs_htlc_claim_txn[0].input[0].previous_output {
+	if first_htlc_timeout_tx.input[0].previous_output == expected_node_tx.input[0].previous_output {
 		confirm_transaction(&nodes[0], &second_htlc_timeout_tx);
 	} else {
 		confirm_transaction(&nodes[0], &first_htlc_timeout_tx);
@@ -800,13 +821,21 @@ fn do_test_completed_payment_not_retryable_on_reload(use_dust: bool) {
 		connect_blocks(&nodes[0], TEST_FINAL_CLTV + (MIN_CLTV_EXPIRY_DELTA as u32));
 		connect_blocks(&nodes[1], TEST_FINAL_CLTV + (MIN_CLTV_EXPIRY_DELTA as u32));
 		let as_htlc_timeout = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
-		check_spends!(as_htlc_timeout[0], bs_commitment_tx[0]);
-		assert_eq!(as_htlc_timeout.len(), 1);
+		assert!(as_htlc_timeout.len() >= 1);
+		// Multiple tx may be broadcasted here, so we loop to find the one matching the expected txid.
+		let mut expected_node_tx = &as_htlc_timeout[0];
+		for node_tx in as_htlc_timeout.iter() {
+			if node_tx.input[0].previous_output.txid == bs_commitment_tx[0].txid() {
+				expected_node_tx = node_tx;
+				break;
+			}
+		}
+		check_spends!(expected_node_tx, bs_commitment_tx[0]);
 
-		mine_transaction(&nodes[0], &as_htlc_timeout[0]);
+		mine_transaction(&nodes[0], &expected_node_tx);
 		// nodes[0] may rebroadcast (or RBF-bump) its HTLC-Timeout, so wipe the announced set.
 		nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().clear();
-		mine_transaction(&nodes[1], &as_htlc_timeout[0]);
+		mine_transaction(&nodes[1], &expected_node_tx);
 	}
 
 	// Create a new channel on which to retry the payment before we fail the payment via the

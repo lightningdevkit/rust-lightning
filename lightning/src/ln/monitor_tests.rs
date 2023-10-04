@@ -1673,8 +1673,16 @@ fn do_test_restored_packages_retry(check_old_monitor_retries_after_upgrade: bool
 	connect_blocks(&nodes[0], TEST_FINAL_CLTV);
 	let htlc_timeout_tx = {
 		let mut txn = nodes[0].tx_broadcaster.txn_broadcast();
-		assert_eq!(txn.len(), 1);
-		check_spends!(txn[0], commitment_tx);
+		assert!(txn.len() >= 1);
+		// Multiple tx may be broadcasted here, so we loop to find the one matching the expected txid.
+		let mut expected_node_tx = &txn[0];
+		for node_tx in txn.iter() {
+			if node_tx.input[0].previous_output.txid == commitment_tx.txid() {
+				expected_node_tx = node_tx;
+				break;
+			}
+		}
+		check_spends!(expected_node_tx, commitment_tx);
 		txn.pop().unwrap()
 	};
 

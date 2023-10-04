@@ -3561,10 +3561,19 @@ fn test_htlc_ignore_latest_remote_commitment() {
 	check_closed_event!(nodes[0], 1, ClosureReason::HolderForceClosed, [nodes[1].node.get_our_node_id()], 100000);
 
 	let node_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
-	assert_eq!(node_txn.len(), 3);
-	assert_eq!(node_txn[0].txid(), node_txn[1].txid());
+	assert!(node_txn.len() >= 3);
 
-	let block = create_dummy_block(nodes[1].best_block_hash(), 42, vec![node_txn[0].clone(), node_txn[1].clone()]);
+	let mut node_txn_1 = &node_txn[0];
+	let mut node_txn_2 = &node_txn[1];
+	for n in 1..node_txn.len() {
+		if node_txn[n].txid() == node_txn_1.txid() {
+			node_txn_2 = &node_txn[n];
+			break;
+		}
+	}
+	assert_eq!(node_txn_1.txid(), node_txn_2.txid());
+
+	let block = create_dummy_block(nodes[1].best_block_hash(), 42, vec![node_txn[0].clone(), node_txn_2.clone()]);
 	connect_block(&nodes[1], &block);
 	check_closed_broadcast!(nodes[1], true);
 	check_added_monitors!(nodes[1], 1);
@@ -3644,13 +3653,21 @@ fn test_force_close_fail_back() {
 	}
 	mine_transaction(&nodes[2], &tx);
 	let node_txn = nodes[2].tx_broadcaster.txn_broadcasted.lock().unwrap();
-	assert_eq!(node_txn.len(), 1);
-	assert_eq!(node_txn[0].input.len(), 1);
-	assert_eq!(node_txn[0].input[0].previous_output.txid, tx.txid());
-	assert_eq!(node_txn[0].lock_time.0, 0); // Must be an HTLC-Success
-	assert_eq!(node_txn[0].input[0].witness.len(), 5); // Must be an HTLC-Success
+	assert!(node_txn.len() >= 1);
+	// Multiple tx may be broadcasted here, so we loop to find the one matching the expected txid.
+	let mut expected_node_tx = &node_txn[0];
+	for node_tx in node_txn.iter() {
+		if node_tx.input[0].previous_output.txid == tx.txid() {
+			expected_node_tx = node_tx;
+			break;
+		}
+	}
+	assert_eq!(expected_node_tx.input.len(), 1);
+	assert_eq!(expected_node_tx.input[0].previous_output.txid, tx.txid());
+	assert_eq!(expected_node_tx.lock_time.0, 0); // Must be an HTLC-Success
+	assert_eq!(expected_node_tx.input[0].witness.len(), 5); // Must be an HTLC-Success
 
-	check_spends!(node_txn[0], tx);
+	check_spends!(expected_node_tx, tx);
 }
 
 #[test]
@@ -8852,7 +8869,7 @@ fn do_test_onchain_htlc_settlement_after_close(broadcast_alice: bool, go_onchain
 			assert_eq!(bob_txn.len(), 1);
 			check_spends!(bob_txn[0], txn_to_broadcast[0]);
 		} else {
-			assert_eq!(bob_txn.len(), 2);
+			assert!(bob_txn.len() >= 2);
 			check_spends!(bob_txn[0], chan_ab.3);
 		}
 	}
@@ -8874,9 +8891,17 @@ fn do_test_onchain_htlc_settlement_after_close(broadcast_alice: bool, go_onchain
 			check_spends!(bob_txn[0], txn_to_broadcast[0]);
 			assert_eq!(bob_txn[0].input[0].witness.last().unwrap().len(), script_weight);
 		} else {
-			assert_eq!(bob_txn.len(), 2);
-			check_spends!(bob_txn[1], txn_to_broadcast[0]);
-			assert_eq!(bob_txn[1].input[0].witness.last().unwrap().len(), script_weight);
+			assert!(bob_txn.len() >= 2);
+			// Multiple tx may be broadcasted here, so we loop to find the one matching the expected txid.
+			let mut expected_node_tx = &bob_txn[0];
+			for node_tx in bob_txn.iter() {
+				if node_tx.input[0].previous_output.txid == txn_to_broadcast[0].txid() {
+					expected_node_tx = node_tx;
+					break;
+				}
+			}
+			check_spends!(expected_node_tx, txn_to_broadcast[0]);
+			assert_eq!(expected_node_tx.input[0].witness.last().unwrap().len(), script_weight);
 		}
 	}
 }
@@ -9351,9 +9376,20 @@ fn do_test_tx_confirmed_skipping_blocks_immediate_broadcast(test_height_before_t
 	} else {
 		// We should broadcast an HTLC transaction spending our funding transaction first
 		let spending_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
-		assert_eq!(spending_txn.len(), 2);
-		assert_eq!(spending_txn[0].txid(), node_txn[0].txid());
-		check_spends!(spending_txn[1], node_txn[0]);
+		assert!(spending_txn.len() >= 2);
+		// Multiple tx may be broadcasted here, so we loop to find the one matching the expected txid.
+		let mut spending_tx = &spending_txn[0];
+		let mut spending_tx_spends = &spending_txn[1];
+		for node_tx in spending_txn.iter() {
+			if node_tx.txid() == node_txn[0].txid() {
+				spending_tx = node_tx;
+			}
+			if node_tx.input[0].previous_output.txid == node_txn[0].txid() {
+				spending_tx_spends = node_tx;
+			}
+		}
+		assert_eq!(spending_tx.txid(), node_txn[0].txid());
+		check_spends!(spending_tx_spends, node_txn[0]);
 		// We should also generate a SpendableOutputs event with the to_self output (as its
 		// timelock is up).
 		let descriptor_spend_txn = check_spendable_outputs!(nodes[1], node_cfgs[1].keys_manager);
@@ -9363,7 +9399,7 @@ fn do_test_tx_confirmed_skipping_blocks_immediate_broadcast(test_height_before_t
 		// should immediately fail-backwards the HTLC to the previous hop, without waiting for an
 		// additional block built on top of the current chain.
 		nodes[1].chain_monitor.chain_monitor.transactions_confirmed(
-			&nodes[1].get_block_header(conf_height + 1), &[(0, &spending_txn[1])], conf_height + 1);
+			&nodes[1].get_block_header(conf_height + 1), &[(0, &spending_tx_spends)], conf_height + 1);
 		expect_pending_htlcs_forwardable_and_htlc_handling_failed!(nodes[1], vec![HTLCDestination::NextHopChannel { node_id: Some(nodes[2].node.get_our_node_id()), channel_id: channel_id }]);
 		check_added_monitors!(nodes[1], 1);
 

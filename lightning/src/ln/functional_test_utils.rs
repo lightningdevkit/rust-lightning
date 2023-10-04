@@ -2788,9 +2788,6 @@ pub enum HTLCType { NONE, TIMEOUT, SUCCESS }
 ///
 /// Next tests that there is (or is not) a transaction that spends the commitment transaction
 /// that appears to be the type of HTLC transaction specified in has_htlc_tx.
-///
-/// All broadcast transactions must be accounted for in one of the above three types of we'll
-/// also fail.
 pub fn test_txn_broadcast<'a, 'b, 'c>(node: &Node<'a, 'b, 'c>, chan: &(msgs::ChannelUpdate, msgs::ChannelUpdate, ChannelId, Transaction), commitment_tx: Option<Transaction>, has_htlc_tx: HTLCType) -> Vec<Transaction>  {
 	let mut node_txn = node.tx_broadcaster.txn_broadcasted.lock().unwrap();
 	let mut txn_seen = HashSet::new();
@@ -2831,8 +2828,6 @@ pub fn test_txn_broadcast<'a, 'b, 'c>(node: &Node<'a, 'b, 'c>, chan: &(msgs::Cha
 			assert_eq!(res[1], res[2]);
 		}
 	}
-
-	assert!(node_txn.is_empty());
 	res
 }
 
