@@ -3493,29 +3493,10 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 
 		let should_broadcast = self.should_broadcast_holder_commitment_txn(logger);
 		if should_broadcast {
-			let funding_outp = HolderFundingOutput::build(self.funding_redeemscript.clone(), self.channel_value_satoshis, self.onchain_tx_handler.channel_type_features().clone());
-			let commitment_package = PackageTemplate::build_package(self.funding_info.0.txid.clone(), self.funding_info.0.index as u32, PackageSolvingData::HolderFundingOutput(funding_outp), self.best_block.height(), self.best_block.height());
-			claimable_outpoints.push(commitment_package);
-			self.pending_monitor_events.push(MonitorEvent::HolderForceClosed(self.funding_info.0));
-			// Although we aren't signing the transaction directly here, the transaction will be signed
-			// in the claim that is queued to OnchainTxHandler. We set holder_tx_signed here to reject
-			// new channel updates.
-			self.holder_tx_signed = true;
-			// We can't broadcast our HTLC transactions while the commitment transaction is
-			// unconfirmed. We'll delay doing so until we detect the confirmed commitment in
-			// `transactions_confirmed`.
-			if !self.onchain_tx_handler.channel_type_features().supports_anchors_zero_fee_htlc_tx() {
-				// Because we're broadcasting a commitment transaction, we should construct the package
-				// assuming it gets confirmed in the next block. Sadly, we have code which considers
-				// "not yet confirmed" things as discardable, so we cannot do that here.
-				let (mut new_outpoints, _) = self.get_broadcasted_holder_claims(&self.current_holder_commitment_tx, self.best_block.height());
-				let unsigned_commitment_tx = self.onchain_tx_handler.get_unsigned_holder_commitment_tx();
-				let new_outputs = self.get_broadcasted_holder_watch_outputs(&self.current_holder_commitment_tx, &unsigned_commitment_tx);
-				if !new_outputs.is_empty() {
-					watch_outputs.push((self.current_holder_commitment_tx.txid.clone(), new_outputs));
-				}
-				claimable_outpoints.append(&mut new_outpoints);
-			}
+			let (mut new_claimable_outpoints, mut new_watch_outputs) = self.generate_claimable_outpoints_and_watch_outputs();
+			claimable_outpoints.append(&mut new_claimable_outpoints);
+			watch_outputs.append(&mut new_watch_outputs);
+
 		}
 
 		// Find which on-chain events have reached their confirmation threshold.
