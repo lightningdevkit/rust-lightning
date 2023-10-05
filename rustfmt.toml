@@ -1,1 +1,11 @@
-disable_all_formatting = true
+hard_tabs = true # use tab characters for indentation, spaces for alignment
+use_field_init_shorthand = true
+chain_width = 100
+max_width = 100
+use_small_heuristics = "Max"
+fn_params_layout = "Compressed"
+fn_single_line = true
+match_arm_blocks = false
+match_block_trailing_comma = true
+overflow_delimited_expr = true
+format_strings = true
