@@ -267,11 +267,15 @@ pub enum PeeledOnion<CM: CustomOnionMessageContents> {
 	Receive(OnionMessageContents<CM>, Option<[u8; 32]>, Option<BlindedPath>)
 }
 
-/// Create an onion message with contents `message` to the destination of `path`.
-/// Returns (first_node_id, onion_msg)
+/// Creates an [`OnionMessage`] with the given `contents` for sending to the destination of
+/// `path`.
+///
+/// Returns both the node id of the peer to send the message to and the message itself.
+///
+/// [`OnionMessage`]: msgs::OnionMessage
 pub fn create_onion_message<ES: Deref, NS: Deref, T: CustomOnionMessageContents>(
 	entropy_source: &ES, node_signer: &NS, secp_ctx: &Secp256k1<secp256k1::All>,
-	path: OnionMessagePath, message: OnionMessageContents<T>, reply_path: Option<BlindedPath>,
+	path: OnionMessagePath, contents: OnionMessageContents<T>, reply_path: Option<BlindedPath>,
 ) -> Result<(PublicKey, msgs::OnionMessage), SendError>
 where
 	ES::Target: EntropySource,
@@ -284,7 +288,7 @@ where
 		}
 	}
 
-	if message.tlv_type() < 64 { return Err(SendError::InvalidMessage) }
+	if contents.tlv_type() < 64 { return Err(SendError::InvalidMessage) }
 
 	// If we are sending straight to a blinded path and we are the introduction node, we need to
 	// advance the blinded path by 1 hop so the second hop is the new introduction node.
@@ -311,7 +315,7 @@ where
 		}
 	};
 	let (packet_payloads, packet_keys) = packet_payloads_and_keys(
-		&secp_ctx, &intermediate_nodes, destination, message, reply_path, &blinding_secret)
+		&secp_ctx, &intermediate_nodes, destination, contents, reply_path, &blinding_secret)
 		.map_err(|e| SendError::Secp256k1(e))?;
 
 	let prng_seed = entropy_source.get_secure_random_bytes();
@@ -449,16 +453,16 @@ where
 		}
 	}
 
-	/// Send an onion message with contents `message` to the destination of `path`.
+	/// Sends an [`msgs::OnionMessage`] with the given `contents` for sending to the destination of
+	/// `path`.
 	///
 	/// See [`OnionMessenger`] for example usage.
 	pub fn send_onion_message<T: CustomOnionMessageContents>(
-		&self, path: OnionMessagePath, message: OnionMessageContents<T>,
+		&self, path: OnionMessagePath, contents: OnionMessageContents<T>,
 		reply_path: Option<BlindedPath>
 	) -> Result<(), SendError> {
 		let (first_node_id, onion_msg) = create_onion_message(
-			&self.entropy_source, &self.node_signer, &self.secp_ctx,
-			path, message, reply_path
+			&self.entropy_source, &self.node_signer, &self.secp_ctx, path, contents, reply_path
 		)?;
 
 		let mut pending_per_peer_msgs = self.pending_messages.lock().unwrap();
