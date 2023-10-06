@@ -4725,8 +4725,10 @@ where
 		if !chan.context.is_outbound() { return NotifyOption::SkipPersistNoEvents; }
 		// If the feerate has decreased by less than half, don't bother
 		if new_feerate <= chan.context.get_feerate_sat_per_1000_weight() && new_feerate * 2 > chan.context.get_feerate_sat_per_1000_weight() {
-			log_trace!(self.logger, "Channel {} does not qualify for a feerate change from {} to {}.",
+			if new_feerate != chan.context.get_feerate_sat_per_1000_weight() {
+				log_trace!(self.logger, "Channel {} does not qualify for a feerate change from {} to {}.",
 				chan_id, chan.context.get_feerate_sat_per_1000_weight(), new_feerate);
+			}
 			return NotifyOption::SkipPersistNoEvents;
 		}
 		if !chan.context.is_live() {
