@@ -26,6 +26,7 @@ use bitcoin::secp256k1;
 
 use crate::ln::{ChannelId, PaymentPreimage, PaymentHash};
 use crate::ln::features::{ChannelTypeFeatures, InitFeatures};
+use crate::ln::interactivetxs::InteractiveTxConstructor;
 use crate::ln::msgs;
 use crate::ln::msgs::DecodeError;
 use crate::ln::script::{self, ShutdownScript};
@@ -1240,6 +1241,9 @@ pub(super) struct ChannelContext<SP: Deref> where SP::Target: SignerProvider {
 	/// If we can't release a [`ChannelMonitorUpdate`] until some external action completes, we
 	/// store it here and only release it to the `ChannelManager` once it asks for it.
 	blocked_monitor_updates: Vec<PendingChannelMonitorUpdate>,
+
+	/// The current interactive transaction construction session under negotiation.
+	interactive_tx_constructor: Option<InteractiveTxConstructor>,
 }
 
 impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
@@ -1610,6 +1614,8 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 			channel_keys_id,
 
 			blocked_monitor_updates: Vec::new(),
+
+			interactive_tx_constructor: None,
 		};
 
 		Ok(channel_context)
@@ -1827,6 +1833,8 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 			channel_keys_id,
 
 			blocked_monitor_updates: Vec::new(),
+
+			interactive_tx_constructor: None,
 		})
 	}
 
@@ -8603,6 +8611,8 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 				channel_keys_id,
 
 				blocked_monitor_updates: blocked_monitor_updates.unwrap(),
+
+				interactive_tx_constructor: None,
 			},
 			#[cfg(dual_funding)]
 			dual_funding_channel_context: None,
