@@ -7287,7 +7287,6 @@ where
 					// TODO(dual_funding): Combine this match arm with above.
 					#[cfg(any(dual_funding, splicing))]
 					ChannelPhase::UnfundedInboundV2(_) | ChannelPhase::UnfundedOutboundV2(_) => {
-						let context = phase.context_mut();
 						log_error!(self.logger, "Immediately closing unfunded channel {} as peer asked to cooperatively shut it down (which is unnecessary)", &msg.channel_id);
 						let mut chan = remove_channel_phase!(self, chan_phase_entry);
 						finish_shutdown = Some(chan.context_mut().force_shutdown(false, ClosureReason::CounterpartyCoopClosedUnfundedChannel));
@@ -9997,7 +9996,7 @@ where
 
 						// TODO(dual_funding): Combine this match arm with above once #[cfg(any(dual_funding, splicing))] is removed.
 						#[cfg(any(dual_funding, splicing))]
-						ChannelPhase::UnfundedInboundV2(channel) => {
+						ChannelPhase::UnfundedInboundV2(_) => {
 							// Since unfunded inbound channel maps are cleared upon disconnecting a peer,
 							// they are not persisted and won't be recovered after a crash.
 							// Therefore, they shouldn't exist at this point.
