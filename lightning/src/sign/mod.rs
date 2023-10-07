@@ -574,7 +574,10 @@ pub trait ChannelSigner {
 	/// Gets the per-commitment point for a specific commitment number
 	///
 	/// Note that the commitment number starts at `(1 << 48) - 1` and counts backwards.
-	fn get_per_commitment_point(&self, idx: u64, secp_ctx: &Secp256k1<secp256k1::All>) -> PublicKey;
+	///
+	/// If the signer returns `Err`, then the user is responsible for either force-closing the channel
+	/// or retrying once the signature is ready.
+	fn get_per_commitment_point(&self, idx: u64, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<PublicKey, ()>;
 
 	/// Gets the commitment secret for a specific commitment number as part of the revocation process
 	///
@@ -585,7 +588,7 @@ pub trait ChannelSigner {
 	///
 	/// Note that the commitment number starts at `(1 << 48) - 1` and counts backwards.
 	// TODO: return a Result so we can signal a validation error
-	fn release_commitment_secret(&self, idx: u64) -> [u8; 32];
+	fn release_commitment_secret(&self, idx: u64) -> Result<[u8; 32], ()>;
 
 	/// Validate the counterparty's signatures on the holder commitment transaction and HTLCs.
 	///
@@ -1077,13 +1080,13 @@ impl EntropySource for InMemorySigner {
 }
 
 impl ChannelSigner for InMemorySigner {
-	fn get_per_commitment_point(&self, idx: u64, secp_ctx: &Secp256k1<secp256k1::All>) -> PublicKey {
+	fn get_per_commitment_point(&self, idx: u64, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<PublicKey, ()> {
 		let commitment_secret = SecretKey::from_slice(&chan_utils::build_commitment_secret(&self.commitment_seed, idx)).unwrap();
-		PublicKey::from_secret_key(secp_ctx, &commitment_secret)
+		Ok(PublicKey::from_secret_key(secp_ctx, &commitment_secret))
 	}
 
-	fn release_commitment_secret(&self, idx: u64) -> [u8; 32] {
-		chan_utils::build_commitment_secret(&self.commitment_seed, idx)
+	fn release_commitment_secret(&self, idx: u64) -> Result<[u8; 32], ()> {
+		Ok(chan_utils::build_commitment_secret(&self.commitment_seed, idx))
 	}
 
 	fn validate_holder_commitment(&self, _holder_tx: &HolderCommitmentTransaction, _outbound_htlc_preimages: Vec<PaymentPreimage>) -> Result<(), ()> {

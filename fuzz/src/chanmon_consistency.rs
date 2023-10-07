@@ -49,7 +49,7 @@ use lightning::ln::functional_test_utils::*;
 use lightning::offers::invoice::{BlindedPayInfo, UnsignedBolt12Invoice};
 use lightning::offers::invoice_request::UnsignedInvoiceRequest;
 use lightning::onion_message::{Destination, MessageRouter, OnionMessagePath};
-use lightning::util::test_channel_signer::{TestChannelSigner, EnforcementState};
+use lightning::util::test_channel_signer::{TestChannelSigner, EnforcementState, ops};
 use lightning::util::errors::APIError;
 use lightning::util::logger::Logger;
 use lightning::util::config::UserConfig;
@@ -72,6 +72,8 @@ use std::sync::atomic;
 use std::io::Cursor;
 use bitcoin::bech32::u5;
 
+#[allow(unused)]
+const ASYNC_OPS: u32 = ops::GET_PER_COMMITMENT_POINT | ops::RELEASE_COMMITMENT_SECRET | ops::SIGN_COUNTERPARTY_COMMITMENT;
 const MAX_FEE: u32 = 10_000;
 struct FuzzEstimator {
 	ret_val: atomic::AtomicU32,
@@ -297,7 +299,6 @@ impl SignerProvider for KeyProvider {
 			inner,
 			state,
 			disable_revocation_policy_check: false,
-			available: Arc::new(Mutex::new(true)),
 		})
 	}
 
@@ -829,7 +830,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 							for (idx, dest) in nodes.iter().enumerate() {
 								if dest.get_our_node_id() == node_id {
 									for update_add in update_add_htlcs.iter() {
-										out.locked_write(format!("Delivering update_add_htlc to node {}.\n", idx).as_bytes());
+										out.locked_write(format!("Delivering update_add_htlc to node {} from node {}.\n", idx, $node).as_bytes());
 										if !$corrupt_forward {
 											dest.handle_update_add_htlc(&nodes[$node].get_our_node_id(), update_add);
 										} else {
@@ -844,19 +845,19 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 										}
 									}
 									for update_fulfill in update_fulfill_htlcs.iter() {
-										out.locked_write(format!("Delivering update_fulfill_htlc to node {}.\n", idx).as_bytes());
+										out.locked_write(format!("Delivering update_fulfill_htlc to node {} from node {}.\n", idx, $node).as_bytes());
 										dest.handle_update_fulfill_htlc(&nodes[$node].get_our_node_id(), update_fulfill);
 									}
 									for update_fail in update_fail_htlcs.iter() {
-										out.locked_write(format!("Delivering update_fail_htlc to node {}.\n", idx).as_bytes());
+										out.locked_write(format!("Delivering update_fail_htlc to node {} from node {}.\n", idx, $node).as_bytes());
 										dest.handle_update_fail_htlc(&nodes[$node].get_our_node_id(), update_fail);
 									}
 									for update_fail_malformed in update_fail_malformed_htlcs.iter() {
-										out.locked_write(format!("Delivering update_fail_malformed_htlc to node {}.\n", idx).as_bytes());
+										out.locked_write(format!("Delivering update_fail_malformed_htlc to node {} from node {}.\n", idx, $node).as_bytes());
 										dest.handle_update_fail_malformed_htlc(&nodes[$node].get_our_node_id(), update_fail_malformed);
 									}
 									if let Some(msg) = update_fee {
-										out.locked_write(format!("Delivering update_fee to node {}.\n", idx).as_bytes());
+										out.locked_write(format!("Delivering update_fee to node {} from node {}.\n", idx, $node).as_bytes());
 										dest.handle_update_fee(&nodes[$node].get_our_node_id(), &msg);
 									}
 									let processed_change = !update_add_htlcs.is_empty() || !update_fulfill_htlcs.is_empty() ||
@@ -873,7 +874,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 										} });
 										break;
 									}
-									out.locked_write(format!("Delivering commitment_signed to node {}.\n", idx).as_bytes());
+									out.locked_write(format!("Delivering commitment_signed to node {} from node {}.\n", idx, $node).as_bytes());
 									dest.handle_commitment_signed(&nodes[$node].get_our_node_id(), &commitment_signed);
 									break;
 								}
@@ -882,7 +883,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 						events::MessageSendEvent::SendRevokeAndACK { ref node_id, ref msg } => {
 							for (idx, dest) in nodes.iter().enumerate() {
 								if dest.get_our_node_id() == *node_id {
-									out.locked_write(format!("Delivering revoke_and_ack to node {}.\n", idx).as_bytes());
+									out.locked_write(format!("Delivering revoke_and_ack to node {} from node {}.\n", idx, $node).as_bytes());
 									dest.handle_revoke_and_ack(&nodes[$node].get_our_node_id(), msg);
 								}
 							}
@@ -890,7 +891,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 						events::MessageSendEvent::SendChannelReestablish { ref node_id, ref msg } => {
 							for (idx, dest) in nodes.iter().enumerate() {
 								if dest.get_our_node_id() == *node_id {
-									out.locked_write(format!("Delivering channel_reestablish to node {}.\n", idx).as_bytes());
+									out.locked_write(format!("Delivering channel_reestablish to node {} from node {}.\n", idx, $node).as_bytes());
 									dest.handle_channel_reestablish(&nodes[$node].get_our_node_id(), msg);
 								}
 							}
@@ -1289,15 +1290,124 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 			},
 			0x89 => { fee_est_c.ret_val.store(253, atomic::Ordering::Release); nodes[2].maybe_update_chan_fees(); },
 
+			#[cfg(async_signing)]
+			0xa0 => {
+				let states = keys_manager_a.enforcement_states.lock().unwrap();
+				assert_eq!(states.len(), 1);
+				states.values().next().unwrap().lock().unwrap().set_signer_unavailable(ASYNC_OPS);
+			}
+			#[cfg(async_signing)]
+			0xa1 => {
+				let states = keys_manager_a.enforcement_states.lock().unwrap();
+				assert_eq!(states.len(), 1);
+				states.values().next().unwrap().lock().unwrap().set_signer_available(ops::GET_PER_COMMITMENT_POINT);
+				nodes[0].signer_unblocked(None);
+			}
+			#[cfg(async_signing)]
+			0xa2 => {
+				let states = keys_manager_a.enforcement_states.lock().unwrap();
+				assert_eq!(states.len(), 1);
+				states.values().next().unwrap().lock().unwrap().set_signer_available(ops::RELEASE_COMMITMENT_SECRET);
+				nodes[0].signer_unblocked(None);
+			}
+			#[cfg(async_signing)]
+			0xa3 => {
+				let states = keys_manager_a.enforcement_states.lock().unwrap();
+				assert_eq!(states.len(), 1);
+				states.values().next().unwrap().lock().unwrap().set_signer_available(ops::SIGN_COUNTERPARTY_COMMITMENT);
+				nodes[0].signer_unblocked(None);
+			}
+
+			#[cfg(async_signing)]
+			0xa4 => {
+				let states = keys_manager_b.enforcement_states.lock().unwrap();
+				assert_eq!(states.len(), 2);
+				states.values().next().unwrap().lock().unwrap().set_signer_unavailable(ASYNC_OPS);
+			}
+			#[cfg(async_signing)]
+			0xa5 => {
+				let states = keys_manager_b.enforcement_states.lock().unwrap();
+				assert_eq!(states.len(), 2);
+				states.values().next().unwrap().lock().unwrap().set_signer_available(ops::GET_PER_COMMITMENT_POINT);
+				nodes[1].signer_unblocked(None);
+			}
+			#[cfg(async_signing)]
+			0xa6 => {
+				let states = keys_manager_b.enforcement_states.lock().unwrap();
+				assert_eq!(states.len(), 2);
+				states.values().next().unwrap().lock().unwrap().set_signer_available(ops::RELEASE_COMMITMENT_SECRET);
+				nodes[1].signer_unblocked(None);
+			}
+			#[cfg(async_signing)]
+			0xa7 => {
+				let states = keys_manager_b.enforcement_states.lock().unwrap();
+				assert_eq!(states.len(), 2);
+				states.values().next().unwrap().lock().unwrap().set_signer_available(ops::SIGN_COUNTERPARTY_COMMITMENT);
+				nodes[1].signer_unblocked(None);
+			}
+
+			#[cfg(async_signing)]
+			0xa8 => {
+				let states = keys_manager_b.enforcement_states.lock().unwrap();
+				assert_eq!(states.len(), 2);
+				states.values().last().unwrap().lock().unwrap().set_signer_unavailable(ASYNC_OPS);
+			}
+			#[cfg(async_signing)]
+			0xa9 => {
+				let states = keys_manager_b.enforcement_states.lock().unwrap();
+				assert_eq!(states.len(), 2);
+				states.values().last().unwrap().lock().unwrap().set_signer_available(ops::GET_PER_COMMITMENT_POINT);
+				nodes[1].signer_unblocked(None);
+			}
+			#[cfg(async_signing)]
+			0xaa => {
+				let states = keys_manager_b.enforcement_states.lock().unwrap();
+				assert_eq!(states.len(), 2);
+				states.values().last().unwrap().lock().unwrap().set_signer_available(ops::RELEASE_COMMITMENT_SECRET);
+				nodes[1].signer_unblocked(None);
+			}
+			#[cfg(async_signing)]
+			0xab => {
+				let states = keys_manager_b.enforcement_states.lock().unwrap();
+				assert_eq!(states.len(), 2);
+				states.values().last().unwrap().lock().unwrap().set_signer_available(ops::SIGN_COUNTERPARTY_COMMITMENT);
+				nodes[1].signer_unblocked(None);
+			}
+
+			#[cfg(async_signing)]
+			0xac => {
+				let states = keys_manager_c.enforcement_states.lock().unwrap();
+				assert_eq!(states.len(), 1);
+				states.values().next().unwrap().lock().unwrap().set_signer_unavailable(ASYNC_OPS);
+			}
+			#[cfg(async_signing)]
+			0xad => {
+				let states = keys_manager_c.enforcement_states.lock().unwrap();
+				assert_eq!(states.len(), 1);
+				states.values().next().unwrap().lock().unwrap().set_signer_available(ops::GET_PER_COMMITMENT_POINT);
+				nodes[2].signer_unblocked(None);
+			}
+			#[cfg(async_signing)]
+			0xae => {
+				let states = keys_manager_c.enforcement_states.lock().unwrap();
+				assert_eq!(states.len(), 1);
+				states.values().next().unwrap().lock().unwrap().set_signer_available(ops::RELEASE_COMMITMENT_SECRET);
+				nodes[2].signer_unblocked(None);
+			}
+			#[cfg(async_signing)]
+			0xaf => {
+				let states = keys_manager_c.enforcement_states.lock().unwrap();
+				assert_eq!(states.len(), 1);
+				states.values().next().unwrap().lock().unwrap().set_signer_available(ops::SIGN_COUNTERPARTY_COMMITMENT);
+				nodes[2].signer_unblocked(None);
+			}
+
 			0xff => {
 				// Test that no channel is in a stuck state where neither party can send funds even
 				// after we resolve all pending events.
 				// First make sure there are no pending monitor updates, resetting the error state
 				// and calling force_channel_monitor_updated for each monitor.
-				*monitor_a.persister.update_ret.lock().unwrap() = ChannelMonitorUpdateStatus::Completed;
-				*monitor_b.persister.update_ret.lock().unwrap() = ChannelMonitorUpdateStatus::Completed;
-				*monitor_c.persister.update_ret.lock().unwrap() = ChannelMonitorUpdateStatus::Completed;
-
+				out.locked_write(format!("Restoring monitors...\n").as_bytes());
 				if let Some((id, _)) = monitor_a.latest_monitors.lock().unwrap().get(&chan_1_funding) {
 					monitor_a.chain_monitor.force_channel_monitor_updated(chan_1_funding, *id);
 					nodes[0].process_monitor_events();
@@ -1316,7 +1426,10 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 				}
 
 				// Next, make sure peers are all connected to each other
+				out.locked_write(format!("Reconnecting peers...\n").as_bytes());
+
 				if chan_a_disconnected {
+					out.locked_write(format!("Reconnecting node 0 and node 1...\n").as_bytes());
 					nodes[0].peer_connected(&nodes[1].get_our_node_id(), &Init {
 						features: nodes[1].init_features(), networks: None, remote_network_address: None
 					}, true).unwrap();
@@ -1326,6 +1439,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 					chan_a_disconnected = false;
 				}
 				if chan_b_disconnected {
+					out.locked_write(format!("Reconnecting node 1 and node 2...\n").as_bytes());
 					nodes[1].peer_connected(&nodes[2].get_our_node_id(), &Init {
 						features: nodes[2].init_features(), networks: None, remote_network_address: None
 					}, true).unwrap();
@@ -1335,8 +1449,33 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 					chan_b_disconnected = false;
 				}
 
+				out.locked_write(format!("Restoring signers...\n").as_bytes());
+
+				*monitor_a.persister.update_ret.lock().unwrap() = ChannelMonitorUpdateStatus::Completed;
+				*monitor_b.persister.update_ret.lock().unwrap() = ChannelMonitorUpdateStatus::Completed;
+				*monitor_c.persister.update_ret.lock().unwrap() = ChannelMonitorUpdateStatus::Completed;
+
+				#[cfg(async_signing)]
+				{
+					for state in keys_manager_a.enforcement_states.lock().unwrap().values() {
+						state.lock().unwrap().set_signer_available(!0);
+					}
+					for state in keys_manager_b.enforcement_states.lock().unwrap().values() {
+						state.lock().unwrap().set_signer_available(!0);
+					}
+					for state in keys_manager_c.enforcement_states.lock().unwrap().values() {
+						state.lock().unwrap().set_signer_available(!0);
+					}
+					nodes[0].signer_unblocked(None);
+					nodes[1].signer_unblocked(None);
+					nodes[2].signer_unblocked(None);
+				}
+
+				out.locked_write(format!("Running event queues to quiescence...\n").as_bytes());
+
 				for i in 0..std::usize::MAX {
 					if i == 100 { panic!("It may take may iterations to settle the state, but it should not take forever"); }
+
 					// Then, make sure any current forwards make their way to their destination
 					if process_msg_events!(0, false, ProcessMessages::AllMessages) { continue; }
 					if process_msg_events!(1, false, ProcessMessages::AllMessages) { continue; }
@@ -1348,6 +1487,8 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 					if process_events!(2, false) { continue; }
 					break;
 				}
+
+				out.locked_write(format!("All channels restored to normal operation.\n").as_bytes());
 
 				// Finally, make sure that at least one end of each channel can make a substantial payment
 				assert!(

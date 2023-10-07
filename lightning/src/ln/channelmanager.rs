@@ -638,7 +638,7 @@ pub(super) const MIN_HTLC_RELAY_HOLDING_CELL_MILLIS: u64 = 100;
 /// be sent in the order they appear in the return value, however sometimes the order needs to be
 /// variable at runtime (eg Channel::channel_reestablish needs to re-send messages in the order
 /// they were originally sent). In those cases, this enum is also returned.
-#[derive(Clone, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub(super) enum RAACommitmentOrder {
 	/// Send the CommitmentUpdate messages first
 	CommitmentFirst,
@@ -2538,7 +2538,7 @@ where
 			}
 		}
 
-		let channel = {
+		let mut channel = {
 			let outbound_scid_alias = self.create_and_insert_outbound_scid_alias();
 			let their_features = &peer_state.latest_features;
 			let config = if override_config.is_some() { override_config.as_ref().unwrap() } else { &self.default_configuration };
@@ -2553,7 +2553,11 @@ where
 				},
 			}
 		};
-		let res = channel.get_open_channel(self.chain_hash);
+		let opt_msg = channel.get_open_channel(self.chain_hash);
+		if opt_msg.is_none() {
+			log_trace!(self.logger, "Awaiting signer for open_channel, setting signer_pending_open_channel");
+			channel.signer_pending_open_channel = true;
+		}
 
 		let temporary_channel_id = channel.context.channel_id();
 		match peer_state.channel_by_id.entry(temporary_channel_id) {
@@ -2567,10 +2571,13 @@ where
 			hash_map::Entry::Vacant(entry) => { entry.insert(ChannelPhase::UnfundedOutboundV1(channel)); }
 		}
 
-		peer_state.pending_msg_events.push(events::MessageSendEvent::SendOpenChannel {
-			node_id: their_network_key,
-			msg: res,
-		});
+		if let Some(msg) = opt_msg {
+			peer_state.pending_msg_events.push(events::MessageSendEvent::SendOpenChannel {
+				node_id: their_network_key,
+				msg,
+			});
+		};
+
 		Ok(temporary_channel_id)
 	}
 
@@ -5904,6 +5911,12 @@ where
 			emit_channel_ready_event!(pending_events, channel);
 		}
 
+
+		log_debug!(self.logger, "Outgoing message queue is{}", if pending_msg_events.is_empty() { " empty" } else { "..." });
+		for msg in pending_msg_events.iter() {
+			log_debug!(self.logger, "  {:?}", msg);
+		}
+
 		htlc_forwards
 	}
 
@@ -6055,10 +6068,17 @@ where
 		let outbound_scid_alias = self.create_and_insert_outbound_scid_alias();
 		channel.context.set_outbound_scid_alias(outbound_scid_alias);
 
-		peer_state.pending_msg_events.push(events::MessageSendEvent::SendAcceptChannel {
-			node_id: channel.context.get_counterparty_node_id(),
-			msg: channel.accept_inbound_channel(),
-		});
+		match channel.accept_inbound_channel() {
+			Some(msg) =>
+				peer_state.pending_msg_events.push(events::MessageSendEvent::SendAcceptChannel {
+					node_id: channel.context.get_counterparty_node_id(),
+					msg
+				}),
+			None => {
+				log_trace!(self.logger, "Awaiting signer for accept_channel; setting signing_pending_accept_channel");
+				channel.signer_pending_accept_channel = true;
+			},
+		};
 
 		peer_state.channel_by_id.insert(temporary_channel_id.clone(), ChannelPhase::UnfundedInboundV1(channel));
 
@@ -6210,10 +6230,18 @@ where
 		let outbound_scid_alias = self.create_and_insert_outbound_scid_alias();
 		channel.context.set_outbound_scid_alias(outbound_scid_alias);
 
-		peer_state.pending_msg_events.push(events::MessageSendEvent::SendAcceptChannel {
-			node_id: counterparty_node_id.clone(),
-			msg: channel.accept_inbound_channel(),
-		});
+		match channel.accept_inbound_channel() {
+			Some(msg) =>
+				peer_state.pending_msg_events.push(events::MessageSendEvent::SendAcceptChannel {
+					node_id: channel.context.get_counterparty_node_id(),
+					msg
+				}),
+			None => {
+				log_trace!(self.logger, "Awaiting signer for accept_channel; setting signer_pending_accept_channel");
+				channel.signer_pending_accept_channel = true;
+			},
+		};
+
 		peer_state.channel_by_id.insert(channel_id, ChannelPhase::UnfundedInboundV1(channel));
 		Ok(())
 	}
@@ -6274,6 +6302,12 @@ where
 					let logger = WithChannelContext::from(&self.logger, &inbound_chan.context);
 					match inbound_chan.funding_created(msg, best_block, &self.signer_provider, &&logger) {
 						Ok(res) => res,
+						Err((inbound_chan, ChannelError::Ignore(_))) => {
+							// If we get an `Ignore` error then something transient went wrong. Put the channel
+							// back into the table and bail.
+							peer_state.channel_by_id.insert(msg.temporary_channel_id, ChannelPhase::UnfundedInboundV1(inbound_chan));
+							return Ok(());
+						},
 						Err((inbound_chan, err)) => {
 							// We've already removed this inbound channel from the map in `PeerState`
 							// above so at this point we just need to clean up any lingering entries
@@ -6423,6 +6457,7 @@ where
 			hash_map::Entry::Occupied(mut chan_phase_entry) => {
 				if let ChannelPhase::Funded(chan) = chan_phase_entry.get_mut() {
 					let logger = WithChannelContext::from(&self.logger, &chan.context);
+					log_debug!(logger, "<== channel_ready");
 					let announcement_sigs_opt = try_chan_phase_entry!(self, chan.channel_ready(&msg, &self.node_signer,
 						self.chain_hash, &self.default_configuration, &self.best_block.read().unwrap(), &&logger), chan_phase_entry);
 					if let Some(announcement_sigs) = announcement_sigs_opt {
@@ -6660,6 +6695,7 @@ where
 						}
 					};
 					let logger = WithChannelContext::from(&self.logger, &chan.context);
+					log_debug!(logger, "<== update_add_htlc: htlc_id={} amount_msat={}", msg.htlc_id, msg.amount_msat);
 					try_chan_phase_entry!(self, chan.update_add_htlc(&msg, pending_forward_info, create_pending_htlc_status, &self.fee_estimator, &&logger), chan_phase_entry);
 				} else {
 					return try_chan_phase_entry!(self, Err(ChannelError::Close(
@@ -6685,6 +6721,7 @@ where
 			match peer_state.channel_by_id.entry(msg.channel_id) {
 				hash_map::Entry::Occupied(mut chan_phase_entry) => {
 					if let ChannelPhase::Funded(chan) = chan_phase_entry.get_mut() {
+						log_debug!(self.logger, "<== update_fulfill_htlc: htlc_id={}", msg.htlc_id);
 						let res = try_chan_phase_entry!(self, chan.update_fulfill_htlc(&msg), chan_phase_entry);
 						if let HTLCSource::PreviousHopData(prev_hop) = &res.0 {
 							let logger = WithChannelContext::from(&self.logger, &chan.context);
@@ -6783,6 +6820,7 @@ where
 				if let ChannelPhase::Funded(chan) = chan_phase_entry.get_mut() {
 					let logger = WithChannelContext::from(&self.logger, &chan.context);
 					let funding_txo = chan.context.get_funding_txo();
+					log_debug!(logger, "<== commitment_signed: {} htlcs", msg.htlc_signatures.len());
 					let monitor_update_opt = try_chan_phase_entry!(self, chan.commitment_signed(&msg, &&logger), chan_phase_entry);
 					if let Some(monitor_update) = monitor_update_opt {
 						handle_new_monitor_update!(self, funding_txo.unwrap(), monitor_update, peer_state_lock,
@@ -6957,6 +6995,7 @@ where
 								&peer_state.actions_blocking_raa_monitor_updates, funding_txo,
 								*counterparty_node_id)
 						} else { false };
+						log_debug!(self.logger, "<== revoke_and_ack");
 						let (htlcs_to_fail, monitor_update_opt) = try_chan_phase_entry!(self,
 							chan.revoke_and_ack(&msg, &self.fee_estimator, &&logger, mon_update_blocked), chan_phase_entry);
 						if let Some(monitor_update) = monitor_update_opt {
@@ -7107,6 +7146,7 @@ where
 			let peer_state = &mut *peer_state_lock;
 			match peer_state.channel_by_id.entry(msg.channel_id) {
 				hash_map::Entry::Occupied(mut chan_phase_entry) => {
+					log_debug!(logger, "<== channel_reestablish");
 					if let ChannelPhase::Funded(chan) = chan_phase_entry.get_mut() {
 						// Currently, we expect all holding cell update_adds to be dropped on peer
 						// disconnect, so Channel's reestablish will never hand us any holding cell
@@ -7338,13 +7378,24 @@ where
 			let node_id = phase.context().get_counterparty_node_id();
 			match phase {
 				ChannelPhase::Funded(chan) => {
-					let msgs = chan.signer_maybe_unblocked(&self.logger);
-					if let Some(updates) = msgs.commitment_update {
-						pending_msg_events.push(events::MessageSendEvent::UpdateHTLCs {
-							node_id,
-							updates,
-						});
+					let logger = WithChannelContext::from(&self.logger, &chan.context);
+					let msgs = chan.signer_maybe_unblocked(&&logger);
+					if let Some(msg) = msgs.channel_reestablish {
+						pending_msg_events.push(events::MessageSendEvent::SendChannelReestablish { node_id, msg });
 					}
+					match (msgs.commitment_update, msgs.raa) {
+						(Some(cu), Some(raa)) if msgs.order == RAACommitmentOrder::CommitmentFirst => {
+							pending_msg_events.push(events::MessageSendEvent::UpdateHTLCs { node_id, updates: cu });
+							pending_msg_events.push(events::MessageSendEvent::SendRevokeAndACK { node_id, msg: raa });
+						},
+						(Some(cu), Some(raa)) if msgs.order == RAACommitmentOrder::RevokeAndACKFirst => {
+							pending_msg_events.push(events::MessageSendEvent::SendRevokeAndACK { node_id, msg: raa });
+							pending_msg_events.push(events::MessageSendEvent::UpdateHTLCs { node_id, updates: cu });
+						},
+						(Some(cu), _) => pending_msg_events.push(events::MessageSendEvent::UpdateHTLCs { node_id, updates: cu }),
+						(_, Some(raa)) => pending_msg_events.push(events::MessageSendEvent::SendRevokeAndACK { node_id, msg: raa }),
+						(_, _) => (),
+					};
 					if let Some(msg) = msgs.funding_signed {
 						pending_msg_events.push(events::MessageSendEvent::SendFundingSigned {
 							node_id,
@@ -7355,15 +7406,25 @@ where
 						send_channel_ready!(self, pending_msg_events, chan, msg);
 					}
 				}
-				ChannelPhase::UnfundedOutboundV1(chan) => {
-					if let Some(msg) = chan.signer_maybe_unblocked(&self.logger) {
-						pending_msg_events.push(events::MessageSendEvent::SendFundingCreated {
-							node_id,
-							msg,
-						});
+				ChannelPhase::UnfundedInboundV1(chan) => {
+					let logger = WithChannelContext::from(&self.logger, &chan.context);
+					let msgs = chan.signer_maybe_unblocked(&&logger);
+					let node_id = phase.context().get_counterparty_node_id();
+					if let Some(msg) = msgs.accept_channel {
+						pending_msg_events.push(events::MessageSendEvent::SendAcceptChannel { node_id, msg });
 					}
 				}
-				ChannelPhase::UnfundedInboundV1(_) => {},
+				ChannelPhase::UnfundedOutboundV1(chan) => {
+					let logger = WithChannelContext::from(&self.logger, &chan.context);
+					let msgs = chan.signer_maybe_unblocked(&self.chain_hash, &&logger);
+					let node_id = phase.context().get_counterparty_node_id();
+					if let Some(msg) = msgs.open_channel {
+						pending_msg_events.push(events::MessageSendEvent::SendOpenChannel { node_id, msg });
+					}
+					if let Some(msg) = msgs.funding_created {
+						pending_msg_events.push(events::MessageSendEvent::SendFundingCreated { node_id, msg });
+					}
+				}
 			}
 		};
 
@@ -8988,10 +9049,12 @@ where
 					}
 				).for_each(|chan| {
 					let logger = WithChannelContext::from(&self.logger, &chan.context);
-					pending_msg_events.push(events::MessageSendEvent::SendChannelReestablish {
-						node_id: chan.context.get_counterparty_node_id(),
-						msg: chan.get_channel_reestablish(&&logger),
-					});
+					if let Some(msg) = chan.get_channel_reestablish(&&logger) {
+						pending_msg_events.push(events::MessageSendEvent::SendChannelReestablish {
+							node_id: chan.context.get_counterparty_node_id(),
+							msg,
+						});
+					}
 				});
 			}
 
@@ -9069,11 +9132,13 @@ where
 				let mut peer_state_lock = peer_state_mutex_opt.unwrap().lock().unwrap();
 				let peer_state = &mut *peer_state_lock;
 				if let Some(ChannelPhase::UnfundedOutboundV1(chan)) = peer_state.channel_by_id.get_mut(&msg.channel_id) {
-					if let Ok(msg) = chan.maybe_handle_error_without_close(self.chain_hash, &self.fee_estimator) {
-						peer_state.pending_msg_events.push(events::MessageSendEvent::SendOpenChannel {
-							node_id: *counterparty_node_id,
-							msg,
-						});
+					if let Ok(opt_msg) = chan.maybe_handle_error_without_close(self.chain_hash, &self.fee_estimator) {
+						if let Some(msg) = opt_msg {
+							peer_state.pending_msg_events.push(events::MessageSendEvent::SendOpenChannel {
+								node_id: *counterparty_node_id,
+								msg,
+							});
+						}
 						return;
 					}
 				}
@@ -10332,6 +10397,8 @@ where
 					log_info!(logger, "Successfully loaded channel {} at update_id {} against monitor at update id {}",
 						&channel.context.channel_id(), channel.context.get_latest_monitor_update_id(),
 						monitor.get_latest_update_id());
+					channel.context.update_holder_per_commitment_point(&args.logger);
+					// channel.context.update_holder_commitment_secret(&args.logger);
 					if let Some(short_channel_id) = channel.context.get_short_channel_id() {
 						short_to_chan_info.insert(short_channel_id, (channel.context.get_counterparty_node_id(), channel.context.channel_id()));
 					}
