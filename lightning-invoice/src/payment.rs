@@ -33,9 +33,10 @@ use core::time::Duration;
 /// with the same [`PaymentHash`] is never sent.
 ///
 /// If you wish to use a different payment idempotency token, see [`pay_invoice_with_id`].
-pub fn pay_invoice<C: AChannelManager>(
-	invoice: &Bolt11Invoice, retry_strategy: Retry, channelmanager: &C
+pub fn pay_invoice<C: Deref>(
+	invoice: &Bolt11Invoice, retry_strategy: Retry, channelmanager: C
 ) -> Result<PaymentId, PaymentError>
+where C::Target: AChannelManager,
 {
 	let payment_id = PaymentId(invoice.payment_hash().into_inner());
 	pay_invoice_with_id(invoice, payment_id, retry_strategy, channelmanager.get_cm())
@@ -52,9 +53,10 @@ pub fn pay_invoice<C: AChannelManager>(
 /// [`PaymentHash`] has never been paid before.
 ///
 /// See [`pay_invoice`] for a variant which uses the [`PaymentHash`] for the idempotency token.
-pub fn pay_invoice_with_id<C: AChannelManager>(
-	invoice: &Bolt11Invoice, payment_id: PaymentId, retry_strategy: Retry, channelmanager: &C
+pub fn pay_invoice_with_id<C: Deref>(
+	invoice: &Bolt11Invoice, payment_id: PaymentId, retry_strategy: Retry, channelmanager: C
 ) -> Result<(), PaymentError>
+where C::Target: AChannelManager,
 {
 	let amt_msat = invoice.amount_milli_satoshis().ok_or(PaymentError::Invoice("amount missing"))?;
 	pay_invoice_using_amount(invoice, amt_msat, payment_id, retry_strategy, channelmanager.get_cm())
@@ -69,9 +71,10 @@ pub fn pay_invoice_with_id<C: AChannelManager>(
 ///
 /// If you wish to use a different payment idempotency token, see
 /// [`pay_zero_value_invoice_with_id`].
-pub fn pay_zero_value_invoice<C: AChannelManager>(
-	invoice: &Bolt11Invoice, amount_msats: u64, retry_strategy: Retry, channelmanager: &C
+pub fn pay_zero_value_invoice<C: Deref>(
+	invoice: &Bolt11Invoice, amount_msats: u64, retry_strategy: Retry, channelmanager: C
 ) -> Result<PaymentId, PaymentError>
+where C::Target: AChannelManager,
 {
 	let payment_id = PaymentId(invoice.payment_hash().into_inner());
 	pay_zero_value_invoice_with_id(invoice, amount_msats, payment_id, retry_strategy,
@@ -90,10 +93,11 @@ pub fn pay_zero_value_invoice<C: AChannelManager>(
 ///
 /// See [`pay_zero_value_invoice`] for a variant which uses the [`PaymentHash`] for the
 /// idempotency token.
-pub fn pay_zero_value_invoice_with_id<C: AChannelManager>(
+pub fn pay_zero_value_invoice_with_id<C: Deref>(
 	invoice: &Bolt11Invoice, amount_msats: u64, payment_id: PaymentId, retry_strategy: Retry,
-	channelmanager: &C
+	channelmanager: C
 ) -> Result<(), PaymentError>
+where C::Target: AChannelManager,
 {
 	if invoice.amount_milli_satoshis().is_some() {
 		Err(PaymentError::Invoice("amount unexpected"))
@@ -125,9 +129,10 @@ fn pay_invoice_using_amount<P: Deref>(
 /// Sends payment probes over all paths of a route that would be used to pay the given invoice.
 ///
 /// See [`ChannelManager::send_preflight_probes`] for more information.
-pub fn preflight_probe_invoice<C: AChannelManager>(
-	invoice: &Bolt11Invoice, channelmanager: &C, liquidity_limit_multiplier: Option<u64>,
+pub fn preflight_probe_invoice<C: Deref>(
+	invoice: &Bolt11Invoice, channelmanager: C, liquidity_limit_multiplier: Option<u64>,
 ) -> Result<Vec<(PaymentHash, PaymentId)>, ProbingError>
+where C::Target: AChannelManager,
 {
 	let amount_msat = if let Some(invoice_amount_msat) = invoice.amount_milli_satoshis() {
 		invoice_amount_msat
@@ -156,10 +161,11 @@ pub fn preflight_probe_invoice<C: AChannelManager>(
 /// invoice using the given amount.
 ///
 /// See [`ChannelManager::send_preflight_probes`] for more information.
-pub fn preflight_probe_zero_value_invoice<C: AChannelManager>(
-	invoice: &Bolt11Invoice, amount_msat: u64, channelmanager: &C,
+pub fn preflight_probe_zero_value_invoice<C: Deref>(
+	invoice: &Bolt11Invoice, amount_msat: u64, channelmanager: C,
 	liquidity_limit_multiplier: Option<u64>,
 ) -> Result<Vec<(PaymentHash, PaymentId)>, ProbingError>
+where C::Target: AChannelManager,
 {
 	if invoice.amount_milli_satoshis().is_some() {
 		return Err(ProbingError::Invoice("amount unexpected"));
