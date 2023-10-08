@@ -1461,7 +1461,7 @@ fn preflight_probes_crossing_paths() {
 
 	assert_eq!(res.len(), 2);
 
-	// The following walks through the messages shared between the origin node and the first node in the path (which was used for both probes)
+	// The following walks through the messages shared between the origin node and the first node in the path (which was used as a hop for both probes)
 	// According to the BOLT 2 spec, update add htlc messages should be batched.
 	let first_node = &nodes[1];
 	let origin_node = &nodes[0];
@@ -1479,13 +1479,13 @@ fn preflight_probes_crossing_paths() {
 
 	check_added_monitors!(origin_node, 0);
 
-	// origin node is clear of any events before the revoke and ack from first_node is handled
+	// The origin_node is clear of any events before the revoke and ack from first_node is handled
 	assert!(origin_node.node.get_and_clear_pending_msg_events().is_empty());
 	origin_node.node.handle_revoke_and_ack(&first_node.node.get_our_node_id(), &as_revoke_and_ack);
 
-	// Usually the origin node should not have any pending update add htlc messages for this hop since they should have been batched in the previous message
-	// In the case of crossing paths the second update add htlc message only becomes available after the origin_node handles the revoke and ack message of the first node.
-	// This creates an issue when doing the commitment_signed_dance for hops that are used in both paths as the origin node is expectd to not have any pending messages (https://github.com/lightningdevkit/rust-lightning/blob/989304ed3623a578dc9ad0d9aac0984da0d43584/lightning/src/ln/functional_test_utils.rs#L1777)
+	/* Usually the origin node should not have any pending update add htlc messages for this hop since they should have been batched in the previous message
+	In the case of crossing paths the second update add htlc message only becomes available after the origin_node handles the revoke and ack message of the first node.
+	This creates an issue when doing the commitment_signed_dance for hops that are used in both paths as the origin node is expected to not have any pending messages (https://github.com/lightningdevkit/rust-lightning/blob/989304ed3623a578dc9ad0d9aac0984da0d43584/lightning/src/ln/functional_test_utils.rs#L1777). */
 	let event = origin_node.node.get_and_clear_pending_msg_events();
 	assert_eq!(event.len(), 1);
 	match event.first().unwrap() {
