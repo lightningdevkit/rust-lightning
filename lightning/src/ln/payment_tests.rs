@@ -1425,6 +1425,81 @@ fn onchain_failed_probe_yields_event() {
 }
 
 #[test]
+fn preflight_probes_crossing_paths() {
+	let chanmon_cfgs = create_chanmon_cfgs(5);
+	let node_cfgs = create_node_cfgs(5, &chanmon_cfgs);
+
+	// We alleviate the HTLC max-in-flight limit, as otherwise we'd always be limited through that.
+	let mut no_htlc_limit_config = test_default_channel_config();
+	no_htlc_limit_config.channel_handshake_config.max_inbound_htlc_value_in_flight_percent_of_channel = 100;
+
+	let user_cfgs = std::iter::repeat(no_htlc_limit_config).take(5).map(|c| Some(c)).collect::<Vec<Option<UserConfig>>>();
+	let node_chanmgrs = create_node_chanmgrs(5, &node_cfgs, &user_cfgs);
+	let nodes = create_network(5, &node_cfgs, &node_chanmgrs);
+
+	// Setup channel topology:
+	//                    (30k:0)- N2 -(1M:0)
+	//                   /                  \
+	//  N0 -(1M:0)-> N1                    N4
+	//                   \                  /
+	//                    (70k:0)- N3 -(1M:0)
+	//
+	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0);
+	create_announced_chan_between_nodes_with_value(&nodes, 1, 2, 30_000, 0);
+	create_announced_chan_between_nodes_with_value(&nodes, 1, 3, 70_000, 0);
+	create_announced_chan_between_nodes_with_value(&nodes, 2, 4, 1_000_000, 0);
+	create_announced_chan_between_nodes_with_value(&nodes, 3, 4, 1_000_000, 0);
+
+	let mut invoice_features = Bolt11InvoiceFeatures::empty();
+	invoice_features.set_basic_mpp_optional();
+
+	let payment_params = PaymentParameters::from_node_id(nodes[4].node.get_our_node_id(), TEST_FINAL_CLTV)
+		.with_bolt11_features(invoice_features).unwrap();
+
+	let route_params = RouteParameters::from_payment_params_and_value(payment_params, 80_000_000);
+	let res = nodes[0].node.send_preflight_probes(route_params, None).unwrap();
+
+	assert_eq!(res.len(), 2);
+
+	// The following walks through the messages shared between the origin node and the first node in the path (which was used for both probes)
+	// According to the BOLT 2 spec, update add htlc messages should be batched.
+	let first_node = &nodes[1];
+	let origin_node = &nodes[0];
+	check_added_monitors!(origin_node, 1);
+
+	let probe_event = SendEvent::from_node(origin_node);
+
+	first_node.node.handle_update_add_htlc(&origin_node.node.get_our_node_id(), &probe_event.msgs[0]);
+	check_added_monitors!(first_node, 0);
+	assert!(first_node.node.get_and_clear_pending_msg_events().is_empty());
+	first_node.node.handle_commitment_signed(&origin_node.node.get_our_node_id(), &probe_event.commitment_msg);
+	check_added_monitors!(first_node, 1);
+
+	let (as_revoke_and_ack, _) = get_revoke_commit_msgs!(first_node, origin_node.node.get_our_node_id());
+
+	check_added_monitors!(origin_node, 0);
+
+	// origin node is clear of any events before the revoke and ack from first_node is handled
+	assert!(origin_node.node.get_and_clear_pending_msg_events().is_empty());
+	origin_node.node.handle_revoke_and_ack(&first_node.node.get_our_node_id(), &as_revoke_and_ack);
+
+	// Usually origin node should not have any pending messages for this hop since they should have been batched with the previous message
+	let event = origin_node.node.get_and_clear_pending_msg_events();
+	assert_eq!(event.len(), 1);
+	let mut found_update_htlc_event = false;
+	match event.first().unwrap() {
+		MessageSendEvent::UpdateHTLCs {..} => {
+			found_update_htlc_event = true;
+			println!("EVENT: {:#?}", event.first().unwrap());
+		},
+		_ => panic!("unexpected event")
+	}
+
+	assert!(found_update_htlc_event);
+	check_added_monitors!(origin_node, 1);
+}
+
+#[test]
 fn preflight_probes_yield_event_and_skip() {
 	let chanmon_cfgs = create_chanmon_cfgs(5);
 	let node_cfgs = create_node_cfgs(5, &chanmon_cfgs);
