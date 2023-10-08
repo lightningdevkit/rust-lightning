@@ -1484,8 +1484,83 @@ fn preflight_probes_crossing_paths() {
 	origin_node.node.handle_revoke_and_ack(&first_node.node.get_our_node_id(), &as_revoke_and_ack);
 
 	/* Usually the origin node should not have any pending update add htlc messages for this hop since they should have been batched in the previous message
-	In the case of crossing paths the second update add htlc message only becomes available after the origin_node handles the revoke and ack message of the first node.
-	This creates an issue when doing the commitment_signed_dance for hops that are used in both paths as the origin node is expected to not have any pending messages (https://github.com/lightningdevkit/rust-lightning/blob/989304ed3623a578dc9ad0d9aac0984da0d43584/lightning/src/ln/functional_test_utils.rs#L1777). */
+	However, In this case the second update add htlc message only becomes available after the origin_node handles the revoke and ack message of the first node.
+	In the context of testing, this creates an issue when doing the commitment_signed_dance for hops that are used in both paths as the origin node is expected to not have any pending messages (https://github.com/lightningdevkit/rust-lightning/blob/989304ed3623a578dc9ad0d9aac0984da0d43584/lightning/src/ln/functional_test_utils.rs#L1777). */
+	let event = origin_node.node.get_and_clear_pending_msg_events();
+	assert_eq!(event.len(), 1);
+	match event.first().unwrap() {
+		MessageSendEvent::UpdateHTLCs { updates, .. } => {
+			assert_eq!(updates.update_add_htlcs.len(), 1);
+		},
+		_ => panic!("unexpected event")
+	}
+
+	check_added_monitors!(origin_node, 1);
+}
+
+#[test]
+fn payments_with_crossing_paths() {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+
+	// We alleviate the HTLC max-in-flight limit, as otherwise we'd always be limited through that.
+	let mut no_htlc_limit_config = test_default_channel_config();
+	no_htlc_limit_config.channel_handshake_config.max_inbound_htlc_value_in_flight_percent_of_channel = 100;
+
+	let user_cfgs = std::iter::repeat(no_htlc_limit_config).take(2).map(|c| Some(c)).collect::<Vec<Option<UserConfig>>>();
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &user_cfgs);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	// Setup channel topology:
+	//                    (30k:0)- N2 -(1M:0)
+	//                   /                  \
+	//  N0 -(1M:0)-> N1                    N4
+	//                   \                  /
+	//                    (70k:0)- N3 -(1M:0)
+	//
+	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0);
+
+	let mut invoice_features = Bolt11InvoiceFeatures::empty();
+	invoice_features.set_basic_mpp_optional();
+
+	let payment_params = PaymentParameters::from_node_id(nodes[1].node.get_our_node_id(), TEST_FINAL_CLTV)
+		.with_bolt11_features(invoice_features).unwrap();
+
+	let route_params = RouteParameters::from_payment_params_and_value(payment_params, 80_000_000);
+
+	let (_, payment_hash, payment_preimage, payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[1], 100_000);
+	nodes[0].node.send_payment(payment_hash, RecipientOnionFields::secret_only(payment_secret),
+							   PaymentId(payment_hash.0), route_params.clone(), Retry::Attempts(0)).unwrap();
+
+	let (_, second_payment_hash, second_payment_preimage, second_payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[1], 100_000);
+	nodes[0].node.send_payment(second_payment_hash, RecipientOnionFields::secret_only(second_payment_secret),
+							   PaymentId(second_payment_hash.0), route_params.clone(), Retry::Attempts(0)).unwrap();
+
+	// The following walks through the messages shared between the origin node and the first node in the path (which was used as a hop for both payments)
+	// According to the BOLT 2 spec, update add htlc messages should be batched.
+	let first_node = &nodes[1];
+	let origin_node = &nodes[0];
+	check_added_monitors!(origin_node, 1);
+
+	let probe_event = SendEvent::from_node(origin_node);
+
+	first_node.node.handle_update_add_htlc(&origin_node.node.get_our_node_id(), &probe_event.msgs[0]);
+	check_added_monitors!(first_node, 0);
+	assert!(first_node.node.get_and_clear_pending_msg_events().is_empty());
+	first_node.node.handle_commitment_signed(&origin_node.node.get_our_node_id(), &probe_event.commitment_msg);
+	check_added_monitors!(first_node, 1);
+
+	let (as_revoke_and_ack, _) = get_revoke_commit_msgs!(first_node, origin_node.node.get_our_node_id());
+
+	check_added_monitors!(origin_node, 0);
+
+	// The origin_node is clear of any events before the revoke and ack from first_node is handled
+	assert!(origin_node.node.get_and_clear_pending_msg_events().is_empty());
+	origin_node.node.handle_revoke_and_ack(&first_node.node.get_our_node_id(), &as_revoke_and_ack);
+
+	/* Usually the origin node should not have any pending update add htlc messages for this hop since they should have been batched in the previous message
+	However, in this case the second update add htlc message only becomes available after the origin_node handles the revoke and ack message of the first node.
+	In the context of testing, this creates an issue when doing the commitment_signed_dance for hops that are used in both paths as the origin node is expected to not have any pending messages (https://github.com/lightningdevkit/rust-lightning/blob/989304ed3623a578dc9ad0d9aac0984da0d43584/lightning/src/ln/functional_test_utils.rs#L1777). */
 	let event = origin_node.node.get_and_clear_pending_msg_events();
 	assert_eq!(event.len(), 1);
 	match event.first().unwrap() {
