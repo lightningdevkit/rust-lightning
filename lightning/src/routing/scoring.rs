@@ -1236,18 +1236,14 @@ DirectedChannelLiquidity< L, BRT, T> {
 	/// Returns the lower bound of the channel liquidity balance in this direction.
 	#[inline(always)]
 	fn min_liquidity_msat(&self) -> u64 {
-		self.decayed_offset_msat(*self.min_liquidity_offset_msat)
+		*self.min_liquidity_offset_msat
 	}
 
 	/// Returns the upper bound of the channel liquidity balance in this direction.
 	#[inline(always)]
 	fn max_liquidity_msat(&self) -> u64 {
 		self.capacity_msat
-			.saturating_sub(self.decayed_offset_msat(*self.max_liquidity_offset_msat))
-	}
-
-	fn decayed_offset_msat(&self, offset_msat: u64) -> u64 {
-		offset_msat
+			.saturating_sub(*self.max_liquidity_offset_msat)
 	}
 }
 
@@ -1306,13 +1302,11 @@ DirectedChannelLiquidity<L, BRT, T> {
 		self.liquidity_history.min_liquidity_offset_history.time_decay_data(half_lives);
 		self.liquidity_history.max_liquidity_offset_history.time_decay_data(half_lives);
 
-		let min_liquidity_offset_msat = self.decayed_offset_msat(*self.min_liquidity_offset_msat);
 		self.liquidity_history.min_liquidity_offset_history.track_datapoint(
-			min_liquidity_offset_msat + bucket_offset_msat, self.capacity_msat
+			*self.min_liquidity_offset_msat + bucket_offset_msat, self.capacity_msat
 		);
-		let max_liquidity_offset_msat = self.decayed_offset_msat(*self.max_liquidity_offset_msat);
 		self.liquidity_history.max_liquidity_offset_history.track_datapoint(
-			max_liquidity_offset_msat.saturating_sub(bucket_offset_msat), self.capacity_msat
+			self.max_liquidity_offset_msat.saturating_sub(bucket_offset_msat), self.capacity_msat
 		);
 		*self.offset_history_last_updated = duration_since_epoch;
 	}
