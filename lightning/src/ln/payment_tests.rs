@@ -1483,9 +1483,10 @@ fn preflight_probes_crossing_paths() {
 	assert!(origin_node.node.get_and_clear_pending_msg_events().is_empty());
 	origin_node.node.handle_revoke_and_ack(&first_node.node.get_our_node_id(), &as_revoke_and_ack);
 
-	/* Usually the origin node should not have any pending update add htlc messages for this hop since they should have been batched in the previous message
-	However, In this case the second update add htlc message only becomes available after the origin_node handles the revoke and ack message of the first node.
-	In the context of testing, this creates an issue when doing the commitment_signed_dance for hops that are used in both paths as the origin node is expected to not have any pending messages (https://github.com/lightningdevkit/rust-lightning/blob/989304ed3623a578dc9ad0d9aac0984da0d43584/lightning/src/ln/functional_test_utils.rs#L1777). */
+	/* Usually the origin node should not have any pending update add htlc message for this hop since it should have been batched with the previous message
+        However, in this case the second update add htlc message only becomes available after the origin_node handles the revoke and ack message of the first node.
+        In the context of testing, this creates an issue when doing the commitment_signed_dance for hops that are used in both paths as the origin node is expected to not have any pending messages (https://github.com/lightningdevkit/rust-lightning/blob/989304ed3623a578dc9ad0d9aac0984da0d43584/lightning/src/ln/functional_test_utils.rs#L1777).
+        Outside of thhe context of testing, this could indicate that update HTLC messages are not batched. */
 	let event = origin_node.node.get_and_clear_pending_msg_events();
 	assert_eq!(event.len(), 1);
 	match event.first().unwrap() {
@@ -1511,13 +1512,6 @@ fn payments_with_crossing_paths() {
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &user_cfgs);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
-	// Setup channel topology:
-	//                    (30k:0)- N2 -(1M:0)
-	//                   /                  \
-	//  N0 -(1M:0)-> N1                    N4
-	//                   \                  /
-	//                    (70k:0)- N3 -(1M:0)
-	//
 	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0);
 
 	let mut invoice_features = Bolt11InvoiceFeatures::empty();
@@ -1526,7 +1520,7 @@ fn payments_with_crossing_paths() {
 	let payment_params = PaymentParameters::from_node_id(nodes[1].node.get_our_node_id(), TEST_FINAL_CLTV)
 		.with_bolt11_features(invoice_features).unwrap();
 
-	let route_params = RouteParameters::from_payment_params_and_value(payment_params, 80_000_000);
+	let route_params = RouteParameters::from_payment_params_and_value(payment_params, 100_000);
 
 	let (_, payment_hash, payment_preimage, payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[1], 100_000);
 	nodes[0].node.send_payment(payment_hash, RecipientOnionFields::secret_only(payment_secret),
@@ -1558,9 +1552,10 @@ fn payments_with_crossing_paths() {
 	assert!(origin_node.node.get_and_clear_pending_msg_events().is_empty());
 	origin_node.node.handle_revoke_and_ack(&first_node.node.get_our_node_id(), &as_revoke_and_ack);
 
-	/* Usually the origin node should not have any pending update add htlc messages for this hop since they should have been batched in the previous message
+	/* Usually the origin node should not have any pending update add htlc message for this hop since it should have been batched with the previous message
 	However, in this case the second update add htlc message only becomes available after the origin_node handles the revoke and ack message of the first node.
-	In the context of testing, this creates an issue when doing the commitment_signed_dance for hops that are used in both paths as the origin node is expected to not have any pending messages (https://github.com/lightningdevkit/rust-lightning/blob/989304ed3623a578dc9ad0d9aac0984da0d43584/lightning/src/ln/functional_test_utils.rs#L1777). */
+	In the context of testing, this creates an issue when doing the commitment_signed_dance for hops that are used in both paths as the origin node is expected to not have any pending messages (https://github.com/lightningdevkit/rust-lightning/blob/989304ed3623a578dc9ad0d9aac0984da0d43584/lightning/src/ln/functional_test_utils.rs#L1777).
+	Outside of thhe context of testing, this could indicate that update HTLC messages are not batched. */
 	let event = origin_node.node.get_and_clear_pending_msg_events();
 	assert_eq!(event.len(), 1);
 	match event.first().unwrap() {
