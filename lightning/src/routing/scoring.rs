@@ -1260,25 +1260,7 @@ impl<L: Deref<Target = u64>, BRT: Deref<Target = HistoricalBucketRangeTracker>, 
 	}
 
 	fn decayed_offset_msat(&self, offset_msat: u64) -> u64 {
-		let half_life = self.decay_params.liquidity_offset_half_life.as_secs();
-		if half_life != 0 {
-			// Decay the offset by the appropriate number of half lives. If half of the next half
-			// life has passed, approximate an additional three-quarter life to help smooth out the
-			// decay.
-			let elapsed_time = self.now.duration_since(*self.last_updated).as_secs();
-			let half_decays = elapsed_time / (half_life / 2);
-			let decays = half_decays / 2;
-			let decayed_offset_msat = offset_msat.checked_shr(decays as u32).unwrap_or(0);
-			if half_decays % 2 == 0 {
-				decayed_offset_msat
-			} else {
-				// 11_585 / 16_384 ~= core::f64::consts::FRAC_1_SQRT_2
-				// 16_384 == 2^14
-				(decayed_offset_msat as u128 * 11_585 / 16_384) as u64
-			}
-		} else {
-			0
-		}
+		offset_msat
 	}
 }
 
