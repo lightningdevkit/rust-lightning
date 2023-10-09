@@ -3748,3 +3748,61 @@ mod tests {
 			Some(0.0));
 	}
 }
+
+#[cfg(ldk_bench)]
+pub mod benches {
+	use super::*;
+	use criterion::Criterion;
+	use crate::routing::router::{bench_utils, RouteHop};
+	use crate::util::test_utils::TestLogger;
+	use crate::ln::features::{ChannelFeatures, NodeFeatures};
+
+	pub fn decay_100k_channel_bounds(bench: &mut Criterion) {
+		let logger = TestLogger::new();
+		let network_graph = bench_utils::read_network_graph(&logger).unwrap();
+		let mut scorer = ProbabilisticScorer::new(Default::default(), &network_graph, &logger);
+		// Score a number of random channels
+		let mut seed: u64 = 0xdeadbeef;
+		for _ in 0..100_000 {
+			seed = seed.overflowing_mul(6364136223846793005).0.overflowing_add(1).0;
+			let (victim, victim_dst, amt) = {
+				let rong = network_graph.read_only();
+				let channels = rong.channels();
+				let chan = channels.unordered_iter()
+					.skip((seed as usize) % channels.len())
+					.next().unwrap();
+				seed = seed.overflowing_mul(6364136223846793005).0.overflowing_add(1).0;
+				let amt = seed % chan.1.capacity_sats.map(|c| c * 1000)
+					.or(chan.1.one_to_two.as_ref().map(|info| info.htlc_maximum_msat))
+					.or(chan.1.two_to_one.as_ref().map(|info| info.htlc_maximum_msat))
+					.unwrap_or(1_000_000_000).saturating_add(1);
+				(*chan.0, chan.1.node_two, amt)
+			};
+			let path = Path {
+				hops: vec![RouteHop {
+					pubkey: victim_dst.as_pubkey().unwrap(),
+					node_features: NodeFeatures::empty(),
+					short_channel_id: victim,
+					channel_features: ChannelFeatures::empty(),
+					fee_msat: amt,
+					cltv_expiry_delta: 42,
+					maybe_announced_channel: true,
+				}],
+				blinded_tail: None
+			};
+			seed = seed.overflowing_mul(6364136223846793005).0.overflowing_add(1).0;
+			if seed % 1 == 0 {
+				scorer.probe_failed(&path, victim, Duration::ZERO);
+			} else {
+				scorer.probe_successful(&path, Duration::ZERO);
+			}
+		}
+		let mut cur_time = Duration::ZERO;
+			cur_time += Duration::from_millis(1);
+			scorer.decay_liquidity_certainty(cur_time);
+		bench.bench_function("decay_100k_channel_bounds", |b| b.iter(|| {
+			cur_time += Duration::from_millis(1);
+			scorer.decay_liquidity_certainty(cur_time);
+		}));
+	}
+}
