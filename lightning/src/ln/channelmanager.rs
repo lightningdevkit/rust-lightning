@@ -4248,7 +4248,7 @@ where
 												let phantom_shared_secret = self.node_signer.ecdh(Recipient::PhantomNode, &onion_packet.public_key.unwrap(), None).unwrap().secret_bytes();
 												let next_hop = match onion_utils::decode_next_payment_hop(
 													phantom_shared_secret, &onion_packet.hop_data, onion_packet.hmac,
-													payment_hash, &self.node_signer
+													payment_hash, None, &self.node_signer
 												) {
 													Ok(res) => res,
 													Err(onion_utils::OnionDecodeErr::Malformed { err_msg, err_code }) => {

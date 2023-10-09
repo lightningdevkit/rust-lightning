@@ -355,7 +355,7 @@ where
 
 	let next_hop = match onion_utils::decode_next_payment_hop(
 		shared_secret, &msg.onion_routing_packet.hop_data[..], msg.onion_routing_packet.hmac,
-		msg.payment_hash, node_signer
+		msg.payment_hash, msg.blinding_point, node_signer
 	) {
 		Ok(res) => res,
 		Err(onion_utils::OnionDecodeErr::Malformed { err_msg, err_code }) => {
