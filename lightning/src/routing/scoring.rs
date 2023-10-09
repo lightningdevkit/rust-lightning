@@ -61,7 +61,6 @@ use crate::routing::gossip::{EffectiveCapacity, NetworkGraph, NodeId};
 use crate::routing::router::{Path, CandidateRouteHop};
 use crate::util::ser::{Readable, ReadableArgs, Writeable, Writer};
 use crate::util::logger::Logger;
-use crate::util::time::Time;
 
 use crate::prelude::*;
 use core::{cmp, fmt};
@@ -440,13 +439,6 @@ impl ReadableArgs<u64> for FixedPenaltyScorer {
 	}
 }
 
-#[cfg(not(feature = "no-std"))]
-type ConfiguredTime = crate::util::time::MonotonicTime;
-#[cfg(feature = "no-std")]
-use crate::util::time::Eternity;
-#[cfg(feature = "no-std")]
-type ConfiguredTime = Eternity;
-
 /// [`ScoreLookUp`] implementation using channel success probability distributions.
 ///
 /// Channels are tracked with upper and lower liquidity bounds - when an HTLC fails at a channel,
@@ -483,18 +475,12 @@ type ConfiguredTime = Eternity;
 /// [`liquidity_offset_half_life`]: ProbabilisticScoringDecayParameters::liquidity_offset_half_life
 /// [`historical_liquidity_penalty_multiplier_msat`]: ProbabilisticScoringFeeParameters::historical_liquidity_penalty_multiplier_msat
 /// [`historical_liquidity_penalty_amount_multiplier_msat`]: ProbabilisticScoringFeeParameters::historical_liquidity_penalty_amount_multiplier_msat
-pub type ProbabilisticScorer<G, L> = ProbabilisticScorerUsingTime::<G, L, ConfiguredTime>;
-
-/// Probabilistic [`ScoreLookUp`] implementation.
-///
-/// This is not exported to bindings users generally all users should use the [`ProbabilisticScorer`] type alias.
-pub struct ProbabilisticScorerUsingTime<G: Deref<Target = NetworkGraph<L>>, L: Deref, T: Time>
+pub struct ProbabilisticScorer<G: Deref<Target = NetworkGraph<L>>, L: Deref>
 where L::Target: Logger {
 	decay_params: ProbabilisticScoringDecayParameters,
 	network_graph: G,
 	logger: L,
 	channel_liquidities: HashMap<u64, ChannelLiquidity>,
-	_unused_time: core::marker::PhantomData<T>,
 }
 
 /// Parameters for configuring [`ProbabilisticScorer`].
@@ -749,7 +735,7 @@ pub struct ProbabilisticScoringDecayParameters {
 	///
 	/// Default value: 14 days
 	///
-	/// [`historical_estimated_channel_liquidity_probabilities`]: ProbabilisticScorerUsingTime::historical_estimated_channel_liquidity_probabilities
+	/// [`historical_estimated_channel_liquidity_probabilities`]: ProbabilisticScorer::historical_estimated_channel_liquidity_probabilities
 	pub historical_no_updates_half_life: Duration,
 
 	/// Whenever this amount of time elapses since the last update to a channel's liquidity bounds,
@@ -827,7 +813,7 @@ struct DirectedChannelLiquidity<L: Deref<Target = u64>, BRT: Deref<Target = Hist
 	decay_params: ProbabilisticScoringDecayParameters,
 }
 
-impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, T: Time> ProbabilisticScorerUsingTime<G, L, T> where L::Target: Logger {
+impl<G: Deref<Target = NetworkGraph<L>>, L: Deref> ProbabilisticScorer<G, L> where L::Target: Logger {
 	/// Creates a new scorer using the given scoring parameters for sending payments from a node
 	/// through a network graph.
 	pub fn new(decay_params: ProbabilisticScoringDecayParameters, network_graph: G, logger: L) -> Self {
@@ -836,7 +822,6 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, T: Time> ProbabilisticScorerU
 			network_graph,
 			logger,
 			channel_liquidities: HashMap::new(),
-			_unused_time: core::marker::PhantomData,
 		}
 	}
 
@@ -1351,7 +1336,7 @@ DirectedChannelLiquidity<L, BRT, T> {
 	}
 }
 
-impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, T: Time> ScoreLookUp for ProbabilisticScorerUsingTime<G, L, T> where L::Target: Logger {
+impl<G: Deref<Target = NetworkGraph<L>>, L: Deref> ScoreLookUp for ProbabilisticScorer<G, L> where L::Target: Logger {
 	type ScoreParams = ProbabilisticScoringFeeParameters;
 	fn channel_penalty_msat(
 		&self, candidate: &CandidateRouteHop, usage: ChannelUsage, score_params: &ProbabilisticScoringFeeParameters
@@ -1402,7 +1387,7 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, T: Time> ScoreLookUp for Prob
 	}
 }
 
-impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, T: Time> ScoreUpdate for ProbabilisticScorerUsingTime<G, L, T> where L::Target: Logger {
+impl<G: Deref<Target = NetworkGraph<L>>, L: Deref> ScoreUpdate for ProbabilisticScorer<G, L> where L::Target: Logger {
 	fn payment_path_failed(&mut self, path: &Path, short_channel_id: u64, duration_since_epoch: Duration) {
 		let amount_msat = path.final_value_msat();
 		log_trace!(self.logger, "Scoring path through to SCID {} as having failed at {} msat", short_channel_id, amount_msat);
@@ -1511,7 +1496,7 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, T: Time> ScoreUpdate for Prob
 }
 
 #[cfg(c_bindings)]
-impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, T: Time> Score for ProbabilisticScorerUsingTime<G, L, T>
+impl<G: Deref<Target = NetworkGraph<L>>, L: Deref> Score for ProbabilisticScorer<G, L>
 where L::Target: Logger {}
 
 #[cfg(feature = "std")]
@@ -2097,7 +2082,7 @@ mod bucketed_history {
 }
 use bucketed_history::{LegacyHistoricalBucketRangeTracker, HistoricalBucketRangeTracker, HistoricalMinMaxBuckets};
 
-impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, T: Time> Writeable for ProbabilisticScorerUsingTime<G, L, T> where L::Target: Logger {
+impl<G: Deref<Target = NetworkGraph<L>>, L: Deref> Writeable for ProbabilisticScorer<G, L> where L::Target: Logger {
 	#[inline]
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
 		write_tlv_fields!(w, {
@@ -2107,8 +2092,8 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, T: Time> Writeable for Probab
 	}
 }
 
-impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, T: Time>
-ReadableArgs<(ProbabilisticScoringDecayParameters, G, L)> for ProbabilisticScorerUsingTime<G, L, T> where L::Target: Logger {
+impl<G: Deref<Target = NetworkGraph<L>>, L: Deref>
+ReadableArgs<(ProbabilisticScoringDecayParameters, G, L)> for ProbabilisticScorer<G, L> where L::Target: Logger {
 	#[inline]
 	fn read<R: Read>(
 		r: &mut R, args: (ProbabilisticScoringDecayParameters, G, L)
@@ -2123,7 +2108,6 @@ ReadableArgs<(ProbabilisticScoringDecayParameters, G, L)> for ProbabilisticScore
 			network_graph,
 			logger,
 			channel_liquidities,
-			_unused_time: core::marker::PhantomData,
 		})
 	}
 }
@@ -2194,7 +2178,7 @@ impl Readable for ChannelLiquidity {
 
 #[cfg(test)]
 mod tests {
-	use super::{ChannelLiquidity, HistoricalBucketRangeTracker, ProbabilisticScoringFeeParameters, ProbabilisticScoringDecayParameters, ProbabilisticScorerUsingTime};
+	use super::{ChannelLiquidity, HistoricalBucketRangeTracker, ProbabilisticScoringFeeParameters, ProbabilisticScoringDecayParameters, ProbabilisticScorer};
 	use crate::blinded_path::{BlindedHop, BlindedPath};
 	use crate::util::config::UserConfig;
 	use crate::util::time::tests::SinceEpoch;
@@ -2242,9 +2226,6 @@ mod tests {
 	}
 
 	// `ProbabilisticScorer` tests
-
-	/// A probabilistic scorer for testing with time that can be manually advanced.
-	type ProbabilisticScorer<'a> = ProbabilisticScorerUsingTime::<&'a NetworkGraph<&'a TestLogger>, &'a TestLogger, SinceEpoch>;
 
 	fn sender_privkey() -> SecretKey {
 		SecretKey::from_slice(&[41; 32]).unwrap()
@@ -3138,7 +3119,7 @@ mod tests {
 
 		let mut serialized_scorer = io::Cursor::new(&serialized_scorer);
 		let deserialized_scorer =
-			<ProbabilisticScorer>::read(&mut serialized_scorer, (decay_params, &network_graph, &logger)).unwrap();
+			<ProbabilisticScorer<_, _>>::read(&mut serialized_scorer, (decay_params, &network_graph, &logger)).unwrap();
 		assert_eq!(deserialized_scorer.channel_penalty_msat(&candidate, usage, &params), 300);
 	}
 
@@ -3181,7 +3162,7 @@ mod tests {
 
 		let mut serialized_scorer = io::Cursor::new(&serialized_scorer);
 		let mut deserialized_scorer =
-			<ProbabilisticScorer>::read(&mut serialized_scorer, (decay_params, &network_graph, &logger)).unwrap();
+			<ProbabilisticScorer<_, _>>::read(&mut serialized_scorer, (decay_params, &network_graph, &logger)).unwrap();
 		if !decay_before_reload {
 			SinceEpoch::advance(Duration::from_secs(10));
 			scorer.time_passed(Duration::from_secs(10));
