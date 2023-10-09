@@ -1486,7 +1486,7 @@ fn preflight_probes_crossing_paths() {
 	/* Usually the origin node should not have any pending update add htlc message for this hop since it should have been batched with the previous message
         However, in this case the second update add htlc message only becomes available after the origin_node handles the revoke and ack message of the first node.
         In the context of testing, this creates an issue when doing the commitment_signed_dance for hops that are used in both paths as the origin node is expected to not have any pending messages (https://github.com/lightningdevkit/rust-lightning/blob/989304ed3623a578dc9ad0d9aac0984da0d43584/lightning/src/ln/functional_test_utils.rs#L1777).
-        Outside of thhe context of testing, this could indicate that update HTLC messages are not batched. */
+        Outside of the context of testing, this could indicate that update HTLC messages are not batched. */
 	let event = origin_node.node.get_and_clear_pending_msg_events();
 	assert_eq!(event.len(), 1);
 	match event.first().unwrap() {
@@ -1555,7 +1555,7 @@ fn payments_with_crossing_paths() {
 	/* Usually the origin node should not have any pending update add htlc message for this hop since it should have been batched with the previous message
 	However, in this case the second update add htlc message only becomes available after the origin_node handles the revoke and ack message of the first node.
 	In the context of testing, this creates an issue when doing the commitment_signed_dance for hops that are used in both paths as the origin node is expected to not have any pending messages (https://github.com/lightningdevkit/rust-lightning/blob/989304ed3623a578dc9ad0d9aac0984da0d43584/lightning/src/ln/functional_test_utils.rs#L1777).
-	Outside of thhe context of testing, this could indicate that update HTLC messages are not batched. */
+	Outside of the context of testing, this could indicate that update HTLC messages are not batched. */
 	let event = origin_node.node.get_and_clear_pending_msg_events();
 	assert_eq!(event.len(), 1);
 	match event.first().unwrap() {
