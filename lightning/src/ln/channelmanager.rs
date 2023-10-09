@@ -5158,9 +5158,23 @@ where
 					&self.pending_events, &self.logger)
 				{ self.push_pending_forwards_ev(); }
 			},
-			HTLCSource::PreviousHopData(HTLCPreviousHopData { ref short_channel_id, ref htlc_id, ref incoming_packet_shared_secret, ref phantom_shared_secret, ref outpoint, .. }) => {
-				log_trace!(self.logger, "Failing HTLC with payment_hash {} backwards from us with {:?}", &payment_hash, onion_error);
-				let err_packet = onion_error.get_encrypted_failure_packet(incoming_packet_shared_secret, phantom_shared_secret);
+			HTLCSource::PreviousHopData(HTLCPreviousHopData {
+				ref short_channel_id, ref htlc_id, ref incoming_packet_shared_secret,
+				ref phantom_shared_secret, ref outpoint, ref blinded_failure, ..
+			}) => {
+				log_trace!(self.logger, "Failing {}HTLC with payment_hash {} backwards from us: {:?}",
+					if blinded_failure.is_some() { "blinded " } else { "" }, &payment_hash, onion_error);
+				let err_packet = match blinded_failure {
+					Some(BlindedFailure::FromIntroductionNode) => {
+						let blinded_onion_error = HTLCFailReason::reason(INVALID_ONION_BLINDING, vec![0; 32]);
+						blinded_onion_error.get_encrypted_failure_packet(
+							incoming_packet_shared_secret, phantom_shared_secret
+						)
+					},
+					None => {
+						onion_error.get_encrypted_failure_packet(incoming_packet_shared_secret, phantom_shared_secret)
+					}
+				};
 
 				let mut push_forward_ev = false;
 				let mut forward_htlcs = self.forward_htlcs.lock().unwrap();
