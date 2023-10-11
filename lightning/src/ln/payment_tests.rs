@@ -706,8 +706,8 @@ fn do_retry_with_no_persist(confirm_before_reload: bool) {
 	let bs_reestablish = get_chan_reestablish_msgs!(nodes[1], nodes[0]).pop().unwrap();
 	nodes[0].node.handle_channel_reestablish(&nodes[1].node.get_our_node_id(), &bs_reestablish);
 	let as_err = nodes[0].node.get_and_clear_pending_msg_events();
-	assert_eq!(as_err.len(), 1);
-	match as_err[0] {
+	assert_eq!(as_err.len(), 2);
+	match as_err[1] {
 		MessageSendEvent::HandleError { node_id, action: msgs::ErrorAction::SendErrorMessage { ref msg } } => {
 			assert_eq!(node_id, nodes[1].node.get_our_node_id());
 			nodes[1].node.handle_error(&nodes[0].node.get_our_node_id(), msg);
@@ -881,9 +881,9 @@ fn do_test_completed_payment_not_retryable_on_reload(use_dust: bool) {
 	let bs_reestablish = get_chan_reestablish_msgs!(nodes[1], nodes[0]).pop().unwrap();
 	nodes[0].node.handle_channel_reestablish(&nodes[1].node.get_our_node_id(), &bs_reestablish);
 	let as_err = nodes[0].node.get_and_clear_pending_msg_events();
-	assert_eq!(as_err.len(), 1);
+	assert_eq!(as_err.len(), 2);
 	let bs_commitment_tx;
-	match as_err[0] {
+	match as_err[1] {
 		MessageSendEvent::HandleError { node_id, action: msgs::ErrorAction::SendErrorMessage { ref msg } } => {
 			assert_eq!(node_id, nodes[1].node.get_our_node_id());
 			nodes[1].node.handle_error(&nodes[0].node.get_our_node_id(), msg);

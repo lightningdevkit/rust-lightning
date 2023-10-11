@@ -623,8 +623,8 @@ fn do_test_shutdown_rebroadcast(recv_count: u8) {
 
 		nodes[0].node.handle_channel_reestablish(&nodes[1].node.get_our_node_id(), &node_1_2nd_reestablish);
 		let msg_events = nodes[0].node.get_and_clear_pending_msg_events();
-		assert_eq!(msg_events.len(), 1);
-		if let MessageSendEvent::HandleError { ref action, .. } = msg_events[0] {
+		assert_eq!(msg_events.len(), 2);
+		if let MessageSendEvent::HandleError { ref action, .. } = msg_events[1] {
 			match action {
 				&ErrorAction::SendErrorMessage { ref msg } => {
 					nodes[1].node.handle_error(&nodes[0].node.get_our_node_id(), &msg);

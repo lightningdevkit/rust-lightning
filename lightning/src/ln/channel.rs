@@ -3992,7 +3992,7 @@ impl<SP: Deref> Channel<SP> where
 
 		if msg.next_local_commitment_number >= INITIAL_COMMITMENT_NUMBER || msg.next_remote_commitment_number >= INITIAL_COMMITMENT_NUMBER ||
 			msg.next_local_commitment_number == 0 {
-			return Err(ChannelError::Close("Peer sent a garbage channel_reestablish (usually an lnd node with lost state asking us to force-close for them)".to_owned()));
+			return Err(ChannelError::Close("Peer sent an invalid channel_reestablish to force close in a non-standard way".to_owned()));
 		}
 
 		if msg.next_remote_commitment_number > 0 {
