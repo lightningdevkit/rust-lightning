@@ -454,6 +454,10 @@ pub trait ChannelSigner {
 	///
 	/// channel_parameters.is_populated() MUST be true.
 	fn provide_channel_parameters(&mut self, channel_parameters: &ChannelTransactionParameters);
+
+	/// #SPLICING
+	/// Similar to provide_channel_parameters(), but can be called a second time (or even more). Also update channel value (capacity)
+	fn reprovide_channel_parameters(&mut self, channel_parameters: &ChannelTransactionParameters, channel_value_satoshis: u64);
 }
 
 /// A trait to sign Lightning channel transactions as described in
@@ -603,6 +607,10 @@ pub trait EcdsaChannelSigner: ChannelSigner {
 	fn sign_channel_announcement_with_funding_key(
 		&self, msg: &UnsignedChannelAnnouncement, secp_ctx: &Secp256k1<secp256k1::All>
 	) -> Result<Signature, ()>;
+
+	/// #SPLICING
+	/// Create a signature for a splicing funding transaction, for the input which is the previous funding tx.
+	fn sign_splicing_funding_input(&self, splicing_tx: &Transaction, splice_prev_funding_input_index: u16, splice_prev_funding_input_value: u64, redeem_script: &Script, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<Signature, ()>;
 }
 
 /// A writeable signer.
@@ -1082,6 +1090,16 @@ impl ChannelSigner for InMemorySigner {
 		assert!(channel_parameters.is_populated(), "Channel parameters must be fully populated");
 		self.channel_parameters = Some(channel_parameters.clone());
 	}
+
+	/// #SPLICING
+	fn reprovide_channel_parameters(&mut self, channel_parameters: &ChannelTransactionParameters, channel_value_satoshis: u64) {
+		assert!(self.channel_parameters.is_some());
+		assert!(channel_parameters.is_populated(), "Channel parameters must be fully populated");
+		self.channel_parameters = Some(channel_parameters.clone());
+
+		self.channel_value_satoshis = channel_value_satoshis;
+		// println!("reprovide_channel_parameters  channel_value {}", self.channel_value_satoshis);
+	}
 }
 
 const MISSING_PARAMS_ERR: &'static str = "ChannelSigner::provide_channel_parameters must be called before signing operations";
@@ -1096,6 +1114,7 @@ impl EcdsaChannelSigner for InMemorySigner {
 		let channel_funding_redeemscript = make_funding_redeemscript(&funding_pubkey, &counterparty_keys.funding_pubkey);
 
 		let built_tx = trusted_tx.built_transaction();
+		// println!("sign_counterparty_commitment tx {:?} {:?}  channel_value_satoshis {}", built_tx.txid, built_tx.transaction.encode(), self.channel_value_satoshis);
 		let commitment_sig = built_tx.sign_counterparty_commitment(&self.funding_key, &channel_funding_redeemscript, self.channel_value_satoshis, secp_ctx);
 		let commitment_txid = built_tx.txid;
 
@@ -1225,6 +1244,18 @@ impl EcdsaChannelSigner for InMemorySigner {
 		let msghash = hash_to_message!(&Sha256dHash::hash(&msg.encode()[..])[..]);
 		Ok(secp_ctx.sign_ecdsa(&msghash, &self.funding_key))
 	}
+
+	/// #SPLICING
+	/// #SPLICE-SIG
+	fn sign_splicing_funding_input(&self, splicing_tx: &Transaction, splice_prev_funding_input_index: u16, splice_prev_funding_input_value: u64, redeem_script: &Script, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<Signature, ()> {
+		// println!("sign_splicing_funding_input  txlen {}  idx {}  val {}  tx {}", splicing_tx.encode().len(), splice_prev_funding_input_index, prev_funding_value, splicing_tx.encode().to_hex());
+		let sighash = &sighash::SighashCache::new(splicing_tx).segwit_signature_hash(splice_prev_funding_input_index as usize, &redeem_script, splice_prev_funding_input_value, EcdsaSighashType::All).unwrap()[..];
+		let msg = hash_to_message!(sighash);
+		let sig = sign(secp_ctx, &msg, &self.funding_key);
+		// println!("sign_splicing_funding_input  hash {}  msg{}  pubkey {} sig {}  val {}", sighash.to_hex(), msg.to_hex(), &self.funding_key.public_key(secp_ctx), sig.serialize_der().to_hex(), splice_prev_funding_input_value);
+		Ok(sig)
+	}
+
 }
 
 const SERIALIZATION_VERSION: u8 = 1;

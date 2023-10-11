@@ -605,6 +605,15 @@ mod tests {
 		fn handle_channel_update(&self, _their_node_id: &PublicKey, _msg: &ChannelUpdate) {}
 		fn handle_open_channel_v2(&self, _their_node_id: &PublicKey, _msg: &OpenChannelV2) {}
 		fn handle_accept_channel_v2(&self, _their_node_id: &PublicKey, _msg: &AcceptChannelV2) {}
+		// #SPLICING
+		fn handle_splice(&self, _their_node_id: &PublicKey, _msg: &Splice) {}
+		fn handle_splice_ack(&self, _their_node_id: &PublicKey, _msg: &SpliceAck) {}
+		fn handle_splice_locked(&self, _their_node_id: &PublicKey, _msg: &SpliceLocked) {}
+		fn handle_splice_created(&self, _their_node_id: &PublicKey, _msg: &SpliceCreated) {}
+		fn handle_splice_comm_signed(&self, their_node_id: &PublicKey, msg: &SpliceCommSigned) {}
+		fn handle_splice_comm_ack(&self, their_node_id: &PublicKey, msg: &SpliceCommAck) {}
+		fn handle_splice_signed(&self, their_node_id: &PublicKey, msg: &SpliceSigned) {}
+		fn handle_splice_signed_ack(&self, _their_node_id: &PublicKey, _msg: &SpliceSignedAck) {}
 		fn handle_tx_add_input(&self, _their_node_id: &PublicKey, _msg: &TxAddInput) {}
 		fn handle_tx_add_output(&self, _their_node_id: &PublicKey, _msg: &TxAddOutput) {}
 		fn handle_tx_remove_input(&self, _their_node_id: &PublicKey, _msg: &TxRemoveInput) {}

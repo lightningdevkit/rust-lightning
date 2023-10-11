@@ -13,6 +13,30 @@ and networking can be provided by LDK's [sample modules](#crates), or you may pr
 own custom implementations.
 More information is available in the [`About`](#about) section.
 
+Splicing Prototype
+------------------
+
+'Happy Path' PoC for Splicing
+
+Objective, Restrictions:
+- Splice-in supported (increase channel capacity)
+- between two LDK instances
+- No quiscence is used/checked
+- Happy path only, no complex combinations, no error scenarios
+- Prototype with minimal changes
+- Semantics of some splicing messages is not fully according to specs
+- TX negotiation messages are skipped, two simpler messages are used instead (splice_created, splice_signed)
+- It is assumed that all extra inputs belong to the initiator (the full capacity increase is credited to the channel initiator)
+- Only a single pending splicing is supported
+- The channel ID is not changed during splicing (which is incorrect)
+
+Up-to-date with main branch as of v0.0.117 (Oct 4, commit 9de51f0; originally branched off v0.0.115).
+
+See also `ldk-sample` https://github.com/catenocrypt/ldk-sample/tree/splicing-hapa2
+
+To test: `cargo test splic`
+
+
 Status
 ------
 The project implements all of the [BOLT specifications](https://github.com/lightning/bolts),

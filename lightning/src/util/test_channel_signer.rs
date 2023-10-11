@@ -18,6 +18,7 @@ use crate::sync::{Mutex, Arc};
 #[cfg(test)] use crate::sync::MutexGuard;
 
 use bitcoin::blockdata::transaction::{Transaction, EcdsaSighashType};
+use bitcoin::blockdata::script::Script;
 use bitcoin::util::sighash;
 
 use bitcoin::secp256k1;
@@ -125,6 +126,12 @@ impl ChannelSigner for TestChannelSigner {
 
 	fn provide_channel_parameters(&mut self, channel_parameters: &ChannelTransactionParameters) {
 		self.inner.provide_channel_parameters(channel_parameters)
+	}
+
+	/// #SPLICING
+	fn reprovide_channel_parameters(&mut self, channel_parameters: &ChannelTransactionParameters, channel_value_satoshis: u64) {
+		self.state = Arc::new(Mutex::new(EnforcementState::new()));
+		self.inner.reprovide_channel_parameters(channel_parameters, channel_value_satoshis)
 	}
 }
 
@@ -238,6 +245,10 @@ impl EcdsaChannelSigner for TestChannelSigner {
 		&self, msg: &msgs::UnsignedChannelAnnouncement, secp_ctx: &Secp256k1<secp256k1::All>
 	) -> Result<Signature, ()> {
 		self.inner.sign_channel_announcement_with_funding_key(msg, secp_ctx)
+	}
+
+	fn sign_splicing_funding_input(&self, splicing_tx: &Transaction, splice_prev_funding_input_index: u16, splice_prev_funding_input_value: u64, redeem_script: &Script, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<Signature, ()> {
+		self.inner.sign_splicing_funding_input(splicing_tx, splice_prev_funding_input_index, splice_prev_funding_input_value, redeem_script, secp_ctx)
 	}
 }
 

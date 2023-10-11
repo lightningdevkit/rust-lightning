@@ -29,6 +29,7 @@ use bitcoin::secp256k1::PublicKey;
 use bitcoin::secp256k1::ecdsa::Signature;
 use bitcoin::{secp256k1, Witness};
 use bitcoin::blockdata::script::Script;
+use bitcoin::blockdata::transaction::Transaction;
 use bitcoin::hash_types::{Txid, BlockHash};
 
 use crate::blinded_path::payment::ReceiveTlvs;
@@ -438,6 +439,142 @@ pub struct ChannelReady {
 	pub short_channel_id_alias: Option<u64>,
 }
 
+/// #SPLICING Inspired by OpenChannel, Shutdown
+/// A splice message to be sent by or received from the splice initiator.
+/// TODO(splicing): Is using 'splice initiator' role OK?
+/// TODO(splicing): Can the channel acceptor later be the splice initiator?
+///
+// TODO(splicing): Add spec link for `splice`; still in draft, using from https://github.com/lightning/bolts/pull/863
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Splice {
+	/// The channel ID where splicing is intended
+	pub channel_id: ChannelId,
+	/// The genesis hash of the blockchain where the channel is intended to be spliced
+	pub chain_hash: BlockHash,
+	/// The intended change in channel capacity: the amount to be added (positive value)
+	/// or removed (negative value) by the sender (splice initiator) by splicing into/from the channel.
+	pub relative_satoshis: i64,
+	/// The feerate for the new funding transaction, set by the splice initiator
+	pub funding_feerate_perkw: u32,
+	/// The locktime for the new funding transaction
+	pub locktime: u32,
+	/// The key of the sender (splice initiator) controlling the new funding transaction
+	pub funding_pubkey: PublicKey,
+}
+
+/// #SPLICING
+/// A splice_ack message to be received by or sent to the splice initiator.
+///
+// TODO(splicing): Add spec link for `splice_ack`; still in draft, using from https://github.com/lightning/bolts/pull/863
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SpliceAck {
+	/// The channel ID where splicing is intended
+	pub channel_id: ChannelId,
+	/// The genesis hash of the blockchain where the channel is intended to be spliced
+	pub chain_hash: BlockHash,
+	/// The intended change in channel capacity: the amount to be added (positive value)
+	/// or removed (negative value) by the sender (splice acceptor) by splicing into/from the channel.
+	pub relative_satoshis: i64,
+	/// The key of the sender (splice acceptor) controlling the new funding transaction
+	pub funding_pubkey: PublicKey,
+}
+
+/// A splice_locked message to be sent to or received from a peer.
+///
+// TODO(splicing): Add spec link for `splice_locked`; still in draft, using from https://github.com/lightning/bolts/pull/863
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SpliceLocked {
+	/// The channel ID
+	pub channel_id: ChannelId,
+}
+
+/// #SPLICING
+/// A [`splice_created`] message to be sent to or received from a peer.
+/// Contains details of the splicing transaction
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SpliceCreated {
+	/// The channel ID
+	pub channel_id: ChannelId,
+	/// The splicing transaction ID (not yet signed nor broadcast)
+	pub splice_txid: Txid,
+	/// The specific output index funding this channel
+	pub funding_output_index: u16,
+	/// The complete splice funding transaction, used for signing by the other party. Not needed in final version with tx negotiation, TODO remove
+	pub splice_transaction: Transaction,
+	/// The input index in the splice transaction that is the previous funding transaction, used by the other party for signing.
+	/// It could be also omitted and found by looking for the previous funding tx among the inputs.
+	/// Not needed in final version with tx negotiation, TODO remove
+	pub splice_prev_funding_input_index: u16,
+	/// The value of the previous funding transaction, the previous channel capacity
+	pub splice_prev_funding_input_value: u64,
+	/*
+	#[cfg(taproot)]
+	/// The partial signature of the channel initiator (funder)
+	pub partial_signature_with_nonce: Option<PartialSignatureWithNonce>,
+	#[cfg(taproot)]
+	/// Next nonce the channel acceptor should use to finalize the funding output signature
+	pub next_local_nonce: Option<musig2::types::PublicNonce>
+	*/
+}
+
+/// #SPLICING
+/// A [`splice_comm_signed`] message to be sent to or received from a peer.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SpliceCommSigned {
+	/// The channel ID
+	pub channel_id: ChannelId,
+	/// A signature on the commitment transaction
+	pub signature: Signature,
+	// pub htlc_signatures: Vec<Signature>,
+	// pub partial_signature_with_nonce: Option<PartialSignatureWithNonce>,
+}
+
+/// #SPLICING
+/// A [`splice_comm_ack`] message to be sent to or received from a peer.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SpliceCommAck {
+	/// The channel ID
+	pub channel_id: ChannelId,
+	/// A signature on the commitment transaction
+	pub signature: Signature,
+	// pub htlc_signatures: Vec<Signature>,
+	// pub partial_signature_with_nonce: Option<PartialSignatureWithNonce>,
+}
+
+/// #SPLICING
+/// A [`splice_signed`] message to be sent to or received from a peer. There are two things signed here: the previous funding tx input and the the commitment transaction.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SpliceSigned {
+	/// The channel ID
+	pub channel_id: ChannelId,
+	/// The signature of the splice acceptor (fundee) on the splicing transaction.
+	/// This should be the result of transaction negotiation, and not needed here, it is needed only in the prototype, TODO remove it later.
+	/// Not to be confused with the `signature` field.
+	pub funding_signature: Signature,
+	/*
+	#[cfg(taproot)]
+	/// The partial signature of the channel acceptor (fundee)
+	pub partial_signature_with_nonce: Option<PartialSignatureWithNonce>,
+	*/
+}
+
+/// #SPLICING
+/// A [`splice_signed_ack`] message to be sent to or received from a peer. There are two things signed here: the previous funding tx input and the the commitment transaction.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SpliceSignedAck {
+	/// The channel ID
+	pub channel_id: ChannelId,
+	/// The signature of the splice acceptor (fundee) on the splicing transaction.
+	/// This should be the result of transaction negotiation, and not needed here, it is needed only in the prototype, TODO remove it later.
+	/// Not to be confused with the `signature` field.
+	pub funding_signature: Signature,
+	/*
+	#[cfg(taproot)]
+	/// The partial signature of the channel acceptor (fundee)
+	pub partial_signature_with_nonce: Option<PartialSignatureWithNonce>,
+	*/
+}
+
 /// A tx_add_input message for adding an input during interactive transaction construction
 ///
 // TODO(dual_funding): Add spec link for `tx_add_input`.
@@ -517,6 +654,8 @@ pub struct TxSignatures {
 	pub tx_hash: Txid,
 	/// The list of witnesses
 	pub witnesses: Vec<Witness>,
+	/// Optional signature for shared funding outpoint input (signed by both parties)
+	pub tlvs: Option<Signature>,
 }
 
 /// A tx_init_rbf message which initiates a replacement of the transaction after it's been
@@ -1346,6 +1485,25 @@ pub trait ChannelMessageHandler : MessageSendEventsProvider {
 	/// Handle an incoming `closing_signed` message from the given peer.
 	fn handle_closing_signed(&self, their_node_id: &PublicKey, msg: &ClosingSigned);
 
+	// Splicing
+	// #SPLICING
+	/// Handle an incoming `splice` message from the given peer.
+	fn handle_splice(&self, their_node_id: &PublicKey, msg: &Splice);
+	/// Handle an incoming `splice_ack` message from the given peer.
+	fn handle_splice_ack(&self, their_node_id: &PublicKey, msg: &SpliceAck);
+	/// Handle an incoming `splice_locked` message from the given peer.
+	fn handle_splice_locked(&self, their_node_id: &PublicKey, msg: &SpliceLocked);
+	/// Handle an incoming `splice_created` message from the given peer.
+	fn handle_splice_created(&self, their_node_id: &PublicKey, msg: &SpliceCreated);
+	/// Handle an incoming `splice_commm_signed` message from the given peer.
+	fn handle_splice_comm_signed(&self, their_node_id: &PublicKey, msg: &SpliceCommSigned);
+	/// Handle an incoming `splice_commm_ack` message from the given peer.
+	fn handle_splice_comm_ack(&self, their_node_id: &PublicKey, msg: &SpliceCommAck);
+	/// Handle an incoming `splice_signed` message from the given peer.
+	fn handle_splice_signed(&self, their_node_id: &PublicKey, msg: &SpliceSigned);
+	/// Handle an incoming `splice_signed_ack` message from the given peer.
+	fn handle_splice_signed_ack(&self, their_node_id: &PublicKey, msg: &SpliceSignedAck);
+
 	// Interactive channel construction
 	/// Handle an incoming `tx_add_input message` from the given peer.
 	fn handle_tx_add_input(&self, their_node_id: &PublicKey, msg: &TxAddInput);
@@ -1745,6 +1903,65 @@ impl_writeable_msg!(AcceptChannelV2, {
 	(2, require_confirmed_inputs, option),
 });
 
+// #SPLICING Inspired by OpenChannel
+impl_writeable_msg!(Splice, {
+	channel_id,
+	chain_hash,
+	relative_satoshis,
+	funding_feerate_perkw,
+	locktime,
+	funding_pubkey,
+}, {});
+
+// #SPLICING
+impl_writeable_msg!(SpliceAck, {
+	channel_id,
+	chain_hash,
+	relative_satoshis,
+	funding_pubkey,
+}, {});
+
+impl_writeable_msg!(SpliceLocked, {
+	channel_id,
+}, {});
+
+// #SPLICING
+// #[cfg(not(taproot))]
+impl_writeable_msg!(SpliceCreated, {
+	channel_id,
+	splice_txid,
+	funding_output_index,
+	splice_transaction,
+	splice_prev_funding_input_index,
+	splice_prev_funding_input_value,
+}, {});
+
+// #SPLICING
+impl_writeable_msg!(SpliceCommSigned, {
+	channel_id,
+	signature,
+}, {});
+
+// #SPLICING
+impl_writeable_msg!(SpliceCommAck, {
+	channel_id,
+	signature,
+}, {});
+
+// #SPLICING
+// #[cfg(not(taproot))]
+impl_writeable_msg!(SpliceSigned, {
+	channel_id,
+	funding_signature,
+}, {});
+
+// #SPLICING
+// #[cfg(not(taproot))]
+impl_writeable_msg!(SpliceSignedAck, {
+	channel_id,
+	funding_signature,
+}, {});
+
 impl_writeable_msg!(TxAddInput, {
 	channel_id,
 	serial_id,
@@ -1778,7 +1995,9 @@ impl_writeable_msg!(TxSignatures, {
 	channel_id,
 	tx_hash,
 	witnesses,
-}, {});
+}, {
+	(0, tlvs, option),
+});
 
 impl_writeable_msg!(TxInitRbf, {
 	channel_id,
@@ -3296,6 +3515,46 @@ mod tests {
 		assert_eq!(encoded_value, target_value);
 	}
 
+	/// #SPLICING
+	#[test]
+	fn encoding_splice() {
+		let secp_ctx = Secp256k1::new();
+		let (_, pubkey_1,) = get_keys_from!("0101010101010101010101010101010101010101010101010101010101010101", secp_ctx);
+		let splice = msgs::Splice {
+			chain_hash: BlockHash::from_hex("6fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d6190000000000").unwrap(),
+			channel_id: ChannelId::from_bytes([2; 32]),
+			relative_satoshis: -123456,
+			funding_feerate_perkw: 2000,
+			locktime: 0,
+			funding_pubkey: pubkey_1,
+		};
+		let encoded_value = splice.encode();
+		assert_eq!(hex::encode(encoded_value), "0202020202020202020202020202020202020202020202020202020202020202000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26ffffffffffffe1dc0000007d000000000031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f");
+	}
+
+	#[test]
+	fn encoding_splice_ack() {
+		let secp_ctx = Secp256k1::new();
+		let (_, pubkey_1,) = get_keys_from!("0101010101010101010101010101010101010101010101010101010101010101", secp_ctx);
+		let splice = msgs::SpliceAck {
+			chain_hash: BlockHash::from_hex("6fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d6190000000000").unwrap(),
+			channel_id: ChannelId::from_bytes([2; 32]),
+			relative_satoshis: -123456,
+			funding_pubkey: pubkey_1,
+		};
+		let encoded_value = splice.encode();
+		assert_eq!(hex::encode(encoded_value), "0202020202020202020202020202020202020202020202020202020202020202000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26ffffffffffffe1dc0031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f");
+	}
+
+	#[test]
+	fn encoding_splice_locked() {
+		let splice = msgs::SpliceLocked {
+			channel_id: ChannelId::from_bytes([2; 32]),
+		};
+		let encoded_value = splice.encode();
+		assert_eq!(hex::encode(encoded_value), "0202020202020202020202020202020202020202020202020202020202020202");
+	}
+
 	#[test]
 	fn encoding_tx_add_input() {
 		let tx_add_input = msgs::TxAddInput {
@@ -3378,6 +3637,10 @@ mod tests {
 
 	#[test]
 	fn encoding_tx_signatures() {
+		let secp_ctx = Secp256k1::new();
+		let (privkey_1, _) = get_keys_from!("0101010101010101010101010101010101010101010101010101010101010101", secp_ctx);
+		let sig_1 = get_sig_on!(privkey_1, secp_ctx, String::from("01010101010101010101010101010101"));
+
 		let tx_signatures = msgs::TxSignatures {
 			channel_id: ChannelId::from_bytes([2; 32]),
 			tx_hash: Txid::from_hex("c2d4449afa8d26140898dd54d3390b057ba2a5afcf03ba29d7dc0d8b9ffe966e").unwrap(),
@@ -3389,6 +3652,7 @@ mod tests {
 					hex::decode("3045022100ee00dbf4a862463e837d7c08509de814d620e4d9830fa84818713e0fa358f145022021c3c7060c4d53fe84fd165d60208451108a778c13b92ca4c6bad439236126cc01").unwrap(),
 					hex::decode("028fbbf0b16f5ba5bcb5dd37cd4047ce6f726a21c06682f9ec2f52b057de1dbdb5").unwrap()]),
 			],
+			tlvs: Some(sig_1),
 		};
 		let encoded_value = tx_signatures.encode();
 		let mut target_value = hex::decode("0202020202020202020202020202020202020202020202020202020202020202").unwrap(); // channel_id
@@ -3408,7 +3672,9 @@ mod tests {
 		target_value.append(&mut hex::decode("3045022100ee00dbf4a862463e837d7c08509de814d620e4d9830fa84818713e0fa358f145022021c3c7060c4d53fe84fd165d60208451108a778c13b92ca4c6bad439236126cc01").unwrap());
 		target_value.append(&mut hex::decode("21").unwrap()); // len of witness element data (VarInt)
 		target_value.append(&mut hex::decode("028fbbf0b16f5ba5bcb5dd37cd4047ce6f726a21c06682f9ec2f52b057de1dbdb5").unwrap());
-		assert_eq!(encoded_value, target_value);
+		target_value.append(&mut hex::decode("0040").unwrap()); // type and len (64)
+		target_value.append(&mut hex::decode("d977cb9b53d93a6ff64bb5f1e158b4094b66e798fb12911168a3ccdf80a83096340a6a95da0ae8d9f776528eecdbb747eb6b545495a4319ed5378e35b21e073a").unwrap());
+		assert_eq!(hex::encode(encoded_value), hex::encode(target_value));
 	}
 
 	fn do_encoding_tx_init_rbf(funding_value_with_hex_target: Option<(i64, &str)>) {
