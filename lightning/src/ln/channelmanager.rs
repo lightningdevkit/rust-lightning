@@ -6387,6 +6387,9 @@ where
 					if let ChannelPhase::Funded(chan) = chan_phase_entry.get_mut() {
 						let res = try_chan_phase_entry!(self, chan.update_fulfill_htlc(&msg), chan_phase_entry);
 						if let HTLCSource::PreviousHopData(prev_hop) = &res.0 {
+							log_trace!(self.logger,
+								"Holding the next revoke_and_ack from {} until the preimage is durably persisted in the inbound edge's ChannelMonitor",
+								msg.channel_id);
 							peer_state.actions_blocking_raa_monitor_updates.entry(msg.channel_id)
 								.or_insert_with(Vec::new)
 								.push(RAAMonitorUpdateBlockingAction::from_prev_hop_data(&prev_hop));
@@ -9972,6 +9975,9 @@ where
 								Some((blocked_node_id, blocked_channel_outpoint, blocking_action)), ..
 						} = action {
 							if let Some(blocked_peer_state) = per_peer_state.get(&blocked_node_id) {
+								log_trace!(args.logger,
+									"Holding the next revoke_and_ack from {} until the preimage is durably persisted in the inbound edge's ChannelMonitor",
+									blocked_channel_outpoint.to_channel_id());
 								blocked_peer_state.lock().unwrap().actions_blocking_raa_monitor_updates
 									.entry(blocked_channel_outpoint.to_channel_id())
 									.or_insert_with(Vec::new).push(blocking_action.clone());
