@@ -2144,19 +2144,20 @@ impl<SP: Deref> Channel<SP> where
 	<SP::Target as SignerProvider>::Signer: WriteableEcdsaChannelSigner
 {
 	fn check_remote_fee<F: Deref, L: Deref>(
-		channel_type: &ChannelTypeFeatures, fee_estimator: &LowerBoundedFeeEstimator<F>,
-		feerate_per_kw: u32, cur_feerate_per_kw: Option<u32>, logger: &L
+		channel_type: &ChannelTypeFeatures, config: &ChannelConfig,
+		fee_estimator: &LowerBoundedFeeEstimator<F>, feerate_per_kw: u32,
+		cur_feerate_per_kw: Option<u32>, logger: &L
 	) -> Result<(), ChannelError> where F::Target: FeeEstimator, L::Target: Logger,
 	{
 		// We only bound the fee updates on the upper side to prevent completely absurd feerates,
-		// always accepting up to 25 sat/vByte or 10x our fee estimator's "High Priority" fee.
+		// by default accepting up to 25 sat/vByte or 10x our fee estimator's "High Priority" fee.
 		// We generally don't care too much if they set the feerate to something very high, but it
 		// could result in the channel being useless due to everything being dust. This doesn't
 		// apply to channels supporting anchor outputs since HTLC transactions are pre-signed with a
 		// zero fee, so their fee is no longer considered to determine dust limits.
 		if !channel_type.supports_anchors_zero_fee_htlc_tx() {
-			let upper_limit = cmp::max(250 * 25,
-				fee_estimator.bounded_sat_per_1000_weight(ConfirmationTarget::HighPriority) as u64 * 10);
+			let upper_limit = cmp::max(config.base_max_accepted_fee_rate as u64,
+				fee_estimator.bounded_sat_per_1000_weight(ConfirmationTarget::HighPriority) as u64 * config.max_accepted_fee_rate_multiplier as u64);
 			if feerate_per_kw as u64 > upper_limit {
 				return Err(ChannelError::Close(format!("Peer's feerate much too high. Actual: {}. Our expected upper limit: {}", feerate_per_kw, upper_limit)));
 			}
@@ -3854,7 +3855,7 @@ impl<SP: Deref> Channel<SP> where
 		if self.context.channel_state & (ChannelState::PeerDisconnected as u32) == ChannelState::PeerDisconnected as u32 {
 			return Err(ChannelError::Close("Peer sent update_fee when we needed a channel_reestablish".to_owned()));
 		}
-		Channel::<SP>::check_remote_fee(&self.context.channel_type, fee_estimator, msg.feerate_per_kw, Some(self.context.feerate_per_kw), logger)?;
+		Channel::<SP>::check_remote_fee(&self.context.channel_type, &self.context.config(), fee_estimator, msg.feerate_per_kw, Some(self.context.feerate_per_kw), logger)?;
 		let feerate_over_dust_buffer = msg.feerate_per_kw > self.context.get_dust_buffer_feerate(None);
 
 		self.context.pending_update_fee = Some((msg.feerate_per_kw, FeeUpdateState::RemoteAnnounced));
@@ -6289,7 +6290,7 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 		if msg.htlc_minimum_msat >= full_channel_value_msat {
 			return Err(ChannelError::Close(format!("Minimum htlc value ({}) was larger than full channel value ({})", msg.htlc_minimum_msat, full_channel_value_msat)));
 		}
-		Channel::<SP>::check_remote_fee(&channel_type, fee_estimator, msg.feerate_per_kw, None, logger)?;
+		Channel::<SP>::check_remote_fee(&channel_type, &config.channel_config, fee_estimator, msg.feerate_per_kw, None, logger)?;
 
 		let max_counterparty_selected_contest_delay = u16::min(config.channel_handshake_limits.their_to_self_delay, MAX_LOCAL_BREAKDOWN_TIMEOUT);
 		if msg.to_self_delay > max_counterparty_selected_contest_delay {
@@ -7642,7 +7643,7 @@ mod tests {
 	use crate::ln::PaymentHash;
 	use crate::ln::channelmanager::{self, HTLCSource, PaymentId};
 	use crate::ln::channel::InitFeatures;
-	use crate::ln::channel::{Channel, ChannelState, InboundHTLCOutput, OutboundV1Channel, InboundV1Channel, OutboundHTLCOutput, InboundHTLCState, OutboundHTLCState, HTLCCandidate, HTLCInitiator, commit_tx_fee_msat};
+	use crate::ln::channel::{Channel, ChannelConfig, ChannelState, InboundHTLCOutput, OutboundV1Channel, InboundV1Channel, OutboundHTLCOutput, InboundHTLCState, OutboundHTLCState, HTLCCandidate, HTLCInitiator, commit_tx_fee_msat};
 	use crate::ln::channel::{MAX_FUNDING_SATOSHIS_NO_WUMBO, TOTAL_BITCOIN_SUPPLY_SATOSHIS, MIN_THEIR_CHAN_RESERVE_SATOSHIS};
 	use crate::ln::features::ChannelTypeFeatures;
 	use crate::ln::msgs::{ChannelUpdate, DecodeError, UnsignedChannelUpdate, MAX_VALUE_MSAT};
@@ -7691,7 +7692,7 @@ mod tests {
 		let fee_est = TestFeeEstimator { fee_est: 42 };
 		let bounded_fee_estimator = LowerBoundedFeeEstimator::new(&fee_est);
 		assert!(Channel::<&TestKeysInterface>::check_remote_fee(
-			&ChannelTypeFeatures::only_static_remote_key(), &bounded_fee_estimator,
+			&ChannelTypeFeatures::only_static_remote_key(), &ChannelConfig::default(), &bounded_fee_estimator,
 			u32::max_value(), None, &&test_utils::TestLogger::new()).is_err());
 	}
 

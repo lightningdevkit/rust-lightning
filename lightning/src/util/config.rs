@@ -485,6 +485,24 @@ pub struct ChannelConfig {
 	/// [`PaymentClaimable::counterparty_skimmed_fee_msat`]: crate::events::Event::PaymentClaimable::counterparty_skimmed_fee_msat
 	//  TODO: link to bLIP when it's merged
 	pub accept_underpaying_htlcs: bool,
+
+	/// When checking our channel counterparty's fee rate, we will allow any value that is up to the greater
+	/// between [`ChannelConfig::base_max_accepted_fee_rate`] and [`ChannelConfig::max_accepted_fee_rate_multiplier`]
+	/// times our [`HighPriority`] estimated feerate. This is only used for non-anchor channels.
+	///
+	/// Default value: 25 sat/vbyte.
+	///
+	/// [`HighPriority`]: crate::chain::chaininterface::ConfirmationTarget::HighPriority
+	pub base_max_accepted_fee_rate: u32,
+
+	/// When checking our channel counterparty's fee rate, we will allow any value that is up to the greater
+	/// between [`ChannelConfig::base_max_accepted_fee_rate`] and [`ChannelConfig::max_accepted_fee_rate_multiplier`]
+	/// times our [`HighPriority`] estimated feerate. This is only used for non-anchor channels.
+	///
+	/// Default value: 10.
+	///
+	/// [`HighPriority`]: crate::chain::chaininterface::ConfirmationTarget::HighPriority
+	pub max_accepted_fee_rate_multiplier: u32,
 }
 
 impl ChannelConfig {
@@ -518,6 +536,8 @@ impl Default for ChannelConfig {
 			max_dust_htlc_exposure: MaxDustHTLCExposure::FeeRateMultiplier(5000),
 			force_close_avoidance_max_fee_satoshis: 1000,
 			accept_underpaying_htlcs: false,
+			base_max_accepted_fee_rate: 25 * 250, // 25 sat/vbyte
+			max_accepted_fee_rate_multiplier: 10,
 		}
 	}
 }
@@ -539,6 +559,8 @@ impl crate::util::ser::Writeable for ChannelConfig {
 			// LegacyChannelConfig. To make sure that serialization is not compatible with this one, we use
 			// the next required type of 10, which if seen by the old serialization will always fail.
 			(10, self.force_close_avoidance_max_fee_satoshis, required),
+			(11, self.base_max_accepted_fee_rate, required),
+			(13, self.max_accepted_fee_rate_multiplier, required),
 		});
 		Ok(())
 	}
@@ -553,6 +575,8 @@ impl crate::util::ser::Readable for ChannelConfig {
 		let mut max_dust_htlc_exposure_msat = None;
 		let mut max_dust_htlc_exposure_enum = None;
 		let mut force_close_avoidance_max_fee_satoshis = 1000;
+		let mut base_max_accepted_fee_rate = 25 * 250;
+		let mut max_accepted_fee_rate_multiplier = 10;
 		read_tlv_fields!(reader, {
 			(0, forwarding_fee_proportional_millionths, required),
 			(1, accept_underpaying_htlcs, (default_value, false)),
@@ -562,6 +586,8 @@ impl crate::util::ser::Readable for ChannelConfig {
 			// Has always been written, but became optionally read in 0.0.116
 			(6, max_dust_htlc_exposure_msat, option),
 			(10, force_close_avoidance_max_fee_satoshis, required),
+			(11, base_max_accepted_fee_rate, (default_value, 25 * 250 as u32)),
+			(13, max_accepted_fee_rate_multiplier, (default_value, 10_u32)),
 		});
 		let max_dust_htlc_fixed_limit = max_dust_htlc_exposure_msat.unwrap_or(5_000_000);
 		let max_dust_htlc_exposure_msat = max_dust_htlc_exposure_enum
@@ -573,6 +599,8 @@ impl crate::util::ser::Readable for ChannelConfig {
 			cltv_expiry_delta,
 			max_dust_htlc_exposure: max_dust_htlc_exposure_msat,
 			force_close_avoidance_max_fee_satoshis,
+			base_max_accepted_fee_rate,
+			max_accepted_fee_rate_multiplier,
 		})
 	}
 }
@@ -666,6 +694,8 @@ impl crate::util::ser::Readable for LegacyChannelConfig {
 		let mut commit_upfront_shutdown_pubkey = false;
 		let mut forwarding_fee_base_msat = 0;
 		let mut max_dust_htlc_exposure_enum = None;
+		let mut base_max_accepted_fee_rate = 25 * 250;
+		let mut max_accepted_fee_rate_multiplier = 10;
 		read_tlv_fields!(reader, {
 			(0, forwarding_fee_proportional_millionths, required),
 			// Has always been written, but became optionally read in 0.0.116
@@ -676,6 +706,8 @@ impl crate::util::ser::Readable for LegacyChannelConfig {
 			(5, max_dust_htlc_exposure_enum, option),
 			(6, commit_upfront_shutdown_pubkey, required),
 			(8, forwarding_fee_base_msat, required),
+			(11, base_max_accepted_fee_rate, (default_value, 25 * 250 as u32)),
+			(13, max_accepted_fee_rate_multiplier, (default_value, 10_u32)),
 		});
 		let max_dust_htlc_exposure_msat_fixed_limit =
 			max_dust_htlc_exposure_msat_fixed_limit.unwrap_or(5_000_000);
@@ -689,6 +721,8 @@ impl crate::util::ser::Readable for LegacyChannelConfig {
 				force_close_avoidance_max_fee_satoshis,
 				forwarding_fee_base_msat,
 				accept_underpaying_htlcs: false,
+				base_max_accepted_fee_rate,
+				max_accepted_fee_rate_multiplier,
 			},
 			announced_channel,
 			commit_upfront_shutdown_pubkey,
