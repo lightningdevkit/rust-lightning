@@ -615,10 +615,34 @@ pub(crate) enum MonitorUpdateCompletionAction {
 		event: events::Event,
 		downstream_counterparty_and_funding_outpoint: Option<(PublicKey, OutPoint, RAAMonitorUpdateBlockingAction)>,
 	},
+	/// Indicates we should immediately resume the operation of another channel, unless there is
+	/// some other reason why the channel is blocked. In practice this simply means immediately
+	/// removing the [`RAAMonitorUpdateBlockingAction`] provided from the blocking set.
+	///
+	/// This is usually generated when we've forwarded an HTLC and want to block the outbound edge
+	/// from completing a monitor update which removes the payment preimage until the inbound edge
+	/// completes a monitor update containing the payment preimage. However, we use this variant
+	/// instead of [`Self::EmitEventAndFreeOtherChannel`] when we discover that the claim was in
+	/// fact duplicative and we simply want to resume the outbound edge channel immediately.
+	///
+	/// This variant should thus never be written to disk, as it is processed inline rather than
+	/// stored for later processing.
+	FreeOtherChannelImmediately {
+		downstream_counterparty_node_id: PublicKey,
+		downstream_funding_outpoint: OutPoint,
+		blocking_action: RAAMonitorUpdateBlockingAction,
+	},
 }
 
 impl_writeable_tlv_based_enum_upgradable!(MonitorUpdateCompletionAction,
 	(0, PaymentClaimed) => { (0, payment_hash, required) },
+	// Note that FreeOtherChannelImmediately should never be written - we were supposed to free
+	// *immediately*. However, for simplicity we implement read/write here.
+	(1, FreeOtherChannelImmediately) => {
+		(0, downstream_counterparty_node_id, required),
+		(2, downstream_funding_outpoint, required),
+		(4, blocking_action, required),
+	},
 	(2, EmitEventAndFreeOtherChannel) => {
 		(0, event, upgradable_required),
 		// LDK prior to 0.0.116 did not have this field as the monitor update application order was
@@ -5585,6 +5609,15 @@ where
 						self.handle_monitor_update_release(node_id, funding_outpoint, Some(blocker));
 					}
 				},
+				MonitorUpdateCompletionAction::FreeOtherChannelImmediately {
+					downstream_counterparty_node_id, downstream_funding_outpoint, blocking_action,
+				} => {
+					self.handle_monitor_update_release(
+						downstream_counterparty_node_id,
+						downstream_funding_outpoint,
+						Some(blocking_action),
+					);
+				},
 			}
 		}
 	}
@@ -9988,6 +10021,9 @@ where
 								// completed, and if the channel closed there's no reason to bother
 								// anymore.
 							}
+						}
+						if let MonitorUpdateCompletionAction::FreeOtherChannelImmediately { .. } = action {
+							debug_assert!(false, "Non-event-generating channel freeing should not appear in our queue");
 						}
 					}
 				}
