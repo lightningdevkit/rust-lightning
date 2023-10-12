@@ -24,7 +24,7 @@ use crate::ln::PaymentPreimage;
 use crate::ln::chan_utils::{TxCreationKeys, HTLCOutputInCommitment};
 use crate::ln::chan_utils;
 use crate::ln::msgs::DecodeError;
-use crate::chain::chaininterface::{FeeEstimator, ConfirmationTarget, MIN_RELAY_FEE_SAT_PER_1000_WEIGHT};
+use crate::chain::chaininterface::{FeeEstimator, ConfirmationTarget, MIN_RELAY_FEE_SAT_PER_1000_WEIGHT, compute_feerate_sat_per_1000_weight, fee_for_weight, FEERATE_FLOOR_SATS_PER_KW};
 use crate::sign::WriteableEcdsaChannelSigner;
 use crate::chain::onchaintx::{ExternalHTLCClaim, OnchainTxHandler};
 use crate::util::logger::Logger;
@@ -1101,40 +1101,30 @@ impl Readable for PackageTemplate {
 }
 
 /// Attempt to propose a bumping fee for a transaction from its spent output's values and predicted
-/// weight. We start with the highest priority feerate returned by the node's fee estimator then
-/// fall-back to lower priorities until we have enough value available to suck from.
+/// weight. We first try our [`OnChainSweep`] feerate, if it's not enough we try to sweep half of
+/// the input amounts.
 ///
 /// If the proposed fee is less than the available spent output's values, we return the proposed
-/// fee and the corresponding updated feerate. If the proposed fee is equal or more than the
-/// available spent output's values, we return nothing
+/// fee and the corresponding updated feerate. If fee is under [`FEERATE_FLOOR_SATS_PER_KW`], we
+/// return nothing.
+///
+/// [`OnChainSweep`]: crate::chain::chaininterface::ConfirmationTarget::OnChainSweep
+/// [`FEERATE_FLOOR_SATS_PER_KW`]: crate::chain::chaininterface::MIN_RELAY_FEE_SAT_PER_1000_WEIGHT
 fn compute_fee_from_spent_amounts<F: Deref, L: Deref>(input_amounts: u64, predicted_weight: usize, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L) -> Option<(u64, u64)>
 	where F::Target: FeeEstimator,
 	      L::Target: Logger,
 {
-	let mut updated_feerate = fee_estimator.bounded_sat_per_1000_weight(ConfirmationTarget::HighPriority) as u64;
-	let mut fee = updated_feerate * (predicted_weight as u64) / 1000;
-	if input_amounts <= fee {
-		updated_feerate = fee_estimator.bounded_sat_per_1000_weight(ConfirmationTarget::Normal) as u64;
-		fee = updated_feerate * (predicted_weight as u64) / 1000;
-		if input_amounts <= fee {
-			updated_feerate = fee_estimator.bounded_sat_per_1000_weight(ConfirmationTarget::Background) as u64;
-			fee = updated_feerate * (predicted_weight as u64) / 1000;
-			if input_amounts <= fee {
-				log_error!(logger, "Failed to generate an on-chain punishment tx as even low priority fee ({} sat) was more than the entire claim balance ({} sat)",
-					fee, input_amounts);
-				None
-			} else {
-				log_warn!(logger, "Used low priority fee for on-chain punishment tx as high priority fee was more than the entire claim balance ({} sat)",
-					input_amounts);
-				Some((fee, updated_feerate))
-			}
-		} else {
-			log_warn!(logger, "Used medium priority fee for on-chain punishment tx as high priority fee was more than the entire claim balance ({} sat)",
-				input_amounts);
-			Some((fee, updated_feerate))
-		}
+	let sweep_feerate = fee_estimator.bounded_sat_per_1000_weight(ConfirmationTarget::OnChainSweep);
+	let fee_rate = cmp::min(sweep_feerate, compute_feerate_sat_per_1000_weight(input_amounts / 2, predicted_weight as u64)) as u64;
+	let fee = fee_rate * (predicted_weight as u64) / 1000;
+
+	// if the fee rate is below the floor, we don't sweep
+	if fee_rate < FEERATE_FLOOR_SATS_PER_KW as u64 {
+		log_error!(logger, "Failed to generate an on-chain tx with fee ({} sat/kw) was less than the floor ({} sat/kw)",
+					fee_rate, FEERATE_FLOOR_SATS_PER_KW);
+		None
 	} else {
-		Some((fee, updated_feerate))
+		Some((fee, fee_rate))
 	}
 }
 

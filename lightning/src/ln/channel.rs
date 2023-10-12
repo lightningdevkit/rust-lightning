@@ -1168,7 +1168,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 		match self.config.options.max_dust_htlc_exposure {
 			MaxDustHTLCExposure::FeeRateMultiplier(multiplier) => {
 				let feerate_per_kw = fee_estimator.bounded_sat_per_1000_weight(
-					ConfirmationTarget::HighPriority);
+					ConfirmationTarget::OnChainSweep);
 				feerate_per_kw as u64 * multiplier
 			},
 			MaxDustHTLCExposure::FixedLimitMsat(limit) => limit,
@@ -2155,28 +2155,20 @@ impl<SP: Deref> Channel<SP> where
 		// apply to channels supporting anchor outputs since HTLC transactions are pre-signed with a
 		// zero fee, so their fee is no longer considered to determine dust limits.
 		if !channel_type.supports_anchors_zero_fee_htlc_tx() {
-			let upper_limit = cmp::max(250 * 25,
-				fee_estimator.bounded_sat_per_1000_weight(ConfirmationTarget::HighPriority) as u64 * 10);
+			let upper_limit =
+				fee_estimator.bounded_sat_per_1000_weight(ConfirmationTarget::MaxAllowedNonAnchorChannelRemoteFee) as u64;
 			if feerate_per_kw as u64 > upper_limit {
 				return Err(ChannelError::Close(format!("Peer's feerate much too high. Actual: {}. Our expected upper limit: {}", feerate_per_kw, upper_limit)));
 			}
 		}
 
-		// We can afford to use a lower bound with anchors than previously since we can now bump
-		// fees when broadcasting our commitment. However, we must still make sure we meet the
-		// minimum mempool feerate, until package relay is deployed, such that we can ensure the
-		// commitment transaction propagates throughout node mempools on its own.
 		let lower_limit_conf_target = if channel_type.supports_anchors_zero_fee_htlc_tx() {
-			ConfirmationTarget::MempoolMinimum
+			ConfirmationTarget::MinAllowedAnchorChannelRemoteFee
 		} else {
-			ConfirmationTarget::Background
+			ConfirmationTarget::MinAllowedNonAnchorChannelRemoteFee
 		};
 		let lower_limit = fee_estimator.bounded_sat_per_1000_weight(lower_limit_conf_target);
-		// Some fee estimators round up to the next full sat/vbyte (ie 250 sats per kw), causing
-		// occasional issues with feerate disagreements between an initiator that wants a feerate
-		// of 1.1 sat/vbyte and a receiver that wants 1.1 rounded up to 2. Thus, we always add 250
-		// sat/kw before the comparison here.
-		if feerate_per_kw + 250 < lower_limit {
+		if feerate_per_kw < lower_limit {
 			if let Some(cur_feerate) = cur_feerate_per_kw {
 				if feerate_per_kw > cur_feerate {
 					log_warn!(logger,
@@ -2185,7 +2177,7 @@ impl<SP: Deref> Channel<SP> where
 					return Ok(());
 				}
 			}
-			return Err(ChannelError::Close(format!("Peer's feerate much too low. Actual: {}. Our expected lower limit: {} (- 250)", feerate_per_kw, lower_limit)));
+			return Err(ChannelError::Close(format!("Peer's feerate much too low. Actual: {}. Our expected lower limit: {}", feerate_per_kw, lower_limit)));
 		}
 		Ok(())
 	}
@@ -4155,8 +4147,10 @@ impl<SP: Deref> Channel<SP> where
 		// Propose a range from our current Background feerate to our Normal feerate plus our
 		// force_close_avoidance_max_fee_satoshis.
 		// If we fail to come to consensus, we'll have to force-close.
-		let mut proposed_feerate = fee_estimator.bounded_sat_per_1000_weight(ConfirmationTarget::Background);
-		let normal_feerate = fee_estimator.bounded_sat_per_1000_weight(ConfirmationTarget::Normal);
+		let mut proposed_feerate = fee_estimator.bounded_sat_per_1000_weight(ConfirmationTarget::ChannelCloseMinimum);
+		// Use NonAnchorChannelFee because this should be an estimate for a channel close
+		// that we don't expect to need fee bumping
+		let normal_feerate = fee_estimator.bounded_sat_per_1000_weight(ConfirmationTarget::NonAnchorChannelFee);
 		let mut proposed_max_feerate = if self.context.is_outbound() { normal_feerate } else { u32::max_value() };
 
 		// The spec requires that (when the channel does not have anchors) we only send absolute
@@ -5727,9 +5721,9 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 		debug_assert!(channel_type.is_subset(&channelmanager::provided_channel_type_features(&config)));
 
 		let commitment_conf_target = if channel_type.supports_anchors_zero_fee_htlc_tx() {
-			ConfirmationTarget::MempoolMinimum
+			ConfirmationTarget::AnchorChannelFee
 		} else {
-			ConfirmationTarget::Normal
+			ConfirmationTarget::NonAnchorChannelFee
 		};
 		let commitment_feerate = fee_estimator.bounded_sat_per_1000_weight(commitment_conf_target);
 
@@ -6019,7 +6013,7 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 		// whatever reason.
 		if self.context.channel_type.supports_anchors_zero_fee_htlc_tx() {
 			self.context.channel_type.clear_anchors_zero_fee_htlc_tx();
-			self.context.feerate_per_kw = fee_estimator.bounded_sat_per_1000_weight(ConfirmationTarget::Normal);
+			self.context.feerate_per_kw = fee_estimator.bounded_sat_per_1000_weight(ConfirmationTarget::NonAnchorChannelFee);
 			assert!(!self.context.channel_transaction_parameters.channel_type_features.supports_anchors_nonzero_fee_htlc_tx());
 		} else if self.context.channel_type.supports_scid_privacy() {
 			self.context.channel_type.clear_scid_privacy();

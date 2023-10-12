@@ -10014,7 +10014,7 @@ fn accept_busted_but_better_fee() {
 		MessageSendEvent::UpdateHTLCs { updates: msgs::CommitmentUpdate { ref update_fee, .. }, .. } => {
 			nodes[1].node.handle_update_fee(&nodes[0].node.get_our_node_id(), update_fee.as_ref().unwrap());
 			check_closed_event!(nodes[1], 1, ClosureReason::ProcessingError {
-				err: "Peer's feerate much too low. Actual: 1000. Our expected lower limit: 5000 (- 250)".to_owned() },
+				err: "Peer's feerate much too low. Actual: 1000. Our expected lower limit: 5000".to_owned() },
 				[nodes[0].node.get_our_node_id()], 100000);
 			check_closed_broadcast!(nodes[1], true);
 			check_added_monitors!(nodes[1], 1);

@@ -438,20 +438,20 @@ pub struct ChannelConfig {
 	/// funder/initiator.
 	///
 	/// When we are the funder, because we have to pay the channel closing fee, we bound the
-	/// acceptable fee by our [`Background`] and [`Normal`] fees, with the upper bound increased by
+	/// acceptable fee by our [`ChannelCloseMinimum`] and [`NonAnchorChannelFee`] fees, with the upper bound increased by
 	/// this value. Because the on-chain fee we'd pay to force-close the channel is kept near our
-	/// [`Normal`] feerate during normal operation, this value represents the additional fee we're
+	/// [`NonAnchorChannelFee`] feerate during normal operation, this value represents the additional fee we're
 	/// willing to pay in order to avoid waiting for our counterparty's to_self_delay to reclaim our
 	/// funds.
 	///
 	/// When we are not the funder, we require the closing transaction fee pay at least our
-	/// [`Background`] fee estimate, but allow our counterparty to pay as much fee as they like.
+	/// [`ChannelCloseMinimum`] fee estimate, but allow our counterparty to pay as much fee as they like.
 	/// Thus, this value is ignored when we are not the funder.
 	///
 	/// Default value: 1000 satoshis.
 	///
-	/// [`Normal`]: crate::chain::chaininterface::ConfirmationTarget::Normal
-	/// [`Background`]: crate::chain::chaininterface::ConfirmationTarget::Background
+	/// [`NonAnchorChannelFee`]: crate::chain::chaininterface::ConfirmationTarget::NonAnchorChannelFee
+	/// [`ChannelCloseMinimum`]: crate::chain::chaininterface::ConfirmationTarget::ChannelCloseMinimum
 	pub force_close_avoidance_max_fee_satoshis: u64,
 	/// If set, allows this channel's counterparty to skim an additional fee off this node's inbound
 	/// HTLCs. Useful for liquidity providers to offload on-chain channel costs to end users.
