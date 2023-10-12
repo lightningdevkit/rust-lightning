@@ -464,11 +464,6 @@ impl ReadableArgs<u64> for FixedPenaltyScorer {
 /// formula, but using the history of a channel rather than our latest estimates for the liquidity
 /// bounds.
 ///
-/// # Note
-///
-/// Mixing the `no-std` feature between serialization and deserialization results in undefined
-/// behavior.
-///
 /// [1]: https://arxiv.org/abs/2107.05322
 /// [`liquidity_penalty_multiplier_msat`]: ProbabilisticScoringFeeParameters::liquidity_penalty_multiplier_msat
 /// [`liquidity_penalty_amount_multiplier_msat`]: ProbabilisticScoringFeeParameters::liquidity_penalty_amount_multiplier_msat
