@@ -1906,7 +1906,7 @@ fn do_test_intercepted_payment(test: InterceptTest) {
 	// Check for unknown channel id error.
 	let unknown_chan_id_err = nodes[1].node.forward_intercepted_htlc(intercept_id, &ChannelId::from_bytes([42; 32]), nodes[2].node.get_our_node_id(), expected_outbound_amount_msat).unwrap_err();
 	assert_eq!(unknown_chan_id_err , APIError::ChannelUnavailable  {
-		err: format!("Channel with id {} not found for the passed counterparty node_id {}.",
+		err: format!("Channel with id {} not found for the passed counterparty node_id {}",
 			log_bytes!([42; 32]), nodes[2].node.get_our_node_id()) });
 
 	if test == InterceptTest::Fail {
