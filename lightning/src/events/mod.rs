@@ -517,7 +517,6 @@ pub enum Event {
 	/// or was explicitly abandoned by [`ChannelManager::abandon_payment`].
 	///
 	/// [`ChannelManager::abandon_payment`]: crate::ln::channelmanager::ChannelManager::abandon_payment
-	#[cfg(invreqfailed)]
 	InvoiceRequestFailed {
 		/// The `payment_id` to have been associated with payment for the requested invoice.
 		payment_id: PaymentId,
@@ -1164,7 +1163,6 @@ impl Writeable for Event {
 					(8, funding_txo, required),
 				});
 			},
-			#[cfg(invreqfailed)]
 			&Event::InvoiceRequestFailed { ref payment_id } => {
 				33u8.write(writer)?;
 				write_tlv_fields!(writer, {
@@ -1558,7 +1556,6 @@ impl MaybeReadable for Event {
 				};
 				f()
 			},
-			#[cfg(invreqfailed)]
 			33u8 => {
 				let f = || {
 					_init_and_read_len_prefixed_tlv_fields!(reader, {

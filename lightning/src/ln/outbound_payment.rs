@@ -1526,9 +1526,6 @@ impl OutboundPayments {
 		pending_events: &Mutex<VecDeque<(events::Event, Option<EventCompletionAction>)>>)
 	{
 		let mut pending_outbound_payments = self.pending_outbound_payments.lock().unwrap();
-		#[cfg(not(invreqfailed))]
-		let pending_events = pending_events.lock().unwrap();
-		#[cfg(invreqfailed)]
 		let mut pending_events = pending_events.lock().unwrap();
 		pending_outbound_payments.retain(|payment_id, payment| match payment {
 			// If an outbound payment was completed, and no pending HTLCs remain, we should remove it
@@ -1578,7 +1575,6 @@ impl OutboundPayments {
 					},
 				};
 				if is_stale {
-					#[cfg(invreqfailed)]
 					pending_events.push_back(
 						(events::Event::InvoiceRequestFailed { payment_id: *payment_id }, None)
 					);
@@ -1734,7 +1730,6 @@ impl OutboundPayments {
 					payment.remove();
 				}
 			} else if let PendingOutboundPayment::AwaitingInvoice { .. } = payment.get() {
-				#[cfg(invreqfailed)]
 				pending_events.lock().unwrap().push_back((events::Event::InvoiceRequestFailed {
 					payment_id,
 				}, None));
@@ -2032,7 +2027,6 @@ mod tests {
 	}
 
 	#[test]
-	#[cfg(invreqfailed)]
 	fn removes_stale_awaiting_invoice_using_absolute_timeout() {
 		let pending_events = Mutex::new(VecDeque::new());
 		let outbound_payments = OutboundPayments::new();
@@ -2083,7 +2077,6 @@ mod tests {
 	}
 
 	#[test]
-	#[cfg(invreqfailed)]
 	fn removes_stale_awaiting_invoice_using_timer_ticks() {
 		let pending_events = Mutex::new(VecDeque::new());
 		let outbound_payments = OutboundPayments::new();
@@ -2133,7 +2126,6 @@ mod tests {
 	}
 
 	#[test]
-	#[cfg(invreqfailed)]
 	fn removes_abandoned_awaiting_invoice() {
 		let pending_events = Mutex::new(VecDeque::new());
 		let outbound_payments = OutboundPayments::new();
