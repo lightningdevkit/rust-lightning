@@ -155,11 +155,8 @@ impl EcdsaChannelSigner for TestChannelSigner {
 		Ok(())
 	}
 
-	fn sign_holder_commitment_and_htlcs(&self, commitment_tx: &HolderCommitmentTransaction, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<(Signature, Vec<Signature>), ()> {
+	fn sign_holder_commitment(&self, commitment_tx: &HolderCommitmentTransaction, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<Signature, ()> {
 		let trusted_tx = self.verify_holder_commitment_tx(commitment_tx, secp_ctx);
-		let commitment_txid = trusted_tx.txid();
-		let holder_csv = self.inner.counterparty_selected_contest_delay().unwrap();
-
 		let state = self.state.lock().unwrap();
 		let commitment_number = trusted_tx.commitment_number();
 		if state.last_holder_revoked_commitment - 1 != commitment_number && state.last_holder_revoked_commitment - 2 != commitment_number {
@@ -168,33 +165,12 @@ impl EcdsaChannelSigner for TestChannelSigner {
 				       state.last_holder_revoked_commitment, commitment_number, self.inner.commitment_seed[0])
 			}
 		}
-
-		for (this_htlc, sig) in trusted_tx.htlcs().iter().zip(&commitment_tx.counterparty_htlc_sigs) {
-			assert!(this_htlc.transaction_output_index.is_some());
-			let keys = trusted_tx.keys();
-			let htlc_tx = chan_utils::build_htlc_transaction(&commitment_txid, trusted_tx.feerate_per_kw(), holder_csv, &this_htlc, self.channel_type_features(), &keys.broadcaster_delayed_payment_key, &keys.revocation_key);
-
-			let htlc_redeemscript = chan_utils::get_htlc_redeemscript(&this_htlc, self.channel_type_features(), &keys);
-
-			let sighash_type = if self.channel_type_features().supports_anchors_zero_fee_htlc_tx() {
-				EcdsaSighashType::SinglePlusAnyoneCanPay
-			} else {
-				EcdsaSighashType::All
-			};
-			let sighash = hash_to_message!(
-				&sighash::SighashCache::new(&htlc_tx).segwit_signature_hash(
-					0, &htlc_redeemscript, this_htlc.amount_msat / 1000, sighash_type,
-				).unwrap()[..]
-			);
-			secp_ctx.verify_ecdsa(&sighash, sig, &keys.countersignatory_htlc_key).unwrap();
-		}
-
-		Ok(self.inner.sign_holder_commitment_and_htlcs(commitment_tx, secp_ctx).unwrap())
+		Ok(self.inner.sign_holder_commitment(commitment_tx, secp_ctx).unwrap())
 	}
 
 	#[cfg(any(test,feature = "unsafe_revoked_tx_signing"))]
-	fn unsafe_sign_holder_commitment_and_htlcs(&self, commitment_tx: &HolderCommitmentTransaction, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<(Signature, Vec<Signature>), ()> {
-		Ok(self.inner.unsafe_sign_holder_commitment_and_htlcs(commitment_tx, secp_ctx).unwrap())
+	fn unsafe_sign_holder_commitment(&self, commitment_tx: &HolderCommitmentTransaction, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<Signature, ()> {
+		Ok(self.inner.unsafe_sign_holder_commitment(commitment_tx, secp_ctx).unwrap())
 	}
 
 	fn sign_justice_revoked_output(&self, justice_tx: &Transaction, input: usize, amount: u64, per_commitment_key: &SecretKey, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<Signature, ()> {
@@ -209,8 +185,34 @@ impl EcdsaChannelSigner for TestChannelSigner {
 		&self, htlc_tx: &Transaction, input: usize, htlc_descriptor: &HTLCDescriptor,
 		secp_ctx: &Secp256k1<secp256k1::All>
 	) -> Result<Signature, ()> {
+		let state = self.state.lock().unwrap();
+		if state.last_holder_revoked_commitment - 1 != htlc_descriptor.per_commitment_number &&
+			state.last_holder_revoked_commitment - 2 != htlc_descriptor.per_commitment_number
+		{
+			if !self.disable_revocation_policy_check {
+				panic!("can only sign the next two unrevoked commitment numbers, revoked={} vs requested={} for {}",
+				       state.last_holder_revoked_commitment, htlc_descriptor.per_commitment_number, self.inner.commitment_seed[0])
+			}
+		}
 		assert_eq!(htlc_tx.input[input], htlc_descriptor.unsigned_tx_input());
 		assert_eq!(htlc_tx.output[input], htlc_descriptor.tx_output(secp_ctx));
+		{
+			let witness_script = htlc_descriptor.witness_script(secp_ctx);
+			let sighash_type = if self.channel_type_features().supports_anchors_zero_fee_htlc_tx() {
+				EcdsaSighashType::SinglePlusAnyoneCanPay
+			} else {
+				EcdsaSighashType::All
+			};
+			let sighash = &sighash::SighashCache::new(&*htlc_tx).segwit_signature_hash(
+				input, &witness_script, htlc_descriptor.htlc.amount_msat / 1000, sighash_type
+			).unwrap();
+			let countersignatory_htlc_key = chan_utils::derive_public_key(
+				&secp_ctx, &htlc_descriptor.per_commitment_point, &self.inner.counterparty_pubkeys().unwrap().htlc_basepoint
+			);
+			secp_ctx.verify_ecdsa(
+				&hash_to_message!(&sighash), &htlc_descriptor.counterparty_sig, &countersignatory_htlc_key
+			).unwrap();
+		}
 		Ok(self.inner.sign_holder_htlc_transaction(htlc_tx, input, htlc_descriptor, secp_ctx).unwrap())
 	}
 

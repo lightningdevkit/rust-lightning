@@ -487,31 +487,26 @@ pub trait EcdsaChannelSigner: ChannelSigner {
 	/// This is required in order for the signer to make sure that the state has moved
 	/// forward and it is safe to sign the next counterparty commitment.
 	fn validate_counterparty_revocation(&self, idx: u64, secret: &SecretKey) -> Result<(), ()>;
-	/// Creates a signature for a holder's commitment transaction and its claiming HTLC transactions.
+	/// Creates a signature for a holder's commitment transaction.
 	///
 	/// This will be called
 	/// - with a non-revoked `commitment_tx`.
 	/// - with the latest `commitment_tx` when we initiate a force-close.
-	/// - with the previous `commitment_tx`, just to get claiming HTLC
-	///   signatures, if we are reacting to a [`ChannelMonitor`]
-	///   [replica](https://github.com/lightningdevkit/rust-lightning/blob/main/GLOSSARY.md#monitor-replicas)
-	///   that decided to broadcast before it had been updated to the latest `commitment_tx`.
 	///
 	/// This may be called multiple times for the same transaction.
 	///
 	/// An external signer implementation should check that the commitment has not been revoked.
-	///
-	/// [`ChannelMonitor`]: crate::chain::channelmonitor::ChannelMonitor
+	//
 	// TODO: Document the things someone using this interface should enforce before signing.
-	fn sign_holder_commitment_and_htlcs(&self, commitment_tx: &HolderCommitmentTransaction,
-		secp_ctx: &Secp256k1<secp256k1::All>) -> Result<(Signature, Vec<Signature>), ()>;
-	/// Same as [`sign_holder_commitment_and_htlcs`], but exists only for tests to get access to
-	/// holder commitment transactions which will be broadcasted later, after the channel has moved
-	/// on to a newer state. Thus, needs its own method as [`sign_holder_commitment_and_htlcs`] may
-	/// enforce that we only ever get called once.
+	fn sign_holder_commitment(&self, commitment_tx: &HolderCommitmentTransaction,
+		secp_ctx: &Secp256k1<secp256k1::All>) -> Result<Signature, ()>;
+	/// Same as [`sign_holder_commitment`], but exists only for tests to get access to holder
+	/// commitment transactions which will be broadcasted later, after the channel has moved on to a
+	/// newer state. Thus, needs its own method as [`sign_holder_commitment`] may enforce that we
+	/// only ever get called once.
 	#[cfg(any(test,feature = "unsafe_revoked_tx_signing"))]
-	fn unsafe_sign_holder_commitment_and_htlcs(&self, commitment_tx: &HolderCommitmentTransaction,
-		secp_ctx: &Secp256k1<secp256k1::All>) -> Result<(Signature, Vec<Signature>), ()>;
+	fn unsafe_sign_holder_commitment(&self, commitment_tx: &HolderCommitmentTransaction,
+		secp_ctx: &Secp256k1<secp256k1::All>) -> Result<Signature, ()>;
 	/// Create a signature for the given input in a transaction spending an HTLC transaction output
 	/// or a commitment transaction `to_local` output when our counterparty broadcasts an old state.
 	///
@@ -554,7 +549,12 @@ pub trait EcdsaChannelSigner: ChannelSigner {
 	/// `htlc_tx`, which spends the commitment transaction at index `input`. The signature returned
 	/// must be be computed using [`EcdsaSighashType::All`].
 	///
+	/// Note that this may be called for HTLCs in the penultimate commitment transaction if a
+	/// [`ChannelMonitor`] [replica](https://github.com/lightningdevkit/rust-lightning/blob/main/GLOSSARY.md#monitor-replicas)
+	/// broadcasts it before receiving the update for the latest commitment transaction.
+	///
 	/// [`EcdsaSighashType::All`]: bitcoin::blockdata::transaction::EcdsaSighashType::All
+	/// [`ChannelMonitor`]: crate::chain::channelmonitor::ChannelMonitor
 	fn sign_holder_htlc_transaction(&self, htlc_tx: &Transaction, input: usize,
 		htlc_descriptor: &HTLCDescriptor, secp_ctx: &Secp256k1<secp256k1::All>
 	) -> Result<Signature, ()>;
@@ -1118,27 +1118,21 @@ impl EcdsaChannelSigner for InMemorySigner {
 		Ok(())
 	}
 
-	fn sign_holder_commitment_and_htlcs(&self, commitment_tx: &HolderCommitmentTransaction, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<(Signature, Vec<Signature>), ()> {
+	fn sign_holder_commitment(&self, commitment_tx: &HolderCommitmentTransaction, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<Signature, ()> {
 		let funding_pubkey = PublicKey::from_secret_key(secp_ctx, &self.funding_key);
 		let counterparty_keys = self.counterparty_pubkeys().expect(MISSING_PARAMS_ERR);
 		let funding_redeemscript = make_funding_redeemscript(&funding_pubkey, &counterparty_keys.funding_pubkey);
 		let trusted_tx = commitment_tx.trust();
-		let sig = trusted_tx.built_transaction().sign_holder_commitment(&self.funding_key, &funding_redeemscript, self.channel_value_satoshis, &self, secp_ctx);
-		let channel_parameters = self.get_channel_parameters().expect(MISSING_PARAMS_ERR);
-		let htlc_sigs = trusted_tx.get_htlc_sigs(&self.htlc_base_key, &channel_parameters.as_holder_broadcastable(), &self, secp_ctx)?;
-		Ok((sig, htlc_sigs))
+		Ok(trusted_tx.built_transaction().sign_holder_commitment(&self.funding_key, &funding_redeemscript, self.channel_value_satoshis, &self, secp_ctx))
 	}
 
 	#[cfg(any(test,feature = "unsafe_revoked_tx_signing"))]
-	fn unsafe_sign_holder_commitment_and_htlcs(&self, commitment_tx: &HolderCommitmentTransaction, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<(Signature, Vec<Signature>), ()> {
+	fn unsafe_sign_holder_commitment(&self, commitment_tx: &HolderCommitmentTransaction, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<Signature, ()> {
 		let funding_pubkey = PublicKey::from_secret_key(secp_ctx, &self.funding_key);
 		let counterparty_keys = self.counterparty_pubkeys().expect(MISSING_PARAMS_ERR);
 		let funding_redeemscript = make_funding_redeemscript(&funding_pubkey, &counterparty_keys.funding_pubkey);
 		let trusted_tx = commitment_tx.trust();
-		let sig = trusted_tx.built_transaction().sign_holder_commitment(&self.funding_key, &funding_redeemscript, self.channel_value_satoshis, &self, secp_ctx);
-		let channel_parameters = self.get_channel_parameters().expect(MISSING_PARAMS_ERR);
-		let htlc_sigs = trusted_tx.get_htlc_sigs(&self.htlc_base_key, &channel_parameters.as_holder_broadcastable(), &self, secp_ctx)?;
-		Ok((sig, htlc_sigs))
+		Ok(trusted_tx.built_transaction().sign_holder_commitment(&self.funding_key, &funding_redeemscript, self.channel_value_satoshis, &self, secp_ctx))
 	}
 
 	fn sign_justice_revoked_output(&self, justice_tx: &Transaction, input: usize, amount: u64, per_commitment_key: &SecretKey, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<Signature, ()> {

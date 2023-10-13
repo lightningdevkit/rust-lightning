@@ -1101,13 +1101,13 @@ impl<ChannelSigner: WriteableEcdsaChannelSigner> OnchainTxHandler<ChannelSigner>
 	// before providing a initial commitment transaction. For outbound channel, init ChannelMonitor at Channel::funding_signed, there is nothing
 	// to monitor before.
 	pub(crate) fn get_fully_signed_holder_tx(&mut self, funding_redeemscript: &Script) -> Transaction {
-		let (sig, _) = self.signer.sign_holder_commitment_and_htlcs(&self.holder_commitment, &self.secp_ctx).expect("signing holder commitment");
+		let sig = self.signer.sign_holder_commitment(&self.holder_commitment, &self.secp_ctx).expect("signing holder commitment");
 		self.holder_commitment.add_holder_sig(funding_redeemscript, sig)
 	}
 
 	#[cfg(any(test, feature="unsafe_revoked_tx_signing"))]
 	pub(crate) fn get_fully_signed_copy_holder_tx(&mut self, funding_redeemscript: &Script) -> Transaction {
-		let (sig, _) = self.signer.unsafe_sign_holder_commitment_and_htlcs(&self.holder_commitment, &self.secp_ctx).expect("sign holder commitment");
+		let sig = self.signer.unsafe_sign_holder_commitment(&self.holder_commitment, &self.secp_ctx).expect("sign holder commitment");
 		self.holder_commitment.add_holder_sig(funding_redeemscript, sig)
 	}
 

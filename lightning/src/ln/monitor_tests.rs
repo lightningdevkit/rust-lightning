@@ -1680,7 +1680,7 @@ fn do_test_revoked_counterparty_aggregated_claims(anchors: bool) {
 	// secret to the counterparty. However, because we always immediately take the revocation
 	// secret from the keys_manager, we would panic at broadcast as we're trying to sign a
 	// transaction which, from the point of view of our keys_manager, is revoked.
-	chanmon_cfgs[1].keys_manager.disable_revocation_policy_check = true;
+	chanmon_cfgs[0].keys_manager.disable_revocation_policy_check = true;
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let mut user_config = test_default_channel_config();
 	if anchors {
