@@ -566,8 +566,8 @@ fn do_test_data_loss_protect(reconnect_panicing: bool) {
 		if let MessageSendEvent::BroadcastChannelUpdate { .. } = msg {
 		} else if let MessageSendEvent::HandleError { ref action, .. } = msg {
 			match action {
-				&ErrorAction::SendErrorMessage { ref msg } => {
-					assert_eq!(msg.data, "Channel force-closed");
+				&ErrorAction::DisconnectPeer { ref msg } => {
+					assert_eq!(msg.as_ref().unwrap().data, "Channel force-closed");
 				},
 				_ => panic!("Unexpected event!"),
 			}
