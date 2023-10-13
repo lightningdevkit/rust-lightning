@@ -2715,3 +2715,113 @@ fn test_anchors_monitor_fixes_counterparty_payment_script_on_reload() {
 	do_test_anchors_monitor_fixes_counterparty_payment_script_on_reload(false);
 	do_test_anchors_monitor_fixes_counterparty_payment_script_on_reload(true);
 }
+
+#[cfg(not(feature = "_test_vectors"))]
+fn do_test_monitor_claims_with_random_signatures(anchors: bool, confirm_counterparty_commitment: bool) {
+	// Tests that our monitor claims will always use fresh random signatures (ensuring a unique
+	// wtxid) to prevent certain classes of transaction replacement at the bitcoin P2P layer.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let mut user_config = test_default_channel_config();
+	if anchors {
+		user_config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
+		user_config.manually_accept_inbound_channels = true;
+	}
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(user_config), Some(user_config)]);
+	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let coinbase_tx = Transaction {
+		version: 2,
+		lock_time: PackedLockTime::ZERO,
+		input: vec![TxIn { ..Default::default() }],
+		output: vec![
+			TxOut {
+				value: Amount::ONE_BTC.to_sat(),
+				script_pubkey: nodes[0].wallet_source.get_change_script().unwrap(),
+			},
+		],
+	};
+	if anchors {
+		nodes[0].wallet_source.add_utxo(bitcoin::OutPoint { txid: coinbase_tx.txid(), vout: 0 }, coinbase_tx.output[0].value);
+	}
+
+	// Open a channel and route a payment. We'll let it timeout to claim it.
+	let (_, _, chan_id, funding_tx) = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0);
+	route_payment(&nodes[0], &[&nodes[1]], 1_000_000);
+
+	let (closing_node, other_node) = if confirm_counterparty_commitment {
+		(&nodes[1], &nodes[0])
+	} else {
+		(&nodes[0], &nodes[1])
+	};
+
+	closing_node.node.force_close_broadcasting_latest_txn(&chan_id, &other_node.node.get_our_node_id()).unwrap();
+
+	// The commitment transaction comes first.
+	let commitment_tx = {
+		let mut txn = closing_node.tx_broadcaster.unique_txn_broadcast();
+		assert_eq!(txn.len(), 1);
+		check_spends!(txn[0], funding_tx);
+		txn.pop().unwrap()
+	};
+
+	mine_transaction(closing_node, &commitment_tx);
+	check_added_monitors!(closing_node, 1);
+	check_closed_broadcast!(closing_node, true);
+	check_closed_event!(closing_node, 1, ClosureReason::HolderForceClosed, [other_node.node.get_our_node_id()], 1_000_000);
+
+	mine_transaction(other_node, &commitment_tx);
+	check_added_monitors!(other_node, 1);
+	check_closed_broadcast!(other_node, true);
+	check_closed_event!(other_node, 1, ClosureReason::CommitmentTxConfirmed, [closing_node.node.get_our_node_id()], 1_000_000);
+
+	// If we update the best block to the new height before providing the confirmed transactions,
+	// we'll see another broadcast of the commitment transaction.
+	if anchors && !confirm_counterparty_commitment && nodes[0].connect_style.borrow().updates_best_block_first() {
+		let _ = nodes[0].tx_broadcaster.txn_broadcast();
+	}
+
+	// Then comes the HTLC timeout transaction.
+	if confirm_counterparty_commitment {
+		connect_blocks(&nodes[0], 5);
+		test_spendable_output(&nodes[0], &commitment_tx, false);
+		connect_blocks(&nodes[0], TEST_FINAL_CLTV - 5);
+	} else {
+		connect_blocks(&nodes[0], TEST_FINAL_CLTV);
+	}
+	if anchors && !confirm_counterparty_commitment {
+		handle_bump_htlc_event(&nodes[0], 1);
+	}
+	let htlc_timeout_tx = {
+		let mut txn = nodes[0].tx_broadcaster.txn_broadcast();
+		assert_eq!(txn.len(), 1);
+		let tx = if txn[0].input[0].previous_output.txid == commitment_tx.txid() {
+			txn[0].clone()
+		} else {
+			txn[1].clone()
+		};
+		check_spends!(tx, commitment_tx, coinbase_tx);
+		tx
+	};
+
+	// Check we rebroadcast it with a different wtxid.
+	nodes[0].chain_monitor.chain_monitor.rebroadcast_pending_claims();
+	if anchors && !confirm_counterparty_commitment {
+		handle_bump_htlc_event(&nodes[0], 1);
+	}
+	{
+		let mut txn = nodes[0].tx_broadcaster.txn_broadcast();
+		assert_eq!(txn.len(), 1);
+		assert_eq!(txn[0].txid(), htlc_timeout_tx.txid());
+		assert_ne!(txn[0].wtxid(), htlc_timeout_tx.wtxid());
+	}
+}
+
+#[cfg(not(feature = "_test_vectors"))]
+#[test]
+fn test_monitor_claims_with_random_signatures() {
+	do_test_monitor_claims_with_random_signatures(false, false);
+	do_test_monitor_claims_with_random_signatures(false, true);
+	do_test_monitor_claims_with_random_signatures(true, false);
+	do_test_monitor_claims_with_random_signatures(true, true);
+}
