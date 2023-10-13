@@ -1172,9 +1172,10 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 			(holder_commitment_tx, trusted_tx.commitment_number())
 		};
 
-		let onchain_tx_handler =
-			OnchainTxHandler::new(destination_script.clone(), keys,
-			channel_parameters.clone(), initial_holder_commitment_tx, secp_ctx);
+		let onchain_tx_handler = OnchainTxHandler::new(
+			channel_value_satoshis, channel_keys_id, destination_script.clone(), keys,
+			channel_parameters.clone(), initial_holder_commitment_tx, secp_ctx
+		);
 
 		let mut outputs_to_watch = HashMap::new();
 		outputs_to_watch.insert(funding_info.0.txid, vec![(funding_info.0.index as u32, funding_info.1.clone())]);

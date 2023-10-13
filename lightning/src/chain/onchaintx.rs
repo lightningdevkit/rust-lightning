@@ -215,6 +215,8 @@ pub(crate) enum OnchainClaim {
 /// do RBF bumping if possible.
 #[derive(Clone)]
 pub struct OnchainTxHandler<ChannelSigner: WriteableEcdsaChannelSigner> {
+	channel_value_satoshis: u64,
+	channel_keys_id: [u8; 32],
 	destination_script: Script,
 	holder_commitment: HolderCommitmentTransaction,
 	// holder_htlc_sigs and prev_holder_htlc_sigs are in the order as they appear in the commitment
@@ -276,7 +278,9 @@ pub struct OnchainTxHandler<ChannelSigner: WriteableEcdsaChannelSigner> {
 impl<ChannelSigner: WriteableEcdsaChannelSigner> PartialEq for OnchainTxHandler<ChannelSigner> {
 	fn eq(&self, other: &Self) -> bool {
 		// `signer`, `secp_ctx`, and `pending_claim_events` are excluded on purpose.
-		self.destination_script == other.destination_script &&
+		self.channel_value_satoshis == other.channel_value_satoshis &&
+			self.channel_keys_id == other.channel_keys_id &&
+			self.destination_script == other.destination_script &&
 			self.holder_commitment == other.holder_commitment &&
 			self.holder_htlc_sigs == other.holder_htlc_sigs &&
 			self.prev_holder_commitment == other.prev_holder_commitment &&
@@ -418,6 +422,8 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 		secp_ctx.seeded_randomize(&entropy_source.get_secure_random_bytes());
 
 		Ok(OnchainTxHandler {
+			channel_value_satoshis,
+			channel_keys_id,
 			destination_script,
 			holder_commitment,
 			holder_htlc_sigs,
@@ -436,8 +442,14 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 }
 
 impl<ChannelSigner: WriteableEcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
-	pub(crate) fn new(destination_script: Script, signer: ChannelSigner, channel_parameters: ChannelTransactionParameters, holder_commitment: HolderCommitmentTransaction, secp_ctx: Secp256k1<secp256k1::All>) -> Self {
+	pub(crate) fn new(
+		channel_value_satoshis: u64, channel_keys_id: [u8; 32], destination_script: Script,
+		signer: ChannelSigner, channel_parameters: ChannelTransactionParameters,
+		holder_commitment: HolderCommitmentTransaction, secp_ctx: Secp256k1<secp256k1::All>
+	) -> Self {
 		OnchainTxHandler {
+			channel_value_satoshis,
+			channel_keys_id,
 			destination_script,
 			holder_commitment,
 			holder_htlc_sigs: None,
