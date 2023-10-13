@@ -29,8 +29,7 @@ use crate::util::test_utils;
 use crate::util::config::{UserConfig, ChannelConfig, MaxDustHTLCExposure};
 use crate::util::errors::APIError;
 
-use bitcoin::hash_types::BlockHash;
-
+use bitcoin::blockdata::constants::ChainHash;
 use bitcoin::hashes::{Hash, HashEngine};
 use bitcoin::hashes::hmac::{Hmac, HmacEngine};
 use bitcoin::hashes::sha256::Hash as Sha256;
@@ -234,12 +233,13 @@ fn run_onion_failure_test_with_fail_intercept<F1,F2,F3>(
 
 impl msgs::ChannelUpdate {
 	fn dummy(short_channel_id: u64) -> msgs::ChannelUpdate {
+		use bitcoin::hash_types::BlockHash;
 		use bitcoin::secp256k1::ffi::Signature as FFISignature;
 		use bitcoin::secp256k1::ecdsa::Signature;
 		msgs::ChannelUpdate {
 			signature: Signature::from(unsafe { FFISignature::new() }),
 			contents: msgs::UnsignedChannelUpdate {
-				chain_hash: BlockHash::hash(&vec![0u8][..]),
+				chain_hash: ChainHash::from(BlockHash::hash(&vec![0u8][..]).as_ref()),
 				short_channel_id,
 				timestamp: 0,
 				flags: 0,

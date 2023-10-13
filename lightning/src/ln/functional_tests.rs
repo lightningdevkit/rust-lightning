@@ -40,7 +40,7 @@ use crate::util::config::{UserConfig, MaxDustHTLCExposure};
 use bitcoin::hash_types::BlockHash;
 use bitcoin::blockdata::script::{Builder, Script};
 use bitcoin::blockdata::opcodes;
-use bitcoin::blockdata::constants::genesis_block;
+use bitcoin::blockdata::constants::ChainHash;
 use bitcoin::network::constants::Network;
 use bitcoin::{PackedLockTime, Sequence, Transaction, TxIn, TxOut, Witness};
 use bitcoin::OutPoint as BitcoinOutPoint;
@@ -5830,8 +5830,8 @@ fn bolt2_open_channel_sending_node_checks_part2() {
 	assert!(node0_to_1_send_open_channel.to_self_delay==BREAKDOWN_TIMEOUT);
 
 	// BOLT #2 spec: Sending node must ensure the chain_hash value identifies the chain it wishes to open the channel within.
-	let chain_hash=genesis_block(Network::Testnet).header.block_hash();
-	assert_eq!(node0_to_1_send_open_channel.chain_hash,chain_hash);
+	let chain_hash = ChainHash::using_genesis_block(Network::Testnet);
+	assert_eq!(node0_to_1_send_open_channel.chain_hash, chain_hash);
 
 	// BOLT #2 spec: Sending node must set funding_pubkey, revocation_basepoint, htlc_basepoint, payment_basepoint, and delayed_payment_basepoint to valid DER-encoded, compressed, secp256k1 pubkeys.
 	assert!(PublicKey::from_slice(&node0_to_1_send_open_channel.funding_pubkey.serialize()).is_ok());

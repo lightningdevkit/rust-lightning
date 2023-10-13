@@ -29,7 +29,7 @@ use bitcoin::secp256k1::PublicKey;
 use bitcoin::secp256k1::ecdsa::Signature;
 use bitcoin::{secp256k1, Witness};
 use bitcoin::blockdata::script::Script;
-use bitcoin::hash_types::{Txid, BlockHash};
+use bitcoin::hash_types::Txid;
 
 use crate::blinded_path::payment::ReceiveTlvs;
 use crate::ln::{ChannelId, PaymentPreimage, PaymentHash, PaymentSecret};
@@ -177,7 +177,7 @@ pub struct Pong {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OpenChannel {
 	/// The genesis hash of the blockchain where the channel is to be opened
-	pub chain_hash: BlockHash,
+	pub chain_hash: ChainHash,
 	/// A temporary channel ID, until the funding outpoint is announced
 	pub temporary_channel_id: ChannelId,
 	/// The channel value
@@ -231,7 +231,7 @@ pub struct OpenChannel {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OpenChannelV2 {
 	/// The genesis hash of the blockchain where the channel is to be opened
-	pub chain_hash: BlockHash,
+	pub chain_hash: ChainHash,
 	/// A temporary channel ID derived using a zeroed out value for the channel acceptor's revocation basepoint
 	pub temporary_channel_id: ChannelId,
 	/// The feerate for the funding transaction set by the channel initiator
@@ -1072,7 +1072,7 @@ pub struct UnsignedChannelAnnouncement {
 	/// The advertised channel features
 	pub features: ChannelFeatures,
 	/// The genesis hash of the blockchain where the channel is to be opened
-	pub chain_hash: BlockHash,
+	pub chain_hash: ChainHash,
 	/// The short channel ID
 	pub short_channel_id: u64,
 	/// One of the two `node_id`s which are endpoints of this channel
@@ -1112,7 +1112,7 @@ pub struct ChannelAnnouncement {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UnsignedChannelUpdate {
 	/// The genesis hash of the blockchain where the channel is to be opened
-	pub chain_hash: BlockHash,
+	pub chain_hash: ChainHash,
 	/// The short channel ID
 	pub short_channel_id: u64,
 	/// A strictly monotonic announcement counter, with gaps allowed, specific to this channel
@@ -1164,7 +1164,7 @@ pub struct ChannelUpdate {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QueryChannelRange {
 	/// The genesis hash of the blockchain being queried
-	pub chain_hash: BlockHash,
+	pub chain_hash: ChainHash,
 	/// The height of the first block for the channel UTXOs being queried
 	pub first_blocknum: u32,
 	/// The number of blocks to include in the query results
@@ -1185,7 +1185,7 @@ pub struct QueryChannelRange {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReplyChannelRange {
 	/// The genesis hash of the blockchain being queried
-	pub chain_hash: BlockHash,
+	pub chain_hash: ChainHash,
 	/// The height of the first block in the range of the reply
 	pub first_blocknum: u32,
 	/// The number of blocks included in the range of the reply
@@ -1210,7 +1210,7 @@ pub struct ReplyChannelRange {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QueryShortChannelIds {
 	/// The genesis hash of the blockchain being queried
-	pub chain_hash: BlockHash,
+	pub chain_hash: ChainHash,
 	/// The short_channel_ids that are being queried
 	pub short_channel_ids: Vec<u64>,
 }
@@ -1224,7 +1224,7 @@ pub struct QueryShortChannelIds {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReplyShortChannelIdsEnd {
 	/// The genesis hash of the blockchain that was queried
-	pub chain_hash: BlockHash,
+	pub chain_hash: ChainHash,
 	/// Indicates if the query recipient maintains up-to-date channel
 	/// information for the `chain_hash`
 	pub full_information: bool,
@@ -1238,7 +1238,7 @@ pub struct ReplyShortChannelIdsEnd {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GossipTimestampFilter {
 	/// The genesis hash of the blockchain for channel and node information
-	pub chain_hash: BlockHash,
+	pub chain_hash: ChainHash,
 	/// The starting unix timestamp
 	pub first_timestamp: u32,
 	/// The range of information in seconds
@@ -1420,11 +1420,11 @@ pub trait ChannelMessageHandler : MessageSendEventsProvider {
 	/// Note that this method is called before [`Self::peer_connected`].
 	fn provided_init_features(&self, their_node_id: &PublicKey) -> InitFeatures;
 
-	/// Gets the genesis hashes for this `ChannelMessageHandler` indicating which chains it supports.
+	/// Gets the chain hashes for this `ChannelMessageHandler` indicating which chains it supports.
 	///
 	/// If it's `None`, then no particular network chain hash compatibility will be enforced when
 	/// connecting to peers.
-	fn get_genesis_hashes(&self) -> Option<Vec<ChainHash>>;
+	fn get_chain_hashes(&self) -> Option<Vec<ChainHash>>;
 }
 
 /// A trait to describe an object which can receive routing messages.
@@ -2507,7 +2507,7 @@ impl_writeable!(NodeAnnouncement, {
 
 impl Readable for QueryShortChannelIds {
 	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
-		let chain_hash: BlockHash = Readable::read(r)?;
+		let chain_hash: ChainHash = Readable::read(r)?;
 
 		let encoding_len: u16 = Readable::read(r)?;
 		let encoding_type: u8 = Readable::read(r)?;
@@ -2583,7 +2583,7 @@ impl_writeable_msg!(QueryChannelRange, {
 
 impl Readable for ReplyChannelRange {
 	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
-		let chain_hash: BlockHash = Readable::read(r)?;
+		let chain_hash: ChainHash = Readable::read(r)?;
 		let first_blocknum: u32 = Readable::read(r)?;
 		let number_of_blocks: u32 = Readable::read(r)?;
 		let sync_complete: bool = Readable::read(r)?;
@@ -2648,7 +2648,6 @@ impl_writeable_msg!(GossipTimestampFilter, {
 #[cfg(test)]
 mod tests {
 	use std::convert::TryFrom;
-	use bitcoin::blockdata::constants::ChainHash;
 	use bitcoin::{Transaction, PackedLockTime, TxIn, Script, Sequence, Witness, TxOut};
 	use hex;
 	use crate::ln::{PaymentPreimage, PaymentHash, PaymentSecret};
@@ -2663,9 +2662,10 @@ mod tests {
 	use bitcoin::hashes::hex::FromHex;
 	use bitcoin::util::address::Address;
 	use bitcoin::network::constants::Network;
+	use bitcoin::blockdata::constants::ChainHash;
 	use bitcoin::blockdata::script::Builder;
 	use bitcoin::blockdata::opcodes;
-	use bitcoin::hash_types::{Txid, BlockHash};
+	use bitcoin::hash_types::Txid;
 
 	use bitcoin::secp256k1::{PublicKey,SecretKey};
 	use bitcoin::secp256k1::{Secp256k1, Message};
@@ -2794,7 +2794,7 @@ mod tests {
 		}
 		let unsigned_channel_announcement = msgs::UnsignedChannelAnnouncement {
 			features,
-			chain_hash: BlockHash::from_hex("6fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d6190000000000").unwrap(),
+			chain_hash: ChainHash::using_genesis_block(Network::Bitcoin),
 			short_channel_id: 2316138423780173,
 			node_id_1: NodeId::from_pubkey(&pubkey_1),
 			node_id_2: NodeId::from_pubkey(&pubkey_2),
@@ -2816,7 +2816,7 @@ mod tests {
 		} else {
 			target_value.append(&mut hex::decode("0000").unwrap());
 		}
-		target_value.append(&mut hex::decode("000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f").unwrap());
+		target_value.append(&mut hex::decode("6fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d6190000000000").unwrap());
 		target_value.append(&mut hex::decode("00083a840000034d031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f024d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d076602531fe6068134503d2723133227c867ac8fa6c83c537e9a44c3c5bdbdcb1fe33703462779ad4aad39514614751a71085f2f10e1c7a593e4e030efb5b8721ce55b0b").unwrap());
 		if excess_data {
 			target_value.append(&mut hex::decode("0a00001400001e000028").unwrap());
@@ -2945,7 +2945,7 @@ mod tests {
 		let (privkey_1, _) = get_keys_from!("0101010101010101010101010101010101010101010101010101010101010101", secp_ctx);
 		let sig_1 = get_sig_on!(privkey_1, secp_ctx, String::from("01010101010101010101010101010101"));
 		let unsigned_channel_update = msgs::UnsignedChannelUpdate {
-			chain_hash: BlockHash::from_hex("6fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d6190000000000").unwrap(),
+			chain_hash: ChainHash::using_genesis_block(Network::Bitcoin),
 			short_channel_id: 2316138423780173,
 			timestamp: 20190119,
 			flags: if direction { 1 } else { 0 } | if disable { 1 << 1 } else { 0 },
@@ -2962,7 +2962,7 @@ mod tests {
 		};
 		let encoded_value = channel_update.encode();
 		let mut target_value = hex::decode("d977cb9b53d93a6ff64bb5f1e158b4094b66e798fb12911168a3ccdf80a83096340a6a95da0ae8d9f776528eecdbb747eb6b545495a4319ed5378e35b21e073a").unwrap();
-		target_value.append(&mut hex::decode("000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f").unwrap());
+		target_value.append(&mut hex::decode("6fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d6190000000000").unwrap());
 		target_value.append(&mut hex::decode("00083a840000034d013413a7").unwrap());
 		target_value.append(&mut hex::decode("01").unwrap());
 		target_value.append(&mut hex::decode("00").unwrap());
@@ -3003,7 +3003,7 @@ mod tests {
 		let (_, pubkey_5) = get_keys_from!("0505050505050505050505050505050505050505050505050505050505050505", secp_ctx);
 		let (_, pubkey_6) = get_keys_from!("0606060606060606060606060606060606060606060606060606060606060606", secp_ctx);
 		let open_channel = msgs::OpenChannel {
-			chain_hash: BlockHash::from_hex("6fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d6190000000000").unwrap(),
+			chain_hash: ChainHash::using_genesis_block(Network::Bitcoin),
 			temporary_channel_id: ChannelId::from_bytes([2; 32]),
 			funding_satoshis: 1311768467284833366,
 			push_msat: 2536655962884945560,
@@ -3026,7 +3026,7 @@ mod tests {
 		};
 		let encoded_value = open_channel.encode();
 		let mut target_value = Vec::new();
-		target_value.append(&mut hex::decode("000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f").unwrap());
+		target_value.append(&mut hex::decode("6fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d6190000000000").unwrap());
 		target_value.append(&mut hex::decode("02020202020202020202020202020202020202020202020202020202020202021234567890123456233403289122369832144668701144767633030896203198784335490624111800083a840000034d000c89d4c0bcc0bc031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f024d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d076602531fe6068134503d2723133227c867ac8fa6c83c537e9a44c3c5bdbdcb1fe33703462779ad4aad39514614751a71085f2f10e1c7a593e4e030efb5b8721ce55b0b0362c0a046dacce86ddd0343c6d3c7c79c2208ba0d9c9cf24a6d046d21d21f90f703f006a18d5653c4edf5391ff23a61f03ff83d237e880ee61187fa9f379a028e0a").unwrap());
 		if random_bit {
 			target_value.append(&mut hex::decode("20").unwrap());
@@ -3064,7 +3064,7 @@ mod tests {
 		let (_, pubkey_6) = get_keys_from!("0606060606060606060606060606060606060606060606060606060606060606", secp_ctx);
 		let (_, pubkey_7) = get_keys_from!("0707070707070707070707070707070707070707070707070707070707070707", secp_ctx);
 		let open_channelv2 = msgs::OpenChannelV2 {
-			chain_hash: BlockHash::from_hex("6fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d6190000000000").unwrap(),
+			chain_hash: ChainHash::using_genesis_block(Network::Bitcoin),
 			temporary_channel_id: ChannelId::from_bytes([2; 32]),
 			funding_feerate_sat_per_1000_weight: 821716,
 			commitment_feerate_sat_per_1000_weight: 821716,
@@ -3089,7 +3089,7 @@ mod tests {
 		};
 		let encoded_value = open_channelv2.encode();
 		let mut target_value = Vec::new();
-		target_value.append(&mut hex::decode("000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f").unwrap());
+		target_value.append(&mut hex::decode("6fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d6190000000000").unwrap());
 		target_value.append(&mut hex::decode("0202020202020202020202020202020202020202020202020202020202020202").unwrap());
 		target_value.append(&mut hex::decode("000c89d4").unwrap());
 		target_value.append(&mut hex::decode("000c89d4").unwrap());
@@ -3662,7 +3662,7 @@ mod tests {
 
 	#[test]
 	fn encoding_init() {
-		let mainnet_hash = ChainHash::from_hex("6fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d6190000000000").unwrap();
+		let mainnet_hash = ChainHash::using_genesis_block(Network::Bitcoin);
 		assert_eq!(msgs::Init {
 			features: InitFeatures::from_le_bytes(vec![0xFF, 0xFF, 0xFF]),
 			networks: Some(vec![mainnet_hash]),
@@ -3900,7 +3900,7 @@ mod tests {
 
 		for (first_blocknum, number_of_blocks, expected) in tests.into_iter() {
 			let sut = msgs::QueryChannelRange {
-				chain_hash: BlockHash::from_hex("06226e46111a0b59caaf126043eb5bbf28c34f3a5e332a1fc7b2b73cf188910f").unwrap(),
+				chain_hash: ChainHash::using_genesis_block(Network::Regtest),
 				first_blocknum,
 				number_of_blocks,
 			};
@@ -3911,12 +3911,12 @@ mod tests {
 	#[test]
 	fn encoding_query_channel_range() {
 		let mut query_channel_range = msgs::QueryChannelRange {
-			chain_hash: BlockHash::from_hex("06226e46111a0b59caaf126043eb5bbf28c34f3a5e332a1fc7b2b73cf188910f").unwrap(),
+			chain_hash: ChainHash::using_genesis_block(Network::Regtest),
 			first_blocknum: 100000,
 			number_of_blocks: 1500,
 		};
 		let encoded_value = query_channel_range.encode();
-		let target_value = hex::decode("0f9188f13cb7b2c71f2a335e3a4fc328bf5beb436012afca590b1a11466e2206000186a0000005dc").unwrap();
+		let target_value = hex::decode("06226e46111a0b59caaf126043eb5bbf28c34f3a5e332a1fc7b2b73cf188910f000186a0000005dc").unwrap();
 		assert_eq!(encoded_value, target_value);
 
 		query_channel_range = Readable::read(&mut Cursor::new(&target_value[..])).unwrap();
@@ -3931,8 +3931,8 @@ mod tests {
 	}
 
 	fn do_encoding_reply_channel_range(encoding_type: u8) {
-		let mut target_value = hex::decode("0f9188f13cb7b2c71f2a335e3a4fc328bf5beb436012afca590b1a11466e2206000b8a06000005dc01").unwrap();
-		let expected_chain_hash = BlockHash::from_hex("06226e46111a0b59caaf126043eb5bbf28c34f3a5e332a1fc7b2b73cf188910f").unwrap();
+		let mut target_value = hex::decode("06226e46111a0b59caaf126043eb5bbf28c34f3a5e332a1fc7b2b73cf188910f000b8a06000005dc01").unwrap();
+		let expected_chain_hash = ChainHash::using_genesis_block(Network::Regtest);
 		let mut reply_channel_range = msgs::ReplyChannelRange {
 			chain_hash: expected_chain_hash,
 			first_blocknum: 756230,
@@ -3968,8 +3968,8 @@ mod tests {
 	}
 
 	fn do_encoding_query_short_channel_ids(encoding_type: u8) {
-		let mut target_value = hex::decode("0f9188f13cb7b2c71f2a335e3a4fc328bf5beb436012afca590b1a11466e2206").unwrap();
-		let expected_chain_hash = BlockHash::from_hex("06226e46111a0b59caaf126043eb5bbf28c34f3a5e332a1fc7b2b73cf188910f").unwrap();
+		let mut target_value = hex::decode("06226e46111a0b59caaf126043eb5bbf28c34f3a5e332a1fc7b2b73cf188910f").unwrap();
+		let expected_chain_hash = ChainHash::using_genesis_block(Network::Regtest);
 		let mut query_short_channel_ids = msgs::QueryShortChannelIds {
 			chain_hash: expected_chain_hash,
 			short_channel_ids: vec![0x0000000000008e, 0x0000000000003c69, 0x000000000045a6c4],
@@ -3994,13 +3994,13 @@ mod tests {
 
 	#[test]
 	fn encoding_reply_short_channel_ids_end() {
-		let expected_chain_hash = BlockHash::from_hex("06226e46111a0b59caaf126043eb5bbf28c34f3a5e332a1fc7b2b73cf188910f").unwrap();
+		let expected_chain_hash = ChainHash::using_genesis_block(Network::Regtest);
 		let mut reply_short_channel_ids_end = msgs::ReplyShortChannelIdsEnd {
 			chain_hash: expected_chain_hash,
 			full_information: true,
 		};
 		let encoded_value = reply_short_channel_ids_end.encode();
-		let target_value = hex::decode("0f9188f13cb7b2c71f2a335e3a4fc328bf5beb436012afca590b1a11466e220601").unwrap();
+		let target_value = hex::decode("06226e46111a0b59caaf126043eb5bbf28c34f3a5e332a1fc7b2b73cf188910f01").unwrap();
 		assert_eq!(encoded_value, target_value);
 
 		reply_short_channel_ids_end = Readable::read(&mut Cursor::new(&target_value[..])).unwrap();
@@ -4010,14 +4010,14 @@ mod tests {
 
 	#[test]
 	fn encoding_gossip_timestamp_filter(){
-		let expected_chain_hash = BlockHash::from_hex("06226e46111a0b59caaf126043eb5bbf28c34f3a5e332a1fc7b2b73cf188910f").unwrap();
+		let expected_chain_hash = ChainHash::using_genesis_block(Network::Regtest);
 		let mut gossip_timestamp_filter = msgs::GossipTimestampFilter {
 			chain_hash: expected_chain_hash,
 			first_timestamp: 1590000000,
 			timestamp_range: 0xffff_ffff,
 		};
 		let encoded_value = gossip_timestamp_filter.encode();
-		let target_value = hex::decode("0f9188f13cb7b2c71f2a335e3a4fc328bf5beb436012afca590b1a11466e22065ec57980ffffffff").unwrap();
+		let target_value = hex::decode("06226e46111a0b59caaf126043eb5bbf28c34f3a5e332a1fc7b2b73cf188910f5ec57980ffffffff").unwrap();
 		assert_eq!(encoded_value, target_value);
 
 		gossip_timestamp_filter = Readable::read(&mut Cursor::new(&target_value[..])).unwrap();

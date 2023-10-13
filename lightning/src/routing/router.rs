@@ -2830,7 +2830,7 @@ mod tests {
 
 	use bitcoin::hashes::Hash;
 	use bitcoin::network::constants::Network;
-	use bitcoin::blockdata::constants::genesis_block;
+	use bitcoin::blockdata::constants::ChainHash;
 	use bitcoin::blockdata::script::Builder;
 	use bitcoin::blockdata::opcodes;
 	use bitcoin::blockdata::transaction::TxOut;
@@ -2961,7 +2961,7 @@ mod tests {
 
 		// Disable other paths
 		update_channel(&gossip_sync, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 12,
 			timestamp: 2,
 			flags: 2, // to disable
@@ -2973,7 +2973,7 @@ mod tests {
 			excess_data: Vec::new()
 		});
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[0], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 3,
 			timestamp: 2,
 			flags: 2, // to disable
@@ -2985,7 +2985,7 @@ mod tests {
 			excess_data: Vec::new()
 		});
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[7], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 13,
 			timestamp: 2,
 			flags: 2, // to disable
@@ -2997,7 +2997,7 @@ mod tests {
 			excess_data: Vec::new()
 		});
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[2], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 6,
 			timestamp: 2,
 			flags: 2, // to disable
@@ -3009,7 +3009,7 @@ mod tests {
 			excess_data: Vec::new()
 		});
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[2], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 7,
 			timestamp: 2,
 			flags: 2, // to disable
@@ -3024,7 +3024,7 @@ mod tests {
 		// Check against amount_to_transfer_over_msat.
 		// Set minimal HTLC of 200_000_000 msat.
 		update_channel(&gossip_sync, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 2,
 			timestamp: 3,
 			flags: 0,
@@ -3039,7 +3039,7 @@ mod tests {
 		// Second hop only allows to forward 199_999_999 at most, thus not allowing the first hop to
 		// be used.
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[1], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 4,
 			timestamp: 3,
 			flags: 0,
@@ -3062,7 +3062,7 @@ mod tests {
 
 		// Lift the restriction on the first hop.
 		update_channel(&gossip_sync, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 2,
 			timestamp: 4,
 			flags: 0,
@@ -3094,7 +3094,7 @@ mod tests {
 		// One path allows transferring 35-40 sats, another one also allows 35-40 sats.
 		// Thus, they can't send 60 without overpaying.
 		update_channel(&gossip_sync, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 2,
 			timestamp: 2,
 			flags: 0,
@@ -3106,7 +3106,7 @@ mod tests {
 			excess_data: Vec::new()
 		});
 		update_channel(&gossip_sync, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 12,
 			timestamp: 3,
 			flags: 0,
@@ -3120,7 +3120,7 @@ mod tests {
 
 		// Make 0 fee.
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[7], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 13,
 			timestamp: 2,
 			flags: 0,
@@ -3132,7 +3132,7 @@ mod tests {
 			excess_data: Vec::new()
 		});
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[1], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 4,
 			timestamp: 2,
 			flags: 0,
@@ -3146,7 +3146,7 @@ mod tests {
 
 		// Disable other paths
 		update_channel(&gossip_sync, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 1,
 			timestamp: 3,
 			flags: 2, // to disable
@@ -3171,7 +3171,7 @@ mod tests {
 		// Now, test that if there are 2 paths, a "cheaper" by fee path wouldn't be prioritized
 		// while taking even more fee to match htlc_minimum_msat.
 		update_channel(&gossip_sync, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 12,
 			timestamp: 4,
 			flags: 0,
@@ -3183,7 +3183,7 @@ mod tests {
 			excess_data: Vec::new()
 		});
 		update_channel(&gossip_sync, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 2,
 			timestamp: 3,
 			flags: 0,
@@ -3195,7 +3195,7 @@ mod tests {
 			excess_data: Vec::new()
 		});
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[1], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 4,
 			timestamp: 4,
 			flags: 0,
@@ -3240,7 +3240,7 @@ mod tests {
 
 		// First disable all paths except the us -> node1 -> node2 path
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[2], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 13,
 			timestamp: 2,
 			flags: 3,
@@ -3254,7 +3254,7 @@ mod tests {
 
 		// Set channel 4 to free but with a high htlc_minimum_msat
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[1], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 4,
 			timestamp: 2,
 			flags: 0,
@@ -3298,7 +3298,7 @@ mod tests {
 
 		// // Disable channels 4 and 12 by flags=2
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[1], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 4,
 			timestamp: 2,
 			flags: 2, // to disable
@@ -3310,7 +3310,7 @@ mod tests {
 			excess_data: Vec::new()
 		});
 		update_channel(&gossip_sync, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 12,
 			timestamp: 2,
 			flags: 2, // to disable
@@ -3742,7 +3742,7 @@ mod tests {
 
 		// Disabling channels 6 & 7 by flags=2
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[2], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 6,
 			timestamp: 2,
 			flags: 2, // to disable
@@ -3754,7 +3754,7 @@ mod tests {
 			excess_data: Vec::new()
 		});
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[2], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 7,
 			timestamp: 2,
 			flags: 2, // to disable
@@ -3816,7 +3816,7 @@ mod tests {
 
 		// Disabling channels 6 & 7 by flags=2
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[2], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 6,
 			timestamp: 2,
 			flags: 2, // to disable
@@ -3828,7 +3828,7 @@ mod tests {
 			excess_data: Vec::new()
 		});
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[2], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 7,
 			timestamp: 2,
 			flags: 2, // to disable
@@ -4177,7 +4177,7 @@ mod tests {
 
 		// First disable all other paths.
 		update_channel(&gossip_sync, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 2,
 			timestamp: 2,
 			flags: 2,
@@ -4189,7 +4189,7 @@ mod tests {
 			excess_data: Vec::new()
 		});
 		update_channel(&gossip_sync, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 12,
 			timestamp: 2,
 			flags: 2,
@@ -4204,7 +4204,7 @@ mod tests {
 		// Make the first channel (#1) very permissive,
 		// and we will be testing all limits on the second channel.
 		update_channel(&gossip_sync, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 1,
 			timestamp: 2,
 			flags: 0,
@@ -4219,7 +4219,7 @@ mod tests {
 		// First, let's see if routing works if we have absolutely no idea about the available amount.
 		// In this case, it should be set to 250_000 sats.
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[0], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 3,
 			timestamp: 2,
 			flags: 0,
@@ -4258,7 +4258,7 @@ mod tests {
 		// Check that setting next_outbound_htlc_limit_msat in first_hops limits the channels.
 		// Disable channel #1 and use another first hop.
 		update_channel(&gossip_sync, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 1,
 			timestamp: 3,
 			flags: 2,
@@ -4301,7 +4301,7 @@ mod tests {
 
 		// Enable channel #1 back.
 		update_channel(&gossip_sync, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 1,
 			timestamp: 4,
 			flags: 0,
@@ -4316,7 +4316,7 @@ mod tests {
 
 		// Now let's see if routing works if we know only htlc_maximum_msat.
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[0], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 3,
 			timestamp: 3,
 			flags: 0,
@@ -4357,7 +4357,7 @@ mod tests {
 		// We can't change UTXO capacity on the fly, so we'll disable
 		// the existing channel and add another one with the capacity we need.
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[0], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 3,
 			timestamp: 4,
 			flags: 2,
@@ -4381,7 +4381,7 @@ mod tests {
 
 		add_channel(&gossip_sync, &secp_ctx, &privkeys[0], &privkeys[2], ChannelFeatures::from_le_bytes(id_to_feature_flags(3)), 333);
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[0], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 333,
 			timestamp: 1,
 			flags: 0,
@@ -4393,7 +4393,7 @@ mod tests {
 			excess_data: Vec::new()
 		});
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[2], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 333,
 			timestamp: 1,
 			flags: 1,
@@ -4431,7 +4431,7 @@ mod tests {
 
 		// Now let's see if routing chooses htlc_maximum_msat over UTXO capacity.
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[0], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 333,
 			timestamp: 6,
 			flags: 0,
@@ -4486,7 +4486,7 @@ mod tests {
 
 		// Disable other potential paths.
 		update_channel(&gossip_sync, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 2,
 			timestamp: 2,
 			flags: 2,
@@ -4498,7 +4498,7 @@ mod tests {
 			excess_data: Vec::new()
 		});
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[2], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 7,
 			timestamp: 2,
 			flags: 2,
@@ -4513,7 +4513,7 @@ mod tests {
 		// Limit capacities
 
 		update_channel(&gossip_sync, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 12,
 			timestamp: 2,
 			flags: 0,
@@ -4525,7 +4525,7 @@ mod tests {
 			excess_data: Vec::new()
 		});
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[7], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 13,
 			timestamp: 2,
 			flags: 0,
@@ -4538,7 +4538,7 @@ mod tests {
 		});
 
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[2], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 6,
 			timestamp: 2,
 			flags: 0,
@@ -4550,7 +4550,7 @@ mod tests {
 			excess_data: Vec::new()
 		});
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[4], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 11,
 			timestamp: 2,
 			flags: 0,
@@ -4616,7 +4616,7 @@ mod tests {
 
 		// Path via node0 is channels {1, 3}. Limit them to 100 and 50 sats (total limit 50).
 		update_channel(&gossip_sync, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 1,
 			timestamp: 2,
 			flags: 0,
@@ -4628,7 +4628,7 @@ mod tests {
 			excess_data: Vec::new()
 		});
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[0], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 3,
 			timestamp: 2,
 			flags: 0,
@@ -4729,7 +4729,7 @@ mod tests {
 
 		// Path via node0 is channels {1, 3}. Limit them to 100 and 50 sats (total limit 50).
 		update_channel(&gossip_sync, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 1,
 			timestamp: 2,
 			flags: 0,
@@ -4741,7 +4741,7 @@ mod tests {
 			excess_data: Vec::new()
 		});
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[0], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 3,
 			timestamp: 2,
 			flags: 0,
@@ -4756,7 +4756,7 @@ mod tests {
 		// Path via node7 is channels {12, 13}. Limit them to 60 and 60 sats
 		// (total limit 60).
 		update_channel(&gossip_sync, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 12,
 			timestamp: 2,
 			flags: 0,
@@ -4768,7 +4768,7 @@ mod tests {
 			excess_data: Vec::new()
 		});
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[7], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 13,
 			timestamp: 2,
 			flags: 0,
@@ -4783,7 +4783,7 @@ mod tests {
 		// Path via node1 is channels {2, 4}. Limit them to 200 and 180 sats
 		// (total capacity 180 sats).
 		update_channel(&gossip_sync, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 2,
 			timestamp: 2,
 			flags: 0,
@@ -4795,7 +4795,7 @@ mod tests {
 			excess_data: Vec::new()
 		});
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[1], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 4,
 			timestamp: 2,
 			flags: 0,
@@ -4916,7 +4916,7 @@ mod tests {
 
 		// Disable other potential paths.
 		update_channel(&gossip_sync, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 2,
 			timestamp: 2,
 			flags: 2,
@@ -4928,7 +4928,7 @@ mod tests {
 			excess_data: Vec::new()
 		});
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[2], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 7,
 			timestamp: 2,
 			flags: 2,
@@ -4942,7 +4942,7 @@ mod tests {
 
 		// Path via {node0, node2} is channels {1, 3, 5}.
 		update_channel(&gossip_sync, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 1,
 			timestamp: 2,
 			flags: 0,
@@ -4954,7 +4954,7 @@ mod tests {
 			excess_data: Vec::new()
 		});
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[0], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 3,
 			timestamp: 2,
 			flags: 0,
@@ -4969,7 +4969,7 @@ mod tests {
 		// Capacity of 200 sats because this channel will be used by 3rd path as well.
 		add_channel(&gossip_sync, &secp_ctx, &privkeys[2], &privkeys[3], ChannelFeatures::from_le_bytes(id_to_feature_flags(5)), 5);
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[2], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 5,
 			timestamp: 2,
 			flags: 0,
@@ -4985,7 +4985,7 @@ mod tests {
 		// Add 100 sats to the capacities of {12, 13}, because these channels
 		// are also used for 3rd path. 100 sats for the rest. Total capacity: 100 sats.
 		update_channel(&gossip_sync, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 12,
 			timestamp: 2,
 			flags: 0,
@@ -4997,7 +4997,7 @@ mod tests {
 			excess_data: Vec::new()
 		});
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[7], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 13,
 			timestamp: 2,
 			flags: 0,
@@ -5010,7 +5010,7 @@ mod tests {
 		});
 
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[2], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 6,
 			timestamp: 2,
 			flags: 0,
@@ -5022,7 +5022,7 @@ mod tests {
 			excess_data: Vec::new()
 		});
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[4], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 11,
 			timestamp: 2,
 			flags: 0,
@@ -5091,7 +5091,7 @@ mod tests {
 
 		// Disable other potential paths.
 		update_channel(&gossip_sync, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 2,
 			timestamp: 2,
 			flags: 2,
@@ -5103,7 +5103,7 @@ mod tests {
 			excess_data: Vec::new()
 		});
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[2], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 7,
 			timestamp: 2,
 			flags: 2,
@@ -5117,7 +5117,7 @@ mod tests {
 
 		// Path via {node0, node2} is channels {1, 3, 5}.
 		update_channel(&gossip_sync, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 1,
 			timestamp: 2,
 			flags: 0,
@@ -5129,7 +5129,7 @@ mod tests {
 			excess_data: Vec::new()
 		});
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[0], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 3,
 			timestamp: 2,
 			flags: 0,
@@ -5144,7 +5144,7 @@ mod tests {
 		// Capacity of 200 sats because this channel will be used by 3rd path as well.
 		add_channel(&gossip_sync, &secp_ctx, &privkeys[2], &privkeys[3], ChannelFeatures::from_le_bytes(id_to_feature_flags(5)), 5);
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[2], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 5,
 			timestamp: 2,
 			flags: 0,
@@ -5160,7 +5160,7 @@ mod tests {
 		// Add 100 sats to the capacities of {12, 13}, because these channels
 		// are also used for 3rd path. 100 sats for the rest. Total capacity: 100 sats.
 		update_channel(&gossip_sync, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 12,
 			timestamp: 2,
 			flags: 0,
@@ -5172,7 +5172,7 @@ mod tests {
 			excess_data: Vec::new()
 		});
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[7], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 13,
 			timestamp: 2,
 			flags: 0,
@@ -5185,7 +5185,7 @@ mod tests {
 		});
 
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[2], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 6,
 			timestamp: 2,
 			flags: 0,
@@ -5197,7 +5197,7 @@ mod tests {
 			excess_data: Vec::new()
 		});
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[4], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 11,
 			timestamp: 2,
 			flags: 0,
@@ -5262,7 +5262,7 @@ mod tests {
 
 		// Disable other potential paths.
 		update_channel(&gossip_sync, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 2,
 			timestamp: 2,
 			flags: 2,
@@ -5275,7 +5275,7 @@ mod tests {
 		});
 
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[2], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 7,
 			timestamp: 2,
 			flags: 2,
@@ -5289,7 +5289,7 @@ mod tests {
 
 		// Path via {node0, node2} is channels {1, 3, 5}.
 		update_channel(&gossip_sync, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 1,
 			timestamp: 2,
 			flags: 0,
@@ -5301,7 +5301,7 @@ mod tests {
 			excess_data: Vec::new()
 		});
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[0], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 3,
 			timestamp: 2,
 			flags: 0,
@@ -5315,7 +5315,7 @@ mod tests {
 
 		add_channel(&gossip_sync, &secp_ctx, &privkeys[2], &privkeys[3], ChannelFeatures::from_le_bytes(id_to_feature_flags(5)), 5);
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[2], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 5,
 			timestamp: 2,
 			flags: 0,
@@ -5338,7 +5338,7 @@ mod tests {
 		// - fee for channel 6 is 150 sats
 		// Let's test this by enforcing these 2 conditions and removing other limits.
 		update_channel(&gossip_sync, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 12,
 			timestamp: 2,
 			flags: 0,
@@ -5350,7 +5350,7 @@ mod tests {
 			excess_data: Vec::new()
 		});
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[7], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 13,
 			timestamp: 2,
 			flags: 0,
@@ -5363,7 +5363,7 @@ mod tests {
 		});
 
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[2], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 6,
 			timestamp: 2,
 			flags: 0,
@@ -5375,7 +5375,7 @@ mod tests {
 			excess_data: Vec::new()
 		});
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[4], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 11,
 			timestamp: 2,
 			flags: 0,
@@ -5464,7 +5464,7 @@ mod tests {
 		// we think we can only send up to 1 additional sat over the last-hop but refuse to as its
 		// under 5% of our payment amount.
 		update_channel(&gossip_sync, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 1,
 			timestamp: 2,
 			flags: 0,
@@ -5476,7 +5476,7 @@ mod tests {
 			excess_data: Vec::new()
 		});
 		update_channel(&gossip_sync, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 2,
 			timestamp: 2,
 			flags: 0,
@@ -5488,7 +5488,7 @@ mod tests {
 			excess_data: Vec::new()
 		});
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[1], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 4,
 			timestamp: 2,
 			flags: 0,
@@ -5500,7 +5500,7 @@ mod tests {
 			excess_data: Vec::new()
 		});
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[7], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 13,
 			timestamp: 2,
 			flags: 0|2, // Channel disabled
@@ -5557,7 +5557,7 @@ mod tests {
 
 		// Path via node0 is channels {1, 3}. Limit them to 100 and 50 sats (total limit 50);
 		update_channel(&gossip_sync, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 1,
 			timestamp: 2,
 			flags: 0,
@@ -5569,7 +5569,7 @@ mod tests {
 			excess_data: Vec::new()
 		});
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[0], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 3,
 			timestamp: 2,
 			flags: 0,
@@ -5583,7 +5583,7 @@ mod tests {
 
 		// Path via node7 is channels {12, 13}. Limit them to 60 and 60 sats (total limit 60);
 		update_channel(&gossip_sync, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 12,
 			timestamp: 2,
 			flags: 0,
@@ -5595,7 +5595,7 @@ mod tests {
 			excess_data: Vec::new()
 		});
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[7], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 13,
 			timestamp: 2,
 			flags: 0,
@@ -5609,7 +5609,7 @@ mod tests {
 
 		// Path via node1 is channels {2, 4}. Limit them to 20 and 20 sats (total capacity 20 sats).
 		update_channel(&gossip_sync, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 2,
 			timestamp: 2,
 			flags: 0,
@@ -5621,7 +5621,7 @@ mod tests {
 			excess_data: Vec::new()
 		});
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[1], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 4,
 			timestamp: 2,
 			flags: 0,
@@ -5716,7 +5716,7 @@ mod tests {
 
 		add_channel(&gossip_sync, &secp_ctx, &our_privkey, &privkeys[1], ChannelFeatures::from_le_bytes(id_to_feature_flags(6)), 6);
 		update_channel(&gossip_sync, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 6,
 			timestamp: 1,
 			flags: 0,
@@ -5731,7 +5731,7 @@ mod tests {
 
 		add_channel(&gossip_sync, &secp_ctx, &privkeys[1], &privkeys[4], ChannelFeatures::from_le_bytes(id_to_feature_flags(5)), 5);
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[1], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 5,
 			timestamp: 1,
 			flags: 0,
@@ -5746,7 +5746,7 @@ mod tests {
 
 		add_channel(&gossip_sync, &secp_ctx, &privkeys[4], &privkeys[3], ChannelFeatures::from_le_bytes(id_to_feature_flags(4)), 4);
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[4], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 4,
 			timestamp: 1,
 			flags: 0,
@@ -5761,7 +5761,7 @@ mod tests {
 
 		add_channel(&gossip_sync, &secp_ctx, &privkeys[3], &privkeys[2], ChannelFeatures::from_le_bytes(id_to_feature_flags(3)), 3);
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[3], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 3,
 			timestamp: 1,
 			flags: 0,
@@ -5776,7 +5776,7 @@ mod tests {
 
 		add_channel(&gossip_sync, &secp_ctx, &privkeys[2], &privkeys[4], ChannelFeatures::from_le_bytes(id_to_feature_flags(2)), 2);
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[2], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 2,
 			timestamp: 1,
 			flags: 0,
@@ -5790,7 +5790,7 @@ mod tests {
 
 		add_channel(&gossip_sync, &secp_ctx, &privkeys[4], &privkeys[6], ChannelFeatures::from_le_bytes(id_to_feature_flags(1)), 1);
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[4], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 1,
 			timestamp: 1,
 			flags: 0,
@@ -5851,7 +5851,7 @@ mod tests {
 		// We modify the graph to set the htlc_maximum of channel 2 to below the value we wish to
 		// send.
 		update_channel(&gossip_sync, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 2,
 			timestamp: 2,
 			flags: 0,
@@ -5864,7 +5864,7 @@ mod tests {
 		});
 
 		update_channel(&gossip_sync, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 12,
 			timestamp: 2,
 			flags: 0,
@@ -5921,7 +5921,7 @@ mod tests {
 		// gets an htlc_maximum_msat of 80_000 and channel 4 an htlc_minimum_msat of 90_000. We
 		// then try to send 90_000.
 		update_channel(&gossip_sync, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 2,
 			timestamp: 2,
 			flags: 0,
@@ -5933,7 +5933,7 @@ mod tests {
 			excess_data: Vec::new()
 		});
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[1], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 4,
 			timestamp: 2,
 			flags: 0,
@@ -6473,7 +6473,7 @@ mod tests {
 		// Set the fee on channel 13 to 100% to match channel 4 giving us two equivalent paths (us
 		// -> node 7 -> node2 and us -> node 1 -> node 2) which we should balance over.
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[1], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 4,
 			timestamp: 2,
 			flags: 0,
@@ -6485,7 +6485,7 @@ mod tests {
 			excess_data: Vec::new()
 		});
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[7], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 13,
 			timestamp: 2,
 			flags: 0,
@@ -7151,7 +7151,7 @@ mod tests {
 		add_channel(&gossip_sync, &secp_ctx, &privkeys[0], &privkeys[1],
 			ChannelFeatures::from_le_bytes(id_to_feature_flags(1)), 1);
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[0], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 1,
 			timestamp: 1,
 			flags: 0,
@@ -7163,7 +7163,7 @@ mod tests {
 			excess_data: Vec::new()
 		});
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[1], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 1,
 			timestamp: 1,
 			flags: 1,
@@ -7584,7 +7584,7 @@ mod tests {
 
 		add_channel(&gossip_sync, &secp_ctx, &privkeys[0], &privkeys[6], ChannelFeatures::from_le_bytes(id_to_feature_flags(6)), 6);
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[0], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 6,
 			timestamp: 1,
 			flags: 0,
@@ -7711,7 +7711,7 @@ mod tests {
 		add_channel(&gossip_sync, &secp_ctx, &our_privkey, &privkeys[0],
 			ChannelFeatures::from_le_bytes(id_to_feature_flags(1)), 1);
 		update_channel(&gossip_sync, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 1,
 			timestamp: 1,
 			flags: 0,
@@ -7723,7 +7723,7 @@ mod tests {
 			excess_data: Vec::new()
 		});
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[0], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 1,
 			timestamp: 1,
 			flags: 1,
@@ -7738,7 +7738,7 @@ mod tests {
 		add_channel(&gossip_sync, &secp_ctx, &privkeys[0], &privkeys[1],
 			ChannelFeatures::from_le_bytes(id_to_feature_flags(1)), 2);
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[0], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 2,
 			timestamp: 2,
 			flags: 0,
@@ -7750,7 +7750,7 @@ mod tests {
 			excess_data: Vec::new()
 		});
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[1], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 2,
 			timestamp: 2,
 			flags: 1,

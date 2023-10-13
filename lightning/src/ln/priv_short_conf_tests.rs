@@ -30,7 +30,7 @@ use core::default::Default;
 
 use crate::ln::functional_test_utils::*;
 
-use bitcoin::blockdata::constants::genesis_block;
+use bitcoin::blockdata::constants::ChainHash;
 use bitcoin::network::constants::Network;
 
 #[test]
@@ -505,7 +505,7 @@ fn test_scid_alias_returned() {
 
 	// Build the expected channel update
 	let contents = msgs::UnsignedChannelUpdate {
-		chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+		chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 		short_channel_id: last_hop[0].inbound_scid_alias.unwrap(),
 		timestamp: 21,
 		flags: 1,

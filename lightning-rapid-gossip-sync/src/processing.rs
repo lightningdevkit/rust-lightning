@@ -2,7 +2,7 @@ use core::cmp::max;
 use core::ops::Deref;
 use core::sync::atomic::Ordering;
 
-use bitcoin::BlockHash;
+use bitcoin::blockdata::constants::ChainHash;
 use bitcoin::secp256k1::PublicKey;
 
 use lightning::ln::msgs::{
@@ -67,9 +67,9 @@ impl<NG: Deref<Target=NetworkGraph<L>>, L: Deref> RapidGossipSync<NG, L> where L
 			return Err(DecodeError::UnknownVersion.into());
 		}
 
-		let chain_hash: BlockHash = Readable::read(read_cursor)?;
-		let ng_genesis_hash = self.network_graph.get_genesis_hash();
-		if chain_hash != ng_genesis_hash {
+		let chain_hash: ChainHash = Readable::read(read_cursor)?;
+		let ng_chain_hash = self.network_graph.get_chain_hash();
+		if chain_hash != ng_chain_hash {
 			return Err(
 				LightningError {
 					err: "Rapid Gossip Sync data's chain hash does not match the network graph's".to_owned(),
