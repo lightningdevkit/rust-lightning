@@ -3356,7 +3356,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 						continue;
 					}
 				} else { None };
-				if let Some(htlc_tx) = self.onchain_tx_handler.unsafe_get_fully_signed_htlc_tx(
+				if let Some(htlc_tx) = self.onchain_tx_handler.get_fully_signed_htlc_tx(
 					&::bitcoin::OutPoint { txid, vout }, &preimage) {
 					holder_transactions.push(htlc_tx);
 				}

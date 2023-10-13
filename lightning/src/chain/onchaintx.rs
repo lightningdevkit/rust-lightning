@@ -220,12 +220,7 @@ pub struct OnchainTxHandler<ChannelSigner: WriteableEcdsaChannelSigner> {
 	channel_keys_id: [u8; 32],
 	destination_script: Script,
 	holder_commitment: HolderCommitmentTransaction,
-	// holder_htlc_sigs and prev_holder_htlc_sigs are in the order as they appear in the commitment
-	// transaction outputs (hence the Option<>s inside the Vec). The first usize is the index in
-	// the set of HTLCs in the HolderCommitmentTransaction.
-	holder_htlc_sigs: Option<Vec<Option<(usize, Signature)>>>,
 	prev_holder_commitment: Option<HolderCommitmentTransaction>,
-	prev_holder_htlc_sigs: Option<Vec<Option<(usize, Signature)>>>,
 
 	pub(super) signer: ChannelSigner,
 	pub(crate) channel_transaction_parameters: ChannelTransactionParameters,
@@ -283,9 +278,7 @@ impl<ChannelSigner: WriteableEcdsaChannelSigner> PartialEq for OnchainTxHandler<
 			self.channel_keys_id == other.channel_keys_id &&
 			self.destination_script == other.destination_script &&
 			self.holder_commitment == other.holder_commitment &&
-			self.holder_htlc_sigs == other.holder_htlc_sigs &&
 			self.prev_holder_commitment == other.prev_holder_commitment &&
-			self.prev_holder_htlc_sigs == other.prev_holder_htlc_sigs &&
 			self.channel_transaction_parameters == other.channel_transaction_parameters &&
 			self.pending_claim_requests == other.pending_claim_requests &&
 			self.claimable_outpoints == other.claimable_outpoints &&
@@ -303,9 +296,9 @@ impl<ChannelSigner: WriteableEcdsaChannelSigner> OnchainTxHandler<ChannelSigner>
 
 		self.destination_script.write(writer)?;
 		self.holder_commitment.write(writer)?;
-		self.holder_htlc_sigs.write(writer)?;
+		None::<Option<Vec<Option<(usize, Signature)>>>>.write(writer)?; // holder_htlc_sigs
 		self.prev_holder_commitment.write(writer)?;
-		self.prev_holder_htlc_sigs.write(writer)?;
+		None::<Option<Vec<Option<(usize, Signature)>>>>.write(writer)?; // prev_holder_htlc_sigs
 
 		self.channel_transaction_parameters.write(writer)?;
 
@@ -360,9 +353,9 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 		let destination_script = Readable::read(reader)?;
 
 		let holder_commitment = Readable::read(reader)?;
-		let holder_htlc_sigs = Readable::read(reader)?;
+		let _holder_htlc_sigs: Option<Vec<Option<(usize, Signature)>>> = Readable::read(reader)?;
 		let prev_holder_commitment = Readable::read(reader)?;
-		let prev_holder_htlc_sigs = Readable::read(reader)?;
+		let _prev_holder_htlc_sigs: Option<Vec<Option<(usize, Signature)>>> = Readable::read(reader)?;
 
 		let channel_parameters = Readable::read(reader)?;
 
@@ -427,9 +420,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 			channel_keys_id,
 			destination_script,
 			holder_commitment,
-			holder_htlc_sigs,
 			prev_holder_commitment,
-			prev_holder_htlc_sigs,
 			signer,
 			channel_transaction_parameters: channel_parameters,
 			claimable_outpoints,
@@ -453,9 +444,7 @@ impl<ChannelSigner: WriteableEcdsaChannelSigner> OnchainTxHandler<ChannelSigner>
 			channel_keys_id,
 			destination_script,
 			holder_commitment,
-			holder_htlc_sigs: None,
 			prev_holder_commitment: None,
-			prev_holder_htlc_sigs: None,
 			signer,
 			channel_transaction_parameters: channel_parameters,
 			pending_claim_requests: HashMap::new(),
@@ -1101,39 +1090,6 @@ impl<ChannelSigner: WriteableEcdsaChannelSigner> OnchainTxHandler<ChannelSigner>
 
 	pub(crate) fn provide_latest_holder_tx(&mut self, tx: HolderCommitmentTransaction) {
 		self.prev_holder_commitment = Some(replace(&mut self.holder_commitment, tx));
-		self.holder_htlc_sigs = None;
-	}
-
-	// Normally holder HTLCs are signed at the same time as the holder commitment tx.  However,
-	// in some configurations, the holder commitment tx has been signed and broadcast by a
-	// ChannelMonitor replica, so we handle that case here.
-	fn sign_latest_holder_htlcs(&mut self) {
-		if self.holder_htlc_sigs.is_none() {
-			let (_sig, sigs) = self.signer.sign_holder_commitment_and_htlcs(&self.holder_commitment, &self.secp_ctx).expect("sign holder commitment");
-			self.holder_htlc_sigs = Some(Self::extract_holder_sigs(&self.holder_commitment, sigs));
-		}
-	}
-
-	// Normally only the latest commitment tx and HTLCs need to be signed.  However, in some
-	// configurations we may have updated our holder commitment but a replica of the ChannelMonitor
-	// broadcast the previous one before we sync with it.  We handle that case here.
-	fn sign_prev_holder_htlcs(&mut self) {
-		if self.prev_holder_htlc_sigs.is_none() {
-			if let Some(ref holder_commitment) = self.prev_holder_commitment {
-				let (_sig, sigs) = self.signer.sign_holder_commitment_and_htlcs(holder_commitment, &self.secp_ctx).expect("sign previous holder commitment");
-				self.prev_holder_htlc_sigs = Some(Self::extract_holder_sigs(holder_commitment, sigs));
-			}
-		}
-	}
-
-	fn extract_holder_sigs(holder_commitment: &HolderCommitmentTransaction, sigs: Vec<Signature>) -> Vec<Option<(usize, Signature)>> {
-		let mut ret = Vec::new();
-		for (htlc_idx, (holder_sig, htlc)) in sigs.iter().zip(holder_commitment.htlcs().iter()).enumerate() {
-			let tx_idx = htlc.transaction_output_index.unwrap();
-			if ret.len() <= tx_idx as usize { ret.resize(tx_idx as usize + 1, None); }
-			ret[tx_idx as usize] = Some((htlc_idx, holder_sig.clone()));
-		}
-		ret
 	}
 
 	pub(crate) fn get_unsigned_holder_commitment_tx(&self) -> &Transaction {
@@ -1145,15 +1101,13 @@ impl<ChannelSigner: WriteableEcdsaChannelSigner> OnchainTxHandler<ChannelSigner>
 	// before providing a initial commitment transaction. For outbound channel, init ChannelMonitor at Channel::funding_signed, there is nothing
 	// to monitor before.
 	pub(crate) fn get_fully_signed_holder_tx(&mut self, funding_redeemscript: &Script) -> Transaction {
-		let (sig, htlc_sigs) = self.signer.sign_holder_commitment_and_htlcs(&self.holder_commitment, &self.secp_ctx).expect("signing holder commitment");
-		self.holder_htlc_sigs = Some(Self::extract_holder_sigs(&self.holder_commitment, htlc_sigs));
+		let (sig, _) = self.signer.sign_holder_commitment_and_htlcs(&self.holder_commitment, &self.secp_ctx).expect("signing holder commitment");
 		self.holder_commitment.add_holder_sig(funding_redeemscript, sig)
 	}
 
 	#[cfg(any(test, feature="unsafe_revoked_tx_signing"))]
 	pub(crate) fn get_fully_signed_copy_holder_tx(&mut self, funding_redeemscript: &Script) -> Transaction {
-		let (sig, htlc_sigs) = self.signer.unsafe_sign_holder_commitment_and_htlcs(&self.holder_commitment, &self.secp_ctx).expect("sign holder commitment");
-		self.holder_htlc_sigs = Some(Self::extract_holder_sigs(&self.holder_commitment, htlc_sigs));
+		let (sig, _) = self.signer.unsafe_sign_holder_commitment_and_htlcs(&self.holder_commitment, &self.secp_ctx).expect("sign holder commitment");
 		self.holder_commitment.add_holder_sig(funding_redeemscript, sig)
 	}
 
@@ -1229,19 +1183,5 @@ impl<ChannelSigner: WriteableEcdsaChannelSigner> OnchainTxHandler<ChannelSigner>
 
 	pub(crate) fn channel_type_features(&self) -> &ChannelTypeFeatures {
 		&self.channel_transaction_parameters.channel_type_features
-	}
-
-	#[cfg(any(test,feature = "unsafe_revoked_tx_signing"))]
-	pub(crate) fn unsafe_get_fully_signed_htlc_tx(&mut self, outp: &::bitcoin::OutPoint, preimage: &Option<PaymentPreimage>) -> Option<Transaction> {
-		let latest_had_sigs = self.holder_htlc_sigs.is_some();
-		let prev_had_sigs = self.prev_holder_htlc_sigs.is_some();
-		let ret = self.get_fully_signed_htlc_tx(outp, preimage);
-		if !latest_had_sigs {
-			self.holder_htlc_sigs = None;
-		}
-		if !prev_had_sigs {
-			self.prev_holder_htlc_sigs = None;
-		}
-		ret
 	}
 }
