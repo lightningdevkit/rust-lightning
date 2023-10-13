@@ -23,7 +23,6 @@ use crate::ln::chan_utils::{
 	ANCHOR_INPUT_WITNESS_WEIGHT, HTLC_SUCCESS_INPUT_ANCHOR_WITNESS_WEIGHT,
 	HTLC_TIMEOUT_INPUT_ANCHOR_WITNESS_WEIGHT, ChannelTransactionParameters, HTLCOutputInCommitment
 };
-use crate::ln::features::ChannelTypeFeatures;
 use crate::ln::PaymentPreimage;
 use crate::prelude::*;
 use crate::sign::{EcdsaChannelSigner, SignerProvider, WriteableEcdsaChannelSigner, P2WPKH_WITNESS_WEIGHT};
@@ -136,6 +135,10 @@ pub struct HTLCDescriptor {
 	///
 	/// See <https://github.com/lightning/bolts/blob/master/03-transactions.md#keys> for more info.
 	pub per_commitment_point: PublicKey,
+	/// The feerate to use on the HTLC claiming transaction. This is always `0` for HTLCs
+	/// originating from a channel supporting anchor outputs, otherwise it is the channel's
+	/// negotiated feerate at the time the commitment transaction was built.
+	pub feerate_per_kw: u32,
 	/// The details of the HTLC as it appears in the commitment transaction.
 	pub htlc: HTLCOutputInCommitment,
 	/// The preimage, if `Some`, to claim the HTLC output with. If `None`, the timeout path must be
@@ -146,13 +149,14 @@ pub struct HTLCDescriptor {
 }
 
 impl_writeable_tlv_based!(HTLCDescriptor, {
-    (0, channel_derivation_parameters, required),
-    (2, commitment_txid, required),
-    (4, per_commitment_number, required),
-    (6, per_commitment_point, required),
-    (8, htlc, required),
-    (10, preimage, option),
-    (12, counterparty_sig, required),
+	(0, channel_derivation_parameters, required),
+	(1, feerate_per_kw, (default_value, 0)),
+	(2, commitment_txid, required),
+	(4, per_commitment_number, required),
+	(6, per_commitment_point, required),
+	(8, htlc, required),
+	(10, preimage, option),
+	(12, counterparty_sig, required),
 });
 
 impl HTLCDescriptor {
@@ -177,7 +181,9 @@ impl HTLCDescriptor {
 	/// Returns the unsigned transaction input spending the HTLC output in the commitment
 	/// transaction.
 	pub fn unsigned_tx_input(&self) -> TxIn {
-		chan_utils::build_htlc_input(&self.commitment_txid, &self.htlc, &ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies())
+		chan_utils::build_htlc_input(
+			&self.commitment_txid, &self.htlc, &self.channel_derivation_parameters.transaction_parameters.channel_type_features
+		)
 	}
 
 	/// Returns the delayed output created as a result of spending the HTLC output in the commitment
@@ -193,8 +199,8 @@ impl HTLCDescriptor {
 			secp, &self.per_commitment_point, &counterparty_keys.revocation_basepoint
 		);
 		chan_utils::build_htlc_output(
-			0 /* feerate_per_kw */, channel_params.contest_delay(), &self.htlc,
-			&ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies(), &broadcaster_delayed_key, &counterparty_revocation_key
+			self.feerate_per_kw, channel_params.contest_delay(), &self.htlc,
+			channel_params.channel_type_features(), &broadcaster_delayed_key, &counterparty_revocation_key
 		)
 	}
 
@@ -213,7 +219,7 @@ impl HTLCDescriptor {
 			secp, &self.per_commitment_point, &counterparty_keys.revocation_basepoint
 		);
 		chan_utils::get_htlc_redeemscript_with_explicit_keys(
-			&self.htlc, &ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies(), &broadcaster_htlc_key, &counterparty_htlc_key,
+			&self.htlc, channel_params.channel_type_features(), &broadcaster_htlc_key, &counterparty_htlc_key,
 			&counterparty_revocation_key,
 		)
 	}
@@ -222,7 +228,8 @@ impl HTLCDescriptor {
 	/// transaction.
 	pub fn tx_input_witness(&self, signature: &Signature, witness_script: &Script) -> Witness {
 		chan_utils::build_htlc_input_witness(
-			signature, &self.counterparty_sig, &self.preimage, witness_script, &ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies() /* opt_anchors */
+			signature, &self.counterparty_sig, &self.preimage, witness_script,
+			&self.channel_derivation_parameters.transaction_parameters.channel_type_features
 		)
 	}
 

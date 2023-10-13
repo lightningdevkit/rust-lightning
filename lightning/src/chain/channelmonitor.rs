@@ -2835,6 +2835,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 							per_commitment_point: self.onchain_tx_handler.signer.get_per_commitment_point(
 								htlc.per_commitment_number, &self.onchain_tx_handler.secp_ctx,
 							),
+							feerate_per_kw: 0,
 							htlc: htlc.htlc,
 							preimage: htlc.preimage,
 							counterparty_sig: htlc.counterparty_sig,

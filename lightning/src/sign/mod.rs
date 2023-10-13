@@ -552,9 +552,7 @@ pub trait EcdsaChannelSigner: ChannelSigner {
 		secp_ctx: &Secp256k1<secp256k1::All>) -> Result<Signature, ()>;
 	/// Computes the signature for a commitment transaction's HTLC output used as an input within
 	/// `htlc_tx`, which spends the commitment transaction at index `input`. The signature returned
-	/// must be be computed using [`EcdsaSighashType::All`]. Note that this should only be used to
-	/// sign HTLC transactions from channels supporting anchor outputs after all additional
-	/// inputs/outputs have been added to the transaction.
+	/// must be be computed using [`EcdsaSighashType::All`].
 	///
 	/// [`EcdsaSighashType::All`]: bitcoin::blockdata::transaction::EcdsaSighashType::All
 	fn sign_holder_htlc_transaction(&self, htlc_tx: &Transaction, input: usize,
