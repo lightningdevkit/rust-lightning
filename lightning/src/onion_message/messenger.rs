@@ -20,7 +20,7 @@ use crate::blinded_path::message::{advance_path_by_one, ForwardTlvs, ReceiveTlvs
 use crate::blinded_path::utils;
 use crate::sign::{EntropySource, KeysManager, NodeSigner, Recipient};
 use crate::ln::features::{InitFeatures, NodeFeatures};
-use crate::ln::msgs::{self, OnionMessageHandler};
+use crate::ln::msgs::{self, OnionMessage, OnionMessageHandler};
 use crate::ln::onion_utils;
 use crate::ln::peer_handler::IgnoringMessageHandler;
 pub use super::packet::{CustomOnionMessageContents, OnionMessageContents};
@@ -132,7 +132,6 @@ use crate::prelude::*;
 /// onion_messenger.send_onion_message(path, message, reply_path);
 /// ```
 ///
-/// [`OnionMessage`]: crate::ln::msgs::OnionMessage
 /// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
 /// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
 pub struct OnionMessenger<ES: Deref, NS: Deref, L: Deref, MR: Deref, OMH: Deref, CMH: Deref>
@@ -147,7 +146,7 @@ where
 	entropy_source: ES,
 	node_signer: NS,
 	logger: L,
-	pending_messages: Mutex<HashMap<PublicKey, VecDeque<msgs::OnionMessage>>>,
+	pending_messages: Mutex<HashMap<PublicKey, VecDeque<OnionMessage>>>,
 	secp_ctx: Secp256k1<secp256k1::All>,
 	message_router: MR,
 	offers_handler: OMH,
@@ -155,12 +154,8 @@ where
 }
 
 /// A trait defining behavior for routing an [`OnionMessage`].
-///
-/// [`OnionMessage`]: msgs::OnionMessage
 pub trait MessageRouter {
 	/// Returns a route for sending an [`OnionMessage`] to the given [`Destination`].
-	///
-	/// [`OnionMessage`]: msgs::OnionMessage
 	fn find_path(
 		&self, sender: PublicKey, peers: Vec<PublicKey>, destination: Destination
 	) -> Result<OnionMessagePath, ()>;
@@ -177,7 +172,7 @@ impl MessageRouter for DefaultMessageRouter {
 	}
 }
 
-/// A path for sending an [`msgs::OnionMessage`].
+/// A path for sending an [`OnionMessage`].
 #[derive(Clone)]
 pub struct OnionMessagePath {
 	/// Nodes on the path between the sender and the destination.
@@ -262,7 +257,7 @@ pub trait CustomOnionMessageHandler {
 /// or a Receive payload with decrypted contents.
 pub enum PeeledOnion<CM: CustomOnionMessageContents> {
 	/// Forwarded onion, with the next node id and a new onion
-	Forward(PublicKey, msgs::OnionMessage),
+	Forward(PublicKey, OnionMessage),
 	/// Received onion message, with decrypted contents, path_id, and reply path
 	Receive(OnionMessageContents<CM>, Option<[u8; 32]>, Option<BlindedPath>)
 }
@@ -271,12 +266,10 @@ pub enum PeeledOnion<CM: CustomOnionMessageContents> {
 /// `path`.
 ///
 /// Returns both the node id of the peer to send the message to and the message itself.
-///
-/// [`OnionMessage`]: msgs::OnionMessage
 pub fn create_onion_message<ES: Deref, NS: Deref, T: CustomOnionMessageContents>(
 	entropy_source: &ES, node_signer: &NS, secp_ctx: &Secp256k1<secp256k1::All>,
 	path: OnionMessagePath, contents: OnionMessageContents<T>, reply_path: Option<BlindedPath>,
-) -> Result<(PublicKey, msgs::OnionMessage), SendError>
+) -> Result<(PublicKey, OnionMessage), SendError>
 where
 	ES::Target: EntropySource,
 	NS::Target: NodeSigner,
@@ -322,7 +315,7 @@ where
 	let onion_routing_packet = construct_onion_message_packet(
 		packet_payloads, packet_keys, prng_seed).map_err(|()| SendError::TooBigPacket)?;
 
-	Ok((first_node_id, msgs::OnionMessage {
+	Ok((first_node_id, OnionMessage {
 		blinding_point,
 		onion_routing_packet
 	}))
@@ -332,7 +325,7 @@ where
 /// Returns either a Forward (another onion message), or Receive (decrypted content)
 pub fn peel_onion<NS: Deref, L: Deref, CMH: Deref>(
 	node_signer: NS, secp_ctx: &Secp256k1<secp256k1::All>, logger: L, custom_handler: CMH,
-	msg: &msgs::OnionMessage,
+	msg: &OnionMessage,
 ) -> Result<PeeledOnion<<<CMH>::Target as CustomOnionMessageHandler>::CustomMessage>, ()>
 where
 	NS::Target: NodeSigner,
@@ -392,7 +385,7 @@ where
 				hop_data: new_packet_bytes,
 				hmac: next_hop_hmac,
 			};
-			let onion_message = msgs::OnionMessage {
+			let onion_message = OnionMessage {
 				blinding_point: match next_blinding_override {
 					Some(blinding_point) => blinding_point,
 					None => {
@@ -453,7 +446,7 @@ where
 		}
 	}
 
-	/// Sends an [`msgs::OnionMessage`] with the given `contents` for sending to the destination of
+	/// Sends an [`OnionMessage`] with the given `contents` for sending to the destination of
 	/// `path`.
 	///
 	/// See [`OnionMessenger`] for example usage.
@@ -527,7 +520,7 @@ where
 	}
 
 	#[cfg(test)]
-	pub(super) fn release_pending_msgs(&self) -> HashMap<PublicKey, VecDeque<msgs::OnionMessage>> {
+	pub(super) fn release_pending_msgs(&self) -> HashMap<PublicKey, VecDeque<OnionMessage>> {
 		let mut pending_msgs = self.pending_messages.lock().unwrap();
 		let mut msgs = HashMap::new();
 		// We don't want to disconnect the peers by removing them entirely from the original map, so we
@@ -539,7 +532,7 @@ where
 	}
 }
 
-fn outbound_buffer_full(peer_node_id: &PublicKey, buffer: &HashMap<PublicKey, VecDeque<msgs::OnionMessage>>) -> bool {
+fn outbound_buffer_full(peer_node_id: &PublicKey, buffer: &HashMap<PublicKey, VecDeque<OnionMessage>>) -> bool {
 	const MAX_TOTAL_BUFFER_SIZE: usize = (1 << 20) * 128;
 	const MAX_PER_PEER_BUFFER_SIZE: usize = (1 << 10) * 256;
 	let mut total_buffered_bytes = 0;
@@ -575,7 +568,7 @@ where
 	/// Handle an incoming onion message. Currently, if a message was destined for us we will log, but
 	/// soon we'll delegate the onion message to a handler that can generate invoices or send
 	/// payments.
-	fn handle_onion_message(&self, _peer_node_id: &PublicKey, msg: &msgs::OnionMessage) {
+	fn handle_onion_message(&self, _peer_node_id: &PublicKey, msg: &OnionMessage) {
 		match peel_onion(
 			&*self.node_signer, &self.secp_ctx, &*self.logger, &*self.custom_handler, msg
 		) {
@@ -649,7 +642,7 @@ where
 		features
 	}
 
-	fn next_onion_message_for_peer(&self, peer_node_id: PublicKey) -> Option<msgs::OnionMessage> {
+	fn next_onion_message_for_peer(&self, peer_node_id: PublicKey) -> Option<OnionMessage> {
 		let mut pending_msgs = self.pending_messages.lock().unwrap();
 		if let Some(msgs) = pending_msgs.get_mut(&peer_node_id) {
 			return msgs.pop_front()
