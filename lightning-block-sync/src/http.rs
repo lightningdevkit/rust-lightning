@@ -511,21 +511,19 @@ mod endpoint_tests {
 
 	#[test]
 	fn convert_to_socket_addrs() {
-		let endpoint = HttpEndpoint::for_host("foo.com".into());
+		let endpoint = HttpEndpoint::for_host("localhost".into());
 		let host = endpoint.host();
 		let port = endpoint.port();
 
 		use std::net::ToSocketAddrs;
 		match (&endpoint).to_socket_addrs() {
 			Err(e) => panic!("Unexpected error: {:?}", e),
-			Ok(mut socket_addrs) => {
-				match socket_addrs.next() {
-					None => panic!("Expected socket address"),
-					Some(addr) => {
-						assert_eq!(addr, (host, port).to_socket_addrs().unwrap().next().unwrap());
-						assert!(socket_addrs.next().is_none());
-					}
+			Ok(socket_addrs) => {
+				let mut std_addrs = (host, port).to_socket_addrs().unwrap();
+				for addr in socket_addrs {
+					assert_eq!(addr, std_addrs.next().unwrap());
 				}
+				assert!(std_addrs.next().is_none());
 			}
 		}
 	}
