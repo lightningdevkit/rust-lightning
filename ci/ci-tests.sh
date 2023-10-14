@@ -80,6 +80,7 @@ if [ "$RUSTC_MINOR_VERSION" -gt 55 ]; then
 	echo -e "\n\nTest Custom Message Macros"
 	pushd lightning-custom-message
 	cargo test --verbose --color always
+	[ "$CI_MINIMIZE_DISK_USAGE" != "" ] && cargo clean
 	popd
 fi
 
@@ -130,17 +131,20 @@ else
 	[ "$RUSTC_MINOR_VERSION" -lt 60 ] && cargo update -p memchr --precise "2.5.0" --verbose
 	cargo check --verbose --color always
 fi
+[ "$CI_MINIMIZE_DISK_USAGE" != "" ] && cargo clean
 popd
 
 # Test that we can build downstream code with only the "release pins".
 pushd msrv-no-dev-deps-check
 PIN_RELEASE_DEPS
 cargo check
+[ "$CI_MINIMIZE_DISK_USAGE" != "" ] && cargo clean
 popd
 
 if [ -f "$(which arm-none-eabi-gcc)" ]; then
 	pushd no-std-check
 	cargo build --target=thumbv7m-none-eabi
+	[ "$CI_MINIMIZE_DISK_USAGE" != "" ] && cargo clean
 	popd
 fi
 
