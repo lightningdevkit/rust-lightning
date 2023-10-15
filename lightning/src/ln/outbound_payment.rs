@@ -901,12 +901,10 @@ impl OutboundPayments {
 			RetryableSendFailure::RouteNotFound
 		})?;
 
-		if let Some(route_route_params) = route.route_params.as_mut() {
-			if route_route_params.final_value_msat != route_params.final_value_msat {
-				debug_assert!(false,
-					"Routers are expected to return a route which includes the requested final_value_msat");
-				route_route_params.final_value_msat = route_params.final_value_msat;
-			}
+		if route.route_params.as_ref() != Some(&route_params) {
+			debug_assert!(false,
+				"Routers are expected to return a Route which includes the requested RouteParameters");
+			route.route_params = Some(route_params.clone());
 		}
 
 		let onion_session_privs = self.add_new_pending_payment(payment_hash,
@@ -963,12 +961,10 @@ impl OutboundPayments {
 			}
 		};
 
-		if let Some(route_route_params) = route.route_params.as_mut() {
-			if route_route_params.final_value_msat != route_params.final_value_msat {
-				debug_assert!(false,
-					"Routers are expected to return a route which includes the requested final_value_msat");
-				route_route_params.final_value_msat = route_params.final_value_msat;
-			}
+		if route.route_params.as_ref() != Some(&route_params) {
+			debug_assert!(false,
+				"Routers are expected to return a Route which includes the requested RouteParameters");
+			route.route_params = Some(route_params.clone());
 		}
 
 		for path in route.paths.iter() {
@@ -1958,7 +1954,9 @@ mod tests {
 		router.expect_find_route(route_params.clone(), Ok(route.clone()));
 		let mut route_params_w_failed_scid = route_params.clone();
 		route_params_w_failed_scid.payment_params.previously_failed_channels.push(failed_scid);
-		router.expect_find_route(route_params_w_failed_scid, Ok(route.clone()));
+		let mut route_w_failed_scid = route.clone();
+		route_w_failed_scid.route_params = Some(route_params_w_failed_scid.clone());
+		router.expect_find_route(route_params_w_failed_scid, Ok(route_w_failed_scid));
 		router.expect_find_route(route_params.clone(), Ok(route.clone()));
 		router.expect_find_route(route_params.clone(), Ok(route.clone()));
 
