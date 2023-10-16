@@ -8184,8 +8184,7 @@ mod tests {
 		use bitcoin::hashes::hex::FromHex;
 		use bitcoin::hash_types::Txid;
 		use bitcoin::secp256k1::Message;
-		use crate::events::bump_transaction::{ChannelDerivationParameters, HTLCDescriptor};
-		use crate::sign::EcdsaChannelSigner;
+		use crate::sign::{ChannelDerivationParameters, HTLCDescriptor, EcdsaChannelSigner};
 		use crate::ln::PaymentPreimage;
 		use crate::ln::channel::{HTLCOutputInCommitment ,TxCreationKeys};
 		use crate::ln::chan_utils::{ChannelPublicKeys, HolderCommitmentTransaction, CounterpartyChannelTransactionParameters};

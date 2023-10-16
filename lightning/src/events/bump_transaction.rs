@@ -21,19 +21,21 @@ use crate::ln::channel::ANCHOR_OUTPUT_VALUE_SATOSHI;
 use crate::ln::chan_utils;
 use crate::ln::chan_utils::{
 	ANCHOR_INPUT_WITNESS_WEIGHT, HTLC_SUCCESS_INPUT_ANCHOR_WITNESS_WEIGHT,
-	HTLC_TIMEOUT_INPUT_ANCHOR_WITNESS_WEIGHT, ChannelTransactionParameters, HTLCOutputInCommitment
+	HTLC_TIMEOUT_INPUT_ANCHOR_WITNESS_WEIGHT, HTLCOutputInCommitment
 };
-use crate::ln::PaymentPreimage;
 use crate::prelude::*;
-use crate::sign::{EcdsaChannelSigner, SignerProvider, WriteableEcdsaChannelSigner, P2WPKH_WITNESS_WEIGHT};
+use crate::sign::{
+	ChannelDerivationParameters, HTLCDescriptor, EcdsaChannelSigner, SignerProvider,
+	WriteableEcdsaChannelSigner, P2WPKH_WITNESS_WEIGHT
+};
 use crate::sync::Mutex;
 use crate::util::logger::Logger;
 
-use bitcoin::{OutPoint, PackedLockTime, PubkeyHash, Sequence, Script, Transaction, Txid, TxIn, TxOut, Witness, WPubkeyHash};
+use bitcoin::{OutPoint, PackedLockTime, PubkeyHash, Sequence, Script, Transaction, TxIn, TxOut, Witness, WPubkeyHash};
 use bitcoin::blockdata::constants::WITNESS_SCALE_FACTOR;
 use bitcoin::consensus::Encodable;
 use bitcoin::secp256k1;
-use bitcoin::secp256k1::{PublicKey, Secp256k1};
+use bitcoin::secp256k1::Secp256k1;
 use bitcoin::secp256k1::ecdsa::Signature;
 
 const EMPTY_SCRIPT_SIG_WEIGHT: u64 = 1 /* empty script_sig */ * WITNESS_SCALE_FACTOR as u64;
@@ -41,26 +43,6 @@ const EMPTY_SCRIPT_SIG_WEIGHT: u64 = 1 /* empty script_sig */ * WITNESS_SCALE_FA
 const BASE_INPUT_SIZE: u64 = 32 /* txid */ + 4 /* vout */ + 4 /* sequence */;
 
 const BASE_INPUT_WEIGHT: u64 = BASE_INPUT_SIZE * WITNESS_SCALE_FACTOR as u64;
-
-/// The parameters required to derive a channel signer via [`SignerProvider`].
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ChannelDerivationParameters {
-	/// The value in satoshis of the channel we're attempting to spend the anchor output of.
-	pub value_satoshis: u64,
-	/// The unique identifier to re-derive the signer for the associated channel.
-	pub keys_id: [u8; 32],
-	/// The necessary channel parameters that need to be provided to the re-derived signer through
-	/// [`ChannelSigner::provide_channel_parameters`].
-	///
-	/// [`ChannelSigner::provide_channel_parameters`]: crate::sign::ChannelSigner::provide_channel_parameters
-	pub transaction_parameters: ChannelTransactionParameters,
-}
-
-impl_writeable_tlv_based!(ChannelDerivationParameters, {
-    (0, value_satoshis, required),
-    (2, keys_id, required),
-    (4, transaction_parameters, required),
-});
 
 /// A descriptor used to sign for a commitment transaction's anchor output.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -107,133 +89,6 @@ impl AnchorDescriptor {
 	}
 
 	/// Derives the channel signer required to sign the anchor input.
-	pub fn derive_channel_signer<S: WriteableEcdsaChannelSigner, SP: Deref>(&self, signer_provider: &SP) -> S
-	where
-		SP::Target: SignerProvider<Signer = S>
-	{
-		let mut signer = signer_provider.derive_channel_signer(
-			self.channel_derivation_parameters.value_satoshis,
-			self.channel_derivation_parameters.keys_id,
-		);
-		signer.provide_channel_parameters(&self.channel_derivation_parameters.transaction_parameters);
-		signer
-	}
-}
-
-/// A descriptor used to sign for a commitment transaction's HTLC output.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct HTLCDescriptor {
-	/// The parameters required to derive the signer for the HTLC input.
-	pub channel_derivation_parameters: ChannelDerivationParameters,
-	/// The txid of the commitment transaction in which the HTLC output lives.
-	pub commitment_txid: Txid,
-	/// The number of the commitment transaction in which the HTLC output lives.
-	pub per_commitment_number: u64,
-	/// The key tweak corresponding to the number of the commitment transaction in which the HTLC
-	/// output lives. This tweak is applied to all the basepoints for both parties in the channel to
-	/// arrive at unique keys per commitment.
-	///
-	/// See <https://github.com/lightning/bolts/blob/master/03-transactions.md#keys> for more info.
-	pub per_commitment_point: PublicKey,
-	/// The feerate to use on the HTLC claiming transaction. This is always `0` for HTLCs
-	/// originating from a channel supporting anchor outputs, otherwise it is the channel's
-	/// negotiated feerate at the time the commitment transaction was built.
-	pub feerate_per_kw: u32,
-	/// The details of the HTLC as it appears in the commitment transaction.
-	pub htlc: HTLCOutputInCommitment,
-	/// The preimage, if `Some`, to claim the HTLC output with. If `None`, the timeout path must be
-	/// taken.
-	pub preimage: Option<PaymentPreimage>,
-	/// The counterparty's signature required to spend the HTLC output.
-	pub counterparty_sig: Signature
-}
-
-impl_writeable_tlv_based!(HTLCDescriptor, {
-	(0, channel_derivation_parameters, required),
-	(1, feerate_per_kw, (default_value, 0)),
-	(2, commitment_txid, required),
-	(4, per_commitment_number, required),
-	(6, per_commitment_point, required),
-	(8, htlc, required),
-	(10, preimage, option),
-	(12, counterparty_sig, required),
-});
-
-impl HTLCDescriptor {
-	/// Returns the outpoint of the HTLC output in the commitment transaction. This is the outpoint
-	/// being spent by the HTLC input in the HTLC transaction.
-	pub fn outpoint(&self) -> OutPoint {
-		OutPoint {
-			txid: self.commitment_txid,
-			vout: self.htlc.transaction_output_index.unwrap(),
-		}
-	}
-
-	/// Returns the UTXO to be spent by the HTLC input, which can be obtained via
-	/// [`Self::unsigned_tx_input`].
-	pub fn previous_utxo<C: secp256k1::Signing + secp256k1::Verification>(&self, secp: &Secp256k1<C>) -> TxOut {
-		TxOut {
-			script_pubkey: self.witness_script(secp).to_v0_p2wsh(),
-			value: self.htlc.amount_msat / 1000,
-		}
-	}
-
-	/// Returns the unsigned transaction input spending the HTLC output in the commitment
-	/// transaction.
-	pub fn unsigned_tx_input(&self) -> TxIn {
-		chan_utils::build_htlc_input(
-			&self.commitment_txid, &self.htlc, &self.channel_derivation_parameters.transaction_parameters.channel_type_features
-		)
-	}
-
-	/// Returns the delayed output created as a result of spending the HTLC output in the commitment
-	/// transaction.
-	pub fn tx_output<C: secp256k1::Signing + secp256k1::Verification>(&self, secp: &Secp256k1<C>) -> TxOut {
-		let channel_params = self.channel_derivation_parameters.transaction_parameters.as_holder_broadcastable();
-		let broadcaster_keys = channel_params.broadcaster_pubkeys();
-		let counterparty_keys = channel_params.countersignatory_pubkeys();
-		let broadcaster_delayed_key = chan_utils::derive_public_key(
-			secp, &self.per_commitment_point, &broadcaster_keys.delayed_payment_basepoint
-		);
-		let counterparty_revocation_key = chan_utils::derive_public_revocation_key(
-			secp, &self.per_commitment_point, &counterparty_keys.revocation_basepoint
-		);
-		chan_utils::build_htlc_output(
-			self.feerate_per_kw, channel_params.contest_delay(), &self.htlc,
-			channel_params.channel_type_features(), &broadcaster_delayed_key, &counterparty_revocation_key
-		)
-	}
-
-	/// Returns the witness script of the HTLC output in the commitment transaction.
-	pub fn witness_script<C: secp256k1::Signing + secp256k1::Verification>(&self, secp: &Secp256k1<C>) -> Script {
-		let channel_params = self.channel_derivation_parameters.transaction_parameters.as_holder_broadcastable();
-		let broadcaster_keys = channel_params.broadcaster_pubkeys();
-		let counterparty_keys = channel_params.countersignatory_pubkeys();
-		let broadcaster_htlc_key = chan_utils::derive_public_key(
-			secp, &self.per_commitment_point, &broadcaster_keys.htlc_basepoint
-		);
-		let counterparty_htlc_key = chan_utils::derive_public_key(
-			secp, &self.per_commitment_point, &counterparty_keys.htlc_basepoint
-		);
-		let counterparty_revocation_key = chan_utils::derive_public_revocation_key(
-			secp, &self.per_commitment_point, &counterparty_keys.revocation_basepoint
-		);
-		chan_utils::get_htlc_redeemscript_with_explicit_keys(
-			&self.htlc, channel_params.channel_type_features(), &broadcaster_htlc_key, &counterparty_htlc_key,
-			&counterparty_revocation_key,
-		)
-	}
-
-	/// Returns the fully signed witness required to spend the HTLC output in the commitment
-	/// transaction.
-	pub fn tx_input_witness(&self, signature: &Signature, witness_script: &Script) -> Witness {
-		chan_utils::build_htlc_input_witness(
-			signature, &self.counterparty_sig, &self.preimage, witness_script,
-			&self.channel_derivation_parameters.transaction_parameters.channel_type_features
-		)
-	}
-
-	/// Derives the channel signer required to sign the HTLC input.
 	pub fn derive_channel_signer<S: WriteableEcdsaChannelSigner, SP: Deref>(&self, signer_provider: &SP) -> S
 	where
 		SP::Target: SignerProvider<Signer = S>
@@ -342,7 +197,6 @@ pub enum BumpTransactionEvent {
 	///
 	/// [`EcdsaChannelSigner`]: crate::sign::EcdsaChannelSigner
 	/// [`EcdsaChannelSigner::sign_holder_htlc_transaction`]: crate::sign::EcdsaChannelSigner::sign_holder_htlc_transaction
-	/// [`HTLCDescriptor::tx_input_witness`]: HTLCDescriptor::tx_input_witness
 	HTLCResolution {
 		/// The unique identifier for the claim of the HTLCs in the confirmed commitment
 		/// transaction.
