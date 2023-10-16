@@ -319,11 +319,16 @@ where
 		($msg: expr, $err_code: expr) => {
 			{
 				log_info!(logger, "Failed to accept/forward incoming HTLC: {}", $msg);
+				let (sha256_of_onion, failure_code) = if msg.blinding_point.is_some() {
+					([0; 32], INVALID_ONION_BLINDING)
+				} else {
+					(Sha256::hash(&msg.onion_routing_packet.hop_data).to_byte_array(), $err_code)
+				};
 				return Err(HTLCFailureMsg::Malformed(msgs::UpdateFailMalformedHTLC {
 					channel_id: msg.channel_id,
 					htlc_id: msg.htlc_id,
-					sha256_of_onion: Sha256::hash(&msg.onion_routing_packet.hop_data).to_byte_array(),
-					failure_code: $err_code,
+					sha256_of_onion,
+					failure_code,
 				}));
 			}
 		}

@@ -281,7 +281,12 @@ fn failed_backwards_to_intro_node() {
 
 	let mut updates = get_htlc_update_msgs!(nodes[2], nodes[1].node.get_our_node_id());
 	let mut update_malformed = &mut updates.update_fail_malformed_htlcs[0];
-	// Ensure the final hop does not correctly blind their error.
+	// Check that the final node encodes its failure correctly.
+	assert_eq!(update_malformed.failure_code, INVALID_ONION_BLINDING);
+	assert_eq!(update_malformed.sha256_of_onion, [0; 32]);
+
+	// Modify such the final hop does not correctly blind their error so we can ensure the intro node
+	// converts it to the correct error.
 	update_malformed.sha256_of_onion = [1; 32];
 	nodes[1].node.handle_update_fail_malformed_htlc(&nodes[2].node.get_our_node_id(), update_malformed);
 	do_commitment_signed_dance(&nodes[1], &nodes[2], &updates.commitment_signed, true, false);
