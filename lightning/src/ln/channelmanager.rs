@@ -4297,8 +4297,9 @@ where
 							}
 						}
 					}
-					let (counterparty_node_id, forward_chan_id) = match self.short_to_chan_info.read().unwrap().get(&short_chan_id) {
-						Some((cp_id, chan_id)) => (cp_id.clone(), chan_id.clone()),
+					let chan_info_opt = self.short_to_chan_info.read().unwrap().get(&short_chan_id).cloned();
+					let (counterparty_node_id, forward_chan_id) = match chan_info_opt {
+						Some((cp_id, chan_id)) => (cp_id, chan_id),
 						None => {
 							forwarding_channel_not_found!();
 							continue;
