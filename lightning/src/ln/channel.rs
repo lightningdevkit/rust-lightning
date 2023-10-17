@@ -7,6 +7,7 @@
 // You may not use this file except in accordance with one or both of these
 // licenses.
 
+use bitcoin::blockdata::constants::ChainHash;
 use bitcoin::blockdata::script::{Script,Builder};
 use bitcoin::blockdata::transaction::{Transaction, EcdsaSighashType};
 use bitcoin::util::sighash;
@@ -2661,7 +2662,7 @@ impl<SP: Deref> Channel<SP> where
 	/// and the channel is now usable (and public), this may generate an announcement_signatures to
 	/// reply with.
 	pub fn channel_ready<NS: Deref, L: Deref>(
-		&mut self, msg: &msgs::ChannelReady, node_signer: &NS, genesis_block_hash: BlockHash,
+		&mut self, msg: &msgs::ChannelReady, node_signer: &NS, chain_hash: ChainHash,
 		user_config: &UserConfig, best_block: &BestBlock, logger: &L
 	) -> Result<Option<msgs::AnnouncementSignatures>, ChannelError>
 	where
@@ -2732,7 +2733,7 @@ impl<SP: Deref> Channel<SP> where
 
 		log_info!(logger, "Received channel_ready from peer for channel {}", &self.context.channel_id());
 
-		Ok(self.get_announcement_sigs(node_signer, genesis_block_hash, user_config, best_block.height(), logger))
+		Ok(self.get_announcement_sigs(node_signer, chain_hash, user_config, best_block.height(), logger))
 	}
 
 	pub fn update_add_htlc<F, FE: Deref, L: Deref>(
@@ -3766,7 +3767,7 @@ impl<SP: Deref> Channel<SP> where
 	/// successfully and we should restore normal operation. Returns messages which should be sent
 	/// to the remote side.
 	pub fn monitor_updating_restored<L: Deref, NS: Deref>(
-		&mut self, logger: &L, node_signer: &NS, genesis_block_hash: BlockHash,
+		&mut self, logger: &L, node_signer: &NS, chain_hash: ChainHash,
 		user_config: &UserConfig, best_block_height: u32
 	) -> MonitorRestoreUpdates
 	where
@@ -3807,7 +3808,7 @@ impl<SP: Deref> Channel<SP> where
 			})
 		} else { None };
 
-		let announcement_sigs = self.get_announcement_sigs(node_signer, genesis_block_hash, user_config, best_block_height, logger);
+		let announcement_sigs = self.get_announcement_sigs(node_signer, chain_hash, user_config, best_block_height, logger);
 
 		let mut accepted_htlcs = Vec::new();
 		mem::swap(&mut accepted_htlcs, &mut self.context.monitor_pending_forwards);
@@ -3977,7 +3978,7 @@ impl<SP: Deref> Channel<SP> where
 	/// [`super::channelmanager::ChannelManager::force_close_all_channels_without_broadcasting_txn`].
 	pub fn channel_reestablish<L: Deref, NS: Deref>(
 		&mut self, msg: &msgs::ChannelReestablish, logger: &L, node_signer: &NS,
-		genesis_block_hash: BlockHash, user_config: &UserConfig, best_block: &BestBlock
+		chain_hash: ChainHash, user_config: &UserConfig, best_block: &BestBlock
 	) -> Result<ReestablishResponses, ChannelError>
 	where
 		L::Target: Logger,
@@ -4036,7 +4037,7 @@ impl<SP: Deref> Channel<SP> where
 
 		let shutdown_msg = self.get_outbound_shutdown();
 
-		let announcement_sigs = self.get_announcement_sigs(node_signer, genesis_block_hash, user_config, best_block.height(), logger);
+		let announcement_sigs = self.get_announcement_sigs(node_signer, chain_hash, user_config, best_block.height(), logger);
 
 		if self.context.channel_state & (ChannelState::FundingSent as u32) == ChannelState::FundingSent as u32 {
 			// If we're waiting on a monitor update, we shouldn't re-send any channel_ready's.
@@ -4813,7 +4814,7 @@ impl<SP: Deref> Channel<SP> where
 	/// In the second, we simply return an Err indicating we need to be force-closed now.
 	pub fn transactions_confirmed<NS: Deref, L: Deref>(
 		&mut self, block_hash: &BlockHash, height: u32, txdata: &TransactionData,
-		genesis_block_hash: BlockHash, node_signer: &NS, user_config: &UserConfig, logger: &L
+		chain_hash: ChainHash, node_signer: &NS, user_config: &UserConfig, logger: &L
 	) -> Result<(Option<msgs::ChannelReady>, Option<msgs::AnnouncementSignatures>), ClosureReason>
 	where
 		NS::Target: NodeSigner,
@@ -4874,7 +4875,7 @@ impl<SP: Deref> Channel<SP> where
 					// may have already happened for this block).
 					if let Some(channel_ready) = self.check_get_channel_ready(height) {
 						log_info!(logger, "Sending a channel_ready to our peer for channel {}", &self.context.channel_id);
-						let announcement_sigs = self.get_announcement_sigs(node_signer, genesis_block_hash, user_config, height, logger);
+						let announcement_sigs = self.get_announcement_sigs(node_signer, chain_hash, user_config, height, logger);
 						msgs = (Some(channel_ready), announcement_sigs);
 					}
 				}
@@ -4901,19 +4902,19 @@ impl<SP: Deref> Channel<SP> where
 	/// May return some HTLCs (and their payment_hash) which have timed out and should be failed
 	/// back.
 	pub fn best_block_updated<NS: Deref, L: Deref>(
-		&mut self, height: u32, highest_header_time: u32, genesis_block_hash: BlockHash,
+		&mut self, height: u32, highest_header_time: u32, chain_hash: ChainHash,
 		node_signer: &NS, user_config: &UserConfig, logger: &L
 	) -> Result<(Option<msgs::ChannelReady>, Vec<(HTLCSource, PaymentHash)>, Option<msgs::AnnouncementSignatures>), ClosureReason>
 	where
 		NS::Target: NodeSigner,
 		L::Target: Logger
 	{
-		self.do_best_block_updated(height, highest_header_time, Some((genesis_block_hash, node_signer, user_config)), logger)
+		self.do_best_block_updated(height, highest_header_time, Some((chain_hash, node_signer, user_config)), logger)
 	}
 
 	fn do_best_block_updated<NS: Deref, L: Deref>(
 		&mut self, height: u32, highest_header_time: u32,
-		genesis_node_signer: Option<(BlockHash, &NS, &UserConfig)>, logger: &L
+		chain_node_signer: Option<(ChainHash, &NS, &UserConfig)>, logger: &L
 	) -> Result<(Option<msgs::ChannelReady>, Vec<(HTLCSource, PaymentHash)>, Option<msgs::AnnouncementSignatures>), ClosureReason>
 	where
 		NS::Target: NodeSigner,
@@ -4939,8 +4940,8 @@ impl<SP: Deref> Channel<SP> where
 		self.context.update_time_counter = cmp::max(self.context.update_time_counter, highest_header_time);
 
 		if let Some(channel_ready) = self.check_get_channel_ready(height) {
-			let announcement_sigs = if let Some((genesis_block_hash, node_signer, user_config)) = genesis_node_signer {
-				self.get_announcement_sigs(node_signer, genesis_block_hash, user_config, height, logger)
+			let announcement_sigs = if let Some((chain_hash, node_signer, user_config)) = chain_node_signer {
+				self.get_announcement_sigs(node_signer, chain_hash, user_config, height, logger)
 			} else { None };
 			log_info!(logger, "Sending a channel_ready to our peer for channel {}", &self.context.channel_id);
 			return Ok((Some(channel_ready), timed_out_htlcs, announcement_sigs));
@@ -4980,8 +4981,8 @@ impl<SP: Deref> Channel<SP> where
 			return Err(ClosureReason::FundingTimedOut);
 		}
 
-		let announcement_sigs = if let Some((genesis_block_hash, node_signer, user_config)) = genesis_node_signer {
-			self.get_announcement_sigs(node_signer, genesis_block_hash, user_config, height, logger)
+		let announcement_sigs = if let Some((chain_hash, node_signer, user_config)) = chain_node_signer {
+			self.get_announcement_sigs(node_signer, chain_hash, user_config, height, logger)
 		} else { None };
 		Ok((None, timed_out_htlcs, announcement_sigs))
 	}
@@ -4998,7 +4999,7 @@ impl<SP: Deref> Channel<SP> where
 			// larger. If we don't know that time has moved forward, we can just set it to the last
 			// time we saw and it will be ignored.
 			let best_time = self.context.update_time_counter;
-			match self.do_best_block_updated(reorg_height, best_time, None::<(BlockHash, &&NodeSigner, &UserConfig)>, logger) {
+			match self.do_best_block_updated(reorg_height, best_time, None::<(ChainHash, &&NodeSigner, &UserConfig)>, logger) {
 				Ok((channel_ready, timed_out_htlcs, announcement_sigs)) => {
 					assert!(channel_ready.is_none(), "We can't generate a funding with 0 confirmations?");
 					assert!(timed_out_htlcs.is_empty(), "We can't have accepted HTLCs with a timeout before our funding confirmation?");
@@ -5028,7 +5029,7 @@ impl<SP: Deref> Channel<SP> where
 	///
 	/// [`ChannelReady`]: crate::ln::msgs::ChannelReady
 	fn get_channel_announcement<NS: Deref>(
-		&self, node_signer: &NS, chain_hash: BlockHash, user_config: &UserConfig,
+		&self, node_signer: &NS, chain_hash: ChainHash, user_config: &UserConfig,
 	) -> Result<msgs::UnsignedChannelAnnouncement, ChannelError> where NS::Target: NodeSigner {
 		if !self.context.config.announced_channel {
 			return Err(ChannelError::Ignore("Channel is not available for public announcements".to_owned()));
@@ -5059,7 +5060,7 @@ impl<SP: Deref> Channel<SP> where
 	}
 
 	fn get_announcement_sigs<NS: Deref, L: Deref>(
-		&mut self, node_signer: &NS, genesis_block_hash: BlockHash, user_config: &UserConfig,
+		&mut self, node_signer: &NS, chain_hash: ChainHash, user_config: &UserConfig,
 		best_block_height: u32, logger: &L
 	) -> Option<msgs::AnnouncementSignatures>
 	where
@@ -5084,7 +5085,7 @@ impl<SP: Deref> Channel<SP> where
 		}
 
 		log_trace!(logger, "Creating an announcement_signatures message for channel {}", &self.context.channel_id());
-		let announcement = match self.get_channel_announcement(node_signer, genesis_block_hash, user_config) {
+		let announcement = match self.get_channel_announcement(node_signer, chain_hash, user_config) {
 			Ok(a) => a,
 			Err(e) => {
 				log_trace!(logger, "{:?}", e);
@@ -5158,7 +5159,7 @@ impl<SP: Deref> Channel<SP> where
 	/// channel_announcement message which we can broadcast and storing our counterparty's
 	/// signatures for later reconstruction/rebroadcast of the channel_announcement.
 	pub fn announcement_signatures<NS: Deref>(
-		&mut self, node_signer: &NS, chain_hash: BlockHash, best_block_height: u32,
+		&mut self, node_signer: &NS, chain_hash: ChainHash, best_block_height: u32,
 		msg: &msgs::AnnouncementSignatures, user_config: &UserConfig
 	) -> Result<msgs::ChannelAnnouncement, ChannelError> where NS::Target: NodeSigner {
 		let announcement = self.get_channel_announcement(node_signer, chain_hash, user_config)?;
@@ -5188,7 +5189,7 @@ impl<SP: Deref> Channel<SP> where
 	/// Gets a signed channel_announcement for this channel, if we previously received an
 	/// announcement_signatures from our counterparty.
 	pub fn get_signed_channel_announcement<NS: Deref>(
-		&self, node_signer: &NS, chain_hash: BlockHash, best_block_height: u32, user_config: &UserConfig
+		&self, node_signer: &NS, chain_hash: ChainHash, best_block_height: u32, user_config: &UserConfig
 	) -> Option<msgs::ChannelAnnouncement> where NS::Target: NodeSigner {
 		if self.context.funding_tx_confirmation_height == 0 || self.context.funding_tx_confirmation_height + 5 > best_block_height {
 			return None;
@@ -5998,7 +5999,7 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 	/// not of our ability to open any channel at all. Thus, on error, we should first call this
 	/// and see if we get a new `OpenChannel` message, otherwise the channel is failed.
 	pub(crate) fn maybe_handle_error_without_close<F: Deref>(
-		&mut self, chain_hash: BlockHash, fee_estimator: &LowerBoundedFeeEstimator<F>
+		&mut self, chain_hash: ChainHash, fee_estimator: &LowerBoundedFeeEstimator<F>
 	) -> Result<msgs::OpenChannel, ()>
 	where
 		F::Target: FeeEstimator
@@ -6030,7 +6031,7 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 		Ok(self.get_open_channel(chain_hash))
 	}
 
-	pub fn get_open_channel(&self, chain_hash: BlockHash) -> msgs::OpenChannel {
+	pub fn get_open_channel(&self, chain_hash: ChainHash) -> msgs::OpenChannel {
 		if !self.context.is_outbound() {
 			panic!("Tried to open a channel for an inbound channel?");
 		}
@@ -7633,9 +7634,9 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 #[cfg(test)]
 mod tests {
 	use std::cmp;
+	use bitcoin::blockdata::constants::ChainHash;
 	use bitcoin::blockdata::script::{Script, Builder};
 	use bitcoin::blockdata::transaction::{Transaction, TxOut};
-	use bitcoin::blockdata::constants::genesis_block;
 	use bitcoin::blockdata::opcodes;
 	use bitcoin::network::constants::Network;
 	use hex;
@@ -7779,7 +7780,7 @@ mod tests {
 		// Now change the fee so we can check that the fee in the open_channel message is the
 		// same as the old fee.
 		fee_est.fee_est = 500;
-		let open_channel_msg = node_a_chan.get_open_channel(genesis_block(network).header.block_hash());
+		let open_channel_msg = node_a_chan.get_open_channel(ChainHash::using_genesis_block(network));
 		assert_eq!(open_channel_msg.feerate_per_kw, original_fee);
 	}
 
@@ -7805,7 +7806,7 @@ mod tests {
 
 		// Create Node B's channel by receiving Node A's open_channel message
 		// Make sure A's dust limit is as we expect.
-		let open_channel_msg = node_a_chan.get_open_channel(genesis_block(network).header.block_hash());
+		let open_channel_msg = node_a_chan.get_open_channel(ChainHash::using_genesis_block(network));
 		let node_b_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[7; 32]).unwrap());
 		let mut node_b_chan = InboundV1Channel::<&TestKeysInterface>::new(&feeest, &&keys_provider, &&keys_provider, node_b_node_id, &channelmanager::provided_channel_type_features(&config), &channelmanager::provided_init_features(&config), &open_channel_msg, 7, &config, 0, &&logger, /*is_0conf=*/false).unwrap();
 
@@ -7923,7 +7924,7 @@ mod tests {
 		let seed = [42; 32];
 		let network = Network::Testnet;
 		let best_block = BestBlock::from_network(network);
-		let chain_hash = best_block.block_hash();
+		let chain_hash = ChainHash::using_genesis_block(network);
 		let keys_provider = test_utils::TestKeysInterface::new(&seed, network);
 
 		// Go through the flow of opening a channel between two nodes.
@@ -8003,7 +8004,7 @@ mod tests {
 		let chan_2_value_msat = chan_2.context.channel_value_satoshis * 1000;
 		assert_eq!(chan_2.context.holder_max_htlc_value_in_flight_msat, (chan_2_value_msat as f64 * 0.99) as u64);
 
-		let chan_1_open_channel_msg = chan_1.get_open_channel(genesis_block(network).header.block_hash());
+		let chan_1_open_channel_msg = chan_1.get_open_channel(ChainHash::using_genesis_block(network));
 
 		// Test that `InboundV1Channel::new` creates a channel with the correct value for
 		// `holder_max_htlc_value_in_flight_msat`, when configured with a valid percentage value,
@@ -8084,7 +8085,7 @@ mod tests {
 		let expected_outbound_selected_chan_reserve = cmp::max(MIN_THEIR_CHAN_RESERVE_SATOSHIS, (chan.context.channel_value_satoshis as f64 * outbound_selected_channel_reserve_perc) as u64);
 		assert_eq!(chan.context.holder_selected_channel_reserve_satoshis, expected_outbound_selected_chan_reserve);
 
-		let chan_open_channel_msg = chan.get_open_channel(genesis_block(network).header.block_hash());
+		let chan_open_channel_msg = chan.get_open_channel(ChainHash::using_genesis_block(network));
 		let mut inbound_node_config = UserConfig::default();
 		inbound_node_config.channel_handshake_config.their_channel_reserve_proportional_millionths = (inbound_selected_channel_reserve_perc * 1_000_000.0) as u32;
 
@@ -8110,7 +8111,7 @@ mod tests {
 		let seed = [42; 32];
 		let network = Network::Testnet;
 		let best_block = BestBlock::from_network(network);
-		let chain_hash = genesis_block(network).header.block_hash();
+		let chain_hash = ChainHash::using_genesis_block(network);
 		let keys_provider = test_utils::TestKeysInterface::new(&seed, network);
 
 		// Create Node A's channel pointing to Node B's pubkey
@@ -8120,7 +8121,7 @@ mod tests {
 
 		// Create Node B's channel by receiving Node A's open_channel message
 		// Make sure A's dust limit is as we expect.
-		let open_channel_msg = node_a_chan.get_open_channel(genesis_block(network).header.block_hash());
+		let open_channel_msg = node_a_chan.get_open_channel(ChainHash::using_genesis_block(network));
 		let node_b_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[7; 32]).unwrap());
 		let mut node_b_chan = InboundV1Channel::<&TestKeysInterface>::new(&feeest, &&keys_provider, &&keys_provider, node_b_node_id, &channelmanager::provided_channel_type_features(&config), &channelmanager::provided_init_features(&config), &open_channel_msg, 7, &config, 0, &&logger, /*is_0conf=*/false).unwrap();
 
@@ -8957,7 +8958,7 @@ mod tests {
 		let mut channel_type_features = ChannelTypeFeatures::only_static_remote_key();
 		channel_type_features.set_zero_conf_required();
 
-		let mut open_channel_msg = node_a_chan.get_open_channel(genesis_block(network).header.block_hash());
+		let mut open_channel_msg = node_a_chan.get_open_channel(ChainHash::using_genesis_block(network));
 		open_channel_msg.channel_type = Some(channel_type_features);
 		let node_b_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[7; 32]).unwrap());
 		let res = InboundV1Channel::<&TestKeysInterface>::new(&feeest, &&keys_provider, &&keys_provider,
@@ -9000,7 +9001,7 @@ mod tests {
 			&channelmanager::provided_init_features(&config), 10000000, 100000, 42, &config, 0, 42
 		).unwrap();
 
-		let open_channel_msg = channel_a.get_open_channel(genesis_block(network).header.block_hash());
+		let open_channel_msg = channel_a.get_open_channel(ChainHash::using_genesis_block(network));
 		let channel_b = InboundV1Channel::<&TestKeysInterface>::new(
 			&fee_estimator, &&keys_provider, &&keys_provider, node_id_a,
 			&channelmanager::provided_channel_type_features(&config), &channelmanager::provided_init_features(&config),
@@ -9038,7 +9039,7 @@ mod tests {
 		).unwrap();
 
 		// Set `channel_type` to `None` to force the implicit feature negotiation.
-		let mut open_channel_msg = channel_a.get_open_channel(genesis_block(network).header.block_hash());
+		let mut open_channel_msg = channel_a.get_open_channel(ChainHash::using_genesis_block(network));
 		open_channel_msg.channel_type = None;
 
 		// Since A supports both `static_remote_key` and `option_anchors`, but B only accepts
@@ -9083,7 +9084,7 @@ mod tests {
 			&channelmanager::provided_init_features(&config), 10000000, 100000, 42, &config, 0, 42
 		).unwrap();
 
-		let mut open_channel_msg = channel_a.get_open_channel(genesis_block(network).header.block_hash());
+		let mut open_channel_msg = channel_a.get_open_channel(ChainHash::using_genesis_block(network));
 		open_channel_msg.channel_type = Some(simple_anchors_channel_type.clone());
 
 		let res = InboundV1Channel::<&TestKeysInterface>::new(
@@ -9102,7 +9103,7 @@ mod tests {
 			10000000, 100000, 42, &config, 0, 42
 		).unwrap();
 
-		let open_channel_msg = channel_a.get_open_channel(genesis_block(network).header.block_hash());
+		let open_channel_msg = channel_a.get_open_channel(ChainHash::using_genesis_block(network));
 
 		let channel_b = InboundV1Channel::<&TestKeysInterface>::new(
 			&fee_estimator, &&keys_provider, &&keys_provider, node_id_a,
@@ -9127,7 +9128,7 @@ mod tests {
 		let seed = [42; 32];
 		let network = Network::Testnet;
 		let best_block = BestBlock::from_network(network);
-		let chain_hash = genesis_block(network).header.block_hash();
+		let chain_hash = ChainHash::using_genesis_block(network);
 		let keys_provider = test_utils::TestKeysInterface::new(&seed, network);
 
 		let mut config = UserConfig::default();
@@ -9151,7 +9152,7 @@ mod tests {
 			42,
 		).unwrap();
 
-		let open_channel_msg = node_a_chan.get_open_channel(genesis_block(network).header.block_hash());
+		let open_channel_msg = node_a_chan.get_open_channel(ChainHash::using_genesis_block(network));
 		let node_b_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[7; 32]).unwrap());
 		let mut node_b_chan = InboundV1Channel::<&TestKeysInterface>::new(
 			&feeest,

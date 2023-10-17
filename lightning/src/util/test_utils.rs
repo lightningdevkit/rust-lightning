@@ -581,17 +581,17 @@ pub struct TestChannelMessageHandler {
 	expected_recv_msgs: Mutex<Option<Vec<wire::Message<()>>>>,
 	connected_peers: Mutex<HashSet<PublicKey>>,
 	pub message_fetch_counter: AtomicUsize,
-	genesis_hash: ChainHash,
+	chain_hash: ChainHash,
 }
 
 impl TestChannelMessageHandler {
-	pub fn new(genesis_hash: ChainHash) -> Self {
+	pub fn new(chain_hash: ChainHash) -> Self {
 		TestChannelMessageHandler {
 			pending_events: Mutex::new(Vec::new()),
 			expected_recv_msgs: Mutex::new(None),
 			connected_peers: Mutex::new(HashSet::new()),
 			message_fetch_counter: AtomicUsize::new(0),
-			genesis_hash,
+			chain_hash,
 		}
 	}
 
@@ -695,8 +695,8 @@ impl msgs::ChannelMessageHandler for TestChannelMessageHandler {
 		channelmanager::provided_init_features(&UserConfig::default())
 	}
 
-	fn get_genesis_hashes(&self) -> Option<Vec<ChainHash>> {
-		Some(vec![self.genesis_hash])
+	fn get_chain_hashes(&self) -> Option<Vec<ChainHash>> {
+		Some(vec![self.chain_hash])
 	}
 
 	fn handle_open_channel_v2(&self, _their_node_id: &PublicKey, msg: &msgs::OpenChannelV2) {
@@ -764,7 +764,7 @@ fn get_dummy_channel_announcement(short_chan_id: u64) -> msgs::ChannelAnnounceme
 	let node_2_btckey = SecretKey::from_slice(&[39; 32]).unwrap();
 	let unsigned_ann = msgs::UnsignedChannelAnnouncement {
 		features: ChannelFeatures::empty(),
-		chain_hash: genesis_block(network).header.block_hash(),
+		chain_hash: ChainHash::using_genesis_block(network),
 		short_channel_id: short_chan_id,
 		node_id_1: NodeId::from_pubkey(&PublicKey::from_secret_key(&secp_ctx, &node_1_privkey)),
 		node_id_2: NodeId::from_pubkey(&PublicKey::from_secret_key(&secp_ctx, &node_2_privkey)),
@@ -790,7 +790,7 @@ fn get_dummy_channel_update(short_chan_id: u64) -> msgs::ChannelUpdate {
 	msgs::ChannelUpdate {
 		signature: Signature::from(unsafe { FFISignature::new() }),
 		contents: msgs::UnsignedChannelUpdate {
-			chain_hash: genesis_block(network).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(network),
 			short_channel_id: short_chan_id,
 			timestamp: 0,
 			flags: 0,
@@ -866,7 +866,7 @@ impl msgs::RoutingMessageHandler for TestRoutingMessageHandler {
 		pending_events.push(events::MessageSendEvent::SendGossipTimestampFilter {
 			node_id: their_node_id.clone(),
 			msg: msgs::GossipTimestampFilter {
-				chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+				chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 				first_timestamp: gossip_start_time as u32,
 				timestamp_range: u32::max_value(),
 			},
@@ -1197,7 +1197,7 @@ impl core::fmt::Debug for OnGetShutdownScriptpubkey {
 }
 
 pub struct TestChainSource {
-	pub genesis_hash: BlockHash,
+	pub chain_hash: ChainHash,
 	pub utxo_ret: Mutex<UtxoResult>,
 	pub get_utxo_call_count: AtomicUsize,
 	pub watched_txn: Mutex<HashSet<(Txid, Script)>>,
@@ -1208,7 +1208,7 @@ impl TestChainSource {
 	pub fn new(network: Network) -> Self {
 		let script_pubkey = Builder::new().push_opcode(opcodes::OP_TRUE).into_script();
 		Self {
-			genesis_hash: genesis_block(network).block_hash(),
+			chain_hash: ChainHash::using_genesis_block(network),
 			utxo_ret: Mutex::new(UtxoResult::Sync(Ok(TxOut { value: u64::max_value(), script_pubkey }))),
 			get_utxo_call_count: AtomicUsize::new(0),
 			watched_txn: Mutex::new(HashSet::new()),
@@ -1218,9 +1218,9 @@ impl TestChainSource {
 }
 
 impl UtxoLookup for TestChainSource {
-	fn get_utxo(&self, genesis_hash: &BlockHash, _short_channel_id: u64) -> UtxoResult {
+	fn get_utxo(&self, chain_hash: &ChainHash, _short_channel_id: u64) -> UtxoResult {
 		self.get_utxo_call_count.fetch_add(1, Ordering::Relaxed);
-		if self.genesis_hash != *genesis_hash {
+		if self.chain_hash != *chain_hash {
 			return UtxoResult::Sync(Err(UtxoLookupError::UnknownChain));
 		}
 

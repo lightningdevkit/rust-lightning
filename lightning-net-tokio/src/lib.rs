@@ -630,7 +630,7 @@ mod tests {
 		fn handle_error(&self, _their_node_id: &PublicKey, _msg: &ErrorMessage) {}
 		fn provided_node_features(&self) -> NodeFeatures { NodeFeatures::empty() }
 		fn provided_init_features(&self, _their_node_id: &PublicKey) -> InitFeatures { InitFeatures::empty() }
-		fn get_genesis_hashes(&self) -> Option<Vec<ChainHash>> {
+		fn get_chain_hashes(&self) -> Option<Vec<ChainHash>> {
 			Some(vec![ChainHash::using_genesis_block(Network::Testnet)])
 		}
 	}

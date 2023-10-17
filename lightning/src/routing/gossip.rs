@@ -9,6 +9,8 @@
 
 //! The [`NetworkGraph`] stores the network gossip and [`P2PGossipSync`] fetches it from peers
 
+use bitcoin::blockdata::constants::ChainHash;
+
 use bitcoin::secp256k1::constants::PUBLIC_KEY_SIZE;
 use bitcoin::secp256k1::{PublicKey, Verification};
 use bitcoin::secp256k1::Secp256k1;
@@ -17,10 +19,8 @@ use bitcoin::secp256k1;
 use bitcoin::hashes::sha256d::Hash as Sha256dHash;
 use bitcoin::hashes::Hash;
 use bitcoin::hashes::hex::FromHex;
-use bitcoin::hash_types::BlockHash;
 
 use bitcoin::network::constants::Network;
-use bitcoin::blockdata::constants::genesis_block;
 
 use crate::events::{MessageSendEvent, MessageSendEventsProvider};
 use crate::ln::ChannelId;
@@ -166,7 +166,7 @@ impl FromStr for NodeId {
 pub struct NetworkGraph<L: Deref> where L::Target: Logger {
 	secp_ctx: Secp256k1<secp256k1::VerifyOnly>,
 	last_rapid_gossip_sync_timestamp: Mutex<Option<u32>>,
-	genesis_hash: BlockHash,
+	chain_hash: ChainHash,
 	logger: L,
 	// Lock order: channels -> nodes
 	channels: RwLock<IndexedMap<u64, ChannelInfo>>,
@@ -368,9 +368,9 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 		}
 	}
 
-	/// Gets the genesis hash for this network graph.
-	pub fn get_genesis_hash(&self) -> BlockHash {
-		self.genesis_hash
+	/// Gets the chain hash for this network graph.
+	pub fn get_chain_hash(&self) -> ChainHash {
+		self.chain_hash
 	}
 }
 
@@ -581,7 +581,7 @@ where U::Target: UtxoLookup, L::Target: Logger
 		pending_events.push(MessageSendEvent::SendGossipTimestampFilter {
 			node_id: their_node_id.clone(),
 			msg: GossipTimestampFilter {
-				chain_hash: self.network_graph.genesis_hash,
+				chain_hash: self.network_graph.chain_hash,
 				first_timestamp: gossip_start_time as u32, // 2106 issue!
 				timestamp_range: u32::max_value(),
 			},
@@ -620,7 +620,7 @@ where U::Target: UtxoLookup, L::Target: Logger
 		let exclusive_end_scid = scid_from_parts(cmp::min(msg.end_blocknum() as u64, MAX_SCID_BLOCK), 0, 0);
 
 		// Per spec, we must reply to a query. Send an empty message when things are invalid.
-		if msg.chain_hash != self.network_graph.genesis_hash || inclusive_start_scid.is_err() || exclusive_end_scid.is_err() || msg.number_of_blocks == 0 {
+		if msg.chain_hash != self.network_graph.chain_hash || inclusive_start_scid.is_err() || exclusive_end_scid.is_err() || msg.number_of_blocks == 0 {
 			let mut pending_events = self.pending_events.lock().unwrap();
 			pending_events.push(MessageSendEvent::SendReplyChannelRange {
 				node_id: their_node_id.clone(),
@@ -1282,7 +1282,7 @@ impl<L: Deref> Writeable for NetworkGraph<L> where L::Target: Logger {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		write_ver_prefix!(writer, SERIALIZATION_VERSION, MIN_SERIALIZATION_VERSION);
 
-		self.genesis_hash.write(writer)?;
+		self.chain_hash.write(writer)?;
 		let channels = self.channels.read().unwrap();
 		(channels.len() as u64).write(writer)?;
 		for (ref chan_id, ref chan_info) in channels.unordered_iter() {
@@ -1308,7 +1308,7 @@ impl<L: Deref> ReadableArgs<L> for NetworkGraph<L> where L::Target: Logger {
 	fn read<R: io::Read>(reader: &mut R, logger: L) -> Result<NetworkGraph<L>, DecodeError> {
 		let _ver = read_ver_prefix!(reader, SERIALIZATION_VERSION);
 
-		let genesis_hash: BlockHash = Readable::read(reader)?;
+		let chain_hash: ChainHash = Readable::read(reader)?;
 		let channels_count: u64 = Readable::read(reader)?;
 		let mut channels = IndexedMap::new();
 		for _ in 0..channels_count {
@@ -1331,7 +1331,7 @@ impl<L: Deref> ReadableArgs<L> for NetworkGraph<L> where L::Target: Logger {
 
 		Ok(NetworkGraph {
 			secp_ctx: Secp256k1::verification_only(),
-			genesis_hash,
+			chain_hash,
 			logger,
 			channels: RwLock::new(channels),
 			nodes: RwLock::new(nodes),
@@ -1367,7 +1367,7 @@ impl<L: Deref> PartialEq for NetworkGraph<L> where L::Target: Logger {
 		let b = if ord { (&other.channels, &other.nodes) } else { (&self.channels, &self.nodes) };
 		let (channels_a, channels_b) = (a.0.unsafe_well_ordered_double_lock_self(), b.0.unsafe_well_ordered_double_lock_self());
 		let (nodes_a, nodes_b) = (a.1.unsafe_well_ordered_double_lock_self(), b.1.unsafe_well_ordered_double_lock_self());
-		self.genesis_hash.eq(&other.genesis_hash) && channels_a.eq(&channels_b) && nodes_a.eq(&nodes_b)
+		self.chain_hash.eq(&other.chain_hash) && channels_a.eq(&channels_b) && nodes_a.eq(&nodes_b)
 	}
 }
 
@@ -1376,7 +1376,7 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 	pub fn new(network: Network, logger: L) -> NetworkGraph<L> {
 		Self {
 			secp_ctx: Secp256k1::verification_only(),
-			genesis_hash: genesis_block(network).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(network),
 			logger,
 			channels: RwLock::new(IndexedMap::new()),
 			nodes: RwLock::new(IndexedMap::new()),
@@ -1608,7 +1608,7 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 			return Err(LightningError{err: "Channel announcement node had a channel with itself".to_owned(), action: ErrorAction::IgnoreError});
 		}
 
-		if msg.chain_hash != self.genesis_hash {
+		if msg.chain_hash != self.chain_hash {
 			return Err(LightningError {
 				err: "Channel announcement chain hash does not match genesis hash".to_owned(),
 				action: ErrorAction::IgnoreAndLog(Level::Debug),
@@ -1868,7 +1868,7 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 	fn update_channel_intern(&self, msg: &msgs::UnsignedChannelUpdate, full_msg: Option<&msgs::ChannelUpdate>, sig: Option<&secp256k1::ecdsa::Signature>) -> Result<(), LightningError> {
 		let chan_enabled = msg.flags & (1 << 1) != (1 << 1);
 
-		if msg.chain_hash != self.genesis_hash {
+		if msg.chain_hash != self.chain_hash {
 			return Err(LightningError {
 				err: "Channel update chain hash does not match genesis hash".to_owned(),
 				action: ErrorAction::IgnoreAndLog(Level::Debug),
@@ -2068,7 +2068,7 @@ pub(crate) mod tests {
 	use bitcoin::hashes::sha256d::Hash as Sha256dHash;
 	use bitcoin::hashes::Hash;
 	use bitcoin::network::constants::Network;
-	use bitcoin::blockdata::constants::genesis_block;
+	use bitcoin::blockdata::constants::ChainHash;
 	use bitcoin::blockdata::script::Script;
 	use bitcoin::blockdata::transaction::TxOut;
 
@@ -2140,7 +2140,7 @@ pub(crate) mod tests {
 
 		let mut unsigned_announcement = UnsignedChannelAnnouncement {
 			features: channelmanager::provided_channel_features(&UserConfig::default()),
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 0,
 			node_id_1: NodeId::from_pubkey(&node_id_1),
 			node_id_2: NodeId::from_pubkey(&node_id_2),
@@ -2168,7 +2168,7 @@ pub(crate) mod tests {
 
 	pub(crate) fn get_signed_channel_update<F: Fn(&mut UnsignedChannelUpdate)>(f: F, node_key: &SecretKey, secp_ctx: &Secp256k1<secp256k1::All>) -> ChannelUpdate {
 		let mut unsigned_channel_update = UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 0,
 			timestamp: 100,
 			flags: 0,
@@ -2373,7 +2373,7 @@ pub(crate) mod tests {
 		// Test that channel announcements with the wrong chain hash are ignored (network graph is testnet,
 		// announcement is mainnet).
 		let incorrect_chain_announcement = get_signed_channel_announcement(|unsigned_announcement| {
-			unsigned_announcement.chain_hash = genesis_block(Network::Bitcoin).header.block_hash();
+			unsigned_announcement.chain_hash = ChainHash::using_genesis_block(Network::Bitcoin);
 		}, node_1_privkey, node_2_privkey, &secp_ctx);
 		match gossip_sync.handle_channel_announcement(&incorrect_chain_announcement) {
 			Ok(_) => panic!(),
@@ -2487,7 +2487,7 @@ pub(crate) mod tests {
 		// Test that channel updates with the wrong chain hash are ignored (network graph is testnet, channel
 		// update is mainet).
 		let incorrect_chain_update = get_signed_channel_update(|unsigned_channel_update| {
-			unsigned_channel_update.chain_hash = genesis_block(Network::Bitcoin).header.block_hash();
+			unsigned_channel_update.chain_hash = ChainHash::using_genesis_block(Network::Bitcoin);
 		}, node_1_privkey, &secp_ctx);
 
 		match gossip_sync.handle_channel_update(&incorrect_chain_update) {
@@ -2925,7 +2925,7 @@ pub(crate) mod tests {
 		let node_privkey_1 = &SecretKey::from_slice(&[42; 32]).unwrap();
 		let node_id_1 = PublicKey::from_secret_key(&secp_ctx, node_privkey_1);
 
-		let chain_hash = genesis_block(Network::Testnet).header.block_hash();
+		let chain_hash = ChainHash::using_genesis_block(Network::Testnet);
 
 		// It should ignore if gossip_queries feature is not enabled
 		{
@@ -2962,7 +2962,7 @@ pub(crate) mod tests {
 		let network_graph = create_network_graph();
 		let (secp_ctx, gossip_sync) = create_gossip_sync(&network_graph);
 
-		let chain_hash = genesis_block(Network::Testnet).header.block_hash();
+		let chain_hash = ChainHash::using_genesis_block(Network::Testnet);
 		let node_1_privkey = &SecretKey::from_slice(&[42; 32]).unwrap();
 		let node_2_privkey = &SecretKey::from_slice(&[41; 32]).unwrap();
 		let node_id_2 = PublicKey::from_secret_key(&secp_ctx, node_2_privkey);
@@ -3014,13 +3014,13 @@ pub(crate) mod tests {
 			&gossip_sync,
 			&node_id_2,
 			QueryChannelRange {
-				chain_hash: genesis_block(Network::Bitcoin).header.block_hash(),
+				chain_hash: ChainHash::using_genesis_block(Network::Bitcoin),
 				first_blocknum: 0,
 				number_of_blocks: 0xffff_ffff,
 			},
 			false,
 			vec![ReplyChannelRange {
-				chain_hash: genesis_block(Network::Bitcoin).header.block_hash(),
+				chain_hash: ChainHash::using_genesis_block(Network::Bitcoin),
 				first_blocknum: 0,
 				number_of_blocks: 0xffff_ffff,
 				sync_complete: true,
@@ -3255,7 +3255,7 @@ pub(crate) mod tests {
 		let node_privkey = &SecretKey::from_slice(&[41; 32]).unwrap();
 		let node_id = PublicKey::from_secret_key(&secp_ctx, node_privkey);
 
-		let chain_hash = genesis_block(Network::Testnet).header.block_hash();
+		let chain_hash = ChainHash::using_genesis_block(Network::Testnet);
 
 		let result = gossip_sync.handle_query_short_channel_ids(&node_id, QueryShortChannelIds {
 			chain_hash,

@@ -279,7 +279,7 @@ impl ChannelMessageHandler for ErroringMessageHandler {
 		features
 	}
 
-	fn get_genesis_hashes(&self) -> Option<Vec<ChainHash>> {
+	fn get_chain_hashes(&self) -> Option<Vec<ChainHash>> {
 		// We don't enforce any chains upon peer connection for `ErroringMessageHandler` and leave it up
 		// to users of `ErroringMessageHandler` to make decisions on network compatiblility.
 		// There's not really any way to pull in specific networks here, and hardcoding can cause breakages.
@@ -1367,7 +1367,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 								peer.set_their_node_id(their_node_id);
 								insert_node_id!();
 								let features = self.init_features(&their_node_id);
-								let networks = self.message_handler.chan_handler.get_genesis_hashes();
+								let networks = self.message_handler.chan_handler.get_chain_hashes();
 								let resp = msgs::Init { features, networks, remote_network_address: filter_addresses(peer.their_socket_address.clone()) };
 								self.enqueue_message(peer, &resp);
 								peer.awaiting_pong_timer_tick_intervals = 0;
@@ -1380,7 +1380,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 								peer.set_their_node_id(their_node_id);
 								insert_node_id!();
 								let features = self.init_features(&their_node_id);
-								let networks = self.message_handler.chan_handler.get_genesis_hashes();
+								let networks = self.message_handler.chan_handler.get_chain_hashes();
 								let resp = msgs::Init { features, networks, remote_network_address: filter_addresses(peer.their_socket_address.clone()) };
 								self.enqueue_message(peer, &resp);
 								peer.awaiting_pong_timer_tick_intervals = 0;
@@ -1498,7 +1498,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 		if let wire::Message::Init(msg) = message {
 			// Check if we have any compatible chains if the `networks` field is specified.
 			if let Some(networks) = &msg.networks {
-				if let Some(our_chains) = self.message_handler.chan_handler.get_genesis_hashes() {
+				if let Some(our_chains) = self.message_handler.chan_handler.get_chain_hashes() {
 					let mut have_compatible_chains = false;
 					'our_chains: for our_chain in our_chains.iter() {
 						for their_chain in networks {
