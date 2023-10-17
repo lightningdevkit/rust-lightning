@@ -4791,6 +4791,10 @@ where
 	///    with the current [`ChannelConfig`].
 	///  * Removing peers which have disconnected but and no longer have any channels.
 	///  * Force-closing and removing channels which have not completed establishment in a timely manner.
+	///  * Forgetting about stale outbound payments, either those that have already been fulfilled
+	///    or those awaiting an invoice that hasn't been delivered in the necessary amount of time.
+	///    The latter is determined using the system clock in `std` and the block time minus two
+	///    hours in `no-std`.
 	///
 	/// Note that this may cause reentrancy through [`chain::Watch::update_channel`] calls or feerate
 	/// estimate fetches.
@@ -5019,7 +5023,18 @@ where
 				self.finish_close_channel(shutdown_res);
 			}
 
-			self.pending_outbound_payments.remove_stale_payments(&self.pending_events);
+			#[cfg(feature = "std")]
+			let duration_since_epoch = std::time::SystemTime::now()
+				.duration_since(std::time::SystemTime::UNIX_EPOCH)
+				.expect("SystemTime::now() should come after SystemTime::UNIX_EPOCH");
+			#[cfg(not(feature = "std"))]
+			let duration_since_epoch = Duration::from_secs(
+				self.highest_seen_timestamp.load(Ordering::Acquire).saturating_sub(7200) as u64
+			);
+
+			self.pending_outbound_payments.remove_stale_payments(
+				duration_since_epoch, &self.pending_events
+			);
 
 			// Technically we don't need to do this here, but if we have holding cell entries in a
 			// channel that need freeing, it's better to do that here and block a background task
