@@ -344,11 +344,13 @@ where
 	}))
 }
 
-/// Decode one layer of an incoming onion message
-/// Returns either a Forward (another onion message), or Receive (decrypted content)
-pub fn peel_onion<NS: Deref, L: Deref, CMH: Deref>(
-	node_signer: NS, secp_ctx: &Secp256k1<secp256k1::All>, logger: L, custom_handler: CMH,
-	msg: &OnionMessage,
+/// Decode one layer of an incoming [`OnionMessage`].
+///
+/// Returns either the next layer of the onion for forwarding or the decrypted content for the
+/// receiver.
+pub fn peel_onion_message<NS: Deref, L: Deref, CMH: Deref>(
+	msg: &OnionMessage, secp_ctx: &Secp256k1<secp256k1::All>, node_signer: NS, logger: L,
+	custom_handler: CMH,
 ) -> Result<PeeledOnion<<<CMH>::Target as CustomOnionMessageHandler>::CustomMessage>, ()>
 where
 	NS::Target: NodeSigner,
@@ -584,8 +586,8 @@ where
 	CMH::Target: CustomOnionMessageHandler,
 {
 	fn handle_onion_message(&self, _peer_node_id: &PublicKey, msg: &OnionMessage) {
-		match peel_onion(
-			&*self.node_signer, &self.secp_ctx, &*self.logger, &*self.custom_handler, msg
+		match peel_onion_message(
+			msg, &self.secp_ctx, &*self.node_signer, &*self.logger, &*self.custom_handler
 		) {
 			Ok(PeeledOnion::Receive(message, path_id, reply_path)) => {
 				log_trace!(self.logger,
