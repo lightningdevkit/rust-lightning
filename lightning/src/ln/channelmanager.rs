@@ -447,16 +447,17 @@ impl MsgHandleErrInternal {
 	}
 	#[inline]
 	fn from_finish_shutdown(err: String, channel_id: ChannelId, user_channel_id: u128, shutdown_res: ShutdownResult, channel_update: Option<msgs::ChannelUpdate>, channel_capacity: u64) -> Self {
+		let err_msg = msgs::ErrorMessage { channel_id, data: err.clone() };
+		let action = if let (Some(_), ..) = &shutdown_res {
+			// We have a closing `ChannelMonitorUpdate`, which means the channel was funded and we
+			// should disconnect our peer such that we force them to broadcast their latest
+			// commitment upon reconnecting.
+			msgs::ErrorAction::DisconnectPeer { msg: Some(err_msg) }
+		} else {
+			msgs::ErrorAction::SendErrorMessage { msg: err_msg }
+		};
 		Self {
-			err: LightningError {
-				err: err.clone(),
-				action: msgs::ErrorAction::SendErrorMessage {
-					msg: msgs::ErrorMessage {
-						channel_id,
-						data: err
-					},
-				},
-			},
+			err: LightningError { err, action },
 			chan_id: Some((channel_id, user_channel_id)),
 			shutdown_finish: Some((shutdown_res, channel_update)),
 			channel_capacity: Some(channel_capacity)
@@ -2814,8 +2815,8 @@ where
 					peer_state.pending_msg_events.push(
 						events::MessageSendEvent::HandleError {
 							node_id: counterparty_node_id,
-							action: msgs::ErrorAction::SendErrorMessage {
-								msg: msgs::ErrorMessage { channel_id: *channel_id, data: "Channel force-closed".to_owned() }
+							action: msgs::ErrorAction::DisconnectPeer {
+								msg: Some(msgs::ErrorMessage { channel_id: *channel_id, data: "Channel force-closed".to_owned() })
 							},
 						}
 					);
@@ -4298,8 +4299,9 @@ where
 							}
 						}
 					}
-					let (counterparty_node_id, forward_chan_id) = match self.short_to_chan_info.read().unwrap().get(&short_chan_id) {
-						Some((cp_id, chan_id)) => (cp_id.clone(), chan_id.clone()),
+					let chan_info_opt = self.short_to_chan_info.read().unwrap().get(&short_chan_id).cloned();
+					let (counterparty_node_id, forward_chan_id) = match chan_info_opt {
+						Some((cp_id, chan_id)) => (cp_id, chan_id),
 						None => {
 							forwarding_channel_not_found!();
 							continue;
@@ -6787,7 +6789,10 @@ where
 			let peer_state_mutex = per_peer_state.get(counterparty_node_id)
 				.ok_or_else(|| {
 					debug_assert!(false);
-					MsgHandleErrInternal::send_err_msg_no_close(format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id), msg.channel_id)
+					MsgHandleErrInternal::send_err_msg_no_close(
+						format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id),
+						msg.channel_id
+					)
 				})?;
 			let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 			let peer_state = &mut *peer_state_lock;
@@ -6831,7 +6836,39 @@ where
 							"Got a channel_reestablish message for an unfunded channel!".into())), chan_phase_entry);
 					}
 				},
-				hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id))
+				hash_map::Entry::Vacant(_) => {
+					log_debug!(self.logger, "Sending bogus ChannelReestablish for unknown channel {} to force channel closure",
+						log_bytes!(msg.channel_id.0));
+					// Unfortunately, lnd doesn't force close on errors
+					// (https://github.com/lightningnetwork/lnd/blob/abb1e3463f3a83bbb843d5c399869dbe930ad94f/htlcswitch/link.go#L2119).
+					// One of the few ways to get an lnd counterparty to force close is by
+					// replicating what they do when restoring static channel backups (SCBs). They
+					// send an invalid `ChannelReestablish` with `0` commitment numbers and an
+					// invalid `your_last_per_commitment_secret`.
+					//
+					// Since we received a `ChannelReestablish` for a channel that doesn't exist, we
+					// can assume it's likely the channel closed from our point of view, but it
+					// remains open on the counterparty's side. By sending this bogus
+					// `ChannelReestablish` message now as a response to theirs, we trigger them to
+					// force close broadcasting their latest state. If the closing transaction from
+					// our point of view remains unconfirmed, it'll enter a race with the
+					// counterparty's to-be-broadcast latest commitment transaction.
+					peer_state.pending_msg_events.push(MessageSendEvent::SendChannelReestablish {
+						node_id: *counterparty_node_id,
+						msg: msgs::ChannelReestablish {
+							channel_id: msg.channel_id,
+							next_local_commitment_number: 0,
+							next_remote_commitment_number: 0,
+							your_last_per_commitment_secret: [1u8; 32],
+							my_current_per_commitment_point: PublicKey::from_slice(&[2u8; 33]).unwrap(),
+							next_funding_txid: None,
+						},
+					});
+					return Err(MsgHandleErrInternal::send_err_msg_no_close(
+						format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}",
+							counterparty_node_id), msg.channel_id)
+					)
+				}
 			}
 		};
 
@@ -6895,8 +6932,8 @@ where
 										self.issue_channel_close_events(&chan.context, ClosureReason::HolderForceClosed);
 										pending_msg_events.push(events::MessageSendEvent::HandleError {
 											node_id: chan.context.get_counterparty_node_id(),
-											action: msgs::ErrorAction::SendErrorMessage {
-												msg: msgs::ErrorMessage { channel_id: chan.context.channel_id(), data: "Channel force-closed".to_owned() }
+											action: msgs::ErrorAction::DisconnectPeer {
+												msg: Some(msgs::ErrorMessage { channel_id: chan.context.channel_id(), data: "Channel force-closed".to_owned() })
 											},
 										});
 									}
@@ -7680,10 +7717,12 @@ where
 								self.issue_channel_close_events(&channel.context, reason);
 								pending_msg_events.push(events::MessageSendEvent::HandleError {
 									node_id: channel.context.get_counterparty_node_id(),
-									action: msgs::ErrorAction::SendErrorMessage { msg: msgs::ErrorMessage {
-										channel_id: channel.context.channel_id(),
-										data: reason_message,
-									} },
+									action: msgs::ErrorAction::DisconnectPeer {
+										msg: Some(msgs::ErrorMessage {
+											channel_id: channel.context.channel_id(),
+											data: reason_message,
+										})
+									},
 								});
 								return false;
 							}
@@ -11284,6 +11323,67 @@ mod tests {
 		assert_eq!(format!("{}", &payment_hash), "2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a");
 		let payment_preimage = PaymentPreimage([42; 32]);
 		assert_eq!(format!("{}", &payment_preimage), "2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a");
+	}
+
+	#[test]
+	fn test_trigger_lnd_force_close() {
+		let chanmon_cfg = create_chanmon_cfgs(2);
+		let node_cfg = create_node_cfgs(2, &chanmon_cfg);
+		let user_config = test_default_channel_config();
+		let node_chanmgr = create_node_chanmgrs(2, &node_cfg, &[Some(user_config), Some(user_config)]);
+		let nodes = create_network(2, &node_cfg, &node_chanmgr);
+
+		// Open a channel, immediately disconnect each other, and broadcast Alice's latest state.
+		let (_, _, chan_id, funding_tx) = create_announced_chan_between_nodes(&nodes, 0, 1);
+		nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id());
+		nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id());
+		nodes[0].node.force_close_broadcasting_latest_txn(&chan_id, &nodes[1].node.get_our_node_id()).unwrap();
+		check_closed_broadcast(&nodes[0], 1, true);
+		check_added_monitors(&nodes[0], 1);
+		check_closed_event!(nodes[0], 1, ClosureReason::HolderForceClosed, [nodes[1].node.get_our_node_id()], 100000);
+		{
+			let txn = nodes[0].tx_broadcaster.txn_broadcast();
+			assert_eq!(txn.len(), 1);
+			check_spends!(txn[0], funding_tx);
+		}
+
+		// Since they're disconnected, Bob won't receive Alice's `Error` message. Reconnect them
+		// such that Bob sends a `ChannelReestablish` to Alice since the channel is still open from
+		// their side.
+		nodes[0].node.peer_connected(&nodes[1].node.get_our_node_id(), &msgs::Init {
+			features: nodes[1].node.init_features(), networks: None, remote_network_address: None
+		}, true).unwrap();
+		nodes[1].node.peer_connected(&nodes[0].node.get_our_node_id(), &msgs::Init {
+			features: nodes[0].node.init_features(), networks: None, remote_network_address: None
+		}, false).unwrap();
+		assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
+		let channel_reestablish = get_event_msg!(
+			nodes[1], MessageSendEvent::SendChannelReestablish, nodes[0].node.get_our_node_id()
+		);
+		nodes[0].node.handle_channel_reestablish(&nodes[1].node.get_our_node_id(), &channel_reestablish);
+
+		// Alice should respond with an error since the channel isn't known, but a bogus
+		// `ChannelReestablish` should be sent first, such that we actually trigger Bob to force
+		// close even if it was an lnd node.
+		let msg_events = nodes[0].node.get_and_clear_pending_msg_events();
+		assert_eq!(msg_events.len(), 2);
+		if let MessageSendEvent::SendChannelReestablish { node_id, msg } = &msg_events[0] {
+			assert_eq!(*node_id, nodes[1].node.get_our_node_id());
+			assert_eq!(msg.next_local_commitment_number, 0);
+			assert_eq!(msg.next_remote_commitment_number, 0);
+			nodes[1].node.handle_channel_reestablish(&nodes[0].node.get_our_node_id(), &msg);
+		} else { panic!() };
+		check_closed_broadcast(&nodes[1], 1, true);
+		check_added_monitors(&nodes[1], 1);
+		let expected_close_reason = ClosureReason::ProcessingError {
+			err: "Peer sent an invalid channel_reestablish to force close in a non-standard way".to_string()
+		};
+		check_closed_event!(nodes[1], 1, expected_close_reason, [nodes[0].node.get_our_node_id()], 100000);
+		{
+			let txn = nodes[1].tx_broadcaster.txn_broadcast();
+			assert_eq!(txn.len(), 1);
+			check_spends!(txn[0], funding_tx);
+		}
 	}
 }
 

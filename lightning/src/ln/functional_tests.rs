@@ -1338,9 +1338,9 @@ fn test_duplicate_htlc_different_direction_onchain() {
 	for e in events {
 		match e {
 			MessageSendEvent::BroadcastChannelUpdate { .. } => {},
-			MessageSendEvent::HandleError { node_id, action: msgs::ErrorAction::SendErrorMessage { ref msg } } => {
+			MessageSendEvent::HandleError { node_id, action: msgs::ErrorAction::DisconnectPeer { ref msg } } => {
 				assert_eq!(node_id, nodes[1].node.get_our_node_id());
-				assert_eq!(msg.data, "Channel closed because commitment or closing transaction was confirmed on chain.");
+				assert_eq!(msg.as_ref().unwrap().data, "Channel closed because commitment or closing transaction was confirmed on chain.");
 			},
 			MessageSendEvent::UpdateHTLCs { ref node_id, updates: msgs::CommitmentUpdate { ref update_add_htlcs, ref update_fulfill_htlcs, ref update_fail_htlcs, ref update_fail_malformed_htlcs, .. } } => {
 				assert!(update_add_htlcs.is_empty());
@@ -2369,7 +2369,7 @@ fn channel_monitor_network_test() {
 			_ => panic!("Unexpected event"),
 		};
 		match events[1] {
-			MessageSendEvent::HandleError { action: ErrorAction::SendErrorMessage { .. }, node_id } => {
+			MessageSendEvent::HandleError { action: ErrorAction::DisconnectPeer { .. }, node_id } => {
 				assert_eq!(node_id, nodes[4].node.get_our_node_id());
 			},
 			_ => panic!("Unexpected event"),
@@ -2401,7 +2401,7 @@ fn channel_monitor_network_test() {
 			_ => panic!("Unexpected event"),
 		};
 		match events[1] {
-			MessageSendEvent::HandleError { action: ErrorAction::SendErrorMessage { .. }, node_id } => {
+			MessageSendEvent::HandleError { action: ErrorAction::DisconnectPeer { .. }, node_id } => {
 				assert_eq!(node_id, nodes[3].node.get_our_node_id());
 			},
 			_ => panic!("Unexpected event"),
@@ -2913,7 +2913,7 @@ fn test_htlc_on_chain_success() {
 	let nodes_0_event = remove_first_msg_event_to_node(&nodes[0].node.get_our_node_id(), &mut events);
 
 	match nodes_2_event {
-		MessageSendEvent::HandleError { action: ErrorAction::SendErrorMessage { .. }, node_id: _ } => {},
+		MessageSendEvent::HandleError { action: ErrorAction::DisconnectPeer { .. }, node_id: _ } => {},
 		_ => panic!("Unexpected event"),
 	}
 
@@ -3358,7 +3358,7 @@ fn do_test_commitment_revoked_fail_backward_exhaustive(deliver_bs_raa: bool, use
 
 	let nodes_2_event = remove_first_msg_event_to_node(&nodes[2].node.get_our_node_id(), &mut events);
 	match nodes_2_event {
-		MessageSendEvent::HandleError { action: ErrorAction::SendErrorMessage { msg: msgs::ErrorMessage { channel_id, ref data } }, node_id: _ } => {
+		MessageSendEvent::HandleError { action: ErrorAction::DisconnectPeer { msg: Some(msgs::ErrorMessage { channel_id, ref data }) }, node_id: _ } => {
 			assert_eq!(channel_id, chan_2.2);
 			assert_eq!(data.as_str(), "Channel closed because commitment or closing transaction was confirmed on chain.");
 		},
@@ -4920,7 +4920,7 @@ fn test_onchain_to_onchain_claim() {
 	let nodes_0_event = remove_first_msg_event_to_node(&nodes[0].node.get_our_node_id(), &mut msg_events);
 
 	match nodes_2_event {
-		MessageSendEvent::HandleError { action: ErrorAction::SendErrorMessage { .. }, node_id: _ } => {},
+		MessageSendEvent::HandleError { action: ErrorAction::DisconnectPeer { .. }, node_id: _ } => {},
 		_ => panic!("Unexpected event"),
 	}
 
@@ -7860,9 +7860,9 @@ fn test_channel_conf_timeout() {
 	let close_ev = nodes[1].node.get_and_clear_pending_msg_events();
 	assert_eq!(close_ev.len(), 1);
 	match close_ev[0] {
-		MessageSendEvent::HandleError { action: ErrorAction::SendErrorMessage { ref msg }, ref node_id } => {
+		MessageSendEvent::HandleError { action: ErrorAction::DisconnectPeer { ref msg }, ref node_id } => {
 			assert_eq!(*node_id, nodes[0].node.get_our_node_id());
-			assert_eq!(msg.data, "Channel closed because funding transaction failed to confirm within 2016 blocks");
+			assert_eq!(msg.as_ref().unwrap().data, "Channel closed because funding transaction failed to confirm within 2016 blocks");
 		},
 		_ => panic!("Unexpected event"),
 	}
@@ -9212,8 +9212,8 @@ fn test_invalid_funding_tx() {
 	assert_eq!(events_2.len(), 1);
 	if let MessageSendEvent::HandleError { node_id, action } = &events_2[0] {
 		assert_eq!(*node_id, nodes[0].node.get_our_node_id());
-		if let msgs::ErrorAction::SendErrorMessage { msg } = action {
-			assert_eq!(msg.data, "Channel closed because of an exception: ".to_owned() + expected_err);
+		if let msgs::ErrorAction::DisconnectPeer { msg } = action {
+			assert_eq!(msg.as_ref().unwrap().data, "Channel closed because of an exception: ".to_owned() + expected_err);
 		} else { panic!(); }
 	} else { panic!(); }
 	assert_eq!(nodes[1].node.list_channels().len(), 0);
@@ -10652,7 +10652,7 @@ fn do_test_funding_and_commitment_tx_confirm_same_block(confirm_remote_commitmen
 	let mut msg_events = closing_node.node.get_and_clear_pending_msg_events();
 	assert_eq!(msg_events.len(), 1);
 	match msg_events.pop().unwrap() {
-		MessageSendEvent::HandleError { action: msgs::ErrorAction::SendErrorMessage { .. }, .. } => {},
+		MessageSendEvent::HandleError { action: msgs::ErrorAction::DisconnectPeer { .. }, .. } => {},
 		_ => panic!("Unexpected event"),
 	}
 	check_added_monitors(closing_node, 1);
