@@ -1297,6 +1297,13 @@ impl Hostname {
 		(&self.0).len() as u8
 	}
 }
+
+impl core::fmt::Display for Hostname {
+	fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+		write!(f, "{}", self.0)?;
+		Ok(())
+	}
+}
 impl Deref for Hostname {
 	type Target = String;
 
