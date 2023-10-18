@@ -1870,15 +1870,13 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 			let flush_read_disabled = self.gossip_processing_backlog_lifted.swap(false, Ordering::Relaxed);
 
 			let mut peers_to_disconnect = HashMap::new();
-			let mut events_generated = self.message_handler.chan_handler.get_and_clear_pending_msg_events();
-			events_generated.append(&mut self.message_handler.route_handler.get_and_clear_pending_msg_events());
 
 			{
-				// TODO: There are some DoS attacks here where you can flood someone's outbound send
-				// buffer by doing things like announcing channels on another node. We should be willing to
-				// drop optional-ish messages when send buffers get full!
-
 				let peers_lock = self.peers.read().unwrap();
+
+				let mut events_generated = self.message_handler.chan_handler.get_and_clear_pending_msg_events();
+				events_generated.append(&mut self.message_handler.route_handler.get_and_clear_pending_msg_events());
+
 				let peers = &*peers_lock;
 				macro_rules! get_peer_for_forwarding {
 					($node_id: expr) => {
