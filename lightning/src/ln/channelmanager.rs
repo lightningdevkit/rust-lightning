@@ -7318,6 +7318,8 @@ where
 	/// [`ChannelManager`] when handling [`InvoiceRequest`] messages for the offer. The offer will
 	/// not have an expiration unless otherwise set on the builder.
 	///
+	/// # Privacy
+	///
 	/// Uses a one-hop [`BlindedPath`] for the offer with [`ChannelManager::get_our_node_id`] as the
 	/// introduction node and a derived signing pubkey for recipient privacy. As such, currently,
 	/// the node must be announced. Otherwise, there is no way to find a path to the introduction
@@ -7342,20 +7344,31 @@ where
 	/// Creates a [`RefundBuilder`] such that the [`Refund`] it builds is recognized by the
 	/// [`ChannelManager`] when handling [`Bolt12Invoice`] messages for the refund.
 	///
+	/// # Payment
+	///
+	/// The provided `payment_id` is used to ensure that only one invoice is paid for the refund.
+	/// See [Avoiding Duplicate Payments] for other requirements once the payment has been sent.
+	///
 	/// The builder will have the provided expiration set. Any changes to the expiration on the
 	/// returned builder will not be honored by [`ChannelManager`]. For `no-std`, the highest seen
 	/// block time minus two hours is used for the current time when determining if the refund has
 	/// expired.
 	///
-	/// The provided `payment_id` is used to ensure that only one invoice is paid for the refund. To
-	/// revoke the refund, use [`ChannelManager::abandon_payment`] prior to receiving the invoice.
-	/// If an invoice isn't received before expiration, the payment will fail with an
-	/// [`Event::InvoiceRequestFailed`].
+	/// To revoke the refund, use [`ChannelManager::abandon_payment`] prior to receiving the
+	/// invoice. If abandoned, or an invoice isn't received before expiration, the payment will fail
+	/// with an [`Event::InvoiceRequestFailed`].
+	///
+	/// # Privacy
 	///
 	/// Uses a one-hop [`BlindedPath`] for the refund with [`ChannelManager::get_our_node_id`] as
 	/// the introduction node and a derived payer id for sender privacy. As such, currently, the
 	/// node must be announced. Otherwise, there is no way to find a path to the introduction node
 	/// in order to send the [`Bolt12Invoice`].
+	///
+	/// # Errors
+	///
+	/// Errors if a duplicate `payment_id` is provided given the caveats in the aforementioned link
+	/// or if `amount_msats` is invalid.
 	///
 	/// [`Refund`]: crate::offers::refund::Refund
 	/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
@@ -7398,6 +7411,8 @@ where
 	/// - `amount_msats` if overpaying what is required for the given `quantity` is desired, and
 	/// - `payer_note` for [`InvoiceRequest::payer_note`].
 	///
+	/// # Payment
+	///
 	/// The provided `payment_id` is used to ensure that only one invoice is paid for the request
 	/// when received. See [Avoiding Duplicate Payments] for other requirements once the payment has
 	/// been sent.
@@ -7406,7 +7421,10 @@ where
 	/// invoice. If abandoned, or an invoice isn't received in a reasonable amount of time, the
 	/// payment will fail with an [`Event::InvoiceRequestFailed`].
 	///
-	/// Errors if a duplicate `payment_id` is provided given the caveats in the aforementioned link.
+	/// # Errors
+	///
+	/// Errors if a duplicate `payment_id` is provided given the caveats in the aforementioned link
+	/// or if the provided parameters are invalid for the offer.
 	///
 	/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
 	/// [`InvoiceRequest::quantity`]: crate::offers::invoice_request::InvoiceRequest::quantity
