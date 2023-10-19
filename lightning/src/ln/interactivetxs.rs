@@ -17,7 +17,7 @@ use bitcoin::consensus::Encodable;
 use bitcoin::policy::MAX_STANDARD_TX_WEIGHT;
 use bitcoin::secp256k1::PublicKey;
 use bitcoin::transaction::Version;
-use bitcoin::{OutPoint, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Weight};
+use bitcoin::{OutPoint, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Txid, Weight};
 
 use crate::chain::chaininterface::fee_for_weight;
 use crate::events::bump_transaction::{BASE_INPUT_WEIGHT, EMPTY_SCRIPT_SIG_WEIGHT};
@@ -217,6 +217,18 @@ impl ConstructedTransaction {
 			outputs.into_iter().map(|output| output.tx_out().clone()).collect();
 
 		Transaction { version: Version::TWO, lock_time: self.lock_time, input, output }
+	}
+
+	pub fn outputs(&self) -> impl Iterator<Item = &InteractiveTxOutput> {
+		self.outputs.iter()
+	}
+
+	pub fn inputs(&self) -> impl Iterator<Item = &InteractiveTxInput> {
+		self.inputs.iter()
+	}
+
+	pub fn txid(&self) -> Txid {
+		self.clone().into_unsigned_tx().txid()
 	}
 }
 
@@ -1026,23 +1038,23 @@ pub struct InteractiveTxOutput {
 }
 
 impl InteractiveTxOutput {
-	fn tx_out(&self) -> &TxOut {
+	pub fn tx_out(&self) -> &TxOut {
 		self.output.tx_out()
 	}
 
-	fn value(&self) -> u64 {
+	pub fn value(&self) -> u64 {
 		self.tx_out().value.to_sat()
 	}
 
-	fn local_value(&self) -> u64 {
+	pub fn local_value(&self) -> u64 {
 		self.output.local_value(self.added_by)
 	}
 
-	fn remote_value(&self) -> u64 {
+	pub fn remote_value(&self) -> u64 {
 		self.output.remote_value(self.added_by)
 	}
 
-	fn script_pubkey(&self) -> &ScriptBuf {
+	pub fn script_pubkey(&self) -> &ScriptBuf {
 		&self.output.tx_out().script_pubkey
 	}
 }
