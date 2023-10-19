@@ -2125,7 +2125,7 @@ fn commit_tx_fee_sat(feerate_per_kw: u32, num_htlcs: usize, channel_type_feature
 
 // Get the fee cost in MSATS of a commitment tx with a given number of HTLC outputs.
 // Note that num_htlcs should not include dust HTLCs.
-fn commit_tx_fee_msat(feerate_per_kw: u32, num_htlcs: usize, channel_type_features: &ChannelTypeFeatures) -> u64 {
+pub(crate) fn commit_tx_fee_msat(feerate_per_kw: u32, num_htlcs: usize, channel_type_features: &ChannelTypeFeatures) -> u64 {
 	// Note that we need to divide before multiplying to round properly,
 	// since the lowest denomination of bitcoin on-chain is the satoshi.
 	(commitment_tx_base_weight(channel_type_features) + num_htlcs as u64 * COMMITMENT_TX_WEIGHT_PER_HTLC) * feerate_per_kw as u64 / 1000 * 1000
@@ -2772,6 +2772,7 @@ impl<SP: Deref> Channel<SP> where
 		if inbound_stats.pending_htlcs_value_msat + msg.amount_msat > self.context.holder_max_htlc_value_in_flight_msat {
 			return Err(ChannelError::Close(format!("Remote HTLC add would put them over our max HTLC value ({})", self.context.holder_max_htlc_value_in_flight_msat)));
 		}
+
 		// Check holder_selected_channel_reserve_satoshis (we're getting paid, so they have to at least meet
 		// the reserve_satoshis we told them to always have as direct payment so that they lose
 		// something if we punish them for broadcasting an old state).
@@ -2831,18 +2832,29 @@ impl<SP: Deref> Channel<SP> where
 
 		// Check that the remote can afford to pay for this HTLC on-chain at the current
 		// feerate_per_kw, while maintaining their channel reserve (as required by the spec).
-		let remote_commit_tx_fee_msat = if self.context.is_outbound() { 0 } else {
-			let htlc_candidate = HTLCCandidate::new(msg.amount_msat, HTLCInitiator::RemoteOffered);
-			self.context.next_remote_commit_tx_fee_msat(htlc_candidate, None) // Don't include the extra fee spike buffer HTLC in calculations
-		};
-		if pending_remote_value_msat - msg.amount_msat < remote_commit_tx_fee_msat {
-			return Err(ChannelError::Close("Remote HTLC add would not leave enough to pay for fees".to_owned()));
-		};
-
-		if pending_remote_value_msat - msg.amount_msat - remote_commit_tx_fee_msat < self.context.holder_selected_channel_reserve_satoshis * 1000 {
-			return Err(ChannelError::Close("Remote HTLC add would put them under remote reserve value".to_owned()));
+		{
+			let remote_commit_tx_fee_msat = if self.context.is_outbound() { 0 } else {
+				let htlc_candidate = HTLCCandidate::new(msg.amount_msat, HTLCInitiator::RemoteOffered);
+				self.context.next_remote_commit_tx_fee_msat(htlc_candidate, None) // Don't include the extra fee spike buffer HTLC in calculations
+			};
+			let anchor_outputs_value_msat = if !self.context.is_outbound() && self.context.get_channel_type().supports_anchors_zero_fee_htlc_tx() {
+				ANCHOR_OUTPUT_VALUE_SATOSHI * 2 * 1000
+			} else {
+				0
+			};
+			if pending_remote_value_msat.saturating_sub(msg.amount_msat).saturating_sub(anchor_outputs_value_msat) < remote_commit_tx_fee_msat {
+				return Err(ChannelError::Close("Remote HTLC add would not leave enough to pay for fees".to_owned()));
+			};
+			if pending_remote_value_msat.saturating_sub(msg.amount_msat).saturating_sub(remote_commit_tx_fee_msat).saturating_sub(anchor_outputs_value_msat) < self.context.holder_selected_channel_reserve_satoshis * 1000 {
+				return Err(ChannelError::Close("Remote HTLC add would put them under remote reserve value".to_owned()));
+			}
 		}
 
+		let anchor_outputs_value_msat = if self.context.get_channel_type().supports_anchors_zero_fee_htlc_tx() {
+			ANCHOR_OUTPUT_VALUE_SATOSHI * 2 * 1000
+		} else {
+			0
+		};
 		if !self.context.is_outbound() {
 			// `2 *` and `Some(())` is for the fee spike buffer we keep for the remote. This deviates from
 			// the spec because in the spec, the fee spike buffer requirement doesn't exist on the
@@ -2854,7 +2866,7 @@ impl<SP: Deref> Channel<SP> where
 			// sensitive to fee spikes.
 			let htlc_candidate = HTLCCandidate::new(msg.amount_msat, HTLCInitiator::RemoteOffered);
 			let remote_fee_cost_incl_stuck_buffer_msat = 2 * self.context.next_remote_commit_tx_fee_msat(htlc_candidate, Some(()));
-			if pending_remote_value_msat - msg.amount_msat - self.context.holder_selected_channel_reserve_satoshis * 1000 < remote_fee_cost_incl_stuck_buffer_msat {
+			if pending_remote_value_msat.saturating_sub(msg.amount_msat).saturating_sub(self.context.holder_selected_channel_reserve_satoshis * 1000).saturating_sub(anchor_outputs_value_msat) < remote_fee_cost_incl_stuck_buffer_msat {
 				// Note that if the pending_forward_status is not updated here, then it's because we're already failing
 				// the HTLC, i.e. its status is already set to failing.
 				log_info!(logger, "Attempting to fail HTLC due to fee spike buffer violation in channel {}. Rebalancing is required.", &self.context.channel_id());
@@ -2864,7 +2876,7 @@ impl<SP: Deref> Channel<SP> where
 			// Check that they won't violate our local required channel reserve by adding this HTLC.
 			let htlc_candidate = HTLCCandidate::new(msg.amount_msat, HTLCInitiator::RemoteOffered);
 			let local_commit_tx_fee_msat = self.context.next_local_commit_tx_fee_msat(htlc_candidate, None);
-			if self.context.value_to_self_msat < self.context.counterparty_selected_channel_reserve_satoshis.unwrap() * 1000 + local_commit_tx_fee_msat {
+			if self.context.value_to_self_msat < self.context.counterparty_selected_channel_reserve_satoshis.unwrap() * 1000 + local_commit_tx_fee_msat + anchor_outputs_value_msat {
 				return Err(ChannelError::Close("Cannot accept HTLC that would put our balance under counterparty-announced channel reserve value".to_owned()));
 			}
 		}

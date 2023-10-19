@@ -1400,7 +1400,7 @@ fn do_test_revoked_counterparty_htlc_tx_balances(anchors: bool) {
 
 	// Create some initial channels
 	let (_, _, chan_id, funding_tx) =
-		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 11_000_000);
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 12_000_000);
 	let funding_outpoint = OutPoint { txid: funding_tx.txid(), index: 0 };
 	assert_eq!(funding_outpoint.to_channel_id(), chan_id);
 
@@ -1410,9 +1410,9 @@ fn do_test_revoked_counterparty_htlc_tx_balances(anchors: bool) {
 	assert_eq!(revoked_local_txn[0].input.len(), 1);
 	assert_eq!(revoked_local_txn[0].input[0].previous_output.txid, funding_tx.txid());
 	if anchors {
-		assert_eq!(revoked_local_txn[0].output[4].value, 10000); // to_self output
+		assert_eq!(revoked_local_txn[0].output[4].value, 11000); // to_self output
 	} else {
-		assert_eq!(revoked_local_txn[0].output[2].value, 10000); // to_self output
+		assert_eq!(revoked_local_txn[0].output[2].value, 11000); // to_self output
 	}
 
 	// The to-be-revoked commitment tx should have two HTLCs, an output for each side, and an
@@ -1499,11 +1499,11 @@ fn do_test_revoked_counterparty_htlc_tx_balances(anchors: bool) {
 	let anchor_outputs_value = if anchors { channel::ANCHOR_OUTPUT_VALUE_SATOSHI * 2 } else { 0 };
 	let as_balances = sorted_vec(vec![Balance::ClaimableAwaitingConfirmations {
 			// to_remote output in B's revoked commitment
-			amount_satoshis: 1_000_000 - 11_000 - 3_000 - commitment_tx_fee - anchor_outputs_value,
+			amount_satoshis: 1_000_000 - 12_000 - 3_000 - commitment_tx_fee - anchor_outputs_value,
 			confirmation_height: to_remote_conf_height,
 		}, Balance::CounterpartyRevokedOutputClaimable {
 			// to_self output in B's revoked commitment
-			amount_satoshis: 10_000,
+			amount_satoshis: 11_000,
 		}, Balance::CounterpartyRevokedOutputClaimable { // HTLC 1
 			amount_satoshis: 3_000,
 		}, Balance::CounterpartyRevokedOutputClaimable { // HTLC 2
@@ -1544,11 +1544,11 @@ fn do_test_revoked_counterparty_htlc_tx_balances(anchors: bool) {
 	mine_transaction(&nodes[0], &as_htlc_claim_tx[0]);
 	assert_eq!(sorted_vec(vec![Balance::ClaimableAwaitingConfirmations {
 			// to_remote output in B's revoked commitment
-			amount_satoshis: 1_000_000 - 11_000 - 3_000 - commitment_tx_fee - anchor_outputs_value,
+			amount_satoshis: 1_000_000 - 12_000 - 3_000 - commitment_tx_fee - anchor_outputs_value,
 			confirmation_height: to_remote_conf_height,
 		}, Balance::CounterpartyRevokedOutputClaimable {
 			// to_self output in B's revoked commitment
-			amount_satoshis: 10_000,
+			amount_satoshis: 11_000,
 		}, Balance::CounterpartyRevokedOutputClaimable { // HTLC 2
 			amount_satoshis: 1_000,
 		}, Balance::ClaimableAwaitingConfirmations {
@@ -1561,7 +1561,7 @@ fn do_test_revoked_counterparty_htlc_tx_balances(anchors: bool) {
 	test_spendable_output(&nodes[0], &revoked_local_txn[0], false);
 	assert_eq!(sorted_vec(vec![Balance::CounterpartyRevokedOutputClaimable {
 			// to_self output to B
-			amount_satoshis: 10_000,
+			amount_satoshis: 11_000,
 		}, Balance::CounterpartyRevokedOutputClaimable { // HTLC 2
 			amount_satoshis: 1_000,
 		}, Balance::ClaimableAwaitingConfirmations {
@@ -1574,7 +1574,7 @@ fn do_test_revoked_counterparty_htlc_tx_balances(anchors: bool) {
 	test_spendable_output(&nodes[0], &as_htlc_claim_tx[0], false);
 	assert_eq!(sorted_vec(vec![Balance::CounterpartyRevokedOutputClaimable {
 			// to_self output in B's revoked commitment
-			amount_satoshis: 10_000,
+			amount_satoshis: 11_000,
 		}, Balance::CounterpartyRevokedOutputClaimable { // HTLC 2
 			amount_satoshis: 1_000,
 		}]),
@@ -1623,7 +1623,7 @@ fn do_test_revoked_counterparty_htlc_tx_balances(anchors: bool) {
 	connect_blocks(&nodes[0], ANTI_REORG_DELAY - 1);
 	assert_eq!(sorted_vec(vec![Balance::CounterpartyRevokedOutputClaimable {
 			// to_self output in B's revoked commitment
-			amount_satoshis: 10_000,
+			amount_satoshis: 11_000,
 		}, Balance::CounterpartyRevokedOutputClaimable { // HTLC 2
 			amount_satoshis: 1_000,
 		}]),
@@ -1632,7 +1632,7 @@ fn do_test_revoked_counterparty_htlc_tx_balances(anchors: bool) {
 	mine_transaction(&nodes[0], &revoked_htlc_timeout_claim);
 	assert_eq!(sorted_vec(vec![Balance::CounterpartyRevokedOutputClaimable {
 			// to_self output in B's revoked commitment
-			amount_satoshis: 10_000,
+			amount_satoshis: 11_000,
 		}, Balance::ClaimableAwaitingConfirmations {
 			amount_satoshis: revoked_htlc_timeout_claim.output[0].value,
 			confirmation_height: nodes[0].best_block_info().1 + ANTI_REORG_DELAY - 1,

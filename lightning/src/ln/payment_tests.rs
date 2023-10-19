@@ -16,9 +16,9 @@ use crate::chain::channelmonitor::{ANTI_REORG_DELAY, HTLC_FAIL_BACK_BUFFER, LATE
 use crate::sign::EntropySource;
 use crate::chain::transaction::OutPoint;
 use crate::events::{ClosureReason, Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider, PathFailure, PaymentFailureReason, PaymentPurpose};
-use crate::ln::channel::EXPIRE_PREV_CONFIG_TICKS;
+use crate::ln::channel::{EXPIRE_PREV_CONFIG_TICKS, commit_tx_fee_msat, get_holder_selected_channel_reserve_satoshis, ANCHOR_OUTPUT_VALUE_SATOSHI};
 use crate::ln::channelmanager::{BREAKDOWN_TIMEOUT, MPP_TIMEOUT_TICKS, MIN_CLTV_EXPIRY_DELTA, PaymentId, PaymentSendFailure, RecentPaymentDetails, RecipientOnionFields, HTLCForwardInfo, PendingHTLCRouting, PendingAddHTLCInfo};
-use crate::ln::features::Bolt11InvoiceFeatures;
+use crate::ln::features::{Bolt11InvoiceFeatures, ChannelTypeFeatures};
 use crate::ln::{msgs, ChannelId, PaymentSecret, PaymentPreimage};
 use crate::ln::msgs::ChannelMessageHandler;
 use crate::ln::outbound_payment::{IDEMPOTENCY_TIMEOUT_TICKS, Retry};
@@ -4092,4 +4092,96 @@ fn test_payment_metadata_consistency() {
 	do_test_payment_metadata_consistency(true, false);
 	do_test_payment_metadata_consistency(false, true);
 	do_test_payment_metadata_consistency(false, false);
+}
+
+#[test]
+fn  test_htlc_forward_considers_anchor_outputs_value() {
+	// Tests that:
+	//
+	// 1) Forwarding nodes don't forward HTLCs that would cause their balance to dip below the
+	//    reserve when considering the value of anchor outputs.
+	//
+	// 2) Recipients of `update_add_htlc` properly reject HTLCs that would cause the initiator's
+	//    balance to dip below the reserve when considering the value of anchor outputs.
+	let mut config = test_default_channel_config();
+	config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
+	config.manually_accept_inbound_channels = true;
+	config.channel_config.forwarding_fee_base_msat = 0;
+	config.channel_config.forwarding_fee_proportional_millionths = 0;
+
+	// Set up a test network of three nodes that replicates a production failure leading to the
+	// discovery of this bug.
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[Some(config), Some(config), Some(config)]);
+	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+
+	const CHAN_AMT: u64 = 1_000_000;
+	const PUSH_MSAT: u64 = 900_000_000;
+	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, CHAN_AMT, 500_000_000);
+	let (_, _, chan_id_2, _) = create_announced_chan_between_nodes_with_value(&nodes, 1, 2, CHAN_AMT, PUSH_MSAT);
+
+	let channel_reserve_msat = get_holder_selected_channel_reserve_satoshis(CHAN_AMT, &config) * 1000;
+	let commitment_fee_msat = commit_tx_fee_msat(
+		*nodes[1].fee_estimator.sat_per_kw.lock().unwrap(), 2, &ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies()
+	);
+	let anchor_outpus_value_msat = ANCHOR_OUTPUT_VALUE_SATOSHI * 2 * 1000;
+	let sendable_balance_msat = CHAN_AMT * 1000 - PUSH_MSAT - channel_reserve_msat - commitment_fee_msat - anchor_outpus_value_msat;
+	let channel_details = nodes[1].node.list_channels().into_iter().find(|channel| channel.channel_id == chan_id_2).unwrap();
+	assert!(sendable_balance_msat >= channel_details.next_outbound_htlc_minimum_msat);
+	assert!(sendable_balance_msat <= channel_details.next_outbound_htlc_limit_msat);
+
+	send_payment(&nodes[0], &[&nodes[1], &nodes[2]], sendable_balance_msat);
+	send_payment(&nodes[2], &[&nodes[1], &nodes[0]], sendable_balance_msat);
+
+	// Send out an HTLC that would cause the forwarding node to dip below its reserve when
+	// considering the value of anchor outputs.
+	let (route, payment_hash, _, payment_secret) = get_route_and_payment_hash!(
+		nodes[0], nodes[2], sendable_balance_msat + anchor_outpus_value_msat
+	);
+	nodes[0].node.send_payment_with_route(
+		&route, payment_hash, RecipientOnionFields::secret_only(payment_secret), PaymentId(payment_hash.0)
+	).unwrap();
+	check_added_monitors!(nodes[0], 1);
+
+	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 1);
+	let mut update_add_htlc = if let MessageSendEvent::UpdateHTLCs { updates, .. } = events.pop().unwrap() {
+		nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &updates.update_add_htlcs[0]);
+		check_added_monitors(&nodes[1], 0);
+		commitment_signed_dance!(nodes[1], nodes[0], &updates.commitment_signed, false);
+		updates.update_add_htlcs[0].clone()
+	} else {
+		panic!("Unexpected event");
+	};
+
+	// The forwarding node should reject forwarding it as expected.
+	expect_pending_htlcs_forwardable!(nodes[1]);
+	expect_pending_htlcs_forwardable_and_htlc_handling_failed!(&nodes[1], vec![HTLCDestination::NextHopChannel {
+		node_id: Some(nodes[2].node.get_our_node_id()),
+		channel_id: chan_id_2
+	}]);
+	check_added_monitors(&nodes[1], 1);
+
+	let mut events = nodes[1].node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 1);
+	if let MessageSendEvent::UpdateHTLCs { updates, .. } = events.pop().unwrap() {
+		nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &updates.update_fail_htlcs[0]);
+		check_added_monitors(&nodes[0], 0);
+		commitment_signed_dance!(nodes[0], nodes[1], &updates.commitment_signed, false);
+	} else {
+		panic!("Unexpected event");
+	}
+
+	expect_payment_failed!(nodes[0], payment_hash, false);
+
+	// Assume that the forwarding node did forward it, and make sure the recipient rejects it as an
+	// invalid update and closes the channel.
+	update_add_htlc.channel_id = chan_id_2;
+	nodes[2].node.handle_update_add_htlc(&nodes[1].node.get_our_node_id(), &update_add_htlc);
+	check_closed_event(&nodes[2], 1, ClosureReason::ProcessingError {
+		err: "Remote HTLC add would put them under remote reserve value".to_owned()
+	}, false, &[nodes[1].node.get_our_node_id()], 1_000_000);
+	check_closed_broadcast(&nodes[2], 1, true);
+	check_added_monitors(&nodes[2], 1);
 }
