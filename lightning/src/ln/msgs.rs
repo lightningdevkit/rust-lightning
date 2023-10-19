@@ -1457,6 +1457,7 @@ pub trait ChannelMessageHandler : MessageSendEventsProvider {
 	fn handle_open_channel_v2(&self, their_node_id: &PublicKey, msg: &OpenChannelV2);
 	/// Handle an incoming `accept_channel` message from the given peer.
 	fn handle_accept_channel(&self, their_node_id: &PublicKey, msg: &AcceptChannel);
+	#[cfg(dual_funding)]
 	/// Handle an incoming `accept_channel2` message from the given peer.
 	#[cfg(dual_funding)]
 	fn handle_accept_channel_v2(&self, their_node_id: &PublicKey, msg: &AcceptChannelV2);
