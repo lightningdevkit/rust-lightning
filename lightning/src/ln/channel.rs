@@ -1692,9 +1692,13 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 			}
 
 			let htlc_above_dust = HTLCCandidate::new(real_dust_limit_timeout_sat * 1000, HTLCInitiator::LocalOffered);
-			let max_reserved_commit_tx_fee_msat = FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE * context.next_local_commit_tx_fee_msat(htlc_above_dust, Some(()));
+			let mut max_reserved_commit_tx_fee_msat = context.next_local_commit_tx_fee_msat(htlc_above_dust, Some(()));
 			let htlc_dust = HTLCCandidate::new(real_dust_limit_timeout_sat * 1000 - 1, HTLCInitiator::LocalOffered);
-			let min_reserved_commit_tx_fee_msat = FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE * context.next_local_commit_tx_fee_msat(htlc_dust, Some(()));
+			let mut min_reserved_commit_tx_fee_msat = context.next_local_commit_tx_fee_msat(htlc_dust, Some(()));
+			if !context.get_channel_type().supports_anchors_zero_fee_htlc_tx() {
+				max_reserved_commit_tx_fee_msat *= FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE;
+				min_reserved_commit_tx_fee_msat *= FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE;
+			}
 
 			// We will first subtract the fee as if we were above-dust. Then, if the resulting
 			// value ends up being below dust, we have this fee available again. In that case,
@@ -2856,16 +2860,15 @@ impl<SP: Deref> Channel<SP> where
 			0
 		};
 		if !self.context.is_outbound() {
-			// `2 *` and `Some(())` is for the fee spike buffer we keep for the remote. This deviates from
-			// the spec because in the spec, the fee spike buffer requirement doesn't exist on the
-			// receiver's side, only on the sender's.
-			// Note that when we eventually remove support for fee updates and switch to anchor output
-			// fees, we will drop the `2 *`, since we no longer be as sensitive to fee spikes. But, keep
-			// the extra htlc when calculating the next remote commitment transaction fee as we should
-			// still be able to afford adding this HTLC plus one more future HTLC, regardless of being
-			// sensitive to fee spikes.
+			// `Some(())` is for the fee spike buffer we keep for the remote. This deviates from
+			// the spec because the fee spike buffer requirement doesn't exist on the receiver's
+			// side, only on the sender's. Note that with anchor outputs we are no longer as
+			// sensitive to fee spikes, so we need to account for them.
 			let htlc_candidate = HTLCCandidate::new(msg.amount_msat, HTLCInitiator::RemoteOffered);
-			let remote_fee_cost_incl_stuck_buffer_msat = 2 * self.context.next_remote_commit_tx_fee_msat(htlc_candidate, Some(()));
+			let mut remote_fee_cost_incl_stuck_buffer_msat = self.context.next_remote_commit_tx_fee_msat(htlc_candidate, Some(()));
+			if !self.context.get_channel_type().supports_anchors_zero_fee_htlc_tx() {
+				remote_fee_cost_incl_stuck_buffer_msat *= FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE;
+			}
 			if pending_remote_value_msat.saturating_sub(msg.amount_msat).saturating_sub(self.context.holder_selected_channel_reserve_satoshis * 1000).saturating_sub(anchor_outputs_value_msat) < remote_fee_cost_incl_stuck_buffer_msat {
 				// Note that if the pending_forward_status is not updated here, then it's because we're already failing
 				// the HTLC, i.e. its status is already set to failing.

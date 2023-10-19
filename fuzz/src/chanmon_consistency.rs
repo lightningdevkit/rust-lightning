@@ -1223,7 +1223,10 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 			0x6d => { send_hop_payment(&nodes[2], &nodes[1], chan_b, &nodes[0], chan_a, 1, &mut payment_id, &mut payment_idx); },
 
 			0x80 => {
-				let max_feerate = last_htlc_clear_fee_a * FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE as u32;
+				let mut max_feerate = last_htlc_clear_fee_a;
+				if !anchors {
+					max_feerate *= FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE as u32;
+				}
 				if fee_est_a.ret_val.fetch_add(250, atomic::Ordering::AcqRel) + 250 > max_feerate {
 					fee_est_a.ret_val.store(max_feerate, atomic::Ordering::Release);
 				}
@@ -1232,7 +1235,10 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 			0x81 => { fee_est_a.ret_val.store(253, atomic::Ordering::Release); nodes[0].maybe_update_chan_fees(); },
 
 			0x84 => {
-				let max_feerate = last_htlc_clear_fee_b * FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE as u32;
+				let mut max_feerate = last_htlc_clear_fee_b;
+				if !anchors {
+					max_feerate *= FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE as u32;
+				}
 				if fee_est_b.ret_val.fetch_add(250, atomic::Ordering::AcqRel) + 250 > max_feerate {
 					fee_est_b.ret_val.store(max_feerate, atomic::Ordering::Release);
 				}
@@ -1241,7 +1247,10 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 			0x85 => { fee_est_b.ret_val.store(253, atomic::Ordering::Release); nodes[1].maybe_update_chan_fees(); },
 
 			0x88 => {
-				let max_feerate = last_htlc_clear_fee_c * FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE as u32;
+				let mut max_feerate = last_htlc_clear_fee_c;
+				if !anchors {
+					max_feerate *= FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE as u32;
+				}
 				if fee_est_c.ret_val.fetch_add(250, atomic::Ordering::AcqRel) + 250 > max_feerate {
 					fee_est_c.ret_val.store(max_feerate, atomic::Ordering::Release);
 				}
