@@ -341,6 +341,9 @@ where U::Target: UtxoLookup, L::Target: Logger
 
 impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 	/// Handles any network updates originating from [`Event`]s.
+	//
+	/// Note that this will skip applying any [`NetworkUpdate::ChannelUpdateMessage`] to avoid
+	/// leaking possibly identifying information of the sender to the public network.
 	///
 	/// [`Event`]: crate::events::Event
 	pub fn handle_network_update(&self, network_update: &NetworkUpdate) {
@@ -349,8 +352,7 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 				let short_channel_id = msg.contents.short_channel_id;
 				let is_enabled = msg.contents.flags & (1 << 1) != (1 << 1);
 				let status = if is_enabled { "enabled" } else { "disabled" };
-				log_debug!(self.logger, "Updating channel with channel_update from a payment failure. Channel {} is {}.", short_channel_id, status);
-				let _ = self.update_channel(msg);
+				log_debug!(self.logger, "Skipping application of a channel update from a payment failure. Channel {} is {}.", short_channel_id, status);
 			},
 			NetworkUpdate::ChannelFailure { short_channel_id, is_permanent } => {
 				if is_permanent {
@@ -1845,14 +1847,14 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 	/// For an already known (from announcement) channel, update info about one of the directions
 	/// of the channel.
 	///
-	/// You probably don't want to call this directly, instead relying on a P2PGossipSync's
-	/// RoutingMessageHandler implementation to call it indirectly. This may be useful to accept
+	/// You probably don't want to call this directly, instead relying on a [`P2PGossipSync`]'s
+	/// [`RoutingMessageHandler`] implementation to call it indirectly. This may be useful to accept
 	/// routing messages from a source using a protocol other than the lightning P2P protocol.
 	///
 	/// If built with `no-std`, any updates with a timestamp more than two weeks in the past or
 	/// materially in the future will be rejected.
 	pub fn update_channel(&self, msg: &msgs::ChannelUpdate) -> Result<(), LightningError> {
-		self.update_channel_intern(&msg.contents, Some(&msg), Some(&msg.signature))
+		self.update_channel_internal(&msg.contents, Some(&msg), Some(&msg.signature), false)
 	}
 
 	/// For an already known (from announcement) channel, update info about one of the directions
@@ -1862,10 +1864,23 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 	/// If built with `no-std`, any updates with a timestamp more than two weeks in the past or
 	/// materially in the future will be rejected.
 	pub fn update_channel_unsigned(&self, msg: &msgs::UnsignedChannelUpdate) -> Result<(), LightningError> {
-		self.update_channel_intern(msg, None, None)
+		self.update_channel_internal(msg, None, None, false)
 	}
 
-	fn update_channel_intern(&self, msg: &msgs::UnsignedChannelUpdate, full_msg: Option<&msgs::ChannelUpdate>, sig: Option<&secp256k1::ecdsa::Signature>) -> Result<(), LightningError> {
+	/// For an already known (from announcement) channel, verify the given [`ChannelUpdate`].
+	///
+	/// This checks whether the update currently is applicable by [`Self::update_channel`].
+	///
+	/// If built with `no-std`, any updates with a timestamp more than two weeks in the past or
+	/// materially in the future will be rejected.
+	pub fn verify_channel_update(&self, msg: &msgs::ChannelUpdate) -> Result<(), LightningError> {
+		self.update_channel_internal(&msg.contents, Some(&msg), Some(&msg.signature), true)
+	}
+
+	fn update_channel_internal(&self, msg: &msgs::UnsignedChannelUpdate,
+		full_msg: Option<&msgs::ChannelUpdate>, sig: Option<&secp256k1::ecdsa::Signature>,
+		only_verify: bool) -> Result<(), LightningError>
+	{
 		let chan_enabled = msg.flags & (1 << 1) != (1 << 1);
 
 		if msg.chain_hash != self.chain_hash {
@@ -1961,7 +1976,9 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 							action: ErrorAction::IgnoreAndLog(Level::Debug)
 						})?, "channel_update");
 					}
-					channel.two_to_one = get_new_channel_info!();
+					if !only_verify {
+						channel.two_to_one = get_new_channel_info!();
+					}
 				} else {
 					check_update_latest!(channel.one_to_two);
 					if let Some(sig) = sig {
@@ -1970,7 +1987,9 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 							action: ErrorAction::IgnoreAndLog(Level::Debug)
 						})?, "channel_update");
 					}
-					channel.one_to_two = get_new_channel_info!();
+					if !only_verify {
+						channel.one_to_two = get_new_channel_info!();
+					}
 				}
 			}
 		}
@@ -2411,6 +2430,7 @@ pub(crate) mod tests {
 		}
 
 		let valid_channel_update = get_signed_channel_update(|_| {}, node_1_privkey, &secp_ctx);
+		network_graph.verify_channel_update(&valid_channel_update).unwrap();
 		match gossip_sync.handle_channel_update(&valid_channel_update) {
 			Ok(res) => assert!(res),
 			_ => panic!(),
@@ -2513,7 +2533,8 @@ pub(crate) mod tests {
 
 		let short_channel_id;
 		{
-			// Announce a channel we will update
+			// Check we won't apply an update via `handle_network_update` for privacy reasons, but
+			// can continue fine if we manually apply it.
 			let valid_channel_announcement = get_signed_channel_announcement(|_| {}, node_1_privkey, node_2_privkey, &secp_ctx);
 			short_channel_id = valid_channel_announcement.contents.short_channel_id;
 			let chain_source: Option<&test_utils::TestChainSource> = None;
@@ -2524,10 +2545,11 @@ pub(crate) mod tests {
 			assert!(network_graph.read_only().channels().get(&short_channel_id).unwrap().one_to_two.is_none());
 
 			network_graph.handle_network_update(&NetworkUpdate::ChannelUpdateMessage {
-				msg: valid_channel_update,
+				msg: valid_channel_update.clone(),
 			});
 
-			assert!(network_graph.read_only().channels().get(&short_channel_id).unwrap().one_to_two.is_some());
+			assert!(network_graph.read_only().channels().get(&short_channel_id).unwrap().one_to_two.is_none());
+			network_graph.update_channel(&valid_channel_update).unwrap();
 		}
 
 		// Non-permanent failure doesn't touch the channel at all
