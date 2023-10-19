@@ -1823,6 +1823,7 @@ mod tests {
 	use crate::ln::features::{ChannelFeatures, NodeFeatures};
 	use crate::ln::msgs::{ErrorAction, LightningError};
 	use crate::ln::outbound_payment::{Bolt12PaymentError, OutboundPayments, Retry, RetryableSendFailure, StaleExpiration};
+	#[cfg(feature = "std")]
 	use crate::offers::invoice::DEFAULT_RELATIVE_EXPIRY;
 	use crate::offers::offer::OfferBuilder;
 	use crate::offers::test_utils::*;
