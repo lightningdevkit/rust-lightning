@@ -54,7 +54,7 @@ use crate::ln::onion_utils::HTLCFailReason;
 use crate::ln::msgs::{ChannelMessageHandler, DecodeError, LightningError};
 #[cfg(test)]
 use crate::ln::outbound_payment;
-use crate::ln::outbound_payment::{OutboundPayments, PaymentAttempts, PendingOutboundPayment, SendAlongPathArgs};
+use crate::ln::outbound_payment::{OutboundPayments, PaymentAttempts, PendingOutboundPayment, SendAlongPathArgs, StaleExpiration};
 use crate::ln::wire::Encode;
 use crate::offers::offer::{DerivedMetadata, OfferBuilder};
 use crate::offers::parse::Bolt12SemanticError;
@@ -7349,9 +7349,10 @@ where
 			.absolute_expiry(absolute_expiry)
 			.path(path);
 
+		let expiration = StaleExpiration::AbsoluteTimeout(absolute_expiry);
 		self.pending_outbound_payments
 			.add_new_awaiting_invoice(
-				payment_id, absolute_expiry, retry_strategy, max_total_routing_fee_msat,
+				payment_id, expiration, retry_strategy, max_total_routing_fee_msat,
 			)
 			.map_err(|_| Bolt12SemanticError::DuplicatePaymentId)?;
 
