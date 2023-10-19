@@ -177,14 +177,18 @@ pub trait MessageRouter {
 	) -> Result<OnionMessagePath, ()>;
 }
 
-/// A [`MessageRouter`] that always fails.
+/// A [`MessageRouter`] that can only route to a directly connected [`Destination`].
 pub struct DefaultMessageRouter;
 
 impl MessageRouter for DefaultMessageRouter {
 	fn find_path(
-		&self, _sender: PublicKey, _peers: Vec<PublicKey>, _destination: Destination
+		&self, _sender: PublicKey, peers: Vec<PublicKey>, destination: Destination
 	) -> Result<OnionMessagePath, ()> {
-		Err(())
+		if peers.contains(&destination.first_node()) {
+			Ok(OnionMessagePath { intermediate_nodes: vec![], destination })
+		} else {
+			Err(())
+		}
 	}
 }
 
@@ -212,6 +216,13 @@ impl Destination {
 		match self {
 			Destination::Node(_) => 1,
 			Destination::BlindedPath(BlindedPath { blinded_hops, .. }) => blinded_hops.len(),
+		}
+	}
+
+	fn first_node(&self) -> PublicKey {
+		match self {
+			Destination::Node(node_id) => *node_id,
+			Destination::BlindedPath(BlindedPath { introduction_node_id: node_id, .. }) => *node_id,
 		}
 	}
 }

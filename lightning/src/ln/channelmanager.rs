@@ -7325,6 +7325,11 @@ where
 	/// the node must be announced. Otherwise, there is no way to find a path to the introduction
 	/// node in order to send the [`InvoiceRequest`].
 	///
+	/// # Limitations
+	///
+	/// Requires a direct connection to the introduction node in the responding [`InvoiceRequest`]'s
+	/// reply path.
+	///
 	/// [`Offer`]: crate::offers::offer::Offer
 	/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
 	pub fn create_offer_builder(
@@ -7365,6 +7370,11 @@ where
 	/// node must be announced. Otherwise, there is no way to find a path to the introduction node
 	/// in order to send the [`Bolt12Invoice`].
 	///
+	/// # Limitations
+	///
+	/// Requires a direct connection to an introduction node in the responding
+	/// [`Bolt12Invoice::payment_paths`].
+	///
 	/// # Errors
 	///
 	/// Errors if a duplicate `payment_id` is provided given the caveats in the aforementioned link
@@ -7372,6 +7382,7 @@ where
 	///
 	/// [`Refund`]: crate::offers::refund::Refund
 	/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
+	/// [`Bolt12Invoice::payment_paths`]: crate::offers::invoice::Bolt12Invoice::payment_paths
 	pub fn create_refund_builder(
 		&self, description: String, amount_msats: u64, absolute_expiry: Duration,
 		payment_id: PaymentId, retry_strategy: Retry, max_total_routing_fee_msat: Option<u64>
@@ -7428,6 +7439,12 @@ where
 	/// node must be announced. Otherwise, there is no way to find a path to the introduction node
 	/// in order to send the [`Bolt12Invoice`].
 	///
+	/// # Limitations
+	///
+	/// Requires a direct connection to an introduction node in [`Offer::paths`] or to
+	/// [`Offer::signing_pubkey`], if empty. A similar restriction applies to the responding
+	/// [`Bolt12Invoice::payment_paths`].
+	///
 	/// # Errors
 	///
 	/// Errors if a duplicate `payment_id` is provided given the caveats in the aforementioned link
@@ -7438,6 +7455,7 @@ where
 	/// [`InvoiceRequest::payer_note`]: crate::offers::invoice_request::InvoiceRequest::payer_note
 	/// [`InvoiceRequestBuilder`]: crate::offers::invoice_request::InvoiceRequestBuilder
 	/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
+	/// [`Bolt12Invoice::payment_paths`]: crate::offers::invoice::Bolt12Invoice::payment_paths
 	/// [Avoiding Duplicate Payments]: #avoiding-duplicate-payments
 	pub fn pay_for_offer(
 		&self, offer: &Offer, quantity: Option<u64>, amount_msats: Option<u64>,
@@ -7506,6 +7524,11 @@ where
 	/// The resulting invoice uses a [`PaymentHash`] recognized by the [`ChannelManager`] and a
 	/// [`BlindedPath`] containing the [`PaymentSecret`] needed to reconstruct the corresponding
 	/// [`PaymentPreimage`].
+	///
+	/// # Limitations
+	///
+	/// Requires a direct connection to an introduction node in [`Refund::paths`] or to
+	/// [`Refund::payer_id`], if empty.
 	///
 	/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
 	pub fn request_refund_payment(&self, refund: &Refund) -> Result<(), Bolt12SemanticError> {
