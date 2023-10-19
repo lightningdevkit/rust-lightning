@@ -432,7 +432,7 @@ fn send_hop_payment(source: &ChanMan, middle: &ChanMan, middle_chan_id: u64, des
 }
 
 #[inline]
-pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out) {
+pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 	let out = SearchingOutput::new(underlying_out);
 	let broadcast = Arc::new(TestBroadcaster{});
 	let router = FuzzRouter {};
@@ -450,6 +450,10 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out) {
 			let mut config = UserConfig::default();
 			config.channel_config.forwarding_fee_proportional_millionths = 0;
 			config.channel_handshake_config.announced_channel = true;
+			if anchors {
+				config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
+				config.manually_accept_inbound_channels = true;
+			}
 			let network = Network::Bitcoin;
 			let best_block_timestamp = genesis_block(network).header.time;
 			let params = ChainParameters {
@@ -473,6 +477,10 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out) {
 			let mut config = UserConfig::default();
 			config.channel_config.forwarding_fee_proportional_millionths = 0;
 			config.channel_handshake_config.announced_channel = true;
+			if anchors {
+				config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
+				config.manually_accept_inbound_channels = true;
+			}
 
 			let mut monitors = HashMap::new();
 			let mut old_monitors = $old_monitors.latest_monitors.lock().unwrap();
@@ -509,7 +517,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out) {
 
 	let mut channel_txn = Vec::new();
 	macro_rules! make_channel {
-		($source: expr, $dest: expr, $chan_id: expr) => { {
+		($source: expr, $dest: expr, $dest_keys_manager: expr, $chan_id: expr) => { {
 			$source.peer_connected(&$dest.get_our_node_id(), &Init {
 				features: $dest.init_features(), networks: None, remote_network_address: None
 			}, true).unwrap();
@@ -528,6 +536,22 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out) {
 
 			$dest.handle_open_channel(&$source.get_our_node_id(), &open_channel);
 			let accept_channel = {
+				if anchors {
+					let events = $dest.get_and_clear_pending_events();
+					assert_eq!(events.len(), 1);
+					if let events::Event::OpenChannelRequest {
+						ref temporary_channel_id, ref counterparty_node_id, ..
+					} = events[0] {
+						let mut random_bytes = [0u8; 16];
+						random_bytes.copy_from_slice(&$dest_keys_manager.get_secure_random_bytes()[..16]);
+						let user_channel_id = u128::from_be_bytes(random_bytes);
+						$dest.accept_inbound_channel(
+							temporary_channel_id,
+							counterparty_node_id,
+							user_channel_id,
+						).unwrap();
+					} else { panic!("Wrong event type"); }
+				}
 				let events = $dest.get_and_clear_pending_msg_events();
 				assert_eq!(events.len(), 1);
 				if let events::MessageSendEvent::SendAcceptChannel { ref msg, .. } = events[0] {
@@ -639,8 +663,8 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out) {
 
 	let mut nodes = [node_a, node_b, node_c];
 
-	let chan_1_funding = make_channel!(nodes[0], nodes[1], 0);
-	let chan_2_funding = make_channel!(nodes[1], nodes[2], 1);
+	let chan_1_funding = make_channel!(nodes[0], nodes[1], keys_manager_b, 0);
+	let chan_2_funding = make_channel!(nodes[1], nodes[2], keys_manager_c, 1);
 
 	for node in nodes.iter() {
 		confirm_txn!(node);
@@ -1338,10 +1362,12 @@ impl<O: Output> SearchingOutput<O> {
 }
 
 pub fn chanmon_consistency_test<Out: Output>(data: &[u8], out: Out) {
-	do_test(data, out);
+	do_test(data, out.clone(), false);
+	do_test(data, out, true);
 }
 
 #[no_mangle]
 pub extern "C" fn chanmon_consistency_run(data: *const u8, datalen: usize) {
-	do_test(unsafe { std::slice::from_raw_parts(data, datalen) }, test_logger::DevNull{});
+	do_test(unsafe { std::slice::from_raw_parts(data, datalen) }, test_logger::DevNull{}, false);
+	do_test(unsafe { std::slice::from_raw_parts(data, datalen) }, test_logger::DevNull{}, true);
 }
