@@ -724,7 +724,7 @@ pub(super) struct ChannelContext<SP: Deref> where SP::Target: SignerProvider {
 
 	cur_holder_commitment_transaction_number: u64,
 	cur_counterparty_commitment_transaction_number: u64,
-	value_to_self_msat: u64, // Excluding all pending_htlcs, excluding fees
+	value_to_self_msat: u64, // Excluding all pending_htlcs, fees, and anchor outputs
 	pending_inbound_htlcs: Vec<InboundHTLCOutput>,
 	pending_outbound_htlcs: Vec<OutboundHTLCOutput>,
 	holding_cell_htlc_updates: Vec<HTLCUpdateAwaitingACK>,
@@ -1673,6 +1673,11 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 
 		let mut available_capacity_msat = outbound_capacity_msat;
 
+		let anchor_outputs_value_msat = if context.get_channel_type().supports_anchors_zero_fee_htlc_tx() {
+			ANCHOR_OUTPUT_VALUE_SATOSHI * 2 * 1000
+		} else {
+			0
+		};
 		if context.is_outbound() {
 			// We should mind channel commit tx fee when computing how much of the available capacity
 			// can be used in the next htlc. Mirrors the logic in send_htlc.
@@ -1694,7 +1699,8 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 			// We will first subtract the fee as if we were above-dust. Then, if the resulting
 			// value ends up being below dust, we have this fee available again. In that case,
 			// match the value to right-below-dust.
-			let mut capacity_minus_commitment_fee_msat: i64 = (available_capacity_msat as i64) - (max_reserved_commit_tx_fee_msat as i64);
+			let mut capacity_minus_commitment_fee_msat: i64 = available_capacity_msat as i64 -
+				max_reserved_commit_tx_fee_msat as i64 - anchor_outputs_value_msat as i64;
 			if capacity_minus_commitment_fee_msat < (real_dust_limit_timeout_sat as i64) * 1000 {
 				let one_htlc_difference_msat = max_reserved_commit_tx_fee_msat - min_reserved_commit_tx_fee_msat;
 				debug_assert!(one_htlc_difference_msat != 0);
@@ -1719,7 +1725,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 			let remote_balance_msat = (context.channel_value_satoshis * 1000 - context.value_to_self_msat)
 				.saturating_sub(inbound_stats.pending_htlcs_value_msat);
 
-			if remote_balance_msat < max_reserved_commit_tx_fee_msat + holder_selected_chan_reserve_msat {
+			if remote_balance_msat < max_reserved_commit_tx_fee_msat + holder_selected_chan_reserve_msat + anchor_outputs_value_msat {
 				// If another HTLC's fee would reduce the remote's balance below the reserve limit
 				// we've selected for them, we can only send dust HTLCs.
 				available_capacity_msat = cmp::min(available_capacity_msat, real_dust_limit_success_sat * 1000 - 1);
