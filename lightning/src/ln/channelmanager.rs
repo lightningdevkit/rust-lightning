@@ -7361,7 +7361,7 @@ where
 	/// # Privacy
 	///
 	/// Uses a one-hop [`BlindedPath`] for the refund with [`ChannelManager::get_our_node_id`] as
-	/// the introduction node and a derived payer id for sender privacy. As such, currently, the
+	/// the introduction node and a derived payer id for payer privacy. As such, currently, the
 	/// node must be announced. Otherwise, there is no way to find a path to the introduction node
 	/// in order to send the [`Bolt12Invoice`].
 	///
@@ -7420,6 +7420,13 @@ where
 	/// To revoke the request, use [`ChannelManager::abandon_payment`] prior to receiving the
 	/// invoice. If abandoned, or an invoice isn't received in a reasonable amount of time, the
 	/// payment will fail with an [`Event::InvoiceRequestFailed`].
+	///
+	/// # Privacy
+	///
+	/// Uses a one-hop [`BlindedPath`] for the reply path with [`ChannelManager::get_our_node_id`]
+	/// as the introduction node and a derived payer id for payer privacy. As such, currently, the
+	/// node must be announced. Otherwise, there is no way to find a path to the introduction node
+	/// in order to send the [`Bolt12Invoice`].
 	///
 	/// # Errors
 	///
