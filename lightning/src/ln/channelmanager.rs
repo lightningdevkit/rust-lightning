@@ -4822,8 +4822,8 @@ where
 	///  * Force-closing and removing channels which have not completed establishment in a timely manner.
 	///  * Forgetting about stale outbound payments, either those that have already been fulfilled
 	///    or those awaiting an invoice that hasn't been delivered in the necessary amount of time.
-	///    The latter is determined using the system clock in `std` and the block time minus two
-	///    hours in `no-std`.
+	///    The latter is determined using the system clock in `std` and the highest seen block time
+	///    minus two hours in `no-std`.
 	///
 	/// Note that this may cause reentrancy through [`chain::Watch::update_channel`] calls or feerate
 	/// estimate fetches.
@@ -7308,11 +7308,15 @@ where
 	}
 
 	/// Creates a [`RefundBuilder`] such that the [`Refund`] it builds is recognized by the
-	/// [`ChannelManager`] when handling [`Bolt12Invoice`] messages for the refund. The builder will
-	/// have the provided expiration set. Any changes to the expiration on the returned builder will
-	/// not be honored by [`ChannelManager`].
+	/// [`ChannelManager`] when handling [`Bolt12Invoice`] messages for the refund.
 	///
-	/// The provided `payment_id` is used to ensure that only one invoice is paid for the refund.
+	/// The builder will have the provided expiration set. Any changes to the expiration on the
+	/// returned builder will not be honored by [`ChannelManager`]. For `no-std`, the highest seen
+	/// block time minus two hours is used for the current time when determining if the refund has
+	/// expired.
+	///
+	/// The provided `payment_id` is used to ensure that only one invoice is paid for the refund. To
+	/// revoke the refund, use [`ChannelManager::abandon_payment`] prior to receiving the invoice.
 	///
 	/// Uses a one-hop [`BlindedPath`] for the refund with [`ChannelManager::get_our_node_id`] as
 	/// the introduction node and a derived payer id for sender privacy. As such, currently, the
