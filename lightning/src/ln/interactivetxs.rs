@@ -17,7 +17,7 @@ use bitcoin::policy::MAX_STANDARD_TX_WEIGHT;
 use bitcoin::secp256k1::PublicKey;
 use bitcoin::{
 	absolute::LockTime as AbsoluteLockTime, OutPoint, ScriptBuf, Sequence, Transaction, TxIn,
-	TxOut, Weight,
+	TxOut, Txid, Weight,
 };
 
 use crate::chain::chaininterface::fee_for_weight;
@@ -147,6 +147,12 @@ pub(crate) struct InteractiveTxOutput {
 	tx_out: TxOut,
 }
 
+impl InteractiveTxOutput {
+	pub fn tx_out(&self) -> &TxOut {
+		&self.tx_out
+	}
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ConstructedTransaction {
 	holder_is_initiator: bool,
@@ -229,6 +235,18 @@ impl ConstructedTransaction {
 			outputs.into_iter().map(|InteractiveTxOutput { tx_out, .. }| tx_out).collect();
 
 		Transaction { version: 2, lock_time: self.lock_time, input, output }
+	}
+
+	pub fn outputs(&self) -> impl Iterator<Item = &InteractiveTxOutput> {
+		self.outputs.iter()
+	}
+
+	pub fn inputs(&self) -> impl Iterator<Item = &InteractiveTxInput> {
+		self.inputs.iter()
+	}
+
+	pub fn txid(&self) -> Txid {
+		self.clone().into_unsigned_tx().txid()
 	}
 }
 
