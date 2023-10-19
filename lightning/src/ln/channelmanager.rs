@@ -7528,7 +7528,9 @@ where
 	/// # Limitations
 	///
 	/// Requires a direct connection to an introduction node in [`Refund::paths`] or to
-	/// [`Refund::payer_id`], if empty.
+	/// [`Refund::payer_id`], if empty. This request is best effort; an invoice will be sent to each
+	/// node meeting the aforementioned criteria, but there's no guarantee that they will be
+	/// received and no retries will be made.
 	///
 	/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
 	pub fn request_refund_payment(&self, refund: &Refund) -> Result<(), Bolt12SemanticError> {
