@@ -3608,9 +3608,10 @@ where
 	///
 	/// # Requested Invoices
 	///
-	/// In the case of paying a [`Bolt12Invoice`], abandoning the payment prior to receiving the
-	/// invoice will result in an [`Event::InvoiceRequestFailed`] and prevent any attempts at paying
-	/// it once received. The other events may only be generated once the invoice has been received.
+	/// In the case of paying a [`Bolt12Invoice`] via [`ChannelManager::pay_for_offer`], abandoning
+	/// the payment prior to receiving the invoice will result in an [`Event::InvoiceRequestFailed`]
+	/// and prevent any attempts at paying it once received. The other events may only be generated
+	/// once the invoice has been received.
 	///
 	/// # Restart Behavior
 	///
@@ -7348,6 +7349,8 @@ where
 	///
 	/// The provided `payment_id` is used to ensure that only one invoice is paid for the refund. To
 	/// revoke the refund, use [`ChannelManager::abandon_payment`] prior to receiving the invoice.
+	/// If an invoice isn't received before expiration, the payment will fail with an
+	/// [`Event::InvoiceRequestFailed`].
 	///
 	/// Uses a one-hop [`BlindedPath`] for the refund with [`ChannelManager::get_our_node_id`] as
 	/// the introduction node and a derived payer id for sender privacy. As such, currently, the
@@ -7397,8 +7400,11 @@ where
 	///
 	/// The provided `payment_id` is used to ensure that only one invoice is paid for the request
 	/// when received. See [Avoiding Duplicate Payments] for other requirements once the payment has
-	/// been sent. To revoke the request, use [`ChannelManager::abandon_payment`] prior to receiving
-	/// the invoice.
+	/// been sent.
+	///
+	/// To revoke the request, use [`ChannelManager::abandon_payment`] prior to receiving the
+	/// invoice. If abandoned, or an invoice isn't received in a reasonable amount of time, the
+	/// payment will fail with an [`Event::InvoiceRequestFailed`].
 	///
 	/// Errors if a duplicate `payment_id` is provided given the caveats in the aforementioned link.
 	///

@@ -514,9 +514,13 @@ pub enum Event {
 		sender_intended_total_msat: Option<u64>,
 	},
 	/// Indicates a request for an invoice failed to yield a response in a reasonable amount of time
-	/// or was explicitly abandoned by [`ChannelManager::abandon_payment`].
+	/// or was explicitly abandoned by [`ChannelManager::abandon_payment`]. This may be for an
+	/// [`InvoiceRequest`] sent for an [`Offer`] or for a [`Refund`] that hasn't been redeemed.
 	///
 	/// [`ChannelManager::abandon_payment`]: crate::ln::channelmanager::ChannelManager::abandon_payment
+	/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
+	/// [`Offer`]: crate::offers::offer::Offer
+	/// [`Refund`]: crate::offers::refund::Refund
 	InvoiceRequestFailed {
 		/// The `payment_id` to have been associated with payment for the requested invoice.
 		payment_id: PaymentId,
