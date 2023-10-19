@@ -35,8 +35,10 @@ use crate::util::logger::Logger;
 
 use bitcoin::blockdata::block::{Block, Header, Version};
 use bitcoin::blockdata::locktime::absolute::LockTime;
-use bitcoin::blockdata::transaction::{Transaction, TxIn, TxOut};
-use bitcoin::hash_types::{BlockHash, TxMerkleNode};
+use bitcoin::blockdata::script::ScriptBuf;
+use bitcoin::blockdata::transaction::{Sequence, Transaction, TxIn, TxOut};
+use bitcoin::blockdata::witness::Witness;
+use bitcoin::hash_types::{BlockHash, TxMerkleNode, WPubkeyHash};
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::Hash as _;
 use bitcoin::network::constants::Network;
@@ -1072,6 +1074,27 @@ pub fn create_coinbase_funding_transaction<'a, 'b, 'c>(node: &Node<'a, 'b, 'c>,
  -> (ChannelId, Transaction, OutPoint)
 {
 	internal_create_funding_transaction(node, expected_counterparty_node_id, expected_chan_value, expected_user_chan_id, true)
+}
+
+pub fn create_dual_funding_utxo_with_prev_tx<'a, 'b, 'c>(
+	node: &Node<'a, 'b, 'c>, value_satoshis: u64,
+) -> (TxIn, Transaction) {
+	let chan_id = *node.network_chan_count.borrow();
+
+	let tx = Transaction { version: chan_id as i32, lock_time: LockTime::ZERO, input: vec![],
+		output: vec![TxOut {
+			value: value_satoshis, script_pubkey: ScriptBuf::new_v0_p2wpkh(&WPubkeyHash::all_zeros()),
+		}]};
+	let funding_input = TxIn {
+		previous_output: OutPoint {
+			txid: tx.txid(),
+			index: 0,
+		}.into_bitcoin_outpoint(),
+		script_sig: ScriptBuf::new(),
+		sequence: Sequence::ZERO,
+		witness: Witness::new(),
+	};
+	(funding_input, tx)
 }
 
 fn internal_create_funding_transaction<'a, 'b, 'c>(node: &Node<'a, 'b, 'c>,

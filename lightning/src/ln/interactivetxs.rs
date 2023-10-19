@@ -15,13 +15,14 @@ use bitcoin::blockdata::constants::WITNESS_SCALE_FACTOR;
 use bitcoin::consensus::Encodable;
 use bitcoin::locktime::absolute::LockTime;
 use bitcoin::policy::MAX_STANDARD_TX_WEIGHT;
-use bitcoin::{OutPoint, Sequence, Transaction, TxIn, TxOut};
+use bitcoin::secp256k1::PublicKey;
+use bitcoin::{OutPoint, Sequence, Transaction, TxIn, TxOut, Witness};
 
 use crate::chain::chaininterface::fee_for_weight;
 use crate::events::bump_transaction::{BASE_INPUT_WEIGHT, EMPTY_SCRIPT_SIG_WEIGHT};
 use crate::ln::channel::TOTAL_BITCOIN_SUPPLY_SATOSHIS;
 use crate::ln::{ChannelId, msgs};
-use crate::ln::msgs::SerialId;
+use crate::ln::msgs::{CommitmentSigned, SerialId, TxSignatures};
 use crate::sign::EntropySource;
 use crate::util::ser::TransactionU16LenLimited;
 
@@ -66,18 +67,109 @@ pub enum AbortReason {
 	InsufficientFees,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct TxInputWithPrevOutput {
 	input: TxIn,
 	prev_output: TxOut,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum InteractiveTxInput {
+	HolderInput(TxInputWithPrevOutput),
+	CounterpartyInput(TxInputWithPrevOutput),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct InteractiveTxSigningSession {
+	pub constructed_transaction: Transaction,
+	holder_sends_tx_signatures_first: bool,
+	inputs: Vec<InteractiveTxInput>,
+	sent_commitment_signed: Option<CommitmentSigned>,
+	received_commitment_signed: Option<CommitmentSigned>,
+	holder_tx_signatures: Option<TxSignatures>,
+	counterparty_tx_signatures: Option<TxSignatures>,
+}
+
+impl InteractiveTxSigningSession {
+	pub fn received_commitment_signed(&mut self, commitment_signed: CommitmentSigned) -> Option<TxSignatures> {
+		self.received_commitment_signed = Some(commitment_signed);
+		if self.holder_sends_tx_signatures_first {
+			self.holder_tx_signatures.clone()
+		} else {
+			None
+		}
+	}
+
+	pub fn received_tx_signatures(&mut self, tx_signatures: TxSignatures) -> (Option<TxSignatures>, Option<Transaction>) {
+		if self.counterparty_tx_signatures.is_some() {
+			return (None, None);
+		};
+		self.counterparty_tx_signatures = Some(tx_signatures.clone());
+		self.inputs.iter_mut().filter_map(|input| match input {
+			InteractiveTxInput::CounterpartyInput(TxInputWithPrevOutput { input, .. }) => Some(input),
+			_ => None,
+		}).zip(tx_signatures.witnesses.into_iter()).for_each(|(input, witness)| input.witness = witness);
+
+		let holder_tx_signatures = if !self.holder_sends_tx_signatures_first {
+			self.holder_tx_signatures.clone()
+		} else {
+			None
+		};
+
+		let funding_tx = if self.holder_tx_signatures.is_some() {
+			Some(self.finalize_funding_tx())
+		} else {
+			None
+		};
+
+		(holder_tx_signatures, funding_tx)
+	}
+
+	pub fn provide_holder_witnesses(&mut self, channel_id: ChannelId, witnesses: Vec<Witness>) -> Option<TxSignatures> {
+		self.inputs.iter_mut().filter_map(|input| match input {
+			InteractiveTxInput::HolderInput(TxInputWithPrevOutput { input, .. }) => Some(input),
+			_ => None,
+		}).zip(witnesses.iter()).for_each(|(input, witness)| input.witness = witness.clone());
+		self.holder_tx_signatures = Some(TxSignatures {
+			channel_id,
+			tx_hash: self.constructed_transaction.txid(),
+			witnesses: witnesses.into_iter().map(|witness| witness).collect(),
+		});
+		if self.received_commitment_signed.is_some() &&
+			(self.holder_sends_tx_signatures_first || self.counterparty_tx_signatures.is_some()) {
+			self.holder_tx_signatures.clone()
+		} else {
+			None
+		}
+	}
+
+	pub fn counterparty_inputs_count(&self) -> usize {
+		self.inputs.iter().filter(|input| match input {
+			InteractiveTxInput::CounterpartyInput(_) => true, _ => false }).count()
+	}
+
+	pub fn holder_inputs_count(&self) -> usize {
+		self.inputs.iter().filter(|input| match input {
+			InteractiveTxInput::HolderInput(_) => true, _ => false }).count()
+	}
+
+	fn finalize_funding_tx(&mut self) -> Transaction {
+		self.constructed_transaction.input = self.inputs.iter().map(|interactive_tx_input| match interactive_tx_input {
+			InteractiveTxInput::HolderInput(input_with_prevout) => input_with_prevout.input.clone(),
+			InteractiveTxInput::CounterpartyInput(input_with_prevout) => input_with_prevout.input.clone(),
+		}).collect();
+		self.constructed_transaction.clone()
+	}
+}
+
 #[derive(Debug)]
 struct NegotiationContext {
+	holder_node_id: PublicKey,
+	counterparty_node_id: PublicKey,
 	holder_is_initiator: bool,
 	received_tx_add_input_count: u16,
 	received_tx_add_output_count: u16,
-	inputs: HashMap<SerialId, TxInputWithPrevOutput>,
+	inputs: HashMap<SerialId, InteractiveTxInput>,
 	prevtx_outpoints: HashSet<OutPoint>,
 	outputs: HashMap<SerialId, TxOut>,
 	tx_locktime: LockTime,
@@ -90,16 +182,38 @@ impl NegotiationContext {
 		self.holder_is_initiator == !serial_id.is_valid_for_initiator()
 	}
 
+	fn holder_inputs_contributed(&self) -> impl Iterator<Item=&TxInputWithPrevOutput> + Clone {
+		self.inputs.iter()
+			.filter_map(move |(_, input)| match input {
+				InteractiveTxInput::HolderInput(tx_input_with_prev_output) => Some(tx_input_with_prev_output),
+				_ => None,
+			})
+	}
+
 	fn counterparty_inputs_contributed(&self) -> impl Iterator<Item=&TxInputWithPrevOutput> + Clone {
 		self.inputs.iter()
-			.filter(move |(serial_id, _)| self.is_serial_id_valid_for_counterparty(serial_id))
-			.map(|(_, input_with_prevout)| input_with_prevout)
+			.filter_map(move |(_, input)| match input {
+				InteractiveTxInput::CounterpartyInput(tx_input_with_prev_output) => Some(tx_input_with_prev_output),
+				_ => None,
+			})
 	}
 
 	fn counterparty_outputs_contributed(&self) -> impl Iterator<Item=&TxOut> + Clone{
 		self.outputs.iter()
 			.filter(move |(serial_id, _)| self.is_serial_id_valid_for_counterparty(serial_id))
 			.map(|(_, input_with_prevout)| input_with_prevout)
+	}
+
+	fn should_holder_send_tx_signatures_first(&self, holder_inputs_value: u64, counterparty_inputs_value: u64) -> bool {
+		// There is a strict ordering for `tx_signatures` exchange to prevent deadlocks.
+		if holder_inputs_value == counterparty_inputs_value {
+			// If the amounts are the same then the peer with the lowest pubkey lexicographically sends its
+			// tx_signatures first
+			self.holder_node_id < self.counterparty_node_id
+		} else {
+			// Otherwise the peer with the lowest contributed input value sends its tx_signatures first.
+			holder_inputs_value < counterparty_inputs_value
+		}
 	}
 
 	fn remote_tx_add_input(&mut self, msg: &msgs::TxAddInput) -> Result<(), AbortReason> {
@@ -170,14 +284,15 @@ impl NegotiationContext {
 			txid: transaction.txid(),
 			vout: msg.prevtx_out,
 		};
-		self.inputs.insert(msg.serial_id, TxInputWithPrevOutput {
-			input: TxIn {
-				previous_output: prev_outpoint.clone(),
-				sequence: Sequence(msg.sequence),
-				..Default::default()
-			},
-			prev_output: prev_out,
-		});
+		self.inputs.insert(msg.serial_id, InteractiveTxInput::CounterpartyInput(
+			TxInputWithPrevOutput {
+				input: TxIn {
+					previous_output: prev_outpoint.clone(),
+					sequence: Sequence(msg.sequence),
+					..Default::default()
+				},
+				prev_output: prev_out,
+			}));
 		self.prevtx_outpoints.insert(prev_outpoint);
 		Ok(())
 	}
@@ -279,10 +394,10 @@ impl NegotiationContext {
 		debug_assert!((msg.prevtx_out as usize) < tx.output.len());
 		let prev_output = &tx.output[msg.prevtx_out as usize];
 		self.prevtx_outpoints.insert(input.previous_output.clone());
-		self.inputs.insert(msg.serial_id, TxInputWithPrevOutput {
+		self.inputs.insert(msg.serial_id, InteractiveTxInput::HolderInput(TxInputWithPrevOutput {
 			input,
 			prev_output: prev_output.clone(),
-		});
+		}));
 	}
 
 	fn local_tx_add_output(&mut self, msg: &msgs::TxAddOutput) {
@@ -300,7 +415,7 @@ impl NegotiationContext {
 		self.outputs.remove(&msg.serial_id);
 	}
 
-	fn build_transaction(mut self) -> Result<Transaction, AbortReason> {
+	fn build_transaction(mut self) -> Result<(Vec<InteractiveTxInput>, Transaction), AbortReason> {
 		// The receiving node:
 		// MUST fail the negotiation if:
 
@@ -327,10 +442,15 @@ impl NegotiationContext {
 		inputs.sort_unstable_by_key(|(serial_id, _)| *serial_id);
 		outputs.sort_unstable_by_key(|(serial_id, _)| *serial_id);
 
+		let tx_input = inputs.iter().filter_map(|(_, input)| match input {
+			InteractiveTxInput::HolderInput(TxInputWithPrevOutput { input, .. }) => Some(input.clone()),
+			InteractiveTxInput::CounterpartyInput(TxInputWithPrevOutput { input, .. }) => Some(input.clone()),
+		}).collect();
+
 		let tx_to_validate = Transaction {
 			version: 2,
 			lock_time: self.tx_locktime,
-			input: inputs.into_iter().map(|(_, input)| input.input.clone()).collect(),
+			input: tx_input,
 			output: outputs.into_iter().map(|(_, output)| output.clone()).collect(),
 		};
 		if tx_to_validate.weight().to_wu() > MAX_STANDARD_TX_WEIGHT as u64 {
@@ -364,7 +484,8 @@ impl NegotiationContext {
 		    return Err(AbortReason::InsufficientFees);
 		}
 
-		Ok(tx_to_validate)
+		let interactive_tx_inputs = inputs.into_iter().map(|(_, input)| input.clone()).collect();
+		Ok((interactive_tx_inputs, tx_to_validate))
 	}
 }
 
@@ -411,7 +532,7 @@ define_state!(LOCAL_STATE, LocalChange, "We have sent a message to the counterpa
 define_state!(LOCAL_STATE, LocalTxComplete, "We have sent a `tx_complete` message and are awaiting the counterparty's.");
 define_state!(REMOTE_STATE, RemoteChange, "We have received a message from the counterparty that has affected our negotiation state.");
 define_state!(REMOTE_STATE, RemoteTxComplete, "We have received a `tx_complete` message and the counterparty is awaiting ours.");
-define_state!(NegotiationComplete, Transaction, "We have exchanged consecutive `tx_complete` messages with the counterparty and the transaction negotiation is complete.");
+define_state!(NegotiationComplete, InteractiveTxSigningSession, "We have exchanged consecutive `tx_complete` messages with the counterparty and the transaction negotiation is complete.");
 define_state!(NegotiationAborted, AbortReason, "The negotiation has failed and cannot be continued.");
 
 type StateTransitionResult<S> = Result<S, AbortReason>;
@@ -454,8 +575,23 @@ macro_rules! define_state_transitions {
 		impl StateTransition<NegotiationComplete, &msgs::TxComplete> for $from_state {
 			fn transition(self, _data: &msgs::TxComplete) -> StateTransitionResult<NegotiationComplete> {
 				let context = self.into_negotiation_context();
-				let tx = context.build_transaction()?;
-				Ok(NegotiationComplete(tx))
+				let holder_inputs_value = context.holder_inputs_contributed()
+					.fold(0, |value, input| value + input.prev_output.value);
+				let counterparty_inputs_value = context.counterparty_inputs_contributed()
+					.fold(0, |value, input| value + input.prev_output.value);
+				let holder_sends_tx_signatures_first = context.should_holder_send_tx_signatures_first(
+					holder_inputs_value, counterparty_inputs_value);
+				let (inputs, tx) = context.build_transaction()?;
+				let signing_session = InteractiveTxSigningSession {
+					inputs,
+					holder_sends_tx_signatures_first,
+					constructed_transaction: tx,
+					sent_commitment_signed: None,
+					received_commitment_signed: None,
+					holder_tx_signatures: None,
+					counterparty_tx_signatures: None,
+				};
+				Ok(NegotiationComplete(signing_session))
 			}
 		}
 	};
@@ -526,9 +662,12 @@ macro_rules! define_state_machine_transitions {
 }
 
 impl StateMachine {
-	fn new(feerate_sat_per_kw: u32, is_initiator: bool, tx_locktime: LockTime) -> Self {
+	fn new(holder_node_id: PublicKey, counterparty_node_id: PublicKey, feerate_sat_per_kw: u32,
+		is_initiator: bool, tx_locktime: LockTime) -> Self {
 		let context = NegotiationContext {
 			tx_locktime,
+			holder_node_id,
+			counterparty_node_id,
 			holder_is_initiator: is_initiator,
 			received_tx_add_input_count: 0,
 			received_tx_add_output_count: 0,
@@ -603,14 +742,14 @@ fn generate_local_serial_id<ES: Deref>(entropy_source: &ES, is_initiator: bool) 
 
 impl InteractiveTxConstructor {
 	pub fn new<ES: Deref>(
-		entropy_source: &ES, channel_id: ChannelId, feerate_sat_per_kw: u32, is_initiator: bool,
-		tx_locktime: LockTime, inputs_to_contribute: Vec<(TxIn, Transaction)>,
-		outputs_to_contribute: Vec<TxOut>,
+		entropy_source: &ES, channel_id: ChannelId, feerate_sat_per_kw: u32, holder_node_id: PublicKey,
+		counterparty_node_id: PublicKey, is_initiator: bool, tx_locktime: LockTime,
+		inputs_to_contribute: Vec<(TxIn, Transaction)>, outputs_to_contribute: Vec<TxOut>,
 	) -> (Self, Option<InteractiveTxMessageSend>)
 	where
 		ES::Target: EntropySource,
 	{
-		let state_machine = StateMachine::new(feerate_sat_per_kw, is_initiator, tx_locktime);
+		let state_machine = StateMachine::new(holder_node_id, counterparty_node_id, feerate_sat_per_kw, is_initiator, tx_locktime);
 		let inputs_to_contribute = inputs_to_contribute.into_iter().map(|(input, tx)| {
 			let serial_id = generate_local_serial_id(entropy_source, is_initiator);
 			(serial_id, input, tx)
@@ -688,12 +827,12 @@ impl InteractiveTxConstructor {
 		self.do_local_state_transition()
 	}
 
-	pub fn handle_tx_complete(&mut self, msg: &msgs::TxComplete) -> Result<(Option<InteractiveTxMessageSend>, Option<Transaction>), AbortReason> {
+	pub fn handle_tx_complete(&mut self, msg: &msgs::TxComplete) -> Result<(Option<InteractiveTxMessageSend>, Option<InteractiveTxSigningSession>), AbortReason> {
 		let _ = do_state_transition!(self, remote_tx_complete, msg)?;
 		match &self.state_machine {
 			StateMachine::RemoteTxComplete(_) => {
 				let msg_send = self.do_local_state_transition()?;
-				let negotiated_tx = match &self.state_machine {
+				let success_result = match &self.state_machine {
 					StateMachine::NegotiationComplete(s) => Some(s.0.clone()),
 					StateMachine::LocalChange(_) => None, // We either had an input or output to contribute.
 					_ => {
@@ -701,7 +840,7 @@ impl InteractiveTxConstructor {
 						return Err(AbortReason::InvalidStateTransition);
 					}
 				};
-				Ok((Some(msg_send), negotiated_tx))
+				Ok((Some(msg_send), success_result))
 			}
 			StateMachine::NegotiationComplete(s) => Ok((None, Some(s.0.clone()))),
 			_ => {
@@ -718,7 +857,8 @@ mod tests {
 	use std::ops::Deref;
 	use crate::chain::chaininterface::FEERATE_FLOOR_SATS_PER_KW;
 	use crate::ln::interactivetxs::{AbortReason, generate_local_serial_id, InteractiveTxConstructor, InteractiveTxMessageSend, MAX_INPUTS_OUTPUTS_COUNT, MAX_RECEIVED_TX_ADD_INPUT_COUNT, MAX_RECEIVED_TX_ADD_OUTPUT_COUNT};
-	use bitcoin::{OutPoint, Sequence, Transaction, TxIn, TxOut, Witness};
+	use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
+	use bitcoin::{OutPoint, Sequence, Transaction, TxIn, TxOut};
 	use bitcoin::blockdata::opcodes;
 	use bitcoin::blockdata::script::Builder;
 	use bitcoin::locktime::absolute::LockTime;
@@ -776,14 +916,15 @@ mod tests {
 
 	fn do_test_interactive_tx_constructor_internal<ES: Deref>(session: TestSession, entropy_source: &ES) where ES::Target: EntropySource {
 		let channel_id = ChannelId(entropy_source.get_secure_random_bytes());
-		let channel_id = ChannelId(entropy_source.get_secure_random_bytes());
 		let tx_locktime = LockTime::from_height(1337).unwrap();
+		let holder_node_id = PublicKey::from_secret_key(&Secp256k1::signing_only(), &SecretKey::from_slice(&[42; 32]).unwrap());
+		let counterparty_node_id = PublicKey::from_secret_key(&Secp256k1::signing_only(), &SecretKey::from_slice(&[43; 32]).unwrap());
 
 		let (mut constructor_a, first_message_a) = InteractiveTxConstructor::new(
-			entropy_source, channel_id, FEERATE_FLOOR_SATS_PER_KW * 10, true, tx_locktime, session.inputs_a.clone(), session.outputs_a.clone()
+			entropy_source, channel_id, FEERATE_FLOOR_SATS_PER_KW * 10, holder_node_id, counterparty_node_id, true, tx_locktime, session.inputs_a.clone(), session.outputs_a.clone()
 		);
 		let (mut constructor_b, first_message_b) = InteractiveTxConstructor::new(
-			entropy_source, channel_id, FEERATE_FLOOR_SATS_PER_KW * 10, false, tx_locktime, session.inputs_b.clone(), session.outputs_b.clone()
+			entropy_source, channel_id, FEERATE_FLOOR_SATS_PER_KW * 10, holder_node_id, counterparty_node_id, false, tx_locktime, session.inputs_b.clone(), session.outputs_b.clone()
 		);
 
 		let handle_message_send = |msg: InteractiveTxMessageSend, for_constructor: &mut InteractiveTxConstructor| {
@@ -808,9 +949,9 @@ mod tests {
 		while final_tx_a.is_none() || final_tx_b.is_none()  {
 			if let Some(message_send_a) = message_send_a.take() {
 				match handle_message_send(message_send_a, &mut constructor_b) {
-					Ok((msg_send, final_tx)) => {
+					Ok((msg_send, interactive_signing_session)) => {
 						message_send_b = msg_send;
-						final_tx_b = final_tx;
+						final_tx_b = interactive_signing_session.map(|session| session.constructed_transaction);
 					}
 					Err(abort_reason) => {
 						assert_eq!(Some(abort_reason), session.expect_error);
@@ -820,9 +961,9 @@ mod tests {
 			}
 			if let Some(message_send_b) = message_send_b.take() {
 				match handle_message_send(message_send_b, &mut constructor_a) {
-					Ok((msg_send, final_tx)) => {
+					Ok((msg_send, interactive_signing_session)) => {
 						message_send_a = msg_send;
-						final_tx_a = final_tx;
+						final_tx_a = interactive_signing_session.map(|session| session.constructed_transaction);
 					}
 					Err(abort_reason) => {
 						assert_eq!(Some(abort_reason), session.expect_error);
