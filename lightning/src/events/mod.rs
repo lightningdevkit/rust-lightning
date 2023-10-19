@@ -1270,7 +1270,56 @@ pub enum Event {
 		/// The node id of the peer we just connected to, who advertises support for
 		/// onion messages.
 		peer_node_id: PublicKey,
-	}
+	},
+	#[cfg(any(dual_funding, splicing))]
+	/// Indicates that a transaction constructed via interactive transaction construction for a
+	/// dual-funded (V2) channel is ready to be signed by the client. This event will only be triggered
+	/// if at least one input was contributed by the holder.
+	///
+	/// The transaction contains all inputs provided by both parties when the channel was
+	/// created/accepted along with the channel's funding output and a change output if applicable.
+	///
+	/// No part of the transaction should be changed before signing as the content of the transaction
+	/// has already been negotiated with the counterparty.
+	///
+	/// Each signature MUST use the SIGHASH_ALL flag to avoid invalidation of initial commitment and
+	/// hence possible loss of funds.
+	///
+	/// After signing, call [`ChannelManager::funding_transaction_signed`] with the (partially) signed
+	/// funding transaction.
+	///
+	/// Generated in [`ChannelManager`] message handling.
+	///
+	/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
+	/// [`ChannelManager::funding_transaction_signed`]: crate::ln::channelmanager::ChannelManager::funding_transaction_signed
+	FundingTransactionReadyForSigning {
+		/// The channel_id of the V2 channel which you'll need to pass back into
+		/// [`ChannelManager::funding_transaction_signed`].
+		///
+		/// [`ChannelManager::funding_transaction_signed`]: crate::ln::channelmanager::ChannelManager::funding_transaction_signed
+		channel_id: ChannelId,
+		/// The counterparty's node_id, which you'll need to pass back into
+		/// [`ChannelManager::funding_transaction_signed`].
+		///
+		/// [`ChannelManager::funding_transaction_signed`]: crate::ln::channelmanager::ChannelManager::funding_transaction_signed
+		counterparty_node_id: PublicKey,
+		/// The `user_channel_id` value passed in to [`ChannelManager::create_dual_funded_channel`] for outbound
+		/// channels, or to [`ChannelManager::accept_inbound_channel`] or [`ChannelManager::accept_inbound_channel_with_contribution`]
+		/// for inbound channels if [`UserConfig::manually_accept_inbound_channels`] config flag is set to true.
+		/// Otherwise `user_channel_id` will be randomized for an inbound channel.
+		/// This may be zero for objects serialized with LDK versions prior to 0.0.113.
+		///
+		/// [`ChannelManager::create_dual_funded_channel`]: crate::ln::channelmanager::ChannelManager::create_dual_funded_channel
+		/// [`ChannelManager::accept_inbound_channel`]: crate::ln::channelmanager::ChannelManager::accept_inbound_channel
+		/// [`ChannelManager::accept_inbound_channel_with_contribution`]: crate::ln::channelmanager::ChannelManager::accept_inbound_channel_with_contribution
+		/// [`UserConfig::manually_accept_inbound_channels`]: crate::util::config::UserConfig::manually_accept_inbound_channels
+		user_channel_id: u128,
+		/// The unsigned transaction to be signed and passed back to
+		/// [`ChannelManager::funding_transaction_signed`].
+		///
+		/// [`ChannelManager::funding_transaction_signed`]: crate::ln::channelmanager::ChannelManager::funding_transaction_signed
+		unsigned_transaction: Transaction,
+	},
 }
 
 impl Writeable for Event {
@@ -1555,6 +1604,14 @@ impl Writeable for Event {
 					(2, invoice, required),
 					(4, responder, option),
 				})
+			},
+			#[cfg(any(splicing, dual_funding))]
+			&Event::FundingTransactionReadyForSigning { .. } => {
+				43u8.write(writer)?;
+				// We never write out FundingTransactionReadyForSigning events as, upon disconnection, peers
+				// drop any V2-established channels which have not yet exchanged the initial `commitment_signed`.
+				// We only exhange the initial `commitment_signed` after the client calls
+				// `ChannelManager::funding_transaction_signed` and ALWAYS before we send a `tx_signatures`
 			},
 			// Note that, going forward, all new events must only write data inside of
 			// `write_tlv_fields`. Versions 0.0.101+ will ignore odd-numbered events that write
