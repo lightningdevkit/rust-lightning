@@ -341,6 +341,9 @@ where U::Target: UtxoLookup, L::Target: Logger
 
 impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 	/// Handles any network updates originating from [`Event`]s.
+	//
+	/// Note that this will skip applying any [`NetworkUpdate::ChannelUpdateMessage`] to avoid
+	/// leaking possibly identifying information of the sender to the public network.
 	///
 	/// [`Event`]: crate::events::Event
 	pub fn handle_network_update(&self, network_update: &NetworkUpdate) {
@@ -349,8 +352,7 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 				let short_channel_id = msg.contents.short_channel_id;
 				let is_enabled = msg.contents.flags & (1 << 1) != (1 << 1);
 				let status = if is_enabled { "enabled" } else { "disabled" };
-				log_debug!(self.logger, "Updating channel with channel_update from a payment failure. Channel {} is {}.", short_channel_id, status);
-				let _ = self.update_channel(msg);
+				log_debug!(self.logger, "Skipping application of a channel update from a payment failure. Channel {} is {}.", short_channel_id, status);
 			},
 			NetworkUpdate::ChannelFailure { short_channel_id, is_permanent } => {
 				if is_permanent {
@@ -2531,7 +2533,8 @@ pub(crate) mod tests {
 
 		let short_channel_id;
 		{
-			// Announce a channel we will update
+			// Check we won't apply an update via `handle_network_update` for privacy reasons, but
+			// can continue fine if we manually apply it.
 			let valid_channel_announcement = get_signed_channel_announcement(|_| {}, node_1_privkey, node_2_privkey, &secp_ctx);
 			short_channel_id = valid_channel_announcement.contents.short_channel_id;
 			let chain_source: Option<&test_utils::TestChainSource> = None;
@@ -2542,10 +2545,11 @@ pub(crate) mod tests {
 			assert!(network_graph.read_only().channels().get(&short_channel_id).unwrap().one_to_two.is_none());
 
 			network_graph.handle_network_update(&NetworkUpdate::ChannelUpdateMessage {
-				msg: valid_channel_update,
+				msg: valid_channel_update.clone(),
 			});
 
-			assert!(network_graph.read_only().channels().get(&short_channel_id).unwrap().one_to_two.is_some());
+			assert!(network_graph.read_only().channels().get(&short_channel_id).unwrap().one_to_two.is_none());
+			network_graph.update_channel(&valid_channel_update).unwrap();
 		}
 
 		// Non-permanent failure doesn't touch the channel at all
