@@ -30,6 +30,7 @@ use bitcoin::secp256k1::{SecretKey,PublicKey};
 use bitcoin::secp256k1::Secp256k1;
 use bitcoin::{LockTime, secp256k1, Sequence};
 
+use crate::blinded_path::BlindedPath;
 use crate::chain;
 use crate::chain::{Confirm, ChannelMonitorUpdateStatus, Watch, BestBlock};
 use crate::chain::chaininterface::{BroadcasterInterface, ConfirmationTarget, FeeEstimator, LowerBoundedFeeEstimator};
@@ -55,6 +56,9 @@ use crate::ln::msgs::{ChannelMessageHandler, DecodeError, LightningError};
 use crate::ln::outbound_payment;
 use crate::ln::outbound_payment::{OutboundPayments, PaymentAttempts, PendingOutboundPayment, SendAlongPathArgs};
 use crate::ln::wire::Encode;
+use crate::offers::offer::{DerivedMetadata, OfferBuilder};
+use crate::offers::parse::Bolt12SemanticError;
+use crate::offers::refund::RefundBuilder;
 use crate::sign::{EntropySource, KeysManager, NodeSigner, Recipient, SignerProvider, WriteableEcdsaChannelSigner};
 use crate::util::config::{UserConfig, ChannelConfig, ChannelConfigUpdate};
 use crate::util::wakers::{Future, Notifier};
@@ -4791,6 +4795,10 @@ where
 	///    with the current [`ChannelConfig`].
 	///  * Removing peers which have disconnected but and no longer have any channels.
 	///  * Force-closing and removing channels which have not completed establishment in a timely manner.
+	///  * Forgetting about stale outbound payments, either those that have already been fulfilled
+	///    or those awaiting an invoice that hasn't been delivered in the necessary amount of time.
+	///    The latter is determined using the system clock in `std` and the block time minus two
+	///    hours in `no-std`.
 	///
 	/// Note that this may cause reentrancy through [`chain::Watch::update_channel`] calls or feerate
 	/// estimate fetches.
@@ -5019,7 +5027,18 @@ where
 				self.finish_close_channel(shutdown_res);
 			}
 
-			self.pending_outbound_payments.remove_stale_payments(&self.pending_events);
+			#[cfg(feature = "std")]
+			let duration_since_epoch = std::time::SystemTime::now()
+				.duration_since(std::time::SystemTime::UNIX_EPOCH)
+				.expect("SystemTime::now() should come after SystemTime::UNIX_EPOCH");
+			#[cfg(not(feature = "std"))]
+			let duration_since_epoch = Duration::from_secs(
+				self.highest_seen_timestamp.load(Ordering::Acquire).saturating_sub(7200) as u64
+			);
+
+			self.pending_outbound_payments.remove_stale_payments(
+				duration_since_epoch, &self.pending_events
+			);
 
 			// Technically we don't need to do this here, but if we have holding cell entries in a
 			// channel that need freeing, it's better to do that here and block a background task
@@ -7108,6 +7127,71 @@ where
 		}
 	}
 
+	/// Creates an [`OfferBuilder`] such that the [`Offer`] it builds is recognized by the
+	/// [`ChannelManager`] when handling [`InvoiceRequest`] messages for the offer. The offer will
+	/// not have an expiration unless otherwise set on the builder.
+	///
+	/// Uses a one-hop [`BlindedPath`] for the offer with [`ChannelManager::get_our_node_id`] as the
+	/// introduction node and a derived signing pubkey for recipient privacy. As such, currently,
+	/// the node must be announced. Otherwise, there is no way to find a path to the introduction
+	/// node in order to send the [`InvoiceRequest`].
+	///
+	/// [`Offer`]: crate::offers::offer::Offer
+	/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
+	pub fn create_offer_builder(
+		&self, description: String
+	) -> OfferBuilder<DerivedMetadata, secp256k1::All> {
+		let node_id = self.get_our_node_id();
+		let expanded_key = &self.inbound_payment_key;
+		let entropy = &*self.entropy_source;
+		let secp_ctx = &self.secp_ctx;
+		let path = self.create_one_hop_blinded_path();
+
+		OfferBuilder::deriving_signing_pubkey(description, node_id, expanded_key, entropy, secp_ctx)
+			.chain_hash(self.chain_hash)
+			.path(path)
+	}
+
+	/// Creates a [`RefundBuilder`] such that the [`Refund`] it builds is recognized by the
+	/// [`ChannelManager`] when handling [`Bolt12Invoice`] messages for the refund. The builder will
+	/// have the provided expiration set. Any changes to the expiration on the returned builder will
+	/// not be honored by [`ChannelManager`].
+	///
+	/// The provided `payment_id` is used to ensure that only one invoice is paid for the refund.
+	///
+	/// Uses a one-hop [`BlindedPath`] for the refund with [`ChannelManager::get_our_node_id`] as
+	/// the introduction node and a derived payer id for sender privacy. As such, currently, the
+	/// node must be announced. Otherwise, there is no way to find a path to the introduction node
+	/// in order to send the [`Bolt12Invoice`].
+	///
+	/// [`Refund`]: crate::offers::refund::Refund
+	/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
+	pub fn create_refund_builder(
+		&self, description: String, amount_msats: u64, absolute_expiry: Duration,
+		payment_id: PaymentId, retry_strategy: Retry, max_total_routing_fee_msat: Option<u64>
+	) -> Result<RefundBuilder<secp256k1::All>, Bolt12SemanticError> {
+		let node_id = self.get_our_node_id();
+		let expanded_key = &self.inbound_payment_key;
+		let entropy = &*self.entropy_source;
+		let secp_ctx = &self.secp_ctx;
+		let path = self.create_one_hop_blinded_path();
+
+		let builder = RefundBuilder::deriving_payer_id(
+			description, node_id, expanded_key, entropy, secp_ctx, amount_msats, payment_id
+		)?
+			.chain_hash(self.chain_hash)
+			.absolute_expiry(absolute_expiry)
+			.path(path);
+
+		self.pending_outbound_payments
+			.add_new_awaiting_invoice(
+				payment_id, absolute_expiry, retry_strategy, max_total_routing_fee_msat,
+			)
+			.map_err(|_| Bolt12SemanticError::DuplicatePaymentId)?;
+
+		Ok(builder)
+	}
+
 	/// Gets a payment secret and payment hash for use in an invoice given to a third party wishing
 	/// to pay us.
 	///
@@ -7206,6 +7290,14 @@ where
 	/// [`create_inbound_payment`]: Self::create_inbound_payment
 	pub fn get_payment_preimage(&self, payment_hash: PaymentHash, payment_secret: PaymentSecret) -> Result<PaymentPreimage, APIError> {
 		inbound_payment::get_payment_preimage(payment_hash, payment_secret, &self.inbound_payment_key)
+	}
+
+	/// Creates a one-hop blinded path with [`ChannelManager::get_our_node_id`] as the introduction
+	/// node.
+	fn create_one_hop_blinded_path(&self) -> BlindedPath {
+		let entropy_source = self.entropy_source.deref();
+		let secp_ctx = &self.secp_ctx;
+		BlindedPath::one_hop_for_message(self.get_our_node_id(), entropy_source, secp_ctx).unwrap()
 	}
 
 	/// Gets a fake short channel id for use in receiving [phantom node payments]. These fake scids

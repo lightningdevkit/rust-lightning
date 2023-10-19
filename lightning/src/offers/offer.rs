@@ -13,6 +13,8 @@
 //! published as a QR code to be scanned by a customer. The customer uses the offer to request an
 //! invoice from the merchant to be paid.
 //!
+//! # Example
+//!
 //! ```
 //! extern crate bitcoin;
 //! extern crate core;
@@ -65,6 +67,14 @@
 //! # Ok(())
 //! # }
 //! ```
+//!
+//! # Note
+//!
+//! If constructing an [`Offer`] for use with a [`ChannelManager`], use
+//! [`ChannelManager::create_offer_builder`] instead of [`OfferBuilder::new`].
+//!
+//! [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
+//! [`ChannelManager::create_offer_builder`]: crate::ln::channelmanager::ChannelManager::create_offer_builder
 
 use bitcoin::blockdata::constants::ChainHash;
 use bitcoin::network::constants::Network;
@@ -132,6 +142,14 @@ impl<'a> OfferBuilder<'a, ExplicitMetadata, secp256k1::SignOnly> {
 	/// while the offer is valid.
 	///
 	/// Use a different pubkey per offer to avoid correlating offers.
+	///
+	/// # Note
+	///
+	/// If constructing an [`Offer`] for use with a [`ChannelManager`], use
+	/// [`ChannelManager::create_offer_builder`] instead of [`OfferBuilder::new`].
+	///
+	/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
+	/// [`ChannelManager::create_offer_builder`]: crate::ln::channelmanager::ChannelManager::create_offer_builder
 	pub fn new(description: String, signing_pubkey: PublicKey) -> Self {
 		OfferBuilder {
 			offer: OfferContents {
@@ -191,9 +209,18 @@ impl<'a, M: MetadataStrategy, T: secp256k1::Signing> OfferBuilder<'a, M, T> {
 	/// See [`Offer::chains`] on how this relates to the payment currency.
 	///
 	/// Successive calls to this method will add another chain hash.
-	pub fn chain(mut self, network: Network) -> Self {
+	pub fn chain(self, network: Network) -> Self {
+		self.chain_hash(ChainHash::using_genesis_block(network))
+	}
+
+	/// Adds the [`ChainHash`] to [`Offer::chains`]. If not called, the chain hash of
+	/// [`Network::Bitcoin`] is assumed to be the only one supported.
+	///
+	/// See [`Offer::chains`] on how this relates to the payment currency.
+	///
+	/// Successive calls to this method will add another chain hash.
+	pub(crate) fn chain_hash(mut self, chain: ChainHash) -> Self {
 		let chains = self.offer.chains.get_or_insert_with(Vec::new);
-		let chain = ChainHash::using_genesis_block(network);
 		if !chains.contains(&chain) {
 			chains.push(chain);
 		}

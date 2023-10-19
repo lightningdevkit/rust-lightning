@@ -1846,12 +1846,6 @@ pub trait MessageSendEventsProvider {
 	fn get_and_clear_pending_msg_events(&self) -> Vec<MessageSendEvent>;
 }
 
-/// A trait indicating an object may generate onion messages to send
-pub trait OnionMessageProvider {
-	/// Gets the next pending onion message for the peer with the given node id.
-	fn next_onion_message_for_peer(&self, peer_node_id: PublicKey) -> Option<msgs::OnionMessage>;
-}
-
 /// A trait indicating an object may generate events.
 ///
 /// Events are processed by passing an [`EventHandler`] to [`process_pending_events`].

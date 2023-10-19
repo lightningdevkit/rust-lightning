@@ -49,7 +49,7 @@ use core::str::FromStr;
 use crate::io::{self, Cursor, Read};
 use crate::io_extras::read_to_end;
 
-use crate::events::{MessageSendEventsProvider, OnionMessageProvider};
+use crate::events::MessageSendEventsProvider;
 use crate::util::chacha20poly1305rfc::ChaChaPolyReadAdapter;
 use crate::util::logger;
 use crate::util::ser::{LengthReadable, LengthReadableArgs, Readable, ReadableArgs, Writeable, Writer, WithoutLength, FixedLengthReader, HighZeroBytesDroppedBigSize, Hostname, TransactionU16LenLimited, BigSize};
@@ -1497,10 +1497,14 @@ pub trait RoutingMessageHandler : MessageSendEventsProvider {
 	fn provided_init_features(&self, their_node_id: &PublicKey) -> InitFeatures;
 }
 
-/// A trait to describe an object that can receive onion messages.
-pub trait OnionMessageHandler : OnionMessageProvider {
+/// A handler for received [`OnionMessage`]s and for providing generated ones to send.
+pub trait OnionMessageHandler {
 	/// Handle an incoming `onion_message` message from the given peer.
 	fn handle_onion_message(&self, peer_node_id: &PublicKey, msg: &OnionMessage);
+
+	/// Returns the next pending onion message for the peer with the given node id.
+	fn next_onion_message_for_peer(&self, peer_node_id: PublicKey) -> Option<OnionMessage>;
+
 	/// Called when a connection is established with a peer. Can be used to track which peers
 	/// advertise onion message support and are online.
 	///
@@ -1508,6 +1512,7 @@ pub trait OnionMessageHandler : OnionMessageProvider {
 	/// with us. Implementors should be somewhat conservative about doing so, however, as other
 	/// message handlers may still wish to communicate with this peer.
 	fn peer_connected(&self, their_node_id: &PublicKey, init: &Init, inbound: bool) -> Result<(), ()>;
+
 	/// Indicates a connection to the peer failed/an existing connection was lost. Allows handlers to
 	/// drop and refuse to forward onion messages to this peer.
 	fn peer_disconnected(&self, their_node_id: &PublicKey);

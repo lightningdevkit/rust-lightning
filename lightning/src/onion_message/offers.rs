@@ -16,6 +16,8 @@ use crate::offers::invoice_error::InvoiceError;
 use crate::offers::invoice_request::InvoiceRequest;
 use crate::offers::invoice::Bolt12Invoice;
 use crate::offers::parse::Bolt12ParseError;
+use crate::onion_message::OnionMessageContents;
+use crate::onion_message::messenger::PendingOnionMessage;
 use crate::util::logger::Logger;
 use crate::util::ser::{Readable, ReadableArgs, Writeable, Writer};
 
@@ -32,7 +34,17 @@ const INVOICE_ERROR_TLV_TYPE: u64 = 68;
 pub trait OffersMessageHandler {
 	/// Handles the given message by either responding with an [`Bolt12Invoice`], sending a payment,
 	/// or replying with an error.
+	///
+	/// The returned [`OffersMessage`], if any, is enqueued to be sent by [`OnionMessenger`].
+	///
+	/// [`OnionMessenger`]: crate::onion_message::OnionMessenger
 	fn handle_message(&self, message: OffersMessage) -> Option<OffersMessage>;
+
+	/// Releases any [`OffersMessage`]s that need to be sent.
+	///
+	/// Typically, this is used for messages initiating a payment flow rather than in response to
+	/// another message. The latter should use the return value of [`Self::handle_message`].
+	fn release_pending_messages(&self) -> Vec<PendingOnionMessage<OffersMessage>> { vec![] }
 }
 
 /// Possible BOLT 12 Offers messages sent and received via an [`OnionMessage`].
@@ -63,20 +75,21 @@ impl OffersMessage {
 		}
 	}
 
-	/// The TLV record type for the message as used in an `onionmsg_tlv` TLV stream.
-	pub fn tlv_type(&self) -> u64 {
-		match self {
-			OffersMessage::InvoiceRequest(_) => INVOICE_REQUEST_TLV_TYPE,
-			OffersMessage::Invoice(_) => INVOICE_TLV_TYPE,
-			OffersMessage::InvoiceError(_) => INVOICE_ERROR_TLV_TYPE,
-		}
-	}
-
 	fn parse(tlv_type: u64, bytes: Vec<u8>) -> Result<Self, Bolt12ParseError> {
 		match tlv_type {
 			INVOICE_REQUEST_TLV_TYPE => Ok(Self::InvoiceRequest(InvoiceRequest::try_from(bytes)?)),
 			INVOICE_TLV_TYPE => Ok(Self::Invoice(Bolt12Invoice::try_from(bytes)?)),
 			_ => Err(Bolt12ParseError::Decode(DecodeError::InvalidValue)),
+		}
+	}
+}
+
+impl OnionMessageContents for OffersMessage {
+	fn tlv_type(&self) -> u64 {
+		match self {
+			OffersMessage::InvoiceRequest(_) => INVOICE_REQUEST_TLV_TYPE,
+			OffersMessage::Invoice(_) => INVOICE_TLV_TYPE,
+			OffersMessage::InvoiceError(_) => INVOICE_ERROR_TLV_TYPE,
 		}
 	}
 }
