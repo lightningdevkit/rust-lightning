@@ -540,13 +540,16 @@ impl RefundContents {
 
 	#[cfg(feature = "std")]
 	pub(super) fn is_expired(&self) -> bool {
-		match self.absolute_expiry {
-			Some(seconds_from_epoch) => match SystemTime::UNIX_EPOCH.elapsed() {
-				Ok(elapsed) => elapsed > seconds_from_epoch,
-				Err(_) => false,
-			},
-			None => false,
-		}
+		SystemTime::UNIX_EPOCH
+			.elapsed()
+			.map(|duration_since_epoch| self.is_expired_no_std(duration_since_epoch))
+			.unwrap_or(false)
+	}
+
+	pub(super) fn is_expired_no_std(&self, duration_since_epoch: Duration) -> bool {
+		self.absolute_expiry
+			.map(|absolute_expiry| duration_since_epoch > absolute_expiry)
+			.unwrap_or(false)
 	}
 
 	pub fn issuer(&self) -> Option<PrintableString> {

@@ -339,6 +339,12 @@ impl<'a> InvoiceBuilder<'a, ExplicitSigningPubkey> {
 			}
 		}
 
+		#[cfg(not(feature = "std"))] {
+			if self.invoice.is_offer_or_refund_expired_no_std(self.invoice.created_at()) {
+				return Err(Bolt12SemanticError::AlreadyExpired);
+			}
+		}
+
 		let InvoiceBuilder { invreq_bytes, invoice, .. } = self;
 		Ok(UnsignedBolt12Invoice::new(invreq_bytes, invoice))
 	}
@@ -351,6 +357,12 @@ impl<'a> InvoiceBuilder<'a, DerivedSigningPubkey> {
 	) -> Result<Bolt12Invoice, Bolt12SemanticError> {
 		#[cfg(feature = "std")] {
 			if self.invoice.is_offer_or_refund_expired() {
+				return Err(Bolt12SemanticError::AlreadyExpired);
+			}
+		}
+
+		#[cfg(not(feature = "std"))] {
+			if self.invoice.is_offer_or_refund_expired_no_std(self.invoice.created_at()) {
 				return Err(Bolt12SemanticError::AlreadyExpired);
 			}
 		}
@@ -724,6 +736,16 @@ impl InvoiceContents {
 			InvoiceContents::ForOffer { invoice_request, .. } =>
 				invoice_request.inner.offer.is_expired(),
 			InvoiceContents::ForRefund { refund, .. } => refund.is_expired(),
+		}
+	}
+
+	#[cfg(not(feature = "std"))]
+	fn is_offer_or_refund_expired_no_std(&self, duration_since_epoch: Duration) -> bool {
+		match self {
+			InvoiceContents::ForOffer { invoice_request, .. } =>
+				invoice_request.inner.offer.is_expired_no_std(duration_since_epoch),
+			InvoiceContents::ForRefund { refund, .. } =>
+				refund.is_expired_no_std(duration_since_epoch),
 		}
 	}
 
