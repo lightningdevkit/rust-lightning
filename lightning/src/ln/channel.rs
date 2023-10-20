@@ -8205,7 +8205,7 @@ mod tests {
 		use bitcoin::hashes::hex::FromHex;
 		use bitcoin::hash_types::Txid;
 		use bitcoin::secp256k1::Message;
-		use crate::sign::EcdsaChannelSigner;
+		use crate::sign::{ChannelDerivationParameters, HTLCDescriptor, EcdsaChannelSigner};
 		use crate::ln::PaymentPreimage;
 		use crate::ln::channel::{HTLCOutputInCommitment ,TxCreationKeys};
 		use crate::ln::chan_utils::{ChannelPublicKeys, HolderCommitmentTransaction, CounterpartyChannelTransactionParameters};
@@ -8330,7 +8330,7 @@ mod tests {
 					&chan.context.holder_signer.as_ref().pubkeys().funding_pubkey,
 					chan.context.counterparty_funding_pubkey()
 				);
-				let (holder_sig, htlc_sigs) = signer.sign_holder_commitment_and_htlcs(&holder_commitment_tx, &secp_ctx).unwrap();
+				let holder_sig = signer.sign_holder_commitment(&holder_commitment_tx, &secp_ctx).unwrap();
 				assert_eq!(Signature::from_der(&hex::decode($sig_hex).unwrap()[..]).unwrap(), holder_sig, "holder_sig");
 
 				let funding_redeemscript = chan.context.get_funding_redeemscript();
@@ -8338,14 +8338,14 @@ mod tests {
 				assert_eq!(serialize(&tx)[..], hex::decode($tx_hex).unwrap()[..], "tx");
 
 				// ((htlc, counterparty_sig), (index, holder_sig))
-				let mut htlc_sig_iter = holder_commitment_tx.htlcs().iter().zip(&holder_commitment_tx.counterparty_htlc_sigs).zip(htlc_sigs.iter().enumerate());
+				let mut htlc_counterparty_sig_iter = holder_commitment_tx.counterparty_htlc_sigs.iter();
 
 				$({
 					log_trace!(logger, "verifying htlc {}", $htlc_idx);
 					let remote_signature = Signature::from_der(&hex::decode($counterparty_htlc_sig_hex).unwrap()[..]).unwrap();
 
 					let ref htlc = htlcs[$htlc_idx];
-					let htlc_tx = chan_utils::build_htlc_transaction(&unsigned_tx.txid, chan.context.feerate_per_kw,
+					let mut htlc_tx = chan_utils::build_htlc_transaction(&unsigned_tx.txid, chan.context.feerate_per_kw,
 						chan.context.get_counterparty_selected_contest_delay().unwrap(),
 						&htlc, $opt_anchors, &keys.broadcaster_delayed_payment_key, &keys.revocation_key);
 					let htlc_redeemscript = chan_utils::get_htlc_redeemscript(&htlc, $opt_anchors, &keys);
@@ -8365,20 +8365,32 @@ mod tests {
 						assert!(preimage.is_some());
 					}
 
-					let htlc_sig = htlc_sig_iter.next().unwrap();
+					let htlc_counterparty_sig = htlc_counterparty_sig_iter.next().unwrap();
+					let htlc_holder_sig = signer.sign_holder_htlc_transaction(&htlc_tx, 0, &HTLCDescriptor {
+						channel_derivation_parameters: ChannelDerivationParameters {
+							value_satoshis: chan.context.channel_value_satoshis,
+							keys_id: chan.context.channel_keys_id,
+							transaction_parameters: chan.context.channel_transaction_parameters.clone(),
+						},
+						commitment_txid: trusted_tx.txid(),
+						per_commitment_number: trusted_tx.commitment_number(),
+						per_commitment_point: trusted_tx.per_commitment_point(),
+						feerate_per_kw: trusted_tx.feerate_per_kw(),
+						htlc: htlc.clone(),
+						preimage: preimage.clone(),
+						counterparty_sig: *htlc_counterparty_sig,
+					}, &secp_ctx).unwrap();
 					let num_anchors = if $opt_anchors.supports_anchors_zero_fee_htlc_tx() { 2 } else { 0 };
-					assert_eq!((htlc_sig.0).0.transaction_output_index, Some($htlc_idx + num_anchors), "output index");
+					assert_eq!(htlc.transaction_output_index, Some($htlc_idx + num_anchors), "output index");
 
 					let signature = Signature::from_der(&hex::decode($htlc_sig_hex).unwrap()[..]).unwrap();
-					assert_eq!(signature, *(htlc_sig.1).1, "htlc sig");
-					let index = (htlc_sig.1).0;
-					let channel_parameters = chan.context.channel_transaction_parameters.as_holder_broadcastable();
+					assert_eq!(signature, htlc_holder_sig, "htlc sig");
 					let trusted_tx = holder_commitment_tx.trust();
-					log_trace!(logger, "htlc_tx = {}", hex::encode(serialize(&trusted_tx.get_signed_htlc_tx(&channel_parameters, index, &(htlc_sig.0).1, (htlc_sig.1).1, &preimage))));
-					assert_eq!(serialize(&trusted_tx.get_signed_htlc_tx(&channel_parameters, index, &(htlc_sig.0).1, (htlc_sig.1).1, &preimage))[..],
-							hex::decode($htlc_tx_hex).unwrap()[..], "htlc tx");
+					htlc_tx.input[0].witness = trusted_tx.build_htlc_input_witness($htlc_idx, htlc_counterparty_sig, &htlc_holder_sig, &preimage);
+					log_trace!(logger, "htlc_tx = {}", hex::encode(serialize(&htlc_tx)));
+					assert_eq!(serialize(&htlc_tx)[..], hex::decode($htlc_tx_hex).unwrap()[..], "htlc tx");
 				})*
-				assert!(htlc_sig_iter.next().is_none());
+				assert!(htlc_counterparty_sig_iter.next().is_none());
 			} }
 		}
 
