@@ -2681,11 +2681,11 @@ where
 	/// will be accepted on the given channel, and after additional timeout/the closing of all
 	/// pending HTLCs, the channel will be closed on chain.
 	///
-	///  * If we are the channel initiator, we will pay between our [`Background`] and
-	///    [`ChannelConfig::force_close_avoidance_max_fee_satoshis`] plus our [`Normal`] fee
-	///    estimate.
+	///  * If we are the channel initiator, we will pay between our [`ChannelCloseMinimum`] and
+	///    [`ChannelConfig::force_close_avoidance_max_fee_satoshis`] plus our [`NonAnchorChannelFee`]
+	///    fee estimate.
 	///  * If our counterparty is the channel initiator, we will require a channel closing
-	///    transaction feerate of at least our [`Background`] feerate or the feerate which
+	///    transaction feerate of at least our [`ChannelCloseMinimum`] feerate or the feerate which
 	///    would appear on a force-closure transaction, whichever is lower. We will allow our
 	///    counterparty to pay as much fee as they'd like, however.
 	///
@@ -2697,8 +2697,8 @@ where
 	/// channel.
 	///
 	/// [`ChannelConfig::force_close_avoidance_max_fee_satoshis`]: crate::util::config::ChannelConfig::force_close_avoidance_max_fee_satoshis
-	/// [`Background`]: crate::chain::chaininterface::ConfirmationTarget::Background
-	/// [`Normal`]: crate::chain::chaininterface::ConfirmationTarget::Normal
+	/// [`ChannelCloseMinimum`]: crate::chain::chaininterface::ConfirmationTarget::ChannelCloseMinimum
+	/// [`NonAnchorChannelFee`]: crate::chain::chaininterface::ConfirmationTarget::NonAnchorChannelFee
 	/// [`SendShutdown`]: crate::events::MessageSendEvent::SendShutdown
 	pub fn close_channel(&self, channel_id: &ChannelId, counterparty_node_id: &PublicKey) -> Result<(), APIError> {
 		self.close_channel_internal(channel_id, counterparty_node_id, None, None)
@@ -2712,8 +2712,8 @@ where
 	/// the channel being closed or not:
 	///  * If we are the channel initiator, we will pay at least this feerate on the closing
 	///    transaction. The upper-bound is set by
-	///    [`ChannelConfig::force_close_avoidance_max_fee_satoshis`] plus our [`Normal`] fee
-	///    estimate (or `target_feerate_sat_per_1000_weight`, if it is greater).
+	///    [`ChannelConfig::force_close_avoidance_max_fee_satoshis`] plus our [`NonAnchorChannelFee`]
+	///    fee estimate (or `target_feerate_sat_per_1000_weight`, if it is greater).
 	///  * If our counterparty is the channel initiator, we will refuse to accept a channel closure
 	///    transaction feerate below `target_feerate_sat_per_1000_weight` (or the feerate which
 	///    will appear on a force-closure transaction, whichever is lower).
@@ -2731,8 +2731,7 @@ where
 	/// channel.
 	///
 	/// [`ChannelConfig::force_close_avoidance_max_fee_satoshis`]: crate::util::config::ChannelConfig::force_close_avoidance_max_fee_satoshis
-	/// [`Background`]: crate::chain::chaininterface::ConfirmationTarget::Background
-	/// [`Normal`]: crate::chain::chaininterface::ConfirmationTarget::Normal
+	/// [`NonAnchorChannelFee`]: crate::chain::chaininterface::ConfirmationTarget::NonAnchorChannelFee
 	/// [`SendShutdown`]: crate::events::MessageSendEvent::SendShutdown
 	pub fn close_channel_with_feerate_and_script(&self, channel_id: &ChannelId, counterparty_node_id: &PublicKey, target_feerate_sats_per_1000_weight: Option<u32>, shutdown_script: Option<ShutdownScript>) -> Result<(), APIError> {
 		self.close_channel_internal(channel_id, counterparty_node_id, target_feerate_sats_per_1000_weight, shutdown_script)
@@ -4817,8 +4816,8 @@ where
 		PersistenceNotifierGuard::optionally_notify(self, || {
 			let mut should_persist = NotifyOption::SkipPersistNoEvents;
 
-			let normal_feerate = self.fee_estimator.bounded_sat_per_1000_weight(ConfirmationTarget::Normal);
-			let min_mempool_feerate = self.fee_estimator.bounded_sat_per_1000_weight(ConfirmationTarget::MempoolMinimum);
+			let non_anchor_feerate = self.fee_estimator.bounded_sat_per_1000_weight(ConfirmationTarget::NonAnchorChannelFee);
+			let anchor_feerate = self.fee_estimator.bounded_sat_per_1000_weight(ConfirmationTarget::AnchorChannelFee);
 
 			let per_peer_state = self.per_peer_state.read().unwrap();
 			for (_cp_id, peer_state_mutex) in per_peer_state.iter() {
@@ -4828,9 +4827,9 @@ where
 					|(chan_id, phase)| if let ChannelPhase::Funded(chan) = phase { Some((chan_id, chan)) } else { None }
 				) {
 					let new_feerate = if chan.context.get_channel_type().supports_anchors_zero_fee_htlc_tx() {
-						min_mempool_feerate
+						anchor_feerate
 					} else {
-						normal_feerate
+						non_anchor_feerate
 					};
 					let chan_needs_persist = self.update_channel_fee(chan_id, chan, new_feerate);
 					if chan_needs_persist == NotifyOption::DoPersist { should_persist = NotifyOption::DoPersist; }
@@ -4866,8 +4865,8 @@ where
 		PersistenceNotifierGuard::optionally_notify(self, || {
 			let mut should_persist = NotifyOption::SkipPersistNoEvents;
 
-			let normal_feerate = self.fee_estimator.bounded_sat_per_1000_weight(ConfirmationTarget::Normal);
-			let min_mempool_feerate = self.fee_estimator.bounded_sat_per_1000_weight(ConfirmationTarget::MempoolMinimum);
+			let non_anchor_feerate = self.fee_estimator.bounded_sat_per_1000_weight(ConfirmationTarget::NonAnchorChannelFee);
+			let anchor_feerate = self.fee_estimator.bounded_sat_per_1000_weight(ConfirmationTarget::AnchorChannelFee);
 
 			let mut handle_errors: Vec<(Result<(), _>, _)> = Vec::new();
 			let mut timed_out_mpp_htlcs = Vec::new();
@@ -4914,9 +4913,9 @@ where
 						match phase {
 							ChannelPhase::Funded(chan) => {
 								let new_feerate = if chan.context.get_channel_type().supports_anchors_zero_fee_htlc_tx() {
-									min_mempool_feerate
+									anchor_feerate
 								} else {
-									normal_feerate
+									non_anchor_feerate
 								};
 								let chan_needs_persist = self.update_channel_fee(chan_id, chan, new_feerate);
 								if chan_needs_persist == NotifyOption::DoPersist { should_persist = NotifyOption::DoPersist; }

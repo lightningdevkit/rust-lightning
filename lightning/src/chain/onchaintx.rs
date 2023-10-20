@@ -580,7 +580,7 @@ impl<ChannelSigner: WriteableEcdsaChannelSigner> OnchainTxHandler<ChannelSigner>
 		if cached_request.is_malleable() {
 			if cached_request.requires_external_funding() {
 				let target_feerate_sat_per_1000_weight = cached_request.compute_package_feerate(
-					fee_estimator, ConfirmationTarget::HighPriority, force_feerate_bump
+					fee_estimator, ConfirmationTarget::OnChainSweep, force_feerate_bump
 				);
 				if let Some(htlcs) = cached_request.construct_malleable_package_with_external_funding(self) {
 					return Some((
@@ -631,7 +631,7 @@ impl<ChannelSigner: WriteableEcdsaChannelSigner> OnchainTxHandler<ChannelSigner>
 					debug_assert_eq!(tx.txid(), self.holder_commitment.trust().txid(),
 						"Holder commitment transaction mismatch");
 
-					let conf_target = ConfirmationTarget::HighPriority;
+					let conf_target = ConfirmationTarget::OnChainSweep;
 					let package_target_feerate_sat_per_1000_weight = cached_request
 						.compute_package_feerate(fee_estimator, conf_target, force_feerate_bump);
 					if let Some(input_amount_sat) = output.funding_amount {
