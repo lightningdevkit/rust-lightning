@@ -48,6 +48,7 @@ use core::ops::Deref;
 use core::str::FromStr;
 #[cfg(feature = "std")]
 use std::net::SocketAddr;
+use core::fmt::Display;
 use crate::io::{self, Cursor, Read};
 use crate::io_extras::read_to_end;
 
@@ -1014,6 +1015,35 @@ pub fn parse_onion_address(host: &str, port: u16) -> Result<SocketAddress, Socke
 
 	} else {
 		return Err(SocketAddressParseError::InvalidInput);
+	}
+}
+
+impl Display for SocketAddress {
+	fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+		match self {
+			SocketAddress::TcpIpV4{addr, port} => write!(
+				f, "{}.{}.{}.{}:{}", addr[0], addr[1], addr[2], addr[3], port)?,
+			SocketAddress::TcpIpV6{addr, port} => write!(
+				f,
+				"[{:02x}{:02x}:{:02x}{:02x}:{:02x}{:02x}:{:02x}{:02x}:{:02x}{:02x}:{:02x}{:02x}:{:02x}{:02x}:{:02x}{:02x}]:{}",
+				addr[0], addr[1], addr[2], addr[3], addr[4], addr[5], addr[6], addr[7], addr[8], addr[9], addr[10], addr[11], addr[12], addr[13], addr[14], addr[15], port
+			)?,
+			SocketAddress::OnionV2(bytes) => write!(f, "OnionV2({:?})", bytes)?,
+			SocketAddress::OnionV3 {
+				ed25519_pubkey,
+				checksum,
+				version,
+				port,
+			} => {
+				let [first_checksum_flag, second_checksum_flag] = checksum.to_be_bytes();
+				let mut addr = vec![*version, first_checksum_flag, second_checksum_flag];
+				addr.extend_from_slice(ed25519_pubkey);
+				let onion = base32::Alphabet::RFC4648 { padding: false }.encode(&addr);
+				write!(f, "{}.onion:{}", onion, port)?
+			},
+			SocketAddress::Hostname { hostname, port } => write!(f, "{}:{}", hostname, port)?,
+		}
+		Ok(())
 	}
 }
 
@@ -4104,32 +4134,41 @@ mod tests {
 	#[test]
 	#[cfg(feature = "std")]
 	fn test_socket_address_from_str() {
-		assert_eq!(SocketAddress::TcpIpV4 {
+		let tcpip_v4 = SocketAddress::TcpIpV4 {
 			addr: Ipv4Addr::new(127, 0, 0, 1).octets(),
 			port: 1234,
-		}, SocketAddress::from_str("127.0.0.1:1234").unwrap());
+		};
+		assert_eq!(tcpip_v4, SocketAddress::from_str("127.0.0.1:1234").unwrap());
+		assert_eq!(tcpip_v4, SocketAddress::from_str(&tcpip_v4.to_string()).unwrap());
 
-		assert_eq!(SocketAddress::TcpIpV6 {
+		let tcpip_v6 = SocketAddress::TcpIpV6 {
 			addr: Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1).octets(),
 			port: 1234,
-		}, SocketAddress::from_str("[0:0:0:0:0:0:0:1]:1234").unwrap());
-		assert_eq!(
-			SocketAddress::Hostname {
+		};
+		assert_eq!(tcpip_v6, SocketAddress::from_str("[0:0:0:0:0:0:0:1]:1234").unwrap());
+		assert_eq!(tcpip_v6, SocketAddress::from_str(&tcpip_v6.to_string()).unwrap());
+
+		let hostname = SocketAddress::Hostname {
 				hostname: Hostname::try_from("lightning-node.mydomain.com".to_string()).unwrap(),
 				port: 1234,
-			}, SocketAddress::from_str("lightning-node.mydomain.com:1234").unwrap());
-		assert_eq!(
-			SocketAddress::Hostname {
-				hostname: Hostname::try_from("example.com".to_string()).unwrap(),
-				port: 1234,
-			}, SocketAddress::from_str("example.com:1234").unwrap());
-		assert_eq!(SocketAddress::OnionV3 {
+		};
+		assert_eq!(hostname, SocketAddress::from_str("lightning-node.mydomain.com:1234").unwrap());
+		assert_eq!(hostname, SocketAddress::from_str(&hostname.to_string()).unwrap());
+
+		let onion_v2 = SocketAddress::OnionV2 ([40, 4, 64, 185, 202, 19, 162, 75, 90, 200, 38, 7],);
+		assert_eq!("OnionV2([40, 4, 64, 185, 202, 19, 162, 75, 90, 200, 38, 7])", &onion_v2.to_string());
+		assert_eq!(Err(SocketAddressParseError::InvalidOnionV3), SocketAddress::from_str("FACEBOOKCOREWWWI.onion:9735"));
+
+		let onion_v3 = SocketAddress::OnionV3 {
 			ed25519_pubkey: [37, 24, 75, 5, 25, 73, 117, 194, 139, 102, 182, 107, 4, 105, 247, 246, 85,
 			111, 177, 172, 49, 137, 167, 155, 64, 221, 163, 47, 31, 33, 71, 3],
 			checksum: 48326,
 			version: 121,
 			port: 1234
-		}, SocketAddress::from_str("pg6mmjiyjmcrsslvykfwnntlaru7p5svn6y2ymmju6nubxndf4pscryd.onion:1234").unwrap());
+		};
+		assert_eq!(onion_v3, SocketAddress::from_str("pg6mmjiyjmcrsslvykfwnntlaru7p5svn6y2ymmju6nubxndf4pscryd.onion:1234").unwrap());
+		assert_eq!(onion_v3, SocketAddress::from_str(&onion_v3.to_string()).unwrap());
+
 		assert_eq!(Err(SocketAddressParseError::InvalidOnionV3), SocketAddress::from_str("pg6mmjiyjmcrsslvykfwnntlaru7p5svn6.onion:1234"));
 		assert_eq!(Err(SocketAddressParseError::InvalidInput), SocketAddress::from_str("127.0.0.1@1234"));
 		assert_eq!(Err(SocketAddressParseError::InvalidInput), "".parse::<SocketAddress>());
