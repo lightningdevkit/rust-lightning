@@ -8967,10 +8967,10 @@ where
 								match invoice.sign(|invoice| self.node_signer.sign_bolt12_invoice(invoice)) {
 									Ok(invoice) => Ok(OffersMessage::Invoice(invoice)),
 									Err(SignError::Signing(())) => Err(OffersMessage::InvoiceError(
-											InvoiceError::from_str("Failed signing invoice")
+											InvoiceError::from_string("Failed signing invoice".to_string())
 									)),
 									Err(SignError::Verification(_)) => Err(OffersMessage::InvoiceError(
-											InvoiceError::from_str("Failed invoice signature verification")
+											InvoiceError::from_string("Failed invoice signature verification".to_string())
 									)),
 								});
 						match response {
@@ -8986,7 +8986,7 @@ where
 			OffersMessage::Invoice(invoice) => {
 				match invoice.verify(expanded_key, secp_ctx) {
 					Err(()) => {
-						Some(OffersMessage::InvoiceError(InvoiceError::from_str("Unrecognized invoice")))
+						Some(OffersMessage::InvoiceError(InvoiceError::from_string("Unrecognized invoice".to_owned())))
 					},
 					Ok(_) if invoice.invoice_features().requires_unknown_bits_from(&self.bolt12_invoice_features()) => {
 						Some(OffersMessage::InvoiceError(Bolt12SemanticError::UnknownRequiredFeatures.into()))
@@ -8994,7 +8994,7 @@ where
 					Ok(payment_id) => {
 						if let Err(e) = self.send_payment_for_bolt12_invoice(&invoice, payment_id) {
 							log_trace!(self.logger, "Failed paying invoice: {:?}", e);
-							Some(OffersMessage::InvoiceError(InvoiceError::from_str(&format!("{:?}", e))))
+							Some(OffersMessage::InvoiceError(InvoiceError::from_string(format!("{:?}", e))))
 						} else {
 							None
 						}
