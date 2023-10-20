@@ -19,6 +19,7 @@ use crate::blinded_path::BlindedPath;
 use crate::blinded_path::message::{advance_path_by_one, ForwardTlvs, ReceiveTlvs};
 use crate::blinded_path::utils;
 use crate::sign::{EntropySource, KeysManager, NodeSigner, Recipient};
+use crate::ln::channelmanager::{SimpleArcChannelManager, SimpleRefChannelManager};
 use crate::ln::features::{InitFeatures, NodeFeatures};
 use crate::ln::msgs::{self, OnionMessage, OnionMessageHandler};
 use crate::ln::onion_utils;
@@ -176,14 +177,18 @@ pub trait MessageRouter {
 	) -> Result<OnionMessagePath, ()>;
 }
 
-/// A [`MessageRouter`] that always fails.
+/// A [`MessageRouter`] that can only route to a directly connected [`Destination`].
 pub struct DefaultMessageRouter;
 
 impl MessageRouter for DefaultMessageRouter {
 	fn find_path(
-		&self, _sender: PublicKey, _peers: Vec<PublicKey>, _destination: Destination
+		&self, _sender: PublicKey, peers: Vec<PublicKey>, destination: Destination
 	) -> Result<OnionMessagePath, ()> {
-		Err(())
+		if peers.contains(&destination.first_node()) {
+			Ok(OnionMessagePath { intermediate_nodes: vec![], destination })
+		} else {
+			Err(())
+		}
 	}
 }
 
@@ -211,6 +216,13 @@ impl Destination {
 		match self {
 			Destination::Node(_) => 1,
 			Destination::BlindedPath(BlindedPath { blinded_hops, .. }) => blinded_hops.len(),
+		}
+	}
+
+	fn first_node(&self) -> PublicKey {
+		match self {
+			Destination::Node(node_id) => *node_id,
+			Destination::BlindedPath(BlindedPath { introduction_node_id: node_id, .. }) => *node_id,
 		}
 	}
 }
@@ -704,12 +716,12 @@ where
 ///
 /// [`SimpleArcChannelManager`]: crate::ln::channelmanager::SimpleArcChannelManager
 /// [`SimpleArcPeerManager`]: crate::ln::peer_handler::SimpleArcPeerManager
-pub type SimpleArcOnionMessenger<L> = OnionMessenger<
+pub type SimpleArcOnionMessenger<M, T, F, L> = OnionMessenger<
 	Arc<KeysManager>,
 	Arc<KeysManager>,
 	Arc<L>,
 	Arc<DefaultMessageRouter>,
-	IgnoringMessageHandler,
+	Arc<SimpleArcChannelManager<M, T, F, L>>,
 	IgnoringMessageHandler
 >;
 
@@ -720,12 +732,14 @@ pub type SimpleArcOnionMessenger<L> = OnionMessenger<
 ///
 /// [`SimpleRefChannelManager`]: crate::ln::channelmanager::SimpleRefChannelManager
 /// [`SimpleRefPeerManager`]: crate::ln::peer_handler::SimpleRefPeerManager
-pub type SimpleRefOnionMessenger<'a, 'b, 'c, L> = OnionMessenger<
+pub type SimpleRefOnionMessenger<
+	'a, 'b, 'c, 'd, 'e, 'f, 'g, 'h, 'i, 'j, M, T, F, L
+> = OnionMessenger<
 	&'a KeysManager,
 	&'a KeysManager,
 	&'b L,
-	&'c DefaultMessageRouter,
-	IgnoringMessageHandler,
+	&'i DefaultMessageRouter,
+	&'j SimpleRefChannelManager<'a, 'b, 'c, 'd, 'e, 'f, 'g, 'h, M, T, F, L>,
 	IgnoringMessageHandler
 >;
 

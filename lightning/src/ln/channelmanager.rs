@@ -31,6 +31,7 @@ use bitcoin::secp256k1::Secp256k1;
 use bitcoin::{LockTime, secp256k1, Sequence};
 
 use crate::blinded_path::BlindedPath;
+use crate::blinded_path::payment::{PaymentConstraints, ReceiveTlvs};
 use crate::chain;
 use crate::chain::{Confirm, ChannelMonitorUpdateStatus, Watch, BestBlock};
 use crate::chain::chaininterface::{BroadcasterInterface, ConfirmationTarget, FeeEstimator, LowerBoundedFeeEstimator};
@@ -42,7 +43,7 @@ use crate::events::{Event, EventHandler, EventsProvider, MessageSendEvent, Messa
 // construct one themselves.
 use crate::ln::{inbound_payment, ChannelId, PaymentHash, PaymentPreimage, PaymentSecret};
 use crate::ln::channel::{Channel, ChannelPhase, ChannelContext, ChannelError, ChannelUpdateStatus, ShutdownResult, UnfundedChannelContext, UpdateFulfillCommitFetch, OutboundV1Channel, InboundV1Channel};
-use crate::ln::features::{ChannelFeatures, ChannelTypeFeatures, InitFeatures, NodeFeatures};
+use crate::ln::features::{Bolt12InvoiceFeatures, ChannelFeatures, ChannelTypeFeatures, InitFeatures, NodeFeatures};
 #[cfg(any(feature = "_test_utils", test))]
 use crate::ln::features::Bolt11InvoiceFeatures;
 use crate::routing::gossip::NetworkGraph;
@@ -54,11 +55,15 @@ use crate::ln::onion_utils::HTLCFailReason;
 use crate::ln::msgs::{ChannelMessageHandler, DecodeError, LightningError};
 #[cfg(test)]
 use crate::ln::outbound_payment;
-use crate::ln::outbound_payment::{OutboundPayments, PaymentAttempts, PendingOutboundPayment, SendAlongPathArgs};
+use crate::ln::outbound_payment::{Bolt12PaymentError, OutboundPayments, PaymentAttempts, PendingOutboundPayment, SendAlongPathArgs, StaleExpiration};
 use crate::ln::wire::Encode;
-use crate::offers::offer::{DerivedMetadata, OfferBuilder};
+use crate::offers::invoice::{BlindedPayInfo, Bolt12Invoice, DEFAULT_RELATIVE_EXPIRY, DerivedSigningPubkey, InvoiceBuilder};
+use crate::offers::invoice_error::InvoiceError;
+use crate::offers::merkle::SignError;
+use crate::offers::offer::{DerivedMetadata, Offer, OfferBuilder};
 use crate::offers::parse::Bolt12SemanticError;
-use crate::offers::refund::RefundBuilder;
+use crate::offers::refund::{Refund, RefundBuilder};
+use crate::onion_message::{Destination, OffersMessage, OffersMessageHandler, PendingOnionMessage};
 use crate::sign::{EntropySource, KeysManager, NodeSigner, Recipient, SignerProvider, WriteableEcdsaChannelSigner};
 use crate::util::config::{UserConfig, ChannelConfig, ChannelConfigUpdate};
 use crate::util::wakers::{Future, Notifier};
@@ -1008,6 +1013,8 @@ where
 //
 // Lock order tree:
 //
+// `pending_offers_messages`
+//
 // `total_consistency_lock`
 //  |
 //  |__`forward_htlcs`
@@ -1015,26 +1022,26 @@ where
 //  |   |__`pending_intercepted_htlcs`
 //  |
 //  |__`per_peer_state`
-//  |   |
-//  |   |__`pending_inbound_payments`
-//  |       |
-//  |       |__`claimable_payments`
-//  |       |
-//  |       |__`pending_outbound_payments` // This field's struct contains a map of pending outbounds
-//  |           |
-//  |           |__`peer_state`
-//  |               |
-//  |               |__`id_to_peer`
-//  |               |
-//  |               |__`short_to_chan_info`
-//  |               |
-//  |               |__`outbound_scid_aliases`
-//  |               |
-//  |               |__`best_block`
-//  |               |
-//  |               |__`pending_events`
-//  |                   |
-//  |                   |__`pending_background_events`
+//      |
+//      |__`pending_inbound_payments`
+//          |
+//          |__`claimable_payments`
+//          |
+//          |__`pending_outbound_payments` // This field's struct contains a map of pending outbounds
+//              |
+//              |__`peer_state`
+//                  |
+//                  |__`id_to_peer`
+//                  |
+//                  |__`short_to_chan_info`
+//                  |
+//                  |__`outbound_scid_aliases`
+//                  |
+//                  |__`best_block`
+//                  |
+//                  |__`pending_events`
+//                      |
+//                      |__`pending_background_events`
 //
 pub struct ChannelManager<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, L: Deref>
 where
@@ -1245,6 +1252,8 @@ where
 
 	event_persist_notifier: Notifier,
 	needs_persist_flag: AtomicBool,
+
+	pending_offers_messages: Mutex<Vec<PendingOnionMessage<OffersMessage>>>,
 
 	entropy_source: ES,
 	node_signer: NS,
@@ -2325,6 +2334,8 @@ where
 			event_persist_notifier: Notifier::new(),
 			needs_persist_flag: AtomicBool::new(false),
 			funding_batch_states: Mutex::new(BTreeMap::new()),
+
+			pending_offers_messages: Mutex::new(Vec::new()),
 
 			entropy_source,
 			node_signer,
@@ -3570,6 +3581,17 @@ where
 		self.pending_outbound_payments.test_set_payment_metadata(payment_id, new_payment_metadata);
 	}
 
+	pub(super) fn send_payment_for_bolt12_invoice(&self, invoice: &Bolt12Invoice, payment_id: PaymentId) -> Result<(), Bolt12PaymentError> {
+		let best_block_height = self.best_block.read().unwrap().height();
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
+		self.pending_outbound_payments
+			.send_payment_for_bolt12_invoice(
+				invoice, payment_id, &self.router, self.list_usable_channels(),
+				|| self.compute_inflight_htlcs(), &self.entropy_source, &self.node_signer,
+				best_block_height, &self.logger, &self.pending_events,
+				|args| self.send_payment_along_path(args)
+			)
+	}
 
 	/// Signals that no further attempts for the given payment should occur. Useful if you have a
 	/// pending outbound payment with retries remaining, but wish to stop retrying the payment before
@@ -3584,10 +3606,20 @@ where
 	/// wait until you receive either a [`Event::PaymentFailed`] or [`Event::PaymentSent`] event to
 	/// determine the ultimate status of a payment.
 	///
+	/// # Requested Invoices
+	///
+	/// In the case of paying a [`Bolt12Invoice`] via [`ChannelManager::pay_for_offer`], abandoning
+	/// the payment prior to receiving the invoice will result in an [`Event::InvoiceRequestFailed`]
+	/// and prevent any attempts at paying it once received. The other events may only be generated
+	/// once the invoice has been received.
+	///
 	/// # Restart Behavior
 	///
 	/// If an [`Event::PaymentFailed`] is generated and we restart without first persisting the
-	/// [`ChannelManager`], another [`Event::PaymentFailed`] may be generated.
+	/// [`ChannelManager`], another [`Event::PaymentFailed`] may be generated; likewise for
+	/// [`Event::InvoiceRequestFailed`].
+	///
+	/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
 	pub fn abandon_payment(&self, payment_id: PaymentId) {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 		self.pending_outbound_payments.abandon_payment(payment_id, PaymentFailureReason::UserAbandoned, &self.pending_events);
@@ -4822,8 +4854,8 @@ where
 	///  * Force-closing and removing channels which have not completed establishment in a timely manner.
 	///  * Forgetting about stale outbound payments, either those that have already been fulfilled
 	///    or those awaiting an invoice that hasn't been delivered in the necessary amount of time.
-	///    The latter is determined using the system clock in `std` and the block time minus two
-	///    hours in `no-std`.
+	///    The latter is determined using the system clock in `std` and the highest seen block time
+	///    minus two hours in `no-std`.
 	///
 	/// Note that this may cause reentrancy through [`chain::Watch::update_channel`] calls or feerate
 	/// estimate fetches.
@@ -7286,10 +7318,17 @@ where
 	/// [`ChannelManager`] when handling [`InvoiceRequest`] messages for the offer. The offer will
 	/// not have an expiration unless otherwise set on the builder.
 	///
+	/// # Privacy
+	///
 	/// Uses a one-hop [`BlindedPath`] for the offer with [`ChannelManager::get_our_node_id`] as the
 	/// introduction node and a derived signing pubkey for recipient privacy. As such, currently,
 	/// the node must be announced. Otherwise, there is no way to find a path to the introduction
 	/// node in order to send the [`InvoiceRequest`].
+	///
+	/// # Limitations
+	///
+	/// Requires a direct connection to the introduction node in the responding [`InvoiceRequest`]'s
+	/// reply path.
 	///
 	/// [`Offer`]: crate::offers::offer::Offer
 	/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
@@ -7308,19 +7347,42 @@ where
 	}
 
 	/// Creates a [`RefundBuilder`] such that the [`Refund`] it builds is recognized by the
-	/// [`ChannelManager`] when handling [`Bolt12Invoice`] messages for the refund. The builder will
-	/// have the provided expiration set. Any changes to the expiration on the returned builder will
-	/// not be honored by [`ChannelManager`].
+	/// [`ChannelManager`] when handling [`Bolt12Invoice`] messages for the refund.
+	///
+	/// # Payment
 	///
 	/// The provided `payment_id` is used to ensure that only one invoice is paid for the refund.
+	/// See [Avoiding Duplicate Payments] for other requirements once the payment has been sent.
+	///
+	/// The builder will have the provided expiration set. Any changes to the expiration on the
+	/// returned builder will not be honored by [`ChannelManager`]. For `no-std`, the highest seen
+	/// block time minus two hours is used for the current time when determining if the refund has
+	/// expired.
+	///
+	/// To revoke the refund, use [`ChannelManager::abandon_payment`] prior to receiving the
+	/// invoice. If abandoned, or an invoice isn't received before expiration, the payment will fail
+	/// with an [`Event::InvoiceRequestFailed`].
+	///
+	/// # Privacy
 	///
 	/// Uses a one-hop [`BlindedPath`] for the refund with [`ChannelManager::get_our_node_id`] as
-	/// the introduction node and a derived payer id for sender privacy. As such, currently, the
+	/// the introduction node and a derived payer id for payer privacy. As such, currently, the
 	/// node must be announced. Otherwise, there is no way to find a path to the introduction node
 	/// in order to send the [`Bolt12Invoice`].
 	///
+	/// # Limitations
+	///
+	/// Requires a direct connection to an introduction node in the responding
+	/// [`Bolt12Invoice::payment_paths`].
+	///
+	/// # Errors
+	///
+	/// Errors if a duplicate `payment_id` is provided given the caveats in the aforementioned link
+	/// or if `amount_msats` is invalid.
+	///
 	/// [`Refund`]: crate::offers::refund::Refund
 	/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
+	/// [`Bolt12Invoice::payment_paths`]: crate::offers::invoice::Bolt12Invoice::payment_paths
 	pub fn create_refund_builder(
 		&self, description: String, amount_msats: u64, absolute_expiry: Duration,
 		payment_id: PaymentId, retry_strategy: Retry, max_total_routing_fee_msat: Option<u64>
@@ -7338,13 +7400,190 @@ where
 			.absolute_expiry(absolute_expiry)
 			.path(path);
 
+		let expiration = StaleExpiration::AbsoluteTimeout(absolute_expiry);
 		self.pending_outbound_payments
 			.add_new_awaiting_invoice(
-				payment_id, absolute_expiry, retry_strategy, max_total_routing_fee_msat,
+				payment_id, expiration, retry_strategy, max_total_routing_fee_msat,
 			)
 			.map_err(|_| Bolt12SemanticError::DuplicatePaymentId)?;
 
 		Ok(builder)
+	}
+
+	/// Pays for an [`Offer`] using the given parameters by creating an [`InvoiceRequest`] and
+	/// enqueuing it to be sent via an onion message. [`ChannelManager`] will pay the actual
+	/// [`Bolt12Invoice`] once it is received.
+	///
+	/// Uses [`InvoiceRequestBuilder`] such that the [`InvoiceRequest`] it builds is recognized by
+	/// the [`ChannelManager`] when handling a [`Bolt12Invoice`] message in response to the request.
+	/// The optional parameters are used in the builder, if `Some`:
+	/// - `quantity` for [`InvoiceRequest::quantity`] which must be set if
+	///   [`Offer::expects_quantity`] is `true`.
+	/// - `amount_msats` if overpaying what is required for the given `quantity` is desired, and
+	/// - `payer_note` for [`InvoiceRequest::payer_note`].
+	///
+	/// # Payment
+	///
+	/// The provided `payment_id` is used to ensure that only one invoice is paid for the request
+	/// when received. See [Avoiding Duplicate Payments] for other requirements once the payment has
+	/// been sent.
+	///
+	/// To revoke the request, use [`ChannelManager::abandon_payment`] prior to receiving the
+	/// invoice. If abandoned, or an invoice isn't received in a reasonable amount of time, the
+	/// payment will fail with an [`Event::InvoiceRequestFailed`].
+	///
+	/// # Privacy
+	///
+	/// Uses a one-hop [`BlindedPath`] for the reply path with [`ChannelManager::get_our_node_id`]
+	/// as the introduction node and a derived payer id for payer privacy. As such, currently, the
+	/// node must be announced. Otherwise, there is no way to find a path to the introduction node
+	/// in order to send the [`Bolt12Invoice`].
+	///
+	/// # Limitations
+	///
+	/// Requires a direct connection to an introduction node in [`Offer::paths`] or to
+	/// [`Offer::signing_pubkey`], if empty. A similar restriction applies to the responding
+	/// [`Bolt12Invoice::payment_paths`].
+	///
+	/// # Errors
+	///
+	/// Errors if a duplicate `payment_id` is provided given the caveats in the aforementioned link
+	/// or if the provided parameters are invalid for the offer.
+	///
+	/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
+	/// [`InvoiceRequest::quantity`]: crate::offers::invoice_request::InvoiceRequest::quantity
+	/// [`InvoiceRequest::payer_note`]: crate::offers::invoice_request::InvoiceRequest::payer_note
+	/// [`InvoiceRequestBuilder`]: crate::offers::invoice_request::InvoiceRequestBuilder
+	/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
+	/// [`Bolt12Invoice::payment_paths`]: crate::offers::invoice::Bolt12Invoice::payment_paths
+	/// [Avoiding Duplicate Payments]: #avoiding-duplicate-payments
+	pub fn pay_for_offer(
+		&self, offer: &Offer, quantity: Option<u64>, amount_msats: Option<u64>,
+		payer_note: Option<String>, payment_id: PaymentId, retry_strategy: Retry,
+		max_total_routing_fee_msat: Option<u64>
+	) -> Result<(), Bolt12SemanticError> {
+		let expanded_key = &self.inbound_payment_key;
+		let entropy = &*self.entropy_source;
+		let secp_ctx = &self.secp_ctx;
+
+		let builder = offer
+			.request_invoice_deriving_payer_id(expanded_key, entropy, secp_ctx, payment_id)?
+			.chain_hash(self.chain_hash)?;
+		let builder = match quantity {
+			None => builder,
+			Some(quantity) => builder.quantity(quantity)?,
+		};
+		let builder = match amount_msats {
+			None => builder,
+			Some(amount_msats) => builder.amount_msats(amount_msats)?,
+		};
+		let builder = match payer_note {
+			None => builder,
+			Some(payer_note) => builder.payer_note(payer_note),
+		};
+
+		let invoice_request = builder.build_and_sign()?;
+		let reply_path = self.create_one_hop_blinded_path();
+
+		let expiration = StaleExpiration::TimerTicks(1);
+		self.pending_outbound_payments
+			.add_new_awaiting_invoice(
+				payment_id, expiration, retry_strategy, max_total_routing_fee_msat
+			)
+			.map_err(|_| Bolt12SemanticError::DuplicatePaymentId)?;
+
+		let mut pending_offers_messages = self.pending_offers_messages.lock().unwrap();
+		if offer.paths().is_empty() {
+			let message = PendingOnionMessage {
+				contents: OffersMessage::InvoiceRequest(invoice_request),
+				destination: Destination::Node(offer.signing_pubkey()),
+				reply_path: Some(reply_path),
+			};
+			pending_offers_messages.push(message);
+		} else {
+			// Send as many invoice requests as there are paths in the offer (with an upper bound).
+			// Using only one path could result in a failure if the path no longer exists. But only
+			// one invoice for a given payment id will be paid, even if more than one is received.
+			const REQUEST_LIMIT: usize = 10;
+			for path in offer.paths().into_iter().take(REQUEST_LIMIT) {
+				let message = PendingOnionMessage {
+					contents: OffersMessage::InvoiceRequest(invoice_request.clone()),
+					destination: Destination::BlindedPath(path.clone()),
+					reply_path: Some(reply_path.clone()),
+				};
+				pending_offers_messages.push(message);
+			}
+		}
+
+		Ok(())
+	}
+
+	/// Creates a [`Bolt12Invoice`] for a [`Refund`] and enqueues it to be sent via an onion
+	/// message.
+	///
+	/// The resulting invoice uses a [`PaymentHash`] recognized by the [`ChannelManager`] and a
+	/// [`BlindedPath`] containing the [`PaymentSecret`] needed to reconstruct the corresponding
+	/// [`PaymentPreimage`].
+	///
+	/// # Limitations
+	///
+	/// Requires a direct connection to an introduction node in [`Refund::paths`] or to
+	/// [`Refund::payer_id`], if empty. This request is best effort; an invoice will be sent to each
+	/// node meeting the aforementioned criteria, but there's no guarantee that they will be
+	/// received and no retries will be made.
+	///
+	/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
+	pub fn request_refund_payment(&self, refund: &Refund) -> Result<(), Bolt12SemanticError> {
+		let expanded_key = &self.inbound_payment_key;
+		let entropy = &*self.entropy_source;
+		let secp_ctx = &self.secp_ctx;
+
+		let amount_msats = refund.amount_msats();
+		let relative_expiry = DEFAULT_RELATIVE_EXPIRY.as_secs() as u32;
+
+		match self.create_inbound_payment(Some(amount_msats), relative_expiry, None) {
+			Ok((payment_hash, payment_secret)) => {
+				let payment_paths = vec![
+					self.create_one_hop_blinded_payment_path(payment_secret),
+				];
+				#[cfg(not(feature = "no-std"))]
+				let builder = refund.respond_using_derived_keys(
+					payment_paths, payment_hash, expanded_key, entropy
+				)?;
+				#[cfg(feature = "no-std")]
+				let created_at = Duration::from_secs(
+					self.highest_seen_timestamp.load(Ordering::Acquire) as u64
+				);
+				#[cfg(feature = "no-std")]
+				let builder = refund.respond_using_derived_keys_no_std(
+					payment_paths, payment_hash, created_at, expanded_key, entropy
+				)?;
+				let invoice = builder.allow_mpp().build_and_sign(secp_ctx)?;
+				let reply_path = self.create_one_hop_blinded_path();
+
+				let mut pending_offers_messages = self.pending_offers_messages.lock().unwrap();
+				if refund.paths().is_empty() {
+					let message = PendingOnionMessage {
+						contents: OffersMessage::Invoice(invoice),
+						destination: Destination::Node(refund.payer_id()),
+						reply_path: Some(reply_path),
+					};
+					pending_offers_messages.push(message);
+				} else {
+					for path in refund.paths() {
+						let message = PendingOnionMessage {
+							contents: OffersMessage::Invoice(invoice.clone()),
+							destination: Destination::BlindedPath(path.clone()),
+							reply_path: Some(reply_path.clone()),
+						};
+						pending_offers_messages.push(message);
+					}
+				}
+
+				Ok(())
+			},
+			Err(()) => Err(Bolt12SemanticError::InvalidAmount),
+		}
 	}
 
 	/// Gets a payment secret and payment hash for use in an invoice given to a third party wishing
@@ -7453,6 +7692,29 @@ where
 		let entropy_source = self.entropy_source.deref();
 		let secp_ctx = &self.secp_ctx;
 		BlindedPath::one_hop_for_message(self.get_our_node_id(), entropy_source, secp_ctx).unwrap()
+	}
+
+	/// Creates a one-hop blinded path with [`ChannelManager::get_our_node_id`] as the introduction
+	/// node.
+	fn create_one_hop_blinded_payment_path(
+		&self, payment_secret: PaymentSecret
+	) -> (BlindedPayInfo, BlindedPath) {
+		let entropy_source = self.entropy_source.deref();
+		let secp_ctx = &self.secp_ctx;
+
+		let payee_node_id = self.get_our_node_id();
+		let max_cltv_expiry = self.best_block.read().unwrap().height() + LATENCY_GRACE_PERIOD_BLOCKS;
+		let payee_tlvs = ReceiveTlvs {
+			payment_secret,
+			payment_constraints: PaymentConstraints {
+				max_cltv_expiry,
+				htlc_minimum_msat: 1,
+			},
+		};
+		// TODO: Err for overflow?
+		BlindedPath::one_hop_for_payment(
+			payee_node_id, payee_tlvs, entropy_source, secp_ctx
+		).unwrap()
 	}
 
 	/// Gets a fake short channel id for use in receiving [phantom node payments]. These fake scids
@@ -8060,35 +8322,41 @@ where
 		self.best_block.read().unwrap().clone()
 	}
 
-	/// Fetches the set of [`NodeFeatures`] flags which are provided by or required by
+	/// Fetches the set of [`NodeFeatures`] flags that are provided by or required by
 	/// [`ChannelManager`].
 	pub fn node_features(&self) -> NodeFeatures {
 		provided_node_features(&self.default_configuration)
 	}
 
-	/// Fetches the set of [`Bolt11InvoiceFeatures`] flags which are provided by or required by
+	/// Fetches the set of [`Bolt11InvoiceFeatures`] flags that are provided by or required by
 	/// [`ChannelManager`].
 	///
 	/// Note that the invoice feature flags can vary depending on if the invoice is a "phantom invoice"
 	/// or not. Thus, this method is not public.
 	#[cfg(any(feature = "_test_utils", test))]
-	pub fn invoice_features(&self) -> Bolt11InvoiceFeatures {
-		provided_invoice_features(&self.default_configuration)
+	pub fn bolt11_invoice_features(&self) -> Bolt11InvoiceFeatures {
+		provided_bolt11_invoice_features(&self.default_configuration)
 	}
 
-	/// Fetches the set of [`ChannelFeatures`] flags which are provided by or required by
+	/// Fetches the set of [`Bolt12InvoiceFeatures`] flags that are provided by or required by
+	/// [`ChannelManager`].
+	fn bolt12_invoice_features(&self) -> Bolt12InvoiceFeatures {
+		provided_bolt12_invoice_features(&self.default_configuration)
+	}
+
+	/// Fetches the set of [`ChannelFeatures`] flags that are provided by or required by
 	/// [`ChannelManager`].
 	pub fn channel_features(&self) -> ChannelFeatures {
 		provided_channel_features(&self.default_configuration)
 	}
 
-	/// Fetches the set of [`ChannelTypeFeatures`] flags which are provided by or required by
+	/// Fetches the set of [`ChannelTypeFeatures`] flags that are provided by or required by
 	/// [`ChannelManager`].
 	pub fn channel_type_features(&self) -> ChannelTypeFeatures {
 		provided_channel_type_features(&self.default_configuration)
 	}
 
-	/// Fetches the set of [`InitFeatures`] flags which are provided by or required by
+	/// Fetches the set of [`InitFeatures`] flags that are provided by or required by
 	/// [`ChannelManager`].
 	pub fn init_features(&self) -> InitFeatures {
 		provided_init_features(&self.default_configuration)
@@ -8619,7 +8887,128 @@ where
 	}
 }
 
-/// Fetches the set of [`NodeFeatures`] flags which are provided by or required by
+impl<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, L: Deref>
+OffersMessageHandler for ChannelManager<M, T, ES, NS, SP, F, R, L>
+where
+	M::Target: chain::Watch<<SP::Target as SignerProvider>::Signer>,
+	T::Target: BroadcasterInterface,
+	ES::Target: EntropySource,
+	NS::Target: NodeSigner,
+	SP::Target: SignerProvider,
+	F::Target: FeeEstimator,
+	R::Target: Router,
+	L::Target: Logger,
+{
+	fn handle_message(&self, message: OffersMessage) -> Option<OffersMessage> {
+		let secp_ctx = &self.secp_ctx;
+		let expanded_key = &self.inbound_payment_key;
+
+		match message {
+			OffersMessage::InvoiceRequest(invoice_request) => {
+				let amount_msats = match InvoiceBuilder::<DerivedSigningPubkey>::amount_msats(
+					&invoice_request
+				) {
+					Ok(amount_msats) => Some(amount_msats),
+					Err(error) => return Some(OffersMessage::InvoiceError(error.into())),
+				};
+				let invoice_request = match invoice_request.verify(expanded_key, secp_ctx) {
+					Ok(invoice_request) => invoice_request,
+					Err(()) => {
+						let error = Bolt12SemanticError::InvalidMetadata;
+						return Some(OffersMessage::InvoiceError(error.into()));
+					},
+				};
+				let relative_expiry = DEFAULT_RELATIVE_EXPIRY.as_secs() as u32;
+
+				match self.create_inbound_payment(amount_msats, relative_expiry, None) {
+					Ok((payment_hash, payment_secret)) if invoice_request.keys.is_some() => {
+						let payment_paths = vec![
+							self.create_one_hop_blinded_payment_path(payment_secret),
+						];
+						#[cfg(not(feature = "no-std"))]
+						let builder = invoice_request.respond_using_derived_keys(
+							payment_paths, payment_hash
+						);
+						#[cfg(feature = "no-std")]
+						let created_at = Duration::from_secs(
+							self.highest_seen_timestamp.load(Ordering::Acquire) as u64
+						);
+						#[cfg(feature = "no-std")]
+						let builder = invoice_request.respond_using_derived_keys_no_std(
+							payment_paths, payment_hash, created_at
+						);
+						match builder.and_then(|b| b.allow_mpp().build_and_sign(secp_ctx)) {
+							Ok(invoice) => Some(OffersMessage::Invoice(invoice)),
+							Err(error) => Some(OffersMessage::InvoiceError(error.into())),
+						}
+					},
+					Ok((payment_hash, payment_secret)) => {
+						let payment_paths = vec![
+							self.create_one_hop_blinded_payment_path(payment_secret),
+						];
+						#[cfg(not(feature = "no-std"))]
+						let builder = invoice_request.respond_with(payment_paths, payment_hash);
+						#[cfg(feature = "no-std")]
+						let created_at = Duration::from_secs(
+							self.highest_seen_timestamp.load(Ordering::Acquire) as u64
+						);
+						#[cfg(feature = "no-std")]
+						let builder = invoice_request.respond_with_no_std(
+							payment_paths, payment_hash, created_at
+						);
+						let response = builder.and_then(|builder| builder.allow_mpp().build())
+							.map_err(|e| OffersMessage::InvoiceError(e.into()))
+							.and_then(|invoice|
+								match invoice.sign(|invoice| self.node_signer.sign_bolt12_invoice(invoice)) {
+									Ok(invoice) => Ok(OffersMessage::Invoice(invoice)),
+									Err(SignError::Signing(())) => Err(OffersMessage::InvoiceError(
+											InvoiceError::from_str("Failed signing invoice")
+									)),
+									Err(SignError::Verification(_)) => Err(OffersMessage::InvoiceError(
+											InvoiceError::from_str("Failed invoice signature verification")
+									)),
+								});
+						match response {
+							Ok(invoice) => Some(invoice),
+							Err(error) => Some(error),
+						}
+					},
+					Err(()) => {
+						Some(OffersMessage::InvoiceError(Bolt12SemanticError::InvalidAmount.into()))
+					},
+				}
+			},
+			OffersMessage::Invoice(invoice) => {
+				match invoice.verify(expanded_key, secp_ctx) {
+					Err(()) => {
+						Some(OffersMessage::InvoiceError(InvoiceError::from_str("Unrecognized invoice")))
+					},
+					Ok(_) if invoice.invoice_features().requires_unknown_bits_from(&self.bolt12_invoice_features()) => {
+						Some(OffersMessage::InvoiceError(Bolt12SemanticError::UnknownRequiredFeatures.into()))
+					},
+					Ok(payment_id) => {
+						if let Err(e) = self.send_payment_for_bolt12_invoice(&invoice, payment_id) {
+							log_trace!(self.logger, "Failed paying invoice: {:?}", e);
+							Some(OffersMessage::InvoiceError(InvoiceError::from_str(&format!("{:?}", e))))
+						} else {
+							None
+						}
+					},
+				}
+			},
+			OffersMessage::InvoiceError(invoice_error) => {
+				log_trace!(self.logger, "Received invoice_error: {}", invoice_error);
+				None
+			},
+		}
+	}
+
+	fn release_pending_messages(&self) -> Vec<PendingOnionMessage<OffersMessage>> {
+		core::mem::take(&mut self.pending_offers_messages.lock().unwrap())
+	}
+}
+
+/// Fetches the set of [`NodeFeatures`] flags that are provided by or required by
 /// [`ChannelManager`].
 pub(crate) fn provided_node_features(config: &UserConfig) -> NodeFeatures {
 	let mut node_features = provided_init_features(config).to_context();
@@ -8627,29 +9016,35 @@ pub(crate) fn provided_node_features(config: &UserConfig) -> NodeFeatures {
 	node_features
 }
 
-/// Fetches the set of [`Bolt11InvoiceFeatures`] flags which are provided by or required by
+/// Fetches the set of [`Bolt11InvoiceFeatures`] flags that are provided by or required by
 /// [`ChannelManager`].
 ///
 /// Note that the invoice feature flags can vary depending on if the invoice is a "phantom invoice"
 /// or not. Thus, this method is not public.
 #[cfg(any(feature = "_test_utils", test))]
-pub(crate) fn provided_invoice_features(config: &UserConfig) -> Bolt11InvoiceFeatures {
+pub(crate) fn provided_bolt11_invoice_features(config: &UserConfig) -> Bolt11InvoiceFeatures {
 	provided_init_features(config).to_context()
 }
 
-/// Fetches the set of [`ChannelFeatures`] flags which are provided by or required by
+/// Fetches the set of [`Bolt12InvoiceFeatures`] flags that are provided by or required by
+/// [`ChannelManager`].
+pub(crate) fn provided_bolt12_invoice_features(config: &UserConfig) -> Bolt12InvoiceFeatures {
+	provided_init_features(config).to_context()
+}
+
+/// Fetches the set of [`ChannelFeatures`] flags that are provided by or required by
 /// [`ChannelManager`].
 pub(crate) fn provided_channel_features(config: &UserConfig) -> ChannelFeatures {
 	provided_init_features(config).to_context()
 }
 
-/// Fetches the set of [`ChannelTypeFeatures`] flags which are provided by or required by
+/// Fetches the set of [`ChannelTypeFeatures`] flags that are provided by or required by
 /// [`ChannelManager`].
 pub(crate) fn provided_channel_type_features(config: &UserConfig) -> ChannelTypeFeatures {
 	ChannelTypeFeatures::from_init(&provided_init_features(config))
 }
 
-/// Fetches the set of [`InitFeatures`] flags which are provided by or required by
+/// Fetches the set of [`InitFeatures`] flags that are provided by or required by
 /// [`ChannelManager`].
 pub fn provided_init_features(config: &UserConfig) -> InitFeatures {
 	// Note that if new features are added here which other peers may (eventually) require, we
@@ -10325,6 +10720,8 @@ where
 
 			funding_batch_states: Mutex::new(BTreeMap::new()),
 
+			pending_offers_messages: Mutex::new(Vec::new()),
+
 			entropy_source: args.entropy_source,
 			node_signer: args.node_signer,
 			signer_provider: args.signer_provider,
@@ -11802,7 +12199,7 @@ pub mod bench {
 		macro_rules! send_payment {
 			($node_a: expr, $node_b: expr) => {
 				let payment_params = PaymentParameters::from_node_id($node_b.get_our_node_id(), TEST_FINAL_CLTV)
-					.with_bolt11_features($node_b.invoice_features()).unwrap();
+					.with_bolt11_features($node_b.bolt11_invoice_features()).unwrap();
 				let mut payment_preimage = PaymentPreimage([0; 32]);
 				payment_preimage.0[0..8].copy_from_slice(&payment_count.to_le_bytes());
 				payment_count += 1;

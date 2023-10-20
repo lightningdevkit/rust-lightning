@@ -84,7 +84,7 @@ impl BlindedPath {
 	}
 
 	/// Create a one-hop blinded path for a payment.
-	pub fn one_hop_for_payment<ES: EntropySource, T: secp256k1::Signing + secp256k1::Verification>(
+	pub fn one_hop_for_payment<ES: EntropySource + ?Sized, T: secp256k1::Signing + secp256k1::Verification>(
 		payee_node_id: PublicKey, payee_tlvs: payment::ReceiveTlvs, entropy_source: &ES,
 		secp_ctx: &Secp256k1<T>
 	) -> Result<(BlindedPayInfo, Self), ()> {
@@ -105,7 +105,7 @@ impl BlindedPath {
 	///
 	/// [`ForwardTlvs`]: crate::blinded_path::payment::ForwardTlvs
 	//  TODO: make all payloads the same size with padding + add dummy hops
-	pub(crate) fn new_for_payment<ES: EntropySource, T: secp256k1::Signing + secp256k1::Verification>(
+	pub(crate) fn new_for_payment<ES: EntropySource + ?Sized, T: secp256k1::Signing + secp256k1::Verification>(
 		intermediate_nodes: &[payment::ForwardNode], payee_node_id: PublicKey,
 		payee_tlvs: payment::ReceiveTlvs, htlc_maximum_msat: u64, entropy_source: &ES,
 		secp_ctx: &Secp256k1<T>

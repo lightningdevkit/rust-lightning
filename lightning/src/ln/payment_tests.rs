@@ -85,7 +85,7 @@ fn mpp_retry() {
 	let amt_msat = 1_000_000;
 	let max_total_routing_fee_msat = 50_000;
 	let payment_params = PaymentParameters::from_node_id(nodes[3].node.get_our_node_id(), TEST_FINAL_CLTV)
-		.with_bolt11_features(nodes[3].node.invoice_features()).unwrap();
+		.with_bolt11_features(nodes[3].node.bolt11_invoice_features()).unwrap();
 	let (mut route, payment_hash, payment_preimage, payment_secret) = get_route_and_payment_hash!(
 		nodes[0], nodes[3], payment_params, amt_msat, Some(max_total_routing_fee_msat));
 	let path = route.paths[0].clone();
@@ -184,7 +184,7 @@ fn mpp_retry_overpay() {
 	let max_total_routing_fee_msat = Some(1_000_000);
 
 	let payment_params = PaymentParameters::from_node_id(nodes[3].node.get_our_node_id(), TEST_FINAL_CLTV)
-		.with_bolt11_features(nodes[3].node.invoice_features()).unwrap();
+		.with_bolt11_features(nodes[3].node.bolt11_invoice_features()).unwrap();
 	let (mut route, payment_hash, payment_preimage, payment_secret) = get_route_and_payment_hash!(
 		nodes[0], nodes[3], payment_params, amt_msat, max_total_routing_fee_msat);
 
@@ -1217,7 +1217,7 @@ fn get_ldk_payment_preimage() {
 	let (payment_hash, payment_secret) = nodes[1].node.create_inbound_payment(Some(amt_msat), expiry_secs, None).unwrap();
 
 	let payment_params = PaymentParameters::from_node_id(nodes[1].node.get_our_node_id(), TEST_FINAL_CLTV)
-		.with_bolt11_features(nodes[1].node.invoice_features()).unwrap();
+		.with_bolt11_features(nodes[1].node.bolt11_invoice_features()).unwrap();
 	let scorer = test_utils::TestScorer::new();
 	let keys_manager = test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
 	let random_seed_bytes = keys_manager.get_secure_random_bytes();
@@ -1867,11 +1867,12 @@ fn do_test_intercepted_payment(test: InterceptTest) {
 				htlc_maximum_msat: None,
 			}])
 		]).unwrap()
-		.with_bolt11_features(nodes[2].node.invoice_features()).unwrap();
-	let route_params = RouteParameters::from_payment_params_and_value(payment_params, amt_msat,);
-	let route = get_route(&nodes[0].node.get_our_node_id(), &route_params,
-		&nodes[0].network_graph.read_only(), None, nodes[0].logger, &scorer, &Default::default(),
-		&random_seed_bytes).unwrap();
+		.with_bolt11_features(nodes[2].node.bolt11_invoice_features()).unwrap();
+	let route_params = RouteParameters::from_payment_params_and_value(payment_params, amt_msat);
+	let route = get_route(
+		&nodes[0].node.get_our_node_id(), &route_params, &nodes[0].network_graph.read_only(), None,
+		nodes[0].logger, &scorer, &(), &random_seed_bytes
+	).unwrap();
 
 	let (payment_hash, payment_secret) = nodes[2].node.create_inbound_payment(Some(amt_msat), 60 * 60, None).unwrap();
 	nodes[0].node.send_payment_with_route(&route, payment_hash,
@@ -2051,7 +2052,7 @@ fn do_accept_underpaying_htlcs_config(num_mpp_parts: usize) {
 	}
 	let payment_params = PaymentParameters::from_node_id(nodes[2].node.get_our_node_id(), TEST_FINAL_CLTV)
 		.with_route_hints(route_hints).unwrap()
-		.with_bolt11_features(nodes[2].node.invoice_features()).unwrap();
+		.with_bolt11_features(nodes[2].node.bolt11_invoice_features()).unwrap();
 	let route_params = RouteParameters::from_payment_params_and_value(payment_params, amt_msat);
 	let (payment_hash, payment_secret) = nodes[2].node.create_inbound_payment(Some(amt_msat), 60 * 60, None).unwrap();
 	nodes[0].node.send_payment(payment_hash, RecipientOnionFields::secret_only(payment_secret),
@@ -3513,10 +3514,9 @@ fn do_claim_from_closed_chan(fail_payment: bool) {
 	create_announced_chan_between_nodes(&nodes, 2, 3);
 
 	let (payment_preimage, payment_hash, payment_secret) = get_payment_preimage_hash!(nodes[3]);
-	let mut route_params = RouteParameters::from_payment_params_and_value(
-		PaymentParameters::from_node_id(nodes[3].node.get_our_node_id(), TEST_FINAL_CLTV)
-			.with_bolt11_features(nodes[1].node.invoice_features()).unwrap(),
-		10_000_000);
+	let payment_params = PaymentParameters::from_node_id(nodes[3].node.get_our_node_id(), TEST_FINAL_CLTV)
+		.with_bolt11_features(nodes[1].node.bolt11_invoice_features()).unwrap();
+	let mut route_params = RouteParameters::from_payment_params_and_value(payment_params, 10_000_000);
 	let mut route = nodes[0].router.find_route(&nodes[0].node.get_our_node_id(), &route_params,
 		None, nodes[0].node.compute_inflight_htlcs()).unwrap();
 	// Make sure the route is ordered as the B->D path before C->D
@@ -3840,7 +3840,7 @@ fn do_test_custom_tlvs_consistency(first_tlvs: Vec<(u64, Vec<u8>)>, second_tlvs:
 	let chan_2_3 = create_announced_chan_between_nodes_with_value(&nodes, 2, 3, 100_000, 0);
 
 	let payment_params = PaymentParameters::from_node_id(nodes[3].node.get_our_node_id(), TEST_FINAL_CLTV)
-		.with_bolt11_features(nodes[3].node.invoice_features()).unwrap();
+		.with_bolt11_features(nodes[3].node.bolt11_invoice_features()).unwrap();
 	let mut route = get_route!(nodes[0], payment_params, 15_000_000).unwrap();
 	assert_eq!(route.paths.len(), 2);
 	route.paths.sort_by(|path_a, _| {
@@ -3978,7 +3978,7 @@ fn do_test_payment_metadata_consistency(do_reload: bool, do_modify: bool) {
 	let payment_metadata = vec![44, 49, 52, 142];
 
 	let payment_params = PaymentParameters::from_node_id(nodes[3].node.get_our_node_id(), TEST_FINAL_CLTV)
-		.with_bolt11_features(nodes[1].node.invoice_features()).unwrap();
+		.with_bolt11_features(nodes[1].node.bolt11_invoice_features()).unwrap();
 	let mut route_params = RouteParameters::from_payment_params_and_value(payment_params, amt_msat);
 
 	// Send the MPP payment, delivering the updated commitment state to nodes[1].

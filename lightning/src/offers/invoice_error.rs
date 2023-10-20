@@ -48,6 +48,16 @@ pub struct ErroneousField {
 	pub suggested_value: Option<Vec<u8>>,
 }
 
+impl InvoiceError {
+	/// Creates an [`InvoiceError`] with the given message.
+	pub fn from_str(s: &str) -> Self {
+		Self {
+			erroneous_field: None,
+			message: UntrustedString(s.to_string()),
+		}
+	}
+}
+
 impl core::fmt::Display for InvoiceError {
 	fn fmt(&self, f: &mut core::fmt::Formatter) -> Result<(), core::fmt::Error> {
 		self.message.fmt(f)

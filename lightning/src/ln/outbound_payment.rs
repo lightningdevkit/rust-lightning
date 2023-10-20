@@ -47,7 +47,7 @@ pub(crate) enum PendingOutboundPayment {
 		session_privs: HashSet<[u8; 32]>,
 	},
 	AwaitingInvoice {
-		absolute_expiry: Duration,
+		expiration: StaleExpiration,
 		retry_strategy: Retry,
 		max_total_routing_fee_msat: Option<u64>,
 	},
@@ -377,6 +377,22 @@ impl<T: Time> Display for PaymentAttemptsUsingTime<T> {
 		);
 	}
 }
+
+/// How long before a [`PendingOutboundPayment::AwaitingInvoice`] should be considered stale and
+/// candidate for removal in [`OutboundPayments::remove_stale_payments`].
+#[derive(Clone, Copy)]
+pub(crate) enum StaleExpiration {
+	/// Number of times [`OutboundPayments::remove_stale_payments`] is called.
+	TimerTicks(u64),
+	/// Duration since the Unix epoch.
+	AbsoluteTimeout(core::time::Duration),
+}
+
+impl_writeable_tlv_based_enum!(StaleExpiration,
+	;
+	(0, TimerTicks),
+	(2, AbsoluteTimeout)
+);
 
 /// Indicates an immediate error on [`ChannelManager::send_payment`]. Further errors may be
 /// surfaced later via [`Event::PaymentPathFailed`] and [`Event::PaymentFailed`].
@@ -1269,7 +1285,7 @@ impl OutboundPayments {
 	}
 
 	pub(super) fn add_new_awaiting_invoice(
-		&self, payment_id: PaymentId, absolute_expiry: Duration, retry_strategy: Retry,
+		&self, payment_id: PaymentId, expiration: StaleExpiration, retry_strategy: Retry,
 		max_total_routing_fee_msat: Option<u64>
 	) -> Result<(), ()> {
 		let mut pending_outbounds = self.pending_outbound_payments.lock().unwrap();
@@ -1277,7 +1293,7 @@ impl OutboundPayments {
 			hash_map::Entry::Occupied(_) => Err(()),
 			hash_map::Entry::Vacant(entry) => {
 				entry.insert(PendingOutboundPayment::AwaitingInvoice {
-					absolute_expiry,
+					expiration,
 					retry_strategy,
 					max_total_routing_fee_msat,
 				});
@@ -1510,9 +1526,6 @@ impl OutboundPayments {
 		pending_events: &Mutex<VecDeque<(events::Event, Option<EventCompletionAction>)>>)
 	{
 		let mut pending_outbound_payments = self.pending_outbound_payments.lock().unwrap();
-		#[cfg(not(invreqfailed))]
-		let pending_events = pending_events.lock().unwrap();
-		#[cfg(invreqfailed)]
 		let mut pending_events = pending_events.lock().unwrap();
 		pending_outbound_payments.retain(|payment_id, payment| match payment {
 			// If an outbound payment was completed, and no pending HTLCs remain, we should remove it
@@ -1547,15 +1560,27 @@ impl OutboundPayments {
 					true
 				}
 			},
-			PendingOutboundPayment::AwaitingInvoice { absolute_expiry, ..  } => {
-				if duration_since_epoch < *absolute_expiry {
-					true
-				} else {
-					#[cfg(invreqfailed)]
+			PendingOutboundPayment::AwaitingInvoice { expiration, .. } => {
+				let is_stale = match expiration {
+					StaleExpiration::AbsoluteTimeout(absolute_expiry) => {
+						*absolute_expiry <= duration_since_epoch
+					},
+					StaleExpiration::TimerTicks(timer_ticks_remaining) => {
+						if *timer_ticks_remaining > 0 {
+							*timer_ticks_remaining -= 1;
+							false
+						} else {
+							true
+						}
+					},
+				};
+				if is_stale {
 					pending_events.push_back(
 						(events::Event::InvoiceRequestFailed { payment_id: *payment_id }, None)
 					);
 					false
+				} else {
+					true
 				}
 			},
 			_ => true,
@@ -1705,7 +1730,6 @@ impl OutboundPayments {
 					payment.remove();
 				}
 			} else if let PendingOutboundPayment::AwaitingInvoice { .. } = payment.get() {
-				#[cfg(invreqfailed)]
 				pending_events.lock().unwrap().push_back((events::Event::InvoiceRequestFailed {
 					payment_id,
 				}, None));
@@ -1775,7 +1799,7 @@ impl_writeable_tlv_based_enum_upgradable!(PendingOutboundPayment,
 		(2, payment_hash, required),
 	},
 	(5, AwaitingInvoice) => {
-		(0, absolute_expiry, required),
+		(0, expiration, required),
 		(2, retry_strategy, required),
 		(4, max_total_routing_fee_msat, option),
 	},
@@ -1798,7 +1822,8 @@ mod tests {
 	use crate::ln::channelmanager::{PaymentId, RecipientOnionFields};
 	use crate::ln::features::{ChannelFeatures, NodeFeatures};
 	use crate::ln::msgs::{ErrorAction, LightningError};
-	use crate::ln::outbound_payment::{Bolt12PaymentError, OutboundPayments, Retry, RetryableSendFailure};
+	use crate::ln::outbound_payment::{Bolt12PaymentError, OutboundPayments, Retry, RetryableSendFailure, StaleExpiration};
+	#[cfg(feature = "std")]
 	use crate::offers::invoice::DEFAULT_RELATIVE_EXPIRY;
 	use crate::offers::offer::OfferBuilder;
 	use crate::offers::test_utils::*;
@@ -2003,18 +2028,18 @@ mod tests {
 	}
 
 	#[test]
-	#[cfg(invreqfailed)]
-	fn removes_stale_awaiting_invoice() {
+	fn removes_stale_awaiting_invoice_using_absolute_timeout() {
 		let pending_events = Mutex::new(VecDeque::new());
 		let outbound_payments = OutboundPayments::new();
 		let payment_id = PaymentId([0; 32]);
 		let absolute_expiry = 100;
 		let tick_interval = 10;
+		let expiration = StaleExpiration::AbsoluteTimeout(Duration::from_secs(absolute_expiry));
 
 		assert!(!outbound_payments.has_pending_payments());
 		assert!(
 			outbound_payments.add_new_awaiting_invoice(
-				payment_id, Duration::from_secs(absolute_expiry), Retry::Attempts(0), None
+				payment_id, expiration, Retry::Attempts(0), None
 			).is_ok()
 		);
 		assert!(outbound_payments.has_pending_payments());
@@ -2040,30 +2065,78 @@ mod tests {
 
 		assert!(
 			outbound_payments.add_new_awaiting_invoice(
-				payment_id, Duration::from_secs(absolute_expiry + 1), Retry::Attempts(0), None
+				payment_id, expiration, Retry::Attempts(0), None
 			).is_ok()
 		);
 		assert!(outbound_payments.has_pending_payments());
 
 		assert!(
 			outbound_payments.add_new_awaiting_invoice(
-				payment_id, Duration::from_secs(absolute_expiry + 1), Retry::Attempts(0), None
+				payment_id, expiration, Retry::Attempts(0), None
 			).is_err()
 		);
 	}
 
 	#[test]
-	#[cfg(invreqfailed)]
-	fn removes_abandoned_awaiting_invoice() {
+	fn removes_stale_awaiting_invoice_using_timer_ticks() {
 		let pending_events = Mutex::new(VecDeque::new());
 		let outbound_payments = OutboundPayments::new();
 		let payment_id = PaymentId([0; 32]);
-		let absolute_expiry = 100;
+		let timer_ticks = 3;
+		let expiration = StaleExpiration::TimerTicks(timer_ticks);
 
 		assert!(!outbound_payments.has_pending_payments());
 		assert!(
 			outbound_payments.add_new_awaiting_invoice(
-				payment_id, Duration::from_secs(absolute_expiry), Retry::Attempts(0), None
+				payment_id, expiration, Retry::Attempts(0), None
+			).is_ok()
+		);
+		assert!(outbound_payments.has_pending_payments());
+
+		for i in 0..timer_ticks {
+			let duration_since_epoch = Duration::from_secs(i * 60);
+			outbound_payments.remove_stale_payments(duration_since_epoch, &pending_events);
+
+			assert!(outbound_payments.has_pending_payments());
+			assert!(pending_events.lock().unwrap().is_empty());
+		}
+
+		let duration_since_epoch = Duration::from_secs(timer_ticks * 60);
+		outbound_payments.remove_stale_payments(duration_since_epoch, &pending_events);
+
+		assert!(!outbound_payments.has_pending_payments());
+		assert!(!pending_events.lock().unwrap().is_empty());
+		assert_eq!(
+			pending_events.lock().unwrap().pop_front(),
+			Some((Event::InvoiceRequestFailed { payment_id }, None)),
+		);
+		assert!(pending_events.lock().unwrap().is_empty());
+
+		assert!(
+			outbound_payments.add_new_awaiting_invoice(
+				payment_id, expiration, Retry::Attempts(0), None
+			).is_ok()
+		);
+		assert!(outbound_payments.has_pending_payments());
+
+		assert!(
+			outbound_payments.add_new_awaiting_invoice(
+				payment_id, expiration, Retry::Attempts(0), None
+			).is_err()
+		);
+	}
+
+	#[test]
+	fn removes_abandoned_awaiting_invoice() {
+		let pending_events = Mutex::new(VecDeque::new());
+		let outbound_payments = OutboundPayments::new();
+		let payment_id = PaymentId([0; 32]);
+		let expiration = StaleExpiration::AbsoluteTimeout(Duration::from_secs(100));
+
+		assert!(!outbound_payments.has_pending_payments());
+		assert!(
+			outbound_payments.add_new_awaiting_invoice(
+				payment_id, expiration, Retry::Attempts(0), None
 			).is_ok()
 		);
 		assert!(outbound_payments.has_pending_payments());
@@ -2092,11 +2165,11 @@ mod tests {
 		let pending_events = Mutex::new(VecDeque::new());
 		let outbound_payments = OutboundPayments::new();
 		let payment_id = PaymentId([0; 32]);
-		let absolute_expiry = 100;
+		let expiration = StaleExpiration::AbsoluteTimeout(Duration::from_secs(100));
 
 		assert!(
 			outbound_payments.add_new_awaiting_invoice(
-				payment_id, Duration::from_secs(absolute_expiry), Retry::Attempts(0), None
+				payment_id, expiration, Retry::Attempts(0), None
 			).is_ok()
 		);
 		assert!(outbound_payments.has_pending_payments());
@@ -2143,7 +2216,7 @@ mod tests {
 		let pending_events = Mutex::new(VecDeque::new());
 		let outbound_payments = OutboundPayments::new();
 		let payment_id = PaymentId([0; 32]);
-		let absolute_expiry = 100;
+		let expiration = StaleExpiration::AbsoluteTimeout(Duration::from_secs(100));
 
 		let invoice = OfferBuilder::new("foo".into(), recipient_pubkey())
 			.amount_msats(1000)
@@ -2157,7 +2230,7 @@ mod tests {
 
 		assert!(
 			outbound_payments.add_new_awaiting_invoice(
-				payment_id, Duration::from_secs(absolute_expiry), Retry::Attempts(0),
+				payment_id, expiration, Retry::Attempts(0),
 				Some(invoice.amount_msats() / 100 + 50_000)
 			).is_ok()
 		);
@@ -2202,7 +2275,7 @@ mod tests {
 		let pending_events = Mutex::new(VecDeque::new());
 		let outbound_payments = OutboundPayments::new();
 		let payment_id = PaymentId([0; 32]);
-		let absolute_expiry = 100;
+		let expiration = StaleExpiration::AbsoluteTimeout(Duration::from_secs(100));
 
 		let invoice = OfferBuilder::new("foo".into(), recipient_pubkey())
 			.amount_msats(1000)
@@ -2216,7 +2289,7 @@ mod tests {
 
 		assert!(
 			outbound_payments.add_new_awaiting_invoice(
-				payment_id, Duration::from_secs(absolute_expiry), Retry::Attempts(0),
+				payment_id, expiration, Retry::Attempts(0),
 				Some(invoice.amount_msats() / 100 + 50_000)
 			).is_ok()
 		);
@@ -2261,7 +2334,7 @@ mod tests {
 		let pending_events = Mutex::new(VecDeque::new());
 		let outbound_payments = OutboundPayments::new();
 		let payment_id = PaymentId([0; 32]);
-		let absolute_expiry = 100;
+		let expiration = StaleExpiration::AbsoluteTimeout(Duration::from_secs(100));
 
 		let invoice = OfferBuilder::new("foo".into(), recipient_pubkey())
 			.amount_msats(1000)
@@ -2314,7 +2387,7 @@ mod tests {
 
 		assert!(
 			outbound_payments.add_new_awaiting_invoice(
-				payment_id, Duration::from_secs(absolute_expiry), Retry::Attempts(0), Some(1234)
+				payment_id, expiration, Retry::Attempts(0), Some(1234)
 			).is_ok()
 		);
 		assert!(outbound_payments.has_pending_payments());
