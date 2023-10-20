@@ -762,7 +762,6 @@ impl OutboundPayments {
 		}
 	}
 
-	#[allow(unused)]
 	pub(super) fn send_payment_for_bolt12_invoice<R: Deref, ES: Deref, NS: Deref, IH, SP, L: Deref>(
 		&self, invoice: &Bolt12Invoice, payment_id: PaymentId, router: &R,
 		first_hops: Vec<ChannelDetails>, inflight_htlcs: IH, entropy_source: &ES, node_signer: &NS,
@@ -779,7 +778,7 @@ impl OutboundPayments {
 		SP: Fn(SendAlongPathArgs) -> Result<(), APIError>,
 	{
 		let payment_hash = invoice.payment_hash();
-		let mut max_total_routing_fee_msat = None;
+		let max_total_routing_fee_msat;
 		match self.pending_outbound_payments.lock().unwrap().entry(payment_id) {
 			hash_map::Entry::Occupied(entry) => match entry.get() {
 				PendingOutboundPayment::AwaitingInvoice { retry_strategy, max_total_routing_fee_msat: max_total_fee, .. } => {
@@ -795,11 +794,12 @@ impl OutboundPayments {
 			hash_map::Entry::Vacant(_) => return Err(Bolt12PaymentError::UnexpectedInvoice),
 		};
 
-		let route_params = RouteParameters {
-			payment_params: PaymentParameters::from_bolt12_invoice(&invoice),
-			final_value_msat: invoice.amount_msats(),
-			max_total_routing_fee_msat,
-		};
+		let pay_params = PaymentParameters::from_bolt12_invoice(&invoice);
+		let amount_msat = invoice.amount_msats();
+		let mut route_params = RouteParameters::from_payment_params_and_value(pay_params, amount_msat);
+		if let Some(max_fee_msat) = max_total_routing_fee_msat {
+			route_params.max_total_routing_fee_msat = Some(max_fee_msat);
+		}
 
 		self.find_route_and_send_payment(
 			payment_hash, payment_id, route_params, router, first_hops, &inflight_htlcs,

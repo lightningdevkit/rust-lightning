@@ -7362,6 +7362,9 @@ where
 	/// invoice. If abandoned, or an invoice isn't received before expiration, the payment will fail
 	/// with an [`Event::InvoiceRequestFailed`].
 	///
+	/// If `max_total_routing_fee_msat` is not specified, The default from
+	/// [`RouteParameters::from_payment_params_and_value`] is applied.
+	///
 	/// # Privacy
 	///
 	/// Uses a one-hop [`BlindedPath`] for the refund with [`ChannelManager::get_our_node_id`] as
@@ -7420,6 +7423,9 @@ where
 	///   [`Offer::expects_quantity`] is `true`.
 	/// - `amount_msats` if overpaying what is required for the given `quantity` is desired, and
 	/// - `payer_note` for [`InvoiceRequest::payer_note`].
+	///
+	/// If `max_total_routing_fee_msat` is not specified, The default from
+	/// [`RouteParameters::from_payment_params_and_value`] is applied.
 	///
 	/// # Payment
 	///
