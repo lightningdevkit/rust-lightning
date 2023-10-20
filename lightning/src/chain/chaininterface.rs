@@ -85,13 +85,10 @@ pub enum ConfirmationTarget {
 	/// (package relay) may obviate the need for this entirely.
 	MinAllowedAnchorChannelRemoteFee,
 	/// The lowest feerate we will allow our channel counterparty to have in a non-anchor channel.
-	/// This needs to be sufficient to get confirmed when the channel needs to be force-closed.
-	/// Setting too low may result in force-closures.
 	///
 	/// This is the feerate on the transaction which we (or our counterparty) will broadcast in
-	/// order to close the channel if a channel party goes away. Because our counterparty must
-	/// ensure they can always broadcast the latest state, this value being too high will cause
-	/// immediate force-closures.
+	/// order to close the channel if a channel party goes away. Setting this value too high will
+	/// cause immediate force-closures in order to avoid having an unbroadcastable state.
 	///
 	/// This feerate represents the fee we pick now, which must be sufficient to enter a block at an
 	/// arbitrary time in the future. Obviously this is not an estimate which is very easy to
