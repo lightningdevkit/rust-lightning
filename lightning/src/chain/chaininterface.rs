@@ -71,14 +71,12 @@ pub enum ConfirmationTarget {
 	/// [`ChannelConfig::max_dust_htlc_exposure`]: crate::util::config::ChannelConfig::max_dust_htlc_exposure
 	MaxAllowedNonAnchorChannelRemoteFee,
 	/// This is the lowest feerate we will allow our channel counterparty to have in an anchor
-	/// channel in order to close the channel if a channel party goes away. Because our counterparty
-	/// must ensure they can always broadcast the latest state, this value being too high will cause
-	/// immediate force-closures.
+	/// channel in order to close the channel if a channel party goes away.
 	///
 	/// This needs to be sufficient to get into the mempool when the channel needs to
-	/// be force-closed. Setting too low may result in force-closures. Because this is for anchor
-	/// channels, we can always bump the feerate later, the feerate here only needs to suffice to
-	/// enter the mempool.
+	/// be force-closed. Setting too high may result in force-closures if our counterparty attempts
+	/// to use a lower feerate. Because this is for anchor channels, we can always bump the feerate
+	/// later; the feerate here only needs to be sufficient to enter the mempool.
 	///
 	/// A good estimate is the expected mempool minimum at the time of force-closure. Obviously this
 	/// is not an estimate which is very easy to calculate because we do not know the future. Using
