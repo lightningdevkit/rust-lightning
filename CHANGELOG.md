@@ -1,3 +1,94 @@
+# 0.0.118 - Oct 23, 2023 - "Just the Twelve Sinks"
+
+## API Updates
+ * BOLT12 sending and receiving is now supported as an alpha feature. You may
+   run into unexpected issues and will need to have a direct connection with
+   the offer's blinded path introduction points as messages are not yet routed.
+   We are seeking feedback from early testers (#2578, #2039).
+ * `ConfirmationTarget` has been rewritten to provide information about the
+   specific use LDK needs the feerate estimate for, rather than the generic
+   low-, medium-, and high-priority estimates. This allows LDK users to more
+   accurately target their feerate estimates (#2660). For those wishing to
+   retain their existing behavior, see the table below for conversion.
+ * `ChainHash` is now used in place of `BlockHash` where it represents the
+   genesis block (#2662).
+ * `lightning-invoice` payment utilities now take a `Deref` to
+   `AChannelManager` (#2652).
+ * `peel_onion` is provided to statelessly decode an `OnionMessage` (#2599).
+ * `ToSocketAddrs` + `Display` are now impl'd for `SocketAddress` (#2636, #2670)
+ * `Display` is now implemented for `OutPoint` (#2649).
+ * `Features::from_be_bytes` is now provided (#2640).
+
+For those moving to the new `ConfirmationTarget`, the new variants in terms of
+the old mempool/low/medium/high priorities are as follows:
+ * `OnChainSweep` = `HighPriority`
+ * `MaxAllowedNonAnchorChannelRemoteFee` = `max(25 * 250, HighPriority * 10)`
+ * `MinAllowedAnchorChannelRemoteFee` = `MempoolMinimum`
+ * `MinAllowedNonAnchorChannelRemoteFee` = `Background - 250`
+ * `AnchorChannelFee` = `Background`
+ * `NonAnchorChannelFee` = `Normal`
+ * `ChannelCloseMinimum` = `Background`
+
+## Bug Fixes
+ * Calling `ChannelManager::close_channel[_with_feerate_and_script]` on a
+   channel which did not exist would immediately hang holding several key
+   `ChannelManager`-internal locks (#2657).
+ * Channel information updates received from a failing HTLC are no longer
+   applied to our `NetworkGraph`. This prevents a node which we attempted to
+   route a payment through from being able to learn the sender of the payment.
+   In some rare cases, this may result in marginally reduced payment success
+   rates (#2666).
+ * Anchor outputs are now properly considered when calculating the amount
+   available to send in HTLCs. This can prevent force-closes in anchor channels
+   when sending payments which overflow the available balance (#2674).
+ * A peer that sends an `update_fulfill_htlc` message for a forwarded HTLC,
+   then reconnects prior to sending a `commitment_signed` (thus retransmitting
+   their `update_fulfill_htlc`) may result in the channel stalling and being
+   unable to make progress (#2661).
+ * In exceedingly rare circumstances, messages intended to be sent to a peer
+   prior to reconnection can be sent after reconnection. This could result in
+   undefined channel state and force-closes (#2663).
+
+## Backwards Compatibility
+
+ * Creating a blinded path to receive a payment then downgrading to LDK prior to
+   0.0.117 may result in failure to receive the payment (#2413).
+ * Calling `ChannelManager::pay_for_offer` or
+   `ChannelManager::create_refund_builder` may prevent downgrading to LDK prior
+   to 0.0.118 until the payment times out and has been removed (#2039).
+
+## Node Compatibility
+ * LDK now sends a bogus `channel_reestablish` message to peers when they ask to
+   resume an unknown channel. This should cause LND nodes to force-close and
+   broadcast the latest channel state to the chain. In order to trigger this
+   when we wish to force-close a channel, LDK now disconnects immediately after
+   sending a channel-closing `error` message. This should result in cooperative
+   peers also working to confirm the latest commitment transaction when we wish
+   to force-close (#2658).
+
+## Security
+0.0.118 expands mitigations against transaction cycling attacks to non-anchor
+channels, though note that no mitigations which exist today are considered robust
+to prevent the class of attacks.
+ * In order to mitigate against transaction cycling attacks, non-anchor HTLC
+   transactions are now properly re-signed before broadcasting (#2667).
+
+In total, this release features 61 files changed, 3470 insertions, 1503
+deletions in 85 commits from 12 authors, in alphabetical order:
+ * Antonio Yang
+ * Elias Rohrer
+ * Evan Feenstra
+ * Fedeparma74
+ * Gursharan Singh
+ * Jeffrey Czyz
+ * Matt Corallo
+ * Sergi Delgado Segura
+ * Vladimir Fomene
+ * Wilmer Paulino
+ * benthecarman
+ * slanesuke
+
+
 # 0.0.117 - Oct 3, 2023 - "Everything but the Twelve Sinks"
 
 ## API Updates
