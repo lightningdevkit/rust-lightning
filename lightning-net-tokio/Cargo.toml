@@ -1,6 +1,6 @@
 [package]
 name = "lightning-net-tokio"
-version = "0.0.117"
+version = "0.0.118"
 authors = ["Matt Corallo"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/lightningdevkit/rust-lightning/"
@@ -16,9 +16,9 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 [dependencies]
 bitcoin = "0.29.0"
-lightning = { version = "0.0.117", path = "../lightning" }
+lightning = { version = "0.0.118", path = "../lightning" }
 tokio = { version = "1.0", features = [ "rt", "sync", "net", "time" ] }
 
 [dev-dependencies]
 tokio = { version = "1.14", features = [ "macros", "rt", "rt-multi-thread", "sync", "net", "time" ] }
-lightning = { version = "0.0.117", path = "../lightning", features = ["_test_utils"] }
+lightning = { version = "0.0.118", path = "../lightning", features = ["_test_utils"] }
