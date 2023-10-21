@@ -1466,8 +1466,6 @@ pub type SimpleArcChannelManager<M, T, F, L> = ChannelManager<
 		Arc<L>,
 		Arc<KeysManager>,
 		Arc<RwLock<ProbabilisticScorer<Arc<NetworkGraph<Arc<L>>>, Arc<L>>>>,
-		ProbabilisticScoringFeeParameters,
-		ProbabilisticScorer<Arc<NetworkGraph<Arc<L>>>, Arc<L>>,
 	>>,
 	Arc<DefaultMessageRouter<
 		Arc<NetworkGraph<Arc<L>>>,
@@ -1502,8 +1500,6 @@ pub type SimpleRefChannelManager<'a, 'b, 'c, 'd, 'e, 'f, 'g, 'h, 'i, M, T, F, L>
 			&'g L,
 			&'c KeysManager,
 			&'h RwLock<ProbabilisticScorer<&'f NetworkGraph<&'g L>, &'g L>>,
-			ProbabilisticScoringFeeParameters,
-			ProbabilisticScorer<&'f NetworkGraph<&'g L>, &'g L>
 		>,
 		&'i DefaultMessageRouter<
 			&'f NetworkGraph<&'g L>,
@@ -1669,7 +1665,7 @@ where
 /// #     fee_estimator: &dyn lightning::chain::chaininterface::FeeEstimator,
 /// #     chain_monitor: &dyn lightning::chain::Watch<lightning::sign::InMemorySigner>,
 /// #     tx_broadcaster: &dyn lightning::chain::chaininterface::BroadcasterInterface,
-/// #     router: &lightning::routing::router::DefaultRouter<&NetworkGraph<&'a L>, &'a L, &ES, &S, SP, SL>,
+/// #     router: &lightning::routing::router::DefaultRouter<&NetworkGraph<&'a L>, &'a L, &ES, &S>,
 /// #     message_router: &lightning::onion_message::messenger::DefaultMessageRouter<&NetworkGraph<&'a L>, &'a L, &ES>,
 /// #     logger: &L,
 /// #     entropy_source: &ES,
