@@ -33,31 +33,31 @@ use core::{cmp, fmt};
 use core::ops::Deref;
 
 /// A [`Router`] implemented using [`find_route`].
-pub struct DefaultRouter<G: Deref<Target = NetworkGraph<L>>, L: Deref, S: Deref, SP: Sized, Sc: ScoreLookUp<ScoreParams = SP>> where
+pub struct DefaultRouter<G: Deref<Target = NetworkGraph<L>>, L: Deref, S: Deref> where
 	L::Target: Logger,
-	S::Target: for <'a> LockableScore<'a, ScoreLookUp = Sc>,
+	S::Target: for <'a> LockableScore<'a>,
 {
 	network_graph: G,
 	logger: L,
 	random_seed_bytes: Mutex<[u8; 32]>,
 	scorer: S,
-	score_params: SP
+	score_params: crate::routing::scoring::ProbabilisticScoringFeeParameters,
 }
 
-impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, S: Deref, SP: Sized, Sc: ScoreLookUp<ScoreParams = SP>> DefaultRouter<G, L, S, SP, Sc> where
+impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, S: Deref> DefaultRouter<G, L, S> where
 	L::Target: Logger,
-	S::Target: for <'a> LockableScore<'a, ScoreLookUp = Sc>,
+	S::Target: for <'a> LockableScore<'a>,
 {
 	/// Creates a new router.
-	pub fn new(network_graph: G, logger: L, random_seed_bytes: [u8; 32], scorer: S, score_params: SP) -> Self {
+	pub fn new(network_graph: G, logger: L, random_seed_bytes: [u8; 32], scorer: S, score_params: crate::routing::scoring::ProbabilisticScoringFeeParameters) -> Self {
 		let random_seed_bytes = Mutex::new(random_seed_bytes);
 		Self { network_graph, logger, random_seed_bytes, scorer, score_params }
 	}
 }
 
-impl< G: Deref<Target = NetworkGraph<L>>, L: Deref, S: Deref, SP: Sized, Sc: ScoreLookUp<ScoreParams = SP>> Router for DefaultRouter<G, L, S, SP, Sc> where
+impl< G: Deref<Target = NetworkGraph<L>>, L: Deref, S: Deref> Router for DefaultRouter<G, L, S> where
 	L::Target: Logger,
-	S::Target: for <'a> LockableScore<'a, ScoreLookUp = Sc>,
+	S::Target: for <'a> LockableScore<'a>,
 {
 	fn find_route(
 		&self,
@@ -129,8 +129,9 @@ impl<'a, S: Deref> ScorerAccountingForInFlightHtlcs<'a, S> where S::Target: Scor
 }
 
 impl<'a, S: Deref> ScoreLookUp for ScorerAccountingForInFlightHtlcs<'a, S> where S::Target: ScoreLookUp {
+	#[cfg(not(c_bindings))]
 	type ScoreParams = <S::Target as ScoreLookUp>::ScoreParams;
-	fn channel_penalty_msat(&self, short_channel_id: u64, source: &NodeId, target: &NodeId, usage: ChannelUsage, score_params: &Self::ScoreParams) -> u64 {
+	fn channel_penalty_msat(&self, short_channel_id: u64, source: &NodeId, target: &NodeId, usage: ChannelUsage, score_params: &crate::routing::scoring::ProbabilisticScoringFeeParameters) -> u64 {
 		if let Some(used_liquidity) = self.inflight_htlcs.used_liquidity_msat(
 			source, target, short_channel_id
 		) {
@@ -1467,7 +1468,7 @@ fn sort_first_hop_channels(
 pub fn find_route<L: Deref, GL: Deref, S: ScoreLookUp>(
 	our_node_pubkey: &PublicKey, route_params: &RouteParameters,
 	network_graph: &NetworkGraph<GL>, first_hops: Option<&[&ChannelDetails]>, logger: L,
-	scorer: &S, score_params: &S::ScoreParams, random_seed_bytes: &[u8; 32]
+	scorer: &S, score_params: &crate::routing::scoring::ProbabilisticScoringFeeParameters, random_seed_bytes: &[u8; 32]
 ) -> Result<Route, LightningError>
 where L::Target: Logger, GL::Target: Logger {
 	let graph_lock = network_graph.read_only();
@@ -1479,7 +1480,7 @@ where L::Target: Logger, GL::Target: Logger {
 
 pub(crate) fn get_route<L: Deref, S: ScoreLookUp>(
 	our_node_pubkey: &PublicKey, route_params: &RouteParameters, network_graph: &ReadOnlyNetworkGraph,
-	first_hops: Option<&[&ChannelDetails]>, logger: L, scorer: &S, score_params: &S::ScoreParams,
+	first_hops: Option<&[&ChannelDetails]>, logger: L, scorer: &S, score_params: &crate::routing::scoring::ProbabilisticScoringFeeParameters,
 	_random_seed_bytes: &[u8; 32]
 ) -> Result<Route, LightningError>
 where L::Target: Logger {
@@ -2764,9 +2765,10 @@ fn build_route_from_hops_internal<L: Deref>(
 	}
 
 	impl ScoreLookUp for HopScorer {
+		#[cfg(not(c_bindings))]
 		type ScoreParams = ();
 		fn channel_penalty_msat(&self, _short_channel_id: u64, source: &NodeId, target: &NodeId,
-			_usage: ChannelUsage, _score_params: &Self::ScoreParams) -> u64
+			_usage: ChannelUsage, _score_params: &crate::routing::scoring::ProbabilisticScoringFeeParameters) -> u64
 		{
 			let mut cur_id = self.our_node_id;
 			for i in 0..self.hop_ids.len() {
@@ -6118,8 +6120,9 @@ mod tests {
 		fn write<W: Writer>(&self, _w: &mut W) -> Result<(), crate::io::Error> { unimplemented!() }
 	}
 	impl ScoreLookUp for BadChannelScorer {
+		#[cfg(not(c_bindings))]
 		type ScoreParams = ();
-		fn channel_penalty_msat(&self, short_channel_id: u64, _: &NodeId, _: &NodeId, _: ChannelUsage, _score_params:&Self::ScoreParams) -> u64 {
+		fn channel_penalty_msat(&self, short_channel_id: u64, _: &NodeId, _: &NodeId, _: ChannelUsage, _score_params: &crate::routing::scoring::ProbabilisticScoringFeeParameters) -> u64 {
 			if short_channel_id == self.short_channel_id { u64::max_value() } else { 0 }
 		}
 	}
@@ -6134,8 +6137,9 @@ mod tests {
 	}
 
 	impl ScoreLookUp for BadNodeScorer {
+		#[cfg(not(c_bindings))]
 		type ScoreParams = ();
-		fn channel_penalty_msat(&self, _: u64, _: &NodeId, target: &NodeId, _: ChannelUsage, _score_params:&Self::ScoreParams) -> u64 {
+		fn channel_penalty_msat(&self, _: u64, _: &NodeId, target: &NodeId, _: ChannelUsage, _score_params: &crate::routing::scoring::ProbabilisticScoringFeeParameters) -> u64 {
 			if *target == self.node_id { u64::max_value() } else { 0 }
 		}
 	}
@@ -8020,7 +8024,7 @@ pub(crate) mod bench_utils {
 	}
 
 	pub(crate) fn generate_test_routes<S: ScoreLookUp + ScoreUpdate>(graph: &NetworkGraph<&TestLogger>, scorer: &mut S,
-		score_params: &S::ScoreParams, features: Bolt11InvoiceFeatures, mut seed: u64,
+		score_params: &crate::routing::scoring::ProbabilisticScoringFeeParameters, features: Bolt11InvoiceFeatures, mut seed: u64,
 		starting_amount: u64, route_count: usize,
 	) -> Vec<(ChannelDetails, PaymentParameters, u64)> {
 		let payer = payer_pubkey();
@@ -8205,7 +8209,7 @@ pub mod benches {
 
 	fn generate_routes<S: ScoreLookUp + ScoreUpdate>(
 		bench: &mut Criterion, graph: &NetworkGraph<&TestLogger>, mut scorer: S,
-		score_params: &S::ScoreParams, features: Bolt11InvoiceFeatures, starting_amount: u64,
+		score_params: &crate::routing::scoring::ProbabilisticScoringFeeParameters, features: Bolt11InvoiceFeatures, starting_amount: u64,
 		bench_name: &'static str,
 	) {
 		let payer = bench_utils::payer_pubkey();
