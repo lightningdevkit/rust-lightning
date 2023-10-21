@@ -864,7 +864,7 @@ mod tests {
 	use lightning::ln::peer_handler::{PeerManager, MessageHandler, SocketDescriptor, IgnoringMessageHandler};
 	use lightning::routing::gossip::{NetworkGraph, NodeId, P2PGossipSync};
 	use lightning::routing::router::{DefaultRouter, Path, RouteHop};
-	use lightning::routing::scoring::{ChannelUsage, ScoreUpdate, ScoreLookUp};
+	use lightning::routing::scoring::{ChannelUsage, ScoreUpdate, ScoreLookUp, LockableScore};
 	use lightning::util::config::UserConfig;
 	use lightning::util::ser::Writeable;
 	use lightning::util::test_utils;
@@ -894,6 +894,11 @@ mod tests {
 		fn disconnect_socket(&mut self) {}
 	}
 
+	#[cfg(c_bindings)]
+	type LockingWrapper<T> = lightning::routing::scoring::MultiThreadedLockableScore<T>;
+	#[cfg(not(c_bindings))]
+	type LockingWrapper<T> = Mutex<T>;
+
 	type ChannelManager =
 		channelmanager::ChannelManager<
 			Arc<ChainMonitor>,
@@ -905,7 +910,7 @@ mod tests {
 			Arc<DefaultRouter<
 				Arc<NetworkGraph<Arc<test_utils::TestLogger>>>,
 				Arc<test_utils::TestLogger>,
-				Arc<Mutex<TestScorer>>,
+				Arc<LockingWrapper<TestScorer>>,
 				(),
 				TestScorer>
 			>,
@@ -927,7 +932,7 @@ mod tests {
 		network_graph: Arc<NetworkGraph<Arc<test_utils::TestLogger>>>,
 		logger: Arc<test_utils::TestLogger>,
 		best_block: BestBlock,
-		scorer: Arc<Mutex<TestScorer>>,
+		scorer: Arc<LockingWrapper<TestScorer>>,
 	}
 
 	impl Node {
@@ -1148,6 +1153,9 @@ mod tests {
 		}
 	}
 
+	#[cfg(c_bindings)]
+	impl lightning::routing::scoring::Score for TestScorer {}
+
 	impl Drop for TestScorer {
 		fn drop(&mut self) {
 			if std::thread::panicking() {
@@ -1179,7 +1187,7 @@ mod tests {
 			let logger = Arc::new(test_utils::TestLogger::with_id(format!("node {}", i)));
 			let genesis_block = genesis_block(network);
 			let network_graph = Arc::new(NetworkGraph::new(network, logger.clone()));
-			let scorer = Arc::new(Mutex::new(TestScorer::new()));
+			let scorer = Arc::new(LockingWrapper::new(TestScorer::new()));
 			let seed = [i as u8; 32];
 			let router = Arc::new(DefaultRouter::new(network_graph.clone(), logger.clone(), seed, scorer.clone(), Default::default()));
 			let chain_source = Arc::new(test_utils::TestChainSource::new(Network::Bitcoin));
@@ -1689,7 +1697,7 @@ mod tests {
 				maybe_announced_channel: true,
 			}], blinded_tail: None };
 
-			$nodes[0].scorer.lock().unwrap().expect(TestResult::PaymentFailure { path: path.clone(), short_channel_id: scored_scid });
+			$nodes[0].scorer.write_lock().expect(TestResult::PaymentFailure { path: path.clone(), short_channel_id: scored_scid });
 			$nodes[0].node.push_pending_event(Event::PaymentPathFailed {
 				payment_id: None,
 				payment_hash: PaymentHash([42; 32]),
@@ -1706,7 +1714,7 @@ mod tests {
 
 			// Ensure we'll score payments that were explicitly failed back by the destination as
 			// ProbeSuccess.
-			$nodes[0].scorer.lock().unwrap().expect(TestResult::ProbeSuccess { path: path.clone() });
+			$nodes[0].scorer.write_lock().expect(TestResult::ProbeSuccess { path: path.clone() });
 			$nodes[0].node.push_pending_event(Event::PaymentPathFailed {
 				payment_id: None,
 				payment_hash: PaymentHash([42; 32]),
@@ -1721,7 +1729,7 @@ mod tests {
 				_ => panic!("Unexpected event"),
 			}
 
-			$nodes[0].scorer.lock().unwrap().expect(TestResult::PaymentSuccess { path: path.clone() });
+			$nodes[0].scorer.write_lock().expect(TestResult::PaymentSuccess { path: path.clone() });
 			$nodes[0].node.push_pending_event(Event::PaymentPathSuccessful {
 				payment_id: PaymentId([42; 32]),
 				payment_hash: None,
@@ -1733,7 +1741,7 @@ mod tests {
 				_ => panic!("Unexpected event"),
 			}
 
-			$nodes[0].scorer.lock().unwrap().expect(TestResult::ProbeSuccess { path: path.clone() });
+			$nodes[0].scorer.write_lock().expect(TestResult::ProbeSuccess { path: path.clone() });
 			$nodes[0].node.push_pending_event(Event::ProbeSuccessful {
 				payment_id: PaymentId([42; 32]),
 				payment_hash: PaymentHash([42; 32]),
@@ -1745,7 +1753,7 @@ mod tests {
 				_ => panic!("Unexpected event"),
 			}
 
-			$nodes[0].scorer.lock().unwrap().expect(TestResult::ProbeFailure { path: path.clone() });
+			$nodes[0].scorer.write_lock().expect(TestResult::ProbeFailure { path: path.clone() });
 			$nodes[0].node.push_pending_event(Event::ProbeFailed {
 				payment_id: PaymentId([42; 32]),
 				payment_hash: PaymentHash([42; 32]),
