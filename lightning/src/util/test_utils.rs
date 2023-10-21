@@ -1440,9 +1440,10 @@ impl crate::util::ser::Writeable for TestScorer {
 }
 
 impl ScoreLookUp for TestScorer {
+	#[cfg(not(c_bindings))]
 	type ScoreParams = ();
 	fn channel_penalty_msat(
-		&self, candidate: &CandidateRouteHop, usage: ChannelUsage, _score_params: &Self::ScoreParams
+		&self, candidate: &CandidateRouteHop, usage: ChannelUsage, _score_params: &crate::routing::scoring::ProbabilisticScoringFeeParameters
 	) -> u64 {
 		let short_channel_id = match candidate.globally_unique_short_channel_id() {
 			Some(scid) => scid,
