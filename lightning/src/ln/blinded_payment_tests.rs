@@ -474,6 +474,8 @@ fn multi_hop_receiver_fail() {
 		nodes.iter().skip(1).map(|n| n.node.get_our_node_id()).collect(), &[&chan_upd_1_2],
 		&chanmon_cfgs[2].keys_manager);
 
+	let route = find_route(&nodes[0], &route_params).unwrap();
+	node_cfgs[0].router.expect_find_route(route_params.clone(), Ok(route.clone()));
 	nodes[0].node.send_payment(payment_hash, RecipientOnionFields::spontaneous_empty(), PaymentId(payment_hash.0), route_params, Retry::Attempts(0)).unwrap();
 	check_added_monitors(&nodes[0], 1);
 	pass_along_route(&nodes[0], &[&[&nodes[1], &nodes[2]]], amt_msat, payment_hash, payment_secret);
