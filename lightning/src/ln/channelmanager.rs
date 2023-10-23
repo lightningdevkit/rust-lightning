@@ -7331,6 +7331,8 @@ where
 	/// Requires a direct connection to the introduction node in the responding [`InvoiceRequest`]'s
 	/// reply path.
 	///
+	/// This is not exported to bindings users as builder patterns don't map outside of move semantics.
+	///
 	/// [`Offer`]: crate::offers::offer::Offer
 	/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
 	pub fn create_offer_builder(
@@ -7383,6 +7385,8 @@ where
 	///
 	/// Errors if a duplicate `payment_id` is provided given the caveats in the aforementioned link
 	/// or if `amount_msats` is invalid.
+	///
+	/// This is not exported to bindings users as builder patterns don't map outside of move semantics.
 	///
 	/// [`Refund`]: crate::offers::refund::Refund
 	/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
