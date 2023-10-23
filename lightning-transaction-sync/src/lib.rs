@@ -74,11 +74,17 @@ extern crate bdk_macros;
 #[cfg(any(feature = "esplora-blocking", feature = "esplora-async"))]
 mod esplora;
 
-#[cfg(any(feature = "esplora-blocking", feature = "esplora-async"))]
-mod common;
+#[cfg(any(feature = "electrum"))]
+mod electrum;
 
+#[cfg(any(feature = "esplora-blocking", feature = "esplora-async", feature = "electrum"))]
+mod common;
+#[cfg(any(feature = "esplora-blocking", feature = "esplora-async", feature = "electrum"))]
 mod error;
+#[cfg(any(feature = "esplora-blocking", feature = "esplora-async", feature = "electrum"))]
 pub use error::TxSyncError;
 
 #[cfg(any(feature = "esplora-blocking", feature = "esplora-async"))]
 pub use esplora::EsploraSyncClient;
+#[cfg(feature = "electrum")]
+pub use electrum::ElectrumSyncClient;

@@ -101,6 +101,7 @@ impl FilterQueue {
 	}
 }
 
+#[derive(Debug)]
 pub(crate) struct ConfirmedTx {
 	pub tx: Transaction,
 	pub block_header: Header,
