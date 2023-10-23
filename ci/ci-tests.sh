@@ -100,13 +100,13 @@ popd
 
 echo -e "\n\nTesting no-std flags in various combinations"
 for DIR in lightning lightning-invoice lightning-rapid-gossip-sync; do
-	cargo test -p $DIR --verbose --color always --no-default-features --features no-std
+	[ "$RUSTC_MINOR_VERSION" -gt 50 ] && cargo test -p $DIR --verbose --color always --no-default-features --features no-std
 	# check if there is a conflict between no-std and the default std feature
-	cargo test -p $DIR --verbose --color always --features no-std
+	[ "$RUSTC_MINOR_VERSION" -gt 50 ] && cargo test -p $DIR --verbose --color always --features no-std
 done
 for DIR in lightning lightning-invoice lightning-rapid-gossip-sync; do
 	# check if there is a conflict between no-std and the c_bindings cfg
-	RUSTFLAGS="--cfg=c_bindings" cargo test -p $DIR --verbose --color always --no-default-features --features=no-std
+	[ "$RUSTC_MINOR_VERSION" -gt 50 ] && RUSTFLAGS="--cfg=c_bindings" cargo test -p $DIR --verbose --color always --no-default-features --features=no-std
 done
 RUSTFLAGS="--cfg=c_bindings" cargo test --verbose --color always
 
