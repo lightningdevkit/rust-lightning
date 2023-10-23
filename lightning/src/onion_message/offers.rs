@@ -44,7 +44,15 @@ pub trait OffersMessageHandler {
 	///
 	/// Typically, this is used for messages initiating a payment flow rather than in response to
 	/// another message. The latter should use the return value of [`Self::handle_message`].
+	#[cfg(not(c_bindings))]
 	fn release_pending_messages(&self) -> Vec<PendingOnionMessage<OffersMessage>> { vec![] }
+
+	/// Releases any [`OffersMessage`]s that need to be sent.
+	///
+	/// Typically, this is used for messages initiating a payment flow rather than in response to
+	/// another message. The latter should use the return value of [`Self::handle_message`].
+	#[cfg(c_bindings)]
+	fn release_pending_messages(&self) -> Vec<(OffersMessage, crate::onion_message::Destination, Option<crate::blinded_path::BlindedPath>)> { vec![] }
 }
 
 /// Possible BOLT 12 Offers messages sent and received via an [`OnionMessage`].

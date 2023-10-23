@@ -63,7 +63,7 @@ use crate::offers::merkle::SignError;
 use crate::offers::offer::{DerivedMetadata, Offer, OfferBuilder};
 use crate::offers::parse::Bolt12SemanticError;
 use crate::offers::refund::{Refund, RefundBuilder};
-use crate::onion_message::{Destination, OffersMessage, OffersMessageHandler, PendingOnionMessage};
+use crate::onion_message::{Destination, OffersMessage, OffersMessageHandler, PendingOnionMessage, new_pending_onion_message};
 use crate::sign::{EntropySource, KeysManager, NodeSigner, Recipient, SignerProvider, WriteableEcdsaChannelSigner};
 use crate::util::config::{UserConfig, ChannelConfig, ChannelConfigUpdate};
 use crate::util::wakers::{Future, Notifier};
@@ -7505,11 +7505,11 @@ where
 
 		let mut pending_offers_messages = self.pending_offers_messages.lock().unwrap();
 		if offer.paths().is_empty() {
-			let message = PendingOnionMessage {
-				contents: OffersMessage::InvoiceRequest(invoice_request),
-				destination: Destination::Node(offer.signing_pubkey()),
-				reply_path: Some(reply_path),
-			};
+			let message = new_pending_onion_message(
+				OffersMessage::InvoiceRequest(invoice_request),
+				Destination::Node(offer.signing_pubkey()),
+				Some(reply_path),
+			);
 			pending_offers_messages.push(message);
 		} else {
 			// Send as many invoice requests as there are paths in the offer (with an upper bound).
@@ -7517,11 +7517,11 @@ where
 			// one invoice for a given payment id will be paid, even if more than one is received.
 			const REQUEST_LIMIT: usize = 10;
 			for path in offer.paths().into_iter().take(REQUEST_LIMIT) {
-				let message = PendingOnionMessage {
-					contents: OffersMessage::InvoiceRequest(invoice_request.clone()),
-					destination: Destination::BlindedPath(path.clone()),
-					reply_path: Some(reply_path.clone()),
-				};
+				let message = new_pending_onion_message(
+					OffersMessage::InvoiceRequest(invoice_request.clone()),
+					Destination::BlindedPath(path.clone()),
+					Some(reply_path.clone()),
+				);
 				pending_offers_messages.push(message);
 			}
 		}
@@ -7574,19 +7574,19 @@ where
 
 				let mut pending_offers_messages = self.pending_offers_messages.lock().unwrap();
 				if refund.paths().is_empty() {
-					let message = PendingOnionMessage {
-						contents: OffersMessage::Invoice(invoice),
-						destination: Destination::Node(refund.payer_id()),
-						reply_path: Some(reply_path),
-					};
+					let message = new_pending_onion_message(
+						OffersMessage::Invoice(invoice),
+						Destination::Node(refund.payer_id()),
+						Some(reply_path),
+					);
 					pending_offers_messages.push(message);
 				} else {
 					for path in refund.paths() {
-						let message = PendingOnionMessage {
-							contents: OffersMessage::Invoice(invoice.clone()),
-							destination: Destination::BlindedPath(path.clone()),
-							reply_path: Some(reply_path.clone()),
-						};
+						let message = new_pending_onion_message(
+							OffersMessage::Invoice(invoice.clone()),
+							Destination::BlindedPath(path.clone()),
+							Some(reply_path.clone()),
+						);
 						pending_offers_messages.push(message);
 					}
 				}

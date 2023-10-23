@@ -33,3 +33,4 @@ pub use self::messenger::{SimpleArcOnionMessenger, SimpleRefOnionMessenger};
 pub use self::offers::{OffersMessage, OffersMessageHandler};
 pub use self::packet::{Packet, ParsedOnionMessageContents};
 pub(crate) use self::packet::ControlTlvs;
+pub(crate) use self::messenger::new_pending_onion_message;
