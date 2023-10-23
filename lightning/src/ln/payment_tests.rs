@@ -1871,7 +1871,7 @@ fn do_test_intercepted_payment(test: InterceptTest) {
 	let route_params = RouteParameters::from_payment_params_and_value(payment_params, amt_msat);
 	let route = get_route(
 		&nodes[0].node.get_our_node_id(), &route_params, &nodes[0].network_graph.read_only(), None,
-		nodes[0].logger, &scorer, &(), &random_seed_bytes
+		nodes[0].logger, &scorer, &Default::default(), &random_seed_bytes
 	).unwrap();
 
 	let (payment_hash, payment_secret) = nodes[2].node.create_inbound_payment(Some(amt_msat), 60 * 60, None).unwrap();

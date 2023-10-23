@@ -827,7 +827,8 @@ struct PendingInboundPayment {
 /// or, respectively, [`Router`] for its router, but this type alias chooses the concrete types
 /// of [`KeysManager`] and [`DefaultRouter`].
 ///
-/// This is not exported to bindings users as Arcs don't make sense in bindings
+/// This is not exported to bindings users as type aliases aren't supported in most languages.
+#[cfg(not(c_bindings))]
 pub type SimpleArcChannelManager<M, T, F, L> = ChannelManager<
 	Arc<M>,
 	Arc<T>,
@@ -855,7 +856,8 @@ pub type SimpleArcChannelManager<M, T, F, L> = ChannelManager<
 /// or, respectively, [`Router`]  for its router, but this type alias chooses the concrete types
 /// of [`KeysManager`] and [`DefaultRouter`].
 ///
-/// This is not exported to bindings users as Arcs don't make sense in bindings
+/// This is not exported to bindings users as type aliases aren't supported in most languages.
+#[cfg(not(c_bindings))]
 pub type SimpleRefChannelManager<'a, 'b, 'c, 'd, 'e, 'f, 'g, 'h, M, T, F, L> =
 	ChannelManager<
 		&'a M,
@@ -7329,6 +7331,8 @@ where
 	/// Requires a direct connection to the introduction node in the responding [`InvoiceRequest`]'s
 	/// reply path.
 	///
+	/// This is not exported to bindings users as builder patterns don't map outside of move semantics.
+	///
 	/// [`Offer`]: crate::offers::offer::Offer
 	/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
 	pub fn create_offer_builder(
@@ -7362,6 +7366,9 @@ where
 	/// invoice. If abandoned, or an invoice isn't received before expiration, the payment will fail
 	/// with an [`Event::InvoiceRequestFailed`].
 	///
+	/// If `max_total_routing_fee_msat` is not specified, The default from
+	/// [`RouteParameters::from_payment_params_and_value`] is applied.
+	///
 	/// # Privacy
 	///
 	/// Uses a one-hop [`BlindedPath`] for the refund with [`ChannelManager::get_our_node_id`] as
@@ -7378,6 +7385,8 @@ where
 	///
 	/// Errors if a duplicate `payment_id` is provided given the caveats in the aforementioned link
 	/// or if `amount_msats` is invalid.
+	///
+	/// This is not exported to bindings users as builder patterns don't map outside of move semantics.
 	///
 	/// [`Refund`]: crate::offers::refund::Refund
 	/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
@@ -7420,6 +7429,9 @@ where
 	///   [`Offer::expects_quantity`] is `true`.
 	/// - `amount_msats` if overpaying what is required for the given `quantity` is desired, and
 	/// - `payer_note` for [`InvoiceRequest::payer_note`].
+	///
+	/// If `max_total_routing_fee_msat` is not specified, The default from
+	/// [`RouteParameters::from_payment_params_and_value`] is applied.
 	///
 	/// # Payment
 	///
@@ -8961,10 +8973,10 @@ where
 								match invoice.sign(|invoice| self.node_signer.sign_bolt12_invoice(invoice)) {
 									Ok(invoice) => Ok(OffersMessage::Invoice(invoice)),
 									Err(SignError::Signing(())) => Err(OffersMessage::InvoiceError(
-											InvoiceError::from_str("Failed signing invoice")
+											InvoiceError::from_string("Failed signing invoice".to_string())
 									)),
 									Err(SignError::Verification(_)) => Err(OffersMessage::InvoiceError(
-											InvoiceError::from_str("Failed invoice signature verification")
+											InvoiceError::from_string("Failed invoice signature verification".to_string())
 									)),
 								});
 						match response {
@@ -8980,7 +8992,7 @@ where
 			OffersMessage::Invoice(invoice) => {
 				match invoice.verify(expanded_key, secp_ctx) {
 					Err(()) => {
-						Some(OffersMessage::InvoiceError(InvoiceError::from_str("Unrecognized invoice")))
+						Some(OffersMessage::InvoiceError(InvoiceError::from_string("Unrecognized invoice".to_owned())))
 					},
 					Ok(_) if invoice.invoice_features().requires_unknown_bits_from(&self.bolt12_invoice_features()) => {
 						Some(OffersMessage::InvoiceError(Bolt12SemanticError::UnknownRequiredFeatures.into()))
@@ -8988,7 +9000,7 @@ where
 					Ok(payment_id) => {
 						if let Err(e) = self.send_payment_for_bolt12_invoice(&invoice, payment_id) {
 							log_trace!(self.logger, "Failed paying invoice: {:?}", e);
-							Some(OffersMessage::InvoiceError(InvoiceError::from_str(&format!("{:?}", e))))
+							Some(OffersMessage::InvoiceError(InvoiceError::from_string(format!("{:?}", e))))
 						} else {
 							None
 						}

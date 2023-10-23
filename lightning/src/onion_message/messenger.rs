@@ -19,6 +19,7 @@ use crate::blinded_path::BlindedPath;
 use crate::blinded_path::message::{advance_path_by_one, ForwardTlvs, ReceiveTlvs};
 use crate::blinded_path::utils;
 use crate::sign::{EntropySource, KeysManager, NodeSigner, Recipient};
+#[cfg(not(c_bindings))]
 use crate::ln::channelmanager::{SimpleArcChannelManager, SimpleRefChannelManager};
 use crate::ln::features::{InitFeatures, NodeFeatures};
 use crate::ln::msgs::{self, OnionMessage, OnionMessageHandler};
@@ -712,10 +713,11 @@ where
 /// Useful for simplifying the parameters of [`SimpleArcChannelManager`] and
 /// [`SimpleArcPeerManager`]. See their docs for more details.
 ///
-/// This is not exported to bindings users as `Arc`s don't make sense in bindings.
+/// This is not exported to bindings users as type aliases aren't supported in most languages.
 ///
 /// [`SimpleArcChannelManager`]: crate::ln::channelmanager::SimpleArcChannelManager
 /// [`SimpleArcPeerManager`]: crate::ln::peer_handler::SimpleArcPeerManager
+#[cfg(not(c_bindings))]
 pub type SimpleArcOnionMessenger<M, T, F, L> = OnionMessenger<
 	Arc<KeysManager>,
 	Arc<KeysManager>,
@@ -728,10 +730,11 @@ pub type SimpleArcOnionMessenger<M, T, F, L> = OnionMessenger<
 /// Useful for simplifying the parameters of [`SimpleRefChannelManager`] and
 /// [`SimpleRefPeerManager`]. See their docs for more details.
 ///
-/// This is not exported to bindings users as general type aliases don't make sense in bindings.
+/// This is not exported to bindings users as type aliases aren't supported in most languages.
 ///
 /// [`SimpleRefChannelManager`]: crate::ln::channelmanager::SimpleRefChannelManager
 /// [`SimpleRefPeerManager`]: crate::ln::peer_handler::SimpleRefPeerManager
+#[cfg(not(c_bindings))]
 pub type SimpleRefOnionMessenger<
 	'a, 'b, 'c, 'd, 'e, 'f, 'g, 'h, 'i, 'j, M, T, F, L
 > = OnionMessenger<

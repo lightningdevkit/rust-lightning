@@ -50,10 +50,10 @@ pub struct ErroneousField {
 
 impl InvoiceError {
 	/// Creates an [`InvoiceError`] with the given message.
-	pub fn from_str(s: &str) -> Self {
+	pub fn from_string(s: String) -> Self {
 		Self {
 			erroneous_field: None,
-			message: UntrustedString(s.to_string()),
+			message: UntrustedString(s),
 		}
 	}
 }

@@ -100,14 +100,16 @@ popd
 
 echo -e "\n\nTesting no-std flags in various combinations"
 for DIR in lightning lightning-invoice lightning-rapid-gossip-sync; do
-	pushd $DIR
-	cargo test --verbose --color always --no-default-features --features no-std
+	cargo test -p $DIR --verbose --color always --no-default-features --features no-std
 	# check if there is a conflict between no-std and the default std feature
-	cargo test --verbose --color always --features no-std
-	# check if there is a conflict between no-std and the c_bindings cfg
-	RUSTFLAGS="--cfg=c_bindings" cargo test --verbose --color always --no-default-features --features=no-std
-	popd
+	cargo test -p $DIR --verbose --color always --features no-std
 done
+for DIR in lightning lightning-invoice lightning-rapid-gossip-sync; do
+	# check if there is a conflict between no-std and the c_bindings cfg
+	RUSTFLAGS="--cfg=c_bindings" cargo test -p $DIR --verbose --color always --no-default-features --features=no-std
+done
+RUSTFLAGS="--cfg=c_bindings" cargo test --verbose --color always
+
 # Note that outbound_commitment_test only runs in this mode because of hardcoded signature values
 pushd lightning
 cargo test --verbose --color always --no-default-features --features=std,_test_vectors

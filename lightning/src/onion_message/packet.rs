@@ -137,7 +137,6 @@ impl<T: OnionMessageContents> OnionMessageContents for ParsedOnionMessageContent
 	}
 }
 
-/// This is not exported to bindings users as methods on non-cloneable enums are not currently exportable
 impl<T: OnionMessageContents> Writeable for ParsedOnionMessageContents<T> {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
 		match self {
