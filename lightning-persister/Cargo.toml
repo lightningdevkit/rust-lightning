@@ -7,7 +7,7 @@ repository = "https://github.com/lightningdevkit/rust-lightning"
 description = """
 Utilities for LDK data persistence and retrieval.
 """
-edition = "2018"
+edition = "2021"
 
 [package.metadata.docs.rs]
 all-features = true

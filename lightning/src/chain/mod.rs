@@ -357,7 +357,7 @@ pub struct WatchedOutput {
 	pub script_pubkey: ScriptBuf,
 }
 
-impl<T: Listen> Listen for core::ops::Deref<Target = T> {
+impl<T: Listen> Listen for dyn core::ops::Deref<Target = T> {
 	fn filtered_block_connected(&self, header: &Header, txdata: &TransactionData, height: u32) {
 		(**self).filtered_block_connected(header, txdata, height);
 	}

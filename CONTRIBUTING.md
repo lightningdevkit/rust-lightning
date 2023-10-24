@@ -88,7 +88,7 @@ be covered by functional tests.
 When refactoring, structure your PR to make it easy to review and don't
 hesitate to split it into multiple small, focused PRs.
 
-The Minimum Supported Rust Version (MSRV) currently is 1.48.0 (enforced by
+The Minimum Supported Rust Version (MSRV) currently is 1.63.0 (enforced by
 our GitHub Actions). We support reading serialized LDK objects written by any
 version of LDK 0.0.99 and above. We support LDK versions 0.0.113 and above
 reading serialized LDK objects written by modern LDK. Any expected issues with

@@ -3334,6 +3334,7 @@ fn test_threaded_payment_retries() {
 		// We really want std::thread::scope, but its not stable until 1.63. Until then, we get unsafe.
 		let node_ref = NodePtr::from_node(&nodes[0]);
 		move || {
+			let _ = &node_ref;
 			let node_a = unsafe { &*node_ref.0 };
 			while Instant::now() < end_time {
 				node_a.node.get_and_clear_pending_events(); // wipe the PendingHTLCsForwardable

@@ -7,7 +7,7 @@ repository = "https://github.com/lightningdevkit/rust-lightning"
 description = """
 Utilities to perform required background tasks for Rust Lightning.
 """
-edition = "2018"
+edition = "2021"
 
 [package.metadata.docs.rs]
 all-features = true

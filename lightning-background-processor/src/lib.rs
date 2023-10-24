@@ -2,9 +2,8 @@
 //! running properly, and (2) either can or should be run in the background. See docs for
 //! [`BackgroundProcessor`] for more details on the nitty-gritty.
 
-// Prefix these with `rustdoc::` when we update our MSRV to be >= 1.52 to remove warnings.
-#![deny(broken_intra_doc_links)]
-#![deny(private_intra_doc_links)]
+#![deny(rustdoc::broken_intra_doc_links)]
+#![deny(rustdoc::private_intra_doc_links)]
 
 #![deny(missing_docs)]
 #![cfg_attr(not(feature = "futures"), deny(unsafe_code))]

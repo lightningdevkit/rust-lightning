@@ -18,19 +18,7 @@ jobs:
       fail-fast: false
       matrix:
         platform: [ ubuntu-latest, windows-latest, macos-latest ]
-        toolchain: [ stable, beta ]
-        include:
-          - toolchain: stable
-            platform: ubuntu-latest
-          # 1.48.0 is the MSRV for all crates except lightning-transaction-sync and Win/Mac
-          - toolchain: 1.48.0
-            platform: ubuntu-latest
-          # Windows requires 1.49.0 because that's the MSRV for supported Tokio
-          - toolchain: 1.49.0
-            platform: windows-latest
-          # MacOS-latest requires 1.54.0 because that's what's required for linking to work properly
-          - toolchain: 1.54.0
-            platform: macos-latest
+        toolchain: [ stable, beta, 1.63.0 ] # 1.63.0 is the MSRV for all crates.
     runs-on: ${{ matrix.platform }}
     steps:
       - name: Checkout source code
@@ -168,13 +156,13 @@ jobs:
         run: |
           cargo check --release
           cargo check --no-default-features --features=no-std --release
-          cargo check --no-default-features --features=futures --release
+          cargo check --no-default-features --features=futures,std --release
           cargo doc --release
       - name: Run cargo check for Taproot build.
         run: |
           cargo check --release
           cargo check --no-default-features --features=no-std --release
-          cargo check --no-default-features --features=futures --release
+          cargo check --no-default-features --features=futures,std --release
           cargo doc --release
         env:
           RUSTFLAGS: '--cfg=taproot'

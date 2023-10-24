@@ -4,7 +4,7 @@ version = "0.0.118"
 authors = ["Arik Sosman <git@arik.io>"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/lightningdevkit/rust-lightning"
-edition = "2018"
+edition = "2021"
 description = """
 Utility to process gossip routing data from Rapid Gossip Sync Server.
 """

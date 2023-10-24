@@ -2284,7 +2284,7 @@ macro_rules! fail_unbroadcast_htlcs {
 							// broadcastable commitment transaction has the HTLC in it, but it
 							// cannot currently change after channel initialization, so we don't
 							// need to here.
-							let confirmed_htlcs_iter: &mut Iterator<Item = (&HTLCOutputInCommitment, Option<&HTLCSource>)> = &mut $confirmed_htlcs_list;
+							let confirmed_htlcs_iter: &mut dyn Iterator<Item = (&HTLCOutputInCommitment, Option<&HTLCSource>)> = &mut $confirmed_htlcs_list;
 
 							let mut matched_htlc = false;
 							for (ref broadcast_htlc, ref broadcast_source) in confirmed_htlcs_iter {

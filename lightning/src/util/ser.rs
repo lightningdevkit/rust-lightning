@@ -371,14 +371,14 @@ impl Writeable for BigSize {
 	#[inline]
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		match self.0 {
-			0...0xFC => {
+			0..=0xFC => {
 				(self.0 as u8).write(writer)
 			},
-			0xFD...0xFFFF => {
+			0xFD..=0xFFFF => {
 				0xFDu8.write(writer)?;
 				(self.0 as u16).write(writer)
 			},
-			0x10000...0xFFFFFFFF => {
+			0x10000..=0xFFFFFFFF => {
 				0xFEu8.write(writer)?;
 				(self.0 as u32).write(writer)
 			},
