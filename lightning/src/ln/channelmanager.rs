@@ -29,7 +29,7 @@ use bitcoin::hash_types::{BlockHash, Txid};
 
 use bitcoin::secp256k1::{SecretKey,PublicKey};
 use bitcoin::secp256k1::Secp256k1;
-use bitcoin::{secp256k1, Sequence};
+use bitcoin::{secp256k1, Sequence, TxIn};
 
 use crate::blinded_path::BlindedPath;
 use crate::blinded_path::payment::{PaymentConstraints, ReceiveTlvs};
@@ -3959,6 +3959,23 @@ where
 			}
 		}
 		result
+	}
+
+	/// Call this to contribute inputs to a funding transaction for dual-funding.
+	///
+	/// Returns an [`APIError::APIMisuseError`] if the contributed inputs spent non-SegWit outputs
+	/// or if the input amounts will not sufficiently cover the holder `funding_satoshis` and fees.
+	/// Any amount left over and above dust will be returned as change.
+	///
+	/// Returns [`APIError::ChannelUnavailable`] if a inputs have already been provided for the
+	/// funding transaction of the channel or if the channel has been closed as indicated by
+	/// [`Event::ChannelClosed`].
+	///
+	/// [`Event::FundingInputsContributionReady`]: crate::events::Event::FundingInputsContributionReady
+	/// [`Event::ChannelClosed`]: crate::events::Event::ChannelClosed
+	pub fn contribute_funding_inputs(&self, channel_id: &ChannelId, counterparty_node_id: &PublicKey,
+		funding_inputs: Vec<(TxIn, Transaction)>) -> Result<(), APIError> {
+		Ok(())
 	}
 
 	/// Atomically applies partial updates to the [`ChannelConfig`] of the given channels.

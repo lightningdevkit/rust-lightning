@@ -977,6 +977,43 @@ pub enum Event {
 	///
 	/// [`ChannelHandshakeConfig::negotiate_anchors_zero_fee_htlc_tx`]: crate::util::config::ChannelHandshakeConfig::negotiate_anchors_zero_fee_htlc_tx
 	BumpTransaction(BumpTransactionEvent),
+	/// Used to indicate that the client should provide inputs to fund a dual-funded channel using
+	/// interactive transaction construction by calling [`ChannelManager::contribute_funding_inputs`].
+	/// Generated in [`ChannelManager`] message handling.
+	/// Note that *all inputs* contributed must spend SegWit outputs or your counterparty can steal
+	/// your funds!
+	///
+	/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
+	/// [`ChannelManager::contribute_funding_inputs`]: crate::ln::channelmanager::ChannelManager::contribute_funding_inputs
+	FundingInputsContributionReady {
+		/// The channel_id of the channel that requires funding inputs which you'll need to pass into
+		/// [`ChannelManager::contribute_funding_inputs`].
+		///
+		/// [`ChannelManager::contribute_funding_inputs`]: crate::ln::channelmanager::ChannelManager::contribute_funding_inputs
+		channel_id: ChannelId,
+		/// The counterparty's node_id, which you'll need to pass back into
+		/// [`ChannelManager::contribute_funding_inputs`].
+		///
+		/// [`ChannelManager::contribute_funding_inputs`]: crate::ln::channelmanager::ChannelManager::contribute_funding_inputs
+		counterparty_node_id: PublicKey,
+		/// The value, in satoshis, that we commited to contribute to the channel value during
+		/// establishment.
+		holder_funding_satoshis: u64,
+		/// The value, in satoshis, that the counterparty commited to contribute to the channel value
+		/// during channel establishment.
+		counterparty_funding_satoshis: u64,
+		/// TODO(dual_funding): Update docs
+		/// The `user_channel_id` value passed in to [`ChannelManager::create_channel`] for outbound
+		/// channels, or to [`ChannelManager::accept_inbound_channel`] for inbound channels if
+		/// [`UserConfig::manually_accept_inbound_channels`] config flag is set to true. Otherwise
+		/// `user_channel_id` will be randomized for an inbound channel.  This may be zero for objects
+		/// serialized with LDK versions prior to 0.0.113.
+		///
+		/// [`ChannelManager::create_channel`]: crate::ln::channelmanager::ChannelManager::create_channel
+		/// [`ChannelManager::accept_inbound_channel`]: crate::ln::channelmanager::ChannelManager::accept_inbound_channel
+		/// [`UserConfig::manually_accept_inbound_channels`]: crate::util::config::UserConfig::manually_accept_inbound_channels
+		user_channel_id: u128,
+	},
 }
 
 impl Writeable for Event {
@@ -1212,6 +1249,12 @@ impl Writeable for Event {
 			&Event::ConnectionNeeded { .. } => {
 				35u8.write(writer)?;
 				// Never write ConnectionNeeded events as buffered onion messages aren't serialized.
+			},
+			&Event::FundingInputsContributionReady { .. } => {
+				37u8.write(writer)?;
+				// We never write out FundingInputsContributionReady events as, upon disconnection, peers
+				// drop any channels which have not yet exchanged the initial commitment_signed in V2 channel
+				// establishment.
 			},
 			// Note that, going forward, all new events must only write data inside of
 			// `write_tlv_fields`. Versions 0.0.101+ will ignore odd-numbered events that write
