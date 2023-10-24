@@ -6603,6 +6603,16 @@ where
 						Err(e) => PendingHTLCStatus::Fail(e)
 					};
 					let create_pending_htlc_status = |chan: &Channel<SP>, pending_forward_info: PendingHTLCStatus, error_code: u16| {
+						if msg.blinding_point.is_some() {
+							return PendingHTLCStatus::Fail(HTLCFailureMsg::Malformed(
+									msgs::UpdateFailMalformedHTLC {
+										channel_id: msg.channel_id,
+										htlc_id: msg.htlc_id,
+										sha256_of_onion: [0; 32],
+										failure_code: INVALID_ONION_BLINDING,
+									}
+							))
+						}
 						// If the update_add is completely bogus, the call will Err and we will close,
 						// but if we've sent a shutdown and they haven't acknowledged it yet, we just
 						// want to reject the new HTLC and fail it backwards instead of forwarding.

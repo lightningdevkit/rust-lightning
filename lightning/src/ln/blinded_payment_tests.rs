@@ -10,7 +10,7 @@
 use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
 use crate::blinded_path::BlindedPath;
 use crate::blinded_path::payment::{ForwardNode, ForwardTlvs, PaymentConstraints, PaymentRelay, ReceiveTlvs};
-use crate::events::{HTLCDestination, MessageSendEventsProvider};
+use crate::events::{HTLCDestination, MessageSendEvent, MessageSendEventsProvider};
 use crate::ln::PaymentSecret;
 use crate::ln::channelmanager;
 use crate::ln::channelmanager::{PaymentId, RecipientOnionFields};
@@ -459,6 +459,7 @@ fn two_hop_blinded_path_success() {
 	claim_payment(&nodes[0], &[&nodes[1], &nodes[2]], payment_preimage);
 }
 
+#[derive(PartialEq)]
 enum ReceiveCheckFail {
 	// The recipient fails the payment upon `PaymentClaimable`.
 	RecipientFail,
@@ -467,6 +468,9 @@ enum ReceiveCheckFail {
 	// The incoming HTLC did not satisfy our requirements; in this case it underpaid us according to
 	// the expected receive amount in the onion.
 	ReceiveRequirements,
+	// The incoming HTLC errors when added to the Channel, in this case due to the HTLC being
+	// delivered out-of-order with a shutdown message.
+	ChannelCheck,
 }
 
 #[test]
@@ -474,6 +478,7 @@ fn multi_hop_receiver_fail() {
 	do_multi_hop_receiver_fail(ReceiveCheckFail::RecipientFail);
 	do_multi_hop_receiver_fail(ReceiveCheckFail::OnionDecodeFail);
 	do_multi_hop_receiver_fail(ReceiveCheckFail::ReceiveRequirements);
+	do_multi_hop_receiver_fail(ReceiveCheckFail::ChannelCheck);
 }
 
 fn do_multi_hop_receiver_fail(check: ReceiveCheckFail) {
@@ -486,7 +491,12 @@ fn do_multi_hop_receiver_fail(check: ReceiveCheckFail) {
 	let session_priv = [3; 32];
 	*nodes[0].keys_manager.override_random_bytes.lock().unwrap() = Some(session_priv);
 	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0);
-	let chan_upd_1_2 = create_announced_chan_between_nodes_with_value(&nodes, 1, 2, 1_000_000, 0).0.contents;
+	let (chan_upd_1_2, chan_id_1_2) = {
+		let (chan_upd, _, channel_id, ..) = create_announced_chan_between_nodes_with_value(
+			&nodes, 1, 2, 1_000_000, 0
+		);
+		(chan_upd.contents, channel_id)
+	};
 
 	let amt_msat = 5000;
 	let (_, payment_hash, payment_secret) = get_payment_preimage_hash(&nodes[2], Some(amt_msat), None);
@@ -566,6 +576,19 @@ fn do_multi_hop_receiver_fail(check: ReceiveCheckFail) {
 			check_added_monitors!(nodes[2], 0);
 			do_commitment_signed_dance(&nodes[2], &nodes[1], &payment_event_1_2.commitment_msg, true, true);
 		},
+		ReceiveCheckFail::ChannelCheck => {
+			nodes[2].node.close_channel(&chan_id_1_2, &nodes[1].node.get_our_node_id()).unwrap();
+			let node_2_shutdown = get_event_msg!(nodes[2], MessageSendEvent::SendShutdown, nodes[1].node.get_our_node_id());
+			nodes[1].node.handle_shutdown(&nodes[2].node.get_our_node_id(), &node_2_shutdown);
+			let node_1_shutdown = get_event_msg!(nodes[1], MessageSendEvent::SendShutdown, nodes[2].node.get_our_node_id());
+
+			nodes[2].node.handle_update_add_htlc(&nodes[1].node.get_our_node_id(), &payment_event_1_2.msgs[0]);
+			nodes[2].node.handle_commitment_signed(&nodes[1].node.get_our_node_id(), &payment_event_1_2.commitment_msg);
+			check_added_monitors!(nodes[2], 1);
+
+			nodes[2].node.handle_shutdown(&nodes[1].node.get_our_node_id(), &node_1_shutdown);
+			commitment_signed_dance!(nodes[2], nodes[1], (), false, true, false, false);
+		}
 	}
 
 	let updates_2_1 = get_htlc_update_msgs!(nodes[2], nodes[1].node.get_our_node_id());
@@ -576,7 +599,20 @@ fn do_multi_hop_receiver_fail(check: ReceiveCheckFail) {
 	nodes[1].node.handle_update_fail_malformed_htlc(&nodes[2].node.get_our_node_id(), update_malformed);
 	do_commitment_signed_dance(&nodes[1], &nodes[2], &updates_2_1.commitment_signed, true, false);
 
-	let updates_1_0 = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+	let updates_1_0 = if check == ReceiveCheckFail::ChannelCheck {
+		let events = nodes[1].node.get_and_clear_pending_msg_events();
+		assert_eq!(events.len(), 2);
+		events.into_iter().find_map(|ev| {
+			match ev {
+				MessageSendEvent:: UpdateHTLCs { node_id, updates } => {
+					assert_eq!(node_id, nodes[0].node.get_our_node_id());
+					return Some(updates)
+				},
+				MessageSendEvent::SendClosingSigned { .. } => None,
+				_ => panic!()
+			}
+		}).unwrap()
+	} else { get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id()) };
 	assert_eq!(updates_1_0.update_fail_htlcs.len(), 1);
 	nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &updates_1_0.update_fail_htlcs[0]);
 	do_commitment_signed_dance(&nodes[0], &nodes[1], &updates_1_0.commitment_signed, false, false);
