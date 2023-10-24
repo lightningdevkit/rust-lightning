@@ -90,9 +90,13 @@ macro_rules! define_score { ($($supertrait: path)*) => {
 ///
 /// Scoring is in terms of fees willing to be paid in order to avoid routing through a channel.
 pub trait ScoreLookUp {
+	#[cfg(not(c_bindings))]
 	/// A configurable type which should contain various passed-in parameters for configuring the scorer,
 	/// on a per-routefinding-call basis through to the scorer methods,
 	/// which are used to determine the parameters for the suitability of channels for use.
+	///
+	/// Note that due to limitations in many other languages' generics features, language bindings
+	/// use [`ProbabilisticScoringFeeParameters`] for the parameters on all scorers.
 	type ScoreParams;
 	/// Returns the fee in msats willing to be paid to avoid routing `send_amt_msat` through the
 	/// given channel in the direction from `source` to `target`.
@@ -103,7 +107,7 @@ pub trait ScoreLookUp {
 	/// [`u64::max_value`] is given to indicate sufficient capacity for the invoice's full amount.
 	/// Thus, implementations should be overflow-safe.
 	fn channel_penalty_msat(
-		&self, short_channel_id: u64, source: &NodeId, target: &NodeId, usage: ChannelUsage, score_params: &Self::ScoreParams
+		&self, short_channel_id: u64, source: &NodeId, target: &NodeId, usage: ChannelUsage, score_params: &ProbabilisticScoringFeeParameters
 	) -> u64;
 }
 
@@ -135,9 +139,10 @@ impl<T: ScoreLookUp + ScoreUpdate $(+ $supertrait)*> Score for T {}
 
 #[cfg(not(c_bindings))]
 impl<S: ScoreLookUp, T: Deref<Target=S>> ScoreLookUp for T {
+	#[cfg(not(c_bindings))]
 	type ScoreParams = S::ScoreParams;
 	fn channel_penalty_msat(
-		&self, short_channel_id: u64, source: &NodeId, target: &NodeId, usage: ChannelUsage, score_params: &Self::ScoreParams
+		&self, short_channel_id: u64, source: &NodeId, target: &NodeId, usage: ChannelUsage, score_params: &ProbabilisticScoringFeeParameters
 	) -> u64 {
 		self.deref().channel_penalty_msat(short_channel_id, source, target, usage, score_params)
 	}
@@ -314,9 +319,10 @@ impl<'a, T: 'a + Score> Deref for MultiThreadedScoreLockRead<'a, T> {
 
 #[cfg(c_bindings)]
 impl<'a, T: Score> ScoreLookUp for MultiThreadedScoreLockRead<'a, T> {
+	#[cfg(not(c_bindings))]
 	type ScoreParams = T::ScoreParams;
 	fn channel_penalty_msat(&self, short_channel_id: u64, source: &NodeId,
-		target: &NodeId, usage: ChannelUsage, score_params: &Self::ScoreParams
+		target: &NodeId, usage: ChannelUsage, score_params: &ProbabilisticScoringFeeParameters
 	) -> u64 {
 		self.0.channel_penalty_msat(short_channel_id, source, target, usage, score_params)
 	}
@@ -393,8 +399,9 @@ impl FixedPenaltyScorer {
 }
 
 impl ScoreLookUp for FixedPenaltyScorer {
+	#[cfg(not(c_bindings))]
 	type ScoreParams = ();
-	fn channel_penalty_msat(&self, _: u64, _: &NodeId, _: &NodeId, _: ChannelUsage, _score_params: &Self::ScoreParams) -> u64 {
+	fn channel_penalty_msat(&self, _: u64, _: &NodeId, _: &NodeId, _: ChannelUsage, _score_params: &ProbabilisticScoringFeeParameters) -> u64 {
 		self.penalty_msat
 	}
 }
@@ -426,12 +433,45 @@ impl ReadableArgs<u64> for FixedPenaltyScorer {
 }
 
 #[cfg(not(feature = "no-std"))]
-type ConfiguredTime = crate::util::time::MonotonicTime;
-#[cfg(feature = "no-std")]
-use crate::util::time::Eternity;
-#[cfg(feature = "no-std")]
-type ConfiguredTime = Eternity;
+/// [`ScoreLookUp`] implementation using channel success probability distributions.
+///
+/// Channels are tracked with upper and lower liquidity bounds - when an HTLC fails at a channel,
+/// we learn that the upper-bound on the available liquidity is lower than the amount of the HTLC.
+/// When a payment is forwarded through a channel (but fails later in the route), we learn the
+/// lower-bound on the channel's available liquidity must be at least the value of the HTLC.
+///
+/// These bounds are then used to determine a success probability using the formula from
+/// *Optimally Reliable & Cheap Payment Flows on the Lightning Network* by Rene Pickhardt
+/// and Stefan Richter [[1]] (i.e. `(upper_bound - payment_amount) / (upper_bound - lower_bound)`).
+///6762, 1070
+/// This probability is combined with the [`liquidity_penalty_multiplier_msat`] and
+/// [`liquidity_penalty_amount_multiplier_msat`] parameters to calculate a concrete penalty in
+/// milli-satoshis. The penalties, when added across all hops, have the property of being linear in
+/// terms of the entire path's success probability. This allows the router to directly compare
+/// penalties for different paths. See the documentation of those parameters for the exact formulas.
+///
+/// The liquidity bounds are decayed by halving them every [`liquidity_offset_half_life`].
+///
+/// Further, we track the history of our upper and lower liquidity bounds for each channel,
+/// allowing us to assign a second penalty (using [`historical_liquidity_penalty_multiplier_msat`]
+/// and [`historical_liquidity_penalty_amount_multiplier_msat`]) based on the same probability
+/// formula, but using the history of a channel rather than our latest estimates for the liquidity
+/// bounds.
+///
+/// # Note
+///
+/// Mixing the `no-std` feature between serialization and deserialization results in undefined
+/// behavior.
+///
+/// [1]: https://arxiv.org/abs/2107.05322
+/// [`liquidity_penalty_multiplier_msat`]: ProbabilisticScoringFeeParameters::liquidity_penalty_multiplier_msat
+/// [`liquidity_penalty_amount_multiplier_msat`]: ProbabilisticScoringFeeParameters::liquidity_penalty_amount_multiplier_msat
+/// [`liquidity_offset_half_life`]: ProbabilisticScoringDecayParameters::liquidity_offset_half_life
+/// [`historical_liquidity_penalty_multiplier_msat`]: ProbabilisticScoringFeeParameters::historical_liquidity_penalty_multiplier_msat
+/// [`historical_liquidity_penalty_amount_multiplier_msat`]: ProbabilisticScoringFeeParameters::historical_liquidity_penalty_amount_multiplier_msat
+pub type ProbabilisticScorer<G, L> = ProbabilisticScorerUsingTime::<G, L, crate::util::time::MonotonicTime>;
 
+#[cfg(feature = "no-std")]
 /// [`ScoreLookUp`] implementation using channel success probability distributions.
 ///
 /// Channels are tracked with upper and lower liquidity bounds - when an HTLC fails at a channel,
@@ -468,7 +508,7 @@ type ConfiguredTime = Eternity;
 /// [`liquidity_offset_half_life`]: ProbabilisticScoringDecayParameters::liquidity_offset_half_life
 /// [`historical_liquidity_penalty_multiplier_msat`]: ProbabilisticScoringFeeParameters::historical_liquidity_penalty_multiplier_msat
 /// [`historical_liquidity_penalty_amount_multiplier_msat`]: ProbabilisticScoringFeeParameters::historical_liquidity_penalty_amount_multiplier_msat
-pub type ProbabilisticScorer<G, L> = ProbabilisticScorerUsingTime::<G, L, ConfiguredTime>;
+pub type ProbabilisticScorer<G, L> = ProbabilisticScorerUsingTime::<G, L, crate::util::time::Eternity>;
 
 /// Probabilistic [`ScoreLookUp`] implementation.
 ///
@@ -1341,6 +1381,7 @@ impl<L: DerefMut<Target = u64>, BRT: DerefMut<Target = HistoricalBucketRangeTrac
 }
 
 impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, T: Time> ScoreLookUp for ProbabilisticScorerUsingTime<G, L, T> where L::Target: Logger {
+	#[cfg(not(c_bindings))]
 	type ScoreParams = ProbabilisticScoringFeeParameters;
 	fn channel_penalty_msat(
 		&self, short_channel_id: u64, source: &NodeId, target: &NodeId, usage: ChannelUsage, score_params: &ProbabilisticScoringFeeParameters

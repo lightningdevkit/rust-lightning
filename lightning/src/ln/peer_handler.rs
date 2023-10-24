@@ -32,7 +32,8 @@ use crate::ln::wire;
 use crate::ln::wire::{Encode, Type};
 #[cfg(not(c_bindings))]
 use crate::onion_message::{SimpleArcOnionMessenger, SimpleRefOnionMessenger};
-use crate::onion_message::{CustomOnionMessageHandler, OffersMessage, OffersMessageHandler, OnionMessageContents, PendingOnionMessage};
+use crate::onion_message::packet::OnionMessageContents;
+use crate::onion_message::{CustomOnionMessageHandler, OffersMessage, OffersMessageHandler, PendingOnionMessage};
 use crate::routing::gossip::{NetworkGraph, P2PGossipSync, NodeId, NodeAlias};
 use crate::util::atomic_counter::AtomicCounter;
 use crate::util::logger::Logger;
@@ -2449,7 +2450,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 			excess_data: Vec::new(),
 		};
 		let node_announce_sig = match self.node_signer.sign_gossip_message(
-			msgs::UnsignedGossipMessage::NodeAnnouncement(&announcement)
+			msgs::UnsignedGossipMessage::NodeAnnouncement(announcement.clone())
 		) {
 			Ok(sig) => sig,
 			Err(_) => {
