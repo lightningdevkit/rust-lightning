@@ -3192,6 +3192,16 @@ where
 				{
 					let logger = WithContext::from(&self.logger, Some(*counterparty_node_id), Some(msg.channel_id));
 					log_info!(logger, "Failed to accept/forward incoming HTLC: {}", $msg);
+					if msg.blinding_point.is_some() {
+						return PendingHTLCStatus::Fail(HTLCFailureMsg::Malformed(
+							msgs::UpdateFailMalformedHTLC {
+								channel_id: msg.channel_id,
+								htlc_id: msg.htlc_id,
+								sha256_of_onion: [0; 32],
+								failure_code: INVALID_ONION_BLINDING,
+							}
+						))
+					}
 					return PendingHTLCStatus::Fail(HTLCFailureMsg::Relay(msgs::UpdateFailHTLC {
 						channel_id: msg.channel_id,
 						htlc_id: msg.htlc_id,

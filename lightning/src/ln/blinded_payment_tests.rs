@@ -464,12 +464,16 @@ enum ReceiveCheckFail {
 	RecipientFail,
 	// Failure to decode the recipient's onion payload.
 	OnionDecodeFail,
+	// The incoming HTLC did not satisfy our requirements; in this case it underpaid us according to
+	// the expected receive amount in the onion.
+	ReceiveRequirements,
 }
 
 #[test]
 fn multi_hop_receiver_fail() {
 	do_multi_hop_receiver_fail(ReceiveCheckFail::RecipientFail);
 	do_multi_hop_receiver_fail(ReceiveCheckFail::OnionDecodeFail);
+	do_multi_hop_receiver_fail(ReceiveCheckFail::ReceiveRequirements);
 }
 
 fn do_multi_hop_receiver_fail(check: ReceiveCheckFail) {
@@ -554,7 +558,14 @@ fn do_multi_hop_receiver_fail(check: ReceiveCheckFail) {
 			nodes[2].node.handle_update_add_htlc(&nodes[1].node.get_our_node_id(), update_add);
 			check_added_monitors!(nodes[2], 0);
 			do_commitment_signed_dance(&nodes[2], &nodes[1], &payment_event_1_2.commitment_msg, true, true);
-		}
+		},
+		ReceiveCheckFail::ReceiveRequirements => {
+			let update_add = &mut payment_event_1_2.msgs[0];
+			update_add.amount_msat -= 1;
+			nodes[2].node.handle_update_add_htlc(&nodes[1].node.get_our_node_id(), update_add);
+			check_added_monitors!(nodes[2], 0);
+			do_commitment_signed_dance(&nodes[2], &nodes[1], &payment_event_1_2.commitment_msg, true, true);
+		},
 	}
 
 	let updates_2_1 = get_htlc_update_msgs!(nodes[2], nodes[1].node.get_our_node_id());
