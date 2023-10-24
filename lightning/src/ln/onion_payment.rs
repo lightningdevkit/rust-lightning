@@ -360,6 +360,10 @@ where
 	macro_rules! return_err {
 		($msg: expr, $err_code: expr, $data: expr) => {
 			{
+				if msg.blinding_point.is_some() {
+					return_malformed_err!($msg, INVALID_ONION_BLINDING)
+				}
+
 				log_info!(logger, "Failed to accept/forward incoming HTLC: {}", $msg);
 				return Err(HTLCFailureMsg::Relay(msgs::UpdateFailHTLC {
 					channel_id: msg.channel_id,

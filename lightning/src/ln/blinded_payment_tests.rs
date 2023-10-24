@@ -459,12 +459,28 @@ fn two_hop_blinded_path_success() {
 	claim_payment(&nodes[0], &[&nodes[1], &nodes[2]], payment_preimage);
 }
 
+enum ReceiveCheckFail {
+	// The recipient fails the payment upon `PaymentClaimable`.
+	RecipientFail,
+	// Failure to decode the recipient's onion payload.
+	OnionDecodeFail,
+}
+
 #[test]
 fn multi_hop_receiver_fail() {
+	do_multi_hop_receiver_fail(ReceiveCheckFail::RecipientFail);
+	do_multi_hop_receiver_fail(ReceiveCheckFail::OnionDecodeFail);
+}
+
+fn do_multi_hop_receiver_fail(check: ReceiveCheckFail) {
+	// Test that the receiver to a multihop blinded path fails back correctly.
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
 	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+	// We need the session priv to construct an invalid onion packet later.
+	let session_priv = [3; 32];
+	*nodes[0].keys_manager.override_random_bytes.lock().unwrap() = Some(session_priv);
 	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0);
 	let chan_upd_1_2 = create_announced_chan_between_nodes_with_value(&nodes, 1, 2, 1_000_000, 0).0.contents;
 
@@ -478,14 +494,68 @@ fn multi_hop_receiver_fail() {
 	node_cfgs[0].router.expect_find_route(route_params.clone(), Ok(route.clone()));
 	nodes[0].node.send_payment(payment_hash, RecipientOnionFields::spontaneous_empty(), PaymentId(payment_hash.0), route_params, Retry::Attempts(0)).unwrap();
 	check_added_monitors(&nodes[0], 1);
-	pass_along_route(&nodes[0], &[&[&nodes[1], &nodes[2]]], amt_msat, payment_hash, payment_secret);
 
-	nodes[2].node.fail_htlc_backwards(&payment_hash);
-	expect_pending_htlcs_forwardable_conditions(
-		nodes[2].node.get_and_clear_pending_events(), &[HTLCDestination::FailedPayment { payment_hash }]
-	);
-	nodes[2].node.process_pending_htlc_forwards();
-	check_added_monitors!(nodes[2], 1);
+	let mut payment_event_0_1 = {
+		let mut events = nodes[0].node.get_and_clear_pending_msg_events();
+		assert_eq!(events.len(), 1);
+		let ev = remove_first_msg_event_to_node(&nodes[1].node.get_our_node_id(), &mut events);
+		SendEvent::from_event(ev)
+	};
+	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &payment_event_0_1.msgs[0]);
+	check_added_monitors!(nodes[1], 0);
+	do_commitment_signed_dance(&nodes[1], &nodes[0], &payment_event_0_1.commitment_msg, false, false);
+	expect_pending_htlcs_forwardable!(nodes[1]);
+	check_added_monitors!(&nodes[1], 1);
+
+	let mut payment_event_1_2 = {
+		let mut events = nodes[1].node.get_and_clear_pending_msg_events();
+		assert_eq!(events.len(), 1);
+		let ev = remove_first_msg_event_to_node(&nodes[2].node.get_our_node_id(), &mut events);
+		SendEvent::from_event(ev)
+	};
+
+	match check {
+		ReceiveCheckFail::RecipientFail => {
+			nodes[2].node.handle_update_add_htlc(&nodes[1].node.get_our_node_id(), &payment_event_1_2.msgs[0]);
+			check_added_monitors!(nodes[2], 0);
+			do_commitment_signed_dance(&nodes[2], &nodes[1], &payment_event_1_2.commitment_msg, true, true);
+			expect_pending_htlcs_forwardable!(nodes[2]);
+			check_payment_claimable(
+				&nodes[2].node.get_and_clear_pending_events()[0], payment_hash, payment_secret, amt_msat,
+				None, nodes[2].node.get_our_node_id()
+			);
+			nodes[2].node.fail_htlc_backwards(&payment_hash);
+			expect_pending_htlcs_forwardable_conditions(
+				nodes[2].node.get_and_clear_pending_events(), &[HTLCDestination::FailedPayment { payment_hash }]
+			);
+			nodes[2].node.process_pending_htlc_forwards();
+			check_added_monitors!(nodes[2], 1);
+		},
+		ReceiveCheckFail::OnionDecodeFail => {
+			let session_priv = SecretKey::from_slice(&session_priv).unwrap();
+			let mut onion_keys = onion_utils::construct_onion_keys(&Secp256k1::new(), &route.paths[0], &session_priv).unwrap();
+			let cur_height = nodes[0].best_block_info().1;
+			let (mut onion_payloads, ..) = onion_utils::build_onion_payloads(
+				&route.paths[0], amt_msat, RecipientOnionFields::spontaneous_empty(), cur_height, &None).unwrap();
+
+			let update_add = &mut payment_event_1_2.msgs[0];
+			onion_payloads.last_mut().map(|p| {
+				if let msgs::OutboundOnionPayload::BlindedReceive { ref mut intro_node_blinding_point, .. } = p {
+					// The receiver should error if both the update_add blinding_point and the
+					// intro_node_blinding_point are set.
+					assert!(intro_node_blinding_point.is_none() && update_add.blinding_point.is_some());
+					*intro_node_blinding_point = Some(PublicKey::from_slice(&[2; 33]).unwrap());
+				} else { panic!() }
+			});
+			update_add.onion_routing_packet = onion_utils::construct_onion_packet(
+				vec![onion_payloads.pop().unwrap()], vec![onion_keys.pop().unwrap()], [0; 32],
+				&payment_hash
+			).unwrap();
+			nodes[2].node.handle_update_add_htlc(&nodes[1].node.get_our_node_id(), update_add);
+			check_added_monitors!(nodes[2], 0);
+			do_commitment_signed_dance(&nodes[2], &nodes[1], &payment_event_1_2.commitment_msg, true, true);
+		}
+	}
 
 	let updates_2_1 = get_htlc_update_msgs!(nodes[2], nodes[1].node.get_our_node_id());
 	assert_eq!(updates_2_1.update_fail_malformed_htlcs.len(), 1);
