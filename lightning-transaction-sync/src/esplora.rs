@@ -2,7 +2,7 @@ use crate::error::{TxSyncError, InternalError};
 use crate::common::{SyncState, FilterQueue, ConfirmedTx};
 
 use lightning::util::logger::Logger;
-use lightning::{log_error, log_info, log_debug, log_trace};
+use lightning::{log_error, log_debug, log_trace};
 use lightning::chain::WatchedOutput;
 use lightning::chain::{Confirm, Filter};
 
@@ -14,6 +14,7 @@ use esplora_client::r#async::AsyncClient;
 #[cfg(not(feature = "async-interface"))]
 use esplora_client::blocking::BlockingClient;
 
+use std::time::Instant;
 use std::collections::HashSet;
 use core::ops::Deref;
 
@@ -89,7 +90,10 @@ where
 		#[cfg(feature = "async-interface")]
 		let mut sync_state = self.sync_state.lock().await;
 
-		log_info!(self.logger, "Starting transaction sync.");
+		log_trace!(self.logger, "Starting transaction sync.");
+		let start_time = Instant::now();
+		let mut num_confirmed = 0;
+		let mut num_unconfirmed = 0;
 
 		let mut tip_hash = maybe_await!(self.client.get_tip_hash())?;
 
@@ -113,14 +117,21 @@ where
 							let check_tip_hash = maybe_await!(self.client.get_tip_hash())?;
 							if check_tip_hash != tip_hash {
 								tip_hash = check_tip_hash;
+
+								log_debug!(self.logger, "Encountered inconsistency during transaction sync, restarting.");
+								sync_state.pending_sync = true;
 								continue;
 							}
-
+							num_unconfirmed += unconfirmed_txs.len();
 							self.sync_unconfirmed_transactions(&mut sync_state, &confirmables, unconfirmed_txs);
 						},
 						Err(err) => {
 							// (Semi-)permanent failure, retry later.
-							log_error!(self.logger, "Failed during transaction sync, aborting.");
+							log_error!(self.logger,
+								"Failed during transaction sync, aborting. Synced so far: {} confirmed, {} unconfirmed.",
+								num_confirmed,
+								num_unconfirmed
+							);
 							sync_state.pending_sync = true;
 							return Err(TxSyncError::from(err));
 						}
@@ -136,6 +147,11 @@ where
 						}
 						Err(err) => {
 							// (Semi-)permanent failure, retry later.
+							log_error!(self.logger,
+								"Failed during transaction sync, aborting. Synced so far: {} confirmed, {} unconfirmed.",
+								num_confirmed,
+								num_unconfirmed
+							);
 							sync_state.pending_sync = true;
 							return Err(TxSyncError::from(err));
 						}
@@ -152,6 +168,7 @@ where
 							continue;
 						}
 
+						num_confirmed += confirmed_txs.len();
 						self.sync_confirmed_transactions(
 							&mut sync_state,
 							&confirmables,
@@ -166,7 +183,11 @@ where
 					}
 					Err(err) => {
 						// (Semi-)permanent failure, retry later.
-						log_error!(self.logger, "Failed during transaction sync, aborting.");
+						log_error!(self.logger,
+							"Failed during transaction sync, aborting. Synced so far: {} confirmed, {} unconfirmed.",
+							num_confirmed,
+							num_unconfirmed
+						);
 						sync_state.pending_sync = true;
 						return Err(TxSyncError::from(err));
 					}
@@ -175,7 +196,8 @@ where
 				sync_state.pending_sync = false;
 			}
 		}
-		log_info!(self.logger, "Finished transaction sync.");
+		log_debug!(self.logger, "Finished transaction sync at tip {} in {}ms: {} confirmed, {} unconfirmed.",
+				tip_hash, start_time.elapsed().as_millis(), num_confirmed, num_unconfirmed);
 		Ok(())
 	}
 
@@ -286,7 +308,8 @@ where
 				return Err(InternalError::Failed);
 			}
 
-			let pos = *indexes.get(0).ok_or(InternalError::Failed)? as usize;
+			// unwrap() safety: len() > 0 is checked above
+			let pos = *indexes.first().unwrap() as usize;
 			if let Some(tx) = maybe_await!(self.client.get_tx(&txid))? {
 				if let Some(block_height) = known_block_height {
 					// We can take a shortcut here if a previous call already gave us the height.
