@@ -6343,7 +6343,7 @@ mod tests {
 		let route = get_route(&our_id, &route_params, &network_graph, None, Arc::clone(&logger),
 			&scorer, &Default::default(), &random_seed_bytes).unwrap();
 		let path = route.paths[0].hops.iter().map(|hop| hop.short_channel_id).collect::<Vec<_>>();
-		assert!(path.len() == MAX_PATH_LENGTH_ESTIMATE.into());
+		assert!(path.len() == MAX_PATH_LENGTH_ESTIMATE as usize);
 
 		// But we can't create a path surpassing the MAX_PATH_LENGTH_ESTIMATE limit.
 		let fail_payment_params = PaymentParameters::from_node_id(nodes[19], 0);

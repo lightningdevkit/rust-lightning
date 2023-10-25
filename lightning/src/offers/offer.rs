@@ -103,6 +103,9 @@ use crate::prelude::*;
 #[cfg(feature = "std")]
 use std::time::SystemTime;
 
+#[cfg(feature = "serde")]
+use serde::{Deserialize, Deserializer,Serialize, Serializer, de::Error};
+
 pub(super) const IV_BYTES: &[u8; IV_LEN] = b"LDK Offer ~~~~~~";
 
 /// Builds an [`Offer`] for the "offer to be paid" flow.
@@ -902,6 +905,23 @@ impl core::fmt::Display for Offer {
 	}
 }
 
+#[cfg(feature = "serde")]
+impl Serialize for Offer {
+	fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error> where S: Serializer {
+	 	serializer.serialize_str(&self.to_string())
+	}
+}
+
+#[cfg(feature = "serde")]
+impl<'de> Deserialize<'de> for Offer {
+	fn deserialize<D>(deserializer: D) -> Result<Offer, D::Error> where D: Deserializer<'de> {
+		let offer = String::deserialize(deserializer)?
+			.parse::<Offer>()
+			.map_err(|e| D::Error::custom(format_args!("{:?}", e)))?;
+		Ok(offer)
+	}
+}
+
 #[cfg(test)]
 mod tests {
 	use super::{Amount, Offer, OfferBuilder, OfferTlvStreamRef, Quantity};
@@ -1585,5 +1605,29 @@ mod bech32_tests {
 			Ok(_) => panic!("Valid offer: {}", encoded_offer),
 			Err(e) => assert_eq!(e, Bolt12ParseError::Decode(DecodeError::InvalidValue)),
 		}
+	}
+}
+
+#[cfg(all(test, feature = "serde"))]
+mod serde_tests {
+	use super::Offer;
+
+	#[test]
+	fn serialize_offer() {
+		let encoded_offer = "lno1pqps7sjqpgtyzm3qv4uxzmtsd3jjqer9wd3hy6tsw35k7msjzfpy7nz5yqcnygrfdej82um5wf5k2uckyypwa3eyt44h6txtxquqh7lz5djge4afgfjn7k4rgrkuag0jsd5xvxg";
+		let offer = dbg!(encoded_offer.parse::<Offer>().unwrap());
+		let serialized_offer = dbg!(serde_json::to_string(&offer).unwrap());
+		assert_eq!(encoded_offer, serialized_offer.to_string().trim_matches('\"'));
+	}
+
+	#[test]
+	fn deserialize_offer() {
+		let serialized_offer = "\"lno1pqps7sjqpgtyzm3qv4uxzmtsd3jjqer9wd3hy6tsw35k7msjzfpy7nz5yqcnygrfdej82um5wf5k2uckyypwa3eyt44h6txtxquqh7lz5djge4afgfjn7k4rgrkuag0jsd5xvxg\"";
+		let deserialized_offer: Offer = match serde_json::from_str(serialized_offer) {
+			Err(e) => panic!("Error in deserialization {}", e.to_string()),
+			Ok(o) => o,
+		};
+		let stringified_offer = deserialized_offer.to_string();
+		assert_eq!(serialized_offer.trim_matches('\"'), stringified_offer);
 	}
 }
