@@ -1,7 +1,7 @@
 #![cfg(any(feature = "esplora-blocking", feature = "esplora-async"))]
 use lightning_transaction_sync::EsploraSyncClient;
-use lightning::chain::{Confirm, Filter};
-use lightning::chain::transaction::TransactionData;
+use lightning::chain::{Confirm, Filter, WatchedOutput};
+use lightning::chain::transaction::{OutPoint, TransactionData};
 use lightning::util::test_utils::TestLogger;
 
 use electrsd::{bitcoind, bitcoind::BitcoinD, ElectrsD};
@@ -168,9 +168,13 @@ fn test_esplora_syncs() {
 	assert_eq!(events.len(), 1);
 
 	// Check registered confirmed transactions are marked confirmed
-	let new_address = bitcoind.client.get_new_address(Some("test"), Some(AddressType::Legacy)).unwrap().assume_checked();
-	let txid = bitcoind.client.send_to_address(&new_address, Amount::from_sat(5000), None, None, None, None, None, None).unwrap();
-	tx_sync.register_tx(&txid, &new_address.payload.script_pubkey());
+	let new_address = bitcoind.client.get_new_address(Some("test"),
+		Some(AddressType::Legacy)).unwrap().assume_checked();
+	let txid = bitcoind.client.send_to_address(&new_address, Amount::from_sat(5000), None, None,
+		None, None, None, None).unwrap();
+	let second_txid = bitcoind.client.send_to_address(&new_address, Amount::from_sat(5000), None,
+		None, None, None, None, None).unwrap();
+	tx_sync.register_tx(&txid, &new_address.script_pubkey());
 
 	tx_sync.sync(vec![&confirmable]).unwrap();
 
@@ -185,6 +189,29 @@ fn test_esplora_syncs() {
 	let events = std::mem::take(&mut *confirmable.events.lock().unwrap());
 	assert_eq!(events.len(), 2);
 	assert!(confirmable.confirmed_txs.lock().unwrap().contains_key(&txid));
+	assert!(confirmable.unconfirmed_txs.lock().unwrap().is_empty());
+
+	// Now take an arbitrary output of the second transaction and check we'll confirm its spend.
+	let tx_res = bitcoind.client.get_transaction(&second_txid, None).unwrap();
+	let block_hash = tx_res.info.blockhash.unwrap();
+	let tx = tx_res.transaction().unwrap();
+	let prev_outpoint = tx.input.first().unwrap().previous_output;
+	let prev_tx = bitcoind.client.get_transaction(&prev_outpoint.txid, None).unwrap().transaction()
+		.unwrap();
+	let prev_script_pubkey = prev_tx.output[prev_outpoint.vout as usize].script_pubkey.clone();
+	let output = WatchedOutput {
+		block_hash: Some(block_hash),
+		outpoint: OutPoint { txid: prev_outpoint.txid, index: prev_outpoint.vout as u16 },
+		script_pubkey: prev_script_pubkey
+	};
+
+	tx_sync.register_output(output);
+	tx_sync.sync(vec![&confirmable]).unwrap();
+
+	let events = std::mem::take(&mut *confirmable.events.lock().unwrap());
+	assert_eq!(events.len(), 1);
+	assert!(confirmable.confirmed_txs.lock().unwrap().contains_key(&second_txid));
+	assert_eq!(confirmable.confirmed_txs.lock().unwrap().len(), 2);
 	assert!(confirmable.unconfirmed_txs.lock().unwrap().is_empty());
 
 	// Check previously confirmed transactions are marked unconfirmed when they are reorged.
@@ -203,32 +230,54 @@ fn test_esplora_syncs() {
 	assert_ne!(bitcoind.client.get_best_block_hash().unwrap(), best_block_hash);
 	tx_sync.sync(vec![&confirmable]).unwrap();
 
-	// Transaction still confirmed but under new tip.
+	// Transactions still confirmed but under new tip.
 	assert!(confirmable.confirmed_txs.lock().unwrap().contains_key(&txid));
+	assert!(confirmable.confirmed_txs.lock().unwrap().contains_key(&second_txid));
 	assert!(confirmable.unconfirmed_txs.lock().unwrap().is_empty());
 
 	// Check we got unconfirmed, then reconfirmed in the meantime.
+	let mut seen_txids = HashSet::new();
 	let events = std::mem::take(&mut *confirmable.events.lock().unwrap());
-	assert_eq!(events.len(), 3);
+	assert_eq!(events.len(), 5);
 
 	match events[0] {
 		TestConfirmableEvent::Unconfirmed(t) => {
-			assert_eq!(t, txid);
+			assert!(t == txid || t == second_txid);
+			assert!(seen_txids.insert(t));
 		},
 		_ => panic!("Unexpected event"),
 	}
 
 	match events[1] {
-		TestConfirmableEvent::BestBlockUpdated(..) => {},
+		TestConfirmableEvent::Unconfirmed(t) => {
+			assert!(t == txid || t == second_txid);
+			assert!(seen_txids.insert(t));
+		},
 		_ => panic!("Unexpected event"),
 	}
 
 	match events[2] {
+		TestConfirmableEvent::BestBlockUpdated(..) => {},
+		_ => panic!("Unexpected event"),
+	}
+
+	match events[3] {
 		TestConfirmableEvent::Confirmed(t, _, _) => {
-			assert_eq!(t, txid);
+			assert!(t == txid || t == second_txid);
+			assert!(seen_txids.remove(&t));
 		},
 		_ => panic!("Unexpected event"),
 	}
+
+	match events[4] {
+		TestConfirmableEvent::Confirmed(t, _, _) => {
+			assert!(t == txid || t == second_txid);
+			assert!(seen_txids.remove(&t));
+		},
+		_ => panic!("Unexpected event"),
+	}
+
+	assert_eq!(seen_txids.len(), 0);
 }
 
 #[tokio::test]
@@ -251,9 +300,13 @@ async fn test_esplora_syncs() {
 	assert_eq!(events.len(), 1);
 
 	// Check registered confirmed transactions are marked confirmed
-	let new_address = bitcoind.client.get_new_address(Some("test"), Some(AddressType::Legacy)).unwrap().assume_checked();
-	let txid = bitcoind.client.send_to_address(&new_address, Amount::from_sat(5000), None, None, None, None, None, None).unwrap();
-	tx_sync.register_tx(&txid, &new_address.payload.script_pubkey());
+	let new_address = bitcoind.client.get_new_address(Some("test"),
+		Some(AddressType::Legacy)).unwrap().assume_checked();
+	let txid = bitcoind.client.send_to_address(&new_address, Amount::from_sat(5000), None, None,
+		None, None, None, None).unwrap();
+	let second_txid = bitcoind.client.send_to_address(&new_address, Amount::from_sat(5000), None,
+		None, None, None, None, None).unwrap();
+	tx_sync.register_tx(&txid, &new_address.script_pubkey());
 
 	tx_sync.sync(vec![&confirmable]).await.unwrap();
 
@@ -268,6 +321,29 @@ async fn test_esplora_syncs() {
 	let events = std::mem::take(&mut *confirmable.events.lock().unwrap());
 	assert_eq!(events.len(), 2);
 	assert!(confirmable.confirmed_txs.lock().unwrap().contains_key(&txid));
+	assert!(confirmable.unconfirmed_txs.lock().unwrap().is_empty());
+
+	// Now take an arbitrary output of the second transaction and check we'll confirm its spend.
+	let tx_res = bitcoind.client.get_transaction(&second_txid, None).unwrap();
+	let block_hash = tx_res.info.blockhash.unwrap();
+	let tx = tx_res.transaction().unwrap();
+	let prev_outpoint = tx.input.first().unwrap().previous_output;
+	let prev_tx = bitcoind.client.get_transaction(&prev_outpoint.txid, None).unwrap().transaction()
+		.unwrap();
+	let prev_script_pubkey = prev_tx.output[prev_outpoint.vout as usize].script_pubkey.clone();
+	let output = WatchedOutput {
+		block_hash: Some(block_hash),
+		outpoint: OutPoint { txid: prev_outpoint.txid, index: prev_outpoint.vout as u16 },
+		script_pubkey: prev_script_pubkey
+	};
+
+	tx_sync.register_output(output);
+	tx_sync.sync(vec![&confirmable]).await.unwrap();
+
+	let events = std::mem::take(&mut *confirmable.events.lock().unwrap());
+	assert_eq!(events.len(), 1);
+	assert!(confirmable.confirmed_txs.lock().unwrap().contains_key(&second_txid));
+	assert_eq!(confirmable.confirmed_txs.lock().unwrap().len(), 2);
 	assert!(confirmable.unconfirmed_txs.lock().unwrap().is_empty());
 
 	// Check previously confirmed transactions are marked unconfirmed when they are reorged.
@@ -286,30 +362,52 @@ async fn test_esplora_syncs() {
 	assert_ne!(bitcoind.client.get_best_block_hash().unwrap(), best_block_hash);
 	tx_sync.sync(vec![&confirmable]).await.unwrap();
 
-	// Transaction still confirmed but under new tip.
+	// Transactions still confirmed but under new tip.
 	assert!(confirmable.confirmed_txs.lock().unwrap().contains_key(&txid));
+	assert!(confirmable.confirmed_txs.lock().unwrap().contains_key(&second_txid));
 	assert!(confirmable.unconfirmed_txs.lock().unwrap().is_empty());
 
 	// Check we got unconfirmed, then reconfirmed in the meantime.
+	let mut seen_txids = HashSet::new();
 	let events = std::mem::take(&mut *confirmable.events.lock().unwrap());
-	assert_eq!(events.len(), 3);
+	assert_eq!(events.len(), 5);
 
 	match events[0] {
 		TestConfirmableEvent::Unconfirmed(t) => {
-			assert_eq!(t, txid);
+			assert!(t == txid || t == second_txid);
+			assert!(seen_txids.insert(t));
 		},
 		_ => panic!("Unexpected event"),
 	}
 
 	match events[1] {
-		TestConfirmableEvent::BestBlockUpdated(..) => {},
+		TestConfirmableEvent::Unconfirmed(t) => {
+			assert!(t == txid || t == second_txid);
+			assert!(seen_txids.insert(t));
+		},
 		_ => panic!("Unexpected event"),
 	}
 
 	match events[2] {
+		TestConfirmableEvent::BestBlockUpdated(..) => {},
+		_ => panic!("Unexpected event"),
+	}
+
+	match events[3] {
 		TestConfirmableEvent::Confirmed(t, _, _) => {
-			assert_eq!(t, txid);
+			assert!(t == txid || t == second_txid);
+			assert!(seen_txids.remove(&t));
 		},
 		_ => panic!("Unexpected event"),
 	}
+
+	match events[4] {
+		TestConfirmableEvent::Confirmed(t, _, _) => {
+			assert!(t == txid || t == second_txid);
+			assert!(seen_txids.remove(&t));
+		},
+		_ => panic!("Unexpected event"),
+	}
+
+	assert_eq!(seen_txids.len(), 0);
 }
