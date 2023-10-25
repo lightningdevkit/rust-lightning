@@ -2,7 +2,7 @@
 use lightning_transaction_sync::EsploraSyncClient;
 use lightning::chain::{Confirm, Filter};
 use lightning::chain::transaction::TransactionData;
-use lightning::util::logger::{Logger, Record};
+use lightning::util::test_utils::TestLogger;
 
 use electrsd::{bitcoind, bitcoind::BitcoinD, ElectrsD};
 use bitcoin::{Amount, Txid, BlockHash};
@@ -148,22 +148,12 @@ impl Confirm for TestConfirmable {
 	}
 }
 
-pub struct TestLogger {}
-
-impl Logger for TestLogger {
-	fn log(&self, record: &Record) {
-		println!("{} -- {}",
-				record.level,
-				record.args);
-	}
-}
-
 #[test]
 #[cfg(feature = "esplora-blocking")]
 fn test_esplora_syncs() {
 	let (bitcoind, electrsd) = setup_bitcoind_and_electrsd();
 	generate_blocks_and_wait(&bitcoind, &electrsd, 101);
-	let mut logger = TestLogger {};
+	let mut logger = TestLogger::new();
 	let esplora_url = format!("http://{}", electrsd.esplora_url.as_ref().unwrap());
 	let tx_sync = EsploraSyncClient::new(esplora_url, &mut logger);
 	let confirmable = TestConfirmable::new();
@@ -246,7 +236,7 @@ fn test_esplora_syncs() {
 async fn test_esplora_syncs() {
 	let (bitcoind, electrsd) = setup_bitcoind_and_electrsd();
 	generate_blocks_and_wait(&bitcoind, &electrsd, 101);
-	let mut logger = TestLogger {};
+	let mut logger = TestLogger::new();
 	let esplora_url = format!("http://{}", electrsd.esplora_url.as_ref().unwrap());
 	let tx_sync = EsploraSyncClient::new(esplora_url, &mut logger);
 	let confirmable = TestConfirmable::new();
