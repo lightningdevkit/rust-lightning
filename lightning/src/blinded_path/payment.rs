@@ -118,21 +118,6 @@ impl Writeable for ReceiveTlvs {
 	}
 }
 
-// This will be removed once we support forwarding blinded HTLCs, because we'll always read a
-// `BlindedPaymentTlvs` instead.
-impl Readable for ReceiveTlvs {
-	fn read<R: io::Read>(r: &mut R) -> Result<Self, DecodeError> {
-		_init_and_read_tlv_stream!(r, {
-			(12, payment_constraints, required),
-			(65536, payment_secret, required),
-		});
-		Ok(Self {
-			payment_secret: payment_secret.0.unwrap(),
-			payment_constraints: payment_constraints.0.unwrap()
-		})
-	}
-}
-
 impl<'a> Writeable for BlindedPaymentTlvsRef<'a> {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
 		// TODO: write padding
