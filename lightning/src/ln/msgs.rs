@@ -31,7 +31,7 @@ use bitcoin::{secp256k1, Witness};
 use bitcoin::blockdata::script::ScriptBuf;
 use bitcoin::hash_types::Txid;
 
-use crate::blinded_path::payment::ReceiveTlvs;
+use crate::blinded_path::payment::{BlindedPaymentTlvs, ForwardTlvs, ReceiveTlvs};
 use crate::ln::{ChannelId, PaymentPreimage, PaymentHash, PaymentSecret};
 use crate::ln::features::{ChannelFeatures, ChannelTypeFeatures, InitFeatures, NodeFeatures};
 use crate::ln::onion_utils;
@@ -1666,9 +1666,10 @@ pub trait OnionMessageHandler {
 
 mod fuzzy_internal_msgs {
 	use bitcoin::secp256k1::PublicKey;
-	use crate::blinded_path::payment::PaymentConstraints;
+	use crate::blinded_path::payment::{PaymentConstraints, PaymentRelay};
 	use crate::prelude::*;
 	use crate::ln::{PaymentPreimage, PaymentSecret};
+	use crate::ln::features::BlindedHopFeatures;
 
 	// These types aren't intended to be pub, but are exposed for direct fuzzing (as we deserialize
 	// them from untrusted input):
@@ -1694,6 +1695,13 @@ mod fuzzy_internal_msgs {
 			custom_tlvs: Vec<(u64, Vec<u8>)>,
 			amt_msat: u64,
 			outgoing_cltv_value: u32,
+		},
+		BlindedForward {
+			short_channel_id: u64,
+			payment_relay: PaymentRelay,
+			payment_constraints: PaymentConstraints,
+			features: BlindedHopFeatures,
+			intro_node_blinding_point: PublicKey,
 		},
 		BlindedReceive {
 			amt_msat: u64,
@@ -2354,7 +2362,23 @@ impl<NS: Deref> ReadableArgs<&NS> for InboundOnionPayload where NS::Target: Node
 			let mut s = Cursor::new(&enc_tlvs);
 			let mut reader = FixedLengthReader::new(&mut s, enc_tlvs.len() as u64);
 			match ChaChaPolyReadAdapter::read(&mut reader, rho)? {
-				ChaChaPolyReadAdapter { readable: ReceiveTlvs { payment_secret, payment_constraints }} => {
+				ChaChaPolyReadAdapter { readable: BlindedPaymentTlvs::Forward(ForwardTlvs {
+					short_channel_id, payment_relay, payment_constraints, features
+				})} => {
+					if amt.is_some() || cltv_value.is_some() || total_msat.is_some() {
+						return Err(DecodeError::InvalidValue)
+					}
+					Ok(Self::BlindedForward {
+						short_channel_id,
+						payment_relay,
+						payment_constraints,
+						features,
+						intro_node_blinding_point: blinding_point,
+					})
+				},
+				ChaChaPolyReadAdapter { readable: BlindedPaymentTlvs::Receive(ReceiveTlvs {
+					payment_secret, payment_constraints
+				})} => {
 					if total_msat.unwrap_or(0) > MAX_VALUE_MSAT { return Err(DecodeError::InvalidValue) }
 					Ok(Self::BlindedReceive {
 						amt_msat: amt.ok_or(DecodeError::InvalidValue)?,

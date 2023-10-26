@@ -11,7 +11,7 @@ use crate::ln::PaymentHash;
 use crate::ln::channelmanager::{CLTV_FAR_FAR_AWAY, HTLCFailureMsg, MIN_CLTV_EXPIRY_DELTA, PendingHTLCInfo, PendingHTLCRouting};
 use crate::ln::msgs;
 use crate::ln::onion_utils;
-use crate::ln::onion_utils::HTLCFailReason;
+use crate::ln::onion_utils::{HTLCFailReason, INVALID_ONION_BLINDING};
 use crate::sign::{NodeSigner, Recipient};
 use crate::util::logger::Logger;
 
@@ -44,6 +44,7 @@ pub(super) fn create_fwd_pending_htlc_info(
 	let (short_channel_id, amt_to_forward, outgoing_cltv_value) = match hop_data {
 		msgs::InboundOnionPayload::Forward { short_channel_id, amt_to_forward, outgoing_cltv_value } =>
 			(short_channel_id, amt_to_forward, outgoing_cltv_value),
+		msgs::InboundOnionPayload::BlindedForward { .. } => todo!(),
 		msgs::InboundOnionPayload::Receive { .. } | msgs::InboundOnionPayload::BlindedReceive { .. } =>
 			return Err(InboundOnionErr {
 				msg: "Final Node OnionHopData provided for us as an intermediary node",
@@ -90,6 +91,13 @@ pub(super) fn create_recv_pending_htlc_info(
 				msg: "Got non final data with an HMAC of 0",
 			})
 		},
+		msgs::InboundOnionPayload::BlindedForward { .. } => {
+			return Err(InboundOnionErr {
+				err_code: INVALID_ONION_BLINDING,
+				err_data: vec![0; 32],
+				msg: "Got blinded non final data with an HMAC of 0",
+			})
+		}
 	};
 	// final_incorrect_cltv_expiry
 	if outgoing_cltv_value > cltv_expiry {
@@ -326,6 +334,11 @@ where
 				next_packet_pubkey, outgoing_scid: short_channel_id,
 				outgoing_amt_msat: amt_to_forward, outgoing_cltv_value
 			}
+		},
+		onion_utils::Hop::Forward {
+			next_hop_data: msgs::InboundOnionPayload::BlindedForward { .. }, ..
+		} => {
+			todo!()
 		},
 		onion_utils::Hop::Receive { .. } => return Ok((next_hop, shared_secret, None)),
 		onion_utils::Hop::Forward { next_hop_data: msgs::InboundOnionPayload::Receive { .. }, .. } |
