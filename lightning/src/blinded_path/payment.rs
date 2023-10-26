@@ -187,7 +187,7 @@ pub(super) fn blinded_hops<T: secp256k1::Signing + secp256k1::Verification>(
 }
 
 /// `None` if underflow occurs.
-fn amt_to_forward_msat(inbound_amt_msat: u64, payment_relay: &PaymentRelay) -> Option<u64> {
+pub(crate) fn amt_to_forward_msat(inbound_amt_msat: u64, payment_relay: &PaymentRelay) -> Option<u64> {
 	let inbound_amt = inbound_amt_msat as u128;
 	let base = payment_relay.fee_base_msat as u128;
 	let prop = payment_relay.fee_proportional_millionths as u128;
