@@ -31,21 +31,40 @@ tlv_stream!(SignatureTlvStream, SignatureTlvStreamRef, SIGNATURE_TYPES, {
 /// [BIP 340]: https://github.com/bitcoin/bips/blob/master/bip-0340.mediawiki
 /// [BOLT 12]: https://github.com/rustyrussell/lightning-rfc/blob/guilt/offers/12-offer-encoding.md#signature-calculation
 #[derive(Clone, Debug, PartialEq)]
-pub struct TaggedHash(Message);
+pub struct TaggedHash {
+	tag: String,
+	merkle_root: sha256::Hash,
+	digest: Message,
+}
 
 impl TaggedHash {
 	/// Creates a tagged hash with the given parameters.
 	///
 	/// Panics if `tlv_stream` is not a well-formed TLV stream containing at least one TLV record.
 	pub(super) fn new(tag: &str, tlv_stream: &[u8]) -> Self {
-		let tag = sha256::Hash::hash(tag.as_bytes());
+		let tag_hash = sha256::Hash::hash(tag.as_bytes());
 		let merkle_root = root_hash(tlv_stream);
-		Self(Message::from_slice(&tagged_hash(tag, merkle_root)).unwrap())
+		let digest = Message::from_slice(&tagged_hash(tag_hash, merkle_root)).unwrap();
+		Self {
+			tag: tag.to_owned(),
+			merkle_root,
+			digest,
+		}
 	}
 
 	/// Returns the digest to sign.
 	pub fn as_digest(&self) -> &Message {
-		&self.0
+		&self.digest
+	}
+
+	/// Returns the tag used in the tagged hash.
+	pub fn tag(&self) -> &str {
+		&self.tag
+	}
+
+	/// Returns the merkle root used in the tagged hash.
+	pub fn merkle_root(&self) -> sha256::Hash {
+		self.merkle_root
 	}
 }
 
@@ -254,12 +273,13 @@ mod tests {
 	use super::{SIGNATURE_TYPES, TlvStream, WithoutSignatures};
 
 	use bitcoin::hashes::{Hash, sha256};
-	use bitcoin::secp256k1::{KeyPair, Secp256k1, SecretKey};
+	use bitcoin::secp256k1::{KeyPair, Message, Secp256k1, SecretKey};
 	use bitcoin::secp256k1::schnorr::Signature;
 	use core::convert::Infallible;
 	use crate::offers::offer::{Amount, OfferBuilder};
 	use crate::offers::invoice_request::InvoiceRequest;
 	use crate::offers::parse::Bech32Encode;
+	use crate::offers::test_utils::{payer_pubkey, recipient_pubkey};
 	use crate::util::ser::Writeable;
 
 	#[test]
@@ -317,6 +337,25 @@ mod tests {
 			Signature::from_slice(&hex::decode("b8f83ea3288cfd6ea510cdb481472575141e8d8744157f98562d162cc1c472526fdb24befefbdebab4dbb726bbd1b7d8aec057f8fa805187e5950d2bbe0e5642").unwrap()).unwrap(),
 		);
 	}
+
+        #[test]
+        fn compute_tagged_hash() {
+                let unsigned_invoice_request = OfferBuilder::new("foo".into(), recipient_pubkey())
+                        .amount_msats(1000)
+                        .build().unwrap()
+                        .request_invoice(vec![1; 32], payer_pubkey()).unwrap()
+                        .payer_note("bar".into())
+                        .build().unwrap();
+
+                // Simply test that we can grab the tag and merkle root exposed by the accessor
+                // functions, then use them to succesfully compute a tagged hash.
+                let tagged_hash = unsigned_invoice_request.as_ref();
+                let expected_digest = unsigned_invoice_request.as_ref().as_digest();
+                let tag = sha256::Hash::hash(tagged_hash.tag().as_bytes());
+                let actual_digest = Message::from_slice(&super::tagged_hash(tag, tagged_hash.merkle_root()))
+                        .unwrap();
+                assert_eq!(*expected_digest, actual_digest);
+        }
 
 	#[test]
 	fn skips_encoding_signature_tlv_records() {
