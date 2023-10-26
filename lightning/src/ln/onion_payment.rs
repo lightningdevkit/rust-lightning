@@ -3,9 +3,10 @@
 //! Primarily features [`peel_payment_onion`], which allows the decoding of an onion statelessly
 //! and can be used to predict whether we'd accept a payment.
 
-use bitcoin::hashes::Hash;
+use bitcoin::hashes::{Hash, HashEngine};
+use bitcoin::hashes::hmac::{Hmac, HmacEngine};
 use bitcoin::hashes::sha256::Hash as Sha256;
-use bitcoin::secp256k1::{self, Secp256k1, PublicKey};
+use bitcoin::secp256k1::{self, PublicKey, Scalar, Secp256k1};
 
 use crate::blinded_path;
 use crate::blinded_path::payment::{PaymentConstraints, PaymentRelay};
@@ -326,8 +327,14 @@ where
 		return_malformed_err!("invalid ephemeral pubkey", 0x8000 | 0x4000 | 6);
 	}
 
+	let blinded_node_id_tweak = msg.blinding_point.map(|bp| {
+		let blinded_tlvs_ss = node_signer.ecdh(Recipient::Node, &bp, None).unwrap().secret_bytes();
+		let mut hmac = HmacEngine::<Sha256>::new(b"blinded_node_id");
+		hmac.input(blinded_tlvs_ss.as_ref());
+		Scalar::from_be_bytes(Hmac::from_engine(hmac).to_byte_array()).unwrap()
+	});
 	let shared_secret = node_signer.ecdh(
-		Recipient::Node, &msg.onion_routing_packet.public_key.unwrap(), None
+		Recipient::Node, &msg.onion_routing_packet.public_key.unwrap(), blinded_node_id_tweak.as_ref()
 	).unwrap().secret_bytes();
 
 	if msg.onion_routing_packet.version != 0 {
