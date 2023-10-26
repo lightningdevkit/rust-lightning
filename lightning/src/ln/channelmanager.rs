@@ -201,11 +201,11 @@ pub struct BlindedForward {
 impl PendingHTLCRouting {
 	// Used to override the onion failure code and data if the HTLC is blinded.
 	fn blinded_failure(&self) -> Option<BlindedFailure> {
-		// TODO: needs update when we support receiving to multi-hop blinded paths
-		if let Self::Forward { blinded: Some(_), .. } = self {
-			Some(BlindedFailure::FromIntroductionNode)
-		} else {
-			None
+		// TODO: needs update when we support forwarding blinded HTLCs as non-intro node
+		match self {
+			Self::Forward { blinded: Some(_), .. } => Some(BlindedFailure::FromIntroductionNode),
+			Self::Receive { requires_blinded_error: true, .. } => Some(BlindedFailure::FromBlindedNode),
+			_ => None,
 		}
 	}
 }
@@ -291,7 +291,7 @@ pub(super) enum HTLCForwardInfo {
 }
 
 // Used for failing blinded HTLCs backwards correctly.
-#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 enum BlindedFailure {
 	FromIntroductionNode,
 	FromBlindedNode,
@@ -4462,7 +4462,7 @@ where
 												htlc_id: $htlc.prev_hop.htlc_id,
 												incoming_packet_shared_secret: $htlc.prev_hop.incoming_packet_shared_secret,
 												phantom_shared_secret,
-												blinded_failure: None,
+												blinded_failure,
 											}), payment_hash,
 											HTLCFailReason::reason(0x4000 | 15, htlc_msat_height_data),
 											HTLCDestination::FailedPayment { payment_hash: $payment_hash },
