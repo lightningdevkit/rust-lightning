@@ -112,16 +112,21 @@ pub(super) fn create_recv_pending_htlc_info(
 	amt_msat: u64, cltv_expiry: u32, phantom_shared_secret: Option<[u8; 32]>, allow_underpay: bool,
 	counterparty_skimmed_fee_msat: Option<u64>, current_height: u32, accept_mpp_keysend: bool,
 ) -> Result<PendingHTLCInfo, InboundOnionErr> {
-	let (payment_data, keysend_preimage, custom_tlvs, onion_amt_msat, outgoing_cltv_value, payment_metadata) = match hop_data {
+	let (
+		payment_data, keysend_preimage, custom_tlvs, onion_amt_msat, outgoing_cltv_value,
+		payment_metadata, requires_blinded_error
+	) = match hop_data {
 		msgs::InboundOnionPayload::Receive {
 			payment_data, keysend_preimage, custom_tlvs, amt_msat, outgoing_cltv_value, payment_metadata, ..
 		} =>
-			(payment_data, keysend_preimage, custom_tlvs, amt_msat, outgoing_cltv_value, payment_metadata),
+			(payment_data, keysend_preimage, custom_tlvs, amt_msat, outgoing_cltv_value, payment_metadata,
+			 false),
 		msgs::InboundOnionPayload::BlindedReceive {
-			amt_msat, total_msat, outgoing_cltv_value, payment_secret, ..
+			amt_msat, total_msat, outgoing_cltv_value, payment_secret, intro_node_blinding_point, ..
 		} => {
 			let payment_data = msgs::FinalOnionHopData { payment_secret, total_msat };
-			(Some(payment_data), None, Vec::new(), amt_msat, outgoing_cltv_value, None)
+			(Some(payment_data), None, Vec::new(), amt_msat, outgoing_cltv_value, None,
+			 intro_node_blinding_point.is_none())
 		}
 		msgs::InboundOnionPayload::Forward { .. } => {
 			return Err(InboundOnionErr {
@@ -208,6 +213,7 @@ pub(super) fn create_recv_pending_htlc_info(
 			incoming_cltv_expiry: outgoing_cltv_value,
 			phantom_shared_secret,
 			custom_tlvs,
+			requires_blinded_error,
 		}
 	} else {
 		return Err(InboundOnionErr {

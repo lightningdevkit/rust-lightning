@@ -155,6 +155,8 @@ pub enum PendingHTLCRouting {
 		/// [`Event::PaymentClaimable::onion_fields`] as
 		/// [`RecipientOnionFields::custom_tlvs`].
 		custom_tlvs: Vec<(u64, Vec<u8>)>,
+		/// Set if this HTLC is the final hop in a multi-hop blinded path.
+		requires_blinded_error: bool,
 	},
 	/// The onion indicates that this is for payment to us but which contains the preimage for
 	/// claiming included, and is unrelated to any invoice we'd previously generated (aka a
@@ -4398,7 +4400,10 @@ where
 							}) => {
 								let blinded_failure = routing.blinded_failure();
 								let (cltv_expiry, onion_payload, payment_data, phantom_shared_secret, mut onion_fields) = match routing {
-									PendingHTLCRouting::Receive { payment_data, payment_metadata, incoming_cltv_expiry, phantom_shared_secret, custom_tlvs } => {
+									PendingHTLCRouting::Receive {
+										payment_data, payment_metadata, incoming_cltv_expiry, phantom_shared_secret,
+										custom_tlvs, requires_blinded_error: _
+									} => {
 										let _legacy_hop_data = Some(payment_data.clone());
 										let onion_fields = RecipientOnionFields { payment_secret: Some(payment_data.payment_secret),
 												payment_metadata, custom_tlvs };
@@ -9374,6 +9379,7 @@ impl_writeable_tlv_based_enum!(PendingHTLCRouting,
 		(2, incoming_cltv_expiry, required),
 		(3, payment_metadata, option),
 		(5, custom_tlvs, optional_vec),
+		(7, requires_blinded_error, (default_value, false)),
 	},
 	(2, ReceiveKeysend) => {
 		(0, payment_preimage, required),
