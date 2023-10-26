@@ -502,8 +502,21 @@ pub(super) fn process_onion_failure<T: secp256k1::Signing, L: Deref>(
 				Some(hop) => hop,
 				None => {
 					// The failing hop is within a multi-hop blinded path.
-					error_code_ret = Some(BADONION | PERM | 24); // invalid_onion_blinding
-					error_packet_ret = Some(vec![0; 32]);
+					#[cfg(not(test))] {
+						error_code_ret = Some(BADONION | PERM | 24); // invalid_onion_blinding
+						error_packet_ret = Some(vec![0; 32]);
+					}
+					#[cfg(test)] {
+						// Actually parse the onion error data in tests so we can check that blinded hops fail
+						// back correctly.
+						let err_packet = decrypt_onion_error_packet(
+							&mut encrypted_packet, shared_secret
+						).unwrap();
+						error_code_ret =
+							Some(u16::from_be_bytes(err_packet.failuremsg.get(0..2).unwrap().try_into().unwrap()));
+						error_packet_ret = Some(err_packet.failuremsg[2..].to_vec());
+					}
+
 					res = Some(FailureLearnings {
 						network_update: None, short_channel_id: None, payment_failed_permanently: false
 					});
