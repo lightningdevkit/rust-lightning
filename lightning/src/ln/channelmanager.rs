@@ -53,7 +53,7 @@ use crate::routing::scoring::{ProbabilisticScorer, ProbabilisticScoringFeeParame
 use crate::ln::onion_payment::{check_incoming_htlc_cltv, create_recv_pending_htlc_info, create_fwd_pending_htlc_info, decode_incoming_update_add_htlc_onion, InboundOnionErr, NextPacketDetails};
 use crate::ln::msgs;
 use crate::ln::onion_utils;
-use crate::ln::onion_utils::HTLCFailReason;
+use crate::ln::onion_utils::{HTLCFailReason, INVALID_ONION_BLINDING};
 use crate::ln::msgs::{ChannelMessageHandler, DecodeError, LightningError};
 #[cfg(test)]
 use crate::ln::outbound_payment;
@@ -4262,9 +4262,17 @@ where
 										phantom_shared_secret: None,
 										blinded_failure: blinded.map(|_| BlindedFailure::FromIntroductionNode),
 									});
+									let next_blinding_point = blinded.and_then(|b| {
+										let encrypted_tlvs_ss = self.node_signer.ecdh(
+											Recipient::Node, &b.inbound_blinding_point, None
+										).unwrap().secret_bytes();
+										onion_utils::next_hop_pubkey(
+											&self.secp_ctx, b.inbound_blinding_point, &encrypted_tlvs_ss
+										).ok()
+									});
 									if let Err(e) = chan.queue_add_htlc(outgoing_amt_msat,
 										payment_hash, outgoing_cltv_value, htlc_source.clone(),
-										onion_packet, skimmed_fee_msat, None, &self.fee_estimator,
+										onion_packet, skimmed_fee_msat, next_blinding_point, &self.fee_estimator,
 										&self.logger)
 									{
 										if let ChannelError::Ignore(msg) = e {

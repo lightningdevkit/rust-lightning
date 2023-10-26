@@ -242,6 +242,8 @@ pub(super) fn build_onion_payloads(path: &Path, total_msat: u64, mut recipient_o
 /// the hops can be of variable length.
 pub(crate) const ONION_DATA_LEN: usize = 20*65;
 
+pub(super) const INVALID_ONION_BLINDING: u16 = 0x8000 | 0x4000 | 24;
+
 #[inline]
 fn shift_slice_right(arr: &mut [u8], amt: usize) {
 	for i in (amt..arr.len()).rev() {
