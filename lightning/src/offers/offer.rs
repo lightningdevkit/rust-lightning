@@ -468,6 +468,11 @@ impl Offer {
 		self.contents.is_expired()
 	}
 
+	/// Whether the offer has expired given the duration since the Unix epoch.
+	pub fn is_expired_no_std(&self, duration_since_epoch: Duration) -> bool {
+		self.contents.is_expired_no_std(duration_since_epoch)
+	}
+
 	/// Returns whether the given quantity is valid for the offer.
 	pub fn is_valid_quantity(&self, quantity: u64) -> bool {
 		self.contents.is_valid_quantity(quantity)
@@ -1192,6 +1197,7 @@ mod tests {
 	fn builds_offer_with_absolute_expiry() {
 		let future_expiry = Duration::from_secs(u64::max_value());
 		let past_expiry = Duration::from_secs(0);
+		let now = future_expiry - Duration::from_secs(1_000);
 
 		let offer = OfferBuilder::new("foo".into(), pubkey(42))
 			.absolute_expiry(future_expiry)
@@ -1199,6 +1205,7 @@ mod tests {
 			.unwrap();
 		#[cfg(feature = "std")]
 		assert!(!offer.is_expired());
+		assert!(!offer.is_expired_no_std(now));
 		assert_eq!(offer.absolute_expiry(), Some(future_expiry));
 		assert_eq!(offer.as_tlv_stream().absolute_expiry, Some(future_expiry.as_secs()));
 
@@ -1209,6 +1216,7 @@ mod tests {
 			.unwrap();
 		#[cfg(feature = "std")]
 		assert!(offer.is_expired());
+		assert!(offer.is_expired_no_std(now));
 		assert_eq!(offer.absolute_expiry(), Some(past_expiry));
 		assert_eq!(offer.as_tlv_stream().absolute_expiry, Some(past_expiry.as_secs()));
 	}
