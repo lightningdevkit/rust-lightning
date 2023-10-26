@@ -433,11 +433,22 @@ pub(crate) struct DecodedOnionFailure {
 	pub(crate) onion_error_data: Option<Vec<u8>>,
 }
 
+/// Note that we always decrypt `packet` in-place here even if the deserialization into
+/// [`msgs::DecodedOnionErrorPacket`] ultimately fails.
+fn decrypt_onion_error_packet(
+	packet: &mut Vec<u8>, shared_secret: SharedSecret
+) -> Result<msgs::DecodedOnionErrorPacket, msgs::DecodeError> {
+	let ammag = gen_ammag_from_shared_secret(shared_secret.as_ref());
+	let mut chacha = ChaCha20::new(&ammag, &[0u8; 8]);
+	chacha.process_in_place(packet);
+	msgs::DecodedOnionErrorPacket::read(&mut Cursor::new(packet))
+}
+
 /// Process failure we got back from upstream on a payment we sent (implying htlc_source is an
 /// OutboundRoute).
 #[inline]
 pub(super) fn process_onion_failure<T: secp256k1::Signing, L: Deref>(
-	secp_ctx: &Secp256k1<T>, logger: &L, htlc_source: &HTLCSource, mut packet_decrypted: Vec<u8>
+	secp_ctx: &Secp256k1<T>, logger: &L, htlc_source: &HTLCSource, mut encrypted_packet: Vec<u8>
 ) -> DecodedOnionFailure where L::Target: Logger {
 	let (path, session_priv, first_hop_htlc_msat) = if let &HTLCSource::OutboundRoute {
 		ref path, ref session_priv, ref first_hop_htlc_msat, ..
@@ -504,15 +515,7 @@ pub(super) fn process_onion_failure<T: secp256k1::Signing, L: Deref>(
 		let amt_to_forward = htlc_msat - route_hop.fee_msat;
 		htlc_msat = amt_to_forward;
 
-		let ammag = gen_ammag_from_shared_secret(shared_secret.as_ref());
-
-		let mut decryption_tmp = Vec::with_capacity(packet_decrypted.len());
-		decryption_tmp.resize(packet_decrypted.len(), 0);
-		let mut chacha = ChaCha20::new(&ammag, &[0u8; 8]);
-		chacha.process(&packet_decrypted, &mut decryption_tmp[..]);
-		packet_decrypted = decryption_tmp;
-
-		let err_packet = match msgs::DecodedOnionErrorPacket::read(&mut Cursor::new(&packet_decrypted)) {
+		let err_packet = match decrypt_onion_error_packet(&mut encrypted_packet, shared_secret) {
 			Ok(p) => p,
 			Err(_) => return
 		};
