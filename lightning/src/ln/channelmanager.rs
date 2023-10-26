@@ -167,6 +167,18 @@ pub struct BlindedForward {
 	// Another field will be added here when we support forwarding as a non-intro node.
 }
 
+impl PendingHTLCRouting {
+	// Used to override the onion failure code and data if the HTLC is blinded.
+	fn blinded_failure(&self) -> Option<BlindedFailure> {
+		// TODO: needs update when we support receiving to multi-hop blinded paths
+		if let Self::Forward { blinded: Some(_), .. } = self {
+			Some(BlindedFailure::FromIntroductionNode)
+		} else {
+			None
+		}
+	}
+}
+
 /// Full details of an incoming HTLC, including routing info.
 #[derive(Clone)] // See Channel::revoke_and_ack for why, tl;dr: Rust bug
 pub struct PendingHTLCInfo {
@@ -4080,7 +4092,7 @@ where
 				htlc_id: payment.prev_htlc_id,
 				incoming_packet_shared_secret: payment.forward_info.incoming_shared_secret,
 				phantom_shared_secret: None,
-				blinded_failure: None,
+				blinded_failure: payment.forward_info.routing.blinded_failure(),
 			});
 
 			let failure_reason = HTLCFailReason::from_failure_code(0x4000 | 10);
@@ -4129,7 +4141,7 @@ where
 													htlc_id: prev_htlc_id,
 													incoming_packet_shared_secret: incoming_shared_secret,
 													phantom_shared_secret: $phantom_ss,
-													blinded_failure: None,
+													blinded_failure: routing.blinded_failure(),
 												});
 
 												let reason = if $next_hop_unknown {
@@ -4159,7 +4171,7 @@ where
 												}
 											}
 										}
-										if let PendingHTLCRouting::Forward { onion_packet, .. } = routing {
+										if let PendingHTLCRouting::Forward { ref onion_packet, .. } = routing {
 											let phantom_pubkey_res = self.node_signer.get_node_id(Recipient::PhantomNode);
 											if phantom_pubkey_res.is_ok() && fake_scid::is_valid_phantom(&self.fake_scid_rand_bytes, short_chan_id, &self.chain_hash) {
 												let phantom_shared_secret = self.node_signer.ecdh(Recipient::PhantomNode, &onion_packet.public_key.unwrap(), None).unwrap().secret_bytes();
@@ -4234,7 +4246,9 @@ where
 									prev_short_channel_id, prev_htlc_id, prev_funding_outpoint, prev_user_channel_id,
 									forward_info: PendingHTLCInfo {
 										incoming_shared_secret, payment_hash, outgoing_amt_msat, outgoing_cltv_value,
-										routing: PendingHTLCRouting::Forward { onion_packet, .. }, skimmed_fee_msat, ..
+										routing: PendingHTLCRouting::Forward {
+											onion_packet, blinded, ..
+										}, skimmed_fee_msat, ..
 									},
 								}) => {
 									log_trace!(self.logger, "Adding HTLC from short id {} with payment_hash {} to channel with short id {} after delay", prev_short_channel_id, &payment_hash, short_chan_id);
@@ -4246,7 +4260,7 @@ where
 										incoming_packet_shared_secret: incoming_shared_secret,
 										// Phantom payments are only PendingHTLCRouting::Receive.
 										phantom_shared_secret: None,
-										blinded_failure: None,
+										blinded_failure: blinded.map(|_| BlindedFailure::FromIntroductionNode),
 									});
 									if let Err(e) = chan.queue_add_htlc(outgoing_amt_msat,
 										payment_hash, outgoing_cltv_value, htlc_source.clone(),
@@ -4301,6 +4315,7 @@ where
 									skimmed_fee_msat, ..
 								}
 							}) => {
+								let blinded_failure = routing.blinded_failure();
 								let (cltv_expiry, onion_payload, payment_data, phantom_shared_secret, mut onion_fields) = match routing {
 									PendingHTLCRouting::Receive { payment_data, payment_metadata, incoming_cltv_expiry, phantom_shared_secret, custom_tlvs } => {
 										let _legacy_hop_data = Some(payment_data.clone());
@@ -4330,7 +4345,7 @@ where
 										htlc_id: prev_htlc_id,
 										incoming_packet_shared_secret: incoming_shared_secret,
 										phantom_shared_secret,
-										blinded_failure: None,
+										blinded_failure,
 									},
 									// We differentiate the received value from the sender intended value
 									// if possible so that we don't prematurely mark MPP payments complete
@@ -6611,7 +6626,7 @@ where
 											htlc_id: prev_htlc_id,
 											incoming_packet_shared_secret: forward_info.incoming_shared_secret,
 											phantom_shared_secret: None,
-											blinded_failure: None,
+											blinded_failure: forward_info.routing.blinded_failure(),
 										});
 
 										failed_intercept_forwards.push((htlc_source, forward_info.payment_hash,
@@ -8208,7 +8223,7 @@ where
 						incoming_packet_shared_secret: htlc.forward_info.incoming_shared_secret,
 						phantom_shared_secret: None,
 						outpoint: htlc.prev_funding_outpoint,
-						blinded_failure: None,
+						blinded_failure: htlc.forward_info.routing.blinded_failure(),
 					});
 
 					let requested_forward_scid /* intercept scid */ = match htlc.forward_info.routing {
