@@ -2523,6 +2523,36 @@ struct CommitmentTxInfoCached {
 	feerate: u32,
 }
 
+/// Contents of a wire message that fails an HTLC backwards. Useful for [`Channel::fail_htlc`] to
+/// fail with either [`msgs::UpdateFailMalformedHTLC`] or [`msgs::UpdateFailHTLC`] as needed.
+trait FailHTLCContents {
+	type Message: FailHTLCMessageName;
+	fn to_message(self, htlc_id: u64, channel_id: ChannelId) -> Self::Message;
+	fn to_inbound_htlc_state(self) -> InboundHTLCState;
+	fn to_htlc_update_awaiting_ack(self, htlc_id: u64) -> HTLCUpdateAwaitingACK;
+}
+impl FailHTLCContents for msgs::OnionErrorPacket {
+	type Message = msgs::UpdateFailHTLC;
+	fn to_message(self, htlc_id: u64, channel_id: ChannelId) -> Self::Message {
+		msgs::UpdateFailHTLC { htlc_id, channel_id, reason: self }
+	}
+	fn to_inbound_htlc_state(self) -> InboundHTLCState {
+		InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::FailRelay(self))
+	}
+	fn to_htlc_update_awaiting_ack(self, htlc_id: u64) -> HTLCUpdateAwaitingACK {
+		HTLCUpdateAwaitingACK::FailHTLC { htlc_id, err_packet: self }
+	}
+}
+
+trait FailHTLCMessageName {
+	fn name() -> &'static str;
+}
+impl FailHTLCMessageName for msgs::UpdateFailHTLC {
+	fn name() -> &'static str {
+		"update_fail_htlc"
+	}
+}
+
 impl<SP: Deref> Channel<SP> where
 	SP::Target: SignerProvider,
 	<SP::Target as SignerProvider>::EcdsaSigner: WriteableEcdsaChannelSigner
@@ -2831,8 +2861,10 @@ impl<SP: Deref> Channel<SP> where
 	/// If we do fail twice, we `debug_assert!(false)` and return `Ok(None)`. Thus, this will always
 	/// return `Ok(_)` if preconditions are met. In any case, `Err`s will only be
 	/// [`ChannelError::Ignore`].
-	fn fail_htlc<L: Deref>(&mut self, htlc_id_arg: u64, err_packet: msgs::OnionErrorPacket, mut force_holding_cell: bool, logger: &L)
-	-> Result<Option<msgs::UpdateFailHTLC>, ChannelError> where L::Target: Logger {
+	fn fail_htlc<L: Deref, E: FailHTLCContents + Clone>(
+		&mut self, htlc_id_arg: u64, err_packet: E, mut force_holding_cell: bool,
+		logger: &L
+	) -> Result<Option<E::Message>, ChannelError> where L::Target: Logger {
 		if !matches!(self.context.channel_state, ChannelState::ChannelReady(_)) {
 			panic!("Was asked to fail an HTLC when channel was not in an operational state");
 		}
@@ -2897,24 +2929,18 @@ impl<SP: Deref> Channel<SP> where
 				}
 			}
 			log_trace!(logger, "Placing failure for HTLC ID {} in holding cell in channel {}.", htlc_id_arg, &self.context.channel_id());
-			self.context.holding_cell_htlc_updates.push(HTLCUpdateAwaitingACK::FailHTLC {
-				htlc_id: htlc_id_arg,
-				err_packet,
-			});
+			self.context.holding_cell_htlc_updates.push(err_packet.to_htlc_update_awaiting_ack(htlc_id_arg));
 			return Ok(None);
 		}
 
-		log_trace!(logger, "Failing HTLC ID {} back with a update_fail_htlc message in channel {}.", htlc_id_arg, &self.context.channel_id());
+		log_trace!(logger, "Failing HTLC ID {} back with {} message in channel {}.", htlc_id_arg,
+			E::Message::name(), &self.context.channel_id());
 		{
 			let htlc = &mut self.context.pending_inbound_htlcs[pending_idx];
-			htlc.state = InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::FailRelay(err_packet.clone()));
+			htlc.state = err_packet.clone().to_inbound_htlc_state();
 		}
 
-		Ok(Some(msgs::UpdateFailHTLC {
-			channel_id: self.context.channel_id(),
-			htlc_id: htlc_id_arg,
-			reason: err_packet
-		}))
+		Ok(Some(err_packet.to_message(htlc_id_arg, self.context.channel_id())))
 	}
 
 	// Message handlers:
