@@ -56,6 +56,7 @@ pub(super) fn create_fwd_pending_htlc_info(
 		routing: PendingHTLCRouting::Forward {
 			onion_packet: outgoing_packet,
 			short_channel_id,
+			blinded: None,
 		},
 		payment_hash: msg.payment_hash,
 		incoming_shared_secret: shared_secret,
@@ -414,7 +415,7 @@ mod tests {
 			.map_err(|e| e.msg).unwrap();
 
 		let next_onion = match peeled.routing {
-			PendingHTLCRouting::Forward { onion_packet, short_channel_id: _ } => {
+			PendingHTLCRouting::Forward { onion_packet, .. } => {
 				onion_packet
 			},
 			_ => panic!("expected a forwarded onion"),
