@@ -1713,7 +1713,7 @@ mod fuzzy_internal_msgs {
 			outgoing_cltv_value: u32,
 			payment_secret: PaymentSecret,
 			payment_constraints: PaymentConstraints,
-			intro_node_blinding_point: PublicKey,
+			intro_node_blinding_point: Option<PublicKey>,
 		}
 	}
 
@@ -2356,8 +2356,11 @@ impl<NS: Deref> ReadableArgs<(Option<PublicKey>, &NS)> for InboundOnionPayload w
 		});
 
 		if amt.unwrap_or(0) > MAX_VALUE_MSAT { return Err(DecodeError::InvalidValue) }
+		if intro_node_blinding_point.is_some() && update_add_blinding_point.is_some() {
+			return Err(DecodeError::InvalidValue)
+		}
 
-		if let Some(blinding_point) = intro_node_blinding_point {
+		if let Some(blinding_point) = intro_node_blinding_point.or(update_add_blinding_point) {
 			if short_id.is_some() || payment_data.is_some() || payment_metadata.is_some() {
 				return Err(DecodeError::InvalidValue)
 			}
@@ -2379,7 +2382,7 @@ impl<NS: Deref> ReadableArgs<(Option<PublicKey>, &NS)> for InboundOnionPayload w
 						payment_relay,
 						payment_constraints,
 						features,
-						intro_node_blinding_point: blinding_point,
+						intro_node_blinding_point: intro_node_blinding_point.ok_or(DecodeError::InvalidValue)?,
 					})
 				},
 				ChaChaPolyReadAdapter { readable: BlindedPaymentTlvs::Receive(ReceiveTlvs {
@@ -2392,7 +2395,7 @@ impl<NS: Deref> ReadableArgs<(Option<PublicKey>, &NS)> for InboundOnionPayload w
 						outgoing_cltv_value: cltv_value.ok_or(DecodeError::InvalidValue)?,
 						payment_secret,
 						payment_constraints,
-						intro_node_blinding_point: blinding_point,
+						intro_node_blinding_point,
 					})
 				},
 			}
