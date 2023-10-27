@@ -2698,7 +2698,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 								_ => false,
 							}).is_some();
 						if detected_funding_spend {
-							log_trace!(logger, "Avoiding commitment broadcast, already detected confirmed spend onchain");
+							log_trace!(logger, "Avoiding commitment broadcast, already detected confirmed spend onchain, txid: {:?}", self.funding_spend_confirmed);
 							continue;
 						}
 						self.broadcast_latest_holder_commitment_txn(broadcaster, logger);
