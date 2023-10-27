@@ -714,6 +714,11 @@ where
 		}
 	}
 
+	#[cfg(test)]
+	pub(crate) fn set_offers_handler(&mut self, offers_handler: OMH) {
+		self.offers_handler = offers_handler;
+	}
+
 	/// Sends an [`OnionMessage`] with the given `contents` to `destination`.
 	///
 	/// See [`OnionMessenger`] for example usage.

@@ -251,7 +251,7 @@ impl<'a, T: Score + 'a> LockableScore<'a> for RefCell<T> {
 	}
 }
 
-#[cfg(not(c_bindings))]
+#[cfg(any(not(c_bindings), feature = "_test_utils", test))]
 impl<'a, T: Score + 'a> LockableScore<'a> for RwLock<T> {
 	type ScoreUpdate = T;
 	type ScoreLookUp = T;

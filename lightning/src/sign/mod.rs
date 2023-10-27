@@ -1874,9 +1874,9 @@ impl PhantomKeysManager {
 	}
 }
 
-/// An implementation of [`EntropySource`] using [`ChaCha20`].
+/// An implementation of [`EntropySource`] using ChaCha20.
 #[derive(Debug)]
-struct RandomBytes {
+pub struct RandomBytes {
 	/// Seed from which all randomness produced is derived from.
 	seed: [u8; 32],
 	/// Tracks the number of times we've produced randomness to ensure we don't return the same

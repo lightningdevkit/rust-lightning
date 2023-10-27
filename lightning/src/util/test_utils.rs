@@ -32,7 +32,7 @@ use crate::ln::msgs::LightningError;
 use crate::ln::script::ShutdownScript;
 use crate::offers::invoice::{BlindedPayInfo, UnsignedBolt12Invoice};
 use crate::offers::invoice_request::UnsignedInvoiceRequest;
-use crate::onion_message::messenger::{Destination, MessageRouter, OnionMessagePath};
+use crate::onion_message::messenger::{DefaultMessageRouter, Destination, MessageRouter, OnionMessagePath};
 use crate::routing::gossip::{EffectiveCapacity, NetworkGraph, NodeId, RoutingFees};
 use crate::routing::utxo::{UtxoLookup, UtxoLookupError, UtxoResult};
 use crate::routing::router::{find_route, InFlightHtlcs, Path, Route, RouteParameters, RouteHintHop, Router, ScorerAccountingForInFlightHtlcs};
@@ -228,6 +228,33 @@ impl<'a> Drop for TestRouter<'a> {
 			}
 		}
 		assert!(self.next_routes.lock().unwrap().is_empty());
+	}
+}
+
+pub struct TestMessageRouter<'a> {
+	inner: DefaultMessageRouter<Arc<NetworkGraph<&'a TestLogger>>, &'a TestLogger>,
+}
+
+impl<'a> TestMessageRouter<'a> {
+	pub fn new(network_graph: Arc<NetworkGraph<&'a TestLogger>>) -> Self {
+		Self { inner: DefaultMessageRouter::new(network_graph) }
+	}
+}
+
+impl<'a> MessageRouter for TestMessageRouter<'a> {
+	fn find_path(
+		&self, sender: PublicKey, peers: Vec<PublicKey>, destination: Destination
+	) -> Result<OnionMessagePath, ()> {
+		self.inner.find_path(sender, peers, destination)
+	}
+
+	fn create_blinded_paths<
+		ES: EntropySource + ?Sized, T: secp256k1::Signing + secp256k1::Verification
+	>(
+		&self, recipient: PublicKey, peers: Vec<PublicKey>, entropy_source: &ES,
+		secp_ctx: &Secp256k1<T>
+	) -> Result<Vec<BlindedPath>, ()> {
+		self.inner.create_blinded_paths(recipient, peers, entropy_source, secp_ctx)
 	}
 }
 
@@ -1389,6 +1416,9 @@ impl ScoreUpdate for TestScorer {
 
 	fn time_passed(&mut self, _duration_since_epoch: Duration) {}
 }
+
+#[cfg(c_bindings)]
+impl crate::routing::scoring::Score for TestScorer {}
 
 impl Drop for TestScorer {
 	fn drop(&mut self) {
