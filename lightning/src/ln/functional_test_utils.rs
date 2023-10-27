@@ -11,27 +11,27 @@
 //! nodes for functional tests.
 
 use crate::chain::{BestBlock, ChannelMonitorUpdateStatus, Confirm, Listen, Watch, chainmonitor::Persist};
-use crate::sign::EntropySource;
 use crate::chain::channelmonitor::ChannelMonitor;
 use crate::chain::transaction::OutPoint;
 use crate::events::{ClaimedHTLC, ClosureReason, Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider, PathFailure, PaymentPurpose, PaymentFailureReason};
 use crate::events::bump_transaction::{BumpTransactionEvent, BumpTransactionEventHandler, Wallet, WalletSource};
 use crate::ln::{ChannelId, PaymentPreimage, PaymentHash, PaymentSecret};
 use crate::ln::channelmanager::{AChannelManager, ChainParameters, ChannelManager, ChannelManagerReadArgs, RAACommitmentOrder, PaymentSendFailure, RecipientOnionFields, PaymentId, MIN_CLTV_EXPIRY_DELTA};
-use crate::routing::gossip::{P2PGossipSync, NetworkGraph, NetworkUpdate};
-use crate::routing::router::{self, PaymentParameters, Route, RouteParameters};
 use crate::ln::features::InitFeatures;
 use crate::ln::msgs;
 use crate::ln::msgs::{ChannelMessageHandler,RoutingMessageHandler};
-use crate::util::test_channel_signer::TestChannelSigner;
-use crate::util::scid_utils;
-use crate::util::test_utils;
-use crate::util::test_utils::{panicking, TestChainMonitor, TestScorer, TestKeysInterface};
-use crate::util::errors::APIError;
+use crate::routing::gossip::{P2PGossipSync, NetworkGraph, NetworkUpdate};
+use crate::routing::router::{self, PaymentParameters, Route, RouteParameters};
+use crate::sign::EntropySource;
 use crate::util::config::{UserConfig, MaxDustHTLCExposure};
-use crate::util::ser::{ReadableArgs, Writeable};
+use crate::util::errors::APIError;
 #[cfg(test)]
 use crate::util::logger::Logger;
+use crate::util::scid_utils;
+use crate::util::test_channel_signer::TestChannelSigner;
+use crate::util::test_utils;
+use crate::util::test_utils::{panicking, TestChainMonitor, TestScorer, TestKeysInterface};
+use crate::util::ser::{ReadableArgs, Writeable};
 
 use bitcoin::blockdata::block::{Block, Header, Version};
 use bitcoin::blockdata::locktime::absolute::LockTime;
@@ -43,13 +43,13 @@ use bitcoin::network::constants::Network;
 use bitcoin::pow::CompactTarget;
 use bitcoin::secp256k1::{PublicKey, SecretKey};
 
+use alloc::rc::Rc;
+use core::cell::RefCell;
+use core::iter::repeat;
+use core::mem;
 use crate::io;
 use crate::prelude::*;
-use core::cell::RefCell;
-use alloc::rc::Rc;
 use crate::sync::{Arc, Mutex, LockTestExt, RwLock};
-use core::mem;
-use core::iter::repeat;
 
 pub const CHAN_CONFIRM_DEPTH: u32 = 10;
 
