@@ -288,6 +288,11 @@ pub(super) enum HTLCForwardInfo {
 		htlc_id: u64,
 		err_packet: msgs::OnionErrorPacket,
 	},
+	FailMalformedHTLC {
+		htlc_id: u64,
+		failure_code: u16,
+		sha256_of_onion: [u8; 32],
+	},
 }
 
 // Used for failing blinded HTLCs backwards correctly.
@@ -4286,7 +4291,7 @@ where
 											fail_forward!(format!("Unknown short channel id {} for forward HTLC", short_chan_id), 0x4000 | 10, Vec::new(), None);
 										}
 									},
-									HTLCForwardInfo::FailHTLC { .. } => {
+									HTLCForwardInfo::FailHTLC { .. } | HTLCForwardInfo::FailMalformedHTLC { .. } => {
 										// Channel went away before we could fail it. This implies
 										// the channel is now on chain and our counterparty is
 										// trying to broadcast the HTLC-Timeout, but that's their
@@ -4381,6 +4386,9 @@ where
 										// the chain and sending the HTLC-Timeout is their problem.
 										continue;
 									}
+								},
+								HTLCForwardInfo::FailMalformedHTLC { .. } => {
+									todo!()
 								},
 							}
 						}
@@ -4636,7 +4644,7 @@ where
 									},
 								};
 							},
-							HTLCForwardInfo::FailHTLC { .. } => {
+							HTLCForwardInfo::FailHTLC { .. } | HTLCForwardInfo::FailMalformedHTLC { .. } => {
 								panic!("Got pending fail of our own HTLC");
 							}
 						}
@@ -9639,13 +9647,68 @@ impl_writeable_tlv_based!(PendingAddHTLCInfo, {
 	(6, prev_funding_outpoint, required),
 });
 
-impl_writeable_tlv_based_enum!(HTLCForwardInfo,
-	(1, FailHTLC) => {
-		(0, htlc_id, required),
-		(2, err_packet, required),
-	};
-	(0, AddHTLC)
-);
+impl Writeable for HTLCForwardInfo {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		const FAIL_HTLC_VARIANT_ID: u8 = 1;
+		match self {
+			Self::AddHTLC(info) => {
+				0u8.write(w)?;
+				info.write(w)?;
+			},
+			Self::FailHTLC { htlc_id, err_packet } => {
+				FAIL_HTLC_VARIANT_ID.write(w)?;
+				write_tlv_fields!(w, {
+					(0, htlc_id, required),
+					(2, err_packet, required),
+				});
+			},
+			Self::FailMalformedHTLC { htlc_id, failure_code, sha256_of_onion } => {
+				// Since this variant was added in 0.0.119, write this as `::FailHTLC` with an empty error
+				// packet so older versions have something to fail back with, but serialize the real data as
+				// optional TLVs for the benefit of newer versions.
+				FAIL_HTLC_VARIANT_ID.write(w)?;
+				let dummy_err_packet = msgs::OnionErrorPacket { data: Vec::new() };
+				write_tlv_fields!(w, {
+					(0, htlc_id, required),
+					(1, failure_code, required),
+					(2, dummy_err_packet, required),
+					(3, sha256_of_onion, required),
+				});
+			},
+		}
+		Ok(())
+	}
+}
+
+impl Readable for HTLCForwardInfo {
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+		let id: u8 = Readable::read(r)?;
+		Ok(match id {
+			0 => Self::AddHTLC(Readable::read(r)?),
+			1 => {
+				_init_and_read_len_prefixed_tlv_fields!(r, {
+					(0, htlc_id, required),
+					(1, malformed_htlc_failure_code, option),
+					(2, err_packet, required),
+					(3, sha256_of_onion, option),
+				});
+				if let Some(failure_code) = malformed_htlc_failure_code {
+					Self::FailMalformedHTLC {
+						htlc_id: _init_tlv_based_struct_field!(htlc_id, required),
+						failure_code,
+						sha256_of_onion: sha256_of_onion.ok_or(DecodeError::InvalidValue)?,
+					}
+				} else {
+					Self::FailHTLC {
+						htlc_id: _init_tlv_based_struct_field!(htlc_id, required),
+						err_packet: _init_tlv_based_struct_field!(err_packet, required),
+					}
+				}
+			},
+			_ => return Err(DecodeError::InvalidValue),
+		})
+	}
+}
 
 impl_writeable_tlv_based!(PendingInboundPayment, {
 	(0, payment_secret, required),
