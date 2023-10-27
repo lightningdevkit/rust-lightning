@@ -1847,6 +1847,13 @@ pub struct KeysManager {
 	seed: [u8; 32],
 	starting_time_secs: u64,
 	starting_time_nanos: u32,
+
+	funding_key: Option<SecretKey>,
+	revocation_base_secret: Option<SecretKey>,
+	payment_base_secret: Option<SecretKey>,
+	delayed_payment_base_secret: Option<SecretKey>,
+	htlc_base_secret: Option<SecretKey>,
+	shachain_seed: Option<[u8; 32]>,
 }
 
 impl KeysManager {
@@ -1932,6 +1939,13 @@ impl KeysManager {
 					seed: *seed,
 					starting_time_secs,
 					starting_time_nanos,
+
+					funding_key: None,
+					revocation_base_secret: None,
+					delayed_payment_base_secret: None,
+					payment_base_secret: None,
+					htlc_base_secret: None,
+					shachain_seed: None,
 				};
 				let secp_seed = res.get_secure_random_bytes();
 				res.secp_ctx.seeded_randomize(&secp_seed);
@@ -1945,6 +1959,19 @@ impl KeysManager {
 	pub fn get_node_secret_key(&self) -> SecretKey {
 		self.node_secret
 	}
+
+	// FIXME: put this under a debug a feature flag like `unsafa_channel_keys`
+	#[cfg(debug_assertions)]
+	pub fn set_channels_keys(&mut self, funding_key: String, revocation_base_secret: String, payment_base_secret: String, delayed_payment_base_secret: String, htlc_base_secret: String, _shachain_seed: String,){
+		use std::str::FromStr;
+
+		self.funding_key = Some(SecretKey::from_str(&funding_key).unwrap());
+		self.revocation_base_secret = Some(SecretKey::from_str(&revocation_base_secret).unwrap());
+		self.payment_base_secret = Some(SecretKey::from_str(&payment_base_secret).unwrap());
+		self.delayed_payment_base_secret = Some(SecretKey::from_str(&delayed_payment_base_secret).unwrap());
+		self.htlc_base_secret = Some(SecretKey::from_str(&htlc_base_secret).unwrap());
+		self.shachain_seed = Some(self.get_secure_random_bytes())
+    }
 
 	/// Derive an old [`EcdsaChannelSigner`] containing per-channel secrets based on a key derivation parameters.
 	pub fn derive_channel_keys(
@@ -1970,40 +1997,64 @@ impl KeysManager {
 
 		let seed = Sha256::from_engine(unique_start).to_byte_array();
 
-		let commitment_seed = {
+		let mut commitment_seed = {
 			let mut sha = Sha256::engine();
 			sha.input(&seed);
 			sha.input(&b"commitment seed"[..]);
 			Sha256::from_engine(sha).to_byte_array()
 		};
-		macro_rules! key_step {
-			($info: expr, $prev_key: expr) => {{
-				let mut sha = Sha256::engine();
-				sha.input(&seed);
-				sha.input(&$prev_key[..]);
-				sha.input(&$info[..]);
-				SecretKey::from_slice(&Sha256::from_engine(sha).to_byte_array())
-					.expect("SHA-256 is busted")
-			}};
+
+		let funding_key: Option<SecretKey>;
+		let revocation_base_key: Option<SecretKey>;
+		let payment_key: Option<SecretKey>;
+		let delayed_payment_base_key: Option<SecretKey>;
+		let htlc_base_key: Option<SecretKey>;
+		let prng_seed: Option<[u8; 32]>;
+
+		if self.revocation_base_secret.is_some() {
+			funding_key = self.funding_key;
+			revocation_base_key = self.revocation_base_secret;
+			payment_key = self.payment_base_secret;
+			delayed_payment_base_key = self.delayed_payment_base_secret;
+			htlc_base_key = self.htlc_base_secret;
+			prng_seed = self.shachain_seed;
+			// FIXME(vincenzopalazzo): make this a general
+			commitment_seed = [
+                255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+                255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+            ];
+		} else {
+			macro_rules! key_step {
+				($info: expr, $prev_key: expr) => {{
+					let mut sha = Sha256::engine();
+					sha.input(&seed);
+					sha.input(&$prev_key[..]);
+					sha.input(&$info[..]);
+					SecretKey::from_slice(&Sha256::from_engine(sha).to_byte_array()).expect("SHA-256 is busted")
+				}}
+			}
+			funding_key = Some(key_step!(b"funding key", commitment_seed));
+			revocation_base_key = Some(key_step!(b"revocation base key", funding_key.unwrap()));
+			payment_key = Some(key_step!(b"payment key", revocation_base_key.unwrap()));
+			delayed_payment_base_key = Some(key_step!(b"delayed payment base key", payment_key.unwrap()));
+			htlc_base_key = Some(key_step!(
+				b"HTLC base key",
+				delayed_payment_base_key.unwrap()
+			));
+			prng_seed = Some(self.get_secure_random_bytes());
 		}
-		let funding_key = key_step!(b"funding key", commitment_seed);
-		let revocation_base_key = key_step!(b"revocation base key", funding_key);
-		let payment_key = key_step!(b"payment key", revocation_base_key);
-		let delayed_payment_base_key = key_step!(b"delayed payment base key", payment_key);
-		let htlc_base_key = key_step!(b"HTLC base key", delayed_payment_base_key);
-		let prng_seed = self.get_secure_random_bytes();
 
 		InMemorySigner::new(
 			&self.secp_ctx,
-			funding_key,
-			revocation_base_key,
-			payment_key,
-			delayed_payment_base_key,
-			htlc_base_key,
+			funding_key.unwrap(),
+			revocation_base_key.unwrap(),
+			payment_key.unwrap(),
+			delayed_payment_base_key.unwrap(),
+			htlc_base_key.unwrap(),
 			commitment_seed,
 			channel_value_satoshis,
 			params.clone(),
-			prng_seed,
+			prng_seed.unwrap(),
 		)
 	}
 
