@@ -6,4 +6,3 @@ use_small_heuristics = "Max"
 fn_params_layout = "Compressed"
 match_block_trailing_comma = true
 overflow_delimited_expr = true
-format_strings = true
