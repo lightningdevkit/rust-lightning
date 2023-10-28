@@ -7,6 +7,8 @@
 // You may not use this file except in accordance with one or both of these
 // licenses.
 
+//! Utilities for creating and parsing short channel ids.
+
 /// Maximum block height that can be used in a `short_channel_id`. This
 /// value is based on the 3-bytes available for block height.
 pub const MAX_SCID_BLOCK: u64 = 0x00ffffff;
@@ -22,8 +24,11 @@ pub const MAX_SCID_VOUT_INDEX: u64 = 0xffff;
 /// A `short_channel_id` construction error
 #[derive(Debug, PartialEq, Eq)]
 pub enum ShortChannelIdError {
+	/// Block height too high
 	BlockOverflow,
+	/// Tx index too high
 	TxIndexOverflow,
+	/// Vout index too high
 	VoutIndexOverflow,
 }
 
@@ -91,8 +96,11 @@ pub(crate) mod fake_scid {
 	/// into the fake scid.
 	#[derive(Copy, Clone)]
 	pub(crate) enum Namespace {
+		/// Phantom nodes namespace
 		Phantom,
+		/// SCID aliases for outbound private channels
 		OutboundAlias,
+		/// Payment interception namespace
 		Intercept
 	}
 
