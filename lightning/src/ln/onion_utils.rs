@@ -935,6 +935,27 @@ pub(crate) fn decode_next_payment_hop<NS: Deref>(
 	}
 }
 
+/// Build a payment onion, returning the first hop msat and cltv values as well.
+/// `cur_block_height` should be set to the best known block height + 1.
+pub fn create_payment_onion<T: secp256k1::Signing>(
+	secp_ctx: &Secp256k1<T>, path: &Path, session_priv: &SecretKey, total_msat: u64,
+	recipient_onion: RecipientOnionFields, cur_block_height: u32, payment_hash: &PaymentHash,
+	keysend_preimage: &Option<PaymentPreimage>, prng_seed: [u8; 32]
+) -> Result<(msgs::OnionPacket, u64, u32), APIError> {
+	let onion_keys = construct_onion_keys(&secp_ctx, &path, &session_priv)
+		.map_err(|_| APIError::InvalidRoute{
+			err: "Pubkey along hop was maliciously selected".to_owned()
+		})?;
+	let (onion_payloads, htlc_msat, htlc_cltv) = build_onion_payloads(
+		&path, total_msat, recipient_onion, cur_block_height, keysend_preimage
+	)?;
+	let onion_packet = construct_onion_packet(onion_payloads, onion_keys, prng_seed, payment_hash)
+		.map_err(|_| APIError::InvalidRoute{
+			err: "Route size too large considering onion data".to_owned()
+		})?;
+	Ok((onion_packet, htlc_msat, htlc_cltv))
+}
+
 pub(crate) fn decode_next_untagged_hop<T, R: ReadableArgs<T>, N: NextPacketBytes>(shared_secret: [u8; 32], hop_data: &[u8], hmac_bytes: [u8; 32], read_args: T) -> Result<(R, Option<([u8; 32], N)>), OnionDecodeErr> {
 	decode_next_hop(shared_secret, hop_data, hmac_bytes, None, read_args)
 }

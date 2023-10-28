@@ -1674,17 +1674,21 @@ pub use self::fuzzy_internal_msgs::*;
 #[cfg(not(fuzzing))]
 pub(crate) use self::fuzzy_internal_msgs::*;
 
+/// BOLT 4 onion packet including hop data for the next peer.
 #[derive(Clone)]
-pub(crate) struct OnionPacket {
-	pub(crate) version: u8,
+pub struct OnionPacket {
+	/// BOLT 4 version number.
+	pub version: u8,
 	/// In order to ensure we always return an error on onion decode in compliance with [BOLT
 	/// #4](https://github.com/lightning/bolts/blob/master/04-onion-routing.md), we have to
 	/// deserialize `OnionPacket`s contained in [`UpdateAddHTLC`] messages even if the ephemeral
 	/// public key (here) is bogus, so we hold a [`Result`] instead of a [`PublicKey`] as we'd
 	/// like.
-	pub(crate) public_key: Result<PublicKey, secp256k1::Error>,
-	pub(crate) hop_data: [u8; 20*65],
-	pub(crate) hmac: [u8; 32],
+	pub public_key: Result<PublicKey, secp256k1::Error>,
+	/// 1300 bytes encrypted payload for the next hop.
+	pub hop_data: [u8; 20*65],
+	/// HMAC to verify the integrity of hop_data.
+	pub hmac: [u8; 32],
 }
 
 impl onion_utils::Packet for OnionPacket {
