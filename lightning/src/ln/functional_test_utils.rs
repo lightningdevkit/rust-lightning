@@ -1478,27 +1478,61 @@ macro_rules! check_closed_broadcast {
 	}
 }
 
+#[derive(Default)]
+pub struct ExpectedCloseEvent {
+	pub channel_capacity_sats: Option<u64>,
+	pub channel_id: Option<ChannelId>,
+	pub counterparty_node_id: Option<PublicKey>,
+	pub discard_funding: bool,
+	pub reason: Option<ClosureReason>,
+}
+
+/// Check that multiple channel closing events have been issued.
+pub fn check_closed_events(node: &Node, expected_close_events: &[ExpectedCloseEvent]) {
+	let closed_events_count = expected_close_events.len();
+	let discard_events_count = expected_close_events.iter().filter(|e| e.discard_funding).count();
+	let events = node.node.get_and_clear_pending_events();
+	assert_eq!(events.len(), closed_events_count + discard_events_count, "{:?}", events);
+	for expected_event in expected_close_events {
+		assert!(events.iter().any(|e| matches!(
+			e,
+			Event::ChannelClosed {
+				channel_id,
+				reason,
+				counterparty_node_id,
+				channel_capacity_sats,
+				..
+			} if (
+				expected_event.channel_id.map(|expected| *channel_id == expected).unwrap_or(true) &&
+				expected_event.reason.as_ref().map(|expected| reason == expected).unwrap_or(true) &&
+				expected_event.counterparty_node_id.map(|expected| *counterparty_node_id == Some(expected)).unwrap_or(true) &&
+				expected_event.channel_capacity_sats.map(|expected| *channel_capacity_sats == Some(expected)).unwrap_or(true)
+			)
+		)));
+	}
+	assert_eq!(events.iter().filter(|e| matches!(
+		e,
+		Event::DiscardFunding { .. },
+	)).count(), discard_events_count);
+}
+
 /// Check that a channel's closing channel events has been issued
 pub fn check_closed_event(node: &Node, events_count: usize, expected_reason: ClosureReason, is_check_discard_funding: bool,
 	expected_counterparty_node_ids: &[PublicKey], expected_channel_capacity: u64) {
-	let events = node.node.get_and_clear_pending_events();
-	assert_eq!(events.len(), events_count, "{:?}", events);
-	let mut issues_discard_funding = false;
-	for event in events {
-		match event {
-			Event::ChannelClosed { ref reason, counterparty_node_id,
-				channel_capacity_sats, .. } => {
-				assert_eq!(*reason, expected_reason);
-				assert!(expected_counterparty_node_ids.iter().any(|id| id == &counterparty_node_id.unwrap()));
-				assert_eq!(channel_capacity_sats.unwrap(), expected_channel_capacity);
-			},
-			Event::DiscardFunding { .. } => {
-				issues_discard_funding = true;
-			}
-			_ => panic!("Unexpected event"),
-		}
-	}
-	assert_eq!(is_check_discard_funding, issues_discard_funding);
+	let expected_events_count = if is_check_discard_funding {
+		2 * expected_counterparty_node_ids.len()
+	} else {
+		expected_counterparty_node_ids.len()
+	};
+	assert_eq!(events_count, expected_events_count);
+	let expected_close_events = expected_counterparty_node_ids.iter().map(|node_id| ExpectedCloseEvent {
+		channel_capacity_sats: Some(expected_channel_capacity),
+		channel_id: None,
+		counterparty_node_id: Some(*node_id),
+		discard_funding: is_check_discard_funding,
+		reason: Some(expected_reason.clone()),
+	}).collect::<Vec<_>>();
+	check_closed_events(node, expected_close_events.as_slice());
 }
 
 /// Check that a channel's closing channel events has been issued
