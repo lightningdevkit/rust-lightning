@@ -132,7 +132,8 @@ pub enum MonitorEvent {
 	/// A monitor event containing an HTLCUpdate.
 	HTLCEvent(HTLCUpdate),
 
-	/// A monitor event that the Channel's commitment transaction was confirmed.
+	/// Indicates we broadcasted the channel's latest commitment transaction and thus closed the
+	/// channel.
 	HolderForceClosed(OutPoint),
 
 	/// Indicates a [`ChannelMonitor`] update has completed. See
