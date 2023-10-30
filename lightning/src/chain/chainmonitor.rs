@@ -814,12 +814,7 @@ where C::Target: chain::Filter,
 		let mut pending_monitor_events = self.pending_monitor_events.lock().unwrap().split_off(0);
 		for monitor_state in self.monitors.read().unwrap().values() {
 			let is_pending_monitor_update = monitor_state.has_pending_chainsync_updates(&monitor_state.pending_monitor_updates.lock().unwrap());
-			if is_pending_monitor_update &&
-					monitor_state.last_chain_persist_height.load(Ordering::Acquire) + LATENCY_GRACE_PERIOD_BLOCKS as usize
-						> self.highest_chain_height.load(Ordering::Acquire)
-			{
-				log_debug!(self.logger, "A Channel Monitor sync is still in progress, refusing to provide monitor events!");
-			} else {
+			if !is_pending_monitor_update || monitor_state.last_chain_persist_height.load(Ordering::Acquire) + LATENCY_GRACE_PERIOD_BLOCKS as usize <= self.highest_chain_height.load(Ordering::Acquire) {
 				if is_pending_monitor_update {
 					log_error!(self.logger, "A ChannelMonitor sync took longer than {} blocks to complete.", LATENCY_GRACE_PERIOD_BLOCKS);
 					log_error!(self.logger, "   To avoid funds-loss, we are allowing monitor updates to be released.");
