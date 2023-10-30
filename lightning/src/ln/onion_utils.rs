@@ -93,7 +93,7 @@ pub(super) fn gen_pad_from_shared_secret(shared_secret: &[u8]) -> [u8; 32] {
 }
 
 /// Calculates a pubkey for the next hop, such as the next hop's packet pubkey or blinding point.
-pub(crate) fn next_hop_pubkey<T: secp256k1::Signing + secp256k1::Verification>(
+pub(crate) fn next_hop_pubkey<T: secp256k1::Verification>(
 	secp_ctx: &Secp256k1<T>, curr_pubkey: PublicKey, shared_secret: &[u8]
 ) -> Result<PublicKey, secp256k1::Error> {
 	let blinding_factor = {
