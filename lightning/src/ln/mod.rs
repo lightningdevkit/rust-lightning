@@ -79,6 +79,9 @@ mod shutdown_tests;
 #[cfg(all(test, async_signing))]
 #[allow(unused_mut)]
 mod async_signer_tests;
+#[cfg(test)]
+#[allow(unused_mut)]
+mod offers_tests;
 
 pub use self::peer_channel_encryptor::LN_MAX_MSG_LEN;
 
