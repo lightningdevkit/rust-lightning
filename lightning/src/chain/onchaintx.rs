@@ -676,6 +676,25 @@ impl<ChannelSigner: WriteableEcdsaChannelSigner> OnchainTxHandler<ChannelSigner>
 		None
 	}
 
+	pub fn abandon_claim(&mut self, outpoint: &BitcoinOutPoint) {
+		let claim_id = self.claimable_outpoints.get(outpoint).map(|(claim_id, _)| *claim_id)
+			.or_else(|| {
+				self.pending_claim_requests.iter()
+					.find(|(_, claim)| claim.outpoints().iter().any(|claim_outpoint| *claim_outpoint == outpoint))
+					.map(|(claim_id, _)| *claim_id)
+			});
+		if let Some(claim_id) = claim_id {
+			if let Some(claim) = self.pending_claim_requests.remove(&claim_id) {
+				for outpoint in claim.outpoints() {
+					self.claimable_outpoints.remove(&outpoint);
+				}
+			}
+		} else {
+			self.locktimed_packages.values_mut().for_each(|claims|
+				claims.retain(|claim| !claim.outpoints().iter().any(|claim_outpoint| *claim_outpoint == outpoint)));
+		}
+	}
+
 	/// Upon channelmonitor.block_connected(..) or upon provision of a preimage on the forward link
 	/// for this channel, provide new relevant on-chain transactions and/or new claim requests.
 	/// Together with `update_claims_view_from_matched_txn` this used to be named

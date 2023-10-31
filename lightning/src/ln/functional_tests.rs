@@ -8568,10 +8568,11 @@ fn test_concurrent_monitor_claim() {
 	watchtower_alice.chain_monitor.block_connected(&block, HTLC_TIMEOUT_BROADCAST);
 
 	// Watchtower Alice should have broadcast a commitment/HTLC-timeout
-	let alice_state = {
+	{
 		let mut txn = alice_broadcaster.txn_broadcast();
 		assert_eq!(txn.len(), 2);
-		txn.remove(0)
+		check_spends!(txn[0], chan_1.3);
+		check_spends!(txn[1], txn[0]);
 	};
 
 	// Copy ChainMonitor to simulate watchtower Bob and make it receive a commitment update first.
@@ -8640,11 +8641,8 @@ fn test_concurrent_monitor_claim() {
 	check_added_monitors(&nodes[0], 1);
 	{
 		let htlc_txn = alice_broadcaster.txn_broadcast();
-		assert_eq!(htlc_txn.len(), 2);
+		assert_eq!(htlc_txn.len(), 1);
 		check_spends!(htlc_txn[0], bob_state_y);
-		// Alice doesn't clean up the old HTLC claim since it hasn't seen a conflicting spend for
-		// it. However, she should, because it now has an invalid parent.
-		check_spends!(htlc_txn[1], alice_state);
 	}
 }
 

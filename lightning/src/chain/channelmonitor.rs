@@ -3356,6 +3356,58 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		}
 	}
 
+	/// Cancels any existing pending claims for a commitment that previously confirmed and has now
+	/// been replaced by another.
+	pub fn cancel_prev_commitment_claims<L: Deref>(
+		&mut self, logger: &L, confirmed_commitment_txid: &Txid
+	) where L::Target: Logger {
+		for (counterparty_commitment_txid, _) in &self.counterparty_commitment_txn_on_chain {
+			// Cancel any pending claims for counterparty commitments we've seen confirm.
+			if counterparty_commitment_txid == confirmed_commitment_txid {
+				continue;
+			}
+			for (htlc, _) in self.counterparty_claimable_outpoints.get(counterparty_commitment_txid).unwrap_or(&vec![]) {
+				log_trace!(logger, "Canceling claims for previously confirmed counterparty commitment {}",
+					counterparty_commitment_txid);
+				let mut outpoint = BitcoinOutPoint { txid: *counterparty_commitment_txid, vout: 0 };
+				if let Some(vout) = htlc.transaction_output_index {
+					outpoint.vout = vout;
+					self.onchain_tx_handler.abandon_claim(&outpoint);
+				}
+			}
+		}
+		if self.holder_tx_signed {
+			// If we've signed, we may have broadcast either commitment (prev or current), and
+			// attempted to claim from it immediately without waiting for a confirmation.
+			if self.current_holder_commitment_tx.txid != *confirmed_commitment_txid {
+				log_trace!(logger, "Canceling claims for previously broadcast holder commitment {}",
+					self.current_holder_commitment_tx.txid);
+				let mut outpoint = BitcoinOutPoint { txid: self.current_holder_commitment_tx.txid, vout: 0 };
+				for (htlc, _, _) in &self.current_holder_commitment_tx.htlc_outputs {
+					if let Some(vout) = htlc.transaction_output_index {
+						outpoint.vout = vout;
+						self.onchain_tx_handler.abandon_claim(&outpoint);
+					}
+				}
+			}
+			if let Some(prev_holder_commitment_tx) = &self.prev_holder_signed_commitment_tx {
+				if prev_holder_commitment_tx.txid != *confirmed_commitment_txid {
+					log_trace!(logger, "Canceling claims for previously broadcast holder commitment {}",
+						prev_holder_commitment_tx.txid);
+					let mut outpoint = BitcoinOutPoint { txid: prev_holder_commitment_tx.txid, vout: 0 };
+					for (htlc, _, _) in &prev_holder_commitment_tx.htlc_outputs {
+						if let Some(vout) = htlc.transaction_output_index {
+							outpoint.vout = vout;
+							self.onchain_tx_handler.abandon_claim(&outpoint);
+						}
+					}
+				}
+			}
+		} else {
+			// No previous claim.
+		}
+	}
+
 	fn get_latest_holder_commitment_txn<L: Deref>(
 		&mut self, logger: &WithChannelMonitor<L>,
 	) -> Vec<Transaction> where L::Target: Logger {
@@ -3568,6 +3620,10 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 							commitment_tx_to_counterparty_output,
 						},
 					});
+					// Now that we've detected a confirmed commitment transaction, attempt to cancel
+					// pending claims for any commitments that were previously confirmed such that
+					// we don't continue claiming inputs that no longer exist.
+					self.cancel_prev_commitment_claims(&logger, &txid);
 				}
 			}
 			if tx.input.len() >= 1 {

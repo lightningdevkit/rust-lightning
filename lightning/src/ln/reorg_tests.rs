@@ -666,6 +666,9 @@ fn test_htlc_preimage_claim_holder_commitment_after_counterparty_commitment_reor
 
 	mine_transaction(&nodes[0], &commitment_tx_b);
 	mine_transaction(&nodes[1], &commitment_tx_b);
+	if nodes[1].connect_style.borrow().updates_best_block_first() {
+		let _ = nodes[1].tx_broadcaster.txn_broadcast();
+	}
 
 	// Provide the preimage now, such that we only claim from the holder commitment (since it's
 	// currently confirmed) and not the counterparty's.
