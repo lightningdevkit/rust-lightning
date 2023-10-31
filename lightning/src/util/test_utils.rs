@@ -94,13 +94,8 @@ pub struct TestFeeEstimator {
 	pub sat_per_kw: Mutex<u32>,
 }
 impl chaininterface::FeeEstimator for TestFeeEstimator {
-	fn get_est_sat_per_1000_weight(&self, confirmation_target: ConfirmationTarget) -> u32 {
-		match confirmation_target {
-			ConfirmationTarget::MaxAllowedNonAnchorChannelRemoteFee => {
-				core::cmp::max(25 * 250, *self.sat_per_kw.lock().unwrap() * 10)
-			}
-			_ => *self.sat_per_kw.lock().unwrap(),
-		}
+	fn get_est_sat_per_1000_weight(&self, _confirmation_target: ConfirmationTarget) -> u32 {
+		*self.sat_per_kw.lock().unwrap()
 	}
 }
 

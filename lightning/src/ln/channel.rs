@@ -2162,20 +2162,6 @@ impl<SP: Deref> Channel<SP> where
 		feerate_per_kw: u32, cur_feerate_per_kw: Option<u32>, logger: &L
 	) -> Result<(), ChannelError> where F::Target: FeeEstimator, L::Target: Logger,
 	{
-		// We only bound the fee updates on the upper side to prevent completely absurd feerates,
-		// always accepting up to 25 sat/vByte or 10x our fee estimator's "High Priority" fee.
-		// We generally don't care too much if they set the feerate to something very high, but it
-		// could result in the channel being useless due to everything being dust. This doesn't
-		// apply to channels supporting anchor outputs since HTLC transactions are pre-signed with a
-		// zero fee, so their fee is no longer considered to determine dust limits.
-		if !channel_type.supports_anchors_zero_fee_htlc_tx() {
-			let upper_limit =
-				fee_estimator.bounded_sat_per_1000_weight(ConfirmationTarget::MaxAllowedNonAnchorChannelRemoteFee) as u64;
-			if feerate_per_kw as u64 > upper_limit {
-				return Err(ChannelError::Close(format!("Peer's feerate much too high. Actual: {}. Our expected upper limit: {}", feerate_per_kw, upper_limit)));
-			}
-		}
-
 		let lower_limit_conf_target = if channel_type.supports_anchors_zero_fee_htlc_tx() {
 			ConfirmationTarget::MinAllowedAnchorChannelRemoteFee
 		} else {
@@ -3872,14 +3858,11 @@ impl<SP: Deref> Channel<SP> where
 			return Err(ChannelError::Close("Peer sent update_fee when we needed a channel_reestablish".to_owned()));
 		}
 		Channel::<SP>::check_remote_fee(&self.context.channel_type, fee_estimator, msg.feerate_per_kw, Some(self.context.feerate_per_kw), logger)?;
-		let feerate_over_dust_buffer = msg.feerate_per_kw > self.context.get_dust_buffer_feerate(None);
 
 		self.context.pending_update_fee = Some((msg.feerate_per_kw, FeeUpdateState::RemoteAnnounced));
 		self.context.update_time_counter += 1;
-		// If the feerate has increased over the previous dust buffer (note that
-		// `get_dust_buffer_feerate` considers the `pending_update_fee` status), check that we
-		// won't be pushed over our dust exposure limit by the feerate increase.
-		if feerate_over_dust_buffer {
+		// Check that we won't be pushed over our dust exposure limit by the feerate increase.
+		if !self.context.channel_type.supports_anchors_zero_fee_htlc_tx() {
 			let inbound_stats = self.context.get_inbound_pending_htlc_stats(None);
 			let outbound_stats = self.context.get_outbound_pending_htlc_stats(None);
 			let holder_tx_dust_exposure = inbound_stats.on_holder_tx_dust_exposure_msat + outbound_stats.on_holder_tx_dust_exposure_msat;
@@ -7684,7 +7667,7 @@ mod tests {
 	use crate::ln::PaymentHash;
 	use crate::ln::channelmanager::{self, HTLCSource, PaymentId};
 	use crate::ln::channel::InitFeatures;
-	use crate::ln::channel::{Channel, ChannelState, InboundHTLCOutput, OutboundV1Channel, InboundV1Channel, OutboundHTLCOutput, InboundHTLCState, OutboundHTLCState, HTLCCandidate, HTLCInitiator, commit_tx_fee_msat};
+	use crate::ln::channel::{ChannelState, InboundHTLCOutput, OutboundV1Channel, InboundV1Channel, OutboundHTLCOutput, InboundHTLCState, OutboundHTLCState, HTLCCandidate, HTLCInitiator, commit_tx_fee_msat};
 	use crate::ln::channel::{MAX_FUNDING_SATOSHIS_NO_WUMBO, TOTAL_BITCOIN_SUPPLY_SATOSHIS, MIN_THEIR_CHAN_RESERVE_SATOSHIS};
 	use crate::ln::features::ChannelTypeFeatures;
 	use crate::ln::msgs::{ChannelUpdate, DecodeError, UnsignedChannelUpdate, MAX_VALUE_MSAT};
@@ -7724,17 +7707,6 @@ mod tests {
 		assert_eq!(TOTAL_BITCOIN_SUPPLY_SATOSHIS, 21_000_000 * 100_000_000);
 		assert!(MAX_FUNDING_SATOSHIS_NO_WUMBO <= TOTAL_BITCOIN_SUPPLY_SATOSHIS,
 		        "MAX_FUNDING_SATOSHIS_NO_WUMBO is greater than all satoshis in existence");
-	}
-
-	#[test]
-	fn test_no_fee_check_overflow() {
-		// Previously, calling `check_remote_fee` with a fee of 0xffffffff would overflow in
-		// arithmetic, causing a panic with debug assertions enabled.
-		let fee_est = TestFeeEstimator { fee_est: 42 };
-		let bounded_fee_estimator = LowerBoundedFeeEstimator::new(&fee_est);
-		assert!(Channel::<&TestKeysInterface>::check_remote_fee(
-			&ChannelTypeFeatures::only_static_remote_key(), &bounded_fee_estimator,
-			u32::max_value(), None, &&test_utils::TestLogger::new()).is_err());
 	}
 
 	struct Keys {
