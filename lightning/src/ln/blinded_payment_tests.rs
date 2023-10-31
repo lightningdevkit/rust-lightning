@@ -502,6 +502,9 @@ enum ReceiveCheckFail {
 	// The incoming HTLC errors when added to the Channel, in this case due to the HTLC being
 	// delivered out-of-order with a shutdown message.
 	ChannelCheck,
+	// The HTLC is successfully added to the inbound channel but fails receive checks in
+	// process_pending_htlc_forwards.
+	ProcessPendingHTLCsCheck,
 }
 
 #[test]
@@ -510,6 +513,7 @@ fn multi_hop_receiver_fail() {
 	do_multi_hop_receiver_fail(ReceiveCheckFail::OnionDecodeFail);
 	do_multi_hop_receiver_fail(ReceiveCheckFail::ReceiveRequirements);
 	do_multi_hop_receiver_fail(ReceiveCheckFail::ChannelCheck);
+	do_multi_hop_receiver_fail(ReceiveCheckFail::ProcessPendingHTLCsCheck);
 }
 
 fn do_multi_hop_receiver_fail(check: ReceiveCheckFail) {
@@ -530,12 +534,23 @@ fn do_multi_hop_receiver_fail(check: ReceiveCheckFail) {
 	};
 
 	let amt_msat = 5000;
-	let (_, payment_hash, payment_secret) = get_payment_preimage_hash(&nodes[2], Some(amt_msat), None);
+	let final_cltv_delta = if check == ReceiveCheckFail::ProcessPendingHTLCsCheck {
+		// Set the final CLTV expiry too low to trigger the failure in process_pending_htlc_forwards.
+		Some(TEST_FINAL_CLTV as u16 - 2)
+	} else { None };
+	let (_, payment_hash, payment_secret) = get_payment_preimage_hash(&nodes[2], Some(amt_msat), final_cltv_delta);
 	let route_params = get_blinded_route_parameters(amt_msat, payment_secret,
 		nodes.iter().skip(1).map(|n| n.node.get_our_node_id()).collect(), &[&chan_upd_1_2],
 		&chanmon_cfgs[2].keys_manager);
 
-	let route = find_route(&nodes[0], &route_params).unwrap();
+	let route = if check == ReceiveCheckFail::ProcessPendingHTLCsCheck {
+		let mut route = get_route(&nodes[0], &route_params).unwrap();
+		// Set the final CLTV expiry too low to trigger the failure in process_pending_htlc_forwards.
+		route.paths[0].blinded_tail.as_mut().map(|bt| bt.excess_final_cltv_expiry_delta = TEST_FINAL_CLTV - 2);
+		route
+	} else  {
+		find_route(&nodes[0], &route_params).unwrap()
+	};
 	node_cfgs[0].router.expect_find_route(route_params.clone(), Ok(route.clone()));
 	nodes[0].node.send_payment(payment_hash, RecipientOnionFields::spontaneous_empty(), PaymentId(payment_hash.0), route_params, Retry::Attempts(0)).unwrap();
 	check_added_monitors(&nodes[0], 1);
@@ -619,6 +634,15 @@ fn do_multi_hop_receiver_fail(check: ReceiveCheckFail) {
 
 			nodes[2].node.handle_shutdown(&nodes[1].node.get_our_node_id(), &node_1_shutdown);
 			commitment_signed_dance!(nodes[2], nodes[1], (), false, true, false, false);
+		},
+		ReceiveCheckFail::ProcessPendingHTLCsCheck => {
+			nodes[2].node.handle_update_add_htlc(&nodes[1].node.get_our_node_id(), &payment_event_1_2.msgs[0]);
+			check_added_monitors!(nodes[2], 0);
+			do_commitment_signed_dance(&nodes[2], &nodes[1], &payment_event_1_2.commitment_msg, true, true);
+			expect_pending_htlcs_forwardable!(nodes[2]);
+			expect_pending_htlcs_forwardable_and_htlc_handling_failed_ignore!(nodes[2],
+				vec![HTLCDestination::FailedPayment { payment_hash }]);
+			check_added_monitors!(nodes[2], 1);
 		}
 	}
 
