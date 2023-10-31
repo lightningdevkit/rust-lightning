@@ -10,7 +10,7 @@
 use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
 use crate::blinded_path::BlindedPath;
 use crate::blinded_path::payment::{ForwardNode, ForwardTlvs, PaymentConstraints, PaymentRelay, ReceiveTlvs};
-use crate::events::MessageSendEventsProvider;
+use crate::events::{HTLCDestination, MessageSendEventsProvider};
 use crate::ln::PaymentSecret;
 use crate::ln::channelmanager;
 use crate::ln::channelmanager::{PaymentId, RecipientOnionFields};
@@ -289,6 +289,88 @@ fn failed_backwards_to_intro_node() {
 	let mut updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 	nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &updates.update_fail_htlcs[0]);
 	do_commitment_signed_dance(&nodes[0], &nodes[1], &updates.commitment_signed, false, false);
+	expect_payment_failed_conditions(&nodes[0], payment_hash, false,
+		PaymentFailedConditions::new().expected_htlc_error_data(INVALID_ONION_BLINDING, &[0; 32]));
+}
+
+enum ProcessPendingHTLCsCheck {
+	FwdPeerDisconnected,
+	FwdChannelClosed,
+}
+
+#[test]
+fn forward_fail_in_process_pending_htlc_fwds() {
+	do_forward_fail_in_process_pending_htlc_fwds(ProcessPendingHTLCsCheck::FwdPeerDisconnected);
+	do_forward_fail_in_process_pending_htlc_fwds(ProcessPendingHTLCsCheck::FwdChannelClosed);
+}
+fn do_forward_fail_in_process_pending_htlc_fwds(check: ProcessPendingHTLCsCheck) {
+	// Ensure the intro node will error backwards properly if the HTLC fails in
+	// process_pending_htlc_forwards.
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
+	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0);
+	let (chan_upd_1_2, channel_id) = {
+		let chan = create_announced_chan_between_nodes_with_value(&nodes, 1, 2, 1_000_000, 0);
+		(chan.0.contents, chan.2)
+	};
+
+	let amt_msat = 5000;
+	let (_, payment_hash, payment_secret) = get_payment_preimage_hash(&nodes[2], Some(amt_msat), None);
+	let route_params = get_blinded_route_parameters(amt_msat, payment_secret,
+		nodes.iter().skip(1).map(|n| n.node.get_our_node_id()).collect(), &[&chan_upd_1_2],
+		&chanmon_cfgs[2].keys_manager);
+
+	nodes[0].node.send_payment(payment_hash, RecipientOnionFields::spontaneous_empty(), PaymentId(payment_hash.0), route_params, Retry::Attempts(0)).unwrap();
+	check_added_monitors(&nodes[0], 1);
+
+	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 1);
+	let ev = remove_first_msg_event_to_node(&nodes[1].node.get_our_node_id(), &mut events);
+	let mut payment_event = SendEvent::from_event(ev);
+
+	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &payment_event.msgs[0]);
+	check_added_monitors!(nodes[1], 0);
+	do_commitment_signed_dance(&nodes[1], &nodes[0], &payment_event.commitment_msg, false, false);
+
+	match check {
+		ProcessPendingHTLCsCheck::FwdPeerDisconnected => {
+			// Disconnect the next-hop peer so when we go to forward in process_pending_htlc_forwards, the
+			// intro node will error backwards.
+			nodes[1].node.peer_disconnected(&nodes[2].node.get_our_node_id());
+			expect_pending_htlcs_forwardable!(nodes[1]);
+			expect_pending_htlcs_forwardable_and_htlc_handling_failed_ignore!(nodes[1],
+				vec![HTLCDestination::NextHopChannel { node_id: Some(nodes[2].node.get_our_node_id()), channel_id }]);
+		},
+		ProcessPendingHTLCsCheck::FwdChannelClosed => {
+			// Force close the next-hop channel so when we go to forward in process_pending_htlc_forwards,
+			// the intro node will error backwards.
+			nodes[1].node.force_close_broadcasting_latest_txn(&channel_id, &nodes[2].node.get_our_node_id()).unwrap();
+			let events = nodes[1].node.get_and_clear_pending_events();
+			match events[0] {
+				crate::events::Event::PendingHTLCsForwardable { .. } => {},
+				_ => panic!("Unexpected event {:?}", events),
+			};
+			match events[1] {
+				crate::events::Event::ChannelClosed { .. } => {},
+				_ => panic!("Unexpected event {:?}", events),
+			}
+
+			nodes[1].node.process_pending_htlc_forwards();
+			expect_pending_htlcs_forwardable_and_htlc_handling_failed_ignore!(nodes[1],
+				vec![HTLCDestination::UnknownNextHop { requested_forward_scid: chan_upd_1_2.short_channel_id }]);
+			check_closed_broadcast(&nodes[1], 1, true);
+			check_added_monitors!(nodes[1], 1);
+			nodes[1].node.process_pending_htlc_forwards();
+		},
+	}
+
+	let mut updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+	nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &updates.update_fail_htlcs[0]);
+	check_added_monitors!(nodes[1], 1);
+	do_commitment_signed_dance(&nodes[0], &nodes[1], &updates.commitment_signed, false, false);
+
 	expect_payment_failed_conditions(&nodes[0], payment_hash, false,
 		PaymentFailedConditions::new().expected_htlc_error_data(INVALID_ONION_BLINDING, &[0; 32]));
 }
