@@ -382,6 +382,10 @@ fn do_forward_fail_in_process_pending_htlc_fwds(check: ProcessPendingHTLCsCheck)
 
 #[test]
 fn blinded_intercept_payment() {
+	do_blinded_intercept_payment(true);
+	do_blinded_intercept_payment(false);
+}
+fn do_blinded_intercept_payment(intercept_node_fails: bool) {
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 	let mut intercept_forwards_config = test_default_channel_config();
@@ -389,10 +393,13 @@ fn blinded_intercept_payment() {
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, Some(intercept_forwards_config), None]);
 	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0);
-	let chan_upd = create_announced_chan_between_nodes_with_value(&nodes, 1, 2, 1_000_000, 0).0.contents;
+	let (channel_id, chan_upd) = {
+		let chan = create_announced_chan_between_nodes_with_value(&nodes, 1, 2, 1_000_000, 0);
+		(chan.2, chan.0.contents)
+	};
 
 	let amt_msat = 5000;
-	let (_, payment_hash, payment_secret) = get_payment_preimage_hash(&nodes[2], Some(amt_msat), None);
+	let (payment_preimage, payment_hash, payment_secret) = get_payment_preimage_hash(&nodes[2], Some(amt_msat), None);
 	let intercept_scid = nodes[1].node.get_intercept_scid();
 	let mut intercept_chan_upd = chan_upd;
 	intercept_chan_upd.short_channel_id = intercept_scid;
@@ -413,29 +420,53 @@ fn blinded_intercept_payment() {
 
 	let events = nodes[1].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);
-	let intercept_id = match events[0] {
+	let (intercept_id, expected_outbound_amount_msat) = match events[0] {
 		crate::events::Event::HTLCIntercepted {
 			intercept_id, payment_hash: pmt_hash,
-			requested_next_hop_scid: short_channel_id, ..
+			requested_next_hop_scid: short_channel_id, expected_outbound_amount_msat, ..
 		} => {
 			assert_eq!(pmt_hash, payment_hash);
 			assert_eq!(short_channel_id, intercept_scid);
-			intercept_id
+			(intercept_id, expected_outbound_amount_msat)
 		},
 		_ => panic!()
 	};
 
-	nodes[1].node.fail_intercepted_htlc(intercept_id).unwrap();
-	expect_pending_htlcs_forwardable_and_htlc_handling_failed_ignore!(nodes[1], vec![HTLCDestination::UnknownNextHop { requested_forward_scid: intercept_scid }]);
-	nodes[1].node.process_pending_htlc_forwards();
-	let update_fail = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
-	check_added_monitors!(&nodes[1], 1);
-	assert!(update_fail.update_fail_htlcs.len() == 1);
-	let fail_msg = update_fail.update_fail_htlcs[0].clone();
-	nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &fail_msg);
-	commitment_signed_dance!(nodes[0], nodes[1], update_fail.commitment_signed, false);
-	expect_payment_failed_conditions(&nodes[0], payment_hash, false,
-		PaymentFailedConditions::new().expected_htlc_error_data(INVALID_ONION_BLINDING, &[0; 32]));
+	if intercept_node_fails {
+		nodes[1].node.fail_intercepted_htlc(intercept_id).unwrap();
+		expect_pending_htlcs_forwardable_and_htlc_handling_failed_ignore!(nodes[1], vec![HTLCDestination::UnknownNextHop { requested_forward_scid: intercept_scid }]);
+		nodes[1].node.process_pending_htlc_forwards();
+		let update_fail = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+		check_added_monitors!(&nodes[1], 1);
+		assert!(update_fail.update_fail_htlcs.len() == 1);
+		let fail_msg = update_fail.update_fail_htlcs[0].clone();
+		nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &fail_msg);
+		commitment_signed_dance!(nodes[0], nodes[1], update_fail.commitment_signed, false);
+		expect_payment_failed_conditions(&nodes[0], payment_hash, false,
+			PaymentFailedConditions::new().expected_htlc_error_data(INVALID_ONION_BLINDING, &[0; 32]));
+		return
+	}
+
+	nodes[1].node.forward_intercepted_htlc(intercept_id, &channel_id, nodes[2].node.get_our_node_id(), expected_outbound_amount_msat).unwrap();
+	expect_pending_htlcs_forwardable!(nodes[1]);
+
+	let payment_event = {
+		{
+			let mut added_monitors = nodes[1].chain_monitor.added_monitors.lock().unwrap();
+			assert_eq!(added_monitors.len(), 1);
+			added_monitors.clear();
+		}
+		let mut events = nodes[1].node.get_and_clear_pending_msg_events();
+		assert_eq!(events.len(), 1);
+		SendEvent::from_event(events.remove(0))
+	};
+	nodes[2].node.handle_update_add_htlc(&nodes[1].node.get_our_node_id(), &payment_event.msgs[0]);
+	commitment_signed_dance!(nodes[2], nodes[1], &payment_event.commitment_msg, false, true);
+	expect_pending_htlcs_forwardable!(nodes[2]);
+
+	expect_payment_claimable!(&nodes[2], payment_hash, payment_secret, amt_msat, None, nodes[2].node.get_our_node_id());
+	do_claim_payment_along_route(&nodes[0], &vec!(&vec!(&nodes[1], &nodes[2])[..]), false, payment_preimage);
+	expect_payment_sent(&nodes[0], payment_preimage, Some(Some(1000)), true, true);
 }
 
 #[test]
