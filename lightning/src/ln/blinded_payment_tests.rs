@@ -435,7 +435,7 @@ fn do_forward_fail_in_process_pending_htlc_fwds(check: ProcessPendingHTLCsCheck)
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
 	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0);
-	let (chan_upd_1_2, channel_id) = {
+	let (chan_upd_1_2, chan_id_1_2) = {
 		let chan = create_announced_chan_between_nodes_with_value(&nodes, 1, 2, 1_000_000, 0);
 		(chan.0.contents, chan.2)
 	};
@@ -458,38 +458,43 @@ fn do_forward_fail_in_process_pending_htlc_fwds(check: ProcessPendingHTLCsCheck)
 	check_added_monitors!(nodes[1], 0);
 	do_commitment_signed_dance(&nodes[1], &nodes[0], &payment_event.commitment_msg, false, false);
 
-	match check {
-		ProcessPendingHTLCsCheck::FwdPeerDisconnected => {
-			// Disconnect the next-hop peer so when we go to forward in process_pending_htlc_forwards, the
-			// intro node will error backwards.
-			nodes[1].node.peer_disconnected(&nodes[2].node.get_our_node_id());
-			expect_pending_htlcs_forwardable!(nodes[1]);
-			expect_pending_htlcs_forwardable_and_htlc_handling_failed_ignore!(nodes[1],
-				vec![HTLCDestination::NextHopChannel { node_id: Some(nodes[2].node.get_our_node_id()), channel_id }]);
-		},
-		ProcessPendingHTLCsCheck::FwdChannelClosed => {
-			// Force close the next-hop channel so when we go to forward in process_pending_htlc_forwards,
-			// the intro node will error backwards.
-			nodes[1].node.force_close_broadcasting_latest_txn(&channel_id, &nodes[2].node.get_our_node_id()).unwrap();
-			let events = nodes[1].node.get_and_clear_pending_events();
-			match events[0] {
-				crate::events::Event::PendingHTLCsForwardable { .. } => {},
-				_ => panic!("Unexpected event {:?}", events),
-			};
-			match events[1] {
-				crate::events::Event::ChannelClosed { .. } => {},
-				_ => panic!("Unexpected event {:?}", events),
-			}
+	macro_rules! cause_error {
+		($prev_node: expr, $curr_node: expr, $next_node: expr, $failed_chan_id: expr, $failed_scid: expr) => {
+			match check {
+				ProcessPendingHTLCsCheck::FwdPeerDisconnected => {
+					// Disconnect the next-hop peer so when we go to forward in process_pending_htlc_forwards, the
+					// intro node will error backwards.
+					$curr_node.node.peer_disconnected(&$next_node.node.get_our_node_id());
+					expect_pending_htlcs_forwardable!($curr_node);
+					expect_pending_htlcs_forwardable_and_htlc_handling_failed_ignore!($curr_node,
+						vec![HTLCDestination::NextHopChannel { node_id: Some($next_node.node.get_our_node_id()), channel_id: $failed_chan_id }]);
+				},
+				ProcessPendingHTLCsCheck::FwdChannelClosed => {
+					// Force close the next-hop channel so when we go to forward in process_pending_htlc_forwards,
+					// the intro node will error backwards.
+					$curr_node.node.force_close_broadcasting_latest_txn(&$failed_chan_id, &$next_node.node.get_our_node_id()).unwrap();
+					let events = $curr_node.node.get_and_clear_pending_events();
+					match events[0] {
+						crate::events::Event::PendingHTLCsForwardable { .. } => {},
+						_ => panic!("Unexpected event {:?}", events),
+					};
+					match events[1] {
+						crate::events::Event::ChannelClosed { .. } => {},
+						_ => panic!("Unexpected event {:?}", events),
+					}
 
-			nodes[1].node.process_pending_htlc_forwards();
-			expect_pending_htlcs_forwardable_and_htlc_handling_failed_ignore!(nodes[1],
-				vec![HTLCDestination::UnknownNextHop { requested_forward_scid: chan_upd_1_2.short_channel_id }]);
-			check_closed_broadcast(&nodes[1], 1, true);
-			check_added_monitors!(nodes[1], 1);
-			nodes[1].node.process_pending_htlc_forwards();
-		},
+					$curr_node.node.process_pending_htlc_forwards();
+					expect_pending_htlcs_forwardable_and_htlc_handling_failed_ignore!($curr_node,
+						vec![HTLCDestination::UnknownNextHop { requested_forward_scid: $failed_scid }]);
+					check_closed_broadcast(&$curr_node, 1, true);
+					check_added_monitors!($curr_node, 1);
+					$curr_node.node.process_pending_htlc_forwards();
+				},
+			}
+		}
 	}
 
+	cause_error!(nodes[0],  nodes[1], nodes[2], chan_id_1_2, chan_upd_1_2.short_channel_id);
 	let mut updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 	nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &updates.update_fail_htlcs[0]);
 	check_added_monitors!(nodes[1], 1);
