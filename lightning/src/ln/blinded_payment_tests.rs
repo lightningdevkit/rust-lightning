@@ -273,35 +273,42 @@ fn do_forward_checks_failure(check: ForwardCheckFail) {
 	nodes[0].node.send_payment(payment_hash, RecipientOnionFields::spontaneous_empty(), PaymentId(payment_hash.0), route_params, Retry::Attempts(0)).unwrap();
 	check_added_monitors(&nodes[0], 1);
 
-	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
-	assert_eq!(events.len(), 1);
-	let ev = remove_first_msg_event_to_node(&nodes[1].node.get_our_node_id(), &mut events);
-	let mut payment_event = SendEvent::from_event(ev);
-
-	let mut update_add = &mut payment_event.msgs[0];
-	match check {
-		ForwardCheckFail::InboundOnionCheck => {
-			update_add.cltv_expiry = 10; // causes outbound CLTV expiry to underflow
-		},
-		ForwardCheckFail::ForwardPayloadEncodedAsReceive => {
-			let session_priv = SecretKey::from_slice(&[3; 32]).unwrap();
-			let onion_keys = onion_utils::construct_onion_keys(&Secp256k1::new(), &route.paths[0], &session_priv).unwrap();
-			let cur_height = nodes[0].best_block_info().1;
-			let (mut onion_payloads, ..) = onion_utils::build_onion_payloads(
-				&route.paths[0], amt_msat, RecipientOnionFields::spontaneous_empty(), cur_height, &None).unwrap();
-			// Remove the receive payload so the blinded forward payload is encoded as a final payload
-			// (i.e. next_hop_hmac == [0; 32])
-			onion_payloads.pop();
-			update_add.onion_routing_packet = onion_utils::construct_onion_packet(onion_payloads, onion_keys, [0; 32], &payment_hash).unwrap();
-		},
-		ForwardCheckFail::OutboundChannelCheck => {
-			// The intro node will see that the next-hop peer is disconnected and fail the HTLC backwards.
-			nodes[1].node.peer_disconnected(&nodes[2].node.get_our_node_id());
-		},
+	macro_rules! cause_error {
+		($src_node_idx: expr, $target_node_idx: expr, $update_add: expr) => {
+			match check {
+				ForwardCheckFail::InboundOnionCheck => {
+					$update_add.cltv_expiry = 10; // causes outbound CLTV expiry to underflow
+				},
+				ForwardCheckFail::ForwardPayloadEncodedAsReceive => {
+					let session_priv = SecretKey::from_slice(&[3; 32]).unwrap();
+					let onion_keys = onion_utils::construct_onion_keys(&Secp256k1::new(), &route.paths[0], &session_priv).unwrap();
+					let cur_height = nodes[0].best_block_info().1;
+					let (mut onion_payloads, ..) = onion_utils::build_onion_payloads(
+						&route.paths[0], amt_msat, RecipientOnionFields::spontaneous_empty(), cur_height, &None).unwrap();
+					// Remove the receive payload so the blinded forward payload is encoded as a final payload
+					// (i.e. next_hop_hmac == [0; 32])
+					onion_payloads.pop();
+					if $target_node_idx + 1 < nodes.len() {
+						onion_payloads.pop();
+					}
+					$update_add.onion_routing_packet = onion_utils::construct_onion_packet(onion_payloads, onion_keys, [0; 32], &payment_hash).unwrap();
+				},
+				ForwardCheckFail::OutboundChannelCheck => {
+					// The intro node will see that the next-hop peer is disconnected and fail the HTLC backwards.
+					nodes[$src_node_idx].node.peer_disconnected(&nodes[$target_node_idx].node.get_our_node_id());
+				}
+			}
+		}
 	}
-	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &payment_event.msgs[0]);
+
+	let mut updates_0_1 = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
+	let update_add = &mut updates_0_1.update_add_htlcs[0];
+
+	cause_error!(1, 2, update_add);
+
+	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &update_add);
 	check_added_monitors!(nodes[1], 0);
-	do_commitment_signed_dance(&nodes[1], &nodes[0], &payment_event.commitment_msg, true, true);
+	do_commitment_signed_dance(&nodes[1], &nodes[0], &updates_0_1.commitment_signed, true, true);
 
 	let mut updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 	nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &updates.update_fail_htlcs[0]);
