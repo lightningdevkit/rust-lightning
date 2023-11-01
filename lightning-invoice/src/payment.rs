@@ -12,7 +12,7 @@
 use crate::Bolt11Invoice;
 use crate::prelude::*;
 
-use bitcoin_hashes::Hash;
+use bitcoin::hashes::Hash;
 
 use lightning::chain;
 use lightning::chain::chaininterface::{BroadcasterInterface, FeeEstimator};
@@ -247,7 +247,7 @@ where
 mod tests {
 	use super::*;
 	use crate::{InvoiceBuilder, Currency};
-	use bitcoin_hashes::sha256::Hash as Sha256;
+	use bitcoin::hashes::sha256::Hash as Sha256;
 	use lightning::events::Event;
 	use lightning::ln::msgs::ChannelMessageHandler;
 	use lightning::ln::{PaymentPreimage, PaymentSecret};

@@ -4,7 +4,7 @@ use crate::{Bolt11Invoice, CreationError, Currency, InvoiceBuilder, SignOrCreati
 
 use crate::{prelude::*, Description, Bolt11InvoiceDescription, Sha256};
 use bech32::ToBase32;
-use bitcoin_hashes::Hash;
+use bitcoin::hashes::Hash;
 use lightning::chain;
 use lightning::chain::chaininterface::{BroadcasterInterface, FeeEstimator};
 use lightning::sign::{Recipient, NodeSigner, SignerProvider, EntropySource};
@@ -795,8 +795,8 @@ mod test {
 	use core::cell::RefCell;
 	use core::time::Duration;
 	use crate::{Currency, Description, Bolt11InvoiceDescription, SignOrCreationError, CreationError};
-	use bitcoin_hashes::{Hash, sha256};
-	use bitcoin_hashes::sha256::Hash as Sha256;
+	use bitcoin::hashes::{Hash, sha256};
+	use bitcoin::hashes::sha256::Hash as Sha256;
 	use lightning::sign::PhantomKeysManager;
 	use lightning::events::{MessageSendEvent, MessageSendEventsProvider, Event, EventsProvider};
 	use lightning::ln::{PaymentPreimage, PaymentHash};

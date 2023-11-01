@@ -11,8 +11,8 @@ use bech32::{u5, FromBase32};
 
 use bitcoin::{PubkeyHash, ScriptHash};
 use bitcoin::util::address::WitnessVersion;
-use bitcoin_hashes::Hash;
-use bitcoin_hashes::sha256;
+use bitcoin::hashes::Hash;
+use bitcoin::hashes::sha256;
 use crate::prelude::*;
 use lightning::ln::PaymentSecret;
 use lightning::routing::gossip::RoutingFees;
@@ -564,14 +564,14 @@ impl FromBase32 for Fallback {
 			17 => {
 				let pkh = match PubkeyHash::from_slice(&bytes) {
 					Ok(pkh) => pkh,
-					Err(bitcoin_hashes::Error::InvalidLength(_, _)) => return Err(Bolt11ParseError::InvalidPubKeyHashLength),
+					Err(bitcoin::hashes::Error::InvalidLength(_, _)) => return Err(Bolt11ParseError::InvalidPubKeyHashLength),
 				};
 				Ok(Fallback::PubKeyHash(pkh))
 			}
 			18 => {
 				let sh = match ScriptHash::from_slice(&bytes) {
 					Ok(sh) => sh,
-					Err(bitcoin_hashes::Error::InvalidLength(_, _)) => return Err(Bolt11ParseError::InvalidScriptHashLength),
+					Err(bitcoin::hashes::Error::InvalidLength(_, _)) => return Err(Bolt11ParseError::InvalidScriptHashLength),
 				};
 				Ok(Fallback::ScriptHash(sh))
 			}
@@ -726,8 +726,8 @@ mod test {
 	use crate::de::Bolt11ParseError;
 	use secp256k1::PublicKey;
 	use bech32::u5;
-	use bitcoin_hashes::hex::FromHex;
-	use bitcoin_hashes::sha256;
+	use bitcoin::hashes::hex::FromHex;
+	use bitcoin::hashes::sha256;
 
 	const CHARSET_REV: [i8; 128] = [
 		-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
@@ -856,7 +856,7 @@ mod test {
 		use bech32::FromBase32;
 		use bitcoin::{PubkeyHash, ScriptHash};
 		use bitcoin::util::address::WitnessVersion;
-		use bitcoin_hashes::Hash;
+		use bitcoin::hashes::Hash;
 
 		let cases = vec![
 			(

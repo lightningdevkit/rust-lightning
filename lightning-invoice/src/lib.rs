@@ -31,7 +31,6 @@ pub mod payment;
 pub mod utils;
 
 extern crate bech32;
-extern crate bitcoin_hashes;
 #[macro_use] extern crate lightning;
 extern crate num_traits;
 extern crate secp256k1;
@@ -47,7 +46,7 @@ use std::time::SystemTime;
 use bech32::u5;
 use bitcoin::{Address, Network, PubkeyHash, ScriptHash};
 use bitcoin::util::address::{Payload, WitnessVersion};
-use bitcoin_hashes::{Hash, sha256};
+use bitcoin::hashes::{Hash, sha256};
 use lightning::ln::features::Bolt11InvoiceFeatures;
 use lightning::util::invoice::construct_invoice_preimage;
 
@@ -172,10 +171,10 @@ pub const DEFAULT_MIN_FINAL_CLTV_EXPIRY_DELTA: u64 = 18;
 /// extern crate secp256k1;
 /// extern crate lightning;
 /// extern crate lightning_invoice;
-/// extern crate bitcoin_hashes;
+/// extern crate bitcoin;
 ///
-/// use bitcoin_hashes::Hash;
-/// use bitcoin_hashes::sha256;
+/// use bitcoin::hashes::Hash;
+/// use bitcoin::hashes::sha256;
 ///
 /// use secp256k1::Secp256k1;
 /// use secp256k1::SecretKey;
@@ -1748,8 +1747,8 @@ impl<'de> Deserialize<'de> for Bolt11Invoice {
 #[cfg(test)]
 mod test {
 	use bitcoin::Script;
-	use bitcoin_hashes::hex::FromHex;
-	use bitcoin_hashes::sha256;
+	use bitcoin::hashes::hex::FromHex;
+	use bitcoin::hashes::sha256;
 
 	#[test]
 	fn test_system_time_bounds_assumptions() {
