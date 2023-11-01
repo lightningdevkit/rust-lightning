@@ -1469,6 +1469,16 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, T: Time> ScoreUpdate for Prob
 impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, T: Time> Score for ProbabilisticScorerUsingTime<G, L, T>
 where L::Target: Logger {}
 
+#[cfg(feature = "std")]
+#[inline]
+fn powf64(n: f64, exp: f64) -> f64 {
+	n.powf(exp)
+}
+#[cfg(not(feature = "std"))]
+fn powf64(n: f64, exp: f64) -> f64 {
+	libm::powf(n as f32, exp as f32) as f64
+}
+
 mod approx {
 	const BITS: u32 = 64;
 	const HIGHEST_BIT: u32 = BITS - 1;
