@@ -814,6 +814,14 @@ where
 		self.enqueue_onion_message(path, contents, reply_path, format_args!(""))
 	}
 
+	pub(crate) fn peel_onion_message(
+		&self, msg: &OnionMessage
+	) -> Result<PeeledOnion<<<CMH>::Target as CustomOnionMessageHandler>::CustomMessage>, ()> {
+		peel_onion_message(
+			msg, &self.secp_ctx, &*self.node_signer, &*self.logger, &*self.custom_handler
+		)
+	}
+
 	fn handle_onion_message_response<T: OnionMessageContents>(
 		&self, response: Option<T>, reply_path: Option<BlindedPath>, log_suffix: fmt::Arguments
 	) {
@@ -899,9 +907,7 @@ where
 	CMH::Target: CustomOnionMessageHandler,
 {
 	fn handle_onion_message(&self, _peer_node_id: &PublicKey, msg: &OnionMessage) {
-		match peel_onion_message(
-			msg, &self.secp_ctx, &*self.node_signer, &*self.logger, &*self.custom_handler
-		) {
+		match self.peel_onion_message(msg) {
 			Ok(PeeledOnion::Receive(message, path_id, reply_path)) => {
 				log_trace!(
 					self.logger,
