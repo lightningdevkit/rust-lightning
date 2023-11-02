@@ -14,6 +14,8 @@ use crate::ln::msgs::LightningError;
 use crate::ln::msgs;
 use crate::ln::wire;
 
+use internals::hex::display::DisplayHex;
+
 use bitcoin::hashes::{Hash, HashEngine};
 use bitcoin::hashes::sha256::Hash as Sha256;
 
@@ -25,7 +27,6 @@ use bitcoin::secp256k1;
 use crate::util::chacha20poly1305rfc::ChaCha20Poly1305RFC;
 use crate::util::crypto::hkdf_extract_expand_twice;
 use crate::util::ser::VecWriter;
-use bitcoin::hashes::hex::ToHex;
 
 use core::ops::Deref;
 
@@ -100,7 +101,7 @@ impl PeerChannelEncryptor {
 		let mut sha = Sha256::engine();
 		sha.input(&NOISE_H);
 		sha.input(&their_node_id.serialize()[..]);
-		let h = Sha256::from_engine(sha).into_inner();
+		let h = Sha256::from_engine(sha).to_byte_array();
 
 		PeerChannelEncryptor {
 			their_node_id: Some(their_node_id),
@@ -122,7 +123,7 @@ impl PeerChannelEncryptor {
 		sha.input(&NOISE_H);
 		let our_node_id = node_signer.get_node_id(Recipient::Node).unwrap();
 		sha.input(&our_node_id.serialize()[..]);
-		let h = Sha256::from_engine(sha).into_inner();
+		let h = Sha256::from_engine(sha).to_byte_array();
 
 		PeerChannelEncryptor {
 			their_node_id: None,
@@ -191,7 +192,7 @@ impl PeerChannelEncryptor {
 		let mut sha = Sha256::engine();
 		sha.input(&state.h);
 		sha.input(&our_pub.serialize()[..]);
-		state.h = Sha256::from_engine(sha).into_inner();
+		state.h = Sha256::from_engine(sha).to_byte_array();
 
 		let ss = SharedSecret::new(&their_key, &our_key);
 		let temp_k = PeerChannelEncryptor::hkdf(state, ss);
@@ -203,7 +204,7 @@ impl PeerChannelEncryptor {
 		let mut sha = Sha256::engine();
 		sha.input(&state.h);
 		sha.input(&res[34..]);
-		state.h = Sha256::from_engine(sha).into_inner();
+		state.h = Sha256::from_engine(sha).to_byte_array();
 
 		(res, temp_k)
 	}
@@ -219,14 +220,14 @@ impl PeerChannelEncryptor {
 		}
 
 		let their_pub = match PublicKey::from_slice(&act[1..34]) {
-			Err(_) => return Err(LightningError{err: format!("Invalid public key {}", &act[1..34].to_hex()), action: msgs::ErrorAction::DisconnectPeer{ msg: None }}),
+			Err(_) => return Err(LightningError{err: format!("Invalid public key {:x}", &act[1..34].as_hex()), action: msgs::ErrorAction::DisconnectPeer{ msg: None }}),
 			Ok(key) => key,
 		};
 
 		let mut sha = Sha256::engine();
 		sha.input(&state.h);
 		sha.input(&their_pub.serialize()[..]);
-		state.h = Sha256::from_engine(sha).into_inner();
+		state.h = Sha256::from_engine(sha).to_byte_array();
 
 		let ss = match secret_key {
 			NoiseSecretKey::InMemory(secret_key) => SharedSecret::new(&their_pub, secret_key),
@@ -245,7 +246,7 @@ impl PeerChannelEncryptor {
 		let mut sha = Sha256::engine();
 		sha.input(&state.h);
 		sha.input(&act[34..]);
-		state.h = Sha256::from_engine(sha).into_inner();
+		state.h = Sha256::from_engine(sha).to_byte_array();
 
 		Ok((their_pub, temp_k))
 	}
@@ -327,7 +328,7 @@ impl PeerChannelEncryptor {
 						let mut sha = Sha256::engine();
 						sha.input(&bidirectional_state.h);
 						sha.input(&res[1..50]);
-						bidirectional_state.h = Sha256::from_engine(sha).into_inner();
+						bidirectional_state.h = Sha256::from_engine(sha).to_byte_array();
 
 						let ss = node_signer.ecdh(Recipient::Node, &re, None).map_err(|_| LightningError {
 							err: "Failed to derive shared secret".to_owned(),
@@ -378,13 +379,13 @@ impl PeerChannelEncryptor {
 						PeerChannelEncryptor::decrypt_with_ad(&mut their_node_id, 1, &temp_k2.unwrap(), &bidirectional_state.h, &act_three[1..50])?;
 						self.their_node_id = Some(match PublicKey::from_slice(&their_node_id) {
 							Ok(key) => key,
-							Err(_) => return Err(LightningError{err: format!("Bad node_id from peer, {}", &their_node_id.to_hex()), action: msgs::ErrorAction::DisconnectPeer{ msg: None }}),
+							Err(_) => return Err(LightningError{err: format!("Bad node_id from peer, {:x}", &their_node_id.as_hex()), action: msgs::ErrorAction::DisconnectPeer{ msg: None }}),
 						});
 
 						let mut sha = Sha256::engine();
 						sha.input(&bidirectional_state.h);
 						sha.input(&act_three[1..50]);
-						bidirectional_state.h = Sha256::from_engine(sha).into_inner();
+						bidirectional_state.h = Sha256::from_engine(sha).to_byte_array();
 
 						let ss = SharedSecret::new(&self.their_node_id.unwrap(), &re.unwrap());
 						let temp_k = PeerChannelEncryptor::hkdf(bidirectional_state, ss);

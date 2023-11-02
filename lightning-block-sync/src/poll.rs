@@ -60,7 +60,7 @@ impl Validate for BlockHeaderData {
 
 	fn validate(self, block_hash: BlockHash) -> BlockSourceResult<Self::T> {
 		let pow_valid_block_hash = self.header
-			.validate_pow(&self.header.target())
+			.validate_pow(self.header.target())
 			.map_err(BlockSourceError::persistent)?;
 
 		if pow_valid_block_hash != block_hash {
@@ -81,7 +81,7 @@ impl Validate for BlockData {
 		};
 
 		let pow_valid_block_hash = header
-			.validate_pow(&header.target())
+			.validate_pow(header.target())
 			.map_err(BlockSourceError::persistent)?;
 
 		if pow_valid_block_hash != block_hash {
@@ -261,8 +261,8 @@ impl<B: Deref<Target=T> + Sized + Send + Sync, T: BlockSource + ?Sized> Poll for
 mod tests {
 	use crate::*;
 	use crate::test_utils::Blockchain;
+    use bitcoin::pow::Target;
 	use super::*;
-	use bitcoin::uint::Uint256;
 
 	#[tokio::test]
 	async fn poll_empty_chain() {
@@ -301,8 +301,7 @@ mod tests {
 		let best_known_chain_tip = chain.at_height(0);
 
 		// Invalidate the tip by changing its target.
-		chain.blocks.last_mut().unwrap().header.bits =
-			BlockHeader::compact_target_from_u256(&Uint256::from_be_bytes([0; 32]));
+		chain.blocks.last_mut().unwrap().header.bits = Target::ZERO.to_compact_lossy();
 
 		let poller = ChainPoller::new(&chain, Network::Bitcoin);
 		match poller.poll_chain_tip(best_known_chain_tip).await {

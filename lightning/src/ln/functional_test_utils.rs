@@ -31,13 +31,18 @@ use crate::util::errors::APIError;
 use crate::util::config::{UserConfig, MaxDustHTLCExposure};
 use crate::util::ser::{ReadableArgs, Writeable};
 
-use bitcoin::blockdata::block::{Block, BlockHeader};
+use bitcoin::blockdata::block;
+use bitcoin::blockdata::block::{Block, Version};
+use bitcoin::blockdata::locktime::absolute;
 use bitcoin::blockdata::transaction::{Transaction, TxOut};
 use bitcoin::hash_types::BlockHash;
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::Hash as _;
 use bitcoin::network::constants::Network;
+use bitcoin::pow::CompactTarget;
 use bitcoin::secp256k1::{PublicKey, SecretKey};
+use bitcoin::hash_types::TxMerkleNode;
+use bitcoin::TxIn;
 
 use crate::io;
 use crate::prelude::*;
@@ -46,7 +51,6 @@ use alloc::rc::Rc;
 use crate::sync::{Arc, Mutex, LockTestExt, RwLock};
 use core::mem;
 use core::iter::repeat;
-use bitcoin::{LockTime, TxIn, TxMerkleNode};
 
 pub const CHAN_CONFIRM_DEPTH: u32 = 10;
 
@@ -78,11 +82,11 @@ pub fn mine_transactions<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, txn: &[&Tra
 pub fn mine_transaction_without_consistency_checks<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, tx: &Transaction) {
 	let height = node.best_block_info().1 + 1;
 	let mut block = Block {
-		header: BlockHeader { version: 0x20000000, prev_blockhash: node.best_block_hash(), merkle_root: TxMerkleNode::all_zeros(), time: height, bits: 42, nonce: 42 },
+		header: block::Header { version: Version::from_consensus(0x20000000), prev_blockhash: node.best_block_hash(), merkle_root: TxMerkleNode::all_zeros(), time: height, bits: CompactTarget::from_consensus(42), nonce: 42 },
 		txdata: Vec::new(),
 	};
 	for _ in 0..*node.network_chan_count.borrow() { // Make sure we don't end up with channels at the same short id by offsetting by chan_count
-		block.txdata.push(Transaction { version: 0, lock_time: LockTime::ZERO, input: Vec::new(), output: Vec::new() });
+		block.txdata.push(Transaction { version: 0, lock_time: absolute::LockTime::ZERO, input: Vec::new(), output: Vec::new() });
 	}
 	block.txdata.push((*tx).clone());
 	do_connect_block_without_consistency_checks(node, block, false);
@@ -100,7 +104,7 @@ pub fn confirm_transactions_at<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, txn: 
 	}
 	let mut txdata = Vec::new();
 	for _ in 0..*node.network_chan_count.borrow() { // Make sure we don't end up with channels at the same short id by offsetting by chan_count
-		txdata.push(Transaction { version: 0, lock_time: LockTime::ZERO, input: Vec::new(), output: Vec::new() });
+		txdata.push(Transaction { version: 0, lock_time: absolute::LockTime::ZERO, input: Vec::new(), output: Vec::new() });
 	}
 	for tx in txn {
 		txdata.push((*tx).clone());
@@ -202,13 +206,13 @@ impl ConnectStyle {
 	}
 }
 
-pub fn create_dummy_header(prev_blockhash: BlockHash, time: u32) -> BlockHeader {
-	BlockHeader {
-		version: 0x2000_0000,
+pub fn create_dummy_header(prev_blockhash: BlockHash, time: u32) -> block::Header {
+	block::Header {
+		version: Version::from_consensus(0x2000_0000),
 		prev_blockhash,
 		merkle_root: TxMerkleNode::all_zeros(),
 		time,
-		bits: 42,
+		bits: CompactTarget::from_consensus(42),
 		nonce: 42,
 	}
 }
@@ -433,7 +437,7 @@ impl<'a, 'b, 'c> Node<'a, 'b, 'c> {
 	pub fn best_block_info(&self) -> (BlockHash, u32) {
 		self.blocks.lock().unwrap().last().map(|(a, b)| (a.block_hash(), *b)).unwrap()
 	}
-	pub fn get_block_header(&self, height: u32) -> BlockHeader {
+	pub fn get_block_header(&self, height: u32) -> block::Header {
 		self.blocks.lock().unwrap()[height as usize].0.header
 	}
 }
@@ -1047,7 +1051,7 @@ fn internal_create_funding_transaction<'a, 'b, 'c>(node: &Node<'a, 'b, 'c>,
 				Vec::new()
 			};
 
-			let tx = Transaction { version: chan_id as i32, lock_time: LockTime::ZERO, input, output: vec![TxOut {
+			let tx = Transaction { version: chan_id as i32, lock_time: absolute::LockTime::ZERO, input, output: vec![TxOut {
 				value: *channel_value_satoshis, script_pubkey: output_script.clone(),
 			}]};
 			let funding_outpoint = OutPoint { txid: tx.txid(), index: 0 };
@@ -1373,7 +1377,7 @@ pub fn do_check_spends<F: Fn(&bitcoin::blockdata::transaction::OutPoint) -> Opti
 	for output in tx.output.iter() {
 		total_value_out += output.value;
 	}
-	let min_fee = (tx.weight() as u64 + 3) / 4; // One sat per vbyte (ie per weight/4, rounded up)
+	let min_fee = (tx.weight().to_wu() as u64 + 3) / 4; // One sat per vbyte (ie per weight/4, rounded up)
 	// Input amount - output amount = fee, so check that out + min_fee is smaller than input
 	assert!(total_value_out + min_fee <= total_value_in);
 	tx.verify(get_output).unwrap();
@@ -1855,7 +1859,7 @@ pub fn get_payment_preimage_hash(recipient: &Node, min_value_msat: Option<u64>, 
 	let mut payment_count = recipient.network_payment_count.borrow_mut();
 	let payment_preimage = PaymentPreimage([*payment_count; 32]);
 	*payment_count += 1;
-	let payment_hash = PaymentHash(Sha256::hash(&payment_preimage.0[..]).into_inner());
+	let payment_hash = PaymentHash(Sha256::hash(&payment_preimage.0[..]).to_byte_array());
 	let payment_secret = recipient.node.create_inbound_payment_for_hash(payment_hash, min_value_msat, 7200, min_final_cltv_expiry_delta).unwrap();
 	(payment_preimage, payment_hash, payment_secret)
 }
@@ -1977,7 +1981,7 @@ pub fn expect_payment_sent<CM: AChannelManager, H: NodeHolder<CM=CM>>(node: &H,
 ) {
 	let events = node.node().get_and_clear_pending_events();
 	let expected_payment_hash = PaymentHash(
-		bitcoin::hashes::sha256::Hash::hash(&expected_payment_preimage.0).into_inner());
+		bitcoin::hashes::sha256::Hash::hash(&expected_payment_preimage.0).to_byte_array());
 	if expect_per_path_claims {
 		assert!(events.len() > 1);
 	} else {
@@ -2849,9 +2853,9 @@ pub fn test_txn_broadcast<'a, 'b, 'c>(node: &Node<'a, 'b, 'c>, chan: &(msgs::Cha
 			if tx.input.len() == 1 && tx.input[0].previous_output.txid == res[0].txid() {
 				check_spends!(tx, res[0]);
 				if has_htlc_tx == HTLCType::TIMEOUT {
-					assert!(tx.lock_time.0 != 0);
+					assert!(tx.lock_time.to_consensus_u32() != 0);
 				} else {
-					assert!(tx.lock_time.0 == 0);
+					assert!(tx.lock_time.to_consensus_u32() == 0);
 				}
 				res.push(tx.clone());
 				false
@@ -3354,7 +3358,7 @@ pub fn create_batch_channel_funding<'a, 'b, 'c>(
 	// Compose the batch funding transaction and give it to the ChannelManager.
 	let tx = Transaction {
 		version: 2,
-		lock_time: LockTime::ZERO,
+		lock_time: absolute::LockTime::ZERO,
 		input: Vec::new(),
 		output: tx_outs,
 	};

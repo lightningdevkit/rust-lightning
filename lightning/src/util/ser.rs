@@ -1000,16 +1000,16 @@ impl Readable for ecdsa::Signature {
 	}
 }
 
-impl Writeable for taproot::Signature {
+impl Writeable for schnorr::Signature {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
 		self.as_ref().write(w)
 	}
 }
 
-impl Readable for taproot::Signature {
+impl Readable for schnorr::Signature {
 	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
 		let buf: [u8; SCHNORR_SIGNATURE_SIZE] = Readable::read(r)?;
-		match taproot::Signature::from_slice(&buf) {
+		match schnorr::Signature::from_slice(&buf) {
 			Ok(sig) => Ok(sig),
 			Err(_) => return Err(DecodeError::InvalidValue),
 		}
@@ -1133,7 +1133,7 @@ impl Writeable for ChainHash {
 impl Readable for ChainHash {
 	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
 		let buf: [u8; 32] = Readable::read(r)?;
-		Ok(ChainHash::from(&buf[..]))
+		Ok(ChainHash::from(&buf))
 	}
 }
 

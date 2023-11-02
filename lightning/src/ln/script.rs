@@ -6,6 +6,7 @@ use bitcoin::hashes::Hash;
 use bitcoin::hash_types::{WPubkeyHash, WScriptHash};
 use bitcoin::secp256k1::PublicKey;
 use bitcoin::address::WitnessVersion;
+use bitcoin::script::PushBytes;
 
 use crate::ln::channelmanager;
 use crate::ln::features::InitFeatures;
@@ -88,8 +89,8 @@ impl ShutdownScript {
 	pub fn new_witness_program(version: WitnessVersion, program: &[u8]) -> Result<Self, InvalidShutdownScript> {
 		let script = Builder::new()
 			.push_int(version as i64)
-			.push_slice(&program)
-			.into_script();
+			.push_slice(<&PushBytes>::try_from(program).expect("TODO: Handle this error"))
+    		.into_script();
 		Self::try_from(script)
 	}
 
@@ -181,7 +182,7 @@ mod shutdown_script_tests {
 	use bitcoin::secp256k1::{PublicKey, SecretKey};
 	use crate::ln::features::InitFeatures;
 	use core::convert::TryFrom;
-	use bitcoin::address::WitnessVersion;
+	use bitcoin::address::{WitnessVersion, WitnessProgram};
 
 	fn pubkey() -> bitcoin::key::PublicKey {
 		let secp_ctx = Secp256k1::signing_only();
@@ -244,7 +245,8 @@ mod shutdown_script_tests {
 
 	#[test]
 	fn generates_segwit_from_non_v0_witness_program() {
-		let witness_program = ScriptBuf::new_witness_program(WitnessVersion::V16, &[0; 40]);
+        let program = WitnessProgram::new(WitnessVersion::V16, &[0; 40]).unwrap();
+		let witness_program = ScriptBuf::new_witness_program(&program);
 		let shutdown_script = ShutdownScript::new_witness_program(WitnessVersion::V16, &[0; 40]).unwrap();
 		assert!(shutdown_script.is_compatible(&any_segwit_features()));
 		assert!(!shutdown_script.is_compatible(&InitFeatures::empty()));
@@ -259,13 +261,15 @@ mod shutdown_script_tests {
 
 	#[test]
 	fn fails_from_invalid_segwit_v0_witness_program() {
-		let witness_program = ScriptBuf::new_witness_program(WitnessVersion::V0, &[0; 2]);
+        let program = WitnessProgram::new(WitnessVersion::V0, &[0; 2]).unwrap();
+		let witness_program = ScriptBuf::new_witness_program(&program);
 		assert!(ShutdownScript::try_from(witness_program).is_err());
 	}
 
 	#[test]
 	fn fails_from_invalid_segwit_non_v0_witness_program() {
-		let witness_program = ScriptBuf::new_witness_program(WitnessVersion::V16, &[0; 42]);
+        let program = WitnessProgram::new(WitnessVersion::V16, &[0; 42]).unwrap();
+		let witness_program = ScriptBuf::new_witness_program(&program);
 		assert!(ShutdownScript::try_from(witness_program).is_err());
 
 		assert!(ShutdownScript::new_witness_program(WitnessVersion::V16, &[0; 42]).is_err());

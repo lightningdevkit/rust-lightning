@@ -2,7 +2,8 @@ use crate::http::{BinaryResponse, JsonResponse};
 use crate::utils::hex_to_uint256;
 use crate::{BlockHeaderData, BlockSourceError};
 
-use bitcoin::blockdata::block::{Block, BlockHeader};
+use bitcoin::blockdata::block;
+use bitcoin::blockdata::block::Block;
 use bitcoin::consensus::encode;
 use bitcoin::hash_types::{BlockHash, TxMerkleNode, Txid};
 use bitcoin::hashes::hex::FromHex;
@@ -88,7 +89,7 @@ impl TryFrom<serde_json::Value> for BlockHeaderData {
 		} }
 
 		Ok(BlockHeaderData {
-			header: BlockHeader {
+			header: block::Header {
 				version: get_field!("version", as_i64).try_into().map_err(|_| ())?,
 				prev_blockhash: if let Some(hash_str) = response.get("previousblockhash") {
 						BlockHash::from_hex(hash_str.as_str().ok_or(())?).map_err(|_| ())?
@@ -394,7 +395,7 @@ pub(crate) mod tests {
 	#[test]
 	fn into_block_header_from_json_response_with_valid_header_array() {
 		let genesis_block = genesis_block(Network::Bitcoin);
-		let best_block_header = BlockHeader {
+		let best_block_header = block::Header {
 			prev_blockhash: genesis_block.block_hash(),
 			..genesis_block.header
 		};

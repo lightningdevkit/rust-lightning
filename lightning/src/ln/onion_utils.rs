@@ -49,7 +49,7 @@ pub(crate) fn gen_rho_from_shared_secret(shared_secret: &[u8]) -> [u8; 32] {
 	assert_eq!(shared_secret.len(), 32);
 	let mut hmac = HmacEngine::<Sha256>::new(&[0x72, 0x68, 0x6f]); // rho
 	hmac.input(&shared_secret);
-	Hmac::from_engine(hmac).into_inner()
+	Hmac::from_engine(hmac).to_byte_array()
 }
 
 #[inline]
@@ -58,12 +58,12 @@ pub(crate) fn gen_rho_mu_from_shared_secret(shared_secret: &[u8]) -> ([u8; 32], 
 	({
 		let mut hmac = HmacEngine::<Sha256>::new(&[0x72, 0x68, 0x6f]); // rho
 		hmac.input(&shared_secret);
-		Hmac::from_engine(hmac).into_inner()
+		Hmac::from_engine(hmac).to_byte_array()
 	},
 	{
 		let mut hmac = HmacEngine::<Sha256>::new(&[0x6d, 0x75]); // mu
 		hmac.input(&shared_secret);
-		Hmac::from_engine(hmac).into_inner()
+		Hmac::from_engine(hmac).to_byte_array()
 	})
 }
 
@@ -72,7 +72,7 @@ pub(super) fn gen_um_from_shared_secret(shared_secret: &[u8]) -> [u8; 32] {
 	assert_eq!(shared_secret.len(), 32);
 	let mut hmac = HmacEngine::<Sha256>::new(&[0x75, 0x6d]); // um
 	hmac.input(&shared_secret);
-	Hmac::from_engine(hmac).into_inner()
+	Hmac::from_engine(hmac).to_byte_array()
 }
 
 #[inline]
@@ -80,7 +80,7 @@ pub(super) fn gen_ammag_from_shared_secret(shared_secret: &[u8]) -> [u8; 32] {
 	assert_eq!(shared_secret.len(), 32);
 	let mut hmac = HmacEngine::<Sha256>::new(&[0x61, 0x6d, 0x6d, 0x61, 0x67]); // ammag
 	hmac.input(&shared_secret);
-	Hmac::from_engine(hmac).into_inner()
+	Hmac::from_engine(hmac).to_byte_array()
 }
 
 #[cfg(test)]
@@ -89,7 +89,7 @@ pub(super) fn gen_pad_from_shared_secret(shared_secret: &[u8]) -> [u8; 32] {
 	assert_eq!(shared_secret.len(), 32);
 	let mut hmac = HmacEngine::<Sha256>::new(&[0x70, 0x61, 0x64]); // pad
 	hmac.input(&shared_secret);
-	Hmac::from_engine(hmac).into_inner()
+	Hmac::from_engine(hmac).to_byte_array()
 }
 
 /// Calculates a pubkey for the next hop, such as the next hop's packet pubkey or blinding point.
@@ -100,7 +100,7 @@ pub(crate) fn next_hop_pubkey<T: secp256k1::Signing + secp256k1::Verification>(
 		let mut sha = Sha256::engine();
 		sha.input(&curr_pubkey.serialize()[..]);
 		sha.input(shared_secret);
-		Sha256::from_engine(sha).into_inner()
+		Sha256::from_engine(sha).to_byte_array()
 	};
 
 	curr_pubkey.mul_tweak(secp_ctx, &Scalar::from_be_bytes(blinding_factor).unwrap())
@@ -129,7 +129,7 @@ where
 		let mut sha = Sha256::engine();
 		sha.input(&blinded_pub.serialize()[..]);
 		sha.input(shared_secret.as_ref());
-		let blinding_factor = Sha256::from_engine(sha).into_inner();
+		let blinding_factor = Sha256::from_engine(sha).to_byte_array();
 
 		let ephemeral_pubkey = blinded_pub;
 
@@ -366,7 +366,7 @@ fn construct_onion_packet_with_init_noise<HD: Writeable, P: Packet>(
 		if let Some(associated_data) = associated_data {
 			hmac.input(&associated_data.0[..]);
 		}
-		hmac_res = Hmac::from_engine(hmac).into_inner();
+		hmac_res = Hmac::from_engine(hmac).to_byte_array();
 	}
 
 	Ok(P::new(onion_keys.first().unwrap().ephemeral_pubkey, packet_data, hmac_res))
@@ -412,7 +412,7 @@ pub(super) fn build_failure_packet(shared_secret: &[u8], failure_type: u16, fail
 
 	let mut hmac = HmacEngine::<Sha256>::new(&um);
 	hmac.input(&packet.encode()[32..]);
-	packet.hmac = Hmac::from_engine(hmac).into_inner();
+	packet.hmac = Hmac::from_engine(hmac).to_byte_array();
 
 	packet
 }
@@ -520,7 +520,7 @@ pub(super) fn process_onion_failure<T: secp256k1::Signing, L: Deref>(
 		let mut hmac = HmacEngine::<Sha256>::new(&um);
 		hmac.input(&err_packet.encode()[32..]);
 
-		if !fixed_time_eq(&Hmac::from_engine(hmac).into_inner(), &err_packet.hmac) { return }
+		if !fixed_time_eq(&Hmac::from_engine(hmac).to_byte_array(), &err_packet.hmac) { return }
 		let error_code_slice = match err_packet.failuremsg.get(0..2) {
 			Some(s) => s,
 			None => {
@@ -946,7 +946,7 @@ fn decode_next_hop<T, R: ReadableArgs<T>, N: NextPacketBytes>(shared_secret: [u8
 	if let Some(tag) = payment_hash {
 		hmac.input(&tag.0[..]);
 	}
-	if !fixed_time_eq(&Hmac::from_engine(hmac).into_inner(), &hmac_bytes) {
+	if !fixed_time_eq(&Hmac::from_engine(hmac).to_byte_array(), &hmac_bytes) {
 		return Err(OnionDecodeErr::Malformed {
 			err_msg: "HMAC Check failed",
 			err_code: 0x8000 | 0x4000 | 5,

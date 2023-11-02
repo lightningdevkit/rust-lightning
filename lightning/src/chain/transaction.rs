@@ -60,7 +60,7 @@ pub struct OutPoint {
 impl OutPoint {
 	/// Convert an `OutPoint` to a lightning channel id.
 	pub fn to_channel_id(&self) -> ChannelId {
-		ChannelId::v1_from_funding_txid(&self.txid.as_inner(), self.index)
+		ChannelId::v1_from_funding_txid(self.txid.as_byte_array(), self.index)
 	}
 
 	/// Converts this OutPoint into the OutPoint field as used by rust-bitcoin

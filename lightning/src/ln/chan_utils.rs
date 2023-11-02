@@ -10,10 +10,13 @@
 //! Various utilities for building scripts and deriving keys related to channels. These are
 //! largely of interest for those implementing the traits on [`crate::sign`] by hand.
 
+use bitcoin::blockdata::locktime::absolute;
 use bitcoin::blockdata::script::{ScriptBuf,Builder};
 use bitcoin::blockdata::opcodes;
-use bitcoin::blockdata::transaction::{TxIn,TxOut,OutPoint,Transaction, EcdsaSighashType};
+use bitcoin::blockdata::transaction::{TxIn,TxOut,OutPoint,Transaction};
+use bitcoin::script::PushBytes;
 use bitcoin::sighash;
+use bitcoin::sighash::EcdsaSighashType;
 use bitcoin::address::Payload;
 
 use bitcoin::hashes::{Hash, HashEngine};
@@ -31,7 +34,7 @@ use crate::util::transaction_utils;
 
 use bitcoin::secp256k1::{SecretKey, PublicKey, Scalar};
 use bitcoin::secp256k1::{Secp256k1, ecdsa::Signature, Message};
-use bitcoin::{LockTime, secp256k1, Sequence, Witness};
+use bitcoin::{secp256k1, Sequence, Witness};
 use bitcoin::PublicKey as BitcoinPublicKey;
 
 use crate::io;
@@ -41,6 +44,7 @@ use crate::ln::chan_utils;
 use crate::util::transaction_utils::sort_outputs;
 use crate::ln::channel::{INITIAL_COMMITMENT_NUMBER, ANCHOR_OUTPUT_VALUE_SATOSHI};
 use core::ops::Deref;
+use core::convert::TryFrom;
 use crate::chain;
 use crate::ln::features::ChannelTypeFeatures;
 use crate::util::crypto::{sign, sign_with_aux_rand};
@@ -174,7 +178,7 @@ pub fn build_commitment_secret(commitment_seed: &[u8; 32], idx: u64) -> [u8; 32]
 		let bitpos = 47 - i;
 		if idx & (1 << bitpos) == (1 << bitpos) {
 			res[bitpos / 8] ^= 1 << (bitpos & 7);
-			res = Sha256::hash(&res).into_inner();
+			res = Sha256::hash(&res).to_byte_array();
 		}
 	}
 	res
@@ -218,7 +222,7 @@ pub fn build_closing_transaction(to_holder_value_sat: u64, to_counterparty_value
 
 	Transaction {
 		version: 2,
-		lock_time: LockTime::ZERO,
+		lock_time: absolute::LockTime::ZERO,
 		input: txins,
 		output: outputs,
 	}
@@ -282,7 +286,7 @@ impl CounterpartyCommitmentSecrets {
 			let bitpos = bits - 1 - i;
 			if idx & (1 << bitpos) == (1 << bitpos) {
 				res[(bitpos / 8) as usize] ^= 1 << (bitpos & 7);
-				res = Sha256::hash(&res).into_inner();
+				res = Sha256::hash(&res).to_byte_array();
 			}
 		}
 		res
@@ -346,7 +350,7 @@ pub fn derive_private_key<T: secp256k1::Signing>(secp_ctx: &Secp256k1<T>, per_co
 	let mut sha = Sha256::engine();
 	sha.input(&per_commitment_point.serialize());
 	sha.input(&PublicKey::from_secret_key(&secp_ctx, &base_secret).serialize());
-	let res = Sha256::from_engine(sha).into_inner();
+	let res = Sha256::from_engine(sha).to_byte_array();
 
 	base_secret.clone().add_tweak(&Scalar::from_be_bytes(res).unwrap())
 		.expect("Addition only fails if the tweak is the inverse of the key. This is not possible when the tweak contains the hash of the key.")
@@ -359,7 +363,7 @@ pub fn derive_public_key<T: secp256k1::Signing>(secp_ctx: &Secp256k1<T>, per_com
 	let mut sha = Sha256::engine();
 	sha.input(&per_commitment_point.serialize());
 	sha.input(&base_point.serialize());
-	let res = Sha256::from_engine(sha).into_inner();
+	let res = Sha256::from_engine(sha).to_byte_array();
 
 	let hashkey = PublicKey::from_secret_key(&secp_ctx,
 		&SecretKey::from_slice(&res).expect("Hashes should always be valid keys unless SHA-256 is broken"));
@@ -384,14 +388,14 @@ pub fn derive_private_revocation_key<T: secp256k1::Signing>(secp_ctx: &Secp256k1
 		sha.input(&countersignatory_revocation_base_point.serialize());
 		sha.input(&per_commitment_point.serialize());
 
-		Sha256::from_engine(sha).into_inner()
+		Sha256::from_engine(sha).to_byte_array()
 	};
 	let commit_append_rev_hash_key = {
 		let mut sha = Sha256::engine();
 		sha.input(&per_commitment_point.serialize());
 		sha.input(&countersignatory_revocation_base_point.serialize());
 
-		Sha256::from_engine(sha).into_inner()
+		Sha256::from_engine(sha).to_byte_array()
 	};
 
 	let countersignatory_contrib = countersignatory_revocation_base_secret.clone().mul_tweak(&Scalar::from_be_bytes(rev_append_commit_hash_key).unwrap())
@@ -421,14 +425,14 @@ pub fn derive_public_revocation_key<T: secp256k1::Verification>(secp_ctx: &Secp2
 		sha.input(&countersignatory_revocation_base_point.serialize());
 		sha.input(&per_commitment_point.serialize());
 
-		Sha256::from_engine(sha).into_inner()
+		Sha256::from_engine(sha).to_byte_array()
 	};
 	let commit_append_rev_hash_key = {
 		let mut sha = Sha256::engine();
 		sha.input(&per_commitment_point.serialize());
 		sha.input(&countersignatory_revocation_base_point.serialize());
 
-		Sha256::from_engine(sha).into_inner()
+		Sha256::from_engine(sha).to_byte_array()
 	};
 
 	let countersignatory_contrib = countersignatory_revocation_base_point.clone().mul_tweak(&secp_ctx, &Scalar::from_be_bytes(rev_append_commit_hash_key).unwrap())
@@ -597,16 +601,16 @@ impl_writeable_tlv_based!(HTLCOutputInCommitment, {
 
 #[inline]
 pub(crate) fn get_htlc_redeemscript_with_explicit_keys(htlc: &HTLCOutputInCommitment, channel_type_features: &ChannelTypeFeatures, broadcaster_htlc_key: &PublicKey, countersignatory_htlc_key: &PublicKey, revocation_key: &PublicKey) -> ScriptBuf {
-	let payment_hash160 = Ripemd160::hash(&htlc.payment_hash.0[..]).into_inner();
+	let payment_hash160 = Ripemd160::hash(&htlc.payment_hash.0[..]).to_byte_array();
 	if htlc.offered {
 		let mut bldr = Builder::new().push_opcode(opcodes::all::OP_DUP)
 		              .push_opcode(opcodes::all::OP_HASH160)
-		              .push_slice(&PubkeyHash::hash(&revocation_key.serialize())[..])
+		              .push_slice(<&PushBytes>::from(PubkeyHash::hash(&revocation_key.serialize()).as_byte_array()))
 		              .push_opcode(opcodes::all::OP_EQUAL)
 		              .push_opcode(opcodes::all::OP_IF)
 		              .push_opcode(opcodes::all::OP_CHECKSIG)
 		              .push_opcode(opcodes::all::OP_ELSE)
-		              .push_slice(&countersignatory_htlc_key.serialize()[..])
+		              .push_slice(countersignatory_htlc_key.serialize())
 		              .push_opcode(opcodes::all::OP_SWAP)
 		              .push_opcode(opcodes::all::OP_SIZE)
 		              .push_int(32)
@@ -615,7 +619,7 @@ pub(crate) fn get_htlc_redeemscript_with_explicit_keys(htlc: &HTLCOutputInCommit
 		              .push_opcode(opcodes::all::OP_DROP)
 		              .push_int(2)
 		              .push_opcode(opcodes::all::OP_SWAP)
-		              .push_slice(&broadcaster_htlc_key.serialize()[..])
+		              .push_slice(broadcaster_htlc_key.serialize())
 		              .push_int(2)
 		              .push_opcode(opcodes::all::OP_CHECKMULTISIG)
 		              .push_opcode(opcodes::all::OP_ELSE)
@@ -634,12 +638,12 @@ pub(crate) fn get_htlc_redeemscript_with_explicit_keys(htlc: &HTLCOutputInCommit
 	} else {
 			let mut bldr = Builder::new().push_opcode(opcodes::all::OP_DUP)
 		              .push_opcode(opcodes::all::OP_HASH160)
-		              .push_slice(&PubkeyHash::hash(&revocation_key.serialize())[..])
+		              .push_slice(<&PushBytes>::from(PubkeyHash::hash(&revocation_key.serialize()).as_byte_array()))
 		              .push_opcode(opcodes::all::OP_EQUAL)
 		              .push_opcode(opcodes::all::OP_IF)
 		              .push_opcode(opcodes::all::OP_CHECKSIG)
 		              .push_opcode(opcodes::all::OP_ELSE)
-		              .push_slice(&countersignatory_htlc_key.serialize()[..])
+		              .push_slice(countersignatory_htlc_key.serialize())
 		              .push_opcode(opcodes::all::OP_SWAP)
 		              .push_opcode(opcodes::all::OP_SIZE)
 		              .push_int(32)
@@ -650,7 +654,7 @@ pub(crate) fn get_htlc_redeemscript_with_explicit_keys(htlc: &HTLCOutputInCommit
 		              .push_opcode(opcodes::all::OP_EQUALVERIFY)
 		              .push_int(2)
 		              .push_opcode(opcodes::all::OP_SWAP)
-		              .push_slice(&broadcaster_htlc_key.serialize()[..])
+		              .push_slice(broadcaster_htlc_key.serialize())
 		              .push_int(2)
 		              .push_opcode(opcodes::all::OP_CHECKMULTISIG)
 		              .push_opcode(opcodes::all::OP_ELSE)
@@ -689,11 +693,11 @@ pub fn make_funding_redeemscript(broadcaster: &PublicKey, countersignatory: &Pub
 pub(crate) fn make_funding_redeemscript_from_slices(broadcaster_funding_key: &[u8], countersignatory_funding_key: &[u8]) -> ScriptBuf {
 	let builder = Builder::new().push_opcode(opcodes::all::OP_PUSHNUM_2);
 	if broadcaster_funding_key[..] < countersignatory_funding_key[..] {
-		builder.push_slice(broadcaster_funding_key)
-			.push_slice(countersignatory_funding_key)
+		builder.push_slice(<&PushBytes>::try_from(broadcaster_funding_key).expect("TODO: Handle this error"))
+			.push_slice(<&PushBytes>::try_from(countersignatory_funding_key).expect("TODO: Handle this error"))
 	} else {
-		builder.push_slice(countersignatory_funding_key)
-			.push_slice(broadcaster_funding_key)
+		builder.push_slice(<&PushBytes>::try_from(countersignatory_funding_key).expect("TODO: Handle this error"))
+		    .push_slice(<&PushBytes>::try_from(broadcaster_funding_key).expect("TODO: Handle this error"))
 	}.push_opcode(opcodes::all::OP_PUSHNUM_2).push_opcode(opcodes::all::OP_CHECKMULTISIG).into_script()
 }
 
@@ -716,7 +720,7 @@ pub fn build_htlc_transaction(commitment_txid: &Txid, feerate_per_kw: u32, conte
 
 	Transaction {
 		version: 2,
-		lock_time: LockTime(if htlc.offered { htlc.cltv_expiry } else { 0 }),
+		lock_time: absolute::LockTime::from_consensus(if htlc.offered { htlc.cltv_expiry } else { 0 }),
 		input: txins,
 		output: txouts,
 	}
@@ -816,7 +820,7 @@ pub(crate) fn legacy_deserialization_prevention_marker_for_channel_type_features
 #[inline]
 pub fn get_to_countersignatory_with_anchors_redeemscript(payment_point: &PublicKey) -> ScriptBuf {
 	Builder::new()
-		.push_slice(&payment_point.serialize()[..])
+		.push_slice(payment_point.serialize())
 		.push_opcode(opcodes::all::OP_CHECKSIGVERIFY)
 		.push_int(1)
 		.push_opcode(opcodes::all::OP_CSV)
@@ -831,7 +835,7 @@ pub fn get_to_countersignatory_with_anchors_redeemscript(payment_point: &PublicK
 /// (empty vector required to satisfy compliance with MINIMALIF-standard rule)
 #[inline]
 pub fn get_anchor_redeemscript(funding_pubkey: &PublicKey) -> ScriptBuf {
-	Builder::new().push_slice(&funding_pubkey.serialize()[..])
+	Builder::new().push_slice(funding_pubkey.serialize())
 		.push_opcode(opcodes::all::OP_CHECKSIG)
 		.push_opcode(opcodes::all::OP_IFDUP)
 		.push_opcode(opcodes::all::OP_NOTIF)
@@ -1461,7 +1465,7 @@ impl CommitmentTransaction {
 	fn make_transaction(obscured_commitment_transaction_number: u64, txins: Vec<TxIn>, outputs: Vec<TxOut>) -> Transaction {
 		Transaction {
 			version: 2,
-			lock_time: LockTime(((0x20 as u32) << 8 * 3) | ((obscured_commitment_transaction_number & 0xffffffu64) as u32)),
+			lock_time: absolute::LockTime::from_consensus(((0x20 as u32) << 8 * 3) | ((obscured_commitment_transaction_number & 0xffffffu64) as u32)),
 			input: txins,
 			output: outputs,
 		}
@@ -1813,11 +1817,11 @@ impl<'a> TrustedCommitmentTransaction<'a> {
 		}];
 		let mut justice_tx = Transaction {
 			version: 2,
-			lock_time: LockTime::ZERO,
+			lock_time: absolute::LockTime::ZERO,
 			input,
 			output,
 		};
-		let weight = justice_tx.weight() as u64 + WEIGHT_REVOKED_OUTPUT;
+		let weight = justice_tx.weight().to_wu() + WEIGHT_REVOKED_OUTPUT;
 		let fee = fee_for_weight(feerate_per_kw as u32, weight);
 		justice_tx.output[0].value = value.checked_sub(fee).ok_or(())?;
 		Ok(justice_tx)
@@ -1845,7 +1849,7 @@ pub fn get_commitment_transaction_number_obscure_factor(
 		sha.input(&countersignatory_payment_basepoint.serialize());
 		sha.input(&broadcaster_payment_basepoint.serialize());
 	}
-	let res = Sha256::from_engine(sha).into_inner();
+	let res = Sha256::from_engine(sha).to_byte_array();
 
 	((res[26] as u64) << 5 * 8)
 		| ((res[27] as u64) << 4 * 8)
@@ -1867,7 +1871,6 @@ mod tests {
 	use bitcoin::{Network, Txid, ScriptBuf};
 	use bitcoin::hashes::Hash;
 	use crate::ln::PaymentHash;
-	use bitcoin::hashes::hex::ToHex;
 	use bitcoin::address::Payload;
 	use bitcoin::PublicKey as BitcoinPublicKey;
 	use crate::ln::features::ChannelTypeFeatures;
@@ -1978,9 +1981,9 @@ mod tests {
 		assert_eq!(tx.built.transaction.output.len(), 3);
 		assert_eq!(tx.built.transaction.output[0].script_pubkey, get_htlc_redeemscript(&received_htlc, &ChannelTypeFeatures::only_static_remote_key(), &keys).to_v0_p2wsh());
 		assert_eq!(tx.built.transaction.output[1].script_pubkey, get_htlc_redeemscript(&offered_htlc, &ChannelTypeFeatures::only_static_remote_key(), &keys).to_v0_p2wsh());
-		assert_eq!(get_htlc_redeemscript(&received_htlc, &ChannelTypeFeatures::only_static_remote_key(), &keys).to_v0_p2wsh().to_hex(),
+		assert_eq!(get_htlc_redeemscript(&received_htlc, &ChannelTypeFeatures::only_static_remote_key(), &keys).to_v0_p2wsh().to_string(),
 				   "0020e43a7c068553003fe68fcae424fb7b28ec5ce48cd8b6744b3945631389bad2fb");
-		assert_eq!(get_htlc_redeemscript(&offered_htlc, &ChannelTypeFeatures::only_static_remote_key(), &keys).to_v0_p2wsh().to_hex(),
+		assert_eq!(get_htlc_redeemscript(&offered_htlc, &ChannelTypeFeatures::only_static_remote_key(), &keys).to_v0_p2wsh().to_string(),
 				   "0020215d61bba56b19e9eadb6107f5a85d7f99c40f65992443f69229c290165bc00d");
 
 		// Generate broadcaster output and received and offered HTLC outputs,  with anchors
@@ -1990,9 +1993,9 @@ mod tests {
 		assert_eq!(tx.built.transaction.output.len(), 5);
 		assert_eq!(tx.built.transaction.output[2].script_pubkey, get_htlc_redeemscript(&received_htlc, &ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies(), &keys).to_v0_p2wsh());
 		assert_eq!(tx.built.transaction.output[3].script_pubkey, get_htlc_redeemscript(&offered_htlc, &ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies(), &keys).to_v0_p2wsh());
-		assert_eq!(get_htlc_redeemscript(&received_htlc, &ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies(), &keys).to_v0_p2wsh().to_hex(),
+		assert_eq!(get_htlc_redeemscript(&received_htlc, &ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies(), &keys).to_v0_p2wsh().to_string(),
 				   "0020b70d0649c72b38756885c7a30908d912a7898dd5d79457a7280b8e9a20f3f2bc");
-		assert_eq!(get_htlc_redeemscript(&offered_htlc, &ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies(), &keys).to_v0_p2wsh().to_hex(),
+		assert_eq!(get_htlc_redeemscript(&offered_htlc, &ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies(), &keys).to_v0_p2wsh().to_string(),
 				   "002087a3faeb1950a469c0e2db4a79b093a41b9526e5a6fc6ef5cb949bde3be379c7");
 	}
 

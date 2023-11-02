@@ -17,12 +17,14 @@ use core::cmp;
 use crate::sync::{Mutex, Arc};
 #[cfg(test)] use crate::sync::MutexGuard;
 
-use bitcoin::blockdata::transaction::{Transaction, EcdsaSighashType};
+use bitcoin::blockdata::transaction::Transaction;
+use bitcoin::hashes::Hash;
 use bitcoin::sighash;
-
+use bitcoin::sighash::EcdsaSighashType;
 use bitcoin::secp256k1;
 use bitcoin::secp256k1::{SecretKey, PublicKey};
 use bitcoin::secp256k1::{Secp256k1, ecdsa::Signature};
+
 use crate::sign::HTLCDescriptor;
 use crate::util::ser::{Writeable, Writer};
 use crate::io::Error;
@@ -210,7 +212,7 @@ impl EcdsaChannelSigner for TestChannelSigner {
 				&secp_ctx, &htlc_descriptor.per_commitment_point, &self.inner.counterparty_pubkeys().unwrap().htlc_basepoint
 			);
 			secp_ctx.verify_ecdsa(
-				&hash_to_message!(&sighash), &htlc_descriptor.counterparty_sig, &countersignatory_htlc_key
+				&hash_to_message!(sighash.as_byte_array()), &htlc_descriptor.counterparty_sig, &countersignatory_htlc_key
 			).unwrap();
 		}
 		Ok(self.inner.sign_holder_htlc_transaction(htlc_tx, input, htlc_descriptor, secp_ctx).unwrap())

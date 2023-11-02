@@ -12,13 +12,16 @@
 //! The provided output descriptors follow a custom LDK data format and are currently not fully
 //! compatible with Bitcoin Core output descriptors.
 
-use bitcoin::blockdata::transaction::{Transaction, TxOut, TxIn, EcdsaSighashType};
+use bitcoin::blockdata::locktime::absolute;
+use bitcoin::blockdata::transaction::{Transaction, TxOut, TxIn};
+
 use bitcoin::blockdata::script::{ScriptBuf, Builder};
 use bitcoin::blockdata::opcodes;
 use bitcoin::network::constants::Network;
 use bitcoin::psbt::PartiallySignedTransaction;
 use bitcoin::bip32::{ExtendedPrivKey, ExtendedPubKey, ChildNumber};
 use bitcoin::sighash;
+use bitcoin::sighash::EcdsaSighashType;
 
 use bitcoin::bech32::u5;
 use bitcoin::hashes::{Hash, HashEngine};
@@ -30,7 +33,7 @@ use bitcoin::secp256k1::{KeyPair, PublicKey, Scalar, Secp256k1, SecretKey, Signi
 use bitcoin::secp256k1::ecdh::SharedSecret;
 use bitcoin::secp256k1::ecdsa::{RecoverableSignature, Signature};
 use bitcoin::secp256k1::schnorr;
-use bitcoin::{LockTime, secp256k1, Sequence, Witness, Txid};
+use bitcoin::{secp256k1, Sequence, Witness, Txid};
 
 use crate::util::transaction_utils;
 use crate::util::crypto::{hkdf_extract_expand_twice, sign, sign_with_aux_rand};
@@ -319,7 +322,7 @@ impl SpendableOutputDescriptor {
 	/// does not match the one we can spend.
 	///
 	/// We do not enforce that outputs meet the dust limit or that any output scripts are standard.
-	pub fn create_spendable_outputs_psbt(descriptors: &[&SpendableOutputDescriptor], outputs: Vec<TxOut>, change_destination_script: ScriptBuf, feerate_sat_per_1000_weight: u32, locktime: Option<LockTime>) -> Result<(PartiallySignedTransaction, usize), ()> {
+	pub fn create_spendable_outputs_psbt(descriptors: &[&SpendableOutputDescriptor], outputs: Vec<TxOut>, change_destination_script: ScriptBuf, feerate_sat_per_1000_weight: u32, locktime: Option<absolute::LockTime>) -> Result<(PartiallySignedTransaction, usize), ()> {
 		let mut input = Vec::with_capacity(descriptors.len());
 		let mut input_value = 0;
 		let mut witness_weight = 0;
@@ -379,7 +382,7 @@ impl SpendableOutputDescriptor {
 		}
 		let mut tx = Transaction {
 			version: 2,
-			lock_time: locktime.unwrap_or(LockTime::ZERO),
+			lock_time: locktime.unwrap_or(absolute::LockTime::ZERO),
 			input,
 			output: outputs,
 		};
@@ -837,7 +840,7 @@ pub trait NodeSigner {
 	/// [`TaggedHash`]: crate::offers::merkle::TaggedHash
 	fn sign_bolt12_invoice_request(
 		&self, invoice_request: &UnsignedInvoiceRequest
-	) -> Result<taproot::Signature, ()>;
+	) -> Result<schnorr::Signature, ()>;
 
 	/// Signs the [`TaggedHash`] of a BOLT 12 invoice.
 	///
@@ -852,7 +855,7 @@ pub trait NodeSigner {
 	/// [`TaggedHash`]: crate::offers::merkle::TaggedHash
 	fn sign_bolt12_invoice(
 		&self, invoice: &UnsignedBolt12Invoice
-	) -> Result<taproot::Signature, ()>;
+	) -> Result<schnorr::Signature, ()>;
 
 	/// Sign a gossip message.
 	///
@@ -1322,7 +1325,7 @@ impl EcdsaChannelSigner for InMemorySigner {
 		let our_htlc_private_key = chan_utils::derive_private_key(
 			&secp_ctx, &htlc_descriptor.per_commitment_point, &self.htlc_base_key
 		);
-		Ok(sign_with_aux_rand(&secp_ctx, &hash_to_message!(sighash), &our_htlc_private_key, &self))
+		Ok(sign_with_aux_rand(&secp_ctx, &hash_to_message!(sighash.as_byte_array()), &our_htlc_private_key, &self))
 	}
 
 	fn sign_counterparty_htlc_transaction(&self, htlc_tx: &Transaction, input: usize, amount: u64, per_commitment_point: &PublicKey, htlc: &HTLCOutputInCommitment, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<Signature, ()> {
@@ -1486,7 +1489,7 @@ impl KeysManager {
 					Ok(destination_key) => {
 						let wpubkey_hash = WPubkeyHash::hash(&ExtendedPubKey::from_priv(&secp_ctx, &destination_key).to_pub().to_bytes());
 						Builder::new().push_opcode(opcodes::all::OP_PUSHBYTES_0)
-							.push_slice(&wpubkey_hash.into_inner())
+							.push_slice(wpubkey_hash.as_byte_array())
 							.into_script()
 					},
 					Err(_) => panic!("Your RNG is busted"),
@@ -1505,7 +1508,7 @@ impl KeysManager {
 				rand_bytes_engine.input(&starting_time_nanos.to_be_bytes());
 				rand_bytes_engine.input(seed);
 				rand_bytes_engine.input(b"LDK PRNG Seed");
-				let rand_bytes_unique_start = Sha256::from_engine(rand_bytes_engine).into_inner();
+				let rand_bytes_unique_start = Sha256::from_engine(rand_bytes_engine).to_byte_array();
 
 				let mut res = KeysManager {
 					secp_ctx,
@@ -1554,13 +1557,13 @@ impl KeysManager {
 			).expect("Your RNG is busted");
 		unique_start.input(&child_privkey.private_key[..]);
 
-		let seed = Sha256::from_engine(unique_start).into_inner();
+		let seed = Sha256::from_engine(unique_start).to_byte_array();
 
 		let commitment_seed = {
 			let mut sha = Sha256::engine();
 			sha.input(&seed);
 			sha.input(&b"commitment seed"[..]);
-			Sha256::from_engine(sha).into_inner()
+			Sha256::from_engine(sha).to_byte_array()
 		};
 		macro_rules! key_step {
 			($info: expr, $prev_key: expr) => {{
@@ -1568,7 +1571,7 @@ impl KeysManager {
 				sha.input(&seed);
 				sha.input(&$prev_key[..]);
 				sha.input(&$info[..]);
-				SecretKey::from_slice(&Sha256::from_engine(sha).into_inner()).expect("SHA-256 is busted")
+				SecretKey::from_slice(Sha256::from_engine(sha).as_byte_array()).expect("SHA-256 is busted")
 			}}
 		}
 		let funding_key = key_step!(b"funding key", commitment_seed);
@@ -1613,7 +1616,7 @@ impl KeysManager {
 						}
 						keys_cache = Some((signer, descriptor.channel_keys_id));
 					}
-					let witness = Witness::from_vec(keys_cache.as_ref().unwrap().0.sign_counterparty_payment_input(&psbt.unsigned_tx, input_idx, &descriptor, &secp_ctx)?);
+					let witness = Witness::from_slice(&keys_cache.as_ref().unwrap().0.sign_counterparty_payment_input(&psbt.unsigned_tx, input_idx, &descriptor, &secp_ctx)?);
 					psbt.inputs[input_idx].final_script_witness = Some(witness);
 				},
 				SpendableOutputDescriptor::DelayedPaymentOutput(descriptor) => {
@@ -1623,7 +1626,7 @@ impl KeysManager {
 							self.derive_channel_keys(descriptor.channel_value_satoshis, &descriptor.channel_keys_id),
 							descriptor.channel_keys_id));
 					}
-					let witness = Witness::from_vec(keys_cache.as_ref().unwrap().0.sign_dynamic_p2wsh_input(&psbt.unsigned_tx, input_idx, &descriptor, &secp_ctx)?);
+					let witness = Witness::from_slice(&keys_cache.as_ref().unwrap().0.sign_dynamic_p2wsh_input(&psbt.unsigned_tx, input_idx, &descriptor, &secp_ctx)?);
 					psbt.inputs[input_idx].final_script_witness = Some(witness);
 				},
 				SpendableOutputDescriptor::StaticOutput { ref outpoint, ref output } => {
@@ -1658,7 +1661,7 @@ impl KeysManager {
 					let sig = sign_with_aux_rand(secp_ctx, &sighash, &secret.private_key, &self);
 					let mut sig_ser = sig.serialize_der().to_vec();
 					sig_ser.push(EcdsaSighashType::All as u8);
-					let witness = Witness::from_vec(vec![sig_ser, pubkey.inner.serialize().to_vec()]);
+					let witness = Witness::from_slice(&[sig_ser, pubkey.inner.serialize().to_vec()]);
 					psbt.inputs[input_idx].final_script_witness = Some(witness);
 				},
 			}
@@ -1684,16 +1687,16 @@ impl KeysManager {
 	///
 	/// May panic if the [`SpendableOutputDescriptor`]s were not generated by channels which used
 	/// this [`KeysManager`] or one of the [`InMemorySigner`] created by this [`KeysManager`].
-	pub fn spend_spendable_outputs<C: Signing>(&self, descriptors: &[&SpendableOutputDescriptor], outputs: Vec<TxOut>, change_destination_script: ScriptBuf, feerate_sat_per_1000_weight: u32, locktime: Option<LockTime>, secp_ctx: &Secp256k1<C>) -> Result<Transaction, ()> {
+	pub fn spend_spendable_outputs<C: Signing>(&self, descriptors: &[&SpendableOutputDescriptor], outputs: Vec<TxOut>, change_destination_script: ScriptBuf, feerate_sat_per_1000_weight: u32, locktime: Option<absolute::LockTime>, secp_ctx: &Secp256k1<C>) -> Result<Transaction, ()> {
 		let (mut psbt, expected_max_weight) = SpendableOutputDescriptor::create_spendable_outputs_psbt(descriptors, outputs, change_destination_script, feerate_sat_per_1000_weight, locktime)?;
 		psbt = self.sign_spendable_outputs_psbt(descriptors, psbt, secp_ctx)?;
 
 		let spend_tx = psbt.extract_tx();
 
-		debug_assert!(expected_max_weight >= spend_tx.weight());
+		debug_assert!(expected_max_weight as u64 >= spend_tx.weight().to_wu());
 		// Note that witnesses with a signature vary somewhat in size, so allow
 		// `expected_max_weight` to overshoot by up to 3 bytes per input.
-		debug_assert!(expected_max_weight <= spend_tx.weight() + descriptors.len() * 3);
+		debug_assert!(expected_max_weight as u64 <= spend_tx.weight().to_wu() + descriptors.len() as u64 * 3);
 
 		Ok(spend_tx)
 	}
@@ -1737,12 +1740,12 @@ impl NodeSigner for KeysManager {
 			Recipient::Node => Ok(&self.node_secret),
 			Recipient::PhantomNode => Err(())
 		}?;
-		Ok(self.secp_ctx.sign_ecdsa_recoverable(&hash_to_message!(&Sha256::hash(&preimage)), secret))
+		Ok(self.secp_ctx.sign_ecdsa_recoverable(&hash_to_message!(Sha256::hash(&preimage).as_byte_array()), secret))
 	}
 
 	fn sign_bolt12_invoice_request(
 		&self, invoice_request: &UnsignedInvoiceRequest
-	) -> Result<taproot::Signature, ()> {
+	) -> Result<schnorr::Signature, ()> {
 		let message = invoice_request.tagged_hash().as_digest();
 		let keys = KeyPair::from_secret_key(&self.secp_ctx, &self.node_secret);
 		let aux_rand = self.get_secure_random_bytes();
@@ -1751,7 +1754,7 @@ impl NodeSigner for KeysManager {
 
 	fn sign_bolt12_invoice(
 		&self, invoice: &UnsignedBolt12Invoice
-	) -> Result<taproot::Signature, ()> {
+	) -> Result<schnorr::Signature, ()> {
 		let message = invoice.tagged_hash().as_digest();
 		let keys = KeyPair::from_secret_key(&self.secp_ctx, &self.node_secret);
 		let aux_rand = self.get_secure_random_bytes();
@@ -1863,18 +1866,18 @@ impl NodeSigner for PhantomKeysManager {
 			Recipient::Node => &self.inner.node_secret,
 			Recipient::PhantomNode => &self.phantom_secret,
 		};
-		Ok(self.inner.secp_ctx.sign_ecdsa_recoverable(&hash_to_message!(&Sha256::hash(&preimage)), secret))
+		Ok(self.inner.secp_ctx.sign_ecdsa_recoverable(&hash_to_message!(Sha256::hash(&preimage).as_byte_array()), secret))
 	}
 
 	fn sign_bolt12_invoice_request(
 		&self, invoice_request: &UnsignedInvoiceRequest
-	) -> Result<taproot::Signature, ()> {
+	) -> Result<schnorr::Signature, ()> {
 		self.inner.sign_bolt12_invoice_request(invoice_request)
 	}
 
 	fn sign_bolt12_invoice(
 		&self, invoice: &UnsignedBolt12Invoice
-	) -> Result<taproot::Signature, ()> {
+	) -> Result<schnorr::Signature, ()> {
 		self.inner.sign_bolt12_invoice(invoice)
 	}
 
@@ -1933,7 +1936,7 @@ impl PhantomKeysManager {
 	}
 
 	/// See [`KeysManager::spend_spendable_outputs`] for documentation on this method.
-	pub fn spend_spendable_outputs<C: Signing>(&self, descriptors: &[&SpendableOutputDescriptor], outputs: Vec<TxOut>, change_destination_script: ScriptBuf, feerate_sat_per_1000_weight: u32, locktime: Option<LockTime>, secp_ctx: &Secp256k1<C>) -> Result<Transaction, ()> {
+	pub fn spend_spendable_outputs<C: Signing>(&self, descriptors: &[&SpendableOutputDescriptor], outputs: Vec<TxOut>, change_destination_script: ScriptBuf, feerate_sat_per_1000_weight: u32, locktime: Option<absolute::LockTime>, secp_ctx: &Secp256k1<C>) -> Result<Transaction, ()> {
 		self.inner.spend_spendable_outputs(descriptors, outputs, change_destination_script, feerate_sat_per_1000_weight, locktime, secp_ctx)
 	}
 

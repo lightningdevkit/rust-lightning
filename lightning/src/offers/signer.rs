@@ -183,7 +183,7 @@ impl MetadataMaterial {
 
 		let mut bytes = self.encrypted_payment_id.map(|id| id.to_vec()).unwrap_or(vec![]);
 		bytes.extend_from_slice(self.nonce.as_slice());
-		bytes.extend_from_slice(&Hmac::from_engine(self.hmac).into_inner());
+		bytes.extend_from_slice(&Hmac::from_engine(self.hmac).to_byte_array());
 		bytes
 	}
 
@@ -197,7 +197,7 @@ impl MetadataMaterial {
 		bytes.extend_from_slice(self.nonce.as_slice());
 
 		let hmac = Hmac::from_engine(self.hmac);
-		let privkey = SecretKey::from_slice(hmac.as_inner()).unwrap();
+		let privkey = SecretKey::from_slice(hmac.as_byte_array()).unwrap();
 		let keys = KeyPair::from_secret_key(secp_ctx, &privkey);
 
 		(bytes, keys)
@@ -218,7 +218,7 @@ pub(super) fn derive_keys(nonce: Nonce, expanded_key: &ExpandedKey) -> KeyPair {
 	const IV_BYTES: &[u8; IV_LEN] = b"LDK Invoice ~~~~";
 	let secp_ctx = Secp256k1::new();
 	let hmac = Hmac::from_engine(expanded_key.hmac_for_offer(nonce, IV_BYTES));
-	let privkey = SecretKey::from_slice(hmac.as_inner()).unwrap();
+	let privkey = SecretKey::from_slice(hmac.as_byte_array()).unwrap();
 	KeyPair::from_secret_key(&secp_ctx, &privkey)
 }
 
@@ -283,7 +283,7 @@ fn verify_metadata<T: secp256k1::Signing>(
 ) -> Result<Option<KeyPair>, ()> {
 	if metadata.len() == Nonce::LENGTH {
 		let derived_keys = KeyPair::from_secret_key(
-			secp_ctx, &SecretKey::from_slice(hmac.as_inner()).unwrap()
+			secp_ctx, &SecretKey::from_slice(hmac.as_byte_array()).unwrap()
 		);
 		if fixed_time_eq(&signing_pubkey.serialize(), &derived_keys.public_key().serialize()) {
 			Ok(Some(derived_keys))
@@ -291,7 +291,7 @@ fn verify_metadata<T: secp256k1::Signing>(
 			Err(())
 		}
 	} else if metadata[Nonce::LENGTH..].len() == Sha256::LEN {
-		if fixed_time_eq(&metadata[Nonce::LENGTH..], &hmac.into_inner()) {
+		if fixed_time_eq(&metadata[Nonce::LENGTH..], &hmac.to_byte_array()) {
 			Ok(None)
 		} else {
 			Err(())

@@ -1,12 +1,14 @@
 use crate::{AsyncBlockSourceResult, BlockData, BlockHeaderData, BlockSource, BlockSourceError, UnboundedCache};
 use crate::poll::{Validate, ValidatedBlockHeader};
 
-use bitcoin::blockdata::block::{Block, BlockHeader};
+use bitcoin::blockdata::locktime::absolute;
+use bitcoin::blockdata::block;
+use bitcoin::blockdata::block::Block;
 use bitcoin::blockdata::constants::genesis_block;
 use bitcoin::hash_types::BlockHash;
 use bitcoin::network::constants::Network;
-use bitcoin::uint::Uint256;
-use bitcoin::{merkle_root, LockTime, Transaction};
+use bitcoin::pow::Target;
+use bitcoin::{merkle_tree, Transaction};
 
 use lightning::chain;
 
@@ -34,7 +36,7 @@ impl Blockchain {
 
 	pub fn with_height(mut self, height: usize) -> Self {
 		self.blocks.reserve_exact(height);
-		let bits = BlockHeader::compact_target_from_u256(&Uint256::from_be_bytes([0xff; 32]));
+        let bits = Target::MAX.to_compact_lossy();
 		for i in 1..=height {
 			let prev_block = &self.blocks[i - 1];
 			let prev_blockhash = prev_block.block_hash();
@@ -45,13 +47,13 @@ impl Blockchain {
 			// but that's OK because those tests don't trigger the check.
 			let coinbase = Transaction {
 				version: 0,
-				lock_time: LockTime::ZERO,
+				lock_time: absolute::LockTime::ZERO,
 				input: vec![],
 				output: vec![]
 			};
-			let merkle_root = merkle_root::calculate_root(vec![coinbase.txid().as_hash()].into_iter()).unwrap();
+			let merkle_root = merkle_tree::calculate_root(vec![coinbase.txid().as_hash()].into_iter()).unwrap();
 			self.blocks.push(Block {
-				header: BlockHeader {
+				header: block::Header {
 					version: 0,
 					prev_blockhash,
 					merkle_root: merkle_root.into(),
@@ -187,8 +189,8 @@ impl BlockSource for Blockchain {
 pub struct NullChainListener;
 
 impl chain::Listen for NullChainListener {
-	fn filtered_block_connected(&self, _header: &BlockHeader, _txdata: &chain::transaction::TransactionData, _height: u32) {}
-	fn block_disconnected(&self, _header: &BlockHeader, _height: u32) {}
+	fn filtered_block_connected(&self, _header: &block::Header, _txdata: &chain::transaction::TransactionData, _height: u32) {}
+	fn block_disconnected(&self, _header: &block::Header, _height: u32) {}
 }
 
 pub struct MockChainListener {
@@ -235,7 +237,7 @@ impl chain::Listen for MockChainListener {
 		}
 	}
 
-	fn filtered_block_connected(&self, header: &BlockHeader, _txdata: &chain::transaction::TransactionData, height: u32) {
+	fn filtered_block_connected(&self, header: &block::Header, _txdata: &chain::transaction::TransactionData, height: u32) {
 		match self.expected_filtered_blocks_connected.borrow_mut().pop_front() {
 			None => {
 				panic!("Unexpected filtered block connected: {:?}", header.block_hash());
@@ -247,7 +249,7 @@ impl chain::Listen for MockChainListener {
 		}
 	}
 
-	fn block_disconnected(&self, header: &BlockHeader, height: u32) {
+	fn block_disconnected(&self, header: &block::Header, height: u32) {
 		match self.expected_blocks_disconnected.borrow_mut().pop_front() {
 			None => {
 				panic!("Unexpected block disconnected: {:?}", header.block_hash());

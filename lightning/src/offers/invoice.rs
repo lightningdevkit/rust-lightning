@@ -101,10 +101,11 @@ use bitcoin::blockdata::constants::ChainHash;
 use bitcoin::hash_types::{WPubkeyHash, WScriptHash};
 use bitcoin::hashes::Hash;
 use bitcoin::network::constants::Network;
+use bitcoin::script::PushBytesBuf;
 use bitcoin::secp256k1::{KeyPair, PublicKey, Secp256k1, self};
-use bitcoin::secp256k1::taproot::Signature;
-use bitcoin::address::{Address, Payload, WitnessVersion};
-use bitcoin::taproot::TweakedPublicKey;
+use bitcoin::secp256k1::schnorr::Signature;
+use bitcoin::address::{Address, Payload, WitnessVersion, WitnessProgram};
+use bitcoin::key::TweakedPublicKey;
 use core::convert::{AsRef, Infallible, TryFrom};
 use core::time::Duration;
 use crate::io;
@@ -291,7 +292,7 @@ impl<'a, S: SigningPubkeyStrategy> InvoiceBuilder<'a, S> {
 	pub fn fallback_v0_p2wsh(mut self, script_hash: &WScriptHash) -> Self {
 		let address = FallbackAddress {
 			version: WitnessVersion::V0.to_num(),
-			program: Vec::from(&script_hash.into_inner()[..]),
+			program: Vec::from(script_hash.to_byte_array()),
 		};
 		self.invoice.fields_mut().fallbacks.get_or_insert_with(Vec::new).push(address);
 		self
@@ -304,7 +305,7 @@ impl<'a, S: SigningPubkeyStrategy> InvoiceBuilder<'a, S> {
 	pub fn fallback_v0_p2wpkh(mut self, pubkey_hash: &WPubkeyHash) -> Self {
 		let address = FallbackAddress {
 			version: WitnessVersion::V0.to_num(),
-			program: Vec::from(&pubkey_hash.into_inner()[..]),
+			program: Vec::from(pubkey_hash.to_byte_array()),
 		};
 		self.invoice.fields_mut().fallbacks.get_or_insert_with(Vec::new).push(address);
 		self
@@ -923,20 +924,18 @@ impl InvoiceContents {
 				Err(_) => return None,
 			};
 
-			let program = &address.program;
-			if program.len() < 2 || program.len() > 40 {
-				return None;
-			}
+            let program = match PushBytesBuf::try_from(address.program.clone()) {
+                Ok(program) => program,
+                Err(_) => return None,
+            };
+            let program = match WitnessProgram::new(version, program) {
+                Ok(program) => program,
+                Err(_) => return None,
+            };
 
-			let address = Address {
-				payload: Payload::WitnessProgram {
-					version,
-					program: program.clone(),
-				},
-				network,
-			};
+			let address = Address::new(network, Payload::WitnessProgram(program));
 
-			if !address.is_standard() && version == WitnessVersion::V0 {
+			if !address.is_spend_standard() && version == WitnessVersion::V0 {
 				return None;
 			}
 
@@ -1308,7 +1307,7 @@ mod tests {
 	use bitcoin::network::constants::Network;
 	use bitcoin::secp256k1::{Message, Secp256k1, XOnlyPublicKey, self};
 	use bitcoin::address::{Address, Payload, WitnessVersion};
-	use bitcoin::taproot::TweakedPublicKey;
+	use bitcoin::key::TweakedPublicKey;
 	use core::convert::TryFrom;
 	use core::time::Duration;
 	use crate::blinded_path::{BlindedHop, BlindedPath};
@@ -1835,7 +1834,7 @@ mod tests {
 			Some(&vec![
 				FallbackAddress {
 					version: WitnessVersion::V0.to_num(),
-					program: Vec::from(&script.wscript_hash().into_inner()[..]),
+					program: Vec::from(&script.wscript_hash().to_byte_array()),
 				},
 				FallbackAddress {
 					version: WitnessVersion::V0.to_num(),

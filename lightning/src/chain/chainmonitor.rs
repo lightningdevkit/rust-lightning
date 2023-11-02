@@ -23,7 +23,7 @@
 //! events. The remote server would make use of [`ChainMonitor`] for block processing and for
 //! servicing [`ChannelMonitor`] updates from the client.
 
-use bitcoin::blockdata::block::BlockHeader;
+use bitcoin::blockdata::block;
 use bitcoin::hash_types::{Txid, BlockHash};
 
 use crate::chain;
@@ -312,7 +312,7 @@ where C::Target: chain::Filter,
 	/// updated `txdata`.
 	///
 	/// Calls which represent a new blockchain tip height should set `best_height`.
-	fn process_chain_data<FN>(&self, header: &BlockHeader, best_height: Option<u32>, txdata: &TransactionData, process: FN)
+	fn process_chain_data<FN>(&self, header: &block::Header, best_height: Option<u32>, txdata: &TransactionData, process: FN)
 	where
 		FN: Fn(&ChannelMonitor<ChannelSigner>, &TransactionData) -> Vec<TransactionOutputs>
 	{
@@ -355,7 +355,7 @@ where C::Target: chain::Filter,
 	}
 
 	fn update_monitor_with_chain_data<FN>(
-		&self, header: &BlockHeader, best_height: Option<u32>, txdata: &TransactionData,
+		&self, header: &block::Header, best_height: Option<u32>, txdata: &TransactionData,
 		process: FN, funding_outpoint: &OutPoint, monitor_state: &MonitorHolder<ChannelSigner>
 	) -> Result<(), ()> where FN: Fn(&ChannelMonitor<ChannelSigner>, &TransactionData) -> Vec<TransactionOutputs> {
 		let monitor = &monitor_state.monitor;
@@ -635,7 +635,7 @@ where
 	L::Target: Logger,
 	P::Target: Persist<ChannelSigner>,
 {
-	fn filtered_block_connected(&self, header: &BlockHeader, txdata: &TransactionData, height: u32) {
+	fn filtered_block_connected(&self, header: &block::Header, txdata: &TransactionData, height: u32) {
 		log_debug!(self.logger, "New best block {} at height {} provided via block_connected", header.block_hash(), height);
 		self.process_chain_data(header, Some(height), &txdata, |monitor, txdata| {
 			monitor.block_connected(
@@ -643,7 +643,7 @@ where
 		});
 	}
 
-	fn block_disconnected(&self, header: &BlockHeader, height: u32) {
+	fn block_disconnected(&self, header: &block::Header, height: u32) {
 		let monitor_states = self.monitors.read().unwrap();
 		log_debug!(self.logger, "Latest block {} at height {} removed via block_disconnected", header.block_hash(), height);
 		for monitor_state in monitor_states.values() {
@@ -662,7 +662,7 @@ where
 	L::Target: Logger,
 	P::Target: Persist<ChannelSigner>,
 {
-	fn transactions_confirmed(&self, header: &BlockHeader, txdata: &TransactionData, height: u32) {
+	fn transactions_confirmed(&self, header: &block::Header, txdata: &TransactionData, height: u32) {
 		log_debug!(self.logger, "{} provided transactions confirmed at height {} in block {}", txdata.len(), height, header.block_hash());
 		self.process_chain_data(header, None, txdata, |monitor, txdata| {
 			monitor.transactions_confirmed(
@@ -678,7 +678,7 @@ where
 		}
 	}
 
-	fn best_block_updated(&self, header: &BlockHeader, height: u32) {
+	fn best_block_updated(&self, header: &block::Header, height: u32) {
 		log_debug!(self.logger, "New best block {} at height {} provided via best_block_updated", header.block_hash(), height);
 		self.process_chain_data(header, Some(height), &[], |monitor, txdata| {
 			// While in practice there shouldn't be any recursive calls when given empty txdata,

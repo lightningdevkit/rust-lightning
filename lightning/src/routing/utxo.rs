@@ -15,7 +15,8 @@
 
 use bitcoin::TxOut;
 use bitcoin::blockdata::constants::ChainHash;
-use bitcoin::hashes::hex::ToHex;
+
+use internals::hex::display::DisplayHex;
 
 use crate::events::MessageSendEvent;
 use crate::ln::chan_utils::make_funding_redeemscript_from_slices;
@@ -463,8 +464,8 @@ impl PendingChecks {
 						make_funding_redeemscript_from_slices(msg.bitcoin_key_1.as_slice(), msg.bitcoin_key_2.as_slice()).to_v0_p2wsh();
 					if script_pubkey != expected_script {
 						return Err(LightningError{
-							err: format!("Channel announcement key ({}) didn't match on-chain script ({})",
-								expected_script.to_hex(), script_pubkey.to_hex()),
+							err: format!("Channel announcement key ({:x}) didn't match on-chain script ({:x})",
+								expected_script, script_pubkey),
 							action: ErrorAction::IgnoreError
 						});
 					}
@@ -472,8 +473,8 @@ impl PendingChecks {
 				},
 				Err(UtxoLookupError::UnknownChain) => {
 					Err(LightningError {
-						err: format!("Channel announced on an unknown chain ({})",
-							msg.chain_hash.encode().to_hex()),
+						err: format!("Channel announced on an unknown chain ({:x})",
+							msg.chain_hash.encode().as_hex()),
 						action: ErrorAction::IgnoreError
 					})
 				},

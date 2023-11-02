@@ -57,7 +57,7 @@
 use bitcoin::blockdata::constants::ChainHash;
 use bitcoin::network::constants::Network;
 use bitcoin::secp256k1::{KeyPair, PublicKey, Secp256k1, self};
-use bitcoin::secp256k1::taproot::Signature;
+use bitcoin::secp256k1::schnorr::Signature;
 use core::convert::{AsRef, Infallible, TryFrom};
 use core::ops::Deref;
 use crate::sign::EntropySource;

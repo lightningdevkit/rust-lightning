@@ -12,9 +12,12 @@
 //! also includes witness weight computation and fee computation methods.
 
 use bitcoin::blockdata::constants::WITNESS_SCALE_FACTOR;
-use bitcoin::blockdata::transaction::{TxOut,TxIn, Transaction, EcdsaSighashType};
+use bitcoin::blockdata::locktime::absolute;
+use bitcoin::blockdata::transaction::{TxOut,TxIn, Transaction};
 use bitcoin::blockdata::transaction::OutPoint as BitcoinOutPoint;
 use bitcoin::blockdata::script::ScriptBuf;
+
+use bitcoin::sighash::EcdsaSighashType;
 
 use bitcoin::hash_types::Txid;
 
@@ -36,7 +39,7 @@ use core::cmp;
 use core::convert::TryInto;
 use core::mem;
 use core::ops::Deref;
-use bitcoin::{LockTime, Sequence, Witness};
+use bitcoin::{Sequence, Witness};
 use crate::ln::features::ChannelTypeFeatures;
 
 use super::chaininterface::LowerBoundedFeeEstimator;
@@ -914,7 +917,7 @@ impl PackageTemplate {
 		debug_assert!(self.is_malleable());
 		let mut bumped_tx = Transaction {
 			version: 2,
-			lock_time: LockTime(self.package_locktime(current_height)),
+			lock_time: absolute::LockTime::from_consensus(self.package_locktime(current_height)),
 			input: vec![],
 			output: vec![TxOut {
 				script_pubkey: destination_script,
@@ -1186,6 +1189,8 @@ where
 
 #[cfg(test)]
 mod tests {
+    use core::str::FromStr;
+
 	use crate::chain::package::{CounterpartyOfferedHTLCOutput, CounterpartyReceivedHTLCOutput, HolderHTLCOutput, PackageTemplate, PackageSolvingData, RevokedOutput, WEIGHT_REVOKED_OUTPUT, weight_offered_htlc, weight_received_htlc};
 	use crate::chain::Txid;
 	use crate::ln::chan_utils::HTLCOutputInCommitment;
@@ -1194,8 +1199,6 @@ mod tests {
 	use bitcoin::blockdata::constants::WITNESS_SCALE_FACTOR;
 	use bitcoin::blockdata::script::ScriptBuf;
 	use bitcoin::blockdata::transaction::OutPoint as BitcoinOutPoint;
-
-	use bitcoin::hashes::hex::FromHex;
 
 	use bitcoin::secp256k1::{PublicKey,SecretKey};
 	use bitcoin::secp256k1::Secp256k1;
@@ -1248,7 +1251,7 @@ mod tests {
 	#[test]
 	#[should_panic]
 	fn test_package_differing_heights() {
-		let txid = Txid::from_hex("c2d4449afa8d26140898dd54d3390b057ba2a5afcf03ba29d7dc0d8b9ffe966e").unwrap();
+		let txid = Txid::from_str("c2d4449afa8d26140898dd54d3390b057ba2a5afcf03ba29d7dc0d8b9ffe966e").unwrap();
 		let secp_ctx = Secp256k1::new();
 		let revk_outp = dumb_revk_output!(secp_ctx, false);
 
@@ -1260,7 +1263,7 @@ mod tests {
 	#[test]
 	#[should_panic]
 	fn test_package_untractable_merge_to() {
-		let txid = Txid::from_hex("c2d4449afa8d26140898dd54d3390b057ba2a5afcf03ba29d7dc0d8b9ffe966e").unwrap();
+		let txid = Txid::from_str("c2d4449afa8d26140898dd54d3390b057ba2a5afcf03ba29d7dc0d8b9ffe966e").unwrap();
 		let secp_ctx = Secp256k1::new();
 		let revk_outp = dumb_revk_output!(secp_ctx, false);
 		let htlc_outp = dumb_htlc_output!();
@@ -1273,7 +1276,7 @@ mod tests {
 	#[test]
 	#[should_panic]
 	fn test_package_untractable_merge_from() {
-		let txid = Txid::from_hex("c2d4449afa8d26140898dd54d3390b057ba2a5afcf03ba29d7dc0d8b9ffe966e").unwrap();
+		let txid = Txid::from_str("c2d4449afa8d26140898dd54d3390b057ba2a5afcf03ba29d7dc0d8b9ffe966e").unwrap();
 		let secp_ctx = Secp256k1::new();
 		let htlc_outp = dumb_htlc_output!();
 		let revk_outp = dumb_revk_output!(secp_ctx, false);
@@ -1286,7 +1289,7 @@ mod tests {
 	#[test]
 	#[should_panic]
 	fn test_package_noaggregation_to() {
-		let txid = Txid::from_hex("c2d4449afa8d26140898dd54d3390b057ba2a5afcf03ba29d7dc0d8b9ffe966e").unwrap();
+		let txid = Txid::from_str("c2d4449afa8d26140898dd54d3390b057ba2a5afcf03ba29d7dc0d8b9ffe966e").unwrap();
 		let secp_ctx = Secp256k1::new();
 		let revk_outp = dumb_revk_output!(secp_ctx, false);
 		let revk_outp_counterparty_balance = dumb_revk_output!(secp_ctx, true);
@@ -1299,7 +1302,7 @@ mod tests {
 	#[test]
 	#[should_panic]
 	fn test_package_noaggregation_from() {
-		let txid = Txid::from_hex("c2d4449afa8d26140898dd54d3390b057ba2a5afcf03ba29d7dc0d8b9ffe966e").unwrap();
+		let txid = Txid::from_str("c2d4449afa8d26140898dd54d3390b057ba2a5afcf03ba29d7dc0d8b9ffe966e").unwrap();
 		let secp_ctx = Secp256k1::new();
 		let revk_outp = dumb_revk_output!(secp_ctx, false);
 		let revk_outp_counterparty_balance = dumb_revk_output!(secp_ctx, true);
@@ -1312,7 +1315,7 @@ mod tests {
 	#[test]
 	#[should_panic]
 	fn test_package_empty() {
-		let txid = Txid::from_hex("c2d4449afa8d26140898dd54d3390b057ba2a5afcf03ba29d7dc0d8b9ffe966e").unwrap();
+		let txid = Txid::from_str("c2d4449afa8d26140898dd54d3390b057ba2a5afcf03ba29d7dc0d8b9ffe966e").unwrap();
 		let secp_ctx = Secp256k1::new();
 		let revk_outp = dumb_revk_output!(secp_ctx, false);
 
@@ -1325,7 +1328,7 @@ mod tests {
 	#[test]
 	#[should_panic]
 	fn test_package_differing_categories() {
-		let txid = Txid::from_hex("c2d4449afa8d26140898dd54d3390b057ba2a5afcf03ba29d7dc0d8b9ffe966e").unwrap();
+		let txid = Txid::from_str("c2d4449afa8d26140898dd54d3390b057ba2a5afcf03ba29d7dc0d8b9ffe966e").unwrap();
 		let secp_ctx = Secp256k1::new();
 		let revk_outp = dumb_revk_output!(secp_ctx, false);
 		let counterparty_outp = dumb_counterparty_output!(secp_ctx, 0, ChannelTypeFeatures::only_static_remote_key());
@@ -1337,7 +1340,7 @@ mod tests {
 
 	#[test]
 	fn test_package_split_malleable() {
-		let txid = Txid::from_hex("c2d4449afa8d26140898dd54d3390b057ba2a5afcf03ba29d7dc0d8b9ffe966e").unwrap();
+		let txid = Txid::from_str("c2d4449afa8d26140898dd54d3390b057ba2a5afcf03ba29d7dc0d8b9ffe966e").unwrap();
 		let secp_ctx = Secp256k1::new();
 		let revk_outp_one = dumb_revk_output!(secp_ctx, false);
 		let revk_outp_two = dumb_revk_output!(secp_ctx, false);
@@ -1365,7 +1368,7 @@ mod tests {
 
 	#[test]
 	fn test_package_split_untractable() {
-		let txid = Txid::from_hex("c2d4449afa8d26140898dd54d3390b057ba2a5afcf03ba29d7dc0d8b9ffe966e").unwrap();
+		let txid = Txid::from_str("c2d4449afa8d26140898dd54d3390b057ba2a5afcf03ba29d7dc0d8b9ffe966e").unwrap();
 		let htlc_outp_one = dumb_htlc_output!();
 
 		let mut package_one = PackageTemplate::build_package(txid, 0, htlc_outp_one, 1000, 100);
@@ -1375,7 +1378,7 @@ mod tests {
 
 	#[test]
 	fn test_package_timer() {
-		let txid = Txid::from_hex("c2d4449afa8d26140898dd54d3390b057ba2a5afcf03ba29d7dc0d8b9ffe966e").unwrap();
+		let txid = Txid::from_str("c2d4449afa8d26140898dd54d3390b057ba2a5afcf03ba29d7dc0d8b9ffe966e").unwrap();
 		let secp_ctx = Secp256k1::new();
 		let revk_outp = dumb_revk_output!(secp_ctx, false);
 
@@ -1387,7 +1390,7 @@ mod tests {
 
 	#[test]
 	fn test_package_amounts() {
-		let txid = Txid::from_hex("c2d4449afa8d26140898dd54d3390b057ba2a5afcf03ba29d7dc0d8b9ffe966e").unwrap();
+		let txid = Txid::from_str("c2d4449afa8d26140898dd54d3390b057ba2a5afcf03ba29d7dc0d8b9ffe966e").unwrap();
 		let secp_ctx = Secp256k1::new();
 		let counterparty_outp = dumb_counterparty_output!(secp_ctx, 1_000_000, ChannelTypeFeatures::only_static_remote_key());
 
@@ -1397,7 +1400,7 @@ mod tests {
 
 	#[test]
 	fn test_package_weight() {
-		let txid = Txid::from_hex("c2d4449afa8d26140898dd54d3390b057ba2a5afcf03ba29d7dc0d8b9ffe966e").unwrap();
+		let txid = Txid::from_str("c2d4449afa8d26140898dd54d3390b057ba2a5afcf03ba29d7dc0d8b9ffe966e").unwrap();
 		let secp_ctx = Secp256k1::new();
 
 		// (nVersion (4) + nLocktime (4) + count_tx_in (1) + prevout (36) + sequence (4) + script_length (1) + count_tx_out (1) + value (8) + var_int (1)) * WITNESS_SCALE_FACTOR + witness marker (2)

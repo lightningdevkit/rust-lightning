@@ -41,6 +41,7 @@ default = ["std", "grind_signatures"]
 
 [dependencies]
 bitcoin = { version = "0.30.1", default-features = false, features = ["secp-recovery"] }
+internals = { package = "bitcoin-private", version = "0.1.0", default-features = false }
 
 hashbrown = { version = "0.8", optional = true }
 hex = { version = "0.4", optional = true }

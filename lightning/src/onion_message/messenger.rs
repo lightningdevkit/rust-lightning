@@ -406,7 +406,7 @@ where
 		let blinding_factor = {
 			let mut hmac = HmacEngine::<Sha256>::new(b"blinded_node_id");
 			hmac.input(control_tlvs_ss.as_ref());
-			Hmac::from_engine(hmac).into_inner()
+			Hmac::from_engine(hmac).to_byte_array()
 		};
 		match node_signer.ecdh(Recipient::Node, &msg.onion_routing_packet.public_key,
 			Some(&Scalar::from_be_bytes(blinding_factor).unwrap()))

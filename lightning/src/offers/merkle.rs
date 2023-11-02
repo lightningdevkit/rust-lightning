@@ -11,7 +11,7 @@
 
 use bitcoin::hashes::{Hash, HashEngine, sha256};
 use bitcoin::secp256k1::{Message, PublicKey, Secp256k1, self};
-use bitcoin::secp256k1::taproot::Signature;
+use bitcoin::secp256k1::schnorr::Signature;
 use core::convert::AsRef;
 use crate::io;
 use crate::util::ser::{BigSize, Readable, Writeable, Writer};
@@ -102,7 +102,7 @@ pub(super) fn verify_signature(
 pub(super) fn message_digest(tag: &str, bytes: &[u8]) -> Message {
 	let tag = sha256::Hash::hash(tag.as_bytes());
 	let merkle_root = root_hash(bytes);
-	Message::from_slice(&tagged_hash(tag, merkle_root)).unwrap()
+	Message::from_slice(tagged_hash(tag, merkle_root).as_byte_array()).unwrap()
 }
 
 /// Computes a merkle root hash for the given data, which must be a well-formed TLV stream
@@ -259,7 +259,7 @@ mod tests {
 
 	use bitcoin::hashes::{Hash, sha256};
 	use bitcoin::secp256k1::{KeyPair, Secp256k1, SecretKey};
-	use bitcoin::secp256k1::taproot::Signature;
+	use bitcoin::secp256k1::schnorr::Signature;
 	use core::convert::Infallible;
 	use crate::offers::offer::{Amount, OfferBuilder};
 	use crate::offers::invoice_request::InvoiceRequest;

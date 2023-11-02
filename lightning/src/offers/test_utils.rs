@@ -10,7 +10,7 @@
 //! Utilities for testing BOLT 12 Offers interfaces
 
 use bitcoin::secp256k1::{KeyPair, PublicKey, Secp256k1, SecretKey};
-use bitcoin::secp256k1::taproot::Signature;
+use bitcoin::secp256k1::schnorr::Signature;
 use core::convert::{AsRef, Infallible};
 use core::time::Duration;
 use crate::blinded_path::{BlindedHop, BlindedPath};

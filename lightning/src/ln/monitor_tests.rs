@@ -24,12 +24,12 @@ use crate::util::ser::Writeable;
 use crate::util::scid_utils::block_from_scid;
 use crate::util::test_utils;
 
-use bitcoin::blockdata::transaction::EcdsaSighashType;
+use bitcoin::blockdata::locktime::absolute;
 use bitcoin::blockdata::script::Builder;
 use bitcoin::blockdata::opcodes;
 use bitcoin::secp256k1::{Secp256k1, SecretKey};
-use bitcoin::{Amount, PublicKey, ScriptBuf, Transaction, TxIn, TxOut, LockTime, Witness};
-use bitcoin::sighash::SighashCache;
+use bitcoin::{Amount, PublicKey, ScriptBuf, Transaction, TxIn, TxOut, Witness};
+use bitcoin::sighash::{EcdsaSighashType, SighashCache};
 
 use crate::prelude::*;
 
@@ -305,7 +305,7 @@ fn do_test_claim_value_force_close(anchors: bool, prev_commitment_tx: bool) {
 
 	let coinbase_tx = Transaction {
 		version: 2,
-		lock_time: LockTime::ZERO,
+		lock_time: absolute::LockTime::ZERO,
 		input: vec![TxIn { ..Default::default() }],
 		output: vec![
 			TxOut {
@@ -666,7 +666,7 @@ fn do_test_balances_on_local_commitment_htlcs(anchors: bool) {
 
 	let coinbase_tx = Transaction {
 		version: 2,
-		lock_time: LockTime::ZERO,
+		lock_time: absolute::LockTime::ZERO,
 		input: vec![TxIn { ..Default::default() }],
 		output: vec![
 			TxOut {
@@ -1229,17 +1229,17 @@ fn do_test_revoked_counterparty_commitment_balances(anchors: bool, confirm_htlc_
 
 	// Check that the weight is close to the expected weight. Note that signature sizes vary
 	// somewhat so it may not always be exact.
-	fuzzy_assert_eq(claim_txn[0].weight(), outbound_htlc_claim_exp_weight);
-	fuzzy_assert_eq(claim_txn[1].weight(), inbound_htlc_claim_exp_weight);
-	fuzzy_assert_eq(claim_txn[2].weight(), inbound_htlc_claim_exp_weight);
-	fuzzy_assert_eq(claim_txn[3].weight(), BS_TO_SELF_CLAIM_EXP_WEIGHT);
+	fuzzy_assert_eq(claim_txn[0].weight().to_wu(), outbound_htlc_claim_exp_weight as u64);
+	fuzzy_assert_eq(claim_txn[1].weight().to_wu(), inbound_htlc_claim_exp_weight as u64);
+	fuzzy_assert_eq(claim_txn[2].weight().to_wu(), inbound_htlc_claim_exp_weight as u64);
+	fuzzy_assert_eq(claim_txn[3].weight().to_wu(), BS_TO_SELF_CLAIM_EXP_WEIGHT as u64);
 
 	let commitment_tx_fee = chan_feerate *
 		(channel::commitment_tx_base_weight(&channel_type_features) + 3 * channel::COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000;
 	let anchor_outputs_value = if anchors { channel::ANCHOR_OUTPUT_VALUE_SATOSHI * 2 } else { 0 };
 	let inbound_htlc_claim_fee = chan_feerate * inbound_htlc_claim_exp_weight as u64 / 1000;
 	let outbound_htlc_claim_fee = chan_feerate * outbound_htlc_claim_exp_weight as u64 / 1000;
-	let to_self_claim_fee = chan_feerate * claim_txn[3].weight() as u64 / 1000;
+	let to_self_claim_fee = chan_feerate * claim_txn[3].weight().to_wu() / 1000;
 
 	// The expected balance for the next three checks, with the largest-HTLC and to_self output
 	// claim balances separated out.
@@ -1380,7 +1380,7 @@ fn do_test_revoked_counterparty_htlc_tx_balances(anchors: bool) {
 
 	let coinbase_tx = Transaction {
 		version: 2,
-		lock_time: LockTime::ZERO,
+		lock_time: absolute::LockTime::ZERO,
 		input: vec![TxIn { ..Default::default() }],
 		output: vec![
 			TxOut {
@@ -1442,7 +1442,7 @@ fn do_test_revoked_counterparty_htlc_tx_balances(anchors: bool) {
 		check_spends!(txn[0], revoked_local_txn[0], coinbase_tx);
 		txn.pop().unwrap()
 	};
-	let revoked_htlc_success_fee = chan_feerate * revoked_htlc_success.weight() as u64 / 1000;
+	let revoked_htlc_success_fee = chan_feerate * revoked_htlc_success.weight().to_wu() / 1000;
 
 	connect_blocks(&nodes[1], TEST_FINAL_CLTV);
 	if anchors {
@@ -1459,8 +1459,8 @@ fn do_test_revoked_counterparty_htlc_tx_balances(anchors: bool) {
 	};
 	check_spends!(revoked_htlc_timeout, revoked_local_txn[0], coinbase_tx);
 	assert_ne!(revoked_htlc_success.input[0].previous_output, revoked_htlc_timeout.input[0].previous_output);
-	assert_eq!(revoked_htlc_success.lock_time.0, 0);
-	assert_ne!(revoked_htlc_timeout.lock_time.0, 0);
+	assert_eq!(revoked_htlc_success.lock_time.to_consensus_u32(), 0);
+	assert_ne!(revoked_htlc_timeout.lock_time.to_consensus_u32(), 0);
 
 	// A will generate justice tx from B's revoked commitment/HTLC tx
 	mine_transaction(&nodes[0], &revoked_local_txn[0]);
@@ -1530,7 +1530,7 @@ fn do_test_revoked_counterparty_htlc_tx_balances(anchors: bool) {
 		sorted_vec(nodes[0].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances()));
 
 	assert_eq!(as_htlc_claim_tx[0].output.len(), 1);
-	let as_revoked_htlc_success_claim_fee = chan_feerate * as_htlc_claim_tx[0].weight() as u64 / 1000;
+	let as_revoked_htlc_success_claim_fee = chan_feerate * as_htlc_claim_tx[0].weight().to_wu() / 1000;
 	if anchors {
 		// With anchors, B can pay for revoked_htlc_success's fee with additional inputs, rather
 		// than with the HTLC itself.
@@ -1580,7 +1580,7 @@ fn do_test_revoked_counterparty_htlc_tx_balances(anchors: bool) {
 		}]),
 		sorted_vec(nodes[0].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances()));
 
-	connect_blocks(&nodes[0], revoked_htlc_timeout.lock_time.0 - nodes[0].best_block_info().1);
+	connect_blocks(&nodes[0], revoked_htlc_timeout.lock_time.to_consensus_u32() - nodes[0].best_block_info().1);
 	expect_pending_htlcs_forwardable_and_htlc_handling_failed_ignore!(&nodes[0],
 		[HTLCDestination::FailedPayment { payment_hash: failed_payment_hash }]);
 	// As time goes on A may split its revocation claim transaction into multiple.
@@ -1692,7 +1692,7 @@ fn do_test_revoked_counterparty_aggregated_claims(anchors: bool) {
 
 	let coinbase_tx = Transaction {
 		version: 2,
-		lock_time: LockTime::ZERO,
+		lock_time: absolute::LockTime::ZERO,
 		input: vec![TxIn { ..Default::default() }],
 		output: vec![TxOut {
 			value: Amount::ONE_BTC.to_sat(),
@@ -2076,7 +2076,7 @@ fn do_test_monitor_rebroadcast_pending_claims(anchors: bool) {
 
 	let coinbase_tx = Transaction {
 		version: 2,
-		lock_time: LockTime::ZERO,
+		lock_time: absolute::LockTime::ZERO,
 		input: vec![TxIn { ..Default::default() }],
 		output: vec![TxOut { // UTXO to attach fees to `htlc_tx` on anchors
 			value: Amount::ONE_BTC.to_sat(),
@@ -2106,7 +2106,7 @@ fn do_test_monitor_rebroadcast_pending_claims(anchors: bool) {
 					check_spends!(&htlc_tx, &commitment_txn[0], &coinbase_tx);
 					let htlc_tx_fee = HTLC_AMT_SAT + coinbase_tx.output[0].value -
 						htlc_tx.output.iter().map(|output| output.value).sum::<u64>();
-					let htlc_tx_weight = htlc_tx.weight() as u64;
+					let htlc_tx_weight = htlc_tx.weight().to_wu();
 					(htlc_tx, compute_feerate_sat_per_1000_weight(htlc_tx_fee, htlc_tx_weight))
 				}
 				_ => panic!("Unexpected event"),
@@ -2121,7 +2121,7 @@ fn do_test_monitor_rebroadcast_pending_claims(anchors: bool) {
 			let htlc_tx = txn.pop().unwrap();
 			check_spends!(htlc_tx, commitment_txn[0]);
 			let htlc_tx_fee = HTLC_AMT_SAT - htlc_tx.output[0].value;
-			let htlc_tx_weight = htlc_tx.weight() as u64;
+			let htlc_tx_weight = htlc_tx.weight().to_wu();
 			(htlc_tx, compute_feerate_sat_per_1000_weight(htlc_tx_fee, htlc_tx_weight))
 		};
 		if should_bump {
@@ -2232,7 +2232,7 @@ fn test_yield_anchors_events() {
 		Event::BumpTransaction(event) => {
 			let coinbase_tx = Transaction {
 				version: 2,
-				lock_time: LockTime::ZERO,
+				lock_time: absolute::LockTime::ZERO,
 				input: vec![TxIn { ..Default::default() }],
 				output: vec![TxOut { // UTXO to attach fees to `anchor_tx`
 					value: Amount::ONE_BTC.to_sat(),
@@ -2425,7 +2425,7 @@ fn test_anchors_aggregated_revoked_htlc_tx() {
 		let utxo_value = Amount::ONE_BTC.to_sat() * (idx + 1) as u64;
 		let coinbase_tx = Transaction {
 			version: 2,
-			lock_time: LockTime::ZERO,
+			lock_time: absolute::LockTime::ZERO,
 			input: vec![TxIn { ..Default::default() }],
 			output: vec![TxOut { // UTXO to attach fees to `anchor_tx`
 				value: utxo_value,
@@ -2494,7 +2494,7 @@ fn test_anchors_aggregated_revoked_htlc_tx() {
 		let fee_utxo_script = ScriptBuf::new_v0_p2wpkh(&public_key.wpubkey_hash().unwrap());
 		let coinbase_tx = Transaction {
 			version: 2,
-			lock_time: LockTime::ZERO,
+			lock_time: absolute::LockTime::ZERO,
 			input: vec![TxIn { ..Default::default() }],
 			output: vec![TxOut { // UTXO to attach fees to `htlc_tx`
 				value: Amount::ONE_BTC.to_sat(),
@@ -2503,7 +2503,7 @@ fn test_anchors_aggregated_revoked_htlc_tx() {
 		};
 		let mut htlc_tx = Transaction {
 			version: 2,
-			lock_time: LockTime::ZERO,
+			lock_time: absolute::LockTime::ZERO,
 			input: vec![TxIn { // Fee input
 				previous_output: bitcoin::OutPoint { txid: coinbase_tx.txid(), vout: 0 },
 				..Default::default()
@@ -2547,7 +2547,7 @@ fn test_anchors_aggregated_revoked_htlc_tx() {
 			sig.push(EcdsaSighashType::All as u8);
 			sig
 		};
-		htlc_tx.input[0].witness = Witness::from_vec(vec![fee_utxo_sig, public_key.to_bytes()]);
+		htlc_tx.input[0].witness = Witness::from_slice(&[fee_utxo_sig, public_key.to_bytes()]);
 		check_spends!(htlc_tx, coinbase_tx, revoked_commitment_a, revoked_commitment_b);
 		htlc_tx
 	};
@@ -2732,7 +2732,7 @@ fn do_test_monitor_claims_with_random_signatures(anchors: bool, confirm_counterp
 
 	let coinbase_tx = Transaction {
 		version: 2,
-		lock_time: LockTime::ZERO,
+		lock_time: absolute::LockTime::ZERO,
 		input: vec![TxIn { ..Default::default() }],
 		output: vec![
 			TxOut {

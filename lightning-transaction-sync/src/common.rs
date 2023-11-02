@@ -1,5 +1,6 @@
 use lightning::chain::WatchedOutput;
-use bitcoin::{Txid, BlockHash, Transaction, BlockHeader, OutPoint};
+use bitcoin::blockdata::block;
+use bitcoin::{Txid, BlockHash, Transaction, OutPoint};
 
 use std::collections::{HashSet, HashMap};
 
@@ -69,7 +70,7 @@ impl FilterQueue {
 
 pub(crate) struct ConfirmedTx {
 	pub tx: Transaction,
-	pub block_header: BlockHeader,
+	pub block_header: block::Header,
 	pub block_height: u32,
 	pub pos: usize,
 }

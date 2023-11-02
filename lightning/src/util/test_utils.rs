@@ -40,7 +40,7 @@ use crate::util::logger::{Logger, Level, Record};
 use crate::util::ser::{Readable, ReadableArgs, Writer, Writeable};
 use crate::util::persist::KVStore;
 
-use bitcoin::EcdsaSighashType;
+use bitcoin::blockdata::locktime::absolute;
 use bitcoin::blockdata::constants::ChainHash;
 use bitcoin::blockdata::constants::genesis_block;
 use bitcoin::blockdata::transaction::{Transaction, TxOut};
@@ -49,7 +49,7 @@ use bitcoin::blockdata::opcodes;
 use bitcoin::blockdata::block::Block;
 use bitcoin::network::constants::Network;
 use bitcoin::hash_types::{BlockHash, Txid};
-use bitcoin::sighash::SighashCache;
+use bitcoin::sighash::{EcdsaSighashType, SighashCache};
 
 use bitcoin::secp256k1::{PublicKey, Scalar, Secp256k1, SecretKey};
 use bitcoin::secp256k1::ecdh::SharedSecret;
@@ -566,9 +566,9 @@ impl TestBroadcaster {
 impl chaininterface::BroadcasterInterface for TestBroadcaster {
 	fn broadcast_transactions(&self, txs: &[&Transaction]) {
 		for tx in txs {
-			let lock_time = tx.lock_time.0;
+			let lock_time = tx.lock_time.to_consensus_u32();
 			assert!(lock_time < 1_500_000_000);
-			if bitcoin::LockTime::from(tx.lock_time).is_block_height() && lock_time > self.blocks.lock().unwrap().last().unwrap().1 {
+			if absolute::LockTime::from(tx.lock_time).is_block_height() && lock_time > self.blocks.lock().unwrap().last().unwrap().1 {
 				for inp in tx.input.iter() {
 					if inp.sequence != Sequence::MAX {
 						panic!("We should never broadcast a transaction before its locktime ({})!", tx.lock_time);
@@ -1022,13 +1022,13 @@ impl NodeSigner for TestNodeSigner {
 
 	fn sign_bolt12_invoice_request(
 		&self, _invoice_request: &UnsignedInvoiceRequest
-	) -> Result<taproot::Signature, ()> {
+	) -> Result<schnorr::Signature, ()> {
 		unreachable!()
 	}
 
 	fn sign_bolt12_invoice(
 		&self, _invoice: &UnsignedBolt12Invoice,
-	) -> Result<taproot::Signature, ()> {
+	) -> Result<schnorr::Signature, ()> {
 		unreachable!()
 	}
 
@@ -1074,13 +1074,13 @@ impl NodeSigner for TestKeysInterface {
 
 	fn sign_bolt12_invoice_request(
 		&self, invoice_request: &UnsignedInvoiceRequest
-	) -> Result<taproot::Signature, ()> {
+	) -> Result<schnorr::Signature, ()> {
 		self.backing.sign_bolt12_invoice_request(invoice_request)
 	}
 
 	fn sign_bolt12_invoice(
 		&self, invoice: &UnsignedBolt12Invoice,
-	) -> Result<taproot::Signature, ()> {
+	) -> Result<schnorr::Signature, ()> {
 		self.backing.sign_bolt12_invoice(invoice)
 	}
 
@@ -1367,10 +1367,10 @@ impl WalletSource for TestWalletSource {
 				let sighash = SighashCache::new(&tx)
 					.legacy_signature_hash(i, &utxo.output.script_pubkey, EcdsaSighashType::All as u32)
 					.map_err(|_| ())?;
-				let sig = self.secp.sign_ecdsa(&sighash.as_hash().into(), &self.secret_key);
-				let bitcoin_sig = bitcoin::EcdsaSig { sig, hash_ty: EcdsaSighashType::All }.to_vec();
+				let sig = self.secp.sign_ecdsa(&sighash.into(), &self.secret_key);
+				let bitcoin_sig = bitcoin::ecdsa::Signature { sig, hash_ty: EcdsaSighashType::All };
 				tx.input[i].script_sig = Builder::new()
-					.push_slice(&bitcoin_sig)
+					.push_slice(&bitcoin_sig.serialize())
 					.push_slice(&self.secret_key.public_key(&self.secp).serialize())
 					.into_script();
 			}

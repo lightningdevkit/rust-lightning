@@ -38,7 +38,7 @@ pub fn pay_invoice<C: Deref>(
 ) -> Result<PaymentId, PaymentError>
 where C::Target: AChannelManager,
 {
-	let payment_id = PaymentId(invoice.payment_hash().into_inner());
+	let payment_id = PaymentId(invoice.payment_hash().to_byte_array());
 	pay_invoice_with_id(invoice, payment_id, retry_strategy, channelmanager.get_cm())
 		.map(|()| payment_id)
 }
@@ -76,7 +76,7 @@ pub fn pay_zero_value_invoice<C: Deref>(
 ) -> Result<PaymentId, PaymentError>
 where C::Target: AChannelManager,
 {
-	let payment_id = PaymentId(invoice.payment_hash().into_inner());
+	let payment_id = PaymentId(invoice.payment_hash().to_byte_array());
 	pay_zero_value_invoice_with_id(invoice, amount_msats, payment_id, retry_strategy,
 		channelmanager)
 		.map(|()| payment_id)
@@ -111,7 +111,7 @@ fn pay_invoice_using_amount<P: Deref>(
 	invoice: &Bolt11Invoice, amount_msats: u64, payment_id: PaymentId, retry_strategy: Retry,
 	payer: P
 ) -> Result<(), PaymentError> where P::Target: Payer {
-	let payment_hash = PaymentHash((*invoice.payment_hash()).into_inner());
+	let payment_hash = PaymentHash((*invoice.payment_hash()).to_byte_array());
 	let mut recipient_onion = RecipientOnionFields::secret_only(*invoice.payment_secret());
 	recipient_onion.payment_metadata = invoice.payment_metadata().map(|v| v.clone());
 	let mut payment_params = PaymentParameters::from_node_id(invoice.recover_payee_pub_key(),

@@ -11,7 +11,8 @@
 use core::cmp;
 use core::convert::{TryFrom, TryInto};
 use core::ops::Deref;
-use bitcoin::hashes::hex::{FromHex, ToHex};
+use core::str::FromStr;
+
 use bitcoin::{BlockHash, Txid};
 
 use crate::{io, log_error};
@@ -194,7 +195,7 @@ impl<ChannelSigner: WriteableEcdsaChannelSigner, K: KVStore> Persist<ChannelSign
 	// just shut down the node since we're not retrying persistence!
 
 	fn persist_new_channel(&self, funding_txo: OutPoint, monitor: &ChannelMonitor<ChannelSigner>, _update_id: MonitorUpdateId) -> chain::ChannelMonitorUpdateStatus {
-		let key = format!("{}_{}", funding_txo.txid.to_hex(), funding_txo.index);
+		let key = format!("{}_{}", funding_txo.txid, funding_txo.index);
 		match self.write(
 			CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
 			CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
@@ -206,7 +207,7 @@ impl<ChannelSigner: WriteableEcdsaChannelSigner, K: KVStore> Persist<ChannelSign
 	}
 
 	fn update_persisted_channel(&self, funding_txo: OutPoint, _update: Option<&ChannelMonitorUpdate>, monitor: &ChannelMonitor<ChannelSigner>, _update_id: MonitorUpdateId) -> chain::ChannelMonitorUpdateStatus {
-		let key = format!("{}_{}", funding_txo.txid.to_hex(), funding_txo.index);
+		let key = format!("{}_{}", funding_txo.txid, funding_txo.index);
 		match self.write(
 			CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
 			CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
@@ -238,7 +239,7 @@ where
 				"Stored key has invalid length"));
 		}
 
-		let txid = Txid::from_hex(stored_key.split_at(64).0).map_err(|_| {
+		let txid = Txid::from_str(stored_key.split_at(64).0).map_err(|_| {
 			io::Error::new(io::ErrorKind::InvalidData, "Invalid tx ID in stored key")
 		})?;
 
@@ -780,7 +781,7 @@ impl MonitorName {
 	fn do_try_into_outpoint(name: &str) -> Result<OutPoint, io::Error> {
 		let mut parts = name.splitn(2, '_');
 		let txid = if let Some(part) = parts.next() {
-			Txid::from_hex(part).map_err(|_| {
+			Txid::from_str(part).map_err(|_| {
 				io::Error::new(io::ErrorKind::InvalidData, "Invalid tx ID in stored key")
 			})?
 		} else {
@@ -813,7 +814,7 @@ impl TryFrom<&MonitorName> for OutPoint {
 
 impl From<OutPoint> for MonitorName {
 	fn from(value: OutPoint) -> Self {
-		MonitorName(format!("{}_{}", value.txid.to_hex(), value.index))
+		MonitorName(format!("{}_{}", value.txid, value.index))
 	}
 }
 
@@ -873,13 +874,13 @@ mod tests {
 	#[test]
 	fn monitor_from_outpoint_works() {
 		let monitor_name1 = MonitorName::from(OutPoint {
-			txid: Txid::from_hex("deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef").unwrap(),
+			txid: Txid::from_str("deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef").unwrap(),
 			index: 1,
 		});
 		assert_eq!(monitor_name1.as_str(), "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef_1");
 
 		let monitor_name2 = MonitorName::from(OutPoint {
-			txid: Txid::from_hex("f33dbeeff33dbeeff33dbeeff33dbeeff33dbeeff33dbeeff33dbeeff33dbeef").unwrap(),
+			txid: Txid::from_str("f33dbeeff33dbeeff33dbeeff33dbeeff33dbeeff33dbeeff33dbeeff33dbeef").unwrap(),
 			index: u16::MAX,
 		});
 		assert_eq!(monitor_name2.as_str(), "f33dbeeff33dbeeff33dbeeff33dbeeff33dbeeff33dbeeff33dbeeff33dbeef_65535");
@@ -1062,7 +1063,7 @@ mod tests {
 			let update_id = update_map.get(&added_monitors[0].0.to_channel_id()).unwrap();
 			let cmu_map = nodes[1].chain_monitor.monitor_updates.lock().unwrap();
 			let cmu = &cmu_map.get(&added_monitors[0].0.to_channel_id()).unwrap()[0];
-			let test_txo = OutPoint { txid: Txid::from_hex("8984484a580b825b9972d7adb15050b3ab624ccd731946b3eeddb92f4e7ef6be").unwrap(), index: 0 };
+			let test_txo = OutPoint { txid: Txid::from_str("8984484a580b825b9972d7adb15050b3ab624ccd731946b3eeddb92f4e7ef6be").unwrap(), index: 0 };
 
 			let ro_persister = MonitorUpdatingPersister {
 				kv_store: &TestStore::new(true),

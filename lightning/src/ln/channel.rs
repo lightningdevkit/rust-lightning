@@ -7,10 +7,13 @@
 // You may not use this file except in accordance with one or both of these
 // licenses.
 
+use internals::hex::display::DisplayHex;
+
 use bitcoin::blockdata::constants::ChainHash;
 use bitcoin::blockdata::script::{ScriptBuf,Builder};
-use bitcoin::blockdata::transaction::{Transaction, EcdsaSighashType};
+use bitcoin::blockdata::transaction::Transaction;
 use bitcoin::sighash;
+use bitcoin::sighash::EcdsaSighashType;
 use bitcoin::consensus::encode;
 
 use bitcoin::hashes::Hash;
@@ -51,7 +54,6 @@ use core::{cmp,mem,fmt};
 use core::ops::Deref;
 #[cfg(any(test, fuzzing, debug_assertions))]
 use crate::sync::Mutex;
-use bitcoin::hashes::hex::ToHex;
 use crate::sign::type_resolver::ChannelSignerType;
 
 #[cfg(test)]
@@ -2307,7 +2309,7 @@ impl<SP: Deref> Channel<SP> where
 		let mut htlc_value_msat = 0;
 		for (idx, htlc) in self.context.pending_inbound_htlcs.iter().enumerate() {
 			if htlc.htlc_id == htlc_id_arg {
-				debug_assert_eq!(htlc.payment_hash, PaymentHash(Sha256::hash(&payment_preimage_arg.0[..]).into_inner()));
+				debug_assert_eq!(htlc.payment_hash, PaymentHash(Sha256::hash(&payment_preimage_arg.0[..]).to_byte_array()));
 				log_debug!(logger, "Claiming inbound HTLC id {} with payment hash {} with preimage {}",
 					htlc.htlc_id, htlc.payment_hash, payment_preimage_arg);
 				match htlc.state {
@@ -2917,7 +2919,7 @@ impl<SP: Deref> Channel<SP> where
 				let outcome = match check_preimage {
 					None => fail_reason.into(),
 					Some(payment_preimage) => {
-						let payment_hash = PaymentHash(Sha256::hash(&payment_preimage.0[..]).into_inner());
+						let payment_hash = PaymentHash(Sha256::hash(&payment_preimage.0[..]).to_byte_array());
 						if payment_hash != htlc.payment_hash {
 							return Err(ChannelError::Close(format!("Remote tried to fulfill HTLC ({}) with an incorrect preimage", htlc_id)));
 						}
@@ -4318,12 +4320,12 @@ impl<SP: Deref> Channel<SP> where
 		assert_eq!(self.context.channel_state & ChannelState::ShutdownComplete as u32, 0);
 
 		if !script::is_bolt2_compliant(&msg.scriptpubkey, their_features) {
-			return Err(ChannelError::Warn(format!("Got a nonstandard scriptpubkey ({}) from remote peer", msg.scriptpubkey.to_bytes().to_hex())));
+			return Err(ChannelError::Warn(format!("Got a nonstandard scriptpubkey ({:x}) from remote peer", msg.scriptpubkey.to_bytes().as_hex())));
 		}
 
 		if self.context.counterparty_shutdown_scriptpubkey.is_some() {
 			if Some(&msg.scriptpubkey) != self.context.counterparty_shutdown_scriptpubkey.as_ref() {
-				return Err(ChannelError::Warn(format!("Got shutdown request with a scriptpubkey ({}) which did not match their previous scriptpubkey.", msg.scriptpubkey.to_bytes().to_hex())));
+				return Err(ChannelError::Warn(format!("Got shutdown request with a scriptpubkey ({:x}) which did not match their previous scriptpubkey.", msg.scriptpubkey.to_bytes().as_hex())));
 			}
 		} else {
 			self.context.counterparty_shutdown_scriptpubkey = Some(msg.scriptpubkey.clone());
@@ -7653,6 +7655,8 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 
 #[cfg(test)]
 mod tests {
+    use core::str::FromStr;
+
 	use std::cmp;
 	use bitcoin::blockdata::constants::ChainHash;
 	use bitcoin::blockdata::script::{ScriptBuf, Builder};
@@ -7685,8 +7689,8 @@ mod tests {
 	use bitcoin::hashes::sha256::Hash as Sha256;
 	use bitcoin::hashes::Hash;
 	use bitcoin::hash_types::WPubkeyHash;
-	use bitcoin::LockTime;
 	use bitcoin::address::WitnessVersion;
+    use bitcoin::locktime::absolute;
 	use crate::prelude::*;
 
 	struct TestFeeEstimator {
@@ -7741,7 +7745,7 @@ mod tests {
 			let secp_ctx = Secp256k1::signing_only();
 			let channel_monitor_claim_key = SecretKey::from_slice(&hex::decode("0fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff").unwrap()[..]).unwrap();
 			let channel_monitor_claim_key_hash = WPubkeyHash::hash(&PublicKey::from_secret_key(&secp_ctx, &channel_monitor_claim_key).serialize());
-			Ok(Builder::new().push_opcode(opcodes::all::OP_PUSHBYTES_0).push_slice(&channel_monitor_claim_key_hash[..]).into_script())
+			Ok(Builder::new().push_opcode(opcodes::all::OP_PUSHBYTES_0).push_slice(&channel_monitor_claim_key_hash).into_script())
 		}
 
 		fn get_shutdown_scriptpubkey(&self) -> Result<ShutdownScript, ()> {
@@ -7838,7 +7842,7 @@ mod tests {
 
 		// Node A --> Node B: funding created
 		let output_script = node_a_chan.context.get_funding_redeemscript();
-		let tx = Transaction { version: 1, lock_time: LockTime::ZERO, input: Vec::new(), output: vec![TxOut {
+		let tx = Transaction { version: 1, lock_time: absolute::LockTime::ZERO, input: Vec::new(), output: vec![TxOut {
 			value: 10000000, script_pubkey: output_script.clone(),
 		}]};
 		let funding_outpoint = OutPoint{ txid: tx.txid(), index: 0 };
@@ -7853,7 +7857,7 @@ mod tests {
 		node_a_chan.context.pending_inbound_htlcs.push(InboundHTLCOutput {
 			htlc_id: 0,
 			amount_msat: htlc_amount_msat,
-			payment_hash: PaymentHash(Sha256::hash(&[42; 32]).into_inner()),
+			payment_hash: PaymentHash(Sha256::hash(&[42; 32]).to_byte_array()),
 			cltv_expiry: 300000000,
 			state: InboundHTLCState::Committed,
 		});
@@ -7861,7 +7865,7 @@ mod tests {
 		node_a_chan.context.pending_outbound_htlcs.push(OutboundHTLCOutput {
 			htlc_id: 1,
 			amount_msat: htlc_amount_msat, // put an amount below A's dust amount but above B's.
-			payment_hash: PaymentHash(Sha256::hash(&[43; 32]).into_inner()),
+			payment_hash: PaymentHash(Sha256::hash(&[43; 32]).to_byte_array()),
 			cltv_expiry: 200000000,
 			state: OutboundHTLCState::Committed,
 			source: HTLCSource::OutboundRoute {
@@ -7965,7 +7969,7 @@ mod tests {
 
 		// Node A --> Node B: funding created
 		let output_script = node_a_chan.context.get_funding_redeemscript();
-		let tx = Transaction { version: 1, lock_time: LockTime::ZERO, input: Vec::new(), output: vec![TxOut {
+		let tx = Transaction { version: 1, lock_time: absolute::LockTime::ZERO, input: Vec::new(), output: vec![TxOut {
 			value: 10000000, script_pubkey: output_script.clone(),
 		}]};
 		let funding_outpoint = OutPoint{ txid: tx.txid(), index: 0 };
@@ -8153,7 +8157,7 @@ mod tests {
 
 		// Node A --> Node B: funding created
 		let output_script = node_a_chan.context.get_funding_redeemscript();
-		let tx = Transaction { version: 1, lock_time: LockTime::ZERO, input: Vec::new(), output: vec![TxOut {
+		let tx = Transaction { version: 1, lock_time: absolute::LockTime::ZERO, input: Vec::new(), output: vec![TxOut {
 			value: 10000000, script_pubkey: output_script.clone(),
 		}]};
 		let funding_outpoint = OutPoint{ txid: tx.txid(), index: 0 };
@@ -8200,9 +8204,8 @@ mod tests {
 	#[test]
 	fn outbound_commitment_test() {
 		use bitcoin::sighash;
+		use bitcoin::sighash::EcdsaSighashType;
 		use bitcoin::consensus::encode::serialize;
-		use bitcoin::blockdata::transaction::EcdsaSighashType;
-		use bitcoin::hashes::hex::FromHex;
 		use bitcoin::hash_types::Txid;
 		use bitcoin::secp256k1::Message;
 		use crate::sign::{ChannelDerivationParameters, HTLCDescriptor, EcdsaChannelSigner};
@@ -8243,7 +8246,7 @@ mod tests {
 		chan.context.holder_dust_limit_satoshis = 546;
 		chan.context.counterparty_selected_channel_reserve_satoshis = Some(0); // Filled in in accept_channel
 
-		let funding_info = OutPoint{ txid: Txid::from_hex("8984484a580b825b9972d7adb15050b3ab624ccd731946b3eeddb92f4e7ef6be").unwrap(), index: 0 };
+		let funding_info = OutPoint{ txid: Txid::from_str("8984484a580b825b9972d7adb15050b3ab624ccd731946b3eeddb92f4e7ef6be").unwrap(), index: 0 };
 
 		let counterparty_pubkeys = ChannelPublicKeys {
 			funding_pubkey: public_from_secret_hex(&secp_ctx, "1552dfba4f6cf29a62a0af13c8d6981d36d0ef8d61ba10fb0fe90da7634d7e13"),
@@ -8356,7 +8359,7 @@ mod tests {
 					let mut preimage: Option<PaymentPreimage> = None;
 					if !htlc.offered {
 						for i in 0..5 {
-							let out = PaymentHash(Sha256::hash(&[i; 32]).into_inner());
+							let out = PaymentHash(Sha256::hash(&[i; 32]).to_byte_array());
 							if out == htlc.payment_hash {
 								preimage = Some(PaymentPreimage([i; 32]));
 							}
@@ -8419,7 +8422,7 @@ mod tests {
 				payment_hash: PaymentHash([0; 32]),
 				state: InboundHTLCState::Committed,
 			};
-			out.payment_hash.0 = Sha256::hash(&hex::decode("0000000000000000000000000000000000000000000000000000000000000000").unwrap()).into_inner();
+			out.payment_hash.0 = Sha256::hash(&hex::decode("0000000000000000000000000000000000000000000000000000000000000000").unwrap()).to_byte_array();
 			out
 		});
 		chan.context.pending_inbound_htlcs.push({
@@ -8430,7 +8433,7 @@ mod tests {
 				payment_hash: PaymentHash([0; 32]),
 				state: InboundHTLCState::Committed,
 			};
-			out.payment_hash.0 = Sha256::hash(&hex::decode("0101010101010101010101010101010101010101010101010101010101010101").unwrap()).into_inner();
+			out.payment_hash.0 = Sha256::hash(&hex::decode("0101010101010101010101010101010101010101010101010101010101010101").unwrap()).to_byte_array();
 			out
 		});
 		chan.context.pending_outbound_htlcs.push({
@@ -8443,7 +8446,7 @@ mod tests {
 				source: HTLCSource::dummy(),
 				skimmed_fee_msat: None,
 			};
-			out.payment_hash.0 = Sha256::hash(&hex::decode("0202020202020202020202020202020202020202020202020202020202020202").unwrap()).into_inner();
+			out.payment_hash.0 = Sha256::hash(&hex::decode("0202020202020202020202020202020202020202020202020202020202020202").unwrap()).to_byte_array();
 			out
 		});
 		chan.context.pending_outbound_htlcs.push({
@@ -8456,7 +8459,7 @@ mod tests {
 				source: HTLCSource::dummy(),
 				skimmed_fee_msat: None,
 			};
-			out.payment_hash.0 = Sha256::hash(&hex::decode("0303030303030303030303030303030303030303030303030303030303030303").unwrap()).into_inner();
+			out.payment_hash.0 = Sha256::hash(&hex::decode("0303030303030303030303030303030303030303030303030303030303030303").unwrap()).to_byte_array();
 			out
 		});
 		chan.context.pending_inbound_htlcs.push({
@@ -8467,7 +8470,7 @@ mod tests {
 				payment_hash: PaymentHash([0; 32]),
 				state: InboundHTLCState::Committed,
 			};
-			out.payment_hash.0 = Sha256::hash(&hex::decode("0404040404040404040404040404040404040404040404040404040404040404").unwrap()).into_inner();
+			out.payment_hash.0 = Sha256::hash(&hex::decode("0404040404040404040404040404040404040404040404040404040404040404").unwrap()).to_byte_array();
 			out
 		});
 
@@ -8853,7 +8856,7 @@ mod tests {
 				payment_hash: PaymentHash([0; 32]),
 				state: InboundHTLCState::Committed,
 			};
-			out.payment_hash.0 = Sha256::hash(&hex::decode("0101010101010101010101010101010101010101010101010101010101010101").unwrap()).into_inner();
+			out.payment_hash.0 = Sha256::hash(&hex::decode("0101010101010101010101010101010101010101010101010101010101010101").unwrap()).to_byte_array();
 			out
 		});
 		chan.context.pending_outbound_htlcs.clear();
@@ -8867,7 +8870,7 @@ mod tests {
 				source: HTLCSource::dummy(),
 				skimmed_fee_msat: None,
 			};
-			out.payment_hash.0 = Sha256::hash(&hex::decode("0505050505050505050505050505050505050505050505050505050505050505").unwrap()).into_inner();
+			out.payment_hash.0 = Sha256::hash(&hex::decode("0505050505050505050505050505050505050505050505050505050505050505").unwrap()).to_byte_array();
 			out
 		});
 		chan.context.pending_outbound_htlcs.push({
@@ -8880,7 +8883,7 @@ mod tests {
 				source: HTLCSource::dummy(),
 				skimmed_fee_msat: None,
 			};
-			out.payment_hash.0 = Sha256::hash(&hex::decode("0505050505050505050505050505050505050505050505050505050505050505").unwrap()).into_inner();
+			out.payment_hash.0 = Sha256::hash(&hex::decode("0505050505050505050505050505050505050505050505050505050505050505").unwrap()).to_byte_array();
 			out
 		});
 
@@ -9212,7 +9215,7 @@ mod tests {
 		let output_script = node_a_chan.context.get_funding_redeemscript();
 		let tx = Transaction {
 			version: 1,
-			lock_time: LockTime::ZERO,
+			lock_time: absolute::LockTime::ZERO,
 			input: Vec::new(),
 			output: vec![
 				TxOut {

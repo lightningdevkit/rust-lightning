@@ -5,7 +5,8 @@ use lightning::chain::transaction::TransactionData;
 use lightning::util::logger::{Logger, Record};
 
 use electrsd::{bitcoind, bitcoind::BitcoinD, ElectrsD};
-use bitcoin::{Amount, Txid, BlockHash, BlockHeader};
+use bitcoin::blockdata::block;
+use bitcoin::{Amount, Txid, BlockHash};
 use bitcoin::blockdata::constants::genesis_block;
 use bitcoin::network::constants::Network;
 use electrsd::bitcoind::bitcoincore_rpc::bitcoincore_rpc_json::AddressType;
@@ -119,7 +120,7 @@ impl TestConfirmable {
 }
 
 impl Confirm for TestConfirmable {
-	fn transactions_confirmed(&self, header: &BlockHeader, txdata: &TransactionData<'_>, height: u32) {
+	fn transactions_confirmed(&self, header: &block::Header, txdata: &TransactionData<'_>, height: u32) {
 		for (_, tx) in txdata {
 			let txid = tx.txid();
 			let block_hash = header.block_hash();
@@ -135,7 +136,7 @@ impl Confirm for TestConfirmable {
 		self.events.lock().unwrap().push(TestConfirmableEvent::Unconfirmed(*txid));
 	}
 
-	fn best_block_updated(&self, header: &BlockHeader, height: u32) {
+	fn best_block_updated(&self, header: &block::Header, height: u32) {
 		let block_hash = header.block_hash();
 		*self.best_block.lock().unwrap() = (block_hash, height);
 		self.events.lock().unwrap().push(TestConfirmableEvent::BestBlockUpdated(block_hash, height));

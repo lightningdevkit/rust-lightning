@@ -31,8 +31,9 @@ use crate::sign::{
 use crate::sync::Mutex;
 use crate::util::logger::Logger;
 
-use bitcoin::{OutPoint, LockTime, PubkeyHash, Sequence, ScriptBuf, Transaction, TxIn, TxOut, Witness, WPubkeyHash};
+use bitcoin::{OutPoint, PubkeyHash, Sequence, ScriptBuf, Transaction, TxIn, TxOut, Witness, WPubkeyHash};
 use bitcoin::blockdata::constants::WITNESS_SCALE_FACTOR;
+use bitcoin::blockdata::locktime::absolute;
 use bitcoin::consensus::Encodable;
 use bitcoin::secp256k1;
 use bitcoin::secp256k1::Secp256k1;
@@ -211,7 +212,7 @@ pub enum BumpTransactionEvent {
 		/// by the same transaction.
 		htlc_descriptors: Vec<HTLCDescriptor>,
 		/// The locktime required for the resulting HTLC transaction.
-		tx_lock_time: LockTime,
+		tx_lock_time: absolute::LockTime,
 	},
 }
 
@@ -587,7 +588,7 @@ where
 		let must_spend = vec![Input {
 			outpoint: anchor_descriptor.outpoint,
 			previous_utxo: anchor_utxo,
-			satisfaction_weight: commitment_tx.weight() as u64 + ANCHOR_INPUT_WITNESS_WEIGHT + EMPTY_SCRIPT_SIG_WEIGHT,
+			satisfaction_weight: commitment_tx.weight().to_wu() + ANCHOR_INPUT_WITNESS_WEIGHT + EMPTY_SCRIPT_SIG_WEIGHT,
 		}];
 		#[cfg(debug_assertions)]
 		let must_spend_amount =	must_spend.iter().map(|input| input.previous_utxo.value).sum::<u64>();
@@ -600,7 +601,7 @@ where
 
 		let mut anchor_tx = Transaction {
 			version: 2,
-			lock_time: LockTime::ZERO, // TODO: Use next best height.
+			lock_time: absolute::LockTime::ZERO, // TODO: Use next best height.
 			input: vec![anchor_descriptor.unsigned_tx_input()],
 			output: vec![],
 		};
@@ -617,7 +618,7 @@ where
 
 		debug_assert_eq!(anchor_tx.output.len(), 1);
 		#[cfg(debug_assertions)]
-		let unsigned_tx_weight = anchor_tx.weight() as u64 - (anchor_tx.input.len() as u64 * EMPTY_SCRIPT_SIG_WEIGHT);
+		let unsigned_tx_weight = anchor_tx.weight().to_wu() - (anchor_tx.input.len() as u64 * EMPTY_SCRIPT_SIG_WEIGHT);
 
 		log_debug!(self.logger, "Signing anchor transaction {}", anchor_txid);
 		anchor_tx = self.utxo_source.sign_tx(anchor_tx)?;
@@ -627,7 +628,7 @@ where
 		anchor_tx.input[0].witness = anchor_descriptor.tx_input_witness(&anchor_sig);
 
 		#[cfg(debug_assertions)] {
-			let signed_tx_weight = anchor_tx.weight() as u64;
+			let signed_tx_weight = anchor_tx.weight().to_wu();
 			let expected_signed_tx_weight = unsigned_tx_weight + total_satisfaction_weight;
 			// Our estimate should be within a 1% error margin of the actual weight and we should
 			// never underestimate.
@@ -635,7 +636,7 @@ where
 				expected_signed_tx_weight - (expected_signed_tx_weight / 100) <= signed_tx_weight);
 
 			let expected_package_fee = fee_for_weight(package_target_feerate_sat_per_1000_weight,
-				signed_tx_weight + commitment_tx.weight() as u64);
+				signed_tx_weight + commitment_tx.weight().to_wu());
 			let package_fee = total_input_amount -
 				anchor_tx.output.iter().map(|output| output.value).sum::<u64>();
 			// Our fee should be within a 5% error margin of the expected fee based on the
@@ -655,7 +656,7 @@ where
 	/// fully-signed, fee-bumped HTLC transaction that is broadcast to the network.
 	fn handle_htlc_resolution(
 		&self, claim_id: ClaimId, target_feerate_sat_per_1000_weight: u32,
-		htlc_descriptors: &[HTLCDescriptor], tx_lock_time: LockTime,
+		htlc_descriptors: &[HTLCDescriptor], tx_lock_time: absolute::LockTime,
 	) -> Result<(), ()> {
 		let mut htlc_tx = Transaction {
 			version: 2,
@@ -703,7 +704,7 @@ where
 		self.process_coin_selection(&mut htlc_tx, coin_selection);
 
 		#[cfg(debug_assertions)]
-		let unsigned_tx_weight = htlc_tx.weight() as u64 - (htlc_tx.input.len() as u64 * EMPTY_SCRIPT_SIG_WEIGHT);
+		let unsigned_tx_weight = htlc_tx.weight().to_wu() - (htlc_tx.input.len() as u64 * EMPTY_SCRIPT_SIG_WEIGHT);
 
 		log_debug!(self.logger, "Signing HTLC transaction {}", htlc_tx.txid());
 		htlc_tx = self.utxo_source.sign_tx(htlc_tx)?;
@@ -718,7 +719,7 @@ where
 		}
 
 		#[cfg(debug_assertions)] {
-			let signed_tx_weight = htlc_tx.weight() as u64;
+			let signed_tx_weight = htlc_tx.weight().to_wu();
 			let expected_signed_tx_weight = unsigned_tx_weight + total_satisfaction_weight;
 			// Our estimate should be within a 1% error margin of the actual weight and we should
 			// never underestimate.

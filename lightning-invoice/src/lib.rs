@@ -44,8 +44,9 @@ use std::time::SystemTime;
 use bitcoin::{Address, Network, PubkeyHash, ScriptHash};
 use bitcoin::bech32;
 use bitcoin::bech32::u5;
-use bitcoin::address::{Payload, WitnessVersion};
+use bitcoin::address::{Payload, WitnessVersion, WitnessProgram};
 use bitcoin::hashes::{Hash, sha256};
+use bitcoin::script::PushBytesBuf;
 use bitcoin::secp256k1;
 use lightning::ln::features::Bolt11InvoiceFeatures;
 use lightning::util::invoice::construct_invoice_preimage;
@@ -1413,7 +1414,9 @@ impl Bolt11Invoice {
 		self.fallbacks().iter().map(|fallback| {
 			let payload = match fallback {
 				Fallback::SegWitProgram { version, program } => {
-					Payload::WitnessProgram { version: *version, program: program.to_vec() }
+                    let program = PushBytesBuf::try_from(program.to_vec).expect("TODO: Handle this error");
+                    let program = WitnessProgram::new(version, program);
+					Payload::WitnessProgram(program)
 				}
 				Fallback::PubKeyHash(pkh) => {
 					Payload::PubkeyHash(*pkh)

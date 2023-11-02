@@ -68,7 +68,7 @@ impl< G: Deref<Target = NetworkGraph<L>>, L: Deref, S: Deref, SP: Sized, Sc: Sco
 	) -> Result<Route, LightningError> {
 		let random_seed_bytes = {
 			let mut locked_random_seed_bytes = self.random_seed_bytes.lock().unwrap();
-			*locked_random_seed_bytes = Sha256::hash(&*locked_random_seed_bytes).into_inner();
+			*locked_random_seed_bytes = Sha256::hash(&*locked_random_seed_bytes).to_byte_array();
 			*locked_random_seed_bytes
 		};
 		find_route(
