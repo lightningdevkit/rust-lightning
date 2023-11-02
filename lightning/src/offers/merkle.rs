@@ -11,7 +11,7 @@
 
 use bitcoin::hashes::{Hash, HashEngine, sha256};
 use bitcoin::secp256k1::{Message, PublicKey, Secp256k1, self};
-use bitcoin::secp256k1::schnorr::Signature;
+use bitcoin::secp256k1::taproot::Signature;
 use core::convert::AsRef;
 use crate::io;
 use crate::util::ser::{BigSize, Readable, Writeable, Writer};
@@ -259,7 +259,7 @@ mod tests {
 
 	use bitcoin::hashes::{Hash, sha256};
 	use bitcoin::secp256k1::{KeyPair, Secp256k1, SecretKey};
-	use bitcoin::secp256k1::schnorr::Signature;
+	use bitcoin::secp256k1::taproot::Signature;
 	use core::convert::Infallible;
 	use crate::offers::offer::{Amount, OfferBuilder};
 	use crate::offers::invoice_request::InvoiceRequest;

@@ -321,13 +321,13 @@ impl NodeSigner for KeyProvider {
 
 	fn sign_bolt12_invoice_request(
 		&self, _invoice_request: &UnsignedInvoiceRequest
-	) -> Result<schnorr::Signature, ()> {
+	) -> Result<taproot::Signature, ()> {
 		unreachable!()
 	}
 
 	fn sign_bolt12_invoice(
 		&self, _invoice: &UnsignedBolt12Invoice,
-	) -> Result<schnorr::Signature, ()> {
+	) -> Result<taproot::Signature, ()> {
 		unreachable!()
 	}
 

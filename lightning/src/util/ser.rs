@@ -591,7 +591,7 @@ impl_array!(12, u8); // for OnionV2
 impl_array!(16, u8); // for IPv6
 impl_array!(32, u8); // for channel id & hmac
 impl_array!(PUBLIC_KEY_SIZE, u8); // for PublicKey
-impl_array!(64, u8); // for ecdsa::Signature and schnorr::Signature
+impl_array!(64, u8); // for ecdsa::Signature and taproot::Signature
 impl_array!(66, u8); // for MuSig2 nonces
 impl_array!(1300, u8); // for OnionPacket.hop_data
 
@@ -1000,16 +1000,16 @@ impl Readable for ecdsa::Signature {
 	}
 }
 
-impl Writeable for schnorr::Signature {
+impl Writeable for taproot::Signature {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
 		self.as_ref().write(w)
 	}
 }
 
-impl Readable for schnorr::Signature {
+impl Readable for taproot::Signature {
 	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
 		let buf: [u8; SCHNORR_SIGNATURE_SIZE] = Readable::read(r)?;
-		match schnorr::Signature::from_slice(&buf) {
+		match taproot::Signature::from_slice(&buf) {
 			Ok(sig) => Ok(sig),
 			Err(_) => return Err(DecodeError::InvalidValue),
 		}

@@ -837,7 +837,7 @@ pub trait NodeSigner {
 	/// [`TaggedHash`]: crate::offers::merkle::TaggedHash
 	fn sign_bolt12_invoice_request(
 		&self, invoice_request: &UnsignedInvoiceRequest
-	) -> Result<schnorr::Signature, ()>;
+	) -> Result<taproot::Signature, ()>;
 
 	/// Signs the [`TaggedHash`] of a BOLT 12 invoice.
 	///
@@ -852,7 +852,7 @@ pub trait NodeSigner {
 	/// [`TaggedHash`]: crate::offers::merkle::TaggedHash
 	fn sign_bolt12_invoice(
 		&self, invoice: &UnsignedBolt12Invoice
-	) -> Result<schnorr::Signature, ()>;
+	) -> Result<taproot::Signature, ()>;
 
 	/// Sign a gossip message.
 	///
@@ -1742,7 +1742,7 @@ impl NodeSigner for KeysManager {
 
 	fn sign_bolt12_invoice_request(
 		&self, invoice_request: &UnsignedInvoiceRequest
-	) -> Result<schnorr::Signature, ()> {
+	) -> Result<taproot::Signature, ()> {
 		let message = invoice_request.tagged_hash().as_digest();
 		let keys = KeyPair::from_secret_key(&self.secp_ctx, &self.node_secret);
 		let aux_rand = self.get_secure_random_bytes();
@@ -1751,7 +1751,7 @@ impl NodeSigner for KeysManager {
 
 	fn sign_bolt12_invoice(
 		&self, invoice: &UnsignedBolt12Invoice
-	) -> Result<schnorr::Signature, ()> {
+	) -> Result<taproot::Signature, ()> {
 		let message = invoice.tagged_hash().as_digest();
 		let keys = KeyPair::from_secret_key(&self.secp_ctx, &self.node_secret);
 		let aux_rand = self.get_secure_random_bytes();
@@ -1868,13 +1868,13 @@ impl NodeSigner for PhantomKeysManager {
 
 	fn sign_bolt12_invoice_request(
 		&self, invoice_request: &UnsignedInvoiceRequest
-	) -> Result<schnorr::Signature, ()> {
+	) -> Result<taproot::Signature, ()> {
 		self.inner.sign_bolt12_invoice_request(invoice_request)
 	}
 
 	fn sign_bolt12_invoice(
 		&self, invoice: &UnsignedBolt12Invoice
-	) -> Result<schnorr::Signature, ()> {
+	) -> Result<taproot::Signature, ()> {
 		self.inner.sign_bolt12_invoice(invoice)
 	}
 

@@ -1022,13 +1022,13 @@ impl NodeSigner for TestNodeSigner {
 
 	fn sign_bolt12_invoice_request(
 		&self, _invoice_request: &UnsignedInvoiceRequest
-	) -> Result<schnorr::Signature, ()> {
+	) -> Result<taproot::Signature, ()> {
 		unreachable!()
 	}
 
 	fn sign_bolt12_invoice(
 		&self, _invoice: &UnsignedBolt12Invoice,
-	) -> Result<schnorr::Signature, ()> {
+	) -> Result<taproot::Signature, ()> {
 		unreachable!()
 	}
 
@@ -1074,13 +1074,13 @@ impl NodeSigner for TestKeysInterface {
 
 	fn sign_bolt12_invoice_request(
 		&self, invoice_request: &UnsignedInvoiceRequest
-	) -> Result<schnorr::Signature, ()> {
+	) -> Result<taproot::Signature, ()> {
 		self.backing.sign_bolt12_invoice_request(invoice_request)
 	}
 
 	fn sign_bolt12_invoice(
 		&self, invoice: &UnsignedBolt12Invoice,
-	) -> Result<schnorr::Signature, ()> {
+	) -> Result<taproot::Signature, ()> {
 		self.backing.sign_bolt12_invoice(invoice)
 	}
 
