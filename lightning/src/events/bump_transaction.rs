@@ -31,7 +31,7 @@ use crate::sign::{
 use crate::sync::Mutex;
 use crate::util::logger::Logger;
 
-use bitcoin::{OutPoint, PackedLockTime, PubkeyHash, Sequence, ScriptBuf, Transaction, TxIn, TxOut, Witness, WPubkeyHash};
+use bitcoin::{OutPoint, LockTime, PubkeyHash, Sequence, ScriptBuf, Transaction, TxIn, TxOut, Witness, WPubkeyHash};
 use bitcoin::blockdata::constants::WITNESS_SCALE_FACTOR;
 use bitcoin::consensus::Encodable;
 use bitcoin::secp256k1;
@@ -211,7 +211,7 @@ pub enum BumpTransactionEvent {
 		/// by the same transaction.
 		htlc_descriptors: Vec<HTLCDescriptor>,
 		/// The locktime required for the resulting HTLC transaction.
-		tx_lock_time: PackedLockTime,
+		tx_lock_time: LockTime,
 	},
 }
 
@@ -600,7 +600,7 @@ where
 
 		let mut anchor_tx = Transaction {
 			version: 2,
-			lock_time: PackedLockTime::ZERO, // TODO: Use next best height.
+			lock_time: LockTime::ZERO, // TODO: Use next best height.
 			input: vec![anchor_descriptor.unsigned_tx_input()],
 			output: vec![],
 		};
@@ -655,7 +655,7 @@ where
 	/// fully-signed, fee-bumped HTLC transaction that is broadcast to the network.
 	fn handle_htlc_resolution(
 		&self, claim_id: ClaimId, target_feerate_sat_per_1000_weight: u32,
-		htlc_descriptors: &[HTLCDescriptor], tx_lock_time: PackedLockTime,
+		htlc_descriptors: &[HTLCDescriptor], tx_lock_time: LockTime,
 	) -> Result<(), ()> {
 		let mut htlc_tx = Transaction {
 			version: 2,

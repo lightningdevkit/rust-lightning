@@ -22,7 +22,7 @@ use bitcoin::blockdata::constants::genesis_block;
 use bitcoin::blockdata::transaction::{Transaction, TxOut};
 use bitcoin::blockdata::script::{Builder, ScriptBuf};
 use bitcoin::blockdata::opcodes;
-use bitcoin::blockdata::locktime::PackedLockTime;
+use bitcoin::blockdata::locktime::absolute::LockTime;
 use bitcoin::network::constants::Network;
 
 use bitcoin::hashes::Hash as TraitImport;
@@ -565,7 +565,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 				let events = $source.get_and_clear_pending_events();
 				assert_eq!(events.len(), 1);
 				if let events::Event::FundingGenerationReady { ref temporary_channel_id, ref channel_value_satoshis, ref output_script, .. } = events[0] {
-					let tx = Transaction { version: $chan_id, lock_time: PackedLockTime::ZERO, input: Vec::new(), output: vec![TxOut {
+					let tx = Transaction { version: $chan_id, lock_time: LockTime::ZERO, input: Vec::new(), output: vec![TxOut {
 						value: *channel_value_satoshis, script_pubkey: output_script.clone(),
 					}]};
 					funding_output = OutPoint { txid: tx.txid(), index: 0 };

@@ -46,7 +46,7 @@ use alloc::rc::Rc;
 use crate::sync::{Arc, Mutex, LockTestExt, RwLock};
 use core::mem;
 use core::iter::repeat;
-use bitcoin::{PackedLockTime, TxIn, TxMerkleNode};
+use bitcoin::{LockTime, TxIn, TxMerkleNode};
 
 pub const CHAN_CONFIRM_DEPTH: u32 = 10;
 
@@ -82,7 +82,7 @@ pub fn mine_transaction_without_consistency_checks<'a, 'b, 'c, 'd>(node: &'a Nod
 		txdata: Vec::new(),
 	};
 	for _ in 0..*node.network_chan_count.borrow() { // Make sure we don't end up with channels at the same short id by offsetting by chan_count
-		block.txdata.push(Transaction { version: 0, lock_time: PackedLockTime::ZERO, input: Vec::new(), output: Vec::new() });
+		block.txdata.push(Transaction { version: 0, lock_time: LockTime::ZERO, input: Vec::new(), output: Vec::new() });
 	}
 	block.txdata.push((*tx).clone());
 	do_connect_block_without_consistency_checks(node, block, false);
@@ -100,7 +100,7 @@ pub fn confirm_transactions_at<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, txn: 
 	}
 	let mut txdata = Vec::new();
 	for _ in 0..*node.network_chan_count.borrow() { // Make sure we don't end up with channels at the same short id by offsetting by chan_count
-		txdata.push(Transaction { version: 0, lock_time: PackedLockTime::ZERO, input: Vec::new(), output: Vec::new() });
+		txdata.push(Transaction { version: 0, lock_time: LockTime::ZERO, input: Vec::new(), output: Vec::new() });
 	}
 	for tx in txn {
 		txdata.push((*tx).clone());
@@ -1047,7 +1047,7 @@ fn internal_create_funding_transaction<'a, 'b, 'c>(node: &Node<'a, 'b, 'c>,
 				Vec::new()
 			};
 
-			let tx = Transaction { version: chan_id as i32, lock_time: PackedLockTime::ZERO, input, output: vec![TxOut {
+			let tx = Transaction { version: chan_id as i32, lock_time: LockTime::ZERO, input, output: vec![TxOut {
 				value: *channel_value_satoshis, script_pubkey: output_script.clone(),
 			}]};
 			let funding_outpoint = OutPoint { txid: tx.txid(), index: 0 };
@@ -3354,7 +3354,7 @@ pub fn create_batch_channel_funding<'a, 'b, 'c>(
 	// Compose the batch funding transaction and give it to the ChannelManager.
 	let tx = Transaction {
 		version: 2,
-		lock_time: PackedLockTime::ZERO,
+		lock_time: LockTime::ZERO,
 		input: Vec::new(),
 		output: tx_outs,
 	};

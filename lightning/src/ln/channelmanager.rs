@@ -12064,7 +12064,7 @@ pub mod bench {
 
 	use bitcoin::hashes::Hash;
 	use bitcoin::hashes::sha256::Hash as Sha256;
-	use bitcoin::{Block, BlockHeader, PackedLockTime, Transaction, TxMerkleNode, TxOut};
+	use bitcoin::{Block, BlockHeader, LockTime, Transaction, TxMerkleNode, TxOut};
 
 	use crate::sync::{Arc, Mutex, RwLock};
 
@@ -12141,7 +12141,7 @@ pub mod bench {
 
 		let tx;
 		if let Event::FundingGenerationReady { temporary_channel_id, output_script, .. } = get_event!(node_a_holder, Event::FundingGenerationReady) {
-			tx = Transaction { version: 2, lock_time: PackedLockTime::ZERO, input: Vec::new(), output: vec![TxOut {
+			tx = Transaction { version: 2, lock_time: LockTime::ZERO, input: Vec::new(), output: vec![TxOut {
 				value: 8_000_000, script_pubkey: output_script,
 			}]};
 			node_a.funding_transaction_generated(&temporary_channel_id, &node_b.get_our_node_id(), tx.clone()).unwrap();

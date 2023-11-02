@@ -31,7 +31,7 @@ use crate::util::transaction_utils;
 
 use bitcoin::secp256k1::{SecretKey, PublicKey, Scalar};
 use bitcoin::secp256k1::{Secp256k1, ecdsa::Signature, Message};
-use bitcoin::{PackedLockTime, secp256k1, Sequence, Witness};
+use bitcoin::{LockTime, secp256k1, Sequence, Witness};
 use bitcoin::PublicKey as BitcoinPublicKey;
 
 use crate::io;
@@ -218,7 +218,7 @@ pub fn build_closing_transaction(to_holder_value_sat: u64, to_counterparty_value
 
 	Transaction {
 		version: 2,
-		lock_time: PackedLockTime::ZERO,
+		lock_time: LockTime::ZERO,
 		input: txins,
 		output: outputs,
 	}
@@ -716,7 +716,7 @@ pub fn build_htlc_transaction(commitment_txid: &Txid, feerate_per_kw: u32, conte
 
 	Transaction {
 		version: 2,
-		lock_time: PackedLockTime(if htlc.offered { htlc.cltv_expiry } else { 0 }),
+		lock_time: LockTime(if htlc.offered { htlc.cltv_expiry } else { 0 }),
 		input: txins,
 		output: txouts,
 	}
@@ -1461,7 +1461,7 @@ impl CommitmentTransaction {
 	fn make_transaction(obscured_commitment_transaction_number: u64, txins: Vec<TxIn>, outputs: Vec<TxOut>) -> Transaction {
 		Transaction {
 			version: 2,
-			lock_time: PackedLockTime(((0x20 as u32) << 8 * 3) | ((obscured_commitment_transaction_number & 0xffffffu64) as u32)),
+			lock_time: LockTime(((0x20 as u32) << 8 * 3) | ((obscured_commitment_transaction_number & 0xffffffu64) as u32)),
 			input: txins,
 			output: outputs,
 		}
@@ -1813,7 +1813,7 @@ impl<'a> TrustedCommitmentTransaction<'a> {
 		}];
 		let mut justice_tx = Transaction {
 			version: 2,
-			lock_time: PackedLockTime::ZERO,
+			lock_time: LockTime::ZERO,
 			input,
 			output,
 		};

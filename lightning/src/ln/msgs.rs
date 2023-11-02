@@ -2716,7 +2716,7 @@ impl_writeable_msg!(GossipTimestampFilter, {
 #[cfg(test)]
 mod tests {
 	use std::convert::TryFrom;
-	use bitcoin::{Transaction, PackedLockTime, TxIn, ScriptBuf, Sequence, Witness, TxOut};
+	use bitcoin::{Transaction, LockTime, TxIn, ScriptBuf, Sequence, Witness, TxOut};
 	use hex;
 	use crate::ln::{PaymentPreimage, PaymentHash, PaymentSecret};
 	use crate::ln::ChannelId;
@@ -3372,7 +3372,7 @@ mod tests {
 			serial_id: 4886718345,
 			prevtx: TransactionU16LenLimited::new(Transaction {
 				version: 2,
-				lock_time: PackedLockTime(0),
+				lock_time: LockTime(0),
 				input: vec![TxIn {
 					previous_output: OutPoint { txid: Txid::from_hex("305bab643ee297b8b6b76b320792c8223d55082122cb606bf89382146ced9c77").unwrap(), index: 2 }.into_bitcoin_outpoint(),
 					script_sig: ScriptBuf::new(),

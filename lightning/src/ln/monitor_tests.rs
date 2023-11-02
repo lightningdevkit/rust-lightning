@@ -28,7 +28,7 @@ use bitcoin::blockdata::transaction::EcdsaSighashType;
 use bitcoin::blockdata::script::Builder;
 use bitcoin::blockdata::opcodes;
 use bitcoin::secp256k1::{Secp256k1, SecretKey};
-use bitcoin::{Amount, PublicKey, ScriptBuf, Transaction, TxIn, TxOut, PackedLockTime, Witness};
+use bitcoin::{Amount, PublicKey, ScriptBuf, Transaction, TxIn, TxOut, LockTime, Witness};
 use bitcoin::sighash::SighashCache;
 
 use crate::prelude::*;
@@ -305,7 +305,7 @@ fn do_test_claim_value_force_close(anchors: bool, prev_commitment_tx: bool) {
 
 	let coinbase_tx = Transaction {
 		version: 2,
-		lock_time: PackedLockTime::ZERO,
+		lock_time: LockTime::ZERO,
 		input: vec![TxIn { ..Default::default() }],
 		output: vec![
 			TxOut {
@@ -666,7 +666,7 @@ fn do_test_balances_on_local_commitment_htlcs(anchors: bool) {
 
 	let coinbase_tx = Transaction {
 		version: 2,
-		lock_time: PackedLockTime::ZERO,
+		lock_time: LockTime::ZERO,
 		input: vec![TxIn { ..Default::default() }],
 		output: vec![
 			TxOut {
@@ -1380,7 +1380,7 @@ fn do_test_revoked_counterparty_htlc_tx_balances(anchors: bool) {
 
 	let coinbase_tx = Transaction {
 		version: 2,
-		lock_time: PackedLockTime::ZERO,
+		lock_time: LockTime::ZERO,
 		input: vec![TxIn { ..Default::default() }],
 		output: vec![
 			TxOut {
@@ -1692,7 +1692,7 @@ fn do_test_revoked_counterparty_aggregated_claims(anchors: bool) {
 
 	let coinbase_tx = Transaction {
 		version: 2,
-		lock_time: PackedLockTime::ZERO,
+		lock_time: LockTime::ZERO,
 		input: vec![TxIn { ..Default::default() }],
 		output: vec![TxOut {
 			value: Amount::ONE_BTC.to_sat(),
@@ -2076,7 +2076,7 @@ fn do_test_monitor_rebroadcast_pending_claims(anchors: bool) {
 
 	let coinbase_tx = Transaction {
 		version: 2,
-		lock_time: PackedLockTime::ZERO,
+		lock_time: LockTime::ZERO,
 		input: vec![TxIn { ..Default::default() }],
 		output: vec![TxOut { // UTXO to attach fees to `htlc_tx` on anchors
 			value: Amount::ONE_BTC.to_sat(),
@@ -2232,7 +2232,7 @@ fn test_yield_anchors_events() {
 		Event::BumpTransaction(event) => {
 			let coinbase_tx = Transaction {
 				version: 2,
-				lock_time: PackedLockTime::ZERO,
+				lock_time: LockTime::ZERO,
 				input: vec![TxIn { ..Default::default() }],
 				output: vec![TxOut { // UTXO to attach fees to `anchor_tx`
 					value: Amount::ONE_BTC.to_sat(),
@@ -2425,7 +2425,7 @@ fn test_anchors_aggregated_revoked_htlc_tx() {
 		let utxo_value = Amount::ONE_BTC.to_sat() * (idx + 1) as u64;
 		let coinbase_tx = Transaction {
 			version: 2,
-			lock_time: PackedLockTime::ZERO,
+			lock_time: LockTime::ZERO,
 			input: vec![TxIn { ..Default::default() }],
 			output: vec![TxOut { // UTXO to attach fees to `anchor_tx`
 				value: utxo_value,
@@ -2494,7 +2494,7 @@ fn test_anchors_aggregated_revoked_htlc_tx() {
 		let fee_utxo_script = ScriptBuf::new_v0_p2wpkh(&public_key.wpubkey_hash().unwrap());
 		let coinbase_tx = Transaction {
 			version: 2,
-			lock_time: PackedLockTime::ZERO,
+			lock_time: LockTime::ZERO,
 			input: vec![TxIn { ..Default::default() }],
 			output: vec![TxOut { // UTXO to attach fees to `htlc_tx`
 				value: Amount::ONE_BTC.to_sat(),
@@ -2503,7 +2503,7 @@ fn test_anchors_aggregated_revoked_htlc_tx() {
 		};
 		let mut htlc_tx = Transaction {
 			version: 2,
-			lock_time: PackedLockTime::ZERO,
+			lock_time: LockTime::ZERO,
 			input: vec![TxIn { // Fee input
 				previous_output: bitcoin::OutPoint { txid: coinbase_tx.txid(), vout: 0 },
 				..Default::default()
@@ -2732,7 +2732,7 @@ fn do_test_monitor_claims_with_random_signatures(anchors: bool, confirm_counterp
 
 	let coinbase_tx = Transaction {
 		version: 2,
-		lock_time: PackedLockTime::ZERO,
+		lock_time: LockTime::ZERO,
 		input: vec![TxIn { ..Default::default() }],
 		output: vec![
 			TxOut {

@@ -76,7 +76,7 @@ mod tests {
 	use bitcoin::hash_types::{PubkeyHash, Txid};
 
 	use bitcoin::hashes::Hash;
-	use bitcoin::{PackedLockTime, Sequence, Witness};
+	use bitcoin::{LockTime, Sequence, Witness};
 
 	use hex::decode;
 
@@ -214,7 +214,7 @@ mod tests {
 	#[test]
 	fn test_tx_value_overrun() {
 		// If we have a bogus input amount or outputs valued more than inputs, we should fail
-		let mut tx = Transaction { version: 2, lock_time: PackedLockTime::ZERO, input: Vec::new(), output: vec![TxOut {
+		let mut tx = Transaction { version: 2, lock_time: LockTime::ZERO, input: Vec::new(), output: vec![TxOut {
 			script_pubkey: ScriptBuf::new(), value: 1000
 		}] };
 		assert!(maybe_add_change_output(&mut tx, 21_000_000_0000_0001, 0, 253, ScriptBuf::new()).is_err());
@@ -225,7 +225,7 @@ mod tests {
 	#[test]
 	fn test_tx_change_edge() {
 		// Check that we never add dust outputs
-		let mut tx = Transaction { version: 2, lock_time: PackedLockTime::ZERO, input: Vec::new(), output: Vec::new() };
+		let mut tx = Transaction { version: 2, lock_time: LockTime::ZERO, input: Vec::new(), output: Vec::new() };
 		let orig_wtxid = tx.wtxid();
 		let output_spk = ScriptBuf::new_p2pkh(&PubkeyHash::hash(&[0; 0]));
 		assert_eq!(output_spk.dust_value().to_sat(), 546);
@@ -259,7 +259,7 @@ mod tests {
 	#[test]
 	fn test_tx_extra_outputs() {
 		// Check that we correctly handle existing outputs
-		let mut tx = Transaction { version: 2, lock_time: PackedLockTime::ZERO, input: vec![TxIn {
+		let mut tx = Transaction { version: 2, lock_time: LockTime::ZERO, input: vec![TxIn {
 			previous_output: OutPoint::new(Txid::all_zeros(), 0), script_sig: ScriptBuf::new(), witness: Witness::new(), sequence: Sequence::ZERO,
 		}], output: vec![TxOut {
 			script_pubkey: Builder::new().push_int(1).into_script(), value: 1000

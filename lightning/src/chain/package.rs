@@ -36,7 +36,7 @@ use core::cmp;
 use core::convert::TryInto;
 use core::mem;
 use core::ops::Deref;
-use bitcoin::{PackedLockTime, Sequence, Witness};
+use bitcoin::{LockTime, Sequence, Witness};
 use crate::ln::features::ChannelTypeFeatures;
 
 use super::chaininterface::LowerBoundedFeeEstimator;
@@ -914,7 +914,7 @@ impl PackageTemplate {
 		debug_assert!(self.is_malleable());
 		let mut bumped_tx = Transaction {
 			version: 2,
-			lock_time: PackedLockTime(self.package_locktime(current_height)),
+			lock_time: LockTime(self.package_locktime(current_height)),
 			input: vec![],
 			output: vec![TxOut {
 				script_pubkey: destination_script,

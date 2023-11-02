@@ -30,7 +30,7 @@ use crate::util::ser::{BigSize, FixedLengthReader, Writeable, Writer, MaybeReada
 use crate::util::string::UntrustedString;
 use crate::routing::router::{BlindedTail, Path, RouteHop, RouteParameters};
 
-use bitcoin::{PackedLockTime, Transaction, OutPoint};
+use bitcoin::{LockTime, Transaction, OutPoint};
 use bitcoin::blockdata::script::ScriptBuf;
 use bitcoin::hashes::Hash;
 use bitcoin::hashes::sha256::Hash as Sha256;
@@ -1389,7 +1389,7 @@ impl MaybeReadable for Event {
 			11u8 => {
 				let f = || {
 					let mut channel_id = ChannelId::new_zero();
-					let mut transaction = Transaction{ version: 2, lock_time: PackedLockTime::ZERO, input: Vec::new(), output: Vec::new() };
+					let mut transaction = Transaction{ version: 2, lock_time: LockTime::ZERO, input: Vec::new(), output: Vec::new() };
 					read_tlv_fields!(reader, {
 						(0, channel_id, required),
 						(2, transaction, required),

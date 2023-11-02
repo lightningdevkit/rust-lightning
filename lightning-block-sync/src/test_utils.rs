@@ -6,7 +6,7 @@ use bitcoin::blockdata::constants::genesis_block;
 use bitcoin::hash_types::BlockHash;
 use bitcoin::network::constants::Network;
 use bitcoin::uint::Uint256;
-use bitcoin::{merkle_root, PackedLockTime, Transaction};
+use bitcoin::{merkle_root, LockTime, Transaction};
 
 use lightning::chain;
 
@@ -45,7 +45,7 @@ impl Blockchain {
 			// but that's OK because those tests don't trigger the check.
 			let coinbase = Transaction {
 				version: 0,
-				lock_time: PackedLockTime::ZERO,
+				lock_time: LockTime::ZERO,
 				input: vec![],
 				output: vec![]
 			};

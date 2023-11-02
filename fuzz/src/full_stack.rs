@@ -17,7 +17,7 @@ use bitcoin::blockdata::constants::genesis_block;
 use bitcoin::blockdata::transaction::{Transaction, TxOut};
 use bitcoin::blockdata::script::{Builder, ScriptBuf};
 use bitcoin::blockdata::opcodes;
-use bitcoin::blockdata::locktime::PackedLockTime;
+use bitcoin::blockdata::locktime::absolute::LockTime;
 use bitcoin::consensus::encode::deserialize;
 use bitcoin::network::constants::Network;
 
@@ -617,7 +617,7 @@ pub fn do_test(data: &[u8], logger: &Arc<dyn Logger>) {
 			},
 			10 => {
 				'outer_loop: for funding_generation in pending_funding_generation.drain(..) {
-					let mut tx = Transaction { version: 0, lock_time: PackedLockTime::ZERO, input: Vec::new(), output: vec![TxOut {
+					let mut tx = Transaction { version: 0, lock_time: LockTime::ZERO, input: Vec::new(), output: vec![TxOut {
 							value: funding_generation.2, script_pubkey: funding_generation.3,
 						}] };
 					let funding_output = 'search_loop: loop {

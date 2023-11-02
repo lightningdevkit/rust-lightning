@@ -42,7 +42,7 @@ use bitcoin::blockdata::script::{Builder, ScriptBuf};
 use bitcoin::blockdata::opcodes;
 use bitcoin::blockdata::constants::ChainHash;
 use bitcoin::network::constants::Network;
-use bitcoin::{PackedLockTime, Sequence, Transaction, TxIn, TxOut, Witness};
+use bitcoin::{LockTime, Sequence, Transaction, TxIn, TxOut, Witness};
 use bitcoin::OutPoint as BitcoinOutPoint;
 
 use bitcoin::secp256k1::Secp256k1;
@@ -9223,7 +9223,7 @@ fn test_invalid_funding_tx() {
 	// long the ChannelMonitor will try to read 32 bytes from the second-to-last element, panicing
 	// as its not 32 bytes long.
 	let mut spend_tx = Transaction {
-		version: 2i32, lock_time: PackedLockTime::ZERO,
+		version: 2i32, lock_time: LockTime::ZERO,
 		input: tx.output.iter().enumerate().map(|(idx, _)| TxIn {
 			previous_output: BitcoinOutPoint {
 				txid: tx.txid(),
@@ -9888,7 +9888,7 @@ fn test_non_final_funding_tx() {
 	let mut tx = match events[0] {
 		Event::FundingGenerationReady { ref channel_value_satoshis, ref output_script, .. } => {
 			// Timelock the transaction _beyond_ the best client height + 1.
-			Transaction { version: chan_id as i32, lock_time: PackedLockTime(best_height + 2), input: vec![input], output: vec![TxOut {
+			Transaction { version: chan_id as i32, lock_time: LockTime(best_height + 2), input: vec![input], output: vec![TxOut {
 				value: *channel_value_satoshis, script_pubkey: output_script.clone(),
 			}]}
 		},
@@ -9933,7 +9933,7 @@ fn test_non_final_funding_tx_within_headroom() {
 	let mut tx = match events[0] {
 		Event::FundingGenerationReady { ref channel_value_satoshis, ref output_script, .. } => {
 			// Timelock the transaction within a +1 headroom from the best block.
-			Transaction { version: chan_id as i32, lock_time: PackedLockTime(best_height + 1), input: vec![input], output: vec![TxOut {
+			Transaction { version: chan_id as i32, lock_time: LockTime(best_height + 1), input: vec![input], output: vec![TxOut {
 				value: *channel_value_satoshis, script_pubkey: output_script.clone(),
 			}]}
 		},

@@ -4513,7 +4513,7 @@ mod tests {
 	use crate::util::ser::{ReadableArgs, Writeable};
 	use crate::sync::{Arc, Mutex};
 	use crate::io;
-	use bitcoin::{PackedLockTime, Sequence, Witness};
+	use bitcoin::{LockTime, Sequence, Witness};
 	use crate::ln::features::ChannelTypeFeatures;
 	use crate::prelude::*;
 
@@ -4802,7 +4802,7 @@ mod tests {
 
 		// Justice tx with 1 to_holder, 2 revoked offered HTLCs, 1 revoked received HTLCs
 		for channel_type_features in [ChannelTypeFeatures::only_static_remote_key(), ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies()].iter() {
-			let mut claim_tx = Transaction { version: 0, lock_time: PackedLockTime::ZERO, input: Vec::new(), output: Vec::new() };
+			let mut claim_tx = Transaction { version: 0, lock_time: LockTime::ZERO, input: Vec::new(), output: Vec::new() };
 			let mut sum_actual_sigs = 0;
 			for i in 0..4 {
 				claim_tx.input.push(TxIn {
@@ -4834,7 +4834,7 @@ mod tests {
 
 		// Claim tx with 1 offered HTLCs, 3 received HTLCs
 		for channel_type_features in [ChannelTypeFeatures::only_static_remote_key(), ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies()].iter() {
-			let mut claim_tx = Transaction { version: 0, lock_time: PackedLockTime::ZERO, input: Vec::new(), output: Vec::new() };
+			let mut claim_tx = Transaction { version: 0, lock_time: LockTime::ZERO, input: Vec::new(), output: Vec::new() };
 			let mut sum_actual_sigs = 0;
 			for i in 0..4 {
 				claim_tx.input.push(TxIn {
@@ -4866,7 +4866,7 @@ mod tests {
 
 		// Justice tx with 1 revoked HTLC-Success tx output
 		for channel_type_features in [ChannelTypeFeatures::only_static_remote_key(), ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies()].iter() {
-			let mut claim_tx = Transaction { version: 0, lock_time: PackedLockTime::ZERO, input: Vec::new(), output: Vec::new() };
+			let mut claim_tx = Transaction { version: 0, lock_time: LockTime::ZERO, input: Vec::new(), output: Vec::new() };
 			let mut sum_actual_sigs = 0;
 			claim_tx.input.push(TxIn {
 				previous_output: BitcoinOutPoint {
