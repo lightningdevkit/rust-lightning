@@ -2728,7 +2728,7 @@ mod tests {
 	use crate::util::test_utils;
 
 	use bitcoin::hashes::hex::FromHex;
-	use bitcoin::util::address::Address;
+	use bitcoin::address::Address;
 	use bitcoin::network::constants::Network;
 	use bitcoin::blockdata::constants::ChainHash;
 	use bitcoin::blockdata::script::Builder;

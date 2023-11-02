@@ -5,7 +5,7 @@ use bitcoin::blockdata::script::{Builder, Script};
 use bitcoin::hashes::Hash;
 use bitcoin::hash_types::{WPubkeyHash, WScriptHash};
 use bitcoin::secp256k1::PublicKey;
-use bitcoin::util::address::WitnessVersion;
+use bitcoin::address::WitnessVersion;
 
 use crate::ln::channelmanager;
 use crate::ln::features::InitFeatures;
@@ -181,12 +181,12 @@ mod shutdown_script_tests {
 	use bitcoin::secp256k1::{PublicKey, SecretKey};
 	use crate::ln::features::InitFeatures;
 	use core::convert::TryFrom;
-	use bitcoin::util::address::WitnessVersion;
+	use bitcoin::address::WitnessVersion;
 
-	fn pubkey() -> bitcoin::util::key::PublicKey {
+	fn pubkey() -> bitcoin::key::PublicKey {
 		let secp_ctx = Secp256k1::signing_only();
 		let secret_key = SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]).unwrap();
-		bitcoin::util::key::PublicKey::new(PublicKey::from_secret_key(&secp_ctx, &secret_key))
+		bitcoin::key::PublicKey::new(PublicKey::from_secret_key(&secp_ctx, &secret_key))
 	}
 
 	fn redeem_script() -> Script {

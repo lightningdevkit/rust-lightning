@@ -49,7 +49,7 @@ use bitcoin::blockdata::opcodes;
 use bitcoin::blockdata::block::Block;
 use bitcoin::network::constants::Network;
 use bitcoin::hash_types::{BlockHash, Txid};
-use bitcoin::util::sighash::SighashCache;
+use bitcoin::sighash::SighashCache;
 
 use bitcoin::secp256k1::{PublicKey, Scalar, Secp256k1, SecretKey};
 use bitcoin::secp256k1::ecdh::SharedSecret;

@@ -29,7 +29,7 @@ use bitcoin::blockdata::script::Builder;
 use bitcoin::blockdata::opcodes;
 use bitcoin::secp256k1::{Secp256k1, SecretKey};
 use bitcoin::{Amount, PublicKey, Script, Transaction, TxIn, TxOut, PackedLockTime, Witness};
-use bitcoin::util::sighash::SighashCache;
+use bitcoin::sighash::SighashCache;
 
 use crate::prelude::*;
 

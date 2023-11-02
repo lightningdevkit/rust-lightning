@@ -13,8 +13,8 @@
 use bitcoin::blockdata::script::{Script,Builder};
 use bitcoin::blockdata::opcodes;
 use bitcoin::blockdata::transaction::{TxIn,TxOut,OutPoint,Transaction, EcdsaSighashType};
-use bitcoin::util::sighash;
-use bitcoin::util::address::Payload;
+use bitcoin::sighash;
+use bitcoin::address::Payload;
 
 use bitcoin::hashes::{Hash, HashEngine};
 use bitcoin::hashes::sha256::Hash as Sha256;
@@ -1868,7 +1868,7 @@ mod tests {
 	use bitcoin::hashes::Hash;
 	use crate::ln::PaymentHash;
 	use bitcoin::hashes::hex::ToHex;
-	use bitcoin::util::address::Payload;
+	use bitcoin::address::Payload;
 	use bitcoin::PublicKey as BitcoinPublicKey;
 	use crate::ln::features::ChannelTypeFeatures;
 

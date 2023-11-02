@@ -2,7 +2,7 @@ extern crate lightning;
 extern crate lightning_invoice;
 extern crate hex;
 
-use bitcoin::util::address::WitnessVersion;
+use bitcoin::address::WitnessVersion;
 use bitcoin::{PubkeyHash, ScriptHash};
 use bitcoin::bech32;
 use bitcoin::hashes::hex::FromHex;

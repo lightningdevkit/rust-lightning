@@ -10,7 +10,7 @@
 use bitcoin::blockdata::constants::ChainHash;
 use bitcoin::blockdata::script::{Script,Builder};
 use bitcoin::blockdata::transaction::{Transaction, EcdsaSighashType};
-use bitcoin::util::sighash;
+use bitcoin::sighash;
 use bitcoin::consensus::encode;
 
 use bitcoin::hashes::Hash;
@@ -7686,7 +7686,7 @@ mod tests {
 	use bitcoin::hashes::Hash;
 	use bitcoin::hash_types::WPubkeyHash;
 	use bitcoin::PackedLockTime;
-	use bitcoin::util::address::WitnessVersion;
+	use bitcoin::address::WitnessVersion;
 	use crate::prelude::*;
 
 	struct TestFeeEstimator {
@@ -8199,7 +8199,7 @@ mod tests {
 	#[cfg(feature = "_test_vectors")]
 	#[test]
 	fn outbound_commitment_test() {
-		use bitcoin::util::sighash;
+		use bitcoin::sighash;
 		use bitcoin::consensus::encode::serialize;
 		use bitcoin::blockdata::transaction::EcdsaSighashType;
 		use bitcoin::hashes::hex::FromHex;

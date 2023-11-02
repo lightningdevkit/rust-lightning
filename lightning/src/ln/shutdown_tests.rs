@@ -26,7 +26,7 @@ use crate::util::string::UntrustedString;
 use bitcoin::blockdata::script::Builder;
 use bitcoin::blockdata::opcodes;
 use bitcoin::network::constants::Network;
-use bitcoin::util::address::WitnessVersion;
+use bitcoin::address::WitnessVersion;
 
 use regex;
 

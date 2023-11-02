@@ -40,7 +40,7 @@
 //! let secp_ctx = Secp256k1::new();
 //! let keys = KeyPair::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32])?);
 //! let pubkey = PublicKey::from(keys);
-//! let wpubkey_hash = bitcoin::util::key::PublicKey::new(pubkey).wpubkey_hash().unwrap();
+//! let wpubkey_hash = bitcoin::key::PublicKey::new(pubkey).wpubkey_hash().unwrap();
 //! let mut buffer = Vec::new();
 //!
 //! // Invoice for the "offer to be paid" flow.
@@ -70,7 +70,7 @@
 //! # let secp_ctx = Secp256k1::new();
 //! # let keys = KeyPair::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32])?);
 //! # let pubkey = PublicKey::from(keys);
-//! # let wpubkey_hash = bitcoin::util::key::PublicKey::new(pubkey).wpubkey_hash().unwrap();
+//! # let wpubkey_hash = bitcoin::key::PublicKey::new(pubkey).wpubkey_hash().unwrap();
 //! # let mut buffer = Vec::new();
 //!
 //! // Invoice for the "offer for money" flow.
@@ -103,8 +103,8 @@ use bitcoin::hashes::Hash;
 use bitcoin::network::constants::Network;
 use bitcoin::secp256k1::{KeyPair, PublicKey, Secp256k1, self};
 use bitcoin::secp256k1::schnorr::Signature;
-use bitcoin::util::address::{Address, Payload, WitnessVersion};
-use bitcoin::util::schnorr::TweakedPublicKey;
+use bitcoin::address::{Address, Payload, WitnessVersion};
+use bitcoin::schnorr::TweakedPublicKey;
 use core::convert::{AsRef, Infallible, TryFrom};
 use core::time::Duration;
 use crate::io;
@@ -1307,8 +1307,8 @@ mod tests {
 	use bitcoin::hashes::Hash;
 	use bitcoin::network::constants::Network;
 	use bitcoin::secp256k1::{Message, Secp256k1, XOnlyPublicKey, self};
-	use bitcoin::util::address::{Address, Payload, WitnessVersion};
-	use bitcoin::util::schnorr::TweakedPublicKey;
+	use bitcoin::address::{Address, Payload, WitnessVersion};
+	use bitcoin::schnorr::TweakedPublicKey;
 	use core::convert::TryFrom;
 	use core::time::Duration;
 	use crate::blinded_path::{BlindedHop, BlindedPath};
@@ -1805,7 +1805,7 @@ mod tests {
 	#[test]
 	fn builds_invoice_with_fallback_address() {
 		let script = Script::new();
-		let pubkey = bitcoin::util::key::PublicKey::new(recipient_pubkey());
+		let pubkey = bitcoin::key::PublicKey::new(recipient_pubkey());
 		let x_only_pubkey = XOnlyPublicKey::from_keypair(&recipient_keys()).0;
 		let tweaked_pubkey = TweakedPublicKey::dangerous_assume_tweaked(x_only_pubkey);
 
@@ -2094,7 +2094,7 @@ mod tests {
 	#[test]
 	fn parses_invoice_with_fallback_address() {
 		let script = Script::new();
-		let pubkey = bitcoin::util::key::PublicKey::new(recipient_pubkey());
+		let pubkey = bitcoin::key::PublicKey::new(recipient_pubkey());
 		let x_only_pubkey = XOnlyPublicKey::from_keypair(&recipient_keys()).0;
 		let tweaked_pubkey = TweakedPublicKey::dangerous_assume_tweaked(x_only_pubkey);
 

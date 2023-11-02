@@ -44,7 +44,7 @@ use std::time::SystemTime;
 use bitcoin::{Address, Network, PubkeyHash, ScriptHash};
 use bitcoin::bech32;
 use bitcoin::bech32::u5;
-use bitcoin::util::address::{Payload, WitnessVersion};
+use bitcoin::address::{Payload, WitnessVersion};
 use bitcoin::hashes::{Hash, sha256};
 use bitcoin::secp256k1;
 use lightning::ln::features::Bolt11InvoiceFeatures;

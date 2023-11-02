@@ -10,7 +10,7 @@ use core::str::FromStr;
 use bitcoin::{PubkeyHash, ScriptHash};
 use bitcoin::bech32;
 use bitcoin::bech32::{u5, FromBase32};
-use bitcoin::util::address::WitnessVersion;
+use bitcoin::address::WitnessVersion;
 use bitcoin::hashes::Hash;
 use bitcoin::hashes::sha256;
 use bitcoin::secp256k1;
@@ -857,7 +857,7 @@ mod test {
 		use crate::Fallback;
 		use bech32::FromBase32;
 		use bitcoin::{PubkeyHash, ScriptHash};
-		use bitcoin::util::address::WitnessVersion;
+		use bitcoin::address::WitnessVersion;
 		use bitcoin::hashes::Hash;
 
 		let cases = vec![

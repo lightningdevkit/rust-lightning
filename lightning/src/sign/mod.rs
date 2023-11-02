@@ -17,8 +17,8 @@ use bitcoin::blockdata::script::{Script, Builder};
 use bitcoin::blockdata::opcodes;
 use bitcoin::network::constants::Network;
 use bitcoin::psbt::PartiallySignedTransaction;
-use bitcoin::util::bip32::{ExtendedPrivKey, ExtendedPubKey, ChildNumber};
-use bitcoin::util::sighash;
+use bitcoin::bip32::{ExtendedPrivKey, ExtendedPubKey, ChildNumber};
+use bitcoin::sighash;
 
 use bitcoin::bech32::u5;
 use bitcoin::hashes::{Hash, HashEngine};

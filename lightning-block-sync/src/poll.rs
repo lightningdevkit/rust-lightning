@@ -262,7 +262,7 @@ mod tests {
 	use crate::*;
 	use crate::test_utils::Blockchain;
 	use super::*;
-	use bitcoin::util::uint::Uint256;
+	use bitcoin::uint::Uint256;
 
 	#[tokio::test]
 	async fn poll_empty_chain() {

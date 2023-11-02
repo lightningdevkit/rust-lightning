@@ -4482,7 +4482,7 @@ mod tests {
 	use bitcoin::blockdata::opcodes;
 	use bitcoin::blockdata::transaction::{Transaction, TxIn, TxOut, EcdsaSighashType};
 	use bitcoin::blockdata::transaction::OutPoint as BitcoinOutPoint;
-	use bitcoin::util::sighash;
+	use bitcoin::sighash;
 	use bitcoin::hashes::Hash;
 	use bitcoin::hashes::sha256::Hash as Sha256;
 	use bitcoin::hashes::hex::FromHex;

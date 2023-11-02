@@ -1,5 +1,5 @@
 use bitcoin::hashes::hex::FromHex;
-use bitcoin::util::uint::Uint256;
+use bitcoin::uint::Uint256;
 
 pub fn hex_to_uint256(hex: &str) -> Result<Uint256, bitcoin::hashes::hex::Error> {
 	let bytes = <[u8; 32]>::from_hex(hex)?;
@@ -9,7 +9,7 @@ pub fn hex_to_uint256(hex: &str) -> Result<Uint256, bitcoin::hashes::hex::Error>
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use bitcoin::util::uint::Uint256;
+	use bitcoin::uint::Uint256;
 
 	#[test]
 	fn hex_to_uint256_empty_str() {

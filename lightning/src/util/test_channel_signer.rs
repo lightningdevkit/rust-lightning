@@ -18,7 +18,7 @@ use crate::sync::{Mutex, Arc};
 #[cfg(test)] use crate::sync::MutexGuard;
 
 use bitcoin::blockdata::transaction::{Transaction, EcdsaSighashType};
-use bitcoin::util::sighash;
+use bitcoin::sighash;
 
 use bitcoin::secp256k1;
 use bitcoin::secp256k1::{SecretKey, PublicKey};

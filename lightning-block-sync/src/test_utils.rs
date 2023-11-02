@@ -5,9 +5,8 @@ use bitcoin::blockdata::block::{Block, BlockHeader};
 use bitcoin::blockdata::constants::genesis_block;
 use bitcoin::hash_types::BlockHash;
 use bitcoin::network::constants::Network;
-use bitcoin::util::uint::Uint256;
-use bitcoin::util::hash::bitcoin_merkle_root;
-use bitcoin::{PackedLockTime, Transaction};
+use bitcoin::uint::Uint256;
+use bitcoin::{merkle_root, PackedLockTime, Transaction};
 
 use lightning::chain;
 
@@ -50,7 +49,7 @@ impl Blockchain {
 				input: vec![],
 				output: vec![]
 			};
-			let merkle_root = bitcoin_merkle_root(vec![coinbase.txid().as_hash()].into_iter()).unwrap();
+			let merkle_root = merkle_root::calculate_root(vec![coinbase.txid().as_hash()].into_iter()).unwrap();
 			self.blocks.push(Block {
 				header: BlockHeader {
 					version: 0,
