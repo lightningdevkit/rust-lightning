@@ -30,7 +30,6 @@ compile_error!("at least one of the `std` or `no-std` features must be enabled")
 pub mod payment;
 pub mod utils;
 
-extern crate bech32;
 #[macro_use] extern crate lightning;
 extern crate num_traits;
 extern crate secp256k1;
@@ -43,8 +42,9 @@ extern crate serde;
 #[cfg(feature = "std")]
 use std::time::SystemTime;
 
-use bech32::u5;
 use bitcoin::{Address, Network, PubkeyHash, ScriptHash};
+use bitcoin::bech32;
+use bitcoin::bech32::u5;
 use bitcoin::util::address::{Payload, WitnessVersion};
 use bitcoin::hashes::{Hash, sha256};
 use lightning::ln::features::Bolt11InvoiceFeatures;

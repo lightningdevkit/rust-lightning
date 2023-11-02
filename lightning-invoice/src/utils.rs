@@ -3,7 +3,7 @@
 use crate::{Bolt11Invoice, CreationError, Currency, InvoiceBuilder, SignOrCreationError};
 
 use crate::{prelude::*, Description, Bolt11InvoiceDescription, Sha256};
-use bech32::ToBase32;
+use bitcoin::bech32::ToBase32;
 use bitcoin::hashes::Hash;
 use lightning::chain;
 use lightning::chain::chaininterface::{BroadcasterInterface, FeeEstimator};

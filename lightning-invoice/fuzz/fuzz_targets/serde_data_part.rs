@@ -1,5 +1,4 @@
 extern crate lightning_invoice;
-extern crate bech32;
 
 use lightning_invoice::RawDataPart;
 use bech32::{FromBase32, ToBase32, u5};

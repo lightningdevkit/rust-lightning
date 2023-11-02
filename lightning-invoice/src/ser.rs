@@ -1,6 +1,7 @@
 use core::fmt;
 use core::fmt::{Display, Formatter};
-use bech32::{ToBase32, u5, WriteBase32, Base32Len};
+use bitcoin::bech32;
+use bitcoin::bech32::{ToBase32, u5, WriteBase32, Base32Len};
 use crate::prelude::*;
 
 use super::{Bolt11Invoice, Sha256, TaggedField, ExpiryTime, MinFinalCltvExpiryDelta, Fallback, PayeePubKey, Bolt11InvoiceSignature, PositiveTimestamp,
@@ -468,7 +469,7 @@ impl ToBase32 for Bolt11InvoiceSignature {
 
 #[cfg(test)]
 mod test {
-	use bech32::CheckBase32;
+	use bitcoin::bech32::CheckBase32;
 
 	#[test]
 	fn test_currency_code() {

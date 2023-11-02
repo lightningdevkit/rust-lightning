@@ -7,9 +7,9 @@ use core::num::ParseIntError;
 use core::str;
 use core::str::FromStr;
 
-use bech32::{u5, FromBase32};
-
 use bitcoin::{PubkeyHash, ScriptHash};
+use bitcoin::bech32;
+use bitcoin::bech32::{u5, FromBase32};
 use bitcoin::util::address::WitnessVersion;
 use bitcoin::hashes::Hash;
 use bitcoin::hashes::sha256;
@@ -725,7 +725,8 @@ impl From<crate::Bolt11SemanticError> for ParseOrSemanticError {
 mod test {
 	use crate::de::Bolt11ParseError;
 	use secp256k1::PublicKey;
-	use bech32::u5;
+	use bitcoin::bech32;
+	use bitcoin::bech32::u5;
 	use bitcoin::hashes::hex::FromHex;
 	use bitcoin::hashes::sha256;
 
