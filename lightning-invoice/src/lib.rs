@@ -32,7 +32,6 @@ pub mod utils;
 
 #[macro_use] extern crate lightning;
 extern crate num_traits;
-extern crate secp256k1;
 extern crate alloc;
 #[cfg(any(test, feature = "std"))]
 extern crate core;
@@ -47,12 +46,13 @@ use bitcoin::bech32;
 use bitcoin::bech32::u5;
 use bitcoin::util::address::{Payload, WitnessVersion};
 use bitcoin::hashes::{Hash, sha256};
+use bitcoin::secp256k1;
 use lightning::ln::features::Bolt11InvoiceFeatures;
 use lightning::util::invoice::construct_invoice_preimage;
 
-use secp256k1::PublicKey;
-use secp256k1::{Message, Secp256k1};
-use secp256k1::ecdsa::RecoverableSignature;
+use bitcoin::secp256k1::PublicKey;
+use bitcoin::secp256k1::{Message, Secp256k1};
+use bitcoin::secp256k1::ecdsa::RecoverableSignature;
 
 use core::cmp::Ordering;
 use core::fmt::{Display, Formatter, self};
@@ -168,16 +168,14 @@ pub const DEFAULT_MIN_FINAL_CLTV_EXPIRY_DELTA: u64 = 18;
 /// ensures that only a semantically and syntactically correct invoice can be built using it.
 ///
 /// ```
-/// extern crate secp256k1;
 /// extern crate lightning;
 /// extern crate lightning_invoice;
 /// extern crate bitcoin;
 ///
 /// use bitcoin::hashes::Hash;
 /// use bitcoin::hashes::sha256;
-///
-/// use secp256k1::Secp256k1;
-/// use secp256k1::SecretKey;
+/// use bitcoin::secp256k1::Secp256k1;
+/// use bitcoin::secp256k1::SecretKey;
 ///
 /// use lightning::ln::PaymentSecret;
 ///
@@ -1749,6 +1747,7 @@ mod test {
 	use bitcoin::Script;
 	use bitcoin::hashes::hex::FromHex;
 	use bitcoin::hashes::sha256;
+	use bitcoin::secp256k1;
 
 	#[test]
 	fn test_system_time_bounds_assumptions() {

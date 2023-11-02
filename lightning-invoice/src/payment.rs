@@ -248,11 +248,11 @@ mod tests {
 	use super::*;
 	use crate::{InvoiceBuilder, Currency};
 	use bitcoin::hashes::sha256::Hash as Sha256;
+	use bitcoin::secp256k1::{SecretKey, Secp256k1};
 	use lightning::events::Event;
 	use lightning::ln::msgs::ChannelMessageHandler;
 	use lightning::ln::{PaymentPreimage, PaymentSecret};
 	use lightning::ln::functional_test_utils::*;
-	use secp256k1::{SecretKey, Secp256k1};
 	use std::collections::VecDeque;
 	use std::time::{SystemTime, Duration};
 

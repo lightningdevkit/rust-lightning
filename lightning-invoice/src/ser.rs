@@ -2,6 +2,7 @@ use core::fmt;
 use core::fmt::{Display, Formatter};
 use bitcoin::bech32;
 use bitcoin::bech32::{ToBase32, u5, WriteBase32, Base32Len};
+use bitcoin::secp256k1;
 use crate::prelude::*;
 
 use super::{Bolt11Invoice, Sha256, TaggedField, ExpiryTime, MinFinalCltvExpiryDelta, Fallback, PayeePubKey, Bolt11InvoiceSignature, PositiveTimestamp,

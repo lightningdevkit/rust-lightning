@@ -5,6 +5,7 @@ use crate::{Bolt11Invoice, CreationError, Currency, InvoiceBuilder, SignOrCreati
 use crate::{prelude::*, Description, Bolt11InvoiceDescription, Sha256};
 use bitcoin::bech32::ToBase32;
 use bitcoin::hashes::Hash;
+use bitcoin::secp256k1::PublicKey;
 use lightning::chain;
 use lightning::chain::chaininterface::{BroadcasterInterface, FeeEstimator};
 use lightning::sign::{Recipient, NodeSigner, SignerProvider, EntropySource};
@@ -15,7 +16,6 @@ use lightning::ln::inbound_payment::{create, create_from_hash, ExpandedKey};
 use lightning::routing::gossip::RoutingFees;
 use lightning::routing::router::{RouteHint, RouteHintHop, Router};
 use lightning::util::logger::Logger;
-use secp256k1::PublicKey;
 use core::ops::Deref;
 use core::time::Duration;
 use core::iter::Iterator;

@@ -21,7 +21,6 @@ std = ["num-traits/std", "lightning/std"]
 
 [dependencies]
 lightning = { version = "0.0.118", path = "../lightning", default-features = false }
-secp256k1 = { version = "0.24.0", default-features = false, features = ["recovery", "alloc"] }
 num-traits = { version = "0.2.8", default-features = false }
 hashbrown = { version = "0.8", optional = true }
 serde = { version = "1.0.118", optional = true }
