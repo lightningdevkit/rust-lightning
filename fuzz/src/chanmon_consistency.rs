@@ -267,6 +267,7 @@ impl SignerProvider for KeyProvider {
 			inner,
 			state,
 			disable_revocation_policy_check: false,
+			available: Arc::new(Mutex::new(true)),
 		})
 	}
 

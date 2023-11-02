@@ -3802,7 +3802,7 @@ where
 
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 		let peer_state = &mut *peer_state_lock;
-		let (chan, msg) = match peer_state.channel_by_id.remove(temporary_channel_id) {
+		let (chan, msg_opt) = match peer_state.channel_by_id.remove(temporary_channel_id) {
 			Some(ChannelPhase::UnfundedOutboundV1(chan)) => {
 				let funding_txo = find_funding_output(&chan, &funding_transaction)?;
 
@@ -3841,10 +3841,12 @@ where
 				}),
 		};
 
-		peer_state.pending_msg_events.push(events::MessageSendEvent::SendFundingCreated {
-			node_id: chan.context.get_counterparty_node_id(),
-			msg,
-		});
+		if let Some(msg) = msg_opt {
+			peer_state.pending_msg_events.push(events::MessageSendEvent::SendFundingCreated {
+				node_id: chan.context.get_counterparty_node_id(),
+				msg,
+			});
+		}
 		match peer_state.channel_by_id.entry(chan.context.channel_id()) {
 			hash_map::Entry::Occupied(_) => {
 				panic!("Generated duplicate funding txid?");
@@ -6229,7 +6231,7 @@ where
 
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 		let peer_state = &mut *peer_state_lock;
-		let (chan, funding_msg, monitor) =
+		let (chan, funding_msg_opt, monitor) =
 			match peer_state.channel_by_id.remove(&msg.temporary_channel_id) {
 				Some(ChannelPhase::UnfundedInboundV1(inbound_chan)) => {
 					match inbound_chan.funding_created(msg, best_block, &self.signer_provider, &self.logger) {
@@ -6252,9 +6254,12 @@ where
 				None => return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.temporary_channel_id))
 			};
 
-		match peer_state.channel_by_id.entry(funding_msg.channel_id) {
+		match peer_state.channel_by_id.entry(chan.context.channel_id()) {
 			hash_map::Entry::Occupied(_) => {
-				Err(MsgHandleErrInternal::send_err_msg_no_close("Already had channel with the new channel_id".to_owned(), funding_msg.channel_id))
+				Err(MsgHandleErrInternal::send_err_msg_no_close(
+					"Already had channel with the new channel_id".to_owned(),
+					chan.context.channel_id()
+				))
 			},
 			hash_map::Entry::Vacant(e) => {
 				let mut id_to_peer_lock = self.id_to_peer.lock().unwrap();
@@ -6262,7 +6267,7 @@ where
 					hash_map::Entry::Occupied(_) => {
 						return Err(MsgHandleErrInternal::send_err_msg_no_close(
 							"The funding_created message had the same funding_txid as an existing channel - funding is not possible".to_owned(),
-							funding_msg.channel_id))
+							chan.context.channel_id()))
 					},
 					hash_map::Entry::Vacant(i_e) => {
 						let monitor_res = self.chain_monitor.watch_channel(monitor.get_funding_txo().0, monitor);
@@ -6274,10 +6279,12 @@ where
 							// hasn't persisted to disk yet - we can't lose money on a transaction that we haven't
 							// accepted payment from yet. We do, however, need to wait to send our channel_ready
 							// until we have persisted our monitor.
-							peer_state.pending_msg_events.push(events::MessageSendEvent::SendFundingSigned {
-								node_id: counterparty_node_id.clone(),
-								msg: funding_msg,
-							});
+							if let Some(msg) = funding_msg_opt {
+								peer_state.pending_msg_events.push(events::MessageSendEvent::SendFundingSigned {
+									node_id: counterparty_node_id.clone(),
+									msg,
+								});
+							}
 
 							if let ChannelPhase::Funded(chan) = e.insert(ChannelPhase::Funded(chan)) {
 								handle_new_monitor_update!(self, persist_state, peer_state_lock, peer_state,
@@ -6288,9 +6295,13 @@ where
 							Ok(())
 						} else {
 							log_error!(self.logger, "Persisting initial ChannelMonitor failed, implying the funding outpoint was duplicated");
+							let channel_id = match funding_msg_opt {
+								Some(msg) => msg.channel_id,
+								None => chan.context.channel_id(),
+							};
 							return Err(MsgHandleErrInternal::send_err_msg_no_close(
 								"The funding_created message had the same funding_txid as an existing channel - funding is not possible".to_owned(),
-								funding_msg.channel_id));
+								channel_id));
 						}
 					}
 				}
@@ -7214,6 +7225,66 @@ where
 		}
 
 		has_update
+	}
+
+	/// When a call to a [`ChannelSigner`] method returns an error, this indicates that the signer
+	/// is (temporarily) unavailable, and the operation should be retried later.
+	///
+	/// This method allows for that retry - either checking for any signer-pending messages to be
+	/// attempted in every channel, or in the specifically provided channel.
+	///
+	/// [`ChannelSigner`]: crate::sign::ChannelSigner
+	#[cfg(test)] // This is only implemented for one signer method, and should be private until we
+	             // actually finish implementing it fully.
+	pub fn signer_unblocked(&self, channel_opt: Option<(PublicKey, ChannelId)>) {
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
+
+		let unblock_chan = |phase: &mut ChannelPhase<SP>, pending_msg_events: &mut Vec<MessageSendEvent>| {
+			let node_id = phase.context().get_counterparty_node_id();
+			if let ChannelPhase::Funded(chan) = phase {
+				let msgs = chan.signer_maybe_unblocked(&self.logger);
+				if let Some(updates) = msgs.commitment_update {
+					pending_msg_events.push(events::MessageSendEvent::UpdateHTLCs {
+						node_id,
+						updates,
+					});
+				}
+				if let Some(msg) = msgs.funding_signed {
+					pending_msg_events.push(events::MessageSendEvent::SendFundingSigned {
+						node_id,
+						msg,
+					});
+				}
+				if let Some(msg) = msgs.funding_created {
+					pending_msg_events.push(events::MessageSendEvent::SendFundingCreated {
+						node_id,
+						msg,
+					});
+				}
+				if let Some(msg) = msgs.channel_ready {
+					send_channel_ready!(self, pending_msg_events, chan, msg);
+				}
+			}
+		};
+
+		let per_peer_state = self.per_peer_state.read().unwrap();
+		if let Some((counterparty_node_id, channel_id)) = channel_opt {
+			if let Some(peer_state_mutex) = per_peer_state.get(&counterparty_node_id) {
+				let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+				let peer_state = &mut *peer_state_lock;
+				if let Some(chan) = peer_state.channel_by_id.get_mut(&channel_id) {
+					unblock_chan(chan, &mut peer_state.pending_msg_events);
+				}
+			}
+		} else {
+			for (_cp_id, peer_state_mutex) in per_peer_state.iter() {
+				let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+				let peer_state = &mut *peer_state_lock;
+				for (_, chan) in peer_state.channel_by_id.iter_mut() {
+					unblock_chan(chan, &mut peer_state.pending_msg_events);
+				}
+			}
+		}
 	}
 
 	/// Check whether any channels have finished removing all pending updates after a shutdown
