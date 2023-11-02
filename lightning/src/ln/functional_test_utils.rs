@@ -2142,6 +2142,26 @@ pub fn expect_channel_ready_event<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, ex
 	}
 }
 
+#[cfg(any(test, feature = "_test_utils"))]
+pub fn expect_probe_successful_events(node: &Node, mut probe_results: Vec<(PaymentHash, PaymentId)>) {
+	let mut events = node.node.get_and_clear_pending_events();
+
+	for event in events.drain(..) {
+		match event {
+			Event::ProbeSuccessful { payment_hash: ev_ph, payment_id: ev_pid, ..} => {
+				let result_idx = probe_results.iter().position(|(payment_hash, payment_id)| *payment_hash == ev_ph && *payment_id == ev_pid);
+				assert!(result_idx.is_some());
+
+				probe_results.remove(result_idx.unwrap());
+			},
+			_ => panic!(),
+		}
+	};
+
+	// Ensure that we received a ProbeSuccessful event for each probe result.
+	assert!(probe_results.is_empty());
+}
+
 pub struct PaymentFailedConditions<'a> {
 	pub(crate) expected_htlc_error_data: Option<(u16, &'a [u8])>,
 	pub(crate) expected_blamed_scid: Option<u64>,
@@ -2279,21 +2299,41 @@ pub fn send_along_route_with_secret<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, 
 	payment_id
 }
 
-pub fn do_pass_along_path<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_path: &[&Node<'a, 'b, 'c>], recv_value: u64, our_payment_hash: PaymentHash, our_payment_secret: Option<PaymentSecret>, ev: MessageSendEvent, payment_claimable_expected: bool, clear_recipient_events: bool, expected_preimage: Option<PaymentPreimage>) -> Option<Event> {
+fn fail_payment_along_path<'a, 'b, 'c>(expected_path: &[&Node<'a, 'b, 'c>]) {
+	let origin_node_id = expected_path[0].node.get_our_node_id();
+
+	// iterate from the receiving node to the origin node and handle update fail htlc.
+	for (&node, &prev_node) in expected_path.iter().rev().zip(expected_path.iter().rev().skip(1)) {
+		let updates = get_htlc_update_msgs!(node, prev_node.node.get_our_node_id());
+		prev_node.node.handle_update_fail_htlc(&node.node.get_our_node_id(), &updates.update_fail_htlcs[0]);
+		check_added_monitors!(prev_node, 0);
+
+		let is_first_hop = origin_node_id == prev_node.node.get_our_node_id();
+		// We do not want to fail backwards on the first hop. All other hops should fail backwards.
+		commitment_signed_dance!(prev_node, node, updates.commitment_signed, !is_first_hop);
+	}
+}
+
+pub fn do_pass_along_path<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_path: &[&Node<'a, 'b, 'c>], recv_value: u64, our_payment_hash: PaymentHash, our_payment_secret: Option<PaymentSecret>, ev: MessageSendEvent, payment_claimable_expected: bool, clear_recipient_events: bool, expected_preimage: Option<PaymentPreimage>, is_probe: bool) -> Option<Event> {
 	let mut payment_event = SendEvent::from_event(ev);
 	let mut prev_node = origin_node;
 	let mut event = None;
 
 	for (idx, &node) in expected_path.iter().enumerate() {
+		let is_last_hop = idx == expected_path.len() - 1;
 		assert_eq!(node.node.get_our_node_id(), payment_event.node_id);
 
 		node.node.handle_update_add_htlc(&prev_node.node.get_our_node_id(), &payment_event.msgs[0]);
 		check_added_monitors!(node, 0);
-		commitment_signed_dance!(node, prev_node, payment_event.commitment_msg, false);
 
-		expect_pending_htlcs_forwardable!(node);
+		if is_last_hop && is_probe {
+			commitment_signed_dance!(node, prev_node, payment_event.commitment_msg, true, true);
+		} else {
+			commitment_signed_dance!(node, prev_node, payment_event.commitment_msg, false);
+			expect_pending_htlcs_forwardable!(node);
+		}
 
-		if idx == expected_path.len() - 1 && clear_recipient_events {
+		if is_last_hop && clear_recipient_events {
 			let events_2 = node.node.get_and_clear_pending_events();
 			if payment_claimable_expected {
 				assert_eq!(events_2.len(), 1);
@@ -2327,7 +2367,7 @@ pub fn do_pass_along_path<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_p
 			} else {
 				assert!(events_2.is_empty());
 			}
-		} else if idx != expected_path.len() - 1 {
+		} else if !is_last_hop {
 			let mut events_2 = node.node.get_and_clear_pending_msg_events();
 			assert_eq!(events_2.len(), 1);
 			check_added_monitors!(node, 1);
@@ -2341,16 +2381,33 @@ pub fn do_pass_along_path<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_p
 }
 
 pub fn pass_along_path<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_path: &[&Node<'a, 'b, 'c>], recv_value: u64, our_payment_hash: PaymentHash, our_payment_secret: Option<PaymentSecret>, ev: MessageSendEvent, payment_claimable_expected: bool, expected_preimage: Option<PaymentPreimage>) -> Option<Event> {
-	do_pass_along_path(origin_node, expected_path, recv_value, our_payment_hash, our_payment_secret, ev, payment_claimable_expected, true, expected_preimage)
+	do_pass_along_path(origin_node, expected_path, recv_value, our_payment_hash, our_payment_secret, ev, payment_claimable_expected, true, expected_preimage, false)
+}
+
+pub fn send_probe_along_route<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_route: &[&[&Node<'a, 'b, 'c>]]) {
+	let mut events = origin_node.node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), expected_route.len());
+
+	check_added_monitors!(origin_node, expected_route.len());
+
+	for path in expected_route.iter() {
+		let ev = remove_first_msg_event_to_node(&path[0].node.get_our_node_id(), &mut events);
+
+		do_pass_along_path(origin_node, path, 0, PaymentHash([0_u8; 32]), None, ev, false, false, None, true);
+		let nodes_to_fail_payment: Vec<_> = vec![origin_node].into_iter().chain(path.iter().cloned()).collect();
+
+		fail_payment_along_path(nodes_to_fail_payment.as_slice());
+	}
 }
 
 pub fn pass_along_route<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_route: &[&[&Node<'a, 'b, 'c>]], recv_value: u64, our_payment_hash: PaymentHash, our_payment_secret: PaymentSecret) {
 	let mut events = origin_node.node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), expected_route.len());
+
 	for (path_idx, expected_path) in expected_route.iter().enumerate() {
 		let ev = remove_first_msg_event_to_node(&expected_path[0].node.get_our_node_id(), &mut events);
 		// Once we've gotten through all the HTLCs, the last one should result in a
-		// PaymentClaimable (but each previous one should not!), .
+		// PaymentClaimable (but each previous one should not!).
 		let expect_payment = path_idx == expected_route.len() - 1;
 		pass_along_path(origin_node, expected_path, recv_value, our_payment_hash.clone(), Some(our_payment_secret), ev, expect_payment, None);
 	}
