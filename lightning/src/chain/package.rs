@@ -14,7 +14,7 @@
 use bitcoin::blockdata::constants::WITNESS_SCALE_FACTOR;
 use bitcoin::blockdata::transaction::{TxOut,TxIn, Transaction, EcdsaSighashType};
 use bitcoin::blockdata::transaction::OutPoint as BitcoinOutPoint;
-use bitcoin::blockdata::script::Script;
+use bitcoin::blockdata::script::ScriptBuf;
 
 use bitcoin::hash_types::Txid;
 
@@ -428,14 +428,14 @@ impl Readable for HolderHTLCOutput {
 /// Note that on upgrades, some features of existing outputs may be missed.
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct HolderFundingOutput {
-	funding_redeemscript: Script,
+	funding_redeemscript: ScriptBuf,
 	pub(crate) funding_amount: Option<u64>,
 	channel_type_features: ChannelTypeFeatures,
 }
 
 
 impl HolderFundingOutput {
-	pub(crate) fn build(funding_redeemscript: Script, funding_amount: u64, channel_type_features: ChannelTypeFeatures) -> Self {
+	pub(crate) fn build(funding_redeemscript: ScriptBuf, funding_amount: u64, channel_type_features: ChannelTypeFeatures) -> Self {
 		HolderFundingOutput {
 			funding_redeemscript,
 			funding_amount: Some(funding_amount),
@@ -572,7 +572,7 @@ impl PackageSolvingData {
 		};
 		TxIn {
 			previous_output,
-			script_sig: Script::new(),
+			script_sig: ScriptBuf::new(),
 			sequence,
 			witness: Witness::new(),
 		}
@@ -875,7 +875,7 @@ impl PackageTemplate {
 
 		locktime
 	}
-	pub(crate) fn package_weight(&self, destination_script: &Script) -> usize {
+	pub(crate) fn package_weight(&self, destination_script: &ScriptBuf) -> usize {
 		let mut inputs_weight = 0;
 		let mut witnesses_weight = 2; // count segwit flags
 		for (_, outp) in self.inputs.iter() {
@@ -909,7 +909,7 @@ impl PackageTemplate {
 	}
 	pub(crate) fn finalize_malleable_package<L: Deref, Signer: WriteableEcdsaChannelSigner>(
 		&self, current_height: u32, onchain_handler: &mut OnchainTxHandler<Signer>, value: u64,
-		destination_script: Script, logger: &L
+		destination_script: ScriptBuf, logger: &L
 	) -> Option<Transaction> where L::Target: Logger {
 		debug_assert!(self.is_malleable());
 		let mut bumped_tx = Transaction {
@@ -1192,7 +1192,7 @@ mod tests {
 	use crate::ln::{PaymentPreimage, PaymentHash};
 
 	use bitcoin::blockdata::constants::WITNESS_SCALE_FACTOR;
-	use bitcoin::blockdata::script::Script;
+	use bitcoin::blockdata::script::ScriptBuf;
 	use bitcoin::blockdata::transaction::OutPoint as BitcoinOutPoint;
 
 	use bitcoin::hashes::hex::FromHex;
@@ -1406,14 +1406,14 @@ mod tests {
 		{
 			let revk_outp = dumb_revk_output!(secp_ctx, false);
 			let package = PackageTemplate::build_package(txid, 0, revk_outp, 0, 100);
-			assert_eq!(package.package_weight(&Script::new()),  weight_sans_output + WEIGHT_REVOKED_OUTPUT as usize);
+			assert_eq!(package.package_weight(&ScriptBuf::new()),  weight_sans_output + WEIGHT_REVOKED_OUTPUT as usize);
 		}
 
 		{
 			for channel_type_features in [ChannelTypeFeatures::only_static_remote_key(), ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies()].iter() {
 				let counterparty_outp = dumb_counterparty_output!(secp_ctx, 1_000_000, channel_type_features.clone());
 				let package = PackageTemplate::build_package(txid, 0, counterparty_outp, 1000, 100);
-				assert_eq!(package.package_weight(&Script::new()), weight_sans_output + weight_received_htlc(channel_type_features) as usize);
+				assert_eq!(package.package_weight(&ScriptBuf::new()), weight_sans_output + weight_received_htlc(channel_type_features) as usize);
 			}
 		}
 
@@ -1421,7 +1421,7 @@ mod tests {
 			for channel_type_features in [ChannelTypeFeatures::only_static_remote_key(), ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies()].iter() {
 				let counterparty_outp = dumb_counterparty_offered_output!(secp_ctx, 1_000_000, channel_type_features.clone());
 				let package = PackageTemplate::build_package(txid, 0, counterparty_outp, 1000, 100);
-				assert_eq!(package.package_weight(&Script::new()), weight_sans_output + weight_offered_htlc(channel_type_features) as usize);
+				assert_eq!(package.package_weight(&ScriptBuf::new()), weight_sans_output + weight_offered_htlc(channel_type_features) as usize);
 			}
 		}
 	}

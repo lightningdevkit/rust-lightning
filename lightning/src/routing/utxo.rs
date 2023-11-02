@@ -578,7 +578,7 @@ mod tests {
 	}
 
 	fn get_test_objects() -> (msgs::ChannelAnnouncement, TestChainSource,
-		NetworkGraph<Box<TestLogger>>, bitcoin::Script, msgs::NodeAnnouncement,
+		NetworkGraph<Box<TestLogger>>, bitcoin::ScriptBuf, msgs::NodeAnnouncement,
 		msgs::NodeAnnouncement, msgs::ChannelUpdate, msgs::ChannelUpdate, msgs::ChannelUpdate)
 	{
 		let secp_ctx = Secp256k1::new();
@@ -661,7 +661,7 @@ mod tests {
 		assert!(network_graph.read_only().channels().get(&valid_announcement.contents.short_channel_id).is_none());
 
 		future.resolve_without_forwarding(&network_graph,
-			Ok(TxOut { value: 1_000_000, script_pubkey: bitcoin::Script::new() }));
+			Ok(TxOut { value: 1_000_000, script_pubkey: bitcoin::ScriptBuf::new() }));
 		assert!(network_graph.read_only().channels().get(&valid_announcement.contents.short_channel_id).is_none());
 	}
 

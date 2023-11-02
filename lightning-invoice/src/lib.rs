@@ -1744,7 +1744,7 @@ impl<'de> Deserialize<'de> for Bolt11Invoice {
 
 #[cfg(test)]
 mod test {
-	use bitcoin::Script;
+	use bitcoin::ScriptBuf;
 	use bitcoin::hashes::hex::FromHex;
 	use bitcoin::hashes::sha256;
 	use bitcoin::secp256k1;
@@ -2136,7 +2136,7 @@ mod test {
 		assert_eq!(invoice.expiry_time(), Duration::from_secs(54321));
 		assert_eq!(invoice.min_final_cltv_expiry_delta(), 144);
 		assert_eq!(invoice.fallbacks(), vec![&Fallback::PubKeyHash(PubkeyHash::from_slice(&[0;20]).unwrap())]);
-		let address = Address::from_script(&Script::new_p2pkh(&PubkeyHash::from_slice(&[0;20]).unwrap()), Network::Testnet).unwrap();
+		let address = Address::from_script(&ScriptBuf::new_p2pkh(&PubkeyHash::from_slice(&[0;20]).unwrap()), Network::Testnet).unwrap();
 		assert_eq!(invoice.fallback_addresses(), vec![address]);
 		assert_eq!(invoice.private_routes(), vec![&PrivateRoute(route_1), &PrivateRoute(route_2)]);
 		assert_eq!(

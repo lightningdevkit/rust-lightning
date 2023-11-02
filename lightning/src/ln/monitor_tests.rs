@@ -28,7 +28,7 @@ use bitcoin::blockdata::transaction::EcdsaSighashType;
 use bitcoin::blockdata::script::Builder;
 use bitcoin::blockdata::opcodes;
 use bitcoin::secp256k1::{Secp256k1, SecretKey};
-use bitcoin::{Amount, PublicKey, Script, Transaction, TxIn, TxOut, PackedLockTime, Witness};
+use bitcoin::{Amount, PublicKey, ScriptBuf, Transaction, TxIn, TxOut, PackedLockTime, Witness};
 use bitcoin::sighash::SighashCache;
 
 use crate::prelude::*;
@@ -2491,7 +2491,7 @@ fn test_anchors_aggregated_revoked_htlc_tx() {
 	let htlc_tx = {
 		let secret_key = SecretKey::from_slice(&[1; 32]).unwrap();
 		let public_key = PublicKey::new(secret_key.public_key(&secp));
-		let fee_utxo_script = Script::new_v0_p2wpkh(&public_key.wpubkey_hash().unwrap());
+		let fee_utxo_script = ScriptBuf::new_v0_p2wpkh(&public_key.wpubkey_hash().unwrap());
 		let coinbase_tx = Transaction {
 			version: 2,
 			lock_time: PackedLockTime::ZERO,
@@ -2510,7 +2510,7 @@ fn test_anchors_aggregated_revoked_htlc_tx() {
 			}],
 			output: vec![TxOut { // Fee input change
 				value: coinbase_tx.output[0].value / 2 ,
-				script_pubkey: Script::new_op_return(&[]),
+				script_pubkey: ScriptBuf::new_op_return(&[]),
 			}],
 		};
 		let mut descriptors = Vec::with_capacity(4);
@@ -2538,7 +2538,7 @@ fn test_anchors_aggregated_revoked_htlc_tx() {
 			htlc_tx.input[htlc_input_idx].witness = htlc_descriptor.tx_input_witness(&our_sig, &witness_script);
 		}
 		let fee_utxo_sig = {
-			let witness_script = Script::new_p2pkh(&public_key.pubkey_hash());
+			let witness_script = ScriptBuf::new_p2pkh(&public_key.pubkey_hash());
 			let sighash = hash_to_message!(&SighashCache::new(&htlc_tx).segwit_signature_hash(
 				0, &witness_script, coinbase_tx.output[0].value, EcdsaSighashType::All
 			).unwrap()[..]);
@@ -2603,7 +2603,7 @@ fn test_anchors_aggregated_revoked_htlc_tx() {
 			assert_eq!(outputs.len(), 1);
 			assert!(vec![chan_b.2, chan_a.2].contains(&channel_id.unwrap()));
 			let spend_tx = nodes[0].keys_manager.backing.spend_spendable_outputs(
-				&[&outputs[0]], Vec::new(), Script::new_op_return(&[]), 253, None, &Secp256k1::new(),
+				&[&outputs[0]], Vec::new(), ScriptBuf::new_op_return(&[]), 253, None, &Secp256k1::new(),
 			).unwrap();
 
 			if let SpendableOutputDescriptor::StaticPaymentOutput(_) = &outputs[0] {
@@ -2649,7 +2649,7 @@ fn do_test_anchors_monitor_fixes_counterparty_payment_script_on_reload(confirm_c
 	let secp = Secp256k1::new();
 	let privkey = bitcoin::PrivateKey::from_slice(&[1; 32], bitcoin::Network::Testnet).unwrap();
 	let pubkey = bitcoin::PublicKey::from_private_key(&secp, &privkey);
-	let p2wpkh_script = Script::new_v0_p2wpkh(&pubkey.wpubkey_hash().unwrap());
+	let p2wpkh_script = ScriptBuf::new_v0_p2wpkh(&pubkey.wpubkey_hash().unwrap());
 	get_monitor!(nodes[1], chan_id).set_counterparty_payment_script(p2wpkh_script.clone());
 	assert_eq!(get_monitor!(nodes[1], chan_id).get_counterparty_payment_script(), p2wpkh_script);
 

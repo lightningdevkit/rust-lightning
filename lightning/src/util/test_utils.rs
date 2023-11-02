@@ -44,7 +44,7 @@ use bitcoin::EcdsaSighashType;
 use bitcoin::blockdata::constants::ChainHash;
 use bitcoin::blockdata::constants::genesis_block;
 use bitcoin::blockdata::transaction::{Transaction, TxOut};
-use bitcoin::blockdata::script::{Builder, Script};
+use bitcoin::blockdata::script::{Builder, ScriptBuf};
 use bitcoin::blockdata::opcodes;
 use bitcoin::blockdata::block::Block;
 use bitcoin::network::constants::Network;
@@ -198,7 +198,7 @@ impl SignerProvider for OnlyReadsKeysInterface {
 		))
 	}
 
-	fn get_destination_script(&self) -> Result<Script, ()> { Err(()) }
+	fn get_destination_script(&self) -> Result<ScriptBuf, ()> { Err(()) }
 	fn get_shutdown_scriptpubkey(&self) -> Result<ShutdownScript, ()> { Err(()) }
 }
 
@@ -307,12 +307,12 @@ pub(crate) struct WatchtowerPersister {
 	/// After receiving a revoke_and_ack for a commitment number, we'll form and store the justice
 	/// tx which would be used to provide a watchtower with the data it needs.
 	watchtower_state: Mutex<HashMap<OutPoint, HashMap<Txid, Transaction>>>,
-	destination_script: Script,
+	destination_script: ScriptBuf,
 }
 
 impl WatchtowerPersister {
 	#[cfg(test)]
-	pub(crate) fn new(destination_script: Script) -> Self {
+	pub(crate) fn new(destination_script: ScriptBuf) -> Self {
 		WatchtowerPersister {
 			persister: TestPersister::new(),
 			unsigned_justice_tx_data: Mutex::new(HashMap::new()),
@@ -1115,7 +1115,7 @@ impl SignerProvider for TestKeysInterface {
 		))
 	}
 
-	fn get_destination_script(&self) -> Result<Script, ()> { self.backing.get_destination_script() }
+	fn get_destination_script(&self) -> Result<ScriptBuf, ()> { self.backing.get_destination_script() }
 
 	fn get_shutdown_scriptpubkey(&self) -> Result<ShutdownScript, ()> {
 		match &mut *self.expectations.lock().unwrap() {
@@ -1205,8 +1205,8 @@ pub struct TestChainSource {
 	pub chain_hash: ChainHash,
 	pub utxo_ret: Mutex<UtxoResult>,
 	pub get_utxo_call_count: AtomicUsize,
-	pub watched_txn: Mutex<HashSet<(Txid, Script)>>,
-	pub watched_outputs: Mutex<HashSet<(OutPoint, Script)>>,
+	pub watched_txn: Mutex<HashSet<(Txid, ScriptBuf)>>,
+	pub watched_outputs: Mutex<HashSet<(OutPoint, ScriptBuf)>>,
 }
 
 impl TestChainSource {
@@ -1234,7 +1234,7 @@ impl UtxoLookup for TestChainSource {
 }
 
 impl chain::Filter for TestChainSource {
-	fn register_tx(&self, txid: &Txid, script_pubkey: &Script) {
+	fn register_tx(&self, txid: &Txid, script_pubkey: &ScriptBuf) {
 		self.watched_txn.lock().unwrap().insert((*txid, script_pubkey.clone()));
 	}
 
@@ -1355,9 +1355,9 @@ impl WalletSource for TestWalletSource {
 		Ok(self.utxos.borrow().clone())
 	}
 
-	fn get_change_script(&self) -> Result<Script, ()> {
+	fn get_change_script(&self) -> Result<ScriptBuf, ()> {
 		let public_key = bitcoin::PublicKey::new(self.secret_key.public_key(&self.secp));
-		Ok(Script::new_p2pkh(&public_key.pubkey_hash()))
+		Ok(ScriptBuf::new_p2pkh(&public_key.pubkey_hash()))
 	}
 
 	fn sign_tx(&self, mut tx: Transaction) -> Result<Transaction, ()> {

@@ -11,7 +11,7 @@
 
 use bitcoin::blockdata::block::{Block, BlockHeader};
 use bitcoin::blockdata::constants::genesis_block;
-use bitcoin::blockdata::script::Script;
+use bitcoin::blockdata::script::ScriptBuf;
 use bitcoin::hash_types::{BlockHash, Txid};
 use bitcoin::network::constants::Network;
 use bitcoin::secp256k1::PublicKey;
@@ -323,7 +323,7 @@ pub trait Watch<ChannelSigner: WriteableEcdsaChannelSigner> {
 pub trait Filter {
 	/// Registers interest in a transaction with `txid` and having an output with `script_pubkey` as
 	/// a spending condition.
-	fn register_tx(&self, txid: &Txid, script_pubkey: &Script);
+	fn register_tx(&self, txid: &Txid, script_pubkey: &ScriptBuf);
 
 	/// Registers interest in spends of a transaction output.
 	///
@@ -354,7 +354,7 @@ pub struct WatchedOutput {
 	pub outpoint: OutPoint,
 
 	/// Spending condition of the transaction output.
-	pub script_pubkey: Script,
+	pub script_pubkey: ScriptBuf,
 }
 
 impl<T: Listen> Listen for core::ops::Deref<Target = T> {

@@ -8,7 +8,7 @@
 // licenses.
 
 use bitcoin::blockdata::transaction::{Transaction, TxOut};
-use bitcoin::blockdata::script::Script;
+use bitcoin::blockdata::script::ScriptBuf;
 use bitcoin::consensus::Encodable;
 use bitcoin::consensus::encode::VarInt;
 
@@ -33,7 +33,7 @@ pub fn sort_outputs<T, C : Fn(&T, &T) -> Ordering>(outputs: &mut Vec<(TxOut, T)>
 /// Assumes at least one input will have a witness (ie spends a segwit output).
 /// Returns an Err(()) if the requested feerate cannot be met.
 /// Returns the expected maximum weight of the fully signed transaction on success.
-pub(crate) fn maybe_add_change_output(tx: &mut Transaction, input_value: u64, witness_max_weight: usize, feerate_sat_per_1000_weight: u32, change_destination_script: Script) -> Result<usize, ()> {
+pub(crate) fn maybe_add_change_output(tx: &mut Transaction, input_value: u64, witness_max_weight: usize, feerate_sat_per_1000_weight: u32, change_destination_script: ScriptBuf) -> Result<usize, ()> {
 	if input_value > MAX_VALUE_MSAT / 1000 { return Err(()); }
 
 	const WITNESS_FLAG_BYTES: i64 = 2;
@@ -72,7 +72,7 @@ mod tests {
 	use super::*;
 
 	use bitcoin::blockdata::transaction::{Transaction, TxOut, TxIn, OutPoint};
-	use bitcoin::blockdata::script::{Script, Builder};
+	use bitcoin::blockdata::script::{ScriptBuf, Builder};
 	use bitcoin::hash_types::{PubkeyHash, Txid};
 
 	use bitcoin::hashes::Hash;
@@ -169,8 +169,8 @@ mod tests {
 		);
 	}
 
-	fn script_from_hex(hex_str: &str) -> Script {
-		Script::from(decode(hex_str).unwrap())
+	fn script_from_hex(hex_str: &str) -> ScriptBuf {
+		ScriptBuf::from(decode(hex_str).unwrap())
 	}
 
 	macro_rules! bip_txout_tests {
@@ -215,11 +215,11 @@ mod tests {
 	fn test_tx_value_overrun() {
 		// If we have a bogus input amount or outputs valued more than inputs, we should fail
 		let mut tx = Transaction { version: 2, lock_time: PackedLockTime::ZERO, input: Vec::new(), output: vec![TxOut {
-			script_pubkey: Script::new(), value: 1000
+			script_pubkey: ScriptBuf::new(), value: 1000
 		}] };
-		assert!(maybe_add_change_output(&mut tx, 21_000_000_0000_0001, 0, 253, Script::new()).is_err());
-		assert!(maybe_add_change_output(&mut tx, 400, 0, 253, Script::new()).is_err());
-		assert!(maybe_add_change_output(&mut tx, 4000, 0, 253, Script::new()).is_ok());
+		assert!(maybe_add_change_output(&mut tx, 21_000_000_0000_0001, 0, 253, ScriptBuf::new()).is_err());
+		assert!(maybe_add_change_output(&mut tx, 400, 0, 253, ScriptBuf::new()).is_err());
+		assert!(maybe_add_change_output(&mut tx, 4000, 0, 253, ScriptBuf::new()).is_ok());
 	}
 
 	#[test]
@@ -227,7 +227,7 @@ mod tests {
 		// Check that we never add dust outputs
 		let mut tx = Transaction { version: 2, lock_time: PackedLockTime::ZERO, input: Vec::new(), output: Vec::new() };
 		let orig_wtxid = tx.wtxid();
-		let output_spk = Script::new_p2pkh(&PubkeyHash::hash(&[0; 0]));
+		let output_spk = ScriptBuf::new_p2pkh(&PubkeyHash::hash(&[0; 0]));
 		assert_eq!(output_spk.dust_value().to_sat(), 546);
 		// 9 sats isn't enough to pay fee on a dummy transaction...
 		assert_eq!(tx.weight() as u64, 40); // ie 10 vbytes
@@ -260,7 +260,7 @@ mod tests {
 	fn test_tx_extra_outputs() {
 		// Check that we correctly handle existing outputs
 		let mut tx = Transaction { version: 2, lock_time: PackedLockTime::ZERO, input: vec![TxIn {
-			previous_output: OutPoint::new(Txid::all_zeros(), 0), script_sig: Script::new(), witness: Witness::new(), sequence: Sequence::ZERO,
+			previous_output: OutPoint::new(Txid::all_zeros(), 0), script_sig: ScriptBuf::new(), witness: Witness::new(), sequence: Sequence::ZERO,
 		}], output: vec![TxOut {
 			script_pubkey: Builder::new().push_int(1).into_script(), value: 1000
 		}] };

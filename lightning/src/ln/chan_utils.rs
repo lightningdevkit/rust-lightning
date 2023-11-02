@@ -10,7 +10,7 @@
 //! Various utilities for building scripts and deriving keys related to channels. These are
 //! largely of interest for those implementing the traits on [`crate::sign`] by hand.
 
-use bitcoin::blockdata::script::{Script,Builder};
+use bitcoin::blockdata::script::{ScriptBuf,Builder};
 use bitcoin::blockdata::opcodes;
 use bitcoin::blockdata::transaction::{TxIn,TxOut,OutPoint,Transaction, EcdsaSighashType};
 use bitcoin::sighash;
@@ -181,12 +181,12 @@ pub fn build_commitment_secret(commitment_seed: &[u8; 32], idx: u64) -> [u8; 32]
 }
 
 /// Build a closing transaction
-pub fn build_closing_transaction(to_holder_value_sat: u64, to_counterparty_value_sat: u64, to_holder_script: Script, to_counterparty_script: Script, funding_outpoint: OutPoint) -> Transaction {
+pub fn build_closing_transaction(to_holder_value_sat: u64, to_counterparty_value_sat: u64, to_holder_script: ScriptBuf, to_counterparty_script: ScriptBuf, funding_outpoint: OutPoint) -> Transaction {
 	let txins = {
 		let mut ins: Vec<TxIn> = Vec::new();
 		ins.push(TxIn {
 			previous_output: funding_outpoint,
-			script_sig: Script::new(),
+			script_sig: ScriptBuf::new(),
 			sequence: Sequence::MAX,
 			witness: Witness::new(),
 		});
@@ -541,7 +541,7 @@ pub const REVOKEABLE_REDEEMSCRIPT_MAX_LENGTH: usize = 6 + 3 + 34*2;
 /// A script either spendable by the revocation
 /// key or the broadcaster_delayed_payment_key and satisfying the relative-locktime OP_CSV constrain.
 /// Encumbering a `to_holder` output on a commitment transaction or 2nd-stage HTLC transactions.
-pub fn get_revokeable_redeemscript(revocation_key: &PublicKey, contest_delay: u16, broadcaster_delayed_payment_key: &PublicKey) -> Script {
+pub fn get_revokeable_redeemscript(revocation_key: &PublicKey, contest_delay: u16, broadcaster_delayed_payment_key: &PublicKey) -> ScriptBuf {
 	let res = Builder::new().push_opcode(opcodes::all::OP_IF)
 	              .push_slice(&revocation_key.serialize())
 	              .push_opcode(opcodes::all::OP_ELSE)
@@ -558,11 +558,11 @@ pub fn get_revokeable_redeemscript(revocation_key: &PublicKey, contest_delay: u1
 
 /// Returns the script for the counterparty's output on a holder's commitment transaction based on
 /// the channel type.
-pub fn get_counterparty_payment_script(channel_type_features: &ChannelTypeFeatures, payment_key: &PublicKey) -> Script {
+pub fn get_counterparty_payment_script(channel_type_features: &ChannelTypeFeatures, payment_key: &PublicKey) -> ScriptBuf {
 	if channel_type_features.supports_anchors_zero_fee_htlc_tx() {
 		get_to_countersignatory_with_anchors_redeemscript(payment_key).to_v0_p2wsh()
 	} else {
-		Script::new_v0_p2wpkh(&WPubkeyHash::hash(&payment_key.serialize()))
+		ScriptBuf::new_v0_p2wpkh(&WPubkeyHash::hash(&payment_key.serialize()))
 	}
 }
 
@@ -596,7 +596,7 @@ impl_writeable_tlv_based!(HTLCOutputInCommitment, {
 });
 
 #[inline]
-pub(crate) fn get_htlc_redeemscript_with_explicit_keys(htlc: &HTLCOutputInCommitment, channel_type_features: &ChannelTypeFeatures, broadcaster_htlc_key: &PublicKey, countersignatory_htlc_key: &PublicKey, revocation_key: &PublicKey) -> Script {
+pub(crate) fn get_htlc_redeemscript_with_explicit_keys(htlc: &HTLCOutputInCommitment, channel_type_features: &ChannelTypeFeatures, broadcaster_htlc_key: &PublicKey, countersignatory_htlc_key: &PublicKey, revocation_key: &PublicKey) -> ScriptBuf {
 	let payment_hash160 = Ripemd160::hash(&htlc.payment_hash.0[..]).into_inner();
 	if htlc.offered {
 		let mut bldr = Builder::new().push_opcode(opcodes::all::OP_DUP)
@@ -673,20 +673,20 @@ pub(crate) fn get_htlc_redeemscript_with_explicit_keys(htlc: &HTLCOutputInCommit
 /// Gets the witness redeemscript for an HTLC output in a commitment transaction. Note that htlc
 /// does not need to have its previous_output_index filled.
 #[inline]
-pub fn get_htlc_redeemscript(htlc: &HTLCOutputInCommitment, channel_type_features: &ChannelTypeFeatures, keys: &TxCreationKeys) -> Script {
+pub fn get_htlc_redeemscript(htlc: &HTLCOutputInCommitment, channel_type_features: &ChannelTypeFeatures, keys: &TxCreationKeys) -> ScriptBuf {
 	get_htlc_redeemscript_with_explicit_keys(htlc, channel_type_features, &keys.broadcaster_htlc_key, &keys.countersignatory_htlc_key, &keys.revocation_key)
 }
 
 /// Gets the redeemscript for a funding output from the two funding public keys.
 /// Note that the order of funding public keys does not matter.
-pub fn make_funding_redeemscript(broadcaster: &PublicKey, countersignatory: &PublicKey) -> Script {
+pub fn make_funding_redeemscript(broadcaster: &PublicKey, countersignatory: &PublicKey) -> ScriptBuf {
 	let broadcaster_funding_key = broadcaster.serialize();
 	let countersignatory_funding_key = countersignatory.serialize();
 
 	make_funding_redeemscript_from_slices(&broadcaster_funding_key, &countersignatory_funding_key)
 }
 
-pub(crate) fn make_funding_redeemscript_from_slices(broadcaster_funding_key: &[u8], countersignatory_funding_key: &[u8]) -> Script {
+pub(crate) fn make_funding_redeemscript_from_slices(broadcaster_funding_key: &[u8], countersignatory_funding_key: &[u8]) -> ScriptBuf {
 	let builder = Builder::new().push_opcode(opcodes::all::OP_PUSHNUM_2);
 	if broadcaster_funding_key[..] < countersignatory_funding_key[..] {
 		builder.push_slice(broadcaster_funding_key)
@@ -728,7 +728,7 @@ pub(crate) fn build_htlc_input(commitment_txid: &Txid, htlc: &HTLCOutputInCommit
 			txid: commitment_txid.clone(),
 			vout: htlc.transaction_output_index.expect("Can't build an HTLC transaction for a dust output"),
 		},
-		script_sig: Script::new(),
+		script_sig: ScriptBuf::new(),
 		sequence: Sequence(if channel_type_features.supports_anchors_zero_fee_htlc_tx() { 1 } else { 0 }),
 		witness: Witness::new(),
 	}
@@ -758,7 +758,7 @@ pub(crate) fn build_htlc_output(
 /// Returns the witness required to satisfy and spend a HTLC input.
 pub fn build_htlc_input_witness(
 	local_sig: &Signature, remote_sig: &Signature, preimage: &Option<PaymentPreimage>,
-	redeem_script: &Script, channel_type_features: &ChannelTypeFeatures,
+	redeem_script: &ScriptBuf, channel_type_features: &ChannelTypeFeatures,
 ) -> Witness {
 	let remote_sighash_type = if channel_type_features.supports_anchors_zero_fee_htlc_tx() {
 		EcdsaSighashType::SinglePlusAnyoneCanPay
@@ -814,7 +814,7 @@ pub(crate) fn legacy_deserialization_prevention_marker_for_channel_type_features
 
 /// Gets the witnessScript for the to_remote output when anchors are enabled.
 #[inline]
-pub fn get_to_countersignatory_with_anchors_redeemscript(payment_point: &PublicKey) -> Script {
+pub fn get_to_countersignatory_with_anchors_redeemscript(payment_point: &PublicKey) -> ScriptBuf {
 	Builder::new()
 		.push_slice(&payment_point.serialize()[..])
 		.push_opcode(opcodes::all::OP_CHECKSIGVERIFY)
@@ -830,7 +830,7 @@ pub fn get_to_countersignatory_with_anchors_redeemscript(payment_point: &PublicK
 /// <>
 /// (empty vector required to satisfy compliance with MINIMALIF-standard rule)
 #[inline]
-pub fn get_anchor_redeemscript(funding_pubkey: &PublicKey) -> Script {
+pub fn get_anchor_redeemscript(funding_pubkey: &PublicKey) -> ScriptBuf {
 	Builder::new().push_slice(&funding_pubkey.serialize()[..])
 		.push_opcode(opcodes::all::OP_CHECKSIG)
 		.push_opcode(opcodes::all::OP_IFDUP)
@@ -1125,7 +1125,7 @@ impl HolderCommitmentTransaction {
 		}
 	}
 
-	pub(crate) fn add_holder_sig(&self, funding_redeemscript: &Script, holder_sig: Signature) -> Transaction {
+	pub(crate) fn add_holder_sig(&self, funding_redeemscript: &ScriptBuf, holder_sig: Signature) -> Transaction {
 		// First push the multisig dummy, note that due to BIP147 (NULLDUMMY) it must be a zero-length element.
 		let mut tx = self.inner.built.transaction.clone();
 		tx.input[0].witness.push(Vec::new());
@@ -1164,20 +1164,20 @@ impl BuiltCommitmentTransaction {
 	/// Get the SIGHASH_ALL sighash value of the transaction.
 	///
 	/// This can be used to verify a signature.
-	pub fn get_sighash_all(&self, funding_redeemscript: &Script, channel_value_satoshis: u64) -> Message {
+	pub fn get_sighash_all(&self, funding_redeemscript: &ScriptBuf, channel_value_satoshis: u64) -> Message {
 		let sighash = &sighash::SighashCache::new(&self.transaction).segwit_signature_hash(0, funding_redeemscript, channel_value_satoshis, EcdsaSighashType::All).unwrap()[..];
 		hash_to_message!(sighash)
 	}
 
 	/// Signs the counterparty's commitment transaction.
-	pub fn sign_counterparty_commitment<T: secp256k1::Signing>(&self, funding_key: &SecretKey, funding_redeemscript: &Script, channel_value_satoshis: u64, secp_ctx: &Secp256k1<T>) -> Signature {
+	pub fn sign_counterparty_commitment<T: secp256k1::Signing>(&self, funding_key: &SecretKey, funding_redeemscript: &ScriptBuf, channel_value_satoshis: u64, secp_ctx: &Secp256k1<T>) -> Signature {
 		let sighash = self.get_sighash_all(funding_redeemscript, channel_value_satoshis);
 		sign(secp_ctx, &sighash, funding_key)
 	}
 
 	/// Signs the holder commitment transaction because we are about to broadcast it.
 	pub fn sign_holder_commitment<T: secp256k1::Signing, ES: Deref>(
-		&self, funding_key: &SecretKey, funding_redeemscript: &Script, channel_value_satoshis: u64,
+		&self, funding_key: &SecretKey, funding_redeemscript: &ScriptBuf, channel_value_satoshis: u64,
 		entropy_source: &ES, secp_ctx: &Secp256k1<T>
 	) -> Signature where ES::Target: EntropySource {
 		let sighash = self.get_sighash_all(funding_redeemscript, channel_value_satoshis);
@@ -1194,8 +1194,8 @@ impl BuiltCommitmentTransaction {
 pub struct ClosingTransaction {
 	to_holder_value_sat: u64,
 	to_counterparty_value_sat: u64,
-	to_holder_script: Script,
-	to_counterparty_script: Script,
+	to_holder_script: ScriptBuf,
+	to_counterparty_script: ScriptBuf,
 	built: Transaction,
 }
 
@@ -1204,8 +1204,8 @@ impl ClosingTransaction {
 	pub fn new(
 		to_holder_value_sat: u64,
 		to_counterparty_value_sat: u64,
-		to_holder_script: Script,
-		to_counterparty_script: Script,
+		to_holder_script: ScriptBuf,
+		to_counterparty_script: ScriptBuf,
 		funding_outpoint: OutPoint,
 	) -> Self {
 		let built = build_closing_transaction(
@@ -1261,12 +1261,12 @@ impl ClosingTransaction {
 	}
 
 	/// The destination of the holder's output
-	pub fn to_holder_script(&self) -> &Script {
+	pub fn to_holder_script(&self) -> &ScriptBuf {
 		&self.to_holder_script
 	}
 
 	/// The destination of the counterparty's output
-	pub fn to_counterparty_script(&self) -> &Script {
+	pub fn to_counterparty_script(&self) -> &ScriptBuf {
 		&self.to_counterparty_script
 	}
 }
@@ -1296,14 +1296,14 @@ impl<'a> TrustedClosingTransaction<'a> {
 	/// Get the SIGHASH_ALL sighash value of the transaction.
 	///
 	/// This can be used to verify a signature.
-	pub fn get_sighash_all(&self, funding_redeemscript: &Script, channel_value_satoshis: u64) -> Message {
+	pub fn get_sighash_all(&self, funding_redeemscript: &ScriptBuf, channel_value_satoshis: u64) -> Message {
 		let sighash = &sighash::SighashCache::new(&self.inner.built).segwit_signature_hash(0, funding_redeemscript, channel_value_satoshis, EcdsaSighashType::All).unwrap()[..];
 		hash_to_message!(sighash)
 	}
 
 	/// Sign a transaction, either because we are counter-signing the counterparty's transaction or
 	/// because we are about to broadcast a holder transaction.
-	pub fn sign<T: secp256k1::Signing>(&self, funding_key: &SecretKey, funding_redeemscript: &Script, channel_value_satoshis: u64, secp_ctx: &Secp256k1<T>) -> Signature {
+	pub fn sign<T: secp256k1::Signing>(&self, funding_key: &SecretKey, funding_redeemscript: &ScriptBuf, channel_value_satoshis: u64, secp_ctx: &Secp256k1<T>) -> Signature {
 		let sighash = self.get_sighash_all(funding_redeemscript, channel_value_satoshis);
 		sign(secp_ctx, &sighash, funding_key)
 	}
@@ -1584,7 +1584,7 @@ impl CommitmentTransaction {
 			let mut ins: Vec<TxIn> = Vec::new();
 			ins.push(TxIn {
 				previous_output: channel_parameters.funding_outpoint(),
-				script_sig: Script::new(),
+				script_sig: ScriptBuf::new(),
 				sequence: Sequence(((0x80 as u32) << 8 * 3)
 					| ((obscured_commitment_transaction_number >> 3 * 8) as u32)),
 				witness: Witness::new(),
@@ -1794,7 +1794,7 @@ impl<'a> TrustedCommitmentTransaction<'a> {
 	/// The built transaction will allow fee bumping with RBF, and this method takes
 	/// `feerate_per_kw` as an input such that multiple copies of a justice transaction at different
 	/// fee rates may be built.
-	pub fn build_to_local_justice_tx(&self, feerate_per_kw: u64, destination_script: Script)
+	pub fn build_to_local_justice_tx(&self, feerate_per_kw: u64, destination_script: ScriptBuf)
 	-> Result<Transaction, ()> {
 		let output_idx = self.revokeable_output_index().ok_or(())?;
 		let input = vec![TxIn {
@@ -1802,7 +1802,7 @@ impl<'a> TrustedCommitmentTransaction<'a> {
 				txid: self.trust().txid(),
 				vout: output_idx as u32,
 			},
-			script_sig: Script::new(),
+			script_sig: ScriptBuf::new(),
 			sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
 			witness: Witness::new(),
 		}];
@@ -1864,7 +1864,7 @@ mod tests {
 	use bitcoin::secp256k1::{PublicKey, SecretKey, Secp256k1};
 	use crate::util::test_utils;
 	use crate::sign::{ChannelSigner, SignerProvider};
-	use bitcoin::{Network, Txid, Script};
+	use bitcoin::{Network, Txid, ScriptBuf};
 	use bitcoin::hashes::Hash;
 	use crate::ln::PaymentHash;
 	use bitcoin::hashes::hex::ToHex;
@@ -2023,14 +2023,14 @@ mod tests {
 		// Revokeable output not present (our balance is dust)
 		let tx = builder.build(0, 2000);
 		assert_eq!(tx.built.transaction.output.len(), 1);
-		assert!(tx.trust().build_to_local_justice_tx(253, Script::new()).is_err());
+		assert!(tx.trust().build_to_local_justice_tx(253, ScriptBuf::new()).is_err());
 
 		// Revokeable output present
 		let tx = builder.build(1000, 2000);
 		assert_eq!(tx.built.transaction.output.len(), 2);
 
 		// Too high feerate
-		assert!(tx.trust().build_to_local_justice_tx(100_000, Script::new()).is_err());
+		assert!(tx.trust().build_to_local_justice_tx(100_000, ScriptBuf::new()).is_err());
 
 		// Generate a random public key for destination script
 		let secret_key = SecretKey::from_slice(
@@ -2038,7 +2038,7 @@ mod tests {
 			.unwrap()[..]).unwrap();
 		let pubkey_hash = BitcoinPublicKey::new(
 			PublicKey::from_secret_key(&Secp256k1::new(), &secret_key)).wpubkey_hash().unwrap();
-		let destination_script = Script::new_v0_p2wpkh(&pubkey_hash);
+		let destination_script = ScriptBuf::new_v0_p2wpkh(&pubkey_hash);
 
 		let justice_tx = tx.trust().build_to_local_justice_tx(253, destination_script.clone()).unwrap();
 		assert_eq!(justice_tx.input.len(), 1);

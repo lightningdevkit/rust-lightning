@@ -38,7 +38,7 @@ use crate::util::string::UntrustedString;
 use crate::util::config::{UserConfig, MaxDustHTLCExposure};
 
 use bitcoin::hash_types::BlockHash;
-use bitcoin::blockdata::script::{Builder, Script};
+use bitcoin::blockdata::script::{Builder, ScriptBuf};
 use bitcoin::blockdata::opcodes;
 use bitcoin::blockdata::constants::ChainHash;
 use bitcoin::network::constants::Network;
@@ -9182,10 +9182,10 @@ fn test_invalid_funding_tx() {
 	// a panic as we'd try to extract a 32 byte preimage from a witness element without checking
 	// its length.
 	let mut wit_program: Vec<u8> = channelmonitor::deliberately_bogus_accepted_htlc_witness_program();
-	let wit_program_script: Script = wit_program.into();
+	let wit_program_script: ScriptBuf = wit_program.into();
 	for output in tx.output.iter_mut() {
 		// Make the confirmed funding transaction have a bogus script_pubkey
-		output.script_pubkey = Script::new_v0_p2wsh(&wit_program_script.wscript_hash());
+		output.script_pubkey = ScriptBuf::new_v0_p2wsh(&wit_program_script.wscript_hash());
 	}
 
 	nodes[0].node.funding_transaction_generated_unchecked(&temporary_channel_id, &nodes[1].node.get_our_node_id(), tx.clone(), 0).unwrap();
@@ -9229,13 +9229,13 @@ fn test_invalid_funding_tx() {
 				txid: tx.txid(),
 				vout: idx as u32,
 			},
-			script_sig: Script::new(),
+			script_sig: ScriptBuf::new(),
 			sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
 			witness: Witness::from_vec(channelmonitor::deliberately_bogus_accepted_htlc_witness())
 		}).collect(),
 		output: vec![TxOut {
 			value: 1000,
-			script_pubkey: Script::new(),
+			script_pubkey: ScriptBuf::new(),
 		}]
 	};
 	check_spends!(spend_tx, tx);
@@ -9883,7 +9883,7 @@ fn test_non_final_funding_tx() {
 
 	let chan_id = *nodes[0].network_chan_count.borrow();
 	let events = nodes[0].node.get_and_clear_pending_events();
-	let input = TxIn { previous_output: BitcoinOutPoint::null(), script_sig: bitcoin::Script::new(), sequence: Sequence(1), witness: Witness::from_vec(vec!(vec!(1))) };
+	let input = TxIn { previous_output: BitcoinOutPoint::null(), script_sig: bitcoin::ScriptBuf::new(), sequence: Sequence(1), witness: Witness::from_vec(vec!(vec!(1))) };
 	assert_eq!(events.len(), 1);
 	let mut tx = match events[0] {
 		Event::FundingGenerationReady { ref channel_value_satoshis, ref output_script, .. } => {
@@ -9928,7 +9928,7 @@ fn test_non_final_funding_tx_within_headroom() {
 
 	let chan_id = *nodes[0].network_chan_count.borrow();
 	let events = nodes[0].node.get_and_clear_pending_events();
-	let input = TxIn { previous_output: BitcoinOutPoint::null(), script_sig: bitcoin::Script::new(), sequence: Sequence(1), witness: Witness::from_vec(vec!(vec!(1))) };
+	let input = TxIn { previous_output: BitcoinOutPoint::null(), script_sig: bitcoin::ScriptBuf::new(), sequence: Sequence(1), witness: Witness::from_vec(vec!(vec!(1))) };
 	assert_eq!(events.len(), 1);
 	let mut tx = match events[0] {
 		Event::FundingGenerationReady { ref channel_value_satoshis, ref output_script, .. } => {

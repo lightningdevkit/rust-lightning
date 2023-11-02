@@ -780,7 +780,7 @@ fn test_unsupported_anysegwit_upfront_shutdown_script() {
 	match events[0] {
 		MessageSendEvent::HandleError { action: ErrorAction::SendErrorMessage { ref msg }, node_id } => {
 			assert_eq!(node_id, nodes[0].node.get_our_node_id());
-			assert_eq!(msg.data, "Peer is signaling upfront_shutdown but has provided an unacceptable scriptpubkey format: Script(OP_PUSHNUM_16 OP_PUSHBYTES_2 0028)");
+			assert_eq!(msg.data, "Peer is signaling upfront_shutdown but has provided an unacceptable scriptpubkey format: ScriptBuf(OP_PUSHNUM_16 OP_PUSHBYTES_2 0028)");
 		},
 		_ => panic!("Unexpected event"),
 	}
@@ -805,11 +805,11 @@ fn test_unsupported_anysegwit_upfront_shutdown_script() {
 	match events[0] {
 		MessageSendEvent::HandleError { action: ErrorAction::SendErrorMessage { ref msg }, node_id } => {
 			assert_eq!(node_id, nodes[1].node.get_our_node_id());
-			assert_eq!(msg.data, "Peer is signaling upfront_shutdown but has provided an unacceptable scriptpubkey format: Script(OP_PUSHNUM_16 OP_PUSHBYTES_2 0028)");
+			assert_eq!(msg.data, "Peer is signaling upfront_shutdown but has provided an unacceptable scriptpubkey format: ScriptBuf(OP_PUSHNUM_16 OP_PUSHBYTES_2 0028)");
 		},
 		_ => panic!("Unexpected event"),
 	}
-	check_closed_event!(nodes[0], 1, ClosureReason::ProcessingError { err: "Peer is signaling upfront_shutdown but has provided an unacceptable scriptpubkey format: Script(OP_PUSHNUM_16 OP_PUSHBYTES_2 0028)".to_string() }
+	check_closed_event!(nodes[0], 1, ClosureReason::ProcessingError { err: "Peer is signaling upfront_shutdown but has provided an unacceptable scriptpubkey format: ScriptBuf(OP_PUSHNUM_16 OP_PUSHBYTES_2 0028)".to_string() }
 		, [nodes[1].node.get_our_node_id()], 100000);
 }
 
@@ -834,7 +834,7 @@ fn test_invalid_upfront_shutdown_script() {
 	match events[0] {
 		MessageSendEvent::HandleError { action: ErrorAction::SendErrorMessage { ref msg }, node_id } => {
 			assert_eq!(node_id, nodes[0].node.get_our_node_id());
-			assert_eq!(msg.data, "Peer is signaling upfront_shutdown but has provided an unacceptable scriptpubkey format: Script(OP_0 OP_PUSHBYTES_2 0000)");
+			assert_eq!(msg.data, "Peer is signaling upfront_shutdown but has provided an unacceptable scriptpubkey format: ScriptBuf(OP_0 OP_PUSHBYTES_2 0000)");
 		},
 		_ => panic!("Unexpected event"),
 	}

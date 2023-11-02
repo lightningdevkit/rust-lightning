@@ -6,7 +6,7 @@ use lightning::{log_error, log_info, log_debug, log_trace};
 use lightning::chain::WatchedOutput;
 use lightning::chain::{Confirm, Filter};
 
-use bitcoin::{BlockHash, Script, Txid};
+use bitcoin::{BlockHash, ScriptBuf, Txid};
 
 use esplora_client::Builder;
 #[cfg(feature = "async-interface")]
@@ -371,7 +371,7 @@ impl<L: Deref> Filter for EsploraSyncClient<L>
 where
 	L::Target: Logger,
 {
-	fn register_tx(&self, txid: &Txid, _script_pubkey: &Script) {
+	fn register_tx(&self, txid: &Txid, _script_pubkey: &ScriptBuf) {
 		let mut locked_queue = self.queue.lock().unwrap();
 		locked_queue.transactions.insert(*txid);
 	}

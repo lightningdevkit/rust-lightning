@@ -22,7 +22,7 @@
 
 use bitcoin::blockdata::block::BlockHeader;
 use bitcoin::blockdata::transaction::{OutPoint as BitcoinOutPoint, TxOut, Transaction};
-use bitcoin::blockdata::script::Script;
+use bitcoin::blockdata::script::ScriptBuf;
 
 use bitcoin::hashes::Hash;
 use bitcoin::hashes::sha256::Hash as Sha256;
@@ -515,7 +515,7 @@ pub(crate) enum ChannelMonitorUpdateStep {
 		should_broadcast: bool,
 	},
 	ShutdownScript {
-		scriptpubkey: Script,
+		scriptpubkey: ScriptBuf,
 	},
 }
 
@@ -749,19 +749,19 @@ pub(crate) struct ChannelMonitorImpl<Signer: WriteableEcdsaChannelSigner> {
 	latest_update_id: u64,
 	commitment_transaction_number_obscure_factor: u64,
 
-	destination_script: Script,
-	broadcasted_holder_revokable_script: Option<(Script, PublicKey, PublicKey)>,
-	counterparty_payment_script: Script,
-	shutdown_script: Option<Script>,
+	destination_script: ScriptBuf,
+	broadcasted_holder_revokable_script: Option<(ScriptBuf, PublicKey, PublicKey)>,
+	counterparty_payment_script: ScriptBuf,
+	shutdown_script: Option<ScriptBuf>,
 
 	channel_keys_id: [u8; 32],
 	holder_revocation_basepoint: PublicKey,
-	funding_info: (OutPoint, Script),
+	funding_info: (OutPoint, ScriptBuf),
 	current_counterparty_commitment_txid: Option<Txid>,
 	prev_counterparty_commitment_txid: Option<Txid>,
 
 	counterparty_commitment_params: CounterpartyCommitmentParameters,
-	funding_redeemscript: Script,
+	funding_redeemscript: ScriptBuf,
 	channel_value_satoshis: u64,
 	// first is the idx of the first of the two per-commitment points
 	their_cur_per_commitment_points: Option<(u64, PublicKey, Option<PublicKey>)>,
@@ -830,7 +830,7 @@ pub(crate) struct ChannelMonitorImpl<Signer: WriteableEcdsaChannelSigner> {
 	// interface knows about the TXOs that we want to be notified of spends of. We could probably
 	// be smart and derive them from the above storage fields, but its much simpler and more
 	// Obviously Correct (tm) if we just keep track of them explicitly.
-	outputs_to_watch: HashMap<Txid, Vec<(u32, Script)>>,
+	outputs_to_watch: HashMap<Txid, Vec<(u32, ScriptBuf)>>,
 
 	#[cfg(test)]
 	pub onchain_tx_handler: OnchainTxHandler<Signer>,
@@ -939,7 +939,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Writeable for ChannelMonitorImpl<Signe
 		self.counterparty_payment_script.write(writer)?;
 		match &self.shutdown_script {
 			Some(script) => script.write(writer)?,
-			None => Script::new().write(writer)?,
+			None => ScriptBuf::new().write(writer)?,
 		}
 
 		self.channel_keys_id.write(writer)?;
@@ -1131,10 +1131,10 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 		ChannelMonitor { inner: Mutex::new(imp) }
 	}
 
-	pub(crate) fn new(secp_ctx: Secp256k1<secp256k1::All>, keys: Signer, shutdown_script: Option<Script>,
-	                  on_counterparty_tx_csv: u16, destination_script: &Script, funding_info: (OutPoint, Script),
+	pub(crate) fn new(secp_ctx: Secp256k1<secp256k1::All>, keys: Signer, shutdown_script: Option<ScriptBuf>,
+	                  on_counterparty_tx_csv: u16, destination_script: &ScriptBuf, funding_info: (OutPoint, ScriptBuf),
 	                  channel_parameters: &ChannelTransactionParameters,
-	                  funding_redeemscript: Script, channel_value_satoshis: u64,
+	                  funding_redeemscript: ScriptBuf, channel_value_satoshis: u64,
 	                  commitment_transaction_number_obscure_factor: u64,
 	                  initial_holder_commitment_tx: HolderCommitmentTransaction,
 	                  best_block: BestBlock, counterparty_node_id: PublicKey) -> ChannelMonitor<Signer> {
@@ -1330,13 +1330,13 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 	}
 
 	/// Gets the funding transaction outpoint of the channel this ChannelMonitor is monitoring for.
-	pub fn get_funding_txo(&self) -> (OutPoint, Script) {
+	pub fn get_funding_txo(&self) -> (OutPoint, ScriptBuf) {
 		self.inner.lock().unwrap().get_funding_txo().clone()
 	}
 
 	/// Gets a list of txids, with their output scripts (in the order they appear in the
 	/// transaction), which we must learn about spends of via block_connected().
-	pub fn get_outputs_to_watch(&self) -> Vec<(Txid, Vec<(u32, Script)>)> {
+	pub fn get_outputs_to_watch(&self) -> Vec<(Txid, Vec<(u32, ScriptBuf)>)> {
 		self.inner.lock().unwrap().get_outputs_to_watch()
 			.iter().map(|(txid, outputs)| (*txid, outputs.clone())).collect()
 	}
@@ -1705,12 +1705,12 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 	}
 
 	#[cfg(test)]
-	pub fn get_counterparty_payment_script(&self) -> Script{
+	pub fn get_counterparty_payment_script(&self) -> ScriptBuf{
 		self.inner.lock().unwrap().counterparty_payment_script.clone()
 	}
 
 	#[cfg(test)]
-	pub fn set_counterparty_payment_script(&self, script: Script) {
+	pub fn set_counterparty_payment_script(&self, script: ScriptBuf) {
 		self.inner.lock().unwrap().counterparty_payment_script = script;
 	}
 }
@@ -2765,11 +2765,11 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		self.latest_update_id
 	}
 
-	pub fn get_funding_txo(&self) -> &(OutPoint, Script) {
+	pub fn get_funding_txo(&self) -> &(OutPoint, ScriptBuf) {
 		&self.funding_info
 	}
 
-	pub fn get_outputs_to_watch(&self) -> &HashMap<Txid, Vec<(u32, Script)>> {
+	pub fn get_outputs_to_watch(&self) -> &HashMap<Txid, Vec<(u32, ScriptBuf)>> {
 		// If we've detected a counterparty commitment tx on chain, we must include it in the set
 		// of outputs to watch for spends of, otherwise we're likely to lose user funds. Because
 		// its trivial to do, double-check that here.
@@ -3202,7 +3202,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 	// Returns (1) `PackageTemplate`s that can be given to the OnchainTxHandler, so that the handler can
 	// broadcast transactions claiming holder HTLC commitment outputs and (2) a holder revokable
 	// script so we can detect whether a holder transaction has been seen on-chain.
-	fn get_broadcasted_holder_claims(&self, holder_tx: &HolderSignedTx, conf_height: u32) -> (Vec<PackageTemplate>, Option<(Script, PublicKey, PublicKey)>) {
+	fn get_broadcasted_holder_claims(&self, holder_tx: &HolderSignedTx, conf_height: u32) -> (Vec<PackageTemplate>, Option<(ScriptBuf, PublicKey, PublicKey)>) {
 		let mut claim_requests = Vec::with_capacity(holder_tx.htlc_outputs.len());
 
 		let redeemscript = chan_utils::get_revokeable_redeemscript(&holder_tx.revocation_key, self.on_holder_tx_csv, &holder_tx.delayed_payment_key);
@@ -3790,7 +3790,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 									return true;
 								}
 
-								assert_eq!(&bitcoin::Address::p2wsh(&Script::from(input.witness.last().unwrap().to_vec()), bitcoin::Network::Bitcoin).script_pubkey(), _script_pubkey);
+								assert_eq!(&bitcoin::Address::p2wsh(&ScriptBuf::from(input.witness.last().unwrap().to_vec()), bitcoin::Network::Bitcoin).script_pubkey(), _script_pubkey);
 							} else if _script_pubkey.is_v0_p2wpkh() {
 								assert_eq!(&bitcoin::Address::p2wpkh(&bitcoin::PublicKey::from_slice(&input.witness.last().unwrap()).unwrap(), bitcoin::Network::Bitcoin).unwrap().script_pubkey(), _script_pubkey);
 							} else { panic!(); }
@@ -4206,9 +4206,9 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 			1 => { None },
 			_ => return Err(DecodeError::InvalidValue),
 		};
-		let mut counterparty_payment_script: Script = Readable::read(reader)?;
+		let mut counterparty_payment_script: ScriptBuf = Readable::read(reader)?;
 		let shutdown_script = {
-			let script = <Script as Readable>::read(reader)?;
+			let script = <ScriptBuf as Readable>::read(reader)?;
 			if script.is_empty() { None } else { Some(script) }
 		};
 
@@ -4351,11 +4351,11 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 		}
 
 		let outputs_to_watch_len: u64 = Readable::read(reader)?;
-		let mut outputs_to_watch = HashMap::with_capacity(cmp::min(outputs_to_watch_len as usize, MAX_ALLOC_SIZE / (mem::size_of::<Txid>() + mem::size_of::<u32>() + mem::size_of::<Vec<Script>>())));
+		let mut outputs_to_watch = HashMap::with_capacity(cmp::min(outputs_to_watch_len as usize, MAX_ALLOC_SIZE / (mem::size_of::<Txid>() + mem::size_of::<u32>() + mem::size_of::<Vec<ScriptBuf>>())));
 		for _ in 0..outputs_to_watch_len {
 			let txid = Readable::read(reader)?;
 			let outputs_len: u64 = Readable::read(reader)?;
-			let mut outputs = Vec::with_capacity(cmp::min(outputs_len as usize, MAX_ALLOC_SIZE / (mem::size_of::<u32>() + mem::size_of::<Script>())));
+			let mut outputs = Vec::with_capacity(cmp::min(outputs_len as usize, MAX_ALLOC_SIZE / (mem::size_of::<u32>() + mem::size_of::<ScriptBuf>())));
 			for _ in 0..outputs_len {
 				outputs.push((Readable::read(reader)?, Readable::read(reader)?));
 			}
@@ -4478,7 +4478,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 
 #[cfg(test)]
 mod tests {
-	use bitcoin::blockdata::script::{Script, Builder};
+	use bitcoin::blockdata::script::{ScriptBuf, Builder};
 	use bitcoin::blockdata::opcodes;
 	use bitcoin::blockdata::transaction::{Transaction, TxIn, TxOut, EcdsaSighashType};
 	use bitcoin::blockdata::transaction::OutPoint as BitcoinOutPoint;
@@ -4692,9 +4692,9 @@ mod tests {
 		let shutdown_pubkey = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 		let best_block = BestBlock::from_network(Network::Testnet);
 		let monitor = ChannelMonitor::new(Secp256k1::new(), keys,
-			Some(ShutdownScript::new_p2wpkh_from_pubkey(shutdown_pubkey).into_inner()), 0, &Script::new(),
-			(OutPoint { txid: Txid::from_slice(&[43; 32]).unwrap(), index: 0 }, Script::new()),
-			&channel_parameters, Script::new(), 46, 0, HolderCommitmentTransaction::dummy(&mut Vec::new()),
+			Some(ShutdownScript::new_p2wpkh_from_pubkey(shutdown_pubkey).into_inner()), 0, &ScriptBuf::new(),
+			(OutPoint { txid: Txid::from_slice(&[43; 32]).unwrap(), index: 0 }, ScriptBuf::new()),
+			&channel_parameters, ScriptBuf::new(), 46, 0, HolderCommitmentTransaction::dummy(&mut Vec::new()),
 			best_block, dummy_key);
 
 		let mut htlcs = preimages_slice_to_htlcs!(preimages[0..10]);
@@ -4810,7 +4810,7 @@ mod tests {
 						txid,
 						vout: i,
 					},
-					script_sig: Script::new(),
+					script_sig: ScriptBuf::new(),
 					sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
 					witness: Witness::new(),
 				});
@@ -4842,7 +4842,7 @@ mod tests {
 						txid,
 						vout: i,
 					},
-					script_sig: Script::new(),
+					script_sig: ScriptBuf::new(),
 					sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
 					witness: Witness::new(),
 				});
@@ -4873,7 +4873,7 @@ mod tests {
 					txid,
 					vout: 0,
 				},
-				script_sig: Script::new(),
+				script_sig: ScriptBuf::new(),
 				sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
 				witness: Witness::new(),
 			});

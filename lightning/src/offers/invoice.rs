@@ -1303,7 +1303,7 @@ mod tests {
 	use super::{Bolt12Invoice, DEFAULT_RELATIVE_EXPIRY, FallbackAddress, FullInvoiceTlvStreamRef, InvoiceTlvStreamRef, SIGNATURE_TAG, UnsignedBolt12Invoice};
 
 	use bitcoin::blockdata::constants::ChainHash;
-	use bitcoin::blockdata::script::Script;
+	use bitcoin::blockdata::script::ScriptBuf;
 	use bitcoin::hashes::Hash;
 	use bitcoin::network::constants::Network;
 	use bitcoin::secp256k1::{Message, Secp256k1, XOnlyPublicKey, self};
@@ -1804,7 +1804,7 @@ mod tests {
 
 	#[test]
 	fn builds_invoice_with_fallback_address() {
-		let script = Script::new();
+		let script = ScriptBuf::new();
 		let pubkey = bitcoin::key::PublicKey::new(recipient_pubkey());
 		let x_only_pubkey = XOnlyPublicKey::from_keypair(&recipient_keys()).0;
 		let tweaked_pubkey = TweakedPublicKey::dangerous_assume_tweaked(x_only_pubkey);
@@ -2093,7 +2093,7 @@ mod tests {
 
 	#[test]
 	fn parses_invoice_with_fallback_address() {
-		let script = Script::new();
+		let script = ScriptBuf::new();
 		let pubkey = bitcoin::key::PublicKey::new(recipient_pubkey());
 		let x_only_pubkey = XOnlyPublicKey::from_keypair(&recipient_keys()).0;
 		let tweaked_pubkey = TweakedPublicKey::dangerous_assume_tweaked(x_only_pubkey);

@@ -31,7 +31,7 @@ use crate::util::string::UntrustedString;
 use crate::routing::router::{BlindedTail, Path, RouteHop, RouteParameters};
 
 use bitcoin::{PackedLockTime, Transaction, OutPoint};
-use bitcoin::blockdata::script::Script;
+use bitcoin::blockdata::script::ScriptBuf;
 use bitcoin::hashes::Hash;
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::secp256k1::PublicKey;
@@ -378,7 +378,7 @@ pub enum Event {
 		/// The value, in satoshis, that the output should have.
 		channel_value_satoshis: u64,
 		/// The script which should be used in the transaction output.
-		output_script: Script,
+		output_script: ScriptBuf,
 		/// The `user_channel_id` value passed in to [`ChannelManager::create_channel`] for outbound
 		/// channels, or to [`ChannelManager::accept_inbound_channel`] for inbound channels if
 		/// [`UserConfig::manually_accept_inbound_channels`] config flag is set to true. Otherwise

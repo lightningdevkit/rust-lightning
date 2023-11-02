@@ -1,7 +1,7 @@
 //! Abstractions for scripts used in the Lightning Network.
 
 use bitcoin::blockdata::opcodes::all::OP_PUSHBYTES_0 as SEGWIT_V0;
-use bitcoin::blockdata::script::{Builder, Script};
+use bitcoin::blockdata::script::{Builder, ScriptBuf};
 use bitcoin::hashes::Hash;
 use bitcoin::hash_types::{WPubkeyHash, WScriptHash};
 use bitcoin::secp256k1::PublicKey;
@@ -21,13 +21,13 @@ use crate::io;
 #[derive(Clone, PartialEq, Eq)]
 pub struct ShutdownScript(ShutdownScriptImpl);
 
-/// An error occurring when converting from [`Script`] to [`ShutdownScript`].
+/// An error occurring when converting from [`ScriptBuf`] to [`ShutdownScript`].
 #[derive(Clone, Debug)]
 pub struct InvalidShutdownScript {
 	/// The script that did not meet the requirements from [BOLT #2].
 	///
 	/// [BOLT #2]: https://github.com/lightning/bolts/blob/master/02-peer-protocol.md
-	pub script: Script
+	pub script: ScriptBuf
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -36,8 +36,8 @@ enum ShutdownScriptImpl {
 	/// serialization.
 	Legacy(PublicKey),
 
-	/// [`Script`] adhering to a script pubkey format specified in BOLT #2.
-	Bolt2(Script),
+	/// [`ScriptBuf`] adhering to a script pubkey format specified in BOLT #2.
+	Bolt2(ScriptBuf),
 }
 
 impl Writeable for ShutdownScript {
@@ -69,12 +69,12 @@ impl ShutdownScript {
 
 	/// Generates a P2WPKH script pubkey from the given [`WPubkeyHash`].
 	pub fn new_p2wpkh(pubkey_hash: &WPubkeyHash) -> Self {
-		Self(ShutdownScriptImpl::Bolt2(Script::new_v0_p2wpkh(pubkey_hash)))
+		Self(ShutdownScriptImpl::Bolt2(ScriptBuf::new_v0_p2wpkh(pubkey_hash)))
 	}
 
 	/// Generates a P2WSH script pubkey from the given [`WScriptHash`].
 	pub fn new_p2wsh(script_hash: &WScriptHash) -> Self {
-		Self(ShutdownScriptImpl::Bolt2(Script::new_v0_p2wsh(script_hash)))
+		Self(ShutdownScriptImpl::Bolt2(ScriptBuf::new_v0_p2wsh(script_hash)))
 	}
 
 	/// Generates a witness script pubkey from the given segwit version and program.
@@ -93,8 +93,8 @@ impl ShutdownScript {
 		Self::try_from(script)
 	}
 
-	/// Converts the shutdown script into the underlying [`Script`].
-	pub fn into_inner(self) -> Script {
+	/// Converts the shutdown script into the underlying [`ScriptBuf`].
+	pub fn into_inner(self) -> ScriptBuf {
 		self.into()
 	}
 
@@ -119,7 +119,7 @@ impl ShutdownScript {
 
 /// Check if a given script is compliant with BOLT 2's shutdown script requirements for the given
 /// counterparty features.
-pub(crate) fn is_bolt2_compliant(script: &Script, features: &InitFeatures) -> bool {
+pub(crate) fn is_bolt2_compliant(script: &ScriptBuf, features: &InitFeatures) -> bool {
 	if script.is_p2pkh() || script.is_p2sh() || script.is_v0_p2wpkh() || script.is_v0_p2wsh() {
 		true
 	} else if features.supports_shutdown_anysegwit() {
@@ -131,20 +131,20 @@ pub(crate) fn is_bolt2_compliant(script: &Script, features: &InitFeatures) -> bo
 
 // Note that this is only for our own shutdown scripts. Counterparties are still allowed to send us
 // non-witness shutdown scripts which this rejects.
-impl TryFrom<Script> for ShutdownScript {
+impl TryFrom<ScriptBuf> for ShutdownScript {
 	type Error = InvalidShutdownScript;
 
-	fn try_from(script: Script) -> Result<Self, Self::Error> {
+	fn try_from(script: ScriptBuf) -> Result<Self, Self::Error> {
 		Self::try_from((script, &channelmanager::provided_init_features(&crate::util::config::UserConfig::default())))
 	}
 }
 
 // Note that this is only for our own shutdown scripts. Counterparties are still allowed to send us
 // non-witness shutdown scripts which this rejects.
-impl TryFrom<(Script, &InitFeatures)> for ShutdownScript {
+impl TryFrom<(ScriptBuf, &InitFeatures)> for ShutdownScript {
 	type Error = InvalidShutdownScript;
 
-	fn try_from((script, features): (Script, &InitFeatures)) -> Result<Self, Self::Error> {
+	fn try_from((script, features): (ScriptBuf, &InitFeatures)) -> Result<Self, Self::Error> {
 		if is_bolt2_compliant(&script, features) && script.is_witness_program() {
 			Ok(Self(ShutdownScriptImpl::Bolt2(script)))
 		} else {
@@ -153,11 +153,11 @@ impl TryFrom<(Script, &InitFeatures)> for ShutdownScript {
 	}
 }
 
-impl Into<Script> for ShutdownScript {
-	fn into(self) -> Script {
+impl Into<ScriptBuf> for ShutdownScript {
+	fn into(self) -> ScriptBuf {
 		match self.0 {
 			ShutdownScriptImpl::Legacy(pubkey) =>
-				Script::new_v0_p2wpkh(&WPubkeyHash::hash(&pubkey.serialize())),
+				ScriptBuf::new_v0_p2wpkh(&WPubkeyHash::hash(&pubkey.serialize())),
 			ShutdownScriptImpl::Bolt2(script_pubkey) => script_pubkey,
 		}
 	}
@@ -176,7 +176,7 @@ impl core::fmt::Display for ShutdownScript{
 mod shutdown_script_tests {
 	use super::ShutdownScript;
 	use bitcoin::blockdata::opcodes;
-	use bitcoin::blockdata::script::{Builder, Script};
+	use bitcoin::blockdata::script::{Builder, ScriptBuf};
 	use bitcoin::secp256k1::Secp256k1;
 	use bitcoin::secp256k1::{PublicKey, SecretKey};
 	use crate::ln::features::InitFeatures;
@@ -189,7 +189,7 @@ mod shutdown_script_tests {
 		bitcoin::key::PublicKey::new(PublicKey::from_secret_key(&secp_ctx, &secret_key))
 	}
 
-	fn redeem_script() -> Script {
+	fn redeem_script() -> ScriptBuf {
 		let pubkey = pubkey();
 		Builder::new()
 			.push_opcode(opcodes::all::OP_PUSHNUM_2)
@@ -210,7 +210,7 @@ mod shutdown_script_tests {
 	fn generates_p2wpkh_from_pubkey() {
 		let pubkey = pubkey();
 		let pubkey_hash = pubkey.wpubkey_hash().unwrap();
-		let p2wpkh_script = Script::new_v0_p2wpkh(&pubkey_hash);
+		let p2wpkh_script = ScriptBuf::new_v0_p2wpkh(&pubkey_hash);
 
 		let shutdown_script = ShutdownScript::new_p2wpkh_from_pubkey(pubkey.inner);
 		assert!(shutdown_script.is_compatible(&any_segwit_features()));
@@ -221,7 +221,7 @@ mod shutdown_script_tests {
 	#[test]
 	fn generates_p2wpkh_from_pubkey_hash() {
 		let pubkey_hash = pubkey().wpubkey_hash().unwrap();
-		let p2wpkh_script = Script::new_v0_p2wpkh(&pubkey_hash);
+		let p2wpkh_script = ScriptBuf::new_v0_p2wpkh(&pubkey_hash);
 
 		let shutdown_script = ShutdownScript::new_p2wpkh(&pubkey_hash);
 		assert!(shutdown_script.is_compatible(&any_segwit_features()));
@@ -233,7 +233,7 @@ mod shutdown_script_tests {
 	#[test]
 	fn generates_p2wsh_from_script_hash() {
 		let script_hash = redeem_script().wscript_hash();
-		let p2wsh_script = Script::new_v0_p2wsh(&script_hash);
+		let p2wsh_script = ScriptBuf::new_v0_p2wsh(&script_hash);
 
 		let shutdown_script = ShutdownScript::new_p2wsh(&script_hash);
 		assert!(shutdown_script.is_compatible(&any_segwit_features()));
@@ -244,7 +244,7 @@ mod shutdown_script_tests {
 
 	#[test]
 	fn generates_segwit_from_non_v0_witness_program() {
-		let witness_program = Script::new_witness_program(WitnessVersion::V16, &[0; 40]);
+		let witness_program = ScriptBuf::new_witness_program(WitnessVersion::V16, &[0; 40]);
 		let shutdown_script = ShutdownScript::new_witness_program(WitnessVersion::V16, &[0; 40]).unwrap();
 		assert!(shutdown_script.is_compatible(&any_segwit_features()));
 		assert!(!shutdown_script.is_compatible(&InitFeatures::empty()));
@@ -253,19 +253,19 @@ mod shutdown_script_tests {
 
 	#[test]
 	fn fails_from_unsupported_script() {
-		let op_return = Script::new_op_return(&[0; 42]);
+		let op_return = ScriptBuf::new_op_return(&[0; 42]);
 		assert!(ShutdownScript::try_from(op_return).is_err());
 	}
 
 	#[test]
 	fn fails_from_invalid_segwit_v0_witness_program() {
-		let witness_program = Script::new_witness_program(WitnessVersion::V0, &[0; 2]);
+		let witness_program = ScriptBuf::new_witness_program(WitnessVersion::V0, &[0; 2]);
 		assert!(ShutdownScript::try_from(witness_program).is_err());
 	}
 
 	#[test]
 	fn fails_from_invalid_segwit_non_v0_witness_program() {
-		let witness_program = Script::new_witness_program(WitnessVersion::V16, &[0; 42]);
+		let witness_program = ScriptBuf::new_witness_program(WitnessVersion::V16, &[0; 42]);
 		assert!(ShutdownScript::try_from(witness_program).is_err());
 
 		assert!(ShutdownScript::new_witness_program(WitnessVersion::V16, &[0; 42]).is_err());

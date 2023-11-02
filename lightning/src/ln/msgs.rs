@@ -28,7 +28,7 @@ use bitcoin::blockdata::constants::ChainHash;
 use bitcoin::secp256k1::PublicKey;
 use bitcoin::secp256k1::ecdsa::Signature;
 use bitcoin::{secp256k1, Witness};
-use bitcoin::blockdata::script::Script;
+use bitcoin::blockdata::script::ScriptBuf;
 use bitcoin::hash_types::Txid;
 
 use crate::blinded_path::payment::ReceiveTlvs;
@@ -218,7 +218,7 @@ pub struct OpenChannel {
 	/// The channel flags to be used
 	pub channel_flags: u8,
 	/// A request to pre-set the to-sender output's `scriptPubkey` for when we collaboratively close
-	pub shutdown_scriptpubkey: Option<Script>,
+	pub shutdown_scriptpubkey: Option<ScriptBuf>,
 	/// The channel type that this channel will represent
 	///
 	/// If this is `None`, we derive the channel type from the intersection of our
@@ -276,7 +276,7 @@ pub struct OpenChannelV2 {
 	pub channel_flags: u8,
 	/// Optionally, a request to pre-set the to-channel-initiator output's scriptPubkey for when we
 	/// collaboratively close
-	pub shutdown_scriptpubkey: Option<Script>,
+	pub shutdown_scriptpubkey: Option<ScriptBuf>,
 	/// The channel type that this channel will represent. If none is set, we derive the channel
 	/// type from the intersection of our feature bits with our counterparty's feature bits from
 	/// the Init message.
@@ -321,7 +321,7 @@ pub struct AcceptChannel {
 	/// The first to-be-broadcast-by-sender transaction's per commitment point
 	pub first_per_commitment_point: PublicKey,
 	/// A request to pre-set the to-sender output's scriptPubkey for when we collaboratively close
-	pub shutdown_scriptpubkey: Option<Script>,
+	pub shutdown_scriptpubkey: Option<ScriptBuf>,
 	/// The channel type that this channel will represent.
 	///
 	/// If this is `None`, we derive the channel type from the intersection of
@@ -375,7 +375,7 @@ pub struct AcceptChannelV2 {
 	pub second_per_commitment_point: PublicKey,
 	/// Optionally, a request to pre-set the to-channel-acceptor output's scriptPubkey for when we
 	/// collaboratively close
-	pub shutdown_scriptpubkey: Option<Script>,
+	pub shutdown_scriptpubkey: Option<ScriptBuf>,
 	/// The channel type that this channel will represent. If none is set, we derive the channel
 	/// type from the intersection of our feature bits with our counterparty's feature bits from
 	/// the Init message.
@@ -473,7 +473,7 @@ pub struct TxAddOutput {
 	/// The satoshi value of the output
 	pub sats: u64,
 	/// The scriptPubKey for the output
-	pub script: Script,
+	pub script: ScriptBuf,
 }
 
 /// A tx_remove_input message for removing an input during interactive transaction construction.
@@ -573,7 +573,7 @@ pub struct Shutdown {
 	/// The destination of this peer's funds on closing.
 	///
 	/// Must be in one of these forms: P2PKH, P2SH, P2WPKH, P2WSH, P2TR.
-	pub scriptpubkey: Script,
+	pub scriptpubkey: ScriptBuf,
 }
 
 /// The minimum and maximum fees which the sender is willing to place on the closing transaction.
@@ -1765,7 +1765,7 @@ impl_writeable_msg!(AcceptChannel, {
 	htlc_basepoint,
 	first_per_commitment_point,
 }, {
-	(0, shutdown_scriptpubkey, (option, encoding: (Script, WithoutLength))), // Don't encode length twice.
+	(0, shutdown_scriptpubkey, (option, encoding: (ScriptBuf, WithoutLength))), // Don't encode length twice.
 	(1, channel_type, option),
 });
 
@@ -1786,7 +1786,7 @@ impl_writeable_msg!(AcceptChannel, {
 	htlc_basepoint,
 	first_per_commitment_point,
 }, {
-	(0, shutdown_scriptpubkey, (option, encoding: (Script, WithoutLength))), // Don't encode length twice.
+	(0, shutdown_scriptpubkey, (option, encoding: (ScriptBuf, WithoutLength))), // Don't encode length twice.
 	(1, channel_type, option),
 	(4, next_local_nonce, option),
 });
@@ -2007,7 +2007,7 @@ impl_writeable_msg!(OpenChannel, {
 	first_per_commitment_point,
 	channel_flags,
 }, {
-	(0, shutdown_scriptpubkey, (option, encoding: (Script, WithoutLength))), // Don't encode length twice.
+	(0, shutdown_scriptpubkey, (option, encoding: (ScriptBuf, WithoutLength))), // Don't encode length twice.
 	(1, channel_type, option),
 });
 
@@ -2716,7 +2716,7 @@ impl_writeable_msg!(GossipTimestampFilter, {
 #[cfg(test)]
 mod tests {
 	use std::convert::TryFrom;
-	use bitcoin::{Transaction, PackedLockTime, TxIn, Script, Sequence, Witness, TxOut};
+	use bitcoin::{Transaction, PackedLockTime, TxIn, ScriptBuf, Sequence, Witness, TxOut};
 	use hex;
 	use crate::ln::{PaymentPreimage, PaymentHash, PaymentSecret};
 	use crate::ln::ChannelId;
@@ -3375,7 +3375,7 @@ mod tests {
 				lock_time: PackedLockTime(0),
 				input: vec![TxIn {
 					previous_output: OutPoint { txid: Txid::from_hex("305bab643ee297b8b6b76b320792c8223d55082122cb606bf89382146ced9c77").unwrap(), index: 2 }.into_bitcoin_outpoint(),
-					script_sig: Script::new(),
+					script_sig: ScriptBuf::new(),
 					sequence: Sequence(0xfffffffd),
 					witness: Witness::from_vec(vec![
 						hex::decode("304402206af85b7dd67450ad12c979302fac49dfacbc6a8620f49c5da2b5721cf9565ca502207002b32fed9ce1bf095f57aeb10c36928ac60b12e723d97d2964a54640ceefa701").unwrap(),

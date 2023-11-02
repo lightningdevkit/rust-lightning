@@ -15,7 +15,7 @@
 use bitcoin::PackedLockTime;
 use bitcoin::blockdata::transaction::Transaction;
 use bitcoin::blockdata::transaction::OutPoint as BitcoinOutPoint;
-use bitcoin::blockdata::script::Script;
+use bitcoin::blockdata::script::ScriptBuf;
 use bitcoin::hashes::{Hash, HashEngine};
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hash_types::{Txid, BlockHash};
@@ -216,7 +216,7 @@ pub(crate) enum OnchainClaim {
 pub struct OnchainTxHandler<ChannelSigner: WriteableEcdsaChannelSigner> {
 	channel_value_satoshis: u64,
 	channel_keys_id: [u8; 32],
-	destination_script: Script,
+	destination_script: ScriptBuf,
 	holder_commitment: HolderCommitmentTransaction,
 	prev_holder_commitment: Option<HolderCommitmentTransaction>,
 
@@ -433,7 +433,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 
 impl<ChannelSigner: WriteableEcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 	pub(crate) fn new(
-		channel_value_satoshis: u64, channel_keys_id: [u8; 32], destination_script: Script,
+		channel_value_satoshis: u64, channel_keys_id: [u8; 32], destination_script: ScriptBuf,
 		signer: ChannelSigner, channel_parameters: ChannelTransactionParameters,
 		holder_commitment: HolderCommitmentTransaction, secp_ctx: Secp256k1<secp256k1::All>
 	) -> Self {
@@ -1098,13 +1098,13 @@ impl<ChannelSigner: WriteableEcdsaChannelSigner> OnchainTxHandler<ChannelSigner>
 	// have empty holder commitment transaction if a ChannelMonitor is asked to force-close just after OutboundV1Channel::get_funding_created,
 	// before providing a initial commitment transaction. For outbound channel, init ChannelMonitor at Channel::funding_signed, there is nothing
 	// to monitor before.
-	pub(crate) fn get_fully_signed_holder_tx(&mut self, funding_redeemscript: &Script) -> Transaction {
+	pub(crate) fn get_fully_signed_holder_tx(&mut self, funding_redeemscript: &ScriptBuf) -> Transaction {
 		let sig = self.signer.sign_holder_commitment(&self.holder_commitment, &self.secp_ctx).expect("signing holder commitment");
 		self.holder_commitment.add_holder_sig(funding_redeemscript, sig)
 	}
 
 	#[cfg(any(test, feature="unsafe_revoked_tx_signing"))]
-	pub(crate) fn get_fully_signed_copy_holder_tx(&mut self, funding_redeemscript: &Script) -> Transaction {
+	pub(crate) fn get_fully_signed_copy_holder_tx(&mut self, funding_redeemscript: &ScriptBuf) -> Transaction {
 		let sig = self.signer.unsafe_sign_holder_commitment(&self.holder_commitment, &self.secp_ctx).expect("sign holder commitment");
 		self.holder_commitment.add_holder_sig(funding_redeemscript, sig)
 	}

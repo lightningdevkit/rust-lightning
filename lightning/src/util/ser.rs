@@ -29,7 +29,7 @@ use bitcoin::secp256k1::constants::{PUBLIC_KEY_SIZE, SECRET_KEY_SIZE, COMPACT_SI
 use bitcoin::secp256k1::ecdsa;
 use bitcoin::secp256k1::schnorr;
 use bitcoin::blockdata::constants::ChainHash;
-use bitcoin::blockdata::script::{self, Script};
+use bitcoin::blockdata::script::{self, ScriptBuf};
 use bitcoin::blockdata::transaction::{OutPoint, Transaction, TxOut};
 use bitcoin::{consensus, Witness};
 use bitcoin::consensus::Encodable;
@@ -668,14 +668,14 @@ impl<'a, T> From<&'a Vec<T>> for WithoutLength<&'a Vec<T>> {
 	fn from(v: &'a Vec<T>) -> Self { Self(v) }
 }
 
-impl Writeable for WithoutLength<&Script> {
+impl Writeable for WithoutLength<&ScriptBuf> {
 	#[inline]
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		writer.write_all(self.0.as_bytes())
 	}
 }
 
-impl Readable for WithoutLength<Script> {
+impl Readable for WithoutLength<ScriptBuf> {
 	#[inline]
 	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
 		let v: WithoutLength<Vec<u8>> = Readable::read(r)?;
@@ -878,19 +878,19 @@ impl Readable for Vec<Witness> {
 	}
 }
 
-impl Writeable for Script {
+impl Writeable for ScriptBuf {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
 		(self.len() as u16).write(w)?;
 		w.write_all(self.as_bytes())
 	}
 }
 
-impl Readable for Script {
+impl Readable for ScriptBuf {
 	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
 		let len = <u16 as Readable>::read(r)? as usize;
 		let mut buf = vec![0; len];
 		r.read_exact(&mut buf)?;
-		Ok(Script::from(buf))
+		Ok(ScriptBuf::from(buf))
 	}
 }
 

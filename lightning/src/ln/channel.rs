@@ -8,7 +8,7 @@
 // licenses.
 
 use bitcoin::blockdata::constants::ChainHash;
-use bitcoin::blockdata::script::{Script,Builder};
+use bitcoin::blockdata::script::{ScriptBuf,Builder};
 use bitcoin::blockdata::transaction::{Transaction, EcdsaSighashType};
 use bitcoin::sighash;
 use bitcoin::consensus::encode;
@@ -716,7 +716,7 @@ pub(super) struct ChannelContext<SP: Deref> where SP::Target: SignerProvider {
 
 	holder_signer: ChannelSignerType<<SP::Target as SignerProvider>::Signer>,
 	shutdown_scriptpubkey: Option<ShutdownScript>,
-	destination_script: Script,
+	destination_script: ScriptBuf,
 
 	// Our commitment numbers start at 2^48-1 and count down, whereas the ones used in transaction
 	// generation start at 0 and count up...this simplifies some parts of implementation at the
@@ -848,7 +848,7 @@ pub(super) struct ChannelContext<SP: Deref> where SP::Target: SignerProvider {
 	counterparty_prev_commitment_point: Option<PublicKey>,
 	counterparty_node_id: PublicKey,
 
-	counterparty_shutdown_scriptpubkey: Option<Script>,
+	counterparty_shutdown_scriptpubkey: Option<ScriptBuf>,
 
 	commitment_secrets: CounterpartyCommitmentSecrets,
 
@@ -1528,7 +1528,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 	/// Gets the redeemscript for the funding transaction output (ie the funding transaction output
 	/// pays to get_funding_redeemscript().to_v0_p2wsh()).
 	/// Panics if called before accept_channel/InboundV1Channel::new
-	pub fn get_funding_redeemscript(&self) -> Script {
+	pub fn get_funding_redeemscript(&self) -> ScriptBuf {
 		make_funding_redeemscript(&self.get_holder_pubkeys().funding_pubkey, self.counterparty_funding_pubkey())
 	}
 
@@ -2194,7 +2194,7 @@ impl<SP: Deref> Channel<SP> where
 	}
 
 	#[inline]
-	fn get_closing_scriptpubkey(&self) -> Script {
+	fn get_closing_scriptpubkey(&self) -> ScriptBuf {
 		// The shutdown scriptpubkey is set on channel opening when option_upfront_shutdown_script
 		// is signaled. Otherwise, it is set when sending a shutdown message. Calling this method
 		// outside of those situations will fail.
@@ -2202,7 +2202,7 @@ impl<SP: Deref> Channel<SP> where
 	}
 
 	#[inline]
-	fn get_closing_transaction_weight(&self, a_scriptpubkey: Option<&Script>, b_scriptpubkey: Option<&Script>) -> u64 {
+	fn get_closing_transaction_weight(&self, a_scriptpubkey: Option<&ScriptBuf>, b_scriptpubkey: Option<&ScriptBuf>) -> u64 {
 		let mut ret =
 		(4 +                                                   // version
 		 1 +                                                   // input count
@@ -7655,7 +7655,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 mod tests {
 	use std::cmp;
 	use bitcoin::blockdata::constants::ChainHash;
-	use bitcoin::blockdata::script::{Script, Builder};
+	use bitcoin::blockdata::script::{ScriptBuf, Builder};
 	use bitcoin::blockdata::transaction::{Transaction, TxOut};
 	use bitcoin::blockdata::opcodes;
 	use bitcoin::network::constants::Network;
@@ -7737,7 +7737,7 @@ mod tests {
 
 		fn read_chan_signer(&self, _data: &[u8]) -> Result<Self::Signer, DecodeError> { panic!(); }
 
-		fn get_destination_script(&self) -> Result<Script, ()> {
+		fn get_destination_script(&self) -> Result<ScriptBuf, ()> {
 			let secp_ctx = Secp256k1::signing_only();
 			let channel_monitor_claim_key = SecretKey::from_slice(&hex::decode("0fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff").unwrap()[..]).unwrap();
 			let channel_monitor_claim_key_hash = WPubkeyHash::hash(&PublicKey::from_secret_key(&secp_ctx, &channel_monitor_claim_key).serialize());

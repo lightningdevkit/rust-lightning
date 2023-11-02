@@ -2728,7 +2728,7 @@ mod tests {
 								node_id: peers[1].node_signer.get_node_id(Recipient::Node).unwrap(),
 								msg: msgs::Shutdown {
 									channel_id: ChannelId::new_zero(),
-									scriptpubkey: bitcoin::Script::new(),
+									scriptpubkey: bitcoin::ScriptBuf::new(),
 								},
 							});
 						cfgs[1].chan_handler.pending_events.lock().unwrap()
@@ -2736,7 +2736,7 @@ mod tests {
 								node_id: peers[0].node_signer.get_node_id(Recipient::Node).unwrap(),
 								msg: msgs::Shutdown {
 									channel_id: ChannelId::new_zero(),
-									scriptpubkey: bitcoin::Script::new(),
+									scriptpubkey: bitcoin::ScriptBuf::new(),
 								},
 							});
 
@@ -2864,7 +2864,7 @@ mod tests {
 
 		let their_id = peers[1].node_signer.get_node_id(Recipient::Node).unwrap();
 
-		let msg = msgs::Shutdown { channel_id: ChannelId::from_bytes([42; 32]), scriptpubkey: bitcoin::Script::new() };
+		let msg = msgs::Shutdown { channel_id: ChannelId::from_bytes([42; 32]), scriptpubkey: bitcoin::ScriptBuf::new() };
 		a_chan_handler.pending_events.lock().unwrap().push(events::MessageSendEvent::SendShutdown {
 			node_id: their_id, msg: msg.clone()
 		});

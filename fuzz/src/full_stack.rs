@@ -15,7 +15,7 @@
 
 use bitcoin::blockdata::constants::genesis_block;
 use bitcoin::blockdata::transaction::{Transaction, TxOut};
-use bitcoin::blockdata::script::{Builder, Script};
+use bitcoin::blockdata::script::{Builder, ScriptBuf};
 use bitcoin::blockdata::opcodes;
 use bitcoin::blockdata::locktime::PackedLockTime;
 use bitcoin::consensus::encode::deserialize;
@@ -391,7 +391,7 @@ impl SignerProvider for KeyProvider {
 		))
 	}
 
-	fn get_destination_script(&self) -> Result<Script, ()> {
+	fn get_destination_script(&self) -> Result<ScriptBuf, ()> {
 		let secp_ctx = Secp256k1::signing_only();
 		let channel_monitor_claim_key = SecretKey::from_slice(&hex::decode("0fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff").unwrap()[..]).unwrap();
 		let our_channel_monitor_claim_key_hash = WPubkeyHash::hash(&PublicKey::from_secret_key(&secp_ctx, &channel_monitor_claim_key).serialize());
@@ -481,7 +481,7 @@ pub fn do_test(data: &[u8], logger: &Arc<dyn Logger>) {
 	let mut should_forward = false;
 	let mut payments_received: Vec<PaymentHash> = Vec::new();
 	let mut payments_sent = 0;
-	let mut pending_funding_generation: Vec<(ChannelId, PublicKey, u64, Script)> = Vec::new();
+	let mut pending_funding_generation: Vec<(ChannelId, PublicKey, u64, ScriptBuf)> = Vec::new();
 	let mut pending_funding_signatures = HashMap::new();
 
 	loop {

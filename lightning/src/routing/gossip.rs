@@ -2088,7 +2088,7 @@ pub(crate) mod tests {
 	use bitcoin::hashes::Hash;
 	use bitcoin::network::constants::Network;
 	use bitcoin::blockdata::constants::ChainHash;
-	use bitcoin::blockdata::script::Script;
+	use bitcoin::blockdata::script::ScriptBuf;
 	use bitcoin::blockdata::transaction::TxOut;
 
 	use hex;
@@ -2178,7 +2178,7 @@ pub(crate) mod tests {
 		}
 	}
 
-	pub(crate) fn get_channel_script(secp_ctx: &Secp256k1<secp256k1::All>) -> Script {
+	pub(crate) fn get_channel_script(secp_ctx: &Secp256k1<secp256k1::All>) -> ScriptBuf {
 		let node_1_btckey = SecretKey::from_slice(&[40; 32]).unwrap();
 		let node_2_btckey = SecretKey::from_slice(&[39; 32]).unwrap();
 		make_funding_redeemscript(&PublicKey::from_secret_key(secp_ctx, &node_1_btckey),

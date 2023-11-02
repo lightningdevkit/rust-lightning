@@ -13,7 +13,7 @@
 //! compatible with Bitcoin Core output descriptors.
 
 use bitcoin::blockdata::transaction::{Transaction, TxOut, TxIn, EcdsaSighashType};
-use bitcoin::blockdata::script::{Script, Builder};
+use bitcoin::blockdata::script::{ScriptBuf, Builder};
 use bitcoin::blockdata::opcodes;
 use bitcoin::network::constants::Network;
 use bitcoin::psbt::PartiallySignedTransaction;
@@ -137,7 +137,7 @@ impl StaticPaymentOutputDescriptor {
 	///
 	/// Note that this will only return `Some` for [`StaticPaymentOutputDescriptor`]s that
 	/// originated from an anchor outputs channel, as they take the form of a P2WSH script.
-	pub fn witness_script(&self) -> Option<Script> {
+	pub fn witness_script(&self) -> Option<ScriptBuf> {
 		self.channel_transaction_parameters.as_ref()
 			.and_then(|channel_params|
 				 if channel_params.channel_type_features.supports_anchors_zero_fee_htlc_tx() {
@@ -319,7 +319,7 @@ impl SpendableOutputDescriptor {
 	/// does not match the one we can spend.
 	///
 	/// We do not enforce that outputs meet the dust limit or that any output scripts are standard.
-	pub fn create_spendable_outputs_psbt(descriptors: &[&SpendableOutputDescriptor], outputs: Vec<TxOut>, change_destination_script: Script, feerate_sat_per_1000_weight: u32, locktime: Option<PackedLockTime>) -> Result<(PartiallySignedTransaction, usize), ()> {
+	pub fn create_spendable_outputs_psbt(descriptors: &[&SpendableOutputDescriptor], outputs: Vec<TxOut>, change_destination_script: ScriptBuf, feerate_sat_per_1000_weight: u32, locktime: Option<PackedLockTime>) -> Result<(PartiallySignedTransaction, usize), ()> {
 		let mut input = Vec::with_capacity(descriptors.len());
 		let mut input_value = 0;
 		let mut witness_weight = 0;
@@ -339,7 +339,7 @@ impl SpendableOutputDescriptor {
 						};
 					input.push(TxIn {
 						previous_output: descriptor.outpoint.into_bitcoin_outpoint(),
-						script_sig: Script::new(),
+						script_sig: ScriptBuf::new(),
 						sequence,
 						witness: Witness::new(),
 					});
@@ -352,7 +352,7 @@ impl SpendableOutputDescriptor {
 					if !output_set.insert(descriptor.outpoint) { return Err(()); }
 					input.push(TxIn {
 						previous_output: descriptor.outpoint.into_bitcoin_outpoint(),
-						script_sig: Script::new(),
+						script_sig: ScriptBuf::new(),
 						sequence: Sequence(descriptor.to_self_delay as u32),
 						witness: Witness::new(),
 					});
@@ -365,7 +365,7 @@ impl SpendableOutputDescriptor {
 					if !output_set.insert(*outpoint) { return Err(()); }
 					input.push(TxIn {
 						previous_output: outpoint.into_bitcoin_outpoint(),
-						script_sig: Script::new(),
+						script_sig: ScriptBuf::new(),
 						sequence: Sequence::ZERO,
 						witness: Witness::new(),
 					});
@@ -503,7 +503,7 @@ impl HTLCDescriptor {
 	}
 
 	/// Returns the witness script of the HTLC output in the commitment transaction.
-	pub fn witness_script<C: secp256k1::Signing + secp256k1::Verification>(&self, secp: &Secp256k1<C>) -> Script {
+	pub fn witness_script<C: secp256k1::Signing + secp256k1::Verification>(&self, secp: &Secp256k1<C>) -> ScriptBuf {
 		let channel_params = self.channel_derivation_parameters.transaction_parameters.as_holder_broadcastable();
 		let broadcaster_keys = channel_params.broadcaster_pubkeys();
 		let counterparty_keys = channel_params.countersignatory_pubkeys();
@@ -524,7 +524,7 @@ impl HTLCDescriptor {
 
 	/// Returns the fully signed witness required to spend the HTLC output in the commitment
 	/// transaction.
-	pub fn tx_input_witness(&self, signature: &Signature, witness_script: &Script) -> Witness {
+	pub fn tx_input_witness(&self, signature: &Signature, witness_script: &ScriptBuf) -> Witness {
 		chan_utils::build_htlc_input_witness(
 			signature, &self.counterparty_sig, &self.preimage, witness_script,
 			&self.channel_derivation_parameters.transaction_parameters.channel_type_features
@@ -905,7 +905,7 @@ pub trait SignerProvider {
 	///
 	/// This method should return a different value each time it is called, to avoid linking
 	/// on-chain funds across channels as controlled to the same user.
-	fn get_destination_script(&self) -> Result<Script, ()>;
+	fn get_destination_script(&self) -> Result<ScriptBuf, ()>;
 
 	/// Get a script pubkey which we will send funds to when closing a channel.
 	///
@@ -1127,14 +1127,14 @@ impl InMemorySigner {
 		let witness_script = if supports_anchors_zero_fee_htlc_tx {
 			chan_utils::get_to_countersignatory_with_anchors_redeemscript(&remotepubkey.inner)
 		} else {
-			Script::new_p2pkh(&remotepubkey.pubkey_hash())
+			ScriptBuf::new_p2pkh(&remotepubkey.pubkey_hash())
 		};
 		let sighash = hash_to_message!(&sighash::SighashCache::new(spend_tx).segwit_signature_hash(input_idx, &witness_script, descriptor.output.value, EcdsaSighashType::All).unwrap()[..]);
 		let remotesig = sign_with_aux_rand(secp_ctx, &sighash, &self.payment_key, &self);
 		let payment_script = if supports_anchors_zero_fee_htlc_tx {
 			witness_script.to_v0_p2wsh()
 		} else {
-			Script::new_v0_p2wpkh(&remotepubkey.wpubkey_hash().unwrap())
+			ScriptBuf::new_v0_p2wpkh(&remotepubkey.wpubkey_hash().unwrap())
 		};
 
 		if payment_script != descriptor.output.script_pubkey { return Err(()); }
@@ -1444,7 +1444,7 @@ pub struct KeysManager {
 	node_secret: SecretKey,
 	node_id: PublicKey,
 	inbound_payment_key: KeyMaterial,
-	destination_script: Script,
+	destination_script: ScriptBuf,
 	shutdown_pubkey: PublicKey,
 	channel_master_key: ExtendedPrivKey,
 	channel_child_index: AtomicUsize,
@@ -1684,7 +1684,7 @@ impl KeysManager {
 	///
 	/// May panic if the [`SpendableOutputDescriptor`]s were not generated by channels which used
 	/// this [`KeysManager`] or one of the [`InMemorySigner`] created by this [`KeysManager`].
-	pub fn spend_spendable_outputs<C: Signing>(&self, descriptors: &[&SpendableOutputDescriptor], outputs: Vec<TxOut>, change_destination_script: Script, feerate_sat_per_1000_weight: u32, locktime: Option<PackedLockTime>, secp_ctx: &Secp256k1<C>) -> Result<Transaction, ()> {
+	pub fn spend_spendable_outputs<C: Signing>(&self, descriptors: &[&SpendableOutputDescriptor], outputs: Vec<TxOut>, change_destination_script: ScriptBuf, feerate_sat_per_1000_weight: u32, locktime: Option<PackedLockTime>, secp_ctx: &Secp256k1<C>) -> Result<Transaction, ()> {
 		let (mut psbt, expected_max_weight) = SpendableOutputDescriptor::create_spendable_outputs_psbt(descriptors, outputs, change_destination_script, feerate_sat_per_1000_weight, locktime)?;
 		psbt = self.sign_spendable_outputs_psbt(descriptors, psbt, secp_ctx)?;
 
@@ -1791,7 +1791,7 @@ impl SignerProvider for KeysManager {
 		InMemorySigner::read(&mut io::Cursor::new(reader), self)
 	}
 
-	fn get_destination_script(&self) -> Result<Script, ()> {
+	fn get_destination_script(&self) -> Result<ScriptBuf, ()> {
 		Ok(self.destination_script.clone())
 	}
 
@@ -1898,7 +1898,7 @@ impl SignerProvider for PhantomKeysManager {
 		self.inner.read_chan_signer(reader)
 	}
 
-	fn get_destination_script(&self) -> Result<Script, ()> {
+	fn get_destination_script(&self) -> Result<ScriptBuf, ()> {
 		self.inner.get_destination_script()
 	}
 
@@ -1933,7 +1933,7 @@ impl PhantomKeysManager {
 	}
 
 	/// See [`KeysManager::spend_spendable_outputs`] for documentation on this method.
-	pub fn spend_spendable_outputs<C: Signing>(&self, descriptors: &[&SpendableOutputDescriptor], outputs: Vec<TxOut>, change_destination_script: Script, feerate_sat_per_1000_weight: u32, locktime: Option<PackedLockTime>, secp_ctx: &Secp256k1<C>) -> Result<Transaction, ()> {
+	pub fn spend_spendable_outputs<C: Signing>(&self, descriptors: &[&SpendableOutputDescriptor], outputs: Vec<TxOut>, change_destination_script: ScriptBuf, feerate_sat_per_1000_weight: u32, locktime: Option<PackedLockTime>, secp_ctx: &Secp256k1<C>) -> Result<Transaction, ()> {
 		self.inner.spend_spendable_outputs(descriptors, outputs, change_destination_script, feerate_sat_per_1000_weight, locktime, secp_ctx)
 	}
 

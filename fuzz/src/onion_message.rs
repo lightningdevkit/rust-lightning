@@ -1,6 +1,6 @@
 // Imports that need to be added manually
 use bitcoin::bech32::u5;
-use bitcoin::blockdata::script::Script;
+use bitcoin::blockdata::script::ScriptBuf;
 use bitcoin::secp256k1::{PublicKey, Scalar, Secp256k1, SecretKey};
 use bitcoin::secp256k1::ecdh::SharedSecret;
 use bitcoin::secp256k1::ecdsa::RecoverableSignature;
@@ -187,7 +187,7 @@ impl SignerProvider for KeyProvider {
 
 	fn read_chan_signer(&self, _data: &[u8]) -> Result<TestChannelSigner, DecodeError> { unreachable!() }
 
-	fn get_destination_script(&self) -> Result<Script, ()> { unreachable!() }
+	fn get_destination_script(&self) -> Result<ScriptBuf, ()> { unreachable!() }
 
 	fn get_shutdown_scriptpubkey(&self) -> Result<ShutdownScript, ()> { unreachable!() }
 }

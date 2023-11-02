@@ -31,7 +31,7 @@ use crate::sign::{
 use crate::sync::Mutex;
 use crate::util::logger::Logger;
 
-use bitcoin::{OutPoint, PackedLockTime, PubkeyHash, Sequence, Script, Transaction, TxIn, TxOut, Witness, WPubkeyHash};
+use bitcoin::{OutPoint, PackedLockTime, PubkeyHash, Sequence, ScriptBuf, Transaction, TxIn, TxOut, Witness, WPubkeyHash};
 use bitcoin::blockdata::constants::WITNESS_SCALE_FACTOR;
 use bitcoin::consensus::Encodable;
 use bitcoin::secp256k1;
@@ -69,14 +69,14 @@ impl AnchorDescriptor {
 	pub fn unsigned_tx_input(&self) -> TxIn {
 		TxIn {
 			previous_output: self.outpoint.clone(),
-			script_sig: Script::new(),
+			script_sig: ScriptBuf::new(),
 			sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
 			witness: Witness::new(),
 		}
 	}
 
 	/// Returns the witness script of the anchor output in the commitment transaction.
-	pub fn witness_script(&self) -> Script {
+	pub fn witness_script(&self) -> ScriptBuf {
 		let channel_params = self.channel_derivation_parameters.transaction_parameters.as_holder_broadcastable();
 		chan_utils::get_anchor_redeemscript(&channel_params.broadcaster_pubkeys().funding_pubkey)
 	}
@@ -256,7 +256,7 @@ impl Utxo {
 			outpoint,
 			output: TxOut {
 				value,
-				script_pubkey: Script::new_p2pkh(pubkey_hash),
+				script_pubkey: ScriptBuf::new_p2pkh(pubkey_hash),
 			},
 			satisfaction_weight: script_sig_size * WITNESS_SCALE_FACTOR as u64 + 1 /* empty witness */,
 		}
@@ -272,7 +272,7 @@ impl Utxo {
 			outpoint,
 			output: TxOut {
 				value,
-				script_pubkey: Script::new_p2sh(&Script::new_v0_p2wpkh(pubkey_hash).script_hash()),
+				script_pubkey: ScriptBuf::new_p2sh(&ScriptBuf::new_v0_p2wpkh(pubkey_hash).script_hash()),
 			},
 			satisfaction_weight: script_sig_size * WITNESS_SCALE_FACTOR as u64 + P2WPKH_WITNESS_WEIGHT,
 		}
@@ -284,7 +284,7 @@ impl Utxo {
 			outpoint,
 			output: TxOut {
 				value,
-				script_pubkey: Script::new_v0_p2wpkh(pubkey_hash),
+				script_pubkey: ScriptBuf::new_v0_p2wpkh(pubkey_hash),
 			},
 			satisfaction_weight: EMPTY_SCRIPT_SIG_WEIGHT + P2WPKH_WITNESS_WEIGHT,
 		}
@@ -352,7 +352,7 @@ pub trait WalletSource {
 	fn list_confirmed_utxos(&self) -> Result<Vec<Utxo>, ()>;
 	/// Returns a script to use for change above dust resulting from a successful coin selection
 	/// attempt.
-	fn get_change_script(&self) -> Result<Script, ()>;
+	fn get_change_script(&self) -> Result<ScriptBuf, ()>;
 	/// Signs and provides the full [`TxIn::script_sig`] and [`TxIn::witness`] for all inputs within
 	/// the transaction known to the wallet (i.e., any provided via
 	/// [`WalletSource::list_confirmed_utxos`]).
@@ -552,7 +552,7 @@ where
 		for utxo in coin_selection.confirmed_utxos.drain(..) {
 			tx.input.push(TxIn {
 				previous_output: utxo.outpoint,
-				script_sig: Script::new(),
+				script_sig: ScriptBuf::new(),
 				sequence: Sequence::ZERO,
 				witness: Witness::new(),
 			});
@@ -567,7 +567,7 @@ where
 			log_debug!(self.logger, "Including dummy OP_RETURN output since an output is needed and a change output was not provided");
 			tx.output.push(TxOut {
 				value: 0,
-				script_pubkey: Script::new_op_return(&[]),
+				script_pubkey: ScriptBuf::new_op_return(&[]),
 			});
 		}
 	}
