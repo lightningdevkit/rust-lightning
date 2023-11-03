@@ -1115,6 +1115,8 @@ where
 /// Implements [`ChannelMessageHandler`], handling the multi-channel parts and passing things through
 /// to individual Channels.
 ///
+/// # Persistence
+///
 /// Implements [`Writeable`] to write out all channel state to disk. Implies [`peer_disconnected`] for
 /// all peers during write/read (though does not modify this instance, only the instance being
 /// serialized). This will result in any channels which have not yet exchanged [`funding_created`] (i.e.,
@@ -1134,11 +1136,15 @@ where
 /// tells you the last block hash which was connected. You should get the best block tip before using the manager.
 /// See [`chain::Listen`] and [`chain::Confirm`] for more details.
 ///
+/// # `ChannelUpdate` Messages
+///
 /// Note that `ChannelManager` is responsible for tracking liveness of its channels and generating
 /// [`ChannelUpdate`] messages informing peers that the channel is temporarily disabled. To avoid
 /// spam due to quick disconnection/reconnection, updates are not sent until the channel has been
 /// offline for a full minute. In order to track this, you must call
 /// [`timer_tick_occurred`] roughly once per minute, though it doesn't have to be perfect.
+///
+/// # DoS Mitigation
 ///
 /// To avoid trivial DoS issues, `ChannelManager` limits the number of inbound connections and
 /// inbound channels without confirmed funding transactions. This may result in nodes which we do
@@ -1148,6 +1154,8 @@ where
 /// Because it is an indication of trust, inbound channels which we've accepted as 0conf are
 /// exempted from the count of unfunded channels. Similarly, outbound channels and connections are
 /// never limited. Please ensure you limit the count of such channels yourself.
+///
+/// # Type Aliases
 ///
 /// Rather than using a plain `ChannelManager`, it is preferable to use either a [`SimpleArcChannelManager`]
 /// a [`SimpleRefChannelManager`], for conciseness. See their documentation for more details, but
