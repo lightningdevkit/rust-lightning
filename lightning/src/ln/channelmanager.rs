@@ -1135,6 +1135,22 @@ where
 /// Thus, [`ChannelManager`] is typically used to parameterize a [`MessageHandler`] and an
 /// [`OnionMessenger`]. The latter is required to support BOLT 12 functionality.
 ///
+/// # `ChannelManager` vs `ChannelMonitor`
+///
+/// It's important to distinguish between the *off-chain* management and *on-chain* enforcement of
+/// lightning channels. [`ChannelManager`] exchanges messages with peers to manage the off-chain
+/// state of each channel. During this process, it generates a [`ChannelMonitor`] for each channel
+/// and a [`ChannelMonitorUpdate`] for each relevant change, notifying its parameterized
+/// [`chain::Watch`] of them.
+///
+/// An implementation of [`chain::Watch`], such as [`ChainMonitor`], is responsible for aggregating
+/// these [`ChannelMonitor`]s and applying any [`ChannelMonitorUpdate`]s to them. It then monitors
+/// for any pertinent on-chain activity, enforcing claims as needed.
+///
+/// This division of off-chain management and on-chain enforcement allows for interesting node
+/// setups. For instance, on-chain enforcement could be moved to a separate host or have added
+/// redundancy, possibly as a watchtower. See [`chain::Watch`] for the relevant interface.
+///
 /// # Persistence
 ///
 /// Implements [`Writeable`] to write out all channel state to disk. Implies [`peer_disconnected`] for
