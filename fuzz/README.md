@@ -1,22 +1,23 @@
 # Fuzzing
 
-Fuzz tests generate a ton of random parameter arguments to the program and then validate that none cause it to crash.
+Fuzz tests generate a ton of random parameter arguments to the program and then validate that none 
+cause it to crash.
 
 ## How does it work?
 
-Typically, Travis CI will run `travis-fuzz.sh` on one of the environments the automated tests are configured for.
-This is the most time-consuming component of the continuous integration workflow, so it is recommended that you detect
-issues locally, and Travis merely acts as a sanity check. Fuzzing is further only effective with
-a lot of CPU time, indicating that if crash scenarios are discovered on Travis with its low
-runtime constraints, the crash is caused relatively easily.
+Typically, CI will run `ci-fuzz.sh` on one of the environments the automated tests are
+configured for. Fuzzing is further only effective with a lot of CPU time, indicating that if crash 
+scenarios are discovered on CI with its low runtime constraints, the crash is caused relatively
+easily.
 
 ## How do I run fuzz tests locally?
 
-You typically won't need to run the entire combination of different fuzzing tools. For local execution, `honggfuzz`
-should be more than sufficient. 
+We support multiple fuzzing engines such as `honggfuzz`, `libFuzzer` and `AFL`. You typically won't 
+need to run the entire suite of different fuzzing tools. For local execution, `honggfuzz`should be 
+more than sufficient. 
 
 ### Setup
-
+#### Honggfuzz
 To install `honggfuzz`, simply run
 
 ```shell
@@ -31,9 +32,18 @@ cargo update -p honggfuzz --precise "0.5.52"
 cargo install --force honggfuzz --version "0.5.52"
 ```
 
+#### cargo-fuzz / libFuzzer
+To install `cargo-fuzz`, simply run
+
+```shell
+cargo update
+cargo install --force cargo-fuzz
+```
+
 ### Execution
 
-To run the Hongg fuzzer, do
+#### Honggfuzz
+To run fuzzing using `honggfuzz`, do
 
 ```shell
 export CPU_COUNT=1 # replace as needed
@@ -46,19 +56,39 @@ cargo hfuzz run $TARGET
 
 (Or, for a prettier output, replace the last line with `cargo --color always hfuzz run $TARGET`.)
 
+#### cargo-fuzz / libFuzzer
+To run fuzzing using `cargo-fuzz / libFuzzer`, run
+
+```shell
+rustup install nightly # Note: libFuzzer requires a nightly version of rust.
+cargo +nightly fuzz run --features "libfuzzer_fuzz" msg_ping_target
+```
+Note: If you encounter a `SIGKILL` during run/build check for OOM in kernel logs and consider 
+increasing RAM size for VM.
+
+If you wish to just generate fuzzing binary executables for `libFuzzer` and not run them:
+```shell 
+cargo +nightly fuzz build --features "libfuzzer_fuzz" msg_ping_target 
+# Generates binary artifact in path ./target/aarch64-unknown-linux-gnu/release/msg_ping_target
+# Exact path depends on your system architecture.
+```
+You can upload the build artifact generated above to `ClusterFuzz` for distributed fuzzing.
+
+### List Fuzzing Targets
 To see a list of available fuzzing targets, run:
 
 ```shell
 ls ./src/bin/
 ```
 
-## A fuzz test failed on Travis, what do I do?
+## A fuzz test failed, what do I do?
 
-You're trying to create a PR, but need to find the underlying cause of that pesky fuzz failure blocking the merge?
+You're trying to create a PR, but need to find the underlying cause of that pesky fuzz failure 
+blocking the merge?
 
 Worry not, for this is easily traced.
 
-If your Travis output log looks like this:
+If your output log looks like this:
 
 ```
 Size:639 (i,b,hw,ed,ip,cmp): 0/0/0/0/0/1, Tot:0/0/0/2036/5/28604
@@ -66,13 +96,13 @@ Seen a crash. Terminating all fuzzing threads
 
 … # a lot of lines in between
 
-<0x0000555555565559> [func:UNKNOWN file: line:0 module:/home/travis/build/rust-bitcoin/rust-lightning/fuzz/hfuzz_target/x86_64-unknown-linux-gnu/release/full_stack_target]
+<0x0000555555565559> [func:UNKNOWN file: line:0 module:./rust-lightning/fuzz/hfuzz_target/x86_64-unknown-linux-gnu/release/full_stack_target]
 <0x0000000000000000> [func:UNKNOWN file: line:0 module:UNKNOWN]
 =====================================================================
 2d3136383734090101010101010101010101010101010101010101010101
 010101010100040101010101010101010101010103010101010100010101
 0069d07c319a4961
-The command "if [ "$(rustup show | grep default | grep stable)" != "" ]; then cd fuzz && cargo test --verbose && ./travis-fuzz.sh; fi" exited with 1.
+The command "if [ "$(rustup show | grep default | grep stable)" != "" ]; then cd fuzz && cargo test --verbose && ./ci-fuzz.sh; fi" exited with 1.
 ```
 
 Note that the penultimate stack trace line ends in `release/full_stack_target]`. That indicates that
