@@ -2273,9 +2273,15 @@ fn channel_monitor_network_test() {
 	nodes[1].node.force_close_broadcasting_latest_txn(&chan_1.2, &nodes[0].node.get_our_node_id()).unwrap();
 	check_added_monitors!(nodes[1], 1);
 	check_closed_broadcast!(nodes[1], true);
+	check_closed_event!(nodes[1], 1, ClosureReason::HolderForceClosed, [nodes[0].node.get_our_node_id()], 100000);
 	{
 		let mut node_txn = test_txn_broadcast(&nodes[1], &chan_1, None, HTLCType::NONE);
 		assert_eq!(node_txn.len(), 1);
+		mine_transaction(&nodes[1], &node_txn[0]);
+		if nodes[1].connect_style.borrow().updates_best_block_first() {
+			let _ = nodes[1].tx_broadcaster.txn_broadcast();
+		}
+
 		mine_transaction(&nodes[0], &node_txn[0]);
 		check_added_monitors!(nodes[0], 1);
 		test_txn_broadcast(&nodes[0], &chan_1, Some(node_txn[0].clone()), HTLCType::NONE);
@@ -2284,7 +2290,6 @@ fn channel_monitor_network_test() {
 	assert_eq!(nodes[0].node.list_channels().len(), 0);
 	assert_eq!(nodes[1].node.list_channels().len(), 1);
 	check_closed_event!(nodes[0], 1, ClosureReason::CommitmentTxConfirmed, [nodes[1].node.get_our_node_id()], 100000);
-	check_closed_event!(nodes[1], 1, ClosureReason::HolderForceClosed, [nodes[0].node.get_our_node_id()], 100000);
 
 	// One pending HTLC is discarded by the force-close:
 	let (payment_preimage_1, payment_hash_1, ..) = route_payment(&nodes[1], &[&nodes[2], &nodes[3]], 3_000_000);
@@ -3556,7 +3561,7 @@ fn test_htlc_ignore_latest_remote_commitment() {
 		// connect_style.
 		return;
 	}
-	create_announced_chan_between_nodes(&nodes, 0, 1);
+	let funding_tx = create_announced_chan_between_nodes(&nodes, 0, 1).3;
 
 	route_payment(&nodes[0], &[&nodes[1]], 10000000);
 	nodes[0].node.force_close_broadcasting_latest_txn(&nodes[0].node.list_channels()[0].channel_id, &nodes[1].node.get_our_node_id()).unwrap();
@@ -3565,11 +3570,12 @@ fn test_htlc_ignore_latest_remote_commitment() {
 	check_added_monitors!(nodes[0], 1);
 	check_closed_event!(nodes[0], 1, ClosureReason::HolderForceClosed, [nodes[1].node.get_our_node_id()], 100000);
 
-	let node_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
-	assert_eq!(node_txn.len(), 3);
-	assert_eq!(node_txn[0].txid(), node_txn[1].txid());
+	let node_txn = nodes[0].tx_broadcaster.unique_txn_broadcast();
+	assert_eq!(node_txn.len(), 2);
+	check_spends!(node_txn[0], funding_tx);
+	check_spends!(node_txn[1], node_txn[0]);
 
-	let block = create_dummy_block(nodes[1].best_block_hash(), 42, vec![node_txn[0].clone(), node_txn[1].clone()]);
+	let block = create_dummy_block(nodes[1].best_block_hash(), 42, vec![node_txn[0].clone()]);
 	connect_block(&nodes[1], &block);
 	check_closed_broadcast!(nodes[1], true);
 	check_added_monitors!(nodes[1], 1);
@@ -3626,7 +3632,7 @@ fn test_force_close_fail_back() {
 	check_closed_broadcast!(nodes[2], true);
 	check_added_monitors!(nodes[2], 1);
 	check_closed_event!(nodes[2], 1, ClosureReason::HolderForceClosed, [nodes[1].node.get_our_node_id()], 100000);
-	let tx = {
+	let commitment_tx = {
 		let mut node_txn = nodes[2].tx_broadcaster.txn_broadcasted.lock().unwrap();
 		// Note that we don't bother broadcasting the HTLC-Success transaction here as we don't
 		// have a use for it unless nodes[2] learns the preimage somehow, the funds will go
@@ -3635,7 +3641,7 @@ fn test_force_close_fail_back() {
 		node_txn.remove(0)
 	};
 
-	mine_transaction(&nodes[1], &tx);
+	mine_transaction(&nodes[1], &commitment_tx);
 
 	// Note no UpdateHTLCs event here from nodes[1] to nodes[0]!
 	check_closed_broadcast!(nodes[1], true);
@@ -3647,15 +3653,16 @@ fn test_force_close_fail_back() {
 		get_monitor!(nodes[2], payment_event.commitment_msg.channel_id)
 			.provide_payment_preimage(&our_payment_hash, &our_payment_preimage, &node_cfgs[2].tx_broadcaster, &LowerBoundedFeeEstimator::new(node_cfgs[2].fee_estimator), &node_cfgs[2].logger);
 	}
-	mine_transaction(&nodes[2], &tx);
-	let node_txn = nodes[2].tx_broadcaster.txn_broadcasted.lock().unwrap();
-	assert_eq!(node_txn.len(), 1);
-	assert_eq!(node_txn[0].input.len(), 1);
-	assert_eq!(node_txn[0].input[0].previous_output.txid, tx.txid());
-	assert_eq!(node_txn[0].lock_time, LockTime::ZERO); // Must be an HTLC-Success
-	assert_eq!(node_txn[0].input[0].witness.len(), 5); // Must be an HTLC-Success
+	mine_transaction(&nodes[2], &commitment_tx);
+	let mut node_txn = nodes[2].tx_broadcaster.txn_broadcast();
+	assert_eq!(node_txn.len(), if nodes[2].connect_style.borrow().updates_best_block_first() { 2 } else { 1 });
+	let htlc_tx = node_txn.pop().unwrap();
+	assert_eq!(htlc_tx.input.len(), 1);
+	assert_eq!(htlc_tx.input[0].previous_output.txid, commitment_tx.txid());
+	assert_eq!(htlc_tx.lock_time, LockTime::ZERO); // Must be an HTLC-Success
+	assert_eq!(htlc_tx.input[0].witness.len(), 5); // Must be an HTLC-Success
 
-	check_spends!(node_txn[0], tx);
+	check_spends!(htlc_tx, commitment_tx);
 }
 
 #[test]
@@ -8881,7 +8888,12 @@ fn do_test_onchain_htlc_settlement_after_close(broadcast_alice: bool, go_onchain
 			assert_eq!(bob_txn.len(), 1);
 			check_spends!(bob_txn[0], txn_to_broadcast[0]);
 		} else {
-			assert_eq!(bob_txn.len(), 2);
+			if nodes[1].connect_style.borrow().updates_best_block_first() {
+				assert_eq!(bob_txn.len(), 3);
+				assert_eq!(bob_txn[0].txid(), bob_txn[1].txid());
+			} else {
+				assert_eq!(bob_txn.len(), 2);
+			}
 			check_spends!(bob_txn[0], chan_ab.3);
 		}
 	}
@@ -8897,15 +8909,16 @@ fn do_test_onchain_htlc_settlement_after_close(broadcast_alice: bool, go_onchain
 		// If Alice force-closed, Bob only broadcasts a HTLC-output-claiming transaction. Otherwise,
 		// Bob force-closed and broadcasts the commitment transaction along with a
 		// HTLC-output-claiming transaction.
-		let bob_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().clone();
+		let mut bob_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().clone();
 		if broadcast_alice {
 			assert_eq!(bob_txn.len(), 1);
 			check_spends!(bob_txn[0], txn_to_broadcast[0]);
 			assert_eq!(bob_txn[0].input[0].witness.last().unwrap().len(), script_weight);
 		} else {
-			assert_eq!(bob_txn.len(), 2);
-			check_spends!(bob_txn[1], txn_to_broadcast[0]);
-			assert_eq!(bob_txn[1].input[0].witness.last().unwrap().len(), script_weight);
+			assert_eq!(bob_txn.len(), if nodes[1].connect_style.borrow().updates_best_block_first() { 3 } else { 2 });
+			let htlc_tx = bob_txn.pop().unwrap();
+			check_spends!(htlc_tx, txn_to_broadcast[0]);
+			assert_eq!(htlc_tx.input[0].witness.last().unwrap().len(), script_weight);
 		}
 	}
 }
@@ -9381,8 +9394,12 @@ fn do_test_tx_confirmed_skipping_blocks_immediate_broadcast(test_height_before_t
 		// We should broadcast an HTLC transaction spending our funding transaction first
 		let spending_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
 		assert_eq!(spending_txn.len(), 2);
-		assert_eq!(spending_txn[0].txid(), node_txn[0].txid());
-		check_spends!(spending_txn[1], node_txn[0]);
+		let htlc_tx = if spending_txn[0].txid() == node_txn[0].txid() {
+			&spending_txn[1]
+		} else {
+			&spending_txn[0]
+		};
+		check_spends!(htlc_tx, node_txn[0]);
 		// We should also generate a SpendableOutputs event with the to_self output (as its
 		// timelock is up).
 		let descriptor_spend_txn = check_spendable_outputs!(nodes[1], node_cfgs[1].keys_manager);
@@ -9392,7 +9409,7 @@ fn do_test_tx_confirmed_skipping_blocks_immediate_broadcast(test_height_before_t
 		// should immediately fail-backwards the HTLC to the previous hop, without waiting for an
 		// additional block built on top of the current chain.
 		nodes[1].chain_monitor.chain_monitor.transactions_confirmed(
-			&nodes[1].get_block_header(conf_height + 1), &[(0, &spending_txn[1])], conf_height + 1);
+			&nodes[1].get_block_header(conf_height + 1), &[(0, htlc_tx)], conf_height + 1);
 		expect_pending_htlcs_forwardable_and_htlc_handling_failed!(nodes[1], vec![HTLCDestination::NextHopChannel { node_id: Some(nodes[2].node.get_our_node_id()), channel_id: channel_id }]);
 		check_added_monitors!(nodes[1], 1);
 

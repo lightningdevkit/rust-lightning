@@ -638,7 +638,7 @@ fn do_retry_with_no_persist(confirm_before_reload: bool) {
 	let nodes_0_deserialized;
 	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 
-	let chan_id = create_announced_chan_between_nodes(&nodes, 0, 1).2;
+	let (_, _, chan_id, funding_tx) = create_announced_chan_between_nodes(&nodes, 0, 1);
 	let (_, _, chan_id_2, _) = create_announced_chan_between_nodes(&nodes, 1, 2);
 
 	// Serialize the ChannelManager prior to sending payments
@@ -750,14 +750,21 @@ fn do_retry_with_no_persist(confirm_before_reload: bool) {
 	assert_eq!(nodes[0].node.list_usable_channels().len(), 1);
 
 	mine_transaction(&nodes[1], &as_commitment_tx);
-	let bs_htlc_claim_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
-	assert_eq!(bs_htlc_claim_txn.len(), 1);
-	check_spends!(bs_htlc_claim_txn[0], as_commitment_tx);
+	let bs_htlc_claim_txn = {
+		let mut txn = nodes[1].tx_broadcaster.unique_txn_broadcast();
+		assert_eq!(txn.len(), 2);
+		check_spends!(txn[0], funding_tx);
+		check_spends!(txn[1], as_commitment_tx);
+		txn.pop().unwrap()
+	};
 
 	if !confirm_before_reload {
 		mine_transaction(&nodes[0], &as_commitment_tx);
+		let txn = nodes[0].tx_broadcaster.unique_txn_broadcast();
+		assert_eq!(txn.len(), 1);
+		assert_eq!(txn[0].txid(), as_commitment_tx.txid());
 	}
-	mine_transaction(&nodes[0], &bs_htlc_claim_txn[0]);
+	mine_transaction(&nodes[0], &bs_htlc_claim_txn);
 	expect_payment_sent(&nodes[0], payment_preimage_1, None, true, false);
 	connect_blocks(&nodes[0], TEST_FINAL_CLTV*4 + 20);
 	let (first_htlc_timeout_tx, second_htlc_timeout_tx) = {
@@ -767,7 +774,7 @@ fn do_retry_with_no_persist(confirm_before_reload: bool) {
 	};
 	check_spends!(first_htlc_timeout_tx, as_commitment_tx);
 	check_spends!(second_htlc_timeout_tx, as_commitment_tx);
-	if first_htlc_timeout_tx.input[0].previous_output == bs_htlc_claim_txn[0].input[0].previous_output {
+	if first_htlc_timeout_tx.input[0].previous_output == bs_htlc_claim_txn.input[0].previous_output {
 		confirm_transaction(&nodes[0], &second_htlc_timeout_tx);
 	} else {
 		confirm_transaction(&nodes[0], &first_htlc_timeout_tx);
@@ -919,18 +926,22 @@ fn do_test_completed_payment_not_retryable_on_reload(use_dust: bool) {
 	// the HTLC-Timeout transaction beyond 1 conf). For dust HTLCs, the HTLC is considered resolved
 	// after the commitment transaction, so always connect the commitment transaction.
 	mine_transaction(&nodes[0], &bs_commitment_tx[0]);
+	if nodes[0].connect_style.borrow().updates_best_block_first() {
+		let _ = nodes[0].tx_broadcaster.txn_broadcast();
+	}
 	mine_transaction(&nodes[1], &bs_commitment_tx[0]);
 	if !use_dust {
 		connect_blocks(&nodes[0], TEST_FINAL_CLTV + (MIN_CLTV_EXPIRY_DELTA as u32));
 		connect_blocks(&nodes[1], TEST_FINAL_CLTV + (MIN_CLTV_EXPIRY_DELTA as u32));
 		let as_htlc_timeout = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
-		check_spends!(as_htlc_timeout[0], bs_commitment_tx[0]);
 		assert_eq!(as_htlc_timeout.len(), 1);
+		check_spends!(as_htlc_timeout[0], bs_commitment_tx[0]);
 
 		mine_transaction(&nodes[0], &as_htlc_timeout[0]);
-		// nodes[0] may rebroadcast (or RBF-bump) its HTLC-Timeout, so wipe the announced set.
-		nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().clear();
 		mine_transaction(&nodes[1], &as_htlc_timeout[0]);
+	}
+	if nodes[0].connect_style.borrow().updates_best_block_first() {
+		let _ = nodes[0].tx_broadcaster.txn_broadcast();
 	}
 
 	// Create a new channel on which to retry the payment before we fail the payment via the
@@ -1049,32 +1060,36 @@ fn do_test_dup_htlc_onchain_fails_on_reload(persist_manager_post_event: bool, co
 
 	// Connect blocks until the CLTV timeout is up so that we get an HTLC-Timeout transaction
 	connect_blocks(&nodes[0], TEST_FINAL_CLTV + LATENCY_GRACE_PERIOD_BLOCKS + 1);
-	let node_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
-	assert_eq!(node_txn.len(), 3);
-	assert_eq!(node_txn[0].txid(), node_txn[1].txid());
-	check_spends!(node_txn[1], funding_tx);
-	check_spends!(node_txn[2], node_txn[1]);
-	let timeout_txn = vec![node_txn[2].clone()];
+	let (commitment_tx, htlc_timeout_tx) = {
+		let mut txn = nodes[0].tx_broadcaster.unique_txn_broadcast();
+		assert_eq!(txn.len(), 2);
+		check_spends!(txn[0], funding_tx);
+		check_spends!(txn[1], txn[0]);
+		(txn.remove(0), txn.remove(0))
+	};
 
 	nodes[1].node.claim_funds(payment_preimage);
 	check_added_monitors!(nodes[1], 1);
 	expect_payment_claimed!(nodes[1], payment_hash, 10_000_000);
 
-	connect_block(&nodes[1], &create_dummy_block(nodes[1].best_block_hash(), 42, vec![node_txn[1].clone()]));
+	mine_transaction(&nodes[1], &commitment_tx);
 	check_closed_broadcast!(nodes[1], true);
 	check_added_monitors!(nodes[1], 1);
 	check_closed_event!(nodes[1], 1, ClosureReason::CommitmentTxConfirmed, [nodes[0].node.get_our_node_id()], 100000);
-	let claim_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
-	assert_eq!(claim_txn.len(), 1);
-	check_spends!(claim_txn[0], node_txn[1]);
+	let htlc_success_tx = {
+		let mut txn = nodes[1].tx_broadcaster.txn_broadcast();
+		assert_eq!(txn.len(), 1);
+		check_spends!(txn[0], commitment_tx);
+		txn.pop().unwrap()
+	};
 
-	connect_block(&nodes[0], &create_dummy_block(nodes[0].best_block_hash(), 42, vec![node_txn[1].clone()]));
+	mine_transaction(&nodes[0], &commitment_tx);
 
 	if confirm_commitment_tx {
 		connect_blocks(&nodes[0], BREAKDOWN_TIMEOUT as u32 - 1);
 	}
 
-	let claim_block = create_dummy_block(nodes[0].best_block_hash(), 42, if payment_timeout { timeout_txn } else { vec![claim_txn[0].clone()] });
+	let claim_block = create_dummy_block(nodes[0].best_block_hash(), 42, if payment_timeout { vec![htlc_timeout_tx] } else { vec![htlc_success_tx] });
 
 	if payment_timeout {
 		assert!(confirm_commitment_tx); // Otherwise we're spending below our CSV!

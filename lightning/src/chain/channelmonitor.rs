@@ -2659,18 +2659,59 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		}
 	}
 
-	fn broadcast_latest_holder_commitment_txn<B: Deref, L: Deref>(&mut self, broadcaster: &B, logger: &WithChannelMonitor<L>)
-		where B::Target: BroadcasterInterface,
-			L::Target: Logger,
-	{
-		let commit_txs = self.get_latest_holder_commitment_txn(logger);
-		let mut txs = vec![];
-		for tx in commit_txs.iter() {
-			log_info!(logger, "Broadcasting local {}", log_tx!(tx));
-			txs.push(tx);
-		}
-		broadcaster.broadcast_transactions(&txs);
+	fn generate_claimable_outpoints_and_watch_outputs(&mut self) -> (Vec<PackageTemplate>, Vec<TransactionOutputs>) {
+		let funding_outp = HolderFundingOutput::build(
+			self.funding_redeemscript.clone(),
+			self.channel_value_satoshis,
+			self.onchain_tx_handler.channel_type_features().clone()
+		);
+		let commitment_package = PackageTemplate::build_package(
+			self.funding_info.0.txid.clone(), self.funding_info.0.index as u32,
+			PackageSolvingData::HolderFundingOutput(funding_outp),
+			self.best_block.height(), self.best_block.height()
+		);
+		let mut claimable_outpoints = vec![commitment_package];
 		self.pending_monitor_events.push(MonitorEvent::HolderForceClosed(self.funding_info.0));
+		// Although we aren't signing the transaction directly here, the transaction will be signed
+		// in the claim that is queued to OnchainTxHandler. We set holder_tx_signed here to reject
+		// new channel updates.
+		self.holder_tx_signed = true;
+		let mut watch_outputs = Vec::new();
+		// We can't broadcast our HTLC transactions while the commitment transaction is
+		// unconfirmed. We'll delay doing so until we detect the confirmed commitment in
+		// `transactions_confirmed`.
+		if !self.onchain_tx_handler.channel_type_features().supports_anchors_zero_fee_htlc_tx() {
+			// Because we're broadcasting a commitment transaction, we should construct the package
+			// assuming it gets confirmed in the next block. Sadly, we have code which considers
+			// "not yet confirmed" things as discardable, so we cannot do that here.
+			let (mut new_outpoints, _) = self.get_broadcasted_holder_claims(
+				&self.current_holder_commitment_tx, self.best_block.height()
+			);
+			let unsigned_commitment_tx = self.onchain_tx_handler.get_unsigned_holder_commitment_tx();
+			let new_outputs = self.get_broadcasted_holder_watch_outputs(
+				&self.current_holder_commitment_tx, &unsigned_commitment_tx
+			);
+			if !new_outputs.is_empty() {
+				watch_outputs.push((self.current_holder_commitment_tx.txid.clone(), new_outputs));
+			}
+			claimable_outpoints.append(&mut new_outpoints);
+		}
+		(claimable_outpoints, watch_outputs)
+	}
+
+	pub(crate) fn queue_latest_holder_commitment_txn_for_broadcast<B: Deref, F: Deref, L: Deref>(
+		&mut self, broadcaster: &B, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &WithChannelMonitor<L>
+	)
+	where
+		B::Target: BroadcasterInterface,
+		F::Target: FeeEstimator,
+		L::Target: Logger,
+	{
+		let (claimable_outpoints, _) = self.generate_claimable_outpoints_and_watch_outputs();
+		self.onchain_tx_handler.update_claims_view_from_requests(
+			claimable_outpoints, self.best_block.height(), self.best_block.height(), broadcaster,
+			fee_estimator, logger
+		);
 	}
 
 	fn update_monitor<B: Deref, F: Deref, L: Deref>(
@@ -2760,26 +2801,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 							log_trace!(logger, "Avoiding commitment broadcast, already detected confirmed spend onchain");
 							continue;
 						}
-						self.broadcast_latest_holder_commitment_txn(broadcaster, logger);
-						// If the channel supports anchor outputs, we'll need to emit an external
-						// event to be consumed such that a child transaction is broadcast with a
-						// high enough feerate for the parent commitment transaction to confirm.
-						if self.onchain_tx_handler.channel_type_features().supports_anchors_zero_fee_htlc_tx() {
-							let funding_output = HolderFundingOutput::build(
-								self.funding_redeemscript.clone(), self.channel_value_satoshis,
-								self.onchain_tx_handler.channel_type_features().clone(),
-							);
-							let best_block_height = self.best_block.height();
-							let commitment_package = PackageTemplate::build_package(
-								self.funding_info.0.txid.clone(), self.funding_info.0.index as u32,
-								PackageSolvingData::HolderFundingOutput(funding_output),
-								best_block_height, best_block_height
-							);
-							self.onchain_tx_handler.update_claims_view_from_requests(
-								vec![commitment_package], best_block_height, best_block_height,
-								broadcaster, &bounded_fee_estimator, logger,
-							);
-						}
+						self.queue_latest_holder_commitment_txn_for_broadcast(broadcaster, &bounded_fee_estimator, logger);
 					} else if !self.holder_tx_signed {
 						log_error!(logger, "WARNING: You have a potentially-unsafe holder commitment transaction available to broadcast");
 						log_error!(logger, "    in channel monitor for channel {}!", &self.funding_info.0.to_channel_id());
@@ -3689,29 +3711,9 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 
 		let should_broadcast = self.should_broadcast_holder_commitment_txn(logger);
 		if should_broadcast {
-			let funding_outp = HolderFundingOutput::build(self.funding_redeemscript.clone(), self.channel_value_satoshis, self.onchain_tx_handler.channel_type_features().clone());
-			let commitment_package = PackageTemplate::build_package(self.funding_info.0.txid.clone(), self.funding_info.0.index as u32, PackageSolvingData::HolderFundingOutput(funding_outp), self.best_block.height(), self.best_block.height());
-			claimable_outpoints.push(commitment_package);
-			self.pending_monitor_events.push(MonitorEvent::HolderForceClosed(self.funding_info.0));
-			// Although we aren't signing the transaction directly here, the transaction will be signed
-			// in the claim that is queued to OnchainTxHandler. We set holder_tx_signed here to reject
-			// new channel updates.
-			self.holder_tx_signed = true;
-			// We can't broadcast our HTLC transactions while the commitment transaction is
-			// unconfirmed. We'll delay doing so until we detect the confirmed commitment in
-			// `transactions_confirmed`.
-			if !self.onchain_tx_handler.channel_type_features().supports_anchors_zero_fee_htlc_tx() {
-				// Because we're broadcasting a commitment transaction, we should construct the package
-				// assuming it gets confirmed in the next block. Sadly, we have code which considers
-				// "not yet confirmed" things as discardable, so we cannot do that here.
-				let (mut new_outpoints, _) = self.get_broadcasted_holder_claims(&self.current_holder_commitment_tx, self.best_block.height());
-				let unsigned_commitment_tx = self.onchain_tx_handler.get_unsigned_holder_commitment_tx();
-				let new_outputs = self.get_broadcasted_holder_watch_outputs(&self.current_holder_commitment_tx, &unsigned_commitment_tx);
-				if !new_outputs.is_empty() {
-					watch_outputs.push((self.current_holder_commitment_tx.txid.clone(), new_outputs));
-				}
-				claimable_outpoints.append(&mut new_outpoints);
-			}
+			let (mut new_outpoints, mut new_outputs) = self.generate_claimable_outpoints_and_watch_outputs();
+			claimable_outpoints.append(&mut new_outpoints);
+			watch_outputs.append(&mut new_outputs);
 		}
 
 		// Find which on-chain events have reached their confirmation threshold.
