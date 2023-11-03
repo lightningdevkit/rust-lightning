@@ -213,3 +213,88 @@ fn creates_and_pays_for_refund_using_one_hop_blinded_path() {
 	claim_bolt12_payment(bob, &[alice]);
 	expect_recent_payment!(bob, RecentPaymentDetails::Fulfilled, payment_id);
 }
+
+/// Checks that an invoice for an offer without any blinded paths can be requested. Note that while
+/// the requested is sent directly using the node's pubkey, the response and the payment still use
+/// blinded paths as required by the spec.
+#[test]
+fn pays_for_offer_without_blinded_paths() {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 10_000_000, 1_000_000_000);
+
+	let alice = &nodes[0];
+	let alice_id = alice.node.get_our_node_id();
+	let bob = &nodes[1];
+	let bob_id = bob.node.get_our_node_id();
+
+	let offer = alice.node
+		.create_offer_builder("coffee".to_string()).unwrap()
+		.clear_paths()
+		.amount_msats(10_000_000)
+		.build().unwrap();
+	assert_eq!(offer.signing_pubkey(), alice_id);
+	assert!(offer.paths().is_empty());
+
+	let payment_id = PaymentId([1; 32]);
+	bob.node.pay_for_offer(&offer, None, None, None, payment_id, Retry::Attempts(0), None).unwrap();
+	expect_recent_payment!(bob, RecentPaymentDetails::AwaitingInvoice, payment_id);
+
+	let onion_message = bob.onion_messenger.next_onion_message_for_peer(alice_id).unwrap();
+	alice.onion_messenger.handle_onion_message(&bob_id, &onion_message);
+
+	let onion_message = alice.onion_messenger.next_onion_message_for_peer(bob_id).unwrap();
+	bob.onion_messenger.handle_onion_message(&alice_id, &onion_message);
+
+	let invoice = extract_invoice(bob, &onion_message);
+	route_bolt12_payment(bob, &[alice], &invoice);
+	expect_recent_payment!(bob, RecentPaymentDetails::Pending, payment_id);
+
+	claim_bolt12_payment(bob, &[alice]);
+	expect_recent_payment!(bob, RecentPaymentDetails::Fulfilled, payment_id);
+}
+
+/// Checks that a refund without any blinded paths can be paid. Note that while the invoice is sent
+/// directly using the node's pubkey, the payment still use blinded paths as required by the spec.
+#[test]
+fn pays_for_refund_without_blinded_paths() {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 10_000_000, 1_000_000_000);
+
+	let alice = &nodes[0];
+	let alice_id = alice.node.get_our_node_id();
+	let bob = &nodes[1];
+	let bob_id = bob.node.get_our_node_id();
+
+	let absolute_expiry = Duration::from_secs(u64::MAX);
+	let payment_id = PaymentId([1; 32]);
+	let refund = bob.node
+		.create_refund_builder(
+			"refund".to_string(), 10_000_000, absolute_expiry, payment_id, Retry::Attempts(0), None
+		)
+		.unwrap()
+		.clear_paths()
+		.build().unwrap();
+	assert_eq!(refund.payer_id(), bob_id);
+	assert!(refund.paths().is_empty());
+	expect_recent_payment!(bob, RecentPaymentDetails::AwaitingInvoice, payment_id);
+
+	alice.node.request_refund_payment(&refund).unwrap();
+
+	let onion_message = alice.onion_messenger.next_onion_message_for_peer(bob_id).unwrap();
+	bob.onion_messenger.handle_onion_message(&alice_id, &onion_message);
+
+	let invoice = extract_invoice(bob, &onion_message);
+	route_bolt12_payment(bob, &[alice], &invoice);
+	expect_recent_payment!(bob, RecentPaymentDetails::Pending, payment_id);
+
+	claim_bolt12_payment(bob, &[alice]);
+	expect_recent_payment!(bob, RecentPaymentDetails::Fulfilled, payment_id);
+}
