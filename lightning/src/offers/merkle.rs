@@ -30,7 +30,7 @@ tlv_stream!(SignatureTlvStream, SignatureTlvStreamRef, SIGNATURE_TYPES, {
 ///
 /// [BIP 340]: https://github.com/bitcoin/bips/blob/master/bip-0340.mediawiki
 /// [BOLT 12]: https://github.com/rustyrussell/lightning-rfc/blob/guilt/offers/12-offer-encoding.md#signature-calculation
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct TaggedHash(Message);
 
 impl TaggedHash {
@@ -38,7 +38,9 @@ impl TaggedHash {
 	///
 	/// Panics if `tlv_stream` is not a well-formed TLV stream containing at least one TLV record.
 	pub(super) fn new(tag: &str, tlv_stream: &[u8]) -> Self {
-		Self(message_digest(tag, tlv_stream))
+		let tag = sha256::Hash::hash(tag.as_bytes());
+		let merkle_root = root_hash(tlv_stream);
+		Self(Message::from_slice(&tagged_hash(tag, merkle_root)).unwrap())
 	}
 
 	/// Returns the digest to sign.
@@ -91,18 +93,12 @@ where
 /// Verifies the signature with a pubkey over the given message using a tagged hash as the message
 /// digest.
 pub(super) fn verify_signature(
-	signature: &Signature, message: TaggedHash, pubkey: PublicKey,
+	signature: &Signature, message: &TaggedHash, pubkey: PublicKey,
 ) -> Result<(), secp256k1::Error> {
 	let digest = message.as_digest();
 	let pubkey = pubkey.into();
 	let secp_ctx = Secp256k1::verification_only();
 	secp_ctx.verify_schnorr(signature, digest, &pubkey)
-}
-
-pub(super) fn message_digest(tag: &str, bytes: &[u8]) -> Message {
-	let tag = sha256::Hash::hash(tag.as_bytes());
-	let merkle_root = root_hash(bytes);
-	Message::from_slice(&tagged_hash(tag, merkle_root)).unwrap()
 }
 
 /// Computes a merkle root hash for the given data, which must be a well-formed TLV stream

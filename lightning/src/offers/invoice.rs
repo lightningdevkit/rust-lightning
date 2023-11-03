@@ -439,6 +439,7 @@ impl UnsignedBolt12Invoice {
 			bytes: self.bytes,
 			contents: self.contents,
 			signature,
+			tagged_hash: self.tagged_hash,
 		})
 	}
 }
@@ -463,6 +464,7 @@ pub struct Bolt12Invoice {
 	bytes: Vec<u8>,
 	contents: InvoiceContents,
 	signature: Signature,
+	tagged_hash: TaggedHash,
 }
 
 /// The contents of an [`Bolt12Invoice`] for responding to either an [`Offer`] or a [`Refund`].
@@ -707,7 +709,7 @@ impl Bolt12Invoice {
 
 	/// Hash that was used for signing the invoice.
 	pub fn signable_hash(&self) -> [u8; 32] {
-		merkle::message_digest(SIGNATURE_TAG, &self.bytes).as_ref().clone()
+		self.tagged_hash.as_digest().as_ref().clone()
 	}
 
 	/// Verifies that the invoice was for a request or refund created using the given key. Returns
@@ -1212,11 +1214,11 @@ impl TryFrom<ParsedMessage<FullInvoiceTlvStream>> for Bolt12Invoice {
 			None => return Err(Bolt12ParseError::InvalidSemantics(Bolt12SemanticError::MissingSignature)),
 			Some(signature) => signature,
 		};
-		let message = TaggedHash::new(SIGNATURE_TAG, &bytes);
+		let tagged_hash = TaggedHash::new(SIGNATURE_TAG, &bytes);
 		let pubkey = contents.fields().signing_pubkey;
-		merkle::verify_signature(&signature, message, pubkey)?;
+		merkle::verify_signature(&signature, &tagged_hash, pubkey)?;
 
-		Ok(Bolt12Invoice { bytes, contents, signature })
+		Ok(Bolt12Invoice { bytes, contents, signature, tagged_hash })
 	}
 }
 
@@ -1431,7 +1433,7 @@ mod tests {
 		assert_eq!(invoice.signing_pubkey(), recipient_pubkey());
 
 		let message = TaggedHash::new(SIGNATURE_TAG, &invoice.bytes);
-		assert!(merkle::verify_signature(&invoice.signature, message, recipient_pubkey()).is_ok());
+		assert!(merkle::verify_signature(&invoice.signature, &message, recipient_pubkey()).is_ok());
 
 		let digest = Message::from_slice(&invoice.signable_hash()).unwrap();
 		let pubkey = recipient_pubkey().into();
@@ -1528,7 +1530,7 @@ mod tests {
 		assert_eq!(invoice.signing_pubkey(), recipient_pubkey());
 
 		let message = TaggedHash::new(SIGNATURE_TAG, &invoice.bytes);
-		assert!(merkle::verify_signature(&invoice.signature, message, recipient_pubkey()).is_ok());
+		assert!(merkle::verify_signature(&invoice.signature, &message, recipient_pubkey()).is_ok());
 
 		assert_eq!(
 			invoice.as_tlv_stream(),
