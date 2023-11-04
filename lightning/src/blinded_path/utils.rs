@@ -20,7 +20,7 @@ use crate::ln::msgs::DecodeError;
 use crate::ln::onion_utils;
 use crate::onion_message::Destination;
 use crate::util::chacha20poly1305rfc::ChaChaPolyWriteAdapter;
-use crate::util::ser::{Readable, VecWriter, Writeable};
+use crate::util::ser::{Readable, Writeable};
 
 use crate::io;
 use crate::prelude::*;
@@ -129,10 +129,8 @@ where
 
 /// Encrypt TLV payload to be used as a [`crate::blinded_path::BlindedHop::encrypted_payload`].
 fn encrypt_payload<P: Writeable>(payload: P, encrypted_tlvs_rho: [u8; 32]) -> Vec<u8> {
-	let mut writer = VecWriter(Vec::new());
 	let write_adapter = ChaChaPolyWriteAdapter::new(encrypted_tlvs_rho, &payload);
-	write_adapter.write(&mut writer).expect("In-memory writes cannot fail");
-	writer.0
+	write_adapter.encode()
 }
 
 /// Blinded path encrypted payloads may be padded to ensure they are equal length.
