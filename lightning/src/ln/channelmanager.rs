@@ -2415,6 +2415,11 @@ where
 			.ok_or_else(|| APIError::APIMisuseError{ err: format!("Not connected to node: {}", their_network_key) })?;
 
 		let mut peer_state = peer_state_mutex.lock().unwrap();
+
+		if !peer_state.is_connected {
+			return Err(APIError::APIMisuseError { err: format!("Disconnected from the node: {}", their_network_key) });
+		}
+
 		let channel = {
 			let outbound_scid_alias = self.create_and_insert_outbound_scid_alias();
 			let their_features = &peer_state.latest_features;
