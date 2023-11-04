@@ -27,7 +27,7 @@ use crate::ln::msgs::{ChannelMessageHandler, LightningError, SocketAddress, Onio
 #[cfg(not(c_bindings))]
 use crate::ln::channelmanager::{SimpleArcChannelManager, SimpleRefChannelManager};
 use crate::util::ser::{VecWriter, Writeable, Writer};
-use crate::ln::peer_channel_encryptor::{PeerChannelEncryptor, NextNoiseStep, MSG_BUF_ALLOC_SIZE};
+use crate::ln::peer_channel_encryptor::{PeerChannelEncryptor, NextNoiseStep, MessageBuf, MSG_BUF_ALLOC_SIZE};
 use crate::ln::wire;
 use crate::ln::wire::{Encode, Type};
 #[cfg(not(c_bindings))]
@@ -495,7 +495,7 @@ struct Peer {
 	/// prioritize channel messages over them.
 	///
 	/// Note that these messages are *not* encrypted/MAC'd, and are only serialized.
-	gossip_broadcast_buffer: VecDeque<Vec<u8>>,
+	gossip_broadcast_buffer: VecDeque<MessageBuf>,
 	awaiting_write_event: bool,
 
 	pending_read_buffer: Vec<u8>,
@@ -1102,7 +1102,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 			}
 			if peer.should_buffer_gossip_broadcast() {
 				if let Some(msg) = peer.gossip_broadcast_buffer.pop_front() {
-					peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_buffer(&msg[..]));
+					peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_buffer(msg));
 				}
 			}
 			if peer.should_buffer_gossip_backfill() {
@@ -1251,7 +1251,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 	}
 
 	/// Append a message to a peer's pending outbound/write gossip broadcast buffer
-	fn enqueue_encoded_gossip_broadcast(&self, peer: &mut Peer, encoded_message: Vec<u8>) {
+	fn enqueue_encoded_gossip_broadcast(&self, peer: &mut Peer, encoded_message: MessageBuf) {
 		peer.msgs_sent_since_pong += 1;
 		debug_assert!(peer.gossip_broadcast_buffer.len() <= OUTBOUND_BUFFER_LIMIT_DROP_GOSSIP);
 		peer.gossip_broadcast_buffer.push_back(encoded_message);
@@ -1800,7 +1800,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 					if except_node.is_some() && peer.their_node_id.as_ref().map(|(pk, _)| pk) == except_node {
 						continue;
 					}
-					self.enqueue_encoded_gossip_broadcast(&mut *peer, encoded_msg.clone());
+					self.enqueue_encoded_gossip_broadcast(&mut *peer, MessageBuf::from_encoded(&encoded_msg));
 				}
 			},
 			wire::Message::NodeAnnouncement(ref msg) => {
@@ -1827,7 +1827,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 					if except_node.is_some() && peer.their_node_id.as_ref().map(|(pk, _)| pk) == except_node {
 						continue;
 					}
-					self.enqueue_encoded_gossip_broadcast(&mut *peer, encoded_msg.clone());
+					self.enqueue_encoded_gossip_broadcast(&mut *peer, MessageBuf::from_encoded(&encoded_msg));
 				}
 			},
 			wire::Message::ChannelUpdate(ref msg) => {
@@ -1849,7 +1849,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 					if except_node.is_some() && peer.their_node_id.as_ref().map(|(pk, _)| pk) == except_node {
 						continue;
 					}
-					self.enqueue_encoded_gossip_broadcast(&mut *peer, encoded_msg.clone());
+					self.enqueue_encoded_gossip_broadcast(&mut *peer, MessageBuf::from_encoded(&encoded_msg));
 				}
 			},
 			_ => debug_assert!(false, "We shouldn't attempt to forward anything but gossip messages"),
