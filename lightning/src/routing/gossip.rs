@@ -1312,14 +1312,16 @@ impl<L: Deref> ReadableArgs<L> for NetworkGraph<L> where L::Target: Logger {
 
 		let chain_hash: ChainHash = Readable::read(reader)?;
 		let channels_count: u64 = Readable::read(reader)?;
-		let mut channels = IndexedMap::new();
+		// In Nov, 2023 there were about 15,000 nodes; we cap allocations to 1.5x that.
+		let mut channels = IndexedMap::with_capacity(cmp::min(channels_count as usize, 22500));
 		for _ in 0..channels_count {
 			let chan_id: u64 = Readable::read(reader)?;
 			let chan_info = Readable::read(reader)?;
 			channels.insert(chan_id, chan_info);
 		}
 		let nodes_count: u64 = Readable::read(reader)?;
-		let mut nodes = IndexedMap::new();
+		// In Nov, 2023 there were about 69K channels; we cap allocations to 1.5x that.
+		let mut nodes = IndexedMap::with_capacity(cmp::min(nodes_count as usize, 103500));
 		for _ in 0..nodes_count {
 			let node_id = Readable::read(reader)?;
 			let node_info = Readable::read(reader)?;
