@@ -122,10 +122,15 @@ mod real_chachapoly {
 			}
 		}
 
-		// Decrypt in place, without checking the tag. Use `finish_and_check_tag` to check it
-		// later when decryption finishes.
-		//
-		// Should never be `pub` because the public API should always enforce tag checking.
+		pub fn check_decrypt_in_place(&mut self, input_output: &mut [u8], tag: &[u8]) -> Result<(), ()> {
+			self.decrypt_in_place(input_output);
+			if self.finish_and_check_tag(tag) { Ok(()) } else { Err(()) }
+		}
+
+		/// Decrypt in place, without checking the tag. Use `finish_and_check_tag` to check it
+		/// later when decryption finishes.
+		///
+		/// Should never be `pub` because the public API should always enforce tag checking.
 		pub(super) fn decrypt_in_place(&mut self, input_output: &mut [u8]) {
 			debug_assert!(self.finished == false);
 			self.mac.input(input_output);
@@ -133,8 +138,8 @@ mod real_chachapoly {
 			self.cipher.process_in_place(input_output);
 		}
 
-		// If we were previously decrypting with `decrypt_in_place`, this method must be used to finish
-		// decrypting and check the tag. Returns whether or not the tag is valid.
+		/// If we were previously decrypting with `just_decrypt_in_place`, this method must be used
+		/// to check the tag. Returns whether or not the tag is valid.
 		pub(super) fn finish_and_check_tag(&mut self, tag: &[u8]) -> bool {
 			debug_assert!(self.finished == false);
 			self.finished = true;
@@ -311,6 +316,11 @@ mod fuzzy_chachapoly {
 			output.copy_from_slice(input);
 			self.finished = true;
 			true
+		}
+
+		pub fn check_decrypt_in_place(&mut self, input_output: &mut [u8], tag: &[u8]) -> Result<(), ()> {
+			self.decrypt_in_place(input_output);
+			if self.finish_and_check_tag(tag) { Ok(()) } else { Err(()) }
 		}
 
 		pub(super) fn decrypt_in_place(&mut self, _input: &mut [u8]) {
