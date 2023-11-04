@@ -412,11 +412,17 @@ macro_rules! get_pubkey_from_node_id {
 	}
 }
 
+fn message_sha256d_hash<M: Writeable>(msg: &M) -> Sha256dHash {
+	let mut engine = Sha256dHash::engine();
+	msg.write(&mut engine).expect("In-memory structs should not fail to serialize");
+	Sha256dHash::from_engine(engine)
+}
+
 /// Verifies the signature of a [`NodeAnnouncement`].
 ///
 /// Returns an error if it is invalid.
 pub fn verify_node_announcement<C: Verification>(msg: &NodeAnnouncement, secp_ctx: &Secp256k1<C>) -> Result<(), LightningError> {
-	let msg_hash = hash_to_message!(&Sha256dHash::hash(&msg.contents.encode()[..])[..]);
+	let msg_hash = hash_to_message!(&message_sha256d_hash(&msg.contents)[..]);
 	secp_verify_sig!(secp_ctx, &msg_hash, &msg.signature, &get_pubkey_from_node_id!(msg.contents.node_id, "node_announcement"), "node_announcement");
 
 	Ok(())
@@ -426,7 +432,7 @@ pub fn verify_node_announcement<C: Verification>(msg: &NodeAnnouncement, secp_ct
 ///
 /// Returns an error if one of the signatures is invalid.
 pub fn verify_channel_announcement<C: Verification>(msg: &ChannelAnnouncement, secp_ctx: &Secp256k1<C>) -> Result<(), LightningError> {
-	let msg_hash = hash_to_message!(&Sha256dHash::hash(&msg.contents.encode()[..])[..]);
+	let msg_hash = hash_to_message!(&message_sha256d_hash(&msg.contents)[..]);
 	secp_verify_sig!(secp_ctx, &msg_hash, &msg.node_signature_1, &get_pubkey_from_node_id!(msg.contents.node_id_1, "channel_announcement"), "channel_announcement");
 	secp_verify_sig!(secp_ctx, &msg_hash, &msg.node_signature_2, &get_pubkey_from_node_id!(msg.contents.node_id_2, "channel_announcement"), "channel_announcement");
 	secp_verify_sig!(secp_ctx, &msg_hash, &msg.bitcoin_signature_1, &get_pubkey_from_node_id!(msg.contents.bitcoin_key_1, "channel_announcement"), "channel_announcement");
@@ -1969,7 +1975,7 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 					} }
 				}
 
-				let msg_hash = hash_to_message!(&Sha256dHash::hash(&msg.encode()[..])[..]);
+				let msg_hash = hash_to_message!(&message_sha256d_hash(&msg)[..]);
 				if msg.flags & 1 == 1 {
 					check_update_latest!(channel.two_to_one);
 					if let Some(sig) = sig {
