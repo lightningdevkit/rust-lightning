@@ -40,7 +40,7 @@ use crate::util::string::PrintableString;
 
 use crate::prelude::*;
 use crate::io;
-use alloc::collections::LinkedList;
+use alloc::collections::VecDeque;
 use crate::sync::{Arc, Mutex, MutexGuard, FairRwLock};
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicI32, Ordering};
 use core::{cmp, hash, fmt, mem};
@@ -489,13 +489,13 @@ struct Peer {
 	their_features: Option<InitFeatures>,
 	their_socket_address: Option<SocketAddress>,
 
-	pending_outbound_buffer: LinkedList<Vec<u8>>,
+	pending_outbound_buffer: VecDeque<Vec<u8>>,
 	pending_outbound_buffer_first_msg_offset: usize,
 	/// Queue gossip broadcasts separately from `pending_outbound_buffer` so we can easily
 	/// prioritize channel messages over them.
 	///
 	/// Note that these messages are *not* encrypted/MAC'd, and are only serialized.
-	gossip_broadcast_buffer: LinkedList<Vec<u8>>,
+	gossip_broadcast_buffer: VecDeque<Vec<u8>>,
 	awaiting_write_event: bool,
 
 	pending_read_buffer: Vec<u8>,
@@ -997,9 +997,9 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 					their_features: None,
 					their_socket_address: remote_network_address,
 
-					pending_outbound_buffer: LinkedList::new(),
+					pending_outbound_buffer: VecDeque::new(),
 					pending_outbound_buffer_first_msg_offset: 0,
-					gossip_broadcast_buffer: LinkedList::new(),
+					gossip_broadcast_buffer: VecDeque::new(),
 					awaiting_write_event: false,
 
 					pending_read_buffer,
@@ -1053,9 +1053,9 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 					their_features: None,
 					their_socket_address: remote_network_address,
 
-					pending_outbound_buffer: LinkedList::new(),
+					pending_outbound_buffer: VecDeque::new(),
 					pending_outbound_buffer_first_msg_offset: 0,
-					gossip_broadcast_buffer: LinkedList::new(),
+					gossip_broadcast_buffer: VecDeque::new(),
 					awaiting_write_event: false,
 
 					pending_read_buffer,
@@ -1168,6 +1168,13 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 			if peer.pending_outbound_buffer_first_msg_offset == next_buff.len() {
 				peer.pending_outbound_buffer_first_msg_offset = 0;
 				peer.pending_outbound_buffer.pop_front();
+				const VEC_SIZE: usize = ::core::mem::size_of::<Vec<u8>>();
+				let large_capacity = peer.pending_outbound_buffer.capacity() > 4096 / VEC_SIZE;
+				let lots_of_slack = peer.pending_outbound_buffer.len()
+					< peer.pending_outbound_buffer.capacity() / 2;
+				if large_capacity && lots_of_slack {
+					peer.pending_outbound_buffer.shrink_to_fit();
+				}
 			} else {
 				peer.awaiting_write_event = true;
 			}
@@ -1246,6 +1253,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 	/// Append a message to a peer's pending outbound/write gossip broadcast buffer
 	fn enqueue_encoded_gossip_broadcast(&self, peer: &mut Peer, encoded_message: Vec<u8>) {
 		peer.msgs_sent_since_pong += 1;
+		debug_assert!(peer.gossip_broadcast_buffer.len() <= OUTBOUND_BUFFER_LIMIT_DROP_GOSSIP);
 		peer.gossip_broadcast_buffer.push_back(encoded_message);
 	}
 
