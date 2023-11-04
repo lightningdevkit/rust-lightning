@@ -27,7 +27,7 @@ use crate::ln::msgs::{ChannelMessageHandler, LightningError, SocketAddress, Onio
 #[cfg(not(c_bindings))]
 use crate::ln::channelmanager::{SimpleArcChannelManager, SimpleRefChannelManager};
 use crate::util::ser::{VecWriter, Writeable, Writer};
-use crate::ln::peer_channel_encryptor::{PeerChannelEncryptor,NextNoiseStep};
+use crate::ln::peer_channel_encryptor::{PeerChannelEncryptor, NextNoiseStep, MSG_BUF_ALLOC_SIZE};
 use crate::ln::wire;
 use crate::ln::wire::{Encode, Type};
 #[cfg(not(c_bindings))]
@@ -785,7 +785,7 @@ impl From<LightningError> for MessageHandlingError {
 
 macro_rules! encode_msg {
 	($msg: expr) => {{
-		let mut buffer = VecWriter(Vec::new());
+		let mut buffer = VecWriter(Vec::with_capacity(MSG_BUF_ALLOC_SIZE));
 		wire::write($msg, &mut buffer).unwrap();
 		buffer.0
 	}}

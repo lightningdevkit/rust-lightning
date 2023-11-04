@@ -34,6 +34,10 @@ use core::ops::Deref;
 /// and [BOLT-1](https://github.com/lightning/bolts/blob/master/01-messaging.md#lightning-message-format):
 pub const LN_MAX_MSG_LEN: usize = ::core::u16::MAX as usize; // Must be equal to 65535
 
+/// The (rough) size buffer to pre-allocate when encoding a message. Messages should reliably be
+/// smaller than this size by at least 32 bytes or so.
+pub const MSG_BUF_ALLOC_SIZE: usize = 2048;
+
 // Sha256("Noise_XK_secp256k1_ChaChaPoly_SHA256")
 const NOISE_CK: [u8; 32] = [0x26, 0x40, 0xf5, 0x2e, 0xeb, 0xcd, 0x9e, 0x88, 0x29, 0x58, 0x95, 0x1c, 0x79, 0x42, 0x50, 0xee, 0xdb, 0x28, 0x00, 0x2c, 0x05, 0xd7, 0xdc, 0x2e, 0xa0, 0xf1, 0x95, 0x40, 0x60, 0x42, 0xca, 0xf1];
 // Sha256(NOISE_CK || "lightning")
@@ -448,7 +452,7 @@ impl PeerChannelEncryptor {
 	pub fn encrypt_message<M: wire::Type>(&mut self, message: &M) -> Vec<u8> {
 		// Allocate a buffer with 2KB, fitting most common messages. Reserve the first 16+2 bytes
 		// for the 2-byte message type prefix and its MAC.
-		let mut res = VecWriter(Vec::with_capacity(2048));
+		let mut res = VecWriter(Vec::with_capacity(MSG_BUF_ALLOC_SIZE));
 		res.0.resize(16 + 2, 0);
 		wire::write(message, &mut res).expect("In-memory messages must never fail to serialize");
 
