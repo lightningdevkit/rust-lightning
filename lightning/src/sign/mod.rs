@@ -29,6 +29,8 @@ use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::sha256d::Hash as Sha256dHash;
 use bitcoin::hash_types::WPubkeyHash;
 
+#[cfg(taproot)]
+use bitcoin::secp256k1::All;
 use bitcoin::secp256k1::{KeyPair, PublicKey, Scalar, Secp256k1, SecretKey, Signing};
 use bitcoin::secp256k1::ecdh::SharedSecret;
 use bitcoin::secp256k1::ecdsa::{RecoverableSignature, Signature};
@@ -44,6 +46,8 @@ use crate::ln::{chan_utils, PaymentPreimage};
 use crate::ln::chan_utils::{HTLCOutputInCommitment, make_funding_redeemscript, ChannelPublicKeys, HolderCommitmentTransaction, ChannelTransactionParameters, CommitmentTransaction, ClosingTransaction};
 use crate::ln::channel_keys::{DelayedPaymentBasepoint, DelayedPaymentKey, HtlcKey, HtlcBasepoint, RevocationKey, RevocationBasepoint};
 use crate::ln::msgs::{UnsignedChannelAnnouncement, UnsignedGossipMessage};
+#[cfg(taproot)]
+use crate::ln::msgs::PartialSignatureWithNonce;
 use crate::ln::script::ShutdownScript;
 use crate::offers::invoice::UnsignedBolt12Invoice;
 use crate::offers::invoice_request::UnsignedInvoiceRequest;
@@ -52,9 +56,13 @@ use crate::prelude::*;
 use core::convert::TryInto;
 use core::ops::Deref;
 use core::sync::atomic::{AtomicUsize, Ordering};
+#[cfg(taproot)]
+use musig2::types::{PartialSignature, PublicNonce, SecretNonce};
 use crate::io::{self, Error};
 use crate::ln::features::ChannelTypeFeatures;
 use crate::ln::msgs::{DecodeError, MAX_VALUE_MSAT};
+#[cfg(taproot)]
+use crate::sign::taproot::TaprootChannelSigner;
 use crate::util::atomic_counter::AtomicCounter;
 use crate::util::chacha20::ChaCha20;
 use crate::util::invoice::construct_invoice_preimage;
@@ -869,6 +877,9 @@ pub trait NodeSigner {
 pub trait SignerProvider {
 	/// A type which implements [`WriteableEcdsaChannelSigner`] which will be returned by [`Self::derive_channel_signer`].
 	type EcdsaSigner: WriteableEcdsaChannelSigner;
+	#[cfg(taproot)]
+	/// A type which implements [`TaprootChannelSigner`]
+	type TaprootSigner: TaprootChannelSigner;
 
 	/// Generates a unique `channel_keys_id` that can be used to obtain a [`Self::EcdsaSigner`] through
 	/// [`SignerProvider::derive_channel_signer`]. The `user_channel_id` is provided to allow
@@ -1380,6 +1391,45 @@ impl EcdsaChannelSigner for InMemorySigner {
 	}
 }
 
+#[cfg(taproot)]
+impl TaprootChannelSigner for InMemorySigner {
+	fn generate_local_nonce_pair(&self, commitment_number: u64, secp_ctx: &Secp256k1<All>) -> PublicNonce {
+		todo!()
+	}
+
+	fn partially_sign_counterparty_commitment(&self, counterparty_nonce: PublicNonce, commitment_tx: &CommitmentTransaction, preimages: Vec<PaymentPreimage>, secp_ctx: &Secp256k1<All>) -> Result<(PartialSignatureWithNonce, Vec<schnorr::Signature>), ()> {
+		todo!()
+	}
+
+	fn finalize_holder_commitment(&self, commitment_number: u64, commitment_tx: &HolderCommitmentTransaction, counterparty_partial_signature: PartialSignatureWithNonce, secp_ctx: &Secp256k1<All>) -> Result<PartialSignature, ()> {
+		todo!()
+	}
+
+	fn sign_justice_revoked_output(&self, justice_tx: &Transaction, input: usize, amount: u64, per_commitment_key: &SecretKey, secp_ctx: &Secp256k1<All>) -> Result<schnorr::Signature, ()> {
+		todo!()
+	}
+
+	fn sign_justice_revoked_htlc(&self, justice_tx: &Transaction, input: usize, amount: u64, per_commitment_key: &SecretKey, htlc: &HTLCOutputInCommitment, secp_ctx: &Secp256k1<All>) -> Result<schnorr::Signature, ()> {
+		todo!()
+	}
+
+	fn sign_holder_htlc_transaction(&self, htlc_tx: &Transaction, input: usize, htlc_descriptor: &HTLCDescriptor, secp_ctx: &Secp256k1<All>) -> Result<schnorr::Signature, ()> {
+		todo!()
+	}
+
+	fn sign_counterparty_htlc_transaction(&self, htlc_tx: &Transaction, input: usize, amount: u64, per_commitment_point: &PublicKey, htlc: &HTLCOutputInCommitment, secp_ctx: &Secp256k1<All>) -> Result<schnorr::Signature, ()> {
+		todo!()
+	}
+
+	fn partially_sign_closing_transaction(&self, closing_tx: &ClosingTransaction, secp_ctx: &Secp256k1<All>) -> Result<PartialSignature, ()> {
+		todo!()
+	}
+
+	fn sign_holder_anchor_input(&self, anchor_tx: &Transaction, input: usize, secp_ctx: &Secp256k1<All>) -> Result<schnorr::Signature, ()> {
+		todo!()
+	}
+}
+
 const SERIALIZATION_VERSION: u8 = 1;
 
 const MIN_SERIALIZATION_VERSION: u8 = 1;
@@ -1783,6 +1833,8 @@ impl NodeSigner for KeysManager {
 
 impl SignerProvider for KeysManager {
 	type EcdsaSigner = InMemorySigner;
+	#[cfg(taproot)]
+	type TaprootSigner = InMemorySigner;
 
 	fn generate_channel_keys_id(&self, _inbound: bool, _channel_value_satoshis: u64, user_channel_id: u128) -> [u8; 32] {
 		let child_idx = self.channel_child_index.fetch_add(1, Ordering::AcqRel);
@@ -1902,6 +1954,8 @@ impl NodeSigner for PhantomKeysManager {
 
 impl SignerProvider for PhantomKeysManager {
 	type EcdsaSigner = InMemorySigner;
+	#[cfg(taproot)]
+	type TaprootSigner = InMemorySigner;
 
 	fn generate_channel_keys_id(&self, inbound: bool, channel_value_satoshis: u64, user_channel_id: u128) -> [u8; 32] {
 		self.inner.generate_channel_keys_id(inbound, channel_value_satoshis, user_channel_id)

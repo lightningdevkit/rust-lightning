@@ -7863,6 +7863,8 @@ use crate::ln::channelmanager::{self, HTLCSource, PaymentId};
 
 	impl SignerProvider for Keys {
 		type EcdsaSigner = InMemorySigner;
+		#[cfg(taproot)]
+		type TaprootSigner = InMemorySigner;
 
 		fn generate_channel_keys_id(&self, _inbound: bool, _channel_value_satoshis: u64, _user_channel_id: u128) -> [u8; 32] {
 			self.signer.channel_keys_id()

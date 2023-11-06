@@ -176,6 +176,8 @@ impl EntropySource for OnlyReadsKeysInterface {
 
 impl SignerProvider for OnlyReadsKeysInterface {
 	type EcdsaSigner = TestChannelSigner;
+	#[cfg(taproot)]
+	type TaprootSigner = TestChannelSigner;
 
 	fn generate_channel_keys_id(&self, _inbound: bool, _channel_value_satoshis: u64, _user_channel_id: u128) -> [u8; 32] { unreachable!(); }
 
@@ -1097,6 +1099,8 @@ impl NodeSigner for TestKeysInterface {
 
 impl SignerProvider for TestKeysInterface {
 	type EcdsaSigner = TestChannelSigner;
+	#[cfg(taproot)]
+	type TaprootSigner = TestChannelSigner;
 
 	fn generate_channel_keys_id(&self, inbound: bool, channel_value_satoshis: u64, user_channel_id: u128) -> [u8; 32] {
 		self.backing.generate_channel_keys_id(inbound, channel_value_satoshis, user_channel_id)

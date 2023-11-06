@@ -190,6 +190,8 @@ impl NodeSigner for KeyProvider {
 
 impl SignerProvider for KeyProvider {
 	type EcdsaSigner = TestChannelSigner;
+	#[cfg(taproot)]
+	type TaprootSigner = TestChannelSigner;
 
 	fn generate_channel_keys_id(&self, _inbound: bool, _channel_value_satoshis: u64, _user_channel_id: u128) -> [u8; 32] { unreachable!() }
 
