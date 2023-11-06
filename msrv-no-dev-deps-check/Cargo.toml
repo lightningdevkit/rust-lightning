@@ -11,3 +11,4 @@ lightning-net-tokio = { path = "../lightning-net-tokio" }
 lightning-persister = { path = "../lightning-persister" }
 lightning-background-processor = { path = "../lightning-background-processor", features = ["futures"] }
 lightning-rapid-gossip-sync = { path = "../lightning-rapid-gossip-sync" }
+lightning-custom-message = { path = "../lightning-custom-message" }
