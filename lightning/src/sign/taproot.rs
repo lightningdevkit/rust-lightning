@@ -1,5 +1,6 @@
 //! Defines a Taproot-specific signer type.
 
+use alloc::vec::Vec;
 use bitcoin::blockdata::transaction::Transaction;
 use bitcoin::secp256k1;
 use bitcoin::secp256k1::{PublicKey, schnorr::Signature, Secp256k1, SecretKey};
