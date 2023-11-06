@@ -1402,17 +1402,18 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 									}
 									peer.pending_read_is_header = false;
 								} else {
-									let msg_data = try_potential_handleerror!(peer,
-										peer.channel_encryptor.decrypt_message(&peer.pending_read_buffer[..]));
-									assert!(msg_data.len() >= 2);
+									debug_assert!(peer.pending_read_buffer.len() >= 2 + 16);
+									try_potential_handleerror!(peer,
+										peer.channel_encryptor.decrypt_message(&mut peer.pending_read_buffer[..]));
+
+									let mut reader = io::Cursor::new(&peer.pending_read_buffer[..peer.pending_read_buffer.len() - 16]);
+									let message_result = wire::read(&mut reader, &*self.message_handler.custom_message_handler);
 
 									// Reset read buffer
 									if peer.pending_read_buffer.capacity() > 8192 { peer.pending_read_buffer = Vec::new(); }
 									peer.pending_read_buffer.resize(18, 0);
 									peer.pending_read_is_header = true;
 
-									let mut reader = io::Cursor::new(&msg_data[..]);
-									let message_result = wire::read(&mut reader, &*self.message_handler.custom_message_handler);
 									let message = match message_result {
 										Ok(x) => x,
 										Err(e) => {
