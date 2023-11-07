@@ -123,7 +123,7 @@ where
 								continue;
 							}
 							num_unconfirmed += unconfirmed_txs.len();
-							self.sync_unconfirmed_transactions(&mut sync_state, &confirmables, unconfirmed_txs);
+							sync_state.sync_unconfirmed_transactions(&confirmables, unconfirmed_txs);
 						},
 						Err(err) => {
 							// (Semi-)permanent failure, retry later.
@@ -169,8 +169,7 @@ where
 						}
 
 						num_confirmed += confirmed_txs.len();
-						self.sync_confirmed_transactions(
-							&mut sync_state,
+						sync_state.sync_confirmed_transactions(
 							&confirmables,
 							confirmed_txs,
 						);
@@ -219,26 +218,6 @@ where
 			return Err(InternalError::Inconsistency);
 		}
 		Ok(())
-	}
-
-	fn sync_confirmed_transactions(
-		&self, sync_state: &mut SyncState, confirmables: &Vec<&(dyn Confirm + Sync + Send)>, confirmed_txs: Vec<ConfirmedTx>,
-	) {
-		for ctx in confirmed_txs {
-			for c in confirmables {
-				c.transactions_confirmed(
-					&ctx.block_header,
-					&[(ctx.pos, &ctx.tx)],
-					ctx.block_height,
-				);
-			}
-
-			sync_state.watched_transactions.remove(&ctx.tx.txid());
-
-			for input in &ctx.tx.input {
-				sync_state.watched_outputs.remove(&input.previous_output);
-			}
-		}
 	}
 
 	#[maybe_async]
@@ -358,18 +337,6 @@ where
 			}
 		}
 		Ok(unconfirmed_txs)
-	}
-
-	fn sync_unconfirmed_transactions(
-		&self, sync_state: &mut SyncState, confirmables: &Vec<&(dyn Confirm + Sync + Send)>, unconfirmed_txs: Vec<Txid>,
-	) {
-		for txid in unconfirmed_txs {
-			for c in confirmables {
-				c.transaction_unconfirmed(&txid);
-			}
-
-			sync_state.watched_transactions.insert(txid);
-		}
 	}
 
 	/// Returns a reference to the underlying esplora client.

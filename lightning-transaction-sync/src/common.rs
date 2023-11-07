@@ -1,6 +1,6 @@
-use lightning::chain::WatchedOutput;
+use lightning::chain::{Confirm, WatchedOutput};
 use bitcoin::{Txid, BlockHash, Transaction, OutPoint};
-use bitcoin::blockdata::block::Header;
+use bitcoin::block::Header;
 
 use std::collections::{HashSet, HashMap};
 
@@ -26,6 +26,39 @@ impl SyncState {
 			watched_outputs: HashMap::new(),
 			last_sync_hash: None,
 			pending_sync: false,
+		}
+	}
+	pub fn sync_unconfirmed_transactions(
+		&mut self, confirmables: &Vec<&(dyn Confirm + Sync + Send)>,
+		unconfirmed_txs: Vec<Txid>,
+	) {
+		for txid in unconfirmed_txs {
+			for c in confirmables {
+				c.transaction_unconfirmed(&txid);
+			}
+
+			self.watched_transactions.insert(txid);
+		}
+	}
+
+	pub fn sync_confirmed_transactions(
+		&mut self, confirmables: &Vec<&(dyn Confirm + Sync + Send)>,
+		confirmed_txs: Vec<ConfirmedTx>
+	) {
+		for ctx in confirmed_txs {
+			for c in confirmables {
+				c.transactions_confirmed(
+					&ctx.block_header,
+					&[(ctx.pos, &ctx.tx)],
+					ctx.block_height,
+				);
+			}
+
+			self.watched_transactions.remove(&ctx.tx.txid());
+
+			for input in &ctx.tx.input {
+				self.watched_outputs.remove(&input.previous_output);
+			}
 		}
 	}
 }
