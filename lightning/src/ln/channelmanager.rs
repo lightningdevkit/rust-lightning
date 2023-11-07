@@ -3429,12 +3429,10 @@ where
 		let prng_seed = self.entropy_source.get_secure_random_bytes();
 		let session_priv = SecretKey::from_slice(&session_priv_bytes[..]).expect("RNG is busted");
 
-		let onion_keys = onion_utils::construct_onion_keys(&self.secp_ctx, &path, &session_priv)
-			.map_err(|_| APIError::InvalidRoute{err: "Pubkey along hop was maliciously selected".to_owned()})?;
-		let (onion_payloads, htlc_msat, htlc_cltv) = onion_utils::build_onion_payloads(path, total_value, recipient_onion, cur_height, keysend_preimage)?;
-
-		let onion_packet = onion_utils::construct_onion_packet(onion_payloads, onion_keys, prng_seed, payment_hash)
-			.map_err(|_| APIError::InvalidRoute { err: "Route size too large considering onion data".to_owned()})?;
+		let (onion_packet, htlc_msat, htlc_cltv) = onion_utils::create_payment_onion(
+			&self.secp_ctx, &path, &session_priv, total_value, recipient_onion, cur_height,
+			payment_hash, keysend_preimage, prng_seed
+		)?;
 
 		let err: Result<(), _> = loop {
 			let (counterparty_node_id, id) = match self.short_to_chan_info.read().unwrap().get(&path.hops.first().unwrap().short_channel_id) {
