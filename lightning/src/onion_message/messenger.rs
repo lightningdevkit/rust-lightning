@@ -313,6 +313,9 @@ pub enum SendSuccess {
 	/// The message was buffered and will be sent once it is processed by
 	/// [`OnionMessageHandler::next_onion_message_for_peer`].
 	Buffered,
+	/// The message was buffered and will be sent once the node is connected as a peer and it is
+	/// processed by [`OnionMessageHandler::next_onion_message_for_peer`].
+	BufferedAwaitingConnection(PublicKey),
 }
 
 /// Errors that may occur when [sending an onion message].
@@ -328,8 +331,6 @@ pub enum SendError {
 	/// The provided [`Destination`] was an invalid [`BlindedPath`] due to not having any blinded
 	/// hops.
 	TooFewBlindedHops,
-	/// Our next-hop peer was offline or does not support onion message forwarding.
-	InvalidFirstHop,
 	/// A path from the sender to the destination could not be found by the [`MessageRouter`].
 	PathNotFound,
 	/// Onion message contents must have a TLV type >= 64.
@@ -612,6 +613,12 @@ where
 			Ok(SendSuccess::Buffered) => {
 				log_trace!(self.logger, "Buffered onion message {}", log_suffix);
 			},
+			Ok(SendSuccess::BufferedAwaitingConnection(node_id)) => {
+				log_trace!(
+					self.logger, "Buffered onion message waiting on peer connection {}: {:?}",
+					log_suffix, node_id
+				);
+			},
 		}
 
 		result
@@ -649,7 +656,11 @@ where
 		}
 
 		match message_buffers.entry(first_node_id) {
-			hash_map::Entry::Vacant(_) => Err(SendError::InvalidFirstHop),
+			hash_map::Entry::Vacant(e) => {
+				e.insert(OnionMessageBuffer::PendingConnection(VecDeque::new()))
+					.enqueue_message(onion_message);
+				Ok(SendSuccess::BufferedAwaitingConnection(first_node_id))
+			},
 			hash_map::Entry::Occupied(mut e) => {
 				e.get_mut().enqueue_message(onion_message);
 				Ok(SendSuccess::Buffered)
