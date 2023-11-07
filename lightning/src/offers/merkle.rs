@@ -32,7 +32,7 @@ tlv_stream!(SignatureTlvStream, SignatureTlvStreamRef, SIGNATURE_TYPES, {
 /// [BOLT 12]: https://github.com/rustyrussell/lightning-rfc/blob/guilt/offers/12-offer-encoding.md#signature-calculation
 #[derive(Clone, Debug, PartialEq)]
 pub struct TaggedHash {
-	tag: String,
+	tag: &'static str,
 	merkle_root: sha256::Hash,
 	digest: Message,
 }
@@ -41,12 +41,12 @@ impl TaggedHash {
 	/// Creates a tagged hash with the given parameters.
 	///
 	/// Panics if `tlv_stream` is not a well-formed TLV stream containing at least one TLV record.
-	pub(super) fn new(tag: &str, tlv_stream: &[u8]) -> Self {
+	pub(super) fn new(tag: &'static str, tlv_stream: &[u8]) -> Self {
 		let tag_hash = sha256::Hash::hash(tag.as_bytes());
 		let merkle_root = root_hash(tlv_stream);
 		let digest = Message::from_slice(&tagged_hash(tag_hash, merkle_root)).unwrap();
 		Self {
-			tag: tag.to_owned(),
+			tag,
 			merkle_root,
 			digest,
 		}
