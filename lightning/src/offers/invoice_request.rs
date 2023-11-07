@@ -876,7 +876,7 @@ impl TryFrom<Vec<u8>> for InvoiceRequest {
 			Some(signature) => signature,
 		};
 		let message = TaggedHash::new(SIGNATURE_TAG, &bytes);
-		merkle::verify_signature(&signature, message, contents.payer_id)?;
+		merkle::verify_signature(&signature, &message, contents.payer_id)?;
 
 		Ok(InvoiceRequest { bytes, contents, signature })
 	}
@@ -1013,7 +1013,7 @@ mod tests {
 		assert_eq!(invoice_request.payer_note(), None);
 
 		let message = TaggedHash::new(SIGNATURE_TAG, &invoice_request.bytes);
-		assert!(merkle::verify_signature(&invoice_request.signature, message, payer_pubkey()).is_ok());
+		assert!(merkle::verify_signature(&invoice_request.signature, &message, payer_pubkey()).is_ok());
 
 		assert_eq!(
 			invoice_request.as_tlv_stream(),
