@@ -34,12 +34,13 @@ use core::time::Duration;
 ///
 /// If you wish to use a different payment idempotency token, see [`pay_invoice_with_id`].
 pub fn pay_invoice<C: Deref>(
-	invoice: &Bolt11Invoice, retry_strategy: Retry, channelmanager: C
+	invoice: &Bolt11Invoice, retry_strategy: Retry, max_total_routing_fee_msat: Option<u64>,
+	channelmanager: C
 ) -> Result<PaymentId, PaymentError>
 where C::Target: AChannelManager,
 {
 	let payment_id = PaymentId(invoice.payment_hash().into_inner());
-	pay_invoice_with_id(invoice, payment_id, retry_strategy, channelmanager.get_cm())
+	pay_invoice_with_id(invoice, payment_id, retry_strategy, max_total_routing_fee_msat, channelmanager.get_cm())
 		.map(|()| payment_id)
 }
 
@@ -54,12 +55,13 @@ where C::Target: AChannelManager,
 ///
 /// See [`pay_invoice`] for a variant which uses the [`PaymentHash`] for the idempotency token.
 pub fn pay_invoice_with_id<C: Deref>(
-	invoice: &Bolt11Invoice, payment_id: PaymentId, retry_strategy: Retry, channelmanager: C
+	invoice: &Bolt11Invoice, payment_id: PaymentId, retry_strategy: Retry,
+	max_total_routing_fee_msat: Option<u64>, channelmanager: C
 ) -> Result<(), PaymentError>
 where C::Target: AChannelManager,
 {
 	let amt_msat = invoice.amount_milli_satoshis().ok_or(PaymentError::Invoice("amount missing"))?;
-	pay_invoice_using_amount(invoice, amt_msat, payment_id, retry_strategy, channelmanager.get_cm())
+	pay_invoice_using_amount(invoice, amt_msat, payment_id, retry_strategy, max_total_routing_fee_msat, channelmanager.get_cm())
 }
 
 /// Pays the given zero-value [`Bolt11Invoice`] using the given amount, retrying if needed based on
@@ -72,13 +74,13 @@ where C::Target: AChannelManager,
 /// If you wish to use a different payment idempotency token, see
 /// [`pay_zero_value_invoice_with_id`].
 pub fn pay_zero_value_invoice<C: Deref>(
-	invoice: &Bolt11Invoice, amount_msats: u64, retry_strategy: Retry, channelmanager: C
+	invoice: &Bolt11Invoice, amount_msats: u64, retry_strategy: Retry,
+	max_total_routing_fee_msat: Option<u64>, channelmanager: C
 ) -> Result<PaymentId, PaymentError>
 where C::Target: AChannelManager,
 {
 	let payment_id = PaymentId(invoice.payment_hash().into_inner());
-	pay_zero_value_invoice_with_id(invoice, amount_msats, payment_id, retry_strategy,
-		channelmanager)
+	pay_zero_value_invoice_with_id(invoice, amount_msats, payment_id, retry_strategy, max_total_routing_fee_msat, channelmanager)
 		.map(|()| payment_id)
 }
 
@@ -95,21 +97,20 @@ where C::Target: AChannelManager,
 /// idempotency token.
 pub fn pay_zero_value_invoice_with_id<C: Deref>(
 	invoice: &Bolt11Invoice, amount_msats: u64, payment_id: PaymentId, retry_strategy: Retry,
-	channelmanager: C
+	max_total_routing_fee_msat: Option<u64>, channelmanager: C
 ) -> Result<(), PaymentError>
 where C::Target: AChannelManager,
 {
 	if invoice.amount_milli_satoshis().is_some() {
 		Err(PaymentError::Invoice("amount unexpected"))
 	} else {
-		pay_invoice_using_amount(invoice, amount_msats, payment_id, retry_strategy,
-			channelmanager.get_cm())
+		pay_invoice_using_amount(invoice, amount_msats, payment_id, retry_strategy, max_total_routing_fee_msat, channelmanager.get_cm())
 	}
 }
 
 fn pay_invoice_using_amount<P: Deref>(
 	invoice: &Bolt11Invoice, amount_msats: u64, payment_id: PaymentId, retry_strategy: Retry,
-	payer: P
+	max_total_routing_fee_msat: Option<u64>, payer: P
 ) -> Result<(), PaymentError> where P::Target: Payer {
 	let payment_hash = PaymentHash((*invoice.payment_hash()).into_inner());
 	let mut recipient_onion = RecipientOnionFields::secret_only(*invoice.payment_secret());
@@ -121,7 +122,11 @@ fn pay_invoice_using_amount<P: Deref>(
 	if let Some(features) = invoice.features() {
 		payment_params = payment_params.with_bolt11_features(features.clone()).unwrap();
 	}
-	let route_params = RouteParameters::from_payment_params_and_value(payment_params, amount_msats);
+	let route_params = RouteParameters {
+		payment_params,
+		final_value_msat: amount_msats,
+		max_total_routing_fee_msat,
+	};
 
 	payer.send_payment(payment_hash, recipient_onion, payment_id, route_params, retry_strategy)
 }
@@ -357,7 +362,7 @@ mod tests {
 		let final_value_msat = invoice.amount_milli_satoshis().unwrap();
 
 		let payer = TestPayer::new().expect_send(Amount(final_value_msat));
-		pay_invoice_using_amount(&invoice, final_value_msat, payment_id, Retry::Attempts(0), &payer).unwrap();
+		pay_invoice_using_amount(&invoice, final_value_msat, payment_id, Retry::Attempts(0), None, &payer).unwrap();
 	}
 
 	#[test]
@@ -368,7 +373,7 @@ mod tests {
 		let amt_msat = 10_000;
 
 		let payer = TestPayer::new().expect_send(Amount(amt_msat));
-		pay_invoice_using_amount(&invoice, amt_msat, payment_id, Retry::Attempts(0), &payer).unwrap();
+		pay_invoice_using_amount(&invoice, amt_msat, payment_id, Retry::Attempts(0), None, &payer).unwrap();
 	}
 
 	#[test]
@@ -382,7 +387,7 @@ mod tests {
 		let invoice = invoice(payment_preimage);
 		let amt_msat = 10_000;
 
-		match pay_zero_value_invoice(&invoice, amt_msat, Retry::Attempts(0), nodes[0].node) {
+		match pay_zero_value_invoice(&invoice, amt_msat, Retry::Attempts(0), None, nodes[0].node) {
 			Err(PaymentError::Invoice("amount unexpected")) => {},
 			_ => panic!()
 		}
@@ -418,7 +423,7 @@ mod tests {
 			})
 			.unwrap();
 
-		pay_invoice(&invoice, Retry::Attempts(0), nodes[0].node).unwrap();
+		pay_invoice(&invoice, Retry::Attempts(0), None, nodes[0].node).unwrap();
 		check_added_monitors(&nodes[0], 1);
 		let send_event = SendEvent::from_node(&nodes[0]);
 		nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &send_event.msgs[0]);
