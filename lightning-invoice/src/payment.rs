@@ -24,7 +24,6 @@ use lightning::util::logger::Logger;
 
 use core::fmt::Debug;
 use core::ops::Deref;
-use core::time::Duration;
 
 /// Pays the given [`Bolt11Invoice`], retrying if needed based on [`Retry`].
 ///
@@ -117,7 +116,7 @@ fn pay_invoice_using_amount<P: Deref>(
 	recipient_onion.payment_metadata = invoice.payment_metadata().map(|v| v.clone());
 	let mut payment_params = PaymentParameters::from_node_id(invoice.recover_payee_pub_key(),
 		invoice.min_final_cltv_expiry_delta() as u32)
-		.with_expiry_time(expiry_time_from_unix_epoch(invoice).as_secs())
+		.with_expiry_time(invoice.expires_at().unwrap().as_secs())
 		.with_route_hints(invoice.route_hints()).unwrap();
 	if let Some(features) = invoice.features() {
 		payment_params = payment_params.with_bolt11_features(features.clone()).unwrap();
@@ -149,7 +148,7 @@ where C::Target: AChannelManager,
 		invoice.recover_payee_pub_key(),
 		invoice.min_final_cltv_expiry_delta() as u32,
 	)
-	.with_expiry_time(expiry_time_from_unix_epoch(invoice).as_secs())
+	.with_expiry_time(invoice.expires_at().unwrap().as_secs())
 	.with_route_hints(invoice.route_hints())
 	.unwrap();
 
@@ -180,7 +179,7 @@ where C::Target: AChannelManager,
 		invoice.recover_payee_pub_key(),
 		invoice.min_final_cltv_expiry_delta() as u32,
 	)
-	.with_expiry_time(expiry_time_from_unix_epoch(invoice).as_secs())
+	.with_expiry_time(invoice.expires_at().unwrap().as_secs())
 	.with_route_hints(invoice.route_hints())
 	.unwrap();
 
@@ -191,10 +190,6 @@ where C::Target: AChannelManager,
 
 	channelmanager.get_cm().send_preflight_probes(route_params, liquidity_limit_multiplier)
 		.map_err(ProbingError::Sending)
-}
-
-fn expiry_time_from_unix_epoch(invoice: &Bolt11Invoice) -> Duration {
-	invoice.signed_invoice.raw_invoice.data.timestamp.0 + invoice.expiry_time()
 }
 
 /// An error that may occur when making a payment.
