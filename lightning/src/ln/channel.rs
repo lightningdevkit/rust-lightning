@@ -4236,8 +4236,25 @@ impl<SP: Deref> Channel<SP> where
 			} else {
 				Some(self.get_last_revoke_and_ack())
 			}
+		} else if self.context.cur_holder_commitment_transaction_number > msg.next_remote_commitment_number {
+		    // The remote has attempted to reestablish with a very old state, return an error.
+		    return Err(ChannelError::Close("Peer attempted to reestablish channel with a very old local commitment transaction".to_owned()));
 		} else {
-			return Err(ChannelError::Close("Peer attempted to reestablish channel with a very old local commitment transaction".to_owned()));
+		    // Our local state has fallen behind the remote state.
+		    macro_rules! log_and_panic {
+		        ($err_msg: expr) => {
+		            log_error!(logger, $err_msg, &self.context.channel_id, log_pubkey!(self.context.counterparty_node_id));
+		            panic!($err_msg, &self.context.channel_id, log_pubkey!(self.context.counterparty_node_id));
+		        }
+		    }
+			log_and_panic!("We have fallen behind - we have received proof that if we broadcast our counterparty is going to claim all our funds.\n\
+				This implies you have restarted with lost ChannelMonitor and ChannelManager state, the first of which is a violation of the LDK chain::Watch requirements.\n\
+				More specifically, this means you have a bug in your implementation that can cause loss of funds, or you are running with an old backup, which is unsafe.\n\
+				If you have restored from an old backup and wish to force-close channels and return to operation, you should start up, call\n\
+				ChannelManager::force_close_without_broadcasting_txn on channel {} with counterparty {} or\n\
+				ChannelManager::force_close_all_channels_without_broadcasting_txn, then reconnect to peer(s).\n\
+				Note that due to a long-standing bug in lnd you may have to reach out to peers running lnd-based nodes to ask them to manually force-close channels\n\
+				See https://github.com/lightningdevkit/rust-lightning/issues/1565 for more info.");
 		};
 
 		// We increment cur_counterparty_commitment_transaction_number only upon receipt of
