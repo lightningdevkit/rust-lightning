@@ -493,6 +493,7 @@ fn test_manager_serialize_deserialize_inconsistent_monitor() {
 	assert!(found_err);
 }
 
+#[cfg(feature = "std")]
 fn do_test_data_loss_protect(reconnect_panicing: bool) {
 	// When we get a data_loss_protect proving we're behind, we immediately panic as the
 	// chain::Watch API requirements have been violated (e.g. the user restored from a backup). The
@@ -539,8 +540,20 @@ fn do_test_data_loss_protect(reconnect_panicing: bool) {
 		// Check that we sent the warning message when we detected that A has fallen behind,
 		// and give the possibility for A to recover from the warning.
 		nodes[1].node.handle_channel_reestablish(&nodes[0].node.get_our_node_id(), &reestablish_1[0]);
-		let warn_msg = "Peer attempted to reestablish channel with a very old local commitment transaction".to_owned();
-		assert!(check_warn_msg!(nodes[1], nodes[0].node.get_our_node_id(), chan.2).contains(&warn_msg));
+		let warn_msg = "Peer attempted to reestablish channel with a very old local commitment transaction: 0 (received) vs 4 (expected)".to_owned();
+
+		let warn_reestablish = nodes[1].node.get_and_clear_pending_msg_events();
+		assert_eq!(warn_reestablish.len(), 2);
+		match warn_reestablish[1] {
+			MessageSendEvent::HandleError { action: ErrorAction::SendWarningMessage { ref msg, .. }, .. } => {
+				assert_eq!(msg.data, warn_msg);
+			},
+			_ => panic!("Unexpected event"),
+		}
+		let reestablish_msg = match &warn_reestablish[0] {
+			MessageSendEvent::SendChannelReestablish { msg, .. } => msg.clone(),
+			_ => panic!("Unexpected event"),
+		};
 
 		{
 			let mut node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().clone();
@@ -548,9 +561,11 @@ fn do_test_data_loss_protect(reconnect_panicing: bool) {
 			assert!(node_txn.is_empty());
 		}
 
-		let reestablish_0 = get_chan_reestablish_msgs!(nodes[1], nodes[0]);
 		// Check A panics upon seeing proof it has fallen behind.
-		nodes[0].node.handle_channel_reestablish(&nodes[1].node.get_our_node_id(), &reestablish_0[0]);
+		assert!(std::panic::catch_unwind(|| {
+			nodes[0].node.handle_channel_reestablish(&nodes[1].node.get_our_node_id(), &reestablish_msg);
+		}).is_err());
+		std::mem::forget(nodes); // Skip the `Drop` handler for `Node`
 		return; // By this point we should have panic'ed!
 	}
 
@@ -610,13 +625,9 @@ fn do_test_data_loss_protect(reconnect_panicing: bool) {
 }
 
 #[test]
-#[should_panic]
-fn test_data_loss_protect_showing_stale_state_panics() {
+#[cfg(feature = "std")]
+fn test_data_loss_protect() {
 	do_test_data_loss_protect(true);
-}
-
-#[test]
-fn test_force_close_without_broadcast() {
 	do_test_data_loss_protect(false);
 }
 
