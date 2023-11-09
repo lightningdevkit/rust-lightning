@@ -18,6 +18,7 @@ use bitcoin::secp256k1::{self, PublicKey, Scalar, Secp256k1, SecretKey};
 use crate::blinded_path::BlindedPath;
 use crate::blinded_path::message::{advance_path_by_one, ForwardTlvs, ReceiveTlvs};
 use crate::blinded_path::utils;
+use crate::events::{Event, EventHandler, EventsProvider};
 use crate::sign::{EntropySource, KeysManager, NodeSigner, Recipient};
 #[cfg(not(c_bindings))]
 use crate::ln::channelmanager::{SimpleArcChannelManager, SimpleRefChannelManager};
@@ -166,21 +167,21 @@ enum OnionMessageBuffer {
 	ConnectedPeer(VecDeque<OnionMessage>),
 
 	/// Messages for a node that is not yet connected.
-	PendingConnection(VecDeque<OnionMessage>),
+	PendingConnection(VecDeque<OnionMessage>, Option<Vec<SocketAddress>>),
 }
 
 impl OnionMessageBuffer {
 	fn pending_messages(&self) -> &VecDeque<OnionMessage> {
 		match self {
 			OnionMessageBuffer::ConnectedPeer(pending_messages) => pending_messages,
-			OnionMessageBuffer::PendingConnection(pending_messages) => pending_messages,
+			OnionMessageBuffer::PendingConnection(pending_messages, _) => pending_messages,
 		}
 	}
 
 	fn enqueue_message(&mut self, message: OnionMessage) {
 		let pending_messages = match self {
 			OnionMessageBuffer::ConnectedPeer(pending_messages) => pending_messages,
-			OnionMessageBuffer::PendingConnection(pending_messages) => pending_messages,
+			OnionMessageBuffer::PendingConnection(pending_messages, _) => pending_messages,
 		};
 
 		pending_messages.push_back(message);
@@ -189,7 +190,7 @@ impl OnionMessageBuffer {
 	fn dequeue_message(&mut self) -> Option<OnionMessage> {
 		let pending_messages = match self {
 			OnionMessageBuffer::ConnectedPeer(pending_messages) => pending_messages,
-			OnionMessageBuffer::PendingConnection(pending_messages) => {
+			OnionMessageBuffer::PendingConnection(pending_messages, _) => {
 				debug_assert!(false);
 				pending_messages
 			},
@@ -202,14 +203,14 @@ impl OnionMessageBuffer {
 	fn release_pending_messages(&mut self) -> VecDeque<OnionMessage> {
 		let pending_messages = match self {
 			OnionMessageBuffer::ConnectedPeer(pending_messages) => pending_messages,
-			OnionMessageBuffer::PendingConnection(pending_messages) => pending_messages,
+			OnionMessageBuffer::PendingConnection(pending_messages, _) => pending_messages,
 		};
 
 		core::mem::take(pending_messages)
 	}
 
 	fn mark_connected(&mut self) {
-		if let OnionMessageBuffer::PendingConnection(pending_messages) = self {
+		if let OnionMessageBuffer::PendingConnection(pending_messages, _) = self {
 			let mut new_pending_messages = VecDeque::new();
 			core::mem::swap(pending_messages, &mut new_pending_messages);
 			*self = OnionMessageBuffer::ConnectedPeer(new_pending_messages);
@@ -381,6 +382,8 @@ pub enum SendError {
 	/// The provided [`Destination`] was an invalid [`BlindedPath`] due to not having any blinded
 	/// hops.
 	TooFewBlindedHops,
+	/// The first hop is not a peer and doesn't have a known [`SocketAddress`].
+	InvalidFirstHop(PublicKey),
 	/// A path from the sender to the destination could not be found by the [`MessageRouter`].
 	PathNotFound,
 	/// Onion message contents must have a TLV type >= 64.
@@ -453,12 +456,12 @@ pub enum PeeledOnion<T: OnionMessageContents> {
 pub fn create_onion_message<ES: Deref, NS: Deref, T: OnionMessageContents>(
 	entropy_source: &ES, node_signer: &NS, secp_ctx: &Secp256k1<secp256k1::All>,
 	path: OnionMessagePath, contents: T, reply_path: Option<BlindedPath>,
-) -> Result<(PublicKey, OnionMessage), SendError>
+) -> Result<(PublicKey, OnionMessage, Option<Vec<SocketAddress>>), SendError>
 where
 	ES::Target: EntropySource,
 	NS::Target: NodeSigner,
 {
-	let OnionMessagePath { intermediate_nodes, mut destination, .. } = path;
+	let OnionMessagePath { intermediate_nodes, mut destination, addresses } = path;
 	if let Destination::BlindedPath(BlindedPath { ref blinded_hops, .. }) = destination {
 		if blinded_hops.is_empty() {
 			return Err(SendError::TooFewBlindedHops);
@@ -499,10 +502,8 @@ where
 	let onion_routing_packet = construct_onion_message_packet(
 		packet_payloads, packet_keys, prng_seed).map_err(|()| SendError::TooBigPacket)?;
 
-	Ok((first_node_id, OnionMessage {
-		blinding_point,
-		onion_routing_packet
-	}))
+	let message = OnionMessage { blinding_point, onion_routing_packet };
+	Ok((first_node_id, message, addresses))
 }
 
 /// Decode one layer of an incoming [`OnionMessage`].
@@ -696,7 +697,7 @@ where
 	) -> Result<SendSuccess, SendError> {
 		log_trace!(self.logger, "Constructing onion message {}: {:?}", log_suffix, contents);
 
-		let (first_node_id, onion_message) = create_onion_message(
+		let (first_node_id, onion_message, addresses) = create_onion_message(
 			&self.entropy_source, &self.node_signer, &self.secp_ctx, path, contents, reply_path
 		)?;
 
@@ -706,10 +707,14 @@ where
 		}
 
 		match message_buffers.entry(first_node_id) {
-			hash_map::Entry::Vacant(e) => {
-				e.insert(OnionMessageBuffer::PendingConnection(VecDeque::new()))
-					.enqueue_message(onion_message);
-				Ok(SendSuccess::BufferedAwaitingConnection(first_node_id))
+			hash_map::Entry::Vacant(e) => match addresses {
+				None => Err(SendError::InvalidFirstHop(first_node_id)),
+				Some(addresses) => {
+					e.insert(
+						OnionMessageBuffer::PendingConnection(VecDeque::new(), Some(addresses))
+					).enqueue_message(onion_message);
+					Ok(SendSuccess::BufferedAwaitingConnection(first_node_id))
+				},
 			},
 			hash_map::Entry::Occupied(mut e) => {
 				e.get_mut().enqueue_message(onion_message);
@@ -776,6 +781,27 @@ fn outbound_buffer_full(peer_node_id: &PublicKey, buffer: &HashMap<PublicKey, On
 		}
 	}
 	false
+}
+
+impl<ES: Deref, NS: Deref, L: Deref, MR: Deref, OMH: Deref, CMH: Deref> EventsProvider
+for OnionMessenger<ES, NS, L, MR, OMH, CMH>
+where
+	ES::Target: EntropySource,
+	NS::Target: NodeSigner,
+	L::Target: Logger,
+	MR::Target: MessageRouter,
+	OMH::Target: OffersMessageHandler,
+	CMH::Target: CustomOnionMessageHandler,
+{
+	fn process_pending_events<H: Deref>(&self, handler: H) where H::Target: EventHandler {
+		for (node_id, recipient) in self.message_buffers.lock().unwrap().iter_mut() {
+			if let OnionMessageBuffer::PendingConnection(_, addresses) = recipient {
+				if let Some(addresses) = addresses.take() {
+					handler.handle_event(Event::ConnectionNeeded { node_id: *node_id, addresses });
+				}
+			}
+		}
+	}
 }
 
 impl<ES: Deref, NS: Deref, L: Deref, MR: Deref, OMH: Deref, CMH: Deref> OnionMessageHandler

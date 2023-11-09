@@ -19,7 +19,7 @@ use bitcoin::blockdata::constants::ChainHash;
 use bitcoin::secp256k1::{self, Secp256k1, SecretKey, PublicKey};
 
 use crate::sign::{KeysManager, NodeSigner, Recipient};
-use crate::events::{MessageSendEvent, MessageSendEventsProvider};
+use crate::events::{EventHandler, EventsProvider, MessageSendEvent, MessageSendEventsProvider};
 use crate::ln::ChannelId;
 use crate::ln::features::{InitFeatures, NodeFeatures};
 use crate::ln::msgs;
@@ -89,6 +89,9 @@ pub trait CustomMessageHandler: wire::CustomMessageReader {
 /// A dummy struct which implements `RoutingMessageHandler` without storing any routing information
 /// or doing any processing. You can provide one of these as the route_handler in a MessageHandler.
 pub struct IgnoringMessageHandler{}
+impl EventsProvider for IgnoringMessageHandler {
+	fn process_pending_events<H: Deref>(&self, _handler: H) where H::Target: EventHandler {}
+}
 impl MessageSendEventsProvider for IgnoringMessageHandler {
 	fn get_and_clear_pending_msg_events(&self) -> Vec<MessageSendEvent> { Vec::new() }
 }
