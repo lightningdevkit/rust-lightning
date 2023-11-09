@@ -1650,6 +1650,10 @@ pub trait OnionMessageHandler: EventsProvider {
 	/// drop and refuse to forward onion messages to this peer.
 	fn peer_disconnected(&self, their_node_id: &PublicKey);
 
+	/// Performs actions that should happen roughly every ten seconds after startup. Allows handlers
+	/// to drop any buffered onion messages intended for prospective peers.
+	fn timer_tick_occurred(&self);
+
 	// Handler information:
 	/// Gets the node feature flags which this handler itself supports. All available handlers are
 	/// queried similarly and their feature flags are OR'd together to form the [`NodeFeatures`]

@@ -166,22 +166,27 @@ enum OnionMessageBuffer {
 	/// Messages for a node connected as a peer.
 	ConnectedPeer(VecDeque<OnionMessage>),
 
-	/// Messages for a node that is not yet connected.
-	PendingConnection(VecDeque<OnionMessage>, Option<Vec<SocketAddress>>),
+	/// Messages for a node that is not yet connected, which are dropped after a certain number of
+	/// timer ticks defined in [`OnionMessenger::timer_tick_occurred`] and tracked here.
+	PendingConnection(VecDeque<OnionMessage>, Option<Vec<SocketAddress>>, usize),
 }
 
 impl OnionMessageBuffer {
+	fn pending_connection(addresses: Vec<SocketAddress>) -> Self {
+		Self::PendingConnection(VecDeque::new(), Some(addresses), 0)
+	}
+
 	fn pending_messages(&self) -> &VecDeque<OnionMessage> {
 		match self {
 			OnionMessageBuffer::ConnectedPeer(pending_messages) => pending_messages,
-			OnionMessageBuffer::PendingConnection(pending_messages, _) => pending_messages,
+			OnionMessageBuffer::PendingConnection(pending_messages, _, _) => pending_messages,
 		}
 	}
 
 	fn enqueue_message(&mut self, message: OnionMessage) {
 		let pending_messages = match self {
 			OnionMessageBuffer::ConnectedPeer(pending_messages) => pending_messages,
-			OnionMessageBuffer::PendingConnection(pending_messages, _) => pending_messages,
+			OnionMessageBuffer::PendingConnection(pending_messages, _, _) => pending_messages,
 		};
 
 		pending_messages.push_back(message);
@@ -190,7 +195,7 @@ impl OnionMessageBuffer {
 	fn dequeue_message(&mut self) -> Option<OnionMessage> {
 		let pending_messages = match self {
 			OnionMessageBuffer::ConnectedPeer(pending_messages) => pending_messages,
-			OnionMessageBuffer::PendingConnection(pending_messages, _) => {
+			OnionMessageBuffer::PendingConnection(pending_messages, _, _) => {
 				debug_assert!(false);
 				pending_messages
 			},
@@ -203,14 +208,14 @@ impl OnionMessageBuffer {
 	fn release_pending_messages(&mut self) -> VecDeque<OnionMessage> {
 		let pending_messages = match self {
 			OnionMessageBuffer::ConnectedPeer(pending_messages) => pending_messages,
-			OnionMessageBuffer::PendingConnection(pending_messages, _) => pending_messages,
+			OnionMessageBuffer::PendingConnection(pending_messages, _, _) => pending_messages,
 		};
 
 		core::mem::take(pending_messages)
 	}
 
 	fn mark_connected(&mut self) {
-		if let OnionMessageBuffer::PendingConnection(pending_messages, _) = self {
+		if let OnionMessageBuffer::PendingConnection(pending_messages, _, _) = self {
 			let mut new_pending_messages = VecDeque::new();
 			core::mem::swap(pending_messages, &mut new_pending_messages);
 			*self = OnionMessageBuffer::ConnectedPeer(new_pending_messages);
@@ -710,9 +715,8 @@ where
 			hash_map::Entry::Vacant(e) => match addresses {
 				None => Err(SendError::InvalidFirstHop(first_node_id)),
 				Some(addresses) => {
-					e.insert(
-						OnionMessageBuffer::PendingConnection(VecDeque::new(), Some(addresses))
-					).enqueue_message(onion_message);
+					e.insert(OnionMessageBuffer::pending_connection(addresses))
+						.enqueue_message(onion_message);
 					Ok(SendSuccess::BufferedAwaitingConnection(first_node_id))
 				},
 			},
@@ -795,7 +799,7 @@ where
 {
 	fn process_pending_events<H: Deref>(&self, handler: H) where H::Target: EventHandler {
 		for (node_id, recipient) in self.message_buffers.lock().unwrap().iter_mut() {
-			if let OnionMessageBuffer::PendingConnection(_, addresses) = recipient {
+			if let OnionMessageBuffer::PendingConnection(_, addresses, _) = recipient {
 				if let Some(addresses) = addresses.take() {
 					handler.handle_event(Event::ConnectionNeeded { node_id: *node_id, addresses });
 				}
@@ -893,6 +897,27 @@ where
 		match self.message_buffers.lock().unwrap().remove(their_node_id) {
 			Some(OnionMessageBuffer::ConnectedPeer(..)) => {},
 			_ => debug_assert!(false),
+		}
+	}
+
+	fn timer_tick_occurred(&self) {
+		const MAX_TIMER_TICKS: usize = 2;
+		let mut message_buffers = self.message_buffers.lock().unwrap();
+
+		// Drop any pending recipients since the last call to avoid retaining buffered messages for
+		// too long.
+		message_buffers.retain(|_, recipient| match recipient {
+			OnionMessageBuffer::PendingConnection(_, None, ticks) => *ticks < MAX_TIMER_TICKS,
+			OnionMessageBuffer::PendingConnection(_, Some(_), _) => true,
+			_ => true,
+		});
+
+		// Increment a timer tick for pending recipients so that their buffered messages are dropped
+		// at MAX_TIMER_TICKS.
+		for recipient in message_buffers.values_mut() {
+			if let OnionMessageBuffer::PendingConnection(_, None, ticks) = recipient {
+				*ticks += 1;
+			}
 		}
 	}
 
