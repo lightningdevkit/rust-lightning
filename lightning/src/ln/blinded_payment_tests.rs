@@ -22,7 +22,7 @@ use crate::ln::onion_utils;
 use crate::ln::onion_utils::INVALID_ONION_BLINDING;
 use crate::ln::outbound_payment::Retry;
 use crate::prelude::*;
-use crate::routing::router::{PaymentParameters, RouteParameters};
+use crate::routing::router::{Payee, PaymentParameters, RouteParameters};
 use crate::util::config::UserConfig;
 use crate::util::test_utils;
 
@@ -505,6 +505,8 @@ enum ReceiveCheckFail {
 	// The HTLC is successfully added to the inbound channel but fails receive checks in
 	// process_pending_htlc_forwards.
 	ProcessPendingHTLCsCheck,
+	// The HTLC violates the `PaymentConstraints` contained within the receiver's encrypted payload.
+	PaymentConstraints,
 }
 
 #[test]
@@ -514,6 +516,7 @@ fn multi_hop_receiver_fail() {
 	do_multi_hop_receiver_fail(ReceiveCheckFail::ReceiveRequirements);
 	do_multi_hop_receiver_fail(ReceiveCheckFail::ChannelCheck);
 	do_multi_hop_receiver_fail(ReceiveCheckFail::ProcessPendingHTLCsCheck);
+	do_multi_hop_receiver_fail(ReceiveCheckFail::PaymentConstraints);
 }
 
 fn do_multi_hop_receiver_fail(check: ReceiveCheckFail) {
@@ -539,7 +542,7 @@ fn do_multi_hop_receiver_fail(check: ReceiveCheckFail) {
 		Some(TEST_FINAL_CLTV as u16 - 2)
 	} else { None };
 	let (_, payment_hash, payment_secret) = get_payment_preimage_hash(&nodes[2], Some(amt_msat), final_cltv_delta);
-	let route_params = get_blinded_route_parameters(amt_msat, payment_secret,
+	let mut route_params = get_blinded_route_parameters(amt_msat, payment_secret,
 		nodes.iter().skip(1).map(|n| n.node.get_our_node_id()).collect(), &[&chan_upd_1_2],
 		&chanmon_cfgs[2].keys_manager);
 
@@ -548,7 +551,25 @@ fn do_multi_hop_receiver_fail(check: ReceiveCheckFail) {
 		// Set the final CLTV expiry too low to trigger the failure in process_pending_htlc_forwards.
 		route.paths[0].blinded_tail.as_mut().map(|bt| bt.excess_final_cltv_expiry_delta = TEST_FINAL_CLTV - 2);
 		route
-	} else  {
+	} else if check == ReceiveCheckFail::PaymentConstraints {
+		// Create a blinded path where the receiver's encrypted payload has an htlc_minimum_msat that is
+		// violated by `amt_msat`, and stick it in the route_params without changing the corresponding
+		// BlindedPayInfo (to ensure pathfinding still succeeds).
+		let high_htlc_min_bp = {
+			let mut high_htlc_minimum_upd = chan_upd_1_2.clone();
+			high_htlc_minimum_upd.htlc_minimum_msat = amt_msat + 1000;
+			let high_htlc_min_params = get_blinded_route_parameters(amt_msat, payment_secret,
+				nodes.iter().skip(1).map(|n| n.node.get_our_node_id()).collect(), &[&high_htlc_minimum_upd],
+				&chanmon_cfgs[2].keys_manager);
+			if let Payee::Blinded { route_hints, .. } = high_htlc_min_params.payment_params.payee {
+				route_hints[0].1.clone()
+			} else { panic!() }
+		};
+		if let Payee::Blinded { ref mut route_hints, .. } = route_params.payment_params.payee {
+			route_hints[0].1 = high_htlc_min_bp;
+		} else { panic!() }
+		find_route(&nodes[0], &route_params).unwrap()
+	} else {
 		find_route(&nodes[0], &route_params).unwrap()
 	};
 	node_cfgs[0].router.expect_find_route(route_params.clone(), Ok(route.clone()));
@@ -643,6 +664,11 @@ fn do_multi_hop_receiver_fail(check: ReceiveCheckFail) {
 			expect_pending_htlcs_forwardable_and_htlc_handling_failed_ignore!(nodes[2],
 				vec![HTLCDestination::FailedPayment { payment_hash }]);
 			check_added_monitors!(nodes[2], 1);
+		},
+		ReceiveCheckFail::PaymentConstraints => {
+			nodes[2].node.handle_update_add_htlc(&nodes[1].node.get_our_node_id(), &payment_event_1_2.msgs[0]);
+			check_added_monitors!(nodes[2], 0);
+			do_commitment_signed_dance(&nodes[2], &nodes[1], &payment_event_1_2.commitment_msg, true, true);
 		}
 	}
 

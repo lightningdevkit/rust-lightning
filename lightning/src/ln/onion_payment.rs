@@ -33,6 +33,15 @@ pub struct InboundOnionErr {
 	pub msg: &'static str,
 }
 
+fn check_blinded_payment_constraints(
+	amt_msat: u64, cltv_expiry: u32, constraints: &PaymentConstraints
+) -> Result<(), ()> {
+	if amt_msat < constraints.htlc_minimum_msat ||
+		cltv_expiry > constraints.max_cltv_expiry
+	{ return Err(()) }
+	Ok(())
+}
+
 fn check_blinded_forward(
 	inbound_amt_msat: u64, inbound_cltv_expiry: u32, payment_relay: &PaymentRelay,
 	payment_constraints: &PaymentConstraints, features: &BlindedHopFeatures
@@ -43,9 +52,8 @@ fn check_blinded_forward(
 	let outgoing_cltv_value = inbound_cltv_expiry.checked_sub(
 		payment_relay.cltv_expiry_delta as u32
 	).ok_or(())?;
-	if inbound_amt_msat < payment_constraints.htlc_minimum_msat ||
-		outgoing_cltv_value > payment_constraints.max_cltv_expiry
-		{ return Err(()) }
+	check_blinded_payment_constraints(inbound_amt_msat, outgoing_cltv_value, payment_constraints)?;
+
 	if features.requires_unknown_bits_from(&BlindedHopFeatures::empty()) { return Err(()) }
 	Ok((amt_to_forward, outgoing_cltv_value))
 }
@@ -122,8 +130,17 @@ pub(super) fn create_recv_pending_htlc_info(
 			(payment_data, keysend_preimage, custom_tlvs, amt_msat, outgoing_cltv_value, payment_metadata,
 			 false),
 		msgs::InboundOnionPayload::BlindedReceive {
-			amt_msat, total_msat, outgoing_cltv_value, payment_secret, intro_node_blinding_point, ..
+			amt_msat, total_msat, outgoing_cltv_value, payment_secret, intro_node_blinding_point,
+			payment_constraints, ..
 		} => {
+			check_blinded_payment_constraints(amt_msat, cltv_expiry, &payment_constraints)
+				.map_err(|()| {
+					InboundOnionErr {
+						err_code: INVALID_ONION_BLINDING,
+						err_data: vec![0; 32],
+						msg: "Amount or cltv_expiry violated blinded payment constraints",
+					}
+				})?;
 			let payment_data = msgs::FinalOnionHopData { payment_secret, total_msat };
 			(Some(payment_data), None, Vec::new(), amt_msat, outgoing_cltv_value, None,
 			 intro_node_blinding_point.is_none())
