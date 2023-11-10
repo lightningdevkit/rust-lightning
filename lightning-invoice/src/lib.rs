@@ -479,7 +479,7 @@ impl Sha256 {
 ///
 /// # Invariants
 /// The description can be at most 639 __bytes__ long
-#[derive(Clone, Debug, Hash, Eq, PartialEq, Ord, PartialOrd)]
+#[derive(Clone, Debug, Hash, Eq, PartialEq, Ord, PartialOrd, Default)]
 pub struct Description(String);
 
 /// Payee public key
@@ -529,7 +529,7 @@ impl Ord for Bolt11InvoiceSignature {
 /// The encoded route has to be <1024 5bit characters long (<=639 bytes or <=12 hops)
 ///
 #[derive(Clone, Debug, Hash, Eq, PartialEq, Ord, PartialOrd)]
-pub struct PrivateRoute(RouteHint);
+pub struct PrivateRoute(pub RouteHint);
 
 /// Tag constants as specified in BOLT11
 #[allow(missing_docs)]
@@ -1142,6 +1142,12 @@ impl PositiveTimestamp {
 	#[cfg(feature = "std")]
 	pub fn as_time(&self) -> SystemTime {
 		SystemTime::UNIX_EPOCH + self.0
+	}
+}
+
+impl From<PositiveTimestamp> for Duration {
+	fn from(val: PositiveTimestamp) -> Self {
+		val.0
 	}
 }
 
