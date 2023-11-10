@@ -654,6 +654,8 @@ const DEFAULT_MAX_CHANNEL_SATURATION_POW_HALF: u8 = 2;
 // The median hop CLTV expiry delta currently seen in the network.
 const MEDIAN_HOP_CLTV_EXPIRY_DELTA: u32 = 40;
 
+/// Estimated maximum number of hops that can be included in a payment path. May be inaccurate if
+/// payment metadata, custom TLVs, or blinded paths are included in the payment.
 // During routing, we only consider paths shorter than our maximum length estimate.
 // In the TLV onion format, there is no fixed maximum length, but the `hop_payloads`
 // field is always 1300 bytes. As the `tlv_payload` for each hop may vary in length, we have to
@@ -665,7 +667,7 @@ const MEDIAN_HOP_CLTV_EXPIRY_DELTA: u32 = 40;
 // (payment_secret and total_msat) = 93 bytes for the final hop.
 // Since the length of the potentially included `payment_metadata` is unknown to us, we round
 // down from (1300-93) / 61 = 19.78... to arrive at a conservative estimate of 19.
-const MAX_PATH_LENGTH_ESTIMATE: u8 = 19;
+pub const MAX_PATH_LENGTH_ESTIMATE: u8 = 19;
 
 /// Information used to route a payment.
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
