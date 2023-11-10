@@ -269,6 +269,15 @@ pub enum Bolt11InvoiceDescription<'f> {
 	Hash(&'f Sha256),
 }
 
+impl<'f> Display for Bolt11InvoiceDescription<'f> {
+	fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+		match self {
+			Bolt11InvoiceDescription::Direct(desc) => write!(f, "{}", desc.0),
+			Bolt11InvoiceDescription::Hash(hash) => write!(f, "{}", hash.0),
+		}
+	}
+}
+
 /// Represents a signed [`RawBolt11Invoice`] with cached hash. The signature is not checked and may be
 /// invalid.
 ///
@@ -1523,6 +1532,12 @@ impl Deref for Description {
 
 	fn deref(&self) -> &str {
 		&self.0
+	}
+}
+
+impl Display for Description {
+	fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+		write!(f, "{}", self.0)
 	}
 }
 
