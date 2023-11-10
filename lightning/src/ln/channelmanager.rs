@@ -1491,8 +1491,21 @@ pub struct ChannelCounterparty {
 	pub outbound_htlc_maximum_msat: Option<u64>,
 }
 
+impl Default for ChannelCounterparty {
+	fn default() -> Self {
+		Self {
+			node_id: PublicKey::from_slice(&[2; 33]).unwrap(), // dummy value
+			features: InitFeatures::empty(),
+			unspendable_punishment_reserve: 0,
+			forwarding_info: None,
+			outbound_htlc_minimum_msat: None,
+			outbound_htlc_maximum_msat: None,
+		}
+	}
+}
+
 /// Details of a channel, as returned by [`ChannelManager::list_channels`] and [`ChannelManager::list_usable_channels`]
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Default)]
 pub struct ChannelDetails {
 	/// The channel's ID (prior to funding transaction generation, this is a random 32 bytes,
 	/// thereafter this is the txid of the funding transaction xor the funding transaction output).

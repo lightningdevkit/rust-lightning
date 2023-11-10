@@ -33,6 +33,12 @@ use core::ops::Deref;
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct ChannelId(pub [u8; 32]);
 
+impl Default for ChannelId {
+	fn default() -> Self {
+		Self::new_zero()
+	}
+}
+
 impl ChannelId {
 	/// Create _v1_ channel ID based on a funding TX ID and output index
 	pub fn v1_from_funding_txid(txid: &[u8; 32], output_index: u16) -> Self {
