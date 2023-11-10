@@ -686,6 +686,10 @@ pub struct PaymentParameters {
 	/// Defaults to [`DEFAULT_MAX_PATH_COUNT`].
 	pub max_path_count: u8,
 
+	/// The maximum number of [`Path::hops`] in any returned path.
+	/// Defaults to [`MAX_PATH_LENGTH_ESTIMATE`].
+	pub max_path_length: u8,
+
 	/// Selects the maximum share of a channel's total capacity which will be sent over a channel,
 	/// as a power of 1/2. A higher value prefers to send the payment using more MPP parts whereas
 	/// a lower value prefers to send larger MPP parts, potentially saturating channels and
@@ -732,6 +736,7 @@ impl Writeable for PaymentParameters {
 			(8, *blinded_hints, optional_vec),
 			(9, self.payee.final_cltv_expiry_delta(), option),
 			(11, self.previously_failed_blinded_path_idxs, required_vec),
+			(13, self.max_path_length, required),
 		});
 		Ok(())
 	}
@@ -751,6 +756,7 @@ impl ReadableArgs<u32> for PaymentParameters {
 			(8, blinded_route_hints, optional_vec),
 			(9, final_cltv_expiry_delta, (default_value, default_final_cltv_expiry_delta)),
 			(11, previously_failed_blinded_path_idxs, optional_vec),
+			(13, max_path_length, (default_value, MAX_PATH_LENGTH_ESTIMATE)),
 		});
 		let blinded_route_hints = blinded_route_hints.unwrap_or(vec![]);
 		let payee = if blinded_route_hints.len() != 0 {
@@ -775,6 +781,7 @@ impl ReadableArgs<u32> for PaymentParameters {
 			expiry_time,
 			previously_failed_channels: previously_failed_channels.unwrap_or(Vec::new()),
 			previously_failed_blinded_path_idxs: previously_failed_blinded_path_idxs.unwrap_or(Vec::new()),
+			max_path_length: _init_tlv_based_struct_field!(max_path_length, (default_value, unused)),
 		})
 	}
 }
@@ -791,6 +798,7 @@ impl PaymentParameters {
 			expiry_time: None,
 			max_total_cltv_expiry_delta: DEFAULT_MAX_TOTAL_CLTV_EXPIRY_DELTA,
 			max_path_count: DEFAULT_MAX_PATH_COUNT,
+			max_path_length: MAX_PATH_LENGTH_ESTIMATE,
 			max_channel_saturation_power_of_half: DEFAULT_MAX_CHANNEL_SATURATION_POW_HALF,
 			previously_failed_channels: Vec::new(),
 			previously_failed_blinded_path_idxs: Vec::new(),
@@ -830,6 +838,7 @@ impl PaymentParameters {
 			expiry_time: None,
 			max_total_cltv_expiry_delta: DEFAULT_MAX_TOTAL_CLTV_EXPIRY_DELTA,
 			max_path_count: DEFAULT_MAX_PATH_COUNT,
+			max_path_length: MAX_PATH_LENGTH_ESTIMATE,
 			max_channel_saturation_power_of_half: DEFAULT_MAX_CHANNEL_SATURATION_POW_HALF,
 			previously_failed_channels: Vec::new(),
 			previously_failed_blinded_path_idxs: Vec::new(),
