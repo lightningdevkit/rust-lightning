@@ -369,10 +369,13 @@ impl NegotiationContext {
 // Channel states that can receive `(send|receive)_tx_(add|remove)_(input|output)`
 trait State {}
 
+/// Category of states where we have sent some message to the counterparty, and we are waiting for
+/// a response.
 trait LocalState: State {
 	fn into_negotiation_context(self) -> NegotiationContext;
 }
 
+/// Category of states that our counterparty has put us in after we receive a message from them.
 trait RemoteState: State {
 	fn into_negotiation_context(self) -> NegotiationContext;
 }
@@ -456,12 +459,16 @@ macro_rules! define_state_transitions {
 	};
 }
 
+// State transitions when we have sent our counterparty some messages and are waiting for them
+// to respond.
 define_state_transitions!(LOCAL_STATE, [
 	DATA &msgs::TxAddInput, TRANSITION remote_tx_add_input,
 	DATA &msgs::TxRemoveInput, TRANSITION remote_tx_remove_input,
 	DATA &msgs::TxAddOutput, TRANSITION remote_tx_add_output,
 	DATA &msgs::TxRemoveOutput, TRANSITION remote_tx_remove_output
 ]);
+// State transitions when we have received some messages from our counterparty and we should
+// respond.
 define_state_transitions!(REMOTE_STATE, [
 	DATA &msgs::TxAddInput, TRANSITION local_tx_add_input,
 	DATA &msgs::TxRemoveInput, TRANSITION local_tx_remove_input,
@@ -631,6 +638,8 @@ impl InteractiveTxConstructor {
 	}
 
 	fn do_local_state_transition(&mut self) -> Result<InteractiveTxMessageSend, AbortReason> {
+		// We first attempt to send inputs we want to add, then outputs. Once we are done sending
+		// them both, then we always send tx_complete.
 		if let Some((serial_id, input, prev_tx)) = self.inputs_to_contribute.pop() {
 			let msg = msgs::TxAddInput {
 				channel_id: self.channel_id,
@@ -704,25 +713,48 @@ impl InteractiveTxConstructor {
 #[cfg(test)]
 mod tests {
 	use core::default::Default;
+	use std::ops::Deref;
 	use crate::chain::chaininterface::FEERATE_FLOOR_SATS_PER_KW;
-	use crate::ln::interactivetxs::{AbortReason, InteractiveTxConstructor, InteractiveTxMessageSend};
-	use bitcoin::{OutPoint, Sequence, Transaction, TxIn, TxOut};
+	use crate::ln::interactivetxs::{AbortReason, generate_local_serial_id, InteractiveTxConstructor, InteractiveTxMessageSend, MAX_INPUTS_OUTPUTS_COUNT, MAX_RECEIVED_TX_ADD_INPUT_COUNT, MAX_RECEIVED_TX_ADD_OUTPUT_COUNT};
+	use bitcoin::{OutPoint, Sequence, Transaction, TxIn, TxOut, Witness};
 	use bitcoin::blockdata::opcodes;
 	use bitcoin::blockdata::script::Builder;
 	use bitcoin::locktime::absolute::LockTime;
+	use crate::ln::channel::TOTAL_BITCOIN_SUPPLY_SATOSHIS;
 	use crate::ln::ChannelId;
 	use crate::sign::EntropySource;
 	use crate::util::atomic_counter::AtomicCounter;
 
+	// A simple entropy source that works based on an atomic counter.
 	struct TestEntropySource(AtomicCounter);
 	impl EntropySource for TestEntropySource {
 		fn get_secure_random_bytes(&self) -> [u8; 32] {
-			let bytes = self.0.get_increment().to_be_bytes();
 			let mut res = [0u8; 32];
-			res[0..8].copy_from_slice(&bytes);
+			let increment = self.0.get_increment();
+			for i in 0..32 {
+				// Rotate the increment value by 'i' bits to the right, to avoid clashes
+				// when `generate_local_serial_id` does a parity flip on consecutive calls for the
+				// same party.
+				let rotated_increment = increment.rotate_right(i as u32);
+				res[i] = (rotated_increment & 0xff) as u8;
+			}
 			res
 		}
 	}
+
+	// An entropy source that deliberately returns you the same seed every time. We use this
+	// to test if the constructor would catch inputs/outputs that are attempting to be added
+	// with duplicate serial ids.
+	struct DuplicateEntropySource;
+	impl EntropySource for DuplicateEntropySource {
+		fn get_secure_random_bytes(&self) -> [u8; 32] {
+			let mut res = [0u8; 32];
+			let count = 1u64;
+			res[0..8].copy_from_slice(&count.to_be_bytes());
+			res
+		}
+	}
+
 	struct TestSession {
 		inputs_a: Vec<(TxIn, Transaction)>,
 		outputs_a: Vec<TxOut>,
@@ -733,14 +765,23 @@ mod tests {
 
 	fn do_test_interactive_tx_constructor(session: TestSession) {
 		let entropy_source = TestEntropySource(AtomicCounter::new());
+		do_test_interactive_tx_constructor_internal(session, &&entropy_source);
+	}
+
+	fn do_test_interactive_tx_constructor_with_entropy_source<ES: Deref>(session: TestSession, entropy_source: ES) where ES::Target: EntropySource {
+		do_test_interactive_tx_constructor_internal(session, &entropy_source);
+	}
+
+	fn do_test_interactive_tx_constructor_internal<ES: Deref>(session: TestSession, entropy_source: &ES) where ES::Target: EntropySource {
+		let channel_id = ChannelId(entropy_source.get_secure_random_bytes());
 		let channel_id = ChannelId(entropy_source.get_secure_random_bytes());
 		let tx_locktime = LockTime::from_height(1337).unwrap();
 
 		let (mut constructor_a, first_message_a) = InteractiveTxConstructor::new(
-			&&entropy_source, channel_id, FEERATE_FLOOR_SATS_PER_KW * 10, true, tx_locktime, session.inputs_a.clone(), session.outputs_a.clone()
+			entropy_source, channel_id, FEERATE_FLOOR_SATS_PER_KW * 10, true, tx_locktime, session.inputs_a.clone(), session.outputs_a.clone()
 		);
 		let (mut constructor_b, first_message_b) = InteractiveTxConstructor::new(
-			&&entropy_source, channel_id, FEERATE_FLOOR_SATS_PER_KW * 10, false, tx_locktime, session.inputs_b.clone(), session.outputs_b.clone()
+			entropy_source, channel_id, FEERATE_FLOOR_SATS_PER_KW * 10, false, tx_locktime, session.inputs_b.clone(), session.outputs_b.clone()
 		);
 
 		let handle_message_send = |msg: InteractiveTxMessageSend, for_constructor: &mut InteractiveTxConstructor| {
@@ -823,8 +864,41 @@ mod tests {
 		}).collect()
 	}
 
-	fn generate_output(value: u64) -> TxOut {
-		TxOut { value, script_pubkey: Builder::new().push_opcode(opcodes::OP_TRUE).into_script().to_v0_p2wsh() }
+	fn generate_outputs(values: &[u64]) -> Vec<TxOut> {
+		values.iter().map(|value| {
+			TxOut {
+				value: *value,
+				script_pubkey:  Builder::new().push_opcode(opcodes::OP_TRUE).into_script().to_v0_p2wsh()
+			}
+		}).collect()
+	}
+
+	fn generate_fixed_number_of_inputs(count: u16) -> Vec<(TxIn, Transaction)> {
+		// Generate a transaction with `count` number of outputs.
+		let tx = generate_tx(&vec![1_000_000; count as usize]);
+		let txid = tx.txid();
+
+		tx.output.iter().enumerate().map(|(idx, _)| {
+			let input = TxIn {
+				previous_output: OutPoint {
+					txid: txid,
+					vout: idx as u32,
+				},
+				script_sig: Default::default(),
+				sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
+				witness: Default::default(),
+			};
+			(input, tx.clone())
+		}).collect()
+	}
+
+	fn generate_fixed_number_of_outputs(count: u16) -> Vec<TxOut> {
+		// Set a constant value for each TxOut
+		generate_outputs(&vec![1_000_000; count as usize])
+	}
+
+	fn generate_non_witness_output(value: u64) -> TxOut {
+		TxOut { value, script_pubkey: Builder::new().push_opcode(opcodes::OP_TRUE).into_script().to_p2sh() }
 	}
 
 	#[test]
@@ -840,7 +914,7 @@ mod tests {
 		// Single contribution, no initiator inputs.
 		do_test_interactive_tx_constructor(TestSession {
 			inputs_a: vec![],
-			outputs_a: vec![generate_output(1_000_000)],
+			outputs_a: generate_outputs(&[1_000_000]),
 			inputs_b: vec![],
 			outputs_b: vec![],
 			expect_error: Some(AbortReason::InsufficientFees),
@@ -856,7 +930,7 @@ mod tests {
 		// Single contribution, insufficient fees.
 		do_test_interactive_tx_constructor(TestSession {
 			inputs_a: generate_inputs(&[1_000_000]),
-			outputs_a: vec![generate_output(1_000_000)],
+			outputs_a: generate_outputs(&[1_000_000]),
 			inputs_b: vec![],
 			outputs_b: vec![],
 			expect_error: Some(AbortReason::InsufficientFees),
@@ -866,17 +940,40 @@ mod tests {
 			inputs_a: generate_inputs(&[1_000_000]),
 			outputs_a: vec![],
 			inputs_b: generate_inputs(&[100_000]),
-			outputs_b: vec![generate_output(100_000)],
+			outputs_b: generate_outputs(&[100_000]),
 			expect_error: Some(AbortReason::InsufficientFees),
 		});
 		// Multi-input-output contributions from both sides.
 		do_test_interactive_tx_constructor(TestSession {
 			inputs_a: generate_inputs(&[1_000_000, 1_000_000]),
-			outputs_a: vec![generate_output(1_000_000), generate_output(200_000)],
+			outputs_a: generate_outputs(&[1_000_000, 200_000]),
 			inputs_b: generate_inputs(&[1_000_000, 500_000]),
-			outputs_b: vec![generate_output(1_000_000), generate_output(400_000)],
+			outputs_b: generate_outputs(&[1_000_000, 400_000]),
 			expect_error: None,
 		});
+
+		// Prevout from initiator is not a witness program
+		let non_segwit_output_tx = {
+			let mut tx = generate_tx(&[1_000_000]);
+			tx.output.push(TxOut {
+				script_pubkey: Builder::new().push_opcode(opcodes::all::OP_RETURN).into_script().to_p2sh(),
+				..Default::default()
+			});
+			tx
+		};
+		let non_segwit_input = TxIn {
+			previous_output: OutPoint { txid: non_segwit_output_tx.txid(), vout: 1 },
+			sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
+			..Default::default()
+		};
+		do_test_interactive_tx_constructor(TestSession {
+			inputs_a: vec![(non_segwit_input, non_segwit_output_tx)],
+			outputs_a: vec![],
+			inputs_b: vec![],
+			outputs_b: vec![],
+			expect_error: Some(AbortReason::PrevTxOutInvalid),
+		});
+
 		// Invalid input sequence from initiator.
 		let tx = generate_tx(&[1_000_000]);
 		let invalid_sequence_input = TxIn {
@@ -885,7 +982,7 @@ mod tests {
 		};
 		do_test_interactive_tx_constructor(TestSession {
 			inputs_a: vec![(invalid_sequence_input, tx.clone())],
-			outputs_a: vec![generate_output(1_000_000)],
+			outputs_a: generate_outputs(&[1_000_000]),
 			inputs_b: vec![],
 			outputs_b: vec![],
 			expect_error: Some(AbortReason::IncorrectInputSequenceValue),
@@ -898,7 +995,7 @@ mod tests {
 		};
 		do_test_interactive_tx_constructor(TestSession {
 			inputs_a: vec![(duplicate_input.clone(), tx.clone()), (duplicate_input, tx.clone())],
-			outputs_a: vec![generate_output(1_000_000)],
+			outputs_a: generate_outputs(&[1_000_000]),
 			inputs_b: vec![],
 			outputs_b: vec![],
 			expect_error: Some(AbortReason::PrevTxOutInvalid),
@@ -911,10 +1008,103 @@ mod tests {
 		};
 		do_test_interactive_tx_constructor(TestSession {
 			inputs_a: vec![(duplicate_input.clone(), tx.clone())],
-			outputs_a: vec![generate_output(1_000_000)],
+			outputs_a: generate_outputs(&[1_000_000]),
 			inputs_b: vec![(duplicate_input.clone(), tx.clone())],
 			outputs_b: vec![],
 			expect_error: Some(AbortReason::PrevTxOutInvalid),
 		});
+		// Initiator sends too many TxAddInputs
+		do_test_interactive_tx_constructor(TestSession {
+			inputs_a: generate_fixed_number_of_inputs(MAX_RECEIVED_TX_ADD_INPUT_COUNT + 1),
+			outputs_a: vec![],
+			inputs_b: vec![],
+			outputs_b: vec![],
+			expect_error: Some(AbortReason::ReceivedTooManyTxAddInputs),
+		});
+		// Attempt to queue up two inputs with duplicate serial ids. We use a deliberately bad
+		// entropy source, `DuplicateEntropySource` to simulate this.
+		do_test_interactive_tx_constructor_with_entropy_source(TestSession {
+			inputs_a: generate_fixed_number_of_inputs(2),
+			outputs_a: vec![],
+			inputs_b: vec![],
+			outputs_b: vec![],
+			expect_error: Some(AbortReason::DuplicateSerialId),
+		}, &DuplicateEntropySource);
+		// Initiator sends too many TxAddOutputs.
+		do_test_interactive_tx_constructor(TestSession {
+			inputs_a: vec![],
+			outputs_a: generate_fixed_number_of_outputs(MAX_RECEIVED_TX_ADD_OUTPUT_COUNT + 1),
+			inputs_b: vec![],
+			outputs_b: vec![],
+			expect_error: Some(AbortReason::ReceivedTooManyTxAddOutputs),
+		});
+		// Initiator sends an output below dust value.
+		do_test_interactive_tx_constructor(TestSession {
+			inputs_a: vec![],
+			outputs_a: generate_outputs(&[1]),
+			inputs_b: vec![],
+			outputs_b: vec![],
+			expect_error: Some(AbortReason::BelowDustLimit)
+		});
+		// Initiator sends an output above maximum sats allowed.
+		do_test_interactive_tx_constructor(TestSession {
+			inputs_a: vec![],
+			outputs_a: generate_outputs(&[TOTAL_BITCOIN_SUPPLY_SATOSHIS + 1]),
+			inputs_b: vec![],
+			outputs_b: vec![],
+			expect_error: Some(AbortReason::ExceededMaximumSatsAllowed)
+		});
+		// Initiator sends an output without a witness program.
+		do_test_interactive_tx_constructor(TestSession {
+			inputs_a: vec![],
+			outputs_a: vec![generate_non_witness_output(1_000_000)],
+			inputs_b: vec![],
+			outputs_b: vec![],
+			expect_error: Some(AbortReason::InvalidOutputScript)
+		});
+		// Attempt to queue up two outputs with duplicate serial ids. We use a deliberately bad
+		// entropy source, `DuplicateEntropySource` to simulate this.
+		do_test_interactive_tx_constructor_with_entropy_source(TestSession {
+			inputs_a: vec![],
+			outputs_a: generate_fixed_number_of_outputs(2),
+			inputs_b: vec![],
+			outputs_b: vec![],
+			expect_error: Some(AbortReason::DuplicateSerialId)
+		}, &DuplicateEntropySource);
+
+		// Peer contributed more output value than inputs
+		do_test_interactive_tx_constructor(TestSession {
+			inputs_a: generate_inputs(&[100_000]),
+			outputs_a: generate_outputs(&[1_000_000]),
+			inputs_b: vec![],
+			outputs_b: vec![],
+			expect_error: Some(AbortReason::InsufficientFees)
+		});
+
+		// Peer contributed more than allowed number of inputs.
+		do_test_interactive_tx_constructor(TestSession {
+			inputs_a: generate_fixed_number_of_inputs(MAX_INPUTS_OUTPUTS_COUNT as u16 + 1),
+			outputs_a: vec![],
+			inputs_b: vec![],
+			outputs_b: vec![],
+			expect_error: Some(AbortReason::ExceededNumberOfInputsOrOutputs)
+		});
+		// Peer contributed more than allowed number of outputs.
+		do_test_interactive_tx_constructor(TestSession {
+			inputs_a: generate_inputs(&[TOTAL_BITCOIN_SUPPLY_SATOSHIS]),
+			outputs_a: generate_fixed_number_of_outputs(MAX_INPUTS_OUTPUTS_COUNT as u16 + 1),
+			inputs_b: vec![],
+			outputs_b: vec![],
+			expect_error: Some(AbortReason::ExceededNumberOfInputsOrOutputs)
+		});
+	}
+
+	#[test]
+	fn test_generate_local_serial_id() {
+		let entropy_source = TestEntropySource(AtomicCounter::new());
+
+		// Initiators should have even serial id, non-initiators should have odd serial id.
+		assert_eq!(generate_local_serial_id(&&entropy_source, true)  % 2, 0);
+		assert_eq!(generate_local_serial_id(&&entropy_source, false)  % 2, 1)
 	}
 }
