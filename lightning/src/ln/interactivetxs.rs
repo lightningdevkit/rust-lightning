@@ -220,6 +220,8 @@ impl NegotiationContext {
 			//		- the sats amount is less than the dust_limit
 			return Err(AbortReason::BelowDustLimit);
 		}
+		// TODO (Spec Clarification https://github.com/lightning/bolts/pull/851/files#r1390457718):
+		// Check if we should validate cumulative output value so far, instead of just the value of this input.
 		if msg.sats > TOTAL_BITCOIN_SUPPLY_SATOSHIS {
 			// The receiving node:
 			// - MUST fail the negotiation if:
