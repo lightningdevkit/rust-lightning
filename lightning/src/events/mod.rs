@@ -102,9 +102,15 @@ pub struct ClaimedHTLC {
 	pub cltv_expiry: u32,
 	/// The amount (in msats) of this part of an MPP.
 	pub value_msat: u64,
+	/// The extra fee our counterparty skimmed off the top of this HTLC, if any.
+	///
+	/// This value will always be 0 for [`ClaimedHTLC`]s serialized with LDK versions prior to
+	/// 0.0.119.
+	pub counterparty_skimmed_fee_msat: u64,
 }
 impl_writeable_tlv_based!(ClaimedHTLC, {
 	(0, channel_id, required),
+	(1, counterparty_skimmed_fee_msat, (default_value, 0u64)),
 	(2, user_channel_id, required),
 	(4, cltv_expiry, required),
 	(6, value_msat, required),
