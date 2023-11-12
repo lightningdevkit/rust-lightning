@@ -10,15 +10,12 @@
 //! Convenient utilities for paying Lightning invoices.
 
 use crate::Bolt11Invoice;
-use crate::prelude::*;
 
 use bitcoin_hashes::Hash;
 
 use lightning::ln::PaymentHash;
 use lightning::ln::channelmanager::RecipientOnionFields;
 use lightning::routing::router::{PaymentParameters, RouteParameters};
-
-use core::time::Duration;
 
 /// Builds the necessary parameters to pay or pre-flight probe the given zero-amount
 /// [`Bolt11Invoice`] using [`ChannelManager::send_payment`] or
@@ -61,10 +58,6 @@ pub fn payment_parameters_from_invoice(invoice: &Bolt11Invoice)
 	}
 }
 
-fn expiry_time_from_unix_epoch(invoice: &Bolt11Invoice) -> Duration {
-	invoice.signed_invoice.raw_invoice.data.timestamp.0 + invoice.expiry_time()
-}
-
 fn params_from_invoice(invoice: &Bolt11Invoice, amount_msat: u64)
 -> (PaymentHash, RecipientOnionFields, RouteParameters) {
 	let payment_hash = PaymentHash((*invoice.payment_hash()).into_inner());
@@ -76,8 +69,10 @@ fn params_from_invoice(invoice: &Bolt11Invoice, amount_msat: u64)
 			invoice.recover_payee_pub_key(),
 			invoice.min_final_cltv_expiry_delta() as u32
 		)
-		.with_expiry_time(expiry_time_from_unix_epoch(invoice).as_secs())
 		.with_route_hints(invoice.route_hints()).unwrap();
+	if let Some(expiry) = invoice.expires_at() {
+		payment_params = payment_params.with_expiry_time(expiry.as_secs());
+	}
 	if let Some(features) = invoice.features() {
 		payment_params = payment_params.with_bolt11_features(features.clone()).unwrap();
 	}
