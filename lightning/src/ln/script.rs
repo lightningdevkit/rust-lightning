@@ -44,10 +44,6 @@ impl Writeable for ShutdownScript {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
 		self.0.write(w)
 	}
-
-	fn serialized_length(&self) -> usize {
-		self.0.serialized_length()
-	}
 }
 
 impl Readable for ShutdownScript {

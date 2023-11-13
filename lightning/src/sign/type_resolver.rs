@@ -18,6 +18,7 @@ impl<ECS: EcdsaChannelSigner> ChannelSignerType<ECS>{
 		}
 	}
 
+	#[allow(unused)]
 	pub(crate) fn as_ecdsa(&self) -> Option<&ECS> {
 		match self {
 			ChannelSignerType::Ecdsa(ecs) => Some(ecs)

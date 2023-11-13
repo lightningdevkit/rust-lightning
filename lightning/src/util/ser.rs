@@ -199,8 +199,14 @@ pub trait Writeable {
 
 	/// Writes `self` out to a `Vec<u8>`.
 	fn encode(&self) -> Vec<u8> {
-		let mut msg = VecWriter(Vec::new());
+		let len = self.serialized_length();
+		let mut msg = VecWriter(Vec::with_capacity(len));
 		self.write(&mut msg).unwrap();
+		// Note that objects with interior mutability may change size between when we called
+		// serialized_length and when we called write. That's okay, but shouldn't happen during
+		// testing as most of our tests are not threaded.
+		#[cfg(test)]
+		debug_assert_eq!(len, msg.0.len());
 		msg.0
 	}
 
@@ -211,6 +217,7 @@ pub trait Writeable {
 		0u16.write(&mut msg).unwrap();
 		self.write(&mut msg).unwrap();
 		let len = msg.0.len();
+		debug_assert_eq!(len - 2, self.serialized_length());
 		msg.0[..2].copy_from_slice(&(len as u16 - 2).to_be_bytes());
 		msg.0
 	}

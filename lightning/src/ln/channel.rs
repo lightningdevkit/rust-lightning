@@ -39,7 +39,7 @@ use crate::chain::transaction::{OutPoint, TransactionData};
 use crate::sign::{EcdsaChannelSigner, WriteableEcdsaChannelSigner, EntropySource, ChannelSigner, SignerProvider, NodeSigner, Recipient};
 use crate::events::ClosureReason;
 use crate::routing::gossip::NodeId;
-use crate::util::ser::{Readable, ReadableArgs, Writeable, Writer, VecWriter};
+use crate::util::ser::{Readable, ReadableArgs, Writeable, Writer};
 use crate::util::logger::Logger;
 use crate::util::errors::APIError;
 use crate::util::config::{UserConfig, ChannelConfig, LegacyChannelConfig, ChannelHandshakeConfig, ChannelHandshakeLimits, MaxDustHTLCExposure};
@@ -6893,7 +6893,7 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 }
 
 const SERIALIZATION_VERSION: u8 = 3;
-const MIN_SERIALIZATION_VERSION: u8 = 2;
+const MIN_SERIALIZATION_VERSION: u8 = 3;
 
 impl_writeable_tlv_based_enum!(InboundHTLCRemovalReason,;
 	(0, FailRelay),
@@ -6972,14 +6972,6 @@ impl<SP: Deref> Writeable for Channel<SP> where SP::Target: SignerProvider {
 		self.context.channel_value_satoshis.write(writer)?;
 
 		self.context.latest_monitor_update_id.write(writer)?;
-
-		let mut key_data = VecWriter(Vec::new());
-		// TODO (taproot|arik): Introduce serialization distinction for non-ECDSA signers.
-		self.context.holder_signer.as_ecdsa().expect("Only ECDSA signers may be serialized").write(&mut key_data)?;
-		assert!(key_data.0.len() < core::usize::MAX);
-		assert!(key_data.0.len() < core::u32::MAX as usize);
-		(key_data.0.len() as u32).write(writer)?;
-		writer.write_all(&key_data.0[..])?;
 
 		// Write out the old serialization for shutdown_pubkey for backwards compatibility, if
 		// deserialized from that format.
