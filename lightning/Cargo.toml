@@ -62,4 +62,4 @@ features = ["bitcoinconsensus", "secp-recovery"]
 criterion = { version = "0.4", optional = true, default-features = false }
 
 [target.'cfg(taproot)'.dependencies]
-musig2 = { git = "https://github.com/arik-so/rust-musig2", rev = "27797d7" }
+musig2 = { git = "https://github.com/arik-so/rust-musig2", rev = "dc05904" }
