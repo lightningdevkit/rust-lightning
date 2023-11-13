@@ -41,3 +41,7 @@ pub mod msg_tx_signatures;
 pub mod msg_tx_init_rbf;
 pub mod msg_tx_ack_rbf;
 pub mod msg_tx_abort;
+pub mod msg_stfu;
+pub mod msg_splice;
+pub mod msg_splice_ack;
+pub mod msg_splice_locked;

@@ -441,6 +441,60 @@ pub struct ChannelReady {
 	pub short_channel_id_alias: Option<u64>,
 }
 
+/// An stfu (quiescence) message to be sent by or received from the stfu initiator.
+// TODO(splicing): Add spec link for `stfu`; still in draft, using from https://github.com/lightning/bolts/pull/863
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Stfu {
+	/// The channel ID where quiescence is intended
+	pub channel_id: ChannelId,
+	/// Initiator flag, 1 if initiating, 0 if replying to an stfu.
+	pub initiator: u8,
+}
+
+/// A splice message to be sent by or received from the stfu initiator (splice initiator).
+// TODO(splicing): Add spec link for `splice`; still in draft, using from https://github.com/lightning/bolts/pull/863
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Splice {
+	/// The channel ID where splicing is intended
+	pub channel_id: ChannelId,
+	/// The genesis hash of the blockchain where the channel is intended to be spliced
+	pub chain_hash: ChainHash,
+	/// The intended change in channel capacity: the amount to be added (positive value)
+	/// or removed (negative value) by the sender (splice initiator) by splicing into/from the channel.
+	pub relative_satoshis: i64,
+	/// The feerate for the new funding transaction, set by the splice initiator
+	pub funding_feerate_perkw: u32,
+	/// The locktime for the new funding transaction
+	pub locktime: u32,
+	/// The key of the sender (splice initiator) controlling the new funding transaction
+	pub funding_pubkey: PublicKey,
+}
+
+/// A splice_ack message to be received by or sent to the splice initiator.
+///
+// TODO(splicing): Add spec link for `splice_ack`; still in draft, using from https://github.com/lightning/bolts/pull/863
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SpliceAck {
+	/// The channel ID where splicing is intended
+	pub channel_id: ChannelId,
+	/// The genesis hash of the blockchain where the channel is intended to be spliced
+	pub chain_hash: ChainHash,
+	/// The intended change in channel capacity: the amount to be added (positive value)
+	/// or removed (negative value) by the sender (splice acceptor) by splicing into/from the channel.
+	pub relative_satoshis: i64,
+	/// The key of the sender (splice acceptor) controlling the new funding transaction
+	pub funding_pubkey: PublicKey,
+}
+
+/// A splice_locked message to be sent to or received from a peer.
+///
+// TODO(splicing): Add spec link for `splice_locked`; still in draft, using from https://github.com/lightning/bolts/pull/863
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SpliceLocked {
+	/// The channel ID
+	pub channel_id: ChannelId,
+}
+
 /// A tx_add_input message for adding an input during interactive transaction construction
 ///
 // TODO(dual_funding): Add spec link for `tx_add_input`.
@@ -1409,6 +1463,18 @@ pub trait ChannelMessageHandler : MessageSendEventsProvider {
 	/// Handle an incoming `closing_signed` message from the given peer.
 	fn handle_closing_signed(&self, their_node_id: &PublicKey, msg: &ClosingSigned);
 
+	// Quiescence
+	/// Handle an incoming `stfu` message from the given peer.
+	fn handle_stfu(&self, their_node_id: &PublicKey, msg: &Stfu);
+
+	// Splicing
+	/// Handle an incoming `splice` message from the given peer.
+	fn handle_splice(&self, their_node_id: &PublicKey, msg: &Splice);
+	/// Handle an incoming `splice_ack` message from the given peer.
+	fn handle_splice_ack(&self, their_node_id: &PublicKey, msg: &SpliceAck);
+	/// Handle an incoming `splice_locked` message from the given peer.
+	fn handle_splice_locked(&self, their_node_id: &PublicKey, msg: &SpliceLocked);
+
 	// Interactive channel construction
 	/// Handle an incoming `tx_add_input message` from the given peer.
 	fn handle_tx_add_input(&self, their_node_id: &PublicKey, msg: &TxAddInput);
@@ -1816,6 +1882,31 @@ impl_writeable_msg!(AcceptChannelV2, {
 	(1, channel_type, option),
 	(2, require_confirmed_inputs, option),
 });
+
+impl_writeable_msg!(Stfu, {
+	channel_id,
+	initiator,
+}, {});
+
+impl_writeable_msg!(Splice, {
+	channel_id,
+	chain_hash,
+	relative_satoshis,
+	funding_feerate_perkw,
+	locktime,
+	funding_pubkey,
+}, {});
+
+impl_writeable_msg!(SpliceAck, {
+	channel_id,
+	chain_hash,
+	relative_satoshis,
+	funding_pubkey,
+}, {});
+
+impl_writeable_msg!(SpliceLocked, {
+	channel_id,
+}, {});
 
 impl_writeable_msg!(TxAddInput, {
 	channel_id,
@@ -3367,6 +3458,55 @@ mod tests {
 		let encoded_value = channel_ready.encode();
 		let target_value = hex::decode("0202020202020202020202020202020202020202020202020202020202020202031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f").unwrap();
 		assert_eq!(encoded_value, target_value);
+	}
+
+	#[test]
+	fn encoding_splice() {
+		let secp_ctx = Secp256k1::new();
+		let (_, pubkey_1,) = get_keys_from!("0101010101010101010101010101010101010101010101010101010101010101", secp_ctx);
+		let splice = msgs::Splice {
+			chain_hash: ChainHash::from_hex("6fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d6190000000000").unwrap(),
+			channel_id: ChannelId::from_bytes([2; 32]),
+			relative_satoshis: 123456,
+			funding_feerate_perkw: 2000,
+			locktime: 0,
+			funding_pubkey: pubkey_1,
+		};
+		let encoded_value = splice.encode();
+		assert_eq!(hex::encode(encoded_value), "02020202020202020202020202020202020202020202020202020202020202026fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d6190000000000000000000001e240000007d000000000031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f");
+	}
+
+	#[test]
+	fn encoding_stfu() {
+		let stfu = msgs::Stfu {
+			channel_id: ChannelId::from_bytes([2; 32]),
+			initiator: 1,
+		};
+		let encoded_value = stfu.encode();
+		assert_eq!(hex::encode(encoded_value), "020202020202020202020202020202020202020202020202020202020202020201");
+	}
+
+	#[test]
+	fn encoding_splice_ack() {
+		let secp_ctx = Secp256k1::new();
+		let (_, pubkey_1,) = get_keys_from!("0101010101010101010101010101010101010101010101010101010101010101", secp_ctx);
+		let splice = msgs::SpliceAck {
+			chain_hash: ChainHash::from_hex("6fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d6190000000000").unwrap(),
+			channel_id: ChannelId::from_bytes([2; 32]),
+			relative_satoshis: 123456,
+			funding_pubkey: pubkey_1,
+		};
+		let encoded_value = splice.encode();
+		assert_eq!(hex::encode(encoded_value), "02020202020202020202020202020202020202020202020202020202020202026fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d6190000000000000000000001e240031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f");
+	}
+
+	#[test]
+	fn encoding_splice_locked() {
+		let splice = msgs::SpliceLocked {
+			channel_id: ChannelId::from_bytes([2; 32]),
+		};
+		let encoded_value = splice.encode();
+		assert_eq!(hex::encode(encoded_value), "0202020202020202020202020202020202020202020202020202020202020202");
 	}
 
 	#[test]

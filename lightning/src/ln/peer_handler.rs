@@ -231,6 +231,18 @@ impl ChannelMessageHandler for ErroringMessageHandler {
 	fn handle_closing_signed(&self, their_node_id: &PublicKey, msg: &msgs::ClosingSigned) {
 		ErroringMessageHandler::push_error(self, their_node_id, msg.channel_id);
 	}
+	fn handle_stfu(&self, their_node_id: &PublicKey, msg: &msgs::Stfu) {
+		ErroringMessageHandler::push_error(&self, their_node_id, msg.channel_id);
+	}
+	fn handle_splice(&self, their_node_id: &PublicKey, msg: &msgs::Splice) {
+		ErroringMessageHandler::push_error(&self, their_node_id, msg.channel_id);
+	}
+	fn handle_splice_ack(&self, their_node_id: &PublicKey, msg: &msgs::SpliceAck) {
+		ErroringMessageHandler::push_error(&self, their_node_id, msg.channel_id);
+	}
+	fn handle_splice_locked(&self, their_node_id: &PublicKey, msg: &msgs::SpliceLocked) {
+		ErroringMessageHandler::push_error(&self, their_node_id, msg.channel_id);
+	}
 	fn handle_update_add_htlc(&self, their_node_id: &PublicKey, msg: &msgs::UpdateAddHTLC) {
 		ErroringMessageHandler::push_error(self, their_node_id, msg.channel_id);
 	}
@@ -1652,6 +1664,22 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 				self.message_handler.chan_handler.handle_channel_ready(&their_node_id, &msg);
 			},
 
+			// Quiescence messages:
+			wire::Message::Stfu(msg) => {
+				self.message_handler.chan_handler.handle_stfu(&their_node_id, &msg);
+			}
+
+			// Splicing messages:
+			wire::Message::Splice(msg) => {
+				self.message_handler.chan_handler.handle_splice(&their_node_id, &msg);
+			}
+			wire::Message::SpliceAck(msg) => {
+				self.message_handler.chan_handler.handle_splice_ack(&their_node_id, &msg);
+			}
+			wire::Message::SpliceLocked(msg) => {
+				self.message_handler.chan_handler.handle_splice_locked(&their_node_id, &msg);
+			}
+
 			// Interactive transaction construction messages:
 			wire::Message::TxAddInput(msg) => {
 				self.message_handler.chan_handler.handle_tx_add_input(&their_node_id, &msg);
@@ -1969,6 +1997,30 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 									&msg.channel_id);
 							self.enqueue_message(&mut *get_peer_for_forwarding!(node_id), msg);
 						},
+						MessageSendEvent::SendStfu { ref node_id, ref msg} => {
+							log_debug!(self.logger, "Handling SendStfu event in peer_handler for node {} for channel {}",
+									log_pubkey!(node_id),
+									&msg.channel_id);
+							self.enqueue_message(&mut *get_peer_for_forwarding!(node_id), msg);
+						}
+						MessageSendEvent::SendSplice { ref node_id, ref msg} => {
+							log_debug!(self.logger, "Handling SendSplice event in peer_handler for node {} for channel {}",
+									log_pubkey!(node_id),
+									&msg.channel_id);
+							self.enqueue_message(&mut *get_peer_for_forwarding!(node_id), msg);
+						}
+						MessageSendEvent::SendSpliceAck { ref node_id, ref msg} => {
+							log_debug!(self.logger, "Handling SendSpliceAck event in peer_handler for node {} for channel {}",
+									log_pubkey!(node_id),
+									&msg.channel_id);
+							self.enqueue_message(&mut *get_peer_for_forwarding!(node_id), msg);
+						}
+						MessageSendEvent::SendSpliceLocked { ref node_id, ref msg} => {
+							log_debug!(self.logger, "Handling SendSpliceLocked event in peer_handler for node {} for channel {}",
+									log_pubkey!(node_id),
+									&msg.channel_id);
+							self.enqueue_message(&mut *get_peer_for_forwarding!(node_id), msg);
+						}
 						MessageSendEvent::SendTxAddInput { ref node_id, ref msg } => {
 							log_debug!(self.logger, "Handling SendTxAddInput event in peer_handler for node {} for channel {}",
 									log_pubkey!(node_id),
