@@ -143,8 +143,8 @@ impl Confirm for TestConfirmable {
 		self.events.lock().unwrap().push(TestConfirmableEvent::BestBlockUpdated(block_hash, height));
 	}
 
-	fn get_relevant_txids(&self) -> Vec<(Txid, Option<BlockHash>)> {
-		self.confirmed_txs.lock().unwrap().iter().map(|(&txid, (hash, _))| (txid, Some(*hash))).collect::<Vec<_>>()
+	fn get_relevant_txids(&self) -> Vec<(Txid, u32, Option<BlockHash>)> {
+		self.confirmed_txs.lock().unwrap().iter().map(|(&txid, (hash, height))| (txid, *height, Some(*hash))).collect::<Vec<_>>()
 	}
 }
 

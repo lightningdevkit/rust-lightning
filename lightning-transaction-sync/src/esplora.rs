@@ -316,11 +316,11 @@ where
 		let relevant_txids = confirmables
 			.iter()
 			.flat_map(|c| c.get_relevant_txids())
-			.collect::<HashSet<(Txid, Option<BlockHash>)>>();
+			.collect::<HashSet<(Txid, u32, Option<BlockHash>)>>();
 
 		let mut unconfirmed_txs = Vec::new();
 
-		for (txid, block_hash_opt) in relevant_txids {
+		for (txid, _conf_height, block_hash_opt) in relevant_txids {
 			if let Some(block_hash) = block_hash_opt {
 				let block_status = maybe_await!(self.client.get_block_status(&block_hash))?;
 				if block_status.in_best_chain {
