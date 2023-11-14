@@ -816,6 +816,19 @@ pub(super) struct ChannelContext<SP: Deref> where SP::Target: SignerProvider {
 	#[cfg(not(test))]
 	closing_fee_limits: Option<(u64, u64)>,
 
+	/// If we remove an HTLC (or fee update), commit, and receive our counterparty's
+	/// `revoke_and_ack`, we remove all knowledge of said HTLC (or fee update). However, the latest
+	/// local commitment transaction that we can broadcast still contains the HTLC (or old fee)
+	/// until we receive a further `commitment_signed`. Thus we are not eligible for initiating the
+	/// `closing_signed` negotiation if we're expecting a counterparty `commitment_signed`.
+	///
+	/// To ensure we don't send a `closing_signed` too early, we track this state here, waiting
+	/// until we see a `commitment_signed` before doing so.
+	///
+	/// We don't bother to persist this - we anticipate this state won't last longer than a few
+	/// milliseconds, so any accidental force-closes here should be exceedingly rare.
+	expecting_peer_commitment_signed: bool,
+
 	/// The hash of the block in which the funding transaction was included.
 	funding_tx_confirmed_in: Option<BlockHash>,
 	funding_tx_confirmation_height: u32,
@@ -3249,6 +3262,7 @@ impl<SP: Deref> Channel<SP> where
 		};
 
 		self.context.cur_holder_commitment_transaction_number -= 1;
+		self.context.expecting_peer_commitment_signed = false;
 		// Note that if we need_commitment & !AwaitingRemoteRevoke we'll call
 		// build_commitment_no_status_check() next which will reset this to RAAFirst.
 		self.context.resend_order = RAACommitmentOrder::CommitmentFirst;
@@ -3514,6 +3528,7 @@ impl<SP: Deref> Channel<SP> where
 			// Take references explicitly so that we can hold multiple references to self.context.
 			let pending_inbound_htlcs: &mut Vec<_> = &mut self.context.pending_inbound_htlcs;
 			let pending_outbound_htlcs: &mut Vec<_> = &mut self.context.pending_outbound_htlcs;
+			let expecting_peer_commitment_signed = &mut self.context.expecting_peer_commitment_signed;
 
 			// We really shouldnt have two passes here, but retain gives a non-mutable ref (Rust bug)
 			pending_inbound_htlcs.retain(|htlc| {
@@ -3522,6 +3537,7 @@ impl<SP: Deref> Channel<SP> where
 					if let &InboundHTLCRemovalReason::Fulfill(_) = reason {
 						value_to_self_msat_diff += htlc.amount_msat as i64;
 					}
+					*expecting_peer_commitment_signed = true;
 					false
 				} else { true }
 			});
@@ -3581,6 +3597,7 @@ impl<SP: Deref> Channel<SP> where
 				if let OutboundHTLCState::LocalAnnounced(_) = htlc.state {
 					log_trace!(logger, " ...promoting outbound LocalAnnounced {} to Committed", &htlc.payment_hash);
 					htlc.state = OutboundHTLCState::Committed;
+					*expecting_peer_commitment_signed = true;
 				}
 				if let &mut OutboundHTLCState::AwaitingRemoteRevokeToRemove(ref mut outcome) = &mut htlc.state {
 					log_trace!(logger, " ...promoting outbound AwaitingRemoteRevokeToRemove {} to AwaitingRemovedRemoteRevoke", &htlc.payment_hash);
@@ -3601,6 +3618,7 @@ impl<SP: Deref> Channel<SP> where
 					log_trace!(logger, " ...promoting outbound fee update {} to Committed", feerate);
 					self.context.feerate_per_kw = feerate;
 					self.context.pending_update_fee = None;
+					self.context.expecting_peer_commitment_signed = true;
 				},
 				FeeUpdateState::RemoteAnnounced => { debug_assert!(!self.context.is_outbound()); },
 				FeeUpdateState::AwaitingRemoteRevokeToAnnounce => {
@@ -4381,6 +4399,10 @@ impl<SP: Deref> Channel<SP> where
 		-> Result<(Option<msgs::ClosingSigned>, Option<Transaction>, Option<ShutdownResult>), ChannelError>
 		where F::Target: FeeEstimator, L::Target: Logger
 	{
+		// If we're waiting on a monitor persistence, that implies we're also waiting to send some
+		// message to our counterparty (probably a `revoke_and_ack`). In such a case, we shouldn't
+		// initiate `closing_signed` negotiation until we're clear of all pending messages. Note
+		// that closing_negotiation_ready checks this case (as well as a few others).
 		if self.context.last_sent_closing_fee.is_some() || !self.closing_negotiation_ready() {
 			return Ok((None, None, None));
 		}
@@ -4389,6 +4411,12 @@ impl<SP: Deref> Channel<SP> where
 			if let Some(msg) = &self.context.pending_counterparty_closing_signed.take() {
 				return self.closing_signed(fee_estimator, &msg);
 			}
+			return Ok((None, None, None));
+		}
+
+		// If we're waiting on a counterparty `commitment_signed` to clear some updates from our
+		// local commitment transaction, we can't yet initiate `closing_signed` negotiation.
+		if self.context.expecting_peer_commitment_signed {
 			return Ok((None, None, None));
 		}
 
@@ -6005,6 +6033,7 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 
 				last_sent_closing_fee: None,
 				pending_counterparty_closing_signed: None,
+				expecting_peer_commitment_signed: false,
 				closing_fee_limits: None,
 				target_closing_feerate_sats_per_kw: None,
 
@@ -6637,6 +6666,7 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 
 				last_sent_closing_fee: None,
 				pending_counterparty_closing_signed: None,
+				expecting_peer_commitment_signed: false,
 				closing_fee_limits: None,
 				target_closing_feerate_sats_per_kw: None,
 
@@ -7708,6 +7738,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 
 				last_sent_closing_fee: None,
 				pending_counterparty_closing_signed: None,
+				expecting_peer_commitment_signed: false,
 				closing_fee_limits: None,
 				target_closing_feerate_sats_per_kw,
 
