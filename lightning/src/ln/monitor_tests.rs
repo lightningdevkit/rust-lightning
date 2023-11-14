@@ -382,7 +382,7 @@ fn do_test_claim_value_force_close(anchors: bool, prev_commitment_tx: bool) {
 	// as claimable. A lists both its to-self balance and the (possibly-claimable) HTLCs.
 	let commitment_tx_fee = chan_feerate as u64 *
 		(chan_utils::commitment_tx_base_weight(&channel_type_features) + 2 * chan_utils::COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000;
-	let anchor_outputs_value = if anchors { 2 * chan_utils::ANCHOR_OUTPUT_VALUE_SATOSHI } else { 0 };
+	let anchor_outputs_value = if anchors { 2 * channel::ANCHOR_OUTPUT_VALUE_SATOSHI } else { 0 };
 	assert_eq!(sorted_vec(vec![Balance::ClaimableOnChannelClose {
 			amount_satoshis: 1_000_000 - 3_000 - 4_000 - 1_000 - 3 - commitment_tx_fee - anchor_outputs_value,
 		}, sent_htlc_balance.clone(), sent_htlc_timeout_balance.clone()]),
@@ -759,7 +759,7 @@ fn do_test_balances_on_local_commitment_htlcs(anchors: bool) {
 	};
 
 	let commitment_tx_fee = chan_feerate *
-		(channel::commitment_tx_base_weight(&channel_type_features) + 2 * channel::COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000;
+		(chan_utils::commitment_tx_base_weight(&channel_type_features) + 2 * chan_utils::COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000;
 	let anchor_outputs_value = if anchors { 2 * channel::ANCHOR_OUTPUT_VALUE_SATOSHI } else { 0 };
 	assert_eq!(sorted_vec(vec![Balance::ClaimableAwaitingConfirmations {
 			amount_satoshis: 1_000_000 - 10_000 - 20_000 - commitment_tx_fee - anchor_outputs_value,
@@ -1245,7 +1245,7 @@ fn do_test_revoked_counterparty_commitment_balances(anchors: bool, confirm_htlc_
 	fuzzy_assert_eq(claim_txn[3].weight(), BS_TO_SELF_CLAIM_EXP_WEIGHT);
 
 	let commitment_tx_fee = chan_feerate *
-		(channel::commitment_tx_base_weight(&channel_type_features) + 3 * channel::COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000;
+		(chan_utils::commitment_tx_base_weight(&channel_type_features) + 3 * chan_utils::COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000;
 	let anchor_outputs_value = if anchors { channel::ANCHOR_OUTPUT_VALUE_SATOSHI * 2 } else { 0 };
 	let inbound_htlc_claim_fee = chan_feerate * inbound_htlc_claim_exp_weight as u64 / 1000;
 	let outbound_htlc_claim_fee = chan_feerate * outbound_htlc_claim_exp_weight as u64 / 1000;
@@ -1505,7 +1505,7 @@ fn do_test_revoked_counterparty_htlc_tx_balances(anchors: bool) {
 	// transaction our balance tracking doesn't use the on-chain value so the
 	// `CounterpartyRevokedOutputClaimable` entry doesn't change.
 	let commitment_tx_fee = chan_feerate *
-		(channel::commitment_tx_base_weight(&channel_type_features) + 2 * channel::COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000;
+		(chan_utils::commitment_tx_base_weight(&channel_type_features) + 2 * chan_utils::COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000;
 	let anchor_outputs_value = if anchors { channel::ANCHOR_OUTPUT_VALUE_SATOSHI * 2 } else { 0 };
 	let as_balances = sorted_vec(vec![Balance::ClaimableAwaitingConfirmations {
 			// to_remote output in B's revoked commitment
@@ -1801,7 +1801,7 @@ fn do_test_revoked_counterparty_aggregated_claims(anchors: bool) {
 	let to_remote_maturity = nodes[1].best_block_info().1 + ANTI_REORG_DELAY - 1;
 
 	let commitment_tx_fee = chan_feerate *
-		(channel::commitment_tx_base_weight(&channel_type_features) + 2 * channel::COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000;
+		(chan_utils::commitment_tx_base_weight(&channel_type_features) + 2 * chan_utils::COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000;
 	let anchor_outputs_value = if anchors { channel::ANCHOR_OUTPUT_VALUE_SATOSHI * 2 } else { 0 };
 	assert_eq!(sorted_vec(vec![Balance::ClaimableAwaitingConfirmations {
 			// to_remote output in A's revoked commitment
