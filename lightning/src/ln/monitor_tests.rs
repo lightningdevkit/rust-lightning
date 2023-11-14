@@ -184,8 +184,8 @@ fn do_chanmon_claim_value_coop_close(anchors: bool) {
 	let commitment_tx_fee = chan_feerate * chan_utils::commitment_tx_base_weight(&channel_type_features) / 1000;
 	let anchor_outputs_value = if anchors { channel::ANCHOR_OUTPUT_VALUE_SATOSHI * 2 } else { 0 };
 	assert_eq!(vec![Balance::ClaimableOnChannelClose {
-			amount_satoshis: 1_000_000 - 1_000 - commitment_fee - anchor_outputs_value,
-			transaction_fee_satoshis: commitment_fee,
+			amount_satoshis: 1_000_000 - 1_000 - commitment_tx_fee - anchor_outputs_value,
+			transaction_fee_satoshis: commitment_tx_fee,
 		}],
 		nodes[0].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances());
 	assert_eq!(vec![Balance::ClaimableOnChannelClose { amount_satoshis: 1_000, transaction_fee_satoshis: 0 }],
