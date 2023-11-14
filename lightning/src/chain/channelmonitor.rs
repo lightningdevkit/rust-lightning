@@ -578,6 +578,47 @@ pub enum Balance {
 		/// The amount available to claim, in satoshis, excluding the on-chain fees which will be
 		/// required to do so.
 		amount_satoshis: u64,
+		/// The transaction fee we pay for the closing commitment transaction. This amount is not
+		/// included in the [`Balance::ClaimableOnChannelClose::amount_satoshis`] value.
+		///
+		/// Note that if this channel is inbound (and thus our counterparty pays the commitment
+		/// transaction fee) this value will be zero. For [`ChannelMonitor`]s created prior to LDK
+		/// 0.0.117, the channel is always treated as outbound (and thus this value is never zero).
+		transaction_fee_satoshis: u64,
+		/// The amount of millisatoshis which has been burned to fees from HTLCs which are outbound
+		/// from us and are related to a payment which was sent by us. This is the sum of the
+		/// millisatoshis part of all HTLCs which are otherwise represented by
+		/// [`Balance::MaybeTimeoutClaimableHTLC`] with their
+		/// [`Balance::MaybeTimeoutClaimableHTLC::outbound_payment`] flag set, as well as any dust
+		/// HTLCs which would otherwise be represented the same.
+		///
+		/// XXX: Talk about how this is included in the overall balance
+		outbound_payment_htlc_rounded_msat: u64,
+		/// The amount of millisatoshis which has been burned to fees from HTLCs which are outbound
+		/// from us and are related to a forwarded HTLC. This is the sum of the millisatoshis part
+		/// of all HTLCs which are otherwise represented by [`Balance::MaybeTimeoutClaimableHTLC`]
+		/// with their [`Balance::MaybeTimeoutClaimableHTLC::outbound_payment`] flag *not* set, as
+		/// well as any dust HTLCs which would otherwise be represented the same.
+		///
+		/// XXX: Talk about how this is included in the overall balance
+		outbound_forwarded_htlc_rounded_msat: u64,
+		/// The amount of millisatoshis which has been burned to fees from HTLCs which are inbound
+		/// to us and for which we know the preimage. This is the sum of the millisatoshis part of
+		/// all HTLCs which would be represented by [`Balance::ContentiousClaimable`] on channel
+		/// close, but who's current value is included in
+		/// [`Balance::ClaimableOnChannelClose::amount_satoshis`], as well as any dust HTLCs which
+		/// would otherwise be represented the same.
+		///
+		/// XXX: Talk about how this is included in the overall balance
+		inbound_claiming_htlc_rounded_msat: u64,
+		/// The amount of millisatoshis which has been burned to fees from HTLCs which are inbound
+		/// to us and for which we do not know the preimage. This is the sum of the millisatoshis
+		/// part of all HTLCs which would be represented by [`Balance::MaybePreimageClaimableHTLC`]
+		/// on channel close, as well as any dust HTLCs which would otherwise be represented the
+		/// same.
+		///
+		/// XXX: Talk about how this is included in the overall balance
+		inbound_htlc_rounded_msat: u64,
 	},
 	/// The channel has been closed, and the given balance is ours but awaiting confirmations until
 	/// we consider it spendable.
@@ -620,6 +661,10 @@ pub enum Balance {
 		claimable_height: u32,
 		/// The payment hash whose preimage our counterparty needs to claim this HTLC.
 		payment_hash: PaymentHash,
+		/// Whether this HTLC represents a payment which was sent outbound from us. Otherwise it
+		/// represents an HTLC which was forwarded (and should, thus, have a corresponding inbound
+		/// edge on another channel).
+		outbound_payment: bool,
 	},
 	/// HTLCs which we received from our counterparty which are claimable with a preimage which we
 	/// do not currently have. This will only be claimable if we receive the preimage from the node
@@ -662,9 +707,9 @@ impl Balance {
 			Balance::ContentiousClaimable { amount_satoshis, .. }|
 			Balance::CounterpartyRevokedOutputClaimable { amount_satoshis, .. }
 				=> *amount_satoshis,
-			Balance::MaybeTimeoutClaimableHTLC { .. }|
-			Balance::MaybePreimageClaimableHTLC { .. }
-				=> 0,
+			Balance::MaybeTimeoutClaimableHTLC { amount_satoshis, outbound_payment, .. }
+				=> if *outbound_payment { 0 } else { *amount_satoshis },
+			Balance::MaybePreimageClaimableHTLC { .. } => 0,
 		}
 	}
 }
@@ -856,6 +901,10 @@ pub(crate) struct ChannelMonitorImpl<Signer: WriteableEcdsaChannelSigner> {
 	// updates. This prevents any further changes in the offchain state no matter the order
 	// of block connection between ChannelMonitors and the ChannelManager.
 	funding_spend_seen: bool,
+
+	/// True if the commitment transaction fee is paid by us.
+	/// Added in 0.0.117.
+	holder_pays_commitment_tx_fee: Option<bool>,
 
 	/// Set to `Some` of the confirmed transaction spending the funding input of the channel after
 	/// reaching `ANTI_REORG_DELAY` confirmations.
@@ -1082,6 +1131,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Writeable for ChannelMonitorImpl<Signe
 			(13, self.spendable_txids_confirmed, required_vec),
 			(15, self.counterparty_fulfilled_htlcs, required),
 			(17, self.initial_counterparty_commitment_info, option),
+			(19, self.holder_pays_commitment_tx_fee, option),
 		});
 
 		Ok(())
@@ -1134,7 +1184,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 
 	pub(crate) fn new(secp_ctx: Secp256k1<secp256k1::All>, keys: Signer, shutdown_script: Option<Script>,
 	                  on_counterparty_tx_csv: u16, destination_script: &Script, funding_info: (OutPoint, Script),
-	                  channel_parameters: &ChannelTransactionParameters,
+	                  channel_parameters: &ChannelTransactionParameters, holder_pays_commitment_tx_fee: bool,
 	                  funding_redeemscript: Script, channel_value_satoshis: u64,
 	                  commitment_transaction_number_obscure_factor: u64,
 	                  initial_holder_commitment_tx: HolderCommitmentTransaction,
@@ -1224,6 +1274,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 
 			onchain_tx_handler,
 
+			holder_pays_commitment_tx_fee: Some(holder_pays_commitment_tx_fee),
 			lockdown_from_offchain: false,
 			holder_tx_signed: false,
 			funding_spend_seen: false,
@@ -1719,9 +1770,10 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 	/// Helper for get_claimable_balances which does the work for an individual HTLC, generating up
 	/// to one `Balance` for the HTLC.
-	fn get_htlc_balance(&self, htlc: &HTLCOutputInCommitment, holder_commitment: bool,
-		counterparty_revoked_commitment: bool, confirmed_txid: Option<Txid>)
-	-> Option<Balance> {
+	fn get_htlc_balance(&self, htlc: &HTLCOutputInCommitment, source: Option<&HTLCSource>,
+		holder_commitment: bool, counterparty_revoked_commitment: bool,
+		confirmed_txid: Option<Txid>
+	) -> Option<Balance> {
 		let htlc_commitment_tx_output_idx =
 			if let Some(v) = htlc.transaction_output_index { v } else { return None; };
 
@@ -1858,10 +1910,19 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 					confirmation_height: conf_thresh,
 				});
 			} else {
+				let outbound_payment = match source {
+					None => {
+						debug_assert!(false, "Outbound HTLCs should have a source");
+						true
+					},
+					Some(&HTLCSource::PreviousHopData(_)) => false,
+					Some(&HTLCSource::OutboundRoute { .. }) => true,
+				};
 				return Some(Balance::MaybeTimeoutClaimableHTLC {
 					amount_satoshis: htlc.amount_msat / 1000,
 					claimable_height: htlc.cltv_expiry,
 					payment_hash: htlc.payment_hash,
+					outbound_payment,
 				});
 			}
 		} else if let Some(payment_preimage) = self.payment_preimages.get(&htlc.payment_hash) {
@@ -1934,10 +1995,12 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 
 		macro_rules! walk_htlcs {
 			($holder_commitment: expr, $counterparty_revoked_commitment: expr, $htlc_iter: expr) => {
-				for htlc in $htlc_iter {
+				for (htlc, source) in $htlc_iter {
 					if htlc.transaction_output_index.is_some() {
 
-						if let Some(bal) = us.get_htlc_balance(htlc, $holder_commitment, $counterparty_revoked_commitment, confirmed_txid) {
+						if let Some(bal) = us.get_htlc_balance(
+							htlc, source, $holder_commitment, $counterparty_revoked_commitment, confirmed_txid
+						) {
 							res.push(bal);
 						}
 					}
@@ -1968,9 +2031,9 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 					}
 				}
 				if Some(txid) == us.current_counterparty_commitment_txid || Some(txid) == us.prev_counterparty_commitment_txid {
-					walk_htlcs!(false, false, counterparty_tx_htlcs.iter().map(|(a, _)| a));
+					walk_htlcs!(false, false, counterparty_tx_htlcs.iter().map(|(a, b)| (a, b.as_ref().map(|b| &**b))));
 				} else {
-					walk_htlcs!(false, true, counterparty_tx_htlcs.iter().map(|(a, _)| a));
+					walk_htlcs!(false, true, counterparty_tx_htlcs.iter().map(|(a, b)| (a, b.as_ref().map(|b| &**b))));
 					// The counterparty broadcasted a revoked state!
 					// Look for any StaticOutputs first, generating claimable balances for those.
 					// If any match the confirmed counterparty revoked to_self output, skip
@@ -2010,7 +2073,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 				}
 				found_commitment_tx = true;
 			} else if txid == us.current_holder_commitment_tx.txid {
-				walk_htlcs!(true, false, us.current_holder_commitment_tx.htlc_outputs.iter().map(|(a, _, _)| a));
+				walk_htlcs!(true, false, us.current_holder_commitment_tx.htlc_outputs.iter().map(|(a, _, c)| (a, c.as_ref())));
 				if let Some(conf_thresh) = pending_commitment_tx_conf_thresh {
 					res.push(Balance::ClaimableAwaitingConfirmations {
 						amount_satoshis: us.current_holder_commitment_tx.to_self_value_sat,
@@ -2020,7 +2083,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 				found_commitment_tx = true;
 			} else if let Some(prev_commitment) = &us.prev_holder_signed_commitment_tx {
 				if txid == prev_commitment.txid {
-					walk_htlcs!(true, false, prev_commitment.htlc_outputs.iter().map(|(a, _, _)| a));
+					walk_htlcs!(true, false, prev_commitment.htlc_outputs.iter().map(|(a, _, c)| (a, c.as_ref())));
 					if let Some(conf_thresh) = pending_commitment_tx_conf_thresh {
 						res.push(Balance::ClaimableAwaitingConfirmations {
 							amount_satoshis: prev_commitment.to_self_value_sat,
@@ -2042,29 +2105,78 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 				}
 			}
 		} else {
+			let mut expected_tx_value_sats = if us.holder_pays_commitment_tx_fee.unwrap_or(true) {
+					us.channel_value_satoshis
+				} else { 0 };
 			let mut claimable_inbound_htlc_value_sat = 0;
-			for (htlc, _, _) in us.current_holder_commitment_tx.htlc_outputs.iter() {
-				if htlc.transaction_output_index.is_none() { continue; }
+			let mut claimable_inbound_htlc_value_msat = 0;
+			let mut nondust_htlc_count = 0;
+			let mut outbound_payment_htlc_rounded_msat = 0;
+			let mut outbound_forwarded_htlc_rounded_msat = 0;
+			let mut inbound_claiming_htlc_rounded_msat = 0;
+			let mut inbound_htlc_rounded_msat = 0;
+			for (htlc, _, source) in us.current_holder_commitment_tx.htlc_outputs.iter() {
+				if htlc.transaction_output_index.is_some() {
+					nondust_htlc_count += 1;
+				}
+				let rounded_value_msat = if htlc.transaction_output_index.is_none() {
+					htlc.amount_msat
+				} else { htlc.amount_msat % 1000 };
 				if htlc.offered {
-					res.push(Balance::MaybeTimeoutClaimableHTLC {
-						amount_satoshis: htlc.amount_msat / 1000,
-						claimable_height: htlc.cltv_expiry,
-						payment_hash: htlc.payment_hash,
-					});
+					let outbound_payment = match source {
+						None => {
+							debug_assert!(false, "Outbound HTLCs should have a source");
+							true
+						},
+						Some(HTLCSource::PreviousHopData(_)) => false,
+						Some(HTLCSource::OutboundRoute { .. }) => true,
+					};
+					if outbound_payment {
+						outbound_payment_htlc_rounded_msat += rounded_value_msat;
+					} else {
+						outbound_forwarded_htlc_rounded_msat += rounded_value_msat;
+					}
+					expectex_tx_value_sats -= (htlc.amount_msat + 999) / 1000;
+					if htlc.transaction_output_index.is_some() {
+						res.push(Balance::MaybeTimeoutClaimableHTLC {
+							amount_satoshis: htlc.amount_msat / 1000,
+							claimable_height: htlc.cltv_expiry,
+							payment_hash: htlc.payment_hash,
+							outbound_payment,
+						});
+					}
 				} else if us.payment_preimages.get(&htlc.payment_hash).is_some() {
-					claimable_inbound_htlc_value_sat += htlc.amount_msat / 1000;
+					inbound_claiming_htlc_rounded_msat += rounded_value_msat;
+					if htlc.transaction_output_index.is_some() {
+						claimable_inbound_htlc_value_sat += htlc.amount_msat / 1000;
+					}
 				} else {
-					// As long as the HTLC is still in our latest commitment state, treat
-					// it as potentially claimable, even if it has long-since expired.
-					res.push(Balance::MaybePreimageClaimableHTLC {
-						amount_satoshis: htlc.amount_msat / 1000,
-						expiry_height: htlc.cltv_expiry,
-						payment_hash: htlc.payment_hash,
-					});
+					inbound_htlc_rounded_msat += rounded_value_msat;
+					if htlc.transaction_output_index.is_some() {
+						// As long as the HTLC is still in our latest commitment state, treat
+						// it as potentially claimable, even if it has long-since expired.
+						res.push(Balance::MaybePreimageClaimableHTLC {
+							amount_satoshis: htlc.amount_msat / 1000,
+							expiry_height: htlc.cltv_expiry,
+							payment_hash: htlc.payment_hash,
+						});
+					}
 				}
 			}
+			let tx_fee_satoshis = chan_utils::commit_tx_fee_sat(
+				us.current_holder_commitment_tx.feerate_per_kw, nondust_htlc_count,
+				us.onchain_tx_handler.channel_type_features());
+			//XXX: Debug assert that we're able to rebuild the amount_satoshis amount from other
+			//information we provide here (and provide such other information)
 			res.push(Balance::ClaimableOnChannelClose {
 				amount_satoshis: us.current_holder_commitment_tx.to_self_value_sat + claimable_inbound_htlc_value_sat,
+				transaction_fee_satoshis: if us.holder_pays_commitment_tx_fee.unwrap_or(true) {
+					tx_fee_satoshis
+				} else { 0 },
+				outbound_payment_htlc_rounded_msat,
+				outbound_forwarded_htlc_rounded_msat,
+				inbound_claiming_htlc_rounded_msat,
+				inbound_htlc_rounded_msat,
 			});
 		}
 
@@ -4396,6 +4508,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 		let mut spendable_txids_confirmed = Some(Vec::new());
 		let mut counterparty_fulfilled_htlcs = Some(HashMap::new());
 		let mut initial_counterparty_commitment_info = None;
+		let mut holder_pays_commitment_tx_fee = None;
 		read_tlv_fields!(reader, {
 			(1, funding_spend_confirmed, option),
 			(3, htlcs_resolved_on_chain, optional_vec),
@@ -4406,6 +4519,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 			(13, spendable_txids_confirmed, optional_vec),
 			(15, counterparty_fulfilled_htlcs, option),
 			(17, initial_counterparty_commitment_info, option),
+			(19, holder_pays_commitment_tx_fee, option),
 		});
 
 		// Monitors for anchor outputs channels opened in v0.0.116 suffered from a bug in which the
@@ -4464,6 +4578,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 
 			lockdown_from_offchain,
 			holder_tx_signed,
+			holder_pays_commitment_tx_fee,
 			funding_spend_seen: funding_spend_seen.unwrap(),
 			funding_spend_confirmed,
 			confirmed_commitment_tx_counterparty_output,
@@ -4695,7 +4810,7 @@ mod tests {
 		let monitor = ChannelMonitor::new(Secp256k1::new(), keys,
 			Some(ShutdownScript::new_p2wpkh_from_pubkey(shutdown_pubkey).into_inner()), 0, &Script::new(),
 			(OutPoint { txid: Txid::from_slice(&[43; 32]).unwrap(), index: 0 }, Script::new()),
-			&channel_parameters, Script::new(), 46, 0, HolderCommitmentTransaction::dummy(&mut Vec::new()),
+			&channel_parameters, true, Script::new(), 46, 0, HolderCommitmentTransaction::dummy(&mut Vec::new()),
 			best_block, dummy_key);
 
 		let mut htlcs = preimages_slice_to_htlcs!(preimages[0..10]);

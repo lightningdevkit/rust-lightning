@@ -16,6 +16,7 @@ use crate::chain::chaininterface::{LowerBoundedFeeEstimator, compute_feerate_sat
 use crate::events::bump_transaction::{BumpTransactionEvent, WalletSource};
 use crate::events::{Event, MessageSendEvent, MessageSendEventsProvider, ClosureReason, HTLCDestination};
 use crate::ln::channel;
+use crate::ln::chan_utils;
 use crate::ln::channelmanager::{BREAKDOWN_TIMEOUT, PaymentId, RecipientOnionFields};
 use crate::ln::msgs::ChannelMessageHandler;
 use crate::util::config::UserConfig;
@@ -180,13 +181,24 @@ fn do_chanmon_claim_value_coop_close(anchors: bool) {
 	let chan_feerate = get_feerate!(nodes[0], nodes[1], chan_id) as u64;
 	let channel_type_features = get_channel_type_features!(nodes[0], nodes[1], chan_id);
 
-	let commitment_tx_fee = chan_feerate * channel::commitment_tx_base_weight(&channel_type_features) / 1000;
+	let commitment_tx_fee = chan_feerate * chan_utils::commitment_tx_base_weight(&channel_type_features) / 1000;
 	let anchor_outputs_value = if anchors { channel::ANCHOR_OUTPUT_VALUE_SATOSHI * 2 } else { 0 };
 	assert_eq!(vec![Balance::ClaimableOnChannelClose {
-			amount_satoshis: 1_000_000 - 1_000 - commitment_tx_fee - anchor_outputs_value
+			amount_satoshis: 1_000_000 - 1_000 - commitment_tx_fee - anchor_outputs_value,
+			transaction_fee_satoshis: commitment_tx_fee,
+			outbound_payment_htlc_rounded_msat: 0,
+			outbound_forwarded_htlc_rounded_msat: 0,
+			inbound_claiming_htlc_rounded_msat: 0,
+			inbound_htlc_rounded_msat: 0,
 		}],
 		nodes[0].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances());
-	assert_eq!(vec![Balance::ClaimableOnChannelClose { amount_satoshis: 1_000, }],
+	assert_eq!(vec![Balance::ClaimableOnChannelClose {
+			amount_satoshis: 1_000, transaction_fee_satoshis: 0,
+			outbound_payment_htlc_rounded_msat: 0,
+			outbound_forwarded_htlc_rounded_msat: 0,
+			inbound_claiming_htlc_rounded_msat: 0,
+			inbound_htlc_rounded_msat: 0,
+		}],
 		nodes[1].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances());
 
 	nodes[0].node.close_channel(&chan_id, &nodes[1].node.get_our_node_id()).unwrap();
@@ -346,11 +358,13 @@ fn do_test_claim_value_force_close(anchors: bool, prev_commitment_tx: bool) {
 		amount_satoshis: 3_000,
 		claimable_height: htlc_cltv_timeout,
 		payment_hash,
+		outbound_payment: true,
 	};
 	let sent_htlc_timeout_balance = Balance::MaybeTimeoutClaimableHTLC {
 		amount_satoshis: 4_000,
 		claimable_height: htlc_cltv_timeout,
 		payment_hash: timeout_payment_hash,
+		outbound_payment: true,
 	};
 	let received_htlc_balance = Balance::MaybePreimageClaimableHTLC {
 		amount_satoshis: 3_000,
@@ -378,14 +392,24 @@ fn do_test_claim_value_force_close(anchors: bool, prev_commitment_tx: bool) {
 	// Before B receives the payment preimage, it only suggests the push_msat value of 1_000 sats
 	// as claimable. A lists both its to-self balance and the (possibly-claimable) HTLCs.
 	let commitment_tx_fee = chan_feerate as u64 *
-		(channel::commitment_tx_base_weight(&channel_type_features) + 2 * channel::COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000;
+		(chan_utils::commitment_tx_base_weight(&channel_type_features) + 2 * chan_utils::COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000;
 	let anchor_outputs_value = if anchors { 2 * channel::ANCHOR_OUTPUT_VALUE_SATOSHI } else { 0 };
 	assert_eq!(sorted_vec(vec![Balance::ClaimableOnChannelClose {
 			amount_satoshis: 1_000_000 - 3_000 - 4_000 - 1_000 - 3 - commitment_tx_fee - anchor_outputs_value,
+			transaction_fee_satoshis: commitment_tx_fee,
+			outbound_payment_htlc_rounded_msat: 3000,
+			outbound_forwarded_htlc_rounded_msat: 0,
+			inbound_claiming_htlc_rounded_msat: 0,
+			inbound_htlc_rounded_msat: 0,
 		}, sent_htlc_balance.clone(), sent_htlc_timeout_balance.clone()]),
 		sorted_vec(nodes[0].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances()));
 	assert_eq!(sorted_vec(vec![Balance::ClaimableOnChannelClose {
 			amount_satoshis: 1_000,
+			transaction_fee_satoshis: 0,
+			outbound_payment_htlc_rounded_msat: 0,
+			outbound_forwarded_htlc_rounded_msat: 0,
+			inbound_claiming_htlc_rounded_msat: 0,
+			inbound_htlc_rounded_msat: 3000,
 		}, received_htlc_balance.clone(), received_htlc_timeout_balance.clone()]),
 		sorted_vec(nodes[1].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances()));
 
@@ -422,8 +446,8 @@ fn do_test_claim_value_force_close(anchors: bool, prev_commitment_tx: bool) {
 	// Once B has received the payment preimage, it includes the value of the HTLC in its
 	// "claimable if you were to close the channel" balance.
 	let commitment_tx_fee = chan_feerate as u64 *
-		(channel::commitment_tx_base_weight(&channel_type_features) +
-		if prev_commitment_tx { 1 } else { 2 } * channel::COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000;
+		(chan_utils::commitment_tx_base_weight(&channel_type_features) +
+		if prev_commitment_tx { 1 } else { 2 } * chan_utils::COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000;
 	let mut a_expected_balances = vec![Balance::ClaimableOnChannelClose {
 			amount_satoshis: 1_000_000 - // Channel funding value in satoshis
 				4_000 - // The to-be-failed HTLC value in satoshis
@@ -432,6 +456,11 @@ fn do_test_claim_value_force_close(anchors: bool, prev_commitment_tx: bool) {
 				3 - // The dust HTLC value in satoshis
 				commitment_tx_fee - // The commitment transaction fee with two HTLC outputs
 				anchor_outputs_value, // The anchor outputs value in satoshis
+			transaction_fee_satoshis: commitment_tx_fee,
+			outbound_payment_htlc_rounded_msat: 3000,
+			outbound_forwarded_htlc_rounded_msat: 0,
+			inbound_claiming_htlc_rounded_msat: 0,
+			inbound_htlc_rounded_msat: 0,
 		}, sent_htlc_timeout_balance.clone()];
 	if !prev_commitment_tx {
 		a_expected_balances.push(sent_htlc_balance.clone());
@@ -440,6 +469,11 @@ fn do_test_claim_value_force_close(anchors: bool, prev_commitment_tx: bool) {
 		sorted_vec(nodes[0].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances()));
 	assert_eq!(vec![Balance::ClaimableOnChannelClose {
 			amount_satoshis: 1_000 + 3_000 + 4_000,
+			transaction_fee_satoshis: 0,
+			outbound_payment_htlc_rounded_msat: 0,
+			outbound_forwarded_htlc_rounded_msat: 0,
+			inbound_claiming_htlc_rounded_msat: 3000,
+			inbound_htlc_rounded_msat: 0,
 		}],
 		nodes[1].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances());
 
@@ -501,7 +535,7 @@ fn do_test_claim_value_force_close(anchors: bool, prev_commitment_tx: bool) {
 	assert!(nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events().is_empty());
 	assert!(nodes[1].chain_monitor.chain_monitor.get_and_clear_pending_events().is_empty());
 	let commitment_tx_fee = chan_feerate as u64 *
-		(channel::commitment_tx_base_weight(&channel_type_features) + 2 * channel::COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000;
+		(chan_utils::commitment_tx_base_weight(&channel_type_features) + 2 * chan_utils::COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000;
 	assert_eq!(sorted_vec(vec![Balance::ClaimableAwaitingConfirmations {
 			amount_satoshis: 1_000_000 - 3_000 - 4_000 - 1_000 - 3 - commitment_tx_fee - anchor_outputs_value,
 			confirmation_height: nodes[0].best_block_info().1 + ANTI_REORG_DELAY - 1,
@@ -746,15 +780,17 @@ fn do_test_balances_on_local_commitment_htlcs(anchors: bool) {
 		amount_satoshis: 10_000,
 		claimable_height: htlc_cltv_timeout,
 		payment_hash,
+		outbound_payment: true,
 	};
 	let htlc_balance_unknown_preimage = Balance::MaybeTimeoutClaimableHTLC {
 		amount_satoshis: 20_000,
 		claimable_height: htlc_cltv_timeout,
 		payment_hash: payment_hash_2,
+		outbound_payment: true,
 	};
 
 	let commitment_tx_fee = chan_feerate *
-		(channel::commitment_tx_base_weight(&channel_type_features) + 2 * channel::COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000;
+		(chan_utils::commitment_tx_base_weight(&channel_type_features) + 2 * chan_utils::COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000;
 	let anchor_outputs_value = if anchors { 2 * channel::ANCHOR_OUTPUT_VALUE_SATOSHI } else { 0 };
 	assert_eq!(sorted_vec(vec![Balance::ClaimableAwaitingConfirmations {
 			amount_satoshis: 1_000_000 - 10_000 - 20_000 - commitment_tx_fee - anchor_outputs_value,
@@ -893,6 +929,7 @@ fn test_no_preimage_inbound_htlc_balances() {
 		amount_satoshis: 10_000,
 		claimable_height: htlc_cltv_timeout,
 		payment_hash: to_b_failed_payment_hash,
+		outbound_payment: true,
 	};
 	let a_received_htlc_balance = Balance::MaybePreimageClaimableHTLC {
 		amount_satoshis: 20_000,
@@ -908,20 +945,31 @@ fn test_no_preimage_inbound_htlc_balances() {
 		amount_satoshis: 20_000,
 		claimable_height: htlc_cltv_timeout,
 		payment_hash: to_a_failed_payment_hash,
+		outbound_payment: true,
 	};
 
 	// Both A and B will have an HTLC that's claimable on timeout and one that's claimable if they
 	// receive the preimage. These will remain the same through the channel closure and until the
 	// HTLC output is spent.
-
+	let commitment_tx_fee = chan_feerate *
+		(chan_utils::commitment_tx_base_weight(&channel_type_features) + 2 * chan_utils::COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000;
 	assert_eq!(sorted_vec(vec![Balance::ClaimableOnChannelClose {
-			amount_satoshis: 1_000_000 - 500_000 - 10_000 - chan_feerate *
-				(channel::commitment_tx_base_weight(&channel_type_features) + 2 * channel::COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000,
+			amount_satoshis: 1_000_000 - 500_000 - 10_000 - commitment_tx_fee,
+			transaction_fee_satoshis: commitment_tx_fee,
+			outbound_payment_htlc_rounded_msat: 0,
+			outbound_forwarded_htlc_rounded_msat: 0,
+			inbound_claiming_htlc_rounded_msat: 0,
+			inbound_htlc_rounded_msat: 0,
 		}, a_received_htlc_balance.clone(), a_sent_htlc_balance.clone()]),
 		sorted_vec(nodes[0].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances()));
 
 	assert_eq!(sorted_vec(vec![Balance::ClaimableOnChannelClose {
 			amount_satoshis: 500_000 - 20_000,
+			transaction_fee_satoshis: 0,
+			outbound_payment_htlc_rounded_msat: 0,
+			outbound_forwarded_htlc_rounded_msat: 0,
+			inbound_claiming_htlc_rounded_msat: 0,
+			inbound_htlc_rounded_msat: 0,
 		}, b_received_htlc_balance.clone(), b_sent_htlc_balance.clone()]),
 		sorted_vec(nodes[1].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances()));
 
@@ -936,7 +984,7 @@ fn test_no_preimage_inbound_htlc_balances() {
 	let node_a_commitment_claimable = nodes[0].best_block_info().1 + BREAKDOWN_TIMEOUT as u32;
 	let as_pre_spend_claims = sorted_vec(vec![Balance::ClaimableAwaitingConfirmations {
 			amount_satoshis: 1_000_000 - 500_000 - 10_000 - chan_feerate *
-				(channel::commitment_tx_base_weight(&channel_type_features) + 2 * channel::COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000,
+				(chan_utils::commitment_tx_base_weight(&channel_type_features) + 2 * chan_utils::COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000,
 			confirmation_height: node_a_commitment_claimable,
 		}, a_received_htlc_balance.clone(), a_sent_htlc_balance.clone()]);
 
@@ -1008,7 +1056,7 @@ fn test_no_preimage_inbound_htlc_balances() {
 	let as_timeout_claimable_height = nodes[0].best_block_info().1 + (BREAKDOWN_TIMEOUT as u32) - 1;
 	assert_eq!(sorted_vec(vec![Balance::ClaimableAwaitingConfirmations {
 			amount_satoshis: 1_000_000 - 500_000 - 10_000 - chan_feerate *
-				(channel::commitment_tx_base_weight(&channel_type_features) + 2 * channel::COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000,
+				(chan_utils::commitment_tx_base_weight(&channel_type_features) + 2 * chan_utils::COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000,
 			confirmation_height: node_a_commitment_claimable,
 		}, a_received_htlc_balance.clone(), Balance::ClaimableAwaitingConfirmations {
 			amount_satoshis: 10_000,
@@ -1019,7 +1067,7 @@ fn test_no_preimage_inbound_htlc_balances() {
 	mine_transaction(&nodes[0], &bs_htlc_timeout_claim[0]);
 	assert_eq!(sorted_vec(vec![Balance::ClaimableAwaitingConfirmations {
 			amount_satoshis: 1_000_000 - 500_000 - 10_000 - chan_feerate *
-				(channel::commitment_tx_base_weight(&channel_type_features) + 2 * channel::COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000,
+				(chan_utils::commitment_tx_base_weight(&channel_type_features) + 2 * chan_utils::COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000,
 			confirmation_height: node_a_commitment_claimable,
 		}, a_received_htlc_balance.clone(), Balance::ClaimableAwaitingConfirmations {
 			amount_satoshis: 10_000,
@@ -1035,7 +1083,7 @@ fn test_no_preimage_inbound_htlc_balances() {
 	connect_blocks(&nodes[0], 1);
 	assert_eq!(sorted_vec(vec![Balance::ClaimableAwaitingConfirmations {
 			amount_satoshis: 1_000_000 - 500_000 - 10_000 - chan_feerate *
-				(channel::commitment_tx_base_weight(&channel_type_features) + 2 * channel::COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000,
+				(chan_utils::commitment_tx_base_weight(&channel_type_features) + 2 * chan_utils::COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000,
 			confirmation_height: node_a_commitment_claimable,
 		}, Balance::ClaimableAwaitingConfirmations {
 			amount_satoshis: 10_000,
@@ -1200,18 +1248,26 @@ fn do_test_revoked_counterparty_commitment_balances(anchors: bool, confirm_htlc_
 	// lists the two on-chain timeout-able HTLCs as claimable balances.
 	assert_eq!(sorted_vec(vec![Balance::ClaimableOnChannelClose {
 			amount_satoshis: 100_000 - 5_000 - 4_000 - 3 - 2_000 + 3_000,
+			transaction_fee_satoshis: 0,
+			outbound_payment_htlc_rounded_msat: 3000,
+			outbound_forwarded_htlc_rounded_msat: 0,
+			inbound_claiming_htlc_rounded_msat: 0,
+			inbound_htlc_rounded_msat: 0,
 		}, Balance::MaybeTimeoutClaimableHTLC {
 			amount_satoshis: 2_000,
 			claimable_height: missing_htlc_cltv_timeout,
 			payment_hash: missing_htlc_payment_hash,
+			outbound_payment: true,
 		}, Balance::MaybeTimeoutClaimableHTLC {
 			amount_satoshis: 4_000,
 			claimable_height: htlc_cltv_timeout,
 			payment_hash: timeout_payment_hash,
+			outbound_payment: true,
 		}, Balance::MaybeTimeoutClaimableHTLC {
 			amount_satoshis: 5_000,
 			claimable_height: live_htlc_cltv_timeout,
 			payment_hash: live_payment_hash,
+			outbound_payment: true,
 		}]),
 		sorted_vec(nodes[1].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances()));
 
@@ -1235,7 +1291,7 @@ fn do_test_revoked_counterparty_commitment_balances(anchors: bool, confirm_htlc_
 	fuzzy_assert_eq(claim_txn[3].weight(), BS_TO_SELF_CLAIM_EXP_WEIGHT);
 
 	let commitment_tx_fee = chan_feerate *
-		(channel::commitment_tx_base_weight(&channel_type_features) + 3 * channel::COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000;
+		(chan_utils::commitment_tx_base_weight(&channel_type_features) + 3 * chan_utils::COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000;
 	let anchor_outputs_value = if anchors { channel::ANCHOR_OUTPUT_VALUE_SATOSHI * 2 } else { 0 };
 	let inbound_htlc_claim_fee = chan_feerate * inbound_htlc_claim_exp_weight as u64 / 1000;
 	let outbound_htlc_claim_fee = chan_feerate * outbound_htlc_claim_exp_weight as u64 / 1000;
@@ -1495,7 +1551,7 @@ fn do_test_revoked_counterparty_htlc_tx_balances(anchors: bool) {
 	// transaction our balance tracking doesn't use the on-chain value so the
 	// `CounterpartyRevokedOutputClaimable` entry doesn't change.
 	let commitment_tx_fee = chan_feerate *
-		(channel::commitment_tx_base_weight(&channel_type_features) + 2 * channel::COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000;
+		(chan_utils::commitment_tx_base_weight(&channel_type_features) + 2 * chan_utils::COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000;
 	let anchor_outputs_value = if anchors { channel::ANCHOR_OUTPUT_VALUE_SATOSHI * 2 } else { 0 };
 	let as_balances = sorted_vec(vec![Balance::ClaimableAwaitingConfirmations {
 			// to_remote output in B's revoked commitment
@@ -1750,14 +1806,21 @@ fn do_test_revoked_counterparty_aggregated_claims(anchors: bool) {
 
 	assert_eq!(sorted_vec(vec![Balance::ClaimableOnChannelClose {
 			amount_satoshis: 100_000 - 4_000 - 3_000,
+			transaction_fee_satoshis: 0,
+			outbound_payment_htlc_rounded_msat: 0,
+			outbound_forwarded_htlc_rounded_msat: 0,
+			inbound_claiming_htlc_rounded_msat: 0,
+			inbound_htlc_rounded_msat: 0,
 		}, Balance::MaybeTimeoutClaimableHTLC {
 			amount_satoshis: 4_000,
 			claimable_height: htlc_cltv_timeout,
 			payment_hash: revoked_payment_hash,
+			outbound_payment: true,
 		}, Balance::MaybeTimeoutClaimableHTLC {
 			amount_satoshis: 3_000,
 			claimable_height: htlc_cltv_timeout,
 			payment_hash: claimed_payment_hash,
+			outbound_payment: true,
 		}]),
 		sorted_vec(nodes[1].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances()));
 
@@ -1789,7 +1852,7 @@ fn do_test_revoked_counterparty_aggregated_claims(anchors: bool) {
 	let to_remote_maturity = nodes[1].best_block_info().1 + ANTI_REORG_DELAY - 1;
 
 	let commitment_tx_fee = chan_feerate *
-		(channel::commitment_tx_base_weight(&channel_type_features) + 2 * channel::COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000;
+		(chan_utils::commitment_tx_base_weight(&channel_type_features) + 2 * chan_utils::COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000;
 	let anchor_outputs_value = if anchors { channel::ANCHOR_OUTPUT_VALUE_SATOSHI * 2 } else { 0 };
 	assert_eq!(sorted_vec(vec![Balance::ClaimableAwaitingConfirmations {
 			// to_remote output in A's revoked commitment
