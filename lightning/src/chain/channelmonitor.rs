@@ -585,6 +585,32 @@ pub enum Balance {
 		/// transaction fee) this value will be zero. For [`ChannelMonitor`]s created prior to LDK
 		/// 0.0.117, the channel is always treated as outbound (and thus this value is never zero).
 		transaction_fee_satoshis: u64,
+		/// The amount of millisatoshis which has been burned to fees from HTLCs which are outbound
+		/// from us and are related to a payment which was sent by us. This is the sum of the
+		/// millisatoshis part of all HTLCs which are otherwise represented by
+		/// [`Balance::MaybeTimeoutClaimableHTLC`] with their
+		/// [`Balance::MaybeTimeoutClaimableHTLC::outbound_payment`] flag set, as well as any dust
+		/// HTLCs which would otherwise be represented the same.
+		outbound_payment_htlc_rounded_msat: u64,
+		/// The amount of millisatoshis which has been burned to fees from HTLCs which are outbound
+		/// from us and are related to a forwarded HTLC. This is the sum of the millisatoshis part
+		/// of all HTLCs which are otherwise represented by [`Balance::MaybeTimeoutClaimableHTLC`]
+		/// with their [`Balance::MaybeTimeoutClaimableHTLC::outbound_payment`] flag *not* set, as
+		/// well as any dust HTLCs which would otherwise be represented the same.
+		outbound_forwarded_htlc_rounded_msat: u64,
+		/// The amount of millisatoshis which has been burned to fees from HTLCs which are inbound
+		/// to us and for which we know the preimage. This is the sum of the millisatoshis part of
+		/// all HTLCs which would be represented by [`Balance::ContentiousClaimable`] on channel
+		/// close, but who's current value is included in
+		/// [`Balance::ClaimableOnChannelClose::amount_satoshis`], as well as any dust HTLCs which
+		/// would otherwise be represented the same.
+		inbound_claiming_htlc_rounded_msat: u64,
+		/// The amount of millisatoshis which has been burned to fees from HTLCs which are inbound
+		/// to us and for which we do not know the preimage. This is the sum of the millisatoshis
+		/// part of all HTLCs which would be represented by [`Balance::MaybePreimageClaimableHTLC`]
+		/// on channel close, as well as any dust HTLCs which would otherwise be represented the
+		/// same.
+		inbound_htlc_rounded_msat: u64,
 	},
 	/// The channel has been closed, and the given balance is ours but awaiting confirmations until
 	/// we consider it spendable.
@@ -2073,10 +2099,17 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 		} else {
 			let mut claimable_inbound_htlc_value_sat = 0;
 			let mut nondust_htlc_count = 0;
+			let mut outbound_payment_htlc_rounded_msat = 0;
+			let mut outbound_forwarded_htlc_rounded_msat = 0;
+			let mut inbound_claiming_htlc_rounded_msat = 0;
+			let mut inbound_htlc_rounded_msat = 0;
 			for (htlc, _, source) in us.current_holder_commitment_tx.htlc_outputs.iter() {
 				if htlc.transaction_output_index.is_some() {
 					nondust_htlc_count += 1;
-				} else { continue; }
+				}
+				let rounded_value_msat = if htlc.transaction_output_index.is_none() {
+					htlc.amount_msat
+				} else { htlc.amount_msat % 1000 };
 				if htlc.offered {
 					let outbound_payment = match source {
 						None => {
@@ -2086,22 +2119,36 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 						Some(HTLCSource::PreviousHopData(_)) => false,
 						Some(HTLCSource::OutboundRoute { .. }) => true,
 					};
-					res.push(Balance::MaybeTimeoutClaimableHTLC {
-						amount_satoshis: htlc.amount_msat / 1000,
-						claimable_height: htlc.cltv_expiry,
-						payment_hash: htlc.payment_hash,
-						outbound_payment,
-					});
+					if outbound_payment {
+						outbound_payment_htlc_rounded_msat += rounded_value_msat;
+					} else {
+						outbound_forwarded_htlc_rounded_msat += rounded_value_msat;
+					}
+					if htlc.transaction_output_index.is_some() {
+						res.push(Balance::MaybeTimeoutClaimableHTLC {
+							amount_satoshis: htlc.amount_msat / 1000,
+							claimable_height: htlc.cltv_expiry,
+							payment_hash: htlc.payment_hash,
+							outbound_payment,
+						});
+					}
 				} else if us.payment_preimages.get(&htlc.payment_hash).is_some() {
-					claimable_inbound_htlc_value_sat += htlc.amount_msat / 1000;
+					inbound_claiming_htlc_rounded_msat += rounded_value_msat;
+					if htlc.transaction_output_index.is_some() {
+						claimable_inbound_htlc_value_sat += htlc.amount_msat / 1000;
+						claimable_inbound_htlc_value_msat += htlc.amount_msat;
+					}
 				} else {
-					// As long as the HTLC is still in our latest commitment state, treat
-					// it as potentially claimable, even if it has long-since expired.
-					res.push(Balance::MaybePreimageClaimableHTLC {
-						amount_satoshis: htlc.amount_msat / 1000,
-						expiry_height: htlc.cltv_expiry,
-						payment_hash: htlc.payment_hash,
-					});
+					inbound_htlc_rounded_msat += rounded_value_msat;
+					if htlc.transaction_output_index.is_some() {
+						// As long as the HTLC is still in our latest commitment state, treat
+						// it as potentially claimable, even if it has long-since expired.
+						res.push(Balance::MaybePreimageClaimableHTLC {
+							amount_satoshis: htlc.amount_msat / 1000,
+							expiry_height: htlc.cltv_expiry,
+							payment_hash: htlc.payment_hash,
+						});
+					}
 				}
 			}
 			res.push(Balance::ClaimableOnChannelClose {
@@ -2111,6 +2158,10 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 						us.current_holder_commitment_tx.feerate_per_kw, nondust_htlc_count,
 						us.onchain_tx_handler.channel_type_features())
 				} else { 0 },
+				outbound_payment_htlc_rounded_msat,
+				outbound_forwarded_htlc_rounded_msat,
+				inbound_claiming_htlc_rounded_msat,
+				inbound_htlc_rounded_msat,
 			});
 		}
 
