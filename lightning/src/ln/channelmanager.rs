@@ -8006,8 +8006,6 @@ where
 				outgoing_amt_msat: amt_to_forward, outgoing_cltv_value
 			}
 		},
-		// We'll do receive checks in [`Self::construct_pending_htlc_info`] so we have access to the
-		// inbound channel's state.
 		onion_utils::Hop::Receive { .. } => return Ok((next_hop, shared_secret, None)),
 		onion_utils::Hop::Forward { next_hop_data: msgs::InboundOnionPayload::Receive { .. }, .. } |
 			onion_utils::Hop::Forward { next_hop_data: msgs::InboundOnionPayload::BlindedReceive { .. }, .. } =>
