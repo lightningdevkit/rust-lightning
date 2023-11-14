@@ -279,13 +279,13 @@ impl Base32Len for Sha256 {
 
 impl ToBase32 for Description {
 	fn write_base32<W: WriteBase32>(&self, writer: &mut W) -> Result<(), <W as WriteBase32>::Err> {
-		self.as_bytes().write_base32(writer)
+		self.0.0.as_bytes().write_base32(writer)
 	}
 }
 
 impl Base32Len for Description {
 	fn base32_len(&self) -> usize {
-		self.0.as_bytes().base32_len()
+		self.0.0.as_bytes().base32_len()
 	}
 }
 

@@ -158,7 +158,7 @@ where
 
 	let invoice = match description {
 		Bolt11InvoiceDescription::Direct(description) => {
-			InvoiceBuilder::new(network).description(description.0.clone())
+			InvoiceBuilder::new(network).description(description.0.0.clone())
 		}
 		Bolt11InvoiceDescription::Hash(hash) => InvoiceBuilder::new(network).description_hash(hash.0),
 	};
@@ -538,7 +538,7 @@ fn _create_invoice_from_channelmanager_and_duration_since_epoch_with_payment_has
 
 	let invoice = match description {
 		Bolt11InvoiceDescription::Direct(description) => {
-			InvoiceBuilder::new(network).description(description.0.clone())
+			InvoiceBuilder::new(network).description(description.0.0.clone())
 		}
 		Bolt11InvoiceDescription::Hash(hash) => InvoiceBuilder::new(network).description_hash(hash.0),
 	};
@@ -808,6 +808,7 @@ mod test {
 	use lightning::util::config::UserConfig;
 	use crate::utils::{create_invoice_from_channelmanager_and_duration_since_epoch, rotate_through_iterators};
 	use std::collections::HashSet;
+	use lightning::util::string::UntrustedString;
 
 	#[test]
 	fn test_prefer_current_channel() {
@@ -852,7 +853,7 @@ mod test {
 		assert_eq!(invoice.amount_pico_btc(), Some(100_000));
 		// If no `min_final_cltv_expiry_delta` is specified, then it should be `MIN_FINAL_CLTV_EXPIRY_DELTA`.
 		assert_eq!(invoice.min_final_cltv_expiry_delta(), MIN_FINAL_CLTV_EXPIRY_DELTA as u64);
-		assert_eq!(invoice.description(), Bolt11InvoiceDescription::Direct(&Description("test".to_string())));
+		assert_eq!(invoice.description(), Bolt11InvoiceDescription::Direct(&Description(UntrustedString("test".to_string()))));
 		assert_eq!(invoice.expiry_time(), Duration::from_secs(non_default_invoice_expiry_secs.into()));
 
 		// Invoice SCIDs should always use inbound SCID aliases over the real channel ID, if one is
@@ -963,7 +964,7 @@ mod test {
 		).unwrap();
 		assert_eq!(invoice.amount_pico_btc(), Some(100_000));
 		assert_eq!(invoice.min_final_cltv_expiry_delta(), MIN_FINAL_CLTV_EXPIRY_DELTA as u64);
-		assert_eq!(invoice.description(), Bolt11InvoiceDescription::Direct(&Description("test".to_string())));
+		assert_eq!(invoice.description(), Bolt11InvoiceDescription::Direct(&Description(UntrustedString("test".to_string()))));
 		assert_eq!(invoice.payment_hash(), &sha256::Hash::from_slice(&payment_hash.0[..]).unwrap());
 	}
 
@@ -1315,7 +1316,7 @@ mod test {
 		};
 
 		assert_eq!(invoice.min_final_cltv_expiry_delta(), MIN_FINAL_CLTV_EXPIRY_DELTA as u64);
-		assert_eq!(invoice.description(), Bolt11InvoiceDescription::Direct(&Description("test".to_string())));
+		assert_eq!(invoice.description(), Bolt11InvoiceDescription::Direct(&Description(UntrustedString("test".to_string()))));
 		assert_eq!(invoice.route_hints().len(), 2);
 		assert_eq!(invoice.expiry_time(), Duration::from_secs(non_default_invoice_expiry_secs.into()));
 		assert!(!invoice.features().unwrap().supports_basic_mpp());
