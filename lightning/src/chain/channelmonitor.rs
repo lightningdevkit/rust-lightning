@@ -2136,7 +2136,6 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 					inbound_claiming_htlc_rounded_msat += rounded_value_msat;
 					if htlc.transaction_output_index.is_some() {
 						claimable_inbound_htlc_value_sat += htlc.amount_msat / 1000;
-						claimable_inbound_htlc_value_msat += htlc.amount_msat;
 					}
 				} else {
 					inbound_htlc_rounded_msat += rounded_value_msat;
