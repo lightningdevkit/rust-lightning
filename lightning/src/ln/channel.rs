@@ -55,6 +55,8 @@ use core::ops::Deref;
 use crate::sync::Mutex;
 use crate::sign::type_resolver::ChannelSignerType;
 
+use super::channel_keys::{DelayedPaymentBasepoint, HtlcBasepoint, RevocationBasepoint};
+
 #[cfg(test)]
 pub struct ChannelValueStat {
 	pub value_to_self_msat: u64,
@@ -3164,9 +3166,9 @@ impl<SP: Deref> Channel<SP> where
 				let htlc_sighashtype = if self.context.channel_type.supports_anchors_zero_fee_htlc_tx() { EcdsaSighashType::SinglePlusAnyoneCanPay } else { EcdsaSighashType::All };
 				let htlc_sighash = hash_to_message!(&sighash::SighashCache::new(&htlc_tx).segwit_signature_hash(0, &htlc_redeemscript, htlc.amount_msat / 1000, htlc_sighashtype).unwrap()[..]);
 				log_trace!(logger, "Checking HTLC tx signature {} by key {} against tx {} (sighash {}) with redeemscript {} in channel {}.",
-					log_bytes!(msg.htlc_signatures[idx].serialize_compact()[..]), log_bytes!(keys.countersignatory_htlc_key.serialize()),
+					log_bytes!(msg.htlc_signatures[idx].serialize_compact()[..]), log_bytes!(keys.countersignatory_htlc_key.to_public_key().serialize()),
 					encode::serialize_hex(&htlc_tx), log_bytes!(htlc_sighash[..]), encode::serialize_hex(&htlc_redeemscript), &self.context.channel_id());
-				if let Err(_) = self.context.secp_ctx.verify_ecdsa(&htlc_sighash, &msg.htlc_signatures[idx], &keys.countersignatory_htlc_key) {
+				if let Err(_) = self.context.secp_ctx.verify_ecdsa(&htlc_sighash, &msg.htlc_signatures[idx], &keys.countersignatory_htlc_key.to_public_key()) {
 					return Err(ChannelError::Close("Invalid HTLC tx signature from peer".to_owned()));
 				}
 				if !separate_nondust_htlc_sources {
@@ -5696,7 +5698,7 @@ impl<SP: Deref> Channel<SP> where
 						log_trace!(logger, "Signed remote HTLC tx {} with redeemscript {} with pubkey {} -> {} in channel {}",
 							encode::serialize_hex(&chan_utils::build_htlc_transaction(&counterparty_commitment_txid, commitment_stats.feerate_per_kw, self.context.get_holder_selected_contest_delay(), htlc, &self.context.channel_type, &counterparty_keys.broadcaster_delayed_payment_key, &counterparty_keys.revocation_key)),
 							encode::serialize_hex(&chan_utils::get_htlc_redeemscript(&htlc, &self.context.channel_type, &counterparty_keys)),
-							log_bytes!(counterparty_keys.broadcaster_htlc_key.serialize()),
+							log_bytes!(counterparty_keys.broadcaster_htlc_key.to_public_key().serialize()),
 							log_bytes!(htlc_sig.serialize_compact()[..]), &self.context.channel_id());
 					}
 				}
@@ -6232,10 +6234,10 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 			to_self_delay: self.context.get_holder_selected_contest_delay(),
 			max_accepted_htlcs: self.context.holder_max_accepted_htlcs,
 			funding_pubkey: keys.funding_pubkey,
-			revocation_basepoint: keys.revocation_basepoint,
+			revocation_basepoint: keys.revocation_basepoint.to_public_key(),
 			payment_point: keys.payment_point,
-			delayed_payment_basepoint: keys.delayed_payment_basepoint,
-			htlc_basepoint: keys.htlc_basepoint,
+			delayed_payment_basepoint: keys.delayed_payment_basepoint.to_public_key(),
+			htlc_basepoint: keys.htlc_basepoint.to_public_key(),
 			first_per_commitment_point,
 			channel_flags: if self.context.config.announced_channel {1} else {0},
 			shutdown_scriptpubkey: Some(match &self.context.shutdown_scriptpubkey {
@@ -6357,10 +6359,10 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 
 		let counterparty_pubkeys = ChannelPublicKeys {
 			funding_pubkey: msg.funding_pubkey,
-			revocation_basepoint: msg.revocation_basepoint,
+			revocation_basepoint: RevocationBasepoint::from(msg.revocation_basepoint),
 			payment_point: msg.payment_point,
-			delayed_payment_basepoint: msg.delayed_payment_basepoint,
-			htlc_basepoint: msg.htlc_basepoint
+			delayed_payment_basepoint: DelayedPaymentBasepoint::from(msg.delayed_payment_basepoint),
+			htlc_basepoint: HtlcBasepoint::from(msg.htlc_basepoint)
 		};
 
 		self.context.channel_transaction_parameters.counterparty_parameters = Some(CounterpartyChannelTransactionParameters {
@@ -6433,10 +6435,10 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 		let pubkeys = holder_signer.pubkeys().clone();
 		let counterparty_pubkeys = ChannelPublicKeys {
 			funding_pubkey: msg.funding_pubkey,
-			revocation_basepoint: msg.revocation_basepoint,
+			revocation_basepoint: RevocationBasepoint::from(msg.revocation_basepoint),
 			payment_point: msg.payment_point,
-			delayed_payment_basepoint: msg.delayed_payment_basepoint,
-			htlc_basepoint: msg.htlc_basepoint
+			delayed_payment_basepoint: DelayedPaymentBasepoint::from(msg.delayed_payment_basepoint),
+			htlc_basepoint: HtlcBasepoint::from(msg.htlc_basepoint)
 		};
 
 		if config.channel_handshake_config.our_to_self_delay < BREAKDOWN_TIMEOUT {
@@ -6766,10 +6768,10 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 			to_self_delay: self.context.get_holder_selected_contest_delay(),
 			max_accepted_htlcs: self.context.holder_max_accepted_htlcs,
 			funding_pubkey: keys.funding_pubkey,
-			revocation_basepoint: keys.revocation_basepoint,
+			revocation_basepoint: keys.revocation_basepoint.to_public_key(),
 			payment_point: keys.payment_point,
-			delayed_payment_basepoint: keys.delayed_payment_basepoint,
-			htlc_basepoint: keys.htlc_basepoint,
+			delayed_payment_basepoint: keys.delayed_payment_basepoint.to_public_key(),
+			htlc_basepoint: keys.htlc_basepoint.to_public_key(),
 			first_per_commitment_point,
 			shutdown_scriptpubkey: Some(match &self.context.shutdown_scriptpubkey {
 				Some(script) => script.clone().into_inner(),
@@ -7796,15 +7798,15 @@ mod tests {
 	use bitcoin::blockdata::opcodes;
 	use bitcoin::network::constants::Network;
 	use crate::ln::PaymentHash;
-	use crate::ln::channelmanager::{self, HTLCSource, PaymentId};
+	use crate::ln::channel_keys::{RevocationKey, RevocationBasepoint};
+use crate::ln::channelmanager::{self, HTLCSource, PaymentId};
 	use crate::ln::channel::InitFeatures;
 	use crate::ln::channel::{ChannelState, InboundHTLCOutput, OutboundV1Channel, InboundV1Channel, OutboundHTLCOutput, InboundHTLCState, OutboundHTLCState, HTLCCandidate, HTLCInitiator, commit_tx_fee_msat};
 	use crate::ln::channel::{MAX_FUNDING_SATOSHIS_NO_WUMBO, TOTAL_BITCOIN_SUPPLY_SATOSHIS, MIN_THEIR_CHAN_RESERVE_SATOSHIS};
 	use crate::ln::features::ChannelTypeFeatures;
 	use crate::ln::msgs::{ChannelUpdate, DecodeError, UnsignedChannelUpdate, MAX_VALUE_MSAT};
 	use crate::ln::script::ShutdownScript;
-	use crate::ln::chan_utils;
-	use crate::ln::chan_utils::{htlc_success_tx_weight, htlc_timeout_tx_weight};
+	use crate::ln::chan_utils::{self, htlc_success_tx_weight, htlc_timeout_tx_weight};
 	use crate::chain::BestBlock;
 	use crate::chain::chaininterface::{FeeEstimator, LowerBoundedFeeEstimator, ConfirmationTarget};
 	use crate::sign::{ChannelSigner, InMemorySigner, EntropySource, SignerProvider};
@@ -8334,6 +8336,7 @@ mod tests {
 		use crate::sign::{ChannelDerivationParameters, HTLCDescriptor, EcdsaChannelSigner};
 		use crate::ln::PaymentPreimage;
 		use crate::ln::channel::{HTLCOutputInCommitment ,TxCreationKeys};
+		use crate::ln::channel_keys::{DelayedPaymentBasepoint, HtlcBasepoint};
 		use crate::ln::chan_utils::{ChannelPublicKeys, HolderCommitmentTransaction, CounterpartyChannelTransactionParameters};
 		use crate::util::logger::Logger;
 		use crate::sync::Arc;
@@ -8375,10 +8378,10 @@ mod tests {
 
 		let counterparty_pubkeys = ChannelPublicKeys {
 			funding_pubkey: public_from_secret_hex(&secp_ctx, "1552dfba4f6cf29a62a0af13c8d6981d36d0ef8d61ba10fb0fe90da7634d7e13"),
-			revocation_basepoint: PublicKey::from_slice(&<Vec<u8>>::from_hex("02466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27").unwrap()[..]).unwrap(),
+			revocation_basepoint: RevocationBasepoint::from(PublicKey::from_slice(&<Vec<u8>>::from_hex("02466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27").unwrap()[..]).unwrap()),
 			payment_point: public_from_secret_hex(&secp_ctx, "4444444444444444444444444444444444444444444444444444444444444444"),
-			delayed_payment_basepoint: public_from_secret_hex(&secp_ctx, "1552dfba4f6cf29a62a0af13c8d6981d36d0ef8d61ba10fb0fe90da7634d7e13"),
-			htlc_basepoint: public_from_secret_hex(&secp_ctx, "4444444444444444444444444444444444444444444444444444444444444444")
+			delayed_payment_basepoint: DelayedPaymentBasepoint::from(public_from_secret_hex(&secp_ctx, "1552dfba4f6cf29a62a0af13c8d6981d36d0ef8d61ba10fb0fe90da7634d7e13")),
+			htlc_basepoint: HtlcBasepoint::from(public_from_secret_hex(&secp_ctx, "4444444444444444444444444444444444444444444444444444444444444444"))
 		};
 		chan.context.channel_transaction_parameters.counterparty_parameters = Some(
 			CounterpartyChannelTransactionParameters {
@@ -8394,7 +8397,7 @@ mod tests {
 		assert_eq!(counterparty_pubkeys.funding_pubkey.serialize()[..],
 		           <Vec<u8>>::from_hex("030e9f7b623d2ccc7c9bd44d66d5ce21ce504c0acf6385a132cec6d3c39fa711c1").unwrap()[..]);
 
-		assert_eq!(counterparty_pubkeys.htlc_basepoint.serialize()[..],
+		assert_eq!(counterparty_pubkeys.htlc_basepoint.to_public_key().serialize()[..],
 		           <Vec<u8>>::from_hex("032c0b7cf95324a07d05398b240174dc0c2be444d96b159aa6c7f7b1e668680991").unwrap()[..]);
 
 		// We can't just use build_holder_transaction_keys here as the per_commitment_secret is not
@@ -8479,7 +8482,7 @@ mod tests {
 					let htlc_redeemscript = chan_utils::get_htlc_redeemscript(&htlc, $opt_anchors, &keys);
 					let htlc_sighashtype = if $opt_anchors.supports_anchors_zero_fee_htlc_tx() { EcdsaSighashType::SinglePlusAnyoneCanPay } else { EcdsaSighashType::All };
 					let htlc_sighash = Message::from_slice(&sighash::SighashCache::new(&htlc_tx).segwit_signature_hash(0, &htlc_redeemscript, htlc.amount_msat / 1000, htlc_sighashtype).unwrap()[..]).unwrap();
-					assert!(secp_ctx.verify_ecdsa(&htlc_sighash, &remote_signature, &keys.countersignatory_htlc_key).is_ok(), "verify counterparty htlc sig");
+					assert!(secp_ctx.verify_ecdsa(&htlc_sighash, &remote_signature, &keys.countersignatory_htlc_key.to_public_key()).is_ok(), "verify counterparty htlc sig");
 
 					let mut preimage: Option<PaymentPreimage> = None;
 					if !htlc.offered {
@@ -9073,7 +9076,7 @@ mod tests {
 		assert_eq!(chan_utils::build_commitment_secret(&seed, 1),
 		           <Vec<u8>>::from_hex("915c75942a26bb3a433a8ce2cb0427c29ec6c1775cfc78328b57f6ba7bfeaa9c").unwrap()[..]);
 	}
-
+	
 	#[test]
 	fn test_key_derivation() {
 		// Test vectors from BOLT 3 Appendix E:
@@ -9088,13 +9091,10 @@ mod tests {
 		let per_commitment_point = PublicKey::from_secret_key(&secp_ctx, &per_commitment_secret);
 		assert_eq!(per_commitment_point.serialize()[..], <Vec<u8>>::from_hex("025f7117a78150fe2ef97db7cfc83bd57b2e2c0d0dd25eaf467a4a1c2a45ce1486").unwrap()[..]);
 
-		assert_eq!(chan_utils::derive_public_key(&secp_ctx, &per_commitment_point, &base_point).serialize()[..],
-				<Vec<u8>>::from_hex("0235f2dbfaa89b57ec7b055afe29849ef7ddfeb1cefdb9ebdc43f5494984db29e5").unwrap()[..]);
-
 		assert_eq!(chan_utils::derive_private_key(&secp_ctx, &per_commitment_point, &base_secret),
 				SecretKey::from_slice(&<Vec<u8>>::from_hex("cbced912d3b21bf196a766651e436aff192362621ce317704ea2f75d87e7be0f").unwrap()[..]).unwrap());
 
-		assert_eq!(chan_utils::derive_public_revocation_key(&secp_ctx, &per_commitment_point, &base_point).serialize()[..],
+		assert_eq!(RevocationKey::from_basepoint(&secp_ctx, &RevocationBasepoint::from(base_point), &per_commitment_point).to_public_key().serialize()[..],
 				<Vec<u8>>::from_hex("02916e326636d19c33f13e8c0c3a03dd157f332f3e99c317c141dd865eb01f8ff0").unwrap()[..]);
 
 		assert_eq!(chan_utils::derive_private_revocation_key(&secp_ctx, &per_commitment_secret, &base_secret),
