@@ -25,6 +25,7 @@ use crate::ln::features::{InitFeatures, NodeFeatures};
 use crate::ln::msgs::{self, OnionMessage, OnionMessageHandler};
 use crate::ln::onion_utils;
 use crate::ln::peer_handler::IgnoringMessageHandler;
+use crate::routing::gossip::NetworkGraph;
 pub use super::packet::OnionMessageContents;
 use super::packet::ParsedOnionMessageContents;
 use super::offers::OffersMessageHandler;
@@ -256,9 +257,27 @@ pub trait MessageRouter {
 }
 
 /// A [`MessageRouter`] that can only route to a directly connected [`Destination`].
-pub struct DefaultMessageRouter;
+pub struct DefaultMessageRouter<G: Deref<Target=NetworkGraph<L>>, L: Deref>
+where
+	L::Target: Logger,
+{
+	network_graph: G,
+}
 
-impl MessageRouter for DefaultMessageRouter {
+impl<G: Deref<Target=NetworkGraph<L>>, L: Deref> DefaultMessageRouter<G, L>
+where
+	L::Target: Logger,
+{
+	/// Creates a [`DefaultMessageRouter`] using the given [`NetworkGraph`].
+	pub fn new(network_graph: G) -> Self {
+		Self { network_graph }
+	}
+}
+
+impl<G: Deref<Target=NetworkGraph<L>>, L: Deref> MessageRouter for DefaultMessageRouter<G, L>
+where
+	L::Target: Logger,
+{
 	fn find_path(
 		&self, _sender: PublicKey, peers: Vec<PublicKey>, destination: Destination
 	) -> Result<OnionMessagePath, ()> {
@@ -878,7 +897,7 @@ pub type SimpleArcOnionMessenger<M, T, F, L> = OnionMessenger<
 	Arc<KeysManager>,
 	Arc<KeysManager>,
 	Arc<L>,
-	Arc<DefaultMessageRouter>,
+	Arc<DefaultMessageRouter<Arc<NetworkGraph<Arc<L>>>, Arc<L>>>,
 	Arc<SimpleArcChannelManager<M, T, F, L>>,
 	IgnoringMessageHandler
 >;
@@ -897,7 +916,7 @@ pub type SimpleRefOnionMessenger<
 	&'a KeysManager,
 	&'a KeysManager,
 	&'b L,
-	&'i DefaultMessageRouter,
+	&'i DefaultMessageRouter<&'g NetworkGraph<&'b L>, &'b L>,
 	&'j SimpleRefChannelManager<'a, 'b, 'c, 'd, 'e, 'f, 'g, 'h, M, T, F, L>,
 	IgnoringMessageHandler
 >;
