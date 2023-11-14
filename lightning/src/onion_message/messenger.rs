@@ -22,7 +22,7 @@ use crate::sign::{EntropySource, KeysManager, NodeSigner, Recipient};
 #[cfg(not(c_bindings))]
 use crate::ln::channelmanager::{SimpleArcChannelManager, SimpleRefChannelManager};
 use crate::ln::features::{InitFeatures, NodeFeatures};
-use crate::ln::msgs::{self, OnionMessage, OnionMessageHandler};
+use crate::ln::msgs::{self, OnionMessage, OnionMessageHandler, SocketAddress};
 use crate::ln::onion_utils;
 use crate::ln::peer_handler::IgnoringMessageHandler;
 use crate::routing::gossip::NetworkGraph;
@@ -84,6 +84,7 @@ use crate::prelude::*;
 /// #         Ok(OnionMessagePath {
 /// #             intermediate_nodes: vec![hop_node_id1, hop_node_id2],
 /// #             destination,
+/// #             addresses: None,
 /// #         })
 /// #     }
 /// # }
@@ -282,7 +283,7 @@ where
 		&self, _sender: PublicKey, peers: Vec<PublicKey>, destination: Destination
 	) -> Result<OnionMessagePath, ()> {
 		if peers.contains(&destination.first_node()) {
-			Ok(OnionMessagePath { intermediate_nodes: vec![], destination })
+			Ok(OnionMessagePath { intermediate_nodes: vec![], destination, addresses: None })
 		} else {
 			Err(())
 		}
@@ -297,6 +298,22 @@ pub struct OnionMessagePath {
 
 	/// The recipient of the message.
 	pub destination: Destination,
+
+	/// Addresses that may be used to connect to [`OnionMessagePath::first_node`].
+	///
+	/// Only needs to be set if a connection to the node is required. [`OnionMessenger`] may use
+	/// this to initiate such a connection.
+	pub addresses: Option<Vec<SocketAddress>>,
+}
+
+impl OnionMessagePath {
+	/// Returns the first node in the path.
+	pub fn first_node(&self) -> PublicKey {
+		self.intermediate_nodes
+			.first()
+			.copied()
+			.unwrap_or_else(|| self.destination.first_node())
+	}
 }
 
 /// The destination of an onion message.
@@ -427,7 +444,7 @@ where
 	ES::Target: EntropySource,
 	NS::Target: NodeSigner,
 {
-	let OnionMessagePath { intermediate_nodes, mut destination } = path;
+	let OnionMessagePath { intermediate_nodes, mut destination, .. } = path;
 	if let Destination::BlindedPath(BlindedPath { ref blinded_hops, .. }) = destination {
 		if blinded_hops.is_empty() {
 			return Err(SendError::TooFewBlindedHops);
