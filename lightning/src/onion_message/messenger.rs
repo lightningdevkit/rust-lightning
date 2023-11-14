@@ -25,7 +25,7 @@ use crate::ln::features::{InitFeatures, NodeFeatures};
 use crate::ln::msgs::{self, OnionMessage, OnionMessageHandler, SocketAddress};
 use crate::ln::onion_utils;
 use crate::ln::peer_handler::IgnoringMessageHandler;
-use crate::routing::gossip::NetworkGraph;
+use crate::routing::gossip::{NetworkGraph, NodeId};
 pub use super::packet::OnionMessageContents;
 use super::packet::ParsedOnionMessageContents;
 use super::offers::OffersMessageHandler;
@@ -282,10 +282,24 @@ where
 	fn find_path(
 		&self, _sender: PublicKey, peers: Vec<PublicKey>, destination: Destination
 	) -> Result<OnionMessagePath, ()> {
-		if peers.contains(&destination.first_node()) {
+		let first_node = destination.first_node();
+		if peers.contains(&first_node) {
 			Ok(OnionMessagePath { intermediate_nodes: vec![], destination, addresses: None })
 		} else {
-			Err(())
+			let network_graph = self.network_graph.deref().read_only();
+			let node_announcement = network_graph
+				.node(&NodeId::from_pubkey(&first_node))
+				.and_then(|node_info| node_info.announcement_info.as_ref())
+				.and_then(|announcement_info| announcement_info.announcement_message.as_ref())
+				.map(|node_announcement| &node_announcement.contents);
+
+			match node_announcement {
+				Some(node_announcement) if node_announcement.features.supports_onion_messages() => {
+					let addresses = Some(node_announcement.addresses.clone());
+					Ok(OnionMessagePath { intermediate_nodes: vec![], destination, addresses })
+				},
+				_ => Err(()),
+			}
 		}
 	}
 }
