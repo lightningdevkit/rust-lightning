@@ -33,7 +33,7 @@ pub(super) const SMALL_PACKET_HOP_DATA_LEN: usize = 1300;
 pub(super) const BIG_PACKET_HOP_DATA_LEN: usize = 32768;
 
 /// Packet of hop data for next peer
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct Packet {
 	/// Bolt 04 version number
 	pub version: u8,

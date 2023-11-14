@@ -1178,7 +1178,7 @@ impl Readable for NodeAnnouncementInfo {
 ///
 /// Since node aliases are provided by third parties, they are a potential avenue for injection
 /// attacks. Care must be taken when processing.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 pub struct NodeAlias(pub [u8; 32]);
 
 impl fmt::Display for NodeAlias {

@@ -1296,7 +1296,7 @@ impl Readable for String {
 /// This serialization is used by [`BOLT 7`] hostnames.
 ///
 /// [`BOLT 7`]: https://github.com/lightning/bolts/blob/master/07-routing-gossip.md
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct Hostname(String);
 impl Hostname {
 	/// Returns the length of the hostname.
@@ -1389,7 +1389,7 @@ impl Readable for Duration {
 /// if the `Transaction`'s consensus-serialized length is <= u16::MAX.
 ///
 /// Use [`TransactionU16LenLimited::into_transaction`] to convert into the contained `Transaction`.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct TransactionU16LenLimited(Transaction);
 
 impl TransactionU16LenLimited {
