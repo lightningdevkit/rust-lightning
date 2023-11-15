@@ -76,7 +76,14 @@ use crate::prelude::*;
 /// # struct FakeMessageRouter {}
 /// # impl MessageRouter for FakeMessageRouter {
 /// #     fn find_path(&self, sender: PublicKey, peers: Vec<PublicKey>, destination: Destination) -> Result<OnionMessagePath, ()> {
-/// #         unimplemented!()
+/// #         let secp_ctx = Secp256k1::new();
+/// #         let node_secret = SecretKey::from_slice(&<Vec<u8>>::from_hex("0101010101010101010101010101010101010101010101010101010101010101").unwrap()[..]).unwrap();
+/// #         let hop_node_id1 = PublicKey::from_secret_key(&secp_ctx, &node_secret);
+/// #         let hop_node_id2 = hop_node_id1;
+/// #         Ok(OnionMessagePath {
+/// #             intermediate_nodes: vec![hop_node_id1, hop_node_id2],
+/// #             destination,
+/// #         })
 /// #     }
 /// # }
 /// # let seed = [42u8; 32];
@@ -86,7 +93,7 @@ use crate::prelude::*;
 /// # let node_secret = SecretKey::from_slice(&<Vec<u8>>::from_hex("0101010101010101010101010101010101010101010101010101010101010101").unwrap()[..]).unwrap();
 /// # let secp_ctx = Secp256k1::new();
 /// # let hop_node_id1 = PublicKey::from_secret_key(&secp_ctx, &node_secret);
-/// # let (hop_node_id2, hop_node_id3, hop_node_id4) = (hop_node_id1, hop_node_id1, hop_node_id1);
+/// # let (hop_node_id3, hop_node_id4) = (hop_node_id1, hop_node_id1);
 /// # let destination_node_id = hop_node_id1;
 /// # let message_router = Arc::new(FakeMessageRouter {});
 /// # let custom_message_handler = IgnoringMessageHandler {};
@@ -113,13 +120,10 @@ use crate::prelude::*;
 /// 	}
 /// }
 /// // Send a custom onion message to a node id.
-/// let path = OnionMessagePath {
-/// 	intermediate_nodes: vec![hop_node_id1, hop_node_id2],
-/// 	destination: Destination::Node(destination_node_id),
-/// };
+/// let destination = Destination::Node(destination_node_id);
 /// let reply_path = None;
 /// # let message = YourCustomMessage {};
-/// onion_messenger.send_onion_message(path, message, reply_path);
+/// onion_messenger.send_onion_message(message, destination, reply_path);
 ///
 /// // Create a blinded path to yourself, for someone to send an onion message to.
 /// # let your_node_id = hop_node_id1;
@@ -127,13 +131,10 @@ use crate::prelude::*;
 /// let blinded_path = BlindedPath::new_for_message(&hops, &keys_manager, &secp_ctx).unwrap();
 ///
 /// // Send a custom onion message to a blinded path.
-/// let path = OnionMessagePath {
-/// 	intermediate_nodes: vec![hop_node_id1, hop_node_id2],
-/// 	destination: Destination::BlindedPath(blinded_path),
-/// };
+/// let destination = Destination::BlindedPath(blinded_path);
 /// let reply_path = None;
 /// # let message = YourCustomMessage {};
-/// onion_messenger.send_onion_message(path, message, reply_path);
+/// onion_messenger.send_onion_message(message, destination, reply_path);
 /// ```
 ///
 /// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
@@ -304,6 +305,16 @@ impl Destination {
 	}
 }
 
+/// Result of successfully [sending an onion message].
+///
+/// [sending an onion message]: OnionMessenger::send_onion_message
+#[derive(Debug, PartialEq, Eq)]
+pub enum SendSuccess {
+	/// The message was buffered and will be sent once it is processed by
+	/// [`OnionMessageHandler::next_onion_message_for_peer`].
+	Buffered,
+}
+
 /// Errors that may occur when [sending an onion message].
 ///
 /// [sending an onion message]: OnionMessenger::send_onion_message
@@ -319,6 +330,8 @@ pub enum SendError {
 	TooFewBlindedHops,
 	/// Our next-hop peer was offline or does not support onion message forwarding.
 	InvalidFirstHop,
+	/// A path from the sender to the destination could not be found by the [`MessageRouter`].
+	PathNotFound,
 	/// Onion message contents must have a TLV type >= 64.
 	InvalidMessage,
 	/// Our next-hop peer's buffer was full or our total outbound buffer was full.
@@ -568,14 +581,63 @@ where
 		}
 	}
 
-	/// Sends an [`OnionMessage`] with the given `contents` for sending to the destination of
-	/// `path`.
+	/// Sends an [`OnionMessage`] with the given `contents` to `destination`.
 	///
 	/// See [`OnionMessenger`] for example usage.
 	pub fn send_onion_message<T: OnionMessageContents>(
-		&self, path: OnionMessagePath, contents: T, reply_path: Option<BlindedPath>
-	) -> Result<(), SendError> {
-		log_trace!(self.logger, "Sending onion message: {:?}", contents);
+		&self, contents: T, destination: Destination, reply_path: Option<BlindedPath>
+	) -> Result<SendSuccess, SendError> {
+		self.find_path_and_enqueue_onion_message(
+			contents, destination, reply_path, format_args!("")
+		)
+	}
+
+	fn find_path_and_enqueue_onion_message<T: OnionMessageContents>(
+		&self, contents: T, destination: Destination, reply_path: Option<BlindedPath>,
+		log_suffix: fmt::Arguments
+	) -> Result<SendSuccess, SendError> {
+		let result = self.find_path(destination)
+			.and_then(|path| self.enqueue_onion_message(path, contents, reply_path, log_suffix));
+
+		match result.as_ref() {
+			Err(SendError::GetNodeIdFailed) => {
+				log_warn!(self.logger, "Unable to retrieve node id {}", log_suffix);
+			},
+			Err(SendError::PathNotFound) => {
+				log_trace!(self.logger, "Failed to find path {}", log_suffix);
+			},
+			Err(e) => {
+				log_trace!(self.logger, "Failed sending onion message {}: {:?}", log_suffix, e);
+			},
+			Ok(SendSuccess::Buffered) => {
+				log_trace!(self.logger, "Buffered onion message {}", log_suffix);
+			},
+		}
+
+		result
+	}
+
+	fn find_path(&self, destination: Destination) -> Result<OnionMessagePath, SendError> {
+		let sender = self.node_signer
+			.get_node_id(Recipient::Node)
+			.map_err(|_| SendError::GetNodeIdFailed)?;
+
+		let peers = self.message_buffers.lock().unwrap()
+			.iter()
+			.filter(|(_, buffer)| matches!(buffer, OnionMessageBuffer::ConnectedPeer(_)))
+			.map(|(node_id, _)| *node_id)
+			.collect();
+
+		self.message_router
+			.find_path(sender, peers, destination)
+			.map_err(|_| SendError::PathNotFound)
+	}
+
+	fn enqueue_onion_message<T: OnionMessageContents>(
+		&self, path: OnionMessagePath, contents: T, reply_path: Option<BlindedPath>,
+		log_suffix: fmt::Arguments
+	) -> Result<SendSuccess, SendError> {
+		log_trace!(self.logger, "Constructing onion message {}: {:?}", log_suffix, contents);
 
 		let (first_node_id, onion_message) = create_onion_message(
 			&self.entropy_source, &self.node_signer, &self.secp_ctx, path, contents, reply_path
@@ -590,9 +652,16 @@ where
 			hash_map::Entry::Vacant(_) => Err(SendError::InvalidFirstHop),
 			hash_map::Entry::Occupied(mut e) => {
 				e.get_mut().enqueue_message(onion_message);
-				Ok(())
+				Ok(SendSuccess::Buffered)
 			},
 		}
+	}
+
+	#[cfg(test)]
+	pub(super) fn send_onion_message_using_path<T: OnionMessageContents>(
+		&self, path: OnionMessagePath, contents: T, reply_path: Option<BlindedPath>
+	) -> Result<SendSuccess, SendError> {
+		self.enqueue_onion_message(path, contents, reply_path, format_args!(""))
 	}
 
 	fn handle_onion_message_response<T: OnionMessageContents>(
@@ -601,7 +670,7 @@ where
 		if let Some(response) = response {
 			match reply_path {
 				Some(reply_path) => {
-					self.find_path_and_enqueue_onion_message(
+					let _ = self.find_path_and_enqueue_onion_message(
 						response, Destination::BlindedPath(reply_path), None, log_suffix
 					);
 				},
@@ -609,34 +678,6 @@ where
 					log_trace!(self.logger, "Missing reply path {}", log_suffix);
 				},
 			}
-		}
-	}
-
-	fn find_path_and_enqueue_onion_message<T: OnionMessageContents>(
-		&self, contents: T, destination: Destination, reply_path: Option<BlindedPath>,
-		log_suffix: fmt::Arguments
-	) {
-		let sender = match self.node_signer.get_node_id(Recipient::Node) {
-			Ok(node_id) => node_id,
-			Err(_) => {
-				log_warn!(self.logger, "Unable to retrieve node id {}", log_suffix);
-				return;
-			}
-		};
-
-		let peers = self.message_buffers.lock().unwrap().keys().copied().collect();
-		let path = match self.message_router.find_path(sender, peers, destination) {
-			Ok(path) => path,
-			Err(()) => {
-				log_trace!(self.logger, "Failed to find path {}", log_suffix);
-				return;
-			},
-		};
-
-		log_trace!(self.logger, "Sending onion message {}: {:?}", log_suffix, contents);
-
-		if let Err(e) = self.send_onion_message(path, contents, reply_path) {
-			log_trace!(self.logger, "Failed sending onion message {}: {:?}", log_suffix, e);
 		}
 	}
 
@@ -790,7 +831,7 @@ where
 			let PendingOnionMessage { contents, destination, reply_path } = message;
 			#[cfg(c_bindings)]
 			let (contents, destination, reply_path) = message;
-			self.find_path_and_enqueue_onion_message(
+			let _ = self.find_path_and_enqueue_onion_message(
 				contents, destination, reply_path, format_args!("when sending OffersMessage")
 			);
 		}
@@ -801,7 +842,7 @@ where
 			let PendingOnionMessage { contents, destination, reply_path } = message;
 			#[cfg(c_bindings)]
 			let (contents, destination, reply_path) = message;
-			self.find_path_and_enqueue_onion_message(
+			let _ = self.find_path_and_enqueue_onion_message(
 				contents, destination, reply_path, format_args!("when sending CustomMessage")
 			);
 		}

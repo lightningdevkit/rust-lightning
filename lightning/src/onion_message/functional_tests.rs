@@ -206,7 +206,7 @@ fn one_unblinded_hop() {
 		intermediate_nodes: vec![],
 		destination: Destination::Node(nodes[1].get_node_pk()),
 	};
-	nodes[0].messenger.send_onion_message(path, test_msg, None).unwrap();
+	nodes[0].messenger.send_onion_message_using_path(path, test_msg, None).unwrap();
 	nodes[1].custom_message_handler.expect_message(TestCustomMessage::Response);
 	pass_along_path(&nodes);
 }
@@ -220,7 +220,7 @@ fn two_unblinded_hops() {
 		intermediate_nodes: vec![nodes[1].get_node_pk()],
 		destination: Destination::Node(nodes[2].get_node_pk()),
 	};
-	nodes[0].messenger.send_onion_message(path, test_msg, None).unwrap();
+	nodes[0].messenger.send_onion_message_using_path(path, test_msg, None).unwrap();
 	nodes[2].custom_message_handler.expect_message(TestCustomMessage::Response);
 	pass_along_path(&nodes);
 }
@@ -236,7 +236,7 @@ fn one_blinded_hop() {
 		intermediate_nodes: vec![],
 		destination: Destination::BlindedPath(blinded_path),
 	};
-	nodes[0].messenger.send_onion_message(path, test_msg, None).unwrap();
+	nodes[0].messenger.send_onion_message_using_path(path, test_msg, None).unwrap();
 	nodes[1].custom_message_handler.expect_message(TestCustomMessage::Response);
 	pass_along_path(&nodes);
 }
@@ -253,7 +253,7 @@ fn two_unblinded_two_blinded() {
 		destination: Destination::BlindedPath(blinded_path),
 	};
 
-	nodes[0].messenger.send_onion_message(path, test_msg, None).unwrap();
+	nodes[0].messenger.send_onion_message_using_path(path, test_msg, None).unwrap();
 	nodes[4].custom_message_handler.expect_message(TestCustomMessage::Response);
 	pass_along_path(&nodes);
 }
@@ -270,7 +270,7 @@ fn three_blinded_hops() {
 		destination: Destination::BlindedPath(blinded_path),
 	};
 
-	nodes[0].messenger.send_onion_message(path, test_msg, None).unwrap();
+	nodes[0].messenger.send_onion_message_using_path(path, test_msg, None).unwrap();
 	nodes[3].custom_message_handler.expect_message(TestCustomMessage::Response);
 	pass_along_path(&nodes);
 }
@@ -287,7 +287,7 @@ fn too_big_packet_error() {
 		intermediate_nodes: hops,
 		destination: Destination::Node(hop_node_id),
 	};
-	let err = nodes[0].messenger.send_onion_message(path, test_msg, None).unwrap_err();
+	let err = nodes[0].messenger.send_onion_message_using_path(path, test_msg, None).unwrap_err();
 	assert_eq!(err, SendError::TooBigPacket);
 }
 
@@ -305,7 +305,7 @@ fn we_are_intro_node() {
 		destination: Destination::BlindedPath(blinded_path),
 	};
 
-	nodes[0].messenger.send_onion_message(path, test_msg.clone(), None).unwrap();
+	nodes[0].messenger.send_onion_message_using_path(path, test_msg.clone(), None).unwrap();
 	nodes[2].custom_message_handler.expect_message(TestCustomMessage::Response);
 	pass_along_path(&nodes);
 
@@ -315,7 +315,7 @@ fn we_are_intro_node() {
 		intermediate_nodes: vec![],
 		destination: Destination::BlindedPath(blinded_path),
 	};
-	nodes[0].messenger.send_onion_message(path, test_msg, None).unwrap();
+	nodes[0].messenger.send_onion_message_using_path(path, test_msg, None).unwrap();
 	nodes[1].custom_message_handler.expect_message(TestCustomMessage::Response);
 	nodes.remove(2);
 	pass_along_path(&nodes);
@@ -335,7 +335,7 @@ fn invalid_blinded_path_error() {
 		intermediate_nodes: vec![],
 		destination: Destination::BlindedPath(blinded_path),
 	};
-	let err = nodes[0].messenger.send_onion_message(path, test_msg.clone(), None).unwrap_err();
+	let err = nodes[0].messenger.send_onion_message_using_path(path, test_msg.clone(), None).unwrap_err();
 	assert_eq!(err, SendError::TooFewBlindedHops);
 }
 
@@ -351,7 +351,7 @@ fn reply_path() {
 		destination: Destination::Node(nodes[3].get_node_pk()),
 	};
 	let reply_path = BlindedPath::new_for_message(&[nodes[2].get_node_pk(), nodes[1].get_node_pk(), nodes[0].get_node_pk()], &*nodes[0].keys_manager, &secp_ctx).unwrap();
-	nodes[0].messenger.send_onion_message(path, test_msg.clone(), Some(reply_path)).unwrap();
+	nodes[0].messenger.send_onion_message_using_path(path, test_msg.clone(), Some(reply_path)).unwrap();
 	nodes[3].custom_message_handler.expect_message(TestCustomMessage::Request);
 	pass_along_path(&nodes);
 	// Make sure the last node successfully decoded the reply path.
@@ -367,7 +367,7 @@ fn reply_path() {
 	};
 	let reply_path = BlindedPath::new_for_message(&[nodes[2].get_node_pk(), nodes[1].get_node_pk(), nodes[0].get_node_pk()], &*nodes[0].keys_manager, &secp_ctx).unwrap();
 
-	nodes[0].messenger.send_onion_message(path, test_msg, Some(reply_path)).unwrap();
+	nodes[0].messenger.send_onion_message_using_path(path, test_msg, Some(reply_path)).unwrap();
 	nodes[3].custom_message_handler.expect_message(TestCustomMessage::Request);
 	pass_along_path(&nodes);
 
@@ -399,7 +399,7 @@ fn invalid_custom_message_type() {
 		intermediate_nodes: vec![],
 		destination: Destination::Node(nodes[1].get_node_pk()),
 	};
-	let err = nodes[0].messenger.send_onion_message(path, test_msg, None).unwrap_err();
+	let err = nodes[0].messenger.send_onion_message_using_path(path, test_msg, None).unwrap_err();
 	assert_eq!(err, SendError::InvalidMessage);
 }
 
@@ -412,9 +412,9 @@ fn peer_buffer_full() {
 		destination: Destination::Node(nodes[1].get_node_pk()),
 	};
 	for _ in 0..188 { // Based on MAX_PER_PEER_BUFFER_SIZE in OnionMessenger
-		nodes[0].messenger.send_onion_message(path.clone(), test_msg.clone(), None).unwrap();
+		nodes[0].messenger.send_onion_message_using_path(path.clone(), test_msg.clone(), None).unwrap();
 	}
-	let err = nodes[0].messenger.send_onion_message(path, test_msg, None).unwrap_err();
+	let err = nodes[0].messenger.send_onion_message_using_path(path, test_msg, None).unwrap_err();
 	assert_eq!(err, SendError::BufferFull);
 }
 
@@ -435,7 +435,7 @@ fn many_hops() {
 		intermediate_nodes,
 		destination: Destination::Node(nodes[num_nodes-1].get_node_pk()),
 	};
-	nodes[0].messenger.send_onion_message(path, test_msg, None).unwrap();
+	nodes[0].messenger.send_onion_message_using_path(path, test_msg, None).unwrap();
 	nodes[num_nodes-1].custom_message_handler.expect_message(TestCustomMessage::Response);
 	pass_along_path(&nodes);
 }
