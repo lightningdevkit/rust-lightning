@@ -7152,7 +7152,7 @@ impl<SP: Deref> Writeable for Channel<SP> where SP::Target: SignerProvider {
 		let mut pending_outbound_blinding_points: Vec<Option<PublicKey>> = Vec::new();
 
 		(self.context.pending_outbound_htlcs.len() as u64).write(writer)?;
-		for (idx, htlc) in self.context.pending_outbound_htlcs.iter().enumerate() {
+		for htlc in self.context.pending_outbound_htlcs.iter() {
 			htlc.htlc_id.write(writer)?;
 			htlc.amount_msat.write(writer)?;
 			htlc.cltv_expiry.write(writer)?;
@@ -7188,21 +7188,14 @@ impl<SP: Deref> Writeable for Channel<SP> where SP::Target: SignerProvider {
 					reason.write(writer)?;
 				}
 			}
-			if let Some(skimmed_fee) = htlc.skimmed_fee_msat {
-				if pending_outbound_skimmed_fees.is_empty() {
-					for _ in 0..idx { pending_outbound_skimmed_fees.push(None); }
-				}
-				pending_outbound_skimmed_fees.push(Some(skimmed_fee));
-			} else if !pending_outbound_skimmed_fees.is_empty() {
-				pending_outbound_skimmed_fees.push(None);
-			}
+			pending_outbound_skimmed_fees.push(htlc.skimmed_fee_msat);
 			pending_outbound_blinding_points.push(htlc.blinding_point);
 		}
 
 		let mut holding_cell_skimmed_fees: Vec<Option<u64>> = Vec::new();
 		let mut holding_cell_blinding_points: Vec<Option<PublicKey>> = Vec::new();
 		(self.context.holding_cell_htlc_updates.len() as u64).write(writer)?;
-		for (idx, update) in self.context.holding_cell_htlc_updates.iter().enumerate() {
+		for update in self.context.holding_cell_htlc_updates.iter() {
 			match update {
 				&HTLCUpdateAwaitingACK::AddHTLC {
 					ref amount_msat, ref cltv_expiry, ref payment_hash, ref source, ref onion_routing_packet,
@@ -7215,13 +7208,7 @@ impl<SP: Deref> Writeable for Channel<SP> where SP::Target: SignerProvider {
 					source.write(writer)?;
 					onion_routing_packet.write(writer)?;
 
-					if let Some(skimmed_fee) = skimmed_fee_msat {
-						if holding_cell_skimmed_fees.is_empty() {
-							for _ in 0..idx { holding_cell_skimmed_fees.push(None); }
-						}
-						holding_cell_skimmed_fees.push(Some(skimmed_fee));
-					} else if !holding_cell_skimmed_fees.is_empty() { holding_cell_skimmed_fees.push(None); }
-
+					holding_cell_skimmed_fees.push(skimmed_fee_msat);
 					holding_cell_blinding_points.push(blinding_point);
 				},
 				&HTLCUpdateAwaitingACK::ClaimHTLC { ref payment_preimage, ref htlc_id } => {
@@ -8474,8 +8461,8 @@ mod tests {
 	}
 
 	#[test]
-	fn blinding_point_ser() {
-		// Ensure that channel blinding points are (de)serialized properly.
+	fn blinding_point_skimmed_fee_ser() {
+		// Ensure that channel blinding points and skimmed fees are (de)serialized properly.
 		let feeest = LowerBoundedFeeEstimator::new(&TestFeeEstimator{fee_est: 15000});
 		let secp_ctx = Secp256k1::new();
 		let seed = [42; 32];
@@ -8516,6 +8503,9 @@ mod tests {
 			if idx % 2 == 0 {
 				htlc.blinding_point = Some(test_utils::pubkey(42 + idx as u8));
 			}
+			if idx % 3 == 0 {
+				htlc.skimmed_fee_msat = Some(1);
+			}
 		}
 		chan.context.pending_outbound_htlcs = pending_outbound_htlcs.clone();
 
@@ -8545,8 +8535,11 @@ mod tests {
 				holding_cell_htlc_updates.push(dummy_holding_cell_claim_htlc.clone());
 			} else {
 				let mut dummy_add = dummy_holding_cell_add_htlc.clone();
-				if let HTLCUpdateAwaitingACK::AddHTLC { ref mut blinding_point, .. } = &mut dummy_add {
+				if let HTLCUpdateAwaitingACK::AddHTLC {
+					ref mut blinding_point, ref mut skimmed_fee_msat, ..
+				} = &mut dummy_add {
 					*blinding_point = Some(test_utils::pubkey(42 + i));
+					*skimmed_fee_msat = Some(42);
 				} else { panic!() }
 				holding_cell_htlc_updates.push(dummy_add);
 			}
