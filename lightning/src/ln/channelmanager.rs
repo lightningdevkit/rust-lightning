@@ -396,9 +396,12 @@ impl HTLCSource {
 
 /// Invalid inbound onion payment.
 pub struct InboundOnionErr {
-	err_code: u16,
-	err_data: Vec<u8>,
-	msg: &'static str,
+	/// BOLT 4 error code.
+	pub err_code: u16,
+	/// Data attached to this error.
+	pub err_data: Vec<u8>,
+	/// Error message text.
+	pub msg: &'static str,
 }
 
 /// This enum is used to specify which error data to send to peers when failing back an HTLC
