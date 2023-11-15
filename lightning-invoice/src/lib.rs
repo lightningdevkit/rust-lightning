@@ -73,6 +73,7 @@ pub use lightning::ln::PaymentSecret;
 pub use lightning::routing::router::{RouteHint, RouteHintHop};
 #[doc(no_inline)]
 pub use lightning::routing::gossip::RoutingFees;
+use lightning::util::string::UntrustedString;
 
 mod de;
 mod ser;
@@ -267,6 +268,15 @@ pub enum Bolt11InvoiceDescription<'f> {
 
 	/// Reference to the description's hash included in the invoice
 	Hash(&'f Sha256),
+}
+
+impl<'f> Display for Bolt11InvoiceDescription<'f> {
+	fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+		match self {
+			Bolt11InvoiceDescription::Direct(desc) => write!(f, "{}", desc.0),
+			Bolt11InvoiceDescription::Hash(hash) => write!(f, "{}", hash.0),
+		}
+	}
 }
 
 /// Represents a signed [`RawBolt11Invoice`] with cached hash. The signature is not checked and may be
@@ -470,8 +480,8 @@ impl Sha256 {
 ///
 /// # Invariants
 /// The description can be at most 639 __bytes__ long
-#[derive(Clone, Debug, Hash, Eq, PartialEq, Ord, PartialOrd)]
-pub struct Description(String);
+#[derive(Clone, Debug, Hash, Eq, PartialEq, Ord, PartialOrd, Default)]
+pub struct Description(UntrustedString);
 
 /// Payee public key
 #[derive(Clone, Debug, Hash, Eq, PartialEq, Ord, PartialOrd)]
@@ -520,7 +530,7 @@ impl Ord for Bolt11InvoiceSignature {
 /// The encoded route has to be <1024 5bit characters long (<=639 bytes or <=12 hops)
 ///
 #[derive(Clone, Debug, Hash, Eq, PartialEq, Ord, PartialOrd)]
-pub struct PrivateRoute(RouteHint);
+pub struct PrivateRoute(pub RouteHint);
 
 /// Tag constants as specified in BOLT11
 #[allow(missing_docs)]
@@ -675,7 +685,7 @@ impl<H: tb::Bool, T: tb::Bool, C: tb::Bool, S: tb::Bool, M: tb::Bool> InvoiceBui
 	pub fn invoice_description(self, description: Bolt11InvoiceDescription) -> InvoiceBuilder<tb::True, H, T, C, S, M> {
 		match description {
 			Bolt11InvoiceDescription::Direct(desc) => {
-				self.description(desc.clone().into_inner())
+				self.description(desc.clone().into_inner().0)
 			}
 			Bolt11InvoiceDescription::Hash(hash) => {
 				self.description_hash(hash.0)
@@ -1136,6 +1146,12 @@ impl PositiveTimestamp {
 	}
 }
 
+impl From<PositiveTimestamp> for Duration {
+	fn from(val: PositiveTimestamp) -> Self {
+		val.0
+	}
+}
+
 #[cfg(feature = "std")]
 impl From<PositiveTimestamp> for SystemTime {
 	fn from(val: PositiveTimestamp) -> Self {
@@ -1502,27 +1518,19 @@ impl Description {
 		if description.len() > 639 {
 			Err(CreationError::DescriptionTooLong)
 		} else {
-			Ok(Description(description))
+			Ok(Description(UntrustedString(description)))
 		}
 	}
 
-	/// Returns the underlying description [`String`]
-	pub fn into_inner(self) -> String {
+	/// Returns the underlying description [`UntrustedString`]
+	pub fn into_inner(self) -> UntrustedString {
 		self.0
 	}
 }
 
-impl From<Description> for String {
-	fn from(val: Description) -> Self {
-		val.into_inner()
-	}
-}
-
-impl Deref for Description {
-	type Target = str;
-
-	fn deref(&self) -> &str {
-		&self.0
+impl Display for Description {
+	fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+		write!(f, "{}", self.0)
 	}
 }
 
