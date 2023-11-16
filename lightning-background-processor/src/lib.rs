@@ -30,6 +30,7 @@ use lightning::events::{Event, PathFailure};
 #[cfg(feature = "std")]
 use lightning::events::{EventHandler, EventsProvider};
 use lightning::ln::channelmanager::ChannelManager;
+use lightning::ln::msgs::OnionMessageHandler;
 use lightning::ln::peer_handler::APeerManager;
 use lightning::routing::gossip::{NetworkGraph, P2PGossipSync};
 use lightning::routing::utxo::UtxoLookup;
@@ -103,6 +104,11 @@ const PING_TIMER: u64 = 10;
 const PING_TIMER: u64 = 30;
 #[cfg(test)]
 const PING_TIMER: u64 = 1;
+
+#[cfg(not(test))]
+const ONION_MESSAGE_HANDLER_TIMER: u64 = 10;
+#[cfg(test)]
+const ONION_MESSAGE_HANDLER_TIMER: u64 = 1;
 
 /// Prune the network graph of stale entries hourly.
 const NETWORK_PRUNE_TIMER: u64 = 60 * 60;
@@ -283,6 +289,7 @@ macro_rules! define_run_body {
 		$chain_monitor.rebroadcast_pending_claims();
 
 		let mut last_freshness_call = $get_timer(FRESHNESS_TIMER);
+		let mut last_onion_message_handler_call = $get_timer(ONION_MESSAGE_HANDLER_TIMER);
 		let mut last_ping_call = $get_timer(PING_TIMER);
 		let mut last_prune_call = $get_timer(FIRST_NETWORK_PRUNE_TIMER);
 		let mut last_scorer_persist_call = $get_timer(SCORER_PERSIST_TIMER);
@@ -335,6 +342,11 @@ macro_rules! define_run_body {
 				log_trace!($logger, "Calling ChannelManager's timer_tick_occurred");
 				$channel_manager.timer_tick_occurred();
 				last_freshness_call = $get_timer(FRESHNESS_TIMER);
+			}
+			if $timer_elapsed(&mut last_onion_message_handler_call, ONION_MESSAGE_HANDLER_TIMER) {
+				log_trace!($logger, "Calling OnionMessageHandler's timer_tick_occurred");
+				$peer_manager.onion_message_handler().timer_tick_occurred();
+				last_onion_message_handler_call = $get_timer(ONION_MESSAGE_HANDLER_TIMER);
 			}
 			if await_slow {
 				// On various platforms, we may be starved of CPU cycles for several reasons.
@@ -1392,9 +1404,11 @@ mod tests {
 
 	#[test]
 	fn test_timer_tick_called() {
-		// Test that `ChannelManager::timer_tick_occurred` is called every `FRESHNESS_TIMER`,
-		// `ChainMonitor::rebroadcast_pending_claims` is called every `REBROADCAST_TIMER`, and
-		// `PeerManager::timer_tick_occurred` every `PING_TIMER`.
+		// Test that:
+		// - `ChannelManager::timer_tick_occurred` is called every `FRESHNESS_TIMER`,
+		// - `ChainMonitor::rebroadcast_pending_claims` is called every `REBROADCAST_TIMER`,
+		// - `PeerManager::timer_tick_occurred` is called every `PING_TIMER`, and
+		// - `OnionMessageHandler::timer_tick_occurred` is called every `ONION_MESSAGE_HANDLER_TIMER`.
 		let (_, nodes) = create_nodes(1, "test_timer_tick_called");
 		let data_dir = nodes[0].kv_store.get_data_dir();
 		let persister = Arc::new(Persister::new(data_dir));
@@ -1405,9 +1419,11 @@ mod tests {
 			let desired_log_1 = "Calling ChannelManager's timer_tick_occurred".to_string();
 			let desired_log_2 = "Calling PeerManager's timer_tick_occurred".to_string();
 			let desired_log_3 = "Rebroadcasting monitor's pending claims".to_string();
+			let desired_log_4 = "Calling OnionMessageHandler's timer_tick_occurred".to_string();
 			if log_entries.get(&("lightning_background_processor", desired_log_1)).is_some() &&
 				log_entries.get(&("lightning_background_processor", desired_log_2)).is_some() &&
-				log_entries.get(&("lightning_background_processor", desired_log_3)).is_some() {
+				log_entries.get(&("lightning_background_processor", desired_log_3)).is_some() &&
+				log_entries.get(&("lightning_background_processor", desired_log_4)).is_some() {
 				break
 			}
 		}
