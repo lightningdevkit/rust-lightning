@@ -270,12 +270,13 @@ fn update_scorer<'a, S: 'static + Deref<Target = SC> + Send + Sync, SC: 'a + Wri
 }
 
 macro_rules! define_run_body {
-	($persister: ident, $chain_monitor: ident, $process_chain_monitor_events: expr,
-	 $channel_manager: ident, $process_channel_manager_events: expr,
-	 $gossip_sync: ident, $peer_manager: ident, $logger: ident, $scorer: ident,
-	 $loop_exit_check: expr, $await: expr, $get_timer: expr, $timer_elapsed: expr,
-	 $check_slow_await: expr)
-	=> { {
+	(
+		$persister: ident, $chain_monitor: ident, $process_chain_monitor_events: expr,
+		$channel_manager: ident, $process_channel_manager_events: expr,
+		$gossip_sync: ident, $peer_manager: ident, $logger: ident, $scorer: ident,
+		$loop_exit_check: expr, $await: expr, $get_timer: expr, $timer_elapsed: expr,
+		$check_slow_await: expr
+	) => { {
 		log_trace!($logger, "Calling ChannelManager's timer_tick_occurred on startup");
 		$channel_manager.timer_tick_occurred();
 		log_trace!($logger, "Rebroadcasting monitor's pending claims on startup");
@@ -650,8 +651,9 @@ where
 			event_handler(event).await;
 		}
 	};
-	define_run_body!(persister,
-		chain_monitor, chain_monitor.process_pending_events_async(async_event_handler).await,
+	define_run_body!(
+		persister, chain_monitor,
+		chain_monitor.process_pending_events_async(async_event_handler).await,
 		channel_manager, channel_manager.process_pending_events_async(async_event_handler).await,
 		gossip_sync, peer_manager, logger, scorer, should_break, {
 			let fut = Selector {
@@ -673,7 +675,8 @@ where
 				task::Poll::Ready(exit) => { should_break = exit; true },
 				task::Poll::Pending => false,
 			}
-		}, mobile_interruptable_platform)
+		}, mobile_interruptable_platform
+	)
 }
 
 #[cfg(feature = "std")]
@@ -782,14 +785,16 @@ impl BackgroundProcessor {
 				}
 				event_handler.handle_event(event);
 			};
-			define_run_body!(persister, chain_monitor, chain_monitor.process_pending_events(&event_handler),
+			define_run_body!(
+				persister, chain_monitor, chain_monitor.process_pending_events(&event_handler),
 				channel_manager, channel_manager.process_pending_events(&event_handler),
 				gossip_sync, peer_manager, logger, scorer, stop_thread.load(Ordering::Acquire),
 				{ Sleeper::from_two_futures(
 					channel_manager.get_event_or_persistence_needed_future(),
 					chain_monitor.get_update_future()
 				).wait_timeout(Duration::from_millis(100)); },
-				|_| Instant::now(), |time: &Instant, dur| time.elapsed().as_secs() > dur, false)
+				|_| Instant::now(), |time: &Instant, dur| time.elapsed().as_secs() > dur, false
+			)
 		});
 		Self { stop_thread: stop_thread_clone, thread_handle: Some(handle) }
 	}
