@@ -603,8 +603,7 @@ pub async fn process_events_async<
 	CM: 'static + Deref<Target = ChannelManager<CW, T, ES, NS, SP, F, R, L>> + Send + Sync,
 	PGS: 'static + Deref<Target = P2PGossipSync<G, UL, L>> + Send + Sync,
 	RGS: 'static + Deref<Target = RapidGossipSync<G, L>> + Send,
-	APM: APeerManager + Send + Sync,
-	PM: 'static + Deref<Target = APM> + Send + Sync,
+	PM: 'static + Deref + Send + Sync,
 	S: 'static + Deref<Target = SC> + Send + Sync,
 	SC: for<'b> WriteableScore<'b>,
 	SleepFuture: core::future::Future<Output = bool> + core::marker::Unpin,
@@ -627,6 +626,7 @@ where
 	L::Target: 'static + Logger,
 	P::Target: 'static + Persist<<SP::Target as SignerProvider>::EcdsaSigner>,
 	PS::Target: 'static + Persister<'a, CW, T, ES, NS, SP, F, R, L, SC>,
+	PM::Target: APeerManager + Send + Sync,
 {
 	let mut should_break = false;
 	let async_event_handler = |event| {
@@ -742,8 +742,7 @@ impl BackgroundProcessor {
 		CM: 'static + Deref<Target = ChannelManager<CW, T, ES, NS, SP, F, R, L>> + Send + Sync,
 		PGS: 'static + Deref<Target = P2PGossipSync<G, UL, L>> + Send + Sync,
 		RGS: 'static + Deref<Target = RapidGossipSync<G, L>> + Send,
-		APM: APeerManager + Send + Sync,
-		PM: 'static + Deref<Target = APM> + Send + Sync,
+		PM: 'static + Deref + Send + Sync,
 		S: 'static + Deref<Target = SC> + Send + Sync,
 		SC: for <'b> WriteableScore<'b>,
 	>(
@@ -763,6 +762,7 @@ impl BackgroundProcessor {
 		L::Target: 'static + Logger,
 		P::Target: 'static + Persist<<SP::Target as SignerProvider>::EcdsaSigner>,
 		PS::Target: 'static + Persister<'a, CW, T, ES, NS, SP, F, R, L, SC>,
+		PM::Target: APeerManager + Send + Sync,
 	{
 		let stop_thread = Arc::new(AtomicBool::new(false));
 		let stop_thread_clone = stop_thread.clone();
