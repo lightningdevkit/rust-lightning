@@ -114,16 +114,32 @@ where
 						Ok(unconfirmed_txs) => {
 							// Double-check the tip hash. If it changed, a reorg happened since
 							// we started syncing and we need to restart last-minute.
-							let check_tip_hash = maybe_await!(self.client.get_tip_hash())?;
-							if check_tip_hash != tip_hash {
-								tip_hash = check_tip_hash;
+							match maybe_await!(self.client.get_tip_hash()) {
+								Ok(check_tip_hash) => {
+									if check_tip_hash != tip_hash {
+										tip_hash = check_tip_hash;
 
-								log_debug!(self.logger, "Encountered inconsistency during transaction sync, restarting.");
-								sync_state.pending_sync = true;
-								continue;
+										log_debug!(self.logger, "Encountered inconsistency during transaction sync, restarting.");
+										sync_state.pending_sync = true;
+										continue;
+									}
+									num_unconfirmed += unconfirmed_txs.len();
+									sync_state.sync_unconfirmed_transactions(
+										&confirmables,
+										unconfirmed_txs
+									);
+								}
+								Err(err) => {
+									// (Semi-)permanent failure, retry later.
+									log_error!(self.logger,
+										"Failed during transaction sync, aborting. Synced so far: {} confirmed, {} unconfirmed.",
+										num_confirmed,
+										num_unconfirmed
+										);
+									sync_state.pending_sync = true;
+									return Err(TxSyncError::from(err));
+								}
 							}
-							num_unconfirmed += unconfirmed_txs.len();
-							sync_state.sync_unconfirmed_transactions(&confirmables, unconfirmed_txs);
 						},
 						Err(err) => {
 							// (Semi-)permanent failure, retry later.
@@ -162,17 +178,33 @@ where
 					Ok(confirmed_txs) => {
 						// Double-check the tip hash. If it changed, a reorg happened since
 						// we started syncing and we need to restart last-minute.
-						let check_tip_hash = maybe_await!(self.client.get_tip_hash())?;
-						if check_tip_hash != tip_hash {
-							tip_hash = check_tip_hash;
-							continue;
-						}
+						match maybe_await!(self.client.get_tip_hash()) {
+							Ok(check_tip_hash) => {
+								if check_tip_hash != tip_hash {
+									tip_hash = check_tip_hash;
 
-						num_confirmed += confirmed_txs.len();
-						sync_state.sync_confirmed_transactions(
-							&confirmables,
-							confirmed_txs,
-						);
+									log_debug!(self.logger,
+										"Encountered inconsistency during transaction sync, restarting.");
+									sync_state.pending_sync = true;
+									continue;
+								}
+								num_confirmed += confirmed_txs.len();
+								sync_state.sync_confirmed_transactions(
+									&confirmables,
+									confirmed_txs
+								);
+							}
+							Err(err) => {
+								// (Semi-)permanent failure, retry later.
+								log_error!(self.logger,
+									"Failed during transaction sync, aborting. Synced so far: {} confirmed, {} unconfirmed.",
+									num_confirmed,
+									num_unconfirmed
+								);
+								sync_state.pending_sync = true;
+								return Err(TxSyncError::from(err));
+							}
+						}
 					}
 					Err(InternalError::Inconsistency) => {
 						// Immediately restart syncing when we encounter any inconsistencies.
