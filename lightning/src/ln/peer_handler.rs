@@ -684,6 +684,8 @@ pub trait APeerManager {
 	type NS: Deref<Target=Self::NST>;
 	/// Gets a reference to the underlying [`PeerManager`].
 	fn as_ref(&self) -> &PeerManager<Self::Descriptor, Self::CM, Self::RM, Self::OM, Self::L, Self::CMH, Self::NS>;
+	/// Returns the peer manager's [`OnionMessageHandler`].
+	fn onion_message_handler(&self) -> &Self::OMT;
 }
 
 impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CMH: Deref, NS: Deref>
@@ -709,6 +711,9 @@ APeerManager for PeerManager<Descriptor, CM, RM, OM, L, CMH, NS> where
 	type NST = <NS as Deref>::Target;
 	type NS = NS;
 	fn as_ref(&self) -> &PeerManager<Descriptor, CM, RM, OM, L, CMH, NS> { self }
+	fn onion_message_handler(&self) -> &Self::OMT {
+		self.message_handler.onion_message_handler.deref()
+	}
 }
 
 /// A PeerManager manages a set of peers, described by their [`SocketDescriptor`] and marshalls

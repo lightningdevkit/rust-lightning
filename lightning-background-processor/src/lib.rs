@@ -273,9 +273,9 @@ macro_rules! define_run_body {
 	(
 		$persister: ident, $chain_monitor: ident, $process_chain_monitor_events: expr,
 		$channel_manager: ident, $process_channel_manager_events: expr,
-		$peer_manager: ident, $gossip_sync: ident, $logger: ident, $scorer: ident,
-		$loop_exit_check: expr, $await: expr, $get_timer: expr, $timer_elapsed: expr,
-		$check_slow_await: expr
+		$peer_manager: ident, $process_onion_message_handler_events: expr, $gossip_sync: ident,
+		$logger: ident, $scorer: ident, $loop_exit_check: expr, $await: expr, $get_timer: expr,
+		$timer_elapsed: expr, $check_slow_await: expr
 	) => { {
 		log_trace!($logger, "Calling ChannelManager's timer_tick_occurred on startup");
 		$channel_manager.timer_tick_occurred();
@@ -292,6 +292,7 @@ macro_rules! define_run_body {
 		loop {
 			$process_channel_manager_events;
 			$process_chain_monitor_events;
+			$process_onion_message_handler_events;
 
 			// Note that the PeerManager::process_events may block on ChannelManager's locks,
 			// hence it comes last here. When the ChannelManager finishes whatever it's doing,
@@ -655,7 +656,8 @@ where
 		persister, chain_monitor,
 		chain_monitor.process_pending_events_async(async_event_handler).await,
 		channel_manager, channel_manager.process_pending_events_async(async_event_handler).await,
-		peer_manager, gossip_sync, logger, scorer, should_break, {
+		peer_manager, process_onion_message_handler_events_async(&peer_manager, async_event_handler).await,
+		gossip_sync, logger, scorer, should_break, {
 			let fut = Selector {
 				a: channel_manager.get_event_or_persistence_needed_future(),
 				b: chain_monitor.get_update_future(),
@@ -677,6 +679,27 @@ where
 			}
 		}, mobile_interruptable_platform
 	)
+}
+
+#[cfg(feature = "futures")]
+async fn process_onion_message_handler_events_async<
+	EventHandlerFuture: core::future::Future<Output = ()>,
+	EventHandler: Fn(Event) -> EventHandlerFuture,
+	PM: 'static + Deref + Send + Sync,
+>(
+	peer_manager: &PM, handler: EventHandler
+)
+where
+	PM::Target: APeerManager + Send + Sync,
+{
+	use lightning::events::EventsProvider;
+
+	let events = core::cell::RefCell::new(Vec::new());
+	peer_manager.onion_message_handler().process_pending_events(&|e| events.borrow_mut().push(e));
+
+	for event in events.into_inner() {
+		handler(event).await
+	}
 }
 
 #[cfg(feature = "std")]
@@ -788,7 +811,9 @@ impl BackgroundProcessor {
 			define_run_body!(
 				persister, chain_monitor, chain_monitor.process_pending_events(&event_handler),
 				channel_manager, channel_manager.process_pending_events(&event_handler),
-				peer_manager, gossip_sync, logger, scorer, stop_thread.load(Ordering::Acquire),
+				peer_manager,
+				peer_manager.onion_message_handler().process_pending_events(&event_handler),
+				gossip_sync, logger, scorer, stop_thread.load(Ordering::Acquire),
 				{ Sleeper::from_two_futures(
 					channel_manager.get_event_or_persistence_needed_future(),
 					chain_monitor.get_update_future()
