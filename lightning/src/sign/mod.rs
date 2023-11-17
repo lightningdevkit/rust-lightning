@@ -736,6 +736,19 @@ pub trait NodeSigner {
 	fn sign_gossip_message(&self, msg: UnsignedGossipMessage) -> Result<Signature, ()>;
 }
 
+// Primarily needed in doctests because of https://github.com/rust-lang/rust/issues/67295
+/// A dynamic [`SignerProvider`] temporarily needed for doc tests.
+#[cfg(taproot)]
+#[doc(hidden)]
+#[deprecated(note = "Remove once taproot cfg is removed")]
+pub type DynSignerProvider = dyn SignerProvider<EcdsaSigner = InMemorySigner, TaprootSigner = InMemorySigner>;
+
+/// A dynamic [`SignerProvider`] temporarily needed for doc tests.
+#[cfg(not(taproot))]
+#[doc(hidden)]
+#[deprecated(note = "Remove once taproot cfg is removed")]
+pub type DynSignerProvider = dyn SignerProvider<EcdsaSigner = InMemorySigner>;
+
 /// A trait that can return signer instances for individual channels.
 pub trait SignerProvider {
 	/// A type which implements [`WriteableEcdsaChannelSigner`] which will be returned by [`Self::derive_channel_signer`].

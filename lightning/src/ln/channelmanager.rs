@@ -1151,6 +1151,77 @@ where
 /// setups. For instance, on-chain enforcement could be moved to a separate host or have added
 /// redundancy, possibly as a watchtower. See [`chain::Watch`] for the relevant interface.
 ///
+/// # Initialization
+///
+/// Use [`ChannelManager::new`] with the most recent [`BlockHash`] when creating a fresh instance.
+/// Otherwise, if restarting, construct [`ChannelManagerReadArgs`] with the necessary parameters and
+/// references to any deserialized [`ChannelMonitor`]s that were previously persisted. Use this to
+/// deserialize the [`ChannelManager`] and feed it any new chain data since it was last online, as
+/// detailed in the [`ChannelManagerReadArgs`] documentation.
+///
+/// ```
+/// use bitcoin::BlockHash;
+/// use bitcoin::network::constants::Network;
+/// use lightning::chain::BestBlock;
+/// # use lightning::chain::channelmonitor::ChannelMonitor;
+/// use lightning::ln::channelmanager::{ChainParameters, ChannelManager, ChannelManagerReadArgs};
+/// # use lightning::routing::gossip::NetworkGraph;
+/// use lightning::util::config::UserConfig;
+/// use lightning::util::ser::ReadableArgs;
+///
+/// # fn read_channel_monitors() -> Vec<ChannelMonitor<lightning::sign::InMemorySigner>> { vec![] }
+/// # fn example<
+/// #     'a,
+/// #     L: lightning::util::logger::Logger,
+/// #     ES: lightning::sign::EntropySource,
+/// #     S: for <'b> lightning::routing::scoring::LockableScore<'b, ScoreLookUp = SL>,
+/// #     SL: lightning::routing::scoring::ScoreLookUp<ScoreParams = SP>,
+/// #     SP: Sized,
+/// #     R: lightning::io::Read,
+/// # >(
+/// #     fee_estimator: &dyn lightning::chain::chaininterface::FeeEstimator,
+/// #     chain_monitor: &dyn lightning::chain::Watch<lightning::sign::InMemorySigner>,
+/// #     tx_broadcaster: &dyn lightning::chain::chaininterface::BroadcasterInterface,
+/// #     router: &lightning::routing::router::DefaultRouter<&NetworkGraph<&'a L>, &'a L, &ES, &S, SP, SL>,
+/// #     logger: &L,
+/// #     entropy_source: &ES,
+/// #     node_signer: &dyn lightning::sign::NodeSigner,
+/// #     signer_provider: &lightning::sign::DynSignerProvider,
+/// #     best_block: lightning::chain::BestBlock,
+/// #     current_timestamp: u32,
+/// #     mut reader: R,
+/// # ) -> Result<(), lightning::ln::msgs::DecodeError> {
+/// // Fresh start with no channels
+/// let params = ChainParameters {
+///     network: Network::Bitcoin,
+///     best_block,
+/// };
+/// let default_config = UserConfig::default();
+/// let channel_manager = ChannelManager::new(
+///     fee_estimator, chain_monitor, tx_broadcaster, router, logger, entropy_source, node_signer,
+///     signer_provider, default_config, params, current_timestamp
+/// );
+///
+/// // Restart from deserialized data
+/// let mut channel_monitors = read_channel_monitors();
+/// let args = ChannelManagerReadArgs::new(
+///     entropy_source, node_signer, signer_provider, fee_estimator, chain_monitor, tx_broadcaster,
+///     router, logger, default_config, channel_monitors.iter_mut().collect()
+/// );
+/// let (block_hash, channel_manager) =
+///     <(BlockHash, ChannelManager<_, _, _, _, _, _, _, _>)>::read(&mut reader, args)?;
+///
+/// // Update the ChannelManager and ChannelMonitors with the latest chain data
+/// // ...
+///
+/// // Move the monitors to the ChannelManager's chain::Watch parameter
+/// for monitor in channel_monitors {
+///     chain_monitor.watch_channel(monitor.get_funding_txo().0, monitor);
+/// }
+/// # Ok(())
+/// # }
+/// ```
+///
 /// # Persistence
 ///
 /// Implements [`Writeable`] to write out all channel state to disk. Implies [`peer_disconnected`] for
