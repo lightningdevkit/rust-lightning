@@ -1247,9 +1247,6 @@ fn iter_equal<I1: Iterator, I2: Iterator>(mut iter_a: I1, mut iter_b: I2)
 /// These fee values are useful to choose hops as we traverse the graph "payee-to-payer".
 #[derive(Clone)]
 struct PathBuildingHop<'a> {
-	// Note that this should be dropped in favor of loading it from CandidateRouteHop, but doing so
-	// is a larger refactor and will require careful performance analysis.
-	node_id: NodeId,
 	candidate: CandidateRouteHop<'a>,
 	fee_msat: u64,
 
@@ -1287,7 +1284,7 @@ impl<'a> core::fmt::Debug for PathBuildingHop<'a> {
 	fn fmt(&self, f: &mut core::fmt::Formatter) -> Result<(), core::fmt::Error> {
 		let mut debug_struct = f.debug_struct("PathBuildingHop");
 		debug_struct
-			.field("node_id", &self.node_id)
+			.field("node_id", &self.candidate.target())
 			.field("short_channel_id", &self.candidate.short_channel_id())
 			.field("total_fee_msat", &self.total_fee_msat)
 			.field("next_hops_fee_msat", &self.next_hops_fee_msat)
@@ -1824,8 +1821,7 @@ where L::Target: Logger {
 			// - for regular channels at channel announcement (TODO)
 			// - for first and last hops early in get_route
 			let src_node_id = $candidate.source();
-			let dest_node_id = $candidate.target().unwrap_or(maybe_dummy_payee_node_id);
-			if src_node_id != dest_node_id {
+			if Some(src_node_id) != $candidate.target() {
 				let scid_opt = $candidate.short_channel_id();
 				let effective_capacity = $candidate.effective_capacity();
 				let htlc_maximum_msat = max_htlc_from_capacity(effective_capacity, channel_saturation_pow_half);
@@ -1964,7 +1960,6 @@ where L::Target: Logger {
 							// This will affect our decision on selecting short_channel_id
 							// as a way to reach the $candidate.target() node.
 							PathBuildingHop {
-								node_id: dest_node_id.clone(),
 								candidate: $candidate.clone(),
 								fee_msat: 0,
 								next_hops_fee_msat: u64::max_value(),
@@ -2063,7 +2058,6 @@ where L::Target: Logger {
 									old_entry.next_hops_fee_msat = $next_hops_fee_msat;
 									old_entry.hop_use_fee_msat = hop_use_fee_msat;
 									old_entry.total_fee_msat = total_fee_msat;
-									old_entry.node_id = dest_node_id;
 									old_entry.candidate = $candidate.clone();
 									old_entry.fee_msat = 0; // This value will be later filled with hop_use_fee_msat of the following channel
 									old_entry.path_htlc_minimum_msat = path_htlc_minimum_msat;
@@ -2435,7 +2429,8 @@ where L::Target: Logger {
 
 				'path_walk: loop {
 					let mut features_set = false;
-					if let Some(first_channels) = first_hop_targets.get(&ordered_hops.last().unwrap().0.node_id) {
+					let target = ordered_hops.last().unwrap().0.candidate.target().unwrap_or(maybe_dummy_payee_node_id);
+					if let Some(first_channels) = first_hop_targets.get(&target) {
 						for details in first_channels {
 							if let Some(scid) = ordered_hops.last().unwrap().0.candidate.short_channel_id() {
 								if details.get_outbound_payment_scid().unwrap() == scid {
@@ -2447,7 +2442,7 @@ where L::Target: Logger {
 						}
 					}
 					if !features_set {
-						if let Some(node) = network_nodes.get(&ordered_hops.last().unwrap().0.node_id) {
+						if let Some(node) = network_nodes.get(&target) {
 							if let Some(node_info) = node.announcement_info.as_ref() {
 								ordered_hops.last_mut().unwrap().1 = node_info.features.clone();
 							} else {
@@ -2464,11 +2459,11 @@ where L::Target: Logger {
 					// save this path for the payment route. Also, update the liquidity
 					// remaining on the used hops, so that we take them into account
 					// while looking for more paths.
-					if ordered_hops.last().unwrap().0.node_id == maybe_dummy_payee_node_id {
+					if target == maybe_dummy_payee_node_id {
 						break 'path_walk;
 					}
 
-					new_entry = match dist.remove(&ordered_hops.last().unwrap().0.node_id) {
+					new_entry = match dist.remove(&target) {
 						Some(payment_hop) => payment_hop,
 						// We can't arrive at None because, if we ever add an entry to targets,
 						// we also fill in the entry in dist (see add_entry!).
@@ -2687,8 +2682,8 @@ where L::Target: Logger {
 	});
 	for idx in 0..(selected_route.len() - 1) {
 		if idx + 1 >= selected_route.len() { break; }
-		if iter_equal(selected_route[idx].hops.iter().map(|h| (h.0.candidate.id(), h.0.node_id)),
-									selected_route[idx + 1].hops.iter().map(|h| (h.0.candidate.id(), h.0.node_id))) {
+		if iter_equal(selected_route[idx].hops.iter().map(|h| (h.0.candidate.id(), h.0.candidate.target())),
+									selected_route[idx + 1].hops.iter().map(|h| (h.0.candidate.id(), h.0.candidate.target()))) {
 			let new_value = selected_route[idx].get_value_msat() + selected_route[idx + 1].get_value_msat();
 			selected_route[idx].update_value_and_recompute_fees(new_value);
 			selected_route.remove(idx + 1);
@@ -2701,6 +2696,7 @@ where L::Target: Logger {
 		for (hop, node_features) in payment_path.hops.iter()
 			.filter(|(h, _)| h.candidate.short_channel_id().is_some())
 		{
+			let target = hop.candidate.target().expect("target is defined when short_channel_id is defined");
 			let maybe_announced_channel = if let CandidateRouteHop::PublicHop { .. } = hop.candidate {
 				// If we sourced the hop from the graph we're sure the target node is announced.
 				true
@@ -2712,14 +2708,14 @@ where L::Target: Logger {
 				// there are announced channels between the endpoints. If so, the hop might be
 				// referring to any of the announced channels, as its `short_channel_id` might be
 				// an alias, in which case we don't take any chances here.
-				network_graph.node(&hop.node_id).map_or(false, |hop_node|
+				network_graph.node(&target).map_or(false, |hop_node|
 					hop_node.channels.iter().any(|scid| network_graph.channel(*scid)
 							.map_or(false, |c| c.as_directed_from(&hop.candidate.source()).is_some()))
 				)
 			};
 
 			hops.push(RouteHop {
-				pubkey: PublicKey::from_slice(hop.node_id.as_slice()).map_err(|_| LightningError{err: format!("Public key {:?} is invalid", &hop.node_id), action: ErrorAction::IgnoreAndLog(Level::Trace)})?,
+				pubkey: PublicKey::from_slice(target.as_slice()).map_err(|_| LightningError{err: format!("Public key {:?} is invalid", &target), action: ErrorAction::IgnoreAndLog(Level::Trace)})?,
 				node_features: node_features.clone(),
 				short_channel_id: hop.candidate.short_channel_id().unwrap(),
 				channel_features: hop.candidate.features(),
