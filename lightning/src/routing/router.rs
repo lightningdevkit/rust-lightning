@@ -1062,7 +1062,11 @@ pub enum CandidateRouteHop<'a> {
 }
 
 impl<'a> CandidateRouteHop<'a> {
-	fn short_channel_id(&self) -> Option<u64> {
+	/// Returns short_channel_id if known.
+	/// For `FirstHop` we assume [`ChannelDetails::get_outbound_payment_scid`] is always set, this assumption is checked in
+	/// [`find_route`] method.
+	/// For `Blinded` and `OneHopBlinded` we return `None` because next hop is not known.
+	pub fn short_channel_id(&self) -> Option<u64> {
 		match self {
 			CandidateRouteHop::FirstHop { details, .. } => Some(details.get_outbound_payment_scid().unwrap()),
 			CandidateRouteHop::PublicHop { short_channel_id, .. } => Some(*short_channel_id),
@@ -1083,7 +1087,8 @@ impl<'a> CandidateRouteHop<'a> {
 		}
 	}
 
-	fn cltv_expiry_delta(&self) -> u32 {
+	/// Returns cltv_expiry_delta for this hop.
+	pub fn cltv_expiry_delta(&self) -> u32 {
 		match self {
 			CandidateRouteHop::FirstHop { .. } => 0,
 			CandidateRouteHop::PublicHop { info, .. } => info.direction().cltv_expiry_delta as u32,
@@ -1093,7 +1098,8 @@ impl<'a> CandidateRouteHop<'a> {
 		}
 	}
 
-	fn htlc_minimum_msat(&self) -> u64 {
+	/// Returns the htlc_minimum_msat for this hop.
+	pub fn htlc_minimum_msat(&self) -> u64 {
 		match self {
 			CandidateRouteHop::FirstHop { details, .. } => details.next_outbound_htlc_minimum_msat,
 			CandidateRouteHop::PublicHop { info, .. } => info.direction().htlc_minimum_msat,
@@ -1103,7 +1109,8 @@ impl<'a> CandidateRouteHop<'a> {
 		}
 	}
 
-	fn fees(&self) -> RoutingFees {
+	/// Returns the fees for this hop.
+	pub fn fees(&self) -> RoutingFees {
 		match self {
 			CandidateRouteHop::FirstHop { .. } => RoutingFees {
 				base_msat: 0, proportional_millionths: 0,
