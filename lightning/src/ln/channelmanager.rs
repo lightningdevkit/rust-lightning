@@ -11416,7 +11416,7 @@ mod tests {
 		let _chan = create_chan_between_nodes(&nodes[0], &nodes[1]);
 		let route_params = RouteParameters::from_payment_params_and_value(
 			PaymentParameters::for_keysend(payee_pubkey, 40, false), 10_000);
-		let network_graph = nodes[0].network_graph.clone();
+		let network_graph = nodes[0].network_graph;
 		let first_hops = nodes[0].node.list_usable_channels();
 		let scorer = test_utils::TestScorer::new();
 		let random_seed_bytes = chanmon_cfgs[1].keys_manager.get_secure_random_bytes();
@@ -11461,7 +11461,7 @@ mod tests {
 		let _chan = create_chan_between_nodes(&nodes[0], &nodes[1]);
 		let route_params = RouteParameters::from_payment_params_and_value(
 			PaymentParameters::for_keysend(payee_pubkey, 40, false), 10_000);
-		let network_graph = nodes[0].network_graph.clone();
+		let network_graph = nodes[0].network_graph;
 		let first_hops = nodes[0].node.list_usable_channels();
 		let scorer = test_utils::TestScorer::new();
 		let random_seed_bytes = chanmon_cfgs[1].keys_manager.get_secure_random_bytes();

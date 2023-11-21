@@ -83,9 +83,9 @@ mod prelude {
 	#[cfg(feature = "hashbrown")]
 	extern crate hashbrown;
 
-	pub use alloc::{vec, vec::Vec, string::String, collections::VecDeque, boxed::Box};
+	pub use alloc::{vec, vec::Vec, string::String};
 	#[cfg(not(feature = "hashbrown"))]
-	pub use std::collections::{HashMap, HashSet, hash_map};
+	pub use std::collections::{HashMap, hash_map};
 	#[cfg(feature = "hashbrown")]
 	pub use self::hashbrown::{HashMap, HashSet, hash_map};
 
@@ -93,12 +93,6 @@ mod prelude {
 }
 
 use crate::prelude::*;
-
-/// Sync compat for std/no_std
-#[cfg(feature = "std")]
-mod sync {
-	pub use ::std::sync::{Mutex, MutexGuard};
-}
 
 /// Sync compat for std/no_std
 #[cfg(not(feature = "std"))]
