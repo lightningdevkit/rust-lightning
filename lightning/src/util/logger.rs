@@ -19,6 +19,7 @@ use bitcoin::secp256k1::PublicKey;
 use core::cmp;
 use core::fmt;
 
+use crate::ln::ChannelId;
 #[cfg(c_bindings)]
 use crate::prelude::*; // Needed for String
 
@@ -95,6 +96,11 @@ impl Level {
 pub struct Record<'a> {
 	/// The verbosity level of the message.
 	pub level: Level,
+	/// The node id of the peer pertaining to the logged record.
+	pub peer_id: Option<PublicKey>,
+	/// The channel id of the channel pertaining to the logged record. May be a temporary id before
+	/// the channel has been funded.
+	pub channel_id: Option<ChannelId>,
 	#[cfg(not(c_bindings))]
 	/// The message body.
 	pub args: fmt::Arguments<'a>,
@@ -119,9 +125,14 @@ impl<'a> Record<'a> {
 	///
 	/// This is not exported to bindings users as fmt can't be used in C
 	#[inline]
-	pub fn new(level: Level, args: fmt::Arguments<'a>, module_path: &'static str, file: &'static str, line: u32) -> Record<'a> {
+	pub fn new(
+		level: Level, peer_id: Option<PublicKey>, channel_id: Option<ChannelId>,
+		args: fmt::Arguments<'a>, module_path: &'static str, file: &'static str, line: u32
+	) -> Record<'a> {
 		Record {
 			level,
+			peer_id,
+			channel_id,
 			#[cfg(not(c_bindings))]
 			args,
 			#[cfg(c_bindings)]
