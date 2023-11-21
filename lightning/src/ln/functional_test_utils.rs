@@ -31,12 +31,14 @@ use crate::util::errors::APIError;
 use crate::util::config::{UserConfig, MaxDustHTLCExposure};
 use crate::util::ser::{ReadableArgs, Writeable};
 
+use bitcoin::Script;
 use bitcoin::blockdata::block::{Block, BlockHeader};
-use bitcoin::blockdata::transaction::{Transaction, TxOut};
+use bitcoin::blockdata::transaction::{Sequence, Transaction, TxOut};
+use bitcoin::blockdata::witness::Witness;
+use bitcoin::network::constants::Network;
 use bitcoin::hash_types::BlockHash;
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::Hash as _;
-use bitcoin::network::constants::Network;
 use bitcoin::secp256k1::{PublicKey, SecretKey};
 
 use crate::io;
@@ -648,7 +650,7 @@ macro_rules! get_event_msg {
 					assert_eq!(*node_id, $node_id);
 					(*msg).clone()
 				},
-				_ => panic!("Unexpected event"),
+				_ => panic!("Unexpected event {:?}", events[0]),
 			}
 		}
 	}
@@ -687,7 +689,7 @@ macro_rules! get_event {
 				$event_type { .. } => {
 					ev
 				},
-				_ => panic!("Unexpected event"),
+				_ => panic!("Unexpected event {:?}", ev),
 			}
 		}
 	}
@@ -791,6 +793,31 @@ pub fn remove_first_msg_event_to_node(msg_node_id: &PublicKey, msg_events: &mut 
 			node_id == msg_node_id
 		},
 		MessageSendEvent::SendOpenChannelV2 { node_id, .. } => {
+			node_id == msg_node_id
+		},
+		// #SPLICING
+		MessageSendEvent::SendSplice { node_id, .. } => {
+			node_id == msg_node_id
+		},
+		MessageSendEvent::SendSpliceAck { node_id, .. } => {
+			node_id == msg_node_id
+		},
+		MessageSendEvent::SendSpliceLocked { node_id, .. } => {
+			node_id == msg_node_id
+		},
+		MessageSendEvent::SendSpliceCreated { node_id, .. } => {
+			node_id == msg_node_id
+		},
+		MessageSendEvent::SendSpliceCommSigned { node_id, .. } => {
+			node_id == msg_node_id
+		},
+		MessageSendEvent::SendSpliceCommAck { node_id, .. } => {
+			node_id == msg_node_id
+		},
+		MessageSendEvent::SendSpliceSigned { node_id, .. } => {
+			node_id == msg_node_id
+		},
+		MessageSendEvent::SendSpliceSignedAck { node_id, .. } => {
 			node_id == msg_node_id
 		},
 		MessageSendEvent::SendTxAddInput { node_id, .. } => {
@@ -1097,6 +1124,33 @@ pub fn sign_funding_transaction<'a, 'b, 'c>(node_a: &Node<'a, 'b, 'c>, node_b: &
 	check_added_monitors!(node_a, 0);
 
 	tx
+}
+
+/// #SPLICING
+pub fn create_splice_in_transaction<'a, 'b, 'c>(node: &Node<'a, 'b, 'c>, expected_channel_id: &ChannelId, expected_post_splice_chan_value: u64) -> (Transaction, OutPoint) {
+	let chan_id = *node.network_chan_count.borrow();
+
+	let events = node.node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1);
+	match events[0] {
+		Event::SpliceAcked { ref channel_id, counterparty_node_id: _,  ref current_funding_outpoint, pre_channel_value_satoshis: _, ref post_channel_value_satoshis, ref output_script } => {
+			assert_eq!(*channel_id, *expected_channel_id);
+			assert_eq!(*post_channel_value_satoshis, expected_post_splice_chan_value);
+
+			let tx = Transaction {
+				version: chan_id as i32,
+				lock_time: PackedLockTime::ZERO,
+				// TODO: witness! must not be empty
+				input: vec![
+					TxIn {previous_output: *current_funding_outpoint, script_sig: Script::new(), sequence: Sequence::ENABLE_RBF_NO_LOCKTIME, witness: Witness::new()}
+				],
+				output: vec![TxOut {value: *post_channel_value_satoshis, script_pubkey: output_script.clone()}]
+			};
+			let funding_outpoint = OutPoint { txid: tx.txid(), index: 0 };
+			(tx, funding_outpoint)
+		},
+		_ => panic!("Unexpected event"),
+	}
 }
 
 // Receiver must have been initialized with manually_accept_inbound_channels set to true.

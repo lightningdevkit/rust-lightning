@@ -59,6 +59,15 @@ pub(crate) enum Message<T> where T: core::fmt::Debug + Type + TestEq {
 	AcceptChannelV2(msgs::AcceptChannelV2),
 	FundingCreated(msgs::FundingCreated),
 	FundingSigned(msgs::FundingSigned),
+	// #SPLICING
+	Splice(msgs::Splice),
+	SpliceAck(msgs::SpliceAck),
+	SpliceLocked(msgs::SpliceLocked),
+	SpliceCreated(msgs::SpliceCreated),
+	SpliceCommSigned(msgs::SpliceCommSigned),
+	SpliceCommAck(msgs::SpliceCommAck),
+	SpliceSigned(msgs::SpliceSigned),
+	SpliceSignedAck(msgs::SpliceSignedAck),
 	TxAddInput(msgs::TxAddInput),
 	TxAddOutput(msgs::TxAddOutput),
 	TxRemoveInput(msgs::TxRemoveInput),
@@ -110,6 +119,14 @@ impl<T> Writeable for Message<T> where T: core::fmt::Debug + Type + TestEq {
 			&Message::AcceptChannelV2(ref msg) => msg.write(writer),
 			&Message::FundingCreated(ref msg) => msg.write(writer),
 			&Message::FundingSigned(ref msg) => msg.write(writer),
+			&Message::Splice(ref msg) => msg.write(writer),
+			&Message::SpliceAck(ref msg) => msg.write(writer),
+			&Message::SpliceLocked(ref msg) => msg.write(writer),
+			&Message::SpliceCreated(ref msg) => msg.write(writer),
+			&Message::SpliceCommSigned(ref msg) => msg.write(writer),
+			&Message::SpliceCommAck(ref msg) => msg.write(writer),
+			&Message::SpliceSigned(ref msg) => msg.write(writer),
+			&Message::SpliceSignedAck(ref msg) => msg.write(writer),
 			&Message::TxAddInput(ref msg) => msg.write(writer),
 			&Message::TxAddOutput(ref msg) => msg.write(writer),
 			&Message::TxRemoveInput(ref msg) => msg.write(writer),
@@ -161,6 +178,15 @@ impl<T> Type for Message<T> where T: core::fmt::Debug + Type + TestEq {
 			&Message::AcceptChannelV2(ref msg) => msg.type_id(),
 			&Message::FundingCreated(ref msg) => msg.type_id(),
 			&Message::FundingSigned(ref msg) => msg.type_id(),
+			// #SPLICING
+			&Message::Splice(ref msg) => msg.type_id(),
+			&Message::SpliceAck(ref msg) => msg.type_id(),
+			&Message::SpliceLocked(ref msg) => msg.type_id(),
+			&Message::SpliceCreated(ref msg) => msg.type_id(),
+			&Message::SpliceCommSigned(ref msg) => msg.type_id(),
+			&Message::SpliceCommAck(ref msg) => msg.type_id(),
+			&Message::SpliceSigned(ref msg) => msg.type_id(),
+			&Message::SpliceSignedAck(ref msg) => msg.type_id(),
 			&Message::TxAddInput(ref msg) => msg.type_id(),
 			&Message::TxAddOutput(ref msg) => msg.type_id(),
 			&Message::TxRemoveInput(ref msg) => msg.type_id(),
@@ -257,6 +283,31 @@ fn do_read<R: io::Read, T, H: core::ops::Deref>(buffer: &mut R, message_type: u1
 		},
 		msgs::FundingSigned::TYPE => {
 			Ok(Message::FundingSigned(Readable::read(buffer)?))
+		},
+		// #SPLICING
+		msgs::Splice::TYPE => {
+			Ok(Message::Splice(Readable::read(buffer)?))
+		},
+		msgs::SpliceAck::TYPE => {
+			Ok(Message::SpliceAck(Readable::read(buffer)?))
+		},
+		msgs::SpliceLocked::TYPE => {
+			Ok(Message::SpliceLocked(Readable::read(buffer)?))
+		},
+		msgs::SpliceCreated::TYPE => {
+			Ok(Message::SpliceCreated(Readable::read(buffer)?))
+		},
+		msgs::SpliceCommSigned::TYPE => {
+			Ok(Message::SpliceCommSigned(Readable::read(buffer)?))
+		},
+		msgs::SpliceCommAck::TYPE => {
+			Ok(Message::SpliceCommAck(Readable::read(buffer)?))
+		},
+		msgs::SpliceSigned::TYPE => {
+			Ok(Message::SpliceSigned(Readable::read(buffer)?))
+		},
+		msgs::SpliceSignedAck::TYPE => {
+			Ok(Message::SpliceSignedAck(Readable::read(buffer)?))
 		},
 		msgs::TxAddInput::TYPE => {
 			Ok(Message::TxAddInput(Readable::read(buffer)?))
@@ -462,6 +513,52 @@ impl Encode for msgs::OpenChannelV2 {
 
 impl Encode for msgs::AcceptChannelV2 {
 	const TYPE: u16 = 65;
+}
+
+// #SPLICING
+impl Encode for msgs::Splice {
+	// TODO(splicing) Double check with spec; spec contains 74, which is probably wrong as it is used by tx_Abort; CLN uses 75
+	const TYPE: u16 = 75;
+}
+
+// #SPLICING
+impl Encode for msgs::SpliceAck {
+	const TYPE: u16 = 76;
+}
+
+// #SPLICING
+impl Encode for msgs::SpliceLocked {
+	const TYPE: u16 = 77;
+}
+
+// #SPLICING
+impl Encode for msgs::SpliceCreated {
+	// TODO: Made-up value!
+	const TYPE: u16 = 78;
+}
+
+// #SPLICING
+impl Encode for msgs::SpliceCommSigned {
+	// TODO: Made-up value!
+	const TYPE: u16 = 80;
+}
+
+// #SPLICING
+impl Encode for msgs::SpliceCommAck {
+	// TODO: Made-up value!
+	const TYPE: u16 = 81;
+}
+
+// #SPLICING
+impl Encode for msgs::SpliceSigned {
+	// TODO: Made-up value!
+	const TYPE: u16 = 82;
+}
+
+// #SPLICING
+impl Encode for msgs::SpliceSignedAck {
+	// TODO: Made-up value!
+	const TYPE: u16 = 83;
 }
 
 impl Encode for msgs::TxAddInput {

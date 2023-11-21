@@ -231,6 +231,31 @@ impl ChannelMessageHandler for ErroringMessageHandler {
 	fn handle_closing_signed(&self, their_node_id: &PublicKey, msg: &msgs::ClosingSigned) {
 		ErroringMessageHandler::push_error(self, their_node_id, msg.channel_id);
 	}
+	// #SPLICING
+	fn handle_splice(&self, their_node_id: &PublicKey, msg: &msgs::Splice) {
+		ErroringMessageHandler::push_error(&self, their_node_id, msg.channel_id);
+	}
+	fn handle_splice_ack(&self, their_node_id: &PublicKey, msg: &msgs::SpliceAck) {
+		ErroringMessageHandler::push_error(&self, their_node_id, msg.channel_id);
+	}
+	fn handle_splice_locked(&self, their_node_id: &PublicKey, msg: &msgs::SpliceLocked) {
+		ErroringMessageHandler::push_error(&self, their_node_id, msg.channel_id);
+	}
+	fn handle_splice_created(&self, their_node_id: &PublicKey, msg: &msgs::SpliceCreated) {
+		ErroringMessageHandler::push_error(self, their_node_id, msg.channel_id);
+	}
+	fn handle_splice_comm_signed(&self, their_node_id: &PublicKey, msg: &msgs::SpliceCommSigned) {
+		ErroringMessageHandler::push_error(self, their_node_id, msg.channel_id);
+	}
+	fn handle_splice_comm_ack(&self, their_node_id: &PublicKey, msg: &msgs::SpliceCommAck) {
+		ErroringMessageHandler::push_error(self, their_node_id, msg.channel_id);
+	}
+	fn handle_splice_signed(&self, their_node_id: &PublicKey, msg: &msgs::SpliceSigned) {
+		ErroringMessageHandler::push_error(self, their_node_id, msg.channel_id);
+	}
+	fn handle_splice_signed_ack(&self, their_node_id: &PublicKey, msg: &msgs::SpliceSignedAck) {
+		ErroringMessageHandler::push_error(self, their_node_id, msg.channel_id);
+	}
 	fn handle_update_add_htlc(&self, their_node_id: &PublicKey, msg: &msgs::UpdateAddHTLC) {
 		ErroringMessageHandler::push_error(self, their_node_id, msg.channel_id);
 	}
@@ -258,7 +283,7 @@ impl ChannelMessageHandler for ErroringMessageHandler {
 	fn handle_channel_reestablish(&self, their_node_id: &PublicKey, msg: &msgs::ChannelReestablish) {
 		ErroringMessageHandler::push_error(self, their_node_id, msg.channel_id);
 	}
-	// msgs::ChannelUpdate does not contain the channel_id field, so we just drop them.
+		// msgs::ChannelUpdate does not contain the channel_id field, so we just drop them.
 	fn handle_channel_update(&self, _their_node_id: &PublicKey, _msg: &msgs::ChannelUpdate) {}
 	fn peer_disconnected(&self, _their_node_id: &PublicKey) {}
 	fn peer_connected(&self, _their_node_id: &PublicKey, _init: &msgs::Init, _inbound: bool) -> Result<(), ()> { Ok(()) }
@@ -1643,6 +1668,33 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 				self.message_handler.chan_handler.handle_channel_ready(&their_node_id, &msg);
 			},
 
+			// #SPLICING
+			// Splicing messages:
+			wire::Message::Splice(msg) => {
+				self.message_handler.chan_handler.handle_splice(&their_node_id, &msg);
+			}
+			wire::Message::SpliceAck(msg) => {
+				self.message_handler.chan_handler.handle_splice_ack(&their_node_id, &msg);
+			}
+			wire::Message::SpliceLocked(msg) => {
+				self.message_handler.chan_handler.handle_splice_locked(&their_node_id, &msg);
+			}
+			wire::Message::SpliceCreated(msg) => {
+				self.message_handler.chan_handler.handle_splice_created(&their_node_id, &msg);
+			},
+			wire::Message::SpliceCommSigned(msg) => {
+				self.message_handler.chan_handler.handle_splice_comm_signed(&their_node_id, &msg);
+			},
+			wire::Message::SpliceCommAck(msg) => {
+				self.message_handler.chan_handler.handle_splice_comm_ack(&their_node_id, &msg);
+			},
+			wire::Message::SpliceSigned(msg) => {
+				self.message_handler.chan_handler.handle_splice_signed(&their_node_id, &msg);
+			},
+			wire::Message::SpliceSignedAck(msg) => {
+				self.message_handler.chan_handler.handle_splice_signed_ack(&their_node_id, &msg);
+			},
+
 			// Interactive transaction construction messages:
 			wire::Message::TxAddInput(msg) => {
 				self.message_handler.chan_handler.handle_tx_add_input(&their_node_id, &msg);
@@ -1958,6 +2010,58 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 							log_debug!(self.logger, "Handling SendChannelReady event in peer_handler for node {} for channel {}",
 									log_pubkey!(node_id),
 									&msg.channel_id);
+							self.enqueue_message(&mut *get_peer_for_forwarding!(node_id), msg);
+						},
+						// #SPLICING
+						MessageSendEvent::SendSplice { ref node_id, ref msg} => {
+							log_debug!(self.logger, "Handling SendSplice event in peer_handler for node {} for channel {}",
+									log_pubkey!(node_id),
+									&msg.channel_id);
+							self.enqueue_message(&mut *get_peer_for_forwarding!(node_id), msg);
+						}
+						MessageSendEvent::SendSpliceAck { ref node_id, ref msg} => {
+							log_debug!(self.logger, "Handling SendSpliceAck event in peer_handler for node {} for channel {}",
+									log_pubkey!(node_id),
+									&msg.channel_id);
+							self.enqueue_message(&mut *get_peer_for_forwarding!(node_id), msg);
+						}
+						MessageSendEvent::SendSpliceLocked { ref node_id, ref msg} => {
+							log_debug!(self.logger, "Handling SendSpliceLocked event in peer_handler for node {} for channel {}",
+									log_pubkey!(node_id),
+									&msg.channel_id);
+							self.enqueue_message(&mut *get_peer_for_forwarding!(node_id), msg);
+						}
+						MessageSendEvent::SendSpliceCreated { ref node_id, ref msg } => {
+							log_debug!(self.logger, "Handling SendSpliceCreated event in peer_handler for node {} for channel {} (which becomes {})",
+									log_pubkey!(node_id),
+									msg.channel_id,
+									log_funding_channel_id!(msg.splice_txid, msg.funding_output_index));
+							// TODO: If the peer is gone we should generate a DiscardFunding event
+							// indicating to the wallet that they should just throw away this funding transaction
+							self.enqueue_message(&mut *get_peer_for_forwarding!(node_id), msg);
+						},
+						MessageSendEvent::SendSpliceCommSigned { ref node_id, ref msg } => {
+							log_debug!(self.logger, "Handling SendCommSigned event in peer_handler for node {} for channel {}",
+									log_pubkey!(node_id),
+									&msg.channel_id);
+							self.enqueue_message(&mut *get_peer_for_forwarding!(node_id), msg);
+						},
+						MessageSendEvent::SendSpliceCommAck { ref node_id, ref msg } => {
+							log_debug!(self.logger, "Handling SendCommAck event in peer_handler for node {} for channel {}",
+									log_pubkey!(node_id),
+									&msg.channel_id);
+							self.enqueue_message(&mut *get_peer_for_forwarding!(node_id), msg);
+						},
+						MessageSendEvent::SendSpliceSigned { ref node_id, ref msg } => {
+							log_debug!(self.logger, "Handling SendSpliceSigned event in peer_handler for node {} for channel {}",
+									log_pubkey!(node_id),
+									msg.channel_id);
+							self.enqueue_message(&mut *get_peer_for_forwarding!(node_id), msg);
+						},
+						MessageSendEvent::SendSpliceSignedAck { ref node_id, ref msg } => {
+							log_debug!(self.logger, "Handling SendSpliceSignedAck event in peer_handler for node {} for channel {}",
+									log_pubkey!(node_id),
+									msg.channel_id);
 							self.enqueue_message(&mut *get_peer_for_forwarding!(node_id), msg);
 						},
 						MessageSendEvent::SendTxAddInput { ref node_id, ref msg } => {
