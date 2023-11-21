@@ -348,9 +348,9 @@ fn do_test_unconf_chan(reload_node: bool, reorg_after_reload: bool, use_funding_
 	*nodes[0].chain_monitor.expect_channel_force_closed.lock().unwrap() = Some((chan.2, true));
 	nodes[0].node.test_process_background_events(); // Required to free the pending background monitor update
 	check_added_monitors!(nodes[0], 1);
-	let expected_err = "Funding transaction was un-confirmed. Locked at 6 confs, now have 0 confs.";
+	let expected_err = "Funding transaction was un-confirmed. Locked at 6 confs, now have Unconfirmed confs.";
 	if reorg_after_reload || !reload_node {
-		handle_announce_close_broadcast_events(&nodes, 0, 1, true, "Channel closed because of an exception: Funding transaction was un-confirmed. Locked at 6 confs, now have 0 confs.");
+		handle_announce_close_broadcast_events(&nodes, 0, 1, true, "Channel closed because of an exception: Funding transaction was un-confirmed. Locked at 6 confs, now have Unconfirmed confs.");
 		check_added_monitors!(nodes[1], 1);
 		check_closed_event!(nodes[1], 1, ClosureReason::CounterpartyForceClosed { peer_msg: UntrustedString(format!("Channel closed because of an exception: {}", expected_err)) }
 			, [nodes[0].node.get_our_node_id()], 100000);

@@ -686,6 +686,84 @@ impl UnfundedChannelContext {
 	}
 }
 
+/// Info about a transaction and its confirmation status (pending/confirmed).
+/// It is used mainly for funding transactions (established or candidates).
+#[derive(Default)]
+struct TransactionConfirmation {
+	/// The transaction, or None.
+	transaction: Option<Transaction>,
+	/// The hash of the block in which the transaction was included, or None if there is no such block known.
+	confirmed_in: Option<BlockHash>,
+	/// The height of the block in which the transaction was included, or 0 if there is no such block known.
+	confirmation_height: u32,
+}
+
+/// Confirmation depth: height relative to a current height.
+#[derive(Debug, PartialEq)]
+enum RelativeConfirmationDepth {
+	/// If fhere is no confirmation height (it was not confirmed, or confirmed then reorg'd).
+	Unconfirmed,
+	/// Confirmed by N blokcks: current_height - confirmation_height + 1. Always at least 1.
+	Confirmed(u32),
+	/// If the confirmation height is in the 'future' (e.g. due to a reorg).
+	ConfirmedInFuture,
+}
+
+impl RelativeConfirmationDepth {
+	/// Check if confirmed
+	fn is_confirmed(&self) -> bool {
+		matches!(self, Self::Confirmed(_d))
+	}
+
+	/// Check if confirmed for a desired mimimum depth
+	fn is_confirmed_for(&self, min_depth: Option<u32>) -> bool {
+		match min_depth {
+			None => {
+				// min depth is unset
+				false
+			},
+			Some(min_depth) => {
+				if min_depth == 0 {
+					// confirmation not needed
+					true
+				} else {
+					if let Self::Confirmed(depth) = self {
+						// confirmed, check depth
+						*depth >= min_depth
+					} else {
+						// not confirmed
+						false
+					}
+				}
+			}
+		}
+	}
+
+	/// Return depth as a single numnber: the depth or 0 for unconfirmed (or confirmed in future)
+	fn as_num(&self) -> u32 {
+		match self {
+			Self::Unconfirmed | Self::ConfirmedInFuture => 0,
+			Self::Confirmed(d) => *d,
+		}
+	}
+}
+
+impl TransactionConfirmation {
+	/// Get the confirmation depth: height relative to the given current height.
+	fn confirmation_depth(&self, current_height: u32) -> RelativeConfirmationDepth {
+		if self.confirmation_height == 0 {
+			RelativeConfirmationDepth::Unconfirmed
+		} else {
+			match current_height.checked_sub(self.confirmation_height) {
+				// current_height is lower (subtraction would underflow)
+				None => RelativeConfirmationDepth::ConfirmedInFuture,
+				// confirmed, depth is the difference
+				Some(d) => RelativeConfirmationDepth::Confirmed(d + 1),
+			}
+		}
+	}
+}
+
 /// Contains everything about the channel including state, and various flags.
 pub(super) struct ChannelContext<SP: Deref> where SP::Target: SignerProvider {
 	config: LegacyChannelConfig,
@@ -829,9 +907,6 @@ pub(super) struct ChannelContext<SP: Deref> where SP::Target: SignerProvider {
 	/// milliseconds, so any accidental force-closes here should be exceedingly rare.
 	expecting_peer_commitment_signed: bool,
 
-	/// The hash of the block in which the funding transaction was included.
-	funding_tx_confirmed_in: Option<BlockHash>,
-	funding_tx_confirmation_height: u32,
 	short_channel_id: Option<u64>,
 	/// Either the height at which this channel was created or the height at which it was last
 	/// serialized if it was serialized by versions prior to 0.0.103.
@@ -875,7 +950,8 @@ pub(super) struct ChannelContext<SP: Deref> where SP::Target: SignerProvider {
 	counterparty_forwarding_info: Option<CounterpartyForwardingInfo>,
 
 	pub(crate) channel_transaction_parameters: ChannelTransactionParameters,
-	funding_transaction: Option<Transaction>,
+	/// The funding transaction and its confirmation status
+	funding_tx_confirmation: TransactionConfirmation,
 	is_batch_funding: Option<()>,
 
 	counterparty_cur_commitment_point: Option<PublicKey>,
@@ -1113,17 +1189,12 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 
 	/// Returns the block hash in which our funding transaction was confirmed.
 	pub fn get_funding_tx_confirmed_in(&self) -> Option<BlockHash> {
-		self.funding_tx_confirmed_in
+		self.funding_tx_confirmation.confirmed_in
 	}
 
 	/// Returns the current number of confirmations on the funding transaction.
 	pub fn get_funding_tx_confirmations(&self, height: u32) -> u32 {
-		if self.funding_tx_confirmation_height == 0 {
-			// We either haven't seen any confirmation yet, or observed a reorg.
-			return 0;
-		}
-
-		height.checked_sub(self.funding_tx_confirmation_height).map_or(0, |c| c + 1)
+		self.funding_tx_confirmation.confirmation_depth(height).as_num()
 	}
 
 	fn get_holder_selected_contest_delay(&self) -> u16 {
@@ -2048,7 +2119,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 	/// Returns the transaction if there is a pending funding transaction that is yet to be
 	/// broadcast.
 	pub fn unbroadcasted_funding(&self) -> Option<Transaction> {
-		self.if_unbroadcasted_funding(|| self.funding_transaction.clone())
+		self.if_unbroadcasted_funding(|| self.funding_tx_confirmation.transaction.clone())
 	}
 
 	/// Returns the transaction ID if there is a pending funding transaction that is yet to be
@@ -3896,7 +3967,7 @@ impl<SP: Deref> Channel<SP> where
 		// first received the funding_signed.
 		let mut funding_broadcastable =
 			if self.context.is_outbound() && self.context.channel_state & !STATE_FLAGS >= ChannelState::FundingSent as u32 && self.context.channel_state & ChannelState::WaitingForBatch as u32 == 0 {
-				self.context.funding_transaction.take()
+				self.context.funding_tx_confirmation.transaction.take()
 			} else { None };
 		// That said, if the funding transaction is already confirmed (ie we're active with a
 		// minimum_depth over 0) don't bother re-broadcasting the confirmed funding tx.
@@ -4885,7 +4956,7 @@ impl<SP: Deref> Channel<SP> where
 			// Because deciding we're awaiting initial broadcast spuriously could result in
 			// funds-loss (as we don't have a monitor, but have the funding transaction confirmed),
 			// we hard-assert here, even in production builds.
-			if self.context.is_outbound() { assert!(self.context.funding_transaction.is_some()); }
+			if self.context.is_outbound() { assert!(self.context.funding_tx_confirmation.transaction.is_some()); }
 			assert!(self.context.monitor_pending_channel_ready);
 			assert_eq!(self.context.latest_monitor_update_id, 0);
 			return true;
@@ -4931,16 +5002,14 @@ impl<SP: Deref> Channel<SP> where
 		// Called:
 		//  * always when a new block/transactions are confirmed with the new height
 		//  * when funding is signed with a height of 0
-		if self.context.funding_tx_confirmation_height == 0 && self.context.minimum_depth != Some(0) {
-			return None;
-		}
 
-		let funding_tx_confirmations = height as i64 - self.context.funding_tx_confirmation_height as i64 + 1;
-		if funding_tx_confirmations <= 0 {
-			self.context.funding_tx_confirmation_height = 0;
+		// Check confirmation status
+		let confirmation_depth = self.context.funding_tx_confirmation.confirmation_depth(height);
+		if confirmation_depth == RelativeConfirmationDepth::ConfirmedInFuture {
+			// reset to unconfirmed
+			self.context.funding_tx_confirmation.confirmation_height = 0;
 		}
-
-		if funding_tx_confirmations < self.context.minimum_depth.unwrap_or(0) as i64 {
+		if !confirmation_depth.is_confirmed_for(self.context.minimum_depth) {
 			return None;
 		}
 
@@ -4964,7 +5033,7 @@ impl<SP: Deref> Channel<SP> where
 			// We got a reorg but not enough to trigger a force close, just ignore.
 			false
 		} else {
-			if self.context.funding_tx_confirmation_height != 0 && self.context.channel_state & !STATE_FLAGS < ChannelState::ChannelReady as u32 {
+			if self.context.funding_tx_confirmation.confirmation_height != 0 && self.context.channel_state & !STATE_FLAGS < ChannelState::ChannelReady as u32 {
 				// We should never see a funding transaction on-chain until we've received
 				// funding_signed (if we're an outbound channel), or seen funding_generated (if we're
 				// an inbound channel - before that we have no known funding TXID). The fuzzer,
@@ -5012,7 +5081,7 @@ impl<SP: Deref> Channel<SP> where
 			for &(index_in_block, tx) in txdata.iter() {
 				// Check if the transaction is the expected funding transaction, and if it is,
 				// check that it pays the right amount to the right script.
-				if self.context.funding_tx_confirmation_height == 0 {
+				if self.context.funding_tx_confirmation.confirmation_height == 0 {
 					if tx.txid() == funding_txo.txid {
 						let txo_idx = funding_txo.index as usize;
 						if txo_idx >= tx.output.len() || tx.output[txo_idx].script_pubkey != self.context.get_funding_redeemscript().to_v0_p2wsh() ||
@@ -5042,8 +5111,8 @@ impl<SP: Deref> Channel<SP> where
 									}
 								}
 							}
-							self.context.funding_tx_confirmation_height = height;
-							self.context.funding_tx_confirmed_in = Some(*block_hash);
+							self.context.funding_tx_confirmation.confirmation_height = height;
+							self.context.funding_tx_confirmation.confirmed_in = Some(*block_hash);
 							self.context.short_channel_id = match scid_from_parts(height as u64, index_in_block as u64, txo_idx as u64) {
 								Ok(scid) => Some(scid),
 								Err(_) => panic!("Block was bogus - either height was > 16 million, had > 16 million transactions, or had > 65k outputs"),
@@ -5137,13 +5206,10 @@ impl<SP: Deref> Channel<SP> where
 		let non_shutdown_state = self.context.channel_state & (!MULTI_STATE_FLAGS);
 		if non_shutdown_state & !STATE_FLAGS >= ChannelState::ChannelReady as u32 ||
 		   (non_shutdown_state & ChannelState::OurChannelReady as u32) == ChannelState::OurChannelReady as u32 {
-			let mut funding_tx_confirmations = height as i64 - self.context.funding_tx_confirmation_height as i64 + 1;
-			if self.context.funding_tx_confirmation_height == 0 {
-				// Note that check_get_channel_ready may reset funding_tx_confirmation_height to
-				// zero if it has been reorged out, however in either case, our state flags
-				// indicate we've already sent a channel_ready
-				funding_tx_confirmations = 0;
-			}
+			let confirmation_depth = self.context.funding_tx_confirmation.confirmation_depth(height);
+			// Note that check_get_channel_ready may reset funding_tx_confirmation.confirmation_height to
+			// zero if it has been reorged out, however in either case, our state flags
+			// indicate we've already sent a channel_ready
 
 			// If we've sent channel_ready (or have both sent and received channel_ready), and
 			// the funding transaction has become unconfirmed,
@@ -5154,15 +5220,15 @@ impl<SP: Deref> Channel<SP> where
 			// 0-conf channel, but not doing so may lead to the
 			// `ChannelManager::short_to_chan_info` map  being inconsistent, so we currently have
 			// to.
-			if funding_tx_confirmations == 0 && self.context.funding_tx_confirmed_in.is_some() {
-				let err_reason = format!("Funding transaction was un-confirmed. Locked at {} confs, now have {} confs.",
-					self.context.minimum_depth.unwrap(), funding_tx_confirmations);
+			if !confirmation_depth.is_confirmed() && self.context.funding_tx_confirmation.confirmed_in.is_some() {
+				let err_reason = format!("Funding transaction was un-confirmed. Locked at {} confs, now have {:?} confs.",
+					self.context.minimum_depth.unwrap(), confirmation_depth);
 				return Err(ClosureReason::ProcessingError { err: err_reason });
 			}
-		} else if !self.context.is_outbound() && self.context.funding_tx_confirmed_in.is_none() &&
+		} else if !self.context.is_outbound() && self.context.funding_tx_confirmation.confirmed_in.is_none() &&
 				height >= self.context.channel_creation_height + FUNDING_CONF_DEADLINE_BLOCKS {
 			log_info!(logger, "Closing channel {} due to funding timeout", &self.context.channel_id);
-			// If funding_tx_confirmed_in is unset, the channel must not be active
+			// If funding_tx_confirmation.confirmed_in is unset, the channel must not be active
 			assert!(non_shutdown_state & !STATE_FLAGS <= ChannelState::ChannelReady as u32);
 			assert_eq!(non_shutdown_state & ChannelState::OurChannelReady as u32, 0);
 			return Err(ClosureReason::FundingTimedOut);
@@ -5178,10 +5244,10 @@ impl<SP: Deref> Channel<SP> where
 	/// force-close the channel, but may also indicate a harmless reorganization of a block or two
 	/// before the channel has reached channel_ready and we can just wait for more blocks.
 	pub fn funding_transaction_unconfirmed<L: Deref>(&mut self, logger: &L) -> Result<(), ClosureReason> where L::Target: Logger {
-		if self.context.funding_tx_confirmation_height != 0 {
+		if self.context.funding_tx_confirmation.confirmation_height > 0 {
 			// We handle the funding disconnection by calling best_block_updated with a height one
 			// below where our funding was connected, implying a reorg back to conf_height - 1.
-			let reorg_height = self.context.funding_tx_confirmation_height - 1;
+			let reorg_height = self.context.funding_tx_confirmation.confirmation_height - 1;
 			// We use the time field to bump the current time we set on channel updates if its
 			// larger. If we don't know that time has moved forward, we can just set it to the last
 			// time we saw and it will be ignored.
@@ -5254,7 +5320,7 @@ impl<SP: Deref> Channel<SP> where
 		NS::Target: NodeSigner,
 		L::Target: Logger
 	{
-		if self.context.funding_tx_confirmation_height == 0 || self.context.funding_tx_confirmation_height + 5 > best_block_height {
+		if self.context.funding_tx_confirmation.confirmation_height == 0 || self.context.funding_tx_confirmation.confirmation_height + 5 > best_block_height {
 			return None;
 		}
 
@@ -5365,7 +5431,7 @@ impl<SP: Deref> Channel<SP> where
 		}
 
 		self.context.announcement_sigs = Some((msg.node_signature, msg.bitcoin_signature));
-		if self.context.funding_tx_confirmation_height == 0 || self.context.funding_tx_confirmation_height + 5 > best_block_height {
+		if self.context.funding_tx_confirmation.confirmation_height == 0 || self.context.funding_tx_confirmation.confirmation_height + 5 > best_block_height {
 			return Err(ChannelError::Ignore(
 				"Got announcement_signatures prior to the required six confirmations - we may not have received a block yet that our peer has".to_owned()));
 		}
@@ -5378,7 +5444,7 @@ impl<SP: Deref> Channel<SP> where
 	pub fn get_signed_channel_announcement<NS: Deref>(
 		&self, node_signer: &NS, chain_hash: ChainHash, best_block_height: u32, user_config: &UserConfig
 	) -> Option<msgs::ChannelAnnouncement> where NS::Target: NodeSigner {
-		if self.context.funding_tx_confirmation_height == 0 || self.context.funding_tx_confirmation_height + 5 > best_block_height {
+		if self.context.funding_tx_confirmation.confirmation_height == 0 || self.context.funding_tx_confirmation.confirmation_height + 5 > best_block_height {
 			return None;
 		}
 		let announcement = match self.get_channel_announcement(node_signer, chain_hash, user_config) {
@@ -6020,8 +6086,6 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 				closing_fee_limits: None,
 				target_closing_feerate_sats_per_kw: None,
 
-				funding_tx_confirmed_in: None,
-				funding_tx_confirmation_height: 0,
 				short_channel_id: None,
 				channel_creation_height: current_chain_height,
 
@@ -6048,7 +6112,7 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 					funding_outpoint: None,
 					channel_type_features: channel_type.clone()
 				},
-				funding_transaction: None,
+				funding_tx_confirmation: TransactionConfirmation::default(),
 				is_batch_funding: None,
 
 				counterparty_cur_commitment_point: None,
@@ -6127,7 +6191,7 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 			self.context.minimum_depth = Some(COINBASE_MATURITY);
 		}
 
-		self.context.funding_transaction = Some(funding_transaction);
+		self.context.funding_tx_confirmation.transaction = Some(funding_transaction);
 		self.context.is_batch_funding = Some(()).filter(|_| is_batch_funding);
 
 		let funding_created = self.context.get_funding_created_msg(logger);
@@ -6653,8 +6717,6 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 				closing_fee_limits: None,
 				target_closing_feerate_sats_per_kw: None,
 
-				funding_tx_confirmed_in: None,
-				funding_tx_confirmation_height: 0,
 				short_channel_id: None,
 				channel_creation_height: current_chain_height,
 
@@ -6685,7 +6747,7 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 					funding_outpoint: None,
 					channel_type_features: channel_type.clone()
 				},
-				funding_transaction: None,
+				funding_tx_confirmation: TransactionConfirmation::default(),
 				is_batch_funding: None,
 
 				counterparty_cur_commitment_point: Some(msg.first_per_commitment_point),
@@ -7162,8 +7224,8 @@ impl<SP: Deref> Writeable for Channel<SP> where SP::Target: SignerProvider {
 		// consider the stale state on reload.
 		0u8.write(writer)?;
 
-		self.context.funding_tx_confirmed_in.write(writer)?;
-		self.context.funding_tx_confirmation_height.write(writer)?;
+		self.context.funding_tx_confirmation.confirmed_in.write(writer)?;
+		self.context.funding_tx_confirmation.confirmation_height.write(writer)?;
 		self.context.short_channel_id.write(writer)?;
 
 		self.context.counterparty_dust_limit_satoshis.write(writer)?;
@@ -7191,7 +7253,7 @@ impl<SP: Deref> Writeable for Channel<SP> where SP::Target: SignerProvider {
 		}
 
 		self.context.channel_transaction_parameters.write(writer)?;
-		self.context.funding_transaction.write(writer)?;
+		self.context.funding_tx_confirmation.transaction.write(writer)?;
 
 		self.context.counterparty_cur_commitment_point.write(writer)?;
 		self.context.counterparty_prev_commitment_point.write(writer)?;
@@ -7725,8 +7787,6 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 				closing_fee_limits: None,
 				target_closing_feerate_sats_per_kw,
 
-				funding_tx_confirmed_in,
-				funding_tx_confirmation_height,
 				short_channel_id,
 				channel_creation_height: channel_creation_height.unwrap(),
 
@@ -7744,7 +7804,11 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 				counterparty_forwarding_info,
 
 				channel_transaction_parameters: channel_parameters,
-				funding_transaction,
+				funding_tx_confirmation: TransactionConfirmation {
+					transaction: funding_transaction,
+					confirmed_in: funding_tx_confirmed_in,
+					confirmation_height: funding_tx_confirmation_height,
+				},
 				is_batch_funding,
 
 				counterparty_cur_commitment_point,
@@ -7799,7 +7863,7 @@ mod tests {
 	use crate::ln::PaymentHash;
 	use crate::ln::channelmanager::{self, HTLCSource, PaymentId};
 	use crate::ln::channel::InitFeatures;
-	use crate::ln::channel::{ChannelState, InboundHTLCOutput, OutboundV1Channel, InboundV1Channel, OutboundHTLCOutput, InboundHTLCState, OutboundHTLCState, HTLCCandidate, HTLCInitiator, commit_tx_fee_msat};
+	use crate::ln::channel::{ChannelState, InboundHTLCOutput, OutboundV1Channel, InboundV1Channel, OutboundHTLCOutput, InboundHTLCState, OutboundHTLCState, HTLCCandidate, HTLCInitiator, RelativeConfirmationDepth, TransactionConfirmation, commit_tx_fee_msat};
 	use crate::ln::channel::{MAX_FUNDING_SATOSHIS_NO_WUMBO, TOTAL_BITCOIN_SUPPLY_SATOSHIS, MIN_THEIR_CHAN_RESERVE_SATOSHIS};
 	use crate::ln::features::ChannelTypeFeatures;
 	use crate::ln::msgs::{ChannelUpdate, DecodeError, UnsignedChannelUpdate, MAX_VALUE_MSAT};
@@ -7839,6 +7903,77 @@ mod tests {
 		assert_eq!(TOTAL_BITCOIN_SUPPLY_SATOSHIS, 21_000_000 * 100_000_000);
 		assert!(MAX_FUNDING_SATOSHIS_NO_WUMBO <= TOTAL_BITCOIN_SUPPLY_SATOSHIS,
 		        "MAX_FUNDING_SATOSHIS_NO_WUMBO is greater than all satoshis in existence");
+	}
+
+	#[test]
+	fn test_transaction_confirmation_depth() {
+		{
+			let tx_conf = TransactionConfirmation { transaction: None, confirmed_in: None, confirmation_height: 0 };
+			assert_eq!(tx_conf.confirmation_depth(42), RelativeConfirmationDepth::Unconfirmed);
+		}
+		{
+			let tx_conf = TransactionConfirmation { transaction: None, confirmed_in: None, confirmation_height: 100005 };
+			assert_eq!(tx_conf.confirmation_depth(100008), RelativeConfirmationDepth::Confirmed(4));
+		}
+		{
+			let tx_conf = TransactionConfirmation { transaction: None, confirmed_in: None, confirmation_height: 100005 };
+			assert_eq!(tx_conf.confirmation_depth(100005), RelativeConfirmationDepth::Confirmed(1));
+		}
+		{
+			// confirmation_height is larger than current, 'in the future'
+			let tx_conf = TransactionConfirmation { transaction: None, confirmed_in: None, confirmation_height: 100005 };
+			assert_eq!(tx_conf.confirmation_depth(100000), RelativeConfirmationDepth::ConfirmedInFuture);
+		}
+	}
+
+	#[test]
+	fn test_relative_confirmation_height_is_confirmed() {
+		assert_eq!(RelativeConfirmationDepth::Confirmed(3).is_confirmed(), true);
+		assert_eq!(RelativeConfirmationDepth::Unconfirmed.is_confirmed(), false);
+		assert_eq!(RelativeConfirmationDepth::ConfirmedInFuture.is_confirmed(), false);
+	}
+
+	#[test]
+	fn test_relative_confirmation_height_is_confirmed_for() {
+		{
+			assert_eq!(RelativeConfirmationDepth::Confirmed(1).is_confirmed_for(Some(3)), false);
+			assert_eq!(RelativeConfirmationDepth::Confirmed(2).is_confirmed_for(Some(3)), false);
+			assert_eq!(RelativeConfirmationDepth::Confirmed(3).is_confirmed_for(Some(3)), true);
+			assert_eq!(RelativeConfirmationDepth::Confirmed(4).is_confirmed_for(Some(3)), true);
+			assert_eq!(RelativeConfirmationDepth::Unconfirmed.is_confirmed_for(Some(3)), false);
+			assert_eq!(RelativeConfirmationDepth::ConfirmedInFuture.is_confirmed_for(Some(3)), false);
+		}
+		{
+			assert_eq!(RelativeConfirmationDepth::Confirmed(1).is_confirmed_for(Some(1)), true);
+			assert_eq!(RelativeConfirmationDepth::Confirmed(2).is_confirmed_for(Some(1)), true);
+			assert_eq!(RelativeConfirmationDepth::Confirmed(3).is_confirmed_for(Some(1)), true);
+			assert_eq!(RelativeConfirmationDepth::Confirmed(4).is_confirmed_for(Some(1)), true);
+			assert_eq!(RelativeConfirmationDepth::Unconfirmed.is_confirmed_for(Some(1)), false);
+			assert_eq!(RelativeConfirmationDepth::ConfirmedInFuture.is_confirmed_for(Some(1)), false);
+		}
+		{
+			assert_eq!(RelativeConfirmationDepth::Confirmed(1).is_confirmed_for(Some(0)), true);
+			assert_eq!(RelativeConfirmationDepth::Confirmed(2).is_confirmed_for(Some(0)), true);
+			assert_eq!(RelativeConfirmationDepth::Confirmed(3).is_confirmed_for(Some(0)), true);
+			assert_eq!(RelativeConfirmationDepth::Confirmed(4).is_confirmed_for(Some(0)), true);
+			assert_eq!(RelativeConfirmationDepth::Unconfirmed.is_confirmed_for(Some(0)), true);
+			assert_eq!(RelativeConfirmationDepth::ConfirmedInFuture.is_confirmed_for(Some(0)), true);
+		}
+		{
+			assert_eq!(RelativeConfirmationDepth::Confirmed(1).is_confirmed_for(None), false);
+			assert_eq!(RelativeConfirmationDepth::Confirmed(2).is_confirmed_for(None), false);
+			assert_eq!(RelativeConfirmationDepth::Confirmed(3).is_confirmed_for(None), false);
+			assert_eq!(RelativeConfirmationDepth::Confirmed(4).is_confirmed_for(None), false);
+			assert_eq!(RelativeConfirmationDepth::Unconfirmed.is_confirmed_for(None), false);
+			assert_eq!(RelativeConfirmationDepth::ConfirmedInFuture.is_confirmed_for(None), false);
+		}
+	}
+
+	#[test]
+	fn test_relative_confirmation_height_num() {
+		assert_eq!(RelativeConfirmationDepth::Confirmed(3).as_num(), 3);
+		assert_eq!(RelativeConfirmationDepth::Unconfirmed.as_num(), 0);
+		assert_eq!(RelativeConfirmationDepth::ConfirmedInFuture.as_num(), 0);
 	}
 
 	struct Keys {
