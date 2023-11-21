@@ -1337,6 +1337,13 @@ impl OutboundPayments {
 					continue 'path_check;
 				}
 			}
+			for (i, hop) in path.hops.iter().enumerate() {
+				// Check for duplicate channel_id in the remaining hops of the path
+				if path.hops.iter().skip(i + 1).any(|other_hop| other_hop.short_channel_id == hop.short_channel_id) {
+					path_errs.push(Err(APIError::InvalidRoute{err: "Path went through the same channel twice".to_owned()}));
+					continue 'path_check;
+				}
+			}
 			total_value += path.final_value_msat();
 			path_errs.push(Ok(()));
 		}
