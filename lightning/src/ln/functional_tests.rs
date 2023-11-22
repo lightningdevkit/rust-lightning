@@ -2590,8 +2590,8 @@ fn do_test_forming_justice_tx_from_monitor_updates(broadcast_initial_commitment:
 	// that a revoked commitment transaction is broadcasted
 	// (Similar to `revoked_output_claim` test but we get the justice tx + broadcast manually)
 	let chanmon_cfgs = create_chanmon_cfgs(2);
-	let destination_script0 = chanmon_cfgs[0].keys_manager.get_destination_script().unwrap();
-	let destination_script1 = chanmon_cfgs[1].keys_manager.get_destination_script().unwrap();
+	let destination_script0 = chanmon_cfgs[0].keys_manager.get_destination_script([0; 32]).unwrap();
+	let destination_script1 = chanmon_cfgs[1].keys_manager.get_destination_script([0; 32]).unwrap();
 	let persisters = vec![WatchtowerPersister::new(destination_script0),
 		WatchtowerPersister::new(destination_script1)];
 	let node_cfgs = create_node_cfgs_with_persisters(2, &chanmon_cfgs, persisters.iter().collect());

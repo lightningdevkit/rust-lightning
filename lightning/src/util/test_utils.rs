@@ -192,7 +192,7 @@ impl SignerProvider for OnlyReadsKeysInterface {
 		))
 	}
 
-	fn get_destination_script(&self) -> Result<ScriptBuf, ()> { Err(()) }
+	fn get_destination_script(&self, _channel_keys_id: [u8; 32]) -> Result<ScriptBuf, ()> { Err(()) }
 	fn get_shutdown_scriptpubkey(&self) -> Result<ShutdownScript, ()> { Err(()) }
 }
 
@@ -1121,7 +1121,7 @@ impl SignerProvider for TestKeysInterface {
 		))
 	}
 
-	fn get_destination_script(&self) -> Result<ScriptBuf, ()> { self.backing.get_destination_script() }
+	fn get_destination_script(&self, channel_keys_id: [u8; 32]) -> Result<ScriptBuf, ()> { self.backing.get_destination_script(channel_keys_id) }
 
 	fn get_shutdown_scriptpubkey(&self) -> Result<ShutdownScript, ()> {
 		match &mut *self.expectations.lock().unwrap() {
