@@ -1021,18 +1021,20 @@ fn decode_next_hop<T, R: ReadableArgs<T>, N: NextPacketBytes>(shared_secret: [u8
 			if hmac == [0; 32] {
 				#[cfg(test)]
 				{
-					// In tests, make sure that the initial onion packet data is, at least, non-0.
-					// We could do some fancy randomness test here, but, ehh, whatever.
-					// This checks for the issue where you can calculate the path length given the
-					// onion data as all the path entries that the originator sent will be here
-					// as-is (and were originally 0s).
-					// Of course reverse path calculation is still pretty easy given naive routing
-					// algorithms, but this fixes the most-obvious case.
-					let mut next_bytes = [0; 32];
-					chacha_stream.read_exact(&mut next_bytes).unwrap();
-					assert_ne!(next_bytes[..], [0; 32][..]);
-					chacha_stream.read_exact(&mut next_bytes).unwrap();
-					assert_ne!(next_bytes[..], [0; 32][..]);
+					if chacha_stream.read.position() < hop_data.len() as u64 - 64 {
+						// In tests, make sure that the initial onion packet data is, at least, non-0.
+						// We could do some fancy randomness test here, but, ehh, whatever.
+						// This checks for the issue where you can calculate the path length given the
+						// onion data as all the path entries that the originator sent will be here
+						// as-is (and were originally 0s).
+						// Of course reverse path calculation is still pretty easy given naive routing
+						// algorithms, but this fixes the most-obvious case.
+						let mut next_bytes = [0; 32];
+						chacha_stream.read_exact(&mut next_bytes).unwrap();
+						assert_ne!(next_bytes[..], [0; 32][..]);
+						chacha_stream.read_exact(&mut next_bytes).unwrap();
+						assert_ne!(next_bytes[..], [0; 32][..]);
+					}
 				}
 				return Ok((msg, None)); // We are the final destination for this packet
 			} else {

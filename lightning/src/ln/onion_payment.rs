@@ -23,6 +23,7 @@ use crate::prelude::*;
 use core::ops::Deref;
 
 /// Invalid inbound onion payment.
+#[derive(Debug)]
 pub struct InboundOnionErr {
 	/// BOLT 4 error code.
 	pub err_code: u16,

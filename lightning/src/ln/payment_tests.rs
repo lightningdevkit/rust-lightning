@@ -19,8 +19,9 @@ use crate::events::{ClosureReason, Event, HTLCDestination, MessageSendEvent, Mes
 use crate::ln::channel::{EXPIRE_PREV_CONFIG_TICKS, commit_tx_fee_msat, get_holder_selected_channel_reserve_satoshis, ANCHOR_OUTPUT_VALUE_SATOSHI};
 use crate::ln::channelmanager::{BREAKDOWN_TIMEOUT, MPP_TIMEOUT_TICKS, MIN_CLTV_EXPIRY_DELTA, PaymentId, PaymentSendFailure, RecentPaymentDetails, RecipientOnionFields, HTLCForwardInfo, PendingHTLCRouting, PendingAddHTLCInfo};
 use crate::ln::features::{Bolt11InvoiceFeatures, ChannelTypeFeatures};
-use crate::ln::{msgs, ChannelId, PaymentSecret, PaymentPreimage};
+use crate::ln::{msgs, ChannelId, PaymentHash, PaymentSecret, PaymentPreimage};
 use crate::ln::msgs::ChannelMessageHandler;
+use crate::ln::onion_utils;
 use crate::ln::outbound_payment::{IDEMPOTENCY_TIMEOUT_TICKS, Retry};
 use crate::routing::gossip::{EffectiveCapacity, RoutingFees};
 use crate::routing::router::{get_route, Path, PaymentParameters, Route, Router, RouteHint, RouteHintHop, RouteHop, RouteParameters, find_route};
@@ -31,10 +32,14 @@ use crate::util::errors::APIError;
 use crate::util::ser::Writeable;
 use crate::util::string::UntrustedString;
 
+use bitcoin::hashes::Hash;
+use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::network::constants::Network;
+use bitcoin::secp256k1::{Secp256k1, SecretKey};
 
 use crate::prelude::*;
 
+use crate::ln::functional_test_utils;
 use crate::ln::functional_test_utils::*;
 use crate::routing::gossip::NodeId;
 #[cfg(feature = "std")]
@@ -4193,4 +4198,60 @@ fn  test_htlc_forward_considers_anchor_outputs_value() {
 	}, false, &[nodes[1].node.get_our_node_id()], 1_000_000);
 	check_closed_broadcast(&nodes[2], 1, true);
 	check_added_monitors(&nodes[2], 1);
+}
+
+#[test]
+fn peel_payment_onion_custom_tlvs() {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	create_announced_chan_between_nodes(&nodes, 0, 1);
+	let secp_ctx = Secp256k1::new();
+
+	let amt_msat = 1000;
+	let payment_params = PaymentParameters::for_keysend(nodes[1].node.get_our_node_id(),
+		TEST_FINAL_CLTV, false);
+	let route_params = RouteParameters::from_payment_params_and_value(payment_params, amt_msat);
+	let route = functional_test_utils::get_route(&nodes[0], &route_params).unwrap();
+	let mut recipient_onion = RecipientOnionFields::spontaneous_empty()
+		.with_custom_tlvs(vec![(414141, vec![42; 1200])]).unwrap();
+	let prng_seed = chanmon_cfgs[0].keys_manager.get_secure_random_bytes();
+	let session_priv = SecretKey::from_slice(&prng_seed[..]).expect("RNG is busted");
+	let keysend_preimage = PaymentPreimage([42; 32]);
+	let payment_hash = PaymentHash(Sha256::hash(&keysend_preimage.0).to_byte_array());
+
+	let (onion_routing_packet, first_hop_msat, cltv_expiry) = onion_utils::create_payment_onion(
+		&secp_ctx, &route.paths[0], &session_priv, amt_msat, recipient_onion.clone(),
+		nodes[0].best_block_info().1, &payment_hash, &Some(keysend_preimage), prng_seed
+	).unwrap();
+
+	let update_add = msgs::UpdateAddHTLC {
+		channel_id: ChannelId([0; 32]),
+		htlc_id: 42,
+		amount_msat: first_hop_msat,
+		payment_hash,
+		cltv_expiry,
+		skimmed_fee_msat: None,
+		onion_routing_packet,
+		blinding_point: None,
+	};
+	let peeled_onion = crate::ln::onion_payment::peel_payment_onion(
+		&update_add, &&chanmon_cfgs[1].keys_manager, &&chanmon_cfgs[1].logger, &secp_ctx,
+		nodes[1].best_block_info().1, true, false
+	).unwrap();
+	assert_eq!(peeled_onion.incoming_amt_msat, Some(amt_msat));
+	match peeled_onion.routing {
+		PendingHTLCRouting::ReceiveKeysend {
+			payment_data, payment_metadata, custom_tlvs, ..
+		} => {
+			#[cfg(not(c_bindings))]
+			assert_eq!(&custom_tlvs, recipient_onion.custom_tlvs());
+			#[cfg(c_bindings)]
+			assert_eq!(custom_tlvs, recipient_onion.custom_tlvs());
+			assert!(payment_metadata.is_none());
+			assert!(payment_data.is_none());
+		},
+		_ => panic!()
+	}
 }
