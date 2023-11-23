@@ -470,6 +470,18 @@ fn test_splice_in_simple() {
 	check_added_monitors!(nodes[i], 1);
 	check_added_monitors!(nodes[a], 1);
 
+	// check that capacity has _not_ been changed yet
+	assert_eq!(nodes[i].node.list_channels().len(), 1);
+	{
+		let channel = &nodes[i].node.list_channels()[0];
+		assert!(!channel.is_usable); // TODO check
+		assert!(!channel.is_channel_ready); // TODO check
+		assert_eq!(channel.channel_value_satoshis, channel_value_sat);
+		assert_eq!(channel.outbound_capacity_msat, 100000000 - 1000000);
+		assert_eq!(channel.funding_txo.unwrap().txid, splice_tx.txid()); // TODO check
+		assert_eq!(channel.confirmations.unwrap(), 0); // TODO check
+	}
+
 	confirm_transaction(&nodes[i], &broadcasted_splice_tx);
 	let channel_ready_message = get_event_msg!(nodes[i], MessageSendEvent::SendChannelReady, nodes[a].node.get_our_node_id());
 
