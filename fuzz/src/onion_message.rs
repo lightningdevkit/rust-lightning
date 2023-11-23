@@ -1,6 +1,6 @@
 // Imports that need to be added manually
 use bitcoin::bech32::u5;
-use bitcoin::blockdata::script::Script;
+use bitcoin::blockdata::script::ScriptBuf;
 use bitcoin::secp256k1::{PublicKey, Scalar, Secp256k1, SecretKey};
 use bitcoin::secp256k1::ecdh::SharedSecret;
 use bitcoin::secp256k1::ecdsa::RecoverableSignature;
@@ -199,13 +199,14 @@ impl SignerProvider for KeyProvider {
 
 	fn read_chan_signer(&self, _data: &[u8]) -> Result<TestChannelSigner, DecodeError> { unreachable!() }
 
-	fn get_destination_script(&self) -> Result<Script, ()> { unreachable!() }
+	fn get_destination_script(&self) -> Result<ScriptBuf, ()> { unreachable!() }
 
 	fn get_shutdown_scriptpubkey(&self) -> Result<ShutdownScript, ()> { unreachable!() }
 }
 
 #[cfg(test)]
 mod tests {
+	use bitcoin::hashes::hex::FromHex;
 	use lightning::util::logger::{Logger, Record};
 	use std::collections::HashMap;
 	use std::sync::Mutex;
@@ -258,7 +259,7 @@ mod tests {
 			000000000000000000000000000000000000000005600000000000000000000000000000000000000000000\
 			000000000000000000";
 		let logger = TrackingLogger { lines: Mutex::new(HashMap::new()) };
-		super::do_test(&::hex::decode(one_hop_om).unwrap(), &logger);
+		super::do_test(&<Vec<u8>>::from_hex(one_hop_om).unwrap(), &logger);
 		{
 			let log_entries = logger.lines.lock().unwrap();
 			assert_eq!(log_entries.get(&("lightning::onion_message::messenger".to_string(),
@@ -302,7 +303,7 @@ mod tests {
 			000000000000000000000000000000000000000004800000000000000000000000000000000000000000000\
 			000000000000000000";
 		let logger = TrackingLogger { lines: Mutex::new(HashMap::new()) };
-		super::do_test(&::hex::decode(two_unblinded_hops_om).unwrap(), &logger);
+		super::do_test(&<Vec<u8>>::from_hex(two_unblinded_hops_om).unwrap(), &logger);
 		{
 			let log_entries = logger.lines.lock().unwrap();
 			assert_eq!(log_entries.get(&("lightning::onion_message::messenger".to_string(), "Forwarding an onion message to peer 020202020202020202020202020202020202020202020202020202020202020202".to_string())), Some(&1));
@@ -343,7 +344,7 @@ mod tests {
 			000000000000000000000000000000000000000004800000000000000000000000000000000000000000000\
 			000000000000000000";
 		let logger = TrackingLogger { lines: Mutex::new(HashMap::new()) };
-		super::do_test(&::hex::decode(two_unblinded_two_blinded_om).unwrap(), &logger);
+		super::do_test(&<Vec<u8>>::from_hex(two_unblinded_two_blinded_om).unwrap(), &logger);
 		{
 			let log_entries = logger.lines.lock().unwrap();
 			assert_eq!(log_entries.get(&("lightning::onion_message::messenger".to_string(), "Forwarding an onion message to peer 020202020202020202020202020202020202020202020202020202020202020202".to_string())), Some(&1));
@@ -384,7 +385,7 @@ mod tests {
 			000000000000000000000000000000000000000004800000000000000000000000000000000000000000000\
 			000000000000000000";
 		let logger = TrackingLogger { lines: Mutex::new(HashMap::new()) };
-		super::do_test(&::hex::decode(three_blinded_om).unwrap(), &logger);
+		super::do_test(&<Vec<u8>>::from_hex(three_blinded_om).unwrap(), &logger);
 		{
 			let log_entries = logger.lines.lock().unwrap();
 			assert_eq!(log_entries.get(&("lightning::onion_message::messenger".to_string(), "Forwarding an onion message to peer 020202020202020202020202020202020202020202020202020202020202020202".to_string())), Some(&1));

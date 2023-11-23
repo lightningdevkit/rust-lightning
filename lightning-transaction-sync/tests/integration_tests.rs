@@ -5,12 +5,13 @@ use lightning::chain::transaction::TransactionData;
 use lightning::util::logger::{Logger, Record};
 
 use electrsd::{bitcoind, bitcoind::BitcoinD, ElectrsD};
-use bitcoin::{Amount, Txid, BlockHash, BlockHeader};
+use bitcoin::{Amount, Txid, BlockHash};
+use bitcoin::blockdata::block::Header;
 use bitcoin::blockdata::constants::genesis_block;
 use bitcoin::network::constants::Network;
 use electrsd::bitcoind::bitcoincore_rpc::bitcoincore_rpc_json::AddressType;
 use bitcoind::bitcoincore_rpc::RpcApi;
-use electrum_client::ElectrumApi;
+use electrsd::electrum_client::ElectrumApi;
 
 use std::env;
 use std::sync::Mutex;
@@ -42,21 +43,22 @@ pub fn generate_blocks_and_wait(bitcoind: &BitcoinD, electrsd: &ElectrsD, num: u
 	let address = bitcoind
 		.client
 		.get_new_address(Some("test"), Some(AddressType::Legacy))
-		.expect("failed to get new address");
+		.expect("failed to get new address")
+		.assume_checked();
 	// TODO: expect this Result once the WouldBlock issue is resolved upstream.
 	let _block_hashes_res = bitcoind.client.generate_to_address(num as u64, &address);
 	wait_for_block(electrsd, cur_height as usize + num);
 }
 
 pub fn wait_for_block(electrsd: &ElectrsD, min_height: usize) {
-	let mut header = match electrsd.client.block_headers_subscribe() {
+	let mut header = match electrsd.client.block_headers_subscribe_raw() {
 		Ok(header) => header,
 		Err(_) => {
 			// While subscribing should succeed the first time around, we ran into some cases where
 			// it didn't. Since we can't proceed without subscribing, we try again after a delay
 			// and panic if it still fails.
 			std::thread::sleep(Duration::from_secs(1));
-			electrsd.client.block_headers_subscribe().expect("failed to subscribe to block headers")
+			electrsd.client.block_headers_subscribe_raw().expect("failed to subscribe to block headers")
 		}
 	};
 	loop {
@@ -66,7 +68,7 @@ pub fn wait_for_block(electrsd: &ElectrsD, min_height: usize) {
 		header = exponential_backoff_poll(|| {
 			electrsd.trigger().expect("failed to trigger electrsd");
 			electrsd.client.ping().expect("failed to ping electrsd");
-			electrsd.client.block_headers_pop().expect("failed to pop block header")
+			electrsd.client.block_headers_pop_raw().expect("failed to pop block header")
 		});
 	}
 }
@@ -119,7 +121,7 @@ impl TestConfirmable {
 }
 
 impl Confirm for TestConfirmable {
-	fn transactions_confirmed(&self, header: &BlockHeader, txdata: &TransactionData<'_>, height: u32) {
+	fn transactions_confirmed(&self, header: &Header, txdata: &TransactionData<'_>, height: u32) {
 		for (_, tx) in txdata {
 			let txid = tx.txid();
 			let block_hash = header.block_hash();
@@ -135,7 +137,7 @@ impl Confirm for TestConfirmable {
 		self.events.lock().unwrap().push(TestConfirmableEvent::Unconfirmed(*txid));
 	}
 
-	fn best_block_updated(&self, header: &BlockHeader, height: u32) {
+	fn best_block_updated(&self, header: &Header, height: u32) {
 		let block_hash = header.block_hash();
 		*self.best_block.lock().unwrap() = (block_hash, height);
 		self.events.lock().unwrap().push(TestConfirmableEvent::BestBlockUpdated(block_hash, height));
@@ -176,9 +178,9 @@ fn test_esplora_syncs() {
 	assert_eq!(events.len(), 1);
 
 	// Check registered confirmed transactions are marked confirmed
-	let new_address = bitcoind.client.get_new_address(Some("test"), Some(AddressType::Legacy)).unwrap();
+	let new_address = bitcoind.client.get_new_address(Some("test"), Some(AddressType::Legacy)).unwrap().assume_checked();
 	let txid = bitcoind.client.send_to_address(&new_address, Amount::from_sat(5000), None, None, None, None, None, None).unwrap();
-	tx_sync.register_tx(&txid, &new_address.script_pubkey());
+	tx_sync.register_tx(&txid, &new_address.payload.script_pubkey());
 
 	tx_sync.sync(vec![&confirmable]).unwrap();
 
@@ -259,9 +261,9 @@ async fn test_esplora_syncs() {
 	assert_eq!(events.len(), 1);
 
 	// Check registered confirmed transactions are marked confirmed
-	let new_address = bitcoind.client.get_new_address(Some("test"), Some(AddressType::Legacy)).unwrap();
+	let new_address = bitcoind.client.get_new_address(Some("test"), Some(AddressType::Legacy)).unwrap().assume_checked();
 	let txid = bitcoind.client.send_to_address(&new_address, Amount::from_sat(5000), None, None, None, None, None, None).unwrap();
-	tx_sync.register_tx(&txid, &new_address.script_pubkey());
+	tx_sync.register_tx(&txid, &new_address.payload.script_pubkey());
 
 	tx_sync.sync(vec![&confirmable]).await.unwrap();
 

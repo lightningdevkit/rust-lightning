@@ -18,8 +18,6 @@ use bitcoin::secp256k1;
 
 use bitcoin::hashes::sha256d::Hash as Sha256dHash;
 use bitcoin::hashes::Hash;
-use bitcoin::hashes::hex::FromHex;
-
 use bitcoin::network::constants::Network;
 
 use crate::events::{MessageSendEvent, MessageSendEventsProvider};
@@ -78,6 +76,11 @@ impl NodeId {
 
 	/// Get the public key slice from this NodeId
 	pub fn as_slice(&self) -> &[u8] {
+		&self.0
+	}
+
+	/// Get the public key as an array from this NodeId
+	pub fn as_array(&self) -> &[u8; PUBLIC_KEY_SIZE] {
 		&self.0
 	}
 
@@ -154,10 +157,10 @@ impl TryFrom<NodeId> for PublicKey {
 }
 
 impl FromStr for NodeId {
-	type Err = bitcoin::hashes::hex::Error;
+	type Err = hex::parse::HexToArrayError;
 
 	fn from_str(s: &str) -> Result<Self, Self::Err> {
-		let data: [u8; PUBLIC_KEY_SIZE] = FromHex::from_hex(s)?;
+		let data: [u8; PUBLIC_KEY_SIZE] = hex::FromHex::from_hex(s)?;
 		Ok(NodeId(data))
 	}
 }
@@ -2094,13 +2097,11 @@ pub(crate) mod tests {
 
 	use bitcoin::hashes::sha256d::Hash as Sha256dHash;
 	use bitcoin::hashes::Hash;
+	use bitcoin::hashes::hex::FromHex;
 	use bitcoin::network::constants::Network;
 	use bitcoin::blockdata::constants::ChainHash;
-	use bitcoin::blockdata::script::Script;
+	use bitcoin::blockdata::script::ScriptBuf;
 	use bitcoin::blockdata::transaction::TxOut;
-
-	use hex;
-
 	use bitcoin::secp256k1::{PublicKey, SecretKey};
 	use bitcoin::secp256k1::{All, Secp256k1};
 
@@ -2129,7 +2130,7 @@ pub(crate) mod tests {
 	fn request_full_sync_finite_times() {
 		let network_graph = create_network_graph();
 		let (secp_ctx, gossip_sync) = create_gossip_sync(&network_graph);
-		let node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&hex::decode("0202020202020202020202020202020202020202020202020202020202020202").unwrap()[..]).unwrap());
+		let node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&<Vec<u8>>::from_hex("0202020202020202020202020202020202020202020202020202020202020202").unwrap()[..]).unwrap());
 
 		assert!(gossip_sync.should_request_full_sync(&node_id));
 		assert!(gossip_sync.should_request_full_sync(&node_id));
@@ -2186,7 +2187,7 @@ pub(crate) mod tests {
 		}
 	}
 
-	pub(crate) fn get_channel_script(secp_ctx: &Secp256k1<secp256k1::All>) -> Script {
+	pub(crate) fn get_channel_script(secp_ctx: &Secp256k1<secp256k1::All>) -> ScriptBuf {
 		let node_1_btckey = SecretKey::from_slice(&[40; 32]).unwrap();
 		let node_2_btckey = SecretKey::from_slice(&[39; 32]).unwrap();
 		make_funding_redeemscript(&PublicKey::from_secret_key(secp_ctx, &node_1_btckey),
@@ -2243,7 +2244,7 @@ pub(crate) mod tests {
 			Err(_) => panic!()
 		};
 
-		let fake_msghash = hash_to_message!(&zero_hash);
+		let fake_msghash = hash_to_message!(zero_hash.as_byte_array());
 		match gossip_sync.handle_node_announcement(
 			&NodeAnnouncement {
 				signature: secp_ctx.sign_ecdsa(&fake_msghash, node_1_privkey),
@@ -2505,7 +2506,7 @@ pub(crate) mod tests {
 			unsigned_channel_update.timestamp += 500;
 		}, node_1_privkey, &secp_ctx);
 		let zero_hash = Sha256dHash::hash(&[0; 32]);
-		let fake_msghash = hash_to_message!(&zero_hash);
+		let fake_msghash = hash_to_message!(zero_hash.as_byte_array());
 		invalid_sig_channel_update.signature = secp_ctx.sign_ecdsa(&fake_msghash, node_1_privkey);
 		match gossip_sync.handle_channel_update(&invalid_sig_channel_update) {
 			Ok(_) => panic!(),
@@ -3344,16 +3345,16 @@ pub(crate) mod tests {
 		assert_eq!(chan_update_info, read_chan_update_info);
 
 		// Check the serialization hasn't changed.
-		let legacy_chan_update_info_with_some: Vec<u8> = hex::decode("340004000000170201010402002a060800000000000004d2080909000000000000162e0a0d0c00040000000902040000000a0c0100").unwrap();
+		let legacy_chan_update_info_with_some: Vec<u8> = <Vec<u8>>::from_hex("340004000000170201010402002a060800000000000004d2080909000000000000162e0a0d0c00040000000902040000000a0c0100").unwrap();
 		assert_eq!(encoded_chan_update_info, legacy_chan_update_info_with_some);
 
 		// Check we fail if htlc_maximum_msat is not present in either the ChannelUpdateInfo itself
 		// or the ChannelUpdate enclosed with `last_update_message`.
-		let legacy_chan_update_info_with_some_and_fail_update: Vec<u8> = hex::decode("b40004000000170201010402002a060800000000000004d2080909000000000000162e0a0d0c00040000000902040000000a0c8181d977cb9b53d93a6ff64bb5f1e158b4094b66e798fb12911168a3ccdf80a83096340a6a95da0ae8d9f776528eecdbb747eb6b545495a4319ed5378e35b21e073a000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f00083a840000034d013413a70000009000000000000f42400000271000000014").unwrap();
+		let legacy_chan_update_info_with_some_and_fail_update: Vec<u8> = <Vec<u8>>::from_hex("b40004000000170201010402002a060800000000000004d2080909000000000000162e0a0d0c00040000000902040000000a0c8181d977cb9b53d93a6ff64bb5f1e158b4094b66e798fb12911168a3ccdf80a83096340a6a95da0ae8d9f776528eecdbb747eb6b545495a4319ed5378e35b21e073a000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f00083a840000034d013413a70000009000000000000f42400000271000000014").unwrap();
 		let read_chan_update_info_res: Result<ChannelUpdateInfo, crate::ln::msgs::DecodeError> = crate::util::ser::Readable::read(&mut legacy_chan_update_info_with_some_and_fail_update.as_slice());
 		assert!(read_chan_update_info_res.is_err());
 
-		let legacy_chan_update_info_with_none: Vec<u8> = hex::decode("2c0004000000170201010402002a060800000000000004d20801000a0d0c00040000000902040000000a0c0100").unwrap();
+		let legacy_chan_update_info_with_none: Vec<u8> = <Vec<u8>>::from_hex("2c0004000000170201010402002a060800000000000004d20801000a0d0c00040000000902040000000a0c0100").unwrap();
 		let read_chan_update_info_res: Result<ChannelUpdateInfo, crate::ln::msgs::DecodeError> = crate::util::ser::Readable::read(&mut legacy_chan_update_info_with_none.as_slice());
 		assert!(read_chan_update_info_res.is_err());
 
@@ -3395,18 +3396,18 @@ pub(crate) mod tests {
 		assert_eq!(chan_info_some_updates, read_chan_info);
 
 		// Check the serialization hasn't changed.
-		let legacy_chan_info_with_some: Vec<u8> = hex::decode("ca00020000010800000000000156660221027f921585f2ac0c7c70e36110adecfd8fd14b8a99bfb3d000a283fcac358fce88043636340004000000170201010402002a060800000000000004d2080909000000000000162e0a0d0c00040000000902040000000a0c010006210355f8d2238a322d16b602bd0ceaad5b01019fb055971eaadcc9b29226a4da6c23083636340004000000170201010402002a060800000000000004d2080909000000000000162e0a0d0c00040000000902040000000a0c01000a01000c0100").unwrap();
+		let legacy_chan_info_with_some: Vec<u8> = <Vec<u8>>::from_hex("ca00020000010800000000000156660221027f921585f2ac0c7c70e36110adecfd8fd14b8a99bfb3d000a283fcac358fce88043636340004000000170201010402002a060800000000000004d2080909000000000000162e0a0d0c00040000000902040000000a0c010006210355f8d2238a322d16b602bd0ceaad5b01019fb055971eaadcc9b29226a4da6c23083636340004000000170201010402002a060800000000000004d2080909000000000000162e0a0d0c00040000000902040000000a0c01000a01000c0100").unwrap();
 		assert_eq!(encoded_chan_info, legacy_chan_info_with_some);
 
 		// Check we can decode legacy ChannelInfo, even if the `two_to_one` / `one_to_two` /
 		// `last_update_message` fields fail to decode due to missing htlc_maximum_msat.
-		let legacy_chan_info_with_some_and_fail_update = hex::decode("fd01ca00020000010800000000000156660221027f921585f2ac0c7c70e36110adecfd8fd14b8a99bfb3d000a283fcac358fce8804b6b6b40004000000170201010402002a060800000000000004d2080909000000000000162e0a0d0c00040000000902040000000a0c8181d977cb9b53d93a6ff64bb5f1e158b4094b66e798fb12911168a3ccdf80a83096340a6a95da0ae8d9f776528eecdbb747eb6b545495a4319ed5378e35b21e073a000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f00083a840000034d013413a70000009000000000000f4240000027100000001406210355f8d2238a322d16b602bd0ceaad5b01019fb055971eaadcc9b29226a4da6c2308b6b6b40004000000170201010402002a060800000000000004d2080909000000000000162e0a0d0c00040000000902040000000a0c8181d977cb9b53d93a6ff64bb5f1e158b4094b66e798fb12911168a3ccdf80a83096340a6a95da0ae8d9f776528eecdbb747eb6b545495a4319ed5378e35b21e073a000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f00083a840000034d013413a70000009000000000000f424000002710000000140a01000c0100").unwrap();
+		let legacy_chan_info_with_some_and_fail_update = <Vec<u8>>::from_hex("fd01ca00020000010800000000000156660221027f921585f2ac0c7c70e36110adecfd8fd14b8a99bfb3d000a283fcac358fce8804b6b6b40004000000170201010402002a060800000000000004d2080909000000000000162e0a0d0c00040000000902040000000a0c8181d977cb9b53d93a6ff64bb5f1e158b4094b66e798fb12911168a3ccdf80a83096340a6a95da0ae8d9f776528eecdbb747eb6b545495a4319ed5378e35b21e073a000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f00083a840000034d013413a70000009000000000000f4240000027100000001406210355f8d2238a322d16b602bd0ceaad5b01019fb055971eaadcc9b29226a4da6c2308b6b6b40004000000170201010402002a060800000000000004d2080909000000000000162e0a0d0c00040000000902040000000a0c8181d977cb9b53d93a6ff64bb5f1e158b4094b66e798fb12911168a3ccdf80a83096340a6a95da0ae8d9f776528eecdbb747eb6b545495a4319ed5378e35b21e073a000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f00083a840000034d013413a70000009000000000000f424000002710000000140a01000c0100").unwrap();
 		let read_chan_info: ChannelInfo = crate::util::ser::Readable::read(&mut legacy_chan_info_with_some_and_fail_update.as_slice()).unwrap();
 		assert_eq!(read_chan_info.announcement_received_time, 87654);
 		assert_eq!(read_chan_info.one_to_two, None);
 		assert_eq!(read_chan_info.two_to_one, None);
 
-		let legacy_chan_info_with_none: Vec<u8> = hex::decode("ba00020000010800000000000156660221027f921585f2ac0c7c70e36110adecfd8fd14b8a99bfb3d000a283fcac358fce88042e2e2c0004000000170201010402002a060800000000000004d20801000a0d0c00040000000902040000000a0c010006210355f8d2238a322d16b602bd0ceaad5b01019fb055971eaadcc9b29226a4da6c23082e2e2c0004000000170201010402002a060800000000000004d20801000a0d0c00040000000902040000000a0c01000a01000c0100").unwrap();
+		let legacy_chan_info_with_none: Vec<u8> = <Vec<u8>>::from_hex("ba00020000010800000000000156660221027f921585f2ac0c7c70e36110adecfd8fd14b8a99bfb3d000a283fcac358fce88042e2e2c0004000000170201010402002a060800000000000004d20801000a0d0c00040000000902040000000a0c010006210355f8d2238a322d16b602bd0ceaad5b01019fb055971eaadcc9b29226a4da6c23082e2e2c0004000000170201010402002a060800000000000004d20801000a0d0c00040000000902040000000a0c01000a01000c0100").unwrap();
 		let read_chan_info: ChannelInfo = crate::util::ser::Readable::read(&mut legacy_chan_info_with_none.as_slice()).unwrap();
 		assert_eq!(read_chan_info.announcement_received_time, 87654);
 		assert_eq!(read_chan_info.one_to_two, None);
@@ -3416,7 +3417,7 @@ pub(crate) mod tests {
 	#[test]
 	fn node_info_is_readable() {
 		// 1. Check we can read a valid NodeAnnouncementInfo and fail on an invalid one
-		let announcement_message = hex::decode("d977cb9b53d93a6ff64bb5f1e158b4094b66e798fb12911168a3ccdf80a83096340a6a95da0ae8d9f776528eecdbb747eb6b545495a4319ed5378e35b21e073a000122013413a7031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f2020201010101010101010101010101010101010101010101010101010101010101010000701fffefdfc2607").unwrap();
+		let announcement_message = <Vec<u8>>::from_hex("d977cb9b53d93a6ff64bb5f1e158b4094b66e798fb12911168a3ccdf80a83096340a6a95da0ae8d9f776528eecdbb747eb6b545495a4319ed5378e35b21e073a000122013413a7031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f2020201010101010101010101010101010101010101010101010101010101010101010000701fffefdfc2607").unwrap();
 		let announcement_message = NodeAnnouncement::read(&mut announcement_message.as_slice()).unwrap();
 		let valid_node_ann_info = NodeAnnouncementInfo {
 			features: channelmanager::provided_node_features(&UserConfig::default()),
@@ -3432,7 +3433,7 @@ pub(crate) mod tests {
 		assert_eq!(read_valid_node_ann_info, valid_node_ann_info);
 		assert_eq!(read_valid_node_ann_info.addresses().len(), 1);
 
-		let encoded_invalid_node_ann_info = hex::decode("3f0009000788a000080a51a20204000000000403000000062000000000000000000000000000000000000000000000000000000000000000000a0505014004d2").unwrap();
+		let encoded_invalid_node_ann_info = <Vec<u8>>::from_hex("3f0009000788a000080a51a20204000000000403000000062000000000000000000000000000000000000000000000000000000000000000000a0505014004d2").unwrap();
 		let read_invalid_node_ann_info_res = NodeAnnouncementInfo::read(&mut encoded_invalid_node_ann_info.as_slice());
 		assert!(read_invalid_node_ann_info_res.is_err());
 
@@ -3447,14 +3448,14 @@ pub(crate) mod tests {
 		let read_valid_node_info = NodeInfo::read(&mut encoded_valid_node_info.as_slice()).unwrap();
 		assert_eq!(read_valid_node_info, valid_node_info);
 
-		let encoded_invalid_node_info_hex = hex::decode("4402403f0009000788a000080a51a20204000000000403000000062000000000000000000000000000000000000000000000000000000000000000000a0505014004d20400").unwrap();
+		let encoded_invalid_node_info_hex = <Vec<u8>>::from_hex("4402403f0009000788a000080a51a20204000000000403000000062000000000000000000000000000000000000000000000000000000000000000000a0505014004d20400").unwrap();
 		let read_invalid_node_info = NodeInfo::read(&mut encoded_invalid_node_info_hex.as_slice()).unwrap();
 		assert_eq!(read_invalid_node_info.announcement_info, None);
 	}
 
 	#[test]
 	fn test_node_info_keeps_compatibility() {
-		let old_ann_info_with_addresses = hex::decode("3f0009000708a000080a51220204000000000403000000062000000000000000000000000000000000000000000000000000000000000000000a0505014104d2").unwrap();
+		let old_ann_info_with_addresses = <Vec<u8>>::from_hex("3f0009000708a000080a51220204000000000403000000062000000000000000000000000000000000000000000000000000000000000000000a0505014104d2").unwrap();
 		let ann_info_with_addresses = NodeAnnouncementInfo::read(&mut old_ann_info_with_addresses.as_slice())
 				.expect("to be able to read an old NodeAnnouncementInfo with addresses");
 		// This serialized info has an address field but no announcement_message, therefore the addresses returned by our function will still be empty

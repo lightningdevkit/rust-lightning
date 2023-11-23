@@ -422,7 +422,7 @@ fn test_manager_serialize_deserialize_inconsistent_monitor() {
 		fee_estimator: &fee_estimator,
 		router: &nodes[0].router,
 		chain_monitor: nodes[0].chain_monitor,
-		tx_broadcaster: nodes[0].tx_broadcaster.clone(),
+		tx_broadcaster: nodes[0].tx_broadcaster,
 		logger: &logger,
 		channel_monitors: node_0_stale_monitors.iter_mut().map(|monitor| { (monitor.get_funding_txo().0, monitor) }).collect(),
 	}) { } else {
@@ -439,7 +439,7 @@ fn test_manager_serialize_deserialize_inconsistent_monitor() {
 		fee_estimator: &fee_estimator,
 		router: nodes[0].router,
 		chain_monitor: nodes[0].chain_monitor,
-		tx_broadcaster: nodes[0].tx_broadcaster.clone(),
+		tx_broadcaster: nodes[0].tx_broadcaster,
 		logger: &logger,
 		channel_monitors: node_0_monitors.iter_mut().map(|monitor| { (monitor.get_funding_txo().0, monitor) }).collect(),
 	}).unwrap();

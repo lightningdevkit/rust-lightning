@@ -6,7 +6,6 @@ use crate::http::{HttpClient, HttpEndpoint, HttpError, JsonResponse};
 use crate::gossip::UtxoSource;
 
 use bitcoin::hash_types::BlockHash;
-use bitcoin::hashes::hex::ToHex;
 use bitcoin::OutPoint;
 
 use std::sync::Mutex;
@@ -120,14 +119,14 @@ impl RpcClient {
 impl BlockSource for RpcClient {
 	fn get_header<'a>(&'a self, header_hash: &'a BlockHash, _height: Option<u32>) -> AsyncBlockSourceResult<'a, BlockHeaderData> {
 		Box::pin(async move {
-			let header_hash = serde_json::json!(header_hash.to_hex());
+			let header_hash = serde_json::json!(header_hash.to_string());
 			Ok(self.call_method("getblockheader", &[header_hash]).await?)
 		})
 	}
 
 	fn get_block<'a>(&'a self, header_hash: &'a BlockHash) -> AsyncBlockSourceResult<'a, BlockData> {
 		Box::pin(async move {
-			let header_hash = serde_json::json!(header_hash.to_hex());
+			let header_hash = serde_json::json!(header_hash.to_string());
 			let verbosity = serde_json::json!(0);
 			Ok(BlockData::FullBlock(self.call_method("getblock", &[header_hash, verbosity]).await?))
 		})
@@ -150,7 +149,7 @@ impl UtxoSource for RpcClient {
 
 	fn is_output_unspent<'a>(&'a self, outpoint: OutPoint) -> AsyncBlockSourceResult<'a, bool> {
 		Box::pin(async move {
-			let txid_param = serde_json::json!(outpoint.txid.to_hex());
+			let txid_param = serde_json::json!(outpoint.txid.to_string());
 			let vout_param = serde_json::json!(outpoint.vout);
 			let include_mempool = serde_json::json!(false);
 			let utxo_opt: serde_json::Value = self.call_method(
@@ -275,7 +274,7 @@ mod tests {
 		let response = serde_json::json!({ "result": null });
 		let server = HttpServer::responding_with_ok(MessageBody::Content(response));
 		let client = RpcClient::new(CREDENTIALS, server.endpoint()).unwrap();
-		let outpoint = OutPoint::new(bitcoin::Txid::from_inner([0; 32]), 0);
+		let outpoint = OutPoint::new(bitcoin::Txid::from_byte_array([0; 32]), 0);
 		let unspent_output = client.is_output_unspent(outpoint).await.unwrap();
 		assert_eq!(unspent_output, false);
 	}
@@ -285,7 +284,7 @@ mod tests {
 		let response = serde_json::json!({ "result": {"bestblock": 1, "confirmations": 42}});
 		let server = HttpServer::responding_with_ok(MessageBody::Content(response));
 		let client = RpcClient::new(CREDENTIALS, server.endpoint()).unwrap();
-		let outpoint = OutPoint::new(bitcoin::Txid::from_inner([0; 32]), 0);
+		let outpoint = OutPoint::new(bitcoin::Txid::from_byte_array([0; 32]), 0);
 		let unspent_output = client.is_output_unspent(outpoint).await.unwrap();
 		assert_eq!(unspent_output, true);
 	}

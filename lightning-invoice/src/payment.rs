@@ -10,8 +10,7 @@
 //! Convenient utilities for paying Lightning invoices.
 
 use crate::Bolt11Invoice;
-
-use bitcoin_hashes::Hash;
+use crate::bitcoin_hashes::Hash;
 
 use lightning::ln::PaymentHash;
 use lightning::ln::channelmanager::RecipientOnionFields;
@@ -60,7 +59,7 @@ pub fn payment_parameters_from_invoice(invoice: &Bolt11Invoice)
 
 fn params_from_invoice(invoice: &Bolt11Invoice, amount_msat: u64)
 -> (PaymentHash, RecipientOnionFields, RouteParameters) {
-	let payment_hash = PaymentHash((*invoice.payment_hash()).into_inner());
+	let payment_hash = PaymentHash((*invoice.payment_hash()).to_byte_array());
 
 	let mut recipient_onion = RecipientOnionFields::secret_only(*invoice.payment_secret());
 	recipient_onion.payment_metadata = invoice.payment_metadata().map(|v| v.clone());

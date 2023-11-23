@@ -377,7 +377,7 @@ fn do_test_keysend_payments(public_node: bool, with_retry: bool) {
 	let route_params = RouteParameters::from_payment_params_and_value(
 		PaymentParameters::for_keysend(payee_pubkey, 40, false), 10000);
 
-	let network_graph = nodes[0].network_graph.clone();
+	let network_graph = nodes[0].network_graph;
 	let channels = nodes[0].node.list_usable_channels();
 	let first_hops = channels.iter().collect::<Vec<_>>();
 	let first_hops = if public_node { None } else { Some(first_hops.as_slice()) };
@@ -429,7 +429,7 @@ fn test_mpp_keysend() {
 	create_announced_chan_between_nodes(&nodes, 0, 2);
 	create_announced_chan_between_nodes(&nodes, 1, 3);
 	create_announced_chan_between_nodes(&nodes, 2, 3);
-	let network_graph = nodes[0].network_graph.clone();
+	let network_graph = nodes[0].network_graph;
 
 	let payer_pubkey = nodes[0].node.get_our_node_id();
 	let payee_pubkey = nodes[3].node.get_our_node_id();
@@ -1279,7 +1279,7 @@ fn successful_probe_yields_event() {
 	create_announced_chan_between_nodes(&nodes, 1, 2);
 
 	let recv_value = 100_000;
-	let (route, payment_hash, _, _) = get_route_and_payment_hash!(&nodes[0], nodes[2], recv_value);
+	let (route, _, _, _) = get_route_and_payment_hash!(&nodes[0], nodes[2], recv_value);
 
 	let res = nodes[0].node.send_probe(route.paths[0].clone()).unwrap();
 

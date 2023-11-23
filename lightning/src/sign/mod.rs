@@ -12,13 +12,16 @@
 //! The provided output descriptors follow a custom LDK data format and are currently not fully
 //! compatible with Bitcoin Core output descriptors.
 
-use bitcoin::blockdata::transaction::{Transaction, TxOut, TxIn, EcdsaSighashType};
-use bitcoin::blockdata::script::{Script, Builder};
+use bitcoin::blockdata::locktime::absolute::LockTime;
+use bitcoin::blockdata::transaction::{Transaction, TxOut, TxIn};
+use bitcoin::blockdata::script::{Script, ScriptBuf, Builder};
 use bitcoin::blockdata::opcodes;
+use bitcoin::ecdsa::Signature as EcdsaSignature;
 use bitcoin::network::constants::Network;
 use bitcoin::psbt::PartiallySignedTransaction;
-use bitcoin::util::bip32::{ExtendedPrivKey, ExtendedPubKey, ChildNumber};
-use bitcoin::util::sighash;
+use bitcoin::bip32::{ExtendedPrivKey, ExtendedPubKey, ChildNumber};
+use bitcoin::sighash;
+use bitcoin::sighash::EcdsaSighashType;
 
 use bitcoin::bech32::u5;
 use bitcoin::hashes::{Hash, HashEngine};
@@ -30,7 +33,7 @@ use bitcoin::secp256k1::{KeyPair, PublicKey, Scalar, Secp256k1, SecretKey, Signi
 use bitcoin::secp256k1::ecdh::SharedSecret;
 use bitcoin::secp256k1::ecdsa::{RecoverableSignature, Signature};
 use bitcoin::secp256k1::schnorr;
-use bitcoin::{PackedLockTime, secp256k1, Sequence, Witness, Txid};
+use bitcoin::{secp256k1, Sequence, Witness, Txid};
 
 use crate::util::transaction_utils;
 use crate::util::crypto::{hkdf_extract_expand_twice, sign, sign_with_aux_rand};
@@ -93,7 +96,7 @@ impl DelayedPaymentOutputDescriptor {
 	/// shorter.
 	// Calculated as 1 byte length + 73 byte signature, 1 byte empty vec push, 1 byte length plus
 	// redeemscript push length.
-	pub const MAX_WITNESS_LENGTH: usize = 1 + 73 + 1 + chan_utils::REVOKEABLE_REDEEMSCRIPT_MAX_LENGTH + 1;
+	pub const MAX_WITNESS_LENGTH: u64 = 1 + 73 + 1 + chan_utils::REVOKEABLE_REDEEMSCRIPT_MAX_LENGTH as u64 + 1;
 }
 
 impl_writeable_tlv_based!(DelayedPaymentOutputDescriptor, {
@@ -137,7 +140,7 @@ impl StaticPaymentOutputDescriptor {
 	///
 	/// Note that this will only return `Some` for [`StaticPaymentOutputDescriptor`]s that
 	/// originated from an anchor outputs channel, as they take the form of a P2WSH script.
-	pub fn witness_script(&self) -> Option<Script> {
+	pub fn witness_script(&self) -> Option<ScriptBuf> {
 		self.channel_transaction_parameters.as_ref()
 			.and_then(|channel_params|
 				 if channel_params.channel_type_features.supports_anchors_zero_fee_htlc_tx() {
@@ -152,7 +155,7 @@ impl StaticPaymentOutputDescriptor {
 	/// The maximum length a well-formed witness spending one of these should have.
 	/// Note: If you have the grind_signatures feature enabled, this will be at least 1 byte
 	/// shorter.
-	pub fn max_witness_length(&self) -> usize {
+	pub fn max_witness_length(&self) -> u64 {
 		if self.channel_transaction_parameters.as_ref()
 			.map(|channel_params| channel_params.channel_type_features.supports_anchors_zero_fee_htlc_tx())
 			.unwrap_or(false)
@@ -162,7 +165,7 @@ impl StaticPaymentOutputDescriptor {
 			1 /* num witness items */ + 1 /* sig push */ + 73 /* sig including sighash flag */ +
 				1 /* witness script push */ + witness_script_weight
 		} else {
-			P2WPKH_WITNESS_WEIGHT as usize
+			P2WPKH_WITNESS_WEIGHT
 		}
 	}
 }
@@ -319,7 +322,7 @@ impl SpendableOutputDescriptor {
 	/// does not match the one we can spend.
 	///
 	/// We do not enforce that outputs meet the dust limit or that any output scripts are standard.
-	pub fn create_spendable_outputs_psbt(descriptors: &[&SpendableOutputDescriptor], outputs: Vec<TxOut>, change_destination_script: Script, feerate_sat_per_1000_weight: u32, locktime: Option<PackedLockTime>) -> Result<(PartiallySignedTransaction, usize), ()> {
+	pub fn create_spendable_outputs_psbt(descriptors: &[&SpendableOutputDescriptor], outputs: Vec<TxOut>, change_destination_script: ScriptBuf, feerate_sat_per_1000_weight: u32, locktime: Option<LockTime>) -> Result<(PartiallySignedTransaction, u64), ()> {
 		let mut input = Vec::with_capacity(descriptors.len());
 		let mut input_value = 0;
 		let mut witness_weight = 0;
@@ -339,7 +342,7 @@ impl SpendableOutputDescriptor {
 						};
 					input.push(TxIn {
 						previous_output: descriptor.outpoint.into_bitcoin_outpoint(),
-						script_sig: Script::new(),
+						script_sig: ScriptBuf::new(),
 						sequence,
 						witness: Witness::new(),
 					});
@@ -352,7 +355,7 @@ impl SpendableOutputDescriptor {
 					if !output_set.insert(descriptor.outpoint) { return Err(()); }
 					input.push(TxIn {
 						previous_output: descriptor.outpoint.into_bitcoin_outpoint(),
-						script_sig: Script::new(),
+						script_sig: ScriptBuf::new(),
 						sequence: Sequence(descriptor.to_self_delay as u32),
 						witness: Witness::new(),
 					});
@@ -365,7 +368,7 @@ impl SpendableOutputDescriptor {
 					if !output_set.insert(*outpoint) { return Err(()); }
 					input.push(TxIn {
 						previous_output: outpoint.into_bitcoin_outpoint(),
-						script_sig: Script::new(),
+						script_sig: ScriptBuf::new(),
 						sequence: Sequence::ZERO,
 						witness: Witness::new(),
 					});
@@ -379,7 +382,7 @@ impl SpendableOutputDescriptor {
 		}
 		let mut tx = Transaction {
 			version: 2,
-			lock_time: locktime.unwrap_or(PackedLockTime::ZERO),
+			lock_time: locktime.unwrap_or(LockTime::ZERO),
 			input,
 			output: outputs,
 		};
@@ -503,7 +506,7 @@ impl HTLCDescriptor {
 	}
 
 	/// Returns the witness script of the HTLC output in the commitment transaction.
-	pub fn witness_script<C: secp256k1::Signing + secp256k1::Verification>(&self, secp: &Secp256k1<C>) -> Script {
+	pub fn witness_script<C: secp256k1::Signing + secp256k1::Verification>(&self, secp: &Secp256k1<C>) -> ScriptBuf {
 		let channel_params = self.channel_derivation_parameters.transaction_parameters.as_holder_broadcastable();
 		let broadcaster_keys = channel_params.broadcaster_pubkeys();
 		let counterparty_keys = channel_params.countersignatory_pubkeys();
@@ -697,7 +700,6 @@ pub trait EcdsaChannelSigner: ChannelSigner {
 	/// [`ChannelMonitor`] [replica](https://github.com/lightningdevkit/rust-lightning/blob/main/GLOSSARY.md#monitor-replicas)
 	/// broadcasts it before receiving the update for the latest commitment transaction.
 	///
-	/// [`EcdsaSighashType::All`]: bitcoin::blockdata::transaction::EcdsaSighashType::All
 	/// [`ChannelMonitor`]: crate::chain::channelmonitor::ChannelMonitor
 	fn sign_holder_htlc_transaction(&self, htlc_tx: &Transaction, input: usize,
 		htlc_descriptor: &HTLCDescriptor, secp_ctx: &Secp256k1<secp256k1::All>
@@ -905,7 +907,7 @@ pub trait SignerProvider {
 	///
 	/// This method should return a different value each time it is called, to avoid linking
 	/// on-chain funds across channels as controlled to the same user.
-	fn get_destination_script(&self) -> Result<Script, ()>;
+	fn get_destination_script(&self) -> Result<ScriptBuf, ()>;
 
 	/// Get a script pubkey which we will send funds to when closing a channel.
 	///
@@ -1108,7 +1110,7 @@ impl InMemorySigner {
 	/// or if an output descriptor `script_pubkey` does not match the one we can spend.
 	///
 	/// [`descriptor.outpoint`]: StaticPaymentOutputDescriptor::outpoint
-	pub fn sign_counterparty_payment_input<C: Signing>(&self, spend_tx: &Transaction, input_idx: usize, descriptor: &StaticPaymentOutputDescriptor, secp_ctx: &Secp256k1<C>) -> Result<Vec<Vec<u8>>, ()> {
+	pub fn sign_counterparty_payment_input<C: Signing>(&self, spend_tx: &Transaction, input_idx: usize, descriptor: &StaticPaymentOutputDescriptor, secp_ctx: &Secp256k1<C>) -> Result<Witness, ()> {
 		// TODO: We really should be taking the SigHashCache as a parameter here instead of
 		// spend_tx, but ideally the SigHashCache would expose the transaction's inputs read-only
 		// so that we can check them. This requires upstream rust-bitcoin changes (as well as
@@ -1127,14 +1129,14 @@ impl InMemorySigner {
 		let witness_script = if supports_anchors_zero_fee_htlc_tx {
 			chan_utils::get_to_countersignatory_with_anchors_redeemscript(&remotepubkey.inner)
 		} else {
-			Script::new_p2pkh(&remotepubkey.pubkey_hash())
+			ScriptBuf::new_p2pkh(&remotepubkey.pubkey_hash())
 		};
 		let sighash = hash_to_message!(&sighash::SighashCache::new(spend_tx).segwit_signature_hash(input_idx, &witness_script, descriptor.output.value, EcdsaSighashType::All).unwrap()[..]);
 		let remotesig = sign_with_aux_rand(secp_ctx, &sighash, &self.payment_key, &self);
 		let payment_script = if supports_anchors_zero_fee_htlc_tx {
 			witness_script.to_v0_p2wsh()
 		} else {
-			Script::new_v0_p2wpkh(&remotepubkey.wpubkey_hash().unwrap())
+			ScriptBuf::new_v0_p2wpkh(&remotepubkey.wpubkey_hash().unwrap())
 		};
 
 		if payment_script != descriptor.output.script_pubkey { return Err(()); }
@@ -1147,7 +1149,7 @@ impl InMemorySigner {
 		} else {
 			witness.push(remotepubkey.to_bytes());
 		}
-		Ok(witness)
+		Ok(witness.into())
 	}
 
 	/// Sign the single input of `spend_tx` at index `input_idx` which spends the output
@@ -1160,7 +1162,7 @@ impl InMemorySigner {
 	///
 	/// [`descriptor.outpoint`]: DelayedPaymentOutputDescriptor::outpoint
 	/// [`descriptor.to_self_delay`]: DelayedPaymentOutputDescriptor::to_self_delay
-	pub fn sign_dynamic_p2wsh_input<C: Signing>(&self, spend_tx: &Transaction, input_idx: usize, descriptor: &DelayedPaymentOutputDescriptor, secp_ctx: &Secp256k1<C>) -> Result<Vec<Vec<u8>>, ()> {
+	pub fn sign_dynamic_p2wsh_input<C: Signing>(&self, spend_tx: &Transaction, input_idx: usize, descriptor: &DelayedPaymentOutputDescriptor, secp_ctx: &Secp256k1<C>) -> Result<Witness, ()> {
 		// TODO: We really should be taking the SigHashCache as a parameter here instead of
 		// spend_tx, but ideally the SigHashCache would expose the transaction's inputs read-only
 		// so that we can check them. This requires upstream rust-bitcoin changes (as well as
@@ -1174,17 +1176,19 @@ impl InMemorySigner {
 		let delayed_payment_pubkey = PublicKey::from_secret_key(&secp_ctx, &delayed_payment_key);
 		let witness_script = chan_utils::get_revokeable_redeemscript(&descriptor.revocation_pubkey, descriptor.to_self_delay, &delayed_payment_pubkey);
 		let sighash = hash_to_message!(&sighash::SighashCache::new(spend_tx).segwit_signature_hash(input_idx, &witness_script, descriptor.output.value, EcdsaSighashType::All).unwrap()[..]);
-		let local_delayedsig = sign_with_aux_rand(secp_ctx, &sighash, &delayed_payment_key, &self);
+		let local_delayedsig = EcdsaSignature {
+			sig: sign_with_aux_rand(secp_ctx, &sighash, &delayed_payment_key, &self),
+			hash_ty: EcdsaSighashType::All,
+		};
 		let payment_script = bitcoin::Address::p2wsh(&witness_script, Network::Bitcoin).script_pubkey();
 
 		if descriptor.output.script_pubkey != payment_script { return Err(()); }
 
-		let mut witness = Vec::with_capacity(3);
-		witness.push(local_delayedsig.serialize_der().to_vec());
-		witness[0].push(EcdsaSighashType::All as u8);
-		witness.push(vec!()); //MINIMALIF
-		witness.push(witness_script.clone().into_bytes());
-		Ok(witness)
+		Ok(Witness::from_slice(&[
+			&local_delayedsig.serialize()[..],
+			&[], // MINIMALIF
+			witness_script.as_bytes(),
+		]))
 	}
 }
 
@@ -1322,7 +1326,7 @@ impl EcdsaChannelSigner for InMemorySigner {
 		let our_htlc_private_key = chan_utils::derive_private_key(
 			&secp_ctx, &htlc_descriptor.per_commitment_point, &self.htlc_base_key
 		);
-		Ok(sign_with_aux_rand(&secp_ctx, &hash_to_message!(sighash), &our_htlc_private_key, &self))
+		Ok(sign_with_aux_rand(&secp_ctx, &hash_to_message!(sighash.as_byte_array()), &our_htlc_private_key, &self))
 	}
 
 	fn sign_counterparty_htlc_transaction(&self, htlc_tx: &Transaction, input: usize, amount: u64, per_commitment_point: &PublicKey, htlc: &HTLCOutputInCommitment, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<Signature, ()> {
@@ -1444,7 +1448,7 @@ pub struct KeysManager {
 	node_secret: SecretKey,
 	node_id: PublicKey,
 	inbound_payment_key: KeyMaterial,
-	destination_script: Script,
+	destination_script: ScriptBuf,
 	shutdown_pubkey: PublicKey,
 	channel_master_key: ExtendedPrivKey,
 	channel_child_index: AtomicUsize,
@@ -1486,7 +1490,7 @@ impl KeysManager {
 					Ok(destination_key) => {
 						let wpubkey_hash = WPubkeyHash::hash(&ExtendedPubKey::from_priv(&secp_ctx, &destination_key).to_pub().to_bytes());
 						Builder::new().push_opcode(opcodes::all::OP_PUSHBYTES_0)
-							.push_slice(&wpubkey_hash.into_inner())
+							.push_slice(&wpubkey_hash.to_byte_array())
 							.into_script()
 					},
 					Err(_) => panic!("Your RNG is busted"),
@@ -1505,7 +1509,7 @@ impl KeysManager {
 				rand_bytes_engine.input(&starting_time_nanos.to_be_bytes());
 				rand_bytes_engine.input(seed);
 				rand_bytes_engine.input(b"LDK PRNG Seed");
-				let rand_bytes_unique_start = Sha256::from_engine(rand_bytes_engine).into_inner();
+				let rand_bytes_unique_start = Sha256::from_engine(rand_bytes_engine).to_byte_array();
 
 				let mut res = KeysManager {
 					secp_ctx,
@@ -1554,13 +1558,13 @@ impl KeysManager {
 			).expect("Your RNG is busted");
 		unique_start.input(&child_privkey.private_key[..]);
 
-		let seed = Sha256::from_engine(unique_start).into_inner();
+		let seed = Sha256::from_engine(unique_start).to_byte_array();
 
 		let commitment_seed = {
 			let mut sha = Sha256::engine();
 			sha.input(&seed);
 			sha.input(&b"commitment seed"[..]);
-			Sha256::from_engine(sha).into_inner()
+			Sha256::from_engine(sha).to_byte_array()
 		};
 		macro_rules! key_step {
 			($info: expr, $prev_key: expr) => {{
@@ -1568,7 +1572,7 @@ impl KeysManager {
 				sha.input(&seed);
 				sha.input(&$prev_key[..]);
 				sha.input(&$info[..]);
-				SecretKey::from_slice(&Sha256::from_engine(sha).into_inner()).expect("SHA-256 is busted")
+				SecretKey::from_slice(&Sha256::from_engine(sha).to_byte_array()).expect("SHA-256 is busted")
 			}}
 		}
 		let funding_key = key_step!(b"funding key", commitment_seed);
@@ -1613,7 +1617,7 @@ impl KeysManager {
 						}
 						keys_cache = Some((signer, descriptor.channel_keys_id));
 					}
-					let witness = Witness::from_vec(keys_cache.as_ref().unwrap().0.sign_counterparty_payment_input(&psbt.unsigned_tx, input_idx, &descriptor, &secp_ctx)?);
+					let witness = keys_cache.as_ref().unwrap().0.sign_counterparty_payment_input(&psbt.unsigned_tx, input_idx, &descriptor, &secp_ctx)?;
 					psbt.inputs[input_idx].final_script_witness = Some(witness);
 				},
 				SpendableOutputDescriptor::DelayedPaymentOutput(descriptor) => {
@@ -1623,7 +1627,7 @@ impl KeysManager {
 							self.derive_channel_keys(descriptor.channel_value_satoshis, &descriptor.channel_keys_id),
 							descriptor.channel_keys_id));
 					}
-					let witness = Witness::from_vec(keys_cache.as_ref().unwrap().0.sign_dynamic_p2wsh_input(&psbt.unsigned_tx, input_idx, &descriptor, &secp_ctx)?);
+					let witness = keys_cache.as_ref().unwrap().0.sign_dynamic_p2wsh_input(&psbt.unsigned_tx, input_idx, &descriptor, &secp_ctx)?;
 					psbt.inputs[input_idx].final_script_witness = Some(witness);
 				},
 				SpendableOutputDescriptor::StaticOutput { ref outpoint, ref output } => {
@@ -1658,7 +1662,7 @@ impl KeysManager {
 					let sig = sign_with_aux_rand(secp_ctx, &sighash, &secret.private_key, &self);
 					let mut sig_ser = sig.serialize_der().to_vec();
 					sig_ser.push(EcdsaSighashType::All as u8);
-					let witness = Witness::from_vec(vec![sig_ser, pubkey.inner.serialize().to_vec()]);
+					let witness = Witness::from_slice(&[&sig_ser, &pubkey.inner.serialize().to_vec()]);
 					psbt.inputs[input_idx].final_script_witness = Some(witness);
 				},
 			}
@@ -1684,16 +1688,16 @@ impl KeysManager {
 	///
 	/// May panic if the [`SpendableOutputDescriptor`]s were not generated by channels which used
 	/// this [`KeysManager`] or one of the [`InMemorySigner`] created by this [`KeysManager`].
-	pub fn spend_spendable_outputs<C: Signing>(&self, descriptors: &[&SpendableOutputDescriptor], outputs: Vec<TxOut>, change_destination_script: Script, feerate_sat_per_1000_weight: u32, locktime: Option<PackedLockTime>, secp_ctx: &Secp256k1<C>) -> Result<Transaction, ()> {
+	pub fn spend_spendable_outputs<C: Signing>(&self, descriptors: &[&SpendableOutputDescriptor], outputs: Vec<TxOut>, change_destination_script: ScriptBuf, feerate_sat_per_1000_weight: u32, locktime: Option<LockTime>, secp_ctx: &Secp256k1<C>) -> Result<Transaction, ()> {
 		let (mut psbt, expected_max_weight) = SpendableOutputDescriptor::create_spendable_outputs_psbt(descriptors, outputs, change_destination_script, feerate_sat_per_1000_weight, locktime)?;
 		psbt = self.sign_spendable_outputs_psbt(descriptors, psbt, secp_ctx)?;
 
 		let spend_tx = psbt.extract_tx();
 
-		debug_assert!(expected_max_weight >= spend_tx.weight());
+		debug_assert!(expected_max_weight >= spend_tx.weight().to_wu());
 		// Note that witnesses with a signature vary somewhat in size, so allow
 		// `expected_max_weight` to overshoot by up to 3 bytes per input.
-		debug_assert!(expected_max_weight <= spend_tx.weight() + descriptors.len() * 3);
+		debug_assert!(expected_max_weight <= spend_tx.weight().to_wu() + descriptors.len() as u64 * 3);
 
 		Ok(spend_tx)
 	}
@@ -1737,7 +1741,7 @@ impl NodeSigner for KeysManager {
 			Recipient::Node => Ok(&self.node_secret),
 			Recipient::PhantomNode => Err(())
 		}?;
-		Ok(self.secp_ctx.sign_ecdsa_recoverable(&hash_to_message!(&Sha256::hash(&preimage)), secret))
+		Ok(self.secp_ctx.sign_ecdsa_recoverable(&hash_to_message!(&Sha256::hash(&preimage).to_byte_array()), secret))
 	}
 
 	fn sign_bolt12_invoice_request(
@@ -1791,7 +1795,7 @@ impl SignerProvider for KeysManager {
 		InMemorySigner::read(&mut io::Cursor::new(reader), self)
 	}
 
-	fn get_destination_script(&self) -> Result<Script, ()> {
+	fn get_destination_script(&self) -> Result<ScriptBuf, ()> {
 		Ok(self.destination_script.clone())
 	}
 
@@ -1863,7 +1867,7 @@ impl NodeSigner for PhantomKeysManager {
 			Recipient::Node => &self.inner.node_secret,
 			Recipient::PhantomNode => &self.phantom_secret,
 		};
-		Ok(self.inner.secp_ctx.sign_ecdsa_recoverable(&hash_to_message!(&Sha256::hash(&preimage)), secret))
+		Ok(self.inner.secp_ctx.sign_ecdsa_recoverable(&hash_to_message!(&Sha256::hash(&preimage).to_byte_array()), secret))
 	}
 
 	fn sign_bolt12_invoice_request(
@@ -1898,7 +1902,7 @@ impl SignerProvider for PhantomKeysManager {
 		self.inner.read_chan_signer(reader)
 	}
 
-	fn get_destination_script(&self) -> Result<Script, ()> {
+	fn get_destination_script(&self) -> Result<ScriptBuf, ()> {
 		self.inner.get_destination_script()
 	}
 
@@ -1933,7 +1937,7 @@ impl PhantomKeysManager {
 	}
 
 	/// See [`KeysManager::spend_spendable_outputs`] for documentation on this method.
-	pub fn spend_spendable_outputs<C: Signing>(&self, descriptors: &[&SpendableOutputDescriptor], outputs: Vec<TxOut>, change_destination_script: Script, feerate_sat_per_1000_weight: u32, locktime: Option<PackedLockTime>, secp_ctx: &Secp256k1<C>) -> Result<Transaction, ()> {
+	pub fn spend_spendable_outputs<C: Signing>(&self, descriptors: &[&SpendableOutputDescriptor], outputs: Vec<TxOut>, change_destination_script: ScriptBuf, feerate_sat_per_1000_weight: u32, locktime: Option<LockTime>, secp_ctx: &Secp256k1<C>) -> Result<Transaction, ()> {
 		self.inner.spend_spendable_outputs(descriptors, outputs, change_destination_script, feerate_sat_per_1000_weight, locktime, secp_ctx)
 	}
 

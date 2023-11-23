@@ -44,7 +44,7 @@ impl TaggedHash {
 	pub(super) fn new(tag: &'static str, tlv_stream: &[u8]) -> Self {
 		let tag_hash = sha256::Hash::hash(tag.as_bytes());
 		let merkle_root = root_hash(tlv_stream);
-		let digest = Message::from_slice(&tagged_hash(tag_hash, merkle_root)).unwrap();
+		let digest = Message::from_slice(tagged_hash(tag_hash, merkle_root).as_byte_array()).unwrap();
 		Self {
 			tag,
 			merkle_root,
@@ -273,6 +273,7 @@ mod tests {
 	use super::{SIGNATURE_TYPES, TlvStream, WithoutSignatures};
 
 	use bitcoin::hashes::{Hash, sha256};
+	use bitcoin::hashes::hex::FromHex;
 	use bitcoin::secp256k1::{KeyPair, Message, Secp256k1, SecretKey};
 	use bitcoin::secp256k1::schnorr::Signature;
 	use core::convert::Infallible;
@@ -289,16 +290,16 @@ mod tests {
 		macro_rules! tlv2 { () => { "02080000010000020003" } }
 		macro_rules! tlv3 { () => { "03310266e4598d1d3c415f572a8488830b60f7e744ed9235eb0b1ba93283b315c0351800000000000000010000000000000002" } }
 		assert_eq!(
-			super::root_hash(&hex::decode(tlv1!()).unwrap()),
-			sha256::Hash::from_slice(&hex::decode("b013756c8fee86503a0b4abdab4cddeb1af5d344ca6fc2fa8b6c08938caa6f93").unwrap()).unwrap(),
+			super::root_hash(&<Vec<u8>>::from_hex(tlv1!()).unwrap()),
+			sha256::Hash::from_slice(&<Vec<u8>>::from_hex("b013756c8fee86503a0b4abdab4cddeb1af5d344ca6fc2fa8b6c08938caa6f93").unwrap()).unwrap(),
 		);
 		assert_eq!(
-			super::root_hash(&hex::decode(concat!(tlv1!(), tlv2!())).unwrap()),
-			sha256::Hash::from_slice(&hex::decode("c3774abbf4815aa54ccaa026bff6581f01f3be5fe814c620a252534f434bc0d1").unwrap()).unwrap(),
+			super::root_hash(&<Vec<u8>>::from_hex(concat!(tlv1!(), tlv2!())).unwrap()),
+			sha256::Hash::from_slice(&<Vec<u8>>::from_hex("c3774abbf4815aa54ccaa026bff6581f01f3be5fe814c620a252534f434bc0d1").unwrap()).unwrap(),
 		);
 		assert_eq!(
-			super::root_hash(&hex::decode(concat!(tlv1!(), tlv2!(), tlv3!())).unwrap()),
-			sha256::Hash::from_slice(&hex::decode("ab2e79b1283b0b31e0b035258de23782df6b89a38cfa7237bde69aed1a658c5d").unwrap()).unwrap(),
+			super::root_hash(&<Vec<u8>>::from_hex(concat!(tlv1!(), tlv2!(), tlv3!())).unwrap()),
+			sha256::Hash::from_slice(&<Vec<u8>>::from_hex("ab2e79b1283b0b31e0b035258de23782df6b89a38cfa7237bde69aed1a658c5d").unwrap()).unwrap(),
 		);
 	}
 
@@ -306,11 +307,11 @@ mod tests {
 	fn calculates_merkle_root_hash_from_invoice_request() {
 		let secp_ctx = Secp256k1::new();
 		let recipient_pubkey = {
-			let secret_key = SecretKey::from_slice(&hex::decode("4141414141414141414141414141414141414141414141414141414141414141").unwrap()).unwrap();
+			let secret_key = SecretKey::from_slice(&<Vec<u8>>::from_hex("4141414141414141414141414141414141414141414141414141414141414141").unwrap()).unwrap();
 			KeyPair::from_secret_key(&secp_ctx, &secret_key).public_key()
 		};
 		let payer_keys = {
-			let secret_key = SecretKey::from_slice(&hex::decode("4242424242424242424242424242424242424242424242424242424242424242").unwrap()).unwrap();
+			let secret_key = SecretKey::from_slice(&<Vec<u8>>::from_hex("4242424242424242424242424242424242424242424242424242424242424242").unwrap()).unwrap();
 			KeyPair::from_secret_key(&secp_ctx, &secret_key)
 		};
 
@@ -330,11 +331,11 @@ mod tests {
 		);
 		assert_eq!(
 			super::root_hash(&invoice_request.bytes[..]),
-			sha256::Hash::from_slice(&hex::decode("608407c18ad9a94d9ea2bcdbe170b6c20c462a7833a197621c916f78cf18e624").unwrap()).unwrap(),
+			sha256::Hash::from_slice(&<Vec<u8>>::from_hex("608407c18ad9a94d9ea2bcdbe170b6c20c462a7833a197621c916f78cf18e624").unwrap()).unwrap(),
 		);
 		assert_eq!(
 			invoice_request.signature(),
-			Signature::from_slice(&hex::decode("b8f83ea3288cfd6ea510cdb481472575141e8d8744157f98562d162cc1c472526fdb24befefbdebab4dbb726bbd1b7d8aec057f8fa805187e5950d2bbe0e5642").unwrap()).unwrap(),
+			Signature::from_slice(&<Vec<u8>>::from_hex("b8f83ea3288cfd6ea510cdb481472575141e8d8744157f98562d162cc1c472526fdb24befefbdebab4dbb726bbd1b7d8aec057f8fa805187e5950d2bbe0e5642").unwrap()).unwrap(),
 		);
 	}
 
@@ -352,7 +353,7 @@ mod tests {
                 let tagged_hash = unsigned_invoice_request.as_ref();
                 let expected_digest = unsigned_invoice_request.as_ref().as_digest();
                 let tag = sha256::Hash::hash(tagged_hash.tag().as_bytes());
-                let actual_digest = Message::from_slice(&super::tagged_hash(tag, tagged_hash.merkle_root()))
+                let actual_digest = Message::from_slice(super::tagged_hash(tag, tagged_hash.merkle_root()).as_byte_array())
                         .unwrap();
                 assert_eq!(*expected_digest, actual_digest);
         }

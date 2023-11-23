@@ -873,8 +873,7 @@ mod test {
 		let route_params = RouteParameters::from_payment_params_and_value(
 			payment_params, invoice.amount_milli_satoshis().unwrap());
 		let payment_event = {
-			let mut payment_hash = PaymentHash([0; 32]);
-			payment_hash.0.copy_from_slice(&invoice.payment_hash().as_ref()[0..32]);
+			let payment_hash = PaymentHash(invoice.payment_hash().to_byte_array());
 			nodes[0].node.send_payment(payment_hash,
 				RecipientOnionFields::secret_only(*invoice.payment_secret()),
 				PaymentId(payment_hash.0), route_params, Retry::Attempts(0)).unwrap();
@@ -1295,7 +1294,7 @@ mod test {
 
 		let user_payment_preimage = PaymentPreimage([1; 32]);
 		let payment_hash = if user_generated_pmt_hash {
-			Some(PaymentHash(Sha256::hash(&user_payment_preimage.0[..]).into_inner()))
+			Some(PaymentHash(Sha256::hash(&user_payment_preimage.0[..]).to_byte_array()))
 		} else {
 			None
 		};
@@ -1308,7 +1307,7 @@ mod test {
 				route_hints, nodes[1].keys_manager, nodes[1].keys_manager, nodes[1].logger,
 				Currency::BitcoinTestnet, None, Duration::from_secs(genesis_timestamp)
 			).unwrap();
-		let (payment_hash, payment_secret) = (PaymentHash(invoice.payment_hash().into_inner()), *invoice.payment_secret());
+		let (payment_hash, payment_secret) = (PaymentHash(invoice.payment_hash().to_byte_array()), *invoice.payment_secret());
 		let payment_preimage = if user_generated_pmt_hash {
 			user_payment_preimage
 		} else {
@@ -1328,8 +1327,7 @@ mod test {
 		let params = RouteParameters::from_payment_params_and_value(
 			payment_params, invoice.amount_milli_satoshis().unwrap());
 		let (payment_event, fwd_idx) = {
-			let mut payment_hash = PaymentHash([0; 32]);
-			payment_hash.0.copy_from_slice(&invoice.payment_hash().as_ref()[0..32]);
+			let payment_hash = PaymentHash(invoice.payment_hash().to_byte_array());
 			nodes[0].node.send_payment(payment_hash,
 				RecipientOnionFields::secret_only(*invoice.payment_secret()),
 				PaymentId(payment_hash.0), params, Retry::Attempts(0)).unwrap();
@@ -1454,7 +1452,7 @@ mod test {
 			nodes[2].node.get_phantom_route_hints(),
 		];
 		let user_payment_preimage = PaymentPreimage([1; 32]);
-		let payment_hash = Some(PaymentHash(Sha256::hash(&user_payment_preimage.0[..]).into_inner()));
+		let payment_hash = Some(PaymentHash(Sha256::hash(&user_payment_preimage.0[..]).to_byte_array()));
 		let non_default_invoice_expiry_secs = 4200;
 		let min_final_cltv_expiry_delta = Some(100);
 		let duration_since_epoch = Duration::from_secs(1234567);

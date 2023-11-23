@@ -60,7 +60,7 @@ impl Validate for BlockHeaderData {
 
 	fn validate(self, block_hash: BlockHash) -> BlockSourceResult<Self::T> {
 		let pow_valid_block_hash = self.header
-			.validate_pow(&self.header.target())
+			.validate_pow(self.header.target())
 			.map_err(BlockSourceError::persistent)?;
 
 		if pow_valid_block_hash != block_hash {
@@ -81,7 +81,7 @@ impl Validate for BlockData {
 		};
 
 		let pow_valid_block_hash = header
-			.validate_pow(&header.target())
+			.validate_pow(header.target())
 			.map_err(BlockSourceError::persistent)?;
 
 		if pow_valid_block_hash != block_hash {
@@ -138,8 +138,8 @@ impl ValidatedBlockHeader {
 			if self.height % 2016 == 0 {
 				let target = self.header.target();
 				let previous_target = previous_header.header.target();
-				let min_target = previous_target >> 2;
-				let max_target = previous_target << 2;
+				let min_target = previous_target.min_difficulty_transition_threshold();
+				let max_target = previous_target.max_difficulty_transition_threshold();
 				if target > max_target || target < min_target {
 					return Err(BlockSourceError::persistent("invalid difficulty transition"))
 				}
@@ -262,7 +262,6 @@ mod tests {
 	use crate::*;
 	use crate::test_utils::Blockchain;
 	use super::*;
-	use bitcoin::util::uint::Uint256;
 
 	#[tokio::test]
 	async fn poll_empty_chain() {
@@ -302,7 +301,7 @@ mod tests {
 
 		// Invalidate the tip by changing its target.
 		chain.blocks.last_mut().unwrap().header.bits =
-			BlockHeader::compact_target_from_u256(&Uint256::from_be_bytes([0; 32]));
+			bitcoin::Target::from_be_bytes([0x01; 32]).to_compact_lossy();
 
 		let poller = ChainPoller::new(&chain, Network::Bitcoin);
 		match poller.poll_chain_tip(best_known_chain_tip).await {
