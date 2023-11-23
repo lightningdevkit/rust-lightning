@@ -7608,7 +7608,13 @@ where
 							node_id: chan.context.get_counterparty_node_id(),
 							msg: splice_signed_ack_msg,
 						});
-						if let Ok(persist_status) = self.chain_monitor.watch_channel(chan.context.get_funding_txo().unwrap(), monitor) {
+						let funding_txo_to_watch = if let Some(pending) = &chan.context.pending_splice {
+							pending.funding_txo.unwrap()
+						} else {
+							panic!("There is no pending splice!"); // TODO error handling
+							// chan.context.get_funding_txo().unwrap()
+						};
+						if let Ok(persist_status) = self.chain_monitor.watch_channel(funding_txo_to_watch, monitor) {
 							handle_new_monitor_update!(self, persist_status, peer_state_lock, peer_state, per_peer_state, chan, INITIAL_MONITOR);
 							Ok(())
 						} else {
