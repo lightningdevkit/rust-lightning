@@ -16,7 +16,7 @@ rustdoc-args = ["--cfg", "docsrs"]
 [features]
 default = []
 esplora-async = ["async-interface", "esplora-client/async", "futures"]
-esplora-async-https = ["esplora-async", "reqwest/rustls-tls"]
+esplora-async-https = ["esplora-async", "esplora-client/async-https-rustls"]
 esplora-blocking = ["esplora-client/blocking"]
 electrum = ["electrum-client"]
 async-interface = []
@@ -27,7 +27,6 @@ bitcoin = { version = "0.30.2", default-features = false }
 bdk-macros = "0.6"
 futures = { version = "0.3", optional = true }
 esplora-client = { version = "0.6", default-features = false, optional = true }
-reqwest = { version = "0.11", optional = true, default-features = false, features = ["json"] }
 electrum-client = { version = "0.18.0", optional = true }
 
 [dev-dependencies]
