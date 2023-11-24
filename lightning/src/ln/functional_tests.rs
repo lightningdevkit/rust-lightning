@@ -6204,6 +6204,30 @@ fn test_fail_holding_cell_htlc_upon_free_multihop() {
 	check_added_monitors!(nodes[0], 1);
 }
 
+#[test]
+fn test_payment_route_reaching_same_channel_twice() {
+	//A route should not go through the same channel twice
+	//It is enforced when constructing a route.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let _chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1000000, 0);
+
+	let payment_params = PaymentParameters::from_node_id(nodes[1].node.get_our_node_id(), 0)
+		.with_bolt11_features(nodes[1].node.bolt11_invoice_features()).unwrap();
+	let (mut route, our_payment_hash, _, our_payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[1], payment_params, 100000000);
+
+	// Extend the path by itself, essentially simulating route going through same channel twice
+	let cloned_hops = route.paths[0].hops.clone();
+	route.paths[0].hops.extend_from_slice(&cloned_hops);
+
+	unwrap_send_err!(nodes[0].node.send_payment_with_route(&route, our_payment_hash,
+		RecipientOnionFields::secret_only(our_payment_secret), PaymentId(our_payment_hash.0)
+	), false, APIError::InvalidRoute { ref err },
+	assert_eq!(err, &"Path went through the same channel twice"));
+}
+
 // BOLT 2 Requirements for the Sender when constructing and sending an update_add_htlc message.
 // BOLT 2 Requirement: MUST NOT offer amount_msat it cannot pay for in the remote commitment transaction at the current feerate_per_kw (see "Updating Fees") while maintaining its channel reserve.
 //TODO: I don't believe this is explicitly enforced when sending an HTLC but as the Fee aspect of the BOLT specs is in flux leaving this as a TODO.
