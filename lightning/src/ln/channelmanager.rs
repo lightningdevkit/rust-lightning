@@ -2490,10 +2490,11 @@ where
 			hash_map::Entry::Occupied(mut chan_phase_entry) => {
 				if let ChannelPhase::Funded(chan) = chan_phase_entry.get_mut() {
 					let current_value_sats = chan.context.get_value_satoshis();
+					// TODO check for i64 overflow
 					if relative_satoshis < 0 && -relative_satoshis > (current_value_sats as i64) {
 						return Err(APIError::APIMisuseError { err: format!("Post-splicing channel value cannot be negative. It was {} - {}", current_value_sats, -relative_satoshis) });
 					}
-					let post_splice_funding_satoshis: u64 = (current_value_sats as i64 + relative_satoshis) as u64;
+					let post_splice_funding_satoshis = PendingSpliceInfo::add_checked(current_value_sats, relative_satoshis);
 
 					// TODO handle code duplication with create_channel
 					if post_splice_funding_satoshis < 1000 {
@@ -4284,7 +4285,7 @@ where
 				}
 				if input_index.is_none() {
 					return Err(APIError::APIMisuseError {
-						err: format!("No input matched the address and value in the SpliceAcked event {}", if chan.context.pending_splice.is_some() { chan.context.pending_splice.as_ref().unwrap().relative_satoshis } else { 0 })
+						err: format!("No input matched the address and value in the SpliceAcked event {}", if chan.context.pending_splice.is_some() { chan.context.pending_splice.as_ref().unwrap().relative_satoshis() } else { 0 })
 					});
 				}
 				Ok(input_index.unwrap())
@@ -4311,7 +4312,7 @@ where
 				}
 				if output_index.is_none() {
 					return Err(APIError::APIMisuseError {
-						err: format!("No output matched the script_pubkey and value in the SpliceAcked event {}", if chan.context.pending_splice.is_some() { chan.context.pending_splice.as_ref().unwrap().relative_satoshis } else { 0 })
+						err: format!("No output matched the script_pubkey and value in the SpliceAcked event {}", if chan.context.pending_splice.is_some() { chan.context.pending_splice.as_ref().unwrap().relative_satoshis() } else { 0 })
 					});
 				}
 				Ok(OutPoint { txid: tx.txid(), index: output_index.unwrap() })
@@ -7400,7 +7401,7 @@ where
 			counterparty_node_id: *counterparty_node_id,
 			current_funding_outpoint: funding_outpoint,
 			pre_channel_value_satoshis: pre_value,
-			post_channel_value_satoshis: (pre_value as i64 + msg.relative_satoshis) as u64,  // TODO handle underflow
+			post_channel_value_satoshis: PendingSpliceInfo::add_checked(pre_value, msg.relative_satoshis),
 			output_script,
 		}, None));
 		Ok(())

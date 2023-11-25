@@ -48,6 +48,7 @@ use crate::util::scid_utils::scid_from_parts;
 use crate::io;
 use crate::prelude::*;
 use core::{cmp,mem,fmt};
+use core::convert::TryFrom;
 use core::ops::Deref;
 #[cfg(any(test, fuzzing, debug_assertions))]
 use crate::sync::Mutex;
@@ -680,8 +681,6 @@ impl UnfundedChannelContext {
 /// Info about a pending splice
 #[derive(Default, Clone)]
 pub(super) struct PendingSpliceInfo {
-	/// The relative splice value (change in capacity value relative to current value)
-	pub relative_satoshis: i64,
 	/// The post splice value (current + relative)
 	pub post_channel_value: u64,
 	/// The pre splice value (a bit redundant)
@@ -700,11 +699,9 @@ pub(super) struct PendingSpliceInfo {
 }
 
 impl PendingSpliceInfo {
-	pub fn new(relative_satoshis: i64, pre_channel_value: u64, is_outgoing: bool) -> Self {
-		// TODO check for underflow
-		let post_channel_value = (pre_channel_value as i64 + relative_satoshis) as u64;
+	pub(crate) fn new(relative_satoshis: i64, pre_channel_value: u64, is_outgoing: bool) -> Self {
+		let post_channel_value = Self::add_checked(pre_channel_value, relative_satoshis);
 		Self {
-			relative_satoshis,
 			post_channel_value,
 			pre_channel_value,
 			is_outgoing,
@@ -713,6 +710,24 @@ impl PendingSpliceInfo {
 			cp_commitment_sig: None,
 			funding_transaction: None,
 			funding_txo: None,
+		}
+	}
+
+	/// Add a u64 and an i64, handling i64 overflow cases (doing without cast to i64)
+	pub(crate) fn add_checked(pre_channel_value: u64, relative_satoshis: i64) -> u64 {
+		if relative_satoshis >= 0 {
+			pre_channel_value + (relative_satoshis as u64)
+		} else {
+			pre_channel_value.checked_sub((-relative_satoshis) as u64).unwrap_or_default()
+		}
+	}
+
+	/// The relative splice value (change in capacity value relative to current value)
+	pub(crate) fn relative_satoshis(&self) -> i64 {
+		if self.post_channel_value > self.pre_channel_value {
+			i64::try_from(self.post_channel_value.checked_sub(self.pre_channel_value).unwrap_or_default()).unwrap_or_default()
+		} else {
+			-i64::try_from(self.pre_channel_value.checked_sub(self.post_channel_value).unwrap_or_default()).unwrap_or_default()
 		}
 	}
 }
@@ -2161,6 +2176,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 		let old_value = self.channel_value_satoshis;
 		let old_to_self = self.value_to_self_msat;
 		if belongs_to_local {
+			// TODO check for i64 overflow
 			let delta_msats = (new_value_sats as i64 - old_value as i64) * 1000;
 			// Check if not reducing by too much
 			if delta_msats < 0 && -delta_msats > self.value_to_self_msat as i64 {
@@ -8526,7 +8542,7 @@ mod tests {
 	use crate::ln::PaymentHash;
 	use crate::ln::channelmanager::{self, HTLCSource, PaymentId};
 	use crate::ln::channel::InitFeatures;
-	use crate::ln::channel::{Channel, ChannelState, InboundHTLCOutput, OutboundV1Channel, InboundV1Channel, OutboundHTLCOutput, InboundHTLCState, OutboundHTLCState, HTLCCandidate, HTLCInitiator, commit_tx_fee_msat};
+	use crate::ln::channel::{Channel, ChannelState, InboundHTLCOutput, OutboundV1Channel, InboundV1Channel, OutboundHTLCOutput, InboundHTLCState, OutboundHTLCState, HTLCCandidate, HTLCInitiator, PendingSpliceInfo, commit_tx_fee_msat};
 	use crate::ln::channel::{MAX_FUNDING_SATOSHIS_NO_WUMBO, TOTAL_BITCOIN_SUPPLY_SATOSHIS, MIN_THEIR_CHAN_RESERVE_SATOSHIS};
 	use crate::ln::features::ChannelTypeFeatures;
 	use crate::ln::msgs::{ChannelUpdate, DecodeError, UnsignedChannelUpdate, MAX_VALUE_MSAT};
@@ -8577,6 +8593,82 @@ mod tests {
 		assert!(Channel::<&TestKeysInterface>::check_remote_fee(
 			&ChannelTypeFeatures::only_static_remote_key(), &bounded_fee_estimator,
 			u32::max_value(), None, &&test_utils::TestLogger::new()).is_err());
+	}
+
+	fn create_pending_splice_info(pre_channel_value: u64, post_channel_value: u64) -> PendingSpliceInfo {
+		PendingSpliceInfo {
+			post_channel_value,
+			pre_channel_value,
+			is_outgoing: true,
+			prev_funding_input_index: None,
+			initial_commitment_tx: None,
+			cp_commitment_sig: None,
+			funding_transaction: None,
+			funding_txo: None,
+		}
+	}
+
+	#[test]
+	fn test_pending_splice_info_new() {
+		{
+			// increase, small amounts
+			let ps = create_pending_splice_info(9_000, 15_000);
+			assert_eq!(ps.pre_channel_value, 9_000);
+			assert_eq!(ps.post_channel_value, 15_000);
+			assert_eq!(ps.relative_satoshis(), 6_000);
+		}
+		{
+			// decrease, small amounts
+			let ps = create_pending_splice_info(15_000, 9_000);
+			assert_eq!(ps.pre_channel_value, 15_000);
+			assert_eq!(ps.post_channel_value, 9_000);
+			assert_eq!(ps.relative_satoshis(), -6_000);
+		}
+		let base2: u64 = 2;
+		let huge63 = base2.pow(63);
+		assert_eq!(huge63, 9223372036854775808);
+		{
+			// increase, one huge amount
+			let ps = create_pending_splice_info(9_000, huge63 + 9_000 - 1);
+			assert_eq!(ps.pre_channel_value, 9_000);
+			assert_eq!(ps.post_channel_value, 9223372036854784807); // 2^63 + 9000 - 1
+			assert_eq!(ps.relative_satoshis(), 9223372036854775807); // 2^63 - 1
+		}
+		{
+			// decrease, one huge amount
+			let ps = create_pending_splice_info(huge63 + 9_000 - 1, 9_000);
+			assert_eq!(ps.pre_channel_value, 9223372036854784807); // 2^63 + 9000 - 1
+			assert_eq!(ps.post_channel_value, 9_000);
+			assert_eq!(ps.relative_satoshis(), -9223372036854775807); // 2^63 - 1
+		}
+		{
+			// increase, two huge amounts
+			let ps = create_pending_splice_info(huge63 + 9_000, huge63 + 15_000);
+			assert_eq!(ps.pre_channel_value, 9223372036854784808); // 2^63 + 9000
+			assert_eq!(ps.post_channel_value, 9223372036854790808); // 2^63 + 15000
+			assert_eq!(ps.relative_satoshis(), 6_000);
+		}
+		{
+			// decrease, two huge amounts
+			let ps = create_pending_splice_info(huge63 + 15_000, huge63 + 9_000);
+			assert_eq!(ps.pre_channel_value, 9223372036854790808); // 2^63 + 15000
+			assert_eq!(ps.post_channel_value, 9223372036854784808); // 2^63 + 9000
+			assert_eq!(ps.relative_satoshis(), -6_000);
+		}
+		{
+			// underflow
+			let ps = create_pending_splice_info(9_000, huge63 + 9_000 + 20);
+			assert_eq!(ps.pre_channel_value, 9_000);
+			assert_eq!(ps.post_channel_value, 9223372036854784828); // 2^63 + 9000 + 20
+			assert_eq!(ps.relative_satoshis(), -0);
+		}
+		{
+			// underflow
+			let ps = create_pending_splice_info(huge63 + 9_000 + 20, 9_000);
+			assert_eq!(ps.pre_channel_value, 9223372036854784828); // 2^63 + 9000 + 20
+			assert_eq!(ps.post_channel_value, 9_000);
+			assert_eq!(ps.relative_satoshis(), -0);
+		}
 	}
 
 	struct Keys {
