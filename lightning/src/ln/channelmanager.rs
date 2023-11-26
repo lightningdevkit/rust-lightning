@@ -1942,15 +1942,6 @@ macro_rules! handle_error {
 			},
 		}
 	} };
-	($self: ident, $internal: expr) => {
-		match $internal {
-			Ok(res) => Ok(res),
-			Err((chan, msg_handle_err)) => {
-				let counterparty_node_id = chan.get_counterparty_node_id();
-				handle_error!($self, Err(msg_handle_err), counterparty_node_id).map_err(|err| (chan, err))
-			},
-		}
-	};
 }
 
 macro_rules! update_maps_on_chan_removal {
