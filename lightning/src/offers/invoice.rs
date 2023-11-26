@@ -926,20 +926,11 @@ impl InvoiceContents {
 			};
 
 			let program = &address.program;
-			if program.len() < 2 || program.len() > 40 {
-				return None;
-			}
-
 			let witness_program = match WitnessProgram::new(version, program.clone()) {
 				Ok(witness_program) => witness_program,
 				Err(_) => return None,
 			};
-			let address = Address::new(network, Payload::WitnessProgram(witness_program));
-			if !address.is_spend_standard() && version == WitnessVersion::V0 {
-				return None;
-			}
-
-			Some(address)
+			Some(Address::new(network, Payload::WitnessProgram(witness_program)))
 		};
 
 		self.fields().fallbacks
