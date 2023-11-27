@@ -171,23 +171,27 @@ basepoint_impl!(RevocationBasepoint);
 key_read_write!(RevocationBasepoint);
 
 
-/// [htlcpubkey](https://github.com/lightning/bolts/blob/master/03-transactions.md#localpubkey-local_htlcpubkey-remote_htlcpubkey-local_delayedpubkey-and-remote_delayedpubkey-derivation) is a child key of a revocation basepoint,
-/// that enables a node to create a justice transaction punishing a counterparty for an attempt to steal funds. Used to in generation of commitment and htlc outputs.
+/// The revocation key is used to allow a channel party to revoke their state - giving their
+/// counterparty the required material to claim all of their funds if they broadcast that state.
+///
+/// Each commitment transaction has a revocation key based on the basepoint and
+/// per_commitment_point which is used in both commitment and HTLC transactions.
+///
+/// See [the BOLT spec for derivation details]
+/// (https://github.com/lightning/bolts/blob/master/03-transactions.md#revocationpubkey-derivation)
 #[derive(PartialEq, Eq, Clone, Copy, Debug, Hash)]
 pub struct RevocationKey(pub PublicKey);
 
 impl RevocationKey {
-	/// Derives a per-commitment-transaction revocation public key from its constituent parts. This is
-	/// the public equivalend of derive_private_revocation_key - using only public keys to derive a
-	/// public key instead of private keys.
-	///
-	/// Only the cheating participant owns a valid witness to propagate a revoked
-	/// commitment transaction, thus per_commitment_point always come from cheater
-	/// and revocation_base_point always come from punisher, which is the broadcaster
-	/// of the transaction spending with this key knowledge.
+	/// Derives a per-commitment-transaction revocation public key from one party's per-commitment
+	/// point and the other party's [`RevocationBasepoint`]. This is the public equivalent of
+	/// [`chan_utils::derive_private_revocation_key`] - using only public keys to derive a public
+	/// key instead of private keys.
 	///
 	/// Note that this is infallible iff we trust that at least one of the two input keys are randomly
 	/// generated (ie our own).
+	///
+	/// [`chan_utils::derive_private_revocation_key`]: crate::ln::chan_utils::derive_private_revocation_key
 	pub fn from_basepoint<T: secp256k1::Verification>(
 		secp_ctx: &Secp256k1<T>,
 		basepoint: &RevocationBasepoint,
