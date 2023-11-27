@@ -50,18 +50,18 @@ macro_rules! basepoint_impl {
 macro_rules! key_impl {
 	($BasepointT:ty, $KeyName:expr) => {
 		doc_comment! {
-			concat!("Generate ", $KeyName, " using per_commitment_point"),
+			concat!("Derive a public ", $KeyName, " using one node's `per_commitment_point` and its countersignatory's `basepoint`"),
 			pub fn from_basepoint<T: secp256k1::Signing>(
 				secp_ctx: &Secp256k1<T>,
-				basepoint: &$BasepointT,
+				countersignatory_basepoint: &$BasepointT,
 				per_commitment_point: &PublicKey,
 			) -> Self {
-				Self(derive_public_key(secp_ctx, per_commitment_point, &basepoint.0))
+				Self(derive_public_key(secp_ctx, per_commitment_point, &countersignatory_basepoint.0))
 			}
 		}
 
 		doc_comment! {
-			concat!("Generate ", $KeyName, " from privkey"),
+			concat!("Build a ", $KeyName, " directly from an already-derived private key"),
 			pub fn from_secret_key<T: secp256k1::Signing>(secp_ctx: &Secp256k1<T>, sk: &SecretKey) -> Self {
 				Self(PublicKey::from_secret_key(&secp_ctx, &sk))
 			}
