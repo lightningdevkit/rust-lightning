@@ -111,26 +111,6 @@ impl DelayedPaymentKey {
 }
 key_read_write!(DelayedPaymentKey);
 
-/// Master key used in conjunction with per_commitment_point to generate a [localpubkey](https://github.com/lightning/bolts/blob/master/03-transactions.md#key-derivation) for the latest state of a channel.
-/// Also used to generate a commitment number in a commitment transaction or as a Payment Key for a remote node (not us) in an anchor output if `option_static_remotekey` is enabled.
-/// Shared by both nodes in a channel establishment message flow.
-#[derive(PartialEq, Eq, Clone, Copy, Debug, Hash)]
-pub struct PaymentBasepoint(pub PublicKey);
-basepoint_impl!(PaymentBasepoint);
-key_read_write!(PaymentBasepoint);
-
-
-/// [localpubkey](https://github.com/lightning/bolts/blob/master/03-transactions.md#localpubkey-local_htlcpubkey-remote_htlcpubkey-local_delayedpubkey-and-remote_delayedpubkey-derivation) is a child key of a payment basepoint,
-/// that enables a secure hash-lock for off-chain payments without risk of funds getting stuck or stolen. A payment key is normally shared with a counterparty so that it can generate 
-/// a commitment transaction's to_remote ouput, which our node can claim in case the counterparty force closes the channel.
-#[derive(PartialEq, Eq, Clone, Copy, Debug)]
-pub struct PaymentKey(pub PublicKey);
-
-impl PaymentKey {
-	key_impl!(PaymentBasepoint, "localpubkey");
-}
-key_read_write!(PaymentKey);
-
 /// Master key used in conjunction with per_commitment_point to generate [htlcpubkey](https://github.com/lightning/bolts/blob/master/03-transactions.md#key-derivation) for the latest state of a channel.
 #[derive(PartialEq, Eq, Clone, Copy, Debug, Hash)]
 pub struct HtlcBasepoint(pub PublicKey);
