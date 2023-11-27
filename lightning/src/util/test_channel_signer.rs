@@ -9,7 +9,8 @@
 
 use crate::ln::channel::{ANCHOR_OUTPUT_VALUE_SATOSHI, MIN_CHAN_DUST_LIMIT_SATOSHIS};
 use crate::ln::chan_utils::{HTLCOutputInCommitment, ChannelPublicKeys, HolderCommitmentTransaction, CommitmentTransaction, ChannelTransactionParameters, TrustedCommitmentTransaction, ClosingTransaction};
-use crate::ln::{chan_utils, msgs, PaymentPreimage};
+use crate::ln::channel_keys::{HtlcKey};
+use crate::ln::{msgs, PaymentPreimage};
 use crate::sign::{WriteableEcdsaChannelSigner, InMemorySigner, ChannelSigner, EcdsaChannelSigner};
 
 use crate::prelude::*;
@@ -232,11 +233,12 @@ impl EcdsaChannelSigner for TestChannelSigner {
 			let sighash = &sighash::SighashCache::new(&*htlc_tx).segwit_signature_hash(
 				input, &witness_script, htlc_descriptor.htlc.amount_msat / 1000, sighash_type
 			).unwrap();
-			let countersignatory_htlc_key = chan_utils::derive_public_key(
-				&secp_ctx, &htlc_descriptor.per_commitment_point, &self.inner.counterparty_pubkeys().unwrap().htlc_basepoint
+			let countersignatory_htlc_key = HtlcKey::from_basepoint(
+				&secp_ctx, &self.inner.counterparty_pubkeys().unwrap().htlc_basepoint, &htlc_descriptor.per_commitment_point,
 			);
+
 			secp_ctx.verify_ecdsa(
-				&hash_to_message!(sighash.as_byte_array()), &htlc_descriptor.counterparty_sig, &countersignatory_htlc_key
+				&hash_to_message!(sighash.as_byte_array()), &htlc_descriptor.counterparty_sig, &countersignatory_htlc_key.to_public_key()
 			).unwrap();
 		}
 		Ok(self.inner.sign_holder_htlc_transaction(htlc_tx, input, htlc_descriptor, secp_ctx).unwrap())
