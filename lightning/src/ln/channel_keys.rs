@@ -25,69 +25,69 @@ use bitcoin::secp256k1::PublicKey;
 use bitcoin::hashes::sha256::Hash as Sha256;
 
 macro_rules! doc_comment {
-    ($x:expr, $($tt:tt)*) => {
-        #[doc = $x]
-        $($tt)*
-    };
+	($x:expr, $($tt:tt)*) => {
+		#[doc = $x]
+		$($tt)*
+	};
 }
 macro_rules! basepoint_impl {
-    ($BasepointT:ty) => {
-        impl $BasepointT {
-            /// Get inner Public Key
-            pub fn to_public_key(&self) -> PublicKey {
-                self.0
-            }
-        }
-        
-        impl From<PublicKey> for $BasepointT {
-            fn from(value: PublicKey) -> Self {
-                Self(value)
-            }
-        }
-        
-    }
+	($BasepointT:ty) => {
+		impl $BasepointT {
+			/// Get inner Public Key
+			pub fn to_public_key(&self) -> PublicKey {
+				self.0
+			}
+		}
+
+		impl From<PublicKey> for $BasepointT {
+			fn from(value: PublicKey) -> Self {
+				Self(value)
+			}
+		}
+
+	}
 }
 macro_rules! key_impl {
-    ($BasepointT:ty, $KeyName:expr) => {
-        doc_comment! {
-            concat!("Generate ", $KeyName, " using per_commitment_point"),
-            pub fn from_basepoint<T: secp256k1::Signing>(
-                secp_ctx: &Secp256k1<T>,
-                basepoint: &$BasepointT,
-                per_commitment_point: &PublicKey,
-            ) -> Self {
-                Self(derive_public_key(secp_ctx, per_commitment_point, &basepoint.0))
-            }
-        }
-        
-        doc_comment! {
-            concat!("Generate ", $KeyName, " from privkey"),
-            pub fn from_secret_key<T: secp256k1::Signing>(secp_ctx: &Secp256k1<T>, sk: &SecretKey) -> Self {
-                Self(PublicKey::from_secret_key(&secp_ctx, &sk))
-            }
-        }
-        
-        /// Get inner Public Key
-        pub fn to_public_key(&self) -> PublicKey {
-            self.0
-        }
-    }
+	($BasepointT:ty, $KeyName:expr) => {
+		doc_comment! {
+			concat!("Generate ", $KeyName, " using per_commitment_point"),
+			pub fn from_basepoint<T: secp256k1::Signing>(
+				secp_ctx: &Secp256k1<T>,
+				basepoint: &$BasepointT,
+				per_commitment_point: &PublicKey,
+			) -> Self {
+				Self(derive_public_key(secp_ctx, per_commitment_point, &basepoint.0))
+			}
+		}
+
+		doc_comment! {
+			concat!("Generate ", $KeyName, " from privkey"),
+			pub fn from_secret_key<T: secp256k1::Signing>(secp_ctx: &Secp256k1<T>, sk: &SecretKey) -> Self {
+				Self(PublicKey::from_secret_key(&secp_ctx, &sk))
+			}
+		}
+
+		/// Get inner Public Key
+		pub fn to_public_key(&self) -> PublicKey {
+			self.0
+		}
+	}
 }
 macro_rules! key_read_write {
-    ($SelfT:ty) => {
-        impl Writeable for $SelfT {
-            fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
-                self.0.serialize().write(w)
-            }
-        }
-        
-        impl Readable for $SelfT {
-            fn read<R: io::Read>(r: &mut R) -> Result<Self, DecodeError> {
-                let key: PublicKey = Readable::read(r)?;
-                Ok(Self(key))
-            }
-        }
-    }
+	($SelfT:ty) => {
+		impl Writeable for $SelfT {
+			fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+				self.0.serialize().write(w)
+			}
+		}
+
+		impl Readable for $SelfT {
+			fn read<R: io::Read>(r: &mut R) -> Result<Self, DecodeError> {
+				let key: PublicKey = Readable::read(r)?;
+				Ok(Self(key))
+			}
+		}
+	}
 }
 
 
@@ -107,7 +107,7 @@ key_read_write!(DelayedPaymentBasepoint);
 pub struct DelayedPaymentKey(pub PublicKey);
 
 impl DelayedPaymentKey {
-    key_impl!(DelayedPaymentBasepoint, "delayedpubkey");
+	key_impl!(DelayedPaymentBasepoint, "delayedpubkey");
 }
 key_read_write!(DelayedPaymentKey);
 
@@ -127,7 +127,7 @@ key_read_write!(PaymentBasepoint);
 pub struct PaymentKey(pub PublicKey);
 
 impl PaymentKey {
-    key_impl!(PaymentBasepoint, "localpubkey");
+	key_impl!(PaymentBasepoint, "localpubkey");
 }
 key_read_write!(PaymentKey);
 
@@ -144,7 +144,7 @@ key_read_write!(HtlcBasepoint);
 pub struct HtlcKey(pub PublicKey);
 
 impl HtlcKey {
-    key_impl!(HtlcBasepoint, "htlcpubkey");
+	key_impl!(HtlcBasepoint, "htlcpubkey");
 }
 key_read_write!(HtlcKey);
 
@@ -156,7 +156,6 @@ fn derive_public_key<T: secp256k1::Signing>(secp_ctx: &Secp256k1<T>, per_commitm
 	sha.input(&per_commitment_point.serialize());
 	sha.input(&base_point.serialize());
 	let res = Sha256::from_engine(sha).to_byte_array();
-    
 
 	let hashkey = PublicKey::from_secret_key(&secp_ctx,
 		&SecretKey::from_slice(&res).expect("Hashes should always be valid keys unless SHA-256 is broken"));
@@ -178,50 +177,50 @@ key_read_write!(RevocationBasepoint);
 pub struct RevocationKey(pub PublicKey);
 
 impl RevocationKey {
-    /// Derives a per-commitment-transaction revocation public key from its constituent parts. This is
-    /// the public equivalend of derive_private_revocation_key - using only public keys to derive a
-    /// public key instead of private keys.
-    ///
-    /// Only the cheating participant owns a valid witness to propagate a revoked
-    /// commitment transaction, thus per_commitment_point always come from cheater
-    /// and revocation_base_point always come from punisher, which is the broadcaster
-    /// of the transaction spending with this key knowledge.
-    ///
-    /// Note that this is infallible iff we trust that at least one of the two input keys are randomly
-    /// generated (ie our own).
-    pub fn from_basepoint<T: secp256k1::Verification>(
-        secp_ctx: &Secp256k1<T>,
-        basepoint: &RevocationBasepoint,
-        per_commitment_point: &PublicKey,
-    ) -> Self {
-        let rev_append_commit_hash_key = {
-            let mut sha = Sha256::engine();
-            sha.input(&basepoint.to_public_key().serialize());
-            sha.input(&per_commitment_point.serialize());
-    
-            Sha256::from_engine(sha).to_byte_array()
-        };
-        let commit_append_rev_hash_key = {
-            let mut sha = Sha256::engine();
-            sha.input(&per_commitment_point.serialize());
-            sha.input(&basepoint.to_public_key().serialize());
-    
-            Sha256::from_engine(sha).to_byte_array()
-        };
-    
-        let countersignatory_contrib = basepoint.to_public_key().mul_tweak(&secp_ctx, &Scalar::from_be_bytes(rev_append_commit_hash_key).unwrap())
-            .expect("Multiplying a valid public key by a hash is expected to never fail per secp256k1 docs");
-        let broadcaster_contrib = (&per_commitment_point).mul_tweak(&secp_ctx, &Scalar::from_be_bytes(commit_append_rev_hash_key).unwrap())
-            .expect("Multiplying a valid public key by a hash is expected to never fail per secp256k1 docs");
-        let pk = countersignatory_contrib.combine(&broadcaster_contrib)
-            .expect("Addition only fails if the tweak is the inverse of the key. This is not possible when the tweak commits to the key.");
-        Self(pk)
-    }
+	/// Derives a per-commitment-transaction revocation public key from its constituent parts. This is
+	/// the public equivalend of derive_private_revocation_key - using only public keys to derive a
+	/// public key instead of private keys.
+	///
+	/// Only the cheating participant owns a valid witness to propagate a revoked
+	/// commitment transaction, thus per_commitment_point always come from cheater
+	/// and revocation_base_point always come from punisher, which is the broadcaster
+	/// of the transaction spending with this key knowledge.
+	///
+	/// Note that this is infallible iff we trust that at least one of the two input keys are randomly
+	/// generated (ie our own).
+	pub fn from_basepoint<T: secp256k1::Verification>(
+		secp_ctx: &Secp256k1<T>,
+		basepoint: &RevocationBasepoint,
+		per_commitment_point: &PublicKey,
+	) -> Self {
+		let rev_append_commit_hash_key = {
+			let mut sha = Sha256::engine();
+			sha.input(&basepoint.to_public_key().serialize());
+			sha.input(&per_commitment_point.serialize());
 
-    /// Get inner Public Key
-    pub fn to_public_key(&self) -> PublicKey {
-        self.0
-    }
+			Sha256::from_engine(sha).to_byte_array()
+		};
+		let commit_append_rev_hash_key = {
+			let mut sha = Sha256::engine();
+			sha.input(&per_commitment_point.serialize());
+			sha.input(&basepoint.to_public_key().serialize());
+
+			Sha256::from_engine(sha).to_byte_array()
+		};
+
+		let countersignatory_contrib = basepoint.to_public_key().mul_tweak(&secp_ctx, &Scalar::from_be_bytes(rev_append_commit_hash_key).unwrap())
+			.expect("Multiplying a valid public key by a hash is expected to never fail per secp256k1 docs");
+		let broadcaster_contrib = (&per_commitment_point).mul_tweak(&secp_ctx, &Scalar::from_be_bytes(commit_append_rev_hash_key).unwrap())
+			.expect("Multiplying a valid public key by a hash is expected to never fail per secp256k1 docs");
+		let pk = countersignatory_contrib.combine(&broadcaster_contrib)
+			.expect("Addition only fails if the tweak is the inverse of the key. This is not possible when the tweak commits to the key.");
+		Self(pk)
+	}
+
+	/// Get inner Public Key
+	pub fn to_public_key(&self) -> PublicKey {
+		self.0
+	}
 }
 key_read_write!(RevocationKey);
 
@@ -229,11 +228,11 @@ key_read_write!(RevocationKey);
 
 #[cfg(test)]
 mod test {
-    use bitcoin::secp256k1::{Secp256k1, SecretKey, PublicKey};
-    use bitcoin::hashes::hex::FromHex;
-    use super::derive_public_key;
+	use bitcoin::secp256k1::{Secp256k1, SecretKey, PublicKey};
+	use bitcoin::hashes::hex::FromHex;
+	use super::derive_public_key;
 
-    #[test]
+	#[test]
 	fn test_key_derivation() {
 		// Test vectors from BOLT 3 Appendix E:
 		let secp_ctx = Secp256k1::new();
@@ -248,6 +247,6 @@ mod test {
 		assert_eq!(per_commitment_point.serialize()[..], <Vec<u8>>::from_hex("025f7117a78150fe2ef97db7cfc83bd57b2e2c0d0dd25eaf467a4a1c2a45ce1486").unwrap()[..]);
 
 		assert_eq!(derive_public_key(&secp_ctx, &per_commitment_point, &base_point).serialize()[..],
-				<Vec<u8>>::from_hex("0235f2dbfaa89b57ec7b055afe29849ef7ddfeb1cefdb9ebdc43f5494984db29e5").unwrap()[..]);
+			<Vec<u8>>::from_hex("0235f2dbfaa89b57ec7b055afe29849ef7ddfeb1cefdb9ebdc43f5494984db29e5").unwrap()[..]);
 	}
 }
