@@ -903,8 +903,9 @@ pub trait SignerProvider {
 	/// If this function returns an error, this will result in a channel failing to open.
 	///
 	/// This method should return a different value each time it is called, to avoid linking
-	/// on-chain funds across channels as controlled to the same user.
-	fn get_destination_script(&self) -> Result<ScriptBuf, ()>;
+	/// on-chain funds across channels as controlled to the same user. `channel_keys_id` may be
+	/// used to derive a unique value for each channel.
+	fn get_destination_script(&self, channel_keys_id: [u8; 32]) -> Result<ScriptBuf, ()>;
 
 	/// Get a script pubkey which we will send funds to when closing a channel.
 	///
@@ -1804,7 +1805,7 @@ impl SignerProvider for KeysManager {
 		InMemorySigner::read(&mut io::Cursor::new(reader), self)
 	}
 
-	fn get_destination_script(&self) -> Result<ScriptBuf, ()> {
+	fn get_destination_script(&self, _channel_keys_id: [u8; 32]) -> Result<ScriptBuf, ()> {
 		Ok(self.destination_script.clone())
 	}
 
@@ -1911,8 +1912,8 @@ impl SignerProvider for PhantomKeysManager {
 		self.inner.read_chan_signer(reader)
 	}
 
-	fn get_destination_script(&self) -> Result<ScriptBuf, ()> {
-		self.inner.get_destination_script()
+	fn get_destination_script(&self, channel_keys_id: [u8; 32]) -> Result<ScriptBuf, ()> {
+		self.inner.get_destination_script(channel_keys_id)
 	}
 
 	fn get_shutdown_scriptpubkey(&self) -> Result<ShutdownScript, ()> {
