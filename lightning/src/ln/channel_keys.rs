@@ -194,12 +194,12 @@ impl RevocationKey {
 	/// [`chan_utils::derive_private_revocation_key`]: crate::ln::chan_utils::derive_private_revocation_key
 	pub fn from_basepoint<T: secp256k1::Verification>(
 		secp_ctx: &Secp256k1<T>,
-		basepoint: &RevocationBasepoint,
+		countersignatory_basepoint: &RevocationBasepoint,
 		per_commitment_point: &PublicKey,
 	) -> Self {
 		let rev_append_commit_hash_key = {
 			let mut sha = Sha256::engine();
-			sha.input(&basepoint.to_public_key().serialize());
+			sha.input(&countersignatory_basepoint.to_public_key().serialize());
 			sha.input(&per_commitment_point.serialize());
 
 			Sha256::from_engine(sha).to_byte_array()
@@ -207,12 +207,12 @@ impl RevocationKey {
 		let commit_append_rev_hash_key = {
 			let mut sha = Sha256::engine();
 			sha.input(&per_commitment_point.serialize());
-			sha.input(&basepoint.to_public_key().serialize());
+			sha.input(&countersignatory_basepoint.to_public_key().serialize());
 
 			Sha256::from_engine(sha).to_byte_array()
 		};
 
-		let countersignatory_contrib = basepoint.to_public_key().mul_tweak(&secp_ctx, &Scalar::from_be_bytes(rev_append_commit_hash_key).unwrap())
+		let countersignatory_contrib = countersignatory_basepoint.to_public_key().mul_tweak(&secp_ctx, &Scalar::from_be_bytes(rev_append_commit_hash_key).unwrap())
 			.expect("Multiplying a valid public key by a hash is expected to never fail per secp256k1 docs");
 		let broadcaster_contrib = (&per_commitment_point).mul_tweak(&secp_ctx, &Scalar::from_be_bytes(commit_append_rev_hash_key).unwrap())
 			.expect("Multiplying a valid public key by a hash is expected to never fail per secp256k1 docs");
@@ -227,7 +227,6 @@ impl RevocationKey {
 	}
 }
 key_read_write!(RevocationKey);
-
 
 
 #[cfg(test)]
