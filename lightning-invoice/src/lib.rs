@@ -407,7 +407,10 @@ impl From<Network> for Currency {
 			Network::Testnet => Currency::BitcoinTestnet,
 			Network::Regtest => Currency::Regtest,
 			Network::Signet => Currency::Signet,
-			_ => unreachable!(),
+			_ => {
+				debug_assert!(false, "Need to handle new rust-bitcoin network type");
+				Currency::Regtest
+			},
 		}
 	}
 }
