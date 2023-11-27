@@ -92,17 +92,26 @@ macro_rules! key_read_write {
 
 
 
-/// Master key used in conjunction with per_commitment_point to generate [`local_delayedpubkey`](https://github.com/lightning/bolts/blob/master/03-transactions.md#key-derivation) for the latest state of a channel.
-/// A watcher can be given a [DelayedPaymentBasepoint] to generate per commitment [DelayedPaymentKey] to create justice transactions.
+/// Base key used in conjunction with a `per_commitment_point` to generate a [`DelayedPaymentKey`].
+///
+/// The delayed payment key is used to pay the commitment state broadcaster their
+/// non-HTLC-encumbered funds after a delay to give their counterparty a chance to punish if the
+/// state broadcasted was previously revoked.
 #[derive(PartialEq, Eq, Clone, Copy, Debug, Hash)]
 pub struct DelayedPaymentBasepoint(pub PublicKey);
 basepoint_impl!(DelayedPaymentBasepoint);
 key_read_write!(DelayedPaymentBasepoint);
 
-/// [delayedpubkey](https://github.com/lightning/bolts/blob/master/03-transactions.md#localpubkey-local_htlcpubkey-remote_htlcpubkey-local_delayedpubkey-and-remote_delayedpubkey-derivation)
-/// To allow a counterparty to contest a channel state published by a node, Lightning protocol sets delays for some of the outputs, before can be spend.
-/// For example a commitment transaction has to_local output encumbered by a delay, negotiated at the channel establishment flow.
-/// To spend from such output a node has to generate a script using, among others, a local delayed payment key.
+
+/// A derived key built from a [`DelayedPaymentBasepoint`] and `per_commitment_point`.
+///
+/// The delayed payment key is used to pay the commitment state broadcaster their
+/// non-HTLC-encumbered funds after a delay. This delay gives their counterparty a chance to
+/// punish and claim all the channel funds if the state broadcasted was previously revoked.
+///
+/// [See the BOLT specs]
+/// (https://github.com/lightning/bolts/blob/master/03-transactions.md#localpubkey-local_htlcpubkey-remote_htlcpubkey-local_delayedpubkey-and-remote_delayedpubkey-derivation)
+/// for more information on key derivation details.
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
 pub struct DelayedPaymentKey(pub PublicKey);
 
@@ -111,15 +120,25 @@ impl DelayedPaymentKey {
 }
 key_read_write!(DelayedPaymentKey);
 
-/// Master key used in conjunction with per_commitment_point to generate [htlcpubkey](https://github.com/lightning/bolts/blob/master/03-transactions.md#key-derivation) for the latest state of a channel.
+/// Base key used in conjunction with a `per_commitment_point` to generate an [`HtlcKey`].
+///
+/// HTLC keys are used to ensure only the recipient of an HTLC can claim it on-chain with the HTLC
+/// preimage and that only the sender of an HTLC can claim it on-chain after it has timed out.
+/// Thus, both channel counterparties' HTLC keys will appears in each HTLC output's script.
 #[derive(PartialEq, Eq, Clone, Copy, Debug, Hash)]
 pub struct HtlcBasepoint(pub PublicKey);
 basepoint_impl!(HtlcBasepoint);
 key_read_write!(HtlcBasepoint);
 
-
-/// [htlcpubkey](https://github.com/lightning/bolts/blob/master/03-transactions.md#localpubkey-local_htlcpubkey-remote_htlcpubkey-local_delayedpubkey-and-remote_delayedpubkey-derivation) is a child key of an htlc basepoint,
-/// that enables secure routing of payments in onion scheme without a risk of them getting stuck or diverted. It is used to claim the funds in successful or timed out htlc outputs.
+/// A derived key built from a [`HtlcBasepoint`] and `per_commitment_point`.
+///
+/// HTLC keys are used to ensure only the recipient of an HTLC can claim it on-chain with the HTLC
+/// preimage and that only the sender of an HTLC can claim it on-chain after it has timed out.
+/// Thus, both channel counterparties' HTLC keys will appears in each HTLC output's script.
+///
+/// [See the BOLT specs]
+/// (https://github.com/lightning/bolts/blob/master/03-transactions.md#localpubkey-local_htlcpubkey-remote_htlcpubkey-local_delayedpubkey-and-remote_delayedpubkey-derivation)
+/// for more information on key derivation details.
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
 pub struct HtlcKey(pub PublicKey);
 
