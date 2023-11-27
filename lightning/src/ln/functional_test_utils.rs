@@ -956,7 +956,14 @@ macro_rules! unwrap_send_err {
 					_ => panic!(),
 				}
 			},
-			_ => panic!(),
+			&Err(PaymentSendFailure::PathParameterError(ref result)) if !$all_failed => {
+				assert_eq!(result.len(), 1);
+				match result[0] {
+					Err($type) => { $check },
+					_ => panic!(),
+				}
+			},
+			_ => {panic!()},
 		}
 	}
 }
