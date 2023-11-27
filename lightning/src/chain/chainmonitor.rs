@@ -689,15 +689,15 @@ where
 		});
 	}
 
-	fn get_relevant_txids(&self) -> Vec<(Txid, Option<BlockHash>)> {
+	fn get_relevant_txids(&self) -> Vec<(Txid, u32, Option<BlockHash>)> {
 		let mut txids = Vec::new();
 		let monitor_states = self.monitors.read().unwrap();
 		for monitor_state in monitor_states.values() {
 			txids.append(&mut monitor_state.monitor.get_relevant_txids());
 		}
 
-		txids.sort_unstable();
-		txids.dedup();
+		txids.sort_unstable_by(|a, b| a.0.cmp(&b.0).then(b.1.cmp(&a.1)));
+		txids.dedup_by_key(|(txid, _, _)| *txid);
 		txids
 	}
 }

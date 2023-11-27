@@ -8336,14 +8336,17 @@ where
 		});
 	}
 
-	fn get_relevant_txids(&self) -> Vec<(Txid, Option<BlockHash>)> {
+	fn get_relevant_txids(&self) -> Vec<(Txid, u32, Option<BlockHash>)> {
 		let mut res = Vec::with_capacity(self.short_to_chan_info.read().unwrap().len());
 		for (_cp_id, peer_state_mutex) in self.per_peer_state.read().unwrap().iter() {
 			let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 			let peer_state = &mut *peer_state_lock;
 			for chan in peer_state.channel_by_id.values().filter_map(|phase| if let ChannelPhase::Funded(chan) = phase { Some(chan) } else { None }) {
-				if let (Some(funding_txo), Some(block_hash)) = (chan.context.get_funding_txo(), chan.context.get_funding_tx_confirmed_in()) {
-					res.push((funding_txo.txid, Some(block_hash)));
+				let txid_opt = chan.context.get_funding_txo();
+				let height_opt = chan.context.get_funding_tx_confirmation_height();
+				let hash_opt = chan.context.get_funding_tx_confirmed_in();
+				if let (Some(funding_txo), Some(conf_height), Some(block_hash)) = (txid_opt, height_opt, hash_opt) {
+					res.push((funding_txo.txid, conf_height, Some(block_hash)));
 				}
 			}
 		}

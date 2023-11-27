@@ -68,6 +68,8 @@ if [[ $RUSTC_MINOR_VERSION -gt 67 && "$HOST_PLATFORM" != *windows* ]]; then
 	cargo check --verbose --color always --features esplora-async
 	cargo test --verbose --color always --features esplora-async-https
 	cargo check --verbose --color always --features esplora-async-https
+	cargo test --verbose --color always --features electrum
+	cargo check --verbose --color always --features electrum
 	popd
 fi
 

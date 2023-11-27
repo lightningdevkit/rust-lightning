@@ -18,7 +18,6 @@ impl fmt::Display for TxSyncError {
 }
 
 #[derive(Debug)]
-#[cfg(any(feature = "esplora-blocking", feature = "esplora-async"))]
 pub(crate) enum InternalError {
 	/// A transaction sync failed and needs to be retried eventually.
 	Failed,
@@ -26,7 +25,6 @@ pub(crate) enum InternalError {
 	Inconsistency,
 }
 
-#[cfg(any(feature = "esplora-blocking", feature = "esplora-async"))]
 impl fmt::Display for InternalError {
 	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
 		match *self {
@@ -38,8 +36,13 @@ impl fmt::Display for InternalError {
 	}
 }
 
-#[cfg(any(feature = "esplora-blocking", feature = "esplora-async"))]
 impl std::error::Error for InternalError {}
+
+impl From<InternalError> for TxSyncError {
+	fn from(_e: InternalError) -> Self {
+		Self::Failed
+	}
+}
 
 #[cfg(any(feature = "esplora-blocking", feature = "esplora-async"))]
 impl From<esplora_client::Error> for TxSyncError {
@@ -55,9 +58,16 @@ impl From<esplora_client::Error> for InternalError {
 	}
 }
 
-#[cfg(any(feature = "esplora-blocking", feature = "esplora-async"))]
-impl From<InternalError> for TxSyncError {
-	fn from(_e: InternalError) -> Self {
+#[cfg(feature = "electrum")]
+impl From<electrum_client::Error> for InternalError {
+	fn from(_e: electrum_client::Error) -> Self {
+		Self::Failed
+	}
+}
+
+#[cfg(feature = "electrum")]
+impl From<electrum_client::Error> for TxSyncError {
+	fn from(_e: electrum_client::Error) -> Self {
 		Self::Failed
 	}
 }

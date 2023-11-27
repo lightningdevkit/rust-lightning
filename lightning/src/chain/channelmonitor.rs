@@ -1634,15 +1634,15 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 	}
 
 	/// Returns the set of txids that should be monitored for re-organization out of the chain.
-	pub fn get_relevant_txids(&self) -> Vec<(Txid, Option<BlockHash>)> {
+	pub fn get_relevant_txids(&self) -> Vec<(Txid, u32, Option<BlockHash>)> {
 		let inner = self.inner.lock().unwrap();
-		let mut txids: Vec<(Txid, Option<BlockHash>)> = inner.onchain_events_awaiting_threshold_conf
+		let mut txids: Vec<(Txid, u32, Option<BlockHash>)> = inner.onchain_events_awaiting_threshold_conf
 			.iter()
-			.map(|entry| (entry.txid, entry.block_hash))
+			.map(|entry| (entry.txid, entry.height, entry.block_hash))
 			.chain(inner.onchain_tx_handler.get_relevant_txids().into_iter())
 			.collect();
-		txids.sort_unstable();
-		txids.dedup();
+		txids.sort_unstable_by(|a, b| a.0.cmp(&b.0).then(b.1.cmp(&a.1)));
+		txids.dedup_by_key(|(txid, _, _)| *txid);
 		txids
 	}
 
@@ -4171,7 +4171,7 @@ where
 		self.0.best_block_updated(header, height, &*self.1, &*self.2, &*self.3);
 	}
 
-	fn get_relevant_txids(&self) -> Vec<(Txid, Option<BlockHash>)> {
+	fn get_relevant_txids(&self) -> Vec<(Txid, u32, Option<BlockHash>)> {
 		self.0.get_relevant_txids()
 	}
 }

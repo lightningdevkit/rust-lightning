@@ -1,0 +1,3 @@
+## API Updates
+
+- The `Confirm::get_relevant_txids()` call now also returns the height under which LDK expects the respective transaction to be confirmed.

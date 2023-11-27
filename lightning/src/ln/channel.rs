@@ -1111,6 +1111,16 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 		self.channel_transaction_parameters.funding_outpoint
 	}
 
+	/// Returns the height in which our funding transaction was confirmed.
+	pub fn get_funding_tx_confirmation_height(&self) -> Option<u32> {
+		let conf_height = self.funding_tx_confirmation_height;
+		if conf_height > 0 {
+			Some(conf_height)
+		} else {
+			None
+		}
+	}
+
 	/// Returns the block hash in which our funding transaction was confirmed.
 	pub fn get_funding_tx_confirmed_in(&self) -> Option<BlockHash> {
 		self.funding_tx_confirmed_in
