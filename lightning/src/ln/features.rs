@@ -166,6 +166,8 @@ mod sealed {
 		ChannelType | SCIDPrivacy,
 		// Byte 6
 		ZeroConf | Keysend,
+		// Byte 7
+		Trampoline,
 	]);
 	define_context!(ChannelContext, []);
 	define_context!(Bolt11InvoiceContext, [
@@ -415,6 +417,9 @@ mod sealed {
 	define_feature!(55, Keysend, [NodeContext],
 		"Feature flags for keysend payments.", set_keysend_optional, set_keysend_required,
 		supports_keysend, requires_keysend);
+	define_feature!(57, Trampoline, [NodeContext],
+		"Feature flags for Trampoline routing.", set_trampoline_routing_optional, set_trampoline_routing_required,
+		supports_trampoline_routing, requires_trampoline_routing);
 	// Note: update the module-level docs when a new feature bit is added!
 
 	#[cfg(test)]
