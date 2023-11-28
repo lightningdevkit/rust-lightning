@@ -746,7 +746,7 @@ fn test_update_fee_that_funder_cannot_afford() {
 			&mut htlcs,
 			&local_chan.context.channel_transaction_parameters.as_counterparty_broadcastable()
 		);
-		local_chan_signer.as_ecdsa().unwrap().sign_counterparty_commitment(&commitment_tx, Vec::new(), &secp_ctx).unwrap()
+		local_chan_signer.as_ecdsa().unwrap().sign_counterparty_commitment(&commitment_tx, Vec::new(), Vec::new(), &secp_ctx).unwrap()
 	};
 
 	let commit_signed_msg = msgs::CommitmentSigned {
@@ -1493,7 +1493,7 @@ fn test_fee_spike_violation_fails_htlc() {
 			&mut vec![(accepted_htlc_info, ())],
 			&local_chan.context.channel_transaction_parameters.as_counterparty_broadcastable()
 		);
-		local_chan_signer.as_ecdsa().unwrap().sign_counterparty_commitment(&commitment_tx, Vec::new(), &secp_ctx).unwrap()
+		local_chan_signer.as_ecdsa().unwrap().sign_counterparty_commitment(&commitment_tx, Vec::new(), Vec::new(), &secp_ctx).unwrap()
 	};
 
 	let commit_signed_msg = msgs::CommitmentSigned {

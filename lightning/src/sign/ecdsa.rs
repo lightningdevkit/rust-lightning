@@ -29,16 +29,18 @@ pub trait EcdsaChannelSigner: ChannelSigner {
 	/// Policy checks should be implemented in this function, including checking the amount
 	/// sent to us and checking the HTLCs.
 	///
-	/// The preimages of outgoing HTLCs that were fulfilled since the last commitment are provided.
-	/// A validating signer should ensure that an HTLC output is removed only when the matching
-	/// preimage is provided, or when the value to holder is restored.
+	/// The preimages of outbound and inbound HTLCs that were fulfilled since the last commitment
+	/// are provided. A validating signer should ensure that an outbound HTLC output is removed
+	/// only when the matching preimage is provided and after the corresponding inbound HTLC has
+	/// been removed for forwarded payments.
 	///
 	/// Note that all the relevant preimages will be provided, but there may also be additional
 	/// irrelevant or duplicate preimages.
 	//
 	// TODO: Document the things someone using this interface should enforce before signing.
 	fn sign_counterparty_commitment(&self, commitment_tx: &CommitmentTransaction,
-		preimages: Vec<PaymentPreimage>, secp_ctx: &Secp256k1<secp256k1::All>
+		inbound_htlc_preimages: Vec<PaymentPreimage>,
+		outbound_htlc_preimages: Vec<PaymentPreimage>, secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> Result<(Signature, Vec<Signature>), ()>;
 	/// Validate the counterparty's revocation.
 	///

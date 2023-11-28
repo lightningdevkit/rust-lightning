@@ -594,14 +594,14 @@ pub trait ChannelSigner {
 	/// Policy checks should be implemented in this function, including checking the amount
 	/// sent to us and checking the HTLCs.
 	///
-	/// The preimages of outgoing HTLCs that were fulfilled since the last commitment are provided.
+	/// The preimages of outbound HTLCs that were fulfilled since the last commitment are provided.
 	/// A validating signer should ensure that an HTLC output is removed only when the matching
 	/// preimage is provided, or when the value to holder is restored.
 	///
 	/// Note that all the relevant preimages will be provided, but there may also be additional
 	/// irrelevant or duplicate preimages.
 	fn validate_holder_commitment(&self, holder_tx: &HolderCommitmentTransaction,
-		preimages: Vec<PaymentPreimage>) -> Result<(), ()>;
+		outbound_htlc_preimages: Vec<PaymentPreimage>) -> Result<(), ()>;
 
 	/// Returns the holder's channel public keys and basepoints.
 	fn pubkeys(&self) -> &ChannelPublicKeys;
@@ -1080,7 +1080,7 @@ impl ChannelSigner for InMemorySigner {
 		chan_utils::build_commitment_secret(&self.commitment_seed, idx)
 	}
 
-	fn validate_holder_commitment(&self, _holder_tx: &HolderCommitmentTransaction, _preimages: Vec<PaymentPreimage>) -> Result<(), ()> {
+	fn validate_holder_commitment(&self, _holder_tx: &HolderCommitmentTransaction, _outbound_htlc_preimages: Vec<PaymentPreimage>) -> Result<(), ()> {
 		Ok(())
 	}
 
@@ -1102,7 +1102,7 @@ impl ChannelSigner for InMemorySigner {
 const MISSING_PARAMS_ERR: &'static str = "ChannelSigner::provide_channel_parameters must be called before signing operations";
 
 impl EcdsaChannelSigner for InMemorySigner {
-	fn sign_counterparty_commitment(&self, commitment_tx: &CommitmentTransaction, _preimages: Vec<PaymentPreimage>, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<(Signature, Vec<Signature>), ()> {
+	fn sign_counterparty_commitment(&self, commitment_tx: &CommitmentTransaction, _inbound_htlc_preimages: Vec<PaymentPreimage>, _outbound_htlc_preimages: Vec<PaymentPreimage>, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<(Signature, Vec<Signature>), ()> {
 		let trusted_tx = commitment_tx.trust();
 		let keys = trusted_tx.keys();
 
@@ -1254,7 +1254,7 @@ impl TaprootChannelSigner for InMemorySigner {
 		todo!()
 	}
 
-	fn partially_sign_counterparty_commitment(&self, counterparty_nonce: PublicNonce, commitment_tx: &CommitmentTransaction, preimages: Vec<PaymentPreimage>, secp_ctx: &Secp256k1<All>) -> Result<(PartialSignatureWithNonce, Vec<schnorr::Signature>), ()> {
+	fn partially_sign_counterparty_commitment(&self, counterparty_nonce: PublicNonce, commitment_tx: &CommitmentTransaction, inbound_htlc_preimages: Vec<PaymentPreimage>, outbound_htlc_preimages: Vec<PaymentPreimage>, secp_ctx: &Secp256k1<All>) -> Result<(PartialSignatureWithNonce, Vec<schnorr::Signature>), ()> {
 		todo!()
 	}
 
