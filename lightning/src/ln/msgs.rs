@@ -1654,7 +1654,7 @@ mod fuzzy_internal_msgs {
 	use crate::prelude::*;
 	use crate::ln::{PaymentPreimage, PaymentSecret};
 	use crate::ln::features::BlindedHopFeatures;
-	use super::FinalOnionHopData;
+	use super::{FinalOnionHopData, TrampolineOnionPacket};
 
 	// These types aren't intended to be pub, but are exposed for direct fuzzing (as we deserialize
 	// them from untrusted input):
@@ -1697,6 +1697,13 @@ mod fuzzy_internal_msgs {
 			/// The value, in msat, of the payment after this hop's fee is deducted.
 			amt_to_forward: u64,
 			outgoing_cltv_value: u32,
+		},
+		#[allow(unused)]
+		TrampolineEntrypoint {
+			amt_to_forward: u64,
+			outgoing_cltv_value: u32,
+			multipath_trampoline_data: Option<FinalOnionHopData>,
+			trampoline_packet: TrampolineOnionPacket,
 		},
 		Receive {
 			payment_data: Option<FinalOnionHopData>,
@@ -2524,6 +2531,17 @@ impl Writeable for OutboundOnionPayload {
 					(6, short_channel_id, required)
 				});
 			},
+			Self::TrampolineEntrypoint {
+				amt_to_forward, outgoing_cltv_value, ref multipath_trampoline_data,
+				ref trampoline_packet
+			} => {
+				_encode_varint_length_prefixed_tlv!(w, {
+					(2, HighZeroBytesDroppedBigSize(*amt_to_forward), required),
+					(4, HighZeroBytesDroppedBigSize(*outgoing_cltv_value), required),
+					(8, multipath_trampoline_data, option),
+					(20, trampoline_packet, required)
+				});
+			},
 			Self::Receive {
 				ref payment_data, ref payment_metadata, ref keysend_preimage, sender_intended_htlc_amt_msat,
 				cltv_expiry_height, ref custom_tlvs,
@@ -3089,10 +3107,10 @@ mod tests {
 	use crate::ln::{PaymentPreimage, PaymentHash, PaymentSecret};
 	use crate::ln::ChannelId;
 	use crate::ln::features::{ChannelFeatures, ChannelTypeFeatures, InitFeatures, NodeFeatures};
-	use crate::ln::msgs::{self, FinalOnionHopData, OnionErrorPacket, CommonOpenChannelFields, CommonAcceptChannelFields};
+	use crate::ln::msgs::{self, FinalOnionHopData, OnionErrorPacket, CommonOpenChannelFields, CommonAcceptChannelFields, TrampolineOnionPacket};
 	use crate::ln::msgs::SocketAddress;
 	use crate::routing::gossip::{NodeAlias, NodeId};
-	use crate::util::ser::{Writeable, Readable, ReadableArgs, Hostname, TransactionU16LenLimited};
+	use crate::util::ser::{BigSize, Hostname, Readable, ReadableArgs, TransactionU16LenLimited, Writeable};
 	use crate::util::test_utils;
 
 	use bitcoin::hashes::hex::FromHex;
@@ -4382,6 +4400,64 @@ mod tests {
 			assert_eq!(sender_intended_htlc_amt_msat, 0x0badf00d01020304);
 			assert_eq!(outgoing_cltv_value, 0xffffffff);
 		} else { panic!(); }
+	}
+
+	#[test]
+	fn encoding_final_onion_hop_data_with_trampoline_packet() {
+		let secp_ctx = Secp256k1::new();
+		let (_private_key, public_key) = get_keys_from!("0101010101010101010101010101010101010101010101010101010101010101", secp_ctx);
+
+		let compressed_public_key = public_key.serialize();
+		assert_eq!(compressed_public_key.len(), 33);
+
+		let trampoline_packet = TrampolineOnionPacket {
+			version: 0,
+			public_key,
+			hop_data: vec![1; 650], // this should be the standard encoded length
+			hmac: [2; 32],
+		};
+		let encoded_trampoline_packet = trampoline_packet.encode();
+		assert_eq!(encoded_trampoline_packet.len(), 716);
+
+		let msg = msgs::OutboundOnionPayload::TrampolineEntrypoint {
+			multipath_trampoline_data: None,
+			amt_to_forward: 0x0badf00d01020304,
+			outgoing_cltv_value: 0xffffffff,
+			trampoline_packet,
+		};
+		let encoded_payload = msg.encode();
+
+		let trampoline_type_bytes = &encoded_payload[19..=19];
+		let mut trampoline_type_cursor = Cursor::new(trampoline_type_bytes);
+		let trampoline_type_big_size: BigSize = Readable::read(&mut trampoline_type_cursor).unwrap();
+		assert_eq!(trampoline_type_big_size.0, 20);
+
+		let trampoline_length_bytes = &encoded_payload[20..=22];
+		let mut trampoline_length_cursor = Cursor::new(trampoline_length_bytes);
+		let trampoline_length_big_size: BigSize = Readable::read(&mut trampoline_length_cursor).unwrap();
+		assert_eq!(trampoline_length_big_size.0, encoded_trampoline_packet.len() as u64);
+	}
+
+	#[test]
+	fn encoding_final_onion_hop_data_with_eclair_trampoline_packet() {
+		let public_key = PublicKey::from_slice(&<Vec<u8>>::from_hex("02eec7245d6b7d2ccb30380bfbe2a3648cd7a942653f5aa340edcea1f283686619").unwrap()).unwrap();
+		let hop_data = <Vec<u8>>::from_hex("cff34152f3a36e52ca94e74927203a560392b9cc7ce3c45809c6be52166c24a595716880f95f178bf5b30ca63141f74db6e92795c6130877cfdac3d4bd3087ee73c65d627ddd709112a848cc99e303f3706509aa43ba7c8a88cba175fccf9a8f5016ef06d3b935dbb15196d7ce16dc1a7157845566901d7b2197e52cab4ce487014b14816e5805f9fcacb4f8f88b8ff176f1b94f6ce6b00bc43221130c17d20ef629db7c5f7eafaa166578c720619561dd14b3277db557ec7dcdb793771aef0f2f667cfdbeae3ac8d331c5994779dffb31e5fc0dbdedc0c592ca6d21c18e47fe3528d6975c19517d7e2ea8c5391cf17d0fe30c80913ed887234ccb48808f7ef9425bcd815c3b586210979e3bb286ef2851bf9ce04e28c40a203df98fd648d2f1936fd2f1def0e77eecb277229b4b682322371c0a1dbfcd723a991993df8cc1f2696b84b055b40a1792a29f710295a18fbd351b0f3ff34cd13941131b8278ba79303c89117120eea691738a9954908195143b039dbeed98f26a92585f3d15cf742c953799d3272e0545e9b744be9d3b4c").unwrap();
+		let hmac_vector = <Vec<u8>>::from_hex("bb079bfc4b35190eee9f59a1d7b41ba2f773179f322dafb4b1af900c289ebd6c").unwrap();
+		let mut hmac = [0; 32];
+		hmac.copy_from_slice(&hmac_vector);
+
+		let compressed_public_key = public_key.serialize();
+		assert_eq!(compressed_public_key.len(), 33);
+
+		let trampoline_packet = TrampolineOnionPacket {
+			version: 0,
+			public_key,
+			hop_data,
+			hmac,
+		};
+		let encoded_trampoline_packet = trampoline_packet.encode();
+		let expected_eclair_trampoline_packet = <Vec<u8>>::from_hex("0002eec7245d6b7d2ccb30380bfbe2a3648cd7a942653f5aa340edcea1f283686619cff34152f3a36e52ca94e74927203a560392b9cc7ce3c45809c6be52166c24a595716880f95f178bf5b30ca63141f74db6e92795c6130877cfdac3d4bd3087ee73c65d627ddd709112a848cc99e303f3706509aa43ba7c8a88cba175fccf9a8f5016ef06d3b935dbb15196d7ce16dc1a7157845566901d7b2197e52cab4ce487014b14816e5805f9fcacb4f8f88b8ff176f1b94f6ce6b00bc43221130c17d20ef629db7c5f7eafaa166578c720619561dd14b3277db557ec7dcdb793771aef0f2f667cfdbeae3ac8d331c5994779dffb31e5fc0dbdedc0c592ca6d21c18e47fe3528d6975c19517d7e2ea8c5391cf17d0fe30c80913ed887234ccb48808f7ef9425bcd815c3b586210979e3bb286ef2851bf9ce04e28c40a203df98fd648d2f1936fd2f1def0e77eecb277229b4b682322371c0a1dbfcd723a991993df8cc1f2696b84b055b40a1792a29f710295a18fbd351b0f3ff34cd13941131b8278ba79303c89117120eea691738a9954908195143b039dbeed98f26a92585f3d15cf742c953799d3272e0545e9b744be9d3b4cbb079bfc4b35190eee9f59a1d7b41ba2f773179f322dafb4b1af900c289ebd6c").unwrap();
+		assert_eq!(encoded_trampoline_packet, expected_eclair_trampoline_packet);
 	}
 
 	#[test]
