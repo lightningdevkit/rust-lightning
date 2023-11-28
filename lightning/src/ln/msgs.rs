@@ -1645,6 +1645,7 @@ mod fuzzy_internal_msgs {
 	use crate::ln::{PaymentPreimage, PaymentSecret};
 	use crate::ln::features::BlindedHopFeatures;
 	use super::FinalOnionHopData;
+	use crate::ln::msgs::OnionPacket;
 
 	// These types aren't intended to be pub, but are exposed for direct fuzzing (as we deserialize
 	// them from untrusted input):
@@ -1695,6 +1696,7 @@ mod fuzzy_internal_msgs {
 			custom_tlvs: Vec<(u64, Vec<u8>)>,
 			sender_intended_htlc_amt_msat: u64,
 			cltv_expiry_height: u32,
+			trampoline_packet: Option<OnionPacket>
 		},
 		BlindedForward {
 			encrypted_tlvs: Vec<u8>,
@@ -2470,13 +2472,17 @@ impl Writeable for OutboundOnionPayload {
 			},
 			Self::Receive {
 				ref payment_data, ref payment_metadata, ref keysend_preimage, sender_intended_htlc_amt_msat,
-				cltv_expiry_height, ref custom_tlvs,
+				cltv_expiry_height, ref trampoline_packet, ref custom_tlvs,
 			} => {
 				// We need to update [`ln::outbound_payment::RecipientOnionFields::with_custom_tlvs`]
 				// to reject any reserved types in the experimental range if new ones are ever
 				// standardized.
 				let keysend_tlv = keysend_preimage.map(|preimage| (5482373484, preimage.encode()));
-				let mut custom_tlvs: Vec<&(u64, Vec<u8>)> = custom_tlvs.iter().chain(keysend_tlv.iter()).collect();
+				let trampoline_tlv = trampoline_packet.as_ref().map(|trampoline| (66100, trampoline.encode()));
+				let mut custom_tlvs: Vec<&(u64, Vec<u8>)> = custom_tlvs.iter()
+					.chain(keysend_tlv.iter())
+					.chain(trampoline_tlv.iter())
+					.collect();
 				custom_tlvs.sort_unstable_by_key(|(typ, _)| *typ);
 				_encode_varint_length_prefixed_tlv!(w, {
 					(2, HighZeroBytesDroppedBigSize(*sender_intended_htlc_amt_msat), required),
@@ -4208,6 +4214,7 @@ mod tests {
 			sender_intended_htlc_amt_msat: 0x0badf00d01020304,
 			cltv_expiry_height: 0xffffffff,
 			custom_tlvs: vec![],
+			trampoline_packet: None
 		};
 		let encoded_value = outbound_msg.encode();
 		let target_value = <Vec<u8>>::from_hex("1002080badf00d010203040404ffffffff").unwrap();
@@ -4236,6 +4243,7 @@ mod tests {
 			sender_intended_htlc_amt_msat: 0x0badf00d01020304,
 			cltv_expiry_height: 0xffffffff,
 			custom_tlvs: vec![],
+			trampoline_packet: None
 		};
 		let encoded_value = outbound_msg.encode();
 		let target_value = <Vec<u8>>::from_hex("3602080badf00d010203040404ffffffff082442424242424242424242424242424242424242424242424242424242424242421badca1f").unwrap();
@@ -4275,6 +4283,7 @@ mod tests {
 			custom_tlvs: bad_type_range_tlvs,
 			sender_intended_htlc_amt_msat: 0x0badf00d01020304,
 			cltv_expiry_height: 0xffffffff,
+			trampoline_packet: None
 		};
 		let encoded_value = msg.encode();
 		let node_signer = test_utils::TestKeysInterface::new(&[42; 32], Network::Testnet);
@@ -4307,6 +4316,7 @@ mod tests {
 			custom_tlvs: expected_custom_tlvs.clone(),
 			sender_intended_htlc_amt_msat: 0x0badf00d01020304,
 			cltv_expiry_height: 0xffffffff,
+			trampoline_packet: None
 		};
 		let encoded_value = msg.encode();
 		let target_value = <Vec<u8>>::from_hex("2e02080badf00d010203040404ffffffffff0000000146c6616b021234ff0000000146c6616f084242424242424242").unwrap();
