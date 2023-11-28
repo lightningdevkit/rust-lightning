@@ -37,7 +37,8 @@ use crate::chain::BestBlock;
 use crate::chain::chaininterface::{FeeEstimator, ConfirmationTarget, LowerBoundedFeeEstimator};
 use crate::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateStep, LATENCY_GRACE_PERIOD_BLOCKS, CLOSED_CHANNEL_UPDATE_ID};
 use crate::chain::transaction::{OutPoint, TransactionData};
-use crate::sign::{EcdsaChannelSigner, WriteableEcdsaChannelSigner, EntropySource, ChannelSigner, SignerProvider, NodeSigner, Recipient};
+use crate::sign::ecdsa::{EcdsaChannelSigner, WriteableEcdsaChannelSigner};
+use crate::sign::{EntropySource, ChannelSigner, SignerProvider, NodeSigner, Recipient};
 use crate::events::ClosureReason;
 use crate::routing::gossip::NodeId;
 use crate::util::ser::{Readable, ReadableArgs, Writeable, Writer};
@@ -647,7 +648,7 @@ pub(super) enum ChannelPhase<SP: Deref> where SP::Target: SignerProvider {
 
 impl<'a, SP: Deref> ChannelPhase<SP> where
 	SP::Target: SignerProvider,
-	<SP::Target as SignerProvider>::Signer: ChannelSigner,
+	<SP::Target as SignerProvider>::EcdsaSigner: ChannelSigner,
 {
 	pub fn context(&'a self) -> &'a ChannelContext<SP> {
 		match self {
@@ -725,7 +726,7 @@ pub(super) struct ChannelContext<SP: Deref> where SP::Target: SignerProvider {
 
 	latest_monitor_update_id: u64,
 
-	holder_signer: ChannelSignerType<<SP::Target as SignerProvider>::Signer>,
+	holder_signer: ChannelSignerType<SP>,
 	shutdown_scriptpubkey: Option<ShutdownScript>,
 	destination_script: ScriptBuf,
 
@@ -1095,7 +1096,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 
 	/// Returns the holder signer for this channel.
 	#[cfg(test)]
-	pub fn get_signer(&self) -> &ChannelSignerType<<SP::Target as SignerProvider>::Signer> {
+	pub fn get_signer(&self) -> &ChannelSignerType<SP> {
 		return &self.holder_signer
 	}
 
@@ -2142,7 +2143,9 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 			ChannelSignerType::Ecdsa(ecdsa) => {
 				ecdsa.sign_counterparty_commitment(&counterparty_initial_commitment_tx, Vec::new(), &self.secp_ctx)
 					.map(|(sig, _)| sig).ok()?
-			}
+			},
+			// TODO (taproot|arik)
+			_ => todo!()
 		};
 
 		if self.signer_pending_funding {
@@ -2194,7 +2197,9 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 
 				// We sign "counterparty" commitment transaction, allowing them to broadcast the tx if they wish.
 				(counterparty_initial_commitment_tx, funding_signed)
-			}
+			},
+			// TODO (taproot|arik)
+			_ => todo!()
 		}
 	}
 }
@@ -2273,7 +2278,7 @@ struct CommitmentTxInfoCached {
 
 impl<SP: Deref> Channel<SP> where
 	SP::Target: SignerProvider,
-	<SP::Target as SignerProvider>::Signer: WriteableEcdsaChannelSigner
+	<SP::Target as SignerProvider>::EcdsaSigner: WriteableEcdsaChannelSigner
 {
 	fn check_remote_fee<F: Deref, L: Deref>(
 		channel_type: &ChannelTypeFeatures, fee_estimator: &LowerBoundedFeeEstimator<F>,
@@ -2669,7 +2674,7 @@ impl<SP: Deref> Channel<SP> where
 	/// If this call is successful, broadcast the funding transaction (and not before!)
 	pub fn funding_signed<L: Deref>(
 		&mut self, msg: &msgs::FundingSigned, best_block: BestBlock, signer_provider: &SP, logger: &L
-	) -> Result<ChannelMonitor<<SP::Target as SignerProvider>::Signer>, ChannelError>
+	) -> Result<ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>, ChannelError>
 	where
 		L::Target: Logger
 	{
@@ -3485,7 +3490,9 @@ impl<SP: Deref> Channel<SP> where
 					self.context.cur_counterparty_commitment_transaction_number + 1,
 					&secret
 				).map_err(|_| ChannelError::Close("Failed to validate revocation from peer".to_owned()))?;
-			}
+			},
+			// TODO (taproot|arik)
+			_ => todo!()
 		};
 
 		self.context.commitment_secrets.provide_secret(self.context.cur_counterparty_commitment_transaction_number + 1, msg.per_commitment_secret)
@@ -4438,7 +4445,9 @@ impl<SP: Deref> Channel<SP> where
 						max_fee_satoshis: our_max_fee,
 					}),
 				}), None, None))
-			}
+			},
+			// TODO (taproot|arik)
+			_ => todo!()
 		}
 	}
 
@@ -4689,7 +4698,9 @@ impl<SP: Deref> Channel<SP> where
 								max_fee_satoshis: our_max_fee,
 							}),
 						}), signed_tx, shutdown_result))
-					}
+					},
+					// TODO (taproot|arik)
+					_ => todo!()
 				}
 			}
 		}
@@ -4801,7 +4812,7 @@ impl<SP: Deref> Channel<SP> where
 	}
 
 	#[cfg(test)]
-	pub fn get_signer(&self) -> &ChannelSignerType<<SP::Target as SignerProvider>::Signer> {
+	pub fn get_signer(&self) -> &ChannelSignerType<SP> {
 		&self.context.holder_signer
 	}
 
@@ -5320,7 +5331,9 @@ impl<SP: Deref> Channel<SP> where
 					node_signature: our_node_sig,
 					bitcoin_signature: our_bitcoin_sig,
 				})
-			}
+			},
+			// TODO (taproot|arik)
+			_ => todo!()
 		}
 	}
 
@@ -5347,7 +5360,9 @@ impl<SP: Deref> Channel<SP> where
 						bitcoin_signature_2: if were_node_one { their_bitcoin_sig } else { our_bitcoin_sig },
 						contents: announcement,
 					})
-				}
+				},
+				// TODO (taproot|arik)
+				_ => todo!()
 			}
 		} else {
 			Err(ChannelError::Ignore("Attempted to sign channel announcement before we'd received announcement_signatures".to_string()))
@@ -5720,7 +5735,9 @@ impl<SP: Deref> Channel<SP> where
 					#[cfg(taproot)]
 					partial_signature_with_nonce: None,
 				}, (counterparty_commitment_txid, commitment_stats.htlcs_included)))
-			}
+			},
+			// TODO (taproot|arik)
+			_ => todo!()
 		}
 	}
 
@@ -6822,7 +6839,7 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 
 	pub fn funding_created<L: Deref>(
 		mut self, msg: &msgs::FundingCreated, best_block: BestBlock, signer_provider: &SP, logger: &L
-	) -> Result<(Channel<SP>, Option<msgs::FundingSigned>, ChannelMonitor<<SP::Target as SignerProvider>::Signer>), (Self, ChannelError)>
+	) -> Result<(Channel<SP>, Option<msgs::FundingSigned>, ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>), (Self, ChannelError)>
 	where
 		L::Target: Logger
 	{
@@ -7862,17 +7879,19 @@ use crate::ln::channelmanager::{self, HTLCSource, PaymentId};
 	}
 
 	impl SignerProvider for Keys {
-		type Signer = InMemorySigner;
+		type EcdsaSigner = InMemorySigner;
+		#[cfg(taproot)]
+		type TaprootSigner = InMemorySigner;
 
 		fn generate_channel_keys_id(&self, _inbound: bool, _channel_value_satoshis: u64, _user_channel_id: u128) -> [u8; 32] {
 			self.signer.channel_keys_id()
 		}
 
-		fn derive_channel_signer(&self, _channel_value_satoshis: u64, _channel_keys_id: [u8; 32]) -> Self::Signer {
+		fn derive_channel_signer(&self, _channel_value_satoshis: u64, _channel_keys_id: [u8; 32]) -> Self::EcdsaSigner {
 			self.signer.clone()
 		}
 
-		fn read_chan_signer(&self, _data: &[u8]) -> Result<Self::Signer, DecodeError> { panic!(); }
+		fn read_chan_signer(&self, _data: &[u8]) -> Result<Self::EcdsaSigner, DecodeError> { panic!(); }
 
 		fn get_destination_script(&self, _channel_keys_id: [u8; 32]) -> Result<ScriptBuf, ()> {
 			let secp_ctx = Secp256k1::signing_only();
@@ -8343,7 +8362,7 @@ use crate::ln::channelmanager::{self, HTLCSource, PaymentId};
 		use bitcoin::hashes::hex::FromHex;
 		use bitcoin::hash_types::Txid;
 		use bitcoin::secp256k1::Message;
-		use crate::sign::{ChannelDerivationParameters, HTLCDescriptor, EcdsaChannelSigner};
+		use crate::sign::{ChannelDerivationParameters, HTLCDescriptor, ecdsa::EcdsaChannelSigner};
 		use crate::ln::PaymentPreimage;
 		use crate::ln::channel::{HTLCOutputInCommitment ,TxCreationKeys};
 		use crate::ln::channel_keys::{DelayedPaymentBasepoint, HtlcBasepoint};

@@ -599,7 +599,7 @@ pub async fn process_events_async<
 	EventHandlerFuture: core::future::Future<Output = ()>,
 	EventHandler: Fn(Event) -> EventHandlerFuture,
 	PS: 'static + Deref + Send,
-	M: 'static + Deref<Target = ChainMonitor<<SP::Target as SignerProvider>::Signer, CF, T, F, L, P>> + Send + Sync,
+	M: 'static + Deref<Target = ChainMonitor<<SP::Target as SignerProvider>::EcdsaSigner, CF, T, F, L, P>> + Send + Sync,
 	CM: 'static + Deref<Target = ChannelManager<CW, T, ES, NS, SP, F, R, L>> + Send + Sync,
 	PGS: 'static + Deref<Target = P2PGossipSync<G, UL, L>> + Send + Sync,
 	RGS: 'static + Deref<Target = RapidGossipSync<G, L>> + Send,
@@ -617,7 +617,7 @@ pub async fn process_events_async<
 where
 	UL::Target: 'static + UtxoLookup,
 	CF::Target: 'static + chain::Filter,
-	CW::Target: 'static + chain::Watch<<SP::Target as SignerProvider>::Signer>,
+	CW::Target: 'static + chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 	T::Target: 'static + BroadcasterInterface,
 	ES::Target: 'static + EntropySource,
 	NS::Target: 'static + NodeSigner,
@@ -625,7 +625,7 @@ where
 	F::Target: 'static + FeeEstimator,
 	R::Target: 'static + Router,
 	L::Target: 'static + Logger,
-	P::Target: 'static + Persist<<SP::Target as SignerProvider>::Signer>,
+	P::Target: 'static + Persist<<SP::Target as SignerProvider>::EcdsaSigner>,
 	PS::Target: 'static + Persister<'a, CW, T, ES, NS, SP, F, R, L, SC>,
 {
 	let mut should_break = false;
@@ -738,7 +738,7 @@ impl BackgroundProcessor {
 		P: 'static + Deref + Send + Sync,
 		EH: 'static + EventHandler + Send,
 		PS: 'static + Deref + Send,
-		M: 'static + Deref<Target = ChainMonitor<<SP::Target as SignerProvider>::Signer, CF, T, F, L, P>> + Send + Sync,
+		M: 'static + Deref<Target = ChainMonitor<<SP::Target as SignerProvider>::EcdsaSigner, CF, T, F, L, P>> + Send + Sync,
 		CM: 'static + Deref<Target = ChannelManager<CW, T, ES, NS, SP, F, R, L>> + Send + Sync,
 		PGS: 'static + Deref<Target = P2PGossipSync<G, UL, L>> + Send + Sync,
 		RGS: 'static + Deref<Target = RapidGossipSync<G, L>> + Send,
@@ -753,7 +753,7 @@ impl BackgroundProcessor {
 	where
 		UL::Target: 'static + UtxoLookup,
 		CF::Target: 'static + chain::Filter,
-		CW::Target: 'static + chain::Watch<<SP::Target as SignerProvider>::Signer>,
+		CW::Target: 'static + chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 		T::Target: 'static + BroadcasterInterface,
 		ES::Target: 'static + EntropySource,
 		NS::Target: 'static + NodeSigner,
@@ -761,7 +761,7 @@ impl BackgroundProcessor {
 		F::Target: 'static + FeeEstimator,
 		R::Target: 'static + Router,
 		L::Target: 'static + Logger,
-		P::Target: 'static + Persist<<SP::Target as SignerProvider>::Signer>,
+		P::Target: 'static + Persist<<SP::Target as SignerProvider>::EcdsaSigner>,
 		PS::Target: 'static + Persister<'a, CW, T, ES, NS, SP, F, R, L, SC>,
 	{
 		let stop_thread = Arc::new(AtomicBool::new(false));
