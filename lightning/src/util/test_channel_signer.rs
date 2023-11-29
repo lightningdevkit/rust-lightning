@@ -146,6 +146,16 @@ impl ChannelSigner for TestChannelSigner {
 		Ok(())
 	}
 
+	fn validate_counterparty_revocation(&self, idx: u64, _secret: &SecretKey) -> Result<(), ()> {
+		if !*self.available.lock().unwrap() {
+			return Err(());
+		}
+		let mut state = self.state.lock().unwrap();
+		assert!(idx == state.last_counterparty_revoked_commitment || idx == state.last_counterparty_revoked_commitment - 1, "expecting to validate the current or next counterparty revocation - trying {}, current {}", idx, state.last_counterparty_revoked_commitment);
+		state.last_counterparty_revoked_commitment = idx;
+		Ok(())
+	}
+
 	fn pubkeys(&self) -> &ChannelPublicKeys { self.inner.pubkeys() }
 
 	fn channel_keys_id(&self) -> [u8; 32] { self.inner.channel_keys_id() }
@@ -176,16 +186,6 @@ impl EcdsaChannelSigner for TestChannelSigner {
 		}
 
 		Ok(self.inner.sign_counterparty_commitment(commitment_tx, preimages, secp_ctx).unwrap())
-	}
-
-	fn validate_counterparty_revocation(&self, idx: u64, _secret: &SecretKey) -> Result<(), ()> {
-		if !*self.available.lock().unwrap() {
-			return Err(());
-		}
-		let mut state = self.state.lock().unwrap();
-		assert!(idx == state.last_counterparty_revoked_commitment || idx == state.last_counterparty_revoked_commitment - 1, "expecting to validate the current or next counterparty revocation - trying {}, current {}", idx, state.last_counterparty_revoked_commitment);
-		state.last_counterparty_revoked_commitment = idx;
-		Ok(())
 	}
 
 	fn sign_holder_commitment(&self, commitment_tx: &HolderCommitmentTransaction, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<Signature, ()> {
@@ -292,7 +292,7 @@ impl TaprootChannelSigner for TestChannelSigner {
 		todo!()
 	}
 
-	fn finalize_holder_commitment(&self, commitment_number: u64, commitment_tx: &HolderCommitmentTransaction, counterparty_partial_signature: PartialSignatureWithNonce, secp_ctx: &Secp256k1<All>) -> Result<PartialSignature, ()> {
+	fn finalize_holder_commitment(&self, commitment_tx: &HolderCommitmentTransaction, counterparty_partial_signature: PartialSignatureWithNonce, secp_ctx: &Secp256k1<All>) -> Result<PartialSignature, ()> {
 		todo!()
 	}
 
