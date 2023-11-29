@@ -57,7 +57,7 @@ use core::convert::TryInto;
 use core::ops::Deref;
 use core::sync::atomic::{AtomicUsize, Ordering};
 #[cfg(taproot)]
-use musig2::types::{PartialSignature, PublicNonce, SecretNonce};
+use musig2::types::{PartialSignature, PublicNonce};
 use crate::io::{self, Error};
 use crate::ln::features::ChannelTypeFeatures;
 use crate::ln::msgs::{DecodeError, MAX_VALUE_MSAT};
