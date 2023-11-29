@@ -40,11 +40,6 @@ pub trait EcdsaChannelSigner: ChannelSigner {
 	fn sign_counterparty_commitment(&self, commitment_tx: &CommitmentTransaction,
 		preimages: Vec<PaymentPreimage>, secp_ctx: &Secp256k1<secp256k1::All>
 	) -> Result<(Signature, Vec<Signature>), ()>;
-	/// Validate the counterparty's revocation.
-	///
-	/// This is required in order for the signer to make sure that the state has moved
-	/// forward and it is safe to sign the next counterparty commitment.
-	fn validate_counterparty_revocation(&self, idx: u64, secret: &SecretKey) -> Result<(), ()>;
 	/// Creates a signature for a holder's commitment transaction.
 	///
 	/// This will be called

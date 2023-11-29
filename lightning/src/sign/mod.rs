@@ -603,6 +603,12 @@ pub trait ChannelSigner {
 	fn validate_holder_commitment(&self, holder_tx: &HolderCommitmentTransaction,
 		preimages: Vec<PaymentPreimage>) -> Result<(), ()>;
 
+	/// Validate the counterparty's revocation.
+	///
+	/// This is required in order for the signer to make sure that the state has moved
+	/// forward and it is safe to sign the next counterparty commitment.
+	fn validate_counterparty_revocation(&self, idx: u64, secret: &SecretKey) -> Result<(), ()>;
+
 	/// Returns the holder's channel public keys and basepoints.
 	fn pubkeys(&self) -> &ChannelPublicKeys;
 
@@ -1084,6 +1090,10 @@ impl ChannelSigner for InMemorySigner {
 		Ok(())
 	}
 
+	fn validate_counterparty_revocation(&self, _idx: u64, _secret: &SecretKey) -> Result<(), ()> {
+		Ok(())
+	}
+
 	fn pubkeys(&self) -> &ChannelPublicKeys { &self.holder_channel_pubkeys }
 
 	fn channel_keys_id(&self) -> [u8; 32] { self.channel_keys_id }
@@ -1129,10 +1139,6 @@ impl EcdsaChannelSigner for InMemorySigner {
 		}
 
 		Ok((commitment_sig, htlc_sigs))
-	}
-
-	fn validate_counterparty_revocation(&self, _idx: u64, _secret: &SecretKey) -> Result<(), ()> {
-		Ok(())
 	}
 
 	fn sign_holder_commitment(&self, commitment_tx: &HolderCommitmentTransaction, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<Signature, ()> {
