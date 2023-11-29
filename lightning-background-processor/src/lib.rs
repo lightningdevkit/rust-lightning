@@ -113,7 +113,7 @@ const ONION_MESSAGE_HANDLER_TIMER: u64 = 1;
 const NETWORK_PRUNE_TIMER: u64 = 60 * 60;
 
 #[cfg(not(test))]
-const SCORER_PERSIST_TIMER: u64 = 60 * 60;
+const SCORER_PERSIST_TIMER: u64 = 60 * 5;
 #[cfg(test)]
 const SCORER_PERSIST_TIMER: u64 = 1;
 
