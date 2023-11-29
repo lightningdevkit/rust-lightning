@@ -2758,13 +2758,12 @@ where
 					}
 				},
 				hash_map::Entry::Vacant(_) => {
-					// If we reach this point, it means that the channel_id either refers to an unfunded channel or
-					// it does not exist for this peer. Either way, we can attempt to force-close it.
-					//
-					// An appropriate error will be returned for non-existence of the channel if that's the case.
-					mem::drop(peer_state_lock);
-					mem::drop(per_peer_state);
-					return self.force_close_channel_with_peer(&channel_id, counterparty_node_id, None, false).map(|_| ())
+					return Err(APIError::ChannelUnavailable {
+						err: format!(
+							"Channel with id {} not found for the passed counterparty node_id {}",
+							channel_id, counterparty_node_id,
+						)
+					});
 				},
 			}
 		}
