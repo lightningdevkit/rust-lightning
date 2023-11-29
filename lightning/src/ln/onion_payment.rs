@@ -1,6 +1,7 @@
-//! Utilities for channelmanager.rs
+//! Utilities to decode payment onions and do contextless validation of incoming payments.
 //!
-//! Includes a public [`peel_payment_onion`] function for use by external projects or libraries.
+//! Primarily features [`peel_payment_onion`], which allows the decoding of an onion statelessly
+//! and can be used to predict whether we'd accept a payment.
 
 use bitcoin::hashes::Hash;
 use bitcoin::hashes::sha256::Hash as Sha256;
@@ -225,7 +226,9 @@ pub(super) fn create_recv_pending_htlc_info(
 	})
 }
 
-/// Peel one layer off an incoming onion, returning [`PendingHTLCInfo`] (either Forward or Receive).
+/// Peel one layer off an incoming onion, returning a [`PendingHTLCInfo`] that contains information
+/// about the intended next-hop for the HTLC.
+///
 /// This does all the relevant context-free checks that LDK requires for payment relay or
 /// acceptance. If the payment is to be received, and the amount matches the expected amount for
 /// a given invoice, this indicates the [`msgs::UpdateAddHTLC`], once fully committed in the
@@ -234,7 +237,7 @@ pub(super) fn create_recv_pending_htlc_info(
 /// [`Event::PaymentClaimable`]: crate::events::Event::PaymentClaimable
 pub fn peel_payment_onion<NS: Deref, L: Deref, T: secp256k1::Verification>(
 	msg: &msgs::UpdateAddHTLC, node_signer: &NS, logger: &L, secp_ctx: &Secp256k1<T>,
-	cur_height: u32, accept_mpp_keysend: bool,
+	cur_height: u32, accept_mpp_keysend: bool, allow_skimmed_fees: bool,
 ) -> Result<PendingHTLCInfo, InboundOnionErr>
 where
 	NS::Target: NodeSigner,
@@ -273,6 +276,10 @@ where
 					err_data: Vec::new(),
 				});
 			}
+
+			// TODO: If this is potentially a phantom payment we should decode the phantom payment
+			// onion here and check it.
+
 			create_fwd_pending_htlc_info(
 				msg, next_hop_data, next_hop_hmac, new_packet_bytes, shared_secret,
 				Some(next_packet_pubkey)
@@ -281,7 +288,7 @@ where
 		onion_utils::Hop::Receive(received_data) => {
 			create_recv_pending_htlc_info(
 				received_data, shared_secret, msg.payment_hash, msg.amount_msat, msg.cltv_expiry,
-				None, false, msg.skimmed_fee_msat, cur_height, accept_mpp_keysend,
+				None, allow_skimmed_fees, msg.skimmed_fee_msat, cur_height, accept_mpp_keysend,
 			)?
 		}
 	})
@@ -477,7 +484,7 @@ mod tests {
 		let msg = make_update_add_msg(amount_msat, cltv_expiry, payment_hash, onion);
 		let logger = test_utils::TestLogger::with_id("bob".to_string());
 
-		let peeled = peel_payment_onion(&msg, &&bob, &&logger, &secp_ctx, cur_height, true)
+		let peeled = peel_payment_onion(&msg, &&bob, &&logger, &secp_ctx, cur_height, true, false)
 			.map_err(|e| e.msg).unwrap();
 
 		let next_onion = match peeled.routing {
@@ -488,7 +495,7 @@ mod tests {
 		};
 
 		let msg2 = make_update_add_msg(amount_msat, cltv_expiry, payment_hash, next_onion);
-		let peeled2 = peel_payment_onion(&msg2, &&charlie, &&logger, &secp_ctx, cur_height, true)
+		let peeled2 = peel_payment_onion(&msg2, &&charlie, &&logger, &secp_ctx, cur_height, true, false)
 			.map_err(|e| e.msg).unwrap();
 
 		match peeled2.routing {
