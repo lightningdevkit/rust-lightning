@@ -2714,9 +2714,10 @@ where
 	fn close_channel_internal(&self, channel_id: &ChannelId, counterparty_node_id: &PublicKey, target_feerate_sats_per_1000_weight: Option<u32>, override_shutdown_script: Option<ShutdownScript>) -> Result<(), APIError> {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 
-		let mut failed_htlcs: Vec<(HTLCSource, PaymentHash)>;
-		let shutdown_result;
-		loop {
+		let mut failed_htlcs: Vec<(HTLCSource, PaymentHash)> = Vec::new();
+		let mut shutdown_result = None;
+
+		{
 			let per_peer_state = self.per_peer_state.read().unwrap();
 
 			let peer_state_mutex = per_peer_state.get(counterparty_node_id)
@@ -2733,8 +2734,6 @@ where
 						let (shutdown_msg, mut monitor_update_opt, htlcs) =
 							chan.get_shutdown(&self.signer_provider, their_features, target_feerate_sats_per_1000_weight, override_shutdown_script)?;
 						failed_htlcs = htlcs;
-						shutdown_result = None;
-						debug_assert_eq!(shutdown_result.is_some(), chan.is_shutdown());
 
 						// We can send the `shutdown` message before updating the `ChannelMonitor`
 						// here as we don't need the monitor update to complete until we send a
@@ -2751,20 +2750,11 @@ where
 						if let Some(monitor_update) = monitor_update_opt.take() {
 							handle_new_monitor_update!(self, funding_txo_opt.unwrap(), monitor_update,
 								peer_state_lock, peer_state, per_peer_state, chan);
-							break;
 						}
-
-						if chan.is_shutdown() {
-							if let ChannelPhase::Funded(chan) = remove_channel_phase!(self, chan_phase_entry) {
-								if let Ok(channel_update) = self.get_channel_update_for_broadcast(&chan) {
-									peer_state.pending_msg_events.push(events::MessageSendEvent::BroadcastChannelUpdate {
-										msg: channel_update
-									});
-								}
-								self.issue_channel_close_events(&chan.context, ClosureReason::HolderForceClosed);
-							}
-						}
-						break;
+					} else {
+						self.issue_channel_close_events(chan_phase_entry.get().context(), ClosureReason::HolderForceClosed);
+						let mut chan_phase = remove_channel_phase!(self, chan_phase_entry);
+						shutdown_result = Some(chan_phase.context_mut().force_shutdown(false));
 					}
 				},
 				hash_map::Entry::Vacant(_) => {
