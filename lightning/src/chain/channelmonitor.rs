@@ -71,6 +71,15 @@ use crate::sync::{Mutex, LockTestExt};
 #[must_use]
 pub struct ChannelMonitorUpdate {
 	pub(crate) updates: Vec<ChannelMonitorUpdateStep>,
+	/// Historically, [`ChannelMonitor`]s didn't know their counterparty node id. However,
+	/// `ChannelManager` really wants to know it so that it can easily look up the corresponding
+	/// channel. For now, this results in a temporary map in `ChannelManager` to look up channels
+	/// by only the funding outpoint.
+	///
+	/// To eventually remove that, we repeat the counterparty node id here so that we can upgrade
+	/// `ChannelMonitor`s to become aware of the counterparty node id if they were generated prior
+	/// to when it was stored directly in them.
+	pub(crate) counterparty_node_id: Option<PublicKey>,
 	/// The sequence number of this update. Updates *must* be replayed in-order according to this
 	/// sequence number (and updates may panic if they are not). The update_id values are strictly
 	/// increasing and increase by one for each new update, with two exceptions specified below.
@@ -107,7 +116,9 @@ impl Writeable for ChannelMonitorUpdate {
 		for update_step in self.updates.iter() {
 			update_step.write(w)?;
 		}
-		write_tlv_fields!(w, {});
+		write_tlv_fields!(w, {
+			(1, self.counterparty_node_id, option),
+		});
 		Ok(())
 	}
 }
@@ -122,8 +133,11 @@ impl Readable for ChannelMonitorUpdate {
 				updates.push(upd);
 			}
 		}
-		read_tlv_fields!(r, {});
-		Ok(Self { update_id, updates })
+		let mut counterparty_node_id = None;
+		read_tlv_fields!(r, {
+			(1, counterparty_node_id, option),
+		});
+		Ok(Self { update_id, counterparty_node_id, updates })
 	}
 }
 
@@ -2697,6 +2711,15 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			log_info!(logger, "Applying update to monitor {}, bringing update_id from {} to {} with {} change(s).",
 				log_funding_info!(self), self.latest_update_id, updates.update_id, updates.updates.len());
 		}
+
+		if updates.counterparty_node_id.is_some() {
+			if self.counterparty_node_id.is_none() {
+				self.counterparty_node_id = updates.counterparty_node_id;
+			} else {
+				debug_assert_eq!(self.counterparty_node_id, updates.counterparty_node_id);
+			}
+		}
+
 		// ChannelMonitor updates may be applied after force close if we receive a preimage for a
 		// broadcasted commitment transaction HTLC output that we'd like to claim on-chain. If this
 		// is the case, we no longer have guaranteed access to the monitor's update ID, so we use a
