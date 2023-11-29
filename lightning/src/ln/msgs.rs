@@ -680,7 +680,8 @@ pub struct UpdateAddHTLC {
 	///
 	/// [`ChannelConfig::accept_underpaying_htlcs`]: crate::util::config::ChannelConfig::accept_underpaying_htlcs
 	pub skimmed_fee_msat: Option<u64>,
-	pub(crate) onion_routing_packet: OnionPacket,
+	/// The onion routing packet with encrypted data for the next hop.
+	pub onion_routing_packet: OnionPacket,
 }
 
  /// An onion message to be sent to or received from a peer.
