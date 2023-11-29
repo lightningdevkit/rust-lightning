@@ -51,8 +51,7 @@ pub trait TaprootChannelSigner: ChannelSigner {
 	/// An external signer implementation should check that the commitment has not been revoked.
 	///
 	// TODO: Document the things someone using this interface should enforce before signing.
-	fn finalize_holder_commitment(&self, commitment_number: u64,
-		commitment_tx: &HolderCommitmentTransaction,
+	fn finalize_holder_commitment(&self, commitment_tx: &HolderCommitmentTransaction,
 		counterparty_partial_signature: PartialSignatureWithNonce,
 		secp_ctx: &Secp256k1<secp256k1::All>
 	) -> Result<PartialSignature, ()>;

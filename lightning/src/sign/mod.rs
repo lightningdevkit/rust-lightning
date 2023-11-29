@@ -1258,7 +1258,7 @@ impl TaprootChannelSigner for InMemorySigner {
 		todo!()
 	}
 
-	fn finalize_holder_commitment(&self, commitment_number: u64, commitment_tx: &HolderCommitmentTransaction, counterparty_partial_signature: PartialSignatureWithNonce, secp_ctx: &Secp256k1<All>) -> Result<PartialSignature, ()> {
+	fn finalize_holder_commitment(&self, commitment_tx: &HolderCommitmentTransaction, counterparty_partial_signature: PartialSignatureWithNonce, secp_ctx: &Secp256k1<All>) -> Result<PartialSignature, ()> {
 		todo!()
 	}
 
