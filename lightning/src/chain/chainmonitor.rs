@@ -758,8 +758,9 @@ where C::Target: chain::Filter,
 
 	fn update_channel(&self, funding_txo: OutPoint, update: &ChannelMonitorUpdate) -> ChannelMonitorUpdateStatus {
 		// Update the monitor that watches the channel referred to by the given outpoint.
-		let monitors = self.monitors.read().unwrap();
-		let ret = match monitors.get(&funding_txo) {
+		let monitors_lock = self.monitors.read().unwrap();
+		let monitors = monitors_lock.deref();
+		match monitors.get(&funding_txo) {
 			None => {
 				log_error!(self.logger, "Failed to update channel monitor: no such monitor registered");
 
@@ -798,7 +799,15 @@ where C::Target: chain::Filter,
 					ChannelMonitorUpdateStatus::Completed => {
 						log_debug!(logger, "Persistence of ChannelMonitorUpdate for channel {} completed", log_funding_info!(monitor));
 					},
-					ChannelMonitorUpdateStatus::UnrecoverableError => { /* we'll panic in a moment */ },
+					ChannelMonitorUpdateStatus::UnrecoverableError => {
+						// Take the monitors lock for writing so that we poison it and any future
+						// operations going forward fail immediately.
+						core::mem::drop(monitors);
+						let _poison = self.monitors.write().unwrap();
+						let err_str = "ChannelMonitor[Update] persistence failed unrecoverably. This indicates we cannot continue normal operation and must shut down.";
+						log_error!(logger, "{}", err_str);
+						panic!("{}", err_str);
+					},
 				}
 				if update_res.is_err() {
 					ChannelMonitorUpdateStatus::InProgress
@@ -806,21 +815,7 @@ where C::Target: chain::Filter,
 					persist_res
 				}
 			}
-		};
-		if let ChannelMonitorUpdateStatus::UnrecoverableError = ret {
-			let logger = WithChannelMonitor::from(
-				&self.logger, &monitors.get(&funding_txo).unwrap().monitor
-			);
-
-			// Take the monitors lock for writing so that we poison it and any future
-			// operations going forward fail immediately.
-			core::mem::drop(monitors);
-			let _poison = self.monitors.write().unwrap();
-			let err_str = "ChannelMonitor[Update] persistence failed unrecoverably. This indicates we cannot continue normal operation and must shut down.";
-			log_error!(logger, "{}", err_str);
-			panic!("{}", err_str);
 		}
-		ret
 	}
 
 	fn release_pending_monitor_events(&self) -> Vec<(OutPoint, Vec<MonitorEvent>, Option<PublicKey>)> {
