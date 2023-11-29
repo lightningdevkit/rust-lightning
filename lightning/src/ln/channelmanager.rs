@@ -208,25 +208,47 @@ impl PendingHTLCRouting {
 	}
 }
 
-/// Full details of an incoming HTLC, including routing info.
+/// Information about an incoming HTLC, including the [`PendingHTLCRouting`] describing where it
+/// should go next.
 #[derive(Clone)] // See Channel::revoke_and_ack for why, tl;dr: Rust bug
 pub struct PendingHTLCInfo {
 	/// Further routing details based on whether the HTLC is being forwarded or received.
 	pub routing: PendingHTLCRouting,
-	/// Shared secret from the previous hop.
-	/// Used encrypt failure packets in the event that the HTLC needs to be failed backwards.
+	/// The onion shared secret we build with the sender used to decrypt the onion.
+	///
+	/// This is later used to encrypt failure packets in the event that the HTLC is failed.
 	pub incoming_shared_secret: [u8; 32],
 	/// Hash of the payment preimage, to lock the payment until the receiver releases the preimage.
 	pub payment_hash: PaymentHash,
-	/// Amount offered by this HTLC.
-	pub incoming_amt_msat: Option<u64>, // Added in 0.0.113
-	/// Sender intended amount to forward or receive (actual amount received
-	/// may overshoot this in either case)
+	/// Amount received in the incoming HTLC.
+	///
+	/// This field was added in LDK 0.0.113 and will be `None` for objects written by prior
+	/// versions.
+	pub incoming_amt_msat: Option<u64>,
+	/// The amount the sender indicated should be forwarded on to the next hop or amount the sender
+	/// intended for us to receive for received payments.
+	///
+	/// If the received amount is less than this for received payments, an intermediary hop has
+	/// attempted to steal some of our funds and we should fail the HTLC (the sender should retry
+	/// it along another path).
+	///
+	/// Because nodes can take less than their required fees, and because senders may wish to
+	/// improve their own privacy, this amount may be less than [`Self::incoming_amt_msat`] for
+	/// received payments. In such cases, recipients must handle this HTLC as if it had received
+	/// [`Self::outgoing_amt_msat`].
 	pub outgoing_amt_msat: u64,
-	/// Outgoing timelock expiration blockheight.
+	/// The CLTV the sender has indicated we should set on the forwarded HTLC (or has indicated
+	/// should have been set on the received HTLC for received payments).
 	pub outgoing_cltv_value: u32,
-	/// The fee being skimmed off the top of this HTLC. If this is a forward, it'll be the fee we are
-	/// skimming. If we're receiving this HTLC, it's the fee that our counterparty skimmed.
+	/// The fee taken for this HTLC in addition to the standard protocol HTLC fees.
+	///
+	/// If this is a payment for forwarding, this is the fee we are taking before forwarding the
+	/// HTLC.
+	///
+	/// If this is a received payment, this is the fee that our counterparty took.
+	///
+	/// This is used to allow LSPs to take fees as a part of payments, without the sender having to
+	/// shoulder them.
 	pub skimmed_fee_msat: Option<u64>,
 }
 
