@@ -2145,6 +2145,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 					.map(|(sig, _)| sig).ok()?
 			},
 			// TODO (taproot|arik)
+			#[cfg(taproot)]
 			_ => todo!()
 		};
 
@@ -2199,6 +2200,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 				(counterparty_initial_commitment_tx, funding_signed)
 			},
 			// TODO (taproot|arik)
+			#[cfg(taproot)]
 			_ => todo!()
 		}
 	}
@@ -3492,6 +3494,7 @@ impl<SP: Deref> Channel<SP> where
 				).map_err(|_| ChannelError::Close("Failed to validate revocation from peer".to_owned()))?;
 			},
 			// TODO (taproot|arik)
+			#[cfg(taproot)]
 			_ => todo!()
 		};
 
@@ -4447,6 +4450,7 @@ impl<SP: Deref> Channel<SP> where
 				}), None, None))
 			},
 			// TODO (taproot|arik)
+			#[cfg(taproot)]
 			_ => todo!()
 		}
 	}
@@ -4700,6 +4704,7 @@ impl<SP: Deref> Channel<SP> where
 						}), signed_tx, shutdown_result))
 					},
 					// TODO (taproot|arik)
+					#[cfg(taproot)]
 					_ => todo!()
 				}
 			}
@@ -5333,6 +5338,7 @@ impl<SP: Deref> Channel<SP> where
 				})
 			},
 			// TODO (taproot|arik)
+			#[cfg(taproot)]
 			_ => todo!()
 		}
 	}
@@ -5362,6 +5368,7 @@ impl<SP: Deref> Channel<SP> where
 					})
 				},
 				// TODO (taproot|arik)
+				#[cfg(taproot)]
 				_ => todo!()
 			}
 		} else {
@@ -5737,6 +5744,7 @@ impl<SP: Deref> Channel<SP> where
 				}, (counterparty_commitment_txid, commitment_stats.htlcs_included)))
 			},
 			// TODO (taproot|arik)
+			#[cfg(taproot)]
 			_ => todo!()
 		}
 	}
@@ -9105,7 +9113,7 @@ use crate::ln::channelmanager::{self, HTLCSource, PaymentId};
 		assert_eq!(chan_utils::build_commitment_secret(&seed, 1),
 		           <Vec<u8>>::from_hex("915c75942a26bb3a433a8ce2cb0427c29ec6c1775cfc78328b57f6ba7bfeaa9c").unwrap()[..]);
 	}
-	
+
 	#[test]
 	fn test_key_derivation() {
 		// Test vectors from BOLT 3 Appendix E:
