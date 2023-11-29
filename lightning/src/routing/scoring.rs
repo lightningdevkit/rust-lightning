@@ -1318,6 +1318,7 @@ impl<L: DerefMut<Target = u64>, BRT: DerefMut<Target = HistoricalBucketRangeTrac
 		self.liquidity_history.max_liquidity_offset_history.track_datapoint(
 			max_liquidity_offset_msat.saturating_sub(bucket_offset_msat), self.capacity_msat
 		);
+		*self.offset_history_last_updated = self.now;
 	}
 
 	/// Adjusts the lower bound of the channel liquidity balance in this direction.
@@ -1329,7 +1330,6 @@ impl<L: DerefMut<Target = u64>, BRT: DerefMut<Target = HistoricalBucketRangeTrac
 			self.decayed_offset_msat(*self.max_liquidity_offset_msat)
 		};
 		*self.last_updated = self.now;
-		*self.offset_history_last_updated = self.now;
 	}
 
 	/// Adjusts the upper bound of the channel liquidity balance in this direction.
@@ -1341,7 +1341,6 @@ impl<L: DerefMut<Target = u64>, BRT: DerefMut<Target = HistoricalBucketRangeTrac
 			self.decayed_offset_msat(*self.min_liquidity_offset_msat)
 		};
 		*self.last_updated = self.now;
-		*self.offset_history_last_updated = self.now;
 	}
 }
 
