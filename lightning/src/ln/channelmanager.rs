@@ -1139,7 +1139,7 @@ where
 //              |
 //              |__`peer_state`
 //                  |
-//                  |__`id_to_peer`
+//                  |__`outpoint_to_peer`
 //                  |
 //                  |__`short_to_chan_info`
 //                  |
@@ -1233,11 +1233,7 @@ where
 	/// See `ChannelManager` struct-level documentation for lock order requirements.
 	outbound_scid_aliases: Mutex<HashSet<u64>>,
 
-	/// `channel_id` -> `counterparty_node_id`.
-	///
-	/// Only `channel_id`s are allowed as keys in this map, and not `temporary_channel_id`s. As
-	/// multiple channels with the same `temporary_channel_id` to different peers can exist,
-	/// allowing `temporary_channel_id`s in this map would cause collisions for such channels.
+	/// Channel funding outpoint -> `counterparty_node_id`.
 	///
 	/// Note that this map should only be used for `MonitorEvent` handling, to be able to access
 	/// the corresponding channel for the event, as we only have access to the `channel_id` during
@@ -1255,7 +1251,7 @@ where
 	/// required to access the channel with the `counterparty_node_id`.
 	///
 	/// See `ChannelManager` struct-level documentation for lock order requirements.
-	id_to_peer: Mutex<HashMap<ChannelId, PublicKey>>,
+	outpoint_to_peer: Mutex<HashMap<OutPoint, PublicKey>>,
 
 	/// SCIDs (and outbound SCID aliases) -> `counterparty_node_id`s and `channel_id`s.
 	///
@@ -1995,7 +1991,9 @@ macro_rules! handle_error {
 
 macro_rules! update_maps_on_chan_removal {
 	($self: expr, $channel_context: expr) => {{
-		$self.id_to_peer.lock().unwrap().remove(&$channel_context.channel_id());
+		if let Some(outpoint) = $channel_context.get_funding_txo() {
+			$self.outpoint_to_peer.lock().unwrap().remove(&outpoint);
+		}
 		let mut short_to_chan_info = $self.short_to_chan_info.write().unwrap();
 		if let Some(short_id) = $channel_context.get_short_channel_id() {
 			short_to_chan_info.remove(&short_id);
@@ -2414,7 +2412,7 @@ where
 			forward_htlcs: Mutex::new(HashMap::new()),
 			claimable_payments: Mutex::new(ClaimablePayments { claimable_payments: HashMap::new(), pending_claiming_payments: HashMap::new() }),
 			pending_intercepted_htlcs: Mutex::new(HashMap::new()),
-			id_to_peer: Mutex::new(HashMap::new()),
+			outpoint_to_peer: Mutex::new(HashMap::new()),
 			short_to_chan_info: FairRwLock::new(HashMap::new()),
 
 			our_network_pubkey: node_signer.get_node_id(Recipient::Node).unwrap(),
@@ -2565,7 +2563,7 @@ where
 	fn list_funded_channels_with_filter<Fn: FnMut(&(&ChannelId, &Channel<SP>)) -> bool + Copy>(&self, f: Fn) -> Vec<ChannelDetails> {
 		// Allocate our best estimate of the number of channels we have in the `res`
 		// Vec. Sadly the `short_to_chan_info` map doesn't cover channels without
-		// a scid or a scid alias, and the `id_to_peer` shouldn't be used outside
+		// a scid or a scid alias, and the `outpoint_to_peer` shouldn't be used outside
 		// of the ChannelMonitor handling. Therefore reallocations may still occur, but is
 		// unlikely as the `short_to_chan_info` map often contains 2 entries for
 		// the same channel.
@@ -2598,7 +2596,7 @@ where
 	pub fn list_channels(&self) -> Vec<ChannelDetails> {
 		// Allocate our best estimate of the number of channels we have in the `res`
 		// Vec. Sadly the `short_to_chan_info` map doesn't cover channels without
-		// a scid or a scid alias, and the `id_to_peer` shouldn't be used outside
+		// a scid or a scid alias, and the `outpoint_to_peer` shouldn't be used outside
 		// of the ChannelMonitor handling. Therefore reallocations may still occur, but is
 		// unlikely as the `short_to_chan_info` map often contains 2 entries for
 		// the same channel.
@@ -3716,9 +3714,10 @@ where
 
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 		let peer_state = &mut *peer_state_lock;
+		let funding_txo;
 		let (chan, msg_opt) = match peer_state.channel_by_id.remove(temporary_channel_id) {
 			Some(ChannelPhase::UnfundedOutboundV1(mut chan)) => {
-				let funding_txo = find_funding_output(&chan, &funding_transaction)?;
+				funding_txo = find_funding_output(&chan, &funding_transaction)?;
 
 				let logger = WithChannelContext::from(&self.logger, &chan.context);
 				let funding_res = chan.get_funding_created(funding_transaction, funding_txo, is_batch_funding, &&logger)
@@ -3766,9 +3765,9 @@ where
 				panic!("Generated duplicate funding txid?");
 			},
 			hash_map::Entry::Vacant(e) => {
-				let mut id_to_peer = self.id_to_peer.lock().unwrap();
-				if id_to_peer.insert(chan.context.channel_id(), chan.context.get_counterparty_node_id()).is_some() {
-					panic!("id_to_peer map already contained funding txid, which shouldn't be possible");
+				let mut outpoint_to_peer = self.outpoint_to_peer.lock().unwrap();
+				if outpoint_to_peer.insert(funding_txo, chan.context.get_counterparty_node_id()).is_some() {
+					panic!("outpoint_to_peer map already contained funding outpoint, which shouldn't be possible");
 				}
 				e.insert(ChannelPhase::UnfundedOutboundV1(chan));
 			}
@@ -5851,9 +5850,9 @@ where
 			Some(cp_id) => cp_id.clone(),
 			None => {
 				// TODO: Once we can rely on the counterparty_node_id from the
-				// monitor event, this and the id_to_peer map should be removed.
-				let id_to_peer = self.id_to_peer.lock().unwrap();
-				match id_to_peer.get(&funding_txo.to_channel_id()) {
+				// monitor event, this and the outpoint_to_peer map should be removed.
+				let outpoint_to_peer = self.outpoint_to_peer.lock().unwrap();
+				match outpoint_to_peer.get(&funding_txo) {
 					Some(cp_id) => cp_id.clone(),
 					None => return,
 				}
@@ -6237,8 +6236,8 @@ where
 				))
 			},
 			hash_map::Entry::Vacant(e) => {
-				let mut id_to_peer_lock = self.id_to_peer.lock().unwrap();
-				match id_to_peer_lock.entry(chan.context.channel_id()) {
+				let mut outpoint_to_peer_lock = self.outpoint_to_peer.lock().unwrap();
+				match outpoint_to_peer_lock.entry(monitor.get_funding_txo().0) {
 					hash_map::Entry::Occupied(_) => {
 						return Err(MsgHandleErrInternal::send_err_msg_no_close(
 							"The funding_created message had the same funding_txid as an existing channel - funding is not possible".to_owned(),
@@ -6248,7 +6247,7 @@ where
 						let monitor_res = self.chain_monitor.watch_channel(monitor.get_funding_txo().0, monitor);
 						if let Ok(persist_state) = monitor_res {
 							i_e.insert(chan.context.get_counterparty_node_id());
-							mem::drop(id_to_peer_lock);
+							mem::drop(outpoint_to_peer_lock);
 
 							// There's no problem signing a counterparty's funding transaction if our monitor
 							// hasn't persisted to disk yet - we can't lose money on a transaction that we haven't
@@ -7142,9 +7141,9 @@ where
 							Some(cp_id) => Some(cp_id),
 							None => {
 								// TODO: Once we can rely on the counterparty_node_id from the
-								// monitor event, this and the id_to_peer map should be removed.
-								let id_to_peer = self.id_to_peer.lock().unwrap();
-								id_to_peer.get(&funding_outpoint.to_channel_id()).cloned()
+								// monitor event, this and the outpoint_to_peer map should be removed.
+								let outpoint_to_peer = self.outpoint_to_peer.lock().unwrap();
+								outpoint_to_peer.get(&funding_outpoint).cloned()
 							}
 						};
 						if let Some(counterparty_node_id) = counterparty_node_id_opt {
@@ -10081,7 +10080,7 @@ where
 		let channel_count: u64 = Readable::read(reader)?;
 		let mut funding_txo_set = HashSet::with_capacity(cmp::min(channel_count as usize, 128));
 		let mut funded_peer_channels: HashMap<PublicKey, HashMap<ChannelId, ChannelPhase<SP>>> = HashMap::with_capacity(cmp::min(channel_count as usize, 128));
-		let mut id_to_peer = HashMap::with_capacity(cmp::min(channel_count as usize, 128));
+		let mut outpoint_to_peer = HashMap::with_capacity(cmp::min(channel_count as usize, 128));
 		let mut short_to_chan_info = HashMap::with_capacity(cmp::min(channel_count as usize, 128));
 		let mut channel_closures = VecDeque::new();
 		let mut close_background_events = Vec::new();
@@ -10159,8 +10158,8 @@ where
 					if let Some(short_channel_id) = channel.context.get_short_channel_id() {
 						short_to_chan_info.insert(short_channel_id, (channel.context.get_counterparty_node_id(), channel.context.channel_id()));
 					}
-					if channel.context.is_funding_broadcast() {
-						id_to_peer.insert(channel.context.channel_id(), channel.context.get_counterparty_node_id());
+					if let Some(funding_txo) = channel.context.get_funding_txo() {
+						outpoint_to_peer.insert(funding_txo, channel.context.get_counterparty_node_id());
 					}
 					match funded_peer_channels.entry(channel.context.get_counterparty_node_id()) {
 						hash_map::Entry::Occupied(mut entry) => {
@@ -10494,7 +10493,7 @@ where
 			// We only rebuild the pending payments map if we were most recently serialized by
 			// 0.0.102+
 			for (_, monitor) in args.channel_monitors.iter() {
-				let counterparty_opt = id_to_peer.get(&monitor.get_funding_txo().0.to_channel_id());
+				let counterparty_opt = outpoint_to_peer.get(&monitor.get_funding_txo().0);
 				if counterparty_opt.is_none() {
 					let logger = WithChannelMonitor::from(&args.logger, monitor);
 					for (htlc_source, (htlc, _)) in monitor.get_pending_or_resolved_outbound_htlcs() {
@@ -10787,7 +10786,7 @@ where
 						// without the new monitor persisted - we'll end up right back here on
 						// restart.
 						let previous_channel_id = claimable_htlc.prev_hop.outpoint.to_channel_id();
-						if let Some(peer_node_id) = id_to_peer.get(&previous_channel_id){
+						if let Some(peer_node_id) = outpoint_to_peer.get(&claimable_htlc.prev_hop.outpoint) {
 							let peer_state_mutex = per_peer_state.get(peer_node_id).unwrap();
 							let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 							let peer_state = &mut *peer_state_lock;
@@ -10865,7 +10864,7 @@ where
 			forward_htlcs: Mutex::new(forward_htlcs),
 			claimable_payments: Mutex::new(ClaimablePayments { claimable_payments, pending_claiming_payments: pending_claiming_payments.unwrap() }),
 			outbound_scid_aliases: Mutex::new(outbound_scid_aliases),
-			id_to_peer: Mutex::new(id_to_peer),
+			outpoint_to_peer: Mutex::new(outpoint_to_peer),
 			short_to_chan_info: FairRwLock::new(short_to_chan_info),
 			fake_scid_rand_bytes: fake_scid_rand_bytes.unwrap(),
 
@@ -11482,8 +11481,8 @@ mod tests {
 	}
 
 	#[test]
-	fn test_id_to_peer_coverage() {
-		// Test that the `ChannelManager:id_to_peer` contains channels which have been assigned
+	fn test_outpoint_to_peer_coverage() {
+		// Test that the `ChannelManager:outpoint_to_peer` contains channels which have been assigned
 		// a `channel_id` (i.e. have had the funding tx created), and that they are removed once
 		// the channel is successfully closed.
 		let chanmon_cfgs = create_chanmon_cfgs(2);
@@ -11497,42 +11496,42 @@ mod tests {
 		let accept_channel = get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, nodes[0].node.get_our_node_id());
 		nodes[0].node.handle_accept_channel(&nodes[1].node.get_our_node_id(), &accept_channel);
 
-		let (temporary_channel_id, tx, _funding_output) = create_funding_transaction(&nodes[0], &nodes[1].node.get_our_node_id(), 1_000_000, 42);
+		let (temporary_channel_id, tx, funding_output) = create_funding_transaction(&nodes[0], &nodes[1].node.get_our_node_id(), 1_000_000, 42);
 		let channel_id = ChannelId::from_bytes(tx.txid().to_byte_array());
 		{
-			// Ensure that the `id_to_peer` map is empty until either party has received the
+			// Ensure that the `outpoint_to_peer` map is empty until either party has received the
 			// funding transaction, and have the real `channel_id`.
-			assert_eq!(nodes[0].node.id_to_peer.lock().unwrap().len(), 0);
-			assert_eq!(nodes[1].node.id_to_peer.lock().unwrap().len(), 0);
+			assert_eq!(nodes[0].node.outpoint_to_peer.lock().unwrap().len(), 0);
+			assert_eq!(nodes[1].node.outpoint_to_peer.lock().unwrap().len(), 0);
 		}
 
 		nodes[0].node.funding_transaction_generated(&temporary_channel_id, &nodes[1].node.get_our_node_id(), tx.clone()).unwrap();
 		{
-			// Assert that `nodes[0]`'s `id_to_peer` map is populated with the channel as soon as
+			// Assert that `nodes[0]`'s `outpoint_to_peer` map is populated with the channel as soon as
 			// as it has the funding transaction.
-			let nodes_0_lock = nodes[0].node.id_to_peer.lock().unwrap();
+			let nodes_0_lock = nodes[0].node.outpoint_to_peer.lock().unwrap();
 			assert_eq!(nodes_0_lock.len(), 1);
-			assert!(nodes_0_lock.contains_key(&channel_id));
+			assert!(nodes_0_lock.contains_key(&funding_output));
 		}
 
-		assert_eq!(nodes[1].node.id_to_peer.lock().unwrap().len(), 0);
+		assert_eq!(nodes[1].node.outpoint_to_peer.lock().unwrap().len(), 0);
 
 		let funding_created_msg = get_event_msg!(nodes[0], MessageSendEvent::SendFundingCreated, nodes[1].node.get_our_node_id());
 
 		nodes[1].node.handle_funding_created(&nodes[0].node.get_our_node_id(), &funding_created_msg);
 		{
-			let nodes_0_lock = nodes[0].node.id_to_peer.lock().unwrap();
+			let nodes_0_lock = nodes[0].node.outpoint_to_peer.lock().unwrap();
 			assert_eq!(nodes_0_lock.len(), 1);
-			assert!(nodes_0_lock.contains_key(&channel_id));
+			assert!(nodes_0_lock.contains_key(&funding_output));
 		}
 		expect_channel_pending_event(&nodes[1], &nodes[0].node.get_our_node_id());
 
 		{
-			// Assert that `nodes[1]`'s `id_to_peer` map is populated with the channel as soon as
-			// as it has the funding transaction.
-			let nodes_1_lock = nodes[1].node.id_to_peer.lock().unwrap();
+			// Assert that `nodes[1]`'s `outpoint_to_peer` map is populated with the channel as
+			// soon as it has the funding transaction.
+			let nodes_1_lock = nodes[1].node.outpoint_to_peer.lock().unwrap();
 			assert_eq!(nodes_1_lock.len(), 1);
-			assert!(nodes_1_lock.contains_key(&channel_id));
+			assert!(nodes_1_lock.contains_key(&funding_output));
 		}
 		check_added_monitors!(nodes[1], 1);
 		let funding_signed = get_event_msg!(nodes[1], MessageSendEvent::SendFundingSigned, nodes[0].node.get_our_node_id());
@@ -11551,23 +11550,23 @@ mod tests {
 		let closing_signed_node_0 = get_event_msg!(nodes[0], MessageSendEvent::SendClosingSigned, nodes[1].node.get_our_node_id());
 		nodes[1].node.handle_closing_signed(&nodes[0].node.get_our_node_id(), &closing_signed_node_0);
 		{
-			// Assert that the channel is kept in the `id_to_peer` map for both nodes until the
+			// Assert that the channel is kept in the `outpoint_to_peer` map for both nodes until the
 			// channel can be fully closed by both parties (i.e. no outstanding htlcs exists, the
 			// fee for the closing transaction has been negotiated and the parties has the other
 			// party's signature for the fee negotiated closing transaction.)
-			let nodes_0_lock = nodes[0].node.id_to_peer.lock().unwrap();
+			let nodes_0_lock = nodes[0].node.outpoint_to_peer.lock().unwrap();
 			assert_eq!(nodes_0_lock.len(), 1);
-			assert!(nodes_0_lock.contains_key(&channel_id));
+			assert!(nodes_0_lock.contains_key(&funding_output));
 		}
 
 		{
 			// At this stage, `nodes[1]` has proposed a fee for the closing transaction in the
 			// `handle_closing_signed` call above. As `nodes[1]` has not yet received the signature
 			// from `nodes[0]` for the closing transaction with the proposed fee, the channel is
-			// kept in the `nodes[1]`'s `id_to_peer` map.
-			let nodes_1_lock = nodes[1].node.id_to_peer.lock().unwrap();
+			// kept in the `nodes[1]`'s `outpoint_to_peer` map.
+			let nodes_1_lock = nodes[1].node.outpoint_to_peer.lock().unwrap();
 			assert_eq!(nodes_1_lock.len(), 1);
-			assert!(nodes_1_lock.contains_key(&channel_id));
+			assert!(nodes_1_lock.contains_key(&funding_output));
 		}
 
 		nodes[0].node.handle_closing_signed(&nodes[1].node.get_our_node_id(), &get_event_msg!(nodes[1], MessageSendEvent::SendClosingSigned, nodes[0].node.get_our_node_id()));
@@ -11575,24 +11574,24 @@ mod tests {
 			// `nodes[0]` accepts `nodes[1]`'s proposed fee for the closing transaction, and
 			// therefore has all it needs to fully close the channel (both signatures for the
 			// closing transaction).
-			// Assert that the channel is removed from `nodes[0]`'s `id_to_peer` map as it can be
+			// Assert that the channel is removed from `nodes[0]`'s `outpoint_to_peer` map as it can be
 			// fully closed by `nodes[0]`.
-			assert_eq!(nodes[0].node.id_to_peer.lock().unwrap().len(), 0);
+			assert_eq!(nodes[0].node.outpoint_to_peer.lock().unwrap().len(), 0);
 
-			// Assert that the channel is still in `nodes[1]`'s  `id_to_peer` map, as `nodes[1]`
+			// Assert that the channel is still in `nodes[1]`'s  `outpoint_to_peer` map, as `nodes[1]`
 			// doesn't have `nodes[0]`'s signature for the closing transaction yet.
-			let nodes_1_lock = nodes[1].node.id_to_peer.lock().unwrap();
+			let nodes_1_lock = nodes[1].node.outpoint_to_peer.lock().unwrap();
 			assert_eq!(nodes_1_lock.len(), 1);
-			assert!(nodes_1_lock.contains_key(&channel_id));
+			assert!(nodes_1_lock.contains_key(&funding_output));
 		}
 
 		let (_nodes_0_update, closing_signed_node_0) = get_closing_signed_broadcast!(nodes[0].node, nodes[1].node.get_our_node_id());
 
 		nodes[1].node.handle_closing_signed(&nodes[0].node.get_our_node_id(), &closing_signed_node_0.unwrap());
 		{
-			// Assert that the channel has now been removed from both parties `id_to_peer` map once
+			// Assert that the channel has now been removed from both parties `outpoint_to_peer` map once
 			// they both have everything required to fully close the channel.
-			assert_eq!(nodes[1].node.id_to_peer.lock().unwrap().len(), 0);
+			assert_eq!(nodes[1].node.outpoint_to_peer.lock().unwrap().len(), 0);
 		}
 		let (_nodes_1_update, _none) = get_closing_signed_broadcast!(nodes[1].node, nodes[0].node.get_our_node_id());
 
