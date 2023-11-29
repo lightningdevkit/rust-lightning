@@ -2730,10 +2730,10 @@ where
 					if let ChannelPhase::Funded(chan) = chan_phase_entry.get_mut() {
 						let funding_txo_opt = chan.context.get_funding_txo();
 						let their_features = &peer_state.latest_features;
-						let (shutdown_msg, mut monitor_update_opt, htlcs, local_shutdown_result) =
+						let (shutdown_msg, mut monitor_update_opt, htlcs) =
 							chan.get_shutdown(&self.signer_provider, their_features, target_feerate_sats_per_1000_weight, override_shutdown_script)?;
 						failed_htlcs = htlcs;
-						shutdown_result = local_shutdown_result;
+						shutdown_result = None;
 						debug_assert_eq!(shutdown_result.is_some(), chan.is_shutdown());
 
 						// We can send the `shutdown` message before updating the `ChannelMonitor`
