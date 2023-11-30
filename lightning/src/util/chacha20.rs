@@ -21,6 +21,7 @@ mod real_chacha {
 	struct u32x4(pub u32, pub u32, pub u32, pub u32);
 	impl ::core::ops::Add for u32x4 {
 		type Output = u32x4;
+		#[inline]
 		fn add(self, rhs: u32x4) -> u32x4 {
 			u32x4(self.0.wrapping_add(rhs.0),
 			      self.1.wrapping_add(rhs.1),
@@ -30,6 +31,7 @@ mod real_chacha {
 	}
 	impl ::core::ops::Sub for u32x4 {
 		type Output = u32x4;
+		#[inline]
 		fn sub(self, rhs: u32x4) -> u32x4 {
 			u32x4(self.0.wrapping_sub(rhs.0),
 			      self.1.wrapping_sub(rhs.1),
@@ -39,23 +41,27 @@ mod real_chacha {
 	}
 	impl ::core::ops::BitXor for u32x4 {
 		type Output = u32x4;
+		#[inline]
 		fn bitxor(self, rhs: u32x4) -> u32x4 {
 			u32x4(self.0 ^ rhs.0, self.1 ^ rhs.1, self.2 ^ rhs.2, self.3 ^ rhs.3)
 		}
 	}
 	impl ::core::ops::Shr<u8> for u32x4 {
 		type Output = u32x4;
+		#[inline]
 		fn shr(self, shr: u8) -> u32x4 {
 			u32x4(self.0 >> shr, self.1 >> shr, self.2 >> shr, self.3 >> shr)
 		}
 	}
 	impl ::core::ops::Shl<u8> for u32x4 {
 		type Output = u32x4;
+		#[inline]
 		fn shl(self, shl: u8) -> u32x4 {
 			u32x4(self.0 << shl, self.1 << shl, self.2 << shl, self.3 << shl)
 		}
 	}
 	impl u32x4 {
+		#[inline]
 		fn from_bytes(bytes: &[u8]) -> Self {
 			assert_eq!(bytes.len(), 4*4);
 			Self (
