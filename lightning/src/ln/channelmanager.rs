@@ -3730,7 +3730,7 @@ where
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 		let peer_state = &mut *peer_state_lock;
 		let (chan, msg_opt) = match peer_state.channel_by_id.remove(temporary_channel_id) {
-			Some(ChannelPhase::UnfundedOutboundV1(chan)) => {
+			Some(ChannelPhase::UnfundedOutboundV1(mut chan)) => {
 				let funding_txo = find_funding_output(&chan, &funding_transaction)?;
 
 				let logger = WithChannelContext::from(&self.logger, &chan.context);
@@ -3743,7 +3743,7 @@ where
 						(chan, MsgHandleErrInternal::from_finish_shutdown(msg, channel_id, user_id, shutdown_res, None, channel_capacity))
 					} else { unreachable!(); });
 				match funding_res {
-					Ok((chan, funding_msg)) => (chan, funding_msg),
+					Ok(funding_msg) => (chan, funding_msg),
 					Err((chan, err)) => {
 						mem::drop(peer_state_lock);
 						mem::drop(per_peer_state);
@@ -3783,7 +3783,7 @@ where
 				if id_to_peer.insert(chan.context.channel_id(), chan.context.get_counterparty_node_id()).is_some() {
 					panic!("id_to_peer map already contained funding txid, which shouldn't be possible");
 				}
-				e.insert(ChannelPhase::Funded(chan));
+				e.insert(ChannelPhase::UnfundedOutboundV1(chan));
 			}
 		}
 		Ok(())
@@ -5429,7 +5429,7 @@ where
 						// We got a temporary failure updating monitor, but will claim the
 						// HTLC when the monitor updating is restored (or on chain).
 						let logger = WithContext::from(&self.logger, None, Some(prev_hop_chan_id));
-						log_error!(self.logger, "Temporary failure claiming HTLC, treating as success: {}", err.err.err);
+						log_error!(logger, "Temporary failure claiming HTLC, treating as success: {}", err.err.err);
 					} else { errs.push((pk, err)); }
 				}
 			}
@@ -6310,22 +6310,43 @@ where
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 		let peer_state = &mut *peer_state_lock;
 		match peer_state.channel_by_id.entry(msg.channel_id) {
-			hash_map::Entry::Occupied(mut chan_phase_entry) => {
-				match chan_phase_entry.get_mut() {
-					ChannelPhase::Funded(ref mut chan) => {
-						let logger = WithChannelContext::from(&self.logger, &chan.context);
-						let monitor = try_chan_phase_entry!(self,
-							chan.funding_signed(&msg, best_block, &self.signer_provider, &&logger), chan_phase_entry);
-						if let Ok(persist_status) = self.chain_monitor.watch_channel(chan.context.get_funding_txo().unwrap(), monitor) {
-							handle_new_monitor_update!(self, persist_status, peer_state_lock, peer_state, per_peer_state, chan, INITIAL_MONITOR);
-							Ok(())
-						} else {
-							try_chan_phase_entry!(self, Err(ChannelError::Close("Channel funding outpoint was a duplicate".to_owned())), chan_phase_entry)
+			hash_map::Entry::Occupied(chan_phase_entry) => {
+				if matches!(chan_phase_entry.get(), ChannelPhase::UnfundedOutboundV1(_)) {
+					let chan = if let ChannelPhase::UnfundedOutboundV1(chan) = chan_phase_entry.remove() { chan } else { unreachable!() };
+					let logger = WithContext::from(
+						&self.logger,
+						Some(chan.context.get_counterparty_node_id()),
+						Some(chan.context.channel_id())
+					);
+					let res =
+						chan.funding_signed(&msg, best_block, &self.signer_provider, &&logger);
+					match res {
+						Ok((chan, monitor)) => {
+							if let Ok(persist_status) = self.chain_monitor.watch_channel(chan.context.get_funding_txo().unwrap(), monitor) {
+								// We really should be able to insert here without doing a second
+								// lookup, but sadly rust stdlib doesn't currently allow keeping
+								// the original Entry around with the value removed.
+								let mut chan = peer_state.channel_by_id.entry(msg.channel_id).or_insert(ChannelPhase::Funded(chan));
+								if let ChannelPhase::Funded(ref mut chan) = &mut chan {
+									handle_new_monitor_update!(self, persist_status, peer_state_lock, peer_state, per_peer_state, chan, INITIAL_MONITOR);
+								} else { unreachable!(); }
+								Ok(())
+							} else {
+								let e = ChannelError::Close("Channel funding outpoint was a duplicate".to_owned());
+								return Err(convert_chan_phase_err!(self, e, &mut ChannelPhase::Funded(chan), &msg.channel_id).1);
+							}
+						},
+						Err((chan, e)) => {
+							debug_assert!(matches!(e, ChannelError::Close(_)),
+								"We don't have a channel anymore, so the error better have expected close");
+							// We've already removed this outbound channel from the map in
+							// `PeerState` above so at this point we just need to clean up any
+							// lingering entries concerning this channel as it is safe to do so.
+							return Err(convert_chan_phase_err!(self, e, &mut ChannelPhase::UnfundedOutboundV1(chan), &msg.channel_id).1);
 						}
-					},
-					_ => {
-						return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel".to_owned(), msg.channel_id));
-					},
+					}
+				} else {
+					return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel".to_owned(), msg.channel_id));
 				}
 			},
 			hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel".to_owned(), msg.channel_id))
@@ -7251,29 +7272,34 @@ where
 
 		let unblock_chan = |phase: &mut ChannelPhase<SP>, pending_msg_events: &mut Vec<MessageSendEvent>| {
 			let node_id = phase.context().get_counterparty_node_id();
-			if let ChannelPhase::Funded(chan) = phase {
-				let msgs = chan.signer_maybe_unblocked(&self.logger);
-				if let Some(updates) = msgs.commitment_update {
-					pending_msg_events.push(events::MessageSendEvent::UpdateHTLCs {
-						node_id,
-						updates,
-					});
+			match phase {
+				ChannelPhase::Funded(chan) => {
+					let msgs = chan.signer_maybe_unblocked(&self.logger);
+					if let Some(updates) = msgs.commitment_update {
+						pending_msg_events.push(events::MessageSendEvent::UpdateHTLCs {
+							node_id,
+							updates,
+						});
+					}
+					if let Some(msg) = msgs.funding_signed {
+						pending_msg_events.push(events::MessageSendEvent::SendFundingSigned {
+							node_id,
+							msg,
+						});
+					}
+					if let Some(msg) = msgs.channel_ready {
+						send_channel_ready!(self, pending_msg_events, chan, msg);
+					}
 				}
-				if let Some(msg) = msgs.funding_signed {
-					pending_msg_events.push(events::MessageSendEvent::SendFundingSigned {
-						node_id,
-						msg,
-					});
+				ChannelPhase::UnfundedOutboundV1(chan) => {
+					if let Some(msg) = chan.signer_maybe_unblocked(&self.logger) {
+						pending_msg_events.push(events::MessageSendEvent::SendFundingCreated {
+							node_id,
+							msg,
+						});
+					}
 				}
-				if let Some(msg) = msgs.funding_created {
-					pending_msg_events.push(events::MessageSendEvent::SendFundingCreated {
-						node_id,
-						msg,
-					});
-				}
-				if let Some(msg) = msgs.channel_ready {
-					send_channel_ready!(self, pending_msg_events, chan, msg);
-				}
+				ChannelPhase::UnfundedInboundV1(_) => {},
 			}
 		};
 
