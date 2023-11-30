@@ -2920,6 +2920,20 @@ impl<SP: Deref> Channel<SP> where
 		self.context.channel_state.clear_waiting_for_batch();
 	}
 
+	/// Unsets the existing funding information.
+	///
+	/// This must only be used if the channel has not yet completed funding and has not been used.
+	///
+	/// Further, the channel must be immediately shut down after this with a call to
+	/// [`ChannelContext::force_shutdown`].
+	pub fn unset_funding_info(&mut self, temporary_channel_id: ChannelId) {
+		debug_assert!(matches!(
+			self.context.channel_state, ChannelState::AwaitingChannelReady(_)
+		));
+		self.context.channel_transaction_parameters.funding_outpoint = None;
+		self.context.channel_id = temporary_channel_id;
+	}
+
 	/// Handles a channel_ready message from our peer. If we've already sent our channel_ready
 	/// and the channel is now usable (and public), this may generate an announcement_signatures to
 	/// reply with.

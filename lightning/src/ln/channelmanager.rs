@@ -1251,7 +1251,10 @@ where
 	/// required to access the channel with the `counterparty_node_id`.
 	///
 	/// See `ChannelManager` struct-level documentation for lock order requirements.
+	#[cfg(not(test))]
 	outpoint_to_peer: Mutex<HashMap<OutPoint, PublicKey>>,
+	#[cfg(test)]
+	pub(crate) outpoint_to_peer: Mutex<HashMap<OutPoint, PublicKey>>,
 
 	/// SCIDs (and outbound SCID aliases) -> `counterparty_node_id`s and `channel_id`s.
 	///
@@ -6205,44 +6208,55 @@ where
 
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 		let peer_state = &mut *peer_state_lock;
-		let (chan, funding_msg_opt, monitor) =
+		let (mut chan, funding_msg_opt, monitor) =
 			match peer_state.channel_by_id.remove(&msg.temporary_channel_id) {
 				Some(ChannelPhase::UnfundedInboundV1(inbound_chan)) => {
 					let logger = WithChannelContext::from(&self.logger, &inbound_chan.context);
 					match inbound_chan.funding_created(msg, best_block, &self.signer_provider, &&logger) {
 						Ok(res) => res,
-						Err((mut inbound_chan, err)) => {
+						Err((inbound_chan, err)) => {
 							// We've already removed this inbound channel from the map in `PeerState`
 							// above so at this point we just need to clean up any lingering entries
 							// concerning this channel as it is safe to do so.
-							update_maps_on_chan_removal!(self, &inbound_chan.context);
-							let user_id = inbound_chan.context.get_user_id();
-							let shutdown_res = inbound_chan.context.force_shutdown(false);
-							return Err(MsgHandleErrInternal::from_finish_shutdown(format!("{}", err),
-								msg.temporary_channel_id, user_id, shutdown_res, None, inbound_chan.context.get_value_satoshis()));
+							debug_assert!(matches!(err, ChannelError::Close(_)));
+							// Really we should be returning the channel_id the peer expects based
+							// on their funding info here, but they're horribly confused anyway, so
+							// there's not a lot we can do to save them.
+							return Err(convert_chan_phase_err!(self, err, &mut ChannelPhase::UnfundedInboundV1(inbound_chan), &msg.temporary_channel_id).1);
 						},
 					}
 				},
-				Some(ChannelPhase::Funded(_)) | Some(ChannelPhase::UnfundedOutboundV1(_)) => {
-					return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got an unexpected funding_created message from peer with counterparty_node_id {}", counterparty_node_id), msg.temporary_channel_id));
+				Some(mut phase) => {
+					let err_msg = format!("Got an unexpected funding_created message from peer with counterparty_node_id {}", counterparty_node_id);
+					let err = ChannelError::Close(err_msg);
+					return Err(convert_chan_phase_err!(self, err, &mut phase, &msg.temporary_channel_id).1);
 				},
 				None => return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.temporary_channel_id))
 			};
 
-		match peer_state.channel_by_id.entry(chan.context.channel_id()) {
+		let funded_channel_id = chan.context.channel_id();
+
+		macro_rules! fail_chan { ($err: expr) => { {
+			// Note that at this point we've filled in the funding outpoint on our
+			// channel, but its actually in conflict with another channel. Thus, if
+			// we call `convert_chan_phase_err` immediately (thus calling
+			// `update_maps_on_chan_removal`), we'll remove the existing channel
+			// from `outpoint_to_peer`. Thus, we must first unset the funding outpoint
+			// on the channel.
+			let err = ChannelError::Close($err.to_owned());
+			chan.unset_funding_info(msg.temporary_channel_id);
+			return Err(convert_chan_phase_err!(self, err, chan, &funded_channel_id, UNFUNDED_CHANNEL).1);
+		} } }
+
+		match peer_state.channel_by_id.entry(funded_channel_id) {
 			hash_map::Entry::Occupied(_) => {
-				Err(MsgHandleErrInternal::send_err_msg_no_close(
-					"Already had channel with the new channel_id".to_owned(),
-					chan.context.channel_id()
-				))
+				fail_chan!("Already had channel with the new channel_id");
 			},
 			hash_map::Entry::Vacant(e) => {
 				let mut outpoint_to_peer_lock = self.outpoint_to_peer.lock().unwrap();
 				match outpoint_to_peer_lock.entry(monitor.get_funding_txo().0) {
 					hash_map::Entry::Occupied(_) => {
-						return Err(MsgHandleErrInternal::send_err_msg_no_close(
-							"The funding_created message had the same funding_txid as an existing channel - funding is not possible".to_owned(),
-							chan.context.channel_id()))
+						fail_chan!("The funding_created message had the same funding_txid as an existing channel - funding is not possible");
 					},
 					hash_map::Entry::Vacant(i_e) => {
 						let monitor_res = self.chain_monitor.watch_channel(monitor.get_funding_txo().0, monitor);
@@ -6271,13 +6285,7 @@ where
 						} else {
 							let logger = WithChannelContext::from(&self.logger, &chan.context);
 							log_error!(logger, "Persisting initial ChannelMonitor failed, implying the funding outpoint was duplicated");
-							let channel_id = match funding_msg_opt {
-								Some(msg) => msg.channel_id,
-								None => chan.context.channel_id(),
-							};
-							return Err(MsgHandleErrInternal::send_err_msg_no_close(
-								"The funding_created message had the same funding_txid as an existing channel - funding is not possible".to_owned(),
-								channel_id));
+							fail_chan!("Duplicate funding outpoint");
 						}
 					}
 				}

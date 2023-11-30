@@ -8971,6 +8971,54 @@ fn test_duplicate_temporary_channel_id_from_different_peers() {
 }
 
 #[test]
+fn test_duplicate_funding_err_in_funding() {
+	// Test that if we have a live channel with one peer, then another peer comes along and tries
+	// to create a second channel with the same txid we'll fail and not overwrite the
+	// outpoint_to_peer map in `ChannelManager`.
+	//
+	// This was previously broken.
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
+	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+
+	let (_, _, _, real_channel_id, funding_tx) = create_chan_between_nodes(&nodes[0], &nodes[1]);
+	let real_chan_funding_txo = chain::transaction::OutPoint { txid: funding_tx.txid(), index: 0 };
+	assert_eq!(real_chan_funding_txo.to_channel_id(), real_channel_id);
+
+	nodes[2].node.create_channel(nodes[1].node.get_our_node_id(), 100_000, 0, 42, None, None).unwrap();
+	let mut open_chan_msg = get_event_msg!(nodes[2], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
+	let node_c_temp_chan_id = open_chan_msg.temporary_channel_id;
+	open_chan_msg.temporary_channel_id = real_channel_id;
+	nodes[1].node.handle_open_channel(&nodes[2].node.get_our_node_id(), &open_chan_msg);
+	let mut accept_chan_msg = get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, nodes[2].node.get_our_node_id());
+	accept_chan_msg.temporary_channel_id = node_c_temp_chan_id;
+	nodes[2].node.handle_accept_channel(&nodes[1].node.get_our_node_id(), &accept_chan_msg);
+
+	// Now that we have a second channel with the same funding txo, send a bogus funding message
+	// and let nodes[1] remove the inbound channel.
+	let (_, funding_tx, _) = create_funding_transaction(&nodes[2], &nodes[1].node.get_our_node_id(), 100_000, 42);
+
+	nodes[2].node.funding_transaction_generated(&node_c_temp_chan_id, &nodes[1].node.get_our_node_id(), funding_tx).unwrap();
+
+	let mut funding_created_msg = get_event_msg!(nodes[2], MessageSendEvent::SendFundingCreated, nodes[1].node.get_our_node_id());
+	funding_created_msg.temporary_channel_id = real_channel_id;
+	// Make the signature invalid by changing the funding output
+	funding_created_msg.funding_output_index += 10;
+	nodes[1].node.handle_funding_created(&nodes[2].node.get_our_node_id(), &funding_created_msg);
+	get_err_msg(&nodes[1], &nodes[2].node.get_our_node_id());
+	let err = "Invalid funding_created signature from peer".to_owned();
+	let reason = ClosureReason::ProcessingError { err };
+	let expected_closing = ExpectedCloseEvent::from_id_reason(real_channel_id, false, reason);
+	check_closed_events(&nodes[1], &[expected_closing]);
+
+	assert_eq!(
+		*nodes[1].node.outpoint_to_peer.lock().unwrap().get(&real_chan_funding_txo).unwrap(),
+		nodes[0].node.get_our_node_id()
+	);
+}
+
+#[test]
 fn test_duplicate_chan_id() {
 	// Test that if a given peer tries to open a channel with the same channel_id as one that is
 	// already open we reject it and keep the old channel.
@@ -9079,6 +9127,12 @@ fn test_duplicate_chan_id() {
 	// At this point we'll look up if the channel_id is present and immediately fail the channel
 	// without trying to persist the `ChannelMonitor`.
 	check_added_monitors!(nodes[1], 0);
+
+	check_closed_events(&nodes[1], &[
+		ExpectedCloseEvent::from_id_reason(channel_id, false, ClosureReason::ProcessingError {
+			err: "Already had channel with the new channel_id".to_owned()
+		})
+	]);
 
 	// ...still, nodes[1] will reject the duplicate channel.
 	{
