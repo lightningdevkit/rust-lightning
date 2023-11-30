@@ -10,8 +10,9 @@
 //! Onion message testing and test utilities live here.
 
 use crate::blinded_path::BlindedPath;
+use crate::events::{Event, EventsProvider};
 use crate::ln::features::InitFeatures;
-use crate::ln::msgs::{self, DecodeError, OnionMessageHandler};
+use crate::ln::msgs::{self, DecodeError, OnionMessageHandler, SocketAddress};
 use crate::sign::{NodeSigner, Recipient};
 use crate::util::ser::{FixedLengthReader, LengthReadable, Writeable, Writer};
 use crate::util::test_utils;
@@ -50,7 +51,7 @@ impl MessageRouter for TestMessageRouter {
 		Ok(OnionMessagePath {
 			intermediate_nodes: vec![],
 			destination,
-			addresses: None,
+			addresses: Some(vec![SocketAddress::TcpIpV4 { addr: [127, 0, 0, 1], port: 1000 }]),
 		})
 	}
 }
@@ -180,13 +181,28 @@ fn create_nodes_using_secrets(secrets: Vec<SecretKey>) -> Vec<MessengerNode> {
 		});
 	}
 	for i in 0..nodes.len() - 1 {
-		let mut features = InitFeatures::empty();
-		features.set_onion_messages_optional();
-		let init_msg = msgs::Init { features, networks: None, remote_network_address: None };
-		nodes[i].messenger.peer_connected(&nodes[i + 1].node_id, &init_msg.clone(), true).unwrap();
-		nodes[i + 1].messenger.peer_connected(&nodes[i].node_id, &init_msg.clone(), false).unwrap();
+		connect_peers(&nodes[i], &nodes[i + 1]);
 	}
 	nodes
+}
+
+fn connect_peers(node_a: &MessengerNode, node_b: &MessengerNode) {
+	let mut features = InitFeatures::empty();
+	features.set_onion_messages_optional();
+	let init_msg = msgs::Init { features, networks: None, remote_network_address: None };
+	node_a.messenger.peer_connected(&node_b.node_id, &init_msg.clone(), true).unwrap();
+	node_b.messenger.peer_connected(&node_a.node_id, &init_msg.clone(), false).unwrap();
+}
+
+fn disconnect_peers(node_a: &MessengerNode, node_b: &MessengerNode) {
+	node_a.messenger.peer_disconnected(&node_b.node_id);
+	node_b.messenger.peer_disconnected(&node_a.node_id);
+}
+
+fn release_events(node: &MessengerNode) -> Vec<Event> {
+	let events = core::cell::RefCell::new(Vec::new());
+	node.messenger.process_pending_events(&|e| events.borrow_mut().push(e));
+	events.into_inner()
 }
 
 fn pass_along_path(path: &Vec<MessengerNode>) {
@@ -458,6 +474,72 @@ fn many_hops() {
 	nodes[0].messenger.send_onion_message_using_path(path, test_msg, None).unwrap();
 	nodes[num_nodes-1].custom_message_handler.expect_message(TestCustomMessage::Response);
 	pass_along_path(&nodes);
+}
+
+#[test]
+fn requests_peer_connection_for_buffered_messages() {
+	let nodes = create_nodes(3);
+	let message = TestCustomMessage::Request;
+	let secp_ctx = Secp256k1::new();
+	let blinded_path = BlindedPath::new_for_message(
+		&[nodes[1].node_id, nodes[2].node_id], &*nodes[0].entropy_source, &secp_ctx
+	).unwrap();
+	let destination = Destination::BlindedPath(blinded_path);
+
+	// Buffer an onion message for a connected peer
+	nodes[0].messenger.send_onion_message(message.clone(), destination.clone(), None).unwrap();
+	assert!(release_events(&nodes[0]).is_empty());
+	assert!(nodes[0].messenger.next_onion_message_for_peer(nodes[1].node_id).is_some());
+	assert!(nodes[0].messenger.next_onion_message_for_peer(nodes[1].node_id).is_none());
+
+	// Buffer an onion message for a disconnected peer
+	disconnect_peers(&nodes[0], &nodes[1]);
+	assert!(nodes[0].messenger.next_onion_message_for_peer(nodes[1].node_id).is_none());
+	nodes[0].messenger.send_onion_message(message, destination, None).unwrap();
+
+	// Check that a ConnectionNeeded event for the peer is provided
+	let events = release_events(&nodes[0]);
+	assert_eq!(events.len(), 1);
+	match &events[0] {
+		Event::ConnectionNeeded { node_id, .. } => assert_eq!(*node_id, nodes[1].node_id),
+		e => panic!("Unexpected event: {:?}", e),
+	}
+
+	// Release the buffered onion message when reconnected
+	connect_peers(&nodes[0], &nodes[1]);
+	assert!(nodes[0].messenger.next_onion_message_for_peer(nodes[1].node_id).is_some());
+	assert!(nodes[0].messenger.next_onion_message_for_peer(nodes[1].node_id).is_none());
+}
+
+#[test]
+fn drops_buffered_messages_waiting_for_peer_connection() {
+	let nodes = create_nodes(3);
+	let message = TestCustomMessage::Request;
+	let secp_ctx = Secp256k1::new();
+	let blinded_path = BlindedPath::new_for_message(
+		&[nodes[1].node_id, nodes[2].node_id], &*nodes[0].entropy_source, &secp_ctx
+	).unwrap();
+	let destination = Destination::BlindedPath(blinded_path);
+
+	// Buffer an onion message for a disconnected peer
+	disconnect_peers(&nodes[0], &nodes[1]);
+	nodes[0].messenger.send_onion_message(message, destination, None).unwrap();
+
+	// Release the event so the timer can start ticking
+	let events = release_events(&nodes[0]);
+	assert_eq!(events.len(), 1);
+	match &events[0] {
+		Event::ConnectionNeeded { node_id, .. } => assert_eq!(*node_id, nodes[1].node_id),
+		e => panic!("Unexpected event: {:?}", e),
+	}
+
+	// Drop buffered messages for a disconnected peer after some timer ticks
+	use crate::onion_message::messenger::MAX_TIMER_TICKS;
+	for _ in 0..=MAX_TIMER_TICKS {
+		nodes[0].messenger.timer_tick_occurred();
+	}
+	connect_peers(&nodes[0], &nodes[1]);
+	assert!(nodes[0].messenger.next_onion_message_for_peer(nodes[1].node_id).is_none());
 }
 
 #[test]

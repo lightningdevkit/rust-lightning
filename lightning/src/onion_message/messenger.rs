@@ -40,6 +40,8 @@ use crate::io;
 use crate::sync::{Arc, Mutex};
 use crate::prelude::*;
 
+pub(super) const MAX_TIMER_TICKS: usize = 2;
+
 /// A sender, receiver and forwarder of [`OnionMessage`]s.
 ///
 /// # Handling Messages
@@ -166,8 +168,8 @@ enum OnionMessageBuffer {
 	/// Messages for a node connected as a peer.
 	ConnectedPeer(VecDeque<OnionMessage>),
 
-	/// Messages for a node that is not yet connected, which are dropped after a certain number of
-	/// timer ticks defined in [`OnionMessenger::timer_tick_occurred`] and tracked here.
+	/// Messages for a node that is not yet connected, which are dropped after [`MAX_TIMER_TICKS`]
+	/// and tracked here.
 	PendingConnection(VecDeque<OnionMessage>, Option<Vec<SocketAddress>>, usize),
 }
 
@@ -901,7 +903,6 @@ where
 	}
 
 	fn timer_tick_occurred(&self) {
-		const MAX_TIMER_TICKS: usize = 2;
 		let mut message_buffers = self.message_buffers.lock().unwrap();
 
 		// Drop any pending recipients since the last call to avoid retaining buffered messages for
