@@ -151,7 +151,7 @@ where
 	L::Target: Logger,
 	MR::Target: MessageRouter,
 	OMH::Target: OffersMessageHandler,
-	CMH:: Target: CustomOnionMessageHandler,
+	CMH::Target: CustomOnionMessageHandler,
 {
 	entropy_source: ES,
 	node_signer: NS,
