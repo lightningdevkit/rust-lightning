@@ -35,7 +35,7 @@ use crate::sign::ecdsa::WriteableEcdsaChannelSigner;
 use crate::events;
 use crate::events::{Event, EventHandler};
 use crate::util::atomic_counter::AtomicCounter;
-use crate::util::logger::Logger;
+use crate::util::logger::{Logger, WithContext};
 use crate::util::errors::APIError;
 use crate::util::wakers::{Future, Notifier};
 use crate::ln::channelmanager::ChannelDetails;
@@ -757,7 +757,8 @@ where C::Target: chain::Filter,
 		let monitors = self.monitors.read().unwrap();
 		match monitors.get(&funding_txo) {
 			None => {
-				log_error!(self.logger, "Failed to update channel monitor: no such monitor registered");
+				let logger = WithContext::from(&self.logger, update.counterparty_node_id, Some(funding_txo.to_channel_id()));
+				log_error!(logger, "Failed to update channel monitor: no such monitor registered");
 
 				// We should never ever trigger this from within ChannelManager. Technically a
 				// user could use this object with some proxying in between which makes this
