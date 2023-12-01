@@ -1,0 +1,4 @@
+## Backwards Compat
+
+* Forwarding a blinded HTLC and subsequently downgrading to an LDK version prior to 0.0.119 may
+	result in a forwarding failure or an HTLC being failed backwards with an unblinded error.

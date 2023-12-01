@@ -13,10 +13,11 @@ use crate::sign::{EntropySource, SignerProvider};
 use crate::chain::ChannelMonitorUpdateStatus;
 use crate::chain::transaction::OutPoint;
 use crate::events::{MessageSendEvent, HTLCDestination, MessageSendEventsProvider, ClosureReason};
-use crate::ln::channelmanager::{self, PaymentSendFailure, PaymentId, RecipientOnionFields, ChannelShutdownState, ChannelDetails};
+use crate::ln::channelmanager::{self, PaymentSendFailure, PaymentId, RecipientOnionFields, Retry, ChannelShutdownState, ChannelDetails};
 use crate::routing::router::{PaymentParameters, get_route, RouteParameters};
 use crate::ln::msgs;
 use crate::ln::msgs::{ChannelMessageHandler, ErrorAction};
+use crate::ln::onion_utils::INVALID_ONION_BLINDING;
 use crate::ln::script::ShutdownScript;
 use crate::util::test_utils;
 use crate::util::test_utils::OnGetShutdownScriptpubkey;
@@ -401,6 +402,11 @@ fn updates_shutdown_wait() {
 
 #[test]
 fn htlc_fail_async_shutdown() {
+	do_htlc_fail_async_shutdown(true);
+	do_htlc_fail_async_shutdown(false);
+}
+
+fn do_htlc_fail_async_shutdown(blinded_recipient: bool) {
 	// Test HTLCs fail if shutdown starts even if messages are delivered out-of-order
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
@@ -409,9 +415,20 @@ fn htlc_fail_async_shutdown() {
 	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1);
 	let chan_2 = create_announced_chan_between_nodes(&nodes, 1, 2);
 
-	let (route, our_payment_hash, _, our_payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[2], 100000);
-	nodes[0].node.send_payment_with_route(&route, our_payment_hash,
-		RecipientOnionFields::secret_only(our_payment_secret), PaymentId(our_payment_hash.0)).unwrap();
+	let amt_msat = 100000;
+	let (_, our_payment_hash, our_payment_secret) = get_payment_preimage_hash(&nodes[2], Some(amt_msat), None);
+	let route_params = if blinded_recipient {
+		crate::ln::blinded_payment_tests::get_blinded_route_parameters(
+			amt_msat, our_payment_secret,
+			nodes.iter().skip(1).map(|n| n.node.get_our_node_id()).collect(), &[&chan_2.0.contents],
+			&chanmon_cfgs[2].keys_manager)
+	} else {
+		RouteParameters::from_payment_params_and_value(
+			PaymentParameters::from_node_id(nodes[2].node.get_our_node_id(), TEST_FINAL_CLTV), amt_msat)
+	};
+	nodes[0].node.send_payment(our_payment_hash,
+		RecipientOnionFields::secret_only(our_payment_secret),
+		PaymentId(our_payment_hash.0), route_params, Retry::Attempts(0)).unwrap();
 	check_added_monitors!(nodes[0], 1);
 	let updates = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
 	assert_eq!(updates.update_add_htlcs.len(), 1);
@@ -441,7 +458,12 @@ fn htlc_fail_async_shutdown() {
 	nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &updates_2.update_fail_htlcs[0]);
 	commitment_signed_dance!(nodes[0], nodes[1], updates_2.commitment_signed, false, true);
 
-	expect_payment_failed_with_update!(nodes[0], our_payment_hash, false, chan_2.0.contents.short_channel_id, true);
+	if blinded_recipient {
+		expect_payment_failed_conditions(&nodes[0], our_payment_hash, false,
+			PaymentFailedConditions::new().expected_htlc_error_data(INVALID_ONION_BLINDING, &[0; 32]));
+	} else {
+		expect_payment_failed_with_update!(nodes[0], our_payment_hash, false, chan_2.0.contents.short_channel_id, true);
+	}
 
 	let msg_events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(msg_events.len(), 1);

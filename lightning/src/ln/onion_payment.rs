@@ -6,12 +6,15 @@ use bitcoin::hashes::Hash;
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::secp256k1::{self, Secp256k1, PublicKey};
 
+use crate::blinded_path;
+use crate::blinded_path::payment::{PaymentConstraints, PaymentRelay};
 use crate::chain::channelmonitor::{HTLC_FAIL_BACK_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS};
 use crate::ln::PaymentHash;
-use crate::ln::channelmanager::{CLTV_FAR_FAR_AWAY, HTLCFailureMsg, MIN_CLTV_EXPIRY_DELTA, PendingHTLCInfo, PendingHTLCRouting};
+use crate::ln::channelmanager::{BlindedForward, CLTV_FAR_FAR_AWAY, HTLCFailureMsg, MIN_CLTV_EXPIRY_DELTA, PendingHTLCInfo, PendingHTLCRouting};
+use crate::ln::features::BlindedHopFeatures;
 use crate::ln::msgs;
 use crate::ln::onion_utils;
-use crate::ln::onion_utils::HTLCFailReason;
+use crate::ln::onion_utils::{HTLCFailReason, INVALID_ONION_BLINDING};
 use crate::sign::{NodeSigner, Recipient};
 use crate::util::logger::Logger;
 
@@ -28,6 +31,23 @@ pub struct InboundOnionErr {
 	pub msg: &'static str,
 }
 
+fn check_blinded_forward(
+	inbound_amt_msat: u64, inbound_cltv_expiry: u32, payment_relay: &PaymentRelay,
+	payment_constraints: &PaymentConstraints, features: &BlindedHopFeatures
+) -> Result<(u64, u32), ()> {
+	let amt_to_forward = blinded_path::payment::amt_to_forward_msat(
+		inbound_amt_msat, payment_relay
+	).ok_or(())?;
+	let outgoing_cltv_value = inbound_cltv_expiry.checked_sub(
+		payment_relay.cltv_expiry_delta as u32
+	).ok_or(())?;
+	if inbound_amt_msat < payment_constraints.htlc_minimum_msat ||
+		outgoing_cltv_value > payment_constraints.max_cltv_expiry
+		{ return Err(()) }
+	if features.requires_unknown_bits_from(&BlindedHopFeatures::empty()) { return Err(()) }
+	Ok((amt_to_forward, outgoing_cltv_value))
+}
+
 pub(super) fn create_fwd_pending_htlc_info(
 	msg: &msgs::UpdateAddHTLC, hop_data: msgs::InboundOnionPayload, hop_hmac: [u8; 32],
 	new_packet_bytes: [u8; onion_utils::ONION_DATA_LEN], shared_secret: [u8; 32],
@@ -41,9 +61,27 @@ pub(super) fn create_fwd_pending_htlc_info(
 		hmac: hop_hmac,
 	};
 
-	let (short_channel_id, amt_to_forward, outgoing_cltv_value) = match hop_data {
+	let (
+		short_channel_id, amt_to_forward, outgoing_cltv_value, inbound_blinding_point
+	) = match hop_data {
 		msgs::InboundOnionPayload::Forward { short_channel_id, amt_to_forward, outgoing_cltv_value } =>
-			(short_channel_id, amt_to_forward, outgoing_cltv_value),
+			(short_channel_id, amt_to_forward, outgoing_cltv_value, None),
+		msgs::InboundOnionPayload::BlindedForward {
+			short_channel_id, payment_relay, payment_constraints, intro_node_blinding_point, features,
+		} => {
+			let (amt_to_forward, outgoing_cltv_value) = check_blinded_forward(
+				msg.amount_msat, msg.cltv_expiry, &payment_relay, &payment_constraints, &features
+			).map_err(|()| {
+				// We should be returning malformed here if `msg.blinding_point` is set, but this is
+				// unreachable right now since we checked it in `decode_update_add_htlc_onion`.
+				InboundOnionErr {
+					msg: "Underflow calculating outbound amount or cltv value for blinded forward",
+					err_code: INVALID_ONION_BLINDING,
+					err_data: vec![0; 32],
+				}
+			})?;
+			(short_channel_id, amt_to_forward, outgoing_cltv_value, Some(intro_node_blinding_point))
+		},
 		msgs::InboundOnionPayload::Receive { .. } | msgs::InboundOnionPayload::BlindedReceive { .. } =>
 			return Err(InboundOnionErr {
 				msg: "Final Node OnionHopData provided for us as an intermediary node",
@@ -56,6 +94,7 @@ pub(super) fn create_fwd_pending_htlc_info(
 		routing: PendingHTLCRouting::Forward {
 			onion_packet: outgoing_packet,
 			short_channel_id,
+			blinded: inbound_blinding_point.map(|bp| BlindedForward { inbound_blinding_point: bp }),
 		},
 		payment_hash: msg.payment_hash,
 		incoming_shared_secret: shared_secret,
@@ -89,6 +128,13 @@ pub(super) fn create_recv_pending_htlc_info(
 				msg: "Got non final data with an HMAC of 0",
 			})
 		},
+		msgs::InboundOnionPayload::BlindedForward { .. } => {
+			return Err(InboundOnionErr {
+				err_code: INVALID_ONION_BLINDING,
+				err_data: vec![0; 32],
+				msg: "Got blinded non final data with an HMAC of 0",
+			})
+		}
 	};
 	// final_incorrect_cltv_expiry
 	if outgoing_cltv_value > cltv_expiry {
@@ -326,6 +372,27 @@ where
 				outgoing_amt_msat: amt_to_forward, outgoing_cltv_value
 			}
 		},
+		onion_utils::Hop::Forward {
+			next_hop_data: msgs::InboundOnionPayload::BlindedForward {
+				short_channel_id, ref payment_relay, ref payment_constraints, ref features, ..
+			}, ..
+		} => {
+			let (amt_to_forward, outgoing_cltv_value) = match check_blinded_forward(
+				msg.amount_msat, msg.cltv_expiry, &payment_relay, &payment_constraints, &features
+			) {
+				Ok((amt, cltv)) => (amt, cltv),
+				Err(()) => {
+					return_err!("Underflow calculating outbound amount or cltv value for blinded forward",
+						INVALID_ONION_BLINDING, &[0; 32]);
+				}
+			};
+			let next_packet_pubkey = onion_utils::next_hop_pubkey(&secp_ctx,
+				msg.onion_routing_packet.public_key.unwrap(), &shared_secret);
+			NextPacketDetails {
+				next_packet_pubkey, outgoing_scid: short_channel_id, outgoing_amt_msat: amt_to_forward,
+				outgoing_cltv_value
+			}
+		},
 		onion_utils::Hop::Receive { .. } => return Ok((next_hop, shared_secret, None)),
 		onion_utils::Hop::Forward { next_hop_data: msgs::InboundOnionPayload::Receive { .. }, .. } |
 			onion_utils::Hop::Forward { next_hop_data: msgs::InboundOnionPayload::BlindedReceive { .. }, .. } =>
@@ -414,7 +481,7 @@ mod tests {
 			.map_err(|e| e.msg).unwrap();
 
 		let next_onion = match peeled.routing {
-			PendingHTLCRouting::Forward { onion_packet, short_channel_id: _ } => {
+			PendingHTLCRouting::Forward { onion_packet, .. } => {
 				onion_packet
 			},
 			_ => panic!("expected a forwarded onion"),
@@ -449,6 +516,7 @@ mod tests {
 			payment_hash,
 			onion_routing_packet,
 			skimmed_fee_msat: None,
+			blinding_point: None,
 		}
 	}
 
