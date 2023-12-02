@@ -3281,22 +3281,32 @@ where
 		} = args;
 		// The top-level caller should hold the total_consistency_lock read lock.
 		debug_assert!(self.total_consistency_lock.try_write().is_err());
-		log_trace!(WithContext::from(&self.logger, Some(path.hops.first().unwrap().pubkey), None),
-			"Attempting to send payment with payment hash {} along path with next hop {}",
-			payment_hash, path.hops.first().unwrap().short_channel_id);
 		let prng_seed = self.entropy_source.get_secure_random_bytes();
 		let session_priv = SecretKey::from_slice(&session_priv_bytes[..]).expect("RNG is busted");
 
 		let (onion_packet, htlc_msat, htlc_cltv) = onion_utils::create_payment_onion(
 			&self.secp_ctx, &path, &session_priv, total_value, recipient_onion, cur_height,
 			payment_hash, keysend_preimage, prng_seed
-		)?;
+		).map_err(|e| {
+			let logger = WithContext::from(&self.logger, Some(path.hops.first().unwrap().pubkey), None);
+			log_error!(logger, "Failed to build an onion for path for payment hash {}", payment_hash);
+			e
+		})?;
 
 		let err: Result<(), _> = loop {
 			let (counterparty_node_id, id) = match self.short_to_chan_info.read().unwrap().get(&path.hops.first().unwrap().short_channel_id) {
-				None => return Err(APIError::ChannelUnavailable{err: "No channel available with first hop!".to_owned()}),
+				None => {
+					let logger = WithContext::from(&self.logger, Some(path.hops.first().unwrap().pubkey), None);
+					log_error!(logger, "Failed to find first-hop for payment hash {}", payment_hash);
+					return Err(APIError::ChannelUnavailable{err: "No channel available with first hop!".to_owned()})
+				},
 				Some((cp_id, chan_id)) => (cp_id.clone(), chan_id.clone()),
 			};
+
+			let logger = WithContext::from(&self.logger, Some(counterparty_node_id), Some(id));
+			log_trace!(logger,
+				"Attempting to send payment with payment hash {} along path with next hop {}",
+				payment_hash, path.hops.first().unwrap().short_channel_id);
 
 			let per_peer_state = self.per_peer_state.read().unwrap();
 			let peer_state_mutex = per_peer_state.get(&counterparty_node_id)
