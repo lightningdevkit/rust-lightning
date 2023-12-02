@@ -10711,8 +10711,7 @@ where
 							}
 						}
 						if let Some(previous_hop_monitor) = args.channel_monitors.get(&claimable_htlc.prev_hop.outpoint) {
-							let logger = WithChannelMonitor::from(&args.logger, previous_hop_monitor);
-							previous_hop_monitor.provide_payment_preimage(&payment_hash, &payment_preimage, &args.tx_broadcaster, &bounded_fee_estimator, &&logger);
+							previous_hop_monitor.provide_payment_preimage(&payment_hash, &payment_preimage, &args.tx_broadcaster, &bounded_fee_estimator, &args.logger);
 						}
 					}
 					pending_events_read.push_back((events::Event::PaymentClaimed {
