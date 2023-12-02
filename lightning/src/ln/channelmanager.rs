@@ -3215,7 +3215,7 @@ where
 	/// [`internal_closing_signed`]: Self::internal_closing_signed
 	fn get_channel_update_for_unicast(&self, chan: &Channel<SP>) -> Result<msgs::ChannelUpdate, LightningError> {
 		let logger = WithChannelContext::from(&self.logger, &chan.context);
-		log_trace!(logger, "Attempting to generate channel update for channel {}", log_bytes!(chan.context.channel_id().0));
+		log_trace!(logger, "Attempting to generate channel update for channel {}", chan.context.channel_id());
 		let short_channel_id = match chan.context.get_short_channel_id().or(chan.context.latest_inbound_scid_alias()) {
 			None => return Err(LightningError{err: "Channel not yet established".to_owned(), action: msgs::ErrorAction::IgnoreError}),
 			Some(id) => id,
@@ -3226,7 +3226,7 @@ where
 
 	fn get_channel_update_for_onion(&self, short_channel_id: u64, chan: &Channel<SP>) -> Result<msgs::ChannelUpdate, LightningError> {
 		let logger = WithChannelContext::from(&self.logger, &chan.context);
-		log_trace!(logger, "Generating channel update for channel {}", log_bytes!(chan.context.channel_id().0));
+		log_trace!(logger, "Generating channel update for channel {}", chan.context.channel_id());
 		let were_node_one = self.our_network_pubkey.serialize()[..] < chan.context.get_counterparty_node_id().serialize()[..];
 
 		let enabled = chan.context.is_usable() && match chan.channel_update_status() {
@@ -6987,7 +6987,7 @@ where
 				},
 				hash_map::Entry::Vacant(_) => {
 					log_debug!(logger, "Sending bogus ChannelReestablish for unknown channel {} to force channel closure",
-						log_bytes!(msg.channel_id.0));
+						msg.channel_id);
 					// Unfortunately, lnd doesn't force close on errors
 					// (https://github.com/lightningnetwork/lnd/blob/abb1e3463f3a83bbb843d5c399869dbe930ad94f/htlcswitch/link.go#L2119).
 					// One of the few ways to get an lnd counterparty to force close is by
@@ -10425,7 +10425,7 @@ where
 								hash_map::Entry::Occupied(mut entry) => {
 									let newly_added = entry.get_mut().insert(session_priv_bytes, &path);
 									log_info!(logger, "{} a pending payment path for {} msat for session priv {} on an existing pending payment with payment hash {}",
-										if newly_added { "Added" } else { "Had" }, path_amt, log_bytes!(session_priv_bytes), log_bytes!(htlc.payment_hash.0));
+										if newly_added { "Added" } else { "Had" }, path_amt, log_bytes!(session_priv_bytes), htlc.payment_hash);
 								},
 								hash_map::Entry::Vacant(entry) => {
 									let path_fee = path.fee_msat();
