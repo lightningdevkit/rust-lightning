@@ -526,7 +526,7 @@ fn do_test_data_loss_protect(reconnect_panicing: bool, substantially_old: bool, 
 		// `not_stale` to test the boundary condition.
 		let pay_params = PaymentParameters::for_keysend(nodes[1].node.get_our_node_id(), 100, false);
 		let route_params = RouteParameters::from_payment_params_and_value(pay_params, 40000);
-		nodes[0].node.send_spontaneous_payment_with_retry(None, RecipientOnionFields::spontaneous_empty(), PaymentId([0; 32]), route_params, Retry::Attempts(0));
+		nodes[0].node.send_spontaneous_payment_with_retry(None, RecipientOnionFields::spontaneous_empty(), PaymentId([0; 32]), route_params, Retry::Attempts(0)).unwrap();
 		check_added_monitors(&nodes[0], 1);
 		let update_add_commit = SendEvent::from_node(&nodes[0]);
 
