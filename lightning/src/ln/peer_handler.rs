@@ -1286,8 +1286,10 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 				let mut read_pos = 0;
 				while read_pos < data.len() {
 					macro_rules! try_potential_handleerror {
-						($peer: expr, $thing: expr) => {
-							match $thing {
+						($peer: expr, $thing: expr) => {{
+							let res = $thing;
+							let logger = WithContext::from(&self.logger, peer_node_id.map(|(id, _)| id), None);
+							match res {
 								Ok(x) => x,
 								Err(e) => {
 									match e.action {
@@ -1297,7 +1299,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 											// re-entrant code and possibly unexpected behavior. The
 											// message send is optimistic anyway, and in this case
 											// we immediately disconnect the peer.
-											log_debug!(self.logger, "Error handling message{}; disconnecting peer with: {}", OptionalFromDebugger(&peer_node_id), e.err);
+											log_debug!(logger, "Error handling message{}; disconnecting peer with: {}", OptionalFromDebugger(&peer_node_id), e.err);
 											return Err(PeerHandleError { });
 										},
 										msgs::ErrorAction::DisconnectPeerWithWarning { .. } => {
@@ -1306,32 +1308,32 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 											// re-entrant code and possibly unexpected behavior. The
 											// message send is optimistic anyway, and in this case
 											// we immediately disconnect the peer.
-											log_debug!(self.logger, "Error handling message{}; disconnecting peer with: {}", OptionalFromDebugger(&peer_node_id), e.err);
+											log_debug!(logger, "Error handling message{}; disconnecting peer with: {}", OptionalFromDebugger(&peer_node_id), e.err);
 											return Err(PeerHandleError { });
 										},
 										msgs::ErrorAction::IgnoreAndLog(level) => {
-											log_given_level!(self.logger, level, "Error handling message{}; ignoring: {}", OptionalFromDebugger(&peer_node_id), e.err);
+											log_given_level!(logger, level, "Error handling message{}; ignoring: {}", OptionalFromDebugger(&peer_node_id), e.err);
 											continue
 										},
 										msgs::ErrorAction::IgnoreDuplicateGossip => continue, // Don't even bother logging these
 										msgs::ErrorAction::IgnoreError => {
-											log_debug!(self.logger, "Error handling message{}; ignoring: {}", OptionalFromDebugger(&peer_node_id), e.err);
+											log_debug!(logger, "Error handling message{}; ignoring: {}", OptionalFromDebugger(&peer_node_id), e.err);
 											continue;
 										},
 										msgs::ErrorAction::SendErrorMessage { msg } => {
-											log_debug!(self.logger, "Error handling message{}; sending error message with: {}", OptionalFromDebugger(&peer_node_id), e.err);
+											log_debug!(logger, "Error handling message{}; sending error message with: {}", OptionalFromDebugger(&peer_node_id), e.err);
 											self.enqueue_message($peer, &msg);
 											continue;
 										},
 										msgs::ErrorAction::SendWarningMessage { msg, log_level } => {
-											log_given_level!(self.logger, log_level, "Error handling message{}; sending warning message with: {}", OptionalFromDebugger(&peer_node_id), e.err);
+											log_given_level!(logger, log_level, "Error handling message{}; sending warning message with: {}", OptionalFromDebugger(&peer_node_id), e.err);
 											self.enqueue_message($peer, &msg);
 											continue;
 										},
 									}
 								}
 							}
-						}
+						}}
 					}
 
 					let mut peer_lock = peer_mutex.lock().unwrap();
@@ -2005,25 +2007,29 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 							self.enqueue_message(&mut *get_peer_for_forwarding!(node_id), msg);
 						},
 						MessageSendEvent::SendStfu { ref node_id, ref msg} => {
-							log_debug!(self.logger, "Handling SendStfu event in peer_handler for node {} for channel {}",
+							let logger = WithContext::from(&self.logger, Some(*node_id), Some(msg.channel_id));
+							log_debug!(logger, "Handling SendStfu event in peer_handler for node {} for channel {}",
 									log_pubkey!(node_id),
 									&msg.channel_id);
 							self.enqueue_message(&mut *get_peer_for_forwarding!(node_id), msg);
 						}
 						MessageSendEvent::SendSplice { ref node_id, ref msg} => {
-							log_debug!(self.logger, "Handling SendSplice event in peer_handler for node {} for channel {}",
+							let logger = WithContext::from(&self.logger, Some(*node_id), Some(msg.channel_id));
+							log_debug!(logger, "Handling SendSplice event in peer_handler for node {} for channel {}",
 									log_pubkey!(node_id),
 									&msg.channel_id);
 							self.enqueue_message(&mut *get_peer_for_forwarding!(node_id), msg);
 						}
 						MessageSendEvent::SendSpliceAck { ref node_id, ref msg} => {
-							log_debug!(self.logger, "Handling SendSpliceAck event in peer_handler for node {} for channel {}",
+							let logger = WithContext::from(&self.logger, Some(*node_id), Some(msg.channel_id));
+							log_debug!(logger, "Handling SendSpliceAck event in peer_handler for node {} for channel {}",
 									log_pubkey!(node_id),
 									&msg.channel_id);
 							self.enqueue_message(&mut *get_peer_for_forwarding!(node_id), msg);
 						}
 						MessageSendEvent::SendSpliceLocked { ref node_id, ref msg} => {
-							log_debug!(self.logger, "Handling SendSpliceLocked event in peer_handler for node {} for channel {}",
+							let logger = WithContext::from(&self.logger, Some(*node_id), Some(msg.channel_id));
+							log_debug!(logger, "Handling SendSpliceLocked event in peer_handler for node {} for channel {}",
 									log_pubkey!(node_id),
 									&msg.channel_id);
 							self.enqueue_message(&mut *get_peer_for_forwarding!(node_id), msg);
