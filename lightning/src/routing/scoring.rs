@@ -26,7 +26,7 @@
 //! #
 //! # struct FakeLogger {};
 //! # impl Logger for FakeLogger {
-//! #     fn log(&self, record: &Record) { unimplemented!() }
+//! #     fn log(&self, record: Record) { unimplemented!() }
 //! # }
 //! # fn find_scored_route(payer: PublicKey, route_params: RouteParameters, network_graph: NetworkGraph<&FakeLogger>) {
 //! # let logger = FakeLogger {};

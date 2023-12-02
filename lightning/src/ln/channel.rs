@@ -35,14 +35,14 @@ use crate::ln::chan_utils;
 use crate::ln::onion_utils::HTLCFailReason;
 use crate::chain::BestBlock;
 use crate::chain::chaininterface::{FeeEstimator, ConfirmationTarget, LowerBoundedFeeEstimator};
-use crate::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateStep, LATENCY_GRACE_PERIOD_BLOCKS, CLOSED_CHANNEL_UPDATE_ID};
+use crate::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateStep, WithChannelMonitor, LATENCY_GRACE_PERIOD_BLOCKS, CLOSED_CHANNEL_UPDATE_ID};
 use crate::chain::transaction::{OutPoint, TransactionData};
 use crate::sign::ecdsa::{EcdsaChannelSigner, WriteableEcdsaChannelSigner};
 use crate::sign::{EntropySource, ChannelSigner, SignerProvider, NodeSigner, Recipient};
 use crate::events::ClosureReason;
 use crate::routing::gossip::NodeId;
 use crate::util::ser::{Readable, ReadableArgs, Writeable, Writer};
-use crate::util::logger::Logger;
+use crate::util::logger::{Logger, Record, WithContext};
 use crate::util::errors::APIError;
 use crate::util::config::{UserConfig, ChannelConfig, LegacyChannelConfig, ChannelHandshakeConfig, ChannelHandshakeLimits, MaxDustHTLCExposure};
 use crate::util::scid_utils::scid_from_parts;
@@ -410,6 +410,33 @@ impl fmt::Display for ChannelError {
 			&ChannelError::Ignore(ref e) => write!(f, "{}", e),
 			&ChannelError::Warn(ref e) => write!(f, "{}", e),
 			&ChannelError::Close(ref e) => write!(f, "{}", e),
+		}
+	}
+}
+
+pub(super) struct WithChannelContext<'a, L: Deref> where L::Target: Logger {
+	pub logger: &'a L,
+	pub peer_id: Option<PublicKey>,
+	pub channel_id: Option<ChannelId>,
+}
+
+impl<'a, L: Deref> Logger for WithChannelContext<'a, L> where L::Target: Logger {
+	fn log(&self, mut record: Record) {
+		record.peer_id = self.peer_id;
+		record.channel_id = self.channel_id;
+		self.logger.log(record)
+	}
+}
+
+impl<'a, 'b, L: Deref> WithChannelContext<'a, L>
+where L::Target: Logger {
+	pub(super) fn from<S: Deref>(logger: &'a L, context: &'b ChannelContext<S>) -> Self
+	where S::Target: SignerProvider
+	{
+		WithChannelContext {
+			logger,
+			peer_id: Some(context.counterparty_node_id),
+			channel_id: Some(context.channel_id),
 		}
 	}
 }
@@ -2746,14 +2773,14 @@ impl<SP: Deref> Channel<SP> where
 		                                          funding_redeemscript.clone(), self.context.channel_value_satoshis,
 		                                          obscure_factor,
 		                                          holder_commitment_tx, best_block, self.context.counterparty_node_id);
-
+		let logger_with_chan_monitor = WithChannelMonitor::from(logger, &channel_monitor);
 		channel_monitor.provide_initial_counterparty_commitment_tx(
 			counterparty_initial_bitcoin_tx.txid, Vec::new(),
 			self.context.cur_counterparty_commitment_transaction_number,
 			self.context.counterparty_cur_commitment_point.unwrap(),
 			counterparty_initial_commitment_tx.feerate_per_kw(),
 			counterparty_initial_commitment_tx.to_broadcaster_value_sat(),
-			counterparty_initial_commitment_tx.to_countersignatory_value_sat(), logger);
+			counterparty_initial_commitment_tx.to_countersignatory_value_sat(), &&logger_with_chan_monitor);
 
 		assert_eq!(self.context.channel_state & (ChannelState::MonitorUpdateInProgress as u32), 0); // We have no had any monitor(s) yet to fail update!
 		if self.context.is_batch_funding() {
@@ -6463,6 +6490,7 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 			  F::Target: FeeEstimator,
 			  L::Target: Logger,
 	{
+		let logger = WithContext::from(logger, Some(counterparty_node_id), Some(msg.temporary_channel_id));
 		let announced_channel = if (msg.channel_flags & 1) == 1 { true } else { false };
 
 		// First check the channel type is known, failing before we do anything else if we don't
@@ -6529,7 +6557,7 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 		if msg.htlc_minimum_msat >= full_channel_value_msat {
 			return Err(ChannelError::Close(format!("Minimum htlc value ({}) was larger than full channel value ({})", msg.htlc_minimum_msat, full_channel_value_msat)));
 		}
-		Channel::<SP>::check_remote_fee(&channel_type, fee_estimator, msg.feerate_per_kw, None, logger)?;
+		Channel::<SP>::check_remote_fee(&channel_type, fee_estimator, msg.feerate_per_kw, None, &&logger)?;
 
 		let max_counterparty_selected_contest_delay = u16::min(config.channel_handshake_limits.their_to_self_delay, MAX_LOCAL_BREAKDOWN_TIMEOUT);
 		if msg.to_self_delay > max_counterparty_selected_contest_delay {
@@ -6948,13 +6976,13 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 		                                          funding_redeemscript.clone(), self.context.channel_value_satoshis,
 		                                          obscure_factor,
 		                                          holder_commitment_tx, best_block, self.context.counterparty_node_id);
-
+		let logger_with_chan_monitor = WithChannelMonitor::from(logger, &channel_monitor);
 		channel_monitor.provide_initial_counterparty_commitment_tx(
 			counterparty_initial_commitment_tx.trust().txid(), Vec::new(),
 			self.context.cur_counterparty_commitment_transaction_number + 1,
 			self.context.counterparty_cur_commitment_point.unwrap(), self.context.feerate_per_kw,
 			counterparty_initial_commitment_tx.to_broadcaster_value_sat(),
-			counterparty_initial_commitment_tx.to_countersignatory_value_sat(), logger);
+			counterparty_initial_commitment_tx.to_countersignatory_value_sat(), &&logger_with_chan_monitor);
 
 		log_info!(logger, "{} funding_signed for peer for channel {}",
 			if funding_signed.is_some() { "Generated" } else { "Waiting for signature on" }, &self.context.channel_id());

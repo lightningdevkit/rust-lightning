@@ -728,7 +728,7 @@ mod tests {
 		pub lines: Mutex<HashMap<(String, String), usize>>,
 	}
 	impl Logger for TrackingLogger {
-		fn log(&self, record: &Record) {
+		fn log(&self, record: Record) {
 			*self.lines.lock().unwrap().entry((record.module_path.to_string(), format!("{}", record.args))).or_insert(0) += 1;
 			println!("{:<5} [{} : {}, {}] {}", record.level.to_string(), record.module_path, record.file, record.line, record.args);
 		}

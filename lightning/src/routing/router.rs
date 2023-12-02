@@ -8116,7 +8116,7 @@ pub mod benches {
 
 	struct DummyLogger {}
 	impl Logger for DummyLogger {
-		fn log(&self, _record: &Record) {}
+		fn log(&self, _record: Record) {}
 	}
 
 	pub fn generate_routes_with_zero_penalty_scorer(bench: &mut Criterion) {

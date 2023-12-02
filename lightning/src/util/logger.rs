@@ -18,7 +18,9 @@ use bitcoin::secp256k1::PublicKey;
 
 use core::cmp;
 use core::fmt;
+use core::ops::Deref;
 
+use crate::ln::ChannelId;
 #[cfg(c_bindings)]
 use crate::prelude::*; // Needed for String
 
@@ -95,6 +97,11 @@ impl Level {
 pub struct Record<'a> {
 	/// The verbosity level of the message.
 	pub level: Level,
+	/// The node id of the peer pertaining to the logged record.
+	pub peer_id: Option<PublicKey>,
+	/// The channel id of the channel pertaining to the logged record. May be a temporary id before
+	/// the channel has been funded.
+	pub channel_id: Option<ChannelId>,
 	#[cfg(not(c_bindings))]
 	/// The message body.
 	pub args: fmt::Arguments<'a>,
@@ -119,9 +126,14 @@ impl<'a> Record<'a> {
 	///
 	/// This is not exported to bindings users as fmt can't be used in C
 	#[inline]
-	pub fn new(level: Level, args: fmt::Arguments<'a>, module_path: &'static str, file: &'static str, line: u32) -> Record<'a> {
+	pub fn new(
+		level: Level, peer_id: Option<PublicKey>, channel_id: Option<ChannelId>,
+		args: fmt::Arguments<'a>, module_path: &'static str, file: &'static str, line: u32
+	) -> Record<'a> {
 		Record {
 			level,
+			peer_id,
+			channel_id,
 			#[cfg(not(c_bindings))]
 			args,
 			#[cfg(c_bindings)]
@@ -135,10 +147,43 @@ impl<'a> Record<'a> {
 	}
 }
 
-/// A trait encapsulating the operations required of a logger
+/// A trait encapsulating the operations required of a logger.
 pub trait Logger {
-	/// Logs the `Record`
-	fn log(&self, record: &Record);
+	/// Logs the [`Record`].
+	fn log(&self, record: Record);
+}
+
+/// Adds relevant context to a [`Record`] before passing it to the wrapped [`Logger`].
+pub struct WithContext<'a, L: Deref> where L::Target: Logger {
+	/// The logger to delegate to after adding context to the record.
+	logger: &'a L,
+	/// The node id of the peer pertaining to the logged record.
+	peer_id: Option<PublicKey>,
+	/// The channel id of the channel pertaining to the logged record.
+	channel_id: Option<ChannelId>,
+}
+
+impl<'a, L: Deref> Logger for WithContext<'a, L> where L::Target: Logger {
+	fn log(&self, mut record: Record) {
+		if self.peer_id.is_some() {
+			record.peer_id = self.peer_id
+		};
+		if self.channel_id.is_some() {
+			record.channel_id = self.channel_id;
+		}
+		self.logger.log(record)
+	}
+}
+
+impl<'a, L: Deref> WithContext<'a, L> where L::Target: Logger {
+	/// Wraps the given logger, providing additional context to any logged records.
+	pub fn from(logger: &'a L, peer_id: Option<PublicKey>, channel_id: Option<ChannelId>) -> Self {
+		WithContext {
+			logger,
+			peer_id,
+			channel_id,
+		}
+	}
 }
 
 /// Wrapper for logging a [`PublicKey`] in hex format.
@@ -191,7 +236,9 @@ impl<T: fmt::Display, I: core::iter::Iterator<Item = T> + Clone> fmt::Display fo
 
 #[cfg(test)]
 mod tests {
-	use crate::util::logger::{Logger, Level};
+	use bitcoin::secp256k1::{PublicKey, SecretKey, Secp256k1};
+	use crate::ln::ChannelId;
+	use crate::util::logger::{Logger, Level, WithContext};
 	use crate::util::test_utils::TestLogger;
 	use crate::sync::Arc;
 
@@ -230,6 +277,41 @@ mod tests {
 		let logger : Arc<Logger> = Arc::new(logger);
 		let wrapper = WrapperLog::new(Arc::clone(&logger));
 		wrapper.call_macros();
+	}
+
+	#[test]
+	fn test_logging_with_context() {
+		let logger = &TestLogger::new();
+		let secp_ctx = Secp256k1::new();
+		let pk = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
+		let context_logger = WithContext::from(&logger, Some(pk), Some(ChannelId([0; 32])));
+		log_error!(context_logger, "This is an error");
+		log_warn!(context_logger, "This is an error");
+		log_debug!(context_logger, "This is an error");
+		log_trace!(context_logger, "This is an error");
+		log_gossip!(context_logger, "This is an error");
+		log_info!(context_logger, "This is an error");
+		logger.assert_log_context_contains(
+			"lightning::util::logger::tests", Some(pk), Some(ChannelId([0;32])), 6
+		);
+	}
+
+	#[test]
+	fn test_logging_with_multiple_wrapped_context() {
+		let logger = &TestLogger::new();
+		let secp_ctx = Secp256k1::new();
+		let pk = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
+		let context_logger = &WithContext::from(&logger, None, Some(ChannelId([0; 32])));
+		let full_context_logger = WithContext::from(&context_logger, Some(pk), None);
+		log_error!(full_context_logger, "This is an error");
+		log_warn!(full_context_logger, "This is an error");
+		log_debug!(full_context_logger, "This is an error");
+		log_trace!(full_context_logger, "This is an error");
+		log_gossip!(full_context_logger, "This is an error");
+		log_info!(full_context_logger, "This is an error");
+		logger.assert_log_context_contains(
+			"lightning::util::logger::tests", Some(pk), Some(ChannelId([0;32])), 6
+		);
 	}
 
 	#[test]

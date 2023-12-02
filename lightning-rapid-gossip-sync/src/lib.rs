@@ -49,7 +49,7 @@
 //! # use lightning::util::logger::{Logger, Record};
 //! # struct FakeLogger {}
 //! # impl Logger for FakeLogger {
-//! #     fn log(&self, record: &Record) { }
+//! #     fn log(&self, record: Record) { }
 //! # }
 //! # let logger = FakeLogger {};
 //!
