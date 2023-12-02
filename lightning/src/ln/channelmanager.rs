@@ -2970,7 +2970,7 @@ where
 	}
 
 	fn decode_update_add_htlc_onion(
-		&self, msg: &msgs::UpdateAddHTLC
+		&self, msg: &msgs::UpdateAddHTLC, counterparty_node_id: &PublicKey,
 	) -> Result<
 		(onion_utils::Hop, [u8; 32], Option<Result<PublicKey, secp256k1::Error>>), HTLCFailureMsg
 	> {
@@ -2989,7 +2989,7 @@ where
 			($msg: expr, $err_code: expr, $data: expr) => {
 				{
 					log_info!(
-						WithContext::from(&self.logger, None, Some(msg.channel_id)),
+						WithContext::from(&self.logger, Some(*counterparty_node_id), Some(msg.channel_id)),
 						"Failed to accept/forward incoming HTLC: {}", $msg
 					);
 					let (err_code, err_data) = if is_blinded {
@@ -3136,13 +3136,15 @@ where
 	}
 
 	fn construct_pending_htlc_status<'a>(
-		&self, msg: &msgs::UpdateAddHTLC, shared_secret: [u8; 32], decoded_hop: onion_utils::Hop,
-		allow_underpay: bool, next_packet_pubkey_opt: Option<Result<PublicKey, secp256k1::Error>>
+		&self, msg: &msgs::UpdateAddHTLC, counterparty_node_id: &PublicKey, shared_secret: [u8; 32],
+		decoded_hop: onion_utils::Hop, allow_underpay: bool,
+		next_packet_pubkey_opt: Option<Result<PublicKey, secp256k1::Error>>,
 	) -> PendingHTLCStatus {
 		macro_rules! return_err {
 			($msg: expr, $err_code: expr, $data: expr) => {
 				{
-					log_info!(WithContext::from(&self.logger, None, Some(msg.channel_id)), "Failed to accept/forward incoming HTLC: {}", $msg);
+					let logger = WithContext::from(&self.logger, Some(*counterparty_node_id), Some(msg.channel_id));
+					log_info!(logger, "Failed to accept/forward incoming HTLC: {}", $msg);
 					return PendingHTLCStatus::Fail(HTLCFailureMsg::Relay(msgs::UpdateFailHTLC {
 						channel_id: msg.channel_id,
 						htlc_id: msg.htlc_id,
@@ -6458,7 +6460,7 @@ where
 		// Note that the ChannelManager is NOT re-persisted on disk after this (unless we error
 		// closing a channel), so any changes are likely to be lost on restart!
 
-		let decoded_hop_res = self.decode_update_add_htlc_onion(msg);
+		let decoded_hop_res = self.decode_update_add_htlc_onion(msg, counterparty_node_id);
 		let per_peer_state = self.per_peer_state.read().unwrap();
 		let peer_state_mutex = per_peer_state.get(counterparty_node_id)
 			.ok_or_else(|| {
@@ -6472,8 +6474,10 @@ where
 				if let ChannelPhase::Funded(chan) = chan_phase_entry.get_mut() {
 					let pending_forward_info = match decoded_hop_res {
 						Ok((next_hop, shared_secret, next_packet_pk_opt)) =>
-							self.construct_pending_htlc_status(msg, shared_secret, next_hop,
-								chan.context.config().accept_underpaying_htlcs, next_packet_pk_opt),
+							self.construct_pending_htlc_status(
+								msg, counterparty_node_id, shared_secret, next_hop,
+								chan.context.config().accept_underpaying_htlcs, next_packet_pk_opt,
+							),
 						Err(e) => PendingHTLCStatus::Fail(e)
 					};
 					let create_pending_htlc_status = |chan: &Channel<SP>, pending_forward_info: PendingHTLCStatus, error_code: u16| {
