@@ -4059,7 +4059,8 @@ where
 				None => {
 					let error = format!("Channel with id {} not found for the passed counterparty node_id {}",
 						next_hop_channel_id, next_node_id);
-					log_error!(self.logger, "{} when attempting to forward intercepted HTLC", error);
+					let logger = WithContext::from(&self.logger, Some(next_node_id), Some(*next_hop_channel_id));
+					log_error!(logger, "{} when attempting to forward intercepted HTLC", error);
 					return Err(APIError::ChannelUnavailable {
 						err: error
 					})
@@ -4147,6 +4148,7 @@ where
 
 			for (short_chan_id, mut pending_forwards) in forward_htlcs {
 				if short_chan_id != 0 {
+					let mut forwarding_counterparty = None;
 					macro_rules! forwarding_channel_not_found {
 						() => {
 							for forward_info in pending_forwards.drain(..) {
@@ -4160,7 +4162,8 @@ where
 									}) => {
 										macro_rules! failure_handler {
 											($msg: expr, $err_code: expr, $err_data: expr, $phantom_ss: expr, $next_hop_unknown: expr) => {
-												log_info!(self.logger, "Failed to accept/forward incoming HTLC: {}", $msg);
+												let logger = WithContext::from(&self.logger, forwarding_counterparty, Some(prev_funding_outpoint.to_channel_id()));
+												log_info!(logger, "Failed to accept/forward incoming HTLC: {}", $msg);
 
 												let htlc_source = HTLCSource::PreviousHopData(HTLCPreviousHopData {
 													short_channel_id: prev_short_channel_id,
@@ -4259,6 +4262,7 @@ where
 							continue;
 						}
 					};
+					forwarding_counterparty = Some(counterparty_node_id);
 					let per_peer_state = self.per_peer_state.read().unwrap();
 					let peer_state_mutex_opt = per_peer_state.get(&counterparty_node_id);
 					if peer_state_mutex_opt.is_none() {
