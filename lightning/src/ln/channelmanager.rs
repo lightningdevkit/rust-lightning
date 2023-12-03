@@ -5366,6 +5366,7 @@ where
 		}
 		if valid_mpp {
 			for htlc in sources.drain(..) {
+				let prev_hop_chan_id = htlc.prev_hop.outpoint.to_channel_id();
 				if let Err((pk, err)) = self.claim_funds_from_hop(
 					htlc.prev_hop, payment_preimage,
 					|_, definitely_duplicate| {
@@ -5376,6 +5377,7 @@ where
 					if let msgs::ErrorAction::IgnoreError = err.err.action {
 						// We got a temporary failure updating monitor, but will claim the
 						// HTLC when the monitor updating is restored (or on chain).
+						let logger = WithContext::from(&self.logger, None, Some(prev_hop_chan_id));
 						log_error!(self.logger, "Temporary failure claiming HTLC, treating as success: {}", err.err.err);
 					} else { errs.push((pk, err)); }
 				}
@@ -10035,7 +10037,7 @@ where
 					log_error!(logger, "A ChannelManager is stale compared to the current ChannelMonitor!");
 					log_error!(logger, " The channel will be force-closed and the latest commitment transaction from the ChannelMonitor broadcast.");
 					if channel.context.get_latest_monitor_update_id() < monitor.get_latest_update_id() {
-						log_error!(args.logger, " The ChannelMonitor for channel {} is at update_id {} but the ChannelManager is at update_id {}.",
+						log_error!(logger, " The ChannelMonitor for channel {} is at update_id {} but the ChannelManager is at update_id {}.",
 							&channel.context.channel_id(), monitor.get_latest_update_id(), channel.context.get_latest_monitor_update_id());
 					}
 					if channel.get_cur_holder_commitment_transaction_number() > monitor.get_cur_holder_commitment_number() {
@@ -10431,7 +10433,7 @@ where
 				let counterparty_opt = id_to_peer.get(&monitor.get_funding_txo().0.to_channel_id());
 				let chan_id = monitor.get_funding_txo().0.to_channel_id();
 				if counterparty_opt.is_none() {
-					let logger = WithContext::from(&args.logger, None, Some(chan_id));
+					let logger = WithChannelMonitor::from(&args.logger, monitor);
 					for (htlc_source, (htlc, _)) in monitor.get_pending_or_resolved_outbound_htlcs() {
 						if let HTLCSource::OutboundRoute { payment_id, session_priv, path, .. } = htlc_source {
 							if path.hops.is_empty() {
