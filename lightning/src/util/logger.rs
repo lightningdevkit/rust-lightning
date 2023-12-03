@@ -98,6 +98,10 @@ pub struct Record<'a> {
 	/// The verbosity level of the message.
 	pub level: Level,
 	/// The node id of the peer pertaining to the logged record.
+	///
+	/// Note that in some cases a [`Self::channel_id`] may be filled in but this may still be
+	/// `None`, depending on if the peer information is readily available in LDK when the log is
+	/// generated.
 	pub peer_id: Option<PublicKey>,
 	/// The channel id of the channel pertaining to the logged record. May be a temporary id before
 	/// the channel has been funded.
