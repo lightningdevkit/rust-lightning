@@ -1141,10 +1141,14 @@ impl<'a, L: Deref> Logger for WithChannelMonitor<'a, L> where L::Target: Logger 
 
 impl<'a, L: Deref> WithChannelMonitor<'a, L> where L::Target: Logger {
 	pub(crate) fn from<S: WriteableEcdsaChannelSigner>(logger: &'a L, monitor: &ChannelMonitor<S>) -> Self {
+		Self::from_impl(logger, &*monitor.inner.lock().unwrap())
+	}
+
+	pub(crate) fn from_impl<S: WriteableEcdsaChannelSigner>(logger: &'a L, monitor_impl: &ChannelMonitorImpl<S>) -> Self {
+		let peer_id = monitor_impl.counterparty_node_id;
+		let channel_id = Some(monitor_impl.funding_info.0.to_channel_id());
 		WithChannelMonitor {
-			logger,
-			peer_id: monitor.get_counterparty_node_id(),
-			channel_id: Some(monitor.get_funding_txo().0.to_channel_id()),
+			logger, peer_id, channel_id,
 		}
 	}
 }
@@ -1282,8 +1286,9 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 	)
 	where L::Target: Logger
 	{
-		let logger = WithChannelMonitor::from(logger, self);
-		self.inner.lock().unwrap().provide_initial_counterparty_commitment_tx(txid,
+		let mut inner = self.inner.lock().unwrap();
+		let logger = WithChannelMonitor::from_impl(logger, &*inner);
+		inner.provide_initial_counterparty_commitment_tx(txid,
 			htlc_outputs, commitment_number, their_cur_per_commitment_point, feerate_per_kw,
 			to_broadcaster_value_sat, to_countersignatory_value_sat, &logger);
 	}
@@ -1301,8 +1306,9 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 		their_per_commitment_point: PublicKey,
 		logger: &L,
 	) where L::Target: Logger {
-		let logger = WithChannelMonitor::from(logger, self);
-		self.inner.lock().unwrap().provide_latest_counterparty_commitment_tx(
+		let mut inner = self.inner.lock().unwrap();
+		let logger = WithChannelMonitor::from_impl(logger, &*inner);
+		inner.provide_latest_counterparty_commitment_tx(
 			txid, htlc_outputs, commitment_number, their_per_commitment_point, &logger)
 	}
 
@@ -1328,8 +1334,9 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 		F::Target: FeeEstimator,
 		L::Target: Logger,
 	{
-		let logger = WithChannelMonitor::from(logger, self);
-		self.inner.lock().unwrap().provide_payment_preimage(
+		let mut inner = self.inner.lock().unwrap();
+		let logger = WithChannelMonitor::from_impl(logger, &*inner);
+		inner.provide_payment_preimage(
 			payment_hash, payment_preimage, broadcaster, fee_estimator, &logger)
 	}
 
@@ -1349,8 +1356,9 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 		F::Target: FeeEstimator,
 		L::Target: Logger,
 	{
-		let logger = WithChannelMonitor::from(logger, self);
-		self.inner.lock().unwrap().update_monitor(updates, broadcaster, fee_estimator, &logger)
+		let mut inner = self.inner.lock().unwrap();
+		let logger = WithChannelMonitor::from_impl(logger, &*inner);
+		inner.update_monitor(updates, broadcaster, fee_estimator, &logger)
 	}
 
 	/// Gets the update_id from the latest ChannelMonitorUpdate which was applied to this
@@ -1529,8 +1537,9 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 	/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
 	pub fn get_latest_holder_commitment_txn<L: Deref>(&self, logger: &L) -> Vec<Transaction>
 	where L::Target: Logger {
-		let logger = WithChannelMonitor::from(logger, self);
-		self.inner.lock().unwrap().get_latest_holder_commitment_txn(&logger)
+		let mut inner = self.inner.lock().unwrap();
+		let logger = WithChannelMonitor::from_impl(logger, &*inner);
+		inner.get_latest_holder_commitment_txn(&logger)
 	}
 
 	/// Unsafe test-only version of get_latest_holder_commitment_txn used by our test framework
@@ -1539,8 +1548,9 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 	#[cfg(any(test, feature = "unsafe_revoked_tx_signing"))]
 	pub fn unsafe_get_latest_holder_commitment_txn<L: Deref>(&self, logger: &L) -> Vec<Transaction>
 	where L::Target: Logger {
-		let logger = WithChannelMonitor::from(logger, self);
-		self.inner.lock().unwrap().unsafe_get_latest_holder_commitment_txn(&logger)
+		let mut inner = self.inner.lock().unwrap();
+		let logger = WithChannelMonitor::from_impl(logger, &*inner);
+		inner.unsafe_get_latest_holder_commitment_txn(&logger)
 	}
 
 	/// Processes transactions in a newly connected block, which may result in any of the following:
@@ -1568,8 +1578,9 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 		F::Target: FeeEstimator,
 		L::Target: Logger,
 	{
-		let logger = WithChannelMonitor::from(logger, self);
-		self.inner.lock().unwrap().block_connected(
+		let mut inner = self.inner.lock().unwrap();
+		let logger = WithChannelMonitor::from_impl(logger, &*inner);
+		inner.block_connected(
 			header, txdata, height, broadcaster, fee_estimator, &logger)
 	}
 
@@ -1587,8 +1598,9 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 		F::Target: FeeEstimator,
 		L::Target: Logger,
 	{
-		let logger = WithChannelMonitor::from(logger, self);
-		self.inner.lock().unwrap().block_disconnected(
+		let mut inner = self.inner.lock().unwrap();
+		let logger = WithChannelMonitor::from_impl(logger, &*inner);
+		inner.block_disconnected(
 			header, height, broadcaster, fee_estimator, &logger)
 	}
 
@@ -1614,8 +1626,9 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 		L::Target: Logger,
 	{
 		let bounded_fee_estimator = LowerBoundedFeeEstimator::new(fee_estimator);
-		let logger = WithChannelMonitor::from(logger, self);
-		self.inner.lock().unwrap().transactions_confirmed(
+		let mut inner = self.inner.lock().unwrap();
+		let logger = WithChannelMonitor::from_impl(logger, &*inner);
+		inner.transactions_confirmed(
 			header, txdata, height, broadcaster, &bounded_fee_estimator, &logger)
 	}
 
@@ -1637,8 +1650,9 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 		L::Target: Logger,
 	{
 		let bounded_fee_estimator = LowerBoundedFeeEstimator::new(fee_estimator);
-		let logger = WithChannelMonitor::from(logger, self);
-		self.inner.lock().unwrap().transaction_unconfirmed(
+		let mut inner = self.inner.lock().unwrap();
+		let logger = WithChannelMonitor::from_impl(logger, &*inner);
+		inner.transaction_unconfirmed(
 			txid, broadcaster, &bounded_fee_estimator, &logger
 		);
 	}
@@ -1664,8 +1678,9 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 		L::Target: Logger,
 	{
 		let bounded_fee_estimator = LowerBoundedFeeEstimator::new(fee_estimator);
-		let logger = WithChannelMonitor::from(logger, self);
-		self.inner.lock().unwrap().best_block_updated(
+		let mut inner = self.inner.lock().unwrap();
+		let logger = WithChannelMonitor::from_impl(logger, &*inner);
+		inner.best_block_updated(
 			header, height, broadcaster, &bounded_fee_estimator, &logger
 		)
 	}
@@ -1703,8 +1718,8 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 		L::Target: Logger,
 	{
 		let fee_estimator = LowerBoundedFeeEstimator::new(fee_estimator);
-		let logger = WithChannelMonitor::from(logger, self);
 		let mut inner = self.inner.lock().unwrap();
+		let logger = WithChannelMonitor::from_impl(logger, &*inner);
 		let current_height = inner.best_block.height;
 		inner.onchain_tx_handler.rebroadcast_pending_claims(
 			current_height, &broadcaster, &fee_estimator, &logger,
