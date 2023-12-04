@@ -2808,7 +2808,10 @@ where
 			debug_assert_ne!(peer.held_by_thread(), LockHeldState::HeldByThread);
 		}
 
-		log_debug!(self.logger, "Finishing closure of channel with {} HTLCs to fail", shutdown_res.dropped_outbound_htlcs.len());
+		let logger = WithContext::from(
+			&self.logger, Some(shutdown_res.counterparty_node_id), Some(shutdown_res.channel_id),
+		);
+		log_debug!(logger, "Finishing closure of channel with {} HTLCs to fail", shutdown_res.dropped_outbound_htlcs.len());
 		for htlc_source in shutdown_res.dropped_outbound_htlcs.drain(..) {
 			let (source, payment_hash, counterparty_node_id, channel_id) = htlc_source;
 			let reason = HTLCFailReason::from_failure_code(0x4000 | 8);
@@ -2967,7 +2970,7 @@ where
 	}
 
 	fn decode_update_add_htlc_onion(
-		&self, msg: &msgs::UpdateAddHTLC
+		&self, msg: &msgs::UpdateAddHTLC, counterparty_node_id: &PublicKey,
 	) -> Result<
 		(onion_utils::Hop, [u8; 32], Option<Result<PublicKey, secp256k1::Error>>), HTLCFailureMsg
 	> {
@@ -2986,7 +2989,7 @@ where
 			($msg: expr, $err_code: expr, $data: expr) => {
 				{
 					log_info!(
-						WithContext::from(&self.logger, None, Some(msg.channel_id)),
+						WithContext::from(&self.logger, Some(*counterparty_node_id), Some(msg.channel_id)),
 						"Failed to accept/forward incoming HTLC: {}", $msg
 					);
 					let (err_code, err_data) = if is_blinded {
@@ -3133,13 +3136,15 @@ where
 	}
 
 	fn construct_pending_htlc_status<'a>(
-		&self, msg: &msgs::UpdateAddHTLC, shared_secret: [u8; 32], decoded_hop: onion_utils::Hop,
-		allow_underpay: bool, next_packet_pubkey_opt: Option<Result<PublicKey, secp256k1::Error>>
+		&self, msg: &msgs::UpdateAddHTLC, counterparty_node_id: &PublicKey, shared_secret: [u8; 32],
+		decoded_hop: onion_utils::Hop, allow_underpay: bool,
+		next_packet_pubkey_opt: Option<Result<PublicKey, secp256k1::Error>>,
 	) -> PendingHTLCStatus {
 		macro_rules! return_err {
 			($msg: expr, $err_code: expr, $data: expr) => {
 				{
-					log_info!(WithContext::from(&self.logger, None, Some(msg.channel_id)), "Failed to accept/forward incoming HTLC: {}", $msg);
+					let logger = WithContext::from(&self.logger, Some(*counterparty_node_id), Some(msg.channel_id));
+					log_info!(logger, "Failed to accept/forward incoming HTLC: {}", $msg);
 					return PendingHTLCStatus::Fail(HTLCFailureMsg::Relay(msgs::UpdateFailHTLC {
 						channel_id: msg.channel_id,
 						htlc_id: msg.htlc_id,
@@ -3276,22 +3281,32 @@ where
 		} = args;
 		// The top-level caller should hold the total_consistency_lock read lock.
 		debug_assert!(self.total_consistency_lock.try_write().is_err());
-		log_trace!(WithContext::from(&self.logger, Some(path.hops.first().unwrap().pubkey), None),
-			"Attempting to send payment with payment hash {} along path with next hop {}",
-			payment_hash, path.hops.first().unwrap().short_channel_id);
 		let prng_seed = self.entropy_source.get_secure_random_bytes();
 		let session_priv = SecretKey::from_slice(&session_priv_bytes[..]).expect("RNG is busted");
 
 		let (onion_packet, htlc_msat, htlc_cltv) = onion_utils::create_payment_onion(
 			&self.secp_ctx, &path, &session_priv, total_value, recipient_onion, cur_height,
 			payment_hash, keysend_preimage, prng_seed
-		)?;
+		).map_err(|e| {
+			let logger = WithContext::from(&self.logger, Some(path.hops.first().unwrap().pubkey), None);
+			log_error!(logger, "Failed to build an onion for path for payment hash {}", payment_hash);
+			e
+		})?;
 
 		let err: Result<(), _> = loop {
 			let (counterparty_node_id, id) = match self.short_to_chan_info.read().unwrap().get(&path.hops.first().unwrap().short_channel_id) {
-				None => return Err(APIError::ChannelUnavailable{err: "No channel available with first hop!".to_owned()}),
+				None => {
+					let logger = WithContext::from(&self.logger, Some(path.hops.first().unwrap().pubkey), None);
+					log_error!(logger, "Failed to find first-hop for payment hash {}", payment_hash);
+					return Err(APIError::ChannelUnavailable{err: "No channel available with first hop!".to_owned()})
+				},
 				Some((cp_id, chan_id)) => (cp_id.clone(), chan_id.clone()),
 			};
+
+			let logger = WithContext::from(&self.logger, Some(counterparty_node_id), Some(id));
+			log_trace!(logger,
+				"Attempting to send payment with payment hash {} along path with next hop {}",
+				payment_hash, path.hops.first().unwrap().short_channel_id);
 
 			let per_peer_state = self.per_peer_state.read().unwrap();
 			let peer_state_mutex = per_peer_state.get(&counterparty_node_id)
@@ -4044,7 +4059,8 @@ where
 				None => {
 					let error = format!("Channel with id {} not found for the passed counterparty node_id {}",
 						next_hop_channel_id, next_node_id);
-					log_error!(self.logger, "{} when attempting to forward intercepted HTLC", error);
+					let logger = WithContext::from(&self.logger, Some(next_node_id), Some(*next_hop_channel_id));
+					log_error!(logger, "{} when attempting to forward intercepted HTLC", error);
 					return Err(APIError::ChannelUnavailable {
 						err: error
 					})
@@ -4132,6 +4148,7 @@ where
 
 			for (short_chan_id, mut pending_forwards) in forward_htlcs {
 				if short_chan_id != 0 {
+					let mut forwarding_counterparty = None;
 					macro_rules! forwarding_channel_not_found {
 						() => {
 							for forward_info in pending_forwards.drain(..) {
@@ -4145,7 +4162,8 @@ where
 									}) => {
 										macro_rules! failure_handler {
 											($msg: expr, $err_code: expr, $err_data: expr, $phantom_ss: expr, $next_hop_unknown: expr) => {
-												log_info!(self.logger, "Failed to accept/forward incoming HTLC: {}", $msg);
+												let logger = WithContext::from(&self.logger, forwarding_counterparty, Some(prev_funding_outpoint.to_channel_id()));
+												log_info!(logger, "Failed to accept/forward incoming HTLC: {}", $msg);
 
 												let htlc_source = HTLCSource::PreviousHopData(HTLCPreviousHopData {
 													short_channel_id: prev_short_channel_id,
@@ -4244,6 +4262,7 @@ where
 							continue;
 						}
 					};
+					forwarding_counterparty = Some(counterparty_node_id);
 					let per_peer_state = self.per_peer_state.read().unwrap();
 					let peer_state_mutex_opt = per_peer_state.get(&counterparty_node_id);
 					if peer_state_mutex_opt.is_none() {
@@ -5347,6 +5366,7 @@ where
 		}
 		if valid_mpp {
 			for htlc in sources.drain(..) {
+				let prev_hop_chan_id = htlc.prev_hop.outpoint.to_channel_id();
 				if let Err((pk, err)) = self.claim_funds_from_hop(
 					htlc.prev_hop, payment_preimage,
 					|_, definitely_duplicate| {
@@ -5357,6 +5377,7 @@ where
 					if let msgs::ErrorAction::IgnoreError = err.err.action {
 						// We got a temporary failure updating monitor, but will claim the
 						// HTLC when the monitor updating is restored (or on chain).
+						let logger = WithContext::from(&self.logger, None, Some(prev_hop_chan_id));
 						log_error!(self.logger, "Temporary failure claiming HTLC, treating as success: {}", err.err.err);
 					} else { errs.push((pk, err)); }
 				}
@@ -6455,7 +6476,7 @@ where
 		// Note that the ChannelManager is NOT re-persisted on disk after this (unless we error
 		// closing a channel), so any changes are likely to be lost on restart!
 
-		let decoded_hop_res = self.decode_update_add_htlc_onion(msg);
+		let decoded_hop_res = self.decode_update_add_htlc_onion(msg, counterparty_node_id);
 		let per_peer_state = self.per_peer_state.read().unwrap();
 		let peer_state_mutex = per_peer_state.get(counterparty_node_id)
 			.ok_or_else(|| {
@@ -6469,8 +6490,10 @@ where
 				if let ChannelPhase::Funded(chan) = chan_phase_entry.get_mut() {
 					let pending_forward_info = match decoded_hop_res {
 						Ok((next_hop, shared_secret, next_packet_pk_opt)) =>
-							self.construct_pending_htlc_status(msg, shared_secret, next_hop,
-								chan.context.config().accept_underpaying_htlcs, next_packet_pk_opt),
+							self.construct_pending_htlc_status(
+								msg, counterparty_node_id, shared_secret, next_hop,
+								chan.context.config().accept_underpaying_htlcs, next_packet_pk_opt,
+							),
 						Err(e) => PendingHTLCStatus::Fail(e)
 					};
 					let create_pending_htlc_status = |chan: &Channel<SP>, pending_forward_info: PendingHTLCStatus, error_code: u16| {
@@ -10014,7 +10037,7 @@ where
 					log_error!(logger, "A ChannelManager is stale compared to the current ChannelMonitor!");
 					log_error!(logger, " The channel will be force-closed and the latest commitment transaction from the ChannelMonitor broadcast.");
 					if channel.context.get_latest_monitor_update_id() < monitor.get_latest_update_id() {
-						log_error!(args.logger, " The ChannelMonitor for channel {} is at update_id {} but the ChannelManager is at update_id {}.",
+						log_error!(logger, " The ChannelMonitor for channel {} is at update_id {} but the ChannelManager is at update_id {}.",
 							&channel.context.channel_id(), monitor.get_latest_update_id(), channel.context.get_latest_monitor_update_id());
 					}
 					if channel.get_cur_holder_commitment_transaction_number() > monitor.get_cur_holder_commitment_number() {
@@ -10410,7 +10433,7 @@ where
 				let counterparty_opt = id_to_peer.get(&monitor.get_funding_txo().0.to_channel_id());
 				let chan_id = monitor.get_funding_txo().0.to_channel_id();
 				if counterparty_opt.is_none() {
-					let logger = WithContext::from(&args.logger, None, Some(chan_id));
+					let logger = WithChannelMonitor::from(&args.logger, monitor);
 					for (htlc_source, (htlc, _)) in monitor.get_pending_or_resolved_outbound_htlcs() {
 						if let HTLCSource::OutboundRoute { payment_id, session_priv, path, .. } = htlc_source {
 							if path.hops.is_empty() {
