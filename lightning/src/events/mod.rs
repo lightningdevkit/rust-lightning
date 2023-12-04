@@ -72,6 +72,16 @@ pub enum PaymentPurpose {
 	SpontaneousPayment(PaymentPreimage),
 }
 
+impl PaymentPurpose {
+	/// Returns the preimage for this payment, if it is known.
+	pub fn preimage(&self) -> Option<PaymentPreimage> {
+		match self {
+			PaymentPurpose::InvoicePayment { payment_preimage, .. } => *payment_preimage,
+			PaymentPurpose::SpontaneousPayment(preimage) => Some(*preimage),
+		}
+	}
+}
+
 impl_writeable_tlv_based_enum!(PaymentPurpose,
 	(0, InvoicePayment) => {
 		(0, payment_preimage, option),
