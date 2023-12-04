@@ -3025,11 +3025,12 @@ where
 			msg, &self.node_signer, &self.logger, &self.secp_ctx
 		)?;
 
-		let is_blinded = match next_hop {
+		let is_intro_node_forward = match next_hop {
 			onion_utils::Hop::Forward {
+				// TODO: update this when we support blinded forwarding as non-intro node
 				next_hop_data: msgs::InboundOnionPayload::BlindedForward { .. }, ..
 			} => true,
-			_ => false, // TODO: update this when we support receiving to multi-hop blinded paths
+			_ => false,
 		};
 
 		macro_rules! return_err {
@@ -3039,7 +3040,17 @@ where
 						WithContext::from(&self.logger, Some(*counterparty_node_id), Some(msg.channel_id)),
 						"Failed to accept/forward incoming HTLC: {}", $msg
 					);
-					let (err_code, err_data) = if is_blinded {
+					// If `msg.blinding_point` is set, we must always fail with malformed.
+					if msg.blinding_point.is_some() {
+						return Err(HTLCFailureMsg::Malformed(msgs::UpdateFailMalformedHTLC {
+							channel_id: msg.channel_id,
+							htlc_id: msg.htlc_id,
+							sha256_of_onion: [0; 32],
+							failure_code: INVALID_ONION_BLINDING,
+						}));
+					}
+
+					let (err_code, err_data) = if is_intro_node_forward {
 						(INVALID_ONION_BLINDING, &[0; 32][..])
 					} else { ($err_code, $data) };
 					return Err(HTLCFailureMsg::Relay(msgs::UpdateFailHTLC {
