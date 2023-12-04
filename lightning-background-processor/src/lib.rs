@@ -1375,9 +1375,9 @@ mod tests {
 			let desired_log_1 = "Calling ChannelManager's timer_tick_occurred".to_string();
 			let desired_log_2 = "Calling PeerManager's timer_tick_occurred".to_string();
 			let desired_log_3 = "Rebroadcasting monitor's pending claims".to_string();
-			if log_entries.get(&("lightning_background_processor".to_string(), desired_log_1)).is_some() &&
-				log_entries.get(&("lightning_background_processor".to_string(), desired_log_2)).is_some() &&
-				log_entries.get(&("lightning_background_processor".to_string(), desired_log_3)).is_some() {
+			if log_entries.get(&("lightning_background_processor", desired_log_1)).is_some() &&
+				log_entries.get(&("lightning_background_processor", desired_log_2)).is_some() &&
+				log_entries.get(&("lightning_background_processor", desired_log_3)).is_some() {
 				break
 			}
 		}
@@ -1556,7 +1556,7 @@ mod tests {
 		loop {
 			let log_entries = nodes[0].logger.lines.lock().unwrap();
 			let expected_log = "Persisting scorer".to_string();
-			if log_entries.get(&("lightning_background_processor".to_string(), expected_log)).is_some() {
+			if log_entries.get(&("lightning_background_processor", expected_log)).is_some() {
 				break
 			}
 		}
@@ -1580,7 +1580,7 @@ mod tests {
 				$sleep;
 				let log_entries = $nodes[0].logger.lines.lock().unwrap();
 				let loop_counter = "Calling ChannelManager's timer_tick_occurred".to_string();
-				if *log_entries.get(&("lightning_background_processor".to_string(), loop_counter))
+				if *log_entries.get(&("lightning_background_processor", loop_counter))
 					.unwrap_or(&0) > 1
 				{
 					// Wait until the loop has gone around at least twice.
@@ -1792,7 +1792,7 @@ mod tests {
 
 		let log_entries = nodes[0].logger.lines.lock().unwrap();
 		let expected_log = "Persisting scorer after update".to_string();
-		assert_eq!(*log_entries.get(&("lightning_background_processor".to_string(), expected_log)).unwrap(), 5);
+		assert_eq!(*log_entries.get(&("lightning_background_processor", expected_log)).unwrap(), 5);
 	}
 
 	#[tokio::test]
@@ -1838,7 +1838,7 @@ mod tests {
 
 			let log_entries = nodes[0].logger.lines.lock().unwrap();
 			let expected_log = "Persisting scorer after update".to_string();
-			assert_eq!(*log_entries.get(&("lightning_background_processor".to_string(), expected_log)).unwrap(), 5);
+			assert_eq!(*log_entries.get(&("lightning_background_processor", expected_log)).unwrap(), 5);
 		});
 
 		let (r1, r2) = tokio::join!(t1, t2);

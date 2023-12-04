@@ -930,8 +930,8 @@ impl events::MessageSendEventsProvider for TestRoutingMessageHandler {
 pub struct TestLogger {
 	level: Level,
 	pub(crate) id: String,
-	pub lines: Mutex<HashMap<(String, String), usize>>,
-	pub context: Mutex<HashMap<(String, Option<PublicKey>, Option<ChannelId>), usize>>,
+	pub lines: Mutex<HashMap<(&'static str, String), usize>>,
+	pub context: Mutex<HashMap<(&'static str, Option<PublicKey>, Option<ChannelId>), usize>>,
 }
 
 impl TestLogger {
@@ -949,7 +949,7 @@ impl TestLogger {
 	pub fn enable(&mut self, level: Level) {
 		self.level = level;
 	}
-	pub fn assert_log(&self, module: String, line: String, count: usize) {
+	pub fn assert_log(&self, module: &str, line: String, count: usize) {
 		let log_entries = self.lines.lock().unwrap();
 		assert_eq!(log_entries.get(&(module, line)), Some(&count));
 	}
@@ -961,7 +961,7 @@ impl TestLogger {
 	pub fn assert_log_contains(&self, module: &str, line: &str, count: usize) {
 		let log_entries = self.lines.lock().unwrap();
 		let l: usize = log_entries.iter().filter(|&(&(ref m, ref l), _c)| {
-			m == module && l.contains(line)
+			*m == module && l.contains(line)
 		}).map(|(_, c) | { c }).sum();
 		assert_eq!(l, count)
 	}
@@ -974,7 +974,7 @@ impl TestLogger {
 	pub fn assert_log_regex(&self, module: &str, pattern: regex::Regex, count: usize) {
 		let log_entries = self.lines.lock().unwrap();
 		let l: usize = log_entries.iter().filter(|&(&(ref m, ref l), _c)| {
-			m == module && pattern.is_match(&l)
+			*m == module && pattern.is_match(&l)
 		}).map(|(_, c) | { c }).sum();
 		assert_eq!(l, count)
 	}
@@ -983,18 +983,15 @@ impl TestLogger {
 		&self, module: &str, peer_id: Option<PublicKey>, channel_id: Option<ChannelId>, count: usize
 	) {
 		let context_entries = self.context.lock().unwrap();
-		let l: usize = context_entries.iter()
-			.filter(|&(&(ref m, ref p, ref c), _)| m == module && *p == peer_id && *c == channel_id)
-			.map(|(_, c) | c)
-			.sum();
-		assert_eq!(l, count)
+		let l = context_entries.get(&(module, peer_id, channel_id)).unwrap();
+		assert_eq!(*l, count)
 	}
 }
 
 impl Logger for TestLogger {
 	fn log(&self, record: Record) {
-		*self.lines.lock().unwrap().entry((record.module_path.to_string(), format!("{}", record.args))).or_insert(0) += 1;
-		*self.context.lock().unwrap().entry((record.module_path.to_string(), record.peer_id, record.channel_id)).or_insert(0) += 1;
+		*self.lines.lock().unwrap().entry((record.module_path, format!("{}", record.args))).or_insert(0) += 1;
+		*self.context.lock().unwrap().entry((record.module_path, record.peer_id, record.channel_id)).or_insert(0) += 1;
 		if record.level >= self.level {
 			#[cfg(all(not(ldk_bench), feature = "std"))] {
 				let pfx = format!("{} {} [{}:{}]", self.id, record.level.to_string(), record.module_path, record.line);
