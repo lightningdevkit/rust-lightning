@@ -96,6 +96,8 @@ def check_cfg_tag(cfg):
         pass
     elif cfg == "require_route_graph_test":
         pass
+    elif cfg == "dual_funding":
+        pass
     else:
         print("Bad cfg tag: " + cfg)
         assert False
