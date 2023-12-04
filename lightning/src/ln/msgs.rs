@@ -1670,7 +1670,7 @@ mod fuzzy_internal_msgs {
 	use crate::prelude::*;
 	use crate::ln::{PaymentPreimage, PaymentSecret};
 	use crate::ln::features::BlindedHopFeatures;
-	use crate::ln::msgs::OnionPacket;
+	use crate::ln::msgs::VariableLengthOnionPacket;
 
 	// These types aren't intended to be pub, but are exposed for direct fuzzing (as we deserialize
 	// them from untrusted input):
@@ -1728,7 +1728,7 @@ mod fuzzy_internal_msgs {
 			custom_tlvs: Vec<(u64, Vec<u8>)>,
 			amt_msat: u64,
 			outgoing_cltv_value: u32,
-			trampoline_packet: Option<OnionPacket>
+			trampoline_packet: Option<VariableLengthOnionPacket>
 		},
 		BlindedForward {
 			encrypted_tlvs: Vec<u8>,
@@ -1786,6 +1786,29 @@ impl onion_utils::Packet for OnionPacket {
 impl fmt::Debug for OnionPacket {
 	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
 		f.write_fmt(format_args!("OnionPacket version {} with hmac {:?}", self.version, &self.hmac[..]))
+	}
+}
+
+/// BOLT 4 onion packet including hop data for the next peer.
+#[derive(Clone, Hash, PartialEq, Eq)]
+pub struct VariableLengthOnionPacket {
+	/// BOLT 4 version number.
+	pub version: u8,
+	/// In order to ensure we always return an error on onion decode in compliance with [BOLT
+	/// #4](https://github.com/lightning/bolts/blob/master/04-onion-routing.md), we have to
+	/// deserialize `OnionPacket`s contained in [`UpdateAddHTLC`] messages even if the ephemeral
+	/// public key (here) is bogus, so we hold a [`Result`] instead of a [`PublicKey`] as we'd
+	/// like.
+	pub public_key: Result<PublicKey, secp256k1::Error>,
+	/// Variable number of bytes encrypted payload for the next hop; 650 by default for Trampoline
+	pub(crate) hop_data: Vec<u8>,
+	/// HMAC to verify the integrity of hop_data.
+	pub hmac: [u8; 32],
+}
+
+impl fmt::Debug for VariableLengthOnionPacket {
+	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+		f.write_fmt(format_args!("VariableLengthOnionPacket version {} with hmac {:?}", self.version, &self.hmac[..]))
 	}
 }
 
@@ -2214,6 +2237,22 @@ impl Readable for OnionPacket {
 			hop_data: Readable::read(r)?,
 			hmac: Readable::read(r)?,
 		})
+	}
+}
+
+// This will be written as the value of a TLV, so when reading, the length of the hop data will be
+// inferred from a ReadableArg containing the total length. The standard hop data for Trampoline
+// onions will prospectively be 650 bytes.
+impl Writeable for VariableLengthOnionPacket {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		self.version.write(w)?;
+		match self.public_key {
+			Ok(pubkey) => pubkey.write(w)?,
+			Err(_) => [0u8;33].write(w)?,
+		}
+		&self.hop_data.write(w)?;
+		&self.hmac.write(w)?;
+		Ok(())
 	}
 }
 
