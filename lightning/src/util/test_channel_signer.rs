@@ -138,7 +138,7 @@ impl ChannelSigner for TestChannelSigner {
 		self.inner.release_commitment_secret(idx)
 	}
 
-	fn validate_holder_commitment(&self, holder_tx: &HolderCommitmentTransaction, _preimages: Vec<PaymentPreimage>) -> Result<(), ()> {
+	fn validate_holder_commitment(&self, holder_tx: &HolderCommitmentTransaction, _outbound_htlc_preimages: Vec<PaymentPreimage>) -> Result<(), ()> {
 		let mut state = self.state.lock().unwrap();
 		let idx = holder_tx.commitment_number();
 		assert!(idx == state.last_holder_commitment || idx == state.last_holder_commitment - 1, "expecting to validate the current or next holder commitment - trying {}, current {}", idx, state.last_holder_commitment);
@@ -166,7 +166,7 @@ impl ChannelSigner for TestChannelSigner {
 }
 
 impl EcdsaChannelSigner for TestChannelSigner {
-	fn sign_counterparty_commitment(&self, commitment_tx: &CommitmentTransaction, preimages: Vec<PaymentPreimage>, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<(Signature, Vec<Signature>), ()> {
+	fn sign_counterparty_commitment(&self, commitment_tx: &CommitmentTransaction, inbound_htlc_preimages: Vec<PaymentPreimage>, outbound_htlc_preimages: Vec<PaymentPreimage>, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<(Signature, Vec<Signature>), ()> {
 		self.verify_counterparty_commitment_tx(commitment_tx, secp_ctx);
 
 		{
@@ -185,7 +185,7 @@ impl EcdsaChannelSigner for TestChannelSigner {
 			state.last_counterparty_commitment = cmp::min(last_commitment_number, actual_commitment_number)
 		}
 
-		Ok(self.inner.sign_counterparty_commitment(commitment_tx, preimages, secp_ctx).unwrap())
+		Ok(self.inner.sign_counterparty_commitment(commitment_tx, inbound_htlc_preimages, outbound_htlc_preimages, secp_ctx).unwrap())
 	}
 
 	fn sign_holder_commitment(&self, commitment_tx: &HolderCommitmentTransaction, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<Signature, ()> {
@@ -288,7 +288,7 @@ impl TaprootChannelSigner for TestChannelSigner {
 		todo!()
 	}
 
-	fn partially_sign_counterparty_commitment(&self, counterparty_nonce: PublicNonce, commitment_tx: &CommitmentTransaction, preimages: Vec<PaymentPreimage>, secp_ctx: &Secp256k1<All>) -> Result<(PartialSignatureWithNonce, Vec<secp256k1::schnorr::Signature>), ()> {
+	fn partially_sign_counterparty_commitment(&self, counterparty_nonce: PublicNonce, commitment_tx: &CommitmentTransaction, inbound_htlc_preimages: Vec<PaymentPreimage>, outbound_htlc_preimages: Vec<PaymentPreimage>, secp_ctx: &Secp256k1<All>) -> Result<(PartialSignatureWithNonce, Vec<secp256k1::schnorr::Signature>), ()> {
 		todo!()
 	}
 

@@ -512,7 +512,8 @@ struct CommitmentStats<'a> {
 	htlcs_included: Vec<(HTLCOutputInCommitment, Option<&'a HTLCSource>)>, // the list of HTLCs (dust HTLCs *included*) which were not ignored when building the transaction
 	local_balance_msat: u64, // local balance before fees but considering dust limits
 	remote_balance_msat: u64, // remote balance before fees but considering dust limits
-	preimages: Vec<PaymentPreimage>, // preimages for successful offered HTLCs since last commitment
+	outbound_htlc_preimages: Vec<PaymentPreimage>, // preimages for successful offered HTLCs since last commitment
+	inbound_htlc_preimages: Vec<PaymentPreimage>, // preimages for successful received HTLCs since last commitment
 }
 
 /// Used when calculating whether we or the remote can afford an additional HTLC.
@@ -1428,6 +1429,8 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 			}
 		}
 
+		let mut inbound_htlc_preimages: Vec<PaymentPreimage> = Vec::new();
+
 		for ref htlc in self.pending_inbound_htlcs.iter() {
 			let (include, state_name) = match htlc.state {
 				InboundHTLCState::RemoteAnnounced(_) => (!generated_by_local, "RemoteAnnounced"),
@@ -1445,7 +1448,8 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 				match &htlc.state {
 					&InboundHTLCState::LocalRemoved(ref reason) => {
 						if generated_by_local {
-							if let &InboundHTLCRemovalReason::Fulfill(_) = reason {
+							if let &InboundHTLCRemovalReason::Fulfill(preimage) = reason {
+								inbound_htlc_preimages.push(preimage);
 								value_to_self_msat_offset += htlc.amount_msat as i64;
 							}
 						}
@@ -1455,7 +1459,8 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 			}
 		}
 
-		let mut preimages: Vec<PaymentPreimage> = Vec::new();
+
+		let mut outbound_htlc_preimages: Vec<PaymentPreimage> = Vec::new();
 
 		for ref htlc in self.pending_outbound_htlcs.iter() {
 			let (include, state_name) = match htlc.state {
@@ -1474,7 +1479,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 			};
 
 			if let Some(preimage) = preimage_opt {
-				preimages.push(preimage);
+				outbound_htlc_preimages.push(preimage);
 			}
 
 			if include {
@@ -1580,7 +1585,8 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 			htlcs_included,
 			local_balance_msat: value_to_self_msat as u64,
 			remote_balance_msat: value_to_remote_msat as u64,
-			preimages
+			inbound_htlc_preimages,
+			outbound_htlc_preimages,
 		}
 	}
 
@@ -2178,7 +2184,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 		let signature = match &self.holder_signer {
 			// TODO (taproot|arik): move match into calling method for Taproot
 			ChannelSignerType::Ecdsa(ecdsa) => {
-				ecdsa.sign_counterparty_commitment(&counterparty_initial_commitment_tx, Vec::new(), &self.secp_ctx)
+				ecdsa.sign_counterparty_commitment(&counterparty_initial_commitment_tx, Vec::new(), Vec::new(), &self.secp_ctx)
 					.map(|(sig, _)| sig).ok()?
 			},
 			// TODO (taproot|arik)
@@ -2216,7 +2222,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 		match &self.holder_signer {
 			// TODO (arik): move match into calling method for Taproot
 			ChannelSignerType::Ecdsa(ecdsa) => {
-				let funding_signed = ecdsa.sign_counterparty_commitment(&counterparty_initial_commitment_tx, Vec::new(), &self.secp_ctx)
+				let funding_signed = ecdsa.sign_counterparty_commitment(&counterparty_initial_commitment_tx, Vec::new(), Vec::new(), &self.secp_ctx)
 					.map(|(signature, _)| msgs::FundingSigned {
 						channel_id: self.channel_id(),
 						signature,
@@ -3247,7 +3253,7 @@ impl<SP: Deref> Channel<SP> where
 			self.context.counterparty_funding_pubkey()
 		);
 
-		self.context.holder_signer.as_ref().validate_holder_commitment(&holder_commitment_tx, commitment_stats.preimages)
+		self.context.holder_signer.as_ref().validate_holder_commitment(&holder_commitment_tx, commitment_stats.outbound_htlc_preimages)
 			.map_err(|_| ChannelError::Close("Failed to validate our commitment".to_owned()))?;
 
 		// Update state now that we've passed all the can-fail calls...
@@ -5780,8 +5786,12 @@ impl<SP: Deref> Channel<SP> where
 						htlcs.push(htlc);
 					}
 
-					let res = ecdsa.sign_counterparty_commitment(&commitment_stats.tx, commitment_stats.preimages, &self.context.secp_ctx)
-						.map_err(|_| ChannelError::Ignore("Failed to get signatures for new commitment_signed".to_owned()))?;
+					let res = ecdsa.sign_counterparty_commitment(
+							&commitment_stats.tx,
+							commitment_stats.inbound_htlc_preimages,
+							commitment_stats.outbound_htlc_preimages,
+							&self.context.secp_ctx,
+						).map_err(|_| ChannelError::Ignore("Failed to get signatures for new commitment_signed".to_owned()))?;
 					signature = res.0;
 					htlc_signatures = res.1;
 
