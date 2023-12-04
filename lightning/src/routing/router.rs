@@ -1795,12 +1795,12 @@ where L::Target: Logger {
 					let payment_failed_on_this_channel = scid_opt.map_or(false,
 						|scid| payment_params.previously_failed_channels.contains(&scid));
 
-					let should_log_candidate = match $candidate {
-						CandidateRouteHop::FirstHop { .. } => true,
-						CandidateRouteHop::PrivateHop { .. } => true,
-						CandidateRouteHop::Blinded { .. } => true,
-						CandidateRouteHop::OneHopBlinded { .. } => true,
-						_ => false,
+					let (should_log_candidate, first_hop_details) = match $candidate {
+						CandidateRouteHop::FirstHop { details } => (true, Some(details)),
+						CandidateRouteHop::PrivateHop { .. } => (true, None),
+						CandidateRouteHop::Blinded { .. } => (true, None),
+						CandidateRouteHop::OneHopBlinded { .. } => (true, None),
+						_ => (false, None),
 					};
 
 					// If HTLC minimum is larger than the amount we're going to transfer, we shouldn't
@@ -1810,6 +1810,13 @@ where L::Target: Logger {
 					if !contributes_sufficient_value {
 						if should_log_candidate {
 							log_trace!(logger, "Ignoring {} due to insufficient value contribution.", LoggedCandidateHop(&$candidate));
+
+							if let Some(details) = first_hop_details {
+								log_trace!(logger,
+									"First hop candidate next_outbound_htlc_limit_msat: {}",
+									details.next_outbound_htlc_limit_msat,
+								);
+							}
 						}
 						num_ignored_value_contribution += 1;
 					} else if exceeds_max_path_length {
@@ -1820,6 +1827,14 @@ where L::Target: Logger {
 					} else if exceeds_cltv_delta_limit {
 						if should_log_candidate {
 							log_trace!(logger, "Ignoring {} due to exceeding CLTV delta limit.", LoggedCandidateHop(&$candidate));
+
+							if let Some(_) = first_hop_details {
+								log_trace!(logger,
+									"First hop candidate cltv_expiry_delta: {}. Limit: {}",
+									hop_total_cltv_delta,
+									max_total_cltv_expiry_delta,
+								);
+							}
 						}
 						num_ignored_cltv_delta_limit += 1;
 					} else if payment_failed_on_this_channel {
@@ -1832,6 +1847,13 @@ where L::Target: Logger {
 							log_trace!(logger,
 								"Ignoring {} to avoid overpaying to meet htlc_minimum_msat limit.",
 								LoggedCandidateHop(&$candidate));
+
+							if let Some(details) = first_hop_details {
+								log_trace!(logger,
+									"First hop candidate next_outbound_htlc_minimum_msat: {}",
+									details.next_outbound_htlc_minimum_msat,
+								);
+							}
 						}
 						num_ignored_avoid_overpayment += 1;
 						hit_minimum_limit = true;
@@ -1893,6 +1915,14 @@ where L::Target: Logger {
 							if total_fee_msat > max_total_routing_fee_msat {
 								if should_log_candidate {
 									log_trace!(logger, "Ignoring {} due to exceeding max total routing fee limit.", LoggedCandidateHop(&$candidate));
+
+									if let Some(_) = first_hop_details {
+										log_trace!(logger,
+											"First hop candidate routing fee: {}. Limit: {}",
+											total_fee_msat,
+											max_total_routing_fee_msat,
+										);
+									}
 								}
 								num_ignored_total_fee_limit += 1;
 							} else {
@@ -1988,6 +2018,13 @@ where L::Target: Logger {
 							log_trace!(logger,
 								"Ignoring {} due to its htlc_minimum_msat limit.",
 								LoggedCandidateHop(&$candidate));
+
+							if let Some(details) = first_hop_details {
+								log_trace!(logger,
+									"First hop candidate next_outbound_htlc_minimum_msat: {}",
+									details.next_outbound_htlc_minimum_msat,
+								);
+							}
 						}
 						num_ignored_htlc_minimum_msat_limit += 1;
 					}
