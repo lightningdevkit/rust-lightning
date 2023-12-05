@@ -870,31 +870,31 @@ impl ChannelInfo {
 	/// Returns a [`DirectedChannelInfo`] for the channel directed to the given `target` from a
 	/// returned `source`, or `None` if `target` is not one of the channel's counterparties.
 	pub fn as_directed_to(&self, target: &NodeId) -> Option<(DirectedChannelInfo, &NodeId)> {
-		let (direction, source) = {
+		let (direction, source, outbound) = {
 			if target == &self.node_one {
-				(self.two_to_one.as_ref(), &self.node_two)
+				(self.two_to_one.as_ref(), &self.node_two, false)
 			} else if target == &self.node_two {
-				(self.one_to_two.as_ref(), &self.node_one)
+				(self.one_to_two.as_ref(), &self.node_one, true)
 			} else {
 				return None;
 			}
 		};
-		direction.map(|dir| (DirectedChannelInfo::new(self, dir), source))
+		direction.map(|dir| (DirectedChannelInfo::new(self, dir, outbound), source))
 	}
 
 	/// Returns a [`DirectedChannelInfo`] for the channel directed from the given `source` to a
 	/// returned `target`, or `None` if `source` is not one of the channel's counterparties.
 	pub fn as_directed_from(&self, source: &NodeId) -> Option<(DirectedChannelInfo, &NodeId)> {
-		let (direction, target) = {
+		let (direction, target, outbound) = {
 			if source == &self.node_one {
-				(self.one_to_two.as_ref(), &self.node_two)
+				(self.one_to_two.as_ref(), &self.node_two, true)
 			} else if source == &self.node_two {
-				(self.two_to_one.as_ref(), &self.node_one)
+				(self.two_to_one.as_ref(), &self.node_one, false)
 			} else {
 				return None;
 			}
 		};
-		direction.map(|dir| (DirectedChannelInfo::new(self, dir), target))
+		direction.map(|dir| (DirectedChannelInfo::new(self, dir, outbound), target))
 	}
 
 	/// Returns a [`ChannelUpdateInfo`] based on the direction implied by the channel_flag.
@@ -992,24 +992,32 @@ pub struct DirectedChannelInfo<'a> {
 	direction: &'a ChannelUpdateInfo,
 	htlc_maximum_msat: u64,
 	effective_capacity: EffectiveCapacity,
+	/// Outbound from the perspective of `node_one`.
+	///
+	/// If true, the channel is considered to be outbound from `node_one` perspective.
+	/// If false, the channel is considered to be outbound from `node_two` perspective.
+	///
+	/// [`ChannelInfo::node_one`]
+	/// [`ChannelInfo::node_two`]
+	outbound: bool,
 }
 
 impl<'a> DirectedChannelInfo<'a> {
 	#[inline]
-	fn new(channel: &'a ChannelInfo, direction: &'a ChannelUpdateInfo) -> Self {
+	fn new(channel: &'a ChannelInfo, direction: &'a ChannelUpdateInfo, outbound: bool) -> Self {
 		let mut htlc_maximum_msat = direction.htlc_maximum_msat;
 		let capacity_msat = channel.capacity_sats.map(|capacity_sats| capacity_sats * 1000);
 
 		let effective_capacity = match capacity_msat {
 			Some(capacity_msat) => {
 				htlc_maximum_msat = cmp::min(htlc_maximum_msat, capacity_msat);
-				EffectiveCapacity::Total { capacity_msat, htlc_maximum_msat: htlc_maximum_msat }
+				EffectiveCapacity::Total { capacity_msat, htlc_maximum_msat }
 			},
 			None => EffectiveCapacity::AdvertisedMaxHTLC { amount_msat: htlc_maximum_msat },
 		};
 
 		Self {
-			channel, direction, htlc_maximum_msat, effective_capacity
+			channel, direction, htlc_maximum_msat, effective_capacity, outbound
 		}
 	}
 
