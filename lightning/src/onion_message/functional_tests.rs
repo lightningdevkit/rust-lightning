@@ -381,6 +381,7 @@ fn reply_path() {
 fn invalid_custom_message_type() {
 	let nodes = create_nodes(2);
 
+	#[derive(Debug)]
 	struct InvalidCustomMessage{}
 	impl OnionMessageContents for InvalidCustomMessage {
 		fn tlv_type(&self) -> u64 {

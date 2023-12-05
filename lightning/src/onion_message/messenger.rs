@@ -71,7 +71,7 @@ use crate::prelude::*;
 /// # use std::sync::Arc;
 /// # struct FakeLogger;
 /// # impl Logger for FakeLogger {
-/// #     fn log(&self, record: Record) { unimplemented!() }
+/// #     fn log(&self, record: Record) { println!("{:?}" , record); }
 /// # }
 /// # struct FakeMessageRouter {}
 /// # impl MessageRouter for FakeMessageRouter {
@@ -97,7 +97,8 @@ use crate::prelude::*;
 ///     &keys_manager, &keys_manager, logger, message_router, &offers_message_handler,
 ///     &custom_message_handler
 /// );
-///
+
+/// # #[derive(Debug)]
 /// # struct YourCustomMessage {}
 /// impl Writeable for YourCustomMessage {
 /// 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
@@ -517,6 +518,9 @@ where
 	pub fn send_onion_message<T: OnionMessageContents>(
 		&self, path: OnionMessagePath, contents: T, reply_path: Option<BlindedPath>
 	) -> Result<(), SendError> {
+
+		log_trace!(self.logger, "Sending onion message: {:?}", contents);
+		
 		let (first_node_id, onion_msg) = create_onion_message(
 			&self.entropy_source, &self.node_signer, &self.secp_ctx, path, contents, reply_path
 		)?;
@@ -570,7 +574,7 @@ where
 			},
 		};
 
-		log_trace!(self.logger, "Sending onion message {}", log_suffix);
+		log_trace!(self.logger, "Sending onion message {}: {:?}", log_suffix, contents);
 
 		if let Err(e) = self.send_onion_message(path, contents, reply_path) {
 			log_trace!(self.logger, "Failed sending onion message {}: {:?}", log_suffix, e);
@@ -629,9 +633,10 @@ where
 			msg, &self.secp_ctx, &*self.node_signer, &*self.logger, &*self.custom_handler
 		) {
 			Ok(PeeledOnion::Receive(message, path_id, reply_path)) => {
-				log_trace!(self.logger,
-					"Received an onion message with path_id {:02x?} and {} reply_path",
-						path_id, if reply_path.is_some() { "a" } else { "no" });
+				log_trace!(
+					self.logger,
+				   "Received an onion message with path_id {:02x?} and {} reply_path: {:?}",
+					path_id, if reply_path.is_some() { "a" } else { "no" }, message);
 
 				match message {
 					ParsedOnionMessageContents::Offers(msg) => {

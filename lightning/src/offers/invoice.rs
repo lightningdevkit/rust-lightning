@@ -720,8 +720,7 @@ impl Bolt12Invoice {
 		self.contents.verify(TlvStream::new(&self.bytes), key, secp_ctx)
 	}
 
-	#[cfg(test)]
-	pub(super) fn as_tlv_stream(&self) -> FullInvoiceTlvStreamRef {
+	pub(crate) fn as_tlv_stream(&self) -> FullInvoiceTlvStreamRef {
 		let (payer_tlv_stream, offer_tlv_stream, invoice_request_tlv_stream, invoice_tlv_stream) =
 			self.contents.as_tlv_stream();
 		let signature_tlv_stream = SignatureTlvStreamRef {
@@ -1143,7 +1142,6 @@ impl_writeable!(FallbackAddress, { version, program });
 type FullInvoiceTlvStream =
 	(PayerTlvStream, OfferTlvStream, InvoiceRequestTlvStream, InvoiceTlvStream, SignatureTlvStream);
 
-#[cfg(test)]
 type FullInvoiceTlvStreamRef<'a> = (
 	PayerTlvStreamRef<'a>,
 	OfferTlvStreamRef<'a>,

@@ -91,6 +91,7 @@ impl OffersMessageHandler for TestOffersMessageHandler {
 	}
 }
 
+#[derive(Debug)]
 struct TestCustomMessage {}
 
 const CUSTOM_MESSAGE_TYPE: u64 = 4242;
@@ -265,9 +266,10 @@ mod tests {
 		{
 			let log_entries = logger.lines.lock().unwrap();
 			assert_eq!(log_entries.get(&("lightning::onion_message::messenger".to_string(),
-						"Received an onion message with path_id None and a reply_path".to_string())), Some(&1));
+						"Received an onion message with path_id None and a reply_path: Custom(TestCustomMessage)"
+						.to_string())), Some(&1));
 			assert_eq!(log_entries.get(&("lightning::onion_message::messenger".to_string(),
-						"Sending onion message when responding to Custom onion message with path_id None".to_string())), Some(&1));
+						"Sending onion message: TestCustomMessage".to_string())), Some(&1));
 		}
 
 		let two_unblinded_hops_om = "\
