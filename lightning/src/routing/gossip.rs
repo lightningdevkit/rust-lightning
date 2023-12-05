@@ -1043,6 +1043,16 @@ impl<'a> DirectedChannelInfo<'a> {
 	/// Returns information for the direction.
 	#[inline]
 	pub(super) fn direction(&self) -> &'a ChannelUpdateInfo { self.direction }
+
+	/// Returns the `node_id` of the source hop.
+	///
+	/// Refers to the `node_id` forwarding the payment to the next hop.
+	pub(super) fn source(&self) -> &'a NodeId { if self.outbound { &self.channel.node_one } else { &self.channel.node_two } }
+
+	/// Returns the `node_id` of the target hop.
+	///
+	/// Refers to the `node_id` receiving the payment from the previous hop.
+	pub(super) fn target(&self) -> &'a NodeId { if self.outbound { &self.channel.node_two } else { &self.channel.node_one } }
 }
 
 impl<'a> fmt::Debug for DirectedChannelInfo<'a> {
