@@ -2878,10 +2878,10 @@ mod tests {
 	use crate::ln::{PaymentPreimage, PaymentHash, PaymentSecret};
 	use crate::ln::ChannelId;
 	use crate::ln::features::{ChannelFeatures, ChannelTypeFeatures, InitFeatures, NodeFeatures};
-	use crate::ln::msgs::{self, FinalOnionHopData, OnionErrorPacket};
+	use crate::ln::msgs::{self, FinalOnionHopData, OnionErrorPacket, VariableLengthOnionPacket};
 	use crate::ln::msgs::SocketAddress;
 	use crate::routing::gossip::{NodeAlias, NodeId};
-	use crate::util::ser::{Writeable, Readable, ReadableArgs, Hostname, TransactionU16LenLimited};
+	use crate::util::ser::{Writeable, Readable, ReadableArgs, Hostname, TransactionU16LenLimited, BigSize};
 	use crate::util::test_utils;
 
 	use bitcoin::hashes::hex::FromHex;
@@ -4169,6 +4169,45 @@ mod tests {
 			assert_eq!(amt_msat, 0x0badf00d01020304);
 			assert_eq!(outgoing_cltv_value, 0xffffffff);
 		} else { panic!(); }
+	}
+
+	#[test]
+	fn encoding_final_onion_hop_data_with_trampoline_packet() {
+		let secp_ctx = Secp256k1::new();
+		let (private_key, public_key) = get_keys_from!("0101010101010101010101010101010101010101010101010101010101010101", secp_ctx);
+
+		let compressed_public_key = public_key.serialize();
+		assert_eq!(compressed_public_key.len(), 33);
+
+		let trampoline_packet = VariableLengthOnionPacket {
+			version: 0,
+			public_key: Ok(public_key),
+			hop_data: vec![1; 650], // this should be the standard encoded length
+			hmac: [2; 32],
+		};
+		let encoded_trampoline_packet = trampoline_packet.encode();
+		assert_eq!(encoded_trampoline_packet.len(), 718);
+
+		let msg = msgs::OutboundOnionPayload::Receive {
+			payment_data: None,
+			payment_metadata: None,
+			keysend_preimage: None,
+			custom_tlvs: Vec::new(),
+			amt_msat: 0x0badf00d01020304,
+			outgoing_cltv_value: 0xffffffff,
+			trampoline_packet: Some(trampoline_packet)
+		};
+		let encoded_payload = msg.encode();
+
+		let trampoline_type_bytes = &encoded_payload[19..=23];
+		let mut trampoline_type_cursor = Cursor::new(trampoline_type_bytes);
+		let trampoline_type_big_size: BigSize = Readable::read(&mut trampoline_type_cursor).unwrap();
+		assert_eq!(trampoline_type_big_size.0, 66100);
+
+		let trampoline_length_bytes = &encoded_payload[24..=26];
+		let mut trampoline_length_cursor = Cursor::new(trampoline_length_bytes);
+		let trampoline_length_big_size: BigSize = Readable::read(&mut trampoline_length_cursor).unwrap();
+		assert_eq!(trampoline_length_big_size.0, encoded_trampoline_packet.len() as u64);
 	}
 
 	#[test]
