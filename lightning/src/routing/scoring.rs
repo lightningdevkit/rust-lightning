@@ -2151,7 +2151,6 @@ mod tests {
 	use super::{ChannelLiquidity, HistoricalBucketRangeTracker, ProbabilisticScoringFeeParameters, ProbabilisticScoringDecayParameters, ProbabilisticScorer};
 	use crate::blinded_path::{BlindedHop, BlindedPath};
 	use crate::util::config::UserConfig;
-	use crate::util::time::tests::SinceEpoch;
 
 	use crate::ln::channelmanager;
 	use crate::ln::msgs::{ChannelAnnouncement, ChannelUpdate, UnsignedChannelAnnouncement, UnsignedChannelUpdate};
@@ -2901,7 +2900,6 @@ mod tests {
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), u64::max_value());
 
 		// Half decay (i.e., three-quarter life)
-		SinceEpoch::advance(Duration::from_secs(5));
 		scorer.time_passed(Duration::from_secs(5));
 		let usage = ChannelUsage { amount_msat: 128, ..usage };
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 22);
@@ -2913,7 +2911,6 @@ mod tests {
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), u64::max_value());
 
 		// One decay (i.e., half life)
-		SinceEpoch::advance(Duration::from_secs(5));
 		scorer.time_passed(Duration::from_secs(10));
 		let usage = ChannelUsage { amount_msat: 64, ..usage };
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 0);
@@ -2925,7 +2922,6 @@ mod tests {
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), u64::max_value());
 
 		// Fully decay liquidity lower bound.
-		SinceEpoch::advance(Duration::from_secs(10 * 7));
 		scorer.time_passed(Duration::from_secs(10 * 8));
 		let usage = ChannelUsage { amount_msat: 0, ..usage };
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 0);
@@ -2937,14 +2933,12 @@ mod tests {
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), u64::max_value());
 
 		// Fully decay liquidity upper bound.
-		SinceEpoch::advance(Duration::from_secs(10));
 		scorer.time_passed(Duration::from_secs(10 * 9));
 		let usage = ChannelUsage { amount_msat: 0, ..usage };
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 0);
 		let usage = ChannelUsage { amount_msat: 1_024, ..usage };
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), u64::max_value());
 
-		SinceEpoch::advance(Duration::from_secs(10));
 		scorer.time_passed(Duration::from_secs(10 * 10));
 		let usage = ChannelUsage { amount_msat: 0, ..usage };
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 0);
@@ -2986,7 +2980,6 @@ mod tests {
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 281);
 
 		// Decaying knowledge gives less confidence (128, 896), meaning a higher penalty.
-		SinceEpoch::advance(Duration::from_secs(10));
 		scorer.time_passed(Duration::from_secs(10));
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 291);
 
@@ -3001,7 +2994,6 @@ mod tests {
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 245);
 
 		// Further decaying affects the lower bound more than the upper bound (128, 928).
-		SinceEpoch::advance(Duration::from_secs(10));
 		scorer.time_passed(Duration::from_secs(20));
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 280);
 	}
@@ -3036,7 +3028,6 @@ mod tests {
 		};
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), u64::max_value());
 
-		SinceEpoch::advance(Duration::from_secs(10));
 		scorer.time_passed(Duration::from_secs(10));
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 473);
 
@@ -3082,7 +3073,6 @@ mod tests {
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), u64::max_value());
 
 		if decay_before_reload {
-			SinceEpoch::advance(Duration::from_secs(10));
 			scorer.time_passed(Duration::from_secs(10));
 		}
 
@@ -3093,7 +3083,6 @@ mod tests {
 		let mut deserialized_scorer =
 			<ProbabilisticScorer<_, _>>::read(&mut serialized_scorer, (decay_params, &network_graph, &logger)).unwrap();
 		if !decay_before_reload {
-			SinceEpoch::advance(Duration::from_secs(10));
 			scorer.time_passed(Duration::from_secs(10));
 			deserialized_scorer.time_passed(Duration::from_secs(10));
 		}
@@ -3102,7 +3091,6 @@ mod tests {
 		scorer.payment_path_failed(&payment_path_for_amount(250), 43, Duration::from_secs(10));
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 300);
 
-		SinceEpoch::advance(Duration::from_secs(10));
 		deserialized_scorer.time_passed(Duration::from_secs(20));
 		assert_eq!(deserialized_scorer.channel_penalty_msat(&candidate, usage, &params), 370);
 	}
@@ -3436,7 +3424,6 @@ mod tests {
 
 		// Advance the time forward 16 half-lives (which the docs claim will ensure all data is
 		// gone), and check that we're back to where we started.
-		SinceEpoch::advance(Duration::from_secs(10 * 16));
 		scorer.time_passed(Duration::from_secs(10 * 16));
 		{
 			let network_graph = network_graph.read_only();
@@ -3481,7 +3468,6 @@ mod tests {
 		}
 
 		// Advance to decay all liquidity offsets to zero.
-		SinceEpoch::advance(Duration::from_secs(60 * 60 * 10));
 		scorer.time_passed(Duration::from_secs(10 * (16 + 60 * 60)));
 
 		// Once even the bounds have decayed information about the channel should be removed
@@ -3734,10 +3720,10 @@ pub mod benches {
 		}
 		let mut cur_time = Duration::ZERO;
 			cur_time += Duration::from_millis(1);
-			scorer.decay_liquidity_certainty(cur_time);
+			scorer.time_passed(cur_time);
 		bench.bench_function("decay_100k_channel_bounds", |b| b.iter(|| {
 			cur_time += Duration::from_millis(1);
-			scorer.decay_liquidity_certainty(cur_time);
+			scorer.time_passed(cur_time);
 		}));
 	}
 }
