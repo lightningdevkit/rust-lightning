@@ -348,8 +348,8 @@ macro_rules! define_state_flags {
 mod state_flags {
 	pub const OUR_INIT_SENT: u32 = 1 << 0;
 	pub const THEIR_INIT_SENT: u32 = 1 << 1;
-	pub const FUNDING_CREATED: u32 = 1 << 2;
-	pub const FUNDING_SENT: u32 = 1 << 3;
+	pub const FUNDING_NEGOTIATED: u32 = 1 << 2;
+	pub const AWAITING_CHANNEL_READY: u32 = 1 << 3;
 	pub const THEIR_CHANNEL_READY: u32 = 1 << 4;
 	pub const OUR_CHANNEL_READY: u32 = 1 << 5;
 	pub const CHANNEL_READY: u32 = 1 << 6;
@@ -389,8 +389,8 @@ define_state_flags!(
 );
 
 define_state_flags!(
-	"Flags that only apply to [`ChannelState::FundingSent`].",
-	FUNDED_STATE, FundingSentFlags, [
+	"Flags that only apply to [`ChannelState::AwaitingChannelReady`].",
+	FUNDED_STATE, AwaitingChannelReadyFlags, [
 		("Indicates they sent us a `channel_ready` message. Once both `THEIR_CHANNEL_READY` and \
 			`OUR_CHANNEL_READY` are set, our state moves on to `ChannelReady`.",
 			THEIR_CHANNEL_READY, state_flags::THEIR_CHANNEL_READY),
@@ -419,12 +419,12 @@ enum ChannelState {
 	/// We are negotiating the parameters required for the channel prior to funding it.
 	NegotiatingFunding(NegotiatingFundingFlags),
 	/// We have sent `funding_created` and are awaiting a `funding_signed` to advance to
-	/// `FundingSent`. Note that this is nonsense for an inbound channel as we immediately generate
+	/// `AwaitingChannelReady`. Note that this is nonsense for an inbound channel as we immediately generate
 	/// `funding_signed` upon receipt of `funding_created`, so simply skip this state.
-	FundingCreated,
+	FundingNegotiated,
 	/// We've received/sent `funding_created` and `funding_signed` and are thus now waiting on the
 	/// funding transaction to confirm.
-	FundingSent(FundingSentFlags),
+	AwaitingChannelReady(AwaitingChannelReadyFlags),
 	/// Both we and our counterparty consider the funding transaction confirmed and the channel is
 	/// now operational.
 	ChannelReady(ChannelReadyFlags),
@@ -464,7 +464,7 @@ macro_rules! impl_state_flag {
 		}
 	};
 	($get: ident, $set: ident, $clear: ident, $state_flag: expr, FUNDED_STATES) => {
-		impl_state_flag!($get, $set, $clear, $state_flag, [FundingSent, ChannelReady]);
+		impl_state_flag!($get, $set, $clear, $state_flag, [AwaitingChannelReady, ChannelReady]);
 	};
 	($get: ident, $set: ident, $clear: ident, $state_flag: expr, $state: ident) => {
 		impl_state_flag!($get, $set, $clear, $state_flag, [$state]);
@@ -474,12 +474,12 @@ macro_rules! impl_state_flag {
 impl ChannelState {
 	fn from_u32(state: u32) -> Result<Self, ()> {
 		match state {
-			state_flags::FUNDING_CREATED => Ok(ChannelState::FundingCreated),
+			state_flags::FUNDING_NEGOTIATED => Ok(ChannelState::FundingNegotiated),
 			state_flags::SHUTDOWN_COMPLETE => Ok(ChannelState::ShutdownComplete),
 			val => {
-				if val & state_flags::FUNDING_SENT == state_flags::FUNDING_SENT {
-					FundingSentFlags::from_u32(val & !state_flags::FUNDING_SENT)
-						.map(|flags| ChannelState::FundingSent(flags))
+				if val & state_flags::AWAITING_CHANNEL_READY == state_flags::AWAITING_CHANNEL_READY {
+					AwaitingChannelReadyFlags::from_u32(val & !state_flags::AWAITING_CHANNEL_READY)
+						.map(|flags| ChannelState::AwaitingChannelReady(flags))
 				} else if val & state_flags::CHANNEL_READY == state_flags::CHANNEL_READY {
 					ChannelReadyFlags::from_u32(val & !state_flags::CHANNEL_READY)
 						.map(|flags| ChannelState::ChannelReady(flags))
@@ -495,15 +495,15 @@ impl ChannelState {
 	fn to_u32(&self) -> u32 {
 		match self {
 			ChannelState::NegotiatingFunding(flags) => flags.0,
-			ChannelState::FundingCreated => state_flags::FUNDING_CREATED,
-			ChannelState::FundingSent(flags) => state_flags::FUNDING_SENT | flags.0,
+			ChannelState::FundingNegotiated => state_flags::FUNDING_NEGOTIATED,
+			ChannelState::AwaitingChannelReady(flags) => state_flags::AWAITING_CHANNEL_READY | flags.0,
 			ChannelState::ChannelReady(flags) => state_flags::CHANNEL_READY | flags.0,
 			ChannelState::ShutdownComplete => state_flags::SHUTDOWN_COMPLETE,
 		}
 	}
 
 	fn is_pre_funded_state(&self) -> bool {
-		matches!(self, ChannelState::NegotiatingFunding(_)|ChannelState::FundingCreated)
+		matches!(self, ChannelState::NegotiatingFunding(_)|ChannelState::FundingNegotiated)
 	}
 
 	fn is_both_sides_shutdown(&self) -> bool {
@@ -512,7 +512,7 @@ impl ChannelState {
 
 	fn with_funded_state_flags_mask(&self) -> FundedStateFlags {
 		match self {
-			ChannelState::FundingSent(flags) => FundedStateFlags((*flags & FundedStateFlags::ALL).0),
+			ChannelState::AwaitingChannelReady(flags) => FundedStateFlags((*flags & FundedStateFlags::ALL).0),
 			ChannelState::ChannelReady(flags) => FundedStateFlags((*flags & FundedStateFlags::ALL).0),
 			_ => FundedStateFlags::new(),
 		}
@@ -540,11 +540,11 @@ impl ChannelState {
 	impl_state_flag!(is_remote_shutdown_sent, set_remote_shutdown_sent, clear_remote_shutdown_sent,
 		FundedStateFlags::REMOTE_SHUTDOWN_SENT, FUNDED_STATES);
 	impl_state_flag!(is_our_channel_ready, set_our_channel_ready, clear_our_channel_ready,
-		FundingSentFlags::OUR_CHANNEL_READY, FundingSent);
+		AwaitingChannelReadyFlags::OUR_CHANNEL_READY, AwaitingChannelReady);
 	impl_state_flag!(is_their_channel_ready, set_their_channel_ready, clear_their_channel_ready,
-		FundingSentFlags::THEIR_CHANNEL_READY, FundingSent);
+		AwaitingChannelReadyFlags::THEIR_CHANNEL_READY, AwaitingChannelReady);
 	impl_state_flag!(is_waiting_for_batch, set_waiting_for_batch, clear_waiting_for_batch,
-		FundingSentFlags::WAITING_FOR_BATCH, FundingSent);
+		AwaitingChannelReadyFlags::WAITING_FOR_BATCH, AwaitingChannelReady);
 	impl_state_flag!(is_awaiting_remote_revoke, set_awaiting_remote_revoke, clear_awaiting_remote_revoke,
 		ChannelReadyFlags::AWAITING_REMOTE_REVOKE, ChannelReady);
 }
@@ -1272,7 +1272,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 	/// shutdown state returns the state of the channel in its various stages of shutdown
 	pub fn shutdown_state(&self) -> ChannelShutdownState {
 		match self.channel_state {
-			ChannelState::FundingSent(_)|ChannelState::ChannelReady(_) =>
+			ChannelState::AwaitingChannelReady(_)|ChannelState::ChannelReady(_) =>
 				if self.channel_state.is_local_shutdown_sent() && !self.channel_state.is_remote_shutdown_sent() {
 					ChannelShutdownState::ShutdownInitiated
 				} else if (self.channel_state.is_local_shutdown_sent() || self.channel_state.is_remote_shutdown_sent()) && !self.closing_negotiation_ready() {
@@ -1289,7 +1289,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 
 	fn closing_negotiation_ready(&self) -> bool {
 		let is_ready_to_close = match self.channel_state {
-			ChannelState::FundingSent(flags) =>
+			ChannelState::AwaitingChannelReady(flags) =>
 				flags & FundedStateFlags::ALL == FundedStateFlags::LOCAL_SHUTDOWN_SENT | FundedStateFlags::REMOTE_SHUTDOWN_SENT,
 			ChannelState::ChannelReady(flags) =>
 				flags == FundedStateFlags::LOCAL_SHUTDOWN_SENT | FundedStateFlags::REMOTE_SHUTDOWN_SENT,
@@ -1558,7 +1558,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 	/// funding transaction has been broadcast if necessary.
 	pub fn is_funding_broadcast(&self) -> bool {
 		!self.channel_state.is_pre_funded_state() &&
-			!matches!(self.channel_state, ChannelState::FundingSent(flags) if flags.is_set(FundingSentFlags::WAITING_FOR_BATCH))
+			!matches!(self.channel_state, ChannelState::AwaitingChannelReady(flags) if flags.is_set(AwaitingChannelReadyFlags::WAITING_FOR_BATCH))
 	}
 
 	/// Transaction nomenclature is somewhat confusing here as there are many different cases - a
@@ -2315,8 +2315,8 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 	fn if_unbroadcasted_funding<F, O>(&self, f: F) -> Option<O>
 		where F: Fn() -> Option<O> {
 		match self.channel_state {
-			ChannelState::FundingCreated => f(),
-			ChannelState::FundingSent(flags) => if flags.is_set(FundingSentFlags::WAITING_FOR_BATCH) {
+			ChannelState::FundingNegotiated => f(),
+			ChannelState::AwaitingChannelReady(flags) => if flags.is_set(AwaitingChannelReadyFlags::WAITING_FOR_BATCH) {
 				f()
 			} else {
 				None
@@ -2375,7 +2375,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 			}
 		}
 		let monitor_update = if let Some(funding_txo) = self.get_funding_txo() {
-			// If we haven't yet exchanged funding signatures (ie channel_state < FundingSent),
+			// If we haven't yet exchanged funding signatures (ie channel_state < AwaitingChannelReady),
 			// returning a channel monitor update here would imply a channel monitor update before
 			// we even registered the channel monitor to begin with, which is invalid.
 			// Thus, if we aren't actually at a point where we could conceivably broadcast the
@@ -2383,7 +2383,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 			// monitor update to the user, even if we return one).
 			// See test_duplicate_chan_id and test_pre_lockin_no_chan_closed_update for more.
 			let generate_monitor_update = match self.channel_state {
-				ChannelState::FundingSent(_)|ChannelState::ChannelReady(_)|ChannelState::ShutdownComplete => true,
+				ChannelState::AwaitingChannelReady(_)|ChannelState::ChannelReady(_)|ChannelState::ShutdownComplete => true,
 				_ => false,
 			};
 			if generate_monitor_update {
@@ -2954,7 +2954,7 @@ impl<SP: Deref> Channel<SP> where
 		if !self.context.is_outbound() {
 			return Err(ChannelError::Close("Received funding_signed for an inbound channel?".to_owned()));
 		}
-		if !matches!(self.context.channel_state, ChannelState::FundingCreated) {
+		if !matches!(self.context.channel_state, ChannelState::FundingNegotiated) {
 			return Err(ChannelError::Close("Received funding_signed in strange state!".to_owned()));
 		}
 		if self.context.commitment_secrets.get_min_seen_secret() != (1 << 48) ||
@@ -3022,9 +3022,9 @@ impl<SP: Deref> Channel<SP> where
 
 		assert!(!self.context.channel_state.is_monitor_update_in_progress()); // We have no had any monitor(s) yet to fail update!
 		if self.context.is_batch_funding() {
-			self.context.channel_state = ChannelState::FundingSent(FundingSentFlags::WAITING_FOR_BATCH);
+			self.context.channel_state = ChannelState::AwaitingChannelReady(AwaitingChannelReadyFlags::WAITING_FOR_BATCH);
 		} else {
-			self.context.channel_state = ChannelState::FundingSent(FundingSentFlags::new());
+			self.context.channel_state = ChannelState::AwaitingChannelReady(AwaitingChannelReadyFlags::new());
 		}
 		self.context.cur_holder_commitment_transaction_number -= 1;
 		self.context.cur_counterparty_commitment_transaction_number -= 1;
@@ -3074,20 +3074,20 @@ impl<SP: Deref> Channel<SP> where
 		// batch, but we can receive channel_ready messages.
 		let mut check_reconnection = false;
 		match &self.context.channel_state {
-			ChannelState::FundingSent(flags) => {
+			ChannelState::AwaitingChannelReady(flags) => {
 				let flags = *flags & !FundedStateFlags::ALL;
-				debug_assert!(!flags.is_set(FundingSentFlags::OUR_CHANNEL_READY) || !flags.is_set(FundingSentFlags::WAITING_FOR_BATCH));
-				if flags & !FundingSentFlags::WAITING_FOR_BATCH == FundingSentFlags::THEIR_CHANNEL_READY {
+				debug_assert!(!flags.is_set(AwaitingChannelReadyFlags::OUR_CHANNEL_READY) || !flags.is_set(AwaitingChannelReadyFlags::WAITING_FOR_BATCH));
+				if flags & !AwaitingChannelReadyFlags::WAITING_FOR_BATCH == AwaitingChannelReadyFlags::THEIR_CHANNEL_READY {
 					// If we reconnected before sending our `channel_ready` they may still resend theirs.
 					check_reconnection = true;
-				} else if (flags & !FundingSentFlags::WAITING_FOR_BATCH).is_empty() {
+				} else if (flags & !AwaitingChannelReadyFlags::WAITING_FOR_BATCH).is_empty() {
 					self.context.channel_state.set_their_channel_ready();
-				} else if flags == FundingSentFlags::OUR_CHANNEL_READY {
+				} else if flags == AwaitingChannelReadyFlags::OUR_CHANNEL_READY {
 					self.context.channel_state = ChannelState::ChannelReady(self.context.channel_state.with_funded_state_flags_mask().into());
 					self.context.update_time_counter += 1;
 				} else {
 					// We're in `WAITING_FOR_BATCH`, so we should wait until we're ready.
-					debug_assert!(flags.is_set(FundingSentFlags::WAITING_FOR_BATCH));
+					debug_assert!(flags.is_set(AwaitingChannelReadyFlags::WAITING_FOR_BATCH));
 				}
 			}
 			// If we reconnected before sending our `channel_ready` they may still resend theirs.
@@ -4190,12 +4190,12 @@ impl<SP: Deref> Channel<SP> where
 		assert!(self.context.channel_state.is_monitor_update_in_progress());
 		self.context.channel_state.clear_monitor_update_in_progress();
 
-		// If we're past (or at) the FundingSent stage on an outbound channel, try to
+		// If we're past (or at) the AwaitingChannelReady stage on an outbound channel, try to
 		// (re-)broadcast the funding transaction as we may have declined to broadcast it when we
 		// first received the funding_signed.
 		let mut funding_broadcastable =
 			if self.context.is_outbound() &&
-				matches!(self.context.channel_state, ChannelState::FundingSent(flags) if !flags.is_set(FundingSentFlags::WAITING_FOR_BATCH)) ||
+				matches!(self.context.channel_state, ChannelState::AwaitingChannelReady(flags) if !flags.is_set(AwaitingChannelReadyFlags::WAITING_FOR_BATCH)) ||
 				matches!(self.context.channel_state, ChannelState::ChannelReady(_))
 			{
 				self.context.funding_transaction.take()
@@ -4502,7 +4502,7 @@ impl<SP: Deref> Channel<SP> where
 
 		let announcement_sigs = self.get_announcement_sigs(node_signer, chain_hash, user_config, best_block.height(), logger);
 
-		if matches!(self.context.channel_state, ChannelState::FundingSent(_)) {
+		if matches!(self.context.channel_state, ChannelState::AwaitingChannelReady(_)) {
 			// If we're waiting on a monitor update, we shouldn't re-send any channel_ready's.
 			if !self.context.channel_state.is_our_channel_ready() ||
 					self.context.channel_state.is_monitor_update_in_progress() {
@@ -5194,17 +5194,17 @@ impl<SP: Deref> Channel<SP> where
 	pub fn is_awaiting_initial_mon_persist(&self) -> bool {
 		if !self.is_awaiting_monitor_update() { return false; }
 		if matches!(
-			self.context.channel_state, ChannelState::FundingSent(flags)
-			if (flags & !(FundingSentFlags::THEIR_CHANNEL_READY | FundedStateFlags::PEER_DISCONNECTED | FundedStateFlags::MONITOR_UPDATE_IN_PROGRESS | FundingSentFlags::WAITING_FOR_BATCH)).is_empty()
+			self.context.channel_state, ChannelState::AwaitingChannelReady(flags)
+			if (flags & !(AwaitingChannelReadyFlags::THEIR_CHANNEL_READY | FundedStateFlags::PEER_DISCONNECTED | FundedStateFlags::MONITOR_UPDATE_IN_PROGRESS | AwaitingChannelReadyFlags::WAITING_FOR_BATCH)).is_empty()
 		) {
 			// If we're not a 0conf channel, we'll be waiting on a monitor update with only
-			// FundingSent set, though our peer could have sent their channel_ready.
+			// AwaitingChannelReady set, though our peer could have sent their channel_ready.
 			debug_assert!(self.context.minimum_depth.unwrap_or(1) > 0);
 			return true;
 		}
 		if self.context.cur_holder_commitment_transaction_number == INITIAL_COMMITMENT_NUMBER - 1 &&
 			self.context.cur_counterparty_commitment_transaction_number == INITIAL_COMMITMENT_NUMBER - 1 {
-			// If we're a 0-conf channel, we'll move beyond FundingSent immediately even while
+			// If we're a 0-conf channel, we'll move beyond AwaitingChannelReady immediately even while
 			// waiting for the initial monitor persistence. Thus, we check if our commitment
 			// transaction numbers have both been iterated only exactly once (for the
 			// funding_signed), and we're awaiting monitor update.
@@ -5226,7 +5226,7 @@ impl<SP: Deref> Channel<SP> where
 
 	/// Returns true if our channel_ready has been sent
 	pub fn is_our_channel_ready(&self) -> bool {
-		matches!(self.context.channel_state, ChannelState::FundingSent(flags) if flags.is_set(FundingSentFlags::OUR_CHANNEL_READY)) ||
+		matches!(self.context.channel_state, ChannelState::AwaitingChannelReady(flags) if flags.is_set(AwaitingChannelReadyFlags::OUR_CHANNEL_READY)) ||
 			matches!(self.context.channel_state, ChannelState::ChannelReady(_))
 	}
 
@@ -5281,14 +5281,14 @@ impl<SP: Deref> Channel<SP> where
 
 		// Note that we don't include ChannelState::WaitingForBatch as we don't want to send
 		// channel_ready until the entire batch is ready.
-		let need_commitment_update = if matches!(self.context.channel_state, ChannelState::FundingSent(f) if (f & !FundedStateFlags::ALL).is_empty()) {
+		let need_commitment_update = if matches!(self.context.channel_state, ChannelState::AwaitingChannelReady(f) if (f & !FundedStateFlags::ALL).is_empty()) {
 			self.context.channel_state.set_our_channel_ready();
 			true
-		} else if matches!(self.context.channel_state, ChannelState::FundingSent(f) if f & !FundedStateFlags::ALL == FundingSentFlags::THEIR_CHANNEL_READY) {
+		} else if matches!(self.context.channel_state, ChannelState::AwaitingChannelReady(f) if f & !FundedStateFlags::ALL == AwaitingChannelReadyFlags::THEIR_CHANNEL_READY) {
 			self.context.channel_state = ChannelState::ChannelReady(self.context.channel_state.with_funded_state_flags_mask().into());
 			self.context.update_time_counter += 1;
 			true
-		} else if matches!(self.context.channel_state, ChannelState::FundingSent(f) if f & !FundedStateFlags::ALL == FundingSentFlags::OUR_CHANNEL_READY) {
+		} else if matches!(self.context.channel_state, ChannelState::AwaitingChannelReady(f) if f & !FundedStateFlags::ALL == AwaitingChannelReadyFlags::OUR_CHANNEL_READY) {
 			// We got a reorg but not enough to trigger a force close, just ignore.
 			false
 		} else {
@@ -5300,7 +5300,7 @@ impl<SP: Deref> Channel<SP> where
 				// an inbound channel - before that we have no known funding TXID). The fuzzer,
 				// however, may do this and we shouldn't treat it as a bug.
 				#[cfg(not(fuzzing))]
-				panic!("Started confirming a channel in a state pre-FundingSent: {}.\n\
+				panic!("Started confirming a channel in a state pre-AwaitingChannelReady: {}.\n\
 					Do NOT broadcast a funding transaction manually - let LDK do it for you!",
 					self.context.channel_state.to_u32());
 			}
@@ -5765,7 +5765,7 @@ impl<SP: Deref> Channel<SP> where
 			// (which is one further, as they always revoke previous commitment transaction, not
 			// the one we send) so we have to decrement by 1. Note that if
 			// cur_counterparty_commitment_transaction_number is INITIAL_COMMITMENT_NUMBER we will have
-			// dropped this channel on disconnect as it hasn't yet reached FundingSent so we can't
+			// dropped this channel on disconnect as it hasn't yet reached AwaitingChannelReady so we can't
 			// overflow here.
 			next_remote_commitment_number: INITIAL_COMMITMENT_NUMBER - self.context.cur_counterparty_commitment_transaction_number - 1,
 			your_last_per_commitment_secret: remote_last_secret,
@@ -6468,7 +6468,7 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 
 		// Now that we're past error-generating stuff, update our local state:
 
-		self.context.channel_state = ChannelState::FundingCreated;
+		self.context.channel_state = ChannelState::FundingNegotiated;
 		self.context.channel_id = funding_txo.to_channel_id();
 
 		// If the funding transaction is a coinbase transaction, we need to set the minimum depth to 100.
@@ -7232,7 +7232,7 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 
 		// Now that we're past error-generating stuff, update our local state:
 
-		self.context.channel_state = ChannelState::FundingSent(FundingSentFlags::new());
+		self.context.channel_state = ChannelState::AwaitingChannelReady(AwaitingChannelReadyFlags::new());
 		self.context.channel_id = funding_txo.to_channel_id();
 		self.context.cur_counterparty_commitment_transaction_number -= 1;
 		self.context.cur_holder_commitment_transaction_number -= 1;
@@ -7353,7 +7353,7 @@ impl<SP: Deref> Writeable for Channel<SP> where SP::Target: SignerProvider {
 		self.context.channel_id.write(writer)?;
 		{
 			let mut channel_state = self.context.channel_state;
-			if matches!(channel_state, ChannelState::FundingSent(_)|ChannelState::ChannelReady(_)) {
+			if matches!(channel_state, ChannelState::AwaitingChannelReady(_)|ChannelState::ChannelReady(_)) {
 				channel_state.set_peer_disconnected();
 			}
 			channel_state.to_u32().write(writer)?;
@@ -7980,7 +7980,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 			let mut holder_signer = signer_provider.derive_channel_signer(channel_value_satoshis, channel_keys_id);
 			// If we've gotten to the funding stage of the channel, populate the signer with its
 			// required channel parameters.
-			if channel_state >= ChannelState::FundingCreated {
+			if channel_state >= ChannelState::FundingNegotiated {
 				holder_signer.provide_channel_parameters(&channel_parameters);
 			}
 			(channel_keys_id, holder_signer)
@@ -8206,7 +8206,7 @@ mod tests {
 	use crate::ln::channel_keys::{RevocationKey, RevocationBasepoint};
 	use crate::ln::channelmanager::{self, HTLCSource, PaymentId};
 	use crate::ln::channel::InitFeatures;
-	use crate::ln::channel::{FundingSentFlags, Channel, ChannelState, InboundHTLCOutput, OutboundV1Channel, InboundV1Channel, OutboundHTLCOutput, InboundHTLCState, OutboundHTLCState, HTLCCandidate, HTLCInitiator, HTLCUpdateAwaitingACK, commit_tx_fee_msat};
+	use crate::ln::channel::{AwaitingChannelReadyFlags, Channel, ChannelState, InboundHTLCOutput, OutboundV1Channel, InboundV1Channel, OutboundHTLCOutput, InboundHTLCState, OutboundHTLCState, HTLCCandidate, HTLCInitiator, HTLCUpdateAwaitingACK, commit_tx_fee_msat};
 	use crate::ln::channel::{MAX_FUNDING_SATOSHIS_NO_WUMBO, TOTAL_BITCOIN_SUPPLY_SATOSHIS, MIN_THEIR_CHAN_RESERVE_SATOSHIS};
 	use crate::ln::features::{ChannelFeatures, ChannelTypeFeatures, NodeFeatures};
 	use crate::ln::msgs;
@@ -9898,7 +9898,7 @@ mod tests {
 		// as the funding transaction depends on all channels in the batch becoming ready.
 		assert!(node_a_updates.channel_ready.is_none());
 		assert!(node_a_updates.funding_broadcastable.is_none());
-		assert_eq!(node_a_chan.context.channel_state, ChannelState::FundingSent(FundingSentFlags::WAITING_FOR_BATCH));
+		assert_eq!(node_a_chan.context.channel_state, ChannelState::AwaitingChannelReady(AwaitingChannelReadyFlags::WAITING_FOR_BATCH));
 
 		// It is possible to receive a 0conf channel_ready from the remote node.
 		node_a_chan.channel_ready(
@@ -9911,12 +9911,12 @@ mod tests {
 		).unwrap();
 		assert_eq!(
 			node_a_chan.context.channel_state,
-			ChannelState::FundingSent(FundingSentFlags::WAITING_FOR_BATCH | FundingSentFlags::THEIR_CHANNEL_READY)
+			ChannelState::AwaitingChannelReady(AwaitingChannelReadyFlags::WAITING_FOR_BATCH | AwaitingChannelReadyFlags::THEIR_CHANNEL_READY)
 		);
 
 		// Clear the ChannelState::WaitingForBatch only when called by ChannelManager.
 		node_a_chan.set_batch_ready();
-		assert_eq!(node_a_chan.context.channel_state, ChannelState::FundingSent(FundingSentFlags::THEIR_CHANNEL_READY));
+		assert_eq!(node_a_chan.context.channel_state, ChannelState::AwaitingChannelReady(AwaitingChannelReadyFlags::THEIR_CHANNEL_READY));
 		assert!(node_a_chan.check_get_channel_ready(0).is_some());
 	}
 }
