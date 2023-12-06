@@ -30,9 +30,9 @@ use crate::ln::msgs::LightningError;
 use crate::ln::script::ShutdownScript;
 use crate::offers::invoice::UnsignedBolt12Invoice;
 use crate::offers::invoice_request::UnsignedInvoiceRequest;
-use crate::routing::gossip::{EffectiveCapacity, NetworkGraph, NodeId};
+use crate::routing::gossip::{EffectiveCapacity, NetworkGraph, NodeId, RoutingFees};
 use crate::routing::utxo::{UtxoLookup, UtxoLookupError, UtxoResult};
-use crate::routing::router::{find_route, InFlightHtlcs, Path, Route, RouteParameters, Router, ScorerAccountingForInFlightHtlcs};
+use crate::routing::router::{find_route, InFlightHtlcs, Path, Route, RouteParameters, RouteHintHop, Router, ScorerAccountingForInFlightHtlcs};
 use crate::routing::scoring::{ChannelUsage, ScoreUpdate, ScoreLookUp};
 use crate::sync::RwLock;
 use crate::util::config::UserConfig;
@@ -129,6 +129,7 @@ impl<'a> Router for TestRouter<'a> {
 				let scorer = ScorerAccountingForInFlightHtlcs::new(scorer, &inflight_htlcs);
 				for path in &route.paths {
 					let mut aggregate_msat = 0u64;
+					let mut prev_hop_node = payer;
 					for (idx, hop) in path.hops.iter().rev().enumerate() {
 						aggregate_msat += hop.fee_msat;
 						let usage = ChannelUsage {
@@ -137,39 +138,44 @@ impl<'a> Router for TestRouter<'a> {
 							effective_capacity: EffectiveCapacity::Unknown,
 						};
 
-						// Since the path is reversed, the last element in our iteration is the first
-						// hop.
 						if idx == path.hops.len() - 1 {
-							let first_hops = match first_hops {
-								Some(hops) => hops,
-								None => continue,
-							};
-							if first_hops.len() == 0 {
-								continue;
+							if let Some(first_hops) = first_hops {
+								if let Some(idx) = first_hops.iter().position(|h| h.get_outbound_payment_scid() == Some(hop.short_channel_id)) {
+									let node_id = NodeId::from_pubkey(payer);
+									let candidate = CandidateRouteHop::FirstHop {
+										details: first_hops[idx],
+										payer_node_id: &node_id,
+									};
+									scorer.channel_penalty_msat(&candidate, usage, &());
+									continue;
+								}
 							}
-							let idx = if first_hops.len() > 1 { route.paths.iter().position(|p| p == path).unwrap_or(0) } else { 0 };
-							let node_id = NodeId::from_pubkey(payer);
-							let candidate = CandidateRouteHop::FirstHop {
-								details: first_hops[idx],
-								payer_node_id: &node_id,
-							};
-							scorer.channel_penalty_msat(&candidate, usage, &());
-						} else {
-							let network_graph = self.network_graph.read_only();
-							let channel = match network_graph.channel(hop.short_channel_id) {
-								Some(channel) => channel,
-								None => continue,
-							};
-							let channel = match channel.as_directed_to(&NodeId::from_pubkey(&hop.pubkey)) {
-								Some(channel) => channel,
-								None => panic!("Channel directed to {} was not found", hop.pubkey),
-							};
+						}
+						let network_graph = self.network_graph.read_only();
+						if let Some(channel) = network_graph.channel(hop.short_channel_id) {
+							let (directed, _) = channel.as_directed_to(&NodeId::from_pubkey(&hop.pubkey)).unwrap();
 							let candidate = CandidateRouteHop::PublicHop {
-								info: channel.0,
+								info: directed,
 								short_channel_id: hop.short_channel_id,
 							};
 							scorer.channel_penalty_msat(&candidate, usage, &());
+						} else {
+							let target_node_id = NodeId::from_pubkey(&hop.pubkey);
+							let route_hint = RouteHintHop {
+								src_node_id: *prev_hop_node,
+								short_channel_id: hop.short_channel_id,
+								fees: RoutingFees { base_msat: 0, proportional_millionths: 0 },
+								cltv_expiry_delta: 0,
+								htlc_minimum_msat: None,
+								htlc_maximum_msat: None,
+							};
+							let candidate = CandidateRouteHop::PrivateHop {
+								hint: &route_hint,
+								target_node_id: target_node_id,
+							};
+							scorer.channel_penalty_msat(&candidate, usage, &());
 						}
+						prev_hop_node = &hop.pubkey;
 					}
 				}
 			}
