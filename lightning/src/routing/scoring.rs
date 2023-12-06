@@ -3388,6 +3388,7 @@ mod tests {
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), u64::max_value());
 	}
 
+	#[test]
 	fn remembers_historical_failures() {
 		let logger = TestLogger::new();
 		let network_graph = network_graph(&logger);
@@ -3402,6 +3403,7 @@ mod tests {
 		};
 		let mut scorer = ProbabilisticScorer::new(decay_params, &network_graph, &logger);
 		let source = source_node_id();
+		let target = target_node_id();
 
 		let usage = ChannelUsage {
 			amount_msat: 100,
@@ -3413,24 +3415,37 @@ mod tests {
 			inflight_htlc_msat: 0,
 			effective_capacity: EffectiveCapacity::Total { capacity_msat: 1_024, htlc_maximum_msat: 1_024 },
 		};
-		let network_graph = network_graph.read_only();
-		let channel = network_graph.channel(42).unwrap();
-		let (info, target) = channel.as_directed_from(&source).unwrap();
-		let candidate = CandidateRouteHop::PublicHop {
-			info,
-			short_channel_id: 42,
-		};
 
-		// With no historical data the normal liquidity penalty calculation is used.
-		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 168);
+		{
+			let network_graph = network_graph.read_only();
+			let channel = network_graph.channel(42).unwrap();
+			let (info, _) = channel.as_directed_from(&source).unwrap();
+			let candidate = CandidateRouteHop::PublicHop {
+				info,
+				short_channel_id: 42,
+			};
+
+			// With no historical data the normal liquidity penalty calculation is used.
+			assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 168);
+		}
 		assert_eq!(scorer.historical_estimated_channel_liquidity_probabilities(42, &target),
 		None);
 		assert_eq!(scorer.historical_estimated_payment_success_probability(42, &target, 42, &params),
 		None);
 
 		scorer.payment_path_failed(&payment_path_for_amount(1), 42);
-		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 2048);
-		assert_eq!(scorer.channel_penalty_msat(&candidate, usage_1, &params), 249);
+		{
+			let network_graph = network_graph.read_only();
+			let channel = network_graph.channel(42).unwrap();
+			let (info, _) = channel.as_directed_from(&source).unwrap();
+			let candidate = CandidateRouteHop::PublicHop {
+				info,
+				short_channel_id: 42,
+			};
+
+			assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 2048);
+			assert_eq!(scorer.channel_penalty_msat(&candidate, usage_1, &params), 249);
+		}
 		// The "it failed" increment is 32, where the probability should lie several buckets into
 		// the first octile.
 		assert_eq!(scorer.historical_estimated_channel_liquidity_probabilities(42, &target),
@@ -3444,7 +3459,17 @@ mod tests {
 		// Even after we tell the scorer we definitely have enough available liquidity, it will
 		// still remember that there was some failure in the past, and assign a non-0 penalty.
 		scorer.payment_path_failed(&payment_path_for_amount(1000), 43);
-		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 105);
+		{
+			let network_graph = network_graph.read_only();
+			let channel = network_graph.channel(42).unwrap();
+			let (info, _) = channel.as_directed_from(&source).unwrap();
+			let candidate = CandidateRouteHop::PublicHop {
+				info,
+				short_channel_id: 42,
+			};
+
+			assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 105);
+		}
 		// The first points should be decayed just slightly and the last bucket has a new point.
 		assert_eq!(scorer.historical_estimated_channel_liquidity_probabilities(42, &target),
 			Some(([31, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 32, 0, 0, 0, 0, 0],
@@ -3464,7 +3489,17 @@ mod tests {
 		// Advance the time forward 16 half-lives (which the docs claim will ensure all data is
 		// gone), and check that we're back to where we started.
 		SinceEpoch::advance(Duration::from_secs(10 * 16));
-		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 168);
+		{
+			let network_graph = network_graph.read_only();
+			let channel = network_graph.channel(42).unwrap();
+			let (info, _) = channel.as_directed_from(&source).unwrap();
+			let candidate = CandidateRouteHop::PublicHop {
+				info,
+				short_channel_id: 42,
+			};
+
+			assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 168);
+		}
 		// Once fully decayed we still have data, but its all-0s. In the future we may remove the
 		// data entirely instead.
 		assert_eq!(scorer.historical_estimated_channel_liquidity_probabilities(42, &target),
@@ -3477,16 +3512,26 @@ mod tests {
 			effective_capacity: EffectiveCapacity::Total { capacity_msat: 1_024, htlc_maximum_msat: 1_024 },
 		};
 		scorer.payment_path_failed(&payment_path_for_amount(1), 42);
-		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 2050);
-		usage.inflight_htlc_msat = 0;
-		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 866);
+		{
+			let network_graph = network_graph.read_only();
+			let channel = network_graph.channel(42).unwrap();
+			let (info, _) = channel.as_directed_from(&source).unwrap();
+			let candidate = CandidateRouteHop::PublicHop {
+				info,
+				short_channel_id: 42,
+			};
 
-		let usage = ChannelUsage {
-			amount_msat: 1,
-			inflight_htlc_msat: 0,
-			effective_capacity: EffectiveCapacity::AdvertisedMaxHTLC { amount_msat: 0 },
-		};
-		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 2048);
+			assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 2050);
+			usage.inflight_htlc_msat = 0;
+			assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 866);
+
+			let usage = ChannelUsage {
+				amount_msat: 1,
+				inflight_htlc_msat: 0,
+				effective_capacity: EffectiveCapacity::AdvertisedMaxHTLC { amount_msat: 0 },
+			};
+			assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 2048);
+		}
 
 		// Advance to decay all liquidity offsets to zero.
 		SinceEpoch::advance(Duration::from_secs(60 * 60 * 10));
