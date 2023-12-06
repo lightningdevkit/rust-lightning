@@ -938,6 +938,10 @@ impl Readable for RouteHint {
 }
 
 /// A channel descriptor for a hop along a payment path.
+///
+/// While this generally comes from BOLT 11's `r` field, this struct includes more fields than are
+/// available in BOLT 11. Thus, encoding and decoding this via `lightning-invoice` is lossy, as
+/// fields not supported in BOLT 11 will be stripped.
 #[derive(Clone, Debug, Hash, Eq, PartialEq, Ord, PartialOrd)]
 pub struct RouteHintHop {
 	/// The node_id of the non-target end of the route
@@ -1009,63 +1013,73 @@ pub enum CandidateRouteHop<'a> {
 	/// A hop from the payer, where the outbound liquidity is known.
 	FirstHop {
 		/// Channel details of the first hop
-		/// [`ChannelDetails::get_outbound_payment_scid`] is assumed
-		/// to always return `Some(scid)`
-		/// this assumption is checked in [`find_route`] method.
-		details: &'a ChannelDetails,
-		/// The node id of the payer.
 		///
-		/// Can be accessed via `source` method.
-		node_id: NodeId
+		/// [`ChannelDetails::get_outbound_payment_scid`] MUST be `Some` (indicating the channel
+		/// has been funded and is able to pay), and accessor methods may panic otherwise.
+		///
+		/// [`find_route`] validates this prior to constructing a [`CandidateRouteHop`].
+		details: &'a ChannelDetails,
+		/// The node id of the payer, which is also the source side of this candidate route hop.
+		node_id: NodeId,
 	},
-	/// A hop found in the [`ReadOnlyNetworkGraph`],
-	/// where the channel capacity may be unknown.
+	/// A hop found in the [`ReadOnlyNetworkGraph`].
 	PublicHop {
-		/// channel info of the hop.
+		/// Information about the channel, including potentially its capacity and
+		/// direction-specific information.
 		info: DirectedChannelInfo<'a>,
-		/// short_channel_id of the channel.
+		/// The short channel ID of the channel, i.e. the identifier by which we refer to this
+		/// channel.
 		short_channel_id: u64,
 	},
-	/// A hop to the payee found in the BOLT 11 payment invoice,
-	/// though not necessarily a direct
-	/// channel.
+	/// A private hop communicated by the payee, generally via a BOLT 11 invoice.
+	///
+	/// Because BOLT 11 route hints can take multiple hops to get to the destination, this may not
+	/// terminate at the payee.
 	PrivateHop {
-		/// Hint provides information about a private hop,
-		/// needed while routing through a private
-		/// channel.
+		/// Information about the private hop communicated via BOLT 11.
 		hint: &'a RouteHintHop,
-		/// Node id of the next hop in route.
+		/// Node id of the next hop in BOLT 11 route hint.
 		target_node_id: NodeId
 	},
-	/// The payee's identity is concealed behind
-	/// blinded paths provided in a BOLT 12 invoice.
+	/// A blinded path which starts with an introduction point and ultimately terminates with the
+	/// payee.
+	///
+	/// Because we don't know the payee's identity, [`CandidateRouteHop::target`] will return
+	/// `None` in this state.
+	///
+	/// Because blinded paths are "all or nothing", and we cannot use just one part of a blinded
+	/// path, the full path is treated as a single [`CandidateRouteHop`].
 	Blinded {
-		/// Hint provides information about a blinded hop,
-		/// needed while routing through a blinded path.
-		/// `BlindedPayInfo` provides information needed about the
-		/// payment while routing through a blinded path.
-		/// `BlindedPath` is the blinded path to the destination.
+		/// Information about the blinded path including the fee, HTLC amount limits, and
+		/// cryptographic material required to build an HTLC through the given path.
 		hint: &'a (BlindedPayInfo, BlindedPath),
 		/// Index of the hint in the original list of blinded hints.
-		/// Provided to uniquely identify a hop as we are
-		/// route building.
+		///
+		/// This is used to build a [`CandidateHopId`] that uniquely identifies this blinded path,
+		/// even though we don't have a short channel ID for this hop.
 		hint_idx: usize,
 	},
-	/// Similar to [`Self::Blinded`], but the path here
-	/// has 1 blinded hop. `BlindedPayInfo` provided
-	/// for 1-hop blinded paths is ignored
-	/// because it is meant to apply to the hops *between* the
-	/// introduction node and the destination.
-	/// Useful for tracking that we need to include a blinded
-	/// path at the end of our [`Route`].
+	/// Similar to [`Self::Blinded`], but the path here only has one hop.
+	///
+	/// While we treat this similarly to [`CandidateRouteHop::Blinded`] in many respects (e.g.
+	/// returning `None` from [`CandidateRouteHop::target`]), in this case we do actually know the
+	/// payee's identity - it's the introduction point!
+	///
+	/// [`BlindedPayInfo`] provided for 1-hop blinded paths is ignored because it is meant to apply
+	/// to the hops *between* the introduction node and the destination.
+	///
+	/// This primarily exists to track that we need to included a blinded path at the end of our
+	/// [`Route`], even though it doesn't actually add an additional hop in the payment.
 	OneHopBlinded {
-		/// Hint provides information about a single blinded hop,
-		/// needed while routing through a one hop blinded path.
-		/// `BlindedPayInfo` is ignored here.
-		/// `BlindedPath` is the blinded path to the destination.
+		/// Information about the blinded path including the fee, HTLC amount limits, and
+		/// cryptographic material required to build an HTLC terminating with the given path.
+		///
+		/// Note that the [`BlindedPayInfo`] is ignored here.
 		hint: &'a (BlindedPayInfo, BlindedPath),
 		/// Index of the hint in the original list of blinded hints.
-		/// Provided to uniquely identify a hop as we are route building.
+		///
+		/// This is used to build a [`CandidateHopId`] that uniquely identifies this blinded path,
+		/// even though we don't have a short channel ID for this hop.
 		hint_idx: usize,
 	},
 }
