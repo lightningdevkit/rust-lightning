@@ -1039,7 +1039,7 @@ pub enum CandidateRouteHop<'a> {
 		/// Information about the private hop communicated via BOLT 11.
 		hint: &'a RouteHintHop,
 		/// Node id of the next hop in BOLT 11 route hint.
-		target_node_id: NodeId
+		target_node_id: &'a NodeId
 	},
 	/// A blinded path which starts with an introduction point and ultimately terminates with the
 	/// payee.
@@ -1250,7 +1250,7 @@ impl<'a> CandidateRouteHop<'a> {
 		match self {
 			CandidateRouteHop::FirstHop { details, .. } => Some(details.counterparty.node_id.into()),
 			CandidateRouteHop::PublicHop { info, .. } => Some(*info.target()),
-			CandidateRouteHop::PrivateHop { target_node_id, .. } => Some(*target_node_id),
+			CandidateRouteHop::PrivateHop { target_node_id, .. } => Some(**target_node_id),
 			CandidateRouteHop::Blinded { .. } => None,
 			CandidateRouteHop::OneHopBlinded { .. } => None,
 		}
@@ -1792,6 +1792,20 @@ where L::Target: Logger {
 		}
 		if first_hop_targets.is_empty() {
 			return Err(LightningError{err: "Cannot route when there are no outbound routes away from us".to_owned(), action: ErrorAction::IgnoreError});
+		}
+	}
+
+	let mut private_hop_key_cache = HashMap::with_capacity(
+		payment_params.payee.unblinded_route_hints().iter().map(|path| path.0.len()).sum()
+	);
+
+	// Because we store references to private hop node_ids in `dist`, below, we need them to exist
+	// (as `NodeId`, not `PublicKey`) for the lifetime of `dist`. Thus, we calculate all the keys
+	// we'll need here and simply fetch them when routing.
+	private_hop_key_cache.insert(maybe_dummy_payee_pk, NodeId::from_pubkey(&maybe_dummy_payee_pk));
+	for route in payment_params.payee.unblinded_route_hints().iter() {
+		for hop in route.0.iter() {
+			private_hop_key_cache.insert(hop.src_node_id, NodeId::from_pubkey(&hop.src_node_id));
 		}
 	}
 
@@ -2353,8 +2367,7 @@ where L::Target: Logger {
 				let mut aggregate_path_contribution_msat = path_value_msat;
 
 				for (idx, (hop, prev_hop_id)) in hop_iter.zip(prev_hop_iter).enumerate() {
-					let source = NodeId::from_pubkey(&hop.src_node_id);
-					let target = NodeId::from_pubkey(&prev_hop_id);
+					let target = private_hop_key_cache.get(&prev_hop_id).unwrap();
 
 					if let Some(first_channels) = first_hop_targets.get(&target) {
 						if first_channels.iter().any(|d| d.outbound_scid_alias == Some(hop.short_channel_id)) {

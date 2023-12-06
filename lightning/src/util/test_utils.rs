@@ -171,7 +171,7 @@ impl<'a> Router for TestRouter<'a> {
 							};
 							let candidate = CandidateRouteHop::PrivateHop {
 								hint: &route_hint,
-								target_node_id: target_node_id,
+								target_node_id: &target_node_id,
 							};
 							scorer.channel_penalty_msat(&candidate, usage, &());
 						}
