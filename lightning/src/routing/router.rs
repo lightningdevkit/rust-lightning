@@ -1100,6 +1100,7 @@ impl<'a> CandidateRouteHop<'a> {
 	///
 	/// Note that this is deliberately not public as it is somewhat of a footgun because it doesn't
 	/// define a global namespace.
+	#[inline]
 	fn short_channel_id(&self) -> Option<u64> {
 		match self {
 			CandidateRouteHop::FirstHop { details, .. } => details.get_outbound_payment_scid(),
@@ -1115,6 +1116,7 @@ impl<'a> CandidateRouteHop<'a> {
 	/// This only returns `Some` if the channel is public (either our own, or one we've learned
 	/// from the public network graph), and thus the short channel ID we have for this channel is
 	/// globally unique and identifies this channel in a global namespace.
+	#[inline]
 	pub fn globally_unique_short_channel_id(&self) -> Option<u64> {
 		match self {
 			CandidateRouteHop::FirstHop { details, .. } => if details.is_public { details.short_channel_id } else { None },
@@ -1137,6 +1139,7 @@ impl<'a> CandidateRouteHop<'a> {
 	}
 
 	/// Returns cltv_expiry_delta for this hop.
+	#[inline]
 	pub fn cltv_expiry_delta(&self) -> u32 {
 		match self {
 			CandidateRouteHop::FirstHop { .. } => 0,
@@ -1148,6 +1151,7 @@ impl<'a> CandidateRouteHop<'a> {
 	}
 
 	/// Returns the htlc_minimum_msat for this hop.
+	#[inline]
 	pub fn htlc_minimum_msat(&self) -> u64 {
 		match self {
 			CandidateRouteHop::FirstHop { details, .. } => details.next_outbound_htlc_minimum_msat,
@@ -1159,6 +1163,7 @@ impl<'a> CandidateRouteHop<'a> {
 	}
 
 	/// Returns the fees for this hop.
+	#[inline]
 	pub fn fees(&self) -> RoutingFees {
 		match self {
 			CandidateRouteHop::FirstHop { .. } => RoutingFees {
@@ -1196,6 +1201,7 @@ impl<'a> CandidateRouteHop<'a> {
 	/// Returns an ID describing the given hop.
 	///
 	/// See the docs on [`CandidateHopId`] for when this is, or is not, unique.
+	#[inline]
 	fn id(&self) -> CandidateHopId {
 		match self {
 			CandidateRouteHop::Blinded { hint_idx, .. } => CandidateHopId::Blinded(*hint_idx),
@@ -1216,6 +1222,7 @@ impl<'a> CandidateRouteHop<'a> {
 	/// Source node id refers to the hop forwarding the payment.
 	///
 	/// For `FirstHop` we return payer's node id.
+	#[inline]
 	pub fn source(&self) -> NodeId {
 		match self {
 			CandidateRouteHop::FirstHop { node_id, .. } => *node_id,
@@ -1230,7 +1237,8 @@ impl<'a> CandidateRouteHop<'a> {
 	/// Target node id refers to the hop receiving the payment.
 	///
 	/// For `Blinded` and `OneHopBlinded` we return `None` because next hop is blinded.
- 	pub fn target(&self) -> Option<NodeId> {
+	#[inline]
+	pub fn target(&self) -> Option<NodeId> {
 		match self {
 			CandidateRouteHop::FirstHop { details, .. } => Some(details.counterparty.node_id.into()),
 			CandidateRouteHop::PublicHop { info, .. } => Some(*info.target()),
