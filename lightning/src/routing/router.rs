@@ -968,33 +968,24 @@ impl_writeable_tlv_based!(RouteHintHop, {
 });
 
 #[derive(Eq, PartialEq)]
+#[repr(align(64))] // Force the size to 64 bytes
 struct RouteGraphNode {
 	node_id: NodeId,
-	lowest_fee_to_node: u64,
-	total_cltv_delta: u32,
+	score: u64,
 	// The maximum value a yet-to-be-constructed payment path might flow through this node.
 	// This value is upper-bounded by us by:
 	// - how much is needed for a path being constructed
 	// - how much value can channels following this node (up to the destination) can contribute,
 	//   considering their capacity and fees
 	value_contribution_msat: u64,
-	/// The effective htlc_minimum_msat at this hop. If a later hop on the path had a higher HTLC
-	/// minimum, we use it, plus the fees required at each earlier hop to meet it.
-	path_htlc_minimum_msat: u64,
-	/// All penalties incurred from this hop on the way to the destination, as calculated using
-	/// channel scoring.
-	path_penalty_msat: u64,
+	total_cltv_delta: u32,
 	/// The number of hops walked up to this node.
 	path_length_to_node: u8,
 }
 
 impl cmp::Ord for RouteGraphNode {
 	fn cmp(&self, other: &RouteGraphNode) -> cmp::Ordering {
-		let other_score = cmp::max(other.lowest_fee_to_node, other.path_htlc_minimum_msat)
-			.saturating_add(other.path_penalty_msat);
-		let self_score = cmp::max(self.lowest_fee_to_node, self.path_htlc_minimum_msat)
-			.saturating_add(self.path_penalty_msat);
-		other_score.cmp(&self_score).then_with(|| other.node_id.cmp(&self.node_id))
+		other.score.cmp(&self.score).then_with(|| other.node_id.cmp(&self.node_id))
 	}
 }
 
@@ -1003,6 +994,16 @@ impl cmp::PartialOrd for RouteGraphNode {
 		Some(self.cmp(other))
 	}
 }
+
+// While RouteGraphNode can be laid out with fewer bytes, performance appears to be improved
+// substantially when it is laid out at exactly 64 bytes.
+//
+// Thus, we use `#[repr(C)]` on the struct to force a suboptimal layout and check that it stays 64
+// bytes here.
+#[cfg(any(ldk_bench, not(any(test, fuzzing))))]
+const _GRAPH_NODE_SMALL: usize = 64 - core::mem::size_of::<RouteGraphNode>();
+#[cfg(any(ldk_bench, not(any(test, fuzzing))))]
+const _GRAPH_NODE_FIXED_SIZE: usize = core::mem::size_of::<RouteGraphNode>() - 64;
 
 /// A wrapper around the various hop representations.
 ///
@@ -2120,15 +2121,6 @@ where L::Target: Logger {
 										score_params);
 								let path_penalty_msat = $next_hops_path_penalty_msat
 									.saturating_add(channel_penalty_msat);
-								let new_graph_node = RouteGraphNode {
-									node_id: src_node_id,
-									lowest_fee_to_node: total_fee_msat,
-									total_cltv_delta: hop_total_cltv_delta,
-									value_contribution_msat,
-									path_htlc_minimum_msat,
-									path_penalty_msat,
-									path_length_to_node,
-								};
 
 								// Update the way of reaching $candidate.source()
 								// with the given short_channel_id (from $candidate.target()),
@@ -2153,6 +2145,13 @@ where L::Target: Logger {
 									.saturating_add(path_penalty_msat);
 
 								if !old_entry.was_processed && new_cost < old_cost {
+									let new_graph_node = RouteGraphNode {
+										node_id: src_node_id,
+										score: cmp::max(total_fee_msat, path_htlc_minimum_msat).saturating_add(path_penalty_msat),
+										total_cltv_delta: hop_total_cltv_delta,
+										value_contribution_msat,
+										path_length_to_node,
+									};
 									targets.push(new_graph_node);
 									old_entry.next_hops_fee_msat = $next_hops_fee_msat;
 									old_entry.hop_use_fee_msat = hop_use_fee_msat;
@@ -2226,18 +2225,26 @@ where L::Target: Logger {
 	// meaning how much will be paid in fees after this node (to the best of our knowledge).
 	// This data can later be helpful to optimize routing (pay lower fees).
 	macro_rules! add_entries_to_cheapest_to_target_node {
-		( $node: expr, $node_id: expr, $fee_to_target_msat: expr, $next_hops_value_contribution: expr,
-		  $next_hops_path_htlc_minimum_msat: expr, $next_hops_path_penalty_msat: expr,
+		( $node: expr, $node_id: expr, $next_hops_value_contribution: expr,
 		  $next_hops_cltv_delta: expr, $next_hops_path_length: expr ) => {
+			let fee_to_target_msat;
+			let next_hops_path_htlc_minimum_msat;
+			let next_hops_path_penalty_msat;
 			let skip_node = if let Some(elem) = dist.get_mut(&$node_id) {
 				let was_processed = elem.was_processed;
 				elem.was_processed = true;
+				fee_to_target_msat = elem.total_fee_msat;
+				next_hops_path_htlc_minimum_msat = elem.path_htlc_minimum_msat;
+				next_hops_path_penalty_msat = elem.path_penalty_msat;
 				was_processed
 			} else {
 				// Entries are added to dist in add_entry!() when there is a channel from a node.
 				// Because there are no channels from payee, it will not have a dist entry at this point.
 				// If we're processing any other node, it is always be the result of a channel from it.
 				debug_assert_eq!($node_id, maybe_dummy_payee_node_id);
+				fee_to_target_msat = 0;
+				next_hops_path_htlc_minimum_msat = 0;
+				next_hops_path_penalty_msat = 0;
 				false
 			};
 
@@ -2247,9 +2254,9 @@ where L::Target: Logger {
 						let candidate = CandidateRouteHop::FirstHop {
 							details, payer_node_id: &our_node_id,
 						};
-						add_entry!(&candidate, $fee_to_target_msat,
+						add_entry!(&candidate, fee_to_target_msat,
 							$next_hops_value_contribution,
-							$next_hops_path_htlc_minimum_msat, $next_hops_path_penalty_msat,
+							next_hops_path_htlc_minimum_msat, next_hops_path_penalty_msat,
 							$next_hops_cltv_delta, $next_hops_path_length);
 					}
 				}
@@ -2272,10 +2279,10 @@ where L::Target: Logger {
 											short_channel_id: *chan_id,
 										};
 										add_entry!(&candidate,
-											$fee_to_target_msat,
+											fee_to_target_msat,
 											$next_hops_value_contribution,
-											$next_hops_path_htlc_minimum_msat,
-											$next_hops_path_penalty_msat,
+											next_hops_path_htlc_minimum_msat,
+											next_hops_path_penalty_msat,
 											$next_hops_cltv_delta, $next_hops_path_length);
 									}
 								}
@@ -2320,7 +2327,7 @@ where L::Target: Logger {
 			// If not, targets.pop() will not even let us enter the loop in step 2.
 			None => {},
 			Some(node) => {
-				add_entries_to_cheapest_to_target_node!(node, payee, 0, path_value_msat, 0, 0u64, 0, 0);
+				add_entries_to_cheapest_to_target_node!(node, payee, path_value_msat, 0, 0);
 			},
 		});
 
@@ -2527,7 +2534,7 @@ where L::Target: Logger {
 		// Both these cases (and other cases except reaching recommended_value_msat) mean that
 		// paths_collection will be stopped because found_new_path==false.
 		// This is not necessarily a routing failure.
-		'path_construction: while let Some(RouteGraphNode { node_id, lowest_fee_to_node, total_cltv_delta, mut value_contribution_msat, path_htlc_minimum_msat, path_penalty_msat, path_length_to_node, .. }) = targets.pop() {
+		'path_construction: while let Some(RouteGraphNode { node_id, total_cltv_delta, mut value_contribution_msat, path_length_to_node, .. }) = targets.pop() {
 
 			// Since we're going payee-to-payer, hitting our node as a target means we should stop
 			// traversing the graph and arrange the path out of what we found.
@@ -2662,8 +2669,8 @@ where L::Target: Logger {
 			match network_nodes.get(&node_id) {
 				None => {},
 				Some(node) => {
-					add_entries_to_cheapest_to_target_node!(node, node_id, lowest_fee_to_node,
-						value_contribution_msat, path_htlc_minimum_msat, path_penalty_msat,
+					add_entries_to_cheapest_to_target_node!(node, node_id,
+						value_contribution_msat,
 						total_cltv_delta, path_length_to_node);
 				},
 			}
