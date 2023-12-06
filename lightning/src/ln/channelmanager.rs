@@ -4387,8 +4387,19 @@ where
 										continue;
 									}
 								},
-								HTLCForwardInfo::FailMalformedHTLC { .. } => {
-									todo!()
+								HTLCForwardInfo::FailMalformedHTLC { htlc_id, failure_code, sha256_of_onion } => {
+									log_trace!(self.logger, "Failing malformed HTLC back to channel with short id {} (backward HTLC ID {}) after delay", short_chan_id, htlc_id);
+									if let Err(e) = chan.queue_fail_malformed_htlc(htlc_id, failure_code, sha256_of_onion, &self.logger) {
+										if let ChannelError::Ignore(msg) = e {
+											log_trace!(self.logger, "Failed to fail HTLC with ID {} backwards to short_id {}: {}", htlc_id, short_chan_id, msg);
+										} else {
+											panic!("Stated return value requirements in queue_fail_malformed_htlc() were not met");
+										}
+										// fail-backs are best-effort, we probably already have one
+										// pending, and if not that's OK, if not, the channel is on
+										// the chain and sending the HTLC-Timeout is their problem.
+										continue;
+									}
 								},
 							}
 						}
@@ -5257,7 +5268,13 @@ where
 						);
 						HTLCForwardInfo::FailHTLC { htlc_id: *htlc_id, err_packet }
 					},
-					Some(BlindedFailure::FromBlindedNode) => todo!(),
+					Some(BlindedFailure::FromBlindedNode) => {
+						HTLCForwardInfo::FailMalformedHTLC {
+							htlc_id: *htlc_id,
+							failure_code: INVALID_ONION_BLINDING,
+							sha256_of_onion: [0; 32]
+						}
+					},
 					None => {
 						let err_packet = onion_error.get_encrypted_failure_packet(
 							incoming_packet_shared_secret, phantom_shared_secret

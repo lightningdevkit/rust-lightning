@@ -2881,6 +2881,17 @@ impl<SP: Deref> Channel<SP> where
 			.map(|msg_opt| assert!(msg_opt.is_none(), "We forced holding cell?"))
 	}
 
+	/// Used for failing back with [`msgs::UpdateFailMalformedHTLC`]. For now, this is used when we
+	/// want to fail blinded HTLCs where we are not the intro node.
+	///
+	/// See [`Self::queue_fail_htlc`] for more info.
+	pub fn queue_fail_malformed_htlc<L: Deref>(
+		&mut self, htlc_id_arg: u64, failure_code: u16, sha256_of_onion: [u8; 32], logger: &L
+	) -> Result<(), ChannelError> where L::Target: Logger {
+		self.fail_htlc(htlc_id_arg, (failure_code, sha256_of_onion), true, logger)
+			.map(|msg_opt| assert!(msg_opt.is_none(), "We forced holding cell?"))
+	}
+
 	/// We can only have one resolution per HTLC. In some cases around reconnect, we may fulfill
 	/// an HTLC more than once or fulfill once and then attempt to fail after reconnect. We cannot,
 	/// however, fail more than once as we wait for an upstream failure to be irrevocably committed
