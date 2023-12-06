@@ -1311,15 +1311,15 @@ fn iter_equal<I1: Iterator, I2: Iterator>(mut iter_a: I1, mut iter_b: I2)
 /// Fee values should be updated only in the context of the whole path, see update_value_and_recompute_fees.
 /// These fee values are useful to choose hops as we traverse the graph "payee-to-payer".
 #[derive(Clone)]
+#[repr(C)] // Force fields to appear in the order we define them.
 struct PathBuildingHop<'a> {
 	candidate: CandidateRouteHop<'a>,
-	fee_msat: u64,
-
-	/// All the fees paid *after* this channel on the way to the destination
-	next_hops_fee_msat: u64,
-	/// Fee paid for the use of the current channel (see candidate.fees()).
-	/// The value will be actually deducted from the counterparty balance on the previous link.
-	hop_use_fee_msat: u64,
+	/// If we've already processed a node as the best node, we shouldn't process it again. Normally
+	/// we'd just ignore it if we did as all channels would have a higher new fee, but because we
+	/// may decrease the amounts in use as we walk the graph, the actual calculated fee may
+	/// decrease as well. Thus, we have to explicitly track which nodes have been processed and
+	/// avoid processing them again.
+	was_processed: bool,
 	/// Used to compare channels when choosing the for routing.
 	/// Includes paying for the use of a hop and the following hops, as well as
 	/// an estimated cost of reaching this hop.
@@ -1331,12 +1331,20 @@ struct PathBuildingHop<'a> {
 	/// All penalties incurred from this channel on the way to the destination, as calculated using
 	/// channel scoring.
 	path_penalty_msat: u64,
-	/// If we've already processed a node as the best node, we shouldn't process it again. Normally
-	/// we'd just ignore it if we did as all channels would have a higher new fee, but because we
-	/// may decrease the amounts in use as we walk the graph, the actual calculated fee may
-	/// decrease as well. Thus, we have to explicitly track which nodes have been processed and
-	/// avoid processing them again.
-	was_processed: bool,
+
+	// The last 16 bytes are on the next cache line by default in glibc's malloc. Thus, we should
+	// only place fields which are not hot there. Luckily, the next three fields are only read if
+	// we end up on the selected path, and only in the final path layout phase, so we don't care
+	// too much if reading them is slow.
+
+	fee_msat: u64,
+
+	/// All the fees paid *after* this channel on the way to the destination
+	next_hops_fee_msat: u64,
+	/// Fee paid for the use of the current channel (see candidate.fees()).
+	/// The value will be actually deducted from the counterparty balance on the previous link.
+	hop_use_fee_msat: u64,
+
 	#[cfg(all(not(ldk_bench), any(test, fuzzing)))]
 	// In tests, we apply further sanity checks on cases where we skip nodes we already processed
 	// to ensure it is specifically in cases where the fee has gone down because of a decrease in
