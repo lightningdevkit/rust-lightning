@@ -2250,7 +2250,8 @@ impl Writeable for VariableLengthOnionPacket {
 			Ok(pubkey) => pubkey.write(w)?,
 			Err(_) => [0u8;33].write(w)?,
 		}
-		&self.hop_data.write(w)?;
+		// don't encode the length of hop_data
+		w.write_all(&self.hop_data)?;
 		&self.hmac.write(w)?;
 		Ok(())
 	}
@@ -4186,7 +4187,7 @@ mod tests {
 			hmac: [2; 32],
 		};
 		let encoded_trampoline_packet = trampoline_packet.encode();
-		assert_eq!(encoded_trampoline_packet.len(), 718);
+		assert_eq!(encoded_trampoline_packet.len(), 716);
 
 		let msg = msgs::OutboundOnionPayload::Receive {
 			payment_data: None,
@@ -4208,6 +4209,28 @@ mod tests {
 		let mut trampoline_length_cursor = Cursor::new(trampoline_length_bytes);
 		let trampoline_length_big_size: BigSize = Readable::read(&mut trampoline_length_cursor).unwrap();
 		assert_eq!(trampoline_length_big_size.0, encoded_trampoline_packet.len() as u64);
+	}
+
+	#[test]
+	fn encoding_final_onion_hop_data_with_eclair_trampoline_packet() {
+		let public_key = PublicKey::from_slice(&<Vec<u8>>::from_hex("02eec7245d6b7d2ccb30380bfbe2a3648cd7a942653f5aa340edcea1f283686619").unwrap()).unwrap();
+		let hop_data = <Vec<u8>>::from_hex("cff34152f3a36e52ca94e74927203a560392b9cc7ce3c45809c6be52166c24a595716880f95f178bf5b30ca63141f74db6e92795c6130877cfdac3d4bd3087ee73c65d627ddd709112a848cc99e303f3706509aa43ba7c8a88cba175fccf9a8f5016ef06d3b935dbb15196d7ce16dc1a7157845566901d7b2197e52cab4ce487014b14816e5805f9fcacb4f8f88b8ff176f1b94f6ce6b00bc43221130c17d20ef629db7c5f7eafaa166578c720619561dd14b3277db557ec7dcdb793771aef0f2f667cfdbeae3ac8d331c5994779dffb31e5fc0dbdedc0c592ca6d21c18e47fe3528d6975c19517d7e2ea8c5391cf17d0fe30c80913ed887234ccb48808f7ef9425bcd815c3b586210979e3bb286ef2851bf9ce04e28c40a203df98fd648d2f1936fd2f1def0e77eecb277229b4b682322371c0a1dbfcd723a991993df8cc1f2696b84b055b40a1792a29f710295a18fbd351b0f3ff34cd13941131b8278ba79303c89117120eea691738a9954908195143b039dbeed98f26a92585f3d15cf742c953799d3272e0545e9b744be9d3b4c").unwrap();
+		let hmac_vector = <Vec<u8>>::from_hex("bb079bfc4b35190eee9f59a1d7b41ba2f773179f322dafb4b1af900c289ebd6c").unwrap();
+		let mut hmac = [0; 32];
+		hmac.copy_from_slice(&hmac_vector);
+
+		let compressed_public_key = public_key.serialize();
+		assert_eq!(compressed_public_key.len(), 33);
+
+		let trampoline_packet = VariableLengthOnionPacket {
+			version: 0,
+			public_key: Ok(public_key),
+			hop_data,
+			hmac
+		};
+		let encoded_trampoline_packet = trampoline_packet.encode();
+		let expected_eclair_trampoline_packet = <Vec<u8>>::from_hex("0002eec7245d6b7d2ccb30380bfbe2a3648cd7a942653f5aa340edcea1f283686619cff34152f3a36e52ca94e74927203a560392b9cc7ce3c45809c6be52166c24a595716880f95f178bf5b30ca63141f74db6e92795c6130877cfdac3d4bd3087ee73c65d627ddd709112a848cc99e303f3706509aa43ba7c8a88cba175fccf9a8f5016ef06d3b935dbb15196d7ce16dc1a7157845566901d7b2197e52cab4ce487014b14816e5805f9fcacb4f8f88b8ff176f1b94f6ce6b00bc43221130c17d20ef629db7c5f7eafaa166578c720619561dd14b3277db557ec7dcdb793771aef0f2f667cfdbeae3ac8d331c5994779dffb31e5fc0dbdedc0c592ca6d21c18e47fe3528d6975c19517d7e2ea8c5391cf17d0fe30c80913ed887234ccb48808f7ef9425bcd815c3b586210979e3bb286ef2851bf9ce04e28c40a203df98fd648d2f1936fd2f1def0e77eecb277229b4b682322371c0a1dbfcd723a991993df8cc1f2696b84b055b40a1792a29f710295a18fbd351b0f3ff34cd13941131b8278ba79303c89117120eea691738a9954908195143b039dbeed98f26a92585f3d15cf742c953799d3272e0545e9b744be9d3b4cbb079bfc4b35190eee9f59a1d7b41ba2f773179f322dafb4b1af900c289ebd6c").unwrap();
+		assert_eq!(encoded_trampoline_packet, expected_eclair_trampoline_packet);
 	}
 
 	#[test]
