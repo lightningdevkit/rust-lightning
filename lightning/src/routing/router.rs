@@ -1020,7 +1020,7 @@ pub enum CandidateRouteHop<'a> {
 		/// [`find_route`] validates this prior to constructing a [`CandidateRouteHop`].
 		details: &'a ChannelDetails,
 		/// The node id of the payer, which is also the source side of this candidate route hop.
-		node_id: NodeId,
+		payer_node_id: &'a NodeId,
 	},
 	/// A hop found in the [`ReadOnlyNetworkGraph`].
 	PublicHop {
@@ -1225,7 +1225,7 @@ impl<'a> CandidateRouteHop<'a> {
 	#[inline]
 	pub fn source(&self) -> NodeId {
 		match self {
-			CandidateRouteHop::FirstHop { node_id, .. } => *node_id,
+			CandidateRouteHop::FirstHop { payer_node_id, .. } => **payer_node_id,
 			CandidateRouteHop::PublicHop { info, .. } => *info.source(),
 			CandidateRouteHop::PrivateHop { hint, .. } => hint.src_node_id.into(),
 			CandidateRouteHop::Blinded { hint, .. } => hint.1.introduction_node_id.into(),
@@ -2198,7 +2198,9 @@ where L::Target: Logger {
 			if !skip_node {
 				if let Some(first_channels) = first_hop_targets.get(&$node_id) {
 					for details in first_channels {
-						let candidate = CandidateRouteHop::FirstHop { details, node_id: our_node_id };
+						let candidate = CandidateRouteHop::FirstHop {
+							details, payer_node_id: &our_node_id,
+						};
 						add_entry!(&candidate, $fee_to_target_msat,
 							$next_hops_value_contribution,
 							$next_hops_path_htlc_minimum_msat, $next_hops_path_penalty_msat,
@@ -2253,7 +2255,9 @@ where L::Target: Logger {
 		// place where it could be added.
 		payee_node_id_opt.map(|payee| first_hop_targets.get(&payee).map(|first_channels| {
 			for details in first_channels {
-				let candidate = CandidateRouteHop::FirstHop { details, node_id: our_node_id };
+				let candidate = CandidateRouteHop::FirstHop {
+					details, payer_node_id: &our_node_id,
+				};
 				let added = add_entry!(&candidate, 0, path_value_msat,
 									0, 0u64, 0, 0).is_some();
 				log_trace!(logger, "{} direct route to payee via {}",
@@ -2300,7 +2304,9 @@ where L::Target: Logger {
 				sort_first_hop_channels(first_channels, &used_liquidities, recommended_value_msat,
 					our_node_pubkey);
 				for details in first_channels {
-					let first_hop_candidate = CandidateRouteHop::FirstHop { details, node_id: our_node_id};
+					let first_hop_candidate = CandidateRouteHop::FirstHop {
+						details, payer_node_id: &our_node_id,
+					};
 					let blinded_path_fee = match compute_fees(path_contribution_msat, candidate.fees()) {
 						Some(fee) => fee,
 						None => continue
@@ -2397,7 +2403,9 @@ where L::Target: Logger {
 						sort_first_hop_channels(first_channels, &used_liquidities,
 							recommended_value_msat, our_node_pubkey);
 						for details in first_channels {
-							let first_hop_candidate = CandidateRouteHop::FirstHop { details, node_id: our_node_id};
+							let first_hop_candidate = CandidateRouteHop::FirstHop {
+								details, payer_node_id: &our_node_id,
+							};
 							add_entry!(&first_hop_candidate,
 								aggregate_next_hops_fee_msat, aggregate_path_contribution_msat,
 								aggregate_next_hops_path_htlc_minimum_msat, aggregate_next_hops_path_penalty_msat,
@@ -2442,7 +2450,9 @@ where L::Target: Logger {
 							sort_first_hop_channels(first_channels, &used_liquidities,
 								recommended_value_msat, our_node_pubkey);
 							for details in first_channels {
-								let first_hop_candidate = CandidateRouteHop::FirstHop { details, node_id: our_node_id};
+								let first_hop_candidate = CandidateRouteHop::FirstHop {
+									details, payer_node_id: &our_node_id,
+								};
 								add_entry!(&first_hop_candidate,
 									aggregate_next_hops_fee_msat,
 									aggregate_path_contribution_msat,

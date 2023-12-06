@@ -148,9 +148,10 @@ impl<'a> Router for TestRouter<'a> {
 								continue;
 							}
 							let idx = if first_hops.len() > 1 { route.paths.iter().position(|p| p == path).unwrap_or(0) } else { 0 };
+							let node_id = NodeId::from_pubkey(payer);
 							let candidate = CandidateRouteHop::FirstHop {
 								details: first_hops[idx],
-								node_id: NodeId::from_pubkey(payer)
+								payer_node_id: &node_id,
 							};
 							scorer.channel_penalty_msat(&candidate, usage, &());
 						} else {
