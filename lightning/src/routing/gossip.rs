@@ -992,19 +992,14 @@ pub struct DirectedChannelInfo<'a> {
 	direction: &'a ChannelUpdateInfo,
 	htlc_maximum_msat: u64,
 	effective_capacity: EffectiveCapacity,
-	/// Outbound from the perspective of `node_one`.
-	///
-	/// If true, the channel is considered to be outbound from `node_one` perspective.
-	/// If false, the channel is considered to be outbound from `node_two` perspective.
-	///
-	/// [`ChannelInfo::node_one`]
-	/// [`ChannelInfo::node_two`]
-	outbound: bool,
+	/// The direction this channel is in - if set, it indicates that we're traversing the channel
+	/// from [`ChannelInfo::node_one`] to [`ChannelInfo::node_two`].
+	from_node_one: bool,
 }
 
 impl<'a> DirectedChannelInfo<'a> {
 	#[inline]
-	fn new(channel: &'a ChannelInfo, direction: &'a ChannelUpdateInfo, outbound: bool) -> Self {
+	fn new(channel: &'a ChannelInfo, direction: &'a ChannelUpdateInfo, from_node_one: bool) -> Self {
 		let mut htlc_maximum_msat = direction.htlc_maximum_msat;
 		let capacity_msat = channel.capacity_sats.map(|capacity_sats| capacity_sats * 1000);
 
@@ -1017,7 +1012,7 @@ impl<'a> DirectedChannelInfo<'a> {
 		};
 
 		Self {
-			channel, direction, htlc_maximum_msat, effective_capacity, outbound
+			channel, direction, htlc_maximum_msat, effective_capacity, from_node_one,
 		}
 	}
 
@@ -1047,12 +1042,12 @@ impl<'a> DirectedChannelInfo<'a> {
 	/// Returns the `node_id` of the source hop.
 	///
 	/// Refers to the `node_id` forwarding the payment to the next hop.
-	pub(super) fn source(&self) -> &'a NodeId { if self.outbound { &self.channel.node_one } else { &self.channel.node_two } }
+	pub(super) fn source(&self) -> &'a NodeId { if self.from_node_one { &self.channel.node_one } else { &self.channel.node_two } }
 
 	/// Returns the `node_id` of the target hop.
 	///
 	/// Refers to the `node_id` receiving the payment from the previous hop.
-	pub(super) fn target(&self) -> &'a NodeId { if self.outbound { &self.channel.node_two } else { &self.channel.node_one } }
+	pub(super) fn target(&self) -> &'a NodeId { if self.from_node_one { &self.channel.node_two } else { &self.channel.node_one } }
 }
 
 impl<'a> fmt::Debug for DirectedChannelInfo<'a> {
