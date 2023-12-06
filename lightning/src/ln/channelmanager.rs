@@ -5249,16 +5249,20 @@ where
 					"Failing {}HTLC with payment_hash {} backwards from us: {:?}",
 					if blinded_failure.is_some() { "blinded " } else { "" }, &payment_hash, onion_error
 				);
-				let err_packet = match blinded_failure {
+				let failure = match blinded_failure {
 					Some(BlindedFailure::FromIntroductionNode) => {
 						let blinded_onion_error = HTLCFailReason::reason(INVALID_ONION_BLINDING, vec![0; 32]);
-						blinded_onion_error.get_encrypted_failure_packet(
+						let err_packet = blinded_onion_error.get_encrypted_failure_packet(
 							incoming_packet_shared_secret, phantom_shared_secret
-						)
+						);
+						HTLCForwardInfo::FailHTLC { htlc_id: *htlc_id, err_packet }
 					},
 					Some(BlindedFailure::FromBlindedNode) => todo!(),
 					None => {
-						onion_error.get_encrypted_failure_packet(incoming_packet_shared_secret, phantom_shared_secret)
+						let err_packet = onion_error.get_encrypted_failure_packet(
+							incoming_packet_shared_secret, phantom_shared_secret
+						);
+						HTLCForwardInfo::FailHTLC { htlc_id: *htlc_id, err_packet }
 					}
 				};
 
@@ -5269,10 +5273,10 @@ where
 				}
 				match forward_htlcs.entry(*short_channel_id) {
 					hash_map::Entry::Occupied(mut entry) => {
-						entry.get_mut().push(HTLCForwardInfo::FailHTLC { htlc_id: *htlc_id, err_packet });
+						entry.get_mut().push(failure);
 					},
 					hash_map::Entry::Vacant(entry) => {
-						entry.insert(vec!(HTLCForwardInfo::FailHTLC { htlc_id: *htlc_id, err_packet }));
+						entry.insert(vec!(failure));
 					}
 				}
 				mem::drop(forward_htlcs);
