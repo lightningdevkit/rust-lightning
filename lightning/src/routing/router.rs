@@ -2747,8 +2747,8 @@ where L::Target: Logger {
 	});
 	for idx in 0..(selected_route.len() - 1) {
 		if idx + 1 >= selected_route.len() { break; }
-		if iter_equal(selected_route[idx].hops.iter().map(|h| (h.0.candidate.id(), h.0.candidate.target())),
-									selected_route[idx + 1].hops.iter().map(|h| (h.0.candidate.id(), h.0.candidate.target()))) {
+		if iter_equal(selected_route[idx    ].hops.iter().map(|h| (h.0.candidate.id(), h.0.candidate.target())),
+		              selected_route[idx + 1].hops.iter().map(|h| (h.0.candidate.id(), h.0.candidate.target()))) {
 			let new_value = selected_route[idx].get_value_msat() + selected_route[idx + 1].get_value_msat();
 			selected_route[idx].update_value_and_recompute_fees(new_value);
 			selected_route.remove(idx + 1);
