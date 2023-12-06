@@ -620,9 +620,8 @@ where C::Target: chain::Filter,
 	pub fn rebroadcast_pending_claims(&self) {
 		let monitors = self.monitors.read().unwrap();
 		for (_, monitor_holder) in &*monitors {
-			let logger = WithChannelMonitor::from(&self.logger, &monitor_holder.monitor);
 			monitor_holder.monitor.rebroadcast_pending_claims(
-				&*self.broadcaster, &*self.fee_estimator, &logger
+				&*self.broadcaster, &*self.fee_estimator, &self.logger
 			)
 		}
 	}
@@ -640,9 +639,8 @@ where
 	fn filtered_block_connected(&self, header: &Header, txdata: &TransactionData, height: u32) {
 		log_debug!(self.logger, "New best block {} at height {} provided via block_connected", header.block_hash(), height);
 		self.process_chain_data(header, Some(height), &txdata, |monitor, txdata| {
-			let logger = WithChannelMonitor::from(&self.logger, &monitor);
 			monitor.block_connected(
-				header, txdata, height, &*self.broadcaster, &*self.fee_estimator, &logger)
+				header, txdata, height, &*self.broadcaster, &*self.fee_estimator, &self.logger)
 		});
 	}
 
@@ -650,9 +648,8 @@ where
 		let monitor_states = self.monitors.read().unwrap();
 		log_debug!(self.logger, "Latest block {} at height {} removed via block_disconnected", header.block_hash(), height);
 		for monitor_state in monitor_states.values() {
-			let logger = WithChannelMonitor::from(&self.logger, &monitor_state.monitor);
 			monitor_state.monitor.block_disconnected(
-				header, height, &*self.broadcaster, &*self.fee_estimator, &logger);
+				header, height, &*self.broadcaster, &*self.fee_estimator, &self.logger);
 		}
 	}
 }
@@ -669,9 +666,8 @@ where
 	fn transactions_confirmed(&self, header: &Header, txdata: &TransactionData, height: u32) {
 		log_debug!(self.logger, "{} provided transactions confirmed at height {} in block {}", txdata.len(), height, header.block_hash());
 		self.process_chain_data(header, None, txdata, |monitor, txdata| {
-			let logger = WithChannelMonitor::from(&self.logger, &monitor);
 			monitor.transactions_confirmed(
-				header, txdata, height, &*self.broadcaster, &*self.fee_estimator, &logger)
+				header, txdata, height, &*self.broadcaster, &*self.fee_estimator, &self.logger)
 		});
 	}
 
@@ -679,20 +675,19 @@ where
 		log_debug!(self.logger, "Transaction {} reorganized out of chain", txid);
 		let monitor_states = self.monitors.read().unwrap();
 		for monitor_state in monitor_states.values() {
-			let logger = WithChannelMonitor::from(&self.logger, &monitor_state.monitor);
-			monitor_state.monitor.transaction_unconfirmed(txid, &*self.broadcaster, &*self.fee_estimator, &logger);
+			monitor_state.monitor.transaction_unconfirmed(txid, &*self.broadcaster, &*self.fee_estimator, &self.logger);
 		}
 	}
 
 	fn best_block_updated(&self, header: &Header, height: u32) {
 		log_debug!(self.logger, "New best block {} at height {} provided via best_block_updated", header.block_hash(), height);
 		self.process_chain_data(header, Some(height), &[], |monitor, txdata| {
-			let logger = WithChannelMonitor::from(&self.logger, &monitor);
 			// While in practice there shouldn't be any recursive calls when given empty txdata,
 			// it's still possible if a chain::Filter implementation returns a transaction.
 			debug_assert!(txdata.is_empty());
 			monitor.best_block_updated(
-				header, height, &*self.broadcaster, &*self.fee_estimator, &logger)
+				header, height, &*self.broadcaster, &*self.fee_estimator, &self.logger
+			)
 		});
 	}
 
@@ -758,8 +753,7 @@ where C::Target: chain::Filter,
 
 	fn update_channel(&self, funding_txo: OutPoint, update: &ChannelMonitorUpdate) -> ChannelMonitorUpdateStatus {
 		// Update the monitor that watches the channel referred to by the given outpoint.
-		let monitors_lock = self.monitors.read().unwrap();
-		let monitors = monitors_lock.deref();
+		let monitors = self.monitors.read().unwrap();
 		match monitors.get(&funding_txo) {
 			None => {
 				log_error!(self.logger, "Failed to update channel monitor: no such monitor registered");
@@ -802,6 +796,7 @@ where C::Target: chain::Filter,
 					ChannelMonitorUpdateStatus::UnrecoverableError => {
 						// Take the monitors lock for writing so that we poison it and any future
 						// operations going forward fail immediately.
+						core::mem::drop(pending_monitor_updates);
 						core::mem::drop(monitors);
 						let _poison = self.monitors.write().unwrap();
 						let err_str = "ChannelMonitor[Update] persistence failed unrecoverably. This indicates we cannot continue normal operation and must shut down.";
