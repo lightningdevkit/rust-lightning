@@ -1138,7 +1138,11 @@ impl<'a> CandidateRouteHop<'a> {
 		}
 	}
 
-	/// Returns cltv_expiry_delta for this hop.
+	/// Returns the required difference in HTLC CLTV expiry between the [`Self::source`] and the
+	/// next-hop for an HTLC taking this hop.
+	///
+	/// This is the time that the node(s) in this hop have to claim the HTLC on-chain if the
+	/// next-hop goes on chain with a payment preimage.
 	#[inline]
 	pub fn cltv_expiry_delta(&self) -> u32 {
 		match self {
@@ -1150,7 +1154,7 @@ impl<'a> CandidateRouteHop<'a> {
 		}
 	}
 
-	/// Returns the htlc_minimum_msat for this hop.
+	/// Returns the minimum amount that can be sent over this hop, in millisatoshis.
 	#[inline]
 	pub fn htlc_minimum_msat(&self) -> u64 {
 		match self {
@@ -1162,7 +1166,7 @@ impl<'a> CandidateRouteHop<'a> {
 		}
 	}
 
-	/// Returns the fees for this hop.
+	/// Returns the fees that must be paid to route an HTLC over this channel.
 	#[inline]
 	pub fn fees(&self) -> RoutingFees {
 		match self {
@@ -1219,9 +1223,9 @@ impl<'a> CandidateRouteHop<'a> {
 	}
 	/// Returns the source node id of current hop.
 	///
-	/// Source node id refers to the hop forwarding the payment.
+	/// Source node id refers to the node forwarding the HTLC through this hop.
 	///
-	/// For `FirstHop` we return payer's node id.
+	/// For [`Self::FirstHop`] we return payer's node id.
 	#[inline]
 	pub fn source(&self) -> NodeId {
 		match self {
@@ -1234,9 +1238,13 @@ impl<'a> CandidateRouteHop<'a> {
 	}
 	/// Returns the target node id of this hop, if known.
 	///
-	/// Target node id refers to the hop receiving the payment.
+	/// Target node id refers to the node receiving the HTLC after this hop.
 	///
-	/// For `Blinded` and `OneHopBlinded` we return `None` because next hop is blinded.
+	/// For [`Self::Blinded`] we return `None` because the ultimate destination after the blinded
+	/// path is unknown.
+	///
+	/// For [`Self::OneHopBlinded`] we return `None` because the target is the same as the source,
+	/// and such a return value would be somewhat nonsensical.
 	#[inline]
 	pub fn target(&self) -> Option<NodeId> {
 		match self {
