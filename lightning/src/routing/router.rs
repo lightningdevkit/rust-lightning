@@ -1186,6 +1186,10 @@ impl<'a> CandidateRouteHop<'a> {
 		}
 	}
 
+	/// Fetch the effective capacity of this hop.
+	///
+	/// Note that this may be somewhat expensive, so calls to this should be limited and results
+	/// cached!
 	fn effective_capacity(&self) -> EffectiveCapacity {
 		match self {
 			CandidateRouteHop::FirstHop { details, .. } => EffectiveCapacity::ExactLiquidity {
@@ -1340,6 +1344,18 @@ struct PathBuildingHop<'a> {
 	// used for more info.
 	value_contribution_msat: u64,
 }
+
+// Checks that the entries in the `find_route` `dist` map fit in (exactly) two standard x86-64
+// cache lines. Sadly, they're not guaranteed to actually lie on a cache line (and in fact,
+// generally won't, because at least glibc's malloc will align to a nice, big, round
+// boundary...plus 16), but at least it will reduce the amount of data we'll need to load.
+//
+// Note that these assertions only pass on somewhat recent rustc, and thus are gated on the
+// ldk_bench flag.
+#[cfg(ldk_bench)]
+const _NODE_MAP_SIZE_TWO_CACHE_LINES: usize = 128 - core::mem::size_of::<(NodeId, PathBuildingHop)>();
+#[cfg(ldk_bench)]
+const _NODE_MAP_SIZE_EXACTLY_CACHE_LINES: usize = core::mem::size_of::<(NodeId, PathBuildingHop)>() - 128;
 
 impl<'a> core::fmt::Debug for PathBuildingHop<'a> {
 	fn fmt(&self, f: &mut core::fmt::Formatter) -> Result<(), core::fmt::Error> {
