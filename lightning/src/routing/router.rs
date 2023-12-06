@@ -1055,8 +1055,8 @@ pub enum CandidateRouteHop<'a> {
 		hint: &'a (BlindedPayInfo, BlindedPath),
 		/// Index of the hint in the original list of blinded hints.
 		///
-		/// This is used to build a [`CandidateHopId`] that uniquely identifies this blinded path,
-		/// even though we don't have a short channel ID for this hop.
+		/// This is used to cheaply uniquely identify this blinded path, even though we don't have
+		/// a short channel ID for this hop.
 		hint_idx: usize,
 	},
 	/// Similar to [`Self::Blinded`], but the path here only has one hop.
@@ -1078,22 +1078,48 @@ pub enum CandidateRouteHop<'a> {
 		hint: &'a (BlindedPayInfo, BlindedPath),
 		/// Index of the hint in the original list of blinded hints.
 		///
-		/// This is used to build a [`CandidateHopId`] that uniquely identifies this blinded path,
-		/// even though we don't have a short channel ID for this hop.
+		/// This is used to cheaply uniquely identify this blinded path, even though we don't have
+		/// a short channel ID for this hop.
 		hint_idx: usize,
 	},
 }
 
 impl<'a> CandidateRouteHop<'a> {
-	/// Returns short_channel_id if known.
-	/// For `FirstHop` we assume [`ChannelDetails::get_outbound_payment_scid`] is always set, this assumption is checked in
-	/// [`find_route`] method.
-	/// For `Blinded` and `OneHopBlinded` we return `None` because next hop is not known.
-	pub fn short_channel_id(&self) -> Option<u64> {
+	/// Returns the short channel ID for this hop, if one is known.
+	///
+	/// This SCID could be an alias or a globally unique SCID, and thus is only expected to
+	/// uniquely identify this channel in conjunction with the [`CandidateRouteHop::source`].
+	///
+	/// Returns `Some` as long as the candidate is a [`CandidateRouteHop::PublicHop`], a
+	/// [`CandidateRouteHop::PrivateHop`] from a BOLT 11 route hint, or a
+	/// [`CandidateRouteHop::FirstHop`] with a known [`ChannelDetails::get_outbound_payment_scid`]
+	/// (which is always true for channels which are funded and ready for use).
+	///
+	/// In other words, this should always return `Some` as long as the candidate hop is not a
+	/// [`CandidateRouteHop::Blinded`] or a [`CandidateRouteHop::OneHopBlinded`].
+	///
+	/// Note that this is deliberately not public as it is somewhat of a footgun because it doesn't
+	/// define a global namespace.
+	fn short_channel_id(&self) -> Option<u64> {
 		match self {
 			CandidateRouteHop::FirstHop { details, .. } => details.get_outbound_payment_scid(),
 			CandidateRouteHop::PublicHop { short_channel_id, .. } => Some(*short_channel_id),
 			CandidateRouteHop::PrivateHop { hint, .. } => Some(hint.short_channel_id),
+			CandidateRouteHop::Blinded { .. } => None,
+			CandidateRouteHop::OneHopBlinded { .. } => None,
+		}
+	}
+
+	/// Returns the globally unique short channel ID for this hop, if one is known.
+	///
+	/// This only returns `Some` if the channel is public (either our own, or one we've learned
+	/// from the public network graph), and thus the short channel ID we have for this channel is
+	/// globally unique and identifies this channel in a global namespace.
+	pub fn globally_unique_short_channel_id(&self) -> Option<u64> {
+		match self {
+			CandidateRouteHop::FirstHop { details, .. } => if details.is_public { details.short_channel_id } else { None },
+			CandidateRouteHop::PublicHop { short_channel_id, .. } => Some(*short_channel_id),
+			CandidateRouteHop::PrivateHop { .. } => None,
 			CandidateRouteHop::Blinded { .. } => None,
 			CandidateRouteHop::OneHopBlinded { .. } => None,
 		}
@@ -1167,10 +1193,10 @@ impl<'a> CandidateRouteHop<'a> {
 		}
 	}
 
-	///  Returns the id of this hop.
-	///  For `Blinded` and `OneHopBlinded` we return `CandidateHopId::Blinded` with `hint_idx` because we don't know the channel id.
-	///  For any other option we return `CandidateHopId::Clear` because we know the channel id and the direction.
-	pub fn id(&self) -> CandidateHopId {
+	/// Returns an ID describing the given hop.
+	///
+	/// See the docs on [`CandidateHopId`] for when this is, or is not, unique.
+	fn id(&self) -> CandidateHopId {
 		match self {
 			CandidateRouteHop::Blinded { hint_idx, .. } => CandidateHopId::Blinded(*hint_idx),
 			CandidateRouteHop::OneHopBlinded { hint_idx, .. } => CandidateHopId::Blinded(*hint_idx),
@@ -1215,12 +1241,17 @@ impl<'a> CandidateRouteHop<'a> {
 	}
 }
 
-/// A wrapper around the various hop id representations.
+/// A unique(ish) identifier for a specific [`CandidateRouteHop`].
 ///
-/// `CandidateHopId::Clear` is used to identify a hop with a known short channel id and direction.
-/// `CandidateHopId::Blinded` is used to identify a blinded hop `hint_idx`.
+/// For blinded paths, this ID is unique only within a given [`find_route`] call.
+///
+/// For other hops, because SCIDs between private channels and public channels can conflict, this
+/// isn't guaranteed to be unique at all.
+///
+/// For our uses, this is generally fine, but it is not public as it is otherwise a rather
+/// difficult-to-use API.
 #[derive(Clone, Copy, Eq, Hash, Ord, PartialOrd, PartialEq)]
-pub enum CandidateHopId {
+enum CandidateHopId {
 	/// Contains (scid, src_node_id < target_node_id)
 	Clear((u64, bool)),
 	/// Index of the blinded route hint in [`Payee::Blinded::route_hints`].
@@ -2446,8 +2477,10 @@ where L::Target: Logger {
 					let target = ordered_hops.last().unwrap().0.candidate.target().unwrap_or(maybe_dummy_payee_node_id);
 					if let Some(first_channels) = first_hop_targets.get(&target) {
 						for details in first_channels {
-							if let Some(scid) = ordered_hops.last().unwrap().0.candidate.short_channel_id() {
-								if details.get_outbound_payment_scid().unwrap() == scid {
+							if let CandidateRouteHop::FirstHop { details: last_hop_details, .. }
+								= ordered_hops.last().unwrap().0.candidate
+							{
+								if details.get_outbound_payment_scid() == last_hop_details.get_outbound_payment_scid() {
 									ordered_hops.last_mut().unwrap().1 = details.counterparty.features.to_context();
 									features_set = true;
 									break;

@@ -1324,7 +1324,7 @@ impl ScoreLookUp for TestScorer {
 	fn channel_penalty_msat(
 		&self, candidate: &CandidateRouteHop, usage: ChannelUsage, _score_params: &Self::ScoreParams
 	) -> u64 {
-		let short_channel_id = match candidate.short_channel_id() {
+		let short_channel_id = match candidate.globally_unique_short_channel_id() {
 			Some(scid) => scid,
 			None => return 0,
 		};

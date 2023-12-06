@@ -1344,13 +1344,11 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, T: Time> ScoreLookUp for Prob
 	fn channel_penalty_msat(
 		&self, candidate: &CandidateRouteHop, usage: ChannelUsage, score_params: &ProbabilisticScoringFeeParameters
 	) -> u64 {
-		let scid = match candidate.short_channel_id() {
-			Some(scid) => scid,
-			None => return 0,
-		};
-		let target = match candidate.target() {
-			Some(target) => target,
-			None => return 0,
+		let (scid, target) = match candidate {
+			CandidateRouteHop::PublicHop { info, short_channel_id } => {
+				(short_channel_id, info.target())
+			},
+			_ => return 0,
 		};
 		let source = candidate.source();
 		if let Some(penalty) = score_params.manual_node_penalties.get(&target) {
