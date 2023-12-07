@@ -64,7 +64,7 @@ const MAX_EXCESS_BYTES_FOR_RELAY: usize = 1024;
 const MAX_SCIDS_PER_REPLY: usize = 8000;
 
 /// Represents the compressed public key of a node
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub struct NodeId([u8; PUBLIC_KEY_SIZE]);
 
 impl NodeId {
@@ -113,14 +113,6 @@ impl fmt::Display for NodeId {
 impl core::hash::Hash for NodeId {
 	fn hash<H: core::hash::Hasher>(&self, hasher: &mut H) {
 		self.0.hash(hasher);
-	}
-}
-
-impl Eq for NodeId {}
-
-impl PartialEq for NodeId {
-	fn eq(&self, other: &Self) -> bool {
-		self.0[..] == other.0[..]
 	}
 }
 
@@ -850,7 +842,7 @@ impl Readable for ChannelUpdateInfo {
 	}
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Eq)]
 /// Details about a channel (both directions).
 /// Received within a channel announcement.
 pub struct ChannelInfo {
@@ -875,6 +867,24 @@ pub struct ChannelInfo {
 	/// (which we can probably assume we are - no-std environments probably won't have a full
 	/// network graph in memory!).
 	announcement_received_time: u64,
+
+	/// The [`NodeInfo::node_counter`] of the node pointed to by [`Self::node_one`].
+	pub(crate) node_one_counter: u32,
+	/// The [`NodeInfo::node_counter`] of the node pointed to by [`Self::node_two`].
+	pub(crate) node_two_counter: u32,
+}
+
+impl PartialEq for ChannelInfo {
+	fn eq(&self, o: &ChannelInfo) -> bool {
+		self.features == o.features &&
+			self.node_one == o.node_one &&
+			self.one_to_two == o.one_to_two &&
+			self.node_two == o.node_two &&
+			self.two_to_one == o.two_to_one &&
+			self.capacity_sats == o.capacity_sats &&
+			self.announcement_message == o.announcement_message &&
+			self.announcement_received_time == o.announcement_received_time
+	}
 }
 
 impl ChannelInfo {
@@ -995,6 +1005,8 @@ impl Readable for ChannelInfo {
 			capacity_sats: _init_tlv_based_struct_field!(capacity_sats, required),
 			announcement_message: _init_tlv_based_struct_field!(announcement_message, required),
 			announcement_received_time: _init_tlv_based_struct_field!(announcement_received_time, (default_value, 0)),
+			node_one_counter: u32::max_value(),
+			node_two_counter: u32::max_value(),
 		})
 	}
 }
@@ -1371,7 +1383,7 @@ impl<L: Deref> ReadableArgs<L> for NetworkGraph<L> where L::Target: Logger {
 		let mut channels = IndexedMap::with_capacity(cmp::min(channels_count as usize, 22500));
 		for _ in 0..channels_count {
 			let chan_id: u64 = Readable::read(reader)?;
-			let chan_info = Readable::read(reader)?;
+			let chan_info: ChannelInfo = Readable::read(reader)?;
 			channels.insert(chan_id, chan_info);
 		}
 		let nodes_count: u64 = Readable::read(reader)?;
@@ -1383,6 +1395,13 @@ impl<L: Deref> ReadableArgs<L> for NetworkGraph<L> where L::Target: Logger {
 			let mut node_info: NodeInfo = Readable::read(reader)?;
 			node_info.node_counter = i as u32;
 			nodes.insert(node_id, node_info);
+		}
+
+		for (_, chan) in channels.unordered_iter_mut() {
+			chan.node_one_counter =
+				nodes.get(&chan.node_one).ok_or(DecodeError::InvalidValue)?.node_counter;
+			chan.node_two_counter =
+				nodes.get(&chan.node_two).ok_or(DecodeError::InvalidValue)?.node_counter;
 		}
 
 		let mut last_rapid_gossip_sync_timestamp: Option<u32> = None;
@@ -1454,6 +1473,7 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 
 	fn test_node_counter_consistency(&self) {
 		#[cfg(debug_assertions)] {
+			let channels = self.channels.read().unwrap();
 			let nodes = self.nodes.read().unwrap();
 			let removed_node_counters = self.removed_node_counters.lock().unwrap();
 			let next_counter = self.next_node_counter.load(Ordering::Acquire);
@@ -1472,6 +1492,11 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 				let bit = 1 << (node.node_counter % 8);
 				assert_eq!(used_node_counters[pos] & bit, 0);
 				used_node_counters[pos] |= bit;
+			}
+
+			for (_, chan) in channels.unordered_iter() {
+				assert_eq!(chan.node_one_counter, nodes.get(&chan.node_one).unwrap().node_counter);
+				assert_eq!(chan.node_two_counter, nodes.get(&chan.node_two).unwrap().node_counter);
 			}
 		}
 	}
@@ -1632,6 +1657,8 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 			capacity_sats: None,
 			announcement_message: None,
 			announcement_received_time: timestamp,
+			node_one_counter: u32::max_value(),
+			node_two_counter: u32::max_value(),
 		};
 
 		self.add_channel_between_nodes(short_channel_id, channel_info, None)
@@ -1646,7 +1673,8 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 
 		log_gossip!(self.logger, "Adding channel {} between nodes {} and {}", short_channel_id, node_id_a, node_id_b);
 
-		match channels.entry(short_channel_id) {
+		let channel_entry = channels.entry(short_channel_id);
+		let channel_info = match channel_entry {
 			IndexedMapEntry::Occupied(mut entry) => {
 				//TODO: because asking the blockchain if short_channel_id is valid is only optional
 				//in the blockchain API, we need to handle it smartly here, though it's unclear
@@ -1662,28 +1690,35 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 					// c) it's unclear how to do so without exposing ourselves to massive DoS risk.
 					self.remove_channel_in_nodes(&mut nodes, &entry.get(), short_channel_id);
 					*entry.get_mut() = channel_info;
+					entry.into_mut()
 				} else {
 					return Err(LightningError{err: "Already have knowledge of channel".to_owned(), action: ErrorAction::IgnoreDuplicateGossip});
 				}
 			},
 			IndexedMapEntry::Vacant(entry) => {
-				entry.insert(channel_info);
+				entry.insert(channel_info)
 			}
 		};
 
-		for current_node_id in [node_id_a, node_id_b].iter() {
+		let mut node_counter_id = [
+			(&mut channel_info.node_one_counter, node_id_a),
+			(&mut channel_info.node_two_counter, node_id_b)
+		];
+		for (node_counter, current_node_id) in node_counter_id.iter_mut() {
 			match nodes.entry(current_node_id.clone()) {
 				IndexedMapEntry::Occupied(node_entry) => {
-					node_entry.into_mut().channels.push(short_channel_id);
+					let node = node_entry.into_mut();
+					node.channels.push(short_channel_id);
+					**node_counter = node.node_counter;
 				},
 				IndexedMapEntry::Vacant(node_entry) => {
 					let mut removed_node_counters = self.removed_node_counters.lock().unwrap();
-					let node_counter = removed_node_counters.pop()
+					**node_counter = removed_node_counters.pop()
 						.unwrap_or(self.next_node_counter.fetch_add(1, Ordering::Relaxed) as u32);
 					node_entry.insert(NodeInfo {
 						channels: vec!(short_channel_id),
 						announcement_info: None,
-						node_counter,
+						node_counter: **node_counter,
 					});
 				}
 			};
@@ -1774,6 +1809,8 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 			announcement_message: if msg.excess_data.len() <= MAX_EXCESS_BYTES_FOR_RELAY
 				{ full_msg.cloned() } else { None },
 			announcement_received_time,
+			node_one_counter: u32::max_value(),
+			node_two_counter: u32::max_value(),
 		};
 
 		self.add_channel_between_nodes(msg.short_channel_id, chan_info, utxo_value)?;
@@ -3459,6 +3496,8 @@ pub(crate) mod tests {
 			capacity_sats: None,
 			announcement_message: None,
 			announcement_received_time: 87654,
+			node_one_counter: 0,
+			node_two_counter: 1,
 		};
 
 		let mut encoded_chan_info: Vec<u8> = Vec::new();
@@ -3477,6 +3516,8 @@ pub(crate) mod tests {
 			capacity_sats: None,
 			announcement_message: None,
 			announcement_received_time: 87654,
+			node_one_counter: 0,
+			node_two_counter: 1,
 		};
 
 		let mut encoded_chan_info: Vec<u8> = Vec::new();
