@@ -9,7 +9,7 @@
 
 //! The router finds paths within a [`NetworkGraph`] for a payment.
 
-use bitcoin::secp256k1::PublicKey;
+use bitcoin::secp256k1::{PublicKey, Secp256k1, self};
 use bitcoin::hashes::Hash;
 use bitcoin::hashes::sha256::Hash as Sha256;
 
@@ -19,8 +19,10 @@ use crate::ln::channelmanager::{ChannelDetails, PaymentId};
 use crate::ln::features::{Bolt11InvoiceFeatures, Bolt12InvoiceFeatures, ChannelFeatures, NodeFeatures};
 use crate::ln::msgs::{DecodeError, ErrorAction, LightningError, MAX_VALUE_MSAT};
 use crate::offers::invoice::{BlindedPayInfo, Bolt12Invoice};
+use crate::onion_message::{DefaultMessageRouter, Destination, MessageRouter, OnionMessagePath};
 use crate::routing::gossip::{DirectedChannelInfo, EffectiveCapacity, ReadOnlyNetworkGraph, NetworkGraph, NodeId, RoutingFees};
 use crate::routing::scoring::{ChannelUsage, LockableScore, ScoreLookUp};
+use crate::sign::EntropySource;
 use crate::util::ser::{Writeable, Readable, ReadableArgs, Writer};
 use crate::util::logger::{Level, Logger};
 use crate::util::chacha20::ChaCha20;
@@ -33,7 +35,7 @@ use core::{cmp, fmt};
 use core::ops::Deref;
 
 /// A [`Router`] implemented using [`find_route`].
-pub struct DefaultRouter<G: Deref<Target = NetworkGraph<L>>, L: Deref, S: Deref, SP: Sized, Sc: ScoreLookUp<ScoreParams = SP>> where
+pub struct DefaultRouter<G: Deref<Target = NetworkGraph<L>> + Clone, L: Deref, S: Deref, SP: Sized, Sc: ScoreLookUp<ScoreParams = SP>> where
 	L::Target: Logger,
 	S::Target: for <'a> LockableScore<'a, ScoreLookUp = Sc>,
 {
@@ -41,21 +43,23 @@ pub struct DefaultRouter<G: Deref<Target = NetworkGraph<L>>, L: Deref, S: Deref,
 	logger: L,
 	random_seed_bytes: Mutex<[u8; 32]>,
 	scorer: S,
-	score_params: SP
+	score_params: SP,
+	message_router: DefaultMessageRouter<G, L>,
 }
 
-impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, S: Deref, SP: Sized, Sc: ScoreLookUp<ScoreParams = SP>> DefaultRouter<G, L, S, SP, Sc> where
+impl<G: Deref<Target = NetworkGraph<L>> + Clone, L: Deref, S: Deref, SP: Sized, Sc: ScoreLookUp<ScoreParams = SP>> DefaultRouter<G, L, S, SP, Sc> where
 	L::Target: Logger,
 	S::Target: for <'a> LockableScore<'a, ScoreLookUp = Sc>,
 {
 	/// Creates a new router.
 	pub fn new(network_graph: G, logger: L, random_seed_bytes: [u8; 32], scorer: S, score_params: SP) -> Self {
 		let random_seed_bytes = Mutex::new(random_seed_bytes);
-		Self { network_graph, logger, random_seed_bytes, scorer, score_params }
+		let message_router = DefaultMessageRouter::new(network_graph.clone());
+		Self { network_graph, logger, random_seed_bytes, scorer, score_params, message_router }
 	}
 }
 
-impl< G: Deref<Target = NetworkGraph<L>>, L: Deref, S: Deref, SP: Sized, Sc: ScoreLookUp<ScoreParams = SP>> Router for DefaultRouter<G, L, S, SP, Sc> where
+impl<G: Deref<Target = NetworkGraph<L>> + Clone, L: Deref, S: Deref, SP: Sized, Sc: ScoreLookUp<ScoreParams = SP>> Router for DefaultRouter<G, L, S, SP, Sc> where
 	L::Target: Logger,
 	S::Target: for <'a> LockableScore<'a, ScoreLookUp = Sc>,
 {
@@ -80,8 +84,28 @@ impl< G: Deref<Target = NetworkGraph<L>>, L: Deref, S: Deref, SP: Sized, Sc: Sco
 	}
 }
 
+impl< G: Deref<Target = NetworkGraph<L>> + Clone, L: Deref, S: Deref, SP: Sized, Sc: ScoreLookUp<ScoreParams = SP>> MessageRouter for DefaultRouter<G, L, S, SP, Sc> where
+	L::Target: Logger,
+	S::Target: for <'a> LockableScore<'a, ScoreLookUp = Sc>,
+{
+	fn find_path(
+		&self, sender: PublicKey, peers: Vec<PublicKey>, destination: Destination
+	) -> Result<OnionMessagePath, ()> {
+		self.message_router.find_path(sender, peers, destination)
+	}
+
+	fn create_blinded_paths<
+		ES: EntropySource + ?Sized, T: secp256k1::Signing + secp256k1::Verification
+	>(
+		&self, recipient: PublicKey, peers: Vec<PublicKey>, entropy_source: &ES,
+		secp_ctx: &Secp256k1<T>
+	) -> Result<Vec<BlindedPath>, ()> {
+		self.message_router.create_blinded_paths(recipient, peers, entropy_source, secp_ctx)
+	}
+}
+
 /// A trait defining behavior for routing a payment.
-pub trait Router {
+pub trait Router: MessageRouter {
 	/// Finds a [`Route`] for a payment between the given `payer` and a payee.
 	///
 	/// The `payee` and the payment's value are given in [`RouteParameters::payment_params`]

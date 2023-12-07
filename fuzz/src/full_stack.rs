@@ -28,6 +28,7 @@ use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::sha256d::Hash as Sha256dHash;
 use bitcoin::hash_types::{Txid, BlockHash, WPubkeyHash};
 
+use lightning::blinded_path::BlindedPath;
 use lightning::chain;
 use lightning::chain::{BestBlock, ChannelMonitorUpdateStatus, Confirm, Listen};
 use lightning::chain::chaininterface::{BroadcasterInterface, ConfirmationTarget, FeeEstimator};
@@ -43,6 +44,7 @@ use lightning::ln::script::ShutdownScript;
 use lightning::ln::functional_test_utils::*;
 use lightning::offers::invoice::UnsignedBolt12Invoice;
 use lightning::offers::invoice_request::UnsignedInvoiceRequest;
+use lightning::onion_message::{Destination, MessageRouter, OnionMessagePath};
 use lightning::routing::gossip::{P2PGossipSync, NetworkGraph};
 use lightning::routing::utxo::UtxoLookup;
 use lightning::routing::router::{InFlightHtlcs, PaymentParameters, Route, RouteParameters, Router};
@@ -55,7 +57,7 @@ use lightning::util::ser::{ReadableArgs, Writeable};
 use crate::utils::test_logger;
 use crate::utils::test_persister::TestPersister;
 
-use bitcoin::secp256k1::{Message, PublicKey, SecretKey, Scalar, Secp256k1};
+use bitcoin::secp256k1::{Message, PublicKey, SecretKey, Scalar, Secp256k1, self};
 use bitcoin::secp256k1::ecdh::SharedSecret;
 use bitcoin::secp256k1::ecdsa::{RecoverableSignature, Signature};
 use bitcoin::secp256k1::schnorr;
@@ -141,6 +143,23 @@ impl Router for FuzzRouter {
 			err: String::from("Not implemented"),
 			action: msgs::ErrorAction::IgnoreError
 		})
+	}
+}
+
+impl MessageRouter for FuzzRouter {
+	fn find_path(
+		&self, _sender: PublicKey, _peers: Vec<PublicKey>, _destination: Destination
+	) -> Result<OnionMessagePath, ()> {
+		unreachable!()
+	}
+
+	fn create_blinded_paths<
+		ES: EntropySource + ?Sized, T: secp256k1::Signing + secp256k1::Verification
+	>(
+		&self, _recipient: PublicKey, _peers: Vec<PublicKey>, _entropy_source: &ES,
+		_secp_ctx: &Secp256k1<T>
+	) -> Result<Vec<BlindedPath>, ()> {
+		unreachable!()
 	}
 }
 

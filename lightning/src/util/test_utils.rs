@@ -7,6 +7,7 @@
 // You may not use this file except in accordance with one or both of these
 // licenses.
 
+use crate::blinded_path::BlindedPath;
 use crate::chain;
 use crate::chain::WatchedOutput;
 use crate::chain::chaininterface;
@@ -30,6 +31,7 @@ use crate::ln::msgs::LightningError;
 use crate::ln::script::ShutdownScript;
 use crate::offers::invoice::UnsignedBolt12Invoice;
 use crate::offers::invoice_request::UnsignedInvoiceRequest;
+use crate::onion_message::{Destination, MessageRouter, OnionMessagePath};
 use crate::routing::gossip::{EffectiveCapacity, NetworkGraph, NodeId, RoutingFees};
 use crate::routing::utxo::{UtxoLookup, UtxoLookupError, UtxoResult};
 use crate::routing::router::{find_route, InFlightHtlcs, Path, Route, RouteParameters, RouteHintHop, Router, ScorerAccountingForInFlightHtlcs};
@@ -51,7 +53,7 @@ use bitcoin::network::constants::Network;
 use bitcoin::hash_types::{BlockHash, Txid};
 use bitcoin::sighash::{SighashCache, EcdsaSighashType};
 
-use bitcoin::secp256k1::{PublicKey, Scalar, Secp256k1, SecretKey};
+use bitcoin::secp256k1::{PublicKey, Scalar, Secp256k1, SecretKey, self};
 use bitcoin::secp256k1::ecdh::SharedSecret;
 use bitcoin::secp256k1::ecdsa::{RecoverableSignature, Signature};
 use bitcoin::secp256k1::schnorr;
@@ -188,6 +190,23 @@ impl<'a> Router for TestRouter<'a> {
 			&ScorerAccountingForInFlightHtlcs::new(self.scorer.read().unwrap(), &inflight_htlcs), &Default::default(),
 			&[42; 32]
 		)
+	}
+}
+
+impl<'a> MessageRouter for TestRouter<'a> {
+	fn find_path(
+		&self, _sender: PublicKey, _peers: Vec<PublicKey>, _destination: Destination
+	) -> Result<OnionMessagePath, ()> {
+		unreachable!()
+	}
+
+	fn create_blinded_paths<
+		ES: EntropySource + ?Sized, T: secp256k1::Signing + secp256k1::Verification
+	>(
+		&self, _recipient: PublicKey, _peers: Vec<PublicKey>, _entropy_source: &ES,
+		_secp_ctx: &Secp256k1<T>
+	) -> Result<Vec<BlindedPath>, ()> {
+		unreachable!()
 	}
 }
 
