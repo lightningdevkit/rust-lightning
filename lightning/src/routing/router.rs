@@ -1164,12 +1164,7 @@ impl cmp::PartialOrd for RouteGraphNode {
 
 // While RouteGraphNode can be laid out with fewer bytes, performance appears to be improved
 // substantially when it is laid out at exactly 64 bytes.
-//
-// Thus, we use `#[repr(C)]` on the struct to force a suboptimal layout and check that it stays 64
-// bytes here.
-#[cfg(any(ldk_bench, not(any(test, fuzzing))))]
 const _GRAPH_NODE_SMALL: usize = 64 - core::mem::size_of::<RouteGraphNode>();
-#[cfg(any(ldk_bench, not(any(test, fuzzing))))]
 const _GRAPH_NODE_FIXED_SIZE: usize = core::mem::size_of::<RouteGraphNode>() - 64;
 
 /// A [`CandidateRouteHop::FirstHop`] entry.
@@ -1673,7 +1668,7 @@ fn iter_equal<I1: Iterator, I2: Iterator>(mut iter_a: I1, mut iter_b: I2)
 /// Fee values should be updated only in the context of the whole path, see update_value_and_recompute_fees.
 /// These fee values are useful to choose hops as we traverse the graph "payee-to-payer".
 #[derive(Clone)]
-#[repr(C)] // Force fields to appear in the order we define them.
+#[repr(align(128))]
 struct PathBuildingHop<'a> {
 	candidate: CandidateRouteHop<'a>,
 	/// If we've already processed a node as the best node, we shouldn't process it again. Normally
@@ -1694,11 +1689,6 @@ struct PathBuildingHop<'a> {
 	/// channel scoring.
 	path_penalty_msat: u64,
 
-	// The last 16 bytes are on the next cache line by default in glibc's malloc. Thus, we should
-	// only place fields which are not hot there. Luckily, the next three fields are only read if
-	// we end up on the selected path, and only in the final path layout phase, so we don't care
-	// too much if reading them is slow.
-
 	fee_msat: u64,
 
 	/// All the fees paid *after* this channel on the way to the destination
@@ -1715,17 +1705,8 @@ struct PathBuildingHop<'a> {
 	value_contribution_msat: u64,
 }
 
-// Checks that the entries in the `find_route` `dist` map fit in (exactly) two standard x86-64
-// cache lines. Sadly, they're not guaranteed to actually lie on a cache line (and in fact,
-// generally won't, because at least glibc's malloc will align to a nice, big, round
-// boundary...plus 16), but at least it will reduce the amount of data we'll need to load.
-//
-// Note that these assertions only pass on somewhat recent rustc, and thus are gated on the
-// ldk_bench flag.
-#[cfg(ldk_bench)]
-const _NODE_MAP_SIZE_TWO_CACHE_LINES: usize = 128 - core::mem::size_of::<(NodeId, PathBuildingHop)>();
-#[cfg(ldk_bench)]
-const _NODE_MAP_SIZE_EXACTLY_CACHE_LINES: usize = core::mem::size_of::<(NodeId, PathBuildingHop)>() - 128;
+const _NODE_MAP_SIZE_TWO_CACHE_LINES: usize = 128 - core::mem::size_of::<Option<PathBuildingHop>>();
+const _NODE_MAP_SIZE_EXACTLY_TWO_CACHE_LINES: usize = core::mem::size_of::<Option<PathBuildingHop>>() - 128;
 
 impl<'a> core::fmt::Debug for PathBuildingHop<'a> {
 	fn fmt(&self, f: &mut core::fmt::Formatter) -> Result<(), core::fmt::Error> {
