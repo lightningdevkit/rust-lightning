@@ -13,7 +13,7 @@ use crate::ln::msgs::DecodeError;
 use crate::sign::EntropySource;
 use crate::util::ser::{Readable, Writeable, Writer};
 
-use bitcoin::hashes::Hash;
+use bitcoin::hashes::Hash as _;
 use bitcoin::hashes::sha256::Hash as Sha256;
 
 use crate::io;
