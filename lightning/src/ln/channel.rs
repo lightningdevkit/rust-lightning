@@ -525,14 +525,14 @@ impl ChannelState {
 		}
 	}
 
-	fn should_force_holding_cell(&self) -> bool {
+	fn can_generate_new_commitment(&self) -> bool {
 		match self {
 			ChannelState::ChannelReady(flags) =>
-				flags.is_set(ChannelReadyFlags::AWAITING_REMOTE_REVOKE) ||
-					flags.is_set(FundedStateFlags::MONITOR_UPDATE_IN_PROGRESS.into()) ||
-					flags.is_set(FundedStateFlags::PEER_DISCONNECTED.into()),
+				!flags.is_set(ChannelReadyFlags::AWAITING_REMOTE_REVOKE) &&
+					!flags.is_set(FundedStateFlags::MONITOR_UPDATE_IN_PROGRESS.into()) &&
+					!flags.is_set(FundedStateFlags::PEER_DISCONNECTED.into()),
 			_ => {
-				debug_assert!(false, "The holding cell is only valid within ChannelReady");
+				debug_assert!(false, "Can only generate new commitment within ChannelReady");
 				false
 			},
 		}
@@ -2709,7 +2709,7 @@ impl<SP: Deref> Channel<SP> where
 	where L::Target: Logger {
 		// Assert that we'll add the HTLC claim to the holding cell in `get_update_fulfill_htlc`
 		// (see equivalent if condition there).
-		assert!(self.context.channel_state.should_force_holding_cell());
+		assert!(!self.context.channel_state.can_generate_new_commitment());
 		let mon_update_id = self.context.latest_monitor_update_id; // Forget the ChannelMonitor update
 		let fulfill_resp = self.get_update_fulfill_htlc(htlc_id_arg, payment_preimage_arg, logger);
 		self.context.latest_monitor_update_id = mon_update_id;
@@ -2779,7 +2779,7 @@ impl<SP: Deref> Channel<SP> where
 			}],
 		};
 
-		if self.context.channel_state.should_force_holding_cell() {
+		if !self.context.channel_state.can_generate_new_commitment() {
 			// Note that this condition is the same as the assertion in
 			// `claim_htlc_while_disconnected_dropping_mon_update` and must match exactly -
 			// `claim_htlc_while_disconnected_dropping_mon_update` would not work correctly if we
@@ -2953,7 +2953,7 @@ impl<SP: Deref> Channel<SP> where
 			return Ok(None);
 		}
 
-		if self.context.channel_state.should_force_holding_cell() {
+		if !self.context.channel_state.can_generate_new_commitment() {
 			debug_assert!(force_holding_cell, "!force_holding_cell is only called when emptying the holding cell, so we shouldn't end up back in it!");
 			force_holding_cell = true;
 		}
@@ -3570,7 +3570,7 @@ impl<SP: Deref> Channel<SP> where
 	) -> (Option<ChannelMonitorUpdate>, Vec<(HTLCSource, PaymentHash)>)
 	where F::Target: FeeEstimator, L::Target: Logger
 	{
-		if matches!(self.context.channel_state, ChannelState::ChannelReady(_)) && !self.context.channel_state.should_force_holding_cell() {
+		if matches!(self.context.channel_state, ChannelState::ChannelReady(_)) && self.context.channel_state.can_generate_new_commitment() {
 			self.free_holding_cell_htlcs(fee_estimator, logger)
 		} else { (None, Vec::new()) }
 	}
@@ -5857,7 +5857,7 @@ impl<SP: Deref> Channel<SP> where
 			return Err(ChannelError::Ignore("Cannot send an HTLC while disconnected from channel counterparty".to_owned()));
 		}
 
-		let need_holding_cell = self.context.channel_state.should_force_holding_cell();
+		let need_holding_cell = !self.context.channel_state.can_generate_new_commitment();
 		log_debug!(logger, "Pushing new outbound HTLC with hash {} for {} msat {}",
 			payment_hash, amount_msat,
 			if force_holding_cell { "into holding cell" }
