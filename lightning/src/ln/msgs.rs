@@ -1678,6 +1678,7 @@ mod fuzzy_internal_msgs {
 	// These types aren't intended to be pub, but are exposed for direct fuzzing (as we deserialize
 	// them from untrusted input):
 	#[derive(Clone)]
+	#[cfg_attr(test, derive(Debug, PartialEq))]
 	pub struct FinalOnionHopData {
 		pub payment_secret: PaymentSecret,
 		/// The total value, in msat, of the payment as received by the ultimate recipient.

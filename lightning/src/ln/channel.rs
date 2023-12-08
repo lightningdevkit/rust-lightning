@@ -8288,6 +8288,7 @@ mod tests {
 	use bitcoin::blockdata::transaction::{Transaction, TxOut};
 	use bitcoin::blockdata::opcodes;
 	use bitcoin::network::constants::Network;
+	use crate::ln::onion_utils::INVALID_ONION_BLINDING;
 	use crate::ln::{PaymentHash, PaymentPreimage};
 	use crate::ln::channel_keys::{RevocationKey, RevocationBasepoint};
 	use crate::ln::channelmanager::{self, HTLCSource, PaymentId};
@@ -8824,8 +8825,9 @@ mod tests {
 	}
 
 	#[test]
-	fn blinding_point_skimmed_fee_ser() {
-		// Ensure that channel blinding points and skimmed fees are (de)serialized properly.
+	fn blinding_point_skimmed_fee_malformed_ser() {
+		// Ensure that channel blinding points, skimmed fees, and malformed HTLCs are (de)serialized
+		// properly.
 		let feeest = LowerBoundedFeeEstimator::new(&TestFeeEstimator{fee_est: 15000});
 		let secp_ctx = Secp256k1::new();
 		let seed = [42; 32];
@@ -8890,13 +8892,19 @@ mod tests {
 			payment_preimage: PaymentPreimage([42; 32]),
 			htlc_id: 0,
 		};
-		let mut holding_cell_htlc_updates = Vec::with_capacity(10);
-		for i in 0..10 {
-			if i % 3 == 0 {
+		let dummy_holding_cell_failed_htlc = |htlc_id| HTLCUpdateAwaitingACK::FailHTLC {
+			htlc_id, err_packet: msgs::OnionErrorPacket { data: vec![42] }
+		};
+		let dummy_holding_cell_malformed_htlc = |htlc_id| HTLCUpdateAwaitingACK::FailMalformedHTLC {
+			htlc_id, failure_code: INVALID_ONION_BLINDING, sha256_of_onion: [0; 32],
+		};
+		let mut holding_cell_htlc_updates = Vec::with_capacity(12);
+		for i in 0..12 {
+			if i % 5 == 0 {
 				holding_cell_htlc_updates.push(dummy_holding_cell_add_htlc.clone());
-			} else if i % 3 == 1 {
+			} else if i % 5 == 1 {
 				holding_cell_htlc_updates.push(dummy_holding_cell_claim_htlc.clone());
-			} else {
+			} else if i % 5 == 2 {
 				let mut dummy_add = dummy_holding_cell_add_htlc.clone();
 				if let HTLCUpdateAwaitingACK::AddHTLC {
 					ref mut blinding_point, ref mut skimmed_fee_msat, ..
@@ -8905,6 +8913,10 @@ mod tests {
 					*skimmed_fee_msat = Some(42);
 				} else { panic!() }
 				holding_cell_htlc_updates.push(dummy_add);
+			} else if i % 5 == 3 {
+				holding_cell_htlc_updates.push(dummy_holding_cell_malformed_htlc(i as u64));
+			} else {
+				holding_cell_htlc_updates.push(dummy_holding_cell_failed_htlc(i as u64));
 			}
 		}
 		chan.context.holding_cell_htlc_updates = holding_cell_htlc_updates.clone();
