@@ -31,6 +31,7 @@ use bitcoin::hashes::sha256d::Hash as Sha256dHash;
 use bitcoin::hash_types::{BlockHash, WPubkeyHash};
 
 use lightning::blinded_path::BlindedPath;
+use lightning::blinded_path::payment::ReceiveTlvs;
 use lightning::chain;
 use lightning::chain::{BestBlock, ChannelMonitorUpdateStatus, chainmonitor, channelmonitor, Confirm, Watch};
 use lightning::chain::channelmonitor::{ChannelMonitor, MonitorEvent};
@@ -45,7 +46,7 @@ use lightning::ln::channel::FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE;
 use lightning::ln::msgs::{self, CommitmentUpdate, ChannelMessageHandler, DecodeError, UpdateAddHTLC, Init};
 use lightning::ln::script::ShutdownScript;
 use lightning::ln::functional_test_utils::*;
-use lightning::offers::invoice::UnsignedBolt12Invoice;
+use lightning::offers::invoice::{BlindedPayInfo, UnsignedBolt12Invoice};
 use lightning::offers::invoice_request::UnsignedInvoiceRequest;
 use lightning::onion_message::{Destination, MessageRouter, OnionMessagePath};
 use lightning::util::test_channel_signer::{TestChannelSigner, EnforcementState};
@@ -100,6 +101,15 @@ impl Router for FuzzRouter {
 			err: String::from("Not implemented"),
 			action: msgs::ErrorAction::IgnoreError
 		})
+	}
+
+	fn create_blinded_payment_paths<
+		ES: EntropySource + ?Sized, T: secp256k1::Signing + secp256k1::Verification
+	>(
+		&self, _recipient: PublicKey, _first_hops: Vec<ChannelDetails>, _tlvs: ReceiveTlvs,
+		_amount_msats: u64, _entropy_source: &ES, _secp_ctx: &Secp256k1<T>
+	) -> Result<Vec<(BlindedPayInfo, BlindedPath)>, ()> {
+		unreachable!()
 	}
 }
 

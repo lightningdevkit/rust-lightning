@@ -14,9 +14,10 @@ use bitcoin::hashes::Hash;
 use bitcoin::hashes::sha256::Hash as Sha256;
 
 use crate::blinded_path::{BlindedHop, BlindedPath};
+use crate::blinded_path::payment::{ForwardNode, ForwardTlvs, PaymentConstraints, PaymentRelay, ReceiveTlvs};
 use crate::ln::PaymentHash;
 use crate::ln::channelmanager::{ChannelDetails, PaymentId};
-use crate::ln::features::{Bolt11InvoiceFeatures, Bolt12InvoiceFeatures, ChannelFeatures, NodeFeatures};
+use crate::ln::features::{BlindedHopFeatures, Bolt11InvoiceFeatures, Bolt12InvoiceFeatures, ChannelFeatures, NodeFeatures};
 use crate::ln::msgs::{DecodeError, ErrorAction, LightningError, MAX_VALUE_MSAT};
 use crate::offers::invoice::{BlindedPayInfo, Bolt12Invoice};
 use crate::onion_message::{DefaultMessageRouter, Destination, MessageRouter, OnionMessagePath};
@@ -82,6 +83,81 @@ impl<G: Deref<Target = NetworkGraph<L>> + Clone, L: Deref, S: Deref, SP: Sized, 
 			&random_seed_bytes
 		)
 	}
+
+	fn create_blinded_payment_paths<
+		ES: EntropySource + ?Sized, T: secp256k1::Signing + secp256k1::Verification
+	>(
+		&self, recipient: PublicKey, first_hops: Vec<ChannelDetails>, tlvs: ReceiveTlvs,
+		amount_msats: u64, entropy_source: &ES, secp_ctx: &Secp256k1<T>
+	) -> Result<Vec<(BlindedPayInfo, BlindedPath)>, ()> {
+		// Limit the number of blinded paths that are computed.
+		const MAX_PAYMENT_PATHS: usize = 3;
+
+		// Ensure peers have at least three channels so that it is more difficult to infer the
+		// recipient's node_id.
+		const MIN_PEER_CHANNELS: usize = 3;
+
+		let network_graph = self.network_graph.deref().read_only();
+		let paths = first_hops.into_iter()
+			.filter(|details| details.counterparty.features.supports_route_blinding())
+			.filter(|details| amount_msats <= details.inbound_capacity_msat)
+			.filter(|details| amount_msats >= details.inbound_htlc_minimum_msat.unwrap_or(0))
+			.filter(|details| amount_msats <= details.inbound_htlc_maximum_msat.unwrap_or(0))
+			.filter(|details| network_graph
+					.node(&NodeId::from_pubkey(&details.counterparty.node_id))
+					.map(|node_info| node_info.channels.len() >= MIN_PEER_CHANNELS)
+					.unwrap_or(false)
+			)
+			.filter_map(|details| {
+				let short_channel_id = match details.get_inbound_payment_scid() {
+					Some(short_channel_id) => short_channel_id,
+					None => return None,
+				};
+				let payment_relay: PaymentRelay = match details.counterparty.forwarding_info {
+					Some(forwarding_info) => forwarding_info.into(),
+					None => return None,
+				};
+
+				// Avoid exposing esoteric CLTV expiry deltas
+				let cltv_expiry_delta = match payment_relay.cltv_expiry_delta {
+					0..=40 => 40u32,
+					41..=80 => 80u32,
+					81..=144 => 144u32,
+					145..=216 => 216u32,
+					_ => return None,
+				};
+
+				let payment_constraints = PaymentConstraints {
+					max_cltv_expiry: tlvs.payment_constraints.max_cltv_expiry + cltv_expiry_delta,
+					htlc_minimum_msat: details.inbound_htlc_minimum_msat.unwrap_or(0),
+				};
+				Some(ForwardNode {
+					tlvs: ForwardTlvs {
+						short_channel_id,
+						payment_relay,
+						payment_constraints,
+						features: BlindedHopFeatures::empty(),
+					},
+					node_id: details.counterparty.node_id,
+					htlc_maximum_msat: details.inbound_htlc_maximum_msat.unwrap_or(0),
+				})
+			})
+			.map(|forward_node| {
+				BlindedPath::new_for_payment(
+					&[forward_node], recipient, tlvs.clone(), u64::MAX, entropy_source, secp_ctx
+				)
+			})
+			.take(MAX_PAYMENT_PATHS)
+			.collect::<Result<Vec<_>, _>>();
+
+		match paths {
+			Ok(paths) if !paths.is_empty() => Ok(paths),
+			_ => {
+				BlindedPath::one_hop_for_payment(recipient, tlvs, entropy_source, secp_ctx)
+					.map(|path| vec![path])
+			},
+		}
+	}
 }
 
 impl< G: Deref<Target = NetworkGraph<L>> + Clone, L: Deref, S: Deref, SP: Sized, Sc: ScoreLookUp<ScoreParams = SP>> MessageRouter for DefaultRouter<G, L, S, SP, Sc> where
@@ -129,6 +205,16 @@ pub trait Router: MessageRouter {
 	) -> Result<Route, LightningError> {
 		self.find_route(payer, route_params, first_hops, inflight_htlcs)
 	}
+
+	/// Creates [`BlindedPath`]s for payment to the `recipient` node. The channels in `first_hops`
+	/// are assumed to be with the `recipient`'s peers. The payment secret and any constraints are
+	/// given in `tlvs`.
+	fn create_blinded_payment_paths<
+		ES: EntropySource + ?Sized, T: secp256k1::Signing + secp256k1::Verification
+	>(
+		&self, recipient: PublicKey, first_hops: Vec<ChannelDetails>, tlvs: ReceiveTlvs,
+		amount_msats: u64, entropy_source: &ES, secp_ctx: &Secp256k1<T>
+	) -> Result<Vec<(BlindedPayInfo, BlindedPath)>, ()>;
 }
 
 /// [`ScoreLookUp`] implementation that factors in in-flight HTLC liquidity.

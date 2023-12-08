@@ -8,6 +8,7 @@
 // licenses.
 
 use crate::blinded_path::BlindedPath;
+use crate::blinded_path::payment::ReceiveTlvs;
 use crate::chain;
 use crate::chain::WatchedOutput;
 use crate::chain::chaininterface;
@@ -23,13 +24,13 @@ use crate::sign;
 use crate::events;
 use crate::events::bump_transaction::{WalletSource, Utxo};
 use crate::ln::ChannelId;
-use crate::ln::channelmanager;
+use crate::ln::channelmanager::{ChannelDetails, self};
 use crate::ln::chan_utils::CommitmentTransaction;
 use crate::ln::features::{ChannelFeatures, InitFeatures, NodeFeatures};
 use crate::ln::{msgs, wire};
 use crate::ln::msgs::LightningError;
 use crate::ln::script::ShutdownScript;
-use crate::offers::invoice::UnsignedBolt12Invoice;
+use crate::offers::invoice::{BlindedPayInfo, UnsignedBolt12Invoice};
 use crate::offers::invoice_request::UnsignedInvoiceRequest;
 use crate::onion_message::{Destination, MessageRouter, OnionMessagePath};
 use crate::routing::gossip::{EffectiveCapacity, NetworkGraph, NodeId, RoutingFees};
@@ -121,7 +122,7 @@ impl<'a> TestRouter<'a> {
 
 impl<'a> Router for TestRouter<'a> {
 	fn find_route(
-		&self, payer: &PublicKey, params: &RouteParameters, first_hops: Option<&[&channelmanager::ChannelDetails]>,
+		&self, payer: &PublicKey, params: &RouteParameters, first_hops: Option<&[&ChannelDetails]>,
 		inflight_htlcs: InFlightHtlcs
 	) -> Result<Route, msgs::LightningError> {
 		if let Some((find_route_query, find_route_res)) = self.next_routes.lock().unwrap().pop_front() {
@@ -190,6 +191,15 @@ impl<'a> Router for TestRouter<'a> {
 			&ScorerAccountingForInFlightHtlcs::new(self.scorer.read().unwrap(), &inflight_htlcs), &Default::default(),
 			&[42; 32]
 		)
+	}
+
+	fn create_blinded_payment_paths<
+		ES: EntropySource + ?Sized, T: secp256k1::Signing + secp256k1::Verification
+	>(
+		&self, _recipient: PublicKey, _first_hops: Vec<ChannelDetails>, _tlvs: ReceiveTlvs,
+		_amount_msats: u64, _entropy_source: &ES, _secp_ctx: &Secp256k1<T>
+	) -> Result<Vec<(BlindedPayInfo, BlindedPath)>, ()> {
+		unreachable!()
 	}
 }
 
