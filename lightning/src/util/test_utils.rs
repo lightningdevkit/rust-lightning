@@ -664,8 +664,17 @@ impl msgs::ChannelMessageHandler for TestChannelMessageHandler {
 	fn handle_splice_created(&self, _their_node_id: &PublicKey, msg: &msgs::SpliceCreated) {
 		self.received_msg(wire::Message::SpliceCreated(msg.clone()));
 	}
+	fn handle_splice_comm_signed(&self, _their_node_id: &PublicKey, msg: &msgs::SpliceCommSigned) {
+		self.received_msg(wire::Message::SpliceCommSigned(msg.clone()));
+	}
+	fn handle_splice_comm_ack(&self, _their_node_id: &PublicKey, msg: &msgs::SpliceCommAck) {
+		self.received_msg(wire::Message::SpliceCommAck(msg.clone()));
+	}
 	fn handle_splice_signed(&self, _their_node_id: &PublicKey, msg: &msgs::SpliceSigned) {
 		self.received_msg(wire::Message::SpliceSigned(msg.clone()));
+	}
+	fn handle_splice_signed_ack(&self, _their_node_id: &PublicKey, msg: &msgs::SpliceSignedAck) {
+		self.received_msg(wire::Message::SpliceSignedAck(msg.clone()));
 	}
 	fn handle_update_add_htlc(&self, _their_node_id: &PublicKey, msg: &msgs::UpdateAddHTLC) {
 		self.received_msg(wire::Message::UpdateAddHTLC(msg.clone()));

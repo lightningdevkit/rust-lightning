@@ -64,7 +64,10 @@ pub(crate) enum Message<T> where T: core::fmt::Debug + Type + TestEq {
 	SpliceAck(msgs::SpliceAck),
 	SpliceLocked(msgs::SpliceLocked),
 	SpliceCreated(msgs::SpliceCreated),
+	SpliceCommSigned(msgs::SpliceCommSigned),
+	SpliceCommAck(msgs::SpliceCommAck),
 	SpliceSigned(msgs::SpliceSigned),
+	SpliceSignedAck(msgs::SpliceSignedAck),
 	TxAddInput(msgs::TxAddInput),
 	TxAddOutput(msgs::TxAddOutput),
 	TxRemoveInput(msgs::TxRemoveInput),
@@ -120,7 +123,10 @@ impl<T> Writeable for Message<T> where T: core::fmt::Debug + Type + TestEq {
 			&Message::SpliceAck(ref msg) => msg.write(writer),
 			&Message::SpliceLocked(ref msg) => msg.write(writer),
 			&Message::SpliceCreated(ref msg) => msg.write(writer),
+			&Message::SpliceCommSigned(ref msg) => msg.write(writer),
+			&Message::SpliceCommAck(ref msg) => msg.write(writer),
 			&Message::SpliceSigned(ref msg) => msg.write(writer),
+			&Message::SpliceSignedAck(ref msg) => msg.write(writer),
 			&Message::TxAddInput(ref msg) => msg.write(writer),
 			&Message::TxAddOutput(ref msg) => msg.write(writer),
 			&Message::TxRemoveInput(ref msg) => msg.write(writer),
@@ -177,7 +183,10 @@ impl<T> Type for Message<T> where T: core::fmt::Debug + Type + TestEq {
 			&Message::SpliceAck(ref msg) => msg.type_id(),
 			&Message::SpliceLocked(ref msg) => msg.type_id(),
 			&Message::SpliceCreated(ref msg) => msg.type_id(),
+			&Message::SpliceCommSigned(ref msg) => msg.type_id(),
+			&Message::SpliceCommAck(ref msg) => msg.type_id(),
 			&Message::SpliceSigned(ref msg) => msg.type_id(),
+			&Message::SpliceSignedAck(ref msg) => msg.type_id(),
 			&Message::TxAddInput(ref msg) => msg.type_id(),
 			&Message::TxAddOutput(ref msg) => msg.type_id(),
 			&Message::TxRemoveInput(ref msg) => msg.type_id(),
@@ -288,8 +297,17 @@ fn do_read<R: io::Read, T, H: core::ops::Deref>(buffer: &mut R, message_type: u1
 		msgs::SpliceCreated::TYPE => {
 			Ok(Message::SpliceCreated(Readable::read(buffer)?))
 		},
+		msgs::SpliceCommSigned::TYPE => {
+			Ok(Message::SpliceCommSigned(Readable::read(buffer)?))
+		},
+		msgs::SpliceCommAck::TYPE => {
+			Ok(Message::SpliceCommAck(Readable::read(buffer)?))
+		},
 		msgs::SpliceSigned::TYPE => {
 			Ok(Message::SpliceSigned(Readable::read(buffer)?))
+		},
+		msgs::SpliceSignedAck::TYPE => {
+			Ok(Message::SpliceSignedAck(Readable::read(buffer)?))
 		},
 		msgs::TxAddInput::TYPE => {
 			Ok(Message::TxAddInput(Readable::read(buffer)?))
@@ -520,9 +538,27 @@ impl Encode for msgs::SpliceCreated {
 }
 
 // #SPLICING
-impl Encode for msgs::SpliceSigned {
+impl Encode for msgs::SpliceCommSigned {
 	// TODO: Made-up value!
 	const TYPE: u16 = 80;
+}
+
+// #SPLICING
+impl Encode for msgs::SpliceCommAck {
+	// TODO: Made-up value!
+	const TYPE: u16 = 81;
+}
+
+// #SPLICING
+impl Encode for msgs::SpliceSigned {
+	// TODO: Made-up value!
+	const TYPE: u16 = 82;
+}
+
+// #SPLICING
+impl Encode for msgs::SpliceSignedAck {
+	// TODO: Made-up value!
+	const TYPE: u16 = 83;
 }
 
 impl Encode for msgs::TxAddInput {

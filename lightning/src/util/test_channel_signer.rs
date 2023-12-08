@@ -130,6 +130,7 @@ impl ChannelSigner for TestChannelSigner {
 
 	/// #SPLICING
 	fn reprovide_channel_parameters(&mut self, channel_parameters: &ChannelTransactionParameters, channel_value_satoshis: u64) {
+		self.state = Arc::new(Mutex::new(EnforcementState::new()));
 		self.inner.reprovide_channel_parameters(channel_parameters, channel_value_satoshis)
 	}
 }

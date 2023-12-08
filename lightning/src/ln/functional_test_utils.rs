@@ -808,7 +808,16 @@ pub fn remove_first_msg_event_to_node(msg_node_id: &PublicKey, msg_events: &mut 
 		MessageSendEvent::SendSpliceCreated { node_id, .. } => {
 			node_id == msg_node_id
 		},
+		MessageSendEvent::SendSpliceCommSigned { node_id, .. } => {
+			node_id == msg_node_id
+		},
+		MessageSendEvent::SendSpliceCommAck { node_id, .. } => {
+			node_id == msg_node_id
+		},
 		MessageSendEvent::SendSpliceSigned { node_id, .. } => {
+			node_id == msg_node_id
+		},
+		MessageSendEvent::SendSpliceSignedAck { node_id, .. } => {
 			node_id == msg_node_id
 		},
 		MessageSendEvent::SendTxAddInput { node_id, .. } => {
