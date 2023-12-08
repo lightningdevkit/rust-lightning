@@ -19,7 +19,7 @@ use bitcoin::blockdata::constants::ChainHash;
 use bitcoin::secp256k1::{self, Secp256k1, SecretKey, PublicKey};
 
 use crate::sign::{KeysManager, NodeSigner, Recipient};
-use crate::events::{MessageSendEvent, MessageSendEventsProvider};
+use crate::events::{EventHandler, EventsProvider, MessageSendEvent, MessageSendEventsProvider};
 use crate::ln::ChannelId;
 use crate::ln::features::{InitFeatures, NodeFeatures};
 use crate::ln::msgs;
@@ -89,6 +89,9 @@ pub trait CustomMessageHandler: wire::CustomMessageReader {
 /// A dummy struct which implements `RoutingMessageHandler` without storing any routing information
 /// or doing any processing. You can provide one of these as the route_handler in a MessageHandler.
 pub struct IgnoringMessageHandler{}
+impl EventsProvider for IgnoringMessageHandler {
+	fn process_pending_events<H: Deref>(&self, _handler: H) where H::Target: EventHandler {}
+}
 impl MessageSendEventsProvider for IgnoringMessageHandler {
 	fn get_and_clear_pending_msg_events(&self) -> Vec<MessageSendEvent> { Vec::new() }
 }
@@ -115,6 +118,7 @@ impl OnionMessageHandler for IgnoringMessageHandler {
 	fn next_onion_message_for_peer(&self, _peer_node_id: PublicKey) -> Option<msgs::OnionMessage> { None }
 	fn peer_connected(&self, _their_node_id: &PublicKey, _init: &msgs::Init, _inbound: bool) -> Result<(), ()> { Ok(()) }
 	fn peer_disconnected(&self, _their_node_id: &PublicKey) {}
+	fn timer_tick_occurred(&self) {}
 	fn provided_node_features(&self) -> NodeFeatures { NodeFeatures::empty() }
 	fn provided_init_features(&self, _their_node_id: &PublicKey) -> InitFeatures {
 		InitFeatures::empty()
@@ -680,6 +684,8 @@ pub trait APeerManager {
 	type NS: Deref<Target=Self::NST>;
 	/// Gets a reference to the underlying [`PeerManager`].
 	fn as_ref(&self) -> &PeerManager<Self::Descriptor, Self::CM, Self::RM, Self::OM, Self::L, Self::CMH, Self::NS>;
+	/// Returns the peer manager's [`OnionMessageHandler`].
+	fn onion_message_handler(&self) -> &Self::OMT;
 }
 
 impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CMH: Deref, NS: Deref>
@@ -705,6 +711,9 @@ APeerManager for PeerManager<Descriptor, CM, RM, OM, L, CMH, NS> where
 	type NST = <NS as Deref>::Target;
 	type NS = NS;
 	fn as_ref(&self) -> &PeerManager<Descriptor, CM, RM, OM, L, CMH, NS> { self }
+	fn onion_message_handler(&self) -> &Self::OMT {
+		self.message_handler.onion_message_handler.deref()
+	}
 }
 
 /// A PeerManager manages a set of peers, described by their [`SocketDescriptor`] and marshalls

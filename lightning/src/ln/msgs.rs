@@ -52,7 +52,7 @@ use core::fmt::Display;
 use crate::io::{self, Cursor, Read};
 use crate::io_extras::read_to_end;
 
-use crate::events::MessageSendEventsProvider;
+use crate::events::{EventsProvider, MessageSendEventsProvider};
 use crate::util::chacha20poly1305rfc::ChaChaPolyReadAdapter;
 use crate::util::logger;
 use crate::util::ser::{LengthReadable, LengthReadableArgs, Readable, ReadableArgs, Writeable, Writer, WithoutLength, FixedLengthReader, HighZeroBytesDroppedBigSize, Hostname, TransactionU16LenLimited, BigSize};
@@ -1631,7 +1631,7 @@ pub trait RoutingMessageHandler : MessageSendEventsProvider {
 }
 
 /// A handler for received [`OnionMessage`]s and for providing generated ones to send.
-pub trait OnionMessageHandler {
+pub trait OnionMessageHandler: EventsProvider {
 	/// Handle an incoming `onion_message` message from the given peer.
 	fn handle_onion_message(&self, peer_node_id: &PublicKey, msg: &OnionMessage);
 
@@ -1649,6 +1649,10 @@ pub trait OnionMessageHandler {
 	/// Indicates a connection to the peer failed/an existing connection was lost. Allows handlers to
 	/// drop and refuse to forward onion messages to this peer.
 	fn peer_disconnected(&self, their_node_id: &PublicKey);
+
+	/// Performs actions that should happen roughly every ten seconds after startup. Allows handlers
+	/// to drop any buffered onion messages intended for prospective peers.
+	fn timer_tick_occurred(&self);
 
 	// Handler information:
 	/// Gets the node feature flags which this handler itself supports. All available handlers are
