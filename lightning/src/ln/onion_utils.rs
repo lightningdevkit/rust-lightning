@@ -323,8 +323,6 @@ fn construct_onion_packet_with_init_noise<HD: Writeable, P: Packet>(
 
 		let mut pos = 0;
 		for (i, (payload, keys)) in payloads.iter().zip(onion_keys.iter()).enumerate() {
-			if i == payloads.len() - 1 { break; }
-
 			let mut chacha = ChaCha20::new(&keys.rho, &[0u8; 8]);
 			for _ in 0..(packet_data.len() - pos) { // TODO: Batch this.
 				let mut dummy = [0; 1];
@@ -337,6 +335,8 @@ fn construct_onion_packet_with_init_noise<HD: Writeable, P: Packet>(
 			if pos > packet_data.len() {
 				return Err(());
 			}
+
+			if i == payloads.len() - 1 { break; }
 
 			res.resize(pos, 0u8);
 			chacha.process_in_place(&mut res);

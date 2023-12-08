@@ -449,7 +449,7 @@ pub(super) fn check_incoming_htlc_cltv(
 mod tests {
 	use bitcoin::hashes::Hash;
 	use bitcoin::hashes::sha256::Hash as Sha256;
-	use bitcoin::secp256k1::{PublicKey, SecretKey};
+	use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
 	use crate::ln::{PaymentPreimage, PaymentHash, PaymentSecret};
 	use crate::ln::ChannelId;
 	use crate::ln::channelmanager::RecipientOnionFields;
@@ -458,6 +458,38 @@ mod tests {
 	use crate::ln::onion_utils::create_payment_onion;
 	use crate::routing::router::{Path, RouteHop};
 	use crate::util::test_utils;
+
+	#[test]
+	fn fail_construct_onion_on_too_big_payloads() {
+		// Ensure that if we call `construct_onion_packet` and friends where payloads are too large for
+		// the allotted packet length, we'll fail to construct. Previously, senders would happily
+		// construct invalid packets by array-shifting the final node's HMAC out of the packet when
+		// adding an intermediate onion layer, causing the receiver to error with "final payload
+		// provided for us as an intermediate node."
+		let secp_ctx = Secp256k1::new();
+		let bob = crate::sign::KeysManager::new(&[2; 32], 42, 42);
+		let bob_pk = PublicKey::from_secret_key(&secp_ctx, &bob.get_node_secret_key());
+		let charlie = crate::sign::KeysManager::new(&[3; 32], 42, 42);
+		let charlie_pk = PublicKey::from_secret_key(&secp_ctx, &charlie.get_node_secret_key());
+
+		let (
+			session_priv, total_amt_msat, cur_height, mut recipient_onion, keysend_preimage, payment_hash,
+			prng_seed, hops, ..
+		) = payment_onion_args(bob_pk, charlie_pk);
+
+		// Ensure the onion will not fit all the payloads by adding a large custom TLV.
+		recipient_onion.custom_tlvs.push((13377331, vec![0; 1156]));
+
+		let path = Path { hops, blinded_tail: None, };
+		let onion_keys = super::onion_utils::construct_onion_keys(&secp_ctx, &path, &session_priv).unwrap();
+		let (onion_payloads, ..) = super::onion_utils::build_onion_payloads(
+			&path, total_amt_msat, recipient_onion, cur_height + 1, &Some(keysend_preimage)
+		).unwrap();
+
+		assert!(super::onion_utils::construct_onion_packet(
+				onion_payloads, onion_keys, prng_seed, &payment_hash
+		).is_err());
+	}
 
 	#[test]
 	fn test_peel_payment_onion() {
