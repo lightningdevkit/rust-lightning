@@ -41,7 +41,7 @@ use crate::util::config::{ChannelHandshakeConfig, UserConfig, MaxDustHTLCExposur
 use bitcoin::hash_types::{BlockHash, Txid};
 use bitcoin::blockdata::script::{Builder, Script};
 use bitcoin::blockdata::opcodes;
-use bitcoin::blockdata::constants::genesis_block;
+use bitcoin::blockdata::constants::ChainHash;
 use bitcoin::network::constants::Network;
 use bitcoin::{PackedLockTime, Sequence, Transaction, TxIn, TxOut, Witness};
 use bitcoin::OutPoint as BitcoinOutPoint;
@@ -1707,9 +1707,9 @@ fn test_duplicate_htlc_different_direction_onchain() {
 	for e in events {
 		match e {
 			MessageSendEvent::BroadcastChannelUpdate { .. } => {},
-			MessageSendEvent::HandleError { node_id, action: msgs::ErrorAction::SendErrorMessage { ref msg } } => {
+			MessageSendEvent::HandleError { node_id, action: msgs::ErrorAction::DisconnectPeer { ref msg } } => {
 				assert_eq!(node_id, nodes[1].node.get_our_node_id());
-				assert_eq!(msg.data, "Channel closed because commitment or closing transaction was confirmed on chain.");
+				assert_eq!(msg.as_ref().unwrap().data, "Channel closed because commitment or closing transaction was confirmed on chain.");
 			},
 			MessageSendEvent::UpdateHTLCs { ref node_id, updates: msgs::CommitmentUpdate { ref update_add_htlcs, ref update_fulfill_htlcs, ref update_fail_htlcs, ref update_fail_malformed_htlcs, .. } } => {
 				assert!(update_add_htlcs.is_empty());
@@ -2234,7 +2234,7 @@ fn test_channel_reserve_holding_cell_htlcs() {
 	// attempt to send amt_msat > their_max_htlc_value_in_flight_msat
 	{
 		let payment_params = PaymentParameters::from_node_id(nodes[2].node.get_our_node_id(), TEST_FINAL_CLTV)
-			.with_bolt11_features(nodes[2].node.invoice_features()).unwrap().with_max_channel_saturation_power_of_half(0);
+			.with_bolt11_features(nodes[2].node.bolt11_invoice_features()).unwrap().with_max_channel_saturation_power_of_half(0);
 		let (mut route, our_payment_hash, _, our_payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[2], payment_params, recv_value_0);
 		route.paths[0].hops.last_mut().unwrap().fee_msat += 1;
 		assert!(route.paths[0].hops.iter().rev().skip(1).all(|h| h.fee_msat == feemsat));
@@ -2259,7 +2259,7 @@ fn test_channel_reserve_holding_cell_htlcs() {
 		}
 
 		let payment_params = PaymentParameters::from_node_id(nodes[2].node.get_our_node_id(), TEST_FINAL_CLTV)
-			.with_bolt11_features(nodes[2].node.invoice_features()).unwrap().with_max_channel_saturation_power_of_half(0);
+			.with_bolt11_features(nodes[2].node.bolt11_invoice_features()).unwrap().with_max_channel_saturation_power_of_half(0);
 		let route = get_route!(nodes[0], payment_params, recv_value_0).unwrap();
 		let (payment_preimage, ..) = send_along_route(&nodes[0], route, &[&nodes[1], &nodes[2]], recv_value_0);
 		claim_payment(&nodes[0], &[&nodes[1], &nodes[2]], payment_preimage);
@@ -2738,7 +2738,7 @@ fn channel_monitor_network_test() {
 			_ => panic!("Unexpected event"),
 		};
 		match events[1] {
-			MessageSendEvent::HandleError { action: ErrorAction::SendErrorMessage { .. }, node_id } => {
+			MessageSendEvent::HandleError { action: ErrorAction::DisconnectPeer { .. }, node_id } => {
 				assert_eq!(node_id, nodes[4].node.get_our_node_id());
 			},
 			_ => panic!("Unexpected event"),
@@ -2770,7 +2770,7 @@ fn channel_monitor_network_test() {
 			_ => panic!("Unexpected event"),
 		};
 		match events[1] {
-			MessageSendEvent::HandleError { action: ErrorAction::SendErrorMessage { .. }, node_id } => {
+			MessageSendEvent::HandleError { action: ErrorAction::DisconnectPeer { .. }, node_id } => {
 				assert_eq!(node_id, nodes[3].node.get_our_node_id());
 			},
 			_ => panic!("Unexpected event"),
@@ -3282,7 +3282,7 @@ fn test_htlc_on_chain_success() {
 	let nodes_0_event = remove_first_msg_event_to_node(&nodes[0].node.get_our_node_id(), &mut events);
 
 	match nodes_2_event {
-		MessageSendEvent::HandleError { action: ErrorAction::SendErrorMessage { .. }, node_id: _ } => {},
+		MessageSendEvent::HandleError { action: ErrorAction::DisconnectPeer { .. }, node_id: _ } => {},
 		_ => panic!("Unexpected event"),
 	}
 
@@ -3727,7 +3727,7 @@ fn do_test_commitment_revoked_fail_backward_exhaustive(deliver_bs_raa: bool, use
 
 	let nodes_2_event = remove_first_msg_event_to_node(&nodes[2].node.get_our_node_id(), &mut events);
 	match nodes_2_event {
-		MessageSendEvent::HandleError { action: ErrorAction::SendErrorMessage { msg: msgs::ErrorMessage { channel_id, ref data } }, node_id: _ } => {
+		MessageSendEvent::HandleError { action: ErrorAction::DisconnectPeer { msg: Some(msgs::ErrorMessage { channel_id, ref data }) }, node_id: _ } => {
 			assert_eq!(channel_id, chan_2.2);
 			assert_eq!(data.as_str(), "Channel closed because commitment or closing transaction was confirmed on chain.");
 		},
@@ -5289,7 +5289,7 @@ fn test_onchain_to_onchain_claim() {
 	let nodes_0_event = remove_first_msg_event_to_node(&nodes[0].node.get_our_node_id(), &mut msg_events);
 
 	match nodes_2_event {
-		MessageSendEvent::HandleError { action: ErrorAction::SendErrorMessage { .. }, node_id: _ } => {},
+		MessageSendEvent::HandleError { action: ErrorAction::DisconnectPeer { .. }, node_id: _ } => {},
 		_ => panic!("Unexpected event"),
 	}
 
@@ -5359,7 +5359,7 @@ fn test_duplicate_payment_hash_one_failure_one_success() {
 	// script push size limit so that the below script length checks match
 	// ACCEPTED_HTLC_SCRIPT_WEIGHT.
 	let payment_params = PaymentParameters::from_node_id(nodes[3].node.get_our_node_id(), TEST_FINAL_CLTV - 40)
-		.with_bolt11_features(nodes[3].node.invoice_features()).unwrap();
+		.with_bolt11_features(nodes[3].node.bolt11_invoice_features()).unwrap();
 	let (route, _, _, _) = get_route_and_payment_hash!(nodes[0], nodes[3], payment_params, 800_000);
 	send_along_route_with_secret(&nodes[0], route, &[&[&nodes[1], &nodes[2], &nodes[3]]], 800_000, duplicate_payment_hash, payment_secret);
 
@@ -6199,8 +6199,8 @@ fn bolt2_open_channel_sending_node_checks_part2() {
 	assert!(node0_to_1_send_open_channel.to_self_delay==BREAKDOWN_TIMEOUT);
 
 	// BOLT #2 spec: Sending node must ensure the chain_hash value identifies the chain it wishes to open the channel within.
-	let chain_hash=genesis_block(Network::Testnet).header.block_hash();
-	assert_eq!(node0_to_1_send_open_channel.chain_hash,chain_hash);
+	let chain_hash = ChainHash::using_genesis_block(Network::Testnet);
+	assert_eq!(node0_to_1_send_open_channel.chain_hash, chain_hash);
 
 	// BOLT #2 spec: Sending node must set funding_pubkey, revocation_basepoint, htlc_basepoint, payment_basepoint, and delayed_payment_basepoint to valid DER-encoded, compressed, secp256k1 pubkeys.
 	assert!(PublicKey::from_slice(&node0_to_1_send_open_channel.funding_pubkey.serialize()).is_ok());
@@ -6650,7 +6650,7 @@ fn test_update_add_htlc_bolt2_sender_cltv_expiry_too_high() {
 	let _chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1000000, 0);
 
 	let payment_params = PaymentParameters::from_node_id(nodes[1].node.get_our_node_id(), 0)
-		.with_bolt11_features(nodes[1].node.invoice_features()).unwrap();
+		.with_bolt11_features(nodes[1].node.bolt11_invoice_features()).unwrap();
 	let (mut route, our_payment_hash, _, our_payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[1], payment_params, 100000000);
 	route.paths[0].hops.last_mut().unwrap().cltv_expiry_delta = 500000001;
 	unwrap_send_err!(nodes[0].node.send_payment_with_route(&route, our_payment_hash,
@@ -7596,8 +7596,8 @@ fn test_check_htlc_underpaying() {
 
 	let scorer = test_utils::TestScorer::new();
 	let random_seed_bytes = chanmon_cfgs[1].keys_manager.get_secure_random_bytes();
-	let payment_params = PaymentParameters::from_node_id(nodes[1].node.get_our_node_id(),
-		TEST_FINAL_CLTV).with_bolt11_features(nodes[1].node.invoice_features()).unwrap();
+	let payment_params = PaymentParameters::from_node_id(nodes[1].node.get_our_node_id(), TEST_FINAL_CLTV)
+		.with_bolt11_features(nodes[1].node.bolt11_invoice_features()).unwrap();
 	let route_params = RouteParameters::from_payment_params_and_value(payment_params, 10_000);
 	let route = get_route(&nodes[0].node.get_our_node_id(), &route_params, &nodes[0].network_graph.read_only(),
 		None, nodes[0].logger, &scorer, &Default::default(), &random_seed_bytes).unwrap();
@@ -7749,7 +7749,7 @@ fn test_bump_penalty_txn_on_revoked_commitment() {
 
 	let payment_preimage = route_payment(&nodes[0], &vec!(&nodes[1])[..], 3000000).0;
 	let payment_params = PaymentParameters::from_node_id(nodes[0].node.get_our_node_id(), 30)
-		.with_bolt11_features(nodes[0].node.invoice_features()).unwrap();
+		.with_bolt11_features(nodes[0].node.bolt11_invoice_features()).unwrap();
 	let (route,_, _, _) = get_route_and_payment_hash!(nodes[1], nodes[0], payment_params, 3000000);
 	send_along_route(&nodes[1], route, &vec!(&nodes[0])[..], 3000000);
 
@@ -7853,14 +7853,15 @@ fn test_bump_penalty_txn_on_revoked_htlcs() {
 
 	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1000000, 59000000);
 	// Lock HTLC in both directions (using a slightly lower CLTV delay to provide timely RBF bumps)
-	let payment_params = PaymentParameters::from_node_id(nodes[1].node.get_our_node_id(), 50).with_bolt11_features(nodes[1].node.invoice_features()).unwrap();
+	let payment_params = PaymentParameters::from_node_id(nodes[1].node.get_our_node_id(), 50).with_bolt11_features(nodes[1].node.bolt11_invoice_features()).unwrap();
 	let scorer = test_utils::TestScorer::new();
 	let random_seed_bytes = chanmon_cfgs[1].keys_manager.get_secure_random_bytes();
 	let route_params = RouteParameters::from_payment_params_and_value(payment_params, 3_000_000);
 	let route = get_route(&nodes[0].node.get_our_node_id(), &route_params, &nodes[0].network_graph.read_only(), None,
 		nodes[0].logger, &scorer, &Default::default(), &random_seed_bytes).unwrap();
 	let payment_preimage = send_along_route(&nodes[0], route, &[&nodes[1]], 3_000_000).0;
-	let payment_params = PaymentParameters::from_node_id(nodes[0].node.get_our_node_id(), 50).with_bolt11_features(nodes[0].node.invoice_features()).unwrap();
+	let payment_params = PaymentParameters::from_node_id(nodes[0].node.get_our_node_id(), 50)
+		.with_bolt11_features(nodes[0].node.bolt11_invoice_features()).unwrap();
 	let route_params = RouteParameters::from_payment_params_and_value(payment_params, 3_000_000);
 	let route = get_route(&nodes[1].node.get_our_node_id(), &route_params, &nodes[1].network_graph.read_only(), None,
 		nodes[0].logger, &scorer, &Default::default(), &random_seed_bytes).unwrap();
@@ -8229,9 +8230,9 @@ fn test_channel_conf_timeout() {
 	let close_ev = nodes[1].node.get_and_clear_pending_msg_events();
 	assert_eq!(close_ev.len(), 1);
 	match close_ev[0] {
-		MessageSendEvent::HandleError { action: ErrorAction::SendErrorMessage { ref msg }, ref node_id } => {
+		MessageSendEvent::HandleError { action: ErrorAction::DisconnectPeer { ref msg }, ref node_id } => {
 			assert_eq!(*node_id, nodes[0].node.get_our_node_id());
-			assert_eq!(msg.data, "Channel closed because funding transaction failed to confirm within 2016 blocks");
+			assert_eq!(msg.as_ref().unwrap().data, "Channel closed because funding transaction failed to confirm within 2016 blocks");
 		},
 		_ => panic!("Unexpected event"),
 	}
@@ -9581,8 +9582,8 @@ fn test_invalid_funding_tx() {
 	assert_eq!(events_2.len(), 1);
 	if let MessageSendEvent::HandleError { node_id, action } = &events_2[0] {
 		assert_eq!(*node_id, nodes[0].node.get_our_node_id());
-		if let msgs::ErrorAction::SendErrorMessage { msg } = action {
-			assert_eq!(msg.data, "Channel closed because of an exception: ".to_owned() + expected_err);
+		if let msgs::ErrorAction::DisconnectPeer { msg } = action {
+			assert_eq!(msg.as_ref().unwrap().data, "Channel closed because of an exception: ".to_owned() + expected_err);
 		} else { panic!(); }
 	} else { panic!(); }
 	assert_eq!(nodes[1].node.list_channels().len(), 0);
@@ -9763,7 +9764,7 @@ fn do_test_dup_htlc_second_rejected(test_for_second_fail_panic: bool) {
 	let _chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 10001);
 
 	let payment_params = PaymentParameters::from_node_id(nodes[1].node.get_our_node_id(), TEST_FINAL_CLTV)
-		.with_bolt11_features(nodes[1].node.invoice_features()).unwrap();
+		.with_bolt11_features(nodes[1].node.bolt11_invoice_features()).unwrap();
 	let route = get_route!(nodes[0], payment_params, 10_000).unwrap();
 
 	let (our_payment_preimage, our_payment_hash, our_payment_secret) = get_payment_preimage_hash!(&nodes[1]);
@@ -9872,7 +9873,7 @@ fn test_inconsistent_mpp_params() {
 	let chan_2_3 =create_announced_chan_between_nodes_with_value(&nodes, 2, 3, 100_000, 0);
 
 	let payment_params = PaymentParameters::from_node_id(nodes[3].node.get_our_node_id(), TEST_FINAL_CLTV)
-		.with_bolt11_features(nodes[3].node.invoice_features()).unwrap();
+		.with_bolt11_features(nodes[3].node.bolt11_invoice_features()).unwrap();
 	let mut route = get_route!(nodes[0], payment_params, 15_000_000).unwrap();
 	assert_eq!(route.paths.len(), 2);
 	route.paths.sort_by(|path_a, _| {
@@ -10383,7 +10384,7 @@ fn accept_busted_but_better_fee() {
 		MessageSendEvent::UpdateHTLCs { updates: msgs::CommitmentUpdate { ref update_fee, .. }, .. } => {
 			nodes[1].node.handle_update_fee(&nodes[0].node.get_our_node_id(), update_fee.as_ref().unwrap());
 			check_closed_event!(nodes[1], 1, ClosureReason::ProcessingError {
-				err: "Peer's feerate much too low. Actual: 1000. Our expected lower limit: 5000 (- 250)".to_owned() },
+				err: "Peer's feerate much too low. Actual: 1000. Our expected lower limit: 5000".to_owned() },
 				[nodes[0].node.get_our_node_id()], 100000);
 			check_closed_broadcast!(nodes[1], true);
 			check_added_monitors!(nodes[1], 1);
@@ -11021,7 +11022,7 @@ fn do_test_funding_and_commitment_tx_confirm_same_block(confirm_remote_commitmen
 	let mut msg_events = closing_node.node.get_and_clear_pending_msg_events();
 	assert_eq!(msg_events.len(), 1);
 	match msg_events.pop().unwrap() {
-		MessageSendEvent::HandleError { action: msgs::ErrorAction::SendErrorMessage { .. }, .. } => {},
+		MessageSendEvent::HandleError { action: msgs::ErrorAction::DisconnectPeer { .. }, .. } => {},
 		_ => panic!("Unexpected event"),
 	}
 	check_added_monitors(closing_node, 1);

@@ -19,17 +19,20 @@ use bitcoin::blockdata::constants::ChainHash;
 use bitcoin::secp256k1::{self, Secp256k1, SecretKey, PublicKey};
 
 use crate::sign::{KeysManager, NodeSigner, Recipient};
-use crate::events::{MessageSendEvent, MessageSendEventsProvider, OnionMessageProvider};
+use crate::events::{MessageSendEvent, MessageSendEventsProvider};
 use crate::ln::ChannelId;
 use crate::ln::features::{InitFeatures, NodeFeatures};
 use crate::ln::msgs;
 use crate::ln::msgs::{ChannelMessageHandler, LightningError, SocketAddress, OnionMessageHandler, RoutingMessageHandler};
+#[cfg(not(c_bindings))]
 use crate::ln::channelmanager::{SimpleArcChannelManager, SimpleRefChannelManager};
 use crate::util::ser::{VecWriter, Writeable, Writer};
 use crate::ln::peer_channel_encryptor::{PeerChannelEncryptor,NextNoiseStep};
 use crate::ln::wire;
 use crate::ln::wire::{Encode, Type};
-use crate::onion_message::{CustomOnionMessageContents, CustomOnionMessageHandler, OffersMessage, OffersMessageHandler, SimpleArcOnionMessenger, SimpleRefOnionMessenger};
+#[cfg(not(c_bindings))]
+use crate::onion_message::{SimpleArcOnionMessenger, SimpleRefOnionMessenger};
+use crate::onion_message::{CustomOnionMessageHandler, OffersMessage, OffersMessageHandler, OnionMessageContents, PendingOnionMessage};
 use crate::routing::gossip::{NetworkGraph, P2PGossipSync, NodeId, NodeAlias};
 use crate::util::atomic_counter::AtomicCounter;
 use crate::util::logger::Logger;
@@ -107,11 +110,9 @@ impl RoutingMessageHandler for IgnoringMessageHandler {
 	}
 	fn processing_queue_high(&self) -> bool { false }
 }
-impl OnionMessageProvider for IgnoringMessageHandler {
-	fn next_onion_message_for_peer(&self, _peer_node_id: PublicKey) -> Option<msgs::OnionMessage> { None }
-}
 impl OnionMessageHandler for IgnoringMessageHandler {
 	fn handle_onion_message(&self, _their_node_id: &PublicKey, _msg: &msgs::OnionMessage) {}
+	fn next_onion_message_for_peer(&self, _peer_node_id: PublicKey) -> Option<msgs::OnionMessage> { None }
 	fn peer_connected(&self, _their_node_id: &PublicKey, _init: &msgs::Init, _inbound: bool) -> Result<(), ()> { Ok(()) }
 	fn peer_disconnected(&self, _their_node_id: &PublicKey) {}
 	fn provided_node_features(&self) -> NodeFeatures { NodeFeatures::empty() }
@@ -131,9 +132,12 @@ impl CustomOnionMessageHandler for IgnoringMessageHandler {
 	fn read_custom_message<R: io::Read>(&self, _msg_type: u64, _buffer: &mut R) -> Result<Option<Infallible>, msgs::DecodeError> where Self: Sized {
 		Ok(None)
 	}
+	fn release_pending_custom_messages(&self) -> Vec<PendingOnionMessage<Infallible>> {
+		vec![]
+	}
 }
 
-impl CustomOnionMessageContents for Infallible {
+impl OnionMessageContents for Infallible {
 	fn tlv_type(&self) -> u64 { unreachable!(); }
 }
 
@@ -295,7 +299,7 @@ impl ChannelMessageHandler for ErroringMessageHandler {
 		features
 	}
 
-	fn get_genesis_hashes(&self) -> Option<Vec<ChainHash>> {
+	fn get_chain_hashes(&self) -> Option<Vec<ChainHash>> {
 		// We don't enforce any chains upon peer connection for `ErroringMessageHandler` and leave it up
 		// to users of `ErroringMessageHandler` to make decisions on network compatiblility.
 		// There's not really any way to pull in specific networks here, and hardcoding can cause breakages.
@@ -623,12 +627,13 @@ impl Peer {
 /// SimpleRefPeerManager is the more appropriate type. Defining these type aliases prevents
 /// issues such as overly long function definitions.
 ///
-/// This is not exported to bindings users as `Arc`s don't make sense in bindings.
+/// This is not exported to bindings users as type aliases aren't supported in most languages.
+#[cfg(not(c_bindings))]
 pub type SimpleArcPeerManager<SD, M, T, F, C, L> = PeerManager<
 	SD,
 	Arc<SimpleArcChannelManager<M, T, F, L>>,
 	Arc<P2PGossipSync<Arc<NetworkGraph<Arc<L>>>, C, Arc<L>>>,
-	Arc<SimpleArcOnionMessenger<L>>,
+	Arc<SimpleArcOnionMessenger<M, T, F, L>>,
 	Arc<L>,
 	IgnoringMessageHandler,
 	Arc<KeysManager>
@@ -641,14 +646,15 @@ pub type SimpleArcPeerManager<SD, M, T, F, C, L> = PeerManager<
 /// But if this is not necessary, using a reference is more efficient. Defining these type aliases
 /// helps with issues such as long function definitions.
 ///
-/// This is not exported to bindings users as general type aliases don't make sense in bindings.
+/// This is not exported to bindings users as type aliases aren't supported in most languages.
+#[cfg(not(c_bindings))]
 pub type SimpleRefPeerManager<
-	'a, 'b, 'c, 'd, 'e, 'f, 'logger, 'h, 'i, 'j, 'graph, SD, M, T, F, C, L
+	'a, 'b, 'c, 'd, 'e, 'f, 'logger, 'h, 'i, 'j, 'graph, 'k, SD, M, T, F, C, L
 > = PeerManager<
 	SD,
 	&'j SimpleRefChannelManager<'a, 'b, 'c, 'd, 'e, 'graph, 'logger, 'i, M, T, F, L>,
 	&'f P2PGossipSync<&'graph NetworkGraph<&'logger L>, C, &'logger L>,
-	&'h SimpleRefOnionMessenger<'logger, 'i, 'j, L>,
+	&'h SimpleRefOnionMessenger<'a, 'b, 'c, 'd, 'e, 'graph, 'logger, 'i, 'j, 'k, M, T, F, L>,
 	&'logger L,
 	IgnoringMessageHandler,
 	&'c KeysManager
@@ -1383,7 +1389,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 								peer.set_their_node_id(their_node_id);
 								insert_node_id!();
 								let features = self.init_features(&their_node_id);
-								let networks = self.message_handler.chan_handler.get_genesis_hashes();
+								let networks = self.message_handler.chan_handler.get_chain_hashes();
 								let resp = msgs::Init { features, networks, remote_network_address: filter_addresses(peer.their_socket_address.clone()) };
 								self.enqueue_message(peer, &resp);
 								peer.awaiting_pong_timer_tick_intervals = 0;
@@ -1396,7 +1402,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 								peer.set_their_node_id(their_node_id);
 								insert_node_id!();
 								let features = self.init_features(&their_node_id);
-								let networks = self.message_handler.chan_handler.get_genesis_hashes();
+								let networks = self.message_handler.chan_handler.get_chain_hashes();
 								let resp = msgs::Init { features, networks, remote_network_address: filter_addresses(peer.their_socket_address.clone()) };
 								self.enqueue_message(peer, &resp);
 								peer.awaiting_pong_timer_tick_intervals = 0;
@@ -1514,7 +1520,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 		if let wire::Message::Init(msg) = message {
 			// Check if we have any compatible chains if the `networks` field is specified.
 			if let Some(networks) = &msg.networks {
-				if let Some(our_chains) = self.message_handler.chan_handler.get_genesis_hashes() {
+				if let Some(our_chains) = self.message_handler.chan_handler.get_chain_hashes() {
 					let mut have_compatible_chains = false;
 					'our_chains: for our_chain in our_chains.iter() {
 						for their_chain in networks {
@@ -1904,15 +1910,13 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 			let flush_read_disabled = self.gossip_processing_backlog_lifted.swap(false, Ordering::Relaxed);
 
 			let mut peers_to_disconnect = HashMap::new();
-			let mut events_generated = self.message_handler.chan_handler.get_and_clear_pending_msg_events();
-			events_generated.append(&mut self.message_handler.route_handler.get_and_clear_pending_msg_events());
 
 			{
-				// TODO: There are some DoS attacks here where you can flood someone's outbound send
-				// buffer by doing things like announcing channels on another node. We should be willing to
-				// drop optional-ish messages when send buffers get full!
-
 				let peers_lock = self.peers.read().unwrap();
+
+				let mut events_generated = self.message_handler.chan_handler.get_and_clear_pending_msg_events();
+				events_generated.append(&mut self.message_handler.route_handler.get_and_clear_pending_msg_events());
+
 				let peers = &*peers_lock;
 				macro_rules! get_peer_for_forwarding {
 					($node_id: expr) => {

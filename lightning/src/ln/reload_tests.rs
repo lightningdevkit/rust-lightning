@@ -566,8 +566,8 @@ fn do_test_data_loss_protect(reconnect_panicing: bool) {
 		if let MessageSendEvent::BroadcastChannelUpdate { .. } = msg {
 		} else if let MessageSendEvent::HandleError { ref action, .. } = msg {
 			match action {
-				&ErrorAction::SendErrorMessage { ref msg } => {
-					assert_eq!(msg.data, "Channel force-closed");
+				&ErrorAction::DisconnectPeer { ref msg } => {
+					assert_eq!(msg.as_ref().unwrap().data, "Channel force-closed");
 				},
 				_ => panic!("Unexpected event!"),
 			}
@@ -589,18 +589,16 @@ fn do_test_data_loss_protect(reconnect_panicing: bool) {
 
 	nodes[0].node.handle_channel_reestablish(&nodes[1].node.get_our_node_id(), &retry_reestablish[0]);
 	let mut err_msgs_0 = Vec::with_capacity(1);
-	for msg in nodes[0].node.get_and_clear_pending_msg_events() {
-		if let MessageSendEvent::HandleError { ref action, .. } = msg {
-			match action {
-				&ErrorAction::SendErrorMessage { ref msg } => {
-					assert_eq!(msg.data, format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", &nodes[1].node.get_our_node_id()));
-					err_msgs_0.push(msg.clone());
-				},
-				_ => panic!("Unexpected event!"),
-			}
-		} else {
-			panic!("Unexpected event!");
+	if let MessageSendEvent::HandleError { ref action, .. } = nodes[0].node.get_and_clear_pending_msg_events()[1] {
+		match action {
+			&ErrorAction::SendErrorMessage { ref msg } => {
+				assert_eq!(msg.data, format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", &nodes[1].node.get_our_node_id()));
+				err_msgs_0.push(msg.clone());
+			},
+			_ => panic!("Unexpected event!"),
 		}
+	} else {
+		panic!("Unexpected event!");
 	}
 	assert_eq!(err_msgs_0.len(), 1);
 	nodes[1].node.handle_error(&nodes[0].node.get_our_node_id(), &err_msgs_0[0]);

@@ -29,8 +29,7 @@ use crate::util::test_utils;
 use crate::util::config::{UserConfig, ChannelConfig, MaxDustHTLCExposure};
 use crate::util::errors::APIError;
 
-use bitcoin::hash_types::BlockHash;
-
+use bitcoin::blockdata::constants::ChainHash;
 use bitcoin::hashes::{Hash, HashEngine};
 use bitcoin::hashes::hmac::{Hmac, HmacEngine};
 use bitcoin::hashes::sha256::Hash as Sha256;
@@ -234,12 +233,13 @@ fn run_onion_failure_test_with_fail_intercept<F1,F2,F3>(
 
 impl msgs::ChannelUpdate {
 	fn dummy(short_channel_id: u64) -> msgs::ChannelUpdate {
+		use bitcoin::hash_types::BlockHash;
 		use bitcoin::secp256k1::ffi::Signature as FFISignature;
 		use bitcoin::secp256k1::ecdsa::Signature;
 		msgs::ChannelUpdate {
 			signature: Signature::from(unsafe { FFISignature::new() }),
 			contents: msgs::UnsignedChannelUpdate {
-				chain_hash: BlockHash::hash(&vec![0u8][..]),
+				chain_hash: ChainHash::from(BlockHash::hash(&vec![0u8][..]).as_ref()),
 				short_channel_id,
 				timestamp: 0,
 				flags: 0,
@@ -790,7 +790,7 @@ fn do_test_onion_failure_stale_channel_update(announced_channel: bool) {
 			htlc_minimum_msat: None,
 		}])];
 		let payment_params = PaymentParameters::from_node_id(*channel_to_update_counterparty, TEST_FINAL_CLTV)
-			.with_bolt11_features(nodes[2].node.invoice_features()).unwrap()
+			.with_bolt11_features(nodes[2].node.bolt11_invoice_features()).unwrap()
 			.with_route_hints(hop_hints).unwrap();
 		get_route_and_payment_hash!(nodes[0], nodes[2], payment_params, PAYMENT_AMT)
 	};
@@ -1047,7 +1047,7 @@ macro_rules! get_phantom_route {
 		let phantom_pubkey = $nodes[1].keys_manager.get_node_id(Recipient::PhantomNode).unwrap();
 		let phantom_route_hint = $nodes[1].node.get_phantom_route_hints();
 		let payment_params = PaymentParameters::from_node_id(phantom_pubkey, TEST_FINAL_CLTV)
-			.with_bolt11_features($nodes[1].node.invoice_features()).unwrap()
+			.with_bolt11_features($nodes[1].node.bolt11_invoice_features()).unwrap()
 			.with_route_hints(vec![RouteHint(vec![
 					RouteHintHop {
 						src_node_id: $nodes[0].node.get_our_node_id(),

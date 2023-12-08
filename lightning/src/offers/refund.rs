@@ -18,6 +18,8 @@
 //! [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
 //! [`Offer`]: crate::offers::offer::Offer
 //!
+//! # Example
+//!
 //! ```
 //! extern crate bitcoin;
 //! extern crate core;
@@ -70,6 +72,14 @@
 //! # Ok(())
 //! # }
 //! ```
+//!
+//! # Note
+//!
+//! If constructing a [`Refund`] for use with a [`ChannelManager`], use
+//! [`ChannelManager::create_refund_builder`] instead of [`RefundBuilder::new`].
+//!
+//! [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
+//! [`ChannelManager::create_refund_builder`]: crate::ln::channelmanager::ChannelManager::create_refund_builder
 
 use bitcoin::blockdata::constants::ChainHash;
 use bitcoin::network::constants::Network;
@@ -120,6 +130,14 @@ impl<'a> RefundBuilder<'a, secp256k1::SignOnly> {
 	///
 	/// Additionally, sets the required [`Refund::description`], [`Refund::payer_metadata`], and
 	/// [`Refund::amount_msats`].
+	///
+	/// # Note
+	///
+	/// If constructing a [`Refund`] for use with a [`ChannelManager`], use
+	/// [`ChannelManager::create_refund_builder`] instead of [`RefundBuilder::new`].
+	///
+	/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
+	/// [`ChannelManager::create_refund_builder`]: crate::ln::channelmanager::ChannelManager::create_refund_builder
 	pub fn new(
 		description: String, metadata: Vec<u8>, payer_id: PublicKey, amount_msats: u64
 	) -> Result<Self, Bolt12SemanticError> {
@@ -206,8 +224,16 @@ impl<'a, T: secp256k1::Signing> RefundBuilder<'a, T> {
 	/// called, [`Network::Bitcoin`] is assumed.
 	///
 	/// Successive calls to this method will override the previous setting.
-	pub fn chain(mut self, network: Network) -> Self {
-		self.refund.chain = Some(ChainHash::using_genesis_block(network));
+	pub fn chain(self, network: Network) -> Self {
+		self.chain_hash(ChainHash::using_genesis_block(network))
+	}
+
+	/// Sets the [`Refund::chain`] of the given [`ChainHash`] for paying an invoice. If not called,
+	/// [`Network::Bitcoin`] is assumed.
+	///
+	/// Successive calls to this method will override the previous setting.
+	pub(crate) fn chain_hash(mut self, chain: ChainHash) -> Self {
+		self.refund.chain = Some(chain);
 		self
 	}
 
@@ -514,13 +540,16 @@ impl RefundContents {
 
 	#[cfg(feature = "std")]
 	pub(super) fn is_expired(&self) -> bool {
-		match self.absolute_expiry {
-			Some(seconds_from_epoch) => match SystemTime::UNIX_EPOCH.elapsed() {
-				Ok(elapsed) => elapsed > seconds_from_epoch,
-				Err(_) => false,
-			},
-			None => false,
-		}
+		SystemTime::UNIX_EPOCH
+			.elapsed()
+			.map(|duration_since_epoch| self.is_expired_no_std(duration_since_epoch))
+			.unwrap_or(false)
+	}
+
+	pub(super) fn is_expired_no_std(&self, duration_since_epoch: Duration) -> bool {
+		self.absolute_expiry
+			.map(|absolute_expiry| duration_since_epoch > absolute_expiry)
+			.unwrap_or(false)
 	}
 
 	pub fn issuer(&self) -> Option<PrintableString> {

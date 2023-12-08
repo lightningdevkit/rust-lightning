@@ -56,15 +56,22 @@ pub struct BlindedHop {
 }
 
 impl BlindedPath {
+	/// Create a one-hop blinded path for a message.
+	pub fn one_hop_for_message<ES: EntropySource + ?Sized, T: secp256k1::Signing + secp256k1::Verification>(
+		recipient_node_id: PublicKey, entropy_source: &ES, secp_ctx: &Secp256k1<T>
+	) -> Result<Self, ()> {
+		Self::new_for_message(&[recipient_node_id], entropy_source, secp_ctx)
+	}
+
 	/// Create a blinded path for an onion message, to be forwarded along `node_pks`. The last node
 	/// pubkey in `node_pks` will be the destination node.
 	///
-	/// Errors if less than two hops are provided or if `node_pk`(s) are invalid.
+	/// Errors if no hops are provided or if `node_pk`(s) are invalid.
 	//  TODO: make all payloads the same size with padding + add dummy hops
-	pub fn new_for_message<ES: EntropySource, T: secp256k1::Signing + secp256k1::Verification>
-		(node_pks: &[PublicKey], entropy_source: &ES, secp_ctx: &Secp256k1<T>) -> Result<Self, ()>
-	{
-		if node_pks.len() < 2 { return Err(()) }
+	pub fn new_for_message<ES: EntropySource + ?Sized, T: secp256k1::Signing + secp256k1::Verification>(
+		node_pks: &[PublicKey], entropy_source: &ES, secp_ctx: &Secp256k1<T>
+	) -> Result<Self, ()> {
+		if node_pks.is_empty() { return Err(()) }
 		let blinding_secret_bytes = entropy_source.get_secure_random_bytes();
 		let blinding_secret = SecretKey::from_slice(&blinding_secret_bytes[..]).expect("RNG is busted");
 		let introduction_node_id = node_pks[0];
@@ -77,7 +84,7 @@ impl BlindedPath {
 	}
 
 	/// Create a one-hop blinded path for a payment.
-	pub fn one_hop_for_payment<ES: EntropySource, T: secp256k1::Signing + secp256k1::Verification>(
+	pub fn one_hop_for_payment<ES: EntropySource + ?Sized, T: secp256k1::Signing + secp256k1::Verification>(
 		payee_node_id: PublicKey, payee_tlvs: payment::ReceiveTlvs, entropy_source: &ES,
 		secp_ctx: &Secp256k1<T>
 	) -> Result<(BlindedPayInfo, Self), ()> {
@@ -98,7 +105,7 @@ impl BlindedPath {
 	///
 	/// [`ForwardTlvs`]: crate::blinded_path::payment::ForwardTlvs
 	//  TODO: make all payloads the same size with padding + add dummy hops
-	pub(crate) fn new_for_payment<ES: EntropySource, T: secp256k1::Signing + secp256k1::Verification>(
+	pub(crate) fn new_for_payment<ES: EntropySource + ?Sized, T: secp256k1::Signing + secp256k1::Verification>(
 		intermediate_nodes: &[payment::ForwardNode], payee_node_id: PublicKey,
 		payee_tlvs: payment::ReceiveTlvs, htlc_maximum_msat: u64, entropy_source: &ES,
 		secp_ctx: &Secp256k1<T>

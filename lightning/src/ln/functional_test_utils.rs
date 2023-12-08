@@ -667,6 +667,12 @@ pub fn get_err_msg(node: &Node, recipient: &PublicKey) -> msgs::ErrorMessage {
 			assert_eq!(node_id, recipient);
 			(*msg).clone()
 		},
+		MessageSendEvent::HandleError {
+			action: msgs::ErrorAction::DisconnectPeer { ref msg }, ref node_id
+		} => {
+			assert_eq!(node_id, recipient);
+			msg.as_ref().unwrap().clone()
+		},
 		_ => panic!("Unexpected event"),
 	}
 }
@@ -1491,10 +1497,15 @@ pub fn check_closed_broadcast(node: &Node, num_channels: usize, with_error_msg: 
 				assert_eq!(msg.contents.flags & 2, 2);
 				None
 			},
-			MessageSendEvent::HandleError { action: msgs::ErrorAction::SendErrorMessage { ref msg }, node_id: _ } => {
+			MessageSendEvent::HandleError { action: msgs::ErrorAction::SendErrorMessage { msg }, node_id: _ } => {
 				assert!(with_error_msg);
 				// TODO: Check node_id
-				Some(msg.clone())
+				Some(msg)
+			},
+			MessageSendEvent::HandleError { action: msgs::ErrorAction::DisconnectPeer { msg }, node_id: _ } => {
+				assert!(with_error_msg);
+				// TODO: Check node_id
+				Some(msg.unwrap())
 			},
 			_ => panic!("Unexpected event"),
 		}
@@ -1938,7 +1949,7 @@ macro_rules! get_route {
 macro_rules! get_route_and_payment_hash {
 	($send_node: expr, $recv_node: expr, $recv_value: expr) => {{
 		let payment_params = $crate::routing::router::PaymentParameters::from_node_id($recv_node.node.get_our_node_id(), TEST_FINAL_CLTV)
-			.with_bolt11_features($recv_node.node.invoice_features()).unwrap();
+			.with_bolt11_features($recv_node.node.bolt11_invoice_features()).unwrap();
 		$crate::get_route_and_payment_hash!($send_node, $recv_node, payment_params, $recv_value)
 	}};
 	($send_node: expr, $recv_node: expr, $payment_params: expr, $recv_value: expr) => {{
@@ -2551,7 +2562,7 @@ pub const TEST_FINAL_CLTV: u32 = 70;
 
 pub fn route_payment<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_route: &[&Node<'a, 'b, 'c>], recv_value: u64) -> (PaymentPreimage, PaymentHash, PaymentSecret, PaymentId) {
 	let payment_params = PaymentParameters::from_node_id(expected_route.last().unwrap().node.get_our_node_id(), TEST_FINAL_CLTV)
-		.with_bolt11_features(expected_route.last().unwrap().node.invoice_features()).unwrap();
+		.with_bolt11_features(expected_route.last().unwrap().node.bolt11_invoice_features()).unwrap();
 	let route_params = RouteParameters::from_payment_params_and_value(payment_params, recv_value);
 	let route = get_route(origin_node, &route_params).unwrap();
 	assert_eq!(route.paths.len(), 1);
@@ -2566,7 +2577,7 @@ pub fn route_payment<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_route:
 
 pub fn route_over_limit<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_route: &[&Node<'a, 'b, 'c>], recv_value: u64)  {
 	let payment_params = PaymentParameters::from_node_id(expected_route.last().unwrap().node.get_our_node_id(), TEST_FINAL_CLTV)
-		.with_bolt11_features(expected_route.last().unwrap().node.invoice_features()).unwrap();
+		.with_bolt11_features(expected_route.last().unwrap().node.bolt11_invoice_features()).unwrap();
 	let route_params = RouteParameters::from_payment_params_and_value(payment_params, recv_value);
 	let network_graph = origin_node.network_graph.read_only();
 	let scorer = test_utils::TestScorer::new();
@@ -2966,6 +2977,13 @@ pub fn handle_announce_close_broadcast_events<'a, 'b, 'c>(nodes: &Vec<Node<'a, '
 				nodes[b].node.handle_error(&nodes[a].node.get_our_node_id(), msg);
 			}
 		},
+		MessageSendEvent::HandleError { node_id, action: msgs::ErrorAction::DisconnectPeer { ref msg } } => {
+			assert_eq!(node_id, nodes[b].node.get_our_node_id());
+			assert_eq!(msg.as_ref().unwrap().data, expected_error);
+			if needs_err_handle {
+				nodes[b].node.handle_error(&nodes[a].node.get_our_node_id(), msg.as_ref().unwrap());
+			}
+		},
 		_ => panic!("Unexpected event"),
 	}
 
@@ -2982,6 +3000,10 @@ pub fn handle_announce_close_broadcast_events<'a, 'b, 'c>(nodes: &Vec<Node<'a, '
 			MessageSendEvent::HandleError { node_id, action: msgs::ErrorAction::SendErrorMessage { ref msg } } => {
 				assert_eq!(node_id, nodes[a].node.get_our_node_id());
 				assert_eq!(msg.data, expected_error);
+			},
+			MessageSendEvent::HandleError { node_id, action: msgs::ErrorAction::DisconnectPeer { ref msg } } => {
+				assert_eq!(node_id, nodes[a].node.get_our_node_id());
+				assert_eq!(msg.as_ref().unwrap().data, expected_error);
 			},
 			_ => panic!("Unexpected event"),
 		}

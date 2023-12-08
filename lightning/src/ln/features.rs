@@ -718,7 +718,11 @@ impl<T: sealed::Context> Features<T> {
 		Ok(())
 	}
 
-	fn from_be_bytes(mut flags: Vec<u8>) -> Features<T> {
+	/// Create a [`Features`] given a set of flags, in big-endian. This is in byte order from
+	/// most on-the-wire encodings.
+	///
+	/// This is not exported to bindings users as we don't support export across multiple T
+	pub fn from_be_bytes(mut flags: Vec<u8>) -> Features<T> {
 		flags.reverse(); // Swap to little-endian
 		Self {
 			flags,

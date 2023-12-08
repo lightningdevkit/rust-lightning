@@ -2179,7 +2179,7 @@ mod tests {
 	use crate::util::ser::{ReadableArgs, Writeable};
 	use crate::util::test_utils::{self, TestLogger};
 
-	use bitcoin::blockdata::constants::genesis_block;
+	use bitcoin::blockdata::constants::ChainHash;
 	use bitcoin::hashes::Hash;
 	use bitcoin::hashes::sha256d::Hash as Sha256dHash;
 	use bitcoin::network::constants::Network;
@@ -2256,7 +2256,7 @@ mod tests {
 		network_graph: &mut NetworkGraph<&TestLogger>, short_channel_id: u64, node_1_key: SecretKey,
 		node_2_key: SecretKey
 	) {
-		let genesis_hash = genesis_block(Network::Testnet).header.block_hash();
+		let genesis_hash = ChainHash::using_genesis_block(Network::Testnet);
 		let node_1_secret = &SecretKey::from_slice(&[39; 32]).unwrap();
 		let node_2_secret = &SecretKey::from_slice(&[40; 32]).unwrap();
 		let secp_ctx = Secp256k1::new();
@@ -2289,7 +2289,7 @@ mod tests {
 		network_graph: &mut NetworkGraph<&TestLogger>, short_channel_id: u64, node_key: SecretKey,
 		flags: u8, htlc_maximum_msat: u64, timestamp: u32,
 	) {
-		let genesis_hash = genesis_block(Network::Testnet).header.block_hash();
+		let genesis_hash = ChainHash::using_genesis_block(Network::Testnet);
 		let secp_ctx = Secp256k1::new();
 		let unsigned_update = UnsignedChannelUpdate {
 			chain_hash: genesis_hash,

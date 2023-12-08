@@ -75,6 +75,12 @@ impl OutPoint {
 	}
 }
 
+impl core::fmt::Display for OutPoint {
+	fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+		write!(f, "{}:{}", self.txid, self.index)
+	}
+}
+
 impl_writeable!(OutPoint, { txid, index });
 
 #[cfg(test)]

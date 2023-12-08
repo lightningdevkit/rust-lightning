@@ -7,9 +7,9 @@
 // You may not use this file except in accordance with one or both of these
 // licenses.
 
+use bitcoin::blockdata::constants::ChainHash;
 use bitcoin::blockdata::script::Builder;
 use bitcoin::blockdata::transaction::TxOut;
-use bitcoin::hash_types::BlockHash;
 
 use lightning::blinded_path::{BlindedHop, BlindedPath};
 use lightning::chain::transaction::OutPoint;
@@ -89,7 +89,7 @@ struct FuzzChainSource<'a, 'b, Out: test_logger::Output> {
 	net_graph: &'a NetworkGraph<&'b test_logger::TestLogger<Out>>,
 }
 impl<Out: test_logger::Output> UtxoLookup for FuzzChainSource<'_, '_, Out> {
-	fn get_utxo(&self, _genesis_hash: &BlockHash, _short_channel_id: u64) -> UtxoResult {
+	fn get_utxo(&self, _chain_hash: &ChainHash, _short_channel_id: u64) -> UtxoResult {
 		let input_slice = self.input.get_slice(2);
 		if input_slice.is_none() { return UtxoResult::Sync(Err(UtxoLookupError::UnknownTx)); }
 		let input_slice = input_slice.unwrap();

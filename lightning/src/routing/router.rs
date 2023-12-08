@@ -90,6 +90,7 @@ pub trait Router {
 		&self, payer: &PublicKey, route_params: &RouteParameters,
 		first_hops: Option<&[&ChannelDetails]>, inflight_htlcs: InFlightHtlcs
 	) -> Result<Route, LightningError>;
+
 	/// Finds a [`Route`] for a payment between the given `payer` and a payee.
 	///
 	/// The `payee` and the payment's value are given in [`RouteParameters::payment_params`]
@@ -2817,7 +2818,7 @@ mod tests {
 	use crate::chain::transaction::OutPoint;
 	use crate::sign::EntropySource;
 	use crate::ln::ChannelId;
-	use crate::ln::features::{BlindedHopFeatures, Bolt12InvoiceFeatures, ChannelFeatures, InitFeatures, NodeFeatures};
+	use crate::ln::features::{BlindedHopFeatures, ChannelFeatures, InitFeatures, NodeFeatures};
 	use crate::ln::msgs::{ErrorAction, LightningError, UnsignedChannelUpdate, MAX_VALUE_MSAT};
 	use crate::ln::channelmanager;
 	use crate::offers::invoice::BlindedPayInfo;
@@ -2830,7 +2831,7 @@ mod tests {
 
 	use bitcoin::hashes::Hash;
 	use bitcoin::network::constants::Network;
-	use bitcoin::blockdata::constants::genesis_block;
+	use bitcoin::blockdata::constants::ChainHash;
 	use bitcoin::blockdata::script::Builder;
 	use bitcoin::blockdata::opcodes;
 	use bitcoin::blockdata::transaction::TxOut;
@@ -2961,7 +2962,7 @@ mod tests {
 
 		// Disable other paths
 		update_channel(&gossip_sync, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 12,
 			timestamp: 2,
 			flags: 2, // to disable
@@ -2973,7 +2974,7 @@ mod tests {
 			excess_data: Vec::new()
 		});
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[0], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 3,
 			timestamp: 2,
 			flags: 2, // to disable
@@ -2985,7 +2986,7 @@ mod tests {
 			excess_data: Vec::new()
 		});
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[7], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 13,
 			timestamp: 2,
 			flags: 2, // to disable
@@ -2997,7 +2998,7 @@ mod tests {
 			excess_data: Vec::new()
 		});
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[2], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 6,
 			timestamp: 2,
 			flags: 2, // to disable
@@ -3009,7 +3010,7 @@ mod tests {
 			excess_data: Vec::new()
 		});
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[2], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 7,
 			timestamp: 2,
 			flags: 2, // to disable
@@ -3024,7 +3025,7 @@ mod tests {
 		// Check against amount_to_transfer_over_msat.
 		// Set minimal HTLC of 200_000_000 msat.
 		update_channel(&gossip_sync, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 2,
 			timestamp: 3,
 			flags: 0,
@@ -3039,7 +3040,7 @@ mod tests {
 		// Second hop only allows to forward 199_999_999 at most, thus not allowing the first hop to
 		// be used.
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[1], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 4,
 			timestamp: 3,
 			flags: 0,
@@ -3062,7 +3063,7 @@ mod tests {
 
 		// Lift the restriction on the first hop.
 		update_channel(&gossip_sync, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 2,
 			timestamp: 4,
 			flags: 0,
@@ -3085,7 +3086,9 @@ mod tests {
 		let (secp_ctx, network_graph, gossip_sync, _, logger) = build_graph();
 		let (our_privkey, our_id, privkeys, nodes) = get_nodes(&secp_ctx);
 		let config = UserConfig::default();
-		let payment_params = PaymentParameters::from_node_id(nodes[2], 42).with_bolt11_features(channelmanager::provided_invoice_features(&config)).unwrap();
+		let payment_params = PaymentParameters::from_node_id(nodes[2], 42)
+			.with_bolt11_features(channelmanager::provided_bolt11_invoice_features(&config))
+			.unwrap();
 		let scorer = ln_test_utils::TestScorer::new();
 		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
 		let random_seed_bytes = keys_manager.get_secure_random_bytes();
@@ -3094,7 +3097,7 @@ mod tests {
 		// One path allows transferring 35-40 sats, another one also allows 35-40 sats.
 		// Thus, they can't send 60 without overpaying.
 		update_channel(&gossip_sync, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 2,
 			timestamp: 2,
 			flags: 0,
@@ -3106,7 +3109,7 @@ mod tests {
 			excess_data: Vec::new()
 		});
 		update_channel(&gossip_sync, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 12,
 			timestamp: 3,
 			flags: 0,
@@ -3120,7 +3123,7 @@ mod tests {
 
 		// Make 0 fee.
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[7], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 13,
 			timestamp: 2,
 			flags: 0,
@@ -3132,7 +3135,7 @@ mod tests {
 			excess_data: Vec::new()
 		});
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[1], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 4,
 			timestamp: 2,
 			flags: 0,
@@ -3146,7 +3149,7 @@ mod tests {
 
 		// Disable other paths
 		update_channel(&gossip_sync, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 1,
 			timestamp: 3,
 			flags: 2, // to disable
@@ -3171,7 +3174,7 @@ mod tests {
 		// Now, test that if there are 2 paths, a "cheaper" by fee path wouldn't be prioritized
 		// while taking even more fee to match htlc_minimum_msat.
 		update_channel(&gossip_sync, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 12,
 			timestamp: 4,
 			flags: 0,
@@ -3183,7 +3186,7 @@ mod tests {
 			excess_data: Vec::new()
 		});
 		update_channel(&gossip_sync, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 2,
 			timestamp: 3,
 			flags: 0,
@@ -3195,7 +3198,7 @@ mod tests {
 			excess_data: Vec::new()
 		});
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[1], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 4,
 			timestamp: 4,
 			flags: 0,
@@ -3231,7 +3234,7 @@ mod tests {
 		let (secp_ctx, network_graph, gossip_sync, _, logger) = build_graph();
 		let (_, our_id, privkeys, nodes) = get_nodes(&secp_ctx);
 		let config = UserConfig::default();
-		let payment_params = PaymentParameters::from_node_id(nodes[2], 42).with_bolt11_features(channelmanager::provided_invoice_features(&config)).unwrap();
+		let payment_params = PaymentParameters::from_node_id(nodes[2], 42).with_bolt11_features(channelmanager::provided_bolt11_invoice_features(&config)).unwrap();
 		let scorer = ln_test_utils::TestScorer::new();
 		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
 		let random_seed_bytes = keys_manager.get_secure_random_bytes();
@@ -3240,7 +3243,7 @@ mod tests {
 
 		// First disable all paths except the us -> node1 -> node2 path
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[2], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 13,
 			timestamp: 2,
 			flags: 3,
@@ -3254,7 +3257,7 @@ mod tests {
 
 		// Set channel 4 to free but with a high htlc_minimum_msat
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[1], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 4,
 			timestamp: 2,
 			flags: 0,
@@ -3298,7 +3301,7 @@ mod tests {
 
 		// // Disable channels 4 and 12 by flags=2
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[1], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 4,
 			timestamp: 2,
 			flags: 2, // to disable
@@ -3310,7 +3313,7 @@ mod tests {
 			excess_data: Vec::new()
 		});
 		update_channel(&gossip_sync, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 12,
 			timestamp: 2,
 			flags: 2, // to disable
@@ -3742,7 +3745,7 @@ mod tests {
 
 		// Disabling channels 6 & 7 by flags=2
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[2], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 6,
 			timestamp: 2,
 			flags: 2, // to disable
@@ -3754,7 +3757,7 @@ mod tests {
 			excess_data: Vec::new()
 		});
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[2], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 7,
 			timestamp: 2,
 			flags: 2, // to disable
@@ -3816,7 +3819,7 @@ mod tests {
 
 		// Disabling channels 6 & 7 by flags=2
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[2], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 6,
 			timestamp: 2,
 			flags: 2, // to disable
@@ -3828,7 +3831,7 @@ mod tests {
 			excess_data: Vec::new()
 		});
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[2], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 7,
 			timestamp: 2,
 			flags: 2, // to disable
@@ -4170,14 +4173,16 @@ mod tests {
 		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
 		let random_seed_bytes = keys_manager.get_secure_random_bytes();
 		let config = UserConfig::default();
-		let payment_params = PaymentParameters::from_node_id(nodes[2], 42).with_bolt11_features(channelmanager::provided_invoice_features(&config)).unwrap();
+		let payment_params = PaymentParameters::from_node_id(nodes[2], 42)
+			.with_bolt11_features(channelmanager::provided_bolt11_invoice_features(&config))
+			.unwrap();
 
 		// We will use a simple single-path route from
 		// our node to node2 via node0: channels {1, 3}.
 
 		// First disable all other paths.
 		update_channel(&gossip_sync, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 2,
 			timestamp: 2,
 			flags: 2,
@@ -4189,7 +4194,7 @@ mod tests {
 			excess_data: Vec::new()
 		});
 		update_channel(&gossip_sync, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 12,
 			timestamp: 2,
 			flags: 2,
@@ -4204,7 +4209,7 @@ mod tests {
 		// Make the first channel (#1) very permissive,
 		// and we will be testing all limits on the second channel.
 		update_channel(&gossip_sync, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 1,
 			timestamp: 2,
 			flags: 0,
@@ -4219,7 +4224,7 @@ mod tests {
 		// First, let's see if routing works if we have absolutely no idea about the available amount.
 		// In this case, it should be set to 250_000 sats.
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[0], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 3,
 			timestamp: 2,
 			flags: 0,
@@ -4258,7 +4263,7 @@ mod tests {
 		// Check that setting next_outbound_htlc_limit_msat in first_hops limits the channels.
 		// Disable channel #1 and use another first hop.
 		update_channel(&gossip_sync, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 1,
 			timestamp: 3,
 			flags: 2,
@@ -4301,7 +4306,7 @@ mod tests {
 
 		// Enable channel #1 back.
 		update_channel(&gossip_sync, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 1,
 			timestamp: 4,
 			flags: 0,
@@ -4316,7 +4321,7 @@ mod tests {
 
 		// Now let's see if routing works if we know only htlc_maximum_msat.
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[0], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 3,
 			timestamp: 3,
 			flags: 0,
@@ -4357,7 +4362,7 @@ mod tests {
 		// We can't change UTXO capacity on the fly, so we'll disable
 		// the existing channel and add another one with the capacity we need.
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[0], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 3,
 			timestamp: 4,
 			flags: 2,
@@ -4381,7 +4386,7 @@ mod tests {
 
 		add_channel(&gossip_sync, &secp_ctx, &privkeys[0], &privkeys[2], ChannelFeatures::from_le_bytes(id_to_feature_flags(3)), 333);
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[0], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 333,
 			timestamp: 1,
 			flags: 0,
@@ -4393,7 +4398,7 @@ mod tests {
 			excess_data: Vec::new()
 		});
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[2], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 333,
 			timestamp: 1,
 			flags: 1,
@@ -4431,7 +4436,7 @@ mod tests {
 
 		// Now let's see if routing chooses htlc_maximum_msat over UTXO capacity.
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[0], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 333,
 			timestamp: 6,
 			flags: 0,
@@ -4478,7 +4483,9 @@ mod tests {
 		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
 		let random_seed_bytes = keys_manager.get_secure_random_bytes();
 		let config = UserConfig::default();
-		let payment_params = PaymentParameters::from_node_id(nodes[3], 42).with_bolt11_features(channelmanager::provided_invoice_features(&config)).unwrap();
+		let payment_params = PaymentParameters::from_node_id(nodes[3], 42)
+			.with_bolt11_features(channelmanager::provided_bolt11_invoice_features(&config))
+			.unwrap();
 
 		// Path via {node7, node2, node4} is channels {12, 13, 6, 11}.
 		// {12, 13, 11} have the capacities of 100, {6} has a capacity of 50.
@@ -4486,7 +4493,7 @@ mod tests {
 
 		// Disable other potential paths.
 		update_channel(&gossip_sync, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 2,
 			timestamp: 2,
 			flags: 2,
@@ -4498,7 +4505,7 @@ mod tests {
 			excess_data: Vec::new()
 		});
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[2], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 7,
 			timestamp: 2,
 			flags: 2,
@@ -4513,7 +4520,7 @@ mod tests {
 		// Limit capacities
 
 		update_channel(&gossip_sync, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 12,
 			timestamp: 2,
 			flags: 0,
@@ -4525,7 +4532,7 @@ mod tests {
 			excess_data: Vec::new()
 		});
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[7], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 13,
 			timestamp: 2,
 			flags: 0,
@@ -4538,7 +4545,7 @@ mod tests {
 		});
 
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[2], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 6,
 			timestamp: 2,
 			flags: 0,
@@ -4550,7 +4557,7 @@ mod tests {
 			excess_data: Vec::new()
 		});
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[4], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 11,
 			timestamp: 2,
 			flags: 0,
@@ -4616,7 +4623,7 @@ mod tests {
 
 		// Path via node0 is channels {1, 3}. Limit them to 100 and 50 sats (total limit 50).
 		update_channel(&gossip_sync, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 1,
 			timestamp: 2,
 			flags: 0,
@@ -4628,7 +4635,7 @@ mod tests {
 			excess_data: Vec::new()
 		});
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[0], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 3,
 			timestamp: 2,
 			flags: 0,
@@ -4662,11 +4669,12 @@ mod tests {
 		let (_, _, _, nodes) = get_nodes(&secp_ctx);
 		let config = UserConfig::default();
 		let clear_payment_params = PaymentParameters::from_node_id(nodes[2], 42)
-			.with_bolt11_features(channelmanager::provided_invoice_features(&config)).unwrap();
+			.with_bolt11_features(channelmanager::provided_bolt11_invoice_features(&config))
+			.unwrap();
 		do_simple_mpp_route_test(clear_payment_params);
 
 		// MPP to a 1-hop blinded path for nodes[2]
-		let bolt12_features: Bolt12InvoiceFeatures = channelmanager::provided_invoice_features(&config).to_context();
+		let bolt12_features = channelmanager::provided_bolt12_invoice_features(&config);
 		let blinded_path = BlindedPath {
 			introduction_node_id: nodes[2],
 			blinding_point: ln_test_utils::pubkey(42),
@@ -4729,7 +4737,7 @@ mod tests {
 
 		// Path via node0 is channels {1, 3}. Limit them to 100 and 50 sats (total limit 50).
 		update_channel(&gossip_sync, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 1,
 			timestamp: 2,
 			flags: 0,
@@ -4741,7 +4749,7 @@ mod tests {
 			excess_data: Vec::new()
 		});
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[0], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 3,
 			timestamp: 2,
 			flags: 0,
@@ -4756,7 +4764,7 @@ mod tests {
 		// Path via node7 is channels {12, 13}. Limit them to 60 and 60 sats
 		// (total limit 60).
 		update_channel(&gossip_sync, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 12,
 			timestamp: 2,
 			flags: 0,
@@ -4768,7 +4776,7 @@ mod tests {
 			excess_data: Vec::new()
 		});
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[7], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 13,
 			timestamp: 2,
 			flags: 0,
@@ -4783,7 +4791,7 @@ mod tests {
 		// Path via node1 is channels {2, 4}. Limit them to 200 and 180 sats
 		// (total capacity 180 sats).
 		update_channel(&gossip_sync, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 2,
 			timestamp: 2,
 			flags: 0,
@@ -4795,7 +4803,7 @@ mod tests {
 			excess_data: Vec::new()
 		});
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[1], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 4,
 			timestamp: 2,
 			flags: 0,
@@ -4905,7 +4913,8 @@ mod tests {
 		let random_seed_bytes = keys_manager.get_secure_random_bytes();
 		let config = UserConfig::default();
 		let payment_params = PaymentParameters::from_node_id(nodes[3], 42)
-			.with_bolt11_features(channelmanager::provided_invoice_features(&config)).unwrap();
+			.with_bolt11_features(channelmanager::provided_bolt11_invoice_features(&config))
+			.unwrap();
 
 		// We need a route consisting of 3 paths:
 		// From our node to node3 via {node0, node2}, {node7, node2, node4} and {node7, node2}.
@@ -4916,7 +4925,7 @@ mod tests {
 
 		// Disable other potential paths.
 		update_channel(&gossip_sync, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 2,
 			timestamp: 2,
 			flags: 2,
@@ -4928,7 +4937,7 @@ mod tests {
 			excess_data: Vec::new()
 		});
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[2], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 7,
 			timestamp: 2,
 			flags: 2,
@@ -4942,7 +4951,7 @@ mod tests {
 
 		// Path via {node0, node2} is channels {1, 3, 5}.
 		update_channel(&gossip_sync, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 1,
 			timestamp: 2,
 			flags: 0,
@@ -4954,7 +4963,7 @@ mod tests {
 			excess_data: Vec::new()
 		});
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[0], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 3,
 			timestamp: 2,
 			flags: 0,
@@ -4969,7 +4978,7 @@ mod tests {
 		// Capacity of 200 sats because this channel will be used by 3rd path as well.
 		add_channel(&gossip_sync, &secp_ctx, &privkeys[2], &privkeys[3], ChannelFeatures::from_le_bytes(id_to_feature_flags(5)), 5);
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[2], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 5,
 			timestamp: 2,
 			flags: 0,
@@ -4985,7 +4994,7 @@ mod tests {
 		// Add 100 sats to the capacities of {12, 13}, because these channels
 		// are also used for 3rd path. 100 sats for the rest. Total capacity: 100 sats.
 		update_channel(&gossip_sync, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 12,
 			timestamp: 2,
 			flags: 0,
@@ -4997,7 +5006,7 @@ mod tests {
 			excess_data: Vec::new()
 		});
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[7], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 13,
 			timestamp: 2,
 			flags: 0,
@@ -5010,7 +5019,7 @@ mod tests {
 		});
 
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[2], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 6,
 			timestamp: 2,
 			flags: 0,
@@ -5022,7 +5031,7 @@ mod tests {
 			excess_data: Vec::new()
 		});
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[4], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 11,
 			timestamp: 2,
 			flags: 0,
@@ -5076,7 +5085,9 @@ mod tests {
 		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
 		let random_seed_bytes = keys_manager.get_secure_random_bytes();
 		let config = UserConfig::default();
-		let payment_params = PaymentParameters::from_node_id(nodes[3], 42).with_bolt11_features(channelmanager::provided_invoice_features(&config)).unwrap();
+		let payment_params = PaymentParameters::from_node_id(nodes[3], 42)
+			.with_bolt11_features(channelmanager::provided_bolt11_invoice_features(&config))
+			.unwrap();
 
 		// This test checks that if we have two cheaper paths and one more expensive path,
 		// so that liquidity-wise any 2 of 3 combination is sufficient,
@@ -5091,7 +5102,7 @@ mod tests {
 
 		// Disable other potential paths.
 		update_channel(&gossip_sync, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 2,
 			timestamp: 2,
 			flags: 2,
@@ -5103,7 +5114,7 @@ mod tests {
 			excess_data: Vec::new()
 		});
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[2], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 7,
 			timestamp: 2,
 			flags: 2,
@@ -5117,7 +5128,7 @@ mod tests {
 
 		// Path via {node0, node2} is channels {1, 3, 5}.
 		update_channel(&gossip_sync, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 1,
 			timestamp: 2,
 			flags: 0,
@@ -5129,7 +5140,7 @@ mod tests {
 			excess_data: Vec::new()
 		});
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[0], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 3,
 			timestamp: 2,
 			flags: 0,
@@ -5144,7 +5155,7 @@ mod tests {
 		// Capacity of 200 sats because this channel will be used by 3rd path as well.
 		add_channel(&gossip_sync, &secp_ctx, &privkeys[2], &privkeys[3], ChannelFeatures::from_le_bytes(id_to_feature_flags(5)), 5);
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[2], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 5,
 			timestamp: 2,
 			flags: 0,
@@ -5160,7 +5171,7 @@ mod tests {
 		// Add 100 sats to the capacities of {12, 13}, because these channels
 		// are also used for 3rd path. 100 sats for the rest. Total capacity: 100 sats.
 		update_channel(&gossip_sync, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 12,
 			timestamp: 2,
 			flags: 0,
@@ -5172,7 +5183,7 @@ mod tests {
 			excess_data: Vec::new()
 		});
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[7], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 13,
 			timestamp: 2,
 			flags: 0,
@@ -5185,7 +5196,7 @@ mod tests {
 		});
 
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[2], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 6,
 			timestamp: 2,
 			flags: 0,
@@ -5197,7 +5208,7 @@ mod tests {
 			excess_data: Vec::new()
 		});
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[4], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 11,
 			timestamp: 2,
 			flags: 0,
@@ -5249,7 +5260,9 @@ mod tests {
 		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
 		let random_seed_bytes = keys_manager.get_secure_random_bytes();
 		let config = UserConfig::default();
-		let payment_params = PaymentParameters::from_node_id(nodes[3], 42).with_bolt11_features(channelmanager::provided_invoice_features(&config)).unwrap();
+		let payment_params = PaymentParameters::from_node_id(nodes[3], 42)
+			.with_bolt11_features(channelmanager::provided_bolt11_invoice_features(&config))
+			.unwrap();
 
 		// We need a route consisting of 2 paths:
 		// From our node to node3 via {node0, node2} and {node7, node2, node4}.
@@ -5262,7 +5275,7 @@ mod tests {
 
 		// Disable other potential paths.
 		update_channel(&gossip_sync, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 2,
 			timestamp: 2,
 			flags: 2,
@@ -5275,7 +5288,7 @@ mod tests {
 		});
 
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[2], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 7,
 			timestamp: 2,
 			flags: 2,
@@ -5289,7 +5302,7 @@ mod tests {
 
 		// Path via {node0, node2} is channels {1, 3, 5}.
 		update_channel(&gossip_sync, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 1,
 			timestamp: 2,
 			flags: 0,
@@ -5301,7 +5314,7 @@ mod tests {
 			excess_data: Vec::new()
 		});
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[0], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 3,
 			timestamp: 2,
 			flags: 0,
@@ -5315,7 +5328,7 @@ mod tests {
 
 		add_channel(&gossip_sync, &secp_ctx, &privkeys[2], &privkeys[3], ChannelFeatures::from_le_bytes(id_to_feature_flags(5)), 5);
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[2], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 5,
 			timestamp: 2,
 			flags: 0,
@@ -5338,7 +5351,7 @@ mod tests {
 		// - fee for channel 6 is 150 sats
 		// Let's test this by enforcing these 2 conditions and removing other limits.
 		update_channel(&gossip_sync, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 12,
 			timestamp: 2,
 			flags: 0,
@@ -5350,7 +5363,7 @@ mod tests {
 			excess_data: Vec::new()
 		});
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[7], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 13,
 			timestamp: 2,
 			flags: 0,
@@ -5363,7 +5376,7 @@ mod tests {
 		});
 
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[2], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 6,
 			timestamp: 2,
 			flags: 0,
@@ -5375,7 +5388,7 @@ mod tests {
 			excess_data: Vec::new()
 		});
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[4], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 11,
 			timestamp: 2,
 			flags: 0,
@@ -5404,7 +5417,7 @@ mod tests {
 				max_total_routing_fee_msat: Some(149_999) };
 			if let Err(LightningError{err, action: ErrorAction::IgnoreError}) = get_route(
 				&our_id, &route_params, &network_graph.read_only(), None, Arc::clone(&logger),
-				&scorer, &(), &random_seed_bytes) {
+				&scorer, &Default::default(), &random_seed_bytes) {
 					assert_eq!(err, "Failed to find a sufficient route to the given destination");
 			} else { panic!(); }
 		}
@@ -5448,7 +5461,8 @@ mod tests {
 		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
 		let random_seed_bytes = keys_manager.get_secure_random_bytes();
 		let config = UserConfig::default();
-		let payment_params = PaymentParameters::from_node_id(PublicKey::from_slice(&[02; 33]).unwrap(), 42).with_bolt11_features(channelmanager::provided_invoice_features(&config)).unwrap()
+		let payment_params = PaymentParameters::from_node_id(PublicKey::from_slice(&[02; 33]).unwrap(), 42)
+			.with_bolt11_features(channelmanager::provided_bolt11_invoice_features(&config)).unwrap()
 			.with_route_hints(vec![RouteHint(vec![RouteHintHop {
 				src_node_id: nodes[2],
 				short_channel_id: 42,
@@ -5464,7 +5478,7 @@ mod tests {
 		// we think we can only send up to 1 additional sat over the last-hop but refuse to as its
 		// under 5% of our payment amount.
 		update_channel(&gossip_sync, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 1,
 			timestamp: 2,
 			flags: 0,
@@ -5476,7 +5490,7 @@ mod tests {
 			excess_data: Vec::new()
 		});
 		update_channel(&gossip_sync, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 2,
 			timestamp: 2,
 			flags: 0,
@@ -5488,7 +5502,7 @@ mod tests {
 			excess_data: Vec::new()
 		});
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[1], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 4,
 			timestamp: 2,
 			flags: 0,
@@ -5500,7 +5514,7 @@ mod tests {
 			excess_data: Vec::new()
 		});
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[7], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 13,
 			timestamp: 2,
 			flags: 0|2, // Channel disabled
@@ -5543,7 +5557,9 @@ mod tests {
 		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
 		let random_seed_bytes = keys_manager.get_secure_random_bytes();
 		let config = UserConfig::default();
-		let payment_params = PaymentParameters::from_node_id(nodes[2], 42).with_bolt11_features(channelmanager::provided_invoice_features(&config)).unwrap()
+		let payment_params = PaymentParameters::from_node_id(nodes[2], 42)
+			.with_bolt11_features(channelmanager::provided_bolt11_invoice_features(&config))
+			.unwrap()
 			.with_max_channel_saturation_power_of_half(0);
 
 		// We need a route consisting of 3 paths:
@@ -5557,7 +5573,7 @@ mod tests {
 
 		// Path via node0 is channels {1, 3}. Limit them to 100 and 50 sats (total limit 50);
 		update_channel(&gossip_sync, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 1,
 			timestamp: 2,
 			flags: 0,
@@ -5569,7 +5585,7 @@ mod tests {
 			excess_data: Vec::new()
 		});
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[0], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 3,
 			timestamp: 2,
 			flags: 0,
@@ -5583,7 +5599,7 @@ mod tests {
 
 		// Path via node7 is channels {12, 13}. Limit them to 60 and 60 sats (total limit 60);
 		update_channel(&gossip_sync, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 12,
 			timestamp: 2,
 			flags: 0,
@@ -5595,7 +5611,7 @@ mod tests {
 			excess_data: Vec::new()
 		});
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[7], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 13,
 			timestamp: 2,
 			flags: 0,
@@ -5609,7 +5625,7 @@ mod tests {
 
 		// Path via node1 is channels {2, 4}. Limit them to 20 and 20 sats (total capacity 20 sats).
 		update_channel(&gossip_sync, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 2,
 			timestamp: 2,
 			flags: 0,
@@ -5621,7 +5637,7 @@ mod tests {
 			excess_data: Vec::new()
 		});
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[1], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 4,
 			timestamp: 2,
 			flags: 0,
@@ -5716,7 +5732,7 @@ mod tests {
 
 		add_channel(&gossip_sync, &secp_ctx, &our_privkey, &privkeys[1], ChannelFeatures::from_le_bytes(id_to_feature_flags(6)), 6);
 		update_channel(&gossip_sync, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 6,
 			timestamp: 1,
 			flags: 0,
@@ -5731,7 +5747,7 @@ mod tests {
 
 		add_channel(&gossip_sync, &secp_ctx, &privkeys[1], &privkeys[4], ChannelFeatures::from_le_bytes(id_to_feature_flags(5)), 5);
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[1], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 5,
 			timestamp: 1,
 			flags: 0,
@@ -5746,7 +5762,7 @@ mod tests {
 
 		add_channel(&gossip_sync, &secp_ctx, &privkeys[4], &privkeys[3], ChannelFeatures::from_le_bytes(id_to_feature_flags(4)), 4);
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[4], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 4,
 			timestamp: 1,
 			flags: 0,
@@ -5761,7 +5777,7 @@ mod tests {
 
 		add_channel(&gossip_sync, &secp_ctx, &privkeys[3], &privkeys[2], ChannelFeatures::from_le_bytes(id_to_feature_flags(3)), 3);
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[3], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 3,
 			timestamp: 1,
 			flags: 0,
@@ -5776,7 +5792,7 @@ mod tests {
 
 		add_channel(&gossip_sync, &secp_ctx, &privkeys[2], &privkeys[4], ChannelFeatures::from_le_bytes(id_to_feature_flags(2)), 2);
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[2], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 2,
 			timestamp: 1,
 			flags: 0,
@@ -5790,7 +5806,7 @@ mod tests {
 
 		add_channel(&gossip_sync, &secp_ctx, &privkeys[4], &privkeys[6], ChannelFeatures::from_le_bytes(id_to_feature_flags(1)), 1);
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[4], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 1,
 			timestamp: 1,
 			flags: 0,
@@ -5851,7 +5867,7 @@ mod tests {
 		// We modify the graph to set the htlc_maximum of channel 2 to below the value we wish to
 		// send.
 		update_channel(&gossip_sync, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 2,
 			timestamp: 2,
 			flags: 0,
@@ -5864,7 +5880,7 @@ mod tests {
 		});
 
 		update_channel(&gossip_sync, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 12,
 			timestamp: 2,
 			flags: 0,
@@ -5915,13 +5931,15 @@ mod tests {
 		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
 		let random_seed_bytes = keys_manager.get_secure_random_bytes();
 		let config = UserConfig::default();
-		let payment_params = PaymentParameters::from_node_id(nodes[2], 42).with_bolt11_features(channelmanager::provided_invoice_features(&config)).unwrap();
+		let payment_params = PaymentParameters::from_node_id(nodes[2], 42)
+			.with_bolt11_features(channelmanager::provided_bolt11_invoice_features(&config))
+			.unwrap();
 
 		// We modify the graph to set the htlc_minimum of channel 2 and 4 as needed - channel 2
 		// gets an htlc_maximum_msat of 80_000 and channel 4 an htlc_minimum_msat of 90_000. We
 		// then try to send 90_000.
 		update_channel(&gossip_sync, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 2,
 			timestamp: 2,
 			flags: 0,
@@ -5933,7 +5951,7 @@ mod tests {
 			excess_data: Vec::new()
 		});
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[1], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 4,
 			timestamp: 2,
 			flags: 0,
@@ -5968,7 +5986,7 @@ mod tests {
 			assert_eq!(route.paths[0].hops[1].short_channel_id, 13);
 			assert_eq!(route.paths[0].hops[1].fee_msat, 90_000);
 			assert_eq!(route.paths[0].hops[1].cltv_expiry_delta, 42);
-			assert_eq!(route.paths[0].hops[1].node_features.le_flags(), channelmanager::provided_invoice_features(&config).le_flags());
+			assert_eq!(route.paths[0].hops[1].node_features.le_flags(), channelmanager::provided_bolt11_invoice_features(&config).le_flags());
 			assert_eq!(route.paths[0].hops[1].channel_features.le_flags(), &id_to_feature_flags(13));
 		}
 	}
@@ -5987,7 +6005,9 @@ mod tests {
 		let network_graph = NetworkGraph::new(Network::Testnet, Arc::clone(&logger));
 		let scorer = ln_test_utils::TestScorer::new();
 		let config = UserConfig::default();
-		let payment_params = PaymentParameters::from_node_id(nodes[0], 42).with_bolt11_features(channelmanager::provided_invoice_features(&config)).unwrap();
+		let payment_params = PaymentParameters::from_node_id(nodes[0], 42)
+			.with_bolt11_features(channelmanager::provided_bolt11_invoice_features(&config))
+			.unwrap();
 		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
 		let random_seed_bytes = keys_manager.get_secure_random_bytes();
 
@@ -6473,7 +6493,7 @@ mod tests {
 		// Set the fee on channel 13 to 100% to match channel 4 giving us two equivalent paths (us
 		// -> node 7 -> node2 and us -> node 1 -> node 2) which we should balance over.
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[1], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 4,
 			timestamp: 2,
 			flags: 0,
@@ -6485,7 +6505,7 @@ mod tests {
 			excess_data: Vec::new()
 		});
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[7], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 13,
 			timestamp: 2,
 			flags: 0,
@@ -6498,7 +6518,9 @@ mod tests {
 		});
 
 		let config = UserConfig::default();
-		let payment_params = PaymentParameters::from_node_id(nodes[2], 42).with_bolt11_features(channelmanager::provided_invoice_features(&config)).unwrap();
+		let payment_params = PaymentParameters::from_node_id(nodes[2], 42)
+			.with_bolt11_features(channelmanager::provided_bolt11_invoice_features(&config))
+			.unwrap();
 		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
 		let random_seed_bytes = keys_manager.get_secure_random_bytes();
 		// 100,000 sats is less than the available liquidity on each channel, set above.
@@ -6557,7 +6579,7 @@ mod tests {
 
 		let params = ProbabilisticScoringFeeParameters::default();
 		let mut scorer = ProbabilisticScorer::new(ProbabilisticScoringDecayParameters::default(), &graph, &logger);
-		let features = channelmanager::provided_invoice_features(&UserConfig::default());
+		let features = channelmanager::provided_bolt11_invoice_features(&UserConfig::default());
 
 		super::bench_utils::generate_test_routes(&graph, &mut scorer, &params, features, random_init_seed(), 0, 2);
 	}
@@ -6578,7 +6600,7 @@ mod tests {
 
 		let params = ProbabilisticScoringFeeParameters::default();
 		let mut scorer = ProbabilisticScorer::new(ProbabilisticScoringDecayParameters::default(), &graph, &logger);
-		let features = channelmanager::provided_invoice_features(&UserConfig::default());
+		let features = channelmanager::provided_bolt11_invoice_features(&UserConfig::default());
 
 		super::bench_utils::generate_test_routes(&graph, &mut scorer, &params, features, random_init_seed(), 1_000_000, 2);
 	}
@@ -6652,7 +6674,8 @@ mod tests {
 		let dest_node_id = ln_test_utils::pubkey(42);
 		let payment_params = PaymentParameters::from_node_id(dest_node_id, 42)
 			.with_route_hints(vec![route_hint_1.clone()]).unwrap()
-			.with_bolt11_features(channelmanager::provided_invoice_features(&config)).unwrap();
+			.with_bolt11_features(channelmanager::provided_bolt11_invoice_features(&config))
+			.unwrap();
 
 		// Make sure we'll error if our route hints don't have enough liquidity according to their
 		// htlc_maximum_msat.
@@ -6671,7 +6694,8 @@ mod tests {
 		route_hint_2.0[0].short_channel_id = 43;
 		let payment_params = PaymentParameters::from_node_id(dest_node_id, 42)
 			.with_route_hints(vec![route_hint_1, route_hint_2]).unwrap()
-			.with_bolt11_features(channelmanager::provided_invoice_features(&config)).unwrap();
+			.with_bolt11_features(channelmanager::provided_bolt11_invoice_features(&config))
+			.unwrap();
 		let mut route_params = RouteParameters::from_payment_params_and_value(
 			payment_params, max_htlc_msat + 1);
 		route_params.max_total_routing_fee_msat = Some(max_htlc_msat * 2);
@@ -6727,7 +6751,8 @@ mod tests {
 		let dest_node_id = ln_test_utils::pubkey(44);
 		let payment_params = PaymentParameters::from_node_id(dest_node_id, 42)
 			.with_route_hints(vec![route_hint_1, route_hint_2]).unwrap()
-			.with_bolt11_features(channelmanager::provided_invoice_features(&config)).unwrap();
+			.with_bolt11_features(channelmanager::provided_bolt11_invoice_features(&config))
+			.unwrap();
 
 		let route_params = RouteParameters::from_payment_params_and_value(
 			payment_params, amt_msat);
@@ -6770,7 +6795,7 @@ mod tests {
 			cltv_expiry_delta: 10,
 			features: BlindedHopFeatures::empty(),
 		};
-		let bolt12_features: Bolt12InvoiceFeatures = channelmanager::provided_invoice_features(&config).to_context();
+		let bolt12_features = channelmanager::provided_bolt12_invoice_features(&config);
 		let payment_params = PaymentParameters::blinded(vec![
 			(blinded_payinfo.clone(), blinded_path.clone()),
 			(blinded_payinfo.clone(), blinded_path.clone())])
@@ -7079,7 +7104,7 @@ mod tests {
 		let random_seed_bytes = keys_manager.get_secure_random_bytes();
 		let config = UserConfig::default();
 
-		let bolt12_features: Bolt12InvoiceFeatures = channelmanager::provided_invoice_features(&config).to_context();
+		let bolt12_features = channelmanager::provided_bolt12_invoice_features(&config);
 		let blinded_path_1 = BlindedPath {
 			introduction_node_id: nodes[2],
 			blinding_point: ln_test_utils::pubkey(42),
@@ -7107,7 +7132,7 @@ mod tests {
 			(blinded_payinfo_2.clone(), blinded_path_2.clone()),
 		];
 		let payment_params = PaymentParameters::blinded(blinded_hints.clone())
-			.with_bolt12_features(bolt12_features.clone()).unwrap();
+			.with_bolt12_features(bolt12_features).unwrap();
 
 		let mut route_params = RouteParameters::from_payment_params_and_value(payment_params, 100_000);
 		route_params.max_total_routing_fee_msat = Some(100_000);
@@ -7151,7 +7176,7 @@ mod tests {
 		add_channel(&gossip_sync, &secp_ctx, &privkeys[0], &privkeys[1],
 			ChannelFeatures::from_le_bytes(id_to_feature_flags(1)), 1);
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[0], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 1,
 			timestamp: 1,
 			flags: 0,
@@ -7163,7 +7188,7 @@ mod tests {
 			excess_data: Vec::new()
 		});
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[1], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 1,
 			timestamp: 1,
 			flags: 1,
@@ -7272,9 +7297,9 @@ mod tests {
 		blinded_hints[1].0.htlc_maximum_msat = 2_8089_0861_1584_0000;
 		blinded_hints[1].0.cltv_expiry_delta = 0;
 
-		let bolt12_features: Bolt12InvoiceFeatures = channelmanager::provided_invoice_features(&config).to_context();
+		let bolt12_features = channelmanager::provided_bolt12_invoice_features(&config);
 		let payment_params = PaymentParameters::blinded(blinded_hints.clone())
-			.with_bolt12_features(bolt12_features.clone()).unwrap();
+			.with_bolt12_features(bolt12_features).unwrap();
 
 		let netgraph = network_graph.read_only();
 		let route_params = RouteParameters::from_payment_params_and_value(
@@ -7324,7 +7349,7 @@ mod tests {
 		];
 		blinded_hints[1].1.introduction_node_id = nodes[6];
 
-		let bolt12_features: Bolt12InvoiceFeatures = channelmanager::provided_invoice_features(&config).to_context();
+		let bolt12_features = channelmanager::provided_bolt12_invoice_features(&config);
 		let payment_params = PaymentParameters::blinded(blinded_hints.clone())
 			.with_bolt12_features(bolt12_features.clone()).unwrap();
 
@@ -7332,7 +7357,7 @@ mod tests {
 		let route_params = RouteParameters::from_payment_params_and_value(
 			payment_params, amt_msat);
 		if let Err(LightningError { err, .. }) = get_route(
-			&our_id, &route_params, &netgraph, None, Arc::clone(&logger), &scorer, &(), &random_seed_bytes
+			&our_id, &route_params, &netgraph, None, Arc::clone(&logger), &scorer, &Default::default(), &random_seed_bytes
 		) {
 			assert_eq!(err, "Failed to find a path to the given destination");
 		} else { panic!() }
@@ -7381,7 +7406,7 @@ mod tests {
 
 		blinded_hints[2].1.introduction_node_id = nodes[6];
 
-		let bolt12_features: Bolt12InvoiceFeatures = channelmanager::provided_invoice_features(&config).to_context();
+		let bolt12_features = channelmanager::provided_bolt12_invoice_features(&config);
 		let payment_params = PaymentParameters::blinded(blinded_hints.clone())
 			.with_bolt12_features(bolt12_features.clone()).unwrap();
 
@@ -7389,7 +7414,7 @@ mod tests {
 		let route_params = RouteParameters::from_payment_params_and_value(
 			payment_params, amt_msat);
 		if let Err(LightningError { err, .. }) = get_route(
-			&our_id, &route_params, &netgraph, None, Arc::clone(&logger), &scorer, &(), &random_seed_bytes
+			&our_id, &route_params, &netgraph, None, Arc::clone(&logger), &scorer, &Default::default(), &random_seed_bytes
 		) {
 			assert_eq!(err, "Failed to find a path to the given destination");
 		} else { panic!() }
@@ -7441,7 +7466,7 @@ mod tests {
 				cltv_expiry_delta: 0,
 				features: BlindedHopFeatures::empty(),
 			};
-			let bolt12_features: Bolt12InvoiceFeatures = channelmanager::provided_invoice_features(&config).to_context();
+			let bolt12_features = channelmanager::provided_bolt12_invoice_features(&config);
 			PaymentParameters::blinded(vec![(blinded_payinfo, blinded_path)])
 				.with_bolt12_features(bolt12_features.clone()).unwrap()
 		} else {
@@ -7459,7 +7484,7 @@ mod tests {
 
 			PaymentParameters::from_node_id(nodes[1], 42)
 				.with_route_hints(vec![route_hint]).unwrap()
-				.with_bolt11_features(channelmanager::provided_invoice_features(&config)).unwrap()
+				.with_bolt11_features(channelmanager::provided_bolt11_invoice_features(&config)).unwrap()
 		};
 
 		let netgraph = network_graph.read_only();
@@ -7467,7 +7492,7 @@ mod tests {
 			payment_params, amt_msat);
 		if let Err(LightningError { err, .. }) = get_route(
 			&our_id, &route_params, &netgraph, Some(&first_hops.iter().collect::<Vec<_>>()),
-			Arc::clone(&logger), &scorer, &(), &random_seed_bytes
+			Arc::clone(&logger), &scorer, &Default::default(), &random_seed_bytes
 		) {
 			assert_eq!(err, "Failed to find a path to the given destination");
 		} else { panic!() }
@@ -7524,7 +7549,7 @@ mod tests {
 					features: BlindedHopFeatures::empty(),
 				}, blinded_path.clone()));
 			}
-			let bolt12_features: Bolt12InvoiceFeatures = channelmanager::provided_invoice_features(&config).to_context();
+			let bolt12_features = channelmanager::provided_bolt12_invoice_features(&config);
 			PaymentParameters::blinded(blinded_hints.clone())
 				.with_bolt12_features(bolt12_features.clone()).unwrap()
 		} else {
@@ -7544,7 +7569,7 @@ mod tests {
 			}
 			PaymentParameters::from_node_id(nodes[1], 42)
 				.with_route_hints(route_hints).unwrap()
-				.with_bolt11_features(channelmanager::provided_invoice_features(&config)).unwrap()
+				.with_bolt11_features(channelmanager::provided_bolt11_invoice_features(&config)).unwrap()
 		};
 
 		let netgraph = network_graph.read_only();
@@ -7553,7 +7578,7 @@ mod tests {
 
 		let route = get_route(
 			&our_id, &route_params, &netgraph, Some(&first_hops.iter().collect::<Vec<_>>()),
-			Arc::clone(&logger), &scorer, &(), &random_seed_bytes
+			Arc::clone(&logger), &scorer, &Default::default(), &random_seed_bytes
 		).unwrap();
 		assert_eq!(route.paths.len(), 1);
 		assert_eq!(route.get_total_amount(), amt_msat);
@@ -7584,7 +7609,7 @@ mod tests {
 
 		add_channel(&gossip_sync, &secp_ctx, &privkeys[0], &privkeys[6], ChannelFeatures::from_le_bytes(id_to_feature_flags(6)), 6);
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[0], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 6,
 			timestamp: 1,
 			flags: 0,
@@ -7615,7 +7640,7 @@ mod tests {
 				],
 			})
 		];
-		let bolt12_features: Bolt12InvoiceFeatures = channelmanager::provided_invoice_features(&config).to_context();
+		let bolt12_features = channelmanager::provided_bolt12_invoice_features(&config);
 		let payment_params = PaymentParameters::blinded(blinded_hints.clone())
 			.with_bolt12_features(bolt12_features.clone()).unwrap();
 		let route_params = RouteParameters::from_payment_params_and_value(
@@ -7675,7 +7700,7 @@ mod tests {
 					features: BlindedHopFeatures::empty(),
 				}, blinded_path.clone()));
 			}
-			let bolt12_features: Bolt12InvoiceFeatures = channelmanager::provided_invoice_features(&config).to_context();
+			let bolt12_features = channelmanager::provided_bolt12_invoice_features(&config);
 			PaymentParameters::blinded(blinded_hints.clone())
 				.with_bolt12_features(bolt12_features.clone()).unwrap()
 		};
@@ -7690,6 +7715,203 @@ mod tests {
 		).unwrap();
 		assert_eq!(route.paths.len(), 1);
 		assert_eq!(route.get_total_amount(), amt_msat);
+	}
+
+	#[test]
+	fn first_hop_preferred_over_hint() {
+		// Check that if we have a first hop to a peer we'd always prefer that over a route hint
+		// they gave us, but we'd still consider all subsequent hints if they are more attractive.
+		let secp_ctx = Secp256k1::new();
+		let logger = Arc::new(ln_test_utils::TestLogger::new());
+		let network_graph = Arc::new(NetworkGraph::new(Network::Testnet, Arc::clone(&logger)));
+		let gossip_sync = P2PGossipSync::new(Arc::clone(&network_graph), None, Arc::clone(&logger));
+		let scorer = ln_test_utils::TestScorer::new();
+		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
+		let random_seed_bytes = keys_manager.get_secure_random_bytes();
+		let config = UserConfig::default();
+
+		let amt_msat = 1_000_000;
+		let (our_privkey, our_node_id, privkeys, nodes) = get_nodes(&secp_ctx);
+
+		add_channel(&gossip_sync, &secp_ctx, &our_privkey, &privkeys[0],
+			ChannelFeatures::from_le_bytes(id_to_feature_flags(1)), 1);
+		update_channel(&gossip_sync, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
+			short_channel_id: 1,
+			timestamp: 1,
+			flags: 0,
+			cltv_expiry_delta: 42,
+			htlc_minimum_msat: 1_000,
+			htlc_maximum_msat: 10_000_000,
+			fee_base_msat: 800,
+			fee_proportional_millionths: 0,
+			excess_data: Vec::new()
+		});
+		update_channel(&gossip_sync, &secp_ctx, &privkeys[0], UnsignedChannelUpdate {
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
+			short_channel_id: 1,
+			timestamp: 1,
+			flags: 1,
+			cltv_expiry_delta: 42,
+			htlc_minimum_msat: 1_000,
+			htlc_maximum_msat: 10_000_000,
+			fee_base_msat: 800,
+			fee_proportional_millionths: 0,
+			excess_data: Vec::new()
+		});
+
+		add_channel(&gossip_sync, &secp_ctx, &privkeys[0], &privkeys[1],
+			ChannelFeatures::from_le_bytes(id_to_feature_flags(1)), 2);
+		update_channel(&gossip_sync, &secp_ctx, &privkeys[0], UnsignedChannelUpdate {
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
+			short_channel_id: 2,
+			timestamp: 2,
+			flags: 0,
+			cltv_expiry_delta: 42,
+			htlc_minimum_msat: 1_000,
+			htlc_maximum_msat: 10_000_000,
+			fee_base_msat: 800,
+			fee_proportional_millionths: 0,
+			excess_data: Vec::new()
+		});
+		update_channel(&gossip_sync, &secp_ctx, &privkeys[1], UnsignedChannelUpdate {
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
+			short_channel_id: 2,
+			timestamp: 2,
+			flags: 1,
+			cltv_expiry_delta: 42,
+			htlc_minimum_msat: 1_000,
+			htlc_maximum_msat: 10_000_000,
+			fee_base_msat: 800,
+			fee_proportional_millionths: 0,
+			excess_data: Vec::new()
+		});
+
+		let dest_node_id = nodes[2];
+
+		let route_hint = RouteHint(vec![RouteHintHop {
+			src_node_id: our_node_id,
+			short_channel_id: 44,
+			fees: RoutingFees {
+				base_msat: 234,
+				proportional_millionths: 0,
+			},
+			cltv_expiry_delta: 10,
+			htlc_minimum_msat: None,
+			htlc_maximum_msat: Some(5_000_000),
+		},
+		RouteHintHop {
+			src_node_id: nodes[0],
+			short_channel_id: 45,
+			fees: RoutingFees {
+				base_msat: 123,
+				proportional_millionths: 0,
+			},
+			cltv_expiry_delta: 10,
+			htlc_minimum_msat: None,
+			htlc_maximum_msat: None,
+		}]);
+
+		let payment_params = PaymentParameters::from_node_id(dest_node_id, 42)
+			.with_route_hints(vec![route_hint]).unwrap()
+			.with_bolt11_features(channelmanager::provided_bolt11_invoice_features(&config)).unwrap();
+		let route_params = RouteParameters::from_payment_params_and_value(
+			payment_params, amt_msat);
+
+		// First create an insufficient first hop for channel with SCID 1 and check we'd use the
+		// route hint.
+		let first_hop = get_channel_details(Some(1), nodes[0],
+			channelmanager::provided_init_features(&config), 999_999);
+		let first_hops = vec![first_hop];
+
+		let route = get_route(&our_node_id, &route_params.clone(), &network_graph.read_only(),
+			Some(&first_hops.iter().collect::<Vec<_>>()), Arc::clone(&logger), &scorer,
+			&Default::default(), &random_seed_bytes).unwrap();
+		assert_eq!(route.paths.len(), 1);
+		assert_eq!(route.get_total_amount(), amt_msat);
+		assert_eq!(route.paths[0].hops.len(), 2);
+		assert_eq!(route.paths[0].hops[0].short_channel_id, 44);
+		assert_eq!(route.paths[0].hops[1].short_channel_id, 45);
+		assert_eq!(route.get_total_fees(), 123);
+
+		// Now check we would trust our first hop info, i.e., fail if we detect the route hint is
+		// for a first hop channel.
+		let mut first_hop = get_channel_details(Some(1), nodes[0], channelmanager::provided_init_features(&config), 999_999);
+		first_hop.outbound_scid_alias = Some(44);
+		let first_hops = vec![first_hop];
+
+		let route_res = get_route(&our_node_id, &route_params.clone(), &network_graph.read_only(),
+			Some(&first_hops.iter().collect::<Vec<_>>()), Arc::clone(&logger), &scorer,
+			&Default::default(), &random_seed_bytes);
+		assert!(route_res.is_err());
+
+		// Finally check we'd use the first hop if has sufficient outbound capacity. But we'd stil
+		// use the cheaper second hop of the route hint.
+		let mut first_hop = get_channel_details(Some(1), nodes[0],
+			channelmanager::provided_init_features(&config), 10_000_000);
+		first_hop.outbound_scid_alias = Some(44);
+		let first_hops = vec![first_hop];
+
+		let route = get_route(&our_node_id, &route_params.clone(), &network_graph.read_only(),
+			Some(&first_hops.iter().collect::<Vec<_>>()), Arc::clone(&logger), &scorer,
+			&Default::default(), &random_seed_bytes).unwrap();
+		assert_eq!(route.paths.len(), 1);
+		assert_eq!(route.get_total_amount(), amt_msat);
+		assert_eq!(route.paths[0].hops.len(), 2);
+		assert_eq!(route.paths[0].hops[0].short_channel_id, 1);
+		assert_eq!(route.paths[0].hops[1].short_channel_id, 45);
+		assert_eq!(route.get_total_fees(), 123);
+	}
+
+	#[test]
+	fn allow_us_being_first_hint() {
+		// Check that we consider a route hint even if we are the src of the first hop.
+		let secp_ctx = Secp256k1::new();
+		let logger = Arc::new(ln_test_utils::TestLogger::new());
+		let network_graph = Arc::new(NetworkGraph::new(Network::Testnet, Arc::clone(&logger)));
+		let scorer = ln_test_utils::TestScorer::new();
+		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
+		let random_seed_bytes = keys_manager.get_secure_random_bytes();
+		let config = UserConfig::default();
+
+		let (_, our_node_id, _, nodes) = get_nodes(&secp_ctx);
+
+		let amt_msat = 1_000_000;
+		let dest_node_id = nodes[1];
+
+		let first_hop = get_channel_details(Some(1), nodes[0], channelmanager::provided_init_features(&config), 10_000_000);
+		let first_hops = vec![first_hop];
+
+		let route_hint = RouteHint(vec![RouteHintHop {
+			src_node_id: our_node_id,
+			short_channel_id: 44,
+			fees: RoutingFees {
+				base_msat: 123,
+				proportional_millionths: 0,
+			},
+			cltv_expiry_delta: 10,
+			htlc_minimum_msat: None,
+			htlc_maximum_msat: None,
+		}]);
+
+		let payment_params = PaymentParameters::from_node_id(dest_node_id, 42)
+			.with_route_hints(vec![route_hint]).unwrap()
+			.with_bolt11_features(channelmanager::provided_bolt11_invoice_features(&config)).unwrap();
+
+		let route_params = RouteParameters::from_payment_params_and_value(
+			payment_params, amt_msat);
+
+
+		let route = get_route(&our_node_id, &route_params, &network_graph.read_only(),
+			Some(&first_hops.iter().collect::<Vec<_>>()), Arc::clone(&logger), &scorer,
+			&Default::default(), &random_seed_bytes).unwrap();
+
+		assert_eq!(route.paths.len(), 1);
+		assert_eq!(route.get_total_amount(), amt_msat);
+		assert_eq!(route.get_total_fees(), 0);
+		assert_eq!(route.paths[0].hops.len(), 1);
+
+		assert_eq!(route.paths[0].hops[0].short_channel_id, 44);
 	}
 }
 
@@ -7834,7 +8056,7 @@ pub(crate) mod bench_utils {
 						// Generate fail/success paths for a wider range of potential amounts with
 						// MPP enabled to give us a chance to apply penalties for more potential
 						// routes.
-						let mpp_features = channelmanager::provided_invoice_features(&UserConfig::default());
+						let mpp_features = channelmanager::provided_bolt11_invoice_features(&UserConfig::default());
 						let params = PaymentParameters::from_node_id(dst, 42)
 							.with_bolt11_features(mpp_features).unwrap();
 						let route_params = RouteParameters::from_payment_params_and_value(
@@ -7912,7 +8134,7 @@ pub mod benches {
 		let network_graph = bench_utils::read_network_graph(&logger).unwrap();
 		let scorer = FixedPenaltyScorer::with_penalty(0);
 		generate_routes(bench, &network_graph, scorer, &Default::default(),
-			channelmanager::provided_invoice_features(&UserConfig::default()), 0,
+			channelmanager::provided_bolt11_invoice_features(&UserConfig::default()), 0,
 			"generate_mpp_routes_with_zero_penalty_scorer");
 	}
 
@@ -7931,7 +8153,7 @@ pub mod benches {
 		let params = ProbabilisticScoringFeeParameters::default();
 		let scorer = ProbabilisticScorer::new(ProbabilisticScoringDecayParameters::default(), &network_graph, &logger);
 		generate_routes(bench, &network_graph, scorer, &params,
-			channelmanager::provided_invoice_features(&UserConfig::default()), 0,
+			channelmanager::provided_bolt11_invoice_features(&UserConfig::default()), 0,
 			"generate_mpp_routes_with_probabilistic_scorer");
 	}
 
@@ -7941,7 +8163,7 @@ pub mod benches {
 		let params = ProbabilisticScoringFeeParameters::default();
 		let scorer = ProbabilisticScorer::new(ProbabilisticScoringDecayParameters::default(), &network_graph, &logger);
 		generate_routes(bench, &network_graph, scorer, &params,
-			channelmanager::provided_invoice_features(&UserConfig::default()), 100_000_000,
+			channelmanager::provided_bolt11_invoice_features(&UserConfig::default()), 100_000_000,
 			"generate_large_mpp_routes_with_probabilistic_scorer");
 	}
 
@@ -7953,7 +8175,7 @@ pub mod benches {
 		let scorer = ProbabilisticScorer::new(
 			ProbabilisticScoringDecayParameters::default(), &network_graph, &logger);
 		generate_routes(bench, &network_graph, scorer, &params,
-			channelmanager::provided_invoice_features(&UserConfig::default()), 0,
+			channelmanager::provided_bolt11_invoice_features(&UserConfig::default()), 0,
 			"generate_routes_with_nonlinear_probabilistic_scorer");
 	}
 
@@ -7965,7 +8187,7 @@ pub mod benches {
 		let scorer = ProbabilisticScorer::new(
 			ProbabilisticScoringDecayParameters::default(), &network_graph, &logger);
 		generate_routes(bench, &network_graph, scorer, &params,
-			channelmanager::provided_invoice_features(&UserConfig::default()), 0,
+			channelmanager::provided_bolt11_invoice_features(&UserConfig::default()), 0,
 			"generate_mpp_routes_with_nonlinear_probabilistic_scorer");
 	}
 
@@ -7977,7 +8199,7 @@ pub mod benches {
 		let scorer = ProbabilisticScorer::new(
 			ProbabilisticScoringDecayParameters::default(), &network_graph, &logger);
 		generate_routes(bench, &network_graph, scorer, &params,
-			channelmanager::provided_invoice_features(&UserConfig::default()), 100_000_000,
+			channelmanager::provided_bolt11_invoice_features(&UserConfig::default()), 100_000_000,
 			"generate_large_mpp_routes_with_nonlinear_probabilistic_scorer");
 	}
 
