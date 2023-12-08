@@ -1437,7 +1437,7 @@ impl<'a> CandidateRouteHop<'a> {
 		}
 	}
 
-	#[inline]
+	#[inline(always)]
 	fn src_node_counter(&self) -> u32 {
 		match self {
 			CandidateRouteHop::FirstHop(hop) => hop.payer_node_counter,

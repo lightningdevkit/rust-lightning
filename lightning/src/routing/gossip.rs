@@ -1053,6 +1053,8 @@ impl Readable for ChannelInfo {
 pub struct DirectedChannelInfo<'a> {
 	channel: &'a ChannelInfo,
 	direction: &'a ChannelUpdateInfo,
+	source_counter: u32,
+	target_counter: u32,
 	/// The direction this channel is in - if set, it indicates that we're traversing the channel
 	/// from [`ChannelInfo::node_one`] to [`ChannelInfo::node_two`].
 	from_node_one: bool,
@@ -1061,7 +1063,12 @@ pub struct DirectedChannelInfo<'a> {
 impl<'a> DirectedChannelInfo<'a> {
 	#[inline]
 	fn new(channel: &'a ChannelInfo, direction: &'a ChannelUpdateInfo, from_node_one: bool) -> Self {
-		Self { channel, direction, from_node_one }
+		let (source_counter, target_counter) = if from_node_one {
+			(channel.node_one_counter, channel.node_two_counter)
+		} else {
+			(channel.node_two_counter, channel.node_one_counter)
+		};
+		Self { channel, direction, from_node_one, source_counter, target_counter }
 	}
 
 	/// Returns information for the channel.
@@ -1104,12 +1111,12 @@ impl<'a> DirectedChannelInfo<'a> {
 	pub fn target(&self) -> &'a NodeId { if self.from_node_one { &self.channel.node_two } else { &self.channel.node_one } }
 
 	/// Returns the source node's counter
-	#[inline]
-	pub(super) fn source_counter(&self) -> u32 { if self.from_node_one { self.channel.node_one_counter } else { self.channel.node_two_counter } }
+	#[inline(always)]
+	pub(super) fn source_counter(&self) -> u32 { self.source_counter }
 
 	/// Returns the target node's counter
-	#[inline]
-	pub(super) fn target_counter(&self) -> u32 { if self.from_node_one { self.channel.node_two_counter } else { self.channel.node_one_counter } }
+	#[inline(always)]
+	pub(super) fn target_counter(&self) -> u32 { self.target_counter }
 }
 
 impl<'a> fmt::Debug for DirectedChannelInfo<'a> {
