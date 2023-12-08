@@ -419,6 +419,8 @@ define_state_flags!(
 	]
 );
 
+// Note that the order of this enum is implicitly defined by where each variant is placed. Take this
+// into account when introducing new states and update `test_channel_state_order` accordingly.
 #[derive(Copy, Clone, Debug, PartialEq, PartialOrd, Eq)]
 enum ChannelState {
 	/// We are negotiating the parameters required for the channel prior to funding it.
@@ -8373,6 +8375,18 @@ mod tests {
 	use bitcoin::blockdata::locktime::absolute::LockTime;
 	use bitcoin::address::{WitnessProgram, WitnessVersion};
 	use crate::prelude::*;
+
+	#[test]
+	fn test_channel_state_order() {
+		use crate::ln::channel::NegotiatingFundingFlags;
+		use crate::ln::channel::AwaitingChannelReadyFlags;
+		use crate::ln::channel::ChannelReadyFlags;
+
+		assert!(ChannelState::NegotiatingFunding(NegotiatingFundingFlags::new()) < ChannelState::FundingNegotiated);
+		assert!(ChannelState::FundingNegotiated < ChannelState::AwaitingChannelReady(AwaitingChannelReadyFlags::new()));
+		assert!(ChannelState::AwaitingChannelReady(AwaitingChannelReadyFlags::new()) < ChannelState::ChannelReady(ChannelReadyFlags::new()));
+		assert!(ChannelState::ChannelReady(ChannelReadyFlags::new()) < ChannelState::ShutdownComplete);
+	}
 
 	struct TestFeeEstimator {
 		fee_est: u32
