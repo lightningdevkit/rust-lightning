@@ -4176,8 +4176,8 @@ impl<SP: Deref> Channel<SP> where
 		// first received the funding_signed.
 		let mut funding_broadcastable =
 			if self.context.is_outbound() &&
-				matches!(self.context.channel_state, ChannelState::AwaitingChannelReady(flags) if !flags.is_set(AwaitingChannelReadyFlags::WAITING_FOR_BATCH)) ||
-				matches!(self.context.channel_state, ChannelState::ChannelReady(_))
+				(matches!(self.context.channel_state, ChannelState::AwaitingChannelReady(flags) if !flags.is_set(AwaitingChannelReadyFlags::WAITING_FOR_BATCH)) ||
+				matches!(self.context.channel_state, ChannelState::ChannelReady(_)))
 			{
 				self.context.funding_transaction.take()
 			} else { None };
