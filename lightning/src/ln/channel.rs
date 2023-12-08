@@ -267,7 +267,7 @@ enum HTLCUpdateAwaitingACK {
 }
 
 macro_rules! define_state_flags {
-	($flag_type_doc: expr, $flag_type: ident, [$(($flag_doc: expr, $flag: ident, $value: expr)),+], $extra_flags: expr) => {
+	($flag_type_doc: expr, $flag_type: ident, [$(($flag_doc: expr, $flag: ident, $value: expr, $get: ident, $set: ident, $clear: ident)),+], $extra_flags: expr) => {
 		#[doc = $flag_type_doc]
 		#[derive(Copy, Clone, Debug, PartialEq, PartialOrd, Eq)]
 		struct $flag_type(u32);
@@ -296,7 +296,6 @@ macro_rules! define_state_flags {
 
 			#[allow(unused)]
 			fn is_empty(&self) -> bool { self.0 == 0 }
-
 			#[allow(unused)]
 			fn is_set(&self, flag: Self) -> bool { *self & flag == flag }
 			#[allow(unused)]
@@ -305,10 +304,10 @@ macro_rules! define_state_flags {
 			fn clear(&mut self, flag: Self) -> Self { self.0 &= !flag.0; *self }
 		}
 
-		impl core::ops::Not for $flag_type {
-			type Output = Self;
-			fn not(self) -> Self::Output { Self(!self.0) }
-		}
+		$(
+			define_state_flags!($flag_type, Self::$flag, $get, $set, $clear);
+		)*
+
 		impl core::ops::BitOr for $flag_type {
 			type Output = Self;
 			fn bitor(self, rhs: Self) -> Self::Output { Self(self.0 | rhs.0) }
@@ -339,6 +338,16 @@ macro_rules! define_state_flags {
 	};
 	($flag_type_doc: expr, FUNDED_STATE, $flag_type: ident, $flags: tt) => {
 		define_state_flags!($flag_type_doc, $flag_type, $flags, FundedStateFlags::ALL.0);
+
+		define_state_flags!($flag_type, FundedStateFlags::PEER_DISCONNECTED,
+			is_peer_disconnected, set_peer_disconnected, clear_peer_disconnected);
+		define_state_flags!($flag_type, FundedStateFlags::MONITOR_UPDATE_IN_PROGRESS,
+			is_monitor_update_in_progress, set_monitor_update_in_progress, clear_monitor_update_in_progress);
+		define_state_flags!($flag_type, FundedStateFlags::REMOTE_SHUTDOWN_SENT,
+			is_remote_shutdown_sent, set_remote_shutdown_sent, clear_remote_shutdown_sent);
+		define_state_flags!($flag_type, FundedStateFlags::LOCAL_SHUTDOWN_SENT,
+			is_local_shutdown_sent, set_local_shutdown_sent, clear_local_shutdown_sent);
+
 		impl core::ops::BitOr<FundedStateFlags> for $flag_type {
 			type Output = Self;
 			fn bitor(self, rhs: FundedStateFlags) -> Self::Output { Self(self.0 | rhs.0) }
@@ -385,15 +394,19 @@ define_state_flags!(
 	"Flags that apply to all [`ChannelState`] variants in which the channel is funded.",
 	FundedStateFlags, [
 		("Indicates the remote side is considered \"disconnected\" and no updates are allowed \
-			until after we've done a `channel_reestablish` dance.", PEER_DISCONNECTED, state_flags::PEER_DISCONNECTED),
+			until after we've done a `channel_reestablish` dance.", PEER_DISCONNECTED, state_flags::PEER_DISCONNECTED,
+			is_peer_disconnected, set_peer_disconnected, clear_peer_disconnected),
 		("Indicates the user has told us a `ChannelMonitor` update is pending async persistence \
 			somewhere and we should pause sending any outbound messages until they've managed to \
-			complete it.", MONITOR_UPDATE_IN_PROGRESS, state_flags::MONITOR_UPDATE_IN_PROGRESS),
+			complete it.", MONITOR_UPDATE_IN_PROGRESS, state_flags::MONITOR_UPDATE_IN_PROGRESS,
+			is_monitor_update_in_progress, set_monitor_update_in_progress, clear_monitor_update_in_progress),
 		("Indicates we received a `shutdown` message from the remote end. If set, they may not add \
 			any new HTLCs to the channel, and we are expected to respond with our own `shutdown` \
-			message when possible.", REMOTE_SHUTDOWN_SENT, state_flags::REMOTE_SHUTDOWN_SENT),
+			message when possible.", REMOTE_SHUTDOWN_SENT, state_flags::REMOTE_SHUTDOWN_SENT,
+			is_remote_shutdown_sent, set_remote_shutdown_sent, clear_remote_shutdown_sent),
 		("Indicates we sent a `shutdown` message. At this point, we may not add any new HTLCs to \
-			the channel.", LOCAL_SHUTDOWN_SENT, state_flags::LOCAL_SHUTDOWN_SENT)
+			the channel.", LOCAL_SHUTDOWN_SENT, state_flags::LOCAL_SHUTDOWN_SENT,
+			is_local_shutdown_sent, set_local_shutdown_sent, clear_local_shutdown_sent)
 	]
 );
 
@@ -401,9 +414,9 @@ define_state_flags!(
 	"Flags that only apply to [`ChannelState::NegotiatingFunding`].",
 	NegotiatingFundingFlags, [
 		("Indicates we have (or are prepared to) send our `open_channel`/`accept_channel` message.",
-			OUR_INIT_SENT, state_flags::OUR_INIT_SENT),
+			OUR_INIT_SENT, state_flags::OUR_INIT_SENT, is_our_init_sent, set_our_init_sent, clear_our_init_sent),
 		("Indicates we have received their `open_channel`/`accept_channel` message.",
-			THEIR_INIT_SENT, state_flags::THEIR_INIT_SENT)
+			THEIR_INIT_SENT, state_flags::THEIR_INIT_SENT, is_their_init_sent, set_their_init_sent, clear_their_init_sent)
 	]
 );
 
@@ -412,13 +425,16 @@ define_state_flags!(
 	FUNDED_STATE, AwaitingChannelReadyFlags, [
 		("Indicates they sent us a `channel_ready` message. Once both `THEIR_CHANNEL_READY` and \
 			`OUR_CHANNEL_READY` are set, our state moves on to `ChannelReady`.",
-			THEIR_CHANNEL_READY, state_flags::THEIR_CHANNEL_READY),
+			THEIR_CHANNEL_READY, state_flags::THEIR_CHANNEL_READY,
+			is_their_channel_ready, set_their_channel_ready, clear_their_channel_ready),
 		("Indicates we sent them a `channel_ready` message. Once both `THEIR_CHANNEL_READY` and \
 			`OUR_CHANNEL_READY` are set, our state moves on to `ChannelReady`.",
-			OUR_CHANNEL_READY, state_flags::OUR_CHANNEL_READY),
+			OUR_CHANNEL_READY, state_flags::OUR_CHANNEL_READY,
+			is_our_channel_ready, set_our_channel_ready, clear_our_channel_ready),
 		("Indicates the channel was funded in a batch and the broadcast of the funding transaction \
 			is being held until all channels in the batch have received `funding_signed` and have \
-			their monitors persisted.", WAITING_FOR_BATCH, state_flags::WAITING_FOR_BATCH)
+			their monitors persisted.", WAITING_FOR_BATCH, state_flags::WAITING_FOR_BATCH,
+			is_waiting_for_batch, set_waiting_for_batch, clear_waiting_for_batch)
 	]
 );
 
@@ -429,7 +445,8 @@ define_state_flags!(
 			`revoke_and_ack` message. During this period, we can't generate new `commitment_signed` \
 			messages as we'd be unable to determine which HTLCs they included in their `revoke_and_ack` \
 			implicit ACK, so instead we have to hold them away temporarily to be sent later.",
-			AWAITING_REMOTE_REVOKE, state_flags::AWAITING_REMOTE_REVOKE)
+			AWAITING_REMOTE_REVOKE, state_flags::AWAITING_REMOTE_REVOKE,
+			is_awaiting_remote_revoke, set_awaiting_remote_revoke, clear_awaiting_remote_revoke)
 	]
 );
 
@@ -455,12 +472,12 @@ enum ChannelState {
 }
 
 macro_rules! impl_state_flag {
-	($get: ident, $set: ident, $clear: ident, $state_flag: expr, [$($state: ident),+]) => {
+	($get: ident, $set: ident, $clear: ident, [$($state: ident),+]) => {
 		#[allow(unused)]
 		fn $get(&self) -> bool {
 			match self {
 				$(
-					ChannelState::$state(flags) => flags.is_set($state_flag.into()),
+					ChannelState::$state(flags) => flags.$get(),
 				)*
 				_ => false,
 			}
@@ -469,7 +486,7 @@ macro_rules! impl_state_flag {
 		fn $set(&mut self) {
 			match self {
 				$(
-					ChannelState::$state(flags) => *flags |= $state_flag,
+					ChannelState::$state(flags) => flags.$set(),
 				)*
 				_ => debug_assert!(false, "Attempted to set flag on unexpected ChannelState"),
 			}
@@ -478,17 +495,17 @@ macro_rules! impl_state_flag {
 		fn $clear(&mut self) {
 			match self {
 				$(
-					ChannelState::$state(flags) => *flags &= !($state_flag),
+					ChannelState::$state(flags) => { let _ = flags.$clear(); },
 				)*
 				_ => debug_assert!(false, "Attempted to clear flag on unexpected ChannelState"),
 			}
 		}
 	};
-	($get: ident, $set: ident, $clear: ident, $state_flag: expr, FUNDED_STATES) => {
-		impl_state_flag!($get, $set, $clear, $state_flag, [AwaitingChannelReady, ChannelReady]);
+	($get: ident, $set: ident, $clear: ident, FUNDED_STATES) => {
+		impl_state_flag!($get, $set, $clear, [AwaitingChannelReady, ChannelReady]);
 	};
-	($get: ident, $set: ident, $clear: ident, $state_flag: expr, $state: ident) => {
-		impl_state_flag!($get, $set, $clear, $state_flag, [$state]);
+	($get: ident, $set: ident, $clear: ident, $state: ident) => {
+		impl_state_flag!($get, $set, $clear, [$state]);
 	};
 }
 
@@ -552,22 +569,14 @@ impl ChannelState {
 		}
 	}
 
-	impl_state_flag!(is_peer_disconnected, set_peer_disconnected, clear_peer_disconnected,
-		FundedStateFlags::PEER_DISCONNECTED, FUNDED_STATES);
-	impl_state_flag!(is_monitor_update_in_progress, set_monitor_update_in_progress, clear_monitor_update_in_progress,
-		FundedStateFlags::MONITOR_UPDATE_IN_PROGRESS, FUNDED_STATES);
-	impl_state_flag!(is_local_shutdown_sent, set_local_shutdown_sent, clear_local_shutdown_sent,
-		FundedStateFlags::LOCAL_SHUTDOWN_SENT, FUNDED_STATES);
-	impl_state_flag!(is_remote_shutdown_sent, set_remote_shutdown_sent, clear_remote_shutdown_sent,
-		FundedStateFlags::REMOTE_SHUTDOWN_SENT, FUNDED_STATES);
-	impl_state_flag!(is_our_channel_ready, set_our_channel_ready, clear_our_channel_ready,
-		AwaitingChannelReadyFlags::OUR_CHANNEL_READY, AwaitingChannelReady);
-	impl_state_flag!(is_their_channel_ready, set_their_channel_ready, clear_their_channel_ready,
-		AwaitingChannelReadyFlags::THEIR_CHANNEL_READY, AwaitingChannelReady);
-	impl_state_flag!(is_waiting_for_batch, set_waiting_for_batch, clear_waiting_for_batch,
-		AwaitingChannelReadyFlags::WAITING_FOR_BATCH, AwaitingChannelReady);
-	impl_state_flag!(is_awaiting_remote_revoke, set_awaiting_remote_revoke, clear_awaiting_remote_revoke,
-		ChannelReadyFlags::AWAITING_REMOTE_REVOKE, ChannelReady);
+	impl_state_flag!(is_peer_disconnected, set_peer_disconnected, clear_peer_disconnected, FUNDED_STATES);
+	impl_state_flag!(is_monitor_update_in_progress, set_monitor_update_in_progress, clear_monitor_update_in_progress, FUNDED_STATES);
+	impl_state_flag!(is_local_shutdown_sent, set_local_shutdown_sent, clear_local_shutdown_sent, FUNDED_STATES);
+	impl_state_flag!(is_remote_shutdown_sent, set_remote_shutdown_sent, clear_remote_shutdown_sent, FUNDED_STATES);
+	impl_state_flag!(is_our_channel_ready, set_our_channel_ready, clear_our_channel_ready, AwaitingChannelReady);
+	impl_state_flag!(is_their_channel_ready, set_their_channel_ready, clear_their_channel_ready, AwaitingChannelReady);
+	impl_state_flag!(is_waiting_for_batch, set_waiting_for_batch, clear_waiting_for_batch, AwaitingChannelReady);
+	impl_state_flag!(is_awaiting_remote_revoke, set_awaiting_remote_revoke, clear_awaiting_remote_revoke, ChannelReady);
 }
 
 pub const INITIAL_COMMITMENT_NUMBER: u64 = (1 << 48) - 1;
