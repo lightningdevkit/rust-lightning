@@ -504,7 +504,7 @@ pub struct Bolt11InvoiceSignature(pub RecoverableSignature);
 
 impl PartialOrd for Bolt11InvoiceSignature {
 	fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-		self.0.serialize_compact().1.partial_cmp(&other.0.serialize_compact().1)
+		Some(self.cmp(other))
 	}
 }
 

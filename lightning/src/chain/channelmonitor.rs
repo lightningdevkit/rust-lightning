@@ -42,7 +42,7 @@ use crate::chain;
 use crate::chain::{BestBlock, WatchedOutput};
 use crate::chain::chaininterface::{BroadcasterInterface, FeeEstimator, LowerBoundedFeeEstimator};
 use crate::chain::transaction::{OutPoint, TransactionData};
-use crate::sign::{SpendableOutputDescriptor, StaticPaymentOutputDescriptor, DelayedPaymentOutputDescriptor, WriteableEcdsaChannelSigner, SignerProvider, EntropySource};
+use crate::sign::{ChannelDerivationParameters, HTLCDescriptor, SpendableOutputDescriptor, StaticPaymentOutputDescriptor, DelayedPaymentOutputDescriptor, WriteableEcdsaChannelSigner, SignerProvider, EntropySource};
 use crate::chain::onchaintx::{ClaimEvent, OnchainTxHandler};
 use crate::chain::package::{CounterpartyOfferedHTLCOutput, CounterpartyReceivedHTLCOutput, HolderFundingOutput, HolderHTLCOutput, PackageSolvingData, PackageTemplate, RevokedOutput, RevokedHTLCOutput};
 use crate::chain::Filter;
@@ -50,7 +50,7 @@ use crate::util::logger::Logger;
 use crate::util::ser::{Readable, ReadableArgs, RequiredWrapper, MaybeReadable, UpgradableRequired, Writer, Writeable, U48};
 use crate::util::byte_utils;
 use crate::events::{Event, EventHandler};
-use crate::events::bump_transaction::{ChannelDerivationParameters, AnchorDescriptor, HTLCDescriptor, BumpTransactionEvent};
+use crate::events::bump_transaction::{AnchorDescriptor, BumpTransactionEvent};
 
 use crate::prelude::*;
 use core::{cmp, mem};
@@ -1172,9 +1172,10 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 			(holder_commitment_tx, trusted_tx.commitment_number())
 		};
 
-		let onchain_tx_handler =
-			OnchainTxHandler::new(destination_script.clone(), keys,
-			channel_parameters.clone(), initial_holder_commitment_tx, secp_ctx);
+		let onchain_tx_handler = OnchainTxHandler::new(
+			channel_value_satoshis, channel_keys_id, destination_script.clone(), keys,
+			channel_parameters.clone(), initial_holder_commitment_tx, secp_ctx
+		);
 
 		let mut outputs_to_watch = HashMap::new();
 		outputs_to_watch.insert(funding_info.0.txid, vec![(funding_info.0.index as u32, funding_info.1.clone())]);
@@ -2837,6 +2838,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 							per_commitment_point: self.onchain_tx_handler.signer.get_per_commitment_point(
 								htlc.per_commitment_number, &self.onchain_tx_handler.secp_ctx,
 							),
+							feerate_per_kw: 0,
 							htlc: htlc.htlc,
 							preimage: htlc.preimage,
 							counterparty_sig: htlc.counterparty_sig,
@@ -3356,7 +3358,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 						continue;
 					}
 				} else { None };
-				if let Some(htlc_tx) = self.onchain_tx_handler.unsafe_get_fully_signed_htlc_tx(
+				if let Some(htlc_tx) = self.onchain_tx_handler.get_fully_signed_htlc_tx(
 					&::bitcoin::OutPoint { txid, vout }, &preimage) {
 					holder_transactions.push(htlc_tx);
 				}

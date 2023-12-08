@@ -13,7 +13,8 @@
 //! channel matches a UTXO on-chain, requiring at least some marginal on-chain transacting in
 //! order to announce a channel. This module handles that checking.
 
-use bitcoin::{BlockHash, TxOut};
+use bitcoin::TxOut;
+use bitcoin::blockdata::constants::ChainHash;
 use bitcoin::hashes::hex::ToHex;
 
 use crate::events::MessageSendEvent;
@@ -60,11 +61,11 @@ pub enum UtxoResult {
 /// The `UtxoLookup` trait defines behavior for accessing on-chain UTXOs.
 pub trait UtxoLookup {
 	/// Returns the transaction output of a funding transaction encoded by [`short_channel_id`].
-	/// Returns an error if `genesis_hash` is for a different chain or if such a transaction output
-	/// is unknown.
+	/// Returns an error if `chain_hash` is for a different chain or if such a transaction output is
+	/// unknown.
 	///
 	/// [`short_channel_id`]: https://github.com/lightning/bolts/blob/master/07-routing-gossip.md#definition-of-short_channel_id
-	fn get_utxo(&self, genesis_hash: &BlockHash, short_channel_id: u64) -> UtxoResult;
+	fn get_utxo(&self, chain_hash: &ChainHash, short_channel_id: u64) -> UtxoResult;
 }
 
 enum ChannelAnnouncement {
@@ -127,7 +128,7 @@ pub struct UtxoFuture {
 /// once we have a concrete resolution of a request.
 pub(crate) struct UtxoResolver(Result<TxOut, UtxoLookupError>);
 impl UtxoLookup for UtxoResolver {
-	fn get_utxo(&self, _genesis_hash: &BlockHash, _short_channel_id: u64) -> UtxoResult {
+	fn get_utxo(&self, _chain_hash: &ChainHash, _short_channel_id: u64) -> UtxoResult {
 		UtxoResult::Sync(self.0.clone())
 	}
 }

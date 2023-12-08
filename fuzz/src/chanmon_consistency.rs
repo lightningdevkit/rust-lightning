@@ -80,9 +80,10 @@ impl FeeEstimator for FuzzEstimator {
 		// always return a HighPriority feerate here which is >= the maximum Normal feerate and a
 		// Background feerate which is <= the minimum Normal feerate.
 		match conf_target {
-			ConfirmationTarget::HighPriority => MAX_FEE,
-			ConfirmationTarget::Background|ConfirmationTarget::MempoolMinimum => 253,
-			ConfirmationTarget::Normal => cmp::min(self.ret_val.load(atomic::Ordering::Acquire), MAX_FEE),
+			ConfirmationTarget::MaxAllowedNonAnchorChannelRemoteFee => MAX_FEE * 10,
+			ConfirmationTarget::OnChainSweep => MAX_FEE,
+			ConfirmationTarget::ChannelCloseMinimum|ConfirmationTarget::AnchorChannelFee|ConfirmationTarget::MinAllowedAnchorChannelRemoteFee|ConfirmationTarget::MinAllowedNonAnchorChannelRemoteFee => 253,
+			ConfirmationTarget::NonAnchorChannelFee => cmp::min(self.ret_val.load(atomic::Ordering::Acquire), MAX_FEE),
 		}
 	}
 }
@@ -431,7 +432,7 @@ fn send_hop_payment(source: &ChanMan, middle: &ChanMan, middle_chan_id: u64, des
 }
 
 #[inline]
-pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out) {
+pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 	let out = SearchingOutput::new(underlying_out);
 	let broadcast = Arc::new(TestBroadcaster{});
 	let router = FuzzRouter {};
@@ -449,6 +450,10 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out) {
 			let mut config = UserConfig::default();
 			config.channel_config.forwarding_fee_proportional_millionths = 0;
 			config.channel_handshake_config.announced_channel = true;
+			if anchors {
+				config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
+				config.manually_accept_inbound_channels = true;
+			}
 			let network = Network::Bitcoin;
 			let best_block_timestamp = genesis_block(network).header.time;
 			let params = ChainParameters {
@@ -472,6 +477,10 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out) {
 			let mut config = UserConfig::default();
 			config.channel_config.forwarding_fee_proportional_millionths = 0;
 			config.channel_handshake_config.announced_channel = true;
+			if anchors {
+				config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
+				config.manually_accept_inbound_channels = true;
+			}
 
 			let mut monitors = HashMap::new();
 			let mut old_monitors = $old_monitors.latest_monitors.lock().unwrap();
@@ -508,7 +517,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out) {
 
 	let mut channel_txn = Vec::new();
 	macro_rules! make_channel {
-		($source: expr, $dest: expr, $chan_id: expr) => { {
+		($source: expr, $dest: expr, $dest_keys_manager: expr, $chan_id: expr) => { {
 			$source.peer_connected(&$dest.get_our_node_id(), &Init {
 				features: $dest.init_features(), networks: None, remote_network_address: None
 			}, true).unwrap();
@@ -527,6 +536,22 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out) {
 
 			$dest.handle_open_channel(&$source.get_our_node_id(), &open_channel);
 			let accept_channel = {
+				if anchors {
+					let events = $dest.get_and_clear_pending_events();
+					assert_eq!(events.len(), 1);
+					if let events::Event::OpenChannelRequest {
+						ref temporary_channel_id, ref counterparty_node_id, ..
+					} = events[0] {
+						let mut random_bytes = [0u8; 16];
+						random_bytes.copy_from_slice(&$dest_keys_manager.get_secure_random_bytes()[..16]);
+						let user_channel_id = u128::from_be_bytes(random_bytes);
+						$dest.accept_inbound_channel(
+							temporary_channel_id,
+							counterparty_node_id,
+							user_channel_id,
+						).unwrap();
+					} else { panic!("Wrong event type"); }
+				}
 				let events = $dest.get_and_clear_pending_msg_events();
 				assert_eq!(events.len(), 1);
 				if let events::MessageSendEvent::SendAcceptChannel { ref msg, .. } = events[0] {
@@ -638,8 +663,8 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out) {
 
 	let mut nodes = [node_a, node_b, node_c];
 
-	let chan_1_funding = make_channel!(nodes[0], nodes[1], 0);
-	let chan_2_funding = make_channel!(nodes[1], nodes[2], 1);
+	let chan_1_funding = make_channel!(nodes[0], nodes[1], keys_manager_b, 0);
+	let chan_2_funding = make_channel!(nodes[1], nodes[2], keys_manager_c, 1);
 
 	for node in nodes.iter() {
 		confirm_txn!(node);
@@ -1198,7 +1223,10 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out) {
 			0x6d => { send_hop_payment(&nodes[2], &nodes[1], chan_b, &nodes[0], chan_a, 1, &mut payment_id, &mut payment_idx); },
 
 			0x80 => {
-				let max_feerate = last_htlc_clear_fee_a * FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE as u32;
+				let mut max_feerate = last_htlc_clear_fee_a;
+				if !anchors {
+					max_feerate *= FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE as u32;
+				}
 				if fee_est_a.ret_val.fetch_add(250, atomic::Ordering::AcqRel) + 250 > max_feerate {
 					fee_est_a.ret_val.store(max_feerate, atomic::Ordering::Release);
 				}
@@ -1207,7 +1235,10 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out) {
 			0x81 => { fee_est_a.ret_val.store(253, atomic::Ordering::Release); nodes[0].maybe_update_chan_fees(); },
 
 			0x84 => {
-				let max_feerate = last_htlc_clear_fee_b * FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE as u32;
+				let mut max_feerate = last_htlc_clear_fee_b;
+				if !anchors {
+					max_feerate *= FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE as u32;
+				}
 				if fee_est_b.ret_val.fetch_add(250, atomic::Ordering::AcqRel) + 250 > max_feerate {
 					fee_est_b.ret_val.store(max_feerate, atomic::Ordering::Release);
 				}
@@ -1216,7 +1247,10 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out) {
 			0x85 => { fee_est_b.ret_val.store(253, atomic::Ordering::Release); nodes[1].maybe_update_chan_fees(); },
 
 			0x88 => {
-				let max_feerate = last_htlc_clear_fee_c * FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE as u32;
+				let mut max_feerate = last_htlc_clear_fee_c;
+				if !anchors {
+					max_feerate *= FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE as u32;
+				}
 				if fee_est_c.ret_val.fetch_add(250, atomic::Ordering::AcqRel) + 250 > max_feerate {
 					fee_est_c.ret_val.store(max_feerate, atomic::Ordering::Release);
 				}
@@ -1337,10 +1371,12 @@ impl<O: Output> SearchingOutput<O> {
 }
 
 pub fn chanmon_consistency_test<Out: Output>(data: &[u8], out: Out) {
-	do_test(data, out);
+	do_test(data, out.clone(), false);
+	do_test(data, out, true);
 }
 
 #[no_mangle]
 pub extern "C" fn chanmon_consistency_run(data: *const u8, datalen: usize) {
-	do_test(unsafe { std::slice::from_raw_parts(data, datalen) }, test_logger::DevNull{});
+	do_test(unsafe { std::slice::from_raw_parts(data, datalen) }, test_logger::DevNull{}, false);
+	do_test(unsafe { std::slice::from_raw_parts(data, datalen) }, test_logger::DevNull{}, true);
 }

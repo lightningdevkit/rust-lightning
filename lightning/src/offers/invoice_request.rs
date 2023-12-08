@@ -179,8 +179,16 @@ impl<'a, 'b, P: PayerIdStrategy, T: secp256k1::Signing> InvoiceRequestBuilder<'a
 	/// by the offer.
 	///
 	/// Successive calls to this method will override the previous setting.
-	pub fn chain(mut self, network: Network) -> Result<Self, Bolt12SemanticError> {
-		let chain = ChainHash::using_genesis_block(network);
+	pub fn chain(self, network: Network) -> Result<Self, Bolt12SemanticError> {
+		self.chain_hash(ChainHash::using_genesis_block(network))
+	}
+
+	/// Sets the [`InvoiceRequest::chain`] for paying an invoice. If not called, the chain hash of
+	/// [`Network::Bitcoin`] is assumed. Errors if the chain for `network` is not supported by the
+	/// offer.
+	///
+	/// Successive calls to this method will override the previous setting.
+	pub(crate) fn chain_hash(mut self, chain: ChainHash) -> Result<Self, Bolt12SemanticError> {
 		if !self.offer.supports_chain(chain) {
 			return Err(Bolt12SemanticError::UnsupportedChain);
 		}

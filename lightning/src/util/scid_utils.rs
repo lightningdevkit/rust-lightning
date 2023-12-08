@@ -66,8 +66,8 @@ pub fn scid_from_parts(block: u64, tx_index: u64, vout_index: u64) -> Result<u64
 /// 3) payments intended to be intercepted will route using a fake scid (this is typically used so
 ///    the forwarding node can open a JIT channel to the next hop)
 pub(crate) mod fake_scid {
-	use bitcoin::hash_types::BlockHash;
-	use bitcoin::hashes::hex::FromHex;
+	use bitcoin::blockdata::constants::ChainHash;
+	use bitcoin::network::constants::Network;
 	use crate::sign::EntropySource;
 	use crate::util::chacha20::ChaCha20;
 	use crate::util::scid_utils;
@@ -101,7 +101,7 @@ pub(crate) mod fake_scid {
 		/// between segwit activation and the current best known height, and the tx index and output
 		/// index are also selected from a "reasonable" range. We add this logic because it makes it
 		/// non-obvious at a glance that the scid is fake, e.g. if it appears in invoice route hints.
-		pub(crate) fn get_fake_scid<ES: Deref>(&self, highest_seen_blockheight: u32, genesis_hash: &BlockHash, fake_scid_rand_bytes: &[u8; 32], entropy_source: &ES) -> u64
+		pub(crate) fn get_fake_scid<ES: Deref>(&self, highest_seen_blockheight: u32, chain_hash: &ChainHash, fake_scid_rand_bytes: &[u8; 32], entropy_source: &ES) -> u64
 			where ES::Target: EntropySource,
 		{
 			// Ensure we haven't created a namespace that doesn't fit into the 3 bits we've allocated for
@@ -109,7 +109,7 @@ pub(crate) mod fake_scid {
 			assert!((*self as u8) < MAX_NAMESPACES);
 			let rand_bytes = entropy_source.get_secure_random_bytes();
 
-			let segwit_activation_height = segwit_activation_height(genesis_hash);
+			let segwit_activation_height = segwit_activation_height(chain_hash);
 			let mut blocks_since_segwit_activation = highest_seen_blockheight.saturating_sub(segwit_activation_height);
 
 			// We want to ensure that this fake channel won't conflict with any transactions we haven't
@@ -144,9 +144,8 @@ pub(crate) mod fake_scid {
 		}
 	}
 
-	fn segwit_activation_height(genesis: &BlockHash) -> u32 {
-		const MAINNET_GENESIS_STR: &'static str = "000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f";
-		if BlockHash::from_hex(MAINNET_GENESIS_STR).unwrap() == *genesis {
+	fn segwit_activation_height(chain_hash: &ChainHash) -> u32 {
+		if *chain_hash == ChainHash::using_genesis_block(Network::Bitcoin) {
 			MAINNET_SEGWIT_ACTIVATION_HEIGHT
 		} else {
 			TEST_SEGWIT_ACTIVATION_HEIGHT
@@ -154,28 +153,28 @@ pub(crate) mod fake_scid {
 	}
 
 	/// Returns whether the given fake scid falls into the phantom namespace.
-	pub fn is_valid_phantom(fake_scid_rand_bytes: &[u8; 32], scid: u64, genesis_hash: &BlockHash) -> bool {
+	pub fn is_valid_phantom(fake_scid_rand_bytes: &[u8; 32], scid: u64, chain_hash: &ChainHash) -> bool {
 		let block_height = scid_utils::block_from_scid(&scid);
 		let tx_index = scid_utils::tx_index_from_scid(&scid);
 		let namespace = Namespace::Phantom;
 		let valid_vout = namespace.get_encrypted_vout(block_height, tx_index, fake_scid_rand_bytes);
-		block_height >= segwit_activation_height(genesis_hash)
+		block_height >= segwit_activation_height(chain_hash)
 			&& valid_vout == scid_utils::vout_from_scid(&scid) as u8
 	}
 
 	/// Returns whether the given fake scid falls into the intercept namespace.
-	pub fn is_valid_intercept(fake_scid_rand_bytes: &[u8; 32], scid: u64, genesis_hash: &BlockHash) -> bool {
+	pub fn is_valid_intercept(fake_scid_rand_bytes: &[u8; 32], scid: u64, chain_hash: &ChainHash) -> bool {
 		let block_height = scid_utils::block_from_scid(&scid);
 		let tx_index = scid_utils::tx_index_from_scid(&scid);
 		let namespace = Namespace::Intercept;
 		let valid_vout = namespace.get_encrypted_vout(block_height, tx_index, fake_scid_rand_bytes);
-		block_height >= segwit_activation_height(genesis_hash)
+		block_height >= segwit_activation_height(chain_hash)
 			&& valid_vout == scid_utils::vout_from_scid(&scid) as u8
 	}
 
 	#[cfg(test)]
 	mod tests {
-		use bitcoin::blockdata::constants::genesis_block;
+		use bitcoin::blockdata::constants::ChainHash;
 		use bitcoin::network::constants::Network;
 		use crate::util::scid_utils::fake_scid::{is_valid_intercept, is_valid_phantom, MAINNET_SEGWIT_ACTIVATION_HEIGHT, MAX_TX_INDEX, MAX_NAMESPACES, Namespace, NAMESPACE_ID_BITMASK, segwit_activation_height, TEST_SEGWIT_ACTIVATION_HEIGHT};
 		use crate::util::scid_utils;
@@ -195,16 +194,16 @@ pub(crate) mod fake_scid {
 
 		#[test]
 		fn test_segwit_activation_height() {
-			let mainnet_genesis = genesis_block(Network::Bitcoin).header.block_hash();
+			let mainnet_genesis = ChainHash::using_genesis_block(Network::Bitcoin);
 			assert_eq!(segwit_activation_height(&mainnet_genesis), MAINNET_SEGWIT_ACTIVATION_HEIGHT);
 
-			let testnet_genesis = genesis_block(Network::Testnet).header.block_hash();
+			let testnet_genesis = ChainHash::using_genesis_block(Network::Testnet);
 			assert_eq!(segwit_activation_height(&testnet_genesis), TEST_SEGWIT_ACTIVATION_HEIGHT);
 
-			let signet_genesis = genesis_block(Network::Signet).header.block_hash();
+			let signet_genesis = ChainHash::using_genesis_block(Network::Signet);
 			assert_eq!(segwit_activation_height(&signet_genesis), TEST_SEGWIT_ACTIVATION_HEIGHT);
 
-			let regtest_genesis = genesis_block(Network::Regtest).header.block_hash();
+			let regtest_genesis = ChainHash::using_genesis_block(Network::Regtest);
 			assert_eq!(segwit_activation_height(&regtest_genesis), TEST_SEGWIT_ACTIVATION_HEIGHT);
 		}
 
@@ -212,7 +211,7 @@ pub(crate) mod fake_scid {
 		fn test_is_valid_phantom() {
 			let namespace = Namespace::Phantom;
 			let fake_scid_rand_bytes = [0; 32];
-			let testnet_genesis = genesis_block(Network::Testnet).header.block_hash();
+			let testnet_genesis = ChainHash::using_genesis_block(Network::Testnet);
 			let valid_encrypted_vout = namespace.get_encrypted_vout(0, 0, &fake_scid_rand_bytes);
 			let valid_fake_scid = scid_utils::scid_from_parts(1, 0, valid_encrypted_vout as u64).unwrap();
 			assert!(is_valid_phantom(&fake_scid_rand_bytes, valid_fake_scid, &testnet_genesis));
@@ -224,7 +223,7 @@ pub(crate) mod fake_scid {
 		fn test_is_valid_intercept() {
 			let namespace = Namespace::Intercept;
 			let fake_scid_rand_bytes = [0; 32];
-			let testnet_genesis = genesis_block(Network::Testnet).header.block_hash();
+			let testnet_genesis = ChainHash::using_genesis_block(Network::Testnet);
 			let valid_encrypted_vout = namespace.get_encrypted_vout(0, 0, &fake_scid_rand_bytes);
 			let valid_fake_scid = scid_utils::scid_from_parts(1, 0, valid_encrypted_vout as u64).unwrap();
 			assert!(is_valid_intercept(&fake_scid_rand_bytes, valid_fake_scid, &testnet_genesis));
@@ -234,7 +233,7 @@ pub(crate) mod fake_scid {
 
 		#[test]
 		fn test_get_fake_scid() {
-			let mainnet_genesis = genesis_block(Network::Bitcoin).header.block_hash();
+			let mainnet_genesis = ChainHash::using_genesis_block(Network::Bitcoin);
 			let seed = [0; 32];
 			let fake_scid_rand_bytes = [1; 32];
 			let keys_manager = Arc::new(test_utils::TestKeysInterface::new(&seed, Network::Testnet));

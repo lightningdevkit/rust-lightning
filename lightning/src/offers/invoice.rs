@@ -174,7 +174,7 @@ impl<'a> InvoiceBuilder<'a, ExplicitSigningPubkey> {
 		invoice_request: &'a InvoiceRequest, payment_paths: Vec<(BlindedPayInfo, BlindedPath)>,
 		created_at: Duration, payment_hash: PaymentHash
 	) -> Result<Self, Bolt12SemanticError> {
-		let amount_msats = Self::check_amount_msats(invoice_request)?;
+		let amount_msats = Self::amount_msats(invoice_request)?;
 		let signing_pubkey = invoice_request.contents.inner.offer.signing_pubkey();
 		let contents = InvoiceContents::ForOffer {
 			invoice_request: invoice_request.contents.clone(),
@@ -207,7 +207,7 @@ impl<'a> InvoiceBuilder<'a, DerivedSigningPubkey> {
 		invoice_request: &'a InvoiceRequest, payment_paths: Vec<(BlindedPayInfo, BlindedPath)>,
 		created_at: Duration, payment_hash: PaymentHash, keys: KeyPair
 	) -> Result<Self, Bolt12SemanticError> {
-		let amount_msats = Self::check_amount_msats(invoice_request)?;
+		let amount_msats = Self::amount_msats(invoice_request)?;
 		let signing_pubkey = invoice_request.contents.inner.offer.signing_pubkey();
 		let contents = InvoiceContents::ForOffer {
 			invoice_request: invoice_request.contents.clone(),
@@ -237,7 +237,9 @@ impl<'a> InvoiceBuilder<'a, DerivedSigningPubkey> {
 }
 
 impl<'a, S: SigningPubkeyStrategy> InvoiceBuilder<'a, S> {
-	fn check_amount_msats(invoice_request: &InvoiceRequest) -> Result<u64, Bolt12SemanticError> {
+	pub(crate) fn amount_msats(
+		invoice_request: &InvoiceRequest
+	) -> Result<u64, Bolt12SemanticError> {
 		match invoice_request.amount_msats() {
 			Some(amount_msats) => Ok(amount_msats),
 			None => match invoice_request.contents.inner.offer.amount() {
@@ -339,6 +341,12 @@ impl<'a> InvoiceBuilder<'a, ExplicitSigningPubkey> {
 			}
 		}
 
+		#[cfg(not(feature = "std"))] {
+			if self.invoice.is_offer_or_refund_expired_no_std(self.invoice.created_at()) {
+				return Err(Bolt12SemanticError::AlreadyExpired);
+			}
+		}
+
 		let InvoiceBuilder { invreq_bytes, invoice, .. } = self;
 		Ok(UnsignedBolt12Invoice::new(invreq_bytes, invoice))
 	}
@@ -351,6 +359,12 @@ impl<'a> InvoiceBuilder<'a, DerivedSigningPubkey> {
 	) -> Result<Bolt12Invoice, Bolt12SemanticError> {
 		#[cfg(feature = "std")] {
 			if self.invoice.is_offer_or_refund_expired() {
+				return Err(Bolt12SemanticError::AlreadyExpired);
+			}
+		}
+
+		#[cfg(not(feature = "std"))] {
+			if self.invoice.is_offer_or_refund_expired_no_std(self.invoice.created_at()) {
 				return Err(Bolt12SemanticError::AlreadyExpired);
 			}
 		}
@@ -724,6 +738,16 @@ impl InvoiceContents {
 			InvoiceContents::ForOffer { invoice_request, .. } =>
 				invoice_request.inner.offer.is_expired(),
 			InvoiceContents::ForRefund { refund, .. } => refund.is_expired(),
+		}
+	}
+
+	#[cfg(not(feature = "std"))]
+	fn is_offer_or_refund_expired_no_std(&self, duration_since_epoch: Duration) -> bool {
+		match self {
+			InvoiceContents::ForOffer { invoice_request, .. } =>
+				invoice_request.inner.offer.is_expired_no_std(duration_since_epoch),
+			InvoiceContents::ForRefund { refund, .. } =>
+				refund.is_expired_no_std(duration_since_epoch),
 		}
 	}
 

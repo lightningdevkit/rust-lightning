@@ -334,12 +334,13 @@ fn updates_shutdown_wait() {
 
 	let (_, payment_hash, payment_secret) = get_payment_preimage_hash!(nodes[0]);
 
-	let payment_params_1 = PaymentParameters::from_node_id(nodes[1].node.get_our_node_id(), TEST_FINAL_CLTV).with_bolt11_features(nodes[1].node.invoice_features()).unwrap();
+	let payment_params_1 = PaymentParameters::from_node_id(nodes[1].node.get_our_node_id(), TEST_FINAL_CLTV)
+		.with_bolt11_features(nodes[1].node.bolt11_invoice_features()).unwrap();
 	let route_params = RouteParameters::from_payment_params_and_value(payment_params_1, 100_000);
 	let route_1 = get_route(&nodes[0].node.get_our_node_id(), &route_params,
 		&nodes[0].network_graph.read_only(), None, &logger, &scorer, &Default::default(), &random_seed_bytes).unwrap();
-	let payment_params_2 = PaymentParameters::from_node_id(nodes[0].node.get_our_node_id(),
-		TEST_FINAL_CLTV).with_bolt11_features(nodes[0].node.invoice_features()).unwrap();
+	let payment_params_2 = PaymentParameters::from_node_id(nodes[0].node.get_our_node_id(), TEST_FINAL_CLTV)
+		.with_bolt11_features(nodes[0].node.bolt11_invoice_features()).unwrap();
 	let route_params = RouteParameters::from_payment_params_and_value(payment_params_2, 100_000);
 	let route_2 = get_route(&nodes[1].node.get_our_node_id(), &route_params,
 		&nodes[1].network_graph.read_only(), None, &logger, &scorer, &Default::default(), &random_seed_bytes).unwrap();
@@ -623,8 +624,8 @@ fn do_test_shutdown_rebroadcast(recv_count: u8) {
 
 		nodes[0].node.handle_channel_reestablish(&nodes[1].node.get_our_node_id(), &node_1_2nd_reestablish);
 		let msg_events = nodes[0].node.get_and_clear_pending_msg_events();
-		assert_eq!(msg_events.len(), 1);
-		if let MessageSendEvent::HandleError { ref action, .. } = msg_events[0] {
+		assert_eq!(msg_events.len(), 2);
+		if let MessageSendEvent::HandleError { ref action, .. } = msg_events[1] {
 			match action {
 				&ErrorAction::SendErrorMessage { ref msg } => {
 					nodes[1].node.handle_error(&nodes[0].node.get_our_node_id(), &msg);

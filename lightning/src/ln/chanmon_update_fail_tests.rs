@@ -3431,3 +3431,72 @@ fn test_reload_mon_update_completion_actions() {
 	do_test_reload_mon_update_completion_actions(true);
 	do_test_reload_mon_update_completion_actions(false);
 }
+
+fn do_test_glacial_peer_cant_hang(hold_chan_a: bool) {
+	// Test that if a peer manages to send an `update_fulfill_htlc` message without a
+	// `commitment_signed`, disconnects, then replays the `update_fulfill_htlc` message it doesn't
+	// result in a channel hang. This was previously broken as the `DuplicateClaim` case wasn't
+	// handled when claiming an HTLC and handling wasn't added when completion actions were added
+	// (which must always complete at some point).
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
+	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+
+	create_announced_chan_between_nodes(&nodes, 0, 1);
+	create_announced_chan_between_nodes(&nodes, 1, 2);
+
+	// Route a payment from A, through B, to C, then claim it on C. Replay the
+	// `update_fulfill_htlc` twice on B to check that B doesn't hang.
+	let (payment_preimage, payment_hash, ..) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 1_000_000);
+
+	nodes[2].node.claim_funds(payment_preimage);
+	check_added_monitors(&nodes[2], 1);
+	expect_payment_claimed!(nodes[2], payment_hash, 1_000_000);
+
+	let cs_updates = get_htlc_update_msgs(&nodes[2], &nodes[1].node.get_our_node_id());
+	if hold_chan_a {
+		// The first update will be on the A <-> B channel, which we allow to complete.
+		chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
+	}
+	nodes[1].node.handle_update_fulfill_htlc(&nodes[2].node.get_our_node_id(), &cs_updates.update_fulfill_htlcs[0]);
+	check_added_monitors(&nodes[1], 1);
+
+	if !hold_chan_a {
+		let bs_updates = get_htlc_update_msgs(&nodes[1], &nodes[0].node.get_our_node_id());
+		nodes[0].node.handle_update_fulfill_htlc(&nodes[1].node.get_our_node_id(), &bs_updates.update_fulfill_htlcs[0]);
+		commitment_signed_dance!(nodes[0], nodes[1], bs_updates.commitment_signed, false);
+		expect_payment_sent!(&nodes[0], payment_preimage);
+	}
+
+	nodes[1].node.peer_disconnected(&nodes[2].node.get_our_node_id());
+	nodes[2].node.peer_disconnected(&nodes[1].node.get_our_node_id());
+
+	let mut reconnect = ReconnectArgs::new(&nodes[1], &nodes[2]);
+	reconnect.pending_htlc_claims = (1, 0);
+	reconnect_nodes(reconnect);
+
+	if !hold_chan_a {
+		expect_payment_forwarded!(nodes[1], nodes[0], nodes[2], Some(1000), false, false);
+		send_payment(&nodes[0], &[&nodes[1], &nodes[2]], 100_000);
+	} else {
+		assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
+		assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+
+		let (route, payment_hash_2, _, payment_secret_2) = get_route_and_payment_hash!(&nodes[1], nodes[2], 1_000_000);
+
+		nodes[1].node.send_payment_with_route(&route, payment_hash_2,
+			RecipientOnionFields::secret_only(payment_secret_2), PaymentId(payment_hash_2.0)).unwrap();
+		check_added_monitors(&nodes[1], 0);
+
+		assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
+		assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+	}
+}
+
+#[test]
+fn test_glacial_peer_cant_hang() {
+	do_test_glacial_peer_cant_hang(false);
+	do_test_glacial_peer_cant_hang(true);
+}

@@ -51,7 +51,7 @@ jobs:
           shellcheck ci/ci-tests.sh
       - name: Run CI script
         shell: bash # Default on Winblows is powershell
-        run: ./ci/ci-tests.sh
+        run: CI_MINIMIZE_DISK_USAGE=1 ./ci/ci-tests.sh
 
   coverage:
     strategy:
