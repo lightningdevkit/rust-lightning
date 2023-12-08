@@ -459,7 +459,8 @@ pub enum PeeledOnion<T: OnionMessageContents> {
 /// Creates an [`OnionMessage`] with the given `contents` for sending to the destination of
 /// `path`.
 ///
-/// Returns both the node id of the peer to send the message to and the message itself.
+/// Returns the node id of the peer to send the message to, the message itself, and any addresses
+/// need to connect to the first node.
 pub fn create_onion_message<ES: Deref, NS: Deref, T: OnionMessageContents>(
 	entropy_source: &ES, node_signer: &NS, secp_ctx: &Secp256k1<secp256k1::All>,
 	path: OnionMessagePath, contents: T, reply_path: Option<BlindedPath>,
