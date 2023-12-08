@@ -7867,8 +7867,8 @@ where
 		BlindedPath::one_hop_for_message(self.get_our_node_id(), entropy_source, secp_ctx).unwrap()
 	}
 
-	/// Creates a one-hop blinded path with [`ChannelManager::get_our_node_id`] as the introduction
-	/// node.
+	/// Creates a one-hop blinded payment path with [`ChannelManager::get_our_node_id`] as the
+	/// introduction node.
 	fn create_one_hop_blinded_payment_path(
 		&self, payment_secret: PaymentSecret
 	) -> (BlindedPayInfo, BlindedPath) {
