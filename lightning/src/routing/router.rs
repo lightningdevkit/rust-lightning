@@ -2392,6 +2392,8 @@ where L::Target: Logger {
 				// if the amount being transferred over this path is lower.
 				// We do this for now, but this is a subject for removal.
 				if let Some(mut available_value_contribution_msat) = htlc_maximum_msat.checked_sub($next_hops_fee_msat) {
+					let cltv_expiry_delta = $candidate.cltv_expiry_delta();
+					let htlc_minimum_msat = $candidate.htlc_minimum_msat();
 					let used_liquidity_msat = used_liquidities
 						.get(&$candidate.id())
 						.map_or(0, |used_liquidity_msat| {
@@ -2415,7 +2417,7 @@ where L::Target: Logger {
 						.checked_sub(2*MEDIAN_HOP_CLTV_EXPIRY_DELTA)
 						.unwrap_or(payment_params.max_total_cltv_expiry_delta - final_cltv_expiry_delta);
 					let hop_total_cltv_delta = ($next_hops_cltv_delta as u32)
-						.saturating_add($candidate.cltv_expiry_delta());
+						.saturating_add(cltv_expiry_delta);
 					let exceeds_cltv_delta_limit = hop_total_cltv_delta > max_total_cltv_expiry_delta;
 
 					let value_contribution_msat = cmp::min(available_value_contribution_msat, $next_hops_value_contribution);
@@ -2425,7 +2427,6 @@ where L::Target: Logger {
 						// Can't overflow due to how the values were computed right above.
 						None => unreachable!(),
 					};
-					let htlc_minimum_msat = $candidate.htlc_minimum_msat();
 					#[allow(unused_comparisons)] // $next_hops_path_htlc_minimum_msat is 0 in some calls so rustc complains
 					let over_path_minimum_msat = amount_to_transfer_over_msat >= htlc_minimum_msat &&
 						amount_to_transfer_over_msat >= $next_hops_path_htlc_minimum_msat;
@@ -2503,12 +2504,14 @@ where L::Target: Logger {
 						// payment path (upstream to the payee). To avoid that, we recompute
 						// path fees knowing the final path contribution after constructing it.
 						let curr_min = cmp::max(
-							$next_hops_path_htlc_minimum_msat, $candidate.htlc_minimum_msat()
+							$next_hops_path_htlc_minimum_msat, htlc_minimum_msat
 						);
-						let path_htlc_minimum_msat = compute_fees_saturating(curr_min, $candidate.fees())
+						let candidate_fees = $candidate.fees();
+						let src_node_counter = $candidate.src_node_counter();
+						let path_htlc_minimum_msat = compute_fees_saturating(curr_min, candidate_fees)
 							.saturating_add(curr_min);
 
-						let dist_entry = &mut dist[$candidate.src_node_counter() as usize];
+						let dist_entry = &mut dist[src_node_counter as usize];
 						let old_entry = if let Some(hop) = dist_entry {
 							hop
 						} else {
@@ -2551,7 +2554,7 @@ where L::Target: Logger {
 							if src_node_id != our_node_id {
 								// Note that `u64::max_value` means we'll always fail the
 								// `old_entry.total_fee_msat > total_fee_msat` check below
-								hop_use_fee_msat = compute_fees_saturating(amount_to_transfer_over_msat, $candidate.fees());
+								hop_use_fee_msat = compute_fees_saturating(amount_to_transfer_over_msat, candidate_fees);
 								total_fee_msat = total_fee_msat.saturating_add(hop_use_fee_msat);
 							}
 
