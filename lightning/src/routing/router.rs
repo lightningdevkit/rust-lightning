@@ -2425,14 +2425,15 @@ where L::Target: Logger {
 						// Can't overflow due to how the values were computed right above.
 						None => unreachable!(),
 					};
+					let htlc_minimum_msat = $candidate.htlc_minimum_msat();
 					#[allow(unused_comparisons)] // $next_hops_path_htlc_minimum_msat is 0 in some calls so rustc complains
-					let over_path_minimum_msat = amount_to_transfer_over_msat >= $candidate.htlc_minimum_msat() &&
+					let over_path_minimum_msat = amount_to_transfer_over_msat >= htlc_minimum_msat &&
 						amount_to_transfer_over_msat >= $next_hops_path_htlc_minimum_msat;
 
 					#[allow(unused_comparisons)] // $next_hops_path_htlc_minimum_msat is 0 in some calls so rustc complains
 					let may_overpay_to_meet_path_minimum_msat =
-						((amount_to_transfer_over_msat < $candidate.htlc_minimum_msat() &&
-						  recommended_value_msat >= $candidate.htlc_minimum_msat()) ||
+						((amount_to_transfer_over_msat < htlc_minimum_msat &&
+						  recommended_value_msat >= htlc_minimum_msat) ||
 						 (amount_to_transfer_over_msat < $next_hops_path_htlc_minimum_msat &&
 						  recommended_value_msat >= $next_hops_path_htlc_minimum_msat));
 
