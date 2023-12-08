@@ -223,6 +223,13 @@ impl OnionMessageRecipient {
 			*self = OnionMessageRecipient::ConnectedPeer(new_pending_messages);
 		}
 	}
+
+	fn is_connected(&self) -> bool {
+		match self {
+			OnionMessageRecipient::ConnectedPeer(..) => true,
+			OnionMessageRecipient::PendingConnection(..) => false,
+		}
+	}
 }
 
 /// An [`OnionMessage`] for [`OnionMessenger`] to send.
@@ -729,7 +736,11 @@ where
 			},
 			hash_map::Entry::Occupied(mut e) => {
 				e.get_mut().enqueue_message(onion_message);
-				Ok(SendSuccess::Buffered)
+				if e.get().is_connected() {
+					Ok(SendSuccess::Buffered)
+				} else {
+					Ok(SendSuccess::BufferedAwaitingConnection(first_node_id))
+				}
 			},
 		}
 	}
