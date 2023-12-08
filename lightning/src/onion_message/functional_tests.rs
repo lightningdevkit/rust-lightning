@@ -51,7 +51,8 @@ impl MessageRouter for TestMessageRouter {
 		Ok(OnionMessagePath {
 			intermediate_nodes: vec![],
 			destination,
-			addresses: Some(vec![SocketAddress::TcpIpV4 { addr: [127, 0, 0, 1], port: 1000 }]),
+			first_node_addresses:
+				Some(vec![SocketAddress::TcpIpV4 { addr: [127, 0, 0, 1], port: 1000 }]),
 		})
 	}
 }
@@ -227,7 +228,7 @@ fn one_unblinded_hop() {
 	let path = OnionMessagePath {
 		intermediate_nodes: vec![],
 		destination: Destination::Node(nodes[1].node_id),
-		addresses: None,
+		first_node_addresses: None,
 	};
 	nodes[0].messenger.send_onion_message_using_path(path, test_msg, None).unwrap();
 	nodes[1].custom_message_handler.expect_message(TestCustomMessage::Response);
@@ -242,7 +243,7 @@ fn two_unblinded_hops() {
 	let path = OnionMessagePath {
 		intermediate_nodes: vec![nodes[1].node_id],
 		destination: Destination::Node(nodes[2].node_id),
-		addresses: None,
+		first_node_addresses: None,
 	};
 	nodes[0].messenger.send_onion_message_using_path(path, test_msg, None).unwrap();
 	nodes[2].custom_message_handler.expect_message(TestCustomMessage::Response);
@@ -259,7 +260,7 @@ fn one_blinded_hop() {
 	let path = OnionMessagePath {
 		intermediate_nodes: vec![],
 		destination: Destination::BlindedPath(blinded_path),
-		addresses: None,
+		first_node_addresses: None,
 	};
 	nodes[0].messenger.send_onion_message_using_path(path, test_msg, None).unwrap();
 	nodes[1].custom_message_handler.expect_message(TestCustomMessage::Response);
@@ -276,7 +277,7 @@ fn two_unblinded_two_blinded() {
 	let path = OnionMessagePath {
 		intermediate_nodes: vec![nodes[1].node_id, nodes[2].node_id],
 		destination: Destination::BlindedPath(blinded_path),
-		addresses: None,
+		first_node_addresses: None,
 	};
 
 	nodes[0].messenger.send_onion_message_using_path(path, test_msg, None).unwrap();
@@ -294,7 +295,7 @@ fn three_blinded_hops() {
 	let path = OnionMessagePath {
 		intermediate_nodes: vec![],
 		destination: Destination::BlindedPath(blinded_path),
-		addresses: None,
+		first_node_addresses: None,
 	};
 
 	nodes[0].messenger.send_onion_message_using_path(path, test_msg, None).unwrap();
@@ -313,7 +314,7 @@ fn too_big_packet_error() {
 	let path = OnionMessagePath {
 		intermediate_nodes: hops,
 		destination: Destination::Node(hop_node_id),
-		addresses: None,
+		first_node_addresses: None,
 	};
 	let err = nodes[0].messenger.send_onion_message_using_path(path, test_msg, None).unwrap_err();
 	assert_eq!(err, SendError::TooBigPacket);
@@ -331,7 +332,7 @@ fn we_are_intro_node() {
 	let path = OnionMessagePath {
 		intermediate_nodes: vec![],
 		destination: Destination::BlindedPath(blinded_path),
-		addresses: None,
+		first_node_addresses: None,
 	};
 
 	nodes[0].messenger.send_onion_message_using_path(path, test_msg.clone(), None).unwrap();
@@ -343,7 +344,7 @@ fn we_are_intro_node() {
 	let path = OnionMessagePath {
 		intermediate_nodes: vec![],
 		destination: Destination::BlindedPath(blinded_path),
-		addresses: None,
+		first_node_addresses: None,
 	};
 	nodes[0].messenger.send_onion_message_using_path(path, test_msg, None).unwrap();
 	nodes[1].custom_message_handler.expect_message(TestCustomMessage::Response);
@@ -364,7 +365,7 @@ fn invalid_blinded_path_error() {
 	let path = OnionMessagePath {
 		intermediate_nodes: vec![],
 		destination: Destination::BlindedPath(blinded_path),
-		addresses: None,
+		first_node_addresses: None,
 	};
 	let err = nodes[0].messenger.send_onion_message_using_path(path, test_msg.clone(), None).unwrap_err();
 	assert_eq!(err, SendError::TooFewBlindedHops);
@@ -380,7 +381,7 @@ fn reply_path() {
 	let path = OnionMessagePath {
 		intermediate_nodes: vec![nodes[1].node_id, nodes[2].node_id],
 		destination: Destination::Node(nodes[3].node_id),
-		addresses: None,
+		first_node_addresses: None,
 	};
 	let reply_path = BlindedPath::new_for_message(&[nodes[2].node_id, nodes[1].node_id, nodes[0].node_id], &*nodes[0].entropy_source, &secp_ctx).unwrap();
 	nodes[0].messenger.send_onion_message_using_path(path, test_msg.clone(), Some(reply_path)).unwrap();
@@ -396,7 +397,7 @@ fn reply_path() {
 	let path = OnionMessagePath {
 		intermediate_nodes: vec![],
 		destination: Destination::BlindedPath(blinded_path),
-		addresses: None,
+		first_node_addresses: None,
 	};
 	let reply_path = BlindedPath::new_for_message(&[nodes[2].node_id, nodes[1].node_id, nodes[0].node_id], &*nodes[0].entropy_source, &secp_ctx).unwrap();
 
@@ -431,7 +432,7 @@ fn invalid_custom_message_type() {
 	let path = OnionMessagePath {
 		intermediate_nodes: vec![],
 		destination: Destination::Node(nodes[1].node_id),
-		addresses: None,
+		first_node_addresses: None,
 	};
 	let err = nodes[0].messenger.send_onion_message_using_path(path, test_msg, None).unwrap_err();
 	assert_eq!(err, SendError::InvalidMessage);
@@ -444,7 +445,7 @@ fn peer_buffer_full() {
 	let path = OnionMessagePath {
 		intermediate_nodes: vec![],
 		destination: Destination::Node(nodes[1].node_id),
-		addresses: None,
+		first_node_addresses: None,
 	};
 	for _ in 0..188 { // Based on MAX_PER_PEER_BUFFER_SIZE in OnionMessenger
 		nodes[0].messenger.send_onion_message_using_path(path.clone(), test_msg.clone(), None).unwrap();
@@ -469,7 +470,7 @@ fn many_hops() {
 	let path = OnionMessagePath {
 		intermediate_nodes,
 		destination: Destination::Node(nodes[num_nodes-1].node_id),
-		addresses: None,
+		first_node_addresses: None,
 	};
 	nodes[0].messenger.send_onion_message_using_path(path, test_msg, None).unwrap();
 	nodes[num_nodes-1].custom_message_handler.expect_message(TestCustomMessage::Response);
