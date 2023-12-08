@@ -7471,6 +7471,8 @@ impl<SP: Deref> Writeable for Channel<SP> where SP::Target: SignerProvider {
 			let mut channel_state = self.context.channel_state;
 			if matches!(channel_state, ChannelState::AwaitingChannelReady(_)|ChannelState::ChannelReady(_)) {
 				channel_state.set_peer_disconnected();
+			} else {
+				debug_assert!(false, "Pre-funded/shutdown channels should not be written");
 			}
 			channel_state.to_u32().write(writer)?;
 		}
@@ -8891,17 +8893,34 @@ mod tests {
 	fn blinding_point_skimmed_fee_malformed_ser() {
 		// Ensure that channel blinding points, skimmed fees, and malformed HTLCs are (de)serialized
 		// properly.
+		let logger = test_utils::TestLogger::new();
 		let feeest = LowerBoundedFeeEstimator::new(&TestFeeEstimator{fee_est: 15000});
 		let secp_ctx = Secp256k1::new();
 		let seed = [42; 32];
 		let network = Network::Testnet;
+		let best_block = BestBlock::from_network(network);
 		let keys_provider = test_utils::TestKeysInterface::new(&seed, network);
 
 		let node_b_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 		let config = UserConfig::default();
 		let features = channelmanager::provided_init_features(&config);
-		let outbound_chan = OutboundV1Channel::<&TestKeysInterface>::new(&feeest, &&keys_provider, &&keys_provider, node_b_node_id, &features, 10000000, 100000, 42, &config, 0, 42, None).unwrap();
-		let mut chan = Channel { context: outbound_chan.context };
+		let mut outbound_chan = OutboundV1Channel::<&TestKeysInterface>::new(
+			&feeest, &&keys_provider, &&keys_provider, node_b_node_id, &features, 10000000, 100000, 42, &config, 0, 42, None
+		).unwrap();
+		let inbound_chan = InboundV1Channel::<&TestKeysInterface>::new(
+			&feeest, &&keys_provider, &&keys_provider, node_b_node_id, &channelmanager::provided_channel_type_features(&config),
+			&features, &outbound_chan.get_open_channel(ChainHash::using_genesis_block(network)), 7, &config, 0, &&logger, false
+		).unwrap();
+		outbound_chan.accept_channel(&inbound_chan.get_accept_channel_message(), &config.channel_handshake_limits, &features).unwrap();
+		let tx = Transaction { version: 1, lock_time: LockTime::ZERO, input: Vec::new(), output: vec![TxOut {
+			value: 10000000, script_pubkey: outbound_chan.context.get_funding_redeemscript(),
+		}]};
+		let funding_outpoint = OutPoint{ txid: tx.txid(), index: 0 };
+		let funding_created = outbound_chan.get_funding_created(tx.clone(), funding_outpoint, false, &&logger).map_err(|_| ()).unwrap().unwrap();
+		let mut chan = match inbound_chan.funding_created(&funding_created, best_block, &&keys_provider, &&logger) {
+			Ok((chan, _, _)) => chan,
+			Err((_, e)) => panic!("{}", e),
+		};
 
 		let dummy_htlc_source = HTLCSource::OutboundRoute {
 			path: Path {
