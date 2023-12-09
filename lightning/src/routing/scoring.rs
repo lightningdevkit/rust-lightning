@@ -801,10 +801,10 @@ struct ChannelLiquidity {
 }
 
 /// A snapshot of [`ChannelLiquidity`] in one direction assuming a certain channel capacity.
-struct DirectedChannelLiquidity<L: Deref<Target = u64>, BRT: Deref<Target = HistoricalBucketRangeTracker>, T: Deref<Target = Duration>> {
+struct DirectedChannelLiquidity<L: Deref<Target = u64>, HT: Deref<Target = HistoricalLiquidityTracker>, T: Deref<Target = Duration>> {
 	min_liquidity_offset_msat: L,
 	max_liquidity_offset_msat: L,
-	liquidity_history: HistoricalMinMaxBuckets<BRT>,
+	liquidity_history: DirectedHistoricalLiquidityTracker<HT>,
 	capacity_msat: u64,
 	last_updated: T,
 	offset_history_last_updated: T,
@@ -991,7 +991,7 @@ impl ChannelLiquidity {
 	/// `capacity_msat`.
 	fn as_directed(
 		&self, source: &NodeId, target: &NodeId, capacity_msat: u64,
-	) -> DirectedChannelLiquidity<&u64, &HistoricalBucketRangeTracker, &Duration> {
+	) -> DirectedChannelLiquidity<&u64, &HistoricalLiquidityTracker, &Duration> {
 		let source_less_than_target = source < target;
 		let (min_liquidity_offset_msat, max_liquidity_offset_msat) =
 			if source_less_than_target {
@@ -1014,7 +1014,7 @@ impl ChannelLiquidity {
 	/// `capacity_msat`.
 	fn as_directed_mut(
 		&mut self, source: &NodeId, target: &NodeId, capacity_msat: u64,
-	) -> DirectedChannelLiquidity<&mut u64, &mut HistoricalBucketRangeTracker, &mut Duration> {
+	) -> DirectedChannelLiquidity<&mut u64, &mut HistoricalLiquidityTracker, &mut Duration> {
 		let source_less_than_target = source < target;
 		let (min_liquidity_offset_msat, max_liquidity_offset_msat) =
 			if source_less_than_target {
@@ -1128,8 +1128,8 @@ fn success_probability(
 	(numerator, denominator)
 }
 
-impl<L: Deref<Target = u64>, BRT: Deref<Target = HistoricalBucketRangeTracker>, T: Deref<Target = Duration>>
-DirectedChannelLiquidity< L, BRT, T> {
+impl<L: Deref<Target = u64>, HT: Deref<Target = HistoricalLiquidityTracker>, T: Deref<Target = Duration>>
+DirectedChannelLiquidity< L, HT, T> {
 	/// Returns a liquidity penalty for routing the given HTLC `amount_msat` through the channel in
 	/// this direction.
 	fn penalty_msat(&self, amount_msat: u64, score_params: &ProbabilisticScoringFeeParameters) -> u64 {
@@ -1234,8 +1234,8 @@ DirectedChannelLiquidity< L, BRT, T> {
 	}
 }
 
-impl<L: DerefMut<Target = u64>, BRT: DerefMut<Target = HistoricalBucketRangeTracker>, T: DerefMut<Target = Duration>>
-DirectedChannelLiquidity<L, BRT, T> {
+impl<L: DerefMut<Target = u64>, HT: DerefMut<Target = HistoricalLiquidityTracker>, T: DerefMut<Target = Duration>>
+DirectedChannelLiquidity<L, HT, T> {
 	/// Adjusts the channel liquidity balance bounds when failing to route `amount_msat`.
 	fn failed_at_channel<Log: Deref>(
 		&mut self, amount_msat: u64, duration_since_epoch: Duration, chan_descr: fmt::Arguments, logger: &Log
@@ -1678,55 +1678,52 @@ mod bucketed_history {
 		}
 
 		pub(super) fn as_directed<'a>(&'a self, source_less_than_target: bool)
-		-> HistoricalMinMaxBuckets<&'a HistoricalBucketRangeTracker> {
-			let (min_liquidity_offset_history, max_liquidity_offset_history) =
-				if source_less_than_target {
-					(&self.min_liquidity_offset_history, &self.max_liquidity_offset_history)
-				} else {
-					(&self.max_liquidity_offset_history, &self.min_liquidity_offset_history)
-				};
-			HistoricalMinMaxBuckets { min_liquidity_offset_history, max_liquidity_offset_history }
+		-> DirectedHistoricalLiquidityTracker<&'a HistoricalLiquidityTracker> {
+			DirectedHistoricalLiquidityTracker { source_less_than_target, tracker: self }
 		}
 
 		pub(super) fn as_directed_mut<'a>(&'a mut self, source_less_than_target: bool)
-		-> HistoricalMinMaxBuckets<&'a mut HistoricalBucketRangeTracker> {
-			let (min_liquidity_offset_history, max_liquidity_offset_history) =
-				if source_less_than_target {
-					(&mut self.min_liquidity_offset_history, &mut self.max_liquidity_offset_history)
-				} else {
-					(&mut self.max_liquidity_offset_history, &mut self.min_liquidity_offset_history)
-				};
-			HistoricalMinMaxBuckets { min_liquidity_offset_history, max_liquidity_offset_history }
+		-> DirectedHistoricalLiquidityTracker<&'a mut HistoricalLiquidityTracker> {
+			DirectedHistoricalLiquidityTracker { source_less_than_target, tracker: self }
 		}
 	}
 
 	/// A set of buckets representing the history of where we've seen the minimum- and maximum-
 	/// liquidity bounds for a given channel.
-	pub(super) struct HistoricalMinMaxBuckets<D: Deref<Target = HistoricalBucketRangeTracker>> {
-		/// Buckets tracking where and how often we've seen the minimum liquidity bound for a
-		/// channel.
-		min_liquidity_offset_history: D,
-		/// Buckets tracking where and how often we've seen the maximum liquidity bound for a
-		/// channel.
-		max_liquidity_offset_history: D,
+	pub(super) struct DirectedHistoricalLiquidityTracker<D: Deref<Target = HistoricalLiquidityTracker>> {
+		source_less_than_target: bool,
+		tracker: D,
 	}
 
-	impl<D: DerefMut<Target = HistoricalBucketRangeTracker>> HistoricalMinMaxBuckets<D> {
+	impl<D: DerefMut<Target = HistoricalLiquidityTracker>> DirectedHistoricalLiquidityTracker<D> {
 		pub(super) fn track_datapoint(
 			&mut self, min_offset_msat: u64, max_offset_msat: u64, capacity_msat: u64,
 		) {
-			self.min_liquidity_offset_history.track_datapoint(min_offset_msat, capacity_msat);
-			self.max_liquidity_offset_history.track_datapoint(max_offset_msat, capacity_msat);
+			if self.source_less_than_target {
+				self.tracker.min_liquidity_offset_history.track_datapoint(min_offset_msat, capacity_msat);
+				self.tracker.max_liquidity_offset_history.track_datapoint(max_offset_msat, capacity_msat);
+			} else {
+				self.tracker.max_liquidity_offset_history.track_datapoint(min_offset_msat, capacity_msat);
+				self.tracker.min_liquidity_offset_history.track_datapoint(max_offset_msat, capacity_msat);
+			}
 		}
 	}
 
-	impl<D: Deref<Target = HistoricalBucketRangeTracker>> HistoricalMinMaxBuckets<D> {
+	impl<D: Deref<Target = HistoricalLiquidityTracker>> DirectedHistoricalLiquidityTracker<D> {
 		pub(super) fn min_liquidity_offset_history_buckets(&self) -> &[u16; 32] {
-			&self.min_liquidity_offset_history.buckets
+			if self.source_less_than_target {
+				&self.tracker.min_liquidity_offset_history.buckets
+			} else {
+				&self.tracker.max_liquidity_offset_history.buckets
+			}
 		}
 
 		pub(super) fn max_liquidity_offset_history_buckets(&self) -> &[u16; 32] {
-			&self.max_liquidity_offset_history.buckets
+			if self.source_less_than_target {
+				&self.tracker.max_liquidity_offset_history.buckets
+			} else {
+				&self.tracker.min_liquidity_offset_history.buckets
+			}
 		}
 
 		#[inline]
@@ -1744,9 +1741,14 @@ mod bucketed_history {
 			let payment_pos = amount_to_pos(amount_msat, capacity_msat);
 			if payment_pos >= POSITION_TICKS { return None; }
 
+			let min_liquidity_offset_history_buckets =
+				self.min_liquidity_offset_history_buckets();
+			let max_liquidity_offset_history_buckets =
+				self.max_liquidity_offset_history_buckets();
+
 			let mut total_valid_points_tracked = 0;
-			for (min_idx, min_bucket) in self.min_liquidity_offset_history.buckets.iter().enumerate() {
-				for max_bucket in self.max_liquidity_offset_history.buckets.iter().take(32 - min_idx) {
+			for (min_idx, min_bucket) in min_liquidity_offset_history_buckets.iter().enumerate() {
+				for max_bucket in max_liquidity_offset_history_buckets.iter().take(32 - min_idx) {
 					total_valid_points_tracked += (*min_bucket as u64) * (*max_bucket as u64);
 				}
 			}
@@ -1766,10 +1768,10 @@ mod bucketed_history {
 			// datapoint, many of which may have relatively high maximum-available-liquidity
 			// values, which will result in us thinking we have some nontrivial probability of
 			// routing up to that amount.
-			if self.min_liquidity_offset_history.buckets[0] != 0 {
+			if min_liquidity_offset_history_buckets[0] != 0 {
 				let mut highest_max_bucket_with_points = 0; // The highest max-bucket with any data
 				let mut total_max_points = 0; // Total points in max-buckets to consider
-				for (max_idx, max_bucket) in self.max_liquidity_offset_history.buckets.iter().enumerate() {
+				for (max_idx, max_bucket) in max_liquidity_offset_history_buckets.iter().enumerate() {
 					if *max_bucket >= BUCKET_FIXED_POINT_ONE {
 						highest_max_bucket_with_points = cmp::max(highest_max_bucket_with_points, max_idx);
 					}
@@ -1780,16 +1782,16 @@ mod bucketed_history {
 					let (numerator, denominator) = success_probability(payment_pos as u64, 0,
 						max_bucket_end_pos as u64, POSITION_TICKS as u64 - 1, params, true);
 					let bucket_prob_times_billion =
-						(self.min_liquidity_offset_history.buckets[0] as u64) * total_max_points
+						(min_liquidity_offset_history_buckets[0] as u64) * total_max_points
 							* 1024 * 1024 * 1024 / total_valid_points_tracked;
 					cumulative_success_prob_times_billion += bucket_prob_times_billion *
 						numerator / denominator;
 				}
 			}
 
-			for (min_idx, min_bucket) in self.min_liquidity_offset_history.buckets.iter().enumerate().skip(1) {
+			for (min_idx, min_bucket) in min_liquidity_offset_history_buckets.iter().enumerate().skip(1) {
 				let min_bucket_start_pos = BUCKET_START_POS[min_idx];
-				for (max_idx, max_bucket) in self.max_liquidity_offset_history.buckets.iter().enumerate().take(32 - min_idx) {
+				for (max_idx, max_bucket) in max_liquidity_offset_history_buckets.iter().enumerate().take(32 - min_idx) {
 					let max_bucket_end_pos = BUCKET_START_POS[32 - max_idx] - 1;
 					// Note that this multiply can only barely not overflow - two 16 bit ints plus
 					// 30 bits is 62 bits.
@@ -1814,7 +1816,7 @@ mod bucketed_history {
 		}
 	}
 }
-use bucketed_history::{LegacyHistoricalBucketRangeTracker, HistoricalBucketRangeTracker, HistoricalMinMaxBuckets, HistoricalLiquidityTracker};
+use bucketed_history::{LegacyHistoricalBucketRangeTracker, HistoricalBucketRangeTracker, DirectedHistoricalLiquidityTracker, HistoricalLiquidityTracker};
 
 impl<G: Deref<Target = NetworkGraph<L>>, L: Deref> Writeable for ProbabilisticScorer<G, L> where L::Target: Logger {
 	#[inline]
