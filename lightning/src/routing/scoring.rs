@@ -790,8 +790,7 @@ struct ChannelLiquidity {
 	/// Upper channel liquidity bound in terms of an offset from the effective capacity.
 	max_liquidity_offset_msat: u64,
 
-	min_liquidity_offset_history: HistoricalBucketRangeTracker,
-	max_liquidity_offset_history: HistoricalBucketRangeTracker,
+	liquidity_history: HistoricalLiquidityTracker,
 
 	/// Time when either liquidity bound was last modified as an offset since the unix epoch.
 	last_updated: Duration,
@@ -982,8 +981,7 @@ impl ChannelLiquidity {
 		Self {
 			min_liquidity_offset_msat: 0,
 			max_liquidity_offset_msat: 0,
-			min_liquidity_offset_history: HistoricalBucketRangeTracker::new(),
-			max_liquidity_offset_history: HistoricalBucketRangeTracker::new(),
+			liquidity_history: HistoricalLiquidityTracker::new(),
 			last_updated,
 			offset_history_last_updated: last_updated,
 		}
@@ -994,22 +992,18 @@ impl ChannelLiquidity {
 	fn as_directed(
 		&self, source: &NodeId, target: &NodeId, capacity_msat: u64,
 	) -> DirectedChannelLiquidity<&u64, &HistoricalBucketRangeTracker, &Duration> {
-		let (min_liquidity_offset_msat, max_liquidity_offset_msat, min_liquidity_offset_history, max_liquidity_offset_history) =
-			if source < target {
-				(&self.min_liquidity_offset_msat, &self.max_liquidity_offset_msat,
-					&self.min_liquidity_offset_history, &self.max_liquidity_offset_history)
+		let source_less_than_target = source < target;
+		let (min_liquidity_offset_msat, max_liquidity_offset_msat) =
+			if source_less_than_target {
+				(&self.min_liquidity_offset_msat, &self.max_liquidity_offset_msat)
 			} else {
-				(&self.max_liquidity_offset_msat, &self.min_liquidity_offset_msat,
-					&self.max_liquidity_offset_history, &self.min_liquidity_offset_history)
+				(&self.max_liquidity_offset_msat, &self.min_liquidity_offset_msat)
 			};
 
 		DirectedChannelLiquidity {
 			min_liquidity_offset_msat,
 			max_liquidity_offset_msat,
-			liquidity_history: HistoricalMinMaxBuckets {
-				min_liquidity_offset_history,
-				max_liquidity_offset_history,
-			},
+			liquidity_history: self.liquidity_history.as_directed(source_less_than_target),
 			capacity_msat,
 			last_updated: &self.last_updated,
 			offset_history_last_updated: &self.offset_history_last_updated,
@@ -1021,22 +1015,18 @@ impl ChannelLiquidity {
 	fn as_directed_mut(
 		&mut self, source: &NodeId, target: &NodeId, capacity_msat: u64,
 	) -> DirectedChannelLiquidity<&mut u64, &mut HistoricalBucketRangeTracker, &mut Duration> {
-		let (min_liquidity_offset_msat, max_liquidity_offset_msat, min_liquidity_offset_history, max_liquidity_offset_history) =
-			if source < target {
-				(&mut self.min_liquidity_offset_msat, &mut self.max_liquidity_offset_msat,
-					&mut self.min_liquidity_offset_history, &mut self.max_liquidity_offset_history)
+		let source_less_than_target = source < target;
+		let (min_liquidity_offset_msat, max_liquidity_offset_msat) =
+			if source_less_than_target {
+				(&mut self.min_liquidity_offset_msat, &mut self.max_liquidity_offset_msat)
 			} else {
-				(&mut self.max_liquidity_offset_msat, &mut self.min_liquidity_offset_msat,
-					&mut self.max_liquidity_offset_history, &mut self.min_liquidity_offset_history)
+				(&mut self.max_liquidity_offset_msat, &mut self.min_liquidity_offset_msat)
 			};
 
 		DirectedChannelLiquidity {
 			min_liquidity_offset_msat,
 			max_liquidity_offset_msat,
-			liquidity_history: HistoricalMinMaxBuckets {
-				min_liquidity_offset_history,
-				max_liquidity_offset_history,
-			},
+			liquidity_history: self.liquidity_history.as_directed_mut(source_less_than_target),
 			capacity_msat,
 			last_updated: &mut self.last_updated,
 			offset_history_last_updated: &mut self.offset_history_last_updated,
@@ -1462,18 +1452,18 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref> ScoreUpdate for Probabilistic
 				let half_life = decay_params.historical_no_updates_half_life.as_secs_f64();
 				if half_life != 0.0 {
 					let divisor = powf64(2048.0, elapsed_time.as_secs_f64() / half_life) as u64;
-					for bucket in liquidity.min_liquidity_offset_history.buckets.iter_mut() {
+					for bucket in liquidity.liquidity_history.min_liquidity_offset_history.buckets.iter_mut() {
 						*bucket = ((*bucket as u64) * 1024 / divisor) as u16;
 					}
-					for bucket in liquidity.max_liquidity_offset_history.buckets.iter_mut() {
+					for bucket in liquidity.liquidity_history.max_liquidity_offset_history.buckets.iter_mut() {
 						*bucket = ((*bucket as u64) * 1024 / divisor) as u16;
 					}
 					liquidity.offset_history_last_updated = duration_since_epoch;
 				}
 			}
 			liquidity.min_liquidity_offset_msat != 0 || liquidity.max_liquidity_offset_msat != 0 ||
-				liquidity.min_liquidity_offset_history.buckets != [0; 32] ||
-				liquidity.max_liquidity_offset_history.buckets != [0; 32]
+				liquidity.liquidity_history.min_liquidity_offset_history.buckets != [0; 32] ||
+				liquidity.liquidity_history.max_liquidity_offset_history.buckets != [0; 32]
 		});
 	}
 }
@@ -1648,6 +1638,54 @@ mod bucketed_history {
 	impl_writeable_tlv_based!(HistoricalBucketRangeTracker, { (0, buckets, required) });
 	impl_writeable_tlv_based!(LegacyHistoricalBucketRangeTracker, { (0, buckets, required) });
 
+
+	#[derive(Clone, Copy)]
+	pub(super) struct HistoricalLiquidityTracker {
+		pub(super) min_liquidity_offset_history: HistoricalBucketRangeTracker,
+		pub(super) max_liquidity_offset_history: HistoricalBucketRangeTracker,
+	}
+
+	impl HistoricalLiquidityTracker {
+		pub(super) fn new() -> HistoricalLiquidityTracker {
+			HistoricalLiquidityTracker {
+				min_liquidity_offset_history: HistoricalBucketRangeTracker::new(),
+				max_liquidity_offset_history: HistoricalBucketRangeTracker::new(),
+			}
+		}
+
+		pub(super) fn from_min_max(
+			min_liquidity_offset_history: HistoricalBucketRangeTracker,
+			max_liquidity_offset_history: HistoricalBucketRangeTracker,
+		) -> HistoricalLiquidityTracker {
+			HistoricalLiquidityTracker {
+				min_liquidity_offset_history,
+				max_liquidity_offset_history,
+			}
+		}
+
+		pub(super) fn as_directed<'a>(&'a self, source_less_than_target: bool)
+		-> HistoricalMinMaxBuckets<&'a HistoricalBucketRangeTracker> {
+			let (min_liquidity_offset_history, max_liquidity_offset_history) =
+				if source_less_than_target {
+					(&self.min_liquidity_offset_history, &self.max_liquidity_offset_history)
+				} else {
+					(&self.max_liquidity_offset_history, &self.min_liquidity_offset_history)
+				};
+			HistoricalMinMaxBuckets { min_liquidity_offset_history, max_liquidity_offset_history }
+		}
+
+		pub(super) fn as_directed_mut<'a>(&'a mut self, source_less_than_target: bool)
+		-> HistoricalMinMaxBuckets<&'a mut HistoricalBucketRangeTracker> {
+			let (min_liquidity_offset_history, max_liquidity_offset_history) =
+				if source_less_than_target {
+					(&mut self.min_liquidity_offset_history, &mut self.max_liquidity_offset_history)
+				} else {
+					(&mut self.max_liquidity_offset_history, &mut self.min_liquidity_offset_history)
+				};
+			HistoricalMinMaxBuckets { min_liquidity_offset_history, max_liquidity_offset_history }
+		}
+	}
+
 	/// A set of buckets representing the history of where we've seen the minimum- and maximum-
 	/// liquidity bounds for a given channel.
 	pub(super) struct HistoricalMinMaxBuckets<D: Deref<Target = HistoricalBucketRangeTracker>> {
@@ -1745,7 +1783,7 @@ mod bucketed_history {
 		}
 	}
 }
-use bucketed_history::{LegacyHistoricalBucketRangeTracker, HistoricalBucketRangeTracker, HistoricalMinMaxBuckets};
+use bucketed_history::{LegacyHistoricalBucketRangeTracker, HistoricalBucketRangeTracker, HistoricalMinMaxBuckets, HistoricalLiquidityTracker};
 
 impl<G: Deref<Target = NetworkGraph<L>>, L: Deref> Writeable for ProbabilisticScorer<G, L> where L::Target: Logger {
 	#[inline]
@@ -1786,8 +1824,8 @@ impl Writeable for ChannelLiquidity {
 			(2, self.max_liquidity_offset_msat, required),
 			// 3 was the max_liquidity_offset_history in octile form
 			(4, self.last_updated, required),
-			(5, Some(self.min_liquidity_offset_history), option),
-			(7, Some(self.max_liquidity_offset_history), option),
+			(5, self.liquidity_history.min_liquidity_offset_history, required),
+			(7, self.liquidity_history.max_liquidity_offset_history, required),
 			(9, self.offset_history_last_updated, required),
 		});
 		Ok(())
@@ -1833,8 +1871,9 @@ impl Readable for ChannelLiquidity {
 		Ok(Self {
 			min_liquidity_offset_msat,
 			max_liquidity_offset_msat,
-			min_liquidity_offset_history: min_liquidity_offset_history.unwrap(),
-			max_liquidity_offset_history: max_liquidity_offset_history.unwrap(),
+			liquidity_history: HistoricalLiquidityTracker::from_min_max(
+				min_liquidity_offset_history.unwrap(), max_liquidity_offset_history.unwrap()
+			),
 			last_updated,
 			offset_history_last_updated: offset_history_last_updated.unwrap_or(last_updated),
 		})
@@ -1843,7 +1882,7 @@ impl Readable for ChannelLiquidity {
 
 #[cfg(test)]
 mod tests {
-	use super::{ChannelLiquidity, HistoricalBucketRangeTracker, ProbabilisticScoringFeeParameters, ProbabilisticScoringDecayParameters, ProbabilisticScorer};
+	use super::{ChannelLiquidity, HistoricalLiquidityTracker, ProbabilisticScoringFeeParameters, ProbabilisticScoringDecayParameters, ProbabilisticScorer};
 	use crate::blinded_path::BlindedHop;
 	use crate::util::config::UserConfig;
 
@@ -2016,15 +2055,13 @@ mod tests {
 				ChannelLiquidity {
 					min_liquidity_offset_msat: 700, max_liquidity_offset_msat: 100,
 					last_updated, offset_history_last_updated,
-					min_liquidity_offset_history: HistoricalBucketRangeTracker::new(),
-					max_liquidity_offset_history: HistoricalBucketRangeTracker::new(),
+					liquidity_history: HistoricalLiquidityTracker::new(),
 				})
 			.with_channel(43,
 				ChannelLiquidity {
 					min_liquidity_offset_msat: 700, max_liquidity_offset_msat: 100,
 					last_updated, offset_history_last_updated,
-					min_liquidity_offset_history: HistoricalBucketRangeTracker::new(),
-					max_liquidity_offset_history: HistoricalBucketRangeTracker::new(),
+					liquidity_history: HistoricalLiquidityTracker::new(),
 				});
 		let source = source_node_id();
 		let target = target_node_id();
@@ -2097,8 +2134,7 @@ mod tests {
 				ChannelLiquidity {
 					min_liquidity_offset_msat: 200, max_liquidity_offset_msat: 400,
 					last_updated, offset_history_last_updated,
-					min_liquidity_offset_history: HistoricalBucketRangeTracker::new(),
-					max_liquidity_offset_history: HistoricalBucketRangeTracker::new(),
+					liquidity_history: HistoricalLiquidityTracker::new(),
 				});
 		let source = source_node_id();
 		let target = target_node_id();
@@ -2158,8 +2194,7 @@ mod tests {
 				ChannelLiquidity {
 					min_liquidity_offset_msat: 200, max_liquidity_offset_msat: 400,
 					last_updated, offset_history_last_updated,
-					min_liquidity_offset_history: HistoricalBucketRangeTracker::new(),
-					max_liquidity_offset_history: HistoricalBucketRangeTracker::new(),
+					liquidity_history: HistoricalLiquidityTracker::new(),
 				});
 		let source = source_node_id();
 		let target = target_node_id();
@@ -2278,8 +2313,7 @@ mod tests {
 				ChannelLiquidity {
 					min_liquidity_offset_msat: 40, max_liquidity_offset_msat: 40,
 					last_updated, offset_history_last_updated,
-					min_liquidity_offset_history: HistoricalBucketRangeTracker::new(),
-					max_liquidity_offset_history: HistoricalBucketRangeTracker::new(),
+					liquidity_history: HistoricalLiquidityTracker::new(),
 				});
 		let source = source_node_id();
 
