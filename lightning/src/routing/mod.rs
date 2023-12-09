@@ -13,5 +13,6 @@ pub mod utxo;
 pub mod gossip;
 pub mod router;
 pub mod scoring;
+mod log_approx;
 #[cfg(test)]
 pub(crate) mod test_utils;
