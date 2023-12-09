@@ -8747,14 +8747,23 @@ pub mod benches {
 		score_params: &S::ScoreParams, features: Bolt11InvoiceFeatures, starting_amount: u64,
 		bench_name: &'static str,
 	) {
-		let payer = bench_utils::payer_pubkey();
-		let keys_manager = KeysManager::new(&[0u8; 32], 42, 42);
-		let random_seed_bytes = keys_manager.get_secure_random_bytes();
-
 		// First, get 100 (source, destination) pairs for which route-getting actually succeeds...
 		let route_endpoints = bench_utils::generate_test_routes(graph, &mut scorer, score_params, features, 0xdeadbeef, starting_amount, 50);
 
 		// ...then benchmark finding paths between the nodes we learned.
+		do_route_bench(bench, graph, scorer, score_params, bench_name, route_endpoints);
+	}
+
+	#[inline(never)]
+	fn do_route_bench<S: ScoreLookUp + ScoreUpdate>(
+		bench: &mut Criterion, graph: &NetworkGraph<&TestLogger>, scorer: S,
+		score_params: &S::ScoreParams, bench_name: &'static str,
+		route_endpoints: Vec<(ChannelDetails, PaymentParameters, u64)>,
+	) {
+		let payer = bench_utils::payer_pubkey();
+		let keys_manager = KeysManager::new(&[0u8; 32], 42, 42);
+		let random_seed_bytes = keys_manager.get_secure_random_bytes();
+
 		let mut idx = 0;
 		bench.bench_function(bench_name, |b| b.iter(|| {
 			let (first_hop, params, amt) = &route_endpoints[idx % route_endpoints.len()];
