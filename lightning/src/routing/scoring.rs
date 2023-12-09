@@ -1634,6 +1634,7 @@ mod bucketed_history {
 	pub(super) struct HistoricalLiquidityTracker {
 		min_liquidity_offset_history: HistoricalBucketRangeTracker,
 		max_liquidity_offset_history: HistoricalBucketRangeTracker,
+		total_valid_points_tracked: u64,
 	}
 
 	impl HistoricalLiquidityTracker {
@@ -1641,6 +1642,7 @@ mod bucketed_history {
 			HistoricalLiquidityTracker {
 				min_liquidity_offset_history: HistoricalBucketRangeTracker::new(),
 				max_liquidity_offset_history: HistoricalBucketRangeTracker::new(),
+				total_valid_points_tracked: 0,
 			}
 		}
 
@@ -1648,10 +1650,13 @@ mod bucketed_history {
 			min_liquidity_offset_history: HistoricalBucketRangeTracker,
 			max_liquidity_offset_history: HistoricalBucketRangeTracker,
 		) -> HistoricalLiquidityTracker {
-			HistoricalLiquidityTracker {
+			let mut res = HistoricalLiquidityTracker {
 				min_liquidity_offset_history,
 				max_liquidity_offset_history,
-			}
+				total_valid_points_tracked: 0,
+			};
+			res.recalculate_valid_point_count();
+			res
 		}
 
 		pub(super) fn has_datapoints(&self) -> bool {
@@ -1666,6 +1671,16 @@ mod bucketed_history {
 			}
 			for bucket in self.max_liquidity_offset_history.buckets.iter_mut() {
 				*bucket = ((*bucket as u64) * 1024 / divisor) as u16;
+			}
+			self.recalculate_valid_point_count();
+		}
+
+		fn recalculate_valid_point_count(&mut self) {
+			self.total_valid_points_tracked = 0;
+			for (min_idx, min_bucket) in self.min_liquidity_offset_history.buckets.iter().enumerate() {
+				for max_bucket in self.max_liquidity_offset_history.buckets.iter().take(32 - min_idx) {
+					self.total_valid_points_tracked += (*min_bucket as u64) * (*max_bucket as u64);
+				}
 			}
 		}
 
@@ -1706,6 +1721,7 @@ mod bucketed_history {
 				self.tracker.max_liquidity_offset_history.track_datapoint(min_offset_msat, capacity_msat);
 				self.tracker.min_liquidity_offset_history.track_datapoint(max_offset_msat, capacity_msat);
 			}
+			self.tracker.recalculate_valid_point_count();
 		}
 	}
 
@@ -1746,11 +1762,15 @@ mod bucketed_history {
 			let max_liquidity_offset_history_buckets =
 				self.max_liquidity_offset_history_buckets();
 
-			let mut total_valid_points_tracked = 0;
-			for (min_idx, min_bucket) in min_liquidity_offset_history_buckets.iter().enumerate() {
-				for max_bucket in max_liquidity_offset_history_buckets.iter().take(32 - min_idx) {
-					total_valid_points_tracked += (*min_bucket as u64) * (*max_bucket as u64);
+			let total_valid_points_tracked = self.tracker.total_valid_points_tracked;
+			#[cfg(debug_assertions)] {
+				let mut actual_valid_points_tracked = 0;
+				for (min_idx, min_bucket) in min_liquidity_offset_history_buckets.iter().enumerate() {
+					for max_bucket in max_liquidity_offset_history_buckets.iter().take(32 - min_idx) {
+						actual_valid_points_tracked += (*min_bucket as u64) * (*max_bucket as u64);
+					}
 				}
+				assert_eq!(total_valid_points_tracked, actual_valid_points_tracked);
 			}
 
 			// If the total valid points is smaller than 1.0 (i.e. 32 in our fixed-point scheme),
