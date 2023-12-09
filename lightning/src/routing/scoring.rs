@@ -841,8 +841,8 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref> ProbabilisticScorer<G, L> whe
 						let amt = directed_info.effective_capacity().as_msat();
 						let dir_liq = liq.as_directed(source, target, amt);
 
-						let min_buckets = &dir_liq.liquidity_history.min_liquidity_offset_history.buckets;
-						let max_buckets = &dir_liq.liquidity_history.max_liquidity_offset_history.buckets;
+						let min_buckets = &dir_liq.liquidity_history.min_liquidity_offset_history_buckets();
+						let max_buckets = &dir_liq.liquidity_history.max_liquidity_offset_history_buckets();
 
 						log_debug!(self.logger, core::concat!(
 							"Liquidity from {} to {} via {} is in the range ({}, {}).\n",
@@ -935,8 +935,8 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref> ProbabilisticScorer<G, L> whe
 					let amt = directed_info.effective_capacity().as_msat();
 					let dir_liq = liq.as_directed(source, target, amt);
 
-					let min_buckets = dir_liq.liquidity_history.min_liquidity_offset_history.buckets;
-					let mut max_buckets = dir_liq.liquidity_history.max_liquidity_offset_history.buckets;
+					let min_buckets = *dir_liq.liquidity_history.min_liquidity_offset_history_buckets();
+					let mut max_buckets = *dir_liq.liquidity_history.max_liquidity_offset_history_buckets();
 
 					// Note that the liquidity buckets are an offset from the edge, so we inverse
 					// the max order to get the probabilities from zero.
@@ -1281,11 +1281,10 @@ DirectedChannelLiquidity<L, BRT, T> {
 	/// state"), we allow the caller to set an offset applied to our liquidity bounds which
 	/// represents the amount of the successful payment we just made.
 	fn update_history_buckets(&mut self, bucket_offset_msat: u64, duration_since_epoch: Duration) {
-		self.liquidity_history.min_liquidity_offset_history.track_datapoint(
-			*self.min_liquidity_offset_msat + bucket_offset_msat, self.capacity_msat
-		);
-		self.liquidity_history.max_liquidity_offset_history.track_datapoint(
-			self.max_liquidity_offset_msat.saturating_sub(bucket_offset_msat), self.capacity_msat
+		self.liquidity_history.track_datapoint(
+			*self.min_liquidity_offset_msat + bucket_offset_msat,
+			self.max_liquidity_offset_msat.saturating_sub(bucket_offset_msat),
+			self.capacity_msat,
 		);
 		*self.offset_history_last_updated = duration_since_epoch;
 	}
@@ -1451,19 +1450,12 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref> ScoreUpdate for Probabilistic
 			if elapsed_time > decay_params.historical_no_updates_half_life {
 				let half_life = decay_params.historical_no_updates_half_life.as_secs_f64();
 				if half_life != 0.0 {
-					let divisor = powf64(2048.0, elapsed_time.as_secs_f64() / half_life) as u64;
-					for bucket in liquidity.liquidity_history.min_liquidity_offset_history.buckets.iter_mut() {
-						*bucket = ((*bucket as u64) * 1024 / divisor) as u16;
-					}
-					for bucket in liquidity.liquidity_history.max_liquidity_offset_history.buckets.iter_mut() {
-						*bucket = ((*bucket as u64) * 1024 / divisor) as u16;
-					}
+					liquidity.liquidity_history.decay_buckets(elapsed_time.as_secs_f64() / half_life);
 					liquidity.offset_history_last_updated = duration_since_epoch;
 				}
 			}
 			liquidity.min_liquidity_offset_msat != 0 || liquidity.max_liquidity_offset_msat != 0 ||
-				liquidity.liquidity_history.min_liquidity_offset_history.buckets != [0; 32] ||
-				liquidity.liquidity_history.max_liquidity_offset_history.buckets != [0; 32]
+				liquidity.liquidity_history.has_datapoints()
 		});
 	}
 }
@@ -1593,7 +1585,7 @@ mod bucketed_history {
 	/// in each of 32 buckets.
 	#[derive(Clone, Copy)]
 	pub(super) struct HistoricalBucketRangeTracker {
-		pub(super) buckets: [u16; 32],
+		buckets: [u16; 32],
 	}
 
 	/// Buckets are stored in fixed point numbers with a 5 bit fractional part. Thus, the value
@@ -1602,7 +1594,7 @@ mod bucketed_history {
 
 	impl HistoricalBucketRangeTracker {
 		pub(super) fn new() -> Self { Self { buckets: [0; 32] } }
-		pub(super) fn track_datapoint(&mut self, liquidity_offset_msat: u64, capacity_msat: u64) {
+		fn track_datapoint(&mut self, liquidity_offset_msat: u64, capacity_msat: u64) {
 			// We have 32 leaky buckets for min and max liquidity. Each bucket tracks the amount of time
 			// we spend in each bucket as a 16-bit fixed-point number with a 5 bit fractional part.
 			//
@@ -1638,11 +1630,10 @@ mod bucketed_history {
 	impl_writeable_tlv_based!(HistoricalBucketRangeTracker, { (0, buckets, required) });
 	impl_writeable_tlv_based!(LegacyHistoricalBucketRangeTracker, { (0, buckets, required) });
 
-
 	#[derive(Clone, Copy)]
 	pub(super) struct HistoricalLiquidityTracker {
-		pub(super) min_liquidity_offset_history: HistoricalBucketRangeTracker,
-		pub(super) max_liquidity_offset_history: HistoricalBucketRangeTracker,
+		min_liquidity_offset_history: HistoricalBucketRangeTracker,
+		max_liquidity_offset_history: HistoricalBucketRangeTracker,
 	}
 
 	impl HistoricalLiquidityTracker {
@@ -1661,6 +1652,29 @@ mod bucketed_history {
 				min_liquidity_offset_history,
 				max_liquidity_offset_history,
 			}
+		}
+
+		pub(super) fn has_datapoints(&self) -> bool {
+			self.min_liquidity_offset_history.buckets != [0; 32] ||
+				self.max_liquidity_offset_history.buckets != [0; 32]
+		}
+
+		pub(super) fn decay_buckets(&mut self, half_lives: f64) {
+			let divisor = powf64(2048.0, half_lives) as u64;
+			for bucket in self.min_liquidity_offset_history.buckets.iter_mut() {
+				*bucket = ((*bucket as u64) * 1024 / divisor) as u16;
+			}
+			for bucket in self.max_liquidity_offset_history.buckets.iter_mut() {
+				*bucket = ((*bucket as u64) * 1024 / divisor) as u16;
+			}
+		}
+
+		pub(super) fn writeable_min_offset_history(&self) -> &HistoricalBucketRangeTracker {
+			&self.min_liquidity_offset_history
+		}
+
+		pub(super) fn writeable_max_offset_history(&self) -> &HistoricalBucketRangeTracker {
+			&self.max_liquidity_offset_history
 		}
 
 		pub(super) fn as_directed<'a>(&'a self, source_less_than_target: bool)
@@ -1691,13 +1705,30 @@ mod bucketed_history {
 	pub(super) struct HistoricalMinMaxBuckets<D: Deref<Target = HistoricalBucketRangeTracker>> {
 		/// Buckets tracking where and how often we've seen the minimum liquidity bound for a
 		/// channel.
-		pub(super) min_liquidity_offset_history: D,
+		min_liquidity_offset_history: D,
 		/// Buckets tracking where and how often we've seen the maximum liquidity bound for a
 		/// channel.
-		pub(super) max_liquidity_offset_history: D,
+		max_liquidity_offset_history: D,
+	}
+
+	impl<D: DerefMut<Target = HistoricalBucketRangeTracker>> HistoricalMinMaxBuckets<D> {
+		pub(super) fn track_datapoint(
+			&mut self, min_offset_msat: u64, max_offset_msat: u64, capacity_msat: u64,
+		) {
+			self.min_liquidity_offset_history.track_datapoint(min_offset_msat, capacity_msat);
+			self.max_liquidity_offset_history.track_datapoint(max_offset_msat, capacity_msat);
+		}
 	}
 
 	impl<D: Deref<Target = HistoricalBucketRangeTracker>> HistoricalMinMaxBuckets<D> {
+		pub(super) fn min_liquidity_offset_history_buckets(&self) -> &[u16; 32] {
+			&self.min_liquidity_offset_history.buckets
+		}
+
+		pub(super) fn max_liquidity_offset_history_buckets(&self) -> &[u16; 32] {
+			&self.max_liquidity_offset_history.buckets
+		}
+
 		#[inline]
 		pub(super) fn calculate_success_probability_times_billion(
 			&self, params: &ProbabilisticScoringFeeParameters, amount_msat: u64,
@@ -1824,8 +1855,8 @@ impl Writeable for ChannelLiquidity {
 			(2, self.max_liquidity_offset_msat, required),
 			// 3 was the max_liquidity_offset_history in octile form
 			(4, self.last_updated, required),
-			(5, self.liquidity_history.min_liquidity_offset_history, required),
-			(7, self.liquidity_history.max_liquidity_offset_history, required),
+			(5, self.liquidity_history.writeable_min_offset_history(), required),
+			(7, self.liquidity_history.writeable_max_offset_history(), required),
 			(9, self.offset_history_last_updated, required),
 		});
 		Ok(())
