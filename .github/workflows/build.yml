@@ -83,19 +83,36 @@ jobs:
         id: cache-graph
         uses: actions/cache@v3
         with:
-          path: lightning/net_graph-2023-01-18.bin
-          key: ldk-net_graph-v0.0.113-2023-01-18.bin
+          path: lightning/net_graph-2023-12-10.bin
+          key: ldk-net_graph-v0.0.118-2023-12-10.bin
       - name: Fetch routing graph snapshot
         if: steps.cache-graph.outputs.cache-hit != 'true'
         run: |
-          curl --verbose -L -o lightning/net_graph-2023-01-18.bin https://bitcoin.ninja/ldk-net_graph-v0.0.113-2023-01-18.bin
-          echo "Sha sum: $(sha256sum lightning/net_graph-2023-01-18.bin | awk '{ print $1 }')"
-          if [ "$(sha256sum lightning/net_graph-2023-01-18.bin | awk '{ print $1 }')" != "${EXPECTED_ROUTING_GRAPH_SNAPSHOT_SHASUM}" ]; then
+          curl --verbose -L -o lightning/net_graph-2023-12-10.bin https://bitcoin.ninja/ldk-net_graph-v0.0.118-2023-12-10.bin
+          echo "Sha sum: $(sha256sum lightning/net_graph-2023-12-10.bin | awk '{ print $1 }')"
+          if [ "$(sha256sum lightning/net_graph-2023-12-10.bin | awk '{ print $1 }')" != "${EXPECTED_ROUTING_GRAPH_SNAPSHOT_SHASUM}" ]; then
             echo "Bad hash"
             exit 1
           fi
         env:
-          EXPECTED_ROUTING_GRAPH_SNAPSHOT_SHASUM: da6066f2bddcddbe7d8a6debbd53545697137b310bbb8c4911bc8c81fc5ff48c
+          EXPECTED_ROUTING_GRAPH_SNAPSHOT_SHASUM: e94b38ef4b3ce683893bf6a3ee28d60cb37c73b059403ff77b7e7458157968c2
+      - name: Cache scorer snapshot
+        id: cache-scorer
+        uses: actions/cache@v3
+        with:
+          path: lightning/scorer-2023-12-10.bin
+          key: ldk-scorer-v0.0.118-2023-12-10.bin
+      - name: Fetch scorer snapshot
+        if: steps.cache-scorer.outputs.cache-hit != 'true'
+        run: |
+          curl --verbose -L -o lightning/scorer-2023-12-10.bin https://bitcoin.ninja/ldk-scorer-v0.0.118-2023-12-10.bin
+          echo "Sha sum: $(sha256sum lightning/scorer-2023-12-10.bin | awk '{ print $1 }')"
+          if [ "$(sha256sum lightning/scorer-2023-12-10.bin | awk '{ print $1 }')" != "${EXPECTED_SCORER_SNAPSHOT_SHASUM}" ]; then
+            echo "Bad hash"
+            exit 1
+          fi
+        env:
+          EXPECTED_SCORER_SNAPSHOT_SHASUM: 570a26bb28870fe1da7e392cdec9fb794718826b04c43ca053d71a8a9bb9be69
       - name: Fetch rapid graph sync reference input
         run: |
           curl --verbose -L -o lightning-rapid-gossip-sync/res/full_graph.lngossip https://bitcoin.ninja/ldk-compressed_graph-285cb27df79-2022-07-21.bin
