@@ -3716,7 +3716,7 @@ pub mod benches {
 
 	pub fn read_network_graph(bench: &mut Criterion) {
 		let logger = crate::util::test_utils::TestLogger::new();
-		let mut d = crate::routing::router::bench_utils::get_route_file().unwrap();
+		let (mut d, _) = crate::routing::router::bench_utils::get_graph_scorer_file().unwrap();
 		let mut v = Vec::new();
 		d.read_to_end(&mut v).unwrap();
 		bench.bench_function("read_network_graph", |b| b.iter(||
@@ -3726,7 +3726,7 @@ pub mod benches {
 
 	pub fn write_network_graph(bench: &mut Criterion) {
 		let logger = crate::util::test_utils::TestLogger::new();
-		let mut d = crate::routing::router::bench_utils::get_route_file().unwrap();
+		let (mut d, _) = crate::routing::router::bench_utils::get_graph_scorer_file().unwrap();
 		let net_graph = NetworkGraph::read(&mut d, &logger).unwrap();
 		bench.bench_function("write_network_graph", |b| b.iter(||
 			black_box(&net_graph).encode()

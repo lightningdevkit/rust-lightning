@@ -7115,11 +7115,11 @@ mod tests {
 	#[test]
 	#[cfg(feature = "std")]
 	fn generate_routes() {
-		use crate::routing::scoring::{ProbabilisticScorer, ProbabilisticScoringFeeParameters};
+		use crate::routing::scoring::ProbabilisticScoringFeeParameters;
 
 		let logger = ln_test_utils::TestLogger::new();
-		let graph = match super::bench_utils::read_network_graph(&logger) {
-			Ok(f) => f,
+		let (graph, mut scorer) = match super::bench_utils::read_graph_scorer(&logger) {
+			Ok(res) => res,
 			Err(e) => {
 				eprintln!("{}", e);
 				return;
@@ -7127,7 +7127,6 @@ mod tests {
 		};
 
 		let params = ProbabilisticScoringFeeParameters::default();
-		let mut scorer = ProbabilisticScorer::new(ProbabilisticScoringDecayParameters::default(), &graph, &logger);
 		let features = super::Bolt11InvoiceFeatures::empty();
 
 		super::bench_utils::generate_test_routes(&graph, &mut scorer, &params, features, random_init_seed(), 0, 2);
@@ -7136,11 +7135,11 @@ mod tests {
 	#[test]
 	#[cfg(feature = "std")]
 	fn generate_routes_mpp() {
-		use crate::routing::scoring::{ProbabilisticScorer, ProbabilisticScoringFeeParameters};
+		use crate::routing::scoring::ProbabilisticScoringFeeParameters;
 
 		let logger = ln_test_utils::TestLogger::new();
-		let graph = match super::bench_utils::read_network_graph(&logger) {
-			Ok(f) => f,
+		let (graph, mut scorer) = match super::bench_utils::read_graph_scorer(&logger) {
+			Ok(res) => res,
 			Err(e) => {
 				eprintln!("{}", e);
 				return;
@@ -7148,7 +7147,6 @@ mod tests {
 		};
 
 		let params = ProbabilisticScoringFeeParameters::default();
-		let mut scorer = ProbabilisticScorer::new(ProbabilisticScoringDecayParameters::default(), &graph, &logger);
 		let features = channelmanager::provided_bolt11_invoice_features(&UserConfig::default());
 
 		super::bench_utils::generate_test_routes(&graph, &mut scorer, &params, features, random_init_seed(), 0, 2);
@@ -7157,11 +7155,11 @@ mod tests {
 	#[test]
 	#[cfg(feature = "std")]
 	fn generate_large_mpp_routes() {
-		use crate::routing::scoring::{ProbabilisticScorer, ProbabilisticScoringFeeParameters};
+		use crate::routing::scoring::ProbabilisticScoringFeeParameters;
 
 		let logger = ln_test_utils::TestLogger::new();
-		let graph = match super::bench_utils::read_network_graph(&logger) {
-			Ok(f) => f,
+		let (graph, mut scorer) = match super::bench_utils::read_graph_scorer(&logger) {
+			Ok(res) => res,
 			Err(e) => {
 				eprintln!("{}", e);
 				return;
@@ -7169,7 +7167,6 @@ mod tests {
 		};
 
 		let params = ProbabilisticScoringFeeParameters::default();
-		let mut scorer = ProbabilisticScorer::new(ProbabilisticScoringDecayParameters::default(), &graph, &logger);
 		let features = channelmanager::provided_bolt11_invoice_features(&UserConfig::default());
 
 		super::bench_utils::generate_test_routes(&graph, &mut scorer, &params, features, random_init_seed(), 1_000_000, 2);
@@ -8498,56 +8495,71 @@ mod tests {
 pub(crate) mod bench_utils {
 	use super::*;
 	use std::fs::File;
-	use std::time::Duration;
 
 	use bitcoin::hashes::Hash;
 	use bitcoin::secp256k1::SecretKey;
 
 	use crate::chain::transaction::OutPoint;
-	use crate::routing::scoring::ScoreUpdate;
+	use crate::routing::scoring::{ProbabilisticScorer, ScoreUpdate};
 	use crate::sign::KeysManager;
 	use crate::ln::channel_state::{ChannelCounterparty, ChannelShutdownState};
 	use crate::ln::channelmanager;
 	use crate::ln::types::ChannelId;
 	use crate::util::config::UserConfig;
 	use crate::util::test_utils::TestLogger;
+	use crate::sync::Arc;
 
 	/// Tries to open a network graph file, or panics with a URL to fetch it.
-	pub(crate) fn get_route_file() -> Result<std::fs::File, &'static str> {
-		let res = File::open("net_graph-2023-01-18.bin") // By default we're run in RL/lightning
-			.or_else(|_| File::open("lightning/net_graph-2023-01-18.bin")) // We may be run manually in RL/
-			.or_else(|_| { // Fall back to guessing based on the binary location
-				// path is likely something like .../rust-lightning/target/debug/deps/lightning-...
-				let mut path = std::env::current_exe().unwrap();
-				path.pop(); // lightning-...
-				path.pop(); // deps
-				path.pop(); // debug
-				path.pop(); // target
-				path.push("lightning");
-				path.push("net_graph-2023-01-18.bin");
-				File::open(path)
-			})
-			.or_else(|_| { // Fall back to guessing based on the binary location for a subcrate
-				// path is likely something like .../rust-lightning/bench/target/debug/deps/bench..
-				let mut path = std::env::current_exe().unwrap();
-				path.pop(); // bench...
-				path.pop(); // deps
-				path.pop(); // debug
-				path.pop(); // target
-				path.pop(); // bench
-				path.push("lightning");
-				path.push("net_graph-2023-01-18.bin");
-				File::open(path)
-			})
-		.map_err(|_| "Please fetch https://bitcoin.ninja/ldk-net_graph-v0.0.113-2023-01-18.bin and place it at lightning/net_graph-2023-01-18.bin");
+	pub(crate) fn get_graph_scorer_file() -> Result<(std::fs::File, std::fs::File), &'static str> {
+		let load_file = |fname, err_str| {
+			File::open(fname) // By default we're run in RL/lightning
+				.or_else(|_| File::open(&format!("lightning/{}", fname))) // We may be run manually in RL/
+				.or_else(|_| { // Fall back to guessing based on the binary location
+					// path is likely something like .../rust-lightning/target/debug/deps/lightning-...
+					let mut path = std::env::current_exe().unwrap();
+					path.pop(); // lightning-...
+					path.pop(); // deps
+					path.pop(); // debug
+					path.pop(); // target
+					path.push("lightning");
+					path.push(fname);
+					File::open(path)
+				})
+				.or_else(|_| { // Fall back to guessing based on the binary location for a subcrate
+					// path is likely something like .../rust-lightning/bench/target/debug/deps/bench..
+					let mut path = std::env::current_exe().unwrap();
+					path.pop(); // bench...
+					path.pop(); // deps
+					path.pop(); // debug
+					path.pop(); // target
+					path.pop(); // bench
+					path.push("lightning");
+					path.push(fname);
+					File::open(path)
+				})
+			.map_err(|_| err_str)
+		};
+		let graph_res = load_file(
+			"net_graph-2023-12-10.bin",
+			"Please fetch https://bitcoin.ninja/ldk-net_graph-v0.0.118-2023-12-10.bin and place it at lightning/net_graph-2023-12-10.bin"
+		);
+		let scorer_res = load_file(
+			"scorer-2023-12-10.bin",
+			"Please fetch https://bitcoin.ninja/ldk-scorer-v0.0.118-2023-12-10.bin and place it at lightning/scorer-2023-12-10.bin"
+		);
 		#[cfg(require_route_graph_test)]
-		return Ok(res.unwrap());
+		return Ok((graph_res.unwrap(), scorer_res.unwrap()));
 		#[cfg(not(require_route_graph_test))]
-		return res;
+		return Ok((graph_res?, scorer_res?));
 	}
 
-	pub(crate) fn read_network_graph(logger: &TestLogger) -> Result<NetworkGraph<&TestLogger>, &'static str> {
-		get_route_file().map(|mut f| NetworkGraph::read(&mut f, logger).unwrap())
+	pub(crate) fn read_graph_scorer(logger: &TestLogger)
+	-> Result<(Arc<NetworkGraph<&TestLogger>>, ProbabilisticScorer<Arc<NetworkGraph<&TestLogger>>, &TestLogger>), &'static str> {
+		let (mut graph_file, mut scorer_file) = get_graph_scorer_file()?;
+		let graph = Arc::new(NetworkGraph::read(&mut graph_file, logger).unwrap());
+		let scorer_args = (Default::default(), Arc::clone(&graph), logger);
+		let scorer = ProbabilisticScorer::read(&mut scorer_file, scorer_args).unwrap();
+		Ok((graph, scorer))
 	}
 
 	pub(crate) fn payer_pubkey() -> PublicKey {
@@ -8609,9 +8621,7 @@ pub(crate) mod bench_utils {
 
 		let nodes = graph.read_only().nodes().clone();
 		let mut route_endpoints = Vec::new();
-		// Fetch 1.5x more routes than we need as after we do some scorer updates we may end up
-		// with some routes we picked being un-routable.
-		for _ in 0..route_count * 3 / 2 {
+		for _ in 0..route_count {
 			loop {
 				seed = seed.overflowing_mul(6364136223846793005).0.overflowing_add(1).0;
 				let src = PublicKey::from_slice(nodes.unordered_keys()
@@ -8629,54 +8639,12 @@ pub(crate) mod bench_utils {
 					get_route(&payer, &route_params, &graph.read_only(), Some(&[&first_hop]),
 						&TestLogger::new(), scorer, score_params, &random_seed_bytes).is_ok();
 				if path_exists {
-					// ...and seed the scorer with success and failure data...
-					seed = seed.overflowing_mul(6364136223846793005).0.overflowing_add(1).0;
-					let mut score_amt = seed % 1_000_000_000;
-					loop {
-						// Generate fail/success paths for a wider range of potential amounts with
-						// MPP enabled to give us a chance to apply penalties for more potential
-						// routes.
-						let mpp_features = channelmanager::provided_bolt11_invoice_features(&UserConfig::default());
-						let params = PaymentParameters::from_node_id(dst, 42)
-							.with_bolt11_features(mpp_features).unwrap();
-						let route_params = RouteParameters::from_payment_params_and_value(
-							params.clone(), score_amt);
-						let route_res = get_route(&payer, &route_params, &graph.read_only(),
-							Some(&[&first_hop]), &TestLogger::new(), scorer, score_params,
-							&random_seed_bytes);
-						if let Ok(route) = route_res {
-							for path in route.paths {
-								if seed & 0x80 == 0 {
-									scorer.payment_path_successful(&path, Duration::ZERO);
-								} else {
-									let short_channel_id = path.hops[path.hops.len() / 2].short_channel_id;
-									scorer.payment_path_failed(&path, short_channel_id, Duration::ZERO);
-								}
-								seed = seed.overflowing_mul(6364136223846793005).0.overflowing_add(1).0;
-							}
-							break;
-						}
-						// If we couldn't find a path with a higher amount, reduce and try again.
-						score_amt /= 100;
-					}
-
 					route_endpoints.push((first_hop, params, amt_msat));
 					break;
 				}
 			}
 		}
 
-		// Because we've changed channel scores, it's possible we'll take different routes to the
-		// selected destinations, possibly causing us to fail because, eg, the newly-selected path
-		// requires a too-high CLTV delta.
-		route_endpoints.retain(|(first_hop, params, amt_msat)| {
-			let route_params = RouteParameters::from_payment_params_and_value(
-				params.clone(), *amt_msat);
-			get_route(&payer, &route_params, &graph.read_only(), Some(&[first_hop]),
-				&TestLogger::new(), scorer, score_params, &random_seed_bytes).is_ok()
-		});
-		route_endpoints.truncate(route_count);
-		assert_eq!(route_endpoints.len(), route_count);
 		route_endpoints
 	}
 }
@@ -8689,7 +8657,7 @@ pub mod benches {
 	use crate::ln::channelmanager;
 	use crate::ln::features::Bolt11InvoiceFeatures;
 	use crate::routing::gossip::NetworkGraph;
-	use crate::routing::scoring::{FixedPenaltyScorer, ProbabilisticScorer, ProbabilisticScoringFeeParameters, ProbabilisticScoringDecayParameters};
+	use crate::routing::scoring::{FixedPenaltyScorer, ProbabilisticScoringFeeParameters};
 	use crate::util::config::UserConfig;
 	use crate::util::logger::{Logger, Record};
 	use crate::util::test_utils::TestLogger;
@@ -8703,7 +8671,7 @@ pub mod benches {
 
 	pub fn generate_routes_with_zero_penalty_scorer(bench: &mut Criterion) {
 		let logger = TestLogger::new();
-		let network_graph = bench_utils::read_network_graph(&logger).unwrap();
+		let (network_graph, _) = bench_utils::read_graph_scorer(&logger).unwrap();
 		let scorer = FixedPenaltyScorer::with_penalty(0);
 		generate_routes(bench, &network_graph, scorer, &Default::default(),
 			Bolt11InvoiceFeatures::empty(), 0, "generate_routes_with_zero_penalty_scorer");
@@ -8711,7 +8679,7 @@ pub mod benches {
 
 	pub fn generate_mpp_routes_with_zero_penalty_scorer(bench: &mut Criterion) {
 		let logger = TestLogger::new();
-		let network_graph = bench_utils::read_network_graph(&logger).unwrap();
+		let (network_graph, _) = bench_utils::read_graph_scorer(&logger).unwrap();
 		let scorer = FixedPenaltyScorer::with_penalty(0);
 		generate_routes(bench, &network_graph, scorer, &Default::default(),
 			channelmanager::provided_bolt11_invoice_features(&UserConfig::default()), 0,
@@ -8720,18 +8688,16 @@ pub mod benches {
 
 	pub fn generate_routes_with_probabilistic_scorer(bench: &mut Criterion) {
 		let logger = TestLogger::new();
-		let network_graph = bench_utils::read_network_graph(&logger).unwrap();
+		let (network_graph, scorer) = bench_utils::read_graph_scorer(&logger).unwrap();
 		let params = ProbabilisticScoringFeeParameters::default();
-		let scorer = ProbabilisticScorer::new(ProbabilisticScoringDecayParameters::default(), &network_graph, &logger);
 		generate_routes(bench, &network_graph, scorer, &params, Bolt11InvoiceFeatures::empty(), 0,
 			"generate_routes_with_probabilistic_scorer");
 	}
 
 	pub fn generate_mpp_routes_with_probabilistic_scorer(bench: &mut Criterion) {
 		let logger = TestLogger::new();
-		let network_graph = bench_utils::read_network_graph(&logger).unwrap();
+		let (network_graph, scorer) = bench_utils::read_graph_scorer(&logger).unwrap();
 		let params = ProbabilisticScoringFeeParameters::default();
-		let scorer = ProbabilisticScorer::new(ProbabilisticScoringDecayParameters::default(), &network_graph, &logger);
 		generate_routes(bench, &network_graph, scorer, &params,
 			channelmanager::provided_bolt11_invoice_features(&UserConfig::default()), 0,
 			"generate_mpp_routes_with_probabilistic_scorer");
@@ -8739,9 +8705,8 @@ pub mod benches {
 
 	pub fn generate_large_mpp_routes_with_probabilistic_scorer(bench: &mut Criterion) {
 		let logger = TestLogger::new();
-		let network_graph = bench_utils::read_network_graph(&logger).unwrap();
+		let (network_graph, scorer) = bench_utils::read_graph_scorer(&logger).unwrap();
 		let params = ProbabilisticScoringFeeParameters::default();
-		let scorer = ProbabilisticScorer::new(ProbabilisticScoringDecayParameters::default(), &network_graph, &logger);
 		generate_routes(bench, &network_graph, scorer, &params,
 			channelmanager::provided_bolt11_invoice_features(&UserConfig::default()), 100_000_000,
 			"generate_large_mpp_routes_with_probabilistic_scorer");
@@ -8749,11 +8714,9 @@ pub mod benches {
 
 	pub fn generate_routes_with_nonlinear_probabilistic_scorer(bench: &mut Criterion) {
 		let logger = TestLogger::new();
-		let network_graph = bench_utils::read_network_graph(&logger).unwrap();
+		let (network_graph, scorer) = bench_utils::read_graph_scorer(&logger).unwrap();
 		let mut params = ProbabilisticScoringFeeParameters::default();
 		params.linear_success_probability = false;
-		let scorer = ProbabilisticScorer::new(
-			ProbabilisticScoringDecayParameters::default(), &network_graph, &logger);
 		generate_routes(bench, &network_graph, scorer, &params,
 			channelmanager::provided_bolt11_invoice_features(&UserConfig::default()), 0,
 			"generate_routes_with_nonlinear_probabilistic_scorer");
@@ -8761,11 +8724,9 @@ pub mod benches {
 
 	pub fn generate_mpp_routes_with_nonlinear_probabilistic_scorer(bench: &mut Criterion) {
 		let logger = TestLogger::new();
-		let network_graph = bench_utils::read_network_graph(&logger).unwrap();
+		let (network_graph, scorer) = bench_utils::read_graph_scorer(&logger).unwrap();
 		let mut params = ProbabilisticScoringFeeParameters::default();
 		params.linear_success_probability = false;
-		let scorer = ProbabilisticScorer::new(
-			ProbabilisticScoringDecayParameters::default(), &network_graph, &logger);
 		generate_routes(bench, &network_graph, scorer, &params,
 			channelmanager::provided_bolt11_invoice_features(&UserConfig::default()), 0,
 			"generate_mpp_routes_with_nonlinear_probabilistic_scorer");
@@ -8773,11 +8734,9 @@ pub mod benches {
 
 	pub fn generate_large_mpp_routes_with_nonlinear_probabilistic_scorer(bench: &mut Criterion) {
 		let logger = TestLogger::new();
-		let network_graph = bench_utils::read_network_graph(&logger).unwrap();
+		let (network_graph, scorer) = bench_utils::read_graph_scorer(&logger).unwrap();
 		let mut params = ProbabilisticScoringFeeParameters::default();
 		params.linear_success_probability = false;
-		let scorer = ProbabilisticScorer::new(
-			ProbabilisticScoringDecayParameters::default(), &network_graph, &logger);
 		generate_routes(bench, &network_graph, scorer, &params,
 			channelmanager::provided_bolt11_invoice_features(&UserConfig::default()), 100_000_000,
 			"generate_large_mpp_routes_with_nonlinear_probabilistic_scorer");
