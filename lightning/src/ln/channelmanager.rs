@@ -903,7 +903,9 @@ impl <SP: Deref> PeerState<SP> where SP::Target: SignerProvider {
 		if require_disconnected && self.is_connected {
 			return false
 		}
-		self.channel_by_id.iter().filter(|(_, phase)| matches!(phase, ChannelPhase::Funded(_))).count() == 0
+		!self.channel_by_id.iter().any(|(_, phase)|
+			matches!(phase, ChannelPhase::Funded(_) | ChannelPhase::UnfundedOutboundV1(_))
+		)
 			&& self.monitor_update_blocked_actions.is_empty()
 			&& self.in_flight_monitor_updates.is_empty()
 	}
@@ -8905,10 +8907,12 @@ where
 							}
 							&mut chan.context
 						},
-						// Unfunded channels will always be removed.
-						ChannelPhase::UnfundedOutboundV1(chan) => {
-							&mut chan.context
+						// We retain UnfundedOutboundV1 channel for some time in case
+						// peer unexpectedly disconnects, and intends to reconnect again.
+						ChannelPhase::UnfundedOutboundV1(_) => {
+							return true;
 						},
+						// Unfunded inbound channels will always be removed.
 						ChannelPhase::UnfundedInboundV1(chan) => {
 							&mut chan.context
 						},
@@ -9047,15 +9051,31 @@ where
 				let peer_state = &mut *peer_state_lock;
 				let pending_msg_events = &mut peer_state.pending_msg_events;
 
-				peer_state.channel_by_id.iter_mut().filter_map(|(_, phase)|
-					if let ChannelPhase::Funded(chan) = phase { Some(chan) } else { None }
-				).for_each(|chan| {
-					let logger = WithChannelContext::from(&self.logger, &chan.context);
-					pending_msg_events.push(events::MessageSendEvent::SendChannelReestablish {
-						node_id: chan.context.get_counterparty_node_id(),
-						msg: chan.get_channel_reestablish(&&logger),
-					});
-				});
+				for (_, phase) in peer_state.channel_by_id.iter_mut() {
+					match phase {
+						ChannelPhase::Funded(chan) => {
+							let logger = WithChannelContext::from(&self.logger, &chan.context);
+							pending_msg_events.push(events::MessageSendEvent::SendChannelReestablish {
+								node_id: chan.context.get_counterparty_node_id(),
+								msg: chan.get_channel_reestablish(&&logger),
+							});
+						}
+
+						ChannelPhase::UnfundedOutboundV1(chan) => {
+							pending_msg_events.push(events::MessageSendEvent::SendOpenChannel {
+								node_id: chan.context.get_counterparty_node_id(),
+								msg: chan.get_open_channel(self.chain_hash),
+							});
+						}
+
+						ChannelPhase::UnfundedInboundV1(_) => {
+							// Since unfunded inbound channel maps are cleared upon disconnecting a peer,
+							// they are not persisted and won't be recovered after a crash.
+							// Therefore, they shouldn't exist at this point.
+							debug_assert!(false);
+						}
+					}
+				}
 			}
 
 			return NotifyOption::SkipPersistHandleEvents;

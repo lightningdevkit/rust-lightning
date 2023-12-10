@@ -3695,7 +3695,7 @@ fn test_dup_events_on_peer_disconnect() {
 #[test]
 fn test_peer_disconnected_before_funding_broadcasted() {
 	// Test that channels are closed with `ClosureReason::DisconnectedPeer` if the peer disconnects
-	// before the funding transaction has been broadcasted.
+	// before the funding transaction has been broadcasted, and doesn't reconnect back within time.
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
@@ -3724,12 +3724,19 @@ fn test_peer_disconnected_before_funding_broadcasted() {
 		assert_eq!(nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().len(), 0);
 	}
 
-	// Ensure that the channel is closed with `ClosureReason::DisconnectedPeer` when the peers are
-	// disconnected before the funding transaction was broadcasted.
+	// The peers disconnect before the funding is broadcasted.
 	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id());
 	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id());
 
-	check_closed_event!(&nodes[0], 2, ClosureReason::DisconnectedPeer, true
+	// The time for peers to reconnect expires.
+	for _ in 0..UNFUNDED_CHANNEL_AGE_LIMIT_TICKS {
+		nodes[0].node.timer_tick_occurred();
+	}
+
+	// Ensure that the channel is closed with `ClosureReason::HolderForceClosed`
+	// when the peers are disconnected and do not reconnect before the funding
+	// transaction is broadcasted.
+	check_closed_event!(&nodes[0], 2, ClosureReason::HolderForceClosed, true
 		, [nodes[1].node.get_our_node_id()], 1000000);
 	check_closed_event!(&nodes[1], 1, ClosureReason::DisconnectedPeer, false
 		, [nodes[0].node.get_our_node_id()], 1000000);
@@ -10662,7 +10669,9 @@ fn test_batch_channel_open() {
 }
 
 #[test]
-fn test_disconnect_in_funding_batch() {
+fn test_close_in_funding_batch() {
+	// This test ensures that if one of the channels
+	// in the batch closes, the complete batch will close.
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
@@ -10686,14 +10695,39 @@ fn test_disconnect_in_funding_batch() {
 	// The transaction should not have been broadcast before all channels are ready.
 	assert_eq!(nodes[0].tx_broadcaster.txn_broadcast().len(), 0);
 
-	// The remaining peer in the batch disconnects.
-	nodes[0].node.peer_disconnected(&nodes[2].node.get_our_node_id());
-
-	// The channels in the batch will close immediately.
+	// Force-close the channel for which we've completed the initial monitor.
 	let funding_txo_1 = OutPoint { txid: tx.txid(), index: 0 };
 	let funding_txo_2 = OutPoint { txid: tx.txid(), index: 1 };
 	let channel_id_1 = ChannelId::v1_from_funding_outpoint(funding_txo_1);
 	let channel_id_2 = ChannelId::v1_from_funding_outpoint(funding_txo_2);
+
+	nodes[0].node.force_close_broadcasting_latest_txn(&channel_id_1, &nodes[1].node.get_our_node_id()).unwrap();
+
+	// The monitor should become closed.
+	check_added_monitors(&nodes[0], 1);
+	{
+		let mut monitor_updates = nodes[0].chain_monitor.monitor_updates.lock().unwrap();
+		let monitor_updates_1 = monitor_updates.get(&channel_id_1).unwrap();
+		assert_eq!(monitor_updates_1.len(), 1);
+		assert_eq!(monitor_updates_1[0].update_id, CLOSED_CHANNEL_UPDATE_ID);
+	}
+
+	let msg_events = nodes[0].node.get_and_clear_pending_msg_events();
+	match msg_events[0] {
+		MessageSendEvent::HandleError { .. } => (),
+		_ => panic!("Unexpected message."),
+	}
+
+	// We broadcast the commitment transaction as part of the force-close.
+	{
+		let broadcasted_txs = nodes[0].tx_broadcaster.txn_broadcast();
+		assert_eq!(broadcasted_txs.len(), 1);
+		assert!(broadcasted_txs[0].txid() != tx.txid());
+		assert_eq!(broadcasted_txs[0].input.len(), 1);
+		assert_eq!(broadcasted_txs[0].input[0].previous_output.txid, tx.txid());
+	}
+
+	// All channels in the batch should close immediately.
 	check_closed_events(&nodes[0], &[
 		ExpectedCloseEvent {
 			channel_id: Some(channel_id_1),
@@ -10710,19 +10744,6 @@ fn test_disconnect_in_funding_batch() {
 			..Default::default()
 		},
 	]);
-
-	// The monitor should become closed.
-	check_added_monitors(&nodes[0], 1);
-	{
-		let mut monitor_updates = nodes[0].chain_monitor.monitor_updates.lock().unwrap();
-		let monitor_updates_1 = monitor_updates.get(&channel_id_1).unwrap();
-		assert_eq!(monitor_updates_1.len(), 1);
-		assert_eq!(monitor_updates_1[0].update_id, CLOSED_CHANNEL_UPDATE_ID);
-	}
-
-	// The funding transaction should not have been broadcast, and therefore, we don't need
-	// to broadcast a force-close transaction for the closed monitor.
-	assert_eq!(nodes[0].tx_broadcaster.txn_broadcast().len(), 0);
 
 	// Ensure the channels don't exist anymore.
 	assert!(nodes[0].node.list_channels().is_empty());
