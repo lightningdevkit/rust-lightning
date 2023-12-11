@@ -10495,7 +10495,6 @@ where
 			// 0.0.102+
 			for (_, monitor) in args.channel_monitors.iter() {
 				let counterparty_opt = id_to_peer.get(&monitor.get_funding_txo().0.to_channel_id());
-				let chan_id = monitor.get_funding_txo().0.to_channel_id();
 				if counterparty_opt.is_none() {
 					let logger = WithChannelMonitor::from(&args.logger, monitor);
 					for (htlc_source, (htlc, _)) in monitor.get_pending_or_resolved_outbound_htlcs() {
