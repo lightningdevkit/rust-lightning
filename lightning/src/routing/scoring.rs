@@ -783,6 +783,7 @@ impl ProbabilisticScoringDecayParameters {
 /// Direction is defined in terms of [`NodeId`] partial ordering, where the source node is the
 /// first node in the ordering of the channel's counterparties. Thus, swapping the two liquidity
 /// offset fields gives the opposite direction.
+#[repr(C)] // Force the fields in memory to be in the order we specify
 struct ChannelLiquidity {
 	/// Lower channel liquidity bound in terms of an offset from zero.
 	min_liquidity_offset_msat: u64,
@@ -799,6 +800,16 @@ struct ChannelLiquidity {
 	/// epoch.
 	offset_history_last_updated: Duration,
 }
+
+// Check that the liquidity HashMap's entries sit on round cache lines.
+//
+// Specifically, the first cache line will have the key, the liquidity offsets, and the total
+// points tracked in the historical tracker.
+//
+// The next two cache lines will have the historical points, which we only access last during
+// scoring, followed by the last_updated `Duration`s (which we do not need during scoring).
+const _LIQUIDITY_MAP_SIZING_CHECK: usize = 192 - ::core::mem::size_of::<(u64, ChannelLiquidity)>();
+const _LIQUIDITY_MAP_SIZING_CHECK_2: usize = ::core::mem::size_of::<(u64, ChannelLiquidity)>() - 192;
 
 /// A snapshot of [`ChannelLiquidity`] in one direction assuming a certain channel capacity.
 struct DirectedChannelLiquidity<L: Deref<Target = u64>, HT: Deref<Target = HistoricalLiquidityTracker>, T: Deref<Target = Duration>> {
@@ -1490,10 +1501,24 @@ mod bucketed_history {
 	// between the 12,000th sat and 24,000th sat, while only needing to store and operate on 32
 	// buckets in total.
 
-	const BUCKET_START_POS: [u16; 33] = [
-		0, 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 3072, 4096, 6144, 8192, 10240, 12288,
-		13312, 14336, 15360, 15872, 16128, 16256, 16320, 16352, 16368, 16376, 16380, 16382, 16383, 16384,
-	];
+	// By default u16s may not be cache-aligned, but we'd rather not have to read a third cache
+	// line just to access it
+	#[repr(align(128))]
+	struct BucketStartPos([u16; 33]);
+	impl BucketStartPos {
+		const fn new() -> Self {
+			Self([
+				0, 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 3072, 4096, 6144, 8192, 10240, 12288,
+				13312, 14336, 15360, 15872, 16128, 16256, 16320, 16352, 16368, 16376, 16380, 16382, 16383, 16384,
+			])
+		}
+	}
+	impl core::ops::Index<usize> for BucketStartPos {
+		type Output = u16;
+		#[inline(always)]
+		fn index(&self, index: usize) -> &u16 { &self.0[index] }
+	}
+	const BUCKET_START_POS: BucketStartPos = BucketStartPos::new();
 
 	const LEGACY_TO_BUCKET_RANGE: [(u8, u8); 8] = [
 		(0, 12), (12, 14), (14, 15), (15, 16), (16, 17), (17, 18), (18, 20), (20, 32)
@@ -1631,10 +1656,19 @@ mod bucketed_history {
 	impl_writeable_tlv_based!(LegacyHistoricalBucketRangeTracker, { (0, buckets, required) });
 
 	#[derive(Clone, Copy)]
+	#[repr(C)] // Force the fields in memory to be in the order we specify.
 	pub(super) struct HistoricalLiquidityTracker {
+		// This struct sits inside a `(u64, ChannelLiquidity)` in memory, and we first read the
+		// liquidity offsets in `ChannelLiquidity` when calculating the non-historical score. This
+		// means that the first handful of bytes of this struct will already be sitting in cache by
+		// the time we go to look at them.
+		//
+		// Because the first thing we do is check if `total_valid_points` is sufficient to consider
+		// the data here at all, and can return early if it is not, we want this to go first to
+		// avoid hitting a second cache line load entirely in that case.
+		total_valid_points_tracked: u64,
 		min_liquidity_offset_history: HistoricalBucketRangeTracker,
 		max_liquidity_offset_history: HistoricalBucketRangeTracker,
-		total_valid_points_tracked: u64,
 	}
 
 	impl HistoricalLiquidityTracker {
