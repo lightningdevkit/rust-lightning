@@ -903,7 +903,7 @@ mod tests {
 	use lightning::ln::functional_test_utils::*;
 	use lightning::ln::msgs::{ChannelMessageHandler, Init};
 	use lightning::ln::peer_handler::{PeerManager, MessageHandler, SocketDescriptor, IgnoringMessageHandler};
-	use lightning::routing::gossip::{NetworkGraph, NodeId, P2PGossipSync};
+	use lightning::routing::gossip::{NetworkGraph, P2PGossipSync};
 	use lightning::routing::scoring::{ChannelUsage, ScoreUpdate, ScoreLookUp, LockableScore};
 	use lightning::routing::router::{DefaultRouter, Path, RouteHop, CandidateRouteHop};
 	use lightning::util::config::UserConfig;
