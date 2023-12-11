@@ -8,7 +8,7 @@ description = """
 Implementation of the rust-lightning network stack using Tokio.
 For Rust-Lightning clients which wish to make direct connections to Lightning P2P nodes, this is a simple alternative to implementing the required network stack, especially for those already using Tokio.
 """
-edition = "2018"
+edition = "2021"
 
 [package.metadata.docs.rs]
 all-features = true

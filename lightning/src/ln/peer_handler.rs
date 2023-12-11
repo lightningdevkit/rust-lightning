@@ -2488,7 +2488,6 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 	// broadcast_node_announcement panics) of the maximum-length addresses would fit in a 64KB
 	// message...
 	const HALF_MESSAGE_IS_ADDRS: u32 = ::core::u16::MAX as u32 / (SocketAddress::MAX_LEN as u32 + 1) / 2;
-	#[deny(const_err)]
 	#[allow(dead_code)]
 	// ...by failing to compile if the number of addresses that would be half of a message is
 	// smaller than 100:

@@ -1,7 +1,7 @@
 [package]
 name = "no-std-check"
 version = "0.1.0"
-edition = "2018"
+edition = "2021"
 
 [features]
 default = ["lightning/no-std", "lightning-invoice/no-std", "lightning-rapid-gossip-sync/no-std"]

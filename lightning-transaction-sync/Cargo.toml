@@ -7,7 +7,7 @@ repository = "https://github.com/lightningdevkit/rust-lightning"
 description = """
 Utilities for syncing LDK via the transaction-based `Confirm` interface.
 """
-edition = "2018"
+edition = "2021"
 
 [package.metadata.docs.rs]
 all-features = true
@@ -22,7 +22,7 @@ electrum = ["electrum-client"]
 async-interface = []
 
 [dependencies]
-lightning = { version = "0.0.118", path = "../lightning", default-features = false }
+lightning = { version = "0.0.118", path = "../lightning", default-features = false, features = ["std"] }
 bitcoin = { version = "0.30.2", default-features = false }
 bdk-macros = "0.6"
 futures = { version = "0.3", optional = true }
@@ -30,6 +30,11 @@ esplora-client = { version = "0.6", default-features = false, optional = true }
 electrum-client = { version = "0.18.0", optional = true }
 
 [dev-dependencies]
-lightning = { version = "0.0.118", path = "../lightning", features = ["std", "_test_utils"] }
-electrsd = { version = "0.26.0", features = ["legacy", "esplora_a33e97e1", "bitcoind_25_0"] }
+lightning = { version = "0.0.118", path = "../lightning", default-features = false, features = ["std", "_test_utils"] }
 tokio = { version = "1.14.0", features = ["full"] }
+
+[target.'cfg(not(no_download))'.dev-dependencies]
+electrsd = { version = "0.26.0", default-features = false, features = ["legacy", "esplora_a33e97e1", "bitcoind_25_0"] }
+
+[target.'cfg(no_download)'.dev-dependencies]
+electrsd = { version = "0.26.0", default-features = false, features = ["legacy"] }

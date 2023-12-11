@@ -5383,7 +5383,7 @@ impl<SP: Deref> Channel<SP> where
 			// larger. If we don't know that time has moved forward, we can just set it to the last
 			// time we saw and it will be ignored.
 			let best_time = self.context.update_time_counter;
-			match self.do_best_block_updated(reorg_height, best_time, None::<(ChainHash, &&NodeSigner, &UserConfig)>, logger) {
+			match self.do_best_block_updated(reorg_height, best_time, None::<(ChainHash, &&dyn NodeSigner, &UserConfig)>, logger) {
 				Ok((channel_ready, timed_out_htlcs, announcement_sigs)) => {
 					assert!(channel_ready.is_none(), "We can't generate a funding with 0 confirmations?");
 					assert!(timed_out_htlcs.is_empty(), "We can't have accepted HTLCs with a timeout before our funding confirmation?");
@@ -8797,7 +8797,7 @@ mod tests {
 		assert_eq!(decoded_chan.context.holding_cell_htlc_updates, holding_cell_htlc_updates);
 	}
 
-	#[cfg(feature = "_test_vectors")]
+	#[cfg(all(feature = "_test_vectors", not(feature = "grind_signatures")))]
 	#[test]
 	fn outbound_commitment_test() {
 		use bitcoin::sighash;
@@ -8818,7 +8818,7 @@ mod tests {
 
 		// Test vectors from BOLT 3 Appendices C and F (anchors):
 		let feeest = TestFeeEstimator{fee_est: 15000};
-		let logger : Arc<Logger> = Arc::new(test_utils::TestLogger::new());
+		let logger : Arc<dyn Logger> = Arc::new(test_utils::TestLogger::new());
 		let secp_ctx = Secp256k1::new();
 
 		let mut signer = InMemorySigner::new(

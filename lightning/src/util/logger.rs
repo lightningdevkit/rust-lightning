@@ -254,11 +254,11 @@ mod tests {
 	}
 
 	struct WrapperLog {
-		logger: Arc<Logger>
+		logger: Arc<dyn Logger>
 	}
 
 	impl WrapperLog {
-		fn new(logger: Arc<Logger>) -> WrapperLog {
+		fn new(logger: Arc<dyn Logger>) -> WrapperLog {
 			WrapperLog {
 				logger,
 			}
@@ -278,7 +278,7 @@ mod tests {
 	fn test_logging_macros() {
 		let mut logger = TestLogger::new();
 		logger.enable(Level::Gossip);
-		let logger : Arc<Logger> = Arc::new(logger);
+		let logger : Arc<dyn Logger> = Arc::new(logger);
 		let wrapper = WrapperLog::new(Arc::clone(&logger));
 		wrapper.call_macros();
 	}

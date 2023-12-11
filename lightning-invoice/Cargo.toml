@@ -8,7 +8,7 @@ license = "MIT OR Apache-2.0"
 keywords = [ "lightning", "bitcoin", "invoice", "BOLT11" ]
 readme = "README.md"
 repository = "https://github.com/lightningdevkit/rust-lightning/"
-edition = "2018"
+edition = "2021"
 
 [package.metadata.docs.rs]
 all-features = true
