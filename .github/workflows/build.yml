@@ -32,6 +32,8 @@ jobs:
         run: |
           rustup target add thumbv7m-none-eabi
           sudo apt-get -y install gcc-arm-none-eabi
+      - name: Check for unknown cfg tags
+        run: ci/check-cfg-flags.py
       - name: shellcheck the CI script
         if: "matrix.platform == 'ubuntu-latest'"
         run: |
