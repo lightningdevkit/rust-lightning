@@ -41,6 +41,11 @@ fi
 # The memchr crate switched to an MSRV of 1.60 starting with v2.6.0
 [ "$RUSTC_MINOR_VERSION" -lt 60 ] && cargo update -p memchr --precise "2.5.0" --verbose
 
+# bitcoinconsensus 0.20.2-0.6.0 broke builds of `rust-bitcoin` and dependant projects
+# We intermittently pin it to unbreak CI.
+# TODO: remove as soon as a fix ships.
+cargo update -p bitcoinconsensus --precise "0.20.2-0.5.0" --verbose
+
 export RUST_BACKTRACE=1
 
 echo -e "\n\nBuilding and testing all workspace crates..."
@@ -62,6 +67,12 @@ popd
 if [[ $RUSTC_MINOR_VERSION -gt 67 && "$HOST_PLATFORM" != *windows* ]]; then
 	echo -e "\n\nBuilding and testing Transaction Sync Clients with features"
 	pushd lightning-transaction-sync
+
+	# bitcoinconsensus 0.20.2-0.6.0 broke builds of `rust-bitcoin` and dependant projects
+	# We intermittently pin it to unbreak CI.
+	# TODO: remove as soon as a fix ships.
+	cargo update -p bitcoinconsensus --precise "0.20.2-0.5.0" --verbose
+
 	cargo test --verbose --color always --features esplora-blocking
 	cargo check --verbose --color always --features esplora-blocking
 	cargo test --verbose --color always --features esplora-async
