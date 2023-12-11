@@ -40,7 +40,7 @@ pub trait BroadcasterInterface {
 	/// be sure to manage both cases correctly.
 	///
 	/// Bitcoin transaction packages are defined in BIP 331 and here:
-	/// https://github.com/bitcoin/bitcoin/blob/master/doc/policy/packages.md
+	/// <https://github.com/bitcoin/bitcoin/blob/master/doc/policy/packages.md>
 	fn broadcast_transactions(&self, txs: &[&Transaction]);
 }
 
