@@ -914,7 +914,8 @@ where
 	fn peer_disconnected(&self, their_node_id: &PublicKey) {
 		match self.message_recipients.lock().unwrap().remove(their_node_id) {
 			Some(OnionMessageRecipient::ConnectedPeer(..)) => {},
-			_ => debug_assert!(false),
+			Some(_) => debug_assert!(false),
+			None => {},
 		}
 	}
 
