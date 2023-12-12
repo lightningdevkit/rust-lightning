@@ -27,7 +27,10 @@ use lightning::chain::chainmonitor::{ChainMonitor, Persist};
 use lightning::sign::{EntropySource, NodeSigner, SignerProvider};
 use lightning::events::{Event, PathFailure};
 #[cfg(feature = "std")]
-use lightning::events::{EventHandler, EventsProvider};
+use lightning::events::EventHandler;
+#[cfg(any(feature = "std", feature = "futures"))]
+use lightning::events::EventsProvider;
+
 use lightning::ln::channelmanager::ChannelManager;
 use lightning::ln::msgs::OnionMessageHandler;
 use lightning::ln::peer_handler::APeerManager;
@@ -727,8 +730,6 @@ async fn process_onion_message_handler_events_async<
 where
 	PM::Target: APeerManager + Send + Sync,
 {
-	use lightning::events::EventsProvider;
-
 	let events = core::cell::RefCell::new(Vec::new());
 	peer_manager.onion_message_handler().process_pending_events(&|e| events.borrow_mut().push(e));
 
