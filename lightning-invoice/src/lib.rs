@@ -399,17 +399,16 @@ pub enum Currency {
 	Signet,
 }
 
-impl From<Network> for Currency {
-	fn from(network: Network) -> Self {
+impl TryFrom<Network> for Currency {
+    type Error = UnsupportedNetworkError;
+
+	fn try_from(network: Network) -> Result<Self, Self::Error> {
 		match network {
-			Network::Bitcoin => Currency::Bitcoin,
-			Network::Testnet => Currency::BitcoinTestnet,
-			Network::Regtest => Currency::Regtest,
-			Network::Signet => Currency::Signet,
-			_ => {
-				debug_assert!(false, "Need to handle new rust-bitcoin network type");
-				Currency::Regtest
-			},
+			Network::Bitcoin => Ok(Currency::Bitcoin),
+			Network::Testnet => Ok(Currency::BitcoinTestnet),
+			Network::Regtest => Ok(Currency::Regtest),
+			Network::Signet => Ok(Currency::Signet),
+			_ => Err(UnsupportedNetworkError(network)),
 		}
 	}
 }
@@ -425,6 +424,24 @@ impl From<Currency> for Network {
 		}
 	}
 }
+
+/// Error returned when a Bitcoin network is not supported by Lightning Network.
+///
+/// BOLT11 defines currency only for closed set of networks which is currently the same as what
+/// `bitcoin::Network` supports but would break if Core and thus `bitcoin` added a new network. In
+/// that case conversion from `Network` to `Currency` will return this error.
+#[derive(Debug, Clone)]
+pub struct UnsupportedNetworkError(Network);
+
+impl fmt::Display for UnsupportedNetworkError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "The bitcoin network {} is not supported byt the Lightning Network", self.0)
+    }
+}
+
+#[cfg(feature = "std")]
+impl std::error::Error for UnsupportedNetworkError {}
+
 
 /// Tagged field which may have an unknown tag
 ///
