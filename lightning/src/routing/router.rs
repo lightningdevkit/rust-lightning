@@ -90,6 +90,8 @@ impl<G: Deref<Target = NetworkGraph<L>> + Clone, L: Deref, S: Deref, SP: Sized, 
 		&self, recipient: PublicKey, first_hops: Vec<ChannelDetails>, tlvs: ReceiveTlvs,
 		amount_msats: u64, entropy_source: &ES, secp_ctx: &Secp256k1<T>
 	) -> Result<Vec<(BlindedPayInfo, BlindedPath)>, ()> {
+		let recipient_node_id = NodeId::from_pubkey(&recipient);
+
 		// Limit the number of blinded paths that are computed.
 		const MAX_PAYMENT_PATHS: usize = 3;
 
@@ -103,12 +105,15 @@ impl<G: Deref<Target = NetworkGraph<L>> + Clone, L: Deref, S: Deref, SP: Sized, 
 			.filter(|details| amount_msats <= details.inbound_capacity_msat)
 			.filter(|details| amount_msats >= details.inbound_htlc_minimum_msat.unwrap_or(0))
 			.filter(|details| amount_msats <= details.inbound_htlc_maximum_msat.unwrap_or(u64::MAX))
-			.filter(|details| network_graph
+			// Limit to counterparties with announced channels
+			.filter_map(|details|
+				network_graph
 					.node(&NodeId::from_pubkey(&details.counterparty.node_id))
-					.map(|node_info| node_info.channels.len() >= MIN_PEER_CHANNELS)
-					.unwrap_or(false)
+					.map(|info| &info.channels[..])
+					.and_then(|channels| (channels.len() >= MIN_PEER_CHANNELS).then(|| channels))
+					.map(|channels| (details, channels))
 			)
-			.filter_map(|details| {
+			.filter_map(|(details, counterparty_channels)| {
 				let short_channel_id = match details.get_inbound_payment_scid() {
 					Some(short_channel_id) => short_channel_id,
 					None => return None,
@@ -126,7 +131,7 @@ impl<G: Deref<Target = NetworkGraph<L>> + Clone, L: Deref, S: Deref, SP: Sized, 
 					max_cltv_expiry: tlvs.payment_constraints.max_cltv_expiry + cltv_expiry_delta,
 					htlc_minimum_msat: details.inbound_htlc_minimum_msat.unwrap_or(0),
 				};
-				Some(ForwardNode {
+				let forward_node = ForwardNode {
 					tlvs: ForwardTlvs {
 						short_channel_id,
 						payment_relay,
@@ -135,12 +140,59 @@ impl<G: Deref<Target = NetworkGraph<L>> + Clone, L: Deref, S: Deref, SP: Sized, 
 					},
 					node_id: details.counterparty.node_id,
 					htlc_maximum_msat: details.inbound_htlc_maximum_msat.unwrap_or(u64::MAX),
-				})
+				};
+				Some((forward_node, counterparty_channels))
 			})
-			.map(|forward_node| {
-				BlindedPath::new_for_payment(
-					&[forward_node], recipient, tlvs.clone(), u64::MAX, entropy_source, secp_ctx
-				)
+			// Pair counterparties with their other channels
+			.flat_map(|(forward_node, counterparty_channels)|
+				counterparty_channels
+					.iter()
+					.filter_map(|scid| network_graph.channels().get_key_value(scid))
+					.filter_map(move |(scid, info)| info
+						.as_directed_to(&NodeId::from_pubkey(&forward_node.node_id))
+						.map(|(info, source)| (source, *scid, info))
+					)
+					.filter(|(source, _, _)| **source != recipient_node_id)
+					.filter(|(source, _, _)| network_graph
+						.node(source)
+						.and_then(|info| info.announcement_info.as_ref())
+						.map(|info| info.features.supports_route_blinding())
+						.unwrap_or(false)
+					)
+					.filter(|(_, _, info)| amount_msats >= info.direction().htlc_minimum_msat)
+					.filter(|(_, _, info)| amount_msats <= info.direction().htlc_maximum_msat)
+					.map(move |(source, scid, info)| (source, scid, info, forward_node.clone()))
+			)
+			// Construct blinded paths where the counterparty's counterparty is the introduction
+			// node:
+			//
+			// source --- info ---> counterparty --- counterparty_forward_node ---> recipient
+			.filter_map(|(introduction_node_id, scid, info, counterparty_forward_node)| {
+				let htlc_minimum_msat = info.direction().htlc_minimum_msat;
+				let htlc_maximum_msat = info.direction().htlc_maximum_msat;
+				let payment_relay: PaymentRelay = match info.try_into() {
+					Ok(payment_relay) => payment_relay,
+					Err(()) => return None,
+				};
+				let payment_constraints = PaymentConstraints {
+					max_cltv_expiry: payment_relay.cltv_expiry_delta as u32
+						+ counterparty_forward_node.tlvs.payment_constraints.max_cltv_expiry,
+					htlc_minimum_msat,
+				};
+				let introduction_forward_node = ForwardNode {
+					tlvs: ForwardTlvs {
+						short_channel_id: scid,
+						payment_relay,
+						payment_constraints,
+						features: BlindedHopFeatures::empty(),
+					},
+					node_id: introduction_node_id.as_pubkey().unwrap(),
+					htlc_maximum_msat,
+				};
+				Some(BlindedPath::new_for_payment(
+					&[introduction_forward_node, counterparty_forward_node], recipient,
+					tlvs.clone(), u64::MAX, entropy_source, secp_ctx
+				))
 			})
 			.take(MAX_PAYMENT_PATHS)
 			.collect::<Result<Vec<_>, _>>();
