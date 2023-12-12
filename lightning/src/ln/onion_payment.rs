@@ -122,7 +122,7 @@ pub(super) fn create_recv_pending_htlc_info(
 	counterparty_skimmed_fee_msat: Option<u64>, current_height: u32, accept_mpp_keysend: bool,
 ) -> Result<PendingHTLCInfo, InboundHTLCErr> {
 	let (
-		payment_data, keysend_preimage, custom_tlvs, onion_amt_msat, outgoing_cltv_value,
+		payment_data, keysend_preimage, custom_tlvs, onion_amt_msat, onion_cltv_expiry,
 		payment_metadata, requires_blinded_error
 	) = match hop_data {
 		msgs::InboundOnionPayload::Receive {
@@ -162,7 +162,7 @@ pub(super) fn create_recv_pending_htlc_info(
 		}
 	};
 	// final_incorrect_cltv_expiry
-	if outgoing_cltv_value > cltv_expiry {
+	if onion_cltv_expiry > cltv_expiry {
 		return Err(InboundHTLCErr {
 			msg: "Upstream node set CLTV to less than the CLTV set by the sender",
 			err_code: 18,
@@ -221,14 +221,14 @@ pub(super) fn create_recv_pending_htlc_info(
 			payment_data,
 			payment_preimage,
 			payment_metadata,
-			incoming_cltv_expiry: outgoing_cltv_value,
+			incoming_cltv_expiry: onion_cltv_expiry,
 			custom_tlvs,
 		}
 	} else if let Some(data) = payment_data {
 		PendingHTLCRouting::Receive {
 			payment_data: data,
 			payment_metadata,
-			incoming_cltv_expiry: outgoing_cltv_value,
+			incoming_cltv_expiry: onion_cltv_expiry,
 			phantom_shared_secret,
 			custom_tlvs,
 			requires_blinded_error,
@@ -246,7 +246,7 @@ pub(super) fn create_recv_pending_htlc_info(
 		incoming_shared_secret: shared_secret,
 		incoming_amt_msat: Some(amt_msat),
 		outgoing_amt_msat: onion_amt_msat,
-		outgoing_cltv_value,
+		outgoing_cltv_value: onion_cltv_expiry,
 		skimmed_fee_msat: counterparty_skimmed_fee_msat,
 	})
 }
