@@ -247,10 +247,12 @@ impl TryInto<BlockHash> for JsonResponse {
 /// The REST `getutxos` endpoint retuns a whole pile of data we don't care about and one bit we do
 /// - whether the `hit bitmap` field had any entries. Thus we condense the result down into only
 /// that.
+#[cfg(feature = "rest-client")]
 pub(crate) struct GetUtxosResponse {
 	pub(crate) hit_bitmap_nonempty: bool
 }
 
+#[cfg(feature = "rest-client")]
 impl TryInto<GetUtxosResponse> for JsonResponse {
 	type Error = std::io::Error;
 
