@@ -2544,7 +2544,7 @@ impl FailHTLCContents for msgs::OnionErrorPacket {
 	}
 }
 impl FailHTLCContents for ([u8; 32], u16) {
-	type Message = msgs::UpdateFailMalformedHTLC; // (failure_code, sha256_of_onion)
+	type Message = msgs::UpdateFailMalformedHTLC;
 	fn to_message(self, htlc_id: u64, channel_id: ChannelId) -> Self::Message {
 		msgs::UpdateFailMalformedHTLC {
 			htlc_id,
