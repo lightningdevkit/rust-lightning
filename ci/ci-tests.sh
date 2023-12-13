@@ -171,7 +171,6 @@ if [ -f "$(which arm-none-eabi-gcc)" ]; then
 	popd
 fi
 
-echo -e "\n\nTest Taproot builds"
-pushd lightning
+echo -e "\n\nTest cfg-flag builds"
 RUSTFLAGS="$RUSTFLAGS --cfg=taproot" cargo test --verbose --color always -p lightning
-popd
+RUSTFLAGS="$RUSTFLAGS --cfg=async_signing" cargo test --verbose --color always -p lightning
