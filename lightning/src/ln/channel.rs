@@ -2543,26 +2543,24 @@ impl FailHTLCContents for msgs::OnionErrorPacket {
 		HTLCUpdateAwaitingACK::FailHTLC { htlc_id, err_packet: self }
 	}
 }
-impl FailHTLCContents for (u16, [u8; 32]) {
+impl FailHTLCContents for ([u8; 32], u16) {
 	type Message = msgs::UpdateFailMalformedHTLC; // (failure_code, sha256_of_onion)
 	fn to_message(self, htlc_id: u64, channel_id: ChannelId) -> Self::Message {
 		msgs::UpdateFailMalformedHTLC {
 			htlc_id,
 			channel_id,
-			failure_code: self.0,
-			sha256_of_onion: self.1
+			sha256_of_onion: self.0,
+			failure_code: self.1
 		}
 	}
 	fn to_inbound_htlc_state(self) -> InboundHTLCState {
-		InboundHTLCState::LocalRemoved(
-			InboundHTLCRemovalReason::FailMalformed((self.1, self.0))
-		)
+		InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::FailMalformed(self))
 	}
 	fn to_htlc_update_awaiting_ack(self, htlc_id: u64) -> HTLCUpdateAwaitingACK {
 		HTLCUpdateAwaitingACK::FailMalformedHTLC {
 			htlc_id,
-			failure_code: self.0,
-			sha256_of_onion: self.1
+			sha256_of_onion: self.0,
+			failure_code: self.1
 		}
 	}
 }
@@ -2888,7 +2886,7 @@ impl<SP: Deref> Channel<SP> where
 	pub fn queue_fail_malformed_htlc<L: Deref>(
 		&mut self, htlc_id_arg: u64, failure_code: u16, sha256_of_onion: [u8; 32], logger: &L
 	) -> Result<(), ChannelError> where L::Target: Logger {
-		self.fail_htlc(htlc_id_arg, (failure_code, sha256_of_onion), true, logger)
+		self.fail_htlc(htlc_id_arg, (sha256_of_onion, failure_code), true, logger)
 			.map(|msg_opt| assert!(msg_opt.is_none(), "We forced holding cell?"))
 	}
 
@@ -3625,7 +3623,7 @@ impl<SP: Deref> Channel<SP> where
 						 .map(|fail_msg_opt| fail_msg_opt.map(|_| ())))
 					},
 					&HTLCUpdateAwaitingACK::FailMalformedHTLC { htlc_id, failure_code, sha256_of_onion } => {
-						Some(self.fail_htlc(htlc_id, (failure_code, sha256_of_onion), false, logger)
+						Some(self.fail_htlc(htlc_id, (sha256_of_onion, failure_code), false, logger)
 						 .map(|fail_msg_opt| fail_msg_opt.map(|_| ())))
 					}
 				};
