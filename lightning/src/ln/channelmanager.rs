@@ -111,6 +111,7 @@ use crate::ln::script::ShutdownScript;
 
 /// Information about where a received HTLC('s onion) has indicated the HTLC should go.
 #[derive(Clone)] // See Channel::revoke_and_ack for why, tl;dr: Rust bug
+#[cfg_attr(test, derive(Debug, PartialEq))]
 pub enum PendingHTLCRouting {
 	/// An HTLC which should be forwarded on to another node.
 	Forward {
@@ -155,6 +156,8 @@ pub enum PendingHTLCRouting {
 		/// [`Event::PaymentClaimable::onion_fields`] as
 		/// [`RecipientOnionFields::custom_tlvs`].
 		custom_tlvs: Vec<(u64, Vec<u8>)>,
+		/// Set if this HTLC is the final hop in a multi-hop blinded path.
+		requires_blinded_error: bool,
 	},
 	/// The onion indicates that this is for payment to us but which contains the preimage for
 	/// claiming included, and is unrelated to any invoice we'd previously generated (aka a
@@ -187,7 +190,7 @@ pub enum PendingHTLCRouting {
 }
 
 /// Information used to forward or fail this HTLC that is being forwarded within a blinded path.
-#[derive(Clone, Copy, Hash, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 pub struct BlindedForward {
 	/// The `blinding_point` that was set in the inbound [`msgs::UpdateAddHTLC`], or in the inbound
 	/// onion payload if we're the introduction node. Useful for calculating the next hop's
@@ -199,11 +202,11 @@ pub struct BlindedForward {
 impl PendingHTLCRouting {
 	// Used to override the onion failure code and data if the HTLC is blinded.
 	fn blinded_failure(&self) -> Option<BlindedFailure> {
-		// TODO: needs update when we support receiving to multi-hop blinded paths
-		if let Self::Forward { blinded: Some(_), .. } = self {
-			Some(BlindedFailure::FromIntroductionNode)
-		} else {
-			None
+		// TODO: needs update when we support forwarding blinded HTLCs as non-intro node
+		match self {
+			Self::Forward { blinded: Some(_), .. } => Some(BlindedFailure::FromIntroductionNode),
+			Self::Receive { requires_blinded_error: true, .. } => Some(BlindedFailure::FromBlindedNode),
+			_ => None,
 		}
 	}
 }
@@ -211,6 +214,7 @@ impl PendingHTLCRouting {
 /// Information about an incoming HTLC, including the [`PendingHTLCRouting`] describing where it
 /// should go next.
 #[derive(Clone)] // See Channel::revoke_and_ack for why, tl;dr: Rust bug
+#[cfg_attr(test, derive(Debug, PartialEq))]
 pub struct PendingHTLCInfo {
 	/// Further routing details based on whether the HTLC is being forwarded or received.
 	pub routing: PendingHTLCRouting,
@@ -265,6 +269,7 @@ pub(super) enum PendingHTLCStatus {
 	Fail(HTLCFailureMsg),
 }
 
+#[cfg_attr(test, derive(Clone, Debug, PartialEq))]
 pub(super) struct PendingAddHTLCInfo {
 	pub(super) forward_info: PendingHTLCInfo,
 
@@ -280,19 +285,25 @@ pub(super) struct PendingAddHTLCInfo {
 	prev_user_channel_id: u128,
 }
 
+#[cfg_attr(test, derive(Clone, Debug, PartialEq))]
 pub(super) enum HTLCForwardInfo {
 	AddHTLC(PendingAddHTLCInfo),
 	FailHTLC {
 		htlc_id: u64,
 		err_packet: msgs::OnionErrorPacket,
 	},
+	FailMalformedHTLC {
+		htlc_id: u64,
+		failure_code: u16,
+		sha256_of_onion: [u8; 32],
+	},
 }
 
 // Used for failing blinded HTLCs backwards correctly.
-#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 enum BlindedFailure {
 	FromIntroductionNode,
-	// Another variant will be added here for non-intro nodes.
+	FromBlindedNode,
 }
 
 /// Tracks the inbound corresponding to an outbound HTLC
@@ -3016,11 +3027,12 @@ where
 			msg, &self.node_signer, &self.logger, &self.secp_ctx
 		)?;
 
-		let is_blinded = match next_hop {
+		let is_intro_node_forward = match next_hop {
 			onion_utils::Hop::Forward {
+				// TODO: update this when we support blinded forwarding as non-intro node
 				next_hop_data: msgs::InboundOnionPayload::BlindedForward { .. }, ..
 			} => true,
-			_ => false, // TODO: update this when we support receiving to multi-hop blinded paths
+			_ => false,
 		};
 
 		macro_rules! return_err {
@@ -3030,7 +3042,17 @@ where
 						WithContext::from(&self.logger, Some(*counterparty_node_id), Some(msg.channel_id)),
 						"Failed to accept/forward incoming HTLC: {}", $msg
 					);
-					let (err_code, err_data) = if is_blinded {
+					// If `msg.blinding_point` is set, we must always fail with malformed.
+					if msg.blinding_point.is_some() {
+						return Err(HTLCFailureMsg::Malformed(msgs::UpdateFailMalformedHTLC {
+							channel_id: msg.channel_id,
+							htlc_id: msg.htlc_id,
+							sha256_of_onion: [0; 32],
+							failure_code: INVALID_ONION_BLINDING,
+						}));
+					}
+
+					let (err_code, err_data) = if is_intro_node_forward {
 						(INVALID_ONION_BLINDING, &[0; 32][..])
 					} else { ($err_code, $data) };
 					return Err(HTLCFailureMsg::Relay(msgs::UpdateFailHTLC {
@@ -3183,6 +3205,16 @@ where
 				{
 					let logger = WithContext::from(&self.logger, Some(*counterparty_node_id), Some(msg.channel_id));
 					log_info!(logger, "Failed to accept/forward incoming HTLC: {}", $msg);
+					if msg.blinding_point.is_some() {
+						return PendingHTLCStatus::Fail(HTLCFailureMsg::Malformed(
+							msgs::UpdateFailMalformedHTLC {
+								channel_id: msg.channel_id,
+								htlc_id: msg.htlc_id,
+								sha256_of_onion: [0; 32],
+								failure_code: INVALID_ONION_BLINDING,
+							}
+						))
+					}
 					return PendingHTLCStatus::Fail(HTLCFailureMsg::Relay(msgs::UpdateFailHTLC {
 						channel_id: msg.channel_id,
 						htlc_id: msg.htlc_id,
@@ -4246,7 +4278,7 @@ where
 												let phantom_shared_secret = self.node_signer.ecdh(Recipient::PhantomNode, &onion_packet.public_key.unwrap(), None).unwrap().secret_bytes();
 												let next_hop = match onion_utils::decode_next_payment_hop(
 													phantom_shared_secret, &onion_packet.hop_data, onion_packet.hmac,
-													payment_hash, &self.node_signer
+													payment_hash, None, &self.node_signer
 												) {
 													Ok(res) => res,
 													Err(onion_utils::OnionDecodeErr::Malformed { err_msg, err_code }) => {
@@ -4282,7 +4314,7 @@ where
 											fail_forward!(format!("Unknown short channel id {} for forward HTLC", short_chan_id), 0x4000 | 10, Vec::new(), None);
 										}
 									},
-									HTLCForwardInfo::FailHTLC { .. } => {
+									HTLCForwardInfo::FailHTLC { .. } | HTLCForwardInfo::FailMalformedHTLC { .. } => {
 										// Channel went away before we could fail it. This implies
 										// the channel is now on chain and our counterparty is
 										// trying to broadcast the HTLC-Timeout, but that's their
@@ -4378,6 +4410,20 @@ where
 										continue;
 									}
 								},
+								HTLCForwardInfo::FailMalformedHTLC { htlc_id, failure_code, sha256_of_onion } => {
+									log_trace!(self.logger, "Failing malformed HTLC back to channel with short id {} (backward HTLC ID {}) after delay", short_chan_id, htlc_id);
+									if let Err(e) = chan.queue_fail_malformed_htlc(htlc_id, failure_code, sha256_of_onion, &self.logger) {
+										if let ChannelError::Ignore(msg) = e {
+											log_trace!(self.logger, "Failed to fail HTLC with ID {} backwards to short_id {}: {}", htlc_id, short_chan_id, msg);
+										} else {
+											panic!("Stated return value requirements in queue_fail_malformed_htlc() were not met");
+										}
+										// fail-backs are best-effort, we probably already have one
+										// pending, and if not that's OK, if not, the channel is on
+										// the chain and sending the HTLC-Timeout is their problem.
+										continue;
+									}
+								},
 							}
 						}
 					} else {
@@ -4396,7 +4442,10 @@ where
 							}) => {
 								let blinded_failure = routing.blinded_failure();
 								let (cltv_expiry, onion_payload, payment_data, phantom_shared_secret, mut onion_fields) = match routing {
-									PendingHTLCRouting::Receive { payment_data, payment_metadata, incoming_cltv_expiry, phantom_shared_secret, custom_tlvs } => {
+									PendingHTLCRouting::Receive {
+										payment_data, payment_metadata, incoming_cltv_expiry, phantom_shared_secret,
+										custom_tlvs, requires_blinded_error: _
+									} => {
 										let _legacy_hop_data = Some(payment_data.clone());
 										let onion_fields = RecipientOnionFields { payment_secret: Some(payment_data.payment_secret),
 												payment_metadata, custom_tlvs };
@@ -4455,7 +4504,7 @@ where
 												htlc_id: $htlc.prev_hop.htlc_id,
 												incoming_packet_shared_secret: $htlc.prev_hop.incoming_packet_shared_secret,
 												phantom_shared_secret,
-												blinded_failure: None,
+												blinded_failure,
 											}), payment_hash,
 											HTLCFailReason::reason(0x4000 | 15, htlc_msat_height_data),
 											HTLCDestination::FailedPayment { payment_hash: $payment_hash },
@@ -4629,7 +4678,7 @@ where
 									},
 								};
 							},
-							HTLCForwardInfo::FailHTLC { .. } => {
+							HTLCForwardInfo::FailHTLC { .. } | HTLCForwardInfo::FailMalformedHTLC { .. } => {
 								panic!("Got pending fail of our own HTLC");
 							}
 						}
@@ -5234,15 +5283,26 @@ where
 					"Failing {}HTLC with payment_hash {} backwards from us: {:?}",
 					if blinded_failure.is_some() { "blinded " } else { "" }, &payment_hash, onion_error
 				);
-				let err_packet = match blinded_failure {
+				let failure = match blinded_failure {
 					Some(BlindedFailure::FromIntroductionNode) => {
 						let blinded_onion_error = HTLCFailReason::reason(INVALID_ONION_BLINDING, vec![0; 32]);
-						blinded_onion_error.get_encrypted_failure_packet(
+						let err_packet = blinded_onion_error.get_encrypted_failure_packet(
 							incoming_packet_shared_secret, phantom_shared_secret
-						)
+						);
+						HTLCForwardInfo::FailHTLC { htlc_id: *htlc_id, err_packet }
+					},
+					Some(BlindedFailure::FromBlindedNode) => {
+						HTLCForwardInfo::FailMalformedHTLC {
+							htlc_id: *htlc_id,
+							failure_code: INVALID_ONION_BLINDING,
+							sha256_of_onion: [0; 32]
+						}
 					},
 					None => {
-						onion_error.get_encrypted_failure_packet(incoming_packet_shared_secret, phantom_shared_secret)
+						let err_packet = onion_error.get_encrypted_failure_packet(
+							incoming_packet_shared_secret, phantom_shared_secret
+						);
+						HTLCForwardInfo::FailHTLC { htlc_id: *htlc_id, err_packet }
 					}
 				};
 
@@ -5253,10 +5313,10 @@ where
 				}
 				match forward_htlcs.entry(*short_channel_id) {
 					hash_map::Entry::Occupied(mut entry) => {
-						entry.get_mut().push(HTLCForwardInfo::FailHTLC { htlc_id: *htlc_id, err_packet });
+						entry.get_mut().push(failure);
 					},
 					hash_map::Entry::Vacant(entry) => {
-						entry.insert(vec!(HTLCForwardInfo::FailHTLC { htlc_id: *htlc_id, err_packet }));
+						entry.insert(vec!(failure));
 					}
 				}
 				mem::drop(forward_htlcs);
@@ -6556,6 +6616,16 @@ where
 						Err(e) => PendingHTLCStatus::Fail(e)
 					};
 					let create_pending_htlc_status = |chan: &Channel<SP>, pending_forward_info: PendingHTLCStatus, error_code: u16| {
+						if msg.blinding_point.is_some() {
+							return PendingHTLCStatus::Fail(HTLCFailureMsg::Malformed(
+									msgs::UpdateFailMalformedHTLC {
+										channel_id: msg.channel_id,
+										htlc_id: msg.htlc_id,
+										sha256_of_onion: [0; 32],
+										failure_code: INVALID_ONION_BLINDING,
+									}
+							))
+						}
 						// If the update_add is completely bogus, the call will Err and we will close,
 						// but if we've sent a shutdown and they haven't acknowledged it yet, we just
 						// want to reject the new HTLC and fail it backwards instead of forwarding.
@@ -9371,6 +9441,7 @@ impl_writeable_tlv_based_enum!(PendingHTLCRouting,
 		(2, incoming_cltv_expiry, required),
 		(3, payment_metadata, option),
 		(5, custom_tlvs, optional_vec),
+		(7, requires_blinded_error, (default_value, false)),
 	},
 	(2, ReceiveKeysend) => {
 		(0, payment_preimage, required),
@@ -9465,7 +9536,8 @@ impl_writeable_tlv_based_enum!(PendingHTLCStatus, ;
 );
 
 impl_writeable_tlv_based_enum!(BlindedFailure,
-	(0, FromIntroductionNode) => {}, ;
+	(0, FromIntroductionNode) => {},
+	(2, FromBlindedNode) => {}, ;
 );
 
 impl_writeable_tlv_based!(HTLCPreviousHopData, {
@@ -9629,13 +9701,68 @@ impl_writeable_tlv_based!(PendingAddHTLCInfo, {
 	(6, prev_funding_outpoint, required),
 });
 
-impl_writeable_tlv_based_enum!(HTLCForwardInfo,
-	(1, FailHTLC) => {
-		(0, htlc_id, required),
-		(2, err_packet, required),
-	};
-	(0, AddHTLC)
-);
+impl Writeable for HTLCForwardInfo {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		const FAIL_HTLC_VARIANT_ID: u8 = 1;
+		match self {
+			Self::AddHTLC(info) => {
+				0u8.write(w)?;
+				info.write(w)?;
+			},
+			Self::FailHTLC { htlc_id, err_packet } => {
+				FAIL_HTLC_VARIANT_ID.write(w)?;
+				write_tlv_fields!(w, {
+					(0, htlc_id, required),
+					(2, err_packet, required),
+				});
+			},
+			Self::FailMalformedHTLC { htlc_id, failure_code, sha256_of_onion } => {
+				// Since this variant was added in 0.0.119, write this as `::FailHTLC` with an empty error
+				// packet so older versions have something to fail back with, but serialize the real data as
+				// optional TLVs for the benefit of newer versions.
+				FAIL_HTLC_VARIANT_ID.write(w)?;
+				let dummy_err_packet = msgs::OnionErrorPacket { data: Vec::new() };
+				write_tlv_fields!(w, {
+					(0, htlc_id, required),
+					(1, failure_code, required),
+					(2, dummy_err_packet, required),
+					(3, sha256_of_onion, required),
+				});
+			},
+		}
+		Ok(())
+	}
+}
+
+impl Readable for HTLCForwardInfo {
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+		let id: u8 = Readable::read(r)?;
+		Ok(match id {
+			0 => Self::AddHTLC(Readable::read(r)?),
+			1 => {
+				_init_and_read_len_prefixed_tlv_fields!(r, {
+					(0, htlc_id, required),
+					(1, malformed_htlc_failure_code, option),
+					(2, err_packet, required),
+					(3, sha256_of_onion, option),
+				});
+				if let Some(failure_code) = malformed_htlc_failure_code {
+					Self::FailMalformedHTLC {
+						htlc_id: _init_tlv_based_struct_field!(htlc_id, required),
+						failure_code,
+						sha256_of_onion: sha256_of_onion.ok_or(DecodeError::InvalidValue)?,
+					}
+				} else {
+					Self::FailHTLC {
+						htlc_id: _init_tlv_based_struct_field!(htlc_id, required),
+						err_packet: _init_tlv_based_struct_field!(err_packet, required),
+					}
+				}
+			},
+			_ => return Err(DecodeError::InvalidValue),
+		})
+	}
+}
 
 impl_writeable_tlv_based!(PendingInboundPayment, {
 	(0, payment_secret, required),
@@ -10930,12 +11057,14 @@ mod tests {
 	use crate::events::{Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider, ClosureReason};
 	use crate::ln::{PaymentPreimage, PaymentHash, PaymentSecret};
 	use crate::ln::ChannelId;
-	use crate::ln::channelmanager::{create_recv_pending_htlc_info, inbound_payment, PaymentId, PaymentSendFailure, RecipientOnionFields, InterceptId};
+	use crate::ln::channelmanager::{create_recv_pending_htlc_info, HTLCForwardInfo, inbound_payment, PaymentId, PaymentSendFailure, RecipientOnionFields, InterceptId};
 	use crate::ln::functional_test_utils::*;
 	use crate::ln::msgs::{self, ErrorAction};
 	use crate::ln::msgs::ChannelMessageHandler;
+	use crate::prelude::*;
 	use crate::routing::router::{PaymentParameters, RouteParameters, find_route};
 	use crate::util::errors::APIError;
+	use crate::util::ser::Writeable;
 	use crate::util::test_utils;
 	use crate::util::config::{ChannelConfig, ChannelConfigUpdate};
 	use crate::sign::EntropySource;
@@ -12209,6 +12338,63 @@ mod tests {
 			assert_eq!(txn.len(), 1);
 			check_spends!(txn[0], funding_tx);
 		}
+	}
+
+	#[test]
+	fn test_malformed_forward_htlcs_ser() {
+		// Ensure that `HTLCForwardInfo::FailMalformedHTLC`s are (de)serialized properly.
+		let chanmon_cfg = create_chanmon_cfgs(1);
+		let node_cfg = create_node_cfgs(1, &chanmon_cfg);
+		let persister;
+		let chain_monitor;
+		let chanmgrs = create_node_chanmgrs(1, &node_cfg, &[None]);
+		let deserialized_chanmgr;
+		let mut nodes = create_network(1, &node_cfg, &chanmgrs);
+
+		let dummy_failed_htlc = |htlc_id| {
+			HTLCForwardInfo::FailHTLC { htlc_id, err_packet: msgs::OnionErrorPacket { data: vec![42] }, }
+		};
+		let dummy_malformed_htlc = |htlc_id| {
+			HTLCForwardInfo::FailMalformedHTLC { htlc_id, failure_code: 0x4000, sha256_of_onion: [0; 32] }
+		};
+
+		let dummy_htlcs_1: Vec<HTLCForwardInfo> = (1..10).map(|htlc_id| {
+			if htlc_id % 2 == 0 {
+				dummy_failed_htlc(htlc_id)
+			} else {
+				dummy_malformed_htlc(htlc_id)
+			}
+		}).collect();
+
+		let dummy_htlcs_2: Vec<HTLCForwardInfo> = (1..10).map(|htlc_id| {
+			if htlc_id % 2 == 1 {
+				dummy_failed_htlc(htlc_id)
+			} else {
+				dummy_malformed_htlc(htlc_id)
+			}
+		}).collect();
+
+
+		let (scid_1, scid_2) = (42, 43);
+		let mut forward_htlcs = HashMap::new();
+		forward_htlcs.insert(scid_1, dummy_htlcs_1.clone());
+		forward_htlcs.insert(scid_2, dummy_htlcs_2.clone());
+
+		let mut chanmgr_fwd_htlcs = nodes[0].node.forward_htlcs.lock().unwrap();
+		*chanmgr_fwd_htlcs = forward_htlcs.clone();
+		core::mem::drop(chanmgr_fwd_htlcs);
+
+		reload_node!(nodes[0], nodes[0].node.encode(), &[], persister, chain_monitor, deserialized_chanmgr);
+
+		let mut deserialized_fwd_htlcs = nodes[0].node.forward_htlcs.lock().unwrap();
+		for scid in [scid_1, scid_2].iter() {
+			let deserialized_htlcs = deserialized_fwd_htlcs.remove(scid).unwrap();
+			assert_eq!(forward_htlcs.remove(scid).unwrap(), deserialized_htlcs);
+		}
+		assert!(deserialized_fwd_htlcs.is_empty());
+		core::mem::drop(deserialized_fwd_htlcs);
+
+		expect_pending_htlcs_forwardable!(nodes[0]);
 	}
 }
 

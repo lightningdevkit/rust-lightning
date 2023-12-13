@@ -1971,6 +1971,18 @@ pub fn get_route(send_node: &Node, route_params: &RouteParameters) -> Result<Rou
 	)
 }
 
+/// Like `get_route` above, but adds a random CLTV offset to the final hop.
+pub fn find_route(send_node: &Node, route_params: &RouteParameters) -> Result<Route, msgs::LightningError> {
+	let scorer = TestScorer::new();
+	let keys_manager = TestKeysInterface::new(&[0u8; 32], bitcoin::network::constants::Network::Testnet);
+	let random_seed_bytes = keys_manager.get_secure_random_bytes();
+	router::find_route(
+		&send_node.node.get_our_node_id(), route_params, &send_node.network_graph,
+		Some(&send_node.node.list_usable_channels().iter().collect::<Vec<_>>()),
+		send_node.logger, &scorer, &Default::default(), &random_seed_bytes
+	)
+}
+
 /// Gets a route from the given sender to the node described in `payment_params`.
 ///
 /// Don't use this, use the identically-named function instead.
