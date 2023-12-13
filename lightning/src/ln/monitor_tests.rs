@@ -737,7 +737,7 @@ fn do_test_balances_on_local_commitment_htlcs(anchors: bool) {
 		commitment_tx
 	};
 	let commitment_tx_conf_height_a = block_from_scid(&mine_transaction(&nodes[0], &commitment_tx));
-	if anchors && nodes[0].connect_style.borrow().updates_best_block_first() {
+	if nodes[0].connect_style.borrow().updates_best_block_first() {
 		let mut txn = nodes[0].tx_broadcaster.txn_broadcast();
 		assert_eq!(txn.len(), 1);
 		assert_eq!(txn[0].txid(), commitment_tx.txid());
@@ -1998,6 +1998,11 @@ fn do_test_restored_packages_retry(check_old_monitor_retries_after_upgrade: bool
 	};
 
 	mine_transaction(&nodes[0], &commitment_tx);
+	if nodes[0].connect_style.borrow().updates_best_block_first() {
+		let txn = nodes[0].tx_broadcaster.txn_broadcast();
+		assert_eq!(txn.len(), 1);
+		assert_eq!(txn[0].txid(), commitment_tx.txid());
+	}
 
 	// Connect blocks until the HTLC's expiration is met, expecting a transaction broadcast.
 	connect_blocks(&nodes[0], TEST_FINAL_CLTV);
@@ -2401,26 +2406,12 @@ fn test_anchors_aggregated_revoked_htlc_tx() {
 	nodes[1].node.timer_tick_occurred();
 	check_added_monitors(&nodes[1], 2);
 	check_closed_event!(&nodes[1], 2, ClosureReason::OutdatedChannelManager, [nodes[0].node.get_our_node_id(); 2], 1000000);
-	let (revoked_commitment_a, revoked_commitment_b) = {
-		let txn = nodes[1].tx_broadcaster.unique_txn_broadcast();
-		assert_eq!(txn.len(), 2);
-		assert_eq!(txn[0].output.len(), 6); // 2 HTLC outputs + 1 to_self output + 1 to_remote output + 2 anchor outputs
-		assert_eq!(txn[1].output.len(), 6); // 2 HTLC outputs + 1 to_self output + 1 to_remote output + 2 anchor outputs
-		if txn[0].input[0].previous_output.txid == chan_a.3.txid() {
-			check_spends!(&txn[0], &chan_a.3);
-			check_spends!(&txn[1], &chan_b.3);
-			(txn[0].clone(), txn[1].clone())
-		} else {
-			check_spends!(&txn[1], &chan_a.3);
-			check_spends!(&txn[0], &chan_b.3);
-			(txn[1].clone(), txn[0].clone())
-		}
-	};
 
 	// Bob should now receive two events to bump his revoked commitment transaction fees.
 	assert!(nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events().is_empty());
 	let events = nodes[1].chain_monitor.chain_monitor.get_and_clear_pending_events();
 	assert_eq!(events.len(), 2);
+	let mut revoked_commitment_txs = Vec::with_capacity(events.len());
 	let mut anchor_txs = Vec::with_capacity(events.len());
 	for (idx, event) in events.into_iter().enumerate() {
 		let utxo_value = Amount::ONE_BTC.to_sat() * (idx + 1) as u64;
@@ -2440,13 +2431,21 @@ fn test_anchors_aggregated_revoked_htlc_tx() {
 		};
 		let txn = nodes[1].tx_broadcaster.txn_broadcast();
 		assert_eq!(txn.len(), 2);
+		assert_eq!(txn[0].output.len(), 6); // 2 HTLC outputs + 1 to_self output + 1 to_remote output + 2 anchor outputs
+		if txn[0].input[0].previous_output.txid == chan_a.3.txid() {
+			check_spends!(&txn[0], &chan_a.3);
+		} else {
+			check_spends!(&txn[0], &chan_b.3);
+		}
 		let (commitment_tx, anchor_tx) = (&txn[0], &txn[1]);
 		check_spends!(anchor_tx, coinbase_tx, commitment_tx);
+
+		revoked_commitment_txs.push(commitment_tx.clone());
 		anchor_txs.push(anchor_tx.clone());
 	};
 
 	for node in &nodes {
-		mine_transactions(node, &[&revoked_commitment_a, &anchor_txs[0], &revoked_commitment_b, &anchor_txs[1]]);
+		mine_transactions(node, &[&revoked_commitment_txs[0], &anchor_txs[0], &revoked_commitment_txs[1], &anchor_txs[1]]);
 	}
 	check_added_monitors!(&nodes[0], 2);
 	check_closed_broadcast(&nodes[0], 2, true);
@@ -2458,7 +2457,7 @@ fn test_anchors_aggregated_revoked_htlc_tx() {
 		let txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
 		assert_eq!(txn.len(), 4);
 
-		let (revoked_htlc_claim_a, revoked_htlc_claim_b) = if txn[0].input[0].previous_output.txid == revoked_commitment_a.txid() {
+		let (revoked_htlc_claim_a, revoked_htlc_claim_b) = if txn[0].input[0].previous_output.txid == revoked_commitment_txs[0].txid() {
 			(if txn[0].input.len() == 2 { &txn[0] } else { &txn[1] }, if txn[2].input.len() == 2 { &txn[2] } else { &txn[3] })
 		} else {
 			(if txn[2].input.len() == 2 { &txn[2] } else { &txn[3] }, if txn[0].input.len() == 2 { &txn[0] } else { &txn[1] })
@@ -2466,10 +2465,10 @@ fn test_anchors_aggregated_revoked_htlc_tx() {
 
 		assert_eq!(revoked_htlc_claim_a.input.len(), 2); // Spends both HTLC outputs
 		assert_eq!(revoked_htlc_claim_a.output.len(), 1);
-		check_spends!(revoked_htlc_claim_a, revoked_commitment_a);
+		check_spends!(revoked_htlc_claim_a, revoked_commitment_txs[0]);
 		assert_eq!(revoked_htlc_claim_b.input.len(), 2); // Spends both HTLC outputs
 		assert_eq!(revoked_htlc_claim_b.output.len(), 1);
-		check_spends!(revoked_htlc_claim_b, revoked_commitment_b);
+		check_spends!(revoked_htlc_claim_b, revoked_commitment_txs[1]);
 	}
 
 	// Since Bob was able to confirm his revoked commitment, he'll now try to claim the HTLCs
@@ -2549,7 +2548,7 @@ fn test_anchors_aggregated_revoked_htlc_tx() {
 			sig
 		};
 		htlc_tx.input[0].witness = Witness::from_slice(&[fee_utxo_sig, public_key.to_bytes()]);
-		check_spends!(htlc_tx, coinbase_tx, revoked_commitment_a, revoked_commitment_b);
+		check_spends!(htlc_tx, coinbase_tx, revoked_commitment_txs[0], revoked_commitment_txs[1]);
 		htlc_tx
 	};
 
@@ -2608,7 +2607,7 @@ fn test_anchors_aggregated_revoked_htlc_tx() {
 			).unwrap();
 
 			if let SpendableOutputDescriptor::StaticPaymentOutput(_) = &outputs[0] {
-				check_spends!(spend_tx, &revoked_commitment_a, &revoked_commitment_b);
+				check_spends!(spend_tx, &revoked_commitment_txs[0], &revoked_commitment_txs[1]);
 			} else {
 				check_spends!(spend_tx, revoked_claim_transactions.get(&spend_tx.input[0].previous_output.txid).unwrap());
 			}
@@ -2778,7 +2777,7 @@ fn do_test_monitor_claims_with_random_signatures(anchors: bool, confirm_counterp
 
 	// If we update the best block to the new height before providing the confirmed transactions,
 	// we'll see another broadcast of the commitment transaction.
-	if anchors && !confirm_counterparty_commitment && nodes[0].connect_style.borrow().updates_best_block_first() {
+	if !confirm_counterparty_commitment && nodes[0].connect_style.borrow().updates_best_block_first() {
 		let _ = nodes[0].tx_broadcaster.txn_broadcast();
 	}
 
@@ -2796,11 +2795,7 @@ fn do_test_monitor_claims_with_random_signatures(anchors: bool, confirm_counterp
 	let htlc_timeout_tx = {
 		let mut txn = nodes[0].tx_broadcaster.txn_broadcast();
 		assert_eq!(txn.len(), 1);
-		let tx = if txn[0].input[0].previous_output.txid == commitment_tx.txid() {
-			txn[0].clone()
-		} else {
-			txn[1].clone()
-		};
+		let tx = txn.pop().unwrap();
 		check_spends!(tx, commitment_tx, coinbase_tx);
 		tx
 	};
