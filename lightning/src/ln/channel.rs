@@ -2899,7 +2899,7 @@ impl<SP: Deref> Channel<SP> where
 	/// return `Ok(_)` if preconditions are met. In any case, `Err`s will only be
 	/// [`ChannelError::Ignore`].
 	fn fail_htlc<L: Deref, E: FailHTLCContents + Clone>(
-		&mut self, htlc_id_arg: u64, err_packet: E, mut force_holding_cell: bool,
+		&mut self, htlc_id_arg: u64, err_contents: E, mut force_holding_cell: bool,
 		logger: &L
 	) -> Result<Option<E::Message>, ChannelError> where L::Target: Logger {
 		if !matches!(self.context.channel_state, ChannelState::ChannelReady(_)) {
@@ -2966,7 +2966,7 @@ impl<SP: Deref> Channel<SP> where
 				}
 			}
 			log_trace!(logger, "Placing failure for HTLC ID {} in holding cell in channel {}.", htlc_id_arg, &self.context.channel_id());
-			self.context.holding_cell_htlc_updates.push(err_packet.to_htlc_update_awaiting_ack(htlc_id_arg));
+			self.context.holding_cell_htlc_updates.push(err_contents.to_htlc_update_awaiting_ack(htlc_id_arg));
 			return Ok(None);
 		}
 
@@ -2974,10 +2974,10 @@ impl<SP: Deref> Channel<SP> where
 			E::Message::name(), &self.context.channel_id());
 		{
 			let htlc = &mut self.context.pending_inbound_htlcs[pending_idx];
-			htlc.state = err_packet.clone().to_inbound_htlc_state();
+			htlc.state = err_contents.clone().to_inbound_htlc_state();
 		}
 
-		Ok(Some(err_packet.to_message(htlc_id_arg, self.context.channel_id())))
+		Ok(Some(err_contents.to_message(htlc_id_arg, self.context.channel_id())))
 	}
 
 	// Message handlers:
