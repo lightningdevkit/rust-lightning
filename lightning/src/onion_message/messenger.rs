@@ -490,6 +490,9 @@ where
 	>(
 		&self, recipient: PublicKey, peers: I, secp_ctx: &Secp256k1<T>, compact_paths: bool
 	) -> Result<Vec<BlindedPath>, ()> {
+		let entropy_source = &*self.entropy_source;
+		let recipient_node_id = NodeId::from_pubkey(&recipient);
+
 		// Limit the number of blinded paths that are computed.
 		const MAX_PATHS: usize = 3;
 
@@ -502,40 +505,67 @@ where
 			network_graph.nodes().contains_key(&NodeId::from_pubkey(&recipient));
 
 		let mut peer_info = peers
+			.map(|peer| (NodeId::from_pubkey(&peer.node_id), peer))
 			// Limit to peers with announced channels
-			.filter_map(|peer|
+			.filter_map(|(node_id, peer)|
 				network_graph
-					.node(&NodeId::from_pubkey(&peer.node_id))
+					.node(&node_id)
 					.filter(|info| info.channels.len() >= MIN_PEER_CHANNELS)
-					.map(|info| (peer, info.is_tor_only(), info.channels.len()))
+					.map(|info| (node_id, peer, info.is_tor_only(), &info.channels))
 			)
 			// Exclude Tor-only nodes when the recipient is announced.
-			.filter(|(_, is_tor_only, _)| !(*is_tor_only && is_recipient_announced))
+			.filter(|(_, _, is_tor_only, _)| !(*is_tor_only && is_recipient_announced))
 			.collect::<Vec<_>>();
 
 		// Prefer using non-Tor nodes with the most channels as the introduction node.
-		peer_info.sort_unstable_by(|(_, a_tor_only, a_channels), (_, b_tor_only, b_channels)| {
-			a_tor_only.cmp(b_tor_only).then(a_channels.cmp(b_channels).reverse())
+		peer_info.sort_unstable_by(|(_, _, a_tor_only, a_channels), (_, _, b_tor_only, b_channels)| {
+			a_tor_only.cmp(b_tor_only).then(a_channels.len().cmp(&b_channels.len()).reverse())
 		});
 
-		let paths = peer_info.into_iter()
-			.map(|(peer, _, _)| {
-				BlindedPath::new_for_message(&[peer], recipient, &*self.entropy_source, secp_ctx)
-			})
-			.take(MAX_PATHS)
-			.collect::<Result<Vec<_>, _>>();
+		let three_hop_paths = peer_info.iter()
+			// Pair peers with their other peers
+			.flat_map(|(node_id, peer, _, channels)|
+				channels
+					.iter()
+					.filter_map(|scid| network_graph.channels().get(scid))
+					.filter_map(move |info| info
+						.as_directed_to(&node_id)
+						.map(|(_, source)| source)
+					)
+					.filter(|source| **source != recipient_node_id)
+					.filter(|source| network_graph
+						.node(source)
+						.and_then(|info| info.announcement_info.as_ref())
+						.map(|info| info.features().supports_onion_messages())
+						.unwrap_or(false)
+					)
+					.filter_map(|source| source.as_pubkey().ok())
+					.map(move |source_pubkey| (source_pubkey, peer.clone()))
+			)
+			.map(|(source_pubkey, peer)| BlindedPath::new_for_message(&[ForwardNode { node_id: source_pubkey, short_channel_id: None }, peer], recipient, entropy_source, secp_ctx))
+			.take(MAX_PATHS);
 
-		let mut paths = match paths {
-			Ok(paths) if !paths.is_empty() => Ok(paths),
-			_ => {
-				if is_recipient_announced {
-					BlindedPath::one_hop_for_message(recipient, &*self.entropy_source, secp_ctx)
-						.map(|path| vec![path])
-				} else {
-					Err(())
-				}
-			},
-		}?;
+		let two_hop_paths = peer_info
+			.iter()
+			.map(|(_, peer, _, _)| BlindedPath::new_for_message(&[peer.clone()], recipient, entropy_source, secp_ctx))
+			.take(MAX_PATHS);
+
+		let mut paths = three_hop_paths
+			.collect::<Result<Vec<_>, _>>().ok()
+			.and_then(|paths| (!paths.is_empty()).then(|| paths))
+			.or_else(|| two_hop_paths.collect::<Result<Vec<_>, _>>().ok())
+			.and_then(|paths| (!paths.is_empty()).then(|| paths))
+			.or_else(|| is_recipient_announced
+				.then(|| BlindedPath::one_hop_for_message(recipient, entropy_source, secp_ctx)
+					.map(|path| vec![path])
+					.unwrap_or(vec![])
+				)
+			)
+			.ok_or(())?;
+
+		if paths.is_empty() {
+			return Err(());
+		}
 
 		if compact_paths {
 			for path in &mut paths {
