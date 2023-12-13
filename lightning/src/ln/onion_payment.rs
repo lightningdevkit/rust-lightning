@@ -131,7 +131,7 @@ pub(super) fn create_recv_pending_htlc_info(
 			(payment_data, keysend_preimage, custom_tlvs, amt_msat, cltv_expiry_height, payment_metadata,
 			 false),
 		msgs::InboundOnionPayload::BlindedReceive {
-			amt_msat, total_msat, outgoing_cltv_value, payment_secret, intro_node_blinding_point,
+			amt_msat, total_msat, cltv_expiry_height, payment_secret, intro_node_blinding_point,
 			payment_constraints, ..
 		} => {
 			check_blinded_payment_constraints(amt_msat, cltv_expiry, &payment_constraints)
@@ -143,7 +143,7 @@ pub(super) fn create_recv_pending_htlc_info(
 					}
 				})?;
 			let payment_data = msgs::FinalOnionHopData { payment_secret, total_msat };
-			(Some(payment_data), None, Vec::new(), amt_msat, outgoing_cltv_value, None,
+			(Some(payment_data), None, Vec::new(), amt_msat, cltv_expiry_height, None,
 			 intro_node_blinding_point.is_none())
 		}
 		msgs::InboundOnionPayload::Forward { .. } => {

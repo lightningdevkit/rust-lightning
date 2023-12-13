@@ -1719,7 +1719,7 @@ mod fuzzy_internal_msgs {
 		BlindedReceive {
 			amt_msat: u64,
 			total_msat: u64,
-			outgoing_cltv_value: u32,
+			cltv_expiry_height: u32,
 			payment_secret: PaymentSecret,
 			payment_constraints: PaymentConstraints,
 			intro_node_blinding_point: Option<PublicKey>,
@@ -2403,7 +2403,7 @@ impl<NS: Deref> ReadableArgs<(Option<PublicKey>, &NS)> for InboundOnionPayload w
 					Ok(Self::BlindedReceive {
 						amt_msat: amt.ok_or(DecodeError::InvalidValue)?,
 						total_msat: total_msat.ok_or(DecodeError::InvalidValue)?,
-						outgoing_cltv_value: cltv_value.ok_or(DecodeError::InvalidValue)?,
+						cltv_expiry_height: cltv_value.ok_or(DecodeError::InvalidValue)?,
 						payment_secret,
 						payment_constraints,
 						intro_node_blinding_point,
