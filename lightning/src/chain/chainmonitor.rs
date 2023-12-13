@@ -45,6 +45,7 @@ use crate::prelude::*;
 use crate::sync::{RwLock, RwLockReadGuard, Mutex, MutexGuard};
 use core::ops::Deref;
 use core::sync::atomic::{AtomicUsize, Ordering};
+use bitcoin::hashes::Hash;
 use bitcoin::secp256k1::PublicKey;
 
 mod update_origin {
@@ -363,10 +364,17 @@ where C::Target: chain::Filter,
 		let mut txn_outputs;
 		{
 			txn_outputs = process(monitor, txdata);
+			let funding_txid_hash = monitor.get_funding_txo().0.txid.to_raw_hash();
+			let funding_txid_hash = funding_txid_hash.as_byte_array();
+			let funding_txid_u32 = u32::from_be_bytes([funding_txid_hash[0], funding_txid_hash[1], funding_txid_hash[2], funding_txid_hash[3]]);
+			let partition_key = funding_txid_u32.wrapping_add(best_height.unwrap_or_default());
+			let partition_factor = 5;
+
+			let mut pending_monitor_updates = monitor_state.pending_monitor_updates.lock().unwrap();
+			if partition_key % partition_factor == 0 {
 			let update_id = MonitorUpdateId {
 				contents: UpdateOrigin::ChainSync(self.sync_persistence_id.get_increment()),
 			};
-			let mut pending_monitor_updates = monitor_state.pending_monitor_updates.lock().unwrap();
 			if let Some(height) = best_height {
 				if !monitor_state.has_pending_chainsync_updates(&pending_monitor_updates) {
 					// If there are not ChainSync persists awaiting completion, go ahead and
@@ -376,17 +384,18 @@ where C::Target: chain::Filter,
 				}
 			}
 
-			log_trace!(logger, "Syncing Channel Monitor for channel {}", log_funding_info!(monitor));
-			match self.persister.update_persisted_channel(*funding_outpoint, None, monitor, update_id) {
-				ChannelMonitorUpdateStatus::Completed =>
-					log_trace!(logger, "Finished syncing Channel Monitor for channel {}", log_funding_info!(monitor)),
-				ChannelMonitorUpdateStatus::InProgress => {
-					log_debug!(logger, "Channel Monitor sync for channel {} in progress, holding events until completion!", log_funding_info!(monitor));
-					pending_monitor_updates.push(update_id);
-				},
-				ChannelMonitorUpdateStatus::UnrecoverableError => {
-					return Err(());
-				},
+				log_trace!(logger, "Syncing Channel Monitor for channel {}", log_funding_info!(monitor));
+				match self.persister.update_persisted_channel(*funding_outpoint, None, monitor, update_id) {
+					ChannelMonitorUpdateStatus::Completed =>
+						log_trace!(logger, "Finished syncing Channel Monitor for channel {}", log_funding_info!(monitor)),
+					ChannelMonitorUpdateStatus::InProgress => {
+						log_debug!(logger, "Channel Monitor sync for channel {} in progress, holding events until completion!", log_funding_info!(monitor));
+						pending_monitor_updates.push(update_id);
+					},
+					ChannelMonitorUpdateStatus::UnrecoverableError => {
+						return Err(());
+					},
+				}
 			}
 		}
 
@@ -1019,7 +1028,7 @@ mod tests {
 
 		assert!(std::panic::catch_unwind(|| {
 			// Returning an UnrecoverableError should always panic immediately
-			connect_blocks(&nodes[0], 1);
+			connect_blocks(&nodes[0], 5);
 		}).is_err());
 		assert!(std::panic::catch_unwind(|| {
 			// ...and also poison our locks causing later use to panic as well
