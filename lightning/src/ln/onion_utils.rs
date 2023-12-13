@@ -215,7 +215,7 @@ pub(super) fn build_onion_payloads(path: &Path, total_msat: u64, mut recipient_o
 					keysend_preimage: *keysend_preimage,
 					custom_tlvs: recipient_onion.custom_tlvs.clone(),
 					amt_msat: value_msat,
-					outgoing_cltv_value: cltv,
+					cltv_expiry_height: cltv,
 				});
 			}
 		} else {

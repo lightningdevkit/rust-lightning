@@ -1739,7 +1739,7 @@ mod fuzzy_internal_msgs {
 			keysend_preimage: Option<PaymentPreimage>,
 			custom_tlvs: Vec<(u64, Vec<u8>)>,
 			amt_msat: u64,
-			outgoing_cltv_value: u32,
+			cltv_expiry_height: u32,
 		},
 		BlindedForward {
 			encrypted_tlvs: Vec<u8>,
@@ -2289,8 +2289,8 @@ impl Writeable for OutboundOnionPayload {
 				});
 			},
 			Self::Receive {
-				ref payment_data, ref payment_metadata, ref keysend_preimage, amt_msat,
-				outgoing_cltv_value, ref custom_tlvs,
+				ref payment_data, ref payment_metadata, ref keysend_preimage, amt_msat, cltv_expiry_height,
+				ref custom_tlvs,
 			} => {
 				// We need to update [`ln::outbound_payment::RecipientOnionFields::with_custom_tlvs`]
 				// to reject any reserved types in the experimental range if new ones are ever
@@ -2300,7 +2300,7 @@ impl Writeable for OutboundOnionPayload {
 				custom_tlvs.sort_unstable_by_key(|(typ, _)| *typ);
 				_encode_varint_length_prefixed_tlv!(w, {
 					(2, HighZeroBytesDroppedBigSize(*amt_msat), required),
-					(4, HighZeroBytesDroppedBigSize(*outgoing_cltv_value), required),
+					(4, HighZeroBytesDroppedBigSize(*cltv_expiry_height), required),
 					(8, payment_data, option),
 					(16, payment_metadata.as_ref().map(|m| WithoutLength(m)), option)
 				}, custom_tlvs.iter());
@@ -4020,7 +4020,7 @@ mod tests {
 			payment_metadata: None,
 			keysend_preimage: None,
 			amt_msat: 0x0badf00d01020304,
-			outgoing_cltv_value: 0xffffffff,
+			cltv_expiry_height: 0xffffffff,
 			custom_tlvs: vec![],
 		};
 		let encoded_value = outbound_msg.encode();
@@ -4048,7 +4048,7 @@ mod tests {
 			payment_metadata: None,
 			keysend_preimage: None,
 			amt_msat: 0x0badf00d01020304,
-			outgoing_cltv_value: 0xffffffff,
+			cltv_expiry_height: 0xffffffff,
 			custom_tlvs: vec![],
 		};
 		let encoded_value = outbound_msg.encode();
@@ -4088,7 +4088,7 @@ mod tests {
 			keysend_preimage: None,
 			custom_tlvs: bad_type_range_tlvs,
 			amt_msat: 0x0badf00d01020304,
-			outgoing_cltv_value: 0xffffffff,
+			cltv_expiry_height: 0xffffffff,
 		};
 		let encoded_value = msg.encode();
 		let node_signer = test_utils::TestKeysInterface::new(&[42; 32], Network::Testnet);
@@ -4120,7 +4120,7 @@ mod tests {
 			keysend_preimage: None,
 			custom_tlvs: expected_custom_tlvs.clone(),
 			amt_msat: 0x0badf00d01020304,
-			outgoing_cltv_value: 0xffffffff,
+			cltv_expiry_height: 0xffffffff,
 		};
 		let encoded_value = msg.encode();
 		let target_value = <Vec<u8>>::from_hex("2e02080badf00d010203040404ffffffffff0000000146c6616b021234ff0000000146c6616f084242424242424242").unwrap();
