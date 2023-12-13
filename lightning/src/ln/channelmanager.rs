@@ -4411,10 +4411,10 @@ where
 									}
 								},
 								HTLCForwardInfo::FailMalformedHTLC { htlc_id, failure_code, sha256_of_onion } => {
-									log_trace!(self.logger, "Failing malformed HTLC back to channel with short id {} (backward HTLC ID {}) after delay", short_chan_id, htlc_id);
-									if let Err(e) = chan.queue_fail_malformed_htlc(htlc_id, failure_code, sha256_of_onion, &self.logger) {
+									log_trace!(logger, "Failing malformed HTLC back to channel with short id {} (backward HTLC ID {}) after delay", short_chan_id, htlc_id);
+									if let Err(e) = chan.queue_fail_malformed_htlc(htlc_id, failure_code, sha256_of_onion, &&logger) {
 										if let ChannelError::Ignore(msg) = e {
-											log_trace!(self.logger, "Failed to fail HTLC with ID {} backwards to short_id {}: {}", htlc_id, short_chan_id, msg);
+											log_trace!(logger, "Failed to fail HTLC with ID {} backwards to short_id {}: {}", htlc_id, short_chan_id, msg);
 										} else {
 											panic!("Stated return value requirements in queue_fail_malformed_htlc() were not met");
 										}
