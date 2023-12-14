@@ -1738,7 +1738,7 @@ mod fuzzy_internal_msgs {
 			payment_metadata: Option<Vec<u8>>,
 			keysend_preimage: Option<PaymentPreimage>,
 			custom_tlvs: Vec<(u64, Vec<u8>)>,
-			amt_msat: u64,
+			sender_intended_htlc_amt_msat: u64,
 			cltv_expiry_height: u32,
 		},
 		BlindedForward {
@@ -2289,8 +2289,8 @@ impl Writeable for OutboundOnionPayload {
 				});
 			},
 			Self::Receive {
-				ref payment_data, ref payment_metadata, ref keysend_preimage, amt_msat, cltv_expiry_height,
-				ref custom_tlvs,
+				ref payment_data, ref payment_metadata, ref keysend_preimage, sender_intended_htlc_amt_msat,
+				cltv_expiry_height, ref custom_tlvs,
 			} => {
 				// We need to update [`ln::outbound_payment::RecipientOnionFields::with_custom_tlvs`]
 				// to reject any reserved types in the experimental range if new ones are ever
@@ -2299,7 +2299,7 @@ impl Writeable for OutboundOnionPayload {
 				let mut custom_tlvs: Vec<&(u64, Vec<u8>)> = custom_tlvs.iter().chain(keysend_tlv.iter()).collect();
 				custom_tlvs.sort_unstable_by_key(|(typ, _)| *typ);
 				_encode_varint_length_prefixed_tlv!(w, {
-					(2, HighZeroBytesDroppedBigSize(*amt_msat), required),
+					(2, HighZeroBytesDroppedBigSize(*sender_intended_htlc_amt_msat), required),
 					(4, HighZeroBytesDroppedBigSize(*cltv_expiry_height), required),
 					(8, payment_data, option),
 					(16, payment_metadata.as_ref().map(|m| WithoutLength(m)), option)
@@ -4018,7 +4018,7 @@ mod tests {
 			payment_data: None,
 			payment_metadata: None,
 			keysend_preimage: None,
-			amt_msat: 0x0badf00d01020304,
+			sender_intended_htlc_amt_msat: 0x0badf00d01020304,
 			cltv_expiry_height: 0xffffffff,
 			custom_tlvs: vec![],
 		};
@@ -4046,7 +4046,7 @@ mod tests {
 			}),
 			payment_metadata: None,
 			keysend_preimage: None,
-			amt_msat: 0x0badf00d01020304,
+			sender_intended_htlc_amt_msat: 0x0badf00d01020304,
 			cltv_expiry_height: 0xffffffff,
 			custom_tlvs: vec![],
 		};
@@ -4086,7 +4086,7 @@ mod tests {
 			payment_metadata: None,
 			keysend_preimage: None,
 			custom_tlvs: bad_type_range_tlvs,
-			amt_msat: 0x0badf00d01020304,
+			sender_intended_htlc_amt_msat: 0x0badf00d01020304,
 			cltv_expiry_height: 0xffffffff,
 		};
 		let encoded_value = msg.encode();
@@ -4118,7 +4118,7 @@ mod tests {
 			payment_metadata: None,
 			keysend_preimage: None,
 			custom_tlvs: expected_custom_tlvs.clone(),
-			amt_msat: 0x0badf00d01020304,
+			sender_intended_htlc_amt_msat: 0x0badf00d01020304,
 			cltv_expiry_height: 0xffffffff,
 		};
 		let encoded_value = msg.encode();
@@ -4131,12 +4131,12 @@ mod tests {
 			payment_metadata: None,
 			keysend_preimage: None,
 			custom_tlvs,
-			sender_intended_htlc_amt_msat: amt_msat,
+			sender_intended_htlc_amt_msat,
 			cltv_expiry_height: outgoing_cltv_value,
 			..
 		} = inbound_msg {
 			assert_eq!(custom_tlvs, expected_custom_tlvs);
-			assert_eq!(amt_msat, 0x0badf00d01020304);
+			assert_eq!(sender_intended_htlc_amt_msat, 0x0badf00d01020304);
 			assert_eq!(outgoing_cltv_value, 0xffffffff);
 		} else { panic!(); }
 	}
