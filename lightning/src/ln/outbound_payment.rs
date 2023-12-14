@@ -1876,7 +1876,7 @@ mod tests {
 		let logger = test_utils::TestLogger::new();
 		let network_graph = Arc::new(NetworkGraph::new(Network::Testnet, &logger));
 		let scorer = RwLock::new(test_utils::TestScorer::new());
-		let router = test_utils::TestRouter::new(network_graph, &scorer);
+		let router = test_utils::TestRouter::new(network_graph, &logger, &scorer);
 		let secp_ctx = Secp256k1::new();
 		let keys_manager = test_utils::TestKeysInterface::new(&[0; 32], Network::Testnet);
 
@@ -1920,7 +1920,7 @@ mod tests {
 		let logger = test_utils::TestLogger::new();
 		let network_graph = Arc::new(NetworkGraph::new(Network::Testnet, &logger));
 		let scorer = RwLock::new(test_utils::TestScorer::new());
-		let router = test_utils::TestRouter::new(network_graph, &scorer);
+		let router = test_utils::TestRouter::new(network_graph, &logger, &scorer);
 		let secp_ctx = Secp256k1::new();
 		let keys_manager = test_utils::TestKeysInterface::new(&[0; 32], Network::Testnet);
 
@@ -1959,7 +1959,7 @@ mod tests {
 		let logger = test_utils::TestLogger::new();
 		let network_graph = Arc::new(NetworkGraph::new(Network::Testnet, &logger));
 		let scorer = RwLock::new(test_utils::TestScorer::new());
-		let router = test_utils::TestRouter::new(network_graph, &scorer);
+		let router = test_utils::TestRouter::new(network_graph, &logger, &scorer);
 		let secp_ctx = Secp256k1::new();
 		let keys_manager = test_utils::TestKeysInterface::new(&[0; 32], Network::Testnet);
 
@@ -2166,7 +2166,7 @@ mod tests {
 		let logger = test_utils::TestLogger::new();
 		let network_graph = Arc::new(NetworkGraph::new(Network::Testnet, &logger));
 		let scorer = RwLock::new(test_utils::TestScorer::new());
-		let router = test_utils::TestRouter::new(network_graph, &scorer);
+		let router = test_utils::TestRouter::new(network_graph, &logger, &scorer);
 		let keys_manager = test_utils::TestKeysInterface::new(&[0; 32], Network::Testnet);
 
 		let pending_events = Mutex::new(VecDeque::new());
@@ -2217,7 +2217,7 @@ mod tests {
 		let logger = test_utils::TestLogger::new();
 		let network_graph = Arc::new(NetworkGraph::new(Network::Testnet, &logger));
 		let scorer = RwLock::new(test_utils::TestScorer::new());
-		let router = test_utils::TestRouter::new(network_graph, &scorer);
+		let router = test_utils::TestRouter::new(network_graph, &logger, &scorer);
 		let keys_manager = test_utils::TestKeysInterface::new(&[0; 32], Network::Testnet);
 
 		let pending_events = Mutex::new(VecDeque::new());
@@ -2276,7 +2276,7 @@ mod tests {
 		let logger = test_utils::TestLogger::new();
 		let network_graph = Arc::new(NetworkGraph::new(Network::Testnet, &logger));
 		let scorer = RwLock::new(test_utils::TestScorer::new());
-		let router = test_utils::TestRouter::new(network_graph, &scorer);
+		let router = test_utils::TestRouter::new(network_graph, &logger, &scorer);
 		let keys_manager = test_utils::TestKeysInterface::new(&[0; 32], Network::Testnet);
 
 		let pending_events = Mutex::new(VecDeque::new());
@@ -2335,7 +2335,7 @@ mod tests {
 		let logger = test_utils::TestLogger::new();
 		let network_graph = Arc::new(NetworkGraph::new(Network::Testnet, &logger));
 		let scorer = RwLock::new(test_utils::TestScorer::new());
-		let router = test_utils::TestRouter::new(network_graph, &scorer);
+		let router = test_utils::TestRouter::new(network_graph, &logger, &scorer);
 		let keys_manager = test_utils::TestKeysInterface::new(&[0; 32], Network::Testnet);
 
 		let pending_events = Mutex::new(VecDeque::new());

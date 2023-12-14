@@ -12527,7 +12527,7 @@ pub mod bench {
 		let fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: Mutex::new(253) };
 		let logger_a = test_utils::TestLogger::with_id("node a".to_owned());
 		let scorer = RwLock::new(test_utils::TestScorer::new());
-		let router = test_utils::TestRouter::new(Arc::new(NetworkGraph::new(network, &logger_a)), &scorer);
+		let router = test_utils::TestRouter::new(Arc::new(NetworkGraph::new(network, &logger_a)), &logger_a, &scorer);
 
 		let mut config: UserConfig = Default::default();
 		config.channel_config.max_dust_htlc_exposure = MaxDustHTLCExposure::FeeRateMultiplier(5_000_000 / 253);

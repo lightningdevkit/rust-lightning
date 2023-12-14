@@ -35,7 +35,7 @@ use crate::offers::invoice_request::UnsignedInvoiceRequest;
 use crate::onion_message::messenger::{DefaultMessageRouter, Destination, MessageRouter, OnionMessagePath};
 use crate::routing::gossip::{EffectiveCapacity, NetworkGraph, NodeId, RoutingFees};
 use crate::routing::utxo::{UtxoLookup, UtxoLookupError, UtxoResult};
-use crate::routing::router::{find_route, InFlightHtlcs, Path, Route, RouteParameters, RouteHintHop, Router, ScorerAccountingForInFlightHtlcs};
+use crate::routing::router::{DefaultRouter, InFlightHtlcs, Path, Route, RouteParameters, RouteHintHop, Router, ScorerAccountingForInFlightHtlcs};
 use crate::routing::scoring::{ChannelUsage, ScoreUpdate, ScoreLookUp};
 use crate::sync::RwLock;
 use crate::util::config::UserConfig;
@@ -104,14 +104,29 @@ impl chaininterface::FeeEstimator for TestFeeEstimator {
 }
 
 pub struct TestRouter<'a> {
+	pub router: DefaultRouter<
+		Arc<NetworkGraph<&'a TestLogger>>,
+		&'a TestLogger,
+		&'a RwLock<TestScorer>,
+		(),
+		TestScorer,
+	>,
 	pub network_graph: Arc<NetworkGraph<&'a TestLogger>>,
 	pub next_routes: Mutex<VecDeque<(RouteParameters, Result<Route, LightningError>)>>,
 	pub scorer: &'a RwLock<TestScorer>,
 }
 
 impl<'a> TestRouter<'a> {
-	pub fn new(network_graph: Arc<NetworkGraph<&'a TestLogger>>, scorer: &'a RwLock<TestScorer>) -> Self {
-		Self { network_graph, next_routes: Mutex::new(VecDeque::new()), scorer }
+	pub fn new(
+		network_graph: Arc<NetworkGraph<&'a TestLogger>>, logger: &'a TestLogger,
+		scorer: &'a RwLock<TestScorer>
+	) -> Self {
+		Self {
+			router: DefaultRouter::new(network_graph.clone(), logger, [42u8; 32], scorer, ()),
+			network_graph,
+			next_routes: Mutex::new(VecDeque::new()),
+			scorer,
+		}
 	}
 
 	pub fn expect_find_route(&self, query: RouteParameters, result: Result<Route, LightningError>) {
@@ -185,38 +200,36 @@ impl<'a> Router for TestRouter<'a> {
 			}
 			return find_route_res;
 		}
-		let logger = TestLogger::new();
-		find_route(
-			payer, params, &self.network_graph, first_hops, &logger,
-			&ScorerAccountingForInFlightHtlcs::new(self.scorer.read().unwrap(), &inflight_htlcs), &Default::default(),
-			&[42; 32]
-		)
+
+		self.router.find_route(payer, params, first_hops, inflight_htlcs)
 	}
 
 	fn create_blinded_payment_paths<
 		ES: EntropySource + ?Sized, T: secp256k1::Signing + secp256k1::Verification
 	>(
-		&self, _recipient: PublicKey, _first_hops: Vec<ChannelDetails>, _tlvs: ReceiveTlvs,
-		_amount_msats: u64, _entropy_source: &ES, _secp_ctx: &Secp256k1<T>
+		&self, recipient: PublicKey, first_hops: Vec<ChannelDetails>, tlvs: ReceiveTlvs,
+		amount_msats: u64, entropy_source: &ES, secp_ctx: &Secp256k1<T>
 	) -> Result<Vec<(BlindedPayInfo, BlindedPath)>, ()> {
-		unreachable!()
+		self.router.create_blinded_payment_paths(
+			recipient, first_hops, tlvs, amount_msats, entropy_source, secp_ctx
+		)
 	}
 }
 
 impl<'a> MessageRouter for TestRouter<'a> {
 	fn find_path(
-		&self, _sender: PublicKey, _peers: Vec<PublicKey>, _destination: Destination
+		&self, sender: PublicKey, peers: Vec<PublicKey>, destination: Destination
 	) -> Result<OnionMessagePath, ()> {
-		unreachable!()
+		self.router.find_path(sender, peers, destination)
 	}
 
 	fn create_blinded_paths<
 		ES: EntropySource + ?Sized, T: secp256k1::Signing + secp256k1::Verification
 	>(
-		&self, _recipient: PublicKey, _peers: Vec<PublicKey>, _entropy_source: &ES,
-		_secp_ctx: &Secp256k1<T>
+		&self, recipient: PublicKey, peers: Vec<PublicKey>, entropy_source: &ES,
+		secp_ctx: &Secp256k1<T>
 	) -> Result<Vec<BlindedPath>, ()> {
-		unreachable!()
+		self.router.create_blinded_paths(recipient, peers, entropy_source, secp_ctx)
 	}
 }
 
