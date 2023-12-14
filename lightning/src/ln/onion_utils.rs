@@ -190,7 +190,7 @@ pub(super) fn build_onion_payloads(path: &Path, total_msat: u64, mut recipient_o
 						cur_value_msat += final_value_msat;
 						cur_cltv += excess_final_cltv_expiry_delta;
 						res.push(msgs::OutboundOnionPayload::BlindedReceive {
-							amt_msat: *final_value_msat,
+							sender_intended_htlc_amt_msat: *final_value_msat,
 							total_msat,
 							cltv_expiry_height: cltv,
 							encrypted_tlvs: blinded_hop.encrypted_payload.clone(),

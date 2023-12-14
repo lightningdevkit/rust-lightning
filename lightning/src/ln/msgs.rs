@@ -1746,7 +1746,7 @@ mod fuzzy_internal_msgs {
 			intro_node_blinding_point: Option<PublicKey>,
 		},
 		BlindedReceive {
-			amt_msat: u64,
+			sender_intended_htlc_amt_msat: u64,
 			total_msat: u64,
 			cltv_expiry_height: u32,
 			encrypted_tlvs: Vec<u8>,
@@ -2312,10 +2312,11 @@ impl Writeable for OutboundOnionPayload {
 				});
 			},
 			Self::BlindedReceive {
-				amt_msat, total_msat, cltv_expiry_height, encrypted_tlvs, intro_node_blinding_point,
+				sender_intended_htlc_amt_msat, total_msat, cltv_expiry_height, encrypted_tlvs,
+				intro_node_blinding_point,
 			} => {
 				_encode_varint_length_prefixed_tlv!(w, {
-					(2, HighZeroBytesDroppedBigSize(*amt_msat), required),
+					(2, HighZeroBytesDroppedBigSize(*sender_intended_htlc_amt_msat), required),
 					(4, HighZeroBytesDroppedBigSize(*cltv_expiry_height), required),
 					(10, *encrypted_tlvs, required_vec),
 					(12, intro_node_blinding_point, option),
