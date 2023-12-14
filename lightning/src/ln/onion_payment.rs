@@ -132,10 +132,12 @@ pub(super) fn create_recv_pending_htlc_info(
 			(payment_data, keysend_preimage, custom_tlvs, sender_intended_htlc_amt_msat,
 			 cltv_expiry_height, payment_metadata, false),
 		msgs::InboundOnionPayload::BlindedReceive {
-			amt_msat, total_msat, cltv_expiry_height, payment_secret, intro_node_blinding_point,
-			payment_constraints, ..
+			sender_intended_htlc_amt_msat, total_msat, cltv_expiry_height, payment_secret,
+			intro_node_blinding_point, payment_constraints, ..
 		} => {
-			check_blinded_payment_constraints(amt_msat, cltv_expiry, &payment_constraints)
+			check_blinded_payment_constraints(
+				sender_intended_htlc_amt_msat, cltv_expiry, &payment_constraints
+			)
 				.map_err(|()| {
 					InboundHTLCErr {
 						err_code: INVALID_ONION_BLINDING,
@@ -144,8 +146,8 @@ pub(super) fn create_recv_pending_htlc_info(
 					}
 				})?;
 			let payment_data = msgs::FinalOnionHopData { payment_secret, total_msat };
-			(Some(payment_data), None, Vec::new(), amt_msat, cltv_expiry_height, None,
-			 intro_node_blinding_point.is_none())
+			(Some(payment_data), None, Vec::new(), sender_intended_htlc_amt_msat, cltv_expiry_height,
+			 None, intro_node_blinding_point.is_none())
 		}
 		msgs::InboundOnionPayload::Forward { .. } => {
 			return Err(InboundHTLCErr {

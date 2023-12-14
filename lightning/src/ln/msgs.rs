@@ -1717,7 +1717,7 @@ mod fuzzy_internal_msgs {
 			intro_node_blinding_point: PublicKey,
 		},
 		BlindedReceive {
-			amt_msat: u64,
+			sender_intended_htlc_amt_msat: u64,
 			total_msat: u64,
 			cltv_expiry_height: u32,
 			payment_secret: PaymentSecret,
@@ -2400,7 +2400,7 @@ impl<NS: Deref> ReadableArgs<(Option<PublicKey>, &NS)> for InboundOnionPayload w
 				})} => {
 					if total_msat.unwrap_or(0) > MAX_VALUE_MSAT { return Err(DecodeError::InvalidValue) }
 					Ok(Self::BlindedReceive {
-						amt_msat: amt.ok_or(DecodeError::InvalidValue)?,
+						sender_intended_htlc_amt_msat: amt.ok_or(DecodeError::InvalidValue)?,
 						total_msat: total_msat.ok_or(DecodeError::InvalidValue)?,
 						cltv_expiry_height: cltv_value.ok_or(DecodeError::InvalidValue)?,
 						payment_secret,
