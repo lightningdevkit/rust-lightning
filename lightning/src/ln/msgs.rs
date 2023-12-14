@@ -1706,7 +1706,7 @@ mod fuzzy_internal_msgs {
 			payment_metadata: Option<Vec<u8>>,
 			keysend_preimage: Option<PaymentPreimage>,
 			custom_tlvs: Vec<(u64, Vec<u8>)>,
-			amt_msat: u64,
+			sender_intended_htlc_amt_msat: u64,
 			cltv_expiry_height: u32,
 		},
 		BlindedForward {
@@ -2431,7 +2431,7 @@ impl<NS: Deref> ReadableArgs<(Option<PublicKey>, &NS)> for InboundOnionPayload w
 				payment_data,
 				payment_metadata: payment_metadata.map(|w| w.0),
 				keysend_preimage,
-				amt_msat: amt.ok_or(DecodeError::InvalidValue)?,
+				sender_intended_htlc_amt_msat: amt.ok_or(DecodeError::InvalidValue)?,
 				cltv_expiry_height: cltv_value.ok_or(DecodeError::InvalidValue)?,
 				custom_tlvs,
 			})
@@ -4029,9 +4029,9 @@ mod tests {
 		let node_signer = test_utils::TestKeysInterface::new(&[42; 32], Network::Testnet);
 		let inbound_msg = ReadableArgs::read(&mut Cursor::new(&target_value[..]), (None, &&node_signer)).unwrap();
 		if let msgs::InboundOnionPayload::Receive {
-			payment_data: None, amt_msat, cltv_expiry_height, ..
+			payment_data: None, sender_intended_htlc_amt_msat, cltv_expiry_height, ..
 		} = inbound_msg {
-			assert_eq!(amt_msat, 0x0badf00d01020304);
+			assert_eq!(sender_intended_htlc_amt_msat, 0x0badf00d01020304);
 			assert_eq!(cltv_expiry_height, 0xffffffff);
 		} else { panic!(); }
 	}
@@ -4061,13 +4061,13 @@ mod tests {
 				payment_secret,
 				total_msat: 0x1badca1f
 			}),
-			amt_msat, cltv_expiry_height,
+			sender_intended_htlc_amt_msat, cltv_expiry_height,
 			payment_metadata: None,
 			keysend_preimage: None,
 			custom_tlvs,
 		} = inbound_msg  {
 			assert_eq!(payment_secret, expected_payment_secret);
-			assert_eq!(amt_msat, 0x0badf00d01020304);
+			assert_eq!(sender_intended_htlc_amt_msat, 0x0badf00d01020304);
 			assert_eq!(cltv_expiry_height, 0xffffffff);
 			assert_eq!(custom_tlvs, vec![]);
 		} else { panic!(); }
@@ -4131,7 +4131,7 @@ mod tests {
 			payment_metadata: None,
 			keysend_preimage: None,
 			custom_tlvs,
-			amt_msat,
+			sender_intended_htlc_amt_msat: amt_msat,
 			cltv_expiry_height: outgoing_cltv_value,
 			..
 		} = inbound_msg {

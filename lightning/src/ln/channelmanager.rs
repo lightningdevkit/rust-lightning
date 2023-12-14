@@ -12127,7 +12127,7 @@ mod tests {
 		let sender_intended_amt_msat = 100;
 		let extra_fee_msat = 10;
 		let hop_data = msgs::InboundOnionPayload::Receive {
-			amt_msat: 100,
+			sender_intended_htlc_amt_msat: 100,
 			cltv_expiry_height: 42,
 			payment_metadata: None,
 			keysend_preimage: None,
@@ -12149,7 +12149,7 @@ mod tests {
 
 		// If amt_received + extra_fee is equal to the sender intended amount, we're fine.
 		let hop_data = msgs::InboundOnionPayload::Receive { // This is the same payload as above, InboundOnionPayload doesn't implement Clone
-			amt_msat: 100,
+			sender_intended_htlc_amt_msat: 100,
 			cltv_expiry_height: 42,
 			payment_metadata: None,
 			keysend_preimage: None,
@@ -12173,7 +12173,7 @@ mod tests {
 
 		let current_height: u32 = node[0].node.best_block.read().unwrap().height();
 		let result = create_recv_pending_htlc_info(msgs::InboundOnionPayload::Receive {
-			amt_msat: 100,
+			sender_intended_htlc_amt_msat: 100,
 			cltv_expiry_height: 22,
 			payment_metadata: None,
 			keysend_preimage: None,

@@ -126,10 +126,11 @@ pub(super) fn create_recv_pending_htlc_info(
 		payment_metadata, requires_blinded_error
 	) = match hop_data {
 		msgs::InboundOnionPayload::Receive {
-			payment_data, keysend_preimage, custom_tlvs, amt_msat, cltv_expiry_height, payment_metadata, ..
+			payment_data, keysend_preimage, custom_tlvs, sender_intended_htlc_amt_msat,
+			cltv_expiry_height, payment_metadata, ..
 		} =>
-			(payment_data, keysend_preimage, custom_tlvs, amt_msat, cltv_expiry_height, payment_metadata,
-			 false),
+			(payment_data, keysend_preimage, custom_tlvs, sender_intended_htlc_amt_msat,
+			 cltv_expiry_height, payment_metadata, false),
 		msgs::InboundOnionPayload::BlindedReceive {
 			amt_msat, total_msat, cltv_expiry_height, payment_secret, intro_node_blinding_point,
 			payment_constraints, ..
