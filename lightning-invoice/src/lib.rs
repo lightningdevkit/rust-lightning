@@ -527,7 +527,7 @@ impl Ord for Bolt11InvoiceSignature {
 /// The encoded route has to be <1024 5bit characters long (<=639 bytes or <=12 hops)
 ///
 #[derive(Clone, Debug, Hash, Eq, PartialEq, Ord, PartialOrd)]
-pub struct PrivateRoute(pub RouteHint);
+pub struct PrivateRoute(RouteHint);
 
 /// Tag constants as specified in BOLT11
 #[allow(missing_docs)]
