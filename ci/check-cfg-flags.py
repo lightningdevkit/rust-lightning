@@ -86,6 +86,8 @@ def check_cfg_tag(cfg):
         pass
     elif cfg == "taproot":
         pass
+    elif cfg == "async_signing":
+        pass
     elif cfg == "require_route_graph_test":
         pass
     else:
