@@ -1,5 +1,4 @@
 extern crate bech32;
-extern crate bitcoin_hashes;
 extern crate lightning;
 extern crate lightning_invoice;
 extern crate secp256k1;
@@ -8,7 +7,7 @@ extern crate hex;
 use bitcoin::address::WitnessVersion;
 use bitcoin::{PubkeyHash, ScriptHash};
 use bitcoin::hashes::hex::FromHex;
-use bitcoin_hashes::{sha256, Hash};
+use bitcoin::hashes::{sha256, Hash};
 use lightning::ln::PaymentSecret;
 use lightning::routing::gossip::RoutingFees;
 use lightning::routing::router::{RouteHint, RouteHintHop};

@@ -30,7 +30,6 @@ pub mod payment;
 pub mod utils;
 
 extern crate bech32;
-extern crate bitcoin_hashes;
 #[macro_use] extern crate lightning;
 extern crate num_traits;
 extern crate secp256k1;
@@ -46,7 +45,7 @@ use std::time::SystemTime;
 use bech32::u5;
 use bitcoin::{Address, Network, PubkeyHash, ScriptHash};
 use bitcoin::address::{Payload, WitnessProgram, WitnessVersion};
-use bitcoin_hashes::{Hash, sha256};
+use bitcoin::hashes::{Hash, sha256};
 use lightning::ln::features::Bolt11InvoiceFeatures;
 use lightning::util::invoice::construct_invoice_preimage;
 
@@ -166,10 +165,10 @@ pub const DEFAULT_MIN_FINAL_CLTV_EXPIRY_DELTA: u64 = 18;
 /// extern crate secp256k1;
 /// extern crate lightning;
 /// extern crate lightning_invoice;
-/// extern crate bitcoin_hashes;
+/// extern crate bitcoin;
 ///
-/// use bitcoin_hashes::Hash;
-/// use bitcoin_hashes::sha256;
+/// use bitcoin::hashes::Hash;
+/// use bitcoin::hashes::sha256;
 ///
 /// use secp256k1::Secp256k1;
 /// use secp256k1::SecretKey;
@@ -527,7 +526,7 @@ impl Ord for Bolt11InvoiceSignature {
 /// The encoded route has to be <1024 5bit characters long (<=639 bytes or <=12 hops)
 ///
 #[derive(Clone, Debug, Hash, Eq, PartialEq, Ord, PartialOrd)]
-pub struct PrivateRoute(pub RouteHint);
+pub struct PrivateRoute(RouteHint);
 
 /// Tag constants as specified in BOLT11
 #[allow(missing_docs)]
@@ -1756,7 +1755,7 @@ impl<'de> Deserialize<'de> for Bolt11Invoice {
 #[cfg(test)]
 mod test {
 	use bitcoin::ScriptBuf;
-	use bitcoin_hashes::sha256;
+	use bitcoin::hashes::sha256;
 	use std::str::FromStr;
 
 	#[test]

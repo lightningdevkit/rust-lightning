@@ -89,6 +89,8 @@ if [[ "$HOST_PLATFORM" != *windows* ]]; then
 	[ "$RUSTC_MINOR_VERSION" -lt 65 ] && cargo update -p reqwest --precise "0.11.20" --verbose
 	# Starting with version 1.10.0, the `regex` crate has an MSRV of rustc 1.65.0.
 	[ "$RUSTC_MINOR_VERSION" -lt 65 ] && cargo update -p regex --precise "1.9.6" --verbose
+	# Starting with version 0.5.9 (there is no .6-.8), the `home` crate has an MSRV of rustc 1.70.0.
+	[ "$RUSTC_MINOR_VERSION" -lt 70 ] && cargo update -p home --precise "0.5.5" --verbose
 
 	DOWNLOAD_ELECTRS_AND_BITCOIND
 
