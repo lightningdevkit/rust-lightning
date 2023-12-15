@@ -7569,6 +7569,7 @@ where
 	/// [`Refund`]: crate::offers::refund::Refund
 	/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
 	/// [`Bolt12Invoice::payment_paths`]: crate::offers::invoice::Bolt12Invoice::payment_paths
+	/// [Avoiding Duplicate Payments]: #avoiding-duplicate-payments
 	pub fn create_refund_builder(
 		&self, description: String, amount_msats: u64, absolute_expiry: Duration,
 		payment_id: PaymentId, retry_strategy: Retry, max_total_routing_fee_msat: Option<u64>
