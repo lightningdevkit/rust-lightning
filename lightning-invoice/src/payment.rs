@@ -10,7 +10,7 @@
 //! Convenient utilities for paying Lightning invoices.
 
 use crate::Bolt11Invoice;
-use crate::bitcoin_hashes::Hash;
+use bitcoin::hashes::Hash;
 
 use lightning::ln::PaymentHash;
 use lightning::ln::channelmanager::RecipientOnionFields;
@@ -84,7 +84,7 @@ fn params_from_invoice(invoice: &Bolt11Invoice, amount_msat: u64)
 mod tests {
 	use super::*;
 	use crate::{InvoiceBuilder, Currency};
-	use bitcoin_hashes::sha256::Hash as Sha256;
+	use bitcoin::hashes::sha256::Hash as Sha256;
 	use lightning::events::Event;
 	use lightning::ln::channelmanager::{Retry, PaymentId};
 	use lightning::ln::msgs::ChannelMessageHandler;
