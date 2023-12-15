@@ -1536,6 +1536,18 @@ pub struct ExpectedCloseEvent {
 	pub reason: Option<ClosureReason>,
 }
 
+impl ExpectedCloseEvent {
+	pub fn from_id_reason(channel_id: ChannelId, discard_funding: bool, reason: ClosureReason) -> Self {
+		Self {
+			channel_capacity_sats: None,
+			channel_id: Some(channel_id),
+			counterparty_node_id: None,
+			discard_funding,
+			reason: Some(reason),
+		}
+	}
+}
+
 /// Check that multiple channel closing events have been issued.
 pub fn check_closed_events(node: &Node, expected_close_events: &[ExpectedCloseEvent]) {
 	let closed_events_count = expected_close_events.len();
