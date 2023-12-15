@@ -3442,7 +3442,7 @@ mod tests {
 			Some(([0; 32], [0; 32])));
 		assert_eq!(scorer.historical_estimated_payment_success_probability(42, &target, 1, &params), None);
 
-		let mut usage = ChannelUsage {
+		let usage = ChannelUsage {
 			amount_msat: 100,
 			inflight_htlc_msat: 1024,
 			effective_capacity: EffectiveCapacity::Total { capacity_msat: 1_024, htlc_maximum_msat: 1_024 },

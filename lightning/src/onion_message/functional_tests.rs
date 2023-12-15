@@ -13,14 +13,14 @@ use crate::blinded_path::BlindedPath;
 use crate::events::{Event, EventsProvider};
 use crate::ln::features::InitFeatures;
 use crate::ln::msgs::{self, DecodeError, OnionMessageHandler, SocketAddress};
-use crate::sign::{NodeSigner, Recipient};
+use crate::sign::{EntropySource, NodeSigner, Recipient};
 use crate::util::ser::{FixedLengthReader, LengthReadable, Writeable, Writer};
 use crate::util::test_utils;
 use super::{CustomOnionMessageHandler, Destination, MessageRouter, OffersMessage, OffersMessageHandler, OnionMessageContents, OnionMessagePath, OnionMessenger, PendingOnionMessage, SendError};
 
 use bitcoin::network::constants::Network;
 use bitcoin::hashes::hex::FromHex;
-use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
+use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey, self};
 
 use crate::io;
 use crate::io_extras::read_to_end;
@@ -54,6 +54,15 @@ impl MessageRouter for TestMessageRouter {
 			first_node_addresses:
 				Some(vec![SocketAddress::TcpIpV4 { addr: [127, 0, 0, 1], port: 1000 }]),
 		})
+	}
+
+	fn create_blinded_paths<
+		ES: EntropySource + ?Sized, T: secp256k1::Signing + secp256k1::Verification
+	>(
+		&self, _recipient: PublicKey, _peers: Vec<PublicKey>, _entropy_source: &ES,
+		_secp_ctx: &Secp256k1<T>
+	) -> Result<Vec<BlindedPath>, ()> {
+		unreachable!()
 	}
 }
 

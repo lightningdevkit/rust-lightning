@@ -65,7 +65,7 @@ use crate::offers::merkle::SignError;
 use crate::offers::offer::{DerivedMetadata, Offer, OfferBuilder};
 use crate::offers::parse::Bolt12SemanticError;
 use crate::offers::refund::{Refund, RefundBuilder};
-use crate::onion_message::{Destination, OffersMessage, OffersMessageHandler, PendingOnionMessage, new_pending_onion_message};
+use crate::onion_message::{Destination, MessageRouter, OffersMessage, OffersMessageHandler, PendingOnionMessage, new_pending_onion_message};
 use crate::sign::{EntropySource, KeysManager, NodeSigner, Recipient, SignerProvider};
 use crate::sign::ecdsa::WriteableEcdsaChannelSigner;
 use crate::util::config::{UserConfig, ChannelConfig, ChannelConfigUpdate};
@@ -7483,15 +7483,22 @@ where
 	///
 	/// # Privacy
 	///
-	/// Uses a one-hop [`BlindedPath`] for the offer with [`ChannelManager::get_our_node_id`] as the
-	/// introduction node and a derived signing pubkey for recipient privacy. As such, currently,
-	/// the node must be announced. Otherwise, there is no way to find a path to the introduction
-	/// node in order to send the [`InvoiceRequest`].
+	/// Uses [`MessageRouter::create_blinded_paths`] to construct a [`BlindedPath`] for the offer.
+	/// However, if one is not found, uses a one-hop [`BlindedPath`] with
+	/// [`ChannelManager::get_our_node_id`] as the introduction node instead. In the latter case,
+	/// the node must be announced, otherwise, there is no way to find a path to the introduction in
+	/// order to send the [`InvoiceRequest`].
+	///
+	/// Also, uses a derived signing pubkey in the offer for recipient privacy.
 	///
 	/// # Limitations
 	///
 	/// Requires a direct connection to the introduction node in the responding [`InvoiceRequest`]'s
 	/// reply path.
+	///
+	/// # Errors
+	///
+	/// Errors if the parameterized [`Router`] is unable to create a blinded path for the offer.
 	///
 	/// This is not exported to bindings users as builder patterns don't map outside of move semantics.
 	///
@@ -7499,16 +7506,20 @@ where
 	/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
 	pub fn create_offer_builder(
 		&self, description: String
-	) -> OfferBuilder<DerivedMetadata, secp256k1::All> {
+	) -> Result<OfferBuilder<DerivedMetadata, secp256k1::All>, Bolt12SemanticError> {
 		let node_id = self.get_our_node_id();
 		let expanded_key = &self.inbound_payment_key;
 		let entropy = &*self.entropy_source;
 		let secp_ctx = &self.secp_ctx;
-		let path = self.create_one_hop_blinded_path();
 
-		OfferBuilder::deriving_signing_pubkey(description, node_id, expanded_key, entropy, secp_ctx)
+		let path = self.create_blinded_path().map_err(|_| Bolt12SemanticError::MissingPaths)?;
+		let builder = OfferBuilder::deriving_signing_pubkey(
+			description, node_id, expanded_key, entropy, secp_ctx
+		)
 			.chain_hash(self.chain_hash)
-			.path(path)
+			.path(path);
+
+		Ok(builder)
 	}
 
 	/// Creates a [`RefundBuilder`] such that the [`Refund`] it builds is recognized by the
@@ -7533,10 +7544,13 @@ where
 	///
 	/// # Privacy
 	///
-	/// Uses a one-hop [`BlindedPath`] for the refund with [`ChannelManager::get_our_node_id`] as
-	/// the introduction node and a derived payer id for payer privacy. As such, currently, the
-	/// node must be announced. Otherwise, there is no way to find a path to the introduction node
-	/// in order to send the [`Bolt12Invoice`].
+	/// Uses [`MessageRouter::create_blinded_paths`] to construct a [`BlindedPath`] for the refund.
+	/// However, if one is not found, uses a one-hop [`BlindedPath`] with
+	/// [`ChannelManager::get_our_node_id`] as the introduction node instead. In the latter case,
+	/// the node must be announced, otherwise, there is no way to find a path to the introduction in
+	/// order to send the [`Bolt12Invoice`].
+	///
+	/// Also, uses a derived payer id in the refund for payer privacy.
 	///
 	/// # Limitations
 	///
@@ -7545,14 +7559,17 @@ where
 	///
 	/// # Errors
 	///
-	/// Errors if a duplicate `payment_id` is provided given the caveats in the aforementioned link
-	/// or if `amount_msats` is invalid.
+	/// Errors if:
+	/// - a duplicate `payment_id` is provided given the caveats in the aforementioned link,
+	/// - `amount_msats` is invalid, or
+	/// - the parameterized [`Router`] is unable to create a blinded path for the refund.
 	///
 	/// This is not exported to bindings users as builder patterns don't map outside of move semantics.
 	///
 	/// [`Refund`]: crate::offers::refund::Refund
 	/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
 	/// [`Bolt12Invoice::payment_paths`]: crate::offers::invoice::Bolt12Invoice::payment_paths
+	/// [Avoiding Duplicate Payments]: #avoiding-duplicate-payments
 	pub fn create_refund_builder(
 		&self, description: String, amount_msats: u64, absolute_expiry: Duration,
 		payment_id: PaymentId, retry_strategy: Retry, max_total_routing_fee_msat: Option<u64>
@@ -7561,8 +7578,8 @@ where
 		let expanded_key = &self.inbound_payment_key;
 		let entropy = &*self.entropy_source;
 		let secp_ctx = &self.secp_ctx;
-		let path = self.create_one_hop_blinded_path();
 
+		let path = self.create_blinded_path().map_err(|_| Bolt12SemanticError::MissingPaths)?;
 		let builder = RefundBuilder::deriving_payer_id(
 			description, node_id, expanded_key, entropy, secp_ctx, amount_msats, payment_id
 		)?
@@ -7620,8 +7637,11 @@ where
 	///
 	/// # Errors
 	///
-	/// Errors if a duplicate `payment_id` is provided given the caveats in the aforementioned link
-	/// or if the provided parameters are invalid for the offer.
+	/// Errors if:
+	/// - a duplicate `payment_id` is provided given the caveats in the aforementioned link,
+	/// - the provided parameters are invalid for the offer,
+	/// - the parameterized [`Router`] is unable to create a blinded reply path for the invoice
+	///   request.
 	///
 	/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
 	/// [`InvoiceRequest::quantity`]: crate::offers::invoice_request::InvoiceRequest::quantity
@@ -7654,9 +7674,8 @@ where
 			None => builder,
 			Some(payer_note) => builder.payer_note(payer_note),
 		};
-
 		let invoice_request = builder.build_and_sign()?;
-		let reply_path = self.create_one_hop_blinded_path();
+		let reply_path = self.create_blinded_path().map_err(|_| Bolt12SemanticError::MissingPaths)?;
 
 		let expiration = StaleExpiration::TimerTicks(1);
 		self.pending_outbound_payments
@@ -7705,6 +7724,11 @@ where
 	/// node meeting the aforementioned criteria, but there's no guarantee that they will be
 	/// received and no retries will be made.
 	///
+	/// # Errors
+	///
+	/// Errors if the parameterized [`Router`] is unable to create a blinded payment path or reply
+	/// path for the invoice.
+	///
 	/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
 	pub fn request_refund_payment(&self, refund: &Refund) -> Result<(), Bolt12SemanticError> {
 		let expanded_key = &self.inbound_payment_key;
@@ -7716,9 +7740,9 @@ where
 
 		match self.create_inbound_payment(Some(amount_msats), relative_expiry, None) {
 			Ok((payment_hash, payment_secret)) => {
-				let payment_paths = vec![
-					self.create_one_hop_blinded_payment_path(payment_secret),
-				];
+				let payment_paths = self.create_blinded_payment_paths(amount_msats, payment_secret)
+					.map_err(|_| Bolt12SemanticError::MissingPaths)?;
+
 				#[cfg(not(feature = "no-std"))]
 				let builder = refund.respond_using_derived_keys(
 					payment_paths, payment_hash, expanded_key, entropy
@@ -7732,7 +7756,8 @@ where
 					payment_paths, payment_hash, created_at, expanded_key, entropy
 				)?;
 				let invoice = builder.allow_mpp().build_and_sign(secp_ctx)?;
-				let reply_path = self.create_one_hop_blinded_path();
+				let reply_path = self.create_blinded_path()
+					.map_err(|_| Bolt12SemanticError::MissingPaths)?;
 
 				let mut pending_offers_messages = self.pending_offers_messages.lock().unwrap();
 				if refund.paths().is_empty() {
@@ -7859,24 +7884,37 @@ where
 		inbound_payment::get_payment_preimage(payment_hash, payment_secret, &self.inbound_payment_key)
 	}
 
-	/// Creates a one-hop blinded path with [`ChannelManager::get_our_node_id`] as the introduction
-	/// node.
-	fn create_one_hop_blinded_path(&self) -> BlindedPath {
+	/// Creates a blinded path by delegating to [`MessageRouter::create_blinded_paths`].
+	///
+	/// Errors if the `MessageRouter` errors or returns an empty `Vec`.
+	fn create_blinded_path(&self) -> Result<BlindedPath, ()> {
+		let recipient = self.get_our_node_id();
 		let entropy_source = self.entropy_source.deref();
 		let secp_ctx = &self.secp_ctx;
-		BlindedPath::one_hop_for_message(self.get_our_node_id(), entropy_source, secp_ctx).unwrap()
+
+		let peers = self.per_peer_state.read().unwrap()
+			.iter()
+			.filter(|(_, peer)| peer.lock().unwrap().latest_features.supports_onion_messages())
+			.map(|(node_id, _)| *node_id)
+			.collect::<Vec<_>>();
+
+		self.router
+			.create_blinded_paths(recipient, peers, entropy_source, secp_ctx)
+			.and_then(|paths| paths.into_iter().next().ok_or(()))
 	}
 
-	/// Creates a one-hop blinded path with [`ChannelManager::get_our_node_id`] as the introduction
-	/// node.
-	fn create_one_hop_blinded_payment_path(
-		&self, payment_secret: PaymentSecret
-	) -> (BlindedPayInfo, BlindedPath) {
+	/// Creates multi-hop blinded payment paths for the given `amount_msats` by delegating to
+	/// [`Router::create_blinded_payment_paths`].
+	fn create_blinded_payment_paths(
+		&self, amount_msats: u64, payment_secret: PaymentSecret
+	) -> Result<Vec<(BlindedPayInfo, BlindedPath)>, ()> {
 		let entropy_source = self.entropy_source.deref();
 		let secp_ctx = &self.secp_ctx;
 
+		let first_hops = self.list_usable_channels();
 		let payee_node_id = self.get_our_node_id();
-		let max_cltv_expiry = self.best_block.read().unwrap().height() + LATENCY_GRACE_PERIOD_BLOCKS;
+		let max_cltv_expiry = self.best_block.read().unwrap().height() + CLTV_FAR_FAR_AWAY
+			+ LATENCY_GRACE_PERIOD_BLOCKS;
 		let payee_tlvs = ReceiveTlvs {
 			payment_secret,
 			payment_constraints: PaymentConstraints {
@@ -7884,10 +7922,9 @@ where
 				htlc_minimum_msat: 1,
 			},
 		};
-		// TODO: Err for overflow?
-		BlindedPath::one_hop_for_payment(
-			payee_node_id, payee_tlvs, entropy_source, secp_ctx
-		).unwrap()
+		self.router.create_blinded_payment_paths(
+			payee_node_id, first_hops, payee_tlvs, amount_msats, entropy_source, secp_ctx
+		)
 	}
 
 	/// Gets a fake short channel id for use in receiving [phantom node payments]. These fake scids
@@ -9127,7 +9164,7 @@ where
 				let amount_msats = match InvoiceBuilder::<DerivedSigningPubkey>::amount_msats(
 					&invoice_request
 				) {
-					Ok(amount_msats) => Some(amount_msats),
+					Ok(amount_msats) => amount_msats,
 					Err(error) => return Some(OffersMessage::InvoiceError(error.into())),
 				};
 				let invoice_request = match invoice_request.verify(expanded_key, secp_ctx) {
@@ -9137,64 +9174,69 @@ where
 						return Some(OffersMessage::InvoiceError(error.into()));
 					},
 				};
-				let relative_expiry = DEFAULT_RELATIVE_EXPIRY.as_secs() as u32;
 
-				match self.create_inbound_payment(amount_msats, relative_expiry, None) {
-					Ok((payment_hash, payment_secret)) if invoice_request.keys.is_some() => {
-						let payment_paths = vec![
-							self.create_one_hop_blinded_payment_path(payment_secret),
-						];
-						#[cfg(not(feature = "no-std"))]
-						let builder = invoice_request.respond_using_derived_keys(
-							payment_paths, payment_hash
-						);
-						#[cfg(feature = "no-std")]
-						let created_at = Duration::from_secs(
-							self.highest_seen_timestamp.load(Ordering::Acquire) as u64
-						);
-						#[cfg(feature = "no-std")]
-						let builder = invoice_request.respond_using_derived_keys_no_std(
-							payment_paths, payment_hash, created_at
-						);
-						match builder.and_then(|b| b.allow_mpp().build_and_sign(secp_ctx)) {
-							Ok(invoice) => Some(OffersMessage::Invoice(invoice)),
-							Err(error) => Some(OffersMessage::InvoiceError(error.into())),
-						}
-					},
-					Ok((payment_hash, payment_secret)) => {
-						let payment_paths = vec![
-							self.create_one_hop_blinded_payment_path(payment_secret),
-						];
-						#[cfg(not(feature = "no-std"))]
-						let builder = invoice_request.respond_with(payment_paths, payment_hash);
-						#[cfg(feature = "no-std")]
-						let created_at = Duration::from_secs(
-							self.highest_seen_timestamp.load(Ordering::Acquire) as u64
-						);
-						#[cfg(feature = "no-std")]
-						let builder = invoice_request.respond_with_no_std(
-							payment_paths, payment_hash, created_at
-						);
-						let response = builder.and_then(|builder| builder.allow_mpp().build())
-							.map_err(|e| OffersMessage::InvoiceError(e.into()))
-							.and_then(|invoice|
-								match invoice.sign(|invoice| self.node_signer.sign_bolt12_invoice(invoice)) {
-									Ok(invoice) => Ok(OffersMessage::Invoice(invoice)),
-									Err(SignError::Signing(())) => Err(OffersMessage::InvoiceError(
-											InvoiceError::from_string("Failed signing invoice".to_string())
-									)),
-									Err(SignError::Verification(_)) => Err(OffersMessage::InvoiceError(
-											InvoiceError::from_string("Failed invoice signature verification".to_string())
-									)),
-								});
-						match response {
-							Ok(invoice) => Some(invoice),
-							Err(error) => Some(error),
-						}
-					},
+				let relative_expiry = DEFAULT_RELATIVE_EXPIRY.as_secs() as u32;
+				let (payment_hash, payment_secret) = match self.create_inbound_payment(
+					Some(amount_msats), relative_expiry, None
+				) {
+					Ok((payment_hash, payment_secret)) => (payment_hash, payment_secret),
 					Err(()) => {
-						Some(OffersMessage::InvoiceError(Bolt12SemanticError::InvalidAmount.into()))
+						let error = Bolt12SemanticError::InvalidAmount;
+						return Some(OffersMessage::InvoiceError(error.into()));
 					},
+				};
+
+				let payment_paths = match self.create_blinded_payment_paths(
+					amount_msats, payment_secret
+				) {
+					Ok(payment_paths) => payment_paths,
+					Err(()) => {
+						let error = Bolt12SemanticError::MissingPaths;
+						return Some(OffersMessage::InvoiceError(error.into()));
+					},
+				};
+
+				#[cfg(feature = "no-std")]
+				let created_at = Duration::from_secs(
+					self.highest_seen_timestamp.load(Ordering::Acquire) as u64
+				);
+
+				if invoice_request.keys.is_some() {
+					#[cfg(not(feature = "no-std"))]
+					let builder = invoice_request.respond_using_derived_keys(
+						payment_paths, payment_hash
+					);
+					#[cfg(feature = "no-std")]
+					let builder = invoice_request.respond_using_derived_keys_no_std(
+						payment_paths, payment_hash, created_at
+					);
+					match builder.and_then(|b| b.allow_mpp().build_and_sign(secp_ctx)) {
+						Ok(invoice) => Some(OffersMessage::Invoice(invoice)),
+						Err(error) => Some(OffersMessage::InvoiceError(error.into())),
+					}
+				} else {
+					#[cfg(not(feature = "no-std"))]
+					let builder = invoice_request.respond_with(payment_paths, payment_hash);
+					#[cfg(feature = "no-std")]
+					let builder = invoice_request.respond_with_no_std(
+						payment_paths, payment_hash, created_at
+					);
+					let response = builder.and_then(|builder| builder.allow_mpp().build())
+						.map_err(|e| OffersMessage::InvoiceError(e.into()))
+						.and_then(|invoice|
+							match invoice.sign(|invoice| self.node_signer.sign_bolt12_invoice(invoice)) {
+								Ok(invoice) => Ok(OffersMessage::Invoice(invoice)),
+								Err(SignError::Signing(())) => Err(OffersMessage::InvoiceError(
+										InvoiceError::from_string("Failed signing invoice".to_string())
+								)),
+								Err(SignError::Verification(_)) => Err(OffersMessage::InvoiceError(
+										InvoiceError::from_string("Failed invoice signature verification".to_string())
+								)),
+							});
+					match response {
+						Ok(invoice) => Some(invoice),
+						Err(error) => Some(error),
+					}
 				}
 			},
 			OffersMessage::Invoice(invoice) => {

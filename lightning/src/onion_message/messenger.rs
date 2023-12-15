@@ -64,9 +64,9 @@ pub(super) const MAX_TIMER_TICKS: usize = 2;
 /// # extern crate bitcoin;
 /// # use bitcoin::hashes::_export::_core::time::Duration;
 /// # use bitcoin::hashes::hex::FromHex;
-/// # use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
+/// # use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey, self};
 /// # use lightning::blinded_path::BlindedPath;
-/// # use lightning::sign::KeysManager;
+/// # use lightning::sign::{EntropySource, KeysManager};
 /// # use lightning::ln::peer_handler::IgnoringMessageHandler;
 /// # use lightning::onion_message::{OnionMessageContents, Destination, MessageRouter, OnionMessagePath, OnionMessenger};
 /// # use lightning::util::logger::{Logger, Record};
@@ -89,6 +89,11 @@ pub(super) const MAX_TIMER_TICKS: usize = 2;
 /// #             destination,
 /// #             first_node_addresses: None,
 /// #         })
+/// #     }
+/// #     fn create_blinded_paths<ES: EntropySource + ?Sized, T: secp256k1::Signing + secp256k1::Verification>(
+/// #         &self, _recipient: PublicKey, _peers: Vec<PublicKey>, _entropy_source: &ES, _secp_ctx: &Secp256k1<T>
+/// #     ) -> Result<Vec<BlindedPath>, ()> {
+/// #         unreachable!()
 /// #     }
 /// # }
 /// # let seed = [42u8; 32];
@@ -270,6 +275,15 @@ pub trait MessageRouter {
 	fn find_path(
 		&self, sender: PublicKey, peers: Vec<PublicKey>, destination: Destination
 	) -> Result<OnionMessagePath, ()>;
+
+	/// Creates [`BlindedPath`]s to the `recipient` node. The nodes in `peers` are assumed to be
+	/// direct peers with the `recipient`.
+	fn create_blinded_paths<
+		ES: EntropySource + ?Sized, T: secp256k1::Signing + secp256k1::Verification
+	>(
+		&self, recipient: PublicKey, peers: Vec<PublicKey>, entropy_source: &ES,
+		secp_ctx: &Secp256k1<T>
+	) -> Result<Vec<BlindedPath>, ()>;
 }
 
 /// A [`MessageRouter`] that can only route to a directly connected [`Destination`].
@@ -319,6 +333,47 @@ where
 				},
 				_ => Err(()),
 			}
+		}
+	}
+
+	fn create_blinded_paths<
+		ES: EntropySource + ?Sized, T: secp256k1::Signing + secp256k1::Verification
+	>(
+		&self, recipient: PublicKey, peers: Vec<PublicKey>, entropy_source: &ES,
+		secp_ctx: &Secp256k1<T>
+	) -> Result<Vec<BlindedPath>, ()> {
+		// Limit the number of blinded paths that are computed.
+		const MAX_PATHS: usize = 3;
+
+		// Ensure peers have at least three channels so that it is more difficult to infer the
+		// recipient's node_id.
+		const MIN_PEER_CHANNELS: usize = 3;
+
+		let network_graph = self.network_graph.deref().read_only();
+		let paths = peers.iter()
+			// Limit to peers with announced channels
+			.filter(|pubkey|
+				network_graph
+					.node(&NodeId::from_pubkey(pubkey))
+					.map(|info| &info.channels[..])
+					.map(|channels| channels.len() >= MIN_PEER_CHANNELS)
+					.unwrap_or(false)
+			)
+			.map(|pubkey| vec![*pubkey, recipient])
+			.map(|node_pks| BlindedPath::new_for_message(&node_pks, entropy_source, secp_ctx))
+			.take(MAX_PATHS)
+			.collect::<Result<Vec<_>, _>>();
+
+		match paths {
+			Ok(paths) if !paths.is_empty() => Ok(paths),
+			_ => {
+				if network_graph.nodes().contains_key(&NodeId::from_pubkey(&recipient)) {
+					BlindedPath::one_hop_for_message(recipient, entropy_source, secp_ctx)
+						.map(|path| vec![path])
+				} else {
+					Err(())
+				}
+			},
 		}
 	}
 }
