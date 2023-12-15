@@ -350,16 +350,16 @@ where
 		const MIN_PEER_CHANNELS: usize = 3;
 
 		let network_graph = self.network_graph.deref().read_only();
-		let paths = peers.into_iter()
+		let paths = peers.iter()
 			// Limit to peers with announced channels
 			.filter(|pubkey|
 				network_graph
-					.node(&NodeId::from_pubkey(&pubkey))
+					.node(&NodeId::from_pubkey(pubkey))
 					.map(|info| &info.channels[..])
 					.map(|channels| channels.len() >= MIN_PEER_CHANNELS)
 					.unwrap_or(false)
 			)
-			.map(|pubkey| vec![pubkey, recipient])
+			.map(|pubkey| vec![*pubkey, recipient])
 			.map(|node_pks| BlindedPath::new_for_message(&node_pks, entropy_source, secp_ctx))
 			.take(MAX_PATHS)
 			.collect::<Result<Vec<_>, _>>();
@@ -367,8 +367,12 @@ where
 		match paths {
 			Ok(paths) if !paths.is_empty() => Ok(paths),
 			_ => {
-				BlindedPath::one_hop_for_message(recipient, entropy_source, secp_ctx)
-					.map(|path| vec![path])
+				if network_graph.nodes().contains_key(&NodeId::from_pubkey(&recipient)) {
+					BlindedPath::one_hop_for_message(recipient, entropy_source, secp_ctx)
+						.map(|path| vec![path])
+				} else {
+					Err(())
+				}
 			},
 		}
 	}

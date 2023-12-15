@@ -153,8 +153,12 @@ impl<G: Deref<Target = NetworkGraph<L>> + Clone, L: Deref, S: Deref, SP: Sized, 
 		match paths {
 			Ok(paths) if !paths.is_empty() => Ok(paths),
 			_ => {
-				BlindedPath::one_hop_for_payment(recipient, tlvs, entropy_source, secp_ctx)
-					.map(|path| vec![path])
+				if network_graph.nodes().contains_key(&NodeId::from_pubkey(&recipient)) {
+					BlindedPath::one_hop_for_payment(recipient, tlvs, entropy_source, secp_ctx)
+						.map(|path| vec![path])
+				} else {
+					Err(())
+				}
 			},
 		}
 	}
