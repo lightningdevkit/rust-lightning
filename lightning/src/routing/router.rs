@@ -102,7 +102,7 @@ impl<G: Deref<Target = NetworkGraph<L>> + Clone, L: Deref, S: Deref, SP: Sized, 
 			.filter(|details| details.counterparty.features.supports_route_blinding())
 			.filter(|details| amount_msats <= details.inbound_capacity_msat)
 			.filter(|details| amount_msats >= details.inbound_htlc_minimum_msat.unwrap_or(0))
-			.filter(|details| amount_msats <= details.inbound_htlc_maximum_msat.unwrap_or(0))
+			.filter(|details| amount_msats <= details.inbound_htlc_maximum_msat.unwrap_or(u64::MAX))
 			.filter(|details| network_graph
 					.node(&NodeId::from_pubkey(&details.counterparty.node_id))
 					.map(|node_info| node_info.channels.len() >= MIN_PEER_CHANNELS)
@@ -139,7 +139,7 @@ impl<G: Deref<Target = NetworkGraph<L>> + Clone, L: Deref, S: Deref, SP: Sized, 
 						features: BlindedHopFeatures::empty(),
 					},
 					node_id: details.counterparty.node_id,
-					htlc_maximum_msat: details.inbound_htlc_maximum_msat.unwrap_or(0),
+					htlc_maximum_msat: details.inbound_htlc_maximum_msat.unwrap_or(u64::MAX),
 				})
 			})
 			.map(|forward_node| {
