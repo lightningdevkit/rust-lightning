@@ -1350,13 +1350,15 @@ impl ScoreLookUp for TestScorer {
 }
 
 impl ScoreUpdate for TestScorer {
-	fn payment_path_failed(&mut self, _actual_path: &Path, _actual_short_channel_id: u64) {}
+	fn payment_path_failed(&mut self, _actual_path: &Path, _actual_short_channel_id: u64, _duration_since_epoch: Duration) {}
 
-	fn payment_path_successful(&mut self, _actual_path: &Path) {}
+	fn payment_path_successful(&mut self, _actual_path: &Path, _duration_since_epoch: Duration) {}
 
-	fn probe_failed(&mut self, _actual_path: &Path, _: u64) {}
+	fn probe_failed(&mut self, _actual_path: &Path, _: u64, _duration_since_epoch: Duration) {}
 
-	fn probe_successful(&mut self, _actual_path: &Path) {}
+	fn probe_successful(&mut self, _actual_path: &Path, _duration_since_epoch: Duration) {}
+
+	fn time_passed(&mut self, _duration_since_epoch: Duration) {}
 }
 
 impl Drop for TestScorer {

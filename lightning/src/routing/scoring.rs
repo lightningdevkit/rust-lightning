@@ -61,7 +61,6 @@ use crate::routing::gossip::{EffectiveCapacity, NetworkGraph, NodeId};
 use crate::routing::router::{Path, CandidateRouteHop};
 use crate::util::ser::{Readable, ReadableArgs, Writeable, Writer};
 use crate::util::logger::Logger;
-use crate::util::time::Time;
 
 use crate::prelude::*;
 use core::{cmp, fmt};
@@ -110,16 +109,22 @@ pub trait ScoreLookUp {
 /// `ScoreUpdate` is used to update the scorer's internal state after a payment attempt.
 pub trait ScoreUpdate {
 	/// Handles updating channel penalties after failing to route through a channel.
-	fn payment_path_failed(&mut self, path: &Path, short_channel_id: u64);
+	fn payment_path_failed(&mut self, path: &Path, short_channel_id: u64, duration_since_epoch: Duration);
 
 	/// Handles updating channel penalties after successfully routing along a path.
-	fn payment_path_successful(&mut self, path: &Path);
+	fn payment_path_successful(&mut self, path: &Path, duration_since_epoch: Duration);
 
 	/// Handles updating channel penalties after a probe over the given path failed.
-	fn probe_failed(&mut self, path: &Path, short_channel_id: u64);
+	fn probe_failed(&mut self, path: &Path, short_channel_id: u64, duration_since_epoch: Duration);
 
 	/// Handles updating channel penalties after a probe over the given path succeeded.
-	fn probe_successful(&mut self, path: &Path);
+	fn probe_successful(&mut self, path: &Path, duration_since_epoch: Duration);
+
+	/// Scorers may wish to reduce their certainty of channel liquidity information over time.
+	/// Thus, this method is provided to allow scorers to observe the passage of time - the holder
+	/// of this object should call this method regularly (generally via the
+	/// `lightning-background-processor` crate).
+	fn time_passed(&mut self, duration_since_epoch: Duration);
 }
 
 /// A trait which can both lookup and update routing channel penalty scores.
@@ -145,20 +150,24 @@ impl<S: ScoreLookUp, T: Deref<Target=S>> ScoreLookUp for T {
 
 #[cfg(not(c_bindings))]
 impl<S: ScoreUpdate, T: DerefMut<Target=S>> ScoreUpdate for T {
-	fn payment_path_failed(&mut self, path: &Path, short_channel_id: u64) {
-		self.deref_mut().payment_path_failed(path, short_channel_id)
+	fn payment_path_failed(&mut self, path: &Path, short_channel_id: u64, duration_since_epoch: Duration) {
+		self.deref_mut().payment_path_failed(path, short_channel_id, duration_since_epoch)
 	}
 
-	fn payment_path_successful(&mut self, path: &Path) {
-		self.deref_mut().payment_path_successful(path)
+	fn payment_path_successful(&mut self, path: &Path, duration_since_epoch: Duration) {
+		self.deref_mut().payment_path_successful(path, duration_since_epoch)
 	}
 
-	fn probe_failed(&mut self, path: &Path, short_channel_id: u64) {
-		self.deref_mut().probe_failed(path, short_channel_id)
+	fn probe_failed(&mut self, path: &Path, short_channel_id: u64, duration_since_epoch: Duration) {
+		self.deref_mut().probe_failed(path, short_channel_id, duration_since_epoch)
 	}
 
-	fn probe_successful(&mut self, path: &Path) {
-		self.deref_mut().probe_successful(path)
+	fn probe_successful(&mut self, path: &Path, duration_since_epoch: Duration) {
+		self.deref_mut().probe_successful(path, duration_since_epoch)
+	}
+
+	fn time_passed(&mut self, duration_since_epoch: Duration) {
+		self.deref_mut().time_passed(duration_since_epoch)
 	}
 }
 } }
@@ -346,20 +355,24 @@ impl<'a, T: 'a + Score> DerefMut for MultiThreadedScoreLockWrite<'a, T> {
 
 #[cfg(c_bindings)]
 impl<'a, T: Score> ScoreUpdate for MultiThreadedScoreLockWrite<'a, T> {
-	fn payment_path_failed(&mut self, path: &Path, short_channel_id: u64) {
-		self.0.payment_path_failed(path, short_channel_id)
+	fn payment_path_failed(&mut self, path: &Path, short_channel_id: u64, duration_since_epoch: Duration) {
+		self.0.payment_path_failed(path, short_channel_id, duration_since_epoch)
 	}
 
-	fn payment_path_successful(&mut self, path: &Path) {
-		self.0.payment_path_successful(path)
+	fn payment_path_successful(&mut self, path: &Path, duration_since_epoch: Duration) {
+		self.0.payment_path_successful(path, duration_since_epoch)
 	}
 
-	fn probe_failed(&mut self, path: &Path, short_channel_id: u64) {
-		self.0.probe_failed(path, short_channel_id)
+	fn probe_failed(&mut self, path: &Path, short_channel_id: u64, duration_since_epoch: Duration) {
+		self.0.probe_failed(path, short_channel_id, duration_since_epoch)
 	}
 
-	fn probe_successful(&mut self, path: &Path) {
-		self.0.probe_successful(path)
+	fn probe_successful(&mut self, path: &Path, duration_since_epoch: Duration) {
+		self.0.probe_successful(path, duration_since_epoch)
+	}
+
+	fn time_passed(&mut self, duration_since_epoch: Duration) {
+		self.0.time_passed(duration_since_epoch)
 	}
 }
 
@@ -399,13 +412,15 @@ impl ScoreLookUp for FixedPenaltyScorer {
 }
 
 impl ScoreUpdate for FixedPenaltyScorer {
-	fn payment_path_failed(&mut self, _path: &Path, _short_channel_id: u64) {}
+	fn payment_path_failed(&mut self, _path: &Path, _short_channel_id: u64, _duration_since_epoch: Duration) {}
 
-	fn payment_path_successful(&mut self, _path: &Path) {}
+	fn payment_path_successful(&mut self, _path: &Path, _duration_since_epoch: Duration) {}
 
-	fn probe_failed(&mut self, _path: &Path, _short_channel_id: u64) {}
+	fn probe_failed(&mut self, _path: &Path, _short_channel_id: u64, _duration_since_epoch: Duration) {}
 
-	fn probe_successful(&mut self, _path: &Path) {}
+	fn probe_successful(&mut self, _path: &Path, _duration_since_epoch: Duration) {}
+
+	fn time_passed(&mut self, _duration_since_epoch: Duration) {}
 }
 
 impl Writeable for FixedPenaltyScorer {
@@ -423,13 +438,6 @@ impl ReadableArgs<u64> for FixedPenaltyScorer {
 		Ok(Self { penalty_msat })
 	}
 }
-
-#[cfg(not(feature = "no-std"))]
-type ConfiguredTime = crate::util::time::MonotonicTime;
-#[cfg(feature = "no-std")]
-use crate::util::time::Eternity;
-#[cfg(feature = "no-std")]
-type ConfiguredTime = Eternity;
 
 /// [`ScoreLookUp`] implementation using channel success probability distributions.
 ///
@@ -456,29 +464,18 @@ type ConfiguredTime = Eternity;
 /// formula, but using the history of a channel rather than our latest estimates for the liquidity
 /// bounds.
 ///
-/// # Note
-///
-/// Mixing the `no-std` feature between serialization and deserialization results in undefined
-/// behavior.
-///
 /// [1]: https://arxiv.org/abs/2107.05322
 /// [`liquidity_penalty_multiplier_msat`]: ProbabilisticScoringFeeParameters::liquidity_penalty_multiplier_msat
 /// [`liquidity_penalty_amount_multiplier_msat`]: ProbabilisticScoringFeeParameters::liquidity_penalty_amount_multiplier_msat
 /// [`liquidity_offset_half_life`]: ProbabilisticScoringDecayParameters::liquidity_offset_half_life
 /// [`historical_liquidity_penalty_multiplier_msat`]: ProbabilisticScoringFeeParameters::historical_liquidity_penalty_multiplier_msat
 /// [`historical_liquidity_penalty_amount_multiplier_msat`]: ProbabilisticScoringFeeParameters::historical_liquidity_penalty_amount_multiplier_msat
-pub type ProbabilisticScorer<G, L> = ProbabilisticScorerUsingTime::<G, L, ConfiguredTime>;
-
-/// Probabilistic [`ScoreLookUp`] implementation.
-///
-/// This is not exported to bindings users generally all users should use the [`ProbabilisticScorer`] type alias.
-pub struct ProbabilisticScorerUsingTime<G: Deref<Target = NetworkGraph<L>>, L: Deref, T: Time>
+pub struct ProbabilisticScorer<G: Deref<Target = NetworkGraph<L>>, L: Deref>
 where L::Target: Logger {
 	decay_params: ProbabilisticScoringDecayParameters,
 	network_graph: G,
 	logger: L,
-	// TODO: Remove entries of closed channels.
-	channel_liquidities: HashMap<u64, ChannelLiquidity<T>>,
+	channel_liquidities: HashMap<u64, ChannelLiquidity>,
 }
 
 /// Parameters for configuring [`ProbabilisticScorer`].
@@ -733,7 +730,7 @@ pub struct ProbabilisticScoringDecayParameters {
 	///
 	/// Default value: 14 days
 	///
-	/// [`historical_estimated_channel_liquidity_probabilities`]: ProbabilisticScorerUsingTime::historical_estimated_channel_liquidity_probabilities
+	/// [`historical_estimated_channel_liquidity_probabilities`]: ProbabilisticScorer::historical_estimated_channel_liquidity_probabilities
 	pub historical_no_updates_half_life: Duration,
 
 	/// Whenever this amount of time elapses since the last update to a channel's liquidity bounds,
@@ -782,33 +779,35 @@ impl ProbabilisticScoringDecayParameters {
 /// Direction is defined in terms of [`NodeId`] partial ordering, where the source node is the
 /// first node in the ordering of the channel's counterparties. Thus, swapping the two liquidity
 /// offset fields gives the opposite direction.
-struct ChannelLiquidity<T: Time> {
+struct ChannelLiquidity {
 	/// Lower channel liquidity bound in terms of an offset from zero.
 	min_liquidity_offset_msat: u64,
 
 	/// Upper channel liquidity bound in terms of an offset from the effective capacity.
 	max_liquidity_offset_msat: u64,
 
-	/// Time when the liquidity bounds were last modified.
-	last_updated: T,
-
 	min_liquidity_offset_history: HistoricalBucketRangeTracker,
 	max_liquidity_offset_history: HistoricalBucketRangeTracker,
+
+	/// Time when either liquidity bound was last modified as an offset since the unix epoch.
+	last_updated: Duration,
+
+	/// Time when the historical liquidity bounds were last modified as an offset against the unix
+	/// epoch.
+	offset_history_last_updated: Duration,
 }
 
-/// A snapshot of [`ChannelLiquidity`] in one direction assuming a certain channel capacity and
-/// decayed with a given half life.
-struct DirectedChannelLiquidity<L: Deref<Target = u64>, BRT: Deref<Target = HistoricalBucketRangeTracker>, T: Time, U: Deref<Target = T>> {
+/// A snapshot of [`ChannelLiquidity`] in one direction assuming a certain channel capacity.
+struct DirectedChannelLiquidity<L: Deref<Target = u64>, BRT: Deref<Target = HistoricalBucketRangeTracker>, T: Deref<Target = Duration>> {
 	min_liquidity_offset_msat: L,
 	max_liquidity_offset_msat: L,
 	liquidity_history: HistoricalMinMaxBuckets<BRT>,
 	capacity_msat: u64,
-	last_updated: U,
-	now: T,
-	decay_params: ProbabilisticScoringDecayParameters,
+	last_updated: T,
+	offset_history_last_updated: T,
 }
 
-impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, T: Time> ProbabilisticScorerUsingTime<G, L, T> where L::Target: Logger {
+impl<G: Deref<Target = NetworkGraph<L>>, L: Deref> ProbabilisticScorer<G, L> where L::Target: Logger {
 	/// Creates a new scorer using the given scoring parameters for sending payments from a node
 	/// through a network graph.
 	pub fn new(decay_params: ProbabilisticScoringDecayParameters, network_graph: G, logger: L) -> Self {
@@ -821,7 +820,7 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, T: Time> ProbabilisticScorerU
 	}
 
 	#[cfg(test)]
-	fn with_channel(mut self, short_channel_id: u64, liquidity: ChannelLiquidity<T>) -> Self {
+	fn with_channel(mut self, short_channel_id: u64, liquidity: ChannelLiquidity) -> Self {
 		assert!(self.channel_liquidities.insert(short_channel_id, liquidity).is_none());
 		self
 	}
@@ -831,20 +830,16 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, T: Time> ProbabilisticScorerU
 	/// Note that this writes roughly one line per channel for which we have a liquidity estimate,
 	/// which may be a substantial amount of log output.
 	pub fn debug_log_liquidity_stats(&self) {
-		let now = T::now();
-
 		let graph = self.network_graph.read_only();
 		for (scid, liq) in self.channel_liquidities.iter() {
 			if let Some(chan_debug) = graph.channels().get(scid) {
 				let log_direction = |source, target| {
 					if let Some((directed_info, _)) = chan_debug.as_directed_to(target) {
 						let amt = directed_info.effective_capacity().as_msat();
-						let dir_liq = liq.as_directed(source, target, amt, self.decay_params);
+						let dir_liq = liq.as_directed(source, target, amt);
 
-						let (min_buckets, max_buckets) = dir_liq.liquidity_history
-							.get_decayed_buckets(now, *dir_liq.last_updated,
-								self.decay_params.historical_no_updates_half_life)
-							.unwrap_or(([0; 32], [0; 32]));
+						let min_buckets = &dir_liq.liquidity_history.min_liquidity_offset_history.buckets;
+						let max_buckets = &dir_liq.liquidity_history.max_liquidity_offset_history.buckets;
 
 						log_debug!(self.logger, core::concat!(
 							"Liquidity from {} to {} via {} is in the range ({}, {}).\n",
@@ -893,7 +888,7 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, T: Time> ProbabilisticScorerU
 			if let Some(liq) = self.channel_liquidities.get(&scid) {
 				if let Some((directed_info, source)) = chan.as_directed_to(target) {
 					let amt = directed_info.effective_capacity().as_msat();
-					let dir_liq = liq.as_directed(source, target, amt, self.decay_params);
+					let dir_liq = liq.as_directed(source, target, amt);
 					return Some((dir_liq.min_liquidity_msat(), dir_liq.max_liquidity_msat()));
 				}
 			}
@@ -923,7 +918,7 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, T: Time> ProbabilisticScorerU
 	/// in the top and bottom bucket, and roughly with similar (recent) frequency.
 	///
 	/// Because the datapoints are decayed slowly over time, values will eventually return to
-	/// `Some(([1; 32], [1; 32]))` and then to `None` once no datapoints remain.
+	/// `Some(([0; 32], [0; 32]))` or `None` if no data remains for a channel.
 	///
 	/// In order to fetch a single success probability from the buckets provided here, as used in
 	/// the scoring model, see [`Self::historical_estimated_payment_success_probability`].
@@ -935,13 +930,10 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, T: Time> ProbabilisticScorerU
 			if let Some(liq) = self.channel_liquidities.get(&scid) {
 				if let Some((directed_info, source)) = chan.as_directed_to(target) {
 					let amt = directed_info.effective_capacity().as_msat();
-					let dir_liq = liq.as_directed(source, target, amt, self.decay_params);
+					let dir_liq = liq.as_directed(source, target, amt);
 
-					let (min_buckets, mut max_buckets) =
-						dir_liq.liquidity_history.get_decayed_buckets(
-							dir_liq.now, *dir_liq.last_updated,
-							self.decay_params.historical_no_updates_half_life
-						)?;
+					let min_buckets = dir_liq.liquidity_history.min_liquidity_offset_history.buckets;
+					let mut max_buckets = dir_liq.liquidity_history.max_liquidity_offset_history.buckets;
 
 					// Note that the liquidity buckets are an offset from the edge, so we inverse
 					// the max order to get the probabilities from zero.
@@ -969,12 +961,10 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, T: Time> ProbabilisticScorerU
 			if let Some(liq) = self.channel_liquidities.get(&scid) {
 				if let Some((directed_info, source)) = chan.as_directed_to(target) {
 					let capacity_msat = directed_info.effective_capacity().as_msat();
-					let dir_liq = liq.as_directed(source, target, capacity_msat, self.decay_params);
+					let dir_liq = liq.as_directed(source, target, capacity_msat);
 
 					return dir_liq.liquidity_history.calculate_success_probability_times_billion(
-						dir_liq.now, *dir_liq.last_updated,
-						self.decay_params.historical_no_updates_half_life, &params, amount_msat,
-						capacity_msat
+						&params, amount_msat, capacity_msat
 					).map(|p| p as f64 / (1024 * 1024 * 1024) as f64);
 				}
 			}
@@ -983,23 +973,23 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, T: Time> ProbabilisticScorerU
 	}
 }
 
-impl<T: Time> ChannelLiquidity<T> {
-	#[inline]
-	fn new() -> Self {
+impl ChannelLiquidity {
+	fn new(last_updated: Duration) -> Self {
 		Self {
 			min_liquidity_offset_msat: 0,
 			max_liquidity_offset_msat: 0,
 			min_liquidity_offset_history: HistoricalBucketRangeTracker::new(),
 			max_liquidity_offset_history: HistoricalBucketRangeTracker::new(),
-			last_updated: T::now(),
+			last_updated,
+			offset_history_last_updated: last_updated,
 		}
 	}
 
 	/// Returns a view of the channel liquidity directed from `source` to `target` assuming
 	/// `capacity_msat`.
 	fn as_directed(
-		&self, source: &NodeId, target: &NodeId, capacity_msat: u64, decay_params: ProbabilisticScoringDecayParameters
-	) -> DirectedChannelLiquidity<&u64, &HistoricalBucketRangeTracker, T, &T> {
+		&self, source: &NodeId, target: &NodeId, capacity_msat: u64,
+	) -> DirectedChannelLiquidity<&u64, &HistoricalBucketRangeTracker, &Duration> {
 		let (min_liquidity_offset_msat, max_liquidity_offset_msat, min_liquidity_offset_history, max_liquidity_offset_history) =
 			if source < target {
 				(&self.min_liquidity_offset_msat, &self.max_liquidity_offset_msat,
@@ -1018,16 +1008,15 @@ impl<T: Time> ChannelLiquidity<T> {
 			},
 			capacity_msat,
 			last_updated: &self.last_updated,
-			now: T::now(),
-			decay_params: decay_params,
+			offset_history_last_updated: &self.offset_history_last_updated,
 		}
 	}
 
 	/// Returns a mutable view of the channel liquidity directed from `source` to `target` assuming
 	/// `capacity_msat`.
 	fn as_directed_mut(
-		&mut self, source: &NodeId, target: &NodeId, capacity_msat: u64, decay_params: ProbabilisticScoringDecayParameters
-	) -> DirectedChannelLiquidity<&mut u64, &mut HistoricalBucketRangeTracker, T, &mut T> {
+		&mut self, source: &NodeId, target: &NodeId, capacity_msat: u64,
+	) -> DirectedChannelLiquidity<&mut u64, &mut HistoricalBucketRangeTracker, &mut Duration> {
 		let (min_liquidity_offset_msat, max_liquidity_offset_msat, min_liquidity_offset_history, max_liquidity_offset_history) =
 			if source < target {
 				(&mut self.min_liquidity_offset_msat, &mut self.max_liquidity_offset_msat,
@@ -1046,8 +1035,20 @@ impl<T: Time> ChannelLiquidity<T> {
 			},
 			capacity_msat,
 			last_updated: &mut self.last_updated,
-			now: T::now(),
-			decay_params: decay_params,
+			offset_history_last_updated: &mut self.offset_history_last_updated,
+		}
+	}
+
+	fn decayed_offset(
+		&self, offset: u64, duration_since_epoch: Duration,
+		decay_params: ProbabilisticScoringDecayParameters,
+	) -> u64 {
+		let half_life = decay_params.liquidity_offset_half_life.as_secs_f64();
+		if half_life != 0.0 {
+			let elapsed_time = duration_since_epoch.saturating_sub(self.last_updated).as_secs_f64();
+			((offset as f64) * powf64(0.5, elapsed_time / half_life)) as u64
+		} else {
+			0
 		}
 	}
 }
@@ -1133,7 +1134,8 @@ fn success_probability(
 	(numerator, denominator)
 }
 
-impl<L: Deref<Target = u64>, BRT: Deref<Target = HistoricalBucketRangeTracker>, T: Time, U: Deref<Target = T>> DirectedChannelLiquidity< L, BRT, T, U> {
+impl<L: Deref<Target = u64>, BRT: Deref<Target = HistoricalBucketRangeTracker>, T: Deref<Target = Duration>>
+DirectedChannelLiquidity< L, BRT, T> {
 	/// Returns a liquidity penalty for routing the given HTLC `amount_msat` through the channel in
 	/// this direction.
 	fn penalty_msat(&self, amount_msat: u64, score_params: &ProbabilisticScoringFeeParameters) -> u64 {
@@ -1181,9 +1183,8 @@ impl<L: Deref<Target = u64>, BRT: Deref<Target = HistoricalBucketRangeTracker>, 
 		if score_params.historical_liquidity_penalty_multiplier_msat != 0 ||
 		   score_params.historical_liquidity_penalty_amount_multiplier_msat != 0 {
 			if let Some(cumulative_success_prob_times_billion) = self.liquidity_history
-				.calculate_success_probability_times_billion(self.now, *self.last_updated,
-					self.decay_params.historical_no_updates_half_life, score_params, amount_msat,
-					self.capacity_msat)
+				.calculate_success_probability_times_billion(
+					score_params, amount_msat, self.capacity_msat)
 			{
 				let historical_negative_log10_times_2048 = approx::negative_log10_times_2048(cumulative_success_prob_times_billion + 1, 1024 * 1024 * 1024);
 				res = res.saturating_add(Self::combined_penalty_msat(amount_msat,
@@ -1227,119 +1228,93 @@ impl<L: Deref<Target = u64>, BRT: Deref<Target = HistoricalBucketRangeTracker>, 
 	/// Returns the lower bound of the channel liquidity balance in this direction.
 	#[inline(always)]
 	fn min_liquidity_msat(&self) -> u64 {
-		self.decayed_offset_msat(*self.min_liquidity_offset_msat)
+		*self.min_liquidity_offset_msat
 	}
 
 	/// Returns the upper bound of the channel liquidity balance in this direction.
 	#[inline(always)]
 	fn max_liquidity_msat(&self) -> u64 {
 		self.capacity_msat
-			.saturating_sub(self.decayed_offset_msat(*self.max_liquidity_offset_msat))
-	}
-
-	fn decayed_offset_msat(&self, offset_msat: u64) -> u64 {
-		let half_life = self.decay_params.liquidity_offset_half_life.as_secs();
-		if half_life != 0 {
-			// Decay the offset by the appropriate number of half lives. If half of the next half
-			// life has passed, approximate an additional three-quarter life to help smooth out the
-			// decay.
-			let elapsed_time = self.now.duration_since(*self.last_updated).as_secs();
-			let half_decays = elapsed_time / (half_life / 2);
-			let decays = half_decays / 2;
-			let decayed_offset_msat = offset_msat.checked_shr(decays as u32).unwrap_or(0);
-			if half_decays % 2 == 0 {
-				decayed_offset_msat
-			} else {
-				// 11_585 / 16_384 ~= core::f64::consts::FRAC_1_SQRT_2
-				// 16_384 == 2^14
-				(decayed_offset_msat as u128 * 11_585 / 16_384) as u64
-			}
-		} else {
-			0
-		}
+			.saturating_sub(*self.max_liquidity_offset_msat)
 	}
 }
 
-impl<L: DerefMut<Target = u64>, BRT: DerefMut<Target = HistoricalBucketRangeTracker>, T: Time, U: DerefMut<Target = T>> DirectedChannelLiquidity<L, BRT, T, U> {
+impl<L: DerefMut<Target = u64>, BRT: DerefMut<Target = HistoricalBucketRangeTracker>, T: DerefMut<Target = Duration>>
+DirectedChannelLiquidity<L, BRT, T> {
 	/// Adjusts the channel liquidity balance bounds when failing to route `amount_msat`.
-	fn failed_at_channel<Log: Deref>(&mut self, amount_msat: u64, chan_descr: fmt::Arguments, logger: &Log) where Log::Target: Logger {
+	fn failed_at_channel<Log: Deref>(
+		&mut self, amount_msat: u64, duration_since_epoch: Duration, chan_descr: fmt::Arguments, logger: &Log
+	) where Log::Target: Logger {
 		let existing_max_msat = self.max_liquidity_msat();
 		if amount_msat < existing_max_msat {
 			log_debug!(logger, "Setting max liquidity of {} from {} to {}", chan_descr, existing_max_msat, amount_msat);
-			self.set_max_liquidity_msat(amount_msat);
+			self.set_max_liquidity_msat(amount_msat, duration_since_epoch);
 		} else {
 			log_trace!(logger, "Max liquidity of {} is {} (already less than or equal to {})",
 				chan_descr, existing_max_msat, amount_msat);
 		}
-		self.update_history_buckets(0);
+		self.update_history_buckets(0, duration_since_epoch);
 	}
 
 	/// Adjusts the channel liquidity balance bounds when failing to route `amount_msat` downstream.
-	fn failed_downstream<Log: Deref>(&mut self, amount_msat: u64, chan_descr: fmt::Arguments, logger: &Log) where Log::Target: Logger {
+	fn failed_downstream<Log: Deref>(
+		&mut self, amount_msat: u64, duration_since_epoch: Duration, chan_descr: fmt::Arguments, logger: &Log
+	) where Log::Target: Logger {
 		let existing_min_msat = self.min_liquidity_msat();
 		if amount_msat > existing_min_msat {
 			log_debug!(logger, "Setting min liquidity of {} from {} to {}", existing_min_msat, chan_descr, amount_msat);
-			self.set_min_liquidity_msat(amount_msat);
+			self.set_min_liquidity_msat(amount_msat, duration_since_epoch);
 		} else {
 			log_trace!(logger, "Min liquidity of {} is {} (already greater than or equal to {})",
 				chan_descr, existing_min_msat, amount_msat);
 		}
-		self.update_history_buckets(0);
+		self.update_history_buckets(0, duration_since_epoch);
 	}
 
 	/// Adjusts the channel liquidity balance bounds when successfully routing `amount_msat`.
-	fn successful<Log: Deref>(&mut self, amount_msat: u64, chan_descr: fmt::Arguments, logger: &Log) where Log::Target: Logger {
+	fn successful<Log: Deref>(&mut self,
+		amount_msat: u64, duration_since_epoch: Duration, chan_descr: fmt::Arguments, logger: &Log
+	) where Log::Target: Logger {
 		let max_liquidity_msat = self.max_liquidity_msat().checked_sub(amount_msat).unwrap_or(0);
 		log_debug!(logger, "Subtracting {} from max liquidity of {} (setting it to {})", amount_msat, chan_descr, max_liquidity_msat);
-		self.set_max_liquidity_msat(max_liquidity_msat);
-		self.update_history_buckets(amount_msat);
+		self.set_max_liquidity_msat(max_liquidity_msat, duration_since_epoch);
+		self.update_history_buckets(amount_msat, duration_since_epoch);
 	}
 
 	/// Updates the history buckets for this channel. Because the history buckets track what we now
 	/// know about the channel's state *prior to our payment* (i.e. what we assume is "steady
 	/// state"), we allow the caller to set an offset applied to our liquidity bounds which
 	/// represents the amount of the successful payment we just made.
-	fn update_history_buckets(&mut self, bucket_offset_msat: u64) {
-		let half_lives = self.now.duration_since(*self.last_updated).as_secs()
-			.checked_div(self.decay_params.historical_no_updates_half_life.as_secs())
-			.map(|v| v.try_into().unwrap_or(u32::max_value())).unwrap_or(u32::max_value());
-		self.liquidity_history.min_liquidity_offset_history.time_decay_data(half_lives);
-		self.liquidity_history.max_liquidity_offset_history.time_decay_data(half_lives);
-
-		let min_liquidity_offset_msat = self.decayed_offset_msat(*self.min_liquidity_offset_msat);
+	fn update_history_buckets(&mut self, bucket_offset_msat: u64, duration_since_epoch: Duration) {
 		self.liquidity_history.min_liquidity_offset_history.track_datapoint(
-			min_liquidity_offset_msat + bucket_offset_msat, self.capacity_msat
+			*self.min_liquidity_offset_msat + bucket_offset_msat, self.capacity_msat
 		);
-		let max_liquidity_offset_msat = self.decayed_offset_msat(*self.max_liquidity_offset_msat);
 		self.liquidity_history.max_liquidity_offset_history.track_datapoint(
-			max_liquidity_offset_msat.saturating_sub(bucket_offset_msat), self.capacity_msat
+			self.max_liquidity_offset_msat.saturating_sub(bucket_offset_msat), self.capacity_msat
 		);
+		*self.offset_history_last_updated = duration_since_epoch;
 	}
 
 	/// Adjusts the lower bound of the channel liquidity balance in this direction.
-	fn set_min_liquidity_msat(&mut self, amount_msat: u64) {
+	fn set_min_liquidity_msat(&mut self, amount_msat: u64, duration_since_epoch: Duration) {
 		*self.min_liquidity_offset_msat = amount_msat;
-		*self.max_liquidity_offset_msat = if amount_msat > self.max_liquidity_msat() {
-			0
-		} else {
-			self.decayed_offset_msat(*self.max_liquidity_offset_msat)
-		};
-		*self.last_updated = self.now;
+		if amount_msat > self.max_liquidity_msat() {
+			*self.max_liquidity_offset_msat = 0;
+		}
+		*self.last_updated = duration_since_epoch;
 	}
 
 	/// Adjusts the upper bound of the channel liquidity balance in this direction.
-	fn set_max_liquidity_msat(&mut self, amount_msat: u64) {
+	fn set_max_liquidity_msat(&mut self, amount_msat: u64, duration_since_epoch: Duration) {
 		*self.max_liquidity_offset_msat = self.capacity_msat.checked_sub(amount_msat).unwrap_or(0);
-		*self.min_liquidity_offset_msat = if amount_msat < self.min_liquidity_msat() {
-			0
-		} else {
-			self.decayed_offset_msat(*self.min_liquidity_offset_msat)
-		};
-		*self.last_updated = self.now;
+		if amount_msat < *self.min_liquidity_offset_msat {
+			*self.min_liquidity_offset_msat = 0;
+		}
+		*self.last_updated = duration_since_epoch;
 	}
 }
 
-impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, T: Time> ScoreLookUp for ProbabilisticScorerUsingTime<G, L, T> where L::Target: Logger {
+impl<G: Deref<Target = NetworkGraph<L>>, L: Deref> ScoreLookUp for ProbabilisticScorer<G, L> where L::Target: Logger {
 	type ScoreParams = ProbabilisticScoringFeeParameters;
 	fn channel_penalty_msat(
 		&self, candidate: &CandidateRouteHop, usage: ChannelUsage, score_params: &ProbabilisticScoringFeeParameters
@@ -1382,16 +1357,16 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, T: Time> ScoreLookUp for Prob
 		let capacity_msat = usage.effective_capacity.as_msat();
 		self.channel_liquidities
 			.get(&scid)
-			.unwrap_or(&ChannelLiquidity::new())
-			.as_directed(&source, &target, capacity_msat, self.decay_params)
+			.unwrap_or(&ChannelLiquidity::new(Duration::ZERO))
+			.as_directed(&source, &target, capacity_msat)
 			.penalty_msat(amount_msat, score_params)
 			.saturating_add(anti_probing_penalty_msat)
 			.saturating_add(base_penalty_msat)
 	}
 }
 
-impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, T: Time> ScoreUpdate for ProbabilisticScorerUsingTime<G, L, T> where L::Target: Logger {
-	fn payment_path_failed(&mut self, path: &Path, short_channel_id: u64) {
+impl<G: Deref<Target = NetworkGraph<L>>, L: Deref> ScoreUpdate for ProbabilisticScorer<G, L> where L::Target: Logger {
+	fn payment_path_failed(&mut self, path: &Path, short_channel_id: u64, duration_since_epoch: Duration) {
 		let amount_msat = path.final_value_msat();
 		log_trace!(self.logger, "Scoring path through to SCID {} as having failed at {} msat", short_channel_id, amount_msat);
 		let network_graph = self.network_graph.read_only();
@@ -1412,15 +1387,17 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, T: Time> ScoreUpdate for Prob
 				if at_failed_channel {
 					self.channel_liquidities
 						.entry(hop.short_channel_id)
-						.or_insert_with(ChannelLiquidity::new)
-						.as_directed_mut(source, &target, capacity_msat, self.decay_params)
-						.failed_at_channel(amount_msat, format_args!("SCID {}, towards {:?}", hop.short_channel_id, target), &self.logger);
+						.or_insert_with(|| ChannelLiquidity::new(duration_since_epoch))
+						.as_directed_mut(source, &target, capacity_msat)
+						.failed_at_channel(amount_msat, duration_since_epoch,
+							format_args!("SCID {}, towards {:?}", hop.short_channel_id, target), &self.logger);
 				} else {
 					self.channel_liquidities
 						.entry(hop.short_channel_id)
-						.or_insert_with(ChannelLiquidity::new)
-						.as_directed_mut(source, &target, capacity_msat, self.decay_params)
-						.failed_downstream(amount_msat, format_args!("SCID {}, towards {:?}", hop.short_channel_id, target), &self.logger);
+						.or_insert_with(|| ChannelLiquidity::new(duration_since_epoch))
+						.as_directed_mut(source, &target, capacity_msat)
+						.failed_downstream(amount_msat, duration_since_epoch,
+							format_args!("SCID {}, towards {:?}", hop.short_channel_id, target), &self.logger);
 				}
 			} else {
 				log_debug!(self.logger, "Not able to penalize channel with SCID {} as we do not have graph info for it (likely a route-hint last-hop).",
@@ -1430,7 +1407,7 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, T: Time> ScoreUpdate for Prob
 		}
 	}
 
-	fn payment_path_successful(&mut self, path: &Path) {
+	fn payment_path_successful(&mut self, path: &Path, duration_since_epoch: Duration) {
 		let amount_msat = path.final_value_msat();
 		log_trace!(self.logger, "Scoring path through SCID {} as having succeeded at {} msat.",
 			path.hops.split_last().map(|(hop, _)| hop.short_channel_id).unwrap_or(0), amount_msat);
@@ -1446,9 +1423,10 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, T: Time> ScoreUpdate for Prob
 				let capacity_msat = channel.effective_capacity().as_msat();
 				self.channel_liquidities
 					.entry(hop.short_channel_id)
-					.or_insert_with(ChannelLiquidity::new)
-					.as_directed_mut(source, &target, capacity_msat, self.decay_params)
-					.successful(amount_msat, format_args!("SCID {}, towards {:?}", hop.short_channel_id, target), &self.logger);
+					.or_insert_with(|| ChannelLiquidity::new(duration_since_epoch))
+					.as_directed_mut(source, &target, capacity_msat)
+					.successful(amount_msat, duration_since_epoch,
+						format_args!("SCID {}, towards {:?}", hop.short_channel_id, target), &self.logger);
 			} else {
 				log_debug!(self.logger, "Not able to learn for channel with SCID {} as we do not have graph info for it (likely a route-hint last-hop).",
 					hop.short_channel_id);
@@ -1456,18 +1434,58 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, T: Time> ScoreUpdate for Prob
 		}
 	}
 
-	fn probe_failed(&mut self, path: &Path, short_channel_id: u64) {
-		self.payment_path_failed(path, short_channel_id)
+	fn probe_failed(&mut self, path: &Path, short_channel_id: u64, duration_since_epoch: Duration) {
+		self.payment_path_failed(path, short_channel_id, duration_since_epoch)
 	}
 
-	fn probe_successful(&mut self, path: &Path) {
-		self.payment_path_failed(path, u64::max_value())
+	fn probe_successful(&mut self, path: &Path, duration_since_epoch: Duration) {
+		self.payment_path_failed(path, u64::max_value(), duration_since_epoch)
+	}
+
+	fn time_passed(&mut self, duration_since_epoch: Duration) {
+		let decay_params = self.decay_params;
+		self.channel_liquidities.retain(|_scid, liquidity| {
+			liquidity.min_liquidity_offset_msat =
+				liquidity.decayed_offset(liquidity.min_liquidity_offset_msat, duration_since_epoch, decay_params);
+			liquidity.max_liquidity_offset_msat =
+				liquidity.decayed_offset(liquidity.max_liquidity_offset_msat, duration_since_epoch, decay_params);
+			liquidity.last_updated = duration_since_epoch;
+
+			let elapsed_time =
+				duration_since_epoch.saturating_sub(liquidity.offset_history_last_updated);
+			if elapsed_time > decay_params.historical_no_updates_half_life {
+				let half_life = decay_params.historical_no_updates_half_life.as_secs_f64();
+				if half_life != 0.0 {
+					let divisor = powf64(2048.0, elapsed_time.as_secs_f64() / half_life) as u64;
+					for bucket in liquidity.min_liquidity_offset_history.buckets.iter_mut() {
+						*bucket = ((*bucket as u64) * 1024 / divisor) as u16;
+					}
+					for bucket in liquidity.max_liquidity_offset_history.buckets.iter_mut() {
+						*bucket = ((*bucket as u64) * 1024 / divisor) as u16;
+					}
+					liquidity.offset_history_last_updated = duration_since_epoch;
+				}
+			}
+			liquidity.min_liquidity_offset_msat != 0 || liquidity.max_liquidity_offset_msat != 0 ||
+				liquidity.min_liquidity_offset_history.buckets != [0; 32] ||
+				liquidity.max_liquidity_offset_history.buckets != [0; 32]
+		});
 	}
 }
 
 #[cfg(c_bindings)]
-impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, T: Time> Score for ProbabilisticScorerUsingTime<G, L, T>
+impl<G: Deref<Target = NetworkGraph<L>>, L: Deref> Score for ProbabilisticScorer<G, L>
 where L::Target: Logger {}
+
+#[cfg(feature = "std")]
+#[inline]
+fn powf64(n: f64, exp: f64) -> f64 {
+	n.powf(exp)
+}
+#[cfg(not(feature = "std"))]
+fn powf64(n: f64, exp: f64) -> f64 {
+	libm::powf(n as f32, exp as f32) as f64
+}
 
 mod approx {
 	const BITS: u32 = 64;
@@ -1890,7 +1908,7 @@ mod bucketed_history {
 	/// in each of 32 buckets.
 	#[derive(Clone, Copy)]
 	pub(super) struct HistoricalBucketRangeTracker {
-		buckets: [u16; 32],
+		pub(super) buckets: [u16; 32],
 	}
 
 	/// Buckets are stored in fixed point numbers with a 5 bit fractional part. Thus, the value
@@ -1930,14 +1948,6 @@ mod bucketed_history {
 				self.buckets[bucket] = self.buckets[bucket].saturating_add(BUCKET_FIXED_POINT_ONE);
 			}
 		}
-		/// Decay all buckets by the given number of half-lives. Used to more aggressively remove old
-		/// datapoints as we receive newer information.
-		#[inline]
-		pub(super) fn time_decay_data(&mut self, half_lives: u32) {
-			for e in self.buckets.iter_mut() {
-				*e = e.checked_shr(half_lives).unwrap_or(0);
-			}
-		}
 	}
 
 	impl_writeable_tlv_based!(HistoricalBucketRangeTracker, { (0, buckets, required) });
@@ -1955,44 +1965,10 @@ mod bucketed_history {
 	}
 
 	impl<D: Deref<Target = HistoricalBucketRangeTracker>> HistoricalMinMaxBuckets<D> {
-		pub(super) fn get_decayed_buckets<T: Time>(&self, now: T, last_updated: T, half_life: Duration)
-		-> Option<([u16; 32], [u16; 32])> {
-			let (_, required_decays) = self.get_total_valid_points(now, last_updated, half_life)?;
-
-			let mut min_buckets = *self.min_liquidity_offset_history;
-			min_buckets.time_decay_data(required_decays);
-			let mut max_buckets = *self.max_liquidity_offset_history;
-			max_buckets.time_decay_data(required_decays);
-			Some((min_buckets.buckets, max_buckets.buckets))
-		}
 		#[inline]
-		pub(super) fn get_total_valid_points<T: Time>(&self, now: T, last_updated: T, half_life: Duration)
-		-> Option<(u64, u32)> {
-			let required_decays = now.duration_since(last_updated).as_secs()
-				.checked_div(half_life.as_secs())
-				.map_or(u32::max_value(), |decays| cmp::min(decays, u32::max_value() as u64) as u32);
-
-			let mut total_valid_points_tracked = 0;
-			for (min_idx, min_bucket) in self.min_liquidity_offset_history.buckets.iter().enumerate() {
-				for max_bucket in self.max_liquidity_offset_history.buckets.iter().take(32 - min_idx) {
-					total_valid_points_tracked += (*min_bucket as u64) * (*max_bucket as u64);
-				}
-			}
-
-			// If the total valid points is smaller than 1.0 (i.e. 32 in our fixed-point scheme),
-			// treat it as if we were fully decayed.
-			const FULLY_DECAYED: u16 = BUCKET_FIXED_POINT_ONE * BUCKET_FIXED_POINT_ONE;
-			if total_valid_points_tracked.checked_shr(required_decays).unwrap_or(0) < FULLY_DECAYED.into() {
-				return None;
-			}
-
-			Some((total_valid_points_tracked, required_decays))
-		}
-
-		#[inline]
-		pub(super) fn calculate_success_probability_times_billion<T: Time>(
-			&self, now: T, last_updated: T, half_life: Duration,
-			params: &ProbabilisticScoringFeeParameters, amount_msat: u64, capacity_msat: u64
+		pub(super) fn calculate_success_probability_times_billion(
+			&self, params: &ProbabilisticScoringFeeParameters, amount_msat: u64,
+			capacity_msat: u64
 		) -> Option<u64> {
 			// If historical penalties are enabled, we try to calculate a probability of success
 			// given our historical distribution of min- and max-liquidity bounds in a channel.
@@ -2004,10 +1980,19 @@ mod bucketed_history {
 			let payment_pos = amount_to_pos(amount_msat, capacity_msat);
 			if payment_pos >= POSITION_TICKS { return None; }
 
-			// Check if all our buckets are zero, once decayed and treat it as if we had no data. We
-			// don't actually use the decayed buckets, though, as that would lose precision.
-			let (total_valid_points_tracked, _)
-				= self.get_total_valid_points(now, last_updated, half_life)?;
+			let mut total_valid_points_tracked = 0;
+			for (min_idx, min_bucket) in self.min_liquidity_offset_history.buckets.iter().enumerate() {
+				for max_bucket in self.max_liquidity_offset_history.buckets.iter().take(32 - min_idx) {
+					total_valid_points_tracked += (*min_bucket as u64) * (*max_bucket as u64);
+				}
+			}
+
+			// If the total valid points is smaller than 1.0 (i.e. 32 in our fixed-point scheme),
+			// treat it as if we were fully decayed.
+			const FULLY_DECAYED: u16 = BUCKET_FIXED_POINT_ONE * BUCKET_FIXED_POINT_ONE;
+			if total_valid_points_tracked < FULLY_DECAYED.into() {
+				return None;
+			}
 
 			let mut cumulative_success_prob_times_billion = 0;
 			// Special-case the 0th min bucket - it generally means we failed a payment, so only
@@ -2067,7 +2052,7 @@ mod bucketed_history {
 }
 use bucketed_history::{LegacyHistoricalBucketRangeTracker, HistoricalBucketRangeTracker, HistoricalMinMaxBuckets};
 
-impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, T: Time> Writeable for ProbabilisticScorerUsingTime<G, L, T> where L::Target: Logger {
+impl<G: Deref<Target = NetworkGraph<L>>, L: Deref> Writeable for ProbabilisticScorer<G, L> where L::Target: Logger {
 	#[inline]
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
 		write_tlv_fields!(w, {
@@ -2077,8 +2062,8 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, T: Time> Writeable for Probab
 	}
 }
 
-impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, T: Time>
-ReadableArgs<(ProbabilisticScoringDecayParameters, G, L)> for ProbabilisticScorerUsingTime<G, L, T> where L::Target: Logger {
+impl<G: Deref<Target = NetworkGraph<L>>, L: Deref>
+ReadableArgs<(ProbabilisticScoringDecayParameters, G, L)> for ProbabilisticScorer<G, L> where L::Target: Logger {
 	#[inline]
 	fn read<R: Read>(
 		r: &mut R, args: (ProbabilisticScoringDecayParameters, G, L)
@@ -2097,24 +2082,24 @@ ReadableArgs<(ProbabilisticScoringDecayParameters, G, L)> for ProbabilisticScore
 	}
 }
 
-impl<T: Time> Writeable for ChannelLiquidity<T> {
+impl Writeable for ChannelLiquidity {
 	#[inline]
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
-		let duration_since_epoch = T::duration_since_epoch() - self.last_updated.elapsed();
 		write_tlv_fields!(w, {
 			(0, self.min_liquidity_offset_msat, required),
 			// 1 was the min_liquidity_offset_history in octile form
 			(2, self.max_liquidity_offset_msat, required),
 			// 3 was the max_liquidity_offset_history in octile form
-			(4, duration_since_epoch, required),
+			(4, self.last_updated, required),
 			(5, Some(self.min_liquidity_offset_history), option),
 			(7, Some(self.max_liquidity_offset_history), option),
+			(9, self.offset_history_last_updated, required),
 		});
 		Ok(())
 	}
 }
 
-impl<T: Time> Readable for ChannelLiquidity<T> {
+impl Readable for ChannelLiquidity {
 	#[inline]
 	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
 		let mut min_liquidity_offset_msat = 0;
@@ -2123,28 +2108,19 @@ impl<T: Time> Readable for ChannelLiquidity<T> {
 		let mut legacy_max_liq_offset_history: Option<LegacyHistoricalBucketRangeTracker> = None;
 		let mut min_liquidity_offset_history: Option<HistoricalBucketRangeTracker> = None;
 		let mut max_liquidity_offset_history: Option<HistoricalBucketRangeTracker> = None;
-		let mut duration_since_epoch = Duration::from_secs(0);
+		let mut last_updated = Duration::from_secs(0);
+		let mut offset_history_last_updated = None;
 		read_tlv_fields!(r, {
 			(0, min_liquidity_offset_msat, required),
 			(1, legacy_min_liq_offset_history, option),
 			(2, max_liquidity_offset_msat, required),
 			(3, legacy_max_liq_offset_history, option),
-			(4, duration_since_epoch, required),
+			(4, last_updated, required),
 			(5, min_liquidity_offset_history, option),
 			(7, max_liquidity_offset_history, option),
+			(9, offset_history_last_updated, option),
 		});
-		// On rust prior to 1.60 `Instant::duration_since` will panic if time goes backwards.
-		// We write `last_updated` as wallclock time even though its ultimately an `Instant` (which
-		// is a time from a monotonic clock usually represented as an offset against boot time).
-		// Thus, we have to construct an `Instant` by subtracting the difference in wallclock time
-		// from the one that was written. However, because `Instant` can panic if we construct one
-		// in the future, we must handle wallclock time jumping backwards, which we do by simply
-		// using `Instant::now()` in that case.
-		let wall_clock_now = T::duration_since_epoch();
-		let now = T::now();
-		let last_updated = if wall_clock_now > duration_since_epoch {
-			now - (wall_clock_now - duration_since_epoch)
-		} else { now };
+
 		if min_liquidity_offset_history.is_none() {
 			if let Some(legacy_buckets) = legacy_min_liq_offset_history {
 				min_liquidity_offset_history = Some(legacy_buckets.into_current());
@@ -2165,17 +2141,16 @@ impl<T: Time> Readable for ChannelLiquidity<T> {
 			min_liquidity_offset_history: min_liquidity_offset_history.unwrap(),
 			max_liquidity_offset_history: max_liquidity_offset_history.unwrap(),
 			last_updated,
+			offset_history_last_updated: offset_history_last_updated.unwrap_or(last_updated),
 		})
 	}
 }
 
 #[cfg(test)]
 mod tests {
-	use super::{ChannelLiquidity, HistoricalBucketRangeTracker, ProbabilisticScoringFeeParameters, ProbabilisticScoringDecayParameters, ProbabilisticScorerUsingTime};
+	use super::{ChannelLiquidity, HistoricalBucketRangeTracker, ProbabilisticScoringFeeParameters, ProbabilisticScoringDecayParameters, ProbabilisticScorer};
 	use crate::blinded_path::{BlindedHop, BlindedPath};
 	use crate::util::config::UserConfig;
-	use crate::util::time::Time;
-	use crate::util::time::tests::SinceEpoch;
 
 	use crate::ln::channelmanager;
 	use crate::ln::msgs::{ChannelAnnouncement, ChannelUpdate, UnsignedChannelAnnouncement, UnsignedChannelUpdate};
@@ -2220,9 +2195,6 @@ mod tests {
 	}
 
 	// `ProbabilisticScorer` tests
-
-	/// A probabilistic scorer for testing with time that can be manually advanced.
-	type ProbabilisticScorer<'a> = ProbabilisticScorerUsingTime::<&'a NetworkGraph<&'a TestLogger>, &'a TestLogger, SinceEpoch>;
 
 	fn sender_privkey() -> SecretKey {
 		SecretKey::from_slice(&[41; 32]).unwrap()
@@ -2339,19 +2311,22 @@ mod tests {
 	#[test]
 	fn liquidity_bounds_directed_from_lowest_node_id() {
 		let logger = TestLogger::new();
-		let last_updated = SinceEpoch::now();
+		let last_updated = Duration::ZERO;
+		let offset_history_last_updated = Duration::ZERO;
 		let network_graph = network_graph(&logger);
 		let decay_params = ProbabilisticScoringDecayParameters::default();
 		let mut scorer = ProbabilisticScorer::new(decay_params, &network_graph, &logger)
 			.with_channel(42,
 				ChannelLiquidity {
-					min_liquidity_offset_msat: 700, max_liquidity_offset_msat: 100, last_updated,
+					min_liquidity_offset_msat: 700, max_liquidity_offset_msat: 100,
+					last_updated, offset_history_last_updated,
 					min_liquidity_offset_history: HistoricalBucketRangeTracker::new(),
 					max_liquidity_offset_history: HistoricalBucketRangeTracker::new(),
 				})
 			.with_channel(43,
 				ChannelLiquidity {
-					min_liquidity_offset_msat: 700, max_liquidity_offset_msat: 100, last_updated,
+					min_liquidity_offset_msat: 700, max_liquidity_offset_msat: 100,
+					last_updated, offset_history_last_updated,
 					min_liquidity_offset_history: HistoricalBucketRangeTracker::new(),
 					max_liquidity_offset_history: HistoricalBucketRangeTracker::new(),
 				});
@@ -2364,52 +2339,52 @@ mod tests {
 		// Update minimum liquidity.
 
 		let liquidity = scorer.channel_liquidities.get(&42).unwrap()
-			.as_directed(&source, &target, 1_000, decay_params);
+			.as_directed(&source, &target, 1_000);
 		assert_eq!(liquidity.min_liquidity_msat(), 100);
 		assert_eq!(liquidity.max_liquidity_msat(), 300);
 
 		let liquidity = scorer.channel_liquidities.get(&42).unwrap()
-			.as_directed(&target, &source, 1_000, decay_params);
+			.as_directed(&target, &source, 1_000);
 		assert_eq!(liquidity.min_liquidity_msat(), 700);
 		assert_eq!(liquidity.max_liquidity_msat(), 900);
 
 		scorer.channel_liquidities.get_mut(&42).unwrap()
-			.as_directed_mut(&source, &target, 1_000, decay_params)
-			.set_min_liquidity_msat(200);
+			.as_directed_mut(&source, &target, 1_000)
+			.set_min_liquidity_msat(200, Duration::ZERO);
 
 		let liquidity = scorer.channel_liquidities.get(&42).unwrap()
-			.as_directed(&source, &target, 1_000, decay_params);
+			.as_directed(&source, &target, 1_000);
 		assert_eq!(liquidity.min_liquidity_msat(), 200);
 		assert_eq!(liquidity.max_liquidity_msat(), 300);
 
 		let liquidity = scorer.channel_liquidities.get(&42).unwrap()
-			.as_directed(&target, &source, 1_000, decay_params);
+			.as_directed(&target, &source, 1_000);
 		assert_eq!(liquidity.min_liquidity_msat(), 700);
 		assert_eq!(liquidity.max_liquidity_msat(), 800);
 
 		// Update maximum liquidity.
 
 		let liquidity = scorer.channel_liquidities.get(&43).unwrap()
-			.as_directed(&target, &recipient, 1_000, decay_params);
+			.as_directed(&target, &recipient, 1_000);
 		assert_eq!(liquidity.min_liquidity_msat(), 700);
 		assert_eq!(liquidity.max_liquidity_msat(), 900);
 
 		let liquidity = scorer.channel_liquidities.get(&43).unwrap()
-			.as_directed(&recipient, &target, 1_000, decay_params);
+			.as_directed(&recipient, &target, 1_000);
 		assert_eq!(liquidity.min_liquidity_msat(), 100);
 		assert_eq!(liquidity.max_liquidity_msat(), 300);
 
 		scorer.channel_liquidities.get_mut(&43).unwrap()
-			.as_directed_mut(&target, &recipient, 1_000, decay_params)
-			.set_max_liquidity_msat(200);
+			.as_directed_mut(&target, &recipient, 1_000)
+			.set_max_liquidity_msat(200, Duration::ZERO);
 
 		let liquidity = scorer.channel_liquidities.get(&43).unwrap()
-			.as_directed(&target, &recipient, 1_000, decay_params);
+			.as_directed(&target, &recipient, 1_000);
 		assert_eq!(liquidity.min_liquidity_msat(), 0);
 		assert_eq!(liquidity.max_liquidity_msat(), 200);
 
 		let liquidity = scorer.channel_liquidities.get(&43).unwrap()
-			.as_directed(&recipient, &target, 1_000, decay_params);
+			.as_directed(&recipient, &target, 1_000);
 		assert_eq!(liquidity.min_liquidity_msat(), 800);
 		assert_eq!(liquidity.max_liquidity_msat(), 1000);
 	}
@@ -2417,13 +2392,15 @@ mod tests {
 	#[test]
 	fn resets_liquidity_upper_bound_when_crossed_by_lower_bound() {
 		let logger = TestLogger::new();
-		let last_updated = SinceEpoch::now();
+		let last_updated = Duration::ZERO;
+		let offset_history_last_updated = Duration::ZERO;
 		let network_graph = network_graph(&logger);
 		let decay_params = ProbabilisticScoringDecayParameters::default();
 		let mut scorer = ProbabilisticScorer::new(decay_params, &network_graph, &logger)
 			.with_channel(42,
 				ChannelLiquidity {
-					min_liquidity_offset_msat: 200, max_liquidity_offset_msat: 400, last_updated,
+					min_liquidity_offset_msat: 200, max_liquidity_offset_msat: 400,
+					last_updated, offset_history_last_updated,
 					min_liquidity_offset_history: HistoricalBucketRangeTracker::new(),
 					max_liquidity_offset_history: HistoricalBucketRangeTracker::new(),
 				});
@@ -2433,42 +2410,42 @@ mod tests {
 
 		// Check initial bounds.
 		let liquidity = scorer.channel_liquidities.get(&42).unwrap()
-			.as_directed(&source, &target, 1_000, decay_params);
+			.as_directed(&source, &target, 1_000);
 		assert_eq!(liquidity.min_liquidity_msat(), 400);
 		assert_eq!(liquidity.max_liquidity_msat(), 800);
 
 		let liquidity = scorer.channel_liquidities.get(&42).unwrap()
-			.as_directed(&target, &source, 1_000, decay_params);
+			.as_directed(&target, &source, 1_000);
 		assert_eq!(liquidity.min_liquidity_msat(), 200);
 		assert_eq!(liquidity.max_liquidity_msat(), 600);
 
 		// Reset from source to target.
 		scorer.channel_liquidities.get_mut(&42).unwrap()
-			.as_directed_mut(&source, &target, 1_000, decay_params)
-			.set_min_liquidity_msat(900);
+			.as_directed_mut(&source, &target, 1_000)
+			.set_min_liquidity_msat(900, Duration::ZERO);
 
 		let liquidity = scorer.channel_liquidities.get(&42).unwrap()
-			.as_directed(&source, &target, 1_000, decay_params);
+			.as_directed(&source, &target, 1_000);
 		assert_eq!(liquidity.min_liquidity_msat(), 900);
 		assert_eq!(liquidity.max_liquidity_msat(), 1_000);
 
 		let liquidity = scorer.channel_liquidities.get(&42).unwrap()
-			.as_directed(&target, &source, 1_000, decay_params);
+			.as_directed(&target, &source, 1_000);
 		assert_eq!(liquidity.min_liquidity_msat(), 0);
 		assert_eq!(liquidity.max_liquidity_msat(), 100);
 
 		// Reset from target to source.
 		scorer.channel_liquidities.get_mut(&42).unwrap()
-			.as_directed_mut(&target, &source, 1_000, decay_params)
-			.set_min_liquidity_msat(400);
+			.as_directed_mut(&target, &source, 1_000)
+			.set_min_liquidity_msat(400, Duration::ZERO);
 
 		let liquidity = scorer.channel_liquidities.get(&42).unwrap()
-			.as_directed(&source, &target, 1_000, decay_params);
+			.as_directed(&source, &target, 1_000);
 		assert_eq!(liquidity.min_liquidity_msat(), 0);
 		assert_eq!(liquidity.max_liquidity_msat(), 600);
 
 		let liquidity = scorer.channel_liquidities.get(&42).unwrap()
-			.as_directed(&target, &source, 1_000, decay_params);
+			.as_directed(&target, &source, 1_000);
 		assert_eq!(liquidity.min_liquidity_msat(), 400);
 		assert_eq!(liquidity.max_liquidity_msat(), 1_000);
 	}
@@ -2476,13 +2453,15 @@ mod tests {
 	#[test]
 	fn resets_liquidity_lower_bound_when_crossed_by_upper_bound() {
 		let logger = TestLogger::new();
-		let last_updated = SinceEpoch::now();
+		let last_updated = Duration::ZERO;
+		let offset_history_last_updated = Duration::ZERO;
 		let network_graph = network_graph(&logger);
 		let decay_params = ProbabilisticScoringDecayParameters::default();
 		let mut scorer = ProbabilisticScorer::new(decay_params, &network_graph, &logger)
 			.with_channel(42,
 				ChannelLiquidity {
-					min_liquidity_offset_msat: 200, max_liquidity_offset_msat: 400, last_updated,
+					min_liquidity_offset_msat: 200, max_liquidity_offset_msat: 400,
+					last_updated, offset_history_last_updated,
 					min_liquidity_offset_history: HistoricalBucketRangeTracker::new(),
 					max_liquidity_offset_history: HistoricalBucketRangeTracker::new(),
 				});
@@ -2492,42 +2471,42 @@ mod tests {
 
 		// Check initial bounds.
 		let liquidity = scorer.channel_liquidities.get(&42).unwrap()
-			.as_directed(&source, &target, 1_000, decay_params);
+			.as_directed(&source, &target, 1_000);
 		assert_eq!(liquidity.min_liquidity_msat(), 400);
 		assert_eq!(liquidity.max_liquidity_msat(), 800);
 
 		let liquidity = scorer.channel_liquidities.get(&42).unwrap()
-			.as_directed(&target, &source, 1_000, decay_params);
+			.as_directed(&target, &source, 1_000);
 		assert_eq!(liquidity.min_liquidity_msat(), 200);
 		assert_eq!(liquidity.max_liquidity_msat(), 600);
 
 		// Reset from source to target.
 		scorer.channel_liquidities.get_mut(&42).unwrap()
-			.as_directed_mut(&source, &target, 1_000, decay_params)
-			.set_max_liquidity_msat(300);
+			.as_directed_mut(&source, &target, 1_000)
+			.set_max_liquidity_msat(300, Duration::ZERO);
 
 		let liquidity = scorer.channel_liquidities.get(&42).unwrap()
-			.as_directed(&source, &target, 1_000, decay_params);
+			.as_directed(&source, &target, 1_000);
 		assert_eq!(liquidity.min_liquidity_msat(), 0);
 		assert_eq!(liquidity.max_liquidity_msat(), 300);
 
 		let liquidity = scorer.channel_liquidities.get(&42).unwrap()
-			.as_directed(&target, &source, 1_000, decay_params);
+			.as_directed(&target, &source, 1_000);
 		assert_eq!(liquidity.min_liquidity_msat(), 700);
 		assert_eq!(liquidity.max_liquidity_msat(), 1_000);
 
 		// Reset from target to source.
 		scorer.channel_liquidities.get_mut(&42).unwrap()
-			.as_directed_mut(&target, &source, 1_000, decay_params)
-			.set_max_liquidity_msat(600);
+			.as_directed_mut(&target, &source, 1_000)
+			.set_max_liquidity_msat(600, Duration::ZERO);
 
 		let liquidity = scorer.channel_liquidities.get(&42).unwrap()
-			.as_directed(&source, &target, 1_000, decay_params);
+			.as_directed(&source, &target, 1_000);
 		assert_eq!(liquidity.min_liquidity_msat(), 400);
 		assert_eq!(liquidity.max_liquidity_msat(), 1_000);
 
 		let liquidity = scorer.channel_liquidities.get(&42).unwrap()
-			.as_directed(&target, &source, 1_000, decay_params);
+			.as_directed(&target, &source, 1_000);
 		assert_eq!(liquidity.min_liquidity_msat(), 0);
 		assert_eq!(liquidity.max_liquidity_msat(), 600);
 	}
@@ -2587,7 +2566,8 @@ mod tests {
 	#[test]
 	fn constant_penalty_outside_liquidity_bounds() {
 		let logger = TestLogger::new();
-		let last_updated = SinceEpoch::now();
+		let last_updated = Duration::ZERO;
+		let offset_history_last_updated = Duration::ZERO;
 		let network_graph = network_graph(&logger);
 		let params = ProbabilisticScoringFeeParameters {
 			liquidity_penalty_multiplier_msat: 1_000,
@@ -2600,7 +2580,8 @@ mod tests {
 		let scorer = ProbabilisticScorer::new(decay_params, &network_graph, &logger)
 			.with_channel(42,
 				ChannelLiquidity {
-					min_liquidity_offset_msat: 40, max_liquidity_offset_msat: 40, last_updated,
+					min_liquidity_offset_msat: 40, max_liquidity_offset_msat: 40,
+					last_updated, offset_history_last_updated,
 					min_liquidity_offset_history: HistoricalBucketRangeTracker::new(),
 					max_liquidity_offset_history: HistoricalBucketRangeTracker::new(),
 				});
@@ -2651,10 +2632,10 @@ mod tests {
 
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 301);
 
-		scorer.payment_path_failed(&failed_path, 41);
+		scorer.payment_path_failed(&failed_path, 41, Duration::ZERO);
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 301);
 
-		scorer.payment_path_successful(&successful_path);
+		scorer.payment_path_successful(&successful_path, Duration::ZERO);
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 301);
 	}
 
@@ -2687,7 +2668,7 @@ mod tests {
 		let usage = ChannelUsage { amount_msat: 750, ..usage };
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 602);
 
-		scorer.payment_path_failed(&path, 43);
+		scorer.payment_path_failed(&path, 43, Duration::ZERO);
 
 		let usage = ChannelUsage { amount_msat: 250, ..usage };
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 0);
@@ -2727,7 +2708,7 @@ mod tests {
 		let usage = ChannelUsage { amount_msat: 750, ..usage };
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 602);
 
-		scorer.payment_path_failed(&path, 42);
+		scorer.payment_path_failed(&path, 42, Duration::ZERO);
 
 		let usage = ChannelUsage { amount_msat: 250, ..usage };
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 300);
@@ -2804,7 +2785,7 @@ mod tests {
 		};
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 128);
 
-		scorer.payment_path_failed(&Path { hops: path, blinded_tail: None }, 43);
+		scorer.payment_path_failed(&Path { hops: path, blinded_tail: None }, 43, Duration::ZERO);
 
 		let channel = network_graph.read_only().channel(42).unwrap().to_owned();
 		let (info, _) = channel.as_directed_from(&node_a).unwrap();
@@ -2867,7 +2848,7 @@ mod tests {
 		assert_eq!(scorer.channel_penalty_msat(&candidate_42, usage, &params), 128);
 		assert_eq!(scorer.channel_penalty_msat(&candidate_43, usage, &params), 128);
 
-		scorer.payment_path_successful(&payment_path_for_amount(500));
+		scorer.payment_path_successful(&payment_path_for_amount(500), Duration::ZERO);
 
 		assert_eq!(scorer.channel_penalty_msat(&candidate_41, usage, &params), 128);
 		assert_eq!(scorer.channel_penalty_msat(&candidate_42, usage, &params), 300);
@@ -2905,8 +2886,8 @@ mod tests {
 		let usage = ChannelUsage { amount_msat: 1_023, ..usage };
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 2_000);
 
-		scorer.payment_path_failed(&payment_path_for_amount(768), 42);
-		scorer.payment_path_failed(&payment_path_for_amount(128), 43);
+		scorer.payment_path_failed(&payment_path_for_amount(768), 42, Duration::ZERO);
+		scorer.payment_path_failed(&payment_path_for_amount(128), 43, Duration::ZERO);
 
 		// Initial penalties
 		let usage = ChannelUsage { amount_msat: 128, ..usage };
@@ -2918,19 +2899,8 @@ mod tests {
 		let usage = ChannelUsage { amount_msat: 896, ..usage };
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), u64::max_value());
 
-		// No decay
-		SinceEpoch::advance(Duration::from_secs(4));
-		let usage = ChannelUsage { amount_msat: 128, ..usage };
-		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 0);
-		let usage = ChannelUsage { amount_msat: 256, ..usage };
-		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 93);
-		let usage = ChannelUsage { amount_msat: 768, ..usage };
-		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 1_479);
-		let usage = ChannelUsage { amount_msat: 896, ..usage };
-		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), u64::max_value());
-
 		// Half decay (i.e., three-quarter life)
-		SinceEpoch::advance(Duration::from_secs(1));
+		scorer.time_passed(Duration::from_secs(5));
 		let usage = ChannelUsage { amount_msat: 128, ..usage };
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 22);
 		let usage = ChannelUsage { amount_msat: 256, ..usage };
@@ -2941,7 +2911,7 @@ mod tests {
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), u64::max_value());
 
 		// One decay (i.e., half life)
-		SinceEpoch::advance(Duration::from_secs(5));
+		scorer.time_passed(Duration::from_secs(10));
 		let usage = ChannelUsage { amount_msat: 64, ..usage };
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 0);
 		let usage = ChannelUsage { amount_msat: 128, ..usage };
@@ -2952,7 +2922,7 @@ mod tests {
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), u64::max_value());
 
 		// Fully decay liquidity lower bound.
-		SinceEpoch::advance(Duration::from_secs(10 * 7));
+		scorer.time_passed(Duration::from_secs(10 * 8));
 		let usage = ChannelUsage { amount_msat: 0, ..usage };
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 0);
 		let usage = ChannelUsage { amount_msat: 1, ..usage };
@@ -2963,56 +2933,17 @@ mod tests {
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), u64::max_value());
 
 		// Fully decay liquidity upper bound.
-		SinceEpoch::advance(Duration::from_secs(10));
+		scorer.time_passed(Duration::from_secs(10 * 9));
 		let usage = ChannelUsage { amount_msat: 0, ..usage };
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 0);
 		let usage = ChannelUsage { amount_msat: 1_024, ..usage };
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), u64::max_value());
 
-		SinceEpoch::advance(Duration::from_secs(10));
+		scorer.time_passed(Duration::from_secs(10 * 10));
 		let usage = ChannelUsage { amount_msat: 0, ..usage };
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 0);
 		let usage = ChannelUsage { amount_msat: 1_024, ..usage };
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), u64::max_value());
-	}
-
-	#[test]
-	fn decays_liquidity_bounds_without_shift_overflow() {
-		let logger = TestLogger::new();
-		let network_graph = network_graph(&logger);
-		let params = ProbabilisticScoringFeeParameters {
-			liquidity_penalty_multiplier_msat: 1_000,
-			..ProbabilisticScoringFeeParameters::zero_penalty()
-		};
-		let decay_params = ProbabilisticScoringDecayParameters {
-			liquidity_offset_half_life: Duration::from_secs(10),
-			..ProbabilisticScoringDecayParameters::default()
-		};
-		let mut scorer = ProbabilisticScorer::new(decay_params, &network_graph, &logger);
-		let source = source_node_id();
-		let usage = ChannelUsage {
-			amount_msat: 256,
-			inflight_htlc_msat: 0,
-			effective_capacity: EffectiveCapacity::Total { capacity_msat: 1_024, htlc_maximum_msat: 1_000 },
-		};
-		let channel = network_graph.read_only().channel(42).unwrap().to_owned();
-		let (info, _) = channel.as_directed_from(&source).unwrap();
-		let candidate = CandidateRouteHop::PublicHop {
-			info,
-			short_channel_id: 42,
-		};
-		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 125);
-
-		scorer.payment_path_failed(&payment_path_for_amount(512), 42);
-		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 281);
-
-		// An unchecked right shift 64 bits or more in DirectedChannelLiquidity::decayed_offset_msat
-		// would cause an overflow.
-		SinceEpoch::advance(Duration::from_secs(10 * 64));
-		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 125);
-
-		SinceEpoch::advance(Duration::from_secs(10));
-		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 125);
 	}
 
 	#[test]
@@ -3044,26 +2975,26 @@ mod tests {
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 300);
 
 		// More knowledge gives higher confidence (256, 768), meaning a lower penalty.
-		scorer.payment_path_failed(&payment_path_for_amount(768), 42);
-		scorer.payment_path_failed(&payment_path_for_amount(256), 43);
+		scorer.payment_path_failed(&payment_path_for_amount(768), 42, Duration::ZERO);
+		scorer.payment_path_failed(&payment_path_for_amount(256), 43, Duration::ZERO);
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 281);
 
 		// Decaying knowledge gives less confidence (128, 896), meaning a higher penalty.
-		SinceEpoch::advance(Duration::from_secs(10));
+		scorer.time_passed(Duration::from_secs(10));
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 291);
 
 		// Reducing the upper bound gives more confidence (128, 832) that the payment amount (512)
 		// is closer to the upper bound, meaning a higher penalty.
-		scorer.payment_path_successful(&payment_path_for_amount(64));
+		scorer.payment_path_successful(&payment_path_for_amount(64), Duration::from_secs(10));
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 331);
 
 		// Increasing the lower bound gives more confidence (256, 832) that the payment amount (512)
 		// is closer to the lower bound, meaning a lower penalty.
-		scorer.payment_path_failed(&payment_path_for_amount(256), 43);
+		scorer.payment_path_failed(&payment_path_for_amount(256), 43, Duration::from_secs(10));
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 245);
 
 		// Further decaying affects the lower bound more than the upper bound (128, 928).
-		SinceEpoch::advance(Duration::from_secs(10));
+		scorer.time_passed(Duration::from_secs(20));
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 280);
 	}
 
@@ -3088,7 +3019,7 @@ mod tests {
 			effective_capacity: EffectiveCapacity::Total { capacity_msat: 1_000, htlc_maximum_msat: 1_000 },
 		};
 
-		scorer.payment_path_failed(&payment_path_for_amount(500), 42);
+		scorer.payment_path_failed(&payment_path_for_amount(500), 42, Duration::ZERO);
 		let channel = network_graph.read_only().channel(42).unwrap().to_owned();
 		let (info, _) = channel.as_directed_from(&source).unwrap();
 		let candidate = CandidateRouteHop::PublicHop {
@@ -3097,10 +3028,10 @@ mod tests {
 		};
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), u64::max_value());
 
-		SinceEpoch::advance(Duration::from_secs(10));
+		scorer.time_passed(Duration::from_secs(10));
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 473);
 
-		scorer.payment_path_failed(&payment_path_for_amount(250), 43);
+		scorer.payment_path_failed(&payment_path_for_amount(250), 43, Duration::from_secs(10));
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 300);
 
 		let mut serialized_scorer = Vec::new();
@@ -3108,12 +3039,11 @@ mod tests {
 
 		let mut serialized_scorer = io::Cursor::new(&serialized_scorer);
 		let deserialized_scorer =
-			<ProbabilisticScorer>::read(&mut serialized_scorer, (decay_params, &network_graph, &logger)).unwrap();
+			<ProbabilisticScorer<_, _>>::read(&mut serialized_scorer, (decay_params, &network_graph, &logger)).unwrap();
 		assert_eq!(deserialized_scorer.channel_penalty_msat(&candidate, usage, &params), 300);
 	}
 
-	#[test]
-	fn decays_persisted_liquidity_bounds() {
+	fn do_decays_persisted_liquidity_bounds(decay_before_reload: bool) {
 		let logger = TestLogger::new();
 		let network_graph = network_graph(&logger);
 		let params = ProbabilisticScoringFeeParameters {
@@ -3133,7 +3063,7 @@ mod tests {
 			effective_capacity: EffectiveCapacity::Total { capacity_msat: 1_000, htlc_maximum_msat: 1_000 },
 		};
 
-		scorer.payment_path_failed(&payment_path_for_amount(500), 42);
+		scorer.payment_path_failed(&payment_path_for_amount(500), 42, Duration::ZERO);
 		let channel = network_graph.read_only().channel(42).unwrap().to_owned();
 		let (info, _) = channel.as_directed_from(&source).unwrap();
 		let candidate = CandidateRouteHop::PublicHop {
@@ -3142,21 +3072,33 @@ mod tests {
 		};
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), u64::max_value());
 
+		if decay_before_reload {
+			scorer.time_passed(Duration::from_secs(10));
+		}
+
 		let mut serialized_scorer = Vec::new();
 		scorer.write(&mut serialized_scorer).unwrap();
 
-		SinceEpoch::advance(Duration::from_secs(10));
-
 		let mut serialized_scorer = io::Cursor::new(&serialized_scorer);
-		let deserialized_scorer =
-			<ProbabilisticScorer>::read(&mut serialized_scorer, (decay_params, &network_graph, &logger)).unwrap();
+		let mut deserialized_scorer =
+			<ProbabilisticScorer<_, _>>::read(&mut serialized_scorer, (decay_params, &network_graph, &logger)).unwrap();
+		if !decay_before_reload {
+			scorer.time_passed(Duration::from_secs(10));
+			deserialized_scorer.time_passed(Duration::from_secs(10));
+		}
 		assert_eq!(deserialized_scorer.channel_penalty_msat(&candidate, usage, &params), 473);
 
-		scorer.payment_path_failed(&payment_path_for_amount(250), 43);
+		scorer.payment_path_failed(&payment_path_for_amount(250), 43, Duration::from_secs(10));
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 300);
 
-		SinceEpoch::advance(Duration::from_secs(10));
+		deserialized_scorer.time_passed(Duration::from_secs(20));
 		assert_eq!(deserialized_scorer.channel_penalty_msat(&candidate, usage, &params), 370);
+	}
+
+	#[test]
+	fn decays_persisted_liquidity_bounds() {
+		do_decays_persisted_liquidity_bounds(false);
+		do_decays_persisted_liquidity_bounds(true);
 	}
 
 	#[test]
@@ -3427,7 +3369,7 @@ mod tests {
 		assert_eq!(scorer.historical_estimated_payment_success_probability(42, &target, 42, &params),
 		None);
 
-		scorer.payment_path_failed(&payment_path_for_amount(1), 42);
+		scorer.payment_path_failed(&payment_path_for_amount(1), 42, Duration::ZERO);
 		{
 			let network_graph = network_graph.read_only();
 			let channel = network_graph.channel(42).unwrap();
@@ -3452,7 +3394,7 @@ mod tests {
 
 		// Even after we tell the scorer we definitely have enough available liquidity, it will
 		// still remember that there was some failure in the past, and assign a non-0 penalty.
-		scorer.payment_path_failed(&payment_path_for_amount(1000), 43);
+		scorer.payment_path_failed(&payment_path_for_amount(1000), 43, Duration::ZERO);
 		{
 			let network_graph = network_graph.read_only();
 			let channel = network_graph.channel(42).unwrap();
@@ -3482,7 +3424,7 @@ mod tests {
 
 		// Advance the time forward 16 half-lives (which the docs claim will ensure all data is
 		// gone), and check that we're back to where we started.
-		SinceEpoch::advance(Duration::from_secs(10 * 16));
+		scorer.time_passed(Duration::from_secs(10 * 16));
 		{
 			let network_graph = network_graph.read_only();
 			let channel = network_graph.channel(42).unwrap();
@@ -3497,7 +3439,7 @@ mod tests {
 		// Once fully decayed we still have data, but its all-0s. In the future we may remove the
 		// data entirely instead.
 		assert_eq!(scorer.historical_estimated_channel_liquidity_probabilities(42, &target),
-			None);
+			Some(([0; 32], [0; 32])));
 		assert_eq!(scorer.historical_estimated_payment_success_probability(42, &target, 1, &params), None);
 
 		let mut usage = ChannelUsage {
@@ -3505,7 +3447,7 @@ mod tests {
 			inflight_htlc_msat: 1024,
 			effective_capacity: EffectiveCapacity::Total { capacity_msat: 1_024, htlc_maximum_msat: 1_024 },
 		};
-		scorer.payment_path_failed(&payment_path_for_amount(1), 42);
+		scorer.payment_path_failed(&payment_path_for_amount(1), 42, Duration::from_secs(10 * 16));
 		{
 			let network_graph = network_graph.read_only();
 			let channel = network_graph.channel(42).unwrap();
@@ -3516,8 +3458,6 @@ mod tests {
 			};
 
 			assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 2050);
-			usage.inflight_htlc_msat = 0;
-			assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 866);
 
 			let usage = ChannelUsage {
 				amount_msat: 1,
@@ -3528,7 +3468,12 @@ mod tests {
 		}
 
 		// Advance to decay all liquidity offsets to zero.
-		SinceEpoch::advance(Duration::from_secs(60 * 60 * 10));
+		scorer.time_passed(Duration::from_secs(10 * (16 + 60 * 60)));
+
+		// Once even the bounds have decayed information about the channel should be removed
+		// entirely.
+		assert_eq!(scorer.historical_estimated_channel_liquidity_probabilities(42, &target),
+			None);
 
 		// Use a path in the opposite direction, which have zero for htlc_maximum_msat. This will
 		// ensure that the effective capacity is zero to test division-by-zero edge cases.
@@ -3537,7 +3482,7 @@ mod tests {
 			path_hop(source_pubkey(), 42, 1),
 			path_hop(sender_pubkey(), 41, 0),
 		];
-		scorer.payment_path_failed(&Path { hops: path, blinded_tail: None }, 42);
+		scorer.payment_path_failed(&Path { hops: path, blinded_tail: None }, 42, Duration::from_secs(10 * (16 + 60 * 60)));
 	}
 
 	#[test]
@@ -3636,12 +3581,12 @@ mod tests {
 		// final value is taken into account.
 		assert!(scorer.channel_liquidities.get(&42).is_none());
 
-		scorer.payment_path_failed(&path, 42);
+		scorer.payment_path_failed(&path, 42, Duration::ZERO);
 		path.blinded_tail.as_mut().unwrap().final_value_msat = 256;
-		scorer.payment_path_failed(&path, 43);
+		scorer.payment_path_failed(&path, 43, Duration::ZERO);
 
 		let liquidity = scorer.channel_liquidities.get(&42).unwrap()
-			.as_directed(&source, &target, 1_000, decay_params);
+			.as_directed(&source, &target, 1_000);
 		assert_eq!(liquidity.min_liquidity_msat(), 256);
 		assert_eq!(liquidity.max_liquidity_msat(), 768);
 	}
@@ -3692,7 +3637,7 @@ mod tests {
 			None);
 
 		// Fail to pay once, and then check the buckets and penalty.
-		scorer.payment_path_failed(&payment_path_for_amount(amount_msat), 42);
+		scorer.payment_path_failed(&payment_path_for_amount(amount_msat), 42, Duration::ZERO);
 		// The penalty should be the maximum penalty, as the payment we're scoring is now in the
 		// same bucket which is the only maximum datapoint.
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params),
@@ -3716,11 +3661,69 @@ mod tests {
 		// ...but once we see a failure, we consider the payment to be substantially less likely,
 		// even though not a probability of zero as we still look at the second max bucket which
 		// now shows 31.
-		scorer.payment_path_failed(&payment_path_for_amount(amount_msat), 42);
+		scorer.payment_path_failed(&payment_path_for_amount(amount_msat), 42, Duration::ZERO);
 		assert_eq!(scorer.historical_estimated_channel_liquidity_probabilities(42, &target),
 			Some(([63, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
 				[32, 31, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])));
 		assert_eq!(scorer.historical_estimated_payment_success_probability(42, &target, amount_msat, &params),
 			Some(0.0));
+	}
+}
+
+#[cfg(ldk_bench)]
+pub mod benches {
+	use super::*;
+	use criterion::Criterion;
+	use crate::routing::router::{bench_utils, RouteHop};
+	use crate::util::test_utils::TestLogger;
+	use crate::ln::features::{ChannelFeatures, NodeFeatures};
+
+	pub fn decay_100k_channel_bounds(bench: &mut Criterion) {
+		let logger = TestLogger::new();
+		let network_graph = bench_utils::read_network_graph(&logger).unwrap();
+		let mut scorer = ProbabilisticScorer::new(Default::default(), &network_graph, &logger);
+		// Score a number of random channels
+		let mut seed: u64 = 0xdeadbeef;
+		for _ in 0..100_000 {
+			seed = seed.overflowing_mul(6364136223846793005).0.overflowing_add(1).0;
+			let (victim, victim_dst, amt) = {
+				let rong = network_graph.read_only();
+				let channels = rong.channels();
+				let chan = channels.unordered_iter()
+					.skip((seed as usize) % channels.len())
+					.next().unwrap();
+				seed = seed.overflowing_mul(6364136223846793005).0.overflowing_add(1).0;
+				let amt = seed % chan.1.capacity_sats.map(|c| c * 1000)
+					.or(chan.1.one_to_two.as_ref().map(|info| info.htlc_maximum_msat))
+					.or(chan.1.two_to_one.as_ref().map(|info| info.htlc_maximum_msat))
+					.unwrap_or(1_000_000_000).saturating_add(1);
+				(*chan.0, chan.1.node_two, amt)
+			};
+			let path = Path {
+				hops: vec![RouteHop {
+					pubkey: victim_dst.as_pubkey().unwrap(),
+					node_features: NodeFeatures::empty(),
+					short_channel_id: victim,
+					channel_features: ChannelFeatures::empty(),
+					fee_msat: amt,
+					cltv_expiry_delta: 42,
+					maybe_announced_channel: true,
+				}],
+				blinded_tail: None
+			};
+			seed = seed.overflowing_mul(6364136223846793005).0.overflowing_add(1).0;
+			if seed % 1 == 0 {
+				scorer.probe_failed(&path, victim, Duration::ZERO);
+			} else {
+				scorer.probe_successful(&path, Duration::ZERO);
+			}
+		}
+		let mut cur_time = Duration::ZERO;
+			cur_time += Duration::from_millis(1);
+			scorer.time_passed(cur_time);
+		bench.bench_function("decay_100k_channel_bounds", |b| b.iter(|| {
+			cur_time += Duration::from_millis(1);
+			scorer.time_passed(cur_time);
+		}));
 	}
 }
