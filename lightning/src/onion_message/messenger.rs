@@ -264,7 +264,7 @@ pub struct PendingOnionMessage<T: OnionMessageContents> {
 ///
 /// These are obtained when released from [`OnionMessenger`]'s handlers after which they are
 /// enqueued for sending.
-pub type PendingOnionMessage<T: OnionMessageContents> = (T, Destination, Option<BlindedPath>);
+pub type PendingOnionMessage<T> = (T, Destination, Option<BlindedPath>);
 
 pub(crate) fn new_pending_onion_message<T: OnionMessageContents>(
 	contents: T, destination: Destination, reply_path: Option<BlindedPath>
