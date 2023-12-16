@@ -92,10 +92,6 @@ mod prelude {
 
 use crate::prelude::*;
 
-/// Sync compat for std/no_std
-#[cfg(not(feature = "std"))]
-mod sync;
-
 /// Errors that indicate what is wrong with the invoice. They have some granularity for debug
 /// reasons, but should generally result in an "invalid BOLT11 invoice" message for the user.
 #[allow(missing_docs)]
