@@ -18,7 +18,7 @@
 use bitcoin::blockdata::constants::ChainHash;
 use bitcoin::secp256k1::{self, Secp256k1, SecretKey, PublicKey};
 
-use crate::sign::{KeysManager, NodeSigner, Recipient};
+use crate::sign::{NodeSigner, Recipient};
 use crate::events::{EventHandler, EventsProvider, MessageSendEvent, MessageSendEventsProvider};
 use crate::ln::ChannelId;
 use crate::ln::features::{InitFeatures, NodeFeatures};
@@ -33,7 +33,7 @@ use crate::ln::wire::{Encode, Type};
 #[cfg(not(c_bindings))]
 use crate::onion_message::{SimpleArcOnionMessenger, SimpleRefOnionMessenger};
 use crate::onion_message::{CustomOnionMessageHandler, OffersMessage, OffersMessageHandler, OnionMessageContents, PendingOnionMessage};
-use crate::routing::gossip::{NetworkGraph, P2PGossipSync, NodeId, NodeAlias};
+use crate::routing::gossip::{NodeId, NodeAlias};
 use crate::util::atomic_counter::AtomicCounter;
 use crate::util::logger::{Logger, WithContext};
 use crate::util::string::PrintableString;
@@ -41,12 +41,19 @@ use crate::util::string::PrintableString;
 use crate::prelude::*;
 use crate::io;
 use alloc::collections::VecDeque;
-use crate::sync::{Arc, Mutex, MutexGuard, FairRwLock};
+use crate::sync::{Mutex, MutexGuard, FairRwLock};
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicI32, Ordering};
 use core::{cmp, hash, fmt, mem};
 use core::ops::Deref;
 use core::convert::Infallible;
-#[cfg(feature = "std")] use std::error;
+#[cfg(feature = "std")]
+use std::error;
+#[cfg(not(c_bindings))]
+use {
+	crate::routing::gossip::{NetworkGraph, P2PGossipSync},
+	crate::sign::KeysManager,
+	crate::sync::Arc,
+};
 
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::sha256::HashEngine as Sha256Engine;

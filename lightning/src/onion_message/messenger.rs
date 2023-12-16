@@ -19,13 +19,12 @@ use crate::blinded_path::BlindedPath;
 use crate::blinded_path::message::{advance_path_by_one, ForwardTlvs, ReceiveTlvs};
 use crate::blinded_path::utils;
 use crate::events::{Event, EventHandler, EventsProvider};
-use crate::sign::{EntropySource, KeysManager, NodeSigner, Recipient};
+use crate::sign::{EntropySource, NodeSigner, Recipient};
 #[cfg(not(c_bindings))]
 use crate::ln::channelmanager::{SimpleArcChannelManager, SimpleRefChannelManager};
 use crate::ln::features::{InitFeatures, NodeFeatures};
 use crate::ln::msgs::{self, OnionMessage, OnionMessageHandler, SocketAddress};
 use crate::ln::onion_utils;
-use crate::ln::peer_handler::IgnoringMessageHandler;
 use crate::routing::gossip::{NetworkGraph, NodeId};
 pub use super::packet::OnionMessageContents;
 use super::packet::ParsedOnionMessageContents;
@@ -37,8 +36,15 @@ use crate::util::ser::Writeable;
 use core::fmt;
 use core::ops::Deref;
 use crate::io;
-use crate::sync::{Arc, Mutex};
+use crate::sync::Mutex;
 use crate::prelude::*;
+
+#[cfg(not(c_bindings))]
+use {
+	crate::sign::KeysManager,
+	crate::ln::peer_handler::IgnoringMessageHandler,
+	crate::sync::Arc,
+};
 
 pub(super) const MAX_TIMER_TICKS: usize = 2;
 

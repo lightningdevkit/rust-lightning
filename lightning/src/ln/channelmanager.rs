@@ -47,9 +47,7 @@ use crate::ln::channel::{Channel, ChannelPhase, ChannelContext, ChannelError, Ch
 use crate::ln::features::{Bolt12InvoiceFeatures, ChannelFeatures, ChannelTypeFeatures, InitFeatures, NodeFeatures};
 #[cfg(any(feature = "_test_utils", test))]
 use crate::ln::features::Bolt11InvoiceFeatures;
-use crate::routing::gossip::NetworkGraph;
-use crate::routing::router::{BlindedTail, DefaultRouter, InFlightHtlcs, Path, Payee, PaymentParameters, Route, RouteParameters, Router};
-use crate::routing::scoring::{ProbabilisticScorer, ProbabilisticScoringFeeParameters};
+use crate::routing::router::{BlindedTail, InFlightHtlcs, Path, Payee, PaymentParameters, Route, RouteParameters, Router};
 use crate::ln::onion_payment::{check_incoming_htlc_cltv, create_recv_pending_htlc_info, create_fwd_pending_htlc_info, decode_incoming_update_add_htlc_onion, InboundOnionErr, NextPacketDetails};
 use crate::ln::msgs;
 use crate::ln::onion_utils;
@@ -66,7 +64,7 @@ use crate::offers::offer::{DerivedMetadata, Offer, OfferBuilder};
 use crate::offers::parse::Bolt12SemanticError;
 use crate::offers::refund::{Refund, RefundBuilder};
 use crate::onion_message::{Destination, MessageRouter, OffersMessage, OffersMessageHandler, PendingOnionMessage, new_pending_onion_message};
-use crate::sign::{EntropySource, KeysManager, NodeSigner, Recipient, SignerProvider};
+use crate::sign::{EntropySource, NodeSigner, Recipient, SignerProvider};
 use crate::sign::ecdsa::WriteableEcdsaChannelSigner;
 use crate::util::config::{UserConfig, ChannelConfig, ChannelConfigUpdate};
 use crate::util::wakers::{Future, Notifier};
@@ -75,6 +73,13 @@ use crate::util::string::UntrustedString;
 use crate::util::ser::{BigSize, FixedLengthReader, Readable, ReadableArgs, MaybeReadable, Writeable, Writer, VecWriter};
 use crate::util::logger::{Level, Logger, WithContext};
 use crate::util::errors::APIError;
+#[cfg(not(c_bindings))]
+use {
+	crate::routing::router::DefaultRouter,
+	crate::routing::gossip::NetworkGraph,
+	crate::routing::scoring::{ProbabilisticScorer, ProbabilisticScoringFeeParameters},
+	crate::sign::KeysManager,
+};
 
 use alloc::collections::{btree_map, BTreeMap};
 
