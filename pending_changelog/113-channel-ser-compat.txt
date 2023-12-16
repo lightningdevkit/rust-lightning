@@ -1,4 +1,0 @@
- * `ChannelManager`s written with LDK 0.0.119 are no longer readable by versions
-   of LDK prior to 0.0.113. Users wishing to downgrade to LDK 0.0.112 or before
-   can read an 0.0.119-serialized `ChannelManager` with a version of LDK from
-   0.0.113 to 0.0.118, re-serialize it, and then downgrade.

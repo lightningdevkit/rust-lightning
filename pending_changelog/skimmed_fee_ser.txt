@@ -1,4 +1,0 @@
-##  Bug fixes
-
-* In LDK versions 0.0.116 through 0.0.118, in rare cases where skimmed fees are present on shutdown
-	the `ChannelManager` may fail to deserialize on startup.

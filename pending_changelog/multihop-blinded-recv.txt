@@ -1,4 +1,0 @@
-## Backwards Compatibility
-
-* Nodes that upgrade to 0.0.119 and subsequently downgrade after receiving a payment to a blinded
-	path may lose privacy if one or more of those HTLCs fails.
