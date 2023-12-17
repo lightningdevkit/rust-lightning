@@ -123,6 +123,7 @@ impl RoutingMessageHandler for IgnoringMessageHandler {
 	fn processing_queue_high(&self) -> bool { false }
 }
 impl OnionMessageHandler for IgnoringMessageHandler {
+	fn get_and_clear_connections_needed(&self) -> Vec<(PublicKey, Vec<SocketAddress>)> { Vec::new() }
 	fn handle_onion_message(&self, _their_node_id: &PublicKey, _msg: &msgs::OnionMessage) {}
 	fn next_onion_message_for_peer(&self, _peer_node_id: PublicKey) -> Option<msgs::OnionMessage> { None }
 	fn peer_connected(&self, _their_node_id: &PublicKey, _init: &msgs::Init, _inbound: bool) -> Result<(), ()> { Ok(()) }
