@@ -694,7 +694,10 @@ where
 		persister, chain_monitor,
 		chain_monitor.process_pending_events_async(async_event_handler).await,
 		channel_manager, channel_manager.process_pending_events_async(async_event_handler).await,
-		peer_manager, process_onion_message_handler_events_async(&peer_manager, async_event_handler).await,
+		peer_manager,
+		for event in onion_message_handler_events(peer_manager) {
+			handler(event).await
+		},
 		gossip_sync, logger, scorer, should_break, {
 			let fut = Selector {
 				a: channel_manager.get_event_or_persistence_needed_future(),
@@ -719,23 +722,11 @@ where
 	)
 }
 
-#[cfg(feature = "futures")]
-async fn process_onion_message_handler_events_async<
-	EventHandlerFuture: core::future::Future<Output = ()>,
-	EventHandler: Fn(Event) -> EventHandlerFuture,
-	PM: 'static + Deref + Send + Sync,
->(
-	peer_manager: &PM, handler: EventHandler
-)
-where
-	PM::Target: APeerManager + Send + Sync,
-{
-	let events = core::cell::RefCell::new(Vec::new());
-	peer_manager.onion_message_handler().process_pending_events(&|e| events.borrow_mut().push(e));
-
-	for event in events.into_inner() {
-		handler(event).await
-	}
+fn onion_message_handler_events<PM: 'static + Deref + Send + Sync>(
+	peer_manager: &PM
+) -> impl Iterator<Item=Event> where PM::Target: APeerManager + Send + Sync {
+	peer_manager.onion_message_handler().get_and_clear_connections_needed()
+		.into_iter().map(|(node_id, addresses)| Event::ConnectionNeeded { node_id, addresses })
 }
 
 #[cfg(feature = "std")]
@@ -851,7 +842,9 @@ impl BackgroundProcessor {
 				persister, chain_monitor, chain_monitor.process_pending_events(&event_handler),
 				channel_manager, channel_manager.process_pending_events(&event_handler),
 				peer_manager,
-				peer_manager.onion_message_handler().process_pending_events(&event_handler),
+				for event in onion_message_handler_events(&peer_manager) {
+					event_handler.handle_event(event);
+				},
 				gossip_sync, logger, scorer, stop_thread.load(Ordering::Acquire),
 				{ Sleeper::from_two_futures(
 					channel_manager.get_event_or_persistence_needed_future(),
