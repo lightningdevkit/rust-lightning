@@ -1624,7 +1624,16 @@ pub trait RoutingMessageHandler : MessageSendEventsProvider {
 }
 
 /// A handler for received [`OnionMessage`]s and for providing generated ones to send.
-pub trait OnionMessageHandler: EventsProvider {
+pub trait OnionMessageHandler {
+	/// Because much of the lightning network does not yet support forwarding onion messages, we
+	/// may need to directly connect to a node which will forward a message for us. In such a case,
+	/// this method will return the set of nodes which need connection by node_id and the
+	/// corresponding socket addresses where they may accept incoming connections.
+	///
+	/// Thus, this method should be polled regularly to detect messages await such a direct
+	/// connection.
+	fn get_and_clear_connections_needed(&self) -> Vec<(PublicKey, Vec<SocketAddress>)>;
+
 	/// Handle an incoming `onion_message` message from the given peer.
 	fn handle_onion_message(&self, peer_node_id: &PublicKey, msg: &OnionMessage);
 

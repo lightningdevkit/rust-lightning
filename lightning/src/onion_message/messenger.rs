@@ -1006,28 +1006,6 @@ fn outbound_buffer_full(peer_node_id: &PublicKey, buffer: &HashMap<PublicKey, On
 	false
 }
 
-impl<ES: Deref, NS: Deref, L: Deref, NL: Deref, MR: Deref, OMH: Deref, CMH: Deref> EventsProvider
-for OnionMessenger<ES, NS, L, NL, MR, OMH, CMH>
-where
-	ES::Target: EntropySource,
-	NS::Target: NodeSigner,
-	L::Target: Logger,
-	NL::Target: NodeIdLookUp,
-	MR::Target: MessageRouter,
-	OMH::Target: OffersMessageHandler,
-	CMH::Target: CustomOnionMessageHandler,
-{
-	fn process_pending_events<H: Deref>(&self, handler: H) where H::Target: EventHandler {
-		for (node_id, recipient) in self.message_recipients.lock().unwrap().iter_mut() {
-			if let OnionMessageRecipient::PendingConnection(_, addresses, _) = recipient {
-				if let Some(addresses) = addresses.take() {
-					handler.handle_event(Event::ConnectionNeeded { node_id: *node_id, addresses });
-				}
-			}
-		}
-	}
-}
-
 impl<ES: Deref, NS: Deref, L: Deref, NL: Deref, MR: Deref, OMH: Deref, CMH: Deref> OnionMessageHandler
 for OnionMessenger<ES, NS, L, NL, MR, OMH, CMH>
 where
@@ -1039,6 +1017,18 @@ where
 	OMH::Target: OffersMessageHandler,
 	CMH::Target: CustomOnionMessageHandler,
 {
+	fn get_and_clear_connections_needed(&self) -> Vec<(PublicKey, Vec<SocketAddress>)> {
+		let mut res = Vec::new();
+		for (node_id, recipient) in self.message_recipients.lock().unwrap().iter_mut() {
+			if let OnionMessageRecipient::PendingConnection(_, addresses, _) = recipient {
+				if let Some(addresses) = addresses.take() {
+					res.push((*node_id, addresses));
+				}
+			}
+		}
+		res
+	}
+
 	fn handle_onion_message(&self, peer_node_id: &PublicKey, msg: &OnionMessage) {
 		let logger = WithContext::from(&self.logger, Some(*peer_node_id), None);
 		match self.peel_onion_message(msg) {
