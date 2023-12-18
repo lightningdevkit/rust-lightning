@@ -202,7 +202,9 @@ pub struct BlindedForward {
 	/// onion payload if we're the introduction node. Useful for calculating the next hop's
 	/// [`msgs::UpdateAddHTLC::blinding_point`].
 	pub inbound_blinding_point: PublicKey,
-	// Another field will be added here when we support forwarding as a non-intro node.
+	/// If needed, this determines how this HTLC should be failed backwards, based on whether we are
+	/// the introduction node.
+	pub failure: BlindedFailure,
 }
 
 impl PendingHTLCRouting {
@@ -9500,6 +9502,7 @@ impl_writeable_tlv_based!(PhantomRouteHints, {
 
 impl_writeable_tlv_based!(BlindedForward, {
 	(0, inbound_blinding_point, required),
+	(1, failure, (default_value, BlindedFailure::FromIntroductionNode)),
 });
 
 impl_writeable_tlv_based_enum!(PendingHTLCRouting,

@@ -12,7 +12,7 @@ use crate::blinded_path;
 use crate::blinded_path::payment::{PaymentConstraints, PaymentRelay};
 use crate::chain::channelmonitor::{HTLC_FAIL_BACK_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS};
 use crate::ln::PaymentHash;
-use crate::ln::channelmanager::{BlindedForward, CLTV_FAR_FAR_AWAY, HTLCFailureMsg, MIN_CLTV_EXPIRY_DELTA, PendingHTLCInfo, PendingHTLCRouting};
+use crate::ln::channelmanager::{BlindedFailure, BlindedForward, CLTV_FAR_FAR_AWAY, HTLCFailureMsg, MIN_CLTV_EXPIRY_DELTA, PendingHTLCInfo, PendingHTLCRouting};
 use crate::ln::features::BlindedHopFeatures;
 use crate::ln::msgs;
 use crate::ln::onion_utils;
@@ -106,7 +106,12 @@ pub(super) fn create_fwd_pending_htlc_info(
 			onion_packet: outgoing_packet,
 			short_channel_id,
 			blinded: intro_node_blinding_point.or(msg.blinding_point)
-				.map(|bp| BlindedForward { inbound_blinding_point: bp }),
+				.map(|bp| BlindedForward {
+					inbound_blinding_point: bp,
+					failure: intro_node_blinding_point
+						.map(|_| BlindedFailure::FromIntroductionNode)
+						.unwrap_or(BlindedFailure::FromBlindedNode),
+				}),
 		},
 		payment_hash: msg.payment_hash,
 		incoming_shared_secret: shared_secret,
