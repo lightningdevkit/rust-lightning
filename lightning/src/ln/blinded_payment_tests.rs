@@ -681,6 +681,59 @@ fn three_hop_blinded_path_success() {
 	claim_payment(&nodes[0], &[&nodes[1], &nodes[2], &nodes[3], &nodes[4]], payment_preimage);
 }
 
+#[test]
+fn three_hop_blinded_path_fail() {
+	// Test that an intermediate blinded forwarding node gets failed back to with
+	// malformed and also fails back themselves with malformed.
+	let chanmon_cfgs = create_chanmon_cfgs(4);
+	let node_cfgs = create_node_cfgs(4, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(4, &node_cfgs, &[None, None, None, None]);
+	let mut nodes = create_network(4, &node_cfgs, &node_chanmgrs);
+	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0);
+	let chan_upd_1_2 = create_announced_chan_between_nodes_with_value(&nodes, 1, 2, 1_000_000, 0).0.contents;
+	let chan_upd_2_3 = create_announced_chan_between_nodes_with_value(&nodes, 2, 3, 1_000_000, 0).0.contents;
+
+	let amt_msat = 5000;
+	let (_, payment_hash, payment_secret) = get_payment_preimage_hash(&nodes[3], Some(amt_msat), None);
+	let route_params = get_blinded_route_parameters(amt_msat, payment_secret,
+		nodes.iter().skip(1).map(|n| n.node.get_our_node_id()).collect(),
+		&[&chan_upd_1_2, &chan_upd_2_3], &chanmon_cfgs[3].keys_manager);
+
+	nodes[0].node.send_payment(payment_hash, RecipientOnionFields::spontaneous_empty(), PaymentId(payment_hash.0), route_params, Retry::Attempts(0)).unwrap();
+	check_added_monitors(&nodes[0], 1);
+	pass_along_route(&nodes[0], &[&[&nodes[1], &nodes[2], &nodes[3]]], amt_msat, payment_hash, payment_secret);
+
+	nodes[3].node.fail_htlc_backwards(&payment_hash);
+	expect_pending_htlcs_forwardable_conditions(
+		nodes[3].node.get_and_clear_pending_events(), &[HTLCDestination::FailedPayment { payment_hash }]
+	);
+	nodes[3].node.process_pending_htlc_forwards();
+	check_added_monitors!(nodes[3], 1);
+
+	let updates_3_2 = get_htlc_update_msgs!(nodes[3], nodes[2].node.get_our_node_id());
+	assert_eq!(updates_3_2.update_fail_malformed_htlcs.len(), 1);
+	let update_malformed = &updates_3_2.update_fail_malformed_htlcs[0];
+	assert_eq!(update_malformed.sha256_of_onion, [0; 32]);
+	assert_eq!(update_malformed.failure_code, INVALID_ONION_BLINDING);
+	nodes[2].node.handle_update_fail_malformed_htlc(&nodes[3].node.get_our_node_id(), update_malformed);
+	do_commitment_signed_dance(&nodes[2], &nodes[3], &updates_3_2.commitment_signed, true, false);
+
+	let updates_2_1 = get_htlc_update_msgs!(nodes[2], nodes[1].node.get_our_node_id());
+	assert_eq!(updates_2_1.update_fail_malformed_htlcs.len(), 1);
+	let update_malformed = &updates_2_1.update_fail_malformed_htlcs[0];
+	assert_eq!(update_malformed.sha256_of_onion, [0; 32]);
+	assert_eq!(update_malformed.failure_code, INVALID_ONION_BLINDING);
+	nodes[1].node.handle_update_fail_malformed_htlc(&nodes[2].node.get_our_node_id(), update_malformed);
+	do_commitment_signed_dance(&nodes[1], &nodes[2], &updates_2_1.commitment_signed, true, false);
+
+	let updates_1_0 = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+	assert_eq!(updates_1_0.update_fail_htlcs.len(), 1);
+	nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &updates_1_0.update_fail_htlcs[0]);
+	do_commitment_signed_dance(&nodes[0], &nodes[1], &updates_1_0.commitment_signed, false, false);
+	expect_payment_failed_conditions(&nodes[0], payment_hash, false,
+		PaymentFailedConditions::new().expected_htlc_error_data(INVALID_ONION_BLINDING, &[0; 32]));
+}
+
 #[derive(PartialEq)]
 enum ReceiveCheckFail {
 	// The recipient fails the payment upon `PaymentClaimable`.
