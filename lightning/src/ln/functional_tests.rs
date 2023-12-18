@@ -506,6 +506,18 @@ fn test_splice_in_simple() {
 		assert_eq!(channel.confirmations.unwrap(), 10);
 	}
 
+	// do the checks on acceptor side as well
+	assert_eq!(nodes[a].node.list_channels().len(), 1);
+	{
+		let channel = &nodes[a].node.list_channels()[0];
+		assert!(channel.is_usable);
+		assert!(channel.is_channel_ready);
+		assert_eq!(channel.channel_value_satoshis, post_splice_channel_value);
+		assert_eq!(channel.outbound_capacity_msat, 0);
+		assert_eq!(channel.funding_txo.unwrap().txid, splice_tx.txid());
+		assert_eq!(channel.confirmations.unwrap(), 10);
+	}
+
 	// ... End of Splicing
 
 	// close channel
