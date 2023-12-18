@@ -1714,7 +1714,7 @@ mod fuzzy_internal_msgs {
 			payment_relay: PaymentRelay,
 			payment_constraints: PaymentConstraints,
 			features: BlindedHopFeatures,
-			intro_node_blinding_point: PublicKey,
+			intro_node_blinding_point: Option<PublicKey>,
 		},
 		BlindedReceive {
 			sender_intended_htlc_amt_msat: u64,
@@ -2394,7 +2394,7 @@ impl<NS: Deref> ReadableArgs<(Option<PublicKey>, &NS)> for InboundOnionPayload w
 						payment_relay,
 						payment_constraints,
 						features,
-						intro_node_blinding_point: intro_node_blinding_point.ok_or(DecodeError::InvalidValue)?,
+						intro_node_blinding_point,
 					})
 				},
 				ChaChaPolyReadAdapter { readable: BlindedPaymentTlvs::Receive(ReceiveTlvs {
