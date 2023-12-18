@@ -210,9 +210,8 @@ pub struct BlindedForward {
 impl PendingHTLCRouting {
 	// Used to override the onion failure code and data if the HTLC is blinded.
 	fn blinded_failure(&self) -> Option<BlindedFailure> {
-		// TODO: needs update when we support forwarding blinded HTLCs as non-intro node
 		match self {
-			Self::Forward { blinded: Some(_), .. } => Some(BlindedFailure::FromIntroductionNode),
+			Self::Forward { blinded: Some(BlindedForward { failure, .. }), .. } => Some(*failure),
 			Self::Receive { requires_blinded_error: true, .. } => Some(BlindedFailure::FromBlindedNode),
 			_ => None,
 		}
@@ -3031,8 +3030,9 @@ where
 
 		let is_intro_node_forward = match next_hop {
 			onion_utils::Hop::Forward {
-				// TODO: update this when we support blinded forwarding as non-intro node
-				next_hop_data: msgs::InboundOnionPayload::BlindedForward { .. }, ..
+				next_hop_data: msgs::InboundOnionPayload::BlindedForward {
+					intro_node_blinding_point: Some(_), ..
+				}, ..
 			} => true,
 			_ => false,
 		};
@@ -4377,7 +4377,7 @@ where
 										incoming_packet_shared_secret: incoming_shared_secret,
 										// Phantom payments are only PendingHTLCRouting::Receive.
 										phantom_shared_secret: None,
-										blinded_failure: blinded.map(|_| BlindedFailure::FromIntroductionNode),
+										blinded_failure: blinded.map(|b| b.failure),
 									});
 									let next_blinding_point = blinded.and_then(|b| {
 										let encrypted_tlvs_ss = self.node_signer.ecdh(
