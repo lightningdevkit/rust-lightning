@@ -572,3 +572,71 @@ fn fails_creating_invoice_request_without_blinded_reply_path() {
 
 	assert!(nodes[0].node.list_recent_payments().is_empty());
 }
+
+#[test]
+fn fails_creating_invoice_request_with_duplicate_payment_id() {
+	let chanmon_cfgs = create_chanmon_cfgs(6);
+	let node_cfgs = create_node_cfgs(6, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(6, &node_cfgs, &[None, None, None, None, None, None]);
+	let nodes = create_network(6, &node_cfgs, &node_chanmgrs);
+
+	create_unannounced_chan_between_nodes_with_value(&nodes, 0, 1, 10_000_000, 1_000_000_000);
+	create_unannounced_chan_between_nodes_with_value(&nodes, 2, 3, 10_000_000, 1_000_000_000);
+	create_announced_chan_between_nodes_with_value(&nodes, 1, 2, 10_000_000, 1_000_000_000);
+	create_announced_chan_between_nodes_with_value(&nodes, 1, 4, 10_000_000, 1_000_000_000);
+	create_announced_chan_between_nodes_with_value(&nodes, 1, 5, 10_000_000, 1_000_000_000);
+	create_announced_chan_between_nodes_with_value(&nodes, 2, 4, 10_000_000, 1_000_000_000);
+	create_announced_chan_between_nodes_with_value(&nodes, 2, 5, 10_000_000, 1_000_000_000);
+
+	let (alice, _bob, charlie, david) = (&nodes[0], &nodes[1], &nodes[2], &nodes[3]);
+
+	disconnect_peers(alice, &[charlie, david, &nodes[4], &nodes[5]]);
+
+	let offer = alice.node
+		.create_offer_builder("coffee".to_string()).unwrap()
+		.amount_msats(10_000_000)
+		.build().unwrap();
+
+	let payment_id = PaymentId([1; 32]);
+	assert!(
+		david.node.pay_for_offer(
+			&offer, None, None, None, payment_id, Retry::Attempts(0), None
+		).is_ok()
+	);
+	expect_recent_payment!(david, RecentPaymentDetails::AwaitingInvoice, payment_id);
+
+	match david.node.pay_for_offer(&offer, None, None, None, payment_id, Retry::Attempts(0), None) {
+		Ok(_) => panic!("Expected error"),
+		Err(e) => assert_eq!(e, Bolt12SemanticError::DuplicatePaymentId),
+	}
+
+	expect_recent_payment!(david, RecentPaymentDetails::AwaitingInvoice, payment_id);
+}
+
+#[test]
+fn fails_creating_refund_with_duplicate_payment_id() {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 10_000_000, 1_000_000_000);
+
+	let absolute_expiry = Duration::from_secs(u64::MAX);
+	let payment_id = PaymentId([1; 32]);
+	assert!(
+		nodes[0].node.create_refund_builder(
+			"refund".to_string(), 10_000, absolute_expiry, payment_id, Retry::Attempts(0), None
+		).is_ok()
+	);
+	expect_recent_payment!(nodes[0], RecentPaymentDetails::AwaitingInvoice, payment_id);
+
+	match nodes[0].node.create_refund_builder(
+		"refund".to_string(), 10_000, absolute_expiry, payment_id, Retry::Attempts(0), None
+	) {
+		Ok(_) => panic!("Expected error"),
+		Err(e) => assert_eq!(e, Bolt12SemanticError::DuplicatePaymentId),
+	}
+
+	expect_recent_payment!(nodes[0], RecentPaymentDetails::AwaitingInvoice, payment_id);
+}
