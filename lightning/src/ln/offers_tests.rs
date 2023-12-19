@@ -22,6 +22,7 @@ use crate::ln::functional_test_utils::*;
 use crate::ln::msgs::{ChannelMessageHandler, Init, OnionMessage, OnionMessageHandler};
 use crate::offers::invoice::Bolt12Invoice;
 use crate::offers::invoice_request::InvoiceRequest;
+use crate::offers::parse::Bolt12SemanticError;
 use crate::onion_message::messenger::PeeledOnion;
 use crate::onion_message::offers::OffersMessage;
 use crate::onion_message::packet::ParsedOnionMessageContents;
@@ -496,4 +497,78 @@ fn pays_for_refund_without_blinded_paths() {
 
 	claim_bolt12_payment(bob, &[alice]);
 	expect_recent_payment!(bob, RecentPaymentDetails::Fulfilled, payment_id);
+}
+
+/// Fails creating an offer when a blinded path cannot be created without exposing the node's id.
+#[test]
+fn fails_creating_offer_without_blinded_paths() {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	create_unannounced_chan_between_nodes_with_value(&nodes, 0, 1, 10_000_000, 1_000_000_000);
+
+	match nodes[0].node.create_offer_builder("coffee".to_string()) {
+		Ok(_) => panic!("Expected error"),
+		Err(e) => assert_eq!(e, Bolt12SemanticError::MissingPaths),
+	}
+}
+
+/// Fails creating a refund when a blinded path cannot be created without exposing the node's id.
+#[test]
+fn fails_creating_refund_without_blinded_paths() {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	create_unannounced_chan_between_nodes_with_value(&nodes, 0, 1, 10_000_000, 1_000_000_000);
+
+	let absolute_expiry = Duration::from_secs(u64::MAX);
+	let payment_id = PaymentId([1; 32]);
+
+	match nodes[0].node.create_refund_builder(
+		"refund".to_string(), 10_000, absolute_expiry, payment_id, Retry::Attempts(0), None
+	) {
+		Ok(_) => panic!("Expected error"),
+		Err(e) => assert_eq!(e, Bolt12SemanticError::MissingPaths),
+	}
+
+	assert!(nodes[0].node.list_recent_payments().is_empty());
+}
+
+/// Fails creating an invoice request when a blinded reply path cannot be created without exposing
+/// the node's id.
+#[test]
+fn fails_creating_invoice_request_without_blinded_reply_path() {
+	let chanmon_cfgs = create_chanmon_cfgs(6);
+	let node_cfgs = create_node_cfgs(6, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(6, &node_cfgs, &[None, None, None, None, None, None]);
+	let nodes = create_network(6, &node_cfgs, &node_chanmgrs);
+
+	create_unannounced_chan_between_nodes_with_value(&nodes, 0, 1, 10_000_000, 1_000_000_000);
+	create_unannounced_chan_between_nodes_with_value(&nodes, 2, 3, 10_000_000, 1_000_000_000);
+	create_announced_chan_between_nodes_with_value(&nodes, 1, 2, 10_000_000, 1_000_000_000);
+	create_announced_chan_between_nodes_with_value(&nodes, 1, 4, 10_000_000, 1_000_000_000);
+	create_announced_chan_between_nodes_with_value(&nodes, 1, 5, 10_000_000, 1_000_000_000);
+
+	let (alice, bob, charlie, david) = (&nodes[0], &nodes[1], &nodes[2], &nodes[3]);
+
+	disconnect_peers(alice, &[charlie, david, &nodes[4], &nodes[5]]);
+	disconnect_peers(david, &[bob, &nodes[4], &nodes[5]]);
+
+	let offer = alice.node
+		.create_offer_builder("coffee".to_string()).unwrap()
+		.amount_msats(10_000_000)
+		.build().unwrap();
+
+	let payment_id = PaymentId([1; 32]);
+
+	match david.node.pay_for_offer(&offer, None, None, None, payment_id, Retry::Attempts(0), None) {
+		Ok(_) => panic!("Expected error"),
+		Err(e) => assert_eq!(e, Bolt12SemanticError::MissingPaths),
+	}
+
+	assert!(nodes[0].node.list_recent_payments().is_empty());
 }
