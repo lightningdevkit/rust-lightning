@@ -40,13 +40,14 @@ use bitcoin::{secp256k1, Sequence, Txid, Witness};
 use crate::chain::transaction::OutPoint;
 use crate::crypto::utils::{hkdf_extract_expand_twice, sign, sign_with_aux_rand};
 use crate::ln::chan_utils::{
-	make_funding_redeemscript, ChannelPublicKeys, ChannelTransactionParameters, ClosingTransaction,
-	CommitmentTransaction, HTLCOutputInCommitment, HolderCommitmentTransaction,
+	get_revokeable_redeemscript, make_funding_redeemscript, ChannelPublicKeys,
+	ChannelTransactionParameters, ClosingTransaction, CommitmentTransaction,
+	HTLCOutputInCommitment, HolderCommitmentTransaction,
 };
 use crate::ln::channel::ANCHOR_OUTPUT_VALUE_SATOSHI;
 use crate::ln::channel_keys::{
-	DelayedPaymentBasepoint, DelayedPaymentKey, HtlcBasepoint, HtlcKey, RevocationBasepoint,
-	RevocationKey,
+	add_public_key_tweak, DelayedPaymentBasepoint, DelayedPaymentKey, HtlcBasepoint, HtlcKey,
+	RevocationBasepoint, RevocationKey,
 };
 #[cfg(taproot)]
 use crate::ln::msgs::PartialSignatureWithNonce;
@@ -68,6 +69,7 @@ use crate::sign::ecdsa::{EcdsaChannelSigner, WriteableEcdsaChannelSigner};
 use crate::sign::taproot::TaprootChannelSigner;
 use crate::util::atomic_counter::AtomicCounter;
 use crate::util::invoice::construct_invoice_preimage;
+use core::convert::TryInto;
 use core::ops::Deref;
 use core::sync::atomic::{AtomicUsize, Ordering};
 #[cfg(taproot)]
@@ -108,7 +110,13 @@ pub struct DelayedPaymentOutputDescriptor {
 	pub channel_keys_id: [u8; 32],
 	/// The value of the channel which this output originated from, possibly indirectly.
 	pub channel_value_satoshis: u64,
+	/// The channel public keys and other parameters needed to generate a spending transaction or to provide to a re-derived signer through
+	/// [`ChannelSigner::provide_channel_parameters`].
+	///
+	/// Added as optional, but always `Some` if the descriptor was produced in v0.0.123 or later.
+	pub channel_transaction_parameters: Option<ChannelTransactionParameters>,
 }
+
 impl DelayedPaymentOutputDescriptor {
 	/// The maximum length a well-formed witness spending one of these should have.
 	/// Note: If you have the grind_signatures feature enabled, this will be at least 1 byte
@@ -127,6 +135,7 @@ impl_writeable_tlv_based!(DelayedPaymentOutputDescriptor, {
 	(8, revocation_pubkey, required),
 	(10, channel_keys_id, required),
 	(12, channel_value_satoshis, required),
+	(13, channel_transaction_parameters, option),
 });
 
 pub(crate) const P2WPKH_WITNESS_WEIGHT: u64 = 1 /* num stack items */ +
@@ -155,6 +164,7 @@ pub struct StaticPaymentOutputDescriptor {
 	/// Added as optional, but always `Some` if the descriptor was produced in v0.0.117 or later.
 	pub channel_transaction_parameters: Option<ChannelTransactionParameters>,
 }
+
 impl StaticPaymentOutputDescriptor {
 	/// Returns the `witness_script` of the spendable output.
 	///
@@ -306,25 +316,104 @@ impl SpendableOutputDescriptor {
 	///
 	/// This is not exported to bindings users as there is no standard serialization for an input.
 	/// See [`Self::create_spendable_outputs_psbt`] instead.
-	pub fn to_psbt_input(&self) -> bitcoin::psbt::Input {
+	///
+	/// The proprietary field is used to store add tweak for the signing key of this transaction.
+	/// See the [`DelayedPaymentBasepoint::derive_add_tweak`] docs for more info on add tweak and how to use it.
+	///
+	/// To get the proprietary field use:
+	/// ```
+	/// use bitcoin::psbt::{PartiallySignedTransaction};
+	/// use bitcoin::hashes::hex::FromHex;
+	///
+	/// # let s = "70736274ff0100520200000001dee978529ab3e61a2987bea5183713d0e6d5ceb5ac81100fdb54a1a2\
+	///	# 		 69cef505000000000090000000011f26000000000000160014abb3ab63280d4ccc5c11d6b50fd427a8\
+	///	# 		 e19d6470000000000001012b10270000000000002200200afe4736760d814a2651bae63b572d935d9a\
+	/// # 		 b74a1a16c01774e341a32afa763601054d63210394a27a700617f5b7aee72bd4f8076b5770a582b7fb\
+	///	# 		 d1d4ee2ea3802cd3cfbe2067029000b27521034629b1c8fdebfaeb58a74cd181f485e2c462e594cb30\
+	///	# 		 34dee655875f69f6c7c968ac20fc144c444b5f7370656e6461626c655f6f7574707574006164645f74\
+	///	# 		 7765616b20a86534f38ad61dc580ef41c3886204adf0911b81619c1ad7a2f5b5de39a2ba600000";
+	/// # let psbt = PartiallySignedTransaction::deserialize(<Vec<u8> as FromHex>::from_hex(s).unwrap().as_slice()).unwrap();
+	/// let key = bitcoin::psbt::raw::ProprietaryKey {
+	/// 	prefix: "LDK_spendable_output".as_bytes().to_vec(),
+	/// 	subtype: 0,
+	/// 	key: "add_tweak".as_bytes().to_vec(),
+	/// };
+	/// let value = psbt
+	/// 	.inputs
+	/// 	.first()
+	/// 	.expect("Unable to get add tweak as there are no inputs")
+	/// 	.proprietary
+	/// 	.get(&key)
+	/// 	.map(|x| x.to_owned());
+	/// ```
+	pub fn to_psbt_input<T: secp256k1::Signing>(
+		&self, secp_ctx: &Secp256k1<T>,
+	) -> bitcoin::psbt::Input {
 		match self {
 			SpendableOutputDescriptor::StaticOutput { output, .. } => {
 				// Is a standard P2WPKH, no need for witness script
 				bitcoin::psbt::Input { witness_utxo: Some(output.clone()), ..Default::default() }
 			},
-			SpendableOutputDescriptor::DelayedPaymentOutput(descriptor) => {
-				// TODO we could add the witness script as well
+			SpendableOutputDescriptor::DelayedPaymentOutput(DelayedPaymentOutputDescriptor {
+				channel_transaction_parameters,
+				per_commitment_point,
+				revocation_pubkey,
+				to_self_delay,
+				output,
+				..
+			}) => {
+				let delayed_payment_basepoint = channel_transaction_parameters
+					.as_ref()
+					.map(|params| params.holder_pubkeys.delayed_payment_basepoint);
+
+				let (witness_script, add_tweak) =
+					if let Some(basepoint) = delayed_payment_basepoint.as_ref() {
+						// Required to derive signing key: privkey = basepoint_secret + SHA256(per_commitment_point || basepoint)
+						let add_tweak = basepoint.derive_add_tweak(&per_commitment_point);
+						let payment_key = DelayedPaymentKey(add_public_key_tweak(
+							secp_ctx,
+							&basepoint.to_public_key(),
+							&add_tweak,
+						));
+
+						(
+							Some(get_revokeable_redeemscript(
+								&revocation_pubkey,
+								*to_self_delay,
+								&payment_key,
+							)),
+							Some(add_tweak),
+						)
+					} else {
+						(None, None)
+					};
+
 				bitcoin::psbt::Input {
-					witness_utxo: Some(descriptor.output.clone()),
+					witness_utxo: Some(output.clone()),
+					witness_script,
+					proprietary: add_tweak
+						.map(|add_tweak| {
+							[(
+								bitcoin::psbt::raw::ProprietaryKey {
+									// A non standard namespace for spendable outputs, used to store the tweak needed
+									// to derive the private key
+									prefix: "LDK_spendable_output".as_bytes().to_vec(),
+									subtype: 0,
+									key: "add_tweak".as_bytes().to_vec(),
+								},
+								add_tweak.to_vec(),
+							)]
+							.into_iter()
+							.collect()
+						})
+						.unwrap_or_default(),
 					..Default::default()
 				}
 			},
-			SpendableOutputDescriptor::StaticPaymentOutput(descriptor) => {
-				// TODO we could add the witness script as well
-				bitcoin::psbt::Input {
-					witness_utxo: Some(descriptor.output.clone()),
-					..Default::default()
-				}
+			SpendableOutputDescriptor::StaticPaymentOutput(descriptor) => bitcoin::psbt::Input {
+				witness_utxo: Some(descriptor.output.clone()),
+				witness_script: descriptor.witness_script(),
+				..Default::default()
 			},
 		}
 	}
@@ -345,8 +434,8 @@ impl SpendableOutputDescriptor {
 	/// does not match the one we can spend.
 	///
 	/// We do not enforce that outputs meet the dust limit or that any output scripts are standard.
-	pub fn create_spendable_outputs_psbt(
-		descriptors: &[&SpendableOutputDescriptor], outputs: Vec<TxOut>,
+	pub fn create_spendable_outputs_psbt<T: secp256k1::Signing>(
+		secp_ctx: &Secp256k1<T>, descriptors: &[&SpendableOutputDescriptor], outputs: Vec<TxOut>,
 		change_destination_script: ScriptBuf, feerate_sat_per_1000_weight: u32,
 		locktime: Option<LockTime>,
 	) -> Result<(PartiallySignedTransaction, u64), ()> {
@@ -438,7 +527,8 @@ impl SpendableOutputDescriptor {
 			change_destination_script,
 		)?;
 
-		let psbt_inputs = descriptors.iter().map(|d| d.to_psbt_input()).collect::<Vec<_>>();
+		let psbt_inputs =
+			descriptors.iter().map(|d| d.to_psbt_input(&secp_ctx)).collect::<Vec<_>>();
 		let psbt = PartiallySignedTransaction {
 			inputs: psbt_inputs,
 			outputs: vec![Default::default(); tx.output.len()],
@@ -2112,6 +2202,7 @@ impl OutputSpender for KeysManager {
 	) -> Result<Transaction, ()> {
 		let (mut psbt, expected_max_weight) =
 			SpendableOutputDescriptor::create_spendable_outputs_psbt(
+				secp_ctx,
 				descriptors,
 				outputs,
 				change_destination_script,

@@ -4330,6 +4330,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 						revocation_pubkey: broadcasted_holder_revokable_script.2,
 						channel_keys_id: self.channel_keys_id,
 						channel_value_satoshis: self.channel_value_satoshis,
+						channel_transaction_parameters: Some(self.onchain_tx_handler.channel_transaction_parameters.clone()),
 					}));
 				}
 			}
