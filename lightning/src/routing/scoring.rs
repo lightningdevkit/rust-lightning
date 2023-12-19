@@ -58,7 +58,7 @@
 
 use crate::ln::msgs::DecodeError;
 use crate::routing::gossip::{EffectiveCapacity, NetworkGraph, NodeId};
-use crate::routing::router::{Path, CandidateRouteHop};
+use crate::routing::router::{Path, CandidateRouteHop, PublicHopCandidate};
 use crate::util::ser::{Readable, ReadableArgs, Writeable, Writer};
 use crate::util::logger::Logger;
 
@@ -1324,7 +1324,7 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref> ScoreLookUp for Probabilistic
 		&self, candidate: &CandidateRouteHop, usage: ChannelUsage, score_params: &ProbabilisticScoringFeeParameters
 	) -> u64 {
 		let (scid, target) = match candidate {
-			CandidateRouteHop::PublicHop { info, short_channel_id } => {
+			CandidateRouteHop::PublicHop(PublicHopCandidate { info, short_channel_id }) => {
 				(short_channel_id, info.target())
 			},
 			_ => return 0,
@@ -2159,7 +2159,7 @@ mod tests {
 	use crate::ln::channelmanager;
 	use crate::ln::msgs::{ChannelAnnouncement, ChannelUpdate, UnsignedChannelAnnouncement, UnsignedChannelUpdate};
 	use crate::routing::gossip::{EffectiveCapacity, NetworkGraph, NodeId};
-	use crate::routing::router::{BlindedTail, Path, RouteHop, CandidateRouteHop};
+	use crate::routing::router::{BlindedTail, Path, RouteHop, CandidateRouteHop, PublicHopCandidate};
 	use crate::routing::scoring::{ChannelUsage, ScoreLookUp, ScoreUpdate};
 	use crate::util::ser::{ReadableArgs, Writeable};
 	use crate::util::test_utils::{self, TestLogger};
@@ -2535,10 +2535,10 @@ mod tests {
 		let network_graph = network_graph.read_only();
 		let channel = network_graph.channel(42).unwrap();
 		let (info, _) = channel.as_directed_from(&source).unwrap();
-		let candidate = CandidateRouteHop::PublicHop {
+		let candidate = CandidateRouteHop::PublicHop(PublicHopCandidate {
 			info,
 			short_channel_id: 42,
-		};
+		});
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 0);
 		let usage = ChannelUsage { amount_msat: 10_240, ..usage };
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 0);
@@ -2598,10 +2598,10 @@ mod tests {
 		};
 		let channel = network_graph.read_only().channel(42).unwrap().to_owned();
 		let (info, _) = channel.as_directed_from(&source).unwrap();
-		let candidate = CandidateRouteHop::PublicHop {
+		let candidate = CandidateRouteHop::PublicHop(PublicHopCandidate {
 			info,
 			short_channel_id: 42,
-		};
+		});
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 0);
 		let usage = ChannelUsage { amount_msat: 50, ..usage };
 		assert_ne!(scorer.channel_penalty_msat(&candidate, usage, &params), 0);
@@ -2629,10 +2629,10 @@ mod tests {
 		let successful_path = payment_path_for_amount(200);
 		let channel = &network_graph.read_only().channel(42).unwrap().to_owned();
 		let (info, _) = channel.as_directed_from(&source).unwrap();
-		let candidate = CandidateRouteHop::PublicHop {
+		let candidate = CandidateRouteHop::PublicHop(PublicHopCandidate {
 			info,
 			short_channel_id: 41,
-		};
+		});
 
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 301);
 
@@ -2662,10 +2662,10 @@ mod tests {
 		};
 		let channel = network_graph.read_only().channel(42).unwrap().to_owned();
 		let (info, _) = channel.as_directed_from(&source).unwrap();
-		let candidate = CandidateRouteHop::PublicHop {
+		let candidate = CandidateRouteHop::PublicHop(PublicHopCandidate {
 			info,
 			short_channel_id: 42,
-		};
+		});
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 128);
 		let usage = ChannelUsage { amount_msat: 500, ..usage };
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 301);
@@ -2702,10 +2702,10 @@ mod tests {
 		};
 		let channel = network_graph.read_only().channel(42).unwrap().to_owned();
 		let (info, _) = channel.as_directed_from(&source).unwrap();
-		let candidate = CandidateRouteHop::PublicHop {
+		let candidate = CandidateRouteHop::PublicHop(PublicHopCandidate {
 			info,
 			short_channel_id: 42,
-		};
+		});
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 128);
 		let usage = ChannelUsage { amount_msat: 500, ..usage };
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 301);
@@ -2768,50 +2768,50 @@ mod tests {
 		};
 		let channel = network_graph.read_only().channel(42).unwrap().to_owned();
 		let (info, _) = channel.as_directed_from(&node_a).unwrap();
-		let candidate = CandidateRouteHop::PublicHop {
+		let candidate = CandidateRouteHop::PublicHop(PublicHopCandidate {
 			info,
 			short_channel_id: 42,
-		};
+		});
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 128);
 		// Note that a default liquidity bound is used for B -> C as no channel exists
 		let channel = network_graph.read_only().channel(42).unwrap().to_owned();
 		let (info, _) = channel.as_directed_from(&node_b).unwrap();
-		let candidate = CandidateRouteHop::PublicHop {
+		let candidate = CandidateRouteHop::PublicHop(PublicHopCandidate {
 			info,
 			short_channel_id: 43,
-		};
+		});
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 128);
 		let channel = network_graph.read_only().channel(44).unwrap().to_owned();
 		let (info, _) = channel.as_directed_from(&node_c).unwrap();
-		let candidate = CandidateRouteHop::PublicHop {
+		let candidate = CandidateRouteHop::PublicHop(PublicHopCandidate {
 			info,
 			short_channel_id: 44,
-		};
+		});
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 128);
 
 		scorer.payment_path_failed(&Path { hops: path, blinded_tail: None }, 43, Duration::ZERO);
 
 		let channel = network_graph.read_only().channel(42).unwrap().to_owned();
 		let (info, _) = channel.as_directed_from(&node_a).unwrap();
-		let candidate = CandidateRouteHop::PublicHop {
+		let candidate = CandidateRouteHop::PublicHop(PublicHopCandidate {
 			info,
 			short_channel_id: 42,
-		};
+		});
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 80);
 		// Note that a default liquidity bound is used for B -> C as no channel exists
 		let channel = network_graph.read_only().channel(42).unwrap().to_owned();
 		let (info, _) = channel.as_directed_from(&node_b).unwrap();
-		let candidate = CandidateRouteHop::PublicHop {
+		let candidate = CandidateRouteHop::PublicHop(PublicHopCandidate {
 			info,
 			short_channel_id: 43,
-		};
+		});
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 128);
 		let channel = network_graph.read_only().channel(44).unwrap().to_owned();
 		let (info, _) = channel.as_directed_from(&node_c).unwrap();
-		let candidate = CandidateRouteHop::PublicHop {
+		let candidate = CandidateRouteHop::PublicHop(PublicHopCandidate {
 			info,
 			short_channel_id: 44,
-		};
+		});
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 128);
 	}
 
@@ -2834,20 +2834,20 @@ mod tests {
 		let channel_42 = network_graph.get(&42).unwrap();
 		let channel_43 = network_graph.get(&43).unwrap();
 		let (info, _) = channel_42.as_directed_from(&source).unwrap();
-		let candidate_41 = CandidateRouteHop::PublicHop {
+		let candidate_41 = CandidateRouteHop::PublicHop(PublicHopCandidate {
 			info,
 			short_channel_id: 41,
-		};
+		});
 		let (info, target) = channel_42.as_directed_from(&source).unwrap();
-		let candidate_42 = CandidateRouteHop::PublicHop {
+		let candidate_42 = CandidateRouteHop::PublicHop(PublicHopCandidate {
 			info,
 			short_channel_id: 42,
-		};
+		});
 		let (info, _) = channel_43.as_directed_from(&target).unwrap();
-		let candidate_43 = CandidateRouteHop::PublicHop {
+		let candidate_43 = CandidateRouteHop::PublicHop(PublicHopCandidate {
 			info,
 			short_channel_id: 43,
-		};
+		});
 		assert_eq!(scorer.channel_penalty_msat(&candidate_41, usage, &params), 128);
 		assert_eq!(scorer.channel_penalty_msat(&candidate_42, usage, &params), 128);
 		assert_eq!(scorer.channel_penalty_msat(&candidate_43, usage, &params), 128);
@@ -2882,10 +2882,10 @@ mod tests {
 		};
 		let channel = network_graph.read_only().channel(42).unwrap().to_owned();
 		let (info, _) = channel.as_directed_from(&source).unwrap();
-		let candidate = CandidateRouteHop::PublicHop {
+		let candidate = CandidateRouteHop::PublicHop(PublicHopCandidate {
 			info,
 			short_channel_id: 42,
-		};
+		});
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 0);
 		let usage = ChannelUsage { amount_msat: 1_023, ..usage };
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 2_000);
@@ -2971,10 +2971,10 @@ mod tests {
 		};
 		let channel = network_graph.read_only().channel(42).unwrap().to_owned();
 		let (info, _) = channel.as_directed_from(&source).unwrap();
-		let candidate = CandidateRouteHop::PublicHop {
+		let candidate = CandidateRouteHop::PublicHop(PublicHopCandidate {
 			info,
 			short_channel_id: 42,
-		};
+		});
 
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 300);
 
@@ -3026,10 +3026,10 @@ mod tests {
 		scorer.payment_path_failed(&payment_path_for_amount(500), 42, Duration::ZERO);
 		let channel = network_graph.read_only().channel(42).unwrap().to_owned();
 		let (info, _) = channel.as_directed_from(&source).unwrap();
-		let candidate = CandidateRouteHop::PublicHop {
+		let candidate = CandidateRouteHop::PublicHop(PublicHopCandidate {
 			info,
 			short_channel_id: 42,
-		};
+		});
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), u64::max_value());
 
 		scorer.time_passed(Duration::from_secs(10));
@@ -3070,10 +3070,10 @@ mod tests {
 		scorer.payment_path_failed(&payment_path_for_amount(500), 42, Duration::ZERO);
 		let channel = network_graph.read_only().channel(42).unwrap().to_owned();
 		let (info, _) = channel.as_directed_from(&source).unwrap();
-		let candidate = CandidateRouteHop::PublicHop {
+		let candidate = CandidateRouteHop::PublicHop(PublicHopCandidate {
 			info,
 			short_channel_id: 42,
-		};
+		});
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), u64::max_value());
 
 		if decay_before_reload {
@@ -3122,10 +3122,10 @@ mod tests {
 		};
 		let channel = network_graph.read_only().channel(42).unwrap().to_owned();
 		let (info, _) = channel.as_directed_from(&source).unwrap();
-		let candidate = CandidateRouteHop::PublicHop {
+		let candidate = CandidateRouteHop::PublicHop(PublicHopCandidate {
 			info,
 			short_channel_id: 42,
-		};
+		});
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 11497);
 		let usage = ChannelUsage {
 			effective_capacity: EffectiveCapacity::Total { capacity_msat: 1_950_000_000, htlc_maximum_msat: 1_000 }, ..usage
@@ -3187,10 +3187,10 @@ mod tests {
 		let scorer = ProbabilisticScorer::new(ProbabilisticScoringDecayParameters::default(), &network_graph, &logger);
 		let channel = network_graph.read_only().channel(42).unwrap().to_owned();
 		let (info, _) = channel.as_directed_from(&source).unwrap();
-		let candidate = CandidateRouteHop::PublicHop {
+		let candidate = CandidateRouteHop::PublicHop(PublicHopCandidate {
 			info,
 			short_channel_id: 42,
-		};
+		});
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 58);
 
 		let params = ProbabilisticScoringFeeParameters {
@@ -3229,10 +3229,10 @@ mod tests {
 		let scorer = ProbabilisticScorer::new(ProbabilisticScoringDecayParameters::default(), &network_graph, &logger);
 		let channel = network_graph.read_only().channel(42).unwrap().to_owned();
 		let (info, _) = channel.as_directed_from(&source).unwrap();
-		let candidate = CandidateRouteHop::PublicHop {
+		let candidate = CandidateRouteHop::PublicHop(PublicHopCandidate {
 			info,
 			short_channel_id: 42,
-		};
+		});
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 300);
 
 		let params = ProbabilisticScoringFeeParameters {
@@ -3261,10 +3261,10 @@ mod tests {
 		let decay_params = ProbabilisticScoringDecayParameters::zero_penalty();
 		let channel = network_graph.read_only().channel(42).unwrap().to_owned();
 		let (info, _) = channel.as_directed_from(&source).unwrap();
-		let candidate = CandidateRouteHop::PublicHop {
+		let candidate = CandidateRouteHop::PublicHop(PublicHopCandidate {
 			info,
 			short_channel_id: 42,
-		};
+		});
 		let scorer = ProbabilisticScorer::new(decay_params, &network_graph, &logger);
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 80_000);
 	}
@@ -3288,10 +3288,10 @@ mod tests {
 		let network_graph = network_graph.read_only();
 		let channel = network_graph.channel(42).unwrap();
 		let (info, _) = channel.as_directed_from(&source).unwrap();
-		let candidate = CandidateRouteHop::PublicHop {
+		let candidate = CandidateRouteHop::PublicHop(PublicHopCandidate {
 			info,
 			short_channel_id: 42,
-		};
+		});
 		assert_ne!(scorer.channel_penalty_msat(&candidate, usage, &params), u64::max_value());
 
 		let usage = ChannelUsage { inflight_htlc_msat: 251, ..usage };
@@ -3315,10 +3315,10 @@ mod tests {
 		let network_graph = network_graph.read_only();
 		let channel = network_graph.channel(42).unwrap();
 		let (info, _) = channel.as_directed_from(&source).unwrap();
-		let candidate = CandidateRouteHop::PublicHop {
+		let candidate = CandidateRouteHop::PublicHop(PublicHopCandidate {
 			info,
 			short_channel_id: 42,
-		};
+		});
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), base_penalty_msat);
 
 		let usage = ChannelUsage { amount_msat: 1_000, ..usage };
@@ -3360,10 +3360,10 @@ mod tests {
 			let network_graph = network_graph.read_only();
 			let channel = network_graph.channel(42).unwrap();
 			let (info, _) = channel.as_directed_from(&source).unwrap();
-			let candidate = CandidateRouteHop::PublicHop {
+			let candidate = CandidateRouteHop::PublicHop(PublicHopCandidate {
 				info,
 				short_channel_id: 42,
-			};
+			});
 
 			// With no historical data the normal liquidity penalty calculation is used.
 			assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 168);
@@ -3378,10 +3378,10 @@ mod tests {
 			let network_graph = network_graph.read_only();
 			let channel = network_graph.channel(42).unwrap();
 			let (info, _) = channel.as_directed_from(&source).unwrap();
-			let candidate = CandidateRouteHop::PublicHop {
+			let candidate = CandidateRouteHop::PublicHop(PublicHopCandidate {
 				info,
 				short_channel_id: 42,
-			};
+			});
 
 			assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 2048);
 			assert_eq!(scorer.channel_penalty_msat(&candidate, usage_1, &params), 249);
@@ -3403,10 +3403,10 @@ mod tests {
 			let network_graph = network_graph.read_only();
 			let channel = network_graph.channel(42).unwrap();
 			let (info, _) = channel.as_directed_from(&source).unwrap();
-			let candidate = CandidateRouteHop::PublicHop {
+			let candidate = CandidateRouteHop::PublicHop(PublicHopCandidate {
 				info,
 				short_channel_id: 42,
-			};
+			});
 
 			assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 105);
 		}
@@ -3433,10 +3433,10 @@ mod tests {
 			let network_graph = network_graph.read_only();
 			let channel = network_graph.channel(42).unwrap();
 			let (info, _) = channel.as_directed_from(&source).unwrap();
-			let candidate = CandidateRouteHop::PublicHop {
+			let candidate = CandidateRouteHop::PublicHop(PublicHopCandidate {
 				info,
 				short_channel_id: 42,
-			};
+			});
 
 			assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 168);
 		}
@@ -3456,10 +3456,10 @@ mod tests {
 			let network_graph = network_graph.read_only();
 			let channel = network_graph.channel(42).unwrap();
 			let (info, _) = channel.as_directed_from(&source).unwrap();
-			let candidate = CandidateRouteHop::PublicHop {
+			let candidate = CandidateRouteHop::PublicHop(PublicHopCandidate {
 				info,
 				short_channel_id: 42,
-			};
+			});
 
 			assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 2050);
 
@@ -3509,10 +3509,10 @@ mod tests {
 		let network_graph = network_graph.read_only();
 		let channel = network_graph.channel(42).unwrap();
 		let (info, _) = channel.as_directed_from(&source).unwrap();
-		let candidate = CandidateRouteHop::PublicHop {
+		let candidate = CandidateRouteHop::PublicHop(PublicHopCandidate {
 			info,
 			short_channel_id: 42,
-		};
+		});
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 0);
 
 		// Check we receive anti-probing penalty for htlc_maximum_msat == channel_capacity.
@@ -3559,10 +3559,10 @@ mod tests {
 		};
 		let channel = network_graph.read_only().channel(42).unwrap().to_owned();
 		let (info, target) = channel.as_directed_from(&source).unwrap();
-		let candidate = CandidateRouteHop::PublicHop {
+		let candidate = CandidateRouteHop::PublicHop(PublicHopCandidate {
 			info,
 			short_channel_id: 42,
-		};
+		});
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 300);
 
 		let mut path = payment_path_for_amount(768);
@@ -3628,10 +3628,10 @@ mod tests {
 		};
 		let channel = network_graph.read_only().channel(42).unwrap().to_owned();
 		let (info, target) = channel.as_directed_from(&source).unwrap();
-		let candidate = CandidateRouteHop::PublicHop {
+		let candidate = CandidateRouteHop::PublicHop(PublicHopCandidate {
 			info,
 			short_channel_id: 42,
-		};
+		});
 		// With no historical data the normal liquidity penalty calculation is used, which results
 		// in a success probability of ~75%.
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 1269);

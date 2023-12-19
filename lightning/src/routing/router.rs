@@ -1119,6 +1119,68 @@ const _GRAPH_NODE_SMALL: usize = 64 - core::mem::size_of::<RouteGraphNode>();
 #[cfg(any(ldk_bench, not(any(test, fuzzing))))]
 const _GRAPH_NODE_FIXED_SIZE: usize = core::mem::size_of::<RouteGraphNode>() - 64;
 
+/// A [`CandidateRouteHop::FirstHop`] entry.
+#[derive(Clone, Debug)]
+pub struct FirstHopCandidate<'a> {
+	/// Channel details of the first hop
+	///
+	/// [`ChannelDetails::get_outbound_payment_scid`] MUST be `Some` (indicating the channel
+	/// has been funded and is able to pay), and accessor methods may panic otherwise.
+	///
+	/// [`find_route`] validates this prior to constructing a [`CandidateRouteHop`].
+	pub details: &'a ChannelDetails,
+	/// The node id of the payer, which is also the source side of this candidate route hop.
+	pub payer_node_id: &'a NodeId,
+}
+
+/// A [`CandidateRouteHop::PublicHop`] entry.
+#[derive(Clone, Debug)]
+pub struct PublicHopCandidate<'a> {
+	/// Information about the channel, including potentially its capacity and
+	/// direction-specific information.
+	pub info: DirectedChannelInfo<'a>,
+	/// The short channel ID of the channel, i.e. the identifier by which we refer to this
+	/// channel.
+	pub short_channel_id: u64,
+}
+
+/// A [`CandidateRouteHop::PrivateHop`] entry.
+#[derive(Clone, Debug)]
+pub struct PrivateHopCandidate<'a> {
+	/// Information about the private hop communicated via BOLT 11.
+	pub hint: &'a RouteHintHop,
+	/// Node id of the next hop in BOLT 11 route hint.
+	pub target_node_id: &'a NodeId
+}
+
+/// A [`CandidateRouteHop::Blinded`] entry.
+#[derive(Clone, Debug)]
+pub struct BlindedPathCandidate<'a> {
+	/// Information about the blinded path including the fee, HTLC amount limits, and
+	/// cryptographic material required to build an HTLC through the given path.
+	pub hint: &'a (BlindedPayInfo, BlindedPath),
+	/// Index of the hint in the original list of blinded hints.
+	///
+	/// This is used to cheaply uniquely identify this blinded path, even though we don't have
+	/// a short channel ID for this hop.
+	hint_idx: usize,
+}
+
+/// A [`CandidateRouteHop::OneHopBlinded`] entry.
+#[derive(Clone, Debug)]
+pub struct OneHopBlindedPathCandidate<'a> {
+	/// Information about the blinded path including the fee, HTLC amount limits, and
+	/// cryptographic material required to build an HTLC terminating with the given path.
+	///
+	/// Note that the [`BlindedPayInfo`] is ignored here.
+	pub hint: &'a (BlindedPayInfo, BlindedPath),
+	/// Index of the hint in the original list of blinded hints.
+	///
+	/// This is used to cheaply uniquely identify this blinded path, even though we don't have
+	/// a short channel ID for this hop.
+	hint_idx: usize,
+}
+
 /// A wrapper around the various hop representations.
 ///
 /// Can be used to examine the properties of a hop,
@@ -1126,36 +1188,14 @@ const _GRAPH_NODE_FIXED_SIZE: usize = core::mem::size_of::<RouteGraphNode>() - 6
 #[derive(Clone, Debug)]
 pub enum CandidateRouteHop<'a> {
 	/// A hop from the payer, where the outbound liquidity is known.
-	FirstHop {
-		/// Channel details of the first hop
-		///
-		/// [`ChannelDetails::get_outbound_payment_scid`] MUST be `Some` (indicating the channel
-		/// has been funded and is able to pay), and accessor methods may panic otherwise.
-		///
-		/// [`find_route`] validates this prior to constructing a [`CandidateRouteHop`].
-		details: &'a ChannelDetails,
-		/// The node id of the payer, which is also the source side of this candidate route hop.
-		payer_node_id: &'a NodeId,
-	},
+	FirstHop(FirstHopCandidate<'a>),
 	/// A hop found in the [`ReadOnlyNetworkGraph`].
-	PublicHop {
-		/// Information about the channel, including potentially its capacity and
-		/// direction-specific information.
-		info: DirectedChannelInfo<'a>,
-		/// The short channel ID of the channel, i.e. the identifier by which we refer to this
-		/// channel.
-		short_channel_id: u64,
-	},
+	PublicHop(PublicHopCandidate<'a>),
 	/// A private hop communicated by the payee, generally via a BOLT 11 invoice.
 	///
 	/// Because BOLT 11 route hints can take multiple hops to get to the destination, this may not
 	/// terminate at the payee.
-	PrivateHop {
-		/// Information about the private hop communicated via BOLT 11.
-		hint: &'a RouteHintHop,
-		/// Node id of the next hop in BOLT 11 route hint.
-		target_node_id: &'a NodeId
-	},
+	PrivateHop(PrivateHopCandidate<'a>),
 	/// A blinded path which starts with an introduction point and ultimately terminates with the
 	/// payee.
 	///
@@ -1164,16 +1204,7 @@ pub enum CandidateRouteHop<'a> {
 	///
 	/// Because blinded paths are "all or nothing", and we cannot use just one part of a blinded
 	/// path, the full path is treated as a single [`CandidateRouteHop`].
-	Blinded {
-		/// Information about the blinded path including the fee, HTLC amount limits, and
-		/// cryptographic material required to build an HTLC through the given path.
-		hint: &'a (BlindedPayInfo, BlindedPath),
-		/// Index of the hint in the original list of blinded hints.
-		///
-		/// This is used to cheaply uniquely identify this blinded path, even though we don't have
-		/// a short channel ID for this hop.
-		hint_idx: usize,
-	},
+	Blinded(BlindedPathCandidate<'a>),
 	/// Similar to [`Self::Blinded`], but the path here only has one hop.
 	///
 	/// While we treat this similarly to [`CandidateRouteHop::Blinded`] in many respects (e.g.
@@ -1185,18 +1216,7 @@ pub enum CandidateRouteHop<'a> {
 	///
 	/// This primarily exists to track that we need to included a blinded path at the end of our
 	/// [`Route`], even though it doesn't actually add an additional hop in the payment.
-	OneHopBlinded {
-		/// Information about the blinded path including the fee, HTLC amount limits, and
-		/// cryptographic material required to build an HTLC terminating with the given path.
-		///
-		/// Note that the [`BlindedPayInfo`] is ignored here.
-		hint: &'a (BlindedPayInfo, BlindedPath),
-		/// Index of the hint in the original list of blinded hints.
-		///
-		/// This is used to cheaply uniquely identify this blinded path, even though we don't have
-		/// a short channel ID for this hop.
-		hint_idx: usize,
-	},
+	OneHopBlinded(OneHopBlindedPathCandidate<'a>),
 }
 
 impl<'a> CandidateRouteHop<'a> {
@@ -1218,11 +1238,11 @@ impl<'a> CandidateRouteHop<'a> {
 	#[inline]
 	fn short_channel_id(&self) -> Option<u64> {
 		match self {
-			CandidateRouteHop::FirstHop { details, .. } => details.get_outbound_payment_scid(),
-			CandidateRouteHop::PublicHop { short_channel_id, .. } => Some(*short_channel_id),
-			CandidateRouteHop::PrivateHop { hint, .. } => Some(hint.short_channel_id),
-			CandidateRouteHop::Blinded { .. } => None,
-			CandidateRouteHop::OneHopBlinded { .. } => None,
+			CandidateRouteHop::FirstHop(hop) => hop.details.get_outbound_payment_scid(),
+			CandidateRouteHop::PublicHop(hop) => Some(hop.short_channel_id),
+			CandidateRouteHop::PrivateHop(hop) => Some(hop.hint.short_channel_id),
+			CandidateRouteHop::Blinded(_) => None,
+			CandidateRouteHop::OneHopBlinded(_) => None,
 		}
 	}
 
@@ -1234,22 +1254,22 @@ impl<'a> CandidateRouteHop<'a> {
 	#[inline]
 	pub fn globally_unique_short_channel_id(&self) -> Option<u64> {
 		match self {
-			CandidateRouteHop::FirstHop { details, .. } => if details.is_public { details.short_channel_id } else { None },
-			CandidateRouteHop::PublicHop { short_channel_id, .. } => Some(*short_channel_id),
-			CandidateRouteHop::PrivateHop { .. } => None,
-			CandidateRouteHop::Blinded { .. } => None,
-			CandidateRouteHop::OneHopBlinded { .. } => None,
+			CandidateRouteHop::FirstHop(hop) => if hop.details.is_public { hop.details.short_channel_id } else { None },
+			CandidateRouteHop::PublicHop(hop) => Some(hop.short_channel_id),
+			CandidateRouteHop::PrivateHop(_) => None,
+			CandidateRouteHop::Blinded(_) => None,
+			CandidateRouteHop::OneHopBlinded(_) => None,
 		}
 	}
 
 	// NOTE: This may alloc memory so avoid calling it in a hot code path.
 	fn features(&self) -> ChannelFeatures {
 		match self {
-			CandidateRouteHop::FirstHop { details, .. } => details.counterparty.features.to_context(),
-			CandidateRouteHop::PublicHop { info, .. } => info.channel().features.clone(),
-			CandidateRouteHop::PrivateHop { .. } => ChannelFeatures::empty(),
-			CandidateRouteHop::Blinded { .. } => ChannelFeatures::empty(),
-			CandidateRouteHop::OneHopBlinded { .. } => ChannelFeatures::empty(),
+			CandidateRouteHop::FirstHop(hop) => hop.details.counterparty.features.to_context(),
+			CandidateRouteHop::PublicHop(hop) => hop.info.channel().features.clone(),
+			CandidateRouteHop::PrivateHop(_) => ChannelFeatures::empty(),
+			CandidateRouteHop::Blinded(_) => ChannelFeatures::empty(),
+			CandidateRouteHop::OneHopBlinded(_) => ChannelFeatures::empty(),
 		}
 	}
 
@@ -1261,11 +1281,11 @@ impl<'a> CandidateRouteHop<'a> {
 	#[inline]
 	pub fn cltv_expiry_delta(&self) -> u32 {
 		match self {
-			CandidateRouteHop::FirstHop { .. } => 0,
-			CandidateRouteHop::PublicHop { info, .. } => info.direction().cltv_expiry_delta as u32,
-			CandidateRouteHop::PrivateHop { hint, .. } => hint.cltv_expiry_delta as u32,
-			CandidateRouteHop::Blinded { hint, .. } => hint.0.cltv_expiry_delta as u32,
-			CandidateRouteHop::OneHopBlinded { .. } => 0,
+			CandidateRouteHop::FirstHop(_) => 0,
+			CandidateRouteHop::PublicHop(hop) => hop.info.direction().cltv_expiry_delta as u32,
+			CandidateRouteHop::PrivateHop(hop) => hop.hint.cltv_expiry_delta as u32,
+			CandidateRouteHop::Blinded(hop) => hop.hint.0.cltv_expiry_delta as u32,
+			CandidateRouteHop::OneHopBlinded(_) => 0,
 		}
 	}
 
@@ -1273,10 +1293,10 @@ impl<'a> CandidateRouteHop<'a> {
 	#[inline]
 	pub fn htlc_minimum_msat(&self) -> u64 {
 		match self {
-			CandidateRouteHop::FirstHop { details, .. } => details.next_outbound_htlc_minimum_msat,
-			CandidateRouteHop::PublicHop { info, .. } => info.direction().htlc_minimum_msat,
-			CandidateRouteHop::PrivateHop { hint, .. } => hint.htlc_minimum_msat.unwrap_or(0),
-			CandidateRouteHop::Blinded { hint, .. } => hint.0.htlc_minimum_msat,
+			CandidateRouteHop::FirstHop(hop) => hop.details.next_outbound_htlc_minimum_msat,
+			CandidateRouteHop::PublicHop(hop) => hop.info.direction().htlc_minimum_msat,
+			CandidateRouteHop::PrivateHop(hop) => hop.hint.htlc_minimum_msat.unwrap_or(0),
+			CandidateRouteHop::Blinded(hop) => hop.hint.0.htlc_minimum_msat,
 			CandidateRouteHop::OneHopBlinded { .. } => 0,
 		}
 	}
@@ -1285,18 +1305,18 @@ impl<'a> CandidateRouteHop<'a> {
 	#[inline]
 	pub fn fees(&self) -> RoutingFees {
 		match self {
-			CandidateRouteHop::FirstHop { .. } => RoutingFees {
+			CandidateRouteHop::FirstHop(_) => RoutingFees {
 				base_msat: 0, proportional_millionths: 0,
 			},
-			CandidateRouteHop::PublicHop { info, .. } => info.direction().fees,
-			CandidateRouteHop::PrivateHop { hint, .. } => hint.fees,
-			CandidateRouteHop::Blinded { hint, .. } => {
+			CandidateRouteHop::PublicHop(hop) => hop.info.direction().fees,
+			CandidateRouteHop::PrivateHop(hop) => hop.hint.fees,
+			CandidateRouteHop::Blinded(hop) => {
 				RoutingFees {
-					base_msat: hint.0.fee_base_msat,
-					proportional_millionths: hint.0.fee_proportional_millionths
+					base_msat: hop.hint.0.fee_base_msat,
+					proportional_millionths: hop.hint.0.fee_proportional_millionths
 				}
 			},
-			CandidateRouteHop::OneHopBlinded { .. } =>
+			CandidateRouteHop::OneHopBlinded(_) =>
 				RoutingFees { base_msat: 0, proportional_millionths: 0 },
 		}
 	}
@@ -1307,17 +1327,17 @@ impl<'a> CandidateRouteHop<'a> {
 	/// cached!
 	fn effective_capacity(&self) -> EffectiveCapacity {
 		match self {
-			CandidateRouteHop::FirstHop { details, .. } => EffectiveCapacity::ExactLiquidity {
-				liquidity_msat: details.next_outbound_htlc_limit_msat,
+			CandidateRouteHop::FirstHop(hop) => EffectiveCapacity::ExactLiquidity {
+				liquidity_msat: hop.details.next_outbound_htlc_limit_msat,
 			},
-			CandidateRouteHop::PublicHop { info, .. } => info.effective_capacity(),
-			CandidateRouteHop::PrivateHop { hint: RouteHintHop { htlc_maximum_msat: Some(max), .. }, .. } =>
+			CandidateRouteHop::PublicHop(hop) => hop.info.effective_capacity(),
+			CandidateRouteHop::PrivateHop(PrivateHopCandidate { hint: RouteHintHop { htlc_maximum_msat: Some(max), .. }, .. }) =>
 				EffectiveCapacity::HintMaxHTLC { amount_msat: *max },
-			CandidateRouteHop::PrivateHop { hint: RouteHintHop { htlc_maximum_msat: None, .. }, .. } =>
+			CandidateRouteHop::PrivateHop(PrivateHopCandidate { hint: RouteHintHop { htlc_maximum_msat: None, .. }, .. }) =>
 				EffectiveCapacity::Infinite,
-			CandidateRouteHop::Blinded { hint, .. } =>
-				EffectiveCapacity::HintMaxHTLC { amount_msat: hint.0.htlc_maximum_msat },
-			CandidateRouteHop::OneHopBlinded { .. } => EffectiveCapacity::Infinite,
+			CandidateRouteHop::Blinded(hop) =>
+				EffectiveCapacity::HintMaxHTLC { amount_msat: hop.hint.0.htlc_maximum_msat },
+			CandidateRouteHop::OneHopBlinded(_) => EffectiveCapacity::Infinite,
 		}
 	}
 
@@ -1327,14 +1347,14 @@ impl<'a> CandidateRouteHop<'a> {
 	#[inline]
 	fn id(&self) -> CandidateHopId {
 		match self {
-			CandidateRouteHop::Blinded { hint_idx, .. } => CandidateHopId::Blinded(*hint_idx),
-			CandidateRouteHop::OneHopBlinded { hint_idx, .. } => CandidateHopId::Blinded(*hint_idx),
+			CandidateRouteHop::Blinded(hop) => CandidateHopId::Blinded(hop.hint_idx),
+			CandidateRouteHop::OneHopBlinded(hop) => CandidateHopId::Blinded(hop.hint_idx),
 			_ => CandidateHopId::Clear((self.short_channel_id().unwrap(), self.source() < self.target().unwrap())),
 		}
 	}
 	fn blinded_path(&self) -> Option<&'a BlindedPath> {
 		match self {
-			CandidateRouteHop::Blinded { hint, .. } | CandidateRouteHop::OneHopBlinded { hint, .. } => {
+			CandidateRouteHop::Blinded(BlindedPathCandidate { hint, .. }) | CandidateRouteHop::OneHopBlinded(OneHopBlindedPathCandidate { hint, .. }) => {
 				Some(&hint.1)
 			},
 			_ => None,
@@ -1348,11 +1368,11 @@ impl<'a> CandidateRouteHop<'a> {
 	#[inline]
 	pub fn source(&self) -> NodeId {
 		match self {
-			CandidateRouteHop::FirstHop { payer_node_id, .. } => **payer_node_id,
-			CandidateRouteHop::PublicHop { info, .. } => *info.source(),
-			CandidateRouteHop::PrivateHop { hint, .. } => hint.src_node_id.into(),
-			CandidateRouteHop::Blinded { hint, .. } => hint.1.introduction_node_id.into(),
-			CandidateRouteHop::OneHopBlinded { hint, .. } => hint.1.introduction_node_id.into(),
+			CandidateRouteHop::FirstHop(hop) => *hop.payer_node_id,
+			CandidateRouteHop::PublicHop(hop) => *hop.info.source(),
+			CandidateRouteHop::PrivateHop(hop) => hop.hint.src_node_id.into(),
+			CandidateRouteHop::Blinded(hop) => hop.hint.1.introduction_node_id.into(),
+			CandidateRouteHop::OneHopBlinded(hop) => hop.hint.1.introduction_node_id.into(),
 		}
 	}
 	/// Returns the target node id of this hop, if known.
@@ -1367,11 +1387,11 @@ impl<'a> CandidateRouteHop<'a> {
 	#[inline]
 	pub fn target(&self) -> Option<NodeId> {
 		match self {
-			CandidateRouteHop::FirstHop { details, .. } => Some(details.counterparty.node_id.into()),
-			CandidateRouteHop::PublicHop { info, .. } => Some(*info.target()),
-			CandidateRouteHop::PrivateHop { target_node_id, .. } => Some(**target_node_id),
-			CandidateRouteHop::Blinded { .. } => None,
-			CandidateRouteHop::OneHopBlinded { .. } => None,
+			CandidateRouteHop::FirstHop(hop) => Some(hop.details.counterparty.node_id.into()),
+			CandidateRouteHop::PublicHop(hop) => Some(*hop.info.target()),
+			CandidateRouteHop::PrivateHop(hop) => Some(*hop.target_node_id),
+			CandidateRouteHop::Blinded(_) => None,
+			CandidateRouteHop::OneHopBlinded(_) => None,
 		}
 	}
 }
@@ -1666,17 +1686,17 @@ struct LoggedCandidateHop<'a>(&'a CandidateRouteHop<'a>);
 impl<'a> fmt::Display for LoggedCandidateHop<'a> {
 	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
 		match self.0 {
-			CandidateRouteHop::Blinded { hint, .. } | CandidateRouteHop::OneHopBlinded { hint, .. } => {
+			CandidateRouteHop::Blinded(BlindedPathCandidate { hint, .. }) | CandidateRouteHop::OneHopBlinded(OneHopBlindedPathCandidate { hint, .. }) => {
 				"blinded route hint with introduction node id ".fmt(f)?;
 				hint.1.introduction_node_id.fmt(f)?;
 				" and blinding point ".fmt(f)?;
 				hint.1.blinding_point.fmt(f)
 			},
-			CandidateRouteHop::FirstHop { .. } => {
+			CandidateRouteHop::FirstHop(_) => {
 				"first hop with SCID ".fmt(f)?;
 				self.0.short_channel_id().unwrap().fmt(f)
 			},
-			CandidateRouteHop::PrivateHop { .. } => {
+			CandidateRouteHop::PrivateHop(_) => {
 				"route hint with SCID ".fmt(f)?;
 				self.0.short_channel_id().unwrap().fmt(f)
 			},
@@ -2095,10 +2115,10 @@ where L::Target: Logger {
 						|scid| payment_params.previously_failed_channels.contains(&scid));
 
 					let (should_log_candidate, first_hop_details) = match $candidate {
-						CandidateRouteHop::FirstHop { details, .. } => (true, Some(details)),
-						CandidateRouteHop::PrivateHop { .. } => (true, None),
-						CandidateRouteHop::Blinded { .. } => (true, None),
-						CandidateRouteHop::OneHopBlinded { .. } => (true, None),
+						CandidateRouteHop::FirstHop(hop) => (true, Some(hop.details)),
+						CandidateRouteHop::PrivateHop(_) => (true, None),
+						CandidateRouteHop::Blinded(_) => (true, None),
+						CandidateRouteHop::OneHopBlinded(_) => (true, None),
 						_ => (false, None),
 					};
 
@@ -2365,9 +2385,9 @@ where L::Target: Logger {
 			if !skip_node {
 				if let Some(first_channels) = first_hop_targets.get(&$node_id) {
 					for details in first_channels {
-						let candidate = CandidateRouteHop::FirstHop {
+						let candidate = CandidateRouteHop::FirstHop(FirstHopCandidate {
 							details, payer_node_id: &our_node_id,
-						};
+						});
 						add_entry!(&candidate, fee_to_target_msat,
 							$next_hops_value_contribution,
 							next_hops_path_htlc_minimum_msat, next_hops_path_penalty_msat,
@@ -2388,10 +2408,10 @@ where L::Target: Logger {
 							if let Some((directed_channel, source)) = chan.as_directed_to(&$node_id) {
 								if first_hops.is_none() || *source != our_node_id {
 									if directed_channel.direction().enabled {
-										let candidate = CandidateRouteHop::PublicHop {
+										let candidate = CandidateRouteHop::PublicHop(PublicHopCandidate {
 											info: directed_channel,
 											short_channel_id: *chan_id,
-										};
+										});
 										add_entry!(&candidate,
 											fee_to_target_msat,
 											$next_hops_value_contribution,
@@ -2422,9 +2442,9 @@ where L::Target: Logger {
 		// place where it could be added.
 		payee_node_id_opt.map(|payee| first_hop_targets.get(&payee).map(|first_channels| {
 			for details in first_channels {
-				let candidate = CandidateRouteHop::FirstHop {
+				let candidate = CandidateRouteHop::FirstHop(FirstHopCandidate {
 					details, payer_node_id: &our_node_id,
-				};
+				});
 				let added = add_entry!(&candidate, 0, path_value_msat,
 									0, 0u64, 0, 0).is_some();
 				log_trace!(logger, "{} direct route to payee via {}",
@@ -2459,8 +2479,8 @@ where L::Target: Logger {
 				network_nodes.get(&intro_node_id).is_some();
 			if !have_intro_node_in_graph || our_node_id == intro_node_id { continue }
 			let candidate = if hint.1.blinded_hops.len() == 1 {
-				CandidateRouteHop::OneHopBlinded { hint, hint_idx }
-			} else { CandidateRouteHop::Blinded { hint, hint_idx } };
+				CandidateRouteHop::OneHopBlinded(OneHopBlindedPathCandidate { hint, hint_idx })
+			} else { CandidateRouteHop::Blinded(BlindedPathCandidate { hint, hint_idx }) };
 			let mut path_contribution_msat = path_value_msat;
 			if let Some(hop_used_msat) = add_entry!(&candidate,
 				0, path_contribution_msat, 0, 0_u64, 0, 0)
@@ -2471,9 +2491,9 @@ where L::Target: Logger {
 				sort_first_hop_channels(first_channels, &used_liquidities, recommended_value_msat,
 					our_node_pubkey);
 				for details in first_channels {
-					let first_hop_candidate = CandidateRouteHop::FirstHop {
+					let first_hop_candidate = CandidateRouteHop::FirstHop(FirstHopCandidate {
 						details, payer_node_id: &our_node_id,
-					};
+					});
 					let blinded_path_fee = match compute_fees(path_contribution_msat, candidate.fees()) {
 						Some(fee) => fee,
 						None => continue
@@ -2525,11 +2545,11 @@ where L::Target: Logger {
 					let candidate = network_channels
 						.get(&hop.short_channel_id)
 						.and_then(|channel| channel.as_directed_to(&target))
-						.map(|(info, _)| CandidateRouteHop::PublicHop {
+						.map(|(info, _)| CandidateRouteHop::PublicHop(PublicHopCandidate {
 							info,
 							short_channel_id: hop.short_channel_id,
-						})
-						.unwrap_or_else(|| CandidateRouteHop::PrivateHop { hint: hop, target_node_id: target });
+						}))
+						.unwrap_or_else(|| CandidateRouteHop::PrivateHop(PrivateHopCandidate { hint: hop, target_node_id: target }));
 
 					if let Some(hop_used_msat) = add_entry!(&candidate,
 						aggregate_next_hops_fee_msat, aggregate_path_contribution_msat,
@@ -2569,9 +2589,9 @@ where L::Target: Logger {
 						sort_first_hop_channels(first_channels, &used_liquidities,
 							recommended_value_msat, our_node_pubkey);
 						for details in first_channels {
-							let first_hop_candidate = CandidateRouteHop::FirstHop {
+							let first_hop_candidate = CandidateRouteHop::FirstHop(FirstHopCandidate {
 								details, payer_node_id: &our_node_id,
-							};
+							});
 							add_entry!(&first_hop_candidate,
 								aggregate_next_hops_fee_msat, aggregate_path_contribution_msat,
 								aggregate_next_hops_path_htlc_minimum_msat, aggregate_next_hops_path_penalty_msat,
@@ -2616,9 +2636,9 @@ where L::Target: Logger {
 							sort_first_hop_channels(first_channels, &used_liquidities,
 								recommended_value_msat, our_node_pubkey);
 							for details in first_channels {
-								let first_hop_candidate = CandidateRouteHop::FirstHop {
+								let first_hop_candidate = CandidateRouteHop::FirstHop(FirstHopCandidate {
 									details, payer_node_id: &our_node_id,
-								};
+								});
 								add_entry!(&first_hop_candidate,
 									aggregate_next_hops_fee_msat,
 									aggregate_path_contribution_msat,
@@ -2661,7 +2681,7 @@ where L::Target: Logger {
 					let target = ordered_hops.last().unwrap().0.candidate.target().unwrap_or(maybe_dummy_payee_node_id);
 					if let Some(first_channels) = first_hop_targets.get(&target) {
 						for details in first_channels {
-							if let CandidateRouteHop::FirstHop { details: last_hop_details, .. }
+							if let CandidateRouteHop::FirstHop(FirstHopCandidate { details: last_hop_details, .. })
 								= ordered_hops.last().unwrap().0.candidate
 							{
 								if details.get_outbound_payment_scid() == last_hop_details.get_outbound_payment_scid() {
@@ -2928,12 +2948,12 @@ where L::Target: Logger {
 			.filter(|(h, _)| h.candidate.short_channel_id().is_some())
 		{
 			let target = hop.candidate.target().expect("target is defined when short_channel_id is defined");
-			let maybe_announced_channel = if let CandidateRouteHop::PublicHop { .. } = hop.candidate {
+			let maybe_announced_channel = if let CandidateRouteHop::PublicHop(_) = hop.candidate {
 				// If we sourced the hop from the graph we're sure the target node is announced.
 				true
-			} else if let CandidateRouteHop::FirstHop { details, .. } = hop.candidate {
+			} else if let CandidateRouteHop::FirstHop(first_hop) = &hop.candidate {
 				// If this is a first hop we also know if it's announced.
-				details.is_public
+				first_hop.details.is_public
 			} else {
 				// If we sourced it any other way, we double-check the network graph to see if
 				// there are announced channels between the endpoints. If so, the hop might be
@@ -3163,7 +3183,7 @@ mod tests {
 	use crate::routing::utxo::UtxoResult;
 	use crate::routing::router::{get_route, build_route_from_hops_internal, add_random_cltv_offset, default_node_features,
 		BlindedTail, InFlightHtlcs, Path, PaymentParameters, Route, RouteHint, RouteHintHop, RouteHop, RoutingFees,
-		DEFAULT_MAX_TOTAL_CLTV_EXPIRY_DELTA, MAX_PATH_LENGTH_ESTIMATE, RouteParameters, CandidateRouteHop};
+		DEFAULT_MAX_TOTAL_CLTV_EXPIRY_DELTA, MAX_PATH_LENGTH_ESTIMATE, RouteParameters, CandidateRouteHop, PublicHopCandidate};
 	use crate::routing::scoring::{ChannelUsage, FixedPenaltyScorer, ScoreLookUp, ProbabilisticScorer, ProbabilisticScoringFeeParameters, ProbabilisticScoringDecayParameters};
 	use crate::routing::test_utils::{add_channel, add_or_update_node, build_graph, build_line_graph, id_to_feature_flags, get_nodes, update_channel};
 	use crate::chain::transaction::OutPoint;
@@ -6977,10 +6997,10 @@ mod tests {
 		let channels = network_graph.channels();
 		let channel = channels.get(&5).unwrap();
 		let info = channel.as_directed_from(&NodeId::from_pubkey(&nodes[3])).unwrap();
-		let candidate: CandidateRouteHop = CandidateRouteHop::PublicHop {
+		let candidate: CandidateRouteHop = CandidateRouteHop::PublicHop(PublicHopCandidate {
 			info: info.0,
 			short_channel_id: 5,
-		};
+		});
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &scorer_params), 456);
 
 		// Then check we can get a normal route
