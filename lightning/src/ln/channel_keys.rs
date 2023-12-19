@@ -37,6 +37,23 @@ macro_rules! basepoint_impl {
 			pub fn to_public_key(&self) -> PublicKey {
 				self.0
 			}
+
+			/// Derives a per-commitment-transaction (eg an htlc key or delayed_payment key) private key addition tweak
+			/// from a basepoint and a per_commitment_point:
+			/// `privkey = basepoint_secret + SHA256(per_commitment_point || basepoint)`
+			/// This calculates the hash part in the tweak derivation process, which is used to ensure
+			/// that each key is unique and cannot be guessed by an external party. It is equivalent
+			/// to the `from_basepoint` method, but without the addition operation, providing just the
+			/// tweak from the hash of the per_commitment_point and the basepoint.
+			pub fn derive_add_tweak(
+				&self,
+				per_commitment_point: &PublicKey,
+			) -> [u8; 32] {
+				let mut sha = Sha256::engine();
+				sha.input(&per_commitment_point.serialize());
+				sha.input(&self.to_public_key().serialize());
+				Sha256::from_engine(sha).to_byte_array()
+			}
 		}
 
 		impl From<PublicKey> for $BasepointT {
@@ -44,7 +61,6 @@ macro_rules! basepoint_impl {
 				Self(value)
 			}
 		}
-
 	}
 }
 macro_rules! key_impl {
