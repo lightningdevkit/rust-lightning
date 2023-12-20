@@ -64,12 +64,16 @@ use crate::util::logger::Logger;
 
 use crate::prelude::*;
 use core::{cmp, fmt};
-use core::cell::{RefCell, RefMut, Ref};
 use core::convert::TryInto;
 use core::ops::{Deref, DerefMut};
 use core::time::Duration;
 use crate::io::{self, Read};
-use crate::sync::{Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use crate::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
+#[cfg(not(c_bindings))]
+use {
+	core::cell::{RefCell, RefMut, Ref},
+	crate::sync::{Mutex, MutexGuard},
+};
 
 /// We define Score ever-so-slightly differently based on whether we are being built for C bindings
 /// or not. For users, `LockableScore` must somehow be writeable to disk. For Rust users, this is

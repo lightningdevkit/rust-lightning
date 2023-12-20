@@ -37,10 +37,6 @@ impl<T> Mutex<T> {
 		Ok(MutexGuard { lock: self.inner.borrow_mut() })
 	}
 
-	pub fn try_lock<'a>(&'a self) -> LockResult<MutexGuard<'a, T>> {
-		Ok(MutexGuard { lock: self.inner.borrow_mut() })
-	}
-
 	pub fn into_inner(self) -> LockResult<T> {
 		Ok(self.inner.into_inner())
 	}

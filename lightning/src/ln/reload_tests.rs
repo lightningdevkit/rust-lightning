@@ -15,16 +15,14 @@ use crate::chain::channelmonitor::{CLOSED_CHANNEL_UPDATE_ID, ChannelMonitor};
 use crate::sign::EntropySource;
 use crate::chain::transaction::OutPoint;
 use crate::events::{ClosureReason, Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider};
-use crate::ln::channelmanager::{ChannelManager, ChannelManagerReadArgs, PaymentId, Retry, RecipientOnionFields};
+use crate::ln::channelmanager::{ChannelManager, ChannelManagerReadArgs, PaymentId, RecipientOnionFields};
 use crate::ln::msgs;
 use crate::ln::msgs::{ChannelMessageHandler, RoutingMessageHandler, ErrorAction};
-use crate::routing::router::{RouteParameters, PaymentParameters};
 use crate::util::test_channel_signer::TestChannelSigner;
 use crate::util::test_utils;
 use crate::util::errors::APIError;
 use crate::util::ser::{Writeable, ReadableArgs};
 use crate::util::config::UserConfig;
-use crate::util::string::UntrustedString;
 
 use bitcoin::hash_types::BlockHash;
 
@@ -496,6 +494,9 @@ fn test_manager_serialize_deserialize_inconsistent_monitor() {
 
 #[cfg(feature = "std")]
 fn do_test_data_loss_protect(reconnect_panicing: bool, substantially_old: bool, not_stale: bool) {
+	use crate::routing::router::{RouteParameters, PaymentParameters};
+	use crate::ln::channelmanager::Retry;
+	use crate::util::string::UntrustedString;
 	// When we get a data_loss_protect proving we're behind, we immediately panic as the
 	// chain::Watch API requirements have been violated (e.g. the user restored from a backup). The
 	// panic message informs the user they should force-close without broadcasting, which is tested

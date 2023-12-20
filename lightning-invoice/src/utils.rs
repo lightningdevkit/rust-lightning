@@ -816,14 +816,15 @@ impl<'a, 'b, L: Deref> WithChannelDetails<'a, 'b, L> where L::Target: Logger {
 
 #[cfg(test)]
 mod test {
-	use core::cell::RefCell;
 	use core::time::Duration;
 	use crate::{Currency, Description, Bolt11InvoiceDescription, SignOrCreationError, CreationError};
 	use bitcoin::hashes::{Hash, sha256};
 	use bitcoin::hashes::sha256::Hash as Sha256;
 	use lightning::sign::PhantomKeysManager;
-	use lightning::events::{MessageSendEvent, MessageSendEventsProvider, Event, EventsProvider};
-	use lightning::ln::{PaymentPreimage, PaymentHash};
+	use lightning::events::{MessageSendEvent, MessageSendEventsProvider};
+	use lightning::ln::PaymentHash;
+	#[cfg(feature = "std")]
+	use lightning::ln::PaymentPreimage;
 	use lightning::ln::channelmanager::{PhantomRouteHints, MIN_FINAL_CLTV_EXPIRY_DELTA, PaymentId, RecipientOnionFields, Retry};
 	use lightning::ln::functional_test_utils::*;
 	use lightning::ln::msgs::ChannelMessageHandler;
@@ -1294,6 +1295,9 @@ mod test {
 
 	#[cfg(feature = "std")]
 	fn do_test_multi_node_receive(user_generated_pmt_hash: bool) {
+		use lightning::events::{Event, EventsProvider};
+		use core::cell::RefCell;
+
 		let mut chanmon_cfgs = create_chanmon_cfgs(3);
 		let seed_1 = [42u8; 32];
 		let seed_2 = [43u8; 32];

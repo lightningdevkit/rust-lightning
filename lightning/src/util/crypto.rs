@@ -64,6 +64,7 @@ pub fn sign<C: Signing>(ctx: &Secp256k1<C>, msg: &Message, sk: &SecretKey) -> Si
 }
 
 #[inline]
+#[allow(unused_variables)]
 pub fn sign_with_aux_rand<C: Signing, ES: Deref>(
 	ctx: &Secp256k1<C>, msg: &Message, sk: &SecretKey, entropy_source: &ES
 ) -> Signature where ES::Target: EntropySource {

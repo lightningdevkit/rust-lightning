@@ -77,6 +77,7 @@ mod de;
 mod ser;
 mod tb;
 
+#[allow(unused_imports)]
 mod prelude {
 	#[cfg(feature = "hashbrown")]
 	extern crate hashbrown;
@@ -91,10 +92,6 @@ mod prelude {
 }
 
 use crate::prelude::*;
-
-/// Sync compat for std/no_std
-#[cfg(not(feature = "std"))]
-mod sync;
 
 /// Errors that indicate what is wrong with the invoice. They have some granularity for debug
 /// reasons, but should generally result in an "invalid BOLT11 invoice" message for the user.
@@ -2049,7 +2046,7 @@ mod test {
 		use lightning::routing::router::RouteHintHop;
 		use secp256k1::Secp256k1;
 		use secp256k1::{SecretKey, PublicKey};
-		use std::time::{UNIX_EPOCH, Duration};
+		use std::time::Duration;
 
 		let secp_ctx = Secp256k1::new();
 
@@ -2138,7 +2135,7 @@ mod test {
 		assert_eq!(invoice.currency(), Currency::BitcoinTestnet);
 		#[cfg(feature = "std")]
 		assert_eq!(
-			invoice.timestamp().duration_since(UNIX_EPOCH).unwrap().as_secs(),
+			invoice.timestamp().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs(),
 			1234567
 		);
 		assert_eq!(invoice.payee_pub_key(), Some(&public_key));

@@ -94,14 +94,14 @@ if [[ "$HOST_PLATFORM" != *windows* ]]; then
 
 	DOWNLOAD_ELECTRS_AND_BITCOIND
 
-	RUSTFLAGS="--cfg no_download" cargo test --verbose --color always --features esplora-blocking
-	RUSTFLAGS="--cfg no_download" cargo check --verbose --color always --features esplora-blocking
-	RUSTFLAGS="--cfg no_download" cargo test --verbose --color always --features esplora-async
-	RUSTFLAGS="--cfg no_download" cargo check --verbose --color always --features esplora-async
-	RUSTFLAGS="--cfg no_download" cargo test --verbose --color always --features esplora-async-https
-	RUSTFLAGS="--cfg no_download" cargo check --verbose --color always --features esplora-async-https
-	RUSTFLAGS="--cfg no_download" cargo test --verbose --color always --features electrum
-	RUSTFLAGS="--cfg no_download" cargo check --verbose --color always --features electrum
+	RUSTFLAGS="$RUSTFLAGS --cfg no_download" cargo test --verbose --color always --features esplora-blocking
+	RUSTFLAGS="$RUSTFLAGS --cfg no_download" cargo check --verbose --color always --features esplora-blocking
+	RUSTFLAGS="$RUSTFLAGS --cfg no_download" cargo test --verbose --color always --features esplora-async
+	RUSTFLAGS="$RUSTFLAGS --cfg no_download" cargo check --verbose --color always --features esplora-async
+	RUSTFLAGS="$RUSTFLAGS --cfg no_download" cargo test --verbose --color always --features esplora-async-https
+	RUSTFLAGS="$RUSTFLAGS --cfg no_download" cargo check --verbose --color always --features esplora-async-https
+	RUSTFLAGS="$RUSTFLAGS --cfg no_download" cargo test --verbose --color always --features electrum
+	RUSTFLAGS="$RUSTFLAGS --cfg no_download" cargo check --verbose --color always --features electrum
 
 	popd
 fi
@@ -125,7 +125,7 @@ popd
 echo -e "\n\nBuilding with all Log-Limiting features"
 pushd lightning
 grep '^max_level_' Cargo.toml | awk '{ print $1 }'| while read -r FEATURE; do
-	cargo check --verbose --color always --features "$FEATURE"
+	RUSTFLAGS="$RUSTFLAGS -A unused_variables -A unused_macros -A unused_imports -A dead_code" cargo check --verbose --color always --features "$FEATURE"
 done
 popd
 
@@ -138,9 +138,9 @@ done
 
 for DIR in lightning lightning-invoice lightning-rapid-gossip-sync; do
 	# check if there is a conflict between no-std and the c_bindings cfg
-	RUSTFLAGS="--cfg=c_bindings" cargo test -p $DIR --verbose --color always --no-default-features --features=no-std
+	RUSTFLAGS="$RUSTFLAGS --cfg=c_bindings" cargo test -p $DIR --verbose --color always --no-default-features --features=no-std
 done
-RUSTFLAGS="--cfg=c_bindings" cargo test --verbose --color always
+RUSTFLAGS="$RUSTFLAGS --cfg=c_bindings" cargo test --verbose --color always
 
 # Note that outbound_commitment_test only runs in this mode because of hardcoded signature values
 pushd lightning
@@ -174,5 +174,5 @@ if [ -f "$(which arm-none-eabi-gcc)" ]; then
 fi
 
 echo -e "\n\nTest cfg-flag builds"
-RUSTFLAGS="$RUSTFLAGS --cfg=taproot" cargo test --verbose --color always -p lightning
-RUSTFLAGS="$RUSTFLAGS --cfg=async_signing" cargo test --verbose --color always -p lightning
+RUSTFLAGS="--cfg=taproot" cargo test --verbose --color always -p lightning
+RUSTFLAGS="--cfg=async_signing" cargo test --verbose --color always -p lightning

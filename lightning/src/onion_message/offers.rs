@@ -18,9 +18,10 @@ use crate::offers::invoice_request::InvoiceRequest;
 use crate::offers::invoice::Bolt12Invoice;
 use crate::offers::parse::Bolt12ParseError;
 use crate::onion_message::OnionMessageContents;
-use crate::onion_message::messenger::PendingOnionMessage;
 use crate::util::logger::Logger;
 use crate::util::ser::{Readable, ReadableArgs, Writeable, Writer};
+#[cfg(not(c_bindings))]
+use crate::onion_message::messenger::PendingOnionMessage;
 
 use crate::prelude::*;
 

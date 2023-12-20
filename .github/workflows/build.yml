@@ -39,6 +39,9 @@ jobs:
         run: |
           sudo apt-get -y install shellcheck
           shellcheck ci/ci-tests.sh
+      - name: Set RUSTFLAGS to deny warnings
+        if: "matrix.toolchain == '1.63.0'"
+        run: echo "RUSTFLAGS=-D warnings" >> "$GITHUB_ENV"
       - name: Run CI script
         shell: bash # Default on Winblows is powershell
         run: CI_MINIMIZE_DISK_USAGE=1 ./ci/ci-tests.sh

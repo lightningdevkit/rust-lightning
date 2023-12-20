@@ -381,11 +381,6 @@ mod tests {
 	use lightning::util::persist::read_channel_monitors;
 	use std::fs;
 	use std::str::FromStr;
-	#[cfg(target_os = "windows")]
-	use {
-		lightning::get_event_msg,
-		lightning::ln::msgs::ChannelMessageHandler,
-	};
 
 	impl Drop for FilesystemStore {
 		fn drop(&mut self) {
