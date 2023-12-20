@@ -2472,7 +2472,60 @@ fn fail_payment_along_path<'a, 'b, 'c>(expected_path: &[&Node<'a, 'b, 'c>]) {
 	}
 }
 
-pub fn do_pass_along_path<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_path: &[&Node<'a, 'b, 'c>], recv_value: u64, our_payment_hash: PaymentHash, our_payment_secret: Option<PaymentSecret>, ev: MessageSendEvent, payment_claimable_expected: bool, clear_recipient_events: bool, expected_preimage: Option<PaymentPreimage>, is_probe: bool) -> Option<Event> {
+pub struct PassAlongPathArgs<'a, 'b, 'c, 'd> {
+	pub origin_node: &'a Node<'b, 'c, 'd>,
+	pub expected_path: &'a [&'a Node<'b, 'c, 'd>],
+	pub recv_value: u64,
+	pub payment_hash: PaymentHash,
+	pub payment_secret: Option<PaymentSecret>,
+	pub event: MessageSendEvent,
+	pub payment_claimable_expected: bool,
+	pub clear_recipient_events: bool,
+	pub expected_preimage: Option<PaymentPreimage>,
+	pub is_probe: bool,
+}
+
+impl<'a, 'b, 'c, 'd> PassAlongPathArgs<'a, 'b, 'c, 'd> {
+	pub fn new(
+		origin_node: &'a Node<'b, 'c, 'd>, expected_path: &'a [&'a Node<'b, 'c, 'd>], recv_value: u64,
+		payment_hash: PaymentHash, event: MessageSendEvent,
+	) -> Self {
+		Self {
+			origin_node, expected_path, recv_value, payment_hash, payment_secret: None, event,
+			payment_claimable_expected: true, clear_recipient_events: true, expected_preimage: None,
+			is_probe: false,
+		}
+	}
+	pub fn without_clearing_recipient_events(mut self) -> Self {
+		self.clear_recipient_events = false;
+		self
+	}
+	pub fn is_probe(mut self) -> Self {
+		self.payment_claimable_expected = false;
+		self.is_probe = true;
+		self
+	}
+	pub fn without_claimable_event(mut self) -> Self {
+		self.payment_claimable_expected = false;
+		self
+	}
+	pub fn with_payment_secret(mut self, payment_secret: PaymentSecret) -> Self {
+		self.payment_secret = Some(payment_secret);
+		self
+	}
+	pub fn with_payment_preimage(mut self, payment_preimage: PaymentPreimage) -> Self {
+		self.expected_preimage = Some(payment_preimage);
+		self
+	}
+}
+
+pub fn do_pass_along_path<'a, 'b, 'c>(args: PassAlongPathArgs) -> Option<Event> {
+	let PassAlongPathArgs {
+		origin_node, expected_path, recv_value, payment_hash: our_payment_hash,
+		payment_secret: our_payment_secret, event: ev, payment_claimable_expected,
+		clear_recipient_events, expected_preimage, is_probe
+	} = args;
+
 	let mut payment_event = SendEvent::from_event(ev);
 	let mut prev_node = origin_node;
 	let mut event = None;
@@ -2539,7 +2592,17 @@ pub fn do_pass_along_path<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_p
 }
 
 pub fn pass_along_path<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_path: &[&Node<'a, 'b, 'c>], recv_value: u64, our_payment_hash: PaymentHash, our_payment_secret: Option<PaymentSecret>, ev: MessageSendEvent, payment_claimable_expected: bool, expected_preimage: Option<PaymentPreimage>) -> Option<Event> {
-	do_pass_along_path(origin_node, expected_path, recv_value, our_payment_hash, our_payment_secret, ev, payment_claimable_expected, true, expected_preimage, false)
+	let mut args = PassAlongPathArgs::new(origin_node, expected_path, recv_value, our_payment_hash, ev);
+	if !payment_claimable_expected {
+		args = args.without_claimable_event();
+	}
+	if let Some(payment_secret) = our_payment_secret {
+		args = args.with_payment_secret(payment_secret);
+	}
+	if let Some(payment_preimage) = expected_preimage {
+		args = args.with_payment_preimage(payment_preimage);
+	}
+	do_pass_along_path(args)
 }
 
 pub fn send_probe_along_route<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_route: &[&[&Node<'a, 'b, 'c>]]) {
@@ -2551,7 +2614,10 @@ pub fn send_probe_along_route<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expect
 	for path in expected_route.iter() {
 		let ev = remove_first_msg_event_to_node(&path[0].node.get_our_node_id(), &mut events);
 
-		do_pass_along_path(origin_node, path, 0, PaymentHash([0_u8; 32]), None, ev, false, false, None, true);
+		do_pass_along_path(PassAlongPathArgs::new(origin_node, path, 0, PaymentHash([0_u8; 32]), ev)
+			.is_probe()
+			.without_clearing_recipient_events());
+
 		let nodes_to_fail_payment: Vec<_> = vec![origin_node].into_iter().chain(path.iter().cloned()).collect();
 
 		fail_payment_along_path(nodes_to_fail_payment.as_slice());
