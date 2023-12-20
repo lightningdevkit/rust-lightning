@@ -772,3 +772,97 @@ fn fails_sending_invoice_without_blinded_payment_paths_for_refund() {
 		Err(e) => assert_eq!(e, Bolt12SemanticError::MissingPaths),
 	}
 }
+
+#[test]
+fn fails_paying_invoice_more_than_once() {
+	let mut accept_forward_cfg = test_default_channel_config();
+	accept_forward_cfg.accept_forwards_to_priv_channels = true;
+
+	let mut features = channelmanager::provided_init_features(&accept_forward_cfg);
+	features.set_onion_messages_optional();
+	features.set_route_blinding_optional();
+
+	let chanmon_cfgs = create_chanmon_cfgs(6);
+	let node_cfgs = create_node_cfgs(6, &chanmon_cfgs);
+
+	*node_cfgs[1].override_init_features.borrow_mut() = Some(features);
+
+	let node_chanmgrs = create_node_chanmgrs(
+		6, &node_cfgs, &[None, Some(accept_forward_cfg), None, None, None, None]
+	);
+	let nodes = create_network(6, &node_cfgs, &node_chanmgrs);
+
+	create_unannounced_chan_between_nodes_with_value(&nodes, 0, 1, 10_000_000, 1_000_000_000);
+	create_unannounced_chan_between_nodes_with_value(&nodes, 2, 3, 10_000_000, 1_000_000_000);
+	create_announced_chan_between_nodes_with_value(&nodes, 1, 2, 10_000_000, 1_000_000_000);
+	create_announced_chan_between_nodes_with_value(&nodes, 1, 4, 10_000_000, 1_000_000_000);
+	create_announced_chan_between_nodes_with_value(&nodes, 1, 5, 10_000_000, 1_000_000_000);
+	create_announced_chan_between_nodes_with_value(&nodes, 2, 4, 10_000_000, 1_000_000_000);
+	create_announced_chan_between_nodes_with_value(&nodes, 2, 5, 10_000_000, 1_000_000_000);
+
+	let (alice, bob, charlie, david) = (&nodes[0], &nodes[1], &nodes[2], &nodes[3]);
+	let alice_id = alice.node.get_our_node_id();
+	let bob_id = bob.node.get_our_node_id();
+	let charlie_id = charlie.node.get_our_node_id();
+	let david_id = david.node.get_our_node_id();
+
+	disconnect_peers(alice, &[charlie, david, &nodes[4], &nodes[5]]);
+	disconnect_peers(david, &[bob, &nodes[4], &nodes[5]]);
+
+	let absolute_expiry = Duration::from_secs(u64::MAX);
+	let payment_id = PaymentId([1; 32]);
+	let refund = david.node
+		.create_refund_builder(
+			"refund".to_string(), 10_000_000, absolute_expiry, payment_id, Retry::Attempts(0), None
+		)
+		.unwrap()
+		.build().unwrap();
+	expect_recent_payment!(david, RecentPaymentDetails::AwaitingInvoice, payment_id);
+
+	// Alice sends the first invoice
+	alice.node.request_refund_payment(&refund).unwrap();
+
+	connect_peers(alice, charlie);
+
+	let onion_message = alice.onion_messenger.next_onion_message_for_peer(charlie_id).unwrap();
+	charlie.onion_messenger.handle_onion_message(&alice_id, &onion_message);
+
+	let onion_message = charlie.onion_messenger.next_onion_message_for_peer(david_id).unwrap();
+	david.onion_messenger.handle_onion_message(&charlie_id, &onion_message);
+
+	// David pays the first invoice
+	let invoice1 = extract_invoice(david, &onion_message);
+
+	route_bolt12_payment(david, &[charlie, bob, alice], &invoice1);
+	expect_recent_payment!(david, RecentPaymentDetails::Pending, payment_id);
+
+	claim_bolt12_payment(david, &[charlie, bob, alice]);
+	expect_recent_payment!(david, RecentPaymentDetails::Fulfilled, payment_id);
+
+	disconnect_peers(alice, &[charlie]);
+
+	// Alice sends the second invoice
+	alice.node.request_refund_payment(&refund).unwrap();
+
+	connect_peers(alice, charlie);
+	connect_peers(david, bob);
+
+	let onion_message = alice.onion_messenger.next_onion_message_for_peer(charlie_id).unwrap();
+	charlie.onion_messenger.handle_onion_message(&alice_id, &onion_message);
+
+	let onion_message = charlie.onion_messenger.next_onion_message_for_peer(david_id).unwrap();
+	david.onion_messenger.handle_onion_message(&charlie_id, &onion_message);
+
+	let invoice2 = extract_invoice(david, &onion_message);
+	assert_eq!(invoice1.payer_metadata(), invoice2.payer_metadata());
+
+	// David sends an error instead of paying the second invoice
+	let onion_message = david.onion_messenger.next_onion_message_for_peer(bob_id).unwrap();
+	bob.onion_messenger.handle_onion_message(&david_id, &onion_message);
+
+	let onion_message = bob.onion_messenger.next_onion_message_for_peer(alice_id).unwrap();
+	alice.onion_messenger.handle_onion_message(&bob_id, &onion_message);
+
+	let invoice_error = extract_invoice_error(alice, &onion_message);
+	assert_eq!(invoice_error, InvoiceError::from_string("DuplicateInvoice".to_string()));
+}
