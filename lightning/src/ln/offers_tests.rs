@@ -21,6 +21,7 @@ use crate::ln::channelmanager::{PaymentId, RecentPaymentDetails, Retry, self};
 use crate::ln::functional_test_utils::*;
 use crate::ln::msgs::{ChannelMessageHandler, Init, OnionMessage, OnionMessageHandler};
 use crate::offers::invoice::Bolt12Invoice;
+use crate::offers::invoice_error::InvoiceError;
 use crate::offers::invoice_request::InvoiceRequest;
 use crate::offers::parse::Bolt12SemanticError;
 use crate::onion_message::messenger::PeeledOnion;
@@ -126,6 +127,23 @@ fn extract_invoice<'a, 'b, 'c>(node: &Node<'a, 'b, 'c>, message: &OnionMessage) 
 				OffersMessage::InvoiceRequest(invoice_request) => panic!("Unexpected invoice_request: {:?}", invoice_request),
 				OffersMessage::Invoice(invoice) => invoice,
 				OffersMessage::InvoiceError(error) => panic!("Unexpected invoice_error: {:?}", error),
+			},
+			ParsedOnionMessageContents::Custom(message) => panic!("Unexpected custom message: {:?}", message),
+		},
+		Ok(PeeledOnion::Forward(_, _)) => panic!("Unexpected onion message forward"),
+		Err(e) => panic!("Failed to process onion message {:?}", e),
+	}
+}
+
+fn extract_invoice_error<'a, 'b, 'c>(
+	node: &Node<'a, 'b, 'c>, message: &OnionMessage
+) -> InvoiceError {
+	match node.onion_messenger.peel_onion_message(message) {
+		Ok(PeeledOnion::Receive(message, _, _)) => match message {
+			ParsedOnionMessageContents::Offers(offers_message) => match offers_message {
+				OffersMessage::InvoiceRequest(invoice_request) => panic!("Unexpected invoice_request: {:?}", invoice_request),
+				OffersMessage::Invoice(invoice) => panic!("Unexpected invoice: {:?}", invoice),
+				OffersMessage::InvoiceError(error) => error,
 			},
 			ParsedOnionMessageContents::Custom(message) => panic!("Unexpected custom message: {:?}", message),
 		},
@@ -639,4 +657,118 @@ fn fails_creating_refund_with_duplicate_payment_id() {
 	}
 
 	expect_recent_payment!(nodes[0], RecentPaymentDetails::AwaitingInvoice, payment_id);
+}
+
+#[test]
+fn fails_sending_invoice_without_blinded_payment_paths_for_offer() {
+	let mut accept_forward_cfg = test_default_channel_config();
+	accept_forward_cfg.accept_forwards_to_priv_channels = true;
+
+	// Clearing route_blinding prevents forming any payment paths since the node is unannounced.
+	let mut features = channelmanager::provided_init_features(&accept_forward_cfg);
+	features.set_onion_messages_optional();
+	features.clear_route_blinding();
+
+	let chanmon_cfgs = create_chanmon_cfgs(6);
+	let node_cfgs = create_node_cfgs(6, &chanmon_cfgs);
+
+	*node_cfgs[1].override_init_features.borrow_mut() = Some(features);
+
+	let node_chanmgrs = create_node_chanmgrs(
+		6, &node_cfgs, &[None, Some(accept_forward_cfg), None, None, None, None]
+	);
+	let nodes = create_network(6, &node_cfgs, &node_chanmgrs);
+
+	create_unannounced_chan_between_nodes_with_value(&nodes, 0, 1, 10_000_000, 1_000_000_000);
+	create_unannounced_chan_between_nodes_with_value(&nodes, 2, 3, 10_000_000, 1_000_000_000);
+	create_announced_chan_between_nodes_with_value(&nodes, 1, 2, 10_000_000, 1_000_000_000);
+	create_announced_chan_between_nodes_with_value(&nodes, 1, 4, 10_000_000, 1_000_000_000);
+	create_announced_chan_between_nodes_with_value(&nodes, 1, 5, 10_000_000, 1_000_000_000);
+	create_announced_chan_between_nodes_with_value(&nodes, 2, 4, 10_000_000, 1_000_000_000);
+	create_announced_chan_between_nodes_with_value(&nodes, 2, 5, 10_000_000, 1_000_000_000);
+
+	let (alice, bob, charlie, david) = (&nodes[0], &nodes[1], &nodes[2], &nodes[3]);
+	let alice_id = alice.node.get_our_node_id();
+	let bob_id = bob.node.get_our_node_id();
+	let charlie_id = charlie.node.get_our_node_id();
+	let david_id = david.node.get_our_node_id();
+
+	disconnect_peers(alice, &[charlie, david, &nodes[4], &nodes[5]]);
+	disconnect_peers(david, &[bob, &nodes[4], &nodes[5]]);
+
+	let offer = alice.node
+		.create_offer_builder("coffee".to_string()).unwrap()
+		.amount_msats(10_000_000)
+		.build().unwrap();
+
+	let payment_id = PaymentId([1; 32]);
+	david.node.pay_for_offer(&offer, None, None, None, payment_id, Retry::Attempts(0), None)
+		.unwrap();
+
+	connect_peers(david, bob);
+
+	let onion_message = david.onion_messenger.next_onion_message_for_peer(bob_id).unwrap();
+	bob.onion_messenger.handle_onion_message(&david_id, &onion_message);
+
+	connect_peers(alice, charlie);
+
+	let onion_message = bob.onion_messenger.next_onion_message_for_peer(alice_id).unwrap();
+	alice.onion_messenger.handle_onion_message(&bob_id, &onion_message);
+
+	let onion_message = alice.onion_messenger.next_onion_message_for_peer(charlie_id).unwrap();
+	charlie.onion_messenger.handle_onion_message(&alice_id, &onion_message);
+
+	let onion_message = charlie.onion_messenger.next_onion_message_for_peer(david_id).unwrap();
+	david.onion_messenger.handle_onion_message(&charlie_id, &onion_message);
+
+	let invoice_error = extract_invoice_error(david, &onion_message);
+	assert_eq!(invoice_error, InvoiceError::from(Bolt12SemanticError::MissingPaths));
+}
+
+#[test]
+fn fails_sending_invoice_without_blinded_payment_paths_for_refund() {
+	let mut accept_forward_cfg = test_default_channel_config();
+	accept_forward_cfg.accept_forwards_to_priv_channels = true;
+
+	// Clearing route_blinding prevents forming any payment paths since the node is unannounced.
+	let mut features = channelmanager::provided_init_features(&accept_forward_cfg);
+	features.set_onion_messages_optional();
+	features.clear_route_blinding();
+
+	let chanmon_cfgs = create_chanmon_cfgs(6);
+	let node_cfgs = create_node_cfgs(6, &chanmon_cfgs);
+
+	*node_cfgs[1].override_init_features.borrow_mut() = Some(features);
+
+	let node_chanmgrs = create_node_chanmgrs(
+		6, &node_cfgs, &[None, Some(accept_forward_cfg), None, None, None, None]
+	);
+	let nodes = create_network(6, &node_cfgs, &node_chanmgrs);
+
+	create_unannounced_chan_between_nodes_with_value(&nodes, 0, 1, 10_000_000, 1_000_000_000);
+	create_unannounced_chan_between_nodes_with_value(&nodes, 2, 3, 10_000_000, 1_000_000_000);
+	create_announced_chan_between_nodes_with_value(&nodes, 1, 2, 10_000_000, 1_000_000_000);
+	create_announced_chan_between_nodes_with_value(&nodes, 1, 4, 10_000_000, 1_000_000_000);
+	create_announced_chan_between_nodes_with_value(&nodes, 1, 5, 10_000_000, 1_000_000_000);
+	create_announced_chan_between_nodes_with_value(&nodes, 2, 4, 10_000_000, 1_000_000_000);
+	create_announced_chan_between_nodes_with_value(&nodes, 2, 5, 10_000_000, 1_000_000_000);
+
+	let (alice, bob, charlie, david) = (&nodes[0], &nodes[1], &nodes[2], &nodes[3]);
+
+	disconnect_peers(alice, &[charlie, david, &nodes[4], &nodes[5]]);
+	disconnect_peers(david, &[bob, &nodes[4], &nodes[5]]);
+
+	let absolute_expiry = Duration::from_secs(u64::MAX);
+	let payment_id = PaymentId([1; 32]);
+	let refund = david.node
+		.create_refund_builder(
+			"refund".to_string(), 10_000_000, absolute_expiry, payment_id, Retry::Attempts(0), None
+		)
+		.unwrap()
+		.build().unwrap();
+
+	match alice.node.request_refund_payment(&refund) {
+		Ok(_) => panic!("Expected error"),
+		Err(e) => assert_eq!(e, Bolt12SemanticError::MissingPaths),
+	}
 }
