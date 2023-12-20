@@ -572,6 +572,7 @@ fn do_multi_hop_receiver_fail(check: ReceiveCheckFail) {
 	let route = if check == ReceiveCheckFail::ProcessPendingHTLCsCheck {
 		let mut route = get_route(&nodes[0], &route_params).unwrap();
 		// Set the final CLTV expiry too low to trigger the failure in process_pending_htlc_forwards.
+		route.paths[0].hops.last_mut().map(|h| h.cltv_expiry_delta += excess_final_cltv_delta_opt.unwrap() as u32);
 		route.paths[0].blinded_tail.as_mut().map(|bt| bt.excess_final_cltv_expiry_delta = excess_final_cltv_delta_opt.unwrap() as u32);
 		route
 	} else if check == ReceiveCheckFail::PaymentConstraints {
@@ -680,6 +681,7 @@ fn do_multi_hop_receiver_fail(check: ReceiveCheckFail) {
 			commitment_signed_dance!(nodes[2], nodes[1], (), false, true, false, false);
 		},
 		ReceiveCheckFail::ProcessPendingHTLCsCheck => {
+			assert_eq!(payment_event_1_2.msgs[0].cltv_expiry, nodes[0].best_block_info().1 + 1 + excess_final_cltv_delta_opt.unwrap() as u32);
 			nodes[2].node.handle_update_add_htlc(&nodes[1].node.get_our_node_id(), &payment_event_1_2.msgs[0]);
 			check_added_monitors!(nodes[2], 0);
 			do_commitment_signed_dance(&nodes[2], &nodes[1], &payment_event_1_2.commitment_msg, true, true);
