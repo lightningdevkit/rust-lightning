@@ -560,11 +560,11 @@ fn do_multi_hop_receiver_fail(check: ReceiveCheckFail) {
 	};
 
 	let amt_msat = 5000;
-	let final_cltv_delta = if check == ReceiveCheckFail::ProcessPendingHTLCsCheck {
+	let excess_final_cltv_delta_opt = if check == ReceiveCheckFail::ProcessPendingHTLCsCheck {
 		// Set the final CLTV expiry too low to trigger the failure in process_pending_htlc_forwards.
 		Some(TEST_FINAL_CLTV as u16 - 2)
 	} else { None };
-	let (_, payment_hash, payment_secret) = get_payment_preimage_hash(&nodes[2], Some(amt_msat), final_cltv_delta);
+	let (_, payment_hash, payment_secret) = get_payment_preimage_hash(&nodes[2], Some(amt_msat), excess_final_cltv_delta_opt);
 	let mut route_params = get_blinded_route_parameters(amt_msat, payment_secret,
 		nodes.iter().skip(1).map(|n| n.node.get_our_node_id()).collect(), &[&chan_upd_1_2],
 		&chanmon_cfgs[2].keys_manager);
@@ -572,7 +572,7 @@ fn do_multi_hop_receiver_fail(check: ReceiveCheckFail) {
 	let route = if check == ReceiveCheckFail::ProcessPendingHTLCsCheck {
 		let mut route = get_route(&nodes[0], &route_params).unwrap();
 		// Set the final CLTV expiry too low to trigger the failure in process_pending_htlc_forwards.
-		route.paths[0].blinded_tail.as_mut().map(|bt| bt.excess_final_cltv_expiry_delta = TEST_FINAL_CLTV - 2);
+		route.paths[0].blinded_tail.as_mut().map(|bt| bt.excess_final_cltv_expiry_delta = excess_final_cltv_delta_opt.unwrap() as u32);
 		route
 	} else if check == ReceiveCheckFail::PaymentConstraints {
 		// Create a blinded path where the receiver's encrypted payload has an htlc_minimum_msat that is
