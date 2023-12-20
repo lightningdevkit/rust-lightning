@@ -91,10 +91,12 @@ impl Level {
 	}
 }
 
+macro_rules! impl_record {
+	($($args: lifetime)?, $($nonstruct_args: lifetime)?) => {
 /// A Record, unit of logging output with Metadata to enable filtering
 /// Module_path, file, line to inform on log's source
 #[derive(Clone, Debug)]
-pub struct Record<'a> {
+pub struct Record<$($args)?> {
 	/// The verbosity level of the message.
 	pub level: Level,
 	/// The node id of the peer pertaining to the logged record.
@@ -118,22 +120,17 @@ pub struct Record<'a> {
 	pub file: &'static str,
 	/// The line containing the message.
 	pub line: u32,
-
-	#[cfg(c_bindings)]
-	/// We don't actually use the lifetime parameter in C bindings (as there is no good way to
-	/// communicate a lifetime to a C, or worse, Java user).
-	_phantom: core::marker::PhantomData<&'a ()>,
 }
 
-impl<'a> Record<'a> {
+impl<$($args)?> Record<$($args)?> {
 	/// Returns a new Record.
 	///
 	/// This is not exported to bindings users as fmt can't be used in C
 	#[inline]
-	pub fn new(
+	pub fn new<$($nonstruct_args)?>(
 		level: Level, peer_id: Option<PublicKey>, channel_id: Option<ChannelId>,
 		args: fmt::Arguments<'a>, module_path: &'static str, file: &'static str, line: u32
-	) -> Record<'a> {
+	) -> Record<$($args)?> {
 		Record {
 			level,
 			peer_id,
@@ -145,11 +142,14 @@ impl<'a> Record<'a> {
 			module_path,
 			file,
 			line,
-			#[cfg(c_bindings)]
-			_phantom: core::marker::PhantomData,
 		}
 	}
 }
+} }
+#[cfg(not(c_bindings))]
+impl_record!('a, );
+#[cfg(c_bindings)]
+impl_record!(, 'a);
 
 /// A trait encapsulating the operations required of a logger.
 pub trait Logger {
