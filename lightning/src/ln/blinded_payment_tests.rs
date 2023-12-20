@@ -169,6 +169,70 @@ fn mpp_to_one_hop_blinded_path() {
 	claim_payment_along_route(&nodes[0], expected_route, false, payment_preimage);
 }
 
+#[test]
+fn mpp_to_three_hop_blinded_paths() {
+	let chanmon_cfgs = create_chanmon_cfgs(6);
+	let node_cfgs = create_node_cfgs(6, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(6, &node_cfgs, &[None, None, None, None, None, None]);
+	let nodes = create_network(6, &node_cfgs, &node_chanmgrs);
+
+	// Create this network topology so node 0 MPP's over 2 3-hop blinded paths:
+	//     n1 -- n3
+	//    /        \
+	// n0           n5
+	//    \        /
+	//     n2 -- n4
+	create_announced_chan_between_nodes(&nodes, 0, 1);
+	create_announced_chan_between_nodes(&nodes, 0, 2);
+	let chan_upd_1_3 = create_announced_chan_between_nodes(&nodes, 1, 3).0.contents;
+	let chan_upd_2_4 = create_announced_chan_between_nodes(&nodes, 2, 4).0.contents;
+	let chan_upd_3_5 = create_announced_chan_between_nodes(&nodes, 3, 5).0.contents;
+	let chan_upd_4_5 = create_announced_chan_between_nodes(&nodes, 4, 5).0.contents;
+
+	let amt_msat = 15_000_000;
+	let (payment_preimage, payment_hash, payment_secret) = get_payment_preimage_hash(&nodes[5], Some(amt_msat), None);
+	let route_params = {
+		let path_1_params = get_blinded_route_parameters(
+			amt_msat, payment_secret, vec![
+				nodes[1].node.get_our_node_id(), nodes[3].node.get_our_node_id(),
+				nodes[5].node.get_our_node_id()
+			], &[&chan_upd_1_3, &chan_upd_3_5], &chanmon_cfgs[5].keys_manager
+		);
+		let path_2_params = get_blinded_route_parameters(
+			amt_msat, payment_secret, vec![
+				nodes[2].node.get_our_node_id(), nodes[4].node.get_our_node_id(),
+				nodes[5].node.get_our_node_id()
+			], &[&chan_upd_2_4, &chan_upd_4_5], &chanmon_cfgs[5].keys_manager
+		);
+		let pay_params = PaymentParameters::blinded(
+			vec![
+				path_1_params.payment_params.payee.blinded_route_hints()[0].clone(),
+				path_2_params.payment_params.payee.blinded_route_hints()[0].clone()
+			]
+		)
+			.with_bolt12_features(channelmanager::provided_bolt12_invoice_features(&UserConfig::default()))
+			.unwrap();
+		RouteParameters::from_payment_params_and_value(pay_params, amt_msat)
+	};
+
+	nodes[0].node.send_payment(payment_hash, RecipientOnionFields::spontaneous_empty(),
+		PaymentId(payment_hash.0), route_params, Retry::Attempts(0)).unwrap();
+	check_added_monitors(&nodes[0], 2);
+
+	let expected_route: &[&[&Node]] = &[&[&nodes[1], &nodes[3], &nodes[5]], &[&nodes[2], &nodes[4], &nodes[5]]];
+	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 2);
+
+	let ev = remove_first_msg_event_to_node(&nodes[1].node.get_our_node_id(), &mut events);
+	pass_along_path(&nodes[0], expected_route[0], amt_msat, payment_hash.clone(),
+		Some(payment_secret), ev.clone(), false, None);
+
+	let ev = remove_first_msg_event_to_node(&nodes[2].node.get_our_node_id(), &mut events);
+	pass_along_path(&nodes[0], expected_route[1], amt_msat, payment_hash.clone(),
+		Some(payment_secret), ev.clone(), true, None);
+	claim_payment_along_route(&nodes[0], expected_route, false, payment_preimage);
+}
+
 enum ForwardCheckFail {
 	// Fail a check on the inbound onion payload. In this case, we underflow when calculating the
 	// outgoing cltv_expiry.

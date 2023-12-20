@@ -986,7 +986,7 @@ impl Payee {
 			_ => None,
 		}
 	}
-	fn blinded_route_hints(&self) -> &[(BlindedPayInfo, BlindedPath)] {
+	pub(crate) fn blinded_route_hints(&self) -> &[(BlindedPayInfo, BlindedPath)] {
 		match self {
 			Self::Blinded { route_hints, .. } => &route_hints[..],
 			Self::Clear { .. } => &[]

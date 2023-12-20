@@ -2690,8 +2690,12 @@ pub fn pass_claimed_payment_along_route<'a, 'b, 'c, 'd>(args: ClaimAlongRouteArg
 		per_path_msgs.push(msgs_from_ev!(&events[0]));
 	} else {
 		for expected_path in expected_paths.iter() {
-			// For MPP payments, we always want the message to the first node in the path.
-			let ev = remove_first_msg_event_to_node(&expected_path[0].node.get_our_node_id(), &mut events);
+			// For MPP payments, we want the fulfill message from the payee to the penultimate hop in the
+			// path.
+			let penultimate_hop_node_id = expected_path.iter().rev().skip(1).next()
+				.map(|n| n.node.get_our_node_id())
+				.unwrap_or(origin_node.node.get_our_node_id());
+			let ev = remove_first_msg_event_to_node(&penultimate_hop_node_id, &mut events);
 			per_path_msgs.push(msgs_from_ev!(&ev));
 		}
 	}
