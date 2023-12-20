@@ -2674,6 +2674,14 @@ pub struct ClaimAlongRouteArgs<'a, 'b, 'c, 'd> {
 	pub expected_min_htlc_overpay: Vec<u32>,
 	pub skip_last: bool,
 	pub payment_preimage: PaymentPreimage,
+	// Allow forwarding nodes to have taken 1 msat more fee than expected based on the downstream
+	// fulfill amount.
+	//
+	// Necessary because our test utils calculate the expected fee for an intermediate node based on
+	// the amount was claimed in their downstream peer's fulfill, but blinded intermediate nodes
+	// calculate their fee based on the inbound amount from their upstream peer, causing a difference
+	// in rounding.
+	pub allow_1_msat_fee_overpay: bool,
 }
 
 impl<'a, 'b, 'c, 'd> ClaimAlongRouteArgs<'a, 'b, 'c, 'd> {
@@ -2684,6 +2692,7 @@ impl<'a, 'b, 'c, 'd> ClaimAlongRouteArgs<'a, 'b, 'c, 'd> {
 		Self {
 			origin_node, expected_paths, expected_extra_fees: vec![0; expected_paths.len()],
 			expected_min_htlc_overpay: vec![0; expected_paths.len()], skip_last: false, payment_preimage,
+			allow_1_msat_fee_overpay: false,
 		}
 	}
 	pub fn skip_last(mut self, skip_last: bool) -> Self {
@@ -2698,12 +2707,16 @@ impl<'a, 'b, 'c, 'd> ClaimAlongRouteArgs<'a, 'b, 'c, 'd> {
 		self.expected_min_htlc_overpay = extra_fees;
 		self
 	}
+	pub fn allow_1_msat_fee_overpay(mut self) -> Self {
+		self.allow_1_msat_fee_overpay = true;
+		self
+	}
 }
 
 pub fn pass_claimed_payment_along_route<'a, 'b, 'c, 'd>(args: ClaimAlongRouteArgs) -> u64 {
 	let ClaimAlongRouteArgs {
 		origin_node, expected_paths, expected_extra_fees, expected_min_htlc_overpay, skip_last,
-		payment_preimage: our_payment_preimage
+		payment_preimage: our_payment_preimage, allow_1_msat_fee_overpay,
 	} = args;
 	let claim_event = expected_paths[0].last().unwrap().node.get_and_clear_pending_events();
 	assert_eq!(claim_event.len(), 1);
@@ -2823,10 +2836,10 @@ pub fn pass_claimed_payment_along_route<'a, 'b, 'c, 'd>(args: ClaimAlongRouteArg
 					}
 					let mut events = $node.node.get_and_clear_pending_events();
 					assert_eq!(events.len(), 1);
-					expect_payment_forwarded(events.pop().unwrap(), *$node, $next_node, $prev_node,
-						Some(fee as u64), expected_extra_fee, false, false, false);
-					expected_total_fee_msat += fee as u64;
-					fwd_amt_msat += fee as u64;
+					let actual_fee = expect_payment_forwarded(events.pop().unwrap(), *$node, $next_node, $prev_node,
+						Some(fee as u64), expected_extra_fee, false, false, allow_1_msat_fee_overpay);
+					expected_total_fee_msat += actual_fee.unwrap();
+					fwd_amt_msat += actual_fee.unwrap();
 					check_added_monitors!($node, 1);
 					let new_next_msgs = if $new_msgs {
 						let events = $node.node.get_and_clear_pending_msg_events();
