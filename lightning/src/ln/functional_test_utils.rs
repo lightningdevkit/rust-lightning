@@ -2552,24 +2552,49 @@ pub fn do_claim_payment_along_route<'a, 'b, 'c>(
 	origin_node: &Node<'a, 'b, 'c>, expected_paths: &[&[&Node<'a, 'b, 'c>]], skip_last: bool,
 	our_payment_preimage: PaymentPreimage
 ) -> u64 {
-	let extra_fees = vec![0; expected_paths.len()];
-	do_claim_payment_along_route_with_extra_penultimate_hop_fees(origin_node, expected_paths,
-		&extra_fees[..], skip_last, our_payment_preimage)
-}
-
-pub fn do_claim_payment_along_route_with_extra_penultimate_hop_fees<'a, 'b, 'c>(
-	origin_node: &Node<'a, 'b, 'c>, expected_paths: &[&[&Node<'a, 'b, 'c>]], expected_extra_fees:
-	&[u32], skip_last: bool, our_payment_preimage: PaymentPreimage
-) -> u64 {
-	assert_eq!(expected_paths.len(), expected_extra_fees.len());
 	for path in expected_paths.iter() {
 		assert_eq!(path.last().unwrap().node.get_our_node_id(), expected_paths[0].last().unwrap().node.get_our_node_id());
 	}
 	expected_paths[0].last().unwrap().node.claim_funds(our_payment_preimage);
-	pass_claimed_payment_along_route(origin_node, expected_paths, expected_extra_fees, skip_last, our_payment_preimage)
+	pass_claimed_payment_along_route(
+		ClaimAlongRouteArgs::new(origin_node, expected_paths, our_payment_preimage)
+			.skip_last(skip_last)
+	)
 }
 
-pub fn pass_claimed_payment_along_route<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_paths: &[&[&Node<'a, 'b, 'c>]], expected_extra_fees: &[u32], skip_last: bool, our_payment_preimage: PaymentPreimage) -> u64 {
+pub struct ClaimAlongRouteArgs<'a, 'b, 'c, 'd> {
+	pub origin_node: &'a Node<'b, 'c, 'd>,
+	pub expected_paths: &'a [&'a [&'a Node<'b, 'c, 'd>]],
+	pub expected_extra_fees: Vec<u32>,
+	pub skip_last: bool,
+	pub payment_preimage: PaymentPreimage,
+}
+
+impl<'a, 'b, 'c, 'd> ClaimAlongRouteArgs<'a, 'b, 'c, 'd> {
+	pub fn new(
+		origin_node: &'a Node<'b, 'c, 'd>, expected_paths: &'a [&'a [&'a Node<'b, 'c, 'd>]],
+		payment_preimage: PaymentPreimage,
+	) -> Self {
+		Self {
+			origin_node, expected_paths, expected_extra_fees: vec![0; expected_paths.len()],
+			skip_last: false, payment_preimage,
+		}
+	}
+	pub fn skip_last(mut self, skip_last: bool) -> Self {
+		self.skip_last = skip_last;
+		self
+	}
+	pub fn with_expected_extra_fees(mut self, extra_fees: Vec<u32>) -> Self {
+		self.expected_extra_fees = extra_fees;
+		self
+	}
+}
+
+pub fn pass_claimed_payment_along_route<'a, 'b, 'c, 'd>(args: ClaimAlongRouteArgs) -> u64 {
+	let ClaimAlongRouteArgs {
+		origin_node, expected_paths, expected_extra_fees, skip_last,
+		payment_preimage: our_payment_preimage
+	} = args;
 	let claim_event = expected_paths[0].last().unwrap().node.get_and_clear_pending_events();
 	assert_eq!(claim_event.len(), 1);
 	match claim_event[0] {
