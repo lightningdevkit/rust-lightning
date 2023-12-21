@@ -13,6 +13,32 @@
 //! to initiate and request payment for them, respectively. It also manages the payment flow via
 //! implementing [`OffersMessageHandler`]. This module tests that functionality, including the
 //! resulting [`Event`] generation.
+//!
+//! Two-node success tests use an announced channel:
+//!
+//! Alice --- Bob
+//!
+//! While two-node failure tests use an unannounced channel:
+//!
+//! Alice ... Bob
+//!
+//! Six-node tests use unannounced channels for the sender and recipient and announced channels for
+//! the rest of the network.
+//!
+//!               nodes[4]
+//!              /        \
+//!             /          \
+//!            /            \
+//! Alice ... Bob -------- Charlie ... David
+//!            \            /
+//!             \          /
+//!              \        /
+//!               nodes[5]
+//!
+//! Unnamed nodes are needed to ensure unannounced nodes can create two-hop blinded paths.
+//!
+//! Nodes without channels are disconnected and connected as needed to ensure that deterministic
+//! blinded paths are used.
 
 use core::time::Duration;
 use crate::blinded_path::BlindedPath;
