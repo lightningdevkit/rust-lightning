@@ -6138,7 +6138,7 @@ where
 				counterparty_node_id: counterparty_node_id.clone(),
 				funding_satoshis: msg.funding_satoshis,
 				push_msat: msg.push_msat,
-				channel_type: msg.channel_type.clone().unwrap(),
+				channel_type: msg.channel_type.clone(),
 			}, None));
 			peer_state.inbound_channel_request_by_id.insert(channel_id, InboundChannelRequest {
 				open_channel_msg: msg.clone(),

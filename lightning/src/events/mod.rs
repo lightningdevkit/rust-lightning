@@ -912,7 +912,7 @@ pub enum Event {
 		/// or will be rejected otherwise.
 		///
 		/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
-		channel_type: ChannelTypeFeatures,
+		channel_type: Option<ChannelTypeFeatures>,
 	},
 	/// Indicates that the HTLC was accepted, but could not be processed when or after attempting to
 	/// forward it.
