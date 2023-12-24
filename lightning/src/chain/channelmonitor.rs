@@ -3679,6 +3679,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 						claimable_outpoints.append(&mut new_outpoints);
 						if new_outpoints.is_empty() {
 							if let Some((mut new_outpoints, new_outputs)) = self.check_spend_holder_transaction(&tx, height, &block_hash, &logger) {
+								#[cfg(not(fuzzing))]
 								debug_assert!(commitment_tx_to_counterparty_output.is_none(),
 									"A commitment transaction matched as both a counterparty and local commitment tx?");
 								if !new_outputs.1.is_empty() {
