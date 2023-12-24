@@ -8979,13 +8979,7 @@ where
 				let pending_msg_events = &mut peer_state.pending_msg_events;
 
 				peer_state.channel_by_id.iter_mut().filter_map(|(_, phase)|
-					if let ChannelPhase::Funded(chan) = phase { Some(chan) } else {
-						// Since unfunded channel maps are cleared upon disconnecting a peer, and they're not persisted
-						// (so won't be recovered after a crash), they shouldn't exist here and we would never need to
-						// worry about closing and removing them.
-						debug_assert!(false);
-						None
-					}
+					if let ChannelPhase::Funded(chan) = phase { Some(chan) } else { None }
 				).for_each(|chan| {
 					let logger = WithChannelContext::from(&self.logger, &chan.context);
 					pending_msg_events.push(events::MessageSendEvent::SendChannelReestablish {
