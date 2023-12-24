@@ -20,7 +20,7 @@ use crate::ln::msgs;
 use crate::ln::msgs::ChannelMessageHandler;
 use crate::ln::onion_utils;
 use crate::ln::onion_utils::INVALID_ONION_BLINDING;
-use crate::ln::outbound_payment::Retry;
+use crate::ln::outbound_payment::{Retry, IDEMPOTENCY_TIMEOUT_TICKS};
 use crate::offers::invoice::BlindedPayInfo;
 use crate::prelude::*;
 use crate::routing::router::{Payee, PaymentParameters, RouteParameters};
@@ -1061,4 +1061,74 @@ fn blinded_path_retries() {
 		},
 		_ => panic!()
 	}
+}
+
+#[test]
+fn min_htlc() {
+	// The min htlc of a blinded path is the max (htlc_min - following_fees) along the path. Make sure
+	// the payment succeeds when we calculate the min htlc this way.
+	let chanmon_cfgs = create_chanmon_cfgs(4);
+	let node_cfgs = create_node_cfgs(4, &chanmon_cfgs);
+	let mut node_1_cfg = test_default_channel_config();
+	node_1_cfg.channel_handshake_config.our_htlc_minimum_msat = 2000;
+	node_1_cfg.channel_config.forwarding_fee_base_msat = 1000;
+	node_1_cfg.channel_config.forwarding_fee_proportional_millionths = 100_000;
+	let mut node_2_cfg = test_default_channel_config();
+	node_2_cfg.channel_handshake_config.our_htlc_minimum_msat = 5000;
+	node_2_cfg.channel_config.forwarding_fee_base_msat = 200;
+	node_2_cfg.channel_config.forwarding_fee_proportional_millionths = 150_000;
+	let mut node_3_cfg = test_default_channel_config();
+	node_3_cfg.channel_handshake_config.our_htlc_minimum_msat = 2000;
+	let node_chanmgrs = create_node_chanmgrs(4, &node_cfgs, &[None, Some(node_1_cfg), Some(node_2_cfg), Some(node_3_cfg)]);
+	let nodes = create_network(4, &node_cfgs, &node_chanmgrs);
+	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0);
+	let chan_1_2 = create_announced_chan_between_nodes_with_value(&nodes, 1, 2, 1_000_000, 0);
+	let chan_2_3 = create_announced_chan_between_nodes_with_value(&nodes, 2, 3, 1_000_000, 0);
+
+	let min_htlc_msat = {
+		// The min htlc for this setup is nodes[2]'s htlc_minimum_msat minus the
+		// following fees.
+		let post_base_fee = chan_2_3.1.contents.htlc_minimum_msat - chan_2_3.0.contents.fee_base_msat as u64;
+		let prop_fee = chan_2_3.0.contents.fee_proportional_millionths as u64;
+		(post_base_fee * 1_000_000 + 1_000_000 + prop_fee - 1) / (prop_fee + 1_000_000)
+	};
+	let (payment_preimage, payment_hash, payment_secret) = get_payment_preimage_hash(&nodes[3], Some(min_htlc_msat), None);
+	let mut route_params = get_blinded_route_parameters(
+		min_htlc_msat, payment_secret, chan_1_2.1.contents.htlc_minimum_msat,
+		chan_1_2.1.contents.htlc_maximum_msat, vec![nodes[1].node.get_our_node_id(),
+		nodes[2].node.get_our_node_id(), nodes[3].node.get_our_node_id()],
+		&[&chan_1_2.0.contents, &chan_2_3.0.contents], &chanmon_cfgs[3].keys_manager);
+	assert_eq!(min_htlc_msat,
+		route_params.payment_params.payee.blinded_route_hints()[0].0.htlc_minimum_msat);
+
+	nodes[0].node.send_payment(payment_hash, RecipientOnionFields::spontaneous_empty(), PaymentId(payment_hash.0), route_params.clone(), Retry::Attempts(0)).unwrap();
+	check_added_monitors(&nodes[0], 1);
+	pass_along_route(&nodes[0], &[&[&nodes[1], &nodes[2], &nodes[3]]], min_htlc_msat, payment_hash, payment_secret);
+	claim_payment(&nodes[0], &[&nodes[1], &nodes[2], &nodes[3]], payment_preimage);
+
+	// Paying 1 less than the min fails.
+	for _ in 0..IDEMPOTENCY_TIMEOUT_TICKS + 1 {
+		nodes[0].node.timer_tick_occurred();
+	}
+	if let Payee::Blinded { ref mut route_hints, .. } = route_params.payment_params.payee {
+		route_hints[0].0.htlc_minimum_msat -= 1;
+	} else { panic!() }
+	route_params.final_value_msat -= 1;
+	nodes[0].node.send_payment(payment_hash, RecipientOnionFields::spontaneous_empty(), PaymentId(payment_hash.0), route_params, Retry::Attempts(0)).unwrap();
+	check_added_monitors(&nodes[0], 1);
+
+	let mut payment_event_0_1 = {
+		let mut events = nodes[0].node.get_and_clear_pending_msg_events();
+		assert_eq!(events.len(), 1);
+		let ev = remove_first_msg_event_to_node(&nodes[1].node.get_our_node_id(), &mut events);
+		SendEvent::from_event(ev)
+	};
+	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &payment_event_0_1.msgs[0]);
+	check_added_monitors!(nodes[1], 0);
+	do_commitment_signed_dance(&nodes[1], &nodes[0], &payment_event_0_1.commitment_msg, true, true);
+	let mut updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+	nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &updates.update_fail_htlcs[0]);
+	do_commitment_signed_dance(&nodes[0], &nodes[1], &updates.commitment_signed, false, false);
+	expect_payment_failed_conditions(&nodes[0], payment_hash, false,
+		PaymentFailedConditions::new().expected_htlc_error_data(INVALID_ONION_BLINDING, &[0; 32]));
 }
