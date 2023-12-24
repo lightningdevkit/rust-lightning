@@ -6845,6 +6845,41 @@ pub(super) struct InboundV1Channel<SP: Deref> where SP::Target: SignerProvider {
 	pub unfunded_context: UnfundedChannelContext,
 }
 
+/// Fetches the [`ChannelTypeFeatures`] that will be used for a channel built from a given
+/// [`msgs::OpenChannel`].
+pub(super) fn channel_type_from_open_channel(
+	msg: &msgs::OpenChannel, their_features: &InitFeatures,
+	our_supported_features: &ChannelTypeFeatures
+) -> Result<ChannelTypeFeatures, ChannelError> {
+	if let Some(channel_type) = &msg.channel_type {
+		if channel_type.supports_any_optional_bits() {
+			return Err(ChannelError::Close("Channel Type field contained optional bits - this is not allowed".to_owned()));
+		}
+
+		// We only support the channel types defined by the `ChannelManager` in
+		// `provided_channel_type_features`. The channel type must always support
+		// `static_remote_key`.
+		if !channel_type.requires_static_remote_key() {
+			return Err(ChannelError::Close("Channel Type was not understood - we require static remote key".to_owned()));
+		}
+		// Make sure we support all of the features behind the channel type.
+		if !channel_type.is_subset(our_supported_features) {
+			return Err(ChannelError::Close("Channel Type contains unsupported features".to_owned()));
+		}
+		let announced_channel = if (msg.channel_flags & 1) == 1 { true } else { false };
+		if channel_type.requires_scid_privacy() && announced_channel {
+			return Err(ChannelError::Close("SCID Alias/Privacy Channel Type cannot be set on a public channel".to_owned()));
+		}
+		Ok(channel_type.clone())
+	} else {
+		let channel_type = ChannelTypeFeatures::from_init(&their_features);
+		if channel_type != ChannelTypeFeatures::only_static_remote_key() {
+			return Err(ChannelError::Close("Only static_remote_key is supported for non-negotiated channel types".to_owned()));
+		}
+		Ok(channel_type)
+	}
+}
+
 impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 	/// Creates a new channel from a remote sides' request for one.
 	/// Assumes chain_hash has already been checked and corresponds with what we expect!
@@ -6863,32 +6898,7 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 
 		// First check the channel type is known, failing before we do anything else if we don't
 		// support this channel type.
-		let channel_type = if let Some(channel_type) = &msg.channel_type {
-			if channel_type.supports_any_optional_bits() {
-				return Err(ChannelError::Close("Channel Type field contained optional bits - this is not allowed".to_owned()));
-			}
-
-			// We only support the channel types defined by the `ChannelManager` in
-			// `provided_channel_type_features`. The channel type must always support
-			// `static_remote_key`.
-			if !channel_type.requires_static_remote_key() {
-				return Err(ChannelError::Close("Channel Type was not understood - we require static remote key".to_owned()));
-			}
-			// Make sure we support all of the features behind the channel type.
-			if !channel_type.is_subset(our_supported_features) {
-				return Err(ChannelError::Close("Channel Type contains unsupported features".to_owned()));
-			}
-			if channel_type.requires_scid_privacy() && announced_channel {
-				return Err(ChannelError::Close("SCID Alias/Privacy Channel Type cannot be set on a public channel".to_owned()));
-			}
-			channel_type.clone()
-		} else {
-			let channel_type = ChannelTypeFeatures::from_init(&their_features);
-			if channel_type != ChannelTypeFeatures::only_static_remote_key() {
-				return Err(ChannelError::Close("Only static_remote_key is supported for non-negotiated channel types".to_owned()));
-			}
-			channel_type
-		};
+		let channel_type = channel_type_from_open_channel(msg, their_features, our_supported_features)?;
 
 		let channel_keys_id = signer_provider.generate_channel_keys_id(true, msg.funding_satoshis, user_id);
 		let holder_signer = signer_provider.derive_channel_signer(msg.funding_satoshis, channel_keys_id);

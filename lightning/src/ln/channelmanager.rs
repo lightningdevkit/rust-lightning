@@ -43,7 +43,7 @@ use crate::events::{Event, EventHandler, EventsProvider, MessageSendEvent, Messa
 // Since this struct is returned in `list_channels` methods, expose it here in case users want to
 // construct one themselves.
 use crate::ln::{inbound_payment, ChannelId, PaymentHash, PaymentPreimage, PaymentSecret};
-use crate::ln::channel::{Channel, ChannelPhase, ChannelContext, ChannelError, ChannelUpdateStatus, ShutdownResult, UnfundedChannelContext, UpdateFulfillCommitFetch, OutboundV1Channel, InboundV1Channel, WithChannelContext};
+use crate::ln::channel::{self, Channel, ChannelPhase, ChannelContext, ChannelError, ChannelUpdateStatus, ShutdownResult, UnfundedChannelContext, UpdateFulfillCommitFetch, OutboundV1Channel, InboundV1Channel, WithChannelContext};
 use crate::ln::features::{Bolt12InvoiceFeatures, ChannelFeatures, ChannelTypeFeatures, InitFeatures, NodeFeatures};
 #[cfg(any(feature = "_test_utils", test))]
 use crate::ln::features::Bolt11InvoiceFeatures;
@@ -6170,13 +6170,18 @@ where
 
 		// If we're doing manual acceptance checks on the channel, then defer creation until we're sure we want to accept.
 		if self.default_configuration.manually_accept_inbound_channels {
+			let channel_type = channel::channel_type_from_open_channel(
+					&msg, &peer_state.latest_features, &self.channel_type_features()
+				).map_err(|e|
+					MsgHandleErrInternal::from_chan_no_close(e, msg.temporary_channel_id)
+				)?;
 			let mut pending_events = self.pending_events.lock().unwrap();
 			pending_events.push_back((events::Event::OpenChannelRequest {
 				temporary_channel_id: msg.temporary_channel_id.clone(),
 				counterparty_node_id: counterparty_node_id.clone(),
 				funding_satoshis: msg.funding_satoshis,
 				push_msat: msg.push_msat,
-				channel_type: msg.channel_type.clone().unwrap(),
+				channel_type,
 			}, None));
 			peer_state.inbound_channel_request_by_id.insert(channel_id, InboundChannelRequest {
 				open_channel_msg: msg.clone(),
