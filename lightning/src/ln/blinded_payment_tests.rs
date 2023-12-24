@@ -33,7 +33,9 @@ fn blinded_payment_path(
 	keys_manager: &test_utils::TestKeysInterface
 ) -> (BlindedPayInfo, BlindedPath) {
 	let mut intermediate_nodes = Vec::new();
-	for (node_id, chan_upd) in node_ids.iter().zip(channel_upds) {
+	let mut intro_node_min_htlc_opt = Some(intro_node_min_htlc);
+	let mut intro_node_max_htlc_opt = Some(intro_node_max_htlc);
+	for (idx, (node_id, chan_upd)) in node_ids.iter().zip(channel_upds).enumerate() {
 		intermediate_nodes.push(ForwardNode {
 			node_id: *node_id,
 			tlvs: ForwardTlvs {
@@ -45,24 +47,28 @@ fn blinded_payment_path(
 				},
 				payment_constraints: PaymentConstraints {
 					max_cltv_expiry: u32::max_value(),
-					htlc_minimum_msat: chan_upd.htlc_minimum_msat,
+					htlc_minimum_msat: intro_node_min_htlc_opt.take()
+						.unwrap_or_else(|| channel_upds[idx - 1].htlc_minimum_msat),
 				},
 				features: BlindedHopFeatures::empty(),
 			},
-			htlc_maximum_msat: chan_upd.htlc_maximum_msat,
+			htlc_maximum_msat: intro_node_max_htlc_opt.take()
+				.unwrap_or_else(|| channel_upds[idx - 1].htlc_maximum_msat),
 		});
 	}
 	let payee_tlvs = ReceiveTlvs {
 		payment_secret,
 		payment_constraints: PaymentConstraints {
 			max_cltv_expiry: u32::max_value(),
-			htlc_minimum_msat: channel_upds.last().unwrap().htlc_minimum_msat,
+			htlc_minimum_msat:
+				intro_node_min_htlc_opt.unwrap_or_else(|| channel_upds.last().unwrap().htlc_minimum_msat),
 		},
 	};
 	let mut secp_ctx = Secp256k1::new();
 	BlindedPath::new_for_payment(
 		&intermediate_nodes[..], *node_ids.last().unwrap(), payee_tlvs,
-		channel_upds.last().unwrap().htlc_maximum_msat, TEST_FINAL_CLTV as u16, keys_manager, &secp_ctx
+		intro_node_max_htlc_opt.unwrap_or_else(|| channel_upds.last().unwrap().htlc_maximum_msat),
+		TEST_FINAL_CLTV as u16, keys_manager, &secp_ctx
 	).unwrap()
 }
 
