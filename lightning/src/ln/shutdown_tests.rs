@@ -437,7 +437,7 @@ fn do_htlc_fail_async_shutdown(blinded_recipient: bool) {
 	let (_, our_payment_hash, our_payment_secret) = get_payment_preimage_hash(&nodes[2], Some(amt_msat), None);
 	let route_params = if blinded_recipient {
 		crate::ln::blinded_payment_tests::get_blinded_route_parameters(
-			amt_msat, our_payment_secret,
+			amt_msat, our_payment_secret, 1, 100000000,
 			nodes.iter().skip(1).map(|n| n.node.get_our_node_id()).collect(), &[&chan_2.0.contents],
 			&chanmon_cfgs[2].keys_manager)
 	} else {

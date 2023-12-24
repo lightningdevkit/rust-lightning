@@ -28,8 +28,9 @@ use crate::util::config::UserConfig;
 use crate::util::test_utils;
 
 fn blinded_payment_path(
-	payment_secret: PaymentSecret, node_ids: Vec<PublicKey>,
-	channel_upds: &[&msgs::UnsignedChannelUpdate], keys_manager: &test_utils::TestKeysInterface
+	payment_secret: PaymentSecret, intro_node_min_htlc: u64, intro_node_max_htlc: u64,
+	node_ids: Vec<PublicKey>, channel_upds: &[&msgs::UnsignedChannelUpdate],
+	keys_manager: &test_utils::TestKeysInterface
 ) -> (BlindedPayInfo, BlindedPath) {
 	let mut intermediate_nodes = Vec::new();
 	for (node_id, chan_upd) in node_ids.iter().zip(channel_upds) {
@@ -66,12 +67,16 @@ fn blinded_payment_path(
 }
 
 pub fn get_blinded_route_parameters(
-	amt_msat: u64, payment_secret: PaymentSecret, node_ids: Vec<PublicKey>,
-	channel_upds: &[&msgs::UnsignedChannelUpdate], keys_manager: &test_utils::TestKeysInterface
+	amt_msat: u64, payment_secret: PaymentSecret, intro_node_min_htlc: u64, intro_node_max_htlc: u64,
+	node_ids: Vec<PublicKey>, channel_upds: &[&msgs::UnsignedChannelUpdate],
+	keys_manager: &test_utils::TestKeysInterface
 ) -> RouteParameters {
 	RouteParameters::from_payment_params_and_value(
 		PaymentParameters::blinded(vec![
-			blinded_payment_path(payment_secret, node_ids, channel_upds, keys_manager)
+			blinded_payment_path(
+				payment_secret, intro_node_min_htlc, intro_node_max_htlc, node_ids, channel_upds,
+				keys_manager
+			)
 		]), amt_msat
 	)
 }
@@ -193,13 +198,13 @@ fn mpp_to_three_hop_blinded_paths() {
 	let (payment_preimage, payment_hash, payment_secret) = get_payment_preimage_hash(&nodes[5], Some(amt_msat), None);
 	let route_params = {
 		let path_1_params = get_blinded_route_parameters(
-			amt_msat, payment_secret, vec![
+			amt_msat, payment_secret, 1, 1_0000_0000, vec![
 				nodes[1].node.get_our_node_id(), nodes[3].node.get_our_node_id(),
 				nodes[5].node.get_our_node_id()
 			], &[&chan_upd_1_3, &chan_upd_3_5], &chanmon_cfgs[5].keys_manager
 		);
 		let path_2_params = get_blinded_route_parameters(
-			amt_msat, payment_secret, vec![
+			amt_msat, payment_secret, 1, 1_0000_0000, vec![
 				nodes[2].node.get_our_node_id(), nodes[4].node.get_our_node_id(),
 				nodes[5].node.get_our_node_id()
 			], &[&chan_upd_2_4, &chan_upd_4_5], &chanmon_cfgs[5].keys_manager
@@ -268,7 +273,7 @@ fn do_forward_checks_failure(check: ForwardCheckFail, intro_fails: bool) {
 
 	let amt_msat = 5000;
 	let (_, payment_hash, payment_secret) = get_payment_preimage_hash(&nodes[3], Some(amt_msat), None);
-	let route_params = get_blinded_route_parameters(amt_msat, payment_secret,
+	let route_params = get_blinded_route_parameters(amt_msat, payment_secret, 1, 1_0000_0000,
 		nodes.iter().skip(1).map(|n| n.node.get_our_node_id()).collect(),
 		&[&chan_upd_1_2, &chan_upd_2_3], &chanmon_cfgs[3].keys_manager);
 
@@ -368,7 +373,7 @@ fn failed_backwards_to_intro_node() {
 
 	let amt_msat = 5000;
 	let (_, payment_hash, payment_secret) = get_payment_preimage_hash(&nodes[2], Some(amt_msat), None);
-	let route_params = get_blinded_route_parameters(amt_msat, payment_secret,
+	let route_params = get_blinded_route_parameters(amt_msat, payment_secret, 1, 1_0000_0000,
 		nodes.iter().skip(1).map(|n| n.node.get_our_node_id()).collect(), &[&chan_upd_1_2],
 		&chanmon_cfgs[2].keys_manager);
 
@@ -448,7 +453,7 @@ fn do_forward_fail_in_process_pending_htlc_fwds(check: ProcessPendingHTLCsCheck,
 
 	let amt_msat = 5000;
 	let (_, payment_hash, payment_secret) = get_payment_preimage_hash(&nodes[2], Some(amt_msat), None);
-	let route_params = get_blinded_route_parameters(amt_msat, payment_secret,
+	let route_params = get_blinded_route_parameters(amt_msat, payment_secret, 1, 1_0000_0000,
 		nodes.iter().skip(1).map(|n| n.node.get_our_node_id()).collect(), &[&chan_upd_1_2, &chan_upd_2_3],
 		&chanmon_cfgs[2].keys_manager);
 
@@ -565,7 +570,7 @@ fn do_blinded_intercept_payment(intercept_node_fails: bool) {
 	let intercept_scid = nodes[1].node.get_intercept_scid();
 	let mut intercept_chan_upd = chan_upd;
 	intercept_chan_upd.short_channel_id = intercept_scid;
-	let route_params = get_blinded_route_parameters(amt_msat, payment_secret,
+	let route_params = get_blinded_route_parameters(amt_msat, payment_secret, 1, 1_0000_0000,
 		nodes.iter().skip(1).map(|n| n.node.get_our_node_id()).collect(), &[&intercept_chan_upd],
 		&chanmon_cfgs[2].keys_manager);
 
@@ -642,7 +647,7 @@ fn two_hop_blinded_path_success() {
 
 	let amt_msat = 5000;
 	let (payment_preimage, payment_hash, payment_secret) = get_payment_preimage_hash(&nodes[2], Some(amt_msat), None);
-	let route_params = get_blinded_route_parameters(amt_msat, payment_secret,
+	let route_params = get_blinded_route_parameters(amt_msat, payment_secret, 1, 1_0000_0000,
 		nodes.iter().skip(1).map(|n| n.node.get_our_node_id()).collect(), &[&chan_upd_1_2],
 		&chanmon_cfgs[2].keys_manager);
 
@@ -671,7 +676,7 @@ fn three_hop_blinded_path_success() {
 
 	let amt_msat = 5000;
 	let (payment_preimage, payment_hash, payment_secret) = get_payment_preimage_hash(&nodes[4], Some(amt_msat), None);
-	let route_params = get_blinded_route_parameters(amt_msat, payment_secret,
+	let route_params = get_blinded_route_parameters(amt_msat, payment_secret, 1, 1_0000_0000,
 		nodes.iter().skip(2).map(|n| n.node.get_our_node_id()).collect(),
 		&[&chan_upd_2_3, &chan_upd_3_4], &chanmon_cfgs[4].keys_manager);
 
@@ -695,7 +700,7 @@ fn three_hop_blinded_path_fail() {
 
 	let amt_msat = 5000;
 	let (_, payment_hash, payment_secret) = get_payment_preimage_hash(&nodes[3], Some(amt_msat), None);
-	let route_params = get_blinded_route_parameters(amt_msat, payment_secret,
+	let route_params = get_blinded_route_parameters(amt_msat, payment_secret, 1, 1_0000_0000,
 		nodes.iter().skip(1).map(|n| n.node.get_our_node_id()).collect(),
 		&[&chan_upd_1_2, &chan_upd_2_3], &chanmon_cfgs[3].keys_manager);
 
@@ -786,7 +791,7 @@ fn do_multi_hop_receiver_fail(check: ReceiveCheckFail) {
 		Some(TEST_FINAL_CLTV as u16 - 2)
 	} else { None };
 	let (_, payment_hash, payment_secret) = get_payment_preimage_hash(&nodes[2], Some(amt_msat), excess_final_cltv_delta_opt);
-	let mut route_params = get_blinded_route_parameters(amt_msat, payment_secret,
+	let mut route_params = get_blinded_route_parameters(amt_msat, payment_secret, 1, 1_0000_0000,
 		nodes.iter().skip(1).map(|n| n.node.get_our_node_id()).collect(), &[&chan_upd_1_2],
 		&chanmon_cfgs[2].keys_manager);
 
@@ -803,7 +808,7 @@ fn do_multi_hop_receiver_fail(check: ReceiveCheckFail) {
 		let high_htlc_min_bp = {
 			let mut high_htlc_minimum_upd = chan_upd_1_2.clone();
 			high_htlc_minimum_upd.htlc_minimum_msat = amt_msat + 1000;
-			let high_htlc_min_params = get_blinded_route_parameters(amt_msat, payment_secret,
+			let high_htlc_min_params = get_blinded_route_parameters(amt_msat, payment_secret, 1, 1_0000_0000,
 				nodes.iter().skip(1).map(|n| n.node.get_our_node_id()).collect(), &[&high_htlc_minimum_upd],
 				&chanmon_cfgs[2].keys_manager);
 			if let Payee::Blinded { route_hints, .. } = high_htlc_min_params.payment_params.payee {
@@ -973,11 +978,11 @@ fn blinded_path_retries() {
 	let route_params = {
 		let pay_params = PaymentParameters::blinded(
 			vec![
-				blinded_payment_path(payment_secret,
+				blinded_payment_path(payment_secret, 1, 1_0000_0000,
 					vec![nodes[1].node.get_our_node_id(), nodes[3].node.get_our_node_id()], &[&chan_1_3.0.contents],
 					&chanmon_cfgs[3].keys_manager
 				),
-				blinded_payment_path(payment_secret,
+				blinded_payment_path(payment_secret, 1, 1_0000_0000,
 					vec![nodes[2].node.get_our_node_id(), nodes[3].node.get_our_node_id()], &[&chan_2_3.0.contents],
 					&chanmon_cfgs[3].keys_manager
 				),
