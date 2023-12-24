@@ -2697,6 +2697,8 @@ pub fn pass_claimed_payment_along_route<'a, 'b, 'c, 'd>(args: ClaimAlongRouteArg
 	} = args;
 	let claim_event = expected_paths[0].last().unwrap().node.get_and_clear_pending_events();
 	assert_eq!(claim_event.len(), 1);
+	#[allow(unused)]
+	let mut fwd_amt_msat = 0;
 	match claim_event[0] {
 		Event::PaymentClaimed {
 			purpose: PaymentPurpose::SpontaneousPayment(preimage),
@@ -2713,6 +2715,7 @@ pub fn pass_claimed_payment_along_route<'a, 'b, 'c, 'd>(args: ClaimAlongRouteArg
 			assert_eq!(htlcs.len(), expected_paths.len());  // One per path.
 			assert_eq!(htlcs.iter().map(|h| h.value_msat).sum::<u64>(), amount_msat);
 			expected_paths.iter().zip(htlcs).for_each(|(path, htlc)| check_claimed_htlc_channel(origin_node, path, htlc));
+			fwd_amt_msat = amount_msat;
 		},
 		Event::PaymentClaimed {
 			purpose: PaymentPurpose::InvoicePayment { .. },
@@ -2725,6 +2728,7 @@ pub fn pass_claimed_payment_along_route<'a, 'b, 'c, 'd>(args: ClaimAlongRouteArg
 			assert_eq!(htlcs.len(), expected_paths.len());  // One per path.
 			assert_eq!(htlcs.iter().map(|h| h.value_msat).sum::<u64>(), amount_msat);
 			expected_paths.iter().zip(htlcs).for_each(|(path, htlc)| check_claimed_htlc_channel(origin_node, path, htlc));
+			fwd_amt_msat = amount_msat;
 		}
 		_ => panic!(),
 	}
@@ -2785,15 +2789,20 @@ pub fn pass_claimed_payment_along_route<'a, 'b, 'c, 'd>(args: ClaimAlongRouteArg
 				{
 					$node.node.handle_update_fulfill_htlc(&$prev_node.node.get_our_node_id(), &next_msgs.as_ref().unwrap().0);
 					let mut fee = {
-						let per_peer_state = $node.node.per_peer_state.read().unwrap();
-						let peer_state = per_peer_state.get(&$prev_node.node.get_our_node_id())
-							.unwrap().lock().unwrap();
-						let channel = peer_state.channel_by_id.get(&next_msgs.as_ref().unwrap().0.channel_id).unwrap();
-						if let Some(prev_config) = channel.context().prev_config() {
-							prev_config.forwarding_fee_base_msat
-						} else {
-							channel.context().config().forwarding_fee_base_msat
-						}
+						let (base_fee, prop_fee) = {
+							let per_peer_state = $node.node.per_peer_state.read().unwrap();
+							let peer_state = per_peer_state.get(&$prev_node.node.get_our_node_id())
+								.unwrap().lock().unwrap();
+							let channel = peer_state.channel_by_id.get(&next_msgs.as_ref().unwrap().0.channel_id).unwrap();
+							if let Some(prev_config) = channel.context().prev_config() {
+								(prev_config.forwarding_fee_base_msat as u64,
+								 prev_config.forwarding_fee_proportional_millionths as u64)
+							} else {
+								(channel.context().config().forwarding_fee_base_msat as u64,
+								 channel.context().config().forwarding_fee_proportional_millionths as u64)
+							}
+						};
+						((fwd_amt_msat * prop_fee / 1_000_000) + base_fee) as u32
 					};
 
 					let mut expected_extra_fee = None;
@@ -2807,6 +2816,7 @@ pub fn pass_claimed_payment_along_route<'a, 'b, 'c, 'd>(args: ClaimAlongRouteArg
 					expect_payment_forwarded(events.pop().unwrap(), *$node, $next_node, $prev_node,
 						Some(fee as u64), expected_extra_fee, false, false);
 					expected_total_fee_msat += fee as u64;
+					fwd_amt_msat += fee as u64;
 					check_added_monitors!($node, 1);
 					let new_next_msgs = if $new_msgs {
 						let events = $node.node.get_and_clear_pending_msg_events();
