@@ -2223,17 +2223,26 @@ macro_rules! expect_payment_path_successful {
 	}
 }
 
+/// Returns the total fee earned by this HTLC forward, in msat.
 pub fn expect_payment_forwarded<CM: AChannelManager, H: NodeHolder<CM=CM>>(
 	event: Event, node: &H, prev_node: &H, next_node: &H, expected_fee: Option<u64>,
 	expected_extra_fees_msat: Option<u64>, upstream_force_closed: bool,
-	downstream_force_closed: bool
-) {
+	downstream_force_closed: bool, allow_1_msat_fee_overpay: bool,
+) -> Option<u64> {
 	match event {
 		Event::PaymentForwarded {
 			total_fee_earned_msat, prev_channel_id, claim_from_onchain_tx, next_channel_id,
 			outbound_amount_forwarded_msat: _, skimmed_fee_msat
 		} => {
-			assert_eq!(total_fee_earned_msat, expected_fee);
+			if allow_1_msat_fee_overpay {
+				// Aggregating fees for blinded paths may result in a rounding error, causing slight
+				// overpayment in fees.
+				let actual_fee = total_fee_earned_msat.unwrap();
+				let expected_fee = expected_fee.unwrap();
+				assert!(actual_fee == expected_fee || actual_fee == expected_fee + 1);
+			} else {
+				assert_eq!(total_fee_earned_msat, expected_fee);
+			}
 
 			// Check that the (knowingly) withheld amount is always less or equal to the expected
 			// overpaid amount.
@@ -2248,6 +2257,7 @@ pub fn expect_payment_forwarded<CM: AChannelManager, H: NodeHolder<CM=CM>>(
 				assert!(node.node().list_channels().iter().any(|x| x.counterparty.node_id == next_node.node().get_our_node_id() && x.channel_id == next_channel_id.unwrap()));
 			}
 			assert_eq!(claim_from_onchain_tx, downstream_force_closed);
+			total_fee_earned_msat
 		},
 		_ => panic!("Unexpected event"),
 	}
@@ -2260,7 +2270,7 @@ macro_rules! expect_payment_forwarded {
 		assert_eq!(events.len(), 1);
 		$crate::ln::functional_test_utils::expect_payment_forwarded(
 			events.pop().unwrap(), &$node, &$prev_node, &$next_node, $expected_fee, None,
-			$upstream_force_closed, $downstream_force_closed
+			$upstream_force_closed, $downstream_force_closed, false
 		);
 	}
 }
@@ -2814,7 +2824,7 @@ pub fn pass_claimed_payment_along_route<'a, 'b, 'c, 'd>(args: ClaimAlongRouteArg
 					let mut events = $node.node.get_and_clear_pending_events();
 					assert_eq!(events.len(), 1);
 					expect_payment_forwarded(events.pop().unwrap(), *$node, $next_node, $prev_node,
-						Some(fee as u64), expected_extra_fee, false, false);
+						Some(fee as u64), expected_extra_fee, false, false, false);
 					expected_total_fee_msat += fee as u64;
 					fwd_amt_msat += fee as u64;
 					check_added_monitors!($node, 1);
