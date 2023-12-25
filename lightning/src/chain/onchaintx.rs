@@ -806,7 +806,9 @@ impl<ChannelSigner: WriteableEcdsaChannelSigner> OnchainTxHandler<ChannelSigner>
 						claim_id
 					},
 				};
-				debug_assert!(self.pending_claim_requests.get(&claim_id).is_none());
+				// Because fuzzing can cause hash collisions, we can end up with conflicting claim
+				// ids here, so we only assert when not fuzzing.
+				debug_assert!(cfg!(fuzzing) || self.pending_claim_requests.get(&claim_id).is_none());
 				for k in req.outpoints() {
 					log_info!(logger, "Registering claiming request for {}:{}", k.txid, k.vout);
 					self.claimable_outpoints.insert(k.clone(), (claim_id, conf_height));
