@@ -1132,3 +1132,54 @@ fn min_htlc() {
 	expect_payment_failed_conditions(&nodes[0], payment_hash, false,
 		PaymentFailedConditions::new().expected_htlc_error_data(INVALID_ONION_BLINDING, &[0; 32]));
 }
+
+#[test]
+fn conditionally_round_fwd_amt() {
+	// Previously, the (rng-found) feerates below caught a bug where an intermediate node would
+	// calculate an amt_to_forward that underpaid them by 1 msat, caused by rounding up the outbound
+	// amount on top of an already rounded-up total routing fee. Ensure that we'll conditionally round
+	// down intermediate nodes' outbound amounts based on whether rounding up will result in
+	// undercharging for relay.
+	let chanmon_cfgs = create_chanmon_cfgs(5);
+	let node_cfgs = create_node_cfgs(5, &chanmon_cfgs);
+
+	let mut node_1_cfg = test_default_channel_config();
+	node_1_cfg.channel_config.forwarding_fee_base_msat = 247371;
+	node_1_cfg.channel_config.forwarding_fee_proportional_millionths = 86552;
+
+	let mut node_2_cfg = test_default_channel_config();
+	node_2_cfg.channel_config.forwarding_fee_base_msat = 198921;
+	node_2_cfg.channel_config.forwarding_fee_proportional_millionths = 681759;
+
+	let mut node_3_cfg = test_default_channel_config();
+	node_3_cfg.channel_config.forwarding_fee_base_msat = 132845;
+	node_3_cfg.channel_config.forwarding_fee_proportional_millionths = 552561;
+
+	let node_chanmgrs = create_node_chanmgrs(5, &node_cfgs, &[None, Some(node_1_cfg), Some(node_2_cfg), Some(node_3_cfg), None]);
+	let nodes = create_network(5, &node_cfgs, &node_chanmgrs);
+	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0);
+	let chan_1_2 = create_announced_chan_between_nodes_with_value(&nodes, 1, 2, 1_000_000, 0);
+	let chan_2_3 = create_announced_chan_between_nodes_with_value(&nodes, 2, 3, 1_000_000, 0);
+	let chan_3_4 = create_announced_chan_between_nodes_with_value(&nodes, 3, 4, 1_000_000, 0);
+
+	let amt_msat = 100_000;
+	let (payment_preimage, payment_hash, payment_secret) = get_payment_preimage_hash(&nodes[4], Some(amt_msat), None);
+	let mut route_params = get_blinded_route_parameters(amt_msat, payment_secret,
+		chan_1_2.1.contents.htlc_minimum_msat, chan_1_2.1.contents.htlc_maximum_msat,
+		vec![nodes[1].node.get_our_node_id(), nodes[2].node.get_our_node_id(),
+		nodes[3].node.get_our_node_id(), nodes[4].node.get_our_node_id()],
+		&[&chan_1_2.0.contents, &chan_2_3.0.contents, &chan_3_4.0.contents],
+		&chanmon_cfgs[4].keys_manager);
+	route_params.max_total_routing_fee_msat = None;
+
+	nodes[0].node.send_payment(payment_hash, RecipientOnionFields::spontaneous_empty(), PaymentId(payment_hash.0), route_params, Retry::Attempts(0)).unwrap();
+	check_added_monitors(&nodes[0], 1);
+	pass_along_route(&nodes[0], &[&[&nodes[1], &nodes[2], &nodes[3], &nodes[4]]], amt_msat, payment_hash, payment_secret);
+	nodes[4].node.claim_funds(payment_preimage);
+	let expected_path = &[&nodes[1], &nodes[2], &nodes[3], &nodes[4]];
+	let expected_route = &[&expected_path[..]];
+	let mut args = ClaimAlongRouteArgs::new(&nodes[0], &expected_route[..], payment_preimage)
+		.allow_1_msat_fee_overpay();
+	let expected_fee = pass_claimed_payment_along_route(args);
+	expect_payment_sent(&nodes[0], payment_preimage, Some(Some(expected_fee)), true, true);
+}
