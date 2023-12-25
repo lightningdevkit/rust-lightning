@@ -6374,7 +6374,7 @@ where
 					let res =
 						chan.funding_signed(&msg, best_block, &self.signer_provider, &&logger);
 					match res {
-						Ok((chan, monitor)) => {
+						Ok((mut chan, monitor)) => {
 							if let Ok(persist_status) = self.chain_monitor.watch_channel(chan.context.get_funding_txo().unwrap(), monitor) {
 								// We really should be able to insert here without doing a second
 								// lookup, but sadly rust stdlib doesn't currently allow keeping
@@ -6386,6 +6386,11 @@ where
 								Ok(())
 							} else {
 								let e = ChannelError::Close("Channel funding outpoint was a duplicate".to_owned());
+								// We weren't able to watch the channel to begin with, so no
+								// updates should be made on it. Previously, full_stack_target
+								// found an (unreachable) panic when the monitor update contained
+								// within `shutdown_finish` was applied.
+								chan.unset_funding_info(msg.channel_id);
 								return Err(convert_chan_phase_err!(self, e, &mut ChannelPhase::Funded(chan), &msg.channel_id).1);
 							}
 						},

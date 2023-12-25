@@ -9033,6 +9033,46 @@ fn test_peer_funding_sidechannel() {
 }
 
 #[test]
+fn test_duplicate_conflicting_funding_from_second_peer() {
+	// Test that if a user tries to fund a channel with a funding outpoint they'd previously used
+	// we don't try to remove the previous ChannelMonitor. This is largely a test to ensure we
+	// don't regress in the fuzzer, as such funding getting passed our outpoint-matches checks
+	// implies the user (and our counterparty) has reused cryptographic keys across channels, which
+	// we require the user not do.
+	let chanmon_cfgs = create_chanmon_cfgs(4);
+	let node_cfgs = create_node_cfgs(4, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(4, &node_cfgs, &[None, None, None, None]);
+	let nodes = create_network(4, &node_cfgs, &node_chanmgrs);
+
+	let temp_chan_id = exchange_open_accept_chan(&nodes[0], &nodes[1], 1_000_000, 0);
+
+	let (_, tx, funding_output) =
+		create_funding_transaction(&nodes[0], &nodes[1].node.get_our_node_id(), 1_000_000, 42);
+
+	// Now that we have a funding outpoint, create a dummy `ChannelMonitor` and insert it into
+	// nodes[0]'s ChainMonitor so that the initial `ChannelMonitor` write fails.
+	let dummy_chan_id = create_chan_between_nodes(&nodes[2], &nodes[3]).3;
+	let dummy_monitor = get_monitor!(nodes[2], dummy_chan_id).clone();
+	nodes[0].chain_monitor.chain_monitor.watch_channel(funding_output, dummy_monitor).unwrap();
+
+	nodes[0].node.funding_transaction_generated(&temp_chan_id, &nodes[1].node.get_our_node_id(), tx.clone()).unwrap();
+
+	let mut funding_created_msg = get_event_msg!(nodes[0], MessageSendEvent::SendFundingCreated, nodes[1].node.get_our_node_id());
+	nodes[1].node.handle_funding_created(&nodes[0].node.get_our_node_id(), &funding_created_msg);
+	let funding_signed_msg = get_event_msg!(nodes[1], MessageSendEvent::SendFundingSigned, nodes[0].node.get_our_node_id());
+	check_added_monitors!(nodes[1], 1);
+	expect_channel_pending_event(&nodes[1], &nodes[0].node.get_our_node_id());
+
+	nodes[0].node.handle_funding_signed(&nodes[1].node.get_our_node_id(), &funding_signed_msg);
+	// At this point, the channel should be closed, after having generated one monitor write (the
+	// watch_channel call which failed), but zero monitor updates.
+	check_added_monitors!(nodes[0], 1);
+	get_err_msg(&nodes[0], &nodes[1].node.get_our_node_id());
+	let err_reason = ClosureReason::ProcessingError { err: "Channel funding outpoint was a duplicate".to_owned() };
+	check_closed_events(&nodes[0], &[ExpectedCloseEvent::from_id_reason(funding_signed_msg.channel_id, true, err_reason)]);
+}
+
+#[test]
 fn test_duplicate_funding_err_in_funding() {
 	// Test that if we have a live channel with one peer, then another peer comes along and tries
 	// to create a second channel with the same txid we'll fail and not overwrite the
