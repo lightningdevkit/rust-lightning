@@ -3738,7 +3738,7 @@ where
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 		let peer_state = &mut *peer_state_lock;
 		let funding_txo;
-		let (chan, msg_opt) = match peer_state.channel_by_id.remove(temporary_channel_id) {
+		let (mut chan, msg_opt) = match peer_state.channel_by_id.remove(temporary_channel_id) {
 			Some(ChannelPhase::UnfundedOutboundV1(mut chan)) => {
 				funding_txo = find_funding_output(&chan, &funding_transaction)?;
 
@@ -3788,8 +3788,20 @@ where
 			},
 			hash_map::Entry::Vacant(e) => {
 				let mut outpoint_to_peer = self.outpoint_to_peer.lock().unwrap();
-				if outpoint_to_peer.insert(funding_txo, chan.context.get_counterparty_node_id()).is_some() {
-					panic!("outpoint_to_peer map already contained funding outpoint, which shouldn't be possible");
+				match outpoint_to_peer.entry(funding_txo) {
+					hash_map::Entry::Vacant(e) => { e.insert(chan.context.get_counterparty_node_id()); },
+					hash_map::Entry::Occupied(o) => {
+						let err = format!(
+							"An existing channel using outpoint {} is open with peer {}",
+							funding_txo, o.get()
+						);
+						mem::drop(outpoint_to_peer);
+						mem::drop(peer_state_lock);
+						mem::drop(per_peer_state);
+						let reason = ClosureReason::ProcessingError { err: err.clone() };
+						self.finish_close_channel(chan.context.force_shutdown(true, reason));
+						return Err(APIError::ChannelUnavailable { err });
+					}
 				}
 				e.insert(ChannelPhase::UnfundedOutboundV1(chan));
 			}
