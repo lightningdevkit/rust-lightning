@@ -1222,6 +1222,29 @@ where
 /// # }
 /// ```
 ///
+/// # Operation
+///
+/// The following is required for [`ChannelManager`] to function properly:
+/// - Handle messages from peers using its [`ChannelMessageHandler`] implementation (typically
+///   called by [`PeerManager::read_event`] when processing network I/O)
+/// - Send messages to peers obtained via its [`MessageSendEventsProvider`] implementation
+///   (typically initiated when [`PeerManager::process_events`] is called)
+/// - Feed on-chain activity using either its [`chain::Listen`] or [`chain::Confirm`] implementation
+///   as documented by those traits
+/// - Perform any periodic channel and payment checks by calling [`timer_tick_occurred`] roughly
+///   every minute
+/// - Persist to disk whenever [`get_and_clear_needs_persistence`] returns `true` using a
+///   [`Persister`] such as a [`KVStore`] implementation
+/// - Handle [`Event`]s obtained via its [`EventsProvider`] implementation
+///
+/// The [`Future`] returned by [`get_event_or_persistence_needed_future`] is useful in determining
+/// when the last two requirements need to be checked.
+///
+/// The [`lightning-block-sync`] and [`lightning-transaction-sync`] crates provide utilities that
+/// simplify feeding in on-chain activity using the [`chain::Listen`] and [`chain::Confirm`] traits,
+/// respectively. The remaining requirements can be met using the [`lightning-background-processor`]
+/// crate. For languages other than Rust, the availability of similar utilities may vary.
+///
 /// # Persistence
 ///
 /// Implements [`Writeable`] to write out all channel state to disk. Implies [`peer_disconnected`] for
@@ -1273,13 +1296,22 @@ where
 /// [`ChainMonitor`]: crate::chain::chainmonitor::ChainMonitor
 /// [`MessageHandler`]: crate::ln::peer_handler::MessageHandler
 /// [`OnionMessenger`]: crate::onion_message::messenger::OnionMessenger
+/// [`PeerManager::read_event`]: crate::ln::peer_handler::PeerManager::read_event
+/// [`PeerManager::process_events`]: crate::ln::peer_handler::PeerManager::process_events
+/// [`timer_tick_occurred`]: Self::timer_tick_occurred
+/// [`get_and_clear_needs_persistence`]: Self::get_and_clear_needs_persistence
+/// [`Persister`]: crate::util::persist::Persister
+/// [`KVStore`]: crate::util::persist::KVStore
+/// [`get_event_or_persistence_needed_future`]: Self::get_event_or_persistence_needed_future
+/// [`lightning-block-sync`]: https://docs.rs/lightning_block_sync/latest/lightning_block_sync
+/// [`lightning-transaction-sync`]: https://docs.rs/lightning_transaction_sync/latest/lightning_transaction_sync
+/// [`lightning-background-processor`]: https://docs.rs/lightning_background_processor/lightning_background_processor
 /// [`peer_disconnected`]: msgs::ChannelMessageHandler::peer_disconnected
 /// [`funding_created`]: msgs::FundingCreated
 /// [`funding_transaction_generated`]: Self::funding_transaction_generated
 /// [`BlockHash`]: bitcoin::hash_types::BlockHash
 /// [`update_channel`]: chain::Watch::update_channel
 /// [`ChannelUpdate`]: msgs::ChannelUpdate
-/// [`timer_tick_occurred`]: Self::timer_tick_occurred
 /// [`read`]: ReadableArgs::read
 //
 // Lock order:
@@ -8879,6 +8911,9 @@ where
 	}
 
 	/// Returns true if this [`ChannelManager`] needs to be persisted.
+	///
+	/// See [`Self::get_event_or_persistence_needed_future`] for retrieving a [`Future`] that
+	/// indicates this should be checked.
 	pub fn get_and_clear_needs_persistence(&self) -> bool {
 		self.needs_persist_flag.swap(false, Ordering::AcqRel)
 	}
