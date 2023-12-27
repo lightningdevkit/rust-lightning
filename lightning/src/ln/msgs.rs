@@ -1696,6 +1696,7 @@ mod fuzzy_internal_msgs {
 			custom_tlvs: Vec<(u64, Vec<u8>)>,
 			amt_msat: u64,
 			outgoing_cltv_value: u32,
+			trampoline_packet: Option<VariableLengthOnionPacket>
 		},
 		BlindedForward {
 			short_channel_id: u64,
@@ -1804,6 +1805,21 @@ pub struct VariableLengthOnionPacket {
 	pub(crate) hop_data: Vec<u8>,
 	/// HMAC to verify the integrity of hop_data.
 	pub hmac: [u8; 32],
+}
+
+impl Readable for VariableLengthOnionPacket {
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+		Ok(VariableLengthOnionPacket {
+			version: Readable::read(r)?,
+			public_key: {
+				let mut buf = [0u8;33];
+				r.read_exact(&mut buf)?;
+				PublicKey::from_slice(&buf)
+			},
+			hop_data: Readable::read(r)?,
+			hmac: Readable::read(r)?,
+		})
+	}
 }
 
 impl fmt::Debug for VariableLengthOnionPacket {
@@ -2373,6 +2389,7 @@ impl<NS: Deref> ReadableArgs<&NS> for InboundOnionPayload where NS::Target: Node
 		let mut total_msat = None;
 		let mut keysend_preimage: Option<PaymentPreimage> = None;
 		let mut custom_tlvs = Vec::new();
+		let mut trampoline_packet: Option<VariableLengthOnionPacket> = None;
 
 		let tlv_len = BigSize::read(r)?;
 		let rd = FixedLengthReader::new(r, tlv_len.0);
@@ -2385,6 +2402,7 @@ impl<NS: Deref> ReadableArgs<&NS> for InboundOnionPayload where NS::Target: Node
 			(12, intro_node_blinding_point, option),
 			(16, payment_metadata, option),
 			(18, total_msat, (option, encoding: (u64, HighZeroBytesDroppedBigSize))),
+			(66100, trampoline_packet, option),
 			// See https://github.com/lightning/blips/blob/master/blip-0003.md
 			(5482373484, keysend_preimage, option)
 		}, |msg_type: u64, msg_reader: &mut FixedLengthReader<_>| -> Result<bool, DecodeError> {
@@ -2461,6 +2479,7 @@ impl<NS: Deref> ReadableArgs<&NS> for InboundOnionPayload where NS::Target: Node
 				amt_msat: amt.ok_or(DecodeError::InvalidValue)?,
 				outgoing_cltv_value: cltv_value.ok_or(DecodeError::InvalidValue)?,
 				custom_tlvs,
+				trampoline_packet
 			})
 		}
 	}
@@ -4094,6 +4113,7 @@ mod tests {
 			payment_metadata: None,
 			keysend_preimage: None,
 			custom_tlvs,
+			..
 		} = inbound_msg  {
 			assert_eq!(payment_secret, expected_payment_secret);
 			assert_eq!(amt_msat, 0x0badf00d01020304);

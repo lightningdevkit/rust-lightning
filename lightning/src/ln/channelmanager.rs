@@ -11867,6 +11867,7 @@ mod tests {
 				payment_secret: PaymentSecret([0; 32]), total_msat: sender_intended_amt_msat,
 			}),
 			custom_tlvs: Vec::new(),
+			trampoline_packet: None
 		};
 		// Check that if the amount we received + the penultimate hop extra fee is less than the sender
 		// intended amount, we fail the payment.
@@ -11889,6 +11890,7 @@ mod tests {
 				payment_secret: PaymentSecret([0; 32]), total_msat: sender_intended_amt_msat,
 			}),
 			custom_tlvs: Vec::new(),
+			trampoline_packet: None
 		};
 		let current_height: u32 = node[0].node.best_block.read().unwrap().height();
 		assert!(create_recv_pending_htlc_info(hop_data, [0; 32], PaymentHash([0; 32]),
@@ -11913,6 +11915,7 @@ mod tests {
 				payment_secret: PaymentSecret([0; 32]), total_msat: 100,
 			}),
 			custom_tlvs: Vec::new(),
+			trampoline_packet: None
 		}, [0; 32], PaymentHash([0; 32]), 100, 23, None, true, None, current_height,
 			node[0].node.default_configuration.accept_mpp_keysend);
 
