@@ -1408,6 +1408,124 @@ where
 /// # }
 /// ```
 ///
+/// # Payments
+///
+/// [`ChannelManager`] is responsible for sending, forwarding, and receiving payments through its
+/// channels. A payment is typically initiated from a [BOLT 11] invoice or a [BOLT 12] offer, though
+/// spontaneous (i.e., keysend) payments are also possible. Incoming payments don't require
+/// maintaining any additional state as [`ChannelManager`] can reconstruct the [`PaymentPreimage`]
+/// from the [`PaymentSecret`]. Sending payments, however, require tracking in order to retry failed
+/// HTLCs.
+///
+/// After a payment is initiated, it will appear in [`list_recent_payments`] until a short time
+/// after either an [`Event::PaymentSent`] or [`Event::PaymentFailed`] is handled. Failed HTLCs
+/// for a payment will be retried according to the payment's [`Retry`] strategy or until
+/// [`abandon_payment`] is called.
+///
+/// ## BOLT 11 Invoices
+///
+/// The [`lightning-invoice`] crate is useful for creating BOLT 11 invoices. Specifically, use the
+/// functions in its `utils` module for constructing invoices that are compatible with
+/// [`ChannelManager`]. These functions serve as a convenience for building invoices with the
+/// [`PaymentHash`] and [`PaymentSecret`] returned from [`create_inbound_payment`]. To provide your
+/// own [`PaymentHash`], use [`create_inbound_payment_for_hash`] or the corresponding functions in
+/// the [`lightning-invoice`] `utils` module.
+///
+/// [`ChannelManager`] generates an [`Event::PaymentClaimable`] once the full payment has been
+/// received. Call [`claim_funds`] to release the [`PaymentPreimage`], which in turn will result in
+/// an [`Event::PaymentClaimed`].
+///
+/// ```
+/// # use lightning::events::{Event, EventsProvider, PaymentPurpose};
+/// # use lightning::ln::channelmanager::AChannelManager;
+/// #
+/// # fn example<T: AChannelManager>(channel_manager: T) {
+/// # let channel_manager = channel_manager.get_cm();
+/// // Or use utils::create_invoice_from_channelmanager
+/// let known_payment_hash = match channel_manager.create_inbound_payment(
+///     Some(10_000_000), 3600, None
+/// ) {
+///     Ok((payment_hash, _payment_secret)) => {
+///         println!("Creating inbound payment {}", payment_hash);
+///         payment_hash
+///     },
+///     Err(()) => panic!("Error creating inbound payment"),
+/// };
+///
+/// // On the event processing thread
+/// channel_manager.process_pending_events(&|event| match event {
+///     Event::PaymentClaimable { payment_hash, purpose, .. } => match purpose {
+///         PaymentPurpose::InvoicePayment { payment_preimage: Some(payment_preimage), .. } => {
+///             assert_eq!(payment_hash, known_payment_hash);
+///             println!("Claiming payment {}", payment_hash);
+///             channel_manager.claim_funds(payment_preimage);
+///         },
+///         PaymentPurpose::InvoicePayment { payment_preimage: None, .. } => {
+///             println!("Unknown payment hash: {}", payment_hash);
+///         },
+///         PaymentPurpose::SpontaneousPayment(payment_preimage) => {
+///             assert_ne!(payment_hash, known_payment_hash);
+///             println!("Claiming spontaneous payment {}", payment_hash);
+///             channel_manager.claim_funds(payment_preimage);
+///         },
+///     },
+///     Event::PaymentClaimed { payment_hash, amount_msat, .. } => {
+///         assert_eq!(payment_hash, known_payment_hash);
+///         println!("Claimed {} msats", amount_msat);
+///     },
+///     // ...
+/// #     _ => {},
+/// });
+/// # }
+/// ```
+///
+/// For paying an invoice, [`lightning-invoice`] provides a `payment` module with convenience
+/// functions for use with [`send_payment`].
+///
+/// ```
+/// # use lightning::events::{Event, EventsProvider};
+/// # use lightning::ln::PaymentHash;
+/// # use lightning::ln::channelmanager::{AChannelManager, PaymentId, RecentPaymentDetails, RecipientOnionFields, Retry};
+/// # use lightning::routing::router::RouteParameters;
+/// #
+/// # fn example<T: AChannelManager>(
+/// #     channel_manager: T, payment_hash: PaymentHash, recipient_onion: RecipientOnionFields,
+/// #     route_params: RouteParameters, retry: Retry
+/// # ) {
+/// # let channel_manager = channel_manager.get_cm();
+/// // let (payment_hash, recipient_onion, route_params) =
+/// //     payment::payment_parameters_from_invoice(&invoice);
+/// let payment_id = PaymentId([42; 32]);
+/// match channel_manager.send_payment(
+///     payment_hash, recipient_onion, payment_id, route_params, retry
+/// ) {
+///     Ok(()) => println!("Sending payment with hash {}", payment_hash),
+///     Err(e) => println!("Failed sending payment with hash {}: {:?}", payment_hash, e),
+/// }
+///
+/// let expected_payment_id = payment_id;
+/// let expected_payment_hash = payment_hash;
+/// assert!(
+///     channel_manager.list_recent_payments().iter().find(|details| matches!(
+///         details,
+///         RecentPaymentDetails::Pending {
+///             payment_id: expected_payment_id,
+///             payment_hash: expected_payment_hash,
+///             ..
+///         }
+///     )).is_some()
+/// );
+///
+/// // On the event processing thread
+/// channel_manager.process_pending_events(&|event| match event {
+///     Event::PaymentSent { payment_hash, .. } => println!("Paid {}", payment_hash),
+///     Event::PaymentFailed { payment_hash, .. } => println!("Failed paying {}", payment_hash),
+///     // ...
+/// #     _ => {},
+/// });
+/// # }
+/// ```
+///
 /// # Persistence
 ///
 /// Implements [`Writeable`] to write out all channel state to disk. Implies [`peer_disconnected`] for
@@ -1474,6 +1592,15 @@ where
 /// [`create_channel`]: Self::create_channel
 /// [`close_channel`]: Self::force_close_broadcasting_latest_txn
 /// [`force_close_broadcasting_latest_txn`]: Self::force_close_broadcasting_latest_txn
+/// [BOLT 11]: https://github.com/lightning/bolts/blob/master/11-payment-encoding.md
+/// [BOLT 12]: https://github.com/rustyrussell/lightning-rfc/blob/guilt/offers/12-offer-encoding.md
+/// [`list_recent_payments`]: Self::list_recent_payments
+/// [`abandon_payment`]: Self::abandon_payment
+/// [`lightning-invoice`]: https://docs.rs/lightning_invoice/latest/lightning_invoice
+/// [`create_inbound_payment`]: Self::create_inbound_payment
+/// [`create_inbound_payment_for_hash`]: Self::create_inbound_payment_for_hash
+/// [`claim_funds`]: Self::claim_funds
+/// [`send_payment`]: Self::send_payment
 /// [`peer_disconnected`]: msgs::ChannelMessageHandler::peer_disconnected
 /// [`funding_created`]: msgs::FundingCreated
 /// [`funding_transaction_generated`]: Self::funding_transaction_generated
