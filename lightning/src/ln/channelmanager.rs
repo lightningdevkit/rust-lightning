@@ -1245,6 +1245,169 @@ where
 /// respectively. The remaining requirements can be met using the [`lightning-background-processor`]
 /// crate. For languages other than Rust, the availability of similar utilities may vary.
 ///
+/// # Channels
+///
+/// [`ChannelManager`]'s primary function involves managing a channel state. Without channels,
+/// payments can't be sent. Use [`list_channels`] or [`list_usable_channels`] for a snapshot of the
+/// currently open channels.
+///
+/// ```
+/// # use lightning::ln::channelmanager::AChannelManager;
+/// #
+/// # fn example<T: AChannelManager>(channel_manager: T) {
+/// # let channel_manager = channel_manager.get_cm();
+/// let channels = channel_manager.list_usable_channels();
+/// for details in channels {
+///     println!("{:?}", details);
+/// }
+/// # }
+/// ```
+///
+/// Each channel is identified using a [`ChannelId`], which will change throughout the channel's
+/// life cycle. Additionally, channels are assigned a `user_channel_id`, which is given in
+/// [`Event`]s associated with the channel and serves as a fixed identifier but is otherwise unused
+/// by [`ChannelManager`].
+///
+/// ## Opening Channels
+///
+/// To an open a channel with a peer, call [`create_channel`]. This will initiate the process of
+/// opening an outbound channel, which requires self-funding when handling
+/// [`Event::FundingGenerationReady`].
+///
+/// ```
+/// # use bitcoin::{ScriptBuf, Transaction};
+/// # use bitcoin::secp256k1::PublicKey;
+/// # use lightning::ln::channelmanager::AChannelManager;
+/// # use lightning::events::{Event, EventsProvider};
+/// #
+/// # trait Wallet {
+/// #     fn create_funding_transaction(
+/// #         &self, _amount_sats: u64, _output_script: ScriptBuf
+/// #     ) -> Transaction;
+/// # }
+/// #
+/// # fn example<T: AChannelManager, W: Wallet>(channel_manager: T, wallet: W, peer_id: PublicKey) {
+/// # let channel_manager = channel_manager.get_cm();
+/// let value_sats = 1_000_000;
+/// let push_msats = 10_000_000;
+/// match channel_manager.create_channel(peer_id, value_sats, push_msats, 42, None, None) {
+///     Ok(channel_id) => println!("Opening channel {}", channel_id),
+///     Err(e) => println!("Error opening channel: {:?}", e),
+/// }
+///
+/// // On the event processing thread once the peer has responded
+/// channel_manager.process_pending_events(&|event| match event {
+///     Event::FundingGenerationReady {
+///         temporary_channel_id, counterparty_node_id, channel_value_satoshis, output_script,
+///         user_channel_id, ..
+///     } => {
+///         assert_eq!(user_channel_id, 42);
+///         let funding_transaction = wallet.create_funding_transaction(
+///             channel_value_satoshis, output_script
+///         );
+///         match channel_manager.funding_transaction_generated(
+///             &temporary_channel_id, &counterparty_node_id, funding_transaction
+///         ) {
+///             Ok(()) => println!("Funding channel {}", temporary_channel_id),
+///             Err(e) => println!("Error funding channel {}: {:?}", temporary_channel_id, e),
+///         }
+///     },
+///     Event::ChannelPending { channel_id, user_channel_id, former_temporary_channel_id, .. } => {
+///         assert_eq!(user_channel_id, 42);
+///         println!(
+///             "Channel {} now {} pending (funding transaction has been broadcasted)", channel_id,
+///             former_temporary_channel_id.unwrap()
+///         );
+///     },
+///     Event::ChannelReady { channel_id, user_channel_id, .. } => {
+///         assert_eq!(user_channel_id, 42);
+///         println!("Channel {} ready", channel_id);
+///     },
+///     // ...
+/// #     _ => {},
+/// });
+/// # }
+/// ```
+///
+/// ## Accepting Channels
+///
+/// Inbound channels are initiated by peers and are automatically accepted unless [`ChannelManager`]
+/// has [`UserConfig::manually_accept_inbound_channels`] set. In that case, the channel may be
+/// either accepted or rejected when handling [`Event::OpenChannelRequest`].
+///
+/// ```
+/// # use bitcoin::secp256k1::PublicKey;
+/// # use lightning::ln::channelmanager::AChannelManager;
+/// # use lightning::events::{Event, EventsProvider};
+/// #
+/// # fn is_trusted(counterparty_node_id: PublicKey) -> bool {
+/// #     // ...
+/// #     unimplemented!()
+/// # }
+/// #
+/// # fn example<T: AChannelManager>(channel_manager: T) {
+/// # let channel_manager = channel_manager.get_cm();
+/// channel_manager.process_pending_events(&|event| match event {
+///     Event::OpenChannelRequest { temporary_channel_id, counterparty_node_id, ..  } => {
+///         if !is_trusted(counterparty_node_id) {
+///             match channel_manager.force_close_without_broadcasting_txn(
+///                 &temporary_channel_id, &counterparty_node_id
+///             ) {
+///                 Ok(()) => println!("Rejecting channel {}", temporary_channel_id),
+///                 Err(e) => println!("Error rejecting channel {}: {:?}", temporary_channel_id, e),
+///             }
+///             return;
+///         }
+///
+///         let user_channel_id = 43;
+///         match channel_manager.accept_inbound_channel(
+///             &temporary_channel_id, &counterparty_node_id, user_channel_id
+///         ) {
+///             Ok(()) => println!("Accepting channel {}", temporary_channel_id),
+///             Err(e) => println!("Error accepting channel {}: {:?}", temporary_channel_id, e),
+///         }
+///     },
+///     // ...
+/// #     _ => {},
+/// });
+/// # }
+/// ```
+///
+/// ## Closing Channels
+///
+/// There are two ways to close a channel: either cooperatively using [`close_channel`] or
+/// unilaterally using [`force_close_broadcasting_latest_txn`]. The former is ideal as it makes for
+/// lower fees and immediate access to funds. However, the latter may be necessary if the
+/// counterparty isn't behaving properly or has gone offline. [`Event::ChannelClosed`] is generated
+/// once the channel has been closed successfully.
+///
+/// ```
+/// # use bitcoin::secp256k1::PublicKey;
+/// # use lightning::ln::ChannelId;
+/// # use lightning::ln::channelmanager::AChannelManager;
+/// # use lightning::events::{Event, EventsProvider};
+/// #
+/// # fn example<T: AChannelManager>(
+/// #     channel_manager: T, channel_id: ChannelId, counterparty_node_id: PublicKey
+/// # ) {
+/// # let channel_manager = channel_manager.get_cm();
+/// match channel_manager.close_channel(&channel_id, &counterparty_node_id) {
+///     Ok(()) => println!("Closing channel {}", channel_id),
+///     Err(e) => println!("Error closing channel {}: {:?}", channel_id, e),
+/// }
+///
+/// // On the event processing thread
+/// channel_manager.process_pending_events(&|event| match event {
+///     Event::ChannelClosed { channel_id, user_channel_id, ..  } => {
+///         assert_eq!(user_channel_id, 42);
+///         println!("Channel {} closed", channel_id);
+///     },
+///     // ...
+/// #     _ => {},
+/// });
+/// # }
+/// ```
+///
 /// # Persistence
 ///
 /// Implements [`Writeable`] to write out all channel state to disk. Implies [`peer_disconnected`] for
@@ -1306,6 +1469,11 @@ where
 /// [`lightning-block-sync`]: https://docs.rs/lightning_block_sync/latest/lightning_block_sync
 /// [`lightning-transaction-sync`]: https://docs.rs/lightning_transaction_sync/latest/lightning_transaction_sync
 /// [`lightning-background-processor`]: https://docs.rs/lightning_background_processor/lightning_background_processor
+/// [`list_channels`]: Self::list_channels
+/// [`list_usable_channels`]: Self::list_usable_channels
+/// [`create_channel`]: Self::create_channel
+/// [`close_channel`]: Self::force_close_broadcasting_latest_txn
+/// [`force_close_broadcasting_latest_txn`]: Self::force_close_broadcasting_latest_txn
 /// [`peer_disconnected`]: msgs::ChannelMessageHandler::peer_disconnected
 /// [`funding_created`]: msgs::FundingCreated
 /// [`funding_transaction_generated`]: Self::funding_transaction_generated
