@@ -823,6 +823,7 @@ pub(crate) struct ShutdownResult {
 	pub(crate) unbroadcasted_batch_funding_txid: Option<Txid>,
 	pub(crate) channel_id: ChannelId,
 	pub(crate) counterparty_node_id: PublicKey,
+	pub(crate) unbroadcasted_funding_tx: Option<Transaction>,
 }
 
 /// If the majority of the channels funds are to the fundee and the initiator holds only just
@@ -2402,6 +2403,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 			} else { None }
 		} else { None };
 		let unbroadcasted_batch_funding_txid = self.unbroadcasted_batch_funding_txid();
+		let unbroadcasted_funding_tx = self.unbroadcasted_funding();
 
 		self.channel_state = ChannelState::ShutdownComplete;
 		self.update_time_counter += 1;
@@ -2411,6 +2413,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 			unbroadcasted_batch_funding_txid,
 			channel_id: self.channel_id,
 			counterparty_node_id: self.counterparty_node_id,
+			unbroadcasted_funding_tx,
 		}
 	}
 
@@ -4943,6 +4946,7 @@ impl<SP: Deref> Channel<SP> where
 					unbroadcasted_batch_funding_txid: self.context.unbroadcasted_batch_funding_txid(),
 					channel_id: self.context.channel_id,
 					counterparty_node_id: self.context.counterparty_node_id,
+					unbroadcasted_funding_tx: self.context.unbroadcasted_funding(),
 				};
 				let tx = self.build_signed_closing_transaction(&mut closing_tx, &msg.signature, &sig);
 				self.context.channel_state = ChannelState::ShutdownComplete;
@@ -4973,6 +4977,7 @@ impl<SP: Deref> Channel<SP> where
 								unbroadcasted_batch_funding_txid: self.context.unbroadcasted_batch_funding_txid(),
 								channel_id: self.context.channel_id,
 								counterparty_node_id: self.context.counterparty_node_id,
+								unbroadcasted_funding_tx: self.context.unbroadcasted_funding(),
 							};
 							self.context.channel_state = ChannelState::ShutdownComplete;
 							self.context.update_time_counter += 1;

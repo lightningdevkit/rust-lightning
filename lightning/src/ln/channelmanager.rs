@@ -2704,14 +2704,6 @@ where
 	/// Helper function that issues the channel close events
 	fn issue_channel_close_events(&self, context: &ChannelContext<SP>, closure_reason: ClosureReason) {
 		let mut pending_events_lock = self.pending_events.lock().unwrap();
-		match context.unbroadcasted_funding() {
-			Some(transaction) => {
-				pending_events_lock.push_back((events::Event::DiscardFunding {
-					channel_id: context.channel_id(), transaction
-				}, None));
-			},
-			None => {},
-		}
 		pending_events_lock.push_back((events::Event::ChannelClosed {
 			channel_id: context.channel_id(),
 			user_channel_id: context.get_user_id(),
@@ -2896,6 +2888,15 @@ where
 				has_uncompleted_channel.unwrap_or(true),
 				"Closing a batch where all channels have completed initial monitor update",
 			);
+		}
+
+		{
+			let mut pending_events = self.pending_events.lock().unwrap();
+			if let Some(transaction) = shutdown_res.unbroadcasted_funding_tx {
+				pending_events.push_back((events::Event::DiscardFunding {
+					channel_id: shutdown_res.channel_id, transaction
+				}, None));
+			}
 		}
 		for shutdown_result in shutdown_results.drain(..) {
 			self.finish_close_channel(shutdown_result);
