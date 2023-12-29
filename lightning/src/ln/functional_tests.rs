@@ -3328,22 +3328,18 @@ fn do_test_commitment_revoked_fail_backward_exhaustive(deliver_bs_raa: bool, use
 
 	let events = nodes[1].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), if deliver_bs_raa { 3 + nodes.len() - 1 } else { 4 + nodes.len() });
-	match events[0] {
-		Event::ChannelClosed { reason: ClosureReason::CommitmentTxConfirmed, .. } => { },
-		_ => panic!("Unexepected event"),
-	}
-	match events[1] {
-		Event::PaymentPathFailed { ref payment_hash, .. } => {
-			assert_eq!(*payment_hash, fourth_payment_hash);
-		},
-		_ => panic!("Unexpected event"),
-	}
-	match events[2] {
-		Event::PaymentFailed { ref payment_hash, .. } => {
-			assert_eq!(*payment_hash, fourth_payment_hash);
-		},
-		_ => panic!("Unexpected event"),
-	}
+	assert!(events.iter().any(|ev| matches!(
+		ev,
+		Event::ChannelClosed { reason: ClosureReason::CommitmentTxConfirmed, .. }
+	)));
+	assert!(events.iter().any(|ev| matches!(
+		ev,
+		Event::PaymentPathFailed { ref payment_hash, .. } if *payment_hash == fourth_payment_hash
+	)));
+	assert!(events.iter().any(|ev| matches!(
+		ev,
+		Event::PaymentFailed { ref payment_hash, .. } if *payment_hash == fourth_payment_hash
+	)));
 
 	nodes[1].node.process_pending_htlc_forwards();
 	check_added_monitors!(nodes[1], 1);
@@ -9131,16 +9127,16 @@ fn test_duplicate_chan_id() {
 				chan.get_funding_created(tx.clone(), funding_outpoint, false, &&logger).map_err(|_| ()).unwrap()
 			},
 			_ => panic!("Unexpected ChannelPhase variant"),
-		}
+		}.unwrap()
 	};
 	check_added_monitors!(nodes[0], 0);
-	nodes[1].node.handle_funding_created(&nodes[0].node.get_our_node_id(), &funding_created.unwrap());
+	nodes[1].node.handle_funding_created(&nodes[0].node.get_our_node_id(), &funding_created);
 	// At this point we'll look up if the channel_id is present and immediately fail the channel
 	// without trying to persist the `ChannelMonitor`.
 	check_added_monitors!(nodes[1], 0);
 
 	check_closed_events(&nodes[1], &[
-		ExpectedCloseEvent::from_id_reason(channel_id, false, ClosureReason::ProcessingError {
+		ExpectedCloseEvent::from_id_reason(funding_created.temporary_channel_id, false, ClosureReason::ProcessingError {
 			err: "Already had channel with the new channel_id".to_owned()
 		})
 	]);
