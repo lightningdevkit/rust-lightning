@@ -331,7 +331,7 @@ impl InFlightHtlcs {
 }
 
 impl Writeable for InFlightHtlcs {
-	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> { self.0.write(writer) }
+	fn write(&self, writer: &mut impl Writer) -> Result<(), io::Error> { self.0.write(writer) }
 }
 
 impl Readable for InFlightHtlcs {
@@ -509,7 +509,7 @@ const SERIALIZATION_VERSION: u8 = 1;
 const MIN_SERIALIZATION_VERSION: u8 = 1;
 
 impl Writeable for Route {
-	fn write<W: crate::util::ser::Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+	fn write(&self, writer: &mut impl Writer) -> Result<(), io::Error> {
 		write_ver_prefix!(writer, SERIALIZATION_VERSION, MIN_SERIALIZATION_VERSION);
 		(self.paths.len() as u64).write(writer)?;
 		let mut blinded_tails = Vec::new();
@@ -614,7 +614,7 @@ impl RouteParameters {
 }
 
 impl Writeable for RouteParameters {
-	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+	fn write(&self, writer: &mut impl Writer) -> Result<(), io::Error> {
 		write_tlv_fields!(writer, {
 			(0, self.payment_params, required),
 			(1, self.max_total_routing_fee_msat, option),
@@ -714,7 +714,7 @@ pub struct PaymentParameters {
 }
 
 impl Writeable for PaymentParameters {
-	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+	fn write(&self, writer: &mut impl Writer) -> Result<(), io::Error> {
 		let mut clear_hints = &vec![];
 		let mut blinded_hints = &vec![];
 		match &self.payee {
@@ -1011,7 +1011,7 @@ impl Features {
 }
 
 impl<'a> Writeable for FeaturesRef<'a> {
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+	fn write(&self, w: &mut impl Writer) -> Result<(), io::Error> {
 		match self {
 			Self::Bolt11(f) => Ok(f.write(w)?),
 			Self::Bolt12(f) => Ok(f.write(w)?),
@@ -1031,7 +1031,7 @@ impl ReadableArgs<bool> for Features {
 pub struct RouteHint(pub Vec<RouteHintHop>);
 
 impl Writeable for RouteHint {
-	fn write<W: crate::util::ser::Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+	fn write(&self, writer: &mut impl Writer) -> Result<(), io::Error> {
 		(self.0.len() as u64).write(writer)?;
 		for hop in self.0.iter() {
 			hop.write(writer)?;
@@ -3136,7 +3136,7 @@ fn build_route_from_hops_internal<L: Deref>(
 
 	impl<'a> Writeable for HopScorer {
 		#[inline]
-		fn write<W: Writer>(&self, _w: &mut W) -> Result<(), io::Error> {
+		fn write(&self, _: &mut impl Writer) -> Result<(), io::Error> {
 			unreachable!();
 		}
 	}
@@ -6464,7 +6464,7 @@ mod tests {
 
 	#[cfg(c_bindings)]
 	impl Writeable for BadChannelScorer {
-		fn write<W: Writer>(&self, _w: &mut W) -> Result<(), crate::io::Error> { unimplemented!() }
+		fn write(&self, _w: &mut impl Writer) -> Result<(), crate::io::Error> { unimplemented!() }
 	}
 	impl ScoreLookUp for BadChannelScorer {
 		type ScoreParams = ();
@@ -6479,7 +6479,7 @@ mod tests {
 
 	#[cfg(c_bindings)]
 	impl Writeable for BadNodeScorer {
-		fn write<W: Writer>(&self, _w: &mut W) -> Result<(), crate::io::Error> { unimplemented!() }
+		fn write(&self, _w: &mut impl Writer) -> Result<(), crate::io::Error> { unimplemented!() }
 	}
 
 	impl ScoreLookUp for BadNodeScorer {

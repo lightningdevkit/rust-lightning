@@ -292,7 +292,7 @@ impl<'a, T: Score + 'a> LockableScore<'a> for MultiThreadedLockableScore<T> {
 
 #[cfg(c_bindings)]
 impl<T: Score> Writeable for MultiThreadedLockableScore<T> {
-	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+	fn write(&self, writer: &mut impl Writer) -> Result<(), io::Error> {
 		self.score.read().unwrap().write(writer)
 	}
 }
@@ -336,7 +336,7 @@ impl<'a, T: Score> ScoreLookUp for MultiThreadedScoreLockRead<'a, T> {
 
 #[cfg(c_bindings)]
 impl<'a, T: Score> Writeable for MultiThreadedScoreLockWrite<'a, T> {
-	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+	fn write(&self, writer: &mut impl Writer) -> Result<(), io::Error> {
 		self.0.write(writer)
 	}
 }
@@ -429,7 +429,7 @@ impl ScoreUpdate for FixedPenaltyScorer {
 
 impl Writeable for FixedPenaltyScorer {
 	#[inline]
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+	fn write(&self, w: &mut impl Writer) -> Result<(), io::Error> {
 		write_tlv_fields!(w, {});
 		Ok(())
 	}
@@ -2058,7 +2058,7 @@ use bucketed_history::{LegacyHistoricalBucketRangeTracker, HistoricalBucketRange
 
 impl<G: Deref<Target = NetworkGraph<L>>, L: Deref> Writeable for ProbabilisticScorer<G, L> where L::Target: Logger {
 	#[inline]
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+	fn write(&self, w: &mut impl Writer) -> Result<(), io::Error> {
 		write_tlv_fields!(w, {
 			(0, self.channel_liquidities, required),
 		});
@@ -2088,7 +2088,7 @@ ReadableArgs<(ProbabilisticScoringDecayParameters, G, L)> for ProbabilisticScore
 
 impl Writeable for ChannelLiquidity {
 	#[inline]
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+	fn write(&self, w: &mut impl Writer) -> Result<(), io::Error> {
 		write_tlv_fields!(w, {
 			(0, self.min_liquidity_offset_msat, required),
 			// 1 was the min_liquidity_offset_history in octile form

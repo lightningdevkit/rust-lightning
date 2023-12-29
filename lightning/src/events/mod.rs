@@ -980,7 +980,7 @@ pub enum Event {
 }
 
 impl Writeable for Event {
-	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+	fn write(&self, writer: &mut impl Writer) -> Result<(), io::Error> {
 		match self {
 			&Event::FundingGenerationReady { .. } => {
 				0u8.write(writer)?;

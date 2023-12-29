@@ -76,7 +76,7 @@ macro_rules! key_impl {
 macro_rules! key_read_write {
     ($SelfT:ty) => {
         impl Writeable for $SelfT {
-            fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+            fn write(&self, w: &mut impl Writer) -> Result<(), io::Error> {
                 self.0.serialize().write(w)
             }
         }

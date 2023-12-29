@@ -218,7 +218,7 @@ impl<'a, W: Writeable> ChaChaPolyWriteAdapter<'a, W> {
 
 impl<'a, T: Writeable> Writeable for ChaChaPolyWriteAdapter<'a, T> {
 	// Simultaneously write and encrypt Self::writeable.
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+	fn write(&self, w: &mut impl Writer) -> Result<(), io::Error> {
 		let mut chacha = ChaCha20Poly1305RFC::new(&self.rho, &[0; 12], &[]);
 		let mut chacha_stream = ChaChaPolyWriter { chacha: &mut chacha, write: w };
 		self.writeable.write(&mut chacha_stream)?;

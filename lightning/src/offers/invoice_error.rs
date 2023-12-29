@@ -65,7 +65,7 @@ impl core::fmt::Display for InvoiceError {
 }
 
 impl Writeable for InvoiceError {
-	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+	fn write(&self, writer: &mut impl Writer) -> Result<(), io::Error> {
 		let tlv_fieldnum = self.erroneous_field.as_ref().map(|f| f.tlv_fieldnum);
 		let suggested_value =
 			self.erroneous_field.as_ref().and_then(|f| f.suggested_value.as_ref());

@@ -646,13 +646,13 @@ impl RefundContents {
 }
 
 impl Writeable for Refund {
-	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+	fn write(&self, writer: &mut impl Writer) -> Result<(), io::Error> {
 		WithoutLength(&self.bytes).write(writer)
 	}
 }
 
 impl Writeable for RefundContents {
-	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+	fn write(&self, writer: &mut impl Writer) -> Result<(), io::Error> {
 		self.as_tlv_stream().write(writer)
 	}
 }

@@ -773,19 +773,19 @@ impl InvoiceRequestContentsWithoutPayerId {
 }
 
 impl Writeable for UnsignedInvoiceRequest {
-	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+	fn write(&self, writer: &mut impl Writer) -> Result<(), io::Error> {
 		WithoutLength(&self.bytes).write(writer)
 	}
 }
 
 impl Writeable for InvoiceRequest {
-	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+	fn write(&self, writer: &mut impl Writer) -> Result<(), io::Error> {
 		WithoutLength(&self.bytes).write(writer)
 	}
 }
 
 impl Writeable for InvoiceRequestContents {
-	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+	fn write(&self, writer: &mut impl Writer) -> Result<(), io::Error> {
 		self.as_tlv_stream().write(writer)
 	}
 }

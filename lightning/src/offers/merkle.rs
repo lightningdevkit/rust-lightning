@@ -259,7 +259,7 @@ pub(super) struct WithoutSignatures<'a>(pub &'a [u8]);
 
 impl<'a> Writeable for WithoutSignatures<'a> {
 	#[inline]
-	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+	fn write(&self, writer: &mut impl Writer) -> Result<(), io::Error> {
 		let tlv_stream = TlvStream::new(self.0);
 		for record in tlv_stream.skip_signatures() {
 			writer.write_all(record.record_bytes)?;

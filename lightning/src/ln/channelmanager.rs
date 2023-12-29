@@ -383,7 +383,7 @@ impl PaymentId {
 }
 
 impl Writeable for PaymentId {
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+	fn write(&self, w: &mut impl Writer) -> Result<(), io::Error> {
 		self.0.write(w)
 	}
 }
@@ -408,7 +408,7 @@ impl core::fmt::Display for PaymentId {
 pub struct InterceptId(pub [u8; 32]);
 
 impl Writeable for InterceptId {
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+	fn write(&self, w: &mut impl Writer) -> Result<(), io::Error> {
 		self.0.write(w)
 	}
 }
@@ -9361,7 +9361,7 @@ impl_writeable_tlv_based!(ChannelCounterparty, {
 });
 
 impl Writeable for ChannelDetails {
-	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+	fn write(&self, writer: &mut impl Writer) -> Result<(), io::Error> {
 		// `user_channel_id` used to be a single u64 value. In order to remain backwards compatible with
 		// versions prior to 0.0.113, the u128 is serialized as two separate u64 values.
 		let user_channel_id_low = self.user_channel_id as u64;
@@ -9518,7 +9518,7 @@ impl_writeable_tlv_based!(PendingHTLCInfo, {
 
 
 impl Writeable for HTLCFailureMsg {
-	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+	fn write(&self, writer: &mut impl Writer) -> Result<(), io::Error> {
 		match self {
 			HTLCFailureMsg::Relay(msgs::UpdateFailHTLC { channel_id, htlc_id, reason }) => {
 				0u8.write(writer)?;
@@ -9605,7 +9605,7 @@ impl_writeable_tlv_based!(HTLCPreviousHopData, {
 });
 
 impl Writeable for ClaimableHTLC {
-	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+	fn write(&self, writer: &mut impl Writer) -> Result<(), io::Error> {
 		let (payment_data, keysend_preimage) = match &self.onion_payload {
 			OnionPayload::Invoice { _legacy_hop_data } => (_legacy_hop_data.as_ref(), None),
 			OnionPayload::Spontaneous(preimage) => (None, Some(preimage)),
@@ -9723,7 +9723,7 @@ impl Readable for HTLCSource {
 }
 
 impl Writeable for HTLCSource {
-	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), crate::io::Error> {
+	fn write(&self, writer: &mut impl Writer) -> Result<(), io::Error> {
 		match self {
 			HTLCSource::OutboundRoute { ref session_priv, ref first_hop_htlc_msat, ref path, payment_id } => {
 				0u8.write(writer)?;
@@ -9756,7 +9756,7 @@ impl_writeable_tlv_based!(PendingAddHTLCInfo, {
 });
 
 impl Writeable for HTLCForwardInfo {
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+	fn write(&self, w: &mut impl Writer) -> Result<(), io::Error> {
 		const FAIL_HTLC_VARIANT_ID: u8 = 1;
 		match self {
 			Self::AddHTLC(info) => {
@@ -9837,7 +9837,7 @@ where
 	R::Target: Router,
 	L::Target: Logger,
 {
-	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+	fn write(&self, writer: &mut impl Writer) -> Result<(), io::Error> {
 		let _consistency_lock = self.total_consistency_lock.write().unwrap();
 
 		write_ver_prefix!(writer, SERIALIZATION_VERSION, MIN_SERIALIZATION_VERSION);
@@ -10050,7 +10050,7 @@ where
 }
 
 impl Writeable for VecDeque<(Event, Option<EventCompletionAction>)> {
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+	fn write(&self, w: &mut impl Writer) -> Result<(), io::Error> {
 		(self.len() as u64).write(w)?;
 		for (event, action) in self.iter() {
 			event.write(w)?;

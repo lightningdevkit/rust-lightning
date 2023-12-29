@@ -63,7 +63,7 @@ impl onion_utils::Packet for Packet {
 }
 
 impl Writeable for Packet {
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+	fn write(&self, w: &mut impl Writer) -> Result<(), io::Error> {
 		self.version.write(w)?;
 		self.public_key.write(w)?;
 		w.write_all(&self.hop_data)?;
@@ -138,7 +138,7 @@ impl<T: OnionMessageContents> OnionMessageContents for ParsedOnionMessageContent
 }
 
 impl<T: OnionMessageContents> Writeable for ParsedOnionMessageContents<T> {
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+	fn write(&self, w: &mut impl Writer) -> Result<(), io::Error> {
 		match self {
 			ParsedOnionMessageContents::Offers(msg) => Ok(msg.write(w)?),
 			ParsedOnionMessageContents::Custom(msg) => Ok(msg.write(w)?),
@@ -174,7 +174,7 @@ pub(super) enum ReceiveControlTlvs {
 
 // Uses the provided secret to simultaneously encode and encrypt the unblinded control TLVs.
 impl<T: OnionMessageContents> Writeable for (Payload<T>, [u8; 32]) {
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+	fn write(&self, w: &mut impl Writer) -> Result<(), io::Error> {
 		match &self.0 {
 			Payload::Forward(ForwardControlTlvs::Blinded(encrypted_bytes)) => {
 				_encode_varint_length_prefixed_tlv!(w, {
@@ -313,7 +313,7 @@ impl Readable for ControlTlvs {
 }
 
 impl Writeable for ControlTlvs {
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+	fn write(&self, w: &mut impl Writer) -> Result<(), io::Error> {
 		match self {
 			Self::Forward(tlvs) => tlvs.write(w),
 			Self::Receive(tlvs) => tlvs.write(w),

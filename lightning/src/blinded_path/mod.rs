@@ -125,7 +125,7 @@ impl BlindedPath {
 }
 
 impl Writeable for BlindedPath {
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+	fn write(&self, w: &mut impl Writer) -> Result<(), io::Error> {
 		self.introduction_node_id.write(w)?;
 		self.blinding_point.write(w)?;
 		(self.blinded_hops.len() as u8).write(w)?;

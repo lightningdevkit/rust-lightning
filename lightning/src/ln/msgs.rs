@@ -891,7 +891,7 @@ impl SocketAddress {
 }
 
 impl Writeable for SocketAddress {
-	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+	fn write(&self, writer: &mut impl Writer) -> Result<(), io::Error> {
 		match self {
 			&SocketAddress::TcpIpV4 { ref addr, ref port } => {
 				1u8.write(writer)?;
@@ -1142,7 +1142,7 @@ pub enum UnsignedGossipMessage<'a> {
 }
 
 impl<'a> Writeable for UnsignedGossipMessage<'a> {
-	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+	fn write(&self, writer: &mut impl Writer) -> Result<(), io::Error> {
 		match self {
 			UnsignedGossipMessage::ChannelAnnouncement(ref msg) => msg.write(writer),
 			UnsignedGossipMessage::ChannelUpdate(ref msg) => msg.write(writer),
@@ -2064,7 +2064,7 @@ impl_writeable_msg!(ChannelReady, {
 });
 
 impl Writeable for Init {
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+	fn write(&self, w: &mut impl Writer) -> Result<(), io::Error> {
 		// global_features gets the bottom 13 bits of our features, and local_features gets all of
 		// our relevant feature bits. This keeps us compatible with old nodes.
 		self.features.write_up_to_13(w)?;
@@ -2201,7 +2201,7 @@ impl_writeable!(OnionErrorPacket, {
 // serialization format in a way which assumes we know the total serialized length/message end
 // position.
 impl Writeable for OnionPacket {
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+	fn write(&self, w: &mut impl Writer) -> Result<(), io::Error> {
 		self.version.write(w)?;
 		match self.public_key {
 			Ok(pubkey) => pubkey.write(w)?,
@@ -2254,7 +2254,7 @@ impl Readable for OnionMessage {
 }
 
 impl Writeable for OnionMessage {
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+	fn write(&self, w: &mut impl Writer) -> Result<(), io::Error> {
 		self.blinding_point.write(w)?;
 		let onion_packet_len = self.onion_routing_packet.serialized_length();
 		(onion_packet_len as u16).write(w)?;
@@ -2264,7 +2264,7 @@ impl Writeable for OnionMessage {
 }
 
 impl Writeable for FinalOnionHopData {
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+	fn write(&self, w: &mut impl Writer) -> Result<(), io::Error> {
 		self.payment_secret.0.write(w)?;
 		HighZeroBytesDroppedBigSize(self.total_msat).write(w)
 	}
@@ -2279,7 +2279,7 @@ impl Readable for FinalOnionHopData {
 }
 
 impl Writeable for OutboundOnionPayload {
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+	fn write(&self, w: &mut impl Writer) -> Result<(), io::Error> {
 		match self {
 			Self::Forward { short_channel_id, amt_to_forward, outgoing_cltv_value } => {
 				_encode_varint_length_prefixed_tlv!(w, {
@@ -2441,7 +2441,7 @@ impl<NS: Deref> ReadableArgs<(Option<PublicKey>, &NS)> for InboundOnionPayload w
 }
 
 impl Writeable for Ping {
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+	fn write(&self, w: &mut impl Writer) -> Result<(), io::Error> {
 		self.ponglen.write(w)?;
 		vec![0u8; self.byteslen as usize].write(w)?; // size-unchecked write
 		Ok(())
@@ -2462,7 +2462,7 @@ impl Readable for Ping {
 }
 
 impl Writeable for Pong {
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+	fn write(&self, w: &mut impl Writer) -> Result<(), io::Error> {
 		vec![0u8; self.byteslen as usize].write(w)?; // size-unchecked write
 		Ok(())
 	}
@@ -2481,7 +2481,7 @@ impl Readable for Pong {
 }
 
 impl Writeable for UnsignedChannelAnnouncement {
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+	fn write(&self, w: &mut impl Writer) -> Result<(), io::Error> {
 		self.features.write(w)?;
 		self.chain_hash.write(w)?;
 		self.short_channel_id.write(w)?;
@@ -2518,7 +2518,7 @@ impl_writeable!(ChannelAnnouncement, {
 });
 
 impl Writeable for UnsignedChannelUpdate {
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+	fn write(&self, w: &mut impl Writer) -> Result<(), io::Error> {
 		// `message_flags` used to indicate presence of `htlc_maximum_msat`, but was deprecated in the spec.
 		const MESSAGE_FLAGS: u8 = 1;
 		self.chain_hash.write(w)?;
@@ -2563,7 +2563,7 @@ impl_writeable!(ChannelUpdate, {
 });
 
 impl Writeable for ErrorMessage {
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+	fn write(&self, w: &mut impl Writer) -> Result<(), io::Error> {
 		self.channel_id.write(w)?;
 		(self.data.len() as u16).write(w)?;
 		w.write_all(self.data.as_bytes())?;
@@ -2590,7 +2590,7 @@ impl Readable for ErrorMessage {
 }
 
 impl Writeable for WarningMessage {
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+	fn write(&self, w: &mut impl Writer) -> Result<(), io::Error> {
 		self.channel_id.write(w)?;
 		(self.data.len() as u16).write(w)?;
 		w.write_all(self.data.as_bytes())?;
@@ -2617,7 +2617,7 @@ impl Readable for WarningMessage {
 }
 
 impl Writeable for UnsignedNodeAnnouncement {
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+	fn write(&self, w: &mut impl Writer) -> Result<(), io::Error> {
 		self.features.write(w)?;
 		self.timestamp.write(w)?;
 		self.node_id.write(w)?;
@@ -2740,7 +2740,7 @@ impl Readable for QueryShortChannelIds {
 }
 
 impl Writeable for QueryShortChannelIds {
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+	fn write(&self, w: &mut impl Writer) -> Result<(), io::Error> {
 		// Calculated from 1-byte encoding_type plus 8-bytes per short_channel_id
 		let encoding_len: u16 = 1 + self.short_channel_ids.len() as u16 * 8;
 
@@ -2822,7 +2822,7 @@ impl Readable for ReplyChannelRange {
 }
 
 impl Writeable for ReplyChannelRange {
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+	fn write(&self, w: &mut impl Writer) -> Result<(), io::Error> {
 		let encoding_len: u16 = 1 + self.short_channel_ids.len() as u16 * 8;
 		self.chain_hash.write(w)?;
 		self.first_blocknum.write(w)?;

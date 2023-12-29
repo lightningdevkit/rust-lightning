@@ -226,7 +226,7 @@ impl CounterpartyOfferedHTLCOutput {
 }
 
 impl Writeable for CounterpartyOfferedHTLCOutput {
-	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+	fn write(&self, writer: &mut impl Writer) -> Result<(), io::Error> {
 		let legacy_deserialization_prevention_marker = chan_utils::legacy_deserialization_prevention_marker_for_channel_type_features(&self.channel_type_features);
 		write_tlv_fields!(writer, {
 			(0, self.per_commitment_point, required),
@@ -302,7 +302,7 @@ impl CounterpartyReceivedHTLCOutput {
 }
 
 impl Writeable for CounterpartyReceivedHTLCOutput {
-	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+	fn write(&self, writer: &mut impl Writer) -> Result<(), io::Error> {
 		let legacy_deserialization_prevention_marker = chan_utils::legacy_deserialization_prevention_marker_for_channel_type_features(&self.channel_type_features);
 		write_tlv_fields!(writer, {
 			(0, self.per_commitment_point, required),
@@ -382,7 +382,7 @@ impl HolderHTLCOutput {
 }
 
 impl Writeable for HolderHTLCOutput {
-	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+	fn write(&self, writer: &mut impl Writer) -> Result<(), io::Error> {
 		let legacy_deserialization_prevention_marker = chan_utils::legacy_deserialization_prevention_marker_for_channel_type_features(&self.channel_type_features);
 		write_tlv_fields!(writer, {
 			(0, self.amount_msat, required),
@@ -446,7 +446,7 @@ impl HolderFundingOutput {
 }
 
 impl Writeable for HolderFundingOutput {
-	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+	fn write(&self, writer: &mut impl Writer) -> Result<(), io::Error> {
 		let legacy_deserialization_prevention_marker = chan_utils::legacy_deserialization_prevention_marker_for_channel_type_features(&self.channel_type_features);
 		write_tlv_fields!(writer, {
 			(0, self.funding_redeemscript, required),
@@ -1046,7 +1046,7 @@ impl PackageTemplate {
 }
 
 impl Writeable for PackageTemplate {
-	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+	fn write(&self, writer: &mut impl Writer) -> Result<(), io::Error> {
 		writer.write_all(&(self.inputs.len() as u64).to_be_bytes())?;
 		for (ref outpoint, ref rev_outp) in self.inputs.iter() {
 			outpoint.write(writer)?;

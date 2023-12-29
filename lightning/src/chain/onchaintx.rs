@@ -90,7 +90,7 @@ enum OnchainEvent {
 }
 
 impl Writeable for OnchainEventEntry {
-	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+	fn write(&self, writer: &mut impl Writer) -> Result<(), io::Error> {
 		write_tlv_fields!(writer, {
 			(0, self.txid, required),
 			(1, self.block_hash, option),
@@ -148,7 +148,7 @@ impl Readable for Option<Vec<Option<(usize, Signature)>>> {
 }
 
 impl Writeable for Option<Vec<Option<(usize, Signature)>>> {
-	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+	fn write(&self, writer: &mut impl Writer) -> Result<(), io::Error> {
 		match self {
 			&Some(ref vec) => {
 				1u8.write(writer)?;
@@ -289,7 +289,7 @@ const SERIALIZATION_VERSION: u8 = 1;
 const MIN_SERIALIZATION_VERSION: u8 = 1;
 
 impl<ChannelSigner: WriteableEcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
-	pub(crate) fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+	pub(crate) fn write(&self, writer: &mut impl Writer) -> Result<(), io::Error> {
 		write_ver_prefix!(writer, SERIALIZATION_VERSION, MIN_SERIALIZATION_VERSION);
 
 		self.destination_script.write(writer)?;

@@ -577,7 +577,7 @@ macro_rules! _decode_tlv_stream_range {
 ///
 /// For example,
 /// ```
-/// # use lightning::impl_writeable_msg;
+/// # use lightning::{impl_writeable_msg, util::ser::Writer};
 /// struct MyCustomMessage {
 /// 	pub field_1: u32,
 /// 	pub field_2: bool,
@@ -601,7 +601,7 @@ macro_rules! _decode_tlv_stream_range {
 macro_rules! impl_writeable_msg {
 	($st:ident, {$($field:ident),* $(,)*}, {$(($type: expr, $tlvfield: ident, $fieldty: tt)),* $(,)*}) => {
 		impl $crate::util::ser::Writeable for $st {
-			fn write<W: $crate::util::ser::Writer>(&self, w: &mut W) -> Result<(), $crate::io::Error> {
+			fn write(&self, w: &mut impl Writer) -> Result<(), $crate::io::Error> {
 				$( self.$field.write(w)?; )*
 				$crate::encode_tlv_stream!(w, {$(($type, self.$tlvfield.as_ref(), $fieldty)),*});
 				Ok(())
@@ -624,7 +624,7 @@ macro_rules! impl_writeable_msg {
 macro_rules! impl_writeable {
 	($st:ident, {$($field:ident),*}) => {
 		impl $crate::util::ser::Writeable for $st {
-			fn write<W: $crate::util::ser::Writer>(&self, w: &mut W) -> Result<(), $crate::io::Error> {
+			fn write(&self, w: &mut impl $crate::util::ser::Writer) -> Result<(), $crate::io::Error> {
 				$( self.$field.write(w)?; )*
 				Ok(())
 			}
@@ -856,7 +856,7 @@ macro_rules! _init_and_read_tlv_stream {
 macro_rules! impl_writeable_tlv_based {
 	($st: ident, {$(($type: expr, $field: ident, $fieldty: tt)),* $(,)*}) => {
 		impl $crate::util::ser::Writeable for $st {
-			fn write<W: $crate::util::ser::Writer>(&self, writer: &mut W) -> Result<(), $crate::io::Error> {
+			fn write(&self, writer: &mut impl $crate::util::ser::Writer) -> Result<(), $crate::io::Error> {
 				$crate::write_tlv_fields!(writer, {
 					$(($type, self.$field, $fieldty)),*
 				});
@@ -924,7 +924,7 @@ macro_rules! tlv_stream {
 		}
 
 		impl<'a> $crate::util::ser::Writeable for $nameref<'a> {
-			fn write<W: $crate::util::ser::Writer>(&self, writer: &mut W) -> Result<(), $crate::io::Error> {
+			fn write(&self, writer: &mut impl $crate::util::ser::Writer) -> Result<(), $crate::io::Error> {
 				encode_tlv_stream!(writer, {
 					$(($type, self.$field, (option, encoding: $fieldty))),*
 				});
@@ -979,7 +979,7 @@ macro_rules! _impl_writeable_tlv_based_enum_common {
 	),* $(,)*;
 	$(($tuple_variant_id: expr, $tuple_variant_name: ident)),*  $(,)*) => {
 		impl $crate::util::ser::Writeable for $st {
-			fn write<W: $crate::util::ser::Writer>(&self, writer: &mut W) -> Result<(), $crate::io::Error> {
+			fn write(&self, writer: &mut impl $crate::util::ser::Writer) -> Result<(), $crate::io::Error> {
 				match self {
 					$($st::$variant_name { $(ref $field),* } => {
 						let id: u8 = $variant_id;

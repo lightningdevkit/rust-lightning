@@ -195,7 +195,7 @@ impl<R: Read> Read for ReadTrackingReader<R> {
 /// This is not exported to bindings users as we only export serialization to/from byte arrays instead
 pub trait Writeable {
 	/// Writes `self` out to the given [`Writer`].
-	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error>;
+	fn write(&self, writer: &mut impl Writer) -> Result<(), io::Error>;
 
 	/// Writes `self` out to a `Vec<u8>`.
 	fn encode(&self) -> Vec<u8> {
@@ -234,7 +234,7 @@ pub trait Writeable {
 }
 
 impl<'a, T: Writeable> Writeable for &'a T {
-	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> { (*self).write(writer) }
+	fn write(&self, writer: &mut impl Writer) -> Result<(), io::Error> { (*self).write(writer) }
 }
 
 /// A trait that various LDK types implement allowing them to be read in from a [`Read`].
@@ -345,7 +345,7 @@ impl<T: MaybeReadable> MaybeReadable for UpgradableRequired<T> {
 pub(crate) struct U48(pub u64);
 impl Writeable for U48 {
 	#[inline]
-	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+	fn write(&self, writer: &mut impl Writer) -> Result<(), io::Error> {
 		writer.write_all(&be48_to_array(self.0))
 	}
 }
@@ -369,7 +369,7 @@ impl Readable for U48 {
 pub struct BigSize(pub u64);
 impl Writeable for BigSize {
 	#[inline]
-	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+	fn write(&self, writer: &mut impl Writer) -> Result<(), io::Error> {
 		match self.0 {
 			0..=0xFC => {
 				(self.0 as u8).write(writer)
@@ -435,7 +435,7 @@ impl Readable for BigSize {
 struct CollectionLength(pub u64);
 impl Writeable for CollectionLength {
 	#[inline]
-	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+	fn write(&self, writer: &mut impl Writer) -> Result<(), io::Error> {
 		if self.0 < 0xffff {
 			(self.0 as u16).write(writer)
 		} else {
@@ -467,13 +467,13 @@ macro_rules! impl_writeable_primitive {
 	($val_type:ty, $len: expr) => {
 		impl Writeable for $val_type {
 			#[inline]
-			fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+			fn write(&self, writer: &mut impl Writer) -> Result<(), io::Error> {
 				writer.write_all(&self.to_be_bytes())
 			}
 		}
 		impl Writeable for HighZeroBytesDroppedBigSize<$val_type> {
 			#[inline]
-			fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+			fn write(&self, writer: &mut impl Writer) -> Result<(), io::Error> {
 				// Skip any full leading 0 bytes when writing (in BE):
 				writer.write_all(&self.0.to_be_bytes()[(self.0.leading_zeros()/8) as usize..$len])
 			}
@@ -529,7 +529,7 @@ impl_writeable_primitive!(i8, 1);
 
 impl Writeable for u8 {
 	#[inline]
-	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+	fn write(&self, writer: &mut impl Writer) -> Result<(), io::Error> {
 		writer.write_all(&[*self])
 	}
 }
@@ -544,7 +544,7 @@ impl Readable for u8 {
 
 impl Writeable for bool {
 	#[inline]
-	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+	fn write(&self, writer: &mut impl Writer) -> Result<(), io::Error> {
 		writer.write_all(&[if *self {1} else {0}])
 	}
 }
@@ -564,7 +564,7 @@ macro_rules! impl_array {
 	($size:expr, $ty: ty) => (
 		impl Writeable for [$ty; $size] {
 			#[inline]
-			fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+			fn write(&self, w: &mut impl Writer) -> Result<(), io::Error> {
 				let mut out = [0; $size * core::mem::size_of::<$ty>()];
 				for (idx, v) in self.iter().enumerate() {
 					let startpos = idx * core::mem::size_of::<$ty>();
@@ -613,7 +613,7 @@ pub struct WithoutLength<T>(pub T);
 
 impl Writeable for WithoutLength<&String> {
 	#[inline]
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+	fn write(&self, w: &mut impl Writer) -> Result<(), io::Error> {
 		w.write_all(self.0.as_bytes())
 	}
 }
@@ -631,7 +631,7 @@ impl<'a> From<&'a String> for WithoutLength<&'a String> {
 
 impl Writeable for WithoutLength<&UntrustedString> {
 	#[inline]
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+	fn write(&self, w: &mut impl Writer) -> Result<(), io::Error> {
 		WithoutLength(&self.0.0).write(w)
 	}
 }
@@ -645,7 +645,7 @@ impl Readable for WithoutLength<UntrustedString> {
 
 impl<'a, T: Writeable> Writeable for WithoutLength<&'a Vec<T>> {
 	#[inline]
-	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+	fn write(&self, writer: &mut impl Writer) -> Result<(), io::Error> {
 		for ref v in self.0.iter() {
 			v.write(writer)?;
 		}
@@ -677,7 +677,7 @@ impl<'a, T> From<&'a Vec<T>> for WithoutLength<&'a Vec<T>> {
 
 impl Writeable for WithoutLength<&ScriptBuf> {
 	#[inline]
-	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+	fn write(&self, writer: &mut impl Writer) -> Result<(), io::Error> {
 		writer.write_all(self.0.as_bytes())
 	}
 }
@@ -695,7 +695,7 @@ pub(crate) struct Iterable<'a, I: Iterator<Item = &'a T> + Clone, T: 'a>(pub I);
 
 impl<'a, I: Iterator<Item = &'a T> + Clone, T: 'a + Writeable> Writeable for Iterable<'a, I, T> {
 	#[inline]
-	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+	fn write(&self, writer: &mut impl Writer) -> Result<(), io::Error> {
 		for ref v in self.0.clone() {
 			v.write(writer)?;
 		}
@@ -716,7 +716,7 @@ macro_rules! impl_for_map {
 			where K: Writeable + Eq + $keybound, V: Writeable
 		{
 			#[inline]
-			fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+			fn write(&self, w: &mut impl Writer) -> Result<(), io::Error> {
 				CollectionLength(self.len() as u64).write(w)?;
 				for (key, value) in self.iter() {
 					key.write(w)?;
@@ -756,7 +756,7 @@ impl<T> Writeable for HashSet<T>
 where T: Writeable + Eq + Hash
 {
 	#[inline]
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+	fn write(&self, w: &mut impl Writer) -> Result<(), io::Error> {
 		CollectionLength(self.len() as u64).write(w)?;
 		for item in self.iter() {
 			item.write(w)?;
@@ -786,7 +786,7 @@ macro_rules! impl_writeable_for_vec {
 	($ty: ty $(, $name: ident)*) => {
 		impl<$($name : Writeable),*> Writeable for Vec<$ty> {
 			#[inline]
-			fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+			fn write(&self, w: &mut impl Writer) -> Result<(), io::Error> {
 				CollectionLength(self.len() as u64).write(w)?;
 				for elem in self.iter() {
 					elem.write(w)?;
@@ -822,7 +822,7 @@ macro_rules! impl_for_vec {
 
 impl Writeable for Vec<u8> {
 	#[inline]
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+	fn write(&self, w: &mut impl Writer) -> Result<(), io::Error> {
 		CollectionLength(self.len() as u64).write(w)?;
 		w.write_all(&self)
 	}
@@ -853,7 +853,7 @@ impl_readable_for_vec!(crate::routing::router::BlindedTail);
 
 impl Writeable for Vec<Witness> {
 	#[inline]
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+	fn write(&self, w: &mut impl Writer) -> Result<(), io::Error> {
 		(self.len() as u16).write(w)?;
 		for witness in self {
 			(witness.serialized_len() as u16).write(w)?;
@@ -886,7 +886,7 @@ impl Readable for Vec<Witness> {
 }
 
 impl Writeable for ScriptBuf {
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+	fn write(&self, w: &mut impl Writer) -> Result<(), io::Error> {
 		(self.len() as u16).write(w)?;
 		w.write_all(self.as_bytes())
 	}
@@ -902,7 +902,7 @@ impl Readable for ScriptBuf {
 }
 
 impl Writeable for PublicKey {
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+	fn write(&self, w: &mut impl Writer) -> Result<(), io::Error> {
 		self.serialize().write(w)
 	}
 	#[inline]
@@ -922,7 +922,7 @@ impl Readable for PublicKey {
 }
 
 impl Writeable for SecretKey {
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+	fn write(&self, w: &mut impl Writer) -> Result<(), io::Error> {
 		let mut ser = [0; SECRET_KEY_SIZE];
 		ser.copy_from_slice(&self[..]);
 		ser.write(w)
@@ -945,7 +945,7 @@ impl Readable for SecretKey {
 
 #[cfg(taproot)]
 impl Writeable for musig2::types::PublicNonce {
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+	fn write(&self, w: &mut impl Writer) -> Result<(), io::Error> {
 		self.serialize().write(w)
 	}
 }
@@ -960,7 +960,7 @@ impl Readable for musig2::types::PublicNonce {
 
 #[cfg(taproot)]
 impl Writeable for PartialSignatureWithNonce {
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+	fn write(&self, w: &mut impl Writer) -> Result<(), io::Error> {
 		self.0.serialize().write(w)?;
 		self.1.write(w)
 	}
@@ -977,7 +977,7 @@ impl Readable for PartialSignatureWithNonce {
 }
 
 impl Writeable for Sha256dHash {
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+	fn write(&self, w: &mut impl Writer) -> Result<(), io::Error> {
 		w.write_all(&self[..])
 	}
 }
@@ -992,7 +992,7 @@ impl Readable for Sha256dHash {
 }
 
 impl Writeable for ecdsa::Signature {
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+	fn write(&self, w: &mut impl Writer) -> Result<(), io::Error> {
 		self.serialize_compact().write(w)
 	}
 }
@@ -1008,7 +1008,7 @@ impl Readable for ecdsa::Signature {
 }
 
 impl Writeable for schnorr::Signature {
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+	fn write(&self, w: &mut impl Writer) -> Result<(), io::Error> {
 		self.as_ref().write(w)
 	}
 }
@@ -1024,7 +1024,7 @@ impl Readable for schnorr::Signature {
 }
 
 impl Writeable for PaymentPreimage {
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+	fn write(&self, w: &mut impl Writer) -> Result<(), io::Error> {
 		self.0.write(w)
 	}
 }
@@ -1037,7 +1037,7 @@ impl Readable for PaymentPreimage {
 }
 
 impl Writeable for PaymentHash {
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+	fn write(&self, w: &mut impl Writer) -> Result<(), io::Error> {
 		self.0.write(w)
 	}
 }
@@ -1050,7 +1050,7 @@ impl Readable for PaymentHash {
 }
 
 impl Writeable for PaymentSecret {
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+	fn write(&self, w: &mut impl Writer) -> Result<(), io::Error> {
 		self.0.write(w)
 	}
 }
@@ -1063,7 +1063,7 @@ impl Readable for PaymentSecret {
 }
 
 impl<T: Writeable> Writeable for Box<T> {
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+	fn write(&self, w: &mut impl Writer) -> Result<(), io::Error> {
 		T::write(&**self, w)
 	}
 }
@@ -1075,7 +1075,7 @@ impl<T: Readable> Readable for Box<T> {
 }
 
 impl<T: Writeable> Writeable for Option<T> {
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+	fn write(&self, w: &mut impl Writer) -> Result<(), io::Error> {
 		match *self {
 			None => 0u8.write(w)?,
 			Some(ref data) => {
@@ -1102,7 +1102,7 @@ impl<T: Readable> Readable for Option<T>
 }
 
 impl Writeable for Txid {
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+	fn write(&self, w: &mut impl Writer) -> Result<(), io::Error> {
 		w.write_all(&self[..])
 	}
 }
@@ -1117,7 +1117,7 @@ impl Readable for Txid {
 }
 
 impl Writeable for BlockHash {
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+	fn write(&self, w: &mut impl Writer) -> Result<(), io::Error> {
 		w.write_all(&self[..])
 	}
 }
@@ -1132,7 +1132,7 @@ impl Readable for BlockHash {
 }
 
 impl Writeable for ChainHash {
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+	fn write(&self, w: &mut impl Writer) -> Result<(), io::Error> {
 		w.write_all(self.as_bytes())
 	}
 }
@@ -1145,7 +1145,7 @@ impl Readable for ChainHash {
 }
 
 impl Writeable for OutPoint {
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+	fn write(&self, w: &mut impl Writer) -> Result<(), io::Error> {
 		self.txid.write(w)?;
 		self.vout.write(w)?;
 		Ok(())
@@ -1166,7 +1166,7 @@ impl Readable for OutPoint {
 macro_rules! impl_consensus_ser {
 	($bitcoin_type: ty) => {
 		impl Writeable for $bitcoin_type {
-			fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+			fn write(&self, writer: &mut impl Writer) -> Result<(), io::Error> {
 				match self.consensus_encode(&mut WriterWriteAdaptor(writer)) {
 					Ok(_) => Ok(()),
 					Err(e) => Err(e),
@@ -1197,7 +1197,7 @@ impl<T: Readable> Readable for Mutex<T> {
 	}
 }
 impl<T: Writeable> Writeable for Mutex<T> {
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+	fn write(&self, w: &mut impl Writer) -> Result<(), io::Error> {
 		self.lock().unwrap().write(w)
 	}
 }
@@ -1209,7 +1209,7 @@ impl<T: Readable> Readable for RwLock<T> {
 	}
 }
 impl<T: Writeable> Writeable for RwLock<T> {
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+	fn write(&self, w: &mut impl Writer) -> Result<(), io::Error> {
 		self.read().unwrap().write(w)
 	}
 }
@@ -1222,7 +1222,7 @@ impl<A: Readable, B: Readable> Readable for (A, B) {
 	}
 }
 impl<A: Writeable, B: Writeable> Writeable for (A, B) {
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+	fn write(&self, w: &mut impl Writer) -> Result<(), io::Error> {
 		self.0.write(w)?;
 		self.1.write(w)
 	}
@@ -1237,7 +1237,7 @@ impl<A: Readable, B: Readable, C: Readable> Readable for (A, B, C) {
 	}
 }
 impl<A: Writeable, B: Writeable, C: Writeable> Writeable for (A, B, C) {
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+	fn write(&self, w: &mut impl Writer) -> Result<(), io::Error> {
 		self.0.write(w)?;
 		self.1.write(w)?;
 		self.2.write(w)
@@ -1254,7 +1254,7 @@ impl<A: Readable, B: Readable, C: Readable, D: Readable> Readable for (A, B, C, 
 	}
 }
 impl<A: Writeable, B: Writeable, C: Writeable, D: Writeable> Writeable for (A, B, C, D) {
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+	fn write(&self, w: &mut impl Writer) -> Result<(), io::Error> {
 		self.0.write(w)?;
 		self.1.write(w)?;
 		self.2.write(w)?;
@@ -1263,7 +1263,7 @@ impl<A: Writeable, B: Writeable, C: Writeable, D: Writeable> Writeable for (A, B
 }
 
 impl Writeable for () {
-	fn write<W: Writer>(&self, _: &mut W) -> Result<(), io::Error> {
+	fn write(&self, _: &mut impl Writer) -> Result<(), io::Error> {
 		Ok(())
 	}
 }
@@ -1275,7 +1275,7 @@ impl Readable for () {
 
 impl Writeable for String {
 	#[inline]
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+	fn write(&self, w: &mut impl Writer) -> Result<(), io::Error> {
 		CollectionLength(self.len() as u64).write(w)?;
 		w.write_all(self.as_bytes())
 	}
@@ -1351,7 +1351,7 @@ impl TryFrom<String> for Hostname {
 }
 impl Writeable for Hostname {
 	#[inline]
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+	fn write(&self, w: &mut impl Writer) -> Result<(), io::Error> {
 		self.len().write(w)?;
 		w.write_all(self.as_bytes())
 	}
@@ -1370,7 +1370,7 @@ impl Readable for Hostname {
 /// This is not exported to bindings users as `Duration`s are simply mapped as ints.
 impl Writeable for Duration {
 	#[inline]
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+	fn write(&self, w: &mut impl Writer) -> Result<(), io::Error> {
 		self.as_secs().write(w)?;
 		self.subsec_nanos().write(w)
 	}
@@ -1410,7 +1410,7 @@ impl TransactionU16LenLimited {
 }
 
 impl Writeable for TransactionU16LenLimited {
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+	fn write(&self, w: &mut impl Writer) -> Result<(), io::Error> {
 		(self.0.serialized_length() as u16).write(w)?;
 		self.0.write(w)
 	}
@@ -1430,7 +1430,7 @@ impl Readable for TransactionU16LenLimited {
 }
 
 impl Writeable for ClaimId {
-	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+	fn write(&self, writer: &mut impl Writer) -> Result<(), io::Error> {
 		self.0.write(writer)
 	}
 }

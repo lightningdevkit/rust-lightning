@@ -1353,7 +1353,7 @@ impl TestScorer {
 
 #[cfg(c_bindings)]
 impl crate::util::ser::Writeable for TestScorer {
-	fn write<W: crate::util::ser::Writer>(&self, _: &mut W) -> Result<(), crate::io::Error> { unreachable!(); }
+	fn write(&self, _: &mut impl crate::util::ser::Writer) -> Result<(), crate::io::Error> { unreachable!(); }
 }
 
 impl ScoreLookUp for TestScorer {

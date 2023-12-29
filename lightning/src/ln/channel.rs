@@ -7387,7 +7387,7 @@ impl_writeable_tlv_based_enum!(InboundHTLCRemovalReason,;
 );
 
 impl Writeable for ChannelUpdateStatus {
-	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+	fn write(&self, writer: &mut impl Writer) -> Result<(), io::Error> {
 		// We only care about writing out the current state as it was announced, ie only either
 		// Enabled or Disabled. In the case of DisabledStaged, we most recently announced the
 		// channel as enabled, so we write 0. For EnabledStaged, we similarly write a 1.
@@ -7412,7 +7412,7 @@ impl Readable for ChannelUpdateStatus {
 }
 
 impl Writeable for AnnouncementSigsState {
-	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+	fn write(&self, writer: &mut impl Writer) -> Result<(), io::Error> {
 		// We only care about writing out the current state as if we had just disconnected, at
 		// which point we always set anything but AnnouncementSigsReceived to NotSent.
 		match self {
@@ -7435,7 +7435,7 @@ impl Readable for AnnouncementSigsState {
 }
 
 impl<SP: Deref> Writeable for Channel<SP> where SP::Target: SignerProvider {
-	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+	fn write(&self, writer: &mut impl Writer) -> Result<(), io::Error> {
 		// Note that we write out as if remove_uncommitted_htlcs_and_mark_paused had just been
 		// called.
 
@@ -8414,6 +8414,20 @@ mod tests {
 	#[cfg(all(feature = "_test_vectors", not(feature = "grind_signatures")))]
 	fn public_from_secret_hex(secp_ctx: &Secp256k1<bitcoin::secp256k1::All>, hex: &str) -> PublicKey {
 		PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&<Vec<u8>>::from_hex(hex).unwrap()[..]).unwrap())
+	}
+
+	#[test]
+	fn upfront_shutdown_script_incompatibility() {
+		struct Node {
+			signer: dyn SignerProvider<EcdsaSigner = dyn crate::sign::ecdsa::WriteableEcdsaChannelSigner>
+		}
+
+		impl Node{
+			fn new(signer: impl SignerProvider<EcdsaSigner = dyn crate::sign::ecdsa::WriteableEcdsaChannelSigner>) -> Self {
+				Self { signer }
+			}
+		}
+		assert!(true)
 	}
 
 	#[test]

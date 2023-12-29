@@ -263,7 +263,7 @@ impl BogusOnionHopData {
 	}
 }
 impl Writeable for BogusOnionHopData {
-	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+	fn write(&self, writer: &mut impl Writer) -> Result<(), io::Error> {
 		writer.write_all(&self.data[..])
 	}
 }

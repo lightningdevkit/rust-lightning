@@ -1300,7 +1300,7 @@ const MIN_SERIALIZATION_VERSION: u8 = 1;
 impl WriteableEcdsaChannelSigner for InMemorySigner {}
 
 impl Writeable for InMemorySigner {
-	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), Error> {
+	fn write(&self, writer: &mut impl Writer) -> Result<(), Error> {
 		write_ver_prefix!(writer, SERIALIZATION_VERSION, MIN_SERIALIZATION_VERSION);
 
 		self.funding_key.write(writer)?;

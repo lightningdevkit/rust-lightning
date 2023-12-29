@@ -165,7 +165,7 @@ impl wire::Type for Infallible {
 	}
 }
 impl Writeable for Infallible {
-	fn write<W: Writer>(&self, _: &mut W) -> Result<(), io::Error> {
+	fn write(&self, _: &mut impl Writer) -> Result<(), io::Error> {
 		unreachable!();
 	}
 }

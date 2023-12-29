@@ -524,7 +524,7 @@ impl Default for ChannelConfig {
 }
 
 impl crate::util::ser::Writeable for ChannelConfig {
-	fn write<W: crate::util::ser::Writer>(&self, writer: &mut W) -> Result<(), crate::io::Error> {
+	fn write(&self, writer: &mut impl crate::util::ser::Writer) -> Result<(), crate::io::Error> {
 		let max_dust_htlc_exposure_msat_fixed_limit = match self.max_dust_htlc_exposure {
 			MaxDustHTLCExposure::FixedLimitMsat(limit) => limit,
 			MaxDustHTLCExposure::FeeRateMultiplier(_) => 5_000_000,
@@ -638,7 +638,7 @@ impl Default for LegacyChannelConfig {
 }
 
 impl crate::util::ser::Writeable for LegacyChannelConfig {
-	fn write<W: crate::util::ser::Writer>(&self, writer: &mut W) -> Result<(), crate::io::Error> {
+	fn write(&self, writer: &mut impl crate::util::ser::Writer) -> Result<(), crate::io::Error> {
 		let max_dust_htlc_exposure_msat_fixed_limit = match self.options.max_dust_htlc_exposure {
 			MaxDustHTLCExposure::FixedLimitMsat(limit) => limit,
 			MaxDustHTLCExposure::FeeRateMultiplier(_) => 5_000_000,

@@ -101,7 +101,7 @@ pub(crate) enum Message<T> where T: core::fmt::Debug + Type + TestEq {
 }
 
 impl<T> Writeable for Message<T> where T: core::fmt::Debug + Type + TestEq {
-	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+	fn write(&self, writer: &mut impl Writer) -> Result<(), io::Error> {
 		match self {
 			&Message::Init(ref msg) => msg.write(writer),
 			&Message::Error(ref msg) => msg.write(writer),
@@ -787,7 +787,7 @@ mod tests {
 	}
 
 	impl Writeable for TestCustomMessage {
-		fn write<W: Writer>(&self, _: &mut W) -> Result<(), io::Error> {
+		fn write(&self, _: &mut impl Writer) -> Result<(), io::Error> {
 			Ok(())
 		}
 	}

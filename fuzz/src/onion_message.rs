@@ -115,7 +115,7 @@ impl OnionMessageContents for TestCustomMessage {
 }
 
 impl Writeable for TestCustomMessage {
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+	fn write(&self, w: &mut impl Writer) -> Result<(), io::Error> {
 		Ok(CUSTOM_MESSAGE_CONTENTS.write(w)?)
 	}
 }

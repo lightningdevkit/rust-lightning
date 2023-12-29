@@ -41,7 +41,7 @@
 //! }
 //! impl Writeable for Foo {
 //!     // ...
-//! #     fn write<W: Writer>(&self, _: &mut W) -> Result<(), io::Error> {
+//! #     fn write(&self, _: &mut impl Writer) -> Result<(), io::Error> {
 //! #         unimplemented!()
 //! #     }
 //! }
@@ -87,7 +87,7 @@
 //! }
 //! impl Writeable for Bar {
 //!     // ...
-//! #     fn write<W: Writer>(&self, _: &mut W) -> Result<(), io::Error> {
+//! #     fn write(&self, _: &mut impl Writer) -> Result<(), io::Error> {
 //! #         unimplemented!()
 //! #     }
 //! }
@@ -133,7 +133,7 @@
 //! }
 //! impl Writeable for Baz {
 //!     // ...
-//! #     fn write<W: Writer>(&self, _: &mut W) -> Result<(), io::Error> {
+//! #     fn write(&self, _: &mut impl Writer) -> Result<(), io::Error> {
 //! #         unimplemented!()
 //! #     }
 //! }
@@ -333,7 +333,7 @@ macro_rules! composite_custom_message_handler {
 		}
 
 		impl $crate::lightning::util::ser::Writeable for $message {
-			fn write<W: $crate::lightning::util::ser::Writer>(&self, writer: &mut W) -> Result<(), $crate::lightning::io::Error> {
+			fn write(&self, writer: &mut impl $crate::lightning::util::ser::Writer) -> Result<(), $crate::lightning::io::Error> {
 				match self {
 					$(
 						Self::$variant(message) => message.write(writer),

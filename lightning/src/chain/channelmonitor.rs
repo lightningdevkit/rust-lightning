@@ -109,7 +109,7 @@ pub struct ChannelMonitorUpdate {
 pub const CLOSED_CHANNEL_UPDATE_ID: u64 = core::u64::MAX;
 
 impl Writeable for ChannelMonitorUpdate {
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+	fn write(&self, w: &mut impl Writer) -> Result<(), io::Error> {
 		write_ver_prefix!(w, SERIALIZATION_VERSION, MIN_SERIALIZATION_VERSION);
 		self.update_id.write(w)?;
 		(self.updates.len() as u64).write(w)?;
@@ -298,7 +298,7 @@ struct CounterpartyCommitmentParameters {
 }
 
 impl Writeable for CounterpartyCommitmentParameters {
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+	fn write(&self, w: &mut impl Writer) -> Result<(), io::Error> {
 		w.write_all(&(0 as u64).to_be_bytes())?;
 		write_tlv_fields!(w, {
 			(0, self.counterparty_delayed_payment_base_key, required),
@@ -444,7 +444,7 @@ enum OnchainEvent {
 }
 
 impl Writeable for OnchainEventEntry {
-	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+	fn write(&self, writer: &mut impl Writer) -> Result<(), io::Error> {
 		write_tlv_fields!(writer, {
 			(0, self.txid, required),
 			(1, self.transaction, option),
@@ -702,7 +702,7 @@ struct IrrevocablyResolvedHTLC {
 // backwards compatibility we must ensure we always write out a commitment_tx_output_idx field,
 // using `u32::max_value()` as a sentinal to indicate the HTLC was dust.
 impl Writeable for IrrevocablyResolvedHTLC {
-	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+	fn write(&self, writer: &mut impl Writer) -> Result<(), io::Error> {
 		let mapped_commitment_tx_output_idx = self.commitment_tx_output_idx.unwrap_or(u32::max_value());
 		write_tlv_fields!(writer, {
 			(0, mapped_commitment_tx_output_idx, required),
@@ -924,7 +924,7 @@ impl<Signer: WriteableEcdsaChannelSigner> PartialEq for ChannelMonitor<Signer> w
 }
 
 impl<Signer: WriteableEcdsaChannelSigner> Writeable for ChannelMonitor<Signer> {
-	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), Error> {
+	fn write(&self, writer: &mut impl Writer) -> Result<(), Error> {
 		self.inner.lock().unwrap().write(writer)
 	}
 }
@@ -934,7 +934,7 @@ const SERIALIZATION_VERSION: u8 = 1;
 const MIN_SERIALIZATION_VERSION: u8 = 1;
 
 impl<Signer: WriteableEcdsaChannelSigner> Writeable for ChannelMonitorImpl<Signer> {
-	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), Error> {
+	fn write(&self, writer: &mut impl Writer) -> Result<(), Error> {
 		write_ver_prefix!(writer, SERIALIZATION_VERSION, MIN_SERIALIZATION_VERSION);
 
 		self.latest_update_id.write(writer)?;

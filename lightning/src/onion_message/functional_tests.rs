@@ -95,7 +95,7 @@ impl OnionMessageContents for TestCustomMessage {
 }
 
 impl Writeable for TestCustomMessage {
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+	fn write(&self, w: &mut impl Writer) -> Result<(), io::Error> {
 		match self {
 			TestCustomMessage::Request => Ok(CUSTOM_REQUEST_MESSAGE_CONTENTS.write(w)?),
 			TestCustomMessage::Response => Ok(CUSTOM_RESPONSE_MESSAGE_CONTENTS.write(w)?),
@@ -434,7 +434,7 @@ fn invalid_custom_message_type() {
 	}
 
 	impl Writeable for InvalidCustomMessage {
-		fn write<W: Writer>(&self, _w: &mut W) -> Result<(), io::Error> { unreachable!() }
+		fn write(&self, _: &mut impl Writer) -> Result<(), io::Error> { unreachable!() }
 	}
 
 	let test_msg = InvalidCustomMessage {};

@@ -128,7 +128,7 @@ impl Ord for NodeId {
 }
 
 impl Writeable for NodeId {
-	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+	fn write(&self, writer: &mut impl Writer) -> Result<(), io::Error> {
 		writer.write_all(&self.0)?;
 		Ok(())
 	}
@@ -787,7 +787,7 @@ impl fmt::Display for ChannelUpdateInfo {
 }
 
 impl Writeable for ChannelUpdateInfo {
-	fn write<W: crate::util::ser::Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+	fn write(&self, writer: &mut impl Writer) -> Result<(), io::Error> {
 		write_tlv_fields!(writer, {
 			(0, self.last_update, required),
 			(2, self.enabled, required),
@@ -917,7 +917,7 @@ impl fmt::Display for ChannelInfo {
 }
 
 impl Writeable for ChannelInfo {
-	fn write<W: crate::util::ser::Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+	fn write(&self, writer: &mut impl Writer) -> Result<(), io::Error> {
 		write_tlv_fields!(writer, {
 			(0, self.features, required),
 			(1, self.announcement_received_time, (default_value, 0)),
@@ -1151,7 +1151,7 @@ impl NodeAnnouncementInfo {
 }
 
 impl Writeable for NodeAnnouncementInfo {
-	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+	fn write(&self, writer: &mut impl Writer) -> Result<(), io::Error> {
 		let empty_addresses = Vec::<SocketAddress>::new();
 		write_tlv_fields!(writer, {
 			(0, self.features, required),
@@ -1209,7 +1209,7 @@ impl fmt::Display for NodeAlias {
 }
 
 impl Writeable for NodeAlias {
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+	fn write(&self, w: &mut impl Writer) -> Result<(), io::Error> {
 		self.0.write(w)
 	}
 }
@@ -1240,7 +1240,7 @@ impl fmt::Display for NodeInfo {
 }
 
 impl Writeable for NodeInfo {
-	fn write<W: crate::util::ser::Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+	fn write(&self, writer: &mut impl Writer) -> Result<(), io::Error> {
 		write_tlv_fields!(writer, {
 			// Note that older versions of LDK wrote the lowest inbound fees here at type 0
 			(2, self.announcement_info, option),
@@ -1294,7 +1294,7 @@ const SERIALIZATION_VERSION: u8 = 1;
 const MIN_SERIALIZATION_VERSION: u8 = 1;
 
 impl<L: Deref> Writeable for NetworkGraph<L> where L::Target: Logger {
-	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+	fn write(&self, writer: &mut impl Writer) -> Result<(), io::Error> {
 		write_ver_prefix!(writer, SERIALIZATION_VERSION, MIN_SERIALIZATION_VERSION);
 
 		self.chain_hash.write(writer)?;

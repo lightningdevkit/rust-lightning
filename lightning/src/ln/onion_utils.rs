@@ -769,7 +769,7 @@ impl core::fmt::Debug for HTLCFailReason {
 }
 
 impl Writeable for HTLCFailReason {
-	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), crate::io::Error> {
+	fn write(&self, writer: &mut impl Writer) -> Result<(), crate::io::Error> {
 		self.0.write(writer)
 	}
 }
@@ -1275,7 +1275,7 @@ mod tests {
 		}
 	}
 	impl Writeable for RawOnionHopData {
-		fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+		fn write(&self, writer: &mut impl Writer) -> Result<(), io::Error> {
 			writer.write_all(&self.data[..])
 		}
 	}

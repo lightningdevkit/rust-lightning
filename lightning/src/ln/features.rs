@@ -932,7 +932,7 @@ impl<T: sealed::UnknownFeature> Features<T> {
 macro_rules! impl_feature_len_prefixed_write {
 	($features: ident) => {
 		impl Writeable for $features {
-			fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+			fn write(&self, w: &mut impl Writer) -> Result<(), io::Error> {
 				(self.flags.len() as u16).write(w)?;
 				self.write_be(w)
 			}
@@ -955,7 +955,7 @@ impl_feature_len_prefixed_write!(BlindedHopFeatures);
 macro_rules! impl_feature_tlv_write {
 	($features: ident) => {
 		impl Writeable for $features {
-			fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+			fn write(&self, w: &mut impl Writer) -> Result<(), io::Error> {
 				WithoutLength(self).write(w)
 			}
 		}
@@ -973,7 +973,7 @@ impl_feature_tlv_write!(ChannelTypeFeatures);
 // requires a length but the former does not.
 
 impl<T: sealed::Context> Writeable for WithoutLength<&Features<T>> {
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+	fn write(&self, w: &mut impl Writer) -> Result<(), io::Error> {
 		self.0.write_be(w)
 	}
 }

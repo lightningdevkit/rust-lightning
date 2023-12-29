@@ -20,7 +20,7 @@ use crate::util::ser::{Writeable, Writer, Readable};
 pub struct UntrustedString(pub String);
 
 impl Writeable for UntrustedString {
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+	fn write(&self, w: &mut impl Writer) -> Result<(), io::Error> {
 		self.0.write(w)
 	}
 }

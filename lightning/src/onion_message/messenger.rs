@@ -124,7 +124,7 @@ pub(super) const MAX_TIMER_TICKS: usize = 2;
 /// # #[derive(Debug)]
 /// # struct YourCustomMessage {}
 /// impl Writeable for YourCustomMessage {
-/// 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+/// 	fn write(&self, w: &mut impl Writer) -> Result<(), io::Error> {
 /// 		# Ok(())
 /// 		// Write your custom onion message to `w`
 /// 	}

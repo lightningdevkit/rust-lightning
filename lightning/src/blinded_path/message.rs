@@ -33,7 +33,7 @@ pub(crate) struct ReceiveTlvs {
 }
 
 impl Writeable for ForwardTlvs {
-	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+	fn write(&self, writer: &mut impl Writer) -> Result<(), io::Error> {
 		// TODO: write padding
 		encode_tlv_stream!(writer, {
 			(4, self.next_node_id, required),
@@ -44,7 +44,7 @@ impl Writeable for ForwardTlvs {
 }
 
 impl Writeable for ReceiveTlvs {
-	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+	fn write(&self, writer: &mut impl Writer) -> Result<(), io::Error> {
 		// TODO: write padding
 		encode_tlv_stream!(writer, {
 			(6, self.path_id, option),

@@ -322,7 +322,7 @@ impl CounterpartyCommitmentSecrets {
 }
 
 impl Writeable for CounterpartyCommitmentSecrets {
-	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+	fn write(&self, writer: &mut impl Writer) -> Result<(), io::Error> {
 		for &(ref secret, ref idx) in self.old_secrets.iter() {
 			writer.write_all(secret)?;
 			writer.write_all(&idx.to_be_bytes())?;
@@ -879,7 +879,7 @@ impl_writeable_tlv_based!(CounterpartyChannelTransactionParameters, {
 });
 
 impl Writeable for ChannelTransactionParameters {
-	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+	fn write(&self, writer: &mut impl Writer) -> Result<(), io::Error> {
 		let legacy_deserialization_prevention_marker = legacy_deserialization_prevention_marker_for_channel_type_features(&self.channel_type_features);
 		write_tlv_fields!(writer, {
 			(0, self.holder_pubkeys, required),
@@ -1301,7 +1301,7 @@ impl PartialEq for CommitmentTransaction {
 }
 
 impl Writeable for CommitmentTransaction {
-	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+	fn write(&self, writer: &mut impl Writer) -> Result<(), io::Error> {
 		let legacy_deserialization_prevention_marker = legacy_deserialization_prevention_marker_for_channel_type_features(&self.channel_type_features);
 		write_tlv_fields!(writer, {
 			(0, self.commitment_number, required),
