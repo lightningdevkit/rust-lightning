@@ -2316,15 +2316,17 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 		res
 	}
 
-	fn if_unbroadcasted_funding<F, O>(&self, f: F) -> Option<O>
-		where F: Fn() -> Option<O> {
+	fn if_unbroadcasted_funding<F, O>(&self, f: F) -> Option<O> where F: Fn() -> Option<O> {
 		match self.channel_state {
 			ChannelState::FundingNegotiated => f(),
-			ChannelState::AwaitingChannelReady(flags) => if flags.is_set(AwaitingChannelReadyFlags::WAITING_FOR_BATCH) {
-				f()
-			} else {
-				None
-			},
+			ChannelState::AwaitingChannelReady(flags) =>
+				if flags.is_set(AwaitingChannelReadyFlags::WAITING_FOR_BATCH) ||
+					flags.is_set(FundedStateFlags::MONITOR_UPDATE_IN_PROGRESS.into())
+				{
+					f()
+				} else {
+					None
+				},
 			_ => None,
 		}
 	}
