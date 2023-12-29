@@ -545,9 +545,8 @@ impl Into<u16> for FailureCode {
 
 struct MsgHandleErrInternal {
 	err: msgs::LightningError,
-	chan_id: Option<(ChannelId, u128)>, // If Some a channel of ours has been closed
+	closes_channel: bool,
 	shutdown_finish: Option<(ShutdownResult, Option<msgs::ChannelUpdate>)>,
-	channel_capacity: Option<u64>,
 }
 impl MsgHandleErrInternal {
 	#[inline]
@@ -562,17 +561,16 @@ impl MsgHandleErrInternal {
 					},
 				},
 			},
-			chan_id: None,
+			closes_channel: false,
 			shutdown_finish: None,
-			channel_capacity: None,
 		}
 	}
 	#[inline]
 	fn from_no_close(err: msgs::LightningError) -> Self {
-		Self { err, chan_id: None, shutdown_finish: None, channel_capacity: None }
+		Self { err, closes_channel: false, shutdown_finish: None }
 	}
 	#[inline]
-	fn from_finish_shutdown(err: String, channel_id: ChannelId, user_channel_id: u128, shutdown_res: ShutdownResult, channel_update: Option<msgs::ChannelUpdate>, channel_capacity: u64) -> Self {
+	fn from_finish_shutdown(err: String, channel_id: ChannelId, shutdown_res: ShutdownResult, channel_update: Option<msgs::ChannelUpdate>) -> Self {
 		let err_msg = msgs::ErrorMessage { channel_id, data: err.clone() };
 		let action = if shutdown_res.monitor_update.is_some() {
 			// We have a closing `ChannelMonitorUpdate`, which means the channel was funded and we
@@ -584,9 +582,8 @@ impl MsgHandleErrInternal {
 		};
 		Self {
 			err: LightningError { err, action },
-			chan_id: Some((channel_id, user_channel_id)),
+			closes_channel: true,
 			shutdown_finish: Some((shutdown_res, channel_update)),
-			channel_capacity: Some(channel_capacity)
 		}
 	}
 	#[inline]
@@ -617,14 +614,13 @@ impl MsgHandleErrInternal {
 					},
 				},
 			},
-			chan_id: None,
+			closes_channel: false,
 			shutdown_finish: None,
-			channel_capacity: None,
 		}
 	}
 
 	fn closes_channel(&self) -> bool {
-		self.chan_id.is_some()
+		self.closes_channel
 	}
 }
 
@@ -1956,22 +1952,27 @@ macro_rules! handle_error {
 
 		match $internal {
 			Ok(msg) => Ok(msg),
-			Err(MsgHandleErrInternal { err, chan_id, shutdown_finish, channel_capacity }) => {
+			Err(MsgHandleErrInternal { err, shutdown_finish, .. }) => {
 				let mut msg_events = Vec::with_capacity(2);
 
 				if let Some((shutdown_res, update_option)) = shutdown_finish {
+					let counterparty_node_id = shutdown_res.counterparty_node_id;
+					let channel_id = shutdown_res.channel_id;
+					let logger = WithContext::from(
+						&$self.logger, Some(counterparty_node_id), Some(channel_id),
+					);
+					log_error!(logger, "Force-closing channel: {}", err.err);
+
 					$self.finish_close_channel(shutdown_res);
 					if let Some(update) = update_option {
 						msg_events.push(events::MessageSendEvent::BroadcastChannelUpdate {
 							msg: update
 						});
 					}
+				} else {
+					log_error!($self.logger, "Got non-closing error: {}", err.err);
 				}
 
-				let logger = WithContext::from(
-					&$self.logger, Some($counterparty_node_id), chan_id.map(|(chan_id, _)| chan_id)
-				);
-				log_error!(logger, "{}", err.err);
 				if let msgs::ErrorAction::IgnoreError = err.action {
 				} else {
 					msg_events.push(events::MessageSendEvent::HandleError {
@@ -2033,11 +2034,9 @@ macro_rules! convert_chan_phase_err {
 				update_maps_on_chan_removal!($self, $channel.context);
 				let reason = ClosureReason::ProcessingError { err: msg.clone() };
 				let shutdown_res = $channel.context.force_shutdown(true, reason);
-				let user_id = $channel.context.get_user_id();
-				let channel_capacity_satoshis = $channel.context.get_value_satoshis();
-
-				(true, MsgHandleErrInternal::from_finish_shutdown(msg, *$channel_id, user_id,
-					shutdown_res, $channel_update, channel_capacity_satoshis))
+				let err =
+					MsgHandleErrInternal::from_finish_shutdown(msg, *$channel_id, shutdown_res, $channel_update);
+				(true, err)
 			},
 		}
 	};
@@ -2834,7 +2833,8 @@ where
 			&self.logger, Some(shutdown_res.counterparty_node_id), Some(shutdown_res.channel_id),
 		);
 
-		log_debug!(logger, "Finishing closure of channel with {} HTLCs to fail", shutdown_res.dropped_outbound_htlcs.len());
+		log_debug!(logger, "Finishing closure of channel due to {} with {} HTLCs to fail",
+			shutdown_res.closure_reason, shutdown_res.dropped_outbound_htlcs.len());
 		for htlc_source in shutdown_res.dropped_outbound_htlcs.drain(..) {
 			let (source, payment_hash, counterparty_node_id, channel_id) = htlc_source;
 			let reason = HTLCFailReason::from_failure_code(0x4000 | 8);
@@ -3746,11 +3746,9 @@ where
 				let funding_res = chan.get_funding_created(funding_transaction, funding_txo, is_batch_funding, &&logger)
 					.map_err(|(mut chan, e)| if let ChannelError::Close(msg) = e {
 						let channel_id = chan.context.channel_id();
-						let user_id = chan.context.get_user_id();
 						let reason = ClosureReason::ProcessingError { err: msg.clone() };
 						let shutdown_res = chan.context.force_shutdown(false, reason);
-						let channel_capacity = chan.context.get_value_satoshis();
-						(chan, MsgHandleErrInternal::from_finish_shutdown(msg, channel_id, user_id, shutdown_res, None, channel_capacity))
+						(chan, MsgHandleErrInternal::from_finish_shutdown(msg, channel_id, shutdown_res, None))
 					} else { unreachable!(); });
 				match funding_res {
 					Ok(funding_msg) => (chan, funding_msg),

@@ -768,7 +768,7 @@ fn test_update_fee_that_funder_cannot_afford() {
 	//check to see if the funder, who sent the update_fee request, can afford the new fee (funder_balance >= fee+channel_reserve)
 	//Should produce and error.
 	nodes[1].node.handle_commitment_signed(&nodes[0].node.get_our_node_id(), &commit_signed_msg);
-	nodes[1].logger.assert_log("lightning::ln::channelmanager", "Funding remote cannot afford proposed new fee".to_string(), 1);
+	nodes[1].logger.assert_log_contains("lightning::ln::channelmanager", "Funding remote cannot afford proposed new fee", 3);
 	check_added_monitors!(nodes[1], 1);
 	check_closed_broadcast!(nodes[1], true);
 	check_closed_event!(nodes[1], 1, ClosureReason::ProcessingError { err: String::from("Funding remote cannot afford proposed new fee") },
@@ -1617,7 +1617,7 @@ fn test_chan_reserve_violation_inbound_htlc_outbound_channel() {
 
 	nodes[0].node.handle_update_add_htlc(&nodes[1].node.get_our_node_id(), &msg);
 	// Check that the payment failed and the channel is closed in response to the malicious UpdateAdd.
-	nodes[0].logger.assert_log("lightning::ln::channelmanager", "Cannot accept HTLC that would put our balance under counterparty-announced channel reserve value".to_string(), 1);
+	nodes[0].logger.assert_log_contains("lightning::ln::channelmanager", "Cannot accept HTLC that would put our balance under counterparty-announced channel reserve value", 3);
 	assert_eq!(nodes[0].node.list_channels().len(), 0);
 	let err_msg = check_closed_broadcast!(nodes[0], true).unwrap();
 	assert_eq!(err_msg.data, "Cannot accept HTLC that would put our balance under counterparty-announced channel reserve value");
@@ -1796,7 +1796,7 @@ fn test_chan_reserve_violation_inbound_htlc_inbound_chan() {
 
 	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &msg);
 	// Check that the payment failed and the channel is closed in response to the malicious UpdateAdd.
-	nodes[1].logger.assert_log("lightning::ln::channelmanager", "Remote HTLC add would put them under remote reserve value".to_string(), 1);
+	nodes[1].logger.assert_log_contains("lightning::ln::channelmanager", "Remote HTLC add would put them under remote reserve value", 3);
 	assert_eq!(nodes[1].node.list_channels().len(), 1);
 	let err_msg = check_closed_broadcast!(nodes[1], true).unwrap();
 	assert_eq!(err_msg.data, "Remote HTLC add would put them under remote reserve value");
@@ -6295,7 +6295,7 @@ fn test_update_add_htlc_bolt2_receiver_zero_value_msat() {
 	updates.update_add_htlcs[0].amount_msat = 0;
 
 	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &updates.update_add_htlcs[0]);
-	nodes[1].logger.assert_log("lightning::ln::channelmanager", "Remote side tried to send a 0-msat HTLC".to_string(), 1);
+	nodes[1].logger.assert_log_contains("lightning::ln::channelmanager", "Remote side tried to send a 0-msat HTLC", 3);
 	check_closed_broadcast!(nodes[1], true).unwrap();
 	check_added_monitors!(nodes[1], 1);
 	check_closed_event!(nodes[1], 1, ClosureReason::ProcessingError { err: "Remote side tried to send a 0-msat HTLC".to_string() },
