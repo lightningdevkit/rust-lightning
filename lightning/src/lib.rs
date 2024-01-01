@@ -169,10 +169,40 @@ mod prelude {
 	extern crate hashbrown;
 
 	pub use alloc::{vec, vec::Vec, string::String, collections::VecDeque, boxed::Box};
+
 	#[cfg(not(feature = "hashbrown"))]
-	pub use std::collections::{HashMap, HashSet, hash_map};
+	mod std_hashtables {
+		pub(crate) use std::collections::{HashMap, HashSet, hash_map};
+
+		pub(crate) type OccupiedHashMapEntry<'a, K, V> =
+			std::collections::hash_map::OccupiedEntry<'a, K, V>;
+		pub(crate) type VacantHashMapEntry<'a, K, V> =
+			std::collections::hash_map::VacantEntry<'a, K, V>;
+	}
+	#[cfg(not(feature = "hashbrown"))]
+	pub(crate) use std_hashtables::*;
+
 	#[cfg(feature = "hashbrown")]
-	pub use self::hashbrown::{HashMap, HashSet, hash_map};
+	mod hashbrown_tables {
+		pub(crate) use hashbrown::{HashMap, HashSet, hash_map};
+
+		pub(crate) type OccupiedHashMapEntry<'a, K, V> =
+			hashbrown::hash_map::OccupiedEntry<'a, K, V, hash_map::DefaultHashBuilder>;
+		pub(crate) type VacantHashMapEntry<'a, K, V> =
+			hashbrown::hash_map::VacantEntry<'a, K, V, hash_map::DefaultHashBuilder>;
+	}
+	#[cfg(feature = "hashbrown")]
+	pub(crate) use hashbrown_tables::*;
+
+	pub(crate) fn new_hash_map<K: core::hash::Hash + Eq, V>() -> HashMap<K, V> { HashMap::new() }
+	pub(crate) fn hash_map_with_capacity<K: core::hash::Hash + Eq, V>(cap: usize) -> HashMap<K, V> {
+		HashMap::with_capacity(cap)
+	}
+
+	pub(crate) fn new_hash_set<K: core::hash::Hash + Eq>() -> HashSet<K> { HashSet::new() }
+	pub(crate) fn hash_set_with_capacity<K: core::hash::Hash + Eq>(cap: usize) -> HashSet<K> {
+		HashSet::with_capacity(cap)
+	}
 
 	pub use alloc::borrow::ToOwned;
 	pub use alloc::string::ToString;

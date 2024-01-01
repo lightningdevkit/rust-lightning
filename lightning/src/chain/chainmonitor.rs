@@ -420,7 +420,7 @@ where C::Target: chain::Filter,
 	/// transactions relevant to the watched channels.
 	pub fn new(chain_source: Option<C>, broadcaster: T, logger: L, feeest: F, persister: P) -> Self {
 		Self {
-			monitors: RwLock::new(HashMap::new()),
+			monitors: RwLock::new(new_hash_map()),
 			sync_persistence_id: AtomicCounter::new(),
 			chain_source,
 			broadcaster,

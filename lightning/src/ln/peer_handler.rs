@@ -944,8 +944,8 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 
 		PeerManager {
 			message_handler,
-			peers: FairRwLock::new(HashMap::new()),
-			node_id_to_descriptor: Mutex::new(HashMap::new()),
+			peers: FairRwLock::new(new_hash_map()),
+			node_id_to_descriptor: Mutex::new(new_hash_map()),
 			event_processing_state: AtomicI32::new(0),
 			ephemeral_key_midstate,
 			peer_counter: AtomicCounter::new(),
@@ -1938,7 +1938,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 			self.update_gossip_backlogged();
 			let flush_read_disabled = self.gossip_processing_backlog_lifted.swap(false, Ordering::Relaxed);
 
-			let mut peers_to_disconnect = HashMap::new();
+			let mut peers_to_disconnect = new_hash_map();
 
 			{
 				let peers_lock = self.peers.read().unwrap();

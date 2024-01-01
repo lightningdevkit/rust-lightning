@@ -2572,7 +2572,7 @@ fn test_anchors_aggregated_revoked_htlc_tx() {
 			check_spends!(revoked_htlc_claim, htlc_tx);
 		}
 
-		let mut revoked_claim_transaction_map = HashMap::new();
+		let mut revoked_claim_transaction_map = new_hash_map();
 		for current_tx in txn.into_iter() {
 			revoked_claim_transaction_map.insert(current_tx.txid(), current_tx);
 		}

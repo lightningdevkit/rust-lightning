@@ -3323,7 +3323,7 @@ fn do_test_commitment_revoked_fail_backward_exhaustive(deliver_bs_raa: bool, use
 		// block connection just like the !deliver_bs_raa case
 	}
 
-	let mut failed_htlcs = HashSet::new();
+	let mut failed_htlcs = new_hash_set();
 	assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
 
 	mine_transaction(&nodes[1], &revoked_local_txn[0]);
@@ -5402,7 +5402,7 @@ fn do_test_fail_backwards_unrevoked_remote_announce(deliver_last_raa: bool, anno
 
 	let as_events = nodes[0].node.get_and_clear_pending_events();
 	assert_eq!(as_events.len(), if announce_latest { 10 } else { 6 });
-	let mut as_failds = HashSet::new();
+	let mut as_failds = new_hash_set();
 	let mut as_updates = 0;
 	for event in as_events.iter() {
 		if let &Event::PaymentPathFailed { ref payment_hash, ref payment_failed_permanently, ref failure, .. } = event {
@@ -5428,7 +5428,7 @@ fn do_test_fail_backwards_unrevoked_remote_announce(deliver_last_raa: bool, anno
 
 	let bs_events = nodes[1].node.get_and_clear_pending_events();
 	assert_eq!(bs_events.len(), if announce_latest { 8 } else { 6 });
-	let mut bs_failds = HashSet::new();
+	let mut bs_failds = new_hash_set();
 	let mut bs_updates = 0;
 	for event in bs_events.iter() {
 		if let &Event::PaymentPathFailed { ref payment_hash, ref payment_failed_permanently, ref failure, .. } = event {
@@ -7340,7 +7340,7 @@ fn test_announce_disable_channels() {
 	}
 	let msg_events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(msg_events.len(), 3);
-	let mut chans_disabled = HashMap::new();
+	let mut chans_disabled = new_hash_map();
 	for e in msg_events {
 		match e {
 			MessageSendEvent::BroadcastChannelUpdate { ref msg } => {

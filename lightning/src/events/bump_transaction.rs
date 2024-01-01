@@ -391,7 +391,7 @@ where
 	/// Returns a new instance backed by the given [`WalletSource`] that serves as an implementation
 	/// of [`CoinSelectionSource`].
 	pub fn new(source: W, logger: L) -> Self {
-		Self { source, logger, locked_utxos: Mutex::new(HashMap::new()) }
+		Self { source, logger, locked_utxos: Mutex::new(new_hash_map()) }
 	}
 
 	/// Performs coin selection on the set of UTXOs obtained from

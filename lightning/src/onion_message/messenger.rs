@@ -704,7 +704,7 @@ where
 		OnionMessenger {
 			entropy_source,
 			node_signer,
-			message_recipients: Mutex::new(HashMap::new()),
+			message_recipients: Mutex::new(new_hash_map()),
 			secp_ctx,
 			logger,
 			message_router,
@@ -846,7 +846,7 @@ where
 	#[cfg(test)]
 	pub(super) fn release_pending_msgs(&self) -> HashMap<PublicKey, VecDeque<OnionMessage>> {
 		let mut message_recipients = self.message_recipients.lock().unwrap();
-		let mut msgs = HashMap::new();
+		let mut msgs = new_hash_map();
 		// We don't want to disconnect the peers by removing them entirely from the original map, so we
 		// release the pending message buffers individually.
 		for (node_id, recipient) in &mut *message_recipients {

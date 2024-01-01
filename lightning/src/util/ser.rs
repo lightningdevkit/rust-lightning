@@ -749,7 +749,7 @@ macro_rules! impl_for_map {
 }
 
 impl_for_map!(BTreeMap, Ord, |_| BTreeMap::new());
-impl_for_map!(HashMap, Hash, |len| HashMap::with_capacity(len));
+impl_for_map!(HashMap, Hash, |len| hash_map_with_capacity(len));
 
 // HashSet
 impl<T> Writeable for HashSet<T>
@@ -771,7 +771,7 @@ where T: Readable + Eq + Hash
 	#[inline]
 	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
 		let len: CollectionLength = Readable::read(r)?;
-		let mut ret = HashSet::with_capacity(cmp::min(len.0 as usize, MAX_BUF_SIZE / core::mem::size_of::<T>()));
+		let mut ret = hash_set_with_capacity(cmp::min(len.0 as usize, MAX_BUF_SIZE / core::mem::size_of::<T>()));
 		for _ in 0..len.0 {
 			if !ret.insert(T::read(r)?) {
 				return Err(DecodeError::InvalidValue)

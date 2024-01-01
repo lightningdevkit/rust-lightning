@@ -618,7 +618,7 @@ impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
 			// Before using all the new monitors to check the watch outpoints, use the full set of
 			// them to ensure we can write and reload our ChannelManager.
 			{
-				let mut channel_monitors = HashMap::new();
+				let mut channel_monitors = new_hash_map();
 				for monitor in deserialized_monitors.iter_mut() {
 					channel_monitors.insert(monitor.get_funding_txo().0, monitor);
 				}
@@ -1049,7 +1049,7 @@ pub fn _reload_node<'a, 'b, 'c>(node: &'a Node<'a, 'b, 'c>, default_config: User
 
 	let mut node_read = &chanman_encoded[..];
 	let (_, node_deserialized) = {
-		let mut channel_monitors = HashMap::new();
+		let mut channel_monitors = new_hash_map();
 		for monitor in monitors_read.iter_mut() {
 			assert!(channel_monitors.insert(monitor.get_funding_txo().0, monitor).is_none());
 		}
@@ -3104,7 +3104,7 @@ pub enum HTLCType { NONE, TIMEOUT, SUCCESS }
 /// also fail.
 pub fn test_txn_broadcast<'a, 'b, 'c>(node: &Node<'a, 'b, 'c>, chan: &(msgs::ChannelUpdate, msgs::ChannelUpdate, ChannelId, Transaction), commitment_tx: Option<Transaction>, has_htlc_tx: HTLCType) -> Vec<Transaction>  {
 	let mut node_txn = node.tx_broadcaster.txn_broadcasted.lock().unwrap();
-	let mut txn_seen = HashSet::new();
+	let mut txn_seen = new_hash_set();
 	node_txn.retain(|tx| txn_seen.insert(tx.txid()));
 	assert!(node_txn.len() >= if commitment_tx.is_some() { 0 } else { 1 } + if has_htlc_tx == HTLCType::NONE { 0 } else { 1 });
 
@@ -3169,7 +3169,7 @@ pub fn test_revoked_htlc_claim_txn_broadcast<'a, 'b, 'c>(node: &Node<'a, 'b, 'c>
 
 pub fn check_preimage_claim<'a, 'b, 'c>(node: &Node<'a, 'b, 'c>, prev_txn: &Vec<Transaction>) -> Vec<Transaction>  {
 	let mut node_txn = node.tx_broadcaster.txn_broadcasted.lock().unwrap();
-	let mut txn_seen = HashSet::new();
+	let mut txn_seen = new_hash_set();
 	node_txn.retain(|tx| txn_seen.insert(tx.txid()));
 
 	let mut found_prev = false;
@@ -3269,7 +3269,7 @@ macro_rules! get_channel_value_stat {
 macro_rules! get_chan_reestablish_msgs {
 	($src_node: expr, $dst_node: expr) => {
 		{
-			let mut announcements = $crate::prelude::HashSet::new();
+			let mut announcements = $crate::prelude::new_hash_set();
 			let mut res = Vec::with_capacity(1);
 			for msg in $src_node.node.get_and_clear_pending_msg_events() {
 				if let MessageSendEvent::SendChannelReestablish { ref node_id, ref msg } = msg {

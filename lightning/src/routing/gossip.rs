@@ -1353,8 +1353,8 @@ impl<L: Deref> ReadableArgs<L> for NetworkGraph<L> where L::Target: Logger {
 			channels: RwLock::new(channels),
 			nodes: RwLock::new(nodes),
 			last_rapid_gossip_sync_timestamp: Mutex::new(last_rapid_gossip_sync_timestamp),
-			removed_nodes: Mutex::new(HashMap::new()),
-			removed_channels: Mutex::new(HashMap::new()),
+			removed_nodes: Mutex::new(new_hash_map()),
+			removed_channels: Mutex::new(new_hash_map()),
 			pending_checks: utxo::PendingChecks::new(),
 		})
 	}
@@ -1398,8 +1398,8 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 			channels: RwLock::new(IndexedMap::new()),
 			nodes: RwLock::new(IndexedMap::new()),
 			last_rapid_gossip_sync_timestamp: Mutex::new(None),
-			removed_channels: Mutex::new(HashMap::new()),
-			removed_nodes: Mutex::new(HashMap::new()),
+			removed_channels: Mutex::new(new_hash_map()),
+			removed_nodes: Mutex::new(new_hash_map()),
 			pending_checks: utxo::PendingChecks::new(),
 		}
 	}

@@ -2432,14 +2432,14 @@ where
 
 			best_block: RwLock::new(params.best_block),
 
-			outbound_scid_aliases: Mutex::new(HashSet::new()),
-			pending_inbound_payments: Mutex::new(HashMap::new()),
+			outbound_scid_aliases: Mutex::new(new_hash_set()),
+			pending_inbound_payments: Mutex::new(new_hash_map()),
 			pending_outbound_payments: OutboundPayments::new(),
-			forward_htlcs: Mutex::new(HashMap::new()),
-			claimable_payments: Mutex::new(ClaimablePayments { claimable_payments: HashMap::new(), pending_claiming_payments: HashMap::new() }),
-			pending_intercepted_htlcs: Mutex::new(HashMap::new()),
-			outpoint_to_peer: Mutex::new(HashMap::new()),
-			short_to_chan_info: FairRwLock::new(HashMap::new()),
+			forward_htlcs: Mutex::new(new_hash_map()),
+			claimable_payments: Mutex::new(ClaimablePayments { claimable_payments: new_hash_map(), pending_claiming_payments: new_hash_map() }),
+			pending_intercepted_htlcs: Mutex::new(new_hash_map()),
+			outpoint_to_peer: Mutex::new(new_hash_map()),
+			short_to_chan_info: FairRwLock::new(new_hash_map()),
 
 			our_network_pubkey: node_signer.get_node_id(Recipient::Node).unwrap(),
 			secp_ctx,
@@ -2451,7 +2451,7 @@ where
 
 			highest_seen_timestamp: AtomicUsize::new(current_timestamp as usize),
 
-			per_peer_state: FairRwLock::new(HashMap::new()),
+			per_peer_state: FairRwLock::new(new_hash_map()),
 
 			pending_events: Mutex::new(VecDeque::new()),
 			pending_events_processor: AtomicBool::new(false),
@@ -3685,7 +3685,7 @@ where
 				ProbeSendFailure::RouteNotFound
 			})?;
 
-		let mut used_liquidity_map = HashMap::with_capacity(first_hops.len());
+		let mut used_liquidity_map = hash_map_with_capacity(first_hops.len());
 
 		let mut res = Vec::new();
 
@@ -4242,7 +4242,7 @@ where
 		let mut failed_forwards = Vec::new();
 		let mut phantom_receives: Vec<(u64, OutPoint, ChannelId, u128, Vec<(PendingHTLCInfo, u64)>)> = Vec::new();
 		{
-			let mut forward_htlcs = HashMap::new();
+			let mut forward_htlcs = new_hash_map();
 			mem::swap(&mut forward_htlcs, &mut self.forward_htlcs.lock().unwrap());
 
 			for (short_chan_id, mut pending_forwards) in forward_htlcs {
@@ -9015,8 +9015,8 @@ where
 							return NotifyOption::SkipPersistNoEvents;
 						}
 						e.insert(Mutex::new(PeerState {
-							channel_by_id: HashMap::new(),
-							inbound_channel_request_by_id: HashMap::new(),
+							channel_by_id: new_hash_map(),
+							inbound_channel_request_by_id: new_hash_map(),
 							latest_features: init_msg.features.clone(),
 							pending_msg_events: Vec::new(),
 							in_flight_monitor_updates: BTreeMap::new(),
@@ -10067,7 +10067,7 @@ where
 		}
 
 		// Encode without retry info for 0.0.101 compatibility.
-		let mut pending_outbound_payments_no_retry: HashMap<PaymentId, HashSet<[u8; 32]>> = HashMap::new();
+		let mut pending_outbound_payments_no_retry: HashMap<PaymentId, HashSet<[u8; 32]>> = new_hash_map();
 		for (id, outbound) in pending_outbound_payments.iter() {
 			match outbound {
 				PendingOutboundPayment::Legacy { session_privs } |
@@ -10095,7 +10095,7 @@ where
 		for ((counterparty_id, _), peer_state) in per_peer_state.iter().zip(peer_states.iter()) {
 			for (funding_outpoint, updates) in peer_state.in_flight_monitor_updates.iter() {
 				if !updates.is_empty() {
-					if in_flight_monitor_updates.is_none() { in_flight_monitor_updates = Some(HashMap::new()); }
+					if in_flight_monitor_updates.is_none() { in_flight_monitor_updates = Some(new_hash_map()); }
 					in_flight_monitor_updates.as_mut().unwrap().insert((counterparty_id, funding_outpoint), updates);
 				}
 			}
@@ -10331,13 +10331,13 @@ where
 		let mut failed_htlcs = Vec::new();
 
 		let channel_count: u64 = Readable::read(reader)?;
-		let mut funding_txo_set = HashSet::with_capacity(cmp::min(channel_count as usize, 128));
-		let mut funded_peer_channels: HashMap<PublicKey, HashMap<ChannelId, ChannelPhase<SP>>> = HashMap::with_capacity(cmp::min(channel_count as usize, 128));
-		let mut outpoint_to_peer = HashMap::with_capacity(cmp::min(channel_count as usize, 128));
-		let mut short_to_chan_info = HashMap::with_capacity(cmp::min(channel_count as usize, 128));
+		let mut funding_txo_set = hash_set_with_capacity(cmp::min(channel_count as usize, 128));
+		let mut funded_peer_channels: HashMap<PublicKey, HashMap<ChannelId, ChannelPhase<SP>>> = hash_map_with_capacity(cmp::min(channel_count as usize, 128));
+		let mut outpoint_to_peer = hash_map_with_capacity(cmp::min(channel_count as usize, 128));
+		let mut short_to_chan_info = hash_map_with_capacity(cmp::min(channel_count as usize, 128));
 		let mut channel_closures = VecDeque::new();
 		let mut close_background_events = Vec::new();
-		let mut funding_txo_to_channel_id = HashMap::with_capacity(channel_count as usize);
+		let mut funding_txo_to_channel_id = hash_map_with_capacity(channel_count as usize);
 		for _ in 0..channel_count {
 			let mut channel: Channel<SP> = Channel::read(reader, (
 				&args.entropy_source, &args.signer_provider, best_block_height, &provided_channel_type_features(&args.default_config)
@@ -10423,7 +10423,7 @@ where
 							by_id_map.insert(channel.context.channel_id(), ChannelPhase::Funded(channel));
 						},
 						hash_map::Entry::Vacant(entry) => {
-							let mut by_id_map = HashMap::new();
+							let mut by_id_map = new_hash_map();
 							by_id_map.insert(channel.context.channel_id(), ChannelPhase::Funded(channel));
 							entry.insert(by_id_map);
 						}
@@ -10470,7 +10470,7 @@ where
 
 		const MAX_ALLOC_SIZE: usize = 1024 * 64;
 		let forward_htlcs_count: u64 = Readable::read(reader)?;
-		let mut forward_htlcs = HashMap::with_capacity(cmp::min(forward_htlcs_count as usize, 128));
+		let mut forward_htlcs = hash_map_with_capacity(cmp::min(forward_htlcs_count as usize, 128));
 		for _ in 0..forward_htlcs_count {
 			let short_channel_id = Readable::read(reader)?;
 			let pending_forwards_count: u64 = Readable::read(reader)?;
@@ -10496,7 +10496,7 @@ where
 		let peer_state_from_chans = |channel_by_id| {
 			PeerState {
 				channel_by_id,
-				inbound_channel_request_by_id: HashMap::new(),
+				inbound_channel_request_by_id: new_hash_map(),
 				latest_features: InitFeatures::empty(),
 				pending_msg_events: Vec::new(),
 				in_flight_monitor_updates: BTreeMap::new(),
@@ -10507,10 +10507,10 @@ where
 		};
 
 		let peer_count: u64 = Readable::read(reader)?;
-		let mut per_peer_state = HashMap::with_capacity(cmp::min(peer_count as usize, MAX_ALLOC_SIZE/mem::size_of::<(PublicKey, Mutex<PeerState<SP>>)>()));
+		let mut per_peer_state = hash_map_with_capacity(cmp::min(peer_count as usize, MAX_ALLOC_SIZE/mem::size_of::<(PublicKey, Mutex<PeerState<SP>>)>()));
 		for _ in 0..peer_count {
 			let peer_pubkey = Readable::read(reader)?;
-			let peer_chans = funded_peer_channels.remove(&peer_pubkey).unwrap_or(HashMap::new());
+			let peer_chans = funded_peer_channels.remove(&peer_pubkey).unwrap_or(new_hash_map());
 			let mut peer_state = peer_state_from_chans(peer_chans);
 			peer_state.latest_features = Readable::read(reader)?;
 			per_peer_state.insert(peer_pubkey, Mutex::new(peer_state));
@@ -10544,7 +10544,7 @@ where
 		let highest_seen_timestamp: u32 = Readable::read(reader)?;
 
 		let pending_inbound_payment_count: u64 = Readable::read(reader)?;
-		let mut pending_inbound_payments: HashMap<PaymentHash, PendingInboundPayment> = HashMap::with_capacity(cmp::min(pending_inbound_payment_count as usize, MAX_ALLOC_SIZE/(3*32)));
+		let mut pending_inbound_payments: HashMap<PaymentHash, PendingInboundPayment> = hash_map_with_capacity(cmp::min(pending_inbound_payment_count as usize, MAX_ALLOC_SIZE/(3*32)));
 		for _ in 0..pending_inbound_payment_count {
 			if pending_inbound_payments.insert(Readable::read(reader)?, Readable::read(reader)?).is_some() {
 				return Err(DecodeError::InvalidValue);
@@ -10553,7 +10553,7 @@ where
 
 		let pending_outbound_payments_count_compat: u64 = Readable::read(reader)?;
 		let mut pending_outbound_payments_compat: HashMap<PaymentId, PendingOutboundPayment> =
-			HashMap::with_capacity(cmp::min(pending_outbound_payments_count_compat as usize, MAX_ALLOC_SIZE/32));
+			hash_map_with_capacity(cmp::min(pending_outbound_payments_count_compat as usize, MAX_ALLOC_SIZE/32));
 		for _ in 0..pending_outbound_payments_count_compat {
 			let session_priv = Readable::read(reader)?;
 			let payment = PendingOutboundPayment::Legacy {
@@ -10567,13 +10567,13 @@ where
 		// pending_outbound_payments_no_retry is for compatibility with 0.0.101 clients.
 		let mut pending_outbound_payments_no_retry: Option<HashMap<PaymentId, HashSet<[u8; 32]>>> = None;
 		let mut pending_outbound_payments = None;
-		let mut pending_intercepted_htlcs: Option<HashMap<InterceptId, PendingAddHTLCInfo>> = Some(HashMap::new());
+		let mut pending_intercepted_htlcs: Option<HashMap<InterceptId, PendingAddHTLCInfo>> = Some(new_hash_map());
 		let mut received_network_pubkey: Option<PublicKey> = None;
 		let mut fake_scid_rand_bytes: Option<[u8; 32]> = None;
 		let mut probing_cookie_secret: Option<[u8; 32]> = None;
 		let mut claimable_htlc_purposes = None;
 		let mut claimable_htlc_onion_fields = None;
-		let mut pending_claiming_payments = Some(HashMap::new());
+		let mut pending_claiming_payments = Some(new_hash_map());
 		let mut monitor_update_blocked_actions_per_peer: Option<Vec<(_, BTreeMap<_, Vec<_>>)>> = Some(Vec::new());
 		let mut events_override = None;
 		let mut in_flight_monitor_updates: Option<HashMap<(PublicKey, OutPoint), Vec<ChannelMonitorUpdate>>> = None;
@@ -10610,7 +10610,7 @@ where
 		if pending_outbound_payments.is_none() && pending_outbound_payments_no_retry.is_none() {
 			pending_outbound_payments = Some(pending_outbound_payments_compat);
 		} else if pending_outbound_payments.is_none() {
-			let mut outbounds = HashMap::new();
+			let mut outbounds = new_hash_map();
 			for (id, session_privs) in pending_outbound_payments_no_retry.unwrap().drain() {
 				outbounds.insert(id, PendingOutboundPayment::Legacy { session_privs });
 			}
@@ -10719,7 +10719,7 @@ where
 					// still open, we need to replay any monitor updates that are for closed channels,
 					// creating the neccessary peer_state entries as we go.
 					let peer_state_mutex = per_peer_state.entry(counterparty_id).or_insert_with(|| {
-						Mutex::new(peer_state_from_chans(HashMap::new()))
+						Mutex::new(peer_state_from_chans(new_hash_map()))
 					});
 					let mut peer_state = peer_state_mutex.lock().unwrap();
 					handle_in_flight_updates!(counterparty_id, chan_in_flight_updates,
@@ -10905,7 +10905,7 @@ where
 		let inbound_pmt_key_material = args.node_signer.get_inbound_payment_key_material();
 		let expanded_inbound_key = inbound_payment::ExpandedKey::new(&inbound_pmt_key_material);
 
-		let mut claimable_payments = HashMap::with_capacity(claimable_htlcs_list.len());
+		let mut claimable_payments = hash_map_with_capacity(claimable_htlcs_list.len());
 		if let Some(purposes) = claimable_htlc_purposes {
 			if purposes.len() != claimable_htlcs_list.len() {
 				return Err(DecodeError::InvalidValue);
@@ -10978,7 +10978,7 @@ where
 			}
 		}
 
-		let mut outbound_scid_aliases = HashSet::new();
+		let mut outbound_scid_aliases = new_hash_set();
 		for (_peer_node_id, peer_state_mutex) in per_peer_state.iter_mut() {
 			let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 			let peer_state = &mut *peer_state_lock;
@@ -12511,7 +12511,7 @@ mod tests {
 
 
 		let (scid_1, scid_2) = (42, 43);
-		let mut forward_htlcs = HashMap::new();
+		let mut forward_htlcs = new_hash_map();
 		forward_htlcs.insert(scid_1, dummy_htlcs_1.clone());
 		forward_htlcs.insert(scid_2, dummy_htlcs_2.clone());
 
