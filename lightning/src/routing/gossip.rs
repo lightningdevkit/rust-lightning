@@ -1845,7 +1845,7 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 				// NOTE: In the case of no-std, we won't have access to the current UNIX time at the time of removal,
 				// so we'll just set the removal time here to the current UNIX time on the very next invocation
 				// of this function.
-				#[cfg(feature = "no-std")]
+				#[cfg(not(feature = "std"))]
 				{
 					let mut tracked_time = Some(current_time_unix);
 					core::mem::swap(time, &mut tracked_time);
