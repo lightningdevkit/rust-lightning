@@ -20,8 +20,6 @@ use crate::blinded_path::message::{advance_path_by_one, ForwardTlvs, ReceiveTlvs
 use crate::blinded_path::utils;
 use crate::events::{Event, EventHandler, EventsProvider};
 use crate::sign::{EntropySource, NodeSigner, Recipient};
-#[cfg(not(c_bindings))]
-use crate::ln::channelmanager::{SimpleArcChannelManager, SimpleRefChannelManager};
 use crate::ln::features::{InitFeatures, NodeFeatures};
 use crate::ln::msgs::{self, OnionMessage, OnionMessageHandler, SocketAddress};
 use crate::ln::onion_utils;
@@ -42,6 +40,7 @@ use crate::prelude::*;
 #[cfg(not(c_bindings))]
 use {
 	crate::sign::KeysManager,
+	crate::ln::channelmanager::{SimpleArcChannelManager, SimpleRefChannelManager},
 	crate::ln::peer_handler::IgnoringMessageHandler,
 	crate::sync::Arc,
 };
