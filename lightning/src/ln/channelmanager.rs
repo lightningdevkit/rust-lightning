@@ -12487,7 +12487,7 @@ pub mod bench {
 	use bitcoin::blockdata::locktime::absolute::LockTime;
 	use bitcoin::hashes::Hash;
 	use bitcoin::hashes::sha256::Hash as Sha256;
-	use bitcoin::{Block, Transaction, TxOut};
+	use bitcoin::{Transaction, TxOut};
 
 	use crate::sync::{Arc, Mutex, RwLock};
 
