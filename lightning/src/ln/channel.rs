@@ -4216,7 +4216,27 @@ impl<SP: Deref> Channel<SP> where
 			return Err(())
 		}
 
-		if !self.context.is_peer_connected() {
+		// If we have requests pending to the signer, then clear out any of them that will be recomputed
+		// on `channel_reestablish`. This ensures we don't send them twice if the signer unblocks before
+		// we receive the counterparty's reestablish message.
+		if self.context.signer_pending_channel_reestablish {
+			log_trace!(logger, "Clearing signer_pending_channel_reestablish");
+			self.context.signer_pending_channel_reestablish = false;
+		}
+		if self.context.signer_pending_channel_ready {
+			log_trace!(logger, "Clearing signer_pending_channel_ready");
+			self.context.signer_pending_channel_ready = false;
+		}
+		if self.context.signer_pending_revoke_and_ack {
+			log_trace!(logger, "Clearing signer_pending_revoke_and_ack");
+			self.context.signer_pending_revoke_and_ack = false;
+		}
+		if self.context.signer_pending_commitment_update {
+			log_trace!(logger, "Clearing signer_pending_commitment_update");
+			self.context.signer_pending_commitment_update = false;
+		}
+
+		if self.context.channel_state.is_peer_disconnected() {
 			// While the below code should be idempotent, it's simpler to just return early, as
 			// redundant disconnect events can fire, though they should be rare.
 			return Ok(());

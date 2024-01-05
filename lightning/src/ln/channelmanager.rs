@@ -7381,28 +7381,41 @@ where
 					let logger = WithChannelContext::from(&self.logger, &chan.context);
 					let msgs = chan.signer_maybe_unblocked(&&logger);
 					if let Some(msg) = msgs.channel_reestablish {
+						log_trace!(logger, "Queuing channel_reestablish to {}", node_id);
 						pending_msg_events.push(events::MessageSendEvent::SendChannelReestablish { node_id, msg });
 					}
 					match (msgs.commitment_update, msgs.raa) {
 						(Some(cu), Some(raa)) if msgs.order == RAACommitmentOrder::CommitmentFirst => {
+							log_trace!(logger, "Queuing update_htlcs to {}", node_id);
 							pending_msg_events.push(events::MessageSendEvent::UpdateHTLCs { node_id, updates: cu });
+							log_trace!(logger, "Queuing revoke_and_ack to {}", node_id);
 							pending_msg_events.push(events::MessageSendEvent::SendRevokeAndACK { node_id, msg: raa });
 						},
 						(Some(cu), Some(raa)) if msgs.order == RAACommitmentOrder::RevokeAndACKFirst => {
+							log_trace!(logger, "Queuing revoke_and_ack to {}", node_id);
 							pending_msg_events.push(events::MessageSendEvent::SendRevokeAndACK { node_id, msg: raa });
+							log_trace!(logger, "Queuing update_htlcs to {}", node_id);
 							pending_msg_events.push(events::MessageSendEvent::UpdateHTLCs { node_id, updates: cu });
 						},
-						(Some(cu), _) => pending_msg_events.push(events::MessageSendEvent::UpdateHTLCs { node_id, updates: cu }),
-						(_, Some(raa)) => pending_msg_events.push(events::MessageSendEvent::SendRevokeAndACK { node_id, msg: raa }),
+						(Some(cu), _) => {
+							log_trace!(logger, "Queuing update_htlcs to {}", node_id);
+							pending_msg_events.push(events::MessageSendEvent::UpdateHTLCs { node_id, updates: cu })
+						},
+						(_, Some(raa)) => {
+							log_trace!(logger, "Queuing revoke_and_ack to {}", node_id);
+							pending_msg_events.push(events::MessageSendEvent::SendRevokeAndACK { node_id, msg: raa })
+						},
 						(_, _) => (),
 					};
 					if let Some(msg) = msgs.funding_signed {
+						log_trace!(logger, "Queuing funding_signed to {}", node_id);
 						pending_msg_events.push(events::MessageSendEvent::SendFundingSigned {
 							node_id,
 							msg,
 						});
 					}
 					if let Some(msg) = msgs.channel_ready {
+						log_trace!(logger, "Queuing channel_ready to {}", node_id);
 						send_channel_ready!(self, pending_msg_events, chan, msg);
 					}
 				}
@@ -7411,6 +7424,7 @@ where
 					let msgs = chan.signer_maybe_unblocked(&&logger);
 					let node_id = phase.context().get_counterparty_node_id();
 					if let Some(msg) = msgs.accept_channel {
+						log_trace!(logger, "Queuing accept_channel to {}", node_id);
 						pending_msg_events.push(events::MessageSendEvent::SendAcceptChannel { node_id, msg });
 					}
 				}
@@ -7419,9 +7433,11 @@ where
 					let msgs = chan.signer_maybe_unblocked(&self.chain_hash, &&logger);
 					let node_id = phase.context().get_counterparty_node_id();
 					if let Some(msg) = msgs.open_channel {
+						log_trace!(logger, "Queuing open_channel to {}", node_id);
 						pending_msg_events.push(events::MessageSendEvent::SendOpenChannel { node_id, msg });
 					}
 					if let Some(msg) = msgs.funding_created {
+						log_trace!(logger, "Queuing funding_created to {}", node_id);
 						pending_msg_events.push(events::MessageSendEvent::SendFundingCreated { node_id, msg });
 					}
 				}
@@ -9050,6 +9066,7 @@ where
 				).for_each(|chan| {
 					let logger = WithChannelContext::from(&self.logger, &chan.context);
 					if let Some(msg) = chan.get_channel_reestablish(&&logger) {
+						log_trace!(logger, "Queuing channel_reestablish to {}", chan.context.get_counterparty_node_id());
 						pending_msg_events.push(events::MessageSendEvent::SendChannelReestablish {
 							node_id: chan.context.get_counterparty_node_id(),
 							msg,
