@@ -1494,9 +1494,28 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 				assert!(
 					send_payment(&nodes[0], &nodes[1], chan_a, 10_000_000, &mut payment_id, &mut payment_idx) ||
 					send_payment(&nodes[1], &nodes[0], chan_a, 10_000_000, &mut payment_id, &mut payment_idx));
+				out.locked_write(format!("Successfully sent a payment between node 0 and node 1.\n").as_bytes());
+
 				assert!(
 					send_payment(&nodes[1], &nodes[2], chan_b, 10_000_000, &mut payment_id, &mut payment_idx) ||
 					send_payment(&nodes[2], &nodes[1], chan_b, 10_000_000, &mut payment_id, &mut payment_idx));
+				out.locked_write(format!("Successfully sent a payment between node 1 and node 2.\n").as_bytes());
+
+				out.locked_write(format!("Flushing pending messages.\n").as_bytes());
+				for i in 0..std::usize::MAX {
+					if i == 100 { panic!("It may take may iterations to settle the state, but it should not take forever"); }
+
+					// Then, make sure any current forwards make their way to their destination
+					if process_msg_events!(0, false, ProcessMessages::AllMessages) { continue; }
+					if process_msg_events!(1, false, ProcessMessages::AllMessages) { continue; }
+					if process_msg_events!(2, false, ProcessMessages::AllMessages) { continue; }
+					// ...making sure any pending PendingHTLCsForwardable events are handled and
+					// payments claimed.
+					if process_events!(0, false) { continue; }
+					if process_events!(1, false) { continue; }
+					if process_events!(2, false) { continue; }
+					break;
+				}
 
 				last_htlc_clear_fee_a = fee_est_a.ret_val.load(atomic::Ordering::Acquire);
 				last_htlc_clear_fee_b = fee_est_b.ret_val.load(atomic::Ordering::Acquire);
