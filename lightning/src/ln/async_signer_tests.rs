@@ -1309,3 +1309,207 @@ fn no_stray_channel_reestablish() {
 	let events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert!(events.is_empty(), "Expected no events from Alice, got {:?}", events);
 }
+
+#[test]
+fn dont_elide_channely_ready_from_state_1() {
+	// 1. Disable Alice's signer.
+	// 2. Send a payment from Alice to Bob.
+	// 3. Disconnect Alice and Bob. Reload Alice.
+	// 4. Reconnect Alice and Bob.
+	// 5. Process messages on Bob, which should generate a `channel_reestablish`.
+	// 6. Process messages on Alice, which should *not* send anything, in particular an
+	//    `update_add_htlc` because Alice must send a `channel_ready` (that she can't create
+	//    without her signer) first.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let persister;
+	let new_chain_monitor;
+
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let alice_deserialized;
+
+	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let (_, _, channel_id, _) = create_announced_chan_between_nodes(&nodes, 0, 1);
+
+	// Turn off Alice's signer.
+	eprintln!("disabling alice's signer");
+	nodes[0].set_channel_signer_ops_available(
+		&nodes[1].node.get_our_node_id(), &channel_id,
+		ops::GET_PER_COMMITMENT_POINT | ops::RELEASE_COMMITMENT_SECRET | ops::SIGN_COUNTERPARTY_COMMITMENT,
+		false);
+
+	eprintln!("sending payment from alice to bob");
+	let (route, payment_hash, _payment_preimage, payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[1], 1_000_000);
+	nodes[0].node.send_payment_with_route(&route, payment_hash,
+		RecipientOnionFields::secret_only(payment_secret), PaymentId(payment_hash.0)).unwrap();
+
+	check_added_monitors!(nodes[0], 1);
+	assert!(nodes[0].node.get_and_clear_pending_events().is_empty());
+	assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
+
+	// Disconnect Bob and restart Alice
+	eprintln!("disconnecting bob");
+	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id());
+
+	eprintln!("restarting alice");
+	{
+		let alice_serialized = nodes[0].node.encode();
+		let alice_monitor_serialized = get_monitor!(nodes[0], channel_id).encode();
+		reload_node!(nodes[0], *nodes[0].node.get_current_default_configuration(), &alice_serialized, &[&alice_monitor_serialized], persister, new_chain_monitor, alice_deserialized);
+	}
+
+	assert!(nodes[0].node.get_and_clear_pending_events().is_empty());
+	assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
+
+	eprintln!("unblocking alice's signer with commmitment signed");
+	nodes[0].set_channel_signer_ops_available(
+		&nodes[1].node.get_our_node_id(), &channel_id,
+		ops::SIGN_COUNTERPARTY_COMMITMENT,
+		true);
+	nodes[0].node.signer_unblocked(None);
+
+	assert!(nodes[0].node.get_and_clear_pending_events().is_empty());
+	assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
+
+	// Reconnect Alice and Bob.
+	eprintln!("reconnecting alice and bob");
+	nodes[0].node.peer_connected(&nodes[1].node.get_our_node_id(), &msgs::Init {
+		features: nodes[1].node.init_features(), networks: None, remote_network_address: None
+	}, false).unwrap();
+
+	nodes[1].node.peer_connected(&nodes[0].node.get_our_node_id(), &msgs::Init {
+		features: nodes[0].node.init_features(), networks: None, remote_network_address: None
+	}, false).unwrap();
+
+	// Bob should have sent Alice a channel_reestablish. Alice should not have done anything.
+	assert!(get_chan_reestablish_msgs!(nodes[0], nodes[1]).is_empty());
+	let reestablish_2 = get_chan_reestablish_msgs!(nodes[1], nodes[0]);
+	assert_eq!(reestablish_2.len(), 1);
+
+	// When Alice handle's the channel_reestablish, she should _still_ do nothing, in particular,
+	// because she doesn't have the channel ready available.
+	nodes[0].node.handle_channel_reestablish(&nodes[1].node.get_our_node_id(), &reestablish_2[0]);
+	match handle_chan_reestablish_msgs!(nodes[0], nodes[1]) {
+		(None, None, None, _) => (),
+		(channel_ready, revoke_and_ack, commitment_update, order) => {
+			panic!("got channel_ready={:?} revoke_and_ack={:?} commitment_update={:?} order={:?}",
+						 channel_ready, revoke_and_ack, commitment_update, order);
+		}
+	};
+
+	// Now provide the commitment point and Alice should send her channel_reestablish.
+	nodes[0].set_channel_signer_ops_available(
+		&nodes[1].node.get_our_node_id(), &channel_id,
+		ops::GET_PER_COMMITMENT_POINT,
+		true);
+	nodes[0].node.signer_unblocked(None);
+
+	{
+		let events = nodes[0].node.get_and_clear_pending_msg_events();
+		assert_eq!(events.len(), 2, "Expected 2 events, got {}: {:?}", events.len(), events);
+		match (&events[0], &events[1]) {
+			(MessageSendEvent::SendChannelReestablish { .. }, MessageSendEvent::SendChannelReady { .. }) => (),
+			(a, b) => panic!("Expected SendChannelReestablish and SendChannelReady, not {:?} and {:?}", a, b)
+		}
+	}
+}
+
+#[test]
+fn dont_lose_commitment_update() {
+	// 1. Send a payment from Alice to Bob.
+	// 2. Disable signing on Alice.
+	// 3. Disconnect Alice and Bob. Reload Alice.
+	// 4. Reconnect Alice and Bob.
+	// 5. Process messages on Bob, which should generate a `channel_reestablish`.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let persister;
+	let new_chain_monitor;
+
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let alice_deserialized;
+
+	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let (_, _, channel_id, _) = create_announced_chan_between_nodes(&nodes, 0, 1);
+
+	eprintln!("sending payment from alice to bob");
+	let (route, payment_hash, _payment_preimage, payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[1], 1_000_000);
+	nodes[0].node.send_payment_with_route(&route, payment_hash,
+		RecipientOnionFields::secret_only(payment_secret), PaymentId(payment_hash.0)).unwrap();
+
+	// Turn off Alice's signer.
+	eprintln!("disabling alice's signer");
+	nodes[0].set_channel_signer_ops_available(
+		&nodes[1].node.get_our_node_id(), &channel_id,
+		ops::GET_PER_COMMITMENT_POINT | ops::RELEASE_COMMITMENT_SECRET | ops::SIGN_COUNTERPARTY_COMMITMENT,
+		false);
+
+	check_added_monitors!(nodes[0], 1);
+	assert!(nodes[0].node.get_and_clear_pending_events().is_empty());
+	assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
+
+	// Disconnect Bob and restart Alice
+	eprintln!("disconnecting bob");
+	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id());
+
+	eprintln!("restarting alice");
+	{
+		let alice_serialized = nodes[0].node.encode();
+		let alice_monitor_serialized = get_monitor!(nodes[0], channel_id).encode();
+		reload_node!(nodes[0], *nodes[0].node.get_current_default_configuration(), &alice_serialized, &[&alice_monitor_serialized], persister, new_chain_monitor, alice_deserialized);
+	}
+
+	// Reconnect Alice and Bob.
+	eprintln!("reconnecting alice and bob");
+	nodes[0].node.peer_connected(&nodes[1].node.get_our_node_id(), &msgs::Init {
+		features: nodes[1].node.init_features(), networks: None, remote_network_address: None
+	}, false).unwrap();
+
+	nodes[1].node.peer_connected(&nodes[0].node.get_our_node_id(), &msgs::Init {
+		features: nodes[0].node.init_features(), networks: None, remote_network_address: None
+	}, false).unwrap();
+
+	// Bob should have sent Alice a channel_reestablish. Alice should not have done anything.
+	assert!(get_chan_reestablish_msgs!(nodes[0], nodes[1]).is_empty());
+	let reestablish_2 = get_chan_reestablish_msgs!(nodes[1], nodes[0]);
+	assert_eq!(reestablish_2.len(), 1);
+
+	// When Alice handle's the channel_reestablish, she should _still_ do nothing, in particular,
+	// because she doesn't have the channel ready available.
+	nodes[0].node.handle_channel_reestablish(&nodes[1].node.get_our_node_id(), &reestablish_2[0]);
+	match handle_chan_reestablish_msgs!(nodes[0], nodes[1]) {
+		(None, None, None, _) => (),
+		(channel_ready, revoke_and_ack, commitment_update, order) => {
+			panic!("got channel_ready={:?} revoke_and_ack={:?} commitment_update={:?} order={:?}",
+						 channel_ready, revoke_and_ack, commitment_update, order);
+		}
+	};
+
+	{
+		let events = nodes[0].node.get_and_clear_pending_msg_events();
+		assert!(events.is_empty(), "expected no events, got {:?}", events);
+	}
+
+	{
+		let events = nodes[1].node.get_and_clear_pending_msg_events();
+		assert!(events.is_empty(), "expected no events, got {:?}", events);
+	}
+
+	eprintln!("unblocking alice's signer");
+	nodes[0].set_channel_signer_ops_available(
+		&nodes[1].node.get_our_node_id(), &channel_id,
+		ops::GET_PER_COMMITMENT_POINT | ops::RELEASE_COMMITMENT_SECRET | ops::SIGN_COUNTERPARTY_COMMITMENT,
+		true);
+	nodes[0].node.signer_unblocked(None);
+
+	{
+		let events = nodes[0].node.get_and_clear_pending_msg_events();
+		assert_eq!(events.len(), 3, "Expected 3 events, got {}: {:?}", events.len(), events);
+		match (&events[0], &events[1], &events[2]) {
+			(MessageSendEvent::SendChannelReestablish { .. },
+			 MessageSendEvent::UpdateHTLCs { .. },
+			 MessageSendEvent::SendChannelReady { .. }) => (),
+			(a, b, c) => panic!("Expected SendChannelReestablish, UpdateHTLCs, SendChannelReady; not {:?}, {:?}, {:?}", a, b, c)
+		}
+	}
+}

@@ -4921,17 +4921,18 @@ impl<SP: Deref> Channel<SP> where
 		}
 		let next_counterparty_commitment_number = INITIAL_COMMITMENT_NUMBER - self.context.cur_counterparty_commitment_transaction_number + if is_awaiting_remote_revoke { 1 } else { 0 };
 
-		let channel_ready = if msg.next_local_commitment_number == 1 && INITIAL_COMMITMENT_NUMBER - self.context.cur_holder_commitment_transaction_number == 1 {
+		let mut channel_ready = None;
+		if msg.next_local_commitment_number == 1 && INITIAL_COMMITMENT_NUMBER - self.context.cur_holder_commitment_transaction_number == 1 {
 			// We should never have to worry about MonitorUpdateInProgress resending ChannelReady
 			log_debug!(logger, "Reconnecting channel at state 1, (re?)sending channel_ready");
-			self.get_channel_ready().or_else(|| {
+			channel_ready = self.get_channel_ready();
+			if channel_ready.is_none() {
 				if !self.context.signer_pending_channel_ready {
 					log_trace!(logger, "Unable to generate channel_ready for channel_reestablish; setting signer_pending_channel_ready");
 					self.context.signer_pending_channel_ready = true;
 				}
-				None
-			})
-		} else { None };
+			}
+		}
 
 		if msg.next_local_commitment_number == next_counterparty_commitment_number {
 			if raa.is_some() || self.context.signer_pending_revoke_and_ack {
@@ -4942,7 +4943,7 @@ impl<SP: Deref> Channel<SP> where
 
 			Ok(ReestablishResponses {
 				channel_ready, shutdown_msg, announcement_sigs,
-				raa,
+				raa: if !self.context.signer_pending_channel_ready { raa } else { None },
 				commitment_update: None,
 				order: self.context.resend_order.clone(),
 			})
@@ -4967,8 +4968,8 @@ impl<SP: Deref> Channel<SP> where
 				self.context.signer_pending_commitment_update = commitment_update.is_none();
 				Ok(ReestablishResponses {
 					channel_ready, shutdown_msg, announcement_sigs,
-					raa,
-					commitment_update,
+					raa: if !self.context.signer_pending_channel_ready { raa } else { None },
+					commitment_update: if !self.context.signer_pending_channel_ready { commitment_update } else { None },
 					order: self.context.resend_order.clone(),
 				})
 			}
