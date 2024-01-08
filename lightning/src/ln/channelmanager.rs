@@ -43,7 +43,7 @@ use crate::events::{Event, EventHandler, EventsProvider, MessageSendEvent, Messa
 // Since this struct is returned in `list_channels` methods, expose it here in case users want to
 // construct one themselves.
 use crate::ln::{inbound_payment, ChannelId, PaymentHash, PaymentPreimage, PaymentSecret};
-use crate::ln::channel::{Channel, ChannelPhase, ChannelContext, ChannelError, ChannelUpdateStatus, ShutdownResult, UnfundedChannelContext, UpdateFulfillCommitFetch, OutboundV1Channel, InboundV1Channel, WithChannelContext};
+use crate::ln::channel::{self, Channel, ChannelPhase, ChannelContext, ChannelError, ChannelUpdateStatus, ShutdownResult, UnfundedChannelContext, UpdateFulfillCommitFetch, OutboundV1Channel, InboundV1Channel, WithChannelContext};
 use crate::ln::features::{Bolt12InvoiceFeatures, ChannelFeatures, ChannelTypeFeatures, InitFeatures, NodeFeatures};
 #[cfg(any(feature = "_test_utils", test))]
 use crate::ln::features::Bolt11InvoiceFeatures;
@@ -6175,13 +6175,18 @@ where
 
 		// If we're doing manual acceptance checks on the channel, then defer creation until we're sure we want to accept.
 		if self.default_configuration.manually_accept_inbound_channels {
+			let channel_type = channel::channel_type_from_open_channel(
+					&msg, &peer_state.latest_features, &self.channel_type_features()
+				).map_err(|e|
+					MsgHandleErrInternal::from_chan_no_close(e, msg.temporary_channel_id)
+				)?;
 			let mut pending_events = self.pending_events.lock().unwrap();
 			pending_events.push_back((events::Event::OpenChannelRequest {
 				temporary_channel_id: msg.temporary_channel_id.clone(),
 				counterparty_node_id: counterparty_node_id.clone(),
 				funding_satoshis: msg.funding_satoshis,
 				push_msat: msg.push_msat,
-				channel_type: msg.channel_type.clone().unwrap(),
+				channel_type,
 			}, None));
 			peer_state.inbound_channel_request_by_id.insert(channel_id, InboundChannelRequest {
 				open_channel_msg: msg.clone(),
@@ -8984,13 +8989,7 @@ where
 				let pending_msg_events = &mut peer_state.pending_msg_events;
 
 				peer_state.channel_by_id.iter_mut().filter_map(|(_, phase)|
-					if let ChannelPhase::Funded(chan) = phase { Some(chan) } else {
-						// Since unfunded channel maps are cleared upon disconnecting a peer, and they're not persisted
-						// (so won't be recovered after a crash), they shouldn't exist here and we would never need to
-						// worry about closing and removing them.
-						debug_assert!(false);
-						None
-					}
+					if let ChannelPhase::Funded(chan) = phase { Some(chan) } else { None }
 				).for_each(|chan| {
 					let logger = WithChannelContext::from(&self.logger, &chan.context);
 					pending_msg_events.push(events::MessageSendEvent::SendChannelReestablish {

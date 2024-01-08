@@ -732,8 +732,8 @@ struct CommitmentStats<'a> {
 	total_fee_sat: u64, // the total fee included in the transaction
 	num_nondust_htlcs: usize,  // the number of HTLC outputs (dust HTLCs *non*-included)
 	htlcs_included: Vec<(HTLCOutputInCommitment, Option<&'a HTLCSource>)>, // the list of HTLCs (dust HTLCs *included*) which were not ignored when building the transaction
-	local_balance_msat: u64, // local balance before fees but considering dust limits
-	remote_balance_msat: u64, // remote balance before fees but considering dust limits
+	local_balance_msat: u64, // local balance before fees *not* considering dust limits
+	remote_balance_msat: u64, // remote balance before fees *not* considering dust limits
 	outbound_htlc_preimages: Vec<PaymentPreimage>, // preimages for successful offered HTLCs since last commitment
 	inbound_htlc_preimages: Vec<PaymentPreimage>, // preimages for successful received HTLCs since last commitment
 }
@@ -1728,13 +1728,13 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 			}
 		}
 
-		let mut value_to_self_msat: i64 = (self.value_to_self_msat - local_htlc_total_msat) as i64 + value_to_self_msat_offset;
+		let value_to_self_msat: i64 = (self.value_to_self_msat - local_htlc_total_msat) as i64 + value_to_self_msat_offset;
 		assert!(value_to_self_msat >= 0);
 		// Note that in case they have several just-awaiting-last-RAA fulfills in-progress (ie
 		// AwaitingRemoteRevokeToRemove or AwaitingRemovedRemoteRevoke) we may have allowed them to
 		// "violate" their reserve value by couting those against it. Thus, we have to convert
 		// everything to i64 before subtracting as otherwise we can overflow.
-		let mut value_to_remote_msat: i64 = (self.channel_value_satoshis * 1000) as i64 - (self.value_to_self_msat as i64) - (remote_htlc_total_msat as i64) - value_to_self_msat_offset;
+		let value_to_remote_msat: i64 = (self.channel_value_satoshis * 1000) as i64 - (self.value_to_self_msat as i64) - (remote_htlc_total_msat as i64) - value_to_self_msat_offset;
 		assert!(value_to_remote_msat >= 0);
 
 		#[cfg(debug_assertions)]
@@ -1799,10 +1799,6 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 		// The unwrap is safe, because all non-dust HTLCs have been assigned an output index
 		htlcs_included.sort_unstable_by_key(|h| h.0.transaction_output_index.unwrap());
 		htlcs_included.append(&mut included_dust_htlcs);
-
-		// For the stats, trimmed-to-0 the value in msats accordingly
-		value_to_self_msat = if (value_to_self_msat * 1000) < broadcaster_dust_limit_satoshis as i64 { 0 } else { value_to_self_msat };
-		value_to_remote_msat = if (value_to_remote_msat * 1000) < broadcaster_dust_limit_satoshis as i64 { 0 } else { value_to_remote_msat };
 
 		CommitmentStats {
 			tx,
@@ -1876,7 +1872,8 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 		if let Some(feerate) = outbound_feerate_update {
 			feerate_per_kw = cmp::max(feerate_per_kw, feerate);
 		}
-		cmp::max(2530, feerate_per_kw * 1250 / 1000)
+		let feerate_plus_quarter = feerate_per_kw.checked_mul(1250).map(|v| v / 1000);
+		cmp::max(2530, feerate_plus_quarter.unwrap_or(u32::max_value()))
 	}
 
 	/// Get forwarding information for the counterparty.
@@ -6848,6 +6845,41 @@ pub(super) struct InboundV1Channel<SP: Deref> where SP::Target: SignerProvider {
 	pub unfunded_context: UnfundedChannelContext,
 }
 
+/// Fetches the [`ChannelTypeFeatures`] that will be used for a channel built from a given
+/// [`msgs::OpenChannel`].
+pub(super) fn channel_type_from_open_channel(
+	msg: &msgs::OpenChannel, their_features: &InitFeatures,
+	our_supported_features: &ChannelTypeFeatures
+) -> Result<ChannelTypeFeatures, ChannelError> {
+	if let Some(channel_type) = &msg.channel_type {
+		if channel_type.supports_any_optional_bits() {
+			return Err(ChannelError::Close("Channel Type field contained optional bits - this is not allowed".to_owned()));
+		}
+
+		// We only support the channel types defined by the `ChannelManager` in
+		// `provided_channel_type_features`. The channel type must always support
+		// `static_remote_key`.
+		if !channel_type.requires_static_remote_key() {
+			return Err(ChannelError::Close("Channel Type was not understood - we require static remote key".to_owned()));
+		}
+		// Make sure we support all of the features behind the channel type.
+		if !channel_type.is_subset(our_supported_features) {
+			return Err(ChannelError::Close("Channel Type contains unsupported features".to_owned()));
+		}
+		let announced_channel = if (msg.channel_flags & 1) == 1 { true } else { false };
+		if channel_type.requires_scid_privacy() && announced_channel {
+			return Err(ChannelError::Close("SCID Alias/Privacy Channel Type cannot be set on a public channel".to_owned()));
+		}
+		Ok(channel_type.clone())
+	} else {
+		let channel_type = ChannelTypeFeatures::from_init(&their_features);
+		if channel_type != ChannelTypeFeatures::only_static_remote_key() {
+			return Err(ChannelError::Close("Only static_remote_key is supported for non-negotiated channel types".to_owned()));
+		}
+		Ok(channel_type)
+	}
+}
+
 impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 	/// Creates a new channel from a remote sides' request for one.
 	/// Assumes chain_hash has already been checked and corresponds with what we expect!
@@ -6866,32 +6898,7 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 
 		// First check the channel type is known, failing before we do anything else if we don't
 		// support this channel type.
-		let channel_type = if let Some(channel_type) = &msg.channel_type {
-			if channel_type.supports_any_optional_bits() {
-				return Err(ChannelError::Close("Channel Type field contained optional bits - this is not allowed".to_owned()));
-			}
-
-			// We only support the channel types defined by the `ChannelManager` in
-			// `provided_channel_type_features`. The channel type must always support
-			// `static_remote_key`.
-			if !channel_type.requires_static_remote_key() {
-				return Err(ChannelError::Close("Channel Type was not understood - we require static remote key".to_owned()));
-			}
-			// Make sure we support all of the features behind the channel type.
-			if !channel_type.is_subset(our_supported_features) {
-				return Err(ChannelError::Close("Channel Type contains unsupported features".to_owned()));
-			}
-			if channel_type.requires_scid_privacy() && announced_channel {
-				return Err(ChannelError::Close("SCID Alias/Privacy Channel Type cannot be set on a public channel".to_owned()));
-			}
-			channel_type.clone()
-		} else {
-			let channel_type = ChannelTypeFeatures::from_init(&their_features);
-			if channel_type != ChannelTypeFeatures::only_static_remote_key() {
-				return Err(ChannelError::Close("Only static_remote_key is supported for non-negotiated channel types".to_owned()));
-			}
-			channel_type
-		};
+		let channel_type = channel_type_from_open_channel(msg, their_features, our_supported_features)?;
 
 		let channel_keys_id = signer_provider.generate_channel_keys_id(true, msg.funding_satoshis, user_id);
 		let holder_signer = signer_provider.derive_channel_signer(msg.funding_satoshis, channel_keys_id);

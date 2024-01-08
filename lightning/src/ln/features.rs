@@ -469,12 +469,24 @@ impl<T: sealed::Context> Clone for Features<T> {
 }
 impl<T: sealed::Context> Hash for Features<T> {
 	fn hash<H: Hasher>(&self, hasher: &mut H) {
-		self.flags.hash(hasher);
+		let mut nonzero_flags = &self.flags[..];
+		while nonzero_flags.last() == Some(&0) {
+			nonzero_flags = &nonzero_flags[..nonzero_flags.len() - 1];
+		}
+		nonzero_flags.hash(hasher);
 	}
 }
 impl<T: sealed::Context> PartialEq for Features<T> {
 	fn eq(&self, o: &Self) -> bool {
-		self.flags.eq(&o.flags)
+		let mut o_iter = o.flags.iter();
+		let mut self_iter = self.flags.iter();
+		loop {
+			match (o_iter.next(), self_iter.next()) {
+				(Some(o), Some(us)) => if o != us { return false },
+				(Some(b), None) | (None, Some(b)) => if *b != 0 { return false },
+				(None, None) => return true,
+			}
+		}
 	}
 }
 impl<T: sealed::Context> PartialOrd for Features<T> {
@@ -1214,5 +1226,27 @@ mod tests {
 		assert_eq!(converted_features, ChannelTypeFeatures::only_static_remote_key());
 		assert!(!converted_features.supports_any_optional_bits());
 		assert!(converted_features.requires_static_remote_key());
+	}
+
+	#[test]
+	#[cfg(feature = "std")]
+	fn test_excess_zero_bytes_ignored() {
+		// Checks that `Hash` and `PartialEq` ignore excess zero bytes, which may appear due to
+		// feature conversion or because a peer serialized their feature poorly.
+		use std::collections::hash_map::DefaultHasher;
+		use std::hash::{Hash, Hasher};
+
+		let mut zerod_features = InitFeatures::empty();
+		zerod_features.flags = vec![0];
+		let empty_features = InitFeatures::empty();
+		assert!(empty_features.flags.is_empty());
+
+		assert_eq!(zerod_features, empty_features);
+
+		let mut zerod_hash = DefaultHasher::new();
+		zerod_features.hash(&mut zerod_hash);
+		let mut empty_hash = DefaultHasher::new();
+		empty_features.hash(&mut empty_hash);
+		assert_eq!(zerod_hash.finish(), empty_hash.finish());
 	}
 }
