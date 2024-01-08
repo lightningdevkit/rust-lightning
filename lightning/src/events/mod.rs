@@ -30,8 +30,9 @@ use crate::util::ser::{BigSize, FixedLengthReader, Writeable, Writer, MaybeReada
 use crate::util::string::UntrustedString;
 use crate::routing::router::{BlindedTail, Path, RouteHop, RouteParameters};
 
-use bitcoin::{PackedLockTime, Transaction, OutPoint};
-use bitcoin::blockdata::script::Script;
+use bitcoin::{Transaction, OutPoint};
+use bitcoin::blockdata::locktime::absolute::LockTime;
+use bitcoin::blockdata::script::ScriptBuf;
 use bitcoin::hashes::Hash;
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::secp256k1::PublicKey;
@@ -102,9 +103,15 @@ pub struct ClaimedHTLC {
 	pub cltv_expiry: u32,
 	/// The amount (in msats) of this part of an MPP.
 	pub value_msat: u64,
+	/// The extra fee our counterparty skimmed off the top of this HTLC, if any.
+	///
+	/// This value will always be 0 for [`ClaimedHTLC`]s serialized with LDK versions prior to
+	/// 0.0.119.
+	pub counterparty_skimmed_fee_msat: u64,
 }
 impl_writeable_tlv_based!(ClaimedHTLC, {
 	(0, channel_id, required),
+	(1, counterparty_skimmed_fee_msat, (default_value, 0u64)),
 	(2, user_channel_id, required),
 	(4, cltv_expiry, required),
 	(6, value_msat, required),
@@ -378,7 +385,7 @@ pub enum Event {
 		/// The value, in satoshis, that the output should have.
 		channel_value_satoshis: u64,
 		/// The script which should be used in the transaction output.
-		output_script: Script,
+		output_script: ScriptBuf,
 		/// The `user_channel_id` value passed in to [`ChannelManager::create_channel`] for outbound
 		/// channels, or to [`ChannelManager::accept_inbound_channel`] for inbound channels if
 		/// [`UserConfig::manually_accept_inbound_channels`] config flag is set to true. Otherwise
@@ -956,7 +963,7 @@ pub enum Event {
 		/// The post-splice channel value, in satoshis.
 		post_channel_value_satoshis: u64,
 		/// The script which should be used in the transaction output (channel funding output).
-		output_script: Script,
+		output_script: ScriptBuf,
 	}
 }
 
@@ -1276,7 +1283,7 @@ impl MaybeReadable for Event {
 						(5, fee_paid_msat, option),
 					});
 					if payment_hash.is_none() {
-						payment_hash = Some(PaymentHash(Sha256::hash(&payment_preimage.0[..]).into_inner()));
+						payment_hash = Some(PaymentHash(Sha256::hash(&payment_preimage.0[..]).to_byte_array()));
 					}
 					Ok(Some(Event::PaymentSent {
 						payment_id,
@@ -1418,7 +1425,7 @@ impl MaybeReadable for Event {
 			11u8 => {
 				let f = || {
 					let mut channel_id = ChannelId::new_zero();
-					let mut transaction = Transaction{ version: 2, lock_time: PackedLockTime::ZERO, input: Vec::new(), output: Vec::new() };
+					let mut transaction = Transaction{ version: 2, lock_time: LockTime::ZERO, input: Vec::new(), output: Vec::new() };
 					read_tlv_fields!(reader, {
 						(0, channel_id, required),
 						(2, transaction, required),
@@ -1671,14 +1678,13 @@ pub enum MessageSendEvent {
 		/// The message which should be sent.
 		msg: msgs::FundingSigned,
 	},
-	// /// Used to indicate that a commitment_signed message should be sent to the peer with the given node_id.
-	// SendCommitmentSigned {
-	// 	/// The node_id of the node which should receive this message
-	// 	node_id: PublicKey,
-	// 	/// The message which should be sent.
-	// 	msg: msgs::CommitmentSigned,
-	// },
-	/// #SPLICING
+	/// Used to indicate that a stfu message should be sent to the peer with the given node id.
+	SendStfu {
+		/// The node_id of the node which should receive this message
+		node_id: PublicKey,
+		/// The message which should be sent.
+		msg: msgs::Stfu,
+	},
 	/// Used to indicate that a splice message should be sent to the peer with the given node id.
 	SendSplice {
 		/// The node_id of the node which should receive this message
@@ -1686,7 +1692,6 @@ pub enum MessageSendEvent {
 		/// The message which should be sent.
 		msg: msgs::Splice,
 	},
-	/// #SPLICING
 	/// Used to indicate that a splice_ack message should be sent to the peer with the given node id.
 	SendSpliceAck {
 		/// The node_id of the node which should receive this message

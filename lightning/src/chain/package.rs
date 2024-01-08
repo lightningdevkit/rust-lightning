@@ -11,18 +11,21 @@
 //! packages are attached metadata, guiding their aggregable or fee-bumping re-schedule. This file
 //! also includes witness weight computation and fee computation methods.
 
+
+use bitcoin::{Sequence, Witness};
 use bitcoin::blockdata::constants::WITNESS_SCALE_FACTOR;
-use bitcoin::blockdata::transaction::{TxOut,TxIn, Transaction, EcdsaSighashType};
+use bitcoin::blockdata::locktime::absolute::LockTime;
+use bitcoin::blockdata::transaction::{TxOut,TxIn, Transaction};
 use bitcoin::blockdata::transaction::OutPoint as BitcoinOutPoint;
-use bitcoin::blockdata::script::Script;
-
+use bitcoin::blockdata::script::{Script, ScriptBuf};
 use bitcoin::hash_types::Txid;
-
 use bitcoin::secp256k1::{SecretKey,PublicKey};
+use bitcoin::sighash::EcdsaSighashType;
 
 use crate::ln::PaymentPreimage;
 use crate::ln::chan_utils::{TxCreationKeys, HTLCOutputInCommitment};
 use crate::ln::chan_utils;
+use crate::ln::features::ChannelTypeFeatures;
 use crate::ln::msgs::DecodeError;
 use crate::chain::chaininterface::{FeeEstimator, ConfirmationTarget, MIN_RELAY_FEE_SAT_PER_1000_WEIGHT, compute_feerate_sat_per_1000_weight, FEERATE_FLOOR_SATS_PER_KW};
 use crate::sign::WriteableEcdsaChannelSigner;
@@ -36,8 +39,6 @@ use core::cmp;
 use core::convert::TryInto;
 use core::mem;
 use core::ops::Deref;
-use bitcoin::{PackedLockTime, Sequence, Witness};
-use crate::ln::features::ChannelTypeFeatures;
 
 use super::chaininterface::LowerBoundedFeeEstimator;
 
@@ -428,14 +429,14 @@ impl Readable for HolderHTLCOutput {
 /// Note that on upgrades, some features of existing outputs may be missed.
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct HolderFundingOutput {
-	funding_redeemscript: Script,
+	funding_redeemscript: ScriptBuf,
 	pub(crate) funding_amount: Option<u64>,
 	channel_type_features: ChannelTypeFeatures,
 }
 
 
 impl HolderFundingOutput {
-	pub(crate) fn build(funding_redeemscript: Script, funding_amount: u64, channel_type_features: ChannelTypeFeatures) -> Self {
+	pub(crate) fn build(funding_redeemscript: ScriptBuf, funding_amount: u64, channel_type_features: ChannelTypeFeatures) -> Self {
 		HolderFundingOutput {
 			funding_redeemscript,
 			funding_amount: Some(funding_amount),
@@ -572,7 +573,7 @@ impl PackageSolvingData {
 		};
 		TxIn {
 			previous_output,
-			script_sig: Script::new(),
+			script_sig: ScriptBuf::new(),
 			sequence,
 			witness: Witness::new(),
 		}
@@ -875,7 +876,7 @@ impl PackageTemplate {
 
 		locktime
 	}
-	pub(crate) fn package_weight(&self, destination_script: &Script) -> usize {
+	pub(crate) fn package_weight(&self, destination_script: &Script) -> u64 {
 		let mut inputs_weight = 0;
 		let mut witnesses_weight = 2; // count segwit flags
 		for (_, outp) in self.inputs.iter() {
@@ -887,7 +888,7 @@ impl PackageTemplate {
 		let transaction_weight = 10 * WITNESS_SCALE_FACTOR;
 		// value: 8 bytes ; var_int: 1 byte ; pk_script: `destination_script.len()`
 		let output_weight = (8 + 1 + destination_script.len()) * WITNESS_SCALE_FACTOR;
-		inputs_weight + witnesses_weight + transaction_weight + output_weight
+		(inputs_weight + witnesses_weight + transaction_weight + output_weight) as u64
 	}
 	pub(crate) fn construct_malleable_package_with_external_funding<Signer: WriteableEcdsaChannelSigner>(
 		&self, onchain_handler: &mut OnchainTxHandler<Signer>,
@@ -909,12 +910,12 @@ impl PackageTemplate {
 	}
 	pub(crate) fn finalize_malleable_package<L: Deref, Signer: WriteableEcdsaChannelSigner>(
 		&self, current_height: u32, onchain_handler: &mut OnchainTxHandler<Signer>, value: u64,
-		destination_script: Script, logger: &L
+		destination_script: ScriptBuf, logger: &L
 	) -> Option<Transaction> where L::Target: Logger {
 		debug_assert!(self.is_malleable());
 		let mut bumped_tx = Transaction {
 			version: 2,
-			lock_time: PackedLockTime(self.package_locktime(current_height)),
+			lock_time: LockTime::from_consensus(self.package_locktime(current_height)),
 			input: vec![],
 			output: vec![TxOut {
 				script_pubkey: destination_script,
@@ -962,7 +963,7 @@ impl PackageTemplate {
 	/// which was used to generate the value. Will not return less than `dust_limit_sats` for the
 	/// value.
 	pub(crate) fn compute_package_output<F: Deref, L: Deref>(
-		&self, predicted_weight: usize, dust_limit_sats: u64, force_feerate_bump: bool,
+		&self, predicted_weight: u64, dust_limit_sats: u64, force_feerate_bump: bool,
 		fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L,
 	) -> Option<(u64, u64)>
 	where
@@ -1110,21 +1111,21 @@ impl Readable for PackageTemplate {
 ///
 /// [`OnChainSweep`]: crate::chain::chaininterface::ConfirmationTarget::OnChainSweep
 /// [`FEERATE_FLOOR_SATS_PER_KW`]: crate::chain::chaininterface::MIN_RELAY_FEE_SAT_PER_1000_WEIGHT
-fn compute_fee_from_spent_amounts<F: Deref, L: Deref>(input_amounts: u64, predicted_weight: usize, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L) -> Option<(u64, u64)>
+fn compute_fee_from_spent_amounts<F: Deref, L: Deref>(input_amounts: u64, predicted_weight: u64, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L) -> Option<(u64, u64)>
 	where F::Target: FeeEstimator,
 	      L::Target: Logger,
 {
 	let sweep_feerate = fee_estimator.bounded_sat_per_1000_weight(ConfirmationTarget::OnChainSweep);
-	let fee_rate = cmp::min(sweep_feerate, compute_feerate_sat_per_1000_weight(input_amounts / 2, predicted_weight as u64)) as u64;
-	let fee = fee_rate * (predicted_weight as u64) / 1000;
+	let fee_rate = cmp::min(sweep_feerate, compute_feerate_sat_per_1000_weight(input_amounts / 2, predicted_weight));
+	let fee = fee_rate as u64 * (predicted_weight) / 1000;
 
 	// if the fee rate is below the floor, we don't sweep
-	if fee_rate < FEERATE_FLOOR_SATS_PER_KW as u64 {
+	if fee_rate < FEERATE_FLOOR_SATS_PER_KW {
 		log_error!(logger, "Failed to generate an on-chain tx with fee ({} sat/kw) was less than the floor ({} sat/kw)",
 					fee_rate, FEERATE_FLOOR_SATS_PER_KW);
 		None
 	} else {
-		Some((fee, fee_rate))
+		Some((fee, fee_rate as u64))
 	}
 }
 
@@ -1135,7 +1136,7 @@ fn compute_fee_from_spent_amounts<F: Deref, L: Deref>(input_amounts: u64, predic
 /// verify that those bumping heuristics respect BIP125 rules 3) and 4) and if required adjust the
 /// new fee to meet the RBF policy requirement.
 fn feerate_bump<F: Deref, L: Deref>(
-	predicted_weight: usize, input_amounts: u64, previous_feerate: u64, force_feerate_bump: bool,
+	predicted_weight: u64, input_amounts: u64, previous_feerate: u64, force_feerate_bump: bool,
 	fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L,
 ) -> Option<(u64, u64)>
 where
@@ -1147,12 +1148,12 @@ where
 		if new_feerate > previous_feerate {
 			(new_fee, new_feerate)
 		} else if !force_feerate_bump {
-			let previous_fee = previous_feerate * (predicted_weight as u64) / 1000;
+			let previous_fee = previous_feerate * predicted_weight / 1000;
 			(previous_fee, previous_feerate)
 		} else {
 			// ...else just increase the previous feerate by 25% (because that's a nice number)
 			let bumped_feerate = previous_feerate + (previous_feerate / 4);
-			let bumped_fee = bumped_feerate * (predicted_weight as u64) / 1000;
+			let bumped_fee = bumped_feerate * predicted_weight / 1000;
 			if input_amounts <= bumped_fee {
 				log_warn!(logger, "Can't 25% bump new claiming tx, amount {} is too small", input_amounts);
 				return None;
@@ -1171,8 +1172,8 @@ where
 		return Some((new_fee, new_feerate));
 	}
 
-	let previous_fee = previous_feerate * (predicted_weight as u64) / 1000;
-	let min_relay_fee = MIN_RELAY_FEE_SAT_PER_1000_WEIGHT * (predicted_weight as u64) / 1000;
+	let previous_fee = previous_feerate * predicted_weight / 1000;
+	let min_relay_fee = MIN_RELAY_FEE_SAT_PER_1000_WEIGHT * predicted_weight / 1000;
 	// BIP 125 Opt-in Full Replace-by-Fee Signaling
 	// 	* 3. The replacement transaction pays an absolute fee of at least the sum paid by the original transactions.
 	//	* 4. The replacement transaction must also pay for its own bandwidth at or above the rate set by the node's minimum relay fee setting.
@@ -1181,7 +1182,7 @@ where
 	} else {
 		new_fee
 	};
-	Some((new_fee, new_fee * 1000 / (predicted_weight as u64)))
+	Some((new_fee, new_fee * 1000 / predicted_weight))
 }
 
 #[cfg(test)]
@@ -1192,7 +1193,7 @@ mod tests {
 	use crate::ln::{PaymentPreimage, PaymentHash};
 
 	use bitcoin::blockdata::constants::WITNESS_SCALE_FACTOR;
-	use bitcoin::blockdata::script::Script;
+	use bitcoin::blockdata::script::ScriptBuf;
 	use bitcoin::blockdata::transaction::OutPoint as BitcoinOutPoint;
 
 	use bitcoin::hashes::hex::FromHex;
@@ -1201,10 +1202,12 @@ mod tests {
 	use bitcoin::secp256k1::Secp256k1;
 	use crate::ln::features::ChannelTypeFeatures;
 
+	use std::str::FromStr;
+
 	macro_rules! dumb_revk_output {
 		($secp_ctx: expr, $is_counterparty_balance_on_anchors: expr) => {
 			{
-				let dumb_scalar = SecretKey::from_slice(&hex::decode("0101010101010101010101010101010101010101010101010101010101010101").unwrap()[..]).unwrap();
+				let dumb_scalar = SecretKey::from_slice(&<Vec<u8>>::from_hex("0101010101010101010101010101010101010101010101010101010101010101").unwrap()[..]).unwrap();
 				let dumb_point = PublicKey::from_secret_key(&$secp_ctx, &dumb_scalar);
 				PackageSolvingData::RevokedOutput(RevokedOutput::build(dumb_point, dumb_point, dumb_point, dumb_scalar, 0, 0, $is_counterparty_balance_on_anchors))
 			}
@@ -1214,7 +1217,7 @@ mod tests {
 	macro_rules! dumb_counterparty_output {
 		($secp_ctx: expr, $amt: expr, $opt_anchors: expr) => {
 			{
-				let dumb_scalar = SecretKey::from_slice(&hex::decode("0101010101010101010101010101010101010101010101010101010101010101").unwrap()[..]).unwrap();
+				let dumb_scalar = SecretKey::from_slice(&<Vec<u8>>::from_hex("0101010101010101010101010101010101010101010101010101010101010101").unwrap()[..]).unwrap();
 				let dumb_point = PublicKey::from_secret_key(&$secp_ctx, &dumb_scalar);
 				let hash = PaymentHash([1; 32]);
 				let htlc = HTLCOutputInCommitment { offered: true, amount_msat: $amt, cltv_expiry: 0, payment_hash: hash, transaction_output_index: None };
@@ -1226,7 +1229,7 @@ mod tests {
 	macro_rules! dumb_counterparty_offered_output {
 		($secp_ctx: expr, $amt: expr, $opt_anchors: expr) => {
 			{
-				let dumb_scalar = SecretKey::from_slice(&hex::decode("0101010101010101010101010101010101010101010101010101010101010101").unwrap()[..]).unwrap();
+				let dumb_scalar = SecretKey::from_slice(&<Vec<u8>>::from_hex("0101010101010101010101010101010101010101010101010101010101010101").unwrap()[..]).unwrap();
 				let dumb_point = PublicKey::from_secret_key(&$secp_ctx, &dumb_scalar);
 				let hash = PaymentHash([1; 32]);
 				let preimage = PaymentPreimage([2;32]);
@@ -1248,7 +1251,7 @@ mod tests {
 	#[test]
 	#[should_panic]
 	fn test_package_differing_heights() {
-		let txid = Txid::from_hex("c2d4449afa8d26140898dd54d3390b057ba2a5afcf03ba29d7dc0d8b9ffe966e").unwrap();
+		let txid = Txid::from_str("c2d4449afa8d26140898dd54d3390b057ba2a5afcf03ba29d7dc0d8b9ffe966e").unwrap();
 		let secp_ctx = Secp256k1::new();
 		let revk_outp = dumb_revk_output!(secp_ctx, false);
 
@@ -1260,7 +1263,7 @@ mod tests {
 	#[test]
 	#[should_panic]
 	fn test_package_untractable_merge_to() {
-		let txid = Txid::from_hex("c2d4449afa8d26140898dd54d3390b057ba2a5afcf03ba29d7dc0d8b9ffe966e").unwrap();
+		let txid = Txid::from_str("c2d4449afa8d26140898dd54d3390b057ba2a5afcf03ba29d7dc0d8b9ffe966e").unwrap();
 		let secp_ctx = Secp256k1::new();
 		let revk_outp = dumb_revk_output!(secp_ctx, false);
 		let htlc_outp = dumb_htlc_output!();
@@ -1273,7 +1276,7 @@ mod tests {
 	#[test]
 	#[should_panic]
 	fn test_package_untractable_merge_from() {
-		let txid = Txid::from_hex("c2d4449afa8d26140898dd54d3390b057ba2a5afcf03ba29d7dc0d8b9ffe966e").unwrap();
+		let txid = Txid::from_str("c2d4449afa8d26140898dd54d3390b057ba2a5afcf03ba29d7dc0d8b9ffe966e").unwrap();
 		let secp_ctx = Secp256k1::new();
 		let htlc_outp = dumb_htlc_output!();
 		let revk_outp = dumb_revk_output!(secp_ctx, false);
@@ -1286,7 +1289,7 @@ mod tests {
 	#[test]
 	#[should_panic]
 	fn test_package_noaggregation_to() {
-		let txid = Txid::from_hex("c2d4449afa8d26140898dd54d3390b057ba2a5afcf03ba29d7dc0d8b9ffe966e").unwrap();
+		let txid = Txid::from_str("c2d4449afa8d26140898dd54d3390b057ba2a5afcf03ba29d7dc0d8b9ffe966e").unwrap();
 		let secp_ctx = Secp256k1::new();
 		let revk_outp = dumb_revk_output!(secp_ctx, false);
 		let revk_outp_counterparty_balance = dumb_revk_output!(secp_ctx, true);
@@ -1299,7 +1302,7 @@ mod tests {
 	#[test]
 	#[should_panic]
 	fn test_package_noaggregation_from() {
-		let txid = Txid::from_hex("c2d4449afa8d26140898dd54d3390b057ba2a5afcf03ba29d7dc0d8b9ffe966e").unwrap();
+		let txid = Txid::from_str("c2d4449afa8d26140898dd54d3390b057ba2a5afcf03ba29d7dc0d8b9ffe966e").unwrap();
 		let secp_ctx = Secp256k1::new();
 		let revk_outp = dumb_revk_output!(secp_ctx, false);
 		let revk_outp_counterparty_balance = dumb_revk_output!(secp_ctx, true);
@@ -1312,7 +1315,7 @@ mod tests {
 	#[test]
 	#[should_panic]
 	fn test_package_empty() {
-		let txid = Txid::from_hex("c2d4449afa8d26140898dd54d3390b057ba2a5afcf03ba29d7dc0d8b9ffe966e").unwrap();
+		let txid = Txid::from_str("c2d4449afa8d26140898dd54d3390b057ba2a5afcf03ba29d7dc0d8b9ffe966e").unwrap();
 		let secp_ctx = Secp256k1::new();
 		let revk_outp = dumb_revk_output!(secp_ctx, false);
 
@@ -1325,7 +1328,7 @@ mod tests {
 	#[test]
 	#[should_panic]
 	fn test_package_differing_categories() {
-		let txid = Txid::from_hex("c2d4449afa8d26140898dd54d3390b057ba2a5afcf03ba29d7dc0d8b9ffe966e").unwrap();
+		let txid = Txid::from_str("c2d4449afa8d26140898dd54d3390b057ba2a5afcf03ba29d7dc0d8b9ffe966e").unwrap();
 		let secp_ctx = Secp256k1::new();
 		let revk_outp = dumb_revk_output!(secp_ctx, false);
 		let counterparty_outp = dumb_counterparty_output!(secp_ctx, 0, ChannelTypeFeatures::only_static_remote_key());
@@ -1337,7 +1340,7 @@ mod tests {
 
 	#[test]
 	fn test_package_split_malleable() {
-		let txid = Txid::from_hex("c2d4449afa8d26140898dd54d3390b057ba2a5afcf03ba29d7dc0d8b9ffe966e").unwrap();
+		let txid = Txid::from_str("c2d4449afa8d26140898dd54d3390b057ba2a5afcf03ba29d7dc0d8b9ffe966e").unwrap();
 		let secp_ctx = Secp256k1::new();
 		let revk_outp_one = dumb_revk_output!(secp_ctx, false);
 		let revk_outp_two = dumb_revk_output!(secp_ctx, false);
@@ -1365,7 +1368,7 @@ mod tests {
 
 	#[test]
 	fn test_package_split_untractable() {
-		let txid = Txid::from_hex("c2d4449afa8d26140898dd54d3390b057ba2a5afcf03ba29d7dc0d8b9ffe966e").unwrap();
+		let txid = Txid::from_str("c2d4449afa8d26140898dd54d3390b057ba2a5afcf03ba29d7dc0d8b9ffe966e").unwrap();
 		let htlc_outp_one = dumb_htlc_output!();
 
 		let mut package_one = PackageTemplate::build_package(txid, 0, htlc_outp_one, 1000, 100);
@@ -1375,7 +1378,7 @@ mod tests {
 
 	#[test]
 	fn test_package_timer() {
-		let txid = Txid::from_hex("c2d4449afa8d26140898dd54d3390b057ba2a5afcf03ba29d7dc0d8b9ffe966e").unwrap();
+		let txid = Txid::from_str("c2d4449afa8d26140898dd54d3390b057ba2a5afcf03ba29d7dc0d8b9ffe966e").unwrap();
 		let secp_ctx = Secp256k1::new();
 		let revk_outp = dumb_revk_output!(secp_ctx, false);
 
@@ -1387,7 +1390,7 @@ mod tests {
 
 	#[test]
 	fn test_package_amounts() {
-		let txid = Txid::from_hex("c2d4449afa8d26140898dd54d3390b057ba2a5afcf03ba29d7dc0d8b9ffe966e").unwrap();
+		let txid = Txid::from_str("c2d4449afa8d26140898dd54d3390b057ba2a5afcf03ba29d7dc0d8b9ffe966e").unwrap();
 		let secp_ctx = Secp256k1::new();
 		let counterparty_outp = dumb_counterparty_output!(secp_ctx, 1_000_000, ChannelTypeFeatures::only_static_remote_key());
 
@@ -1397,23 +1400,23 @@ mod tests {
 
 	#[test]
 	fn test_package_weight() {
-		let txid = Txid::from_hex("c2d4449afa8d26140898dd54d3390b057ba2a5afcf03ba29d7dc0d8b9ffe966e").unwrap();
+		let txid = Txid::from_str("c2d4449afa8d26140898dd54d3390b057ba2a5afcf03ba29d7dc0d8b9ffe966e").unwrap();
 		let secp_ctx = Secp256k1::new();
 
 		// (nVersion (4) + nLocktime (4) + count_tx_in (1) + prevout (36) + sequence (4) + script_length (1) + count_tx_out (1) + value (8) + var_int (1)) * WITNESS_SCALE_FACTOR + witness marker (2)
-		let weight_sans_output = (4 + 4 + 1 + 36 + 4 + 1 + 1 + 8 + 1) * WITNESS_SCALE_FACTOR + 2;
+		let weight_sans_output = (4 + 4 + 1 + 36 + 4 + 1 + 1 + 8 + 1) * WITNESS_SCALE_FACTOR as u64 + 2;
 
 		{
 			let revk_outp = dumb_revk_output!(secp_ctx, false);
 			let package = PackageTemplate::build_package(txid, 0, revk_outp, 0, 100);
-			assert_eq!(package.package_weight(&Script::new()),  weight_sans_output + WEIGHT_REVOKED_OUTPUT as usize);
+			assert_eq!(package.package_weight(&ScriptBuf::new()),  weight_sans_output + WEIGHT_REVOKED_OUTPUT);
 		}
 
 		{
 			for channel_type_features in [ChannelTypeFeatures::only_static_remote_key(), ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies()].iter() {
 				let counterparty_outp = dumb_counterparty_output!(secp_ctx, 1_000_000, channel_type_features.clone());
 				let package = PackageTemplate::build_package(txid, 0, counterparty_outp, 1000, 100);
-				assert_eq!(package.package_weight(&Script::new()), weight_sans_output + weight_received_htlc(channel_type_features) as usize);
+				assert_eq!(package.package_weight(&ScriptBuf::new()), weight_sans_output + weight_received_htlc(channel_type_features));
 			}
 		}
 
@@ -1421,7 +1424,7 @@ mod tests {
 			for channel_type_features in [ChannelTypeFeatures::only_static_remote_key(), ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies()].iter() {
 				let counterparty_outp = dumb_counterparty_offered_output!(secp_ctx, 1_000_000, channel_type_features.clone());
 				let package = PackageTemplate::build_package(txid, 0, counterparty_outp, 1000, 100);
-				assert_eq!(package.package_weight(&Script::new()), weight_sans_output + weight_offered_htlc(channel_type_features) as usize);
+				assert_eq!(package.package_weight(&ScriptBuf::new()), weight_sans_output + weight_offered_htlc(channel_type_features));
 			}
 		}
 	}

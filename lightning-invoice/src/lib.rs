@@ -46,7 +46,7 @@ use std::time::SystemTime;
 
 use bech32::u5;
 use bitcoin::{Address, Network, PubkeyHash, ScriptHash};
-use bitcoin::util::address::{Payload, WitnessVersion};
+use bitcoin::address::{Payload, WitnessProgram, WitnessVersion};
 use bitcoin_hashes::{Hash, sha256};
 use lightning::ln::features::Bolt11InvoiceFeatures;
 use lightning::util::invoice::construct_invoice_preimage;
@@ -73,6 +73,7 @@ pub use lightning::ln::PaymentSecret;
 pub use lightning::routing::router::{RouteHint, RouteHintHop};
 #[doc(no_inline)]
 pub use lightning::routing::gossip::RoutingFees;
+use lightning::util::string::UntrustedString;
 
 mod de;
 mod ser;
@@ -82,9 +83,9 @@ mod prelude {
 	#[cfg(feature = "hashbrown")]
 	extern crate hashbrown;
 
-	pub use alloc::{vec, vec::Vec, string::String, collections::VecDeque, boxed::Box};
+	pub use alloc::{vec, vec::Vec, string::String};
 	#[cfg(not(feature = "hashbrown"))]
-	pub use std::collections::{HashMap, HashSet, hash_map};
+	pub use std::collections::{HashMap, hash_map};
 	#[cfg(feature = "hashbrown")]
 	pub use self::hashbrown::{HashMap, HashSet, hash_map};
 
@@ -92,12 +93,6 @@ mod prelude {
 }
 
 use crate::prelude::*;
-
-/// Sync compat for std/no_std
-#[cfg(feature = "std")]
-mod sync {
-	pub use ::std::sync::{Mutex, MutexGuard};
-}
 
 /// Sync compat for std/no_std
 #[cfg(not(feature = "std"))]
@@ -269,6 +264,15 @@ pub enum Bolt11InvoiceDescription<'f> {
 	Hash(&'f Sha256),
 }
 
+impl<'f> Display for Bolt11InvoiceDescription<'f> {
+	fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+		match self {
+			Bolt11InvoiceDescription::Direct(desc) => write!(f, "{}", desc.0),
+			Bolt11InvoiceDescription::Hash(hash) => write!(f, "{}", hash.0),
+		}
+	}
+}
+
 /// Represents a signed [`RawBolt11Invoice`] with cached hash. The signature is not checked and may be
 /// invalid.
 ///
@@ -403,6 +407,7 @@ impl From<Network> for Currency {
 			Network::Testnet => Currency::BitcoinTestnet,
 			Network::Regtest => Currency::Regtest,
 			Network::Signet => Currency::Signet,
+			_ => unreachable!(),
 		}
 	}
 }
@@ -470,8 +475,8 @@ impl Sha256 {
 ///
 /// # Invariants
 /// The description can be at most 639 __bytes__ long
-#[derive(Clone, Debug, Hash, Eq, PartialEq, Ord, PartialOrd)]
-pub struct Description(String);
+#[derive(Clone, Debug, Hash, Eq, PartialEq, Ord, PartialOrd, Default)]
+pub struct Description(UntrustedString);
 
 /// Payee public key
 #[derive(Clone, Debug, Hash, Eq, PartialEq, Ord, PartialOrd)]
@@ -520,7 +525,7 @@ impl Ord for Bolt11InvoiceSignature {
 /// The encoded route has to be <1024 5bit characters long (<=639 bytes or <=12 hops)
 ///
 #[derive(Clone, Debug, Hash, Eq, PartialEq, Ord, PartialOrd)]
-pub struct PrivateRoute(RouteHint);
+pub struct PrivateRoute(pub RouteHint);
 
 /// Tag constants as specified in BOLT11
 #[allow(missing_docs)]
@@ -675,7 +680,7 @@ impl<H: tb::Bool, T: tb::Bool, C: tb::Bool, S: tb::Bool, M: tb::Bool> InvoiceBui
 	pub fn invoice_description(self, description: Bolt11InvoiceDescription) -> InvoiceBuilder<tb::True, H, T, C, S, M> {
 		match description {
 			Bolt11InvoiceDescription::Direct(desc) => {
-				self.description(desc.clone().into_inner())
+				self.description(desc.clone().into_inner().0)
 			}
 			Bolt11InvoiceDescription::Hash(hash) => {
 				self.description_hash(hash.0)
@@ -1136,6 +1141,12 @@ impl PositiveTimestamp {
 	}
 }
 
+impl From<PositiveTimestamp> for Duration {
+	fn from(val: PositiveTimestamp) -> Self {
+		val.0
+	}
+}
+
 #[cfg(feature = "std")]
 impl From<PositiveTimestamp> for SystemTime {
 	fn from(val: PositiveTimestamp) -> Self {
@@ -1413,10 +1424,13 @@ impl Bolt11Invoice {
 
 	/// Returns a list of all fallback addresses as [`Address`]es
 	pub fn fallback_addresses(&self) -> Vec<Address> {
-		self.fallbacks().iter().map(|fallback| {
+		self.fallbacks().iter().filter_map(|fallback| {
 			let payload = match fallback {
 				Fallback::SegWitProgram { version, program } => {
-					Payload::WitnessProgram { version: *version, program: program.to_vec() }
+					match WitnessProgram::new(*version, program.clone()) {
+						Ok(witness_program) => Payload::WitnessProgram(witness_program),
+						Err(_) => return None,
+					}
 				}
 				Fallback::PubKeyHash(pkh) => {
 					Payload::PubkeyHash(*pkh)
@@ -1426,7 +1440,7 @@ impl Bolt11Invoice {
 				}
 			};
 
-			Address { payload, network: self.network() }
+			Some(Address::new(self.network(), payload))
 		}).collect()
 	}
 
@@ -1502,27 +1516,19 @@ impl Description {
 		if description.len() > 639 {
 			Err(CreationError::DescriptionTooLong)
 		} else {
-			Ok(Description(description))
+			Ok(Description(UntrustedString(description)))
 		}
 	}
 
-	/// Returns the underlying description [`String`]
-	pub fn into_inner(self) -> String {
+	/// Returns the underlying description [`UntrustedString`]
+	pub fn into_inner(self) -> UntrustedString {
 		self.0
 	}
 }
 
-impl From<Description> for String {
-	fn from(val: Description) -> Self {
-		val.into_inner()
-	}
-}
-
-impl Deref for Description {
-	type Target = str;
-
-	fn deref(&self) -> &str {
-		&self.0
+impl Display for Description {
+	fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+		write!(f, "{}", self.0)
 	}
 }
 
@@ -1747,9 +1753,9 @@ impl<'de> Deserialize<'de> for Bolt11Invoice {
 
 #[cfg(test)]
 mod test {
-	use bitcoin::Script;
-	use bitcoin_hashes::hex::FromHex;
+	use bitcoin::ScriptBuf;
 	use bitcoin_hashes::sha256;
+	use std::str::FromStr;
 
 	#[test]
 	fn test_system_time_bounds_assumptions() {
@@ -1773,7 +1779,7 @@ mod test {
 			data: RawDataPart {
 				timestamp: PositiveTimestamp::from_unix_timestamp(1496314658).unwrap(),
 				tagged_fields: vec![
-					PaymentHash(crate::Sha256(sha256::Hash::from_hex(
+					PaymentHash(crate::Sha256(sha256::Hash::from_str(
 						"0001020304050607080900010203040506070809000102030405060708090102"
 					).unwrap())).into(),
 					Description(crate::Description::new(
@@ -1811,7 +1817,7 @@ mod test {
 				data: RawDataPart {
 					timestamp: PositiveTimestamp::from_unix_timestamp(1496314658).unwrap(),
 					tagged_fields: vec ! [
-						PaymentHash(Sha256(sha256::Hash::from_hex(
+						PaymentHash(Sha256(sha256::Hash::from_str(
 							"0001020304050607080900010203040506070809000102030405060708090102"
 						).unwrap())).into(),
 						Description(
@@ -1867,7 +1873,7 @@ mod test {
 		use lightning::ln::features::Bolt11InvoiceFeatures;
 		use secp256k1::Secp256k1;
 		use secp256k1::SecretKey;
-		use crate::{Bolt11Invoice, RawBolt11Invoice, RawHrp, RawDataPart, Currency, Sha256, PositiveTimestamp, 
+		use crate::{Bolt11Invoice, RawBolt11Invoice, RawHrp, RawDataPart, Currency, Sha256, PositiveTimestamp,
 			 Bolt11SemanticError};
 
 		let private_key = SecretKey::from_slice(&[42; 32]).unwrap();
@@ -1881,7 +1887,7 @@ mod test {
 			data: RawDataPart {
 				timestamp: PositiveTimestamp::from_unix_timestamp(1496314658).unwrap(),
 				tagged_fields: vec ! [
-					PaymentHash(Sha256(sha256::Hash::from_hex(
+					PaymentHash(Sha256(sha256::Hash::from_str(
 						"0001020304050607080900010203040506070809000102030405060708090102"
 					).unwrap())).into(),
 					Description(
@@ -2138,7 +2144,7 @@ mod test {
 		assert_eq!(invoice.expiry_time(), Duration::from_secs(54321));
 		assert_eq!(invoice.min_final_cltv_expiry_delta(), 144);
 		assert_eq!(invoice.fallbacks(), vec![&Fallback::PubKeyHash(PubkeyHash::from_slice(&[0;20]).unwrap())]);
-		let address = Address::from_script(&Script::new_p2pkh(&PubkeyHash::from_slice(&[0;20]).unwrap()), Network::Testnet).unwrap();
+		let address = Address::from_script(&ScriptBuf::new_p2pkh(&PubkeyHash::from_slice(&[0;20]).unwrap()), Network::Testnet).unwrap();
 		assert_eq!(invoice.fallback_addresses(), vec![address]);
 		assert_eq!(invoice.private_routes(), vec![&PrivateRoute(route_1), &PrivateRoute(route_2)]);
 		assert_eq!(

@@ -11,14 +11,14 @@ macro_rules! hkdf_extract_expand {
 	($salt: expr, $ikm: expr) => {{
 		let mut hmac = HmacEngine::<Sha256>::new($salt);
 		hmac.input($ikm);
-		let prk = Hmac::from_engine(hmac).into_inner();
+		let prk = Hmac::from_engine(hmac).to_byte_array();
 		let mut hmac = HmacEngine::<Sha256>::new(&prk[..]);
 		hmac.input(&[1; 1]);
-		let t1 = Hmac::from_engine(hmac).into_inner();
+		let t1 = Hmac::from_engine(hmac).to_byte_array();
 		let mut hmac = HmacEngine::<Sha256>::new(&prk[..]);
 		hmac.input(&t1);
 		hmac.input(&[2; 1]);
-		(t1, Hmac::from_engine(hmac).into_inner(), prk)
+		(t1, Hmac::from_engine(hmac).to_byte_array(), prk)
 	}};
 	($salt: expr, $ikm: expr, 2) => {{
 		let (k1, k2, _) = hkdf_extract_expand!($salt, $ikm);
@@ -30,17 +30,17 @@ macro_rules! hkdf_extract_expand {
 		let mut hmac = HmacEngine::<Sha256>::new(&prk[..]);
 		hmac.input(&k2);
 		hmac.input(&[3; 1]);
-		let k3 = Hmac::from_engine(hmac).into_inner();
+		let k3 = Hmac::from_engine(hmac).to_byte_array();
 
 		let mut hmac = HmacEngine::<Sha256>::new(&prk[..]);
 		hmac.input(&k3);
 		hmac.input(&[4; 1]);
-		let k4 = Hmac::from_engine(hmac).into_inner();
+		let k4 = Hmac::from_engine(hmac).to_byte_array();
 
 		let mut hmac = HmacEngine::<Sha256>::new(&prk[..]);
 		hmac.input(&k4);
 		hmac.input(&[5; 1]);
-		let k5 = Hmac::from_engine(hmac).into_inner();
+		let k5 = Hmac::from_engine(hmac).to_byte_array();
 
 		(k1, k2, k3, k4, k5)
 	}}

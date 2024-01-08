@@ -20,9 +20,9 @@
 //! security-domain-separated system design, you should consider having multiple paths for
 //! ChannelMonitors to get out of the HSM and onto monitoring devices.
 
-use bitcoin::blockdata::block::BlockHeader;
+use bitcoin::blockdata::block::Header;
 use bitcoin::blockdata::transaction::{OutPoint as BitcoinOutPoint, TxOut, Transaction};
-use bitcoin::blockdata::script::Script;
+use bitcoin::blockdata::script::{Script, ScriptBuf};
 
 use bitcoin::hashes::Hash;
 use bitcoin::hashes::sha256::Hash as Sha256;
@@ -30,7 +30,8 @@ use bitcoin::hash_types::{Txid, BlockHash};
 
 use bitcoin::secp256k1::{Secp256k1, ecdsa::Signature};
 use bitcoin::secp256k1::{SecretKey, PublicKey};
-use bitcoin::{secp256k1, EcdsaSighashType};
+use bitcoin::secp256k1;
+use bitcoin::sighash::EcdsaSighashType;
 
 use crate::ln::channel::INITIAL_COMMITMENT_NUMBER;
 use crate::ln::{PaymentHash, PaymentPreimage};
@@ -132,7 +133,8 @@ pub enum MonitorEvent {
 	/// A monitor event containing an HTLCUpdate.
 	HTLCEvent(HTLCUpdate),
 
-	/// A monitor event that the Channel's commitment transaction was confirmed.
+	/// Indicates we broadcasted the channel's latest commitment transaction and thus closed the
+	/// channel.
 	HolderForceClosed(OutPoint),
 
 	/// Indicates a [`ChannelMonitor`] update has completed. See
@@ -515,7 +517,7 @@ pub(crate) enum ChannelMonitorUpdateStep {
 		should_broadcast: bool,
 	},
 	ShutdownScript {
-		scriptpubkey: Script,
+		scriptpubkey: ScriptBuf,
 	},
 }
 
@@ -749,19 +751,19 @@ pub(crate) struct ChannelMonitorImpl<Signer: WriteableEcdsaChannelSigner> {
 	latest_update_id: u64,
 	commitment_transaction_number_obscure_factor: u64,
 
-	destination_script: Script,
-	broadcasted_holder_revokable_script: Option<(Script, PublicKey, PublicKey)>,
-	counterparty_payment_script: Script,
-	shutdown_script: Option<Script>,
+	destination_script: ScriptBuf,
+	broadcasted_holder_revokable_script: Option<(ScriptBuf, PublicKey, PublicKey)>,
+	counterparty_payment_script: ScriptBuf,
+	shutdown_script: Option<ScriptBuf>,
 
 	channel_keys_id: [u8; 32],
 	holder_revocation_basepoint: PublicKey,
-	funding_info: (OutPoint, Script),
+	funding_info: (OutPoint, ScriptBuf),
 	current_counterparty_commitment_txid: Option<Txid>,
 	prev_counterparty_commitment_txid: Option<Txid>,
 
 	counterparty_commitment_params: CounterpartyCommitmentParameters,
-	funding_redeemscript: Script,
+	funding_redeemscript: ScriptBuf,
 	channel_value_satoshis: u64,
 	// first is the idx of the first of the two per-commitment points
 	their_cur_per_commitment_points: Option<(u64, PublicKey, Option<PublicKey>)>,
@@ -830,7 +832,7 @@ pub(crate) struct ChannelMonitorImpl<Signer: WriteableEcdsaChannelSigner> {
 	// interface knows about the TXOs that we want to be notified of spends of. We could probably
 	// be smart and derive them from the above storage fields, but its much simpler and more
 	// Obviously Correct (tm) if we just keep track of them explicitly.
-	outputs_to_watch: HashMap<Txid, Vec<(u32, Script)>>,
+	outputs_to_watch: HashMap<Txid, Vec<(u32, ScriptBuf)>>,
 
 	#[cfg(test)]
 	pub onchain_tx_handler: OnchainTxHandler<Signer>,
@@ -939,7 +941,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Writeable for ChannelMonitorImpl<Signe
 		self.counterparty_payment_script.write(writer)?;
 		match &self.shutdown_script {
 			Some(script) => script.write(writer)?,
-			None => Script::new().write(writer)?,
+			None => ScriptBuf::new().write(writer)?,
 		}
 
 		self.channel_keys_id.write(writer)?;
@@ -1131,10 +1133,10 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 		ChannelMonitor { inner: Mutex::new(imp) }
 	}
 
-	pub(crate) fn new(secp_ctx: Secp256k1<secp256k1::All>, keys: Signer, shutdown_script: Option<Script>,
-	                  on_counterparty_tx_csv: u16, destination_script: &Script, funding_info: (OutPoint, Script),
+	pub(crate) fn new(secp_ctx: Secp256k1<secp256k1::All>, keys: Signer, shutdown_script: Option<ScriptBuf>,
+	                  on_counterparty_tx_csv: u16, destination_script: &Script, funding_info: (OutPoint, ScriptBuf),
 	                  channel_parameters: &ChannelTransactionParameters,
-	                  funding_redeemscript: Script, channel_value_satoshis: u64,
+	                  funding_redeemscript: ScriptBuf, channel_value_satoshis: u64,
 	                  commitment_transaction_number_obscure_factor: u64,
 	                  initial_holder_commitment_tx: HolderCommitmentTransaction,
 	                  best_block: BestBlock, counterparty_node_id: PublicKey) -> ChannelMonitor<Signer> {
@@ -1173,7 +1175,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 		};
 
 		let onchain_tx_handler = OnchainTxHandler::new(
-			channel_value_satoshis, channel_keys_id, destination_script.clone(), keys,
+			channel_value_satoshis, channel_keys_id, destination_script.into(), keys,
 			channel_parameters.clone(), initial_holder_commitment_tx, secp_ctx
 		);
 
@@ -1184,7 +1186,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 			latest_update_id: 0,
 			commitment_transaction_number_obscure_factor,
 
-			destination_script: destination_script.clone(),
+			destination_script: destination_script.into(),
 			broadcasted_holder_revokable_script: None,
 			counterparty_payment_script,
 			shutdown_script,
@@ -1332,13 +1334,13 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 	}
 
 	/// Gets the funding transaction outpoint of the channel this ChannelMonitor is monitoring for.
-	pub fn get_funding_txo(&self) -> (OutPoint, Script) {
+	pub fn get_funding_txo(&self) -> (OutPoint, ScriptBuf) {
 		self.inner.lock().unwrap().get_funding_txo().clone()
 	}
 
 	/// Gets a list of txids, with their output scripts (in the order they appear in the
 	/// transaction), which we must learn about spends of via block_connected().
-	pub fn get_outputs_to_watch(&self) -> Vec<(Txid, Vec<(u32, Script)>)> {
+	pub fn get_outputs_to_watch(&self) -> Vec<(Txid, Vec<(u32, ScriptBuf)>)> {
 		self.inner.lock().unwrap().get_outputs_to_watch()
 			.iter().map(|(txid, outputs)| (*txid, outputs.clone())).collect()
 	}
@@ -1526,7 +1528,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 	/// [`get_outputs_to_watch`]: #method.get_outputs_to_watch
 	pub fn block_connected<B: Deref, F: Deref, L: Deref>(
 		&self,
-		header: &BlockHeader,
+		header: &Header,
 		txdata: &TransactionData,
 		height: u32,
 		broadcaster: B,
@@ -1546,7 +1548,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 	/// appropriately.
 	pub fn block_disconnected<B: Deref, F: Deref, L: Deref>(
 		&self,
-		header: &BlockHeader,
+		header: &Header,
 		height: u32,
 		broadcaster: B,
 		fee_estimator: F,
@@ -1569,7 +1571,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 	/// [`block_connected`]: Self::block_connected
 	pub fn transactions_confirmed<B: Deref, F: Deref, L: Deref>(
 		&self,
-		header: &BlockHeader,
+		header: &Header,
 		txdata: &TransactionData,
 		height: u32,
 		broadcaster: B,
@@ -1617,7 +1619,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 	/// [`block_connected`]: Self::block_connected
 	pub fn best_block_updated<B: Deref, F: Deref, L: Deref>(
 		&self,
-		header: &BlockHeader,
+		header: &Header,
 		height: u32,
 		broadcaster: B,
 		fee_estimator: F,
@@ -1707,12 +1709,12 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 	}
 
 	#[cfg(test)]
-	pub fn get_counterparty_payment_script(&self) -> Script{
+	pub fn get_counterparty_payment_script(&self) -> ScriptBuf {
 		self.inner.lock().unwrap().counterparty_payment_script.clone()
 	}
 
 	#[cfg(test)]
-	pub fn set_counterparty_payment_script(&self, script: Script) {
+	pub fn set_counterparty_payment_script(&self, script: ScriptBuf) {
 		self.inner.lock().unwrap().counterparty_payment_script = script;
 	}
 }
@@ -2676,7 +2678,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				},
 				ChannelMonitorUpdateStep::PaymentPreimage { payment_preimage } => {
 					log_trace!(logger, "Updating ChannelMonitor with payment preimage");
-					self.provide_payment_preimage(&PaymentHash(Sha256::hash(&payment_preimage.0[..]).into_inner()), &payment_preimage, broadcaster, &bounded_fee_estimator, logger)
+					self.provide_payment_preimage(&PaymentHash(Sha256::hash(&payment_preimage.0[..]).to_byte_array()), &payment_preimage, broadcaster, &bounded_fee_estimator, logger)
 				},
 				ChannelMonitorUpdateStep::CommitmentSecret { idx, secret } => {
 					log_trace!(logger, "Updating ChannelMonitor with commitment secret");
@@ -2767,11 +2769,11 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		self.latest_update_id
 	}
 
-	pub fn get_funding_txo(&self) -> &(OutPoint, Script) {
+	pub fn get_funding_txo(&self) -> &(OutPoint, ScriptBuf) {
 		&self.funding_info
 	}
 
-	pub fn get_outputs_to_watch(&self) -> &HashMap<Txid, Vec<(u32, Script)>> {
+	pub fn get_outputs_to_watch(&self) -> &HashMap<Txid, Vec<(u32, ScriptBuf)>> {
 		// If we've detected a counterparty commitment tx on chain, we must include it in the set
 		// of outputs to watch for spends of, otherwise we're likely to lose user funds. Because
 		// its trivial to do, double-check that here.
@@ -2987,7 +2989,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			};
 		}
 
-		let commitment_number = 0xffffffffffff - ((((tx.input[0].sequence.0 as u64 & 0xffffff) << 3*8) | (tx.lock_time.0 as u64 & 0xffffff)) ^ self.commitment_transaction_number_obscure_factor);
+		let commitment_number = 0xffffffffffff - ((((tx.input[0].sequence.0 as u64 & 0xffffff) << 3*8) | (tx.lock_time.to_consensus_u32() as u64 & 0xffffff)) ^ self.commitment_transaction_number_obscure_factor);
 		if commitment_number >= self.get_min_seen_secret() {
 			let secret = self.get_secret(commitment_number).unwrap();
 			let per_commitment_key = ignore_error!(SecretKey::from_slice(&secret));
@@ -3204,7 +3206,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 	// Returns (1) `PackageTemplate`s that can be given to the OnchainTxHandler, so that the handler can
 	// broadcast transactions claiming holder HTLC commitment outputs and (2) a holder revokable
 	// script so we can detect whether a holder transaction has been seen on-chain.
-	fn get_broadcasted_holder_claims(&self, holder_tx: &HolderSignedTx, conf_height: u32) -> (Vec<PackageTemplate>, Option<(Script, PublicKey, PublicKey)>) {
+	fn get_broadcasted_holder_claims(&self, holder_tx: &HolderSignedTx, conf_height: u32) -> (Vec<PackageTemplate>, Option<(ScriptBuf, PublicKey, PublicKey)>) {
 		let mut claim_requests = Vec::with_capacity(holder_tx.htlc_outputs.len());
 
 		let redeemscript = chan_utils::get_revokeable_redeemscript(&holder_tx.revocation_key, self.on_holder_tx_csv, &holder_tx.delayed_payment_key);
@@ -3367,7 +3369,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		holder_transactions
 	}
 
-	pub fn block_connected<B: Deref, F: Deref, L: Deref>(&mut self, header: &BlockHeader, txdata: &TransactionData, height: u32, broadcaster: B, fee_estimator: F, logger: L) -> Vec<TransactionOutputs>
+	pub fn block_connected<B: Deref, F: Deref, L: Deref>(&mut self, header: &Header, txdata: &TransactionData, height: u32, broadcaster: B, fee_estimator: F, logger: L) -> Vec<TransactionOutputs>
 		where B::Target: BroadcasterInterface,
 		      F::Target: FeeEstimator,
 					L::Target: Logger,
@@ -3381,7 +3383,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 
 	fn best_block_updated<B: Deref, F: Deref, L: Deref>(
 		&mut self,
-		header: &BlockHeader,
+		header: &Header,
 		height: u32,
 		broadcaster: B,
 		fee_estimator: &LowerBoundedFeeEstimator<F>,
@@ -3407,7 +3409,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 
 	fn transactions_confirmed<B: Deref, F: Deref, L: Deref>(
 		&mut self,
-		header: &BlockHeader,
+		header: &Header,
 		txdata: &TransactionData,
 		height: u32,
 		broadcaster: B,
@@ -3476,7 +3478,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 						&self.funding_info.0.to_channel_id(), txid);
 					self.funding_spend_seen = true;
 					let mut commitment_tx_to_counterparty_output = None;
-					if (tx.input[0].sequence.0 >> 8*3) as u8 == 0x80 && (tx.lock_time.0 >> 8*3) as u8 == 0x20 {
+					if (tx.input[0].sequence.0 >> 8*3) as u8 == 0x80 && (tx.lock_time.to_consensus_u32() >> 8*3) as u8 == 0x20 {
 						let (mut new_outpoints, new_outputs, counterparty_output_idx_sats) =
 							self.check_spend_counterparty_transaction(&tx, height, &block_hash, &logger);
 						commitment_tx_to_counterparty_output = counterparty_output_idx_sats;
@@ -3704,7 +3706,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		watch_outputs
 	}
 
-	pub fn block_disconnected<B: Deref, F: Deref, L: Deref>(&mut self, header: &BlockHeader, height: u32, broadcaster: B, fee_estimator: F, logger: L)
+	pub fn block_disconnected<B: Deref, F: Deref, L: Deref>(&mut self, header: &Header, height: u32, broadcaster: B, fee_estimator: F, logger: L)
 		where B::Target: BroadcasterInterface,
 		      F::Target: FeeEstimator,
 		      L::Target: Logger,
@@ -3794,7 +3796,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 									return true;
 								}
 
-								assert_eq!(&bitcoin::Address::p2wsh(&Script::from(input.witness.last().unwrap().to_vec()), bitcoin::Network::Bitcoin).script_pubkey(), _script_pubkey);
+								assert_eq!(&bitcoin::Address::p2wsh(&ScriptBuf::from(input.witness.last().unwrap().to_vec()), bitcoin::Network::Bitcoin).script_pubkey(), _script_pubkey);
 							} else if _script_pubkey.is_v0_p2wpkh() {
 								assert_eq!(&bitcoin::Address::p2wpkh(&bitcoin::PublicKey::from_slice(&input.witness.last().unwrap()).unwrap(), bitcoin::Network::Bitcoin).unwrap().script_pubkey(), _script_pubkey);
 							} else { panic!(); }
@@ -4146,11 +4148,11 @@ where
 	F::Target: FeeEstimator,
 	L::Target: Logger,
 {
-	fn filtered_block_connected(&self, header: &BlockHeader, txdata: &TransactionData, height: u32) {
+	fn filtered_block_connected(&self, header: &Header, txdata: &TransactionData, height: u32) {
 		self.0.block_connected(header, txdata, height, &*self.1, &*self.2, &*self.3);
 	}
 
-	fn block_disconnected(&self, header: &BlockHeader, height: u32) {
+	fn block_disconnected(&self, header: &Header, height: u32) {
 		self.0.block_disconnected(header, height, &*self.1, &*self.2, &*self.3);
 	}
 }
@@ -4162,7 +4164,7 @@ where
 	F::Target: FeeEstimator,
 	L::Target: Logger,
 {
-	fn transactions_confirmed(&self, header: &BlockHeader, txdata: &TransactionData, height: u32) {
+	fn transactions_confirmed(&self, header: &Header, txdata: &TransactionData, height: u32) {
 		self.0.transactions_confirmed(header, txdata, height, &*self.1, &*self.2, &*self.3);
 	}
 
@@ -4170,7 +4172,7 @@ where
 		self.0.transaction_unconfirmed(txid, &*self.1, &*self.2, &*self.3);
 	}
 
-	fn best_block_updated(&self, header: &BlockHeader, height: u32) {
+	fn best_block_updated(&self, header: &Header, height: u32) {
 		self.0.best_block_updated(header, height, &*self.1, &*self.2, &*self.3);
 	}
 
@@ -4211,9 +4213,9 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 			1 => { None },
 			_ => return Err(DecodeError::InvalidValue),
 		};
-		let mut counterparty_payment_script: Script = Readable::read(reader)?;
+		let mut counterparty_payment_script: ScriptBuf = Readable::read(reader)?;
 		let shutdown_script = {
-			let script = <Script as Readable>::read(reader)?;
+			let script = <ScriptBuf as Readable>::read(reader)?;
 			if script.is_empty() { None } else { Some(script) }
 		};
 
@@ -4319,7 +4321,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 		let mut payment_preimages = HashMap::with_capacity(cmp::min(payment_preimages_len as usize, MAX_ALLOC_SIZE / 32));
 		for _ in 0..payment_preimages_len {
 			let preimage: PaymentPreimage = Readable::read(reader)?;
-			let hash = PaymentHash(Sha256::hash(&preimage.0[..]).into_inner());
+			let hash = PaymentHash(Sha256::hash(&preimage.0[..]).to_byte_array());
 			if let Some(_) = payment_preimages.insert(hash, preimage) {
 				return Err(DecodeError::InvalidValue);
 			}
@@ -4356,11 +4358,11 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 		}
 
 		let outputs_to_watch_len: u64 = Readable::read(reader)?;
-		let mut outputs_to_watch = HashMap::with_capacity(cmp::min(outputs_to_watch_len as usize, MAX_ALLOC_SIZE / (mem::size_of::<Txid>() + mem::size_of::<u32>() + mem::size_of::<Vec<Script>>())));
+		let mut outputs_to_watch = HashMap::with_capacity(cmp::min(outputs_to_watch_len as usize, MAX_ALLOC_SIZE / (mem::size_of::<Txid>() + mem::size_of::<u32>() + mem::size_of::<Vec<ScriptBuf>>())));
 		for _ in 0..outputs_to_watch_len {
 			let txid = Readable::read(reader)?;
 			let outputs_len: u64 = Readable::read(reader)?;
-			let mut outputs = Vec::with_capacity(cmp::min(outputs_len as usize, MAX_ALLOC_SIZE / (mem::size_of::<u32>() + mem::size_of::<Script>())));
+			let mut outputs = Vec::with_capacity(cmp::min(outputs_len as usize, MAX_ALLOC_SIZE / (mem::size_of::<u32>() + mem::size_of::<ScriptBuf>())));
 			for _ in 0..outputs_len {
 				outputs.push((Readable::read(reader)?, Readable::read(reader)?));
 			}
@@ -4483,11 +4485,13 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 
 #[cfg(test)]
 mod tests {
-	use bitcoin::blockdata::script::{Script, Builder};
+	use bitcoin::blockdata::locktime::absolute::LockTime;
+	use bitcoin::blockdata::script::{ScriptBuf, Builder};
 	use bitcoin::blockdata::opcodes;
-	use bitcoin::blockdata::transaction::{Transaction, TxIn, TxOut, EcdsaSighashType};
+	use bitcoin::blockdata::transaction::{Transaction, TxIn, TxOut};
 	use bitcoin::blockdata::transaction::OutPoint as BitcoinOutPoint;
-	use bitcoin::util::sighash;
+	use bitcoin::sighash;
+	use bitcoin::sighash::EcdsaSighashType;
 	use bitcoin::hashes::Hash;
 	use bitcoin::hashes::sha256::Hash as Sha256;
 	use bitcoin::hashes::hex::FromHex;
@@ -4495,8 +4499,7 @@ mod tests {
 	use bitcoin::network::constants::Network;
 	use bitcoin::secp256k1::{SecretKey,PublicKey};
 	use bitcoin::secp256k1::Secp256k1;
-
-	use hex;
+	use bitcoin::{Sequence, Witness};
 
 	use crate::chain::chaininterface::LowerBoundedFeeEstimator;
 
@@ -4518,9 +4521,10 @@ mod tests {
 	use crate::util::ser::{ReadableArgs, Writeable};
 	use crate::sync::{Arc, Mutex};
 	use crate::io;
-	use bitcoin::{PackedLockTime, Sequence, Witness};
 	use crate::ln::features::ChannelTypeFeatures;
 	use crate::prelude::*;
+
+	use std::str::FromStr;
 
 	fn do_test_funding_spend_refuses_updates(use_local_txn: bool) {
 		// Previously, monitor updates were allowed freely even after a funding-spend transaction
@@ -4621,7 +4625,7 @@ mod tests {
 		{
 			for i in 0..20 {
 				let preimage = PaymentPreimage([i; 32]);
-				let hash = PaymentHash(Sha256::hash(&preimage.0[..]).into_inner());
+				let hash = PaymentHash(Sha256::hash(&preimage.0[..]).to_byte_array());
 				preimages.push((preimage, hash));
 			}
 		}
@@ -4697,18 +4701,18 @@ mod tests {
 		let shutdown_pubkey = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 		let best_block = BestBlock::from_network(Network::Testnet);
 		let monitor = ChannelMonitor::new(Secp256k1::new(), keys,
-			Some(ShutdownScript::new_p2wpkh_from_pubkey(shutdown_pubkey).into_inner()), 0, &Script::new(),
-			(OutPoint { txid: Txid::from_slice(&[43; 32]).unwrap(), index: 0 }, Script::new()),
-			&channel_parameters, Script::new(), 46, 0, HolderCommitmentTransaction::dummy(&mut Vec::new()),
+			Some(ShutdownScript::new_p2wpkh_from_pubkey(shutdown_pubkey).into_inner()), 0, &ScriptBuf::new(),
+			(OutPoint { txid: Txid::from_slice(&[43; 32]).unwrap(), index: 0 }, ScriptBuf::new()),
+			&channel_parameters, ScriptBuf::new(), 46, 0, HolderCommitmentTransaction::dummy(&mut Vec::new()),
 			best_block, dummy_key);
 
 		let mut htlcs = preimages_slice_to_htlcs!(preimages[0..10]);
 		let dummy_commitment_tx = HolderCommitmentTransaction::dummy(&mut htlcs);
 		monitor.provide_latest_holder_commitment_tx(dummy_commitment_tx.clone(),
 			htlcs.into_iter().map(|(htlc, _)| (htlc, Some(dummy_sig), None)).collect()).unwrap();
-		monitor.provide_latest_counterparty_commitment_tx(Txid::from_inner(Sha256::hash(b"1").into_inner()),
+		monitor.provide_latest_counterparty_commitment_tx(Txid::from_byte_array(Sha256::hash(b"1").to_byte_array()),
 			preimages_slice_to_htlc_outputs!(preimages[5..15]), 281474976710655, dummy_key, &logger);
-		monitor.provide_latest_counterparty_commitment_tx(Txid::from_inner(Sha256::hash(b"2").into_inner()),
+		monitor.provide_latest_counterparty_commitment_tx(Txid::from_byte_array(Sha256::hash(b"2").to_byte_array()),
 			preimages_slice_to_htlc_outputs!(preimages[15..20]), 281474976710654, dummy_key, &logger);
 		for &(ref preimage, ref hash) in preimages.iter() {
 			let bounded_fee_estimator = LowerBoundedFeeEstimator::new(&fee_estimator);
@@ -4717,23 +4721,23 @@ mod tests {
 
 		// Now provide a secret, pruning preimages 10-15
 		let mut secret = [0; 32];
-		secret[0..32].clone_from_slice(&hex::decode("7cc854b54e3e0dcdb010d7a3fee464a9687be6e8db3be6854c475621e007a5dc").unwrap());
+		secret[0..32].clone_from_slice(&<Vec<u8>>::from_hex("7cc854b54e3e0dcdb010d7a3fee464a9687be6e8db3be6854c475621e007a5dc").unwrap());
 		monitor.provide_secret(281474976710655, secret.clone()).unwrap();
 		assert_eq!(monitor.inner.lock().unwrap().payment_preimages.len(), 15);
 		test_preimages_exist!(&preimages[0..10], monitor);
 		test_preimages_exist!(&preimages[15..20], monitor);
 
-		monitor.provide_latest_counterparty_commitment_tx(Txid::from_inner(Sha256::hash(b"3").into_inner()),
+		monitor.provide_latest_counterparty_commitment_tx(Txid::from_byte_array(Sha256::hash(b"3").to_byte_array()),
 			preimages_slice_to_htlc_outputs!(preimages[17..20]), 281474976710653, dummy_key, &logger);
 
 		// Now provide a further secret, pruning preimages 15-17
-		secret[0..32].clone_from_slice(&hex::decode("c7518c8ae4660ed02894df8976fa1a3659c1a8b4b5bec0c4b872abeba4cb8964").unwrap());
+		secret[0..32].clone_from_slice(&<Vec<u8>>::from_hex("c7518c8ae4660ed02894df8976fa1a3659c1a8b4b5bec0c4b872abeba4cb8964").unwrap());
 		monitor.provide_secret(281474976710654, secret.clone()).unwrap();
 		assert_eq!(monitor.inner.lock().unwrap().payment_preimages.len(), 13);
 		test_preimages_exist!(&preimages[0..10], monitor);
 		test_preimages_exist!(&preimages[17..20], monitor);
 
-		monitor.provide_latest_counterparty_commitment_tx(Txid::from_inner(Sha256::hash(b"4").into_inner()),
+		monitor.provide_latest_counterparty_commitment_tx(Txid::from_byte_array(Sha256::hash(b"4").to_byte_array()),
 			preimages_slice_to_htlc_outputs!(preimages[18..20]), 281474976710652, dummy_key, &logger);
 
 		// Now update holder commitment tx info, pruning only element 18 as we still care about the
@@ -4742,7 +4746,7 @@ mod tests {
 		let dummy_commitment_tx = HolderCommitmentTransaction::dummy(&mut htlcs);
 		monitor.provide_latest_holder_commitment_tx(dummy_commitment_tx.clone(),
 			htlcs.into_iter().map(|(htlc, _)| (htlc, Some(dummy_sig), None)).collect()).unwrap();
-		secret[0..32].clone_from_slice(&hex::decode("2273e227a5b7449b6e70f1fb4652864038b1cbf9cd7c043a7d6456b7fc275ad8").unwrap());
+		secret[0..32].clone_from_slice(&<Vec<u8>>::from_hex("2273e227a5b7449b6e70f1fb4652864038b1cbf9cd7c043a7d6456b7fc275ad8").unwrap());
 		monitor.provide_secret(281474976710653, secret.clone()).unwrap();
 		assert_eq!(monitor.inner.lock().unwrap().payment_preimages.len(), 12);
 		test_preimages_exist!(&preimages[0..10], monitor);
@@ -4753,7 +4757,7 @@ mod tests {
 		let dummy_commitment_tx = HolderCommitmentTransaction::dummy(&mut htlcs);
 		monitor.provide_latest_holder_commitment_tx(dummy_commitment_tx,
 			htlcs.into_iter().map(|(htlc, _)| (htlc, Some(dummy_sig), None)).collect()).unwrap();
-		secret[0..32].clone_from_slice(&hex::decode("27cddaa5624534cb6cb9d7da077cf2b22ab21e9b506fd4998a51d54502e99116").unwrap());
+		secret[0..32].clone_from_slice(&<Vec<u8>>::from_hex("27cddaa5624534cb6cb9d7da077cf2b22ab21e9b506fd4998a51d54502e99116").unwrap());
 		monitor.provide_secret(281474976710652, secret.clone()).unwrap();
 		assert_eq!(monitor.inner.lock().unwrap().payment_preimages.len(), 5);
 		test_preimages_exist!(&preimages[0..5], monitor);
@@ -4765,7 +4769,7 @@ mod tests {
 		// not actual case to avoid sigs and time-lock delays hell variances.
 
 		let secp_ctx = Secp256k1::new();
-		let privkey = SecretKey::from_slice(&hex::decode("0101010101010101010101010101010101010101010101010101010101010101").unwrap()[..]).unwrap();
+		let privkey = SecretKey::from_slice(&<Vec<u8>>::from_hex("0101010101010101010101010101010101010101010101010101010101010101").unwrap()[..]).unwrap();
 		let pubkey = PublicKey::from_secret_key(&secp_ctx, &privkey);
 
 		macro_rules! sign_input {
@@ -4782,7 +4786,7 @@ mod tests {
 				let sig = secp_ctx.sign_ecdsa(&sighash, &privkey);
 				let mut ser_sig = sig.serialize_der().to_vec();
 				ser_sig.push(EcdsaSighashType::All as u8);
-				$sum_actual_sigs += ser_sig.len();
+				$sum_actual_sigs += ser_sig.len() as u64;
 				let witness = $sighash_parts.witness_mut($idx).unwrap();
 				witness.push(ser_sig);
 				if *$weight == WEIGHT_REVOKED_OUTPUT {
@@ -4803,11 +4807,11 @@ mod tests {
 		}
 
 		let script_pubkey = Builder::new().push_opcode(opcodes::all::OP_RETURN).into_script();
-		let txid = Txid::from_hex("56944c5d3f98413ef45cf54545538103cc9f298e0575820ad3591376e2e0f65d").unwrap();
+		let txid = Txid::from_str("56944c5d3f98413ef45cf54545538103cc9f298e0575820ad3591376e2e0f65d").unwrap();
 
 		// Justice tx with 1 to_holder, 2 revoked offered HTLCs, 1 revoked received HTLCs
 		for channel_type_features in [ChannelTypeFeatures::only_static_remote_key(), ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies()].iter() {
-			let mut claim_tx = Transaction { version: 0, lock_time: PackedLockTime::ZERO, input: Vec::new(), output: Vec::new() };
+			let mut claim_tx = Transaction { version: 0, lock_time: LockTime::ZERO, input: Vec::new(), output: Vec::new() };
 			let mut sum_actual_sigs = 0;
 			for i in 0..4 {
 				claim_tx.input.push(TxIn {
@@ -4815,7 +4819,7 @@ mod tests {
 						txid,
 						vout: i,
 					},
-					script_sig: Script::new(),
+					script_sig: ScriptBuf::new(),
 					sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
 					witness: Witness::new(),
 				});
@@ -4824,7 +4828,7 @@ mod tests {
 				script_pubkey: script_pubkey.clone(),
 				value: 0,
 			});
-			let base_weight = claim_tx.weight();
+			let base_weight = claim_tx.weight().to_wu();
 			let inputs_weight = vec![WEIGHT_REVOKED_OUTPUT, weight_revoked_offered_htlc(channel_type_features), weight_revoked_offered_htlc(channel_type_features), weight_revoked_received_htlc(channel_type_features)];
 			let mut inputs_total_weight = 2; // count segwit flags
 			{
@@ -4834,12 +4838,12 @@ mod tests {
 					inputs_total_weight += inp;
 				}
 			}
-			assert_eq!(base_weight + inputs_total_weight as usize,  claim_tx.weight() + /* max_length_sig */ (73 * inputs_weight.len() - sum_actual_sigs));
+			assert_eq!(base_weight + inputs_total_weight, claim_tx.weight().to_wu() + /* max_length_sig */ (73 * inputs_weight.len() as u64 - sum_actual_sigs));
 		}
 
 		// Claim tx with 1 offered HTLCs, 3 received HTLCs
 		for channel_type_features in [ChannelTypeFeatures::only_static_remote_key(), ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies()].iter() {
-			let mut claim_tx = Transaction { version: 0, lock_time: PackedLockTime::ZERO, input: Vec::new(), output: Vec::new() };
+			let mut claim_tx = Transaction { version: 0, lock_time: LockTime::ZERO, input: Vec::new(), output: Vec::new() };
 			let mut sum_actual_sigs = 0;
 			for i in 0..4 {
 				claim_tx.input.push(TxIn {
@@ -4847,7 +4851,7 @@ mod tests {
 						txid,
 						vout: i,
 					},
-					script_sig: Script::new(),
+					script_sig: ScriptBuf::new(),
 					sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
 					witness: Witness::new(),
 				});
@@ -4856,7 +4860,7 @@ mod tests {
 				script_pubkey: script_pubkey.clone(),
 				value: 0,
 			});
-			let base_weight = claim_tx.weight();
+			let base_weight = claim_tx.weight().to_wu();
 			let inputs_weight = vec![weight_offered_htlc(channel_type_features), weight_received_htlc(channel_type_features), weight_received_htlc(channel_type_features), weight_received_htlc(channel_type_features)];
 			let mut inputs_total_weight = 2; // count segwit flags
 			{
@@ -4866,19 +4870,19 @@ mod tests {
 					inputs_total_weight += inp;
 				}
 			}
-			assert_eq!(base_weight + inputs_total_weight as usize,  claim_tx.weight() + /* max_length_sig */ (73 * inputs_weight.len() - sum_actual_sigs));
+			assert_eq!(base_weight + inputs_total_weight, claim_tx.weight().to_wu() + /* max_length_sig */ (73 * inputs_weight.len() as u64 - sum_actual_sigs));
 		}
 
 		// Justice tx with 1 revoked HTLC-Success tx output
 		for channel_type_features in [ChannelTypeFeatures::only_static_remote_key(), ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies()].iter() {
-			let mut claim_tx = Transaction { version: 0, lock_time: PackedLockTime::ZERO, input: Vec::new(), output: Vec::new() };
+			let mut claim_tx = Transaction { version: 0, lock_time: LockTime::ZERO, input: Vec::new(), output: Vec::new() };
 			let mut sum_actual_sigs = 0;
 			claim_tx.input.push(TxIn {
 				previous_output: BitcoinOutPoint {
 					txid,
 					vout: 0,
 				},
-				script_sig: Script::new(),
+				script_sig: ScriptBuf::new(),
 				sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
 				witness: Witness::new(),
 			});
@@ -4886,7 +4890,7 @@ mod tests {
 				script_pubkey: script_pubkey.clone(),
 				value: 0,
 			});
-			let base_weight = claim_tx.weight();
+			let base_weight = claim_tx.weight().to_wu();
 			let inputs_weight = vec![WEIGHT_REVOKED_OUTPUT];
 			let mut inputs_total_weight = 2; // count segwit flags
 			{
@@ -4896,7 +4900,7 @@ mod tests {
 					inputs_total_weight += inp;
 				}
 			}
-			assert_eq!(base_weight + inputs_total_weight as usize, claim_tx.weight() + /* max_length_isg */ (73 * inputs_weight.len() - sum_actual_sigs));
+			assert_eq!(base_weight + inputs_total_weight, claim_tx.weight().to_wu() + /* max_length_isg */ (73 * inputs_weight.len() as u64 - sum_actual_sigs));
 		}
 	}
 

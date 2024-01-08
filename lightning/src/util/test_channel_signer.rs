@@ -17,9 +17,11 @@ use core::cmp;
 use crate::sync::{Mutex, Arc};
 #[cfg(test)] use crate::sync::MutexGuard;
 
-use bitcoin::blockdata::transaction::{Transaction, EcdsaSighashType};
+use bitcoin::blockdata::transaction::Transaction;
 use bitcoin::blockdata::script::Script;
-use bitcoin::util::sighash;
+use bitcoin::hashes::Hash;
+use bitcoin::sighash;
+use bitcoin::sighash::EcdsaSighashType;
 
 use bitcoin::secp256k1;
 use bitcoin::secp256k1::{SecretKey, PublicKey};
@@ -57,6 +59,9 @@ pub struct TestChannelSigner {
 	/// Channel state used for policy enforcement
 	pub state: Arc<Mutex<EnforcementState>>,
 	pub disable_revocation_policy_check: bool,
+	/// When `true` (the default), the signer will respond immediately with signatures. When `false`,
+	/// the signer will return an error indicating that it is unavailable.
+	pub available: Arc<Mutex<bool>>,
 }
 
 impl PartialEq for TestChannelSigner {
@@ -72,7 +77,8 @@ impl TestChannelSigner {
 		Self {
 			inner,
 			state,
-			disable_revocation_policy_check: false
+			disable_revocation_policy_check: false,
+			available: Arc::new(Mutex::new(true)),
 		}
 	}
 
@@ -85,7 +91,8 @@ impl TestChannelSigner {
 		Self {
 			inner,
 			state,
-			disable_revocation_policy_check
+			disable_revocation_policy_check,
+			available: Arc::new(Mutex::new(true)),
 		}
 	}
 
@@ -94,6 +101,16 @@ impl TestChannelSigner {
 	#[cfg(test)]
 	pub fn get_enforcement_state(&self) -> MutexGuard<EnforcementState> {
 		self.state.lock().unwrap()
+	}
+
+	/// Marks the signer's availability.
+	///
+	/// When `true`, methods are forwarded to the underlying signer as normal. When `false`, some
+	/// methods will return `Err` indicating that the signer is unavailable. Intended to be used for
+	/// testing asynchronous signing.
+	#[cfg(test)]
+	pub fn set_available(&self, available: bool) {
+		*self.available.lock().unwrap() = available;
 	}
 }
 
@@ -140,6 +157,9 @@ impl EcdsaChannelSigner for TestChannelSigner {
 		self.verify_counterparty_commitment_tx(commitment_tx, secp_ctx);
 
 		{
+			if !*self.available.lock().unwrap() {
+				return Err(());
+			}
 			let mut state = self.state.lock().unwrap();
 			let actual_commitment_number = commitment_tx.commitment_number();
 			let last_commitment_number = state.last_counterparty_commitment;
@@ -156,6 +176,9 @@ impl EcdsaChannelSigner for TestChannelSigner {
 	}
 
 	fn validate_counterparty_revocation(&self, idx: u64, _secret: &SecretKey) -> Result<(), ()> {
+		if !*self.available.lock().unwrap() {
+			return Err(());
+		}
 		let mut state = self.state.lock().unwrap();
 		assert!(idx == state.last_counterparty_revoked_commitment || idx == state.last_counterparty_revoked_commitment - 1, "expecting to validate the current or next counterparty revocation - trying {}, current {}", idx, state.last_counterparty_revoked_commitment);
 		state.last_counterparty_revoked_commitment = idx;
@@ -163,6 +186,9 @@ impl EcdsaChannelSigner for TestChannelSigner {
 	}
 
 	fn sign_holder_commitment(&self, commitment_tx: &HolderCommitmentTransaction, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<Signature, ()> {
+		if !*self.available.lock().unwrap() {
+			return Err(());
+		}
 		let trusted_tx = self.verify_holder_commitment_tx(commitment_tx, secp_ctx);
 		let state = self.state.lock().unwrap();
 		let commitment_number = trusted_tx.commitment_number();
@@ -217,7 +243,7 @@ impl EcdsaChannelSigner for TestChannelSigner {
 				&secp_ctx, &htlc_descriptor.per_commitment_point, &self.inner.counterparty_pubkeys().unwrap().htlc_basepoint
 			);
 			secp_ctx.verify_ecdsa(
-				&hash_to_message!(&sighash), &htlc_descriptor.counterparty_sig, &countersignatory_htlc_key
+				&hash_to_message!(sighash.as_byte_array()), &htlc_descriptor.counterparty_sig, &countersignatory_htlc_key
 			).unwrap();
 		}
 		Ok(self.inner.sign_holder_htlc_transaction(htlc_tx, input, htlc_descriptor, secp_ctx).unwrap())

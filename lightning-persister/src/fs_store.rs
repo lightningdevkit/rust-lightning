@@ -369,7 +369,6 @@ mod tests {
 	use super::*;
 	use crate::test_utils::{do_read_write_remove_list_persist, do_test_store};
 
-	use bitcoin::hashes::hex::FromHex;
 	use bitcoin::Txid;
 
 	use lightning::chain::ChannelMonitorUpdateStatus;
@@ -381,6 +380,7 @@ mod tests {
 	use lightning::util::test_utils;
 	use lightning::util::persist::read_channel_monitors;
 	use std::fs;
+	use std::str::FromStr;
 	#[cfg(target_os = "windows")]
 	use {
 		lightning::get_event_msg,
@@ -466,7 +466,7 @@ mod tests {
 		fs::set_permissions(path, perms).unwrap();
 
 		let test_txo = OutPoint {
-			txid: Txid::from_hex("8984484a580b825b9972d7adb15050b3ab624ccd731946b3eeddb92f4e7ef6be").unwrap(),
+			txid: Txid::from_str("8984484a580b825b9972d7adb15050b3ab624ccd731946b3eeddb92f4e7ef6be").unwrap(),
 			index: 0
 		};
 		match store.persist_new_channel(test_txo, &added_monitors[0].1, update_id.2) {
@@ -503,7 +503,7 @@ mod tests {
 		let store = FilesystemStore::new(":<>/".into());
 
 		let test_txo = OutPoint {
-			txid: Txid::from_hex("8984484a580b825b9972d7adb15050b3ab624ccd731946b3eeddb92f4e7ef6be").unwrap(),
+			txid: Txid::from_str("8984484a580b825b9972d7adb15050b3ab624ccd731946b3eeddb92f4e7ef6be").unwrap(),
 			index: 0
 		};
 		match store.persist_new_channel(test_txo, &added_monitors[0].1, update_id.2) {

@@ -468,6 +468,11 @@ impl Offer {
 		self.contents.is_expired()
 	}
 
+	/// Whether the offer has expired given the duration since the Unix epoch.
+	pub fn is_expired_no_std(&self, duration_since_epoch: Duration) -> bool {
+		self.contents.is_expired_no_std(duration_since_epoch)
+	}
+
 	/// Returns whether the given quantity is valid for the offer.
 	pub fn is_valid_quantity(&self, quantity: u64) -> bool {
 		self.contents.is_valid_quantity(quantity)
@@ -1192,6 +1197,7 @@ mod tests {
 	fn builds_offer_with_absolute_expiry() {
 		let future_expiry = Duration::from_secs(u64::max_value());
 		let past_expiry = Duration::from_secs(0);
+		let now = future_expiry - Duration::from_secs(1_000);
 
 		let offer = OfferBuilder::new("foo".into(), pubkey(42))
 			.absolute_expiry(future_expiry)
@@ -1199,6 +1205,7 @@ mod tests {
 			.unwrap();
 		#[cfg(feature = "std")]
 		assert!(!offer.is_expired());
+		assert!(!offer.is_expired_no_std(now));
 		assert_eq!(offer.absolute_expiry(), Some(future_expiry));
 		assert_eq!(offer.as_tlv_stream().absolute_expiry, Some(future_expiry.as_secs()));
 
@@ -1209,6 +1216,7 @@ mod tests {
 			.unwrap();
 		#[cfg(feature = "std")]
 		assert!(offer.is_expired());
+		assert!(offer.is_expired_no_std(now));
 		assert_eq!(offer.absolute_expiry(), Some(past_expiry));
 		assert_eq!(offer.as_tlv_stream().absolute_expiry, Some(past_expiry.as_secs()));
 	}
@@ -1511,28 +1519,60 @@ mod tests {
 }
 
 #[cfg(test)]
-mod bech32_tests {
-	use super::{Bolt12ParseError, Offer};
-	use bitcoin::bech32;
+mod bolt12_tests {
+	use super::{Bolt12ParseError, Bolt12SemanticError, Offer};
 	use crate::ln::msgs::DecodeError;
-
-	#[test]
-	fn encodes_offer_as_bech32_without_checksum() {
-		let encoded_offer = "lno1pqps7sjqpgtyzm3qv4uxzmtsd3jjqer9wd3hy6tsw35k7msjzfpy7nz5yqcnygrfdej82um5wf5k2uckyypwa3eyt44h6txtxquqh7lz5djge4afgfjn7k4rgrkuag0jsd5xvxg";
-		let offer = dbg!(encoded_offer.parse::<Offer>().unwrap());
-		let reencoded_offer = offer.to_string();
-		dbg!(reencoded_offer.parse::<Offer>().unwrap());
-		assert_eq!(reencoded_offer, encoded_offer);
-	}
 
 	#[test]
 	fn parses_bech32_encoded_offers() {
 		let offers = [
-			// BOLT 12 test vectors
-			"lno1pqps7sjqpgtyzm3qv4uxzmtsd3jjqer9wd3hy6tsw35k7msjzfpy7nz5yqcnygrfdej82um5wf5k2uckyypwa3eyt44h6txtxquqh7lz5djge4afgfjn7k4rgrkuag0jsd5xvxg",
-			"l+no1pqps7sjqpgtyzm3qv4uxzmtsd3jjqer9wd3hy6tsw35k7msjzfpy7nz5yqcnygrfdej82um5wf5k2uckyypwa3eyt44h6txtxquqh7lz5djge4afgfjn7k4rgrkuag0jsd5xvxg",
-			"lno1pqps7sjqpgt+yzm3qv4uxzmtsd3jjqer9wd3hy6tsw3+5k7msjzfpy7nz5yqcn+ygrfdej82um5wf5k2uckyypwa3eyt44h6txtxquqh7lz5djge4afgfjn7k4rgrkuag0jsd+5xvxg",
-			"lno1pqps7sjqpgt+ yzm3qv4uxzmtsd3jjqer9wd3hy6tsw3+  5k7msjzfpy7nz5yqcn+\nygrfdej82um5wf5k2uckyypwa3eyt44h6txtxquqh7lz5djge4afgfjn7k4rgrkuag0jsd+\r\n 5xvxg",
+			// Minimal bolt12 offer
+			"lno1pgx9getnwss8vetrw3hhyuckyypwa3eyt44h6txtxquqh7lz5djge4afgfjn7k4rgrkuag0jsd5xvxg",
+
+			// for testnet
+			"lno1qgsyxjtl6luzd9t3pr62xr7eemp6awnejusgf6gw45q75vcfqqqqqqq2p32x2um5ypmx2cm5dae8x93pqthvwfzadd7jejes8q9lhc4rvjxd022zv5l44g6qah82ru5rdpnpj",
+
+			// for bitcoin (redundant)
+			"lno1qgsxlc5vp2m0rvmjcxn2y34wv0m5lyc7sdj7zksgn35dvxgqqqqqqqq2p32x2um5ypmx2cm5dae8x93pqthvwfzadd7jejes8q9lhc4rvjxd022zv5l44g6qah82ru5rdpnpj",
+
+			// for bitcoin or liquidv1
+			"lno1qfqpge38tqmzyrdjj3x2qkdr5y80dlfw56ztq6yd9sme995g3gsxqqm0u2xq4dh3kdevrf4zg6hx8a60jv0gxe0ptgyfc6xkryqqqqqqqq9qc4r9wd6zqan9vd6x7unnzcss9mk8y3wkklfvevcrszlmu23kfrxh49px20665dqwmn4p72pksese",
+
+			// with metadata
+			"lno1qsgqqqqqqqqqqqqqqqqqqqqqqqqqqzsv23jhxapqwejkxar0wfe3vggzamrjghtt05kvkvpcp0a79gmy3nt6jsn98ad2xs8de6sl9qmgvcvs",
+
+			// with amount
+			"lno1pqpzwyq2p32x2um5ypmx2cm5dae8x93pqthvwfzadd7jejes8q9lhc4rvjxd022zv5l44g6qah82ru5rdpnpj",
+
+			// with currency
+			"lno1qcp4256ypqpzwyq2p32x2um5ypmx2cm5dae8x93pqthvwfzadd7jejes8q9lhc4rvjxd022zv5l44g6qah82ru5rdpnpj",
+
+			// with expiry
+			"lno1pgx9getnwss8vetrw3hhyucwq3ay997czcss9mk8y3wkklfvevcrszlmu23kfrxh49px20665dqwmn4p72pksese",
+
+			// with issuer
+			"lno1pgx9getnwss8vetrw3hhyucjy358garswvaz7tmzdak8gvfj9ehhyeeqgf85c4p3xgsxjmnyw4ehgunfv4e3vggzamrjghtt05kvkvpcp0a79gmy3nt6jsn98ad2xs8de6sl9qmgvcvs",
+
+			// with quantity
+			"lno1pgx9getnwss8vetrw3hhyuc5qyz3vggzamrjghtt05kvkvpcp0a79gmy3nt6jsn98ad2xs8de6sl9qmgvcvs",
+
+			// with unlimited (or unknown) quantity
+			"lno1pgx9getnwss8vetrw3hhyuc5qqtzzqhwcuj966ma9n9nqwqtl032xeyv6755yeflt235pmww58egx6rxry",
+
+			// with single quantity (weird but valid)
+			"lno1pgx9getnwss8vetrw3hhyuc5qyq3vggzamrjghtt05kvkvpcp0a79gmy3nt6jsn98ad2xs8de6sl9qmgvcvs",
+
+			// with feature
+			"lno1pgx9getnwss8vetrw3hhyucvp5yqqqqqqqqqqqqqqqqqqqqkyypwa3eyt44h6txtxquqh7lz5djge4afgfjn7k4rgrkuag0jsd5xvxg",
+
+			// with blinded path via Bob (0x424242...), blinding 020202...
+			"lno1pgx9getnwss8vetrw3hhyucs5ypjgef743p5fzqq9nqxh0ah7y87rzv3ud0eleps9kl2d5348hq2k8qzqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgqpqqqqqqqqqqqqqqqqqqqqqqqqqqqzqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqqzq3zyg3zyg3zyg3vggzamrjghtt05kvkvpcp0a79gmy3nt6jsn98ad2xs8de6sl9qmgvcvs",
+
+			// ... and with second blinded path via Carol (0x434343...), blinding 020202...
+			"lno1pgx9getnwss8vetrw3hhyucsl5q5yqeyv5l2cs6y3qqzesrth7mlzrlp3xg7xhulusczm04x6g6nms9trspqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqqsqqqqqqqqqqqqqqqqqqqqqqqqqqpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqsqpqg3zyg3zyg3zygz0uc7h32x9s0aecdhxlk075kn046aafpuuyw8f5j652t3vha2yqrsyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqsqzqqqqqqqqqqqqqqqqqqqqqqqqqqqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqqyzyg3zyg3zyg3zzcss9mk8y3wkklfvevcrszlmu23kfrxh49px20665dqwmn4p72pksese",
+
+			// unknown odd field
+			"lno1pgx9getnwss8vetrw3hhyuckyypwa3eyt44h6txtxquqh7lz5djge4afgfjn7k4rgrkuag0jsd5xvxfppf5x2mrvdamk7unvvs",
 		];
 		for encoded_offer in &offers {
 			if let Err(e) = encoded_offer.parse::<Offer>() {
@@ -1542,48 +1582,155 @@ mod bech32_tests {
 	}
 
 	#[test]
-	fn fails_parsing_bech32_encoded_offers_with_invalid_continuations() {
-		let offers = [
-			// BOLT 12 test vectors
-			"lno1pqps7sjqpgtyzm3qv4uxzmtsd3jjqer9wd3hy6tsw35k7msjzfpy7nz5yqcnygrfdej82um5wf5k2uckyypwa3eyt44h6txtxquqh7lz5djge4afgfjn7k4rgrkuag0jsd5xvxg+",
-			"lno1pqps7sjqpgtyzm3qv4uxzmtsd3jjqer9wd3hy6tsw35k7msjzfpy7nz5yqcnygrfdej82um5wf5k2uckyypwa3eyt44h6txtxquqh7lz5djge4afgfjn7k4rgrkuag0jsd5xvxg+ ",
-			"+lno1pqps7sjqpgtyzm3qv4uxzmtsd3jjqer9wd3hy6tsw35k7msjzfpy7nz5yqcnygrfdej82um5wf5k2uckyypwa3eyt44h6txtxquqh7lz5djge4afgfjn7k4rgrkuag0jsd5xvxg",
-			"+ lno1pqps7sjqpgtyzm3qv4uxzmtsd3jjqer9wd3hy6tsw35k7msjzfpy7nz5yqcnygrfdej82um5wf5k2uckyypwa3eyt44h6txtxquqh7lz5djge4afgfjn7k4rgrkuag0jsd5xvxg",
-			"ln++o1pqps7sjqpgtyzm3qv4uxzmtsd3jjqer9wd3hy6tsw35k7msjzfpy7nz5yqcnygrfdej82um5wf5k2uckyypwa3eyt44h6txtxquqh7lz5djge4afgfjn7k4rgrkuag0jsd5xvxg",
-		];
-		for encoded_offer in &offers {
-			match encoded_offer.parse::<Offer>() {
-				Ok(_) => panic!("Valid offer: {}", encoded_offer),
-				Err(e) => assert_eq!(e, Bolt12ParseError::InvalidContinuation),
-			}
-		}
+	fn fails_parsing_bech32_encoded_offers() {
+		// Malformed: fields out of order
+		assert_eq!(
+			"lno1zcssyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszpgz5znzfgdzs".parse::<Offer>(),
+			Err(Bolt12ParseError::Decode(DecodeError::InvalidValue)),
+		);
 
-	}
+		// Malformed: unknown even TLV type 78
+		assert_eq!(
+			"lno1pgz5znzfgdz3vggzqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpysgr0u2xq4dh3kdevrf4zg6hx8a60jv0gxe0ptgyfc6xkryqqqqqqqq".parse::<Offer>(),
+			Err(Bolt12ParseError::Decode(DecodeError::UnknownRequiredFeature)),
+		);
 
-	#[test]
-	fn fails_parsing_bech32_encoded_offer_with_invalid_hrp() {
-		let encoded_offer = "lni1pqps7sjqpgtyzm3qv4uxzmtsd3jjqer9wd3hy6tsw35k7msjzfpy7nz5yqcnygrfdej82um5wf5k2uckyypwa3eyt44h6txtxquqh7lz5djge4afgfjn7k4rgrkuag0jsd5xvxg";
-		match encoded_offer.parse::<Offer>() {
-			Ok(_) => panic!("Valid offer: {}", encoded_offer),
-			Err(e) => assert_eq!(e, Bolt12ParseError::InvalidBech32Hrp),
-		}
-	}
+		// Malformed: empty
+		assert_eq!(
+			"lno1".parse::<Offer>(),
+			Err(Bolt12ParseError::InvalidSemantics(Bolt12SemanticError::MissingDescription)),
+		);
 
-	#[test]
-	fn fails_parsing_bech32_encoded_offer_with_invalid_bech32_data() {
-		let encoded_offer = "lno1pqps7sjqpgtyzm3qv4uxzmtsd3jjqer9wd3hy6tsw35k7msjzfpy7nz5yqcnygrfdej82um5wf5k2uckyypwa3eyt44h6txtxquqh7lz5djge4afgfjn7k4rgrkuag0jsd5xvxo";
-		match encoded_offer.parse::<Offer>() {
-			Ok(_) => panic!("Valid offer: {}", encoded_offer),
-			Err(e) => assert_eq!(e, Bolt12ParseError::Bech32(bech32::Error::InvalidChar('o'))),
-		}
-	}
+		// Malformed: truncated at type
+		assert_eq!(
+			"lno1pg".parse::<Offer>(),
+			Err(Bolt12ParseError::Decode(DecodeError::ShortRead)),
+		);
 
-	#[test]
-	fn fails_parsing_bech32_encoded_offer_with_invalid_tlv_data() {
-		let encoded_offer = "lno1pqps7sjqpgtyzm3qv4uxzmtsd3jjqer9wd3hy6tsw35k7msjzfpy7nz5yqcnygrfdej82um5wf5k2uckyypwa3eyt44h6txtxquqh7lz5djge4afgfjn7k4rgrkuag0jsd5xvxgqqqqq";
-		match encoded_offer.parse::<Offer>() {
-			Ok(_) => panic!("Valid offer: {}", encoded_offer),
-			Err(e) => assert_eq!(e, Bolt12ParseError::Decode(DecodeError::InvalidValue)),
-		}
+		// Malformed: truncated in length
+		assert_eq!(
+			"lno1pt7s".parse::<Offer>(),
+			Err(Bolt12ParseError::Decode(DecodeError::ShortRead)),
+		);
+
+		// Malformed: truncated after length
+		assert_eq!(
+			"lno1pgpq".parse::<Offer>(),
+			Err(Bolt12ParseError::Decode(DecodeError::ShortRead)),
+		);
+
+		// Malformed: truncated in description
+		assert_eq!(
+			"lno1pgpyz".parse::<Offer>(),
+			Err(Bolt12ParseError::Decode(DecodeError::ShortRead)),
+		);
+
+		// Malformed: invalid offer_chains length
+		assert_eq!(
+			"lno1qgqszzs9g9xyjs69zcssyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqsz".parse::<Offer>(),
+			Err(Bolt12ParseError::Decode(DecodeError::ShortRead)),
+		);
+
+		// Malformed: truncated currency UTF-8
+		assert_eq!(
+			"lno1qcqcqzs9g9xyjs69zcssyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqsz".parse::<Offer>(),
+			Err(Bolt12ParseError::Decode(DecodeError::ShortRead)),
+		);
+
+		// Malformed: invalid currency UTF-8
+		assert_eq!(
+			"lno1qcpgqsg2q4q5cj2rg5tzzqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqg".parse::<Offer>(),
+			Err(Bolt12ParseError::Decode(DecodeError::ShortRead)),
+		);
+
+		// Malformed: truncated description UTF-8
+		assert_eq!(
+			"lno1pgqcq93pqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqy".parse::<Offer>(),
+			Err(Bolt12ParseError::Decode(DecodeError::InvalidValue)),
+		);
+
+		// Malformed: invalid description UTF-8
+		assert_eq!(
+			"lno1pgpgqsgkyypqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqs".parse::<Offer>(),
+			Err(Bolt12ParseError::Decode(DecodeError::InvalidValue)),
+		);
+
+		// Malformed: truncated offer_paths
+		assert_eq!(
+			"lno1pgz5znzfgdz3qqgpzcssyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqsz".parse::<Offer>(),
+			Err(Bolt12ParseError::Decode(DecodeError::ShortRead)),
+		);
+
+		// Malformed: zero num_hops in blinded_path
+		assert_eq!(
+			"lno1pgz5znzfgdz3qqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqsqzcssyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqsz".parse::<Offer>(),
+			Err(Bolt12ParseError::Decode(DecodeError::ShortRead)),
+		);
+
+		// Malformed: truncated onionmsg_hop in blinded_path
+		assert_eq!(
+			"lno1pgz5znzfgdz3qqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqspqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqgkyypqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqs".parse::<Offer>(),
+			Err(Bolt12ParseError::Decode(DecodeError::ShortRead)),
+		);
+
+		// Malformed: bad first_node_id in blinded_path
+		assert_eq!(
+			"lno1pgz5znzfgdz3qqcrqvpsxqcrqvpsxqcrqvpsxqcrqvpsxqcrqvpsxqcrqvpsxqcrqvpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqspqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqgqzcssyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqsz".parse::<Offer>(),
+			Err(Bolt12ParseError::Decode(DecodeError::ShortRead)),
+		);
+
+		// Malformed: bad blinding in blinded_path
+		assert_eq!(
+			"lno1pgz5znzfgdz3qqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpsxqcrqvpsxqcrqvpsxqcrqvpsxqcrqvpsxqcrqvpsxqcrqvpsxqcpqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqgqzcssyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqsz".parse::<Offer>(),
+			Err(Bolt12ParseError::Decode(DecodeError::ShortRead)),
+		);
+
+		// Malformed: bad blinded_node_id in onionmsg_hop
+		assert_eq!(
+			"lno1pgz5znzfgdz3qqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqspqvpsxqcrqvpsxqcrqvpsxqcrqvpsxqcrqvpsxqcrqvpsxqcrqvpsxqgqzcssyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqsz".parse::<Offer>(),
+			Err(Bolt12ParseError::Decode(DecodeError::ShortRead)),
+		);
+
+		// Malformed: truncated issuer UTF-8
+		assert_eq!(
+			"lno1pgz5znzfgdz3yqvqzcssyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqsz".parse::<Offer>(),
+			Err(Bolt12ParseError::Decode(DecodeError::InvalidValue)),
+		);
+
+		// Malformed: invalid issuer UTF-8
+		assert_eq!(
+			"lno1pgz5znzfgdz3yq5qgytzzqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqg".parse::<Offer>(),
+			Err(Bolt12ParseError::Decode(DecodeError::InvalidValue)),
+		);
+
+		// Malformed: invalid offer_node_id
+		assert_eq!(
+			"lno1pgz5znzfgdz3vggzqvpsxqcrqvpsxqcrqvpsxqcrqvpsxqcrqvpsxqcrqvpsxqcrqvps".parse::<Offer>(),
+			Err(Bolt12ParseError::Decode(DecodeError::InvalidValue)),
+		);
+
+		// Contains type >= 80
+		assert_eq!(
+			"lno1pgz5znzfgdz3vggzqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgp9qgr0u2xq4dh3kdevrf4zg6hx8a60jv0gxe0ptgyfc6xkryqqqqqqqq".parse::<Offer>(),
+			Err(Bolt12ParseError::Decode(DecodeError::InvalidValue)),
+		);
+
+		// TODO: Resolved in spec https://github.com/lightning/bolts/pull/798/files#r1334851959
+		// Contains unknown feature 22
+		assert!(
+			"lno1pgx9getnwss8vetrw3hhyucvqdqqqqqkyypwa3eyt44h6txtxquqh7lz5djge4afgfjn7k4rgrkuag0jsd5xvxg".parse::<Offer>().is_ok()
+		);
+
+		// Missing offer_description
+		assert_eq!(
+			"lno1zcss9mk8y3wkklfvevcrszlmu23kfrxh49px20665dqwmn4p72pksese".parse::<Offer>(),
+			Err(Bolt12ParseError::InvalidSemantics(Bolt12SemanticError::MissingDescription)),
+		);
+
+		// Missing offer_node_id"
+		assert_eq!(
+			"lno1pgx9getnwss8vetrw3hhyuc".parse::<Offer>(),
+			Err(Bolt12ParseError::InvalidSemantics(Bolt12SemanticError::MissingSigningPubkey)),
+		);
 	}
 }

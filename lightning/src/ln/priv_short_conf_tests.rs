@@ -290,7 +290,7 @@ fn test_scid_privacy_on_pub_channel() {
 	let mut scid_privacy_cfg = test_default_channel_config();
 	scid_privacy_cfg.channel_handshake_config.announced_channel = true;
 	scid_privacy_cfg.channel_handshake_config.negotiate_scid_privacy = true;
-	nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 100000, 10001, 42, Some(scid_privacy_cfg)).unwrap();
+	nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 100000, 10001, 42, None, Some(scid_privacy_cfg)).unwrap();
 	let mut open_channel = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
 
 	assert!(!open_channel.channel_type.as_ref().unwrap().supports_scid_privacy()); // we ignore `negotiate_scid_privacy` on pub channels
@@ -314,7 +314,7 @@ fn test_scid_privacy_negotiation() {
 	let mut scid_privacy_cfg = test_default_channel_config();
 	scid_privacy_cfg.channel_handshake_config.announced_channel = false;
 	scid_privacy_cfg.channel_handshake_config.negotiate_scid_privacy = true;
-	nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 100000, 10001, 42, Some(scid_privacy_cfg)).unwrap();
+	nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 100000, 10001, 42, None, Some(scid_privacy_cfg)).unwrap();
 
 	let init_open_channel = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
 	assert!(init_open_channel.channel_type.as_ref().unwrap().supports_scid_privacy());
@@ -360,7 +360,7 @@ fn test_inbound_scid_privacy() {
 	let mut no_announce_cfg = test_default_channel_config();
 	no_announce_cfg.channel_handshake_config.announced_channel = false;
 	no_announce_cfg.channel_handshake_config.negotiate_scid_privacy = true;
-	nodes[1].node.create_channel(nodes[2].node.get_our_node_id(), 100_000, 10_000, 42, Some(no_announce_cfg)).unwrap();
+	nodes[1].node.create_channel(nodes[2].node.get_our_node_id(), 100_000, 10_000, 42, None, Some(no_announce_cfg)).unwrap();
 	let mut open_channel = get_event_msg!(nodes[1], MessageSendEvent::SendOpenChannel, nodes[2].node.get_our_node_id());
 
 	assert!(open_channel.channel_type.as_ref().unwrap().requires_scid_privacy());
@@ -591,7 +591,7 @@ fn test_0conf_channel_with_async_monitor() {
 	create_announced_chan_between_nodes_with_value(&nodes, 1, 2, 1_000_000, 0);
 
 	chan_config.channel_handshake_config.announced_channel = false;
-	nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 100000, 10001, 42, Some(chan_config)).unwrap();
+	nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 100000, 10001, 42, None, Some(chan_config)).unwrap();
 	let open_channel = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
 
 	nodes[1].node.handle_open_channel(&nodes[0].node.get_our_node_id(), &open_channel);
@@ -882,7 +882,7 @@ fn test_zero_conf_accept_reject() {
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
-	nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 100000, 10001, 42, None).unwrap();
+	nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 100000, 10001, 42, None, None).unwrap();
 	let mut open_channel_msg = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
 
 	open_channel_msg.channel_type = Some(channel_type_features.clone());
@@ -909,7 +909,7 @@ fn test_zero_conf_accept_reject() {
 
 	// 2.1 First try the non-0conf method to manually accept
 	nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 100000, 10001, 42,
-		Some(manually_accept_conf)).unwrap();
+		None, Some(manually_accept_conf)).unwrap();
 	let mut open_channel_msg = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel,
 		nodes[1].node.get_our_node_id());
 
@@ -941,7 +941,7 @@ fn test_zero_conf_accept_reject() {
 
 	// 2.2 Try again with the 0conf method to manually accept
 	nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 100000, 10001, 42,
-		Some(manually_accept_conf)).unwrap();
+		None, Some(manually_accept_conf)).unwrap();
 	let mut open_channel_msg = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel,
 		nodes[1].node.get_our_node_id());
 
@@ -982,7 +982,7 @@ fn test_connect_before_funding() {
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, Some(manually_accept_conf)]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
-	nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 100_000, 10_001, 42, None).unwrap();
+	nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 100_000, 10_001, 42, None, None).unwrap();
 	let open_channel = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
 
 	nodes[1].node.handle_open_channel(&nodes[0].node.get_our_node_id(), &open_channel);

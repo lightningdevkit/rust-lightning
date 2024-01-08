@@ -40,7 +40,7 @@
 //! let secp_ctx = Secp256k1::new();
 //! let keys = KeyPair::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32])?);
 //! let pubkey = PublicKey::from(keys);
-//! let wpubkey_hash = bitcoin::util::key::PublicKey::new(pubkey).wpubkey_hash().unwrap();
+//! let wpubkey_hash = bitcoin::key::PublicKey::new(pubkey).wpubkey_hash().unwrap();
 //! let mut buffer = Vec::new();
 //!
 //! // Invoice for the "offer to be paid" flow.
@@ -70,7 +70,7 @@
 //! # let secp_ctx = Secp256k1::new();
 //! # let keys = KeyPair::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32])?);
 //! # let pubkey = PublicKey::from(keys);
-//! # let wpubkey_hash = bitcoin::util::key::PublicKey::new(pubkey).wpubkey_hash().unwrap();
+//! # let wpubkey_hash = bitcoin::key::PublicKey::new(pubkey).wpubkey_hash().unwrap();
 //! # let mut buffer = Vec::new();
 //!
 //! // Invoice for the "offer for money" flow.
@@ -103,8 +103,8 @@ use bitcoin::hashes::Hash;
 use bitcoin::network::constants::Network;
 use bitcoin::secp256k1::{KeyPair, PublicKey, Secp256k1, self};
 use bitcoin::secp256k1::schnorr::Signature;
-use bitcoin::util::address::{Address, Payload, WitnessVersion};
-use bitcoin::util::schnorr::TweakedPublicKey;
+use bitcoin::address::{Address, Payload, WitnessProgram, WitnessVersion};
+use bitcoin::key::TweakedPublicKey;
 use core::convert::{AsRef, Infallible, TryFrom};
 use core::time::Duration;
 use crate::io;
@@ -291,7 +291,7 @@ impl<'a, S: SigningPubkeyStrategy> InvoiceBuilder<'a, S> {
 	pub fn fallback_v0_p2wsh(mut self, script_hash: &WScriptHash) -> Self {
 		let address = FallbackAddress {
 			version: WitnessVersion::V0.to_num(),
-			program: Vec::from(&script_hash.into_inner()[..]),
+			program: Vec::from(script_hash.to_byte_array()),
 		};
 		self.invoice.fields_mut().fallbacks.get_or_insert_with(Vec::new).push(address);
 		self
@@ -304,7 +304,7 @@ impl<'a, S: SigningPubkeyStrategy> InvoiceBuilder<'a, S> {
 	pub fn fallback_v0_p2wpkh(mut self, pubkey_hash: &WPubkeyHash) -> Self {
 		let address = FallbackAddress {
 			version: WitnessVersion::V0.to_num(),
-			program: Vec::from(&pubkey_hash.into_inner()[..]),
+			program: Vec::from(pubkey_hash.to_byte_array()),
 		};
 		self.invoice.fields_mut().fallbacks.get_or_insert_with(Vec::new).push(address);
 		self
@@ -439,6 +439,7 @@ impl UnsignedBolt12Invoice {
 			bytes: self.bytes,
 			contents: self.contents,
 			signature,
+			tagged_hash: self.tagged_hash,
 		})
 	}
 }
@@ -463,6 +464,7 @@ pub struct Bolt12Invoice {
 	bytes: Vec<u8>,
 	contents: InvoiceContents,
 	signature: Signature,
+	tagged_hash: TaggedHash,
 }
 
 /// The contents of an [`Bolt12Invoice`] for responding to either an [`Offer`] or a [`Refund`].
@@ -707,7 +709,7 @@ impl Bolt12Invoice {
 
 	/// Hash that was used for signing the invoice.
 	pub fn signable_hash(&self) -> [u8; 32] {
-		merkle::message_digest(SIGNATURE_TAG, &self.bytes).as_ref().clone()
+		self.tagged_hash.as_digest().as_ref().clone()
 	}
 
 	/// Verifies that the invoice was for a request or refund created using the given key. Returns
@@ -928,15 +930,12 @@ impl InvoiceContents {
 				return None;
 			}
 
-			let address = Address {
-				payload: Payload::WitnessProgram {
-					version,
-					program: program.clone(),
-				},
-				network,
+			let witness_program = match WitnessProgram::new(version, program.clone()) {
+				Ok(witness_program) => witness_program,
+				Err(_) => return None,
 			};
-
-			if !address.is_standard() && version == WitnessVersion::V0 {
+			let address = Address::new(network, Payload::WitnessProgram(witness_program));
+			if !address.is_spend_standard() && version == WitnessVersion::V0 {
 				return None;
 			}
 
@@ -1212,11 +1211,11 @@ impl TryFrom<ParsedMessage<FullInvoiceTlvStream>> for Bolt12Invoice {
 			None => return Err(Bolt12ParseError::InvalidSemantics(Bolt12SemanticError::MissingSignature)),
 			Some(signature) => signature,
 		};
-		let message = TaggedHash::new(SIGNATURE_TAG, &bytes);
+		let tagged_hash = TaggedHash::new(SIGNATURE_TAG, &bytes);
 		let pubkey = contents.fields().signing_pubkey;
-		merkle::verify_signature(&signature, message, pubkey)?;
+		merkle::verify_signature(&signature, &tagged_hash, pubkey)?;
 
-		Ok(Bolt12Invoice { bytes, contents, signature })
+		Ok(Bolt12Invoice { bytes, contents, signature, tagged_hash })
 	}
 }
 
@@ -1303,12 +1302,12 @@ mod tests {
 	use super::{Bolt12Invoice, DEFAULT_RELATIVE_EXPIRY, FallbackAddress, FullInvoiceTlvStreamRef, InvoiceTlvStreamRef, SIGNATURE_TAG, UnsignedBolt12Invoice};
 
 	use bitcoin::blockdata::constants::ChainHash;
-	use bitcoin::blockdata::script::Script;
+	use bitcoin::blockdata::script::ScriptBuf;
 	use bitcoin::hashes::Hash;
 	use bitcoin::network::constants::Network;
 	use bitcoin::secp256k1::{Message, Secp256k1, XOnlyPublicKey, self};
-	use bitcoin::util::address::{Address, Payload, WitnessVersion};
-	use bitcoin::util::schnorr::TweakedPublicKey;
+	use bitcoin::address::{Address, Payload, WitnessProgram, WitnessVersion};
+	use bitcoin::key::TweakedPublicKey;
 	use core::convert::TryFrom;
 	use core::time::Duration;
 	use crate::blinded_path::{BlindedHop, BlindedPath};
@@ -1431,7 +1430,7 @@ mod tests {
 		assert_eq!(invoice.signing_pubkey(), recipient_pubkey());
 
 		let message = TaggedHash::new(SIGNATURE_TAG, &invoice.bytes);
-		assert!(merkle::verify_signature(&invoice.signature, message, recipient_pubkey()).is_ok());
+		assert!(merkle::verify_signature(&invoice.signature, &message, recipient_pubkey()).is_ok());
 
 		let digest = Message::from_slice(&invoice.signable_hash()).unwrap();
 		let pubkey = recipient_pubkey().into();
@@ -1528,7 +1527,7 @@ mod tests {
 		assert_eq!(invoice.signing_pubkey(), recipient_pubkey());
 
 		let message = TaggedHash::new(SIGNATURE_TAG, &invoice.bytes);
-		assert!(merkle::verify_signature(&invoice.signature, message, recipient_pubkey()).is_ok());
+		assert!(merkle::verify_signature(&invoice.signature, &message, recipient_pubkey()).is_ok());
 
 		assert_eq!(
 			invoice.as_tlv_stream(),
@@ -1804,8 +1803,8 @@ mod tests {
 
 	#[test]
 	fn builds_invoice_with_fallback_address() {
-		let script = Script::new();
-		let pubkey = bitcoin::util::key::PublicKey::new(recipient_pubkey());
+		let script = ScriptBuf::new();
+		let pubkey = bitcoin::key::PublicKey::new(recipient_pubkey());
 		let x_only_pubkey = XOnlyPublicKey::from_keypair(&recipient_keys()).0;
 		let tweaked_pubkey = TweakedPublicKey::dangerous_assume_tweaked(x_only_pubkey);
 
@@ -1835,11 +1834,11 @@ mod tests {
 			Some(&vec![
 				FallbackAddress {
 					version: WitnessVersion::V0.to_num(),
-					program: Vec::from(&script.wscript_hash().into_inner()[..]),
+					program: Vec::from(script.wscript_hash().to_byte_array()),
 				},
 				FallbackAddress {
 					version: WitnessVersion::V0.to_num(),
-					program: Vec::from(&pubkey.wpubkey_hash().unwrap().into_inner()[..]),
+					program: Vec::from(pubkey.wpubkey_hash().unwrap().to_byte_array()),
 				},
 				FallbackAddress {
 					version: WitnessVersion::V1.to_num(),
@@ -2093,8 +2092,8 @@ mod tests {
 
 	#[test]
 	fn parses_invoice_with_fallback_address() {
-		let script = Script::new();
-		let pubkey = bitcoin::util::key::PublicKey::new(recipient_pubkey());
+		let script = ScriptBuf::new();
+		let pubkey = bitcoin::key::PublicKey::new(recipient_pubkey());
 		let x_only_pubkey = XOnlyPublicKey::from_keypair(&recipient_keys()).0;
 		let tweaked_pubkey = TweakedPublicKey::dangerous_assume_tweaked(x_only_pubkey);
 
@@ -2127,26 +2126,16 @@ mod tests {
 
 		match Bolt12Invoice::try_from(buffer) {
 			Ok(invoice) => {
+				let v1_witness_program = WitnessProgram::new(WitnessVersion::V1, vec![0u8; 33]).unwrap();
+				let v2_witness_program = WitnessProgram::new(WitnessVersion::V2, vec![0u8; 40]).unwrap();
 				assert_eq!(
 					invoice.fallbacks(),
 					vec![
 						Address::p2wsh(&script, Network::Bitcoin),
 						Address::p2wpkh(&pubkey, Network::Bitcoin).unwrap(),
 						Address::p2tr_tweaked(tweaked_pubkey, Network::Bitcoin),
-						Address {
-							payload: Payload::WitnessProgram {
-								version: WitnessVersion::V1,
-								program: vec![0u8; 33],
-							},
-							network: Network::Bitcoin,
-						},
-						Address {
-							payload: Payload::WitnessProgram {
-								version: WitnessVersion::V2,
-								program: vec![0u8; 40],
-							},
-							network: Network::Bitcoin,
-						},
+						Address::new(Network::Bitcoin, Payload::WitnessProgram(v1_witness_program)),
+						Address::new(Network::Bitcoin, Payload::WitnessProgram(v2_witness_program)),
 					],
 				);
 			},

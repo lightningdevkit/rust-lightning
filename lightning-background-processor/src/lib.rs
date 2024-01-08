@@ -845,7 +845,7 @@ impl Drop for BackgroundProcessor {
 #[cfg(all(feature = "std", test))]
 mod tests {
 	use bitcoin::blockdata::constants::{genesis_block, ChainHash};
-	use bitcoin::blockdata::locktime::PackedLockTime;
+	use bitcoin::blockdata::locktime::absolute::LockTime;
 	use bitcoin::blockdata::transaction::{Transaction, TxOut};
 	use bitcoin::network::constants::Network;
 	use bitcoin::secp256k1::{SecretKey, PublicKey, Secp256k1};
@@ -1241,7 +1241,7 @@ mod tests {
 
 	macro_rules! begin_open_channel {
 		($node_a: expr, $node_b: expr, $channel_value: expr) => {{
-			$node_a.node.create_channel($node_b.node.get_our_node_id(), $channel_value, 100, 42, None).unwrap();
+			$node_a.node.create_channel($node_b.node.get_our_node_id(), $channel_value, 100, 42, None, None).unwrap();
 			$node_b.node.handle_open_channel(&$node_a.node.get_our_node_id(), &get_event_msg!($node_a, MessageSendEvent::SendOpenChannel, $node_b.node.get_our_node_id()));
 			$node_a.node.handle_accept_channel(&$node_b.node.get_our_node_id(), &get_event_msg!($node_b, MessageSendEvent::SendAcceptChannel, $node_a.node.get_our_node_id()));
 		}}
@@ -1254,7 +1254,7 @@ mod tests {
 					assert_eq!(channel_value_satoshis, $channel_value);
 					assert_eq!(user_channel_id, 42);
 
-					let tx = Transaction { version: 1 as i32, lock_time: PackedLockTime(0), input: Vec::new(), output: vec![TxOut {
+					let tx = Transaction { version: 1 as i32, lock_time: LockTime::ZERO, input: Vec::new(), output: vec![TxOut {
 						value: channel_value_satoshis, script_pubkey: output_script.clone(),
 					}]};
 					(temporary_channel_id, tx)

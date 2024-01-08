@@ -20,7 +20,7 @@ use crate::ln::msgs::DecodeError;
 use crate::ln::onion_utils;
 use crate::onion_message::Destination;
 use crate::util::chacha20poly1305rfc::ChaChaPolyWriteAdapter;
-use crate::util::ser::{Readable, VecWriter, Writeable};
+use crate::util::ser::{Readable, Writeable};
 
 use crate::io;
 use crate::prelude::*;
@@ -49,7 +49,7 @@ where
 				let hop_pk_blinding_factor = {
 					let mut hmac = HmacEngine::<Sha256>::new(b"blinded_node_id");
 					hmac.input(encrypted_data_ss.as_ref());
-					Hmac::from_engine(hmac).into_inner()
+					Hmac::from_engine(hmac).to_byte_array()
 				};
 				$pk.mul_tweak(secp_ctx, &Scalar::from_be_bytes(hop_pk_blinding_factor).unwrap())?
 			};
@@ -70,7 +70,7 @@ where
 				let mut sha = Sha256::engine();
 				sha.input(&msg_blinding_point.serialize()[..]);
 				sha.input(encrypted_data_ss.as_ref());
-				Sha256::from_engine(sha).into_inner()
+				Sha256::from_engine(sha).to_byte_array()
 			};
 
 			msg_blinding_point_priv = msg_blinding_point_priv.mul_tweak(&Scalar::from_be_bytes(msg_blinding_point_blinding_factor).unwrap())?;
@@ -80,7 +80,7 @@ where
 				let mut sha = Sha256::engine();
 				sha.input(&onion_packet_pubkey.serialize()[..]);
 				sha.input(onion_packet_ss.as_ref());
-				Sha256::from_engine(sha).into_inner()
+				Sha256::from_engine(sha).to_byte_array()
 			};
 			onion_packet_pubkey_priv = onion_packet_pubkey_priv.mul_tweak(&Scalar::from_be_bytes(onion_packet_pubkey_blinding_factor).unwrap())?;
 			onion_packet_pubkey = PublicKey::from_secret_key(secp_ctx, &onion_packet_pubkey_priv);
@@ -129,10 +129,8 @@ where
 
 /// Encrypt TLV payload to be used as a [`crate::blinded_path::BlindedHop::encrypted_payload`].
 fn encrypt_payload<P: Writeable>(payload: P, encrypted_tlvs_rho: [u8; 32]) -> Vec<u8> {
-	let mut writer = VecWriter(Vec::new());
 	let write_adapter = ChaChaPolyWriteAdapter::new(encrypted_tlvs_rho, &payload);
-	write_adapter.write(&mut writer).expect("In-memory writes cannot fail");
-	writer.0
+	write_adapter.encode()
 }
 
 /// Blinded path encrypted payloads may be padded to ensure they are equal length.

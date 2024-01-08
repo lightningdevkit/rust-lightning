@@ -28,7 +28,7 @@ use bitcoin::blockdata::constants::ChainHash;
 use bitcoin::secp256k1::PublicKey;
 use bitcoin::secp256k1::ecdsa::Signature;
 use bitcoin::{secp256k1, Witness};
-use bitcoin::blockdata::script::Script;
+use bitcoin::blockdata::script::ScriptBuf;
 use bitcoin::blockdata::transaction::Transaction;
 use bitcoin::hash_types::Txid;
 
@@ -66,11 +66,11 @@ pub(crate) const MAX_VALUE_MSAT: u64 = 21_000_000_0000_0000_000;
 
 #[cfg(taproot)]
 /// A partial signature that also contains the Musig2 nonce its signer used
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct PartialSignatureWithNonce(pub musig2::types::PartialSignature, pub musig2::types::PublicNonce);
 
 /// An error in decoding a message or struct.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub enum DecodeError {
 	/// A version byte specified something we don't know how to handle.
 	///
@@ -97,7 +97,7 @@ pub enum DecodeError {
 /// An [`init`] message to be sent to or received from a peer.
 ///
 /// [`init`]: https://github.com/lightning/bolts/blob/master/01-messaging.md#the-init-message
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct Init {
 	/// The relevant features which the sender supports.
 	pub features: InitFeatures,
@@ -117,7 +117,7 @@ pub struct Init {
 /// An [`error`] message to be sent to or received from a peer.
 ///
 /// [`error`]: https://github.com/lightning/bolts/blob/master/01-messaging.md#the-error-and-warning-messages
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct ErrorMessage {
 	/// The channel ID involved in the error.
 	///
@@ -135,7 +135,7 @@ pub struct ErrorMessage {
 /// A [`warning`] message to be sent to or received from a peer.
 ///
 /// [`warning`]: https://github.com/lightning/bolts/blob/master/01-messaging.md#the-error-and-warning-messages
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct WarningMessage {
 	/// The channel ID involved in the warning.
 	///
@@ -152,7 +152,7 @@ pub struct WarningMessage {
 /// A [`ping`] message to be sent to or received from a peer.
 ///
 /// [`ping`]: https://github.com/lightning/bolts/blob/master/01-messaging.md#the-ping-and-pong-messages
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct Ping {
 	/// The desired response length.
 	pub ponglen: u16,
@@ -165,7 +165,7 @@ pub struct Ping {
 /// A [`pong`] message to be sent to or received from a peer.
 ///
 /// [`pong`]: https://github.com/lightning/bolts/blob/master/01-messaging.md#the-ping-and-pong-messages
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct Pong {
 	/// The pong packet size.
 	///
@@ -178,7 +178,7 @@ pub struct Pong {
 /// Used in V1 channel establishment
 ///
 /// [`open_channel`]: https://github.com/lightning/bolts/blob/master/02-peer-protocol.md#the-open_channel-message
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct OpenChannel {
 	/// The genesis hash of the blockchain where the channel is to be opened
 	pub chain_hash: ChainHash,
@@ -219,7 +219,7 @@ pub struct OpenChannel {
 	/// The channel flags to be used
 	pub channel_flags: u8,
 	/// A request to pre-set the to-sender output's `scriptPubkey` for when we collaboratively close
-	pub shutdown_scriptpubkey: Option<Script>,
+	pub shutdown_scriptpubkey: Option<ScriptBuf>,
 	/// The channel type that this channel will represent
 	///
 	/// If this is `None`, we derive the channel type from the intersection of our
@@ -232,7 +232,7 @@ pub struct OpenChannel {
 /// Used in V2 channel establishment
 ///
 // TODO(dual_funding): Add spec link for `open_channel2`.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct OpenChannelV2 {
 	/// The genesis hash of the blockchain where the channel is to be opened
 	pub chain_hash: ChainHash,
@@ -277,7 +277,7 @@ pub struct OpenChannelV2 {
 	pub channel_flags: u8,
 	/// Optionally, a request to pre-set the to-channel-initiator output's scriptPubkey for when we
 	/// collaboratively close
-	pub shutdown_scriptpubkey: Option<Script>,
+	pub shutdown_scriptpubkey: Option<ScriptBuf>,
 	/// The channel type that this channel will represent. If none is set, we derive the channel
 	/// type from the intersection of our feature bits with our counterparty's feature bits from
 	/// the Init message.
@@ -291,7 +291,7 @@ pub struct OpenChannelV2 {
 /// Used in V1 channel establishment
 ///
 /// [`accept_channel`]: https://github.com/lightning/bolts/blob/master/02-peer-protocol.md#the-accept_channel-message
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct AcceptChannel {
 	/// A temporary channel ID, until the funding outpoint is announced
 	pub temporary_channel_id: ChannelId,
@@ -322,7 +322,7 @@ pub struct AcceptChannel {
 	/// The first to-be-broadcast-by-sender transaction's per commitment point
 	pub first_per_commitment_point: PublicKey,
 	/// A request to pre-set the to-sender output's scriptPubkey for when we collaboratively close
-	pub shutdown_scriptpubkey: Option<Script>,
+	pub shutdown_scriptpubkey: Option<ScriptBuf>,
 	/// The channel type that this channel will represent.
 	///
 	/// If this is `None`, we derive the channel type from the intersection of
@@ -339,7 +339,7 @@ pub struct AcceptChannel {
 /// Used in V2 channel establishment
 ///
 // TODO(dual_funding): Add spec link for `accept_channel2`.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct AcceptChannelV2 {
 	/// The same `temporary_channel_id` received from the initiator's `open_channel2` message.
 	pub temporary_channel_id: ChannelId,
@@ -376,7 +376,7 @@ pub struct AcceptChannelV2 {
 	pub second_per_commitment_point: PublicKey,
 	/// Optionally, a request to pre-set the to-channel-acceptor output's scriptPubkey for when we
 	/// collaboratively close
-	pub shutdown_scriptpubkey: Option<Script>,
+	pub shutdown_scriptpubkey: Option<ScriptBuf>,
 	/// The channel type that this channel will represent. If none is set, we derive the channel
 	/// type from the intersection of our feature bits with our counterparty's feature bits from
 	/// the Init message.
@@ -392,7 +392,7 @@ pub struct AcceptChannelV2 {
 /// Used in V1 channel establishment
 ///
 /// [`funding_created`]: https://github.com/lightning/bolts/blob/master/02-peer-protocol.md#the-funding_created-message
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct FundingCreated {
 	/// A temporary channel ID, until the funding is established
 	pub temporary_channel_id: ChannelId,
@@ -415,7 +415,7 @@ pub struct FundingCreated {
 /// Used in V1 channel establishment
 ///
 /// [`funding_signed`]: https://github.com/lightning/bolts/blob/master/02-peer-protocol.md#the-funding_signed-message
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct FundingSigned {
 	/// The channel ID
 	pub channel_id: ChannelId,
@@ -429,7 +429,7 @@ pub struct FundingSigned {
 /// A [`channel_ready`] message to be sent to or received from a peer.
 ///
 /// [`channel_ready`]: https://github.com/lightning/bolts/blob/master/02-peer-protocol.md#the-channel_ready-message
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct ChannelReady {
 	/// The channel ID
 	pub channel_id: ChannelId,
@@ -442,11 +442,17 @@ pub struct ChannelReady {
 	pub short_channel_id_alias: Option<u64>,
 }
 
-/// #SPLICING Inspired by OpenChannel, Shutdown
-/// A splice message to be sent by or received from the splice initiator.
-/// TODO(splicing): Is using 'splice initiator' role OK?
-/// TODO(splicing): Can the channel acceptor later be the splice initiator?
-///
+/// An stfu (quiescence) message to be sent by or received from the stfu initiator.
+// TODO(splicing): Add spec link for `stfu`; still in draft, using from https://github.com/lightning/bolts/pull/863
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Stfu {
+	/// The channel ID where quiescence is intended
+	pub channel_id: ChannelId,
+	/// Initiator flag, 1 if initiating, 0 if replying to an stfu.
+	pub initiator: u8,
+}
+
+/// A splice message to be sent by or received from the stfu initiator (splice initiator).
 // TODO(splicing): Add spec link for `splice`; still in draft, using from https://github.com/lightning/bolts/pull/863
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Splice {
@@ -465,7 +471,6 @@ pub struct Splice {
 	pub funding_pubkey: PublicKey,
 }
 
-/// #SPLICING
 /// A splice_ack message to be received by or sent to the splice initiator.
 ///
 // TODO(splicing): Add spec link for `splice_ack`; still in draft, using from https://github.com/lightning/bolts/pull/863
@@ -581,7 +586,7 @@ pub struct SpliceSignedAck {
 /// A tx_add_input message for adding an input during interactive transaction construction
 ///
 // TODO(dual_funding): Add spec link for `tx_add_input`.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct TxAddInput {
 	/// The channel ID
 	pub channel_id: ChannelId,
@@ -600,7 +605,7 @@ pub struct TxAddInput {
 /// A tx_add_output message for adding an output during interactive transaction construction.
 ///
 // TODO(dual_funding): Add spec link for `tx_add_output`.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct TxAddOutput {
 	/// The channel ID
 	pub channel_id: ChannelId,
@@ -610,13 +615,13 @@ pub struct TxAddOutput {
 	/// The satoshi value of the output
 	pub sats: u64,
 	/// The scriptPubKey for the output
-	pub script: Script,
+	pub script: ScriptBuf,
 }
 
 /// A tx_remove_input message for removing an input during interactive transaction construction.
 ///
 // TODO(dual_funding): Add spec link for `tx_remove_input`.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct TxRemoveInput {
 	/// The channel ID
 	pub channel_id: ChannelId,
@@ -627,7 +632,7 @@ pub struct TxRemoveInput {
 /// A tx_remove_output message for removing an output during interactive transaction construction.
 ///
 // TODO(dual_funding): Add spec link for `tx_remove_output`.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct TxRemoveOutput {
 	/// The channel ID
 	pub channel_id: ChannelId,
@@ -639,7 +644,7 @@ pub struct TxRemoveOutput {
 /// interactive transaction construction.
 ///
 // TODO(dual_funding): Add spec link for `tx_complete`.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct TxComplete {
 	/// The channel ID
 	pub channel_id: ChannelId,
@@ -649,7 +654,7 @@ pub struct TxComplete {
 /// interactive transaction construction.
 ///
 // TODO(dual_funding): Add spec link for `tx_signatures`.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct TxSignatures {
 	/// The channel ID
 	pub channel_id: ChannelId,
@@ -665,7 +670,7 @@ pub struct TxSignatures {
 /// completed.
 ///
 // TODO(dual_funding): Add spec link for `tx_init_rbf`.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct TxInitRbf {
 	/// The channel ID
 	pub channel_id: ChannelId,
@@ -682,7 +687,7 @@ pub struct TxInitRbf {
 /// completed.
 ///
 // TODO(dual_funding): Add spec link for `tx_ack_rbf`.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct TxAckRbf {
 	/// The channel ID
 	pub channel_id: ChannelId,
@@ -694,7 +699,7 @@ pub struct TxAckRbf {
 /// A tx_abort message which signals the cancellation of an in-progress transaction negotiation.
 ///
 // TODO(dual_funding): Add spec link for `tx_abort`.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct TxAbort {
 	/// The channel ID
 	pub channel_id: ChannelId,
@@ -705,21 +710,21 @@ pub struct TxAbort {
 /// A [`shutdown`] message to be sent to or received from a peer.
 ///
 /// [`shutdown`]: https://github.com/lightning/bolts/blob/master/02-peer-protocol.md#closing-initiation-shutdown
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct Shutdown {
 	/// The channel ID
 	pub channel_id: ChannelId,
 	/// The destination of this peer's funds on closing.
 	///
 	/// Must be in one of these forms: P2PKH, P2SH, P2WPKH, P2WSH, P2TR.
-	pub scriptpubkey: Script,
+	pub scriptpubkey: ScriptBuf,
 }
 
 /// The minimum and maximum fees which the sender is willing to place on the closing transaction.
 ///
 /// This is provided in [`ClosingSigned`] by both sides to indicate the fee range they are willing
 /// to use.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct ClosingSignedFeeRange {
 	/// The minimum absolute fee, in satoshis, which the sender is willing to place on the closing
 	/// transaction.
@@ -732,7 +737,7 @@ pub struct ClosingSignedFeeRange {
 /// A [`closing_signed`] message to be sent to or received from a peer.
 ///
 /// [`closing_signed`]: https://github.com/lightning/bolts/blob/master/02-peer-protocol.md#closing-negotiation-closing_signed
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct ClosingSigned {
 	/// The channel ID
 	pub channel_id: ChannelId,
@@ -748,7 +753,7 @@ pub struct ClosingSigned {
 /// An [`update_add_htlc`] message to be sent to or received from a peer.
 ///
 /// [`update_add_htlc`]: https://github.com/lightning/bolts/blob/master/02-peer-protocol.md#adding-an-htlc-update_add_htlc
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct UpdateAddHTLC {
 	/// The channel ID
 	pub channel_id: ChannelId,
@@ -771,7 +776,7 @@ pub struct UpdateAddHTLC {
  /// An onion message to be sent to or received from a peer.
  ///
  // TODO: update with link to OM when they are merged into the BOLTs
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct OnionMessage {
 	/// Used in decrypting the onion packet's payload.
 	pub blinding_point: PublicKey,
@@ -782,7 +787,7 @@ pub struct OnionMessage {
 /// An [`update_fulfill_htlc`] message to be sent to or received from a peer.
 ///
 /// [`update_fulfill_htlc`]: https://github.com/lightning/bolts/blob/master/02-peer-protocol.md#removing-an-htlc-update_fulfill_htlc-update_fail_htlc-and-update_fail_malformed_htlc
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct UpdateFulfillHTLC {
 	/// The channel ID
 	pub channel_id: ChannelId,
@@ -795,7 +800,7 @@ pub struct UpdateFulfillHTLC {
 /// An [`update_fail_htlc`] message to be sent to or received from a peer.
 ///
 /// [`update_fail_htlc`]: https://github.com/lightning/bolts/blob/master/02-peer-protocol.md#removing-an-htlc-update_fulfill_htlc-update_fail_htlc-and-update_fail_malformed_htlc
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct UpdateFailHTLC {
 	/// The channel ID
 	pub channel_id: ChannelId,
@@ -807,7 +812,7 @@ pub struct UpdateFailHTLC {
 /// An [`update_fail_malformed_htlc`] message to be sent to or received from a peer.
 ///
 /// [`update_fail_malformed_htlc`]: https://github.com/lightning/bolts/blob/master/02-peer-protocol.md#removing-an-htlc-update_fulfill_htlc-update_fail_htlc-and-update_fail_malformed_htlc
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct UpdateFailMalformedHTLC {
 	/// The channel ID
 	pub channel_id: ChannelId,
@@ -821,7 +826,7 @@ pub struct UpdateFailMalformedHTLC {
 /// A [`commitment_signed`] message to be sent to or received from a peer.
 ///
 /// [`commitment_signed`]: https://github.com/lightning/bolts/blob/master/02-peer-protocol.md#committing-updates-so-far-commitment_signed
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct CommitmentSigned {
 	/// The channel ID
 	pub channel_id: ChannelId,
@@ -837,7 +842,7 @@ pub struct CommitmentSigned {
 /// A [`revoke_and_ack`] message to be sent to or received from a peer.
 ///
 /// [`revoke_and_ack`]: https://github.com/lightning/bolts/blob/master/02-peer-protocol.md#completing-the-transition-to-the-updated-state-revoke_and_ack
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct RevokeAndACK {
 	/// The channel ID
 	pub channel_id: ChannelId,
@@ -853,7 +858,7 @@ pub struct RevokeAndACK {
 /// An [`update_fee`] message to be sent to or received from a peer
 ///
 /// [`update_fee`]: https://github.com/lightning/bolts/blob/master/02-peer-protocol.md#updating-fees-update_fee
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct UpdateFee {
 	/// The channel ID
 	pub channel_id: ChannelId,
@@ -864,7 +869,7 @@ pub struct UpdateFee {
 /// A [`channel_reestablish`] message to be sent to or received from a peer.
 ///
 /// [`channel_reestablish`]: https://github.com/lightning/bolts/blob/master/02-peer-protocol.md#message-retransmission
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct ChannelReestablish {
 	/// The channel ID
 	pub channel_id: ChannelId,
@@ -884,7 +889,7 @@ pub struct ChannelReestablish {
 /// An [`announcement_signatures`] message to be sent to or received from a peer.
 ///
 /// [`announcement_signatures`]: https://github.com/lightning/bolts/blob/master/07-routing-gossip.md#the-announcement_signatures-message
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct AnnouncementSignatures {
 	/// The channel ID
 	pub channel_id: ChannelId,
@@ -897,7 +902,7 @@ pub struct AnnouncementSignatures {
 }
 
 /// An address which can be used to connect to a remote peer.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub enum SocketAddress {
 	/// An IPv4 address and port on which the peer is listening.
 	TcpIpV4 {
@@ -1052,7 +1057,7 @@ impl Readable for SocketAddress {
 }
 
 /// [`SocketAddress`] error variants
-#[derive(Debug, Eq, PartialEq, Clone)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub enum SocketAddressParseError {
 	/// Socket address (IPv4/IPv6) parsing error
 	SocketAddrParse,
@@ -1235,7 +1240,7 @@ impl<'a> Writeable for UnsignedGossipMessage<'a> {
 /// The unsigned part of a [`node_announcement`] message.
 ///
 /// [`node_announcement`]: https://github.com/lightning/bolts/blob/master/07-routing-gossip.md#the-node_announcement-message
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct UnsignedNodeAnnouncement {
 	/// The advertised features
 	pub features: NodeFeatures,
@@ -1255,7 +1260,7 @@ pub struct UnsignedNodeAnnouncement {
 	pub(crate) excess_address_data: Vec<u8>,
 	pub(crate) excess_data: Vec<u8>,
 }
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
 /// A [`node_announcement`] message to be sent to or received from a peer.
 ///
 /// [`node_announcement`]: https://github.com/lightning/bolts/blob/master/07-routing-gossip.md#the-node_announcement-message
@@ -1269,7 +1274,7 @@ pub struct NodeAnnouncement {
 /// The unsigned part of a [`channel_announcement`] message.
 ///
 /// [`channel_announcement`]: https://github.com/lightning/bolts/blob/master/07-routing-gossip.md#the-channel_announcement-message
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct UnsignedChannelAnnouncement {
 	/// The advertised channel features
 	pub features: ChannelFeatures,
@@ -1294,7 +1299,7 @@ pub struct UnsignedChannelAnnouncement {
 /// A [`channel_announcement`] message to be sent to or received from a peer.
 ///
 /// [`channel_announcement`]: https://github.com/lightning/bolts/blob/master/07-routing-gossip.md#the-channel_announcement-message
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct ChannelAnnouncement {
 	/// Authentication of the announcement by the first public node
 	pub node_signature_1: Signature,
@@ -1311,7 +1316,7 @@ pub struct ChannelAnnouncement {
 /// The unsigned part of a [`channel_update`] message.
 ///
 /// [`channel_update`]: https://github.com/lightning/bolts/blob/master/07-routing-gossip.md#the-channel_update-message
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct UnsignedChannelUpdate {
 	/// The genesis hash of the blockchain where the channel is to be opened
 	pub chain_hash: ChainHash,
@@ -1349,7 +1354,7 @@ pub struct UnsignedChannelUpdate {
 /// A [`channel_update`] message to be sent to or received from a peer.
 ///
 /// [`channel_update`]: https://github.com/lightning/bolts/blob/master/07-routing-gossip.md#the-channel_update-message
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct ChannelUpdate {
 	/// A signature of the channel update
 	pub signature: Signature,
@@ -1363,7 +1368,7 @@ pub struct ChannelUpdate {
 /// messages.
 ///
 /// [`query_channel_range`]: https://github.com/lightning/bolts/blob/master/07-routing-gossip.md#the-query_channel_range-and-reply_channel_range-messages
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct QueryChannelRange {
 	/// The genesis hash of the blockchain being queried
 	pub chain_hash: ChainHash,
@@ -1384,7 +1389,7 @@ pub struct QueryChannelRange {
 /// serialization and do not support `encoding_type=1` zlib serialization.
 ///
 /// [`reply_channel_range`]: https://github.com/lightning/bolts/blob/master/07-routing-gossip.md#the-query_channel_range-and-reply_channel_range-messages
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct ReplyChannelRange {
 	/// The genesis hash of the blockchain being queried
 	pub chain_hash: ChainHash,
@@ -1409,7 +1414,7 @@ pub struct ReplyChannelRange {
 /// serialization and do not support `encoding_type=1` zlib serialization.
 ///
 /// [`query_short_channel_ids`]: https://github.com/lightning/bolts/blob/master/07-routing-gossip.md#the-query_short_channel_idsreply_short_channel_ids_end-messages
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct QueryShortChannelIds {
 	/// The genesis hash of the blockchain being queried
 	pub chain_hash: ChainHash,
@@ -1423,7 +1428,7 @@ pub struct QueryShortChannelIds {
 /// a perfect view of the network.
 ///
 /// [`reply_short_channel_ids_end`]: https://github.com/lightning/bolts/blob/master/07-routing-gossip.md#the-query_short_channel_idsreply_short_channel_ids_end-messages
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct ReplyShortChannelIdsEnd {
 	/// The genesis hash of the blockchain that was queried
 	pub chain_hash: ChainHash,
@@ -1437,7 +1442,7 @@ pub struct ReplyShortChannelIdsEnd {
 /// `gossip_queries` feature has been negotiated.
 ///
 /// [`gossip_timestamp_filter`]: https://github.com/lightning/bolts/blob/master/07-routing-gossip.md#the-gossip_timestamp_filter-message
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct GossipTimestampFilter {
 	/// The genesis hash of the blockchain for channel and node information
 	pub chain_hash: ChainHash,
@@ -1456,7 +1461,7 @@ enum EncodingType {
 }
 
 /// Used to put an error message in a [`LightningError`].
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Hash, PartialEq)]
 pub enum ErrorAction {
 	/// The peer took some action which made us think they were useless. Disconnect them.
 	DisconnectPeer {
@@ -1505,7 +1510,7 @@ pub struct LightningError {
 
 /// Struct used to return values from [`RevokeAndACK`] messages, containing a bunch of commitment
 /// transaction updates if they were pending.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct CommitmentUpdate {
 	/// `update_add_htlc` messages which should be sent
 	pub update_add_htlcs: Vec<UpdateAddHTLC>,
@@ -1548,14 +1553,18 @@ pub trait ChannelMessageHandler : MessageSendEventsProvider {
 	/// Handle an incoming `closing_signed` message from the given peer.
 	fn handle_closing_signed(&self, their_node_id: &PublicKey, msg: &ClosingSigned);
 
+	// Quiescence
+	/// Handle an incoming `stfu` message from the given peer.
+	fn handle_stfu(&self, their_node_id: &PublicKey, msg: &Stfu);
+
 	// Splicing
-	// #SPLICING
 	/// Handle an incoming `splice` message from the given peer.
 	fn handle_splice(&self, their_node_id: &PublicKey, msg: &Splice);
 	/// Handle an incoming `splice_ack` message from the given peer.
 	fn handle_splice_ack(&self, their_node_id: &PublicKey, msg: &SpliceAck);
 	/// Handle an incoming `splice_locked` message from the given peer.
 	fn handle_splice_locked(&self, their_node_id: &PublicKey, msg: &SpliceLocked);
+	// #SPLICING
 	/// Handle an incoming `splice_created` message from the given peer.
 	fn handle_splice_created(&self, their_node_id: &PublicKey, msg: &SpliceCreated);
 	/// Handle an incoming `splice_commm_signed` message from the given peer.
@@ -1832,17 +1841,21 @@ pub use self::fuzzy_internal_msgs::*;
 #[cfg(not(fuzzing))]
 pub(crate) use self::fuzzy_internal_msgs::*;
 
-#[derive(Clone)]
-pub(crate) struct OnionPacket {
-	pub(crate) version: u8,
+/// BOLT 4 onion packet including hop data for the next peer.
+#[derive(Clone, Hash, PartialEq, Eq)]
+pub struct OnionPacket {
+	/// BOLT 4 version number.
+	pub version: u8,
 	/// In order to ensure we always return an error on onion decode in compliance with [BOLT
 	/// #4](https://github.com/lightning/bolts/blob/master/04-onion-routing.md), we have to
 	/// deserialize `OnionPacket`s contained in [`UpdateAddHTLC`] messages even if the ephemeral
 	/// public key (here) is bogus, so we hold a [`Result`] instead of a [`PublicKey`] as we'd
 	/// like.
-	pub(crate) public_key: Result<PublicKey, secp256k1::Error>,
-	pub(crate) hop_data: [u8; 20*65],
-	pub(crate) hmac: [u8; 32],
+	pub public_key: Result<PublicKey, secp256k1::Error>,
+	/// 1300 bytes encrypted payload for the next hop.
+	pub hop_data: [u8; 20*65],
+	/// HMAC to verify the integrity of hop_data.
+	pub hmac: [u8; 32],
 }
 
 impl onion_utils::Packet for OnionPacket {
@@ -1857,25 +1870,13 @@ impl onion_utils::Packet for OnionPacket {
 	}
 }
 
-impl Eq for OnionPacket { }
-impl PartialEq for OnionPacket {
-	fn eq(&self, other: &OnionPacket) -> bool {
-		for (i, j) in self.hop_data.iter().zip(other.hop_data.iter()) {
-			if i != j { return false; }
-		}
-		self.version == other.version &&
-			self.public_key == other.public_key &&
-			self.hmac == other.hmac
-	}
-}
-
 impl fmt::Debug for OnionPacket {
 	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
 		f.write_fmt(format_args!("OnionPacket version {} with hmac {:?}", self.version, &self.hmac[..]))
 	}
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub(crate) struct OnionErrorPacket {
 	// This really should be a constant size slice, but the spec lets these things be up to 128KB?
 	// (TODO) We limit it in decode to much lower...
@@ -1923,7 +1924,7 @@ impl_writeable_msg!(AcceptChannel, {
 	htlc_basepoint,
 	first_per_commitment_point,
 }, {
-	(0, shutdown_scriptpubkey, (option, encoding: (Script, WithoutLength))), // Don't encode length twice.
+	(0, shutdown_scriptpubkey, (option, encoding: (ScriptBuf, WithoutLength))), // Don't encode length twice.
 	(1, channel_type, option),
 });
 
@@ -1944,7 +1945,7 @@ impl_writeable_msg!(AcceptChannel, {
 	htlc_basepoint,
 	first_per_commitment_point,
 }, {
-	(0, shutdown_scriptpubkey, (option, encoding: (Script, WithoutLength))), // Don't encode length twice.
+	(0, shutdown_scriptpubkey, (option, encoding: (ScriptBuf, WithoutLength))), // Don't encode length twice.
 	(1, channel_type, option),
 	(4, next_local_nonce, option),
 });
@@ -1971,7 +1972,11 @@ impl_writeable_msg!(AcceptChannelV2, {
 	(2, require_confirmed_inputs, option),
 });
 
-// #SPLICING Inspired by OpenChannel
+impl_writeable_msg!(Stfu, {
+	channel_id,
+	initiator,
+}, {});
+
 impl_writeable_msg!(Splice, {
 	channel_id,
 	chain_hash,
@@ -1981,7 +1986,6 @@ impl_writeable_msg!(Splice, {
 	funding_pubkey,
 }, {});
 
-// #SPLICING
 impl_writeable_msg!(SpliceAck, {
 	channel_id,
 	chain_hash,
@@ -2226,7 +2230,7 @@ impl_writeable_msg!(OpenChannel, {
 	first_per_commitment_point,
 	channel_flags,
 }, {
-	(0, shutdown_scriptpubkey, (option, encoding: (Script, WithoutLength))), // Don't encode length twice.
+	(0, shutdown_scriptpubkey, (option, encoding: (ScriptBuf, WithoutLength))), // Don't encode length twice.
 	(1, channel_type, option),
 });
 
@@ -2935,8 +2939,8 @@ impl_writeable_msg!(GossipTimestampFilter, {
 #[cfg(test)]
 mod tests {
 	use std::convert::TryFrom;
-	use bitcoin::{Transaction, PackedLockTime, TxIn, Script, Sequence, Witness, TxOut};
-	use hex;
+	use bitcoin::{Transaction, TxIn, ScriptBuf, Sequence, Witness, TxOut};
+	use hex::DisplayHex;
 	use crate::ln::{PaymentPreimage, PaymentHash, PaymentSecret};
 	use crate::ln::ChannelId;
 	use crate::ln::features::{ChannelFeatures, ChannelTypeFeatures, InitFeatures, NodeFeatures};
@@ -2947,12 +2951,13 @@ mod tests {
 	use crate::util::test_utils;
 
 	use bitcoin::hashes::hex::FromHex;
-	use bitcoin::util::address::Address;
+	use bitcoin::address::Address;
 	use bitcoin::network::constants::Network;
 	use bitcoin::blockdata::constants::ChainHash;
 	use bitcoin::blockdata::script::Builder;
 	use bitcoin::blockdata::opcodes;
 	use bitcoin::hash_types::Txid;
+	use bitcoin::locktime::absolute::LockTime;
 
 	use bitcoin::secp256k1::{PublicKey,SecretKey};
 	use bitcoin::secp256k1::{Secp256k1, Message};
@@ -2971,7 +2976,7 @@ mod tests {
 	fn encoding_channel_reestablish() {
 		let public_key = {
 			let secp_ctx = Secp256k1::new();
-			PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&hex::decode("0101010101010101010101010101010101010101010101010101010101010101").unwrap()[..]).unwrap())
+			PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&<Vec<u8>>::from_hex("0101010101010101010101010101010101010101010101010101010101010101").unwrap()[..]).unwrap())
 		};
 
 		let cr = msgs::ChannelReestablish {
@@ -3000,7 +3005,7 @@ mod tests {
 	fn encoding_channel_reestablish_with_next_funding_txid() {
 		let public_key = {
 			let secp_ctx = Secp256k1::new();
-			PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&hex::decode("0101010101010101010101010101010101010101010101010101010101010101").unwrap()[..]).unwrap())
+			PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&<Vec<u8>>::from_hex("0101010101010101010101010101010101010101010101010101010101010101").unwrap()[..]).unwrap())
 		};
 
 		let cr = msgs::ChannelReestablish {
@@ -3009,7 +3014,7 @@ mod tests {
 			next_remote_commitment_number: 4,
 			your_last_per_commitment_secret: [9;32],
 			my_current_per_commitment_point: public_key,
-			next_funding_txid: Some(Txid::from_hash(bitcoin::hashes::Hash::from_slice(&[
+			next_funding_txid: Some(Txid::from_raw_hash(bitcoin::hashes::Hash::from_slice(&[
 				48, 167, 250, 69, 152, 48, 103, 172, 164, 99, 59, 19, 23, 11, 92, 84, 15, 80, 4, 12, 98, 82, 75, 31, 201, 11, 91, 23, 98, 23, 53, 124,
 			]).unwrap())),
 		};
@@ -3033,7 +3038,7 @@ mod tests {
 	macro_rules! get_keys_from {
 		($slice: expr, $secp_ctx: expr) => {
 			{
-				let privkey = SecretKey::from_slice(&hex::decode($slice).unwrap()[..]).unwrap();
+				let privkey = SecretKey::from_slice(&<Vec<u8>>::from_hex($slice).unwrap()[..]).unwrap();
 				let pubkey = PublicKey::from_secret_key(&$secp_ctx, &privkey);
 				(privkey, pubkey)
 			}
@@ -3063,7 +3068,7 @@ mod tests {
 		};
 
 		let encoded_value = announcement_signatures.encode();
-		assert_eq!(encoded_value, hex::decode("040000000000000005000000000000000600000000000000070000000000000000083a840000034dd977cb9b53d93a6ff64bb5f1e158b4094b66e798fb12911168a3ccdf80a83096340a6a95da0ae8d9f776528eecdbb747eb6b545495a4319ed5378e35b21e073acf9953cef4700860f5967838eba2bae89288ad188ebf8b20bf995c3ea53a26df1876d0a3a0e13172ba286a673140190c02ba9da60a2e43a745188c8a83c7f3ef").unwrap());
+		assert_eq!(encoded_value, <Vec<u8>>::from_hex("040000000000000005000000000000000600000000000000070000000000000000083a840000034dd977cb9b53d93a6ff64bb5f1e158b4094b66e798fb12911168a3ccdf80a83096340a6a95da0ae8d9f776528eecdbb747eb6b545495a4319ed5378e35b21e073acf9953cef4700860f5967838eba2bae89288ad188ebf8b20bf995c3ea53a26df1876d0a3a0e13172ba286a673140190c02ba9da60a2e43a745188c8a83c7f3ef").unwrap());
 	}
 
 	fn do_encoding_channel_announcement(unknown_features_bits: bool, excess_data: bool) {
@@ -3098,16 +3103,16 @@ mod tests {
 			contents: unsigned_channel_announcement,
 		};
 		let encoded_value = channel_announcement.encode();
-		let mut target_value = hex::decode("d977cb9b53d93a6ff64bb5f1e158b4094b66e798fb12911168a3ccdf80a83096340a6a95da0ae8d9f776528eecdbb747eb6b545495a4319ed5378e35b21e073a1735b6a427e80d5fe7cd90a2f4ee08dc9c27cda7c35a4172e5d85b12c49d4232537e98f9b1f3c5e6989a8b9644e90e8918127680dbd0d4043510840fc0f1e11a216c280b5395a2546e7e4b2663e04f811622f15a4f91e83aa2e92ba2a573c139142c54ae63072a1ec1ee7dc0c04bde5c847806172aa05c92c22ae8e308d1d2692b12cc195ce0a2d1bda6a88befa19fa07f51caa75ce83837f28965600b8aacab0855ffb0e741ec5f7c41421e9829a9d48611c8c831f71be5ea73e66594977ffd").unwrap();
+		let mut target_value = <Vec<u8>>::from_hex("d977cb9b53d93a6ff64bb5f1e158b4094b66e798fb12911168a3ccdf80a83096340a6a95da0ae8d9f776528eecdbb747eb6b545495a4319ed5378e35b21e073a1735b6a427e80d5fe7cd90a2f4ee08dc9c27cda7c35a4172e5d85b12c49d4232537e98f9b1f3c5e6989a8b9644e90e8918127680dbd0d4043510840fc0f1e11a216c280b5395a2546e7e4b2663e04f811622f15a4f91e83aa2e92ba2a573c139142c54ae63072a1ec1ee7dc0c04bde5c847806172aa05c92c22ae8e308d1d2692b12cc195ce0a2d1bda6a88befa19fa07f51caa75ce83837f28965600b8aacab0855ffb0e741ec5f7c41421e9829a9d48611c8c831f71be5ea73e66594977ffd").unwrap();
 		if unknown_features_bits {
-			target_value.append(&mut hex::decode("0002ffff").unwrap());
+			target_value.append(&mut <Vec<u8>>::from_hex("0002ffff").unwrap());
 		} else {
-			target_value.append(&mut hex::decode("0000").unwrap());
+			target_value.append(&mut <Vec<u8>>::from_hex("0000").unwrap());
 		}
-		target_value.append(&mut hex::decode("6fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d6190000000000").unwrap());
-		target_value.append(&mut hex::decode("00083a840000034d031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f024d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d076602531fe6068134503d2723133227c867ac8fa6c83c537e9a44c3c5bdbdcb1fe33703462779ad4aad39514614751a71085f2f10e1c7a593e4e030efb5b8721ce55b0b").unwrap());
+		target_value.append(&mut <Vec<u8>>::from_hex("6fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d6190000000000").unwrap());
+		target_value.append(&mut <Vec<u8>>::from_hex("00083a840000034d031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f024d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d076602531fe6068134503d2723133227c867ac8fa6c83c537e9a44c3c5bdbdcb1fe33703462779ad4aad39514614751a71085f2f10e1c7a593e4e030efb5b8721ce55b0b").unwrap());
 		if excess_data {
-			target_value.append(&mut hex::decode("0a00001400001e000028").unwrap());
+			target_value.append(&mut <Vec<u8>>::from_hex("0a00001400001e000028").unwrap());
 		}
 		assert_eq!(encoded_value, target_value);
 	}
@@ -3182,34 +3187,34 @@ mod tests {
 			contents: unsigned_node_announcement,
 		};
 		let encoded_value = node_announcement.encode();
-		let mut target_value = hex::decode("d977cb9b53d93a6ff64bb5f1e158b4094b66e798fb12911168a3ccdf80a83096340a6a95da0ae8d9f776528eecdbb747eb6b545495a4319ed5378e35b21e073a").unwrap();
+		let mut target_value = <Vec<u8>>::from_hex("d977cb9b53d93a6ff64bb5f1e158b4094b66e798fb12911168a3ccdf80a83096340a6a95da0ae8d9f776528eecdbb747eb6b545495a4319ed5378e35b21e073a").unwrap();
 		if unknown_features_bits {
-			target_value.append(&mut hex::decode("0002ffff").unwrap());
+			target_value.append(&mut <Vec<u8>>::from_hex("0002ffff").unwrap());
 		} else {
-			target_value.append(&mut hex::decode("000122").unwrap());
+			target_value.append(&mut <Vec<u8>>::from_hex("000122").unwrap());
 		}
-		target_value.append(&mut hex::decode("013413a7031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f2020201010101010101010101010101010101010101010101010101010101010101010").unwrap());
+		target_value.append(&mut <Vec<u8>>::from_hex("013413a7031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f2020201010101010101010101010101010101010101010101010101010101010101010").unwrap());
 		target_value.append(&mut vec![(addr_len >> 8) as u8, addr_len as u8]);
 		if ipv4 {
-			target_value.append(&mut hex::decode("01fffefdfc2607").unwrap());
+			target_value.append(&mut <Vec<u8>>::from_hex("01fffefdfc2607").unwrap());
 		}
 		if ipv6 {
-			target_value.append(&mut hex::decode("02fffefdfcfbfaf9f8f7f6f5f4f3f2f1f02607").unwrap());
+			target_value.append(&mut <Vec<u8>>::from_hex("02fffefdfcfbfaf9f8f7f6f5f4f3f2f1f02607").unwrap());
 		}
 		if onionv2 {
-			target_value.append(&mut hex::decode("03fffefdfcfbfaf9f8f7f62607").unwrap());
+			target_value.append(&mut <Vec<u8>>::from_hex("03fffefdfcfbfaf9f8f7f62607").unwrap());
 		}
 		if onionv3 {
-			target_value.append(&mut hex::decode("04fffefdfcfbfaf9f8f7f6f5f4f3f2f1f0efeeedecebeae9e8e7e6e5e4e3e2e1e00020102607").unwrap());
+			target_value.append(&mut <Vec<u8>>::from_hex("04fffefdfcfbfaf9f8f7f6f5f4f3f2f1f0efeeedecebeae9e8e7e6e5e4e3e2e1e00020102607").unwrap());
 		}
 		if hostname {
-			target_value.append(&mut hex::decode("0504686f73742607").unwrap());
+			target_value.append(&mut <Vec<u8>>::from_hex("0504686f73742607").unwrap());
 		}
 		if excess_address_data {
-			target_value.append(&mut hex::decode("216c280b5395a2546e7e4b2663e04f811622f15a4f92e83aa2e92ba2a573c139142c54ae63072a1ec1ee7dc0c04bde5c847806172aa05c92c22ae8e308d1d269").unwrap());
+			target_value.append(&mut <Vec<u8>>::from_hex("216c280b5395a2546e7e4b2663e04f811622f15a4f92e83aa2e92ba2a573c139142c54ae63072a1ec1ee7dc0c04bde5c847806172aa05c92c22ae8e308d1d269").unwrap());
 		}
 		if excess_data {
-			target_value.append(&mut hex::decode("3b12cc195ce0a2d1bda6a88befa19fa07f51caa75ce83837f28965600b8aacab0855ffb0e741ec5f7c41421e9829a9d48611c8c831f71be5ea73e66594977ffd").unwrap());
+			target_value.append(&mut <Vec<u8>>::from_hex("3b12cc195ce0a2d1bda6a88befa19fa07f51caa75ce83837f28965600b8aacab0855ffb0e741ec5f7c41421e9829a9d48611c8c831f71be5ea73e66594977ffd").unwrap());
 		}
 		assert_eq!(encoded_value, target_value);
 	}
@@ -3249,11 +3254,11 @@ mod tests {
 			contents: unsigned_channel_update
 		};
 		let encoded_value = channel_update.encode();
-		let mut target_value = hex::decode("d977cb9b53d93a6ff64bb5f1e158b4094b66e798fb12911168a3ccdf80a83096340a6a95da0ae8d9f776528eecdbb747eb6b545495a4319ed5378e35b21e073a").unwrap();
-		target_value.append(&mut hex::decode("6fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d6190000000000").unwrap());
-		target_value.append(&mut hex::decode("00083a840000034d013413a7").unwrap());
-		target_value.append(&mut hex::decode("01").unwrap());
-		target_value.append(&mut hex::decode("00").unwrap());
+		let mut target_value = <Vec<u8>>::from_hex("d977cb9b53d93a6ff64bb5f1e158b4094b66e798fb12911168a3ccdf80a83096340a6a95da0ae8d9f776528eecdbb747eb6b545495a4319ed5378e35b21e073a").unwrap();
+		target_value.append(&mut <Vec<u8>>::from_hex("6fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d6190000000000").unwrap());
+		target_value.append(&mut <Vec<u8>>::from_hex("00083a840000034d013413a7").unwrap());
+		target_value.append(&mut <Vec<u8>>::from_hex("01").unwrap());
+		target_value.append(&mut <Vec<u8>>::from_hex("00").unwrap());
 		if direction {
 			let flag = target_value.last_mut().unwrap();
 			*flag = 1;
@@ -3262,10 +3267,10 @@ mod tests {
 			let flag = target_value.last_mut().unwrap();
 			*flag = *flag | 1 << 1;
 		}
-		target_value.append(&mut hex::decode("009000000000000f42400000271000000014").unwrap());
-		target_value.append(&mut hex::decode("0000777788889999").unwrap());
+		target_value.append(&mut <Vec<u8>>::from_hex("009000000000000f42400000271000000014").unwrap());
+		target_value.append(&mut <Vec<u8>>::from_hex("0000777788889999").unwrap());
 		if excess_data {
-			target_value.append(&mut hex::decode("000000003b9aca00").unwrap());
+			target_value.append(&mut <Vec<u8>>::from_hex("000000003b9aca00").unwrap());
 		}
 		assert_eq!(encoded_value, target_value);
 	}
@@ -3314,18 +3319,18 @@ mod tests {
 		};
 		let encoded_value = open_channel.encode();
 		let mut target_value = Vec::new();
-		target_value.append(&mut hex::decode("6fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d6190000000000").unwrap());
-		target_value.append(&mut hex::decode("02020202020202020202020202020202020202020202020202020202020202021234567890123456233403289122369832144668701144767633030896203198784335490624111800083a840000034d000c89d4c0bcc0bc031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f024d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d076602531fe6068134503d2723133227c867ac8fa6c83c537e9a44c3c5bdbdcb1fe33703462779ad4aad39514614751a71085f2f10e1c7a593e4e030efb5b8721ce55b0b0362c0a046dacce86ddd0343c6d3c7c79c2208ba0d9c9cf24a6d046d21d21f90f703f006a18d5653c4edf5391ff23a61f03ff83d237e880ee61187fa9f379a028e0a").unwrap());
+		target_value.append(&mut <Vec<u8>>::from_hex("6fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d6190000000000").unwrap());
+		target_value.append(&mut <Vec<u8>>::from_hex("02020202020202020202020202020202020202020202020202020202020202021234567890123456233403289122369832144668701144767633030896203198784335490624111800083a840000034d000c89d4c0bcc0bc031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f024d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d076602531fe6068134503d2723133227c867ac8fa6c83c537e9a44c3c5bdbdcb1fe33703462779ad4aad39514614751a71085f2f10e1c7a593e4e030efb5b8721ce55b0b0362c0a046dacce86ddd0343c6d3c7c79c2208ba0d9c9cf24a6d046d21d21f90f703f006a18d5653c4edf5391ff23a61f03ff83d237e880ee61187fa9f379a028e0a").unwrap());
 		if random_bit {
-			target_value.append(&mut hex::decode("20").unwrap());
+			target_value.append(&mut <Vec<u8>>::from_hex("20").unwrap());
 		} else {
-			target_value.append(&mut hex::decode("00").unwrap());
+			target_value.append(&mut <Vec<u8>>::from_hex("00").unwrap());
 		}
 		if shutdown {
-			target_value.append(&mut hex::decode("001976a91479b000887626b294a914501a4cd226b58b23598388ac").unwrap());
+			target_value.append(&mut <Vec<u8>>::from_hex("001976a91479b000887626b294a914501a4cd226b58b23598388ac").unwrap());
 		}
 		if incl_chan_type {
-			target_value.append(&mut hex::decode("0100").unwrap());
+			target_value.append(&mut <Vec<u8>>::from_hex("0100").unwrap());
 		}
 		assert_eq!(encoded_value, target_value);
 	}
@@ -3377,39 +3382,39 @@ mod tests {
 		};
 		let encoded_value = open_channelv2.encode();
 		let mut target_value = Vec::new();
-		target_value.append(&mut hex::decode("6fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d6190000000000").unwrap());
-		target_value.append(&mut hex::decode("0202020202020202020202020202020202020202020202020202020202020202").unwrap());
-		target_value.append(&mut hex::decode("000c89d4").unwrap());
-		target_value.append(&mut hex::decode("000c89d4").unwrap());
-		target_value.append(&mut hex::decode("1234567890123456").unwrap());
-		target_value.append(&mut hex::decode("3214466870114476").unwrap());
-		target_value.append(&mut hex::decode("7633030896203198").unwrap());
-		target_value.append(&mut hex::decode("00083a840000034d").unwrap());
-		target_value.append(&mut hex::decode("c0bc").unwrap());
-		target_value.append(&mut hex::decode("c0bc").unwrap());
-		target_value.append(&mut hex::decode("12345678").unwrap());
-		target_value.append(&mut hex::decode("031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f").unwrap());
-		target_value.append(&mut hex::decode("024d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766").unwrap());
-		target_value.append(&mut hex::decode("02531fe6068134503d2723133227c867ac8fa6c83c537e9a44c3c5bdbdcb1fe337").unwrap());
-		target_value.append(&mut hex::decode("03462779ad4aad39514614751a71085f2f10e1c7a593e4e030efb5b8721ce55b0b").unwrap());
-		target_value.append(&mut hex::decode("0362c0a046dacce86ddd0343c6d3c7c79c2208ba0d9c9cf24a6d046d21d21f90f7").unwrap());
-		target_value.append(&mut hex::decode("03f006a18d5653c4edf5391ff23a61f03ff83d237e880ee61187fa9f379a028e0a").unwrap());
-		target_value.append(&mut hex::decode("02989c0b76cb563971fdc9bef31ec06c3560f3249d6ee9e5d83c57625596e05f6f").unwrap());
+		target_value.append(&mut <Vec<u8>>::from_hex("6fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d6190000000000").unwrap());
+		target_value.append(&mut <Vec<u8>>::from_hex("0202020202020202020202020202020202020202020202020202020202020202").unwrap());
+		target_value.append(&mut <Vec<u8>>::from_hex("000c89d4").unwrap());
+		target_value.append(&mut <Vec<u8>>::from_hex("000c89d4").unwrap());
+		target_value.append(&mut <Vec<u8>>::from_hex("1234567890123456").unwrap());
+		target_value.append(&mut <Vec<u8>>::from_hex("3214466870114476").unwrap());
+		target_value.append(&mut <Vec<u8>>::from_hex("7633030896203198").unwrap());
+		target_value.append(&mut <Vec<u8>>::from_hex("00083a840000034d").unwrap());
+		target_value.append(&mut <Vec<u8>>::from_hex("c0bc").unwrap());
+		target_value.append(&mut <Vec<u8>>::from_hex("c0bc").unwrap());
+		target_value.append(&mut <Vec<u8>>::from_hex("12345678").unwrap());
+		target_value.append(&mut <Vec<u8>>::from_hex("031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f").unwrap());
+		target_value.append(&mut <Vec<u8>>::from_hex("024d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766").unwrap());
+		target_value.append(&mut <Vec<u8>>::from_hex("02531fe6068134503d2723133227c867ac8fa6c83c537e9a44c3c5bdbdcb1fe337").unwrap());
+		target_value.append(&mut <Vec<u8>>::from_hex("03462779ad4aad39514614751a71085f2f10e1c7a593e4e030efb5b8721ce55b0b").unwrap());
+		target_value.append(&mut <Vec<u8>>::from_hex("0362c0a046dacce86ddd0343c6d3c7c79c2208ba0d9c9cf24a6d046d21d21f90f7").unwrap());
+		target_value.append(&mut <Vec<u8>>::from_hex("03f006a18d5653c4edf5391ff23a61f03ff83d237e880ee61187fa9f379a028e0a").unwrap());
+		target_value.append(&mut <Vec<u8>>::from_hex("02989c0b76cb563971fdc9bef31ec06c3560f3249d6ee9e5d83c57625596e05f6f").unwrap());
 
 		if random_bit {
-			target_value.append(&mut hex::decode("20").unwrap());
+			target_value.append(&mut <Vec<u8>>::from_hex("20").unwrap());
 		} else {
-			target_value.append(&mut hex::decode("00").unwrap());
+			target_value.append(&mut <Vec<u8>>::from_hex("00").unwrap());
 		}
 		if shutdown {
-			target_value.append(&mut hex::decode("001b").unwrap()); // Type 0 + Length 27
-			target_value.append(&mut hex::decode("001976a91479b000887626b294a914501a4cd226b58b23598388ac").unwrap());
+			target_value.append(&mut <Vec<u8>>::from_hex("001b").unwrap()); // Type 0 + Length 27
+			target_value.append(&mut <Vec<u8>>::from_hex("001976a91479b000887626b294a914501a4cd226b58b23598388ac").unwrap());
 		}
 		if incl_chan_type {
-			target_value.append(&mut hex::decode("0100").unwrap());
+			target_value.append(&mut <Vec<u8>>::from_hex("0100").unwrap());
 		}
 		if require_confirmed_inputs {
-			target_value.append(&mut hex::decode("0200").unwrap());
+			target_value.append(&mut <Vec<u8>>::from_hex("0200").unwrap());
 		}
 		assert_eq!(encoded_value, target_value);
 	}
@@ -3463,9 +3468,9 @@ mod tests {
 			next_local_nonce: None,
 		};
 		let encoded_value = accept_channel.encode();
-		let mut target_value = hex::decode("020202020202020202020202020202020202020202020202020202020202020212345678901234562334032891223698321446687011447600083a840000034d000c89d4c0bcc0bc031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f024d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d076602531fe6068134503d2723133227c867ac8fa6c83c537e9a44c3c5bdbdcb1fe33703462779ad4aad39514614751a71085f2f10e1c7a593e4e030efb5b8721ce55b0b0362c0a046dacce86ddd0343c6d3c7c79c2208ba0d9c9cf24a6d046d21d21f90f703f006a18d5653c4edf5391ff23a61f03ff83d237e880ee61187fa9f379a028e0a").unwrap();
+		let mut target_value = <Vec<u8>>::from_hex("020202020202020202020202020202020202020202020202020202020202020212345678901234562334032891223698321446687011447600083a840000034d000c89d4c0bcc0bc031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f024d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d076602531fe6068134503d2723133227c867ac8fa6c83c537e9a44c3c5bdbdcb1fe33703462779ad4aad39514614751a71085f2f10e1c7a593e4e030efb5b8721ce55b0b0362c0a046dacce86ddd0343c6d3c7c79c2208ba0d9c9cf24a6d046d21d21f90f703f006a18d5653c4edf5391ff23a61f03ff83d237e880ee61187fa9f379a028e0a").unwrap();
 		if shutdown {
-			target_value.append(&mut hex::decode("001976a91479b000887626b294a914501a4cd226b58b23598388ac").unwrap());
+			target_value.append(&mut <Vec<u8>>::from_hex("001976a91479b000887626b294a914501a4cd226b58b23598388ac").unwrap());
 		}
 		assert_eq!(encoded_value, target_value);
 	}
@@ -3506,24 +3511,24 @@ mod tests {
 			require_confirmed_inputs: None,
 		};
 		let encoded_value = accept_channelv2.encode();
-		let mut target_value = hex::decode("0202020202020202020202020202020202020202020202020202020202020202").unwrap(); // temporary_channel_id
-		target_value.append(&mut hex::decode("1234567890123456").unwrap()); // funding_satoshis
-		target_value.append(&mut hex::decode("1234567890123456").unwrap()); // dust_limit_satoshis
-		target_value.append(&mut hex::decode("2334032891223698").unwrap()); // max_htlc_value_in_flight_msat
-		target_value.append(&mut hex::decode("00083a840000034d").unwrap()); // htlc_minimum_msat
-		target_value.append(&mut hex::decode("000c89d4").unwrap()); //  minimum_depth
-		target_value.append(&mut hex::decode("c0bc").unwrap()); // to_self_delay
-		target_value.append(&mut hex::decode("c0bc").unwrap()); // max_accepted_htlcs
-		target_value.append(&mut hex::decode("031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f").unwrap()); // funding_pubkey
-		target_value.append(&mut hex::decode("024d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766").unwrap()); // revocation_basepoint
-		target_value.append(&mut hex::decode("02531fe6068134503d2723133227c867ac8fa6c83c537e9a44c3c5bdbdcb1fe337").unwrap()); // payment_basepoint
-		target_value.append(&mut hex::decode("03462779ad4aad39514614751a71085f2f10e1c7a593e4e030efb5b8721ce55b0b").unwrap()); // delayed_payment_basepoint
-		target_value.append(&mut hex::decode("0362c0a046dacce86ddd0343c6d3c7c79c2208ba0d9c9cf24a6d046d21d21f90f7").unwrap()); // htlc_basepoint
-		target_value.append(&mut hex::decode("03f006a18d5653c4edf5391ff23a61f03ff83d237e880ee61187fa9f379a028e0a").unwrap()); // first_per_commitment_point
-		target_value.append(&mut hex::decode("02989c0b76cb563971fdc9bef31ec06c3560f3249d6ee9e5d83c57625596e05f6f").unwrap()); // second_per_commitment_point
+		let mut target_value = <Vec<u8>>::from_hex("0202020202020202020202020202020202020202020202020202020202020202").unwrap(); // temporary_channel_id
+		target_value.append(&mut <Vec<u8>>::from_hex("1234567890123456").unwrap()); // funding_satoshis
+		target_value.append(&mut <Vec<u8>>::from_hex("1234567890123456").unwrap()); // dust_limit_satoshis
+		target_value.append(&mut <Vec<u8>>::from_hex("2334032891223698").unwrap()); // max_htlc_value_in_flight_msat
+		target_value.append(&mut <Vec<u8>>::from_hex("00083a840000034d").unwrap()); // htlc_minimum_msat
+		target_value.append(&mut <Vec<u8>>::from_hex("000c89d4").unwrap()); //  minimum_depth
+		target_value.append(&mut <Vec<u8>>::from_hex("c0bc").unwrap()); // to_self_delay
+		target_value.append(&mut <Vec<u8>>::from_hex("c0bc").unwrap()); // max_accepted_htlcs
+		target_value.append(&mut <Vec<u8>>::from_hex("031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f").unwrap()); // funding_pubkey
+		target_value.append(&mut <Vec<u8>>::from_hex("024d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766").unwrap()); // revocation_basepoint
+		target_value.append(&mut <Vec<u8>>::from_hex("02531fe6068134503d2723133227c867ac8fa6c83c537e9a44c3c5bdbdcb1fe337").unwrap()); // payment_basepoint
+		target_value.append(&mut <Vec<u8>>::from_hex("03462779ad4aad39514614751a71085f2f10e1c7a593e4e030efb5b8721ce55b0b").unwrap()); // delayed_payment_basepoint
+		target_value.append(&mut <Vec<u8>>::from_hex("0362c0a046dacce86ddd0343c6d3c7c79c2208ba0d9c9cf24a6d046d21d21f90f7").unwrap()); // htlc_basepoint
+		target_value.append(&mut <Vec<u8>>::from_hex("03f006a18d5653c4edf5391ff23a61f03ff83d237e880ee61187fa9f379a028e0a").unwrap()); // first_per_commitment_point
+		target_value.append(&mut <Vec<u8>>::from_hex("02989c0b76cb563971fdc9bef31ec06c3560f3249d6ee9e5d83c57625596e05f6f").unwrap()); // second_per_commitment_point
 		if shutdown {
-			target_value.append(&mut hex::decode("001b").unwrap()); // Type 0 + Length 27
-			target_value.append(&mut hex::decode("001976a91479b000887626b294a914501a4cd226b58b23598388ac").unwrap());
+			target_value.append(&mut <Vec<u8>>::from_hex("001b").unwrap()); // Type 0 + Length 27
+			target_value.append(&mut <Vec<u8>>::from_hex("001976a91479b000887626b294a914501a4cd226b58b23598388ac").unwrap());
 		}
 		assert_eq!(encoded_value, target_value);
 	}
@@ -3541,7 +3546,7 @@ mod tests {
 		let sig_1 = get_sig_on!(privkey_1, secp_ctx, String::from("01010101010101010101010101010101"));
 		let funding_created = msgs::FundingCreated {
 			temporary_channel_id: ChannelId::from_bytes([2; 32]),
-			funding_txid: Txid::from_hex("c2d4449afa8d26140898dd54d3390b057ba2a5afcf03ba29d7dc0d8b9ffe966e").unwrap(),
+			funding_txid: Txid::from_str("c2d4449afa8d26140898dd54d3390b057ba2a5afcf03ba29d7dc0d8b9ffe966e").unwrap(),
 			funding_output_index: 255,
 			signature: sig_1,
 			#[cfg(taproot)]
@@ -3550,7 +3555,7 @@ mod tests {
 			next_local_nonce: None,
 		};
 		let encoded_value = funding_created.encode();
-		let target_value = hex::decode("02020202020202020202020202020202020202020202020202020202020202026e96fe9f8b0ddcd729ba03cfafa5a27b050b39d354dd980814268dfa9a44d4c200ffd977cb9b53d93a6ff64bb5f1e158b4094b66e798fb12911168a3ccdf80a83096340a6a95da0ae8d9f776528eecdbb747eb6b545495a4319ed5378e35b21e073a").unwrap();
+		let target_value = <Vec<u8>>::from_hex("02020202020202020202020202020202020202020202020202020202020202026e96fe9f8b0ddcd729ba03cfafa5a27b050b39d354dd980814268dfa9a44d4c200ffd977cb9b53d93a6ff64bb5f1e158b4094b66e798fb12911168a3ccdf80a83096340a6a95da0ae8d9f776528eecdbb747eb6b545495a4319ed5378e35b21e073a").unwrap();
 		assert_eq!(encoded_value, target_value);
 	}
 
@@ -3566,7 +3571,7 @@ mod tests {
 			partial_signature_with_nonce: None,
 		};
 		let encoded_value = funding_signed.encode();
-		let target_value = hex::decode("0202020202020202020202020202020202020202020202020202020202020202d977cb9b53d93a6ff64bb5f1e158b4094b66e798fb12911168a3ccdf80a83096340a6a95da0ae8d9f776528eecdbb747eb6b545495a4319ed5378e35b21e073a").unwrap();
+		let target_value = <Vec<u8>>::from_hex("0202020202020202020202020202020202020202020202020202020202020202d977cb9b53d93a6ff64bb5f1e158b4094b66e798fb12911168a3ccdf80a83096340a6a95da0ae8d9f776528eecdbb747eb6b545495a4319ed5378e35b21e073a").unwrap();
 		assert_eq!(encoded_value, target_value);
 	}
 
@@ -3580,11 +3585,12 @@ mod tests {
 			short_channel_id_alias: None,
 		};
 		let encoded_value = channel_ready.encode();
-		let target_value = hex::decode("0202020202020202020202020202020202020202020202020202020202020202031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f").unwrap();
+		let target_value = <Vec<u8>>::from_hex("0202020202020202020202020202020202020202020202020202020202020202031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f").unwrap();
 		assert_eq!(encoded_value, target_value);
 	}
 
 	/// #SPLICING
+
 	#[test]
 	fn encoding_splice() {
 		let secp_ctx = Secp256k1::new();
@@ -3592,13 +3598,23 @@ mod tests {
 		let splice = msgs::Splice {
 			chain_hash: ChainHash::from_hex("6fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d6190000000000").unwrap(),
 			channel_id: ChannelId::from_bytes([2; 32]),
-			relative_satoshis: -123456,
+			relative_satoshis: 123456,
 			funding_feerate_perkw: 2000,
 			locktime: 0,
 			funding_pubkey: pubkey_1,
 		};
 		let encoded_value = splice.encode();
-		assert_eq!(hex::encode(encoded_value), "02020202020202020202020202020202020202020202020202020202020202026fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d6190000000000fffffffffffe1dc0000007d000000000031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f");
+		assert_eq!(encoded_value.as_hex().to_string(), "02020202020202020202020202020202020202020202020202020202020202026fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d6190000000000000000000001e240000007d000000000031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f");
+	}
+
+	#[test]
+	fn encoding_stfu() {
+		let stfu = msgs::Stfu {
+			channel_id: ChannelId::from_bytes([2; 32]),
+			initiator: 1,
+		};
+		let encoded_value = stfu.encode();
+		assert_eq!(encoded_value.as_hex().to_string(), "020202020202020202020202020202020202020202020202020202020202020201");
 	}
 
 	#[test]
@@ -3608,11 +3624,11 @@ mod tests {
 		let splice = msgs::SpliceAck {
 			chain_hash: ChainHash::from_hex("6fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d6190000000000").unwrap(),
 			channel_id: ChannelId::from_bytes([2; 32]),
-			relative_satoshis: -123456,
+			relative_satoshis: 123456,
 			funding_pubkey: pubkey_1,
 		};
 		let encoded_value = splice.encode();
-		assert_eq!(hex::encode(encoded_value), "02020202020202020202020202020202020202020202020202020202020202026fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d6190000000000fffffffffffe1dc0031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f");
+		assert_eq!(encoded_value.as_hex().to_string(), "02020202020202020202020202020202020202020202020202020202020202026fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d6190000000000000000000001e240031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f");
 	}
 
 	#[test]
@@ -3621,7 +3637,7 @@ mod tests {
 			channel_id: ChannelId::from_bytes([2; 32]),
 		};
 		let encoded_value = splice.encode();
-		assert_eq!(hex::encode(encoded_value), "0202020202020202020202020202020202020202020202020202020202020202");
+		assert_eq!(encoded_value.as_hex().to_string(), "0202020202020202020202020202020202020202020202020202020202020202");
 	}
 
 	#[test]
@@ -3631,23 +3647,23 @@ mod tests {
 			serial_id: 4886718345,
 			prevtx: TransactionU16LenLimited::new(Transaction {
 				version: 2,
-				lock_time: PackedLockTime(0),
+				lock_time: LockTime::ZERO,
 				input: vec![TxIn {
-					previous_output: OutPoint { txid: Txid::from_hex("305bab643ee297b8b6b76b320792c8223d55082122cb606bf89382146ced9c77").unwrap(), index: 2 }.into_bitcoin_outpoint(),
-					script_sig: Script::new(),
+					previous_output: OutPoint { txid: Txid::from_str("305bab643ee297b8b6b76b320792c8223d55082122cb606bf89382146ced9c77").unwrap(), index: 2 }.into_bitcoin_outpoint(),
+					script_sig: ScriptBuf::new(),
 					sequence: Sequence(0xfffffffd),
-					witness: Witness::from_vec(vec![
-						hex::decode("304402206af85b7dd67450ad12c979302fac49dfacbc6a8620f49c5da2b5721cf9565ca502207002b32fed9ce1bf095f57aeb10c36928ac60b12e723d97d2964a54640ceefa701").unwrap(),
-						hex::decode("0301ab7dc16488303549bfcdd80f6ae5ee4c20bf97ab5410bbd6b1bfa85dcd6944").unwrap()]),
+					witness: Witness::from_slice(&vec![
+						<Vec<u8>>::from_hex("304402206af85b7dd67450ad12c979302fac49dfacbc6a8620f49c5da2b5721cf9565ca502207002b32fed9ce1bf095f57aeb10c36928ac60b12e723d97d2964a54640ceefa701").unwrap(),
+						<Vec<u8>>::from_hex("0301ab7dc16488303549bfcdd80f6ae5ee4c20bf97ab5410bbd6b1bfa85dcd6944").unwrap()]),
 				}],
 				output: vec![
 					TxOut {
 						value: 12704566,
-						script_pubkey: Address::from_str("bc1qzlffunw52jav8vwdu5x3jfk6sr8u22rmq3xzw2").unwrap().script_pubkey(),
+						script_pubkey: Address::from_str("bc1qzlffunw52jav8vwdu5x3jfk6sr8u22rmq3xzw2").unwrap().payload.script_pubkey(),
 					},
 					TxOut {
 						value: 245148,
-						script_pubkey: Address::from_str("bc1qxmk834g5marzm227dgqvynd23y2nvt2ztwcw2z").unwrap().script_pubkey(),
+						script_pubkey: Address::from_str("bc1qxmk834g5marzm227dgqvynd23y2nvt2ztwcw2z").unwrap().payload.script_pubkey(),
 					},
 				],
 			}).unwrap(),
@@ -3655,7 +3671,7 @@ mod tests {
 			sequence: 305419896,
 		};
 		let encoded_value = tx_add_input.encode();
-		let target_value = hex::decode("0202020202020202020202020202020202020202020202020202020202020202000000012345678900de02000000000101779ced6c148293f86b60cb222108553d22c89207326bb7b6b897e23e64ab5b300200000000fdffffff0236dbc1000000000016001417d29e4dd454bac3b1cde50d1926da80cfc5287b9cbd03000000000016001436ec78d514df462da95e6a00c24daa8915362d420247304402206af85b7dd67450ad12c979302fac49dfacbc6a8620f49c5da2b5721cf9565ca502207002b32fed9ce1bf095f57aeb10c36928ac60b12e723d97d2964a54640ceefa701210301ab7dc16488303549bfcdd80f6ae5ee4c20bf97ab5410bbd6b1bfa85dcd6944000000001234567812345678").unwrap();
+		let target_value = <Vec<u8>>::from_hex("0202020202020202020202020202020202020202020202020202020202020202000000012345678900de02000000000101779ced6c148293f86b60cb222108553d22c89207326bb7b6b897e23e64ab5b300200000000fdffffff0236dbc1000000000016001417d29e4dd454bac3b1cde50d1926da80cfc5287b9cbd03000000000016001436ec78d514df462da95e6a00c24daa8915362d420247304402206af85b7dd67450ad12c979302fac49dfacbc6a8620f49c5da2b5721cf9565ca502207002b32fed9ce1bf095f57aeb10c36928ac60b12e723d97d2964a54640ceefa701210301ab7dc16488303549bfcdd80f6ae5ee4c20bf97ab5410bbd6b1bfa85dcd6944000000001234567812345678").unwrap();
 		assert_eq!(encoded_value, target_value);
 	}
 
@@ -3665,10 +3681,10 @@ mod tests {
 			channel_id: ChannelId::from_bytes([2; 32]),
 			serial_id: 4886718345,
 			sats: 4886718345,
-			script: Address::from_str("bc1qxmk834g5marzm227dgqvynd23y2nvt2ztwcw2z").unwrap().script_pubkey(),
+			script: Address::from_str("bc1qxmk834g5marzm227dgqvynd23y2nvt2ztwcw2z").unwrap().payload.script_pubkey(),
 		};
 		let encoded_value = tx_add_output.encode();
-		let target_value = hex::decode("0202020202020202020202020202020202020202020202020202020202020202000000012345678900000001234567890016001436ec78d514df462da95e6a00c24daa8915362d42").unwrap();
+		let target_value = <Vec<u8>>::from_hex("0202020202020202020202020202020202020202020202020202020202020202000000012345678900000001234567890016001436ec78d514df462da95e6a00c24daa8915362d42").unwrap();
 		assert_eq!(encoded_value, target_value);
 	}
 
@@ -3679,7 +3695,7 @@ mod tests {
 			serial_id: 4886718345,
 		};
 		let encoded_value = tx_remove_input.encode();
-		let target_value = hex::decode("02020202020202020202020202020202020202020202020202020202020202020000000123456789").unwrap();
+		let target_value = <Vec<u8>>::from_hex("02020202020202020202020202020202020202020202020202020202020202020000000123456789").unwrap();
 		assert_eq!(encoded_value, target_value);
 	}
 
@@ -3690,7 +3706,7 @@ mod tests {
 			serial_id: 4886718345,
 		};
 		let encoded_value = tx_remove_output.encode();
-		let target_value = hex::decode("02020202020202020202020202020202020202020202020202020202020202020000000123456789").unwrap();
+		let target_value = <Vec<u8>>::from_hex("02020202020202020202020202020202020202020202020202020202020202020000000123456789").unwrap();
 		assert_eq!(encoded_value, target_value);
 	}
 
@@ -3700,7 +3716,7 @@ mod tests {
 			channel_id: ChannelId::from_bytes([2; 32]),
 		};
 		let encoded_value = tx_complete.encode();
-		let target_value = hex::decode("0202020202020202020202020202020202020202020202020202020202020202").unwrap();
+		let target_value = <Vec<u8>>::from_hex("0202020202020202020202020202020202020202020202020202020202020202").unwrap();
 		assert_eq!(encoded_value, target_value);
 	}
 
@@ -3712,38 +3728,38 @@ mod tests {
 
 		let tx_signatures = msgs::TxSignatures {
 			channel_id: ChannelId::from_bytes([2; 32]),
-			tx_hash: Txid::from_hex("c2d4449afa8d26140898dd54d3390b057ba2a5afcf03ba29d7dc0d8b9ffe966e").unwrap(),
+			tx_hash: Txid::from_str("c2d4449afa8d26140898dd54d3390b057ba2a5afcf03ba29d7dc0d8b9ffe966e").unwrap(),
 			witnesses: vec![
-				Witness::from_vec(vec![
-					hex::decode("304402206af85b7dd67450ad12c979302fac49dfacbc6a8620f49c5da2b5721cf9565ca502207002b32fed9ce1bf095f57aeb10c36928ac60b12e723d97d2964a54640ceefa701").unwrap(),
-					hex::decode("0301ab7dc16488303549bfcdd80f6ae5ee4c20bf97ab5410bbd6b1bfa85dcd6944").unwrap()]),
-				Witness::from_vec(vec![
-					hex::decode("3045022100ee00dbf4a862463e837d7c08509de814d620e4d9830fa84818713e0fa358f145022021c3c7060c4d53fe84fd165d60208451108a778c13b92ca4c6bad439236126cc01").unwrap(),
-					hex::decode("028fbbf0b16f5ba5bcb5dd37cd4047ce6f726a21c06682f9ec2f52b057de1dbdb5").unwrap()]),
+				Witness::from_slice(&vec![
+					<Vec<u8>>::from_hex("304402206af85b7dd67450ad12c979302fac49dfacbc6a8620f49c5da2b5721cf9565ca502207002b32fed9ce1bf095f57aeb10c36928ac60b12e723d97d2964a54640ceefa701").unwrap(),
+					<Vec<u8>>::from_hex("0301ab7dc16488303549bfcdd80f6ae5ee4c20bf97ab5410bbd6b1bfa85dcd6944").unwrap()]),
+				Witness::from_slice(&vec![
+					<Vec<u8>>::from_hex("3045022100ee00dbf4a862463e837d7c08509de814d620e4d9830fa84818713e0fa358f145022021c3c7060c4d53fe84fd165d60208451108a778c13b92ca4c6bad439236126cc01").unwrap(),
+					<Vec<u8>>::from_hex("028fbbf0b16f5ba5bcb5dd37cd4047ce6f726a21c06682f9ec2f52b057de1dbdb5").unwrap()]),
 			],
 			tlvs: Some(sig_1),
 		};
 		let encoded_value = tx_signatures.encode();
-		let mut target_value = hex::decode("0202020202020202020202020202020202020202020202020202020202020202").unwrap(); // channel_id
-		target_value.append(&mut hex::decode("6e96fe9f8b0ddcd729ba03cfafa5a27b050b39d354dd980814268dfa9a44d4c2").unwrap()); // tx_hash (sha256) (big endian byte order)
-		target_value.append(&mut hex::decode("0002").unwrap()); // num_witnesses (u16)
+		let mut target_value = <Vec<u8>>::from_hex("0202020202020202020202020202020202020202020202020202020202020202").unwrap(); // channel_id
+		target_value.append(&mut <Vec<u8>>::from_hex("6e96fe9f8b0ddcd729ba03cfafa5a27b050b39d354dd980814268dfa9a44d4c2").unwrap()); // tx_hash (sha256) (big endian byte order)
+		target_value.append(&mut <Vec<u8>>::from_hex("0002").unwrap()); // num_witnesses (u16)
 		// Witness 1
-		target_value.append(&mut hex::decode("006b").unwrap()); // len of witness_data
-		target_value.append(&mut hex::decode("02").unwrap()); // num_witness_elements (VarInt)
-		target_value.append(&mut hex::decode("47").unwrap()); // len of witness element data (VarInt)
-		target_value.append(&mut hex::decode("304402206af85b7dd67450ad12c979302fac49dfacbc6a8620f49c5da2b5721cf9565ca502207002b32fed9ce1bf095f57aeb10c36928ac60b12e723d97d2964a54640ceefa701").unwrap());
-		target_value.append(&mut hex::decode("21").unwrap()); // len of witness element data (VarInt)
-		target_value.append(&mut hex::decode("0301ab7dc16488303549bfcdd80f6ae5ee4c20bf97ab5410bbd6b1bfa85dcd6944").unwrap());
+		target_value.append(&mut <Vec<u8>>::from_hex("006b").unwrap()); // len of witness_data
+		target_value.append(&mut <Vec<u8>>::from_hex("02").unwrap()); // num_witness_elements (VarInt)
+		target_value.append(&mut <Vec<u8>>::from_hex("47").unwrap()); // len of witness element data (VarInt)
+		target_value.append(&mut <Vec<u8>>::from_hex("304402206af85b7dd67450ad12c979302fac49dfacbc6a8620f49c5da2b5721cf9565ca502207002b32fed9ce1bf095f57aeb10c36928ac60b12e723d97d2964a54640ceefa701").unwrap());
+		target_value.append(&mut <Vec<u8>>::from_hex("21").unwrap()); // len of witness element data (VarInt)
+		target_value.append(&mut <Vec<u8>>::from_hex("0301ab7dc16488303549bfcdd80f6ae5ee4c20bf97ab5410bbd6b1bfa85dcd6944").unwrap());
 		// Witness 2
-		target_value.append(&mut hex::decode("006c").unwrap()); // len of witness_data
-		target_value.append(&mut hex::decode("02").unwrap()); // num_witness_elements (VarInt)
-		target_value.append(&mut hex::decode("48").unwrap()); // len of witness element data (VarInt)
-		target_value.append(&mut hex::decode("3045022100ee00dbf4a862463e837d7c08509de814d620e4d9830fa84818713e0fa358f145022021c3c7060c4d53fe84fd165d60208451108a778c13b92ca4c6bad439236126cc01").unwrap());
-		target_value.append(&mut hex::decode("21").unwrap()); // len of witness element data (VarInt)
-		target_value.append(&mut hex::decode("028fbbf0b16f5ba5bcb5dd37cd4047ce6f726a21c06682f9ec2f52b057de1dbdb5").unwrap());
-		target_value.append(&mut hex::decode("0040").unwrap()); // type and len (64)
-		target_value.append(&mut hex::decode("d977cb9b53d93a6ff64bb5f1e158b4094b66e798fb12911168a3ccdf80a83096340a6a95da0ae8d9f776528eecdbb747eb6b545495a4319ed5378e35b21e073a").unwrap());
-		assert_eq!(hex::encode(encoded_value), hex::encode(target_value));
+		target_value.append(&mut <Vec<u8>>::from_hex("006c").unwrap()); // len of witness_data
+		target_value.append(&mut <Vec<u8>>::from_hex("02").unwrap()); // num_witness_elements (VarInt)
+		target_value.append(&mut <Vec<u8>>::from_hex("48").unwrap()); // len of witness element data (VarInt)
+		target_value.append(&mut <Vec<u8>>::from_hex("3045022100ee00dbf4a862463e837d7c08509de814d620e4d9830fa84818713e0fa358f145022021c3c7060c4d53fe84fd165d60208451108a778c13b92ca4c6bad439236126cc01").unwrap());
+		target_value.append(&mut <Vec<u8>>::from_hex("21").unwrap()); // len of witness element data (VarInt)
+		target_value.append(&mut <Vec<u8>>::from_hex("028fbbf0b16f5ba5bcb5dd37cd4047ce6f726a21c06682f9ec2f52b057de1dbdb5").unwrap());
+		target_value.append(&mut <Vec<u8>>::from_hex("0040").unwrap()); // type and len (64)
+		target_value.append(&mut <Vec<u8>>::from_hex("d977cb9b53d93a6ff64bb5f1e158b4094b66e798fb12911168a3ccdf80a83096340a6a95da0ae8d9f776528eecdbb747eb6b545495a4319ed5378e35b21e073a").unwrap());
+		assert_eq!(encoded_value, target_value);
 	}
 
 	fn do_encoding_tx_init_rbf(funding_value_with_hex_target: Option<(i64, &str)>) {
@@ -3754,13 +3770,13 @@ mod tests {
 			funding_output_contribution: if let Some((value, _)) = funding_value_with_hex_target { Some(value) } else { None },
 		};
 		let encoded_value = tx_init_rbf.encode();
-		let mut target_value = hex::decode("0202020202020202020202020202020202020202020202020202020202020202").unwrap(); // channel_id
-		target_value.append(&mut hex::decode("12345678").unwrap()); // locktime
-		target_value.append(&mut hex::decode("013413a7").unwrap()); // feerate_sat_per_1000_weight
+		let mut target_value = <Vec<u8>>::from_hex("0202020202020202020202020202020202020202020202020202020202020202").unwrap(); // channel_id
+		target_value.append(&mut <Vec<u8>>::from_hex("12345678").unwrap()); // locktime
+		target_value.append(&mut <Vec<u8>>::from_hex("013413a7").unwrap()); // feerate_sat_per_1000_weight
 		if let Some((_, target)) = funding_value_with_hex_target {
 			target_value.push(0x00); // Type
 			target_value.push(target.len() as u8 / 2); // Length
-			target_value.append(&mut hex::decode(target).unwrap()); // Value (i64)
+			target_value.append(&mut <Vec<u8>>::from_hex(target).unwrap()); // Value (i64)
 		}
 		assert_eq!(encoded_value, target_value);
 	}
@@ -3778,11 +3794,11 @@ mod tests {
 			funding_output_contribution: if let Some((value, _)) = funding_value_with_hex_target { Some(value) } else { None },
 		};
 		let encoded_value = tx_ack_rbf.encode();
-		let mut target_value = hex::decode("0202020202020202020202020202020202020202020202020202020202020202").unwrap();
+		let mut target_value = <Vec<u8>>::from_hex("0202020202020202020202020202020202020202020202020202020202020202").unwrap();
 		if let Some((_, target)) = funding_value_with_hex_target {
 			target_value.push(0x00); // Type
 			target_value.push(target.len() as u8 / 2); // Length
-			target_value.append(&mut hex::decode(target).unwrap()); // Value (i64)
+			target_value.append(&mut <Vec<u8>>::from_hex(target).unwrap()); // Value (i64)
 		}
 		assert_eq!(encoded_value, target_value);
 	}
@@ -3798,10 +3814,10 @@ mod tests {
 	fn encoding_tx_abort() {
 		let tx_abort = msgs::TxAbort {
 			channel_id: ChannelId::from_bytes([2; 32]),
-			data: hex::decode("54686520717569636B2062726F776E20666F78206A756D7073206F76657220746865206C617A7920646F672E").unwrap(),
+			data: <Vec<u8>>::from_hex("54686520717569636B2062726F776E20666F78206A756D7073206F76657220746865206C617A7920646F672E").unwrap(),
 		};
 		let encoded_value = tx_abort.encode();
-		let target_value = hex::decode("0202020202020202020202020202020202020202020202020202020202020202002C54686520717569636B2062726F776E20666F78206A756D7073206F76657220746865206C617A7920646F672E").unwrap();
+		let target_value = <Vec<u8>>::from_hex("0202020202020202020202020202020202020202020202020202020202020202002C54686520717569636B2062726F776E20666F78206A756D7073206F76657220746865206C617A7920646F672E").unwrap();
 		assert_eq!(encoded_value, target_value);
 	}
 
@@ -3818,15 +3834,15 @@ mod tests {
 				else { Address::p2wsh(&script, Network::Testnet).script_pubkey() },
 		};
 		let encoded_value = shutdown.encode();
-		let mut target_value = hex::decode("0202020202020202020202020202020202020202020202020202020202020202").unwrap();
+		let mut target_value = <Vec<u8>>::from_hex("0202020202020202020202020202020202020202020202020202020202020202").unwrap();
 		if script_type == 1 {
-			target_value.append(&mut hex::decode("001976a91479b000887626b294a914501a4cd226b58b23598388ac").unwrap());
+			target_value.append(&mut <Vec<u8>>::from_hex("001976a91479b000887626b294a914501a4cd226b58b23598388ac").unwrap());
 		} else if script_type == 2 {
-			target_value.append(&mut hex::decode("0017a914da1745e9b549bd0bfa1a569971c77eba30cd5a4b87").unwrap());
+			target_value.append(&mut <Vec<u8>>::from_hex("0017a914da1745e9b549bd0bfa1a569971c77eba30cd5a4b87").unwrap());
 		} else if script_type == 3 {
-			target_value.append(&mut hex::decode("0016001479b000887626b294a914501a4cd226b58b235983").unwrap());
+			target_value.append(&mut <Vec<u8>>::from_hex("0016001479b000887626b294a914501a4cd226b58b235983").unwrap());
 		} else if script_type == 4 {
-			target_value.append(&mut hex::decode("002200204ae81572f06e1b88fd5ced7a1a000945432e83e1551e6f721ee9c00b8cc33260").unwrap());
+			target_value.append(&mut <Vec<u8>>::from_hex("002200204ae81572f06e1b88fd5ced7a1a000945432e83e1551e6f721ee9c00b8cc33260").unwrap());
 		}
 		assert_eq!(encoded_value, target_value);
 	}
@@ -3851,7 +3867,7 @@ mod tests {
 			fee_range: None,
 		};
 		let encoded_value = closing_signed.encode();
-		let target_value = hex::decode("020202020202020202020202020202020202020202020202020202020202020200083a840000034dd977cb9b53d93a6ff64bb5f1e158b4094b66e798fb12911168a3ccdf80a83096340a6a95da0ae8d9f776528eecdbb747eb6b545495a4319ed5378e35b21e073a").unwrap();
+		let target_value = <Vec<u8>>::from_hex("020202020202020202020202020202020202020202020202020202020202020200083a840000034dd977cb9b53d93a6ff64bb5f1e158b4094b66e798fb12911168a3ccdf80a83096340a6a95da0ae8d9f776528eecdbb747eb6b545495a4319ed5378e35b21e073a").unwrap();
 		assert_eq!(encoded_value, target_value);
 		assert_eq!(msgs::ClosingSigned::read(&mut Cursor::new(&target_value)).unwrap(), closing_signed);
 
@@ -3865,7 +3881,7 @@ mod tests {
 			}),
 		};
 		let encoded_value_with_range = closing_signed_with_range.encode();
-		let target_value_with_range = hex::decode("020202020202020202020202020202020202020202020202020202020202020200083a840000034dd977cb9b53d93a6ff64bb5f1e158b4094b66e798fb12911168a3ccdf80a83096340a6a95da0ae8d9f776528eecdbb747eb6b545495a4319ed5378e35b21e073a011000000000deadbeef1badcafe01234567").unwrap();
+		let target_value_with_range = <Vec<u8>>::from_hex("020202020202020202020202020202020202020202020202020202020202020200083a840000034dd977cb9b53d93a6ff64bb5f1e158b4094b66e798fb12911168a3ccdf80a83096340a6a95da0ae8d9f776528eecdbb747eb6b545495a4319ed5378e35b21e073a011000000000deadbeef1badcafe01234567").unwrap();
 		assert_eq!(encoded_value_with_range, target_value_with_range);
 		assert_eq!(msgs::ClosingSigned::read(&mut Cursor::new(&target_value_with_range)).unwrap(),
 			closing_signed_with_range);
@@ -3891,7 +3907,7 @@ mod tests {
 			skimmed_fee_msat: None,
 		};
 		let encoded_value = update_add_htlc.encode();
-		let target_value = hex::decode("020202020202020202020202020202020202020202020202020202020202020200083a840000034d32144668701144760101010101010101010101010101010101010101010101010101010101010101000c89d4ff031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010202020202020202020202020202020202020202020202020202020202020202").unwrap();
+		let target_value = <Vec<u8>>::from_hex("020202020202020202020202020202020202020202020202020202020202020200083a840000034d32144668701144760101010101010101010101010101010101010101010101010101010101010101000c89d4ff031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010202020202020202020202020202020202020202020202020202020202020202").unwrap();
 		assert_eq!(encoded_value, target_value);
 	}
 
@@ -3903,7 +3919,7 @@ mod tests {
 			payment_preimage: PaymentPreimage([1; 32]),
 		};
 		let encoded_value = update_fulfill_htlc.encode();
-		let target_value = hex::decode("020202020202020202020202020202020202020202020202020202020202020200083a840000034d0101010101010101010101010101010101010101010101010101010101010101").unwrap();
+		let target_value = <Vec<u8>>::from_hex("020202020202020202020202020202020202020202020202020202020202020200083a840000034d0101010101010101010101010101010101010101010101010101010101010101").unwrap();
 		assert_eq!(encoded_value, target_value);
 	}
 
@@ -3918,7 +3934,7 @@ mod tests {
 			reason
 		};
 		let encoded_value = update_fail_htlc.encode();
-		let target_value = hex::decode("020202020202020202020202020202020202020202020202020202020202020200083a840000034d00200101010101010101010101010101010101010101010101010101010101010101").unwrap();
+		let target_value = <Vec<u8>>::from_hex("020202020202020202020202020202020202020202020202020202020202020200083a840000034d00200101010101010101010101010101010101010101010101010101010101010101").unwrap();
 		assert_eq!(encoded_value, target_value);
 	}
 
@@ -3931,7 +3947,7 @@ mod tests {
 			failure_code: 255
 		};
 		let encoded_value = update_fail_malformed_htlc.encode();
-		let target_value = hex::decode("020202020202020202020202020202020202020202020202020202020202020200083a840000034d010101010101010101010101010101010101010101010101010101010101010100ff").unwrap();
+		let target_value = <Vec<u8>>::from_hex("020202020202020202020202020202020202020202020202020202020202020200083a840000034d010101010101010101010101010101010101010101010101010101010101010100ff").unwrap();
 		assert_eq!(encoded_value, target_value);
 	}
 
@@ -3953,11 +3969,11 @@ mod tests {
 			partial_signature_with_nonce: None,
 		};
 		let encoded_value = commitment_signed.encode();
-		let mut target_value = hex::decode("0202020202020202020202020202020202020202020202020202020202020202d977cb9b53d93a6ff64bb5f1e158b4094b66e798fb12911168a3ccdf80a83096340a6a95da0ae8d9f776528eecdbb747eb6b545495a4319ed5378e35b21e073a").unwrap();
+		let mut target_value = <Vec<u8>>::from_hex("0202020202020202020202020202020202020202020202020202020202020202d977cb9b53d93a6ff64bb5f1e158b4094b66e798fb12911168a3ccdf80a83096340a6a95da0ae8d9f776528eecdbb747eb6b545495a4319ed5378e35b21e073a").unwrap();
 		if htlcs {
-			target_value.append(&mut hex::decode("00031735b6a427e80d5fe7cd90a2f4ee08dc9c27cda7c35a4172e5d85b12c49d4232537e98f9b1f3c5e6989a8b9644e90e8918127680dbd0d4043510840fc0f1e11a216c280b5395a2546e7e4b2663e04f811622f15a4f91e83aa2e92ba2a573c139142c54ae63072a1ec1ee7dc0c04bde5c847806172aa05c92c22ae8e308d1d2692b12cc195ce0a2d1bda6a88befa19fa07f51caa75ce83837f28965600b8aacab0855ffb0e741ec5f7c41421e9829a9d48611c8c831f71be5ea73e66594977ffd").unwrap());
+			target_value.append(&mut <Vec<u8>>::from_hex("00031735b6a427e80d5fe7cd90a2f4ee08dc9c27cda7c35a4172e5d85b12c49d4232537e98f9b1f3c5e6989a8b9644e90e8918127680dbd0d4043510840fc0f1e11a216c280b5395a2546e7e4b2663e04f811622f15a4f91e83aa2e92ba2a573c139142c54ae63072a1ec1ee7dc0c04bde5c847806172aa05c92c22ae8e308d1d2692b12cc195ce0a2d1bda6a88befa19fa07f51caa75ce83837f28965600b8aacab0855ffb0e741ec5f7c41421e9829a9d48611c8c831f71be5ea73e66594977ffd").unwrap());
 		} else {
-			target_value.append(&mut hex::decode("0000").unwrap());
+			target_value.append(&mut <Vec<u8>>::from_hex("0000").unwrap());
 		}
 		assert_eq!(encoded_value, target_value);
 	}
@@ -3980,7 +3996,7 @@ mod tests {
 			next_local_nonce: None,
 		};
 		let encoded_value = raa.encode();
-		let target_value = hex::decode("02020202020202020202020202020202020202020202020202020202020202020101010101010101010101010101010101010101010101010101010101010101031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f").unwrap();
+		let target_value = <Vec<u8>>::from_hex("02020202020202020202020202020202020202020202020202020202020202020101010101010101010101010101010101010101010101010101010101010101031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f").unwrap();
 		assert_eq!(encoded_value, target_value);
 	}
 
@@ -3991,7 +4007,7 @@ mod tests {
 			feerate_per_kw: 20190119,
 		};
 		let encoded_value = update_fee.encode();
-		let target_value = hex::decode("0202020202020202020202020202020202020202020202020202020202020202013413a7").unwrap();
+		let target_value = <Vec<u8>>::from_hex("0202020202020202020202020202020202020202020202020202020202020202013413a7").unwrap();
 		assert_eq!(encoded_value, target_value);
 	}
 
@@ -4002,22 +4018,22 @@ mod tests {
 			features: InitFeatures::from_le_bytes(vec![0xFF, 0xFF, 0xFF]),
 			networks: Some(vec![mainnet_hash]),
 			remote_network_address: None,
-		}.encode(), hex::decode("00023fff0003ffffff01206fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d6190000000000").unwrap());
+		}.encode(), <Vec<u8>>::from_hex("00023fff0003ffffff01206fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d6190000000000").unwrap());
 		assert_eq!(msgs::Init {
 			features: InitFeatures::from_le_bytes(vec![0xFF]),
 			networks: None,
 			remote_network_address: None,
-		}.encode(), hex::decode("0001ff0001ff").unwrap());
+		}.encode(), <Vec<u8>>::from_hex("0001ff0001ff").unwrap());
 		assert_eq!(msgs::Init {
 			features: InitFeatures::from_le_bytes(vec![]),
 			networks: Some(vec![mainnet_hash]),
 			remote_network_address: None,
-		}.encode(), hex::decode("0000000001206fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d6190000000000").unwrap());
+		}.encode(), <Vec<u8>>::from_hex("0000000001206fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d6190000000000").unwrap());
 		assert_eq!(msgs::Init {
 			features: InitFeatures::from_le_bytes(vec![]),
-			networks: Some(vec![ChainHash::from(&[1; 32][..]), ChainHash::from(&[2; 32][..])]),
+			networks: Some(vec![ChainHash::from(&[1; 32]), ChainHash::from(&[2; 32])]),
 			remote_network_address: None,
-		}.encode(), hex::decode("00000000014001010101010101010101010101010101010101010101010101010101010101010202020202020202020202020202020202020202020202020202020202020202").unwrap());
+		}.encode(), <Vec<u8>>::from_hex("00000000014001010101010101010101010101010101010101010101010101010101010101010202020202020202020202020202020202020202020202020202020202020202").unwrap());
 		let init_msg = msgs::Init { features: InitFeatures::from_le_bytes(vec![]),
 			networks: Some(vec![mainnet_hash]),
 			remote_network_address: Some(SocketAddress::TcpIpV4 {
@@ -4026,7 +4042,7 @@ mod tests {
 			}),
 		};
 		let encoded_value = init_msg.encode();
-		let target_value = hex::decode("0000000001206fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d61900000000000307017f00000103e8").unwrap();
+		let target_value = <Vec<u8>>::from_hex("0000000001206fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d61900000000000307017f00000103e8").unwrap();
 		assert_eq!(encoded_value, target_value);
 		assert_eq!(msgs::Init::read(&mut Cursor::new(&target_value)).unwrap(), init_msg);
 	}
@@ -4038,7 +4054,7 @@ mod tests {
 			data: String::from("rust-lightning"),
 		};
 		let encoded_value = error.encode();
-		let target_value = hex::decode("0202020202020202020202020202020202020202020202020202020202020202000e727573742d6c696768746e696e67").unwrap();
+		let target_value = <Vec<u8>>::from_hex("0202020202020202020202020202020202020202020202020202020202020202000e727573742d6c696768746e696e67").unwrap();
 		assert_eq!(encoded_value, target_value);
 	}
 
@@ -4049,7 +4065,7 @@ mod tests {
 			data: String::from("rust-lightning"),
 		};
 		let encoded_value = error.encode();
-		let target_value = hex::decode("0202020202020202020202020202020202020202020202020202020202020202000e727573742d6c696768746e696e67").unwrap();
+		let target_value = <Vec<u8>>::from_hex("0202020202020202020202020202020202020202020202020202020202020202000e727573742d6c696768746e696e67").unwrap();
 		assert_eq!(encoded_value, target_value);
 	}
 
@@ -4060,7 +4076,7 @@ mod tests {
 			byteslen: 64
 		};
 		let encoded_value = ping.encode();
-		let target_value = hex::decode("0040004000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000").unwrap();
+		let target_value = <Vec<u8>>::from_hex("0040004000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000").unwrap();
 		assert_eq!(encoded_value, target_value);
 	}
 
@@ -4070,7 +4086,7 @@ mod tests {
 			byteslen: 64
 		};
 		let encoded_value = pong.encode();
-		let target_value = hex::decode("004000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000").unwrap();
+		let target_value = <Vec<u8>>::from_hex("004000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000").unwrap();
 		assert_eq!(encoded_value, target_value);
 	}
 
@@ -4082,7 +4098,7 @@ mod tests {
 			outgoing_cltv_value: 0xffffffff,
 		};
 		let encoded_value = outbound_msg.encode();
-		let target_value = hex::decode("1a02080badf00d010203040404ffffffff0608deadbeef1bad1dea").unwrap();
+		let target_value = <Vec<u8>>::from_hex("1a02080badf00d010203040404ffffffff0608deadbeef1bad1dea").unwrap();
 		assert_eq!(encoded_value, target_value);
 
 		let node_signer = test_utils::TestKeysInterface::new(&[42; 32], Network::Testnet);
@@ -4107,7 +4123,7 @@ mod tests {
 			custom_tlvs: vec![],
 		};
 		let encoded_value = outbound_msg.encode();
-		let target_value = hex::decode("1002080badf00d010203040404ffffffff").unwrap();
+		let target_value = <Vec<u8>>::from_hex("1002080badf00d010203040404ffffffff").unwrap();
 		assert_eq!(encoded_value, target_value);
 
 		let node_signer = test_utils::TestKeysInterface::new(&[42; 32], Network::Testnet);
@@ -4135,7 +4151,7 @@ mod tests {
 			custom_tlvs: vec![],
 		};
 		let encoded_value = outbound_msg.encode();
-		let target_value = hex::decode("3602080badf00d010203040404ffffffff082442424242424242424242424242424242424242424242424242424242424242421badca1f").unwrap();
+		let target_value = <Vec<u8>>::from_hex("3602080badf00d010203040404ffffffff082442424242424242424242424242424242424242424242424242424242424242421badca1f").unwrap();
 		assert_eq!(encoded_value, target_value);
 
 		let node_signer = test_utils::TestKeysInterface::new(&[42; 32], Network::Testnet);
@@ -4206,7 +4222,7 @@ mod tests {
 			outgoing_cltv_value: 0xffffffff,
 		};
 		let encoded_value = msg.encode();
-		let target_value = hex::decode("2e02080badf00d010203040404ffffffffff0000000146c6616b021234ff0000000146c6616f084242424242424242").unwrap();
+		let target_value = <Vec<u8>>::from_hex("2e02080badf00d010203040404ffffffffff0000000146c6616b021234ff0000000146c6616f084242424242424242").unwrap();
 		assert_eq!(encoded_value, target_value);
 		let node_signer = test_utils::TestKeysInterface::new(&[42; 32], Network::Testnet);
 		let inbound_msg: msgs::InboundOnionPayload = ReadableArgs::read(&mut Cursor::new(&target_value[..]), &&node_signer).unwrap();
@@ -4251,7 +4267,7 @@ mod tests {
 			number_of_blocks: 1500,
 		};
 		let encoded_value = query_channel_range.encode();
-		let target_value = hex::decode("06226e46111a0b59caaf126043eb5bbf28c34f3a5e332a1fc7b2b73cf188910f000186a0000005dc").unwrap();
+		let target_value = <Vec<u8>>::from_hex("06226e46111a0b59caaf126043eb5bbf28c34f3a5e332a1fc7b2b73cf188910f000186a0000005dc").unwrap();
 		assert_eq!(encoded_value, target_value);
 
 		query_channel_range = Readable::read(&mut Cursor::new(&target_value[..])).unwrap();
@@ -4266,7 +4282,7 @@ mod tests {
 	}
 
 	fn do_encoding_reply_channel_range(encoding_type: u8) {
-		let mut target_value = hex::decode("06226e46111a0b59caaf126043eb5bbf28c34f3a5e332a1fc7b2b73cf188910f000b8a06000005dc01").unwrap();
+		let mut target_value = <Vec<u8>>::from_hex("06226e46111a0b59caaf126043eb5bbf28c34f3a5e332a1fc7b2b73cf188910f000b8a06000005dc01").unwrap();
 		let expected_chain_hash = ChainHash::using_genesis_block(Network::Regtest);
 		let mut reply_channel_range = msgs::ReplyChannelRange {
 			chain_hash: expected_chain_hash,
@@ -4277,7 +4293,7 @@ mod tests {
 		};
 
 		if encoding_type == 0 {
-			target_value.append(&mut hex::decode("001900000000000000008e0000000000003c69000000000045a6c4").unwrap());
+			target_value.append(&mut <Vec<u8>>::from_hex("001900000000000000008e0000000000003c69000000000045a6c4").unwrap());
 			let encoded_value = reply_channel_range.encode();
 			assert_eq!(encoded_value, target_value);
 
@@ -4290,7 +4306,7 @@ mod tests {
 			assert_eq!(reply_channel_range.short_channel_ids[1], 0x0000000000003c69);
 			assert_eq!(reply_channel_range.short_channel_ids[2], 0x000000000045a6c4);
 		} else {
-			target_value.append(&mut hex::decode("001601789c636000833e08659309a65878be010010a9023a").unwrap());
+			target_value.append(&mut <Vec<u8>>::from_hex("001601789c636000833e08659309a65878be010010a9023a").unwrap());
 			let result: Result<msgs::ReplyChannelRange, msgs::DecodeError> = Readable::read(&mut Cursor::new(&target_value[..]));
 			assert!(result.is_err(), "Expected decode failure with unsupported zlib encoding");
 		}
@@ -4303,7 +4319,7 @@ mod tests {
 	}
 
 	fn do_encoding_query_short_channel_ids(encoding_type: u8) {
-		let mut target_value = hex::decode("06226e46111a0b59caaf126043eb5bbf28c34f3a5e332a1fc7b2b73cf188910f").unwrap();
+		let mut target_value = <Vec<u8>>::from_hex("06226e46111a0b59caaf126043eb5bbf28c34f3a5e332a1fc7b2b73cf188910f").unwrap();
 		let expected_chain_hash = ChainHash::using_genesis_block(Network::Regtest);
 		let mut query_short_channel_ids = msgs::QueryShortChannelIds {
 			chain_hash: expected_chain_hash,
@@ -4311,7 +4327,7 @@ mod tests {
 		};
 
 		if encoding_type == 0 {
-			target_value.append(&mut hex::decode("001900000000000000008e0000000000003c69000000000045a6c4").unwrap());
+			target_value.append(&mut <Vec<u8>>::from_hex("001900000000000000008e0000000000003c69000000000045a6c4").unwrap());
 			let encoded_value = query_short_channel_ids.encode();
 			assert_eq!(encoded_value, target_value);
 
@@ -4321,7 +4337,7 @@ mod tests {
 			assert_eq!(query_short_channel_ids.short_channel_ids[1], 0x0000000000003c69);
 			assert_eq!(query_short_channel_ids.short_channel_ids[2], 0x000000000045a6c4);
 		} else {
-			target_value.append(&mut hex::decode("001601789c636000833e08659309a65878be010010a9023a").unwrap());
+			target_value.append(&mut <Vec<u8>>::from_hex("001601789c636000833e08659309a65878be010010a9023a").unwrap());
 			let result: Result<msgs::QueryShortChannelIds, msgs::DecodeError> = Readable::read(&mut Cursor::new(&target_value[..]));
 			assert!(result.is_err(), "Expected decode failure with unsupported zlib encoding");
 		}
@@ -4335,7 +4351,7 @@ mod tests {
 			full_information: true,
 		};
 		let encoded_value = reply_short_channel_ids_end.encode();
-		let target_value = hex::decode("06226e46111a0b59caaf126043eb5bbf28c34f3a5e332a1fc7b2b73cf188910f01").unwrap();
+		let target_value = <Vec<u8>>::from_hex("06226e46111a0b59caaf126043eb5bbf28c34f3a5e332a1fc7b2b73cf188910f01").unwrap();
 		assert_eq!(encoded_value, target_value);
 
 		reply_short_channel_ids_end = Readable::read(&mut Cursor::new(&target_value[..])).unwrap();
@@ -4352,7 +4368,7 @@ mod tests {
 			timestamp_range: 0xffff_ffff,
 		};
 		let encoded_value = gossip_timestamp_filter.encode();
-		let target_value = hex::decode("06226e46111a0b59caaf126043eb5bbf28c34f3a5e332a1fc7b2b73cf188910f5ec57980ffffffff").unwrap();
+		let target_value = <Vec<u8>>::from_hex("06226e46111a0b59caaf126043eb5bbf28c34f3a5e332a1fc7b2b73cf188910f5ec57980ffffffff").unwrap();
 		assert_eq!(encoded_value, target_value);
 
 		gossip_timestamp_filter = Readable::read(&mut Cursor::new(&target_value[..])).unwrap();

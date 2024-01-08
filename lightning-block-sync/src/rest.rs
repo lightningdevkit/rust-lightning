@@ -8,7 +8,6 @@ use crate::convert::GetUtxosResponse;
 
 use bitcoin::OutPoint;
 use bitcoin::hash_types::BlockHash;
-use bitcoin::hashes::hex::ToHex;
 
 use std::convert::TryFrom;
 use std::convert::TryInto;
@@ -44,14 +43,14 @@ impl RestClient {
 impl BlockSource for RestClient {
 	fn get_header<'a>(&'a self, header_hash: &'a BlockHash, _height: Option<u32>) -> AsyncBlockSourceResult<'a, BlockHeaderData> {
 		Box::pin(async move {
-			let resource_path = format!("headers/1/{}.json", header_hash.to_hex());
+			let resource_path = format!("headers/1/{}.json", header_hash.to_string());
 			Ok(self.request_resource::<JsonResponse, _>(&resource_path).await?)
 		})
 	}
 
 	fn get_block<'a>(&'a self, header_hash: &'a BlockHash) -> AsyncBlockSourceResult<'a, BlockData> {
 		Box::pin(async move {
-			let resource_path = format!("block/{}.bin", header_hash.to_hex());
+			let resource_path = format!("block/{}.bin", header_hash.to_string());
 			Ok(BlockData::FullBlock(self.request_resource::<BinaryResponse, _>(&resource_path).await?))
 		})
 	}
@@ -73,7 +72,7 @@ impl UtxoSource for RestClient {
 
 	fn is_output_unspent<'a>(&'a self, outpoint: OutPoint) -> AsyncBlockSourceResult<'a, bool> {
 		Box::pin(async move {
-			let resource_path = format!("getutxos/{}-{}.json", outpoint.txid.to_hex(), outpoint.vout);
+			let resource_path = format!("getutxos/{}-{}.json", outpoint.txid.to_string(), outpoint.vout);
 			let utxo_result =
 				self.request_resource::<JsonResponse, GetUtxosResponse>(&resource_path).await?;
 			Ok(utxo_result.hit_bitmap_nonempty)
@@ -145,7 +144,7 @@ mod tests {
 		));
 		let client = RestClient::new(server.endpoint()).unwrap();
 
-		let outpoint = OutPoint::new(bitcoin::Txid::from_inner([0; 32]), 0);
+		let outpoint = OutPoint::new(bitcoin::Txid::from_byte_array([0; 32]), 0);
 		let unspent_output = client.is_output_unspent(outpoint).await.unwrap();
 		assert_eq!(unspent_output, false);
 	}
@@ -159,7 +158,7 @@ mod tests {
 		));
 		let client = RestClient::new(server.endpoint()).unwrap();
 
-		let outpoint = OutPoint::new(bitcoin::Txid::from_inner([0; 32]), 0);
+		let outpoint = OutPoint::new(bitcoin::Txid::from_byte_array([0; 32]), 0);
 		let unspent_output = client.is_output_unspent(outpoint).await.unwrap();
 		assert_eq!(unspent_output, true);
 	}

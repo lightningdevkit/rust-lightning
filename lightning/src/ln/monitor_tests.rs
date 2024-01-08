@@ -24,12 +24,13 @@ use crate::util::ser::Writeable;
 use crate::util::scid_utils::block_from_scid;
 use crate::util::test_utils;
 
-use bitcoin::blockdata::transaction::EcdsaSighashType;
+use bitcoin::{Amount, PublicKey, ScriptBuf, Transaction, TxIn, TxOut, Witness};
+use bitcoin::blockdata::locktime::absolute::LockTime;
 use bitcoin::blockdata::script::Builder;
 use bitcoin::blockdata::opcodes;
+use bitcoin::hashes::hex::FromHex;
 use bitcoin::secp256k1::{Secp256k1, SecretKey};
-use bitcoin::{Amount, PublicKey, Script, Transaction, TxIn, TxOut, PackedLockTime, Witness};
-use bitcoin::util::sighash::SighashCache;
+use bitcoin::sighash::{SighashCache, EcdsaSighashType};
 
 use crate::prelude::*;
 
@@ -305,7 +306,7 @@ fn do_test_claim_value_force_close(anchors: bool, prev_commitment_tx: bool) {
 
 	let coinbase_tx = Transaction {
 		version: 2,
-		lock_time: PackedLockTime::ZERO,
+		lock_time: LockTime::ZERO,
 		input: vec![TxIn { ..Default::default() }],
 		output: vec![
 			TxOut {
@@ -666,7 +667,7 @@ fn do_test_balances_on_local_commitment_htlcs(anchors: bool) {
 
 	let coinbase_tx = Transaction {
 		version: 2,
-		lock_time: PackedLockTime::ZERO,
+		lock_time: LockTime::ZERO,
 		input: vec![TxIn { ..Default::default() }],
 		output: vec![
 			TxOut {
@@ -1223,23 +1224,23 @@ fn do_test_revoked_counterparty_commitment_balances(anchors: bool, confirm_htlc_
 	claim_txn.sort_unstable_by_key(|tx| tx.output.iter().map(|output| output.value).sum::<u64>());
 
 	// The following constants were determined experimentally
-	const BS_TO_SELF_CLAIM_EXP_WEIGHT: usize = 483;
-	let outbound_htlc_claim_exp_weight: usize = if anchors { 574 } else { 571 };
-	let inbound_htlc_claim_exp_weight: usize = if anchors { 582 } else { 578 };
+	const BS_TO_SELF_CLAIM_EXP_WEIGHT: u64 = 483;
+	let outbound_htlc_claim_exp_weight: u64 = if anchors { 574 } else { 571 };
+	let inbound_htlc_claim_exp_weight: u64 = if anchors { 582 } else { 578 };
 
 	// Check that the weight is close to the expected weight. Note that signature sizes vary
 	// somewhat so it may not always be exact.
-	fuzzy_assert_eq(claim_txn[0].weight(), outbound_htlc_claim_exp_weight);
-	fuzzy_assert_eq(claim_txn[1].weight(), inbound_htlc_claim_exp_weight);
-	fuzzy_assert_eq(claim_txn[2].weight(), inbound_htlc_claim_exp_weight);
-	fuzzy_assert_eq(claim_txn[3].weight(), BS_TO_SELF_CLAIM_EXP_WEIGHT);
+	fuzzy_assert_eq(claim_txn[0].weight().to_wu(), outbound_htlc_claim_exp_weight);
+	fuzzy_assert_eq(claim_txn[1].weight().to_wu(), inbound_htlc_claim_exp_weight);
+	fuzzy_assert_eq(claim_txn[2].weight().to_wu(), inbound_htlc_claim_exp_weight);
+	fuzzy_assert_eq(claim_txn[3].weight().to_wu(), BS_TO_SELF_CLAIM_EXP_WEIGHT);
 
 	let commitment_tx_fee = chan_feerate *
 		(channel::commitment_tx_base_weight(&channel_type_features) + 3 * channel::COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000;
 	let anchor_outputs_value = if anchors { channel::ANCHOR_OUTPUT_VALUE_SATOSHI * 2 } else { 0 };
-	let inbound_htlc_claim_fee = chan_feerate * inbound_htlc_claim_exp_weight as u64 / 1000;
-	let outbound_htlc_claim_fee = chan_feerate * outbound_htlc_claim_exp_weight as u64 / 1000;
-	let to_self_claim_fee = chan_feerate * claim_txn[3].weight() as u64 / 1000;
+	let inbound_htlc_claim_fee = chan_feerate * inbound_htlc_claim_exp_weight / 1000;
+	let outbound_htlc_claim_fee = chan_feerate * outbound_htlc_claim_exp_weight / 1000;
+	let to_self_claim_fee = chan_feerate * claim_txn[3].weight().to_wu() / 1000;
 
 	// The expected balance for the next three checks, with the largest-HTLC and to_self output
 	// claim balances separated out.
@@ -1380,7 +1381,7 @@ fn do_test_revoked_counterparty_htlc_tx_balances(anchors: bool) {
 
 	let coinbase_tx = Transaction {
 		version: 2,
-		lock_time: PackedLockTime::ZERO,
+		lock_time: LockTime::ZERO,
 		input: vec![TxIn { ..Default::default() }],
 		output: vec![
 			TxOut {
@@ -1442,7 +1443,7 @@ fn do_test_revoked_counterparty_htlc_tx_balances(anchors: bool) {
 		check_spends!(txn[0], revoked_local_txn[0], coinbase_tx);
 		txn.pop().unwrap()
 	};
-	let revoked_htlc_success_fee = chan_feerate * revoked_htlc_success.weight() as u64 / 1000;
+	let revoked_htlc_success_fee = chan_feerate * revoked_htlc_success.weight().to_wu() / 1000;
 
 	connect_blocks(&nodes[1], TEST_FINAL_CLTV);
 	if anchors {
@@ -1459,8 +1460,8 @@ fn do_test_revoked_counterparty_htlc_tx_balances(anchors: bool) {
 	};
 	check_spends!(revoked_htlc_timeout, revoked_local_txn[0], coinbase_tx);
 	assert_ne!(revoked_htlc_success.input[0].previous_output, revoked_htlc_timeout.input[0].previous_output);
-	assert_eq!(revoked_htlc_success.lock_time.0, 0);
-	assert_ne!(revoked_htlc_timeout.lock_time.0, 0);
+	assert_eq!(revoked_htlc_success.lock_time, LockTime::ZERO);
+	assert_ne!(revoked_htlc_timeout.lock_time, LockTime::ZERO);
 
 	// A will generate justice tx from B's revoked commitment/HTLC tx
 	mine_transaction(&nodes[0], &revoked_local_txn[0]);
@@ -1530,7 +1531,7 @@ fn do_test_revoked_counterparty_htlc_tx_balances(anchors: bool) {
 		sorted_vec(nodes[0].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances()));
 
 	assert_eq!(as_htlc_claim_tx[0].output.len(), 1);
-	let as_revoked_htlc_success_claim_fee = chan_feerate * as_htlc_claim_tx[0].weight() as u64 / 1000;
+	let as_revoked_htlc_success_claim_fee = chan_feerate * as_htlc_claim_tx[0].weight().to_wu() / 1000;
 	if anchors {
 		// With anchors, B can pay for revoked_htlc_success's fee with additional inputs, rather
 		// than with the HTLC itself.
@@ -1580,7 +1581,7 @@ fn do_test_revoked_counterparty_htlc_tx_balances(anchors: bool) {
 		}]),
 		sorted_vec(nodes[0].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances()));
 
-	connect_blocks(&nodes[0], revoked_htlc_timeout.lock_time.0 - nodes[0].best_block_info().1);
+	connect_blocks(&nodes[0], revoked_htlc_timeout.lock_time.to_consensus_u32() - nodes[0].best_block_info().1);
 	expect_pending_htlcs_forwardable_and_htlc_handling_failed_ignore!(&nodes[0],
 		[HTLCDestination::FailedPayment { payment_hash: failed_payment_hash }]);
 	// As time goes on A may split its revocation claim transaction into multiple.
@@ -1692,7 +1693,7 @@ fn do_test_revoked_counterparty_aggregated_claims(anchors: bool) {
 
 	let coinbase_tx = Transaction {
 		version: 2,
-		lock_time: PackedLockTime::ZERO,
+		lock_time: LockTime::ZERO,
 		input: vec![TxIn { ..Default::default() }],
 		output: vec![TxOut {
 			value: Amount::ONE_BTC.to_sat(),
@@ -2010,7 +2011,7 @@ fn do_test_restored_packages_retry(check_old_monitor_retries_after_upgrade: bool
 	// Check that we can still rebroadcast these packages/transactions if we're upgrading from an
 	// old `ChannelMonitor` that did not exercise said rebroadcasting logic.
 	if check_old_monitor_retries_after_upgrade {
-		let serialized_monitor = hex::decode(
+		let serialized_monitor = <Vec<u8>>::from_hex(
 			"0101fffffffffffffffff9550f22c95100160014d5a9aa98b89acc215fc3d23d6fec0ad59ca3665f00002200204c5f18e5e95b184f34d02ba6de8a2a4e36ae3d4ec87299ad81f3284dc7195c6302d7dde8e10a5a22c9bd0d7ef5494d85683ac050253b917615d4f97af633f0a8e2035f5e9d58b4328566223c107d86cf853e6b9fae1d26ff6d969be0178d1423c4ea0016001467822698d782e8421ebdf96d010de99382b7ec2300160014caf6d80fe2bab80473b021f57588a9c384bf23170000000000000000000000004d49e5da0000000000000000000000000000002a0270b20ad0f2c2bb30a55590fc77778495bc1b38c96476901145dda57491237f0f74c52ab4f11296d62b66a6dba9513b04a3e7fb5a09a30cee22fce7294ab55b7e00000022002034c0cc0ad0dd5fe61dcf7ef58f995e3d34f8dbd24aa2a6fae68fefe102bf025c21391732ce658e1fe167300bb689a81e7db5399b9ee4095e217b0e997e8dd3d17a0000000000000000004a002103adde8029d3ee281a32e9db929b39f503ff9d7e93cd308eb157955344dc6def84022103205087e2dc1f6b9937e887dfa712c5bdfa950b01dbda3ebac4c85efdde48ee6a04020090004752210307a78def56cba9fc4db22a25928181de538ee59ba1a475ae113af7790acd0db32103c21e841cbc0b48197d060c71e116c185fa0ac281b7d0aa5924f535154437ca3b52ae00000000000186a0ffffffffffff0291e7c0a3232fb8650a6b4089568a81062b48a768780e5a74bb4a4a74e33aec2c029d5760248ec86c4a76d9df8308555785a06a65472fb995f5b392d520bbd000650090c1c94b11625690c9d84c5daa67b6ad19fcc7f9f23e194384140b08fcab9e8e810000ffffffffffff000000000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000002167c86cc0e598a6b541f7c9bf9ef17222e4a76f636e2d22185aeadd2b02d029c0000000000000000391732ce658e1fe167300bb689a81e7db5399b9ee4095e217b0e997e8dd3d17a00000000000000010000000000009896800000005166687aadf862bd776c8fc18b8e9f8e20089714856ee233b3902a591d0d5f29250500000000a0009d00202d704fbfe342a9ff6eaca14d80a24aaed0e680bbbdd36157b6f2798c61d906910120f9fe5e552aa0fc45020f0505efde432a4e373e5d393863973a6899f8c26d33d102080000000000989680044d4c00210355f8d2238a322d16b602bd0ceaad5b01019fb055971eaadcc9b29226a4da6c2302090007000000000241000408000001000000000006020000080800000000009896800a04000000460000000000000000000000000000000166687aadf862bd776c8fc18b8e9f8e20089714856ee233b3902a591d0d5f2925fffffffffffe01e3002004f8eda5676356f539169a8e9a1e86c7f125283328d6f4bded1b939b52a6a7e30108000000000000c299022103a1f98e85886df54add6908b4fc1ff515e44aedefe9eb9c02879c89994298fa79042103a650bf03971df0176c7b412247390ef717853e8bd487b204dccc2fe2078bb75206210390bbbcebe9f70ba5dfd98866a79f72f75e0a6ea550ef73b202dd87cd6477350a08210284152d57908488e666e872716a286eb670b3d06cbeebf3f2e4ad350e01ec5e5b0a2102295e2de39eb3dcc2882f8cc266df7882a8b6d2c32aa08799f49b693aad3be28e0c04000000fd0e00fd0202002045cfd42d0989e55b953f516ac7fd152bd90ec4438a2fc636f97ddd32a0c8fe0d01080000000000009b5e0221035f5e9d58b4328566223c107d86cf853e6b9fae1d26ff6d969be0178d1423c4ea04210230fde9c031f487db95ff55b7c0acbe0c7c26a8d82615e9184416bd350101616706210225afb4e88eac8b47b67adeaf085f5eb5d37d936f56138f0848de3d104edf113208210208e4687a95c172b86b920c3bc5dbd5f023094ec2cb0abdb74f9b624f45740df90a2102d7dde8e10a5a22c9bd0d7ef5494d85683ac050253b917615d4f97af633f0a8e20c04000000fd0efd011d3b00010102080000000000989680040400000051062066687aadf862bd776c8fc18b8e9f8e20089714856ee233b3902a591d0d5f2925080400000000417e2650c201383711eed2a7cb8652c3e77ee6a395e81849c5c222217ed68b333c0ca9f1e900662ae68a7359efa7ef9d90613f2a62f7c3ff90f8c25e2cc974c9d3a0009d00202d704fbfe342a9ff6eaca14d80a24aaed0e680bbbdd36157b6f2798c61d906910120f9fe5e552aa0fc45020f0505efde432a4e373e5d393863973a6899f8c26d33d102080000000000989680044d4c00210355f8d2238a322d16b602bd0ceaad5b01019fb055971eaadcc9b29226a4da6c2302090007000000000241000408000001000000000006020000080800000000009896800a0400000046fffffffffffefffffffffffe000000000000000000000000000000000000000000000000f1600ef6ea657b8d411d553516ae35cedfe86b0cd48d1f91b32772facbae757d0000000b0000000000000002fd01da002045cfd42d0989e55b953f516ac7fd152bd90ec4438a2fc636f97ddd32a0c8fe0d01fd01840200000000010174c52ab4f11296d62b66a6dba9513b04a3e7fb5a09a30cee22fce7294ab55b7e00000000000f55f9800310270000000000002200208309b406e3b96e76cde414fbb8f5159f5b25b24075656c6382cec797854d53495e9b0000000000002200204c5f18e5e95b184f34d02ba6de8a2a4e36ae3d4ec87299ad81f3284dc7195c6350c300000000000016001425df8ec4a074f80579fed67d4707d5ec8ed7e8d304004730440220671c9badf26bd3a1ebd2d17020c6be20587d7822530daacc52c28839875eaec602204b575a21729ed27311f6d79fdf6fe8702b0a798f7d842e39ede1b56f249a613401473044022016a0da36f70cbf5d889586af88f238982889dc161462c56557125c7acfcb69e9022036ae10c6cc8cbc3b27d9e9ef6babb556086585bc819f252208bd175286699fdd014752210307a78def56cba9fc4db22a25928181de538ee59ba1a475ae113af7790acd0db32103c21e841cbc0b48197d060c71e116c185fa0ac281b7d0aa5924f535154437ca3b52ae50c9222002040000000b0320f1600ef6ea657b8d411d553516ae35cedfe86b0cd48d1f91b32772facbae757d0406030400020090fd02a1002045cfd42d0989e55b953f516ac7fd152bd90ec4438a2fc636f97ddd32a0c8fe0d01fd01840200000000010174c52ab4f11296d62b66a6dba9513b04a3e7fb5a09a30cee22fce7294ab55b7e00000000000f55f9800310270000000000002200208309b406e3b96e76cde414fbb8f5159f5b25b24075656c6382cec797854d53495e9b0000000000002200204c5f18e5e95b184f34d02ba6de8a2a4e36ae3d4ec87299ad81f3284dc7195c6350c300000000000016001425df8ec4a074f80579fed67d4707d5ec8ed7e8d304004730440220671c9badf26bd3a1ebd2d17020c6be20587d7822530daacc52c28839875eaec602204b575a21729ed27311f6d79fdf6fe8702b0a798f7d842e39ede1b56f249a613401473044022016a0da36f70cbf5d889586af88f238982889dc161462c56557125c7acfcb69e9022036ae10c6cc8cbc3b27d9e9ef6babb556086585bc819f252208bd175286699fdd014752210307a78def56cba9fc4db22a25928181de538ee59ba1a475ae113af7790acd0db32103c21e841cbc0b48197d060c71e116c185fa0ac281b7d0aa5924f535154437ca3b52ae50c9222002040000000b0320f1600ef6ea657b8d411d553516ae35cedfe86b0cd48d1f91b32772facbae757d04cd01cb00c901c7002245cfd42d0989e55b953f516ac7fd152bd90ec4438a2fc636f97ddd32a0c8fe0d0001022102d7dde8e10a5a22c9bd0d7ef5494d85683ac050253b917615d4f97af633f0a8e204020090062b5e9b0000000000002200204c5f18e5e95b184f34d02ba6de8a2a4e36ae3d4ec87299ad81f3284dc7195c630821035f5e9d58b4328566223c107d86cf853e6b9fae1d26ff6d969be0178d1423c4ea0a200000000000000000000000004d49e5da0000000000000000000000000000002a0c0800000000000186a0000000000000000274c52ab4f11296d62b66a6dba9513b04a3e7fb5a09a30cee22fce7294ab55b7e0000000000000001000000000022002034c0cc0ad0dd5fe61dcf7ef58f995e3d34f8dbd24aa2a6fae68fefe102bf025c45cfd42d0989e55b953f516ac7fd152bd90ec4438a2fc636f97ddd32a0c8fe0d000000000000000100000000002200208309b406e3b96e76cde414fbb8f5159f5b25b24075656c6382cec797854d5349010100160014d5a9aa98b89acc215fc3d23d6fec0ad59ca3665ffd027100fd01e6fd01e300080000fffffffffffe02080000000000009b5e0408000000000000c3500604000000fd08b0af002102d7dde8e10a5a22c9bd0d7ef5494d85683ac050253b917615d4f97af633f0a8e20221035f5e9d58b4328566223c107d86cf853e6b9fae1d26ff6d969be0178d1423c4ea04210230fde9c031f487db95ff55b7c0acbe0c7c26a8d82615e9184416bd350101616706210225afb4e88eac8b47b67adeaf085f5eb5d37d936f56138f0848de3d104edf113208210208e4687a95c172b86b920c3bc5dbd5f023094ec2cb0abdb74f9b624f45740df90acdcc00a8020000000174c52ab4f11296d62b66a6dba9513b04a3e7fb5a09a30cee22fce7294ab55b7e00000000000f55f9800310270000000000002200208309b406e3b96e76cde414fbb8f5159f5b25b24075656c6382cec797854d53495e9b0000000000002200204c5f18e5e95b184f34d02ba6de8a2a4e36ae3d4ec87299ad81f3284dc7195c6350c300000000000016001425df8ec4a074f80579fed67d4707d5ec8ed7e8d350c92220022045cfd42d0989e55b953f516ac7fd152bd90ec4438a2fc636f97ddd32a0c8fe0d0c3c3b00010102080000000000989680040400000051062066687aadf862bd776c8fc18b8e9f8e20089714856ee233b3902a591d0d5f29250804000000000240671c9badf26bd3a1ebd2d17020c6be20587d7822530daacc52c28839875eaec64b575a21729ed27311f6d79fdf6fe8702b0a798f7d842e39ede1b56f249a613404010006407e2650c201383711eed2a7cb8652c3e77ee6a395e81849c5c222217ed68b333c0ca9f1e900662ae68a7359efa7ef9d90613f2a62f7c3ff90f8c25e2cc974c9d3010000000000000001010000000000000000090b2a953d93a124c600ecb1a0ccfed420169cdd37f538ad94a3e4e6318c93c14adf59cdfbb40bdd40950c9f8dd547d29d75a173e1376a7850743394c46dea2dfd01cefd01ca00fd017ffd017c00080000ffffffffffff0208000000000000c2990408000000000000c3500604000000fd08b0af002102295e2de39eb3dcc2882f8cc266df7882a8b6d2c32aa08799f49b693aad3be28e022103a1f98e85886df54add6908b4fc1ff515e44aedefe9eb9c02879c89994298fa79042103a650bf03971df0176c7b412247390ef717853e8bd487b204dccc2fe2078bb75206210390bbbcebe9f70ba5dfd98866a79f72f75e0a6ea550ef73b202dd87cd6477350a08210284152d57908488e666e872716a286eb670b3d06cbeebf3f2e4ad350e01ec5e5b0aa2a1007d020000000174c52ab4f11296d62b66a6dba9513b04a3e7fb5a09a30cee22fce7294ab55b7e00000000000f55f9800299c2000000000000220020740e108cfbc93967b6ab242a351ebee7de51814cf78d366adefd78b10281f17e50c300000000000016001425df8ec4a074f80579fed67d4707d5ec8ed7e8d351c92220022004f8eda5676356f539169a8e9a1e86c7f125283328d6f4bded1b939b52a6a7e30c00024045cb2485594bb1ec08e7bb6af4f89c912bd53f006d7876ea956773e04a4aad4a40e2b8d4fc612102f0b54061b3c1239fb78783053e8e6f9d92b1b99f81ae9ec2040100060000fd019600b0af002103c21e841cbc0b48197d060c71e116c185fa0ac281b7d0aa5924f535154437ca3b02210270b20ad0f2c2bb30a55590fc77778495bc1b38c96476901145dda57491237f0f042103b4e59df102747edc3a3e2283b42b88a8c8218ffd0dcfb52f2524b371d64cadaa062103d902b7b8b3434076d2b210e912c76645048b71e28995aad227a465a65ccd817608210301e9a52f923c157941de4a7692e601f758660969dcf5abdb67817efe84cce2ef0202009004010106b7b600b0af00210307a78def56cba9fc4db22a25928181de538ee59ba1a475ae113af7790acd0db30221034d0f817cb19b4a3bd144b615459bd06cbab3b4bdc96d73e18549a992cee80e8104210380542b59a9679890cba529fe155a9508ef57dac7416d035b23666e3fb98c3814062103adde8029d3ee281a32e9db929b39f503ff9d7e93cd308eb157955344dc6def84082103205087e2dc1f6b9937e887dfa712c5bdfa950b01dbda3ebac4c85efdde48ee6a02020090082274c52ab4f11296d62b66a6dba9513b04a3e7fb5a09a30cee22fce7294ab55b7e000000000287010108d30df34e3a1e00ecdd03a2c843db062479a81752c4dfd0cc4baef0f81e7bc7ef8820990daf8d8e8d30a3b4b08af12c9f5cd71e45c7238103e0c80ca13850862e4fd2c56b69b7195312518de1bfe9aed63c80bb7760d70b2a870d542d815895fd12423d11e2adb0cdf55d776dac8f487c9b3b7ea12f1b150eb15889cf41333ade465692bf1cdc360b9c2a19bf8c1ca4fed7639d8bc953d36c10d8c6c9a8c0a57608788979bcf145e61b308006896e21d03e92084f93bd78740c20639134a7a8fd019afd019600b0af002103c21e841cbc0b48197d060c71e116c185fa0ac281b7d0aa5924f535154437ca3b02210270b20ad0f2c2bb30a55590fc77778495bc1b38c96476901145dda57491237f0f042103b4e59df102747edc3a3e2283b42b88a8c8218ffd0dcfb52f2524b371d64cadaa062103d902b7b8b3434076d2b210e912c76645048b71e28995aad227a465a65ccd817608210301e9a52f923c157941de4a7692e601f758660969dcf5abdb67817efe84cce2ef0202009004010106b7b600b0af00210307a78def56cba9fc4db22a25928181de538ee59ba1a475ae113af7790acd0db30221034d0f817cb19b4a3bd144b615459bd06cbab3b4bdc96d73e18549a992cee80e8104210380542b59a9679890cba529fe155a9508ef57dac7416d035b23666e3fb98c3814062103adde8029d3ee281a32e9db929b39f503ff9d7e93cd308eb157955344dc6def84082103205087e2dc1f6b9937e887dfa712c5bdfa950b01dbda3ebac4c85efdde48ee6a02020090082274c52ab4f11296d62b66a6dba9513b04a3e7fb5a09a30cee22fce7294ab55b7e000000000000000186a00000000000000000000000004d49e5da0000000000000000000000000000002a00000000000000000000000000000000000000000000000001000000510000000000000001000000000000000145cfd42d0989e55b953f516ac7fd152bd90ec4438a2fc636f97ddd32a0c8fe0d00000000041000080000000000989680020400000051160004000000510208000000000000000004040000000b0000000000000000000101300300050007010109210355f8d2238a322d16b602bd0ceaad5b01019fb055971eaadcc9b29226a4da6c230d000f020000",
 		).unwrap();
 		reload_node!(nodes[0], &nodes[0].node.encode(), &[&serialized_monitor], persister, new_chain_monitor, node_deserialized);
@@ -2076,7 +2077,7 @@ fn do_test_monitor_rebroadcast_pending_claims(anchors: bool) {
 
 	let coinbase_tx = Transaction {
 		version: 2,
-		lock_time: PackedLockTime::ZERO,
+		lock_time: LockTime::ZERO,
 		input: vec![TxIn { ..Default::default() }],
 		output: vec![TxOut { // UTXO to attach fees to `htlc_tx` on anchors
 			value: Amount::ONE_BTC.to_sat(),
@@ -2106,7 +2107,7 @@ fn do_test_monitor_rebroadcast_pending_claims(anchors: bool) {
 					check_spends!(&htlc_tx, &commitment_txn[0], &coinbase_tx);
 					let htlc_tx_fee = HTLC_AMT_SAT + coinbase_tx.output[0].value -
 						htlc_tx.output.iter().map(|output| output.value).sum::<u64>();
-					let htlc_tx_weight = htlc_tx.weight() as u64;
+					let htlc_tx_weight = htlc_tx.weight().to_wu();
 					(htlc_tx, compute_feerate_sat_per_1000_weight(htlc_tx_fee, htlc_tx_weight))
 				}
 				_ => panic!("Unexpected event"),
@@ -2121,7 +2122,7 @@ fn do_test_monitor_rebroadcast_pending_claims(anchors: bool) {
 			let htlc_tx = txn.pop().unwrap();
 			check_spends!(htlc_tx, commitment_txn[0]);
 			let htlc_tx_fee = HTLC_AMT_SAT - htlc_tx.output[0].value;
-			let htlc_tx_weight = htlc_tx.weight() as u64;
+			let htlc_tx_weight = htlc_tx.weight().to_wu();
 			(htlc_tx, compute_feerate_sat_per_1000_weight(htlc_tx_fee, htlc_tx_weight))
 		};
 		if should_bump {
@@ -2232,7 +2233,7 @@ fn test_yield_anchors_events() {
 		Event::BumpTransaction(event) => {
 			let coinbase_tx = Transaction {
 				version: 2,
-				lock_time: PackedLockTime::ZERO,
+				lock_time: LockTime::ZERO,
 				input: vec![TxIn { ..Default::default() }],
 				output: vec![TxOut { // UTXO to attach fees to `anchor_tx`
 					value: Amount::ONE_BTC.to_sat(),
@@ -2425,7 +2426,7 @@ fn test_anchors_aggregated_revoked_htlc_tx() {
 		let utxo_value = Amount::ONE_BTC.to_sat() * (idx + 1) as u64;
 		let coinbase_tx = Transaction {
 			version: 2,
-			lock_time: PackedLockTime::ZERO,
+			lock_time: LockTime::ZERO,
 			input: vec![TxIn { ..Default::default() }],
 			output: vec![TxOut { // UTXO to attach fees to `anchor_tx`
 				value: utxo_value,
@@ -2491,10 +2492,10 @@ fn test_anchors_aggregated_revoked_htlc_tx() {
 	let htlc_tx = {
 		let secret_key = SecretKey::from_slice(&[1; 32]).unwrap();
 		let public_key = PublicKey::new(secret_key.public_key(&secp));
-		let fee_utxo_script = Script::new_v0_p2wpkh(&public_key.wpubkey_hash().unwrap());
+		let fee_utxo_script = ScriptBuf::new_v0_p2wpkh(&public_key.wpubkey_hash().unwrap());
 		let coinbase_tx = Transaction {
 			version: 2,
-			lock_time: PackedLockTime::ZERO,
+			lock_time: LockTime::ZERO,
 			input: vec![TxIn { ..Default::default() }],
 			output: vec![TxOut { // UTXO to attach fees to `htlc_tx`
 				value: Amount::ONE_BTC.to_sat(),
@@ -2503,14 +2504,14 @@ fn test_anchors_aggregated_revoked_htlc_tx() {
 		};
 		let mut htlc_tx = Transaction {
 			version: 2,
-			lock_time: PackedLockTime::ZERO,
+			lock_time: LockTime::ZERO,
 			input: vec![TxIn { // Fee input
 				previous_output: bitcoin::OutPoint { txid: coinbase_tx.txid(), vout: 0 },
 				..Default::default()
 			}],
 			output: vec![TxOut { // Fee input change
 				value: coinbase_tx.output[0].value / 2 ,
-				script_pubkey: Script::new_op_return(&[]),
+				script_pubkey: ScriptBuf::new_op_return(&[]),
 			}],
 		};
 		let mut descriptors = Vec::with_capacity(4);
@@ -2538,7 +2539,7 @@ fn test_anchors_aggregated_revoked_htlc_tx() {
 			htlc_tx.input[htlc_input_idx].witness = htlc_descriptor.tx_input_witness(&our_sig, &witness_script);
 		}
 		let fee_utxo_sig = {
-			let witness_script = Script::new_p2pkh(&public_key.pubkey_hash());
+			let witness_script = ScriptBuf::new_p2pkh(&public_key.pubkey_hash());
 			let sighash = hash_to_message!(&SighashCache::new(&htlc_tx).segwit_signature_hash(
 				0, &witness_script, coinbase_tx.output[0].value, EcdsaSighashType::All
 			).unwrap()[..]);
@@ -2547,7 +2548,7 @@ fn test_anchors_aggregated_revoked_htlc_tx() {
 			sig.push(EcdsaSighashType::All as u8);
 			sig
 		};
-		htlc_tx.input[0].witness = Witness::from_vec(vec![fee_utxo_sig, public_key.to_bytes()]);
+		htlc_tx.input[0].witness = Witness::from_slice(&[fee_utxo_sig, public_key.to_bytes()]);
 		check_spends!(htlc_tx, coinbase_tx, revoked_commitment_a, revoked_commitment_b);
 		htlc_tx
 	};
@@ -2603,7 +2604,7 @@ fn test_anchors_aggregated_revoked_htlc_tx() {
 			assert_eq!(outputs.len(), 1);
 			assert!(vec![chan_b.2, chan_a.2].contains(&channel_id.unwrap()));
 			let spend_tx = nodes[0].keys_manager.backing.spend_spendable_outputs(
-				&[&outputs[0]], Vec::new(), Script::new_op_return(&[]), 253, None, &Secp256k1::new(),
+				&[&outputs[0]], Vec::new(), ScriptBuf::new_op_return(&[]), 253, None, &Secp256k1::new(),
 			).unwrap();
 
 			if let SpendableOutputDescriptor::StaticPaymentOutput(_) = &outputs[0] {
@@ -2649,7 +2650,7 @@ fn do_test_anchors_monitor_fixes_counterparty_payment_script_on_reload(confirm_c
 	let secp = Secp256k1::new();
 	let privkey = bitcoin::PrivateKey::from_slice(&[1; 32], bitcoin::Network::Testnet).unwrap();
 	let pubkey = bitcoin::PublicKey::from_private_key(&secp, &privkey);
-	let p2wpkh_script = Script::new_v0_p2wpkh(&pubkey.wpubkey_hash().unwrap());
+	let p2wpkh_script = ScriptBuf::new_v0_p2wpkh(&pubkey.wpubkey_hash().unwrap());
 	get_monitor!(nodes[1], chan_id).set_counterparty_payment_script(p2wpkh_script.clone());
 	assert_eq!(get_monitor!(nodes[1], chan_id).get_counterparty_payment_script(), p2wpkh_script);
 
@@ -2732,7 +2733,7 @@ fn do_test_monitor_claims_with_random_signatures(anchors: bool, confirm_counterp
 
 	let coinbase_tx = Transaction {
 		version: 2,
-		lock_time: PackedLockTime::ZERO,
+		lock_time: LockTime::ZERO,
 		input: vec![TxIn { ..Default::default() }],
 		output: vec![
 			TxOut {

@@ -247,7 +247,7 @@ fn test_manager_serialize_deserialize_events() {
 	let push_msat = 10001;
 	let node_a = nodes.remove(0);
 	let node_b = nodes.remove(0);
-	node_a.node.create_channel(node_b.node.get_our_node_id(), channel_value, push_msat, 42, None).unwrap();
+	node_a.node.create_channel(node_b.node.get_our_node_id(), channel_value, push_msat, 42, None, None).unwrap();
 	node_b.node.handle_open_channel(&node_a.node.get_our_node_id(), &get_event_msg!(node_a, MessageSendEvent::SendOpenChannel, node_b.node.get_our_node_id()));
 	node_a.node.handle_accept_channel(&node_b.node.get_our_node_id(), &get_event_msg!(node_b, MessageSendEvent::SendAcceptChannel, node_a.node.get_our_node_id()));
 
@@ -422,7 +422,7 @@ fn test_manager_serialize_deserialize_inconsistent_monitor() {
 		fee_estimator: &fee_estimator,
 		router: &nodes[0].router,
 		chain_monitor: nodes[0].chain_monitor,
-		tx_broadcaster: nodes[0].tx_broadcaster.clone(),
+		tx_broadcaster: nodes[0].tx_broadcaster,
 		logger: &logger,
 		channel_monitors: node_0_stale_monitors.iter_mut().map(|monitor| { (monitor.get_funding_txo().0, monitor) }).collect(),
 	}) { } else {
@@ -439,7 +439,7 @@ fn test_manager_serialize_deserialize_inconsistent_monitor() {
 		fee_estimator: &fee_estimator,
 		router: nodes[0].router,
 		chain_monitor: nodes[0].chain_monitor,
-		tx_broadcaster: nodes[0].tx_broadcaster.clone(),
+		tx_broadcaster: nodes[0].tx_broadcaster,
 		logger: &logger,
 		channel_monitors: node_0_monitors.iter_mut().map(|monitor| { (monitor.get_funding_txo().0, monitor) }).collect(),
 	}).unwrap();
@@ -747,8 +747,8 @@ fn do_test_partial_claim_before_restart(persist_both_monitors: bool) {
 	assert_eq!(send_events.len(), 2);
 	let node_1_msgs = remove_first_msg_event_to_node(&nodes[1].node.get_our_node_id(), &mut send_events);
 	let node_2_msgs = remove_first_msg_event_to_node(&nodes[2].node.get_our_node_id(), &mut send_events);
-	do_pass_along_path(&nodes[0], &[&nodes[1], &nodes[3]], 15_000_000, payment_hash, Some(payment_secret), node_1_msgs, true, false, None);
-	do_pass_along_path(&nodes[0], &[&nodes[2], &nodes[3]], 15_000_000, payment_hash, Some(payment_secret), node_2_msgs, true, false, None);
+	do_pass_along_path(&nodes[0], &[&nodes[1], &nodes[3]], 15_000_000, payment_hash, Some(payment_secret), node_1_msgs, true, false, None, false);
+	do_pass_along_path(&nodes[0], &[&nodes[2], &nodes[3]], 15_000_000, payment_hash, Some(payment_secret), node_2_msgs, true, false, None, false);
 
 	// Now that we have an MPP payment pending, get the latest encoded copies of nodes[3]'s
 	// monitors and ChannelManager, for use later, if we don't want to persist both monitors.

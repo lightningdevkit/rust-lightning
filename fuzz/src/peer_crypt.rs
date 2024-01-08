@@ -7,7 +7,7 @@
 // You may not use this file except in accordance with one or both of these
 // licenses.
 
-use lightning::ln::peer_channel_encryptor::PeerChannelEncryptor;
+use lightning::ln::peer_channel_encryptor::{PeerChannelEncryptor, MessageBuf};
 use lightning::util::test_utils::TestNodeSigner;
 
 use bitcoin::secp256k1::{Secp256k1, PublicKey, SecretKey};
@@ -74,15 +74,17 @@ pub fn do_test(data: &[u8]) {
 		assert!(crypter.is_ready_for_encryption());
 		crypter
 	};
+	let mut buf = [0; 65536 + 16];
 	loop {
 		if get_slice!(1)[0] == 0 {
-			crypter.encrypt_buffer(get_slice!(slice_to_be16(get_slice!(2))));
+			crypter.encrypt_buffer(MessageBuf::from_encoded(&get_slice!(slice_to_be16(get_slice!(2)))));
 		} else {
 			let len = match crypter.decrypt_length_header(get_slice!(16+2)) {
 				Ok(len) => len,
 				Err(_) => return,
 			};
-			match crypter.decrypt_message(get_slice!(len as usize + 16)) {
+			buf.copy_from_slice(&get_slice!(len as usize + 16));
+			match crypter.decrypt_message(&mut buf[..len as usize + 16]) {
 				Ok(_) => {},
 				Err(_) => return,
 			}

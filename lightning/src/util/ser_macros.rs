@@ -1116,6 +1116,7 @@ mod tests {
 	use crate::prelude::*;
 	use crate::ln::msgs::DecodeError;
 	use crate::util::ser::{Writeable, HighZeroBytesDroppedBigSize, VecWriter};
+	use bitcoin::hashes::hex::FromHex;
 	use bitcoin::secp256k1::PublicKey;
 
 	// The BOLT TLV test cases don't include any tests which use our "required-value" logic since
@@ -1133,7 +1134,7 @@ mod tests {
 	#[test]
 	fn tlv_v_short_read() {
 		// We only expect a u32 for type 3 (which we are given), but the L says its 8 bytes.
-		if let Err(DecodeError::ShortRead) = tlv_reader(&::hex::decode(
+		if let Err(DecodeError::ShortRead) = tlv_reader(&<Vec<u8>>::from_hex(
 				concat!("0100", "0208deadbeef1badbeef", "0308deadbeef")
 				).unwrap()[..]) {
 		} else { panic!(); }
@@ -1141,12 +1142,12 @@ mod tests {
 
 	#[test]
 	fn tlv_types_out_of_order() {
-		if let Err(DecodeError::InvalidValue) = tlv_reader(&::hex::decode(
+		if let Err(DecodeError::InvalidValue) = tlv_reader(&<Vec<u8>>::from_hex(
 				concat!("0100", "0304deadbeef", "0208deadbeef1badbeef")
 				).unwrap()[..]) {
 		} else { panic!(); }
 		// ...even if its some field we don't understand
-		if let Err(DecodeError::InvalidValue) = tlv_reader(&::hex::decode(
+		if let Err(DecodeError::InvalidValue) = tlv_reader(&<Vec<u8>>::from_hex(
 				concat!("0208deadbeef1badbeef", "0100", "0304deadbeef")
 				).unwrap()[..]) {
 		} else { panic!(); }
@@ -1155,17 +1156,17 @@ mod tests {
 	#[test]
 	fn tlv_req_type_missing_or_extra() {
 		// It's also bad if they included even fields we don't understand
-		if let Err(DecodeError::UnknownRequiredFeature) = tlv_reader(&::hex::decode(
+		if let Err(DecodeError::UnknownRequiredFeature) = tlv_reader(&<Vec<u8>>::from_hex(
 				concat!("0100", "0208deadbeef1badbeef", "0304deadbeef", "0600")
 				).unwrap()[..]) {
 		} else { panic!(); }
 		// ... or if they're missing fields we need
-		if let Err(DecodeError::InvalidValue) = tlv_reader(&::hex::decode(
+		if let Err(DecodeError::InvalidValue) = tlv_reader(&<Vec<u8>>::from_hex(
 				concat!("0100", "0208deadbeef1badbeef")
 				).unwrap()[..]) {
 		} else { panic!(); }
 		// ... even if that field is even
-		if let Err(DecodeError::InvalidValue) = tlv_reader(&::hex::decode(
+		if let Err(DecodeError::InvalidValue) = tlv_reader(&<Vec<u8>>::from_hex(
 				concat!("0304deadbeef", "0500")
 				).unwrap()[..]) {
 		} else { panic!(); }
@@ -1173,11 +1174,11 @@ mod tests {
 
 	#[test]
 	fn tlv_simple_good_cases() {
-		assert_eq!(tlv_reader(&::hex::decode(
+		assert_eq!(tlv_reader(&<Vec<u8>>::from_hex(
 				concat!("0208deadbeef1badbeef", "03041bad1dea")
 				).unwrap()[..]).unwrap(),
 			(0xdeadbeef1badbeef, 0x1bad1dea, None));
-		assert_eq!(tlv_reader(&::hex::decode(
+		assert_eq!(tlv_reader(&<Vec<u8>>::from_hex(
 				concat!("0208deadbeef1badbeef", "03041bad1dea", "040401020304")
 				).unwrap()[..]).unwrap(),
 			(0xdeadbeef1badbeef, 0x1bad1dea, Some(0x01020304)));
@@ -1201,12 +1202,12 @@ mod tests {
 
 	#[test]
 	fn upgradable_tlv_simple_good_cases() {
-		assert_eq!(upgradable_tlv_reader(&::hex::decode(
+		assert_eq!(upgradable_tlv_reader(&<Vec<u8>>::from_hex(
 			concat!("0204deadbeef", "03041bad1dea", "0404deadbeef")
 		).unwrap()[..]).unwrap(),
 		Some(TestUpgradable { a: 0xdeadbeef, b: 0x1bad1dea, c: Some(0xdeadbeef) }));
 
-		assert_eq!(upgradable_tlv_reader(&::hex::decode(
+		assert_eq!(upgradable_tlv_reader(&<Vec<u8>>::from_hex(
 			concat!("0204deadbeef", "03041bad1dea")
 		).unwrap()[..]).unwrap(),
 		Some(TestUpgradable { a: 0xdeadbeef, b: 0x1bad1dea, c: None}));
@@ -1214,11 +1215,11 @@ mod tests {
 
 	#[test]
 	fn missing_required_upgradable() {
-		if let Err(DecodeError::InvalidValue) = upgradable_tlv_reader(&::hex::decode(
+		if let Err(DecodeError::InvalidValue) = upgradable_tlv_reader(&<Vec<u8>>::from_hex(
 			concat!("0100", "0204deadbeef")
 			).unwrap()[..]) {
 		} else { panic!(); }
-		if let Err(DecodeError::InvalidValue) = upgradable_tlv_reader(&::hex::decode(
+		if let Err(DecodeError::InvalidValue) = upgradable_tlv_reader(&<Vec<u8>>::from_hex(
 			concat!("0100", "03041bad1dea")
 		).unwrap()[..]) {
 		} else { panic!(); }
@@ -1239,7 +1240,7 @@ mod tests {
 	fn bolt_tlv_bogus_stream() {
 		macro_rules! do_test {
 			($stream: expr, $reason: ident) => {
-				if let Err(DecodeError::$reason) = tlv_reader_n1(&::hex::decode($stream).unwrap()[..]) {
+				if let Err(DecodeError::$reason) = tlv_reader_n1(&<Vec<u8>>::from_hex($stream).unwrap()[..]) {
 				} else { panic!(); }
 			}
 		}
@@ -1264,7 +1265,7 @@ mod tests {
 	fn bolt_tlv_bogus_n1_stream() {
 		macro_rules! do_test {
 			($stream: expr, $reason: ident) => {
-				if let Err(DecodeError::$reason) = tlv_reader_n1(&::hex::decode($stream).unwrap()[..]) {
+				if let Err(DecodeError::$reason) = tlv_reader_n1(&<Vec<u8>>::from_hex($stream).unwrap()[..]) {
 				} else { panic!(); }
 			}
 		}
@@ -1304,7 +1305,7 @@ mod tests {
 	fn bolt_tlv_valid_n1_stream() {
 		macro_rules! do_test {
 			($stream: expr, $tlv1: expr, $tlv2: expr, $tlv3: expr, $tlv4: expr) => {
-				if let Ok((tlv1, tlv2, tlv3, tlv4)) = tlv_reader_n1(&::hex::decode($stream).unwrap()[..]) {
+				if let Ok((tlv1, tlv2, tlv3, tlv4)) = tlv_reader_n1(&<Vec<u8>>::from_hex($stream).unwrap()[..]) {
 					assert_eq!(tlv1.map(|v| v.0), $tlv1);
 					assert_eq!(tlv2, $tlv2);
 					assert_eq!(tlv3, $tlv3);
@@ -1333,7 +1334,7 @@ mod tests {
 		do_test!(concat!("02", "08", "0000000000000226"), None, Some((0 << 30) | (0 << 5) | (550 << 0)), None, None);
 		do_test!(concat!("03", "31", "023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb00000000000000010000000000000002"),
 			None, None, Some((
-				PublicKey::from_slice(&::hex::decode("023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb").unwrap()[..]).unwrap(), 1, 2)),
+				PublicKey::from_slice(&<Vec<u8>>::from_hex("023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb").unwrap()[..]).unwrap(), 1, 2)),
 			None);
 		do_test!(concat!("fd00fe", "02", "0226"), None, None, None, Some(550));
 	}
@@ -1343,27 +1344,27 @@ mod tests {
 
 		stream.0.clear();
 		_encode_varint_length_prefixed_tlv!(&mut stream, {(1, 1u8, required), (42, None::<u64>, option)});
-		assert_eq!(stream.0, ::hex::decode("03010101").unwrap());
+		assert_eq!(stream.0, <Vec<u8>>::from_hex("03010101").unwrap());
 
 		stream.0.clear();
 		_encode_varint_length_prefixed_tlv!(&mut stream, {(1, Some(1u8), option)});
-		assert_eq!(stream.0, ::hex::decode("03010101").unwrap());
+		assert_eq!(stream.0, <Vec<u8>>::from_hex("03010101").unwrap());
 
 		stream.0.clear();
 		_encode_varint_length_prefixed_tlv!(&mut stream, {(4, 0xabcdu16, required), (42, None::<u64>, option)});
-		assert_eq!(stream.0, ::hex::decode("040402abcd").unwrap());
+		assert_eq!(stream.0, <Vec<u8>>::from_hex("040402abcd").unwrap());
 
 		stream.0.clear();
 		_encode_varint_length_prefixed_tlv!(&mut stream, {(42, None::<u64>, option), (0xff, 0xabcdu16, required)});
-		assert_eq!(stream.0, ::hex::decode("06fd00ff02abcd").unwrap());
+		assert_eq!(stream.0, <Vec<u8>>::from_hex("06fd00ff02abcd").unwrap());
 
 		stream.0.clear();
 		_encode_varint_length_prefixed_tlv!(&mut stream, {(0, 1u64, required), (42, None::<u64>, option), (0xff, HighZeroBytesDroppedBigSize(0u64), required)});
-		assert_eq!(stream.0, ::hex::decode("0e00080000000000000001fd00ff00").unwrap());
+		assert_eq!(stream.0, <Vec<u8>>::from_hex("0e00080000000000000001fd00ff00").unwrap());
 
 		stream.0.clear();
 		_encode_varint_length_prefixed_tlv!(&mut stream, {(0, Some(1u64), option), (0xff, HighZeroBytesDroppedBigSize(0u64), required)});
-		assert_eq!(stream.0, ::hex::decode("0e00080000000000000001fd00ff00").unwrap());
+		assert_eq!(stream.0, <Vec<u8>>::from_hex("0e00080000000000000001fd00ff00").unwrap());
 
 		Ok(())
 	}

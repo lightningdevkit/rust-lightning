@@ -359,6 +359,11 @@ impl Refund {
 		self.contents.is_expired()
 	}
 
+	/// Whether the refund has expired given the duration since the Unix epoch.
+	pub fn is_expired_no_std(&self, duration_since_epoch: Duration) -> bool {
+		self.contents.is_expired_no_std(duration_since_epoch)
+	}
+
 	/// The issuer of the refund, possibly beginning with `user@domain` or `domain`. Intended to be
 	/// displayed to the user but with the caveat that it has not been verified in any way.
 	pub fn issuer(&self) -> Option<PrintableString> {
@@ -993,6 +998,7 @@ mod tests {
 	fn builds_refund_with_absolute_expiry() {
 		let future_expiry = Duration::from_secs(u64::max_value());
 		let past_expiry = Duration::from_secs(0);
+		let now = future_expiry - Duration::from_secs(1_000);
 
 		let refund = RefundBuilder::new("foo".into(), vec![1; 32], payer_pubkey(), 1000).unwrap()
 			.absolute_expiry(future_expiry)
@@ -1001,6 +1007,7 @@ mod tests {
 		let (_, tlv_stream, _) = refund.as_tlv_stream();
 		#[cfg(feature = "std")]
 		assert!(!refund.is_expired());
+		assert!(!refund.is_expired_no_std(now));
 		assert_eq!(refund.absolute_expiry(), Some(future_expiry));
 		assert_eq!(tlv_stream.absolute_expiry, Some(future_expiry.as_secs()));
 
@@ -1012,6 +1019,7 @@ mod tests {
 		let (_, tlv_stream, _) = refund.as_tlv_stream();
 		#[cfg(feature = "std")]
 		assert!(refund.is_expired());
+		assert!(refund.is_expired_no_std(now));
 		assert_eq!(refund.absolute_expiry(), Some(past_expiry));
 		assert_eq!(tlv_stream.absolute_expiry, Some(past_expiry.as_secs()));
 	}

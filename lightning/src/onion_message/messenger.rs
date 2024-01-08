@@ -59,6 +59,7 @@ use crate::prelude::*;
 /// ```
 /// # extern crate bitcoin;
 /// # use bitcoin::hashes::_export::_core::time::Duration;
+/// # use bitcoin::hashes::hex::FromHex;
 /// # use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
 /// # use lightning::blinded_path::BlindedPath;
 /// # use lightning::sign::KeysManager;
@@ -82,7 +83,7 @@ use crate::prelude::*;
 /// # let time = Duration::from_secs(123456);
 /// # let keys_manager = KeysManager::new(&seed, time.as_secs(), time.subsec_nanos());
 /// # let logger = Arc::new(FakeLogger {});
-/// # let node_secret = SecretKey::from_slice(&hex::decode("0101010101010101010101010101010101010101010101010101010101010101").unwrap()[..]).unwrap();
+/// # let node_secret = SecretKey::from_slice(&<Vec<u8>>::from_hex("0101010101010101010101010101010101010101010101010101010101010101").unwrap()[..]).unwrap();
 /// # let secp_ctx = Secp256k1::new();
 /// # let hop_node_id1 = PublicKey::from_secret_key(&secp_ctx, &node_secret);
 /// # let (hop_node_id2, hop_node_id3, hop_node_id4) = (hop_node_id1, hop_node_id1, hop_node_id1);
@@ -406,7 +407,7 @@ where
 		let blinding_factor = {
 			let mut hmac = HmacEngine::<Sha256>::new(b"blinded_node_id");
 			hmac.input(control_tlvs_ss.as_ref());
-			Hmac::from_engine(hmac).into_inner()
+			Hmac::from_engine(hmac).to_byte_array()
 		};
 		match node_signer.ecdh(Recipient::Node, &msg.onion_routing_packet.public_key,
 			Some(&Scalar::from_be_bytes(blinding_factor).unwrap()))

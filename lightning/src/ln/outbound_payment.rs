@@ -728,7 +728,7 @@ impl OutboundPayments {
 	{
 		let preimage = payment_preimage
 			.unwrap_or_else(|| PaymentPreimage(entropy_source.get_secure_random_bytes()));
-		let payment_hash = PaymentHash(Sha256::hash(&preimage.0).into_inner());
+		let payment_hash = PaymentHash(Sha256::hash(&preimage.0).to_byte_array());
 		self.send_payment_internal(payment_id, payment_hash, recipient_onion, Some(preimage),
 			retry_strategy, route_params, router, first_hops, inflight_htlcs, entropy_source,
 			node_signer, best_block_height, logger, pending_events, send_payment_along_path)
@@ -747,7 +747,7 @@ impl OutboundPayments {
 	{
 		let preimage = payment_preimage
 			.unwrap_or_else(|| PaymentPreimage(entropy_source.get_secure_random_bytes()));
-		let payment_hash = PaymentHash(Sha256::hash(&preimage.0).into_inner());
+		let payment_hash = PaymentHash(Sha256::hash(&preimage.0).to_byte_array());
 		let onion_session_privs = self.add_new_pending_payment(payment_hash, recipient_onion.clone(),
 			payment_id, Some(preimage), &route, None, None, entropy_source, best_block_height)?;
 
@@ -1463,7 +1463,7 @@ impl OutboundPayments {
 		let mut pending_events = pending_events.lock().unwrap();
 		if let hash_map::Entry::Occupied(mut payment) = outbounds.entry(payment_id) {
 			if !payment.get().is_fulfilled() {
-				let payment_hash = PaymentHash(Sha256::hash(&payment_preimage.0).into_inner());
+				let payment_hash = PaymentHash(Sha256::hash(&payment_preimage.0).to_byte_array());
 				log_info!(logger, "Payment with id {} and hash {} sent!", payment_id, payment_hash);
 				let fee_paid_msat = payment.get().get_pending_fee_msat();
 				pending_events.push_back((events::Event::PaymentSent {
@@ -1483,7 +1483,7 @@ impl OutboundPayments {
 				// TODO: We should have a second monitor event that informs us of payments
 				// irrevocably fulfilled.
 				if payment.get_mut().remove(&session_priv_bytes, Some(&path)) {
-					let payment_hash = Some(PaymentHash(Sha256::hash(&payment_preimage.0).into_inner()));
+					let payment_hash = Some(PaymentHash(Sha256::hash(&payment_preimage.0).to_byte_array()));
 					pending_events.push_back((events::Event::PaymentPathSuccessful {
 						payment_id,
 						payment_hash,
@@ -1763,7 +1763,7 @@ fn probing_cookie_from_id(payment_id: &PaymentId, probing_cookie_secret: [u8; 32
 	let mut preimage = [0u8; 64];
 	preimage[..32].copy_from_slice(&probing_cookie_secret);
 	preimage[32..].copy_from_slice(&payment_id.0);
-	PaymentHash(Sha256::hash(&preimage).into_inner())
+	PaymentHash(Sha256::hash(&preimage).to_byte_array())
 }
 
 impl_writeable_tlv_based_enum_upgradable!(PendingOutboundPayment,

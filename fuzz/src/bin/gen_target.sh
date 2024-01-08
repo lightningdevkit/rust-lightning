@@ -70,3 +70,9 @@ GEN_TEST msg_tx_signatures msg_targets::
 GEN_TEST msg_tx_init_rbf msg_targets::
 GEN_TEST msg_tx_ack_rbf msg_targets::
 GEN_TEST msg_tx_abort msg_targets::
+
+GEN_TEST msg_stfu msg_targets::
+
+GEN_TEST msg_splice msg_targets::
+GEN_TEST msg_splice_ack msg_targets::
+GEN_TEST msg_splice_locked msg_targets::

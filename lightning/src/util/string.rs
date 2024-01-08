@@ -16,7 +16,7 @@ use crate::ln::msgs;
 use crate::util::ser::{Writeable, Writer, Readable};
 
 /// Struct to `Display` fields in a safe way using `PrintableString`
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
 pub struct UntrustedString(pub String);
 
 impl Writeable for UntrustedString {

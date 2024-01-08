@@ -39,6 +39,14 @@ impl<K: Clone + Hash + Ord, V> IndexedMap<K, V> {
 		}
 	}
 
+	/// Constructs a new, empty map with the given capacity pre-allocated
+	pub fn with_capacity(capacity: usize) -> Self {
+		Self {
+			map: HashMap::with_capacity(capacity),
+			keys: Vec::with_capacity(capacity),
+		}
+	}
+
 	#[inline(always)]
 	/// Fetches the element with the given `key`, if one exists.
 	pub fn get(&self, key: &K) -> Option<&V> {

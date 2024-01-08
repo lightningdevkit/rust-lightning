@@ -57,7 +57,7 @@ pub fn sign(msg: &[u8], sk: &SecretKey) -> Result<String, Error> {
 	let secp_ctx = Secp256k1::signing_only();
 	let msg_hash = sha256d::Hash::hash(&[LN_MESSAGE_PREFIX, msg].concat());
 
-	let sig = secp_ctx.sign_ecdsa_recoverable(&Message::from_slice(&msg_hash)?, sk);
+	let sig = secp_ctx.sign_ecdsa_recoverable(&Message::from_slice(msg_hash.as_byte_array())?, sk);
 	Ok(base32::Alphabet::ZBase32.encode(&sigrec_encode(sig)))
 }
 
@@ -69,7 +69,7 @@ pub fn recover_pk(msg: &[u8], sig: &str) ->  Result<PublicKey, Error> {
 	match base32::Alphabet::ZBase32.decode(&sig) {
 		Ok(sig_rec) => {
 			match sigrec_decode(sig_rec) {
-				Ok(sig) => secp_ctx.recover_ecdsa(&Message::from_slice(&msg_hash)?, &sig),
+				Ok(sig) => secp_ctx.recover_ecdsa(&Message::from_slice(msg_hash.as_byte_array())?, &sig),
 				Err(e) => Err(e)
 			}
 		},
@@ -90,13 +90,14 @@ pub fn verify(msg: &[u8], sig: &str, pk: &PublicKey) -> bool {
 mod test {
 	use core::str::FromStr;
 	use crate::util::message_signing::{sign, recover_pk, verify};
-	use bitcoin::secp256k1::ONE_KEY;
-	use bitcoin::secp256k1::{PublicKey, Secp256k1};
+	use bitcoin::secp256k1::constants::ONE;
+	use bitcoin::secp256k1::{PublicKey, SecretKey, Secp256k1};
 
 	#[test]
 	fn test_sign() {
 		let message = "test message";
-		let zbase32_sig = sign(message.as_bytes(), &ONE_KEY);
+		let one_key = SecretKey::from_slice(&ONE).unwrap();
+		let zbase32_sig = sign(message.as_bytes(), &one_key);
 
 		assert_eq!(zbase32_sig.unwrap(), "d9tibmnic9t5y41hg7hkakdcra94akas9ku3rmmj4ag9mritc8ok4p5qzefs78c9pqfhpuftqqzhydbdwfg7u6w6wdxcqpqn4sj4e73e")
 	}
@@ -104,17 +105,19 @@ mod test {
 	#[test]
 	fn test_recover_pk() {
 		let message = "test message";
+		let one_key = SecretKey::from_slice(&ONE).unwrap();
 		let sig = "d9tibmnic9t5y41hg7hkakdcra94akas9ku3rmmj4ag9mritc8ok4p5qzefs78c9pqfhpuftqqzhydbdwfg7u6w6wdxcqpqn4sj4e73e";
 		let pk = recover_pk(message.as_bytes(), sig);
 
-		assert_eq!(pk.unwrap(), PublicKey::from_secret_key(&Secp256k1::signing_only(), &ONE_KEY))
+		assert_eq!(pk.unwrap(), PublicKey::from_secret_key(&Secp256k1::signing_only(), &one_key))
 	}
 
 	#[test]
 	fn test_verify() {
 		let message = "another message";
-		let sig = sign(message.as_bytes(), &ONE_KEY).unwrap();
-		let pk = PublicKey::from_secret_key(&Secp256k1::signing_only(), &ONE_KEY);
+		let one_key = SecretKey::from_slice(&ONE).unwrap();
+		let sig = sign(message.as_bytes(), &one_key).unwrap();
+		let pk = PublicKey::from_secret_key(&Secp256k1::signing_only(), &one_key);
 
 		assert!(verify(message.as_bytes(), &sig, &pk))
 	}

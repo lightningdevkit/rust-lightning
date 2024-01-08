@@ -20,9 +20,9 @@
 
 use bitcoin::blockdata::constants::genesis_block;
 use bitcoin::blockdata::transaction::{Transaction, TxOut};
-use bitcoin::blockdata::script::{Builder, Script};
+use bitcoin::blockdata::script::{Builder, ScriptBuf};
 use bitcoin::blockdata::opcodes;
-use bitcoin::blockdata::locktime::PackedLockTime;
+use bitcoin::blockdata::locktime::absolute::LockTime;
 use bitcoin::network::constants::Network;
 
 use bitcoin::hashes::Hash as TraitImport;
@@ -80,7 +80,6 @@ impl FeeEstimator for FuzzEstimator {
 		// always return a HighPriority feerate here which is >= the maximum Normal feerate and a
 		// Background feerate which is <= the minimum Normal feerate.
 		match conf_target {
-			ConfirmationTarget::MaxAllowedNonAnchorChannelRemoteFee => MAX_FEE * 10,
 			ConfirmationTarget::OnChainSweep => MAX_FEE,
 			ConfirmationTarget::ChannelCloseMinimum|ConfirmationTarget::AnchorChannelFee|ConfirmationTarget::MinAllowedAnchorChannelRemoteFee|ConfirmationTarget::MinAllowedNonAnchorChannelRemoteFee => 253,
 			ConfirmationTarget::NonAnchorChannelFee => cmp::min(self.ret_val.load(atomic::Ordering::Acquire), MAX_FEE),
@@ -267,14 +266,15 @@ impl SignerProvider for KeyProvider {
 			inner,
 			state,
 			disable_revocation_policy_check: false,
+			available: Arc::new(Mutex::new(true)),
 		})
 	}
 
-	fn get_destination_script(&self) -> Result<Script, ()> {
+	fn get_destination_script(&self) -> Result<ScriptBuf, ()> {
 		let secp_ctx = Secp256k1::signing_only();
 		let channel_monitor_claim_key = SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, self.node_secret[31]]).unwrap();
 		let our_channel_monitor_claim_key_hash = WPubkeyHash::hash(&PublicKey::from_secret_key(&secp_ctx, &channel_monitor_claim_key).serialize());
-		Ok(Builder::new().push_opcode(opcodes::all::OP_PUSHBYTES_0).push_slice(&our_channel_monitor_claim_key_hash[..]).into_script())
+		Ok(Builder::new().push_opcode(opcodes::all::OP_PUSHBYTES_0).push_slice(our_channel_monitor_claim_key_hash).into_script())
 	}
 
 	fn get_shutdown_scriptpubkey(&self) -> Result<ShutdownScript, ()> {
@@ -343,7 +343,7 @@ type ChanMan<'a> = ChannelManager<Arc<TestChainMonitor>, Arc<TestBroadcaster>, A
 fn get_payment_secret_hash(dest: &ChanMan, payment_id: &mut u8) -> Option<(PaymentSecret, PaymentHash)> {
 	let mut payment_hash;
 	for _ in 0..256 {
-		payment_hash = PaymentHash(Sha256::hash(&[*payment_id; 1]).into_inner());
+		payment_hash = PaymentHash(Sha256::hash(&[*payment_id; 1]).to_byte_array());
 		if let Ok(payment_secret) = dest.create_inbound_payment_for_hash(payment_hash, None, 3600, None) {
 			return Some((payment_secret, payment_hash));
 		}
@@ -525,7 +525,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 				features: $source.init_features(), networks: None, remote_network_address: None
 			}, false).unwrap();
 
-			$source.create_channel($dest.get_our_node_id(), 100_000, 42, 0, None).unwrap();
+			$source.create_channel($dest.get_our_node_id(), 100_000, 42, 0, None, None).unwrap();
 			let open_channel = {
 				let events = $source.get_and_clear_pending_msg_events();
 				assert_eq!(events.len(), 1);
@@ -565,7 +565,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 				let events = $source.get_and_clear_pending_events();
 				assert_eq!(events.len(), 1);
 				if let events::Event::FundingGenerationReady { ref temporary_channel_id, ref channel_value_satoshis, ref output_script, .. } = events[0] {
-					let tx = Transaction { version: $chan_id, lock_time: PackedLockTime::ZERO, input: Vec::new(), output: vec![TxOut {
+					let tx = Transaction { version: $chan_id, lock_time: LockTime::ZERO, input: Vec::new(), output: vec![TxOut {
 						value: *channel_value_satoshis, script_pubkey: output_script.clone(),
 					}]};
 					funding_output = OutPoint { txid: tx.txid(), index: 0 };

@@ -29,7 +29,7 @@ use bitcoin::secp256k1::constants::{PUBLIC_KEY_SIZE, SECRET_KEY_SIZE, COMPACT_SI
 use bitcoin::secp256k1::ecdsa;
 use bitcoin::secp256k1::schnorr;
 use bitcoin::blockdata::constants::ChainHash;
-use bitcoin::blockdata::script::{self, Script};
+use bitcoin::blockdata::script::{self, ScriptBuf};
 use bitcoin::blockdata::transaction::{OutPoint, Transaction, TxOut};
 use bitcoin::{consensus, Witness};
 use bitcoin::consensus::Encodable;
@@ -199,8 +199,14 @@ pub trait Writeable {
 
 	/// Writes `self` out to a `Vec<u8>`.
 	fn encode(&self) -> Vec<u8> {
-		let mut msg = VecWriter(Vec::new());
+		let len = self.serialized_length();
+		let mut msg = VecWriter(Vec::with_capacity(len));
 		self.write(&mut msg).unwrap();
+		// Note that objects with interior mutability may change size between when we called
+		// serialized_length and when we called write. That's okay, but shouldn't happen during
+		// testing as most of our tests are not threaded.
+		#[cfg(test)]
+		debug_assert_eq!(len, msg.0.len());
 		msg.0
 	}
 
@@ -211,6 +217,7 @@ pub trait Writeable {
 		0u16.write(&mut msg).unwrap();
 		self.write(&mut msg).unwrap();
 		let len = msg.0.len();
+		debug_assert_eq!(len - 2, self.serialized_length());
 		msg.0[..2].copy_from_slice(&(len as u16 - 2).to_be_bytes());
 		msg.0
 	}
@@ -668,14 +675,14 @@ impl<'a, T> From<&'a Vec<T>> for WithoutLength<&'a Vec<T>> {
 	fn from(v: &'a Vec<T>) -> Self { Self(v) }
 }
 
-impl Writeable for WithoutLength<&Script> {
+impl Writeable for WithoutLength<&ScriptBuf> {
 	#[inline]
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		writer.write_all(self.0.as_bytes())
 	}
 }
 
-impl Readable for WithoutLength<Script> {
+impl Readable for WithoutLength<ScriptBuf> {
 	#[inline]
 	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
 		let v: WithoutLength<Vec<u8>> = Readable::read(r)?;
@@ -878,19 +885,19 @@ impl Readable for Vec<Witness> {
 	}
 }
 
-impl Writeable for Script {
+impl Writeable for ScriptBuf {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
 		(self.len() as u16).write(w)?;
 		w.write_all(self.as_bytes())
 	}
 }
 
-impl Readable for Script {
+impl Readable for ScriptBuf {
 	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
 		let len = <u16 as Readable>::read(r)? as usize;
 		let mut buf = vec![0; len];
 		r.read_exact(&mut buf)?;
-		Ok(Script::from(buf))
+		Ok(ScriptBuf::from(buf))
 	}
 }
 
@@ -1133,7 +1140,7 @@ impl Writeable for ChainHash {
 impl Readable for ChainHash {
 	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
 		let buf: [u8; 32] = Readable::read(r)?;
-		Ok(ChainHash::from(&buf[..]))
+		Ok(ChainHash::from(buf))
 	}
 }
 
@@ -1289,7 +1296,7 @@ impl Readable for String {
 /// This serialization is used by [`BOLT 7`] hostnames.
 ///
 /// [`BOLT 7`]: https://github.com/lightning/bolts/blob/master/07-routing-gossip.md
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct Hostname(String);
 impl Hostname {
 	/// Returns the length of the hostname.
@@ -1382,7 +1389,7 @@ impl Readable for Duration {
 /// if the `Transaction`'s consensus-serialized length is <= u16::MAX.
 ///
 /// Use [`TransactionU16LenLimited::into_transaction`] to convert into the contained `Transaction`.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct TransactionU16LenLimited(Transaction);
 
 impl TransactionU16LenLimited {
@@ -1437,6 +1444,7 @@ impl Readable for ClaimId {
 #[cfg(test)]
 mod tests {
 	use core::convert::TryFrom;
+	use bitcoin::hashes::hex::FromHex;
 	use bitcoin::secp256k1::ecdsa;
 	use crate::util::ser::{Readable, Hostname, Writeable};
 
@@ -1485,11 +1493,11 @@ mod tests {
 			"ffffffffffffffffff"
 		];
 		for i in 0..=7 {
-			let mut stream = crate::io::Cursor::new(::hex::decode(bytes[i]).unwrap());
+			let mut stream = crate::io::Cursor::new(<Vec<u8>>::from_hex(bytes[i]).unwrap());
 			assert_eq!(super::BigSize::read(&mut stream).unwrap().0, values[i]);
 			let mut stream = super::VecWriter(Vec::new());
 			super::BigSize(values[i]).write(&mut stream).unwrap();
-			assert_eq!(stream.0, ::hex::decode(bytes[i]).unwrap());
+			assert_eq!(stream.0, <Vec<u8>>::from_hex(bytes[i]).unwrap());
 		}
 		let err_bytes = vec![
 			"fd00fc",
@@ -1504,7 +1512,7 @@ mod tests {
 			""
 		];
 		for i in 0..=9 {
-			let mut stream = crate::io::Cursor::new(::hex::decode(err_bytes[i]).unwrap());
+			let mut stream = crate::io::Cursor::new(<Vec<u8>>::from_hex(err_bytes[i]).unwrap());
 			if i < 3 {
 				assert_eq!(super::BigSize::read(&mut stream).err(), Some(crate::ln::msgs::DecodeError::InvalidValue));
 			} else {

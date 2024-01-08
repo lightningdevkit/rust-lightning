@@ -10,8 +10,9 @@
 //! Tests of our shutdown and closing_signed negotiation logic.
 
 use crate::sign::{EntropySource, SignerProvider};
+use crate::chain::ChannelMonitorUpdateStatus;
 use crate::chain::transaction::OutPoint;
-use crate::events::{MessageSendEvent, MessageSendEventsProvider, ClosureReason};
+use crate::events::{MessageSendEvent, HTLCDestination, MessageSendEventsProvider, ClosureReason};
 use crate::ln::channelmanager::{self, PaymentSendFailure, PaymentId, RecipientOnionFields, ChannelShutdownState, ChannelDetails};
 use crate::routing::router::{PaymentParameters, get_route, RouteParameters};
 use crate::ln::msgs;
@@ -26,7 +27,7 @@ use crate::util::string::UntrustedString;
 use bitcoin::blockdata::script::Builder;
 use bitcoin::blockdata::opcodes;
 use bitcoin::network::constants::Network;
-use bitcoin::util::address::WitnessVersion;
+use bitcoin::address::{WitnessProgram, WitnessVersion};
 
 use regex;
 
@@ -261,7 +262,7 @@ fn shutdown_on_unfunded_channel() {
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
-	nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 1_000_000, 100_000, 0, None).unwrap();
+	nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 1_000_000, 100_000, 0, None, None).unwrap();
 	let open_chan = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
 
 	// Create a dummy P2WPKH script
@@ -770,7 +771,7 @@ fn test_unsupported_anysegwit_upfront_shutdown_script() {
 		.into_script();
 
 	// Check script when handling an open_channel message
-	nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 100000, 10001, 42, None).unwrap();
+	nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 100000, 10001, 42, None, None).unwrap();
 	let mut open_channel = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
 	open_channel.shutdown_scriptpubkey = Some(anysegwit_shutdown_script.clone());
 	nodes[1].node.handle_open_channel(&nodes[0].node.get_our_node_id(), &open_channel);
@@ -780,7 +781,7 @@ fn test_unsupported_anysegwit_upfront_shutdown_script() {
 	match events[0] {
 		MessageSendEvent::HandleError { action: ErrorAction::SendErrorMessage { ref msg }, node_id } => {
 			assert_eq!(node_id, nodes[0].node.get_our_node_id());
-			assert_eq!(msg.data, "Peer is signaling upfront_shutdown but has provided an unacceptable scriptpubkey format: Script(OP_PUSHNUM_16 OP_PUSHBYTES_2 0028)");
+			assert_eq!(msg.data, "Peer is signaling upfront_shutdown but has provided an unacceptable scriptpubkey format: OP_PUSHNUM_16 OP_PUSHBYTES_2 0028");
 		},
 		_ => panic!("Unexpected event"),
 	}
@@ -793,7 +794,7 @@ fn test_unsupported_anysegwit_upfront_shutdown_script() {
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	// Check script when handling an accept_channel message
-	nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 100000, 10001, 42, None).unwrap();
+	nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 100000, 10001, 42, None, None).unwrap();
 	let open_channel = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
 	nodes[1].node.handle_open_channel(&nodes[0].node.get_our_node_id(), &open_channel);
 	let mut accept_channel = get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, nodes[0].node.get_our_node_id());
@@ -805,11 +806,11 @@ fn test_unsupported_anysegwit_upfront_shutdown_script() {
 	match events[0] {
 		MessageSendEvent::HandleError { action: ErrorAction::SendErrorMessage { ref msg }, node_id } => {
 			assert_eq!(node_id, nodes[1].node.get_our_node_id());
-			assert_eq!(msg.data, "Peer is signaling upfront_shutdown but has provided an unacceptable scriptpubkey format: Script(OP_PUSHNUM_16 OP_PUSHBYTES_2 0028)");
+			assert_eq!(msg.data, "Peer is signaling upfront_shutdown but has provided an unacceptable scriptpubkey format: OP_PUSHNUM_16 OP_PUSHBYTES_2 0028");
 		},
 		_ => panic!("Unexpected event"),
 	}
-	check_closed_event!(nodes[0], 1, ClosureReason::ProcessingError { err: "Peer is signaling upfront_shutdown but has provided an unacceptable scriptpubkey format: Script(OP_PUSHNUM_16 OP_PUSHBYTES_2 0028)".to_string() }
+	check_closed_event!(nodes[0], 1, ClosureReason::ProcessingError { err: "Peer is signaling upfront_shutdown but has provided an unacceptable scriptpubkey format: OP_PUSHNUM_16 OP_PUSHBYTES_2 0028".to_string() }
 		, [nodes[1].node.get_our_node_id()], 100000);
 }
 
@@ -820,7 +821,7 @@ fn test_invalid_upfront_shutdown_script() {
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
-	nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 100000, 10001, 42, None).unwrap();
+	nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 100000, 10001, 42, None, None).unwrap();
 
 	// Use a segwit v0 script with an unsupported witness program
 	let mut open_channel = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
@@ -834,7 +835,7 @@ fn test_invalid_upfront_shutdown_script() {
 	match events[0] {
 		MessageSendEvent::HandleError { action: ErrorAction::SendErrorMessage { ref msg }, node_id } => {
 			assert_eq!(node_id, nodes[0].node.get_our_node_id());
-			assert_eq!(msg.data, "Peer is signaling upfront_shutdown but has provided an unacceptable scriptpubkey format: Script(OP_0 OP_PUSHBYTES_2 0000)");
+			assert_eq!(msg.data, "Peer is signaling upfront_shutdown but has provided an unacceptable scriptpubkey format: OP_0 OP_PUSHBYTES_2 0000");
 		},
 		_ => panic!("Unexpected event"),
 	}
@@ -926,8 +927,9 @@ fn test_unsupported_anysegwit_shutdown_script() {
 
 	// Check that using an unsupported shutdown script fails and a supported one succeeds.
 	let supported_shutdown_script = chanmon_cfgs[1].keys_manager.get_shutdown_scriptpubkey().unwrap();
+	let unsupported_witness_program = WitnessProgram::new(WitnessVersion::V16, &[0, 40]).unwrap();
 	let unsupported_shutdown_script =
-		ShutdownScript::new_witness_program(WitnessVersion::V16, &[0, 40]).unwrap();
+		ShutdownScript::new_witness_program(&unsupported_witness_program).unwrap();
 	chanmon_cfgs[1].keys_manager
 		.expect(OnGetShutdownScriptpubkey { returns: unsupported_shutdown_script.clone() })
 		.expect(OnGetShutdownScriptpubkey { returns: supported_shutdown_script });
@@ -1236,4 +1238,103 @@ fn simple_target_feerate_shutdown() {
 	assert!(node_0_none.is_none());
 	check_closed_event!(nodes[0], 1, ClosureReason::CooperativeClosure, [nodes[1].node.get_our_node_id()], 100000);
 	check_closed_event!(nodes[1], 1, ClosureReason::CooperativeClosure, [nodes[0].node.get_our_node_id()], 100000);
+}
+
+fn do_outbound_update_no_early_closing_signed(use_htlc: bool) {
+	// Previously, if we have a pending inbound HTLC (or fee update) on a channel which has
+	// initiated shutdown, we'd send our initial closing_signed immediately after receiving the
+	// peer's last RAA to remove the HTLC/fee update, but before receiving their final
+	// commitment_signed for a commitment without the HTLC/with the new fee. This caused at least
+	// LDK peers to force-close as we initiated closing_signed prior to the channel actually being
+	// fully empty of pending updates/HTLCs.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let chan_id = create_announced_chan_between_nodes(&nodes, 0, 1).2;
+
+	send_payment(&nodes[0], &[&nodes[1]], 1_000_000);
+	let payment_hash_opt = if use_htlc {
+		Some(route_payment(&nodes[1], &[&nodes[0]], 10_000).1)
+	} else {
+		None
+	};
+
+	if use_htlc {
+		nodes[0].node.fail_htlc_backwards(&payment_hash_opt.unwrap());
+		expect_pending_htlcs_forwardable_and_htlc_handling_failed!(nodes[0],
+			[HTLCDestination::FailedPayment { payment_hash: payment_hash_opt.unwrap() }]);
+	} else {
+		*chanmon_cfgs[0].fee_estimator.sat_per_kw.lock().unwrap() *= 10;
+		nodes[0].node.timer_tick_occurred();
+	}
+	let updates = get_htlc_update_msgs(&nodes[0], &nodes[1].node.get_our_node_id());
+	check_added_monitors(&nodes[0], 1);
+
+	nodes[1].node.close_channel(&chan_id, &nodes[0].node.get_our_node_id()).unwrap();
+	let node_0_shutdown = get_event_msg!(nodes[1], MessageSendEvent::SendShutdown, nodes[0].node.get_our_node_id());
+	nodes[0].node.close_channel(&chan_id, &nodes[1].node.get_our_node_id()).unwrap();
+	let node_1_shutdown = get_event_msg!(nodes[0], MessageSendEvent::SendShutdown, nodes[1].node.get_our_node_id());
+
+	nodes[0].node.handle_shutdown(&nodes[1].node.get_our_node_id(), &node_0_shutdown);
+	nodes[1].node.handle_shutdown(&nodes[0].node.get_our_node_id(), &node_1_shutdown);
+
+	if use_htlc {
+		nodes[1].node.handle_update_fail_htlc(&nodes[0].node.get_our_node_id(), &updates.update_fail_htlcs[0]);
+	} else {
+		nodes[1].node.handle_update_fee(&nodes[0].node.get_our_node_id(), &updates.update_fee.unwrap());
+	}
+	nodes[1].node.handle_commitment_signed(&nodes[0].node.get_our_node_id(), &updates.commitment_signed);
+	check_added_monitors(&nodes[1], 1);
+	let (bs_raa, bs_cs) = get_revoke_commit_msgs(&nodes[1], &nodes[0].node.get_our_node_id());
+
+	nodes[0].node.handle_revoke_and_ack(&nodes[1].node.get_our_node_id(), &bs_raa);
+	check_added_monitors(&nodes[0], 1);
+
+	// At this point the Channel on nodes[0] has no record of any HTLCs but the latest
+	// broadcastable commitment does contain the HTLC (but only the ChannelMonitor knows this).
+	// Thus, the channel should not yet initiate closing_signed negotiation (but previously did).
+	assert_eq!(nodes[0].node.get_and_clear_pending_msg_events(), Vec::new());
+
+	chanmon_cfgs[0].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
+	nodes[0].node.handle_commitment_signed(&nodes[1].node.get_our_node_id(), &bs_cs);
+	check_added_monitors(&nodes[0], 1);
+	assert_eq!(nodes[0].node.get_and_clear_pending_msg_events(), Vec::new());
+
+	expect_channel_shutdown_state!(nodes[0], chan_id, ChannelShutdownState::ResolvingHTLCs);
+	assert_eq!(nodes[0].node.get_and_clear_pending_msg_events(), Vec::new());
+	let (outpoint, latest_update, _) = nodes[0].chain_monitor.latest_monitor_update_id.lock().unwrap().get(&chan_id).unwrap().clone();
+	nodes[0].chain_monitor.chain_monitor.force_channel_monitor_updated(outpoint, latest_update);
+
+	let as_raa_closing_signed = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(as_raa_closing_signed.len(), 2);
+
+	if let MessageSendEvent::SendRevokeAndACK { msg, .. } = &as_raa_closing_signed[0] {
+		nodes[1].node.handle_revoke_and_ack(&nodes[0].node.get_our_node_id(), &msg);
+		check_added_monitors(&nodes[1], 1);
+		if use_htlc {
+			expect_payment_failed!(nodes[1], payment_hash_opt.unwrap(), true);
+		}
+	} else { panic!("Unexpected message {:?}", as_raa_closing_signed[0]); }
+
+	if let MessageSendEvent::SendClosingSigned { msg, .. } = &as_raa_closing_signed[1] {
+		nodes[1].node.handle_closing_signed(&nodes[0].node.get_our_node_id(), &msg);
+	} else { panic!("Unexpected message {:?}", as_raa_closing_signed[1]); }
+
+	let bs_closing_signed = get_event_msg!(nodes[1], MessageSendEvent::SendClosingSigned, nodes[0].node.get_our_node_id());
+	nodes[0].node.handle_closing_signed(&nodes[1].node.get_our_node_id(), &bs_closing_signed);
+	let (_, as_2nd_closing_signed) = get_closing_signed_broadcast!(nodes[0].node, nodes[1].node.get_our_node_id());
+	nodes[1].node.handle_closing_signed(&nodes[0].node.get_our_node_id(), &as_2nd_closing_signed.unwrap());
+	let (_, node_1_none) = get_closing_signed_broadcast!(nodes[1].node, nodes[0].node.get_our_node_id());
+	assert!(node_1_none.is_none());
+
+	check_closed_event!(nodes[0], 1, ClosureReason::CooperativeClosure, [nodes[1].node.get_our_node_id()], 100000);
+	check_closed_event!(nodes[1], 1, ClosureReason::CooperativeClosure, [nodes[0].node.get_our_node_id()], 100000);
+}
+
+#[test]
+fn outbound_update_no_early_closing_signed() {
+	do_outbound_update_no_early_closing_signed(true);
+	do_outbound_update_no_early_closing_signed(false);
 }

@@ -15,7 +15,7 @@ all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
 [dependencies]
-bitcoin = "0.29.0"
+bitcoin = "0.30.2"
 lightning = { version = "0.0.118", path = "../lightning" }
 tokio = { version = "1.0", features = [ "rt", "sync", "net", "time" ] }
 

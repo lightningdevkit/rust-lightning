@@ -53,23 +53,6 @@ pub enum ConfirmationTarget {
 	/// to low hundreds of blocks to get our transaction on-chain, but we shouldn't risk too low a
 	/// fee - this should be a relatively high priority feerate.
 	OnChainSweep,
-	/// The highest feerate we will allow our channel counterparty to have in a non-anchor channel.
-	///
-	/// This is the feerate on the transaction which we (or our counterparty) will broadcast in
-	/// order to close the channel unilaterally. Because our counterparty must ensure they can
-	/// always broadcast the latest state, this value being too low will cause immediate
-	/// force-closures.
-	///
-	/// Allowing this value to be too high can allow our counterparty to burn our HTLC outputs to
-	/// dust, which can result in HTLCs failing or force-closures (when the dust HTLCs exceed
-	/// [`ChannelConfig::max_dust_htlc_exposure`]).
-	///
-	/// Because most nodes use a feerate estimate which is based on a relatively high priority
-	/// transaction entering the current mempool, setting this to a small multiple of your current
-	/// high priority feerate estimate should suffice.
-	///
-	/// [`ChannelConfig::max_dust_htlc_exposure`]: crate::util::config::ChannelConfig::max_dust_htlc_exposure
-	MaxAllowedNonAnchorChannelRemoteFee,
 	/// This is the lowest feerate we will allow our channel counterparty to have in an anchor
 	/// channel in order to close the channel if a channel party goes away.
 	///

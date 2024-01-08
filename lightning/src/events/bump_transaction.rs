@@ -31,8 +31,9 @@ use crate::sign::{
 use crate::sync::Mutex;
 use crate::util::logger::Logger;
 
-use bitcoin::{OutPoint, PackedLockTime, PubkeyHash, Sequence, Script, Transaction, TxIn, TxOut, Witness, WPubkeyHash};
+use bitcoin::{OutPoint, PubkeyHash, Sequence, ScriptBuf, Transaction, TxIn, TxOut, Witness, WPubkeyHash};
 use bitcoin::blockdata::constants::WITNESS_SCALE_FACTOR;
+use bitcoin::blockdata::locktime::absolute::LockTime;
 use bitcoin::consensus::Encodable;
 use bitcoin::secp256k1;
 use bitcoin::secp256k1::Secp256k1;
@@ -69,14 +70,14 @@ impl AnchorDescriptor {
 	pub fn unsigned_tx_input(&self) -> TxIn {
 		TxIn {
 			previous_output: self.outpoint.clone(),
-			script_sig: Script::new(),
+			script_sig: ScriptBuf::new(),
 			sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
 			witness: Witness::new(),
 		}
 	}
 
 	/// Returns the witness script of the anchor output in the commitment transaction.
-	pub fn witness_script(&self) -> Script {
+	pub fn witness_script(&self) -> ScriptBuf {
 		let channel_params = self.channel_derivation_parameters.transaction_parameters.as_holder_broadcastable();
 		chan_utils::get_anchor_redeemscript(&channel_params.broadcaster_pubkeys().funding_pubkey)
 	}
@@ -211,7 +212,7 @@ pub enum BumpTransactionEvent {
 		/// by the same transaction.
 		htlc_descriptors: Vec<HTLCDescriptor>,
 		/// The locktime required for the resulting HTLC transaction.
-		tx_lock_time: PackedLockTime,
+		tx_lock_time: LockTime,
 	},
 }
 
@@ -256,7 +257,7 @@ impl Utxo {
 			outpoint,
 			output: TxOut {
 				value,
-				script_pubkey: Script::new_p2pkh(pubkey_hash),
+				script_pubkey: ScriptBuf::new_p2pkh(pubkey_hash),
 			},
 			satisfaction_weight: script_sig_size * WITNESS_SCALE_FACTOR as u64 + 1 /* empty witness */,
 		}
@@ -272,7 +273,7 @@ impl Utxo {
 			outpoint,
 			output: TxOut {
 				value,
-				script_pubkey: Script::new_p2sh(&Script::new_v0_p2wpkh(pubkey_hash).script_hash()),
+				script_pubkey: ScriptBuf::new_p2sh(&ScriptBuf::new_v0_p2wpkh(pubkey_hash).script_hash()),
 			},
 			satisfaction_weight: script_sig_size * WITNESS_SCALE_FACTOR as u64 + P2WPKH_WITNESS_WEIGHT,
 		}
@@ -284,7 +285,7 @@ impl Utxo {
 			outpoint,
 			output: TxOut {
 				value,
-				script_pubkey: Script::new_v0_p2wpkh(pubkey_hash),
+				script_pubkey: ScriptBuf::new_v0_p2wpkh(pubkey_hash),
 			},
 			satisfaction_weight: EMPTY_SCRIPT_SIG_WEIGHT + P2WPKH_WITNESS_WEIGHT,
 		}
@@ -352,7 +353,7 @@ pub trait WalletSource {
 	fn list_confirmed_utxos(&self) -> Result<Vec<Utxo>, ()>;
 	/// Returns a script to use for change above dust resulting from a successful coin selection
 	/// attempt.
-	fn get_change_script(&self) -> Result<Script, ()>;
+	fn get_change_script(&self) -> Result<ScriptBuf, ()>;
 	/// Signs and provides the full [`TxIn::script_sig`] and [`TxIn::witness`] for all inputs within
 	/// the transaction known to the wallet (i.e., any provided via
 	/// [`WalletSource::list_confirmed_utxos`]).
@@ -408,7 +409,7 @@ where
 				}
 			}
 			let fee_to_spend_utxo = fee_for_weight(
-				target_feerate_sat_per_1000_weight, BASE_INPUT_WEIGHT as u64 + utxo.satisfaction_weight,
+				target_feerate_sat_per_1000_weight, BASE_INPUT_WEIGHT + utxo.satisfaction_weight,
 			);
 			let should_spend = if tolerate_high_network_feerates {
 				utxo.output.value > fee_to_spend_utxo
@@ -552,7 +553,7 @@ where
 		for utxo in coin_selection.confirmed_utxos.drain(..) {
 			tx.input.push(TxIn {
 				previous_output: utxo.outpoint,
-				script_sig: Script::new(),
+				script_sig: ScriptBuf::new(),
 				sequence: Sequence::ZERO,
 				witness: Witness::new(),
 			});
@@ -567,7 +568,7 @@ where
 			log_debug!(self.logger, "Including dummy OP_RETURN output since an output is needed and a change output was not provided");
 			tx.output.push(TxOut {
 				value: 0,
-				script_pubkey: Script::new_op_return(&[]),
+				script_pubkey: ScriptBuf::new_op_return(&[]),
 			});
 		}
 	}
@@ -587,7 +588,7 @@ where
 		let must_spend = vec![Input {
 			outpoint: anchor_descriptor.outpoint,
 			previous_utxo: anchor_utxo,
-			satisfaction_weight: commitment_tx.weight() as u64 + ANCHOR_INPUT_WITNESS_WEIGHT + EMPTY_SCRIPT_SIG_WEIGHT,
+			satisfaction_weight: commitment_tx.weight().to_wu() + ANCHOR_INPUT_WITNESS_WEIGHT + EMPTY_SCRIPT_SIG_WEIGHT,
 		}];
 		#[cfg(debug_assertions)]
 		let must_spend_amount =	must_spend.iter().map(|input| input.previous_utxo.value).sum::<u64>();
@@ -600,7 +601,7 @@ where
 
 		let mut anchor_tx = Transaction {
 			version: 2,
-			lock_time: PackedLockTime::ZERO, // TODO: Use next best height.
+			lock_time: LockTime::ZERO, // TODO: Use next best height.
 			input: vec![anchor_descriptor.unsigned_tx_input()],
 			output: vec![],
 		};
@@ -617,7 +618,7 @@ where
 
 		debug_assert_eq!(anchor_tx.output.len(), 1);
 		#[cfg(debug_assertions)]
-		let unsigned_tx_weight = anchor_tx.weight() as u64 - (anchor_tx.input.len() as u64 * EMPTY_SCRIPT_SIG_WEIGHT);
+		let unsigned_tx_weight = anchor_tx.weight().to_wu() - (anchor_tx.input.len() as u64 * EMPTY_SCRIPT_SIG_WEIGHT);
 
 		log_debug!(self.logger, "Signing anchor transaction {}", anchor_txid);
 		anchor_tx = self.utxo_source.sign_tx(anchor_tx)?;
@@ -627,7 +628,7 @@ where
 		anchor_tx.input[0].witness = anchor_descriptor.tx_input_witness(&anchor_sig);
 
 		#[cfg(debug_assertions)] {
-			let signed_tx_weight = anchor_tx.weight() as u64;
+			let signed_tx_weight = anchor_tx.weight().to_wu();
 			let expected_signed_tx_weight = unsigned_tx_weight + total_satisfaction_weight;
 			// Our estimate should be within a 1% error margin of the actual weight and we should
 			// never underestimate.
@@ -635,7 +636,7 @@ where
 				expected_signed_tx_weight - (expected_signed_tx_weight / 100) <= signed_tx_weight);
 
 			let expected_package_fee = fee_for_weight(package_target_feerate_sat_per_1000_weight,
-				signed_tx_weight + commitment_tx.weight() as u64);
+				signed_tx_weight + commitment_tx.weight().to_wu());
 			let package_fee = total_input_amount -
 				anchor_tx.output.iter().map(|output| output.value).sum::<u64>();
 			// Our fee should be within a 5% error margin of the expected fee based on the
@@ -655,7 +656,7 @@ where
 	/// fully-signed, fee-bumped HTLC transaction that is broadcast to the network.
 	fn handle_htlc_resolution(
 		&self, claim_id: ClaimId, target_feerate_sat_per_1000_weight: u32,
-		htlc_descriptors: &[HTLCDescriptor], tx_lock_time: PackedLockTime,
+		htlc_descriptors: &[HTLCDescriptor], tx_lock_time: LockTime,
 	) -> Result<(), ()> {
 		let mut htlc_tx = Transaction {
 			version: 2,
@@ -703,7 +704,7 @@ where
 		self.process_coin_selection(&mut htlc_tx, coin_selection);
 
 		#[cfg(debug_assertions)]
-		let unsigned_tx_weight = htlc_tx.weight() as u64 - (htlc_tx.input.len() as u64 * EMPTY_SCRIPT_SIG_WEIGHT);
+		let unsigned_tx_weight = htlc_tx.weight().to_wu() - (htlc_tx.input.len() as u64 * EMPTY_SCRIPT_SIG_WEIGHT);
 
 		log_debug!(self.logger, "Signing HTLC transaction {}", htlc_tx.txid());
 		htlc_tx = self.utxo_source.sign_tx(htlc_tx)?;
@@ -718,7 +719,7 @@ where
 		}
 
 		#[cfg(debug_assertions)] {
-			let signed_tx_weight = htlc_tx.weight() as u64;
+			let signed_tx_weight = htlc_tx.weight().to_wu();
 			let expected_signed_tx_weight = unsigned_tx_weight + total_satisfaction_weight;
 			// Our estimate should be within a 1% error margin of the actual weight and we should
 			// never underestimate.
