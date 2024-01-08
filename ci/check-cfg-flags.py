@@ -39,6 +39,8 @@ def check_feature(feature):
         pass
     elif feature == "electrum":
         pass
+    elif feature == "time":
+        pass
     elif feature == "_test_utils":
         pass
     elif feature == "_test_vectors":
