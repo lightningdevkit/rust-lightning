@@ -19,7 +19,7 @@ use crate::chain::chainmonitor::{MonitorUpdateId, UpdateOrigin};
 use crate::chain::channelmonitor;
 use crate::chain::channelmonitor::MonitorEvent;
 use crate::chain::transaction::OutPoint;
-use crate::routing::router::CandidateRouteHop;
+use crate::routing::router::{CandidateRouteHop, FirstHopCandidate, PublicHopCandidate, PrivateHopCandidate};
 use crate::sign;
 use crate::events;
 use crate::events::bump_transaction::{WalletSource, Utxo};
@@ -146,10 +146,10 @@ impl<'a> Router for TestRouter<'a> {
 							if let Some(first_hops) = first_hops {
 								if let Some(idx) = first_hops.iter().position(|h| h.get_outbound_payment_scid() == Some(hop.short_channel_id)) {
 									let node_id = NodeId::from_pubkey(payer);
-									let candidate = CandidateRouteHop::FirstHop {
+									let candidate = CandidateRouteHop::FirstHop(FirstHopCandidate {
 										details: first_hops[idx],
 										payer_node_id: &node_id,
-									};
+									});
 									scorer.channel_penalty_msat(&candidate, usage, &());
 									continue;
 								}
@@ -158,10 +158,10 @@ impl<'a> Router for TestRouter<'a> {
 						let network_graph = self.network_graph.read_only();
 						if let Some(channel) = network_graph.channel(hop.short_channel_id) {
 							let (directed, _) = channel.as_directed_to(&NodeId::from_pubkey(&hop.pubkey)).unwrap();
-							let candidate = CandidateRouteHop::PublicHop {
+							let candidate = CandidateRouteHop::PublicHop(PublicHopCandidate {
 								info: directed,
 								short_channel_id: hop.short_channel_id,
-							};
+							});
 							scorer.channel_penalty_msat(&candidate, usage, &());
 						} else {
 							let target_node_id = NodeId::from_pubkey(&hop.pubkey);
@@ -173,10 +173,10 @@ impl<'a> Router for TestRouter<'a> {
 								htlc_minimum_msat: None,
 								htlc_maximum_msat: None,
 							};
-							let candidate = CandidateRouteHop::PrivateHop {
+							let candidate = CandidateRouteHop::PrivateHop(PrivateHopCandidate {
 								hint: &route_hint,
 								target_node_id: &target_node_id,
-							};
+							});
 							scorer.channel_penalty_msat(&candidate, usage, &());
 						}
 						prev_hop_node = &hop.pubkey;
