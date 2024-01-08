@@ -1076,13 +1076,13 @@ impl<ChannelSigner: WriteableEcdsaChannelSigner> OnchainTxHandler<ChannelSigner>
 		self.claimable_outpoints.get(outpoint).is_some()
 	}
 
-	pub(crate) fn get_relevant_txids(&self) -> Vec<(Txid, Option<BlockHash>)> {
-		let mut txids: Vec<(Txid, Option<BlockHash>)> = self.onchain_events_awaiting_threshold_conf
+	pub(crate) fn get_relevant_txids(&self) -> Vec<(Txid, u32, Option<BlockHash>)> {
+		let mut txids: Vec<(Txid, u32, Option<BlockHash>)> = self.onchain_events_awaiting_threshold_conf
 			.iter()
-			.map(|entry| (entry.txid, entry.block_hash))
+			.map(|entry| (entry.txid, entry.height, entry.block_hash))
 			.collect();
-		txids.sort_unstable_by_key(|(txid, _)| *txid);
-		txids.dedup();
+		txids.sort_unstable_by(|a, b| a.0.cmp(&b.0).then(b.1.cmp(&a.1)));
+		txids.dedup_by_key(|(txid, _, _)| *txid);
 		txids
 	}
 

@@ -3072,8 +3072,8 @@ fn do_test_forming_justice_tx_from_monitor_updates(broadcast_initial_commitment:
 	// that a revoked commitment transaction is broadcasted
 	// (Similar to `revoked_output_claim` test but we get the justice tx + broadcast manually)
 	let chanmon_cfgs = create_chanmon_cfgs(2);
-	let destination_script0 = chanmon_cfgs[0].keys_manager.get_destination_script().unwrap();
-	let destination_script1 = chanmon_cfgs[1].keys_manager.get_destination_script().unwrap();
+	let destination_script0 = chanmon_cfgs[0].keys_manager.get_destination_script([0; 32]).unwrap();
+	let destination_script1 = chanmon_cfgs[1].keys_manager.get_destination_script([0; 32]).unwrap();
 	let persisters = vec![WatchtowerPersister::new(destination_script0),
 		WatchtowerPersister::new(destination_script1)];
 	let node_cfgs = create_node_cfgs_with_persisters(2, &chanmon_cfgs, persisters.iter().collect());
@@ -6685,6 +6685,30 @@ fn test_fail_holding_cell_htlc_upon_free_multihop() {
 	nodes[0].node.handle_revoke_and_ack(&nodes[1].node.get_our_node_id(), &raa);
 	expect_payment_failed_with_update!(nodes[0], our_payment_hash, false, chan_1_2.0.contents.short_channel_id, false);
 	check_added_monitors!(nodes[0], 1);
+}
+
+#[test]
+fn test_payment_route_reaching_same_channel_twice() {
+	//A route should not go through the same channel twice
+	//It is enforced when constructing a route.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let _chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1000000, 0);
+
+	let payment_params = PaymentParameters::from_node_id(nodes[1].node.get_our_node_id(), 0)
+		.with_bolt11_features(nodes[1].node.bolt11_invoice_features()).unwrap();
+	let (mut route, our_payment_hash, _, our_payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[1], payment_params, 100000000);
+
+	// Extend the path by itself, essentially simulating route going through same channel twice
+	let cloned_hops = route.paths[0].hops.clone();
+	route.paths[0].hops.extend_from_slice(&cloned_hops);
+
+	unwrap_send_err!(nodes[0].node.send_payment_with_route(&route, our_payment_hash,
+		RecipientOnionFields::secret_only(our_payment_secret), PaymentId(our_payment_hash.0)
+	), false, APIError::InvalidRoute { ref err },
+	assert_eq!(err, &"Path went through the same channel twice"));
 }
 
 // BOLT 2 Requirements for the Sender when constructing and sending an update_add_htlc message.

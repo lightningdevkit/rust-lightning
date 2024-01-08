@@ -270,8 +270,9 @@ fn do_test_unconf_chan(reload_node: bool, reorg_after_reload: bool, use_funding_
 		if use_funding_unconfirmed {
 			let relevant_txids = nodes[0].node.get_relevant_txids();
 			assert_eq!(relevant_txids.len(), 1);
-			let block_hash_opt = relevant_txids[0].1;
+			let block_hash_opt = relevant_txids[0].2;
 			let expected_hash = nodes[0].get_block_header(chan_conf_height).block_hash();
+			assert_eq!(relevant_txids[0].1, chan_conf_height);
 			assert_eq!(block_hash_opt, Some(expected_hash));
 			let txid = relevant_txids[0].0;
 			assert_eq!(txid, chan.3.txid());
@@ -315,8 +316,9 @@ fn do_test_unconf_chan(reload_node: bool, reorg_after_reload: bool, use_funding_
 		if use_funding_unconfirmed {
 			let relevant_txids = nodes[0].node.get_relevant_txids();
 			assert_eq!(relevant_txids.len(), 1);
-			let block_hash_opt = relevant_txids[0].1;
+			let block_hash_opt = relevant_txids[0].2;
 			let expected_hash = nodes[0].get_block_header(chan_conf_height).block_hash();
+			assert_eq!(chan_conf_height, relevant_txids[0].1);
 			assert_eq!(block_hash_opt, Some(expected_hash));
 			let txid = relevant_txids[0].0;
 			assert_eq!(txid, chan.3.txid());

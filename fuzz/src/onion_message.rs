@@ -199,7 +199,7 @@ impl SignerProvider for KeyProvider {
 
 	fn read_chan_signer(&self, _data: &[u8]) -> Result<TestChannelSigner, DecodeError> { unreachable!() }
 
-	fn get_destination_script(&self) -> Result<ScriptBuf, ()> { unreachable!() }
+	fn get_destination_script(&self, _channel_keys_id: [u8; 32]) -> Result<ScriptBuf, ()> { unreachable!() }
 
 	fn get_shutdown_scriptpubkey(&self) -> Result<ShutdownScript, ()> { unreachable!() }
 }

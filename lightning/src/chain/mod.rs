@@ -152,7 +152,7 @@ pub trait Confirm {
 	/// blocks.
 	fn best_block_updated(&self, header: &Header, height: u32);
 	/// Returns transactions that must be monitored for reorganization out of the chain along
-	/// with the hash of the block as part of which it had been previously confirmed.
+	/// with the height and the hash of the block as part of which it had been previously confirmed.
 	///
 	/// Note that the returned `Option<BlockHash>` might be `None` for channels created with LDK
 	/// 0.0.112 and prior, in which case you need to manually track previous confirmations.
@@ -167,12 +167,12 @@ pub trait Confirm {
 	/// given to [`transaction_unconfirmed`].
 	///
 	/// If any of the returned transactions are confirmed in a block other than the one with the
-	/// given hash, they need to be unconfirmed and reconfirmed via [`transaction_unconfirmed`] and
-	/// [`transactions_confirmed`], respectively.
+	/// given hash at the given height, they need to be unconfirmed and reconfirmed via
+	/// [`transaction_unconfirmed`] and [`transactions_confirmed`], respectively.
 	///
 	/// [`transactions_confirmed`]: Self::transactions_confirmed
 	/// [`transaction_unconfirmed`]: Self::transaction_unconfirmed
-	fn get_relevant_txids(&self) -> Vec<(Txid, Option<BlockHash>)>;
+	fn get_relevant_txids(&self) -> Vec<(Txid, u32, Option<BlockHash>)>;
 }
 
 /// An enum representing the status of a channel monitor update persistence.

@@ -3589,8 +3589,6 @@ mod tests {
 		assert_eq!(encoded_value, target_value);
 	}
 
-	/// #SPLICING
-
 	#[test]
 	fn encoding_splice() {
 		let secp_ctx = Secp256k1::new();
