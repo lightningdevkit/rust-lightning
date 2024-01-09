@@ -21,7 +21,7 @@ use crate::chain::{ChannelMonitorUpdateStatus, Listen, Watch};
 use crate::events::{Event, MessageSendEvent, MessageSendEventsProvider, PaymentPurpose, ClosureReason, HTLCDestination};
 use crate::ln::channelmanager::{RAACommitmentOrder, PaymentSendFailure, PaymentId, RecipientOnionFields};
 use crate::ln::channel::{AnnouncementSigsState, ChannelPhase};
-use crate::ln::msgs;
+use crate::ln::{msgs, ChannelId};
 use crate::ln::msgs::{ChannelMessageHandler, RoutingMessageHandler};
 use crate::util::test_channel_signer::TestChannelSigner;
 use crate::util::errors::APIError;
@@ -1861,7 +1861,7 @@ fn do_during_funding_monitor_fail(confirm_a_first: bool, restore_b_before_conf: 
 
 	chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
 	let funding_created_msg = get_event_msg!(nodes[0], MessageSendEvent::SendFundingCreated, nodes[1].node.get_our_node_id());
-	let channel_id = OutPoint { txid: funding_created_msg.funding_txid, index: funding_created_msg.funding_output_index }.to_channel_id();
+	let channel_id = ChannelId::v1_from_funding_outpoint(OutPoint { txid: funding_created_msg.funding_txid, index: funding_created_msg.funding_output_index });
 	nodes[1].node.handle_funding_created(&nodes[0].node.get_our_node_id(), &funding_created_msg);
 	check_added_monitors!(nodes[1], 1);
 

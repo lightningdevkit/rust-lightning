@@ -929,7 +929,7 @@ mod tests {
 	use lightning::chain::transaction::OutPoint;
 	use lightning::events::{Event, PathFailure, MessageSendEventsProvider, MessageSendEvent};
 	use lightning::{get_event_msg, get_event};
-	use lightning::ln::PaymentHash;
+	use lightning::ln::{PaymentHash, ChannelId};
 	use lightning::ln::channelmanager;
 	use lightning::ln::channelmanager::{BREAKDOWN_TIMEOUT, ChainParameters, MIN_CLTV_EXPIRY_DELTA, PaymentId};
 	use lightning::ln::features::{ChannelFeatures, NodeFeatures};
@@ -1414,7 +1414,7 @@ mod tests {
 		}
 
 		// Force-close the channel.
-		nodes[0].node.force_close_broadcasting_latest_txn(&OutPoint { txid: tx.txid(), index: 0 }.to_channel_id(), &nodes[1].node.get_our_node_id()).unwrap();
+		nodes[0].node.force_close_broadcasting_latest_txn(&ChannelId::v1_from_funding_outpoint(OutPoint { txid: tx.txid(), index: 0 }), &nodes[1].node.get_our_node_id()).unwrap();
 
 		// Check that the force-close updates are persisted.
 		check_persisted_data!(nodes[0].node, filepath.clone());

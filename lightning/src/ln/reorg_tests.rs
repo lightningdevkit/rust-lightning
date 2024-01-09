@@ -25,7 +25,7 @@ use bitcoin::secp256k1::Secp256k1;
 
 use crate::prelude::*;
 
-use crate::ln::functional_test_utils::*;
+use crate::ln::{functional_test_utils::*, ChannelId};
 
 fn do_test_onchain_htlc_reorg(local_commitment: bool, claim: bool) {
 	// Our on-chain HTLC-claim learning has a few properties worth testing:
@@ -531,7 +531,7 @@ fn do_test_to_remote_after_local_detection(style: ConnectStyle) {
 	let (_, _, chan_id, funding_tx) =
 		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 100_000_000);
 	let funding_outpoint = OutPoint { txid: funding_tx.txid(), index: 0 };
-	assert_eq!(funding_outpoint.to_channel_id(), chan_id);
+	assert_eq!(ChannelId::v1_from_funding_outpoint(funding_outpoint), chan_id);
 
 	let remote_txn_a = get_local_commitment_txn!(nodes[0], chan_id);
 	let remote_txn_b = get_local_commitment_txn!(nodes[1], chan_id);

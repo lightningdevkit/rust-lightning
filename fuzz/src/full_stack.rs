@@ -22,8 +22,7 @@ use bitcoin::consensus::encode::deserialize;
 use bitcoin::network::constants::Network;
 
 use bitcoin::hashes::hex::FromHex;
-use bitcoin::hashes::Hash as TraitImport;
-use bitcoin::hashes::HashEngine as TraitImportEngine;
+use bitcoin::hashes::Hash as _;
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::sha256d::Hash as Sha256dHash;
 use bitcoin::hash_types::{Txid, BlockHash, WPubkeyHash};
@@ -651,7 +650,7 @@ pub fn do_test(data: &[u8], logger: &Arc<dyn Logger>) {
 						if let None = loss_detector.txids_confirmed.get(&funding_txid) {
 							let outpoint = OutPoint { txid: funding_txid, index: 0 };
 							for chan in channelmanager.list_channels() {
-								if chan.channel_id == outpoint.to_channel_id() {
+								if chan.funding_txo == Some(outpoint) {
 									tx.version += 1;
 									continue 'search_loop;
 								}
