@@ -17,6 +17,7 @@ use crate::chain::chainmonitor::{MonitorUpdateId, UpdateOrigin};
 use crate::chain::channelmonitor;
 use crate::chain::channelmonitor::MonitorEvent;
 use crate::chain::transaction::OutPoint;
+use crate::routing::router::CandidateRouteHop;
 use crate::sign;
 use crate::events;
 use crate::events::bump_transaction::{WalletSource, Utxo};
@@ -29,9 +30,9 @@ use crate::ln::msgs::LightningError;
 use crate::ln::script::ShutdownScript;
 use crate::offers::invoice::UnsignedBolt12Invoice;
 use crate::offers::invoice_request::UnsignedInvoiceRequest;
-use crate::routing::gossip::{EffectiveCapacity, NetworkGraph, NodeId};
+use crate::routing::gossip::{EffectiveCapacity, NetworkGraph, NodeId, RoutingFees};
 use crate::routing::utxo::{UtxoLookup, UtxoLookupError, UtxoResult};
-use crate::routing::router::{find_route, InFlightHtlcs, Path, Route, RouteParameters, Router, ScorerAccountingForInFlightHtlcs};
+use crate::routing::router::{find_route, InFlightHtlcs, Path, Route, RouteParameters, RouteHintHop, Router, ScorerAccountingForInFlightHtlcs};
 use crate::routing::scoring::{ChannelUsage, ScoreUpdate, ScoreLookUp};
 use crate::sync::RwLock;
 use crate::util::config::UserConfig;
@@ -128,6 +129,7 @@ impl<'a> Router for TestRouter<'a> {
 				let scorer = ScorerAccountingForInFlightHtlcs::new(scorer, &inflight_htlcs);
 				for path in &route.paths {
 					let mut aggregate_msat = 0u64;
+					let mut prev_hop_node = payer;
 					for (idx, hop) in path.hops.iter().rev().enumerate() {
 						aggregate_msat += hop.fee_msat;
 						let usage = ChannelUsage {
@@ -136,14 +138,44 @@ impl<'a> Router for TestRouter<'a> {
 							effective_capacity: EffectiveCapacity::Unknown,
 						};
 
-						// Since the path is reversed, the last element in our iteration is the first
-						// hop.
 						if idx == path.hops.len() - 1 {
-							scorer.channel_penalty_msat(hop.short_channel_id, &NodeId::from_pubkey(payer), &NodeId::from_pubkey(&hop.pubkey), usage, &Default::default());
-						} else {
-							let curr_hop_path_idx = path.hops.len() - 1 - idx;
-							scorer.channel_penalty_msat(hop.short_channel_id, &NodeId::from_pubkey(&path.hops[curr_hop_path_idx - 1].pubkey), &NodeId::from_pubkey(&hop.pubkey), usage, &Default::default());
+							if let Some(first_hops) = first_hops {
+								if let Some(idx) = first_hops.iter().position(|h| h.get_outbound_payment_scid() == Some(hop.short_channel_id)) {
+									let node_id = NodeId::from_pubkey(payer);
+									let candidate = CandidateRouteHop::FirstHop {
+										details: first_hops[idx],
+										payer_node_id: &node_id,
+									};
+									scorer.channel_penalty_msat(&candidate, usage, &());
+									continue;
+								}
+							}
 						}
+						let network_graph = self.network_graph.read_only();
+						if let Some(channel) = network_graph.channel(hop.short_channel_id) {
+							let (directed, _) = channel.as_directed_to(&NodeId::from_pubkey(&hop.pubkey)).unwrap();
+							let candidate = CandidateRouteHop::PublicHop {
+								info: directed,
+								short_channel_id: hop.short_channel_id,
+							};
+							scorer.channel_penalty_msat(&candidate, usage, &());
+						} else {
+							let target_node_id = NodeId::from_pubkey(&hop.pubkey);
+							let route_hint = RouteHintHop {
+								src_node_id: *prev_hop_node,
+								short_channel_id: hop.short_channel_id,
+								fees: RoutingFees { base_msat: 0, proportional_millionths: 0 },
+								cltv_expiry_delta: 0,
+								htlc_minimum_msat: None,
+								htlc_maximum_msat: None,
+							};
+							let candidate = CandidateRouteHop::PrivateHop {
+								hint: &route_hint,
+								target_node_id: &target_node_id,
+							};
+							scorer.channel_penalty_msat(&candidate, usage, &());
+						}
+						prev_hop_node = &hop.pubkey;
 					}
 				}
 			}
@@ -175,13 +207,15 @@ impl EntropySource for OnlyReadsKeysInterface {
 	fn get_secure_random_bytes(&self) -> [u8; 32] { [0; 32] }}
 
 impl SignerProvider for OnlyReadsKeysInterface {
-	type Signer = TestChannelSigner;
+	type EcdsaSigner = TestChannelSigner;
+	#[cfg(taproot)]
+	type TaprootSigner = TestChannelSigner;
 
 	fn generate_channel_keys_id(&self, _inbound: bool, _channel_value_satoshis: u64, _user_channel_id: u128) -> [u8; 32] { unreachable!(); }
 
-	fn derive_channel_signer(&self, _channel_value_satoshis: u64, _channel_keys_id: [u8; 32]) -> Self::Signer { unreachable!(); }
+	fn derive_channel_signer(&self, _channel_value_satoshis: u64, _channel_keys_id: [u8; 32]) -> Self::EcdsaSigner { unreachable!(); }
 
-	fn read_chan_signer(&self, mut reader: &[u8]) -> Result<Self::Signer, msgs::DecodeError> {
+	fn read_chan_signer(&self, mut reader: &[u8]) -> Result<Self::EcdsaSigner, msgs::DecodeError> {
 		let inner: InMemorySigner = ReadableArgs::read(&mut reader, self)?;
 		let state = Arc::new(Mutex::new(EnforcementState::new()));
 
@@ -334,7 +368,7 @@ impl WatchtowerPersister {
 	}
 }
 
-impl<Signer: sign::WriteableEcdsaChannelSigner> chainmonitor::Persist<Signer> for WatchtowerPersister {
+impl<Signer: sign::ecdsa::WriteableEcdsaChannelSigner> chainmonitor::Persist<Signer> for WatchtowerPersister {
 	fn persist_new_channel(&self, funding_txo: OutPoint,
 		data: &channelmonitor::ChannelMonitor<Signer>, id: MonitorUpdateId
 	) -> chain::ChannelMonitorUpdateStatus {
@@ -414,7 +448,7 @@ impl TestPersister {
 		self.update_rets.lock().unwrap().push_back(next_ret);
 	}
 }
-impl<Signer: sign::WriteableEcdsaChannelSigner> chainmonitor::Persist<Signer> for TestPersister {
+impl<Signer: sign::ecdsa::WriteableEcdsaChannelSigner> chainmonitor::Persist<Signer> for TestPersister {
 	fn persist_new_channel(&self, _funding_txo: OutPoint, _data: &channelmonitor::ChannelMonitor<Signer>, _id: MonitorUpdateId) -> chain::ChannelMonitorUpdateStatus {
 		if let Some(update_ret) = self.update_rets.lock().unwrap().pop_front() {
 			return update_ret
@@ -944,7 +978,8 @@ impl events::MessageSendEventsProvider for TestRoutingMessageHandler {
 pub struct TestLogger {
 	level: Level,
 	pub(crate) id: String,
-	pub lines: Mutex<HashMap<(String, String), usize>>,
+	pub lines: Mutex<HashMap<(&'static str, String), usize>>,
+	pub context: Mutex<HashMap<(&'static str, Option<PublicKey>, Option<ChannelId>), usize>>,
 }
 
 impl TestLogger {
@@ -955,13 +990,14 @@ impl TestLogger {
 		TestLogger {
 			level: Level::Trace,
 			id,
-			lines: Mutex::new(HashMap::new())
+			lines: Mutex::new(HashMap::new()),
+			context: Mutex::new(HashMap::new()),
 		}
 	}
 	pub fn enable(&mut self, level: Level) {
 		self.level = level;
 	}
-	pub fn assert_log(&self, module: String, line: String, count: usize) {
+	pub fn assert_log(&self, module: &str, line: String, count: usize) {
 		let log_entries = self.lines.lock().unwrap();
 		assert_eq!(log_entries.get(&(module, line)), Some(&count));
 	}
@@ -973,7 +1009,7 @@ impl TestLogger {
 	pub fn assert_log_contains(&self, module: &str, line: &str, count: usize) {
 		let log_entries = self.lines.lock().unwrap();
 		let l: usize = log_entries.iter().filter(|&(&(ref m, ref l), _c)| {
-			m == module && l.contains(line)
+			*m == module && l.contains(line)
 		}).map(|(_, c) | { c }).sum();
 		assert_eq!(l, count)
 	}
@@ -986,15 +1022,24 @@ impl TestLogger {
 	pub fn assert_log_regex(&self, module: &str, pattern: regex::Regex, count: usize) {
 		let log_entries = self.lines.lock().unwrap();
 		let l: usize = log_entries.iter().filter(|&(&(ref m, ref l), _c)| {
-			m == module && pattern.is_match(&l)
+			*m == module && pattern.is_match(&l)
 		}).map(|(_, c) | { c }).sum();
 		assert_eq!(l, count)
+	}
+
+	pub fn assert_log_context_contains(
+		&self, module: &str, peer_id: Option<PublicKey>, channel_id: Option<ChannelId>, count: usize
+	) {
+		let context_entries = self.context.lock().unwrap();
+		let l = context_entries.get(&(module, peer_id, channel_id)).unwrap();
+		assert_eq!(*l, count)
 	}
 }
 
 impl Logger for TestLogger {
-	fn log(&self, record: &Record) {
-		*self.lines.lock().unwrap().entry((record.module_path.to_string(), format!("{}", record.args))).or_insert(0) += 1;
+	fn log(&self, record: Record) {
+		*self.lines.lock().unwrap().entry((record.module_path, format!("{}", record.args))).or_insert(0) += 1;
+		*self.context.lock().unwrap().entry((record.module_path, record.peer_id, record.channel_id)).or_insert(0) += 1;
 		if record.level >= self.level {
 			#[cfg(all(not(ldk_bench), feature = "std"))] {
 				let pfx = format!("{} {} [{}:{}]", self.id, record.level.to_string(), record.module_path, record.line);
@@ -1112,7 +1157,9 @@ impl NodeSigner for TestKeysInterface {
 }
 
 impl SignerProvider for TestKeysInterface {
-	type Signer = TestChannelSigner;
+	type EcdsaSigner = TestChannelSigner;
+	#[cfg(taproot)]
+	type TaprootSigner = TestChannelSigner;
 
 	fn generate_channel_keys_id(&self, inbound: bool, channel_value_satoshis: u64, user_channel_id: u128) -> [u8; 32] {
 		self.backing.generate_channel_keys_id(inbound, channel_value_satoshis, user_channel_id)
@@ -1124,7 +1171,7 @@ impl SignerProvider for TestKeysInterface {
 		TestChannelSigner::new_with_revoked(keys, state, self.disable_revocation_policy_check)
 	}
 
-	fn read_chan_signer(&self, buffer: &[u8]) -> Result<Self::Signer, msgs::DecodeError> {
+	fn read_chan_signer(&self, buffer: &[u8]) -> Result<Self::EcdsaSigner, msgs::DecodeError> {
 		let mut reader = io::Cursor::new(buffer);
 
 		let inner: InMemorySigner = ReadableArgs::read(&mut reader, self)?;
@@ -1298,8 +1345,12 @@ impl crate::util::ser::Writeable for TestScorer {
 impl ScoreLookUp for TestScorer {
 	type ScoreParams = ();
 	fn channel_penalty_msat(
-		&self, short_channel_id: u64, _source: &NodeId, _target: &NodeId, usage: ChannelUsage, _score_params: &Self::ScoreParams
+		&self, candidate: &CandidateRouteHop, usage: ChannelUsage, _score_params: &Self::ScoreParams
 	) -> u64 {
+		let short_channel_id = match candidate.globally_unique_short_channel_id() {
+			Some(scid) => scid,
+			None => return 0,
+		};
 		if let Some(scorer_expectations) = self.scorer_expectations.borrow_mut().as_mut() {
 			match scorer_expectations.pop_front() {
 				Some((scid, expectation)) => {

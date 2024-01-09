@@ -28,7 +28,7 @@ use crate::ln::features::ChannelTypeFeatures;
 use crate::ln::channel_keys::{DelayedPaymentBasepoint, HtlcBasepoint};
 use crate::ln::msgs::DecodeError;
 use crate::chain::chaininterface::{FeeEstimator, ConfirmationTarget, MIN_RELAY_FEE_SAT_PER_1000_WEIGHT, compute_feerate_sat_per_1000_weight, FEERATE_FLOOR_SATS_PER_KW};
-use crate::sign::WriteableEcdsaChannelSigner;
+use crate::sign::ecdsa::WriteableEcdsaChannelSigner;
 use crate::chain::onchaintx::{ExternalHTLCClaim, OnchainTxHandler};
 use crate::util::logger::Logger;
 use crate::util::ser::{Readable, Writer, Writeable, RequiredWrapper};
@@ -908,10 +908,10 @@ impl PackageTemplate {
 		}
 		htlcs
 	}
-	pub(crate) fn finalize_malleable_package<L: Deref, Signer: WriteableEcdsaChannelSigner>(
+	pub(crate) fn finalize_malleable_package<L: Logger, Signer: WriteableEcdsaChannelSigner>(
 		&self, current_height: u32, onchain_handler: &mut OnchainTxHandler<Signer>, value: u64,
 		destination_script: ScriptBuf, logger: &L
-	) -> Option<Transaction> where L::Target: Logger {
+	) -> Option<Transaction> {
 		debug_assert!(self.is_malleable());
 		let mut bumped_tx = Transaction {
 			version: 2,
@@ -932,9 +932,9 @@ impl PackageTemplate {
 		log_debug!(logger, "Finalized transaction {} ready to broadcast", bumped_tx.txid());
 		Some(bumped_tx)
 	}
-	pub(crate) fn finalize_untractable_package<L: Deref, Signer: WriteableEcdsaChannelSigner>(
+	pub(crate) fn finalize_untractable_package<L: Logger, Signer: WriteableEcdsaChannelSigner>(
 		&self, onchain_handler: &mut OnchainTxHandler<Signer>, logger: &L,
-	) -> Option<Transaction> where L::Target: Logger {
+	) -> Option<Transaction> {
 		debug_assert!(!self.is_malleable());
 		if let Some((outpoint, outp)) = self.inputs.first() {
 			if let Some(final_tx) = outp.get_finalized_tx(outpoint, onchain_handler) {
@@ -962,13 +962,11 @@ impl PackageTemplate {
 	/// Returns value in satoshis to be included as package outgoing output amount and feerate
 	/// which was used to generate the value. Will not return less than `dust_limit_sats` for the
 	/// value.
-	pub(crate) fn compute_package_output<F: Deref, L: Deref>(
+	pub(crate) fn compute_package_output<F: Deref, L: Logger>(
 		&self, predicted_weight: u64, dust_limit_sats: u64, force_feerate_bump: bool,
 		fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L,
 	) -> Option<(u64, u64)>
-	where
-		F::Target: FeeEstimator,
-		L::Target: Logger,
+	where F::Target: FeeEstimator,
 	{
 		debug_assert!(self.malleability == PackageMalleability::Malleable, "The package output is fixed for non-malleable packages");
 		let input_amounts = self.package_amount();
@@ -1111,9 +1109,8 @@ impl Readable for PackageTemplate {
 ///
 /// [`OnChainSweep`]: crate::chain::chaininterface::ConfirmationTarget::OnChainSweep
 /// [`FEERATE_FLOOR_SATS_PER_KW`]: crate::chain::chaininterface::MIN_RELAY_FEE_SAT_PER_1000_WEIGHT
-fn compute_fee_from_spent_amounts<F: Deref, L: Deref>(input_amounts: u64, predicted_weight: u64, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L) -> Option<(u64, u64)>
+fn compute_fee_from_spent_amounts<F: Deref, L: Logger>(input_amounts: u64, predicted_weight: u64, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L) -> Option<(u64, u64)>
 	where F::Target: FeeEstimator,
-	      L::Target: Logger,
 {
 	let sweep_feerate = fee_estimator.bounded_sat_per_1000_weight(ConfirmationTarget::OnChainSweep);
 	let fee_rate = cmp::min(sweep_feerate, compute_feerate_sat_per_1000_weight(input_amounts / 2, predicted_weight));
@@ -1135,13 +1132,12 @@ fn compute_fee_from_spent_amounts<F: Deref, L: Deref>(input_amounts: u64, predic
 /// feerate, or just use the previous feerate otherwise. If a feerate bump did happen, we also
 /// verify that those bumping heuristics respect BIP125 rules 3) and 4) and if required adjust the
 /// new fee to meet the RBF policy requirement.
-fn feerate_bump<F: Deref, L: Deref>(
+fn feerate_bump<F: Deref, L: Logger>(
 	predicted_weight: u64, input_amounts: u64, previous_feerate: u64, force_feerate_bump: bool,
 	fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L,
 ) -> Option<(u64, u64)>
 where
 	F::Target: FeeEstimator,
-	L::Target: Logger,
 {
 	// If old feerate inferior to actual one given back by Fee Estimator, use it to compute new fee...
 	let (new_fee, new_feerate) = if let Some((new_fee, new_feerate)) = compute_fee_from_spent_amounts(input_amounts, predicted_weight, fee_estimator, logger) {

@@ -32,7 +32,7 @@ use bitcoin::blockdata::script::ScriptBuf;
 use bitcoin::blockdata::transaction::Transaction;
 use bitcoin::hash_types::Txid;
 
-use crate::blinded_path::payment::ReceiveTlvs;
+use crate::blinded_path::payment::{BlindedPaymentTlvs, ForwardTlvs, ReceiveTlvs};
 use crate::ln::{ChannelId, PaymentPreimage, PaymentHash, PaymentSecret};
 use crate::ln::features::{ChannelFeatures, ChannelTypeFeatures, InitFeatures, NodeFeatures};
 use crate::ln::onion_utils;
@@ -53,7 +53,7 @@ use core::fmt::Display;
 use crate::io::{self, Cursor, Read};
 use crate::io_extras::read_to_end;
 
-use crate::events::MessageSendEventsProvider;
+use crate::events::{EventsProvider, MessageSendEventsProvider};
 use crate::util::chacha20poly1305rfc::ChaChaPolyReadAdapter;
 use crate::util::logger;
 use crate::util::ser::{LengthReadable, LengthReadableArgs, Readable, ReadableArgs, Writeable, Writer, WithoutLength, FixedLengthReader, HighZeroBytesDroppedBigSize, Hostname, TransactionU16LenLimited, BigSize};
@@ -770,7 +770,11 @@ pub struct UpdateAddHTLC {
 	///
 	/// [`ChannelConfig::accept_underpaying_htlcs`]: crate::util::config::ChannelConfig::accept_underpaying_htlcs
 	pub skimmed_fee_msat: Option<u64>,
-	pub(crate) onion_routing_packet: OnionPacket,
+	/// The onion routing packet with encrypted data for the next hop.
+	pub onion_routing_packet: OnionPacket,
+	/// Provided if we are relaying or receiving a payment within a blinded path, to decrypt the onion
+	/// routing packet and the recipient-provided encrypted payload within.
+	pub blinding_point: Option<PublicKey>,
 }
 
  /// An onion message to be sent to or received from a peer.
@@ -1728,7 +1732,7 @@ pub trait RoutingMessageHandler : MessageSendEventsProvider {
 }
 
 /// A handler for received [`OnionMessage`]s and for providing generated ones to send.
-pub trait OnionMessageHandler {
+pub trait OnionMessageHandler: EventsProvider {
 	/// Handle an incoming `onion_message` message from the given peer.
 	fn handle_onion_message(&self, peer_node_id: &PublicKey, msg: &OnionMessage);
 
@@ -1747,6 +1751,10 @@ pub trait OnionMessageHandler {
 	/// drop and refuse to forward onion messages to this peer.
 	fn peer_disconnected(&self, their_node_id: &PublicKey);
 
+	/// Performs actions that should happen roughly every ten seconds after startup. Allows handlers
+	/// to drop any buffered onion messages intended for prospective peers.
+	fn timer_tick_occurred(&self);
+
 	// Handler information:
 	/// Gets the node feature flags which this handler itself supports. All available handlers are
 	/// queried similarly and their feature flags are OR'd together to form the [`NodeFeatures`]
@@ -1763,9 +1771,10 @@ pub trait OnionMessageHandler {
 
 mod fuzzy_internal_msgs {
 	use bitcoin::secp256k1::PublicKey;
-	use crate::blinded_path::payment::PaymentConstraints;
+	use crate::blinded_path::payment::{PaymentConstraints, PaymentRelay};
 	use crate::prelude::*;
 	use crate::ln::{PaymentPreimage, PaymentSecret};
+	use crate::ln::features::BlindedHopFeatures;
 
 	// These types aren't intended to be pub, but are exposed for direct fuzzing (as we deserialize
 	// them from untrusted input):
@@ -1791,6 +1800,13 @@ mod fuzzy_internal_msgs {
 			custom_tlvs: Vec<(u64, Vec<u8>)>,
 			amt_msat: u64,
 			outgoing_cltv_value: u32,
+		},
+		BlindedForward {
+			short_channel_id: u64,
+			payment_relay: PaymentRelay,
+			payment_constraints: PaymentConstraints,
+			features: BlindedHopFeatures,
+			intro_node_blinding_point: PublicKey,
 		},
 		BlindedReceive {
 			amt_msat: u64,
@@ -2351,6 +2367,7 @@ impl_writeable_msg!(UpdateAddHTLC, {
 	cltv_expiry,
 	onion_routing_packet,
 }, {
+	(0, blinding_point, option),
 	(65537, skimmed_fee_msat, option)
 });
 
@@ -2489,7 +2506,23 @@ impl<NS: Deref> ReadableArgs<&NS> for InboundOnionPayload where NS::Target: Node
 			let mut s = Cursor::new(&enc_tlvs);
 			let mut reader = FixedLengthReader::new(&mut s, enc_tlvs.len() as u64);
 			match ChaChaPolyReadAdapter::read(&mut reader, rho)? {
-				ChaChaPolyReadAdapter { readable: ReceiveTlvs { payment_secret, payment_constraints }} => {
+				ChaChaPolyReadAdapter { readable: BlindedPaymentTlvs::Forward(ForwardTlvs {
+					short_channel_id, payment_relay, payment_constraints, features
+				})} => {
+					if amt.is_some() || cltv_value.is_some() || total_msat.is_some() {
+						return Err(DecodeError::InvalidValue)
+					}
+					Ok(Self::BlindedForward {
+						short_channel_id,
+						payment_relay,
+						payment_constraints,
+						features,
+						intro_node_blinding_point: blinding_point,
+					})
+				},
+				ChaChaPolyReadAdapter { readable: BlindedPaymentTlvs::Receive(ReceiveTlvs {
+					payment_secret, payment_constraints
+				})} => {
 					if total_msat.unwrap_or(0) > MAX_VALUE_MSAT { return Err(DecodeError::InvalidValue) }
 					Ok(Self::BlindedReceive {
 						amt_msat: amt.ok_or(DecodeError::InvalidValue)?,
@@ -3903,6 +3936,7 @@ mod tests {
 			cltv_expiry: 821716,
 			onion_routing_packet,
 			skimmed_fee_msat: None,
+			blinding_point: None,
 		};
 		let encoded_value = update_add_htlc.encode();
 		let target_value = <Vec<u8>>::from_hex("020202020202020202020202020202020202020202020202020202020202020200083a840000034d32144668701144760101010101010101010101010101010101010101010101010101010101010101000c89d4ff031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010202020202020202020202020202020202020202020202020202020202020202").unwrap();

@@ -13,6 +13,7 @@
 #[macro_use]
 pub mod functional_test_utils;
 
+pub mod onion_payment;
 pub mod channelmanager;
 pub mod channel_keys;
 pub mod inbound_payment;

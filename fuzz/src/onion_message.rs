@@ -79,6 +79,7 @@ impl MessageRouter for TestMessageRouter {
 		Ok(OnionMessagePath {
 			intermediate_nodes: vec![],
 			destination,
+			first_node_addresses: None,
 		})
 	}
 }
@@ -91,6 +92,7 @@ impl OffersMessageHandler for TestOffersMessageHandler {
 	}
 }
 
+#[derive(Debug)]
 struct TestCustomMessage {}
 
 const CUSTOM_MESSAGE_TYPE: u64 = 4242;
@@ -189,11 +191,13 @@ impl NodeSigner for KeyProvider {
 }
 
 impl SignerProvider for KeyProvider {
-	type Signer = TestChannelSigner;
+	type EcdsaSigner = TestChannelSigner;
+	#[cfg(taproot)]
+	type TaprootSigner = TestChannelSigner;
 
 	fn generate_channel_keys_id(&self, _inbound: bool, _channel_value_satoshis: u64, _user_channel_id: u128) -> [u8; 32] { unreachable!() }
 
-	fn derive_channel_signer(&self, _channel_value_satoshis: u64, _channel_keys_id: [u8; 32]) -> Self::Signer {
+	fn derive_channel_signer(&self, _channel_value_satoshis: u64, _channel_keys_id: [u8; 32]) -> Self::EcdsaSigner {
 		unreachable!()
 	}
 
@@ -216,7 +220,7 @@ mod tests {
 		pub lines: Mutex<HashMap<(String, String), usize>>,
 	}
 	impl Logger for TrackingLogger {
-		fn log(&self, record: &Record) {
+		fn log(&self, record: Record) {
 			*self.lines.lock().unwrap().entry((record.module_path.to_string(), format!("{}", record.args))).or_insert(0) += 1;
 			println!("{:<5} [{} : {}, {}] {}", record.level.to_string(), record.module_path, record.file, record.line, record.args);
 		}
@@ -263,9 +267,12 @@ mod tests {
 		{
 			let log_entries = logger.lines.lock().unwrap();
 			assert_eq!(log_entries.get(&("lightning::onion_message::messenger".to_string(),
-						"Received an onion message with path_id None and a reply_path".to_string())), Some(&1));
+						"Received an onion message with path_id None and a reply_path: Custom(TestCustomMessage)"
+						.to_string())), Some(&1));
 			assert_eq!(log_entries.get(&("lightning::onion_message::messenger".to_string(),
-						"Sending onion message when responding to Custom onion message with path_id None".to_string())), Some(&1));
+						"Constructing onion message when responding to Custom onion message with path_id None: TestCustomMessage".to_string())), Some(&1));
+			assert_eq!(log_entries.get(&("lightning::onion_message::messenger".to_string(),
+						"Buffered onion message when responding to Custom onion message with path_id None".to_string())), Some(&1));
 		}
 
 		let two_unblinded_hops_om = "\

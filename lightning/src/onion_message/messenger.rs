@@ -18,13 +18,15 @@ use bitcoin::secp256k1::{self, PublicKey, Scalar, Secp256k1, SecretKey};
 use crate::blinded_path::BlindedPath;
 use crate::blinded_path::message::{advance_path_by_one, ForwardTlvs, ReceiveTlvs};
 use crate::blinded_path::utils;
+use crate::events::{Event, EventHandler, EventsProvider};
 use crate::sign::{EntropySource, KeysManager, NodeSigner, Recipient};
 #[cfg(not(c_bindings))]
 use crate::ln::channelmanager::{SimpleArcChannelManager, SimpleRefChannelManager};
 use crate::ln::features::{InitFeatures, NodeFeatures};
-use crate::ln::msgs::{self, OnionMessage, OnionMessageHandler};
+use crate::ln::msgs::{self, OnionMessage, OnionMessageHandler, SocketAddress};
 use crate::ln::onion_utils;
 use crate::ln::peer_handler::IgnoringMessageHandler;
+use crate::routing::gossip::{NetworkGraph, NodeId};
 pub use super::packet::OnionMessageContents;
 use super::packet::ParsedOnionMessageContents;
 use super::offers::OffersMessageHandler;
@@ -37,6 +39,8 @@ use core::ops::Deref;
 use crate::io;
 use crate::sync::{Arc, Mutex};
 use crate::prelude::*;
+
+pub(super) const MAX_TIMER_TICKS: usize = 2;
 
 /// A sender, receiver and forwarder of [`OnionMessage`]s.
 ///
@@ -71,12 +75,20 @@ use crate::prelude::*;
 /// # use std::sync::Arc;
 /// # struct FakeLogger;
 /// # impl Logger for FakeLogger {
-/// #     fn log(&self, record: &Record) { unimplemented!() }
+/// #     fn log(&self, record: Record) { println!("{:?}" , record); }
 /// # }
 /// # struct FakeMessageRouter {}
 /// # impl MessageRouter for FakeMessageRouter {
 /// #     fn find_path(&self, sender: PublicKey, peers: Vec<PublicKey>, destination: Destination) -> Result<OnionMessagePath, ()> {
-/// #         unimplemented!()
+/// #         let secp_ctx = Secp256k1::new();
+/// #         let node_secret = SecretKey::from_slice(&<Vec<u8>>::from_hex("0101010101010101010101010101010101010101010101010101010101010101").unwrap()[..]).unwrap();
+/// #         let hop_node_id1 = PublicKey::from_secret_key(&secp_ctx, &node_secret);
+/// #         let hop_node_id2 = hop_node_id1;
+/// #         Ok(OnionMessagePath {
+/// #             intermediate_nodes: vec![hop_node_id1, hop_node_id2],
+/// #             destination,
+/// #             first_node_addresses: None,
+/// #         })
 /// #     }
 /// # }
 /// # let seed = [42u8; 32];
@@ -86,7 +98,7 @@ use crate::prelude::*;
 /// # let node_secret = SecretKey::from_slice(&<Vec<u8>>::from_hex("0101010101010101010101010101010101010101010101010101010101010101").unwrap()[..]).unwrap();
 /// # let secp_ctx = Secp256k1::new();
 /// # let hop_node_id1 = PublicKey::from_secret_key(&secp_ctx, &node_secret);
-/// # let (hop_node_id2, hop_node_id3, hop_node_id4) = (hop_node_id1, hop_node_id1, hop_node_id1);
+/// # let (hop_node_id3, hop_node_id4) = (hop_node_id1, hop_node_id1);
 /// # let destination_node_id = hop_node_id1;
 /// # let message_router = Arc::new(FakeMessageRouter {});
 /// # let custom_message_handler = IgnoringMessageHandler {};
@@ -97,7 +109,8 @@ use crate::prelude::*;
 ///     &keys_manager, &keys_manager, logger, message_router, &offers_message_handler,
 ///     &custom_message_handler
 /// );
-///
+
+/// # #[derive(Debug)]
 /// # struct YourCustomMessage {}
 /// impl Writeable for YourCustomMessage {
 /// 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
@@ -112,13 +125,10 @@ use crate::prelude::*;
 /// 	}
 /// }
 /// // Send a custom onion message to a node id.
-/// let path = OnionMessagePath {
-/// 	intermediate_nodes: vec![hop_node_id1, hop_node_id2],
-/// 	destination: Destination::Node(destination_node_id),
-/// };
+/// let destination = Destination::Node(destination_node_id);
 /// let reply_path = None;
 /// # let message = YourCustomMessage {};
-/// onion_messenger.send_onion_message(path, message, reply_path);
+/// onion_messenger.send_onion_message(message, destination, reply_path);
 ///
 /// // Create a blinded path to yourself, for someone to send an onion message to.
 /// # let your_node_id = hop_node_id1;
@@ -126,13 +136,10 @@ use crate::prelude::*;
 /// let blinded_path = BlindedPath::new_for_message(&hops, &keys_manager, &secp_ctx).unwrap();
 ///
 /// // Send a custom onion message to a blinded path.
-/// let path = OnionMessagePath {
-/// 	intermediate_nodes: vec![hop_node_id1, hop_node_id2],
-/// 	destination: Destination::BlindedPath(blinded_path),
-/// };
+/// let destination = Destination::BlindedPath(blinded_path);
 /// let reply_path = None;
 /// # let message = YourCustomMessage {};
-/// onion_messenger.send_onion_message(path, message, reply_path);
+/// onion_messenger.send_onion_message(message, destination, reply_path);
 /// ```
 ///
 /// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
@@ -144,16 +151,85 @@ where
 	L::Target: Logger,
 	MR::Target: MessageRouter,
 	OMH::Target: OffersMessageHandler,
-	CMH:: Target: CustomOnionMessageHandler,
+	CMH::Target: CustomOnionMessageHandler,
 {
 	entropy_source: ES,
 	node_signer: NS,
 	logger: L,
-	pending_messages: Mutex<HashMap<PublicKey, VecDeque<OnionMessage>>>,
+	message_recipients: Mutex<HashMap<PublicKey, OnionMessageRecipient>>,
 	secp_ctx: Secp256k1<secp256k1::All>,
 	message_router: MR,
 	offers_handler: OMH,
 	custom_handler: CMH,
+}
+
+/// [`OnionMessage`]s buffered to be sent.
+enum OnionMessageRecipient {
+	/// Messages for a node connected as a peer.
+	ConnectedPeer(VecDeque<OnionMessage>),
+
+	/// Messages for a node that is not yet connected, which are dropped after [`MAX_TIMER_TICKS`]
+	/// and tracked here.
+	PendingConnection(VecDeque<OnionMessage>, Option<Vec<SocketAddress>>, usize),
+}
+
+impl OnionMessageRecipient {
+	fn pending_connection(addresses: Vec<SocketAddress>) -> Self {
+		Self::PendingConnection(VecDeque::new(), Some(addresses), 0)
+	}
+
+	fn pending_messages(&self) -> &VecDeque<OnionMessage> {
+		match self {
+			OnionMessageRecipient::ConnectedPeer(pending_messages) => pending_messages,
+			OnionMessageRecipient::PendingConnection(pending_messages, _, _) => pending_messages,
+		}
+	}
+
+	fn enqueue_message(&mut self, message: OnionMessage) {
+		let pending_messages = match self {
+			OnionMessageRecipient::ConnectedPeer(pending_messages) => pending_messages,
+			OnionMessageRecipient::PendingConnection(pending_messages, _, _) => pending_messages,
+		};
+
+		pending_messages.push_back(message);
+	}
+
+	fn dequeue_message(&mut self) -> Option<OnionMessage> {
+		let pending_messages = match self {
+			OnionMessageRecipient::ConnectedPeer(pending_messages) => pending_messages,
+			OnionMessageRecipient::PendingConnection(pending_messages, _, _) => {
+				debug_assert!(false);
+				pending_messages
+			},
+		};
+
+		pending_messages.pop_front()
+	}
+
+	#[cfg(test)]
+	fn release_pending_messages(&mut self) -> VecDeque<OnionMessage> {
+		let pending_messages = match self {
+			OnionMessageRecipient::ConnectedPeer(pending_messages) => pending_messages,
+			OnionMessageRecipient::PendingConnection(pending_messages, _, _) => pending_messages,
+		};
+
+		core::mem::take(pending_messages)
+	}
+
+	fn mark_connected(&mut self) {
+		if let OnionMessageRecipient::PendingConnection(pending_messages, _, _) = self {
+			let mut new_pending_messages = VecDeque::new();
+			core::mem::swap(pending_messages, &mut new_pending_messages);
+			*self = OnionMessageRecipient::ConnectedPeer(new_pending_messages);
+		}
+	}
+
+	fn is_connected(&self) -> bool {
+		match self {
+			OnionMessageRecipient::ConnectedPeer(..) => true,
+			OnionMessageRecipient::PendingConnection(..) => false,
+		}
+	}
 }
 
 /// An [`OnionMessage`] for [`OnionMessenger`] to send.
@@ -197,16 +273,52 @@ pub trait MessageRouter {
 }
 
 /// A [`MessageRouter`] that can only route to a directly connected [`Destination`].
-pub struct DefaultMessageRouter;
+pub struct DefaultMessageRouter<G: Deref<Target=NetworkGraph<L>>, L: Deref>
+where
+	L::Target: Logger,
+{
+	network_graph: G,
+}
 
-impl MessageRouter for DefaultMessageRouter {
+impl<G: Deref<Target=NetworkGraph<L>>, L: Deref> DefaultMessageRouter<G, L>
+where
+	L::Target: Logger,
+{
+	/// Creates a [`DefaultMessageRouter`] using the given [`NetworkGraph`].
+	pub fn new(network_graph: G) -> Self {
+		Self { network_graph }
+	}
+}
+
+impl<G: Deref<Target=NetworkGraph<L>>, L: Deref> MessageRouter for DefaultMessageRouter<G, L>
+where
+	L::Target: Logger,
+{
 	fn find_path(
 		&self, _sender: PublicKey, peers: Vec<PublicKey>, destination: Destination
 	) -> Result<OnionMessagePath, ()> {
-		if peers.contains(&destination.first_node()) {
-			Ok(OnionMessagePath { intermediate_nodes: vec![], destination })
+		let first_node = destination.first_node();
+		if peers.contains(&first_node) {
+			Ok(OnionMessagePath {
+				intermediate_nodes: vec![], destination, first_node_addresses: None
+			})
 		} else {
-			Err(())
+			let network_graph = self.network_graph.deref().read_only();
+			let node_announcement = network_graph
+				.node(&NodeId::from_pubkey(&first_node))
+				.and_then(|node_info| node_info.announcement_info.as_ref())
+				.and_then(|announcement_info| announcement_info.announcement_message.as_ref())
+				.map(|node_announcement| &node_announcement.contents);
+
+			match node_announcement {
+				Some(node_announcement) if node_announcement.features.supports_onion_messages() => {
+					let first_node_addresses = Some(node_announcement.addresses.clone());
+					Ok(OnionMessagePath {
+						intermediate_nodes: vec![], destination, first_node_addresses
+					})
+				},
+				_ => Err(()),
+			}
 		}
 	}
 }
@@ -219,6 +331,22 @@ pub struct OnionMessagePath {
 
 	/// The recipient of the message.
 	pub destination: Destination,
+
+	/// Addresses that may be used to connect to [`OnionMessagePath::first_node`].
+	///
+	/// Only needs to be set if a connection to the node is required. [`OnionMessenger`] may use
+	/// this to initiate such a connection.
+	pub first_node_addresses: Option<Vec<SocketAddress>>,
+}
+
+impl OnionMessagePath {
+	/// Returns the first node in the path.
+	pub fn first_node(&self) -> PublicKey {
+		self.intermediate_nodes
+			.first()
+			.copied()
+			.unwrap_or_else(|| self.destination.first_node())
+	}
 }
 
 /// The destination of an onion message.
@@ -246,6 +374,19 @@ impl Destination {
 	}
 }
 
+/// Result of successfully [sending an onion message].
+///
+/// [sending an onion message]: OnionMessenger::send_onion_message
+#[derive(Debug, PartialEq, Eq)]
+pub enum SendSuccess {
+	/// The message was buffered and will be sent once it is processed by
+	/// [`OnionMessageHandler::next_onion_message_for_peer`].
+	Buffered,
+	/// The message was buffered and will be sent once the node is connected as a peer and it is
+	/// processed by [`OnionMessageHandler::next_onion_message_for_peer`].
+	BufferedAwaitingConnection(PublicKey),
+}
+
 /// Errors that may occur when [sending an onion message].
 ///
 /// [sending an onion message]: OnionMessenger::send_onion_message
@@ -259,8 +400,10 @@ pub enum SendError {
 	/// The provided [`Destination`] was an invalid [`BlindedPath`] due to not having any blinded
 	/// hops.
 	TooFewBlindedHops,
-	/// Our next-hop peer was offline or does not support onion message forwarding.
-	InvalidFirstHop,
+	/// The first hop is not a peer and doesn't have a known [`SocketAddress`].
+	InvalidFirstHop(PublicKey),
+	/// A path from the sender to the destination could not be found by the [`MessageRouter`].
+	PathNotFound,
 	/// Onion message contents must have a TLV type >= 64.
 	InvalidMessage,
 	/// Our next-hop peer's buffer was full or our total outbound buffer was full.
@@ -327,16 +470,17 @@ pub enum PeeledOnion<T: OnionMessageContents> {
 /// Creates an [`OnionMessage`] with the given `contents` for sending to the destination of
 /// `path`.
 ///
-/// Returns both the node id of the peer to send the message to and the message itself.
+/// Returns the node id of the peer to send the message to, the message itself, and any addresses
+/// need to connect to the first node.
 pub fn create_onion_message<ES: Deref, NS: Deref, T: OnionMessageContents>(
 	entropy_source: &ES, node_signer: &NS, secp_ctx: &Secp256k1<secp256k1::All>,
 	path: OnionMessagePath, contents: T, reply_path: Option<BlindedPath>,
-) -> Result<(PublicKey, OnionMessage), SendError>
+) -> Result<(PublicKey, OnionMessage, Option<Vec<SocketAddress>>), SendError>
 where
 	ES::Target: EntropySource,
 	NS::Target: NodeSigner,
 {
-	let OnionMessagePath { intermediate_nodes, mut destination } = path;
+	let OnionMessagePath { intermediate_nodes, mut destination, first_node_addresses } = path;
 	if let Destination::BlindedPath(BlindedPath { ref blinded_hops, .. }) = destination {
 		if blinded_hops.is_empty() {
 			return Err(SendError::TooFewBlindedHops);
@@ -377,10 +521,8 @@ where
 	let onion_routing_packet = construct_onion_message_packet(
 		packet_payloads, packet_keys, prng_seed).map_err(|()| SendError::TooBigPacket)?;
 
-	Ok((first_node_id, OnionMessage {
-		blinding_point,
-		onion_routing_packet
-	}))
+	let message = OnionMessage { blinding_point, onion_routing_packet };
+	Ok((first_node_id, message, first_node_addresses))
 }
 
 /// Decode one layer of an incoming [`OnionMessage`].
@@ -501,7 +643,7 @@ where
 		OnionMessenger {
 			entropy_source,
 			node_signer,
-			pending_messages: Mutex::new(HashMap::new()),
+			message_recipients: Mutex::new(HashMap::new()),
 			secp_ctx,
 			logger,
 			message_router,
@@ -510,26 +652,104 @@ where
 		}
 	}
 
-	/// Sends an [`OnionMessage`] with the given `contents` for sending to the destination of
-	/// `path`.
+	/// Sends an [`OnionMessage`] with the given `contents` to `destination`.
 	///
 	/// See [`OnionMessenger`] for example usage.
 	pub fn send_onion_message<T: OnionMessageContents>(
-		&self, path: OnionMessagePath, contents: T, reply_path: Option<BlindedPath>
-	) -> Result<(), SendError> {
-		let (first_node_id, onion_msg) = create_onion_message(
+		&self, contents: T, destination: Destination, reply_path: Option<BlindedPath>
+	) -> Result<SendSuccess, SendError> {
+		self.find_path_and_enqueue_onion_message(
+			contents, destination, reply_path, format_args!("")
+		)
+	}
+
+	fn find_path_and_enqueue_onion_message<T: OnionMessageContents>(
+		&self, contents: T, destination: Destination, reply_path: Option<BlindedPath>,
+		log_suffix: fmt::Arguments
+	) -> Result<SendSuccess, SendError> {
+		let result = self.find_path(destination)
+			.and_then(|path| self.enqueue_onion_message(path, contents, reply_path, log_suffix));
+
+		match result.as_ref() {
+			Err(SendError::GetNodeIdFailed) => {
+				log_warn!(self.logger, "Unable to retrieve node id {}", log_suffix);
+			},
+			Err(SendError::PathNotFound) => {
+				log_trace!(self.logger, "Failed to find path {}", log_suffix);
+			},
+			Err(e) => {
+				log_trace!(self.logger, "Failed sending onion message {}: {:?}", log_suffix, e);
+			},
+			Ok(SendSuccess::Buffered) => {
+				log_trace!(self.logger, "Buffered onion message {}", log_suffix);
+			},
+			Ok(SendSuccess::BufferedAwaitingConnection(node_id)) => {
+				log_trace!(
+					self.logger, "Buffered onion message waiting on peer connection {}: {:?}",
+					log_suffix, node_id
+				);
+			},
+		}
+
+		result
+	}
+
+	fn find_path(&self, destination: Destination) -> Result<OnionMessagePath, SendError> {
+		let sender = self.node_signer
+			.get_node_id(Recipient::Node)
+			.map_err(|_| SendError::GetNodeIdFailed)?;
+
+		let peers = self.message_recipients.lock().unwrap()
+			.iter()
+			.filter(|(_, recipient)| matches!(recipient, OnionMessageRecipient::ConnectedPeer(_)))
+			.map(|(node_id, _)| *node_id)
+			.collect();
+
+		self.message_router
+			.find_path(sender, peers, destination)
+			.map_err(|_| SendError::PathNotFound)
+	}
+
+	fn enqueue_onion_message<T: OnionMessageContents>(
+		&self, path: OnionMessagePath, contents: T, reply_path: Option<BlindedPath>,
+		log_suffix: fmt::Arguments
+	) -> Result<SendSuccess, SendError> {
+		log_trace!(self.logger, "Constructing onion message {}: {:?}", log_suffix, contents);
+
+		let (first_node_id, onion_message, addresses) = create_onion_message(
 			&self.entropy_source, &self.node_signer, &self.secp_ctx, path, contents, reply_path
 		)?;
 
-		let mut pending_per_peer_msgs = self.pending_messages.lock().unwrap();
-		if outbound_buffer_full(&first_node_id, &pending_per_peer_msgs) { return Err(SendError::BufferFull) }
-		match pending_per_peer_msgs.entry(first_node_id) {
-			hash_map::Entry::Vacant(_) => Err(SendError::InvalidFirstHop),
-			hash_map::Entry::Occupied(mut e) => {
-				e.get_mut().push_back(onion_msg);
-				Ok(())
-			}
+		let mut message_recipients = self.message_recipients.lock().unwrap();
+		if outbound_buffer_full(&first_node_id, &message_recipients) {
+			return Err(SendError::BufferFull);
 		}
+
+		match message_recipients.entry(first_node_id) {
+			hash_map::Entry::Vacant(e) => match addresses {
+				None => Err(SendError::InvalidFirstHop(first_node_id)),
+				Some(addresses) => {
+					e.insert(OnionMessageRecipient::pending_connection(addresses))
+						.enqueue_message(onion_message);
+					Ok(SendSuccess::BufferedAwaitingConnection(first_node_id))
+				},
+			},
+			hash_map::Entry::Occupied(mut e) => {
+				e.get_mut().enqueue_message(onion_message);
+				if e.get().is_connected() {
+					Ok(SendSuccess::Buffered)
+				} else {
+					Ok(SendSuccess::BufferedAwaitingConnection(first_node_id))
+				}
+			},
+		}
+	}
+
+	#[cfg(test)]
+	pub(super) fn send_onion_message_using_path<T: OnionMessageContents>(
+		&self, path: OnionMessagePath, contents: T, reply_path: Option<BlindedPath>
+	) -> Result<SendSuccess, SendError> {
+		self.enqueue_onion_message(path, contents, reply_path, format_args!(""))
 	}
 
 	fn handle_onion_message_response<T: OnionMessageContents>(
@@ -538,7 +758,7 @@ where
 		if let Some(response) = response {
 			match reply_path {
 				Some(reply_path) => {
-					self.find_path_and_enqueue_onion_message(
+					let _ = self.find_path_and_enqueue_onion_message(
 						response, Destination::BlindedPath(reply_path), None, log_suffix
 					);
 				},
@@ -549,55 +769,26 @@ where
 		}
 	}
 
-	fn find_path_and_enqueue_onion_message<T: OnionMessageContents>(
-		&self, contents: T, destination: Destination, reply_path: Option<BlindedPath>,
-		log_suffix: fmt::Arguments
-	) {
-		let sender = match self.node_signer.get_node_id(Recipient::Node) {
-			Ok(node_id) => node_id,
-			Err(_) => {
-				log_warn!(self.logger, "Unable to retrieve node id {}", log_suffix);
-				return;
-			}
-		};
-
-		let peers = self.pending_messages.lock().unwrap().keys().copied().collect();
-		let path = match self.message_router.find_path(sender, peers, destination) {
-			Ok(path) => path,
-			Err(()) => {
-				log_trace!(self.logger, "Failed to find path {}", log_suffix);
-				return;
-			},
-		};
-
-		log_trace!(self.logger, "Sending onion message {}", log_suffix);
-
-		if let Err(e) = self.send_onion_message(path, contents, reply_path) {
-			log_trace!(self.logger, "Failed sending onion message {}: {:?}", log_suffix, e);
-			return;
-		}
-	}
-
 	#[cfg(test)]
 	pub(super) fn release_pending_msgs(&self) -> HashMap<PublicKey, VecDeque<OnionMessage>> {
-		let mut pending_msgs = self.pending_messages.lock().unwrap();
+		let mut message_recipients = self.message_recipients.lock().unwrap();
 		let mut msgs = HashMap::new();
 		// We don't want to disconnect the peers by removing them entirely from the original map, so we
-		// swap the pending message buffers individually.
-		for (peer_node_id, pending_messages) in &mut *pending_msgs {
-			msgs.insert(*peer_node_id, core::mem::take(pending_messages));
+		// release the pending message buffers individually.
+		for (node_id, recipient) in &mut *message_recipients {
+			msgs.insert(*node_id, recipient.release_pending_messages());
 		}
 		msgs
 	}
 }
 
-fn outbound_buffer_full(peer_node_id: &PublicKey, buffer: &HashMap<PublicKey, VecDeque<OnionMessage>>) -> bool {
+fn outbound_buffer_full(peer_node_id: &PublicKey, buffer: &HashMap<PublicKey, OnionMessageRecipient>) -> bool {
 	const MAX_TOTAL_BUFFER_SIZE: usize = (1 << 20) * 128;
 	const MAX_PER_PEER_BUFFER_SIZE: usize = (1 << 10) * 256;
 	let mut total_buffered_bytes = 0;
 	let mut peer_buffered_bytes = 0;
 	for (pk, peer_buf) in buffer {
-		for om in peer_buf {
+		for om in peer_buf.pending_messages() {
 			let om_len = om.serialized_length();
 			if pk == peer_node_id {
 				peer_buffered_bytes += om_len;
@@ -612,6 +803,27 @@ fn outbound_buffer_full(peer_node_id: &PublicKey, buffer: &HashMap<PublicKey, Ve
 		}
 	}
 	false
+}
+
+impl<ES: Deref, NS: Deref, L: Deref, MR: Deref, OMH: Deref, CMH: Deref> EventsProvider
+for OnionMessenger<ES, NS, L, MR, OMH, CMH>
+where
+	ES::Target: EntropySource,
+	NS::Target: NodeSigner,
+	L::Target: Logger,
+	MR::Target: MessageRouter,
+	OMH::Target: OffersMessageHandler,
+	CMH::Target: CustomOnionMessageHandler,
+{
+	fn process_pending_events<H: Deref>(&self, handler: H) where H::Target: EventHandler {
+		for (node_id, recipient) in self.message_recipients.lock().unwrap().iter_mut() {
+			if let OnionMessageRecipient::PendingConnection(_, addresses, _) = recipient {
+				if let Some(addresses) = addresses.take() {
+					handler.handle_event(Event::ConnectionNeeded { node_id: *node_id, addresses });
+				}
+			}
+		}
+	}
 }
 
 impl<ES: Deref, NS: Deref, L: Deref, MR: Deref, OMH: Deref, CMH: Deref> OnionMessageHandler
@@ -629,9 +841,10 @@ where
 			msg, &self.secp_ctx, &*self.node_signer, &*self.logger, &*self.custom_handler
 		) {
 			Ok(PeeledOnion::Receive(message, path_id, reply_path)) => {
-				log_trace!(self.logger,
-					"Received an onion message with path_id {:02x?} and {} reply_path",
-						path_id, if reply_path.is_some() { "a" } else { "no" });
+				log_trace!(
+					self.logger,
+				   "Received an onion message with path_id {:02x?} and {} reply_path: {:?}",
+					path_id, if reply_path.is_some() { "a" } else { "no" }, message);
 
 				match message {
 					ParsedOnionMessageContents::Offers(msg) => {
@@ -655,24 +868,28 @@ where
 				}
 			},
 			Ok(PeeledOnion::Forward(next_node_id, onion_message)) => {
-				let mut pending_per_peer_msgs = self.pending_messages.lock().unwrap();
-				if outbound_buffer_full(&next_node_id, &pending_per_peer_msgs) {
+				let mut message_recipients = self.message_recipients.lock().unwrap();
+				if outbound_buffer_full(&next_node_id, &message_recipients) {
 					log_trace!(self.logger, "Dropping forwarded onion message to peer {:?}: outbound buffer full", next_node_id);
 					return
 				}
 
 				#[cfg(fuzzing)]
-				pending_per_peer_msgs.entry(next_node_id).or_insert_with(VecDeque::new);
+				message_recipients
+					.entry(next_node_id)
+					.or_insert_with(|| OnionMessageRecipient::ConnectedPeer(VecDeque::new()));
 
-				match pending_per_peer_msgs.entry(next_node_id) {
-					hash_map::Entry::Vacant(_) => {
+				match message_recipients.entry(next_node_id) {
+					hash_map::Entry::Occupied(mut e) if matches!(
+						e.get(), OnionMessageRecipient::ConnectedPeer(..)
+					) => {
+						e.get_mut().enqueue_message(onion_message);
+						log_trace!(self.logger, "Forwarding an onion message to peer {}", next_node_id);
+					},
+					_ => {
 						log_trace!(self.logger, "Dropping forwarded onion message to disconnected peer {:?}", next_node_id);
 						return
 					},
-					hash_map::Entry::Occupied(mut e) => {
-						e.get_mut().push_back(onion_message);
-						log_trace!(self.logger, "Forwarding an onion message to peer {}", next_node_id);
-					}
 				}
 			},
 			Err(e) => {
@@ -683,15 +900,42 @@ where
 
 	fn peer_connected(&self, their_node_id: &PublicKey, init: &msgs::Init, _inbound: bool) -> Result<(), ()> {
 		if init.features.supports_onion_messages() {
-			let mut peers = self.pending_messages.lock().unwrap();
-			peers.insert(their_node_id.clone(), VecDeque::new());
+			self.message_recipients.lock().unwrap()
+				.entry(*their_node_id)
+				.or_insert_with(|| OnionMessageRecipient::ConnectedPeer(VecDeque::new()))
+				.mark_connected();
+		} else {
+			self.message_recipients.lock().unwrap().remove(their_node_id);
 		}
+
 		Ok(())
 	}
 
 	fn peer_disconnected(&self, their_node_id: &PublicKey) {
-		let mut pending_msgs = self.pending_messages.lock().unwrap();
-		pending_msgs.remove(their_node_id);
+		match self.message_recipients.lock().unwrap().remove(their_node_id) {
+			Some(OnionMessageRecipient::ConnectedPeer(..)) => {},
+			_ => debug_assert!(false),
+		}
+	}
+
+	fn timer_tick_occurred(&self) {
+		let mut message_recipients = self.message_recipients.lock().unwrap();
+
+		// Drop any pending recipients since the last call to avoid retaining buffered messages for
+		// too long.
+		message_recipients.retain(|_, recipient| match recipient {
+			OnionMessageRecipient::PendingConnection(_, None, ticks) => *ticks < MAX_TIMER_TICKS,
+			OnionMessageRecipient::PendingConnection(_, Some(_), _) => true,
+			_ => true,
+		});
+
+		// Increment a timer tick for pending recipients so that their buffered messages are dropped
+		// at MAX_TIMER_TICKS.
+		for recipient in message_recipients.values_mut() {
+			if let OnionMessageRecipient::PendingConnection(_, None, ticks) = recipient {
+				*ticks += 1;
+			}
+		}
 	}
 
 	fn provided_node_features(&self) -> NodeFeatures {
@@ -716,7 +960,7 @@ where
 			let PendingOnionMessage { contents, destination, reply_path } = message;
 			#[cfg(c_bindings)]
 			let (contents, destination, reply_path) = message;
-			self.find_path_and_enqueue_onion_message(
+			let _ = self.find_path_and_enqueue_onion_message(
 				contents, destination, reply_path, format_args!("when sending OffersMessage")
 			);
 		}
@@ -727,16 +971,14 @@ where
 			let PendingOnionMessage { contents, destination, reply_path } = message;
 			#[cfg(c_bindings)]
 			let (contents, destination, reply_path) = message;
-			self.find_path_and_enqueue_onion_message(
+			let _ = self.find_path_and_enqueue_onion_message(
 				contents, destination, reply_path, format_args!("when sending CustomMessage")
 			);
 		}
 
-		let mut pending_msgs = self.pending_messages.lock().unwrap();
-		if let Some(msgs) = pending_msgs.get_mut(&peer_node_id) {
-			return msgs.pop_front()
-		}
-		None
+		self.message_recipients.lock().unwrap()
+			.get_mut(&peer_node_id)
+			.and_then(|buffer| buffer.dequeue_message())
 	}
 }
 
@@ -754,7 +996,7 @@ pub type SimpleArcOnionMessenger<M, T, F, L> = OnionMessenger<
 	Arc<KeysManager>,
 	Arc<KeysManager>,
 	Arc<L>,
-	Arc<DefaultMessageRouter>,
+	Arc<DefaultMessageRouter<Arc<NetworkGraph<Arc<L>>>, Arc<L>>>,
 	Arc<SimpleArcChannelManager<M, T, F, L>>,
 	IgnoringMessageHandler
 >;
@@ -773,7 +1015,7 @@ pub type SimpleRefOnionMessenger<
 	&'a KeysManager,
 	&'a KeysManager,
 	&'b L,
-	&'i DefaultMessageRouter,
+	&'i DefaultMessageRouter<&'g NetworkGraph<&'b L>, &'b L>,
 	&'j SimpleRefChannelManager<'a, 'b, 'c, 'd, 'e, 'f, 'g, 'h, M, T, F, L>,
 	IgnoringMessageHandler
 >;

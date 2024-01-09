@@ -17,7 +17,7 @@ use crate::chain::chaininterface::LowerBoundedFeeEstimator;
 use crate::chain::channelmonitor;
 use crate::chain::channelmonitor::{CLOSED_CHANNEL_UPDATE_ID, CLTV_CLAIM_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS, ANTI_REORG_DELAY};
 use crate::chain::transaction::OutPoint;
-use crate::sign::{EcdsaChannelSigner, EntropySource, SignerProvider};
+use crate::sign::{ecdsa::EcdsaChannelSigner, EntropySource, SignerProvider};
 use crate::events::{Event, MessageSendEvent, MessageSendEventsProvider, PathFailure, PaymentPurpose, ClosureReason, HTLCDestination, PaymentFailureReason};
 use crate::ln::{ChannelId, PaymentPreimage, PaymentSecret, PaymentHash};
 use crate::ln::channel::{commitment_tx_base_weight, COMMITMENT_TX_WEIGHT_PER_HTLC, CONCURRENT_INBOUND_HTLC_FEE_BUFFER, FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE, MIN_AFFORDABLE_HTLC_COUNT, get_holder_selected_channel_reserve_satoshis, OutboundV1Channel, InboundV1Channel, COINBASE_MATURITY, ChannelPhase};
@@ -1175,7 +1175,7 @@ fn test_update_fee_that_funder_cannot_afford() {
 		*feerate_lock += 4;
 	}
 	nodes[0].node.timer_tick_occurred();
-	nodes[0].logger.assert_log("lightning::ln::channel".to_string(), format!("Cannot afford to send new feerate at {}", feerate + 4), 1);
+	nodes[0].logger.assert_log("lightning::ln::channel", format!("Cannot afford to send new feerate at {}", feerate + 4), 1);
 	check_added_monitors!(nodes[0], 0);
 
 	const INITIAL_COMMITMENT_NUMBER: u64 = 281474976710654;
@@ -1228,7 +1228,7 @@ fn test_update_fee_that_funder_cannot_afford() {
 			&mut htlcs,
 			&local_chan.context.channel_transaction_parameters.as_counterparty_broadcastable()
 		);
-		local_chan_signer.as_ecdsa().unwrap().sign_counterparty_commitment(&commitment_tx, Vec::new(), &secp_ctx).unwrap()
+		local_chan_signer.as_ecdsa().unwrap().sign_counterparty_commitment(&commitment_tx, Vec::new(), Vec::new(), &secp_ctx).unwrap()
 	};
 
 	let commit_signed_msg = msgs::CommitmentSigned {
@@ -1250,7 +1250,7 @@ fn test_update_fee_that_funder_cannot_afford() {
 	//check to see if the funder, who sent the update_fee request, can afford the new fee (funder_balance >= fee+channel_reserve)
 	//Should produce and error.
 	nodes[1].node.handle_commitment_signed(&nodes[0].node.get_our_node_id(), &commit_signed_msg);
-	nodes[1].logger.assert_log("lightning::ln::channelmanager".to_string(), "Funding remote cannot afford proposed new fee".to_string(), 1);
+	nodes[1].logger.assert_log("lightning::ln::channelmanager", "Funding remote cannot afford proposed new fee".to_string(), 1);
 	check_added_monitors!(nodes[1], 1);
 	check_closed_broadcast!(nodes[1], true);
 	check_closed_event!(nodes[1], 1, ClosureReason::ProcessingError { err: String::from("Funding remote cannot afford proposed new fee") },
@@ -1897,6 +1897,7 @@ fn test_fee_spike_violation_fails_htlc() {
 		cltv_expiry: htlc_cltv,
 		onion_routing_packet: onion_packet,
 		skimmed_fee_msat: None,
+		blinding_point: None,
 	};
 
 	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &msg);
@@ -1975,7 +1976,7 @@ fn test_fee_spike_violation_fails_htlc() {
 			&mut vec![(accepted_htlc_info, ())],
 			&local_chan.context.channel_transaction_parameters.as_counterparty_broadcastable()
 		);
-		local_chan_signer.as_ecdsa().unwrap().sign_counterparty_commitment(&commitment_tx, Vec::new(), &secp_ctx).unwrap()
+		local_chan_signer.as_ecdsa().unwrap().sign_counterparty_commitment(&commitment_tx, Vec::new(), Vec::new(), &secp_ctx).unwrap()
 	};
 
 	let commit_signed_msg = msgs::CommitmentSigned {
@@ -2010,7 +2011,7 @@ fn test_fee_spike_violation_fails_htlc() {
 		},
 		_ => panic!("Unexpected event"),
 	};
-	nodes[1].logger.assert_log("lightning::ln::channel".to_string(),
+	nodes[1].logger.assert_log("lightning::ln::channel",
 		format!("Attempting to fail HTLC due to fee spike buffer violation in channel {}. Rebalancing is required.", raa_msg.channel_id), 1);
 
 	check_added_monitors!(nodes[1], 2);
@@ -2093,11 +2094,12 @@ fn test_chan_reserve_violation_inbound_htlc_outbound_channel() {
 		cltv_expiry: htlc_cltv,
 		onion_routing_packet: onion_packet,
 		skimmed_fee_msat: None,
+		blinding_point: None,
 	};
 
 	nodes[0].node.handle_update_add_htlc(&nodes[1].node.get_our_node_id(), &msg);
 	// Check that the payment failed and the channel is closed in response to the malicious UpdateAdd.
-	nodes[0].logger.assert_log("lightning::ln::channelmanager".to_string(), "Cannot accept HTLC that would put our balance under counterparty-announced channel reserve value".to_string(), 1);
+	nodes[0].logger.assert_log("lightning::ln::channelmanager", "Cannot accept HTLC that would put our balance under counterparty-announced channel reserve value".to_string(), 1);
 	assert_eq!(nodes[0].node.list_channels().len(), 0);
 	let err_msg = check_closed_broadcast!(nodes[0], true).unwrap();
 	assert_eq!(err_msg.data, "Cannot accept HTLC that would put our balance under counterparty-announced channel reserve value");
@@ -2271,11 +2273,12 @@ fn test_chan_reserve_violation_inbound_htlc_inbound_chan() {
 		cltv_expiry: htlc_cltv,
 		onion_routing_packet: onion_packet,
 		skimmed_fee_msat: None,
+		blinding_point: None,
 	};
 
 	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &msg);
 	// Check that the payment failed and the channel is closed in response to the malicious UpdateAdd.
-	nodes[1].logger.assert_log("lightning::ln::channelmanager".to_string(), "Remote HTLC add would put them under remote reserve value".to_string(), 1);
+	nodes[1].logger.assert_log("lightning::ln::channelmanager", "Remote HTLC add would put them under remote reserve value".to_string(), 1);
 	assert_eq!(nodes[1].node.list_channels().len(), 1);
 	let err_msg = check_closed_broadcast!(nodes[1], true).unwrap();
 	assert_eq!(err_msg.data, "Remote HTLC add would put them under remote reserve value");
@@ -3992,6 +3995,7 @@ fn fail_backward_pending_htlc_upon_channel_failure() {
 			cltv_expiry,
 			onion_routing_packet,
 			skimmed_fee_msat: None,
+			blinding_point: None,
 		};
 		nodes[0].node.handle_update_add_htlc(&nodes[1].node.get_our_node_id(), &update_add_htlc);
 	}
@@ -6408,7 +6412,7 @@ fn test_fail_holding_cell_htlc_upon_free() {
 	// us to surface its failure to the user.
 	chan_stat = get_channel_value_stat!(nodes[0], nodes[1], chan.2);
 	assert_eq!(chan_stat.holding_cell_outbound_amount_msat, 0);
-	nodes[0].logger.assert_log("lightning::ln::channel".to_string(), format!("Freeing holding cell with 1 HTLC updates in channel {}", chan.2), 1);
+	nodes[0].logger.assert_log("lightning::ln::channel", format!("Freeing holding cell with 1 HTLC updates in channel {}", chan.2), 1);
 
 	// Check that the payment failed to be sent out.
 	let events = nodes[0].node.get_and_clear_pending_events();
@@ -6496,7 +6500,7 @@ fn test_free_and_fail_holding_cell_htlcs() {
 	// to surface its failure to the user. The first payment should succeed.
 	chan_stat = get_channel_value_stat!(nodes[0], nodes[1], chan.2);
 	assert_eq!(chan_stat.holding_cell_outbound_amount_msat, 0);
-	nodes[0].logger.assert_log("lightning::ln::channel".to_string(), format!("Freeing holding cell with 2 HTLC updates in channel {}", chan.2), 1);
+	nodes[0].logger.assert_log("lightning::ln::channel", format!("Freeing holding cell with 2 HTLC updates in channel {}", chan.2), 1);
 
 	// Check that the second payment failed to be sent out.
 	let events = nodes[0].node.get_and_clear_pending_events();
@@ -6770,7 +6774,7 @@ fn test_update_add_htlc_bolt2_receiver_zero_value_msat() {
 	updates.update_add_htlcs[0].amount_msat = 0;
 
 	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &updates.update_add_htlcs[0]);
-	nodes[1].logger.assert_log("lightning::ln::channelmanager".to_string(), "Remote side tried to send a 0-msat HTLC".to_string(), 1);
+	nodes[1].logger.assert_log("lightning::ln::channelmanager", "Remote side tried to send a 0-msat HTLC".to_string(), 1);
 	check_closed_broadcast!(nodes[1], true).unwrap();
 	check_added_monitors!(nodes[1], 1);
 	check_closed_event!(nodes[1], 1, ClosureReason::ProcessingError { err: "Remote side tried to send a 0-msat HTLC".to_string() },
@@ -6963,6 +6967,7 @@ fn test_update_add_htlc_bolt2_receiver_check_max_htlc_limit() {
 		cltv_expiry: htlc_cltv,
 		onion_routing_packet: onion_packet.clone(),
 		skimmed_fee_msat: None,
+		blinding_point: None,
 	};
 
 	for i in 0..50 {
@@ -9536,7 +9541,7 @@ fn test_duplicate_chan_id() {
 	nodes[0].node.handle_accept_channel(&nodes[1].node.get_our_node_id(), &get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, nodes[0].node.get_our_node_id()));
 	create_funding_transaction(&nodes[0], &nodes[1].node.get_our_node_id(), 100000, 42); // Get and check the FundingGenerationReady event
 
-	let (_, funding_created) = {
+	let funding_created = {
 		let per_peer_state = nodes[0].node.per_peer_state.read().unwrap();
 		let mut a_peer_state = per_peer_state.get(&nodes[1].node.get_our_node_id()).unwrap().lock().unwrap();
 		// Once we call `get_funding_created` the channel has a duplicate channel_id as
@@ -9544,7 +9549,7 @@ fn test_duplicate_chan_id() {
 		// try to create another channel. Instead, we drop the channel entirely here (leaving the
 		// channelmanager in a possibly nonsense state instead).
 		match a_peer_state.channel_by_id.remove(&open_chan_2_msg.temporary_channel_id).unwrap() {
-			ChannelPhase::UnfundedOutboundV1(chan) => {
+			ChannelPhase::UnfundedOutboundV1(mut chan) => {
 				let logger = test_utils::TestLogger::new();
 				chan.get_funding_created(tx.clone(), funding_outpoint, false, &&logger).map_err(|_| ()).unwrap()
 			},
@@ -10320,10 +10325,10 @@ fn do_test_max_dust_htlc_exposure(dust_outbound_balance: bool, exposure_breach_e
 			// Outbound dust balance: 6399 sats
 			let dust_inbound_overflow = dust_inbound_htlc_on_holder_tx_msat * (dust_inbound_htlc_on_holder_tx + 1);
 			let dust_outbound_overflow = dust_outbound_htlc_on_holder_tx_msat * dust_outbound_htlc_on_holder_tx + dust_inbound_htlc_on_holder_tx_msat;
-			nodes[0].logger.assert_log("lightning::ln::channel".to_string(), format!("Cannot accept value that would put our exposure to dust HTLCs at {} over the limit {} on holder commitment tx", if dust_outbound_balance { dust_outbound_overflow } else { dust_inbound_overflow }, max_dust_htlc_exposure_msat), 1);
+			nodes[0].logger.assert_log("lightning::ln::channel", format!("Cannot accept value that would put our exposure to dust HTLCs at {} over the limit {} on holder commitment tx", if dust_outbound_balance { dust_outbound_overflow } else { dust_inbound_overflow }, max_dust_htlc_exposure_msat), 1);
 		} else {
 			// Outbound dust balance: 5200 sats
-			nodes[0].logger.assert_log("lightning::ln::channel".to_string(),
+			nodes[0].logger.assert_log("lightning::ln::channel",
 				format!("Cannot accept value that would put our exposure to dust HTLCs at {} over the limit {} on counterparty commitment tx",
 					dust_htlc_on_counterparty_tx_msat * (dust_htlc_on_counterparty_tx - 1) + dust_htlc_on_counterparty_tx_msat + 4,
 					max_dust_htlc_exposure_msat), 1);

@@ -26,7 +26,7 @@
 //! #
 //! # struct FakeLogger {};
 //! # impl Logger for FakeLogger {
-//! #     fn log(&self, record: &Record) { unimplemented!() }
+//! #     fn log(&self, record: Record) { unimplemented!() }
 //! # }
 //! # fn find_scored_route(payer: PublicKey, route_params: RouteParameters, network_graph: NetworkGraph<&FakeLogger>) {
 //! # let logger = FakeLogger {};
@@ -58,7 +58,7 @@
 
 use crate::ln::msgs::DecodeError;
 use crate::routing::gossip::{EffectiveCapacity, NetworkGraph, NodeId};
-use crate::routing::router::Path;
+use crate::routing::router::{Path, CandidateRouteHop};
 use crate::util::ser::{Readable, ReadableArgs, Writeable, Writer};
 use crate::util::logger::Logger;
 use crate::util::time::Time;
@@ -103,7 +103,7 @@ pub trait ScoreLookUp {
 	/// [`u64::max_value`] is given to indicate sufficient capacity for the invoice's full amount.
 	/// Thus, implementations should be overflow-safe.
 	fn channel_penalty_msat(
-		&self, short_channel_id: u64, source: &NodeId, target: &NodeId, usage: ChannelUsage, score_params: &Self::ScoreParams
+		&self, candidate: &CandidateRouteHop, usage: ChannelUsage, score_params: &Self::ScoreParams
 	) -> u64;
 }
 
@@ -137,9 +137,9 @@ impl<T: ScoreLookUp + ScoreUpdate $(+ $supertrait)*> Score for T {}
 impl<S: ScoreLookUp, T: Deref<Target=S>> ScoreLookUp for T {
 	type ScoreParams = S::ScoreParams;
 	fn channel_penalty_msat(
-		&self, short_channel_id: u64, source: &NodeId, target: &NodeId, usage: ChannelUsage, score_params: &Self::ScoreParams
+		&self, candidate: &CandidateRouteHop, usage: ChannelUsage, score_params: &Self::ScoreParams
 	) -> u64 {
-		self.deref().channel_penalty_msat(short_channel_id, source, target, usage, score_params)
+		self.deref().channel_penalty_msat(candidate, usage, score_params)
 	}
 }
 
@@ -315,10 +315,9 @@ impl<'a, T: 'a + Score> Deref for MultiThreadedScoreLockRead<'a, T> {
 #[cfg(c_bindings)]
 impl<'a, T: Score> ScoreLookUp for MultiThreadedScoreLockRead<'a, T> {
 	type ScoreParams = T::ScoreParams;
-	fn channel_penalty_msat(&self, short_channel_id: u64, source: &NodeId,
-		target: &NodeId, usage: ChannelUsage, score_params: &Self::ScoreParams
+	fn channel_penalty_msat(&self, candidate:&CandidateRouteHop, usage: ChannelUsage, score_params: &Self::ScoreParams
 	) -> u64 {
-		self.0.channel_penalty_msat(short_channel_id, source, target, usage, score_params)
+		self.0.channel_penalty_msat(candidate, usage, score_params)
 	}
 }
 
@@ -394,7 +393,7 @@ impl FixedPenaltyScorer {
 
 impl ScoreLookUp for FixedPenaltyScorer {
 	type ScoreParams = ();
-	fn channel_penalty_msat(&self, _: u64, _: &NodeId, _: &NodeId, _: ChannelUsage, _score_params: &Self::ScoreParams) -> u64 {
+	fn channel_penalty_msat(&self, _: &CandidateRouteHop, _: ChannelUsage, _score_params: &Self::ScoreParams) -> u64 {
 		self.penalty_msat
 	}
 }
@@ -1343,9 +1342,16 @@ impl<L: DerefMut<Target = u64>, BRT: DerefMut<Target = HistoricalBucketRangeTrac
 impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, T: Time> ScoreLookUp for ProbabilisticScorerUsingTime<G, L, T> where L::Target: Logger {
 	type ScoreParams = ProbabilisticScoringFeeParameters;
 	fn channel_penalty_msat(
-		&self, short_channel_id: u64, source: &NodeId, target: &NodeId, usage: ChannelUsage, score_params: &ProbabilisticScoringFeeParameters
+		&self, candidate: &CandidateRouteHop, usage: ChannelUsage, score_params: &ProbabilisticScoringFeeParameters
 	) -> u64 {
-		if let Some(penalty) = score_params.manual_node_penalties.get(target) {
+		let (scid, target) = match candidate {
+			CandidateRouteHop::PublicHop { info, short_channel_id } => {
+				(short_channel_id, info.target())
+			},
+			_ => return 0,
+		};
+		let source = candidate.source();
+		if let Some(penalty) = score_params.manual_node_penalties.get(&target) {
 			return *penalty;
 		}
 
@@ -1375,9 +1381,9 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, T: Time> ScoreLookUp for Prob
 		let amount_msat = usage.amount_msat.saturating_add(usage.inflight_htlc_msat);
 		let capacity_msat = usage.effective_capacity.as_msat();
 		self.channel_liquidities
-			.get(&short_channel_id)
+			.get(&scid)
 			.unwrap_or(&ChannelLiquidity::new())
-			.as_directed(source, target, capacity_msat, self.decay_params)
+			.as_directed(&source, &target, capacity_msat, self.decay_params)
 			.penalty_msat(amount_msat, score_params)
 			.saturating_add(anti_probing_penalty_msat)
 			.saturating_add(base_penalty_msat)
@@ -2174,7 +2180,7 @@ mod tests {
 	use crate::ln::channelmanager;
 	use crate::ln::msgs::{ChannelAnnouncement, ChannelUpdate, UnsignedChannelAnnouncement, UnsignedChannelUpdate};
 	use crate::routing::gossip::{EffectiveCapacity, NetworkGraph, NodeId};
-	use crate::routing::router::{BlindedTail, Path, RouteHop};
+	use crate::routing::router::{BlindedTail, Path, RouteHop, CandidateRouteHop};
 	use crate::routing::scoring::{ChannelUsage, ScoreLookUp, ScoreUpdate};
 	use crate::util::ser::{ReadableArgs, Writeable};
 	use crate::util::test_utils::{self, TestLogger};
@@ -2234,10 +2240,6 @@ mod tests {
 	fn recipient_pubkey() -> PublicKey {
 		let secp_ctx = Secp256k1::new();
 		PublicKey::from_secret_key(&secp_ctx, &recipient_privkey())
-	}
-
-	fn sender_node_id() -> NodeId {
-		NodeId::from_pubkey(&sender_pubkey())
 	}
 
 	fn recipient_node_id() -> NodeId {
@@ -2541,39 +2543,45 @@ mod tests {
 		let decay_params = ProbabilisticScoringDecayParameters::default();
 		let scorer = ProbabilisticScorer::new(decay_params, &network_graph, &logger);
 		let source = source_node_id();
-		let target = target_node_id();
 
 		let usage = ChannelUsage {
 			amount_msat: 1_024,
 			inflight_htlc_msat: 0,
 			effective_capacity: EffectiveCapacity::Total { capacity_msat: 1_024_000, htlc_maximum_msat: 1_000 },
 		};
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 0);
+		let network_graph = network_graph.read_only();
+		let channel = network_graph.channel(42).unwrap();
+		let (info, _) = channel.as_directed_from(&source).unwrap();
+		let candidate = CandidateRouteHop::PublicHop {
+			info,
+			short_channel_id: 42,
+		};
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 0);
 		let usage = ChannelUsage { amount_msat: 10_240, ..usage };
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 0);
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 0);
 		let usage = ChannelUsage { amount_msat: 102_400, ..usage };
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 47);
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 47);
 		let usage = ChannelUsage { amount_msat: 1_023_999, ..usage };
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 2_000);
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 2_000);
 
 		let usage = ChannelUsage {
 			amount_msat: 128,
 			inflight_htlc_msat: 0,
 			effective_capacity: EffectiveCapacity::Total { capacity_msat: 1_024, htlc_maximum_msat: 1_000 },
 		};
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 58);
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 58);
 		let usage = ChannelUsage { amount_msat: 256, ..usage };
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 125);
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 125);
 		let usage = ChannelUsage { amount_msat: 374, ..usage };
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 198);
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 198);
 		let usage = ChannelUsage { amount_msat: 512, ..usage };
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 300);
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 300);
 		let usage = ChannelUsage { amount_msat: 640, ..usage };
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 425);
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 425);
 		let usage = ChannelUsage { amount_msat: 768, ..usage };
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 602);
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 602);
 		let usage = ChannelUsage { amount_msat: 896, ..usage };
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 902);
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 902);
 	}
 
 	#[test]
@@ -2597,19 +2605,24 @@ mod tests {
 					max_liquidity_offset_history: HistoricalBucketRangeTracker::new(),
 				});
 		let source = source_node_id();
-		let target = target_node_id();
 
 		let usage = ChannelUsage {
 			amount_msat: 39,
 			inflight_htlc_msat: 0,
 			effective_capacity: EffectiveCapacity::Total { capacity_msat: 100, htlc_maximum_msat: 1_000 },
 		};
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 0);
+		let channel = network_graph.read_only().channel(42).unwrap().to_owned();
+		let (info, _) = channel.as_directed_from(&source).unwrap();
+		let candidate = CandidateRouteHop::PublicHop {
+			info,
+			short_channel_id: 42,
+		};
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 0);
 		let usage = ChannelUsage { amount_msat: 50, ..usage };
-		assert_ne!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 0);
-		assert_ne!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), u64::max_value());
+		assert_ne!(scorer.channel_penalty_msat(&candidate, usage, &params), 0);
+		assert_ne!(scorer.channel_penalty_msat(&candidate, usage, &params), u64::max_value());
 		let usage = ChannelUsage { amount_msat: 61, ..usage };
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), u64::max_value());
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), u64::max_value());
 	}
 
 	#[test]
@@ -2621,7 +2634,6 @@ mod tests {
 			..ProbabilisticScoringFeeParameters::zero_penalty()
 		};
 		let mut scorer = ProbabilisticScorer::new(ProbabilisticScoringDecayParameters::default(), &network_graph, &logger);
-		let sender = sender_node_id();
 		let source = source_node_id();
 		let usage = ChannelUsage {
 			amount_msat: 500,
@@ -2630,14 +2642,20 @@ mod tests {
 		};
 		let failed_path = payment_path_for_amount(500);
 		let successful_path = payment_path_for_amount(200);
+		let channel = &network_graph.read_only().channel(42).unwrap().to_owned();
+		let (info, _) = channel.as_directed_from(&source).unwrap();
+		let candidate = CandidateRouteHop::PublicHop {
+			info,
+			short_channel_id: 41,
+		};
 
-		assert_eq!(scorer.channel_penalty_msat(41, &sender, &source, usage, &params), 301);
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 301);
 
 		scorer.payment_path_failed(&failed_path, 41);
-		assert_eq!(scorer.channel_penalty_msat(41, &sender, &source, usage, &params), 301);
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 301);
 
 		scorer.payment_path_successful(&successful_path);
-		assert_eq!(scorer.channel_penalty_msat(41, &sender, &source, usage, &params), 301);
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 301);
 	}
 
 	#[test]
@@ -2650,7 +2668,6 @@ mod tests {
 		};
 		let mut scorer = ProbabilisticScorer::new(ProbabilisticScoringDecayParameters::default(), &network_graph, &logger);
 		let source = source_node_id();
-		let target = target_node_id();
 		let path = payment_path_for_amount(500);
 
 		let usage = ChannelUsage {
@@ -2658,20 +2675,26 @@ mod tests {
 			inflight_htlc_msat: 0,
 			effective_capacity: EffectiveCapacity::Total { capacity_msat: 1_000, htlc_maximum_msat: 1_000 },
 		};
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 128);
+		let channel = network_graph.read_only().channel(42).unwrap().to_owned();
+		let (info, _) = channel.as_directed_from(&source).unwrap();
+		let candidate = CandidateRouteHop::PublicHop {
+			info,
+			short_channel_id: 42,
+		};
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 128);
 		let usage = ChannelUsage { amount_msat: 500, ..usage };
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 301);
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 301);
 		let usage = ChannelUsage { amount_msat: 750, ..usage };
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 602);
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 602);
 
 		scorer.payment_path_failed(&path, 43);
 
 		let usage = ChannelUsage { amount_msat: 250, ..usage };
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 0);
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 0);
 		let usage = ChannelUsage { amount_msat: 500, ..usage };
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 0);
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 0);
 		let usage = ChannelUsage { amount_msat: 750, ..usage };
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 300);
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 300);
 	}
 
 	#[test]
@@ -2685,7 +2708,6 @@ mod tests {
 		};
 		let mut scorer = ProbabilisticScorer::new(ProbabilisticScoringDecayParameters::default(), &network_graph, &logger);
 		let source = source_node_id();
-		let target = target_node_id();
 		let path = payment_path_for_amount(500);
 
 		let usage = ChannelUsage {
@@ -2693,20 +2715,26 @@ mod tests {
 			inflight_htlc_msat: 0,
 			effective_capacity: EffectiveCapacity::Total { capacity_msat: 1_000, htlc_maximum_msat: 1_000 },
 		};
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 128);
+		let channel = network_graph.read_only().channel(42).unwrap().to_owned();
+		let (info, _) = channel.as_directed_from(&source).unwrap();
+		let candidate = CandidateRouteHop::PublicHop {
+			info,
+			short_channel_id: 42,
+		};
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 128);
 		let usage = ChannelUsage { amount_msat: 500, ..usage };
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 301);
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 301);
 		let usage = ChannelUsage { amount_msat: 750, ..usage };
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 602);
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 602);
 
 		scorer.payment_path_failed(&path, 42);
 
 		let usage = ChannelUsage { amount_msat: 250, ..usage };
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 300);
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 300);
 		let usage = ChannelUsage { amount_msat: 500, ..usage };
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), u64::max_value());
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), u64::max_value());
 		let usage = ChannelUsage { amount_msat: 750, ..usage };
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), u64::max_value());
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), u64::max_value());
 	}
 
 	#[test]
@@ -2741,7 +2769,6 @@ mod tests {
 		let node_a = NodeId::from_pubkey(&pub_a);
 		let node_b = NodeId::from_pubkey(&pub_b);
 		let node_c = NodeId::from_pubkey(&pub_c);
-		let node_d = NodeId::from_pubkey(&pub_d);
 
 		let params = ProbabilisticScoringFeeParameters {
 			liquidity_penalty_multiplier_msat: 1_000,
@@ -2754,17 +2781,53 @@ mod tests {
 			inflight_htlc_msat: 0,
 			effective_capacity: EffectiveCapacity::Total { capacity_msat: 1_000, htlc_maximum_msat: 1_000 },
 		};
-		assert_eq!(scorer.channel_penalty_msat(42, &node_a, &node_b, usage, &params), 128);
+		let channel = network_graph.read_only().channel(42).unwrap().to_owned();
+		let (info, _) = channel.as_directed_from(&node_a).unwrap();
+		let candidate = CandidateRouteHop::PublicHop {
+			info,
+			short_channel_id: 42,
+		};
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 128);
 		// Note that a default liquidity bound is used for B -> C as no channel exists
-		assert_eq!(scorer.channel_penalty_msat(43, &node_b, &node_c, usage, &params), 128);
-		assert_eq!(scorer.channel_penalty_msat(44, &node_c, &node_d, usage, &params), 128);
+		let channel = network_graph.read_only().channel(42).unwrap().to_owned();
+		let (info, _) = channel.as_directed_from(&node_b).unwrap();
+		let candidate = CandidateRouteHop::PublicHop {
+			info,
+			short_channel_id: 43,
+		};
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 128);
+		let channel = network_graph.read_only().channel(44).unwrap().to_owned();
+		let (info, _) = channel.as_directed_from(&node_c).unwrap();
+		let candidate = CandidateRouteHop::PublicHop {
+			info,
+			short_channel_id: 44,
+		};
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 128);
 
 		scorer.payment_path_failed(&Path { hops: path, blinded_tail: None }, 43);
 
-		assert_eq!(scorer.channel_penalty_msat(42, &node_a, &node_b, usage, &params), 80);
+		let channel = network_graph.read_only().channel(42).unwrap().to_owned();
+		let (info, _) = channel.as_directed_from(&node_a).unwrap();
+		let candidate = CandidateRouteHop::PublicHop {
+			info,
+			short_channel_id: 42,
+		};
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 80);
 		// Note that a default liquidity bound is used for B -> C as no channel exists
-		assert_eq!(scorer.channel_penalty_msat(43, &node_b, &node_c, usage, &params), 128);
-		assert_eq!(scorer.channel_penalty_msat(44, &node_c, &node_d, usage, &params), 128);
+		let channel = network_graph.read_only().channel(42).unwrap().to_owned();
+		let (info, _) = channel.as_directed_from(&node_b).unwrap();
+		let candidate = CandidateRouteHop::PublicHop {
+			info,
+			short_channel_id: 43,
+		};
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 128);
+		let channel = network_graph.read_only().channel(44).unwrap().to_owned();
+		let (info, _) = channel.as_directed_from(&node_c).unwrap();
+		let candidate = CandidateRouteHop::PublicHop {
+			info,
+			short_channel_id: 44,
+		};
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 128);
 	}
 
 	#[test]
@@ -2776,25 +2839,39 @@ mod tests {
 			..ProbabilisticScoringFeeParameters::zero_penalty()
 		};
 		let mut scorer = ProbabilisticScorer::new(ProbabilisticScoringDecayParameters::default(), &network_graph, &logger);
-		let sender = sender_node_id();
 		let source = source_node_id();
-		let target = target_node_id();
-		let recipient = recipient_node_id();
 		let usage = ChannelUsage {
 			amount_msat: 250,
 			inflight_htlc_msat: 0,
 			effective_capacity: EffectiveCapacity::Total { capacity_msat: 1_000, htlc_maximum_msat: 1_000 },
 		};
-
-		assert_eq!(scorer.channel_penalty_msat(41, &sender, &source, usage, &params), 128);
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 128);
-		assert_eq!(scorer.channel_penalty_msat(43, &target, &recipient, usage, &params), 128);
+		let network_graph = network_graph.read_only().channels().clone();
+		let channel_42 = network_graph.get(&42).unwrap();
+		let channel_43 = network_graph.get(&43).unwrap();
+		let (info, _) = channel_42.as_directed_from(&source).unwrap();
+		let candidate_41 = CandidateRouteHop::PublicHop {
+			info,
+			short_channel_id: 41,
+		};
+		let (info, target) = channel_42.as_directed_from(&source).unwrap();
+		let candidate_42 = CandidateRouteHop::PublicHop {
+			info,
+			short_channel_id: 42,
+		};
+		let (info, _) = channel_43.as_directed_from(&target).unwrap();
+		let candidate_43 = CandidateRouteHop::PublicHop {
+			info,
+			short_channel_id: 43,
+		};
+		assert_eq!(scorer.channel_penalty_msat(&candidate_41, usage, &params), 128);
+		assert_eq!(scorer.channel_penalty_msat(&candidate_42, usage, &params), 128);
+		assert_eq!(scorer.channel_penalty_msat(&candidate_43, usage, &params), 128);
 
 		scorer.payment_path_successful(&payment_path_for_amount(500));
 
-		assert_eq!(scorer.channel_penalty_msat(41, &sender, &source, usage, &params), 128);
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 300);
-		assert_eq!(scorer.channel_penalty_msat(43, &target, &recipient, usage, &params), 300);
+		assert_eq!(scorer.channel_penalty_msat(&candidate_41, usage, &params), 128);
+		assert_eq!(scorer.channel_penalty_msat(&candidate_42, usage, &params), 300);
+		assert_eq!(scorer.channel_penalty_msat(&candidate_43, usage, &params), 300);
 	}
 
 	#[test]
@@ -2812,86 +2889,91 @@ mod tests {
 		};
 		let mut scorer = ProbabilisticScorer::new(decay_params, &network_graph, &logger);
 		let source = source_node_id();
-		let target = target_node_id();
 
 		let usage = ChannelUsage {
 			amount_msat: 0,
 			inflight_htlc_msat: 0,
 			effective_capacity: EffectiveCapacity::Total { capacity_msat: 1_024, htlc_maximum_msat: 1_024 },
 		};
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 0);
+		let channel = network_graph.read_only().channel(42).unwrap().to_owned();
+		let (info, _) = channel.as_directed_from(&source).unwrap();
+		let candidate = CandidateRouteHop::PublicHop {
+			info,
+			short_channel_id: 42,
+		};
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 0);
 		let usage = ChannelUsage { amount_msat: 1_023, ..usage };
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 2_000);
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 2_000);
 
 		scorer.payment_path_failed(&payment_path_for_amount(768), 42);
 		scorer.payment_path_failed(&payment_path_for_amount(128), 43);
 
 		// Initial penalties
 		let usage = ChannelUsage { amount_msat: 128, ..usage };
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 0);
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 0);
 		let usage = ChannelUsage { amount_msat: 256, ..usage };
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 93);
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 93);
 		let usage = ChannelUsage { amount_msat: 768, ..usage };
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 1_479);
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 1_479);
 		let usage = ChannelUsage { amount_msat: 896, ..usage };
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), u64::max_value());
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), u64::max_value());
 
 		// No decay
 		SinceEpoch::advance(Duration::from_secs(4));
 		let usage = ChannelUsage { amount_msat: 128, ..usage };
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 0);
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 0);
 		let usage = ChannelUsage { amount_msat: 256, ..usage };
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 93);
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 93);
 		let usage = ChannelUsage { amount_msat: 768, ..usage };
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 1_479);
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 1_479);
 		let usage = ChannelUsage { amount_msat: 896, ..usage };
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), u64::max_value());
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), u64::max_value());
 
 		// Half decay (i.e., three-quarter life)
 		SinceEpoch::advance(Duration::from_secs(1));
 		let usage = ChannelUsage { amount_msat: 128, ..usage };
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 22);
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 22);
 		let usage = ChannelUsage { amount_msat: 256, ..usage };
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 106);
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 106);
 		let usage = ChannelUsage { amount_msat: 768, ..usage };
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 921);
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 921);
 		let usage = ChannelUsage { amount_msat: 896, ..usage };
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), u64::max_value());
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), u64::max_value());
 
 		// One decay (i.e., half life)
 		SinceEpoch::advance(Duration::from_secs(5));
 		let usage = ChannelUsage { amount_msat: 64, ..usage };
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 0);
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 0);
 		let usage = ChannelUsage { amount_msat: 128, ..usage };
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 34);
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 34);
 		let usage = ChannelUsage { amount_msat: 896, ..usage };
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 1_970);
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 1_970);
 		let usage = ChannelUsage { amount_msat: 960, ..usage };
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), u64::max_value());
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), u64::max_value());
 
 		// Fully decay liquidity lower bound.
 		SinceEpoch::advance(Duration::from_secs(10 * 7));
 		let usage = ChannelUsage { amount_msat: 0, ..usage };
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 0);
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 0);
 		let usage = ChannelUsage { amount_msat: 1, ..usage };
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 0);
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 0);
 		let usage = ChannelUsage { amount_msat: 1_023, ..usage };
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 2_000);
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 2_000);
 		let usage = ChannelUsage { amount_msat: 1_024, ..usage };
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), u64::max_value());
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), u64::max_value());
 
 		// Fully decay liquidity upper bound.
 		SinceEpoch::advance(Duration::from_secs(10));
 		let usage = ChannelUsage { amount_msat: 0, ..usage };
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 0);
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 0);
 		let usage = ChannelUsage { amount_msat: 1_024, ..usage };
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), u64::max_value());
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), u64::max_value());
 
 		SinceEpoch::advance(Duration::from_secs(10));
 		let usage = ChannelUsage { amount_msat: 0, ..usage };
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 0);
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 0);
 		let usage = ChannelUsage { amount_msat: 1_024, ..usage };
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), u64::max_value());
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), u64::max_value());
 	}
 
 	#[test]
@@ -2908,24 +2990,29 @@ mod tests {
 		};
 		let mut scorer = ProbabilisticScorer::new(decay_params, &network_graph, &logger);
 		let source = source_node_id();
-		let target = target_node_id();
 		let usage = ChannelUsage {
 			amount_msat: 256,
 			inflight_htlc_msat: 0,
 			effective_capacity: EffectiveCapacity::Total { capacity_msat: 1_024, htlc_maximum_msat: 1_000 },
 		};
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 125);
+		let channel = network_graph.read_only().channel(42).unwrap().to_owned();
+		let (info, _) = channel.as_directed_from(&source).unwrap();
+		let candidate = CandidateRouteHop::PublicHop {
+			info,
+			short_channel_id: 42,
+		};
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 125);
 
 		scorer.payment_path_failed(&payment_path_for_amount(512), 42);
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 281);
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 281);
 
 		// An unchecked right shift 64 bits or more in DirectedChannelLiquidity::decayed_offset_msat
 		// would cause an overflow.
 		SinceEpoch::advance(Duration::from_secs(10 * 64));
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 125);
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 125);
 
 		SinceEpoch::advance(Duration::from_secs(10));
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 125);
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 125);
 	}
 
 	#[test]
@@ -2942,37 +3029,42 @@ mod tests {
 		};
 		let mut scorer = ProbabilisticScorer::new(decay_params, &network_graph, &logger);
 		let source = source_node_id();
-		let target = target_node_id();
 		let usage = ChannelUsage {
 			amount_msat: 512,
 			inflight_htlc_msat: 0,
 			effective_capacity: EffectiveCapacity::Total { capacity_msat: 1_024, htlc_maximum_msat: 1_000 },
 		};
+		let channel = network_graph.read_only().channel(42).unwrap().to_owned();
+		let (info, _) = channel.as_directed_from(&source).unwrap();
+		let candidate = CandidateRouteHop::PublicHop {
+			info,
+			short_channel_id: 42,
+		};
 
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 300);
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 300);
 
 		// More knowledge gives higher confidence (256, 768), meaning a lower penalty.
 		scorer.payment_path_failed(&payment_path_for_amount(768), 42);
 		scorer.payment_path_failed(&payment_path_for_amount(256), 43);
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 281);
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 281);
 
 		// Decaying knowledge gives less confidence (128, 896), meaning a higher penalty.
 		SinceEpoch::advance(Duration::from_secs(10));
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 291);
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 291);
 
 		// Reducing the upper bound gives more confidence (128, 832) that the payment amount (512)
 		// is closer to the upper bound, meaning a higher penalty.
 		scorer.payment_path_successful(&payment_path_for_amount(64));
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 331);
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 331);
 
 		// Increasing the lower bound gives more confidence (256, 832) that the payment amount (512)
 		// is closer to the lower bound, meaning a lower penalty.
 		scorer.payment_path_failed(&payment_path_for_amount(256), 43);
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 245);
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 245);
 
 		// Further decaying affects the lower bound more than the upper bound (128, 928).
 		SinceEpoch::advance(Duration::from_secs(10));
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 280);
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 280);
 	}
 
 	#[test]
@@ -2990,7 +3082,6 @@ mod tests {
 		};
 		let mut scorer = ProbabilisticScorer::new(decay_params, &network_graph, &logger);
 		let source = source_node_id();
-		let target = target_node_id();
 		let usage = ChannelUsage {
 			amount_msat: 500,
 			inflight_htlc_msat: 0,
@@ -2998,13 +3089,19 @@ mod tests {
 		};
 
 		scorer.payment_path_failed(&payment_path_for_amount(500), 42);
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), u64::max_value());
+		let channel = network_graph.read_only().channel(42).unwrap().to_owned();
+		let (info, _) = channel.as_directed_from(&source).unwrap();
+		let candidate = CandidateRouteHop::PublicHop {
+			info,
+			short_channel_id: 42,
+		};
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), u64::max_value());
 
 		SinceEpoch::advance(Duration::from_secs(10));
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 473);
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 473);
 
 		scorer.payment_path_failed(&payment_path_for_amount(250), 43);
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 300);
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 300);
 
 		let mut serialized_scorer = Vec::new();
 		scorer.write(&mut serialized_scorer).unwrap();
@@ -3012,7 +3109,7 @@ mod tests {
 		let mut serialized_scorer = io::Cursor::new(&serialized_scorer);
 		let deserialized_scorer =
 			<ProbabilisticScorer>::read(&mut serialized_scorer, (decay_params, &network_graph, &logger)).unwrap();
-		assert_eq!(deserialized_scorer.channel_penalty_msat(42, &source, &target, usage, &params), 300);
+		assert_eq!(deserialized_scorer.channel_penalty_msat(&candidate, usage, &params), 300);
 	}
 
 	#[test]
@@ -3030,7 +3127,6 @@ mod tests {
 		};
 		let mut scorer = ProbabilisticScorer::new(decay_params, &network_graph, &logger);
 		let source = source_node_id();
-		let target = target_node_id();
 		let usage = ChannelUsage {
 			amount_msat: 500,
 			inflight_htlc_msat: 0,
@@ -3038,7 +3134,13 @@ mod tests {
 		};
 
 		scorer.payment_path_failed(&payment_path_for_amount(500), 42);
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), u64::max_value());
+		let channel = network_graph.read_only().channel(42).unwrap().to_owned();
+		let (info, _) = channel.as_directed_from(&source).unwrap();
+		let candidate = CandidateRouteHop::PublicHop {
+			info,
+			short_channel_id: 42,
+		};
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), u64::max_value());
 
 		let mut serialized_scorer = Vec::new();
 		scorer.write(&mut serialized_scorer).unwrap();
@@ -3048,13 +3150,13 @@ mod tests {
 		let mut serialized_scorer = io::Cursor::new(&serialized_scorer);
 		let deserialized_scorer =
 			<ProbabilisticScorer>::read(&mut serialized_scorer, (decay_params, &network_graph, &logger)).unwrap();
-		assert_eq!(deserialized_scorer.channel_penalty_msat(42, &source, &target, usage, &params), 473);
+		assert_eq!(deserialized_scorer.channel_penalty_msat(&candidate, usage, &params), 473);
 
 		scorer.payment_path_failed(&payment_path_for_amount(250), 43);
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 300);
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 300);
 
 		SinceEpoch::advance(Duration::from_secs(10));
-		assert_eq!(deserialized_scorer.channel_penalty_msat(42, &source, &target, usage, &params), 370);
+		assert_eq!(deserialized_scorer.channel_penalty_msat(&candidate, usage, &params), 370);
 	}
 
 	#[test]
@@ -3066,54 +3168,59 @@ mod tests {
 		let params = ProbabilisticScoringFeeParameters::default();
 		let scorer = ProbabilisticScorer::new(ProbabilisticScoringDecayParameters::default(), &network_graph, &logger);
 		let source = source_node_id();
-		let target = target_node_id();
 
 		let usage = ChannelUsage {
 			amount_msat: 100_000_000,
 			inflight_htlc_msat: 0,
 			effective_capacity: EffectiveCapacity::Total { capacity_msat: 950_000_000, htlc_maximum_msat: 1_000 },
 		};
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 11497);
+		let channel = network_graph.read_only().channel(42).unwrap().to_owned();
+		let (info, _) = channel.as_directed_from(&source).unwrap();
+		let candidate = CandidateRouteHop::PublicHop {
+			info,
+			short_channel_id: 42,
+		};
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 11497);
 		let usage = ChannelUsage {
 			effective_capacity: EffectiveCapacity::Total { capacity_msat: 1_950_000_000, htlc_maximum_msat: 1_000 }, ..usage
 		};
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 7408);
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 7408);
 		let usage = ChannelUsage {
 			effective_capacity: EffectiveCapacity::Total { capacity_msat: 2_950_000_000, htlc_maximum_msat: 1_000 }, ..usage
 		};
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 6151);
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 6151);
 		let usage = ChannelUsage {
 			effective_capacity: EffectiveCapacity::Total { capacity_msat: 3_950_000_000, htlc_maximum_msat: 1_000 }, ..usage
 		};
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 5427);
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 5427);
 		let usage = ChannelUsage {
 			effective_capacity: EffectiveCapacity::Total { capacity_msat: 4_950_000_000, htlc_maximum_msat: 1_000 }, ..usage
 		};
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 4955);
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 4955);
 		let usage = ChannelUsage {
 			effective_capacity: EffectiveCapacity::Total { capacity_msat: 5_950_000_000, htlc_maximum_msat: 1_000 }, ..usage
 		};
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 4736);
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 4736);
 		let usage = ChannelUsage {
 			effective_capacity: EffectiveCapacity::Total { capacity_msat: 6_950_000_000, htlc_maximum_msat: 1_000 }, ..usage
 		};
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 4484);
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 4484);
 		let usage = ChannelUsage {
 			effective_capacity: EffectiveCapacity::Total { capacity_msat: 7_450_000_000, htlc_maximum_msat: 1_000 }, ..usage
 		};
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 4484);
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 4484);
 		let usage = ChannelUsage {
 			effective_capacity: EffectiveCapacity::Total { capacity_msat: 7_950_000_000, htlc_maximum_msat: 1_000 }, ..usage
 		};
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 4263);
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 4263);
 		let usage = ChannelUsage {
 			effective_capacity: EffectiveCapacity::Total { capacity_msat: 8_950_000_000, htlc_maximum_msat: 1_000 }, ..usage
 		};
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 4263);
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 4263);
 		let usage = ChannelUsage {
 			effective_capacity: EffectiveCapacity::Total { capacity_msat: 9_950_000_000, htlc_maximum_msat: 1_000 }, ..usage
 		};
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 4044);
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 4044);
 	}
 
 	#[test]
@@ -3121,7 +3228,6 @@ mod tests {
 		let logger = TestLogger::new();
 		let network_graph = network_graph(&logger);
 		let source = source_node_id();
-		let target = target_node_id();
 		let usage = ChannelUsage {
 			amount_msat: 128,
 			inflight_htlc_msat: 0,
@@ -3133,14 +3239,20 @@ mod tests {
 			..ProbabilisticScoringFeeParameters::zero_penalty()
 		};
 		let scorer = ProbabilisticScorer::new(ProbabilisticScoringDecayParameters::default(), &network_graph, &logger);
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 58);
+		let channel = network_graph.read_only().channel(42).unwrap().to_owned();
+		let (info, _) = channel.as_directed_from(&source).unwrap();
+		let candidate = CandidateRouteHop::PublicHop {
+			info,
+			short_channel_id: 42,
+		};
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 58);
 
 		let params = ProbabilisticScoringFeeParameters {
 			base_penalty_msat: 500, liquidity_penalty_multiplier_msat: 1_000,
 			anti_probing_penalty_msat: 0, ..ProbabilisticScoringFeeParameters::zero_penalty()
 		};
 		let scorer = ProbabilisticScorer::new(ProbabilisticScoringDecayParameters::default(), &network_graph, &logger);
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 558);
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 558);
 
 		let params = ProbabilisticScoringFeeParameters {
 			base_penalty_msat: 500, liquidity_penalty_multiplier_msat: 1_000,
@@ -3149,7 +3261,7 @@ mod tests {
 		};
 
 		let scorer = ProbabilisticScorer::new(ProbabilisticScoringDecayParameters::default(), &network_graph, &logger);
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 558 + 128);
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 558 + 128);
 	}
 
 	#[test]
@@ -3157,7 +3269,6 @@ mod tests {
 		let logger = TestLogger::new();
 		let network_graph = network_graph(&logger);
 		let source = source_node_id();
-		let target = target_node_id();
 		let usage = ChannelUsage {
 			amount_msat: 512_000,
 			inflight_htlc_msat: 0,
@@ -3170,7 +3281,13 @@ mod tests {
 			..ProbabilisticScoringFeeParameters::zero_penalty()
 		};
 		let scorer = ProbabilisticScorer::new(ProbabilisticScoringDecayParameters::default(), &network_graph, &logger);
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 300);
+		let channel = network_graph.read_only().channel(42).unwrap().to_owned();
+		let (info, _) = channel.as_directed_from(&source).unwrap();
+		let candidate = CandidateRouteHop::PublicHop {
+			info,
+			short_channel_id: 42,
+		};
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 300);
 
 		let params = ProbabilisticScoringFeeParameters {
 			liquidity_penalty_multiplier_msat: 1_000,
@@ -3178,7 +3295,7 @@ mod tests {
 			..ProbabilisticScoringFeeParameters::zero_penalty()
 		};
 		let scorer = ProbabilisticScorer::new(ProbabilisticScoringDecayParameters::default(), &network_graph, &logger);
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 337);
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 337);
 	}
 
 	#[test]
@@ -3186,20 +3303,24 @@ mod tests {
 		let logger = TestLogger::new();
 		let network_graph = network_graph(&logger);
 		let source = source_node_id();
-		let target = target_node_id();
 		let usage = ChannelUsage {
 			amount_msat: u64::max_value(),
 			inflight_htlc_msat: 0,
 			effective_capacity: EffectiveCapacity::Infinite,
 		};
-
 		let params = ProbabilisticScoringFeeParameters {
 			liquidity_penalty_multiplier_msat: 40_000,
 			..ProbabilisticScoringFeeParameters::zero_penalty()
 		};
 		let decay_params = ProbabilisticScoringDecayParameters::zero_penalty();
+		let channel = network_graph.read_only().channel(42).unwrap().to_owned();
+		let (info, _) = channel.as_directed_from(&source).unwrap();
+		let candidate = CandidateRouteHop::PublicHop {
+			info,
+			short_channel_id: 42,
+		};
 		let scorer = ProbabilisticScorer::new(decay_params, &network_graph, &logger);
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 80_000);
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 80_000);
 	}
 
 	#[test]
@@ -3212,17 +3333,23 @@ mod tests {
 		};
 		let scorer = ProbabilisticScorer::new(ProbabilisticScoringDecayParameters::default(), &network_graph, &logger);
 		let source = source_node_id();
-		let target = target_node_id();
 
 		let usage = ChannelUsage {
 			amount_msat: 750,
 			inflight_htlc_msat: 0,
 			effective_capacity: EffectiveCapacity::Total { capacity_msat: 1_000, htlc_maximum_msat: 1_000 },
 		};
-		assert_ne!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), u64::max_value());
+		let network_graph = network_graph.read_only();
+		let channel = network_graph.channel(42).unwrap();
+		let (info, _) = channel.as_directed_from(&source).unwrap();
+		let candidate = CandidateRouteHop::PublicHop {
+			info,
+			short_channel_id: 42,
+		};
+		assert_ne!(scorer.channel_penalty_msat(&candidate, usage, &params), u64::max_value());
 
 		let usage = ChannelUsage { inflight_htlc_msat: 251, ..usage };
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), u64::max_value());
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), u64::max_value());
 	}
 
 	#[test]
@@ -3232,7 +3359,6 @@ mod tests {
 		let params = ProbabilisticScoringFeeParameters::default();
 		let scorer = ProbabilisticScorer::new(ProbabilisticScoringDecayParameters::default(), &network_graph, &logger);
 		let source = source_node_id();
-		let target = target_node_id();
 
 		let base_penalty_msat = params.base_penalty_msat;
 		let usage = ChannelUsage {
@@ -3240,13 +3366,20 @@ mod tests {
 			inflight_htlc_msat: 0,
 			effective_capacity: EffectiveCapacity::ExactLiquidity { liquidity_msat: 1_000 },
 		};
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), base_penalty_msat);
+		let network_graph = network_graph.read_only();
+		let channel = network_graph.channel(42).unwrap();
+		let (info, _) = channel.as_directed_from(&source).unwrap();
+		let candidate = CandidateRouteHop::PublicHop {
+			info,
+			short_channel_id: 42,
+		};
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), base_penalty_msat);
 
 		let usage = ChannelUsage { amount_msat: 1_000, ..usage };
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), base_penalty_msat);
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), base_penalty_msat);
 
 		let usage = ChannelUsage { amount_msat: 1_001, ..usage };
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), u64::max_value());
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), u64::max_value());
 	}
 
 	#[test]
@@ -3277,16 +3410,36 @@ mod tests {
 			effective_capacity: EffectiveCapacity::Total { capacity_msat: 1_024, htlc_maximum_msat: 1_024 },
 		};
 
-		// With no historical data the normal liquidity penalty calculation is used.
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 168);
+		{
+			let network_graph = network_graph.read_only();
+			let channel = network_graph.channel(42).unwrap();
+			let (info, _) = channel.as_directed_from(&source).unwrap();
+			let candidate = CandidateRouteHop::PublicHop {
+				info,
+				short_channel_id: 42,
+			};
+
+			// With no historical data the normal liquidity penalty calculation is used.
+			assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 168);
+		}
 		assert_eq!(scorer.historical_estimated_channel_liquidity_probabilities(42, &target),
-			None);
+		None);
 		assert_eq!(scorer.historical_estimated_payment_success_probability(42, &target, 42, &params),
-			None);
+		None);
 
 		scorer.payment_path_failed(&payment_path_for_amount(1), 42);
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 2048);
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage_1, &params), 249);
+		{
+			let network_graph = network_graph.read_only();
+			let channel = network_graph.channel(42).unwrap();
+			let (info, _) = channel.as_directed_from(&source).unwrap();
+			let candidate = CandidateRouteHop::PublicHop {
+				info,
+				short_channel_id: 42,
+			};
+
+			assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 2048);
+			assert_eq!(scorer.channel_penalty_msat(&candidate, usage_1, &params), 249);
+		}
 		// The "it failed" increment is 32, where the probability should lie several buckets into
 		// the first octile.
 		assert_eq!(scorer.historical_estimated_channel_liquidity_probabilities(42, &target),
@@ -3300,7 +3453,17 @@ mod tests {
 		// Even after we tell the scorer we definitely have enough available liquidity, it will
 		// still remember that there was some failure in the past, and assign a non-0 penalty.
 		scorer.payment_path_failed(&payment_path_for_amount(1000), 43);
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 105);
+		{
+			let network_graph = network_graph.read_only();
+			let channel = network_graph.channel(42).unwrap();
+			let (info, _) = channel.as_directed_from(&source).unwrap();
+			let candidate = CandidateRouteHop::PublicHop {
+				info,
+				short_channel_id: 42,
+			};
+
+			assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 105);
+		}
 		// The first points should be decayed just slightly and the last bucket has a new point.
 		assert_eq!(scorer.historical_estimated_channel_liquidity_probabilities(42, &target),
 			Some(([31, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 32, 0, 0, 0, 0, 0],
@@ -3320,7 +3483,17 @@ mod tests {
 		// Advance the time forward 16 half-lives (which the docs claim will ensure all data is
 		// gone), and check that we're back to where we started.
 		SinceEpoch::advance(Duration::from_secs(10 * 16));
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 168);
+		{
+			let network_graph = network_graph.read_only();
+			let channel = network_graph.channel(42).unwrap();
+			let (info, _) = channel.as_directed_from(&source).unwrap();
+			let candidate = CandidateRouteHop::PublicHop {
+				info,
+				short_channel_id: 42,
+			};
+
+			assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 168);
+		}
 		// Once fully decayed we still have data, but its all-0s. In the future we may remove the
 		// data entirely instead.
 		assert_eq!(scorer.historical_estimated_channel_liquidity_probabilities(42, &target),
@@ -3333,16 +3506,26 @@ mod tests {
 			effective_capacity: EffectiveCapacity::Total { capacity_msat: 1_024, htlc_maximum_msat: 1_024 },
 		};
 		scorer.payment_path_failed(&payment_path_for_amount(1), 42);
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 2050);
-		usage.inflight_htlc_msat = 0;
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 866);
+		{
+			let network_graph = network_graph.read_only();
+			let channel = network_graph.channel(42).unwrap();
+			let (info, _) = channel.as_directed_from(&source).unwrap();
+			let candidate = CandidateRouteHop::PublicHop {
+				info,
+				short_channel_id: 42,
+			};
 
-		let usage = ChannelUsage {
-			amount_msat: 1,
-			inflight_htlc_msat: 0,
-			effective_capacity: EffectiveCapacity::AdvertisedMaxHTLC { amount_msat: 0 },
-		};
-		assert_eq!(scorer.channel_penalty_msat(42, &target, &source, usage, &params), 2048);
+			assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 2050);
+			usage.inflight_htlc_msat = 0;
+			assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 866);
+
+			let usage = ChannelUsage {
+				amount_msat: 1,
+				inflight_htlc_msat: 0,
+				effective_capacity: EffectiveCapacity::AdvertisedMaxHTLC { amount_msat: 0 },
+			};
+			assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 2048);
+		}
 
 		// Advance to decay all liquidity offsets to zero.
 		SinceEpoch::advance(Duration::from_secs(60 * 60 * 10));
@@ -3362,7 +3545,6 @@ mod tests {
 		let logger = TestLogger::new();
 		let network_graph = network_graph(&logger);
 		let source = source_node_id();
-		let target = target_node_id();
 		let params = ProbabilisticScoringFeeParameters {
 			anti_probing_penalty_msat: 500,
 			..ProbabilisticScoringFeeParameters::zero_penalty()
@@ -3375,7 +3557,14 @@ mod tests {
 			inflight_htlc_msat: 0,
 			effective_capacity: EffectiveCapacity::Total { capacity_msat: 1_024_000, htlc_maximum_msat: 1_000 },
 		};
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 0);
+		let network_graph = network_graph.read_only();
+		let channel = network_graph.channel(42).unwrap();
+		let (info, _) = channel.as_directed_from(&source).unwrap();
+		let candidate = CandidateRouteHop::PublicHop {
+			info,
+			short_channel_id: 42,
+		};
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 0);
 
 		// Check we receive anti-probing penalty for htlc_maximum_msat == channel_capacity.
 		let usage = ChannelUsage {
@@ -3383,7 +3572,7 @@ mod tests {
 			inflight_htlc_msat: 0,
 			effective_capacity: EffectiveCapacity::Total { capacity_msat: 1_024_000, htlc_maximum_msat: 1_024_000 },
 		};
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 500);
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 500);
 
 		// Check we receive anti-probing penalty for htlc_maximum_msat == channel_capacity/2.
 		let usage = ChannelUsage {
@@ -3391,7 +3580,7 @@ mod tests {
 			inflight_htlc_msat: 0,
 			effective_capacity: EffectiveCapacity::Total { capacity_msat: 1_024_000, htlc_maximum_msat: 512_000 },
 		};
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 500);
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 500);
 
 		// Check we receive no anti-probing penalty for htlc_maximum_msat == channel_capacity/2 - 1.
 		let usage = ChannelUsage {
@@ -3399,7 +3588,7 @@ mod tests {
 			inflight_htlc_msat: 0,
 			effective_capacity: EffectiveCapacity::Total { capacity_msat: 1_024_000, htlc_maximum_msat: 511_999 },
 		};
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 0);
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 0);
 	}
 
 	#[test]
@@ -3414,13 +3603,18 @@ mod tests {
 		let decay_params = ProbabilisticScoringDecayParameters::default();
 		let mut scorer = ProbabilisticScorer::new(decay_params, &network_graph, &logger);
 		let source = source_node_id();
-		let target = target_node_id();
 		let usage = ChannelUsage {
 			amount_msat: 512,
 			inflight_htlc_msat: 0,
 			effective_capacity: EffectiveCapacity::Total { capacity_msat: 1_024, htlc_maximum_msat: 1_000 },
 		};
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 300);
+		let channel = network_graph.read_only().channel(42).unwrap().to_owned();
+		let (info, target) = channel.as_directed_from(&source).unwrap();
+		let candidate = CandidateRouteHop::PublicHop {
+			info,
+			short_channel_id: 42,
+		};
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 300);
 
 		let mut path = payment_path_for_amount(768);
 		let recipient_hop = path.hops.pop().unwrap();
@@ -3476,7 +3670,6 @@ mod tests {
 
 		let mut scorer = ProbabilisticScorer::new(decay_params, &network_graph, &logger);
 		let source = source_node_id();
-		let target = target_node_id();
 
 		let mut amount_msat = 10_000_000;
 		let usage = ChannelUsage {
@@ -3484,9 +3677,15 @@ mod tests {
 			inflight_htlc_msat: 0,
 			effective_capacity: EffectiveCapacity::Total { capacity_msat, htlc_maximum_msat: capacity_msat },
 		};
+		let channel = network_graph.read_only().channel(42).unwrap().to_owned();
+		let (info, target) = channel.as_directed_from(&source).unwrap();
+		let candidate = CandidateRouteHop::PublicHop {
+			info,
+			short_channel_id: 42,
+		};
 		// With no historical data the normal liquidity penalty calculation is used, which results
 		// in a success probability of ~75%.
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 1269);
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 1269);
 		assert_eq!(scorer.historical_estimated_channel_liquidity_probabilities(42, &target),
 			None);
 		assert_eq!(scorer.historical_estimated_payment_success_probability(42, &target, 42, &params),
@@ -3496,7 +3695,7 @@ mod tests {
 		scorer.payment_path_failed(&payment_path_for_amount(amount_msat), 42);
 		// The penalty should be the maximum penalty, as the payment we're scoring is now in the
 		// same bucket which is the only maximum datapoint.
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params),
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params),
 			2048 + 2048 * amount_msat / super::AMOUNT_PENALTY_DIVISOR);
 		// The "it failed" increment is 32, which we should apply to the first upper-bound (between
 		// 6k sats and 12k sats).

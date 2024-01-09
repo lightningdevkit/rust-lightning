@@ -14,7 +14,7 @@ use lightning::ln::channelmanager::{PhantomRouteHints, MIN_CLTV_EXPIRY_DELTA};
 use lightning::ln::inbound_payment::{create, create_from_hash, ExpandedKey};
 use lightning::routing::gossip::RoutingFees;
 use lightning::routing::router::{RouteHint, RouteHintHop, Router};
-use lightning::util::logger::Logger;
+use lightning::util::logger::{Logger, Record};
 use secp256k1::PublicKey;
 use core::ops::Deref;
 use core::time::Duration;
@@ -335,7 +335,7 @@ pub fn create_invoice_from_channelmanager<M: Deref, T: Deref, ES: Deref, NS: Der
 	min_final_cltv_expiry_delta: Option<u16>,
 ) -> Result<Bolt11Invoice, SignOrCreationError<()>>
 where
-	M::Target: chain::Watch<<SP::Target as SignerProvider>::Signer>,
+	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 	T::Target: BroadcasterInterface,
 	ES::Target: EntropySource,
 	NS::Target: NodeSigner,
@@ -376,7 +376,7 @@ pub fn create_invoice_from_channelmanager_with_description_hash<M: Deref, T: Der
 	invoice_expiry_delta_secs: u32, min_final_cltv_expiry_delta: Option<u16>,
 ) -> Result<Bolt11Invoice, SignOrCreationError<()>>
 where
-	M::Target: chain::Watch<<SP::Target as SignerProvider>::Signer>,
+	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 	T::Target: BroadcasterInterface,
 	ES::Target: EntropySource,
 	NS::Target: NodeSigner,
@@ -406,7 +406,7 @@ pub fn create_invoice_from_channelmanager_with_description_hash_and_duration_sin
 	duration_since_epoch: Duration, invoice_expiry_delta_secs: u32, min_final_cltv_expiry_delta: Option<u16>,
 ) -> Result<Bolt11Invoice, SignOrCreationError<()>>
 		where
-			M::Target: chain::Watch<<SP::Target as SignerProvider>::Signer>,
+			M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 			T::Target: BroadcasterInterface,
 			ES::Target: EntropySource,
 			NS::Target: NodeSigner,
@@ -431,7 +431,7 @@ pub fn create_invoice_from_channelmanager_and_duration_since_epoch<M: Deref, T: 
 	invoice_expiry_delta_secs: u32, min_final_cltv_expiry_delta: Option<u16>,
 ) -> Result<Bolt11Invoice, SignOrCreationError<()>>
 		where
-			M::Target: chain::Watch<<SP::Target as SignerProvider>::Signer>,
+			M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 			T::Target: BroadcasterInterface,
 			ES::Target: EntropySource,
 			NS::Target: NodeSigner,
@@ -455,7 +455,7 @@ fn _create_invoice_from_channelmanager_and_duration_since_epoch<M: Deref, T: Der
 	duration_since_epoch: Duration, invoice_expiry_delta_secs: u32, min_final_cltv_expiry_delta: Option<u16>,
 ) -> Result<Bolt11Invoice, SignOrCreationError<()>>
 		where
-			M::Target: chain::Watch<<SP::Target as SignerProvider>::Signer>,
+			M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 			T::Target: BroadcasterInterface,
 			ES::Target: EntropySource,
 			NS::Target: NodeSigner,
@@ -488,7 +488,7 @@ pub fn create_invoice_from_channelmanager_and_duration_since_epoch_with_payment_
 	invoice_expiry_delta_secs: u32, payment_hash: PaymentHash, min_final_cltv_expiry_delta: Option<u16>,
 ) -> Result<Bolt11Invoice, SignOrCreationError<()>>
 	where
-		M::Target: chain::Watch<<SP::Target as SignerProvider>::Signer>,
+		M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 		T::Target: BroadcasterInterface,
 		ES::Target: EntropySource,
 		NS::Target: NodeSigner,
@@ -518,7 +518,7 @@ fn _create_invoice_from_channelmanager_and_duration_since_epoch_with_payment_has
 	payment_secret: PaymentSecret, min_final_cltv_expiry_delta: Option<u16>,
 ) -> Result<Bolt11Invoice, SignOrCreationError<()>>
 	where
-		M::Target: chain::Watch<<SP::Target as SignerProvider>::Signer>,
+		M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 		T::Target: BroadcasterInterface,
 		ES::Target: EntropySource,
 		NS::Target: NodeSigner,
@@ -626,6 +626,7 @@ where
 
 	log_trace!(logger, "Considering {} channels for invoice route hints", channels.len());
 	for channel in channels.into_iter().filter(|chan| chan.is_channel_ready) {
+		let logger = WithChannelDetails::from(logger, &channel);
 		if channel.get_inbound_payment_scid().is_none() || channel.counterparty.forwarding_info.is_none() {
 			log_trace!(logger, "Ignoring channel {} for invoice route hints", &channel.channel_id);
 			continue;
@@ -710,6 +711,7 @@ where
 		.into_iter()
 		.map(|(_, channel)| channel)
 		.filter(|channel| {
+			let logger = WithChannelDetails::from(logger, &channel);
 			let has_enough_capacity = channel.inbound_capacity_msat >= min_inbound_capacity;
 			let include_channel = if has_pub_unconf_chan {
 				// If we have a public channel, but it doesn't have enough confirmations to (yet)
@@ -788,6 +790,28 @@ fn prefer_current_channel(min_inbound_capacity_msat: Option<u64>, current_channe
 	}
 
 	current_channel > candidate_channel
+}
+
+/// Adds relevant context to a [`Record`] before passing it to the wrapped [`Logger`].
+struct WithChannelDetails<'a, 'b, L: Deref> where L::Target: Logger {
+	/// The logger to delegate to after adding context to the record.
+	logger: &'a L,
+	/// The [`ChannelDetails`] for adding relevant context to the logged record.
+	details: &'b ChannelDetails
+}
+
+impl<'a, 'b, L: Deref> Logger for WithChannelDetails<'a, 'b, L> where L::Target: Logger {
+	fn log(&self, mut record: Record) {
+		record.peer_id = Some(self.details.counterparty.node_id);
+		record.channel_id = Some(self.details.channel_id);
+		self.logger.log(record)
+	}
+}
+
+impl<'a, 'b, L: Deref> WithChannelDetails<'a, 'b, L> where L::Target: Logger {
+	fn from(logger: &'a L, details: &'b ChannelDetails) -> Self {
+		Self { logger, details }
+	}
 }
 
 #[cfg(test)]

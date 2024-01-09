@@ -21,7 +21,7 @@ use crate::prelude::*;
 use crate::chain;
 use crate::chain::chaininterface::{BroadcasterInterface, FeeEstimator};
 use crate::chain::chainmonitor::{Persist, MonitorUpdateId};
-use crate::sign::{EntropySource, NodeSigner, WriteableEcdsaChannelSigner, SignerProvider};
+use crate::sign::{EntropySource, NodeSigner, ecdsa::WriteableEcdsaChannelSigner, SignerProvider};
 use crate::chain::transaction::OutPoint;
 use crate::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, CLOSED_CHANNEL_UPDATE_ID};
 use crate::ln::channelmanager::ChannelManager;
@@ -132,7 +132,7 @@ pub trait KVStore {
 
 /// Trait that handles persisting a [`ChannelManager`], [`NetworkGraph`], and [`WriteableScore`] to disk.
 pub trait Persister<'a, M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, L: Deref, S: WriteableScore<'a>>
-	where M::Target: 'static + chain::Watch<<SP::Target as SignerProvider>::Signer>,
+	where M::Target: 'static + chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 		T::Target: 'static + BroadcasterInterface,
 		ES::Target: 'static + EntropySource,
 		NS::Target: 'static + NodeSigner,
@@ -153,7 +153,7 @@ pub trait Persister<'a, M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: 
 
 
 impl<'a, A: KVStore, M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, L: Deref, S: WriteableScore<'a>> Persister<'a, M, T, ES, NS, SP, F, R, L, S> for A
-	where M::Target: 'static + chain::Watch<<SP::Target as SignerProvider>::Signer>,
+	where M::Target: 'static + chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 		T::Target: 'static + BroadcasterInterface,
 		ES::Target: 'static + EntropySource,
 		NS::Target: 'static + NodeSigner,
@@ -221,7 +221,7 @@ impl<ChannelSigner: WriteableEcdsaChannelSigner, K: KVStore> Persist<ChannelSign
 /// Read previously persisted [`ChannelMonitor`]s from the store.
 pub fn read_channel_monitors<K: Deref, ES: Deref, SP: Deref>(
 	kv_store: K, entropy_source: ES, signer_provider: SP,
-) -> Result<Vec<(BlockHash, ChannelMonitor<<SP::Target as SignerProvider>::Signer>)>, io::Error>
+) -> Result<Vec<(BlockHash, ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>)>, io::Error>
 where
 	K::Target: KVStore,
 	ES::Target: EntropySource + Sized,
@@ -246,7 +246,7 @@ where
 			io::Error::new(io::ErrorKind::InvalidData, "Invalid tx index in stored key")
 		})?;
 
-		match <(BlockHash, ChannelMonitor<<SP::Target as SignerProvider>::Signer>)>::read(
+		match <(BlockHash, ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>)>::read(
 			&mut io::Cursor::new(
 				kv_store.read(CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE, CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE, &stored_key)?),
 			(&*entropy_source, &*signer_provider),
@@ -334,9 +334,9 @@ where
 /// [`MonitorUpdatingPersister::read_all_channel_monitors_with_updates`]. Alternatively, users can
 /// list channel monitors themselves and load channels individually using
 /// [`MonitorUpdatingPersister::read_channel_monitor_with_updates`].
-/// 
+///
 /// ## EXTREMELY IMPORTANT
-/// 
+///
 /// It is extremely important that your [`KVStore::read`] implementation uses the
 /// [`io::ErrorKind::NotFound`] variant correctly: that is, when a file is not found, and _only_ in
 /// that circumstance (not when there is really a permissions error, for example). This is because
@@ -385,7 +385,7 @@ where
 	/// consolidation will frequently occur with fewer updates than what you set here; this number
 	/// is merely the maximum that may be stored. When setting this value, consider that for higher
 	/// values of `maximum_pending_updates`:
-	/// 
+	///
 	///   - [`MonitorUpdatingPersister`] will tend to write more [`ChannelMonitorUpdate`]s than
 	/// [`ChannelMonitor`]s, approaching one [`ChannelMonitor`] write for every
 	/// `maximum_pending_updates` [`ChannelMonitorUpdate`]s.
@@ -414,7 +414,7 @@ where
 	/// documentation for [`MonitorUpdatingPersister`].
 	pub fn read_all_channel_monitors_with_updates<B: Deref, F: Deref>(
 		&self, broadcaster: &B, fee_estimator: &F,
-	) -> Result<Vec<(BlockHash, ChannelMonitor<<SP::Target as SignerProvider>::Signer>)>, io::Error>
+	) -> Result<Vec<(BlockHash, ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>)>, io::Error>
 	where
 		B::Target: BroadcasterInterface,
 		F::Target: FeeEstimator,
@@ -448,12 +448,12 @@ where
 	///
 	/// The correct `monitor_key` would be:
 	/// `deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef_1`
-	/// 
+	///
 	/// Loading a large number of monitors will be faster if done in parallel. You can use this
 	/// function to accomplish this. Take care to limit the number of parallel readers.
 	pub fn read_channel_monitor_with_updates<B: Deref, F: Deref>(
 		&self, broadcaster: &B, fee_estimator: &F, monitor_key: String,
-	) -> Result<(BlockHash, ChannelMonitor<<SP::Target as SignerProvider>::Signer>), io::Error>
+	) -> Result<(BlockHash, ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>), io::Error>
 	where
 		B::Target: BroadcasterInterface,
 		F::Target: FeeEstimator,
@@ -494,7 +494,7 @@ where
 	/// Read a channel monitor.
 	fn read_monitor(
 		&self, monitor_name: &MonitorName,
-	) -> Result<(BlockHash, ChannelMonitor<<SP::Target as SignerProvider>::Signer>), io::Error> {
+	) -> Result<(BlockHash, ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>), io::Error> {
 		let outpoint: OutPoint = monitor_name.try_into()?;
 		let mut monitor_cursor = io::Cursor::new(self.kv_store.read(
 			CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
@@ -505,7 +505,7 @@ where
 		if monitor_cursor.get_ref().starts_with(MONITOR_UPDATING_PERSISTER_PREPEND_SENTINEL) {
 			monitor_cursor.set_position(MONITOR_UPDATING_PERSISTER_PREPEND_SENTINEL.len() as u64);
 		}
-		match <(BlockHash, ChannelMonitor<<SP::Target as SignerProvider>::Signer>)>::read(
+		match <(BlockHash, ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>)>::read(
 			&mut monitor_cursor,
 			(&*self.entropy_source, &*self.signer_provider),
 		) {
@@ -594,7 +594,7 @@ where
 	}
 }
 
-impl<ChannelSigner: WriteableEcdsaChannelSigner, K: Deref, L: Deref, ES: Deref, SP: Deref> 
+impl<ChannelSigner: WriteableEcdsaChannelSigner, K: Deref, L: Deref, ES: Deref, SP: Deref>
 	Persist<ChannelSigner> for MonitorUpdatingPersister<K, L, ES, SP>
 where
 	K::Target: KVStore,

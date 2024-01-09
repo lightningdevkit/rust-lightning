@@ -340,7 +340,9 @@ impl NodeSigner for KeyProvider {
 }
 
 impl SignerProvider for KeyProvider {
-	type Signer = TestChannelSigner;
+	type EcdsaSigner = TestChannelSigner;
+	#[cfg(taproot)]
+	type TaprootSigner = TestChannelSigner;
 
 	fn generate_channel_keys_id(&self, inbound: bool, _channel_value_satoshis: u64, _user_channel_id: u128) -> [u8; 32] {
 		let ctr = self.counter.fetch_add(1, Ordering::Relaxed) as u8;
@@ -348,7 +350,7 @@ impl SignerProvider for KeyProvider {
 		[ctr; 32]
 	}
 
-	fn derive_channel_signer(&self, channel_value_satoshis: u64, channel_keys_id: [u8; 32]) -> Self::Signer {
+	fn derive_channel_signer(&self, channel_value_satoshis: u64, channel_keys_id: [u8; 32]) -> Self::EcdsaSigner {
 		let secp_ctx = Secp256k1::signing_only();
 		let ctr = channel_keys_id[0];
 		let (inbound, state) = self.signer_state.borrow().get(&ctr).unwrap().clone();
@@ -726,7 +728,7 @@ mod tests {
 		pub lines: Mutex<HashMap<(String, String), usize>>,
 	}
 	impl Logger for TrackingLogger {
-		fn log(&self, record: &Record) {
+		fn log(&self, record: Record) {
 			*self.lines.lock().unwrap().entry((record.module_path.to_string(), format!("{}", record.args))).or_insert(0) += 1;
 			println!("{:<5} [{} : {}, {}] {}", record.level.to_string(), record.module_path, record.file, record.line, record.args);
 		}

@@ -870,31 +870,31 @@ impl ChannelInfo {
 	/// Returns a [`DirectedChannelInfo`] for the channel directed to the given `target` from a
 	/// returned `source`, or `None` if `target` is not one of the channel's counterparties.
 	pub fn as_directed_to(&self, target: &NodeId) -> Option<(DirectedChannelInfo, &NodeId)> {
-		let (direction, source) = {
+		let (direction, source, outbound) = {
 			if target == &self.node_one {
-				(self.two_to_one.as_ref(), &self.node_two)
+				(self.two_to_one.as_ref(), &self.node_two, false)
 			} else if target == &self.node_two {
-				(self.one_to_two.as_ref(), &self.node_one)
+				(self.one_to_two.as_ref(), &self.node_one, true)
 			} else {
 				return None;
 			}
 		};
-		direction.map(|dir| (DirectedChannelInfo::new(self, dir), source))
+		direction.map(|dir| (DirectedChannelInfo::new(self, dir, outbound), source))
 	}
 
 	/// Returns a [`DirectedChannelInfo`] for the channel directed from the given `source` to a
 	/// returned `target`, or `None` if `source` is not one of the channel's counterparties.
 	pub fn as_directed_from(&self, source: &NodeId) -> Option<(DirectedChannelInfo, &NodeId)> {
-		let (direction, target) = {
+		let (direction, target, outbound) = {
 			if source == &self.node_one {
-				(self.one_to_two.as_ref(), &self.node_two)
+				(self.one_to_two.as_ref(), &self.node_two, true)
 			} else if source == &self.node_two {
-				(self.two_to_one.as_ref(), &self.node_one)
+				(self.two_to_one.as_ref(), &self.node_one, false)
 			} else {
 				return None;
 			}
 		};
-		direction.map(|dir| (DirectedChannelInfo::new(self, dir), target))
+		direction.map(|dir| (DirectedChannelInfo::new(self, dir, outbound), target))
 	}
 
 	/// Returns a [`ChannelUpdateInfo`] based on the direction implied by the channel_flag.
@@ -990,51 +990,55 @@ impl Readable for ChannelInfo {
 pub struct DirectedChannelInfo<'a> {
 	channel: &'a ChannelInfo,
 	direction: &'a ChannelUpdateInfo,
-	htlc_maximum_msat: u64,
-	effective_capacity: EffectiveCapacity,
+	/// The direction this channel is in - if set, it indicates that we're traversing the channel
+	/// from [`ChannelInfo::node_one`] to [`ChannelInfo::node_two`].
+	from_node_one: bool,
 }
 
 impl<'a> DirectedChannelInfo<'a> {
 	#[inline]
-	fn new(channel: &'a ChannelInfo, direction: &'a ChannelUpdateInfo) -> Self {
-		let mut htlc_maximum_msat = direction.htlc_maximum_msat;
-		let capacity_msat = channel.capacity_sats.map(|capacity_sats| capacity_sats * 1000);
-
-		let effective_capacity = match capacity_msat {
-			Some(capacity_msat) => {
-				htlc_maximum_msat = cmp::min(htlc_maximum_msat, capacity_msat);
-				EffectiveCapacity::Total { capacity_msat, htlc_maximum_msat: htlc_maximum_msat }
-			},
-			None => EffectiveCapacity::AdvertisedMaxHTLC { amount_msat: htlc_maximum_msat },
-		};
-
-		Self {
-			channel, direction, htlc_maximum_msat, effective_capacity
-		}
+	fn new(channel: &'a ChannelInfo, direction: &'a ChannelUpdateInfo, from_node_one: bool) -> Self {
+		Self { channel, direction, from_node_one }
 	}
 
 	/// Returns information for the channel.
 	#[inline]
 	pub fn channel(&self) -> &'a ChannelInfo { self.channel }
 
-	/// Returns the maximum HTLC amount allowed over the channel in the direction.
-	#[inline]
-	pub fn htlc_maximum_msat(&self) -> u64 {
-		self.htlc_maximum_msat
-	}
-
 	/// Returns the [`EffectiveCapacity`] of the channel in the direction.
 	///
 	/// This is either the total capacity from the funding transaction, if known, or the
 	/// `htlc_maximum_msat` for the direction as advertised by the gossip network, if known,
 	/// otherwise.
+	#[inline]
 	pub fn effective_capacity(&self) -> EffectiveCapacity {
-		self.effective_capacity
+		let mut htlc_maximum_msat = self.direction().htlc_maximum_msat;
+		let capacity_msat = self.channel.capacity_sats.map(|capacity_sats| capacity_sats * 1000);
+
+		match capacity_msat {
+			Some(capacity_msat) => {
+				htlc_maximum_msat = cmp::min(htlc_maximum_msat, capacity_msat);
+				EffectiveCapacity::Total { capacity_msat, htlc_maximum_msat }
+			},
+			None => EffectiveCapacity::AdvertisedMaxHTLC { amount_msat: htlc_maximum_msat },
+		}
 	}
 
 	/// Returns information for the direction.
 	#[inline]
 	pub(super) fn direction(&self) -> &'a ChannelUpdateInfo { self.direction }
+
+	/// Returns the `node_id` of the source hop.
+	///
+	/// Refers to the `node_id` forwarding the payment to the next hop.
+	#[inline]
+	pub(super) fn source(&self) -> &'a NodeId { if self.from_node_one { &self.channel.node_one } else { &self.channel.node_two } }
+
+	/// Returns the `node_id` of the target hop.
+	///
+	/// Refers to the `node_id` receiving the payment from the previous hop.
+	#[inline]
+	pub(super) fn target(&self) -> &'a NodeId { if self.from_node_one { &self.channel.node_two } else { &self.channel.node_one } }
 }
 
 impl<'a> fmt::Debug for DirectedChannelInfo<'a> {

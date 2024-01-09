@@ -23,7 +23,7 @@ use bitcoin::secp256k1::{Secp256k1, ecdsa::Signature};
 use bitcoin::secp256k1;
 
 use crate::chain::chaininterface::compute_feerate_sat_per_1000_weight;
-use crate::sign::{ChannelDerivationParameters, HTLCDescriptor, ChannelSigner, EntropySource, SignerProvider, WriteableEcdsaChannelSigner};
+use crate::sign::{ChannelDerivationParameters, HTLCDescriptor, ChannelSigner, EntropySource, SignerProvider, ecdsa::WriteableEcdsaChannelSigner};
 use crate::ln::msgs::DecodeError;
 use crate::ln::PaymentPreimage;
 use crate::ln::chan_utils::{self, ChannelTransactionParameters, HTLCOutputInCommitment, HolderCommitmentTransaction};
@@ -339,7 +339,7 @@ impl<ChannelSigner: WriteableEcdsaChannelSigner> OnchainTxHandler<ChannelSigner>
 	}
 }
 
-impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP, u64, [u8; 32])> for OnchainTxHandler<SP::Signer> {
+impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP, u64, [u8; 32])> for OnchainTxHandler<SP::EcdsaSigner> {
 	fn read<R: io::Read>(reader: &mut R, args: (&'a ES, &'b SP, u64, [u8; 32])) -> Result<Self, DecodeError> {
 		let entropy_source = args.0;
 		let signer_provider = args.1;
@@ -473,14 +473,13 @@ impl<ChannelSigner: WriteableEcdsaChannelSigner> OnchainTxHandler<ChannelSigner>
 	/// feerate changes between blocks, and ensuring reliability if broadcasting fails. We recommend
 	/// invoking this every 30 seconds, or lower if running in an environment with spotty
 	/// connections, like on mobile.
-	pub(crate) fn rebroadcast_pending_claims<B: Deref, F: Deref, L: Deref>(
+	pub(super) fn rebroadcast_pending_claims<B: Deref, F: Deref, L: Logger>(
 		&mut self, current_height: u32, broadcaster: &B, fee_estimator: &LowerBoundedFeeEstimator<F>,
 		logger: &L,
 	)
 	where
 		B::Target: BroadcasterInterface,
 		F::Target: FeeEstimator,
-		L::Target: Logger,
 	{
 		let mut bump_requests = Vec::with_capacity(self.pending_claim_requests.len());
 		for (claim_id, request) in self.pending_claim_requests.iter() {
@@ -528,13 +527,11 @@ impl<ChannelSigner: WriteableEcdsaChannelSigner> OnchainTxHandler<ChannelSigner>
 	///
 	/// Panics if there are signing errors, because signing operations in reaction to on-chain
 	/// events are not expected to fail, and if they do, we may lose funds.
-	fn generate_claim<F: Deref, L: Deref>(
+	fn generate_claim<F: Deref, L: Logger>(
 		&mut self, cur_height: u32, cached_request: &PackageTemplate, force_feerate_bump: bool,
 		fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L,
 	) -> Option<(u32, u64, OnchainClaim)>
-	where
-		F::Target: FeeEstimator,
-		L::Target: Logger,
+	where F::Target: FeeEstimator,
 	{
 		let request_outpoints = cached_request.outpoints();
 		if request_outpoints.is_empty() {
@@ -688,13 +685,12 @@ impl<ChannelSigner: WriteableEcdsaChannelSigner> OnchainTxHandler<ChannelSigner>
 	/// `conf_height` represents the height at which the request was generated. This
 	/// does not need to equal the current blockchain tip height, which should be provided via
 	/// `cur_height`, however it must never be higher than `cur_height`.
-	pub(crate) fn update_claims_view_from_requests<B: Deref, F: Deref, L: Deref>(
+	pub(super) fn update_claims_view_from_requests<B: Deref, F: Deref, L: Logger>(
 		&mut self, requests: Vec<PackageTemplate>, conf_height: u32, cur_height: u32,
 		broadcaster: &B, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L
 	) where
 		B::Target: BroadcasterInterface,
 		F::Target: FeeEstimator,
-		L::Target: Logger,
 	{
 		log_debug!(logger, "Updating claims view at height {} with {} claim requests", cur_height, requests.len());
 		let mut preprocessed_requests = Vec::with_capacity(requests.len());
@@ -809,13 +805,12 @@ impl<ChannelSigner: WriteableEcdsaChannelSigner> OnchainTxHandler<ChannelSigner>
 	/// `conf_height` represents the height at which the transactions in `txn_matched` were
 	/// confirmed. This does not need to equal the current blockchain tip height, which should be
 	/// provided via `cur_height`, however it must never be higher than `cur_height`.
-	pub(crate) fn update_claims_view_from_matched_txn<B: Deref, F: Deref, L: Deref>(
+	pub(super) fn update_claims_view_from_matched_txn<B: Deref, F: Deref, L: Logger>(
 		&mut self, txn_matched: &[&Transaction], conf_height: u32, conf_hash: BlockHash,
 		cur_height: u32, broadcaster: &B, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L
 	) where
 		B::Target: BroadcasterInterface,
 		F::Target: FeeEstimator,
-		L::Target: Logger,
 	{
 		log_debug!(logger, "Updating claims view at height {} with {} matched transactions in block {}", cur_height, txn_matched.len(), conf_height);
 		let mut bump_candidates = HashMap::new();
@@ -977,16 +972,15 @@ impl<ChannelSigner: WriteableEcdsaChannelSigner> OnchainTxHandler<ChannelSigner>
 		}
 	}
 
-	pub(crate) fn transaction_unconfirmed<B: Deref, F: Deref, L: Deref>(
+	pub(super) fn transaction_unconfirmed<B: Deref, F: Deref, L: Logger>(
 		&mut self,
 		txid: &Txid,
 		broadcaster: B,
 		fee_estimator: &LowerBoundedFeeEstimator<F>,
-		logger: L,
+		logger: &L,
 	) where
 		B::Target: BroadcasterInterface,
 		F::Target: FeeEstimator,
-		L::Target: Logger,
 	{
 		let mut height = None;
 		for entry in self.onchain_events_awaiting_threshold_conf.iter() {
@@ -1001,10 +995,9 @@ impl<ChannelSigner: WriteableEcdsaChannelSigner> OnchainTxHandler<ChannelSigner>
 		}
 	}
 
-	pub(crate) fn block_disconnected<B: Deref, F: Deref, L: Deref>(&mut self, height: u32, broadcaster: B, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: L)
+	pub(super) fn block_disconnected<B: Deref, F: Deref, L: Logger>(&mut self, height: u32, broadcaster: B, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L)
 		where B::Target: BroadcasterInterface,
-		      F::Target: FeeEstimator,
-					L::Target: Logger,
+			F::Target: FeeEstimator,
 	{
 		let mut bump_candidates = HashMap::new();
 		let onchain_events_awaiting_threshold_conf =
@@ -1034,7 +1027,7 @@ impl<ChannelSigner: WriteableEcdsaChannelSigner> OnchainTxHandler<ChannelSigner>
 			// `height` is the height being disconnected, so our `current_height` is 1 lower.
 			let current_height = height - 1;
 			if let Some((new_timer, new_feerate, bump_claim)) = self.generate_claim(
-				current_height, &request, true /* force_feerate_bump */, fee_estimator, &&*logger
+				current_height, &request, true /* force_feerate_bump */, fee_estimator, logger
 			) {
 				request.set_timer(new_timer);
 				request.set_feerate(new_feerate);

@@ -72,6 +72,16 @@ pub enum PaymentPurpose {
 	SpontaneousPayment(PaymentPreimage),
 }
 
+impl PaymentPurpose {
+	/// Returns the preimage for this payment, if it is known.
+	pub fn preimage(&self) -> Option<PaymentPreimage> {
+		match self {
+			PaymentPurpose::InvoicePayment { payment_preimage, .. } => *payment_preimage,
+			PaymentPurpose::SpontaneousPayment(preimage) => Some(*preimage),
+		}
+	}
+}
+
 impl_writeable_tlv_based_enum!(PaymentPurpose,
 	(0, InvoicePayment) => {
 		(0, payment_preimage, option),
@@ -519,6 +529,25 @@ pub enum Event {
 		/// The sender-intended sum total of all the MPP parts. This will be `None` for events
 		/// serialized prior to LDK version 0.0.117.
 		sender_intended_total_msat: Option<u64>,
+	},
+	/// Indicates that a peer connection with a node is needed in order to send an [`OnionMessage`].
+	///
+	/// Typically, this happens when a [`MessageRouter`] is unable to find a complete path to a
+	/// [`Destination`]. Once a connection is established, any messages buffered by an
+	/// [`OnionMessageHandler`] may be sent.
+	///
+	/// This event will not be generated for onion message forwards; only for sends including
+	/// replies. Handlers should connect to the node otherwise any buffered messages may be lost.
+	///
+	/// [`OnionMessage`]: msgs::OnionMessage
+	/// [`MessageRouter`]: crate::onion_message::MessageRouter
+	/// [`Destination`]: crate::onion_message::Destination
+	/// [`OnionMessageHandler`]: crate::ln::msgs::OnionMessageHandler
+	ConnectionNeeded {
+		/// The node id for the node needing a connection.
+		node_id: PublicKey,
+		/// Sockets for connecting to the node.
+		addresses: Vec<msgs::SocketAddress>,
 	},
 	/// Indicates a request for an invoice failed to yield a response in a reasonable amount of time
 	/// or was explicitly abandoned by [`ChannelManager::abandon_payment`]. This may be for an
@@ -1209,6 +1238,10 @@ impl Writeable for Event {
 					(10, output_script, required),
 				});
 			},
+			&Event::ConnectionNeeded { .. } => {
+				35u8.write(writer)?;
+				// Never write ConnectionNeeded events as buffered onion messages aren't serialized.
+			},
 			// Note that, going forward, all new events must only write data inside of
 			// `write_tlv_fields`. Versions 0.0.101+ will ignore odd-numbered events that write
 			// data via `write_tlv_fields`.
@@ -1219,8 +1252,7 @@ impl Writeable for Event {
 impl MaybeReadable for Event {
 	fn read<R: io::Read>(reader: &mut R) -> Result<Option<Self>, msgs::DecodeError> {
 		match Readable::read(reader)? {
-			// Note that we do not write a length-prefixed TLV for FundingGenerationReady events,
-			// unlike all other events, thus we return immediately here.
+			// Note that we do not write a length-prefixed TLV for FundingGenerationReady events.
 			0u8 => Ok(None),
 			1u8 => {
 				let f = || {
@@ -1607,6 +1639,8 @@ impl MaybeReadable for Event {
 				};
 				f()
 			},
+			// Note that we do not write a length-prefixed TLV for ConnectionNeeded events.
+			35u8 => Ok(None),
 			// Versions prior to 0.0.100 did not ignore odd types, instead returning InvalidValue.
 			// Version 0.0.100 failed to properly ignore odd types, possibly resulting in corrupt
 			// reads.

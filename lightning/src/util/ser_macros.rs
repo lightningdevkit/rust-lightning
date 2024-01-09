@@ -917,7 +917,7 @@ macro_rules! tlv_stream {
 
 		#[cfg_attr(test, derive(PartialEq))]
 		#[derive(Debug)]
-		pub(super) struct $nameref<'a> {
+		pub(crate) struct $nameref<'a> {
 			$(
 				pub(super) $field: Option<tlv_record_ref_type!($fieldty)>,
 			)*

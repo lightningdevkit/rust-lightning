@@ -118,21 +118,6 @@ impl Writeable for ReceiveTlvs {
 	}
 }
 
-// This will be removed once we support forwarding blinded HTLCs, because we'll always read a
-// `BlindedPaymentTlvs` instead.
-impl Readable for ReceiveTlvs {
-	fn read<R: io::Read>(r: &mut R) -> Result<Self, DecodeError> {
-		_init_and_read_tlv_stream!(r, {
-			(12, payment_constraints, required),
-			(65536, payment_secret, required),
-		});
-		Ok(Self {
-			payment_secret: payment_secret.0.unwrap(),
-			payment_constraints: payment_constraints.0.unwrap()
-		})
-	}
-}
-
 impl<'a> Writeable for BlindedPaymentTlvsRef<'a> {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
 		// TODO: write padding
@@ -187,7 +172,7 @@ pub(super) fn blinded_hops<T: secp256k1::Signing + secp256k1::Verification>(
 }
 
 /// `None` if underflow occurs.
-fn amt_to_forward_msat(inbound_amt_msat: u64, payment_relay: &PaymentRelay) -> Option<u64> {
+pub(crate) fn amt_to_forward_msat(inbound_amt_msat: u64, payment_relay: &PaymentRelay) -> Option<u64> {
 	let inbound_amt = inbound_amt_msat as u128;
 	let base = payment_relay.fee_base_msat as u128;
 	let prop = payment_relay.fee_proportional_millionths as u128;
