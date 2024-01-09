@@ -10,7 +10,7 @@
 use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
 use crate::blinded_path::BlindedPath;
 use crate::blinded_path::payment::{ForwardNode, ForwardTlvs, PaymentConstraints, PaymentRelay, ReceiveTlvs};
-use crate::events::{HTLCDestination, MessageSendEvent, MessageSendEventsProvider};
+use crate::events::{Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider, PaymentFailureReason};
 use crate::ln::PaymentSecret;
 use crate::ln::channelmanager;
 use crate::ln::channelmanager::{PaymentId, RecipientOnionFields};
@@ -707,4 +707,109 @@ fn do_multi_hop_receiver_fail(check: ReceiveCheckFail) {
 	do_commitment_signed_dance(&nodes[0], &nodes[1], &updates_1_0.commitment_signed, false, false);
 	expect_payment_failed_conditions(&nodes[0], payment_hash, false,
 		PaymentFailedConditions::new().expected_htlc_error_data(INVALID_ONION_BLINDING, &[0; 32]));
+}
+
+#[test]
+fn blinded_path_retries() {
+	let chanmon_cfgs = create_chanmon_cfgs(4);
+	// Make one blinded path's fees slightly higher so they are tried in a deterministic order.
+	let mut higher_fee_chan_cfg = test_default_channel_config();
+	higher_fee_chan_cfg.channel_config.forwarding_fee_base_msat += 1;
+	let node_cfgs = create_node_cfgs(4, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(4, &node_cfgs, &[None, None, Some(higher_fee_chan_cfg), None]);
+	let mut nodes = create_network(4, &node_cfgs, &node_chanmgrs);
+
+	// Create this network topology so nodes[0] has a blinded route hint to retry over.
+	//      n1
+	//    /    \
+	// n0       n3
+	//    \    /
+	//      n2
+	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0);
+	create_announced_chan_between_nodes_with_value(&nodes, 0, 2, 1_000_000, 0);
+	let chan_1_3 = create_announced_chan_between_nodes_with_value(&nodes, 1, 3, 1_000_000, 0);
+	let chan_2_3 = create_announced_chan_between_nodes_with_value(&nodes, 2, 3, 1_000_000, 0);
+
+	let amt_msat = 5000;
+	let (_, payment_hash, payment_secret) = get_payment_preimage_hash(&nodes[3], Some(amt_msat), None);
+	let route_params = {
+		let pay_params = PaymentParameters::blinded(
+			vec![
+				blinded_payment_path(payment_secret,
+					vec![nodes[1].node.get_our_node_id(), nodes[3].node.get_our_node_id()], &[&chan_1_3.0.contents],
+					&chanmon_cfgs[3].keys_manager
+				),
+				blinded_payment_path(payment_secret,
+					vec![nodes[2].node.get_our_node_id(), nodes[3].node.get_our_node_id()], &[&chan_2_3.0.contents],
+					&chanmon_cfgs[3].keys_manager
+				),
+			]
+		)
+			.with_bolt12_features(channelmanager::provided_bolt12_invoice_features(&UserConfig::default()))
+			.unwrap();
+		RouteParameters::from_payment_params_and_value(pay_params, amt_msat)
+	};
+
+	nodes[0].node.send_payment(payment_hash, RecipientOnionFields::spontaneous_empty(), PaymentId(payment_hash.0), route_params.clone(), Retry::Attempts(2)).unwrap();
+	check_added_monitors(&nodes[0], 1);
+	pass_along_route(&nodes[0], &[&[&nodes[1], &nodes[3]]], amt_msat, payment_hash, payment_secret);
+
+	macro_rules! fail_payment_back {
+		($intro_node: expr) => {
+			nodes[3].node.fail_htlc_backwards(&payment_hash);
+			expect_pending_htlcs_forwardable_conditions(
+				nodes[3].node.get_and_clear_pending_events(), &[HTLCDestination::FailedPayment { payment_hash }]
+			);
+			nodes[3].node.process_pending_htlc_forwards();
+			check_added_monitors!(nodes[3], 1);
+
+			let updates = get_htlc_update_msgs!(nodes[3], $intro_node.node.get_our_node_id());
+			assert_eq!(updates.update_fail_malformed_htlcs.len(), 1);
+			let update_malformed = &updates.update_fail_malformed_htlcs[0];
+			assert_eq!(update_malformed.sha256_of_onion, [0; 32]);
+			assert_eq!(update_malformed.failure_code, INVALID_ONION_BLINDING);
+			$intro_node.node.handle_update_fail_malformed_htlc(&nodes[3].node.get_our_node_id(), update_malformed);
+			do_commitment_signed_dance(&$intro_node, &nodes[3], &updates.commitment_signed, true, false);
+
+			let updates =  get_htlc_update_msgs!($intro_node, nodes[0].node.get_our_node_id());
+			assert_eq!(updates.update_fail_htlcs.len(), 1);
+			nodes[0].node.handle_update_fail_htlc(&$intro_node.node.get_our_node_id(), &updates.update_fail_htlcs[0]);
+			do_commitment_signed_dance(&nodes[0], &$intro_node, &updates.commitment_signed, false, false);
+
+			let mut events = nodes[0].node.get_and_clear_pending_events();
+			assert_eq!(events.len(), 2);
+			match events[0] {
+				Event::PaymentPathFailed { payment_hash: ev_payment_hash, payment_failed_permanently, ..  } => {
+					assert_eq!(payment_hash, ev_payment_hash);
+					assert_eq!(payment_failed_permanently, false);
+				},
+				_ => panic!("Unexpected event"),
+			}
+			match events[1] {
+				Event::PendingHTLCsForwardable { .. } => {},
+				_ => panic!("Unexpected event"),
+			}
+			nodes[0].node.process_pending_htlc_forwards();
+		}
+	}
+
+	fail_payment_back!(nodes[1]);
+
+	// Pass the retry along.
+	check_added_monitors!(nodes[0], 1);
+	let mut msg_events = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(msg_events.len(), 1);
+	pass_along_path(&nodes[0], &[&nodes[2], &nodes[3]], amt_msat, payment_hash, Some(payment_secret), msg_events.pop().unwrap(), true, None);
+
+	fail_payment_back!(nodes[2]);
+	let evs = nodes[0].node.get_and_clear_pending_events();
+	assert_eq!(evs.len(), 1);
+	match evs[0] {
+		Event::PaymentFailed { payment_hash: ev_payment_hash, reason, .. } => {
+			assert_eq!(ev_payment_hash, payment_hash);
+			// We have 1 retry attempt remaining, but we're out of blinded paths to try.
+			assert_eq!(reason, Some(PaymentFailureReason::RouteNotFound));
+		},
+		_ => panic!()
+	}
 }
