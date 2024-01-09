@@ -914,6 +914,19 @@ impl PaymentParameters {
 	pub fn with_max_channel_saturation_power_of_half(self, max_channel_saturation_power_of_half: u8) -> Self {
 		Self { max_channel_saturation_power_of_half, ..self }
 	}
+
+	pub(crate) fn insert_previously_failed_blinded_path(&mut self, failed_blinded_tail: &BlindedTail) {
+		let mut found_blinded_tail = false;
+		for (idx, (_, path)) in self.payee.blinded_route_hints().iter().enumerate() {
+			if failed_blinded_tail.hops == path.blinded_hops &&
+				failed_blinded_tail.blinding_point == path.blinding_point
+			{
+				self.previously_failed_blinded_path_idxs.push(idx as u64);
+				found_blinded_tail = true;
+			}
+		}
+		debug_assert!(found_blinded_tail);
+	}
 }
 
 /// The recipient of a payment, differing based on whether they've hidden their identity with route
