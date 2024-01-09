@@ -345,10 +345,10 @@ pub(crate) struct PaymentAttemptsUsingTime<T: Time> {
 
 }
 
-#[cfg(not(any(not(feature = "std"), test)))]
-type ConfiguredTime = crate::util::time::MonotonicTime;
 #[cfg(not(feature = "std"))]
 type ConfiguredTime = crate::util::time::Eternity;
+#[cfg(all(feature = "std", not(test)))]
+type ConfiguredTime = crate::util::time::MonotonicTime;
 #[cfg(all(feature = "std", test))]
 type ConfiguredTime = SinceEpoch;
 
