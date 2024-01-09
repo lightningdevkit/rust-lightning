@@ -711,6 +711,11 @@ pub struct PaymentParameters {
 	/// payment to fail. Future attempts for the same payment shouldn't be relayed through any of
 	/// these SCIDs.
 	pub previously_failed_channels: Vec<u64>,
+
+	/// A list of indices corresponding to blinded paths in [`Payee::Blinded::route_hints`] which this
+	/// payment was previously attempted over and which caused the payment to fail. Future attempts
+	/// for the same payment shouldn't be relayed through any of these blinded paths.
+	pub previously_failed_blinded_path_idxs: Vec<u64>,
 }
 
 impl Writeable for PaymentParameters {
@@ -732,6 +737,7 @@ impl Writeable for PaymentParameters {
 			(7, self.previously_failed_channels, required_vec),
 			(8, *blinded_hints, optional_vec),
 			(9, self.payee.final_cltv_expiry_delta(), option),
+			(11, self.previously_failed_blinded_path_idxs, required_vec),
 		});
 		Ok(())
 	}
@@ -750,6 +756,7 @@ impl ReadableArgs<u32> for PaymentParameters {
 			(7, previously_failed_channels, optional_vec),
 			(8, blinded_route_hints, optional_vec),
 			(9, final_cltv_expiry_delta, (default_value, default_final_cltv_expiry_delta)),
+			(11, previously_failed_blinded_path_idxs, optional_vec),
 		});
 		let blinded_route_hints = blinded_route_hints.unwrap_or(vec![]);
 		let payee = if blinded_route_hints.len() != 0 {
@@ -773,6 +780,7 @@ impl ReadableArgs<u32> for PaymentParameters {
 			max_channel_saturation_power_of_half: _init_tlv_based_struct_field!(max_channel_saturation_power_of_half, (default_value, unused)),
 			expiry_time,
 			previously_failed_channels: previously_failed_channels.unwrap_or(Vec::new()),
+			previously_failed_blinded_path_idxs: previously_failed_blinded_path_idxs.unwrap_or(Vec::new()),
 		})
 	}
 }
@@ -791,6 +799,7 @@ impl PaymentParameters {
 			max_path_count: DEFAULT_MAX_PATH_COUNT,
 			max_channel_saturation_power_of_half: DEFAULT_MAX_CHANNEL_SATURATION_POW_HALF,
 			previously_failed_channels: Vec::new(),
+			previously_failed_blinded_path_idxs: Vec::new(),
 		}
 	}
 
@@ -829,6 +838,7 @@ impl PaymentParameters {
 			max_path_count: DEFAULT_MAX_PATH_COUNT,
 			max_channel_saturation_power_of_half: DEFAULT_MAX_CHANNEL_SATURATION_POW_HALF,
 			previously_failed_channels: Vec::new(),
+			previously_failed_blinded_path_idxs: Vec::new(),
 		}
 	}
 
