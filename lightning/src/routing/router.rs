@@ -1383,6 +1383,15 @@ impl<'a> CandidateRouteHop<'a> {
 			_ => None,
 		}
 	}
+	fn blinded_hint_idx(&self) -> Option<usize> {
+		match self {
+			Self::Blinded(BlindedPathCandidate { hint_idx, .. }) |
+			Self::OneHopBlinded(OneHopBlindedPathCandidate { hint_idx, .. }) => {
+				Some(*hint_idx)
+			},
+			_ => None,
+		}
+	}
 	/// Returns the source node id of current hop.
 	///
 	/// Source node id refers to the node forwarding the HTLC through this hop.
@@ -2134,8 +2143,15 @@ where L::Target: Logger {
 						 (amount_to_transfer_over_msat < $next_hops_path_htlc_minimum_msat &&
 						  recommended_value_msat >= $next_hops_path_htlc_minimum_msat));
 
-					let payment_failed_on_this_channel = scid_opt.map_or(false,
-						|scid| payment_params.previously_failed_channels.contains(&scid));
+					let payment_failed_on_this_channel = match scid_opt {
+						Some(scid) => payment_params.previously_failed_channels.contains(&scid),
+						None => match $candidate.blinded_hint_idx() {
+							Some(idx) => {
+								payment_params.previously_failed_blinded_path_idxs.contains(&(idx as u64))
+							},
+							None => false,
+						},
+					};
 
 					let (should_log_candidate, first_hop_details) = match $candidate {
 						CandidateRouteHop::FirstHop(hop) => (true, Some(hop.details)),
