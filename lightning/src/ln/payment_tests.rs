@@ -42,10 +42,12 @@ use crate::prelude::*;
 use crate::ln::functional_test_utils;
 use crate::ln::functional_test_utils::*;
 use crate::routing::gossip::NodeId;
+
 #[cfg(feature = "std")]
-use std::time::{SystemTime, Instant, Duration};
-#[cfg(feature = "std")]
-use crate::util::time::tests::SinceEpoch;
+use {
+	crate::util::time::tests::SinceEpoch,
+	std::time::{SystemTime, Instant, Duration},
+};
 
 #[test]
 fn mpp_failure() {
