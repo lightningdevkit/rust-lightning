@@ -21,15 +21,16 @@ use crate::ln::msgs::ChannelMessageHandler;
 use crate::ln::onion_utils;
 use crate::ln::onion_utils::INVALID_ONION_BLINDING;
 use crate::ln::outbound_payment::Retry;
+use crate::offers::invoice::BlindedPayInfo;
 use crate::prelude::*;
 use crate::routing::router::{Payee, PaymentParameters, RouteParameters};
 use crate::util::config::UserConfig;
 use crate::util::test_utils;
 
-pub fn get_blinded_route_parameters(
-	amt_msat: u64, payment_secret: PaymentSecret, node_ids: Vec<PublicKey>,
+fn blinded_payment_path(
+	payment_secret: PaymentSecret, node_ids: Vec<PublicKey>,
 	channel_upds: &[&msgs::UnsignedChannelUpdate], keys_manager: &test_utils::TestKeysInterface
-) -> RouteParameters {
+) -> (BlindedPayInfo, BlindedPath) {
 	let mut intermediate_nodes = Vec::new();
 	for (node_id, chan_upd) in node_ids.iter().zip(channel_upds) {
 		intermediate_nodes.push(ForwardNode {
@@ -58,13 +59,20 @@ pub fn get_blinded_route_parameters(
 		},
 	};
 	let mut secp_ctx = Secp256k1::new();
-	let blinded_path = BlindedPath::new_for_payment(
+	BlindedPath::new_for_payment(
 		&intermediate_nodes[..], *node_ids.last().unwrap(), payee_tlvs,
 		channel_upds.last().unwrap().htlc_maximum_msat, keys_manager, &secp_ctx
-	).unwrap();
+	).unwrap()
+}
 
+pub fn get_blinded_route_parameters(
+	amt_msat: u64, payment_secret: PaymentSecret, node_ids: Vec<PublicKey>,
+	channel_upds: &[&msgs::UnsignedChannelUpdate], keys_manager: &test_utils::TestKeysInterface
+) -> RouteParameters {
 	RouteParameters::from_payment_params_and_value(
-		PaymentParameters::blinded(vec![blinded_path]), amt_msat
+		PaymentParameters::blinded(vec![
+			blinded_payment_path(payment_secret, node_ids, channel_upds, keys_manager)
+		]), amt_msat
 	)
 }
 
