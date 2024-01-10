@@ -186,7 +186,7 @@ for OnionMessenger<ES, NS, L, NL, MR, OMH, CMH> where
 ///     &keys_manager, &keys_manager, logger, &node_id_lookup, message_router,
 ///     &offers_message_handler, &custom_message_handler
 /// );
-
+///
 /// # #[derive(Debug)]
 /// # struct YourCustomMessage {}
 /// impl Writeable for YourCustomMessage {
@@ -195,6 +195,7 @@ for OnionMessenger<ES, NS, L, NL, MR, OMH, CMH> where
 /// 		// Write your custom onion message to `w`
 /// 	}
 /// }
+///
 /// impl OnionMessageContents for YourCustomMessage {
 /// 	fn tlv_type(&self) -> u64 {
 /// 		# let your_custom_message_type = 42;
@@ -202,6 +203,7 @@ for OnionMessenger<ES, NS, L, NL, MR, OMH, CMH> where
 /// 	}
 /// 	fn msg_type(&self) -> &'static str { "YourCustomMessageType" }
 /// }
+///
 /// // Send a custom onion message to a node id.
 /// let destination = Destination::Node(destination_node_id);
 /// let reply_path = None;
