@@ -814,6 +814,7 @@ pub(super) struct ReestablishResponses {
 /// The result of a shutdown that should be handled.
 #[must_use]
 pub(crate) struct ShutdownResult {
+	pub(crate) closure_reason: ClosureReason,
 	/// A channel monitor update to apply.
 	pub(crate) monitor_update: Option<(PublicKey, OutPoint, ChannelMonitorUpdate)>,
 	/// A list of dropped outbound HTLCs that can safely be failed backwards immediately.
@@ -822,7 +823,10 @@ pub(crate) struct ShutdownResult {
 	/// propagated to the remainder of the batch.
 	pub(crate) unbroadcasted_batch_funding_txid: Option<Txid>,
 	pub(crate) channel_id: ChannelId,
+	pub(crate) user_channel_id: u128,
+	pub(crate) channel_capacity_satoshis: u64,
 	pub(crate) counterparty_node_id: PublicKey,
+	pub(crate) unbroadcasted_funding_tx: Option<Transaction>,
 }
 
 /// If the majority of the channels funds are to the fundee and the initiator holds only just
@@ -2311,15 +2315,17 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 		res
 	}
 
-	fn if_unbroadcasted_funding<F, O>(&self, f: F) -> Option<O>
-		where F: Fn() -> Option<O> {
+	fn if_unbroadcasted_funding<F, O>(&self, f: F) -> Option<O> where F: Fn() -> Option<O> {
 		match self.channel_state {
 			ChannelState::FundingNegotiated => f(),
-			ChannelState::AwaitingChannelReady(flags) => if flags.is_set(AwaitingChannelReadyFlags::WAITING_FOR_BATCH) {
-				f()
-			} else {
-				None
-			},
+			ChannelState::AwaitingChannelReady(flags) =>
+				if flags.is_set(AwaitingChannelReadyFlags::WAITING_FOR_BATCH) ||
+					flags.is_set(FundedStateFlags::MONITOR_UPDATE_IN_PROGRESS.into())
+				{
+					f()
+				} else {
+					None
+				},
 			_ => None,
 		}
 	}
@@ -2354,7 +2360,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 	/// those explicitly stated to be allowed after shutdown completes, eg some simple getters).
 	/// Also returns the list of payment_hashes for channels which we can safely fail backwards
 	/// immediately (others we will have to allow to time out).
-	pub fn force_shutdown(&mut self, should_broadcast: bool) -> ShutdownResult {
+	pub fn force_shutdown(&mut self, should_broadcast: bool, closure_reason: ClosureReason) -> ShutdownResult {
 		// Note that we MUST only generate a monitor update that indicates force-closure - we're
 		// called during initialization prior to the chain_monitor in the encompassing ChannelManager
 		// being fully configured in some cases. Thus, its likely any monitor events we generate will
@@ -2395,15 +2401,20 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 			} else { None }
 		} else { None };
 		let unbroadcasted_batch_funding_txid = self.unbroadcasted_batch_funding_txid();
+		let unbroadcasted_funding_tx = self.unbroadcasted_funding();
 
 		self.channel_state = ChannelState::ShutdownComplete;
 		self.update_time_counter += 1;
 		ShutdownResult {
+			closure_reason,
 			monitor_update,
 			dropped_outbound_htlcs,
 			unbroadcasted_batch_funding_txid,
 			channel_id: self.channel_id,
+			user_channel_id: self.user_id,
+			channel_capacity_satoshis: self.channel_value_satoshis,
 			counterparty_node_id: self.counterparty_node_id,
+			unbroadcasted_funding_tx,
 		}
 	}
 
@@ -4931,11 +4942,15 @@ impl<SP: Deref> Channel<SP> where
 		if let Some((last_fee, sig)) = self.context.last_sent_closing_fee {
 			if last_fee == msg.fee_satoshis {
 				let shutdown_result = ShutdownResult {
+					closure_reason: ClosureReason::CooperativeClosure,
 					monitor_update: None,
 					dropped_outbound_htlcs: Vec::new(),
 					unbroadcasted_batch_funding_txid: self.context.unbroadcasted_batch_funding_txid(),
 					channel_id: self.context.channel_id,
+					user_channel_id: self.context.user_id,
+					channel_capacity_satoshis: self.context.channel_value_satoshis,
 					counterparty_node_id: self.context.counterparty_node_id,
+					unbroadcasted_funding_tx: self.context.unbroadcasted_funding(),
 				};
 				let tx = self.build_signed_closing_transaction(&mut closing_tx, &msg.signature, &sig);
 				self.context.channel_state = ChannelState::ShutdownComplete;
@@ -4961,11 +4976,15 @@ impl<SP: Deref> Channel<SP> where
 							.map_err(|_| ChannelError::Close("External signer refused to sign closing transaction".to_owned()))?;
 						let (signed_tx, shutdown_result) = if $new_fee == msg.fee_satoshis {
 							let shutdown_result = ShutdownResult {
+								closure_reason: ClosureReason::CooperativeClosure,
 								monitor_update: None,
 								dropped_outbound_htlcs: Vec::new(),
 								unbroadcasted_batch_funding_txid: self.context.unbroadcasted_batch_funding_txid(),
 								channel_id: self.context.channel_id,
+								user_channel_id: self.context.user_id,
+								channel_capacity_satoshis: self.context.channel_value_satoshis,
 								counterparty_node_id: self.context.counterparty_node_id,
+								unbroadcasted_funding_tx: self.context.unbroadcasted_funding(),
 							};
 							self.context.channel_state = ChannelState::ShutdownComplete;
 							self.context.update_time_counter += 1;

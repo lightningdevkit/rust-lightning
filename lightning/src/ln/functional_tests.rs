@@ -768,7 +768,7 @@ fn test_update_fee_that_funder_cannot_afford() {
 	//check to see if the funder, who sent the update_fee request, can afford the new fee (funder_balance >= fee+channel_reserve)
 	//Should produce and error.
 	nodes[1].node.handle_commitment_signed(&nodes[0].node.get_our_node_id(), &commit_signed_msg);
-	nodes[1].logger.assert_log("lightning::ln::channelmanager", "Funding remote cannot afford proposed new fee".to_string(), 1);
+	nodes[1].logger.assert_log_contains("lightning::ln::channelmanager", "Funding remote cannot afford proposed new fee", 3);
 	check_added_monitors!(nodes[1], 1);
 	check_closed_broadcast!(nodes[1], true);
 	check_closed_event!(nodes[1], 1, ClosureReason::ProcessingError { err: String::from("Funding remote cannot afford proposed new fee") },
@@ -1617,7 +1617,7 @@ fn test_chan_reserve_violation_inbound_htlc_outbound_channel() {
 
 	nodes[0].node.handle_update_add_htlc(&nodes[1].node.get_our_node_id(), &msg);
 	// Check that the payment failed and the channel is closed in response to the malicious UpdateAdd.
-	nodes[0].logger.assert_log("lightning::ln::channelmanager", "Cannot accept HTLC that would put our balance under counterparty-announced channel reserve value".to_string(), 1);
+	nodes[0].logger.assert_log_contains("lightning::ln::channelmanager", "Cannot accept HTLC that would put our balance under counterparty-announced channel reserve value", 3);
 	assert_eq!(nodes[0].node.list_channels().len(), 0);
 	let err_msg = check_closed_broadcast!(nodes[0], true).unwrap();
 	assert_eq!(err_msg.data, "Cannot accept HTLC that would put our balance under counterparty-announced channel reserve value");
@@ -1796,7 +1796,7 @@ fn test_chan_reserve_violation_inbound_htlc_inbound_chan() {
 
 	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &msg);
 	// Check that the payment failed and the channel is closed in response to the malicious UpdateAdd.
-	nodes[1].logger.assert_log("lightning::ln::channelmanager", "Remote HTLC add would put them under remote reserve value".to_string(), 1);
+	nodes[1].logger.assert_log_contains("lightning::ln::channelmanager", "Remote HTLC add would put them under remote reserve value", 3);
 	assert_eq!(nodes[1].node.list_channels().len(), 1);
 	let err_msg = check_closed_broadcast!(nodes[1], true).unwrap();
 	assert_eq!(err_msg.data, "Remote HTLC add would put them under remote reserve value");
@@ -3328,22 +3328,18 @@ fn do_test_commitment_revoked_fail_backward_exhaustive(deliver_bs_raa: bool, use
 
 	let events = nodes[1].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), if deliver_bs_raa { 3 + nodes.len() - 1 } else { 4 + nodes.len() });
-	match events[0] {
-		Event::ChannelClosed { reason: ClosureReason::CommitmentTxConfirmed, .. } => { },
-		_ => panic!("Unexepected event"),
-	}
-	match events[1] {
-		Event::PaymentPathFailed { ref payment_hash, .. } => {
-			assert_eq!(*payment_hash, fourth_payment_hash);
-		},
-		_ => panic!("Unexpected event"),
-	}
-	match events[2] {
-		Event::PaymentFailed { ref payment_hash, .. } => {
-			assert_eq!(*payment_hash, fourth_payment_hash);
-		},
-		_ => panic!("Unexpected event"),
-	}
+	assert!(events.iter().any(|ev| matches!(
+		ev,
+		Event::ChannelClosed { reason: ClosureReason::CommitmentTxConfirmed, .. }
+	)));
+	assert!(events.iter().any(|ev| matches!(
+		ev,
+		Event::PaymentPathFailed { ref payment_hash, .. } if *payment_hash == fourth_payment_hash
+	)));
+	assert!(events.iter().any(|ev| matches!(
+		ev,
+		Event::PaymentFailed { ref payment_hash, .. } if *payment_hash == fourth_payment_hash
+	)));
 
 	nodes[1].node.process_pending_htlc_forwards();
 	check_added_monitors!(nodes[1], 1);
@@ -6299,7 +6295,7 @@ fn test_update_add_htlc_bolt2_receiver_zero_value_msat() {
 	updates.update_add_htlcs[0].amount_msat = 0;
 
 	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &updates.update_add_htlcs[0]);
-	nodes[1].logger.assert_log("lightning::ln::channelmanager", "Remote side tried to send a 0-msat HTLC".to_string(), 1);
+	nodes[1].logger.assert_log_contains("lightning::ln::channelmanager", "Remote side tried to send a 0-msat HTLC", 3);
 	check_closed_broadcast!(nodes[1], true).unwrap();
 	check_added_monitors!(nodes[1], 1);
 	check_closed_event!(nodes[1], 1, ClosureReason::ProcessingError { err: "Remote side tried to send a 0-msat HTLC".to_string() },
@@ -8982,6 +8978,101 @@ fn test_duplicate_temporary_channel_id_from_different_peers() {
 }
 
 #[test]
+fn test_peer_funding_sidechannel() {
+	// Test that if a peer somehow learns which txid we'll use for our channel funding before we
+	// receive `funding_transaction_generated` the peer cannot cause us to crash. We'd previously
+	// assumed that LDK would receive `funding_transaction_generated` prior to our peer learning
+	// the txid and panicked if the peer tried to open a redundant channel to us with the same
+	// funding outpoint.
+	//
+	// While this assumption is generally safe, some users may have out-of-band protocols where
+	// they notify their LSP about a funding outpoint first, or this may be violated in the future
+	// with collaborative transaction construction protocols, i.e. dual-funding.
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
+	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+
+	let temp_chan_id_ab = exchange_open_accept_chan(&nodes[0], &nodes[1], 1_000_000, 0);
+	let temp_chan_id_ca = exchange_open_accept_chan(&nodes[2], &nodes[0], 1_000_000, 0);
+
+	let (_, tx, funding_output) =
+		create_funding_transaction(&nodes[0], &nodes[1].node.get_our_node_id(), 1_000_000, 42);
+
+	let cs_funding_events = nodes[2].node.get_and_clear_pending_events();
+	assert_eq!(cs_funding_events.len(), 1);
+	match cs_funding_events[0] {
+		Event::FundingGenerationReady { .. } => {}
+		_ => panic!("Unexpected event {:?}", cs_funding_events),
+	}
+
+	nodes[2].node.funding_transaction_generated_unchecked(&temp_chan_id_ca, &nodes[0].node.get_our_node_id(), tx.clone(), funding_output.index).unwrap();
+	let funding_created_msg = get_event_msg!(nodes[2], MessageSendEvent::SendFundingCreated, nodes[0].node.get_our_node_id());
+	nodes[0].node.handle_funding_created(&nodes[2].node.get_our_node_id(), &funding_created_msg);
+	get_event_msg!(nodes[0], MessageSendEvent::SendFundingSigned, nodes[2].node.get_our_node_id());
+	expect_channel_pending_event(&nodes[0], &nodes[2].node.get_our_node_id());
+	check_added_monitors!(nodes[0], 1);
+
+	let res = nodes[0].node.funding_transaction_generated(&temp_chan_id_ab, &nodes[1].node.get_our_node_id(), tx.clone());
+	let err_msg = format!("{:?}", res.unwrap_err());
+	assert!(err_msg.contains("An existing channel using outpoint "));
+	assert!(err_msg.contains(" is open with peer"));
+	// Even though the last funding_transaction_generated errored, it still generated a
+	// SendFundingCreated. However, when the peer responds with a funding_signed it will send the
+	// appropriate error message.
+	let as_funding_created = get_event_msg!(nodes[0], MessageSendEvent::SendFundingCreated, nodes[1].node.get_our_node_id());
+	nodes[1].node.handle_funding_created(&nodes[0].node.get_our_node_id(), &as_funding_created);
+	check_added_monitors!(nodes[1], 1);
+	expect_channel_pending_event(&nodes[1], &nodes[0].node.get_our_node_id());
+	let reason = ClosureReason::ProcessingError { err: format!("An existing channel using outpoint {} is open with peer {}", funding_output, nodes[2].node.get_our_node_id()), };
+	check_closed_events(&nodes[0], &[ExpectedCloseEvent::from_id_reason(funding_output.to_channel_id(), true, reason)]);
+
+	let funding_signed = get_event_msg!(nodes[1], MessageSendEvent::SendFundingSigned, nodes[0].node.get_our_node_id());
+	nodes[0].node.handle_funding_signed(&nodes[1].node.get_our_node_id(), &funding_signed);
+	get_err_msg(&nodes[0], &nodes[1].node.get_our_node_id());
+}
+
+#[test]
+fn test_duplicate_conflicting_funding_from_second_peer() {
+	// Test that if a user tries to fund a channel with a funding outpoint they'd previously used
+	// we don't try to remove the previous ChannelMonitor. This is largely a test to ensure we
+	// don't regress in the fuzzer, as such funding getting passed our outpoint-matches checks
+	// implies the user (and our counterparty) has reused cryptographic keys across channels, which
+	// we require the user not do.
+	let chanmon_cfgs = create_chanmon_cfgs(4);
+	let node_cfgs = create_node_cfgs(4, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(4, &node_cfgs, &[None, None, None, None]);
+	let nodes = create_network(4, &node_cfgs, &node_chanmgrs);
+
+	let temp_chan_id = exchange_open_accept_chan(&nodes[0], &nodes[1], 1_000_000, 0);
+
+	let (_, tx, funding_output) =
+		create_funding_transaction(&nodes[0], &nodes[1].node.get_our_node_id(), 1_000_000, 42);
+
+	// Now that we have a funding outpoint, create a dummy `ChannelMonitor` and insert it into
+	// nodes[0]'s ChainMonitor so that the initial `ChannelMonitor` write fails.
+	let dummy_chan_id = create_chan_between_nodes(&nodes[2], &nodes[3]).3;
+	let dummy_monitor = get_monitor!(nodes[2], dummy_chan_id).clone();
+	nodes[0].chain_monitor.chain_monitor.watch_channel(funding_output, dummy_monitor).unwrap();
+
+	nodes[0].node.funding_transaction_generated(&temp_chan_id, &nodes[1].node.get_our_node_id(), tx.clone()).unwrap();
+
+	let mut funding_created_msg = get_event_msg!(nodes[0], MessageSendEvent::SendFundingCreated, nodes[1].node.get_our_node_id());
+	nodes[1].node.handle_funding_created(&nodes[0].node.get_our_node_id(), &funding_created_msg);
+	let funding_signed_msg = get_event_msg!(nodes[1], MessageSendEvent::SendFundingSigned, nodes[0].node.get_our_node_id());
+	check_added_monitors!(nodes[1], 1);
+	expect_channel_pending_event(&nodes[1], &nodes[0].node.get_our_node_id());
+
+	nodes[0].node.handle_funding_signed(&nodes[1].node.get_our_node_id(), &funding_signed_msg);
+	// At this point, the channel should be closed, after having generated one monitor write (the
+	// watch_channel call which failed), but zero monitor updates.
+	check_added_monitors!(nodes[0], 1);
+	get_err_msg(&nodes[0], &nodes[1].node.get_our_node_id());
+	let err_reason = ClosureReason::ProcessingError { err: "Channel funding outpoint was a duplicate".to_owned() };
+	check_closed_events(&nodes[0], &[ExpectedCloseEvent::from_id_reason(funding_signed_msg.channel_id, true, err_reason)]);
+}
+
+#[test]
 fn test_duplicate_funding_err_in_funding() {
 	// Test that if we have a live channel with one peer, then another peer comes along and tries
 	// to create a second channel with the same txid we'll fail and not overwrite the
@@ -9131,16 +9222,16 @@ fn test_duplicate_chan_id() {
 				chan.get_funding_created(tx.clone(), funding_outpoint, false, &&logger).map_err(|_| ()).unwrap()
 			},
 			_ => panic!("Unexpected ChannelPhase variant"),
-		}
+		}.unwrap()
 	};
 	check_added_monitors!(nodes[0], 0);
-	nodes[1].node.handle_funding_created(&nodes[0].node.get_our_node_id(), &funding_created.unwrap());
+	nodes[1].node.handle_funding_created(&nodes[0].node.get_our_node_id(), &funding_created);
 	// At this point we'll look up if the channel_id is present and immediately fail the channel
 	// without trying to persist the `ChannelMonitor`.
 	check_added_monitors!(nodes[1], 0);
 
 	check_closed_events(&nodes[1], &[
-		ExpectedCloseEvent::from_id_reason(channel_id, false, ClosureReason::ProcessingError {
+		ExpectedCloseEvent::from_id_reason(funding_created.temporary_channel_id, false, ClosureReason::ProcessingError {
 			err: "Already had channel with the new channel_id".to_owned()
 		})
 	]);
