@@ -360,7 +360,7 @@ where
 		const MIN_PEER_CHANNELS: usize = 3;
 
 		let network_graph = self.network_graph.deref().read_only();
-		let paths = peers.iter()
+		let peer_channels = peers.iter()
 			.map(|pubkey| (pubkey, NodeId::from_pubkey(&pubkey)))
 			// Limit to peers with announced channels
 			.filter_map(|(pubkey, node_id)|
@@ -369,7 +369,9 @@ where
 					.map(|info| &info.channels[..])
 					.and_then(|channels| (channels.len() >= MIN_PEER_CHANNELS).then(|| channels))
 					.map(|channels| (pubkey, node_id, channels))
-			)
+			);
+
+		let three_hop_paths = peer_channels.clone()
 			// Pair peers with their other peers
 			.flat_map(|(pubkey, node_id, channels)|
 				channels
@@ -391,20 +393,25 @@ where
 			)
 			.map(|(source_pubkey, pubkey)| vec![source_pubkey, pubkey, recipient])
 			.map(|node_pks| BlindedPath::new_for_message(&node_pks, entropy_source, secp_ctx))
-			.take(MAX_PATHS)
-			.collect::<Result<Vec<_>, _>>();
+			.take(MAX_PATHS);
 
-		match paths {
-			Ok(paths) if !paths.is_empty() => Ok(paths),
-			_ => {
-				if network_graph.nodes().contains_key(&NodeId::from_pubkey(&recipient)) {
-					BlindedPath::one_hop_for_message(recipient, entropy_source, secp_ctx)
-						.map(|path| vec![path])
-				} else {
-					Err(())
-				}
-			},
-		}
+		let two_hop_paths = peer_channels
+			.map(|(pubkey, _, _)| vec![*pubkey, recipient])
+			.map(|node_pks| BlindedPath::new_for_message(&node_pks, entropy_source, secp_ctx))
+			.take(MAX_PATHS);
+
+		three_hop_paths
+			.collect::<Result<Vec<_>, _>>().ok()
+			.and_then(|paths| (!paths.is_empty()).then(|| paths))
+			.or_else(|| two_hop_paths.collect::<Result<Vec<_>, _>>().ok())
+			.and_then(|paths| (!paths.is_empty()).then(|| paths))
+			.or_else(|| network_graph
+				.node(&NodeId::from_pubkey(&recipient)).ok_or(())
+				.and_then(|_| BlindedPath::one_hop_for_message(recipient, entropy_source, secp_ctx))
+				.map(|path| vec![path])
+				.ok()
+			)
+			.ok_or(())
 	}
 }
 
