@@ -39,11 +39,11 @@ use bitcoin::secp256k1;
 use bitcoin::secp256k1::Secp256k1;
 use bitcoin::secp256k1::ecdsa::Signature;
 
-const EMPTY_SCRIPT_SIG_WEIGHT: u64 = 1 /* empty script_sig */ * WITNESS_SCALE_FACTOR as u64;
+pub(crate) const EMPTY_SCRIPT_SIG_WEIGHT: u64 = 1 /* empty script_sig */ * WITNESS_SCALE_FACTOR as u64;
 
 const BASE_INPUT_SIZE: u64 = 32 /* txid */ + 4 /* vout */ + 4 /* sequence */;
 
-const BASE_INPUT_WEIGHT: u64 = BASE_INPUT_SIZE * WITNESS_SCALE_FACTOR as u64;
+pub(crate) const BASE_INPUT_WEIGHT: u64 = BASE_INPUT_SIZE * WITNESS_SCALE_FACTOR as u64;
 
 /// A descriptor used to sign for a commitment transaction's anchor output.
 #[derive(Clone, Debug, PartialEq, Eq)]

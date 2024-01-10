@@ -583,6 +583,10 @@ pub struct SpliceSignedAck {
 	*/
 }
 
+/// A randomly chosen number that is used to identify inputs within an interactive transaction
+/// construction.
+pub type SerialId = u64;
+
 /// A tx_add_input message for adding an input during interactive transaction construction
 ///
 // TODO(dual_funding): Add spec link for `tx_add_input`.
@@ -592,7 +596,7 @@ pub struct TxAddInput {
 	pub channel_id: ChannelId,
 	/// A randomly chosen unique identifier for this input, which is even for initiators and odd for
 	/// non-initiators.
-	pub serial_id: u64,
+	pub serial_id: SerialId,
 	/// Serialized transaction that contains the output this input spends to verify that it is non
 	/// malleable.
 	pub prevtx: TransactionU16LenLimited,
@@ -611,7 +615,7 @@ pub struct TxAddOutput {
 	pub channel_id: ChannelId,
 	/// A randomly chosen unique identifier for this output, which is even for initiators and odd for
 	/// non-initiators.
-	pub serial_id: u64,
+	pub serial_id: SerialId,
 	/// The satoshi value of the output
 	pub sats: u64,
 	/// The scriptPubKey for the output
@@ -626,7 +630,7 @@ pub struct TxRemoveInput {
 	/// The channel ID
 	pub channel_id: ChannelId,
 	/// The serial ID of the input to be removed
-	pub serial_id: u64,
+	pub serial_id: SerialId,
 }
 
 /// A tx_remove_output message for removing an output during interactive transaction construction.
@@ -637,7 +641,7 @@ pub struct TxRemoveOutput {
 	/// The channel ID
 	pub channel_id: ChannelId,
 	/// The serial ID of the output to be removed
-	pub serial_id: u64,
+	pub serial_id: SerialId,
 }
 
 /// A tx_complete message signalling the conclusion of a peer's transaction contributions during
@@ -1539,10 +1543,13 @@ pub trait ChannelMessageHandler : MessageSendEventsProvider {
 	/// Handle an incoming `open_channel` message from the given peer.
 	fn handle_open_channel(&self, their_node_id: &PublicKey, msg: &OpenChannel);
 	/// Handle an incoming `open_channel2` message from the given peer.
+	#[cfg(dual_funding)]
 	fn handle_open_channel_v2(&self, their_node_id: &PublicKey, msg: &OpenChannelV2);
 	/// Handle an incoming `accept_channel` message from the given peer.
 	fn handle_accept_channel(&self, their_node_id: &PublicKey, msg: &AcceptChannel);
+	#[cfg(dual_funding)]
 	/// Handle an incoming `accept_channel2` message from the given peer.
+	#[cfg(dual_funding)]
 	fn handle_accept_channel_v2(&self, their_node_id: &PublicKey, msg: &AcceptChannelV2);
 	/// Handle an incoming `funding_created` message from the given peer.
 	fn handle_funding_created(&self, their_node_id: &PublicKey, msg: &FundingCreated);
@@ -1579,25 +1586,36 @@ pub trait ChannelMessageHandler : MessageSendEventsProvider {
 	fn handle_splice_signed(&self, their_node_id: &PublicKey, msg: &SpliceSigned);
 	/// Handle an incoming `splice_signed_ack` message from the given peer.
 	fn handle_splice_signed_ack(&self, their_node_id: &PublicKey, msg: &SpliceSignedAck);
+	/// TODO remove
+	fn handle_tx_complete_splice(&self, their_node_id: &PublicKey, msg: &TxComplete);
 
 	// Interactive channel construction
 	/// Handle an incoming `tx_add_input message` from the given peer.
+	#[cfg(dual_funding)]
 	fn handle_tx_add_input(&self, their_node_id: &PublicKey, msg: &TxAddInput);
 	/// Handle an incoming `tx_add_output` message from the given peer.
+	#[cfg(dual_funding)]
 	fn handle_tx_add_output(&self, their_node_id: &PublicKey, msg: &TxAddOutput);
 	/// Handle an incoming `tx_remove_input` message from the given peer.
+	#[cfg(dual_funding)]
 	fn handle_tx_remove_input(&self, their_node_id: &PublicKey, msg: &TxRemoveInput);
 	/// Handle an incoming `tx_remove_output` message from the given peer.
+	#[cfg(dual_funding)]
 	fn handle_tx_remove_output(&self, their_node_id: &PublicKey, msg: &TxRemoveOutput);
 	/// Handle an incoming `tx_complete message` from the given peer.
+	#[cfg(dual_funding)]
 	fn handle_tx_complete(&self, their_node_id: &PublicKey, msg: &TxComplete);
 	/// Handle an incoming `tx_signatures` message from the given peer.
+	#[cfg(dual_funding)]
 	fn handle_tx_signatures(&self, their_node_id: &PublicKey, msg: &TxSignatures);
 	/// Handle an incoming `tx_init_rbf` message from the given peer.
+	#[cfg(dual_funding)]
 	fn handle_tx_init_rbf(&self, their_node_id: &PublicKey, msg: &TxInitRbf);
 	/// Handle an incoming `tx_ack_rbf` message from the given peer.
+	#[cfg(dual_funding)]
 	fn handle_tx_ack_rbf(&self, their_node_id: &PublicKey, msg: &TxAckRbf);
 	/// Handle an incoming `tx_abort message` from the given peer.
+	#[cfg(dual_funding)]
 	fn handle_tx_abort(&self, their_node_id: &PublicKey, msg: &TxAbort);
 
 	// HTLC handling:

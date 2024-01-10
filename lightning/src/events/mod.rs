@@ -950,6 +950,64 @@ pub enum Event {
 		/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
 		channel_type: ChannelTypeFeatures,
 	},
+	/// Indicates a request to open a new dual-funded channel by a peer.
+	///
+	/// To accept the request without contributing funds, call [`ChannelManager::accept_inbound_channel`].
+	/// To accept the request and contribute funds, call [`ChannelManager::accept_inbound_channel_with_contribution`].
+	/// To reject the request, call [`ChannelManager::force_close_without_broadcasting_txn`].
+	///
+	/// The event is always triggered when a new open channel request is received for a dual-funded
+	/// channel, regardless of the value of the [`UserConfig::manually_accept_inbound_channels`]
+	/// config flag. This is so that funding inputs can be manually provided to contribute to the
+	/// overall channel capacity on the acceptor side.
+	///
+	/// [`ChannelManager::accept_inbound_channel`]: crate::ln::channelmanager::ChannelManager::accept_inbound_channel
+	/// [`ChannelManager::accept_inbound_channel_with_contribution`]: crate::ln::channelmanager::ChannelManager::accept_inbound_channel_with_contribution
+	/// [`ChannelManager::force_close_without_broadcasting_txn`]: crate::ln::channelmanager::ChannelManager::force_close_without_broadcasting_txn
+	/// [`UserConfig::manually_accept_inbound_channels`]: crate::util::config::UserConfig::manually_accept_inbound_channels
+	OpenChannelV2Request {
+		/// The temporary channel ID of the channel requested to be opened.
+		///
+		/// When responding to the request, the `temporary_channel_id` should be passed
+		/// back to the ChannelManager through [`ChannelManager::accept_inbound_channel`] or
+		/// [`ChannelManager::accept_inbound_channel_with_contribution`] to accept, or through
+		/// [`ChannelManager::force_close_without_broadcasting_txn`] to reject.
+		///
+		/// [`ChannelManager::accept_inbound_channel`]: crate::ln::channelmanager::ChannelManager::accept_inbound_channel
+		/// [`ChannelManager::accept_inbound_channel_with_contribution`]: crate::ln::channelmanager::ChannelManager::accept_inbound_channel_with_contribution
+		/// [`ChannelManager::force_close_without_broadcasting_txn`]: crate::ln::channelmanager::ChannelManager::force_close_without_broadcasting_txn
+		temporary_channel_id: ChannelId,
+		/// The node_id of the counterparty requesting to open the channel.
+		///
+		/// When responding to the request, the `counterparty_node_id` should be passed
+		/// back to the ChannelManager through [`ChannelManager::accept_inbound_channel`] or
+		/// [`ChannelManager::accept_inbound_channel_with_contribution`] to accept, or through
+		/// [`ChannelManager::force_close_without_broadcasting_txn`] to reject the request.
+		///
+		/// [`ChannelManager::accept_inbound_channel`]: crate::ln::channelmanager::ChannelManager::accept_inbound_channel
+		/// [`ChannelManager::accept_inbound_channel_with_contribution`]: crate::ln::channelmanager::ChannelManager::accept_inbound_channel_with_contribution
+		/// [`ChannelManager::force_close_without_broadcasting_txn`]: crate::ln::channelmanager::ChannelManager::force_close_without_broadcasting_txn
+		counterparty_node_id: PublicKey,
+		/// The counterparty's contribution to the channel value in satoshis.
+		funding_satoshis: u64,
+		/// The features that this channel will operate with. If you reject the channel, a
+		/// well-behaved counterparty may automatically re-attempt the channel with a new set of
+		/// feature flags.
+		///
+		/// Note that if [`ChannelTypeFeatures::supports_scid_privacy`] returns true on this type,
+		/// the resulting [`ChannelManager`] will not be readable by versions of LDK prior to
+		/// 0.0.106.
+		///
+		/// Furthermore, note that if [`ChannelTypeFeatures::supports_zero_conf`] returns true on this type,
+		/// the resulting [`ChannelManager`] will not be readable by versions of LDK prior to
+		/// 0.0.107.
+		///
+		/// NOTE: Zero-conf dual-funded channels are not currently accepted.
+		// TODO(dual_funding): Support zero-conf channels.
+		///
+		/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
+		channel_type: ChannelTypeFeatures,
+	},
 	/// Indicates that the HTLC was accepted, but could not be processed when or after attempting to
 	/// forward it.
 	///
@@ -977,6 +1035,93 @@ pub enum Event {
 	///
 	/// [`ChannelHandshakeConfig::negotiate_anchors_zero_fee_htlc_tx`]: crate::util::config::ChannelHandshakeConfig::negotiate_anchors_zero_fee_htlc_tx
 	BumpTransaction(BumpTransactionEvent),
+	#[cfg(dual_funding)]
+	/// Used to indicate that the client should provide inputs to fund a dual-funded channel using
+	/// interactive transaction construction by calling [`ChannelManager::contribute_funding_inputs`].
+	/// Generated in [`ChannelManager`] message handling.
+	/// Note that *all inputs* contributed must spend SegWit outputs or your counterparty can steal
+	/// your funds!
+	///
+	/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
+	/// [`ChannelManager::contribute_funding_inputs`]: crate::ln::channelmanager::ChannelManager::contribute_funding_inputs
+	FundingInputsContributionReady {
+		/// The channel_id of the channel that requires funding inputs which you'll need to pass into
+		/// [`ChannelManager::contribute_funding_inputs`].
+		///
+		/// [`ChannelManager::contribute_funding_inputs`]: crate::ln::channelmanager::ChannelManager::contribute_funding_inputs
+		channel_id: ChannelId,
+		/// The counterparty's node_id, which you'll need to pass back into
+		/// [`ChannelManager::contribute_funding_inputs`].
+		///
+		/// [`ChannelManager::contribute_funding_inputs`]: crate::ln::channelmanager::ChannelManager::contribute_funding_inputs
+		counterparty_node_id: PublicKey,
+		/// The value, in satoshis, that we commited to contribute to the channel value during
+		/// establishment.
+		holder_funding_satoshis: u64,
+		/// The value, in satoshis, that the counterparty commited to contribute to the channel value
+		/// during channel establishment.
+		counterparty_funding_satoshis: u64,
+		/// TODO(dual_funding): Update docs
+		/// The `user_channel_id` value passed in to [`ChannelManager::create_channel`] for outbound
+		/// channels, or to [`ChannelManager::accept_inbound_channel`] for inbound channels if
+		/// [`UserConfig::manually_accept_inbound_channels`] config flag is set to true. Otherwise
+		/// `user_channel_id` will be randomized for an inbound channel.  This may be zero for objects
+		/// serialized with LDK versions prior to 0.0.113.
+		///
+		/// [`ChannelManager::create_channel`]: crate::ln::channelmanager::ChannelManager::create_channel
+		/// [`ChannelManager::accept_inbound_channel`]: crate::ln::channelmanager::ChannelManager::accept_inbound_channel
+		/// [`UserConfig::manually_accept_inbound_channels`]: crate::util::config::UserConfig::manually_accept_inbound_channels
+		user_channel_id: u128,
+	},
+	#[cfg(dual_funding)]
+	/// Indicates that a transaction constructed via interactive transaction construction for a
+	/// dual-funded (V2) channel is ready to be signed by the client. This event will only be triggered
+	/// if at least one input was contributed by the holder.
+	///
+	/// The transaction contains all inputs provided by both parties when the channel was
+	/// created/accepted along with the channel's funding output and a change output if applicable.
+	///
+	/// No part of the transaction should be changed before signing as the content of the transaction
+	/// has already been negotiated with the counterparty.
+	///
+	/// Each signature MUST use the SIGHASH_ALL flag to avoid invalidation of initial commitment and
+	/// hence possible loss of funds.
+	///
+	/// After signing, call [`ChannelManager::funding_transaction_signed`] with the (partially) signed
+	/// funding transaction.
+	///
+	/// Generated in [`ChannelManager`] message handling.
+	///
+	/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
+	/// [`ChannelManager::funding_transaction_signed`]: crate::ln::channelmanager::ChannelManager::funding_transaction_signed
+	FundingTransactionReadyForSigning {
+		/// The channel_id of the V2 channel which you'll need to pass back into
+		/// [`ChannelManager::funding_transaction_signed`].
+		///
+		/// [`ChannelManager::funding_transaction_signed`]: crate::ln::channelmanager::ChannelManager::funding_transaction_signed
+		channel_id: ChannelId,
+		/// The counterparty's node_id, which you'll need to pass back into
+		/// [`ChannelManager::funding_transaction_signed`].
+		///
+		/// [`ChannelManager::funding_transaction_signed`]: crate::ln::channelmanager::ChannelManager::funding_transaction_signed
+		counterparty_node_id: PublicKey,
+		/// The `user_channel_id` value passed in to [`ChannelManager::create_dual_funded_channel`] for outbound
+		/// channels, or to [`ChannelManager::accept_inbound_channel`] or [`ChannelManager::accept_inbound_channel_with_contribution`]
+		/// for inbound channels if [`UserConfig::manually_accept_inbound_channels`] config flag is set to true.
+		/// Otherwise `user_channel_id` will be randomized for an inbound channel.
+		/// This may be zero for objects serialized with LDK versions prior to 0.0.113.
+		///
+		/// [`ChannelManager::create_dual_funded_channel`]: crate::ln::channelmanager::ChannelManager::create_dual_funded_channel
+		/// [`ChannelManager::accept_inbound_channel`]: crate::ln::channelmanager::ChannelManager::accept_inbound_channel
+		/// [`ChannelManager::accept_inbound_channel_with_contribution`]: crate::ln::channelmanager::ChannelManager::accept_inbound_channel_with_contribution
+		/// [`UserConfig::manually_accept_inbound_channels`]: crate::util::config::UserConfig::manually_accept_inbound_channels
+		user_channel_id: u128,
+		/// The unsigned transaction to be signed and passed back to
+		/// [`ChannelManager::funding_transaction_signed`].
+		///
+		/// [`ChannelManager::funding_transaction_signed`]: crate::ln::channelmanager::ChannelManager::funding_transaction_signed
+		unsigned_transaction: Transaction,
+	},
 	/// #SPLICING
 	/// Indicates that the splice negotiation is done, `splice_ack` msg was received
 	/// TODO Change name, this should come after tx negotiation, maybe not needed in this form
@@ -1241,6 +1386,27 @@ impl Writeable for Event {
 			&Event::ConnectionNeeded { .. } => {
 				35u8.write(writer)?;
 				// Never write ConnectionNeeded events as buffered onion messages aren't serialized.
+			},
+			#[cfg(dual_funding)]
+			&Event::FundingInputsContributionReady { .. } => {
+				37u8.write(writer)?;
+				// We never write out FundingInputsContributionReady events as, upon disconnection, peers
+				// drop any channels which have not yet exchanged the initial commitment_signed in V2 channel
+				// establishment.
+			},
+			&Event::OpenChannelV2Request { .. } => {
+				39u8.write(writer)?;
+				// We never write the OpenChannelV2Request events as, upon disconnection, peers
+				// drop any channels which have not yet completed any interactive funding transaction
+				// construction.
+			},
+			#[cfg(dual_funding)]
+			&Event::FundingTransactionReadyForSigning { .. } => {
+				39u8.write(writer)?;
+				// We never write out FundingTransactionReadyForSigning events as, upon disconnection, peers
+				// drop any V2-established channels which have not yet exchanged the initial `commitment_signed`.
+				// We only exhange the initial `commitment_signed` after the client calls
+				// `ChannelManager::funding_transaction_signed` and ALWAYS before we send a `tx_signatures`
 			},
 			// Note that, going forward, all new events must only write data inside of
 			// `write_tlv_fields`. Versions 0.0.101+ will ignore odd-numbered events that write

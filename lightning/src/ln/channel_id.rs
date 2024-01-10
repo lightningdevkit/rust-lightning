@@ -13,9 +13,14 @@ use crate::ln::msgs::DecodeError;
 use crate::sign::EntropySource;
 use crate::util::ser::{Readable, Writeable, Writer};
 
+use bitcoin::hashes::Hash as _;
+use bitcoin::hashes::sha256::Hash as Sha256;
+
 use crate::io;
 use core::fmt;
 use core::ops::Deref;
+
+use super::channel_keys::RevocationBasepoint;
 
 /// A unique 32-byte identifier for a channel.
 /// Depending on how the ID is generated, several varieties are distinguished
@@ -60,6 +65,28 @@ impl ChannelId {
 	/// Check whether ID is consisting of all zeros (uninitialized)
 	pub fn is_zero(&self) -> bool {
 		self.0[..] == [0; 32]
+	}
+
+	/// Create _v2_ channel ID by concatenating the holder revocation basepoint with the counterparty
+	/// revocation basepoint and hashing the result. The basepoints will be concatenated in increasing
+	/// sorted order.
+	pub fn v2_from_revocation_basepoints(
+		ours: &RevocationBasepoint,
+		theirs: &RevocationBasepoint,
+	) -> Self {
+		let (lesser_point, greater_point) = if *ours < *theirs {
+			(ours, theirs)
+		} else {
+			(theirs, ours)
+		};
+
+		Self(Sha256::hash(&[lesser_point.0.serialize(), greater_point.0.serialize()].concat()).to_byte_array())
+	}
+
+	/// Create temporary _v2_ channel ID by concatenating a zeroed out basepoint with the holder
+	/// revocation basepoint and hashing the result.
+	pub fn temporary_v2_from_revocation_basepoint(our_revocation_basepoint: &RevocationBasepoint) -> Self {
+		Self(Sha256::hash(&[[0u8; 33], our_revocation_basepoint.0.serialize()].concat()).to_byte_array())
 	}
 }
 

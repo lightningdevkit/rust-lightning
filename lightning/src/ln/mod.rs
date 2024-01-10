@@ -79,6 +79,8 @@ mod shutdown_tests;
 #[cfg(test)]
 #[allow(unused_mut)]
 mod async_signer_tests;
+#[allow(unused_mut)] // TODO
+pub(crate) mod interactivetxs;
 
 pub use self::peer_channel_encryptor::LN_MAX_MSG_LEN;
 
