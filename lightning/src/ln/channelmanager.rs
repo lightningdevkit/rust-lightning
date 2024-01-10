@@ -6037,7 +6037,7 @@ where
 						APIError::ChannelUnavailable { err: err_str }
 					})
 				}
-			_ => { 
+			_ => {
 				let err_str = "No such channel awaiting to be accepted.".to_owned();
 				log_error!(logger, "{}", err_str);
 
