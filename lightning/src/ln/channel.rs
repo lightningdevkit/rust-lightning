@@ -3629,23 +3629,22 @@ impl<SP: Deref> Channel<SP> where
 						 .map(|fail_msg_opt| fail_msg_opt.map(|_| ())))
 					}
 				};
-				match fail_htlc_res {
-					Some(Ok(fail_msg_opt)) => {
-						// If an HTLC failure was previously added to the holding cell (via
-						// `queue_fail_{malformed_}htlc`) then generating the fail message itself must
-						// not fail - we should never end up in a state where we double-fail
-						// an HTLC or fail-then-claim an HTLC as it indicates we didn't wait
-						// for a full revocation before failing.
-						debug_assert!(fail_msg_opt.is_some());
-						update_fail_count += 1;
-					},
-					Some(Err(e)) => {
-						if let ChannelError::Ignore(_) = e {}
-						else {
+				if let Some(res) = fail_htlc_res {
+					match res {
+						Ok(fail_msg_opt) => {
+							// If an HTLC failure was previously added to the holding cell (via
+							// `queue_fail_{malformed_}htlc`) then generating the fail message itself must
+							// not fail - we should never end up in a state where we double-fail
+							// an HTLC or fail-then-claim an HTLC as it indicates we didn't wait
+							// for a full revocation before failing.
+							debug_assert!(fail_msg_opt.is_some());
+							update_fail_count += 1;
+						},
+						Err(ChannelError::Ignore(_)) => {},
+						Err(_) => {
 							panic!("Got a non-IgnoreError action trying to fail holding cell HTLC");
-						}
-					},
-					None => {}
+						},
+					}
 				}
 			}
 			if update_add_count == 0 && update_fulfill_count == 0 && update_fail_count == 0 && self.context.holding_cell_update_fee.is_none() {
