@@ -100,7 +100,7 @@ impl<G: Deref<Target = NetworkGraph<L>> + Clone, L: Deref, S: Deref, SP: Sized, 
 		const MIN_PEER_CHANNELS: usize = 3;
 
 		let network_graph = self.network_graph.deref().read_only();
-		let paths = first_hops.into_iter()
+		let counterparty_channels = first_hops.into_iter()
 			.filter(|details| details.counterparty.features.supports_route_blinding())
 			.filter(|details| amount_msats <= details.inbound_capacity_msat)
 			.filter(|details| amount_msats >= details.inbound_htlc_minimum_msat.unwrap_or(0))
@@ -142,7 +142,9 @@ impl<G: Deref<Target = NetworkGraph<L>> + Clone, L: Deref, S: Deref, SP: Sized, 
 					htlc_maximum_msat: details.inbound_htlc_maximum_msat.unwrap_or(u64::MAX),
 				};
 				Some((forward_node, counterparty_channels))
-			})
+			});
+
+		let three_hop_paths = counterparty_channels.clone()
 			// Pair counterparties with their other channels
 			.flat_map(|(forward_node, counterparty_channels)|
 				counterparty_channels
@@ -194,20 +196,29 @@ impl<G: Deref<Target = NetworkGraph<L>> + Clone, L: Deref, S: Deref, SP: Sized, 
 					tlvs.clone(), u64::MAX, entropy_source, secp_ctx
 				))
 			})
-			.take(MAX_PAYMENT_PATHS)
-			.collect::<Result<Vec<_>, _>>();
+			.take(MAX_PAYMENT_PATHS);
 
-		match paths {
-			Ok(paths) if !paths.is_empty() => Ok(paths),
-			_ => {
-				if network_graph.nodes().contains_key(&NodeId::from_pubkey(&recipient)) {
-					BlindedPath::one_hop_for_payment(recipient, tlvs, entropy_source, secp_ctx)
-						.map(|path| vec![path])
-				} else {
-					Err(())
-				}
-			},
-		}
+		let two_hop_paths = counterparty_channels
+			.map(|(forward_node, _)| {
+				BlindedPath::new_for_payment(
+					&[forward_node], recipient, tlvs.clone(), u64::MAX, entropy_source, secp_ctx
+				)
+			})
+			.take(MAX_PAYMENT_PATHS);
+
+		three_hop_paths
+			.collect::<Result<Vec<_>, _>>().ok()
+			.and_then(|paths| (!paths.is_empty()).then(|| paths))
+			.or_else(|| two_hop_paths.collect::<Result<Vec<_>, _>>().ok())
+			.and_then(|paths| (!paths.is_empty()).then(|| paths))
+			.or_else(|| network_graph
+				.node(&NodeId::from_pubkey(&recipient)).ok_or(())
+				.and_then(|_|
+					BlindedPath::one_hop_for_payment(recipient, tlvs, entropy_source, secp_ctx))
+				.map(|path| vec![path])
+				.ok()
+			)
+			.ok_or(())
 	}
 }
 
