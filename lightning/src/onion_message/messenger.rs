@@ -7,8 +7,8 @@
 // You may not use this file except in accordance with one or both of these
 // licenses.
 
-//! LDK sends, receives, and forwards onion messages via the [`OnionMessenger`]. See its docs for
-//! more information.
+//! LDK sends, receives, and forwards onion messages via this [`OnionMessenger`], which lives here,
+//! as well as various types, traits, and utilities that it uses.
 
 use bitcoin::hashes::{Hash, HashEngine};
 use bitcoin::hashes::hmac::{Hmac, HmacEngine};
@@ -26,7 +26,7 @@ use crate::ln::features::{InitFeatures, NodeFeatures};
 use crate::ln::msgs::{self, OnionMessage, OnionMessageHandler, SocketAddress};
 use crate::ln::onion_utils;
 use crate::routing::gossip::{NetworkGraph, NodeId};
-pub use super::packet::OnionMessageContents;
+use super::packet::OnionMessageContents;
 use super::packet::ParsedOnionMessageContents;
 use super::offers::OffersMessageHandler;
 use super::packet::{BIG_PACKET_HOP_DATA_LEN, ForwardControlTlvs, Packet, Payload, ReceiveControlTlvs, SMALL_PACKET_HOP_DATA_LEN};
@@ -74,7 +74,8 @@ pub(super) const MAX_TIMER_TICKS: usize = 2;
 /// # use lightning::blinded_path::BlindedPath;
 /// # use lightning::sign::{EntropySource, KeysManager};
 /// # use lightning::ln::peer_handler::IgnoringMessageHandler;
-/// # use lightning::onion_message::{OnionMessageContents, Destination, MessageRouter, OnionMessagePath, OnionMessenger};
+/// # use lightning::onion_message::messenger::{Destination, MessageRouter, OnionMessagePath, OnionMessenger};
+/// # use lightning::onion_message::packet::OnionMessageContents;
 /// # use lightning::util::logger::{Logger, Record};
 /// # use lightning::util::ser::{Writeable, Writer};
 /// # use lightning::io;

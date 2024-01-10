@@ -20,7 +20,7 @@ use crate::ln::channelmanager::{ChannelDetails, PaymentId};
 use crate::ln::features::{BlindedHopFeatures, Bolt11InvoiceFeatures, Bolt12InvoiceFeatures, ChannelFeatures, NodeFeatures};
 use crate::ln::msgs::{DecodeError, ErrorAction, LightningError, MAX_VALUE_MSAT};
 use crate::offers::invoice::{BlindedPayInfo, Bolt12Invoice};
-use crate::onion_message::{DefaultMessageRouter, Destination, MessageRouter, OnionMessagePath};
+use crate::onion_message::messenger::{DefaultMessageRouter, Destination, MessageRouter, OnionMessagePath};
 use crate::routing::gossip::{DirectedChannelInfo, EffectiveCapacity, ReadOnlyNetworkGraph, NetworkGraph, NodeId, RoutingFees};
 use crate::routing::scoring::{ChannelUsage, LockableScore, ScoreLookUp};
 use crate::sign::EntropySource;

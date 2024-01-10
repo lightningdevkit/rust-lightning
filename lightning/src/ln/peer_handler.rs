@@ -31,8 +31,10 @@ use crate::ln::peer_channel_encryptor::{PeerChannelEncryptor, NextNoiseStep, Mes
 use crate::ln::wire;
 use crate::ln::wire::{Encode, Type};
 #[cfg(not(c_bindings))]
-use crate::onion_message::{SimpleArcOnionMessenger, SimpleRefOnionMessenger};
-use crate::onion_message::{CustomOnionMessageHandler, OffersMessage, OffersMessageHandler, OnionMessageContents, PendingOnionMessage};
+use crate::onion_message::messenger::{SimpleArcOnionMessenger, SimpleRefOnionMessenger};
+use crate::onion_message::messenger::{CustomOnionMessageHandler, PendingOnionMessage};
+use crate::onion_message::offers::{OffersMessage, OffersMessageHandler};
+use crate::onion_message::packet::OnionMessageContents;
 use crate::routing::gossip::{NodeId, NodeAlias};
 use crate::util::atomic_counter::AtomicCounter;
 use crate::util::logger::{Logger, WithContext};
@@ -384,7 +386,7 @@ pub struct MessageHandler<CM: Deref, RM: Deref, OM: Deref, CustomM: Deref> where
 	/// A message handler which handles onion messages. This should generally be an
 	/// [`OnionMessenger`], but can also be an [`IgnoringMessageHandler`].
 	///
-	/// [`OnionMessenger`]: crate::onion_message::OnionMessenger
+	/// [`OnionMessenger`]: crate::onion_message::messenger::OnionMessenger
 	pub onion_message_handler: OM,
 
 	/// A message handler which handles custom messages. The only LDK-provided implementation is

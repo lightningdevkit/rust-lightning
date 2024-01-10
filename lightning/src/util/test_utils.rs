@@ -32,7 +32,7 @@ use crate::ln::msgs::LightningError;
 use crate::ln::script::ShutdownScript;
 use crate::offers::invoice::{BlindedPayInfo, UnsignedBolt12Invoice};
 use crate::offers::invoice_request::UnsignedInvoiceRequest;
-use crate::onion_message::{Destination, MessageRouter, OnionMessagePath};
+use crate::onion_message::messenger::{Destination, MessageRouter, OnionMessagePath};
 use crate::routing::gossip::{EffectiveCapacity, NetworkGraph, NodeId, RoutingFees};
 use crate::routing::utxo::{UtxoLookup, UtxoLookupError, UtxoResult};
 use crate::routing::router::{find_route, InFlightHtlcs, Path, Route, RouteParameters, RouteHintHop, Router, ScorerAccountingForInFlightHtlcs};

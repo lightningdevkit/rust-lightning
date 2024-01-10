@@ -5,7 +5,7 @@ use crate::blinded_path::utils;
 use crate::io;
 use crate::io::Cursor;
 use crate::ln::onion_utils;
-use crate::onion_message::ControlTlvs;
+use crate::onion_message::packet::ControlTlvs;
 use crate::prelude::*;
 use crate::sign::{NodeSigner, Recipient};
 use crate::util::chacha20poly1305rfc::ChaChaPolyReadAdapter;

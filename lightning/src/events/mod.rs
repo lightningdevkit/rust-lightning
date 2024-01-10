@@ -540,8 +540,8 @@ pub enum Event {
 	/// replies. Handlers should connect to the node otherwise any buffered messages may be lost.
 	///
 	/// [`OnionMessage`]: msgs::OnionMessage
-	/// [`MessageRouter`]: crate::onion_message::MessageRouter
-	/// [`Destination`]: crate::onion_message::Destination
+	/// [`MessageRouter`]: crate::onion_message::messenger::MessageRouter
+	/// [`Destination`]: crate::onion_message::messenger::Destination
 	/// [`OnionMessageHandler`]: crate::ln::msgs::OnionMessageHandler
 	ConnectionNeeded {
 		/// The node id for the node needing a connection.
