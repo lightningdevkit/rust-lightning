@@ -4495,6 +4495,7 @@ impl<SP: Deref> Channel<SP> where
 			counterparty_initial_commitment_tx.to_countersignatory_value_sat(), logger);
 
 		assert!(!self.context.channel_state.is_monitor_update_in_progress()); // We have no had any monitor(s) yet to fail update!
+		self.context.channel_state = ChannelState::AwaitingChannelReady(AwaitingChannelReadyFlags::new());
 		self.context.cur_holder_commitment_transaction_number -= 1;
 		self.context.cur_counterparty_commitment_transaction_number -= 1;
 
