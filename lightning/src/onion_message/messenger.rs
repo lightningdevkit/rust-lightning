@@ -120,7 +120,7 @@ pub(super) const MAX_TIMER_TICKS: usize = 2;
 ///     &keys_manager, &keys_manager, logger, message_router, &offers_message_handler,
 ///     &custom_message_handler
 /// );
-
+///
 /// # #[derive(Debug)]
 /// # struct YourCustomMessage {}
 /// impl Writeable for YourCustomMessage {
@@ -129,12 +129,14 @@ pub(super) const MAX_TIMER_TICKS: usize = 2;
 /// 		// Write your custom onion message to `w`
 /// 	}
 /// }
+///
 /// impl OnionMessageContents for YourCustomMessage {
 /// 	fn tlv_type(&self) -> u64 {
 /// 		# let your_custom_message_type = 42;
 /// 		your_custom_message_type
 /// 	}
 /// }
+///
 /// // Send a custom onion message to a node id.
 /// let destination = Destination::Node(destination_node_id);
 /// let reply_path = None;
