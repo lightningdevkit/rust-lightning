@@ -8212,8 +8212,10 @@ fn test_onion_value_mpp_set_calculation() {
 				RecipientOnionFields::secret_only(our_payment_secret), height + 1, &None).unwrap();
 			// Edit amt_to_forward to simulate the sender having set
 			// the final amount and the routing node taking less fee
-			if let msgs::OutboundOnionPayload::Receive { ref mut amt_msat, .. } = onion_payloads[1] {
-				*amt_msat = 99_000;
+			if let msgs::OutboundOnionPayload::Receive {
+				ref mut sender_intended_htlc_amt_msat, ..
+			} = onion_payloads[1] {
+				*sender_intended_htlc_amt_msat = 99_000;
 			} else { panic!() }
 			let new_onion_packet = onion_utils::construct_onion_packet(onion_payloads, onion_keys, [0; 32], &our_payment_hash).unwrap();
 			payment_event.msgs[0].onion_routing_packet = new_onion_packet;

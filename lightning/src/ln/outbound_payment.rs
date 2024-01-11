@@ -243,7 +243,7 @@ impl PendingOutboundPayment {
 		if insert_res {
 			if let PendingOutboundPayment::Retryable {
 				ref mut pending_amt_msat, ref mut pending_fee_msat,
-				ref mut remaining_max_total_routing_fee_msat, .. 
+				ref mut remaining_max_total_routing_fee_msat, ..
 			} = self {
 					*pending_amt_msat += path.final_value_msat();
 					let path_fee_msat = path.fee_msat();
