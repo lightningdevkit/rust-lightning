@@ -97,12 +97,24 @@ pub struct PaymentConstraints {
 	pub htlc_minimum_msat: u64,
 }
 
-impl From<CounterpartyForwardingInfo> for PaymentRelay {
-	fn from(info: CounterpartyForwardingInfo) -> Self {
+impl TryFrom<CounterpartyForwardingInfo> for PaymentRelay {
+	type Error = ();
+
+	fn try_from(info: CounterpartyForwardingInfo) -> Result<Self, ()> {
 		let CounterpartyForwardingInfo {
 			fee_base_msat, fee_proportional_millionths, cltv_expiry_delta
 		} = info;
-		Self { cltv_expiry_delta, fee_proportional_millionths, fee_base_msat }
+
+		// Avoid exposing esoteric CLTV expiry deltas
+		let cltv_expiry_delta = match cltv_expiry_delta {
+			0..=40 => 40,
+			41..=80 => 80,
+			81..=144 => 144,
+			145..=216 => 216,
+			_ => return Err(()),
+		};
+
+		Ok(Self { cltv_expiry_delta, fee_proportional_millionths, fee_base_msat })
 	}
 }
 
