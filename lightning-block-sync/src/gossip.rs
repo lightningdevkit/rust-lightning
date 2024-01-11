@@ -132,14 +132,12 @@ impl<
 pub struct GossipVerifier<S: FutureSpawner,
 	Blocks: Deref + Send + Sync + 'static + Clone,
 	L: Deref + Send + Sync + 'static,
-	APM: Deref + Send + Sync + 'static + Clone,
 > where
 	Blocks::Target: UtxoSource,
 	L::Target: Logger,
-	APM::Target: APeerManager,
 {
 	source: Blocks,
-	peer_manager: APM,
+	peer_manager_wake: Arc<dyn Fn() + Send + Sync>,
 	gossiper: Arc<P2PGossipSync<Arc<NetworkGraph<L>>, Self, L>>,
 	spawn: S,
 	block_cache: Arc<Mutex<VecDeque<(u32, Block)>>>,
@@ -150,19 +148,20 @@ const BLOCK_CACHE_SIZE: usize = 5;
 impl<S: FutureSpawner,
 	Blocks: Deref + Send + Sync + Clone,
 	L: Deref + Send + Sync,
-	APM: Deref + Send + Sync + Clone,
-> GossipVerifier<S, Blocks, L, APM> where
+> GossipVerifier<S, Blocks, L> where
 	Blocks::Target: UtxoSource,
 	L::Target: Logger,
-	APM::Target: APeerManager,
 {
 	/// Constructs a new [`GossipVerifier`].
 	///
 	/// This is expected to be given to a [`P2PGossipSync`] (initially constructed with `None` for
 	/// the UTXO lookup) via [`P2PGossipSync::add_utxo_lookup`].
-	pub fn new(source: Blocks, spawn: S, gossiper: Arc<P2PGossipSync<Arc<NetworkGraph<L>>, Self, L>>, peer_manager: APM) -> Self {
+	pub fn new<APM: Deref + Send + Sync + Clone + 'static>(
+		source: Blocks, spawn: S, gossiper: Arc<P2PGossipSync<Arc<NetworkGraph<L>>, Self, L>>, peer_manager: APM
+	) -> Self where APM::Target: APeerManager {
+		let peer_manager_wake = Arc::new(move || peer_manager.as_ref().process_events());
 		Self {
-			source, spawn, gossiper, peer_manager,
+			source, spawn, gossiper, peer_manager_wake,
 			block_cache: Arc::new(Mutex::new(VecDeque::with_capacity(BLOCK_CACHE_SIZE))),
 		}
 	}
@@ -252,11 +251,9 @@ impl<S: FutureSpawner,
 impl<S: FutureSpawner,
 	Blocks: Deref + Send + Sync + Clone,
 	L: Deref + Send + Sync,
-	APM: Deref + Send + Sync + Clone,
-> Deref for GossipVerifier<S, Blocks, L, APM> where
+> Deref for GossipVerifier<S, Blocks, L> where
 	Blocks::Target: UtxoSource,
 	L::Target: Logger,
-	APM::Target: APeerManager,
 {
 	type Target = Self;
 	fn deref(&self) -> &Self { self }
@@ -266,11 +263,9 @@ impl<S: FutureSpawner,
 impl<S: FutureSpawner,
 	Blocks: Deref + Send + Sync + Clone,
 	L: Deref + Send + Sync,
-	APM: Deref + Send + Sync + Clone,
-> UtxoLookup for GossipVerifier<S, Blocks, L, APM> where
+> UtxoLookup for GossipVerifier<S, Blocks, L> where
 	Blocks::Target: UtxoSource,
 	L::Target: Logger,
-	APM::Target: APeerManager,
 {
 	fn get_utxo(&self, _chain_hash: &ChainHash, short_channel_id: u64) -> UtxoResult {
 		let res = UtxoFuture::new();
@@ -278,11 +273,11 @@ impl<S: FutureSpawner,
 		let source = self.source.clone();
 		let gossiper = Arc::clone(&self.gossiper);
 		let block_cache = Arc::clone(&self.block_cache);
-		let pm = self.peer_manager.clone();
+		let pmw = Arc::clone(&self.peer_manager_wake);
 		self.spawn.spawn(async move {
 			let res = Self::retrieve_utxo(source, block_cache, short_channel_id).await;
 			fut.resolve(gossiper.network_graph(), &*gossiper, res);
-			pm.as_ref().process_events();
+			(pmw)();
 		});
 		UtxoResult::Async(res)
 	}
