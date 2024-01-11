@@ -10689,17 +10689,23 @@ fn test_disconnect_in_funding_batch() {
 	nodes[0].node.peer_disconnected(&nodes[2].node.get_our_node_id());
 
 	// The channels in the batch will close immediately.
-	let channel_id_1 = OutPoint { txid: tx.txid(), index: 0 }.to_channel_id();
-	let channel_id_2 = OutPoint { txid: tx.txid(), index: 1 }.to_channel_id();
+	let funding_txo_1 = OutPoint { txid: tx.txid(), index: 0 };
+	let funding_txo_2 = OutPoint { txid: tx.txid(), index: 1 };
+	let channel_id_1 = funding_txo_1.to_channel_id();
+	let channel_id_2 = funding_txo_2.to_channel_id();
 	check_closed_events(&nodes[0], &[
 		ExpectedCloseEvent {
 			channel_id: Some(channel_id_1),
 			discard_funding: true,
+			channel_funding_txo: Some(funding_txo_1),
+			user_channel_id: Some(42),
 			..Default::default()
 		},
 		ExpectedCloseEvent {
 			channel_id: Some(channel_id_2),
 			discard_funding: true,
+			channel_funding_txo: Some(funding_txo_2),
+			user_channel_id: Some(43),
 			..Default::default()
 		},
 	]);
@@ -10757,8 +10763,10 @@ fn test_batch_funding_close_after_funding_signed() {
 	assert_eq!(nodes[0].tx_broadcaster.txn_broadcast().len(), 0);
 
 	// Force-close the channel for which we've completed the initial monitor.
-	let channel_id_1 = OutPoint { txid: tx.txid(), index: 0 }.to_channel_id();
-	let channel_id_2 = OutPoint { txid: tx.txid(), index: 1 }.to_channel_id();
+	let funding_txo_1 = OutPoint { txid: tx.txid(), index: 0 };
+	let funding_txo_2 = OutPoint { txid: tx.txid(), index: 1 };
+	let channel_id_1 = funding_txo_1.to_channel_id();
+	let channel_id_2 = funding_txo_2.to_channel_id();
 	nodes[0].node.force_close_broadcasting_latest_txn(&channel_id_1, &nodes[1].node.get_our_node_id()).unwrap();
 	check_added_monitors(&nodes[0], 2);
 	{
@@ -10790,11 +10798,15 @@ fn test_batch_funding_close_after_funding_signed() {
 		ExpectedCloseEvent {
 			channel_id: Some(channel_id_1),
 			discard_funding: true,
+			channel_funding_txo: Some(funding_txo_1),
+			user_channel_id: Some(42),
 			..Default::default()
 		},
 		ExpectedCloseEvent {
 			channel_id: Some(channel_id_2),
 			discard_funding: true,
+			channel_funding_txo: Some(funding_txo_2),
+			user_channel_id: Some(43),
 			..Default::default()
 		},
 	]);

@@ -2884,6 +2884,7 @@ where
 				reason: shutdown_res.closure_reason,
 				counterparty_node_id: Some(shutdown_res.counterparty_node_id),
 				channel_capacity_sats: Some(shutdown_res.channel_capacity_satoshis),
+				channel_funding_txo: shutdown_res.channel_funding_txo,
 			}, None));
 
 			if let Some(transaction) = shutdown_res.unbroadcasted_funding_tx {
@@ -10327,6 +10328,7 @@ where
 						reason: ClosureReason::OutdatedChannelManager,
 						counterparty_node_id: Some(channel.context.get_counterparty_node_id()),
 						channel_capacity_sats: Some(channel.context.get_value_satoshis()),
+						channel_funding_txo: channel.context.get_funding_txo(),
 					}, None));
 					for (channel_htlc_source, payment_hash) in channel.inflight_htlc_sources() {
 						let mut found_htlc = false;
@@ -10380,6 +10382,7 @@ where
 					reason: ClosureReason::DisconnectedPeer,
 					counterparty_node_id: Some(channel.context.get_counterparty_node_id()),
 					channel_capacity_sats: Some(channel.context.get_value_satoshis()),
+					channel_funding_txo: channel.context.get_funding_txo(),
 				}, None));
 			} else {
 				log_error!(logger, "Missing ChannelMonitor for channel {} needed by ChannelManager.", &channel.context.channel_id());

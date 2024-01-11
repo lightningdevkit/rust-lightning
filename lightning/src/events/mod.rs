@@ -24,6 +24,7 @@ use crate::ln::channel::FUNDING_CONF_DEADLINE_BLOCKS;
 use crate::ln::features::ChannelTypeFeatures;
 use crate::ln::msgs;
 use crate::ln::{ChannelId, PaymentPreimage, PaymentHash, PaymentSecret};
+use crate::chain::transaction;
 use crate::routing::gossip::NetworkUpdate;
 use crate::util::errors::APIError;
 use crate::util::ser::{BigSize, FixedLengthReader, Writeable, Writer, MaybeReadable, Readable, RequiredWrapper, UpgradableRequired, WithoutLength};
@@ -861,7 +862,7 @@ pub enum Event {
 	///
 	/// [`ChannelManager::accept_inbound_channel`]: crate::ln::channelmanager::ChannelManager::accept_inbound_channel
 	/// [`UserConfig::manually_accept_inbound_channels`]: crate::util::config::UserConfig::manually_accept_inbound_channels
-	ChannelClosed  {
+	ChannelClosed {
 		/// The `channel_id` of the channel which has been closed. Note that on-chain transactions
 		/// resolving the channel are likely still awaiting confirmation.
 		channel_id: ChannelId,
@@ -886,6 +887,10 @@ pub enum Event {
 		///
 		/// This field will be `None` for objects serialized prior to LDK 0.0.117.
 		channel_capacity_sats: Option<u64>,
+		/// The original channel funding TXO; this helps checking for the existence and confirmation
+		/// status of the closing tx.
+		/// Note that for instances serialized in v0.0.119 or prior this will be missing (None).
+		channel_funding_txo: Option<transaction::OutPoint>,
 	},
 	/// Used to indicate to the user that they can abandon the funding transaction and recycle the
 	/// inputs for another purpose.
@@ -1091,7 +1096,7 @@ impl Writeable for Event {
 				});
 			},
 			&Event::ChannelClosed { ref channel_id, ref user_channel_id, ref reason,
-				ref counterparty_node_id, ref channel_capacity_sats
+				ref counterparty_node_id, ref channel_capacity_sats, ref channel_funding_txo
 			} => {
 				9u8.write(writer)?;
 				// `user_channel_id` used to be a single u64 value. In order to remain backwards
@@ -1106,6 +1111,7 @@ impl Writeable for Event {
 					(3, user_channel_id_high, required),
 					(5, counterparty_node_id, option),
 					(7, channel_capacity_sats, option),
+					(9, channel_funding_txo, option),
 				});
 			},
 			&Event::DiscardFunding { ref channel_id, ref transaction } => {
@@ -1405,6 +1411,7 @@ impl MaybeReadable for Event {
 					let mut user_channel_id_high_opt: Option<u64> = None;
 					let mut counterparty_node_id = None;
 					let mut channel_capacity_sats = None;
+					let mut channel_funding_txo = None;
 					read_tlv_fields!(reader, {
 						(0, channel_id, required),
 						(1, user_channel_id_low_opt, option),
@@ -1412,6 +1419,7 @@ impl MaybeReadable for Event {
 						(3, user_channel_id_high_opt, option),
 						(5, counterparty_node_id, option),
 						(7, channel_capacity_sats, option),
+						(9, channel_funding_txo, option),
 					});
 
 					// `user_channel_id` used to be a single u64 value. In order to remain
@@ -1421,7 +1429,7 @@ impl MaybeReadable for Event {
 						((user_channel_id_high_opt.unwrap_or(0) as u128) << 64);
 
 					Ok(Some(Event::ChannelClosed { channel_id, user_channel_id, reason: _init_tlv_based_struct_field!(reason, upgradable_required),
-						counterparty_node_id, channel_capacity_sats }))
+						counterparty_node_id, channel_capacity_sats, channel_funding_txo }))
 				};
 				f()
 			},

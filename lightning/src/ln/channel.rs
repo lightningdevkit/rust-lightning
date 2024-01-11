@@ -827,6 +827,7 @@ pub(crate) struct ShutdownResult {
 	pub(crate) channel_capacity_satoshis: u64,
 	pub(crate) counterparty_node_id: PublicKey,
 	pub(crate) unbroadcasted_funding_tx: Option<Transaction>,
+	pub(crate) channel_funding_txo: Option<OutPoint>,
 }
 
 /// If the majority of the channels funds are to the fundee and the initiator holds only just
@@ -2415,6 +2416,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 			channel_capacity_satoshis: self.channel_value_satoshis,
 			counterparty_node_id: self.counterparty_node_id,
 			unbroadcasted_funding_tx,
+			channel_funding_txo: self.get_funding_txo(),
 		}
 	}
 
@@ -4943,6 +4945,7 @@ impl<SP: Deref> Channel<SP> where
 					channel_capacity_satoshis: self.context.channel_value_satoshis,
 					counterparty_node_id: self.context.counterparty_node_id,
 					unbroadcasted_funding_tx: self.context.unbroadcasted_funding(),
+					channel_funding_txo: self.context.get_funding_txo(),
 				};
 				let tx = self.build_signed_closing_transaction(&mut closing_tx, &msg.signature, &sig);
 				self.context.channel_state = ChannelState::ShutdownComplete;
@@ -4977,6 +4980,7 @@ impl<SP: Deref> Channel<SP> where
 								channel_capacity_satoshis: self.context.channel_value_satoshis,
 								counterparty_node_id: self.context.counterparty_node_id,
 								unbroadcasted_funding_tx: self.context.unbroadcasted_funding(),
+								channel_funding_txo: self.context.get_funding_txo(),
 							};
 							self.context.channel_state = ChannelState::ShutdownComplete;
 							self.context.update_time_counter += 1;
