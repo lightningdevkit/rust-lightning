@@ -914,7 +914,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 						_ => if out.may_fail.load(atomic::Ordering::Acquire) {
 							return;
 						} else {
-							panic!("Unhandled message event {:?}", event)
+							panic!("Unhandled message event on node {}, {:?}", $node, event)
 						},
 					}
 					if $limit_events != ProcessMessages::AllMessages {
@@ -1407,7 +1407,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 				// after we resolve all pending events.
 				// First make sure there are no pending monitor updates, resetting the error state
 				// and calling force_channel_monitor_updated for each monitor.
-				out.locked_write(format!("Restoring monitors...\n").as_bytes());
+				out.locked_write(b"Restoring monitors...\n");
 				if let Some((id, _)) = monitor_a.latest_monitors.lock().unwrap().get(&chan_1_funding) {
 					monitor_a.chain_monitor.force_channel_monitor_updated(chan_1_funding, *id);
 					nodes[0].process_monitor_events();
@@ -1426,10 +1426,10 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 				}
 
 				// Next, make sure peers are all connected to each other
-				out.locked_write(format!("Reconnecting peers...\n").as_bytes());
+				out.locked_write(b"Reconnecting peers...\n");
 
 				if chan_a_disconnected {
-					out.locked_write(format!("Reconnecting node 0 and node 1...\n").as_bytes());
+					out.locked_write(b"Reconnecting node 0 and node 1...\n");
 					nodes[0].peer_connected(&nodes[1].get_our_node_id(), &Init {
 						features: nodes[1].init_features(), networks: None, remote_network_address: None
 					}, true).unwrap();
@@ -1439,7 +1439,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 					chan_a_disconnected = false;
 				}
 				if chan_b_disconnected {
-					out.locked_write(format!("Reconnecting node 1 and node 2...\n").as_bytes());
+					out.locked_write(b"Reconnecting node 1 and node 2...\n");
 					nodes[1].peer_connected(&nodes[2].get_our_node_id(), &Init {
 						features: nodes[2].init_features(), networks: None, remote_network_address: None
 					}, true).unwrap();
@@ -1449,7 +1449,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 					chan_b_disconnected = false;
 				}
 
-				out.locked_write(format!("Restoring signers...\n").as_bytes());
+				out.locked_write(b"Restoring signers...\n");
 
 				*monitor_a.persister.update_ret.lock().unwrap() = ChannelMonitorUpdateStatus::Completed;
 				*monitor_b.persister.update_ret.lock().unwrap() = ChannelMonitorUpdateStatus::Completed;
@@ -1471,7 +1471,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 					nodes[2].signer_unblocked(None);
 				}
 
-				out.locked_write(format!("Running event queues to quiescence...\n").as_bytes());
+				out.locked_write(b"Running event queues to quiescence...\n");
 
 				for i in 0..std::usize::MAX {
 					if i == 100 { panic!("It may take may iterations to settle the state, but it should not take forever"); }
@@ -1488,20 +1488,20 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 					break;
 				}
 
-				out.locked_write(format!("All channels restored to normal operation.\n").as_bytes());
+				out.locked_write(b"All channels restored to normal operation.\n");
 
 				// Finally, make sure that at least one end of each channel can make a substantial payment
 				assert!(
 					send_payment(&nodes[0], &nodes[1], chan_a, 10_000_000, &mut payment_id, &mut payment_idx) ||
 					send_payment(&nodes[1], &nodes[0], chan_a, 10_000_000, &mut payment_id, &mut payment_idx));
-				out.locked_write(format!("Successfully sent a payment between node 0 and node 1.\n").as_bytes());
+				out.locked_write(b"Successfully sent a payment between node 0 and node 1.\n");
 
 				assert!(
 					send_payment(&nodes[1], &nodes[2], chan_b, 10_000_000, &mut payment_id, &mut payment_idx) ||
 					send_payment(&nodes[2], &nodes[1], chan_b, 10_000_000, &mut payment_id, &mut payment_idx));
-				out.locked_write(format!("Successfully sent a payment between node 1 and node 2.\n").as_bytes());
+				out.locked_write(b"Successfully sent a payment between node 1 and node 2.\n");
 
-				out.locked_write(format!("Flushing pending messages.\n").as_bytes());
+				out.locked_write(b"Flushing pending messages.\n");
 				for i in 0..std::usize::MAX {
 					if i == 100 { panic!("It may take may iterations to settle the state, but it should not take forever"); }
 
