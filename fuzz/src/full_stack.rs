@@ -45,7 +45,7 @@ use lightning::ln::script::ShutdownScript;
 use lightning::ln::functional_test_utils::*;
 use lightning::offers::invoice::{BlindedPayInfo, UnsignedBolt12Invoice};
 use lightning::offers::invoice_request::UnsignedInvoiceRequest;
-use lightning::onion_message::{Destination, MessageRouter, OnionMessagePath};
+use lightning::onion_message::messenger::{Destination, MessageRouter, OnionMessagePath};
 use lightning::routing::gossip::{P2PGossipSync, NetworkGraph};
 use lightning::routing::utxo::UtxoLookup;
 use lightning::routing::router::{InFlightHtlcs, PaymentParameters, Route, RouteParameters, Router};

@@ -16,7 +16,9 @@ use crate::ln::msgs::{self, DecodeError, OnionMessageHandler, SocketAddress};
 use crate::sign::{EntropySource, NodeSigner, Recipient};
 use crate::util::ser::{FixedLengthReader, LengthReadable, Writeable, Writer};
 use crate::util::test_utils;
-use super::{CustomOnionMessageHandler, Destination, MessageRouter, OffersMessage, OffersMessageHandler, OnionMessageContents, OnionMessagePath, OnionMessenger, PendingOnionMessage, SendError};
+use super::messenger::{CustomOnionMessageHandler, Destination, MessageRouter, OnionMessagePath, OnionMessenger, PendingOnionMessage, SendError};
+use super::offers::{OffersMessage, OffersMessageHandler};
+use super::packet::{OnionMessageContents, Packet};
 
 use bitcoin::network::constants::Network;
 use bitcoin::hashes::hex::FromHex;
@@ -571,8 +573,8 @@ fn spec_test_vector() {
 	let sender_to_alice_packet_bytes_len = sender_to_alice_packet_bytes.len() as u64;
 	let mut reader = io::Cursor::new(sender_to_alice_packet_bytes);
 	let mut packet_reader = FixedLengthReader::new(&mut reader, sender_to_alice_packet_bytes_len);
-	let sender_to_alice_packet: super::Packet =
-		<super::Packet as LengthReadable>::read(&mut packet_reader).unwrap();
+	let sender_to_alice_packet: Packet =
+		<Packet as LengthReadable>::read(&mut packet_reader).unwrap();
 	let secp_ctx = Secp256k1::new();
 	let sender_to_alice_om = msgs::OnionMessage {
 		blinding_point: PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&<Vec<u8>>::from_hex("6363636363636363636363636363636363636363636363636363636363636363").unwrap()).unwrap()),
