@@ -5402,11 +5402,11 @@ fn do_test_fail_backwards_unrevoked_remote_announce(deliver_last_raa: bool, anno
 
 	let as_events = nodes[0].node.get_and_clear_pending_events();
 	assert_eq!(as_events.len(), if announce_latest { 10 } else { 6 });
-	let mut as_failds = new_hash_set();
+	let mut as_faileds = new_hash_set();
 	let mut as_updates = 0;
 	for event in as_events.iter() {
 		if let &Event::PaymentPathFailed { ref payment_hash, ref payment_failed_permanently, ref failure, .. } = event {
-			assert!(as_failds.insert(*payment_hash));
+			assert!(as_faileds.insert(*payment_hash));
 			if *payment_hash != payment_hash_2 {
 				assert_eq!(*payment_failed_permanently, deliver_last_raa);
 			} else {
@@ -5418,21 +5418,21 @@ fn do_test_fail_backwards_unrevoked_remote_announce(deliver_last_raa: bool, anno
 		} else if let &Event::PaymentFailed { .. } = event {
 		} else { panic!("Unexpected event"); }
 	}
-	assert!(as_failds.contains(&payment_hash_1));
-	assert!(as_failds.contains(&payment_hash_2));
+	assert!(as_faileds.contains(&payment_hash_1));
+	assert!(as_faileds.contains(&payment_hash_2));
 	if announce_latest {
-		assert!(as_failds.contains(&payment_hash_3));
-		assert!(as_failds.contains(&payment_hash_5));
+		assert!(as_faileds.contains(&payment_hash_3));
+		assert!(as_faileds.contains(&payment_hash_5));
 	}
-	assert!(as_failds.contains(&payment_hash_6));
+	assert!(as_faileds.contains(&payment_hash_6));
 
 	let bs_events = nodes[1].node.get_and_clear_pending_events();
 	assert_eq!(bs_events.len(), if announce_latest { 8 } else { 6 });
-	let mut bs_failds = new_hash_set();
+	let mut bs_faileds = new_hash_set();
 	let mut bs_updates = 0;
 	for event in bs_events.iter() {
 		if let &Event::PaymentPathFailed { ref payment_hash, ref payment_failed_permanently, ref failure, .. } = event {
-			assert!(bs_failds.insert(*payment_hash));
+			assert!(bs_faileds.insert(*payment_hash));
 			if *payment_hash != payment_hash_1 && *payment_hash != payment_hash_5 {
 				assert_eq!(*payment_failed_permanently, deliver_last_raa);
 			} else {
@@ -5444,12 +5444,12 @@ fn do_test_fail_backwards_unrevoked_remote_announce(deliver_last_raa: bool, anno
 		} else if let &Event::PaymentFailed { .. } = event {
 		} else { panic!("Unexpected event"); }
 	}
-	assert!(bs_failds.contains(&payment_hash_1));
-	assert!(bs_failds.contains(&payment_hash_2));
+	assert!(bs_faileds.contains(&payment_hash_1));
+	assert!(bs_faileds.contains(&payment_hash_2));
 	if announce_latest {
-		assert!(bs_failds.contains(&payment_hash_4));
+		assert!(bs_faileds.contains(&payment_hash_4));
 	}
-	assert!(bs_failds.contains(&payment_hash_5));
+	assert!(bs_faileds.contains(&payment_hash_5));
 
 	// For each HTLC which was not failed-back by normal process (ie deliver_last_raa), we should
 	// get a NetworkUpdate. A should have gotten 4 HTLCs which were failed-back due to
