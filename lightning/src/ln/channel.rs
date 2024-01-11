@@ -2555,26 +2555,24 @@ impl FailHTLCContents for msgs::OnionErrorPacket {
 		HTLCUpdateAwaitingACK::FailHTLC { htlc_id, err_packet: self }
 	}
 }
-impl FailHTLCContents for (u16, [u8; 32]) {
-	type Message = msgs::UpdateFailMalformedHTLC; // (failure_code, sha256_of_onion)
+impl FailHTLCContents for ([u8; 32], u16) {
+	type Message = msgs::UpdateFailMalformedHTLC;
 	fn to_message(self, htlc_id: u64, channel_id: ChannelId) -> Self::Message {
 		msgs::UpdateFailMalformedHTLC {
 			htlc_id,
 			channel_id,
-			failure_code: self.0,
-			sha256_of_onion: self.1
+			sha256_of_onion: self.0,
+			failure_code: self.1
 		}
 	}
 	fn to_inbound_htlc_state(self) -> InboundHTLCState {
-		InboundHTLCState::LocalRemoved(
-			InboundHTLCRemovalReason::FailMalformed((self.1, self.0))
-		)
+		InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::FailMalformed(self))
 	}
 	fn to_htlc_update_awaiting_ack(self, htlc_id: u64) -> HTLCUpdateAwaitingACK {
 		HTLCUpdateAwaitingACK::FailMalformedHTLC {
 			htlc_id,
-			failure_code: self.0,
-			sha256_of_onion: self.1
+			sha256_of_onion: self.0,
+			failure_code: self.1
 		}
 	}
 }
@@ -2901,7 +2899,7 @@ impl<SP: Deref> Channel<SP> where
 	pub fn queue_fail_malformed_htlc<L: Deref>(
 		&mut self, htlc_id_arg: u64, failure_code: u16, sha256_of_onion: [u8; 32], logger: &L
 	) -> Result<(), ChannelError> where L::Target: Logger {
-		self.fail_htlc(htlc_id_arg, (failure_code, sha256_of_onion), true, logger)
+		self.fail_htlc(htlc_id_arg, (sha256_of_onion, failure_code), true, logger)
 			.map(|msg_opt| assert!(msg_opt.is_none(), "We forced holding cell?"))
 	}
 
@@ -2914,7 +2912,7 @@ impl<SP: Deref> Channel<SP> where
 	/// return `Ok(_)` if preconditions are met. In any case, `Err`s will only be
 	/// [`ChannelError::Ignore`].
 	fn fail_htlc<L: Deref, E: FailHTLCContents + Clone>(
-		&mut self, htlc_id_arg: u64, err_packet: E, mut force_holding_cell: bool,
+		&mut self, htlc_id_arg: u64, err_contents: E, mut force_holding_cell: bool,
 		logger: &L
 	) -> Result<Option<E::Message>, ChannelError> where L::Target: Logger {
 		if !matches!(self.context.channel_state, ChannelState::ChannelReady(_)) {
@@ -2981,7 +2979,7 @@ impl<SP: Deref> Channel<SP> where
 				}
 			}
 			log_trace!(logger, "Placing failure for HTLC ID {} in holding cell in channel {}.", htlc_id_arg, &self.context.channel_id());
-			self.context.holding_cell_htlc_updates.push(err_packet.to_htlc_update_awaiting_ack(htlc_id_arg));
+			self.context.holding_cell_htlc_updates.push(err_contents.to_htlc_update_awaiting_ack(htlc_id_arg));
 			return Ok(None);
 		}
 
@@ -2989,10 +2987,10 @@ impl<SP: Deref> Channel<SP> where
 			E::Message::name(), &self.context.channel_id());
 		{
 			let htlc = &mut self.context.pending_inbound_htlcs[pending_idx];
-			htlc.state = err_packet.clone().to_inbound_htlc_state();
+			htlc.state = err_contents.clone().to_inbound_htlc_state();
 		}
 
-		Ok(Some(err_packet.to_message(htlc_id_arg, self.context.channel_id())))
+		Ok(Some(err_contents.to_message(htlc_id_arg, self.context.channel_id())))
 	}
 
 	// Message handlers:
@@ -3605,7 +3603,7 @@ impl<SP: Deref> Channel<SP> where
 				// the limit. In case it's less rare than I anticipate, we may want to revisit
 				// handling this case better and maybe fulfilling some of the HTLCs while attempting
 				// to rebalance channels.
-				match &htlc_update {
+				let fail_htlc_res = match &htlc_update {
 					&HTLCUpdateAwaitingACK::AddHTLC {
 						amount_msat, cltv_expiry, ref payment_hash, ref source, ref onion_routing_packet,
 						skimmed_fee_msat, blinding_point, ..
@@ -3633,6 +3631,7 @@ impl<SP: Deref> Channel<SP> where
 								}
 							}
 						}
+						None
 					},
 					&HTLCUpdateAwaitingACK::ClaimHTLC { ref payment_preimage, htlc_id, .. } => {
 						// If an HTLC claim was previously added to the holding cell (via
@@ -3646,40 +3645,33 @@ impl<SP: Deref> Channel<SP> where
 							{ monitor_update } else { unreachable!() };
 						update_fulfill_count += 1;
 						monitor_update.updates.append(&mut additional_monitor_update.updates);
+						None
 					},
 					&HTLCUpdateAwaitingACK::FailHTLC { htlc_id, ref err_packet } => {
-						match self.fail_htlc(htlc_id, err_packet.clone(), false, logger) {
-							Ok(update_fail_msg_option) => {
-								// If an HTLC failure was previously added to the holding cell (via
-								// `queue_fail_htlc`) then generating the fail message itself must
-								// not fail - we should never end up in a state where we double-fail
-								// an HTLC or fail-then-claim an HTLC as it indicates we didn't wait
-								// for a full revocation before failing.
-								debug_assert!(update_fail_msg_option.is_some());
-								update_fail_count += 1;
-							},
-							Err(e) => {
-								if let ChannelError::Ignore(_) = e {}
-								else {
-									panic!("Got a non-IgnoreError action trying to fail holding cell HTLC");
-								}
-							}
-						}
+						Some(self.fail_htlc(htlc_id, err_packet.clone(), false, logger)
+						 .map(|fail_msg_opt| fail_msg_opt.map(|_| ())))
 					},
 					&HTLCUpdateAwaitingACK::FailMalformedHTLC { htlc_id, failure_code, sha256_of_onion } => {
-						match self.fail_htlc(htlc_id, (failure_code, sha256_of_onion), false, logger) {
-							Ok(update_fail_malformed_opt) => {
-								debug_assert!(update_fail_malformed_opt.is_some()); // See above comment
-								update_fail_count += 1;
-							},
-							Err(e) => {
-								if let ChannelError::Ignore(_) = e {}
-								else {
-									panic!("Got a non-IgnoreError action trying to fail holding cell HTLC");
-								}
-							}
-						}
-					},
+						Some(self.fail_htlc(htlc_id, (sha256_of_onion, failure_code), false, logger)
+						 .map(|fail_msg_opt| fail_msg_opt.map(|_| ())))
+					}
+				};
+				if let Some(res) = fail_htlc_res {
+					match res {
+						Ok(fail_msg_opt) => {
+							// If an HTLC failure was previously added to the holding cell (via
+							// `queue_fail_{malformed_}htlc`) then generating the fail message itself must
+							// not fail - we should never end up in a state where we double-fail
+							// an HTLC or fail-then-claim an HTLC as it indicates we didn't wait
+							// for a full revocation before failing.
+							debug_assert!(fail_msg_opt.is_some());
+							update_fail_count += 1;
+						},
+						Err(ChannelError::Ignore(_)) => {},
+						Err(_) => {
+							panic!("Got a non-IgnoreError action trying to fail holding cell HTLC");
+						},
+					}
 				}
 			}
 			if update_add_count == 0 && update_fulfill_count == 0 && update_fail_count == 0 && self.context.holding_cell_update_fee.is_none() {

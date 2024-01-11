@@ -4350,7 +4350,7 @@ where
 					if let Some(ChannelPhase::Funded(ref mut chan)) = peer_state.channel_by_id.get_mut(&forward_chan_id) {
 						let logger = WithChannelContext::from(&self.logger, &chan.context);
 						for forward_info in pending_forwards.drain(..) {
-							match forward_info {
+							let queue_fail_htlc_res = match forward_info {
 								HTLCForwardInfo::AddHTLC(PendingAddHTLCInfo {
 									prev_short_channel_id, prev_htlc_id, prev_funding_outpoint, prev_user_channel_id,
 									forward_info: PendingHTLCInfo {
@@ -4396,40 +4396,35 @@ where
 										));
 										continue;
 									}
+									None
 								},
 								HTLCForwardInfo::AddHTLC { .. } => {
 									panic!("short_channel_id != 0 should imply any pending_forward entries are of type Forward");
 								},
 								HTLCForwardInfo::FailHTLC { htlc_id, err_packet } => {
 									log_trace!(logger, "Failing HTLC back to channel with short id {} (backward HTLC ID {}) after delay", short_chan_id, htlc_id);
-									if let Err(e) = chan.queue_fail_htlc(
-										htlc_id, err_packet, &&logger
-									) {
-										if let ChannelError::Ignore(msg) = e {
-											log_trace!(logger, "Failed to fail HTLC with ID {} backwards to short_id {}: {}", htlc_id, short_chan_id, msg);
-										} else {
-											panic!("Stated return value requirements in queue_fail_htlc() were not met");
-										}
-										// fail-backs are best-effort, we probably already have one
-										// pending, and if not that's OK, if not, the channel is on
-										// the chain and sending the HTLC-Timeout is their problem.
-										continue;
-									}
+									Some((chan.queue_fail_htlc(htlc_id, err_packet, &&logger), htlc_id))
 								},
 								HTLCForwardInfo::FailMalformedHTLC { htlc_id, failure_code, sha256_of_onion } => {
-									log_trace!(self.logger, "Failing malformed HTLC back to channel with short id {} (backward HTLC ID {}) after delay", short_chan_id, htlc_id);
-									if let Err(e) = chan.queue_fail_malformed_htlc(htlc_id, failure_code, sha256_of_onion, &self.logger) {
-										if let ChannelError::Ignore(msg) = e {
-											log_trace!(self.logger, "Failed to fail HTLC with ID {} backwards to short_id {}: {}", htlc_id, short_chan_id, msg);
-										} else {
-											panic!("Stated return value requirements in queue_fail_malformed_htlc() were not met");
-										}
-										// fail-backs are best-effort, we probably already have one
-										// pending, and if not that's OK, if not, the channel is on
-										// the chain and sending the HTLC-Timeout is their problem.
-										continue;
-									}
+									log_trace!(logger, "Failing malformed HTLC back to channel with short id {} (backward HTLC ID {}) after delay", short_chan_id, htlc_id);
+									let res = chan.queue_fail_malformed_htlc(
+										htlc_id, failure_code, sha256_of_onion, &&logger
+									);
+									Some((res, htlc_id))
 								},
+							};
+							if let Some((queue_fail_htlc_res, htlc_id)) = queue_fail_htlc_res {
+								if let Err(e) = queue_fail_htlc_res {
+									if let ChannelError::Ignore(msg) = e {
+										log_trace!(logger, "Failed to fail HTLC with ID {} backwards to short_id {}: {}", htlc_id, short_chan_id, msg);
+									} else {
+										panic!("Stated return value requirements in queue_fail_{{malformed_}}htlc() were not met");
+									}
+									// fail-backs are best-effort, we probably already have one
+									// pending, and if not that's OK, if not, the channel is on
+									// the chain and sending the HTLC-Timeout is their problem.
+									continue;
+								}
 							}
 						}
 					} else {
