@@ -1289,6 +1289,94 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 			},
 			0x89 => { fee_est_c.ret_val.store(253, atomic::Ordering::Release); nodes[2].maybe_update_chan_fees(); },
 
+			0xf0 => {
+				let pending_updates = monitor_a.chain_monitor.list_pending_monitor_updates().remove(&chan_1_funding).unwrap();
+				if let Some(id) = pending_updates.get(0) {
+					monitor_a.chain_monitor.channel_monitor_updated(chan_1_funding, *id).unwrap();
+				}
+				nodes[0].process_monitor_events();
+			}
+			0xf1 => {
+				let pending_updates = monitor_a.chain_monitor.list_pending_monitor_updates().remove(&chan_1_funding).unwrap();
+				if let Some(id) = pending_updates.get(1) {
+					monitor_a.chain_monitor.channel_monitor_updated(chan_1_funding, *id).unwrap();
+				}
+				nodes[0].process_monitor_events();
+			}
+			0xf2 => {
+				let pending_updates = monitor_a.chain_monitor.list_pending_monitor_updates().remove(&chan_1_funding).unwrap();
+				if let Some(id) = pending_updates.last() {
+					monitor_a.chain_monitor.channel_monitor_updated(chan_1_funding, *id).unwrap();
+				}
+				nodes[0].process_monitor_events();
+			}
+
+			0xf4 => {
+				let pending_updates = monitor_b.chain_monitor.list_pending_monitor_updates().remove(&chan_1_funding).unwrap();
+				if let Some(id) = pending_updates.get(0) {
+					monitor_b.chain_monitor.channel_monitor_updated(chan_1_funding, *id).unwrap();
+				}
+				nodes[1].process_monitor_events();
+			}
+			0xf5 => {
+				let pending_updates = monitor_b.chain_monitor.list_pending_monitor_updates().remove(&chan_1_funding).unwrap();
+				if let Some(id) = pending_updates.get(1) {
+					monitor_b.chain_monitor.channel_monitor_updated(chan_1_funding, *id).unwrap();
+				}
+				nodes[1].process_monitor_events();
+			}
+			0xf6 => {
+				let pending_updates = monitor_b.chain_monitor.list_pending_monitor_updates().remove(&chan_1_funding).unwrap();
+				if let Some(id) = pending_updates.last() {
+					monitor_b.chain_monitor.channel_monitor_updated(chan_1_funding, *id).unwrap();
+				}
+				nodes[1].process_monitor_events();
+			}
+
+			0xf8 => {
+				let pending_updates = monitor_b.chain_monitor.list_pending_monitor_updates().remove(&chan_2_funding).unwrap();
+				if let Some(id) = pending_updates.get(0) {
+					monitor_b.chain_monitor.channel_monitor_updated(chan_2_funding, *id).unwrap();
+				}
+				nodes[1].process_monitor_events();
+			}
+			0xf9 => {
+				let pending_updates = monitor_b.chain_monitor.list_pending_monitor_updates().remove(&chan_2_funding).unwrap();
+				if let Some(id) = pending_updates.get(1) {
+					monitor_b.chain_monitor.channel_monitor_updated(chan_2_funding, *id).unwrap();
+				}
+				nodes[1].process_monitor_events();
+			}
+			0xfa => {
+				let pending_updates = monitor_b.chain_monitor.list_pending_monitor_updates().remove(&chan_2_funding).unwrap();
+				if let Some(id) = pending_updates.last() {
+					monitor_b.chain_monitor.channel_monitor_updated(chan_2_funding, *id).unwrap();
+				}
+				nodes[1].process_monitor_events();
+			}
+
+			0xfc => {
+				let pending_updates = monitor_c.chain_monitor.list_pending_monitor_updates().remove(&chan_2_funding).unwrap();
+				if let Some(id) = pending_updates.get(0) {
+					monitor_c.chain_monitor.channel_monitor_updated(chan_2_funding, *id).unwrap();
+				}
+				nodes[2].process_monitor_events();
+			}
+			0xfd => {
+				let pending_updates = monitor_c.chain_monitor.list_pending_monitor_updates().remove(&chan_2_funding).unwrap();
+				if let Some(id) = pending_updates.get(1) {
+					monitor_c.chain_monitor.channel_monitor_updated(chan_2_funding, *id).unwrap();
+				}
+				nodes[2].process_monitor_events();
+			}
+			0xfe => {
+				let pending_updates = monitor_c.chain_monitor.list_pending_monitor_updates().remove(&chan_2_funding).unwrap();
+				if let Some(id) = pending_updates.last() {
+					monitor_c.chain_monitor.channel_monitor_updated(chan_2_funding, *id).unwrap();
+				}
+				nodes[2].process_monitor_events();
+			}
+
 			0xff => {
 				// Test that no channel is in a stuck state where neither party can send funds even
 				// after we resolve all pending events.
