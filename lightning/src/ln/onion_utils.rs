@@ -463,6 +463,7 @@ pub(super) fn process_onion_failure<T: secp256k1::Signing, L: Deref>(
 		network_update: Option<NetworkUpdate>,
 		short_channel_id: Option<u64>,
 		payment_failed_permanently: bool,
+		failed_within_blinded_path: bool,
 	}
 	let mut res: Option<FailureLearnings> = None;
 	let mut htlc_msat = *first_hop_htlc_msat;
@@ -488,7 +489,8 @@ pub(super) fn process_onion_failure<T: secp256k1::Signing, L: Deref>(
 				error_code_ret = Some(BADONION | PERM | 24); // invalid_onion_blinding
 				error_packet_ret = Some(vec![0; 32]);
 				res = Some(FailureLearnings {
-					network_update: None, short_channel_id: None, payment_failed_permanently: false
+					network_update: None, short_channel_id: None, payment_failed_permanently: false,
+					failed_within_blinded_path: true,
 				});
 				return
 			},
@@ -520,7 +522,8 @@ pub(super) fn process_onion_failure<T: secp256k1::Signing, L: Deref>(
 					}
 
 					res = Some(FailureLearnings {
-						network_update: None, short_channel_id: None, payment_failed_permanently: false
+						network_update: None, short_channel_id: None, payment_failed_permanently: false,
+						failed_within_blinded_path: true,
 					});
 					return
 				}
@@ -550,7 +553,8 @@ pub(super) fn process_onion_failure<T: secp256k1::Signing, L: Deref>(
 				});
 				let short_channel_id = Some(route_hop.short_channel_id);
 				res = Some(FailureLearnings {
-					network_update, short_channel_id, payment_failed_permanently: is_from_final_node
+					network_update, short_channel_id, payment_failed_permanently: is_from_final_node,
+					failed_within_blinded_path: false
 				});
 				return
 			}
@@ -706,7 +710,8 @@ pub(super) fn process_onion_failure<T: secp256k1::Signing, L: Deref>(
 
 		res = Some(FailureLearnings {
 			network_update, short_channel_id,
-			payment_failed_permanently: error_code & PERM == PERM && is_from_final_node
+			payment_failed_permanently: error_code & PERM == PERM && is_from_final_node,
+			failed_within_blinded_path: false
 		});
 
 		let (description, title) = errors::get_onion_error_description(error_code);
@@ -717,7 +722,7 @@ pub(super) fn process_onion_failure<T: secp256k1::Signing, L: Deref>(
 		}
 	}).expect("Route that we sent via spontaneously grew invalid keys in the middle of it?");
 	if let Some(FailureLearnings {
-		network_update, short_channel_id, payment_failed_permanently
+		network_update, short_channel_id, payment_failed_permanently, failed_within_blinded_path
 	}) = res {
 		DecodedOnionFailure {
 			network_update, short_channel_id, payment_failed_permanently,
