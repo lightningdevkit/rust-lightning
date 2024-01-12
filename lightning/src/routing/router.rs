@@ -2706,7 +2706,7 @@ where L::Target: Logger {
 						}
 					}
 
-					// Means we succesfully traversed from the payer to the payee, now
+					// Means we successfully traversed from the payer to the payee, now
 					// save this path for the payment route. Also, update the liquidity
 					// remaining on the used hops, so that we take them into account
 					// while looking for more paths.
@@ -7803,7 +7803,7 @@ mod tests {
 	fn do_min_htlc_overpay_violates_max_htlc(blinded_payee: bool) {
 		// Test that if overpaying to meet a later hop's min_htlc and causes us to violate an earlier
 		// hop's max_htlc, we don't consider that candidate hop valid. Previously we would add this hop
-		// to `targets` and build an invalid path with it, and subsquently hit a debug panic asserting
+		// to `targets` and build an invalid path with it, and subsequently hit a debug panic asserting
 		// that the used liquidity for a hop was less than its available liquidity limit.
 		let secp_ctx = Secp256k1::new();
 		let logger = Arc::new(ln_test_utils::TestLogger::new());
@@ -8452,7 +8452,7 @@ pub(crate) mod bench_utils {
 							}
 							break;
 						}
-						// If we couldn't find a path with a higer amount, reduce and try again.
+						// If we couldn't find a path with a higher amount, reduce and try again.
 						score_amt /= 100;
 					}
 
