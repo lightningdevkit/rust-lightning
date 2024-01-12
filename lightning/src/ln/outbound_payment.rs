@@ -243,7 +243,7 @@ impl PendingOutboundPayment {
 		if insert_res {
 			if let PendingOutboundPayment::Retryable {
 				ref mut pending_amt_msat, ref mut pending_fee_msat,
-				ref mut remaining_max_total_routing_fee_msat, .. 
+				ref mut remaining_max_total_routing_fee_msat, ..
 			} = self {
 					*pending_amt_msat += path.final_value_msat();
 					let path_fee_msat = path.fee_msat();
@@ -1604,11 +1604,12 @@ impl OutboundPayments {
 		#[cfg(test)]
 		let DecodedOnionFailure {
 			network_update, short_channel_id, payment_failed_permanently, onion_error_code,
-			onion_error_data
+			onion_error_data, failed_within_blinded_path
 		} = onion_error.decode_onion_failure(secp_ctx, logger, &source);
 		#[cfg(not(test))]
-		let DecodedOnionFailure { network_update, short_channel_id, payment_failed_permanently } =
-			onion_error.decode_onion_failure(secp_ctx, logger, &source);
+		let DecodedOnionFailure {
+			network_update, short_channel_id, payment_failed_permanently, failed_within_blinded_path
+		} = onion_error.decode_onion_failure(secp_ctx, logger, &source);
 
 		let payment_is_probe = payment_is_probe(payment_hash, &payment_id, probing_cookie_secret);
 		let mut session_priv_bytes = [0; 32];

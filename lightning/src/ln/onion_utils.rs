@@ -429,6 +429,7 @@ pub(crate) struct DecodedOnionFailure {
 	pub(crate) network_update: Option<NetworkUpdate>,
 	pub(crate) short_channel_id: Option<u64>,
 	pub(crate) payment_failed_permanently: bool,
+	pub(crate) failed_within_blinded_path: bool,
 	#[cfg(test)]
 	pub(crate) onion_error_code: Option<u16>,
 	#[cfg(test)]
@@ -725,7 +726,7 @@ pub(super) fn process_onion_failure<T: secp256k1::Signing, L: Deref>(
 		network_update, short_channel_id, payment_failed_permanently, failed_within_blinded_path
 	}) = res {
 		DecodedOnionFailure {
-			network_update, short_channel_id, payment_failed_permanently,
+			network_update, short_channel_id, payment_failed_permanently, failed_within_blinded_path,
 			#[cfg(test)]
 			onion_error_code: error_code_ret,
 			#[cfg(test)]
@@ -736,6 +737,7 @@ pub(super) fn process_onion_failure<T: secp256k1::Signing, L: Deref>(
 		// payment not retryable only when garbage is from the final node
 		DecodedOnionFailure {
 			network_update: None, short_channel_id: None, payment_failed_permanently: is_from_final_node,
+			failed_within_blinded_path: false,
 			#[cfg(test)]
 			onion_error_code: None,
 			#[cfg(test)]
@@ -883,6 +885,7 @@ impl HTLCFailReason {
 						network_update: None,
 						payment_failed_permanently: false,
 						short_channel_id: Some(path.hops[0].short_channel_id),
+						failed_within_blinded_path: false,
 						#[cfg(test)]
 						onion_error_code: Some(*failure_code),
 						#[cfg(test)]
