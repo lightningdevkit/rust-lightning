@@ -1609,7 +1609,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 		}
 
 		if let wire::Message::GossipTimestampFilter(_msg) = message {
-			// When supporting gossip messages, start inital gossip sync only after we receive
+			// When supporting gossip messages, start initial gossip sync only after we receive
 			// a GossipTimestampFilter
 			if peer_lock.their_features.as_ref().unwrap().supports_gossip_queries() &&
 				!peer_lock.sent_gossip_timestamp_filter {
@@ -2216,7 +2216,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 											log_pubkey!(node_id));
 									}
 									// We do not have the peers write lock, so we just store that we're
-									// about to disconenct the peer and do it after we finish
+									// about to disconnect the peer and do it after we finish
 									// processing most messages.
 									let msg = msg.map(|msg| wire::Message::<<<CMH as core::ops::Deref>::Target as wire::CustomMessageReader>::CustomMessage>::Error(msg));
 									peers_to_disconnect.insert(node_id, msg);
@@ -2225,7 +2225,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 									log_trace!(logger, "Handling DisconnectPeer HandleError event in peer_handler for node {} with message {}",
 										log_pubkey!(node_id), msg.data);
 									// We do not have the peers write lock, so we just store that we're
-									// about to disconenct the peer and do it after we finish
+									// about to disconnect the peer and do it after we finish
 									// processing most messages.
 									peers_to_disconnect.insert(node_id, Some(wire::Message::Warning(msg)));
 								},
