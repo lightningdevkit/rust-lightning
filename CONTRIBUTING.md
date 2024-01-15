@@ -148,7 +148,7 @@ Security
 --------
 
 Security is the primary focus of `rust-lightning`; disclosure of security
-vulnerabilites helps prevent user loss of funds. If you believe a vulnerability
+vulnerabilities helps prevent user loss of funds. If you believe a vulnerability
 may affect other Lightning implementations, please inform them.
 
 You can find further information on submitting (possible) vulnerabilities in the

@@ -491,7 +491,7 @@ mod tests {
 	}
 
 	// Rather annoyingly, there's no safe way in Rust std to construct a Waker despite it being
-	// totally possible to construct from a trait implementation (though somewhat less effecient
+	// totally possible to construct from a trait implementation (though somewhat less efficient
 	// compared to a raw VTable). Instead, we have to write out a lot of boilerplate to build a
 	// waker, which we do here with a trivial Arc<AtomicBool> data element to track woke-ness.
 	const WAKER_V_TABLE: RawWakerVTable = RawWakerVTable::new(waker_clone, wake, wake_by_ref, drop);
