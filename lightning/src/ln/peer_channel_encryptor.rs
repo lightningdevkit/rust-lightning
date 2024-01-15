@@ -24,8 +24,8 @@ use bitcoin::secp256k1;
 
 use hex::DisplayHex;
 
-use crate::util::chacha20poly1305rfc::ChaCha20Poly1305RFC;
-use crate::util::crypto::hkdf_extract_expand_twice;
+use crate::crypto::chacha20poly1305rfc::ChaCha20Poly1305RFC;
+use crate::crypto::utils::hkdf_extract_expand_twice;
 use crate::util::ser::VecWriter;
 
 use core::ops::Deref;
@@ -188,7 +188,7 @@ impl PeerChannelEncryptor {
 		nonce[4..].copy_from_slice(&n.to_le_bytes()[..]);
 
 		let mut chacha = ChaCha20Poly1305RFC::new(key, &nonce, h);
-		if !chacha.decrypt(&cyphertext[0..cyphertext.len() - 16], res, &cyphertext[cyphertext.len() - 16..]) {
+		if chacha.variable_time_decrypt(&cyphertext[0..cyphertext.len() - 16], res, &cyphertext[cyphertext.len() - 16..]).is_err() {
 			return Err(LightningError{err: "Bad MAC".to_owned(), action: msgs::ErrorAction::DisconnectPeer{ msg: None }});
 		}
 		Ok(())

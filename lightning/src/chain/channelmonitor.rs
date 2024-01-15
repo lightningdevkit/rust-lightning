@@ -4808,7 +4808,7 @@ mod tests {
 				preimages_slice_to_htlcs!($preimages_slice).into_iter().map(|(htlc, _)| (htlc, None)).collect()
 			}
 		}
-		let dummy_sig = crate::util::crypto::sign(&secp_ctx,
+		let dummy_sig = crate::crypto::utils::sign(&secp_ctx,
 			&bitcoin::secp256k1::Message::from_slice(&[42; 32]).unwrap(),
 			&SecretKey::from_slice(&[42; 32]).unwrap());
 

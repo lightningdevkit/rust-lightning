@@ -69,7 +69,7 @@ pub(crate) mod fake_scid {
 	use bitcoin::blockdata::constants::ChainHash;
 	use bitcoin::network::constants::Network;
 	use crate::sign::EntropySource;
-	use crate::util::chacha20::ChaCha20;
+	use crate::crypto::chacha20::ChaCha20;
 	use crate::util::scid_utils;
 
 	use core::convert::TryInto;

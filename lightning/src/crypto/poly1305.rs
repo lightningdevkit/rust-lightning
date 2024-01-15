@@ -192,7 +192,6 @@ impl Poly1305 {
 	}
 
 	pub fn raw_result(&mut self, output: &mut [u8]) {
-		assert!(output.len() >= 16);
 		if !self.finalized{
 			self.finish();
 		}
@@ -205,10 +204,10 @@ impl Poly1305 {
 
 #[cfg(test)]
 mod test {
-	use crate::prelude::*;
 	use core::iter::repeat;
+	use alloc::vec::Vec;
 
-	use crate::util::poly1305::Poly1305;
+	use super::Poly1305;
 
 	fn poly1305(key: &[u8], msg: &[u8], mac: &mut [u8]) {
 		let mut poly = Poly1305::new(key);
