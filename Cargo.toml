@@ -2,14 +2,15 @@
 resolver = "2"
 
 members = [
-    "lightning",
-    "lightning-block-sync",
-    "lightning-invoice",
-    "lightning-net-tokio",
-    "lightning-persister",
-    "lightning-background-processor",
-    "lightning-rapid-gossip-sync",
-    "lightning-custom-message",
+	"lightning",
+	"lightning-block-sync",
+	"lightning-invoice",
+	"lightning-net-tokio",
+	"lightning-persister",
+	"lightning-background-processor",
+	"lightning-rapid-gossip-sync",
+	"lightning-custom-message",
+	"mutual-message-exchange",
 ]
 
 exclude = [
