@@ -9,8 +9,6 @@
 // You may not use this file except in accordance with one or both of these
 // licenses.
 
-use crate::io;
-
 #[cfg(not(fuzzing))]
 mod real_chacha {
 	use core::cmp;
@@ -335,27 +333,14 @@ mod fuzzy_chacha {
 #[cfg(fuzzing)]
 pub use self::fuzzy_chacha::ChaCha20;
 
-pub(crate) struct ChaChaReader<'a, R: io::Read> {
-	pub chacha: &'a mut ChaCha20,
-	pub read: R,
-}
-impl<'a, R: io::Read> io::Read for ChaChaReader<'a, R> {
-	fn read(&mut self, dest: &mut [u8]) -> Result<usize, io::Error> {
-		let res = self.read.read(dest)?;
-		if res > 0 {
-			self.chacha.process_in_place(&mut dest[0..res]);
-		}
-		Ok(res)
-	}
-}
-
 #[cfg(test)]
 mod test {
-	use crate::prelude::*;
+	use alloc::vec;
+	use alloc::vec::{Vec};
+	use core::convert::TryInto;
 	use core::iter::repeat;
 
 	use super::ChaCha20;
-	use std::convert::TryInto;
 
 	#[test]
 	fn test_chacha20_256_tls_vectors() {
