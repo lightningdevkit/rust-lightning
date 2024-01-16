@@ -152,15 +152,14 @@ mod real_chacha {
 		}
 
 		/// Get one block from a ChaCha stream.
-		pub fn get_single_block(key: &[u8; 32], nonce: &[u8; 16]) -> [u8; 32] {
+		pub fn get_single_block(key: &[u8; 32], nonce: &[u8; 16]) -> [u8; 64] {
 			let mut chacha = ChaCha20 {
 				state: ChaCha20::expand(key, nonce),
 				output: [0u8; BLOCK_SIZE],
 				offset: 64,
 			};
-			let mut chacha_bytes = [0; 32];
-			chacha.process_in_place(&mut chacha_bytes);
-			chacha_bytes
+			chacha.update();
+			chacha.output
 		}
 
 		/// Encrypts `src` into `dest` using a single block from a ChaCha stream. Passing `dest` as
@@ -585,7 +584,7 @@ mod test {
 		let mut chacha20 = ChaCha20::new(&key, nonce_12bytes);
 		// Seek its counter to the block at counter_pos.
 		chacha20.seek_to_block(u32::from_le_bytes(counter_pos.try_into().unwrap()));
-		let mut block_bytes = [0; 32];
+		let mut block_bytes = [0; 64];
 		chacha20.process_in_place(&mut block_bytes);
 
 		assert_eq!(ChaCha20::get_single_block(&key, &nonce_16bytes), block_bytes);
