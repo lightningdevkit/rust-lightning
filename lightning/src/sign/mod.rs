@@ -1072,7 +1072,10 @@ impl EntropySource for InMemorySigner {
 		let index = self.rand_bytes_index.get_increment();
 		let mut nonce = [0u8; 16];
 		nonce[..8].copy_from_slice(&index.to_be_bytes());
-		ChaCha20::get_single_block(&self.rand_bytes_unique_start, &nonce)
+		let block = ChaCha20::get_single_block(&self.rand_bytes_unique_start, &nonce);
+		let mut half_block = [0; 32];
+		half_block.copy_from_slice(&block[..32]);
+		half_block
 	}
 }
 
@@ -1634,7 +1637,10 @@ impl EntropySource for KeysManager {
 		let index = self.rand_bytes_index.get_increment();
 		let mut nonce = [0u8; 16];
 		nonce[..8].copy_from_slice(&index.to_be_bytes());
-		ChaCha20::get_single_block(&self.rand_bytes_unique_start, &nonce)
+		let block = ChaCha20::get_single_block(&self.rand_bytes_unique_start, &nonce);
+		let mut half_block = [0; 32];
+		half_block.copy_from_slice(&block[..32]);
+		half_block
 	}
 }
 
