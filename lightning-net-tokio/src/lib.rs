@@ -502,6 +502,9 @@ impl peer_handler::SocketDescriptor for SocketDescriptor {
 							written_len += res;
 							if written_len == data.len() { return written_len; }
 						},
+						Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+							continue;
+						}
 						Err(_) => return written_len,
 					}
 				},
