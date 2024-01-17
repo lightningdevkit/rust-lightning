@@ -202,15 +202,16 @@ pub struct BlindedForward {
 	/// onion payload if we're the introduction node. Useful for calculating the next hop's
 	/// [`msgs::UpdateAddHTLC::blinding_point`].
 	pub inbound_blinding_point: PublicKey,
-	// Another field will be added here when we support forwarding as a non-intro node.
+	/// If needed, this determines how this HTLC should be failed backwards, based on whether we are
+	/// the introduction node.
+	pub failure: BlindedFailure,
 }
 
 impl PendingHTLCRouting {
 	// Used to override the onion failure code and data if the HTLC is blinded.
 	fn blinded_failure(&self) -> Option<BlindedFailure> {
-		// TODO: needs update when we support forwarding blinded HTLCs as non-intro node
 		match self {
-			Self::Forward { blinded: Some(_), .. } => Some(BlindedFailure::FromIntroductionNode),
+			Self::Forward { blinded: Some(BlindedForward { failure, .. }), .. } => Some(*failure),
 			Self::Receive { requires_blinded_error: true, .. } => Some(BlindedFailure::FromBlindedNode),
 			_ => None,
 		}
@@ -305,10 +306,15 @@ pub(super) enum HTLCForwardInfo {
 	},
 }
 
-// Used for failing blinded HTLCs backwards correctly.
+/// Whether this blinded HTLC is being failed backwards by the introduction node or a blinded node,
+/// which determines the failure message that should be used.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
-enum BlindedFailure {
+pub enum BlindedFailure {
+	/// This HTLC is being failed backwards by the introduction node, and thus should be failed with
+	/// [`msgs::UpdateFailHTLC`] and error code `0x8000|0x4000|24`.
 	FromIntroductionNode,
+	/// This HTLC is being failed backwards by a blinded node within the path, and thus should be
+	/// failed with [`msgs::UpdateFailMalformedHTLC`] and error code `0x8000|0x4000|24`.
 	FromBlindedNode,
 }
 
@@ -3025,8 +3031,9 @@ where
 
 		let is_intro_node_forward = match next_hop {
 			onion_utils::Hop::Forward {
-				// TODO: update this when we support blinded forwarding as non-intro node
-				next_hop_data: msgs::InboundOnionPayload::BlindedForward { .. }, ..
+				next_hop_data: msgs::InboundOnionPayload::BlindedForward {
+					intro_node_blinding_point: Some(_), ..
+				}, ..
 			} => true,
 			_ => false,
 		};
@@ -4371,7 +4378,7 @@ where
 										incoming_packet_shared_secret: incoming_shared_secret,
 										// Phantom payments are only PendingHTLCRouting::Receive.
 										phantom_shared_secret: None,
-										blinded_failure: blinded.map(|_| BlindedFailure::FromIntroductionNode),
+										blinded_failure: blinded.map(|b| b.failure),
 									});
 									let next_blinding_point = blinded.and_then(|b| {
 										let encrypted_tlvs_ss = self.node_signer.ecdh(
@@ -9351,6 +9358,7 @@ pub fn provided_init_features(config: &UserConfig) -> InitFeatures {
 	features.set_channel_type_optional();
 	features.set_scid_privacy_optional();
 	features.set_zero_conf_optional();
+	features.set_route_blinding_optional();
 	if config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx {
 		features.set_anchors_zero_fee_htlc_tx_optional();
 	}
@@ -9496,6 +9504,7 @@ impl_writeable_tlv_based!(PhantomRouteHints, {
 
 impl_writeable_tlv_based!(BlindedForward, {
 	(0, inbound_blinding_point, required),
+	(1, failure, (default_value, BlindedFailure::FromIntroductionNode)),
 });
 
 impl_writeable_tlv_based_enum!(PendingHTLCRouting,

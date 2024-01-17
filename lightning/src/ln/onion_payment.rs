@@ -12,7 +12,7 @@ use crate::blinded_path;
 use crate::blinded_path::payment::{PaymentConstraints, PaymentRelay};
 use crate::chain::channelmonitor::{HTLC_FAIL_BACK_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS};
 use crate::ln::PaymentHash;
-use crate::ln::channelmanager::{BlindedForward, CLTV_FAR_FAR_AWAY, HTLCFailureMsg, MIN_CLTV_EXPIRY_DELTA, PendingHTLCInfo, PendingHTLCRouting};
+use crate::ln::channelmanager::{BlindedFailure, BlindedForward, CLTV_FAR_FAR_AWAY, HTLCFailureMsg, MIN_CLTV_EXPIRY_DELTA, PendingHTLCInfo, PendingHTLCRouting};
 use crate::ln::features::BlindedHopFeatures;
 use crate::ln::msgs;
 use crate::ln::onion_utils;
@@ -73,7 +73,7 @@ pub(super) fn create_fwd_pending_htlc_info(
 	};
 
 	let (
-		short_channel_id, amt_to_forward, outgoing_cltv_value, inbound_blinding_point
+		short_channel_id, amt_to_forward, outgoing_cltv_value, intro_node_blinding_point
 	) = match hop_data {
 		msgs::InboundOnionPayload::Forward { short_channel_id, amt_to_forward, outgoing_cltv_value } =>
 			(short_channel_id, amt_to_forward, outgoing_cltv_value, None),
@@ -91,7 +91,7 @@ pub(super) fn create_fwd_pending_htlc_info(
 					err_data: vec![0; 32],
 				}
 			})?;
-			(short_channel_id, amt_to_forward, outgoing_cltv_value, Some(intro_node_blinding_point))
+			(short_channel_id, amt_to_forward, outgoing_cltv_value, intro_node_blinding_point)
 		},
 		msgs::InboundOnionPayload::Receive { .. } | msgs::InboundOnionPayload::BlindedReceive { .. } =>
 			return Err(InboundHTLCErr {
@@ -105,7 +105,13 @@ pub(super) fn create_fwd_pending_htlc_info(
 		routing: PendingHTLCRouting::Forward {
 			onion_packet: outgoing_packet,
 			short_channel_id,
-			blinded: inbound_blinding_point.map(|bp| BlindedForward { inbound_blinding_point: bp }),
+			blinded: intro_node_blinding_point.or(msg.blinding_point)
+				.map(|bp| BlindedForward {
+					inbound_blinding_point: bp,
+					failure: intro_node_blinding_point
+						.map(|_| BlindedFailure::FromIntroductionNode)
+						.unwrap_or(BlindedFailure::FromBlindedNode),
+				}),
 		},
 		payment_hash: msg.payment_hash,
 		incoming_shared_secret: shared_secret,

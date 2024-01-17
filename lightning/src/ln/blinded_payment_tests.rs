@@ -490,6 +490,29 @@ fn two_hop_blinded_path_success() {
 	claim_payment(&nodes[0], &[&nodes[1], &nodes[2]], payment_preimage);
 }
 
+#[test]
+fn three_hop_blinded_path_success() {
+	let chanmon_cfgs = create_chanmon_cfgs(5);
+	let node_cfgs = create_node_cfgs(5, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(5, &node_cfgs, &[None, None, None, None, None]);
+	let mut nodes = create_network(5, &node_cfgs, &node_chanmgrs);
+	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0);
+	create_announced_chan_between_nodes_with_value(&nodes, 1, 2, 1_000_000, 0);
+	let chan_upd_2_3 = create_announced_chan_between_nodes_with_value(&nodes, 2, 3, 1_000_000, 0).0.contents;
+	let chan_upd_3_4 = create_announced_chan_between_nodes_with_value(&nodes, 3, 4, 1_000_000, 0).0.contents;
+
+	let amt_msat = 5000;
+	let (payment_preimage, payment_hash, payment_secret) = get_payment_preimage_hash(&nodes[4], Some(amt_msat), None);
+	let route_params = get_blinded_route_parameters(amt_msat, payment_secret,
+		nodes.iter().skip(2).map(|n| n.node.get_our_node_id()).collect(),
+		&[&chan_upd_2_3, &chan_upd_3_4], &chanmon_cfgs[4].keys_manager);
+
+	nodes[0].node.send_payment(payment_hash, RecipientOnionFields::spontaneous_empty(), PaymentId(payment_hash.0), route_params, Retry::Attempts(0)).unwrap();
+	check_added_monitors(&nodes[0], 1);
+	pass_along_route(&nodes[0], &[&[&nodes[1], &nodes[2], &nodes[3], &nodes[4]]], amt_msat, payment_hash, payment_secret);
+	claim_payment(&nodes[0], &[&nodes[1], &nodes[2], &nodes[3], &nodes[4]], payment_preimage);
+}
+
 #[derive(PartialEq)]
 enum ReceiveCheckFail {
 	// The recipient fails the payment upon `PaymentClaimable`.
@@ -537,11 +560,11 @@ fn do_multi_hop_receiver_fail(check: ReceiveCheckFail) {
 	};
 
 	let amt_msat = 5000;
-	let final_cltv_delta = if check == ReceiveCheckFail::ProcessPendingHTLCsCheck {
+	let excess_final_cltv_delta_opt = if check == ReceiveCheckFail::ProcessPendingHTLCsCheck {
 		// Set the final CLTV expiry too low to trigger the failure in process_pending_htlc_forwards.
 		Some(TEST_FINAL_CLTV as u16 - 2)
 	} else { None };
-	let (_, payment_hash, payment_secret) = get_payment_preimage_hash(&nodes[2], Some(amt_msat), final_cltv_delta);
+	let (_, payment_hash, payment_secret) = get_payment_preimage_hash(&nodes[2], Some(amt_msat), excess_final_cltv_delta_opt);
 	let mut route_params = get_blinded_route_parameters(amt_msat, payment_secret,
 		nodes.iter().skip(1).map(|n| n.node.get_our_node_id()).collect(), &[&chan_upd_1_2],
 		&chanmon_cfgs[2].keys_manager);
@@ -549,7 +572,8 @@ fn do_multi_hop_receiver_fail(check: ReceiveCheckFail) {
 	let route = if check == ReceiveCheckFail::ProcessPendingHTLCsCheck {
 		let mut route = get_route(&nodes[0], &route_params).unwrap();
 		// Set the final CLTV expiry too low to trigger the failure in process_pending_htlc_forwards.
-		route.paths[0].blinded_tail.as_mut().map(|bt| bt.excess_final_cltv_expiry_delta = TEST_FINAL_CLTV - 2);
+		route.paths[0].hops.last_mut().map(|h| h.cltv_expiry_delta += excess_final_cltv_delta_opt.unwrap() as u32);
+		route.paths[0].blinded_tail.as_mut().map(|bt| bt.excess_final_cltv_expiry_delta = excess_final_cltv_delta_opt.unwrap() as u32);
 		route
 	} else if check == ReceiveCheckFail::PaymentConstraints {
 		// Create a blinded path where the receiver's encrypted payload has an htlc_minimum_msat that is
@@ -657,6 +681,7 @@ fn do_multi_hop_receiver_fail(check: ReceiveCheckFail) {
 			commitment_signed_dance!(nodes[2], nodes[1], (), false, true, false, false);
 		},
 		ReceiveCheckFail::ProcessPendingHTLCsCheck => {
+			assert_eq!(payment_event_1_2.msgs[0].cltv_expiry, nodes[0].best_block_info().1 + 1 + excess_final_cltv_delta_opt.unwrap() as u32);
 			nodes[2].node.handle_update_add_htlc(&nodes[1].node.get_our_node_id(), &payment_event_1_2.msgs[0]);
 			check_added_monitors!(nodes[2], 0);
 			do_commitment_signed_dance(&nodes[2], &nodes[1], &payment_event_1_2.commitment_msg, true, true);
