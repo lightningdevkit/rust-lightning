@@ -53,7 +53,7 @@ use crate::io::{self, Cursor, Read};
 use crate::io_extras::read_to_end;
 
 use crate::events::{EventsProvider, MessageSendEventsProvider};
-use crate::util::chacha20poly1305rfc::ChaChaPolyReadAdapter;
+use crate::crypto::streams::ChaChaPolyReadAdapter;
 use crate::util::logger;
 use crate::util::ser::{LengthReadable, LengthReadableArgs, Readable, ReadableArgs, Writeable, Writer, WithoutLength, FixedLengthReader, HighZeroBytesDroppedBigSize, Hostname, TransactionU16LenLimited, BigSize};
 use crate::util::base32;

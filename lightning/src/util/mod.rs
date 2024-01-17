@@ -29,10 +29,6 @@ pub(crate) mod base32;
 
 pub(crate) mod atomic_counter;
 pub(crate) mod byte_utils;
-pub(crate) mod chacha20;
-#[cfg(not(fuzzing))]
-pub(crate) mod poly1305;
-pub(crate) mod chacha20poly1305rfc;
 pub(crate) mod transaction_utils;
 pub(crate) mod scid_utils;
 pub(crate) mod time;
@@ -42,9 +38,6 @@ pub mod indexed_map;
 /// Logging macro utilities.
 #[macro_use]
 pub(crate) mod macro_logger;
-
-/// Cryptography utilities.
-pub(crate) mod crypto;
 
 // These have to come after macro_logger to build
 pub mod logger;

@@ -26,7 +26,7 @@ use crate::routing::scoring::{ChannelUsage, LockableScore, ScoreLookUp};
 use crate::sign::EntropySource;
 use crate::util::ser::{Writeable, Readable, ReadableArgs, Writer};
 use crate::util::logger::{Level, Logger};
-use crate::util::chacha20::ChaCha20;
+use crate::crypto::chacha20::ChaCha20;
 
 use crate::io;
 use crate::prelude::*;
@@ -3190,7 +3190,7 @@ mod tests {
 	use crate::offers::invoice::BlindedPayInfo;
 	use crate::util::config::UserConfig;
 	use crate::util::test_utils as ln_test_utils;
-	use crate::util::chacha20::ChaCha20;
+	use crate::crypto::chacha20::ChaCha20;
 	use crate::util::ser::{Readable, Writeable};
 	#[cfg(c_bindings)]
 	use crate::util::ser::Writer;
