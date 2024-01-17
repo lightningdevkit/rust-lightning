@@ -1,3 +1,51 @@
+# 0.0.120 - Jan 17, 2024 - "Blinded Fuzzers"
+
+## API Updates
+ * The `PeerManager` bound on `UtxoLookup` was removed entirely. This enables
+   use of `UtxoLookup` in cases broken in 0.0.119 by #2773 (#2822).
+ * LDK now exposes and fully implements the route blinding feature (#2812).
+ * The `lightning-transaction-sync` crate no longer relies on system time
+   without the `time` feature (#2799, #2817).
+ * `lightning::onion_message`'s module layout has changed (#2821).
+ * `Event::ChannelClosed` now includes the `channel_funding_txo` (#2800).
+ * `CandidateRouteHop` variants were destructured into individual structs,
+   hiding some fields which were not generally consumable (#2802).
+
+## Bug Fixes
+ * Fixed a rare issue where `lightning-net-tokio` may not fully flush its send
+   buffer, leading to connection hangs (#2832).
+ * Fixed a panic which may occur when connecting to a peer if we opened a second
+   channel with that peer while they were disconnected (#2808).
+ * Retries for a payment which previously failed in a blinded path will now
+   always use an alternative blinded path (#2818).
+ * `Feature`'s `Eq` and `Hash` implementation now ignore dummy bytes (#2808).
+ * Some missing `DiscardFunding` or `ChannelClosed` events are now generated in
+   rare funding-related failures (#2809).
+ * Fixed a privacy issue in blinded path generation where the real
+   `cltv_expiry_delta` would be exposed to senders (#2831).
+
+## Security
+0.0.120 fixes a denial-of-service vulnerability which is reachable from
+untrusted input from peers if the `UserConfig::manually_accept_inbound_channels`
+option is enabled.
+ * A peer that sent an `open_channel` message with the `channel_type` field
+   unfilled would trigger a reachable `unwrap` since LDK 0.0.117 (#2808).
+ * In protocols where a funding output is shared with our counterparty before
+   it is given to LDK, a malicious peer could have caused a reachable panic
+   by reusing the same funding info in (#2809).
+
+In total, this release features 67 files changed, 3016 insertions, 2473
+deletions in 79 commits from 9 authors, in alphabetical order:
+ * Elias Rohrer
+ * Jeffrey Czyz
+ * José A.P
+ * Matt Corallo
+ * Tibo-lg
+ * Valentine Wallace
+ * benthecarman
+ * optout
+ * shuoer86
+
 # 0.0.119 - Dec 15, 2023 - "Spring Cleaning for Christmas"
 
 ## API Updates
