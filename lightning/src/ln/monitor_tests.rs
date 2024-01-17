@@ -1977,11 +1977,16 @@ fn do_test_restored_packages_retry(check_old_monitor_retries_after_upgrade: bool
 	let node_deserialized;
 
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-
+	
 	// Open a channel, lock in an HTLC, and immediately broadcast the commitment transaction. This
 	// ensures that the HTLC timeout package is held until we reach its expiration height.
 	let (_, _, chan_id, funding_tx) = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100_000, 50_000_000);
 	route_payment(&nodes[0], &[&nodes[1]], 10_000_000);
+
+	// Force duplicate randomness for every get-random call
+	for node in nodes.iter() {
+		*node.keys_manager.override_random_bytes.lock().unwrap() = Some([0; 32]);
+	}
 
 	nodes[0].node.force_close_broadcasting_latest_txn(&chan_id, &nodes[1].node.get_our_node_id()).unwrap();
 	check_added_monitors(&nodes[0], 1);
