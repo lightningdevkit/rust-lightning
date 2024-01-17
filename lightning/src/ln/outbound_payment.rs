@@ -19,7 +19,7 @@ use crate::ln::{PaymentHash, PaymentPreimage, PaymentSecret};
 use crate::ln::channelmanager::{ChannelDetails, EventCompletionAction, HTLCSource, PaymentId};
 use crate::ln::onion_utils::{DecodedOnionFailure, HTLCFailReason};
 use crate::offers::invoice::Bolt12Invoice;
-use crate::routing::router::{InFlightHtlcs, Path, PaymentParameters, Route, RouteParameters, Router};
+use crate::routing::router::{BlindedTail, InFlightHtlcs, Path, PaymentParameters, Route, RouteParameters, Router};
 use crate::util::errors::APIError;
 use crate::util::logger::Logger;
 use crate::util::time::Time;
@@ -127,6 +127,11 @@ impl PendingOutboundPayment {
 	pub fn insert_previously_failed_scid(&mut self, scid: u64) {
 		if let PendingOutboundPayment::Retryable { payment_params: Some(params), .. } = self {
 			params.previously_failed_channels.push(scid);
+		}
+	}
+	pub fn insert_previously_failed_blinded_path(&mut self, blinded_tail: &BlindedTail) {
+		if let PendingOutboundPayment::Retryable { payment_params: Some(params), .. } = self {
+			params.insert_previously_failed_blinded_path(blinded_tail);
 		}
 	}
 	fn is_awaiting_invoice(&self) -> bool {
@@ -1604,11 +1609,12 @@ impl OutboundPayments {
 		#[cfg(test)]
 		let DecodedOnionFailure {
 			network_update, short_channel_id, payment_failed_permanently, onion_error_code,
-			onion_error_data
+			onion_error_data, failed_within_blinded_path
 		} = onion_error.decode_onion_failure(secp_ctx, logger, &source);
 		#[cfg(not(test))]
-		let DecodedOnionFailure { network_update, short_channel_id, payment_failed_permanently } =
-			onion_error.decode_onion_failure(secp_ctx, logger, &source);
+		let DecodedOnionFailure {
+			network_update, short_channel_id, payment_failed_permanently, failed_within_blinded_path
+		} = onion_error.decode_onion_failure(secp_ctx, logger, &source);
 
 		let payment_is_probe = payment_is_probe(payment_hash, &payment_id, probing_cookie_secret);
 		let mut session_priv_bytes = [0; 32];
@@ -1646,6 +1652,12 @@ impl OutboundPayments {
 				// process_onion_failure we should close that channel as it implies our
 				// next-hop is needlessly blaming us!
 				payment.get_mut().insert_previously_failed_scid(scid);
+			}
+			if failed_within_blinded_path {
+				debug_assert!(short_channel_id.is_none());
+				if let Some(bt) = &path.blinded_tail {
+					payment.get_mut().insert_previously_failed_blinded_path(&bt);
+				} else { debug_assert!(false); }
 			}
 
 			if payment_is_probe || !is_retryable_now || payment_failed_permanently {

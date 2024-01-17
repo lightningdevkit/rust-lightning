@@ -706,6 +706,11 @@ pub struct PaymentParameters {
 	/// payment to fail. Future attempts for the same payment shouldn't be relayed through any of
 	/// these SCIDs.
 	pub previously_failed_channels: Vec<u64>,
+
+	/// A list of indices corresponding to blinded paths in [`Payee::Blinded::route_hints`] which this
+	/// payment was previously attempted over and which caused the payment to fail. Future attempts
+	/// for the same payment shouldn't be relayed through any of these blinded paths.
+	pub previously_failed_blinded_path_idxs: Vec<u64>,
 }
 
 impl Writeable for PaymentParameters {
@@ -727,6 +732,7 @@ impl Writeable for PaymentParameters {
 			(7, self.previously_failed_channels, required_vec),
 			(8, *blinded_hints, optional_vec),
 			(9, self.payee.final_cltv_expiry_delta(), option),
+			(11, self.previously_failed_blinded_path_idxs, required_vec),
 		});
 		Ok(())
 	}
@@ -745,6 +751,7 @@ impl ReadableArgs<u32> for PaymentParameters {
 			(7, previously_failed_channels, optional_vec),
 			(8, blinded_route_hints, optional_vec),
 			(9, final_cltv_expiry_delta, (default_value, default_final_cltv_expiry_delta)),
+			(11, previously_failed_blinded_path_idxs, optional_vec),
 		});
 		let blinded_route_hints = blinded_route_hints.unwrap_or(vec![]);
 		let payee = if blinded_route_hints.len() != 0 {
@@ -768,6 +775,7 @@ impl ReadableArgs<u32> for PaymentParameters {
 			max_channel_saturation_power_of_half: _init_tlv_based_struct_field!(max_channel_saturation_power_of_half, (default_value, unused)),
 			expiry_time,
 			previously_failed_channels: previously_failed_channels.unwrap_or(Vec::new()),
+			previously_failed_blinded_path_idxs: previously_failed_blinded_path_idxs.unwrap_or(Vec::new()),
 		})
 	}
 }
@@ -786,6 +794,7 @@ impl PaymentParameters {
 			max_path_count: DEFAULT_MAX_PATH_COUNT,
 			max_channel_saturation_power_of_half: DEFAULT_MAX_CHANNEL_SATURATION_POW_HALF,
 			previously_failed_channels: Vec::new(),
+			previously_failed_blinded_path_idxs: Vec::new(),
 		}
 	}
 
@@ -824,6 +833,7 @@ impl PaymentParameters {
 			max_path_count: DEFAULT_MAX_PATH_COUNT,
 			max_channel_saturation_power_of_half: DEFAULT_MAX_CHANNEL_SATURATION_POW_HALF,
 			previously_failed_channels: Vec::new(),
+			previously_failed_blinded_path_idxs: Vec::new(),
 		}
 	}
 
@@ -898,6 +908,19 @@ impl PaymentParameters {
 	/// This is not exported to bindings users since bindings don't support move semantics
 	pub fn with_max_channel_saturation_power_of_half(self, max_channel_saturation_power_of_half: u8) -> Self {
 		Self { max_channel_saturation_power_of_half, ..self }
+	}
+
+	pub(crate) fn insert_previously_failed_blinded_path(&mut self, failed_blinded_tail: &BlindedTail) {
+		let mut found_blinded_tail = false;
+		for (idx, (_, path)) in self.payee.blinded_route_hints().iter().enumerate() {
+			if failed_blinded_tail.hops == path.blinded_hops &&
+				failed_blinded_tail.blinding_point == path.blinding_point
+			{
+				self.previously_failed_blinded_path_idxs.push(idx as u64);
+				found_blinded_tail = true;
+			}
+		}
+		debug_assert!(found_blinded_tail);
 	}
 }
 
@@ -1351,6 +1374,15 @@ impl<'a> CandidateRouteHop<'a> {
 		match self {
 			CandidateRouteHop::Blinded(BlindedPathCandidate { hint, .. }) | CandidateRouteHop::OneHopBlinded(OneHopBlindedPathCandidate { hint, .. }) => {
 				Some(&hint.1)
+			},
+			_ => None,
+		}
+	}
+	fn blinded_hint_idx(&self) -> Option<usize> {
+		match self {
+			Self::Blinded(BlindedPathCandidate { hint_idx, .. }) |
+			Self::OneHopBlinded(OneHopBlindedPathCandidate { hint_idx, .. }) => {
+				Some(*hint_idx)
 			},
 			_ => None,
 		}
@@ -2106,8 +2138,15 @@ where L::Target: Logger {
 						 (amount_to_transfer_over_msat < $next_hops_path_htlc_minimum_msat &&
 						  recommended_value_msat >= $next_hops_path_htlc_minimum_msat));
 
-					let payment_failed_on_this_channel = scid_opt.map_or(false,
-						|scid| payment_params.previously_failed_channels.contains(&scid));
+					let payment_failed_on_this_channel = match scid_opt {
+						Some(scid) => payment_params.previously_failed_channels.contains(&scid),
+						None => match $candidate.blinded_hint_idx() {
+							Some(idx) => {
+								payment_params.previously_failed_blinded_path_idxs.contains(&(idx as u64))
+							},
+							None => false,
+						},
+					};
 
 					let (should_log_candidate, first_hop_details) = match $candidate {
 						CandidateRouteHop::FirstHop(hop) => (true, Some(hop.details)),
