@@ -114,19 +114,14 @@ impl<G: Deref<Target = NetworkGraph<L>> + Clone, L: Deref, S: Deref, SP: Sized, 
 					None => return None,
 				};
 				let payment_relay: PaymentRelay = match details.counterparty.forwarding_info {
-					Some(forwarding_info) => forwarding_info.into(),
+					Some(forwarding_info) => match forwarding_info.try_into() {
+						Ok(payment_relay) => payment_relay,
+						Err(()) => return None,
+					},
 					None => return None,
 				};
 
-				// Avoid exposing esoteric CLTV expiry deltas
-				let cltv_expiry_delta = match payment_relay.cltv_expiry_delta {
-					0..=40 => 40u32,
-					41..=80 => 80u32,
-					81..=144 => 144u32,
-					145..=216 => 216u32,
-					_ => return None,
-				};
-
+				let cltv_expiry_delta = payment_relay.cltv_expiry_delta as u32;
 				let payment_constraints = PaymentConstraints {
 					max_cltv_expiry: tlvs.payment_constraints.max_cltv_expiry + cltv_expiry_delta,
 					htlc_minimum_msat: details.inbound_htlc_minimum_msat.unwrap_or(0),
