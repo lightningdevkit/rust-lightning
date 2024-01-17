@@ -38,7 +38,7 @@ use bitcoin::secp256k1::schnorr;
 use bitcoin::{secp256k1, Sequence, Witness, Txid};
 
 use crate::util::transaction_utils;
-use crate::util::crypto::{hkdf_extract_expand_twice, sign, sign_with_aux_rand};
+use crate::crypto::utils::{hkdf_extract_expand_twice, sign, sign_with_aux_rand};
 use crate::util::ser::{Writeable, Writer, Readable, ReadableArgs};
 use crate::chain::transaction::OutPoint;
 use crate::ln::channel::ANCHOR_OUTPUT_VALUE_SATOSHI;
@@ -65,7 +65,7 @@ use crate::sign::ecdsa::{EcdsaChannelSigner, WriteableEcdsaChannelSigner};
 #[cfg(taproot)]
 use crate::sign::taproot::TaprootChannelSigner;
 use crate::util::atomic_counter::AtomicCounter;
-use crate::util::chacha20::ChaCha20;
+use crate::crypto::chacha20::ChaCha20;
 use crate::util::invoice::construct_invoice_preimage;
 
 pub(crate) mod type_resolver;
@@ -1072,7 +1072,10 @@ impl EntropySource for InMemorySigner {
 		let index = self.rand_bytes_index.get_increment();
 		let mut nonce = [0u8; 16];
 		nonce[..8].copy_from_slice(&index.to_be_bytes());
-		ChaCha20::get_single_block(&self.rand_bytes_unique_start, &nonce)
+		let block = ChaCha20::get_single_block(&self.rand_bytes_unique_start, &nonce);
+		let mut half_block = [0; 32];
+		half_block.copy_from_slice(&block[..32]);
+		half_block
 	}
 }
 
@@ -1634,7 +1637,10 @@ impl EntropySource for KeysManager {
 		let index = self.rand_bytes_index.get_increment();
 		let mut nonce = [0u8; 16];
 		nonce[..8].copy_from_slice(&index.to_be_bytes());
-		ChaCha20::get_single_block(&self.rand_bytes_unique_start, &nonce)
+		let block = ChaCha20::get_single_block(&self.rand_bytes_unique_start, &nonce);
+		let mut half_block = [0; 32];
+		half_block.copy_from_slice(&block[..32]);
+		half_block
 	}
 }
 

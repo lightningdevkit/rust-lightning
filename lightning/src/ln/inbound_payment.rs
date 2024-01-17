@@ -18,8 +18,8 @@ use crate::sign::{KeyMaterial, EntropySource};
 use crate::ln::{PaymentHash, PaymentPreimage, PaymentSecret};
 use crate::ln::msgs;
 use crate::ln::msgs::MAX_VALUE_MSAT;
-use crate::util::chacha20::ChaCha20;
-use crate::util::crypto::hkdf_extract_expand_5x;
+use crate::crypto::chacha20::ChaCha20;
+use crate::crypto::utils::hkdf_extract_expand_5x;
 use crate::util::errors::APIError;
 use crate::util::logger::Logger;
 

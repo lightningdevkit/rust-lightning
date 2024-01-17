@@ -19,7 +19,7 @@ use crate::ln::channel;
 use crate::ln::channelmanager::{BREAKDOWN_TIMEOUT, PaymentId, RecipientOnionFields};
 use crate::ln::msgs::ChannelMessageHandler;
 use crate::util::config::UserConfig;
-use crate::util::crypto::sign;
+use crate::crypto::utils::sign;
 use crate::util::ser::Writeable;
 use crate::util::scid_utils::block_from_scid;
 use crate::util::test_utils;

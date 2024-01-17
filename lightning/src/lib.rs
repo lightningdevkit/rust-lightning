@@ -84,6 +84,8 @@ pub mod onion_message;
 pub mod blinded_path;
 pub mod events;
 
+pub(crate) mod crypto;
+
 #[cfg(feature = "std")]
 /// Re-export of either `core2::io` or `std::io`, depending on the `std` feature flag.
 pub use std::io;

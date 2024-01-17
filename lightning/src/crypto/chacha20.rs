@@ -9,8 +9,6 @@
 // You may not use this file except in accordance with one or both of these
 // licenses.
 
-use crate::io;
-
 #[cfg(not(fuzzing))]
 mod real_chacha {
 	use core::cmp;
@@ -152,11 +150,10 @@ mod real_chacha {
 		}
 
 		/// Get one block from a ChaCha stream.
-		pub fn get_single_block(key: &[u8; 32], nonce: &[u8; 16]) -> [u8; 32] {
+		pub fn get_single_block(key: &[u8; 32], nonce: &[u8; 16]) -> [u8; 64] {
 			let mut chacha = ChaCha20 { state: ChaCha20::expand(key, nonce), output: [0u8; BLOCK_SIZE], offset: 64 };
-			let mut chacha_bytes = [0; 32];
-			chacha.process_in_place(&mut chacha_bytes);
-			chacha_bytes
+			chacha.update();
+			chacha.output
 		}
 
 		/// Encrypts `src` into `dest` using a single block from a ChaCha stream. Passing `dest` as
@@ -335,27 +332,14 @@ mod fuzzy_chacha {
 #[cfg(fuzzing)]
 pub use self::fuzzy_chacha::ChaCha20;
 
-pub(crate) struct ChaChaReader<'a, R: io::Read> {
-	pub chacha: &'a mut ChaCha20,
-	pub read: R,
-}
-impl<'a, R: io::Read> io::Read for ChaChaReader<'a, R> {
-	fn read(&mut self, dest: &mut [u8]) -> Result<usize, io::Error> {
-		let res = self.read.read(dest)?;
-		if res > 0 {
-			self.chacha.process_in_place(&mut dest[0..res]);
-		}
-		Ok(res)
-	}
-}
-
 #[cfg(test)]
 mod test {
-	use crate::prelude::*;
+	use alloc::vec;
+	use alloc::vec::{Vec};
+	use core::convert::TryInto;
 	use core::iter::repeat;
 
 	use super::ChaCha20;
-	use std::convert::TryInto;
 
 	#[test]
 	fn test_chacha20_256_tls_vectors() {
@@ -648,7 +632,7 @@ mod test {
 		let mut chacha20 = ChaCha20::new(&key, nonce_12bytes);
 		// Seek its counter to the block at counter_pos.
 		chacha20.seek_to_block(u32::from_le_bytes(counter_pos.try_into().unwrap()));
-		let mut block_bytes = [0; 32];
+		let mut block_bytes = [0; 64];
 		chacha20.process_in_place(&mut block_bytes);
 
 		assert_eq!(ChaCha20::get_single_block(&key, &nonce_16bytes), block_bytes);
