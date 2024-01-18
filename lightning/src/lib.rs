@@ -198,10 +198,16 @@ mod prelude {
 	pub(crate) fn hash_map_with_capacity<K: core::hash::Hash + Eq, V>(cap: usize) -> HashMap<K, V> {
 		HashMap::with_capacity(cap)
 	}
+	pub(crate) fn hash_map_from_iter<K: core::hash::Hash + Eq, V, I: IntoIterator<Item = (K, V)>>(iter: I) -> HashMap<K, V> {
+		HashMap::from_iter(iter)
+	}
 
 	pub(crate) fn new_hash_set<K: core::hash::Hash + Eq>() -> HashSet<K> { HashSet::new() }
 	pub(crate) fn hash_set_with_capacity<K: core::hash::Hash + Eq>(cap: usize) -> HashSet<K> {
 		HashSet::with_capacity(cap)
+	}
+	pub(crate) fn hash_set_from_iter<K: core::hash::Hash + Eq, I: IntoIterator<Item = K>>(iter: I) -> HashSet<K> {
+		HashSet::from_iter(iter)
 	}
 
 	pub use alloc::borrow::ToOwned;

@@ -10284,7 +10284,9 @@ where
 			mut channel_monitors: Vec<&'a mut ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>>) -> Self {
 		Self {
 			entropy_source, node_signer, signer_provider, fee_estimator, chain_monitor, tx_broadcaster, router, logger, default_config,
-			channel_monitors: channel_monitors.drain(..).map(|monitor| { (monitor.get_funding_txo().0, monitor) }).collect()
+			channel_monitors: hash_map_from_iter(
+				channel_monitors.drain(..).map(|monitor| { (monitor.get_funding_txo().0, monitor) })
+			),
 		}
 	}
 }
@@ -10557,7 +10559,7 @@ where
 		for _ in 0..pending_outbound_payments_count_compat {
 			let session_priv = Readable::read(reader)?;
 			let payment = PendingOutboundPayment::Legacy {
-				session_privs: [session_priv].iter().cloned().collect()
+				session_privs: hash_set_from_iter([session_priv]),
 			};
 			if pending_outbound_payments_compat.insert(PaymentId(session_priv), payment).is_some() {
 				return Err(DecodeError::InvalidValue)
@@ -10780,7 +10782,7 @@ where
 										retry_strategy: None,
 										attempts: PaymentAttempts::new(),
 										payment_params: None,
-										session_privs: [session_priv_bytes].iter().map(|a| *a).collect(),
+										session_privs: hash_set_from_iter([session_priv_bytes]),
 										payment_hash: htlc.payment_hash,
 										payment_secret: None, // only used for retries, and we'll never retry on startup
 										payment_metadata: None, // only used for retries, and we'll never retry on startup
