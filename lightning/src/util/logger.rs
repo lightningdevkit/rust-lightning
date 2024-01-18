@@ -158,6 +158,9 @@ pub trait Logger {
 }
 
 /// Adds relevant context to a [`Record`] before passing it to the wrapped [`Logger`].
+///
+/// This is not exported to bindings users as lifetimes are problematic and there's little reason
+/// for this to be used downstream anyway.
 pub struct WithContext<'a, L: Deref> where L::Target: Logger {
 	/// The logger to delegate to after adding context to the record.
 	logger: &'a L,
