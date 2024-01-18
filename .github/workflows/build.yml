@@ -176,7 +176,7 @@ jobs:
   fuzz:
     runs-on: ubuntu-latest
     env:
-      TOOLCHAIN: 1.58
+      TOOLCHAIN: 1.63
     steps:
       - name: Checkout source code
         uses: actions/checkout@v3
@@ -188,6 +188,10 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get -y install build-essential binutils-dev libunwind-dev
+      - name: Pin the regex dependency
+        run: |
+          cd fuzz && cargo update -p regex --precise "1.9.6" --verbose && cd ..
+          cd lightning-invoice/fuzz && cargo update -p regex --precise "1.9.6" --verbose
       - name: Sanity check fuzz targets on Rust ${{ env.TOOLCHAIN }}
         run: cd fuzz && RUSTFLAGS="--cfg=fuzzing" cargo test --verbose --color always
       - name: Run fuzzers
