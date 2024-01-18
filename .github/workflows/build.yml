@@ -110,7 +110,7 @@ jobs:
         run: |
           cd lightning
           RUSTFLAGS="--cfg=require_route_graph_test" cargo test
-          RUSTFLAGS="--cfg=require_route_graph_test" cargo test --features hashbrown
+          RUSTFLAGS="--cfg=require_route_graph_test" cargo test --features hashbrown,ahash
           cd ..
       - name: Run benchmarks on Rust ${{ matrix.toolchain }}
         run: |

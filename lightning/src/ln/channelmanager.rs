@@ -5951,7 +5951,7 @@ where
 				// TODO: Once we can rely on the counterparty_node_id from the
 				// monitor event, this and the outpoint_to_peer map should be removed.
 				let outpoint_to_peer = self.outpoint_to_peer.lock().unwrap();
-				match outpoint_to_peer.get(&funding_txo) {
+				match outpoint_to_peer.get(funding_txo) {
 					Some(cp_id) => cp_id.clone(),
 					None => return,
 				}
@@ -5964,7 +5964,7 @@ where
 		peer_state_lock = peer_state_mutex_opt.unwrap().lock().unwrap();
 		let peer_state = &mut *peer_state_lock;
 		let channel =
-			if let Some(ChannelPhase::Funded(chan)) = peer_state.channel_by_id.get_mut(&channel_id) {
+			if let Some(ChannelPhase::Funded(chan)) = peer_state.channel_by_id.get_mut(channel_id) {
 				chan
 			} else {
 				let update_actions = peer_state.monitor_update_blocked_actions
@@ -11085,7 +11085,7 @@ where
 							downstream_counterparty_and_funding_outpoint:
 								Some((blocked_node_id, _blocked_channel_outpoint, blocked_channel_id, blocking_action)), ..
 						} = action {
-							if let Some(blocked_peer_state) = per_peer_state.get(&blocked_node_id) {
+							if let Some(blocked_peer_state) = per_peer_state.get(blocked_node_id) {
 								log_trace!(logger,
 									"Holding the next revoke_and_ack from {} until the preimage is durably persisted in the inbound edge's ChannelMonitor",
 									blocked_channel_id);

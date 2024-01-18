@@ -686,7 +686,7 @@ impl<ChannelSigner: WriteableEcdsaChannelSigner> OnchainTxHandler<ChannelSigner>
 		if let Some(claim_id) = claim_id {
 			if let Some(claim) = self.pending_claim_requests.remove(&claim_id) {
 				for outpoint in claim.outpoints() {
-					self.claimable_outpoints.remove(&outpoint);
+					self.claimable_outpoints.remove(outpoint);
 				}
 			}
 		} else {

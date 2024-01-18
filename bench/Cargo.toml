@@ -9,7 +9,7 @@ name = "bench"
 harness = false
 
 [features]
-hashbrown = ["lightning/hashbrown"]
+hashbrown = ["lightning/hashbrown", "lightning/ahash"]
 
 [dependencies]
 lightning = { path = "../lightning", features = ["_test_utils", "criterion"] }

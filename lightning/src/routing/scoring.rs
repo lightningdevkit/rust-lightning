@@ -1330,7 +1330,7 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref> ScoreLookUp for Probabilistic
 			_ => return 0,
 		};
 		let source = candidate.source();
-		if let Some(penalty) = score_params.manual_node_penalties.get(&target) {
+		if let Some(penalty) = score_params.manual_node_penalties.get(target) {
 			return *penalty;
 		}
 
@@ -1360,7 +1360,7 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref> ScoreLookUp for Probabilistic
 		let amount_msat = usage.amount_msat.saturating_add(usage.inflight_htlc_msat);
 		let capacity_msat = usage.effective_capacity.as_msat();
 		self.channel_liquidities
-			.get(&scid)
+			.get(scid)
 			.unwrap_or(&ChannelLiquidity::new(Duration::ZERO))
 			.as_directed(&source, &target, capacity_msat)
 			.penalty_msat(amount_msat, score_params)

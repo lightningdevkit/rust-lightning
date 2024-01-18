@@ -13,6 +13,8 @@ def check_feature(feature):
         pass
     elif feature == "no-std":
         pass
+    elif feature == "ahash":
+        pass
     elif feature == "hashbrown":
         pass
     elif feature == "backtrace":

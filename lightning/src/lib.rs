@@ -167,8 +167,18 @@ mod io_extras {
 mod prelude {
 	#[cfg(feature = "hashbrown")]
 	extern crate hashbrown;
+	#[cfg(feature = "ahash")]
+	extern crate ahash;
 
 	pub use alloc::{vec, vec::Vec, string::String, collections::VecDeque, boxed::Box};
+
+	pub use alloc::borrow::ToOwned;
+	pub use alloc::string::ToString;
+
+	// For no-std builds, we need to use hashbrown, however, by default, it doesn't randomize the
+	// hashing and is vulnerable to HashDoS attacks. Thus, when not fuzzing, we use its default
+	// ahash hashing algorithm but randomize, opting to not randomize when fuzzing to avoid false
+	// positive branch coverage.
 
 	#[cfg(not(feature = "hashbrown"))]
 	mod std_hashtables {
@@ -183,35 +193,85 @@ mod prelude {
 	pub(crate) use std_hashtables::*;
 
 	#[cfg(feature = "hashbrown")]
-	mod hashbrown_tables {
-		pub(crate) use hashbrown::{HashMap, HashSet, hash_map};
+	pub(crate) use self::hashbrown::hash_map;
+
+	#[cfg(all(feature = "hashbrown", fuzzing))]
+	mod nonrandomized_hashbrown {
+		pub(crate) use hashbrown::{HashMap, HashSet};
 
 		pub(crate) type OccupiedHashMapEntry<'a, K, V> =
-			hashbrown::hash_map::OccupiedEntry<'a, K, V, hash_map::DefaultHashBuilder>;
+			hashbrown::hash_map::OccupiedEntry<'a, K, V, hashbrown::hash_map::DefaultHashBuilder>;
 		pub(crate) type VacantHashMapEntry<'a, K, V> =
-			hashbrown::hash_map::VacantEntry<'a, K, V, hash_map::DefaultHashBuilder>;
+			hashbrown::hash_map::VacantEntry<'a, K, V, hashbrown::hash_map::DefaultHashBuilder>;
 	}
-	#[cfg(feature = "hashbrown")]
-	pub(crate) use hashbrown_tables::*;
+	#[cfg(all(feature = "hashbrown", fuzzing))]
+	pub(crate) use nonrandomized_hashbrown::*;
 
-	pub(crate) fn new_hash_map<K: core::hash::Hash + Eq, V>() -> HashMap<K, V> { HashMap::new() }
-	pub(crate) fn hash_map_with_capacity<K: core::hash::Hash + Eq, V>(cap: usize) -> HashMap<K, V> {
-		HashMap::with_capacity(cap)
-	}
-	pub(crate) fn hash_map_from_iter<K: core::hash::Hash + Eq, V, I: IntoIterator<Item = (K, V)>>(iter: I) -> HashMap<K, V> {
-		HashMap::from_iter(iter)
+
+	#[cfg(all(feature = "hashbrown", not(fuzzing)))]
+	mod randomized_hashtables {
+		use super::*;
+		use ahash::RandomState;
+
+		pub(crate) type HashMap<K, V> = hashbrown::HashMap<K, V, RandomState>;
+		pub(crate) type HashSet<K> = hashbrown::HashSet<K, RandomState>;
+
+		pub(crate) type OccupiedHashMapEntry<'a, K, V> =
+			hashbrown::hash_map::OccupiedEntry<'a, K, V, RandomState>;
+		pub(crate) type VacantHashMapEntry<'a, K, V> =
+			hashbrown::hash_map::VacantEntry<'a, K, V, RandomState>;
+
+		pub(crate) fn new_hash_map<K, V>() -> HashMap<K, V> {
+			HashMap::with_hasher(RandomState::new())
+		}
+		pub(crate) fn hash_map_with_capacity<K, V>(cap: usize) -> HashMap<K, V> {
+			HashMap::with_capacity_and_hasher(cap, RandomState::new())
+		}
+		pub(crate) fn hash_map_from_iter<K: core::hash::Hash + Eq, V, I: IntoIterator<Item=(K, V)>>(iter: I) -> HashMap<K, V> {
+			let iter = iter.into_iter();
+			let min_size = iter.size_hint().0;
+			let mut res = HashMap::with_capacity_and_hasher(min_size, RandomState::new());
+			res.extend(iter);
+			res
+		}
+
+		pub(crate) fn new_hash_set<K>() -> HashSet<K> {
+			HashSet::with_hasher(RandomState::new())
+		}
+		pub(crate) fn hash_set_with_capacity<K>(cap: usize) -> HashSet<K> {
+			HashSet::with_capacity_and_hasher(cap, RandomState::new())
+		}
+		pub(crate) fn hash_set_from_iter<K: core::hash::Hash + Eq, I: IntoIterator<Item=K>>(iter: I) -> HashSet<K> {
+			let iter = iter.into_iter();
+			let min_size = iter.size_hint().0;
+			let mut res = HashSet::with_capacity_and_hasher(min_size, RandomState::new());
+			res.extend(iter);
+			res
+		}
 	}
 
-	pub(crate) fn new_hash_set<K: core::hash::Hash + Eq>() -> HashSet<K> { HashSet::new() }
-	pub(crate) fn hash_set_with_capacity<K: core::hash::Hash + Eq>(cap: usize) -> HashSet<K> {
-		HashSet::with_capacity(cap)
-	}
-	pub(crate) fn hash_set_from_iter<K: core::hash::Hash + Eq, I: IntoIterator<Item = K>>(iter: I) -> HashSet<K> {
-		HashSet::from_iter(iter)
+	#[cfg(any(not(feature = "hashbrown"), fuzzing))]
+	mod randomized_hashtables {
+		use super::*;
+
+		pub(crate) fn new_hash_map<K, V>() -> HashMap<K, V> { HashMap::new() }
+		pub(crate) fn hash_map_with_capacity<K, V>(cap: usize) -> HashMap<K, V> {
+			HashMap::with_capacity(cap)
+		}
+		pub(crate) fn hash_map_from_iter<K: core::hash::Hash + Eq, V, I: IntoIterator<Item=(K, V)>>(iter: I) -> HashMap<K, V> {
+			HashMap::from_iter(iter)
+		}
+
+		pub(crate) fn new_hash_set<K>() -> HashSet<K> { HashSet::new() }
+		pub(crate) fn hash_set_with_capacity<K>(cap: usize) -> HashSet<K> {
+			HashSet::with_capacity(cap)
+		}
+		pub(crate) fn hash_set_from_iter<K: core::hash::Hash + Eq, I: IntoIterator<Item=K>>(iter: I) -> HashSet<K> {
+			HashSet::from_iter(iter)
+		}
 	}
 
-	pub use alloc::borrow::ToOwned;
-	pub use alloc::string::ToString;
+	pub(crate) use randomized_hashtables::*;
 }
 
 #[cfg(all(not(ldk_bench), feature = "backtrace", feature = "std", test))]
