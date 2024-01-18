@@ -34,7 +34,82 @@ Up-to-date with main branch as of v0.0.118 (Oct 24, commit d2242f6; originally b
 
 See also `ldk-sample` https://github.com/catenocrypt/ldk-sample/tree/splicing-hapa2
 
-To test: `cargo test splic`
+To test: `RUSTFLAGS="--cfg=dual_funding" cargo test splic`
+
+Detailed steps
+--------------
+(as of Jan 10, e5122bf, splicing-hapa5-iatx)
+
+[S1I] splice_channel() - ChannelManager API
+[S2I] get_splice() - Channel
+message out: splice
+handle_splice() - ChannelManager
+[S3A] internal_splice() - ChannelManager
+[S4A] get_splice_ack - Channel
+[A] begin_interactive_funding_tx_construction() - Channel
+message in: splice_ack
+handle_splice_ack() - ChannelManager
+[S5I] internal_splice_ack - ChannelManager
+event: SpliceAckedInputsContributionReady
+action by client, create input for new funding
+contribute_funding_inputs - ChannelManager API
+[I] begin_interactive_funding_tx_construction() - Channel
+message out: tx_add_input
+[A] handle_tx_add_input - ChannelManager
+message in: tx_complete
+[I] handle_tx_complete
+message out: tx_add_input, second
+[A] handle_tx_add_input - ChannelManager
+message in: tx_complete
+[I] handle_tx_complete
+message out: tx_add_output - for change
+[A] handle_tx_add_output
+message in: tx_complete
+[I] handle_tx_complete
+message out: tx_add_output - for new funding
+[A] handle_tx_add_output
+message in: tx_complete
+[I] handle_tx_complete
+event: FundingTransactionReadyForSigning
+message_out: tx_complete
+...
+
+Previous as of Jan 8, dfe53d7, splicing-hapa4
+
+[S1I] splice_channel() - ChannelManager API
+[S2I] get_splice() - Channel
+message out: splice
+[S3A] internal_splice() - ChannelManager
+[S4A] get_splice_ack - Channel
+message in: splice_ack
+handle_splice_ack()
+[S5I] internal_splice_ack - ChannelManager
+event: SpliceAcked
+action by client
+splice_transaction_generated - ChannelManager API
+[S6I] splice_transaction_generated_intern() - ChannelManager
+[S7I] splice_generated() - Channel
+message out: splice_created
+[S8A] internal_splice_created() - ChannelManager
+[S9A] splice_created() - Channel
+message in: tx_complete
+[S10I] internal_tx_complete() - ChannelManager
+[S11I] splice_tx_complete() - Channel
+message out: splice_comm_signed
+[S12A] internal_splice_comm_signed() - ChannelManager
+[S13A] splice_comm_signed() - Channel
+message in: splice_comm_ack
+[S14I] internal_splice_comm_ack() - ChannelManager
+[S15I] splice_comm_ack() - Channel
+message out: splice_signed
+[S16A] internal_splice_signed() - ChannelManager
+[S17A] splice_signed() - Channel
+message in: splice_signed_ack
+[S18I] internal_splice_signed_ack() - ChannelManager
+[S19I] splice_signed_ack() - Channel
+waiting for confirmation
+transactions_confirmed() - Channel
+commit_pending_splice() - Channel
 
 
 Status

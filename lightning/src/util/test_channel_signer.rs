@@ -167,7 +167,6 @@ impl ChannelSigner for TestChannelSigner {
 
 	/// #SPLICING
 	fn reprovide_channel_parameters(&mut self, channel_parameters: &ChannelTransactionParameters, channel_value_satoshis: u64) {
-		self.state = Arc::new(Mutex::new(EnforcementState::new()));
 		self.inner.reprovide_channel_parameters(channel_parameters, channel_value_satoshis)
 	}
 }
@@ -189,7 +188,7 @@ impl EcdsaChannelSigner for TestChannelSigner {
 			// Ensure that the counterparty doesn't get more than two broadcastable commitments -
 			// the last and the one we are trying to sign
 			assert!(actual_commitment_number >= state.last_counterparty_revoked_commitment - 2, "cannot sign a commitment if second to last wasn't revoked - signing {} revoked {}", actual_commitment_number, state.last_counterparty_revoked_commitment);
-			state.last_counterparty_commitment = cmp::min(last_commitment_number, actual_commitment_number)
+			state.last_counterparty_commitment = cmp::min(last_commitment_number, actual_commitment_number);
 		}
 
 		Ok(self.inner.sign_counterparty_commitment(commitment_tx, inbound_htlc_preimages, outbound_htlc_preimages, secp_ctx).unwrap())

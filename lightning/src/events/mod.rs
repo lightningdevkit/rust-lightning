@@ -1123,21 +1123,30 @@ pub enum Event {
 		unsigned_transaction: Transaction,
 	},
 	/// #SPLICING
-	/// Indicates that the splice negotiation is done, `splice_ack` msg was received
+	/// Indicates that the splice negotiation is done, `splice_ack` msg was received, and interactive transaction negotiation can start.
+	/// Similar to FundingInputsContributionReady
 	/// TODO Change name, this should come after tx negotiation, maybe not needed in this form
-	SpliceAcked {
-		/// The channel_id of the channel where the splice was initiated
+	SpliceAckedInputsContributionReady {
+		/// The channel_id of the channel that requires funding inputs which you'll need to pass into
+		/// [`ChannelManager::contribute_funding_inputs`].
+		///
+		/// [`ChannelManager::contribute_funding_inputs`]: crate::ln::channelmanager::ChannelManager::contribute_funding_inputs
 		channel_id: ChannelId,
-		/// The counterparty's node_id
+		/// The counterparty's node_id, which you'll need to pass back into
+		/// [`ChannelManager::contribute_funding_inputs`].
+		///
+		/// [`ChannelManager::contribute_funding_inputs`]: crate::ln::channelmanager::ChannelManager::contribute_funding_inputs
 		counterparty_node_id: PublicKey,
-		/// The current funding TX outpoint, which must be an input to the new splice TX
-		current_funding_outpoint: OutPoint,
 		/// The pre-splice channel value, in satoshis.
 		pre_channel_value_satoshis: u64,
 		/// The post-splice channel value, in satoshis.
 		post_channel_value_satoshis: u64,
-		/// The script which should be used in the transaction output (channel funding output).
-		output_script: ScriptBuf,
+		/// The value, in satoshis, that we commited to contribute to the channel value during
+		/// establishment.
+		holder_funding_satoshis: u64,
+		/// The value, in satoshis, that the counterparty commited to contribute to the channel value
+		/// during channel establishment.
+		counterparty_funding_satoshis: u64,
 	}
 }
 
@@ -1372,15 +1381,15 @@ impl Writeable for Event {
 				})
 			},
 			// #SPLICING
-			&Event::SpliceAcked { ref channel_id, ref counterparty_node_id, ref current_funding_outpoint, ref pre_channel_value_satoshis, ref post_channel_value_satoshis, ref output_script } => {
+			&Event::SpliceAckedInputsContributionReady { ref channel_id, ref counterparty_node_id, ref pre_channel_value_satoshis, ref post_channel_value_satoshis, ref holder_funding_satoshis, ref counterparty_funding_satoshis } => {
 				33u8.write(writer)?; // TODO value
 				write_tlv_fields!(writer, {
 					(0, channel_id, required),
 					(2, counterparty_node_id, required),
-					(4, current_funding_outpoint, required),
-					(6, pre_channel_value_satoshis, required),
-					(8, post_channel_value_satoshis, required),
-					(10, output_script, required),
+					(4, pre_channel_value_satoshis, required),
+					(6, post_channel_value_satoshis, required),
+					(8, holder_funding_satoshis, required),
+					(10, counterparty_funding_satoshis, required),
 				});
 			},
 			&Event::ConnectionNeeded { .. } => {

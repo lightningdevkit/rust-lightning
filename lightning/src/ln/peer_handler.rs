@@ -1763,8 +1763,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 			},
 			#[cfg(dual_funding)]
 			wire::Message::TxComplete(msg) => {
-				// TODO! which one
-				self.message_handler.chan_handler.handle_tx_complete_splice(&their_node_id, &msg);
+				self.message_handler.chan_handler.handle_tx_complete(&their_node_id, &msg);
 			},
 			#[cfg(dual_funding)]
 			wire::Message::TxSignatures(msg) => {
