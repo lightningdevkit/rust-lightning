@@ -1835,13 +1835,13 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 
 				for (_, peer_mutex) in peers.iter() {
 					let mut peer = peer_mutex.lock().unwrap();
-					let logger = WithContext::from(&self.logger, Some(peer.their_node_id.unwrap().0), None);
 					if !peer.handshake_complete() ||
 							!peer.should_forward_channel_announcement(msg.contents.short_channel_id) {
 						continue
 					}
 					debug_assert!(peer.their_node_id.is_some());
 					debug_assert!(peer.channel_encryptor.is_ready_for_encryption());
+					let logger = WithContext::from(&self.logger, Some(peer.their_node_id.unwrap().0), None);
 					if peer.buffer_full_drop_gossip_broadcast() {
 						log_gossip!(logger, "Skipping broadcast message to {:?} as its outbound buffer is full", peer.their_node_id);
 						continue;
@@ -1863,13 +1863,13 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 
 				for (_, peer_mutex) in peers.iter() {
 					let mut peer = peer_mutex.lock().unwrap();
-					let logger = WithContext::from(&self.logger, Some(peer.their_node_id.unwrap().0), None);
 					if !peer.handshake_complete() ||
 							!peer.should_forward_node_announcement(msg.contents.node_id) {
 						continue
 					}
 					debug_assert!(peer.their_node_id.is_some());
 					debug_assert!(peer.channel_encryptor.is_ready_for_encryption());
+					let logger = WithContext::from(&self.logger, Some(peer.their_node_id.unwrap().0), None);
 					if peer.buffer_full_drop_gossip_broadcast() {
 						log_gossip!(logger, "Skipping broadcast message to {:?} as its outbound buffer is full", peer.their_node_id);
 						continue;
@@ -1891,13 +1891,13 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 
 				for (_, peer_mutex) in peers.iter() {
 					let mut peer = peer_mutex.lock().unwrap();
-					let logger = WithContext::from(&self.logger, Some(peer.their_node_id.unwrap().0), None);
 					if !peer.handshake_complete() ||
 							!peer.should_forward_channel_announcement(msg.contents.short_channel_id)  {
 						continue
 					}
 					debug_assert!(peer.their_node_id.is_some());
 					debug_assert!(peer.channel_encryptor.is_ready_for_encryption());
+					let logger = WithContext::from(&self.logger, Some(peer.their_node_id.unwrap().0), None);
 					if peer.buffer_full_drop_gossip_broadcast() {
 						log_gossip!(logger, "Skipping broadcast message to {:?} as its outbound buffer is full", peer.their_node_id);
 						continue;
