@@ -629,33 +629,48 @@ pub fn do_test(mut data: &[u8], logger: &Arc<dyn Logger>) {
 				}
 			},
 			10 => {
-				'outer_loop: for funding_generation in pending_funding_generation.drain(..) {
-					let mut tx = Transaction { version: 0, lock_time: LockTime::ZERO, input: Vec::new(), output: vec![TxOut {
-							value: funding_generation.2, script_pubkey: funding_generation.3,
-						}] };
-					let funding_output = 'search_loop: loop {
-						let funding_txid = tx.txid();
-						if let None = loss_detector.txids_confirmed.get(&funding_txid) {
-							let outpoint = OutPoint { txid: funding_txid, index: 0 };
-							for chan in channelmanager.list_channels() {
-								if chan.funding_txo == Some(outpoint) {
-									tx.version += 1;
-									continue 'search_loop;
-								}
-							}
-							break outpoint;
-						}
-						tx.version += 1;
-						if tx.version > 0xff {
-							continue 'outer_loop;
-						}
+				let mut tx = Transaction { version: 0, lock_time: LockTime::ZERO, input: Vec::new(), output: Vec::new() };
+				let mut channels = Vec::new();
+				for funding_generation in pending_funding_generation.drain(..) {
+					let txout = TxOut {
+						value: funding_generation.2, script_pubkey: funding_generation.3,
 					};
-					if let Err(e) = channelmanager.funding_transaction_generated(&funding_generation.0, &funding_generation.1, tx.clone()) {
+					if !tx.output.contains(&txout) {
+						tx.output.push(txout);
+						channels.push((funding_generation.0, funding_generation.1));
+					}
+				}
+				// Once we switch to V2 channel opens we should be able to drop this entirely as
+				// channel_ids no longer change when we set the funding tx.
+				'search_loop: loop {
+					if tx.version > 0xff {
+						break;
+					}
+					let funding_txid = tx.txid();
+					if loss_detector.txids_confirmed.get(&funding_txid).is_none() {
+						let outpoint = OutPoint { txid: funding_txid, index: 0 };
+						for chan in channelmanager.list_channels() {
+							if chan.channel_id == ChannelId::v1_from_funding_outpoint(outpoint) {
+								tx.version += 1;
+								continue 'search_loop;
+							}
+						}
+						break;
+					}
+					tx.version += 1;
+				}
+				if tx.version <= 0xff && !channels.is_empty() {
+					let chans = channels.iter().map(|(a, b)| (a, b)).collect::<Vec<_>>();
+					if let Err(e) = channelmanager.batch_funding_transaction_generated(&chans, tx.clone()) {
 						// It's possible the channel has been closed in the mean time, but any other
 						// failure may be a bug.
 						if let APIError::ChannelUnavailable { .. } = e { } else { panic!(); }
 					}
-					pending_funding_signatures.insert(funding_output, tx);
+					let funding_txid = tx.txid();
+					for idx in 0..tx.output.len() {
+						let outpoint = OutPoint { txid: funding_txid, index: idx as u16 };
+						pending_funding_signatures.insert(outpoint, tx.clone());
+					}
 				}
 			},
 			11 => {
