@@ -77,32 +77,18 @@ pub fn slice_to_be16(v: &[u8]) -> u16 {
 }
 
 #[inline]
+pub fn be16_to_array(u: u16) -> [u8; 2] {
+	let mut v = [0; 2];
+	v[0] = ((u >> 8*1) & 0xff) as u8;
+	v[1] = ((u >> 8*0) & 0xff) as u8;
+	v
+}
+
+#[inline]
 pub fn slice_to_be24(v: &[u8]) -> u32 {
 	((v[0] as u32) << 8*2) |
 	((v[1] as u32) << 8*1) |
 	((v[2] as u32) << 8*0)
-}
-
-#[inline]
-pub fn slice_to_be32(v: &[u8]) -> u32 {
-	((v[0] as u32) << 8*3) |
-	((v[1] as u32) << 8*2) |
-	((v[2] as u32) << 8*1) |
-	((v[3] as u32) << 8*0)
-}
-
-#[inline]
-pub fn be64_to_array(u: u64) -> [u8; 8] {
-	let mut v = [0; 8];
-	v[0] = ((u >> 8*7) & 0xff) as u8;
-	v[1] = ((u >> 8*6) & 0xff) as u8;
-	v[2] = ((u >> 8*5) & 0xff) as u8;
-	v[3] = ((u >> 8*4) & 0xff) as u8;
-	v[4] = ((u >> 8*3) & 0xff) as u8;
-	v[5] = ((u >> 8*2) & 0xff) as u8;
-	v[6] = ((u >> 8*1) & 0xff) as u8;
-	v[7] = ((u >> 8*0) & 0xff) as u8;
-	v
 }
 
 struct InputData {
@@ -462,6 +448,17 @@ pub fn do_test(mut data: &[u8], logger: &Arc<dyn Logger>) {
 		}
 	}
 
+	macro_rules! get_bytes {
+		($len: expr) => { {
+			let mut res = [0; $len];
+			match input.get_slice($len as usize) {
+				Some(slice) => res.copy_from_slice(slice),
+				None => return,
+			}
+			res
+		} }
+	}
+
 	macro_rules! get_pubkey {
 		() => {
 			match PublicKey::from_slice(get_slice!(33)) {
@@ -508,7 +505,7 @@ pub fn do_test(mut data: &[u8], logger: &Arc<dyn Logger>) {
 
 	let mut should_forward = false;
 	let mut payments_received: Vec<PaymentHash> = Vec::new();
-	let mut payments_sent = 0;
+	let mut payments_sent: u16 = 0;
 	let mut pending_funding_generation: Vec<(ChannelId, PublicKey, u64, ScriptBuf)> = Vec::new();
 	let mut pending_funding_signatures = HashMap::new();
 
@@ -558,16 +555,13 @@ pub fn do_test(mut data: &[u8], logger: &Arc<dyn Logger>) {
 				let params = RouteParameters::from_payment_params_and_value(
 					payment_params, final_value_msat);
 				let mut payment_hash = PaymentHash([0; 32]);
-				payment_hash.0[0..8].copy_from_slice(&be64_to_array(payments_sent));
+				payment_hash.0[0..2].copy_from_slice(&be16_to_array(payments_sent));
 				payment_hash.0 = Sha256::hash(&payment_hash.0[..]).to_byte_array();
 				payments_sent += 1;
-				match channelmanager.send_payment(payment_hash,
-					RecipientOnionFields::spontaneous_empty(), PaymentId(payment_hash.0), params,
-					Retry::Attempts(0))
-				{
-					Ok(_) => {},
-					Err(_) => return,
-				}
+				let _ = channelmanager.send_payment(
+					payment_hash, RecipientOnionFields::spontaneous_empty(),
+					PaymentId(payment_hash.0), params, Retry::Attempts(2)
+				);
 			},
 			15 => {
 				let final_value_msat = slice_to_be24(get_slice!(3)) as u64;
@@ -575,19 +569,16 @@ pub fn do_test(mut data: &[u8], logger: &Arc<dyn Logger>) {
 				let params = RouteParameters::from_payment_params_and_value(
 					payment_params, final_value_msat);
 				let mut payment_hash = PaymentHash([0; 32]);
-				payment_hash.0[0..8].copy_from_slice(&be64_to_array(payments_sent));
+				payment_hash.0[0..2].copy_from_slice(&be16_to_array(payments_sent));
 				payment_hash.0 = Sha256::hash(&payment_hash.0[..]).to_byte_array();
 				payments_sent += 1;
 				let mut payment_secret = PaymentSecret([0; 32]);
-				payment_secret.0[0..8].copy_from_slice(&be64_to_array(payments_sent));
+				payment_secret.0[0..2].copy_from_slice(&be16_to_array(payments_sent));
 				payments_sent += 1;
-				match channelmanager.send_payment(payment_hash,
-					RecipientOnionFields::secret_only(payment_secret), PaymentId(payment_hash.0),
-					params, Retry::Attempts(0))
-				{
-					Ok(_) => {},
-					Err(_) => return,
-				}
+				let _ = channelmanager.send_payment(
+					payment_hash, RecipientOnionFields::secret_only(payment_secret),
+					PaymentId(payment_hash.0), params, Retry::Attempts(2)
+				);
 			},
 			5 => {
 				let peer_id = get_slice!(1)[0];
@@ -680,7 +671,7 @@ pub fn do_test(mut data: &[u8], logger: &Arc<dyn Logger>) {
 				}
 			},
 			12 => {
-				let txlen = slice_to_be16(get_slice!(2));
+				let txlen = u16::from_be_bytes(get_bytes!(2));
 				if txlen == 0 {
 					loss_detector.connect_block(&[]);
 				} else {
