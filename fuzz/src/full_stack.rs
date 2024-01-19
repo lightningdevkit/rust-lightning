@@ -37,7 +37,7 @@ use lightning::chain::transaction::OutPoint;
 use lightning::sign::{InMemorySigner, Recipient, KeyMaterial, EntropySource, NodeSigner, SignerProvider};
 use lightning::events::Event;
 use lightning::ln::{ChannelId, PaymentHash, PaymentPreimage, PaymentSecret};
-use lightning::ln::channelmanager::{ChainParameters, ChannelDetails, ChannelManager, PaymentId, RecipientOnionFields, Retry};
+use lightning::ln::channelmanager::{ChainParameters, ChannelDetails, ChannelManager, PaymentId, RecipientOnionFields, Retry, InterceptId};
 use lightning::ln::peer_handler::{MessageHandler,PeerManager,SocketDescriptor,IgnoringMessageHandler};
 use lightning::ln::msgs::{self, DecodeError};
 use lightning::ln::script::ShutdownScript;
@@ -505,6 +505,7 @@ pub fn do_test(mut data: &[u8], logger: &Arc<dyn Logger>) {
 
 	let mut should_forward = false;
 	let mut payments_received: Vec<PaymentHash> = Vec::new();
+	let mut intercepted_htlcs: Vec<InterceptId> = Vec::new();
 	let mut payments_sent: u16 = 0;
 	let mut pending_funding_generation: Vec<(ChannelId, PublicKey, u64, ScriptBuf)> = Vec::new();
 	let mut pending_funding_signatures = HashMap::new();
@@ -579,6 +580,19 @@ pub fn do_test(mut data: &[u8], logger: &Arc<dyn Logger>) {
 					payment_hash, RecipientOnionFields::secret_only(payment_secret),
 					PaymentId(payment_hash.0), params, Retry::Attempts(2)
 				);
+			},
+			17 => {
+				let final_value_msat = slice_to_be24(get_slice!(3)) as u64;
+				let payment_params = PaymentParameters::from_node_id(get_pubkey!(), 42);
+				let params = RouteParameters::from_payment_params_and_value(
+					payment_params, final_value_msat);
+				let _ = channelmanager.send_preflight_probes(params, None);
+			},
+			18 => {
+				let idx = u16::from_be_bytes(get_bytes!(2)) % cmp::max(payments_sent, 1);
+				let mut payment_id = PaymentId([0; 32]);
+				payment_id.0[0..2].copy_from_slice(&idx.to_be_bytes());
+				channelmanager.abandon_payment(payment_id);
 			},
 			5 => {
 				let peer_id = get_slice!(1)[0];
@@ -714,7 +728,36 @@ pub fn do_test(mut data: &[u8], logger: &Arc<dyn Logger>) {
 				channels.sort_by(|a, b| { a.channel_id.cmp(&b.channel_id) });
 				channelmanager.force_close_broadcasting_latest_txn(&channels[channel_id].channel_id, &channels[channel_id].counterparty.node_id).unwrap();
 			},
-			// 15 is above
+			// 15, 16, 17, 18 is above
+			19 => {
+				let mut list = loss_detector.handler.get_peer_node_ids();
+				list.sort_by_key(|v| v.0);
+				if let Some((id, _)) = list.get(0) {
+					loss_detector.handler.disconnect_by_node_id(*id);
+				}
+			},
+			20 => loss_detector.handler.disconnect_all_peers(),
+			21 => loss_detector.handler.timer_tick_occurred(),
+			22 =>
+				loss_detector.handler.broadcast_node_announcement([42; 3], [43; 32], Vec::new()),
+			32 => channelmanager.timer_tick_occurred(),
+			33 => {
+				for id in intercepted_htlcs.drain(..) {
+					channelmanager.fail_intercepted_htlc(id).unwrap();
+				}
+			}
+			34 => {
+				let amt = u64::from_be_bytes(get_bytes!(8));
+				let chans = channelmanager.list_channels();
+				for id in intercepted_htlcs.drain(..) {
+					if chans.is_empty() {
+						channelmanager.fail_intercepted_htlc(id).unwrap();
+					} else {
+						let chan = &chans[amt as usize % chans.len()];
+						channelmanager.forward_intercepted_htlc(id, &chan.channel_id, chan.counterparty.node_id, amt).unwrap();
+					}
+				}
+			}
 			_ => return,
 		}
 		loss_detector.handler.process_events();
@@ -729,6 +772,11 @@ pub fn do_test(mut data: &[u8], logger: &Arc<dyn Logger>) {
 				},
 				Event::PendingHTLCsForwardable {..} => {
 					should_forward = true;
+				},
+				Event::HTLCIntercepted { intercept_id, .. } => {
+					if !intercepted_htlcs.contains(&intercept_id) {
+						intercepted_htlcs.push(intercept_id);
+					}
 				},
 				_ => {},
 			}
