@@ -1915,45 +1915,6 @@ pub enum MessageSendEvent {
 		/// The message which should be sent.
 		msg: msgs::SpliceLocked,
 	},
-	/// #SPLICING
-	/// Used to indicate that a splice_created message should be sent to the peer with the given node_id.
-	SendSpliceCreated {
-		/// The node_id of the node which should receive this message
-		node_id: PublicKey,
-		/// The message which should be sent.
-		msg: msgs::SpliceCreated,
-	},
-	/// #SPLICING
-	/// Used to indicate that a splice_comm_signed message should be sent to the peer with the given node_id.
-	SendSpliceCommSigned {
-		/// The node_id of the node which should receive this message
-		node_id: PublicKey,
-		/// The message which should be sent.
-		msg: msgs::SpliceCommSigned,
-	},
-	/// Used to indicate that a splice_comm_ack message should be sent to the peer with the given node_id.
-	SendSpliceCommAck {
-		/// The node_id of the node which should receive this message
-		node_id: PublicKey,
-		/// The message which should be sent.
-		msg: msgs::SpliceCommAck,
-	},
-	/// #SPLICING
-	/// Used to indicate that a splice_signed_signed message should be sent to the peer with the given node_id.
-	SendSpliceSigned {
-		/// The node_id of the node which should receive this message
-		node_id: PublicKey,
-		/// The message which should be sent.
-		msg: msgs::SpliceSigned,
-	},
-	/// #SPLICING
-	/// Used to indicate that a splice_signed_ack message should be sent to the peer with the given node_id.
-	SendSpliceSignedAck {
-		/// The node_id of the node which should receive this message
-		node_id: PublicKey,
-		/// The message which should be sent.
-		msg: msgs::SpliceSignedAck,
-	},
 	/// Used to indicate that a tx_add_input message should be sent to the peer with the given node_id.
 	SendTxAddInput {
 		/// The node_id of the node which should receive this message

@@ -624,12 +624,6 @@ mod tests {
 		fn handle_splice(&self, _their_node_id: &PublicKey, _msg: &Splice) {}
 		fn handle_splice_ack(&self, _their_node_id: &PublicKey, _msg: &SpliceAck) {}
 		fn handle_splice_locked(&self, _their_node_id: &PublicKey, _msg: &SpliceLocked) {}
-		fn handle_splice_created(&self, _their_node_id: &PublicKey, _msg: &SpliceCreated) {}
-		fn handle_splice_comm_signed(&self, _their_node_id: &PublicKey, _msg: &SpliceCommSigned) {}
-		fn handle_splice_comm_ack(&self, _their_node_id: &PublicKey, _msg: &SpliceCommAck) {}
-		fn handle_splice_signed(&self, _their_node_id: &PublicKey, _msg: &SpliceSigned) {}
-		fn handle_splice_signed_ack(&self, _their_node_id: &PublicKey, _msg: &SpliceSignedAck) {}
-		fn handle_tx_complete_splice(&self, _their_node_id: &PublicKey, _msg: &TxComplete) {}
 		#[cfg(dual_funding)]
 		fn handle_tx_add_input(&self, _their_node_id: &PublicKey, _msg: &TxAddInput) {}
 		#[cfg(dual_funding)]

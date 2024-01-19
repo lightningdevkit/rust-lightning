@@ -22,7 +22,7 @@ use bitcoin::secp256k1::constants::PUBLIC_KEY_SIZE;
 use bitcoin::secp256k1::{PublicKey,SecretKey};
 use bitcoin::secp256k1::{Secp256k1,ecdsa::Signature};
 use bitcoin::{secp256k1, TxIn, TxOut};
-#[cfg(dual_funding)]
+// #[cfg(dual_funding)]
 use bitcoin::Witness;
 #[cfg(dual_funding)]
 use bitcoin::locktime::absolute::LockTime;
@@ -972,8 +972,8 @@ pub(super) struct PendingSpliceInfo {
 	pub is_outgoing: bool,
 
 	prev_funding_input_index: Option<u16>,
-	initial_commitment_tx: Option<CommitmentTransaction>,
-	cp_commitment_sig: Option<Signature>,
+	// initial_commitment_tx: Option<CommitmentTransaction>,
+	// cp_commitment_sig: Option<Signature>,
 
 	// the new funding transaction (candidate). TODO later should be TransactionConfirmation?
 	funding_transaction: Option<Transaction>,
@@ -992,8 +992,8 @@ impl PendingSpliceInfo {
 			pre_channel_value,
 			is_outgoing,
 			prev_funding_input_index: None,
-			initial_commitment_tx: None,
-			cp_commitment_sig: None,
+			// initial_commitment_tx: None,
+			// cp_commitment_sig: None,
 			funding_transaction: None,
 			funding_txo: None,
 			#[cfg(dual_funding)]
@@ -6800,143 +6800,6 @@ impl<SP: Deref> Channel<SP> where
 	// Methods to get unprompted messages to send to the remote end (or where we already returned
 	// something in the handler for the message that prompted this message):
 
-	/// #SPLICING STEP19 I
-	/// Handles a splice_signed_ack message from the remote end.
-	/// If this call is successful, broadcast the funding transaction (and not before!)
-	pub fn splice_signed_ack<L: Deref>(
-		&mut self, msg: &msgs::SpliceSignedAck, best_block: BestBlock, signer_provider: &SP, logger: &L
-	)
-	-> Result<ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>, ChannelError>
-	where L::Target: Logger
-	{
-		if !self.context.is_outbound() {
-			return Err(ChannelError::Close("Received splice_signed_ack for an inbound channel?".to_owned()));
-		}
-		if !matches!(self.context.channel_state, ChannelState::FundingNegotiated) {
-			return Err(ChannelError::Close(format!("Received splice_signed_ack in strange state! {:?}", self.context.channel_state)));
-		}
-		// TODO check
-		/*
-		if self.commitment_secrets.get_min_seen_secret() != (1 << 48) ||
-				self.cur_counterparty_commitment_transaction_number != INITIAL_COMMITMENT_NUMBER ||
-				self.cur_holder_commitment_transaction_number != INITIAL_COMMITMENT_NUMBER {
-			panic!("Should not have advanced channel commitment tx numbers prior to splice_created");
-		}
-		*/
-
-		// Retrieve transaction properties from PendingSpliceInfo
-		let (prev_funding_input_index, pre_channel_value, initial_commitment_tx, cp_comm_sig) = 
-			if let Some(pending_splice) = &self.context.pending_splice {
-				(
-					pending_splice.prev_funding_input_index.unwrap_or_default(),
-					pending_splice.pre_channel_value,
-					if let Some(ict) = &pending_splice.initial_commitment_tx { ict.clone() } else { panic!("No splice in progress!"); }, // TODO proper error handling
-					if let Some(cpsig) = &pending_splice.cp_commitment_sig { cpsig.clone() } else { panic!("No splice in progress!"); }, // TODO proper error handling
-				)
-			} else {
-				panic!("No splice in progress!"); // TODO proper error handling
-			};
-
-		// TODO: validate the signature from peer
-
-		// Update funding TX with signatures (ours and the one from acceptor)
-		// #SPLICE-SIG
-		// the redeem script
-		let sig_order_ours_first = self.context.get_holder_pubkeys().funding_pubkey.serialize() < self.context.counterparty_funding_pubkey().serialize();
-		log_info!(logger, "Pubkeys used for redeem script: {} {} {}", &self.context.get_holder_pubkeys().funding_pubkey, &self.context.counterparty_funding_pubkey(), sig_order_ours_first);
-		let redeem_script = self.context.get_funding_redeemscript();
-		let mut funding_transaction_with_sigs = self.context.pending_splice.as_ref().unwrap().funding_transaction.as_ref().unwrap().clone();
-		// our sig
-		let holder_signature = match &self.context.holder_signer {
-			ChannelSignerType::Ecdsa(ecdsa) => {
-				ecdsa.sign_splicing_funding_input(&funding_transaction_with_sigs, prev_funding_input_index, pre_channel_value, &redeem_script, &self.context.secp_ctx)
-					.map_err(|_| ChannelError::Close("Failed to sign the previous funding input in the new splicing funding tx".to_owned()))?
-			}
-		};
-		let mut holder_sig = holder_signature.serialize_der().to_vec();
-		holder_sig.push(EcdsaSighashType::All as u8);
-		// sig from counterparty
-		let mut cp_sig = msg.funding_signature.serialize_der().to_vec();
-		cp_sig.push(EcdsaSighashType::All as u8);
-		// prepare witness stack
-		funding_transaction_with_sigs.input[prev_funding_input_index as usize].witness.clear();
-		funding_transaction_with_sigs.input[prev_funding_input_index as usize].witness.push(Vec::new()); // First is the multisig dummy
-		if sig_order_ours_first {
-			funding_transaction_with_sigs.input[prev_funding_input_index as usize].witness.push(holder_sig);
-			funding_transaction_with_sigs.input[prev_funding_input_index as usize].witness.push(cp_sig);
-		} else {
-			funding_transaction_with_sigs.input[prev_funding_input_index as usize].witness.push(cp_sig);
-			funding_transaction_with_sigs.input[prev_funding_input_index as usize].witness.push(holder_sig);
-		}
-		funding_transaction_with_sigs.input[prev_funding_input_index as usize].witness.push(redeem_script.clone().into_bytes());
-
-		log_info!(logger, "Updated splice funding transaction with signatures, our and from acceptor; txid {}  txlen {}  sigs {} {} {}  tx {}",
-			funding_transaction_with_sigs.txid(), funding_transaction_with_sigs.encode().len(),
-			holder_signature, msg.funding_signature, sig_order_ours_first, 
-			encode::serialize_hex(&funding_transaction_with_sigs)
-		);
-		self.context.pending_splice.as_mut().unwrap().funding_transaction = Some(funding_transaction_with_sigs.clone());
-
-		let counterparty_keys = self.context.build_remote_transaction_keys();
-		let counterparty_initial_commitment_tx = self.context.build_commitment_transaction(self.context.cur_counterparty_commitment_transaction_number, &counterparty_keys, false, false, logger).tx;
-		let counterparty_trusted_tx = counterparty_initial_commitment_tx.trust();
-		let counterparty_initial_bitcoin_tx = counterparty_trusted_tx.built_transaction();
-
-		log_trace!(logger, "Initial counterparty tx for channel {} is: txid {} tx {}",
-			self.context.channel_id(), counterparty_initial_bitcoin_tx.txid, encode::serialize_hex(&counterparty_initial_bitcoin_tx.transaction));
-
-		let holder_commitment_tx = HolderCommitmentTransaction::new(
-			initial_commitment_tx.clone(),
-			cp_comm_sig.clone(), //msg.signature,
-			Vec::new(),
-			&self.context.get_holder_pubkeys().funding_pubkey,
-			self.context.counterparty_funding_pubkey()
-		);
-
-		match &self.context.holder_signer {
-			ChannelSignerType::Ecdsa(ecdsa) => {
-				match ecdsa.validate_holder_commitment(&holder_commitment_tx, Vec::new()) {
-					Err(_) => return Err(ChannelError::Close("Failed to validate our commitment".to_owned())),
-					Ok(_) => {}
-				}
-			}
-		}
-
-		let funding_redeemscript = self.context.get_funding_redeemscript();
-		let funding_txo = self.context.get_funding_txo().unwrap();
-		let funding_txo_script = funding_redeemscript.to_v0_p2wsh();
-		let obscure_factor = get_commitment_transaction_number_obscure_factor(&self.context.get_holder_pubkeys().payment_point, &self.context.get_counterparty_pubkeys().payment_point, self.context.is_outbound());
-		let shutdown_script = self.context.shutdown_scriptpubkey.clone().map(|script| script.into_inner());
-		let mut monitor_signer = signer_provider.derive_channel_signer(
-			self.context.pending_splice.as_ref().unwrap().post_channel_value,
-			self.context.channel_keys_id);
-		monitor_signer.provide_channel_parameters(&self.context.channel_transaction_parameters);
-		let channel_monitor = ChannelMonitor::new(self.context.secp_ctx.clone(), monitor_signer,
-												shutdown_script, self.context.get_holder_selected_contest_delay(),
-												&self.context.destination_script, (funding_txo, funding_txo_script),
-												&self.context.channel_transaction_parameters,
-												funding_redeemscript.clone(), self.context.channel_value_satoshis,
-												obscure_factor,
-												holder_commitment_tx, best_block, self.context.counterparty_node_id);
-
-		channel_monitor.provide_latest_counterparty_commitment_tx(counterparty_initial_bitcoin_tx.txid, Vec::new(), self.context.cur_counterparty_commitment_transaction_number, self.context.counterparty_cur_commitment_point.unwrap(), logger);
-
-		assert!(!self.context.channel_state.is_monitor_update_in_progress()); // We have no had any monitor(s) yet to fail update!
-
-
-		// TODO is this needed?
-		self.context.channel_state = ChannelState::AwaitingChannelReady(AwaitingChannelReadyFlags(0));
-		// self.context.cur_holder_commitment_transaction_number -= 1;
-		// self.context.cur_counterparty_commitment_transaction_number -= 1;
-
-		log_info!(logger, "Received splice_signed_ack from peer for channel {}", self.context.channel_id());
-
-		let need_channel_ready = self.check_get_channel_ready(0).is_some();
-		self.monitor_updating_paused(false, false, need_channel_ready, Vec::new(), Vec::new(), Vec::new());
-
-		Ok(channel_monitor)
-	}
-
 	/// Gets an UnsignedChannelAnnouncement for this channel. The channel must be publicly
 	/// announceable and available for use (have exchanged [`ChannelReady`] messages in both
 	/// directions). Should be used for both broadcasted announcements and in response to an
@@ -7673,402 +7536,6 @@ impl<SP: Deref> Channel<SP> where
 			.chain(self.context.pending_outbound_htlcs.iter().map(|htlc| (&htlc.source, &htlc.payment_hash)))
 	}
 
-	/// #SPLICING STEP7 I
-	/// Updates channel state with knowledge of the splicing transaction's txid/index, and generates
-	/// a splice_created message for the remote peer.
-	/// Panics if called at some time other than immediately after splice acknowledgement, if called twice,
-	/// or if called on an inbound channel.
-	/// Note that channel_id is not changed.
-	/// Do NOT broadcast the splicing transaction until after a successful splicing_signed call!
-	/// Based on get_funding_created()
-	pub fn splice_generated<L: Deref>(&mut self, splice_transaction: Transaction, splice_txo: OutPoint, splice_prev_funding_input_index: u16, splice_prev_funding_input_value: u64, logger: &L)
-	-> Result<msgs::SpliceCreated, ChannelError>
-	where L::Target: Logger
-	{
-		if !self.context.is_outbound() {
-			panic!("Tried to create outbound splice_created message on an inbound channel!");
-		}
-		// TODO: Check for quiscence
-		if !matches!(self.context.channel_state, ChannelState::ChannelReady(_)) {
-			panic!("Tried to get a splice_created messsage at a time when channel is not ready {:?}", self.context.channel_state);
-		}
-		/* TODO change check; how is this affected?
-		if self.commitment_secrets.get_min_seen_secret() != (1 << 48) ||
-				self.cur_counterparty_commitment_transaction_number != INITIAL_COMMITMENT_NUMBER ||
-				self.cur_holder_commitment_transaction_number != INITIAL_COMMITMENT_NUMBER {
-			panic!("Should not have advanced channel commitment tx numbers prior to funding_created");
-		}
-		*/
-
-		// Save transaction parameters for later
-		if self.context.pending_splice.is_none() { panic!("No splice in progress"); } // TODO proper error handling
-		self.context.pending_splice.as_mut().unwrap().prev_funding_input_index = Some(splice_prev_funding_input_index);
-
-		// Save funding transaction
-		self.context.pending_splice.as_mut().unwrap().funding_transaction = Some(splice_transaction.clone());
-		self.context.pending_splice.as_mut().unwrap().funding_txo = Some(splice_txo.clone());
-		self.context.channel_transaction_parameters.funding_outpoint = Some(splice_txo);
-		log_info!(logger, "Stored pending splice funding tx, txid {}  len {}", splice_transaction.txid(), splice_transaction.encode().len());
-
-		// Reset commitment counters
-		// TODO do we need to reset them?
-		self.context.cur_counterparty_commitment_transaction_number = INITIAL_COMMITMENT_NUMBER;
-		self.context.cur_holder_commitment_transaction_number = INITIAL_COMMITMENT_NUMBER;
-
-		// Set tx parameters, for commitment signing
-		match &mut self.context.holder_signer {
-			// ChannelSignerType::Ecdsa(ecdsa) => ecdsa.reprovide_channel_parameters(&self.context.channel_transaction_parameters, self.context.channel_value_satoshis),
-			ChannelSignerType::Ecdsa(ecdsa) => ecdsa.reprovide_channel_parameters(&self.context.channel_transaction_parameters, self.context.pending_splice.as_ref().unwrap().post_channel_value),
-		}
-		
-		// TODO: Should this be set only later?
-		self.context.channel_state = ChannelState::FundingNegotiated;
-
-		Ok(msgs::SpliceCreated {
-			channel_id: self.context.channel_id,
-			splice_txid: splice_txo.txid,
-			funding_output_index: splice_txo.index,
-			splice_transaction,
-			splice_prev_funding_input_index,
-			splice_prev_funding_input_value,
-			/*
-			#[cfg(taproot)]
-			partial_signature_with_nonce: None,
-			#[cfg(taproot)]
-			next_local_nonce: None,
-			*/
-		})
-	}
-
-	/// #SPLICING STEP11 I
-	/// Generates a commitment_signed message for the remote peer.
-	/// Panics if called at some time other than immediately after splice acknowledgement, if called twice,
-	/// or if called on an inbound channel.
-	/// Note that channel_id is not changed.
-	/// Do NOT broadcast the splicing transaction until after a successful commitment_signed call!
-	/// Based on get_funding_created()
-	pub fn splice_tx_complete<L: Deref>(&mut self, logger: &L)
-	-> Result<msgs::SpliceCommSigned, ChannelError>
-	where L::Target: Logger 
-	{
-		if !self.context.is_outbound() {
-			panic!("Tried to create outbound splice_comm_signed message on an inbound channel!");
-		}
-		if !matches!(self.context.channel_state, ChannelState::FundingNegotiated) {
-			panic!("Tried to get a splice_comm_signed messsage at a time when channel is not ready {:?}", self.context.channel_state);
-		}
-		/* TODO change check; how is this affected?
-		if self.commitment_secrets.get_min_seen_secret() != (1 << 48) ||
-				self.cur_counterparty_commitment_transaction_number != INITIAL_COMMITMENT_NUMBER ||
-				self.cur_holder_commitment_transaction_number != INITIAL_COMMITMENT_NUMBER {
-			panic!("Should not have advanced channel commitment tx numbers prior to funding_created");
-		}
-		*/
-
-		let (initial_commitment_tx, commitment_signature) = match self.context.get_funding_created_signature(logger) {
-			Err(e) => {
-				log_error!(logger, "Got bad signatures: {:?}!", e);
-				// TODO: restore it. Maybe it should not be overwritten
-				// self.channel_transaction_parameters.funding_outpoint = None;
-				return Err(e);
-			}
-			Ok((i, _, s)) => (i, s),
-		};
-
-		// Store initial commitment tx
-		if self.context.pending_splice.is_none() { panic!("No splice in progress"); } // TODO proper error handling
-		self.context.pending_splice.as_mut().unwrap().initial_commitment_tx = Some(initial_commitment_tx);
-
-		Ok(msgs::SpliceCommSigned {
-			channel_id: self.context.channel_id,
-			signature: commitment_signature,
-			// #[cfg(taproot)]
-			// partial_signature_with_nonce: None,
-		})
-	}
-
-	/// #SPLICING STEP13 A
-	pub fn splice_comm_signed<L: Deref>(&mut self, msg: &msgs::SpliceCommSigned, logger: &L)
-	-> Result<msgs::SpliceCommAck, ChannelError>
-	where L::Target: Logger 
-	{
-		if self.context.is_outbound() {
-			panic!("Tried to create outbound splice_comm_ack message on an outbound channel!");
-		}
-		if !matches!(self.context.channel_state, ChannelState::FundingNegotiated) {
-			panic!("Tried to get a splice_comm_ack messsage in a wrong channel state {:?}", self.context.channel_state);
-		}
-		/* TODO change check; how is this affected?
-		if self.commitment_secrets.get_min_seen_secret() != (1 << 48) ||
-				self.cur_counterparty_commitment_transaction_number != INITIAL_COMMITMENT_NUMBER ||
-				self.cur_holder_commitment_transaction_number != INITIAL_COMMITMENT_NUMBER {
-			panic!("Should not have advanced channel commitment tx numbers prior to funding_created");
-		}
-		*/
-
-		let (initial_commitment_tx, commitment_signature) = match self.context.get_funding_created_signature(logger) {
-			Err(e) => {
-				log_error!(logger, "Got bad signatures: {:?}!", e);
-				// TODO: restore it. Maybe it should not be overwritten
-				// self.channel_transaction_parameters.funding_outpoint = None;
-				return Err(e);
-			}
-			Ok((i, _, s)) => (i, s),
-		};
-
-		// Store cp commitment sig into PendingSpliceInfo
-		if self.context.pending_splice.is_none() { panic!("No splice in progress!"); } // TODO proper error handling
-		self.context.pending_splice.as_mut().unwrap().cp_commitment_sig = Some(msg.signature.clone());
-		// Store initial commitment tx
-		self.context.pending_splice.as_mut().unwrap().initial_commitment_tx = Some(initial_commitment_tx);
-
-		Ok(msgs::SpliceCommAck{
-			channel_id: self.context.channel_id,
-			signature: commitment_signature,
-			// #[cfg(taproot)]
-			// partial_signature_with_nonce: None,
-		})
-	}
-
-	/// #SPLICING STEP15 I
-	pub fn splice_comm_ack<L: Deref>(&mut self, msg: &msgs::SpliceCommAck, logger: &L)
-	-> Result<msgs::SpliceSigned, ChannelError>
-	where L::Target: Logger
-	{
-		if !self.context.is_outbound() {
-			panic!("Tried to create outbound splice_signed message on an inbound channel!");
-		}
-		// TODO: Check for quiscence
-		if !matches!(self.context.channel_state, ChannelState::FundingNegotiated) {
-			panic!("Tried to get a splice_created messsage at a time when channel is not ready {:?}", self.context.channel_state);
-		}
-		/* TODO change check; how is this affected?
-		if self.commitment_secrets.get_min_seen_secret() != (1 << 48) ||
-				self.cur_counterparty_commitment_transaction_number != INITIAL_COMMITMENT_NUMBER ||
-				self.cur_holder_commitment_transaction_number != INITIAL_COMMITMENT_NUMBER {
-			panic!("Should not have advanced channel commitment tx numbers prior to funding_created");
-		}
-		*/
-
-		// Store cp commitment sig into PendingSpliceInfo
-		if self.context.pending_splice.is_none() { panic!("No splice in progress!"); } // TODO proper error handling
-		self.context.pending_splice.as_mut().unwrap().cp_commitment_sig = Some(msg.signature.clone());
-
-		// Retrieve transaction properties from PendingSpliceInfo
-		let (funding_tx, prev_funding_input_index, pre_channel_value) =
-			if let Some(pending_splice) = &self.context.pending_splice {
-				if pending_splice.funding_transaction.is_none() { panic!("No transaction in pending splice!"); } // TODO proper error handling
-				(
-					pending_splice.funding_transaction.as_ref().unwrap().clone(),
-					pending_splice.prev_funding_input_index.unwrap_or_default(),
-					pending_splice.pre_channel_value,
-				)
-			} else {
-				panic!("No splice in progress!"); // TODO proper error handling
-			};
-
-		// Sign splice funding tx: add signature to the input that is the previous funding tx
-		// #SPLICE-SIG
-		log_info!(logger, "Pubkeys used for redeem script: {} {}", &self.context.get_holder_pubkeys().funding_pubkey, &self.context.counterparty_funding_pubkey());
-		let redeem_script = make_funding_redeemscript(&self.context.get_holder_pubkeys().funding_pubkey, self.context.counterparty_funding_pubkey());
-
-		// Sign splice funding tx: create our signature on the funding tx
-		// #SPLICE-SIG
-		let funding_signature = match &mut self.context.holder_signer {
-			ChannelSignerType::Ecdsa(ecdsa) => {
-				ecdsa.sign_splicing_funding_input(&funding_tx, prev_funding_input_index, pre_channel_value, &redeem_script, &self.context.secp_ctx)
-					.map_err(|_| ChannelError::Close("Failed to sign the previous funding input in the new splicing funding tx".to_owned()))?
-			}
-		};
-		log_info!(logger, "Created signature for funding tx input / acceptor, input idx {}  txid {}  value {}  sig {:?}", prev_funding_input_index, funding_tx.txid(), self.context.channel_value_satoshis, funding_signature.serialize_der().to_ascii_lowercase());
-
-		Ok(msgs::SpliceSigned {
-			channel_id: self.context.channel_id,
-			funding_signature,
-			/*
-			#[cfg(taproot)]
-			partial_signature_with_nonce: None,
-			#[cfg(taproot)]
-			next_local_nonce: None,
-			*/
-		})
-	}
-
-	/// #SPLICING STEP17 A
-	pub fn splice_signed<L: Deref>(&mut self, _msg: &msgs::SpliceSigned, best_block: BestBlock, signer_provider: &SP, logger: &L)
-	-> Result<(msgs::SpliceSignedAck, ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>), ChannelError>
-	where L::Target: Logger
-	{
-		if self.context.is_outbound() {
-			panic!("Tried to create outbound splice_signed_ack message on an outbound channel!");
-		}
-		// TODO: Check for quiscence
-		if !matches!(self.context.channel_state, ChannelState::FundingNegotiated) {
-			panic!("Tried to get a splice_created messsage at a time when channel is not ready {:?}", self.context.channel_state);
-		}
-		/* TODO change check; how is this affected?
-		if self.commitment_secrets.get_min_seen_secret() != (1 << 48) ||
-				self.cur_counterparty_commitment_transaction_number != INITIAL_COMMITMENT_NUMBER ||
-				self.cur_holder_commitment_transaction_number != INITIAL_COMMITMENT_NUMBER {
-			panic!("Should not have advanced channel commitment tx numbers prior to funding_created");
-		}
-		*/
-
-		// Retrieve transaction properties from PendingSpliceInfo
-		let (funding_tx, prev_funding_input_index, pre_channel_value, initial_commitment_tx, cp_comm_sig) = 
-			if let Some(pending_splice) = &self.context.pending_splice {
-				if pending_splice.funding_transaction.is_none() { panic!("No transaction in pending splice!"); } // TODO proper error handling
-				(
-					pending_splice.funding_transaction.as_ref().unwrap().clone(),
-					pending_splice.prev_funding_input_index.unwrap_or_default(),
-					pending_splice.pre_channel_value,
-					if let Some(ict) = &pending_splice.initial_commitment_tx { ict } else { panic!("No splice in progress!"); }, // TODO proper error handling
-					if let Some(cps) = &pending_splice.cp_commitment_sig { cps } else { panic!("No splice in progress!"); }, // TODO proper error handling
-				)
-			} else {
-				panic!("No splice in progress!"); // TODO proper error handling
-			};
-
-		// TODO: validate the signature from peer
-
-		// Sign splice funding tx: add signature to the input that is the previous funding tx
-		// #SPLICE-SIG
-		log_info!(logger, "Pubkeys used for redeem script: {} {}", &self.context.get_holder_pubkeys().funding_pubkey, &self.context.counterparty_funding_pubkey());
-		let redeem_script = make_funding_redeemscript(&self.context.get_holder_pubkeys().funding_pubkey, self.context.counterparty_funding_pubkey());
-
-		// Sign splice funding tx: create our signature on the funding tx
-		// #SPLICE-SIG
-		let funding_signature = match &self.context.holder_signer {
-			ChannelSignerType::Ecdsa(ecdsa) => {
-				ecdsa.sign_splicing_funding_input(&funding_tx, prev_funding_input_index, pre_channel_value, &redeem_script, &self.context.secp_ctx)
-					.map_err(|_| ChannelError::Close("Failed to sign the previous funding input in the new splicing funding tx".to_owned()))?
-			}
-		};
-		log_info!(logger, "Created signature for funding tx input / acceptor, input idx {}  txid {}  value {}  sig {:?}", prev_funding_input_index, funding_tx.txid(), self.context.channel_value_satoshis, funding_signature.serialize_der().to_ascii_lowercase());
-
-		let counterparty_keys = self.context.build_remote_transaction_keys();
-		let counterparty_initial_commitment_tx = self.context.build_commitment_transaction(self.context.cur_counterparty_commitment_transaction_number, &counterparty_keys, false, false, logger).tx;
-		let counterparty_trusted_tx = counterparty_initial_commitment_tx.trust();
-		let counterparty_initial_bitcoin_tx = counterparty_trusted_tx.built_transaction();
-
-		log_trace!(logger, "Initial counterparty tx for channel {} is: txid {} tx {}",
-			self.context.channel_id(), counterparty_initial_bitcoin_tx.txid, encode::serialize_hex(&counterparty_initial_bitcoin_tx.transaction));
-
-		let holder_commitment_tx = HolderCommitmentTransaction::new(
-			initial_commitment_tx.clone(),
-			cp_comm_sig.clone(),
-			Vec::new(),
-			&self.context.get_holder_pubkeys().funding_pubkey,
-			self.context.counterparty_funding_pubkey()
-		);
-
-		match &self.context.holder_signer {
-			ChannelSignerType::Ecdsa(ecdsa) => {
-				match ecdsa.validate_holder_commitment(&holder_commitment_tx, Vec::new()) {
-					Err(_) => return Err(ChannelError::Close("Failed to validate our commitment".to_owned())),
-					Ok(_) => {}
-				}
-			}
-		}
-
-		let funding_redeemscript = self.context.get_funding_redeemscript();
-		let funding_txo = self.context.get_funding_txo().unwrap();
-		let funding_txo_script = funding_redeemscript.to_v0_p2wsh();
-		let obscure_factor = get_commitment_transaction_number_obscure_factor(&self.context.get_holder_pubkeys().payment_point, &self.context.get_counterparty_pubkeys().payment_point, self.context.is_outbound());
-		let shutdown_script = self.context.shutdown_scriptpubkey.clone().map(|script| script.into_inner());
-		let mut monitor_signer = signer_provider.derive_channel_signer(self.context.channel_value_satoshis, self.context.channel_keys_id);
-		monitor_signer.provide_channel_parameters(&self.context.channel_transaction_parameters);
-		let channel_monitor = ChannelMonitor::new(self.context.secp_ctx.clone(), monitor_signer,
-		                                          shutdown_script, self.context.get_holder_selected_contest_delay(),
-		                                          &self.context.destination_script, (funding_txo, funding_txo_script),
-		                                          &self.context.channel_transaction_parameters,
-		                                          funding_redeemscript.clone(), self.context.channel_value_satoshis,
-		                                          obscure_factor,
-		                                          holder_commitment_tx, best_block, self.context.counterparty_node_id);
-
-		channel_monitor.provide_latest_counterparty_commitment_tx(counterparty_initial_bitcoin_tx.txid, Vec::new(), self.context.cur_counterparty_commitment_transaction_number, self.context.counterparty_cur_commitment_point.unwrap(), logger);
-
-		assert!(!self.context.channel_state.is_monitor_update_in_progress()); // We have no had any monitor(s) yet to fail update!
-
-		// TODO check if this is needed
-		self.context.channel_state = ChannelState::AwaitingChannelReady(AwaitingChannelReadyFlags(0));
-		// self.context.cur_holder_commitment_transaction_number -= 1;
-		// self.context.cur_counterparty_commitment_transaction_number -= 1;
-
-		let need_channel_ready = self.check_get_channel_ready(0).is_some();
-		self.monitor_updating_paused(false, false, need_channel_ready, Vec::new(), Vec::new(), Vec::new());
-
-		Ok((msgs::SpliceSignedAck {
-			channel_id: self.context.channel_id,
-			funding_signature,
-			/*
-			#[cfg(taproot)]
-			partial_signature_with_nonce: None,
-			#[cfg(taproot)]
-			next_local_nonce: None,
-			*/
-		}, channel_monitor))
-	}
-
-	/// #SPLICING STEP9 A
-	pub fn splice_created<L: Deref>(&mut self, msg: &msgs::SpliceCreated, logger: &L)
-	-> Result<msgs::TxComplete, ChannelError>
-	where L::Target: Logger
-	{
-		if self.context.is_outbound() {
-			return Err(ChannelError::Close("Received splice_created for an outbound channel?".to_owned()));
-		}
-		// TODO checks taken out
-		/*
-		if !matches!(
-			self.context.channel_state, ChannelState::NegotiatingFunding(flags)
-			if flags == (NegotiatingFundingFlags::OUR_INIT_SENT | NegotiatingFundingFlags::THEIR_INIT_SENT)
-		) {
-			// BOLT 2 says that if we disconnect before we send funding_signed we SHOULD NOT
-			// remember the channel, so it's safe to just send an error_message here and drop the
-			// channel.
-			return Err(ChannelError::Close("Received splice_created after we got the channel!".to_owned()));
-		}
-		if self.inbound_awaiting_accept {
-			return Err(ChannelError::Close("SpliceCreated message received before the channel was accepted".to_owned()));
-		}
-		if self.commitment_secrets.get_min_seen_secret() != (1 << 48) ||
-				self.cur_counterparty_commitment_transaction_number != INITIAL_COMMITMENT_NUMBER ||
-				self.cur_holder_commitment_transaction_number != INITIAL_COMMITMENT_NUMBER {
-			panic!("Should not have advanced channel commitment tx numbers prior to funding_created");
-		}
-		*/
-
-		let splice_txo = OutPoint { txid: msg.splice_txid, index: msg.funding_output_index };
-		// Save transaction parameters for later
-		if self.context.pending_splice.is_none() { panic!("No pending splice"); } // TODO proper error handling
-		self.context.pending_splice.as_mut().unwrap().prev_funding_input_index = Some(msg.splice_prev_funding_input_index);
-
-		// Save funding transaction
-		self.context.pending_splice.as_mut().unwrap().funding_transaction = Some(msg.splice_transaction.clone());
-		self.context.pending_splice.as_mut().unwrap().funding_txo = Some(splice_txo.clone());
-		self.context.channel_transaction_parameters.funding_outpoint = Some(splice_txo);
-		log_info!(logger, "Stored pending splice funding tx, txid {}  len {}", msg.splice_transaction.txid(), msg.splice_transaction.encode().len());
-
-		// Reset commitment counters
-		// TODO do we need to reset them?
-		self.context.cur_counterparty_commitment_transaction_number = INITIAL_COMMITMENT_NUMBER;
-		self.context.cur_holder_commitment_transaction_number = INITIAL_COMMITMENT_NUMBER;
-
-		// Set tx parameters, for commitment signing
-		match &mut self.context.holder_signer {
-			// ChannelSignerType::Ecdsa(ecdsa) => ecdsa.reprovide_channel_parameters(&self.context.channel_transaction_parameters, self.context.channel_value_satoshis),
-			ChannelSignerType::Ecdsa(ecdsa) => ecdsa.reprovide_channel_parameters(&self.context.channel_transaction_parameters, self.context.pending_splice.as_ref().unwrap().post_channel_value),
-		}
-
-		// TODO: Should this be set only later?
-		self.context.channel_state = ChannelState::FundingNegotiated;
-
-		Ok(msgs::TxComplete {
-			channel_id: self.context.channel_id(),
-		})
-	}
-
 	/// #SPLICING
 	/// This is neeed when Channel is not changed during splicing, and interactive transaction is
 	/// constructed on the Funded channel. TODO: remove if new unfunded channel instance is used
@@ -8097,7 +7564,10 @@ impl<SP: Deref> Channel<SP> where
 	}
 
 	/// #SPLICING
-	/// TODO comment
+	// This is neeed when Channel is not changed during splicing, and interactive
+	// transaction is constructed on the Funded channel. TODO: remove if new
+	// unfunded channel instance is used during splicing
+	#[cfg(dual_funding)]
 	pub fn funding_tx_constructed<L: Deref>(
 		mut self, counterparty_node_id: &PublicKey, signing_session: InteractiveTxSigningSession, signer_provider: &SP, logger: &L
 	) -> Result<(Channel<SP>, msgs::CommitmentSigned, Option<Event>), (Self, ChannelError)>
@@ -10217,7 +9687,9 @@ mod tests {
 	use crate::ln::channel_keys::{RevocationKey, RevocationBasepoint};
 	use crate::ln::channelmanager::{self, HTLCSource, PaymentId};
 	use crate::ln::channel::InitFeatures;
-	use crate::ln::channel::{AwaitingChannelReadyFlags, Channel, ChannelState, DualFundingChannelContext, InboundHTLCOutput, OutboundV1Channel, InboundV1Channel, OutboundHTLCOutput, InboundHTLCState, OutboundHTLCState, HTLCCandidate, HTLCInitiator, HTLCUpdateAwaitingACK, PendingSpliceInfo, commit_tx_fee_msat};
+	use crate::ln::channel::{AwaitingChannelReadyFlags, Channel, ChannelState, InboundHTLCOutput, OutboundV1Channel, InboundV1Channel, OutboundHTLCOutput, InboundHTLCState, OutboundHTLCState, HTLCCandidate, HTLCInitiator, HTLCUpdateAwaitingACK, PendingSpliceInfo, commit_tx_fee_msat};
+	#[cfg(dual_funding)]
+	use crate::ln::channel::DualFundingChannelContext;
 	use crate::ln::channel::{MAX_FUNDING_SATOSHIS_NO_WUMBO, TOTAL_BITCOIN_SUPPLY_SATOSHIS, MIN_THEIR_CHAN_RESERVE_SATOSHIS};
 	use crate::ln::features::{ChannelFeatures, ChannelTypeFeatures, NodeFeatures};
 	use crate::ln::msgs;
@@ -10267,8 +9739,8 @@ mod tests {
 			pre_channel_value,
 			is_outgoing: true,
 			prev_funding_input_index: None,
-			initial_commitment_tx: None,
-			cp_commitment_sig: None,
+			// initial_commitment_tx: None,
+			// cp_commitment_sig: None,
 			funding_transaction: None,
 			funding_txo: None,
 			#[cfg(dual_funding)]

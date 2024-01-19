@@ -34,7 +34,7 @@ Up-to-date with main branch as of v0.0.118 (Oct 24, commit d2242f6; originally b
 
 See also `ldk-sample` https://github.com/catenocrypt/ldk-sample/tree/splicing-hapa2
 
-To test: `RUSTFLAGS="--cfg=dual_funding" cargo test splic`
+To test: `RUSTFLAGS="--cfg=dual_funding" cargo test -p lightning splic`
 
 Detailed steps
 --------------

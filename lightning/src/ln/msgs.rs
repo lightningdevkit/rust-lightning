@@ -29,7 +29,6 @@ use bitcoin::secp256k1::PublicKey;
 use bitcoin::secp256k1::ecdsa::Signature;
 use bitcoin::{secp256k1, Witness};
 use bitcoin::blockdata::script::ScriptBuf;
-use bitcoin::blockdata::transaction::Transaction;
 use bitcoin::hash_types::Txid;
 
 use crate::blinded_path::payment::{BlindedPaymentTlvs, ForwardTlvs, ReceiveTlvs};
@@ -494,93 +493,6 @@ pub struct SpliceAck {
 pub struct SpliceLocked {
 	/// The channel ID
 	pub channel_id: ChannelId,
-}
-
-/// #SPLICING
-/// A [`splice_created`] message to be sent to or received from a peer.
-/// Contains details of the splicing transaction
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SpliceCreated {
-	/// The channel ID
-	pub channel_id: ChannelId,
-	/// The splicing transaction ID (not yet signed nor broadcast)
-	pub splice_txid: Txid,
-	/// The specific output index funding this channel
-	pub funding_output_index: u16,
-	/// The complete splice funding transaction, used for signing by the other party. Not needed in final version with tx negotiation, TODO remove
-	pub splice_transaction: Transaction,
-	/// The input index in the splice transaction that is the previous funding transaction, used by the other party for signing.
-	/// It could be also omitted and found by looking for the previous funding tx among the inputs.
-	/// Not needed in final version with tx negotiation, TODO remove
-	pub splice_prev_funding_input_index: u16,
-	/// The value of the previous funding transaction, the previous channel capacity
-	pub splice_prev_funding_input_value: u64,
-	/*
-	#[cfg(taproot)]
-	/// The partial signature of the channel initiator (funder)
-	pub partial_signature_with_nonce: Option<PartialSignatureWithNonce>,
-	#[cfg(taproot)]
-	/// Next nonce the channel acceptor should use to finalize the funding output signature
-	pub next_local_nonce: Option<musig2::types::PublicNonce>
-	*/
-}
-
-/// #SPLICING
-/// A [`splice_comm_signed`] message to be sent to or received from a peer.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SpliceCommSigned {
-	/// The channel ID
-	pub channel_id: ChannelId,
-	/// A signature on the commitment transaction
-	pub signature: Signature,
-	// pub htlc_signatures: Vec<Signature>,
-	// pub partial_signature_with_nonce: Option<PartialSignatureWithNonce>,
-}
-
-/// #SPLICING
-/// A [`splice_comm_ack`] message to be sent to or received from a peer.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SpliceCommAck {
-	/// The channel ID
-	pub channel_id: ChannelId,
-	/// A signature on the commitment transaction
-	pub signature: Signature,
-	// pub htlc_signatures: Vec<Signature>,
-	// pub partial_signature_with_nonce: Option<PartialSignatureWithNonce>,
-}
-
-/// #SPLICING
-/// A [`splice_signed`] message to be sent to or received from a peer. There are two things signed here: the previous funding tx input and the the commitment transaction.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SpliceSigned {
-	/// The channel ID
-	pub channel_id: ChannelId,
-	/// The signature of the splice acceptor (fundee) on the splicing transaction.
-	/// This should be the result of transaction negotiation, and not needed here, it is needed only in the prototype, TODO remove it later.
-	/// Not to be confused with the `signature` field.
-	pub funding_signature: Signature,
-	/*
-	#[cfg(taproot)]
-	/// The partial signature of the channel acceptor (fundee)
-	pub partial_signature_with_nonce: Option<PartialSignatureWithNonce>,
-	*/
-}
-
-/// #SPLICING
-/// A [`splice_signed_ack`] message to be sent to or received from a peer. There are two things signed here: the previous funding tx input and the the commitment transaction.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SpliceSignedAck {
-	/// The channel ID
-	pub channel_id: ChannelId,
-	/// The signature of the splice acceptor (fundee) on the splicing transaction.
-	/// This should be the result of transaction negotiation, and not needed here, it is needed only in the prototype, TODO remove it later.
-	/// Not to be confused with the `signature` field.
-	pub funding_signature: Signature,
-	/*
-	#[cfg(taproot)]
-	/// The partial signature of the channel acceptor (fundee)
-	pub partial_signature_with_nonce: Option<PartialSignatureWithNonce>,
-	*/
 }
 
 /// A randomly chosen number that is used to identify inputs within an interactive transaction
@@ -1575,19 +1487,6 @@ pub trait ChannelMessageHandler : MessageSendEventsProvider {
 	fn handle_splice_ack(&self, their_node_id: &PublicKey, msg: &SpliceAck);
 	/// Handle an incoming `splice_locked` message from the given peer.
 	fn handle_splice_locked(&self, their_node_id: &PublicKey, msg: &SpliceLocked);
-	// #SPLICING
-	/// Handle an incoming `splice_created` message from the given peer.
-	fn handle_splice_created(&self, their_node_id: &PublicKey, msg: &SpliceCreated);
-	/// Handle an incoming `splice_commm_signed` message from the given peer.
-	fn handle_splice_comm_signed(&self, their_node_id: &PublicKey, msg: &SpliceCommSigned);
-	/// Handle an incoming `splice_commm_ack` message from the given peer.
-	fn handle_splice_comm_ack(&self, their_node_id: &PublicKey, msg: &SpliceCommAck);
-	/// Handle an incoming `splice_signed` message from the given peer.
-	fn handle_splice_signed(&self, their_node_id: &PublicKey, msg: &SpliceSigned);
-	/// Handle an incoming `splice_signed_ack` message from the given peer.
-	fn handle_splice_signed_ack(&self, their_node_id: &PublicKey, msg: &SpliceSignedAck);
-	/// TODO remove
-	fn handle_tx_complete_splice(&self, their_node_id: &PublicKey, msg: &TxComplete);
 
 	// Interactive channel construction
 	/// Handle an incoming `tx_add_input message` from the given peer.
@@ -2029,43 +1928,6 @@ impl_writeable_msg!(SpliceAck, {
 
 impl_writeable_msg!(SpliceLocked, {
 	channel_id,
-}, {});
-
-// #SPLICING
-// #[cfg(not(taproot))]
-impl_writeable_msg!(SpliceCreated, {
-	channel_id,
-	splice_txid,
-	funding_output_index,
-	splice_transaction,
-	splice_prev_funding_input_index,
-	splice_prev_funding_input_value,
-}, {});
-
-// #SPLICING
-impl_writeable_msg!(SpliceCommSigned, {
-	channel_id,
-	signature,
-}, {});
-
-// #SPLICING
-impl_writeable_msg!(SpliceCommAck, {
-	channel_id,
-	signature,
-}, {});
-
-// #SPLICING
-// #[cfg(not(taproot))]
-impl_writeable_msg!(SpliceSigned, {
-	channel_id,
-	funding_signature,
-}, {});
-
-// #SPLICING
-// #[cfg(not(taproot))]
-impl_writeable_msg!(SpliceSignedAck, {
-	channel_id,
-	funding_signature,
 }, {});
 
 impl_writeable_msg!(TxAddInput, {

@@ -66,11 +66,6 @@ pub(crate) enum Message<T> where T: core::fmt::Debug + Type + TestEq {
 	Splice(msgs::Splice),
 	SpliceAck(msgs::SpliceAck),
 	SpliceLocked(msgs::SpliceLocked),
-	SpliceCreated(msgs::SpliceCreated),
-	SpliceCommSigned(msgs::SpliceCommSigned),
-	SpliceCommAck(msgs::SpliceCommAck),
-	SpliceSigned(msgs::SpliceSigned),
-	SpliceSignedAck(msgs::SpliceSignedAck),
 	#[cfg(dual_funding)]
 	TxAddInput(msgs::TxAddInput),
 	#[cfg(dual_funding)]
@@ -137,11 +132,6 @@ impl<T> Writeable for Message<T> where T: core::fmt::Debug + Type + TestEq {
 			&Message::Splice(ref msg) => msg.write(writer),
 			&Message::SpliceAck(ref msg) => msg.write(writer),
 			&Message::SpliceLocked(ref msg) => msg.write(writer),
-			&Message::SpliceCreated(ref msg) => msg.write(writer),
-			&Message::SpliceCommSigned(ref msg) => msg.write(writer),
-			&Message::SpliceCommAck(ref msg) => msg.write(writer),
-			&Message::SpliceSigned(ref msg) => msg.write(writer),
-			&Message::SpliceSignedAck(ref msg) => msg.write(writer),
 			#[cfg(dual_funding)]
 			&Message::TxAddInput(ref msg) => msg.write(writer),
 			#[cfg(dual_funding)]
@@ -209,11 +199,6 @@ impl<T> Type for Message<T> where T: core::fmt::Debug + Type + TestEq {
 			&Message::Splice(ref msg) => msg.type_id(),
 			&Message::SpliceAck(ref msg) => msg.type_id(),
 			&Message::SpliceLocked(ref msg) => msg.type_id(),
-			&Message::SpliceCreated(ref msg) => msg.type_id(),
-			&Message::SpliceCommSigned(ref msg) => msg.type_id(),
-			&Message::SpliceCommAck(ref msg) => msg.type_id(),
-			&Message::SpliceSigned(ref msg) => msg.type_id(),
-			&Message::SpliceSignedAck(ref msg) => msg.type_id(),
 			#[cfg(dual_funding)]
 			&Message::TxAddInput(ref msg) => msg.type_id(),
 			#[cfg(dual_funding)]
@@ -334,21 +319,6 @@ fn do_read<R: io::Read, T, H: core::ops::Deref>(buffer: &mut R, message_type: u1
 		},
 		msgs::SpliceLocked::TYPE => {
 			Ok(Message::SpliceLocked(Readable::read(buffer)?))
-		},
-		msgs::SpliceCreated::TYPE => {
-			Ok(Message::SpliceCreated(Readable::read(buffer)?))
-		},
-		msgs::SpliceCommSigned::TYPE => {
-			Ok(Message::SpliceCommSigned(Readable::read(buffer)?))
-		},
-		msgs::SpliceCommAck::TYPE => {
-			Ok(Message::SpliceCommAck(Readable::read(buffer)?))
-		},
-		msgs::SpliceSigned::TYPE => {
-			Ok(Message::SpliceSigned(Readable::read(buffer)?))
-		},
-		msgs::SpliceSignedAck::TYPE => {
-			Ok(Message::SpliceSignedAck(Readable::read(buffer)?))
 		},
 		#[cfg(dual_funding)]
 		msgs::TxAddInput::TYPE => {
@@ -580,36 +550,6 @@ impl Encode for msgs::SpliceAck {
 
 impl Encode for msgs::SpliceLocked {
 	const TYPE: u16 = 77;
-}
-
-// #SPLICING
-impl Encode for msgs::SpliceCreated {
-	// TODO: Made-up value!
-	const TYPE: u16 = 78;
-}
-
-// #SPLICING
-impl Encode for msgs::SpliceCommSigned {
-	// TODO: Made-up value!
-	const TYPE: u16 = 80;
-}
-
-// #SPLICING
-impl Encode for msgs::SpliceCommAck {
-	// TODO: Made-up value!
-	const TYPE: u16 = 81;
-}
-
-// #SPLICING
-impl Encode for msgs::SpliceSigned {
-	// TODO: Made-up value!
-	const TYPE: u16 = 82;
-}
-
-// #SPLICING
-impl Encode for msgs::SpliceSignedAck {
-	// TODO: Made-up value!
-	const TYPE: u16 = 83;
 }
 
 impl Encode for msgs::TxAddInput {

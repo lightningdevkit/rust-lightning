@@ -258,6 +258,7 @@ fn test_channel_open_and_close() {
 
 /// End-to-end V2 open channel flow, with close, and verification checks.
 /// The steps are mostly on ChannelManager level.
+#[cfg(dual_funding)]
 #[test]
 fn test_channel_open_v2_and_close() {
 	// Set up a network of 2 nodes
