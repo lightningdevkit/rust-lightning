@@ -1,4 +1,4 @@
-# 0.0.120 - Jan 17, 2024 - "Blinded Fuzzers"
+# 0.0.120 - Jan 17, 2024 - "Unblinded Fuzzers"
 
 ## API Updates
  * The `PeerManager` bound on `UtxoLookup` was removed entirely. This enables
