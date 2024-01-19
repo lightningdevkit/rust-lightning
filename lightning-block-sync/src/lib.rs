@@ -46,6 +46,7 @@ mod utils;
 
 use crate::poll::{ChainTip, Poll, ValidatedBlockHeader};
 
+use async_trait::async_trait;
 use bitcoin::blockdata::block::{Block, Header};
 use bitcoin::hash_types::BlockHash;
 use bitcoin::pow::Work;
@@ -53,23 +54,22 @@ use bitcoin::pow::Work;
 use lightning::chain;
 use lightning::chain::Listen;
 
-use std::future::Future;
 use std::ops::Deref;
-use std::pin::Pin;
 
 /// Abstract type for retrieving block headers and data.
-pub trait BlockSource : Sync + Send {
+#[async_trait]
+pub trait BlockSource {
 	/// Returns the header for a given hash. A height hint may be provided in case a block source
 	/// cannot easily find headers based on a hash. This is merely a hint and thus the returned
 	/// header must have the same hash as was requested. Otherwise, an error must be returned.
 	///
 	/// Implementations that cannot find headers based on the hash should return a `Transient` error
 	/// when `height_hint` is `None`.
-	fn get_header<'a>(&'a self, header_hash: &'a BlockHash, height_hint: Option<u32>) -> AsyncBlockSourceResult<'a, BlockHeaderData>;
+	async fn get_header(&self, header_hash: &BlockHash, height_hint: Option<u32>) -> BlockSourceResult<BlockHeaderData>;
 
 	/// Returns the block for a given hash. A headers-only block source should return a `Transient`
 	/// error.
-	fn get_block<'a>(&'a self, header_hash: &'a BlockHash) -> AsyncBlockSourceResult<'a, BlockData>;
+	async fn get_block(&self, header_hash: &BlockHash) -> BlockSourceResult<BlockData>;
 
 	/// Returns the hash of the best block and, optionally, its height.
 	///
@@ -77,16 +77,11 @@ pub trait BlockSource : Sync + Send {
 	/// to allow for a more efficient lookup.
 	///
 	/// [`get_header`]: Self::get_header
-	fn get_best_block<'a>(&'a self) -> AsyncBlockSourceResult<(BlockHash, Option<u32>)>;
+	async fn get_best_block(&self) -> BlockSourceResult<(BlockHash, Option<u32>)>;
 }
 
 /// Result type for `BlockSource` requests.
 pub type BlockSourceResult<T> = Result<T, BlockSourceError>;
-
-// TODO: Replace with BlockSourceResult once `async` trait functions are supported. For details,
-// see: https://areweasyncyet.rs.
-/// Result type for asynchronous `BlockSource` requests.
-pub type AsyncBlockSourceResult<'a, T> = Pin<Box<dyn Future<Output = BlockSourceResult<T>> + 'a + Send>>;
 
 /// Error type for `BlockSource` requests.
 ///
@@ -419,10 +414,10 @@ impl<'a, C: Cache, L: Deref> ChainNotifier<'a, C, L> where L::Target: chain::Lis
 
 			match block_data.deref() {
 				BlockData::FullBlock(block) => {
-					self.chain_listener.block_connected(block, height);
+					self.chain_listener.block_connected(&block, height);
 				},
 				BlockData::HeaderOnly(header) => {
-					self.chain_listener.filtered_block_connected(header, &[], height);
+					self.chain_listener.filtered_block_connected(&header, &[], height);
 				},
 			}
 

@@ -1,11 +1,12 @@
 //! Simple REST client implementation which implements [`BlockSource`] against a Bitcoin Core REST
 //! endpoint.
 
-use crate::{BlockData, BlockHeaderData, BlockSource, AsyncBlockSourceResult};
+use crate::{BlockData, BlockHeaderData, BlockSource, BlockSourceResult};
 use crate::http::{BinaryResponse, HttpEndpoint, HttpClient, JsonResponse};
 use crate::gossip::UtxoSource;
 use crate::convert::GetUtxosResponse;
 
+use async_trait::async_trait;
 use bitcoin::OutPoint;
 use bitcoin::hash_types::BlockHash;
 
@@ -40,43 +41,35 @@ impl RestClient {
 	}
 }
 
+#[async_trait]
 impl BlockSource for RestClient {
-	fn get_header<'a>(&'a self, header_hash: &'a BlockHash, _height: Option<u32>) -> AsyncBlockSourceResult<'a, BlockHeaderData> {
-		Box::pin(async move {
-			let resource_path = format!("headers/1/{}.json", header_hash.to_string());
-			Ok(self.request_resource::<JsonResponse, _>(&resource_path).await?)
-		})
+	async fn get_header(&self, header_hash: &BlockHash, _height: Option<u32>) -> BlockSourceResult<BlockHeaderData> {
+		let resource_path = format!("headers/1/{}.json", header_hash.to_string());
+		Ok(self.request_resource::<JsonResponse, _>(&resource_path).await?)
 	}
 
-	fn get_block<'a>(&'a self, header_hash: &'a BlockHash) -> AsyncBlockSourceResult<'a, BlockData> {
-		Box::pin(async move {
-			let resource_path = format!("block/{}.bin", header_hash.to_string());
-			Ok(BlockData::FullBlock(self.request_resource::<BinaryResponse, _>(&resource_path).await?))
-		})
+	async fn get_block(&self, header_hash: &BlockHash) -> BlockSourceResult<BlockData> {
+		let resource_path = format!("block/{}.bin", header_hash.to_string());
+		Ok(BlockData::FullBlock(self.request_resource::<BinaryResponse, _>(&resource_path).await?))
 	}
 
-	fn get_best_block<'a>(&'a self) -> AsyncBlockSourceResult<'a, (BlockHash, Option<u32>)> {
-		Box::pin(async move {
-			Ok(self.request_resource::<JsonResponse, _>("chaininfo.json").await?)
-		})
+	async fn get_best_block(&self) -> BlockSourceResult<(BlockHash, Option<u32>)> {
+		Ok(self.request_resource::<JsonResponse, _>("chaininfo.json").await?)
 	}
 }
 
+#[async_trait]
 impl UtxoSource for RestClient {
-	fn get_block_hash_by_height<'a>(&'a self, block_height: u32) -> AsyncBlockSourceResult<'a, BlockHash> {
-		Box::pin(async move {
-			let resource_path = format!("blockhashbyheight/{}.bin", block_height);
-			Ok(self.request_resource::<BinaryResponse, _>(&resource_path).await?)
-		})
+	async fn get_block_hash_by_height(&self, block_height: u32) -> BlockSourceResult<BlockHash> {
+		let resource_path = format!("blockhashbyheight/{}.bin", block_height);
+		Ok(self.request_resource::<BinaryResponse, _>(&resource_path).await?)
 	}
 
-	fn is_output_unspent<'a>(&'a self, outpoint: OutPoint) -> AsyncBlockSourceResult<'a, bool> {
-		Box::pin(async move {
-			let resource_path = format!("getutxos/{}-{}.json", outpoint.txid.to_string(), outpoint.vout);
-			let utxo_result =
-				self.request_resource::<JsonResponse, GetUtxosResponse>(&resource_path).await?;
-			Ok(utxo_result.hit_bitmap_nonempty)
-		})
+	async fn is_output_unspent(&self, outpoint: OutPoint) -> BlockSourceResult<bool> {
+		let resource_path = format!("getutxos/{}-{}.json", outpoint.txid.to_string(), outpoint.vout);
+		let utxo_result =
+			self.request_resource::<JsonResponse, GetUtxosResponse>(&resource_path).await?;
+		Ok(utxo_result.hit_bitmap_nonempty)
 	}
 }
 

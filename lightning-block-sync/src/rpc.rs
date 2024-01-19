@@ -1,10 +1,11 @@
 //! Simple RPC client implementation which implements [`BlockSource`] against a Bitcoin Core RPC
 //! endpoint.
 
-use crate::{BlockData, BlockHeaderData, BlockSource, AsyncBlockSourceResult};
+use crate::{BlockData, BlockHeaderData, BlockSource, BlockSourceResult};
 use crate::http::{HttpClient, HttpEndpoint, HttpError, JsonResponse};
 use crate::gossip::UtxoSource;
 
+use async_trait::async_trait;
 use bitcoin::hash_types::BlockHash;
 use bitcoin::OutPoint;
 
@@ -116,46 +117,38 @@ impl RpcClient {
 	}
 }
 
+#[async_trait]
 impl BlockSource for RpcClient {
-	fn get_header<'a>(&'a self, header_hash: &'a BlockHash, _height: Option<u32>) -> AsyncBlockSourceResult<'a, BlockHeaderData> {
-		Box::pin(async move {
+	async fn get_header(&self, header_hash: &BlockHash, _height: Option<u32>) -> BlockSourceResult<BlockHeaderData> {
 			let header_hash = serde_json::json!(header_hash.to_string());
 			Ok(self.call_method("getblockheader", &[header_hash]).await?)
-		})
 	}
 
-	fn get_block<'a>(&'a self, header_hash: &'a BlockHash) -> AsyncBlockSourceResult<'a, BlockData> {
-		Box::pin(async move {
+	async fn get_block(&self, header_hash: &BlockHash) -> BlockSourceResult<BlockData> {
 			let header_hash = serde_json::json!(header_hash.to_string());
 			let verbosity = serde_json::json!(0);
 			Ok(BlockData::FullBlock(self.call_method("getblock", &[header_hash, verbosity]).await?))
-		})
 	}
 
-	fn get_best_block<'a>(&'a self) -> AsyncBlockSourceResult<'a, (BlockHash, Option<u32>)> {
-		Box::pin(async move {
+	async fn get_best_block(&self) -> BlockSourceResult<(BlockHash, Option<u32>)> {
 			Ok(self.call_method("getblockchaininfo", &[]).await?)
-		})
 	}
 }
 
+#[async_trait]
 impl UtxoSource for RpcClient {
-	fn get_block_hash_by_height<'a>(&'a self, block_height: u32) -> AsyncBlockSourceResult<'a, BlockHash> {
-		Box::pin(async move {
+	async fn get_block_hash_by_height(&self, block_height: u32) -> BlockSourceResult<BlockHash> {
 			let height_param = serde_json::json!(block_height);
 			Ok(self.call_method("getblockhash", &[height_param]).await?)
-		})
 	}
 
-	fn is_output_unspent<'a>(&'a self, outpoint: OutPoint) -> AsyncBlockSourceResult<'a, bool> {
-		Box::pin(async move {
+	async fn is_output_unspent(&self, outpoint: OutPoint) -> BlockSourceResult<bool> {
 			let txid_param = serde_json::json!(outpoint.txid.to_string());
 			let vout_param = serde_json::json!(outpoint.vout);
 			let include_mempool = serde_json::json!(false);
 			let utxo_opt: serde_json::Value = self.call_method(
 				"gettxout", &[txid_param, vout_param, include_mempool]).await?;
 			Ok(!utxo_opt.is_null())
-		})
 	}
 }
 

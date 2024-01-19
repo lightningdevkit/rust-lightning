@@ -1,7 +1,8 @@
 //! Adapters that make one or more [`BlockSource`]s simpler to poll for new chain tip transitions.
 
-use crate::{AsyncBlockSourceResult, BlockData, BlockHeaderData, BlockSource, BlockSourceError, BlockSourceResult};
+use crate::{BlockSourceResult, BlockData, BlockHeaderData, BlockSource, BlockSourceError};
 
+use async_trait::async_trait;
 use bitcoin::hash_types::BlockHash;
 use bitcoin::network::constants::Network;
 use lightning::chain::BestBlock;
@@ -15,18 +16,19 @@ use std::ops::Deref;
 /// required to be built in terms of it to ensure chain data validity.
 ///
 /// [`ChainPoller`]: ../struct.ChainPoller.html
+#[async_trait]
 pub trait Poll {
 	/// Returns a chain tip in terms of its relationship to the provided chain tip.
-	fn poll_chain_tip<'a>(&'a self, best_known_chain_tip: ValidatedBlockHeader) ->
-		AsyncBlockSourceResult<'a, ChainTip>;
+	async fn poll_chain_tip(&self, best_known_chain_tip: ValidatedBlockHeader) ->
+		BlockSourceResult<ChainTip>;
 
 	/// Returns the header that preceded the given header in the chain.
-	fn look_up_previous_header<'a>(&'a self, header: &'a ValidatedBlockHeader) ->
-		AsyncBlockSourceResult<'a, ValidatedBlockHeader>;
+	async fn look_up_previous_header(&self, header: &ValidatedBlockHeader) ->
+		BlockSourceResult<ValidatedBlockHeader>;
 
 	/// Returns the block associated with the given header.
-	fn fetch_block<'a>(&'a self, header: &'a ValidatedBlockHeader) ->
-		AsyncBlockSourceResult<'a, ValidatedBlock>;
+	async fn fetch_block(&self, header: &ValidatedBlockHeader) ->
+		BlockSourceResult<ValidatedBlock>;
 }
 
 /// A chain tip relative to another chain tip in terms of block hash and chainwork.
@@ -206,54 +208,50 @@ impl<B: Deref<Target=T> + Sized + Send + Sync, T: BlockSource + ?Sized> ChainPol
 	}
 }
 
+#[async_trait]
 impl<B: Deref<Target=T> + Sized + Send + Sync, T: BlockSource + ?Sized> Poll for ChainPoller<B, T> {
-	fn poll_chain_tip<'a>(&'a self, best_known_chain_tip: ValidatedBlockHeader) ->
-		AsyncBlockSourceResult<'a, ChainTip>
+	async fn poll_chain_tip(&self, best_known_chain_tip: ValidatedBlockHeader) ->
+		BlockSourceResult<ChainTip>
 	{
-		Box::pin(async move {
-			let (block_hash, height) = self.block_source.get_best_block().await?;
-			if block_hash == best_known_chain_tip.header.block_hash() {
-				return Ok(ChainTip::Common);
-			}
+		let get_best_block_fut = self.block_source.get_best_block();
+		let (block_hash, height) = get_best_block_fut.await?;
+		if block_hash == best_known_chain_tip.header.block_hash() {
+			return Ok(ChainTip::Common);
+		}
 
-			let chain_tip = self.block_source
-				.get_header(&block_hash, height).await?
-				.validate(block_hash)?;
-			if chain_tip.chainwork > best_known_chain_tip.chainwork {
-				Ok(ChainTip::Better(chain_tip))
-			} else {
-				Ok(ChainTip::Worse(chain_tip))
-			}
-		})
+		let get_header_fut = self.block_source.get_header(&block_hash, height);
+		let chain_tip = get_header_fut.await?
+			.validate(block_hash)?;
+		if chain_tip.chainwork > best_known_chain_tip.chainwork {
+			Ok(ChainTip::Better(chain_tip))
+		} else {
+			Ok(ChainTip::Worse(chain_tip))
+		}
 	}
 
-	fn look_up_previous_header<'a>(&'a self, header: &'a ValidatedBlockHeader) ->
-		AsyncBlockSourceResult<'a, ValidatedBlockHeader>
+	async fn look_up_previous_header(&self, header: &ValidatedBlockHeader) ->
+		BlockSourceResult<ValidatedBlockHeader>
 	{
-		Box::pin(async move {
-			if header.height == 0 {
-				return Err(BlockSourceError::persistent("genesis block reached"));
-			}
+		if header.height == 0 {
+			return Err(BlockSourceError::persistent("genesis block reached"));
+		}
 
-			let previous_hash = &header.header.prev_blockhash;
-			let height = header.height - 1;
-			let previous_header = self.block_source
-				.get_header(previous_hash, Some(height)).await?
-				.validate(*previous_hash)?;
-			header.check_builds_on(&previous_header, self.network)?;
+		let previous_hash = &header.header.prev_blockhash;
+		let height = header.height - 1;
+		let get_header_fut = self.block_source.get_header(previous_hash, Some(height));
+		let previous_header = get_header_fut.await?
+			.validate(*previous_hash)?;
+		header.check_builds_on(&previous_header, self.network)?;
 
-			Ok(previous_header)
-		})
+		Ok(previous_header)
 	}
 
-	fn fetch_block<'a>(&'a self, header: &'a ValidatedBlockHeader) ->
-		AsyncBlockSourceResult<'a, ValidatedBlock>
+	async fn fetch_block(&self, header: &ValidatedBlockHeader) ->
+		BlockSourceResult<ValidatedBlock>
 	{
-		Box::pin(async move {
-			self.block_source
-				.get_block(&header.block_hash).await?
-				.validate(header.block_hash)
-		})
+		let get_block_fut = self.block_source.get_block(&header.block_hash);
+		get_block_fut.await?
+			.validate(header.block_hash)
 	}
 }
 
