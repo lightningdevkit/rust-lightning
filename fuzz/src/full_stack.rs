@@ -424,7 +424,7 @@ pub fn do_test(mut data: &[u8], logger: &Arc<dyn Logger>) {
 
 	let our_network_key = match SecretKey::from_slice(&data[..32]) {
 		Ok(key) => key,
-		Err(e) => return,
+		Err(_) => return,
 	};
 	data = &data[32..];
 
