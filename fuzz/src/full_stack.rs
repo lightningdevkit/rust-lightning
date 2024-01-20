@@ -1288,4 +1288,108 @@ mod tests {
 		assert_eq!(log_entries.get(&("lightning::ln::peer_handler".to_string(), "Handling UpdateHTLCs event in peer_handler for node 030000000000000000000000000000000000000000000000000000000000000002 with 0 adds, 0 fulfills, 1 fails for channel 3d00000000000000000000000000000000000000000000000000000000000000".to_string())), Some(&2)); // 9
 		assert_eq!(log_entries.get(&("lightning::chain::channelmonitor".to_string(), "Input spending counterparty commitment tx (0000000000000000000000000000000000000000000000000000000000000073:0) in 0000000000000000000000000000000000000000000000000000000000000067 resolves outbound HTLC with payment hash ff00000000000000000000000000000000000000000000000000000000000000 with timeout".to_string())), Some(&1)); // 10
 	}
+
+	#[test]
+	fn test_gossip_exchange_breakage() {
+		// To avoid accidentally causing all existing fuzz test cases to be useless by making minor
+		// changes (such as requesting feerate info in a new place), we exchange some gossip
+		// messages. Obviously this is pretty finicky, so this should be updated pretty liberally,
+		// but at least we'll know when changes occur.
+		// This test serves as a pretty good full_stack_target seed.
+
+		// What each byte represents is broken down below, and then everything is concatenated into
+		// one large test at the end (you want %s/ -.*//g %s/\n\| \|\t\|\///g).
+
+		// Following BOLT 8, lightning message on the wire are: 2-byte encrypted message length +
+		// 16-byte MAC of the encrypted message length + encrypted Lightning message + 16-byte MAC
+		// of the Lightning message
+		// I.e 2nd inbound read, len 18 : 0006 (encrypted message length) + 03000000000000000000000000000000 (MAC of the encrypted message length)
+		// Len 22 : 0010 00000000 (encrypted lightning message) + 03000000000000000000000000000000 (MAC of the Lightning message)
+
+		// Writing new code generating transactions and see a new failure ? Don't forget to add input for the FuzzEstimator !
+
+		let mut test = Vec::new();
+
+		// our network key
+		ext_from_hex("0100000000000000000000000000000000000000000000000000000000000000", &mut test);
+		// config
+		ext_from_hex("0000000000900000000000000000640001000000000001ffff0000000000000000ffffffffffffffffffffffffffffffff0000000000000000ffffffffffffffff000000ffffffff00ffff1a000400010000020400000000040200000a08ffffffffffffffff0001000000", &mut test);
+
+		// new outbound connection with id 0
+		ext_from_hex("00", &mut test);
+		// peer's pubkey
+		ext_from_hex("030000000000000000000000000000000000000000000000000000000000000002", &mut test);
+		// inbound read from peer id 0 of len 50
+		ext_from_hex("030032", &mut test);
+		// noise act two (0||pubkey||mac)
+		ext_from_hex("00 030000000000000000000000000000000000000000000000000000000000000002 03000000000000000000000000000000", &mut test);
+
+		// inbound read from peer id 0 of len 18
+		ext_from_hex("030012", &mut test);
+		// message header indicating message length 16
+		ext_from_hex("0010 03000000000000000000000000000000", &mut test);
+		// inbound read from peer id 0 of len 32
+		ext_from_hex("030020", &mut test);
+		// init message (type 16) with static_remotekey required, no channel_type/anchors/taproot, and other bits optional and mac
+		ext_from_hex("0010 00021aaa 0008aaa20aaa2a0a9aaa 03000000000000000000000000000000", &mut test);
+
+		// new inbound connection with id 1
+		ext_from_hex("01", &mut test);
+		// inbound read from peer id 1 of len 50
+		ext_from_hex("030132", &mut test);
+		// inbound noise act 1
+		ext_from_hex("0003000000000000000000000000000000000000000000000000000000000000000703000000000000000000000000000000", &mut test);
+		// inbound read from peer id 1 of len 66
+		ext_from_hex("030142", &mut test);
+		// inbound noise act 3
+		ext_from_hex("000302000000000000000000000000000000000000000000000000000000000000000300000000000000000000000000000003000000000000000000000000000000", &mut test);
+
+		// inbound read from peer id 1 of len 18
+		ext_from_hex("030112", &mut test);
+		// message header indicating message length 16
+		ext_from_hex("0010 01000000000000000000000000000000", &mut test);
+		// inbound read from peer id 1 of len 32
+		ext_from_hex("030120", &mut test);
+		// init message (type 16) with static_remotekey required, no channel_type/anchors/taproot, and other bits optional and mac
+		ext_from_hex("0010 00021aaa 0008aaa20aaa2a0a9aaa 01000000000000000000000000000000", &mut test);
+
+		// inbound read from peer id 0 of len 18
+		ext_from_hex("030012", &mut test);
+		// message header indicating message length 432
+		ext_from_hex("01b0 03000000000000000000000000000000", &mut test);
+		// inbound read from peer id 0 of len 255
+		ext_from_hex("0300ff", &mut test);
+		// First part of channel_announcement (type 256)
+		ext_from_hex("0100 00000000000000000000000000000000000000000000000000000000000000b20303030303030303030303030303030303030303030303030303030303030303 00000000000000000000000000000000000000000000000000000000000000b20202020202020202020202020202020202020202020202020202020202020202 00000000000000000000000000000000000000000000000000000000000000b20303030303030303030303030303030303030303030303030303030303030303 00000000000000000000000000000000000000000000000000000000000000b20202020202020202020202020202020202020202020202020202020202", &mut test);
+		// inbound read from peer id 0 of len 193
+		ext_from_hex("0300c1", &mut test);
+		// Last part of channel_announcement and mac
+		ext_from_hex("020202 00006fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d6190000000000000000000000002a030303030303030303030303030303030303030303030303030303030303030303020202020202020202020202020202020202020202020202020202020202020202030303030303030303030303030303030303030303030303030303030303030303020202020202020202020202020202020202020202020202020202020202020202 03000000000000000000000000000000", &mut test);
+
+		// inbound read from peer id 0 of len 18
+		ext_from_hex("030012", &mut test);
+		// message header indicating message length 138
+		ext_from_hex("008a 03000000000000000000000000000000", &mut test);
+		// inbound read from peer id 0 of len 154
+		ext_from_hex("03009a", &mut test);
+		// channel_update (type 258) and mac
+		ext_from_hex("0102 00000000000000000000000000000000000000000000000000000000000000a60303030303030303030303030303030303030303030303030303030303030303 6fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d6190000000000 000000000000002a0000002c01000028000000000000000000000000000000000000000005f5e100 03000000000000000000000000000000", &mut test);
+
+		// inbound read from peer id 0 of len 18
+		ext_from_hex("030012", &mut test);
+		// message header indicating message length 142
+		ext_from_hex("008e 03000000000000000000000000000000", &mut test);
+		// inbound read from peer id 0 of len 158
+		ext_from_hex("03009e", &mut test);
+		// node_announcement (type 257) and mac
+		ext_from_hex("0101 00000000000000000000000000000000000000000000000000000000000000280303030303030303030303030303030303030303030303030303030303030303 00000000002b03030303030303030303030303030303030303030303030303030303030303030300000000000000000000000000000000000000000000000000000000000000000000000000 03000000000000000000000000000000", &mut test);
+
+		let logger = Arc::new(TrackingLogger { lines: Mutex::new(HashMap::new()) });
+		super::do_test(&test, &(Arc::clone(&logger) as Arc<dyn Logger>));
+
+		let log_entries = logger.lines.lock().unwrap();
+		assert_eq!(log_entries.get(&("lightning::ln::peer_handler".to_string(), "Sending message to all peers except Some(PublicKey(0000000000000000000000000000000000000000000000000000000000000002ff00000000000000000000000000000000000000000000000000000000000002)) or the announced channel's counterparties: ChannelAnnouncement { node_signature_1: 3026020200b202200303030303030303030303030303030303030303030303030303030303030303, node_signature_2: 3026020200b202200202020202020202020202020202020202020202020202020202020202020202, bitcoin_signature_1: 3026020200b202200303030303030303030303030303030303030303030303030303030303030303, bitcoin_signature_2: 3026020200b202200202020202020202020202020202020202020202020202020202020202020202, contents: UnsignedChannelAnnouncement { features: [], chain_hash: 6fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d6190000000000, short_channel_id: 42, node_id_1: NodeId(030303030303030303030303030303030303030303030303030303030303030303), node_id_2: NodeId(020202020202020202020202020202020202020202020202020202020202020202), bitcoin_key_1: NodeId(030303030303030303030303030303030303030303030303030303030303030303), bitcoin_key_2: NodeId(020202020202020202020202020202020202020202020202020202020202020202), excess_data: [] } }".to_string())), Some(&1));
+		assert_eq!(log_entries.get(&("lightning::ln::peer_handler".to_string(), "Sending message to all peers except Some(PublicKey(0000000000000000000000000000000000000000000000000000000000000002ff00000000000000000000000000000000000000000000000000000000000002)): ChannelUpdate { signature: 3026020200a602200303030303030303030303030303030303030303030303030303030303030303, contents: UnsignedChannelUpdate { chain_hash: 6fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d6190000000000, short_channel_id: 42, timestamp: 44, flags: 0, cltv_expiry_delta: 40, htlc_minimum_msat: 0, htlc_maximum_msat: 100000000, fee_base_msat: 0, fee_proportional_millionths: 0, excess_data: [] } }".to_string())), Some(&1));
+		assert_eq!(log_entries.get(&("lightning::ln::peer_handler".to_string(), "Sending message to all peers except Some(PublicKey(0000000000000000000000000000000000000000000000000000000000000002ff00000000000000000000000000000000000000000000000000000000000002)) or the announced node: NodeAnnouncement { signature: 302502012802200303030303030303030303030303030303030303030303030303030303030303, contents: UnsignedNodeAnnouncement { features: [], timestamp: 43, node_id: NodeId(030303030303030303030303030303030303030303030303030303030303030303), rgb: [0, 0, 0], alias: NodeAlias([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]), addresses: [], excess_address_data: [], excess_data: [] } }".to_string())), Some(&1));
+	}
 }
