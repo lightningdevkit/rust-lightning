@@ -813,6 +813,12 @@ mod tests {
 		}
 	}
 
+	fn ext_from_hex(hex_with_spaces: &str, out: &mut Vec<u8>) {
+		for hex in hex_with_spaces.split(" ") {
+			out.append(&mut <Vec<u8>>::from_hex(hex).unwrap());
+		}
+	}
+
 	#[test]
 	fn test_no_existing_test_breakage() {
 		// To avoid accidentally causing all existing fuzz test cases to be useless by making minor
@@ -820,9 +826,6 @@ mod tests {
 		// step-through with two peers and HTLC forwarding here. Obviously this is pretty finicky,
 		// so this should be updated pretty liberally, but at least we'll know when changes occur.
 		// If nothing else, this test serves as a pretty great initial full_stack_target seed.
-
-		// What each byte represents is broken down below, and then everything is concatenated into
-		// one large test at the end (you want %s/ -.*//g %s/\n\| \|\t\|\///g).
 
 		// Following BOLT 8, lightning message on the wire are: 2-byte encrypted message length +
 		// 16-byte MAC of the encrypted message length + encrypted Lightning message + 16-byte MAC
@@ -832,270 +835,446 @@ mod tests {
 
 		// Writing new code generating transactions and see a new failure ? Don't forget to add input for the FuzzEstimator !
 
-		// 0100000000000000000000000000000000000000000000000000000000000000 - our network key
-		// 0000000000900000000000000000640001000000000001ffff0000000000000000ffffffffffffffffffffffffffffffff0000000000000000ffffffffffffffff000000ffffffff00ffff1a000400010000020400000000040200000a08ffffffffffffffff0001000000 - config
+		let mut test = Vec::new();
+		// our network key
+		ext_from_hex("0100000000000000000000000000000000000000000000000000000000000000", &mut test);
+		// config
+		ext_from_hex("0000000000900000000000000000640001000000000001ffff0000000000000000ffffffffffffffffffffffffffffffff0000000000000000ffffffffffffffff000000ffffffff00ffff1a000400010000020400000000040200000a08ffffffffffffffff0001000000", &mut test);
+
+		// new outbound connection with id 0
+		ext_from_hex("00", &mut test);
+		// peer's pubkey
+		ext_from_hex("030000000000000000000000000000000000000000000000000000000000000002", &mut test);
+		// inbound read from peer id 0 of len 50
+		ext_from_hex("030032", &mut test);
+		// noise act two (0||pubkey||mac)
+		ext_from_hex("00 030000000000000000000000000000000000000000000000000000000000000002 03000000000000000000000000000000", &mut test);
+
+		// inbound read from peer id 0 of len 18
+		ext_from_hex("030012", &mut test);
+		// message header indicating message length 16
+		ext_from_hex("0010 03000000000000000000000000000000", &mut test);
+		// inbound read from peer id 0 of len 32
+		ext_from_hex("030020", &mut test);
+		// init message (type 16) with static_remotekey required, no channel_type/anchors/taproot, and other bits optional and mac
+		ext_from_hex("0010 00021aaa 0008aaa20aaa2a0a9aaa 03000000000000000000000000000000", &mut test);
+
+		// inbound read from peer id 0 of len 18
+		ext_from_hex("030012", &mut test);
+		// message header indicating message length 327
+		ext_from_hex("0147 03000000000000000000000000000000", &mut test);
+		// inbound read from peer id 0 of len 254
+		ext_from_hex("0300fe", &mut test);
+		// beginning of open_channel message
+		ext_from_hex("0020 6fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d6190000000000 ff4f00f805273c1b203bb5ebf8436bfde57b3be8c2f5e95d9491dbb181909679 000000000000c350 0000000000000000 0000000000000162 ffffffffffffffff 0000000000000222 0000000000000000 000000fd 0006 01e3 030000000000000000000000000000000000000000000000000000000000000001 030000000000000000000000000000000000000000000000000000000000000002 030000000000000000000000000000000000000000000000000000000000000003 030000000000000000000000000000000000000000000000000000000000000004", &mut test);
+		// inbound read from peer id 0 of len 89
+		ext_from_hex("030059", &mut test);
+		// rest of open_channel and mac
+		ext_from_hex("030000000000000000000000000000000000000000000000000000000000000005 020900000000000000000000000000000000000000000000000000000000000000 01 0000 01021000 03000000000000000000000000000000", &mut test);
+
+		// One feerate request returning min feerate, which our open_channel also uses (ingested by FuzzEstimator)
+		ext_from_hex("00fd", &mut test);
+		// client should now respond with accept_channel (CHECK 1: type 33 to peer 03000000)
+
+		// inbound read from peer id 0 of len 18
+		ext_from_hex("030012", &mut test);
+		// message header indicating message length 132
+		ext_from_hex("0084 03000000000000000000000000000000", &mut test);
+		// inbound read from peer id 0 of len 148
+		ext_from_hex("030094", &mut test);
+		// funding_created and mac
+		ext_from_hex("0022 ff4f00f805273c1b203bb5ebf8436bfde57b3be8c2f5e95d9491dbb181909679 3d00000000000000000000000000000000000000000000000000000000000000 0000 00000000000000000000000000000000000000000000000000000000000000210100000000000000000000000000000000000000000000000000000000000000 03000000000000000000000000000000", &mut test);
+		// client should now respond with funding_signed (CHECK 2: type 35 to peer 03000000)
+
+		// connect a block with one transaction of len 94
+		ext_from_hex("0c005e", &mut test);
+		// the funding transaction
+		ext_from_hex("020000000100000000000000000000000000000000000000000000000000000000000000000000000000ffffffff0150c3000000000000220020ae0000000000000000000000000000000000000000000000000000000000000000000000", &mut test);
+		// connect a block with no transactions, one per line
+		ext_from_hex("0c0000", &mut test);
+		ext_from_hex("0c0000", &mut test);
+		ext_from_hex("0c0000", &mut test);
+		ext_from_hex("0c0000", &mut test);
+		ext_from_hex("0c0000", &mut test);
+		ext_from_hex("0c0000", &mut test);
+		ext_from_hex("0c0000", &mut test);
+		ext_from_hex("0c0000", &mut test);
+		ext_from_hex("0c0000", &mut test);
+		ext_from_hex("0c0000", &mut test);
+		ext_from_hex("0c0000", &mut test);
+		ext_from_hex("0c0000", &mut test);
+		// by now client should have sent a channel_ready (CHECK 3: SendChannelReady to 03000000 for chan 3d000000)
+
+		// inbound read from peer id 0 of len 18
+		ext_from_hex("030012", &mut test);
+		// message header indicating message length 67
+		ext_from_hex("0043 03000000000000000000000000000000", &mut test);
+		// inbound read from peer id 0 of len 83
+		ext_from_hex("030053", &mut test);
+		// channel_ready and mac
+		ext_from_hex("0024 3d00000000000000000000000000000000000000000000000000000000000000 020800000000000000000000000000000000000000000000000000000000000000 03000000000000000000000000000000", &mut test);
+
+		// new inbound connection with id 1
+		ext_from_hex("01", &mut test);
+		// inbound read from peer id 1 of len 50
+		ext_from_hex("030132", &mut test);
+		// inbound noise act 1
+		ext_from_hex("0003000000000000000000000000000000000000000000000000000000000000000703000000000000000000000000000000", &mut test);
+		// inbound read from peer id 1 of len 66
+		ext_from_hex("030142", &mut test);
+		// inbound noise act 3
+		ext_from_hex("000302000000000000000000000000000000000000000000000000000000000000000300000000000000000000000000000003000000000000000000000000000000", &mut test);
+
+		// inbound read from peer id 1 of len 18
+		ext_from_hex("030112", &mut test);
+		// message header indicating message length 16
+		ext_from_hex("0010 01000000000000000000000000000000", &mut test);
+		// inbound read from peer id 1 of len 32
+		ext_from_hex("030120", &mut test);
+		// init message (type 16) with static_remotekey required, no channel_type/anchors/taproot, and other bits optional and mac
+		ext_from_hex("0010 00021aaa 0008aaa20aaa2a0a9aaa 01000000000000000000000000000000", &mut test);
+
+		// create outbound channel to peer 1 for 50k sat
+		ext_from_hex("05 01 030200000000000000000000000000000000000000000000000000000000000000 00c350 0003e8", &mut test);
+		// One feerate requests (all returning min feerate) (gonna be ingested by FuzzEstimator)
+		ext_from_hex("00fd", &mut test);
+
+		// inbound read from peer id 1 of len 18
+		ext_from_hex("030112", &mut test);
+		// message header indicating message length 274
+		ext_from_hex("0112 01000000000000000000000000000000", &mut test);
+		// inbound read from peer id 1 of len 255
+		ext_from_hex("0301ff", &mut test);
+		// beginning of accept_channel
+		ext_from_hex("0021 0000000000000000000000000000000000000000000000000000000000000e05 0000000000000162 00000000004c4b40 00000000000003e8 00000000000003e8 00000002 03f0 0005 030000000000000000000000000000000000000000000000000000000000000100 030000000000000000000000000000000000000000000000000000000000000200 030000000000000000000000000000000000000000000000000000000000000300 030000000000000000000000000000000000000000000000000000000000000400 030000000000000000000000000000000000000000000000000000000000000500 02660000000000000000000000000000", &mut test);
+		// inbound read from peer id 1 of len 35
+		ext_from_hex("030123", &mut test);
+		// rest of accept_channel and mac
+		ext_from_hex("0000000000000000000000000000000000 0000 01000000000000000000000000000000", &mut test);
+
+		// create the funding transaction (client should send funding_created now)
+		ext_from_hex("0a", &mut test);
+
+		// inbound read from peer id 1 of len 18
+		ext_from_hex("030112", &mut test);
+		// message header indicating message length 98
+		ext_from_hex("0062 01000000000000000000000000000000", &mut test);
+		// inbound read from peer id 1 of len 114
+		ext_from_hex("030172", &mut test);
+		// funding_signed message and mac
+		ext_from_hex("0023 3a00000000000000000000000000000000000000000000000000000000000000 000000000000000000000000000000000000000000000000000000000000007c0001000000000000000000000000000000000000000000000000000000000000 01000000000000000000000000000000", &mut test);
+
+		// broadcast funding transaction
+		ext_from_hex("0b", &mut test);
+		// by now client should have sent a channel_ready (CHECK 4: SendChannelReady to 03020000 for chan 3f000000)
+
+		// inbound read from peer id 1 of len 18
+		ext_from_hex("030112", &mut test);
+		// message header indicating message length 67
+		ext_from_hex("0043 01000000000000000000000000000000", &mut test);
+		// inbound read from peer id 1 of len 83
+		ext_from_hex("030153", &mut test);
+		// channel_ready and mac
+		ext_from_hex("0024 3a00000000000000000000000000000000000000000000000000000000000000 026700000000000000000000000000000000000000000000000000000000000000 01000000000000000000000000000000", &mut test);
+
+		// inbound read from peer id 0 of len 18
+		ext_from_hex("030012", &mut test);
+		// message header indicating message length 1452
+		ext_from_hex("05ac 03000000000000000000000000000000", &mut test);
+		// inbound read from peer id 0 of len 255
+		ext_from_hex("0300ff", &mut test);
+		// beginning of update_add_htlc from 0 to 1 via client
+		ext_from_hex("0080 3d00000000000000000000000000000000000000000000000000000000000000 0000000000000000 0000000000003e80 ff00000000000000000000000000000000000000000000000000000000000000 000003f0 00 030000000000000000000000000000000000000000000000000000000000000555 11 020203e8 0401a0 060800000e0000010000 0a00000000000000000000000000000000000000000000000000000000000000 ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", &mut test);
+		// inbound read from peer id 0 of len 255
+		ext_from_hex("0300ff", &mut test);
+		ext_from_hex("ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", &mut test);
+		// inbound read from peer id 0 of len 255
+		ext_from_hex("0300ff", &mut test);
+		ext_from_hex("ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", &mut test);
+		// inbound read from peer id 0 of len 255
+		ext_from_hex("0300ff", &mut test);
+		ext_from_hex("ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", &mut test);
+		// inbound read from peer id 0 of len 255
+		ext_from_hex("0300ff", &mut test);
+		ext_from_hex("ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", &mut test);
+		// inbound read from peer id 0 of len 193
+		ext_from_hex("0300c1", &mut test);
+		// end of update_add_htlc from 0 to 1 via client and mac
+		ext_from_hex("ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff ab00000000000000000000000000000000000000000000000000000000000000 03000000000000000000000000000000", &mut test);
+
+		// inbound read from peer id 0 of len 18
+		ext_from_hex("030012", &mut test);
+		// message header indicating message length 100
+		ext_from_hex("0064 03000000000000000000000000000000", &mut test);
+		// inbound read from peer id 0 of len 116
+		ext_from_hex("030074", &mut test);
+		// commitment_signed and mac
+		ext_from_hex("0084 3d00000000000000000000000000000000000000000000000000000000000000 00000000000000000000000000000000000000000000000000000000000000300100000000000000000000000000000000000000000000000000000000000000 0000 03000000000000000000000000000000", &mut test);
+		// client should now respond with revoke_and_ack and commitment_signed (CHECK 5/6: types 133 and 132 to peer 03000000)
+
+		// inbound read from peer id 0 of len 18
+		ext_from_hex("030012", &mut test);
+		// message header indicating message length 99
+		ext_from_hex("0063 03000000000000000000000000000000", &mut test);
+		// inbound read from peer id 0 of len 115
+		ext_from_hex("030073", &mut test);
+		// revoke_and_ack and mac
+		ext_from_hex("0085 3d00000000000000000000000000000000000000000000000000000000000000 0900000000000000000000000000000000000000000000000000000000000000 020b00000000000000000000000000000000000000000000000000000000000000 03000000000000000000000000000000", &mut test);
+
+		// process the now-pending HTLC forward
+		ext_from_hex("07", &mut test);
+		// client now sends id 1 update_add_htlc and commitment_signed (CHECK 7: UpdateHTLCs event for node 03020000 with 1 HTLCs for channel 3f000000)
+
+		// we respond with commitment_signed then revoke_and_ack (a weird, but valid, order)
+		// inbound read from peer id 1 of len 18
+		ext_from_hex("030112", &mut test);
+		// message header indicating message length 100
+		ext_from_hex("0064 01000000000000000000000000000000", &mut test);
+		// inbound read from peer id 1 of len 116
+		ext_from_hex("030174", &mut test);
+		// commitment_signed and mac
+		ext_from_hex("0084 3a00000000000000000000000000000000000000000000000000000000000000 000000000000000000000000000000000000000000000000000000000000006a0001000000000000000000000000000000000000000000000000000000000000 0000 01000000000000000000000000000000", &mut test);
 		//
-		// 00 - new outbound connection with id 0
-		// 030000000000000000000000000000000000000000000000000000000000000002 - peer's pubkey
-		// 030032 - inbound read from peer id 0 of len 50
-		// 00 030000000000000000000000000000000000000000000000000000000000000002 03000000000000000000000000000000 - noise act two (0||pubkey||mac)
+		// inbound read from peer id 1 of len 18
+		ext_from_hex("030112", &mut test);
+		// message header indicating message length 99
+		ext_from_hex("0063 01000000000000000000000000000000", &mut test);
+		// inbound read from peer id 1 of len 115
+		ext_from_hex("030173", &mut test);
+		// revoke_and_ack and mac
+		ext_from_hex("0085 3a00000000000000000000000000000000000000000000000000000000000000 6600000000000000000000000000000000000000000000000000000000000000 026400000000000000000000000000000000000000000000000000000000000000 01000000000000000000000000000000", &mut test);
 		//
-		// 030012 - inbound read from peer id 0 of len 18
-		// 0010 03000000000000000000000000000000 - message header indicating message length 16
-		// 030020 - inbound read from peer id 0 of len 32
-		// 0010 00021aaa 0008aaa20aaa2a0a9aaa 03000000000000000000000000000000 - init message (type 16) with static_remotekey required, no channel_type/anchors/taproot, and other bits optional and mac
+		// inbound read from peer id 1 of len 18
+		ext_from_hex("030112", &mut test);
+		// message header indicating message length 74
+		ext_from_hex("004a 01000000000000000000000000000000", &mut test);
+		// inbound read from peer id 1 of len 90
+		ext_from_hex("03015a", &mut test);
+		// update_fulfill_htlc and mac
+		ext_from_hex("0082 3a00000000000000000000000000000000000000000000000000000000000000 0000000000000000 ff00888888888888888888888888888888888888888888888888888888888888 01000000000000000000000000000000", &mut test);
+		// client should immediately claim the pending HTLC from peer 0 (CHECK 8: SendFulfillHTLCs for node 03000000 with preimage ff00888888 for channel 3d000000)
+
+		// inbound read from peer id 1 of len 18
+		ext_from_hex("030112", &mut test);
+		// message header indicating message length 100
+		ext_from_hex("0064 01000000000000000000000000000000", &mut test);
+		// inbound read from peer id 1 of len 116
+		ext_from_hex("030174", &mut test);
+		// commitment_signed and mac
+		ext_from_hex("0084 3a00000000000000000000000000000000000000000000000000000000000000 00000000000000000000000000000000000000000000000000000000000000100001000000000000000000000000000000000000000000000000000000000000 0000 01000000000000000000000000000000", &mut test);
+
+		// inbound read from peer id 1 of len 18
+		ext_from_hex("030112", &mut test);
+		// message header indicating message length 99
+		ext_from_hex("0063 01000000000000000000000000000000", &mut test);
+		// inbound read from peer id 1 of len 115
+		ext_from_hex("030173", &mut test);
+		// revoke_and_ack and mac
+		ext_from_hex("0085 3a00000000000000000000000000000000000000000000000000000000000000 6700000000000000000000000000000000000000000000000000000000000000 026500000000000000000000000000000000000000000000000000000000000000 01000000000000000000000000000000", &mut test);
+
+		// before responding to the commitment_signed generated above, send a new HTLC
+		// inbound read from peer id 0 of len 18
+		ext_from_hex("030012", &mut test);
+		// message header indicating message length 1452
+		ext_from_hex("05ac 03000000000000000000000000000000", &mut test);
+		// inbound read from peer id 0 of len 255
+		ext_from_hex("0300ff", &mut test);
+		// beginning of update_add_htlc from 0 to 1 via client
+		ext_from_hex("0080 3d00000000000000000000000000000000000000000000000000000000000000 0000000000000001 0000000000003e80 ff00000000000000000000000000000000000000000000000000000000000000 000003f0 00 030000000000000000000000000000000000000000000000000000000000000555 11 020203e8 0401a0 060800000e0000010000 0a00000000000000000000000000000000000000000000000000000000000000 ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", &mut test);
+		// inbound read from peer id 0 of len 255
+		ext_from_hex("0300ff", &mut test);
+		ext_from_hex("ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", &mut test);
+		// inbound read from peer id 0 of len 255
+		ext_from_hex("0300ff", &mut test);
+		ext_from_hex("ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", &mut test);
+		// inbound read from peer id 0 of len 255
+		ext_from_hex("0300ff", &mut test);
+		ext_from_hex("ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", &mut test);
+		// inbound read from peer id 0 of len 255
+		ext_from_hex("0300ff", &mut test);
+		ext_from_hex("ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", &mut test);
+		// inbound read from peer id 0 of len 193
+		ext_from_hex("0300c1", &mut test);
+		// end of update_add_htlc from 0 to 1 via client and mac
+		ext_from_hex("ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff ab00000000000000000000000000000000000000000000000000000000000000 03000000000000000000000000000000", &mut test);
+
+		// now respond to the update_fulfill_htlc+commitment_signed messages the client sent to peer 0
+		// inbound read from peer id 0 of len 18
+		ext_from_hex("030012", &mut test);
+		// message header indicating message length 99
+		ext_from_hex("0063 03000000000000000000000000000000", &mut test);
+		// inbound read from peer id 0 of len 115
+		ext_from_hex("030073", &mut test);
+		// revoke_and_ack and mac
+		ext_from_hex("0085 3d00000000000000000000000000000000000000000000000000000000000000 0800000000000000000000000000000000000000000000000000000000000000 020a00000000000000000000000000000000000000000000000000000000000000 03000000000000000000000000000000", &mut test);
+		// client should now respond with revoke_and_ack and commitment_signed (CHECK 5/6 duplicates)
+
+		// inbound read from peer id 0 of len 18
+		ext_from_hex("030012", &mut test);
+		// message header indicating message length 100
+		ext_from_hex("0064 03000000000000000000000000000000", &mut test);
+		// inbound read from peer id 0 of len 116
+		ext_from_hex("030074", &mut test);
+		// commitment_signed and mac
+		ext_from_hex("0084 3d00000000000000000000000000000000000000000000000000000000000000 00000000000000000000000000000000000000000000000000000000000000c30100000000000000000000000000000000000000000000000000000000000000 0000 03000000000000000000000000000000", &mut test);
+
+		// inbound read from peer id 0 of len 18
+		ext_from_hex("030012", &mut test);
+		// message header indicating message length 99
+		ext_from_hex("0063 03000000000000000000000000000000", &mut test);
+		// inbound read from peer id 0 of len 115
+		ext_from_hex("030073", &mut test);
+		// revoke_and_ack and mac
+		ext_from_hex("0085 3d00000000000000000000000000000000000000000000000000000000000000 0b00000000000000000000000000000000000000000000000000000000000000 020d00000000000000000000000000000000000000000000000000000000000000 03000000000000000000000000000000", &mut test);
+
+		// process the now-pending HTLC forward
+		ext_from_hex("07", &mut test);
+		// client now sends id 1 update_add_htlc and commitment_signed (CHECK 7 duplicate)
+		// we respond with revoke_and_ack, then commitment_signed, then update_fail_htlc
+
+		// inbound read from peer id 1 of len 18
+		ext_from_hex("030112", &mut test);
+		// message header indicating message length 100
+		ext_from_hex("0064 01000000000000000000000000000000", &mut test);
+		// inbound read from peer id 1 of len 116
+		ext_from_hex("030174", &mut test);
+		// commitment_signed and mac
+		ext_from_hex("0084 3a00000000000000000000000000000000000000000000000000000000000000 00000000000000000000000000000000000000000000000000000000000000390001000000000000000000000000000000000000000000000000000000000000 0000 01000000000000000000000000000000", &mut test);
+
+		// inbound read from peer id 1 of len 18
+		ext_from_hex("030112", &mut test);
+		// message header indicating message length 99
+		ext_from_hex("0063 01000000000000000000000000000000", &mut test);
+		// inbound read from peer id 1 of len 115
+		ext_from_hex("030173", &mut test);
+		// revoke_and_ack and mac
+		ext_from_hex("0085 3a00000000000000000000000000000000000000000000000000000000000000 6400000000000000000000000000000000000000000000000000000000000000 027000000000000000000000000000000000000000000000000000000000000000 01000000000000000000000000000000", &mut test);
+
+		// inbound read from peer id 1 of len 18
+		ext_from_hex("030112", &mut test);
+		// message header indicating message length 44
+		ext_from_hex("002c 01000000000000000000000000000000", &mut test);
+		// inbound read from peer id 1 of len 60
+		ext_from_hex("03013c", &mut test);
+		// update_fail_htlc and mac
+		ext_from_hex("0083 3a00000000000000000000000000000000000000000000000000000000000000 0000000000000001 0000 01000000000000000000000000000000", &mut test);
+
+		// inbound read from peer id 1 of len 18
+		ext_from_hex("030112", &mut test);
+		// message header indicating message length 100
+		ext_from_hex("0064 01000000000000000000000000000000", &mut test);
+		// inbound read from peer id 1 of len 116
+		ext_from_hex("030174", &mut test);
+		// commitment_signed and mac
+		ext_from_hex("0084 3a00000000000000000000000000000000000000000000000000000000000000 00000000000000000000000000000000000000000000000000000000000000390001000000000000000000000000000000000000000000000000000000000000 0000 01000000000000000000000000000000", &mut test);
+
+		// inbound read from peer id 1 of len 18
+		ext_from_hex("030112", &mut test);
+		// message header indicating message length 99
+		ext_from_hex("0063 01000000000000000000000000000000", &mut test);
+		// inbound read from peer id 1 of len 115
+		ext_from_hex("030173", &mut test);
+		// revoke_and_ack and mac
+		ext_from_hex("0085 3a00000000000000000000000000000000000000000000000000000000000000 6500000000000000000000000000000000000000000000000000000000000000 027100000000000000000000000000000000000000000000000000000000000000 01000000000000000000000000000000", &mut test);
+
+		// process the now-pending HTLC forward
+		ext_from_hex("07", &mut test);
+		// client now sends id 0 update_fail_htlc and commitment_signed (CHECK 9)
+		// now respond to the update_fail_htlc+commitment_signed messages the client sent to peer 0
+
+		// inbound read from peer id 0 of len 18
+		ext_from_hex("030012", &mut test);
+		// message header indicating message length 99
+		ext_from_hex("0063 03000000000000000000000000000000", &mut test);
+		// inbound read from peer id 0 of len 115
+		ext_from_hex("030073", &mut test);
+		// revoke_and_ack and mac
+		ext_from_hex("0085 3d00000000000000000000000000000000000000000000000000000000000000 0a00000000000000000000000000000000000000000000000000000000000000 020c00000000000000000000000000000000000000000000000000000000000000 03000000000000000000000000000000", &mut test);
+
+		// inbound read from peer id 0 of len 18
+		ext_from_hex("030012", &mut test);
+		// message header indicating message length 100
+		ext_from_hex("0064 03000000000000000000000000000000", &mut test);
+		// inbound read from peer id 0 of len 116
+		ext_from_hex("030074", &mut test);
+		// commitment_signed and mac
+		ext_from_hex("0084 3d00000000000000000000000000000000000000000000000000000000000000 00000000000000000000000000000000000000000000000000000000000000320100000000000000000000000000000000000000000000000000000000000000 0000 03000000000000000000000000000000", &mut test);
+		// client should now respond with revoke_and_ack (CHECK 5 duplicate)
+
+		// inbound read from peer id 0 of len 18
+		ext_from_hex("030012", &mut test);
+		// message header indicating message length 1452
+		ext_from_hex("05ac 03000000000000000000000000000000", &mut test);
+		// inbound read from peer id 0 of len 255
+		ext_from_hex("0300ff", &mut test);
+		// beginning of update_add_htlc from 0 to 1 via client
+		ext_from_hex("0080 3d00000000000000000000000000000000000000000000000000000000000000 0000000000000002 00000000000b0838 ff00000000000000000000000000000000000000000000000000000000000000 000003f0 00 030000000000000000000000000000000000000000000000000000000000000555 12 02030927c0 0401a0 060800000e0000010000 0a00000000000000000000000000000000000000000000000000000000000000 ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", &mut test);
+		// inbound read from peer id 0 of len 255
+		ext_from_hex("0300ff", &mut test);
+		ext_from_hex("ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", &mut test);
+		// inbound read from peer id 0 of len 255
+		ext_from_hex("0300ff", &mut test);
+		ext_from_hex("ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", &mut test);
+		// inbound read from peer id 0 of len 255
+		ext_from_hex("0300ff", &mut test);
+		ext_from_hex("ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", &mut test);
+		// inbound read from peer id 0 of len 255
+		ext_from_hex("0300ff", &mut test);
+		ext_from_hex("ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", &mut test);
+		// inbound read from peer id 0 of len 193
+		ext_from_hex("0300c1", &mut test);
+		// end of update_add_htlc from 0 to 1 via client and mac
+		ext_from_hex("ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff 5300000000000000000000000000000000000000000000000000000000000000 03000000000000000000000000000000", &mut test);
+
+		// inbound read from peer id 0 of len 18
+		ext_from_hex("030012", &mut test);
+		// message header indicating message length 164
+		ext_from_hex("00a4 03000000000000000000000000000000", &mut test);
+		// inbound read from peer id 0 of len 180
+		ext_from_hex("0300b4", &mut test);
+		// commitment_signed and mac
+		ext_from_hex("0084 3d00000000000000000000000000000000000000000000000000000000000000 00000000000000000000000000000000000000000000000000000000000000750100000000000000000000000000000000000000000000000000000000000000 0001 00000000000000000000000000000000000000000000000000000000000000670500000000000000000000000000000000000000000000000000000000000006 03000000000000000000000000000000", &mut test);
+		// client should now respond with revoke_and_ack and commitment_signed (CHECK 5/6 duplicates)
+
+		// inbound read from peer id 0 of len 18
+		ext_from_hex("030012", &mut test);
+		// message header indicating message length 99
+		ext_from_hex("0063 03000000000000000000000000000000", &mut test);
+		// inbound read from peer id 0 of len 115
+		ext_from_hex("030073", &mut test);
+		// revoke_and_ack and mac
+		ext_from_hex("0085 3d00000000000000000000000000000000000000000000000000000000000000 0d00000000000000000000000000000000000000000000000000000000000000 020f00000000000000000000000000000000000000000000000000000000000000 03000000000000000000000000000000", &mut test);
+
+		// process the now-pending HTLC forward
+		ext_from_hex("07", &mut test);
+		// client now sends id 1 update_add_htlc and commitment_signed (CHECK 7 duplicate)
+
+		// connect a block with one transaction of len 125
+		ext_from_hex("0c007d", &mut test);
+		// the commitment transaction for channel 3f00000000000000000000000000000000000000000000000000000000000000
+		ext_from_hex("02000000013a000000000000000000000000000000000000000000000000000000000000000000000000000000800258020000000000002200204b0000000000000000000000000000000000000000000000000000000000000014c0000000000000160014280000000000000000000000000000000000000005000020", &mut test);
 		//
-		// 030012 - inbound read from peer id 0 of len 18
-		// 0147 03000000000000000000000000000000 - message header indicating message length 327
-		// 0300fe - inbound read from peer id 0 of len 254
-		// 0020 6fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d6190000000000 ff4f00f805273c1b203bb5ebf8436bfde57b3be8c2f5e95d9491dbb181909679 000000000000c350 0000000000000000 0000000000000162 ffffffffffffffff 0000000000000222 0000000000000000 000000fd 0006 01e3 030000000000000000000000000000000000000000000000000000000000000001 030000000000000000000000000000000000000000000000000000000000000002 030000000000000000000000000000000000000000000000000000000000000003 030000000000000000000000000000000000000000000000000000000000000004 - beginning of open_channel message
-		// 030059 - inbound read from peer id 0 of len 89
-		// 030000000000000000000000000000000000000000000000000000000000000005 020900000000000000000000000000000000000000000000000000000000000000 01 0000 01021000 03000000000000000000000000000000 - rest of open_channel and mac
-		//
-		// 00fd - Two feerate requests (all returning min feerate, which our open_channel also uses) (gonna be ingested by FuzzEstimator)
-		// - client should now respond with accept_channel (CHECK 1: type 33 to peer 03000000)
-		//
-		// 030012 - inbound read from peer id 0 of len 18
-		// 0084 03000000000000000000000000000000 - message header indicating message length 132
-		// 030094 - inbound read from peer id 0 of len 148
-		// 0022 ff4f00f805273c1b203bb5ebf8436bfde57b3be8c2f5e95d9491dbb181909679 3d00000000000000000000000000000000000000000000000000000000000000 0000 00000000000000000000000000000000000000000000000000000000000000210100000000000000000000000000000000000000000000000000000000000000 03000000000000000000000000000000 - funding_created and mac
-		// - client should now respond with funding_signed (CHECK 2: type 35 to peer 03000000)
-		//
-		// 0c005e - connect a block with one transaction of len 94
-		// 020000000100000000000000000000000000000000000000000000000000000000000000000000000000ffffffff0150c3000000000000220020ae0000000000000000000000000000000000000000000000000000000000000000000000 - the funding transaction
-		// 0c0000 - connect a block with no transactions
-		// 0c0000 - connect a block with no transactions
-		// 0c0000 - connect a block with no transactions
-		// 0c0000 - connect a block with no transactions
-		// 0c0000 - connect a block with no transactions
-		// 0c0000 - connect a block with no transactions
-		// 0c0000 - connect a block with no transactions
-		// 0c0000 - connect a block with no transactions
-		// 0c0000 - connect a block with no transactions
-		// 0c0000 - connect a block with no transactions
-		// 0c0000 - connect a block with no transactions
-		// 0c0000 - connect a block with no transactions
-		// - by now client should have sent a channel_ready (CHECK 3: SendChannelReady to 03000000 for chan 3d000000)
-		//
-		// 030012 - inbound read from peer id 0 of len 18
-		// 0043 03000000000000000000000000000000 - message header indicating message length 67
-		// 030053 - inbound read from peer id 0 of len 83
-		// 0024 3d00000000000000000000000000000000000000000000000000000000000000 020800000000000000000000000000000000000000000000000000000000000000 03000000000000000000000000000000 - channel_ready and mac
-		//
-		// 01 - new inbound connection with id 1
-		// 030132 - inbound read from peer id 1 of len 50
-		// 0003000000000000000000000000000000000000000000000000000000000000000703000000000000000000000000000000 - inbound noise act 1
-		// 030142 - inbound read from peer id 1 of len 66
-		// 000302000000000000000000000000000000000000000000000000000000000000000300000000000000000000000000000003000000000000000000000000000000 - inbound noise act 3
-		//
-		// 030112 - inbound read from peer id 1 of len 18
-		// 0010 01000000000000000000000000000000 - message header indicating message length 16
-		// 030120 - inbound read from peer id 1 of len 32
-		// 0010 00021aaa 0008aaa20aaa2a0a9aaa 01000000000000000000000000000000 - init message (type 16) with static_remotekey required, no channel_type/anchors/taproot, and other bits optional and mac
-		//
-		// 05 01 030200000000000000000000000000000000000000000000000000000000000000 00c350 0003e8 - create outbound channel to peer 1 for 50k sat
-		// 00fd - One feerate requests (all returning min feerate) (gonna be ingested by FuzzEstimator)
-		//
-		// 030112 - inbound read from peer id 1 of len 18
-		// 0112 01000000000000000000000000000000 - message header indicating message length 274
-		// 0301ff - inbound read from peer id 1 of len 255
-		// 0021 0000000000000000000000000000000000000000000000000000000000000e05 0000000000000162 00000000004c4b40 00000000000003e8 00000000000003e8 00000002 03f0 0005 030000000000000000000000000000000000000000000000000000000000000100 030000000000000000000000000000000000000000000000000000000000000200 030000000000000000000000000000000000000000000000000000000000000300 030000000000000000000000000000000000000000000000000000000000000400 030000000000000000000000000000000000000000000000000000000000000500 02660000000000000000000000000000 - beginning of accept_channel
-		// 030123 - inbound read from peer id 1 of len 35
-		// 0000000000000000000000000000000000 0000 01000000000000000000000000000000 - rest of accept_channel and mac
-		//
-		// 0a - create the funding transaction (client should send funding_created now)
-		//
-		// 030112 - inbound read from peer id 1 of len 18
-		// 0062 01000000000000000000000000000000 - message header indicating message length 98
-		// 030172 - inbound read from peer id 1 of len 114
-		// 0023 3a00000000000000000000000000000000000000000000000000000000000000 000000000000000000000000000000000000000000000000000000000000007c0001000000000000000000000000000000000000000000000000000000000000 01000000000000000000000000000000 - funding_signed message and mac
-		//
-		// 0b - broadcast funding transaction
-		// - by now client should have sent a channel_ready (CHECK 4: SendChannelReady to 03020000 for chan 3f000000)
-		//
-		// 030112 - inbound read from peer id 1 of len 18
-		// 0043 01000000000000000000000000000000 - message header indicating message length 67
-		// 030153 - inbound read from peer id 1 of len 83
-		// 0024 3a00000000000000000000000000000000000000000000000000000000000000 026700000000000000000000000000000000000000000000000000000000000000 01000000000000000000000000000000 - channel_ready and mac
-		//
-		// 030012 - inbound read from peer id 0 of len 18
-		// 05ac 03000000000000000000000000000000 - message header indicating message length 1452
-		// 0300ff - inbound read from peer id 0 of len 255
-		// 0080 3d00000000000000000000000000000000000000000000000000000000000000 0000000000000000 0000000000003e80 ff00000000000000000000000000000000000000000000000000000000000000 000003f0 00 030000000000000000000000000000000000000000000000000000000000000555 11 020203e8 0401a0 060800000e0000010000 0a00000000000000000000000000000000000000000000000000000000000000 ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff - beginning of update_add_htlc from 0 to 1 via client
-		// 0300ff - inbound read from peer id 0 of len 255
-		// ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
-		// 0300ff - inbound read from peer id 0 of len 255
-		// ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
-		// 0300ff - inbound read from peer id 0 of len 255
-		// ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
-		// 0300ff - inbound read from peer id 0 of len 255
-		// ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
-		// 0300c1 - inbound read from peer id 0 of len 193
-		// ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff ab00000000000000000000000000000000000000000000000000000000000000 03000000000000000000000000000000 - end of update_add_htlc from 0 to 1 via client and mac
-		//
-		// 030012 - inbound read from peer id 0 of len 18
-		// 0064 03000000000000000000000000000000 - message header indicating message length 100
-		// 030074 - inbound read from peer id 0 of len 116
-		// 0084 3d00000000000000000000000000000000000000000000000000000000000000 00000000000000000000000000000000000000000000000000000000000000300100000000000000000000000000000000000000000000000000000000000000 0000 03000000000000000000000000000000 - commitment_signed and mac
-		// - client should now respond with revoke_and_ack and commitment_signed (CHECK 5/6: types 133 and 132 to peer 03000000)
-		//
-		// 030012 - inbound read from peer id 0 of len 18
-		// 0063 03000000000000000000000000000000 - message header indicating message length 99
-		// 030073 - inbound read from peer id 0 of len 115
-		// 0085 3d00000000000000000000000000000000000000000000000000000000000000 0900000000000000000000000000000000000000000000000000000000000000 020b00000000000000000000000000000000000000000000000000000000000000 03000000000000000000000000000000 - revoke_and_ack and mac
-		//
-		// 07 - process the now-pending HTLC forward
-		// - client now sends id 1 update_add_htlc and commitment_signed (CHECK 7: UpdateHTLCs event for node 03020000 with 1 HTLCs for channel 3f000000)
-		//
-		// - we respond with commitment_signed then revoke_and_ack (a weird, but valid, order)
-		// 030112 - inbound read from peer id 1 of len 18
-		// 0064 01000000000000000000000000000000 - message header indicating message length 100
-		// 030174 - inbound read from peer id 1 of len 116
-		// 0084 3a00000000000000000000000000000000000000000000000000000000000000 000000000000000000000000000000000000000000000000000000000000006a0001000000000000000000000000000000000000000000000000000000000000 0000 01000000000000000000000000000000 - commitment_signed and mac
-		//
-		// 030112 - inbound read from peer id 1 of len 18
-		// 0063 01000000000000000000000000000000 - message header indicating message length 99
-		// 030173 - inbound read from peer id 1 of len 115
-		// 0085 3a00000000000000000000000000000000000000000000000000000000000000 6600000000000000000000000000000000000000000000000000000000000000 026400000000000000000000000000000000000000000000000000000000000000 01000000000000000000000000000000 - revoke_and_ack and mac
-		//
-		// 030112 - inbound read from peer id 1 of len 18
-		// 004a 01000000000000000000000000000000 - message header indicating message length 74
-		// 03015a - inbound read from peer id 1 of len 90
-		// 0082 3a00000000000000000000000000000000000000000000000000000000000000 0000000000000000 ff00888888888888888888888888888888888888888888888888888888888888 01000000000000000000000000000000 - update_fulfill_htlc and mac
-		// - client should immediately claim the pending HTLC from peer 0 (CHECK 8: SendFulfillHTLCs for node 03000000 with preimage ff00888888 for channel 3d000000)
-		//
-		// 030112 - inbound read from peer id 1 of len 18
-		// 0064 01000000000000000000000000000000 - message header indicating message length 100
-		// 030174 - inbound read from peer id 1 of len 116
-		// 0084 3a00000000000000000000000000000000000000000000000000000000000000 00000000000000000000000000000000000000000000000000000000000000100001000000000000000000000000000000000000000000000000000000000000 0000 01000000000000000000000000000000 - commitment_signed and mac
-		//
-		// 030112 - inbound read from peer id 1 of len 18
-		// 0063 01000000000000000000000000000000 - message header indicating message length 99
-		// 030173 - inbound read from peer id 1 of len 115
-		// 0085 3a00000000000000000000000000000000000000000000000000000000000000 6700000000000000000000000000000000000000000000000000000000000000 026500000000000000000000000000000000000000000000000000000000000000 01000000000000000000000000000000 - revoke_and_ack and mac
-		//
-		// - before responding to the commitment_signed generated above, send a new HTLC
-		// 030012 - inbound read from peer id 0 of len 18
-		// 05ac 03000000000000000000000000000000 - message header indicating message length 1452
-		// 0300ff - inbound read from peer id 0 of len 255
-		// 0080 3d00000000000000000000000000000000000000000000000000000000000000 0000000000000001 0000000000003e80 ff00000000000000000000000000000000000000000000000000000000000000 000003f0 00 030000000000000000000000000000000000000000000000000000000000000555 11 020203e8 0401a0 060800000e0000010000 0a00000000000000000000000000000000000000000000000000000000000000 ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff - beginning of update_add_htlc from 0 to 1 via client
-		// 0300ff - inbound read from peer id 0 of len 255
-		// ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
-		// 0300ff - inbound read from peer id 0 of len 255
-		// ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
-		// 0300ff - inbound read from peer id 0 of len 255
-		// ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
-		// 0300ff - inbound read from peer id 0 of len 255
-		// ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
-		// 0300c1 - inbound read from peer id 0 of len 193
-		// ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff ab00000000000000000000000000000000000000000000000000000000000000 03000000000000000000000000000000 - end of update_add_htlc from 0 to 1 via client and mac
-		//
-		// - now respond to the update_fulfill_htlc+commitment_signed messages the client sent to peer 0
-		// 030012 - inbound read from peer id 0 of len 18
-		// 0063 03000000000000000000000000000000 - message header indicating message length 99
-		// 030073 - inbound read from peer id 0 of len 115
-		// 0085 3d00000000000000000000000000000000000000000000000000000000000000 0800000000000000000000000000000000000000000000000000000000000000 020a00000000000000000000000000000000000000000000000000000000000000 03000000000000000000000000000000 - revoke_and_ack and mac
-		// - client should now respond with revoke_and_ack and commitment_signed (CHECK 5/6 duplicates)
-		//
-		// 030012 - inbound read from peer id 0 of len 18
-		// 0064 03000000000000000000000000000000 - message header indicating message length 100
-		// 030074 - inbound read from peer id 0 of len 116
-		// 0084 3d00000000000000000000000000000000000000000000000000000000000000 00000000000000000000000000000000000000000000000000000000000000c30100000000000000000000000000000000000000000000000000000000000000 0000 03000000000000000000000000000000 - commitment_signed and mac
-		//
-		// 030012 - inbound read from peer id 0 of len 18
-		// 0063 03000000000000000000000000000000 - message header indicating message length 99
-		// 030073 - inbound read from peer id 0 of len 115
-		// 0085 3d00000000000000000000000000000000000000000000000000000000000000 0b00000000000000000000000000000000000000000000000000000000000000 020d00000000000000000000000000000000000000000000000000000000000000 03000000000000000000000000000000 - revoke_and_ack and mac
-		//
-		// 07 - process the now-pending HTLC forward
-		// - client now sends id 1 update_add_htlc and commitment_signed (CHECK 7 duplicate)
-		// - we respond with revoke_and_ack, then commitment_signed, then update_fail_htlc
-		//
-		// 030112 - inbound read from peer id 1 of len 18
-		// 0064 01000000000000000000000000000000 - message header indicating message length 100
-		// 030174 - inbound read from peer id 1 of len 116
-		// 0084 3a00000000000000000000000000000000000000000000000000000000000000 00000000000000000000000000000000000000000000000000000000000000390001000000000000000000000000000000000000000000000000000000000000 0000 01000000000000000000000000000000 - commitment_signed and mac
-		//
-		// 030112 - inbound read from peer id 1 of len 18
-		// 0063 01000000000000000000000000000000 - message header indicating message length 99
-		// 030173 - inbound read from peer id 1 of len 115
-		// 0085 3a00000000000000000000000000000000000000000000000000000000000000 6400000000000000000000000000000000000000000000000000000000000000 027000000000000000000000000000000000000000000000000000000000000000 01000000000000000000000000000000 - revoke_and_ack and mac
-		//
-		// 030112 - inbound read from peer id 1 of len 18
-		// 002c 01000000000000000000000000000000 - message header indicating message length 44
-		// 03013c - inbound read from peer id 1 of len 60
-		// 0083 3a00000000000000000000000000000000000000000000000000000000000000 0000000000000001 0000 01000000000000000000000000000000 - update_fail_htlc and mac
-		//
-		// 030112 - inbound read from peer id 1 of len 18
-		// 0064 01000000000000000000000000000000 - message header indicating message length 100
-		// 030174 - inbound read from peer id 1 of len 116
-		// 0084 3a00000000000000000000000000000000000000000000000000000000000000 00000000000000000000000000000000000000000000000000000000000000390001000000000000000000000000000000000000000000000000000000000000 0000 01000000000000000000000000000000 - commitment_signed and mac
-		//
-		// 030112 - inbound read from peer id 1 of len 18
-		// 0063 01000000000000000000000000000000 - message header indicating message length 99
-		// 030173 - inbound read from peer id 1 of len 115
-		// 0085 3a00000000000000000000000000000000000000000000000000000000000000 6500000000000000000000000000000000000000000000000000000000000000 027100000000000000000000000000000000000000000000000000000000000000 01000000000000000000000000000000 - revoke_and_ack and mac
-		//
-		// 07 - process the now-pending HTLC forward
-		// - client now sends id 0 update_fail_htlc and commitment_signed (CHECK 9)
-		// - now respond to the update_fail_htlc+commitment_signed messages the client sent to peer 0
-		//
-		// 030012 - inbound read from peer id 0 of len 18
-		// 0063 03000000000000000000000000000000 - message header indicating message length 99
-		// 030073 - inbound read from peer id 0 of len 115
-		// 0085 3d00000000000000000000000000000000000000000000000000000000000000 0a00000000000000000000000000000000000000000000000000000000000000 020c00000000000000000000000000000000000000000000000000000000000000 03000000000000000000000000000000 - revoke_and_ack and mac
-		//
-		// 030012 - inbound read from peer id 0 of len 18
-		// 0064 03000000000000000000000000000000 - message header indicating message length 100
-		// 030074 - inbound read from peer id 0 of len 116
-		// 0084 3d00000000000000000000000000000000000000000000000000000000000000 00000000000000000000000000000000000000000000000000000000000000320100000000000000000000000000000000000000000000000000000000000000 0000 03000000000000000000000000000000 - commitment_signed and mac
-		// - client should now respond with revoke_and_ack (CHECK 5 duplicate)
-		//
-		// 030012 - inbound read from peer id 0 of len 18
-		// 05ac 03000000000000000000000000000000 - message header indicating message length 1452
-		// 0300ff - inbound read from peer id 0 of len 255
-		// 0080 3d00000000000000000000000000000000000000000000000000000000000000 0000000000000002 00000000000b0838 ff00000000000000000000000000000000000000000000000000000000000000 000003f0 00 030000000000000000000000000000000000000000000000000000000000000555 12 02030927c0 0401a0 060800000e0000010000 0a00000000000000000000000000000000000000000000000000000000000000 ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff - beginning of update_add_htlc from 0 to 1 via client
-		// 0300ff - inbound read from peer id 0 of len 255
-		// ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
-		// 0300ff - inbound read from peer id 0 of len 255
-		// ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
-		// 0300ff - inbound read from peer id 0 of len 255
-		// ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
-		// 0300ff - inbound read from peer id 0 of len 255
-		// ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
-		// 0300c1 - inbound read from peer id 0 of len 193
-		// ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff 5300000000000000000000000000000000000000000000000000000000000000 03000000000000000000000000000000 - end of update_add_htlc from 0 to 1 via client and mac
-		//
-		// 030012 - inbound read from peer id 0 of len 18
-		// 00a4 03000000000000000000000000000000 - message header indicating message length 164
-		// 0300b4 - inbound read from peer id 0 of len 180
-		// 0084 3d00000000000000000000000000000000000000000000000000000000000000 00000000000000000000000000000000000000000000000000000000000000750100000000000000000000000000000000000000000000000000000000000000 0001 00000000000000000000000000000000000000000000000000000000000000670500000000000000000000000000000000000000000000000000000000000006 03000000000000000000000000000000 - commitment_signed and mac
-		// - client should now respond with revoke_and_ack and commitment_signed (CHECK 5/6 duplicates)
-		//
-		// 030012 - inbound read from peer id 0 of len 18
-		// 0063 03000000000000000000000000000000 - message header indicating message length 99
-		// 030073 - inbound read from peer id 0 of len 115
-		// 0085 3d00000000000000000000000000000000000000000000000000000000000000 0d00000000000000000000000000000000000000000000000000000000000000 020f00000000000000000000000000000000000000000000000000000000000000 03000000000000000000000000000000 - revoke_and_ack and mac
-		//
-		// 07 - process the now-pending HTLC forward
-		// - client now sends id 1 update_add_htlc and commitment_signed (CHECK 7 duplicate)
-		//
-		// 0c007d - connect a block with one transaction of len 125
-		// 02000000013a000000000000000000000000000000000000000000000000000000000000000000000000000000800258020000000000002200204b0000000000000000000000000000000000000000000000000000000000000014c0000000000000160014280000000000000000000000000000000000000005000020 - the commitment transaction for channel 3f00000000000000000000000000000000000000000000000000000000000000
-		//
-		// 0c005e - connect a block with one transaction of len 94
-		// 0200000001730000000000000000000000000000000000000000000000000000000000000000000000000000000001a701000000000000220020b20000000000000000000000000000000000000000000000000000000000000000000000 - the HTLC timeout transaction
-		// 0c0000 - connect a block with no transactions
-		// 0c0000 - connect a block with no transactions
-		// 0c0000 - connect a block with no transactions
-		// 0c0000 - connect a block with no transactions
-		// 0c0000 - connect a block with no transactions
-		//
-		// 07 - process the now-pending HTLC forward
-		// - client now fails the HTLC backwards as it was unable to extract the payment preimage (CHECK 9 duplicate and CHECK 10)
+		// connect a block with one transaction of len 94
+		ext_from_hex("0c005e", &mut test);
+		// the HTLC timeout transaction
+		ext_from_hex("0200000001730000000000000000000000000000000000000000000000000000000000000000000000000000000001a701000000000000220020b20000000000000000000000000000000000000000000000000000000000000000000000", &mut test);
+		// connect a block with no transactions
+		ext_from_hex("0c0000", &mut test);
+		// connect a block with no transactions
+		ext_from_hex("0c0000", &mut test);
+		// connect a block with no transactions
+		ext_from_hex("0c0000", &mut test);
+		// connect a block with no transactions
+		ext_from_hex("0c0000", &mut test);
+		// connect a block with no transactions
+		ext_from_hex("0c0000", &mut test);
+
+		// process the now-pending HTLC forward
+		ext_from_hex("07", &mut test);
+		// client now fails the HTLC backwards as it was unable to extract the payment preimage (CHECK 9 duplicate and CHECK 10)
 
 		let logger = Arc::new(TrackingLogger { lines: Mutex::new(HashMap::new()) });
-		super::do_test(&<Vec<u8>>::from_hex("01000000000000000000000000000000000000000000000000000000000000000000000000900000000000000000640001000000000001ffff0000000000000000ffffffffffffffffffffffffffffffff0000000000000000ffffffffffffffff000000ffffffff00ffff1a000400010000020400000000040200000a08ffffffffffffffff0001000000000300000000000000000000000000000000000000000000000000000000000000020300320003000000000000000000000000000000000000000000000000000000000000000203000000000000000000000000000000030012001003000000000000000000000000000000030020001000021aaa0008aaa20aaa2a0a9aaa030000000000000000000000000000000300120147030000000000000000000000000000000300fe00206fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d6190000000000ff4f00f805273c1b203bb5ebf8436bfde57b3be8c2f5e95d9491dbb181909679000000000000c35000000000000000000000000000000162ffffffffffffffff00000000000002220000000000000000000000fd000601e3030000000000000000000000000000000000000000000000000000000000000001030000000000000000000000000000000000000000000000000000000000000002030000000000000000000000000000000000000000000000000000000000000003030000000000000000000000000000000000000000000000000000000000000004030059030000000000000000000000000000000000000000000000000000000000000005020900000000000000000000000000000000000000000000000000000000000000010000010210000300000000000000000000000000000000fd0300120084030000000000000000000000000000000300940022ff4f00f805273c1b203bb5ebf8436bfde57b3be8c2f5e95d9491dbb1819096793d00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000210100000000000000000000000000000000000000000000000000000000000000030000000000000000000000000000000c005e020000000100000000000000000000000000000000000000000000000000000000000000000000000000ffffffff0150c3000000000000220020ae00000000000000000000000000000000000000000000000000000000000000000000000c00000c00000c00000c00000c00000c00000c00000c00000c00000c00000c00000c000003001200430300000000000000000000000000000003005300243d0000000000000000000000000000000000000000000000000000000000000002080000000000000000000000000000000000000000000000000000000000000003000000000000000000000000000000010301320003000000000000000000000000000000000000000000000000000000000000000703000000000000000000000000000000030142000302000000000000000000000000000000000000000000000000000000000000000300000000000000000000000000000003000000000000000000000000000000030112001001000000000000000000000000000000030120001000021aaa0008aaa20aaa2a0a9aaa01000000000000000000000000000000050103020000000000000000000000000000000000000000000000000000000000000000c3500003e800fd0301120112010000000000000000000000000000000301ff00210000000000000000000000000000000000000000000000000000000000000e05000000000000016200000000004c4b4000000000000003e800000000000003e80000000203f000050300000000000000000000000000000000000000000000000000000000000001000300000000000000000000000000000000000000000000000000000000000002000300000000000000000000000000000000000000000000000000000000000003000300000000000000000000000000000000000000000000000000000000000004000300000000000000000000000000000000000000000000000000000000000005000266000000000000000000000000000003012300000000000000000000000000000000000000010000000000000000000000000000000a03011200620100000000000000000000000000000003017200233a00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000007c0001000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000b03011200430100000000000000000000000000000003015300243a000000000000000000000000000000000000000000000000000000000000000267000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000003001205ac030000000000000000000000000000000300ff00803d0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000003e80ff00000000000000000000000000000000000000000000000000000000000000000003f00003000000000000000000000000000000000000000000000000000000000000055511020203e80401a0060800000e00000100000a00000000000000000000000000000000000000000000000000000000000000ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff0300ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff0300ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff0300ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff0300ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff0300c1ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffab000000000000000000000000000000000000000000000000000000000000000300000000000000000000000000000003001200640300000000000000000000000000000003007400843d000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000030010000000000000000000000000000000000000000000000000000000000000000000300000000000000000000000000000003001200630300000000000000000000000000000003007300853d000000000000000000000000000000000000000000000000000000000000000900000000000000000000000000000000000000000000000000000000000000020b00000000000000000000000000000000000000000000000000000000000000030000000000000000000000000000000703011200640100000000000000000000000000000003017400843a00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000006a000100000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000003011200630100000000000000000000000000000003017300853a00000000000000000000000000000000000000000000000000000000000000660000000000000000000000000000000000000000000000000000000000000002640000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000030112004a0100000000000000000000000000000003015a00823a000000000000000000000000000000000000000000000000000000000000000000000000000000ff008888888888888888888888888888888888888888888888888888888888880100000000000000000000000000000003011200640100000000000000000000000000000003017400843a000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000010000100000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000003011200630100000000000000000000000000000003017300853a0000000000000000000000000000000000000000000000000000000000000067000000000000000000000000000000000000000000000000000000000000000265000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000003001205ac030000000000000000000000000000000300ff00803d0000000000000000000000000000000000000000000000000000000000000000000000000000010000000000003e80ff00000000000000000000000000000000000000000000000000000000000000000003f00003000000000000000000000000000000000000000000000000000000000000055511020203e80401a0060800000e00000100000a00000000000000000000000000000000000000000000000000000000000000ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff0300ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff0300ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff0300ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff0300ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff0300c1ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffab000000000000000000000000000000000000000000000000000000000000000300000000000000000000000000000003001200630300000000000000000000000000000003007300853d000000000000000000000000000000000000000000000000000000000000000800000000000000000000000000000000000000000000000000000000000000020a000000000000000000000000000000000000000000000000000000000000000300000000000000000000000000000003001200640300000000000000000000000000000003007400843d0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000c3010000000000000000000000000000000000000000000000000000000000000000000300000000000000000000000000000003001200630300000000000000000000000000000003007300853d000000000000000000000000000000000000000000000000000000000000000b00000000000000000000000000000000000000000000000000000000000000020d00000000000000000000000000000000000000000000000000000000000000030000000000000000000000000000000703011200640100000000000000000000000000000003017400843a000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000039000100000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000003011200630100000000000000000000000000000003017300853a00000000000000000000000000000000000000000000000000000000000000640000000000000000000000000000000000000000000000000000000000000002700000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000030112002c0100000000000000000000000000000003013c00833a00000000000000000000000000000000000000000000000000000000000000000000000000000100000100000000000000000000000000000003011200640100000000000000000000000000000003017400843a000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000039000100000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000003011200630100000000000000000000000000000003017300853a000000000000000000000000000000000000000000000000000000000000006500000000000000000000000000000000000000000000000000000000000000027100000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000703001200630300000000000000000000000000000003007300853d000000000000000000000000000000000000000000000000000000000000000a00000000000000000000000000000000000000000000000000000000000000020c000000000000000000000000000000000000000000000000000000000000000300000000000000000000000000000003001200640300000000000000000000000000000003007400843d000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000032010000000000000000000000000000000000000000000000000000000000000000000300000000000000000000000000000003001205ac030000000000000000000000000000000300ff00803d00000000000000000000000000000000000000000000000000000000000000000000000000000200000000000b0838ff00000000000000000000000000000000000000000000000000000000000000000003f0000300000000000000000000000000000000000000000000000000000000000005551202030927c00401a0060800000e00000100000a00000000000000000000000000000000000000000000000000000000000000ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff0300ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff0300ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff0300ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff0300ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff0300c1ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff53000000000000000000000000000000000000000000000000000000000000000300000000000000000000000000000003001200a4030000000000000000000000000000000300b400843d00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000007501000000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000000000000000000000000000000000006705000000000000000000000000000000000000000000000000000000000000060300000000000000000000000000000003001200630300000000000000000000000000000003007300853d000000000000000000000000000000000000000000000000000000000000000d00000000000000000000000000000000000000000000000000000000000000020f0000000000000000000000000000000000000000000000000000000000000003000000000000000000000000000000070c007d02000000013a000000000000000000000000000000000000000000000000000000000000000000000000000000800258020000000000002200204b0000000000000000000000000000000000000000000000000000000000000014c00000000000001600142800000000000000000000000000000000000000050000200c005e0200000001730000000000000000000000000000000000000000000000000000000000000000000000000000000001a701000000000000220020b200000000000000000000000000000000000000000000000000000000000000000000000c00000c00000c00000c00000c000007").unwrap(), &(Arc::clone(&logger) as Arc<dyn Logger>));
+		super::do_test(&test, &(Arc::clone(&logger) as Arc<dyn Logger>));
 
 		let log_entries = logger.lines.lock().unwrap();
 		assert_eq!(log_entries.get(&("lightning::ln::peer_handler".to_string(), "Handling SendAcceptChannel event in peer_handler for node 030000000000000000000000000000000000000000000000000000000000000002 for channel ff4f00f805273c1b203bb5ebf8436bfde57b3be8c2f5e95d9491dbb181909679".to_string())), Some(&1)); // 1
