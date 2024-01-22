@@ -1,3 +1,22 @@
+# 0.0.121 - Jan 22, 2024 - "Unwraps are Bad"
+
+## Bug Fixes
+ * Fix a deadlock when calling `batch_funding_transaction_generated` with
+   invalid input (#2841).
+
+## Security
+0.0.121 fixes a denial-of-service vulnerability which is reachable from
+untrusted input from peers in rare cases if we have a public channel or in
+common cases if `P2PGossipSync` is used.
+ * A peer that failed to complete its handshake would cause a reachable
+   `unwrap` in LDK since 0.0.119 when LDK attempts to broadcast gossip to all
+   peers (#2842).
+
+In total, this release features 4 files changed, 52 insertions, 10
+deletions in 4 commits from 2 authors, in alphabetical order:
+ * Jeffrey Czyz
+ * Matt Corallo
+
 # 0.0.120 - Jan 17, 2024 - "Unblinded Fuzzers"
 
 ## API Updates
