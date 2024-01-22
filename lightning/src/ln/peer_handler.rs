@@ -1272,7 +1272,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 
 	/// Append a message to a peer's pending outbound/write buffer
 	fn enqueue_message<M: wire::Type>(&self, peer: &mut Peer, message: &M) {
-		let logger = WithContext::from(&self.logger, Some(peer.their_node_id.unwrap().0), None);
+		let logger = WithContext::from(&self.logger, peer.their_node_id.map(|p| p.0), None);
 		if is_gossip_msg(message.type_id()) {
 			log_gossip!(logger, "Enqueueing message {:?} to {}", message, log_pubkey!(peer.their_node_id.unwrap().0));
 		} else {
@@ -1377,7 +1377,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 
 						macro_rules! insert_node_id {
 							() => {
-								let logger = WithContext::from(&self.logger, Some(peer.their_node_id.unwrap().0), None);
+								let logger = WithContext::from(&self.logger, peer.their_node_id.map(|p| p.0), None);
 								match self.node_id_to_descriptor.lock().unwrap().entry(peer.their_node_id.unwrap().0) {
 									hash_map::Entry::Occupied(e) => {
 										log_trace!(logger, "Got second connection with {}, closing", log_pubkey!(peer.their_node_id.unwrap().0));
@@ -1457,7 +1457,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 									peer.pending_read_buffer.resize(18, 0);
 									peer.pending_read_is_header = true;
 
-									let logger = WithContext::from(&self.logger, Some(peer.their_node_id.unwrap().0), None);
+									let logger = WithContext::from(&self.logger, peer.their_node_id.map(|p| p.0), None);
 									let message = match message_result {
 										Ok(x) => x,
 										Err(e) => {
@@ -1835,13 +1835,13 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 
 				for (_, peer_mutex) in peers.iter() {
 					let mut peer = peer_mutex.lock().unwrap();
-					let logger = WithContext::from(&self.logger, Some(peer.their_node_id.unwrap().0), None);
 					if !peer.handshake_complete() ||
 							!peer.should_forward_channel_announcement(msg.contents.short_channel_id) {
 						continue
 					}
 					debug_assert!(peer.their_node_id.is_some());
 					debug_assert!(peer.channel_encryptor.is_ready_for_encryption());
+					let logger = WithContext::from(&self.logger, peer.their_node_id.map(|p| p.0), None);
 					if peer.buffer_full_drop_gossip_broadcast() {
 						log_gossip!(logger, "Skipping broadcast message to {:?} as its outbound buffer is full", peer.their_node_id);
 						continue;
@@ -1863,13 +1863,13 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 
 				for (_, peer_mutex) in peers.iter() {
 					let mut peer = peer_mutex.lock().unwrap();
-					let logger = WithContext::from(&self.logger, Some(peer.their_node_id.unwrap().0), None);
 					if !peer.handshake_complete() ||
 							!peer.should_forward_node_announcement(msg.contents.node_id) {
 						continue
 					}
 					debug_assert!(peer.their_node_id.is_some());
 					debug_assert!(peer.channel_encryptor.is_ready_for_encryption());
+					let logger = WithContext::from(&self.logger, peer.their_node_id.map(|p| p.0), None);
 					if peer.buffer_full_drop_gossip_broadcast() {
 						log_gossip!(logger, "Skipping broadcast message to {:?} as its outbound buffer is full", peer.their_node_id);
 						continue;
@@ -1891,13 +1891,13 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 
 				for (_, peer_mutex) in peers.iter() {
 					let mut peer = peer_mutex.lock().unwrap();
-					let logger = WithContext::from(&self.logger, Some(peer.their_node_id.unwrap().0), None);
 					if !peer.handshake_complete() ||
 							!peer.should_forward_channel_announcement(msg.contents.short_channel_id)  {
 						continue
 					}
 					debug_assert!(peer.their_node_id.is_some());
 					debug_assert!(peer.channel_encryptor.is_ready_for_encryption());
+					let logger = WithContext::from(&self.logger, peer.their_node_id.map(|p| p.0), None);
 					if peer.buffer_full_drop_gossip_broadcast() {
 						log_gossip!(logger, "Skipping broadcast message to {:?} as its outbound buffer is full", peer.their_node_id);
 						continue;
