@@ -1526,6 +1526,105 @@ where
 /// # }
 /// ```
 ///
+/// ## BOLT 12 Offers
+///
+/// The [`offers`] module is useful for creating BOLT 12 offers. An [`Offer`] is a precursor to a
+/// [`Bolt12Invoice`], which must first be requested by the payer. The interchange of these messages
+/// as defined in the specification is handled by [`ChannelManager`] and its implementation of
+/// [`OffersMessageHandler`]. However, this only works with an [`Offer`] created using a builder
+/// returned by [`create_offer_builder`]. With this approach, BOLT 12 offers and invoices are
+/// stateless just as BOLT 11 invoices are.
+///
+/// ```
+/// # use lightning::events::{Event, EventsProvider, PaymentPurpose};
+/// # use lightning::ln::channelmanager::AChannelManager;
+/// # use lightning::offers::parse::Bolt12SemanticError;
+/// #
+/// # fn example<T: AChannelManager>(channel_manager: T) -> Result<(), Bolt12SemanticError> {
+/// # let channel_manager = channel_manager.get_cm();
+/// let offer = channel_manager
+///     .create_offer_builder("coffee".to_string())?
+/// # ;
+/// # // Needed for compiling for c_bindings
+/// # let builder: lightning::offers::offer::OfferBuilder<_, _> = offer.into();
+/// # let offer = builder
+///     .amount_msats(10_000_000)
+///     .build()?;
+/// let bech32_offer = offer.to_string();
+///
+/// // On the event processing thread
+/// channel_manager.process_pending_events(&|event| match event {
+///     Event::PaymentClaimable { payment_hash, purpose, .. } => match purpose {
+///         PaymentPurpose::InvoicePayment { payment_preimage: Some(payment_preimage), .. } => {
+///             println!("Claiming payment {}", payment_hash);
+///             channel_manager.claim_funds(payment_preimage);
+///         },
+///         PaymentPurpose::InvoicePayment { payment_preimage: None, .. } => {
+///             println!("Unknown payment hash: {}", payment_hash);
+///         },
+///         // ...
+/// #         _ => {},
+///     },
+///     Event::PaymentClaimed { payment_hash, amount_msat, .. } => {
+///         println!("Claimed {} msats", amount_msat);
+///     },
+///     // ...
+/// #     _ => {},
+/// });
+/// # Ok(())
+/// # }
+/// ```
+///
+/// Use [`pay_for_offer`] to initiated payment, which sends an [`InvoiceRequest`] for an [`Offer`]
+/// and pays the [`Bolt12Invoice`] response. In addition to success and failure events,
+/// [`ChannelManager`] may also generate an [`Event::InvoiceRequestFailed`].
+///
+/// ```
+/// # use lightning::events::{Event, EventsProvider};
+/// # use lightning::ln::channelmanager::{AChannelManager, PaymentId, RecentPaymentDetails, Retry};
+/// # use lightning::offers::offer::Offer;
+/// #
+/// # fn example<T: AChannelManager>(
+/// #     channel_manager: T, offer: &Offer, quantity: Option<u64>, amount_msats: Option<u64>,
+/// #     payer_note: Option<String>, retry: Retry, max_total_routing_fee_msat: Option<u64>
+/// # ) {
+/// # let channel_manager = channel_manager.get_cm();
+/// let payment_id = PaymentId([42; 32]);
+/// match channel_manager.pay_for_offer(
+///     offer, quantity, amount_msats, payer_note, payment_id, retry, max_total_routing_fee_msat
+/// ) {
+///     Ok(()) => println!("Requesting invoice for offer"),
+///     Err(e) => println!("Unable to request invoice for offer: {:?}", e),
+/// }
+///
+/// // First the payment will be waiting on an invoice
+/// let expected_payment_id = payment_id;
+/// assert!(
+///     channel_manager.list_recent_payments().iter().find(|details| matches!(
+///         details,
+///         RecentPaymentDetails::AwaitingInvoice { payment_id: expected_payment_id }
+///     )).is_some()
+/// );
+///
+/// // Once the invoice is received, a payment will be sent
+/// assert!(
+///     channel_manager.list_recent_payments().iter().find(|details| matches!(
+///         details,
+///         RecentPaymentDetails::Pending { payment_id: expected_payment_id, ..  }
+///     )).is_some()
+/// );
+///
+/// // On the event processing thread
+/// channel_manager.process_pending_events(&|event| match event {
+///     Event::PaymentSent { payment_id: Some(payment_id), .. } => println!("Paid {}", payment_id),
+///     Event::PaymentFailed { payment_id, .. } => println!("Failed paying {}", payment_id),
+///     Event::InvoiceRequestFailed { payment_id, .. } => println!("Failed paying {}", payment_id),
+///     // ...
+/// #     _ => {},
+/// });
+/// # }
+/// ```
+///
 /// # Persistence
 ///
 /// Implements [`Writeable`] to write out all channel state to disk. Implies [`peer_disconnected`] for
@@ -1601,6 +1700,10 @@ where
 /// [`create_inbound_payment_for_hash`]: Self::create_inbound_payment_for_hash
 /// [`claim_funds`]: Self::claim_funds
 /// [`send_payment`]: Self::send_payment
+/// [`offers`]: crate::offers
+/// [`create_offer_builder`]: Self::create_offer_builder
+/// [`pay_for_offer`]: Self::pay_for_offer
+/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
 /// [`peer_disconnected`]: msgs::ChannelMessageHandler::peer_disconnected
 /// [`funding_created`]: msgs::FundingCreated
 /// [`funding_transaction_generated`]: Self::funding_transaction_generated
