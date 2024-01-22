@@ -3984,6 +3984,7 @@ where
 						});
 				}
 			}
+			mem::drop(funding_batch_states);
 			for shutdown_result in shutdown_results.drain(..) {
 				self.finish_close_channel(shutdown_result);
 			}
