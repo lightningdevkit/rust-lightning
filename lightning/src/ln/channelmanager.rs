@@ -7265,7 +7265,6 @@ where
 	}
 
 	fn internal_channel_reestablish(&self, counterparty_node_id: &PublicKey, msg: &msgs::ChannelReestablish) -> Result<NotifyOption, MsgHandleErrInternal> {
-		let htlc_forwards;
 		let need_lnd_workaround = {
 			let per_peer_state = self.per_peer_state.read().unwrap();
 
@@ -7308,9 +7307,10 @@ where
 							}
 						}
 						let need_lnd_workaround = chan.context.workaround_lnd_bug_4006.take();
-						htlc_forwards = self.handle_channel_resumption(
+						let htlc_forwards = self.handle_channel_resumption(
 							&mut peer_state.pending_msg_events, chan, responses.raa, responses.commitment_update, responses.order,
 							Vec::new(), None, responses.channel_ready, responses.announcement_sigs);
+						debug_assert!(htlc_forwards.is_none());
 						if let Some(upd) = channel_update {
 							peer_state.pending_msg_events.push(upd);
 						}
@@ -7356,16 +7356,10 @@ where
 			}
 		};
 
-		let mut persist = NotifyOption::SkipPersistHandleEvents;
-		if let Some(forwards) = htlc_forwards {
-			self.forward_htlcs(&mut [forwards][..]);
-			persist = NotifyOption::DoPersist;
-		}
-
 		if let Some(channel_ready_msg) = need_lnd_workaround {
 			self.internal_channel_ready(counterparty_node_id, &channel_ready_msg)?;
 		}
-		Ok(persist)
+		Ok(NotifyOption::SkipPersistHandleEvents)
 	}
 
 	/// Process pending events from the [`chain::Watch`], returning whether any events were processed.
