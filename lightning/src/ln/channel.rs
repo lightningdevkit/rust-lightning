@@ -104,10 +104,38 @@ enum InboundHTLCRemovalReason {
 	Fulfill(PaymentPreimage),
 }
 
+/// Represents the resolution status of an inbound HTLC.
+#[derive(Clone)]
+enum InboundHTLCResolution {
+	/// Resolved implies the action we must take with the inbound HTLC has already been determined,
+	/// i.e., we already know whether it must be failed back or forwarded.
+	//
+	// TODO: Once this variant is removed, we should also clean up
+	// [`MonitorRestoreUpdates::accepted_htlcs`] as the path will be unreachable.
+	Resolved {
+		pending_htlc_status: PendingHTLCStatus,
+	},
+	/// Pending implies we will attempt to resolve the inbound HTLC once it has been fully committed
+	/// to by both sides of the channel, i.e., once a `revoke_and_ack` has been processed by both
+	/// nodes for the state update in which it was proposed.
+	Pending {
+		update_add_htlc: msgs::UpdateAddHTLC,
+	},
+}
+
+impl_writeable_tlv_based_enum!(InboundHTLCResolution,
+	(0, Resolved) => {
+		(0, pending_htlc_status, required),
+	},
+	(2, Pending) => {
+		(0, update_add_htlc, required),
+	};
+);
+
 enum InboundHTLCState {
 	/// Offered by remote, to be included in next local commitment tx. I.e., the remote sent an
 	/// update_add_htlc message for this HTLC.
-	RemoteAnnounced(PendingHTLCStatus),
+	RemoteAnnounced(InboundHTLCResolution),
 	/// Included in a received commitment_signed message (implying we've
 	/// revoke_and_ack'd it), but the remote hasn't yet revoked their previous
 	/// state (see the example below). We have not yet included this HTLC in a
@@ -137,13 +165,13 @@ enum InboundHTLCState {
 	/// Implies AwaitingRemoteRevoke.
 	///
 	/// [BOLT #2]: https://github.com/lightning/bolts/blob/master/02-peer-protocol.md
-	AwaitingRemoteRevokeToAnnounce(PendingHTLCStatus),
+	AwaitingRemoteRevokeToAnnounce(InboundHTLCResolution),
 	/// Included in a received commitment_signed message (implying we've revoke_and_ack'd it).
 	/// We have also included this HTLC in our latest commitment_signed and are now just waiting
 	/// on the remote's revoke_and_ack to make this HTLC an irrevocable part of the state of the
 	/// channel (before it can then get forwarded and/or removed).
 	/// Implies AwaitingRemoteRevoke.
-	AwaitingAnnouncedRemoteRevoke(PendingHTLCStatus),
+	AwaitingAnnouncedRemoteRevoke(InboundHTLCResolution),
 	Committed,
 	/// Removed by us and a new commitment_signed was sent (if we were AwaitingRemoteRevoke when we
 	/// created it we would have put it in the holding cell instead). When they next revoke_and_ack
@@ -1291,6 +1319,7 @@ pub(super) struct ChannelContext<SP: Deref> where SP::Target: SignerProvider {
 	monitor_pending_forwards: Vec<(PendingHTLCInfo, u64)>,
 	monitor_pending_failures: Vec<(HTLCSource, PaymentHash, HTLCFailReason)>,
 	monitor_pending_finalized_fulfills: Vec<HTLCSource>,
+	monitor_pending_update_adds: Vec<msgs::UpdateAddHTLC>,
 
 	/// If we went to send a commitment update (ie some messages then [`msgs::CommitmentSigned`])
 	/// but our signer (initially) refused to give us a signature, we should retry at some point in
@@ -1755,6 +1784,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 			monitor_pending_forwards: Vec::new(),
 			monitor_pending_failures: Vec::new(),
 			monitor_pending_finalized_fulfills: Vec::new(),
+			monitor_pending_update_adds: Vec::new(),
 
 			signer_pending_commitment_update: false,
 			signer_pending_funding: false,
@@ -1976,6 +2006,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 			monitor_pending_forwards: Vec::new(),
 			monitor_pending_failures: Vec::new(),
 			monitor_pending_finalized_fulfills: Vec::new(),
+			monitor_pending_update_adds: Vec::new(),
 
 			signer_pending_commitment_update: false,
 			signer_pending_funding: false,
@@ -4255,7 +4286,9 @@ impl<SP: Deref> Channel<SP> where
 			amount_msat: msg.amount_msat,
 			payment_hash: msg.payment_hash,
 			cltv_expiry: msg.cltv_expiry,
-			state: InboundHTLCState::RemoteAnnounced(pending_forward_status),
+			state: InboundHTLCState::RemoteAnnounced(InboundHTLCResolution::Resolved {
+				pending_htlc_status: pending_forward_status
+			}),
 		});
 		Ok(())
 	}
@@ -4461,13 +4494,13 @@ impl<SP: Deref> Channel<SP> where
 		}
 
 		for htlc in self.context.pending_inbound_htlcs.iter_mut() {
-			let new_forward = if let &InboundHTLCState::RemoteAnnounced(ref forward_info) = &htlc.state {
-				Some(forward_info.clone())
+			let htlc_resolution = if let &InboundHTLCState::RemoteAnnounced(ref resolution) = &htlc.state {
+				Some(resolution.clone())
 			} else { None };
-			if let Some(forward_info) = new_forward {
+			if let Some(htlc_resolution) = htlc_resolution {
 				log_trace!(logger, "Updating HTLC {} to AwaitingRemoteRevokeToAnnounce due to commitment_signed in channel {}.",
 					&htlc.payment_hash, &self.context.channel_id);
-				htlc.state = InboundHTLCState::AwaitingRemoteRevokeToAnnounce(forward_info);
+				htlc.state = InboundHTLCState::AwaitingRemoteRevokeToAnnounce(htlc_resolution);
 				need_commitment = true;
 			}
 		}
@@ -4777,6 +4810,7 @@ impl<SP: Deref> Channel<SP> where
 
 		log_trace!(logger, "Updating HTLCs on receipt of RAA in channel {}...", &self.context.channel_id());
 		let mut to_forward_infos = Vec::new();
+		let mut pending_update_adds = Vec::new();
 		let mut revoked_htlcs = Vec::new();
 		let mut finalized_claimed_htlcs = Vec::new();
 		let mut update_fail_htlcs = Vec::new();
@@ -4824,29 +4858,37 @@ impl<SP: Deref> Channel<SP> where
 					let mut state = InboundHTLCState::Committed;
 					mem::swap(&mut state, &mut htlc.state);
 
-					if let InboundHTLCState::AwaitingRemoteRevokeToAnnounce(forward_info) = state {
+					if let InboundHTLCState::AwaitingRemoteRevokeToAnnounce(resolution) = state {
 						log_trace!(logger, " ...promoting inbound AwaitingRemoteRevokeToAnnounce {} to AwaitingAnnouncedRemoteRevoke", &htlc.payment_hash);
-						htlc.state = InboundHTLCState::AwaitingAnnouncedRemoteRevoke(forward_info);
+						htlc.state = InboundHTLCState::AwaitingAnnouncedRemoteRevoke(resolution);
 						require_commitment = true;
-					} else if let InboundHTLCState::AwaitingAnnouncedRemoteRevoke(forward_info) = state {
-						match forward_info {
-							PendingHTLCStatus::Fail(fail_msg) => {
-								log_trace!(logger, " ...promoting inbound AwaitingAnnouncedRemoteRevoke {} to LocalRemoved due to PendingHTLCStatus indicating failure", &htlc.payment_hash);
-								require_commitment = true;
-								match fail_msg {
-									HTLCFailureMsg::Relay(msg) => {
-										htlc.state = InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::FailRelay(msg.reason.clone()));
-										update_fail_htlcs.push(msg)
+					} else if let InboundHTLCState::AwaitingAnnouncedRemoteRevoke(resolution) = state {
+						match resolution {
+							InboundHTLCResolution::Resolved { pending_htlc_status } =>
+								match pending_htlc_status {
+									PendingHTLCStatus::Fail(fail_msg) => {
+										log_trace!(logger, " ...promoting inbound AwaitingAnnouncedRemoteRevoke {} to LocalRemoved due to PendingHTLCStatus indicating failure", &htlc.payment_hash);
+										require_commitment = true;
+										match fail_msg {
+											HTLCFailureMsg::Relay(msg) => {
+												htlc.state = InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::FailRelay(msg.reason.clone()));
+												update_fail_htlcs.push(msg)
+											},
+											HTLCFailureMsg::Malformed(msg) => {
+												htlc.state = InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::FailMalformed((msg.sha256_of_onion, msg.failure_code)));
+												update_fail_malformed_htlcs.push(msg)
+											},
+										}
 									},
-									HTLCFailureMsg::Malformed(msg) => {
-										htlc.state = InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::FailMalformed((msg.sha256_of_onion, msg.failure_code)));
-										update_fail_malformed_htlcs.push(msg)
-									},
+									PendingHTLCStatus::Forward(forward_info) => {
+										log_trace!(logger, " ...promoting inbound AwaitingAnnouncedRemoteRevoke {} to Committed, attempting to forward", &htlc.payment_hash);
+										to_forward_infos.push((forward_info, htlc.htlc_id));
+										htlc.state = InboundHTLCState::Committed;
+									}
 								}
-							},
-							PendingHTLCStatus::Forward(forward_info) => {
+							InboundHTLCResolution::Pending { update_add_htlc } => {
 								log_trace!(logger, " ...promoting inbound AwaitingAnnouncedRemoteRevoke {} to Committed", &htlc.payment_hash);
-								to_forward_infos.push((forward_info, htlc.htlc_id));
+								pending_update_adds.push(update_add_htlc);
 								htlc.state = InboundHTLCState::Committed;
 							}
 						}
@@ -4906,6 +4948,8 @@ impl<SP: Deref> Channel<SP> where
 				}
 			}
 		}
+
+		self.context.monitor_pending_update_adds.append(&mut pending_update_adds);
 
 		if self.context.channel_state.is_monitor_update_in_progress() {
 			// We can't actually generate a new commitment transaction (incl by freeing holding
@@ -8232,7 +8276,7 @@ fn get_initial_channel_type(config: &UserConfig, their_features: &InitFeatures) 
 	ret
 }
 
-const SERIALIZATION_VERSION: u8 = 3;
+const SERIALIZATION_VERSION: u8 = 4;
 const MIN_SERIALIZATION_VERSION: u8 = 3;
 
 impl_writeable_tlv_based_enum!(InboundHTLCRemovalReason,;
@@ -8294,7 +8338,18 @@ impl<SP: Deref> Writeable for Channel<SP> where SP::Target: SignerProvider {
 		// Note that we write out as if remove_uncommitted_htlcs_and_mark_paused had just been
 		// called.
 
-		write_ver_prefix!(writer, MIN_SERIALIZATION_VERSION, MIN_SERIALIZATION_VERSION);
+		let version_to_write = if self.context.pending_inbound_htlcs.iter().any(|htlc| match htlc.state {
+			InboundHTLCState::AwaitingRemoteRevokeToAnnounce(ref htlc_resolution)|
+				InboundHTLCState::AwaitingAnnouncedRemoteRevoke(ref htlc_resolution) => {
+				matches!(htlc_resolution, InboundHTLCResolution::Pending { .. })
+			},
+			_ => false,
+		}) {
+			SERIALIZATION_VERSION
+		} else {
+			MIN_SERIALIZATION_VERSION
+		};
+		write_ver_prefix!(writer, version_to_write, MIN_SERIALIZATION_VERSION);
 
 		// `user_id` used to be a single u64 value. In order to remain backwards compatible with
 		// versions prior to 0.0.113, the u128 is serialized as two separate u64 values. We write
@@ -8350,13 +8405,29 @@ impl<SP: Deref> Writeable for Channel<SP> where SP::Target: SignerProvider {
 			htlc.payment_hash.write(writer)?;
 			match &htlc.state {
 				&InboundHTLCState::RemoteAnnounced(_) => unreachable!(),
-				&InboundHTLCState::AwaitingRemoteRevokeToAnnounce(ref htlc_state) => {
+				&InboundHTLCState::AwaitingRemoteRevokeToAnnounce(ref htlc_resolution) => {
 					1u8.write(writer)?;
-					htlc_state.write(writer)?;
+					if version_to_write <= 3 {
+						if let InboundHTLCResolution::Resolved { pending_htlc_status } = htlc_resolution {
+							pending_htlc_status.write(writer)?;
+						} else {
+							panic!();
+						}
+					} else {
+						htlc_resolution.write(writer)?;
+					}
 				},
-				&InboundHTLCState::AwaitingAnnouncedRemoteRevoke(ref htlc_state) => {
+				&InboundHTLCState::AwaitingAnnouncedRemoteRevoke(ref htlc_resolution) => {
 					2u8.write(writer)?;
-					htlc_state.write(writer)?;
+					if version_to_write <= 3 {
+						if let InboundHTLCResolution::Resolved { pending_htlc_status } = htlc_resolution {
+							pending_htlc_status.write(writer)?;
+						} else {
+							panic!();
+						}
+					} else {
+						htlc_resolution.write(writer)?;
+					}
 				},
 				&InboundHTLCState::Committed => {
 					3u8.write(writer)?;
@@ -8582,6 +8653,11 @@ impl<SP: Deref> Writeable for Channel<SP> where SP::Target: SignerProvider {
 
 		let holder_max_accepted_htlcs = if self.context.holder_max_accepted_htlcs == DEFAULT_MAX_HTLCS { None } else { Some(self.context.holder_max_accepted_htlcs) };
 
+		let mut monitor_pending_update_adds = None;
+		if !self.context.monitor_pending_update_adds.is_empty() {
+			monitor_pending_update_adds = Some(&self.context.monitor_pending_update_adds);
+		}
+
 		write_tlv_fields!(writer, {
 			(0, self.context.announcement_sigs, option),
 			// minimum_depth and counterparty_selected_channel_reserve_satoshis used to have a
@@ -8599,6 +8675,7 @@ impl<SP: Deref> Writeable for Channel<SP> where SP::Target: SignerProvider {
 			(7, self.context.shutdown_scriptpubkey, option),
 			(8, self.context.blocked_monitor_updates, optional_vec),
 			(9, self.context.target_closing_feerate_sats_per_kw, option),
+			(10, monitor_pending_update_adds, option), // Added in 0.0.122
 			(11, self.context.monitor_pending_finalized_fulfills, required_vec),
 			(13, self.context.channel_creation_height, required),
 			(15, preimages, required_vec),
@@ -8693,8 +8770,22 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 				cltv_expiry: Readable::read(reader)?,
 				payment_hash: Readable::read(reader)?,
 				state: match <u8 as Readable>::read(reader)? {
-					1 => InboundHTLCState::AwaitingRemoteRevokeToAnnounce(Readable::read(reader)?),
-					2 => InboundHTLCState::AwaitingAnnouncedRemoteRevoke(Readable::read(reader)?),
+					1 => {
+						let resolution = if ver <= 3 {
+							InboundHTLCResolution::Resolved { pending_htlc_status: Readable::read(reader)? }
+						} else {
+							Readable::read(reader)?
+						};
+						InboundHTLCState::AwaitingRemoteRevokeToAnnounce(resolution)
+					},
+					2 => {
+						let resolution = if ver <= 3 {
+							InboundHTLCResolution::Resolved { pending_htlc_status: Readable::read(reader)? }
+						} else {
+							Readable::read(reader)?
+						};
+						InboundHTLCState::AwaitingAnnouncedRemoteRevoke(resolution)
+					},
 					3 => InboundHTLCState::Committed,
 					4 => InboundHTLCState::LocalRemoved(Readable::read(reader)?),
 					_ => return Err(DecodeError::InvalidValue),
@@ -8911,6 +9002,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 		let mut holding_cell_blinding_points_opt: Option<Vec<Option<PublicKey>>> = None;
 
 		let mut malformed_htlcs: Option<Vec<(u64, u16, [u8; 32])>> = None;
+		let mut monitor_pending_update_adds: Option<Vec<msgs::UpdateAddHTLC>> = None;
 
 		read_tlv_fields!(reader, {
 			(0, announcement_sigs, option),
@@ -8923,6 +9015,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 			(7, shutdown_scriptpubkey, option),
 			(8, blocked_monitor_updates, optional_vec),
 			(9, target_closing_feerate_sats_per_kw, option),
+			(10, monitor_pending_update_adds, option), // Added in 0.0.122
 			(11, monitor_pending_finalized_fulfills, optional_vec),
 			(13, channel_creation_height, option),
 			(15, preimages_opt, optional_vec),
@@ -9094,6 +9187,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 				monitor_pending_forwards,
 				monitor_pending_failures,
 				monitor_pending_finalized_fulfills: monitor_pending_finalized_fulfills.unwrap(),
+				monitor_pending_update_adds: monitor_pending_update_adds.unwrap_or(Vec::new()),
 
 				signer_pending_commitment_update: false,
 				signer_pending_funding: false,
