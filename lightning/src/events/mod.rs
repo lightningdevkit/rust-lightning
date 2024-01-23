@@ -302,6 +302,8 @@ pub enum HTLCDestination {
 		/// Short channel id we are requesting to forward an HTLC to.
 		requested_forward_scid: u64
 	},
+	/// We couldn't decode the incoming onion to obtain the forwarding details.
+	InvalidOnion,
 	/// Failure scenario where an HTLC may have been forwarded to be intended for us,
 	/// but is invalid for some reason, so we reject it.
 	///
@@ -329,6 +331,7 @@ impl_writeable_tlv_based_enum_upgradable!(HTLCDestination,
 	(2, UnknownNextHop) => {
 		(0, requested_forward_scid, required),
 	},
+	(3, InvalidOnion) => {},
 	(4, FailedPayment) => {
 		(0, payment_hash, required),
 	},
