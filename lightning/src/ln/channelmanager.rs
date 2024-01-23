@@ -1625,6 +1625,103 @@ where
 /// # }
 /// ```
 ///
+/// ## BOLT 12 Refunds
+///
+/// A [`Refund`] is a request for an invoice to be paid. Like *paying* for an [`Offer`], *creating*
+/// a [`Refund`] involves maintaining state since it represents a future outbound payment.
+/// Therefore, use [`create_refund_builder`] when creating one, otherwise [`ChannelManager`] will
+/// refuse to pay any corresponding [`Bolt12Invoice`] that it receives.
+///
+/// ```
+/// # use core::time::Duration;
+/// # use lightning::events::{Event, EventsProvider};
+/// # use lightning::ln::channelmanager::{AChannelManager, PaymentId, RecentPaymentDetails, Retry};
+/// # use lightning::offers::parse::Bolt12SemanticError;
+/// #
+/// # fn example<T: AChannelManager>(
+/// #     channel_manager: T, amount_msats: u64, absolute_expiry: Duration, retry: Retry,
+/// #     max_total_routing_fee_msat: Option<u64>
+/// # ) -> Result<(), Bolt12SemanticError> {
+/// # let channel_manager = channel_manager.get_cm();
+/// let payment_id = PaymentId([42; 32]);
+/// let refund = channel_manager
+///     .create_refund_builder(
+///         "coffee".to_string(), amount_msats, absolute_expiry, payment_id, retry,
+///         max_total_routing_fee_msat
+///     )?
+/// # ;
+/// # // Needed for compiling for c_bindings
+/// # let builder: lightning::offers::refund::RefundBuilder<_> = refund.into();
+/// # let refund = builder
+///     .payer_note("refund for order 1234".to_string())
+///     .build()?;
+/// let bech32_refund = refund.to_string();
+///
+/// // First the payment will be waiting on an invoice
+/// let expected_payment_id = payment_id;
+/// assert!(
+///     channel_manager.list_recent_payments().iter().find(|details| matches!(
+///         details,
+///         RecentPaymentDetails::AwaitingInvoice { payment_id: expected_payment_id }
+///     )).is_some()
+/// );
+///
+/// // Once the invoice is received, a payment will be sent
+/// assert!(
+///     channel_manager.list_recent_payments().iter().find(|details| matches!(
+///         details,
+///         RecentPaymentDetails::Pending { payment_id: expected_payment_id, ..  }
+///     )).is_some()
+/// );
+///
+/// // On the event processing thread
+/// channel_manager.process_pending_events(&|event| match event {
+///     Event::PaymentSent { payment_id: Some(payment_id), .. } => println!("Paid {}", payment_id),
+///     Event::PaymentFailed { payment_id, .. } => println!("Failed paying {}", payment_id),
+///     // ...
+/// #     _ => {},
+/// });
+/// # Ok(())
+/// # }
+/// ```
+///
+/// Use [`request_refund_payment`] to send a [`Bolt12Invoice`] for receiving the refund. Similar to
+/// *creating* an [`Offer`], this is stateless as it represents an inbound payment.
+///
+/// ```
+/// # use lightning::events::{Event, EventsProvider, PaymentPurpose};
+/// # use lightning::ln::channelmanager::AChannelManager;
+/// # use lightning::offers::refund::Refund;
+/// #
+/// # fn example<T: AChannelManager>(channel_manager: T, refund: &Refund) {
+/// # let channel_manager = channel_manager.get_cm();
+/// match channel_manager.request_refund_payment(refund) {
+///     Ok(()) => println!("Requesting payment for refund"),
+///     Err(e) => println!("Unable to request payment for refund: {:?}", e),
+/// }
+///
+/// // On the event processing thread
+/// channel_manager.process_pending_events(&|event| match event {
+///     Event::PaymentClaimable { payment_hash, purpose, .. } => match purpose {
+///     	PaymentPurpose::InvoicePayment { payment_preimage: Some(payment_preimage), .. } => {
+///             println!("Claiming payment {}", payment_hash);
+///             channel_manager.claim_funds(payment_preimage);
+///         },
+///     	PaymentPurpose::InvoicePayment { payment_preimage: None, .. } => {
+///             println!("Unknown payment hash: {}", payment_hash);
+///     	},
+///         // ...
+/// #         _ => {},
+///     },
+///     Event::PaymentClaimed { payment_hash, amount_msat, .. } => {
+///         println!("Claimed {} msats", amount_msat);
+///     },
+///     // ...
+/// #     _ => {},
+/// });
+/// # }
+/// ```
+///
 /// # Persistence
 ///
 /// Implements [`Writeable`] to write out all channel state to disk. Implies [`peer_disconnected`] for
@@ -1704,6 +1801,8 @@ where
 /// [`create_offer_builder`]: Self::create_offer_builder
 /// [`pay_for_offer`]: Self::pay_for_offer
 /// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
+/// [`create_refund_builder`]: Self::create_refund_builder
+/// [`request_refund_payment`]: Self::request_refund_payment
 /// [`peer_disconnected`]: msgs::ChannelMessageHandler::peer_disconnected
 /// [`funding_created`]: msgs::FundingCreated
 /// [`funding_transaction_generated`]: Self::funding_transaction_generated
