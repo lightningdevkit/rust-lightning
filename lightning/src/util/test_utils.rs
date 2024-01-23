@@ -66,6 +66,7 @@ use crate::io;
 use crate::prelude::*;
 use core::cell::RefCell;
 use core::time::Duration;
+use core::ops::Deref;
 use crate::sync::{Mutex, Arc};
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use core::mem;
@@ -194,10 +195,10 @@ impl<'a> Router for TestRouter<'a> {
 	}
 
 	fn create_blinded_payment_paths<
-		ES: EntropySource + ?Sized, T: secp256k1::Signing + secp256k1::Verification
+		T: secp256k1::Signing + secp256k1::Verification
 	>(
 		&self, _recipient: PublicKey, _first_hops: Vec<ChannelDetails>, _tlvs: ReceiveTlvs,
-		_amount_msats: u64, _entropy_source: &ES, _secp_ctx: &Secp256k1<T>
+		_amount_msats: u64, _secp_ctx: &Secp256k1<T>
 	) -> Result<Vec<(BlindedPayInfo, BlindedPath)>, ()> {
 		unreachable!()
 	}
@@ -211,10 +212,9 @@ impl<'a> MessageRouter for TestRouter<'a> {
 	}
 
 	fn create_blinded_paths<
-		ES: EntropySource + ?Sized, T: secp256k1::Signing + secp256k1::Verification
+		T: secp256k1::Signing + secp256k1::Verification
 	>(
-		&self, _recipient: PublicKey, _peers: Vec<PublicKey>, _entropy_source: &ES,
-		_secp_ctx: &Secp256k1<T>
+		&self, _recipient: PublicKey, _peers: Vec<PublicKey>, _secp_ctx: &Secp256k1<T>,
 	) -> Result<Vec<BlindedPath>, ()> {
 		unreachable!()
 	}
