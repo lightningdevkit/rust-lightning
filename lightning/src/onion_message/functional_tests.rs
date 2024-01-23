@@ -30,6 +30,8 @@ use crate::sync::{Arc, Mutex};
 
 use crate::prelude::*;
 
+use core::ops::Deref;
+
 struct MessengerNode {
 	node_id: PublicKey,
 	entropy_source: Arc<test_utils::TestKeysInterface>,
@@ -59,10 +61,9 @@ impl MessageRouter for TestMessageRouter {
 	}
 
 	fn create_blinded_paths<
-		ES: EntropySource + ?Sized, T: secp256k1::Signing + secp256k1::Verification
+		T: secp256k1::Signing + secp256k1::Verification
 	>(
-		&self, _recipient: PublicKey, _peers: Vec<PublicKey>, _entropy_source: &ES,
-		_secp_ctx: &Secp256k1<T>
+		&self, _recipient: PublicKey, _peers: Vec<PublicKey>, _secp_ctx: &Secp256k1<T>,
 	) -> Result<Vec<BlindedPath>, ()> {
 		unreachable!()
 	}
