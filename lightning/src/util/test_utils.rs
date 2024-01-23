@@ -168,7 +168,7 @@ impl<'a> Router for TestRouter<'a> {
 										details: first_hops[idx],
 										payer_node_id: &node_id,
 									});
-									scorer.channel_penalty_msat(&candidate, usage, &());
+									scorer.channel_penalty_msat(&candidate, usage, &Default::default());
 									continue;
 								}
 							}
@@ -180,7 +180,7 @@ impl<'a> Router for TestRouter<'a> {
 								info: directed,
 								short_channel_id: hop.short_channel_id,
 							});
-							scorer.channel_penalty_msat(&candidate, usage, &());
+							scorer.channel_penalty_msat(&candidate, usage, &Default::default());
 						} else {
 							let target_node_id = NodeId::from_pubkey(&hop.pubkey);
 							let route_hint = RouteHintHop {
@@ -195,7 +195,7 @@ impl<'a> Router for TestRouter<'a> {
 								hint: &route_hint,
 								target_node_id: &target_node_id,
 							});
-							scorer.channel_penalty_msat(&candidate, usage, &());
+							scorer.channel_penalty_msat(&candidate, usage, &Default::default());
 						}
 						prev_hop_node = &hop.pubkey;
 					}
