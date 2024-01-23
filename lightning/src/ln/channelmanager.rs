@@ -7832,7 +7832,7 @@ where
 	/// to pay us.
 	///
 	/// This differs from [`create_inbound_payment_for_hash`] only in that it generates the
-	/// [`PaymentHash`] and [`PaymentPreimage`] for you.
+	/// [`PaymentHash`] and [`PaymentSecret`] for you.
 	///
 	/// The [`PaymentPreimage`] will ultimately be returned to you in the [`PaymentClaimable`], which
 	/// will have the [`PaymentClaimable::purpose`] be [`PaymentPurpose::InvoicePayment`] with
