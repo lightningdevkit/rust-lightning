@@ -4531,53 +4531,6 @@ impl<SP: Deref> Channel<SP> where
 			return SignerResumeUpdates::default()
 		}
 
-		// Make sure that we honor any ordering requirements between the commitment update and revoke-and-ack.
-		let (commitment_update, raa) = match &self.context.resend_order {
-			RAACommitmentOrder::CommitmentFirst => {
-				let cu = if self.context.signer_pending_commitment_update {
-					log_trace!(logger, "Attempting to generate pending commitment update...");
-					self.get_last_commitment_update_for_send(logger).map(|cu| {
-						log_trace!(logger, "Generated commitment update; clearing signer_pending_commitment_update");
-						self.context.signer_pending_commitment_update = false;
-						cu
-					}).ok()
-				} else { None };
-
-				let raa = if self.context.signer_pending_revoke_and_ack && !self.context.signer_pending_commitment_update {
-					log_trace!(logger, "Attempting to generate pending RAA...");
-					self.get_last_revoke_and_ack(logger).map(|raa| {
-						log_trace!(logger, "Generated RAA; clearing signer_pending_revoke_and_ack");
-						self.context.signer_pending_revoke_and_ack = false;
-						raa
-					})
-				} else { None };
-
-				(cu, raa)
-			}
-
-			RAACommitmentOrder::RevokeAndACKFirst => {
-				let raa = if self.context.signer_pending_revoke_and_ack {
-					log_trace!(logger, "Attempting to generate pending RAA...");
-					self.get_last_revoke_and_ack(logger).map(|raa| {
-						log_trace!(logger, "Generated RAA; clearing signer_pending_revoke_and_ack");
-						self.context.signer_pending_revoke_and_ack = false;
-						raa
-					})
-				} else { None };
-
-				let cu = if self.context.signer_pending_commitment_update && !self.context.signer_pending_revoke_and_ack {
-					log_trace!(logger, "Attempting to generate pending commitment update...");
-					self.get_last_commitment_update_for_send(logger).map(|cu| {
-						log_trace!(logger, "Generated commitment update; clearing signer_pending_commitment_update");
-						self.context.signer_pending_commitment_update = false;
-						cu
-					}).ok()
-				} else { None };
-
-				(cu, raa)
-			}
-		};
-
 		let funding_signed = if self.context.signer_pending_funding && !self.context.is_outbound() {
 			log_trace!(logger, "Attempting to generate pending funding signed...");
 			self.context.get_funding_signed_msg(logger).1
@@ -4592,6 +4545,59 @@ impl<SP: Deref> Channel<SP> where
 				msg
 			})
 		} else { None };
+
+		// If we're pending a channel_ready to the counterparty, then we can't be sending commitment
+		// updates. If we're not, then make sure that we honor any ordering requirements between the
+		// commitment update and revoke-and-ack.
+		let (commitment_update, raa) = if false && self.context.signer_pending_channel_ready {
+			(None, None)
+		} else {
+			match &self.context.resend_order {
+				RAACommitmentOrder::CommitmentFirst => {
+					let cu = if self.context.signer_pending_commitment_update {
+						log_trace!(logger, "Attempting to generate pending commitment update...");
+						self.get_last_commitment_update_for_send(logger).map(|cu| {
+							log_trace!(logger, "Generated commitment update; clearing signer_pending_commitment_update");
+							self.context.signer_pending_commitment_update = false;
+							cu
+						}).ok()
+					} else { None };
+
+					let raa = if self.context.signer_pending_revoke_and_ack && !self.context.signer_pending_commitment_update {
+						log_trace!(logger, "Attempting to generate pending RAA...");
+						self.get_last_revoke_and_ack(logger).map(|raa| {
+							log_trace!(logger, "Generated RAA; clearing signer_pending_revoke_and_ack");
+							self.context.signer_pending_revoke_and_ack = false;
+							raa
+						})
+					} else { None };
+
+					(cu, raa)
+				}
+
+				RAACommitmentOrder::RevokeAndACKFirst => {
+					let raa = if self.context.signer_pending_revoke_and_ack {
+						log_trace!(logger, "Attempting to generate pending RAA...");
+						self.get_last_revoke_and_ack(logger).map(|raa| {
+							log_trace!(logger, "Generated RAA; clearing signer_pending_revoke_and_ack");
+							self.context.signer_pending_revoke_and_ack = false;
+							raa
+						})
+					} else { None };
+
+					let cu = if self.context.signer_pending_commitment_update && !self.context.signer_pending_revoke_and_ack {
+						log_trace!(logger, "Attempting to generate pending commitment update...");
+						self.get_last_commitment_update_for_send(logger).map(|cu| {
+							log_trace!(logger, "Generated commitment update; clearing signer_pending_commitment_update");
+							self.context.signer_pending_commitment_update = false;
+							cu
+						}).ok()
+					} else { None };
+
+					(cu, raa)
+				}
+			}
+		};
 
 		let order = self.context.resend_order.clone();
 
@@ -4878,7 +4884,7 @@ impl<SP: Deref> Channel<SP> where
 		// If they think we're behind by one state, then we owe them an RAA. We may or may not have that
 		// RAA handy depending on the status of the remote signer and the monitor.
 		let steps_behind = (INITIAL_COMMITMENT_NUMBER - self.context.cur_holder_commitment_transaction_number) - (msg.next_remote_commitment_number + 1);
-		let raa = if steps_behind == 0 {
+		let mut raa = if steps_behind == 0 {
 			// Remote isn't waiting on any RevokeAndACK from us!
 			// Note that if we need to repeat our ChannelReady we'll do that in the next if block.
 			None
@@ -4941,9 +4947,17 @@ impl<SP: Deref> Channel<SP> where
 				log_debug!(logger, "Reconnected channel {} with no loss", &self.context.channel_id());
 			}
 
+			// If we need to provide a channel_ready, but cannot create it yet (e.g. because we do not
+			// have the next commitment point), then we must not send a revoke-and-ack: suppress it if
+			// necessary.
+			if self.context.signer_pending_channel_ready && raa.is_some() {
+				log_trace!(logger, "Suppressing RAA because signer_pending_channel_ready; marking signer_pending_revoke_and_ack");
+				self.context.signer_pending_revoke_and_ack = true;
+				raa = None;
+			}
+
 			Ok(ReestablishResponses {
-				channel_ready, shutdown_msg, announcement_sigs,
-				raa: if !self.context.signer_pending_channel_ready { raa } else { None },
+				channel_ready, shutdown_msg, announcement_sigs, raa,
 				commitment_update: None,
 				order: self.context.resend_order.clone(),
 			})
@@ -4962,10 +4976,28 @@ impl<SP: Deref> Channel<SP> where
 					order: self.context.resend_order.clone(),
 				})
 			} else {
-				let commitment_update = if raa.is_some() || steps_behind == 0 {
+				// Get the commitment update. This may fail if we're pending the signer.
+				let mut commitment_update = if raa.is_some() || steps_behind == 0 {
 					self.get_last_commitment_update_for_send(logger).ok()
 				} else { None };
 				self.context.signer_pending_commitment_update = commitment_update.is_none();
+
+				// If we need to provide a channel_ready, but cannot create it yet (e.g. because we do not
+				// have the next commitment point), then we must not send the commitment update: suppress it
+				// if necessary.
+				if commitment_update.is_some() && self.context.signer_pending_channel_ready {
+					log_trace!(logger, "Suppressing commitment update because signer_pending_channel_ready; marking signer_pending_commitment_udpate");
+					self.context.signer_pending_commitment_update = true;
+					commitment_update = None;
+				}
+
+				// Handle the revoke-and-ack similarly.
+				if self.context.signer_pending_channel_ready && raa.is_some() {
+					log_trace!(logger, "Suppressing RAA because signer_pending_channel_ready; marking signer_pending_revoke_and_ack");
+					self.context.signer_pending_revoke_and_ack = true;
+					raa = None;
+				}
+
 				Ok(ReestablishResponses {
 					channel_ready, shutdown_msg, announcement_sigs,
 					raa: if !self.context.signer_pending_channel_ready { raa } else { None },

@@ -7380,9 +7380,22 @@ where
 				ChannelPhase::Funded(chan) => {
 					let logger = WithChannelContext::from(&self.logger, &chan.context);
 					let msgs = chan.signer_maybe_unblocked(&&logger);
+
+					// Note that the order in which we enqueue the messages is significant!
 					if let Some(msg) = msgs.channel_reestablish {
 						log_trace!(logger, "Queuing channel_reestablish to {}", node_id);
 						pending_msg_events.push(events::MessageSendEvent::SendChannelReestablish { node_id, msg });
+					}
+					if let Some(msg) = msgs.funding_signed {
+						log_trace!(logger, "Queuing funding_signed to {}", node_id);
+						pending_msg_events.push(events::MessageSendEvent::SendFundingSigned {
+							node_id,
+							msg,
+						});
+					}
+					if let Some(msg) = msgs.channel_ready {
+						log_trace!(logger, "Queuing channel_ready to {}", node_id);
+						send_channel_ready!(self, pending_msg_events, chan, msg);
 					}
 					match (msgs.commitment_update, msgs.raa) {
 						(Some(cu), Some(raa)) if msgs.order == RAACommitmentOrder::CommitmentFirst => {
@@ -7407,17 +7420,6 @@ where
 						},
 						(_, _) => (),
 					};
-					if let Some(msg) = msgs.funding_signed {
-						log_trace!(logger, "Queuing funding_signed to {}", node_id);
-						pending_msg_events.push(events::MessageSendEvent::SendFundingSigned {
-							node_id,
-							msg,
-						});
-					}
-					if let Some(msg) = msgs.channel_ready {
-						log_trace!(logger, "Queuing channel_ready to {}", node_id);
-						send_channel_ready!(self, pending_msg_events, chan, msg);
-					}
 				}
 				ChannelPhase::UnfundedInboundV1(chan) => {
 					let logger = WithChannelContext::from(&self.logger, &chan.context);
