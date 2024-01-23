@@ -72,8 +72,6 @@ extern crate alloc;
 use std::fs::File;
 use core::ops::Deref;
 use core::sync::atomic::{AtomicBool, Ordering};
-use core::fmt::Debug;
-use core::fmt::Formatter;
 
 use lightning::io;
 use lightning::ln::msgs::{DecodeError, LightningError};
@@ -84,6 +82,7 @@ use lightning::util::logger::Logger;
 mod processing;
 
 /// All-encompassing standard error type that processing can return
+#[derive(Debug)]
 pub enum GraphSyncError {
 	/// Error trying to read the update data, typically due to an erroneous data length indication
 	/// that is greater than the actual amount of data provided
@@ -108,15 +107,6 @@ impl From<DecodeError> for GraphSyncError {
 impl From<LightningError> for GraphSyncError {
 	fn from(error: LightningError) -> Self {
 		Self::LightningError(error)
-	}
-}
-
-impl Debug for GraphSyncError {
-	fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
-		match self {
-			GraphSyncError::DecodeError(e) => f.write_fmt(format_args!("DecodeError: {:?}", e)),
-			GraphSyncError::LightningError(e) => f.write_fmt(format_args!("LightningError: {:?}", e))
-		}
 	}
 }
 
