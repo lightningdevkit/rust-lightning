@@ -57,7 +57,7 @@
 //! [`find_route`]: crate::routing::router::find_route
 
 use crate::ln::msgs::DecodeError;
-use crate::routing::gossip::{EffectiveCapacity, NetworkGraph, NodeId};
+use crate::routing::gossip::{DirectedChannelInfo, EffectiveCapacity, NetworkGraph, NodeId};
 use crate::routing::router::{Path, CandidateRouteHop, PublicHopCandidate};
 use crate::util::ser::{Readable, ReadableArgs, Writeable, Writer};
 use crate::util::logger::Logger;
@@ -96,6 +96,7 @@ pub trait ScoreLookUp {
 	/// on a per-routefinding-call basis through to the scorer methods,
 	/// which are used to determine the parameters for the suitability of channels for use.
 	type ScoreParams;
+
 	/// Returns the fee in msats willing to be paid to avoid routing `send_amt_msat` through the
 	/// given channel in the direction from `source` to `target`.
 	///
@@ -107,6 +108,16 @@ pub trait ScoreLookUp {
 	fn channel_penalty_msat(
 		&self, candidate: &CandidateRouteHop, usage: ChannelUsage, score_params: &Self::ScoreParams
 	) -> u64;
+
+	/// Returns how certain any knowledge gained about the channel's liquidity balance is.
+	///
+	/// Expected to return a value between `0.0` and `1.0`, inclusive, where `0.0` indicates
+	/// complete uncertainty and `1.0` complete certainty.
+	///
+	/// This is useful to determine whether a channel should be included in a blinded path.
+	fn channel_balance_certainty(
+		&self, _short_channel_id: u64, _info: &DirectedChannelInfo
+	) -> f64 { 0.5 }
 }
 
 /// `ScoreUpdate` is used to update the scorer's internal state after a payment attempt.

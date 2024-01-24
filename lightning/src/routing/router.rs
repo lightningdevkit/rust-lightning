@@ -103,6 +103,9 @@ impl<G: Deref<Target = NetworkGraph<L>> + Clone, L: Deref, ES: Deref, S: Deref, 
 		// recipient's node_id.
 		const MIN_PEER_CHANNELS: usize = 3;
 
+		// The minimum channel balance certainty required for using a channel in a blinded path.
+		const MIN_CHANNEL_CERTAINTY: f64 = 0.5;
+
 		let network_graph = self.network_graph.deref().read_only();
 		let counterparty_channels = first_hops.into_iter()
 			.filter(|details| details.counterparty.features.supports_route_blinding())
@@ -148,6 +151,7 @@ impl<G: Deref<Target = NetworkGraph<L>> + Clone, L: Deref, ES: Deref, S: Deref, 
 				Some((forward_node, counterparty_channels))
 			});
 
+		let scorer = self.scorer.read_lock();
 		let three_hop_paths = counterparty_channels.clone()
 			// Pair counterparties with their other channels
 			.flat_map(|(forward_node, counterparty_channels)|
@@ -167,6 +171,9 @@ impl<G: Deref<Target = NetworkGraph<L>> + Clone, L: Deref, ES: Deref, S: Deref, 
 					)
 					.filter(|(_, _, info)| amount_msats >= info.direction().htlc_minimum_msat)
 					.filter(|(_, _, info)| amount_msats <= info.direction().htlc_maximum_msat)
+					.filter(|(_, scid, info)| {
+						scorer.channel_balance_certainty(*scid, info) >= MIN_CHANNEL_CERTAINTY
+					})
 					.map(move |(source, scid, info)| (source, scid, info, forward_node.clone()))
 			)
 			// Construct blinded paths where the counterparty's counterparty is the introduction
