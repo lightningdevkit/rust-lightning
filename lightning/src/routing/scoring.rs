@@ -1377,6 +1377,17 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref> ScoreLookUp for Probabilistic
 			.saturating_add(anti_probing_penalty_msat)
 			.saturating_add(base_penalty_msat)
 	}
+
+	fn channel_balance_certainty(&self, short_channel_id: u64, info: &DirectedChannelInfo) -> f64 {
+		self.channel_liquidities
+			.get(&short_channel_id)
+			.map(|channel|
+				((channel.min_liquidity_offset_msat + channel.max_liquidity_offset_msat) as f64)
+				/ info.effective_capacity().as_msat() as f64
+			)
+			.and_then(|certainty| certainty.is_finite().then(|| certainty))
+			.unwrap_or(0.0)
+	}
 }
 
 impl<G: Deref<Target = NetworkGraph<L>>, L: Deref> ScoreUpdate for ProbabilisticScorer<G, L> where L::Target: Logger {
