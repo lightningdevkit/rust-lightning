@@ -7787,15 +7787,15 @@ where
 				let payment_paths = self.create_blinded_payment_paths(amount_msats, payment_secret)
 					.map_err(|_| Bolt12SemanticError::MissingPaths)?;
 
-				#[cfg(not(feature = "no-std"))]
+				#[cfg(feature = "std")]
 				let builder = refund.respond_using_derived_keys(
 					payment_paths, payment_hash, expanded_key, entropy
 				)?;
-				#[cfg(feature = "no-std")]
+				#[cfg(not(feature = "std"))]
 				let created_at = Duration::from_secs(
 					self.highest_seen_timestamp.load(Ordering::Acquire) as u64
 				);
-				#[cfg(feature = "no-std")]
+				#[cfg(not(feature = "std"))]
 				let builder = refund.respond_using_derived_keys_no_std(
 					payment_paths, payment_hash, created_at, expanded_key, entropy
 				)?;
@@ -9232,17 +9232,17 @@ where
 					},
 				};
 
-				#[cfg(feature = "no-std")]
+				#[cfg(not(feature = "std"))]
 				let created_at = Duration::from_secs(
 					self.highest_seen_timestamp.load(Ordering::Acquire) as u64
 				);
 
 				if invoice_request.keys.is_some() {
-					#[cfg(not(feature = "no-std"))]
+					#[cfg(feature = "std")]
 					let builder = invoice_request.respond_using_derived_keys(
 						payment_paths, payment_hash
 					);
-					#[cfg(feature = "no-std")]
+					#[cfg(not(feature = "std"))]
 					let builder = invoice_request.respond_using_derived_keys_no_std(
 						payment_paths, payment_hash, created_at
 					);
@@ -9251,9 +9251,9 @@ where
 						Err(error) => Some(OffersMessage::InvoiceError(error.into())),
 					}
 				} else {
-					#[cfg(not(feature = "no-std"))]
+					#[cfg(feature = "std")]
 					let builder = invoice_request.respond_with(payment_paths, payment_hash);
-					#[cfg(feature = "no-std")]
+					#[cfg(not(feature = "std"))]
 					let builder = invoice_request.respond_with_no_std(
 						payment_paths, payment_hash, created_at
 					);
@@ -12497,7 +12497,7 @@ pub mod bench {
 	use bitcoin::blockdata::locktime::absolute::LockTime;
 	use bitcoin::hashes::Hash;
 	use bitcoin::hashes::sha256::Hash as Sha256;
-	use bitcoin::{Block, Transaction, TxOut};
+	use bitcoin::{Transaction, TxOut};
 
 	use crate::sync::{Arc, Mutex, RwLock};
 
@@ -12537,7 +12537,7 @@ pub mod bench {
 		let fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: Mutex::new(253) };
 		let logger_a = test_utils::TestLogger::with_id("node a".to_owned());
 		let scorer = RwLock::new(test_utils::TestScorer::new());
-		let router = test_utils::TestRouter::new(Arc::new(NetworkGraph::new(network, &logger_a)), &scorer);
+		let router = test_utils::TestRouter::new(Arc::new(NetworkGraph::new(network, &logger_a)), &logger_a, &scorer);
 
 		let mut config: UserConfig = Default::default();
 		config.channel_config.max_dust_htlc_exposure = MaxDustHTLCExposure::FeeRateMultiplier(5_000_000 / 253);

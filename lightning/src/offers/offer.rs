@@ -339,6 +339,11 @@ impl<'a, M: MetadataStrategy, T: secp256k1::Signing> OfferBuilder<'a, M, T> {
 		self
 	}
 
+	pub(crate) fn clear_paths(mut self) -> Self {
+		self.offer.paths = None;
+		self
+	}
+
 	pub(super) fn build_unchecked(self) -> Offer {
 		self.build_without_checks()
 	}

@@ -932,6 +932,13 @@ impl<T: sealed::AnchorsZeroFeeHtlcTx> Features<T> {
 	}
 }
 
+impl<T: sealed::RouteBlinding> Features<T> {
+	#[cfg(test)]
+	pub(crate) fn clear_route_blinding(&mut self) {
+		<T as sealed::RouteBlinding>::clear_bits(&mut self.flags);
+	}
+}
+
 #[cfg(test)]
 impl<T: sealed::UnknownFeature> Features<T> {
 	pub(crate) fn unknown() -> Self {

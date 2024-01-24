@@ -24,14 +24,10 @@ use crate::ln::ChannelId;
 use crate::ln::features::{InitFeatures, NodeFeatures};
 use crate::ln::msgs;
 use crate::ln::msgs::{ChannelMessageHandler, LightningError, SocketAddress, OnionMessageHandler, RoutingMessageHandler};
-#[cfg(not(c_bindings))]
-use crate::ln::channelmanager::{SimpleArcChannelManager, SimpleRefChannelManager};
 use crate::util::ser::{VecWriter, Writeable, Writer};
 use crate::ln::peer_channel_encryptor::{PeerChannelEncryptor, NextNoiseStep, MessageBuf, MSG_BUF_ALLOC_SIZE};
 use crate::ln::wire;
 use crate::ln::wire::{Encode, Type};
-#[cfg(not(c_bindings))]
-use crate::onion_message::messenger::{SimpleArcOnionMessenger, SimpleRefOnionMessenger};
 use crate::onion_message::messenger::{CustomOnionMessageHandler, PendingOnionMessage};
 use crate::onion_message::offers::{OffersMessage, OffersMessageHandler};
 use crate::onion_message::packet::OnionMessageContents;
@@ -52,6 +48,8 @@ use core::convert::Infallible;
 use std::error;
 #[cfg(not(c_bindings))]
 use {
+	crate::ln::channelmanager::{SimpleArcChannelManager, SimpleRefChannelManager},
+	crate::onion_message::messenger::{SimpleArcOnionMessenger, SimpleRefOnionMessenger},
 	crate::routing::gossip::{NetworkGraph, P2PGossipSync},
 	crate::sign::KeysManager,
 	crate::sync::Arc,

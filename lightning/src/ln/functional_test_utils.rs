@@ -11,27 +11,29 @@
 //! nodes for functional tests.
 
 use crate::chain::{BestBlock, ChannelMonitorUpdateStatus, Confirm, Listen, Watch, chainmonitor::Persist};
-use crate::sign::EntropySource;
 use crate::chain::channelmonitor::ChannelMonitor;
 use crate::chain::transaction::OutPoint;
 use crate::events::{ClaimedHTLC, ClosureReason, Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider, PathFailure, PaymentPurpose, PaymentFailureReason};
 use crate::events::bump_transaction::{BumpTransactionEvent, BumpTransactionEventHandler, Wallet, WalletSource};
 use crate::ln::{ChannelId, PaymentPreimage, PaymentHash, PaymentSecret};
 use crate::ln::channelmanager::{AChannelManager, ChainParameters, ChannelManager, ChannelManagerReadArgs, RAACommitmentOrder, PaymentSendFailure, RecipientOnionFields, PaymentId, MIN_CLTV_EXPIRY_DELTA};
-use crate::routing::gossip::{P2PGossipSync, NetworkGraph, NetworkUpdate};
-use crate::routing::router::{self, PaymentParameters, Route, RouteParameters};
 use crate::ln::features::InitFeatures;
 use crate::ln::msgs;
-use crate::ln::msgs::{ChannelMessageHandler,RoutingMessageHandler};
-use crate::util::test_channel_signer::TestChannelSigner;
-use crate::util::scid_utils;
-use crate::util::test_utils;
-use crate::util::test_utils::{panicking, TestChainMonitor, TestScorer, TestKeysInterface};
-use crate::util::errors::APIError;
+use crate::ln::msgs::{ChannelMessageHandler, OnionMessageHandler, RoutingMessageHandler};
+use crate::ln::peer_handler::IgnoringMessageHandler;
+use crate::onion_message::messenger::OnionMessenger;
+use crate::routing::gossip::{P2PGossipSync, NetworkGraph, NetworkUpdate};
+use crate::routing::router::{self, PaymentParameters, Route, RouteParameters};
+use crate::sign::{EntropySource, RandomBytes};
 use crate::util::config::{UserConfig, MaxDustHTLCExposure};
-use crate::util::ser::{ReadableArgs, Writeable};
+use crate::util::errors::APIError;
 #[cfg(test)]
 use crate::util::logger::Logger;
+use crate::util::scid_utils;
+use crate::util::test_channel_signer::TestChannelSigner;
+use crate::util::test_utils;
+use crate::util::test_utils::{panicking, TestChainMonitor, TestScorer, TestKeysInterface};
+use crate::util::ser::{ReadableArgs, Writeable};
 
 use bitcoin::blockdata::block::{Block, Header, Version};
 use bitcoin::blockdata::locktime::absolute::LockTime;
@@ -43,13 +45,14 @@ use bitcoin::network::constants::Network;
 use bitcoin::pow::CompactTarget;
 use bitcoin::secp256k1::{PublicKey, SecretKey};
 
+use alloc::rc::Rc;
+use core::cell::RefCell;
+use core::iter::repeat;
+use core::mem;
+use core::ops::Deref;
 use crate::io;
 use crate::prelude::*;
-use core::cell::RefCell;
-use alloc::rc::Rc;
 use crate::sync::{Arc, Mutex, LockTestExt, RwLock};
-use core::mem;
-use core::iter::repeat;
 
 pub const CHAN_CONFIRM_DEPTH: u32 = 10;
 
@@ -388,6 +391,7 @@ pub struct NodeCfg<'a> {
 	pub tx_broadcaster: &'a test_utils::TestBroadcaster,
 	pub fee_estimator: &'a test_utils::TestFeeEstimator,
 	pub router: test_utils::TestRouter<'a>,
+	pub message_router: test_utils::TestMessageRouter<'a>,
 	pub chain_monitor: test_utils::TestChainMonitor<'a>,
 	pub keys_manager: &'a test_utils::TestKeysInterface,
 	pub logger: &'a test_utils::TestLogger,
@@ -407,6 +411,26 @@ type TestChannelManager<'node_cfg, 'chan_mon_cfg> = ChannelManager<
 	&'chan_mon_cfg test_utils::TestLogger,
 >;
 
+type TestOnionMessenger<'chan_man, 'node_cfg, 'chan_mon_cfg> = OnionMessenger<
+	DedicatedEntropy,
+	&'node_cfg test_utils::TestKeysInterface,
+	&'chan_mon_cfg test_utils::TestLogger,
+	&'node_cfg test_utils::TestMessageRouter<'chan_mon_cfg>,
+	&'chan_man TestChannelManager<'node_cfg, 'chan_mon_cfg>,
+	IgnoringMessageHandler,
+>;
+
+/// For use with [`OnionMessenger`] otherwise `test_restored_packages_retry` will fail. This is
+/// because that test uses older serialized data produced by calling [`EntropySource`] in a specific
+/// manner. Using the same [`EntropySource`] with [`OnionMessenger`] would introduce another call,
+/// causing the produced data to no longer match.
+pub struct DedicatedEntropy(RandomBytes);
+
+impl Deref for DedicatedEntropy {
+	type Target = RandomBytes;
+	fn deref(&self) -> &Self::Target { &self.0 }
+}
+
 pub struct Node<'chan_man, 'node_cfg: 'chan_man, 'chan_mon_cfg: 'node_cfg> {
 	pub chain_source: &'chan_mon_cfg test_utils::TestChainSource,
 	pub tx_broadcaster: &'chan_mon_cfg test_utils::TestBroadcaster,
@@ -415,6 +439,7 @@ pub struct Node<'chan_man, 'node_cfg: 'chan_man, 'chan_mon_cfg: 'node_cfg> {
 	pub chain_monitor: &'node_cfg test_utils::TestChainMonitor<'chan_mon_cfg>,
 	pub keys_manager: &'chan_mon_cfg test_utils::TestKeysInterface,
 	pub node: &'chan_man TestChannelManager<'node_cfg, 'chan_mon_cfg>,
+	pub onion_messenger: TestOnionMessenger<'chan_man, 'node_cfg, 'chan_mon_cfg>,
 	pub network_graph: &'node_cfg NetworkGraph<&'chan_mon_cfg test_utils::TestLogger>,
 	pub gossip_sync: P2PGossipSync<&'node_cfg NetworkGraph<&'chan_mon_cfg test_utils::TestLogger>, &'chan_mon_cfg test_utils::TestChainSource, &'chan_mon_cfg test_utils::TestLogger>,
 	pub node_seed: [u8; 32],
@@ -432,6 +457,14 @@ pub struct Node<'chan_man, 'node_cfg: 'chan_man, 'chan_mon_cfg: 'node_cfg> {
 		&'chan_mon_cfg test_utils::TestLogger,
 	>,
 }
+
+impl<'a, 'b, 'c> Node<'a, 'b, 'c> {
+	pub fn init_features(&self, peer_node_id: &PublicKey) -> InitFeatures {
+		self.override_init_features.borrow().clone()
+			.unwrap_or_else(|| self.node.init_features() | self.onion_messenger.provided_init_features(peer_node_id))
+	}
+}
+
 #[cfg(feature = "std")]
 impl<'a, 'b, 'c> std::panic::UnwindSafe for Node<'a, 'b, 'c> {}
 #[cfg(feature = "std")]
@@ -599,7 +632,7 @@ impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
 					node_signer: self.keys_manager,
 					signer_provider: self.keys_manager,
 					fee_estimator: &test_utils::TestFeeEstimator { sat_per_kw: Mutex::new(253) },
-					router: &test_utils::TestRouter::new(Arc::new(network_graph), &scorer),
+					router: &test_utils::TestRouter::new(Arc::new(network_graph), &self.logger, &scorer),
 					chain_monitor: self.chain_monitor,
 					tx_broadcaster: &broadcaster,
 					logger: &self.logger,
@@ -1054,6 +1087,7 @@ macro_rules! reload_node {
 
 		$new_channelmanager = _reload_node(&$node, $new_config, &chanman_encoded, $monitors_encoded);
 		$node.node = &$new_channelmanager;
+		$node.onion_messenger.set_offers_handler(&$new_channelmanager);
 	};
 	($node: expr, $chanman_encoded: expr, $monitors_encoded: expr, $persister: ident, $new_chain_monitor: ident, $new_channelmanager: ident) => {
 		reload_node!($node, $crate::util::config::UserConfig::default(), $chanman_encoded, $monitors_encoded, $persister, $new_chain_monitor, $new_channelmanager);
@@ -2897,7 +2931,8 @@ pub fn create_node_cfgs_with_persisters<'a>(node_count: usize, chanmon_cfgs: &'a
 			logger: &chanmon_cfgs[i].logger,
 			tx_broadcaster: &chanmon_cfgs[i].tx_broadcaster,
 			fee_estimator: &chanmon_cfgs[i].fee_estimator,
-			router: test_utils::TestRouter::new(network_graph.clone(), &chanmon_cfgs[i].scorer),
+			router: test_utils::TestRouter::new(network_graph.clone(), &chanmon_cfgs[i].logger, &chanmon_cfgs[i].scorer),
+			message_router: test_utils::TestMessageRouter::new(network_graph.clone()),
 			chain_monitor,
 			keys_manager: &chanmon_cfgs[i].keys_manager,
 			node_seed: seed,
@@ -2951,6 +2986,11 @@ pub fn create_network<'a, 'b: 'a, 'c: 'b>(node_count: usize, cfgs: &'b Vec<NodeC
 	let connect_style = Rc::new(RefCell::new(ConnectStyle::random_style()));
 
 	for i in 0..node_count {
+		let dedicated_entropy = DedicatedEntropy(RandomBytes::new([i as u8; 32]));
+		let onion_messenger = OnionMessenger::new(
+			dedicated_entropy, cfgs[i].keys_manager, cfgs[i].logger, &cfgs[i].message_router,
+			&chan_mgrs[i], IgnoringMessageHandler {},
+		);
 		let gossip_sync = P2PGossipSync::new(cfgs[i].network_graph.as_ref(), None, cfgs[i].logger);
 		let wallet_source = Arc::new(test_utils::TestWalletSource::new(SecretKey::from_slice(&[i as u8 + 1; 32]).unwrap()));
 		nodes.push(Node{
@@ -2958,7 +2998,7 @@ pub fn create_network<'a, 'b: 'a, 'c: 'b>(node_count: usize, cfgs: &'b Vec<NodeC
 			fee_estimator: cfgs[i].fee_estimator, router: &cfgs[i].router,
 			chain_monitor: &cfgs[i].chain_monitor, keys_manager: &cfgs[i].keys_manager,
 			node: &chan_mgrs[i], network_graph: cfgs[i].network_graph.as_ref(), gossip_sync,
-			node_seed: cfgs[i].node_seed, network_chan_count: chan_count.clone(),
+			node_seed: cfgs[i].node_seed, onion_messenger, network_chan_count: chan_count.clone(),
 			network_payment_count: payment_count.clone(), logger: cfgs[i].logger,
 			blocks: Arc::clone(&cfgs[i].tx_broadcaster.blocks),
 			connect_style: Rc::clone(&connect_style),
@@ -2973,16 +3013,24 @@ pub fn create_network<'a, 'b: 'a, 'c: 'b>(node_count: usize, cfgs: &'b Vec<NodeC
 
 	for i in 0..node_count {
 		for j in (i+1)..node_count {
-			nodes[i].node.peer_connected(&nodes[j].node.get_our_node_id(), &msgs::Init {
-				features: nodes[j].override_init_features.borrow().clone().unwrap_or_else(|| nodes[j].node.init_features()),
+			let node_id_i = nodes[i].node.get_our_node_id();
+			let node_id_j = nodes[j].node.get_our_node_id();
+
+			let init_i = msgs::Init {
+				features: nodes[i].init_features(&node_id_j),
 				networks: None,
 				remote_network_address: None,
-			}, true).unwrap();
-			nodes[j].node.peer_connected(&nodes[i].node.get_our_node_id(), &msgs::Init {
-				features: nodes[i].override_init_features.borrow().clone().unwrap_or_else(|| nodes[i].node.init_features()),
+			};
+			let init_j = msgs::Init {
+				features: nodes[j].init_features(&node_id_i),
 				networks: None,
 				remote_network_address: None,
-			}, false).unwrap();
+			};
+
+			nodes[i].node.peer_connected(&node_id_j, &init_j, true).unwrap();
+			nodes[j].node.peer_connected(&node_id_i, &init_i, false).unwrap();
+			nodes[i].onion_messenger.peer_connected(&node_id_j, &init_j, true).unwrap();
+			nodes[j].onion_messenger.peer_connected(&node_id_i, &init_i, false).unwrap();
 		}
 	}
 

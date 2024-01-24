@@ -20,8 +20,6 @@ use crate::blinded_path::message::{advance_path_by_one, ForwardTlvs, ReceiveTlvs
 use crate::blinded_path::utils;
 use crate::events::{Event, EventHandler, EventsProvider};
 use crate::sign::{EntropySource, NodeSigner, Recipient};
-#[cfg(not(c_bindings))]
-use crate::ln::channelmanager::{SimpleArcChannelManager, SimpleRefChannelManager};
 use crate::ln::features::{InitFeatures, NodeFeatures};
 use crate::ln::msgs::{self, OnionMessage, OnionMessageHandler, SocketAddress};
 use crate::ln::onion_utils;
@@ -42,6 +40,7 @@ use crate::prelude::*;
 #[cfg(not(c_bindings))]
 use {
 	crate::sign::KeysManager,
+	crate::ln::channelmanager::{SimpleArcChannelManager, SimpleRefChannelManager},
 	crate::ln::peer_handler::IgnoringMessageHandler,
 	crate::sync::Arc,
 };
@@ -714,6 +713,11 @@ where
 		}
 	}
 
+	#[cfg(test)]
+	pub(crate) fn set_offers_handler(&mut self, offers_handler: OMH) {
+		self.offers_handler = offers_handler;
+	}
+
 	/// Sends an [`OnionMessage`] with the given `contents` to `destination`.
 	///
 	/// See [`OnionMessenger`] for example usage.
@@ -814,6 +818,14 @@ where
 		self.enqueue_onion_message(path, contents, reply_path, format_args!(""))
 	}
 
+	pub(crate) fn peel_onion_message(
+		&self, msg: &OnionMessage
+	) -> Result<PeeledOnion<<<CMH>::Target as CustomOnionMessageHandler>::CustomMessage>, ()> {
+		peel_onion_message(
+			msg, &self.secp_ctx, &*self.node_signer, &*self.logger, &*self.custom_handler
+		)
+	}
+
 	fn handle_onion_message_response<T: OnionMessageContents>(
 		&self, response: Option<T>, reply_path: Option<BlindedPath>, log_suffix: fmt::Arguments
 	) {
@@ -899,9 +911,7 @@ where
 	CMH::Target: CustomOnionMessageHandler,
 {
 	fn handle_onion_message(&self, _peer_node_id: &PublicKey, msg: &OnionMessage) {
-		match peel_onion_message(
-			msg, &self.secp_ctx, &*self.node_signer, &*self.logger, &*self.custom_handler
-		) {
+		match self.peel_onion_message(msg) {
 			Ok(PeeledOnion::Receive(message, path_id, reply_path)) => {
 				log_trace!(
 					self.logger,

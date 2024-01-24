@@ -297,6 +297,11 @@ impl<'a, T: secp256k1::Signing> RefundBuilder<'a, T> {
 
 #[cfg(test)]
 impl<'a, T: secp256k1::Signing> RefundBuilder<'a, T> {
+	pub(crate) fn clear_paths(mut self) -> Self {
+		self.refund.paths = None;
+		self
+	}
+
 	fn features_unchecked(mut self, features: InvoiceRequestFeatures) -> Self {
 		self.refund.features = features;
 		self

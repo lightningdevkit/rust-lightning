@@ -23,7 +23,7 @@ use crate::routing::router::{BlindedTail, InFlightHtlcs, Path, PaymentParameters
 use crate::util::errors::APIError;
 use crate::util::logger::Logger;
 use crate::util::time::Time;
-#[cfg(all(not(feature = "no-std"), test))]
+#[cfg(all(feature = "std", test))]
 use crate::util::time::tests::SinceEpoch;
 use crate::util::ser::ReadableArgs;
 
@@ -287,7 +287,7 @@ pub enum Retry {
 	/// retry, and may retry multiple failed HTLCs at once if they failed around the same time and
 	/// were retried along a route from a single call to [`Router::find_route_with_id`].
 	Attempts(u32),
-	#[cfg(not(feature = "no-std"))]
+	#[cfg(feature = "std")]
 	/// Time elapsed before abandoning retries for a payment. At least one attempt at payment is made;
 	/// see [`PaymentParameters::expiry_time`] to avoid any attempt at payment after a specific time.
 	///
@@ -295,13 +295,13 @@ pub enum Retry {
 	Timeout(core::time::Duration),
 }
 
-#[cfg(feature = "no-std")]
+#[cfg(not(feature = "std"))]
 impl_writeable_tlv_based_enum!(Retry,
 	;
 	(0, Attempts)
 );
 
-#[cfg(not(feature = "no-std"))]
+#[cfg(feature = "std")]
 impl_writeable_tlv_based_enum!(Retry,
 	;
 	(0, Attempts),
@@ -314,10 +314,10 @@ impl Retry {
 			(Retry::Attempts(max_retry_count), PaymentAttempts { count, .. }) => {
 				max_retry_count > count
 			},
-			#[cfg(all(not(feature = "no-std"), not(test)))]
+			#[cfg(all(feature = "std", not(test)))]
 			(Retry::Timeout(max_duration), PaymentAttempts { first_attempted_at, .. }) =>
 				*max_duration >= crate::util::time::MonotonicTime::now().duration_since(*first_attempted_at),
-			#[cfg(all(not(feature = "no-std"), test))]
+			#[cfg(all(feature = "std", test))]
 			(Retry::Timeout(max_duration), PaymentAttempts { first_attempted_at, .. }) =>
 				*max_duration >= SinceEpoch::now().duration_since(*first_attempted_at),
 		}
@@ -343,27 +343,27 @@ pub(crate) struct PaymentAttemptsUsingTime<T: Time> {
 	/// it means the result of the first attempt is not known yet.
 	pub(crate) count: u32,
 	/// This field is only used when retry is `Retry::Timeout` which is only build with feature std
-	#[cfg(not(feature = "no-std"))]
+	#[cfg(feature = "std")]
 	first_attempted_at: T,
-	#[cfg(feature = "no-std")]
+	#[cfg(not(feature = "std"))]
 	phantom: core::marker::PhantomData<T>,
 
 }
 
-#[cfg(not(any(feature = "no-std", test)))]
-type ConfiguredTime = crate::util::time::MonotonicTime;
-#[cfg(feature = "no-std")]
+#[cfg(not(feature = "std"))]
 type ConfiguredTime = crate::util::time::Eternity;
-#[cfg(all(not(feature = "no-std"), test))]
+#[cfg(all(feature = "std", not(test)))]
+type ConfiguredTime = crate::util::time::MonotonicTime;
+#[cfg(all(feature = "std", test))]
 type ConfiguredTime = SinceEpoch;
 
 impl<T: Time> PaymentAttemptsUsingTime<T> {
 	pub(crate) fn new() -> Self {
 		PaymentAttemptsUsingTime {
 			count: 0,
-			#[cfg(not(feature = "no-std"))]
+			#[cfg(feature = "std")]
 			first_attempted_at: T::now(),
-			#[cfg(feature = "no-std")]
+			#[cfg(not(feature = "std"))]
 			phantom: core::marker::PhantomData,
 		}
 	}
@@ -371,9 +371,9 @@ impl<T: Time> PaymentAttemptsUsingTime<T> {
 
 impl<T: Time> Display for PaymentAttemptsUsingTime<T> {
 	fn fmt(&self, f: &mut Formatter) -> Result<(), fmt::Error> {
-		#[cfg(feature = "no-std")]
+		#[cfg(not(feature = "std"))]
 		return write!(f, "attempts: {}", self.count);
-		#[cfg(not(feature = "no-std"))]
+		#[cfg(feature = "std")]
 		return write!(
 			f,
 			"attempts: {}, duration: {}s",
@@ -1888,7 +1888,7 @@ mod tests {
 		let logger = test_utils::TestLogger::new();
 		let network_graph = Arc::new(NetworkGraph::new(Network::Testnet, &logger));
 		let scorer = RwLock::new(test_utils::TestScorer::new());
-		let router = test_utils::TestRouter::new(network_graph, &scorer);
+		let router = test_utils::TestRouter::new(network_graph, &logger, &scorer);
 		let secp_ctx = Secp256k1::new();
 		let keys_manager = test_utils::TestKeysInterface::new(&[0; 32], Network::Testnet);
 
@@ -1932,7 +1932,7 @@ mod tests {
 		let logger = test_utils::TestLogger::new();
 		let network_graph = Arc::new(NetworkGraph::new(Network::Testnet, &logger));
 		let scorer = RwLock::new(test_utils::TestScorer::new());
-		let router = test_utils::TestRouter::new(network_graph, &scorer);
+		let router = test_utils::TestRouter::new(network_graph, &logger, &scorer);
 		let secp_ctx = Secp256k1::new();
 		let keys_manager = test_utils::TestKeysInterface::new(&[0; 32], Network::Testnet);
 
@@ -1971,7 +1971,7 @@ mod tests {
 		let logger = test_utils::TestLogger::new();
 		let network_graph = Arc::new(NetworkGraph::new(Network::Testnet, &logger));
 		let scorer = RwLock::new(test_utils::TestScorer::new());
-		let router = test_utils::TestRouter::new(network_graph, &scorer);
+		let router = test_utils::TestRouter::new(network_graph, &logger, &scorer);
 		let secp_ctx = Secp256k1::new();
 		let keys_manager = test_utils::TestKeysInterface::new(&[0; 32], Network::Testnet);
 
@@ -2178,7 +2178,7 @@ mod tests {
 		let logger = test_utils::TestLogger::new();
 		let network_graph = Arc::new(NetworkGraph::new(Network::Testnet, &logger));
 		let scorer = RwLock::new(test_utils::TestScorer::new());
-		let router = test_utils::TestRouter::new(network_graph, &scorer);
+		let router = test_utils::TestRouter::new(network_graph, &logger, &scorer);
 		let keys_manager = test_utils::TestKeysInterface::new(&[0; 32], Network::Testnet);
 
 		let pending_events = Mutex::new(VecDeque::new());
@@ -2229,7 +2229,7 @@ mod tests {
 		let logger = test_utils::TestLogger::new();
 		let network_graph = Arc::new(NetworkGraph::new(Network::Testnet, &logger));
 		let scorer = RwLock::new(test_utils::TestScorer::new());
-		let router = test_utils::TestRouter::new(network_graph, &scorer);
+		let router = test_utils::TestRouter::new(network_graph, &logger, &scorer);
 		let keys_manager = test_utils::TestKeysInterface::new(&[0; 32], Network::Testnet);
 
 		let pending_events = Mutex::new(VecDeque::new());
@@ -2288,7 +2288,7 @@ mod tests {
 		let logger = test_utils::TestLogger::new();
 		let network_graph = Arc::new(NetworkGraph::new(Network::Testnet, &logger));
 		let scorer = RwLock::new(test_utils::TestScorer::new());
-		let router = test_utils::TestRouter::new(network_graph, &scorer);
+		let router = test_utils::TestRouter::new(network_graph, &logger, &scorer);
 		let keys_manager = test_utils::TestKeysInterface::new(&[0; 32], Network::Testnet);
 
 		let pending_events = Mutex::new(VecDeque::new());
@@ -2347,7 +2347,7 @@ mod tests {
 		let logger = test_utils::TestLogger::new();
 		let network_graph = Arc::new(NetworkGraph::new(Network::Testnet, &logger));
 		let scorer = RwLock::new(test_utils::TestScorer::new());
-		let router = test_utils::TestRouter::new(network_graph, &scorer);
+		let router = test_utils::TestRouter::new(network_graph, &logger, &scorer);
 		let keys_manager = test_utils::TestKeysInterface::new(&[0; 32], Network::Testnet);
 
 		let pending_events = Mutex::new(VecDeque::new());

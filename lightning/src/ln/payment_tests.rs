@@ -42,10 +42,12 @@ use crate::prelude::*;
 use crate::ln::functional_test_utils;
 use crate::ln::functional_test_utils::*;
 use crate::routing::gossip::NodeId;
+
 #[cfg(feature = "std")]
-use std::time::{SystemTime, Instant, Duration};
-#[cfg(not(feature = "no-std"))]
-use crate::util::time::tests::SinceEpoch;
+use {
+	crate::util::time::tests::SinceEpoch,
+	std::time::{SystemTime, Instant, Duration},
+};
 
 #[test]
 fn mpp_failure() {
@@ -2313,7 +2315,7 @@ fn do_automatic_retries(test: AutoRetry) {
 		let mut msg_events = nodes[0].node.get_and_clear_pending_msg_events();
 		assert_eq!(msg_events.len(), 0);
 	} else if test == AutoRetry::FailTimeout {
-		#[cfg(not(feature = "no-std"))] {
+		#[cfg(feature = "std")] {
 			// Ensure ChannelManager will not retry a payment if it times out due to Retry::Timeout.
 			nodes[0].node.send_payment(payment_hash, RecipientOnionFields::secret_only(payment_secret),
 				PaymentId(payment_hash.0), route_params, Retry::Timeout(Duration::from_secs(60))).unwrap();
