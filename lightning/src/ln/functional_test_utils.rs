@@ -38,12 +38,12 @@ use bitcoin::blockdata::locktime::absolute::LockTime;
 use bitcoin::blockdata::script::ScriptBuf;
 use bitcoin::blockdata::transaction::{Sequence, Transaction, TxIn, TxOut};
 use bitcoin::blockdata::witness::Witness;
-use bitcoin::hash_types::{BlockHash, TxMerkleNode, WPubkeyHash};
+use bitcoin::hash_types::{BlockHash, TxMerkleNode};
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::Hash as _;
 use bitcoin::network::constants::Network;
 use bitcoin::pow::CompactTarget;
-use bitcoin::secp256k1::{PublicKey, SecretKey};
+use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
 
 use crate::io;
 use crate::prelude::*;
@@ -1085,14 +1085,24 @@ pub fn create_coinbase_funding_transaction<'a, 'b, 'c>(node: &Node<'a, 'b, 'c>,
 	internal_create_funding_transaction(node, expected_counterparty_node_id, expected_chan_value, expected_user_chan_id, true)
 }
 
-pub fn create_dual_funding_utxo_with_prev_tx<'a, 'b, 'c>(
+/// Create a to-be-contributed custom input for a dual-funded transaction
+pub fn create_custom_dual_funding_input<'a, 'b, 'c>(
 	node: &Node<'a, 'b, 'c>, value_satoshis: u64,
+) -> (TxIn, Transaction) {
+	let dummy_secret_key = SecretKey::from_slice(&[2; 32]).unwrap();
+	create_custom_dual_funding_input_with_pubkey(node, value_satoshis, &PublicKey::from_secret_key(&Secp256k1::new(), &dummy_secret_key))
+}
+
+/// Create a to-be-contributed custom input for a dual-funded transaction, from the specified pubkey
+pub fn create_custom_dual_funding_input_with_pubkey<'a, 'b, 'c>(
+	node: &Node<'a, 'b, 'c>, value_satoshis: u64, custom_input_pubkey: &PublicKey,
 ) -> (TxIn, Transaction) {
 	let chan_id = *node.network_chan_count.borrow();
 
+	let input_pubkeyhash = bitcoin::key::PublicKey::new(*custom_input_pubkey).wpubkey_hash().unwrap();
 	let tx = Transaction { version: chan_id as i32, lock_time: LockTime::ZERO, input: vec![],
 		output: vec![TxOut {
-			value: value_satoshis, script_pubkey: ScriptBuf::new_v0_p2wpkh(&WPubkeyHash::all_zeros()),
+			value: value_satoshis, script_pubkey: ScriptBuf::new_v0_p2wpkh(&input_pubkeyhash),
 		}]};
 	let funding_input = TxIn {
 		previous_output: OutPoint {

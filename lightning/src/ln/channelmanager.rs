@@ -20,6 +20,7 @@
 use bitcoin::blockdata::block::Header;
 use bitcoin::blockdata::transaction::Transaction;
 use bitcoin::blockdata::constants::ChainHash;
+use bitcoin::locktime::absolute::LockTime;
 use bitcoin::key::constants::SECRET_KEY_SIZE;
 use bitcoin::network::constants::Network;
 
@@ -43,7 +44,7 @@ use crate::events::{Event, EventHandler, EventsProvider, MessageSendEvent, Messa
 // Since this struct is returned in `list_channels` methods, expose it here in case users want to
 // construct one themselves.
 use crate::ln::{inbound_payment, ChannelId, PaymentHash, PaymentPreimage, PaymentSecret};
-use crate::ln::channel::{Channel, ChannelPhase, ChannelContext, ChannelError, ChannelUpdateStatus, ShutdownResult, UnfundedChannelContext, UpdateFulfillCommitFetch, OutboundV1Channel, InboundV1Channel, PendingSpliceInfo, WithChannelContext};
+use crate::ln::channel::{Channel, ChannelPhase, ChannelContext, ChannelError, ChannelUpdateStatus, DualFundingChannelContext, ShutdownResult, UnfundedChannelContext, UpdateFulfillCommitFetch, OutboundV1Channel, InboundV1Channel, PendingSpliceInfo, WithChannelContext};
 #[cfg(dual_funding)]
 use crate::ln::channel::{InboundV2Channel, OutboundV2Channel};
 use crate::ln::features::{Bolt12InvoiceFeatures, ChannelFeatures, ChannelTypeFeatures, InitFeatures, NodeFeatures};
@@ -2746,7 +2747,13 @@ where
 					}
 					// Store post-splicing channel value (pending)
 					// TODO check if pending_splice is already set
-					chan.context.pending_splice = Some(PendingSpliceInfo::new(relative_satoshis, current_value_sats, true, funding_feerate_perkw));
+					chan.context.pending_splice = Some(PendingSpliceInfo::new(relative_satoshis, current_value_sats, true));
+					chan.dual_funding_channel_context = Some(DualFundingChannelContext {
+						our_funding_satoshis: chan.context.pending_splice.as_ref().unwrap().post_channel_value,
+						their_funding_satoshis: 0,
+						funding_tx_locktime: LockTime::ZERO, // TODO
+						funding_feerate_sat_per_1000_weight: funding_feerate_perkw,
+					});
 
 					let msg = chan.get_splice(self.chain_hash.clone(), relative_satoshis, funding_feerate_perkw, locktime);
 
@@ -4178,30 +4185,27 @@ where
 				let tx_msg_opt = match phase.get_mut() {
 					ChannelPhase::UnfundedOutboundV2(chan) => {
 						chan.begin_interactive_funding_tx_construction(&self.signer_provider,
-							&self.entropy_source, self.get_our_node_id(), funding_inputs)?
+							&self.entropy_source, self.get_our_node_id(), false, funding_inputs, &self.logger,
+						)?
 					},
 					ChannelPhase::UnfundedInboundV2(chan) => {
 						chan.begin_interactive_funding_tx_construction(&self.signer_provider,
-							&self.entropy_source, self.get_our_node_id(), funding_inputs)?
+							&self.entropy_source, self.get_our_node_id(), false, funding_inputs, &self.logger,
+						)?
 					},
 					// This is neeed when Channel is not changed during splicing, and interactive
 					// transaction is constructed on the Funded channel. TODO: remove if new
 					// unfunded channel instance is used during splicing
 					ChannelPhase::Funded(chan) => {
 						if chan.context.pending_splice.is_some() {
-							// prepare current funding tx as extra funding input
-							let (tx_input_curr_funding, curr_funding_tx) = chan.context.get_input_of_current_funding().unwrap();
-							let mut funding_inputs_with_curr = vec![(tx_input_curr_funding, curr_funding_tx)];
-							for tx_tuple in funding_inputs {
-								funding_inputs_with_curr.push(tx_tuple);
-							}
+							let msg = chan.begin_interactive_funding_tx_construction(&self.signer_provider,
+								&self.entropy_source, self.get_our_node_id(), true, true, funding_inputs, &self.logger)?;
 
 							// Commit to post-splice parameters prematurely, to have right values for commitment building
 							// TODO: commitment should happen only upon confirmation
-							let _ = chan.context.early_commit_pending_splice(&self.logger).unwrap();
+							let _ = chan.context.commit_pending_splice(&self.logger).unwrap();
 
-							chan.begin_interactive_funding_tx_construction(&self.signer_provider,
-								&self.entropy_source, self.get_our_node_id(), true, funding_inputs_with_curr)?
+							msg
 						} else {
 							return Err(APIError::APIMisuseError {
 								err: format!("Channel is funded and in not actively splicing {}", chan.context.channel_id())
@@ -4241,7 +4245,7 @@ where
 	#[cfg(dual_funding)]
 	pub fn funding_transaction_signed(&self, channel_id: &ChannelId, counterparty_node_id: &PublicKey,
 		transaction: Transaction) -> Result<(), APIError> {
-		let witnesses: Vec<_> = transaction.input.into_iter().enumerate().filter_map(|(idx, input)| {
+		let witnesses: Vec<_> = transaction.input.clone().into_iter().enumerate().filter_map(|(idx, input)| {
 			if input.witness.is_empty() { None } else { Some(input.witness) }
 		}).collect();
 
@@ -4256,7 +4260,16 @@ where
 			Some(ChannelPhase::Funded(chan)) => {
 				chan.verify_interactive_tx_signatures(&witnesses);
 				if let Some(ref mut signing_session) = chan.interactive_tx_signing_session {
-					if let Some(tx_signatures) = signing_session.provide_holder_witnesses(*channel_id, witnesses) {
+					// Shared signature (splicing): holder signature on the prev funding tx input should have been saved.
+					// include it in tlvs field
+					let mut tlvs = None;
+					if chan.context.pending_splice.is_some() {
+						if let Some(s) = signing_session.shared_signature {
+							tlvs = Some(s);
+						} // TODO error
+						assert!(tlvs.is_some());
+					}
+					if let Some(tx_signatures) = signing_session.provide_holder_witnesses(*channel_id, witnesses, tlvs) {
 						peer_state.pending_msg_events.push(events::MessageSendEvent::SendTxSignatures {
 							node_id: *counterparty_node_id,
 							msg: tx_signatures,
@@ -6669,7 +6682,7 @@ where
 				channel.context.set_outbound_scid_alias(outbound_scid_alias);
 
 				channel.begin_interactive_funding_tx_construction(&self.signer_provider, &self.entropy_source,
-					self.get_our_node_id(), Vec::new()).map_err(|_| MsgHandleErrInternal::send_err_msg_no_close(
+					self.get_our_node_id(), false, Vec::new(), &self.logger).map_err(|_| MsgHandleErrInternal::send_err_msg_no_close(
 						"Failed to start interactive transaction construction".to_owned(), msg.temporary_channel_id))?;
 
 				peer_state.pending_msg_events.push(events::MessageSendEvent::SendAcceptChannelV2 {
@@ -7221,7 +7234,7 @@ where
 				let channel_phase = chan_phase_entry.get_mut();
 				match channel_phase {
 					ChannelPhase::Funded(chan) => {
-						let (tx_signatures_opt, funding_tx_opt) = try_chan_phase_entry!(self, chan.tx_signatures(&msg), chan_phase_entry);
+						let (tx_signatures_opt, funding_tx_opt) = try_chan_phase_entry!(self, chan.tx_signatures(&msg, &self.logger), chan_phase_entry);
 						if let Some(tx_signatures) = tx_signatures_opt {
 							peer_state.pending_msg_events.push(events::MessageSendEvent::SendTxSignatures {
 								node_id: *counterparty_node_id,
@@ -8114,11 +8127,13 @@ where
 				if let ChannelPhase::Funded(chan) = chan_entry.get_mut() {
 					// Store post-splicing channel value (pending)
 					// TODO check if there is a pending already
-					chan.context.pending_splice = Some(PendingSpliceInfo::new(msg.relative_satoshis, chan.context.get_value_satoshis(), false, msg.funding_feerate_perkw));
-
-					// Commit to post-splice parameters prematurely, to have right values for commitment building
-					// TODO: commitment should happen only upon confirmation
-					let _ = chan.context.early_commit_pending_splice(&self.logger).unwrap();
+					chan.context.pending_splice = Some(PendingSpliceInfo::new(msg.relative_satoshis, chan.context.get_value_satoshis(), false));
+					chan.dual_funding_channel_context = Some(DualFundingChannelContext {
+						our_funding_satoshis: 0,
+						their_funding_satoshis: 0,
+						funding_tx_locktime: LockTime::ZERO, // TODO
+						funding_feerate_sat_per_1000_weight: msg.funding_feerate_perkw,
+					});
 
 					let new_msg = chan.get_splice_ack(self.chain_hash.clone(), msg.relative_satoshis);
 					peer_state.pending_msg_events.push(events::MessageSendEvent::SendSpliceAck {
@@ -8126,15 +8141,21 @@ where
 						msg: new_msg,
 					});
 
-					chan.begin_interactive_funding_tx_construction(
+					let _msg = chan.begin_interactive_funding_tx_construction(
 						&self.signer_provider,
 						&self.entropy_source,
 						self.get_our_node_id(),
 						false,
+						true,
 						Vec::new(),
+						&self.logger,
 					).map_err(|e0| MsgHandleErrInternal::send_err_msg_no_close(
 						format!("Failed to start interactive transaction construction, {:?}", e0), msg.channel_id
 					))?;
+
+					// Commit to post-splice parameters prematurely, to have right values for commitment building
+					// TODO: commitment should happen only upon confirmation
+					let _ = chan.context.commit_pending_splice(&self.logger).unwrap();
 
 					Ok(())
 				} else {
@@ -13370,7 +13391,7 @@ mod tests {
 		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 		// Create a funding input for the new channel along with its previous transaction.
-		let funding_inputs = vec![create_dual_funding_utxo_with_prev_tx(&nodes[0], 100_000)];
+		let funding_inputs = vec![create_custom_dual_funding_input(&nodes[0], 100_000)];
 		let funding_satoshis = 50_000;
 
 		// nodes[0] creates a dual-funded channel as initiator.

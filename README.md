@@ -38,7 +38,7 @@ To test: `RUSTFLAGS="--cfg=dual_funding" cargo test -p lightning splic`
 
 Detailed steps
 --------------
-(as of Jan 10, e5122bf, splicing-hapa5-iatx)
+(as of Jan 24, d0b0be1, splicing-hapa6)
 
 [S1I] splice_channel() - ChannelManager API
 [S2I] get_splice() - Channel
@@ -47,69 +47,70 @@ handle_splice() - ChannelManager
 [S3A] internal_splice() - ChannelManager
 [S4A] get_splice_ack - Channel
 [A] begin_interactive_funding_tx_construction() - Channel
+[A] begin_interactive_funding_tx_construction() - ChannelContext
 message in: splice_ack
 handle_splice_ack() - ChannelManager
-[S5I] internal_splice_ack - ChannelManager
+[S5I] internal_splice_ack() - ChannelManager
 event: SpliceAckedInputsContributionReady
 action by client, create input for new funding
-contribute_funding_inputs - ChannelManager API
+[I] contribute_funding_inputs() - ChannelManager API
 [I] begin_interactive_funding_tx_construction() - Channel
+[I] begin_interactive_funding_tx_construction() - ChannelContext
+[I] InteractiveTxConstructor::new()
 message out: tx_add_input
-[A] handle_tx_add_input - ChannelManager
+[A] handle_tx_add_input() - ChannelManager
+[A] internal_tx_add_input() - ChannelManager
+[A] tx_add_input() - Channel
+[A] handle_tx_add_input - InteractiveTxConstructor
 message in: tx_complete
-[I] handle_tx_complete
+[I] handle_tx_complete() - ChannelManager
+[I] internal_tx_complete() - ChannelManager
+[I] tx_complete() - ChannelContext
+[I] handle_tx_complete() - InteractiveTxConstructor
 message out: tx_add_input, second
-[A] handle_tx_add_input - ChannelManager
+[A] handle_tx_add_input() - ChannelManager
 message in: tx_complete
-[I] handle_tx_complete
+[I] handle_tx_complete() - ChannelManager
 message out: tx_add_output - for change
-[A] handle_tx_add_output
+[A] handle_tx_add_output() - ChannelManager
 message in: tx_complete
-[I] handle_tx_complete
+[I] handle_tx_complete() - ChannelManager
 message out: tx_add_output - for new funding
-[A] handle_tx_add_output
+[A] handle_tx_add_output() - ChannelManager
 message in: tx_complete
-[I] handle_tx_complete
+[I] handle_tx_complete() - ChannelManager
+[I] funding_tx_constructed() - Channel
+[I] get_initial_commitment_signed() - Channel
+[I] interactive_tx_constructor = None
+[I] channel_state = FundingNegotiated
+message out: tx_complete
+message out: commitment_signed
 event: FundingTransactionReadyForSigning
-message_out: tx_complete
-...
-
-Previous as of Jan 8, dfe53d7, splicing-hapa4
-
-[S1I] splice_channel() - ChannelManager API
-[S2I] get_splice() - Channel
-message out: splice
-[S3A] internal_splice() - ChannelManager
-[S4A] get_splice_ack - Channel
-message in: splice_ack
-handle_splice_ack()
-[S5I] internal_splice_ack - ChannelManager
-event: SpliceAcked
-action by client
-splice_transaction_generated - ChannelManager API
-[S6I] splice_transaction_generated_intern() - ChannelManager
-[S7I] splice_generated() - Channel
-message out: splice_created
-[S8A] internal_splice_created() - ChannelManager
-[S9A] splice_created() - Channel
-message in: tx_complete
-[S10I] internal_tx_complete() - ChannelManager
-[S11I] splice_tx_complete() - Channel
-message out: splice_comm_signed
-[S12A] internal_splice_comm_signed() - ChannelManager
-[S13A] splice_comm_signed() - Channel
-message in: splice_comm_ack
-[S14I] internal_splice_comm_ack() - ChannelManager
-[S15I] splice_comm_ack() - Channel
-message out: splice_signed
-[S16A] internal_splice_signed() - ChannelManager
-[S17A] splice_signed() - Channel
-message in: splice_signed_ack
-[S18I] internal_splice_signed_ack() - ChannelManager
-[S19I] splice_signed_ack() - Channel
+[I] funding_transaction_signed() - ChannelManager
+[I] verify_interactive_tx_signatures() - Channel
+[I] provide_holder_witnesses() - InteractiveTxSigningSession
+[A] handle_tx_complete() - ChannelManager
+message in: commitment_signed
+[A] handle_commitment_signed() - ChannelManager
+[A] internal_commitment_signed() - ChannelManager
+[A] commitment_signed_initial_v2() - Channel
+[A] watch_channel() - ChainMonitor
+[I] handle_commitment_signed() - ChannelManager
+message in: tx_signatures
+[I] handle_tx_signatures - ChannelManager
+message out: tx_signatures
+[A] handle_tx_signatures - ChannelManager
 waiting for confirmation
-transactions_confirmed() - Channel
-commit_pending_splice() - Channel
+[I] transactions_confirmed() - Channel
+[I] commit_pending_splice() - ChannelContext
+[I] channel_state = AwaitingChannelReady
+[I] clear_pending_splice() - ChannelContext
+message out: channel_ready
+message in: channel_ready
+[A] handle_channel_ready() - ChannelManager
+message in: channel_update
+[I] handle_channel_ready() - ChannelManager
+message out: channel_update
 
 
 Status

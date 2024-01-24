@@ -16,6 +16,7 @@ use bitcoin::consensus::Encodable;
 use bitcoin::locktime::absolute::LockTime;
 use bitcoin::policy::MAX_STANDARD_TX_WEIGHT;
 use bitcoin::secp256k1::PublicKey;
+use bitcoin::secp256k1::ecdsa::Signature;
 use bitcoin::{OutPoint, Sequence, Transaction, TxIn, TxOut, Witness};
 
 use crate::chain::chaininterface::fee_for_weight;
@@ -88,6 +89,8 @@ pub struct InteractiveTxSigningSession {
 	received_commitment_signed: Option<CommitmentSigned>,
 	holder_tx_signatures: Option<TxSignatures>,
 	counterparty_tx_signatures: Option<TxSignatures>,
+	/// TODO comment
+	pub shared_signature: Option<Signature>,
 }
 
 impl InteractiveTxSigningSession {
@@ -125,7 +128,12 @@ impl InteractiveTxSigningSession {
 		(holder_tx_signatures, funding_tx)
 	}
 
-	pub fn provide_holder_witnesses(&mut self, channel_id: ChannelId, witnesses: Vec<Witness>) -> Option<TxSignatures> {
+	/// witnesses: The witnesses for each holder input
+	/// shared_signature: optional signature on the shared (co-signed) input, included in the
+	/// TxSignature.tlvs field. Used in splicing.
+	pub fn provide_holder_witnesses(
+		&mut self, channel_id: ChannelId, witnesses: Vec<Witness>, shared_signature: Option<Signature>,
+	) -> Option<TxSignatures> {
 		self.inputs.iter_mut().filter_map(|input| match input {
 			InteractiveTxInput::HolderInput(TxInputWithPrevOutput { input, .. }) => Some(input),
 			_ => None,
@@ -133,8 +141,8 @@ impl InteractiveTxSigningSession {
 		self.holder_tx_signatures = Some(TxSignatures {
 			channel_id,
 			tx_hash: self.constructed_transaction.txid(),
-			witnesses: witnesses.into_iter().map(|witness| witness).collect(),
-			tlvs: None,
+			witnesses,
+			tlvs: shared_signature,
 		});
 		if self.received_commitment_signed.is_some() &&
 			(self.holder_sends_tx_signatures_first || self.counterparty_tx_signatures.is_some()) {
@@ -161,6 +169,8 @@ impl InteractiveTxSigningSession {
 		}).collect();
 		self.constructed_transaction.clone()
 	}
+
+	pub fn counterparty_tx_signatures(&self) -> Option<&TxSignatures> { self.counterparty_tx_signatures.as_ref() }
 }
 
 #[derive(Debug)]
@@ -591,6 +601,7 @@ macro_rules! define_state_transitions {
 					received_commitment_signed: None,
 					holder_tx_signatures: None,
 					counterparty_tx_signatures: None,
+					shared_signature: None,
 				};
 				Ok(NegotiationComplete(signing_session))
 			}
@@ -925,7 +936,7 @@ mod tests {
 			entropy_source, channel_id, FEERATE_FLOOR_SATS_PER_KW * 10, holder_node_id, counterparty_node_id, true, tx_locktime, session.inputs_a.clone(), session.outputs_a.clone()
 		);
 		let (mut constructor_b, first_message_b) = InteractiveTxConstructor::new(
-			entropy_source, channel_id, FEERATE_FLOOR_SATS_PER_KW * 10, holder_node_id, counterparty_node_id, false, tx_locktime, session.inputs_b.clone(), session.outputs_b.clone()
+			entropy_source, channel_id, FEERATE_FLOOR_SATS_PER_KW * 10, holder_node_id, counterparty_node_id, false, tx_locktime, session.inputs_b.clone(), session.outputs_b.clone()	
 		);
 
 		let handle_message_send = |msg: InteractiveTxMessageSend, for_constructor: &mut InteractiveTxConstructor| {

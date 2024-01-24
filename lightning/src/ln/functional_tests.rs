@@ -276,8 +276,9 @@ fn test_channel_open_v2_and_close() {
 
 	// Initiator and Acceptor nodes. Order matters, we want the case when initiator pubkey is larger.
 	let initiator_node_index = 0;
+	let acceptor_node_index = 1;
 	let initiator_node = &nodes[initiator_node_index];
-	let acceptor_node = &nodes[1];
+	let acceptor_node = &nodes[acceptor_node_index];
 
 	// Instantiate channel parameters where we push the maximum msats given our funding satoshis
 	let channel_value_sat = 100000; // same as funding satoshis
@@ -305,8 +306,8 @@ fn test_channel_open_v2_and_close() {
 		}
 		_ => panic!("FundingInputsContributionReady event missing {:?}", events[0]),
 	};
-
-	let funding_inputs = vec![create_dual_funding_utxo_with_prev_tx(&initiator_node, channel_value_sat * 2)];
+	let custom_input_secret_key = SecretKey::from_slice(&[2; 32]).unwrap();
+	let funding_inputs = vec![create_custom_dual_funding_input_with_pubkey(&initiator_node, channel_value_sat * 2, &PublicKey::from_secret_key(&Secp256k1::new(), &custom_input_secret_key))];
 	let _res = initiator_node.node.contribute_funding_inputs(&channel_id, &acceptor_node.node.get_our_node_id(), funding_inputs).unwrap();
 
 	// initiator_node will generate a TxAddInput message to kickstart the interactive transaction construction protocol
@@ -413,9 +414,14 @@ fn test_channel_open_v2_and_close() {
 	// Check that funding transaction has been broadcasted
 	assert_eq!(chanmon_cfgs[initiator_node_index].tx_broadcaster.txn_broadcasted.lock().unwrap().len(), 1);
 	let broadcasted_funding_tx = chanmon_cfgs[initiator_node_index].tx_broadcaster.txn_broadcasted.lock().unwrap()[0].clone();
+	let expected_funding_tx = "02000000000101642e738998d812934e2848b409068a836bdd15f561b493ae58be53d286db2558000000000000000000021f86010000000000160014d5a9aa98b89acc215fc3d23d6fec0ad59ca3665fa086010000000000220020203e7308dfff4f1923d21ca23f45545965d1f6b44ea0e2184c5db4d649a61c3a01010000000000";
 	assert_eq!(broadcasted_funding_tx.encode().len(), 130);
-	assert_eq!(&broadcasted_funding_tx.encode().as_hex().to_string(),
-		"02000000000101e42b795f949a9a03e4d6477ad04b8fa994d7807a83a61d46ad7a44959b0df2a7000000000000000000021f86010000000000160014d5a9aa98b89acc215fc3d23d6fec0ad59ca3665fa086010000000000220020203e7308dfff4f1923d21ca23f45545965d1f6b44ea0e2184c5db4d649a61c3a01010000000000");
+	assert_eq!(&broadcasted_funding_tx.encode().as_hex().to_string(), expected_funding_tx);
+	// Check that funding transaction has been broadcasted on the acceptor side as well
+	assert_eq!(chanmon_cfgs[acceptor_node_index].tx_broadcaster.txn_broadcasted.lock().unwrap().len(), 1);
+	let broadcasted_funding_tx_acc = chanmon_cfgs[acceptor_node_index].tx_broadcaster.txn_broadcasted.lock().unwrap()[0].clone();
+	assert_eq!(broadcasted_funding_tx_acc.encode().len(), 130);
+	assert_eq!(&broadcasted_funding_tx_acc.encode().as_hex().to_string(), expected_funding_tx);
 
 	// Simulate confirmation of the funding tx
 	confirm_transaction(&initiator_node, &broadcasted_funding_tx);
@@ -499,8 +505,7 @@ fn verify_splice_funding_input(splice_tx: &Transaction, prev_funding_txid: &Txid
 	let witness_count = witness.len();
 	let expected_witness_count = 4;
 	if witness_count != expected_witness_count {
-		println!("Prev fund tx inp {:?}", prev_fund_input);
-		panic!("Prev funding tx input should have {} witness elements! {}", expected_witness_count, witness_count);
+		panic!("Prev funding tx input should have {} witness elements! {} {}", expected_witness_count, witness_count, prev_fund_input_idx.unwrap());
 	}
 	if witness[0].len() != 0 {
 		panic!("First multisig witness should be empty! {}", witness[0].len());
@@ -509,7 +514,7 @@ fn verify_splice_funding_input(splice_tx: &Transaction, prev_funding_txid: &Txid
 	let wit1_sig = &witness[1];
 	let wit2_sig = &witness[2];
 	if wit1_sig.len() < 70 || wit1_sig.len() > 72 || wit2_sig.len() < 70 || wit2_sig.len() > 72 {
-		panic!("Witness entries 2&3 should signatures! {} {}", wit1_sig.as_hex(), wit2_sig.as_hex());
+		panic!("Witness entries 2&3 should be signatures! {} {}", wit1_sig.as_hex(), wit2_sig.as_hex());
 	}
 	if wit1_sig[wit1_sig.len()-1] != 1 || wit2_sig[wit2_sig.len()-1] != 1 {
 		panic!("Witness entries 2&3 should be signatures with SIGHASHALL! {} {}", wit1_sig.as_hex(), wit2_sig.as_hex());
@@ -531,8 +536,7 @@ fn verify_splice_funding_input(splice_tx: &Transaction, prev_funding_txid: &Txid
 /// #SPLICING
 /// Do checks on a splice funding tx
 fn verify_splice_funding_tx(splice_tx: &Transaction, prev_funding_txid: &Txid, funding_value: u64, prev_funding_value: u64, funding_key_1: &PublicKey, funding_key_2: &PublicKey) {
-	// TODO Taken out
-	// verify_splice_funding_input(splice_tx, prev_funding_txid, prev_funding_value, funding_key_1, funding_key_2);
+	verify_splice_funding_input(splice_tx, prev_funding_txid, prev_funding_value, funding_key_1, funding_key_2);
 	verify_funding_tx(splice_tx, funding_value, funding_key_1, funding_key_2);
 }
 
@@ -648,7 +652,6 @@ fn test_splice_in_simple() {
 	// // Although this condition only depends on the test nodes used (and their order), we verify it
 	// // here to make sure we test the case when the initiator funding pubkey is the 'larger', as this
 	// // is the more error prone case (e.g. signature order)
-	// println!("{} {}", initiator_funding_key.to_string(), acceptor_funding_key.to_string());
 	// TODO Taken out during dual_funding, ?, initiator key is the smaller even if init/acceptor indices (0/1) are reverted...
 	// assert!(initiator_funding_key.to_string() > acceptor_funding_key.to_string());
 
@@ -800,8 +803,9 @@ fn test_v2_splice_in() {
 
 	// Initiator and Acceptor nodes. Order matters, we want the case when initiator pubkey is larger.
 	let initiator_node_index = 0;
+	let acceptor_node_index = 1;
 	let initiator_node = &nodes[initiator_node_index];
-	let acceptor_node = &nodes[1];
+	let acceptor_node = &nodes[acceptor_node_index];
 
 	// Instantiate channel parameters where we push the maximum msats given our funding satoshis
 	let channel_value_sat = 100000; // same as funding satoshis
@@ -827,7 +831,9 @@ fn test_v2_splice_in() {
 		_ => panic!("FundingInputsContributionReady event missing {:?}", events[0]),
 	};
 
-	let funding_inputs = vec![create_dual_funding_utxo_with_prev_tx(&initiator_node, channel_value_sat * 2)];
+	let custom_input_secret_key = SecretKey::from_slice(&[2; 32]).unwrap();
+	let custom_input_pubkey = PublicKey::from_secret_key(&Secp256k1::new(), &custom_input_secret_key);
+	let funding_inputs = vec![create_custom_dual_funding_input_with_pubkey(&initiator_node, channel_value_sat * 2, &custom_input_pubkey)];
 	let _res = initiator_node.node.contribute_funding_inputs(&channel_id, &acceptor_node.node.get_our_node_id(), funding_inputs).unwrap();
 
 	// initiator_node will generate a TxAddInput message to kickstart the interactive transaction construction protocol
@@ -980,7 +986,8 @@ fn test_v2_splice_in() {
 		_ => panic!("SpliceAckedInputsContributionReady event missing {:?}", events[0]),
 	};
 
-	let funding_inputs = vec![create_dual_funding_utxo_with_prev_tx(&initiator_node, splice_in_sats * 2)];
+	let funding_inputs = vec![create_custom_dual_funding_input_with_pubkey(&initiator_node, splice_in_sats * 2, &custom_input_pubkey)];
+
 	let _res = initiator_node.node.contribute_funding_inputs(&channel_id, &acceptor_node.node.get_our_node_id(), funding_inputs).unwrap();
 
 	// Initiator_node will generate first TxAddInput message
@@ -1040,68 +1047,119 @@ fn test_v2_splice_in() {
 		..
 	} = get_event!(initiator_node, Event::FundingTransactionReadyForSigning) {
 		assert_eq!(counterparty_node_id, acceptor_node.node.get_our_node_id());
+		assert_eq!(unsigned_transaction.input.len(), 2);
+		assert_eq!(unsigned_transaction.input[0].witness.len(), 0);
 
-		let mut witness = Witness::new();
-		witness.push(vec![0]);
-		unsigned_transaction.input[0].witness = witness;
+		// This is the previous funding tx input, already signed (partially)
+		assert_eq!(unsigned_transaction.input[1].witness.len(), 4);
+
+		// Placeholder for signature on the contributed input
+		let mut witness1 = Witness::new();
+		witness1.push(vec![0]);
+		unsigned_transaction.input[0].witness = witness1;
 
 		let _res = initiator_node.node.funding_transaction_signed(&channel_id, &counterparty_node_id, unsigned_transaction).unwrap();
 	} else { panic!(); }
 
 	let _res = acceptor_node.node.handle_tx_complete(&initiator_node.node.get_our_node_id(), &tx_complete_msg);
 	let msg_events = acceptor_node.node.get_and_clear_pending_msg_events();
-	// // First messsage is commitment_signed, second is tx_signatures (see below for more)
+	// First messsage is commitment_signed, second is tx_signatures (see below for more)
 	assert_eq!(msg_events.len(), 1);
 	let msg_commitment_signed_from_1 = match msg_events[0] {
 		MessageSendEvent::UpdateHTLCs { ref node_id, ref updates } => {
 			assert_eq!(*node_id, initiator_node.node.get_our_node_id());
 			let res = updates.commitment_signed.clone();
-			println!("TEST before acc.handle_commitment_signed  msg {:?} {:?}", updates, res); // TODO remove
 			res
 		},
-		_ => panic!("Unexpected event"),
+		_ => panic!("Unexpected event {:?}", msg_events[0]),
 	};
 
 	// Handle the initial commitment_signed exchange. Order is not important here.
 	let _res = acceptor_node.node.handle_commitment_signed(&initiator_node.node.get_our_node_id(), &msg_commitment_signed_from_0);
 	let _res = initiator_node.node.handle_commitment_signed(&acceptor_node.node.get_our_node_id(), &msg_commitment_signed_from_1);
-	println!("both handle_commitment_signed's done"); // TODO remove
 	check_added_monitors(&initiator_node, 1);
 	check_added_monitors(&acceptor_node, 1);
 
 	// The initiator is the only party that contributed any inputs so they should definitely be the one to send tx_signatures
 	// only after receiving tx_signatures from the non-initiator in this case.
-	let tx_signatures_0 = get_event_msg!(initiator_node, MessageSendEvent::SendTxSignatures, acceptor_node.node.get_our_node_id());
-	let tx_signatures_1 = get_event_msg!(acceptor_node, MessageSendEvent::SendTxSignatures, initiator_node.node.get_our_node_id());
+	let msg_events = initiator_node.node.get_and_clear_pending_msg_events();
+	assert!(msg_events.is_empty());
+	let msg_events = acceptor_node.node.get_and_clear_pending_msg_events();
+	assert_eq!(msg_events.len(), 1);
+	let tx_signatures_1 = match msg_events[0] {
+		MessageSendEvent::SendTxSignatures { ref node_id, ref msg } => {
+			assert_eq!(*node_id, initiator_node.node.get_our_node_id());
+			// Here we only get the signature for the shared input
+			assert_eq!(msg.witnesses.len(), 0);
+			assert!(msg.tlvs.is_some());
+			msg
+		},
+		_ => panic!("Unexpected event {:?}", msg_events[0]),
+	};
 
 	let _res = initiator_node.node.handle_tx_signatures(&acceptor_node.node.get_our_node_id(), &tx_signatures_1);
-	// let events_0 = initiator_node.node.get_and_clear_pending_events();
-	// assert_eq!(events_0.len(), 1);
+	let events_0 = initiator_node.node.get_and_clear_pending_events();
+	assert_eq!(events_0.len(), 0);
 	// match events_0[0] {
 	// 	Event::ChannelPending{ ref counterparty_node_id, .. } => {
 	// 		assert_eq!(*counterparty_node_id, acceptor_node.node.get_our_node_id());
 	// 	},
-	// 	_ => panic!("Unexpected event"),
+	// 	_ => panic!("Unexpected event {:?}", events_0[0]),
 	// }
+	let msg_events = initiator_node.node.get_and_clear_pending_msg_events();
+	assert_eq!(msg_events.len(), 1);
+	let tx_signatures_0 = match msg_events[0] {
+		MessageSendEvent::SendTxSignatures { ref node_id, ref msg } => {
+			assert_eq!(*node_id, acceptor_node.node.get_our_node_id());
+			// Here we get the witnesses for the two inputs:
+			// - the custom input, and
+			// - the previous funding tx, also in the tlvs
+			assert_eq!(msg.witnesses.len(), 2);
+			assert_eq!(msg.witnesses[0].len(), 1);
+			assert_eq!(msg.witnesses[1].len(), 4);
+			assert!(msg.tlvs.is_some());
+			msg
+		},
+		_ => panic!("Unexpected event {:?}", msg_events[0]),
+	};
 	let _res = acceptor_node.node.handle_tx_signatures(&initiator_node.node.get_our_node_id(), &tx_signatures_0);
-	// let events_1 = acceptor_node.node.get_and_clear_pending_events();
-	// assert_eq!(events_1.len(), 1);
+
+	// // TODO we shouldn't this get on acceptor!
+	// if let Event::FundingTransactionReadyForSigning {
+	// 	channel_id,
+	// 	counterparty_node_id,
+	// 	mut unsigned_transaction,
+	// 	..
+	// } = get_event!(acceptor_node, Event::FundingTransactionReadyForSigning) {
+	// 	assert_eq!(counterparty_node_id, initiator_node.node.get_our_node_id());
+	// 	assert_eq!(unsigned_transaction.input.len(), 2);
+	// 	// ...
+	// } else { panic!("Unexpected event"); }
+
+	let events_1 = acceptor_node.node.get_and_clear_pending_events();
+	assert_eq!(events_1.len(), 0);
 	// match events_1[0] {
 	// 	Event::ChannelPending{ ref counterparty_node_id, .. } => {
 	// 		assert_eq!(*counterparty_node_id, initiator_node.node.get_our_node_id());
 	// 	},
-	// 	_ => panic!("Unexpected event"),
+	// 	_ => panic!("Unexpected event {:?}", events_1[0]),
 	// }
 
 	// Check that funding transaction has been broadcasted
-	assert_eq!(chanmon_cfgs[initiator_node_index].tx_broadcaster.txn_broadcasted.lock().unwrap().len(), 2);
-	let broadcasted_splice_tx = chanmon_cfgs[initiator_node_index].tx_broadcaster.txn_broadcasted.lock().unwrap()[1].clone();
-	assert_eq!(broadcasted_splice_tx.encode().len(), 166);
-	assert_eq!(broadcasted_splice_tx.encode().as_hex().to_string(),
-		"02000000024b344175259e6842ddc13b5410fcef809c0d9a963a39aa93d9b6a988fa820ea20000000000000000000acf05bc720f83ff8169df22119e50feb3d8d156b2eb8f46071f8977eaff479b01000000000000000002724b000000000000160014d5a9aa98b89acc215fc3d23d6fec0ad59ca3665fc0d4010000000000220020203e7308dfff4f1923d21ca23f45545965d1f6b44ea0e2184c5db4d649a61c3a00000000");
+	assert_eq!(chanmon_cfgs[initiator_node_index].tx_broadcaster.txn_broadcasted.lock().unwrap().len(), 3);  // Why 3?
+	let broadcasted_splice_tx = chanmon_cfgs[initiator_node_index].tx_broadcaster.txn_broadcasted.lock().unwrap()[2].clone();
+	let expected_funding_tx = "020000000001027b987b4668b22e5b047b133585390e73a94ba98b93cf65b0d0360bd555868bd0000000000000000000d262d78acb96819d5755ff9d0b69be8fdd752f99fe930700adb2642cc95bc25001000000000000000002724b000000000000160014d5a9aa98b89acc215fc3d23d6fec0ad59ca3665fc0d4010000000000220020203e7308dfff4f1923d21ca23f45545965d1f6b44ea0e2184c5db4d649a61c3a0101000400473044022005f643b6d170a6ff4d850e0183a8868bfd49d548cf38530b8e73c9d91e14dc55022009e2855df94f8771b85a72c36d4e88f8830166df3e413e9c87338518b907a709014730440220252b4c3d66b3b3d474f2b5a1391979696aece1190c8490f3aebb3ca3b18db78c02205239059f069b7c7e42276ef21afce2f323f5eb9c63c43b6c74bdee9e0ab2685301475221026a2a07ee436cc6745aed846a76275f66ed16a469706aca3aa581f20b85d85396210307a78def56cba9fc4db22a25928181de538ee59ba1a475ae113af7790acd0db352ae00000000";
+	assert_eq!(broadcasted_splice_tx.encode().len(), 389);
+	assert_eq!(broadcasted_splice_tx.encode().as_hex().to_string(), expected_funding_tx);
 	let initiator_funding_key = get_funding_key(&initiator_node, &acceptor_node, &channel.channel_id);
 	let acceptor_funding_key = get_funding_key(&acceptor_node, &initiator_node, &channel.channel_id);
 	verify_splice_funding_tx(&broadcasted_splice_tx, &broadcasted_funding_tx.txid(), post_splice_channel_value, channel_value_sat, &initiator_funding_key, &acceptor_funding_key);
+
+	// Check that funding transaction has been broadcasted on acceptor side as well
+	assert_eq!(chanmon_cfgs[acceptor_node_index].tx_broadcaster.txn_broadcasted.lock().unwrap().len(), 2);
+	let broadcasted_splice_tx_acc = chanmon_cfgs[acceptor_node_index].tx_broadcaster.txn_broadcasted.lock().unwrap()[1].clone();
+	assert_eq!(broadcasted_splice_tx_acc.encode().len(), 389);
+	assert_eq!(broadcasted_splice_tx_acc.encode().as_hex().to_string(), expected_funding_tx);
 
 	// check_added_monitors!(initiator_node, 1);
 	// check_added_monitors!(acceptor_node, 1);
@@ -1128,7 +1186,16 @@ fn test_v2_splice_in() {
 
 	let _res = acceptor_node.node.handle_channel_ready(&initiator_node.node.get_our_node_id(), &channel_ready_message);
 	// let _ev = get_event!(acceptor_node, Event::ChannelReady);
-	let _ev = get_event!(acceptor_node, Event::FundingTransactionReadyForSigning); // ??
+	// let _ev = get_event!(acceptor_node, Event::FundingTransactionReadyForSigning); // ??
+	let events_0 = acceptor_node.node.get_and_clear_pending_events();
+	assert_eq!(events_0.len(), 0);
+	// match events_0[0] {
+	// 	Event::ChannelPending{ ref counterparty_node_id, .. } => {
+	// 		assert_eq!(*counterparty_node_id, acceptor_node.node.get_our_node_id());
+	// 	},
+	// 	_ => panic!("Unexpected event {:?}", events_0[0]),
+	// }
+
 	let _channel_update = get_event_msg!(acceptor_node, MessageSendEvent::SendChannelUpdate, initiator_node.node.get_our_node_id());
 	// let _announcement_signatures = get_event_msg!(acceptor_node, MessageSendEvent::SendAnnouncementSignatures, initiator_node.node.get_our_node_id());
 
