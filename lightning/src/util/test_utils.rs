@@ -66,6 +66,7 @@ use crate::io;
 use crate::prelude::*;
 use core::cell::RefCell;
 use core::time::Duration;
+use core::ops::Deref;
 use crate::sync::{Mutex, Arc};
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use core::mem;
@@ -150,7 +151,7 @@ impl<'a> Router for TestRouter<'a> {
 										details: first_hops[idx],
 										payer_node_id: &node_id,
 									});
-									scorer.channel_penalty_msat(&candidate, usage, &());
+									scorer.channel_penalty_msat(&candidate, usage, &Default::default());
 									continue;
 								}
 							}
@@ -162,7 +163,7 @@ impl<'a> Router for TestRouter<'a> {
 								info: directed,
 								short_channel_id: hop.short_channel_id,
 							});
-							scorer.channel_penalty_msat(&candidate, usage, &());
+							scorer.channel_penalty_msat(&candidate, usage, &Default::default());
 						} else {
 							let target_node_id = NodeId::from_pubkey(&hop.pubkey);
 							let route_hint = RouteHintHop {
@@ -177,7 +178,7 @@ impl<'a> Router for TestRouter<'a> {
 								hint: &route_hint,
 								target_node_id: &target_node_id,
 							});
-							scorer.channel_penalty_msat(&candidate, usage, &());
+							scorer.channel_penalty_msat(&candidate, usage, &Default::default());
 						}
 						prev_hop_node = &hop.pubkey;
 					}
@@ -194,10 +195,10 @@ impl<'a> Router for TestRouter<'a> {
 	}
 
 	fn create_blinded_payment_paths<
-		ES: EntropySource + ?Sized, T: secp256k1::Signing + secp256k1::Verification
+		T: secp256k1::Signing + secp256k1::Verification
 	>(
 		&self, _recipient: PublicKey, _first_hops: Vec<ChannelDetails>, _tlvs: ReceiveTlvs,
-		_amount_msats: u64, _entropy_source: &ES, _secp_ctx: &Secp256k1<T>
+		_amount_msats: u64, _secp_ctx: &Secp256k1<T>
 	) -> Result<Vec<(BlindedPayInfo, BlindedPath)>, ()> {
 		unreachable!()
 	}
@@ -211,10 +212,9 @@ impl<'a> MessageRouter for TestRouter<'a> {
 	}
 
 	fn create_blinded_paths<
-		ES: EntropySource + ?Sized, T: secp256k1::Signing + secp256k1::Verification
+		T: secp256k1::Signing + secp256k1::Verification
 	>(
-		&self, _recipient: PublicKey, _peers: Vec<PublicKey>, _entropy_source: &ES,
-		_secp_ctx: &Secp256k1<T>
+		&self, _recipient: PublicKey, _peers: Vec<PublicKey>, _secp_ctx: &Secp256k1<T>,
 	) -> Result<Vec<BlindedPath>, ()> {
 		unreachable!()
 	}
@@ -1357,9 +1357,10 @@ impl crate::util::ser::Writeable for TestScorer {
 }
 
 impl ScoreLookUp for TestScorer {
+	#[cfg(not(c_bindings))]
 	type ScoreParams = ();
 	fn channel_penalty_msat(
-		&self, candidate: &CandidateRouteHop, usage: ChannelUsage, _score_params: &Self::ScoreParams
+		&self, candidate: &CandidateRouteHop, usage: ChannelUsage, _score_params: &crate::routing::scoring::ProbabilisticScoringFeeParameters
 	) -> u64 {
 		let short_channel_id = match candidate.globally_unique_short_channel_id() {
 			Some(scid) => scid,

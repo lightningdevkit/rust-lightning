@@ -117,7 +117,7 @@ pub(super) enum Payload<T: OnionMessageContents> {
 /// The contents of an [`OnionMessage`] as read from the wire.
 ///
 /// [`OnionMessage`]: crate::ln::msgs::OnionMessage
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum ParsedOnionMessageContents<T: OnionMessageContents> {
 	/// A message related to BOLT 12 Offers.
 	Offers(OffersMessage),
@@ -147,7 +147,7 @@ impl<T: OnionMessageContents> Writeable for ParsedOnionMessageContents<T> {
 }
 
 /// The contents of an onion message.
-pub trait OnionMessageContents: Writeable + core::fmt::Debug {
+pub trait OnionMessageContents: Writeable + core::fmt::Debug + Clone {
 	/// Returns the TLV type identifying the message contents. MUST be >= 64.
 	fn tlv_type(&self) -> u64;
 }

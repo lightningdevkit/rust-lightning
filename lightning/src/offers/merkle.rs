@@ -76,7 +76,7 @@ impl AsRef<TaggedHash> for TaggedHash {
 
 /// Error when signing messages.
 #[derive(Debug, PartialEq)]
-pub enum SignError<E> {
+pub(crate) enum SignError<E> {
 	/// User-defined error when signing the message.
 	Signing(E),
 	/// Error when verifying the produced signature using the given pubkey.

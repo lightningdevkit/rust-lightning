@@ -97,8 +97,8 @@ pub(super) const MAX_TIMER_TICKS: usize = 2;
 /// #             first_node_addresses: None,
 /// #         })
 /// #     }
-/// #     fn create_blinded_paths<ES: EntropySource + ?Sized, T: secp256k1::Signing + secp256k1::Verification>(
-/// #         &self, _recipient: PublicKey, _peers: Vec<PublicKey>, _entropy_source: &ES, _secp_ctx: &Secp256k1<T>
+/// #     fn create_blinded_paths<T: secp256k1::Signing + secp256k1::Verification>(
+/// #         &self, _recipient: PublicKey, _peers: Vec<PublicKey>, _secp_ctx: &Secp256k1<T>
 /// #     ) -> Result<Vec<BlindedPath>, ()> {
 /// #         unreachable!()
 /// #     }
@@ -121,8 +121,8 @@ pub(super) const MAX_TIMER_TICKS: usize = 2;
 ///     &keys_manager, &keys_manager, logger, message_router, &offers_message_handler,
 ///     &custom_message_handler
 /// );
-
-/// # #[derive(Debug)]
+///
+/// # #[derive(Debug, Clone)]
 /// # struct YourCustomMessage {}
 /// impl Writeable for YourCustomMessage {
 /// 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
@@ -286,37 +286,40 @@ pub trait MessageRouter {
 	/// Creates [`BlindedPath`]s to the `recipient` node. The nodes in `peers` are assumed to be
 	/// direct peers with the `recipient`.
 	fn create_blinded_paths<
-		ES: EntropySource + ?Sized, T: secp256k1::Signing + secp256k1::Verification
+		T: secp256k1::Signing + secp256k1::Verification
 	>(
-		&self, recipient: PublicKey, peers: Vec<PublicKey>, entropy_source: &ES,
-		secp_ctx: &Secp256k1<T>
+		&self, recipient: PublicKey, peers: Vec<PublicKey>, secp_ctx: &Secp256k1<T>,
 	) -> Result<Vec<BlindedPath>, ()>;
 }
 
 /// A [`MessageRouter`] that can only route to a directly connected [`Destination`].
-pub struct DefaultMessageRouter<G: Deref<Target=NetworkGraph<L>>, L: Deref>
+pub struct DefaultMessageRouter<G: Deref<Target=NetworkGraph<L>>, L: Deref, ES: Deref>
 where
 	L::Target: Logger,
+	ES::Target: EntropySource,
 {
 	network_graph: G,
+	entropy_source: ES,
 }
 
-impl<G: Deref<Target=NetworkGraph<L>>, L: Deref> DefaultMessageRouter<G, L>
+impl<G: Deref<Target=NetworkGraph<L>>, L: Deref, ES: Deref> DefaultMessageRouter<G, L, ES>
 where
 	L::Target: Logger,
+	ES::Target: EntropySource,
 {
 	/// Creates a [`DefaultMessageRouter`] using the given [`NetworkGraph`].
-	pub fn new(network_graph: G) -> Self {
-		Self { network_graph }
+	pub fn new(network_graph: G, entropy_source: ES) -> Self {
+		Self { network_graph, entropy_source }
 	}
 }
 
-impl<G: Deref<Target=NetworkGraph<L>>, L: Deref> MessageRouter for DefaultMessageRouter<G, L>
+impl<G: Deref<Target=NetworkGraph<L>>, L: Deref, ES: Deref> DefaultMessageRouter<G, L, ES>
 where
 	L::Target: Logger,
+	ES::Target: EntropySource,
 {
-	fn find_path(
-		&self, _sender: PublicKey, peers: Vec<PublicKey>, destination: Destination
+	pub(crate) fn find_path(
+		network_graph: &G, _sender: PublicKey, peers: Vec<PublicKey>, destination: Destination
 	) -> Result<OnionMessagePath, ()> {
 		let first_node = destination.first_node();
 		if peers.contains(&first_node) {
@@ -324,7 +327,7 @@ where
 				intermediate_nodes: vec![], destination, first_node_addresses: None
 			})
 		} else {
-			let network_graph = self.network_graph.deref().read_only();
+			let network_graph = network_graph.deref().read_only();
 			let node_announcement = network_graph
 				.node(&NodeId::from_pubkey(&first_node))
 				.and_then(|node_info| node_info.announcement_info.as_ref())
@@ -343,11 +346,11 @@ where
 		}
 	}
 
-	fn create_blinded_paths<
-		ES: EntropySource + ?Sized, T: secp256k1::Signing + secp256k1::Verification
+	pub(crate) fn create_blinded_paths<
+		T: secp256k1::Signing + secp256k1::Verification
 	>(
-		&self, recipient: PublicKey, peers: Vec<PublicKey>, entropy_source: &ES,
-		secp_ctx: &Secp256k1<T>
+		network_graph: &G, recipient: PublicKey, peers: Vec<PublicKey>, entropy_source: &ES,
+		secp_ctx: &Secp256k1<T>,
 	) -> Result<Vec<BlindedPath>, ()> {
 		// Limit the number of blinded paths that are computed.
 		const MAX_PATHS: usize = 3;
@@ -356,7 +359,7 @@ where
 		// recipient's node_id.
 		const MIN_PEER_CHANNELS: usize = 3;
 
-		let network_graph = self.network_graph.deref().read_only();
+		let network_graph = network_graph.deref().read_only();
 		let paths = peers.iter()
 			// Limit to peers with announced channels
 			.filter(|pubkey|
@@ -367,7 +370,7 @@ where
 					.unwrap_or(false)
 			)
 			.map(|pubkey| vec![*pubkey, recipient])
-			.map(|node_pks| BlindedPath::new_for_message(&node_pks, entropy_source, secp_ctx))
+			.map(|node_pks| BlindedPath::new_for_message(&node_pks, &**entropy_source, secp_ctx))
 			.take(MAX_PATHS)
 			.collect::<Result<Vec<_>, _>>();
 
@@ -375,13 +378,33 @@ where
 			Ok(paths) if !paths.is_empty() => Ok(paths),
 			_ => {
 				if network_graph.nodes().contains_key(&NodeId::from_pubkey(&recipient)) {
-					BlindedPath::one_hop_for_message(recipient, entropy_source, secp_ctx)
+					BlindedPath::one_hop_for_message(recipient, &**entropy_source, secp_ctx)
 						.map(|path| vec![path])
 				} else {
 					Err(())
 				}
 			},
 		}
+	}
+}
+
+impl<G: Deref<Target=NetworkGraph<L>>, L: Deref, ES: Deref> MessageRouter for DefaultMessageRouter<G, L, ES>
+where
+	L::Target: Logger,
+	ES::Target: EntropySource,
+{
+	fn find_path(
+		&self, sender: PublicKey, peers: Vec<PublicKey>, destination: Destination
+	) -> Result<OnionMessagePath, ()> {
+		Self::find_path(&self.network_graph, sender, peers, destination)
+	}
+
+	fn create_blinded_paths<
+		T: secp256k1::Signing + secp256k1::Verification
+	>(
+		&self, recipient: PublicKey, peers: Vec<PublicKey>, secp_ctx: &Secp256k1<T>,
+	) -> Result<Vec<BlindedPath>, ()> {
+		Self::create_blinded_paths(&self.network_graph, recipient, peers, &self.entropy_source, secp_ctx)
 	}
 }
 
@@ -867,27 +890,6 @@ fn outbound_buffer_full(peer_node_id: &PublicKey, buffer: &HashMap<PublicKey, On
 	false
 }
 
-impl<ES: Deref, NS: Deref, L: Deref, MR: Deref, OMH: Deref, CMH: Deref> EventsProvider
-for OnionMessenger<ES, NS, L, MR, OMH, CMH>
-where
-	ES::Target: EntropySource,
-	NS::Target: NodeSigner,
-	L::Target: Logger,
-	MR::Target: MessageRouter,
-	OMH::Target: OffersMessageHandler,
-	CMH::Target: CustomOnionMessageHandler,
-{
-	fn process_pending_events<H: Deref>(&self, handler: H) where H::Target: EventHandler {
-		for (node_id, recipient) in self.message_recipients.lock().unwrap().iter_mut() {
-			if let OnionMessageRecipient::PendingConnection(_, addresses, _) = recipient {
-				if let Some(addresses) = addresses.take() {
-					handler.handle_event(Event::ConnectionNeeded { node_id: *node_id, addresses });
-				}
-			}
-		}
-	}
-}
-
 impl<ES: Deref, NS: Deref, L: Deref, MR: Deref, OMH: Deref, CMH: Deref> OnionMessageHandler
 for OnionMessenger<ES, NS, L, MR, OMH, CMH>
 where
@@ -898,6 +900,18 @@ where
 	OMH::Target: OffersMessageHandler,
 	CMH::Target: CustomOnionMessageHandler,
 {
+	fn get_and_clear_connections_needed(&self) -> Vec<(PublicKey, Vec<SocketAddress>)> {
+		let mut res = Vec::new();
+		for (node_id, recipient) in self.message_recipients.lock().unwrap().iter_mut() {
+			if let OnionMessageRecipient::PendingConnection(_, addresses, _) = recipient {
+				if let Some(addresses) = addresses.take() {
+					res.push((*node_id, addresses));
+				}
+			}
+		}
+		res
+	}
+
 	fn handle_onion_message(&self, _peer_node_id: &PublicKey, msg: &OnionMessage) {
 		match peel_onion_message(
 			msg, &self.secp_ctx, &*self.node_signer, &*self.logger, &*self.custom_handler
@@ -1059,7 +1073,7 @@ pub type SimpleArcOnionMessenger<M, T, F, L> = OnionMessenger<
 	Arc<KeysManager>,
 	Arc<KeysManager>,
 	Arc<L>,
-	Arc<DefaultMessageRouter<Arc<NetworkGraph<Arc<L>>>, Arc<L>>>,
+	Arc<DefaultMessageRouter<Arc<NetworkGraph<Arc<L>>>, Arc<L>, Arc<KeysManager>>>,
 	Arc<SimpleArcChannelManager<M, T, F, L>>,
 	IgnoringMessageHandler
 >;
@@ -1078,7 +1092,7 @@ pub type SimpleRefOnionMessenger<
 	&'a KeysManager,
 	&'a KeysManager,
 	&'b L,
-	&'i DefaultMessageRouter<&'g NetworkGraph<&'b L>, &'b L>,
+	&'i DefaultMessageRouter<&'g NetworkGraph<&'b L>, &'b L, &'a KeysManager>,
 	&'j SimpleRefChannelManager<'a, 'b, 'c, 'd, 'e, 'f, 'g, 'h, M, T, F, L>,
 	IgnoringMessageHandler
 >;

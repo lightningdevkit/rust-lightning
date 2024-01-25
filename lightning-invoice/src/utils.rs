@@ -825,7 +825,8 @@ mod test {
 	use lightning::ln::PaymentHash;
 	#[cfg(feature = "std")]
 	use lightning::ln::PaymentPreimage;
-	use lightning::ln::channelmanager::{PhantomRouteHints, MIN_FINAL_CLTV_EXPIRY_DELTA, PaymentId, RecipientOnionFields, Retry};
+	use lightning::ln::channelmanager::{PhantomRouteHints, MIN_FINAL_CLTV_EXPIRY_DELTA, PaymentId};
+	use lightning::ln::outbound_payment::{RecipientOnionFields, Retry};
 	use lightning::ln::functional_test_utils::*;
 	use lightning::ln::msgs::ChannelMessageHandler;
 	use lightning::routing::router::{PaymentParameters, RouteParameters};
