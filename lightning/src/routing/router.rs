@@ -106,6 +106,9 @@ impl<G: Deref<Target = NetworkGraph<L>> + Clone, L: Deref, ES: Deref, S: Deref, 
 		// The minimum channel balance certainty required for using a channel in a blinded path.
 		const MIN_CHANNEL_CERTAINTY: f64 = 0.5;
 
+		// The minimum success probability required for using a channel in a blinded path.
+		const MIN_SUCCESS_PROBABILITY: f64 = 0.25;
+
 		let network_graph = self.network_graph.deref().read_only();
 		let counterparty_channels = first_hops.into_iter()
 			.filter(|details| details.counterparty.features.supports_route_blinding())
@@ -181,6 +184,21 @@ impl<G: Deref<Target = NetworkGraph<L>> + Clone, L: Deref, ES: Deref, S: Deref, 
 			//
 			// source --- info ---> counterparty --- counterparty_forward_node ---> recipient
 			.filter_map(|(introduction_node_id, scid, info, counterparty_forward_node)| {
+				let amount_msat = amount_msats;
+				let effective_capacity = info.effective_capacity();
+				let usage = ChannelUsage { amount_msat, inflight_htlc_msat: 0, effective_capacity };
+				let success_probability = scorer.channel_success_probability(
+					scid, &info, usage, &self.score_params
+				);
+
+				if !success_probability.is_finite() {
+					return None;
+				}
+
+				if success_probability < MIN_SUCCESS_PROBABILITY {
+					return None;
+				}
+
 				let htlc_minimum_msat = info.direction().htlc_minimum_msat;
 				let htlc_maximum_msat = info.direction().htlc_maximum_msat;
 				let payment_relay: PaymentRelay = match info.try_into() {
@@ -202,12 +220,13 @@ impl<G: Deref<Target = NetworkGraph<L>> + Clone, L: Deref, ES: Deref, S: Deref, 
 					node_id: introduction_node_id.as_pubkey().unwrap(),
 					htlc_maximum_msat,
 				};
-				Some(BlindedPath::new_for_payment(
+				let path = BlindedPath::new_for_payment(
 					&[introduction_forward_node, counterparty_forward_node], recipient,
 					tlvs.clone(), u64::MAX, MIN_FINAL_CLTV_EXPIRY_DELTA, entropy_source, secp_ctx
-				))
-			})
-			.take(MAX_PAYMENT_PATHS);
+				);
+
+				Some(path.map(|path| (path, success_probability)))
+			});
 
 		let two_hop_paths = counterparty_channels
 			.map(|(forward_node, _)| {
@@ -221,6 +240,10 @@ impl<G: Deref<Target = NetworkGraph<L>> + Clone, L: Deref, ES: Deref, S: Deref, 
 		three_hop_paths
 			.collect::<Result<Vec<_>, _>>().ok()
 			.and_then(|paths| (!paths.is_empty()).then(|| paths))
+			.map(|mut paths| {
+				paths.sort_unstable_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+				paths.into_iter().map(|(path, _)| path).take(MAX_PAYMENT_PATHS).collect::<Vec<_>>()
+			})
 			.or_else(|| two_hop_paths.collect::<Result<Vec<_>, _>>().ok())
 			.and_then(|paths| (!paths.is_empty()).then(|| paths))
 			.or_else(|| network_graph

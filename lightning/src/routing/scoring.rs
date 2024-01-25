@@ -109,6 +109,18 @@ pub trait ScoreLookUp {
 		&self, candidate: &CandidateRouteHop, usage: ChannelUsage, score_params: &Self::ScoreParams
 	) -> u64;
 
+	/// Returns the success probability of sending an HTLC through a channel.
+	///
+	/// Expected to return a value between `0.0` and `1.0`, inclusive, where `0.0` indicates
+	/// highly unlikely and `1.0` highly likely.
+	///
+	/// This is useful to determine whether a channel should be included in a blinded path and the
+	/// preferred ordering of blinded paths.
+	fn channel_success_probability(
+		&self, _short_channel_id: u64, _info: &DirectedChannelInfo, _usage: ChannelUsage,
+		_score_params: &Self::ScoreParams
+	) -> f64 { 0.5 }
+
 	/// Returns how certain any knowledge gained about the channel's liquidity balance is.
 	///
 	/// Expected to return a value between `0.0` and `1.0`, inclusive, where `0.0` indicates
