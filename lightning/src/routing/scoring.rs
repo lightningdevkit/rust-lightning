@@ -1251,6 +1251,27 @@ DirectedChannelLiquidity< L, BRT, T> {
 		liquidity_penalty_msat.saturating_add(amount_penalty_msat)
 	}
 
+	fn success_probability(
+		&self, usage: ChannelUsage, score_params: &ProbabilisticScoringFeeParameters
+	) -> f64 {
+		let amount_msat = usage.amount_msat;
+		let available_capacity = self.capacity_msat;
+		let max_liquidity_msat = self.max_liquidity_msat();
+		let min_liquidity_msat = core::cmp::min(self.min_liquidity_msat(), max_liquidity_msat);
+
+		if amount_msat <= min_liquidity_msat {
+			1.0
+		} else if amount_msat >= max_liquidity_msat {
+			0.0
+		} else {
+			let (numerator, denominator) = success_probability(
+				amount_msat, min_liquidity_msat, max_liquidity_msat, available_capacity,
+				score_params, false
+			);
+			numerator as f64 / denominator as f64
+		}
+	}
+
 	/// Returns the lower bound of the channel liquidity balance in this direction.
 	#[inline(always)]
 	fn min_liquidity_msat(&self) -> u64 {
@@ -1388,6 +1409,17 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref> ScoreLookUp for Probabilistic
 			.penalty_msat(amount_msat, score_params)
 			.saturating_add(anti_probing_penalty_msat)
 			.saturating_add(base_penalty_msat)
+	}
+
+	fn channel_success_probability(
+		&self, short_channel_id: u64, info: &DirectedChannelInfo, usage: ChannelUsage,
+		score_params: &ProbabilisticScoringFeeParameters
+	) -> f64 {
+		self.channel_liquidities
+			.get(&short_channel_id)
+			.unwrap_or(&ChannelLiquidity::new(Duration::ZERO))
+			.as_directed(info.source(), info.target(), usage.effective_capacity.as_msat())
+			.success_probability(usage, score_params)
 	}
 
 	fn channel_balance_certainty(&self, short_channel_id: u64, info: &DirectedChannelInfo) -> f64 {
