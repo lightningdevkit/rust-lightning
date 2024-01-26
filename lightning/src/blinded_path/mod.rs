@@ -114,7 +114,9 @@ impl BlindedPath {
 		let blinding_secret_bytes = entropy_source.get_secure_random_bytes();
 		let blinding_secret = SecretKey::from_slice(&blinding_secret_bytes[..]).expect("RNG is busted");
 
-		let blinded_payinfo = payment::compute_payinfo(intermediate_nodes, &payee_tlvs, htlc_maximum_msat)?;
+		let blinded_payinfo = payment::compute_payinfo(
+			intermediate_nodes, &payee_tlvs, htlc_maximum_msat, min_final_cltv_expiry_delta
+		)?;
 		Ok((blinded_payinfo, BlindedPath {
 			introduction_node_id: intermediate_nodes.first().map_or(payee_node_id, |n| n.node_id),
 			blinding_point: PublicKey::from_secret_key(secp_ctx, &blinding_secret),
