@@ -35,7 +35,7 @@ use crate::util::test_utils::{self, WatchtowerPersister};
 use crate::util::errors::APIError;
 use crate::util::ser::{Writeable, ReadableArgs};
 use crate::util::string::UntrustedString;
-use crate::util::config::{UserConfig, MaxDustHTLCExposure};
+use crate::util::config::{ChannelHandshakeConfig, UserConfig, MaxDustHTLCExposure};
 
 use bitcoin::hash_types::BlockHash;
 use bitcoin::blockdata::locktime::absolute::LockTime;
@@ -49,6 +49,7 @@ use bitcoin::OutPoint as BitcoinOutPoint;
 use bitcoin::secp256k1::Secp256k1;
 use bitcoin::secp256k1::{PublicKey,SecretKey};
 
+use hex::DisplayHex;
 use regex;
 
 use crate::io;
@@ -63,6 +64,372 @@ use crate::ln::functional_test_utils::*;
 use crate::ln::chan_utils::CommitmentTransaction;
 
 use super::channel::UNFUNDED_CHANNEL_AGE_LIMIT_TICKS;
+
+// Create a 2-of-2 multisig redeem script. Return the script, and the two keys in the order they appear in the script.
+fn create_multisig_redeem_script(key1: &PublicKey, key2: &PublicKey) -> (ScriptBuf, PublicKey, PublicKey) {
+	let (smaller_key, larger_key) = if key1.serialize() < key2.serialize() {
+		(key1, key2)
+	} else {
+		(key2, key1)
+	};
+	let script = Builder::new()
+		.push_opcode(opcodes::all::OP_PUSHNUM_2)
+		.push_slice(&smaller_key.serialize())
+		.push_slice(&larger_key.serialize())
+		.push_opcode(opcodes::all::OP_PUSHNUM_2)
+		.push_opcode(opcodes::all::OP_CHECKMULTISIG)
+		.into_script();
+	(script, smaller_key.clone(), larger_key.clone())
+}
+
+// Create an output script for a 2-of-2 multisig.
+fn create_multisig_output_script(key1: &PublicKey, key2: &PublicKey) -> ScriptBuf {
+	let (redeem_script, _k1, _k2) = create_multisig_redeem_script(key1, key2);
+	Builder::new()
+		.push_opcode(opcodes::all::OP_PUSHBYTES_0)
+		.push_slice(&AsRef::<[u8; 32]>::as_ref(&redeem_script.wscript_hash()))
+		.into_script()
+}
+
+// Verify a 2-of-2 multisig output script.
+fn verify_multisig_output_script(script: &ScriptBuf, exp_key_1: &PublicKey, exp_key_2: &PublicKey) {
+	let exp_script = create_multisig_output_script(exp_key_1, exp_key_2);
+	assert_eq!(script.to_hex_string(), exp_script.to_hex_string());
+}
+
+// Get the funding key of a node towards another node
+fn get_funding_key(node: &Node, counterparty_node: &Node, channel_id: &ChannelId) -> PublicKey {
+	let per_peer_state = node.node.per_peer_state.read().unwrap();
+	let chan_lock = per_peer_state.get(&counterparty_node.node.get_our_node_id()).unwrap().lock().unwrap();
+	let local_chan = chan_lock.channel_by_id.get(&channel_id).map(
+		|phase| if let ChannelPhase::Funded(chan) = phase { Some(chan) } else { None }
+	).flatten().unwrap();
+	local_chan.get_signer().as_ref().pubkeys().funding_pubkey
+}
+
+
+/// Verify the funding output of a funding tx
+fn verify_funding_output(funding_txo: &TxOut, funding_key_1: &PublicKey, funding_key_2: &PublicKey) {
+	let act_script = &funding_txo.script_pubkey;
+	verify_multisig_output_script(&act_script, funding_key_1, funding_key_2);
+}
+
+/// Do checks on a funding tx
+fn verify_funding_tx(funding_tx: &Transaction, value: u64, funding_key_1: &PublicKey, funding_key_2: &PublicKey) {
+	// find the output with the given value
+	let mut funding_output_opt: Option<&TxOut> = None;
+	for o in &funding_tx.output {
+		if o.value == value {
+			funding_output_opt = Some(o);
+		}
+	}
+	if funding_output_opt.is_none() {
+		panic!("Funding output not found, no output with value {}", value);
+	}
+	verify_funding_output(funding_output_opt.unwrap(), funding_key_1, funding_key_2)
+}
+
+/// Simple end-to-end open channel flow, with close, and verification checks.
+/// The steps are mostly on ChannelManager level.
+#[test]
+fn test_channel_open_and_close() {
+	// Set up a network of 2 nodes
+	let cfg = UserConfig {
+		channel_handshake_config: ChannelHandshakeConfig {
+			announced_channel: true,
+			..Default::default()
+		},
+		..Default::default()
+	};
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, Some(cfg)]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	// Initiator and Acceptor nodes. Order matters, we want the case when initiator pubkey is larger.
+	let initiator_node_index = 0;
+	let initiator_node = &nodes[initiator_node_index];
+	let acceptor_node = &nodes[1];
+
+	// Instantiate channel parameters where we push the maximum msats given our funding satoshis
+	let channel_value_sat = 100000; // same as funding satoshis
+	let push_msat = 0;
+
+	let expected_temporary_channel_id = "2f64bdc25fb91c69b6f15b6fc10b32eb773471e433681dc956d9267a4dda8c2b";
+	let expected_funded_channel_id = "74c52ab4f11296d62b66a6dba9513b04a3e7fb5a09a30cee22fce7294ab55b7e";
+
+	// Have node0 initiate a channel to node1 with aforementioned parameters
+	let channel_id_temp1 = initiator_node.node.create_channel(acceptor_node.node.get_our_node_id(), channel_value_sat, push_msat, 42, None, None).unwrap();
+
+	// Extract the channel open message from node0 to node1
+	let open_channel_message = get_event_msg!(initiator_node, MessageSendEvent::SendOpenChannel, acceptor_node.node.get_our_node_id());
+
+	let _res = acceptor_node.node.handle_open_channel(&initiator_node.node.get_our_node_id(), &open_channel_message.clone());
+	// Extract the accept channel message from node1 to node0
+	let accept_channel_message = get_event_msg!(acceptor_node, MessageSendEvent::SendAcceptChannel, initiator_node.node.get_our_node_id());
+	let _res = initiator_node.node.handle_accept_channel(&acceptor_node.node.get_our_node_id(), &accept_channel_message.clone());
+	// Note: FundingGenerationReady emitted, checked and used below
+	let (channel_id_temp2, funding_tx, _funding_output) = create_funding_transaction(&initiator_node, &acceptor_node.node.get_our_node_id(), channel_value_sat, 42);
+	assert_eq!(channel_id_temp2.to_string(), expected_temporary_channel_id);
+	assert_eq!(funding_tx.encode().len(), 55);
+	let expected_funding_tx = "0000000000010001a08601000000000022002034c0cc0ad0dd5fe61dcf7ef58f995e3d34f8dbd24aa2a6fae68fefe102bf025c00000000";
+	assert_eq!(&funding_tx.encode().as_hex().to_string(), expected_funding_tx);
+
+	// Funding transation created, provide it
+	let _res = initiator_node.node.funding_transaction_generated(&channel_id_temp1, &acceptor_node.node.get_our_node_id(), funding_tx.clone()).unwrap();
+
+	let funding_created_message = get_event_msg!(initiator_node, MessageSendEvent::SendFundingCreated, acceptor_node.node.get_our_node_id());
+	let _res = acceptor_node.node.handle_funding_created(&initiator_node.node.get_our_node_id(), &funding_created_message);
+
+	let funding_signed_message = get_event_msg!(acceptor_node, MessageSendEvent::SendFundingSigned, initiator_node.node.get_our_node_id());
+	let _res = initiator_node.node.handle_funding_signed(&acceptor_node.node.get_our_node_id(), &funding_signed_message);
+	// Take new channel ID
+	let channel_id2 = funding_signed_message.channel_id;
+	assert_eq!(channel_id2.to_string(), expected_funded_channel_id);
+
+	// Check that funding transaction has been broadcasted
+	assert_eq!(chanmon_cfgs[initiator_node_index].tx_broadcaster.txn_broadcasted.lock().unwrap().len(), 1);
+	let broadcasted_funding_tx = chanmon_cfgs[initiator_node_index].tx_broadcaster.txn_broadcasted.lock().unwrap()[0].clone();
+	assert_eq!(broadcasted_funding_tx.encode().len(), 55);
+	assert_eq!(broadcasted_funding_tx.txid(), funding_tx.txid());
+	assert_eq!(broadcasted_funding_tx.encode(), funding_tx.encode());
+	assert_eq!(&broadcasted_funding_tx.encode().as_hex().to_string(), expected_funding_tx);
+
+	check_added_monitors!(initiator_node, 1);
+	let _ev = get_event!(initiator_node, Event::ChannelPending);
+	check_added_monitors!(acceptor_node, 1);
+	let _ev = get_event!(acceptor_node, Event::ChannelPending);
+
+	// Simulate confirmation of the funding tx
+	confirm_transaction(&initiator_node, &broadcasted_funding_tx);
+	let channel_ready_message = get_event_msg!(initiator_node, MessageSendEvent::SendChannelReady, acceptor_node.node.get_our_node_id());
+
+	confirm_transaction(&acceptor_node, &broadcasted_funding_tx);
+	let channel_ready_message2 = get_event_msg!(acceptor_node, MessageSendEvent::SendChannelReady, initiator_node.node.get_our_node_id());
+
+	let _res = acceptor_node.node.handle_channel_ready(&initiator_node.node.get_our_node_id(), &channel_ready_message);
+	let _ev = get_event!(acceptor_node, Event::ChannelReady);
+	let _announcement_signatures = get_event_msg!(acceptor_node, MessageSendEvent::SendAnnouncementSignatures, initiator_node.node.get_our_node_id());
+
+	let _res = initiator_node.node.handle_channel_ready(&acceptor_node.node.get_our_node_id(), &channel_ready_message2);
+	let _ev = get_event!(initiator_node, Event::ChannelReady);
+	let _announcement_signatures = get_event_msg!(initiator_node, MessageSendEvent::SendAnnouncementSignatures, acceptor_node.node.get_our_node_id());
+
+	// check channel capacity and other parameters
+	assert_eq!(initiator_node.node.list_channels().len(), 1);
+	let channel = &initiator_node.node.list_channels()[0];
+	{
+		assert_eq!(channel.channel_id.to_string(), expected_funded_channel_id);
+		assert!(channel.is_usable);
+		assert!(channel.is_channel_ready);
+		assert_eq!(channel.channel_value_satoshis, channel_value_sat);
+		assert_eq!(channel.outbound_capacity_msat, 100000000 - 1000000);
+		assert_eq!(channel.funding_txo.unwrap().txid, funding_tx.txid());
+		assert_eq!(channel.confirmations.unwrap(), 10);
+	}
+	// do checks on the acceptor node as well (capacity, etc.)
+	assert_eq!(acceptor_node.node.list_channels().len(), 1);
+	{
+		let channel = &acceptor_node.node.list_channels()[0];
+		assert_eq!(channel.channel_id.to_string(), expected_funded_channel_id);
+		assert!(channel.is_usable);
+		assert!(channel.is_channel_ready);
+		assert_eq!(channel.channel_value_satoshis, channel_value_sat);
+		assert_eq!(channel.outbound_capacity_msat, 0);
+		assert_eq!(channel.funding_txo.unwrap().txid, funding_tx.txid());
+		assert_eq!(channel.confirmations.unwrap(), 10);
+	}
+
+	// Verify the funding transaction
+	let initiator_funding_key = get_funding_key(&initiator_node, &acceptor_node, &channel.channel_id);
+	let acceptor_funding_key = get_funding_key(&acceptor_node, &initiator_node, &channel.channel_id);
+
+	verify_funding_tx(&broadcasted_funding_tx, channel_value_sat, &initiator_funding_key, &acceptor_funding_key);
+
+	// Channel is ready now for normal operation
+
+	// close channel, cooperatively
+	initiator_node.node.close_channel(&channel_id2, &acceptor_node.node.get_our_node_id()).unwrap();
+	let node0_shutdown_message = get_event_msg!(initiator_node, MessageSendEvent::SendShutdown, acceptor_node.node.get_our_node_id());
+	acceptor_node.node.handle_shutdown(&initiator_node.node.get_our_node_id(), &node0_shutdown_message);
+	let nodes_1_shutdown = get_event_msg!(acceptor_node, MessageSendEvent::SendShutdown, initiator_node.node.get_our_node_id());
+	initiator_node.node.handle_shutdown(&acceptor_node.node.get_our_node_id(), &nodes_1_shutdown);
+	let _ = get_event_msg!(initiator_node, MessageSendEvent::SendClosingSigned, acceptor_node.node.get_our_node_id());
+}
+
+/// Simple end-to-end payment test
+/// The steps are mostly on ChannelManager level.
+#[test]
+fn test_channel_open_and_payment() {
+	// Set up a network of 2 nodes
+	let cfg = UserConfig {
+		channel_handshake_config: ChannelHandshakeConfig {
+			announced_channel: true,
+			..Default::default()
+		},
+		..Default::default()
+	};
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, Some(cfg)]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	// Initiator and Acceptor nodes
+	let initiator_node_index = 0;
+	let initiator_node = &nodes[initiator_node_index];
+	let acceptor_node = &nodes[1];
+
+	// Instantiate channel parameters where we push the maximum msats given our funding satoshis
+	let channel_value_sat = 100000; // same as funding satoshis
+	let push_msat = 0;
+
+	// Have node0 initiate a channel to node1 with aforementioned parameters
+	let _res = initiator_node.node.create_channel(acceptor_node.node.get_our_node_id(), channel_value_sat, push_msat, 42, None, None).unwrap();
+
+	// Extract the channel open message from node0 to node1
+	let open_channel_message = get_event_msg!(initiator_node, MessageSendEvent::SendOpenChannel, acceptor_node.node.get_our_node_id());
+
+	let _res = acceptor_node.node.handle_open_channel(&initiator_node.node.get_our_node_id(), &open_channel_message.clone());
+	// Extract the accept channel message from node1 to node0
+	let accept_channel_message = get_event_msg!(acceptor_node, MessageSendEvent::SendAcceptChannel, initiator_node.node.get_our_node_id());
+	let _res = initiator_node.node.handle_accept_channel(&acceptor_node.node.get_our_node_id(), &accept_channel_message.clone());
+	// Note: FundingGenerationReady emitted, checked and used below
+	let (temporary_channel_id, funding_tx, _funding_output) = create_funding_transaction(&initiator_node, &acceptor_node.node.get_our_node_id(), channel_value_sat, 42);
+
+	// Funding transation created, provide it
+	let _res = initiator_node.node.funding_transaction_generated(&temporary_channel_id, &acceptor_node.node.get_our_node_id(), funding_tx.clone()).unwrap();
+
+	let funding_created_message = get_event_msg!(initiator_node, MessageSendEvent::SendFundingCreated, acceptor_node.node.get_our_node_id());
+	let _res = acceptor_node.node.handle_funding_created(&initiator_node.node.get_our_node_id(), &funding_created_message);
+
+	let funding_signed_message = get_event_msg!(acceptor_node, MessageSendEvent::SendFundingSigned, initiator_node.node.get_our_node_id());
+	let _res = initiator_node.node.handle_funding_signed(&acceptor_node.node.get_our_node_id(), &funding_signed_message);
+	// Take new channel ID
+	let channel_id = funding_signed_message.channel_id;
+
+	// Check that funding transaction has been broadcasted
+	assert_eq!(chanmon_cfgs[initiator_node_index].tx_broadcaster.txn_broadcasted.lock().unwrap().len(), 1);
+	let broadcasted_funding_tx = chanmon_cfgs[initiator_node_index].tx_broadcaster.txn_broadcasted.lock().unwrap()[0].clone();
+
+	check_added_monitors!(initiator_node, 1);
+	let _ev = get_event!(initiator_node, Event::ChannelPending);
+	check_added_monitors!(acceptor_node, 1);
+	let _ev = get_event!(acceptor_node, Event::ChannelPending);
+
+	// Simulate confirmation of the funding tx
+	confirm_transaction(&initiator_node, &broadcasted_funding_tx);
+	let channel_ready_message = get_event_msg!(initiator_node, MessageSendEvent::SendChannelReady, acceptor_node.node.get_our_node_id());
+
+	confirm_transaction(&acceptor_node, &broadcasted_funding_tx);
+	let channel_ready_message2 = get_event_msg!(acceptor_node, MessageSendEvent::SendChannelReady, initiator_node.node.get_our_node_id());
+
+	let _res = acceptor_node.node.handle_channel_ready(&initiator_node.node.get_our_node_id(), &channel_ready_message);
+	let _ev = get_event!(acceptor_node, Event::ChannelReady);
+	let _announcement_signatures = get_event_msg!(acceptor_node, MessageSendEvent::SendAnnouncementSignatures, initiator_node.node.get_our_node_id());
+
+	let _res = initiator_node.node.handle_channel_ready(&acceptor_node.node.get_our_node_id(), &channel_ready_message2);
+	let _ev = get_event!(initiator_node, Event::ChannelReady);
+	let _announcement_signatures = get_event_msg!(initiator_node, MessageSendEvent::SendAnnouncementSignatures, acceptor_node.node.get_our_node_id());
+
+	// check channel capacity and other parameters
+	let reserve = 1000000;
+	assert_eq!(initiator_node.node.list_channels().len(), 1);
+	{
+		let channel = &initiator_node.node.list_channels()[0];
+		assert!(channel.is_channel_ready);
+		assert_eq!(channel.channel_value_satoshis, channel_value_sat);
+		assert_eq!(channel.outbound_capacity_msat, 100000000 - reserve);
+		assert_eq!(channel.funding_txo.unwrap().txid, funding_tx.txid());
+	}
+	assert_eq!(acceptor_node.node.list_channels().len(), 1);
+	{
+		let channel = &acceptor_node.node.list_channels()[0];
+		assert!(channel.is_channel_ready);
+		assert_eq!(channel.channel_value_satoshis, channel_value_sat);
+		assert_eq!(channel.outbound_capacity_msat, 0);
+		assert_eq!(channel.funding_txo.unwrap().txid, funding_tx.txid());
+	}
+
+	// Make a payment between the two nodes
+	// This could be done by a single call to send_payment(), but instead it is done step-by-step,
+	// to expose the sequence of messages and events
+	let pay_amount_msat = 3000000;
+
+	let payment_params = PaymentParameters::from_node_id(acceptor_node.node.get_our_node_id(), 70)
+		.with_bolt11_features(acceptor_node.node.bolt11_invoice_features()).unwrap();
+	let route_params = RouteParameters::from_payment_params_and_value(payment_params, pay_amount_msat);
+	let route = crate::ln::functional_test_utils::get_route(initiator_node, &route_params).unwrap();
+	assert_eq!(route.paths.len(), 1);
+
+	let (our_payment_preimage, our_payment_hash, our_payment_secret) = get_payment_preimage_hash!(acceptor_node);
+	let payment_id = PaymentId(initiator_node.keys_manager.backing.get_secure_random_bytes());
+	initiator_node.node.send_payment_with_route(&route, our_payment_hash, RecipientOnionFields::secret_only(our_payment_secret), payment_id).unwrap();
+	check_added_monitors!(initiator_node, 1);
+	let mut events = initiator_node.node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 1);
+	let payment_event = SendEvent::from_event(events.pop().unwrap());
+	assert_eq!(acceptor_node.node.get_our_node_id(), payment_event.node_id);
+
+	acceptor_node.node.handle_update_add_htlc(&initiator_node.node.get_our_node_id(), &payment_event.msgs[0]);
+	check_added_monitors!(acceptor_node, 0);
+
+	commitment_signed_dance!(acceptor_node, initiator_node, payment_event.commitment_msg, false);
+	assert_eq!(acceptor_node.node.get_and_clear_pending_events().len(), 1);
+	acceptor_node.node.process_pending_htlc_forwards();
+	assert_eq!(acceptor_node.node.get_and_clear_pending_events().len(), 1);
+
+	acceptor_node.node.claim_funds(our_payment_preimage);
+	let claim_events = acceptor_node.node.get_and_clear_pending_events();
+	assert_eq!(claim_events.len(), 1);
+	match claim_events[0] {
+		Event::PaymentClaimed { purpose: PaymentPurpose::InvoicePayment { .. }, payment_hash, amount_msat, ref htlcs, ..
+		} => {
+			assert_eq!(payment_hash, our_payment_hash);
+			assert_eq!(amount_msat, pay_amount_msat);
+			assert_eq!(htlcs.len(), 1);
+			assert_eq!(htlcs[0].value_msat, pay_amount_msat);
+		}
+		_ => panic!(),
+	}
+	check_added_monitors!(acceptor_node, 1);
+	let events = acceptor_node.node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 1);
+
+	let (fulfill_msg, commitment_msg) = if let MessageSendEvent::UpdateHTLCs { ref node_id, updates: msgs::CommitmentUpdate { ref update_fulfill_htlcs, ref commitment_signed, .. } } = &events[0] {
+		assert_eq!(*node_id, initiator_node.node.get_our_node_id());
+		(update_fulfill_htlcs[0].clone(), commitment_signed.clone())
+	} else {
+		panic!("UpdateHTLCs message expected");
+	};
+	initiator_node.node.handle_update_fulfill_htlc(&acceptor_node.node.get_our_node_id(), &fulfill_msg);
+	check_added_monitors!(initiator_node, 0);
+	assert!(initiator_node.node.get_and_clear_pending_msg_events().is_empty());
+	commitment_signed_dance!(initiator_node, acceptor_node, commitment_msg, false);
+
+	assert_eq!(initiator_node.node.get_and_clear_pending_events().len(), 2);
+	check_added_monitors!(initiator_node, 1);
+	// end of payment
+
+	// check channel parameters post-payment
+	{
+		let channel = &initiator_node.node.list_channels()[0];
+		assert!(channel.is_channel_ready);
+		assert_eq!(channel.outbound_capacity_msat, 100000000 - pay_amount_msat - reserve);
+	}
+	{
+		let channel = &acceptor_node.node.list_channels()[0];
+		assert!(channel.is_channel_ready);
+		assert_eq!(channel.outbound_capacity_msat, pay_amount_msat - reserve);
+	}
+
+	// close channel
+	initiator_node.node.close_channel(&channel_id, &acceptor_node.node.get_our_node_id()).unwrap();
+	let node0_shutdown_message = get_event_msg!(initiator_node, MessageSendEvent::SendShutdown, acceptor_node.node.get_our_node_id());
+	acceptor_node.node.handle_shutdown(&initiator_node.node.get_our_node_id(), &node0_shutdown_message);
+	let nodes_1_shutdown = get_event_msg!(acceptor_node, MessageSendEvent::SendShutdown, initiator_node.node.get_our_node_id());
+	initiator_node.node.handle_shutdown(&acceptor_node.node.get_our_node_id(), &nodes_1_shutdown);
+	let _ = get_event_msg!(initiator_node, MessageSendEvent::SendClosingSigned, acceptor_node.node.get_our_node_id());
+}
 
 #[test]
 fn test_insane_channel_opens() {
