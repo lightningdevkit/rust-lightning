@@ -61,7 +61,7 @@ fn blinded_payment_path(
 	let mut secp_ctx = Secp256k1::new();
 	BlindedPath::new_for_payment(
 		&intermediate_nodes[..], *node_ids.last().unwrap(), payee_tlvs,
-		channel_upds.last().unwrap().htlc_maximum_msat, keys_manager, &secp_ctx
+		channel_upds.last().unwrap().htlc_maximum_msat, TEST_FINAL_CLTV as u16, keys_manager, &secp_ctx
 	).unwrap()
 }
 
@@ -100,7 +100,8 @@ fn do_one_hop_blinded_path(success: bool) {
 	};
 	let mut secp_ctx = Secp256k1::new();
 	let blinded_path = BlindedPath::one_hop_for_payment(
-		nodes[1].node.get_our_node_id(), payee_tlvs, &chanmon_cfgs[1].keys_manager, &secp_ctx
+		nodes[1].node.get_our_node_id(), payee_tlvs, TEST_FINAL_CLTV as u16,
+		&chanmon_cfgs[1].keys_manager, &secp_ctx
 	).unwrap();
 
 	let route_params = RouteParameters::from_payment_params_and_value(
@@ -141,7 +142,8 @@ fn mpp_to_one_hop_blinded_path() {
 		},
 	};
 	let blinded_path = BlindedPath::one_hop_for_payment(
-		nodes[3].node.get_our_node_id(), payee_tlvs, &chanmon_cfgs[3].keys_manager, &secp_ctx
+		nodes[3].node.get_our_node_id(), payee_tlvs, TEST_FINAL_CLTV as u16,
+		&chanmon_cfgs[3].keys_manager, &secp_ctx
 	).unwrap();
 
 	let bolt12_features =
