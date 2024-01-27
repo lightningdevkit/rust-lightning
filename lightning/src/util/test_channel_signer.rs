@@ -40,6 +40,9 @@ use crate::ln::msgs::PartialSignatureWithNonce;
 #[cfg(taproot)]
 use crate::sign::taproot::TaprootChannelSigner;
 
+#[cfg(feature = "std")]
+use std::cell::RefCell;
+
 /// Initial value for revoked commitment downward counter
 pub const INITIAL_REVOKED_COMMITMENT_NUMBER: u64 = 1 << 48;
 
@@ -423,6 +426,11 @@ pub struct EnforcementState {
 }
 
 impl EnforcementState {
+	#[cfg(feature = "std")]
+	thread_local! {
+		static DEFAULT_UNAVAILABLE_SIGNER_OPS: RefCell<u32> = RefCell::new(0);
+	}
+
 	/// Enforcement state for a new channel
 	pub fn new() -> Self {
 		EnforcementState {
@@ -430,7 +438,16 @@ impl EnforcementState {
 			last_counterparty_revoked_commitment: INITIAL_REVOKED_COMMITMENT_NUMBER,
 			last_holder_revoked_commitment: INITIAL_REVOKED_COMMITMENT_NUMBER,
 			last_holder_commitment: INITIAL_REVOKED_COMMITMENT_NUMBER,
-			unavailable_signer_ops: 0,
+			unavailable_signer_ops: {
+				#[cfg(feature = "std")]
+				{
+					EnforcementState::DEFAULT_UNAVAILABLE_SIGNER_OPS.with(|ops| *ops.borrow())
+				}
+				#[cfg(not(feature = "std"))]
+				{
+					0
+				}
+			}
 		}
 	}
 
@@ -444,5 +461,17 @@ impl EnforcementState {
 
 	pub fn is_signer_available(&self, ops_mask: u32) -> bool {
 		(self.unavailable_signer_ops & ops_mask) == 0
+	}
+
+	#[cfg(feature = "std")]
+	pub fn with_default_unavailable<F, R>(ops: u32, f: F) -> R
+	where F: FnOnce() -> R
+	{
+		EnforcementState::DEFAULT_UNAVAILABLE_SIGNER_OPS.with(|unavailable_ops| {
+			unavailable_ops.replace(ops);
+			let res = f();
+			unavailable_ops.replace(0);
+			res
+		})
 	}
 }
