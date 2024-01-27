@@ -720,7 +720,7 @@ fn test_update_fee_that_funder_cannot_afford() {
 		let chan_signer = remote_chan.get_signer();
 		let pubkeys = chan_signer.as_ref().pubkeys();
 		(pubkeys.delayed_payment_basepoint, pubkeys.htlc_basepoint,
-		 chan_signer.as_ref().get_per_commitment_point(INITIAL_COMMITMENT_NUMBER - 1, &secp_ctx),
+		 chan_signer.as_ref().get_per_commitment_point(INITIAL_COMMITMENT_NUMBER - 1, &secp_ctx).unwrap(),
 		 pubkeys.funding_pubkey)
 	};
 
@@ -1442,8 +1442,8 @@ fn test_fee_spike_violation_fails_htlc() {
 
 		let pubkeys = chan_signer.as_ref().pubkeys();
 		(pubkeys.revocation_basepoint, pubkeys.htlc_basepoint,
-		 chan_signer.as_ref().release_commitment_secret(INITIAL_COMMITMENT_NUMBER),
-		 chan_signer.as_ref().get_per_commitment_point(INITIAL_COMMITMENT_NUMBER - 2, &secp_ctx),
+		 chan_signer.as_ref().release_commitment_secret(INITIAL_COMMITMENT_NUMBER).unwrap(),
+		 chan_signer.as_ref().get_per_commitment_point(INITIAL_COMMITMENT_NUMBER - 2, &secp_ctx).unwrap(),
 		 chan_signer.as_ref().pubkeys().funding_pubkey)
 	};
 	let (remote_delayed_payment_basepoint, remote_htlc_basepoint, remote_point, remote_funding) = {
@@ -1455,7 +1455,7 @@ fn test_fee_spike_violation_fails_htlc() {
 		let chan_signer = remote_chan.get_signer();
 		let pubkeys = chan_signer.as_ref().pubkeys();
 		(pubkeys.delayed_payment_basepoint, pubkeys.htlc_basepoint,
-		 chan_signer.as_ref().get_per_commitment_point(INITIAL_COMMITMENT_NUMBER - 1, &secp_ctx),
+		 chan_signer.as_ref().get_per_commitment_point(INITIAL_COMMITMENT_NUMBER - 1, &secp_ctx).unwrap(),
 		 chan_signer.as_ref().pubkeys().funding_pubkey)
 	};
 
@@ -7186,11 +7186,12 @@ fn test_user_configurable_csv_delay() {
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &user_cfgs);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let logger = test_utils::TestLogger::new();
 
 	// We test config.our_to_self > BREAKDOWN_TIMEOUT is enforced in OutboundV1Channel::new()
 	if let Err(error) = OutboundV1Channel::new(&LowerBoundedFeeEstimator::new(&test_utils::TestFeeEstimator { sat_per_kw: Mutex::new(253) }),
 		&nodes[0].keys_manager, &nodes[0].keys_manager, nodes[1].node.get_our_node_id(), &nodes[1].node.init_features(), 1000000, 1000000, 0,
-		&low_our_to_self_config, 0, 42, None)
+		&low_our_to_self_config, 0, 42, None, &&logger)
 	{
 		match error {
 			APIError::APIMisuseError { err } => { assert!(regex::Regex::new(r"Configured with an unreasonable our_to_self_delay \(\d+\) putting user funds at risks").unwrap().is_match(err.as_str())); },
@@ -7792,15 +7793,15 @@ fn test_counterparty_raa_skip_no_crash() {
 
 		// Make signer believe we got a counterparty signature, so that it allows the revocation
 		keys.as_ecdsa().unwrap().get_enforcement_state().last_holder_commitment -= 1;
-		per_commitment_secret = keys.as_ref().release_commitment_secret(INITIAL_COMMITMENT_NUMBER);
+		per_commitment_secret = keys.as_ref().release_commitment_secret(INITIAL_COMMITMENT_NUMBER).unwrap();
 
 		// Must revoke without gaps
 		keys.as_ecdsa().unwrap().get_enforcement_state().last_holder_commitment -= 1;
-		keys.as_ref().release_commitment_secret(INITIAL_COMMITMENT_NUMBER - 1);
+		keys.as_ref().release_commitment_secret(INITIAL_COMMITMENT_NUMBER - 1).expect("unable to release commitment secret");
 
 		keys.as_ecdsa().unwrap().get_enforcement_state().last_holder_commitment -= 1;
 		next_per_commitment_point = PublicKey::from_secret_key(&Secp256k1::new(),
-			&SecretKey::from_slice(&keys.as_ref().release_commitment_secret(INITIAL_COMMITMENT_NUMBER - 2)).unwrap());
+			&SecretKey::from_slice(&keys.as_ref().release_commitment_secret(INITIAL_COMMITMENT_NUMBER - 2).unwrap()).unwrap());
 	}
 
 	nodes[1].node.handle_revoke_and_ack(&nodes[0].node.get_our_node_id(),

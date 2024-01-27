@@ -793,12 +793,53 @@ pub(super) struct MonitorRestoreUpdates {
 	pub announcement_sigs: Option<msgs::AnnouncementSignatures>,
 }
 
-/// The return value of `signer_maybe_unblocked`
+/// The return value of `signer_maybe_unblocked`.
+///
+/// When the signer becomes unblocked, any non-`None` event accumulated here should be sent to the
+/// peer by the caller.
 #[allow(unused)]
 pub(super) struct SignerResumeUpdates {
+	/// A `commitment_signed` message, possibly with additional HTLC-related messages (e.g.,
+	/// `update_add_htlc`) that should be placed in the commitment.
+	///
+	/// When both this and `raa` contain values, they should be sent to the peer using an ordering
+	/// consistent with `order`.
 	pub commitment_update: Option<msgs::CommitmentUpdate>,
+	/// A `revoke_and_ack` message that should be sent to the peer.
+	///
+	/// When both this and `raa` contain values, they should be sent to the peer using an ordering
+	/// consistent with `order`.
+	pub raa: Option<msgs::RevokeAndACK>,
+	/// The order in which the `commitment_signed` and `revoke_and_ack` messages should be provided to
+	/// the peer. Only meaningful if both of these messages are present.
+	pub order: RAACommitmentOrder,
+	/// A `funding_signed` message that should be sent to the peer.
 	pub funding_signed: Option<msgs::FundingSigned>,
+	/// A `channel_ready` message that should be sent to the peer.
 	pub channel_ready: Option<msgs::ChannelReady>,
+}
+
+impl Default for SignerResumeUpdates {
+	fn default() -> Self {
+		Self {
+			commitment_update: None,
+			raa: None,
+			order: RAACommitmentOrder::CommitmentFirst,
+			funding_signed: None,
+			channel_ready: None,
+		}
+	}
+}
+
+#[allow(unused)]
+pub(super) struct UnfundedInboundV1SignerResumeUpdates {
+	pub accept_channel: Option<msgs::AcceptChannel>,
+}
+
+#[allow(unused)]
+pub(super) struct UnfundedOutboundV1SignerResumeUpdates {
+	pub open_channel: Option<msgs::OpenChannel>,
+	pub funding_created: Option<msgs::FundingCreated>,
 }
 
 /// The return value of `channel_reestablish`
@@ -951,6 +992,91 @@ impl UnfundedChannelContext {
 	}
 }
 
+#[derive(Debug, Copy, Clone)]
+enum HolderCommitment {
+	Uninitialized { transaction_number: u64 },
+	PendingNext { transaction_number: u64, current: PublicKey },
+	Available { transaction_number: u64, current: PublicKey, next: PublicKey },
+}
+
+impl HolderCommitment where {
+	pub fn initial() -> Self {
+		HolderCommitment::Uninitialized { transaction_number: INITIAL_COMMITMENT_NUMBER }
+	}
+
+	pub fn is_available(&self) -> bool {
+		if let HolderCommitment::Available { .. } = self { true } else { false }
+	}
+
+	pub fn is_uninitialized(&self) -> bool {
+		if let HolderCommitment::Uninitialized { .. } = self { true } else { false }
+	}
+
+	pub fn transaction_number(&self) -> u64 {
+		match self {
+			HolderCommitment::Uninitialized { transaction_number } => *transaction_number,
+			HolderCommitment::PendingNext { transaction_number, .. } => *transaction_number,
+			HolderCommitment::Available { transaction_number, .. } => *transaction_number,
+		}
+	}
+
+	pub fn current_point(&self) -> PublicKey {
+		match self {
+			HolderCommitment::Uninitialized { .. } => panic!("holder commitment is uninitialized"),
+			HolderCommitment::PendingNext { current, .. } => *current,
+			HolderCommitment::Available { current, .. } => *current,
+		}
+	}
+
+	pub fn next_point(&self) -> Option<PublicKey> {
+		match self {
+			HolderCommitment::Uninitialized { .. } => panic!("holder commitment is uninitialized"),
+			HolderCommitment::PendingNext { .. } => None,
+			HolderCommitment::Available { next, .. } => Some(*next),
+		}
+	}
+
+	pub fn advance<SP: Deref, L: Deref>(&self, signer: &ChannelSignerType<SP>, secp_ctx: &Secp256k1<secp256k1::All>, logger: &L) -> Self
+		where SP::Target: SignerProvider, L::Target: Logger
+	{
+		match self {
+			HolderCommitment::Available { transaction_number, next, .. } => {
+				HolderCommitment::PendingNext {
+					transaction_number: transaction_number - 1,
+					current: *next,
+				}.request_next(signer, secp_ctx, logger)
+			}
+			_ => panic!("Cannot advance holder commitment; there is no next point available")
+		}
+	}
+
+	pub fn request_next<SP: Deref, L: Deref>(&self, signer: &ChannelSignerType<SP>, secp_ctx: &Secp256k1<secp256k1::All>, logger: &L) -> Self
+		where SP::Target: SignerProvider, L::Target: Logger
+	{
+		match self {
+			HolderCommitment::Uninitialized { transaction_number } => {
+				if let Ok(current) = signer.as_ref().get_per_commitment_point(*transaction_number, secp_ctx) {
+					log_trace!(logger, "Retrieved current per-commitment point {}", transaction_number);
+					HolderCommitment::PendingNext { transaction_number: *transaction_number, current }.request_next(signer, secp_ctx, logger)
+				} else {
+					log_trace!(logger, "Current per-commitment point {} is pending", transaction_number);
+					*self
+				}
+			}
+			HolderCommitment::PendingNext { transaction_number, current } => {
+				if let Ok(next) = signer.as_ref().get_per_commitment_point(transaction_number - 1, secp_ctx) {
+					log_trace!(logger, "Retrieved next per-commitment point {}", transaction_number - 1);
+					HolderCommitment::Available { transaction_number: *transaction_number, current: *current, next }
+				} else {
+					log_trace!(logger, "Next per-commitment point {} is pending", transaction_number);
+					*self
+				}
+			}
+			HolderCommitment::Available { .. } => *self,
+		}
+	}
+}
+
 /// Contains everything about the channel including state, and various flags.
 pub(super) struct ChannelContext<SP: Deref> where SP::Target: SignerProvider {
 	config: LegacyChannelConfig,
@@ -996,7 +1122,10 @@ pub(super) struct ChannelContext<SP: Deref> where SP::Target: SignerProvider {
 	// generation start at 0 and count up...this simplifies some parts of implementation at the
 	// cost of others, but should really just be changed.
 
-	cur_holder_commitment_transaction_number: u64,
+	holder_commitment: HolderCommitment,
+	// The commitment secret corresponding to `cur_holder_commitment_transaction_number + 2`, which is
+	// the previous state.
+	prev_holder_commitment_secret: Option<[u8; 32]>,
 	cur_counterparty_commitment_transaction_number: u64,
 	value_to_self_msat: u64, // Excluding all pending_htlcs, fees, and anchor outputs
 	pending_inbound_htlcs: Vec<InboundHTLCOutput>,
@@ -1031,10 +1160,19 @@ pub(super) struct ChannelContext<SP: Deref> where SP::Target: SignerProvider {
 	/// This flag is set in such a case. Note that we don't need to persist this as we'll end up
 	/// setting it again as a side-effect of [`Channel::channel_reestablish`].
 	signer_pending_commitment_update: bool,
+	/// Similar to [`Self::signer_pending_commitment_update`]: indicates that we've deferred sending a
+	/// `revoke_and_ack`, and should do so once the signer has become unblocked.
+	signer_pending_revoke_and_ack: bool,
 	/// Similar to [`Self::signer_pending_commitment_update`] but we're waiting to send either a
 	/// [`msgs::FundingCreated`] or [`msgs::FundingSigned`] depending on if this channel is
 	/// outbound or inbound.
 	signer_pending_funding: bool,
+	/// Similar to [`Self::signer_pending_commitment_update`] but we're waiting to send a
+	/// [`msgs::ChannelReady`].
+	signer_pending_channel_ready: bool,
+	/// If we attempted to release the per-commitment secret for the previous transaction but the
+	/// signer wasn't ready, then this will be set to `true`.
+	signer_pending_released_secret: bool,
 
 	// pending_update_fee is filled when sending and receiving update_fee.
 	//
@@ -1527,6 +1665,54 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 		self.channel_ready_event_emitted = true;
 	}
 
+	pub fn advance_holder_commitment<L: Deref>(&mut self, logger: &L) where L::Target: Logger {
+		self.holder_commitment = self.holder_commitment.advance(&self.holder_signer, &self.secp_ctx, logger);
+	}
+
+	pub fn request_next_holder_commitment<L: Deref>(&mut self, logger: &L) where L::Target: Logger {
+		self.holder_commitment = self.holder_commitment.request_next(&self.holder_signer, &self.secp_ctx, logger);
+	}
+
+	pub fn is_holder_commitment_uninitialized(&self) -> bool {
+		self.holder_commitment.is_uninitialized()
+	}
+
+	pub fn update_holder_commitment_secret<L: Deref>(&mut self, logger: &L) where L::Target: Logger
+	{
+		let transaction_number = self.holder_commitment.transaction_number();
+		let signer = self.holder_signer.as_ref();
+
+		let releasing_transaction_number = transaction_number + 2;
+		if releasing_transaction_number <= INITIAL_COMMITMENT_NUMBER {
+			log_trace!(logger, "Retrieving commitment secret for {} transaction number {}", self.channel_id(), releasing_transaction_number);
+			self.prev_holder_commitment_secret = match signer.release_commitment_secret(releasing_transaction_number) {
+				Ok(secret) => {
+					if self.signer_pending_released_secret {
+						log_trace!(logger, "Commitment secret for {} transaction number {} retrieved; clearing signer_pending_released_secret",
+							self.channel_id(), releasing_transaction_number);
+						self.signer_pending_released_secret = false;
+					}
+					Some(secret)
+				}
+
+				Err(_) => {
+					if !self.signer_pending_released_secret {
+						log_trace!(logger, "Commitment secret for {} transaction number {} is not available; setting signer_pending_released_secret",
+							self.channel_id(), releasing_transaction_number);
+						self.signer_pending_released_secret = true;
+					}
+					None
+				}
+			}
+		};
+	}
+
+	#[cfg(test)]
+	pub fn forget_signer_material(&mut self) {
+		self.holder_commitment = HolderCommitment::Uninitialized { transaction_number: self.holder_commitment.transaction_number() };
+		self.prev_holder_commitment_secret = None;
+	}
+
 	/// Tracks the number of ticks elapsed since the previous [`ChannelConfig`] was updated. Once
 	/// [`EXPIRE_PREV_CONFIG_TICKS`] is reached, the previous config is considered expired and will
 	/// no longer be considered when forwarding HTLCs.
@@ -1824,8 +2010,8 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 	/// our counterparty!)
 	/// The result is a transaction which we can revoke broadcastership of (ie a "local" transaction)
 	/// TODO Some magic rust shit to compile-time check this?
-	fn build_holder_transaction_keys(&self, commitment_number: u64) -> TxCreationKeys {
-		let per_commitment_point = self.holder_signer.as_ref().get_per_commitment_point(commitment_number, &self.secp_ctx);
+	fn build_holder_transaction_keys(&self) -> TxCreationKeys {
+		let per_commitment_point = self.holder_commitment.current_point();
 		let delayed_payment_base = &self.get_holder_pubkeys().delayed_payment_basepoint;
 		let htlc_basepoint = &self.get_holder_pubkeys().htlc_basepoint;
 		let counterparty_pubkeys = self.get_counterparty_pubkeys();
@@ -3354,9 +3540,9 @@ impl<SP: Deref> Channel<SP> where
 
 		let funding_script = self.context.get_funding_redeemscript();
 
-		let keys = self.context.build_holder_transaction_keys(self.context.cur_holder_commitment_transaction_number);
+		let keys = self.context.build_holder_transaction_keys();
 
-		let commitment_stats = self.context.build_commitment_transaction(self.context.cur_holder_commitment_transaction_number, &keys, true, false, logger);
+		let commitment_stats = self.context.build_commitment_transaction(self.context.holder_commitment.transaction_number(), &keys, true, false, logger);
 		let commitment_txid = {
 			let trusted_tx = commitment_stats.tx.trust();
 			let bitcoin_tx = trusted_tx.built_transaction();
@@ -3518,10 +3704,12 @@ impl<SP: Deref> Channel<SP> where
 			}]
 		};
 
-		self.context.cur_holder_commitment_transaction_number -= 1;
 		self.context.expecting_peer_commitment_signed = false;
+		self.context.advance_holder_commitment(logger);
+
 		// Note that if we need_commitment & !AwaitingRemoteRevoke we'll call
 		// build_commitment_no_status_check() next which will reset this to RAAFirst.
+		log_debug!(logger, "setting resend_order to CommitmentFirst");
 		self.context.resend_order = RAACommitmentOrder::CommitmentFirst;
 
 		if self.context.channel_state.is_monitor_update_in_progress() {
@@ -4016,8 +4204,8 @@ impl<SP: Deref> Channel<SP> where
 		// Before proposing a feerate update, check that we can actually afford the new fee.
 		let inbound_stats = self.context.get_inbound_pending_htlc_stats(Some(feerate_per_kw));
 		let outbound_stats = self.context.get_outbound_pending_htlc_stats(Some(feerate_per_kw));
-		let keys = self.context.build_holder_transaction_keys(self.context.cur_holder_commitment_transaction_number);
-		let commitment_stats = self.context.build_commitment_transaction(self.context.cur_holder_commitment_transaction_number, &keys, true, true, logger);
+		let keys = self.context.build_holder_transaction_keys();
+		let commitment_stats = self.context.build_commitment_transaction(self.context.holder_commitment.transaction_number(), &keys, true, true, logger);
 		let buffer_fee_msat = commit_tx_fee_sat(feerate_per_kw, commitment_stats.num_nondust_htlcs + outbound_stats.on_holder_tx_holding_cell_htlcs_count as usize + CONCURRENT_INBOUND_HTLC_FEE_BUFFER as usize, self.context.get_channel_type()) * 1000;
 		let holder_balance_msat = commitment_stats.local_balance_msat - outbound_stats.holding_cell_msat;
 		if holder_balance_msat < buffer_fee_msat  + self.context.counterparty_selected_channel_reserve_satoshis.unwrap() * 1000 {
@@ -4067,6 +4255,22 @@ impl<SP: Deref> Channel<SP> where
 		assert!(!matches!(self.context.channel_state, ChannelState::ShutdownComplete));
 		if self.context.channel_state.is_pre_funded_state() {
 			return Err(())
+		}
+
+		// If we have requests pending to the signer, then clear out any of them that will be recomputed
+		// on `channel_reestablish`. This ensures we don't send them twice if the signer unblocks before
+		// we receive the counterparty's reestablish message.
+		if self.context.signer_pending_channel_ready {
+			log_trace!(logger, "Clearing signer_pending_channel_ready");
+			self.context.signer_pending_channel_ready = false;
+		}
+		if self.context.signer_pending_revoke_and_ack {
+			log_trace!(logger, "Clearing signer_pending_revoke_and_ack");
+			self.context.signer_pending_revoke_and_ack = false;
+		}
+		if self.context.signer_pending_commitment_update {
+			log_trace!(logger, "Clearing signer_pending_commitment_update");
+			self.context.signer_pending_commitment_update = false;
 		}
 
 		if self.context.channel_state.is_peer_disconnected() {
@@ -4201,12 +4405,7 @@ impl<SP: Deref> Channel<SP> where
 			assert!(!self.context.is_outbound() || self.context.minimum_depth == Some(0),
 				"Funding transaction broadcast by the local client before it should have - LDK didn't do it!");
 			self.context.monitor_pending_channel_ready = false;
-			let next_per_commitment_point = self.context.holder_signer.as_ref().get_per_commitment_point(self.context.cur_holder_commitment_transaction_number, &self.context.secp_ctx);
-			Some(msgs::ChannelReady {
-				channel_id: self.context.channel_id(),
-				next_per_commitment_point,
-				short_channel_id_alias: Some(self.context.outbound_scid_alias),
-			})
+			Some(self.get_channel_ready())
 		} else { None };
 
 		let announcement_sigs = self.get_announcement_sigs(node_signer, chain_hash, user_config, best_block_height, logger);
@@ -4228,7 +4427,12 @@ impl<SP: Deref> Channel<SP> where
 		}
 
 		let raa = if self.context.monitor_pending_revoke_and_ack {
-			Some(self.get_last_revoke_and_ack())
+			self.context.update_holder_commitment_secret(logger);
+			self.get_last_revoke_and_ack(logger).or_else(|| {
+				log_trace!(logger, "Monitor was pending RAA, but RAA is not available; setting signer_pending_revoke_and_ack");
+				self.context.signer_pending_revoke_and_ack = true;
+				None
+			})
 		} else { None };
 		let commitment_update = if self.context.monitor_pending_commitment_signed {
 			self.get_last_commitment_update_for_send(logger).ok()
@@ -4237,13 +4441,61 @@ impl<SP: Deref> Channel<SP> where
 			self.mark_awaiting_response();
 		}
 
+		if self.context.monitor_pending_commitment_signed && commitment_update.is_none() {
+			log_trace!(logger, "Monitor was pending_commitment_signed with no commitment update available; setting signer_pending_commitment_update");
+			self.context.signer_pending_commitment_update = true;
+		} else {
+			// If the signer was pending a commitment update, but we happened to get one just now because
+			// the monitor retrieved it, then we can mark the signer as "not pending anymore".
+			if self.context.signer_pending_commitment_update && commitment_update.is_some() {
+				log_trace!(logger, "Signer was pending commitment update, monitor retrieved it: clearing signer_pending_commitment_update");
+				self.context.signer_pending_commitment_update = false;
+			}
+		}
+		if self.context.monitor_pending_revoke_and_ack && raa.is_none() {
+			log_trace!(logger, "Monitor was pending_revoke_and_ack with no RAA available; setting signer_pending_revoke_and_ack");
+			self.context.signer_pending_revoke_and_ack = true;
+		} else {
+			// If the signer was pending a RAA, but we happened to get one just now because the monitor
+			// retrieved it, then we can mark the signer as "not pending anymore".
+			if self.context.signer_pending_revoke_and_ack && raa.is_some() {
+				log_trace!(logger, "Signer was pending RAA, monitor retrived it: clearing signer_pending_revoke_and_ack");
+				self.context.signer_pending_revoke_and_ack = false;
+			}
+		}
+
 		self.context.monitor_pending_revoke_and_ack = false;
 		self.context.monitor_pending_commitment_signed = false;
+
+		// Enforce the ordering between commitment update and revoke-and-ack: with an asynchronous
+		// signer, they may have become available in an order that violates the ordering that our
+		// counterparty expects. If that happens, suppress the out-of-order message and mark it as
+		// pending. When the signer becomes unblocked we can provide the messages in the proper order.
 		let order = self.context.resend_order.clone();
-		log_debug!(logger, "Restored monitor updating in channel {} resulting in {}{} commitment update and {} RAA, with {} first",
+		let (commitment_update, raa) = match order {
+			RAACommitmentOrder::CommitmentFirst => {
+				if self.context.signer_pending_commitment_update && raa.is_some() {
+					log_trace!(logger, "RAA is available, but we can't deliver it because ordering requires CommitmentFirst; setting signer_pending_revoke_and_ack = true");
+					self.context.signer_pending_revoke_and_ack = true;
+				}
+				(commitment_update, if !self.context.signer_pending_commitment_update { raa } else { None })
+			}
+
+			RAACommitmentOrder::RevokeAndACKFirst => {
+				if self.context.signer_pending_revoke_and_ack && commitment_update.is_some() {
+					log_trace!(logger, "commitment_update is available, but we can't deliver it because ordering requires RevokeAndACKFirst; setting signer_pending_commitment_update = true");
+					self.context.signer_pending_commitment_update = true;
+				}
+				(if !self.context.signer_pending_revoke_and_ack { commitment_update } else { None }, raa)
+			}
+		};
+
+		log_debug!(logger, "Restored monitor updating in channel {} resulting in {}{} commitment update and {} RAA{}",
 			&self.context.channel_id(), if funding_broadcastable.is_some() { "a funding broadcastable, " } else { "" },
 			if commitment_update.is_some() { "a" } else { "no" }, if raa.is_some() { "an" } else { "no" },
-			match order { RAACommitmentOrder::CommitmentFirst => "commitment", RAACommitmentOrder::RevokeAndACKFirst => "RAA"});
+			if commitment_update.is_some() && raa.is_some() {
+				match order { RAACommitmentOrder::CommitmentFirst => ", with commitment first", RAACommitmentOrder::RevokeAndACKFirst => ", with RAA first"}
+			} else { "" });
 		MonitorRestoreUpdates {
 			raa, commitment_update, order, accepted_htlcs, failed_htlcs, finalized_claimed_htlcs, funding_broadcastable, channel_ready, announcement_sigs
 		}
@@ -4285,37 +4537,138 @@ impl<SP: Deref> Channel<SP> where
 	/// blocked.
 	#[cfg(async_signing)]
 	pub fn signer_maybe_unblocked<L: Deref>(&mut self, logger: &L) -> SignerResumeUpdates where L::Target: Logger {
-		let commitment_update = if self.context.signer_pending_commitment_update {
-			self.get_last_commitment_update_for_send(logger).ok()
-		} else { None };
+		log_trace!(logger, "Signing unblocked in channel {} at sequence {}",
+			&self.context.channel_id(), self.context.holder_commitment.transaction_number());
+
+		if !self.context.holder_commitment.is_available() {
+			log_trace!(logger, "Attempting to update holder per-commitment point...");
+			self.context.request_next_holder_commitment(logger);
+		}
+
+		if self.context.signer_pending_released_secret {
+			log_trace!(logger, "Attempting to update holder commitment secret...");
+			self.context.update_holder_commitment_secret(logger);
+		}
+
 		let funding_signed = if self.context.signer_pending_funding && !self.context.is_outbound() {
+			log_trace!(logger, "Attempting to generate pending funding signed...");
 			self.context.get_funding_signed_msg(logger).1
 		} else { None };
-		let channel_ready = if funding_signed.is_some() {
-			self.check_get_channel_ready(0)
+
+		// Provide a `channel_ready` message if we need to, but only if we're _not_ still pending
+		// funding.
+		let channel_ready = if self.context.signer_pending_channel_ready && !self.context.signer_pending_funding && self.context.holder_commitment.is_available() {
+			log_trace!(logger, "Generating pending channel_ready...");
+			self.context.signer_pending_channel_ready = false;
+			Some(self.get_channel_ready())
 		} else { None };
 
-		log_trace!(logger, "Signer unblocked with {} commitment_update, {} funding_signed and {} channel_ready",
+		// If we're pending a channel_ready to the counterparty, then we can't be sending commitment
+		// updates. If we're not, then make sure that we honor any ordering requirements between the
+		// commitment update and revoke-and-ack.
+		let (commitment_update, raa) = match &self.context.resend_order {
+			RAACommitmentOrder::CommitmentFirst => {
+				let cu = if self.context.signer_pending_commitment_update {
+					log_trace!(logger, "Attempting to generate pending commitment update...");
+					self.get_last_commitment_update_for_send(logger).map(|cu| {
+						log_trace!(logger, "Generated commitment update; clearing signer_pending_commitment_update");
+						self.context.signer_pending_commitment_update = false;
+						cu
+					}).ok()
+				} else { None };
+
+				let raa = if self.context.signer_pending_revoke_and_ack && !self.context.signer_pending_commitment_update {
+					log_trace!(logger, "Attempting to generate pending RAA...");
+					self.get_last_revoke_and_ack(logger).map(|raa| {
+						log_trace!(logger, "Generated RAA; clearing signer_pending_revoke_and_ack");
+						self.context.signer_pending_revoke_and_ack = false;
+						raa
+					})
+				} else { None };
+
+				(cu, raa)
+			}
+
+			RAACommitmentOrder::RevokeAndACKFirst => {
+				let raa = if self.context.signer_pending_revoke_and_ack {
+					log_trace!(logger, "Attempting to generate pending RAA...");
+					self.get_last_revoke_and_ack(logger).map(|raa| {
+						log_trace!(logger, "Generated RAA; clearing signer_pending_revoke_and_ack");
+						self.context.signer_pending_revoke_and_ack = false;
+						raa
+					})
+				} else { None };
+
+				let cu = if self.context.signer_pending_commitment_update && !self.context.signer_pending_revoke_and_ack {
+					log_trace!(logger, "Attempting to generate pending commitment update...");
+					self.get_last_commitment_update_for_send(logger).map(|cu| {
+						log_trace!(logger, "Generated commitment update; clearing signer_pending_commitment_update");
+						self.context.signer_pending_commitment_update = false;
+						cu
+					}).ok()
+				} else { None };
+
+				(cu, raa)
+			}
+		};
+
+		let order = self.context.resend_order.clone();
+
+		log_debug!(logger, "Signing unblocked in channel {} at sequence {} resulted in {} commitment update, {} RAA{}, {} funding_signed, {} channel_ready",
+			&self.context.channel_id(), self.context.holder_commitment.transaction_number(),
 			if commitment_update.is_some() { "a" } else { "no" },
+			if raa.is_some() { "an" } else { "no" },
+			if commitment_update.is_some() && raa.is_some() {
+				if order == RAACommitmentOrder::CommitmentFirst { " (commitment first)" } else { " (RAA first)" }
+			} else { "" },
 			if funding_signed.is_some() { "a" } else { "no" },
 			if channel_ready.is_some() { "a" } else { "no" });
 
 		SignerResumeUpdates {
 			commitment_update,
+			raa,
+			order,
 			funding_signed,
 			channel_ready,
 		}
 	}
 
-	fn get_last_revoke_and_ack(&self) -> msgs::RevokeAndACK {
-		let next_per_commitment_point = self.context.holder_signer.as_ref().get_per_commitment_point(self.context.cur_holder_commitment_transaction_number, &self.context.secp_ctx);
-		let per_commitment_secret = self.context.holder_signer.as_ref().release_commitment_secret(self.context.cur_holder_commitment_transaction_number + 2);
-		msgs::RevokeAndACK {
-			channel_id: self.context.channel_id,
-			per_commitment_secret,
-			next_per_commitment_point,
-			#[cfg(taproot)]
-			next_local_nonce: None,
+	fn get_last_revoke_and_ack<L: Deref>(&self, logger: &L) -> Option<msgs::RevokeAndACK> where L::Target: Logger {
+		assert!(self.context.holder_commitment.transaction_number() <= INITIAL_COMMITMENT_NUMBER + 2);
+		match (self.context.holder_commitment, self.context.prev_holder_commitment_secret) {
+			(HolderCommitment::Available { current, .. }, Some(per_commitment_secret)) => {
+				log_debug!(logger, "Regenerated last revoke-and-ack in channel {} for next per-commitment point sequence number {}, releasing secret for {}",
+					&self.context.channel_id(), self.context.holder_commitment.transaction_number(),
+					self.context.holder_commitment.transaction_number() + 2);
+
+				Some(msgs::RevokeAndACK {
+					channel_id: self.context.channel_id,
+					per_commitment_secret,
+					next_per_commitment_point: current,
+					#[cfg(taproot)]
+					next_local_nonce: None,
+				})
+			},
+
+			(HolderCommitment::Available { .. }, None) => {
+				log_debug!(logger, "Last revoke-and-ack pending in channel {} for sequence {} because the secret for {} is not available",
+					&self.context.channel_id(), self.context.holder_commitment.transaction_number(),
+					self.context.holder_commitment.transaction_number() + 2);
+				None
+			},
+
+			(_, Some(_)) => {
+				log_debug!(logger, "Last revoke-and-ack pending in channel {} for sequence {} because the next per-commitment point is not available",
+					&self.context.channel_id(), self.context.holder_commitment.transaction_number());
+				None
+			},
+
+			(_, None) => {
+				log_debug!(logger, "Last revoke-and-ack pending in channel {} for sequence {} because neither the next per-commitment point nor the secret for {} is available",
+					&self.context.channel_id(), self.context.holder_commitment.transaction_number(),
+					self.context.holder_commitment.transaction_number() + 2);
+				None
+			},
 		}
 	}
 
@@ -4398,6 +4751,9 @@ impl<SP: Deref> Channel<SP> where
 				return Err(());
 			}
 		};
+		log_debug!(logger, "Regenerated latest commitment update in channel {} at {} with{} {} update_adds, {} update_fulfills, {} update_fails, and {} update_fail_malformeds",
+				&self.context.channel_id(), self.context.holder_commitment.transaction_number(), if update_fee.is_some() { " update_fee," } else { "" },
+				update_add_htlcs.len(), update_fulfill_htlcs.len(), update_fail_htlcs.len(), update_fail_malformed_htlcs.len());
 		Ok(msgs::CommitmentUpdate {
 			update_add_htlcs, update_fulfill_htlcs, update_fail_htlcs, update_fail_malformed_htlcs, update_fee,
 			commitment_signed,
@@ -4442,13 +4798,21 @@ impl<SP: Deref> Channel<SP> where
 			return Err(ChannelError::Close("Peer sent an invalid channel_reestablish to force close in a non-standard way".to_owned()));
 		}
 
-		let our_commitment_transaction = INITIAL_COMMITMENT_NUMBER - self.context.cur_holder_commitment_transaction_number - 1;
+		let our_commitment_transaction = INITIAL_COMMITMENT_NUMBER - self.context.holder_commitment.transaction_number() - 1;
 		if msg.next_remote_commitment_number > 0 {
-			let expected_point = self.context.holder_signer.as_ref().get_per_commitment_point(INITIAL_COMMITMENT_NUMBER - msg.next_remote_commitment_number + 1, &self.context.secp_ctx);
-			let given_secret = SecretKey::from_slice(&msg.your_last_per_commitment_secret)
-				.map_err(|_| ChannelError::Close("Peer sent a garbage channel_reestablish with unparseable secret key".to_owned()))?;
-			if expected_point != PublicKey::from_secret_key(&self.context.secp_ctx, &given_secret) {
-				return Err(ChannelError::Close("Peer sent a garbage channel_reestablish with secret key not matching the commitment height provided".to_owned()));
+			// TODO(waterson): figure out how to do this verification when an async signer is provided
+			// with a (more or less) arbitrary state index. Should we require that an async signer cache
+			// old points? Or should we make it so that we can restart the re-establish after the signer
+			// becomes unblocked? Or something else?
+			if false {
+				let state_index = INITIAL_COMMITMENT_NUMBER - msg.next_remote_commitment_number + 1;
+				let expected_point = self.context.holder_signer.as_ref().get_per_commitment_point(state_index, &self.context.secp_ctx)
+					.map_err(|_| ChannelError::Close(format!("Unable to retrieve per-commitment point for state {}", state_index)))?;
+				let given_secret = SecretKey::from_slice(&msg.your_last_per_commitment_secret)
+					.map_err(|_| ChannelError::Close("Peer sent a garbage channel_reestablish with unparseable secret key".to_owned()))?;
+				if expected_point != PublicKey::from_secret_key(&self.context.secp_ctx, &given_secret) {
+					return Err(ChannelError::Close("Peer sent a garbage channel_reestablish with secret key not matching the commitment height provided".to_owned()));
+				}
 			}
 			if msg.next_remote_commitment_number > our_commitment_transaction {
 				macro_rules! log_and_panic {
@@ -4504,29 +4868,40 @@ impl<SP: Deref> Channel<SP> where
 			}
 
 			// We have OurChannelReady set!
-			let next_per_commitment_point = self.context.holder_signer.as_ref().get_per_commitment_point(self.context.cur_holder_commitment_transaction_number, &self.context.secp_ctx);
 			return Ok(ReestablishResponses {
-				channel_ready: Some(msgs::ChannelReady {
-					channel_id: self.context.channel_id(),
-					next_per_commitment_point,
-					short_channel_id_alias: Some(self.context.outbound_scid_alias),
-				}),
+				channel_ready: Some(self.get_channel_ready()),
 				raa: None, commitment_update: None,
 				order: RAACommitmentOrder::CommitmentFirst,
 				shutdown_msg, announcement_sigs,
 			});
 		}
 
-		let required_revoke = if msg.next_remote_commitment_number == our_commitment_transaction {
+		// If they think we're behind by one state, then we owe them an RAA. We may or may not have that
+		// RAA handy depending on the status of the remote signer and the monitor.
+		let steps_behind = (INITIAL_COMMITMENT_NUMBER - self.context.holder_commitment.transaction_number()) - (msg.next_remote_commitment_number + 1);
+		let raa = if steps_behind == 0 {
 			// Remote isn't waiting on any RevokeAndACK from us!
 			// Note that if we need to repeat our ChannelReady we'll do that in the next if block.
 			None
-		} else if msg.next_remote_commitment_number + 1 == our_commitment_transaction {
+		} else if steps_behind == 1 { // msg.next_remote_commitment_number + 1 == (INITIAL_COMMITMENT_NUMBER - 1) - self.context.holder_commitment.transaction_number() {
 			if self.context.channel_state.is_monitor_update_in_progress() {
 				self.context.monitor_pending_revoke_and_ack = true;
 				None
 			} else {
-				Some(self.get_last_revoke_and_ack())
+				self.context.update_holder_commitment_secret(logger);
+				self.get_last_revoke_and_ack(logger).map(|raa| {
+					if self.context.signer_pending_revoke_and_ack {
+						log_trace!(logger, "Generated RAA for channel_reestablish; clearing signer_pending_revoke_and_ack");
+						self.context.signer_pending_revoke_and_ack = false;
+					}
+					raa
+				}).or_else(|| {
+					if !self.context.signer_pending_revoke_and_ack {
+						log_trace!(logger, "Unable to generate RAA for channel_reestablish; setting signer_pending_revoke_and_ack");
+						self.context.signer_pending_revoke_and_ack = true;
+					}
+					None
+				})
 			}
 		} else {
 			debug_assert!(false, "All values should have been handled in the four cases above");
@@ -4547,31 +4922,26 @@ impl<SP: Deref> Channel<SP> where
 		}
 		let next_counterparty_commitment_number = INITIAL_COMMITMENT_NUMBER - self.context.cur_counterparty_commitment_transaction_number + if is_awaiting_remote_revoke { 1 } else { 0 };
 
-		let channel_ready = if msg.next_local_commitment_number == 1 && INITIAL_COMMITMENT_NUMBER - self.context.cur_holder_commitment_transaction_number == 1 {
+		let channel_ready = if msg.next_local_commitment_number == 1 && INITIAL_COMMITMENT_NUMBER - self.context.holder_commitment.transaction_number() == 1 {
 			// We should never have to worry about MonitorUpdateInProgress resending ChannelReady
-			let next_per_commitment_point = self.context.holder_signer.as_ref().get_per_commitment_point(self.context.cur_holder_commitment_transaction_number, &self.context.secp_ctx);
-			Some(msgs::ChannelReady {
-				channel_id: self.context.channel_id(),
-				next_per_commitment_point,
-				short_channel_id_alias: Some(self.context.outbound_scid_alias),
-			})
+			log_debug!(logger, "Reconnecting channel at state 1, re-sending channel_ready");
+			Some(self.get_channel_ready())
 		} else { None };
 
 		if msg.next_local_commitment_number == next_counterparty_commitment_number {
-			if required_revoke.is_some() {
+			if raa.is_some() || self.context.signer_pending_revoke_and_ack {
 				log_debug!(logger, "Reconnected channel {} with only lost outbound RAA", &self.context.channel_id());
 			} else {
 				log_debug!(logger, "Reconnected channel {} with no loss", &self.context.channel_id());
 			}
 
 			Ok(ReestablishResponses {
-				channel_ready, shutdown_msg, announcement_sigs,
-				raa: required_revoke,
+				channel_ready, shutdown_msg, announcement_sigs, raa,
 				commitment_update: None,
 				order: self.context.resend_order.clone(),
 			})
 		} else if msg.next_local_commitment_number == next_counterparty_commitment_number - 1 {
-			if required_revoke.is_some() {
+			if raa.is_some() || self.context.signer_pending_revoke_and_ack {
 				log_debug!(logger, "Reconnected channel {} with lost outbound RAA and lost remote commitment tx", &self.context.channel_id());
 			} else {
 				log_debug!(logger, "Reconnected channel {} with only lost remote commitment tx", &self.context.channel_id());
@@ -4585,10 +4955,16 @@ impl<SP: Deref> Channel<SP> where
 					order: self.context.resend_order.clone(),
 				})
 			} else {
+				// Get the commitment update. This may fail if we're pending the signer.
+				let commitment_update = if raa.is_some() || steps_behind == 0 {
+					self.get_last_commitment_update_for_send(logger).ok()
+				} else { None };
+				self.context.signer_pending_commitment_update = commitment_update.is_none();
+
 				Ok(ReestablishResponses {
 					channel_ready, shutdown_msg, announcement_sigs,
-					raa: required_revoke,
-					commitment_update: self.get_last_commitment_update_for_send(logger).ok(),
+					raa,
+					commitment_update,
 					order: self.context.resend_order.clone(),
 				})
 			}
@@ -5103,7 +5479,7 @@ impl<SP: Deref> Channel<SP> where
 	}
 
 	pub fn get_cur_holder_commitment_transaction_number(&self) -> u64 {
-		self.context.cur_holder_commitment_transaction_number + 1
+		self.context.holder_commitment.transaction_number() + 1
 	}
 
 	pub fn get_cur_counterparty_commitment_transaction_number(&self) -> u64 {
@@ -5198,7 +5574,7 @@ impl<SP: Deref> Channel<SP> where
 			debug_assert!(self.context.minimum_depth.unwrap_or(1) > 0);
 			return true;
 		}
-		if self.context.cur_holder_commitment_transaction_number == INITIAL_COMMITMENT_NUMBER - 1 &&
+		if self.context.holder_commitment.transaction_number() == INITIAL_COMMITMENT_NUMBER - 1 &&
 			self.context.cur_counterparty_commitment_transaction_number == INITIAL_COMMITMENT_NUMBER - 1 {
 			// If we're a 0-conf channel, we'll move beyond AwaitingChannelReady immediately even while
 			// waiting for the initial monitor persistence. Thus, we check if our commitment
@@ -5252,11 +5628,14 @@ impl<SP: Deref> Channel<SP> where
 		self.context.channel_update_status = status;
 	}
 
-	fn check_get_channel_ready(&mut self, height: u32) -> Option<msgs::ChannelReady> {
+	fn check_get_channel_ready<L: Deref>(&mut self, height: u32, logger: &L) -> Option<msgs::ChannelReady>
+		where L::Target: Logger
+	{
 		// Called:
 		//  * always when a new block/transactions are confirmed with the new height
 		//  * when funding is signed with a height of 0
 		if self.context.funding_tx_confirmation_height == 0 && self.context.minimum_depth != Some(0) {
+			log_debug!(logger, "Can't produce channel_ready: no confirmation height yet on a channel with minimum_depth = {:?}", self.context.minimum_depth);
 			return None;
 		}
 
@@ -5266,17 +5645,14 @@ impl<SP: Deref> Channel<SP> where
 		}
 
 		if funding_tx_confirmations < self.context.minimum_depth.unwrap_or(0) as i64 {
-			return None;
-		}
-
-		// If we're still pending the signature on a funding transaction, then we're not ready to send a
-		// channel_ready yet.
-		if self.context.signer_pending_funding {
+			log_debug!(logger, "Can't produce channel_ready: {} confirmations yet on a channel with minimum_depth = {:?}", funding_tx_confirmations, self.context.minimum_depth);
 			return None;
 		}
 
 		// Note that we don't include ChannelState::WaitingForBatch as we don't want to send
 		// channel_ready until the entire batch is ready.
+		log_debug!(logger, "self.context.channel_state = {:?}", self.context.channel_state);
+		log_debug!(logger, "!FundedStateFlags::ALL = {:?}", !FundedStateFlags::ALL);
 		let need_commitment_update = if matches!(self.context.channel_state, ChannelState::AwaitingChannelReady(f) if (f & !FundedStateFlags::ALL).is_empty()) {
 			self.context.channel_state.set_our_channel_ready();
 			true
@@ -5304,22 +5680,40 @@ impl<SP: Deref> Channel<SP> where
 			false
 		};
 
-		if need_commitment_update {
-			if !self.context.channel_state.is_monitor_update_in_progress() {
-				if !self.context.channel_state.is_peer_disconnected() {
-					let next_per_commitment_point =
-						self.context.holder_signer.as_ref().get_per_commitment_point(INITIAL_COMMITMENT_NUMBER - 1, &self.context.secp_ctx);
-					return Some(msgs::ChannelReady {
-						channel_id: self.context.channel_id,
-						next_per_commitment_point,
-						short_channel_id_alias: Some(self.context.outbound_scid_alias),
-					});
-				}
-			} else {
-				self.context.monitor_pending_channel_ready = true;
-			}
+		if !need_commitment_update {
+			log_debug!(logger, "Not producing channel_ready: we do not need a commitment update");
+			return None;
 		}
-		None
+
+		// If we're still pending the signature on a funding transaction, then we're not ready to send a
+		// channel_ready yet.
+		if self.context.signer_pending_funding {
+			log_debug!(logger, "Can't produce channel_ready: the signer is pending funding. Setting signer_pending_channel_ready.");
+			self.context.signer_pending_channel_ready = true;
+			return None;
+		}
+
+		if self.context.channel_state.is_monitor_update_in_progress() {
+			log_debug!(logger, "Not producing channel_ready: a monitor update is in progress. Setting monitor_pending_channel_ready.");
+			self.context.monitor_pending_channel_ready = true;
+			return None;
+		}
+
+		if self.context.channel_state.is_peer_disconnected() {
+			log_debug!(logger, "Not producing channel_ready: the peer is disconnected.");
+			return None;
+		}
+
+		Some(self.get_channel_ready())
+	}
+
+	fn get_channel_ready(&self) -> msgs::ChannelReady {
+		debug_assert!(self.context.holder_commitment.is_available());
+		msgs::ChannelReady {
+			channel_id: self.context.channel_id(),
+			next_per_commitment_point: self.context.holder_commitment.current_point(),
+			short_channel_id_alias: Some(self.context.outbound_scid_alias),
+		}
 	}
 
 	/// When a transaction is confirmed, we check whether it is or spends the funding transaction
@@ -5386,7 +5780,7 @@ impl<SP: Deref> Channel<SP> where
 					// If we allow 1-conf funding, we may need to check for channel_ready here and
 					// send it immediately instead of waiting for a best_block_updated call (which
 					// may have already happened for this block).
-					if let Some(channel_ready) = self.check_get_channel_ready(height) {
+					if let Some(channel_ready) = self.check_get_channel_ready(height, logger) {
 						log_info!(logger, "Sending a channel_ready to our peer for channel {}", &self.context.channel_id);
 						let announcement_sigs = self.get_announcement_sigs(node_signer, chain_hash, user_config, height, logger);
 						msgs = (Some(channel_ready), announcement_sigs);
@@ -5452,7 +5846,7 @@ impl<SP: Deref> Channel<SP> where
 
 		self.context.update_time_counter = cmp::max(self.context.update_time_counter, highest_header_time);
 
-		if let Some(channel_ready) = self.check_get_channel_ready(height) {
+		if let Some(channel_ready) = self.check_get_channel_ready(height, logger) {
 			let announcement_sigs = if let Some((chain_hash, node_signer, user_config)) = chain_node_signer {
 				self.get_announcement_sigs(node_signer, chain_hash, user_config, height, logger)
 			} else { None };
@@ -5755,7 +6149,7 @@ impl<SP: Deref> Channel<SP> where
 
 			// next_local_commitment_number is the next commitment_signed number we expect to
 			// receive (indicating if they need to resend one that we missed).
-			next_local_commitment_number: INITIAL_COMMITMENT_NUMBER - self.context.cur_holder_commitment_transaction_number,
+			next_local_commitment_number: INITIAL_COMMITMENT_NUMBER - self.context.holder_commitment.transaction_number(),
 			// We have to set next_remote_commitment_number to the next revoke_and_ack we expect to
 			// receive, however we track it by the next commitment number for a remote transaction
 			// (which is one further, as they always revoke previous commitment transaction, not
@@ -5941,6 +6335,7 @@ impl<SP: Deref> Channel<SP> where
 				self.context.pending_update_fee = None;
 			}
 		}
+		log_debug!(logger, "setting resend_order to RevokeAndACKFirst");
 		self.context.resend_order = RAACommitmentOrder::RevokeAndACKFirst;
 
 		let (mut htlcs_ref, counterparty_commitment_tx) =
@@ -6205,16 +6600,18 @@ impl<SP: Deref> Channel<SP> where
 pub(super) struct OutboundV1Channel<SP: Deref> where SP::Target: SignerProvider {
 	pub context: ChannelContext<SP>,
 	pub unfunded_context: UnfundedChannelContext,
+	pub signer_pending_open_channel: bool,
 }
 
 impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
-	pub fn new<ES: Deref, F: Deref>(
+	pub fn new<ES: Deref, F: Deref, L: Deref>(
 		fee_estimator: &LowerBoundedFeeEstimator<F>, entropy_source: &ES, signer_provider: &SP, counterparty_node_id: PublicKey, their_features: &InitFeatures,
 		channel_value_satoshis: u64, push_msat: u64, user_id: u128, config: &UserConfig, current_chain_height: u32,
-		outbound_scid_alias: u64, temporary_channel_id: Option<ChannelId>
+		outbound_scid_alias: u64, temporary_channel_id: Option<ChannelId>, logger: &L,
 	) -> Result<OutboundV1Channel<SP>, APIError>
 	where ES::Target: EntropySource,
-	      F::Target: FeeEstimator
+	      F::Target: FeeEstimator,
+				L::Target: Logger,
 	{
 		let holder_selected_contest_delay = config.channel_handshake_config.our_to_self_delay;
 		let channel_keys_id = signer_provider.generate_channel_keys_id(false, channel_value_satoshis, user_id);
@@ -6279,6 +6676,8 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 		};
 
 		let temporary_channel_id = temporary_channel_id.unwrap_or_else(|| ChannelId::temporary_from_entropy_source(entropy_source));
+		let ecdsa_holder_signer = ChannelSignerType::Ecdsa(holder_signer);
+		let holder_commitment = HolderCommitment::initial().request_next(&ecdsa_holder_signer, &secp_ctx, logger);
 
 		Ok(Self {
 			context: ChannelContext {
@@ -6303,11 +6702,12 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 
 				latest_monitor_update_id: 0,
 
-				holder_signer: ChannelSignerType::Ecdsa(holder_signer),
+				holder_signer: ecdsa_holder_signer,
 				shutdown_scriptpubkey,
 				destination_script,
 
-				cur_holder_commitment_transaction_number: INITIAL_COMMITMENT_NUMBER,
+				holder_commitment,
+				prev_holder_commitment_secret: None,
 				cur_counterparty_commitment_transaction_number: INITIAL_COMMITMENT_NUMBER,
 				value_to_self_msat,
 
@@ -6330,7 +6730,10 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 				monitor_pending_finalized_fulfills: Vec::new(),
 
 				signer_pending_commitment_update: false,
+				signer_pending_revoke_and_ack: false,
 				signer_pending_funding: false,
+				signer_pending_channel_ready: false,
+				signer_pending_released_secret: false,
 
 				#[cfg(debug_assertions)]
 				holder_max_commitment_tx_output: Mutex::new((channel_value_satoshis * 1000 - push_msat, push_msat)),
@@ -6409,7 +6812,8 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 
 				blocked_monitor_updates: Vec::new(),
 			},
-			unfunded_context: UnfundedChannelContext { unfunded_channel_age_ticks: 0 }
+			unfunded_context: UnfundedChannelContext { unfunded_channel_age_ticks: 0 },
+			signer_pending_open_channel: false,
 		})
 	}
 
@@ -6465,7 +6869,7 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 		}
 		if self.context.commitment_secrets.get_min_seen_secret() != (1 << 48) ||
 				self.context.cur_counterparty_commitment_transaction_number != INITIAL_COMMITMENT_NUMBER ||
-				self.context.cur_holder_commitment_transaction_number != INITIAL_COMMITMENT_NUMBER {
+				self.context.holder_commitment.transaction_number() != INITIAL_COMMITMENT_NUMBER {
 			panic!("Should not have advanced channel commitment tx numbers prior to funding_created");
 		}
 
@@ -6532,7 +6936,7 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 	/// and see if we get a new `OpenChannel` message, otherwise the channel is failed.
 	pub(crate) fn maybe_handle_error_without_close<F: Deref>(
 		&mut self, chain_hash: ChainHash, fee_estimator: &LowerBoundedFeeEstimator<F>
-	) -> Result<msgs::OpenChannel, ()>
+	) -> Result<Option<msgs::OpenChannel>, ()>
 	where
 		F::Target: FeeEstimator
 	{
@@ -6567,10 +6971,14 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 			self.context.channel_type = ChannelTypeFeatures::only_static_remote_key();
 		}
 		self.context.channel_transaction_parameters.channel_type_features = self.context.channel_type.clone();
-		Ok(self.get_open_channel(chain_hash))
+		let opt_msg = self.get_open_channel(chain_hash);
+		if opt_msg.is_none() {
+			self.signer_pending_open_channel = true;
+		}
+		Ok(opt_msg)
 	}
 
-	pub fn get_open_channel(&self, chain_hash: ChainHash) -> msgs::OpenChannel {
+	pub fn get_open_channel(&self, chain_hash: ChainHash) -> Option<msgs::OpenChannel> {
 		if !self.context.is_outbound() {
 			panic!("Tried to open a channel for an inbound channel?");
 		}
@@ -6578,14 +6986,16 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 			panic!("Cannot generate an open_channel after we've moved forward");
 		}
 
-		if self.context.cur_holder_commitment_transaction_number != INITIAL_COMMITMENT_NUMBER {
+		if self.context.holder_commitment.transaction_number() != INITIAL_COMMITMENT_NUMBER {
 			panic!("Tried to send an open_channel for a channel that has already advanced");
 		}
 
-		let first_per_commitment_point = self.context.holder_signer.as_ref().get_per_commitment_point(self.context.cur_holder_commitment_transaction_number, &self.context.secp_ctx);
-		let keys = self.context.get_holder_pubkeys();
+		if !self.context.holder_commitment.is_available() {
+			return None;
+		}
 
-		msgs::OpenChannel {
+		let keys = self.context.get_holder_pubkeys();
+		Some(msgs::OpenChannel {
 			chain_hash,
 			temporary_channel_id: self.context.channel_id,
 			funding_satoshis: self.context.channel_value_satoshis,
@@ -6602,14 +7012,14 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 			payment_point: keys.payment_point,
 			delayed_payment_basepoint: keys.delayed_payment_basepoint.to_public_key(),
 			htlc_basepoint: keys.htlc_basepoint.to_public_key(),
-			first_per_commitment_point,
+			first_per_commitment_point: self.context.holder_commitment.current_point(),
 			channel_flags: if self.context.config.announced_channel {1} else {0},
 			shutdown_scriptpubkey: Some(match &self.context.shutdown_scriptpubkey {
 				Some(script) => script.clone().into_inner(),
 				None => Builder::new().into_script(),
 			}),
 			channel_type: Some(self.context.channel_type.clone()),
-		}
+		})
 	}
 
 	// Message handlers
@@ -6761,7 +7171,7 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 		}
 		if self.context.commitment_secrets.get_min_seen_secret() != (1 << 48) ||
 				self.context.cur_counterparty_commitment_transaction_number != INITIAL_COMMITMENT_NUMBER ||
-				self.context.cur_holder_commitment_transaction_number != INITIAL_COMMITMENT_NUMBER {
+				self.context.holder_commitment.transaction_number() != INITIAL_COMMITMENT_NUMBER {
 			panic!("Should not have advanced channel commitment tx numbers prior to funding_created");
 		}
 
@@ -6775,8 +7185,8 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 		log_trace!(logger, "Initial counterparty tx for channel {} is: txid {} tx {}",
 			&self.context.channel_id(), counterparty_initial_bitcoin_tx.txid, encode::serialize_hex(&counterparty_initial_bitcoin_tx.transaction));
 
-		let holder_signer = self.context.build_holder_transaction_keys(self.context.cur_holder_commitment_transaction_number);
-		let initial_commitment_tx = self.context.build_commitment_transaction(self.context.cur_holder_commitment_transaction_number, &holder_signer, true, false, logger).tx;
+		let holder_signer = self.context.build_holder_transaction_keys();
+		let initial_commitment_tx = self.context.build_commitment_transaction(self.context.holder_commitment.transaction_number(), &holder_signer, true, false, logger).tx;
 		{
 			let trusted_tx = initial_commitment_tx.trust();
 			let initial_commitment_bitcoin_tx = trusted_tx.built_transaction();
@@ -6829,14 +7239,15 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 		} else {
 			self.context.channel_state = ChannelState::AwaitingChannelReady(AwaitingChannelReadyFlags::new());
 		}
-		self.context.cur_holder_commitment_transaction_number -= 1;
+		self.context.advance_holder_commitment(logger);
 		self.context.cur_counterparty_commitment_transaction_number -= 1;
 
 		log_info!(logger, "Received funding_signed from peer for channel {}", &self.context.channel_id());
 
 		let mut channel = Channel { context: self.context };
 
-		let need_channel_ready = channel.check_get_channel_ready(0).is_some();
+		let need_channel_ready = channel.check_get_channel_ready(0, logger).is_some();
+		log_trace!(logger, "funding_signed {} channel_ready", if need_channel_ready { "needs" } else { "does not need" });
 		channel.monitor_updating_paused(false, false, need_channel_ready, Vec::new(), Vec::new(), Vec::new());
 		Ok((channel, channel_monitor))
 	}
@@ -6844,11 +7255,27 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 	/// Indicates that the signer may have some signatures for us, so we should retry if we're
 	/// blocked.
 	#[cfg(async_signing)]
-	pub fn signer_maybe_unblocked<L: Deref>(&mut self, logger: &L) -> Option<msgs::FundingCreated> where L::Target: Logger {
-		if self.context.signer_pending_funding && self.context.is_outbound() {
+	pub fn signer_maybe_unblocked<L: Deref>(&mut self, chain_hash: &ChainHash, logger: &L) -> UnfundedOutboundV1SignerResumeUpdates
+	where L::Target: Logger
+	{
+		self.context.request_next_holder_commitment(logger);
+		let open_channel = if self.signer_pending_open_channel && self.context.holder_commitment.is_available() {
+			self.get_open_channel(chain_hash.clone()).map(|msg| {
+				log_trace!(logger, "Signer unblocked an open_channel; clearing signer_pending_open_channel");
+				self.signer_pending_open_channel = false;
+				msg
+			})
+		} else { None };
+
+		let funding_created = if self.context.signer_pending_funding {
 			log_trace!(logger, "Signer unblocked a funding_created");
 			self.get_funding_created_msg(logger)
-		} else { None }
+		} else { None };
+
+		UnfundedOutboundV1SignerResumeUpdates {
+			open_channel,
+			funding_created,
+		}
 	}
 }
 
@@ -6856,6 +7283,7 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 pub(super) struct InboundV1Channel<SP: Deref> where SP::Target: SignerProvider {
 	pub context: ChannelContext<SP>,
 	pub unfunded_context: UnfundedChannelContext,
+	pub signer_pending_accept_channel: bool,
 }
 
 /// Fetches the [`ChannelTypeFeatures`] that will be used for a channel built from a given
@@ -7076,6 +7504,9 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 			Some(cmp::max(config.channel_handshake_config.minimum_depth, 1))
 		};
 
+		let ecdsa_holder_signer = ChannelSignerType::Ecdsa(holder_signer);
+		let holder_commitment = HolderCommitment::initial().request_next(&ecdsa_holder_signer, &secp_ctx, &&logger);
+
 		let chan = Self {
 			context: ChannelContext {
 				user_id,
@@ -7100,11 +7531,12 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 
 				latest_monitor_update_id: 0,
 
-				holder_signer: ChannelSignerType::Ecdsa(holder_signer),
+				holder_signer: ecdsa_holder_signer,
 				shutdown_scriptpubkey,
 				destination_script,
 
-				cur_holder_commitment_transaction_number: INITIAL_COMMITMENT_NUMBER,
+				holder_commitment,
+				prev_holder_commitment_secret: None,
 				cur_counterparty_commitment_transaction_number: INITIAL_COMMITMENT_NUMBER,
 				value_to_self_msat: msg.push_msat,
 
@@ -7127,7 +7559,10 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 				monitor_pending_finalized_fulfills: Vec::new(),
 
 				signer_pending_commitment_update: false,
+				signer_pending_revoke_and_ack: false,
 				signer_pending_funding: false,
+				signer_pending_channel_ready: false,
+				signer_pending_released_secret: false,
 
 				#[cfg(debug_assertions)]
 				holder_max_commitment_tx_output: Mutex::new((msg.push_msat, msg.funding_satoshis * 1000 - msg.push_msat)),
@@ -7210,7 +7645,8 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 
 				blocked_monitor_updates: Vec::new(),
 			},
-			unfunded_context: UnfundedChannelContext { unfunded_channel_age_ticks: 0 }
+			unfunded_context: UnfundedChannelContext { unfunded_channel_age_ticks: 0 },
+			signer_pending_accept_channel: false,
 		};
 
 		Ok(chan)
@@ -7220,7 +7656,7 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 	/// should be sent back to the counterparty node.
 	///
 	/// [`msgs::AcceptChannel`]: crate::ln::msgs::AcceptChannel
-	pub fn accept_inbound_channel(&mut self) -> msgs::AcceptChannel {
+	pub fn accept_inbound_channel(&mut self) -> Option<msgs::AcceptChannel> {
 		if self.context.is_outbound() {
 			panic!("Tried to send accept_channel for an outbound channel?");
 		}
@@ -7230,11 +7666,13 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 		) {
 			panic!("Tried to send accept_channel after channel had moved forward");
 		}
-		if self.context.cur_holder_commitment_transaction_number != INITIAL_COMMITMENT_NUMBER {
+		if self.context.holder_commitment.transaction_number() != INITIAL_COMMITMENT_NUMBER {
 			panic!("Tried to send an accept_channel for a channel that has already advanced");
 		}
 
-		self.generate_accept_channel_message()
+		if self.context.holder_commitment.is_available() {
+			Some(self.generate_accept_channel_message())
+		} else { None }
 	}
 
 	/// This function is used to explicitly generate a [`msgs::AcceptChannel`] message for an
@@ -7243,9 +7681,8 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 	///
 	/// [`msgs::AcceptChannel`]: crate::ln::msgs::AcceptChannel
 	fn generate_accept_channel_message(&self) -> msgs::AcceptChannel {
-		let first_per_commitment_point = self.context.holder_signer.as_ref().get_per_commitment_point(self.context.cur_holder_commitment_transaction_number, &self.context.secp_ctx);
+		assert!(self.context.holder_commitment.is_available());
 		let keys = self.context.get_holder_pubkeys();
-
 		msgs::AcceptChannel {
 			temporary_channel_id: self.context.channel_id,
 			dust_limit_satoshis: self.context.holder_dust_limit_satoshis,
@@ -7260,7 +7697,7 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 			payment_point: keys.payment_point,
 			delayed_payment_basepoint: keys.delayed_payment_basepoint.to_public_key(),
 			htlc_basepoint: keys.htlc_basepoint.to_public_key(),
-			first_per_commitment_point,
+			first_per_commitment_point: self.context.holder_commitment.current_point(),
 			shutdown_scriptpubkey: Some(match &self.context.shutdown_scriptpubkey {
 				Some(script) => script.clone().into_inner(),
 				None => Builder::new().into_script(),
@@ -7283,8 +7720,8 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 	fn check_funding_created_signature<L: Deref>(&mut self, sig: &Signature, logger: &L) -> Result<CommitmentTransaction, ChannelError> where L::Target: Logger {
 		let funding_script = self.context.get_funding_redeemscript();
 
-		let keys = self.context.build_holder_transaction_keys(self.context.cur_holder_commitment_transaction_number);
-		let initial_commitment_tx = self.context.build_commitment_transaction(self.context.cur_holder_commitment_transaction_number, &keys, true, false, logger).tx;
+		let keys = self.context.build_holder_transaction_keys();
+		let initial_commitment_tx = self.context.build_commitment_transaction(self.context.holder_commitment.transaction_number(), &keys, true, false, logger).tx;
 		let trusted_tx = initial_commitment_tx.trust();
 		let initial_commitment_bitcoin_tx = trusted_tx.built_transaction();
 		let sighash = initial_commitment_bitcoin_tx.get_sighash_all(&funding_script, self.context.channel_value_satoshis);
@@ -7318,7 +7755,7 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 		}
 		if self.context.commitment_secrets.get_min_seen_secret() != (1 << 48) ||
 				self.context.cur_counterparty_commitment_transaction_number != INITIAL_COMMITMENT_NUMBER ||
-				self.context.cur_holder_commitment_transaction_number != INITIAL_COMMITMENT_NUMBER {
+				self.context.holder_commitment.transaction_number() != INITIAL_COMMITMENT_NUMBER {
 			panic!("Should not have advanced channel commitment tx numbers prior to funding_created");
 		}
 
@@ -7358,7 +7795,7 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 		self.context.channel_state = ChannelState::AwaitingChannelReady(AwaitingChannelReadyFlags::new());
 		self.context.channel_id = funding_txo.to_channel_id();
 		self.context.cur_counterparty_commitment_transaction_number -= 1;
-		self.context.cur_holder_commitment_transaction_number -= 1;
+		self.context.advance_holder_commitment(logger);
 
 		let (counterparty_initial_commitment_tx, funding_signed) = self.context.get_funding_signed_msg(logger);
 
@@ -7390,10 +7827,28 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 		let mut channel = Channel {
 			context: self.context,
 		};
-		let need_channel_ready = channel.check_get_channel_ready(0).is_some();
+
+		let need_channel_ready = channel.check_get_channel_ready(0, logger).is_some();
+		log_trace!(logger, "funding_created {} channel_ready", if need_channel_ready { "needs" } else { "does not need" });
 		channel.monitor_updating_paused(false, false, need_channel_ready, Vec::new(), Vec::new(), Vec::new());
 
 		Ok((channel, funding_signed, channel_monitor))
+	}
+
+	/// Indicates that the signer may have some signatures for us, so we should retry if we're
+	/// blocked.
+	#[allow(unused)]
+	pub fn signer_maybe_unblocked<L: Deref>(&mut self, logger: &L) -> UnfundedInboundV1SignerResumeUpdates
+	where L::Target: Logger
+	{
+		self.context.request_next_holder_commitment(logger);
+		let accept_channel = if self.signer_pending_accept_channel && self.context.holder_commitment.is_available() {
+			Some(self.generate_accept_channel_message())
+		} else { None };
+
+		UnfundedInboundV1SignerResumeUpdates {
+			accept_channel,
+		}
 	}
 }
 
@@ -7492,7 +7947,7 @@ impl<SP: Deref> Writeable for Channel<SP> where SP::Target: SignerProvider {
 		}
 		self.context.destination_script.write(writer)?;
 
-		self.context.cur_holder_commitment_transaction_number.write(writer)?;
+		self.context.holder_commitment.transaction_number().write(writer)?;
 		self.context.cur_counterparty_commitment_transaction_number.write(writer)?;
 		self.context.value_to_self_msat.write(writer)?;
 
@@ -7745,6 +8200,9 @@ impl<SP: Deref> Writeable for Channel<SP> where SP::Target: SignerProvider {
 
 		let holder_max_accepted_htlcs = if self.context.holder_max_accepted_htlcs == DEFAULT_MAX_HTLCS { None } else { Some(self.context.holder_max_accepted_htlcs) };
 
+		let cur_holder_commitment_point = self.context.holder_commitment.current_point();
+		let next_holder_commitment_point = self.context.holder_commitment.next_point();
+
 		write_tlv_fields!(writer, {
 			(0, self.context.announcement_sigs, option),
 			// minimum_depth and counterparty_selected_channel_reserve_satoshis used to have a
@@ -7780,6 +8238,8 @@ impl<SP: Deref> Writeable for Channel<SP> where SP::Target: SignerProvider {
 			(39, pending_outbound_blinding_points, optional_vec),
 			(41, holding_cell_blinding_points, optional_vec),
 			(43, malformed_htlcs, optional_vec), // Added in 0.0.119
+			(45, cur_holder_commitment_point, required),
+			(47, next_holder_commitment_point, option),
 		});
 
 		Ok(())
@@ -8071,6 +8531,8 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 		let mut holding_cell_blinding_points_opt: Option<Vec<Option<PublicKey>>> = None;
 
 		let mut malformed_htlcs: Option<Vec<(u64, u16, [u8; 32])>> = None;
+		let mut cur_holder_commitment_point_opt: Option<PublicKey> = None;
+		let mut next_holder_commitment_point_opt: Option<PublicKey> = None;
 
 		read_tlv_fields!(reader, {
 			(0, announcement_sigs, option),
@@ -8101,7 +8563,12 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 			(39, pending_outbound_blinding_points_opt, optional_vec),
 			(41, holding_cell_blinding_points_opt, optional_vec),
 			(43, malformed_htlcs, optional_vec), // Added in 0.0.119
+			(45, cur_holder_commitment_point_opt, option),
+			(47, next_holder_commitment_point_opt, option),
 		});
+
+		let mut secp_ctx = Secp256k1::new();
+		secp_ctx.seeded_randomize(&entropy_source.get_secure_random_bytes());
 
 		let (channel_keys_id, holder_signer) = if let Some(channel_keys_id) = channel_keys_id {
 			let mut holder_signer = signer_provider.derive_channel_signer(channel_value_satoshis, channel_keys_id);
@@ -8116,6 +8583,23 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 			let keys_data = keys_data.ok_or(DecodeError::InvalidValue)?;
 			let holder_signer = signer_provider.read_chan_signer(&keys_data)?;
 			(holder_signer.channel_keys_id(), holder_signer)
+		};
+
+		let ecdsa_holder_signer = ChannelSignerType::Ecdsa(holder_signer);
+
+		// If we're restoring this channel for the first time after an upgrade, then we require that the
+		// signer be available so that we can immediately populate the current commitment point. Channel
+		// restoration will fail if this is not possible.
+		let holder_commitment = match (cur_holder_commitment_point_opt, next_holder_commitment_point_opt) {
+			(Some(current), Some(next)) => HolderCommitment::Available {
+				transaction_number: cur_holder_commitment_transaction_number, current, next
+			},
+			(Some(current), _) => HolderCommitment::PendingNext {
+				transaction_number: cur_holder_commitment_transaction_number, current
+			},
+			(_, _) => HolderCommitment::Uninitialized {
+				transaction_number: cur_holder_commitment_transaction_number
+			}
 		};
 
 		if let Some(preimages) = preimages_opt {
@@ -8147,9 +8631,6 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 		// ChannelTransactionParameters may have had an empty features set upon deserialization.
 		// To account for that, we're proactively setting/overriding the field here.
 		channel_parameters.channel_type_features = chan_features.clone();
-
-		let mut secp_ctx = Secp256k1::new();
-		secp_ctx.seeded_randomize(&entropy_source.get_secure_random_bytes());
 
 		// `user_id` used to be a single u64 value. In order to remain backwards
 		// compatible with versions prior to 0.0.113, the u128 is serialized as two
@@ -8232,11 +8713,12 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 
 				latest_monitor_update_id,
 
-				holder_signer: ChannelSignerType::Ecdsa(holder_signer),
+				holder_signer: ecdsa_holder_signer,
 				shutdown_scriptpubkey,
 				destination_script,
 
-				cur_holder_commitment_transaction_number,
+				holder_commitment,
+				prev_holder_commitment_secret: None,
 				cur_counterparty_commitment_transaction_number,
 				value_to_self_msat,
 
@@ -8255,7 +8737,10 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 				monitor_pending_finalized_fulfills: monitor_pending_finalized_fulfills.unwrap(),
 
 				signer_pending_commitment_update: false,
+				signer_pending_revoke_and_ack: false,
 				signer_pending_funding: false,
+				signer_pending_channel_ready: false,
+				signer_pending_released_secret: true,
 
 				pending_update_fee,
 				holding_cell_update_fee,
@@ -8449,11 +8934,12 @@ mod tests {
 		keys_provider.expect(OnGetShutdownScriptpubkey {
 			returns: non_v0_segwit_shutdown_script.clone(),
 		});
+		let logger = test_utils::TestLogger::new();
 
 		let secp_ctx = Secp256k1::new();
 		let node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 		let config = UserConfig::default();
-		match OutboundV1Channel::<&TestKeysInterface>::new(&LowerBoundedFeeEstimator::new(&TestFeeEstimator { fee_est: 253 }), &&keys_provider, &&keys_provider, node_id, &features, 10000000, 100000, 42, &config, 0, 42, None) {
+		match OutboundV1Channel::<&TestKeysInterface>::new(&LowerBoundedFeeEstimator::new(&TestFeeEstimator { fee_est: 253 }), &&keys_provider, &&keys_provider, node_id, &features, 10000000, 100000, 42, &config, 0, 42, None, &&logger) {
 			Err(APIError::IncompatibleShutdownScript { script }) => {
 				assert_eq!(script.into_inner(), non_v0_segwit_shutdown_script.into_inner());
 			},
@@ -8473,15 +8959,16 @@ mod tests {
 		let seed = [42; 32];
 		let network = Network::Testnet;
 		let keys_provider = test_utils::TestKeysInterface::new(&seed, network);
+		let logger = test_utils::TestLogger::new();
 
 		let node_a_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 		let config = UserConfig::default();
-		let node_a_chan = OutboundV1Channel::<&TestKeysInterface>::new(&bounded_fee_estimator, &&keys_provider, &&keys_provider, node_a_node_id, &channelmanager::provided_init_features(&config), 10000000, 100000, 42, &config, 0, 42, None).unwrap();
+		let node_a_chan = OutboundV1Channel::<&TestKeysInterface>::new(&bounded_fee_estimator, &&keys_provider, &&keys_provider, node_a_node_id, &channelmanager::provided_init_features(&config), 10000000, 100000, 42, &config, 0, 42, None, &&logger).unwrap();
 
 		// Now change the fee so we can check that the fee in the open_channel message is the
 		// same as the old fee.
 		fee_est.fee_est = 500;
-		let open_channel_msg = node_a_chan.get_open_channel(ChainHash::using_genesis_block(network));
+		let open_channel_msg = node_a_chan.get_open_channel(ChainHash::using_genesis_block(network)).unwrap();
 		assert_eq!(open_channel_msg.feerate_per_kw, original_fee);
 	}
 
@@ -8503,16 +8990,16 @@ mod tests {
 		// Create Node A's channel pointing to Node B's pubkey
 		let node_b_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 		let config = UserConfig::default();
-		let mut node_a_chan = OutboundV1Channel::<&TestKeysInterface>::new(&feeest, &&keys_provider, &&keys_provider, node_b_node_id, &channelmanager::provided_init_features(&config), 10000000, 100000, 42, &config, 0, 42, None).unwrap();
+		let mut node_a_chan = OutboundV1Channel::<&TestKeysInterface>::new(&feeest, &&keys_provider, &&keys_provider, node_b_node_id, &channelmanager::provided_init_features(&config), 10000000, 100000, 42, &config, 0, 42, None, &&logger).unwrap();
 
 		// Create Node B's channel by receiving Node A's open_channel message
 		// Make sure A's dust limit is as we expect.
-		let open_channel_msg = node_a_chan.get_open_channel(ChainHash::using_genesis_block(network));
+		let open_channel_msg = node_a_chan.get_open_channel(ChainHash::using_genesis_block(network)).unwrap();
 		let node_b_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[7; 32]).unwrap());
 		let mut node_b_chan = InboundV1Channel::<&TestKeysInterface>::new(&feeest, &&keys_provider, &&keys_provider, node_b_node_id, &channelmanager::provided_channel_type_features(&config), &channelmanager::provided_init_features(&config), &open_channel_msg, 7, &config, 0, &&logger, /*is_0conf=*/false).unwrap();
 
 		// Node B --> Node A: accept channel, explicitly setting B's dust limit.
-		let mut accept_channel_msg = node_b_chan.accept_inbound_channel();
+		let mut accept_channel_msg = node_b_chan.accept_inbound_channel().unwrap();
 		accept_channel_msg.dust_limit_satoshis = 546;
 		node_a_chan.accept_channel(&accept_channel_msg, &config.channel_handshake_limits, &channelmanager::provided_init_features(&config)).unwrap();
 		node_a_chan.context.holder_dust_limit_satoshis = 1560;
@@ -8583,10 +9070,11 @@ mod tests {
 		let seed = [42; 32];
 		let network = Network::Testnet;
 		let keys_provider = test_utils::TestKeysInterface::new(&seed, network);
+		let logger = test_utils::TestLogger::new();
 
 		let node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 		let config = UserConfig::default();
-		let mut chan = OutboundV1Channel::<&TestKeysInterface>::new(&fee_est, &&keys_provider, &&keys_provider, node_id, &channelmanager::provided_init_features(&config), 10000000, 100000, 42, &config, 0, 42, None).unwrap();
+		let mut chan = OutboundV1Channel::<&TestKeysInterface>::new(&fee_est, &&keys_provider, &&keys_provider, node_id, &channelmanager::provided_init_features(&config), 10000000, 100000, 42, &config, 0, 42, None, &&logger).unwrap();
 
 		let commitment_tx_fee_0_htlcs = commit_tx_fee_msat(chan.context.feerate_per_kw, 0, chan.context.get_channel_type());
 		let commitment_tx_fee_1_htlc = commit_tx_fee_msat(chan.context.feerate_per_kw, 1, chan.context.get_channel_type());
@@ -8635,15 +9123,15 @@ mod tests {
 		// Create Node A's channel pointing to Node B's pubkey
 		let node_b_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 		let config = UserConfig::default();
-		let mut node_a_chan = OutboundV1Channel::<&TestKeysInterface>::new(&feeest, &&keys_provider, &&keys_provider, node_b_node_id, &channelmanager::provided_init_features(&config), 10000000, 100000, 42, &config, 0, 42, None).unwrap();
+		let mut node_a_chan = OutboundV1Channel::<&TestKeysInterface>::new(&feeest, &&keys_provider, &&keys_provider, node_b_node_id, &channelmanager::provided_init_features(&config), 10000000, 100000, 42, &config, 0, 42, None, &&logger).unwrap();
 
 		// Create Node B's channel by receiving Node A's open_channel message
-		let open_channel_msg = node_a_chan.get_open_channel(chain_hash);
+		let open_channel_msg = node_a_chan.get_open_channel(chain_hash).unwrap();
 		let node_b_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[7; 32]).unwrap());
 		let mut node_b_chan = InboundV1Channel::<&TestKeysInterface>::new(&feeest, &&keys_provider, &&keys_provider, node_b_node_id, &channelmanager::provided_channel_type_features(&config), &channelmanager::provided_init_features(&config), &open_channel_msg, 7, &config, 0, &&logger, /*is_0conf=*/false).unwrap();
 
 		// Node B --> Node A: accept channel
-		let accept_channel_msg = node_b_chan.accept_inbound_channel();
+		let accept_channel_msg = node_b_chan.accept_inbound_channel().unwrap();
 		node_a_chan.accept_channel(&accept_channel_msg, &config.channel_handshake_limits, &channelmanager::provided_init_features(&config)).unwrap();
 
 		// Node A --> Node B: funding created
@@ -8699,16 +9187,16 @@ mod tests {
 		// Test that `OutboundV1Channel::new` creates a channel with the correct value for
 		// `holder_max_htlc_value_in_flight_msat`, when configured with a valid percentage value,
 		// which is set to the lower bound + 1 (2%) of the `channel_value`.
-		let chan_1 = OutboundV1Channel::<&TestKeysInterface>::new(&feeest, &&keys_provider, &&keys_provider, outbound_node_id, &channelmanager::provided_init_features(&config_2_percent), 10000000, 100000, 42, &config_2_percent, 0, 42, None).unwrap();
+		let chan_1 = OutboundV1Channel::<&TestKeysInterface>::new(&feeest, &&keys_provider, &&keys_provider, outbound_node_id, &channelmanager::provided_init_features(&config_2_percent), 10000000, 100000, 42, &config_2_percent, 0, 42, None, &&logger).unwrap();
 		let chan_1_value_msat = chan_1.context.channel_value_satoshis * 1000;
 		assert_eq!(chan_1.context.holder_max_htlc_value_in_flight_msat, (chan_1_value_msat as f64 * 0.02) as u64);
 
 		// Test with the upper bound - 1 of valid values (99%).
-		let chan_2 = OutboundV1Channel::<&TestKeysInterface>::new(&feeest, &&keys_provider, &&keys_provider, outbound_node_id, &channelmanager::provided_init_features(&config_99_percent), 10000000, 100000, 42, &config_99_percent, 0, 42, None).unwrap();
+		let chan_2 = OutboundV1Channel::<&TestKeysInterface>::new(&feeest, &&keys_provider, &&keys_provider, outbound_node_id, &channelmanager::provided_init_features(&config_99_percent), 10000000, 100000, 42, &config_99_percent, 0, 42, None, &&logger).unwrap();
 		let chan_2_value_msat = chan_2.context.channel_value_satoshis * 1000;
 		assert_eq!(chan_2.context.holder_max_htlc_value_in_flight_msat, (chan_2_value_msat as f64 * 0.99) as u64);
 
-		let chan_1_open_channel_msg = chan_1.get_open_channel(ChainHash::using_genesis_block(network));
+		let chan_1_open_channel_msg = chan_1.get_open_channel(ChainHash::using_genesis_block(network)).unwrap();
 
 		// Test that `InboundV1Channel::new` creates a channel with the correct value for
 		// `holder_max_htlc_value_in_flight_msat`, when configured with a valid percentage value,
@@ -8724,14 +9212,14 @@ mod tests {
 
 		// Test that `OutboundV1Channel::new` uses the lower bound of the configurable percentage values (1%)
 		// if `max_inbound_htlc_value_in_flight_percent_of_channel` is set to a value less than 1.
-		let chan_5 = OutboundV1Channel::<&TestKeysInterface>::new(&feeest, &&keys_provider, &&keys_provider, outbound_node_id, &channelmanager::provided_init_features(&config_0_percent), 10000000, 100000, 42, &config_0_percent, 0, 42, None).unwrap();
+		let chan_5 = OutboundV1Channel::<&TestKeysInterface>::new(&feeest, &&keys_provider, &&keys_provider, outbound_node_id, &channelmanager::provided_init_features(&config_0_percent), 10000000, 100000, 42, &config_0_percent, 0, 42, None, &&logger).unwrap();
 		let chan_5_value_msat = chan_5.context.channel_value_satoshis * 1000;
 		assert_eq!(chan_5.context.holder_max_htlc_value_in_flight_msat, (chan_5_value_msat as f64 * 0.01) as u64);
 
 		// Test that `OutboundV1Channel::new` uses the upper bound of the configurable percentage values
 		// (100%) if `max_inbound_htlc_value_in_flight_percent_of_channel` is set to a larger value
 		// than 100.
-		let chan_6 = OutboundV1Channel::<&TestKeysInterface>::new(&feeest, &&keys_provider, &&keys_provider, outbound_node_id, &channelmanager::provided_init_features(&config_101_percent), 10000000, 100000, 42, &config_101_percent, 0, 42, None).unwrap();
+		let chan_6 = OutboundV1Channel::<&TestKeysInterface>::new(&feeest, &&keys_provider, &&keys_provider, outbound_node_id, &channelmanager::provided_init_features(&config_101_percent), 10000000, 100000, 42, &config_101_percent, 0, 42, None, &&logger).unwrap();
 		let chan_6_value_msat = chan_6.context.channel_value_satoshis * 1000;
 		assert_eq!(chan_6.context.holder_max_htlc_value_in_flight_msat, chan_6_value_msat);
 
@@ -8784,12 +9272,12 @@ mod tests {
 
 		let mut outbound_node_config = UserConfig::default();
 		outbound_node_config.channel_handshake_config.their_channel_reserve_proportional_millionths = (outbound_selected_channel_reserve_perc * 1_000_000.0) as u32;
-		let chan = OutboundV1Channel::<&TestKeysInterface>::new(&&fee_est, &&keys_provider, &&keys_provider, outbound_node_id, &channelmanager::provided_init_features(&outbound_node_config), channel_value_satoshis, 100_000, 42, &outbound_node_config, 0, 42, None).unwrap();
+		let chan = OutboundV1Channel::<&TestKeysInterface>::new(&&fee_est, &&keys_provider, &&keys_provider, outbound_node_id, &channelmanager::provided_init_features(&outbound_node_config), channel_value_satoshis, 100_000, 42, &outbound_node_config, 0, 42, None, &&logger).unwrap();
 
 		let expected_outbound_selected_chan_reserve = cmp::max(MIN_THEIR_CHAN_RESERVE_SATOSHIS, (chan.context.channel_value_satoshis as f64 * outbound_selected_channel_reserve_perc) as u64);
 		assert_eq!(chan.context.holder_selected_channel_reserve_satoshis, expected_outbound_selected_chan_reserve);
 
-		let chan_open_channel_msg = chan.get_open_channel(ChainHash::using_genesis_block(network));
+		let chan_open_channel_msg = chan.get_open_channel(ChainHash::using_genesis_block(network)).unwrap();
 		let mut inbound_node_config = UserConfig::default();
 		inbound_node_config.channel_handshake_config.their_channel_reserve_proportional_millionths = (inbound_selected_channel_reserve_perc * 1_000_000.0) as u32;
 
@@ -8821,16 +9309,16 @@ mod tests {
 		// Create Node A's channel pointing to Node B's pubkey
 		let node_b_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 		let config = UserConfig::default();
-		let mut node_a_chan = OutboundV1Channel::<&TestKeysInterface>::new(&feeest, &&keys_provider, &&keys_provider, node_b_node_id, &channelmanager::provided_init_features(&config), 10000000, 100000, 42, &config, 0, 42, None).unwrap();
+		let mut node_a_chan = OutboundV1Channel::<&TestKeysInterface>::new(&feeest, &&keys_provider, &&keys_provider, node_b_node_id, &channelmanager::provided_init_features(&config), 10000000, 100000, 42, &config, 0, 42, None, &&logger).unwrap();
 
 		// Create Node B's channel by receiving Node A's open_channel message
 		// Make sure A's dust limit is as we expect.
-		let open_channel_msg = node_a_chan.get_open_channel(ChainHash::using_genesis_block(network));
+		let open_channel_msg = node_a_chan.get_open_channel(ChainHash::using_genesis_block(network)).unwrap();
 		let node_b_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[7; 32]).unwrap());
 		let mut node_b_chan = InboundV1Channel::<&TestKeysInterface>::new(&feeest, &&keys_provider, &&keys_provider, node_b_node_id, &channelmanager::provided_channel_type_features(&config), &channelmanager::provided_init_features(&config), &open_channel_msg, 7, &config, 0, &&logger, /*is_0conf=*/false).unwrap();
 
 		// Node B --> Node A: accept channel, explicitly setting B's dust limit.
-		let mut accept_channel_msg = node_b_chan.accept_inbound_channel();
+		let mut accept_channel_msg = node_b_chan.accept_inbound_channel().unwrap();
 		accept_channel_msg.dust_limit_satoshis = 546;
 		node_a_chan.accept_channel(&accept_channel_msg, &config.channel_handshake_limits, &channelmanager::provided_init_features(&config)).unwrap();
 		node_a_chan.context.holder_dust_limit_satoshis = 1560;
@@ -8890,11 +9378,12 @@ mod tests {
 		let seed = [42; 32];
 		let network = Network::Testnet;
 		let keys_provider = test_utils::TestKeysInterface::new(&seed, network);
+		let logger = test_utils::TestLogger::new();
 
 		let node_b_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 		let config = UserConfig::default();
 		let features = channelmanager::provided_init_features(&config);
-		let outbound_chan = OutboundV1Channel::<&TestKeysInterface>::new(&feeest, &&keys_provider, &&keys_provider, node_b_node_id, &features, 10000000, 100000, 42, &config, 0, 42, None).unwrap();
+		let outbound_chan = OutboundV1Channel::<&TestKeysInterface>::new(&feeest, &&keys_provider, &&keys_provider, node_b_node_id, &features, 10000000, 100000, 42, &config, 0, 42, None, &&logger).unwrap();
 		let mut chan = Channel { context: outbound_chan.context };
 
 		let dummy_htlc_source = HTLCSource::OutboundRoute {
@@ -8999,7 +9488,7 @@ mod tests {
 		use bitcoin::secp256k1::Message;
 		use crate::sign::{ChannelDerivationParameters, HTLCDescriptor, ecdsa::EcdsaChannelSigner};
 		use crate::ln::PaymentPreimage;
-		use crate::ln::channel::{HTLCOutputInCommitment ,TxCreationKeys};
+		use crate::ln::channel::{HolderCommitment, HTLCOutputInCommitment, INITIAL_COMMITMENT_NUMBER, TxCreationKeys};
 		use crate::ln::channel_keys::{DelayedPaymentBasepoint, HtlcBasepoint};
 		use crate::ln::chan_utils::{ChannelPublicKeys, HolderCommitmentTransaction, CounterpartyChannelTransactionParameters};
 		use crate::util::logger::Logger;
@@ -9034,7 +9523,7 @@ mod tests {
 		let counterparty_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 		let mut config = UserConfig::default();
 		config.channel_handshake_config.announced_channel = false;
-		let mut chan = OutboundV1Channel::<&Keys>::new(&LowerBoundedFeeEstimator::new(&feeest), &&keys_provider, &&keys_provider, counterparty_node_id, &channelmanager::provided_init_features(&config), 10_000_000, 0, 42, &config, 0, 42, None).unwrap(); // Nothing uses their network key in this test
+		let mut chan = OutboundV1Channel::<&Keys>::new(&LowerBoundedFeeEstimator::new(&feeest), &&keys_provider, &&keys_provider, counterparty_node_id, &channelmanager::provided_init_features(&config), 10_000_000, 0, 42, &config, 0, 42, None, &logger).unwrap(); // Nothing uses their network key in this test
 		chan.context.holder_dust_limit_satoshis = 546;
 		chan.context.counterparty_selected_channel_reserve_satoshis = Some(0); // Filled in in accept_channel
 
@@ -9070,6 +9559,7 @@ mod tests {
 		let delayed_payment_base = &chan.context.holder_signer.as_ref().pubkeys().delayed_payment_basepoint;
 		let per_commitment_secret = SecretKey::from_slice(&<Vec<u8>>::from_hex("1f1e1d1c1b1a191817161514131211100f0e0d0c0b0a09080706050403020100").unwrap()[..]).unwrap();
 		let per_commitment_point = PublicKey::from_secret_key(&secp_ctx, &per_commitment_secret);
+		chan.context.holder_commitment = HolderCommitment::PendingNext { transaction_number: INITIAL_COMMITMENT_NUMBER, current: per_commitment_point };
 		let htlc_basepoint = &chan.context.holder_signer.as_ref().pubkeys().htlc_basepoint;
 		let keys = TxCreationKeys::derive_new(&secp_ctx, &per_commitment_point, delayed_payment_base, htlc_basepoint, &counterparty_pubkeys.revocation_basepoint, &counterparty_pubkeys.htlc_basepoint);
 
@@ -9781,12 +10271,12 @@ mod tests {
 		let node_b_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 		let config = UserConfig::default();
 		let node_a_chan = OutboundV1Channel::<&TestKeysInterface>::new(&feeest, &&keys_provider, &&keys_provider,
-			node_b_node_id, &channelmanager::provided_init_features(&config), 10000000, 100000, 42, &config, 0, 42, None).unwrap();
+			node_b_node_id, &channelmanager::provided_init_features(&config), 10000000, 100000, 42, &config, 0, 42, None, &&logger).unwrap();
 
 		let mut channel_type_features = ChannelTypeFeatures::only_static_remote_key();
 		channel_type_features.set_zero_conf_required();
 
-		let mut open_channel_msg = node_a_chan.get_open_channel(ChainHash::using_genesis_block(network));
+		let mut open_channel_msg = node_a_chan.get_open_channel(ChainHash::using_genesis_block(network)).unwrap();
 		open_channel_msg.channel_type = Some(channel_type_features);
 		let node_b_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[7; 32]).unwrap());
 		let res = InboundV1Channel::<&TestKeysInterface>::new(&feeest, &&keys_provider, &&keys_provider,
@@ -9816,7 +10306,7 @@ mod tests {
 		let channel_a = OutboundV1Channel::<&TestKeysInterface>::new(
 			&fee_estimator, &&keys_provider, &&keys_provider, node_id_b,
 			&channelmanager::provided_init_features(&UserConfig::default()), 10000000, 100000, 42,
-			&config, 0, 42, None
+			&config, 0, 42, None, &&logger,
 		).unwrap();
 		assert!(!channel_a.context.channel_type.supports_anchors_zero_fee_htlc_tx());
 
@@ -9827,10 +10317,10 @@ mod tests {
 		let channel_a = OutboundV1Channel::<&TestKeysInterface>::new(
 			&fee_estimator, &&keys_provider, &&keys_provider, node_id_b,
 			&channelmanager::provided_init_features(&config), 10000000, 100000, 42, &config, 0, 42,
-			None
+			None, &&logger
 		).unwrap();
 
-		let open_channel_msg = channel_a.get_open_channel(ChainHash::using_genesis_block(network));
+		let open_channel_msg = channel_a.get_open_channel(ChainHash::using_genesis_block(network)).unwrap();
 		let channel_b = InboundV1Channel::<&TestKeysInterface>::new(
 			&fee_estimator, &&keys_provider, &&keys_provider, node_id_a,
 			&channelmanager::provided_channel_type_features(&config), &channelmanager::provided_init_features(&config),
@@ -9865,11 +10355,11 @@ mod tests {
 		let channel_a = OutboundV1Channel::<&TestKeysInterface>::new(
 			&fee_estimator, &&keys_provider, &&keys_provider, node_id_b,
 			&channelmanager::provided_init_features(&config), 10000000, 100000, 42, &config, 0, 42,
-			None
+			None, &&logger
 		).unwrap();
 
 		// Set `channel_type` to `None` to force the implicit feature negotiation.
-		let mut open_channel_msg = channel_a.get_open_channel(ChainHash::using_genesis_block(network));
+		let mut open_channel_msg = channel_a.get_open_channel(ChainHash::using_genesis_block(network)).unwrap();
 		open_channel_msg.channel_type = None;
 
 		// Since A supports both `static_remote_key` and `option_anchors`, but B only accepts
@@ -9912,10 +10402,10 @@ mod tests {
 		let channel_a = OutboundV1Channel::<&TestKeysInterface>::new(
 			&fee_estimator, &&keys_provider, &&keys_provider, node_id_b,
 			&channelmanager::provided_init_features(&config), 10000000, 100000, 42, &config, 0, 42,
-			None
+			None, &&logger
 		).unwrap();
 
-		let mut open_channel_msg = channel_a.get_open_channel(ChainHash::using_genesis_block(network));
+		let mut open_channel_msg = channel_a.get_open_channel(ChainHash::using_genesis_block(network)).unwrap();
 		open_channel_msg.channel_type = Some(simple_anchors_channel_type.clone());
 
 		let res = InboundV1Channel::<&TestKeysInterface>::new(
@@ -9931,10 +10421,10 @@ mod tests {
 		// LDK.
 		let mut channel_a = OutboundV1Channel::<&TestKeysInterface>::new(
 			&fee_estimator, &&keys_provider, &&keys_provider, node_id_b, &simple_anchors_init,
-			10000000, 100000, 42, &config, 0, 42, None
+			10000000, 100000, 42, &config, 0, 42, None, &&logger
 		).unwrap();
 
-		let open_channel_msg = channel_a.get_open_channel(ChainHash::using_genesis_block(network));
+		let open_channel_msg = channel_a.get_open_channel(ChainHash::using_genesis_block(network)).unwrap();
 
 		let channel_b = InboundV1Channel::<&TestKeysInterface>::new(
 			&fee_estimator, &&keys_provider, &&keys_provider, node_id_a,
@@ -9981,10 +10471,11 @@ mod tests {
 			&config,
 			0,
 			42,
-			None
+			None,
+			&&logger,
 		).unwrap();
 
-		let open_channel_msg = node_a_chan.get_open_channel(ChainHash::using_genesis_block(network));
+		let open_channel_msg = node_a_chan.get_open_channel(ChainHash::using_genesis_block(network)).unwrap();
 		let node_b_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[7; 32]).unwrap());
 		let mut node_b_chan = InboundV1Channel::<&TestKeysInterface>::new(
 			&feeest,
@@ -10001,7 +10492,7 @@ mod tests {
 			true,  // Allow node b to send a 0conf channel_ready.
 		).unwrap();
 
-		let accept_channel_msg = node_b_chan.accept_inbound_channel();
+		let accept_channel_msg = node_b_chan.accept_inbound_channel().unwrap();
 		node_a_chan.accept_channel(
 			&accept_channel_msg,
 			&config.channel_handshake_limits,
@@ -10076,6 +10567,6 @@ mod tests {
 		// Clear the ChannelState::WaitingForBatch only when called by ChannelManager.
 		node_a_chan.set_batch_ready();
 		assert_eq!(node_a_chan.context.channel_state, ChannelState::AwaitingChannelReady(AwaitingChannelReadyFlags::THEIR_CHANNEL_READY));
-		assert!(node_a_chan.check_get_channel_ready(0).is_some());
+		assert!(node_a_chan.check_get_channel_ready(0, &&logger).is_some());
 	}
 }
