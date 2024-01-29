@@ -299,6 +299,10 @@ macro_rules! define_state_flags {
 
 			#[allow(unused)]
 			fn is_set(&self, flag: Self) -> bool { *self & flag == flag }
+			#[allow(unused)]
+			fn set(&mut self, flag: Self) { *self |= flag }
+			#[allow(unused)]
+			fn clear(&mut self, flag: Self) -> Self { self.0 &= !flag.0; *self }
 		}
 
 		impl core::ops::Not for $flag_type {
@@ -322,6 +326,16 @@ macro_rules! define_state_flags {
 	};
 	($flag_type_doc: expr, $flag_type: ident, $flags: tt) => {
 		define_state_flags!($flag_type_doc, $flag_type, $flags, 0);
+	};
+	($flag_type: ident, $flag: expr, $get: ident, $set: ident, $clear: ident) => {
+		impl $flag_type {
+			#[allow(unused)]
+			fn $get(&self) -> bool { self.is_set($flag_type::new() | $flag) }
+			#[allow(unused)]
+			fn $set(&mut self) { self.set($flag_type::new() | $flag) }
+			#[allow(unused)]
+			fn $clear(&mut self) -> Self { self.clear($flag_type::new() | $flag) }
+		}
 	};
 	($flag_type_doc: expr, FUNDED_STATE, $flag_type: ident, $flags: tt) => {
 		define_state_flags!($flag_type_doc, $flag_type, $flags, FundedStateFlags::ALL.0);
@@ -3045,12 +3059,12 @@ impl<SP: Deref> Channel<SP> where
 		let mut check_reconnection = false;
 		match &self.context.channel_state {
 			ChannelState::AwaitingChannelReady(flags) => {
-				let flags = *flags & !FundedStateFlags::ALL;
+				let flags = flags.clone().clear(FundedStateFlags::ALL.into());
 				debug_assert!(!flags.is_set(AwaitingChannelReadyFlags::OUR_CHANNEL_READY) || !flags.is_set(AwaitingChannelReadyFlags::WAITING_FOR_BATCH));
-				if flags & !AwaitingChannelReadyFlags::WAITING_FOR_BATCH == AwaitingChannelReadyFlags::THEIR_CHANNEL_READY {
+				if flags.clone().clear(AwaitingChannelReadyFlags::WAITING_FOR_BATCH) == AwaitingChannelReadyFlags::THEIR_CHANNEL_READY {
 					// If we reconnected before sending our `channel_ready` they may still resend theirs.
 					check_reconnection = true;
-				} else if (flags & !AwaitingChannelReadyFlags::WAITING_FOR_BATCH).is_empty() {
+				} else if flags.clone().clear(AwaitingChannelReadyFlags::WAITING_FOR_BATCH).is_empty() {
 					self.context.channel_state.set_their_channel_ready();
 				} else if flags == AwaitingChannelReadyFlags::OUR_CHANNEL_READY {
 					self.context.channel_state = ChannelState::ChannelReady(self.context.channel_state.with_funded_state_flags_mask().into());
@@ -5185,7 +5199,7 @@ impl<SP: Deref> Channel<SP> where
 		if !self.is_awaiting_monitor_update() { return false; }
 		if matches!(
 			self.context.channel_state, ChannelState::AwaitingChannelReady(flags)
-			if (flags & !(AwaitingChannelReadyFlags::THEIR_CHANNEL_READY | FundedStateFlags::PEER_DISCONNECTED | FundedStateFlags::MONITOR_UPDATE_IN_PROGRESS | AwaitingChannelReadyFlags::WAITING_FOR_BATCH)).is_empty()
+			if flags.clone().clear(AwaitingChannelReadyFlags::THEIR_CHANNEL_READY | FundedStateFlags::PEER_DISCONNECTED | FundedStateFlags::MONITOR_UPDATE_IN_PROGRESS | AwaitingChannelReadyFlags::WAITING_FOR_BATCH).is_empty()
 		) {
 			// If we're not a 0conf channel, we'll be waiting on a monitor update with only
 			// AwaitingChannelReady set, though our peer could have sent their channel_ready.
@@ -5271,14 +5285,14 @@ impl<SP: Deref> Channel<SP> where
 
 		// Note that we don't include ChannelState::WaitingForBatch as we don't want to send
 		// channel_ready until the entire batch is ready.
-		let need_commitment_update = if matches!(self.context.channel_state, ChannelState::AwaitingChannelReady(f) if (f & !FundedStateFlags::ALL).is_empty()) {
+		let need_commitment_update = if matches!(self.context.channel_state, ChannelState::AwaitingChannelReady(f) if f.clone().clear(FundedStateFlags::ALL.into()).is_empty()) {
 			self.context.channel_state.set_our_channel_ready();
 			true
-		} else if matches!(self.context.channel_state, ChannelState::AwaitingChannelReady(f) if f & !FundedStateFlags::ALL == AwaitingChannelReadyFlags::THEIR_CHANNEL_READY) {
+		} else if matches!(self.context.channel_state, ChannelState::AwaitingChannelReady(f) if f.clone().clear(FundedStateFlags::ALL.into()) == AwaitingChannelReadyFlags::THEIR_CHANNEL_READY) {
 			self.context.channel_state = ChannelState::ChannelReady(self.context.channel_state.with_funded_state_flags_mask().into());
 			self.context.update_time_counter += 1;
 			true
-		} else if matches!(self.context.channel_state, ChannelState::AwaitingChannelReady(f) if f & !FundedStateFlags::ALL == AwaitingChannelReadyFlags::OUR_CHANNEL_READY) {
+		} else if matches!(self.context.channel_state, ChannelState::AwaitingChannelReady(f) if f.clone().clear(FundedStateFlags::ALL.into()) == AwaitingChannelReadyFlags::OUR_CHANNEL_READY) {
 			// We got a reorg but not enough to trigger a force close, just ignore.
 			false
 		} else {
