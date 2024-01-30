@@ -2207,10 +2207,10 @@ pub fn expect_payment_forwarded<CM: AChannelManager, H: NodeHolder<CM=CM>>(
 ) {
 	match event {
 		Event::PaymentForwarded {
-			fee_earned_msat, prev_channel_id, claim_from_onchain_tx, next_channel_id,
+			total_fee_earned_msat, prev_channel_id, claim_from_onchain_tx, next_channel_id,
 			outbound_amount_forwarded_msat: _
 		} => {
-			assert_eq!(fee_earned_msat, expected_fee);
+			assert_eq!(total_fee_earned_msat, expected_fee);
 			if !upstream_force_closed {
 				// Is the event prev_channel_id in one of the channels between the two nodes?
 				assert!(node.node().list_channels().iter().any(|x| x.counterparty.node_id == prev_node.node().get_our_node_id() && x.channel_id == prev_channel_id.unwrap()));

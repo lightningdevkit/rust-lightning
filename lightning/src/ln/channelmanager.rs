@@ -5788,14 +5788,14 @@ where
 								})
 							} else { None }
 						} else {
-							let fee_earned_msat = if let Some(forwarded_htlc_value) = forwarded_htlc_value_msat {
+							let total_fee_earned_msat = if let Some(forwarded_htlc_value) = forwarded_htlc_value_msat {
 								if let Some(claimed_htlc_value) = htlc_claim_value_msat {
 									Some(claimed_htlc_value - forwarded_htlc_value)
 								} else { None }
 							} else { None };
 							Some(MonitorUpdateCompletionAction::EmitEventAndFreeOtherChannel {
 								event: events::Event::PaymentForwarded {
-									fee_earned_msat,
+									total_fee_earned_msat,
 									claim_from_onchain_tx: from_onchain,
 									prev_channel_id: Some(prev_channel_id),
 									next_channel_id: Some(next_channel_id),
