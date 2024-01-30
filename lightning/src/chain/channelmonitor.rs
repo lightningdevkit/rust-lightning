@@ -1562,28 +1562,30 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 		self.inner.lock().unwrap().counterparty_node_id
 	}
 
-	/// Used by [`ChannelManager`] deserialization to broadcast the latest holder state if its copy
-	/// of the channel state was out-of-date.
-	///
-	/// You may also use this to broadcast the latest local commitment transaction, either because
+	/// You may use this to broadcast the latest local commitment transaction, either because
 	/// a monitor update failed or because we've fallen behind (i.e. we've received proof that our
 	/// counterparty side knows a revocation secret we gave them that they shouldn't know).
 	///
-	/// Broadcasting these transactions in the second case is UNSAFE, as they allow counterparty
+	/// Broadcasting these transactions in this manner is UNSAFE, as they allow counterparty
 	/// side to punish you. Nevertheless you may want to broadcast them if counterparty doesn't
 	/// close channel with their commitment transaction after a substantial amount of time. Best
 	/// may be to contact the other node operator out-of-band to coordinate other options available
 	/// to you.
-	///
-	/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
-	pub fn get_latest_holder_commitment_txn<L: Deref>(&self, logger: &L) -> Vec<Transaction>
-	where L::Target: Logger {
+	pub fn broadcast_latest_holder_commitment_txn<B: Deref, F: Deref, L: Deref>(
+		&self, broadcaster: &B, fee_estimator: &F, logger: &L
+	)
+	where
+		B::Target: BroadcasterInterface,
+		F::Target: FeeEstimator,
+		L::Target: Logger
+	{
 		let mut inner = self.inner.lock().unwrap();
+		let fee_estimator = LowerBoundedFeeEstimator::new(&**fee_estimator);
 		let logger = WithChannelMonitor::from_impl(logger, &*inner);
-		inner.get_latest_holder_commitment_txn(&logger)
+		inner.queue_latest_holder_commitment_txn_for_broadcast(broadcaster, &fee_estimator, &logger);
 	}
 
-	/// Unsafe test-only version of get_latest_holder_commitment_txn used by our test framework
+	/// Unsafe test-only version of `broadcast_latest_holder_commitment_txn` used by our test framework
 	/// to bypass HolderCommitmentTransaction state update lockdown after signature and generate
 	/// revoked commitment transaction.
 	#[cfg(any(test, feature = "unsafe_revoked_tx_signing"))]
@@ -2855,7 +2857,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 					} else if !self.holder_tx_signed {
 						log_error!(logger, "WARNING: You have a potentially-unsafe holder commitment transaction available to broadcast");
 						log_error!(logger, "    in channel monitor for channel {}!", &self.channel_id());
-						log_error!(logger, "    Read the docs for ChannelMonitor::get_latest_holder_commitment_txn and take manual action!");
+						log_error!(logger, "    Read the docs for ChannelMonitor::broadcast_latest_holder_commitment_txn to take manual action!");
 					} else {
 						// If we generated a MonitorEvent::HolderForceClosed, the ChannelManager
 						// will still give us a ChannelForceClosed event with !should_broadcast, but we
@@ -3500,45 +3502,6 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		} else {
 			// No previous claim.
 		}
-	}
-
-	fn get_latest_holder_commitment_txn<L: Deref>(
-		&mut self, logger: &WithChannelMonitor<L>,
-	) -> Vec<Transaction> where L::Target: Logger {
-		log_debug!(logger, "Getting signed latest holder commitment transaction!");
-		self.holder_tx_signed = true;
-		let commitment_tx = self.onchain_tx_handler.get_fully_signed_holder_tx(&self.funding_redeemscript);
-		let txid = commitment_tx.txid();
-		let mut holder_transactions = vec![commitment_tx];
-		// When anchor outputs are present, the HTLC transactions are only valid once the commitment
-		// transaction confirms.
-		if self.onchain_tx_handler.channel_type_features().supports_anchors_zero_fee_htlc_tx() {
-			return holder_transactions;
-		}
-		for htlc in self.current_holder_commitment_tx.htlc_outputs.iter() {
-			if let Some(vout) = htlc.0.transaction_output_index {
-				let preimage = if !htlc.0.offered {
-					if let Some(preimage) = self.payment_preimages.get(&htlc.0.payment_hash) { Some(preimage.clone()) } else {
-						// We can't build an HTLC-Success transaction without the preimage
-						continue;
-					}
-				} else if htlc.0.cltv_expiry > self.best_block.height() + 1 {
-					// Don't broadcast HTLC-Timeout transactions immediately as they don't meet the
-					// current locktime requirements on-chain. We will broadcast them in
-					// `block_confirmed` when `should_broadcast_holder_commitment_txn` returns true.
-					// Note that we add + 1 as transactions are broadcastable when they can be
-					// confirmed in the next block.
-					continue;
-				} else { None };
-				if let Some(htlc_tx) = self.onchain_tx_handler.get_fully_signed_htlc_tx(
-					&::bitcoin::OutPoint { txid, vout }, &preimage) {
-					holder_transactions.push(htlc_tx);
-				}
-			}
-		}
-		// We throw away the generated waiting_first_conf data as we aren't (yet) confirmed and we don't actually know what the caller wants to do.
-		// The data will be re-generated and tracked in check_spend_holder_transaction if we get a confirmation.
-		holder_transactions
 	}
 
 	#[cfg(any(test,feature = "unsafe_revoked_tx_signing"))]

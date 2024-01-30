@@ -2755,7 +2755,9 @@ fn do_test_monitor_claims_with_random_signatures(anchors: bool, confirm_counterp
 		(&nodes[0], &nodes[1])
 	};
 
-	closing_node.node.force_close_broadcasting_latest_txn(&chan_id, &other_node.node.get_our_node_id()).unwrap();
+	get_monitor!(closing_node, chan_id).broadcast_latest_holder_commitment_txn(
+		&closing_node.tx_broadcaster, &closing_node.fee_estimator, &closing_node.logger
+	);
 
 	// The commitment transaction comes first.
 	let commitment_tx = {
@@ -2768,7 +2770,7 @@ fn do_test_monitor_claims_with_random_signatures(anchors: bool, confirm_counterp
 	mine_transaction(closing_node, &commitment_tx);
 	check_added_monitors!(closing_node, 1);
 	check_closed_broadcast!(closing_node, true);
-	check_closed_event!(closing_node, 1, ClosureReason::HolderForceClosed, [other_node.node.get_our_node_id()], 1_000_000);
+	check_closed_event!(closing_node, 1, ClosureReason::CommitmentTxConfirmed, [other_node.node.get_our_node_id()], 1_000_000);
 
 	mine_transaction(other_node, &commitment_tx);
 	check_added_monitors!(other_node, 1);
