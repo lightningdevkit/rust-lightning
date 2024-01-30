@@ -341,7 +341,7 @@ impl<'a> chain::Watch<TestChannelSigner> for TestChainMonitor<'a> {
 		let new_monitor = <(BlockHash, channelmonitor::ChannelMonitor<TestChannelSigner>)>::read(
 			&mut io::Cursor::new(&w.0), (self.keys_manager, self.keys_manager)).unwrap().1;
 		assert!(new_monitor == monitor);
-		self.latest_monitor_update_id.lock().unwrap().insert(funding_txo.to_channel_id(),
+		self.latest_monitor_update_id.lock().unwrap().insert(monitor.channel_id(),
 			(funding_txo, monitor.get_latest_update_id(), MonitorUpdateId::from_new_monitor(&monitor)));
 		self.added_monitors.lock().unwrap().push((funding_txo, monitor));
 		self.chain_monitor.watch_channel(funding_txo, new_monitor)
@@ -353,18 +353,19 @@ impl<'a> chain::Watch<TestChannelSigner> for TestChainMonitor<'a> {
 		update.write(&mut w).unwrap();
 		assert!(channelmonitor::ChannelMonitorUpdate::read(
 				&mut io::Cursor::new(&w.0)).unwrap() == *update);
+		let channel_id = update.channel_id.unwrap_or(ChannelId::v1_from_funding_outpoint(funding_txo));
 
-		self.monitor_updates.lock().unwrap().entry(funding_txo.to_channel_id()).or_insert(Vec::new()).push(update.clone());
+		self.monitor_updates.lock().unwrap().entry(channel_id).or_insert(Vec::new()).push(update.clone());
 
 		if let Some(exp) = self.expect_channel_force_closed.lock().unwrap().take() {
-			assert_eq!(funding_txo.to_channel_id(), exp.0);
+			assert_eq!(channel_id, exp.0);
 			assert_eq!(update.updates.len(), 1);
 			if let channelmonitor::ChannelMonitorUpdateStep::ChannelForceClosed { should_broadcast } = update.updates[0] {
 				assert_eq!(should_broadcast, exp.1);
 			} else { panic!(); }
 		}
 
-		self.latest_monitor_update_id.lock().unwrap().insert(funding_txo.to_channel_id(),
+		self.latest_monitor_update_id.lock().unwrap().insert(channel_id,
 			(funding_txo, update.update_id, MonitorUpdateId::from_monitor_update(update)));
 		let update_res = self.chain_monitor.update_channel(funding_txo, update);
 		// At every point where we get a monitor update, we should be able to send a useful monitor
@@ -375,7 +376,7 @@ impl<'a> chain::Watch<TestChannelSigner> for TestChainMonitor<'a> {
 		let new_monitor = <(BlockHash, channelmonitor::ChannelMonitor<TestChannelSigner>)>::read(
 			&mut io::Cursor::new(&w.0), (self.keys_manager, self.keys_manager)).unwrap().1;
 		if let Some(chan_id) = self.expect_monitor_round_trip_fail.lock().unwrap().take() {
-			assert_eq!(chan_id, funding_txo.to_channel_id());
+			assert_eq!(chan_id, channel_id);
 			assert!(new_monitor != *monitor);
 		} else {
 			assert!(new_monitor == *monitor);
@@ -384,7 +385,7 @@ impl<'a> chain::Watch<TestChannelSigner> for TestChainMonitor<'a> {
 		update_res
 	}
 
-	fn release_pending_monitor_events(&self) -> Vec<(OutPoint, Vec<MonitorEvent>, Option<PublicKey>)> {
+	fn release_pending_monitor_events(&self) -> Vec<(OutPoint, ChannelId, Vec<MonitorEvent>, Option<PublicKey>)> {
 		return self.chain_monitor.release_pending_monitor_events();
 	}
 }

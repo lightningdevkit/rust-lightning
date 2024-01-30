@@ -252,7 +252,7 @@ pub fn connect_block<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, block: &Block) 
 
 fn call_claimable_balances<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>) {
 	// Ensure `get_claimable_balances`' self-tests never panic
-	for funding_outpoint in node.chain_monitor.chain_monitor.list_monitors() {
+	for (funding_outpoint, _channel_id) in node.chain_monitor.chain_monitor.list_monitors() {
 		node.chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances();
 	}
 }
@@ -601,7 +601,7 @@ impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
 			let feeest = test_utils::TestFeeEstimator { sat_per_kw: Mutex::new(253) };
 			let mut deserialized_monitors = Vec::new();
 			{
-				for outpoint in self.chain_monitor.chain_monitor.list_monitors() {
+				for (outpoint, _channel_id) in self.chain_monitor.chain_monitor.list_monitors() {
 					let mut w = test_utils::TestVecWriter(Vec::new());
 					self.chain_monitor.chain_monitor.get_monitor(outpoint).unwrap().write(&mut w).unwrap();
 					let (_, deserialized_monitor) = <(BlockHash, ChannelMonitor<TestChannelSigner>)>::read(
@@ -644,7 +644,8 @@ impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
 			let chain_source = test_utils::TestChainSource::new(Network::Testnet);
 			let chain_monitor = test_utils::TestChainMonitor::new(Some(&chain_source), &broadcaster, &self.logger, &feeest, &persister, &self.keys_manager);
 			for deserialized_monitor in deserialized_monitors.drain(..) {
-				if chain_monitor.watch_channel(deserialized_monitor.get_funding_txo().0, deserialized_monitor) != Ok(ChannelMonitorUpdateStatus::Completed) {
+				let funding_outpoint = deserialized_monitor.get_funding_txo().0;
+				if chain_monitor.watch_channel(funding_outpoint, deserialized_monitor) != Ok(ChannelMonitorUpdateStatus::Completed) {
 					panic!();
 				}
 			}
@@ -1068,7 +1069,8 @@ pub fn _reload_node<'a, 'b, 'c>(node: &'a Node<'a, 'b, 'c>, default_config: User
 	assert!(node_read.is_empty());
 
 	for monitor in monitors_read.drain(..) {
-		assert_eq!(node.chain_monitor.watch_channel(monitor.get_funding_txo().0, monitor),
+		let funding_outpoint = monitor.get_funding_txo().0;
+		assert_eq!(node.chain_monitor.watch_channel(funding_outpoint, monitor),
 			Ok(ChannelMonitorUpdateStatus::Completed));
 		check_added_monitors!(node, 1);
 	}

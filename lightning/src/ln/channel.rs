@@ -816,7 +816,7 @@ pub(super) struct ReestablishResponses {
 pub(crate) struct ShutdownResult {
 	pub(crate) closure_reason: ClosureReason,
 	/// A channel monitor update to apply.
-	pub(crate) monitor_update: Option<(PublicKey, OutPoint, ChannelMonitorUpdate)>,
+	pub(crate) monitor_update: Option<(PublicKey, OutPoint, ChannelId, ChannelMonitorUpdate)>,
 	/// A list of dropped outbound HTLCs that can safely be failed backwards immediately.
 	pub(crate) dropped_outbound_htlcs: Vec<(HTLCSource, PaymentHash, PublicKey, ChannelId)>,
 	/// An unbroadcasted batch funding transaction id. The closure of this channel should be
@@ -2394,10 +2394,11 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 			};
 			if generate_monitor_update {
 				self.latest_monitor_update_id = CLOSED_CHANNEL_UPDATE_ID;
-				Some((self.get_counterparty_node_id(), funding_txo, ChannelMonitorUpdate {
+				Some((self.get_counterparty_node_id(), funding_txo, self.channel_id(), ChannelMonitorUpdate {
 					update_id: self.latest_monitor_update_id,
 					counterparty_node_id: Some(self.counterparty_node_id),
 					updates: vec![ChannelMonitorUpdateStep::ChannelForceClosed { should_broadcast }],
+					channel_id: Some(self.channel_id()),
 				}))
 			} else { None }
 		} else { None };
@@ -2777,6 +2778,7 @@ impl<SP: Deref> Channel<SP> where
 			updates: vec![ChannelMonitorUpdateStep::PaymentPreimage {
 				payment_preimage: payment_preimage_arg.clone(),
 			}],
+			channel_id: Some(self.context.channel_id()),
 		};
 
 		if self.context.channel_state.should_force_holding_cell() {
@@ -3515,7 +3517,8 @@ impl<SP: Deref> Channel<SP> where
 				htlc_outputs: htlcs_and_sigs,
 				claimed_htlcs,
 				nondust_htlc_sources,
-			}]
+			}],
+			channel_id: Some(self.context.channel_id()),
 		};
 
 		self.context.cur_holder_commitment_transaction_number -= 1;
@@ -3591,6 +3594,7 @@ impl<SP: Deref> Channel<SP> where
 				update_id: self.context.latest_monitor_update_id + 1, // We don't increment this yet!
 				counterparty_node_id: Some(self.context.counterparty_node_id),
 				updates: Vec::new(),
+				channel_id: Some(self.context.channel_id()),
 			};
 
 			let mut htlc_updates = Vec::new();
@@ -3769,6 +3773,7 @@ impl<SP: Deref> Channel<SP> where
 				idx: self.context.cur_counterparty_commitment_transaction_number + 1,
 				secret: msg.per_commitment_secret,
 			}],
+			channel_id: Some(self.context.channel_id()),
 		};
 
 		// Update state now that we've passed all the can-fail calls...
@@ -4826,6 +4831,7 @@ impl<SP: Deref> Channel<SP> where
 				updates: vec![ChannelMonitorUpdateStep::ShutdownScript {
 					scriptpubkey: self.get_closing_scriptpubkey(),
 				}],
+				channel_id: Some(self.context.channel_id()),
 			};
 			self.monitor_updating_paused(false, false, false, Vec::new(), Vec::new(), Vec::new());
 			self.push_ret_blockable_mon_update(monitor_update)
@@ -5965,7 +5971,8 @@ impl<SP: Deref> Channel<SP> where
 				feerate_per_kw: Some(counterparty_commitment_tx.feerate_per_kw()),
 				to_broadcaster_value_sat: Some(counterparty_commitment_tx.to_broadcaster_value_sat()),
 				to_countersignatory_value_sat: Some(counterparty_commitment_tx.to_countersignatory_value_sat()),
-			}]
+			}],
+			channel_id: Some(self.context.channel_id()),
 		};
 		self.context.channel_state.set_awaiting_remote_revoke();
 		monitor_update
@@ -6159,6 +6166,7 @@ impl<SP: Deref> Channel<SP> where
 				updates: vec![ChannelMonitorUpdateStep::ShutdownScript {
 					scriptpubkey: self.get_closing_scriptpubkey(),
 				}],
+				channel_id: Some(self.context.channel_id()),
 			};
 			self.monitor_updating_paused(false, false, false, Vec::new(), Vec::new(), Vec::new());
 			self.push_ret_blockable_mon_update(monitor_update)
@@ -6475,7 +6483,7 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 		// Now that we're past error-generating stuff, update our local state:
 
 		self.context.channel_state = ChannelState::FundingNegotiated;
-		self.context.channel_id = funding_txo.to_channel_id();
+		self.context.channel_id = ChannelId::v1_from_funding_outpoint(funding_txo);
 
 		// If the funding transaction is a coinbase transaction, we need to set the minimum depth to 100.
 		// We can skip this if it is a zero-conf channel.
@@ -6814,7 +6822,7 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 		                                          &self.context.channel_transaction_parameters,
 		                                          funding_redeemscript.clone(), self.context.channel_value_satoshis,
 		                                          obscure_factor,
-		                                          holder_commitment_tx, best_block, self.context.counterparty_node_id);
+		                                          holder_commitment_tx, best_block, self.context.counterparty_node_id, self.context.channel_id());
 		channel_monitor.provide_initial_counterparty_commitment_tx(
 			counterparty_initial_bitcoin_tx.txid, Vec::new(),
 			self.context.cur_counterparty_commitment_transaction_number,
@@ -7356,7 +7364,7 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 		// Now that we're past error-generating stuff, update our local state:
 
 		self.context.channel_state = ChannelState::AwaitingChannelReady(AwaitingChannelReadyFlags::new());
-		self.context.channel_id = funding_txo.to_channel_id();
+		self.context.channel_id = ChannelId::v1_from_funding_outpoint(funding_txo);
 		self.context.cur_counterparty_commitment_transaction_number -= 1;
 		self.context.cur_holder_commitment_transaction_number -= 1;
 
@@ -7374,7 +7382,7 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 		                                          &self.context.channel_transaction_parameters,
 		                                          funding_redeemscript.clone(), self.context.channel_value_satoshis,
 		                                          obscure_factor,
-		                                          holder_commitment_tx, best_block, self.context.counterparty_node_id);
+		                                          holder_commitment_tx, best_block, self.context.counterparty_node_id, self.context.channel_id());
 		channel_monitor.provide_initial_counterparty_commitment_tx(
 			counterparty_initial_commitment_tx.trust().txid(), Vec::new(),
 			self.context.cur_counterparty_commitment_transaction_number + 1,

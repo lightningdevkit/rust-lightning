@@ -96,6 +96,11 @@ pub struct ChannelMonitorUpdate {
 	///
 	/// [`ChannelMonitorUpdateStatus::InProgress`]: super::ChannelMonitorUpdateStatus::InProgress
 	pub update_id: u64,
+	/// The channel ID associated with these updates.
+	///
+	/// Will be `None` for `ChannelMonitorUpdate`s constructed on LDK versions prior to 0.0.121 and
+	/// always `Some` otherwise.
+	pub channel_id: Option<ChannelId>,
 }
 
 /// The update ID used for a [`ChannelMonitorUpdate`] that is either:
@@ -118,6 +123,7 @@ impl Writeable for ChannelMonitorUpdate {
 		}
 		write_tlv_fields!(w, {
 			(1, self.counterparty_node_id, option),
+			(3, self.channel_id, option),
 		});
 		Ok(())
 	}
@@ -134,10 +140,12 @@ impl Readable for ChannelMonitorUpdate {
 			}
 		}
 		let mut counterparty_node_id = None;
+		let mut channel_id = None;
 		read_tlv_fields!(r, {
 			(1, counterparty_node_id, option),
+			(3, channel_id, option),
 		});
-		Ok(Self { update_id, counterparty_node_id, updates })
+		Ok(Self { update_id, counterparty_node_id, updates, channel_id })
 	}
 }
 
@@ -158,6 +166,8 @@ pub enum MonitorEvent {
 	Completed {
 		/// The funding outpoint of the [`ChannelMonitor`] that was updated
 		funding_txo: OutPoint,
+		/// The channel ID of the channel associated with the [`ChannelMonitor`]
+		channel_id: ChannelId,
 		/// The Update ID from [`ChannelMonitorUpdate::update_id`] which was applied or
 		/// [`ChannelMonitor::get_latest_update_id`].
 		///
@@ -172,6 +182,7 @@ impl_writeable_tlv_based_enum_upgradable!(MonitorEvent,
 	(0, Completed) => {
 		(0, funding_txo, required),
 		(2, monitor_update_id, required),
+		(4, channel_id, required),
 	},
 ;
 	(2, HTLCEvent),
@@ -772,6 +783,7 @@ pub(crate) struct ChannelMonitorImpl<Signer: WriteableEcdsaChannelSigner> {
 
 	channel_keys_id: [u8; 32],
 	holder_revocation_basepoint: RevocationBasepoint,
+	channel_id: ChannelId,
 	funding_info: (OutPoint, ScriptBuf),
 	current_counterparty_commitment_txid: Option<Txid>,
 	prev_counterparty_commitment_txid: Option<Txid>,
@@ -1097,6 +1109,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Writeable for ChannelMonitorImpl<Signe
 			(13, self.spendable_txids_confirmed, required_vec),
 			(15, self.counterparty_fulfilled_htlcs, required),
 			(17, self.initial_counterparty_commitment_info, option),
+			(19, self.channel_id, required),
 		});
 
 		Ok(())
@@ -1160,7 +1173,7 @@ impl<'a, L: Deref> WithChannelMonitor<'a, L> where L::Target: Logger {
 
 	pub(crate) fn from_impl<S: WriteableEcdsaChannelSigner>(logger: &'a L, monitor_impl: &ChannelMonitorImpl<S>) -> Self {
 		let peer_id = monitor_impl.counterparty_node_id;
-		let channel_id = Some(monitor_impl.funding_info.0.to_channel_id());
+		let channel_id = Some(monitor_impl.channel_id());
 		WithChannelMonitor {
 			logger, peer_id, channel_id,
 		}
@@ -1181,7 +1194,8 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 	                  funding_redeemscript: ScriptBuf, channel_value_satoshis: u64,
 	                  commitment_transaction_number_obscure_factor: u64,
 	                  initial_holder_commitment_tx: HolderCommitmentTransaction,
-	                  best_block: BestBlock, counterparty_node_id: PublicKey) -> ChannelMonitor<Signer> {
+	                  best_block: BestBlock, counterparty_node_id: PublicKey, channel_id: ChannelId,
+	) -> ChannelMonitor<Signer> {
 
 		assert!(commitment_transaction_number_obscure_factor <= (1 << 48));
 		let counterparty_payment_script = chan_utils::get_counterparty_payment_script(
@@ -1235,6 +1249,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 
 			channel_keys_id,
 			holder_revocation_basepoint,
+			channel_id,
 			funding_info,
 			current_counterparty_commitment_txid: None,
 			prev_counterparty_commitment_txid: None,
@@ -1384,6 +1399,11 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 	/// Gets the funding transaction outpoint of the channel this ChannelMonitor is monitoring for.
 	pub fn get_funding_txo(&self) -> (OutPoint, ScriptBuf) {
 		self.inner.lock().unwrap().get_funding_txo().clone()
+	}
+
+	/// Gets the channel_id of the channel this ChannelMonitor is monitoring for.
+	pub fn channel_id(&self) -> ChannelId {
+		self.inner.lock().unwrap().channel_id()
 	}
 
 	/// Gets a list of txids, with their output scripts (in the order they appear in the
@@ -2834,7 +2854,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 						self.queue_latest_holder_commitment_txn_for_broadcast(broadcaster, &bounded_fee_estimator, logger);
 					} else if !self.holder_tx_signed {
 						log_error!(logger, "WARNING: You have a potentially-unsafe holder commitment transaction available to broadcast");
-						log_error!(logger, "    in channel monitor for channel {}!", &self.funding_info.0.to_channel_id());
+						log_error!(logger, "    in channel monitor for channel {}!", &self.channel_id());
 						log_error!(logger, "    Read the docs for ChannelMonitor::get_latest_holder_commitment_txn and take manual action!");
 					} else {
 						// If we generated a MonitorEvent::HolderForceClosed, the ChannelManager
@@ -2878,6 +2898,10 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 
 	fn get_funding_txo(&self) -> &(OutPoint, ScriptBuf) {
 		&self.funding_info
+	}
+
+	pub fn channel_id(&self) -> ChannelId {
+		self.channel_id
 	}
 
 	fn get_outputs_to_watch(&self) -> &HashMap<Txid, Vec<(u32, ScriptBuf)>> {
@@ -3642,7 +3666,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				if prevout.txid == self.funding_info.0.txid && prevout.vout == self.funding_info.0.index as u32 {
 					let mut balance_spendable_csv = None;
 					log_info!(logger, "Channel {} closed by funding output spend in txid {}.",
-						&self.funding_info.0.to_channel_id(), txid);
+						&self.channel_id(), txid);
 					self.funding_spend_seen = true;
 					let mut commitment_tx_to_counterparty_output = None;
 					if (tx.input[0].sequence.0 >> 8*3) as u8 == 0x80 && (tx.lock_time.to_consensus_u32() >> 8*3) as u8 == 0x20 {
@@ -3812,7 +3836,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 					log_debug!(logger, "Descriptor {} has got enough confirmations to be passed upstream", log_spendable!(descriptor));
 					self.pending_events.push(Event::SpendableOutputs {
 						outputs: vec![descriptor],
-						channel_id: Some(self.funding_info.0.to_channel_id()),
+						channel_id: Some(self.channel_id()),
 					});
 					self.spendable_txids_confirmed.push(entry.txid);
 				},
@@ -4557,6 +4581,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 		let mut spendable_txids_confirmed = Some(Vec::new());
 		let mut counterparty_fulfilled_htlcs = Some(HashMap::new());
 		let mut initial_counterparty_commitment_info = None;
+		let mut channel_id = None;
 		read_tlv_fields!(reader, {
 			(1, funding_spend_confirmed, option),
 			(3, htlcs_resolved_on_chain, optional_vec),
@@ -4567,6 +4592,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 			(13, spendable_txids_confirmed, optional_vec),
 			(15, counterparty_fulfilled_htlcs, option),
 			(17, initial_counterparty_commitment_info, option),
+			(19, channel_id, option),
 		});
 
 		// Monitors for anchor outputs channels opened in v0.0.116 suffered from a bug in which the
@@ -4591,6 +4617,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 
 			channel_keys_id,
 			holder_revocation_basepoint,
+			channel_id: channel_id.unwrap_or(ChannelId::v1_from_funding_outpoint(outpoint)),
 			funding_info,
 			current_counterparty_commitment_txid,
 			prev_counterparty_commitment_txid,
@@ -4665,7 +4692,7 @@ mod tests {
 	use crate::chain::package::{weight_offered_htlc, weight_received_htlc, weight_revoked_offered_htlc, weight_revoked_received_htlc, WEIGHT_REVOKED_OUTPUT};
 	use crate::chain::transaction::OutPoint;
 	use crate::sign::InMemorySigner;
-	use crate::ln::{PaymentPreimage, PaymentHash};
+	use crate::ln::{PaymentPreimage, PaymentHash, ChannelId};
 	use crate::ln::channel_keys::{DelayedPaymentBasepoint, DelayedPaymentKey, HtlcBasepoint, RevocationBasepoint, RevocationKey};
 	use crate::ln::chan_utils::{self,HTLCOutputInCommitment, ChannelPublicKeys, ChannelTransactionParameters, HolderCommitmentTransaction, CounterpartyChannelTransactionParameters};
 	use crate::ln::channelmanager::{PaymentSendFailure, PaymentId, RecipientOnionFields};
@@ -4841,6 +4868,7 @@ mod tests {
 			htlc_basepoint: HtlcBasepoint::from(PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[48; 32]).unwrap()))
 		};
 		let funding_outpoint = OutPoint { txid: Txid::all_zeros(), index: u16::max_value() };
+		let channel_id = ChannelId::v1_from_funding_outpoint(funding_outpoint);
 		let channel_parameters = ChannelTransactionParameters {
 			holder_pubkeys: keys.holder_channel_pubkeys.clone(),
 			holder_selected_contest_delay: 66,
@@ -4860,7 +4888,7 @@ mod tests {
 			Some(ShutdownScript::new_p2wpkh_from_pubkey(shutdown_pubkey).into_inner()), 0, &ScriptBuf::new(),
 			(OutPoint { txid: Txid::from_slice(&[43; 32]).unwrap(), index: 0 }, ScriptBuf::new()),
 			&channel_parameters, ScriptBuf::new(), 46, 0, HolderCommitmentTransaction::dummy(&mut Vec::new()),
-			best_block, dummy_key);
+			best_block, dummy_key, channel_id);
 
 		let mut htlcs = preimages_slice_to_htlcs!(preimages[0..10]);
 		let dummy_commitment_tx = HolderCommitmentTransaction::dummy(&mut htlcs);
@@ -5090,6 +5118,7 @@ mod tests {
 			htlc_basepoint: HtlcBasepoint::from(PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[48; 32]).unwrap())),
 		};
 		let funding_outpoint = OutPoint { txid: Txid::all_zeros(), index: u16::max_value() };
+		let channel_id = ChannelId::v1_from_funding_outpoint(funding_outpoint);
 		let channel_parameters = ChannelTransactionParameters {
 			holder_pubkeys: keys.holder_channel_pubkeys.clone(),
 			holder_selected_contest_delay: 66,
@@ -5107,9 +5136,9 @@ mod tests {
 			Some(ShutdownScript::new_p2wpkh_from_pubkey(shutdown_pubkey).into_inner()), 0, &ScriptBuf::new(),
 			(OutPoint { txid: Txid::from_slice(&[43; 32]).unwrap(), index: 0 }, ScriptBuf::new()),
 			&channel_parameters, ScriptBuf::new(), 46, 0, HolderCommitmentTransaction::dummy(&mut Vec::new()),
-			best_block, dummy_key);
+			best_block, dummy_key, channel_id);
 
-		let chan_id = monitor.inner.lock().unwrap().funding_info.0.to_channel_id().clone();
+		let chan_id = monitor.inner.lock().unwrap().channel_id();
 		let context_logger = WithChannelMonitor::from(&logger, &monitor);
 		log_error!(context_logger, "This is an error");
 		log_warn!(context_logger, "This is an error");

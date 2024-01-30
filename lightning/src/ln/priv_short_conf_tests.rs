@@ -18,7 +18,7 @@ use crate::ln::channelmanager::{MIN_CLTV_EXPIRY_DELTA, PaymentId, RecipientOnion
 use crate::routing::gossip::RoutingFees;
 use crate::routing::router::{PaymentParameters, RouteHint, RouteHintHop};
 use crate::ln::features::ChannelTypeFeatures;
-use crate::ln::msgs;
+use crate::ln::{msgs, ChannelId};
 use crate::ln::msgs::{ChannelMessageHandler, RoutingMessageHandler, ChannelUpdate, ErrorAction};
 use crate::ln::wire::Encode;
 use crate::util::config::{UserConfig, MaxDustHTLCExposure};
@@ -617,7 +617,7 @@ fn test_0conf_channel_with_async_monitor() {
 	check_added_monitors!(nodes[1], 1);
 	assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
 
-	let channel_id = funding_output.to_channel_id();
+	let channel_id = ChannelId::v1_from_funding_outpoint(funding_output);
 	nodes[1].chain_monitor.complete_sole_pending_chan_update(&channel_id);
 	expect_channel_pending_event(&nodes[1], &nodes[0].node.get_our_node_id());
 

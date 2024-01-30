@@ -8684,7 +8684,7 @@ fn test_pre_lockin_no_chan_closed_update() {
 	check_added_monitors!(nodes[0], 0);
 
 	let funding_created_msg = get_event_msg!(nodes[0], MessageSendEvent::SendFundingCreated, nodes[1].node.get_our_node_id());
-	let channel_id = crate::chain::transaction::OutPoint { txid: funding_created_msg.funding_txid, index: funding_created_msg.funding_output_index }.to_channel_id();
+	let channel_id = ChannelId::v1_from_funding_outpoint(crate::chain::transaction::OutPoint { txid: funding_created_msg.funding_txid, index: funding_created_msg.funding_output_index });
 	nodes[0].node.handle_error(&nodes[1].node.get_our_node_id(), &msgs::ErrorMessage { channel_id, data: "Hi".to_owned() });
 	assert!(nodes[0].chain_monitor.added_monitors.lock().unwrap().is_empty());
 	check_closed_event!(nodes[0], 2, ClosureReason::CounterpartyForceClosed { peer_msg: UntrustedString("Hi".to_string()) }, true,
@@ -9028,7 +9028,7 @@ fn test_peer_funding_sidechannel() {
 	check_added_monitors!(nodes[1], 1);
 	expect_channel_pending_event(&nodes[1], &nodes[0].node.get_our_node_id());
 	let reason = ClosureReason::ProcessingError { err: format!("An existing channel using outpoint {} is open with peer {}", funding_output, nodes[2].node.get_our_node_id()), };
-	check_closed_events(&nodes[0], &[ExpectedCloseEvent::from_id_reason(funding_output.to_channel_id(), true, reason)]);
+	check_closed_events(&nodes[0], &[ExpectedCloseEvent::from_id_reason(ChannelId::v1_from_funding_outpoint(funding_output), true, reason)]);
 
 	let funding_signed = get_event_msg!(nodes[1], MessageSendEvent::SendFundingSigned, nodes[0].node.get_our_node_id());
 	nodes[0].node.handle_funding_signed(&nodes[1].node.get_our_node_id(), &funding_signed);
@@ -9089,7 +9089,7 @@ fn test_duplicate_funding_err_in_funding() {
 
 	let (_, _, _, real_channel_id, funding_tx) = create_chan_between_nodes(&nodes[0], &nodes[1]);
 	let real_chan_funding_txo = chain::transaction::OutPoint { txid: funding_tx.txid(), index: 0 };
-	assert_eq!(real_chan_funding_txo.to_channel_id(), real_channel_id);
+	assert_eq!(ChannelId::v1_from_funding_outpoint(real_chan_funding_txo), real_channel_id);
 
 	nodes[2].node.create_channel(nodes[1].node.get_our_node_id(), 100_000, 0, 42, None, None).unwrap();
 	let mut open_chan_msg = get_event_msg!(nodes[2], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
@@ -9181,7 +9181,7 @@ fn test_duplicate_chan_id() {
 	let funding_signed_msg = get_event_msg!(nodes[1], MessageSendEvent::SendFundingSigned, nodes[0].node.get_our_node_id());
 
 	let funding_outpoint = crate::chain::transaction::OutPoint { txid: funding_created_msg.funding_txid, index: funding_created_msg.funding_output_index };
-	let channel_id = funding_outpoint.to_channel_id();
+	let channel_id = ChannelId::v1_from_funding_outpoint(funding_outpoint);
 
 	// Now we have the first channel past funding_created (ie it has a txid-based channel_id, not a
 	// temporary one).
@@ -10635,7 +10635,7 @@ fn test_batch_channel_open() {
 
 	// Complete the persistence of the monitor.
 	nodes[0].chain_monitor.complete_sole_pending_chan_update(
-		&OutPoint { txid: tx.txid(), index: 1 }.to_channel_id()
+		&ChannelId::v1_from_funding_outpoint(OutPoint { txid: tx.txid(), index: 1 })
 	);
 	let events = nodes[0].node.get_and_clear_pending_events();
 
@@ -10692,8 +10692,8 @@ fn test_disconnect_in_funding_batch() {
 	// The channels in the batch will close immediately.
 	let funding_txo_1 = OutPoint { txid: tx.txid(), index: 0 };
 	let funding_txo_2 = OutPoint { txid: tx.txid(), index: 1 };
-	let channel_id_1 = funding_txo_1.to_channel_id();
-	let channel_id_2 = funding_txo_2.to_channel_id();
+	let channel_id_1 = ChannelId::v1_from_funding_outpoint(funding_txo_1);
+	let channel_id_2 = ChannelId::v1_from_funding_outpoint(funding_txo_2);
 	check_closed_events(&nodes[0], &[
 		ExpectedCloseEvent {
 			channel_id: Some(channel_id_1),
@@ -10766,8 +10766,8 @@ fn test_batch_funding_close_after_funding_signed() {
 	// Force-close the channel for which we've completed the initial monitor.
 	let funding_txo_1 = OutPoint { txid: tx.txid(), index: 0 };
 	let funding_txo_2 = OutPoint { txid: tx.txid(), index: 1 };
-	let channel_id_1 = funding_txo_1.to_channel_id();
-	let channel_id_2 = funding_txo_2.to_channel_id();
+	let channel_id_1 = ChannelId::v1_from_funding_outpoint(funding_txo_1);
+	let channel_id_2 = ChannelId::v1_from_funding_outpoint(funding_txo_2);
 	nodes[0].node.force_close_broadcasting_latest_txn(&channel_id_1, &nodes[1].node.get_our_node_id()).unwrap();
 	check_added_monitors(&nodes[0], 2);
 	{
@@ -10827,7 +10827,7 @@ fn do_test_funding_and_commitment_tx_confirm_same_block(confirm_remote_commitmen
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let funding_tx = create_chan_between_nodes_with_value_init(&nodes[0], &nodes[1], 1_000_000, 0);
-	let chan_id = chain::transaction::OutPoint { txid: funding_tx.txid(), index: 0 }.to_channel_id();
+	let chan_id = ChannelId::v1_from_funding_outpoint(chain::transaction::OutPoint { txid: funding_tx.txid(), index: 0 });
 
 	assert_eq!(nodes[0].node.list_channels().len(), 1);
 	assert_eq!(nodes[1].node.list_channels().len(), 1);

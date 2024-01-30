@@ -8,6 +8,7 @@
 // licenses.
 
 use crate::chain::transaction::OutPoint;
+use crate::ln::ChannelId;
 use crate::sign::SpendableOutputDescriptor;
 
 use bitcoin::hash_types::Txid;
@@ -41,24 +42,21 @@ macro_rules! log_bytes {
 pub(crate) struct DebugFundingChannelId<'a>(pub &'a Txid, pub u16);
 impl<'a> core::fmt::Display for DebugFundingChannelId<'a> {
 	fn fmt(&self, f: &mut core::fmt::Formatter) -> Result<(), core::fmt::Error> {
-		(OutPoint { txid: self.0.clone(), index: self.1 }).to_channel_id().fmt(f)
-	}
-}
-macro_rules! log_funding_channel_id {
-	($funding_txid: expr, $funding_txo: expr) => {
-		$crate::util::macro_logger::DebugFundingChannelId(&$funding_txid, $funding_txo)
+		ChannelId::v1_from_funding_outpoint(OutPoint { txid: self.0.clone(), index: self.1 }).fmt(f)
 	}
 }
 
-pub(crate) struct DebugFundingInfo<'a, T: 'a>(pub &'a (OutPoint, T));
-impl<'a, T> core::fmt::Display for DebugFundingInfo<'a, T> {
+pub(crate) struct DebugFundingInfo<'a>(pub &'a ChannelId);
+impl<'a> core::fmt::Display for DebugFundingInfo<'a> {
 	fn fmt(&self, f: &mut core::fmt::Formatter) -> Result<(), core::fmt::Error> {
-		(self.0).0.to_channel_id().fmt(f)
+		self.0.fmt(f)
 	}
 }
 macro_rules! log_funding_info {
 	($key_storage: expr) => {
-		$crate::util::macro_logger::DebugFundingInfo(&$key_storage.get_funding_txo())
+		$crate::util::macro_logger::DebugFundingInfo(
+			&$key_storage.channel_id()
+		)
 	}
 }
 

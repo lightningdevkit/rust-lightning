@@ -9,11 +9,13 @@
 
 //! ChannelId definition.
 
+use crate::chain::transaction::OutPoint;
+use crate::io;
 use crate::ln::msgs::DecodeError;
 use crate::sign::EntropySource;
 use crate::util::ser::{Readable, Writeable, Writer};
 
-use crate::io;
+use bitcoin::hashes::Hash as _;
 use core::fmt;
 use core::ops::Deref;
 
@@ -38,6 +40,11 @@ impl ChannelId {
 		res[30] ^= ((output_index >> 8) & 0xff) as u8;
 		res[31] ^= ((output_index >> 0) & 0xff) as u8;
 		Self(res)
+	}
+
+	/// Create _v1_ channel ID from a funding tx outpoint
+	pub fn v1_from_funding_outpoint(outpoint: OutPoint) -> Self {
+		Self::v1_from_funding_txid(outpoint.txid.as_byte_array(), outpoint.index)
 	}
 
 	/// Create a _temporary_ channel ID randomly, based on an entropy source.

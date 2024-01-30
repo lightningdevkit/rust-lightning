@@ -1052,9 +1052,9 @@ mod tests {
 		{
 			let mut added_monitors = nodes[1].chain_monitor.added_monitors.lock().unwrap();
 			let update_map = nodes[1].chain_monitor.latest_monitor_update_id.lock().unwrap();
-			let update_id = update_map.get(&added_monitors[0].0.to_channel_id()).unwrap();
+			let update_id = update_map.get(&added_monitors[0].1.channel_id()).unwrap();
 			let cmu_map = nodes[1].chain_monitor.monitor_updates.lock().unwrap();
-			let cmu = &cmu_map.get(&added_monitors[0].0.to_channel_id()).unwrap()[0];
+			let cmu = &cmu_map.get(&added_monitors[0].1.channel_id()).unwrap()[0];
 			let test_txo = OutPoint { txid: Txid::from_str("8984484a580b825b9972d7adb15050b3ab624ccd731946b3eeddb92f4e7ef6be").unwrap(), index: 0 };
 
 			let ro_persister = MonitorUpdatingPersister {

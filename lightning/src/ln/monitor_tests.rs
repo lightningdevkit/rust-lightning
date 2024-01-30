@@ -15,7 +15,7 @@ use crate::chain::transaction::OutPoint;
 use crate::chain::chaininterface::{LowerBoundedFeeEstimator, compute_feerate_sat_per_1000_weight};
 use crate::events::bump_transaction::{BumpTransactionEvent, WalletSource};
 use crate::events::{Event, MessageSendEvent, MessageSendEventsProvider, ClosureReason, HTLCDestination};
-use crate::ln::channel;
+use crate::ln::{channel, ChannelId};
 use crate::ln::channelmanager::{BREAKDOWN_TIMEOUT, PaymentId, RecipientOnionFields};
 use crate::ln::msgs::ChannelMessageHandler;
 use crate::util::config::UserConfig;
@@ -176,7 +176,7 @@ fn do_chanmon_claim_value_coop_close(anchors: bool) {
 	let (_, _, chan_id, funding_tx) =
 		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 1_000_000);
 	let funding_outpoint = OutPoint { txid: funding_tx.txid(), index: 0 };
-	assert_eq!(funding_outpoint.to_channel_id(), chan_id);
+	assert_eq!(ChannelId::v1_from_funding_outpoint(funding_outpoint), chan_id);
 
 	let chan_feerate = get_feerate!(nodes[0], nodes[1], chan_id) as u64;
 	let channel_type_features = get_channel_type_features!(nodes[0], nodes[1], chan_id);
@@ -327,7 +327,7 @@ fn do_test_claim_value_force_close(anchors: bool, prev_commitment_tx: bool) {
 	let (_, _, chan_id, funding_tx) =
 		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 1_000_000);
 	let funding_outpoint = OutPoint { txid: funding_tx.txid(), index: 0 };
-	assert_eq!(funding_outpoint.to_channel_id(), chan_id);
+	assert_eq!(ChannelId::v1_from_funding_outpoint(funding_outpoint), chan_id);
 
 	// This HTLC is immediately claimed, giving node B the preimage
 	let (payment_preimage, payment_hash, ..) = route_payment(&nodes[0], &[&nodes[1]], 3_000_000);
@@ -1121,7 +1121,7 @@ fn do_test_revoked_counterparty_commitment_balances(anchors: bool, confirm_htlc_
 	let (_, _, chan_id, funding_tx) =
 		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 100_000_000);
 	let funding_outpoint = OutPoint { txid: funding_tx.txid(), index: 0 };
-	assert_eq!(funding_outpoint.to_channel_id(), chan_id);
+	assert_eq!(ChannelId::v1_from_funding_outpoint(funding_outpoint), chan_id);
 
 	// We create five HTLCs for B to claim against A's revoked commitment transaction:
 	//
@@ -1403,7 +1403,7 @@ fn do_test_revoked_counterparty_htlc_tx_balances(anchors: bool) {
 	let (_, _, chan_id, funding_tx) =
 		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 12_000_000);
 	let funding_outpoint = OutPoint { txid: funding_tx.txid(), index: 0 };
-	assert_eq!(funding_outpoint.to_channel_id(), chan_id);
+	assert_eq!(ChannelId::v1_from_funding_outpoint(funding_outpoint), chan_id);
 
 	let payment_preimage = route_payment(&nodes[0], &[&nodes[1]], 3_000_000).0;
 	let failed_payment_hash = route_payment(&nodes[1], &[&nodes[0]], 1_000_000).1;
@@ -1705,7 +1705,7 @@ fn do_test_revoked_counterparty_aggregated_claims(anchors: bool) {
 	let (_, _, chan_id, funding_tx) =
 		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 100_000_000);
 	let funding_outpoint = OutPoint { txid: funding_tx.txid(), index: 0 };
-	assert_eq!(funding_outpoint.to_channel_id(), chan_id);
+	assert_eq!(ChannelId::v1_from_funding_outpoint(funding_outpoint), chan_id);
 
 	// We create two HTLCs, one which we will give A the preimage to to generate an HTLC-Success
 	// transaction, and one which we will not, allowing B to claim the HTLC output in an aggregated
