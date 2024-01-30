@@ -1492,7 +1492,10 @@ pub(super) struct ChannelContext<SP: Deref> where SP::Target: SignerProvider {
 
 	/// The unique identifier used to re-derive the private key material for the channel through
 	/// [`SignerProvider::derive_channel_signer`].
+	#[cfg(not(test))]
 	channel_keys_id: [u8; 32],
+	#[cfg(test)]
+	pub channel_keys_id: [u8; 32],
 
 	/// If we can't release a [`ChannelMonitorUpdate`] until some external action completes, we
 	/// store it here and only release it to the `ChannelManager` once it asks for it.

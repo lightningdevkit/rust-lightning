@@ -635,6 +635,27 @@ where C::Target: chain::Filter,
 			)
 		}
 	}
+
+	/// Triggers rebroadcasts of pending claims from force-closed channels after a transaction
+	/// signature generation failure.
+	///
+	/// `monitor_opt` can be used as a filter to only trigger them for a specific channel monitor.
+	pub fn signer_unblocked(&self, monitor_opt: Option<OutPoint>) {
+		let monitors = self.monitors.read().unwrap();
+		if let Some(funding_txo) = monitor_opt {
+			if let Some(monitor_holder) = monitors.get(&funding_txo) {
+				monitor_holder.monitor.signer_unblocked(
+					&*self.broadcaster, &*self.fee_estimator, &self.logger
+				)
+			}
+		} else {
+			for (_, monitor_holder) in &*monitors {
+				monitor_holder.monitor.signer_unblocked(
+					&*self.broadcaster, &*self.fee_estimator, &self.logger
+				)
+			}
+		}
+	}
 }
 
 impl<ChannelSigner: WriteableEcdsaChannelSigner, C: Deref, T: Deref, F: Deref, L: Deref, P: Deref>

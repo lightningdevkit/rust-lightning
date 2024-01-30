@@ -1769,6 +1769,25 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 		);
 	}
 
+	/// Triggers rebroadcasts of pending claims from a force-closed channel after a transaction
+	/// signature generation failure.
+	pub fn signer_unblocked<B: Deref, F: Deref, L: Deref>(
+		&self, broadcaster: B, fee_estimator: F, logger: &L,
+	)
+	where
+		B::Target: BroadcasterInterface,
+		F::Target: FeeEstimator,
+		L::Target: Logger,
+	{
+		let fee_estimator = LowerBoundedFeeEstimator::new(fee_estimator);
+		let mut inner = self.inner.lock().unwrap();
+		let logger = WithChannelMonitor::from_impl(logger, &*inner);
+		let current_height = inner.best_block.height;
+		inner.onchain_tx_handler.rebroadcast_pending_claims(
+			current_height, FeerateStrategy::RetryPrevious, &broadcaster, &fee_estimator, &logger,
+		);
+	}
+
 	/// Returns the descriptors for relevant outputs (i.e., those that we can spend) within the
 	/// transaction if they exist and the transaction has at least [`ANTI_REORG_DELAY`]
 	/// confirmations. For [`SpendableOutputDescriptor::DelayedPaymentOutput`] descriptors to be
@@ -1810,6 +1829,12 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 	#[cfg(test)]
 	pub fn set_counterparty_payment_script(&self, script: ScriptBuf) {
 		self.inner.lock().unwrap().counterparty_payment_script = script;
+	}
+
+	#[cfg(test)]
+	pub fn do_signer_call<F: FnMut(&Signer) -> ()>(&self, mut f: F) {
+		let inner = self.inner.lock().unwrap();
+		f(&inner.onchain_tx_handler.signer);
 	}
 }
 
@@ -3526,9 +3551,12 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 						continue;
 					}
 				} else { None };
-				if let Some(htlc_tx) = self.onchain_tx_handler.get_fully_signed_htlc_tx(
-					&::bitcoin::OutPoint { txid, vout }, &preimage) {
-					holder_transactions.push(htlc_tx);
+				if let Some(htlc_tx) = self.onchain_tx_handler.get_maybe_signed_htlc_tx(
+					&::bitcoin::OutPoint { txid, vout }, &preimage
+				) {
+					if htlc_tx.is_fully_signed() {
+						holder_transactions.push(htlc_tx.0);
+					}
 				}
 			}
 		}

@@ -28,6 +28,7 @@ use crate::ln::features::ChannelTypeFeatures;
 use crate::ln::channel_keys::{DelayedPaymentBasepoint, HtlcBasepoint};
 use crate::ln::msgs::DecodeError;
 use crate::chain::chaininterface::{FeeEstimator, ConfirmationTarget, MIN_RELAY_FEE_SAT_PER_1000_WEIGHT, compute_feerate_sat_per_1000_weight, FEERATE_FLOOR_SATS_PER_KW};
+use crate::chain::transaction::MaybeSignedTransaction;
 use crate::sign::ecdsa::WriteableEcdsaChannelSigner;
 use crate::chain::onchaintx::{FeerateStrategy, ExternalHTLCClaim, OnchainTxHandler};
 use crate::util::logger::Logger;
@@ -633,14 +634,14 @@ impl PackageSolvingData {
 		}
 		true
 	}
-	fn get_finalized_tx<Signer: WriteableEcdsaChannelSigner>(&self, outpoint: &BitcoinOutPoint, onchain_handler: &mut OnchainTxHandler<Signer>) -> Option<Transaction> {
+	fn get_maybe_finalized_tx<Signer: WriteableEcdsaChannelSigner>(&self, outpoint: &BitcoinOutPoint, onchain_handler: &mut OnchainTxHandler<Signer>) -> Option<MaybeSignedTransaction> {
 		match self {
 			PackageSolvingData::HolderHTLCOutput(ref outp) => {
 				debug_assert!(!outp.channel_type_features.supports_anchors_zero_fee_htlc_tx());
-				return onchain_handler.get_fully_signed_htlc_tx(outpoint, &outp.preimage);
+				onchain_handler.get_maybe_signed_htlc_tx(outpoint, &outp.preimage)
 			}
 			PackageSolvingData::HolderFundingOutput(ref outp) => {
-				return Some(onchain_handler.get_fully_signed_holder_tx(&outp.funding_redeemscript));
+				Some(onchain_handler.get_maybe_signed_holder_tx(&outp.funding_redeemscript))
 			}
 			_ => { panic!("API Error!"); }
 		}
@@ -908,10 +909,10 @@ impl PackageTemplate {
 		}
 		htlcs
 	}
-	pub(crate) fn finalize_malleable_package<L: Logger, Signer: WriteableEcdsaChannelSigner>(
+	pub(crate) fn maybe_finalize_malleable_package<L: Logger, Signer: WriteableEcdsaChannelSigner>(
 		&self, current_height: u32, onchain_handler: &mut OnchainTxHandler<Signer>, value: u64,
 		destination_script: ScriptBuf, logger: &L
-	) -> Option<Transaction> {
+	) -> Option<MaybeSignedTransaction> {
 		debug_assert!(self.is_malleable());
 		let mut bumped_tx = Transaction {
 			version: 2,
@@ -927,19 +928,17 @@ impl PackageTemplate {
 		}
 		for (i, (outpoint, out)) in self.inputs.iter().enumerate() {
 			log_debug!(logger, "Adding claiming input for outpoint {}:{}", outpoint.txid, outpoint.vout);
-			if !out.finalize_input(&mut bumped_tx, i, onchain_handler) { return None; }
+			if !out.finalize_input(&mut bumped_tx, i, onchain_handler) { continue; }
 		}
-		log_debug!(logger, "Finalized transaction {} ready to broadcast", bumped_tx.txid());
-		Some(bumped_tx)
+		Some(MaybeSignedTransaction(bumped_tx))
 	}
-	pub(crate) fn finalize_untractable_package<L: Logger, Signer: WriteableEcdsaChannelSigner>(
+	pub(crate) fn maybe_finalize_untractable_package<L: Logger, Signer: WriteableEcdsaChannelSigner>(
 		&self, onchain_handler: &mut OnchainTxHandler<Signer>, logger: &L,
-	) -> Option<Transaction> {
+	) -> Option<MaybeSignedTransaction> {
 		debug_assert!(!self.is_malleable());
 		if let Some((outpoint, outp)) = self.inputs.first() {
-			if let Some(final_tx) = outp.get_finalized_tx(outpoint, onchain_handler) {
+			if let Some(final_tx) = outp.get_maybe_finalized_tx(outpoint, onchain_handler) {
 				log_debug!(logger, "Adding claiming input for outpoint {}:{}", outpoint.txid, outpoint.vout);
-				log_debug!(logger, "Finalized transaction {} ready to broadcast", final_tx.txid());
 				return Some(final_tx);
 			}
 			return None;
@@ -996,6 +995,7 @@ impl PackageTemplate {
 		if self.feerate_previous != 0 {
 			let previous_feerate = self.feerate_previous.try_into().unwrap_or(u32::max_value());
 			match feerate_strategy {
+				FeerateStrategy::RetryPrevious => previous_feerate,
 				FeerateStrategy::HighestOfPreviousOrNew => cmp::max(previous_feerate, feerate_estimate),
 				FeerateStrategy::ForceBump => if feerate_estimate > previous_feerate {
 					feerate_estimate
@@ -1141,6 +1141,10 @@ where
 	// If old feerate inferior to actual one given back by Fee Estimator, use it to compute new fee...
 	let (new_fee, new_feerate) = if let Some((new_fee, new_feerate)) = compute_fee_from_spent_amounts(input_amounts, predicted_weight, fee_estimator, logger) {
 		match feerate_strategy {
+			FeerateStrategy::RetryPrevious => {
+				let previous_fee = previous_feerate * predicted_weight / 1000;
+				(previous_fee, previous_feerate)
+			},
 			FeerateStrategy::HighestOfPreviousOrNew => if new_feerate > previous_feerate {
 				(new_fee, new_feerate)
 			} else {

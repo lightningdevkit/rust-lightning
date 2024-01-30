@@ -31,6 +31,7 @@ use crate::chain::ClaimId;
 use crate::chain::chaininterface::{ConfirmationTarget, FeeEstimator, BroadcasterInterface, LowerBoundedFeeEstimator};
 use crate::chain::channelmonitor::{ANTI_REORG_DELAY, CLTV_SHARED_CLAIM_BUFFER};
 use crate::chain::package::{PackageSolvingData, PackageTemplate};
+use crate::chain::transaction::MaybeSignedTransaction;
 use crate::util::logger::Logger;
 use crate::util::ser::{Readable, ReadableArgs, MaybeReadable, UpgradableRequired, Writer, Writeable, VecWriter};
 
@@ -204,14 +205,16 @@ pub(crate) enum ClaimEvent {
 /// control) onchain.
 pub(crate) enum OnchainClaim {
 	/// A finalized transaction pending confirmation spending the output to claim.
-	Tx(Transaction),
+	Tx(MaybeSignedTransaction),
 	/// An event yielded externally to signal additional inputs must be added to a transaction
 	/// pending confirmation spending the output to claim.
 	Event(ClaimEvent),
 }
 
-/// Represents the different feerates a pending request can use when generating a claim.
+/// Represents the different feerate strategies a pending request can use when generating a claim.
 pub(crate) enum FeerateStrategy {
+	/// We must reuse the most recently used feerate, if any.
+	RetryPrevious,
 	/// We must pick the highest between the most recently used and the current feerate estimate.
 	HighestOfPreviousOrNew,
 	/// We must force a bump of the most recently used feerate, either by using the current feerate
@@ -506,9 +509,13 @@ impl<ChannelSigner: WriteableEcdsaChannelSigner> OnchainTxHandler<ChannelSigner>
 					}
 					match claim {
 						OnchainClaim::Tx(tx) => {
-							let log_start = if bumped_feerate { "Broadcasting RBF-bumped" } else { "Rebroadcasting" };
-							log_info!(logger, "{} onchain {}", log_start, log_tx!(tx));
-							broadcaster.broadcast_transactions(&[&tx]);
+							if tx.is_fully_signed() {
+								let log_start = if bumped_feerate { "Broadcasting RBF-bumped" } else { "Rebroadcasting" };
+								log_info!(logger, "{} onchain {}", log_start, log_tx!(tx.0));
+								broadcaster.broadcast_transactions(&[&tx.0]);
+							} else {
+								log_info!(logger, "Waiting for signature of unsigned onchain transaction {}", tx.0.txid());
+							}
 						},
 						OnchainClaim::Event(event) => {
 							let log_start = if bumped_feerate { "Yielding fee-bumped" } else { "Replaying" };
@@ -610,11 +617,10 @@ impl<ChannelSigner: WriteableEcdsaChannelSigner> OnchainTxHandler<ChannelSigner>
 			) {
 				assert!(new_feerate != 0);
 
-				let transaction = cached_request.finalize_malleable_package(
+				let transaction = cached_request.maybe_finalize_malleable_package(
 					cur_height, self, output_value, self.destination_script.clone(), logger
 				).unwrap();
-				log_trace!(logger, "...with timer {} and feerate {}", new_timer, new_feerate);
-				assert!(predicted_weight >= transaction.weight().to_wu());
+				assert!(predicted_weight >= transaction.0.weight().to_wu());
 				return Some((new_timer, new_feerate, OnchainClaim::Tx(transaction)));
 			}
 		} else {
@@ -623,7 +629,7 @@ impl<ChannelSigner: WriteableEcdsaChannelSigner> OnchainTxHandler<ChannelSigner>
 			// which require external funding.
 			let mut inputs = cached_request.inputs();
 			debug_assert_eq!(inputs.len(), 1);
-			let tx = match cached_request.finalize_untractable_package(self, logger) {
+			let tx = match cached_request.maybe_finalize_untractable_package(self, logger) {
 				Some(tx) => tx,
 				None => return None,
 			};
@@ -634,19 +640,19 @@ impl<ChannelSigner: WriteableEcdsaChannelSigner> OnchainTxHandler<ChannelSigner>
 				// Commitment inputs with anchors support are the only untractable inputs supported
 				// thus far that require external funding.
 				PackageSolvingData::HolderFundingOutput(output) => {
-					debug_assert_eq!(tx.txid(), self.holder_commitment.trust().txid(),
+					debug_assert_eq!(tx.0.txid(), self.holder_commitment.trust().txid(),
 						"Holder commitment transaction mismatch");
 
 					let conf_target = ConfirmationTarget::OnChainSweep;
 					let package_target_feerate_sat_per_1000_weight = cached_request
 						.compute_package_feerate(fee_estimator, conf_target, feerate_strategy);
 					if let Some(input_amount_sat) = output.funding_amount {
-						let fee_sat = input_amount_sat - tx.output.iter().map(|output| output.value).sum::<u64>();
+						let fee_sat = input_amount_sat - tx.0.output.iter().map(|output| output.value).sum::<u64>();
 						let commitment_tx_feerate_sat_per_1000_weight =
-							compute_feerate_sat_per_1000_weight(fee_sat, tx.weight().to_wu());
+							compute_feerate_sat_per_1000_weight(fee_sat, tx.0.weight().to_wu());
 						if commitment_tx_feerate_sat_per_1000_weight >= package_target_feerate_sat_per_1000_weight {
-							log_debug!(logger, "Pre-signed {} already has feerate {} sat/kW above required {} sat/kW",
-								log_tx!(tx), commitment_tx_feerate_sat_per_1000_weight,
+							log_debug!(logger, "Pre-signed commitment {} already has feerate {} sat/kW above required {} sat/kW",
+								tx.0.txid(), commitment_tx_feerate_sat_per_1000_weight,
 								package_target_feerate_sat_per_1000_weight);
 							return Some((new_timer, 0, OnchainClaim::Tx(tx.clone())));
 						}
@@ -654,7 +660,7 @@ impl<ChannelSigner: WriteableEcdsaChannelSigner> OnchainTxHandler<ChannelSigner>
 
 					// We'll locate an anchor output we can spend within the commitment transaction.
 					let funding_pubkey = &self.channel_transaction_parameters.holder_pubkeys.funding_pubkey;
-					match chan_utils::get_anchor_output(&tx, funding_pubkey) {
+					match chan_utils::get_anchor_output(&tx.0, funding_pubkey) {
 						// An anchor output was found, so we should yield a funding event externally.
 						Some((idx, _)) => {
 							// TODO: Use a lower confirmation target when both our and the
@@ -664,7 +670,7 @@ impl<ChannelSigner: WriteableEcdsaChannelSigner> OnchainTxHandler<ChannelSigner>
 								package_target_feerate_sat_per_1000_weight as u64,
 								OnchainClaim::Event(ClaimEvent::BumpCommitment {
 									package_target_feerate_sat_per_1000_weight,
-									commitment_tx: tx.clone(),
+									commitment_tx: tx.0.clone(),
 									anchor_output_idx: idx,
 								}),
 							))
@@ -785,9 +791,13 @@ impl<ChannelSigner: WriteableEcdsaChannelSigner> OnchainTxHandler<ChannelSigner>
 				// `OnchainClaim`.
 				let claim_id = match claim {
 					OnchainClaim::Tx(tx) => {
-						log_info!(logger, "Broadcasting onchain {}", log_tx!(tx));
-						broadcaster.broadcast_transactions(&[&tx]);
-						ClaimId(tx.txid().to_byte_array())
+						if tx.is_fully_signed() {
+							log_info!(logger, "Broadcasting onchain {}", log_tx!(tx.0));
+							broadcaster.broadcast_transactions(&[&tx.0]);
+						} else {
+							log_info!(logger, "Waiting for signature of unsigned onchain transaction {}", tx.0.txid());
+						}
+						ClaimId(tx.0.txid().to_byte_array())
 					},
 					OnchainClaim::Event(claim_event) => {
 						log_info!(logger, "Yielding onchain event to spend inputs {:?}", req.outpoints());
@@ -980,8 +990,13 @@ impl<ChannelSigner: WriteableEcdsaChannelSigner> OnchainTxHandler<ChannelSigner>
 			) {
 				match bump_claim {
 					OnchainClaim::Tx(bump_tx) => {
-						log_info!(logger, "Broadcasting RBF-bumped onchain {}", log_tx!(bump_tx));
-						broadcaster.broadcast_transactions(&[&bump_tx]);
+						if bump_tx.is_fully_signed() {
+							log_info!(logger, "Broadcasting RBF-bumped onchain {}", log_tx!(bump_tx.0));
+							broadcaster.broadcast_transactions(&[&bump_tx.0]);
+						} else {
+							log_info!(logger, "Waiting for signature of RBF-bumped unsigned onchain transaction {}",
+								bump_tx.0.txid());
+						}
 					},
 					OnchainClaim::Event(claim_event) => {
 						log_info!(logger, "Yielding RBF-bumped onchain event to spend inputs {:?}", request.outpoints());
@@ -1063,8 +1078,12 @@ impl<ChannelSigner: WriteableEcdsaChannelSigner> OnchainTxHandler<ChannelSigner>
 				request.set_feerate(new_feerate);
 				match bump_claim {
 					OnchainClaim::Tx(bump_tx) => {
-						log_info!(logger, "Broadcasting onchain {}", log_tx!(bump_tx));
-						broadcaster.broadcast_transactions(&[&bump_tx]);
+						if bump_tx.is_fully_signed() {
+							log_info!(logger, "Broadcasting onchain {}", log_tx!(bump_tx.0));
+							broadcaster.broadcast_transactions(&[&bump_tx.0]);
+						} else {
+							log_info!(logger, "Waiting for signature of unsigned onchain transaction {}", bump_tx.0.txid());
+						}
 					},
 					OnchainClaim::Event(claim_event) => {
 						log_info!(logger, "Yielding onchain event after reorg to spend inputs {:?}", request.outpoints());
@@ -1117,13 +1136,11 @@ impl<ChannelSigner: WriteableEcdsaChannelSigner> OnchainTxHandler<ChannelSigner>
 		&self.holder_commitment.trust().built_transaction().transaction
 	}
 
-	//TODO: getting lastest holder transactions should be infallible and result in us "force-closing the channel", but we may
-	// have empty holder commitment transaction if a ChannelMonitor is asked to force-close just after OutboundV1Channel::get_funding_created,
-	// before providing a initial commitment transaction. For outbound channel, init ChannelMonitor at Channel::funding_signed, there is nothing
-	// to monitor before.
-	pub(crate) fn get_fully_signed_holder_tx(&mut self, funding_redeemscript: &Script) -> Transaction {
-		let sig = self.signer.sign_holder_commitment(&self.holder_commitment, &self.secp_ctx).expect("signing holder commitment");
-		self.holder_commitment.add_holder_sig(funding_redeemscript, sig)
+	pub(crate) fn get_maybe_signed_holder_tx(&mut self, funding_redeemscript: &Script) -> MaybeSignedTransaction {
+		let tx = self.signer.sign_holder_commitment(&self.holder_commitment, &self.secp_ctx)
+			.map(|sig| self.holder_commitment.add_holder_sig(funding_redeemscript, sig))
+			.unwrap_or_else(|_| self.get_unsigned_holder_commitment_tx().clone());
+		MaybeSignedTransaction(tx)
 	}
 
 	#[cfg(any(test, feature="unsafe_revoked_tx_signing"))]
@@ -1132,7 +1149,7 @@ impl<ChannelSigner: WriteableEcdsaChannelSigner> OnchainTxHandler<ChannelSigner>
 		self.holder_commitment.add_holder_sig(funding_redeemscript, sig)
 	}
 
-	pub(crate) fn get_fully_signed_htlc_tx(&mut self, outp: &::bitcoin::OutPoint, preimage: &Option<PaymentPreimage>) -> Option<Transaction> {
+	pub(crate) fn get_maybe_signed_htlc_tx(&mut self, outp: &::bitcoin::OutPoint, preimage: &Option<PaymentPreimage>) -> Option<MaybeSignedTransaction> {
 		let get_signed_htlc_tx = |holder_commitment: &HolderCommitmentTransaction| {
 			let trusted_tx = holder_commitment.trust();
 			if trusted_tx.txid() != outp.txid {
@@ -1160,11 +1177,12 @@ impl<ChannelSigner: WriteableEcdsaChannelSigner> OnchainTxHandler<ChannelSigner>
 				preimage: preimage.clone(),
 				counterparty_sig: counterparty_htlc_sig.clone(),
 			};
-			let htlc_sig = self.signer.sign_holder_htlc_transaction(&htlc_tx, 0, &htlc_descriptor, &self.secp_ctx).unwrap();
-			htlc_tx.input[0].witness = trusted_tx.build_htlc_input_witness(
-				htlc_idx, &counterparty_htlc_sig, &htlc_sig, preimage,
-			);
-			Some(htlc_tx)
+			if let Ok(htlc_sig) = self.signer.sign_holder_htlc_transaction(&htlc_tx, 0, &htlc_descriptor, &self.secp_ctx) {
+				htlc_tx.input[0].witness = trusted_tx.build_htlc_input_witness(
+					htlc_idx, &counterparty_htlc_sig, &htlc_sig, preimage,
+				);
+			}
+			Some(MaybeSignedTransaction(htlc_tx))
 		};
 
 		// Check if the HTLC spends from the current holder commitment first, or the previous.
