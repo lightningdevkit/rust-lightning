@@ -2566,6 +2566,7 @@ pub struct ClaimAlongRouteArgs<'a, 'b, 'c, 'd> {
 	pub origin_node: &'a Node<'b, 'c, 'd>,
 	pub expected_paths: &'a [&'a [&'a Node<'b, 'c, 'd>]],
 	pub expected_extra_fees: Vec<u32>,
+	pub expected_min_htlc_overpay: Vec<u32>,
 	pub skip_last: bool,
 	pub payment_preimage: PaymentPreimage,
 }
@@ -2577,7 +2578,7 @@ impl<'a, 'b, 'c, 'd> ClaimAlongRouteArgs<'a, 'b, 'c, 'd> {
 	) -> Self {
 		Self {
 			origin_node, expected_paths, expected_extra_fees: vec![0; expected_paths.len()],
-			skip_last: false, payment_preimage,
+			expected_min_htlc_overpay: vec![0; expected_paths.len()], skip_last: false, payment_preimage,
 		}
 	}
 	pub fn skip_last(mut self, skip_last: bool) -> Self {
@@ -2588,11 +2589,15 @@ impl<'a, 'b, 'c, 'd> ClaimAlongRouteArgs<'a, 'b, 'c, 'd> {
 		self.expected_extra_fees = extra_fees;
 		self
 	}
+	pub fn with_expected_min_htlc_overpay(mut self, extra_fees: Vec<u32>) -> Self {
+		self.expected_min_htlc_overpay = extra_fees;
+		self
+	}
 }
 
 pub fn pass_claimed_payment_along_route<'a, 'b, 'c, 'd>(args: ClaimAlongRouteArgs) -> u64 {
 	let ClaimAlongRouteArgs {
-		origin_node, expected_paths, expected_extra_fees, skip_last,
+		origin_node, expected_paths, expected_extra_fees, expected_min_htlc_overpay, skip_last,
 		payment_preimage: our_payment_preimage
 	} = args;
 	let claim_event = expected_paths[0].last().unwrap().node.get_and_clear_pending_events();
@@ -2691,7 +2696,10 @@ pub fn pass_claimed_payment_along_route<'a, 'b, 'c, 'd>(args: ClaimAlongRouteArg
 							channel.context().config().forwarding_fee_base_msat
 						}
 					};
-					if $idx == 1 { fee += expected_extra_fees[i]; }
+					if $idx == 1 {
+						fee += expected_extra_fees[i];
+						fee += expected_min_htlc_overpay[i];
+					}
 					expect_payment_forwarded!(*$node, $next_node, $prev_node, Some(fee as u64), false, false);
 					expected_total_fee_msat += fee as u64;
 					check_added_monitors!($node, 1);

@@ -281,7 +281,7 @@ fn mpp_retry_overpay() {
 	let extra_fees = vec![0, total_overpaid_amount];
 	let expected_route = &[&[&nodes[1], &nodes[3]][..], &[&nodes[2], &nodes[3]][..]];
 	let args = ClaimAlongRouteArgs::new(&nodes[0], &expected_route[..], payment_preimage)
-		.with_expected_extra_fees(extra_fees);
+		.with_expected_min_htlc_overpay(extra_fees);
 	let expected_total_fee_msat = pass_claimed_payment_along_route(args);
 	expect_payment_sent!(&nodes[0], payment_preimage, Some(expected_total_fee_msat));
 }
