@@ -184,8 +184,15 @@ pub enum ClosureReason {
 	HolderForceClosed,
 	/// The channel was closed after negotiating a cooperative close and we've now broadcasted
 	/// the cooperative close transaction. Note the shutdown may have been initiated by us.
-	//TODO: split between CounterpartyInitiated/LocallyInitiated
+	// Can be removed once we disallow downgrading to 0.0.121
 	CooperativeClosure,
+	/// The channel was closed after negotiating a cooperative close and we've now broadcasted
+	/// the cooperative close transaction. This indicates that the shutdown was initiated by our
+	/// counterparty.
+	CounterpartyInitiatedCooperativeClosure,
+	/// The channel was closed after negotiating a cooperative close and we've now broadcasted
+	/// the cooperative close transaction. This indicates that the shutdown was initiated by us.
+	LocallyInitiatedCooperativeClosure,
 	/// A commitment transaction was confirmed on chain, closing the channel. Most likely this
 	/// commitment transaction came from our counterparty, but it may also have come from
 	/// a copy of our own `ChannelMonitor`.
@@ -231,6 +238,8 @@ impl core::fmt::Display for ClosureReason {
 			},
 			ClosureReason::HolderForceClosed => f.write_str("user manually force-closed the channel"),
 			ClosureReason::CooperativeClosure => f.write_str("the channel was cooperatively closed"),
+			ClosureReason::CounterpartyInitiatedCooperativeClosure => f.write_str("the channel was cooperatively closed by our peer"),
+			ClosureReason::LocallyInitiatedCooperativeClosure => f.write_str("the channel was cooperatively closed by us"),
 			ClosureReason::CommitmentTxConfirmed => f.write_str("commitment or closing transaction was confirmed on chain."),
 			ClosureReason::FundingTimedOut => write!(f, "funding transaction failed to confirm within {} blocks", FUNDING_CONF_DEADLINE_BLOCKS),
 			ClosureReason::ProcessingError { err } => {
@@ -255,7 +264,9 @@ impl_writeable_tlv_based_enum_upgradable!(ClosureReason,
 	(10, DisconnectedPeer) => {},
 	(12, OutdatedChannelManager) => {},
 	(13, CounterpartyCoopClosedUnfundedChannel) => {},
-	(15, FundingBatchClosure) => {}
+	(15, FundingBatchClosure) => {},
+	(17, CounterpartyInitiatedCooperativeClosure) => {},
+	(19, LocallyInitiatedCooperativeClosure) => {},
 );
 
 /// Intended destination of a failed HTLC as indicated in [`Event::HTLCHandlingFailed`].

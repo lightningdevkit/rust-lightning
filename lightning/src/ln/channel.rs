@@ -1256,6 +1256,9 @@ pub(super) struct ChannelContext<SP: Deref> where SP::Target: SignerProvider {
 	// We track whether we already emitted a `ChannelReady` event.
 	channel_ready_event_emitted: bool,
 
+	/// Some if we initiated to shut down the channel.
+	local_initiated_shutdown: Option<()>,
+
 	/// The unique identifier used to re-derive the private key material for the channel through
 	/// [`SignerProvider::derive_channel_signer`].
 	channel_keys_id: [u8; 32],
@@ -4959,11 +4962,17 @@ impl<SP: Deref> Channel<SP> where
 			}
 		}
 
+		let closure_reason = if self.initiated_shutdown() {
+			ClosureReason::LocallyInitiatedCooperativeClosure
+		} else {
+			ClosureReason::CounterpartyInitiatedCooperativeClosure
+		};
+
 		assert!(self.context.shutdown_scriptpubkey.is_some());
 		if let Some((last_fee, sig)) = self.context.last_sent_closing_fee {
 			if last_fee == msg.fee_satoshis {
 				let shutdown_result = ShutdownResult {
-					closure_reason: ClosureReason::CooperativeClosure,
+					closure_reason,
 					monitor_update: None,
 					dropped_outbound_htlcs: Vec::new(),
 					unbroadcasted_batch_funding_txid: self.context.unbroadcasted_batch_funding_txid(),
@@ -4998,7 +5007,7 @@ impl<SP: Deref> Channel<SP> where
 							.map_err(|_| ChannelError::Close("External signer refused to sign closing transaction".to_owned()))?;
 						let (signed_tx, shutdown_result) = if $new_fee == msg.fee_satoshis {
 							let shutdown_result = ShutdownResult {
-								closure_reason: ClosureReason::CooperativeClosure,
+								closure_reason,
 								monitor_update: None,
 								dropped_outbound_htlcs: Vec::new(),
 								unbroadcasted_batch_funding_txid: self.context.unbroadcasted_batch_funding_txid(),
@@ -5261,6 +5270,11 @@ impl<SP: Deref> Channel<SP> where
 	/// Returns true if we either initiated or agreed to shut down the channel.
 	pub fn sent_shutdown(&self) -> bool {
 		self.context.channel_state.is_local_shutdown_sent()
+	}
+
+	/// Returns true if we initiated to shut down the channel.
+	pub fn initiated_shutdown(&self) -> bool {
+		self.context.local_initiated_shutdown.is_some()
 	}
 
 	/// Returns true if this channel is fully shut down. True here implies that no further actions
@@ -6177,6 +6191,7 @@ impl<SP: Deref> Channel<SP> where
 		// From here on out, we may not fail!
 		self.context.target_closing_feerate_sats_per_kw = target_feerate_sats_per_kw;
 		self.context.channel_state.set_local_shutdown_sent();
+		self.context.local_initiated_shutdown = Some(());
 		self.context.update_time_counter += 1;
 
 		let monitor_update = if update_shutdown_script {
@@ -6437,6 +6452,7 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 				channel_keys_id,
 
 				blocked_monitor_updates: Vec::new(),
+				local_initiated_shutdown: None,
 			},
 			unfunded_context: UnfundedChannelContext { unfunded_channel_age_ticks: 0 }
 		})
@@ -7237,6 +7253,8 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 				channel_type,
 				channel_keys_id,
 
+				local_initiated_shutdown: None,
+
 				blocked_monitor_updates: Vec::new(),
 			},
 			unfunded_context: UnfundedChannelContext { unfunded_channel_age_ticks: 0 }
@@ -7811,6 +7829,7 @@ impl<SP: Deref> Writeable for Channel<SP> where SP::Target: SignerProvider {
 			(39, pending_outbound_blinding_points, optional_vec),
 			(41, holding_cell_blinding_points, optional_vec),
 			(43, malformed_htlcs, optional_vec), // Added in 0.0.119
+			(45, self.context.local_initiated_shutdown, option), // Added in 0.0.122
 		});
 
 		Ok(())
@@ -8098,6 +8117,8 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 
 		let mut is_batch_funding: Option<()> = None;
 
+		let mut local_initiated_shutdown: Option<()> = None;
+
 		let mut pending_outbound_blinding_points_opt: Option<Vec<Option<PublicKey>>> = None;
 		let mut holding_cell_blinding_points_opt: Option<Vec<Option<PublicKey>>> = None;
 
@@ -8132,6 +8153,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 			(39, pending_outbound_blinding_points_opt, optional_vec),
 			(41, holding_cell_blinding_points_opt, optional_vec),
 			(43, malformed_htlcs, optional_vec), // Added in 0.0.119
+			(45, local_initiated_shutdown, option),
 		});
 
 		let (channel_keys_id, holder_signer) = if let Some(channel_keys_id) = channel_keys_id {
@@ -8361,6 +8383,8 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 
 				channel_type: channel_type.unwrap(),
 				channel_keys_id,
+
+				local_initiated_shutdown,
 
 				blocked_monitor_updates: blocked_monitor_updates.unwrap(),
 			}
