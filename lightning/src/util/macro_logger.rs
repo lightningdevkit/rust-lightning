@@ -7,11 +7,9 @@
 // You may not use this file except in accordance with one or both of these
 // licenses.
 
-use crate::chain::transaction::OutPoint;
 use crate::ln::ChannelId;
 use crate::sign::SpendableOutputDescriptor;
 
-use bitcoin::hash_types::Txid;
 use bitcoin::blockdata::transaction::Transaction;
 
 use crate::routing::router::Route;
@@ -36,13 +34,6 @@ macro_rules! log_pubkey {
 macro_rules! log_bytes {
 	($obj: expr) => {
 		$crate::util::logger::DebugBytes(&$obj)
-	}
-}
-
-pub(crate) struct DebugFundingChannelId<'a>(pub &'a Txid, pub u16);
-impl<'a> core::fmt::Display for DebugFundingChannelId<'a> {
-	fn fmt(&self, f: &mut core::fmt::Formatter) -> Result<(), core::fmt::Error> {
-		ChannelId::v1_from_funding_outpoint(OutPoint { txid: self.0.clone(), index: self.1 }).fmt(f)
 	}
 }
 

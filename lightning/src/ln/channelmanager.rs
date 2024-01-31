@@ -1636,9 +1636,6 @@ pub struct ChannelDetails {
 	pub counterparty: ChannelCounterparty,
 	/// The Channel's funding transaction output, if we've negotiated the funding transaction with
 	/// our counterparty already.
-	///
-	/// Note that, if this has been set, `channel_id` for V1-established channels will be equivalent to
-	/// `ChannelId::v1_from_funding_outpoint(funding_txo.unwrap())`.
 	pub funding_txo: Option<OutPoint>,
 	/// The features which this channel operates with. See individual features for more info.
 	///
@@ -2296,7 +2293,7 @@ macro_rules! handle_new_monitor_update {
 		handle_new_monitor_update!($self, $update_res, $chan, _internal,
 			handle_monitor_update_completion!($self, $peer_state_lock, $peer_state, $per_peer_state_lock, $chan))
 	};
-	($self: ident, $funding_txo: expr, $channel_id: expr, $update: expr, $peer_state_lock: expr, $peer_state: expr, $per_peer_state_lock: expr, $chan: expr) => { {
+	($self: ident, $funding_txo: expr, $update: expr, $peer_state_lock: expr, $peer_state: expr, $per_peer_state_lock: expr, $chan: expr) => { {
 		let in_flight_updates = $peer_state.in_flight_monitor_updates.entry($funding_txo)
 			.or_insert_with(Vec::new);
 		// During startup, we push monitor updates as background events through to here in
@@ -2753,7 +2750,7 @@ where
 
 						// Update the monitor with the shutdown script if necessary.
 						if let Some(monitor_update) = monitor_update_opt.take() {
-							handle_new_monitor_update!(self, funding_txo_opt.unwrap(), *channel_id, monitor_update,
+							handle_new_monitor_update!(self, funding_txo_opt.unwrap(), monitor_update,
 								peer_state_lock, peer_state, per_peer_state, chan);
 						}
 					} else {
@@ -3414,7 +3411,7 @@ where
 							}, onion_packet, None, &self.fee_estimator, &&logger);
 						match break_chan_phase_entry!(self, send_res, chan_phase_entry) {
 							Some(monitor_update) => {
-								match handle_new_monitor_update!(self, funding_txo, channel_id, monitor_update, peer_state_lock, peer_state, per_peer_state, chan) {
+								match handle_new_monitor_update!(self, funding_txo, monitor_update, peer_state_lock, peer_state, per_peer_state, chan) {
 									false => {
 										// Note that MonitorUpdateInProgress here indicates (per function
 										// docs) that we will resend the commitment update once monitor
@@ -4770,7 +4767,7 @@ where
 								hash_map::Entry::Occupied(mut chan_phase) => {
 									if let ChannelPhase::Funded(chan) = chan_phase.get_mut() {
 										updated_chan = true;
-										handle_new_monitor_update!(self, funding_txo, channel_id, update.clone(),
+										handle_new_monitor_update!(self, funding_txo, update.clone(),
 											peer_state_lock, peer_state, per_peer_state, chan);
 									} else {
 										debug_assert!(false, "We shouldn't have an update for a non-funded channel");
@@ -5574,7 +5571,7 @@ where
 									peer_state.monitor_update_blocked_actions.entry(chan_id).or_insert(Vec::new()).push(action);
 								}
 								if !during_init {
-									handle_new_monitor_update!(self, prev_hop.outpoint, prev_hop.channel_id, monitor_update, peer_state_lock,
+									handle_new_monitor_update!(self, prev_hop.outpoint, monitor_update, peer_state_lock,
 										peer_state, per_peer_state, chan);
 								} else {
 									// If we're running during init we cannot update a monitor directly -
@@ -6570,7 +6567,7 @@ where
 						}
 						// Update the monitor with the shutdown script if necessary.
 						if let Some(monitor_update) = monitor_update_opt {
-							handle_new_monitor_update!(self, funding_txo_opt.unwrap(), chan.context.channel_id(), monitor_update,
+							handle_new_monitor_update!(self, funding_txo_opt.unwrap(), monitor_update,
 								peer_state_lock, peer_state, per_peer_state, chan);
 						}
 					},
@@ -6852,7 +6849,7 @@ where
 					let funding_txo = chan.context.get_funding_txo();
 					let monitor_update_opt = try_chan_phase_entry!(self, chan.commitment_signed(&msg, &&logger), chan_phase_entry);
 					if let Some(monitor_update) = monitor_update_opt {
-						handle_new_monitor_update!(self, funding_txo.unwrap(), chan.context.channel_id(), monitor_update, peer_state_lock,
+						handle_new_monitor_update!(self, funding_txo.unwrap(), monitor_update, peer_state_lock,
 							peer_state, per_peer_state, chan);
 					}
 					Ok(())
@@ -7031,7 +7028,7 @@ where
 						if let Some(monitor_update) = monitor_update_opt {
 							let funding_txo = funding_txo_opt
 								.expect("Funding outpoint must have been set for RAA handling to succeed");
-							handle_new_monitor_update!(self, funding_txo, chan.context.channel_id(), monitor_update,
+							handle_new_monitor_update!(self, funding_txo, monitor_update,
 								peer_state_lock, peer_state, per_peer_state, chan);
 						}
 						htlcs_to_fail
@@ -7372,7 +7369,7 @@ where
 						if let Some(monitor_update) = monitor_opt {
 							has_monitor_update = true;
 
-							handle_new_monitor_update!(self, funding_txo.unwrap(), chan.context.channel_id(), monitor_update,
+							handle_new_monitor_update!(self, funding_txo.unwrap(), monitor_update,
 								peer_state_lock, peer_state, per_peer_state, chan);
 							continue 'peer_loop;
 						}
@@ -8141,7 +8138,7 @@ where
 						if let Some((monitor_update, further_update_exists)) = chan.unblock_next_blocked_monitor_update() {
 							log_debug!(logger, "Unlocking monitor updating for channel {} and updating monitor",
 								channel_id);
-							handle_new_monitor_update!(self, channel_funding_outpoint, channel_id, monitor_update,
+							handle_new_monitor_update!(self, channel_funding_outpoint, monitor_update,
 								peer_state_lck, peer_state, per_peer_state, chan);
 							if further_update_exists {
 								// If there are more `ChannelMonitorUpdate`s to process, restart at the
@@ -9816,7 +9813,7 @@ impl_writeable_tlv_based!(PendingAddHTLCInfo, {
 	(2, prev_short_channel_id, required),
 	(4, prev_htlc_id, required),
 	(6, prev_funding_outpoint, required),
-	// Note that by the time we get past the required read for type 2 above, prev_funding_outpoint will be
+	// Note that by the time we get past the required read for type 6 above, prev_funding_outpoint will be
 	// filled in, so we can safely unwrap it here.
 	(7, prev_channel_id, (default_value, ChannelId::v1_from_funding_outpoint(prev_funding_outpoint.0.unwrap()))),
 });
@@ -11079,12 +11076,11 @@ where
 								Some((blocked_node_id, _blocked_channel_outpoint, blocked_channel_id, blocking_action)), ..
 						} = action {
 							if let Some(blocked_peer_state) = per_peer_state.get(&blocked_node_id) {
-								let channel_id = blocked_channel_id;
 								log_trace!(logger,
 									"Holding the next revoke_and_ack from {} until the preimage is durably persisted in the inbound edge's ChannelMonitor",
-									channel_id);
+									blocked_channel_id);
 								blocked_peer_state.lock().unwrap().actions_blocking_raa_monitor_updates
-									.entry(*channel_id)
+									.entry(*blocked_channel_id)
 									.or_insert_with(Vec::new).push(blocking_action.clone());
 							} else {
 								// If the channel we were blocking has closed, we don't need to
